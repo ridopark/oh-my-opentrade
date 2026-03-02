@@ -1,0 +1,132 @@
+package monitor_test
+
+import (
+	"testing"
+
+	"github.com/oh-my-opentrade/backend/internal/app/monitor"
+	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/stretchr/testify/assert"
+)
+
+func TestIndicators_RSI_AllUp(t *testing.T) {
+	calc := monitor.NewIndicatorCalculator()
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	var snap domain.IndicatorSnapshot
+	// 14 up closes
+	for i := 0; i < 15; i++ {
+		snap = calc.Update(createBar(t, sym, 100.0+float64(i), 10.0))
+	}
+
+	assert.InDelta(t, 100.0, snap.RSI, 0.1, "14 up closes should give RSI near 100")
+}
+
+func TestIndicators_RSI_AllDown(t *testing.T) {
+	calc := monitor.NewIndicatorCalculator()
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	var snap domain.IndicatorSnapshot
+	// 14 down closes
+	for i := 0; i < 15; i++ {
+		snap = calc.Update(createBar(t, sym, 100.0-float64(i), 10.0))
+	}
+
+	assert.InDelta(t, 0.0, snap.RSI, 0.1, "14 down closes should give RSI near 0")
+}
+
+func TestIndicators_RSI_Mixed(t *testing.T) {
+	calc := monitor.NewIndicatorCalculator()
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	var snap domain.IndicatorSnapshot
+	// alternating up and down
+	price := 100.0
+	for i := 0; i < 20; i++ {
+		if i%2 == 0 {
+			price += 1.0
+		} else {
+			price -= 1.0
+		}
+		snap = calc.Update(createBar(t, sym, price, 10.0))
+	}
+
+	assert.InDelta(t, 50.0, snap.RSI, 0.1, "mixed closes should give RSI near 50")
+}
+
+func TestIndicators_RSI_InsufficientData(t *testing.T) {
+	calc := monitor.NewIndicatorCalculator()
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	snap := calc.Update(createBar(t, sym, 100.0, 10.0))
+	assert.Equal(t, 0.0, snap.RSI, "insufficient data should return 0")
+}
+
+func TestIndicators_Stochastic(t *testing.T) {
+	calc := monitor.NewIndicatorCalculator()
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	var snap domain.IndicatorSnapshot
+	// highest high scenario
+	for i := 0; i < 14; i++ {
+		snap = calc.Update(createBarDetailed(t, sym, 100, 100+float64(i), 100, 100+float64(i), 10))
+	}
+	assert.InDelta(t, 100.0, snap.StochK, 0.1, "highest high should give StochK near 100")
+
+	// lowest low scenario
+	calc2 := monitor.NewIndicatorCalculator()
+	for i := 0; i < 14; i++ {
+		snap = calc2.Update(createBarDetailed(t, sym, 100, 100, 100-float64(i), 100-float64(i), 10))
+	}
+	assert.InDelta(t, 0.0, snap.StochK, 0.1, "lowest low should give StochK near 0")
+
+	// check D is 3-period SMA of K
+	// Let's feed some steady values
+	calc3 := monitor.NewIndicatorCalculator()
+	for i := 0; i < 16; i++ {
+		snap = calc3.Update(createBarDetailed(t, sym, 50, 100, 0, 50, 10)) // K will be 50 always
+	}
+	assert.InDelta(t, 50.0, snap.StochD, 0.1, "StochD should be SMA of StochK")
+}
+
+func TestIndicators_EMA(t *testing.T) {
+	calc := monitor.NewIndicatorCalculator()
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	var snap domain.IndicatorSnapshot
+	for i := 0; i < 25; i++ {
+		snap = calc.Update(createBar(t, sym, 50.0, 10.0))
+	}
+	assert.InDelta(t, 50.0, snap.EMA9, 0.1, "EMA of constant values equals constant")
+	assert.InDelta(t, 50.0, snap.EMA21, 0.1, "EMA of constant values equals constant")
+
+	// EMA reacts faster than SMA (in a trend, short EMA > long EMA)
+	for i := 0; i < 25; i++ {
+		snap = calc.Update(createBar(t, sym, 50.0+float64(i*10), 10.0))
+	}
+	assert.Greater(t, snap.EMA9, snap.EMA21, "EMA9 should react faster than EMA21 in uptrend")
+}
+
+func TestIndicators_VWAP(t *testing.T) {
+	calc := monitor.NewIndicatorCalculator()
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	// Single bar
+	snap := calc.Update(createBarDetailed(t, sym, 10, 10, 10, 10, 100))
+	assert.InDelta(t, 10.0, snap.VWAP, 0.1, "single bar VWAP equals typical price")
+
+	// Multiple bars: VWAP = (10*100 + 20*200) / (100 + 200) = 5000 / 300 = 16.666
+	snap = calc.Update(createBarDetailed(t, sym, 20, 20, 20, 20, 200))
+	assert.InDelta(t, 16.666, snap.VWAP, 0.01, "multiple bars VWAP cumulative")
+}
+
+func TestIndicators_VolumeSMA(t *testing.T) {
+	calc := monitor.NewIndicatorCalculator()
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	var snap domain.IndicatorSnapshot
+	for i := 0; i < 20; i++ {
+		snap = calc.Update(createBar(t, sym, 100.0, float64((i+1)*10)))
+	}
+	// volumes: 10, 20, ..., 200. Sum = 2100. Mean = 105
+	assert.InDelta(t, 105.0, snap.VolumeSMA, 0.1, "VolumeSMA returns mean of last 20 volumes")
+}
