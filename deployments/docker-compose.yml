@@ -1,0 +1,46 @@
+version: "3.8"
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: omo-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: opentrade
+      POSTGRES_PASSWORD: ${TIMESCALEDB_PASSWORD:-changeme}
+      POSTGRES_DB: opentrade
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+      # Note: Migrations must be run manually (e.g., via `make migrate` or psql)
+      # Do NOT mount them to /docker-entrypoint-initdb.d as it runs .down.sql files too.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opentrade -d opentrade"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  omo-core:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    container_name: omo-core
+    restart: unless-stopped
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    volumes:
+      - ../configs:/configs:ro
+      - ../migrations:/migrations:ro
+    environment:
+      - TIMESCALEDB_HOST=timescaledb
+      - TIMESCALEDB_PORT=5432
+    networks:
+      - default
+
+volumes:
+  timescaledb_data:
+    driver: local
