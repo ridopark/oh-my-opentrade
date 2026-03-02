@@ -1,0 +1,249 @@
+package config
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Config represents the complete application configuration.
+type Config struct {
+	Alpaca   AlpacaConfig   `yaml:"alpaca"`
+	Database DatabaseConfig `yaml:"database"`
+	Trading  TradingConfig  `yaml:"trading"`
+	Symbols  SymbolsConfig  `yaml:"symbols"`
+	Server   ServerConfig   `yaml:"server"`
+}
+
+// AlpacaConfig represents the Alpaca broker configuration.
+type AlpacaConfig struct {
+	APIKeyID     string `yaml:"api_key_id"`
+	APISecretKey string `yaml:"api_secret_key"`
+	BaseURL      string `yaml:"base_url"`
+	DataURL      string `yaml:"data_url"`
+	PaperMode    bool   `yaml:"paper_mode"`
+}
+
+// DatabaseConfig represents the database connection configuration.
+type DatabaseConfig struct {
+	Host        string `yaml:"host"`
+	Port        int    `yaml:"port"`
+	User        string `yaml:"user"`
+	Password    string `yaml:"password"`
+	DBName      string `yaml:"dbname"`
+	SSLMode     string `yaml:"ssl_mode"`
+	MaxPoolSize int    `yaml:"max_pool_size"`
+}
+
+// TradingConfig represents the trading rules and parameters.
+type TradingConfig struct {
+	MaxRiskPercent         float64       `yaml:"max_risk_percent"`
+	DefaultSlippageBPS     int           `yaml:"default_slippage_bps"`
+	KillSwitchMaxStops     int           `yaml:"kill_switch_max_stops"`
+	KillSwitchWindow       time.Duration `yaml:"-"`
+	KillSwitchHaltDuration time.Duration `yaml:"-"`
+}
+
+// SymbolsConfig represents the symbols to trade and their timeframe.
+type SymbolsConfig struct {
+	Symbols   []string `yaml:"symbols"`
+	Timeframe string   `yaml:"timeframe"`
+}
+
+// ServerConfig represents the HTTP server configuration.
+type ServerConfig struct {
+	Port     int    `yaml:"port"`
+	LogLevel string `yaml:"log_level"`
+}
+
+// rawTradingConfig represents the unparsed trading configuration.
+type rawTradingConfig struct {
+	MaxRiskPercent         float64 `yaml:"max_risk_percent"`
+	DefaultSlippageBPS     int     `yaml:"default_slippage_bps"`
+	KillSwitchMaxStops     int     `yaml:"kill_switch_max_stops"`
+	KillSwitchWindow       string  `yaml:"kill_switch_window"`
+	KillSwitchHaltDuration string  `yaml:"kill_switch_halt_duration"`
+}
+
+// rawConfig represents the unparsed application configuration.
+type rawConfig struct {
+	Alpaca   AlpacaConfig     `yaml:"alpaca"`
+	Database DatabaseConfig   `yaml:"database"`
+	Trading  rawTradingConfig `yaml:"trading"`
+	Symbols  SymbolsConfig    `yaml:"symbols"`
+	Server   ServerConfig     `yaml:"server"`
+}
+
+const (
+	defaultDBPort        = 5432
+	defaultDBSSLMode     = "disable"
+	defaultDBMaxPoolSize = 10
+	defaultServerPort    = 8080
+	defaultLogLevel      = "info"
+	defaultDataURL       = "https://data.alpaca.markets"
+	defaultMaxRiskPct    = 2.0
+	defaultSlippageBPS   = 10
+	defaultKillMaxStops  = 3
+	defaultKillWindow    = "2m"
+	defaultKillHalt      = "15m"
+)
+
+// Load loads the configuration from env and yaml files.
+// The loading sequence is: .env → YAML → env overlay → defaults → validate
+func Load(envPath, yamlPath string) (*Config, error) {
+	// 1. Parse .env file
+	if err := loadEnvFile(envPath); err != nil {
+		return nil, fmt.Errorf("failed to load env file: %w", err)
+	}
+
+	// 2. Read and parse YAML file
+	yamlBytes, err := os.ReadFile(yamlPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read YAML file: %w", err)
+	}
+
+	// Apply defaults
+	raw := rawConfig{
+		Alpaca: AlpacaConfig{
+			PaperMode: true,
+			DataURL:   defaultDataURL,
+		},
+		Database: DatabaseConfig{
+			Port:        defaultDBPort,
+			SSLMode:     defaultDBSSLMode,
+			MaxPoolSize: defaultDBMaxPoolSize,
+		},
+		Trading: rawTradingConfig{
+			MaxRiskPercent:         defaultMaxRiskPct,
+			DefaultSlippageBPS:     defaultSlippageBPS,
+			KillSwitchMaxStops:     defaultKillMaxStops,
+			KillSwitchWindow:       defaultKillWindow,
+			KillSwitchHaltDuration: defaultKillHalt,
+		},
+		Server: ServerConfig{
+			Port:     defaultServerPort,
+			LogLevel: defaultLogLevel,
+		},
+	}
+
+	if err := yaml.Unmarshal(yamlBytes, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse YAML file: %w", err)
+	}
+
+	var killSwitchWindow time.Duration
+	if raw.Trading.KillSwitchWindow != "" {
+		parsed, err := time.ParseDuration(raw.Trading.KillSwitchWindow)
+		if err != nil {
+			return nil, fmt.Errorf("invalid kill_switch_window: %w", err)
+		}
+		killSwitchWindow = parsed
+	}
+
+	var killSwitchHalt time.Duration
+	if raw.Trading.KillSwitchHaltDuration != "" {
+		parsed, err := time.ParseDuration(raw.Trading.KillSwitchHaltDuration)
+		if err != nil {
+			return nil, fmt.Errorf("invalid kill_switch_halt_duration: %w", err)
+		}
+		killSwitchHalt = parsed
+	}
+
+	cfg := &Config{
+		Alpaca:   raw.Alpaca,
+		Database: raw.Database,
+		Trading: TradingConfig{
+			MaxRiskPercent:         raw.Trading.MaxRiskPercent,
+			DefaultSlippageBPS:     raw.Trading.DefaultSlippageBPS,
+			KillSwitchMaxStops:     raw.Trading.KillSwitchMaxStops,
+			KillSwitchWindow:       killSwitchWindow,
+			KillSwitchHaltDuration: killSwitchHalt,
+		},
+		Symbols: raw.Symbols,
+		Server:  raw.Server,
+	}
+
+	// 3. Overlay environment variables
+	if val := os.Getenv("APCA_API_KEY_ID"); val != "" {
+		cfg.Alpaca.APIKeyID = val
+	}
+	if val := os.Getenv("APCA_API_SECRET_KEY"); val != "" {
+		cfg.Alpaca.APISecretKey = val
+	}
+	if val := os.Getenv("TIMESCALEDB_PASSWORD"); val != "" {
+		cfg.Database.Password = val
+	}
+
+	// Validate configuration
+	if err := validate(cfg); err != nil {
+		return nil, fmt.Errorf("validation error: %w", err)
+	}
+
+	return cfg, nil
+}
+
+// loadEnvFile parses a .env file and sets environment variables.
+// It skips missing files, and existing environment variables take precedence.
+func loadEnvFile(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // Skip if the file does not exist
+		}
+		return err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			val := strings.TrimSpace(parts[1])
+			if _, exists := os.LookupEnv(key); !exists {
+				os.Setenv(key, val)
+			}
+		}
+	}
+	return scanner.Err()
+}
+
+// validate checks if the given configuration is valid.
+func validate(cfg *Config) error {
+	if cfg.Trading.MaxRiskPercent < 0 {
+		return fmt.Errorf("config validation: maxRiskPercent cannot be negative")
+	}
+	if len(cfg.Symbols.Symbols) == 0 {
+		return fmt.Errorf("config validation: symbols cannot be empty")
+	}
+	validTimeframes := map[string]bool{
+		"1m":  true,
+		"5m":  true,
+		"15m": true,
+		"1h":  true,
+		"1d":  true,
+	}
+	if !validTimeframes[cfg.Symbols.Timeframe] {
+		return fmt.Errorf("config validation: invalid timeframe %q", cfg.Symbols.Timeframe)
+	}
+	if cfg.Database.Host == "" {
+		return fmt.Errorf("config validation: database host cannot be empty")
+	}
+	if cfg.Alpaca.APIKeyID == "" {
+		return fmt.Errorf("config validation: alpaca API key ID cannot be empty")
+	}
+	if cfg.Alpaca.APISecretKey == "" {
+		return fmt.Errorf("config validation: alpaca API secret key cannot be empty")
+	}
+	if cfg.Alpaca.BaseURL == "" {
+		return fmt.Errorf("config validation: alpaca base URL cannot be empty")
+	}
+	return nil
+}
