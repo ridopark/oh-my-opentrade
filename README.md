@@ -24,6 +24,17 @@ make debug-chrome-headless	Launch headless Chrome (no GUI needed)
 
 cd /home/ridopark/src/oh-my-opentrade/backend && go run ./cmd/omo-core/
 cd /home/ridopark/src/oh-my-opentrade/apps/dashboard && npm run dev 
+
+
+#Start everything:
+./scripts/start.sh
+
+#Stop everything:
+./scripts/shutdown.sh
+
+#View logs:
+tmux attach -t omo-core     # backend logs
+tmux attach -t omo-dashboard    # dashboard logs
 ```
 
 ## Project Structure

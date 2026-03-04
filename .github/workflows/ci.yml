@@ -101,3 +101,22 @@ jobs:
 
       - name: Build binary
         run: cd backend && go build -o bin/omo-core ./cmd/omo-core
+
+  deploy:
+    name: Deploy to OCI
+    runs-on: ubuntu-latest
+    needs: [lint, test, test-integration, build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.OCI_HOST }}
+          username: ${{ secrets.OCI_USER }}
+          key: ${{ secrets.OCI_SSH_KEY }}
+          script: |
+            cd ~/oh-my-opentrade
+            git pull origin main
+            docker compose -f deployments/docker-compose.yml up -d --build --remove-orphans
+            docker compose -f deployments/docker-compose.yml logs --tail=20 omo-core
