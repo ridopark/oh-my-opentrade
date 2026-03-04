@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"encoding/json"
 	"net/http"
 	"os"
 	"os/signal"
@@ -238,6 +239,42 @@ func main() {
 	const strategyBasePath = "configs/strategies"
 	strategyHandler := omhttp.NewStrategyHandler(dnaManager, strategyBasePath, httpLog)
 	mux.Handle("/strategies/", strategyHandler)
+	mux.HandleFunc("/orb", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Type", "application/json")
+		type orbJSON struct {
+			Symbol   string  `json:"symbol"`
+			State    string  `json:"state"`
+			High     float64 `json:"orb_high"`
+			Low      float64 `json:"orb_low"`
+			BarCount int     `json:"range_bar_count"`
+			BreakDir string  `json:"breakout_direction,omitempty"`
+			BreakRVOL float64 `json:"breakout_rvol,omitempty"`
+			Signals  int     `json:"signals_fired"`
+		}
+		var results []orbJSON
+		for _, sym := range cfg.Symbols.Symbols {
+			sess := monitorSvc.GetORBSession(sym)
+			if sess == nil {
+				results = append(results, orbJSON{Symbol: sym, State: "NO_SESSION"})
+				continue
+			}
+			o := orbJSON{
+				Symbol:   sess.Symbol,
+				State:    string(sess.State),
+				High:     sess.OrbHigh,
+				Low:      sess.OrbLow,
+				BarCount: sess.RangeBarCount,
+				Signals:  sess.SignalsFired,
+			}
+			if sess.Breakout.Confirmed {
+				o.BreakDir = string(sess.Breakout.Direction)
+				o.BreakRVOL = sess.Breakout.RVOL
+			}
+			results = append(results, o)
+		}
+		json.NewEncoder(w).Encode(results)
+	})
 	httpServer := &http.Server{
 		Addr:         ":8080",
 		Handler:      middleware.AccessLog(httpLog)(mux),
