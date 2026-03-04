@@ -11,12 +11,10 @@ DASH_PORT=8000
 # ── Colors ───────────────────────────────────────────────────
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 info()  { echo -e "${GREEN}[start]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[start]${NC} $*"; }
-error() { echo -e "${RED}[start]${NC} $*"; }
 
 kill_port() {
   local port=$1
@@ -53,6 +51,6 @@ fi
 
 echo ""
 info "All services launched. Useful commands:"
-echo "  tmux attach -t $OMO_SESSION     # view backend logs"
+echo "  tmux attach -t $OMO_SESSION      # view backend logs"
 echo "  tmux attach -t $DASH_SESSION   # view dashboard logs"
 echo "  ./scripts/shutdown.sh            # stop everything"

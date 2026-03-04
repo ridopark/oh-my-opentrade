@@ -1,7 +1,7 @@
 package strategy
 
 import (
-"context"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -16,7 +16,7 @@ import (
 // This type is internal to the strategy package and distinct from domain.StrategyDNA.
 type StrategyDNA struct {
 	ID           string
-	Version      int
+	Version      string
 	Description  string
 	Parameters   map[string]any
 	RegimeFilter RegimeFilter
@@ -32,10 +32,12 @@ type RegimeFilter struct {
 type tomlFile struct {
 	Strategy struct {
 		ID          string `toml:"id"`
-		Version     int    `toml:"version"`
+		Version     any    `toml:"version"`
 		Description string `toml:"description"`
+		Name        string `toml:"name"`
 	} `toml:"strategy"`
 	Parameters   map[string]any `toml:"parameters"`
+	Params       map[string]any `toml:"params"`
 	RegimeFilter struct {
 		AllowedRegimes    []string `toml:"allowed_regimes"`
 		MinRegimeStrength float64  `toml:"min_regime_strength"`
@@ -74,11 +76,33 @@ func (m *DNAManager) Load(path string) (*StrategyDNA, error) {
 		return nil, errors.New("strategy: DNA file is missing required field strategy.id")
 	}
 
+	// Parse version: int or semver string
+	var version string
+	switch v := raw.Strategy.Version.(type) {
+	case int64:
+		version = fmt.Sprintf("%d.0.0", v)
+	case float64:
+		version = fmt.Sprintf("%d.0.0", int(v))
+	case string:
+		version = v
+	}
+
+	// Prefer [params] over [parameters] (v2 uses [params])
+	params := raw.Parameters
+	if len(params) == 0 && len(raw.Params) > 0 {
+		params = raw.Params
+	}
+
+	description := raw.Strategy.Description
+	if description == "" {
+		description = raw.Strategy.Name
+	}
+
 	dna := &StrategyDNA{
 		ID:          raw.Strategy.ID,
-		Version:     raw.Strategy.Version,
-		Description: raw.Strategy.Description,
-		Parameters:  raw.Parameters,
+		Version:     version,
+		Description: description,
+		Parameters:  params,
 		RegimeFilter: RegimeFilter{
 			AllowedRegimes:    raw.RegimeFilter.AllowedRegimes,
 			MinRegimeStrength: raw.RegimeFilter.MinRegimeStrength,

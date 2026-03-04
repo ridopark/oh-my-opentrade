@@ -87,7 +87,7 @@ func makeSetupEvent(t *testing.T, sym domain.Symbol, dir domain.Direction, regim
 func makeDNA(params map[string]any, allowedRegimes []string, minStrength float64) *strategy.StrategyDNA {
 	return &strategy.StrategyDNA{
 		ID:          "test_strat",
-		Version:     1,
+		Version:     "1.0.0",
 		Description: "test",
 		Parameters:  params,
 		RegimeFilter: strategy.RegimeFilter{

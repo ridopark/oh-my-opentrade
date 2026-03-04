@@ -50,7 +50,7 @@ func TestDNAManager_Load_ParsesAllFields(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "orb_break_retest", dna.ID)
-	assert.Equal(t, 1, dna.Version)
+	assert.Equal(t, "1.0.0", dna.Version)
 	assert.Equal(t, "Opening Range Breakout — Break & Retest", dna.Description)
 	assert.Equal(t, []string{"TREND"}, dna.RegimeFilter.AllowedRegimes)
 	assert.InDelta(t, 0.6, dna.RegimeFilter.MinRegimeStrength, 1e-9)
@@ -150,7 +150,7 @@ description = "v2"
 
 	got, ok := mgr.Get("my_strat")
 	require.True(t, ok)
-	assert.Equal(t, 2, got.Version)
+	assert.Equal(t, "2.0.0", got.Version)
 }
 
 // ─── DNAManager.Watch ───────────────────────────────────────────────────────
@@ -191,7 +191,7 @@ description = "v2"
 
 	select {
 	case dna := <-changed:
-		assert.Equal(t, 2, dna.Version)
+		assert.Equal(t, "2.0.0", dna.Version)
 	case <-ctx.Done():
 		t.Fatal("Watch did not call onChange within timeout")
 	}

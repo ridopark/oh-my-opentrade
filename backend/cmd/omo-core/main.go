@@ -145,7 +145,7 @@ func main() {
 	const dnaPath = "configs/strategies/orb_break_retest.toml"
 	if dna, err := dnaManager.Load(dnaPath); err == nil {
 		strategySvc.RegisterDNA(dna)
-		log.Info().Str("strategy_id", dna.ID).Int("version", dna.Version).Msg("strategy DNA loaded")
+		log.Info().Str("strategy_id", dna.ID).Str("version", dna.Version).Msg("strategy DNA loaded")
 	} else {
 		log.Info().Err(err).Msg("no strategy DNA file found, using deterministic defaults")
 	}
@@ -248,7 +248,7 @@ func main() {
 	if !useStrategyV2 {
 		go dnaManager.Watch(ctx, dnaPath, func(updated *strategy.StrategyDNA) {
 			strategySvc.RegisterDNA(updated)
-			log.Info().Str("strategy_id", updated.ID).Int("version", updated.Version).Msg("strategy DNA hot-reloaded")
+			log.Info().Str("strategy_id", updated.ID).Str("version", updated.Version).Msg("strategy DNA hot-reloaded")
 		})
 	}
 	log.Info().Msg("all services started")
@@ -320,7 +320,7 @@ func main() {
 		}
 		type dnaJSON struct {
 			ID          string         `json:"id"`
-			Version     int            `json:"version"`
+			Version     string         `json:"version"`
 			Description string         `json:"description,omitempty"`
 			Parameters  map[string]any `json:"parameters"`
 		}
