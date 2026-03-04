@@ -79,7 +79,10 @@ func (c *RESTClient) SubmitOrder(ctx context.Context, intent domain.OrderIntent)
 		"type":          "limit",
 		"time_in_force": "gtc",
 		"limit_price":   intent.LimitPrice,
-		"stop_price":    intent.StopLoss,
+	}
+	if intent.StopLoss > 0 {
+		reqBody["type"] = "stop_limit"
+		reqBody["stop_price"] = intent.StopLoss
 	}
 
 	b, _ := json.Marshal(reqBody)

@@ -15,6 +15,15 @@ cd backend && go build -o bin/omo-core ./cmd/omo-core
 
 # Run with Docker Compose
 docker compose -f deployments/docker-compose.yml up
+
+
+
+make debug-chrome	Launch headed Chrome with DevTools MCP on port 9222
+make debug-chrome-headless	Launch headless Chrome (no GUI needed)
+./scripts/debug-chrome.sh	Direct script with --headless flag option
+
+cd /home/ridopark/src/oh-my-opentrade/backend && go run ./cmd/omo-core/
+cd /home/ridopark/src/oh-my-opentrade/apps/dashboard && npm run dev 
 ```
 
 ## Project Structure

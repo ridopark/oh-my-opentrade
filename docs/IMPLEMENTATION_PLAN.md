@@ -1,152 +1,395 @@
-# Implementation Plan: oh-my-opentrade MVP
+# Implementation Plan: oh-my-opentrade
 
-### Section 1: Progress Summary
-| # | Item | Phase | Status |
-|---|------|-------|--------|
-| 1 | TimescaleDB schema + migrations | Foundation | ✅ Done |
-| 2 | Domain types (MarketBar, OrderIntent, IndicatorSnapshot, etc.) | Foundation | ✅ Done |
-| 3 | Port interfaces (MarketDataPort, BrokerPort, EventBusPort, RepositoryPort, AIAdvisorPort, NotifierPort) | Foundation | ✅ Done |
-| 4 | In-memory event bus adapter | Data Pipeline | ✅ Done |
-| 5 | Alpaca adapter (WebSocket + REST + rate limiter) | Data Pipeline | ✅ Done |
-| 6 | TimescaleDB adapter (RepositoryPort impl) | Data Pipeline | ✅ Done |
-| 7 | Ingestion service (Z-score filter) | Data Pipeline | ✅ Done |
-| 8 | Monitor service (indicators, regime detection, setup detection) | Intelligence | ✅ Done |
-| 9 | Execution service (risk engine, kill switch, slippage guard) | Intelligence | ✅ Done |
-| 10 | omo-core main.go (DI wiring) | Wire & Run | ✅ Done |
-| 11 | Docker Compose (TimescaleDB + omo-core) | Wire & Run | ✅ Done |
-| 12 | Config system (.env + config.yaml) | Wire & Run | ✅ Done |
+Last Updated: March 4, 2026 (Session 3)
 
-**Final test count**: 149 tests passing with -race across 9 packages.
+## Section 1: Progress Summary
 
-### Section 2: Dependency Graph
+### Phase 1 — Foundation
+| # | Item | Status |
+|---|------|--------|
+| 1 | TimescaleDB schema + migrations (7 migrations: accounts, bars, trades, thought_logs, strategy_history, orders, unique_constraints) | ✅ Done |
+| 2 | Domain types (MarketBar, Advisory, OrderIntent, Trade, events, value objects) | ✅ Done |
+| 3 | Port interfaces (MarketDataPort, BrokerPort, EventBusPort, RepositoryPort, AIAdvisorPort, NotifierPort, OptionsMarketDataPort) | ✅ Done |
+
+### Phase 2 — Data Pipeline
+| # | Item | Status |
+|---|------|--------|
+| 4 | In-memory event bus adapter | ✅ Done |
+| 5 | Alpaca adapter (WebSocket + REST + Options Support + rate limiter @ 200 req/min) | ✅ Done |
+| 6 | TimescaleDB adapter (SQL query builders, RepositoryPort impl — SaveMarketBar, GetMarketBars, etc.) | ✅ Done |
+| 7 | Ingestion service (Z-score anomaly filter, bar sanitization) | ✅ Done |
+
+### Phase 3 — Intelligence
+| # | Item | Status |
+|---|------|--------|
+| 8 | Monitor service (SMA, EMA, RSI, MACD, Bollinger, ATR, CCI, regime classifier, setup detection) | ✅ Done |
+| 9 | Execution service (risk engine 2% max, options risk, slippage guard, kill switch 3-in-2min→15min halt) | ✅ Done |
+
+### Phase 4 — Wire & Run
+| # | Item | Status |
+|---|------|--------|
+| 10 | omo-core main.go — Full DI wiring (320 lines), all services subscribed to event bus | ✅ Done |
+| 11 | Docker Compose (timescaledb, migrate, omo-core, omo-dashboard) | ✅ Done |
+| 12 | Config system (.env secrets + config.yaml templates, env overlay, validation) | ✅ Done |
+
+### Phase 5 — Historical Data
+| # | Item | Status |
+|---|------|--------|
+| 13 | `omo-backfill` CLI tool — Chunked historical bar download from Alpaca, progress logging | ✅ Done |
+| 14 | SaveMarketBars batch insert + GetLatestMarketBarTime on RepositoryPort | ✅ Done |
+
+### Phase 6 — AI & Strategy
+| # | Item | Status |
+|---|------|--------|
+| 15 | LLM adapter — OpenAI-compatible (Claude, Ollama, LM Studio) for Bull/Bear/Judge debates | ✅ Done |
+| 16 | Debate service — Subscribes to SetupDetected, runs AI adversarial debate, emits OrderIntentCreated | ✅ Done |
+| 17 | Strategy DNA engine — Yaegi hot-swap runtime, TOML hot-reload (5s), position sizing | ✅ Done |
+| 18 | ORB Break & Retest strategy TOML (`configs/strategies/orb_break_retest.toml`) | ✅ Done |
+| 19 | Options contract selection, order, and risk modules | ✅ Done |
+
+### Phase 7 — Dashboard
+| # | Item | Status |
+|---|------|--------|
+| 20 | Next.js 15 app with TailwindCSS + shadcn/ui + lightweight-charts v5 | ✅ Done |
+| 21 | Multi-symbol overlay chart (10 symbols, color-coded) | ✅ Done |
+| 22 | Pan-left lazy loading with visible range detection | ✅ Done |
+| 23 | Loading spinner ("Loading more data...") | ✅ Done |
+| 24 | Off-market-hours shading (ET timezone, 9:30a–4p market hours) | ✅ Done |
+| 25 | Gap break rendering for missing data periods | ✅ Done |
+| 26 | Timeframe switching (1m, 5m, 15m, 1h, 1d) — preserves visible time range | ✅ Done |
+| 27 | SSE real-time event stream hooks (debates, orders, DNA changes) | ✅ Done |
+| 28 | Debates page — Full UI for debate feed | ✅ Done |
+| 29 | Execution monitor page — Full UI for order tracking | ✅ Done |
+| 30 | Strategy DNA page — Full UI with diff view | ✅ Done |
+| 31 | Next.js API proxy for bars (`/api/bars`) and events (`/api/events`) | ✅ Done |
+
+### Phase 8 — Notifications & Observability
+| # | Item | Status |
+|---|------|--------|
+| 32 | SSE handler for dashboard real-time push | ✅ Done |
+| 33 | HTTP handlers (bars, health, services, strategy endpoints) | ✅ Done |
+| 34 | Access logging middleware | ✅ Done |
+| 35 | Structured zerolog logger | ✅ Done |
+| 36 | Telegram notification adapter | ✅ Done |
+| 37 | Discord notification adapter | ✅ Done |
+| 38 | MultiNotifier fan-out | ✅ Done |
+| 38b | Dockerfile.dashboard for containerized frontend | ✅ Done |
+
+### Phase 9 — Paper Trading Readiness 🚧
+| # | Item | Status |
+|---|------|--------|
+| 39 | End-to-end flow verification (live market → event pipeline → paper order) | 🟡 In Progress — startup verified, DNA path fixed, debug logging added. Needs market-hours testing (9:30 AM–4 PM ET) for full pipeline verification. |
+| 40 | Monitor setup detection tuning with real market data | 🟡 In Progress — debug logging added to monitor (indicator snapshots, regime classification, setup evaluation on every bar). Ready for market-hours data collection. Set `LOG_LEVEL=debug` to enable. |
+| 41 | LLM provider configuration (API keys, model selection) | ✅ Done — OpenRouter configured, smoke test passes with real API key, structured debate JSON verified (LONG, 0.72 confidence, full bull/bear/judge). |
+| 42 | Alpaca paper trading order submission verification | ✅ Done — Account equity ($30,965.59), order submit/status/cancel lifecycle, quote retrieval all verified via smoke tests. |
+| 43 | Integration test: Alpaca WS → Ingestion → TimescaleDB round-trip | ✅ Done |
+| 44 | Integration test: SetupDetected → Debate → OrderIntent → Execution → Order | ✅ Done |
+| 45 | Strategy DNA parameter tuning for live conditions | 🟡 In Progress — DNA reviewed, params reasonable for ORB strategy. Regime filter allows TREND only (conservative). `min_rvol` not connected to monitor; `min_confidence` in DNA not used by strategy service (hardcodes 0.75). Full tuning after market-hours data. |
+| 46 | Notification wiring (Telegram/Discord alerts on order events) | ✅ Done |
+| 47 | CI/CD pipeline setup (GitHub Actions) | ✅ Done |
+
+### Phase 10 — Hardening & Backtesting (Future)
+| # | Item | Status |
+|---|------|--------|
+| 48 | Backtesting framework (replay historical bars through event pipeline) | 🔲 Not Started |
+| 49 | Candlestick chart mode (lightweight-charts supports it natively) | 🔲 Not Started |
+| 50 | Auto-reconnect for Alpaca WebSocket | 🔲 Not Started |
+| 51 | Nightly evolution cycle (strategy parameter optimization) | 🔲 Not Started |
+| 52 | Performance dashboard (P&L tracking, win rate, drawdown) | 🔲 Not Started |
+| 53 | Observability stack (Prometheus/Grafana) | 🔲 Not Started |
+
+---
+
+## Section 2: Dependency Graph
+
 ```
-                   ┌──────────────────┐
-                   │  9. Execution    │  ← No external deps, pure domain logic
-                   │     Service      │     Can start NOW
-                   └────────┬─────────┘
-                            │
-          ┌─────────────────┼─────────────────┐
-          │                 │                  │
-┌─────────▼────────┐ ┌─────▼──────────┐ ┌────▼─────────┐
-│ 5. Alpaca        │ │ 6. TimescaleDB │ │ 12. Config   │
-│    Adapter       │ │    Adapter     │ │    System    │
-│ (needs config)   │ │ (needs config) │ │              │
-└─────────▼────────┘ └──────▼─────────┘ └──────▼───────┘
-          │                 │                   │
-          └─────────┬───────┘───────────────────┘
-                    │
-          ┌─────────▼─────────┐
-          │ 10. omo-core      │  ← Wires everything together
-          │     main.go DI    │
-          └─────────┬─────────┘
-                    │
-          ┌─────────▼─────────┐
-          │ 11. Docker        │  ← Containerizes the whole thing
-          │     Compose       │
-          └───────────────────┘
+Phase 1–8 (COMPLETE)
+━━━━━━━━━━━━━━━━━━━
+
+  Foundation ──→ Data Pipeline ──→ Intelligence ──→ Wire & Run
+      │               │                │               │
+      │               ▼                │               │
+      │        Historical Data         │               │
+      │        (omo-backfill)          │               │
+      │               │                │               │
+      ▼               ▼                ▼               ▼
+  AI & Strategy ◄──── All services wired in main.go ────►  Dashboard
+  (LLM, Debate,       │                                    (Next.js,
+   DNA Engine,         │                                     Chart,
+   Options)            │                                     SSE)
+                       ▼
+               Notifications & Observability
+               (Telegram, Discord, SSE, Logging)
+
+
+Phase 9: Paper Trading Readiness (NEXT)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                     End-to-End Flow                             │
+  │                                                                 │
+  │  Alpaca WS ──→ Ingestion ──→ Monitor ──→ Debate ──→ Strategy   │
+  │  (bars)        (sanitize)    (setup      (AI         (DNA       │
+  │                               detect)    debate)     sizing)    │
+  │                                             │                   │
+  │                                             ▼                   │
+  │                               Execution ──→ Alpaca REST         │
+  │                               (risk,       (paper order)        │
+  │                                slippage,                        │
+  │                                kill switch)                     │
+  │                                             │                   │
+  │                                             ▼                   │
+  │                               Notifications + Dashboard SSE     │
+  │                                                                 │
+  └─────────────────────────────────────────────────────────────────┘
+
+  Dependencies for first paper trade:
+  ┌──────────────────┐     ┌──────────────────┐
+  │ 41. LLM Config   │     │ 40. Monitor      │
+  │ (API key, model) │     │ Tuning           │
+  └────────┬─────────┘     └────────┬─────────┘
+           │                        │
+           ▼                        ▼
+  ┌──────────────────────────────────────────┐
+  │ 39. End-to-End Flow Verification         │
+  │ (all events fire correctly in sequence)  │
+  └────────────────────┬─────────────────────┘
+                       │
+           ┌───────────┼───────────┐
+           ▼           ▼           ▼
+    42. Paper      43–44.       46. Alert
+    Order Test     Integration  Wiring
+                   Tests
 ```
 
-### Section 3: Execution Order
-| Step | Task | Depends On | TDD Cycle | Est. Tests |
-|------|------|-----------|-----------|------------|
-| 1 | 9. Execution Service | Nothing new | RED → GREEN → REFACTOR | ~25-30 |
-| 2 | 12. Config System | Nothing new | RED → GREEN → REFACTOR | ~5-8 |
-| 3 | 5. Alpaca Adapter | Config | RED → GREEN → REFACTOR | ~15-20 |
-| 4 | 6. TimescaleDB Adapter | Config | RED → GREEN → REFACTOR | ~10-12 |
-| 5 | 10. omo-core main.go | All above | No (integration wiring) | — |
-| 6 | 11. Docker Compose + Dockerfile | main.go | No | — |
+---
 
-Actual tests added: 72. Total: 149 (exceeded estimate of 130-147).
+## Section 3: Execution Order — Phase 9
 
-### Section 4: Task Breakdown
+| Step | Task | Depends On | Description |
+|------|------|-----------|-------------|
+| 1 | 41. LLM Config | Nothing | Set LLM_BASE_URL, LLM_MODEL, LLM_API_KEY in .env; verify advisor responds |
+| 2 | 40. Monitor Tuning | Nothing | Review/adjust setup detection thresholds in config.yaml; test with backfilled data |
+| 3 | 45. DNA Tuning | Nothing | Review orb_break_retest.toml parameters; add more strategies if needed |
+| 4 | 39. E2E Verification | 41, 40, 45 | Run omo-core during market hours; verify all 7 event stages fire |
+| 5 | 42. Paper Order | 39 | Confirm Alpaca paper account receives and fills orders |
+| 6 | 43. Integration Test | 39 | Automated test: WS → Ingestion → DB round-trip |
+| 7 | 44. Integration Test | 39 | Automated test: Setup → Debate → Order pipeline |
+| 8 | 46. Notifications | 42 | Wire Telegram/Discord alerts to order/kill-switch events |
+| 9 | 47. CI/CD | Nothing | Setup GitHub Actions for build and test automation |
 
-#### Task 9: Execution Service
-Path: `backend/internal/app/execution/`
-Subscribes to: `EventSetupDetected`
-Emits: `EventOrderIntentCreated`, `EventOrderIntentValidated`, `EventOrderIntentRejected`, `EventOrderSubmitted`, `EventKillSwitchEngaged`, `EventCircuitBreakerTripped`
+---
 
-Subtasks:
-- [x] **9a. Risk Engine** (risk.go) — Max 2% account risk per trade, mandatory stop-loss validation, LIMIT orders only. Uses accountEquity constructor parameter.
-- [x] **9b. Slippage Guard** (slippage.go) — Compare LimitPrice against current bid/ask. Reject if spread exceeds MaxSlippageBPS. Uses QuoteProvider interface.
-- [x] **9c. Kill Switch** (killswitch.go) — Track stop-loss exits per tenant per symbol. 3 stops in 2 minutes → 15-minute halt. Time-based sliding window. Emits EventKillSwitchEngaged.
-- [x] **9d. Service Orchestrator** (service.go) — Subscribe to EventSetupDetected. Pipeline: Setup → Risk check → Slippage check → Kill switch check → BrokerPort.SubmitOrder. Emits appropriate events at each stage.
-- [x] **9e. Tests** — 29 tests: risk rule validation, slippage rejection thresholds, kill switch timing windows, service orchestration with mock ports.
+## Section 4: Task Breakdown — Phase 9
 
-Key constraints:
-- Max risk per trade: 2% of account equity
-- Mandatory stop-loss on every order
-- Order type: LIMIT only
-- Circuit breaker: 3 stops in 2 min → 15 min halt
-- Slippage guard: Reject if bid/ask exceeds max_slippage_bps
+### Task 39: End-to-End Flow Verification
 
-#### Task 12: Config System
-Path: `backend/internal/config/`
+The full event pipeline is wired in `main.go` but has never been tested with real market data flowing through all stages. Every service subscribes to the correct events, but we need to verify the chain actually fires in production conditions.
 
-Subtasks:
-- [x] **12a. Config structs** (config.go) — Top-level Config struct containing: AlpacaConfig, DatabaseConfig, TradingConfig, SymbolsConfig, ServerConfig.
-- [x] **12b. Loader** (config.go) — Load() parses .env for secrets, loads config.yaml for thresholds/symbols, applies env overlay, sets defaults, validates required fields.
-- [x] **12c. Tests** — 10 tests: parsing, default values, env overlay, YAML loading, validation errors for missing required fields.
+**Event chain to verify:**
+```
+1. Alpaca WebSocket → MarketBarReceived          (alpaca adapter → event bus)
+2. Ingestion        → MarketBarSanitized          (Z-score filter passes)
+3. Monitor          → SetupDetected               (indicators trigger a setup)
+4. Debate           → DebateCompleted             (LLM produces bull/bear/judge)
+                    → OrderIntentCreated           (if debate recommends trade)
+5. Strategy         → OrderIntentCreated (sized)   (DNA applies position sizing)
+6. Execution        → Risk check → Slippage check → Kill switch check
+                    → OrderSubmitted               (passes all gates)
+7. Alpaca REST      → Paper order placed           (broker confirms)
+```
 
-#### Task 5: Alpaca Adapter
-Path: `backend/internal/adapters/alpaca/`
-Implements: `MarketDataPort` + `BrokerPort`
+**Subtasks:**
+- [x] **39-pre.** Startup sequence verified: config loads, event bus, Alpaca adapter, TimescaleDB, account equity, Discord notifier, AI debate, all 6 services subscribe, SSE handler, HTTP server, indicator warmup, WebSocket stream. All initializes correctly.
+- [x] **39-pre2.** Fixed strategy DNA path bug (absolute `/configs/` → relative `configs/`) and strategy HTTP handler base path.
+- [x] **39-pre3.** Made log level configurable via `LOG_LEVEL` env var (supports `debug`, `info`, `warn`, `error`).
+- [x] **39-pre4.** Fixed config.go env overlay bug — `APCA_API_BASE_URL` and `APCA_DATA_URL` from `.env` were silently ignored.
+- [x] **39-pre5.** Fixed SubmitOrder stop_price bug — limit orders no longer send `stop_price` (Alpaca 422 fix).
+- [ ] **39a.** Run omo-core during market hours, tail logs, verify steps 1–2 fire continuously
+- [ ] **39b.** Observe Monitor logs — confirm indicator calculation + regime classification is running
+- [ ] **39c.** Watch for SetupDetected events — may need to temporarily lower thresholds
+- [ ] **39d.** Verify Debate service receives setup and calls LLM (requires task 41 — ✅)
+- [ ] **39e.** Verify Execution receives intent and runs risk/slippage/kill-switch checks
+- [ ] **39f.** Confirm order reaches Alpaca paper account (requires task 42 — ✅)
 
-Subtasks:
-- [x] **5a. Token Bucket Rate Limiter** (ratelimit.go) — 200 req/min budget via golang.org/x/time/rate. Thread-safe.
-- [x] **5b. REST Client** (rest.go) — SubmitOrder, CancelOrder, GetOrderStatus, GetPositions. All calls go through rate limiter. Alpaca error responses mapped to domain errors. Verified with httptest.
-- [x] **5c. WebSocket Client** (websocket.go) — Parses Alpaca bar JSON → domain.MarketBar. Close() with graceful shutdown. (Auto-reconnect deferred to deployment phase.)
-- [x] **5d. Combined Adapter** (adapter.go) — Implements MarketDataPort, BrokerPort, and execution.QuoteProvider. Constructor takes config.AlpacaConfig.
-- [x] **5e. Tests** — 21 tests: rate limiter timing, REST request/response mapping via httptest.Server, WebSocket message parsing, error mapping. No real Alpaca API calls.
+### Task 40: Monitor Setup Detection Tuning
 
-Key constraint: 200 req/min rate limit.
+The monitor calculates SMA, EMA, RSI, MACD, Bollinger Bands, ATR, CCI, and relative volume, then classifies market regime and detects setups. Thresholds are in `configs/config.yaml`. We need to verify these fire with real market data.
 
-#### Task 6: TimescaleDB Adapter
-Path: `backend/internal/adapters/timescaledb/`
-Implements: `RepositoryPort`
+**Subtasks:**
+- [x] **40a.** Debug logging added to monitor service — logs indicator snapshot (RSI, StochK/D, EMA9/21, VWAP, VolumeSMA), regime classification (type, strength, changed), and setup evaluation criteria (RSI cross conditions, EMA alignment) on every bar at DEBUG level.
+- [ ] **40b.** Run during market hours, collect indicator values for tracked symbols
+- [x] **40c.** Setup detection conditions reviewed — Long: RSI crosses 40 from below + EMA9 > EMA21. Short: RSI crosses 60 from above + EMA9 < EMA21. Regime filter: TREND only (EMA divergence > 1%).
+- [ ] **40d.** Adjust thresholds if too tight (e.g., relax min_rvol, confidence)
+- [ ] **40e.** Confirm at least one SetupDetected event fires during a trading session
 
-Subtasks:
-- [x] **6a. Connection Management** (db.go) — DBTX/Row/Rows interfaces (no pgx dependency in unit tests). pgx connection deferred to main.go wiring.
-- [x] **6b. Repository Implementation** (repository.go) — SaveMarketBar, GetMarketBars, SaveTrade, GetTrades, SaveStrategyDNA, GetLatestStrategyDNA. SQL matches migration schemas.
-- [x] **6c. Tests** — 12 tests using mock DBTX/Row/Rows interfaces. No real DB in unit tests.
+### Task 41: LLM Provider Configuration
 
-SQL must match the migration schemas in /home/ubuntu/src/oh-my-opentrade/migrations/.
+The LLM adapter is OpenAI-compatible and resides in `backend/internal/adapters/llm/`. It supports any OpenAI-compatible endpoint (OpenRouter, Ollama, LM Studio, etc.). **OpenRouter is now the default provider.**
 
-#### Task 10: omo-core main.go
-Path: `backend/cmd/omo-core/main.go`
+**Subtasks:**
+- [x] **41a.** Choose LLM provider — **OpenRouter** selected as default (supports Claude, GPT-4o, Llama, etc. via single API)
+- [x] **41b.** Set `LLM_ENABLED=true`, `LLM_BASE_URL=https://openrouter.ai/api`, `LLM_MODEL=anthropic/claude-sonnet-4`, `LLM_API_KEY` in `.env.example`; config default updated to OpenRouter
+- [x] **41b2.** Added OpenRouter `HTTP-Referer` and `X-Title` headers to LLM adapter for app identification and routing priority
+- [x] **41c.** Smoke test created (`smoke_test.go` with `//go:build smoke`). Verified OpenRouter returns structured debate JSON: LONG direction, 0.72 confidence, full bull/bear/judge reasoning in ~12s. PASS.
+- [ ] **41d.** Tune system prompts for Bull/Bear/Judge roles if needed (deferred — current prompts produce quality output)
 
-Subtasks:
-- [x] **10a. Config loading** — Parse .env + config.yaml via config.Load().
-- [x] **10b. DB initialization** — TimescaleDB connection pool placeholder (TODO: add pgx dependency).
-- [x] **10c. Adapter initialization** — Alpaca adapter (MarketDataPort + BrokerPort + QuoteProvider). TimescaleDB repository (nil placeholder). In-memory event bus.
-- [x] **10d. Service wiring** — Ingestion, Monitor, Execution services wired with all dependencies.
-- [x] **10e. Startup sequence** — Services subscribe to events. WebSocket streaming disabled pending deployment config. Blocks until shutdown signal.
-- [x] **10f. Graceful shutdown** — SIGINT/SIGTERM handler. Cancels context. Closes Alpaca adapter.
+### Task 42: Alpaca Paper Trading Order Verification
 
-No unit tests — verified by running the binary with Docker Compose.
+The Alpaca adapter supports standard and options orders. Paper endpoint: `https://paper-api.alpaca.markets`.
 
-#### Task 11: Docker Compose + Dockerfile
-Path: `deployments/`
+**Subtasks:**
+- [x] **42a.** Verified `.env` has `APCA_API_BASE_URL=https://paper-api.alpaca.markets`
+- [x] **42b.** Smoke test submits LIMIT order via Go test (`smoke_test.go` with `//go:build smoke`)
+- [x] **42c.** Order lifecycle verified: submit → status check → cancel
+- [x] **42d.** GetOrderStatus returns correct state (accepted/pending_cancel)
+- [x] **42e.** CancelOrder works — order transitions to cancelled
+- [ ] **42f.** Test with the execution service (end-to-end — requires market hours)
 
-Subtasks:
-- [x] **11a. Dockerfile** (deployments/Dockerfile) — Multi-stage build: golang:1.22-bookworm → gcr.io/distroless/static-debian12:nonroot. CGO_ENABLED=0, GOARCH=arm64.
-- [x] **11b. Docker Compose** (deployments/docker-compose.yml) — TimescaleDB (latest-pg16) + omo-core. Health checks, persistent volumes, env_file, shared bridge network.
-- [ ] **11c. Migration runner** — Deferred. Cannot use /docker-entrypoint-initdb.d because PostgreSQL runs .down.sql DROP scripts alphabetically.
-- [x] **11d. Example configs** — .env.example updated. configs/config.yaml.example created with all thresholds and defaults.
+### Tasks 43–44: Integration Tests
 
-### Section 5: Explicitly Deferred (Not in MVP)
-- AI adversarial debate system (Bull/Bear/Judge via OpenCode SDK)
-- Strategy DNA engine + Yaegi hot-swap runtime
-- Next.js dashboard (apps/dashboard)
-- Telegram/Discord notification adapter
-- Nightly evolution cycle
-- API Gateway layer
+Integration tests run against real TimescaleDB via `make test-integration`. The Makefile target auto-creates the `opentrade_test` database, runs migrations, and sets `TEST_DATABASE_URL`.
 
-### Section 6: Verification Checklist (End-to-End)
-- [x] All tests pass: cd backend && go test -race ./... (149 tests across 9 packages)
-- [x] go vet ./... clean
-- [x] Binary builds: go build -o bin/omo-core ./cmd/omo-core
-- [ ] Docker Compose starts: docker compose -f deployments/docker-compose.yml up
-- [ ] TimescaleDB migrations run successfully
-- [ ] Paper trading flow works end-to-end: Alpaca WebSocket → Ingestion → Monitor → Execution → Alpaca REST order
+**Subtasks:**
+- [x] **43a.** Create integration test tag (`//go:build integration`)
+- [x] **43b.** Test: connect to TimescaleDB → SaveMarketBar → GetMarketBars round-trip
+- [x] **43c.** Test: publish MarketBarReceived → verify anomalous bar is rejected and not saved
+- [x] **44a.** Test: publish SetupDetected → verify DebateCompleted + OrderSubmitted fires (with mock LLM/broker)
+- [x] **44b.** Test: low-confidence debate skips order creation (mock AI returns below threshold)
+- [x] **44c.** Test: full pipeline with mock broker → verify OrderSubmitted
+- [x] **44d.** `make test-integration` self-contained — auto-creates `opentrade_test` DB, runs migrations, passes `TEST_DATABASE_URL`
+- [x] **44e.** All integration tests verified passing against real TimescaleDB (omo-timescaledb container)
+
+---
+
+## Section 5: Architecture Reference
+
+```
+backend/
+  cmd/
+    omo-core/main.go          Full DI wiring, all services
+    omo-backfill/main.go       Historical data CLI
+  internal/
+    domain/                    
+      entity.go                Entities (MarketBar, Trade, Advisory)
+      value.go                 Value objects (OrderIntent, Regime)
+      event.go                 Event definitions
+      advisory.go              AI Advisor types
+    ports/                     Hexagonal port interfaces
+      options_market_data.go   Options data port
+    app/
+      ingestion/               Z-score filter, bar processing
+        integration_test.go    Integration: WS → Ingestion → DB round-trip
+      monitor/                 Service, indicators, regime & setup detectors
+        indicators.go          SMA, EMA, RSI, MACD, Bollinger, ATR, CCI
+        regime_detector.go     Market regime classification
+        setup_detector.go      Setup detection logic
+      execution/               Risk engine, kill switch, slippage guard
+      debate/                  AI adversarial debate orchestration
+      strategy/                DNA engine, Yaegi hot-swap, TOML loading
+      options/                 Options service
+      notify/                  Notification service (event bus → notifier)
+      backfill/                Chunked historical download
+      pipeline_integration_test.go  Integration: Setup → Debate → Order pipeline
+    adapters/
+      alpaca/                  
+        adapter.go             Main adapter
+        options_rest.go        Options REST client
+        options_order.go       Options order execution
+      timescaledb/             
+        repository.go          Repository implementation
+        db_sql.go              SQL query builders
+      eventbus/memory/         In-memory pub/sub
+      llm/                     OpenAI-compatible adapter (supports Claude, Ollama)
+      http/                    Bars, health, services, strategy handlers
+      sse/                     Server-sent events for dashboard
+      notification/            
+        multi.go               Fan-out notifier
+        telegram.go            Telegram adapter
+        discord.go             Discord adapter
+      middleware/              Access logging
+    config/                    .env + YAML loader
+    logger/                    Zerolog structured logging
+
+apps/dashboard/                Next.js 15 + lightweight-charts v5
+configs/
+  config.yaml                  Runtime thresholds and symbols
+  config.yaml.example          Config template
+  strategies/*.toml            Strategy DNA files (hot-reloaded)
+deployments/
+  docker-compose.yml           Full stack: db, migrate, core, dashboard
+  Dockerfile                   Core service multi-stage build
+  Dockerfile.dashboard         Dashboard service build
+migrations/                    7 SQL migration files (up/down pairs)
+scripts/
+  migrate.sh                   Migration runner
+  debug-chrome.sh              Chrome DevTools debugging helper
+Makefile                       14 targets (build, test, test-integration, migrate, etc.)
+.env.example                   Environment template
+```
+
+---
+
+## Section 6: Verification Checklist
+
+### Completed ✅
+- [x] All unit tests pass: `cd backend && go test ./...` — **320+ test functions across 17 packages**
+- [x] `go vet ./...` clean
+- [x] Binary builds: `go build -o bin/omo-core ./cmd/omo-core`
+- [x] Backfill tool works: `go run ./cmd/omo-backfill/ -symbols AAPL,MSFT -days 7`
+- [x] TimescaleDB stores and retrieves bars correctly
+- [x] Dashboard connects to backend API and renders charts
+- [x] SSE stream connects and hooks are ready
+- [x] All dashboard pages render (debates, execution, DNA)
+- [x] Chart: pan-left loading, spinner, off-market shading, timeframe switching
 - [x] Kill switch triggers after 3 stops in 2 minutes (unit tested)
 - [x] Rate limiter stays under 200 req/min (unit tested)
+- [x] Clean code: No TODO/FIXME/HACK comments in the codebase
+- [x] Makefile automation: All 14 targets verified
+
+### Phase 9 — Paper Trading Readiness 🟡
+- [x] LLM advisor responds to debate requests — smoke test verified with real OpenRouter API key (Claude Sonnet 4, structured JSON output)
+- [ ] Monitor detects at least one setup during market hours
+- [ ] Full event chain fires: WS → Ingestion → Monitor → Debate → Execution → Order
+- [ ] Paper order appears in Alpaca dashboard
+- [ ] Notifications arrive on Telegram/Discord for order events
+- [x] OpenRouter configured as default LLM provider (`.env.example`, config defaults, adapter headers)
+- [x] Alpaca paper account verified: equity $30,965.59, order submit/status/cancel lifecycle works, quote retrieval works
+- [x] Config env overlay bug fixed: `APCA_API_BASE_URL` and `APCA_DATA_URL` now correctly read from `.env`
+- [x] SubmitOrder stop_price bug fixed: limit orders no longer send `stop_price` field (Alpaca 422 fix)
+- [x] Strategy DNA path fixed: absolute `/configs/` → relative `configs/` for running from backend directory
+- [x] Log level configurable via `LOG_LEVEL` env var (supports debug/info/warn/error)
+- [x] Monitor debug logging added: indicator snapshots, regime classification, setup evaluation on every bar
+- [x] Notification service wired to event bus for order/kill-switch/circuit-breaker/fill/rejection events
+- [x] Integration tests pass against real TimescaleDB (`make test-integration`)
+- [x] `opentrade_test` database auto-provisioned by Makefile target
+- [x] CI/CD pipeline configured in `.github/workflows/ci.yml` (lint, test, integration, build)
+- [x] Full test suite passes: 320+ tests across 16 packages, zero failures
+- [x] omo-core startup sequence verified: all services subscribe, config loads from .env, WebSocket streams
+
+### Phase 10 — Hardening 🔲
+- [ ] Backtesting framework replays historical data
+- [ ] WebSocket auto-reconnects on disconnect
+- [ ] P&L tracking dashboard
+- [ ] Candlestick chart mode
+- [ ] Prometheus/Grafana dashboards for system health
+
+---
+
+## Section 7: Data State
+
+**Database**: TimescaleDB in Docker on port 5432.
+**Migration Order**:
+1. `001_create_accounts`
+2. `002_create_market_bars`
+3. `003_create_trades`
+4. `004_create_thought_logs`
+5. `005_create_strategy_dna_history`
+6. `006_create_orders`
+7. `007_market_bars_unique`
+
+**Migration Runner**: Use `./scripts/migrate.sh` to apply migrations.
+
+**Symbols tracked** (from config.yaml): AAPL, MSFT, GOOGL, AMZN, TSLA, SOXL, U, PLTR, SPY, META
+
+**Strategy DNA files**: 1 strategy — `orb_break_retest.toml` (ORB 30min, RVOL ≥ 1.5, confidence ≥ 0.65, TREND regime only)

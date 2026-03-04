@@ -36,7 +36,7 @@ func TestRESTClient_SubmitOrder_Success(t *testing.T) {
 		// Alpaca accepts qty as string
 		assert.Equal(t, "10", req["qty"])
 		assert.Equal(t, "buy", req["side"])
-		assert.Equal(t, "limit", req["type"])
+		assert.Equal(t, "stop_limit", req["type"])
 		assert.Equal(t, "gtc", req["time_in_force"])
 		assert.Equal(t, 150.0, req["limit_price"])
 		assert.Equal(t, 145.0, req["stop_price"])
@@ -62,6 +62,45 @@ func TestRESTClient_SubmitOrder_Success(t *testing.T) {
 	// Assert
 	require.NoError(t, err)
 	assert.Equal(t, "order-uuid-123", orderID)
+}
+
+func TestRESTClient_SubmitOrder_LimitNoStopPrice(t *testing.T) {
+	// Arrange — verify limit orders (StopLoss=0) do NOT include stop_price
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+
+		var req map[string]interface{}
+		err = json.Unmarshal(body, &req)
+		require.NoError(t, err)
+
+		assert.Equal(t, "limit", req["type"])
+		_, hasStopPrice := req["stop_price"]
+		assert.False(t, hasStopPrice, "limit orders must not include stop_price")
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id": "limit-order-123"}`))
+	}))
+	defer server.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+
+	// OrderIntent with StopLoss = 0 (no stop)
+	intent := domain.OrderIntent{
+		Symbol:     "AAPL",
+		Direction:  domain.DirectionLong,
+		Quantity:   5,
+		LimitPrice: 150.0,
+		StopLoss:   0, // no stop
+	}
+
+	// Act
+	orderID, err := client.SubmitOrder(context.Background(), intent)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, "limit-order-123", orderID)
 }
 
 func TestRESTClient_SubmitOrder_Error(t *testing.T) {

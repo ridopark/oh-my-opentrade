@@ -128,7 +128,7 @@ func WithMinInterval(d time.Duration) AdvisorOption {
 }
 
 // NewAdvisor creates a new Advisor targeting the given base URL.
-// model is the LLM model name to request (e.g. "gpt-4o", "llama3", "mistral").
+// model is the LLM model name to request (e.g. "anthropic/claude-sonnet-4", "openai/gpt-4o", "meta-llama/llama-3-70b-instruct").
 // apiKey is optional — set it for OpenAI, OpenRouter, or any authenticated endpoint.
 // Pass nil for httpClient to use http.DefaultClient.
 // opts are functional options (e.g. WithMinInterval).
@@ -137,7 +137,7 @@ func NewAdvisor(baseURL, model, apiKey string, httpClient *http.Client, opts ...
 		httpClient = http.DefaultClient
 	}
 	if model == "" {
-		model = "gpt-4o-mini"
+		model = "anthropic/claude-sonnet-4"
 	}
 	a := &Advisor{
 		baseURL:    baseURL,
@@ -207,6 +207,10 @@ Respond ONLY with valid JSON — no markdown fences, no extra text.`
 	if a.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+a.apiKey)
 	}
+	// OpenRouter-recommended headers for app identification and routing priority.
+	// These are harmless no-ops for non-OpenRouter endpoints.
+	req.Header.Set("HTTP-Referer", "https://github.com/oh-my-opentrade")
+	req.Header.Set("X-Title", "oh-my-opentrade")
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {

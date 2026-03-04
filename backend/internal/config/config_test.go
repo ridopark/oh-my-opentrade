@@ -318,3 +318,81 @@ symbols:
 	// Assert
 	require.Error(t, err)
 }
+
+func TestLoad_EnvOverridesAlpacaBaseURL(t *testing.T) {
+	// Arrange
+	tempDir := t.TempDir()
+	envPath := writeFile(t, tempDir, ".env", "APCA_API_KEY_ID=k\nAPCA_API_SECRET_KEY=s")
+
+	yamlContent := `alpaca:
+  base_url: https://yaml-url.example.com
+database:
+  host: localhost
+symbols:
+  symbols: [AAPL]
+  timeframe: 1m`
+	yamlPath := writeFile(t, tempDir, "config.yaml", yamlContent)
+
+	t.Setenv("APCA_API_KEY_ID", "k")
+	t.Setenv("APCA_API_SECRET_KEY", "s")
+	t.Setenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
+
+	// Act
+	cfg, err := Load(envPath, yamlPath)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, "https://paper-api.alpaca.markets", cfg.Alpaca.BaseURL)
+}
+
+func TestLoad_EnvOverridesAlpacaDataURL(t *testing.T) {
+	// Arrange
+	tempDir := t.TempDir()
+	envPath := writeFile(t, tempDir, ".env", "APCA_API_KEY_ID=k\nAPCA_API_SECRET_KEY=s")
+
+	yamlContent := `alpaca:
+  base_url: https://paper-api.alpaca.markets
+  data_url: https://yaml-data.example.com
+database:
+  host: localhost
+symbols:
+  symbols: [AAPL]
+  timeframe: 1m`
+	yamlPath := writeFile(t, tempDir, "config.yaml", yamlContent)
+
+	t.Setenv("APCA_API_KEY_ID", "k")
+	t.Setenv("APCA_API_SECRET_KEY", "s")
+	t.Setenv("APCA_DATA_URL", "https://custom-data.alpaca.markets")
+
+	// Act
+	cfg, err := Load(envPath, yamlPath)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, "https://custom-data.alpaca.markets", cfg.Alpaca.DataURL)
+}
+
+func TestLoad_EnvOverridesAlpacaBaseURL_FromEnvFile(t *testing.T) {
+	// Arrange — APCA_API_BASE_URL set via .env file (not os env), should be overlaid
+	tempDir := t.TempDir()
+	envContent := `APCA_API_KEY_ID=k
+APCA_API_SECRET_KEY=s
+APCA_API_BASE_URL=https://paper-api.alpaca.markets`
+	envPath := writeFile(t, tempDir, ".env", envContent)
+
+	yamlContent := `alpaca:
+  base_url: https://yaml-url.example.com
+database:
+  host: localhost
+symbols:
+  symbols: [AAPL]
+  timeframe: 1m`
+	yamlPath := writeFile(t, tempDir, "config.yaml", yamlContent)
+
+	// Act
+	cfg, err := Load(envPath, yamlPath)
+
+	// Assert — env file value should override yaml value
+	require.NoError(t, err)
+	assert.Equal(t, "https://paper-api.alpaca.markets", cfg.Alpaca.BaseURL)
+}

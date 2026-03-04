@@ -8,6 +8,7 @@ import {
   type IChartApi,
   type ISeriesApi,
   type LineData,
+  type WhitespaceData,
   type Time,
   type MouseEventParams,
   type LogicalRange,
@@ -15,7 +16,36 @@ import {
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useChartData, SYMBOLS, type OHLCBar } from "@/lib/use-chart-data";
+import { OffMarketShading, detectGaps } from "@/lib/off-market-shading";
 
+/**
+ * Convert a UTC Unix timestamp (seconds) to a "fake UTC" timestamp that
+ * displays as America/New_York local time on the chart.
+ *
+ * lightweight-charts v5 has no native timeZone option — it always renders
+ * timestamps as UTC.  By shifting the timestamp so that the UTC representation
+ * equals the ET wall-clock time, the x-axis labels show ET.
+ *
+ * The trick: extract the ET wall-clock components (year, month, day, h, m, s)
+ * and build a Date using Date.UTC() so we get a Unix timestamp whose UTC
+ * representation matches the ET wall-clock time.
+ *
+ * See: https://tradingview.github.io/lightweight-charts/docs/time-zones
+ */
+function timeToET(utcSecs: number): number {
+  const d = new Date(utcSecs * 1000);
+  // Get individual ET components via Intl formatter
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+  const get = (type: string) => parseInt(parts.find((p) => p.type === type)?.value ?? '0', 10);
+  // Build a UTC timestamp whose UTC h:m:s equals the ET wall-clock h:m:s
+  const fakeUtc = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+  return Math.floor(fakeUtc / 1000);
+}
 // Palette for 10 symbols — vibrant enough to distinguish on dark background
 const SYMBOL_COLORS: Record<string, string> = {
   AAPL:  "#60a5fa", // blue-400
@@ -33,9 +63,53 @@ const SYMBOL_COLORS: Record<string, string> = {
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "1d"] as const;
 type Timeframe = (typeof TIMEFRAMES)[number];
 
-/** Convert OHLCBar array to close-price LineData for lightweight-charts */
-function toLineData(bars: OHLCBar[]): LineData[] {
-  return bars.map((b) => ({ time: b.time as Time, value: b.close }));
+/** Expected interval (seconds) per timeframe — used for gap detection */
+const TF_EXPECTED_SEC: Record<string, number> = {
+  "1m": 60,
+  "5m": 300,
+  "15m": 900,
+  "1h": 3600,
+  "1d": 86400,
+};
+
+/** Minimum gap (seconds) to qualify for off-market background shading.
+ *  Only shade true overnight/weekend gaps, not missing intra-day bars. */
+const TF_SHADING_GAP_SEC: Record<string, number> = {
+  "1m": 3600,    // > 1 hour
+  "5m": 3600,    // > 1 hour
+  "15m": 3600,   // > 1 hour
+  "1h": 14400,   // > 4 hours
+  "1d": 259200,  // > 3 days (weekends)
+};
+
+/**
+ * Convert OHLCBar array to LineData with WhitespaceData gap breaks.
+ * When the time delta between consecutive bars exceeds 1.5× the expected
+ * interval, insert a whitespace-only point to break the line segment
+ * so lightweight-charts doesn't draw a diagonal across the gap.
+ */
+function toLineDataWithGaps(
+  bars: OHLCBar[],
+  timeframe: string,
+): (LineData | WhitespaceData)[] {
+  const expectedSec = TF_EXPECTED_SEC[timeframe] ?? 60;
+  const gapThreshold = expectedSec * 1.5;
+  const out: (LineData | WhitespaceData)[] = [];
+
+  for (let i = 0; i < bars.length; i++) {
+    out.push({ time: timeToET(bars[i].time) as Time, value: bars[i].close });
+
+    if (i < bars.length - 1) {
+      const dt = bars[i + 1].time - bars[i].time;
+      if (dt > gapThreshold) {
+        // Insert whitespace point just after current bar to break the line
+        const gapBreakTime = timeToET(bars[i].time + expectedSec) as Time;
+        out.push({ time: gapBreakTime });
+      }
+    }
+  }
+
+  return out;
 }
 
 export function MultiSymbolChart() {
@@ -43,6 +117,8 @@ export function MultiSymbolChart() {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<Record<string, ISeriesApi<"Line", Time>>>({});
+  const shadingRef = useRef<OffMarketShading | null>(null);
+  const shadingHostRef = useRef<ISeriesApi<"Line", Time> | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [tooltip, setTooltip] = useState<{
     x: number;
@@ -50,7 +126,7 @@ export function MultiSymbolChart() {
     items: { symbol: string; price: string; color: string }[];
   } | null>(null);
 
-  const { barsBySymbol, loading, loadMore } = useChartData(timeframe);
+  const { barsBySymbol, dataTimeframe, loading, loadingMore, loadMore } = useChartData(timeframe);
 
   // Stable ref so the range-change handler always sees the latest loadMore
   const loadMoreRef = useRef(loadMore);
@@ -67,15 +143,53 @@ export function MultiSymbolChart() {
 
   // Consecutive debounce-triggered loadMore calls where oldestTs didn't move.
   // After MAX_EMPTY_FETCHES consecutive no-progress pans we stop fetching.
-  const MAX_EMPTY_FETCHES = 3;
+  // With exponential window backoff in the hook, each attempt covers much
+  // more ground, so 10 attempts can span weeks of calendar gaps.
+  const MAX_EMPTY_FETCHES = 10;
   const noProgressCountRef = useRef(0);
   const noMoreDataRef = useRef(false);
   // Snapshot of oldestTs at the time we last called loadMore — used in the
   // debounce callback to detect whether the previous fetch made progress.
   const prevLoadMoreOldestRef = useRef<number | null>(null);
 
-  // Reset seed flag whenever timeframe changes so fitContent fires again on new data
+  // Saved visible time range (ET fake-UTC seconds) — captured before
+  // a timeframe switch so we can restore the same calendar window
+  // after the new data loads (instead of fitContent zooming to all data).
+  const savedVisibleRangeRef = useRef<{ from: number; to: number } | null>(null);
+
+  // Brief cooldown after seeding (range restore) to suppress loadMore triggers.
+  // Without this, restoring a visible range on sparse data causes range.from ~0,
+  // which triggers loadMore chains that pull in tons of older data.
+  const seedCooldownRef = useRef(false);
+
+  // Reset seed flag whenever timeframe changes so fitContent fires again on new data.
+  // IMPORTANT: Capture the current visible range BEFORE resetting, so we can restore
+  // the same calendar window after the new timeframe's data loads.
   useEffect(() => {
+    // Capture visible range from the chart (ET fake-UTC timestamps)
+    const chart = chartRef.current;
+    if (chart) {
+      const vr = chart.timeScale().getVisibleRange();
+      if (vr) {
+        savedVisibleRangeRef.current = {
+          from: vr.from as number,
+          to: vr.to as number,
+        };
+        console.log('[Chart] timeframe changing — saved visible range',
+          savedVisibleRangeRef.current,
+          new Date((savedVisibleRangeRef.current.from) * 1000).toISOString(),
+          '→',
+          new Date((savedVisibleRangeRef.current.to) * 1000).toISOString());
+      }
+    }
+    // Clear stale series data so the barsBySymbol useEffect doesn't
+    // see old data and prematurely seed the chart before new data arrives.
+    for (const symbol of SYMBOLS) {
+      const series = seriesRef.current[symbol];
+      if (series) series.setData([]);
+    }
+    if (shadingHostRef.current) shadingHostRef.current.setData([]);
+    if (shadingRef.current) shadingRef.current.setGaps([]);
     seededRef.current = false;
     oldestTsRef.current = null;
     noProgressCountRef.current = 0;
@@ -118,6 +232,23 @@ export function MultiSymbolChart() {
 
     chartRef.current = chart;
 
+    // Invisible host series for the off-market shading primitive.
+    // Must be added BEFORE symbol series so zOrder 'bottom' renders behind them.
+    const shadingHostSeries = chart.addSeries(LineSeries, {
+      color: 'transparent',
+      lineWidth: 1,
+      priceScaleId: '__shading_host',
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    chart.priceScale('__shading_host').applyOptions({ visible: false });
+
+    const shading = new OffMarketShading('rgba(148, 163, 184, 0.18)');
+    shadingHostSeries.attachPrimitive(shading);
+    shadingRef.current = shading;
+    shadingHostRef.current = shadingHostSeries;
+
     // Create one line series per symbol
     for (const symbol of SYMBOLS) {
       const color = SYMBOL_COLORS[symbol];
@@ -141,6 +272,7 @@ export function MultiSymbolChart() {
     // Subscribe to visible range changes — trigger loadMore when panning left
     chart.timeScale().subscribeVisibleLogicalRangeChange((range: LogicalRange | null) => {
       if (!range) return;
+      if (seedCooldownRef.current) return;
       if (range.from > 10) return;
       // Once we've exhausted gap-skipping attempts, stop scheduling fetches
       if (noMoreDataRef.current) return;
@@ -195,6 +327,8 @@ export function MultiSymbolChart() {
       chart.remove();
       chartRef.current = null;
       seriesRef.current = {};
+      shadingRef.current = null;
+      shadingHostRef.current = null;
     };
   }, []);
 
@@ -235,10 +369,39 @@ export function MultiSymbolChart() {
       if (!series) continue;
       const bars = barsBySymbol[symbol];
       if (bars && bars.length > 0) {
-        series.setData(toLineData(bars));
+        series.setData(toLineDataWithGaps(bars, timeframe));
         const first = bars[0].time;
         if (newOldest === null || first < newOldest) newOldest = first;
       }
+    }
+
+    // -- Off-market shading: detect gaps & feed host series --
+    if (shadingRef.current && shadingHostRef.current) {
+      // Collect all bars from all symbols into one sorted timeline
+      const allBars: { time: number }[] = [];
+      const seen = new Set<number>();
+      for (const symbol of SYMBOLS) {
+        const bars = barsBySymbol[symbol];
+        if (!bars) continue;
+        for (const b of bars) {
+          if (!seen.has(b.time)) {
+            seen.add(b.time);
+            allBars.push({ time: b.time });
+          }
+        }
+      }
+      allBars.sort((a, b) => a.time - b.time);
+
+      const shadingThreshold = TF_SHADING_GAP_SEC[timeframe] ?? 3600;
+      const gaps = detectGaps(allBars, shadingThreshold);
+
+      // Feed gap boundary timestamps as whitespace data to the host series
+      // so timeToCoordinate() resolves for those times.
+      const hostPoints: WhitespaceData[] = allBars.map((b) => ({ time: timeToET(b.time) as Time }));
+      // Convert gap boundaries to ET so they align with the converted series data
+      const etGaps = gaps.map((g) => ({ from: timeToET(g.from as number) as Time, to: timeToET(g.to as number) as Time }));
+      shadingHostRef.current.setData(hostPoints);
+      shadingRef.current.setGaps(etGaps);
     }
     if (newOldest !== null) {
       const prevOldest = oldestTsRef.current;
@@ -248,13 +411,37 @@ export function MultiSymbolChart() {
           new Date(newOldest * 1000).toISOString());
       }
     }
-    // fitContent only on initial seed — never after loadMore (would reset pan position)
-    if (!seededRef.current && newOldest !== null) {
+    // Seed logic: restore saved visible range (from previous timeframe) or fitContent on first-ever load
+    if (!seededRef.current && dataTimeframe === timeframe && newOldest !== null) {
       seededRef.current = true;
-      chartRef.current?.timeScale().fitContent();
-      console.log('[Chart] fitContent called (initial seed)');
+      const chart = chartRef.current;
+      const saved = savedVisibleRangeRef.current;
+      if (chart && saved) {
+        // Activate cooldown to suppress loadMore triggers while range settles
+        seedCooldownRef.current = true;
+        // Restore the same calendar window the user was looking at
+        try {
+          chart.timeScale().setVisibleRange({
+            from: saved.from as Time,
+            to: saved.to as Time,
+          });
+          console.log('[Chart] restored visible range from saved', saved);
+        } catch (err) {
+          // Fallback to fitContent if setVisibleRange fails (e.g., no data in that range)
+          console.warn('[Chart] setVisibleRange failed, falling back to fitContent', err);
+          chart.timeScale().fitContent();
+        }
+        savedVisibleRangeRef.current = null; // Consume the saved range
+        // Release cooldown after a brief delay so the range-change handler
+        // doesn't immediately trigger a loadMore cascade.
+        setTimeout(() => { seedCooldownRef.current = false; }, 500);
+      } else {
+        // First-ever load — no previous range to restore
+        chart?.timeScale().fitContent();
+        console.log('[Chart] fitContent called (initial seed — no saved range)');
+      }
     }
-  }, [barsBySymbol]);
+  }, [barsBySymbol, timeframe, dataTimeframe]);
 
   const symbolCount = SYMBOLS.filter((s) => (barsBySymbol[s]?.length ?? 0) > 0).length;
 
@@ -333,10 +520,27 @@ export function MultiSymbolChart() {
               </div>
             </div>
           )}
-          {/* Loading overlay — shown while fetching from DB/Alpaca */}
+          {/* Loading overlay — shown during initial fetch */}
           {loading && (
             <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-background/60 backdrop-blur-[2px]">
               <span className="animate-pulse text-xs text-muted-foreground">Loading {timeframe} bars…</span>
+            </div>
+          )}
+          {/* Spinner overlay — shown while fetching older data on pan-left */}
+          {loadingMore && !loading && (
+            <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-background/50 backdrop-blur-[2px]">
+              <div className="flex flex-col items-center gap-3">
+                <svg
+                  className="h-10 w-10 animate-spin text-muted-foreground"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                <span className="text-sm font-medium text-muted-foreground">Loading more data...</span>
+              </div>
             </div>
           )}
         </div>

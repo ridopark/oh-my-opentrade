@@ -249,7 +249,7 @@ func TestNewAdvisor_DefaultModel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		assert.Equal(t, "gpt-4o-mini", body["model"])
+		assert.Equal(t, "anthropic/claude-sonnet-4", body["model"])
 		validCompletionResponse(w, "LONG", "r", "b", "be", "j", 0.8)
 	}))
 	defer server.Close()

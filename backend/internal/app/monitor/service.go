@@ -66,6 +66,18 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	snap := s.calculator.Update(bar)
 	symStr := bar.Symbol.String()
 
+	l.Debug().
+		Float64("close", bar.Close).
+		Float64("volume", bar.Volume).
+		Float64("rsi", snap.RSI).
+		Float64("stoch_k", snap.StochK).
+		Float64("stoch_d", snap.StochD).
+		Float64("ema9", snap.EMA9).
+		Float64("ema21", snap.EMA21).
+		Float64("vwap", snap.VWAP).
+		Float64("volume_sma", snap.VolumeSMA).
+		Msg("indicator snapshot")
+
 	stateUpdatedEv, err := domain.NewEvent(
 		domain.EventStateUpdated,
 		event.TenantID,
@@ -82,6 +94,11 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	}
 
 	regime, changed := s.regimeDetector.Detect(snap)
+	l.Debug().
+		Str("regime", string(regime.Type)).
+		Float64("strength", regime.Strength).
+		Bool("changed", changed).
+		Msg("regime classification")
 	if changed {
 		l.Info().Str("regime", string(regime.Type)).Msg("market regime shifted")
 		regimeShiftedEv, err := domain.NewEvent(
@@ -101,6 +118,19 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 
 	lastSnap, hasLast := s.lastSnaps[symStr]
 	if hasLast && lastSnap.RSI > 0 { // Ensure RSI is actually initialized
+
+	// Debug: log setup detection evaluation criteria
+	l.Debug().
+		Bool("has_prev", hasLast).
+		Float64("rsi_prev", lastSnap.RSI).
+		Float64("rsi_curr", snap.RSI).
+		Float64("ema9", snap.EMA9).
+		Float64("ema21", snap.EMA21).
+		Bool("long_rsi_cross", hasLast && lastSnap.RSI < 40 && snap.RSI >= 40).
+		Bool("long_ema_bullish", snap.EMA9 > snap.EMA21).
+		Bool("short_rsi_cross", hasLast && lastSnap.RSI > 60 && snap.RSI <= 60).
+		Bool("short_ema_bearish", snap.EMA9 < snap.EMA21).
+		Msg("setup evaluation")
 		// Detect Setup
 		// Recovering from oversold and bullish EMA
 		if lastSnap.RSI < 40 && snap.RSI >= 40 && snap.EMA9 > snap.EMA21 {

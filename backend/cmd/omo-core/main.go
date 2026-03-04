@@ -24,6 +24,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
+	"github.com/oh-my-opentrade/backend/internal/app/notify"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/logger"
@@ -33,8 +34,14 @@ import (
 
 func main() {
 	// 0. Initialize structured logger
+	logLevel := zerolog.InfoLevel
+	if lvl := os.Getenv("LOG_LEVEL"); lvl != "" {
+		if parsed, err := zerolog.ParseLevel(lvl); err == nil {
+			logLevel = parsed
+		}
+	}
 	log := logger.New(logger.Config{
-		Level:  zerolog.InfoLevel,
+		Level:  logLevel,
 		Pretty: os.Getenv("LOG_PRETTY") == "true",
 	}).With().Str("service", "omo-core").Logger()
 
@@ -118,14 +125,16 @@ func main() {
 		notifiers = append(notifiers, notification.NewDiscordNotifier(cfg.Notification.DiscordWebhookURL, nil))
 		log.Info().Msg("Discord notifier enabled")
 	}
-	_ = notification.NewMultiNotifier(notifiers...) // available for future event-driven notifications
+	multiNotifier := notification.NewMultiNotifier(notifiers...)
+	notifyLog := log.With().Str("component", "notify").Logger()
+	notifySvc := notify.NewService(eventBus, multiNotifier, notifyLog)
 	log.Info().Int("active", len(notifiers)).Msg("notification adapters initialized")
 
 	// 5b. Initialize strategy DNA engine
 	dnaManager := strategy.NewDNAManager()
 	strategySvc := strategy.NewService(eventBus)
 	strategySvc.SetAccountEquity(accountEquity) // seed initial equity for position sizing
-	const dnaPath = "/configs/strategies/orb_break_retest.toml"
+	const dnaPath = "configs/strategies/orb_break_retest.toml"
 	if dna, err := dnaManager.Load(dnaPath); err == nil {
 		strategySvc.RegisterDNA(dna)
 		log.Info().Str("strategy_id", dna.ID).Int("version", dna.Version).Msg("strategy DNA loaded")
@@ -167,6 +176,9 @@ func main() {
 		if err := debateSvc.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start debate")
 		}
+	}
+	if err := notifySvc.Start(ctx); err != nil {
+		log.Fatal().Err(err).Msg("failed to start notification service")
 	}
 	// 5b (continued): hot-reload DNA after all services are started
 	go dnaManager.Watch(ctx, dnaPath, func(updated *strategy.StrategyDNA) {
@@ -223,7 +235,7 @@ func main() {
 	)
 	mux.Handle("/healthz/services", healthHandler)
 
-	const strategyBasePath = "/configs/strategies"
+	const strategyBasePath = "configs/strategies"
 	strategyHandler := omhttp.NewStrategyHandler(dnaManager, strategyBasePath, httpLog)
 	mux.Handle("/strategies/", strategyHandler)
 	httpServer := &http.Server{

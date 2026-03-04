@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,6 +40,47 @@ func (r *Repository) SaveMarketBar(ctx context.Context, bar domain.MarketBar) er
 	return nil
 }
 
+// SaveMarketBars upserts a batch of market bars in a single INSERT statement.
+// It returns the number of bars processed. Bars with volume <= 0 are skipped.
+func (r *Repository) SaveMarketBars(ctx context.Context, bars []domain.MarketBar) (int, error) {
+	if len(bars) == 0 {
+		return 0, nil
+	}
+	
+	// Build batched INSERT ... VALUES (...), (...), ... ON CONFLICT DO UPDATE
+	var b strings.Builder
+	b.WriteString("INSERT INTO market_bars (time, account_id, env_mode, symbol, timeframe, open, high, low, close, volume, suspect) VALUES ")
+	
+	args := make([]any, 0, len(bars)*11)
+	idx := 0
+	for _, bar := range bars {
+		if bar.Volume <= 0 {
+			continue
+		}
+		if idx > 0 {
+			b.WriteString(", ")
+		}
+		base := idx*11 + 1
+		fmt.Fprintf(&b, "($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			base, base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10)
+		args = append(args, bar.Time, "", string(domain.EnvModePaper), string(bar.Symbol), string(bar.Timeframe), bar.Open, bar.High, bar.Low, bar.Close, bar.Volume, bar.Suspect)
+		idx++
+	}
+	
+	if idx == 0 {
+		return 0, nil
+	}
+	
+	b.WriteString(" ON CONFLICT (symbol, timeframe, time) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume, suspect=EXCLUDED.suspect")
+	
+	_, err := r.db.ExecContext(ctx, b.String(), args...)
+	if err != nil {
+		r.log.Error().Err(err).Int("batch_size", idx).Msg("failed to save market bars batch")
+		return 0, fmt.Errorf("timescaledb: save market bars batch: %w", err)
+	}
+	return idx, nil
+}
+
 // GetMarketBars retrieves historical market bars.
 // It returns the bars ordered by time ascending.
 func (r *Repository) GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
@@ -67,6 +109,23 @@ func (r *Repository) GetMarketBars(ctx context.Context, symbol domain.Symbol, ti
 		return nil, fmt.Errorf("timescaledb: iterate market bars: %w", err)
 	}
 	return bars, nil
+}
+
+// GetLatestMarketBarTime returns the most recent bar time for a given symbol and timeframe.
+// Returns (nil, nil) if no bars exist.
+func (r *Repository) GetLatestMarketBarTime(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe) (*time.Time, error) {
+	row := r.db.QueryRowContext(ctx,
+		"SELECT MAX(time) FROM market_bars WHERE symbol = $1 AND timeframe = $2",
+		string(symbol), string(timeframe))
+	
+	var t *time.Time
+	if err := row.Scan(&t); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("timescaledb: get latest market bar time: %w", err)
+	}
+	return t, nil
 }
 
 // SaveTrade saves a completed or in-progress trade execution.

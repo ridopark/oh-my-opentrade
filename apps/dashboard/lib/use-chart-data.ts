@@ -22,6 +22,14 @@ export const SYMBOLS = [
 /** How many bars to request per fetch window */
 const FETCH_WINDOW = 300;
 
+/** Max window scaling factor for gap-skipping (2^n multiplier cap) */
+const MAX_WINDOW_SCALE = 6; // 2^6 = 64x base window ≈ 13+ days for 1m
+
+/** Max consecutive empty fetches before the hook stops auto-retrying.
+ *  The chart component has its own MAX_EMPTY_FETCHES for the debounce-based
+ *  retry; this limit governs the internal auto-chain in loadMore. */
+const MAX_AUTO_RETRIES = 10;
+
 /** Minutes per timeframe — used for bucketing live 1m SSE bars */
 const TF_MINUTES: Record<string, number> = {
   "1m": 1,
@@ -99,11 +107,15 @@ export function useChartData(
   sseUrl = "/api/events"
 ): {
   barsBySymbol: BarsBySymbol;
+  dataTimeframe: string;
   loading: boolean;
+  loadingMore: boolean;
   loadMore: (beforeTs: number) => void;
 } {
   const [barsBySymbol, setBarsBySymbol] = useState<BarsBySymbol>({});
+  const [dataTimeframe, setDataTimeframe] = useState(timeframe);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   // Stable ref so SSE handler always reads current state
   const barsRef = useRef<BarsBySymbol>({});
@@ -117,13 +129,17 @@ export function useChartData(
   // independently of oldestTs, enabling gap-skipping over non-trading hours.
   const loadMoreCursorRef = useRef<number | null>(null);
 
+  // Consecutive empty fetches — used to exponentially widen the lookback
+  // window so we can jump over overnight, weekend, and holiday gaps.
+  const emptyFetchCountRef = useRef(0);
+
   const fetchBars = useCallback(
     async (from: Date, to: Date, showLoading: boolean) => {
       const key = `${timeframeRef.current}|${from.toISOString()}|${to.toISOString()}`;
       console.log('[useChartData] fetchBars called', { tf: timeframeRef.current, from: from.toISOString(), to: to.toISOString(), showLoading, alreadyInFlight: inFlight.current.has(key) });
       if (inFlight.current.has(key)) {
         console.log('[useChartData] fetchBars SKIPPED — already in-flight', key);
-        return;
+        return 0;
       }
       inFlight.current.add(key);
       if (showLoading) setLoading(true);
@@ -141,12 +157,12 @@ export function useChartData(
         console.log('[useChartData] fetch response', { status: res.status, ok: res.ok });
         if (!res.ok) {
           console.warn('[useChartData] fetch failed with status', res.status);
-          return;
+          return 0;
         }
         const rows: MarketBarEvent[] = await res.json();
         if (!Array.isArray(rows)) {
           console.warn('[useChartData] unexpected response shape', rows);
-          return;
+          return 0;
         }
         console.log('[useChartData] received', rows.length, 'bars');
 
@@ -163,8 +179,11 @@ export function useChartData(
         console.log('[useChartData] updated barsBySymbol counts', symbolCounts);
         barsRef.current = next;
         setBarsBySymbol(next);
+        setDataTimeframe(timeframeRef.current);
+        return rows.length;
       } catch (err) {
         console.error('[useChartData] fetchBars error', err);
+        return 0;
       } finally {
         inFlight.current.delete(key);
         if (showLoading) setLoading(false);
@@ -180,6 +199,7 @@ export function useChartData(
     setBarsBySymbol({});
     inFlight.current.clear();
     loadMoreCursorRef.current = null;
+    emptyFetchCountRef.current = 0;
 
     const to = new Date();
     const mins = TF_MINUTES[timeframe] ?? 1;
@@ -196,20 +216,54 @@ export function useChartData(
   // loadMore: fetch an older window ending before the given timestamp.
   // Maintains an internal cursor so that consecutive calls with the same
   // beforeTs (because oldestTs didn't move) still page backward through gaps.
+  //
+  // Gap-skipping: When a fetch returns 0 bars (e.g., overnight or weekend),
+  // emptyFetchCountRef increments and the next call's window is exponentially
+  // wider: base × 2^emptyFetchCount. This lets us jump over multi-day gaps
+  // (weekends, holidays) without exhausting the retry budget.
   const loadMore = useCallback(
-    (beforeTs: number) => {
+    async (beforeTs: number) => {
       // Use the internal cursor if it has advanced past beforeTs,
       // otherwise start from the caller-supplied beforeTs.
       const cursor = loadMoreCursorRef.current;
       const effectiveTo = cursor !== null && cursor < beforeTs ? cursor : beforeTs;
       const to = new Date(effectiveTo * 1000);
       const mins = TF_MINUTES[timeframeRef.current] ?? 1;
-      const windowMs = FETCH_WINDOW * mins * 60 * 1000;
+      const baseWindowMs = FETCH_WINDOW * mins * 60 * 1000;
+      // Exponential backoff: widen the window on consecutive empty fetches
+      const scale = Math.pow(2, Math.min(emptyFetchCountRef.current, MAX_WINDOW_SCALE));
+      const windowMs = baseWindowMs * scale;
       const from = new Date(to.getTime() - windowMs);
       // Advance cursor to `from` so next call pages further back
       loadMoreCursorRef.current = Math.floor(from.getTime() / 1000);
-      console.log('[useChartData] loadMore triggered', { beforeTs, effectiveTo, beforeDate: to.toISOString(), tf: timeframeRef.current, from: from.toISOString() });
-      fetchBars(from, to, true);
+      console.log('[useChartData] loadMore triggered', {
+        beforeTs, effectiveTo, beforeDate: to.toISOString(),
+        tf: timeframeRef.current, from: from.toISOString(),
+        scale, emptyFetches: emptyFetchCountRef.current,
+      });
+      // Show loadingMore spinner for the entire retry chain
+      setLoadingMore(true);
+      const count = await fetchBars(from, to, false);
+      if (count === 0) {
+        emptyFetchCountRef.current += 1;
+        const nextScale = Math.pow(2, Math.min(emptyFetchCountRef.current, MAX_WINDOW_SCALE));
+        console.log('[useChartData] loadMore got 0 bars — emptyFetchCount now',
+          emptyFetchCountRef.current, '| next window scale:', nextScale, 'x');
+        // Auto-retry with wider window if under the limit, so the user
+        // doesn't have to keep panning through overnight/weekend gaps.
+        if (emptyFetchCountRef.current < MAX_AUTO_RETRIES) {
+          console.log('[useChartData] auto-retrying with wider window…');
+          // Use setTimeout to avoid deep recursion and let React batch
+          setTimeout(() => loadMore(beforeTs), 50);
+        } else {
+          console.log('[useChartData] exhausted', MAX_AUTO_RETRIES, 'auto-retries — giving up');
+          setLoadingMore(false);
+        }
+      } else {
+        emptyFetchCountRef.current = 0;
+        console.log('[useChartData] loadMore got', count, 'bars — emptyFetchCount reset');
+        setLoadingMore(false);
+      }
     },
     [fetchBars]
   );
@@ -251,5 +305,5 @@ export function useChartData(
     return () => es.close();
   }, [sseUrl]);
 
-  return { barsBySymbol, loading, loadMore };
+  return { barsBySymbol, dataTimeframe, loading, loadingMore, loadMore };
 }

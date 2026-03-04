@@ -113,7 +113,7 @@ defaultDBPort          = 5432
 	defaultKillMaxStops    = 3
 	defaultKillWindow      = "2m"
 	defaultKillHalt        = "15m"
-	defaultAIBaseURL       = "http://localhost:4096"
+	defaultAIBaseURL       = "https://openrouter.ai/api"
 	defaultAIMinConfidence = 0.6
 )
 // Load loads the configuration from env and yaml files.
@@ -207,6 +207,12 @@ if val := os.Getenv("APCA_API_KEY_ID"); val != "" {
 	}
 	if val := os.Getenv("APCA_DATA_FEED"); val != "" {
 		cfg.Alpaca.Feed = val
+	}
+	if val := os.Getenv("APCA_API_BASE_URL"); val != "" {
+		cfg.Alpaca.BaseURL = val
+	}
+	if val := os.Getenv("APCA_DATA_URL"); val != "" {
+		cfg.Alpaca.DataURL = val
 	}
 	if val := os.Getenv("TIMESCALEDB_PASSWORD"); val != "" {
 		cfg.Database.Password = val
