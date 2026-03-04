@@ -100,13 +100,13 @@ Last Updated: March 4, 2026 (Session 5 — Gap Analysis + New Phases 11-14)
 ### Phase 9 — Paper Trading Readiness 🚧
 | # | Item | Status |
 |---|------|--------|
-| 39 | End-to-end flow verification (live market → event pipeline → paper order) | 🟡 In Progress — startup verified, DNA path fixed, debug logging added. Needs market-hours testing (9:30 AM–4 PM ET) for full pipeline verification. Strategy v2 pipeline ready for parallel testing via STRATEGY_V2=true flag. |
-| 40 | Monitor setup detection tuning with real market data | 🟡 In Progress — debug logging added to monitor (indicator snapshots, regime classification, setup evaluation on every bar). Ready for market-hours data collection. Set `LOG_LEVEL=debug` to enable. |
+| 39 | End-to-end flow verification (bar replay → event pipeline → paper order) | 🟡 In Progress — startup verified, DNA path fixed, debug logging added. **New approach:** bar replay mode feeds historical bars through event bus, eliminating market-hours dependency. Strategy v2 pipeline ready via STRATEGY_V2=true flag. |
+| 40 | Monitor setup detection tuning | 🟡 In Progress — debug logging added to monitor. **New approach:** run bar replay with backfilled data to collect indicator values and verify setup detection fires. No market-hours dependency. |
 | 41 | LLM provider configuration (API keys, model selection) | ✅ Done — OpenRouter configured, smoke test passes with real API key, structured debate JSON verified (LONG, 0.72 confidence, full bull/bear/judge). |
 | 42 | Alpaca paper trading order submission verification | ✅ Done — Account equity ($30,965.59), order submit/status/cancel lifecycle, quote retrieval all verified via smoke tests. |
 | 43 | Integration test: Alpaca WS → Ingestion → TimescaleDB round-trip | ✅ Done |
 | 44 | Integration test: SetupDetected → Debate → OrderIntent → Execution → Order | ✅ Done |
-| 45 | Strategy DNA parameter tuning for live conditions | 🟡 In Progress — DNA reviewed, params reasonable for ORB strategy. Regime filter allows TREND only (conservative). `min_rvol` not connected to monitor; `min_confidence` in DNA not used by strategy service (hardcodes 0.75). Full tuning after market-hours data. |
+| 45 | Strategy DNA parameter tuning for live conditions | 🟡 In Progress — DNA reviewed, params reasonable for ORB strategy. Regime filter allows TREND only (conservative). **Bugs to fix:** `min_confidence` hardcoded to 0.75 (should use DNA value); verify `min_rvol` wiring from DNA → ORB tracker. |
 | 46 | Notification wiring (Telegram/Discord alerts on order events) | ✅ Done |
 | 47 | CI/CD pipeline setup (GitHub Actions) | ✅ Done |
 
@@ -234,15 +234,12 @@ Phase 9: Paper Trading Readiness (NEXT)
 
 | Step | Task | Depends On | Description |
 |------|------|-----------|-------------|
-| 1 | 41. LLM Config | Nothing | Set LLM_BASE_URL, LLM_MODEL, LLM_API_KEY in .env; verify advisor responds |
-| 2 | 40. Monitor Tuning | Nothing | Review/adjust setup detection thresholds in config.yaml; test with backfilled data |
-| 3 | 45. DNA Tuning | Nothing | Review orb_break_retest.toml parameters; add more strategies if needed |
-| 4 | 39. E2E Verification | 41, 40, 45 | Run omo-core during market hours; verify all 7 event stages fire |
-| 5 | 42. Paper Order | 39 | Confirm Alpaca paper account receives and fills orders |
-| 6 | 43. Integration Test | 39 | Automated test: WS → Ingestion → DB round-trip |
-| 7 | 44. Integration Test | 39 | Automated test: Setup → Debate → Order pipeline |
-| 8 | 46. Notifications | 42 | Wire Telegram/Discord alerts to order/kill-switch events |
-| 9 | 47. CI/CD | Nothing | Setup GitHub Actions for build and test automation |
+| 1 | 45a. Fix min_confidence bug | Nothing | Remove hardcoded 0.75; use DNA `min_confidence` value |
+| 2 | 45b. Verify min_rvol wiring | Nothing | Trace DNA `min_rvol` → ORB tracker; fix if disconnected |
+| 3 | 39-replay. Build bar replay mode | Nothing | CLI command or HTTP endpoint that feeds historical bars through event bus |
+| 4 | 39. E2E Verification | 45a, 45b, 39-replay | Run bar replay with backfilled data; verify all 7 event stages fire |
+| 5 | 40. Monitor Tuning | 39-replay | Run replay, collect indicator values, adjust thresholds if too tight |
+| 6 | 42f. Paper Order E2E | 39 | Replay during market hours to confirm order reaches Alpaca paper account |
 
 ---
 
@@ -250,19 +247,18 @@ Phase 9: Paper Trading Readiness (NEXT)
 
 ### Task 39: End-to-End Flow Verification
 
-The full event pipeline is wired in `main.go` but has never been tested with real market data flowing through all stages. Every service subscribes to the correct events, but we need to verify the chain actually fires in production conditions.
+The full event pipeline is wired in `main.go` but has never been tested with real market data flowing through all stages. **New approach:** instead of waiting for market hours, we build a bar replay mode that feeds historical bars (from `omo-backfill` or TimescaleDB) through the event bus as `MarketBarReceived` events, simulating a live session.
 
 **Event chain to verify:**
 ```
-1. Alpaca WebSocket → MarketBarReceived          (alpaca adapter → event bus)
-2. Ingestion        → MarketBarSanitized          (Z-score filter passes)
-3. Monitor          → SetupDetected               (indicators trigger a setup)
-4. Debate           → DebateCompleted             (LLM produces bull/bear/judge)
-                    → OrderIntentCreated           (if debate recommends trade)
-5. Strategy         → OrderIntentCreated (sized)   (DNA applies position sizing)
-6. Execution        → Risk check → Slippage check → Kill switch check
-                    → OrderSubmitted               (passes all gates)
-7. Alpaca REST      → Paper order placed           (broker confirms)
+1. Bar Replay          → MarketBarReceived          (replay service → event bus)
+2. Ingestion            → MarketBarSanitized          (Z-score filter passes)
+3. Monitor              → SetupDetected               (indicators trigger a setup)
+4. Strategy Runner (v2) → SignalCreated               (ORB strategy emits signal)
+5. RiskSizer            → OrderIntentCreated           (signal → sized order intent)
+6. Execution            → Risk check → Slippage check → Kill switch check
+                        → OrderSubmitted               (passes all gates)
+7. Alpaca REST          → Paper order placed           (broker confirms)
 ```
 
 **Subtasks:**
@@ -271,24 +267,23 @@ The full event pipeline is wired in `main.go` but has never been tested with rea
 - [x] **39-pre3.** Made log level configurable via `LOG_LEVEL` env var (supports `debug`, `info`, `warn`, `error`).
 - [x] **39-pre4.** Fixed config.go env overlay bug — `APCA_API_BASE_URL` and `APCA_DATA_URL` from `.env` were silently ignored.
 - [x] **39-pre5.** Fixed SubmitOrder stop_price bug — limit orders no longer send `stop_price` (Alpaca 422 fix).
-- [ ] **39a.** Run omo-core during market hours, tail logs, verify steps 1–2 fire continuously
+- [ ] **39-replay.** Build bar replay mode — CLI subcommand or app service that reads bars from TimescaleDB and publishes `MarketBarReceived` events with configurable speed (1x, 10x, max).
+- [ ] **39a.** Run replay with backfilled data, tail logs, verify steps 1–2 fire continuously
 - [ ] **39b.** Observe Monitor logs — confirm indicator calculation + regime classification is running
 - [ ] **39c.** Watch for SetupDetected events — may need to temporarily lower thresholds
-- [ ] **39d.** Verify Debate service receives setup and calls LLM (requires task 41 — ✅)
+- [ ] **39d.** Verify Strategy Runner receives setup and emits SignalCreated (requires STRATEGY_V2=true)
 - [ ] **39e.** Verify Execution receives intent and runs risk/slippage/kill-switch checks
-- [ ] **39f.** Confirm order reaches Alpaca paper account (requires task 42 — ✅)
-
+- [ ] **39f.** Confirm order reaches Alpaca paper account (run during market hours for actual fill)
 ### Task 40: Monitor Setup Detection Tuning
 
-The monitor calculates SMA, EMA, RSI, MACD, Bollinger Bands, ATR, CCI, and relative volume, then classifies market regime and detects setups. Thresholds are in `configs/config.yaml`. We need to verify these fire with real market data.
+The monitor calculates SMA, EMA, RSI, MACD, Bollinger Bands, ATR, CCI, and relative volume, then classifies market regime and detects setups. Thresholds are in `configs/config.yaml`. **New approach:** use bar replay mode to feed backfilled data through the monitor and collect indicator values without waiting for market hours.
 
 **Subtasks:**
 - [x] **40a.** Debug logging added to monitor service — logs indicator snapshot (RSI, StochK/D, EMA9/21, VWAP, VolumeSMA), regime classification (type, strength, changed), and setup evaluation criteria (RSI cross conditions, EMA alignment) on every bar at DEBUG level.
-- [ ] **40b.** Run during market hours, collect indicator values for tracked symbols
+- [ ] **40b.** Run bar replay with backfilled data, collect indicator values for tracked symbols
 - [x] **40c.** Setup detection conditions reviewed — Long: RSI crosses 40 from below + EMA9 > EMA21. Short: RSI crosses 60 from above + EMA9 < EMA21. Regime filter: TREND only (EMA divergence > 1%).
 - [ ] **40d.** Adjust thresholds if too tight (e.g., relax min_rvol, confidence)
-- [ ] **40e.** Confirm at least one SetupDetected event fires during a trading session
-
+- [ ] **40e.** Confirm at least one SetupDetected event fires during replay of a full trading session
 ### Task 41: LLM Provider Configuration
 
 The LLM adapter is OpenAI-compatible and resides in `backend/internal/adapters/llm/`. It supports any OpenAI-compatible endpoint (OpenRouter, Ollama, LM Studio, etc.). **OpenRouter is now the default provider.**
