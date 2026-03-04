@@ -104,6 +104,7 @@ export interface MarketBarEvent {
 export interface StrategyDNA {
   id: string;
   version: number;
+  description?: string;
   parameters: Record<string, string | number | boolean>;
   performanceMetrics: Record<string, number>;
 }

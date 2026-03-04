@@ -239,6 +239,33 @@ func main() {
 	const strategyBasePath = "configs/strategies"
 	strategyHandler := omhttp.NewStrategyHandler(dnaManager, strategyBasePath, httpLog)
 	mux.Handle("/strategies/", strategyHandler)
+	mux.HandleFunc("/strategies/current", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		type dnaJSON struct {
+			ID          string         `json:"id"`
+			Version     int            `json:"version"`
+			Description string         `json:"description,omitempty"`
+			Parameters  map[string]any `json:"parameters"`
+		}
+		all := dnaManager.GetAll()
+		if len(all) == 0 {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no strategy loaded"}`))
+			return
+		}
+		dna := all[0]
+		json.NewEncoder(w).Encode(dnaJSON{
+			ID:          dna.ID,
+			Version:     dna.Version,
+			Description: dna.Description,
+			Parameters:  dna.Parameters,
+		})
+	})
 	mux.HandleFunc("/orb", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Content-Type", "application/json")

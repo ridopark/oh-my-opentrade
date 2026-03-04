@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Dna, ArrowRight, TrendingUp, TrendingDown, Minus } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 function isStrategyDNAPayload(payload: unknown): payload is StrategyDNAEvent {
   if (!payload || typeof payload !== "object") return false;
@@ -147,6 +147,7 @@ function DNAView({ dna, previous }: { dna: StrategyDNA; previous: StrategyDNA | 
             <ParamCard
               key={key}
               label={key
+                .replace(/_/g, " ")
                 .replace(/([A-Z])/g, " $1")
                 .replace(/^./, (s) => s.toUpperCase())}
               value={dna.parameters[key]}
@@ -156,33 +157,54 @@ function DNAView({ dna, previous }: { dna: StrategyDNA; previous: StrategyDNA | 
         </div>
       </div>
 
-      {/* Performance Metrics */}
-      <div>
-        <h3 className="mb-3 text-sm font-semibold text-foreground">
-          Performance Metrics
-        </h3>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-          {metricKeys.map((key) => (
-            <MetricCard
-              key={key}
-              label={key
-                .replace(/([A-Z])/g, " $1")
-                .replace(/^./, (s) => s.toUpperCase())}
-              value={dna.performanceMetrics[key]}
-              previousValue={previous?.performanceMetrics[key]}
-              format={percentMetrics.has(key) ? "percent" : "number"}
-            />
-          ))}
+      {metricKeys.length > 0 && (
+        <div>
+          <h3 className="mb-3 text-sm font-semibold text-foreground">
+            Performance Metrics
+          </h3>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+            {metricKeys.map((key) => (
+              <MetricCard
+                key={key}
+                  label={key
+                    .replace(/_/g, " ")
+                    .replace(/([A-Z])/g, " $1")
+                    .replace(/^./, (s) => s.toUpperCase())}
+                value={dna.performanceMetrics[key]}
+                previousValue={previous?.performanceMetrics[key]}
+                format={percentMetrics.has(key) ? "percent" : "number"}
+              />
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
 
 export default function DNAPage() {
   const { states, connected } = useStateEvents(50);
+  const [fetchedDNA, setFetchedDNA] = useState<StrategyDNA | null>(null);
 
-  // Find the latest DNA event
+  // Fetch current strategy DNA from the backend on mount.
+  useEffect(() => {
+    fetch("/api/strategies/current")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && data.id && data.parameters) {
+          setFetchedDNA({
+            id: data.id,
+            version: data.version ?? 1,
+            description: data.description,
+            parameters: data.parameters,
+            performanceMetrics: {},
+          });
+        }
+      })
+      .catch(() => { /* use fallback */ });
+  }, []);
+
+  // Find the latest DNA event from SSE stream
   const latestDNA = useMemo(() => {
     for (const event of states) {
       if (isStrategyDNAPayload(event.payload)) {
@@ -192,34 +214,30 @@ export default function DNAPage() {
     return null;
   }, [states]);
 
-  // Fallback DNA for display
-  const fallbackDNA: StrategyDNA = {
-    id: "default",
+  // Priority: SSE event > REST fetch > hardcoded fallback
+  const currentDNA = latestDNA?.current ?? fetchedDNA ?? {
+    id: "orb_break_retest",
     version: 1,
+    description: "Opening Range Breakout — Break & Retest",
     parameters: {
-      momentumWindow: 14,
-      rsiOverbought: 70,
-      rsiOversold: 30,
-      emaFast: 9,
-      emaSlow: 21,
-      volumeMultiplier: 1.5,
-      maxPositionSize: 0.02,
-      maxDailyLoss: 0.01,
-      debateConfidenceThreshold: 0.7,
-      slippageTolerance: 25,
+      orb_window_minutes: 30,
+      min_rvol: 1.5,
+      max_risk_bps: 200,
+      limit_offset_bps: 5,
+      stop_bps_below_low: 10,
+      min_confidence: 0.65,
+      breakout_confirm_bps: 2,
+      touch_tolerance_bps: 2,
+      hold_confirm_bps: 0,
+      max_retest_bars: 15,
+      allow_missing_range_bars: 1,
+      max_signals_per_session: 1,
     },
-    performanceMetrics: {
-      sharpeRatio: 1.42,
-      winRate: 0.58,
-      profitFactor: 1.85,
-      maxDrawdown: 0.045,
-      avgWin: 1.82,
-      avgLoss: 0.98,
-    },
+    performanceMetrics: {},
   };
-
-  const currentDNA = latestDNA?.current ?? fallbackDNA;
   const previousDNA = latestDNA?.previous ?? null;
+  const strategyName = currentDNA.id || "orb_break_retest";
+  const strategyDescription = currentDNA.description || "Active strategy DNA — Paper trading mode";
 
   return (
     <div className="space-y-6">
@@ -264,18 +282,18 @@ export default function DNAPage() {
           <div className="flex items-center justify-between">
             <div>
               <CardTitle>
-                momentum-v2{" "}
+                {strategyName}{" "}
                 <Badge variant="outline" className="ml-2 font-mono text-xs">
                   v{currentDNA.version}
                 </Badge>
               </CardTitle>
               <CardDescription>
-                Active strategy DNA — Paper trading mode
+                {strategyDescription}
               </CardDescription>
             </div>
-            {!latestDNA && (
+            {!latestDNA && !fetchedDNA && (
               <Badge variant="outline" className="text-xs text-muted-foreground">
-                Default config (awaiting SSE)
+                Default config (awaiting backend)
               </Badge>
             )}
           </div>
@@ -310,6 +328,7 @@ export default function DNAPage() {
                   >
                     <span className="font-medium">
                       {key
+                        .replace(/_/g, " ")
                         .replace(/([A-Z])/g, " $1")
                         .replace(/^./, (s) => s.toUpperCase())}
                     </span>

@@ -111,6 +111,17 @@ func (m *DNAManager) Get(id string) (*StrategyDNA, bool) {
 	return dna, ok
 }
 
+// GetAll returns all loaded strategy DNAs.
+func (m *DNAManager) GetAll() []*StrategyDNA {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*StrategyDNA, 0, len(m.loaded))
+	for _, dna := range m.loaded {
+		out = append(out, dna)
+	}
+	return out
+}
+
 // Watch polls path every 5 seconds and calls onChange whenever the file's
 // modification time changes. Stops when ctx is cancelled.
 func (m *DNAManager) Watch(ctx context.Context, path string, onChange func(*StrategyDNA)) {
