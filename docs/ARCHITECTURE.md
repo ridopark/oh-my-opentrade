@@ -163,18 +163,17 @@ type EventBusPort interface {
 oh-my-opentrade/
 ├── backend/
 │   ├── cmd/
-│   │   └── omo-core/
-│   │       └── main.go                    # MVP: single binary, wires everything
+│   │   ├── omo-core/main.go              # MVP: single binary, wires everything
+│   │   └── omo-backfill/main.go           # Historical bar backfill CLI
 │   │
 │   ├── internal/
 │   │   ├── domain/                        # Pure business logic — NO external imports
 │   │   │   ├── entity.go                  # MarketBar, Trade, Position, Account
 │   │   │   ├── event.go                   # Domain events (MarketBarSanitized, SetupDetected, etc.)
 │   │   │   ├── value.go                   # Value objects (TenantID, EnvMode, Symbol, Timeframe)
-│   │   │   ├── order_intent.go            # OrderIntent, AdvisoryDecision
-│   │   │   ├── indicator.go               # IndicatorSnapshot (RSI, Stoch, EMA, VWAP)
-│   │   │   ├── regime.go                  # MarketRegime, RegimeType
-│   │   │   ├── strategy_dna.go            # StrategyDNA, DNAVersion (v1)
+│   │   │   ├── advisory.go                # AI advisory types (AdvisoryDecision, etc.)
+│   │   │   ├── options.go                 # Options domain logic
+│   │   │   ├── exchange_calendar.go        # NYSE market hours & holiday calendar (2025-2028)
 │   │   │   └── strategy/                  # Strategy v2 domain types, contract, lifecycle
 │   │   │
 │   │   ├── ports/                         # Interface definitions — the hexagonal boundaries
@@ -184,113 +183,78 @@ oh-my-opentrade/
 │   │   │   ├── event_bus.go               # EventBusPort (publish/subscribe)
 │   │   │   ├── repository.go              # RepositoryPort (bars, trades, thoughts, DNA)
 │   │   │   ├── notifier.go                # NotifierPort (Telegram/Discord webhooks)
+│   │   │   ├── options_market_data.go      # OptionsMarketDataPort
 │   │   │   └── strategy/                  # Store, Registry ports
 │   │   │
 │   │   ├── app/                           # Application services — orchestrate domain + ports
 │   │   │   ├── ingestion/                 # Market data ingestion + Z-score sanitization
-│   │   │   ├── monitor/                   # State machine monitor (indicators, regime, setup detection)
+│   │   │   ├── monitor/                   # State machine monitor (indicators, regime, ORB tracker, setup detection)
 │   │   │   ├── debate/                    # AI adversarial debate orchestration
-│   │   │   ├── execution/                 # Order execution + risk engine
-│   │   │   └── strategy/                  # Strategy v2 Runner, Router, Instance, RiskSizer, SwapManager, LifecycleSvc, SpecLoader
+│   │   │   ├── execution/                 # Order execution + risk engine + kill switch
+│   │   │   ├── strategy/                  # Strategy v2 Runner, Router, Instance, RiskSizer, SwapManager, LifecycleSvc
+│   │   │   │   └── builtin/               # Built-in strategies (orb_v1.go)
+│   │   │   ├── backfill/                  # Historical data backfill service
+│   │   │   ├── notify/                    # Notification service (event bus → notifier)
+│   │   │   └── options/                   # Options contract selection & risk
 │   │   │
-│   │   └── adapters/                      # Port implementations — external dependencies live here
-│   │       ├── alpaca/                    # MarketDataPort + BrokerPort
-│   │       ├── timescaledb/               # RepositoryPort
-│   │       ├── eventbus/                  # EventBusPort (memory)
-│   │       ├── opencode/                  # AIAdvisorPort
-│   │       ├── notification/              # NotifierPort
-│   │       ├── http/                      # Lifecycle and Strategy API handlers
-│   │       └── strategy/                  # store_fs, hooks_yaegi implementations
-│   │   │   ├── entity.go                  # MarketBar, Trade, Position, Account
-│   │   │   ├── event.go                   # Domain events (MarketBarSanitized, SetupDetected, etc.)
-│   │   │   ├── value.go                   # Value objects (TenantID, EnvMode, Symbol, Timeframe)
-│   │   │   ├── order_intent.go            # OrderIntent, AdvisoryDecision
-│   │   │   ├── indicator.go               # IndicatorSnapshot (RSI, Stoch, EMA, VWAP)
-│   │   │   ├── regime.go                  # MarketRegime, RegimeType
-│   │   │   └── strategy_dna.go            # StrategyDNA, DNAVersion
+│   │   ├── adapters/                      # Port implementations — external dependencies live here
+│   │   │   ├── alpaca/                    # MarketDataPort + BrokerPort (13 files)
+│   │   │   ├── timescaledb/               # RepositoryPort
+│   │   │   ├── eventbus/memory/           # EventBusPort (in-memory Go channels)
+│   │   │   ├── llm/                       # AIAdvisorPort (OpenAI-compatible: Claude, Ollama, LM Studio)
+│   │   │   ├── notification/              # NotifierPort (Telegram, Discord, Multi fan-out)
+│   │   │   ├── http/                      # Lifecycle and Strategy API handlers
+│   │   │   ├── sse/                       # Server-Sent Events for dashboard real-time push
+│   │   │   ├── middleware/                 # HTTP middleware (access logging)
+│   │   │   └── strategy/                  # store_fs (filesystem), hooks_yaegi (Yaegi sandbox)
 │   │   │
-│   │   ├── ports/                         # Interface definitions — the hexagonal boundaries
-│   │   │   ├── market_data.go             # MarketDataPort (stream bars, pull history)
-│   │   │   ├── broker.go                  # BrokerPort (submit/cancel/query orders)
-│   │   │   ├── ai_advisor.go              # AIAdvisorPort (request debate, get decision)
-│   │   │   ├── event_bus.go               # EventBusPort (publish/subscribe)
-│   │   │   ├── repository.go              # RepositoryPort (bars, trades, thoughts, DNA)
-│   │   │   └── notifier.go               # NotifierPort (Telegram/Discord webhooks)
-│   │   │
-│   │   ├── app/                           # Application services — orchestrate domain + ports
-│   │   │   ├── ingestion/                 # Market data ingestion + Z-score sanitization
-│   │   │   │   ├── service.go
-│   │   │   │   └── zscore_filter.go
-│   │   │   ├── monitor/                   # State machine monitor (indicators, regime, setup detection)
-│   │   │   │   ├── service.go
-│   │   │   │   ├── indicators.go          # RSI, Stochastics, EMA, VWAP computation
-│   │   │   │   └── regime_detector.go
-│   │   │   ├── debate/                    # AI adversarial debate orchestration
-│   │   │   │   └── service.go
-│   │   │   ├── execution/                 # Order execution + risk engine
-│   │   │   │   ├── service.go
-│   │   │   │   ├── risk_engine.go         # 2% max risk, mandatory stop-loss
-│   │   │   │   ├── kill_switch.go         # Micro-circuit breakers
-│   │   │   │   └── slippage_guard.go
-│   │   │   └── strategy/                  # Strategy DNA engine
-│   │   │       ├── service.go
-│   │   │       └── dna_manager.go
-│   │   │
-│   │   └── adapters/                      # Port implementations — external dependencies live here
-│   │       ├── alpaca/                    # MarketDataPort + BrokerPort
-│   │       │   ├── market_data.go         # WebSocket streaming + REST backfill
-│   │       │   ├── broker.go              # Order submission, position queries
-│   │       │   └── rate_limiter.go        # Token bucket (200 req/min)
-│   │       ├── timescaledb/               # RepositoryPort
-│   │       │   ├── repository.go          # Query/persist bars, trades, thoughts
-│   │       │   └── migrations.go          # Embedded SQL migrations
-│   │       ├── eventbus/                  # EventBusPort
-│   │       │   └── memory/
-│   │       │       └── bus.go             # In-memory Go channel implementation
-│   │       ├── opencode/                  # AIAdvisorPort
-│   │       │   └── advisor.go             # Bull/Bear/Judge debate via OpenCode SDK
-│   │       └── notification/              # NotifierPort
-│   │           ├── telegram.go
-│   │           └── discord.go
+│   │   ├── config/                        # Configuration loading (.env + YAML)
+│   │   └── logger/                        # Structured zerolog logging
 │   │
 │   ├── go.mod
 │   └── go.sum
 │
-├── migrations/                            # SQL migration files (run by migrate tool)
-│   ├── 001_create_market_bars.up.sql
-│   ├── 001_create_market_bars.down.sql
-│   ├── 002_create_trades.up.sql
-│   ├── 002_create_trades.down.sql
-│   ├── 003_create_thought_logs.up.sql
-│   ├── 003_create_thought_logs.down.sql
-│   ├── 004_create_strategy_dna_history.up.sql
-│   ├── 004_create_strategy_dna_history.down.sql
-│   └── 005_create_accounts.up.sql
+├── migrations/                            # 7 SQL migration files (up/down pairs)
 │
 ├── apps/
-│   └── dashboard/                         # Next.js 15 (Phase 7 — not in MVP)
+│   └── dashboard/                         # Next.js 15 + TailwindCSS + shadcn/ui + lightweight-charts v5
+│       ├── app/                           # Pages and API routes
+│       │   ├── api/                       # Proxy routes (bars, events, health, strategies, debates, dna, execution)
+│       │   ├── debates/                   # AI debate feed page
+│       │   ├── dna/                       # Strategy DNA diff viewer page
+│       │   ├── execution/                 # Order tracking page
+│       │   ├── strategies/                # Strategy lifecycle management page
+│       │   ├── layout.tsx
+│       │   └── page.tsx                   # Multi-symbol chart home page
+│       └── components/                    # React components (chart, sidebar, query-provider, ui/)
 │
 ├── deployments/
-│   ├── docker-compose.yml                 # TimescaleDB + omo-core
-│   ├── docker-compose.dev.yml             # Dev overrides
-│   └── Dockerfile.omo-core               # Multi-stage Go build (ARM64)
+│   ├── docker-compose.yml                 # Full stack: db, migrate, core, dashboard
+│   ├── Dockerfile                         # Core service multi-stage build (ARM64)
+│   └── Dockerfile.dashboard               # Dashboard service build
 │
 ├── configs/
 │   ├── strategies/                        # TOML strategy DNA files (hot-swappable)
 │   │   └── orb_break_retest.toml
-│   └── config.yaml                        # App configuration
+│   ├── config.yaml                        # App configuration
+│   └── config.yaml.example
 │
 ├── scripts/
 │   ├── migrate.sh                         # Run DB migrations
-│   └── seed.sh                            # Seed test data
+│   ├── start.sh                           # Start all services
+│   ├── shutdown.sh                        # Stop all services
+│   └── debug-chrome.sh                    # Chrome DevTools debugging
 │
 ├── docs/
 │   ├── PRD.md
-│   └── ARCHITECTURE.md                    # This file
+│   ├── ARCHITECTURE.md                    # This file
+│   ├── IMPLEMENTATION_PLAN.md
+│   ├── STRATEGY_SYSTEM.md                 # Strategy v2 documentation
+│   └── STRATEGY_ARCHITECTURE_PLAN.md      # Strategy phases A-H plan
 │
-├── .env.example                           # Template (never commit real .env)
-├── .gitignore
-├── Makefile
+├── .github/workflows/ci.yml               # CI/CD pipeline
+├── .env.example                           # Environment template
+├── Makefile                               # 14+ targets (build, test, etc.)
 └── README.md
 ```
 
@@ -338,46 +302,6 @@ Alpaca WebSocket
        ▼ [Safety Events]
   KillSwitchEngaged          ← 3 stops in 2 min → 15 min halt
   CircuitBreakerTripped      ← System-wide safety event
-Alpaca WebSocket
-       │
-       ▼
-  MarketBarReceived          ← Raw bar from broker
-       │
-       ▼ (Ingestion Service)
-  MarketBarSanitized         ← Passed Z-score filter (or MarketBarRejected)
-       │
-       ▼ (Monitor Service)
-  StateUpdated               ← New indicator snapshot computed
-       │
-       ├─── RegimeShifted    ← Regime changed (trend→balance, etc.)
-       │
-       ▼
-  SetupDetected              ← Valid entry condition found
-       │
-       ├─── [If AI enabled] ──► DebateRequested → DebateCompleted
-       │
-       ▼ (Execution Service)
-  OrderIntentCreated         ← Proposed trade (from strategy or AI)
-       │
-       ▼ (Risk Engine)
-  OrderIntentValidated       ← Passed risk checks (or OrderIntentRejected)
-       │
-       ▼ (Broker Adapter)
-  OrderSubmitted             ← Sent to broker
-       │
-       ▼
-  OrderAccepted / OrderRejected  ← Broker response
-       │
-       ▼
-  FillReceived               ← Trade executed
-       │
-       ▼
-  PositionUpdated            ← Position state changed
-       │
-       ▼ [Safety Events]
-  KillSwitchEngaged          ← 3 stops in 2 min → 15 min halt
-  CircuitBreakerTripped      ← System-wide safety event
-```
 
 ### Event Structure
 
@@ -518,31 +442,6 @@ The minimum path to "data flows in → state machine computes → paper trade ex
 16. **`omo-core` main.go** — Dependency injection, wire all services, start
 17. **Docker Compose** — TimescaleDB + omo-core containers
 18. **Config** — `.env` for API keys, `config.yaml` for thresholds
-1. **TimescaleDB schema** — All 5 tables, compression policies, indexes
-2. **Domain types** — `MarketBar`, `OrderIntent`, `IndicatorSnapshot`, `MarketRegime`, events
-3. **Port interfaces** — `MarketDataPort`, `BrokerPort`, `EventBusPort`, `RepositoryPort`
-
-### Phase 2: Data Pipeline
-4. **In-memory event bus** — Go channel implementation of `EventBusPort`
-5. **Alpaca adapter** — WebSocket bar streaming + REST order submission + rate limiter
-6. **TimescaleDB adapter** — Repository implementation (persist bars, trades)
-7. **Ingestion service** — Subscribe to `MarketBarReceived`, apply Z-score filter, emit `MarketBarSanitized`
-
-### Phase 3: Intelligence
-8. **Monitor service** — Compute indicators on each `MarketBarSanitized`, detect setups
-9. **Execution service** — Risk engine + kill switch + slippage guard + broker submission
-
-### Phase 4: Wire & Run
-10. **`omo-core` main.go** — Dependency injection, wire all services, start
-11. **Docker Compose** — TimescaleDB + omo-core containers
-12. **Config** — `.env` for API keys, `config.yaml` for thresholds
-
-**Explicitly deferred:**
-- AI adversarial debate (Phase 2 of dual-layer syndicate)
-- Strategy DNA engine + Yaegi hot-swap
-- Next.js dashboard
-- Telegram/Discord notifications
-- Nightly evolution cycle
 
 ---
 
@@ -567,23 +466,23 @@ The minimum path to "data flows in → state machine computes → paper trade ex
 - **VM:** Oracle Cloud ARM (4 OCPUs, 24 GB RAM)
 - **OS:** Ubuntu (ARM64)
 - **Runtime:** Docker Compose
-- **Containers (MVP):**
+- **Containers:**
   - `timescaledb` — TimescaleDB 2.x (PostgreSQL 16)
   - `omo-core` — Single Go binary (all services in-process)
+  - `omo-dashboard` — Next.js 15 frontend
 - **Build:** Multi-stage Dockerfile targeting `linux/arm64`
 
 ---
 
-## 10. Open Questions for Review
+## 10. Resolved Questions
 
-1. **Backfill strategy:** On startup, should we backfill N days of historical bars from Alpaca REST, or only process live data? (Backfill would stress the 200 req/min limit.)
+1. **Backfill strategy:** ✅ Resolved — `omo-backfill` CLI tool fetches historical bars. On startup, the indicator warmup system fetches 120 bars from the previous RTH session via Alpaca REST. Rate limiter enforces 200 req/min.
 
-2. **Account management:** Should accounts be configured via `.env` / YAML, or do we need a DB-backed account CRUD API from the start?
+2. **Account management:** ✅ Resolved — Single account via `.env` for MVP. Schema supports multi-tenant via `account_id` + `env_mode` columns, but runtime is single-account.
 
-3. **Logging strategy:** Structured JSON logs (zerolog/slog) → stdout, collected by Docker? Or do we want a log aggregation service?
+3. **Logging strategy:** ✅ Resolved — Structured zerolog → stdout. `LOG_LEVEL` env var controls verbosity (debug/info/warn/error).
 
-4. **Testing approach:** Unit tests on domain + app layers, integration tests against TimescaleDB in Docker? Do we want test containers from day one?
-
+4. **Testing approach:** ✅ Resolved — Unit tests on domain + app layers (320+ tests). Integration tests run against real TimescaleDB in Docker via `make test-integration`.
 ---
 
 

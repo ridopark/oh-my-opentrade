@@ -1,6 +1,6 @@
 # Implementation Plan: oh-my-opentrade
 
-Last Updated: March 4, 2026 (Session 4)
+Last Updated: March 4, 2026 (Session 5 — Gap Analysis + New Phases 11-14)
 
 ## Section 1: Progress Summary
 
@@ -110,16 +110,60 @@ Last Updated: March 4, 2026 (Session 4)
 | 46 | Notification wiring (Telegram/Discord alerts on order events) | ✅ Done |
 | 47 | CI/CD pipeline setup (GitHub Actions) | ✅ Done |
 
-### Phase 10 — Hardening & Backtesting (Future)
+### Phase 10 — Hardening & Infrastructure 🔲
 | # | Item | Status |
 |---|------|--------|
-| 48 | Backtesting framework (replay historical bars through event pipeline) | 🔲 Not Started |
+| 48 | Backtesting framework — Replay historical bars through event pipeline with 5bps slippage model (PRD §3 nightly evolution) | 🔲 Not Started |
 | 49 | Candlestick chart mode (lightweight-charts supports it natively) | 🔲 Not Started |
-| 50 | Auto-reconnect for Alpaca WebSocket | 🔲 Not Started |
-| 51 | Nightly evolution cycle (strategy parameter optimization) | 🔲 Not Started |
-| 52 | Performance dashboard (P&L tracking, win rate, drawdown) | 🔲 Not Started |
-| 53 | Observability stack (Prometheus/Grafana) | 🔲 Not Started |
+| 50 | Auto-reconnect for Alpaca WebSocket with exponential backoff | 🔲 Not Started |
+| 51 | Performance dashboard — P&L tracking, win rate, max drawdown, Sharpe ratio (PRD §7) | 🔲 Not Started |
+| 52 | Observability stack — Prometheus metrics + Grafana dashboards for system health | 🔲 Not Started |
+| 53 | TanStack Query migration — Replace raw fetch() in dashboard pages with useQuery hooks (package already installed) | 🔲 Not Started |
 
+### Phase 11 — Multi-Timeframe Analysis (MTFA) 🔲
+
+PRD §4.2 requires anchor (5m/15m) + trigger (1m) separation. Currently the monitor only processes 1m bars with no explicit anchor/trigger distinction.
+
+| # | Item | Status |
+|---|------|--------|
+| 54 | Multi-timeframe bar aggregation — Aggregate 1m bars into 5m/15m candles in the monitor service | 🔲 Not Started |
+| 55 | Anchor regime detection — Compute regime (trend/balance/reversal) on 5m/15m timeframes | 🔲 Not Started |
+| 56 | Trigger entry logic — Use 1m bars for entry/exit signals, gated by 5m/15m anchor regime | 🔲 Not Started |
+| 57 | MTFA integration tests — Verify anchor+trigger pipeline end-to-end | 🔲 Not Started |
+
+### Phase 12 — Pre-Market Screener & Approval Workflow 🔲
+
+PRD §3 requires 08:30–09:15 screener for "Stocks in Play" and 09:15–09:30 user approval of overnight DNA changes. Neither exists.
+
+| # | Item | Status |
+|---|------|--------|
+| 58 | Screener service — Scan configured universe for Gap%, RVOL, and news at 08:30 ET | 🔲 Not Started |
+| 59 | Screener → monitor symbol routing — Feed screener output into monitor's active symbol list | 🔲 Not Started |
+| 60 | DNA approval workflow (backend) — State machine for DNA change approval (pending → approved / rejected) | 🔲 Not Started |
+| 61 | DNA approval UI — Dashboard page with DNA diff view + approve/reject buttons (PRD §7) | 🔲 Not Started |
+| 62 | Morning approval gate — Block strategy execution until DNA changes are approved (09:15–09:30 window) | 🔲 Not Started |
+
+### Phase 13 — Additional Strategies 🔲
+
+PRD §4.3 specifies 3 pluggable strategies. Only ORB is implemented.
+
+| # | Item | Status |
+|---|------|--------|
+| 63 | AVWAP strategy — Anchored VWAP breakout/bounce strategy using existing VWAP indicator (PRD §4.3 #2) | 🔲 Not Started |
+| 64 | AI-Enhanced Scalping strategy — RSI/Stoch mean-reversion aligned with 5m regime (PRD §4.3 #3, depends on Phase 11 MTFA) | 🔲 Not Started |
+| 65 | Strategy TOML configs — Create `avwap.toml` and `ai_scalping.toml` DNA files | 🔲 Not Started |
+| 66 | Multi-strategy integration tests — Verify multiple strategies run simultaneously per symbol | 🔲 Not Started |
+
+### Phase 14 — Nightly Evolution & Corporate Actions 🔲
+
+PRD §3 nightly cycle: AI analyzes trades, updates DNA, runs backtests. Corporate action filter prevents math errors.
+
+| # | Item | Status |
+|---|------|--------|
+| 67 | Nightly evolution service — Analyze ThoughtLogs + trade P&L, propose DNA parameter changes | 🔲 Not Started |
+| 68 | Automated backtesting — Run proposed DNA changes through backtester with 5bps slippage before applying (depends on Phase 10 #48) | 🔲 Not Started |
+| 69 | Corporate action check — Filter out tickers with upcoming splits/dividends from active trading (PRD §3) | 🔲 Not Started |
+| 70 | Evolution audit trail — Log all DNA mutations with before/after + backtest results to strategy_dna_history | 🔲 Not Started |
 ---
 
 ## Section 2: Dependency Graph
@@ -292,35 +336,29 @@ backend/
     omo-core/main.go          Full DI wiring, all services
     omo-backfill/main.go       Historical data CLI
   internal/
-    domain/                    
+    domain/
       strategy/                contract.go, lifecycle.go, types.go, errors.go
       entity.go                Entities (MarketBar, Trade, Advisory)
       value.go                 Value objects (OrderIntent, Regime)
       event.go                 Event definitions
       advisory.go              AI Advisor types
+      options.go               Options domain logic
+      exchange_calendar.go     NYSE market hours & holiday calendar
     ports/                     Hexagonal port interfaces
       strategy/                store.go, registry.go
       options_market_data.go   Options data port
     app/
       strategy/                runner.go, router.go, instance.go, risk_sizer.go, swap_manager.go, lifecycle_svc.go, spec_loader.go, registry_mem.go, builtin/orb_v1.go
       ingestion/               Z-score filter, bar processing
-      entity.go                Entities (MarketBar, Trade, Advisory)
-      value.go                 Value objects (OrderIntent, Regime)
-      event.go                 Event definitions
-      advisory.go              AI Advisor types
-    ports/                     Hexagonal port interfaces
-      options_market_data.go   Options data port
-    app/
-      ingestion/               Z-score filter, bar processing
         integration_test.go    Integration: WS → Ingestion → DB round-trip
       monitor/                 Service, indicators, regime & setup detectors
         indicators.go          SMA, EMA, RSI, MACD, Bollinger, ATR, CCI
+        orb_tracker.go         ORB Break & Retest detection + RVOL
         regime_detector.go     Market regime classification
         setup_detector.go      Setup detection logic
       execution/               Risk engine, kill switch, slippage guard
       debate/                  AI adversarial debate orchestration
-      strategy/                DNA engine, Yaegi hot-swap, TOML loading
-      options/                 Options service
+      options/                 Options contract selection & risk
       notify/                  Notification service (event bus → notifier)
       backfill/                Chunked historical download
       pipeline_integration_test.go  Integration: Setup → Debate → Order pipeline
@@ -328,19 +366,18 @@ backend/
       strategy/
         store_fs/              Filesystem strategy store
         hooks_yaegi/           Yaegi hot-swap runtime sandbox
-      alpaca/                  
-      alpaca/                  
+      alpaca/                  MarketDataPort + BrokerPort (13 files)
         adapter.go             Main adapter
         options_rest.go        Options REST client
         options_order.go       Options order execution
-      timescaledb/             
+      timescaledb/
         repository.go          Repository implementation
         db_sql.go              SQL query builders
       eventbus/memory/         In-memory pub/sub
       llm/                     OpenAI-compatible adapter (supports Claude, Ollama)
       http/                    Bars, health, services, strategy, lifecycle handlers
       sse/                     Server-sent events for dashboard
-      notification/            
+      notification/
         multi.go               Fan-out notifier
         telegram.go            Telegram adapter
         discord.go             Discord adapter
@@ -360,6 +397,8 @@ deployments/
 migrations/                    7 SQL migration files (up/down pairs)
 scripts/
   migrate.sh                   Migration runner
+  start.sh                     Start all services
+  shutdown.sh                  Stop all services
   debug-chrome.sh              Chrome DevTools debugging helper
 Makefile                       14 targets (build, test, test-integration, migrate, etc.)
 .env.example                   Environment template
@@ -412,13 +451,19 @@ Makefile                       14 targets (build, test, test-integration, migrat
 - [x] Full test suite passes: 320+ tests across 16 packages, zero failures
 - [x] omo-core startup sequence verified: all services subscribe, config loads from .env, WebSocket streams
 
-### Phase 10 — Hardening 🔲
-- [ ] Backtesting framework replays historical data
-- [ ] WebSocket auto-reconnects on disconnect
-- [ ] P&L tracking dashboard
-- [ ] Candlestick chart mode
-- [ ] Prometheus/Grafana dashboards for system health
-
+### Phase 10–14 — Remaining PRD Features 🔲
+- [ ] Backtesting framework replays historical data (#48)
+- [ ] WebSocket auto-reconnects on disconnect (#50)
+- [ ] P&L tracking dashboard (#51)
+- [ ] Observability stack (#52)
+- [ ] TanStack Query migration (#53)
+- [ ] Multi-timeframe anchor/trigger separation (#54-57)
+- [ ] Pre-market screener service (#58-59)
+- [ ] DNA approval workflow + UI (#60-62)
+- [ ] AVWAP strategy (#63)
+- [ ] AI-Enhanced Scalping strategy (#64)
+- [ ] Nightly evolution cycle (#67-68)
+- [ ] Corporate action check (#69)
 ---
 
 ## Section 7: Data State
@@ -438,3 +483,64 @@ Makefile                       14 targets (build, test, test-integration, migrat
 **Symbols tracked** (from config.yaml): AAPL, MSFT, GOOGL, AMZN, TSLA, SOXL, U, PLTR, SPY, META
 
 **Strategy DNA files**: 1 strategy — `orb_break_retest.toml` (ORB 30min, RVOL ≥ 1.5, confidence ≥ 0.65, TREND regime only)
+
+---
+
+## Section 8: PRD Gap Analysis
+
+Comprehensive comparison of PRD v11.0 features vs actual implementation status (audited March 4, 2026).
+
+### ✅ Fully Implemented
+
+| PRD Feature | PRD Section | Implementation |
+|---|---|---|
+| Hexagonal Architecture (Golang) | §2 Backend | Full hex arch with domain/ports/adapters/app layers |
+| Data Sanitization (4σ Z-Score) | §4.1 | Ingestion service with Z-score anomaly filter |
+| Deterministic State Machine Monitor | §5.1 | Monitor service: RSI, Stoch, EMA, VWAP, MACD, Bollinger, ATR, CCI |
+| Regime Detection | §4.2 | RegimeDetector: TREND/BALANCE/REVERSAL classification |
+| Adversarial AI Debate (Bull/Bear/Judge) | §5.2 | Debate service with OpenRouter, structured JSON output |
+| ORB Break & Retest Strategy | §4.3 #1 | Full implementation: ORBTracker + ORBStrategy + TOML config |
+| Kill Switch (3 stops/2min → 15min halt) | §6 | Kill switch module with tenant+symbol isolation |
+| Risk Engine (2% max, mandatory SL, LIMIT only) | §6 | Execution service with deterministic Go risk checks |
+| Slippage Guard | §6 | Bid/ask comparison against max_slippage_bps |
+| API Key Isolation | §6 | .env injection, never in DB or sent to AI |
+| Multi-Tenant Schema | §4 | account_id + env_mode on all tables, runtime isolation in kill switch |
+| Rate Limit Governor (200 req/min) | §2 | Token bucket in Alpaca adapter |
+| TimescaleDB with Compression | §2 Database | 7 migrations, hypertable compression, 1-day chunks |
+| Yaegi Hot-Swap Strategies | §2 Backend | Sandbox with import whitelist, AST validation, timeout, circuit breaker |
+| Strategy DNA Engine | §4.3 #4 | TOML hot-reload (5s), DNA manager, blue/green swap |
+| Notifications (Telegram/Discord) | §6 | Multi-notifier fan-out for order/kill-switch/fill events |
+| Next.js Dashboard | §7 | Multi-symbol chart, debate feed, execution monitor, DNA diffs |
+| Pub/Sub Event Bus | §2 Backend | In-memory event bus with EventBusPort interface |
+
+### 🟡 Partially Implemented
+
+| PRD Feature | PRD Section | Status | Gap |
+|---|---|---|---|
+| Multi-Timeframe Analysis | §4.2 | Timeframe values exist (1m/5m/15m) | No explicit anchor (5m/15m) + trigger (1m) separation; monitor processes 1m only |
+| Options Trading | §4 | Contract selection + order execution | Only LONG direction, TREND regime; no full options strategy |
+| TanStack Query | §2 Frontend | Package installed | Dashboard pages use raw fetch() instead of useQuery hooks |
+| Multi-Account Execution | §4 | Schema + kill switch tenant isolation | Runtime is single-account via .env; no multi-account orchestration |
+| Phase 9 Paper Trading | §9 | 8/11 items done | Needs market-hours E2E verification; min_rvol bug; min_confidence hardcode |
+
+### ❌ Not Implemented
+
+| PRD Feature | PRD Section | New Phase | Notes |
+|---|---|---|---|
+| Pre-Market Screener (08:30–09:15) | §3 | Phase 12 #58-59 | No screener service; no universe scan for Gap%, RVOL, news |
+| Morning DNA Approval Workflow (09:15–09:30) | §3, §7 | Phase 12 #60-62 | DNA page is display-only; no approve/reject mechanism |
+| AVWAP Strategy | §4.3 #2 | Phase 13 #63 | VWAP indicator exists but no anchored breakout strategy |
+| AI-Enhanced Scalping Strategy | §4.3 #3 | Phase 13 #64 | No RSI/Stoch mean-reversion strategy; depends on MTFA |
+| Nightly Evolution Cycle | §3 | Phase 14 #67-68 | No automated AI analysis of trades or DNA parameter optimization |
+| Corporate Action Check | §3 | Phase 14 #69 | No dividend/split filtering for active tickers |
+| Backtesting Framework (5bps slippage) | §3 | Phase 10 #48 | No historical replay through event pipeline |
+| Performance Dashboard (P&L, win rate) | §7 | Phase 10 #51 | No P&L tracking or performance metrics |
+| Observability (Prometheus/Grafana) | Ops | Phase 10 #52 | No system health metrics |
+| WebSocket Auto-Reconnect | Ops | Phase 10 #50 | No reconnection logic on disconnect |
+
+### 🐛 Known Bugs
+
+| Bug | Location | Impact |
+|---|---|---|
+| `min_rvol` not connected to monitor | orb_tracker.go / monitor service | RVOL IS used in ORB tracker for breakout confirmation, but DNA `min_rvol` may not flow through to all code paths |
+| `min_confidence` hardcodes 0.75 | strategy service | DNA value for min_confidence is ignored; strategy service uses hardcoded 0.75 threshold |
