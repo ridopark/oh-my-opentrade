@@ -282,6 +282,30 @@ func main() {
 			Msg("indicator warmup complete")
 	}
 
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		loc = time.FixedZone("EST", -5*3600)
+	}
+	nowET := time.Now().In(loc)
+	isWeekday := nowET.Weekday() != time.Saturday && nowET.Weekday() != time.Sunday
+	isOpen := !domain.IsNYSEHoliday(nowET) && isWeekday
+	todayOpen := time.Date(nowET.Year(), nowET.Month(), nowET.Day(), 9, 30, 0, 0, loc)
+	if isOpen && nowET.After(todayOpen) {
+		warmupLog.Info().Msg("replaying current-session bars for ORB state recovery")
+		for _, sym := range symbols {
+			orbBars, err := alpacaAdapter.GetHistoricalBars(ctx, sym, timeframe, todayOpen.UTC(), time.Now())
+			if err != nil {
+				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("ORB warmup fetch failed")
+				continue
+			}
+			monitorSvc.WarmUpORB(orbBars)
+			warmupLog.Info().
+				Str("symbol", string(sym)).
+				Int("bars", len(orbBars)).
+				Msg("ORB warmup complete")
+		}
+	}
+
 	log.Info().
 		Strs("symbols", symbolStrings(symbols)).
 		Str("timeframe", string(timeframe)).

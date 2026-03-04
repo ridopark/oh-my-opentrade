@@ -14,4 +14,9 @@ type SetupCondition struct {
 	// BarClose is the close price of the bar that triggered this setup.
 	// Used by the strategy engine as the reference price for limit/stop computation.
 	BarClose float64
+
+	ORBHigh    float64
+	ORBLow     float64
+	RVOL       float64
+	Confidence float64
 }

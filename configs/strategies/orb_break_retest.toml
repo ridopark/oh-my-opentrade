@@ -25,6 +25,18 @@ stop_bps_below_low = 10
 # Minimum strategy confidence score in [0,1] to proceed with order intent
 min_confidence = 0.65
 
+breakout_confirm_bps = 2
+
+touch_tolerance_bps = 2
+
+hold_confirm_bps = 0
+
+max_retest_bars = 15
+
+allow_missing_range_bars = 1
+
+max_signals_per_session = 1
+
 # Optional inline Go script executed by Yaegi.
 # If absent, the deterministic formula is used instead.
 # Signature: func Compute(close, low float64, stopBPS, limitOffsetBPS int) (limit, stop float64)

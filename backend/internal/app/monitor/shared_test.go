@@ -33,6 +33,12 @@ func createBarDetailed(t *testing.T, symbol domain.Symbol, o, h, l, c, v float64
 	return bar
 }
 
+func createBarAtTime(t *testing.T, symbol domain.Symbol, barTime time.Time, o, h, l, c, v float64) domain.MarketBar {
+	bar, err := domain.NewMarketBar(barTime, symbol, "1m", o, h, l, c, v)
+	require.NoError(t, err)
+	return bar
+}
+
 func createTestEvent(t *testing.T, payload any) domain.Event {
 	ev, err := domain.NewEvent(
 		domain.EventMarketBarSanitized,

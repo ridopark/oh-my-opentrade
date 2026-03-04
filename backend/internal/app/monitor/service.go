@@ -20,6 +20,7 @@ type Service struct {
 	repo           ports.RepositoryPort
 	calculator     *IndicatorCalculator
 	regimeDetector *RegimeDetector
+	orbTracker     *ORBTracker
 	mu             sync.Mutex
 	lastSnaps      map[string]domain.IndicatorSnapshot
 	liveBars       map[string]int
@@ -33,6 +34,7 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 		repo:           repo,
 		calculator:     NewIndicatorCalculator(),
 		regimeDetector: NewRegimeDetector(),
+		orbTracker:     NewORBTracker(),
 		lastSnaps:      make(map[string]domain.IndicatorSnapshot),
 		liveBars:       make(map[string]int),
 		log:            log,
@@ -129,92 +131,63 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	}
 
 	if s.liveBars[symStr] < settlingBars {
+		cfg := DefaultORBConfig()
+		s.orbTracker.OnBar(bar, snap, cfg, true)
 		l.Debug().Msg(fmt.Sprintf("settling: %d/%d bars, suppressing setup detection", s.liveBars[symStr], settlingBars))
 		s.lastSnaps[symStr] = snap
 		return nil
 	}
 
 	lastSnap, hasLast := s.lastSnaps[symStr]
-	if hasLast && lastSnap.RSI > 0 {
+	_ = hasLast
+	_ = lastSnap
 
-		// Debug: log setup detection evaluation criteria
-		l.Debug().
-			Bool("has_prev", hasLast).
-			Float64("rsi_prev", lastSnap.RSI).
-			Float64("rsi_curr", snap.RSI).
-			Float64("ema9", snap.EMA9).
-			Float64("ema21", snap.EMA21).
-			Bool("long_rsi_cross", hasLast && lastSnap.RSI < 40 && snap.RSI >= 40).
-			Bool("long_ema_bullish", snap.EMA9 > snap.EMA21).
-			Bool("short_rsi_cross", hasLast && lastSnap.RSI > 60 && snap.RSI <= 60).
-			Bool("short_ema_bearish", snap.EMA9 < snap.EMA21).
-			Msg("setup evaluation")
-		// Detect Setup
-		// Recovering from oversold and bullish EMA
-		if lastSnap.RSI < 40 && snap.RSI >= 40 && snap.EMA9 > snap.EMA21 {
-			setup := SetupCondition{
-				Symbol:    bar.Symbol,
-				Timeframe: bar.Timeframe,
-				Direction: domain.DirectionLong,
-				Trigger:   "Bullish EMA Crossover from Oversold",
-				Snapshot:  snap,
-				Regime:    regime,
-				BarClose:  bar.Close,
-			}
-			l.Info().
-				Str("direction", string(domain.DirectionLong)).
-				Str("trigger", setup.Trigger).
-				Float64("rsi_prev", lastSnap.RSI).
-				Float64("rsi_curr", snap.RSI).
-				Msg("setup detected")
-			setupEv, err := domain.NewEvent(
-				domain.EventSetupDetected,
-				event.TenantID,
-				event.EnvMode,
-				event.IdempotencyKey+"-setup-detected",
-				setup,
-			)
-			if err != nil {
-				return fmt.Errorf("monitor: failed to create setup detected event: %w", err)
-			}
-			if err := s.eventBus.Publish(ctx, *setupEv); err != nil {
-				return fmt.Errorf("monitor: failed to publish setup detected event: %w", err)
-			}
-		} else if lastSnap.RSI > 60 && snap.RSI <= 60 && snap.EMA9 < snap.EMA21 {
-			setup := SetupCondition{
-				Symbol:    bar.Symbol,
-				Timeframe: bar.Timeframe,
-				Direction: domain.DirectionShort,
-				Trigger:   "Bearish EMA Crossover from Overbought",
-				Snapshot:  snap,
-				Regime:    regime,
-				BarClose:  bar.Close,
-			}
-			l.Info().
-				Str("direction", string(domain.DirectionShort)).
-				Str("trigger", setup.Trigger).
-				Float64("rsi_prev", lastSnap.RSI).
-				Float64("rsi_curr", snap.RSI).
-				Msg("setup detected")
-			setupEv, err := domain.NewEvent(
-				domain.EventSetupDetected,
-				event.TenantID,
-				event.EnvMode,
-				event.IdempotencyKey+"-setup-detected",
-				setup,
-			)
-			if err != nil {
-				return fmt.Errorf("monitor: failed to create setup detected event: %w", err)
-			}
-			if err := s.eventBus.Publish(ctx, *setupEv); err != nil {
-				return fmt.Errorf("monitor: failed to publish setup detected event: %w", err)
-			}
+	orbCfg := DefaultORBConfig()
+	setup, detected := s.orbTracker.OnBar(bar, snap, orbCfg, false)
+	if detected && setup != nil {
+		setup.Regime = regime
+		l.Info().
+			Str("direction", string(setup.Direction)).
+			Str("trigger", setup.Trigger).
+			Float64("orb_high", setup.ORBHigh).
+			Float64("orb_low", setup.ORBLow).
+			Float64("rvol", setup.RVOL).
+			Float64("confidence", setup.Confidence).
+			Msg("ORB setup detected")
+		setupEv, err := domain.NewEvent(
+			domain.EventSetupDetected,
+			event.TenantID,
+			event.EnvMode,
+			event.IdempotencyKey+"-setup-detected",
+			*setup,
+		)
+		if err != nil {
+			return fmt.Errorf("monitor: failed to create setup detected event: %w", err)
+		}
+		if err := s.eventBus.Publish(ctx, *setupEv); err != nil {
+			return fmt.Errorf("monitor: failed to publish setup detected event: %w", err)
 		}
 	}
 
 	s.lastSnaps[symStr] = snap
 
 	return nil
+}
+
+func (s *Service) WarmUpORB(bars []domain.MarketBar) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cfg := DefaultORBConfig()
+	for _, bar := range bars {
+		snap := s.calculator.Update(bar)
+		s.orbTracker.OnBar(bar, snap, cfg, true)
+	}
+}
+
+func (s *Service) GetORBSession(symbol string) *ORBSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.orbTracker.GetSession(symbol)
 }
 
 // WarmUp seeds the indicator calculator with historical bars without emitting

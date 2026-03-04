@@ -108,18 +108,18 @@ func TestService_EmitsSetupDetected(t *testing.T) {
 
 	sym, _ := domain.NewSymbol("BTC/USD")
 
-	// Simulate condition for a setup (e.g., RSI oversold + bullish EMA crossover)
-	// First push price down to get RSI oversold
-	for i := 0; i < 15; i++ {
-		bar := createBar(t, sym, 100.0-float64(i*2), 10.0)
+	base := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
+	for i := 0; i < 30; i++ {
+		bt := base.Add(time.Duration(i) * time.Minute)
+		bar := createBarAtTime(t, sym, bt, 100, 101, 99, 100, 10)
 		_ = bus.Publish(context.Background(), createTestEvent(t, bar))
 	}
-
-	// Then push price up rapidly to cross EMAs
-	for i := 0; i < 5; i++ {
-		bar := createBar(t, sym, 70.0+float64(i*10), 20.0)
-		_ = bus.Publish(context.Background(), createTestEvent(t, bar))
-	}
+	post := time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC)
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, post, 100, 101, 99, 100, 10)))
+	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, breakT, 100, 104, 100, 104, 50)))
+	retestT := breakT.Add(time.Minute)
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, retestT, 104, 104, 101, 103, 20)))
 
 	// Wait to allow async events if any, but since memory bus is sync it should be immediate
 	assert.Greater(t, setupCount, 0, "should have emitted SetupDetected event")
@@ -129,6 +129,7 @@ func TestService_EmitsSetupDetected(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, sym, setup.Symbol)
 	assert.NotEmpty(t, setup.Trigger)
+	assert.Equal(t, "ORB Break & Retest", setup.Trigger)
 }
 
 func TestService_WarmUp_SeedsIndicators(t *testing.T) {
@@ -299,14 +300,21 @@ func TestService_SettlingGuard_SuppressesSetupDetectionForFirstBars(t *testing.T
 
 	sym, _ := domain.NewSymbol("BTC/USD")
 
-	for i := 0; i < 15; i++ {
-		bar := createBar(t, sym, 100.0-float64(i*2), 10.0)
+	base := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
+	for i := 0; i < 30; i++ {
+		bt := base.Add(time.Duration(i) * time.Minute)
+		bar := createBarAtTime(t, sym, bt, 100, 101, 99, 100, 10)
 		_ = bus.Publish(context.Background(), createTestEvent(t, bar))
+		if i < 5 {
+			assert.Equal(t, 0, setupCount, "settling guard must suppress setup detection")
+		}
 	}
-	for i := 0; i < 5; i++ {
-		bar := createBar(t, sym, 70.0+float64(i*10), 20.0)
-		_ = bus.Publish(context.Background(), createTestEvent(t, bar))
-	}
+	post := time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC)
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, post, 100, 101, 99, 100, 10)))
+	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, breakT, 100, 104, 100, 104, 50)))
+	retestT := breakT.Add(time.Minute)
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, retestT, 104, 104, 101, 103, 20)))
 
 	assert.Greater(t, setupCount, 0, "should emit SetupDetected once settling complete")
 }
