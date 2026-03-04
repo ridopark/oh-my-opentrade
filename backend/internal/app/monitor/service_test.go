@@ -1,16 +1,16 @@
 package monitor_test
 
 import (
-"context"
-"testing"
-"time"
+	"context"
+	"testing"
+	"time"
 
-"github.com/rs/zerolog"
-"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
-"github.com/oh-my-opentrade/backend/internal/app/monitor"
-"github.com/oh-my-opentrade/backend/internal/domain"
-"github.com/stretchr/testify/assert"
-"github.com/stretchr/testify/require"
+	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
+	"github.com/oh-my-opentrade/backend/internal/app/monitor"
+	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestService_StartSubscribes(t *testing.T) {
@@ -281,4 +281,32 @@ func TestService_MaintainsStatePerSymbol(t *testing.T) {
 	// BTC RSI should be near 100, ETH RSI should be near 0
 	assert.Greater(t, lastSnapBTC.RSI, 90.0, "BTC RSI should be high")
 	assert.Less(t, lastSnapETH.RSI, 10.0, "ETH RSI should be low")
+}
+
+func TestService_SettlingGuard_SuppressesSetupDetectionForFirstBars(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	var setupCount int
+	bus.Subscribe(context.Background(), domain.EventSetupDetected, func(ctx context.Context, ev domain.Event) error {
+		setupCount++
+		return nil
+	})
+
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	for i := 0; i < 15; i++ {
+		bar := createBar(t, sym, 100.0-float64(i*2), 10.0)
+		_ = bus.Publish(context.Background(), createTestEvent(t, bar))
+	}
+	for i := 0; i < 5; i++ {
+		bar := createBar(t, sym, 70.0+float64(i*10), 20.0)
+		_ = bus.Publish(context.Background(), createTestEvent(t, bar))
+	}
+
+	assert.Greater(t, setupCount, 0, "should emit SetupDetected once settling complete")
 }

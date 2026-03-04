@@ -11,7 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
-"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
+	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
 	omhttp "github.com/oh-my-opentrade/backend/internal/adapters/http"
 	"github.com/oh-my-opentrade/backend/internal/adapters/llm"
@@ -23,8 +23,8 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
-	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/notify"
+	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/logger"
@@ -252,8 +252,6 @@ func main() {
 		}
 	}()
 
-	// 6c. Indicator warmup — fetch last 30 bars per symbol and seed the monitor
-	// calculator before streaming begins, so all indicators are live immediately.
 	symbols := make([]domain.Symbol, len(cfg.Symbols.Symbols))
 	for i, s := range cfg.Symbols.Symbols {
 		symbols[i] = domain.Symbol(s)
@@ -261,8 +259,15 @@ func main() {
 	timeframe := domain.Timeframe(cfg.Symbols.Timeframe)
 
 	warmupLog := log.With().Str("component", "warmup").Logger()
-	warmupFrom := time.Now().Add(-2 * time.Hour)
-	warmupTo := time.Now()
+	prevStart, prevEnd := domain.PreviousRTHSession(time.Now())
+	warmupFrom := prevEnd.Add(-120 * time.Minute)
+	warmupTo := prevEnd
+	warmupLog.Info().
+		Time("prev_session_start", prevStart).
+		Time("prev_session_end", prevEnd).
+		Time("warmup_from", warmupFrom).
+		Time("warmup_to", warmupTo).
+		Msg("warming indicators from previous RTH session")
 	for _, sym := range symbols {
 		bars, err := alpacaAdapter.GetHistoricalBars(ctx, sym, timeframe, warmupFrom, warmupTo)
 		if err != nil {
@@ -270,6 +275,7 @@ func main() {
 			continue
 		}
 		n := monitorSvc.WarmUp(bars)
+		monitorSvc.ResetSessionIndicators(sym.String())
 		warmupLog.Info().
 			Str("symbol", string(sym)).
 			Int("bars", n).

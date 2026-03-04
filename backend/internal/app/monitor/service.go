@@ -10,6 +10,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const settlingBars = 5
+
 // Service is the monitor application service.
 // It subscribes to MarketBarSanitized events, computes technical indicators,
 // detects market regime shifts, and identifies trade setups.
@@ -20,6 +22,7 @@ type Service struct {
 	regimeDetector *RegimeDetector
 	mu             sync.Mutex
 	lastSnaps      map[string]domain.IndicatorSnapshot
+	liveBars       map[string]int
 	log            zerolog.Logger
 }
 
@@ -31,8 +34,15 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 		calculator:     NewIndicatorCalculator(),
 		regimeDetector: NewRegimeDetector(),
 		lastSnaps:      make(map[string]domain.IndicatorSnapshot),
+		liveBars:       make(map[string]int),
 		log:            log,
 	}
+}
+
+func (s *Service) ResetSessionIndicators(symbol string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calculator.ResetSession(symbol)
 }
 
 // Start subscribes the service to incoming sanitized market data events.
@@ -65,6 +75,8 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 
 	snap := s.calculator.Update(bar)
 	symStr := bar.Symbol.String()
+
+	s.liveBars[symStr]++
 
 	l.Debug().
 		Float64("close", bar.Close).
@@ -116,21 +128,27 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		}
 	}
 
-	lastSnap, hasLast := s.lastSnaps[symStr]
-	if hasLast && lastSnap.RSI > 0 { // Ensure RSI is actually initialized
+	if s.liveBars[symStr] < settlingBars {
+		l.Debug().Msg(fmt.Sprintf("settling: %d/%d bars, suppressing setup detection", s.liveBars[symStr], settlingBars))
+		s.lastSnaps[symStr] = snap
+		return nil
+	}
 
-	// Debug: log setup detection evaluation criteria
-	l.Debug().
-		Bool("has_prev", hasLast).
-		Float64("rsi_prev", lastSnap.RSI).
-		Float64("rsi_curr", snap.RSI).
-		Float64("ema9", snap.EMA9).
-		Float64("ema21", snap.EMA21).
-		Bool("long_rsi_cross", hasLast && lastSnap.RSI < 40 && snap.RSI >= 40).
-		Bool("long_ema_bullish", snap.EMA9 > snap.EMA21).
-		Bool("short_rsi_cross", hasLast && lastSnap.RSI > 60 && snap.RSI <= 60).
-		Bool("short_ema_bearish", snap.EMA9 < snap.EMA21).
-		Msg("setup evaluation")
+	lastSnap, hasLast := s.lastSnaps[symStr]
+	if hasLast && lastSnap.RSI > 0 {
+
+		// Debug: log setup detection evaluation criteria
+		l.Debug().
+			Bool("has_prev", hasLast).
+			Float64("rsi_prev", lastSnap.RSI).
+			Float64("rsi_curr", snap.RSI).
+			Float64("ema9", snap.EMA9).
+			Float64("ema21", snap.EMA21).
+			Bool("long_rsi_cross", hasLast && lastSnap.RSI < 40 && snap.RSI >= 40).
+			Bool("long_ema_bullish", snap.EMA9 > snap.EMA21).
+			Bool("short_rsi_cross", hasLast && lastSnap.RSI > 60 && snap.RSI <= 60).
+			Bool("short_ema_bearish", snap.EMA9 < snap.EMA21).
+			Msg("setup evaluation")
 		// Detect Setup
 		// Recovering from oversold and bullish EMA
 		if lastSnap.RSI < 40 && snap.RSI >= 40 && snap.EMA9 > snap.EMA21 {

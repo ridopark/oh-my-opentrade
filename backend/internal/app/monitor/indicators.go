@@ -43,6 +43,16 @@ func NewIndicatorCalculator() *IndicatorCalculator {
 	}
 }
 
+func (ic *IndicatorCalculator) ResetSession(symbol string) {
+	state, ok := ic.states[symbol]
+	if !ok {
+		return
+	}
+	state.vwapNumerator = 0
+	state.vwapDenom = 0
+	state.volumes = state.volumes[:0]
+}
+
 // smaSlice computes the mean of a slice of float64 values.
 func smaSlice(values []float64) float64 {
 	if len(values) == 0 {
