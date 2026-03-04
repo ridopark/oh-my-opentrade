@@ -8,4 +8,9 @@ type AdvisoryDecision struct {
 	BullArgument   string
 	BearArgument   string
 	JudgeReasoning string
+
+	// Options-specific fields — zero values are valid for equity debates.
+	ContractSymbol string  // e.g. "AAPL240119C00190000" — empty for equity debates
+	MaxLossUSD     float64 // > 0 required if ContractSymbol is set
+	ExitRules      string  // e.g. "Exit at 2x premium or after 21 days" — empty for equity debates
 }

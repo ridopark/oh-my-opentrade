@@ -120,10 +120,10 @@ func TestRepository_SaveMarketBar_Success(t *testing.T) {
 		execFunc: func(ctx context.Context, query string, args ...any) (sql.Result, error) {
 			assert.True(t, strings.Contains(query, "INSERT INTO market_bars"), "query must contain table name")
 			
-			// Expected args: time, "", "", symbol, timeframe, open, high, low, close, volume, suspect
+			// Expected args: time, "", "Paper", symbol, timeframe, open, high, low, close, volume, suspect
 			assert.Equal(t, bar.Time, args[0])
 			assert.Equal(t, "", args[1])
-			assert.Equal(t, "", args[2])
+			assert.Equal(t, string(domain.EnvModePaper), args[2])
 			assert.Equal(t, string(bar.Symbol), args[3])
 			assert.Equal(t, string(bar.Timeframe), args[4])
 			assert.Equal(t, bar.Open, args[5])

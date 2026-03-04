@@ -3,6 +3,8 @@ package timescaledb
 import (
 	"context"
 	"database/sql"
+
+	"github.com/rs/zerolog"
 )
 
 // Row represents a single database row.
@@ -27,12 +29,22 @@ type DBTX interface {
 
 // Repository implements ports.RepositoryPort using TimescaleDB for persistent storage of market data, trades, and strategy configurations.
 type Repository struct {
-	db DBTX
+	db  DBTX
+	log zerolog.Logger
 }
 
 // NewRepository creates a new TimescaleDB repository.
 func NewRepository(db DBTX) *Repository {
 	return &Repository{
-		db: db,
+		db:  db,
+		log: zerolog.Nop(), // overridden via NewRepositoryWithLogger
+	}
+}
+
+// NewRepositoryWithLogger creates a new TimescaleDB repository with a structured logger.
+func NewRepositoryWithLogger(db DBTX, log zerolog.Logger) *Repository {
+	return &Repository{
+		db:  db,
+		log: log,
 	}
 }

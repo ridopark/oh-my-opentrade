@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -28,7 +29,7 @@ func setupTestService(t *testing.T) (*execution.Service, *memory.Bus, *mockBroke
 	nowFunc := func() time.Time { return time.Now() }
 	killSwitch := execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, nowFunc)
 
-	svc := execution.NewService(bus, broker, repo, riskEngine, slippageGuard, killSwitch, 100000.0)
+	svc := execution.NewService(bus, broker, repo, riskEngine, slippageGuard, killSwitch, 100000.0, zerolog.Nop())
 
 	return svc, bus, broker, quoteProvider
 }
@@ -38,8 +39,8 @@ func TestService_StartSubscribes(t *testing.T) {
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
 
-	setupEvt := createSetupEvent(t, domain.DirectionLong)
-	err = bus.Publish(context.Background(), setupEvt)
+	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
+	err = bus.Publish(context.Background(), intentEvt)
 	assert.NoError(t, err)
 
 	// Since the stub handles the event and returns immediately (or fails),
@@ -57,17 +58,15 @@ func TestService_FullPipelineSuccess(t *testing.T) {
 
 	var emittedEvents []string
 	subscribeAll(t, bus, []string{
-		domain.EventOrderIntentCreated,
 		domain.EventOrderIntentValidated,
 		domain.EventOrderSubmitted,
 	}, &emittedEvents)
 
-	setupEvt := createSetupEvent(t, domain.DirectionLong)
-	err = bus.Publish(context.Background(), setupEvt)
+	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
+	err = bus.Publish(context.Background(), intentEvt)
 	assert.NoError(t, err)
 
 	assert.Equal(t, 1, broker.SubmitOrderCalls)
-	assert.Contains(t, emittedEvents, domain.EventOrderIntentCreated)
 	assert.Contains(t, emittedEvents, domain.EventOrderIntentValidated)
 	assert.Contains(t, emittedEvents, domain.EventOrderSubmitted)
 }
@@ -88,6 +87,7 @@ func TestService_RiskRejection(t *testing.T) {
 		execution.NewSlippageGuard(quoteProvider),
 		execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, nowFunc),
 		100.0, // tiny equity → risk rejection
+		zerolog.Nop(),
 	)
 
 	err := svc.Start(context.Background())
@@ -98,8 +98,8 @@ func TestService_RiskRejection(t *testing.T) {
 		domain.EventOrderIntentRejected,
 	}, &emittedEvents)
 
-	setupEvt := createSetupEvent(t, domain.DirectionLong)
-	err = bus.Publish(context.Background(), setupEvt)
+	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
+	err = bus.Publish(context.Background(), intentEvt)
 	assert.NoError(t, err)
 
 	assert.Equal(t, 0, broker.SubmitOrderCalls)
@@ -120,8 +120,8 @@ func TestService_SlippageRejection(t *testing.T) {
 		domain.EventOrderIntentRejected,
 	}, &emittedEvents)
 
-	setupEvt := createSetupEvent(t, domain.DirectionLong)
-	err = bus.Publish(context.Background(), setupEvt)
+	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
+	err = bus.Publish(context.Background(), intentEvt)
 	assert.NoError(t, err)
 
 	assert.Equal(t, 0, broker.SubmitOrderCalls)
@@ -139,7 +139,7 @@ func TestService_KillSwitchHalted(t *testing.T) {
 	killSwitch := execution.NewKillSwitch(1, 2*time.Minute, 15*time.Minute, nowFunc)
 	_ = killSwitch.RecordStop("tenant-1", "BTCUSD") // trip it immediately
 
-	svc := execution.NewService(bus, broker, repo, execution.NewRiskEngine(0.02), execution.NewSlippageGuard(quoteProvider), killSwitch, 100000.0)
+	svc := execution.NewService(bus, broker, repo, execution.NewRiskEngine(0.02), execution.NewSlippageGuard(quoteProvider), killSwitch, 100000.0, zerolog.Nop())
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -149,8 +149,8 @@ func TestService_KillSwitchHalted(t *testing.T) {
 		domain.EventKillSwitchEngaged,
 	}, &emittedEvents)
 
-	setupEvt := createSetupEvent(t, domain.DirectionLong)
-	err = bus.Publish(context.Background(), setupEvt)
+	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
+	err = bus.Publish(context.Background(), intentEvt)
 	assert.NoError(t, err)
 
 	assert.Equal(t, 0, broker.SubmitOrderCalls)
@@ -171,8 +171,8 @@ func TestService_BrokerError(t *testing.T) {
 		domain.EventOrderRejected,
 	}, &emittedEvents)
 
-	setupEvt := createSetupEvent(t, domain.DirectionLong)
-	err = bus.Publish(context.Background(), setupEvt)
+	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
+	err = bus.Publish(context.Background(), intentEvt)
 	assert.NoError(t, err)
 
 	assert.Equal(t, 1, broker.SubmitOrderCalls)
@@ -185,7 +185,7 @@ func TestService_InvalidPayload(t *testing.T) {
 	require.NoError(t, err)
 
 	// Publish an event with a wrong payload type
-	badEvt, _ := domain.NewEvent(domain.EventSetupDetected, "tenant-1", domain.EnvModePaper, "key", "invalid-payload-string")
+	badEvt, _ := domain.NewEvent(domain.EventOrderIntentCreated, "tenant-1", domain.EnvModePaper, "key", "invalid-payload-string")
 
 	err = bus.Publish(context.Background(), *badEvt)
 	assert.NoError(t, err) // publish succeeds, but handler should error internally
@@ -199,24 +199,20 @@ func TestService_EmitsCircuitBreakerOnKillSwitch(t *testing.T) {
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
 
-	// Note: Circuit breaker is tripped when a trade update/stop-loss comes in that trips the switch.
-	// If the service pipeline also evaluates and trips it, it should emit CircuitBreakerTripped.
+	// Note: Circuit breaker is tripped when RecordStop is called for the Nth time.
+	// KillSwitch is configured with maxStops=3, so 3rd RecordStop trips it.
 	var emittedEvents []string
 	subscribeAll(t, bus, []string{
 		domain.EventCircuitBreakerTripped,
 	}, &emittedEvents)
 
-	// Publish multiple to trigger the halt
-	setupEvt := createSetupEvent(t, domain.DirectionLong)
-	_ = bus.Publish(context.Background(), setupEvt)
-	_ = bus.Publish(context.Background(), setupEvt)
-	_ = bus.Publish(context.Background(), setupEvt)
+	// Publish 3 intents: first 2 succeed (RecordStop ok), 3rd trips circuit breaker
+	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
+	_ = bus.Publish(context.Background(), intentEvt)
+	_ = bus.Publish(context.Background(), intentEvt)
+	_ = bus.Publish(context.Background(), intentEvt)
 
-	// Since stubs don't do anything, it will fail to find the event in emittedEvents.
 	assert.Contains(t, emittedEvents, domain.EventCircuitBreakerTripped)
-	// We also don't want it to submit the 3rd order if it tripped before submission,
-	// but the specific behavior depends on implementation.
-	// For RED phase, this is sufficient.
 	assert.Equal(t, 2, broker.SubmitOrderCalls, "Should have stopped after 2 calls before tripping on 3rd")
 }
 

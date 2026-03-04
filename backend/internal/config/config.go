@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,11 +13,13 @@ import (
 
 // Config represents the complete application configuration.
 type Config struct {
-	Alpaca   AlpacaConfig   `yaml:"alpaca"`
-	Database DatabaseConfig `yaml:"database"`
-	Trading  TradingConfig  `yaml:"trading"`
-	Symbols  SymbolsConfig  `yaml:"symbols"`
-	Server   ServerConfig   `yaml:"server"`
+	Alpaca       AlpacaConfig       `yaml:"alpaca"`
+	Database     DatabaseConfig     `yaml:"database"`
+	Trading      TradingConfig      `yaml:"trading"`
+	Symbols      SymbolsConfig      `yaml:"symbols"`
+	Server       ServerConfig       `yaml:"server"`
+	AI           AIConfig           `yaml:"ai"`
+	Notification NotificationConfig `yaml:"notification"`
 }
 
 // AlpacaConfig represents the Alpaca broker configuration.
@@ -25,7 +28,24 @@ type AlpacaConfig struct {
 	APISecretKey string `yaml:"api_secret_key"`
 	BaseURL      string `yaml:"base_url"`
 	DataURL      string `yaml:"data_url"`
+	Feed         string `yaml:"feed"`
 	PaperMode    bool   `yaml:"paper_mode"`
+}
+
+// AIConfig holds configuration for the AI adversarial debate system.
+type AIConfig struct {
+	BaseURL       string  `yaml:"base_url"`
+	Model         string  `yaml:"model"`
+	APIKey        string  `yaml:"api_key"`
+	MinConfidence float64 `yaml:"min_confidence"`
+	Enabled       bool    `yaml:"enabled"`
+}
+
+// NotificationConfig holds credentials for notification adapters.
+type NotificationConfig struct {
+	TelegramBotToken  string `yaml:"telegram_bot_token"`
+	TelegramChatID    string `yaml:"telegram_chat_id"`
+	DiscordWebhookURL string `yaml:"discord_webhook_url"`
 }
 
 // DatabaseConfig represents the database connection configuration.
@@ -71,27 +91,31 @@ type rawTradingConfig struct {
 
 // rawConfig represents the unparsed application configuration.
 type rawConfig struct {
-	Alpaca   AlpacaConfig     `yaml:"alpaca"`
-	Database DatabaseConfig   `yaml:"database"`
-	Trading  rawTradingConfig `yaml:"trading"`
-	Symbols  SymbolsConfig    `yaml:"symbols"`
-	Server   ServerConfig     `yaml:"server"`
+	Alpaca       AlpacaConfig       `yaml:"alpaca"`
+	Database     DatabaseConfig     `yaml:"database"`
+	Trading      rawTradingConfig   `yaml:"trading"`
+	Symbols      SymbolsConfig      `yaml:"symbols"`
+	Server       ServerConfig       `yaml:"server"`
+	AI           AIConfig           `yaml:"ai"`
+	Notification NotificationConfig `yaml:"notification"`
 }
 
 const (
-	defaultDBPort        = 5432
-	defaultDBSSLMode     = "disable"
-	defaultDBMaxPoolSize = 10
-	defaultServerPort    = 8080
-	defaultLogLevel      = "info"
-	defaultDataURL       = "https://data.alpaca.markets"
-	defaultMaxRiskPct    = 2.0
-	defaultSlippageBPS   = 10
-	defaultKillMaxStops  = 3
-	defaultKillWindow    = "2m"
-	defaultKillHalt      = "15m"
+defaultDBPort          = 5432
+	defaultDBSSLMode       = "disable"
+	defaultDBMaxPoolSize   = 10
+	defaultServerPort      = 8080
+	defaultLogLevel        = "info"
+	defaultDataURL         = "https://data.alpaca.markets"
+	defaultFeed            = "iex"
+	defaultMaxRiskPct      = 2.0
+	defaultSlippageBPS     = 10
+	defaultKillMaxStops    = 3
+	defaultKillWindow      = "2m"
+	defaultKillHalt        = "15m"
+	defaultAIBaseURL       = "http://localhost:4096"
+	defaultAIMinConfidence = 0.6
 )
-
 // Load loads the configuration from env and yaml files.
 // The loading sequence is: .env → YAML → env overlay → defaults → validate
 func Load(envPath, yamlPath string) (*Config, error) {
@@ -108,9 +132,10 @@ func Load(envPath, yamlPath string) (*Config, error) {
 
 	// Apply defaults
 	raw := rawConfig{
-		Alpaca: AlpacaConfig{
+Alpaca: AlpacaConfig{
 			PaperMode: true,
 			DataURL:   defaultDataURL,
+			Feed:      defaultFeed,
 		},
 		Database: DatabaseConfig{
 			Port:        defaultDBPort,
@@ -127,6 +152,11 @@ func Load(envPath, yamlPath string) (*Config, error) {
 		Server: ServerConfig{
 			Port:     defaultServerPort,
 			LogLevel: defaultLogLevel,
+		},
+		AI: AIConfig{
+			BaseURL:       defaultAIBaseURL,
+			MinConfidence: defaultAIMinConfidence,
+			Enabled:       false,
 		},
 	}
 
@@ -162,19 +192,58 @@ func Load(envPath, yamlPath string) (*Config, error) {
 			KillSwitchWindow:       killSwitchWindow,
 			KillSwitchHaltDuration: killSwitchHalt,
 		},
-		Symbols: raw.Symbols,
-		Server:  raw.Server,
+		Symbols:      raw.Symbols,
+		Server:       raw.Server,
+		AI:           raw.AI,
+		Notification: raw.Notification,
 	}
 
 	// 3. Overlay environment variables
-	if val := os.Getenv("APCA_API_KEY_ID"); val != "" {
+if val := os.Getenv("APCA_API_KEY_ID"); val != "" {
 		cfg.Alpaca.APIKeyID = val
 	}
 	if val := os.Getenv("APCA_API_SECRET_KEY"); val != "" {
 		cfg.Alpaca.APISecretKey = val
 	}
+	if val := os.Getenv("APCA_DATA_FEED"); val != "" {
+		cfg.Alpaca.Feed = val
+	}
 	if val := os.Getenv("TIMESCALEDB_PASSWORD"); val != "" {
 		cfg.Database.Password = val
+	}
+	if val := os.Getenv("TIMESCALEDB_HOST"); val != "" {
+		cfg.Database.Host = val
+	}
+	if val := os.Getenv("TIMESCALEDB_PORT"); val != "" {
+		if p, err := strconv.Atoi(val); err == nil {
+			cfg.Database.Port = p
+		}
+	}
+	if val := os.Getenv("LLM_BASE_URL"); val != "" {
+		cfg.AI.BaseURL = val
+	}
+	if val := os.Getenv("LLM_MODEL"); val != "" {
+		cfg.AI.Model = val
+	}
+	if val := os.Getenv("LLM_API_KEY"); val != "" {
+		cfg.AI.APIKey = val
+	}
+	if val := os.Getenv("LLM_MIN_CONFIDENCE"); val != "" {
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			cfg.AI.MinConfidence = f
+		}
+	}
+	if val := os.Getenv("LLM_ENABLED"); val == "true" {
+		cfg.AI.Enabled = true
+	}
+	if val := os.Getenv("TELEGRAM_BOT_TOKEN"); val != "" {
+		cfg.Notification.TelegramBotToken = val
+	}
+	if val := os.Getenv("TELEGRAM_CHAT_ID"); val != "" {
+		cfg.Notification.TelegramChatID = val
+	}
+	if val := os.Getenv("DISCORD_WEBHOOK_URL"); val != "" {
+		cfg.Notification.DiscordWebhookURL = val
 	}
 
 	// Validate configuration

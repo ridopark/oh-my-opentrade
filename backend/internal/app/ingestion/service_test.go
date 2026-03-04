@@ -1,16 +1,17 @@
 package ingestion_test
 
 import (
-	"context"
-	"errors"
-	"testing"
-	"time"
+"context"
+"errors"
+"testing"
+"time"
 
-	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
-	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
-	"github.com/oh-my-opentrade/backend/internal/domain"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+"github.com/rs/zerolog"
+"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
+"github.com/oh-my-opentrade/backend/internal/app/ingestion"
+"github.com/oh-my-opentrade/backend/internal/domain"
+"github.com/stretchr/testify/assert"
+"github.com/stretchr/testify/require"
 )
 
 type mockRepository struct {
@@ -40,6 +41,14 @@ func (m *mockRepository) GetLatestStrategyDNA(ctx context.Context, tenantID stri
 	return nil, nil
 }
 
+func (m *mockRepository) SaveOrder(ctx context.Context, order domain.BrokerOrder) error {
+	return nil
+}
+
+func (m *mockRepository) UpdateOrderFill(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64) error {
+	return nil
+}
+
 func createTestEvent(t *testing.T, payload any) domain.Event {
 	ev, err := domain.NewEvent(
 		domain.EventMarketBarReceived,
@@ -56,7 +65,7 @@ func TestService_StartSubscribes(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
 	filter := ingestion.NewZScoreFilter(5, 4.0)
-	svc := ingestion.NewService(bus, repo, filter)
+	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -71,7 +80,7 @@ func TestService_SanitizesCleanBar(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
 	filter := ingestion.NewZScoreFilter(5, 4.0) // needs 5 for active filter
-	svc := ingestion.NewService(bus, repo, filter)
+	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -109,7 +118,7 @@ func TestService_RejectsAnomalousBar(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
 	filter := ingestion.NewZScoreFilter(5, 4.0)
-	svc := ingestion.NewService(bus, repo, filter)
+	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
 
@@ -156,7 +165,7 @@ func TestService_InvalidPayload(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
 	filter := ingestion.NewZScoreFilter(5, 4.0)
-	svc := ingestion.NewService(bus, repo, filter)
+	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
 
 	err := svc.HandleMarketBar(context.Background(), createTestEvent(t, "not a bar"))
 	assert.Error(t, err)
@@ -169,7 +178,7 @@ func TestService_RepositoryErrorPropagates(t *testing.T) {
 		saveErr: errors.New("db error"),
 	}
 	filter := ingestion.NewZScoreFilter(5, 4.0)
-	svc := ingestion.NewService(bus, repo, filter)
+	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
 
 	sym, _ := domain.NewSymbol("BTC/USD")
 	bar := createBar(t, sym, 100.0, 10.0)

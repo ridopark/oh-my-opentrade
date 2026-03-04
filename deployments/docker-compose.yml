@@ -21,15 +21,39 @@ services:
       timeout: 5s
       retries: 5
 
+  migrate:
+    image: postgres:16-alpine
+    container_name: omo-migrate
+    restart: "no"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      PGHOST: timescaledb
+      PGPORT: "5432"
+      PGUSER: opentrade
+      PGPASSWORD: ${TIMESCALEDB_PASSWORD:-changeme}
+      PGDATABASE: opentrade
+    volumes:
+      - ../migrations:/migrations:ro
+      - ../scripts/migrate.sh:/migrate.sh:ro
+    command: ["/bin/sh", "/migrate.sh", "/migrations"]
+
+
   omo-core:
     build:
       context: ..
       dockerfile: deployments/Dockerfile
     container_name: omo-core
     restart: unless-stopped
+    stop_grace_period: 10s  # Give WebSocket close frame time to reach Alpaca before SIGKILL
     depends_on:
       timescaledb:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     env_file:
       - ../.env
     volumes:
@@ -38,6 +62,23 @@ services:
     environment:
       - TIMESCALEDB_HOST=timescaledb
       - TIMESCALEDB_PORT=5432
+    ports:
+      - "8080:8080"
+    networks:
+      - default
+  dashboard:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.dashboard
+    container_name: omo-dashboard
+    restart: unless-stopped
+    depends_on:
+      - omo-core
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - BACKEND_URL=http://omo-core:8080
     networks:
       - default
 

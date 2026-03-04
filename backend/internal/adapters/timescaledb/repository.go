@@ -13,19 +13,27 @@ import (
 )
 
 const (
-	queryInsertMarketBar   = `INSERT INTO market_bars (time, account_id, env_mode, symbol, timeframe, open, high, low, close, volume, suspect) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
-	querySelectMarketBars  = `SELECT time, symbol, timeframe, open, high, low, close, volume, suspect FROM market_bars WHERE symbol = $1 AND timeframe = $2 AND time >= $3 AND time <= $4 ORDER BY time`
+	queryInsertMarketBar   = `INSERT INTO market_bars (time, account_id, env_mode, symbol, timeframe, open, high, low, close, volume, suspect) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (symbol, timeframe, time) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume, suspect=EXCLUDED.suspect`
+	querySelectMarketBars  = `SELECT time, symbol, timeframe, open, high, low, close, volume, suspect FROM market_bars WHERE symbol = $1 AND timeframe = $2 AND time >= $3 AND time < $4 ORDER BY time`
 	queryInsertTrade       = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
 	querySelectTrades      = `SELECT time, trade_id, symbol, side, quantity, price, commission, status FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4 ORDER BY time`
 	queryInsertStrategyDNA = `INSERT INTO strategy_dna_history (time, account_id, env_mode, strategy_id, version, parameters, performance) VALUES ($1, $2, $3, $4, $5, $6, $7)`
 	querySelectLatestDNA   = `SELECT time, strategy_id, version, parameters, performance FROM strategy_dna_history WHERE account_id = $1 AND env_mode = $2 ORDER BY time DESC LIMIT 1`
+	queryInsertOrder     = `INSERT INTO orders (time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (broker_order_id) DO NOTHING`
+	queryUpdateOrderFill = `UPDATE orders SET status = 'filled', filled_at = $2, filled_price = $3, filled_qty = $4 WHERE broker_order_id = $1`
 )
 
 // SaveMarketBar saves a single OHLCV candle.
-// It passes empty strings for account_id and env_mode because market data is shared across all tenants.
+// Market data is shared across all tenants; account_id is stored as empty string.
+// env_mode is always Paper since market bars are feed data, not account-specific.
 func (r *Repository) SaveMarketBar(ctx context.Context, bar domain.MarketBar) error {
-	_, err := r.db.ExecContext(ctx, queryInsertMarketBar, bar.Time, "", "", string(bar.Symbol), string(bar.Timeframe), bar.Open, bar.High, bar.Low, bar.Close, bar.Volume, bar.Suspect)
+	_, err := r.db.ExecContext(ctx, queryInsertMarketBar, bar.Time, "", string(domain.EnvModePaper), string(bar.Symbol), string(bar.Timeframe), bar.Open, bar.High, bar.Low, bar.Close, bar.Volume, bar.Suspect)
 	if err != nil {
+		r.log.Error().Err(err).
+			Str("symbol", string(bar.Symbol)).
+			Str("timeframe", string(bar.Timeframe)).
+			Time("bar_time", bar.Time).
+			Msg("failed to save market bar")
 		return fmt.Errorf("timescaledb: save market bar: %w", err)
 	}
 	return nil
@@ -36,6 +44,10 @@ func (r *Repository) SaveMarketBar(ctx context.Context, bar domain.MarketBar) er
 func (r *Repository) GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
 	rows, err := r.db.QueryContext(ctx, querySelectMarketBars, string(symbol), string(timeframe), from, to)
 	if err != nil {
+		r.log.Error().Err(err).
+			Str("symbol", string(symbol)).
+			Str("timeframe", string(timeframe)).
+			Msg("failed to query market bars")
 		return nil, fmt.Errorf("timescaledb: get market bars: %w", err)
 	}
 	defer rows.Close()
@@ -62,6 +74,11 @@ func (r *Repository) GetMarketBars(ctx context.Context, symbol domain.Symbol, ti
 func (r *Repository) SaveTrade(ctx context.Context, trade domain.Trade) error {
 	_, err := r.db.ExecContext(ctx, queryInsertTrade, trade.Time, trade.TenantID, string(trade.EnvMode), trade.TradeID, string(trade.Symbol), trade.Side, trade.Quantity, trade.Price, trade.Commission, trade.Status)
 	if err != nil {
+		r.log.Error().Err(err).
+			Str("symbol", string(trade.Symbol)).
+			Str("trade_id", trade.TradeID.String()).
+			Str("tenant_id", trade.TenantID).
+			Msg("failed to save trade")
 		return fmt.Errorf("timescaledb: save trade: %w", err)
 	}
 	return nil
@@ -72,6 +89,10 @@ func (r *Repository) SaveTrade(ctx context.Context, trade domain.Trade) error {
 func (r *Repository) GetTrades(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) ([]domain.Trade, error) {
 	rows, err := r.db.QueryContext(ctx, querySelectTrades, tenantID, string(envMode), from, to)
 	if err != nil {
+		r.log.Error().Err(err).
+			Str("tenant_id", tenantID).
+			Str("env_mode", string(envMode)).
+			Msg("failed to query trades")
 		return nil, fmt.Errorf("timescaledb: get trades: %w", err)
 	}
 	defer rows.Close()
@@ -107,6 +128,10 @@ func (r *Repository) SaveStrategyDNA(ctx context.Context, dna domain.StrategyDNA
 	}
 	_, err = r.db.ExecContext(ctx, queryInsertStrategyDNA, time.Now().UTC(), dna.TenantID, string(dna.EnvMode), dna.ID, dna.Version, paramsJSON, metricsJSON)
 	if err != nil {
+		r.log.Error().Err(err).
+			Str("strategy_id", dna.ID.String()).
+			Int("version", dna.Version).
+			Msg("failed to save strategy DNA")
 		return fmt.Errorf("timescaledb: save strategy dna: %w", err)
 	}
 	return nil
@@ -127,6 +152,10 @@ func (r *Repository) GetLatestStrategyDNA(ctx context.Context, tenantID string, 
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
+		r.log.Error().Err(err).
+			Str("tenant_id", tenantID).
+			Str("env_mode", string(envMode)).
+			Msg("failed to scan strategy DNA row")
 		return nil, fmt.Errorf("timescaledb: scan strategy dna: %w", err)
 	}
 
@@ -147,4 +176,34 @@ func (r *Repository) GetLatestStrategyDNA(ctx context.Context, tenantID string, 
 		Parameters:         params,
 		PerformanceMetrics: metrics,
 	}, nil
+}
+
+// SaveOrder persists a submitted broker order.
+func (r *Repository) SaveOrder(ctx context.Context, order domain.BrokerOrder) error {
+	_, err := r.db.ExecContext(ctx, queryInsertOrder,
+		order.Time, order.TenantID, string(order.EnvMode),
+		order.IntentID, order.BrokerOrderID,
+		string(order.Symbol), order.Side,
+		order.Quantity, order.LimitPrice, order.StopLoss,
+		order.Status,
+	)
+	if err != nil {
+		r.log.Error().Err(err).
+			Str("broker_order_id", order.BrokerOrderID).
+			Msg("failed to save order")
+		return fmt.Errorf("timescaledb: save order: %w", err)
+	}
+	return nil
+}
+
+// UpdateOrderFill marks an order as filled with execution details.
+func (r *Repository) UpdateOrderFill(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64) error {
+	_, err := r.db.ExecContext(ctx, queryUpdateOrderFill, brokerOrderID, filledAt, filledPrice, filledQty)
+	if err != nil {
+		r.log.Error().Err(err).
+			Str("broker_order_id", brokerOrderID).
+			Msg("failed to update order fill")
+		return fmt.Errorf("timescaledb: update order fill: %w", err)
+	}
+	return nil
 }

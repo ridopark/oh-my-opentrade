@@ -8,18 +8,21 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
+	"github.com/rs/zerolog"
 )
 
 const defaultRateLimit = 200
 
 // Adapter implements both market data and broker interfaces for Alpaca.
 type Adapter struct {
-	rest *RESTClient
-	ws   *WSClient
+	rest    *RESTClient
+	ws      *WSClient
+	dataURL string
+	log     zerolog.Logger
 }
 
 // NewAdapter creates a new Alpaca Adapter.
-func NewAdapter(cfg config.AlpacaConfig) (*Adapter, error) {
+func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
 	if cfg.APIKeyID == "" {
 		return nil, errors.New("APIKeyID is required")
 	}
@@ -28,12 +31,27 @@ func NewAdapter(cfg config.AlpacaConfig) (*Adapter, error) {
 	}
 
 	limiter := NewRateLimiter(defaultRateLimit)
-	rest := NewRESTClient(cfg.BaseURL, cfg.APIKeyID, cfg.APISecretKey, limiter)
-	ws := NewWSClient(cfg.DataURL, cfg.APIKeyID, cfg.APISecretKey)
+	restLog := log.With().Str("client", "rest").Logger()
+	rest := NewRESTClient(cfg.BaseURL, cfg.APIKeyID, cfg.APISecretKey, limiter, restLog)
+
+	dataURL := cfg.DataURL
+	if dataURL == "" {
+		dataURL = "https://data.alpaca.markets"
+	}
+
+	// Wire the REST fetcher into the WS client so it can poll during ghost windows.
+	fetcher := func(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
+		return rest.GetHistoricalBars(ctx, dataURL, symbol, timeframe, from, to)
+	}
+	ws := NewWSClient(cfg.DataURL, cfg.APIKeyID, cfg.APISecretKey, cfg.Feed, fetcher)
+
+
 
 	return &Adapter{
-		rest: rest,
-		ws:   ws,
+		rest:    rest,
+		ws:      ws,
+		dataURL: dataURL,
+		log:     log,
 	}, nil
 }
 
@@ -42,9 +60,9 @@ func (a *Adapter) StreamBars(ctx context.Context, symbols []domain.Symbol, timef
 	return a.ws.StreamBars(ctx, symbols, timeframe, handler)
 }
 
-// GetHistoricalBars is a stub for fetching historical market bars.
+// GetHistoricalBars fetches historical OHLCV bars from the Alpaca data API.
 func (a *Adapter) GetHistoricalBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
-	return nil, nil
+	return a.rest.GetHistoricalBars(ctx, a.dataURL, symbol, timeframe, from, to)
 }
 
 // Close safely closes the adapter and underlying connections.
@@ -53,7 +71,11 @@ func (a *Adapter) Close() error {
 }
 
 // SubmitOrder places an order through the Alpaca REST API.
+// If the intent carries an options instrument, it dispatches to SubmitOptionOrder.
 func (a *Adapter) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (string, error) {
+	if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
+		return a.rest.SubmitOptionOrder(ctx, intent)
+	}
 	return a.rest.SubmitOrder(ctx, intent)
 }
 
@@ -75,4 +97,13 @@ func (a *Adapter) GetPositions(ctx context.Context, tenantID string, envMode dom
 // GetQuote fetches the latest bid and ask prices for a symbol.
 func (a *Adapter) GetQuote(ctx context.Context, symbol domain.Symbol) (float64, float64, error) {
 	return a.rest.GetQuote(ctx, symbol)
+}
+
+// GetOptionChain fetches option contract snapshots for the given underlying, expiry, and right.
+func (a *Adapter) GetOptionChain(ctx context.Context, underlying domain.Symbol, expiry time.Time, right domain.OptionRight) ([]domain.OptionContractSnapshot, error) {
+	return a.rest.GetOptionChain(ctx, underlying, expiry, right)
+}
+// GetAccountEquity fetches the current paper account equity from Alpaca.
+func (a *Adapter) GetAccountEquity(ctx context.Context) (float64, error) {
+	return a.rest.GetAccountEquity(ctx)
 }

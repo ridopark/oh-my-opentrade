@@ -15,4 +15,6 @@ type RepositoryPort interface {
 	GetTrades(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) ([]domain.Trade, error)
 	SaveStrategyDNA(ctx context.Context, dna domain.StrategyDNA) error
 	GetLatestStrategyDNA(ctx context.Context, tenantID string, envMode domain.EnvMode) (*domain.StrategyDNA, error)
+	SaveOrder(ctx context.Context, order domain.BrokerOrder) error
+	UpdateOrderFill(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64) error
 }

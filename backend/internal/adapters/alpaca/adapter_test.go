@@ -1,14 +1,15 @@
 package alpaca
 
 import (
-	"testing"
+"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+"github.com/rs/zerolog"
+"github.com/stretchr/testify/assert"
+"github.com/stretchr/testify/require"
 
-	"github.com/oh-my-opentrade/backend/internal/app/execution"
-	"github.com/oh-my-opentrade/backend/internal/config"
-	"github.com/oh-my-opentrade/backend/internal/ports"
+"github.com/oh-my-opentrade/backend/internal/app/execution"
+"github.com/oh-my-opentrade/backend/internal/config"
+"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
 func TestAdapter_ImplementsMarketDataPort(t *testing.T) {
@@ -34,7 +35,7 @@ func TestNewAdapter_MissingAPIKey(t *testing.T) {
 	}
 
 	// Act
-	adapter, err := NewAdapter(cfg)
+	adapter, err := NewAdapter(cfg, zerolog.Nop())
 
 	// Assert
 	require.Error(t, err)
@@ -52,7 +53,7 @@ func TestNewAdapter_MissingAPISecret(t *testing.T) {
 	}
 
 	// Act
-	adapter, err := NewAdapter(cfg)
+	adapter, err := NewAdapter(cfg, zerolog.Nop())
 
 	// Assert
 	require.Error(t, err)

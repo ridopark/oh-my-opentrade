@@ -7,6 +7,7 @@ import (
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
+	"github.com/rs/zerolog"
 )
 
 // Service is the monitor application service.
@@ -19,16 +20,18 @@ type Service struct {
 	regimeDetector *RegimeDetector
 	mu             sync.Mutex
 	lastSnaps      map[string]domain.IndicatorSnapshot
+	log            zerolog.Logger
 }
 
 // NewService creates a new monitor Service.
-func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort) *Service {
+func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zerolog.Logger) *Service {
 	return &Service{
 		eventBus:       eventBus,
 		repo:           repo,
 		calculator:     NewIndicatorCalculator(),
 		regimeDetector: NewRegimeDetector(),
 		lastSnaps:      make(map[string]domain.IndicatorSnapshot),
+		log:            log,
 	}
 }
 
@@ -38,6 +41,7 @@ func (s *Service) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("monitor: failed to subscribe to MarketBarSanitized: %w", err)
 	}
+	s.log.Info().Msg("subscribed to MarketBarSanitized events")
 	return nil
 }
 
@@ -50,6 +54,11 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	if !ok {
 		return fmt.Errorf("monitor: payload is not a MarketBar, got %T", event.Payload)
 	}
+
+	l := s.log.With().
+		Str("symbol", string(bar.Symbol)).
+		Str("timeframe", string(bar.Timeframe)).
+		Logger()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -74,6 +83,7 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 
 	regime, changed := s.regimeDetector.Detect(snap)
 	if changed {
+		l.Info().Str("regime", string(regime.Type)).Msg("market regime shifted")
 		regimeShiftedEv, err := domain.NewEvent(
 			domain.EventRegimeShifted,
 			event.TenantID,
@@ -101,7 +111,14 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 				Trigger:   "Bullish EMA Crossover from Oversold",
 				Snapshot:  snap,
 				Regime:    regime,
+				BarClose:  bar.Close,
 			}
+			l.Info().
+				Str("direction", string(domain.DirectionLong)).
+				Str("trigger", setup.Trigger).
+				Float64("rsi_prev", lastSnap.RSI).
+				Float64("rsi_curr", snap.RSI).
+				Msg("setup detected")
 			setupEv, err := domain.NewEvent(
 				domain.EventSetupDetected,
 				event.TenantID,
@@ -123,7 +140,14 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 				Trigger:   "Bearish EMA Crossover from Overbought",
 				Snapshot:  snap,
 				Regime:    regime,
+				BarClose:  bar.Close,
 			}
+			l.Info().
+				Str("direction", string(domain.DirectionShort)).
+				Str("trigger", setup.Trigger).
+				Float64("rsi_prev", lastSnap.RSI).
+				Float64("rsi_curr", snap.RSI).
+				Msg("setup detected")
 			setupEv, err := domain.NewEvent(
 				domain.EventSetupDetected,
 				event.TenantID,
@@ -143,4 +167,16 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	s.lastSnaps[symStr] = snap
 
 	return nil
+}
+
+// WarmUp seeds the indicator calculator with historical bars without emitting
+// any events or persisting data. It must be called before streaming begins.
+// Returns the number of bars processed.
+func (s *Service) WarmUp(bars []domain.MarketBar) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, bar := range bars {
+		s.calculator.Update(bar)
+	}
+	return len(bars)
 }

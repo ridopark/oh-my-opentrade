@@ -3,9 +3,11 @@ package ingestion
 import (
 	"context"
 	"fmt"
+	"sync"
+
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
-	"sync"
+	"github.com/rs/zerolog"
 )
 
 // Service is the ingestion application service.
@@ -14,14 +16,16 @@ type Service struct {
 	repository ports.RepositoryPort
 	filter     *ZScoreFilter
 	mu         sync.Mutex
+	log        zerolog.Logger
 }
 
 // NewService creates a new ingestion Service.
-func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, filter *ZScoreFilter) *Service {
+func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, filter *ZScoreFilter, log zerolog.Logger) *Service {
 	return &Service{
 		eventBus:   eventBus,
 		repository: repo,
 		filter:     filter,
+		log:        log,
 	}
 }
 
@@ -31,6 +35,7 @@ func (s *Service) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("ingestion: failed to subscribe to MarketBarReceived: %w", err)
 	}
+	s.log.Info().Msg("subscribed to MarketBarReceived events")
 	return nil
 }
 
@@ -44,12 +49,21 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		return fmt.Errorf("ingestion: payload is not a MarketBar, got %T", event.Payload)
 	}
 
+	l := s.log.With().
+		Str("symbol", string(bar.Symbol)).
+		Str("timeframe", string(bar.Timeframe)).
+		Time("bar_time", bar.Time).
+		Logger()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	suspect := s.filter.Check(bar)
 	if suspect {
 		bar.Suspect = true
+		l.Warn().
+			Float64("close", bar.Close).
+			Msg("bar flagged as suspect by Z-score filter — rejecting")
 
 		emittedEvent, err := domain.NewEvent(
 			domain.EventMarketBarRejected,
@@ -70,8 +84,11 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	}
 
 	if err := s.repository.SaveMarketBar(ctx, bar); err != nil {
+		l.Error().Err(err).Msg("failed to save market bar to repository")
 		return fmt.Errorf("ingestion: failed to save market bar: %w", err)
 	}
+
+	l.Debug().Float64("close", bar.Close).Msg("market bar saved")
 
 	emittedEvent, err := domain.NewEvent(
 		domain.EventMarketBarSanitized,

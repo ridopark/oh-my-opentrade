@@ -70,3 +70,11 @@ func (m *mockRepository) SaveStrategyDNA(ctx context.Context, dna domain.Strateg
 func (m *mockRepository) GetLatestStrategyDNA(ctx context.Context, tenantID string, envMode domain.EnvMode) (*domain.StrategyDNA, error) {
 	return nil, nil
 }
+
+func (m *mockRepository) SaveOrder(ctx context.Context, order domain.BrokerOrder) error {
+	return nil
+}
+
+func (m *mockRepository) UpdateOrderFill(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64) error {
+	return nil
+}

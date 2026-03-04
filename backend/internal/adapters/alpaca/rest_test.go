@@ -1,19 +1,20 @@
 package alpaca
 
 import (
-	"context"
-	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"testing"
-	"time"
+"context"
+"encoding/json"
+"io"
+"net/http"
+"net/http/httptest"
+"testing"
+"time"
 
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+"github.com/google/uuid"
+"github.com/rs/zerolog"
+"github.com/stretchr/testify/assert"
+"github.com/stretchr/testify/require"
 
-	"github.com/oh-my-opentrade/backend/internal/domain"
+"github.com/oh-my-opentrade/backend/internal/domain"
 )
 
 func TestRESTClient_SubmitOrder_Success(t *testing.T) {
@@ -46,7 +47,7 @@ func TestRESTClient_SubmitOrder_Success(t *testing.T) {
 	defer server.Close()
 
 	limiter := NewRateLimiter(200)
-	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
 
 	sym, _ := domain.NewSymbol("AAPL")
 	dir, _ := domain.NewDirection("LONG")
@@ -72,7 +73,7 @@ func TestRESTClient_SubmitOrder_Error(t *testing.T) {
 	defer server.Close()
 
 	limiter := NewRateLimiter(200)
-	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
 
 	sym, _ := domain.NewSymbol("AAPL")
 	dir, _ := domain.NewDirection("LONG")
@@ -99,7 +100,7 @@ func TestRESTClient_CancelOrder_Success(t *testing.T) {
 	defer server.Close()
 
 	limiter := NewRateLimiter(200)
-	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
 
 	// Act
 	err := client.CancelOrder(context.Background(), "order-uuid-123")
@@ -119,7 +120,7 @@ func TestRESTClient_GetOrderStatus_Success(t *testing.T) {
 	defer server.Close()
 
 	limiter := NewRateLimiter(200)
-	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
 
 	// Act
 	status, err := client.GetOrderStatus(context.Background(), "order-uuid-123")
@@ -140,7 +141,7 @@ func TestRESTClient_GetPositions_Success(t *testing.T) {
 	defer server.Close()
 
 	limiter := NewRateLimiter(200)
-	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
 
 	// Act
 	positions, err := client.GetPositions(context.Background(), "tenant-1", domain.EnvModePaper)
@@ -163,7 +164,7 @@ func TestRESTClient_GetQuote_Success(t *testing.T) {
 	defer server.Close()
 
 	limiter := NewRateLimiter(200)
-	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
 
 	sym, _ := domain.NewSymbol("AAPL")
 
@@ -184,7 +185,7 @@ func TestRESTClient_GetQuote_Error(t *testing.T) {
 	defer server.Close()
 
 	limiter := NewRateLimiter(200)
-	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
 
 	sym, _ := domain.NewSymbol("AAPL")
 
@@ -205,7 +206,7 @@ func TestRESTClient_UsesRateLimiter(t *testing.T) {
 
 	// Rate limiter allows 60 requests per minute -> 1 request per second
 	limiter := NewRateLimiter(60)
-	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
 
 	sym, _ := domain.NewSymbol("AAPL")
 	ctx := context.Background()

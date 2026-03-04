@@ -1,0 +1,46 @@
+# Opening Range Breakout — Break & Retest strategy DNA
+# This file is hot-reloaded every 5 seconds by the DNAManager.
+
+[strategy]
+id          = "orb_break_retest"
+version     = 1
+description = "Opening Range Breakout — Break & Retest"
+
+[parameters]
+# Number of minutes from market open used to define the ORB high/low
+orb_window_minutes = 30
+
+# Minimum relative volume (current vol / average vol) to qualify the setup
+min_rvol = 1.5
+
+# Maximum risk per trade expressed in basis points of notional
+max_risk_bps = 200
+
+# Distance above the break level at which to place the limit order (bps)
+limit_offset_bps = 5
+
+# Distance below the ORB low at which to place the initial stop loss (bps)
+stop_bps_below_low = 10
+
+# Minimum strategy confidence score in [0,1] to proceed with order intent
+min_confidence = 0.65
+
+# Optional inline Go script executed by Yaegi.
+# If absent, the deterministic formula is used instead.
+# Signature: func Compute(close, low float64, stopBPS, limitOffsetBPS int) (limit, stop float64)
+# script = """
+# package main
+# func main() {}
+# func Compute(close, low float64, stopBPS, limitOffsetBPS int) (float64, float64) {
+#     limit := close * (1.0 + float64(limitOffsetBPS)/10000.0)
+#     stop  := low   * (1.0 - float64(stopBPS)/10000.0)
+#     return limit, stop
+# }
+# """
+
+[regime_filter]
+# Only execute this strategy when the market is in one of these regimes
+allowed_regimes = ["TREND"]
+
+# Minimum regime classifier strength in [0,1] required to proceed
+min_regime_strength = 0.6

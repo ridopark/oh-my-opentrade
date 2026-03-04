@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 )
 
@@ -112,6 +111,14 @@ func (m *mockRepository) GetLatestStrategyDNA(ctx context.Context, tenantID stri
 	return nil, nil
 }
 
+func (m *mockRepository) SaveOrder(ctx context.Context, order domain.BrokerOrder) error {
+	return nil
+}
+
+func (m *mockRepository) UpdateOrderFill(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64) error {
+	return nil
+}
+
 // createTestOrderIntent creates a valid domain.OrderIntent for testing.
 func createTestOrderIntent(t *testing.T) domain.OrderIntent {
 	t.Helper()
@@ -136,33 +143,38 @@ func createTestOrderIntent(t *testing.T) domain.OrderIntent {
 	return intent
 }
 
-// createSetupEvent creates a valid setup event for testing.
-func createSetupEvent(t *testing.T, dir domain.Direction) domain.Event {
+// createOrderIntentEvent creates a valid EventOrderIntentCreated event for testing.
+func createOrderIntentEvent(t *testing.T, dir domain.Direction) domain.Event {
 	t.Helper()
-
-	setup := monitor.SetupCondition{
-		Symbol:    "BTCUSD",
-		Timeframe: "1h",
-		Direction: dir,
-		Trigger:   "RSI_Oversold",
-		Regime: domain.MarketRegime{
-			Symbol:    "BTCUSD",
-			Timeframe: "1h",
-			Type:      "Trending",
-			Since:     time.Now().Add(-time.Hour),
-			Strength:  0.8,
-		},
+	intentID := uuid.New()
+	intent, err := domain.NewOrderIntent(
+		intentID,
+		"tenant-1",
+		domain.EnvModePaper,
+		"BTCUSD",
+		dir,
+		50000.0,
+		49000.0,
+		10,  // MaxSlippageBPS
+		1.0, // Quantity
+		"strategy-1",
+		"RSI_Oversold triggered",
+		0.8,
+		intentID.String(),
+	)
+	if err != nil {
+		t.Fatalf("failed to create test order intent: %v", err)
 	}
 
 	event, err := domain.NewEvent(
-		domain.EventSetupDetected,
+		domain.EventOrderIntentCreated,
 		"tenant-1",
 		domain.EnvModePaper,
-		uuid.NewString(),
-		setup,
+		intentID.String(),
+		intent,
 	)
 	if err != nil {
-		t.Fatalf("failed to create setup event: %v", err)
+		t.Fatalf("failed to create intent event: %v", err)
 	}
 	return *event
 }

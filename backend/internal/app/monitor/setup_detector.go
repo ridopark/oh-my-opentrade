@@ -11,4 +11,7 @@ type SetupCondition struct {
 	Trigger   string
 	Snapshot  domain.IndicatorSnapshot
 	Regime    domain.MarketRegime
+	// BarClose is the close price of the bar that triggered this setup.
+	// Used by the strategy engine as the reference price for limit/stop computation.
+	BarClose float64
 }

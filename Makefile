@@ -40,7 +40,7 @@ lint:
 
 ## Run database migrations
 migrate:
-	@echo "TODO: implement migration runner"
+	PGHOST=$${PGHOST:-localhost} PGPORT=$${PGPORT:-5432} PGUSER=$${PGUSER:-opentrade} PGDATABASE=$${PGDATABASE:-opentrade} ./scripts/migrate.sh migrations
 
 ## Format code
 fmt:

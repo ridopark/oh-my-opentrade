@@ -1,5 +1,8 @@
 # Build stage
-FROM golang:1.22-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH
 
 WORKDIR /app
 
@@ -11,13 +14,16 @@ RUN go mod download
 COPY backend/ ./
 
 # Build the binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /omo-core ./cmd/omo-core
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /omo-core ./cmd/omo-core
 
 # Runtime stage
 FROM gcr.io/distroless/static-debian12:nonroot
 
+WORKDIR /
+
 COPY --from=builder /omo-core /omo-core
 COPY migrations/ /migrations/
+COPY configs/ /configs/
 
 EXPOSE 8080
 

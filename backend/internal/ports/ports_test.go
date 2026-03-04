@@ -55,7 +55,7 @@ type mockAIAdvisor struct{}
 
 var _ ports.AIAdvisorPort = (*mockAIAdvisor)(nil)
 
-func (m *mockAIAdvisor) RequestDebate(ctx context.Context, symbol domain.Symbol, regime domain.MarketRegime, indicators domain.IndicatorSnapshot) (*domain.AdvisoryDecision, error) {
+func (m *mockAIAdvisor) RequestDebate(ctx context.Context, symbol domain.Symbol, regime domain.MarketRegime, indicators domain.IndicatorSnapshot, opts ...ports.DebateOption) (*domain.AdvisoryDecision, error) {
 	return &domain.AdvisoryDecision{
 		Direction:  domain.Direction("LONG"),
 		Confidence: 0.85,
@@ -106,6 +106,14 @@ func (m *mockRepository) SaveStrategyDNA(ctx context.Context, dna domain.Strateg
 
 func (m *mockRepository) GetLatestStrategyDNA(ctx context.Context, tenantID string, envMode domain.EnvMode) (*domain.StrategyDNA, error) {
 	return &domain.StrategyDNA{}, nil
+}
+
+func (m *mockRepository) SaveOrder(ctx context.Context, order domain.BrokerOrder) error {
+	return nil
+}
+
+func (m *mockRepository) UpdateOrderFill(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64) error {
+	return nil
 }
 
 // 6. NotifierPort

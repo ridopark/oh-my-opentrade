@@ -1,21 +1,22 @@
 package monitor_test
 
 import (
-	"context"
-	"testing"
-	"time"
+"context"
+"testing"
+"time"
 
-	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
-	"github.com/oh-my-opentrade/backend/internal/app/monitor"
-	"github.com/oh-my-opentrade/backend/internal/domain"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+"github.com/rs/zerolog"
+"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
+"github.com/oh-my-opentrade/backend/internal/app/monitor"
+"github.com/oh-my-opentrade/backend/internal/domain"
+"github.com/stretchr/testify/assert"
+"github.com/stretchr/testify/require"
 )
 
 func TestService_StartSubscribes(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo)
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -30,7 +31,7 @@ func TestService_StartSubscribes(t *testing.T) {
 func TestService_EmitsStateUpdated(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo)
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -57,7 +58,7 @@ func TestService_EmitsStateUpdated(t *testing.T) {
 func TestService_EmitsRegimeShifted(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo)
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -92,7 +93,7 @@ func TestService_EmitsRegimeShifted(t *testing.T) {
 func TestService_EmitsSetupDetected(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo)
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -130,10 +131,80 @@ func TestService_EmitsSetupDetected(t *testing.T) {
 	assert.NotEmpty(t, setup.Trigger)
 }
 
+func TestService_WarmUp_SeedsIndicators(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	sym, _ := domain.NewSymbol("AAPL")
+
+	// Build 21 ascending bars — enough for EMA21 and RSI to initialise
+	bars := make([]domain.MarketBar, 21)
+	for i := 0; i < 21; i++ {
+		bars[i] = createBar(t, sym, 100.0+float64(i), 10.0)
+	}
+
+	n := svc.WarmUp(bars)
+	assert.Equal(t, 21, n, "WarmUp should return count of bars processed")
+
+	// After warmup, the next live bar should produce a non-zero RSI and EMA21.
+	var snap domain.IndicatorSnapshot
+	bus.Subscribe(context.Background(), domain.EventStateUpdated, func(ctx context.Context, ev domain.Event) error {
+		snap = ev.Payload.(domain.IndicatorSnapshot)
+		return nil
+	})
+
+	liveBar := createBar(t, sym, 125.0, 10.0)
+	evt, err := domain.NewEvent(domain.EventMarketBarSanitized, "t", domain.EnvModePaper, "warm-live", liveBar)
+	require.NoError(t, err)
+	err = bus.Publish(context.Background(), *evt)
+	require.NoError(t, err)
+
+	assert.Greater(t, snap.RSI, 0.0, "RSI should be live after warmup")
+	assert.Greater(t, snap.EMA21, 0.0, "EMA21 should be live after warmup")
+}
+
+func TestService_WarmUp_EmitsNoEvents(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	sym, _ := domain.NewSymbol("AAPL")
+
+	var eventCount int
+	for _, typ := range []domain.EventType{
+		domain.EventStateUpdated,
+		domain.EventRegimeShifted,
+		domain.EventSetupDetected,
+	} {
+		typ := typ
+		bus.Subscribe(context.Background(), typ, func(ctx context.Context, ev domain.Event) error {
+			_ = typ
+			eventCount++
+			return nil
+		})
+	}
+
+	bars := make([]domain.MarketBar, 30)
+	for i := 0; i < 30; i++ {
+		bars[i] = createBar(t, sym, 100.0+float64(i), 10.0)
+	}
+
+	svc.WarmUp(bars)
+
+	assert.Equal(t, 0, eventCount, "WarmUp must not emit any events")
+}
+
 func TestService_NoSetupWhenNoConditionMet(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo)
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -162,7 +233,7 @@ func TestService_NoSetupWhenNoConditionMet(t *testing.T) {
 func TestService_InvalidPayload(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo)
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
 
 	err := svc.HandleMarketBar(context.Background(), createTestEvent(t, "not a bar"))
 	if assert.Error(t, err) {
@@ -173,7 +244,7 @@ func TestService_InvalidPayload(t *testing.T) {
 func TestService_MaintainsStatePerSymbol(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo)
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)

@@ -29,7 +29,9 @@ const (
 	EventFillReceived          EventType = "FillReceived"
 	EventPositionUpdated       EventType = "PositionUpdated"
 	EventKillSwitchEngaged     EventType = "KillSwitchEngaged"
-	EventCircuitBreakerTripped EventType = "CircuitBreakerTripped"
+	EventCircuitBreakerTripped  EventType = "CircuitBreakerTripped"
+	EventOptionChainReceived    EventType = "OptionChainReceived"
+	EventOptionContractSelected EventType = "OptionContractSelected"
 )
 
 // Event represents a domain event in the trading pipeline.

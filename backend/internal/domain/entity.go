@@ -44,19 +44,66 @@ func NewMarketBar(t time.Time, sym Symbol, tf Timeframe, open, high, low, close,
 
 // OrderIntent represents a validated intent to place an order, pending broker submission.
 type OrderIntent struct {
-	ID             uuid.UUID
-	TenantID       string
-	EnvMode        EnvMode
-	Symbol         Symbol
-	Direction      Direction
-	LimitPrice     float64
-	StopLoss       float64
-	MaxSlippageBPS int
-	Quantity       float64
-	Strategy       string
-	Rationale      string
-	Confidence     float64
-	IdempotencyKey string
+	ID             uuid.UUID   `json:"id"`
+	TenantID       string      `json:"tenantId"`
+	EnvMode        EnvMode     `json:"envMode"`
+	Symbol         Symbol      `json:"symbol"`
+	Direction      Direction   `json:"direction"`
+	LimitPrice     float64     `json:"limitPrice"`
+	StopLoss       float64     `json:"stopLoss"`
+	MaxSlippageBPS int         `json:"maxSlippageBPS"`
+	Quantity       float64     `json:"quantity"`
+	Strategy       string      `json:"strategy"`
+	Rationale      string      `json:"rationale"`
+	Confidence     float64     `json:"confidence"`
+	IdempotencyKey string      `json:"idempotencyKey"`
+	// Options-specific fields (nil/zero for equity orders)
+	Instrument    *Instrument  `json:"instrument,omitempty"`
+	MaxLossUSD    float64      `json:"maxLossUSD,omitempty"`
+}
+
+// OrderIntentStatus indicates where in the pipeline an order intent currently sits.
+type OrderIntentStatus = string
+
+const (
+	OrderIntentStatusCreated   OrderIntentStatus = "created"
+	OrderIntentStatusValidated OrderIntentStatus = "validated"
+	OrderIntentStatusRejected  OrderIntentStatus = "rejected"
+	OrderIntentStatusSubmitted OrderIntentStatus = "submitted"
+)
+
+// OrderIntentEventPayload is the SSE wire shape for all order-intent events.
+// It embeds the intent fields and adds a Status so the frontend can derive
+// the current lifecycle stage from a single payload.
+type OrderIntentEventPayload struct {
+	ID             string  `json:"id"`
+	Symbol         string  `json:"symbol"`
+	Direction      string  `json:"direction"`
+	LimitPrice     float64 `json:"limitPrice"`
+	StopLoss       float64 `json:"stopLoss"`
+	MaxSlippageBPS int     `json:"maxSlippageBPS"`
+	Quantity       float64 `json:"quantity"`
+	Strategy       string  `json:"strategy"`
+	Rationale      string  `json:"rationale"`
+	Confidence     float64 `json:"confidence"`
+	Status         string  `json:"status"`
+}
+
+// NewOrderIntentEventPayload converts an OrderIntent into the SSE wire shape.
+func NewOrderIntentEventPayload(intent OrderIntent, status OrderIntentStatus) OrderIntentEventPayload {
+	return OrderIntentEventPayload{
+		ID:             intent.ID.String(),
+		Symbol:         string(intent.Symbol),
+		Direction:      string(intent.Direction),
+		LimitPrice:     intent.LimitPrice,
+		StopLoss:       intent.StopLoss,
+		MaxSlippageBPS: intent.MaxSlippageBPS,
+		Quantity:       intent.Quantity,
+		Strategy:       intent.Strategy,
+		Rationale:      intent.Rationale,
+		Confidence:     intent.Confidence,
+		Status:         status,
+	}
 }
 
 // NewOrderIntent creates a validated OrderIntent.
@@ -100,6 +147,57 @@ func NewOrderIntent(
 		Rationale:      rationale,
 		Confidence:     confidence,
 		IdempotencyKey: idempotencyKey,
+	}, nil
+}
+
+// NewOptionOrderIntent creates an OrderIntent specifically for an options trade.
+// It requires a non-nil Instrument of type InstrumentTypeOption and MaxLossUSD > 0.
+// StopLoss is set to LimitPrice (premium) as a placeholder; risk is controlled via MaxLossUSD.
+func NewOptionOrderIntent(
+	id uuid.UUID,
+	tenantID string,
+	envMode EnvMode,
+	inst Instrument,
+	dir Direction,
+	limitPrice float64,
+	quantity float64,
+	strategy, rationale string,
+	confidence float64,
+	idempotencyKey string,
+	maxLossUSD float64,
+) (OrderIntent, error) {
+	if inst.Type != InstrumentTypeOption {
+		return OrderIntent{}, errors.New("instrument must be of type OPTION for NewOptionOrderIntent")
+	}
+	if maxLossUSD <= 0 {
+		return OrderIntent{}, errors.New("MaxLossUSD must be > 0 for option orders")
+	}
+	if confidence < 0 || confidence > 1 {
+		return OrderIntent{}, fmt.Errorf("confidence must be between 0 and 1, got %v", confidence)
+	}
+	if idempotencyKey == "" {
+		return OrderIntent{}, errors.New("idempotency key is required")
+	}
+	if limitPrice <= 0 {
+		return OrderIntent{}, errors.New("limit price must be greater than zero")
+	}
+	instCopy := inst
+	return OrderIntent{
+		ID:             id,
+		TenantID:       tenantID,
+		EnvMode:        envMode,
+		Symbol:         inst.Symbol,
+		Direction:      dir,
+		LimitPrice:     limitPrice,
+		StopLoss:       limitPrice, // premium as reference; risk enforced via MaxLossUSD
+		MaxSlippageBPS: 0,
+		Quantity:       quantity,
+		Strategy:       strategy,
+		Rationale:      rationale,
+		Confidence:     confidence,
+		IdempotencyKey: idempotencyKey,
+		Instrument:     &instCopy,
+		MaxLossUSD:     maxLossUSD,
 	}, nil
 }
 
@@ -220,4 +318,22 @@ func NewTrade(
 		Commission: commission,
 		Status:     status,
 	}, nil
+}
+
+// BrokerOrder represents a submitted order tracked until fill or cancellation.
+type BrokerOrder struct {
+	Time          time.Time
+	TenantID      string
+	EnvMode       EnvMode
+	IntentID      uuid.UUID
+	BrokerOrderID string
+	Symbol        Symbol
+	Side          string
+	Quantity      float64
+	LimitPrice    float64
+	StopLoss      float64
+	Status        string    // submitted | filled | cancelled | expired
+	FilledAt      *time.Time
+	FilledPrice   float64
+	FilledQty     float64
 }
