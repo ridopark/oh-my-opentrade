@@ -1,58 +1,42 @@
-# Opening Range Breakout — Break & Retest strategy DNA
-# This file is hot-reloaded every 5 seconds by the DNAManager.
+schema_version = 2
 
 [strategy]
-id          = "orb_break_retest"
-version     = 1
-description = "Opening Range Breakout — Break & Retest"
+id = "orb_break_retest"
+version = "1.0.0"
+name = "ORB Break & Retest"
+description = "Opening Range Breakout — Break & Retest with volume confirmation"
+author = "system"
+created_at = "2026-03-04T00:00:00Z"
 
-[parameters]
-# Number of minutes from market open used to define the ORB high/low
+[lifecycle]
+state = "LiveActive"
+paper_only = false
+
+[routing]
+symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META"]
+timeframes = ["1m"]
+priority = 100
+conflict_policy = "priority_wins"
+exclusive_per_symbol = false
+
+[params]
 orb_window_minutes = 30
-
-# Minimum relative volume (current vol / average vol) to qualify the setup
 min_rvol = 1.5
-
-# Maximum risk per trade expressed in basis points of notional
-max_risk_bps = 200
-
-# Distance above the break level at which to place the limit order (bps)
-limit_offset_bps = 5
-
-# Distance below the ORB low at which to place the initial stop loss (bps)
-stop_bps_below_low = 10
-
-# Minimum strategy confidence score in [0,1] to proceed with order intent
 min_confidence = 0.65
-
 breakout_confirm_bps = 2
-
 touch_tolerance_bps = 2
-
 hold_confirm_bps = 0
-
 max_retest_bars = 15
-
-allow_missing_range_bars = 1
-
+allow_missing_bars = 1
 max_signals_per_session = 1
-
-# Optional inline Go script executed by Yaegi.
-# If absent, the deterministic formula is used instead.
-# Signature: func Compute(close, low float64, stopBPS, limitOffsetBPS int) (limit, stop float64)
-# script = """
-# package main
-# func main() {}
-# func Compute(close, low float64, stopBPS, limitOffsetBPS int) (float64, float64) {
-#     limit := close * (1.0 + float64(limitOffsetBPS)/10000.0)
-#     stop  := low   * (1.0 - float64(stopBPS)/10000.0)
-#     return limit, stop
-# }
-# """
+stop_bps = 25
+limit_offset_bps = 5
+risk_per_trade_bps = 10
 
 [regime_filter]
-# Only execute this strategy when the market is in one of these regimes
+enabled = true
 allowed_regimes = ["TREND"]
+min_atr_pct = 0.8
 
-# Minimum regime classifier strength in [0,1] required to proceed
-min_regime_strength = 0.6
+[hooks]
+signals = { engine = "builtin", name = "orb_v1" }

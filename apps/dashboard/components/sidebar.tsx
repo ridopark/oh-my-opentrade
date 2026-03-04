@@ -8,6 +8,7 @@ import {
   ListOrdered,
   Dna,
   Activity,
+  Layers,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -16,6 +17,7 @@ const navItems = [
   { href: "/debates", label: "Debates", icon: Swords },
   { href: "/execution", label: "Execution", icon: ListOrdered },
   { href: "/dna", label: "Strategy DNA", icon: Dna },
+  { href: "/strategies", label: "Strategies", icon: Layers },
 ];
 
 export function Sidebar() {

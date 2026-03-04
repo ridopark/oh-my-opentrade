@@ -2,8 +2,9 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,6 +20,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/middleware"
 	"github.com/oh-my-opentrade/backend/internal/adapters/notification"
 	"github.com/oh-my-opentrade/backend/internal/adapters/sse"
+	"github.com/oh-my-opentrade/backend/internal/adapters/strategy/store_fs"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/app/debate"
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
@@ -26,8 +28,10 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/notify"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
+	"github.com/oh-my-opentrade/backend/internal/app/strategy/builtin"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/logger"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
@@ -131,16 +135,65 @@ func main() {
 	notifySvc := notify.NewService(eventBus, multiNotifier, notifyLog)
 	log.Info().Int("active", len(notifiers)).Msg("notification adapters initialized")
 
-	// 5b. Initialize strategy DNA engine
+	// 5b. Initialize strategy pipeline
+	useStrategyV2 := os.Getenv("STRATEGY_V2") == "true"
+
+	// v1 (legacy) — always create so the /strategies/current endpoint works
 	dnaManager := strategy.NewDNAManager()
 	strategySvc := strategy.NewService(eventBus)
-	strategySvc.SetAccountEquity(accountEquity) // seed initial equity for position sizing
+	strategySvc.SetAccountEquity(accountEquity)
 	const dnaPath = "configs/strategies/orb_break_retest.toml"
 	if dna, err := dnaManager.Load(dnaPath); err == nil {
 		strategySvc.RegisterDNA(dna)
 		log.Info().Str("strategy_id", dna.ID).Int("version", dna.Version).Msg("strategy DNA loaded")
 	} else {
 		log.Info().Err(err).Msg("no strategy DNA file found, using deterministic defaults")
+	}
+
+	// v2 — new StrategyRunner + RiskSizer pipeline (feature-flagged)
+	var strategyRunner *strategy.Runner
+	var riskSizer *strategy.RiskSizer
+	var lifecycleSvc *strategy.LifecycleService
+	if useStrategyV2 {
+		const specDir = "configs/strategies"
+		specStore := store_fs.NewStore(specDir, strategy.LoadSpecFile)
+		orbID, _ := strat.NewStrategyID("orb_break_retest")
+		spec, err := specStore.GetLatest(context.Background(), orbID)
+		if err != nil {
+			log.Fatal().Err(err).Msg("strategy v2: failed to load orb_break_retest spec")
+		}
+
+		// Register the builtin ORB strategy in the in-memory registry.
+		registry := strategy.NewMemRegistry()
+		orbStrategy := builtin.NewORBStrategy()
+		if err := registry.Register(orbStrategy); err != nil {
+			log.Fatal().Err(err).Msg("strategy v2: failed to register ORB strategy")
+		}
+
+		// Create the router and wire instances for each symbol.
+		router := strategy.NewRouter()
+		stratLog := slog.Default()
+		for _, sym := range spec.Routing.Symbols {
+			instanceID, _ := strat.NewInstanceID(fmt.Sprintf("%s:%s:%s", spec.ID, spec.Version, sym))
+			inst := strategy.NewInstance(instanceID, orbStrategy, spec.Params, strategy.InstanceAssignment{
+				Symbols:  []string{sym},
+				Priority: spec.Routing.Priority,
+			}, strat.LifecycleLiveActive, stratLog)
+			initCtx := strategy.NewContext(time.Now(), stratLog, nil)
+			if err := inst.InitSymbol(initCtx, sym, nil); err != nil {
+				log.Fatal().Err(err).Str("symbol", sym).Msg("strategy v2: failed to init symbol")
+			}
+			router.Register(inst)
+		}
+
+		strategyRunner = strategy.NewRunner(eventBus, router, "default", domain.EnvModePaper, stratLog)
+		riskSizer = strategy.NewRiskSizer(eventBus, specStore, accountEquity, stratLog)
+		lifecycleSvc = strategy.NewLifecycleService(router, stratLog)
+
+		log.Info().
+			Int("symbols", len(spec.Routing.Symbols)).
+			Str("spec_version", spec.Version.String()).
+			Msg("strategy v2 pipeline initialized")
 	}
 
 	// 5c. Initialize AI debate service (only if enabled in config)
@@ -170,22 +223,34 @@ func main() {
 	if err := executionSvc.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start execution")
 	}
-	if err := strategySvc.Start(ctx); err != nil {
-		log.Fatal().Err(err).Msg("failed to start strategy")
+	if !useStrategyV2 {
+		if err := strategySvc.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start strategy")
+		}
 	}
 	if debateSvc != nil {
 		if err := debateSvc.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start debate")
 		}
 	}
+	if useStrategyV2 {
+		if err := strategyRunner.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start strategy runner v2")
+		}
+		if err := riskSizer.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start risk sizer v2")
+		}
+	}
 	if err := notifySvc.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start notification service")
 	}
 	// 5b (continued): hot-reload DNA after all services are started
-	go dnaManager.Watch(ctx, dnaPath, func(updated *strategy.StrategyDNA) {
-		strategySvc.RegisterDNA(updated)
-		log.Info().Str("strategy_id", updated.ID).Int("version", updated.Version).Msg("strategy DNA hot-reloaded")
-	})
+	if !useStrategyV2 {
+		go dnaManager.Watch(ctx, dnaPath, func(updated *strategy.StrategyDNA) {
+			strategySvc.RegisterDNA(updated)
+			log.Info().Str("strategy_id", updated.ID).Int("version", updated.Version).Msg("strategy DNA hot-reloaded")
+		})
+	}
 	log.Info().Msg("all services started")
 	// 5c (continued): periodic account equity refresh every 5 minutes.
 	go func() {
@@ -199,6 +264,9 @@ func main() {
 				if eq, err := alpacaAdapter.GetAccountEquity(ctx); err == nil {
 					executionSvc.SetAccountEquity(eq)
 					strategySvc.SetAccountEquity(eq)
+					if riskSizer != nil {
+						riskSizer.SetAccountEquity(eq)
+					}
 					log.Info().Float64("equity", eq).Msg("account equity refreshed")
 				} else {
 					log.Warn().Err(err).Msg("failed to refresh account equity")
@@ -239,6 +307,10 @@ func main() {
 	const strategyBasePath = "configs/strategies"
 	strategyHandler := omhttp.NewStrategyHandler(dnaManager, strategyBasePath, httpLog)
 	mux.Handle("/strategies/", strategyHandler)
+	if useStrategyV2 {
+		lifecycleHandler := omhttp.NewLifecycleHandler(lifecycleSvc, httpLog)
+		mux.Handle("/strategies/v2/", lifecycleHandler)
+	}
 	mux.HandleFunc("/strategies/current", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Content-Type", "application/json")
@@ -270,14 +342,14 @@ func main() {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Content-Type", "application/json")
 		type orbJSON struct {
-			Symbol   string  `json:"symbol"`
-			State    string  `json:"state"`
-			High     float64 `json:"orb_high"`
-			Low      float64 `json:"orb_low"`
-			BarCount int     `json:"range_bar_count"`
-			BreakDir string  `json:"breakout_direction,omitempty"`
+			Symbol    string  `json:"symbol"`
+			State     string  `json:"state"`
+			High      float64 `json:"orb_high"`
+			Low       float64 `json:"orb_low"`
+			BarCount  int     `json:"range_bar_count"`
+			BreakDir  string  `json:"breakout_direction,omitempty"`
 			BreakRVOL float64 `json:"breakout_rvol,omitempty"`
-			Signals  int     `json:"signals_fired"`
+			Signals   int     `json:"signals_fired"`
 		}
 		var results []orbJSON
 		for _, sym := range cfg.Symbols.Symbols {

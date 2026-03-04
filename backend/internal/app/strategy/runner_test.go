@@ -1,0 +1,546 @@
+package strategy_test
+
+import (
+	"context"
+	"log/slog"
+	"testing"
+	"time"
+
+	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
+	"github.com/oh-my-opentrade/backend/internal/app/strategy"
+	"github.com/oh-my-opentrade/backend/internal/domain"
+	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// --- Fake strategy for testing ---
+
+type fakeStrategy struct {
+	meta      strat.Meta
+	warmup    int
+	onBarFunc func(ctx strat.Context, symbol string, bar strat.Bar, st strat.State) (strat.State, []strat.Signal, error)
+	onEventFn func(ctx strat.Context, symbol string, evt any, st strat.State) (strat.State, []strat.Signal, error)
+}
+
+func newFakeStrategy(id, version string) *fakeStrategy {
+	sid, _ := strat.NewStrategyID(id)
+	ver, _ := strat.NewVersion(version)
+	return &fakeStrategy{
+		meta: strat.Meta{
+			ID:      sid,
+			Version: ver,
+			Name:    "Fake " + id,
+			Author:  "test",
+		},
+		warmup: 0,
+	}
+}
+
+func (f *fakeStrategy) Meta() strat.Meta { return f.meta }
+func (f *fakeStrategy) WarmupBars() int  { return f.warmup }
+
+func (f *fakeStrategy) Init(_ strat.Context, _ string, _ map[string]any, _ strat.State) (strat.State, error) {
+	return &fakeState{data: "init"}, nil
+}
+
+func (f *fakeStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+	if f.onBarFunc != nil {
+		return f.onBarFunc(ctx, symbol, bar, st)
+	}
+	return st, nil, nil
+}
+
+func (f *fakeStrategy) OnEvent(ctx strat.Context, symbol string, evt any, st strat.State) (strat.State, []strat.Signal, error) {
+	if f.onEventFn != nil {
+		return f.onEventFn(ctx, symbol, evt, st)
+	}
+	return st, nil, nil
+}
+
+// fakeState implements strat.State
+type fakeState struct {
+	data string
+}
+
+func (s *fakeState) Marshal() ([]byte, error) { return []byte(s.data), nil }
+func (s *fakeState) Unmarshal(d []byte) error { s.data = string(d); return nil }
+
+// --- Test context ---
+
+type testCtx struct {
+	now    time.Time
+	logger *slog.Logger
+}
+
+func (c *testCtx) Now() time.Time              { return c.now }
+func (c *testCtx) Logger() *slog.Logger        { return c.logger }
+func (c *testCtx) EmitDomainEvent(_ any) error { return nil }
+
+func newTestCtx() *testCtx {
+	return &testCtx{
+		now:    time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC),
+		logger: slog.Default(),
+	}
+}
+
+// --- Router tests ---
+
+func TestRouter_RegisterAndLookup(t *testing.T) {
+	r := strategy.NewRouter()
+	fs := newFakeStrategy("test_strat", "1.0.0")
+	id, _ := strat.NewInstanceID("test_strat:1.0.0:AAPL")
+
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols:  []string{"AAPL", "MSFT"},
+		Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	r.Register(inst)
+
+	got := r.InstancesForSymbol("AAPL")
+	require.Len(t, got, 1)
+	assert.Equal(t, id, got[0].ID())
+
+	got = r.InstancesForSymbol("MSFT")
+	require.Len(t, got, 1)
+	assert.Equal(t, id, got[0].ID())
+
+	got = r.InstancesForSymbol("TSLA")
+	assert.Empty(t, got)
+}
+
+func TestRouter_PriorityOrdering(t *testing.T) {
+	r := strategy.NewRouter()
+
+	lowID, _ := strat.NewInstanceID("low:1.0.0:AAPL")
+	lowInst := strategy.NewInstance(lowID, newFakeStrategy("low_strat", "1.0.0"), nil, strategy.InstanceAssignment{
+		Symbols:  []string{"AAPL"},
+		Priority: 50,
+	}, strat.LifecycleLiveActive, nil)
+
+	highID, _ := strat.NewInstanceID("high:1.0.0:AAPL")
+	highInst := strategy.NewInstance(highID, newFakeStrategy("high_strat", "1.0.0"), nil, strategy.InstanceAssignment{
+		Symbols:  []string{"AAPL"},
+		Priority: 200,
+	}, strat.LifecycleLiveActive, nil)
+
+	r.Register(lowInst)
+	r.Register(highInst)
+
+	got := r.InstancesForSymbol("AAPL")
+	require.Len(t, got, 2)
+	assert.Equal(t, highID, got[0].ID(), "higher priority should come first")
+	assert.Equal(t, lowID, got[1].ID())
+}
+
+func TestRouter_Unregister(t *testing.T) {
+	r := strategy.NewRouter()
+	id, _ := strat.NewInstanceID("test:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, newFakeStrategy("test_strat", "1.0.0"), nil, strategy.InstanceAssignment{
+		Symbols:  []string{"AAPL"},
+		Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	r.Register(inst)
+	require.Len(t, r.InstancesForSymbol("AAPL"), 1)
+
+	r.Unregister(id)
+	assert.Empty(t, r.InstancesForSymbol("AAPL"))
+}
+
+func TestRouter_InactiveInstancesFiltered(t *testing.T) {
+	r := strategy.NewRouter()
+	id, _ := strat.NewInstanceID("test:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, newFakeStrategy("test_strat", "1.0.0"), nil, strategy.InstanceAssignment{
+		Symbols:  []string{"AAPL"},
+		Priority: 100,
+	}, strat.LifecycleDeactivated, nil) // Not active
+
+	r.Register(inst)
+	got := r.InstancesForSymbol("AAPL")
+	assert.Empty(t, got, "deactivated instance should not be returned")
+}
+
+func TestRouter_Symbols(t *testing.T) {
+	r := strategy.NewRouter()
+	id, _ := strat.NewInstanceID("test:1.0.0:multi")
+	inst := strategy.NewInstance(id, newFakeStrategy("test_strat", "1.0.0"), nil, strategy.InstanceAssignment{
+		Symbols:  []string{"AAPL", "MSFT", "GOOGL"},
+		Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	r.Register(inst)
+	syms := r.Symbols()
+	assert.Equal(t, []string{"AAPL", "GOOGL", "MSFT"}, syms) // sorted
+}
+
+// --- Instance tests ---
+
+func TestInstance_InitAndOnBar(t *testing.T) {
+	barCount := 0
+	fs := newFakeStrategy("test_strat", "1.0.0")
+	fs.onBarFunc = func(_ strat.Context, symbol string, bar strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+		barCount++
+		if barCount >= 3 {
+			iid, _ := strat.NewInstanceID("test:1.0.0:" + symbol)
+			sig, _ := strat.NewSignal(iid, symbol, strat.SignalEntry, strat.SideBuy, 0.8, nil)
+			return st, []strat.Signal{sig}, nil
+		}
+		return st, nil, nil
+	}
+
+	id, _ := strat.NewInstanceID("test:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols:  []string{"AAPL"},
+		Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	ctx := newTestCtx()
+	err := inst.InitSymbol(ctx, "AAPL", nil)
+	require.NoError(t, err)
+
+	bar := strat.Bar{Time: time.Now(), Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}
+	indicators := strat.IndicatorData{Volume: 10}
+
+	// First two bars: no signal
+	for i := 0; i < 2; i++ {
+		signals, err := inst.OnBar(ctx, "AAPL", bar, indicators)
+		require.NoError(t, err)
+		assert.Empty(t, signals)
+	}
+
+	// Third bar: signal
+	signals, err := inst.OnBar(ctx, "AAPL", bar, indicators)
+	require.NoError(t, err)
+	require.Len(t, signals, 1)
+	assert.Equal(t, strat.SignalEntry, signals[0].Type)
+}
+
+func TestInstance_WarmupSuppressesSignals(t *testing.T) {
+	fs := newFakeStrategy("test_strat", "1.0.0")
+	fs.warmup = 3 // Need 3 bars before signals
+	fs.onBarFunc = func(_ strat.Context, symbol string, _ strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+		// Always emit a signal.
+		iid, _ := strat.NewInstanceID("test:1.0.0:" + symbol)
+		sig, _ := strat.NewSignal(iid, symbol, strat.SignalEntry, strat.SideBuy, 0.8, nil)
+		return st, []strat.Signal{sig}, nil
+	}
+
+	id, _ := strat.NewInstanceID("test:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols:  []string{"AAPL"},
+		Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	ctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(ctx, "AAPL", nil))
+
+	bar := strat.Bar{Time: time.Now(), Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}
+	ind := strat.IndicatorData{}
+
+	// First 3 bars: suppressed during warmup
+	for i := 0; i < 3; i++ {
+		signals, err := inst.OnBar(ctx, "AAPL", bar, ind)
+		require.NoError(t, err)
+		assert.Empty(t, signals, "bar %d should be suppressed during warmup", i)
+	}
+
+	// Fourth bar: signal should come through
+	signals, err := inst.OnBar(ctx, "AAPL", bar, ind)
+	require.NoError(t, err)
+	require.Len(t, signals, 1, "signal should pass after warmup")
+}
+
+func TestInstance_InactiveProducesNoSignals(t *testing.T) {
+	fs := newFakeStrategy("test_strat", "1.0.0")
+	fs.onBarFunc = func(_ strat.Context, symbol string, _ strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+		iid, _ := strat.NewInstanceID("test:1.0.0:" + symbol)
+		sig, _ := strat.NewSignal(iid, symbol, strat.SignalEntry, strat.SideBuy, 0.8, nil)
+		return st, []strat.Signal{sig}, nil
+	}
+
+	id, _ := strat.NewInstanceID("test:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols:  []string{"AAPL"},
+		Priority: 100,
+	}, strat.LifecycleDeactivated, nil) // Not active
+
+	ctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(ctx, "AAPL", nil))
+
+	bar := strat.Bar{Time: time.Now(), Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}
+	signals, err := inst.OnBar(ctx, "AAPL", bar, strat.IndicatorData{})
+	require.NoError(t, err)
+	assert.Empty(t, signals, "deactivated instance should not produce signals")
+}
+
+func TestInstance_UninitializedSymbolErrors(t *testing.T) {
+	fs := newFakeStrategy("test_strat", "1.0.0")
+	id, _ := strat.NewInstanceID("test:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols:  []string{"AAPL"},
+		Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	bar := strat.Bar{Time: time.Now(), Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}
+	_, err := inst.OnBar(newTestCtx(), "AAPL", bar, strat.IndicatorData{})
+	assert.Error(t, err, "should error on uninitialized symbol")
+}
+
+func TestInstance_LifecycleAccessors(t *testing.T) {
+	fs := newFakeStrategy("test_strat", "1.0.0")
+	id, _ := strat.NewInstanceID("test:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols:  []string{"AAPL"},
+		Priority: 100,
+	}, strat.LifecyclePaperActive, nil)
+
+	assert.True(t, inst.IsActive())
+	assert.Equal(t, strat.LifecyclePaperActive, inst.Lifecycle())
+
+	inst.SetLifecycle(strat.LifecycleDeactivated)
+	assert.False(t, inst.IsActive())
+	assert.Equal(t, strat.LifecycleDeactivated, inst.Lifecycle())
+}
+
+// --- MemRegistry tests ---
+
+func TestMemRegistry_RegisterAndGet(t *testing.T) {
+	reg := strategy.NewMemRegistry()
+	fs := newFakeStrategy("test_strat", "1.0.0")
+
+	err := reg.Register(fs)
+	require.NoError(t, err)
+
+	got, err := reg.Get("test_strat")
+	require.NoError(t, err)
+	assert.Equal(t, fs.Meta().ID, got.Meta().ID)
+}
+
+func TestMemRegistry_DuplicateRegistrationFails(t *testing.T) {
+	reg := strategy.NewMemRegistry()
+	fs := newFakeStrategy("test_strat", "1.0.0")
+
+	require.NoError(t, reg.Register(fs))
+	err := reg.Register(fs)
+	assert.ErrorIs(t, err, strat.ErrStrategyExists)
+}
+
+func TestMemRegistry_GetNotFound(t *testing.T) {
+	reg := strategy.NewMemRegistry()
+	_, err := reg.Get("nonexistent")
+	assert.ErrorIs(t, err, strat.ErrStrategyNotFound)
+}
+
+func TestMemRegistry_List(t *testing.T) {
+	reg := strategy.NewMemRegistry()
+	fs1 := newFakeStrategy("alpha_strat", "1.0.0")
+	fs2 := newFakeStrategy("beta_strat", "1.0.0")
+
+	require.NoError(t, reg.Register(fs1))
+	require.NoError(t, reg.Register(fs2))
+
+	ids := reg.List()
+	assert.Len(t, ids, 2)
+}
+
+// --- Runner tests ---
+
+func TestRunner_ProcessBar_NoInstances(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	ctx := context.Background()
+	signals, err := runner.ProcessBar(ctx, "AAPL", strat.Bar{
+		Time: time.Now(), Open: 100, High: 101, Low: 99, Close: 100, Volume: 10,
+	}, strat.IndicatorData{})
+
+	require.NoError(t, err)
+	assert.Empty(t, signals)
+}
+
+func TestRunner_ProcessBar_SingleInstance_Signal(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	fs := newFakeStrategy("test_strat", "1.0.0")
+	fs.onBarFunc = func(_ strat.Context, symbol string, _ strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+		iid, _ := strat.NewInstanceID("test_strat:1.0.0:" + symbol)
+		sig, _ := strat.NewSignal(iid, symbol, strat.SignalEntry, strat.SideBuy, 0.85, map[string]string{"trigger": "test"})
+		return st, []strat.Signal{sig}, nil
+	}
+
+	id, _ := strat.NewInstanceID("test_strat:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols:  []string{"AAPL"},
+		Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	tctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(tctx, "AAPL", nil))
+	router.Register(inst)
+
+	ctx := context.Background()
+	signals, err := runner.ProcessBar(ctx, "AAPL", strat.Bar{
+		Time: time.Now(), Open: 100, High: 101, Low: 99, Close: 100, Volume: 10,
+	}, strat.IndicatorData{Volume: 10})
+
+	require.NoError(t, err)
+	require.Len(t, signals, 1)
+	assert.Equal(t, strat.SignalEntry, signals[0].Type)
+	assert.Equal(t, strat.SideBuy, signals[0].Side)
+	assert.Equal(t, "AAPL", signals[0].Symbol)
+	assert.Equal(t, 0.85, signals[0].Strength)
+}
+
+func TestRunner_ProcessBar_MultipleInstances(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	makeSignalingStrategy := func(id, side string) *fakeStrategy {
+		fs := newFakeStrategy(id, "1.0.0")
+		s := strat.SideBuy
+		if side == "sell" {
+			s = strat.SideSell
+		}
+		fs.onBarFunc = func(_ strat.Context, symbol string, _ strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+			iid, _ := strat.NewInstanceID(id + ":1.0.0:" + symbol)
+			sig, _ := strat.NewSignal(iid, symbol, strat.SignalEntry, s, 0.7, nil)
+			return st, []strat.Signal{sig}, nil
+		}
+		return fs
+	}
+
+	// Two strategies on the same symbol.
+	fs1 := makeSignalingStrategy("strat_alpha", "buy")
+	fs2 := makeSignalingStrategy("strat_beta", "sell")
+
+	id1, _ := strat.NewInstanceID("strat_alpha:1.0.0:AAPL")
+	inst1 := strategy.NewInstance(id1, fs1, nil, strategy.InstanceAssignment{
+		Symbols: []string{"AAPL"}, Priority: 200,
+	}, strat.LifecycleLiveActive, nil)
+
+	id2, _ := strat.NewInstanceID("strat_beta:1.0.0:AAPL")
+	inst2 := strategy.NewInstance(id2, fs2, nil, strategy.InstanceAssignment{
+		Symbols: []string{"AAPL"}, Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	tctx := newTestCtx()
+	require.NoError(t, inst1.InitSymbol(tctx, "AAPL", nil))
+	require.NoError(t, inst2.InitSymbol(tctx, "AAPL", nil))
+	router.Register(inst1)
+	router.Register(inst2)
+
+	ctx := context.Background()
+	signals, err := runner.ProcessBar(ctx, "AAPL", strat.Bar{
+		Time: time.Now(), Open: 100, High: 101, Low: 99, Close: 100, Volume: 10,
+	}, strat.IndicatorData{Volume: 10})
+
+	require.NoError(t, err)
+	require.Len(t, signals, 2, "both instances should produce signals")
+
+	// Verify both sides present.
+	sides := map[strat.Side]bool{}
+	for _, sig := range signals {
+		sides[sig.Side] = true
+	}
+	assert.True(t, sides[strat.SideBuy])
+	assert.True(t, sides[strat.SideSell])
+}
+
+func TestRunner_HandleBar_EmitsSignalCreated(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	fs := newFakeStrategy("test_strat", "1.0.0")
+	fs.onBarFunc = func(_ strat.Context, symbol string, _ strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+		iid, _ := strat.NewInstanceID("test_strat:1.0.0:" + symbol)
+		sig, _ := strat.NewSignal(iid, symbol, strat.SignalEntry, strat.SideBuy, 0.9, nil)
+		return st, []strat.Signal{sig}, nil
+	}
+
+	id, _ := strat.NewInstanceID("test_strat:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols:  []string{"AAPL"},
+		Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	tctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(tctx, "AAPL", nil))
+	router.Register(inst)
+
+	// Subscribe to SignalCreated events.
+	var received []domain.Event
+	ctx := context.Background()
+	require.NoError(t, bus.Subscribe(ctx, domain.EventSignalCreated, func(_ context.Context, ev domain.Event) error {
+		received = append(received, ev)
+		return nil
+	}))
+
+	// Subscribe runner to MarketBarSanitized.
+	require.NoError(t, runner.Start(ctx))
+
+	// Publish a MarketBarSanitized event.
+	sym, _ := domain.NewSymbol("AAPL")
+	bar, _ := domain.NewMarketBar(time.Now(), sym, "1m", 100, 101, 99, 100, 10)
+	ev, _ := domain.NewEvent(domain.EventMarketBarSanitized, "test-tenant", envMode, "bar-1", bar)
+	require.NoError(t, bus.Publish(ctx, *ev))
+
+	// Verify SignalCreated was emitted.
+	require.Len(t, received, 1)
+	assert.Equal(t, domain.EventSignalCreated, received[0].Type)
+
+	sig, ok := received[0].Payload.(strat.Signal)
+	require.True(t, ok)
+	assert.Equal(t, "AAPL", sig.Symbol)
+	assert.Equal(t, strat.SignalEntry, sig.Type)
+	assert.Equal(t, strat.SideBuy, sig.Side)
+}
+
+func TestRunner_HandleBar_NoSignalForUnassignedSymbol(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	// Register instance for AAPL only.
+	fs := newFakeStrategy("test_strat", "1.0.0")
+	fs.onBarFunc = func(_ strat.Context, symbol string, _ strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+		iid, _ := strat.NewInstanceID("test_strat:1.0.0:" + symbol)
+		sig, _ := strat.NewSignal(iid, symbol, strat.SignalEntry, strat.SideBuy, 0.9, nil)
+		return st, []strat.Signal{sig}, nil
+	}
+	id, _ := strat.NewInstanceID("test_strat:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols:  []string{"AAPL"},
+		Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+	tctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(tctx, "AAPL", nil))
+	router.Register(inst)
+
+	var received []domain.Event
+	ctx := context.Background()
+	require.NoError(t, bus.Subscribe(ctx, domain.EventSignalCreated, func(_ context.Context, ev domain.Event) error {
+		received = append(received, ev)
+		return nil
+	}))
+	require.NoError(t, runner.Start(ctx))
+
+	// Publish bar for TSLA (not assigned).
+	sym, _ := domain.NewSymbol("TSLA")
+	bar, _ := domain.NewMarketBar(time.Now(), sym, "1m", 200, 202, 199, 201, 20)
+	ev, _ := domain.NewEvent(domain.EventMarketBarSanitized, "test-tenant", envMode, "bar-tsla-1", bar)
+	require.NoError(t, bus.Publish(ctx, *ev))
+
+	assert.Empty(t, received, "no signal for unassigned symbol")
+}

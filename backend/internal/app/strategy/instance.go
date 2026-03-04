@@ -1,0 +1,234 @@
+package strategy
+
+import (
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+)
+
+// InstanceAssignment defines which symbols a strategy instance is responsible for.
+type InstanceAssignment struct {
+	Symbols        []string
+	Timeframes     []string
+	Priority       int
+	ConflictPolicy strat.ConflictPolicy
+}
+
+// Instance wraps a Strategy implementation with per-symbol state management
+// and routing assignment. It is the unit of execution within the StrategyRunner.
+type Instance struct {
+	mu         sync.Mutex
+	id         strat.InstanceID
+	strategy   strat.Strategy
+	params     map[string]any
+	assignment InstanceAssignment
+	lifecycle  strat.LifecycleState
+	states     map[string]strat.State // per-symbol state
+	warmupLeft map[string]int         // bars remaining for warmup per symbol
+	logger     *slog.Logger
+}
+
+// NewInstance creates a new strategy instance with the given assignment.
+func NewInstance(
+	id strat.InstanceID,
+	strategy strat.Strategy,
+	params map[string]any,
+	assignment InstanceAssignment,
+	lifecycle strat.LifecycleState,
+	logger *slog.Logger,
+) *Instance {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Instance{
+		id:         id,
+		strategy:   strategy,
+		params:     params,
+		assignment: assignment,
+		lifecycle:  lifecycle,
+		states:     make(map[string]strat.State),
+		warmupLeft: make(map[string]int),
+		logger:     logger.With("instance_id", id.String()),
+	}
+}
+
+// ID returns the instance identifier.
+func (inst *Instance) ID() strat.InstanceID { return inst.id }
+
+// Strategy returns the underlying strategy implementation.
+func (inst *Instance) Strategy() strat.Strategy { return inst.strategy }
+
+// Assignment returns the routing assignment.
+func (inst *Instance) Assignment() InstanceAssignment { return inst.assignment }
+
+// Lifecycle returns the current lifecycle state.
+func (inst *Instance) Lifecycle() strat.LifecycleState {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	return inst.lifecycle
+}
+
+// SetLifecycle updates the lifecycle state.
+func (inst *Instance) SetLifecycle(state strat.LifecycleState) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	inst.lifecycle = state
+}
+
+// IsActive returns true if the instance is in an active lifecycle state.
+func (inst *Instance) IsActive() bool {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	return inst.lifecycle.IsActive()
+}
+
+// InitSymbol initializes the strategy for a specific symbol.
+// Must be called before processing bars for that symbol.
+func (inst *Instance) InitSymbol(ctx strat.Context, symbol string, prior strat.State) error {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
+	state, err := inst.strategy.Init(ctx, symbol, inst.params, prior)
+	if err != nil {
+		return fmt.Errorf("instance %s: init symbol %s: %w", inst.id, symbol, err)
+	}
+
+	inst.states[symbol] = state
+	inst.warmupLeft[symbol] = inst.strategy.WarmupBars()
+	return nil
+}
+
+// OnBar processes a bar for the given symbol. Returns signals produced.
+// If the instance is still warming up for the symbol, signals are suppressed.
+func (inst *Instance) OnBar(ctx strat.Context, symbol string, bar strat.Bar, indicators strat.IndicatorData) ([]strat.Signal, error) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
+	if !inst.lifecycle.IsActive() {
+		return nil, nil
+	}
+
+	state, ok := inst.states[symbol]
+	if !ok {
+		return nil, fmt.Errorf("instance %s: symbol %s not initialized", inst.id, symbol)
+	}
+
+	// Inject indicators into state if it supports the SetIndicators interface.
+	type indicatorSetter interface {
+		SetIndicators(strat.IndicatorData)
+	}
+	if setter, ok := state.(indicatorSetter); ok {
+		setter.SetIndicators(indicators)
+	}
+
+	next, signals, err := inst.strategy.OnBar(ctx, symbol, bar, state)
+	if err != nil {
+		return nil, fmt.Errorf("instance %s: OnBar %s: %w", inst.id, symbol, err)
+	}
+
+	inst.states[symbol] = next
+
+	// Decrement warmup counter; suppress signals during warmup.
+	if inst.warmupLeft[symbol] > 0 {
+		inst.warmupLeft[symbol]--
+		return nil, nil
+	}
+
+	return signals, nil
+}
+
+// WarmupOnBar processes a bar for warmup purposes only — bypasses lifecycle
+// check and always suppresses signals. Used by SwapManager for shadow instances.
+func (inst *Instance) WarmupOnBar(ctx strat.Context, symbol string, bar strat.Bar, indicators strat.IndicatorData) error {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
+	state, ok := inst.states[symbol]
+	if !ok {
+		return fmt.Errorf("instance %s: symbol %s not initialized", inst.id, symbol)
+	}
+
+	type indicatorSetter interface {
+		SetIndicators(strat.IndicatorData)
+	}
+	if setter, ok := state.(indicatorSetter); ok {
+		setter.SetIndicators(indicators)
+	}
+
+	next, _, err := inst.strategy.OnBar(ctx, symbol, bar, state)
+	if err != nil {
+		return fmt.Errorf("instance %s: WarmupOnBar %s: %w", inst.id, symbol, err)
+	}
+
+	inst.states[symbol] = next
+
+	if inst.warmupLeft[symbol] > 0 {
+		inst.warmupLeft[symbol]--
+	}
+
+	return nil
+}
+
+// OnEvent processes a non-bar event for the given symbol.
+func (inst *Instance) OnEvent(ctx strat.Context, symbol string, evt any) ([]strat.Signal, error) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
+	if !inst.lifecycle.IsActive() {
+		return nil, nil
+	}
+
+	state, ok := inst.states[symbol]
+	if !ok {
+		return nil, nil // ignore events for uninitialized symbols
+	}
+
+	next, signals, err := inst.strategy.OnEvent(ctx, symbol, evt, state)
+	if err != nil {
+		return nil, fmt.Errorf("instance %s: OnEvent %s: %w", inst.id, symbol, err)
+	}
+
+	inst.states[symbol] = next
+	return signals, nil
+}
+
+// IsWarmedUp returns true if the symbol has passed the warmup period.
+func (inst *Instance) IsWarmedUp(symbol string) bool {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	return inst.warmupLeft[symbol] <= 0
+}
+
+// GetState returns the current state for a symbol (for persistence/inspection).
+func (inst *Instance) GetState(symbol string) (strat.State, bool) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	st, ok := inst.states[symbol]
+	return st, ok
+}
+
+// instanceContext implements strat.Context for use within the runner.
+type instanceContext struct {
+	now    time.Time
+	logger *slog.Logger
+	emit   func(evt any) error
+}
+
+func (c *instanceContext) Now() time.Time                { return c.now }
+func (c *instanceContext) Logger() *slog.Logger          { return c.logger }
+func (c *instanceContext) EmitDomainEvent(evt any) error { return c.emit(evt) }
+
+// NewContext creates a strat.Context for use outside the runner (e.g., main.go wiring).
+// The emit function is called when a strategy invokes EmitDomainEvent; pass nil for a no-op.
+func NewContext(now time.Time, logger *slog.Logger, emit func(evt any) error) strat.Context {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if emit == nil {
+		emit = func(evt any) error { return nil }
+	}
+	return &instanceContext{now: now, logger: logger, emit: emit}
+}
