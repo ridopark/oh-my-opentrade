@@ -1,6 +1,6 @@
 # Implementation Plan: oh-my-opentrade
 
-Last Updated: March 4, 2026 (Session 3)
+Last Updated: March 4, 2026 (Session 4)
 
 ## Section 1: Progress Summary
 
@@ -75,10 +75,32 @@ Last Updated: March 4, 2026 (Session 3)
 | 38 | MultiNotifier fan-out | ✅ Done |
 | 38b | Dockerfile.dashboard for containerized frontend | ✅ Done |
 
+### Phase 8.5 — Strategy Architecture (Phases A–H)
+
+| # | Item | Status |
+|---|------|--------|
+| A | Domain Contracts and Types — Strategy interface, Signal, InstanceID, lifecycle state machine, value objects (50+ tests) | ✅ Done |
+| B | Wrap ORBTracker as Strategy — ORBStrategy adapter implementing Strategy interface, SetupCondition→Signal conversion (11 tests) | ✅ Done |
+| C | StrategyRunner and Routing — Runner, Router, Instance with multi-symbol routing, bar dispatching (19 tests) | ✅ Done |
+| D | TOML v2 Spec Loader — spec_loader.go with v1→v2 migration, store_fs filesystem adapter (7 tests) | ✅ Done |
+| E1 | RiskSizer — Signal→OrderIntent pipeline with position sizing, limit/stop price computation (8 tests) | ✅ Done |
+| E2 | Wire StrategyRunner into main.go — Feature-flagged v2 pipeline, STRATEGY_V2=true activates new path | ✅ Done |
+| E3 | Integration test — Bar→Runner→Signal→RiskSizer→OrderIntent end-to-end test (3 tests) | ✅ Done |
+| F1 | Lifecycle Service — Promote, Deactivate, Archive with state machine validation | ✅ Done |
+| F2 | HTTP Lifecycle Endpoints — REST API for lifecycle management | ✅ Done |
+| F3 | Dashboard Strategies Page — Next.js page showing strategy instances with lifecycle controls | ✅ Done |
+| F4 | Lifecycle Tests — Full test coverage (8 tests) | ✅ Done |
+| G1 | SwapManager — Blue/green swap orchestrator with shadow warmup | ✅ Done |
+| G2 | Router.Replace — Atomic instance swap under write lock | ✅ Done |
+| G3 | WarmupOnBar — Lifecycle-bypass method for shadow instances | ✅ Done |
+| G4 | Swap Tests — Full test coverage (12 tests) | ✅ Done |
+| H1 | Yaegi Sandbox — Import whitelist + AST validation | ✅ Done |
+| H2 | HookExecutor — Timeout + circuit breaker for Yaegi scripts | ✅ Done |
+| H3 | Sandbox Tests — Full test coverage (11 tests) | ✅ Done |
 ### Phase 9 — Paper Trading Readiness 🚧
 | # | Item | Status |
 |---|------|--------|
-| 39 | End-to-end flow verification (live market → event pipeline → paper order) | 🟡 In Progress — startup verified, DNA path fixed, debug logging added. Needs market-hours testing (9:30 AM–4 PM ET) for full pipeline verification. |
+| 39 | End-to-end flow verification (live market → event pipeline → paper order) | 🟡 In Progress — startup verified, DNA path fixed, debug logging added. Needs market-hours testing (9:30 AM–4 PM ET) for full pipeline verification. Strategy v2 pipeline ready for parallel testing via STRATEGY_V2=true flag. |
 | 40 | Monitor setup detection tuning with real market data | 🟡 In Progress — debug logging added to monitor (indicator snapshots, regime classification, setup evaluation on every bar). Ready for market-hours data collection. Set `LOG_LEVEL=debug` to enable. |
 | 41 | LLM provider configuration (API keys, model selection) | ✅ Done — OpenRouter configured, smoke test passes with real API key, structured debate JSON verified (LONG, 0.72 confidence, full bull/bear/judge). |
 | 42 | Alpaca paper trading order submission verification | ✅ Done — Account equity ($30,965.59), order submit/status/cancel lifecycle, quote retrieval all verified via smoke tests. |
@@ -103,22 +125,22 @@ Last Updated: March 4, 2026 (Session 3)
 ## Section 2: Dependency Graph
 
 ```
-Phase 1–8 (COMPLETE)
+Phase 1–8.5 (COMPLETE)
 ━━━━━━━━━━━━━━━━━━━
 
-  Foundation ──→ Data Pipeline ──→ Intelligence ──→ Wire & Run
-      │               │                │               │
-      │               ▼                │               │
-      │        Historical Data         │               │
-      │        (omo-backfill)          │               │
-      │               │                │               │
-      ▼               ▼                ▼               ▼
-  AI & Strategy ◄──── All services wired in main.go ────►  Dashboard
-  (LLM, Debate,       │                                    (Next.js,
-   DNA Engine,         │                                     Chart,
-   Options)            │                                     SSE)
-                       ▼
-               Notifications & Observability
+  Foundation ──→ Data Pipeline ──→ Intelligence ──→ Wire & Run ──→ Strategy Architecture (Phases A-H)
+      │               │                │               │                     │
+      │               ▼                │               │                     │
+      │        Historical Data         │               │                     │
+      │        (omo-backfill)          │               │                     ▼
+      │               │                │               │               Yaegi Sandbox
+      ▼               ▼                ▼               ▼                     │
+  AI & Strategy ◄──── All services wired in main.go ────►  Dashboard          │
+  (LLM, Debate,       │                                    (Next.js,         │
+   DNA Engine,         │                                     Chart,           │
+   Options)            │                                     SSE)             │
+                       ▼                                                      │
+               Notifications & Observability ◄────────────────────────────────┘
                (Telegram, Discord, SSE, Logging)
 
 
@@ -271,6 +293,17 @@ backend/
     omo-backfill/main.go       Historical data CLI
   internal/
     domain/                    
+      strategy/                contract.go, lifecycle.go, types.go, errors.go
+      entity.go                Entities (MarketBar, Trade, Advisory)
+      value.go                 Value objects (OrderIntent, Regime)
+      event.go                 Event definitions
+      advisory.go              AI Advisor types
+    ports/                     Hexagonal port interfaces
+      strategy/                store.go, registry.go
+      options_market_data.go   Options data port
+    app/
+      strategy/                runner.go, router.go, instance.go, risk_sizer.go, swap_manager.go, lifecycle_svc.go, spec_loader.go, registry_mem.go, builtin/orb_v1.go
+      ingestion/               Z-score filter, bar processing
       entity.go                Entities (MarketBar, Trade, Advisory)
       value.go                 Value objects (OrderIntent, Regime)
       event.go                 Event definitions
@@ -292,6 +325,10 @@ backend/
       backfill/                Chunked historical download
       pipeline_integration_test.go  Integration: Setup → Debate → Order pipeline
     adapters/
+      strategy/
+        store_fs/              Filesystem strategy store
+        hooks_yaegi/           Yaegi hot-swap runtime sandbox
+      alpaca/                  
       alpaca/                  
         adapter.go             Main adapter
         options_rest.go        Options REST client
@@ -301,7 +338,7 @@ backend/
         db_sql.go              SQL query builders
       eventbus/memory/         In-memory pub/sub
       llm/                     OpenAI-compatible adapter (supports Claude, Ollama)
-      http/                    Bars, health, services, strategy handlers
+      http/                    Bars, health, services, strategy, lifecycle handlers
       sse/                     Server-sent events for dashboard
       notification/            
         multi.go               Fan-out notifier
@@ -346,6 +383,14 @@ Makefile                       14 targets (build, test, test-integration, migrat
 - [x] Rate limiter stays under 200 req/min (unit tested)
 - [x] Clean code: No TODO/FIXME/HACK comments in the codebase
 - [x] Makefile automation: All 14 targets verified
+- [x] Strategy architecture Phases A-H: 130+ tests across domain, app, adapter layers
+- [x] v2 pipeline wired in main.go with STRATEGY_V2=true feature flag
+- [x] Full order pipeline traced: Signal → RiskSizer → OrderIntentCreated → ExecutionService → Alpaca
+- [x] Yaegi sandbox with import whitelist, AST validation, timeout, circuit breaker
+- [x] Blue/green swap with shadow warmup and atomic Router.Replace()
+- [x] Strategy lifecycle state machine (6 states, validated transitions)
+- [x] Dashboard strategies page with lifecycle management UI
+- [x] docs/STRATEGY_SYSTEM.md and docs/STRATEGY_ARCHITECTURE_PLAN.md created
 
 ### Phase 9 — Paper Trading Readiness 🟡
 - [x] LLM advisor responds to debate requests — smoke test verified with real OpenRouter API key (Claude Sonnet 4, structured JSON output)

@@ -7,7 +7,6 @@
 
 ## 1. High-Level Architecture
 
-```
                           ┌──────────────────────────────┐
                           │      Next.js Dashboard       │
                           │   (apps/dashboard — later)   │
@@ -20,12 +19,12 @@
               ┌──────────────────────┼──────────────────────┐
               │                      │                      │
     ┌─────────▼────────┐  ┌─────────▼────────┐  ┌─────────▼────────┐
-    │  State Machine   │  │   Strategy       │  │   Execution      │
-    │  Monitor         │  │   Engine         │  │   Engine         │
+    │  State Machine   │  │  StrategyRunner  │  │   Execution      │
+    │  Monitor         │  │  & RiskSizer     │  │   Engine         │
     │                  │  │                  │  │                  │
-    │  • Indicators    │  │  • Yaegi VM      │  │  • Risk Engine   │
-    │  • Regime detect │  │  • Strategy DNA  │  │  • Kill Switch   │
-    │  • Setup detect  │  │  • Hot-swap      │  │  • Circuit Break │
+    │  • Indicators    │  │  • Multi-Strategy│  │  • Risk Engine   │
+    │  • Regime detect │  │  • Yaegi Sandbox │  │  • Kill Switch   │
+    │  • Setup detect  │  │  • Blue/Green    │  │  • Circuit Break │
     └─────────┬────────┘  └─────────┬────────┘  └─────────┬────────┘
               │                     │                      │
               └──────────┬──────────┘──────────────────────┘
@@ -175,6 +174,39 @@ oh-my-opentrade/
 │   │   │   ├── order_intent.go            # OrderIntent, AdvisoryDecision
 │   │   │   ├── indicator.go               # IndicatorSnapshot (RSI, Stoch, EMA, VWAP)
 │   │   │   ├── regime.go                  # MarketRegime, RegimeType
+│   │   │   ├── strategy_dna.go            # StrategyDNA, DNAVersion (v1)
+│   │   │   └── strategy/                  # Strategy v2 domain types, contract, lifecycle
+│   │   │
+│   │   ├── ports/                         # Interface definitions — the hexagonal boundaries
+│   │   │   ├── market_data.go             # MarketDataPort (stream bars, pull history)
+│   │   │   ├── broker.go                  # BrokerPort (submit/cancel/query orders)
+│   │   │   ├── ai_advisor.go              # AIAdvisorPort (request debate, get decision)
+│   │   │   ├── event_bus.go               # EventBusPort (publish/subscribe)
+│   │   │   ├── repository.go              # RepositoryPort (bars, trades, thoughts, DNA)
+│   │   │   ├── notifier.go                # NotifierPort (Telegram/Discord webhooks)
+│   │   │   └── strategy/                  # Store, Registry ports
+│   │   │
+│   │   ├── app/                           # Application services — orchestrate domain + ports
+│   │   │   ├── ingestion/                 # Market data ingestion + Z-score sanitization
+│   │   │   ├── monitor/                   # State machine monitor (indicators, regime, setup detection)
+│   │   │   ├── debate/                    # AI adversarial debate orchestration
+│   │   │   ├── execution/                 # Order execution + risk engine
+│   │   │   └── strategy/                  # Strategy v2 Runner, Router, Instance, RiskSizer, SwapManager, LifecycleSvc, SpecLoader
+│   │   │
+│   │   └── adapters/                      # Port implementations — external dependencies live here
+│   │       ├── alpaca/                    # MarketDataPort + BrokerPort
+│   │       ├── timescaledb/               # RepositoryPort
+│   │       ├── eventbus/                  # EventBusPort (memory)
+│   │       ├── opencode/                  # AIAdvisorPort
+│   │       ├── notification/              # NotifierPort
+│   │       ├── http/                      # Lifecycle and Strategy API handlers
+│   │       └── strategy/                  # store_fs, hooks_yaegi implementations
+│   │   │   ├── entity.go                  # MarketBar, Trade, Position, Account
+│   │   │   ├── event.go                   # Domain events (MarketBarSanitized, SetupDetected, etc.)
+│   │   │   ├── value.go                   # Value objects (TenantID, EnvMode, Symbol, Timeframe)
+│   │   │   ├── order_intent.go            # OrderIntent, AdvisoryDecision
+│   │   │   ├── indicator.go               # IndicatorSnapshot (RSI, Stoch, EMA, VWAP)
+│   │   │   ├── regime.go                  # MarketRegime, RegimeType
 │   │   │   └── strategy_dna.go            # StrategyDNA, DNAVersion
 │   │   │
 │   │   ├── ports/                         # Interface definitions — the hexagonal boundaries
@@ -268,7 +300,44 @@ oh-my-opentrade/
 
 Events are the nervous system of the platform. Every state transition is an event.
 
-```
+Alpaca WebSocket
+       │
+       ▼
+  MarketBarReceived          ← Raw bar from broker
+       │
+       ▼ (Ingestion Service)
+  MarketBarSanitized         ← Passed Z-score filter (or MarketBarRejected)
+       │
+       ▼ (Monitor Service)
+  StateUpdated               ← New indicator snapshot computed
+       │
+       ▼
+  [If STRATEGY_V2=true]
+       │
+       ▼ (Strategy Runner)
+  SignalCreated              ← Strategy instance produced a signal
+       │
+       ▼ (RiskSizer)
+  OrderIntentCreated         ← Signal converted to sized order intent
+       │
+       ▼ (Execution Service)
+  OrderIntentValidated       ← Passed risk checks (or OrderIntentRejected)
+       │
+       ▼ (Broker Adapter)
+  OrderSubmitted             ← Sent to broker
+       │
+       ▼
+  OrderAccepted / OrderRejected  ← Broker response
+       │
+       ▼
+  FillReceived               ← Trade executed
+       │
+       ▼
+  PositionUpdated            ← Position state changed
+       │
+       ▼ [Safety Events]
+  KillSwitchEngaged          ← 3 stops in 2 min → 15 min halt
+  CircuitBreakerTripped      ← System-wide safety event
 Alpaca WebSocket
        │
        ▼
@@ -422,7 +491,33 @@ All tables are TimescaleDB hypertables with 1-day chunk intervals and 7-day comp
 
 The minimum path to "data flows in → state machine computes → paper trade executes":
 
-### Phase 1: Foundation
+### Phase 1: Foundation (COMPLETED)
+1. **TimescaleDB schema** — All 5 tables, compression policies, indexes
+2. **Domain types** — `MarketBar`, `OrderIntent`, `IndicatorSnapshot`, `MarketRegime`, events
+3. **Port interfaces** — `MarketDataPort`, `BrokerPort`, `EventBusPort`, `RepositoryPort`
+
+### Phase 2: Data Pipeline (COMPLETED)
+4. **In-memory event bus** — Go channel implementation of `EventBusPort`
+5. **Alpaca adapter** — WebSocket bar streaming + REST order submission + rate limiter
+6. **TimescaleDB adapter** — Repository implementation (persist bars, trades)
+7. **Ingestion service** — Subscribe to `MarketBarReceived`, apply Z-score filter, emit `MarketBarSanitized`
+
+### Phase 3: Intelligence (COMPLETED)
+8. **Monitor service** — Compute indicators on each `MarketBarSanitized`, detect setups
+9. **Execution service** — Risk engine + kill switch + slippage guard + broker submission
+
+### Phase 4: Strategy Architecture v2 (COMPLETED)
+10. **Domain Contracts** — Strategy interface, Signal, State, Context, Lifecycle states
+11. **StrategyRunner & Router** — Multi-symbol routing and instance management
+12. **RiskSizer** — Signal to sized OrderIntent conversion pipeline
+13. **Lifecycle Service** — State transitions and TOML v2 spec loading
+14. **Blue/Green Swap** — Warmup and atomic instance swapping
+15. **Yaegi Sandbox** — Whitelisted imports and execution safety
+
+### Phase 5: Wire & Run
+16. **`omo-core` main.go** — Dependency injection, wire all services, start
+17. **Docker Compose** — TimescaleDB + omo-core containers
+18. **Config** — `.env` for API keys, `config.yaml` for thresholds
 1. **TimescaleDB schema** — All 5 tables, compression policies, indexes
 2. **Domain types** — `MarketBar`, `OrderIntent`, `IndicatorSnapshot`, `MarketRegime`, events
 3. **Port interfaces** — `MarketDataPort`, `BrokerPort`, `EventBusPort`, `RepositoryPort`
@@ -490,5 +585,45 @@ The minimum path to "data flows in → state machine computes → paper trade ex
 4. **Testing approach:** Unit tests on domain + app layers, integration tests against TimescaleDB in Docker? Do we want test containers from day one?
 
 ---
+
+
+---
+
+## 11. Strategy Architecture (v2)
+
+The system implements a multi-strategy, multi-instance architecture where strategies are decoupled from infrastructure and risk management.
+
+### Strategy Interface
+The core contract is defined by the `Strategy` interface in `backend/internal/domain/strategy/`:
+- `Init(ctx, params, prior_state) State`: Initializes instance for a symbol, optionally from a prior state.
+- `OnBar(ctx, symbol, bar, state) (next_state, []Signal)`: Decision logic executed on every bar.
+- `OnEvent(ctx, symbol, event, state) (next_state, []Signal)`: Optional reaction to fills or halts.
+
+### Pipeline: Signal to Order
+1. **Runner**: Subscribes to `MarketBarSanitized`, queries `Router` for active instances, calls `OnBar()`.
+2. **Signal**: Strategies emit `Signal` objects containing symbol, direction, confidence, and reference price.
+3. **RiskSizer**: Consumes `SignalCreated`, reads instance `limit_offset_bps` and `stop_bps` to set price levels, and calculates `quantity` from account equity using `risk_per_trade_bps`.
+4. **OrderIntent**: Resulting `OrderIntentCreated` is processed by the existing Execution Service risk engine.
+
+### Lifecycle & Blue/Green Swap
+Strategies transition through states: `Draft → BacktestReady → PaperActive → LiveActive → Deactivated → Archived`.
+
+Updating a strategy uses a Blue/Green swap:
+1. **Shadow Warmup**: A new instance (Green) is created and fed live bars via `WarmupOnBar()` to sync indicators.
+2. **Atomic Swap**: Once Green is warm (bars processed >= `WarmupBars()`), the `SwapManager` replaces Blue with Green in the `Router` at the next bar boundary.
+
+### Yaegi Sandbox
+Pluggable strategy hooks can be executed via the Yaegi interpreter with strict security:
+- **Whitelisted Imports**: Only `math` and `fmt` are allowed.
+- **AST Validation**: Code is inspected before execution to prevent `go` statements or prohibited operations.
+- **Runtime Safety**: 100ms execution timeout and a circuit breaker that disables instances after 3 failures.
+
+### TOML v2 Spec
+Strategy instances are defined in `configs/strategies/*.toml`:
+- `[metadata]`: ID, version, name, author.
+- `[lifecycle]`: Target state, paper_only flag.
+- `[routing]`: Assigned symbols, timeframes, and priority.
+- `[params]`: Strategy-specific parameters and risk settings.
+- `[hooks]`: Selection of builtin or Yaegi logic engines.
 
 *This document is the source of truth for architectural decisions. Update it when decisions change.*
