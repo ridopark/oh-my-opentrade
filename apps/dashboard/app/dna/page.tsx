@@ -12,7 +12,8 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Dna, ArrowRight, TrendingUp, TrendingDown, Minus } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
+import { useCurrentStrategy } from "@/hooks/queries";
 
 function isStrategyDNAPayload(payload: unknown): payload is StrategyDNAEvent {
   if (!payload || typeof payload !== "object") return false;
@@ -184,25 +185,7 @@ function DNAView({ dna, previous }: { dna: StrategyDNA; previous: StrategyDNA | 
 
 export default function DNAPage() {
   const { states, connected } = useStateEvents(50);
-  const [fetchedDNA, setFetchedDNA] = useState<StrategyDNA | null>(null);
-
-  // Fetch current strategy DNA from the backend on mount.
-  useEffect(() => {
-    fetch("/api/strategies/current")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data && data.id && data.parameters) {
-          setFetchedDNA({
-            id: data.id,
-            version: data.version ?? 1,
-            description: data.description,
-            parameters: data.parameters,
-            performanceMetrics: {},
-          });
-        }
-      })
-      .catch(() => { /* use fallback */ });
-  }, []);
+  const { data: fetchedDNA } = useCurrentStrategy();
 
   // Find the latest DNA event from SSE stream
   const latestDNA = useMemo(() => {

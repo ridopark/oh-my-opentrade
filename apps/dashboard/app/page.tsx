@@ -1,5 +1,6 @@
 "use client";
 
+import { useServiceHealth } from "@/hooks/queries";
 import { useEventStream } from "@/lib/event-stream";
 import { MultiSymbolChart } from "@/components/multi-symbol-chart";
 import { isMarketOpen, relativeTime, formatNumber } from "@/lib/format";
@@ -19,44 +20,8 @@ import {
   Clock,
   Zap,
 } from "lucide-react";
-import { useMemo, useEffect, useState } from "react";
+import { useMemo } from "react";
 
-interface ServiceStatus {
-  name: string;
-  healthy: boolean;
-  detail?: string;
-}
-
-interface HealthResponse {
-  healthy: boolean;
-  services: ServiceStatus[];
-}
-
-function useServiceHealth() {
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function poll() {
-      try {
-        const res = await fetch("/api/health/services");
-        if (!res.ok) throw new Error(`status ${res.status}`);
-        const data: HealthResponse = await res.json();
-        if (!cancelled) setHealth(data);
-      } catch {
-        if (!cancelled) setHealth({ healthy: false, services: [] });
-      }
-    }
-    poll();
-    const id = setInterval(poll, 10_000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, []);
-
-  return health;
-}
 
 function EventPayloadSummary({
   type,
@@ -199,7 +164,7 @@ function EventPayloadSummary({
 
 export default function DashboardPage() {
   const { events, connected } = useEventStream({ maxEvents: 200 });
-  const serviceHealth = useServiceHealth();
+  const { data: serviceHealth } = useServiceHealth();
 
   const stats = useMemo(() => {
     const marketOpen = isMarketOpen();
@@ -304,7 +269,7 @@ export default function DashboardPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {serviceHealth === null ? (
+            {!serviceHealth ? (
               <CardTitle className="text-2xl text-muted-foreground">—</CardTitle>
             ) : (
               <CardTitle
@@ -315,8 +280,8 @@ export default function DashboardPage() {
               </CardTitle>
             )}
             <p className="mt-1 text-xs text-muted-foreground">
-              {serviceHealth === null
-                ? "Loading…"
+              {!serviceHealth
+                ? "Loading\u2026"
                 : serviceHealth.healthy
                 ? "All services healthy"
                 : serviceHealth.services

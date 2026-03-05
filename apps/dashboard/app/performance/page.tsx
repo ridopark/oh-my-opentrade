@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   createChart,
   ColorType,
@@ -20,7 +20,10 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-
+import {
+  usePerformanceDashboard,
+  usePerformanceTrades,
+} from "@/hooks/queries";
 import {
   Card,
   CardContent,
@@ -37,11 +40,6 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type {
-  PerformanceDashboard,
-  TradeEntry,
-  TradesResponse,
-} from "@/lib/types";
 
 // Helper for formatting currency
 const formatCurrency = (val: number) =>
@@ -66,79 +64,27 @@ type RangeOption = "7d" | "30d" | "90d" | "all";
 
 export default function PerformancePage() {
   const [range, setRange] = useState<RangeOption>("30d");
-  const [dashboardData, setDashboardData] = useState<PerformanceDashboard | null>(
-    null
-  );
-  const [trades, setTrades] = useState<TradeEntry[]>([]);
-  const [nextCursor, setNextCursor] = useState<string | undefined>(undefined);
-  const [loadingDashboard, setLoadingDashboard] = useState(true);
-  const [loadingTrades, setLoadingTrades] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  const {
+    data: dashboardData,
+    isLoading: loadingDashboard,
+    error: dashboardError,
+    refetch: refetchDashboard,
+  } = usePerformanceDashboard(range);
+
+  const {
+    data: tradesData,
+    isLoading: loadingTrades,
+    hasNextPage,
+    fetchNextPage,
+    isFetchingNextPage,
+  } = usePerformanceTrades(range);
+
+  // Flatten all pages into a single trades array
+  const trades = tradesData?.pages.flatMap((page) => page.items) ?? [];
 
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-
-  // Fetch dashboard data
-  const fetchDashboard = useCallback(async () => {
-    try {
-      setLoadingDashboard(true);
-      setError(null);
-      const res = await fetch(`/api/performance/dashboard?range=${range}`);
-      if (!res.ok) throw new Error("Failed to fetch performance data");
-      const data = await res.json();
-      setDashboardData(data);
-    } catch (err) {
-      console.error(err);
-      setError("Failed to load performance data");
-    } finally {
-      setLoadingDashboard(false);
-    }
-  }, [range]);
-
-  // Fetch trades (initial)
-  const fetchTrades = useCallback(async () => {
-    try {
-      setLoadingTrades(true);
-      const res = await fetch(
-        `/api/performance/trades?range=${range}&limit=50`
-      );
-      if (!res.ok) throw new Error("Failed to fetch trades");
-      const data: TradesResponse = await res.json();
-      setTrades(data.items);
-      setNextCursor(data.next_cursor);
-    } catch (err) {
-      console.error(err);
-      // Don't block UI if trades fail, just show empty
-    } finally {
-      setLoadingTrades(false);
-    }
-  }, [range]);
-
-  // Load more trades
-  const loadMoreTrades = async () => {
-    if (!nextCursor) return;
-    try {
-      setLoadingMore(true);
-      const res = await fetch(
-        `/api/performance/trades?cursor=${encodeURIComponent(nextCursor)}`
-      );
-      if (!res.ok) throw new Error("Failed to load more trades");
-      const data: TradesResponse = await res.json();
-      setTrades((prev) => [...prev, ...data.items]);
-      setNextCursor(data.next_cursor);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoadingMore(false);
-    }
-  };
-
-  // Initial load
-  useEffect(() => {
-    fetchDashboard();
-    fetchTrades();
-  }, [fetchDashboard, fetchTrades]);
 
   // Equity Chart
   useEffect(() => {
@@ -211,11 +157,11 @@ export default function PerformancePage() {
     );
   }
 
-  if (error) {
+  if (dashboardError) {
     return (
       <div className="flex h-96 flex-col items-center justify-center gap-4">
-        <p className="text-destructive">{error}</p>
-        <Button onClick={fetchDashboard}>Retry</Button>
+        <p className="text-destructive">Failed to load performance data</p>
+        <Button onClick={() => refetchDashboard()}>Retry</Button>
       </div>
     );
   }
@@ -434,14 +380,14 @@ export default function PerformancePage() {
                 </TableBody>
               </Table>
 
-              {nextCursor && (
+              {hasNextPage && (
                 <div className="flex justify-center pt-4">
                   <Button
                     variant="outline"
-                    onClick={loadMoreTrades}
-                    disabled={loadingMore}
+                    onClick={() => fetchNextPage()}
+                    disabled={isFetchingNextPage}
                   >
-                    {loadingMore ? "Loading..." : "Load More"}
+                    {isFetchingNextPage ? "Loading..." : "Load More"}
                   </Button>
                 </div>
               )}

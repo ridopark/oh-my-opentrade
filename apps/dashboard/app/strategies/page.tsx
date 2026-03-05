@@ -17,45 +17,29 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Layers, Play, Pause, Archive, ArrowUpCircle } from "lucide-react";
-import { useEffect, useState } from "react";
-
-interface InstanceInfo {
-  id: string;
-  strategyName: string;
-  lifecycle: string; // "Draft" | "BacktestReady" | "PaperActive" | "LiveActive" | "Deactivated" | "Archived"
-  symbols: string[];
-  isActive: boolean;
-  allowedTransitions: string[];
-}
+import { Layers, Pause, Archive, ArrowUpCircle } from "lucide-react";
+import { useState } from "react";
+import {
+  useStrategyInstances,
+  usePromoteInstance,
+  useLifecycleAction,
+} from "@/hooks/queries";
 
 export default function StrategiesPage() {
-  const [instances, setInstances] = useState<InstanceInfo[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const {
+    data: instances = [],
+    isLoading: loading,
+    error: queryError,
+    refetch,
+  } = useStrategyInstances();
 
-  const fetchInstances = async () => {
-    try {
-      setLoading(true);
-      const res = await fetch("/api/strategies/v2/instances");
-      if (!res.ok) {
-        throw new Error(`Failed to fetch instances: ${res.statusText}`);
-      }
-      const data = await res.json();
-      setInstances(data || []);
-      setError(null);
-    } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : "Failed to load instances");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const promoteInstance = usePromoteInstance();
+  const lifecycleAction = useLifecycleAction();
 
-  useEffect(() => {
-    fetchInstances();
-  }, []);
+  const error = queryError ? (queryError instanceof Error ? queryError.message : "Failed to load instances") : null;
+
+  // Track which instance action is in flight
+  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
 
   const getNextState = (current: string): string | null => {
     switch (current) {
@@ -76,40 +60,24 @@ export default function StrategiesPage() {
     const target = getNextState(currentLifecycle);
     if (!target) return;
 
-    setActionLoading(id);
+    setActionLoadingId(id);
     try {
-      const res = await fetch(`/api/strategies/v2/instances/${encodeURIComponent(id)}/promote`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target }),
-      });
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || "Failed to promote instance");
-      }
-      await fetchInstances();
+      await promoteInstance.mutateAsync({ id, target });
     } catch (err) {
       alert(err instanceof Error ? err.message : "Failed to promote");
     } finally {
-      setActionLoading(null);
+      setActionLoadingId(null);
     }
   };
 
   const handleLifecycleAction = async (id: string, action: "deactivate" | "archive") => {
-    setActionLoading(id);
+    setActionLoadingId(id);
     try {
-      const res = await fetch(`/api/strategies/v2/instances/${encodeURIComponent(id)}/${action}`, {
-        method: "POST",
-      });
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || `Failed to ${action} instance`);
-      }
-      await fetchInstances();
+      await lifecycleAction.mutateAsync({ id, action });
     } catch (err) {
       alert(err instanceof Error ? err.message : `Failed to ${action}`);
     } finally {
-      setActionLoading(null);
+      setActionLoadingId(null);
     }
   };
 
@@ -118,9 +86,9 @@ export default function StrategiesPage() {
       case "Draft":
         return "outline";
       case "BacktestReady":
-        return "default"; // blue-ish in default theme usually, but let's check class usage
+        return "default";
       case "PaperActive":
-        return "secondary"; // often yellow/amber in some themes or gray, will adjust with class
+        return "secondary";
       case "LiveActive":
         return "default";
       case "Deactivated":
@@ -160,7 +128,7 @@ export default function StrategiesPage() {
             Manage your strategy instances and their lifecycle states
           </p>
         </div>
-        <Button onClick={fetchInstances} variant="outline" size="sm" disabled={loading}>
+        <Button onClick={() => refetch()} variant="outline" size="sm" disabled={loading}>
           Refresh
         </Button>
       </div>
@@ -235,7 +203,7 @@ export default function StrategiesPage() {
                             variant="outline"
                             size="xs"
                             onClick={() => handlePromote(instance.id, instance.lifecycle)}
-                            disabled={actionLoading === instance.id}
+                            disabled={actionLoadingId === instance.id}
                             className="gap-1"
                           >
                             <ArrowUpCircle className="h-3 w-3" />
@@ -249,7 +217,7 @@ export default function StrategiesPage() {
                             variant="outline"
                             size="xs"
                             onClick={() => handleLifecycleAction(instance.id, "deactivate")}
-                            disabled={actionLoading === instance.id}
+                            disabled={actionLoadingId === instance.id}
                             className="gap-1 border-red-200 hover:bg-red-50 hover:text-red-600 dark:border-red-900 dark:hover:bg-red-900/20"
                           >
                             <Pause className="h-3 w-3" />
@@ -263,7 +231,7 @@ export default function StrategiesPage() {
                             variant="ghost"
                             size="xs"
                             onClick={() => handleLifecycleAction(instance.id, "archive")}
-                            disabled={actionLoading === instance.id}
+                            disabled={actionLoadingId === instance.id}
                             className="gap-1 text-muted-foreground hover:text-foreground"
                           >
                             <Archive className="h-3 w-3" />
