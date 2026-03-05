@@ -27,6 +27,13 @@ func makeIntent(t *testing.T, symbol string, dir domain.Direction) domain.OrderI
 	return intent
 }
 
+func makeExitIntent(t *testing.T, symbol string, dir domain.Direction) domain.OrderIntent {
+	t.Helper()
+	intent := makeIntent(t, symbol, dir)
+	intent.IsExit = true
+	return intent
+}
+
 func makeTrade(symbol, side string, qty float64) domain.Trade {
 	t, _ := domain.NewTrade(
 		time.Now(), "tenant-1", domain.EnvModePaper, uuid.New(),
@@ -93,13 +100,13 @@ func TestPositionGate_Check(t *testing.T) {
 		{
 			name:      "exit_SHORT_with_long_position_allows",
 			positions: []domain.Trade{makeTrade("BTCUSD", "BUY", 1.0)},
-			intent:    func(t *testing.T) domain.OrderIntent { return makeIntent(t, "BTCUSD", domain.DirectionShort) },
+			intent:    func(t *testing.T) domain.OrderIntent { return makeExitIntent(t, "BTCUSD", domain.DirectionShort) },
 			wantErr:   nil,
 		},
 		{
 			name:      "exit_SHORT_no_position_rejects",
 			positions: nil,
-			intent:    func(t *testing.T) domain.OrderIntent { return makeIntent(t, "BTCUSD", domain.DirectionShort) },
+			intent:    func(t *testing.T) domain.OrderIntent { return makeExitIntent(t, "BTCUSD", domain.DirectionShort) },
 			wantErr:   execution.ErrNoPositionToExit,
 		},
 	}

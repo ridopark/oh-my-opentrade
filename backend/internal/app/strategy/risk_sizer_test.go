@@ -145,6 +145,50 @@ func TestRiskSizer_HandleSignal_Entry_Sell(t *testing.T) {
 	assert.InDelta(t, 100*(1+0.0025), intent.StopLoss, 0.0000001)
 }
 
+func TestRiskSizer_HandleSignal_Exit_SetsIsExit(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"limit_offset_bps":   int64(5),
+		"stop_bps":           int64(25),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	received := subscribeOrderIntentCreated(t, bus)
+
+	iid, _ := strat.NewInstanceID("orb_break:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalExit, strat.SideSell, 0.8, map[string]string{"ref_price": "100"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+	assert.Equal(t, domain.DirectionShort, intent.Direction)
+	assert.True(t, intent.IsExit, "exit signal should produce OrderIntent with IsExit=true")
+}
+
+func TestRiskSizer_HandleSignal_Entry_IsExitFalse(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"limit_offset_bps":   int64(5),
+		"stop_bps":           int64(25),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	received := subscribeOrderIntentCreated(t, bus)
+
+	iid, _ := strat.NewInstanceID("orb_break:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "100"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+	assert.Equal(t, domain.DirectionLong, intent.Direction)
+	assert.False(t, intent.IsExit, "entry signal should produce OrderIntent with IsExit=false")
+}
+
 func TestRiskSizer_HandleSignal_FlatIgnored(t *testing.T) {
 	bus := memory.NewBus()
 	rs := strategy.NewRiskSizer(bus, &fakeSpecStore{}, 100000, nil)

@@ -190,3 +190,41 @@ func createOrderIntentEvent(t *testing.T, dir domain.Direction) domain.Event {
 	}
 	return *event
 }
+
+// createExitOrderIntentEvent creates a valid exit EventOrderIntentCreated event for testing.
+// The intent will have IsExit=true, simulating a sell-to-close order.
+func createExitOrderIntentEvent(t *testing.T, dir domain.Direction) domain.Event {
+	t.Helper()
+	intentID := uuid.New()
+	intent, err := domain.NewOrderIntent(
+		intentID,
+		"tenant-1",
+		domain.EnvModePaper,
+		"BTCUSD",
+		dir,
+		50000.0,
+		49000.0,
+		10,  // MaxSlippageBPS
+		1.0, // Quantity
+		"strategy-1",
+		"exit signal",
+		0.8,
+		intentID.String(),
+	)
+	if err != nil {
+		t.Fatalf("failed to create test order intent: %v", err)
+	}
+	intent.IsExit = true
+
+	event, err := domain.NewEvent(
+		domain.EventOrderIntentCreated,
+		"tenant-1",
+		domain.EnvModePaper,
+		intentID.String(),
+		intent,
+	)
+	if err != nil {
+		t.Fatalf("failed to create intent event: %v", err)
+	}
+	return *event
+}
