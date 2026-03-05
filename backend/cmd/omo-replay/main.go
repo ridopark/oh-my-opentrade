@@ -31,23 +31,23 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
-	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/oh-my-opentrade/backend/internal/logger"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
 
 func main() {
 	var (
-		symbolsFlag    string
-		fromFlag       string
-		toFlag         string
-		speedFlag      string
-		configPath     string
-		envPath        string
-		backtestFlag   bool
-		initialEquity  float64
-		slippageBPS    int64
-		outputJSON     string
+		symbolsFlag   string
+		fromFlag      string
+		toFlag        string
+		speedFlag     string
+		configPath    string
+		envPath       string
+		backtestFlag  bool
+		initialEquity float64
+		slippageBPS   int64
+		outputJSON    string
 	)
 
 	flag.StringVar(&symbolsFlag, "symbols", "", "Comma-separated symbols to replay (default: use config file symbols)")
@@ -345,6 +345,13 @@ func main() {
 		warmupLog.Info().Str("symbol", sym.String()).Int("bars", n).Msg("indicator warmup complete")
 	}
 
+	// Initialize MTFA aggregators so 1m bars produce 5m/15m candles + anchor regime.
+	loc, _ := time.LoadLocation("America/New_York")
+	fromET := fromTime.In(loc)
+	replaySessionOpen := time.Date(fromET.Year(), fromET.Month(), fromET.Day(), 9, 30, 0, 0, loc)
+	monitorSvc.InitAggregators(symbols, replaySessionOpen)
+	log.Info().Time("session_open", replaySessionOpen).Msg("MTFA aggregators initialized for replay")
+
 	log.Info().
 		Strs("symbols", symbolStrings(symbols)).
 		Str("timeframe", timeframe.String()).
@@ -371,6 +378,9 @@ func main() {
 	barsProcessed := 0
 	groupsProcessed := 0
 
+	// Track current session date for multi-day replays (reset aggregators on new day).
+	currentSessionDate := replaySessionOpen
+
 	for {
 		if ctx.Err() != nil {
 			break
@@ -381,6 +391,18 @@ func main() {
 		}
 
 		groupsProcessed++
+
+		// Reset MTFA aggregators on new trading day boundary.
+		minET := minTime.In(loc)
+		dayOpen := time.Date(minET.Year(), minET.Month(), minET.Day(), 9, 30, 0, 0, loc)
+		if dayOpen.After(currentSessionDate) {
+			monitorSvc.ResetAggregators(dayOpen)
+			for _, sym := range symbols {
+				monitorSvc.ResetSessionIndicators(sym.String())
+			}
+			currentSessionDate = dayOpen
+			log.Debug().Time("new_session_open", dayOpen).Msg("MTFA aggregators reset for new trading day")
+		}
 		for _, s := range streams {
 			if ctx.Err() != nil {
 				break
@@ -675,9 +697,7 @@ func parseSpeed(v string) (factor float64, max bool, err error) {
 	if s == "max" {
 		return 0, true, nil
 	}
-	if strings.HasSuffix(s, "x") {
-		s = strings.TrimSuffix(s, "x")
-	}
+	s = strings.TrimSuffix(s, "x")
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		return 0, false, err
@@ -729,7 +749,7 @@ func (n *noopRepo) SaveMarketBar(_ context.Context, _ domain.MarketBar) error { 
 func (n *noopRepo) GetMarketBars(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _, _ time.Time) ([]domain.MarketBar, error) {
 	return nil, nil
 }
-func (n *noopRepo) SaveTrade(_ context.Context, _ domain.Trade) error    { return nil }
+func (n *noopRepo) SaveTrade(_ context.Context, _ domain.Trade) error { return nil }
 func (n *noopRepo) GetTrades(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) ([]domain.Trade, error) {
 	return nil, nil
 }
