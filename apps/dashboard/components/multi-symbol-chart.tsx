@@ -5,6 +5,10 @@ import {
   createChart,
   ColorType,
   LineSeries,
+  CandlestickSeries,
+  HistogramSeries,
+  type CandlestickData,
+  type HistogramData,
   type IChartApi,
   type ISeriesApi,
   type LineData,
@@ -15,6 +19,7 @@ import {
 } from "lightweight-charts";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { BarChart2, LineChart } from "lucide-react";
 import { useChartData, SYMBOLS, type OHLCBar } from "@/lib/use-chart-data";
 import { OffMarketShading, detectGaps } from "@/lib/off-market-shading";
 
@@ -111,20 +116,99 @@ function toLineDataWithGaps(
 
   return out;
 }
+function toCandleDataWithGaps(bars: OHLCBar[], timeframe: string): (CandlestickData | WhitespaceData)[] {
+  const expectedSec = TF_EXPECTED_SEC[timeframe] ?? 60;
+  const gapThreshold = expectedSec * 1.5;
+  const out: (CandlestickData | WhitespaceData)[] = [];
+  for (let i = 0; i < bars.length; i++) {
+    out.push({
+      time: timeToET(bars[i].time) as Time,
+      open: bars[i].open,
+      high: bars[i].high,
+      low: bars[i].low,
+      close: bars[i].close,
+    });
+    if (i < bars.length - 1) {
+      const dt = bars[i + 1].time - bars[i].time;
+      if (dt > gapThreshold) {
+        out.push({ time: timeToET(bars[i].time + expectedSec) as Time });
+      }
+    }
+  }
+  return out;
+}
+
+function toVolumeDataWithGaps(bars: OHLCBar[], timeframe: string): (HistogramData | WhitespaceData)[] {
+  const expectedSec = TF_EXPECTED_SEC[timeframe] ?? 60;
+  const gapThreshold = expectedSec * 1.5;
+  const out: (HistogramData | WhitespaceData)[] = [];
+  for (let i = 0; i < bars.length; i++) {
+    out.push({
+      time: timeToET(bars[i].time) as Time,
+      value: bars[i].volume,
+      color: bars[i].close >= bars[i].open ? 'rgba(34, 197, 94, 0.5)' : 'rgba(239, 68, 68, 0.5)',
+    });
+    if (i < bars.length - 1) {
+      const dt = bars[i + 1].time - bars[i].time;
+      if (dt > gapThreshold) {
+        out.push({ time: timeToET(bars[i].time + expectedSec) as Time });
+      }
+    }
+  }
+  return out;
+}
+
+function computeEMA(bars: OHLCBar[], period: number, timeframe: string): (LineData | WhitespaceData)[] {
+  const expectedSec = TF_EXPECTED_SEC[timeframe] ?? 60;
+  const gapThreshold = expectedSec * 1.5;
+  if (bars.length === 0) return [];
+  const k = 2 / (period + 1);
+  const emaValues: number[] = [bars[0].close];
+  for (let i = 1; i < bars.length; i++) {
+    emaValues.push(bars[i].close * k + emaValues[i - 1] * (1 - k));
+  }
+  const out: (LineData | WhitespaceData)[] = [];
+  for (let i = 0; i < bars.length; i++) {
+    if (i < period - 1) continue; // skip until enough data
+    out.push({ time: timeToET(bars[i].time) as Time, value: emaValues[i] });
+    if (i < bars.length - 1) {
+      const dt = bars[i + 1].time - bars[i].time;
+      if (dt > gapThreshold) {
+        out.push({ time: timeToET(bars[i].time + expectedSec) as Time });
+      }
+    }
+  }
+  return out;
+}
+
 
 export function MultiSymbolChart() {
   const [timeframe, setTimeframe] = useState<Timeframe>("1m");
+  const [chartMode, setChartMode] = useState<'line' | 'candle'>('line');
+  const [candleSymbol, setCandleSymbol] = useState<string>(SYMBOLS[0]);
+
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<Record<string, ISeriesApi<"Line", Time>>>({});
   const shadingRef = useRef<OffMarketShading | null>(null);
   const shadingHostRef = useRef<ISeriesApi<"Line", Time> | null>(null);
+  const candleSeriesRef = useRef<ISeriesApi<"Candlestick", Time> | null>(null);
+  const volumeSeriesRef = useRef<ISeriesApi<"Histogram", Time> | null>(null);
+  const ema9SeriesRef = useRef<ISeriesApi<"Line", Time> | null>(null);
+  const ema21SeriesRef = useRef<ISeriesApi<"Line", Time> | null>(null);
+
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [tooltip, setTooltip] = useState<{
     x: number;
     y: number;
     items: { symbol: string; price: string; color: string }[];
   } | null>(null);
+  const [candleTooltip, setCandleTooltip] = useState<{
+    x: number; y: number; symbol: string;
+    open: number; high: number; low: number; close: number; volume: number;
+    color: string;
+  } | null>(null);
+
 
   const { barsBySymbol, dataTimeframe, loading, loadingMore, loadMore } = useChartData(timeframe);
 
@@ -182,6 +266,12 @@ export function MultiSymbolChart() {
           new Date((savedVisibleRangeRef.current.to) * 1000).toISOString());
       }
     }
+    // Reset candle mode refs on timeframe change
+    if (candleSeriesRef.current) candleSeriesRef.current.setData([]);
+    if (volumeSeriesRef.current) volumeSeriesRef.current.setData([]);
+    if (ema9SeriesRef.current) ema9SeriesRef.current.setData([]);
+    if (ema21SeriesRef.current) ema21SeriesRef.current.setData([]);
+
     // Clear stale series data so the barsBySymbol useEffect doesn't
     // see old data and prematurely seed the chart before new data arrives.
     for (const symbol of SYMBOLS) {
@@ -331,6 +421,146 @@ export function MultiSymbolChart() {
       shadingHostRef.current = null;
     };
   }, []);
+  function removeCandleSeries() {
+    const chart = chartRef.current;
+    if (!chart) return;
+    if (candleSeriesRef.current) { chart.removeSeries(candleSeriesRef.current); candleSeriesRef.current = null; }
+    if (volumeSeriesRef.current) { chart.removeSeries(volumeSeriesRef.current); volumeSeriesRef.current = null; }
+    if (ema9SeriesRef.current) { chart.removeSeries(ema9SeriesRef.current); ema9SeriesRef.current = null; }
+    if (ema21SeriesRef.current) { chart.removeSeries(ema21SeriesRef.current); ema21SeriesRef.current = null; }
+  }
+
+  function removeLineSeries() {
+    const chart = chartRef.current;
+    if (!chart) return;
+    for (const symbol of SYMBOLS) {
+      const series = seriesRef.current[symbol];
+      if (series) { chart.removeSeries(series); }
+    }
+    seriesRef.current = {};
+    // Also remove shading host
+    if (shadingHostRef.current) { chart.removeSeries(shadingHostRef.current); shadingHostRef.current = null; shadingRef.current = null; }
+  }
+
+  function buildLineSeries() {
+    const chart = chartRef.current;
+    if (!chart) return;
+    // Recreate shading host
+    const shadingHostSeries = chart.addSeries(LineSeries, {
+      color: 'transparent', lineWidth: 1, priceScaleId: '__shading_host',
+      lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false,
+    });
+    chart.priceScale('__shading_host').applyOptions({ visible: false });
+    const shading = new OffMarketShading('rgba(148, 163, 184, 0.18)');
+    shadingHostSeries.attachPrimitive(shading);
+    shadingRef.current = shading;
+    shadingHostRef.current = shadingHostSeries;
+    // Recreate line series per symbol
+    for (const symbol of SYMBOLS) {
+      const color = SYMBOL_COLORS[symbol];
+      const series = chart.addSeries(LineSeries, {
+        color, lineWidth: 1, priceScaleId: `overlay_${symbol}`, title: symbol,
+        lastValueVisible: true, priceLineVisible: false,
+        crosshairMarkerVisible: true, crosshairMarkerRadius: 4,
+      });
+      chart.priceScale(`overlay_${symbol}`).applyOptions({ visible: false, scaleMargins: { top: 0.1, bottom: 0.1 } });
+      seriesRef.current[symbol] = series;
+    }
+    // Hide right price scale (line mode uses overlay scales)
+    chart.priceScale('right').applyOptions({ visible: false });
+  }
+
+  function buildCandleSeries() {
+    const chart = chartRef.current;
+    if (!chart) return;
+    // Show right price scale for candlestick
+    chart.priceScale('right').applyOptions({
+      visible: true,
+      scaleMargins: { top: 0.05, bottom: 0.25 },
+    });
+    // Candlestick series on right price scale
+    const candleSeries = chart.addSeries(CandlestickSeries, {
+      upColor: '#22c55e', downColor: '#ef4444',
+      wickUpColor: '#22c55e', wickDownColor: '#ef4444',
+      borderUpColor: '#22c55e', borderDownColor: '#ef4444',
+      priceScaleId: 'right',
+    });
+    candleSeriesRef.current = candleSeries;
+    // Volume histogram
+    const volumeSeries = chart.addSeries(HistogramSeries, {
+      priceScaleId: 'volume',
+      priceFormat: { type: 'volume' },
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    chart.priceScale('volume').applyOptions({
+      scaleMargins: { top: 0.80, bottom: 0.00 },
+      visible: false,
+    });
+    volumeSeriesRef.current = volumeSeries;
+    // EMA9 line (thin, semi-transparent)
+    const ema9 = chart.addSeries(LineSeries, {
+      color: 'rgba(251, 191, 36, 0.7)', lineWidth: 1,
+      priceScaleId: 'right', title: 'EMA9',
+      lastValueVisible: false, priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    ema9SeriesRef.current = ema9;
+    // EMA21 line
+    const ema21 = chart.addSeries(LineSeries, {
+      color: 'rgba(96, 165, 250, 0.7)', lineWidth: 1,
+      priceScaleId: 'right', title: 'EMA21',
+      lastValueVisible: false, priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    ema21SeriesRef.current = ema21;
+    // Reattach off-market shading to candlestick series
+    const shading = new OffMarketShading('rgba(148, 163, 184, 0.18)');
+    candleSeries.attachPrimitive(shading);
+    shadingRef.current = shading;
+  }
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    
+    // Snapshot visible range
+    const vr = chart.timeScale().getVisibleRange();
+    
+    if (chartMode === 'line') {
+      // Switching TO line mode
+      removeCandleSeries();
+      buildLineSeries();
+      // Repopulate line data
+      for (const symbol of SYMBOLS) {
+        const series = seriesRef.current[symbol];
+        const bars = barsBySymbol[symbol];
+        if (series && bars?.length) series.setData(toLineDataWithGaps(bars, timeframe));
+      }
+      // Repopulate shading
+      // (the barsBySymbol useEffect will handle this on next render)
+    } else {
+      // Switching TO candle mode
+      removeLineSeries();
+      buildCandleSeries();
+      // Populate candle data
+      const bars = barsBySymbol[candleSymbol];
+      if (bars?.length) {
+        candleSeriesRef.current?.setData(toCandleDataWithGaps(bars, timeframe));
+        volumeSeriesRef.current?.setData(toVolumeDataWithGaps(bars, timeframe));
+        ema9SeriesRef.current?.setData(computeEMA(bars, 9, timeframe));
+        ema21SeriesRef.current?.setData(computeEMA(bars, 21, timeframe));
+      }
+    }
+    
+    // Restore range
+    if (vr) {
+      try {
+        chart.timeScale().setVisibleRange(vr);
+      } catch { /* fallback */ }
+    }
+  }, [chartMode, candleSymbol]); // eslint-disable-line react-hooks/exhaustive-deps
+
 
   // Crosshair tooltip
   useEffect(() => {
@@ -340,26 +570,48 @@ export function MultiSymbolChart() {
     const handler = (param: MouseEventParams<Time>) => {
       if (!param.point || !param.time) {
         setTooltip(null);
+        setCandleTooltip(null);
         return;
       }
-      const items = SYMBOLS.flatMap((symbol) => {
-        const series = seriesRef.current[symbol];
-        if (!series) return [];
-        const data = param.seriesData.get(series);
-        if (!data || !("value" in data)) return [];
-        return [{
-          symbol,
-          price: (data as LineData).value.toFixed(2),
-          color: SYMBOL_COLORS[symbol],
-        }];
-      });
-      if (items.length === 0) { setTooltip(null); return; }
-      setTooltip({ x: param.point.x, y: param.point.y, items });
+
+      if (chartMode === 'candle') {
+        setCandleTooltip(null);
+        const candleSeries = candleSeriesRef.current;
+        const volumeSeries = volumeSeriesRef.current;
+        if (!candleSeries) { setTooltip(null); setCandleTooltip(null); return; }
+        const data = param.seriesData.get(candleSeries) as CandlestickData | undefined;
+        if (!data || !('open' in data)) { setTooltip(null); setCandleTooltip(null); return; }
+        const volData = volumeSeries ? param.seriesData.get(volumeSeries) as HistogramData | undefined : undefined;
+        const vol = volData && 'value' in volData ? volData.value : 0;
+        setCandleTooltip({
+          x: param.point.x, y: param.point.y,
+          symbol: candleSymbol,
+          open: data.open, high: data.high, low: data.low, close: data.close, volume: vol,
+          color: data.close >= data.open ? '#22c55e' : '#ef4444',
+        });
+        setTooltip(null);
+      } else {
+        setCandleTooltip(null);
+        const items = SYMBOLS.flatMap((symbol) => {
+          const series = seriesRef.current[symbol];
+          if (!series) return [];
+          const data = param.seriesData.get(series);
+          if (!data || !("value" in data)) return [];
+          return [{
+            symbol,
+            price: (data as LineData).value.toFixed(2),
+            color: SYMBOL_COLORS[symbol],
+          }];
+        });
+        if (items.length === 0) { setTooltip(null); return; }
+        setTooltip({ x: param.point.x, y: param.point.y, items });
+      }
     };
 
     chart.subscribeCrosshairMove(handler);
     return () => chart.unsubscribeCrosshairMove(handler);
-  }, []);
+  }, [chartMode, candleSymbol]);
+
 
   // Update series data whenever barsBySymbol changes
   useEffect(() => {
@@ -374,6 +626,17 @@ export function MultiSymbolChart() {
         if (newOldest === null || first < newOldest) newOldest = first;
       }
     }
+    // -- Candle mode: update active symbol's series --
+    if (chartMode === 'candle') {
+      const bars = barsBySymbol[candleSymbol];
+      if (bars?.length) {
+        candleSeriesRef.current?.setData(toCandleDataWithGaps(bars, timeframe));
+        volumeSeriesRef.current?.setData(toVolumeDataWithGaps(bars, timeframe));
+        ema9SeriesRef.current?.setData(computeEMA(bars, 9, timeframe));
+        ema21SeriesRef.current?.setData(computeEMA(bars, 21, timeframe));
+      }
+    }
+
 
     // -- Off-market shading: detect gaps & feed host series --
     if (shadingRef.current && shadingHostRef.current) {
@@ -403,6 +666,19 @@ export function MultiSymbolChart() {
       shadingHostRef.current.setData(hostPoints);
       shadingRef.current.setGaps(etGaps);
     }
+    if (chartMode === 'candle' && shadingRef.current) {
+      // For candle mode, shading is attached to candlestick series.
+      // Feed ET gaps directly to the shading primitive.
+      // Recompute gaps from candleSymbol bars only
+      const bars = barsBySymbol[candleSymbol];
+      if (bars?.length) {
+        const shadingThreshold = TF_SHADING_GAP_SEC[timeframe] ?? 3600;
+        const gaps = detectGaps(bars.map(b => ({ time: b.time })), shadingThreshold);
+        const etGaps = gaps.map(g => ({ from: timeToET(g.from as number) as Time, to: timeToET(g.to as number) as Time }));
+        shadingRef.current.setGaps(etGaps);
+      }
+    }
+
     if (newOldest !== null) {
       const prevOldest = oldestTsRef.current;
       oldestTsRef.current = newOldest;
@@ -441,7 +717,8 @@ export function MultiSymbolChart() {
         console.log('[Chart] fitContent called (initial seed — no saved range)');
       }
     }
-  }, [barsBySymbol, timeframe, dataTimeframe]);
+  }, [barsBySymbol, timeframe, dataTimeframe, chartMode, candleSymbol]);
+
 
   const symbolCount = SYMBOLS.filter((s) => (barsBySymbol[s]?.length ?? 0) > 0).length;
 
@@ -452,8 +729,12 @@ export function MultiSymbolChart() {
           <div>
             <CardTitle className="text-base">Multi-Symbol — Overlay Scales</CardTitle>
             <CardDescription className="mt-0.5">
-              Each symbol auto-scales independently · {timeframe} bars
+              {chartMode === 'line' 
+                ? `Each symbol auto-scales independently · ${timeframe} bars`
+                : `${candleSymbol} · OHLCV + EMA(9,21) · ${timeframe} bars`
+              }
             </CardDescription>
+
           </div>
 
           {/* Timeframe selector */}
@@ -470,6 +751,42 @@ export function MultiSymbolChart() {
               </Button>
             ))}
           </div>
+          {/* Chart mode toggle */}
+          <div className="flex items-center gap-1 border-l border-border pl-2 ml-1">
+            <Button
+              variant={chartMode === 'line' ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={() => setChartMode('line')}
+              title="Line chart — all symbols"
+            >
+              <LineChart className="h-3 w-3" />
+            </Button>
+            <Button
+              variant={chartMode === 'candle' ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={() => setChartMode('candle')}
+              title="Candlestick — single symbol"
+            >
+              <BarChart2 className="h-3 w-3" />
+            </Button>
+          </div>
+
+          {chartMode === 'candle' && (
+            <select
+              value={candleSymbol}
+              onChange={(e) => setCandleSymbol(e.target.value)}
+              className="h-6 rounded border border-border bg-background px-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              {SYMBOLS.map((sym) => (
+                <option key={sym} value={sym}>{sym}</option>
+              ))}
+            </select>
+          )}
+
+
+          {chartMode === 'line' && (
 
           <div className="flex flex-wrap justify-end gap-x-3 gap-y-1">
             {SYMBOLS.map((sym) => {
@@ -489,6 +806,8 @@ export function MultiSymbolChart() {
               );
             })}
           </div>
+          )}
+
         </div>
         {symbolCount === 0 && !loading && (
           <p className="mt-1 text-xs text-muted-foreground">
@@ -520,6 +839,35 @@ export function MultiSymbolChart() {
               </div>
             </div>
           )}
+          {candleTooltip && (
+            <div
+              className="pointer-events-none absolute z-10 rounded-md border border-border bg-background/95 px-2.5 py-2 shadow-lg backdrop-blur-sm"
+              style={{
+                left: candleTooltip.x + 12,
+                top: Math.max(4, candleTooltip.y - 40),
+                transform: "translateY(-50%)",
+              }}
+            >
+              <div className="flex flex-col gap-0.5">
+                <div className="flex items-center gap-2 text-xs font-mono font-medium" style={{ color: candleTooltip.color }}>
+                  {candleTooltip.symbol}
+                </div>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs font-mono">
+                  <span className="text-muted-foreground">O</span>
+                  <span className="text-foreground">${candleTooltip.open.toFixed(2)}</span>
+                  <span className="text-muted-foreground">H</span>
+                  <span className="text-foreground">${candleTooltip.high.toFixed(2)}</span>
+                  <span className="text-muted-foreground">L</span>
+                  <span className="text-foreground">${candleTooltip.low.toFixed(2)}</span>
+                  <span className="text-muted-foreground">C</span>
+                  <span className="text-foreground" style={{ color: candleTooltip.color }}>${candleTooltip.close.toFixed(2)}</span>
+                  <span className="text-muted-foreground">Vol</span>
+                  <span className="text-foreground">{candleTooltip.volume.toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Loading overlay — shown during initial fetch */}
           {loading && (
             <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-background/60 backdrop-blur-[2px]">
