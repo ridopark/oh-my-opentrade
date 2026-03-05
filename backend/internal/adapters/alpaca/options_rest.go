@@ -47,7 +47,7 @@ type alpacaOptionSnapshot struct {
 		C  float64 `json:"c"`  // last price
 	} `json:"latestQuote"`
 	OpenInterest int `json:"openInterest"`
-	}
+}
 
 // GetOptionChain retrieves option contract snapshots from Alpaca for the given
 // underlying symbol, expiry date, and option right (call/put).
@@ -69,7 +69,7 @@ func (c *RESTClient) GetOptionChain(
 		underlying.String(), expiryStr, rightStr,
 	)
 
-	resp, err := c.doReq(ctx, http.MethodGet, path, nil)
+	resp, err := c.doReqWithOpts(ctx, http.MethodGet, path, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
 	if err != nil {
 		return nil, err
 	}

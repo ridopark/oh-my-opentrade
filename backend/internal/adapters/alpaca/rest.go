@@ -3,6 +3,8 @@ package alpaca
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,6 +38,43 @@ type RESTClient struct {
 	log       zerolog.Logger
 }
 
+type reqOpts struct {
+	priority   RequestPriority
+	maxRetries int
+}
+
+func normalizeReqOpts(opts reqOpts) reqOpts {
+	if opts.maxRetries <= 0 {
+		if opts.priority == PriorityBackground {
+			opts.maxRetries = 1
+		} else {
+			opts.maxRetries = 3
+		}
+	}
+	return opts
+}
+
+func randUnitFloat64() float64 {
+	var b [8]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return 0
+	}
+	v := binary.LittleEndian.Uint64(b[:])
+	return float64(v) / (float64(^uint64(0)) + 1)
+}
+
+func jitterDuration(max time.Duration) time.Duration {
+	if max <= 0 {
+		return 0
+	}
+	return time.Duration(randUnitFloat64() * float64(max))
+}
+
+func (c *RESTClient) doReqDataAPI(ctx context.Context, dataURL string, method, path string, body io.Reader, opts reqOpts) (*http.Response, error) {
+	fullURL := strings.TrimSuffix(dataURL, "/") + path
+	return c.doReqFullWithPath(ctx, method, fullURL, path, body, opts)
+}
+
 // NewRESTClient constructs a new RESTClient with proper rate limiting.
 func NewRESTClient(baseURL string, apiKey string, apiSecret string, limiter *RateLimiter, log zerolog.Logger) *RESTClient {
 	return &RESTClient{
@@ -49,21 +88,119 @@ func NewRESTClient(baseURL string, apiKey string, apiSecret string, limiter *Rat
 }
 
 func (c *RESTClient) doReq(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
-	if err := c.limiter.Wait(ctx); err != nil {
-		return nil, err
-	}
-	urlStr := strings.TrimSuffix(c.baseURL, "/") + path
-	req, err := http.NewRequestWithContext(ctx, method, urlStr, body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set(headerAPIKey, c.apiKey)
-	req.Header.Set(headerAPISecret, c.apiSecret)
+	return c.doReqWithOpts(ctx, method, path, body, reqOpts{priority: PriorityTrading})
+}
 
+func (c *RESTClient) doReqWithOpts(ctx context.Context, method, path string, body io.Reader, opts reqOpts) (*http.Response, error) {
+	urlStr := strings.TrimSuffix(c.baseURL, "/") + path
+	return c.doReqFullWithPath(ctx, method, urlStr, path, body, opts)
+}
+
+func (c *RESTClient) doReqFull(ctx context.Context, method, fullURL string, body io.Reader, opts reqOpts) (*http.Response, error) {
+	return c.doReqFullWithPath(ctx, method, fullURL, "", body, opts)
+}
+
+func (c *RESTClient) doReqFullWithPath(ctx context.Context, method, fullURL, pathForLog string, body io.Reader, opts reqOpts) (*http.Response, error) {
+	opts = normalizeReqOpts(opts)
+
+	var bodyBytes []byte
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		b, err := io.ReadAll(body)
+		if err != nil {
+			return nil, err
+		}
+		bodyBytes = b
 	}
-	return c.client.Do(req)
+
+	for attempt := 0; ; attempt++ {
+		if err := c.limiter.WaitWithPriority(ctx, opts.priority); err != nil {
+			return nil, err
+		}
+
+		var bodyReader io.Reader
+		if bodyBytes != nil {
+			bodyReader = bytes.NewReader(bodyBytes)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, fullURL, bodyReader)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set(headerAPIKey, c.apiKey)
+		req.Header.Set(headerAPISecret, c.apiSecret)
+		if bodyBytes != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusTooManyRequests {
+			return resp, nil
+		}
+		if attempt >= opts.maxRetries {
+			return resp, nil
+		}
+
+		logPath := pathForLog
+		if logPath == "" {
+			logPath = req.URL.Path
+		}
+
+		remainingRaw := strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining"))
+		resetRaw := strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset"))
+
+		resetIn := time.Duration(0)
+		if resetRaw != "" {
+			if ts, parseErr := strconv.ParseInt(resetRaw, 10, 64); parseErr == nil {
+				until := time.Until(time.Unix(ts, 0))
+				if until > 0 && until < 60*time.Second {
+					resetIn = until
+				}
+			}
+		}
+
+		sleep := time.Duration(0)
+		if resetIn > 0 {
+			sleep = resetIn + jitterDuration(250*time.Millisecond)
+		} else {
+			base := time.Second * time.Duration(math.Pow(2, float64(attempt)))
+			if base > 30*time.Second {
+				base = 30 * time.Second
+			}
+			sleep = jitterDuration(base)
+		}
+
+		evt := c.log.Warn().Str("priority", opts.priority.String()).Str("path", logPath)
+		if remainingRaw != "" {
+			if remainingInt, parseErr := strconv.Atoi(remainingRaw); parseErr == nil {
+				evt = evt.Int("remaining", remainingInt)
+			} else {
+				evt = evt.Str("remaining", remainingRaw)
+			}
+		}
+		if resetIn > 0 {
+			evt = evt.Dur("reset_in", resetIn)
+		}
+		evt.
+			Str("attempt", fmt.Sprintf("%d/%d", attempt+1, opts.maxRetries)).
+			Dur("sleep", sleep).
+			Msg("rate limit hit — retrying")
+
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		t := time.NewTimer(sleep)
+		select {
+		case <-ctx.Done():
+			if !t.Stop() {
+				<-t.C
+			}
+			return nil, ctx.Err()
+		case <-t.C:
+		}
+	}
 }
 
 // SubmitOrder submits a new order to the Alpaca REST API.
@@ -87,7 +224,7 @@ func (c *RESTClient) SubmitOrder(ctx context.Context, intent domain.OrderIntent)
 	}
 
 	b, _ := json.Marshal(reqBody)
-	resp, err := c.doReq(ctx, http.MethodPost, pathOrders, bytes.NewReader(b))
+	resp, err := c.doReqWithOpts(ctx, http.MethodPost, pathOrders, bytes.NewReader(b), reqOpts{priority: PriorityTrading, maxRetries: 3})
 	if err != nil {
 		c.log.Error().Err(err).Str("symbol", intent.Symbol.String()).Msg("submit order HTTP request failed")
 		return "", err
@@ -122,7 +259,7 @@ func (c *RESTClient) SubmitOrder(ctx context.Context, intent domain.OrderIntent)
 
 // CancelOrder requests cancellation of a specific order by ID.
 func (c *RESTClient) CancelOrder(ctx context.Context, orderID string) error {
-	resp, err := c.doReq(ctx, http.MethodDelete, pathOrders+"/"+orderID, nil)
+	resp, err := c.doReqWithOpts(ctx, http.MethodDelete, pathOrders+"/"+orderID, nil, reqOpts{priority: PriorityTrading, maxRetries: 3})
 
 	if err != nil {
 		c.log.Error().Err(err).Str("order_id", orderID).Msg("cancel order HTTP request failed")
@@ -140,7 +277,7 @@ func (c *RESTClient) CancelOrder(ctx context.Context, orderID string) error {
 
 // GetOrderStatus fetches the current status of an order.
 func (c *RESTClient) GetOrderStatus(ctx context.Context, orderID string) (string, error) {
-	resp, err := c.doReq(ctx, http.MethodGet, pathOrders+"/"+orderID, nil)
+	resp, err := c.doReqWithOpts(ctx, http.MethodGet, pathOrders+"/"+orderID, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
 
 	if err != nil {
 		c.log.Error().Err(err).Str("order_id", orderID).Msg("get order status HTTP request failed")
@@ -166,7 +303,7 @@ func (c *RESTClient) GetOrderStatus(ctx context.Context, orderID string) (string
 
 // GetPositions retrieves all current positions.
 func (c *RESTClient) GetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
-	resp, err := c.doReq(ctx, http.MethodGet, pathPositions, nil)
+	resp, err := c.doReqWithOpts(ctx, http.MethodGet, pathPositions, nil, reqOpts{priority: PriorityTrading, maxRetries: 3})
 
 	if err != nil {
 		c.log.Error().Err(err).Msg("get positions HTTP request failed")
@@ -228,17 +365,7 @@ func (c *RESTClient) GetPositions(ctx context.Context, tenantID string, envMode 
 func (c *RESTClient) GetQuote(ctx context.Context, dataURL string, symbol domain.Symbol) (bid float64, ask float64, err error) {
 	path := fmt.Sprintf("/v2/stocks/%s/quotes/latest?feed=iex", symbol.String())
 	urlStr := strings.TrimSuffix(dataURL, "/") + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
-	if err != nil {
-		return 0, 0, err
-	}
-	req.Header.Set(headerAPIKey, c.apiKey)
-	req.Header.Set(headerAPISecret, c.apiSecret)
-
-	if err := c.limiter.Wait(ctx); err != nil {
-		return 0, 0, err
-	}
-	resp, err := c.client.Do(req)
+	resp, err := c.doReqFullWithPath(ctx, http.MethodGet, urlStr, path, nil, reqOpts{priority: PriorityTrading, maxRetries: 3})
 	if err != nil {
 		c.log.Error().Err(err).Str("symbol", symbol.String()).Msg("get quote HTTP request failed")
 		return 0, 0, err
@@ -285,19 +412,8 @@ func (c *RESTClient) GetHistoricalBars(ctx context.Context, dataURL string, symb
 			path += "&page_token=" + nextToken
 		}
 
-		// Historical bars come from data.alpaca.markets, not paper-api.
 		urlStr := strings.TrimSuffix(dataURL, "/") + path
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set(headerAPIKey, c.apiKey)
-		req.Header.Set(headerAPISecret, c.apiSecret)
-
-		if err := c.limiter.Wait(ctx); err != nil {
-			return nil, err
-		}
-		resp, err := c.client.Do(req)
+		resp, err := c.doReqFullWithPath(ctx, http.MethodGet, urlStr, path, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
 		if err != nil {
 			c.log.Error().Err(err).Str("symbol", symbol.String()).Msg("historical bars HTTP request failed")
 			return nil, err
@@ -370,7 +486,7 @@ func toAlpacaTimeframe(tf string) string {
 
 // GetAccountEquity fetches the current account equity from the Alpaca broker API.
 func (c *RESTClient) GetAccountEquity(ctx context.Context) (float64, error) {
-	resp, err := c.doReq(ctx, http.MethodGet, "/v2/account", nil)
+	resp, err := c.doReqWithOpts(ctx, http.MethodGet, "/v2/account", nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
 	if err != nil {
 		c.log.Error().Err(err).Msg("get account HTTP request failed")
 		return 0, err

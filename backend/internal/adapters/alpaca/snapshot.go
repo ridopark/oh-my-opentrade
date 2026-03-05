@@ -18,24 +18,13 @@ func (c *RESTClient) GetSnapshots(ctx context.Context, dataURL string, symbols [
 	}
 
 	path := "/v2/stocks/snapshots?symbols=" + strings.Join(symbols, ",") + "&feed=iex"
-	urlStr := strings.TrimSuffix(dataURL, "/") + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set(headerAPIKey, c.apiKey)
-	req.Header.Set(headerAPISecret, c.apiSecret)
-
-	if err := c.limiter.Wait(ctx); err != nil {
-		return nil, err
-	}
-	resp, err := c.client.Do(req)
+	resp, err := c.doReqDataAPI(ctx, dataURL, http.MethodGet, path, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
 	if err != nil {
 		c.log.Error().Err(err).Msg("snapshots HTTP request failed")
 		return nil, err
 	}
+	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("alpaca: get snapshots failed (status %d): %s", resp.StatusCode, string(body))
 	}

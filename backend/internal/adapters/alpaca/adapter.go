@@ -18,6 +18,7 @@ type Adapter struct {
 	rest    *RESTClient
 	ws      *WSClient
 	dataURL string
+	posC    *positionCache
 	log     zerolog.Logger
 }
 
@@ -32,7 +33,7 @@ func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
 		return nil, errors.New("APISecretKey is required")
 	}
 
-	limiter := NewRateLimiter(defaultRateLimit)
+	limiter := NewPriorityRateLimiter(defaultRateLimit, 120)
 	restLog := log.With().Str("client", "rest").Logger()
 	rest := NewRESTClient(cfg.BaseURL, cfg.APIKeyID, cfg.APISecretKey, limiter, restLog)
 
@@ -51,6 +52,7 @@ func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
 		rest:    rest,
 		ws:      ws,
 		dataURL: dataURL,
+		posC:    newPositionCache(2 * time.Second),
 		log:     log,
 	}, nil
 }
@@ -78,9 +80,21 @@ func (a *Adapter) Close() error {
 // If the intent carries an options instrument, it dispatches to SubmitOptionOrder.
 func (a *Adapter) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (string, error) {
 	if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
-		return a.rest.SubmitOptionOrder(ctx, intent)
+		id, err := a.rest.SubmitOptionOrder(ctx, intent)
+		if err == nil {
+			if a.posC != nil {
+				a.posC.Invalidate()
+			}
+		}
+		return id, err
 	}
-	return a.rest.SubmitOrder(ctx, intent)
+	id, err := a.rest.SubmitOrder(ctx, intent)
+	if err == nil {
+		if a.posC != nil {
+			a.posC.Invalidate()
+		}
+	}
+	return id, err
 }
 
 // CancelOrder requests cancellation of an existing Alpaca order.
@@ -95,7 +109,20 @@ func (a *Adapter) GetOrderStatus(ctx context.Context, orderID string) (string, e
 
 // GetPositions retrieves currently open positions from Alpaca.
 func (a *Adapter) GetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
-	return a.rest.GetPositions(ctx, tenantID, envMode)
+	if a.posC != nil {
+		if pos, ok := a.posC.Get(tenantID, envMode); ok {
+			return pos, nil
+		}
+	}
+
+	pos, err := a.rest.GetPositions(ctx, tenantID, envMode)
+	if err != nil {
+		return nil, err
+	}
+	if a.posC != nil {
+		a.posC.Set(tenantID, envMode, pos)
+	}
+	return pos, nil
 }
 
 // GetQuote fetches the latest bid and ask prices for a symbol.
