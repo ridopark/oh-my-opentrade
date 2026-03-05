@@ -3,7 +3,7 @@ BINARY_NAME := omo-core
 BACKEND_DIR := backend
 BIN_DIR := $(BACKEND_DIR)/bin
 
-.PHONY: all build backfill test test-v test-race test-cover test-integration clean lint migrate fmt debug-chrome debug-chrome-headless
+.PHONY: all build backfill test test-v test-race test-cover test-integration clean lint migrate fmt debug-chrome debug-chrome-headless install-hooks
 
 all: test build
 
@@ -66,3 +66,8 @@ debug-chrome:
 ## Launch Chrome headless with remote debugging
 debug-chrome-headless:
 	./scripts/debug-chrome.sh --headless
+
+## Install git hooks (run once after cloning)
+install-hooks:
+	git config core.hooksPath .githooks
+	@echo "Git hooks installed (.githooks/pre-commit)"

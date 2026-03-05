@@ -339,7 +339,7 @@ func TestService_PositionGate_RejectsDuplicateEntry(t *testing.T) {
 	broker := &mockBroker{
 		GetPositionsFunc: func(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
 			// Simulate an existing long position in BTCUSD.
-			trade, _ := domain.NewTrade(time.Now(), tenantID, envMode, [16]byte{}, "BTCUSD", "BUY", 1.0, 50000, 0, "filled")
+			trade, _ := domain.NewTrade(time.Now(), tenantID, envMode, [16]byte{}, "BTCUSD", "BUY", 1.0, 50000, 0, "filled", "strategy-1", "test")
 			return []domain.Trade{trade}, nil
 		},
 	}
