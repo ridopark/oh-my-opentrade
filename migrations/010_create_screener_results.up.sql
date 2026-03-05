@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS screener_results (
   price_source         TEXT        NULL,
   error_msg            TEXT        NULL,
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (tenant_id, env_mode, run_id, symbol)
+  PRIMARY KEY (tenant_id, env_mode, run_id, symbol, as_of)
 );
 SELECT create_hypertable('screener_results', 'as_of', if_not_exists => TRUE);
 CREATE INDEX IF NOT EXISTS idx_screener_results_as_of_desc ON screener_results (as_of DESC);
