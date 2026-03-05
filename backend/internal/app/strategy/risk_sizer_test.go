@@ -145,7 +145,7 @@ func TestRiskSizer_HandleSignal_Entry_Sell(t *testing.T) {
 	assert.InDelta(t, 100*(1+0.0025), intent.StopLoss, 0.0000001)
 }
 
-func TestRiskSizer_HandleSignal_Exit_SetsIsExit(t *testing.T) {
+func TestRiskSizer_HandleSignal_Exit_SetsDirectionCloseLong(t *testing.T) {
 	bus := memory.NewBus()
 	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
 		"limit_offset_bps":   int64(5),
@@ -163,11 +163,11 @@ func TestRiskSizer_HandleSignal_Exit_SetsIsExit(t *testing.T) {
 
 	evs := waitForEvents(t, received, 1)
 	intent := evs[0].Payload.(domain.OrderIntent)
-	assert.Equal(t, domain.DirectionShort, intent.Direction)
-	assert.True(t, intent.IsExit, "exit signal should produce OrderIntent with IsExit=true")
+	assert.Equal(t, domain.DirectionCloseLong, intent.Direction)
+	assert.True(t, intent.Direction.IsExit(), "exit signal should produce DirectionCloseLong")
 }
 
-func TestRiskSizer_HandleSignal_Entry_IsExitFalse(t *testing.T) {
+func TestRiskSizer_HandleSignal_Entry_IsNotExit(t *testing.T) {
 	bus := memory.NewBus()
 	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
 		"limit_offset_bps":   int64(5),
@@ -186,7 +186,7 @@ func TestRiskSizer_HandleSignal_Entry_IsExitFalse(t *testing.T) {
 	evs := waitForEvents(t, received, 1)
 	intent := evs[0].Payload.(domain.OrderIntent)
 	assert.Equal(t, domain.DirectionLong, intent.Direction)
-	assert.False(t, intent.IsExit, "entry signal should produce OrderIntent with IsExit=false")
+	assert.False(t, intent.Direction.IsExit(), "entry signal should produce DirectionLong, not an exit direction")
 }
 
 func TestRiskSizer_HandleSignal_FlatIgnored(t *testing.T) {

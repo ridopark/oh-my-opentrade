@@ -63,8 +63,14 @@ func (s *Service) Start(ctx context.Context) error {
 
 func (s *Service) fmtOrderSubmitted(ev domain.Event) string {
 	if p, ok := ev.Payload.(domain.OrderIntentEventPayload); ok {
-		msg := fmt.Sprintf("📤 Order Submitted: %s %s @ $%.2f (qty: %.2f)",
-			p.Direction, p.Symbol, p.LimitPrice, p.Quantity)
+		emoji := "📤"
+		action := "Order Submitted"
+		if p.Direction == string(domain.DirectionCloseLong) {
+			emoji = "📕"
+			action = "Exit Submitted"
+		}
+		msg := fmt.Sprintf("%s %s: %s %s @ $%.2f (qty: %.2f)",
+			emoji, action, p.Direction, p.Symbol, p.LimitPrice, p.Quantity)
 		msg += fmt.Sprintf("\n📊 Strategy: %s | Confidence: %.0f%%", p.Strategy, p.Confidence*100)
 		if p.Rationale != "" {
 			msg += fmt.Sprintf("\n💡 Rationale: %s", p.Rationale)

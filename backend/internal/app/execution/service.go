@@ -128,9 +128,9 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		}
 	}
 
-	// 1b. Reject SHORT direction for new entries — paper account does not support short selling.
-	// Exit orders (selling to close a long position) use DirectionShort but must be allowed through.
-	if intent.Direction == domain.DirectionShort && !intent.IsExit {
+	// 1b. Reject SHORT direction — paper account does not support short selling.
+	// Exit orders now use DirectionCloseLong, so this only catches new short entries.
+	if intent.Direction == domain.DirectionShort {
 		l.Warn().Msg("SHORT direction rejected — account does not support short selling")
 		if s.metrics != nil {
 			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "short_disabled").Inc()
@@ -139,24 +139,28 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		return nil
 	}
 
-	// 2. Validate risk.
-	if err := s.riskEngine.Validate(intent, s.accountEquity); err != nil {
-		l.Warn().Err(err).Msg("order intent rejected by risk engine")
-		if s.metrics != nil {
-			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "risk").Inc()
+	// 2. Validate risk (skip for exit orders — closing reduces exposure).
+	if !intent.Direction.IsExit() {
+		if err := s.riskEngine.Validate(intent, s.accountEquity); err != nil {
+			l.Warn().Err(err).Msg("order intent rejected by risk engine")
+			if s.metrics != nil {
+				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "risk").Inc()
+			}
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
+			return nil
 		}
-		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
-		return nil
 	}
 
-	// 3. Validate slippage.
-	if err := s.slippageGuard.Check(ctx, intent); err != nil {
-		l.Warn().Err(err).Msg("order intent rejected by slippage guard")
-		if s.metrics != nil {
-			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "validation").Inc()
+	// 3. Validate slippage (skip for exit orders — we want to exit regardless).
+	if !intent.Direction.IsExit() {
+		if err := s.slippageGuard.Check(ctx, intent); err != nil {
+			l.Warn().Err(err).Msg("order intent rejected by slippage guard")
+			if s.metrics != nil {
+				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "validation").Inc()
+			}
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
+			return nil
 		}
-		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
-		return nil
 	}
 	l.Info().Msg("order intent validated — passed risk and slippage checks")
 	s.emit(ctx, domain.EventOrderIntentValidated, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusValidated))
@@ -175,6 +179,29 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			s.emit(ctx, domain.EventCircuitBreakerTripped, event.TenantID, event.EnvMode, event.IdempotencyKey, err.Error())
 			return nil
 		}
+	}
+
+	// 5a. For exit intents, resolve the full position quantity from the broker.
+	if intent.Direction.IsExit() {
+		positions, posErr := s.broker.GetPositions(ctx, event.TenantID, event.EnvMode)
+		if posErr != nil {
+			l.Error().Err(posErr).Msg("failed to query positions for exit — rejecting conservatively")
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, fmt.Sprintf("exit position query failed: %v", posErr)))
+			return nil
+		}
+		var posQty float64
+		for _, p := range positions {
+			if p.Symbol == intent.Symbol {
+				posQty += p.Quantity
+			}
+		}
+		if posQty <= 0 {
+			l.Warn().Msg("exit intent but no position found — rejecting")
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, "position_gate: no_position_to_exit"))
+			return nil
+		}
+		intent.Quantity = posQty
+		l.Info().Float64("exit_qty", posQty).Msg("resolved exit quantity from broker position")
 	}
 
 	// 6. Submit to broker.

@@ -27,12 +27,6 @@ func makeIntent(t *testing.T, symbol string, dir domain.Direction) domain.OrderI
 	return intent
 }
 
-func makeExitIntent(t *testing.T, symbol string, dir domain.Direction) domain.OrderIntent {
-	t.Helper()
-	intent := makeIntent(t, symbol, dir)
-	intent.IsExit = true
-	return intent
-}
 
 func makeTrade(symbol, side string, qty float64) domain.Trade {
 	t, _ := domain.NewTrade(
@@ -98,16 +92,22 @@ func TestPositionGate_Check(t *testing.T) {
 
 		// ---- EXIT SCENARIOS ----
 		{
-			name:      "exit_SHORT_with_long_position_allows",
+			name:      "exit_CLOSE_LONG_with_long_position_allows",
 			positions: []domain.Trade{makeTrade("BTCUSD", "BUY", 1.0)},
-			intent:    func(t *testing.T) domain.OrderIntent { return makeExitIntent(t, "BTCUSD", domain.DirectionShort) },
+			intent:    func(t *testing.T) domain.OrderIntent { return makeIntent(t, "BTCUSD", domain.DirectionCloseLong) },
 			wantErr:   nil,
 		},
 		{
-			name:      "exit_SHORT_no_position_rejects",
+			name:      "exit_CLOSE_LONG_no_position_rejects",
 			positions: nil,
-			intent:    func(t *testing.T) domain.OrderIntent { return makeExitIntent(t, "BTCUSD", domain.DirectionShort) },
+			intent:    func(t *testing.T) domain.OrderIntent { return makeIntent(t, "BTCUSD", domain.DirectionCloseLong) },
 			wantErr:   execution.ErrNoPositionToExit,
+		},
+		{
+			name:      "exit_CLOSE_LONG_with_alpaca_long_position_allows",
+			positions: []domain.Trade{makeTrade("BTCUSD", "long", 1.0)},
+			intent:    func(t *testing.T) domain.OrderIntent { return makeIntent(t, "BTCUSD", domain.DirectionCloseLong) },
+			wantErr:   nil,
 		},
 	}
 

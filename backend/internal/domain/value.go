@@ -28,15 +28,21 @@ func NewEnvMode(m string) (EnvMode, error) {
 type Direction string
 
 const (
-	DirectionLong  Direction = "LONG"
-	DirectionShort Direction = "SHORT"
+	DirectionLong      Direction = "LONG"
+	DirectionShort     Direction = "SHORT"
+	DirectionCloseLong Direction = "CLOSE_LONG"
 )
 
 func (d Direction) String() string { return string(d) }
 
+// IsExit returns true if the direction represents closing an existing position.
+func (d Direction) IsExit() bool {
+	return d == DirectionCloseLong
+}
+
 func NewDirection(d string) (Direction, error) {
 	switch Direction(d) {
-	case DirectionLong, DirectionShort:
+	case DirectionLong, DirectionShort, DirectionCloseLong:
 		return Direction(d), nil
 	default:
 		return "", fmt.Errorf("invalid direction: %q", d)
