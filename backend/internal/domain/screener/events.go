@@ -21,3 +21,12 @@ type CompletedPayload struct {
 	TopN     int            `json:"top_n"`
 	Ranked   []RankedSymbol `json:"ranked"`
 }
+
+type EffectiveSymbolsUpdatedPayload struct {
+	StrategyKey string    `json:"strategy_key"`
+	RunID       string    `json:"run_id"`
+	AsOf        time.Time `json:"as_of"`
+	Mode        string    `json:"mode"`
+	Source      string    `json:"source"`
+	Symbols     []string  `json:"symbols"`
+}

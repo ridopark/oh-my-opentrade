@@ -9,6 +9,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/domain/screener"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,6 +55,116 @@ func TestService_EmitsStateUpdated(t *testing.T) {
 	snap, ok := emitted.Payload.(domain.IndicatorSnapshot)
 	require.True(t, ok)
 	assert.Equal(t, sym, snap.Symbol)
+}
+
+func TestService_SymbolFilter_AllowsAllWhenNoBaseSymbols(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	var count int
+	err = bus.Subscribe(context.Background(), domain.EventStateUpdated, func(ctx context.Context, ev domain.Event) error {
+		count++
+		return nil
+	})
+	require.NoError(t, err)
+
+	sym, _ := domain.NewSymbol("MSFT")
+	bar := createBar(t, sym, 100.0, 10.0)
+	err = bus.Publish(context.Background(), createTestEvent(t, bar))
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, count)
+}
+
+func TestService_SymbolFilter_BlocksNonBaseSymbol(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc.SetBaseSymbols([]string{"AAPL"})
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	var count int
+	err = bus.Subscribe(context.Background(), domain.EventStateUpdated, func(ctx context.Context, ev domain.Event) error {
+		count++
+		return nil
+	})
+	require.NoError(t, err)
+
+	sym, _ := domain.NewSymbol("MSFT")
+	bar := createBar(t, sym, 100.0, 10.0)
+	err = bus.Publish(context.Background(), createTestEvent(t, bar))
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, count)
+}
+
+func TestService_SymbolFilter_AllowsBaseSymbol(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc.SetBaseSymbols([]string{"AAPL"})
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	var count int
+	err = bus.Subscribe(context.Background(), domain.EventStateUpdated, func(ctx context.Context, ev domain.Event) error {
+		count++
+		return nil
+	})
+	require.NoError(t, err)
+
+	sym, _ := domain.NewSymbol("AAPL")
+	bar := createBar(t, sym, 100.0, 10.0)
+	err = bus.Publish(context.Background(), createTestEvent(t, bar))
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, count)
+}
+
+func TestService_EffectiveSymbolsUpdated_OverridesBase(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc.SetBaseSymbols([]string{"AAPL", "MSFT"})
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	payload := screener.EffectiveSymbolsUpdatedPayload{
+		StrategyKey: "orb_break_retest",
+		RunID:       "test-run",
+		AsOf:        time.Now(),
+		Mode:        "intersection",
+		Source:      "intersection",
+		Symbols:     []string{"TSLA"},
+	}
+	evt, err := domain.NewEvent(domain.EventEffectiveSymbolsUpdated, "tenant123", domain.EnvModePaper, "test-effective", payload)
+	require.NoError(t, err)
+	err = bus.Publish(context.Background(), *evt)
+	require.NoError(t, err)
+
+	var count int
+	err = bus.Subscribe(context.Background(), domain.EventStateUpdated, func(ctx context.Context, ev domain.Event) error {
+		count++
+		return nil
+	})
+	require.NoError(t, err)
+
+	symAAPL, _ := domain.NewSymbol("AAPL")
+	symTSLA, _ := domain.NewSymbol("TSLA")
+	err = bus.Publish(context.Background(), createTestEvent(t, createBar(t, symAAPL, 100.0, 10.0)))
+	require.NoError(t, err)
+	err = bus.Publish(context.Background(), createTestEvent(t, createBar(t, symTSLA, 100.0, 10.0)))
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, count)
 }
 
 func TestService_EmitsRegimeShifted(t *testing.T) {

@@ -35,6 +35,7 @@ import (
 	screenerapp "github.com/oh-my-opentrade/backend/internal/app/screener"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy/builtin"
+	"github.com/oh-my-opentrade/backend/internal/app/symbolrouter"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -171,6 +172,7 @@ func main() {
 	var strategyRunner *strategy.Runner
 	var riskSizer *strategy.RiskSizer
 	var lifecycleSvc *strategy.LifecycleService
+	var symRouter *symbolrouter.Service
 	if useStrategyV2 {
 		const specDir = "configs/strategies"
 		specStore := store_fs.NewStore(specDir, strategy.LoadSpecFile)
@@ -211,6 +213,23 @@ func main() {
 			Int("symbols", len(spec.Routing.Symbols)).
 			Str("spec_version", spec.Version.String()).
 			Msg("strategy v2 pipeline initialized")
+
+		symRouterSpecs := []symbolrouter.StrategySpec{
+			{
+				Key:           string(spec.ID),
+				BaseSymbols:   spec.Routing.Symbols,
+				WatchlistMode: spec.Routing.WatchlistMode,
+			},
+		}
+		symRouter = symbolrouter.NewService(
+			eventBus,
+			symRouterSpecs,
+			"default",
+			domain.EnvModePaper,
+			log.With().Str("component", "symbolrouter").Logger(),
+		)
+
+		monitorSvc.SetBaseSymbols(spec.Routing.Symbols)
 	}
 
 	// 5c. Initialize AI debate service (only if enabled in config)
@@ -259,6 +278,11 @@ func main() {
 		}
 		if err := riskSizer.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start risk sizer v2")
+		}
+	}
+	if symRouter != nil {
+		if err := symRouter.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start symbol router v2")
 		}
 	}
 	if err := notifySvc.Start(ctx); err != nil {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/domain/screener"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
@@ -23,20 +24,22 @@ const settlingBars = 5
 // It subscribes to MarketBarSanitized events, computes technical indicators,
 // detects market regime shifts, and identifies trade setups.
 type Service struct {
-	eventBus       ports.EventBusPort
-	repo           ports.RepositoryPort
-	calculator     *IndicatorCalculator
-	regimeDetector *RegimeDetector
-	orbTracker     *ORBTracker
-	orbCfg         ORBConfig
-	mu             sync.Mutex
-	lastSnaps      map[string]domain.IndicatorSnapshot
-	liveBars       map[string]int
-	aggregators    map[string]*domain.BarAggregator
-	anchorRegimes  map[string]domain.MarketRegime
-	log            zerolog.Logger
-	dnaGate     DNAGateChecker
-	strategyKey string
+	eventBus         ports.EventBusPort
+	repo             ports.RepositoryPort
+	calculator       *IndicatorCalculator
+	regimeDetector   *RegimeDetector
+	orbTracker       *ORBTracker
+	orbCfg           ORBConfig
+	mu               sync.Mutex
+	baseSymbols      map[string]struct{}
+	effectiveSymbols map[string]struct{}
+	lastSnaps        map[string]domain.IndicatorSnapshot
+	liveBars         map[string]int
+	aggregators      map[string]*domain.BarAggregator
+	anchorRegimes    map[string]domain.MarketRegime
+	log              zerolog.Logger
+	dnaGate          DNAGateChecker
+	strategyKey      string
 }
 
 // NewService creates a new monitor Service.
@@ -60,7 +63,7 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 // strategy DNA parameters. This must be called before Start() to ensure
 // the ORB tracker uses DNA-configured thresholds (min_rvol, min_confidence, etc.)
 // instead of hardcoded defaults.
-	func (s *Service) SetORBConfig(params map[string]any) {
+func (s *Service) SetORBConfig(params map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.orbCfg = NewORBConfigFromDNA(params)
@@ -83,6 +86,29 @@ func (s *Service) SetDNAGate(checker DNAGateChecker, strategyKey string) {
 		Str("strategy_key", strategyKey).
 		Bool("gate_enabled", checker != nil).
 		Msg("DNA gate configured")
+}
+
+func (s *Service) SetBaseSymbols(symbols []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.baseSymbols = make(map[string]struct{}, len(symbols))
+	for _, sym := range symbols {
+		s.baseSymbols[sym] = struct{}{}
+	}
+	s.effectiveSymbols = nil
+	s.log.Info().Strs("symbols", symbols).Msg("base symbols configured")
+}
+
+func (s *Service) isAllowedSymbolLocked(sym string) bool {
+	if s.baseSymbols == nil {
+		return true
+	}
+	if s.effectiveSymbols != nil {
+		_, ok := s.effectiveSymbols[sym]
+		return ok
+	}
+	_, ok := s.baseSymbols[sym]
+	return ok
 }
 
 func (s *Service) ResetSessionIndicators(symbol string) {
@@ -123,7 +149,31 @@ func (s *Service) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("monitor: failed to subscribe to MarketBarSanitized: %w", err)
 	}
-	s.log.Info().Msg("subscribed to MarketBarSanitized events")
+	if err := s.eventBus.Subscribe(ctx, domain.EventEffectiveSymbolsUpdated, s.handleEffectiveSymbolsUpdated); err != nil {
+		return fmt.Errorf("monitor: failed to subscribe to EffectiveSymbolsUpdated: %w", err)
+	}
+	s.log.Info().Msg("subscribed to MarketBarSanitized and EffectiveSymbolsUpdated events")
+	return nil
+}
+
+func (s *Service) handleEffectiveSymbolsUpdated(ctx context.Context, evt domain.Event) error {
+	payload, ok := evt.Payload.(screener.EffectiveSymbolsUpdatedPayload)
+	if !ok {
+		return fmt.Errorf("monitor: effective symbols payload is not EffectiveSymbolsUpdatedPayload, got %T", evt.Payload)
+	}
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.effectiveSymbols = make(map[string]struct{}, len(payload.Symbols))
+	for _, sym := range payload.Symbols {
+		s.effectiveSymbols[sym] = struct{}{}
+	}
+	s.log.Info().
+		Str("strategy", payload.StrategyKey).
+		Str("source", payload.Source).
+		Int("count", len(payload.Symbols)).
+		Strs("symbols", payload.Symbols).
+		Msg("effective symbols updated")
 	return nil
 }
 
@@ -149,6 +199,11 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	var publishBestEffort []domain.Event
 
 	s.mu.Lock()
+
+	if !s.isAllowedSymbolLocked(string(bar.Symbol)) {
+		s.mu.Unlock()
+		return nil
+	}
 
 	snap := s.calculator.Update(bar)
 	symStr := bar.Symbol.String()
@@ -250,7 +305,7 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	}
 
 	if s.liveBars[symStr] < settlingBars {
-	s.orbTracker.OnBar(bar, snap, s.orbCfg, true)
+		s.orbTracker.OnBar(bar, snap, s.orbCfg, true)
 		l.Debug().Msg(fmt.Sprintf("settling: %d/%d bars, suppressing setup detection", s.liveBars[symStr], settlingBars))
 		s.lastSnaps[symStr] = snap
 		s.mu.Unlock()

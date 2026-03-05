@@ -94,6 +94,7 @@ type rawRoutingSection struct {
 	Priority           *int     `toml:"priority"`
 	ConflictPolicy     *string  `toml:"conflict_policy"`
 	ExclusivePerSymbol *bool    `toml:"exclusive_per_symbol"`
+	WatchlistMode      *string  `toml:"watchlist_mode"`
 }
 
 func loadV1(content, path string) (portstrategy.Spec, error) {
@@ -152,6 +153,7 @@ func loadV1(content, path string) (portstrategy.Spec, error) {
 			Priority:           100,
 			ConflictPolicy:     conflict,
 			ExclusivePerSymbol: false,
+			WatchlistMode:      "intersection",
 		},
 		Params: params,
 		Hooks:  map[string]portstrategy.HookRef{},
@@ -224,6 +226,11 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 		exclusive = *raw.Routing.ExclusivePerSymbol
 	}
 
+	watchlistMode := "intersection"
+	if raw.Routing.WatchlistMode != nil && strings.TrimSpace(*raw.Routing.WatchlistMode) != "" {
+		watchlistMode = *raw.Routing.WatchlistMode
+	}
+
 	params := make(map[string]any)
 	mergeInto(params, raw.Parameters)
 	mergeInto(params, raw.Params)
@@ -257,6 +264,7 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 			Priority:           priority,
 			ConflictPolicy:     conflict,
 			ExclusivePerSymbol: exclusive,
+			WatchlistMode:      watchlistMode,
 		},
 		Params: params,
 		Hooks:  hooks,

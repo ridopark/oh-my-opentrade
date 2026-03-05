@@ -64,6 +64,7 @@ type RoutingConfig struct {
 	Priority           int
 	ConflictPolicy     domstrategy.ConflictPolicy
 	ExclusivePerSymbol bool
+	WatchlistMode      string // "static"|"replace"|"intersection"|"union" — default "intersection"
 }
 
 // HookRef identifies a hook implementation.

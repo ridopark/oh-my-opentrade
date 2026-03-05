@@ -18,6 +18,7 @@ timeframes = ["1m"]
 priority = 100
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
+watchlist_mode = "intersection"
 
 [params]
 orb_window_minutes = 30
