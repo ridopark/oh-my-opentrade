@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"log/slog"
 	"math"
 	"time"
 
@@ -144,10 +145,17 @@ type ORBSession struct {
 
 type ORBTracker struct {
 	sessions map[string]*ORBSession
+	logger   *slog.Logger
 }
 
 func NewORBTracker() *ORBTracker {
-	return &ORBTracker{sessions: make(map[string]*ORBSession)}
+	return &ORBTracker{sessions: make(map[string]*ORBSession), logger: slog.Default()}
+}
+
+func (t *ORBTracker) SetLogger(l *slog.Logger) {
+	if l != nil {
+		t.logger = l
+	}
 }
 
 func (t *ORBTracker) GetSession(symbol string) *ORBSession {
@@ -181,9 +189,11 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 			State:      ORBStatePreOpen,
 		}
 		t.sessions[sym] = sess
+		t.logger.Info("orb: new session", "symbol", sym, "key", key, "state", sess.State)
 	}
 
 	if sess.State == ORBStateSignalFired || sess.State == ORBStateDoneForSession || sess.State == ORBStateInvalid {
+		t.logger.Debug("orb: terminal state", "symbol", sym, "state", sess.State)
 		return nil, false
 	}
 
@@ -196,6 +206,7 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 			sess.OrbHigh = bar.High
 			sess.OrbLow = bar.Low
 			sess.RangeBarCount = 1
+			t.logger.Info("orb: forming range", "symbol", sym, "high", sess.OrbHigh, "low", sess.OrbLow)
 		}
 		return nil, false
 
@@ -213,9 +224,11 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 		}
 		if sess.RangeBarCount >= required {
 			sess.State = ORBStateRangeSet
+			t.logger.Info("orb: range set", "symbol", sym, "high", sess.OrbHigh, "low", sess.OrbLow, "bars", sess.RangeBarCount)
 			return t.onRangeSetBar(sess, bar, snap, cfg)
 		} else {
 			sess.State = ORBStateInvalid
+			t.logger.Warn("orb: invalid range", "symbol", sym, "bars", sess.RangeBarCount, "required", required)
 			return nil, false
 		}
 
@@ -230,6 +243,7 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 		sess.BarsSinceBreakout++
 		if sess.BarsSinceBreakout > cfg.MaxRetestBars {
 			sess.State = ORBStateDoneForSession
+			t.logger.Info("orb: retest timeout", "symbol", sym, "bars_since_breakout", sess.BarsSinceBreakout, "max", cfg.MaxRetestBars)
 			return nil, false
 		}
 
@@ -273,6 +287,7 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 				sess.Retest.HoldClose = bar.Close
 				sess.Retest.Confirmed = true
 				sess.State = ORBStateRetestConfirmed
+				t.logger.Info("orb: retest confirmed", "symbol", sym, "direction", sess.Breakout.Direction, "hold_close", bar.Close, "confidence", orbConfidence(sess, bar, cfg))
 				setup := &SetupCondition{
 					Symbol:     bar.Symbol,
 					Timeframe:  bar.Timeframe,
@@ -291,9 +306,11 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 				sess.State = ORBStateDoneForSession
 				// Filter: reject if computed confidence is below the DNA min_confidence threshold.
 				if setup.Confidence < cfg.MinConfidence {
+					t.logger.Info("orb: low confidence", "symbol", sym, "confidence", setup.Confidence, "min", cfg.MinConfidence)
 					return nil, false
 				}
 				if replay {
+					t.logger.Info("orb: replay signal suppressed", "symbol", sym, "direction", sess.Breakout.Direction)
 					return nil, false
 				}
 				return setup, true
@@ -319,6 +336,7 @@ func (t *ORBTracker) onRangeSetBar(sess *ORBSession, bar domain.MarketBar, snap 
 		sess.State = ORBStateBreakoutSeen
 		sess.State = ORBStateAwaitingRetest
 		sess.BarsSinceBreakout = 0
+		t.logger.Info("orb: breakout", "symbol", sess.Symbol, "direction", sess.Breakout.Direction, "close", bar.Close, "rvol", rvol)
 		return nil, false
 	}
 	if shortBreak {
@@ -326,6 +344,7 @@ func (t *ORBTracker) onRangeSetBar(sess *ORBSession, bar domain.MarketBar, snap 
 		sess.State = ORBStateBreakoutSeen
 		sess.State = ORBStateAwaitingRetest
 		sess.BarsSinceBreakout = 0
+		t.logger.Info("orb: breakout", "symbol", sess.Symbol, "direction", sess.Breakout.Direction, "close", bar.Close, "rvol", rvol)
 		return nil, false
 	}
 	return nil, false
