@@ -64,6 +64,45 @@ func TestRESTClient_SubmitOrder_Success(t *testing.T) {
 	assert.Equal(t, "order-uuid-123", orderID)
 }
 
+func TestRESTClient_SubmitOrder_RoundsSubPennyPrices(t *testing.T) {
+	// Arrange — verify sub-penny prices are rounded to 2 decimal places
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+
+		var req map[string]interface{}
+		err = json.Unmarshal(body, &req)
+		require.NoError(t, err)
+
+		// Sub-penny prices must be rounded to 2 decimal places
+		assert.Equal(t, 260.25, req["limit_price"])
+		assert.Equal(t, 255.16, req["stop_price"])
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id": "rounded-order-123"}`))
+	}))
+	defer server.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+
+	// Use sub-penny prices that Alpaca would reject
+	intent := domain.OrderIntent{
+		Symbol:     "AAPL",
+		Direction:  domain.DirectionLong,
+		Quantity:   10,
+		LimitPrice: 260.25005999999996, // actual sub-penny value from production
+		StopLoss:   255.1599,           // another sub-penny value
+	}
+
+	// Act
+	orderID, err := client.SubmitOrder(context.Background(), intent)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, "rounded-order-123", orderID)
+}
+
 func TestRESTClient_SubmitOrder_LimitNoStopPrice(t *testing.T) {
 	// Arrange — verify limit orders (StopLoss=0) do NOT include stop_price
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

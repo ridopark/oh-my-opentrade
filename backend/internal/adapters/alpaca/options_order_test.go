@@ -71,6 +71,40 @@ func TestRESTClient_SubmitOptionOrder_HappyPath(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────
+// SubmitOptionOrder — sub-penny price rounding
+// ─────────────────────────────────────────────
+
+func TestRESTClient_SubmitOptionOrder_RoundsSubPennyPrices(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		var req map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &req))
+
+		// Sub-penny prices must be rounded to 2 decimal places
+		assert.Equal(t, 3.2, req["limit_price"])
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id": "opt-rounded-123"}`))
+	}))
+	defer server.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+
+	intent := domain.OrderIntent{
+		Symbol:     "AAPL270119C00190000",
+		Direction:  domain.DirectionLong,
+		Quantity:   5.0,
+		LimitPrice: 3.20456789, // sub-penny
+	}
+
+	orderID, err := client.SubmitOptionOrder(context.Background(), intent)
+	require.NoError(t, err)
+	assert.Equal(t, "opt-rounded-123", orderID)
+}
+
+// ─────────────────────────────────────────────
 // SubmitOptionOrder — short direction error
 // ─────────────────────────────────────────────
 

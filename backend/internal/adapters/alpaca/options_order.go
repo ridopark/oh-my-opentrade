@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 
 	"context"
@@ -40,7 +41,7 @@ func (c *RESTClient) SubmitOptionOrder(ctx context.Context, intent domain.OrderI
 		"side":          side,
 		"type":          "limit",
 		"time_in_force": "day",
-		"limit_price":   intent.LimitPrice,
+		"limit_price":   math.Round(intent.LimitPrice*100) / 100,
 	}
 
 	b, _ := json.Marshal(reqBody)

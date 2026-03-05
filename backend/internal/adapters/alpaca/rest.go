@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -78,11 +79,11 @@ func (c *RESTClient) SubmitOrder(ctx context.Context, intent domain.OrderIntent)
 		"side":          side,
 		"type":          "limit",
 		"time_in_force": "gtc",
-		"limit_price":   intent.LimitPrice,
+		"limit_price":   math.Round(intent.LimitPrice*100) / 100,
 	}
 	if intent.StopLoss > 0 {
 		reqBody["type"] = "stop_limit"
-		reqBody["stop_price"] = intent.StopLoss
+		reqBody["stop_price"] = math.Round(intent.StopLoss*100) / 100
 	}
 
 	b, _ := json.Marshal(reqBody)
