@@ -2,7 +2,12 @@
 
 import { useExecutionEvents } from "@/lib/event-stream";
 import { relativeTime, formatPrice } from "@/lib/format";
-import type { OrderIntentEvent, OrderIntentStatus, DebateEvent } from "@/lib/types";
+import type {
+  OrderIntentEvent,
+  OrderIntentStatus,
+  HistoricalOrder,
+  HistoricalOrdersResponse,
+} from "@/lib/types";
 import {
   Card,
   CardContent,
@@ -32,8 +37,38 @@ import {
   TrendingUp,
   TrendingDown,
   Scale,
+  Database,
+  Radio,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
+
+// Unified order type for display (works for both live SSE + historical)
+interface DisplayOrder {
+  id: string; // unique key for React
+  intentId: string;
+  symbol: string;
+  direction: string;
+  limitPrice: number;
+  stopLoss: number;
+  maxSlippageBPS: number;
+  quantity: number;
+  strategy: string;
+  rationale: string;
+  confidence: number;
+  status: string;
+  occurredAt: string;
+  source: "live" | "historical";
+  // Fill data (historical only)
+  filledAt?: string;
+  filledPrice?: number;
+  filledQty?: number;
+  // Debate data
+  debate?: {
+    bullArgument: string;
+    bearArgument: string;
+    judgeReasoning: string;
+  };
+}
 
 function StatusBadge({ status }: { status: string }) {
   const styles: Record<string, string> = {
@@ -41,6 +76,7 @@ function StatusBadge({ status }: { status: string }) {
     validated: "bg-emerald-500/20 text-emerald-400",
     rejected: "bg-red-500/20 text-red-400",
     submitted: "bg-yellow-500/20 text-yellow-400",
+    filled: "bg-emerald-500/20 text-emerald-400",
   };
 
   return (
@@ -98,23 +134,38 @@ function ConfidenceCell({
   );
 }
 
+function SourceBadge({ source }: { source: "live" | "historical" }) {
+  if (source === "live") {
+    return (
+      <Badge className="bg-emerald-500/10 text-emerald-400 text-[10px] px-1.5 py-0">
+        <Radio className="mr-0.5 h-2.5 w-2.5" />
+        Live
+      </Badge>
+    );
+  }
+  return (
+    <Badge className="bg-muted text-muted-foreground text-[10px] px-1.5 py-0">
+      <Database className="mr-0.5 h-2.5 w-2.5" />
+      DB
+    </Badge>
+  );
+}
+
 interface OrderDetailSheetProps {
-  order: (OrderIntentEvent & { eventId: string; occurredAt: string }) | null;
-  debate: DebateEvent | undefined;
+  order: DisplayOrder | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
 function OrderDetailSheet({
   order,
-  debate,
   open,
   onOpenChange,
 }: OrderDetailSheetProps) {
   if (!order) return null;
 
   const isLong = order.direction === "LONG";
-  const hasDebate = order.strategy === "debate" && debate;
+  const hasDebate = order.debate;
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -143,7 +194,10 @@ function OrderDetailSheet({
             </div>
           </div>
           <SheetDescription className="flex items-center justify-between text-xs">
-            <span>Event ID: {order.eventId.slice(0, 8)}</span>
+            <span className="flex items-center gap-1.5">
+              Intent: {order.intentId.slice(0, 8)}
+              <SourceBadge source={order.source} />
+            </span>
             <span>{relativeTime(order.occurredAt)}</span>
           </SheetDescription>
         </SheetHeader>
@@ -188,8 +242,32 @@ function OrderDetailSheet({
             </div>
           </div>
 
+          {/* Fill Data (historical orders that were filled) */}
+          {order.filledAt && (
+            <div className="grid grid-cols-2 gap-4 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4">
+              <div>
+                <p className="text-xs text-emerald-400">Filled Price</p>
+                <p className="font-mono text-lg font-medium text-emerald-400">
+                  {formatPrice(order.filledPrice ?? 0)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-emerald-400">Filled Qty</p>
+                <p className="font-mono text-lg font-medium text-emerald-400">
+                  {order.filledQty}
+                </p>
+              </div>
+              <div className="col-span-2">
+                <p className="text-xs text-muted-foreground">Filled At</p>
+                <p className="font-mono text-sm">
+                  {relativeTime(order.filledAt)}
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Debate Analysis (if applicable) */}
-          {hasDebate && debate && (
+          {hasDebate && (
             <div className="space-y-4 pt-4">
               <div className="flex items-center gap-2 border-t pt-4">
                 <Swords className="h-4 w-4 text-violet-400" />
@@ -205,7 +283,7 @@ function OrderDetailSheet({
                   Bull Case
                 </div>
                 <p className="text-xs leading-relaxed text-muted-foreground">
-                  {debate.decision.bullArgument}
+                  {order.debate!.bullArgument}
                 </p>
               </div>
 
@@ -216,7 +294,7 @@ function OrderDetailSheet({
                   Bear Case
                 </div>
                 <p className="text-xs leading-relaxed text-muted-foreground">
-                  {debate.decision.bearArgument}
+                  {order.debate!.bearArgument}
                 </p>
               </div>
 
@@ -227,7 +305,7 @@ function OrderDetailSheet({
                   Judge Verdict
                 </div>
                 <p className="text-xs leading-relaxed text-muted-foreground">
-                  {debate.decision.judgeReasoning}
+                  {order.debate!.judgeReasoning}
                 </p>
               </div>
             </div>
@@ -238,12 +316,64 @@ function OrderDetailSheet({
   );
 }
 
+function historicalToDisplay(h: HistoricalOrder): DisplayOrder {
+  const directionMap: Record<string, string> = {
+    BUY: "LONG",
+    SELL: "SHORT",
+    buy: "LONG",
+    sell: "SHORT",
+  };
+  return {
+    id: `hist-${h.intent_id}`,
+    intentId: h.intent_id,
+    symbol: h.symbol,
+    direction: directionMap[h.side] ?? h.side,
+    limitPrice: h.limit_price,
+    stopLoss: h.stop_loss,
+    maxSlippageBPS: 0,
+    quantity: h.quantity,
+    strategy: h.strategy,
+    rationale: h.rationale,
+    confidence: h.confidence,
+    status: h.status,
+    occurredAt: h.time,
+    source: "historical",
+    filledAt: h.filled_at,
+    filledPrice: h.filled_price,
+    filledQty: h.filled_qty,
+    debate: h.thought_log
+      ? {
+          bullArgument: h.thought_log.bull_argument,
+          bearArgument: h.thought_log.bear_argument,
+          judgeReasoning: h.thought_log.judge_reasoning,
+        }
+      : undefined,
+  };
+}
+
 export default function ExecutionPage() {
   const { orders, debates, connected } = useExecutionEvents(100);
-  const [selectedOrder, setSelectedOrder] =
-    useState<(OrderIntentEvent & { eventId: string; occurredAt: string }) | null>(
-      null
-    );
+  const [historicalOrders, setHistoricalOrders] = useState<DisplayOrder[]>([]);
+  const [histLoading, setHistLoading] = useState(true);
+  const [selectedOrder, setSelectedOrder] = useState<DisplayOrder | null>(null);
+
+  // Fetch historical orders on mount
+  const fetchHistorical = useCallback(async () => {
+    try {
+      const res = await fetch("/api/orders?range=30d&limit=200");
+      if (!res.ok) return;
+      const data: HistoricalOrdersResponse = await res.json();
+      setHistoricalOrders(data.items.map(historicalToDisplay));
+    } catch {
+      // silently fail — historical data is supplemental
+    } finally {
+      setHistLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchHistorical();
+  }, [fetchHistorical]);
 
   const statusFromType = (type: string): OrderIntentStatus | undefined => {
     switch (type) {
@@ -260,37 +390,64 @@ export default function ExecutionPage() {
     }
   };
 
-  const orderPayloads = orders.map((e) => {
+  // Convert live SSE orders to DisplayOrder
+  const liveOrders: DisplayOrder[] = orders.map((e) => {
     const p = e.payload as OrderIntentEvent;
+    const status = (p.status ?? statusFromType(e.type)) as string;
+    const debate = debates.get(p.symbol);
     return {
-      ...p,
-      status: (p.status ?? statusFromType(e.type)) as OrderIntentEvent["status"],
+      id: `live-${e.id}`,
+      intentId: p.id,
+      symbol: p.symbol,
+      direction: p.direction,
+      limitPrice: p.limitPrice,
+      stopLoss: p.stopLoss,
+      maxSlippageBPS: p.maxSlippageBPS,
+      quantity: p.quantity,
+      strategy: p.strategy,
+      rationale: p.rationale,
+      confidence: p.confidence,
+      status: status ?? "unknown",
       occurredAt: e.occurredAt,
-      eventId: e.id,
+      source: "live" as const,
+      debate:
+        p.strategy === "debate" && debate
+          ? {
+              bullArgument: debate.decision.bullArgument,
+              bearArgument: debate.decision.bearArgument,
+              judgeReasoning: debate.decision.judgeReasoning,
+            }
+          : undefined,
     };
   });
 
-  // Stats
-  const validated = orderPayloads.filter(
-    (o) => o.status === "validated"
-  ).length;
-  const rejected = orderPayloads.filter((o) => o.status === "rejected").length;
-  const submitted = orderPayloads.filter(
-    (o) => o.status === "submitted"
-  ).length;
+  // Merge: live SSE first, then historical (deduplicated by intentId)
+  const liveIntentIds = new Set(liveOrders.map((o) => o.intentId));
+  const deduplicatedHistorical = historicalOrders.filter(
+    (o) => !liveIntentIds.has(o.intentId)
+  );
+  const allOrders = [...liveOrders, ...deduplicatedHistorical];
+
+  // Stats (over merged set)
+  const validated = allOrders.filter((o) => o.status === "validated").length;
+  const rejected = allOrders.filter((o) => o.status === "rejected").length;
+  const submitted = allOrders.filter((o) => o.status === "submitted").length;
+  const filled = allOrders.filter((o) => o.status === "filled").length;
 
   // Strategy Stats
-  const strategies = orderPayloads.reduce((acc, curr) => {
-    const s = curr.strategy || "unknown";
-    acc[s] = (acc[s] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
+  const strategies = allOrders.reduce(
+    (acc, curr) => {
+      const s = curr.strategy || "unknown";
+      acc[s] = (acc[s] || 0) + 1;
+      return acc;
+    },
+    {} as Record<string, number>
+  );
 
   return (
     <div className="space-y-6">
       <OrderDetailSheet
         order={selectedOrder}
-        debate={selectedOrder ? debates.get(selectedOrder.symbol) : undefined}
         open={!!selectedOrder}
         onOpenChange={(open) => !open && setSelectedOrder(null)}
       />
@@ -303,7 +460,7 @@ export default function ExecutionPage() {
             Execution Monitor
           </h1>
           <p className="text-sm text-muted-foreground">
-            Order intents — created, validated, rejected, and submitted
+            Order intents — live stream + historical from database
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -329,12 +486,12 @@ export default function ExecutionPage() {
       </div>
 
       {/* Summary Stats */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
         <Card>
           <CardContent className="pt-6">
             <p className="text-xs text-muted-foreground">Total</p>
             <p className="text-2xl font-bold tabular-nums">
-              {orderPayloads.length}
+              {allOrders.length}
             </p>
           </CardContent>
         </Card>
@@ -362,6 +519,14 @@ export default function ExecutionPage() {
             </p>
           </CardContent>
         </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-xs text-emerald-400">Filled</p>
+            <p className="text-2xl font-bold tabular-nums text-emerald-400">
+              {filled}
+            </p>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Order Table */}
@@ -369,7 +534,23 @@ export default function ExecutionPage() {
         <CardHeader>
           <CardTitle className="text-base">Recent Order Intents</CardTitle>
           <CardDescription>
-            Real-time order flow from the execution pipeline
+            {liveOrders.length > 0 && (
+              <span className="mr-2">
+                <Radio className="mr-1 inline h-3 w-3 text-emerald-400" />
+                {liveOrders.length} live
+              </span>
+            )}
+            {deduplicatedHistorical.length > 0 && (
+              <span>
+                <Database className="mr-1 inline h-3 w-3 text-muted-foreground" />
+                {deduplicatedHistorical.length} from database
+              </span>
+            )}
+            {histLoading && (
+              <span className="text-muted-foreground">
+                Loading historical orders...
+              </span>
+            )}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -377,6 +558,7 @@ export default function ExecutionPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-8"></TableHead>
                   <TableHead>Symbol</TableHead>
                   <TableHead>Direction</TableHead>
                   <TableHead>Strategy</TableHead>
@@ -389,12 +571,15 @@ export default function ExecutionPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {orderPayloads.map((order) => (
+                {allOrders.map((order) => (
                   <TableRow
-                    key={order.eventId}
+                    key={order.id}
                     className="cursor-pointer hover:bg-muted/50"
                     onClick={() => setSelectedOrder(order)}
                   >
+                    <TableCell className="px-1">
+                      <SourceBadge source={order.source} />
+                    </TableCell>
                     <TableCell className="font-mono font-medium">
                       {order.symbol}
                     </TableCell>
@@ -432,13 +617,23 @@ export default function ExecutionPage() {
                     </TableCell>
                   </TableRow>
                 ))}
-                {orderPayloads.length === 0 && (
+                {allOrders.length === 0 && !histLoading && (
                   <TableRow>
                     <TableCell
-                      colSpan={9}
+                      colSpan={10}
                       className="py-8 text-center text-muted-foreground"
                     >
-                      Waiting for order intent events...
+                      No order intents found. Waiting for live events...
+                    </TableCell>
+                  </TableRow>
+                )}
+                {allOrders.length === 0 && histLoading && (
+                  <TableRow>
+                    <TableCell
+                      colSpan={10}
+                      className="py-8 text-center text-muted-foreground"
+                    >
+                      Loading historical orders...
                     </TableCell>
                   </TableRow>
                 )}

@@ -226,6 +226,9 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		LimitPrice:    intent.LimitPrice,
 		StopLoss:      intent.StopLoss,
 		Status:        "submitted",
+		Strategy:      intent.Strategy,
+		Rationale:     intent.Rationale,
+		Confidence:    intent.Confidence,
 	}
 	if saveErr := s.repo.SaveOrder(ctx, order); saveErr != nil {
 		l.Error().Err(saveErr).Msg("failed to persist order — continuing to poll")
@@ -296,7 +299,7 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 	if intent.Direction == domain.DirectionLong {
 		side = "BUY"
 	}
-	trade, err := domain.NewTrade(now, tenantID, envMode, uuid.New(), intent.Symbol, side, intent.Quantity, fillPrice, 0, "filled")
+	trade, err := domain.NewTrade(now, tenantID, envMode, uuid.New(), intent.Symbol, side, intent.Quantity, fillPrice, 0, "filled", intent.Strategy, intent.Rationale)
 	if err != nil {
 		l.Error().Err(err).Msg("failed to construct trade on fill")
 	} else {

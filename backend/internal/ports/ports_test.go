@@ -119,6 +119,13 @@ func (m *mockRepository) UpdateOrderFill(ctx context.Context, brokerOrderID stri
 func (m *mockRepository) ListTrades(_ context.Context, _ ports.TradeQuery) (ports.TradePage, error) {
 	return ports.TradePage{}, nil
 }
+func (m *mockRepository) ListOrders(_ context.Context, _ ports.OrderQuery) (ports.OrderPage, error) {
+	return ports.OrderPage{}, nil
+}
+func (m *mockRepository) SaveThoughtLog(_ context.Context, _ domain.ThoughtLog) error { return nil }
+func (m *mockRepository) GetThoughtLogsByIntentID(_ context.Context, _ string) ([]domain.ThoughtLog, error) {
+	return nil, nil
+}
 
 // 6. NotifierPort
 type mockNotifier struct{}

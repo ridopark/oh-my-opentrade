@@ -18,11 +18,11 @@ import (
 const (
 	queryInsertMarketBar   = `INSERT INTO market_bars (time, account_id, env_mode, symbol, timeframe, open, high, low, close, volume, suspect) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (symbol, timeframe, time) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume, suspect=EXCLUDED.suspect`
 	querySelectMarketBars  = `SELECT time, symbol, timeframe, open, high, low, close, volume, suspect FROM market_bars WHERE symbol = $1 AND timeframe = $2 AND time >= $3 AND time < $4 ORDER BY time`
-	queryInsertTrade       = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
-	querySelectTrades      = `SELECT time, trade_id, symbol, side, quantity, price, commission, status FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4 ORDER BY time`
+	queryInsertTrade       = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status, strategy, rationale) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
+	querySelectTrades      = `SELECT time, trade_id, symbol, side, quantity, price, commission, status, COALESCE(strategy, ''), COALESCE(rationale, '') FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4 ORDER BY time`
 	queryInsertStrategyDNA = `INSERT INTO strategy_dna_history (time, account_id, env_mode, strategy_id, version, parameters, performance) VALUES ($1, $2, $3, $4, $5, $6, $7)`
 	querySelectLatestDNA   = `SELECT time, strategy_id, version, parameters, performance FROM strategy_dna_history WHERE account_id = $1 AND env_mode = $2 ORDER BY time DESC LIMIT 1`
-	queryInsertOrder     = `INSERT INTO orders (time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (broker_order_id) DO NOTHING`
+	queryInsertOrder     = `INSERT INTO orders (time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, strategy, rationale, confidence) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (broker_order_id) DO NOTHING`
 	queryUpdateOrderFill = `UPDATE orders SET status = 'filled', filled_at = $2, filled_price = $3, filled_qty = $4 WHERE broker_order_id = $1`
 )
 
@@ -133,7 +133,7 @@ func (r *Repository) GetLatestMarketBarTime(ctx context.Context, symbol domain.S
 // SaveTrade saves a completed or in-progress trade execution.
 // It persists the trade details including tenant and environment mode.
 func (r *Repository) SaveTrade(ctx context.Context, trade domain.Trade) error {
-	_, err := r.db.ExecContext(ctx, queryInsertTrade, trade.Time, trade.TenantID, string(trade.EnvMode), trade.TradeID, string(trade.Symbol), trade.Side, trade.Quantity, trade.Price, trade.Commission, trade.Status)
+	_, err := r.db.ExecContext(ctx, queryInsertTrade, trade.Time, trade.TenantID, string(trade.EnvMode), trade.TradeID, string(trade.Symbol), trade.Side, trade.Quantity, trade.Price, trade.Commission, trade.Status, trade.Strategy, trade.Rationale)
 	if err != nil {
 		r.log.Error().Err(err).
 			Str("symbol", string(trade.Symbol)).
@@ -162,7 +162,7 @@ func (r *Repository) GetTrades(ctx context.Context, tenantID string, envMode dom
 	for rows.Next() {
 		var trade domain.Trade
 		var sym string
-		if err := rows.Scan(&trade.Time, &trade.TradeID, &sym, &trade.Side, &trade.Quantity, &trade.Price, &trade.Commission, &trade.Status); err != nil {
+		if err := rows.Scan(&trade.Time, &trade.TradeID, &sym, &trade.Side, &trade.Quantity, &trade.Price, &trade.Commission, &trade.Status, &trade.Strategy, &trade.Rationale); err != nil {
 			return nil, fmt.Errorf("timescaledb: scan trade: %w", err)
 		}
 		trade.Symbol = domain.Symbol(sym)
@@ -247,6 +247,7 @@ func (r *Repository) SaveOrder(ctx context.Context, order domain.BrokerOrder) er
 		string(order.Symbol), order.Side,
 		order.Quantity, order.LimitPrice, order.StopLoss,
 		order.Status,
+		order.Strategy, order.Rationale, order.Confidence,
 	)
 	if err != nil {
 		r.log.Error().Err(err).
@@ -272,7 +273,7 @@ func (r *Repository) UpdateOrderFill(ctx context.Context, brokerOrderID string, 
 // ListTrades retrieves trades with optional filters and keyset pagination.
 func (r *Repository) ListTrades(ctx context.Context, q ports.TradeQuery) (ports.TradePage, error) {
 	var b strings.Builder
-	b.WriteString(`SELECT time, trade_id, symbol, side, quantity, price, commission, status
+	b.WriteString(`SELECT time, trade_id, symbol, side, quantity, price, commission, status, COALESCE(strategy, ''), COALESCE(rationale, '')
 		FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4`)
 
 	args := []any{q.TenantID, string(q.EnvMode), q.From, q.To}
@@ -312,7 +313,7 @@ func (r *Repository) ListTrades(ctx context.Context, q ports.TradeQuery) (ports.
 	for rows.Next() {
 		var t domain.Trade
 		var sym string
-		if err := rows.Scan(&t.Time, &t.TradeID, &sym, &t.Side, &t.Quantity, &t.Price, &t.Commission, &t.Status); err != nil {
+		if err := rows.Scan(&t.Time, &t.TradeID, &sym, &t.Side, &t.Quantity, &t.Price, &t.Commission, &t.Status, &t.Strategy, &t.Rationale); err != nil {
 			return ports.TradePage{}, fmt.Errorf("timescaledb: scan trade row: %w", err)
 		}
 		t.Symbol = domain.Symbol(sym)
@@ -334,4 +335,136 @@ func (r *Repository) ListTrades(ctx context.Context, q ports.TradeQuery) (ports.
 	}
 
 	return ports.TradePage{Items: trades, NextCursor: nextCursor}, nil
+}
+
+// ListOrders retrieves historical orders with optional filters and keyset pagination.
+func (r *Repository) ListOrders(ctx context.Context, q ports.OrderQuery) (ports.OrderPage, error) {
+	var b strings.Builder
+	b.WriteString(`SELECT time, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status,
+		filled_at, COALESCE(filled_price, 0), COALESCE(filled_qty, 0),
+		COALESCE(strategy, ''), COALESCE(rationale, ''), COALESCE(confidence, 0)
+		FROM orders WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4`)
+
+	args := []any{q.TenantID, string(q.EnvMode), q.From, q.To}
+	argIdx := 5
+
+	if q.Symbol != "" {
+		fmt.Fprintf(&b, " AND symbol = $%d", argIdx)
+		args = append(args, q.Symbol)
+		argIdx++
+	}
+	if q.Side != "" {
+		fmt.Fprintf(&b, " AND side = $%d", argIdx)
+		args = append(args, q.Side)
+		argIdx++
+	}
+	if q.Strategy != "" {
+		fmt.Fprintf(&b, " AND strategy = $%d", argIdx)
+		args = append(args, q.Strategy)
+		argIdx++
+	}
+	if q.CursorTime != nil && q.CursorID != "" {
+		fmt.Fprintf(&b, " AND (time, intent_id::text) < ($%d, $%d)", argIdx, argIdx+1)
+		args = append(args, *q.CursorTime, q.CursorID)
+		argIdx += 2
+	}
+
+	limit := q.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	fmt.Fprintf(&b, " ORDER BY time DESC, intent_id DESC LIMIT $%d", argIdx)
+	args = append(args, limit+1)
+
+	rows, err := r.db.QueryContext(ctx, b.String(), args...)
+	if err != nil {
+		r.log.Error().Err(err).Msg("failed to list orders")
+		return ports.OrderPage{}, fmt.Errorf("timescaledb: list orders: %w", err)
+	}
+	defer rows.Close()
+
+	var orders []domain.BrokerOrder
+	for rows.Next() {
+		var o domain.BrokerOrder
+		var sym string
+		if err := rows.Scan(&o.Time, &o.IntentID, &o.BrokerOrderID, &sym, &o.Side, &o.Quantity, &o.LimitPrice, &o.StopLoss, &o.Status,
+			&o.FilledAt, &o.FilledPrice, &o.FilledQty,
+			&o.Strategy, &o.Rationale, &o.Confidence); err != nil {
+			return ports.OrderPage{}, fmt.Errorf("timescaledb: scan order row: %w", err)
+		}
+		o.Symbol = domain.Symbol(sym)
+		o.TenantID = q.TenantID
+		o.EnvMode = q.EnvMode
+		orders = append(orders, o)
+	}
+	if err := rows.Err(); err != nil {
+		return ports.OrderPage{}, fmt.Errorf("timescaledb: iterate orders: %w", err)
+	}
+
+	var nextCursor string
+	if len(orders) > limit {
+		last := orders[limit-1]
+		cursorData := fmt.Sprintf("%s|%s", last.Time.Format(time.RFC3339Nano), last.IntentID.String())
+		nextCursor = base64.URLEncoding.EncodeToString([]byte(cursorData))
+		orders = orders[:limit]
+	}
+
+	return ports.OrderPage{Items: orders, NextCursor: nextCursor}, nil
+}
+
+// SaveThoughtLog persists an AI debate reasoning record.
+func (r *Repository) SaveThoughtLog(ctx context.Context, tl domain.ThoughtLog) error {
+	payload, _ := json.Marshal(map[string]string{"intent_id": tl.IntentID})
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO thought_logs (time, account_id, env_mode, symbol, event_type, direction, confidence, bull_argument, bear_argument, judge_reasoning, rationale, payload)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		tl.Time, tl.TenantID, string(tl.EnvMode), string(tl.Symbol), tl.EventType,
+		tl.Direction, tl.Confidence, tl.BullArgument, tl.BearArgument,
+		tl.JudgeReasoning, tl.Rationale, payload,
+	)
+	if err != nil {
+		r.log.Error().Err(err).
+			Str("symbol", string(tl.Symbol)).
+			Str("intent_id", tl.IntentID).
+			Msg("failed to save thought log")
+		return fmt.Errorf("timescaledb: save thought log: %w", err)
+	}
+	return nil
+}
+
+// GetThoughtLogsByIntentID retrieves thought logs associated with an order intent.
+func (r *Repository) GetThoughtLogsByIntentID(ctx context.Context, intentID string) ([]domain.ThoughtLog, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT time, account_id, env_mode, symbol, event_type, COALESCE(direction, ''), COALESCE(confidence, 0),
+			COALESCE(bull_argument, ''), COALESCE(bear_argument, ''), COALESCE(judge_reasoning, ''), COALESCE(rationale, ''), payload
+		 FROM thought_logs WHERE payload->>'intent_id' = $1 ORDER BY time DESC`,
+		intentID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("timescaledb: get thought logs: %w", err)
+	}
+	defer rows.Close()
+
+	var logs []domain.ThoughtLog
+	for rows.Next() {
+		var tl domain.ThoughtLog
+		var sym, envStr string
+		var payload json.RawMessage
+		if err := rows.Scan(&tl.Time, &tl.TenantID, &envStr, &sym, &tl.EventType, &tl.Direction, &tl.Confidence,
+			&tl.BullArgument, &tl.BearArgument, &tl.JudgeReasoning, &tl.Rationale, &payload); err != nil {
+			return nil, fmt.Errorf("timescaledb: scan thought log: %w", err)
+		}
+		tl.Symbol = domain.Symbol(sym)
+		tl.EnvMode = domain.EnvMode(envStr)
+		// Extract intent_id from payload
+		var p map[string]string
+		if json.Unmarshal(payload, &p) == nil {
+			tl.IntentID = p["intent_id"]
+		}
+		logs = append(logs, tl)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("timescaledb: iterate thought logs: %w", err)
+	}
+	return logs, nil
 }

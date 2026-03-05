@@ -217,7 +217,7 @@ func TestRepository_GetMarketBars_Empty(t *testing.T) {
 func TestRepository_SaveTrade_Success(t *testing.T) {
 	tradeTime := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
 	tradeID := uuid.New()
-	trade, err := domain.NewTrade(tradeTime, "tenant-1", domain.EnvModePaper, tradeID, "AAPL", "BUY", 10.0, 150.0, 1.5, "FILLED")
+	trade, err := domain.NewTrade(tradeTime, "tenant-1", domain.EnvModePaper, tradeID, "AAPL", "BUY", 10.0, 150.0, 1.5, "FILLED", "", "")
 	require.NoError(t, err)
 
 	db := &mockDB{
@@ -235,7 +235,7 @@ func TestRepository_SaveTrade_Success(t *testing.T) {
 func TestRepository_SaveTrade_DBError(t *testing.T) {
 	tradeTime := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
 	tradeID := uuid.New()
-	trade, _ := domain.NewTrade(tradeTime, "tenant-1", domain.EnvModePaper, tradeID, "AAPL", "BUY", 10.0, 150.0, 1.5, "FILLED")
+	trade, _ := domain.NewTrade(tradeTime, "tenant-1", domain.EnvModePaper, tradeID, "AAPL", "BUY", 10.0, 150.0, 1.5, "FILLED", "", "")
 	dbErr := errors.New("db error")
 
 	db := &mockDB{

@@ -297,12 +297,15 @@ type Trade struct {
 	Price      float64
 	Commission float64
 	Status     string
+	Strategy   string
+	Rationale  string
 }
 
 // NewTrade creates a validated Trade. Quantity must not be negative.
 func NewTrade(
 	t time.Time, tenantID string, envMode EnvMode, tradeID uuid.UUID,
 	sym Symbol, side string, quantity, price, commission float64, status string,
+	strategy, rationale string,
 ) (Trade, error) {
 	if quantity < 0 {
 		return Trade{}, errors.New("quantity cannot be negative")
@@ -318,6 +321,8 @@ func NewTrade(
 		Price:      price,
 		Commission: commission,
 		Status:     status,
+		Strategy:   strategy,
+		Rationale:  rationale,
 	}, nil
 }
 
@@ -337,6 +342,9 @@ type BrokerOrder struct {
 	FilledAt      *time.Time
 	FilledPrice   float64
 	FilledQty     float64
+	Strategy      string
+	Rationale     string
+	Confidence    float64
 }
 
 // DailyPnL tracks realized and unrealized P&L for a single trading day.
@@ -389,4 +397,20 @@ func NewEquityPoint(t time.Time, tenantID string, envMode EnvMode, equity, cash,
 		Cash:     cash,
 		Drawdown: drawdown,
 	}, nil
+}
+
+// ThoughtLog represents an AI debate reasoning record persisted for historical audit.
+type ThoughtLog struct {
+	Time           time.Time
+	TenantID       string
+	EnvMode        EnvMode
+	Symbol         Symbol
+	EventType      string
+	Direction      string
+	Confidence     float64
+	BullArgument   string
+	BearArgument   string
+	JudgeReasoning string
+	Rationale      string
+	IntentID       string // stored in payload JSONB
 }
