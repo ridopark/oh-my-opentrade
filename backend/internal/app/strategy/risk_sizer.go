@@ -167,7 +167,11 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 
 	direction := domain.DirectionLong
 	if sig.Side == strat.SideSell {
-		direction = domain.DirectionShort
+		if sig.Type == strat.SignalExit {
+			direction = domain.DirectionCloseLong
+		} else {
+			direction = domain.DirectionShort
+		}
 	}
 
 	strategyName := "unknown"
@@ -193,9 +197,6 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 	)
 	if err != nil {
 		return fmt.Errorf("risk sizer: failed to create order intent: %w", err)
-	}
-	if sig.Type == strat.SignalExit {
-		intent.IsExit = true
 	}
 
 	rs.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)

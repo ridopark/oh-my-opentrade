@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -76,6 +77,14 @@ func TestService_FullPipelineSuccess(t *testing.T) {
 
 func TestService_ExitOrderPassesPipeline(t *testing.T) {
 	svc, bus, broker, _ := setupTestService(t)
+	// Mock broker returns an existing BTCUSD long position so exit can resolve quantity.
+	broker.GetPositionsFunc = func(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
+		trade, _ := domain.NewTrade(
+			time.Now(), tenantID, envMode, uuid.New(),
+			"BTCUSD", "long", 1.0, 50000, 0, "filled", "strategy-1", "test",
+		)
+		return []domain.Trade{trade}, nil
+	}
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
 
@@ -85,9 +94,9 @@ func TestService_ExitOrderPassesPipeline(t *testing.T) {
 		domain.EventOrderSubmitted,
 	}, &emittedEvents)
 
-	// Publish an exit order (DirectionShort + IsExit=true).
-	// This was previously rejected by the blanket SHORT direction guard.
-	intentEvt := createExitOrderIntentEvent(t, domain.DirectionShort)
+	// Publish an exit order (DirectionCloseLong).
+	// This was previously rejected when exits used DirectionShort.
+	intentEvt := createExitOrderIntentEvent(t, domain.DirectionCloseLong)
 	err = bus.Publish(context.Background(), intentEvt)
 	assert.NoError(t, err)
 
@@ -108,7 +117,7 @@ func TestService_NewShortEntryStillRejected(t *testing.T) {
 		domain.EventOrderIntentRejected,
 	}, &emittedEvents)
 
-	// Publish a new short entry (DirectionShort + IsExit=false).
+	// Publish a new short entry (DirectionShort).
 	// This should still be rejected by the SHORT direction guard.
 	intentEvt := createOrderIntentEvent(t, domain.DirectionShort)
 	err = bus.Publish(context.Background(), intentEvt)

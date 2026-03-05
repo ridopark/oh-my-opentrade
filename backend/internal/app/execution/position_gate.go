@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -109,19 +110,17 @@ func (g *PositionGate) ClearInflight(tenantID string, envMode domain.EnvMode, sy
 
 // isEntry returns true if the intent opens or increases a position.
 func isEntry(intent domain.OrderIntent) bool {
-	// Use the IsExit field set by the risk sizer to distinguish exit orders
-	// from new position entries. This decouples the entry check from direction,
-	// since both new short entries and long-position exits use DirectionShort.
-	return !intent.IsExit
+	return !intent.Direction.IsExit()
 }
 
 // positionSide returns the net side ("BUY"/"SELL") and total quantity from positions.
+// Handles both internal formats ("BUY"/"SELL") and Alpaca formats ("long"/"short").
 func positionSide(positions []domain.Trade) (side string, qty float64) {
 	for _, t := range positions {
-		switch t.Side {
-		case "BUY":
+		switch strings.ToLower(t.Side) {
+		case "buy", "long":
 			qty += t.Quantity
-		case "SELL":
+		case "sell", "short":
 			qty -= t.Quantity
 		}
 	}

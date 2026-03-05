@@ -192,7 +192,7 @@ func createOrderIntentEvent(t *testing.T, dir domain.Direction) domain.Event {
 }
 
 // createExitOrderIntentEvent creates a valid exit EventOrderIntentCreated event for testing.
-// The intent will have IsExit=true, simulating a sell-to-close order.
+// Uses DirectionCloseLong to represent selling to close a long position.
 func createExitOrderIntentEvent(t *testing.T, dir domain.Direction) domain.Event {
 	t.Helper()
 	intentID := uuid.New()
@@ -214,7 +214,6 @@ func createExitOrderIntentEvent(t *testing.T, dir domain.Direction) domain.Event
 	if err != nil {
 		t.Fatalf("failed to create test order intent: %v", err)
 	}
-	intent.IsExit = true
 
 	event, err := domain.NewEvent(
 		domain.EventOrderIntentCreated,
