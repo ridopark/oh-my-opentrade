@@ -74,6 +74,52 @@ func TestService_FullPipelineSuccess(t *testing.T) {
 	assert.Contains(t, emittedEvents, domain.EventOrderSubmitted)
 }
 
+func TestService_ExitOrderPassesPipeline(t *testing.T) {
+	svc, bus, broker, _ := setupTestService(t)
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	var emittedEvents []string
+	subscribeAll(t, bus, []string{
+		domain.EventOrderIntentValidated,
+		domain.EventOrderSubmitted,
+	}, &emittedEvents)
+
+	// Publish an exit order (DirectionShort + IsExit=true).
+	// This was previously rejected by the blanket SHORT direction guard.
+	intentEvt := createExitOrderIntentEvent(t, domain.DirectionShort)
+	err = bus.Publish(context.Background(), intentEvt)
+	assert.NoError(t, err)
+
+	time.Sleep(10 * time.Millisecond)
+
+	assert.Equal(t, 1, broker.SubmitOrderCalls, "exit order should reach broker")
+	assert.Contains(t, emittedEvents, domain.EventOrderIntentValidated)
+	assert.Contains(t, emittedEvents, domain.EventOrderSubmitted)
+}
+
+func TestService_NewShortEntryStillRejected(t *testing.T) {
+	svc, bus, broker, _ := setupTestService(t)
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	var emittedEvents []string
+	subscribeAll(t, bus, []string{
+		domain.EventOrderIntentRejected,
+	}, &emittedEvents)
+
+	// Publish a new short entry (DirectionShort + IsExit=false).
+	// This should still be rejected by the SHORT direction guard.
+	intentEvt := createOrderIntentEvent(t, domain.DirectionShort)
+	err = bus.Publish(context.Background(), intentEvt)
+	assert.NoError(t, err)
+
+	time.Sleep(10 * time.Millisecond)
+
+	assert.Equal(t, 0, broker.SubmitOrderCalls, "new short entry should be rejected")
+	assert.Contains(t, emittedEvents, domain.EventOrderIntentRejected)
+}
+
 func TestService_RiskRejection(t *testing.T) {
 	// Create a service with very low equity so risk always exceeds 2%.
 	// With LimitPrice=50000, StopLoss=49000, Qty=1: risk = 1000.
