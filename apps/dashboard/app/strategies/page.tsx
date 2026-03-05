@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,13 +18,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Layers, Pause, Archive, ArrowUpCircle } from "lucide-react";
+import { Layers, Pause, Archive, ArrowUpCircle, TrendingUp } from "lucide-react";
 import { useState } from "react";
 import {
   useStrategyInstances,
+  useStrategyList,
   usePromoteInstance,
   useLifecycleAction,
 } from "@/hooks/queries";
+import type { StrategyInfo } from "@/lib/types";
 
 export default function StrategiesPage() {
   const {
@@ -32,6 +35,8 @@ export default function StrategiesPage() {
     error: queryError,
     refetch,
   } = useStrategyInstances();
+
+  const { data: strategies = [] } = useStrategyList();
 
   const promoteInstance = usePromoteInstance();
   const lifecycleAction = useLifecycleAction();
@@ -132,6 +137,37 @@ export default function StrategiesPage() {
           Refresh
         </Button>
       </div>
+
+      {/* Strategy Performance Overview */}
+      {strategies.length > 0 && (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {strategies.map((strat: StrategyInfo) => (
+            <Link key={strat.id} href={`/strategies/${strat.id}`}>
+              <Card className="hover:border-emerald-500/50 transition-colors cursor-pointer">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-base font-semibold">{strat.name || strat.id}</CardTitle>
+                  <TrendingUp className="h-4 w-4 text-muted-foreground" />
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1">
+                      <p className="text-xs text-muted-foreground">
+                        v{strat.version} · Priority {strat.priority}
+                      </p>
+                      <p className="text-xs font-mono text-muted-foreground">
+                        {strat.symbols.join(", ")}
+                      </p>
+                    </div>
+                    <Badge variant={strat.active ? "outline" : "secondary"} className={strat.active ? "border-emerald-500 text-emerald-500" : ""}>
+                      {strat.active ? "Active" : "Inactive"}
+                    </Badge>
+                  </div>
+                </CardContent>
+              </Card>
+            </Link>
+          ))}
+        </div>
+      )}
 
       <Card>
         <CardHeader>

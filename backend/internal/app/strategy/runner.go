@@ -325,3 +325,58 @@ func domainBarToStratBar(bar domain.MarketBar) strat.Bar {
 		Volume: bar.Volume,
 	}
 }
+
+// StrategyInfo describes a registered strategy for the API.
+type StrategyInfo struct {
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Version  string   `json:"version"`
+	Symbols  []string `json:"symbols"`
+	Priority int      `json:"priority"`
+	Active   bool     `json:"active"`
+}
+
+// ListStrategies returns metadata for all registered strategy instances.
+func (r *Runner) ListStrategies() []StrategyInfo {
+	instances := r.router.AllInstances()
+	infos := make([]StrategyInfo, 0, len(instances))
+	for _, inst := range instances {
+		meta := inst.Strategy().Meta()
+		infos = append(infos, StrategyInfo{
+			ID:       meta.ID.String(),
+			Name:     meta.Name,
+			Version:  meta.Version.String(),
+			Symbols:  inst.Assignment().Symbols,
+			Priority: inst.Assignment().Priority,
+			Active:   inst.IsActive(),
+		})
+	}
+	return infos
+}
+
+// StrategySnapshots returns all state snapshots for a given strategy ID.
+func (r *Runner) StrategySnapshots(strategyID string) []domain.StateSnapshot {
+	instances := r.router.AllInstances()
+	var snaps []domain.StateSnapshot
+	for _, inst := range instances {
+		if inst.Strategy().Meta().ID.String() != strategyID {
+			continue
+		}
+		snaps = append(snaps, inst.AllSnapshots()...)
+	}
+	return snaps
+}
+
+// StrategySnapshot returns the state snapshot for a specific strategy + symbol.
+func (r *Runner) StrategySnapshot(strategyID, symbol string) (domain.StateSnapshot, bool) {
+	instances := r.router.AllInstances()
+	for _, inst := range instances {
+		if inst.Strategy().Meta().ID.String() != strategyID {
+			continue
+		}
+		if snap, ok := inst.Snapshot(symbol); ok {
+			return snap, true
+		}
+	}
+	return domain.StateSnapshot{}, false
+}

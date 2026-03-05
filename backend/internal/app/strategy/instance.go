@@ -1,11 +1,13 @@
 package strategy
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/domain"
 	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
 
@@ -219,6 +221,61 @@ func (inst *Instance) GetState(symbol string) (strat.State, bool) {
 	defer inst.mu.Unlock()
 	st, ok := inst.states[symbol]
 	return st, ok
+}
+
+// Snapshot returns a point-in-time state snapshot for a symbol.
+// It marshals the strategy's internal state into a domain.StateSnapshot.
+func (inst *Instance) Snapshot(symbol string) (domain.StateSnapshot, bool) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
+	st, ok := inst.states[symbol]
+	if !ok {
+		return domain.StateSnapshot{}, false
+	}
+
+	data, err := st.Marshal()
+	if err != nil {
+		inst.logger.Error("snapshot marshal failed",
+			"symbol", symbol,
+			"error", err,
+		)
+		return domain.StateSnapshot{}, false
+	}
+
+	return domain.StateSnapshot{
+		Strategy: inst.strategy.Meta().ID.String(),
+		Symbol:   symbol,
+		Kind:     inst.strategy.Meta().ID.String(),
+		AsOf:     time.Now(),
+		Payload:  json.RawMessage(data),
+	}, true
+}
+
+// AllSnapshots returns state snapshots for all initialized symbols.
+func (inst *Instance) AllSnapshots() []domain.StateSnapshot {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
+	snaps := make([]domain.StateSnapshot, 0, len(inst.states))
+	for symbol, st := range inst.states {
+		data, err := st.Marshal()
+		if err != nil {
+			inst.logger.Error("snapshot marshal failed",
+				"symbol", symbol,
+				"error", err,
+			)
+			continue
+		}
+		snaps = append(snaps, domain.StateSnapshot{
+			Strategy: inst.strategy.Meta().ID.String(),
+			Symbol:   symbol,
+			Kind:     inst.strategy.Meta().ID.String(),
+			AsOf:     time.Now(),
+			Payload:  json.RawMessage(data),
+		})
+	}
+	return snaps
 }
 
 // instanceContext implements strat.Context for use within the runner.

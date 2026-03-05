@@ -345,6 +345,7 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 		"quantity":        intent.Quantity,
 		"price":           fillPrice,
 		"filled_at":       now,
+		"strategy":        intent.Strategy,
 	})
 
 	l.Info().

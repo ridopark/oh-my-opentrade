@@ -122,6 +122,7 @@ func main() {
 		log.Warn().Err(err).Float64("fallback_equity", accountEquity).Msg("failed to fetch account equity, using fallback")
 	}
 	ledgerWriter := perf.NewLedgerWriter(eventBus, pnlRepo, alpacaAdapter, accountEquity, log.With().Str("component", "ledger").Logger())
+	signalTracker := perf.NewSignalTracker(eventBus, pnlRepo, log.With().Str("component", "signal_tracker").Logger())
 	dailyLossBreaker := risk.NewDailyLossBreaker(cfg.Trading.MaxDailyLossPct/100.0, cfg.Trading.MaxDailyLossUSD, ledgerWriter, time.Now, log.With().Str("component", "daily_loss_breaker").Logger())
 	positionGate := execution.NewPositionGate(alpacaAdapter, executionLog)
 	executionSvc := execution.NewService(
@@ -401,6 +402,9 @@ func main() {
 	if err := ledgerWriter.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start ledger writer")
 	}
+	if err := signalTracker.Start(ctx); err != nil {
+		log.Fatal().Err(err).Msg("failed to start signal tracker")
+	}
 	if err := executionSvc.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start execution")
 	}
@@ -564,6 +568,8 @@ func main() {
 	if useStrategyV2 {
 		lifecycleHandler := omhttp.NewLifecycleHandler(lifecycleSvc, httpLog)
 		imux.Handle("/strategies/v2/", lifecycleHandler)
+		stratPerfHandler := omhttp.NewStrategyPerfHandler(strategyRunner, pnlRepo, httpLog)
+		imux.Handle("/api/strategies/", stratPerfHandler)
 	}
 	imux.HandleFunc("/strategies/current", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
