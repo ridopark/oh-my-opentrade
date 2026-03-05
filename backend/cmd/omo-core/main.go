@@ -32,6 +32,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/notify"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
 	"github.com/oh-my-opentrade/backend/internal/app/risk"
+	screenerapp "github.com/oh-my-opentrade/backend/internal/app/screener"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy/builtin"
 	"github.com/oh-my-opentrade/backend/internal/config"
@@ -265,6 +266,36 @@ func main() {
 	}
 	if err := dnaApprovalSvc.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start dna approval service")
+	}
+
+	screenerEnabled := os.Getenv("SCREENER_ENABLED") == "true"
+	if screenerEnabled {
+		screenerRepo := timescaledb.NewScreenerRepo(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "screener_repo").Logger())
+		screenerSvc, err := screenerapp.NewService(
+			log.With().Str("component", "screener").Logger(),
+			screenerapp.Config{
+				Enabled:          true,
+				RVOLLookbackDays: 20,
+				TopN:             50,
+				GapWeight:        1.0,
+				RVOLWeight:       1.0,
+				NewsWeight:       0.5,
+			},
+			"default",
+			string(domain.EnvModePaper),
+			cfg.Symbols.Symbols,
+			eventBus,
+			alpacaAdapter,
+			alpacaAdapter,
+			screenerRepo,
+			nil,
+		)
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to create screener service")
+		}
+		if err := screenerSvc.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start screener service")
+		}
 	}
 	// 5b (continued): hot-reload DNA after all services are started
 	if !useStrategyV2 {

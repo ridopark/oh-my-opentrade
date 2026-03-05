@@ -21,6 +21,8 @@ type Adapter struct {
 	log     zerolog.Logger
 }
 
+var _ ports.SnapshotPort = (*Adapter)(nil)
+
 // NewAdapter creates a new Alpaca Adapter.
 func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
 	if cfg.APIKeyID == "" {
@@ -45,8 +47,6 @@ func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
 	}
 	ws := NewWSClient(cfg.DataURL, cfg.APIKeyID, cfg.APISecretKey, cfg.Feed, fetcher)
 
-
-
 	return &Adapter{
 		rest:    rest,
 		ws:      ws,
@@ -63,6 +63,10 @@ func (a *Adapter) StreamBars(ctx context.Context, symbols []domain.Symbol, timef
 // GetHistoricalBars fetches historical OHLCV bars from the Alpaca data API.
 func (a *Adapter) GetHistoricalBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
 	return a.rest.GetHistoricalBars(ctx, a.dataURL, symbol, timeframe, from, to)
+}
+
+func (a *Adapter) GetSnapshots(ctx context.Context, symbols []string, asOf time.Time) (map[string]ports.Snapshot, error) {
+	return a.rest.GetSnapshots(ctx, a.dataURL, symbols)
 }
 
 // Close safely closes the adapter and underlying connections.
@@ -103,6 +107,7 @@ func (a *Adapter) GetQuote(ctx context.Context, symbol domain.Symbol) (float64, 
 func (a *Adapter) GetOptionChain(ctx context.Context, underlying domain.Symbol, expiry time.Time, right domain.OptionRight) ([]domain.OptionContractSnapshot, error) {
 	return a.rest.GetOptionChain(ctx, underlying, expiry, right)
 }
+
 // GetAccountEquity fetches the current paper account equity from Alpaca.
 func (a *Adapter) GetAccountEquity(ctx context.Context) (float64, error) {
 	return a.rest.GetAccountEquity(ctx)

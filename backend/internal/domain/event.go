@@ -38,6 +38,8 @@ const (
 	EventOptionChainReceived    EventType = "OptionChainReceived"
 	EventOptionContractSelected EventType = "OptionContractSelected"
 	EventSignalCreated          EventType = "SignalCreated"
+	EventScreenerTicked         EventType = "ScreenerTicked"
+	EventScreenerCompleted      EventType = "ScreenerCompleted"
 )
 
 // Event represents a domain event in the trading pipeline.
