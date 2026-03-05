@@ -82,3 +82,51 @@ func TestRateLimiter_ConcurrentSafe(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestRateLimiter_WaitWithPriority_TradingUsesGlobalOnly(t *testing.T) {
+	limiter := NewPriorityRateLimiter(60, 1)
+	ctx := context.Background()
+
+	for i := 0; i < 60; i++ {
+		require.NoError(t, limiter.WaitWithPriority(ctx, PriorityTrading))
+	}
+
+	start := time.Now()
+	require.NoError(t, limiter.WaitWithPriority(ctx, PriorityTrading))
+	d := time.Since(start)
+	assert.GreaterOrEqual(t, d.Milliseconds(), int64(900))
+}
+
+func TestRateLimiter_WaitWithPriority_BackgroundUsesBoth(t *testing.T) {
+	limiter := NewPriorityRateLimiter(1000, 60)
+	ctx := context.Background()
+
+	for i := 0; i < 60; i++ {
+		require.NoError(t, limiter.WaitWithPriority(ctx, PriorityBackground))
+	}
+
+	start := time.Now()
+	require.NoError(t, limiter.WaitWithPriority(ctx, PriorityBackground))
+	d := time.Since(start)
+	assert.GreaterOrEqual(t, d.Milliseconds(), int64(900))
+}
+
+func TestRateLimiter_BackgroundThrottledMoreThanTrading(t *testing.T) {
+	limiter := NewPriorityRateLimiter(1000, 60)
+	ctx := context.Background()
+
+	for i := 0; i < 60; i++ {
+		require.NoError(t, limiter.WaitWithPriority(ctx, PriorityBackground))
+	}
+
+	startTrading := time.Now()
+	require.NoError(t, limiter.WaitWithPriority(ctx, PriorityTrading))
+	tradingDur := time.Since(startTrading)
+
+	startBg := time.Now()
+	require.NoError(t, limiter.WaitWithPriority(ctx, PriorityBackground))
+	bgDur := time.Since(startBg)
+
+	assert.Less(t, tradingDur.Milliseconds(), int64(200))
+	assert.GreaterOrEqual(t, bgDur.Milliseconds(), int64(900))
+}

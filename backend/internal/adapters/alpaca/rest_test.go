@@ -1,20 +1,21 @@
 package alpaca
 
 import (
-"context"
-"encoding/json"
-"io"
-"net/http"
-"net/http/httptest"
-"testing"
-"time"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
 
-"github.com/google/uuid"
-"github.com/rs/zerolog"
-"github.com/stretchr/testify/assert"
-"github.com/stretchr/testify/require"
+	"github.com/google/uuid"
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
-"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/domain"
 )
 
 func TestRESTClient_SubmitOrder_Success(t *testing.T) {
@@ -302,4 +303,86 @@ func TestRESTClient_UsesRateLimiter(t *testing.T) {
 	require.NoError(t, err)
 	duration := time.Since(start)
 	assert.GreaterOrEqual(t, duration.Milliseconds(), int64(900), "REST client should block due to rate limit")
+}
+
+func TestRESTClient_DoReq_Retry429_SucceedsSecondAttempt(t *testing.T) {
+	ctx := context.Background()
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`"too many requests"`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"quote": {"bp": 150.10, "ap": 150.20}}`))
+	}))
+	defer server.Close()
+
+	limiter := NewPriorityRateLimiter(10000, 10000)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+	resp, err := client.doReqWithOpts(ctx, http.MethodGet, "/v2/account", nil, reqOpts{priority: PriorityTrading, maxRetries: 3})
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, 2, attempts)
+}
+
+func TestRESTClient_DoReq_Retry429_RespectsMaxRetries(t *testing.T) {
+	ctx := context.Background()
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`"too many requests"`))
+	}))
+	defer server.Close()
+
+	limiter := NewPriorityRateLimiter(10000, 10000)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+	resp, err := client.doReqWithOpts(ctx, http.MethodGet, "/v2/account", nil, reqOpts{priority: PriorityTrading, maxRetries: 1})
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+	assert.Equal(t, 2, attempts)
+}
+
+func TestRESTClient_DoReq_Non429NotRetried(t *testing.T) {
+	ctx := context.Background()
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	limiter := NewPriorityRateLimiter(10000, 10000)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+	resp, err := client.doReqWithOpts(ctx, http.MethodGet, "/v2/account", nil, reqOpts{priority: PriorityTrading, maxRetries: 3})
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Equal(t, 1, attempts)
+}
+
+func TestRESTClient_DoReq_ContextCancellationDuringRetry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Reset", fmt.Sprintf("%d", time.Now().Add(10*time.Second).Unix()))
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`"too many requests"`))
+		cancel()
+	}))
+	defer server.Close()
+
+	limiter := NewPriorityRateLimiter(10000, 10000)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+	resp, err := client.doReqWithOpts(ctx, http.MethodGet, "/v2/account", nil, reqOpts{priority: PriorityTrading, maxRetries: 3})
+	if resp != nil {
+		resp.Body.Close()
+	}
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
 }

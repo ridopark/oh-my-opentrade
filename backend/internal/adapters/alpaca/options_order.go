@@ -45,7 +45,7 @@ func (c *RESTClient) SubmitOptionOrder(ctx context.Context, intent domain.OrderI
 	}
 
 	b, _ := json.Marshal(reqBody)
-	resp, err := c.doReq(ctx, http.MethodPost, pathOrders, bytes.NewReader(b))
+	resp, err := c.doReqWithOpts(ctx, http.MethodPost, pathOrders, bytes.NewReader(b), reqOpts{priority: PriorityTrading, maxRetries: 3})
 	if err != nil {
 		return "", err
 	}
