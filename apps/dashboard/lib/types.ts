@@ -215,3 +215,35 @@ export interface DnaDiffResponse {
   baseToml: string;
   newToml: string;
 }
+
+// Historical orders API types (backend: GET /orders)
+
+export interface ThoughtLogEntry {
+  bull_argument: string;
+  bear_argument: string;
+  judge_reasoning: string;
+}
+
+export interface HistoricalOrder {
+  time: string; // RFC3339
+  intent_id: string;
+  broker_order_id: string;
+  symbol: string;
+  side: string;
+  quantity: number;
+  limit_price: number;
+  stop_loss: number;
+  status: string;
+  strategy: string;
+  rationale: string;
+  confidence: number;
+  filled_at?: string; // RFC3339
+  filled_price?: number;
+  filled_qty?: number;
+  thought_log?: ThoughtLogEntry;
+}
+
+export interface HistoricalOrdersResponse {
+  items: HistoricalOrder[];
+  next_cursor?: string;
+}

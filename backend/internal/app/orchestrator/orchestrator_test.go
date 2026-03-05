@@ -65,6 +65,13 @@ func (m *mockRepo) UpdateOrderFill(_ context.Context, _ string, _ time.Time, _, 
 func (m *mockRepo) ListTrades(_ context.Context, _ ports.TradeQuery) (ports.TradePage, error) {
 	return ports.TradePage{}, nil
 }
+func (m *mockRepo) ListOrders(_ context.Context, _ ports.OrderQuery) (ports.OrderPage, error) {
+	return ports.OrderPage{}, nil
+}
+func (m *mockRepo) SaveThoughtLog(_ context.Context, _ domain.ThoughtLog) error { return nil }
+func (m *mockRepo) GetThoughtLogsByIntentID(_ context.Context, _ string) ([]domain.ThoughtLog, error) {
+	return nil, nil
+}
 
 // mockPnLRepo implements ports.PnLPort (needed for perf.NewLedgerWriter).
 type mockPnLRepo struct{}

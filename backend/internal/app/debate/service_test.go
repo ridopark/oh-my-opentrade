@@ -117,7 +117,7 @@ func subscribeAll(t *testing.T, bus *memory.Bus, events []string, dest *[]string
 func TestService_StartSubscribesToSetupDetected(t *testing.T) {
 	bus := memory.NewBus()
 	advisor := &mockAIAdvisor{}
-	svc := debate.NewService(bus, advisor, 0.7, zerolog.Nop())
+	svc := debate.NewService(bus, advisor, nil, 0.7, zerolog.Nop())
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -133,7 +133,7 @@ func TestService_StartSubscribesToSetupDetected(t *testing.T) {
 func TestService_EmitsDebateRequestedAndCompleted(t *testing.T) {
 	bus := memory.NewBus()
 	advisor := &mockAIAdvisor{}
-	svc := debate.NewService(bus, advisor, 0.7, zerolog.Nop())
+	svc := debate.NewService(bus, advisor, nil, 0.7, zerolog.Nop())
 
 	require.NoError(t, svc.Start(context.Background()))
 
@@ -159,7 +159,7 @@ func TestService_EmitsOrderIntentCreatedWhenConfidenceAboveThreshold(t *testing.
 			}), nil
 		},
 	}
-	svc := debate.NewService(bus, advisor, 0.7, zerolog.Nop())
+	svc := debate.NewService(bus, advisor, nil, 0.7, zerolog.Nop())
 	require.NoError(t, svc.Start(context.Background()))
 
 	var emitted []string
@@ -180,7 +180,7 @@ func TestService_DoesNotEmitOrderIntentWhenConfidenceBelowThreshold(t *testing.T
 			}), nil
 		},
 	}
-	svc := debate.NewService(bus, advisor, 0.7, zerolog.Nop())
+	svc := debate.NewService(bus, advisor, nil, 0.7, zerolog.Nop())
 	require.NoError(t, svc.Start(context.Background()))
 
 	var emitted []string
@@ -204,7 +204,7 @@ func TestService_OrderIntentCarriesAIRationaleAndDirection(t *testing.T) {
 			}), nil
 		},
 	}
-	svc := debate.NewService(bus, advisor, 0.7, zerolog.Nop())
+	svc := debate.NewService(bus, advisor, nil, 0.7, zerolog.Nop())
 	require.NoError(t, svc.Start(context.Background()))
 
 	var capturedIntent *domain.OrderIntent
@@ -232,7 +232,7 @@ func TestService_ContinuesOnAIError(t *testing.T) {
 			return nil, errors.New("AI service unavailable")
 		},
 	}
-	svc := debate.NewService(bus, advisor, 0.7, zerolog.Nop())
+	svc := debate.NewService(bus, advisor, nil, 0.7, zerolog.Nop())
 	require.NoError(t, svc.Start(context.Background()))
 
 	var emitted []string
@@ -255,7 +255,7 @@ func TestService_ContinuesOnAIError(t *testing.T) {
 func TestService_InvalidPayloadIsIgnored(t *testing.T) {
 	bus := memory.NewBus()
 	advisor := &mockAIAdvisor{}
-	svc := debate.NewService(bus, advisor, 0.7, zerolog.Nop())
+	svc := debate.NewService(bus, advisor, nil, 0.7, zerolog.Nop())
 	require.NoError(t, svc.Start(context.Background()))
 
 	// Publish SetupDetected with invalid payload type
@@ -277,7 +277,7 @@ func TestService_DebateCompletedPayloadContainsDecision(t *testing.T) {
 			return decision, nil
 		},
 	}
-	svc := debate.NewService(bus, advisor, 0.7, zerolog.Nop())
+	svc := debate.NewService(bus, advisor, nil, 0.7, zerolog.Nop())
 	require.NoError(t, svc.Start(context.Background()))
 
 	var capturedDecision *domain.AdvisoryDecision
@@ -300,7 +300,7 @@ func TestService_DebateCompletedPayloadContainsDecision(t *testing.T) {
 func TestNewService_ReturnsNonNilService(t *testing.T) {
 	bus := memory.NewBus()
 	advisor := &mockAIAdvisor{}
-	svc := debate.NewService(bus, advisor, 0.7, zerolog.Nop())
+	svc := debate.NewService(bus, advisor, nil, 0.7, zerolog.Nop())
 	assert.NotNil(t, svc)
 }
 
@@ -314,7 +314,7 @@ func TestService_CancelsAdvisorCallAfterTimeout(t *testing.T) {
 		},
 	}
 	// Tight 50ms timeout — should fire well before test timeout.
-	svc := debate.NewService(bus, advisor, 0.7, zerolog.Nop(), debate.WithAdvisorTimeout(50*time.Millisecond))
+	svc := debate.NewService(bus, advisor, nil, 0.7, zerolog.Nop(), debate.WithAdvisorTimeout(50*time.Millisecond))
 	require.NoError(t, svc.Start(context.Background()))
 
 	var emitted []string
@@ -333,6 +333,6 @@ func TestService_DefaultTimeoutIsReasonable(t *testing.T) {
 	bus := memory.NewBus()
 	advisor := &mockAIAdvisor{}
 	// NewService without options should compile and return a non-nil service.
-	svc := debate.NewService(bus, advisor, 0.7, zerolog.Nop())
+	svc := debate.NewService(bus, advisor, nil, 0.7, zerolog.Nop())
 	assert.NotNil(t, svc)
 }

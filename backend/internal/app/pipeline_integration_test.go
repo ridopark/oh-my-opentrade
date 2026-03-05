@@ -86,6 +86,13 @@ func (m *mockRepository) UpdateOrderFill(ctx context.Context, brokerOrderID stri
 func (m *mockRepository) ListTrades(_ context.Context, _ ports.TradeQuery) (ports.TradePage, error) {
 	return ports.TradePage{}, nil
 }
+func (m *mockRepository) ListOrders(_ context.Context, _ ports.OrderQuery) (ports.OrderPage, error) {
+	return ports.OrderPage{}, nil
+}
+func (m *mockRepository) SaveThoughtLog(_ context.Context, _ domain.ThoughtLog) error { return nil }
+func (m *mockRepository) GetThoughtLogsByIntentID(_ context.Context, _ string) ([]domain.ThoughtLog, error) {
+	return nil, nil
+}
 
 type mockQuoteProvider struct{}
 
@@ -102,7 +109,7 @@ func TestIntegration_FullPipeline_SetupToOrder(t *testing.T) {
 	mockB := &mockBroker{}
 	mockRepo := &mockRepository{}
 
-	debateSvc := debate.NewService(bus, mockAI, 0.5, log)
+	debateSvc := debate.NewService(bus, mockAI, nil, 0.5, log)
 	riskEngine := execution.NewRiskEngine(0.02)
 	slippageGuard := execution.NewSlippageGuard(&mockQuoteProvider{})
 	killSwitch := execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, time.Now)
@@ -164,7 +171,7 @@ func TestIntegration_LowConfidence_NoOrder(t *testing.T) {
 	mockB := &mockBroker{}
 	mockRepo := &mockRepository{}
 
-	debateSvc := debate.NewService(bus, mockAI, 0.5, log)
+	debateSvc := debate.NewService(bus, mockAI, nil, 0.5, log)
 	riskEngine := execution.NewRiskEngine(0.02)
 	slippageGuard := execution.NewSlippageGuard(&mockQuoteProvider{})
 	killSwitch := execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, time.Now)

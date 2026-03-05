@@ -221,7 +221,7 @@ func TestTrade(t *testing.T) {
 	now := time.Now()
 
 	t.Run("valid creation", func(t *testing.T) {
-		trade, err := domain.NewTrade(now, tenantID, envMode, tradeID, sym, "BUY", 2.0, 3000.0, 1.5, "FILLED")
+		trade, err := domain.NewTrade(now, tenantID, envMode, tradeID, sym, "BUY", 2.0, 3000.0, 1.5, "FILLED", "debate", "test rationale")
 		require.NoError(t, err)
 		assert.Equal(t, now, trade.Time)
 		assert.Equal(t, tenantID, trade.TenantID)
@@ -236,7 +236,7 @@ func TestTrade(t *testing.T) {
 	})
 
 	t.Run("invalid - negative quantity", func(t *testing.T) {
-		_, err := domain.NewTrade(now, tenantID, envMode, tradeID, sym, "BUY", -2.0, 3000.0, 1.5, "FILLED")
+		_, err := domain.NewTrade(now, tenantID, envMode, tradeID, sym, "BUY", -2.0, 3000.0, 1.5, "FILLED", "", "")
 		assert.ErrorContains(t, err, "quantity cannot be negative")
 	})
 }

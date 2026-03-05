@@ -768,6 +768,13 @@ func (n *noopRepo) UpdateOrderFill(_ context.Context, _ string, _ time.Time, _, 
 func (n *noopRepo) ListTrades(_ context.Context, _ ports.TradeQuery) (ports.TradePage, error) {
 	return ports.TradePage{}, nil
 }
+func (n *noopRepo) ListOrders(_ context.Context, _ ports.OrderQuery) (ports.OrderPage, error) {
+	return ports.OrderPage{}, nil
+}
+func (n *noopRepo) SaveThoughtLog(_ context.Context, _ domain.ThoughtLog) error { return nil }
+func (n *noopRepo) GetThoughtLogsByIntentID(_ context.Context, _ string) ([]domain.ThoughtLog, error) {
+	return nil, nil
+}
 
 // noopPnLRepo implements ports.PnLPort as a no-op for backtest mode.
 // LedgerWriter calls UpsertDailyPnL/SaveEquityPoint which we discard.

@@ -32,6 +32,7 @@ const defaultAdvisorTimeout = 5 * time.Second
 type Service struct {
 	eventBus       ports.EventBusPort
 	aiAdvisor      ports.AIAdvisorPort
+	repo           ports.RepositoryPort
 	minConfidence  float64
 	advisorTimeout time.Duration
 	log            zerolog.Logger
@@ -49,10 +50,11 @@ func WithAdvisorTimeout(d time.Duration) Option {
 // NewService creates a new debate Service.
 // minConfidence is the minimum AI confidence [0,1] required to emit an OrderIntentCreated event.
 // opts are functional options (e.g. WithAdvisorTimeout).
-func NewService(eventBus ports.EventBusPort, aiAdvisor ports.AIAdvisorPort, minConfidence float64, log zerolog.Logger, opts ...Option) *Service {
+func NewService(eventBus ports.EventBusPort, aiAdvisor ports.AIAdvisorPort, repo ports.RepositoryPort, minConfidence float64, log zerolog.Logger, opts ...Option) *Service {
 	s := &Service{
 		eventBus:       eventBus,
 		aiAdvisor:      aiAdvisor,
+		repo:           repo,
 		minConfidence:  minConfidence,
 		advisorTimeout: defaultAdvisorTimeout,
 		log:            log,
@@ -139,6 +141,27 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 
 	l.Info().Str("intent_id", intentID.String()).Msg("order intent created from AI debate")
 	s.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)
+
+	// 6. Persist thought log for historical audit.
+	if s.repo != nil {
+		tl := domain.ThoughtLog{
+			Time:           time.Now().UTC(),
+			TenantID:       event.TenantID,
+			EnvMode:        event.EnvMode,
+			Symbol:         setup.Symbol,
+			EventType:      "DebateCompleted",
+			Direction:      string(decision.Direction),
+			Confidence:     decision.Confidence,
+			BullArgument:   decision.BullArgument,
+			BearArgument:   decision.BearArgument,
+			JudgeReasoning: decision.JudgeReasoning,
+			Rationale:      decision.Rationale,
+			IntentID:       intentID.String(),
+		}
+		if err := s.repo.SaveThoughtLog(ctx, tl); err != nil {
+			l.Error().Err(err).Msg("failed to save thought log")
+		}
+	}
 
 	return nil
 }

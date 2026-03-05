@@ -379,7 +379,7 @@ func main() {
 	if cfg.AI.Enabled {
 		debateLog := log.With().Str("component", "debate").Logger()
 		aiAdvisor := llm.NewAdvisor(cfg.AI.BaseURL, cfg.AI.Model, cfg.AI.APIKey, nil)
-		debateSvc = debate.NewService(eventBus, aiAdvisor, cfg.AI.MinConfidence, debateLog)
+		debateSvc = debate.NewService(eventBus, aiAdvisor, repo, cfg.AI.MinConfidence, debateLog)
 		log.Info().
 			Float64("min_confidence", cfg.AI.MinConfidence).
 			Str("base_url", cfg.AI.BaseURL).
@@ -632,6 +632,9 @@ func main() {
 	// Performance dashboard API
 	perfHandler := omhttp.NewPerformanceHandler(pnlRepo, repo, httpLog)
 	imux.Handle("/performance/", perfHandler)
+	// Historical orders API
+	orderHandler := omhttp.NewOrderHandler(repo, httpLog)
+	imux.Handle("/orders", orderHandler)
 
 	imux.HandleFunc("/pnl", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
