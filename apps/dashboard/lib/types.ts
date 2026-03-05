@@ -186,3 +186,32 @@ export interface TradesResponse {
   items: TradeEntry[];
   next_cursor?: string;
 }
+
+// DNA Approval types (backend: /api/dna/approvals)
+export interface DnaVersionJSON {
+  id: string;
+  strategyKey: string;
+  contentToml: string;
+  contentHash: string;
+  detectedAt: string; // RFC3339
+}
+
+export interface DnaApprovalJSON {
+  id: string;
+  versionId: string;
+  status: "pending" | "approved" | "rejected";
+  decidedBy: string | null;
+  decidedAt: string | null; // RFC3339
+  comment: string | null;
+  createdAt: string; // RFC3339
+}
+
+export interface DnaApprovalWithVersion {
+  approval: DnaApprovalJSON;
+  version: DnaVersionJSON;
+}
+
+export interface DnaDiffResponse {
+  baseToml: string;
+  newToml: string;
+}

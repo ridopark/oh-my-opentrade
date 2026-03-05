@@ -10,7 +10,9 @@ import {
   Activity,
   Layers,
   TrendingUp,
+  ShieldCheck,
 } from "lucide-react";
+
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -19,7 +21,9 @@ const navItems = [
   { href: "/execution", label: "Execution", icon: ListOrdered },
   { href: "/performance", label: "Performance", icon: TrendingUp },
   { href: "/dna", label: "Strategy DNA", icon: Dna },
+  { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   { href: "/strategies", label: "Strategies", icon: Layers },
+
 ];
 
 export function Sidebar() {
