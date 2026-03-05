@@ -12,6 +12,13 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// positionEntry tracks the average entry price and quantity for one symbol
+// within a tenant+envMode context. Used to compute realized P&L on sells.
+type positionEntry struct {
+	avgEntry float64
+	quantity float64
+}
+
 // LedgerWriter subscribes to FillReceived events and maintains the daily P&L
 // ledger and equity curve. It is the single writer for both daily_pnl and
 // equity_curve tables.
@@ -24,6 +31,7 @@ type LedgerWriter struct {
 
 	mu            sync.Mutex
 	dailyPnL      map[string]*dailyAccum // key: tenantID:envMode:date
+	positions     map[string]*positionEntry // key: tenantID:envMode:symbol
 	peakEquity    float64
 	accountEquity float64
 }
@@ -52,6 +60,7 @@ func NewLedgerWriter(
 		broker:        broker,
 		log:           log,
 		dailyPnL:      make(map[string]*dailyAccum),
+		positions:     make(map[string]*positionEntry),
 		peakEquity:    accountEquity,
 		accountEquity: accountEquity,
 	}
@@ -99,21 +108,43 @@ func (lw *LedgerWriter) handleFill(ctx context.Context, event domain.Event) erro
 	lw.mu.Lock()
 	defer lw.mu.Unlock()
 
-	// Calculate realized P&L from this fill.
-	// For paper trading: BUY side = opening position (no P&L), SELL side = closing position (P&L realized).
-	// Simplified FIFO: we track net realized P&L incrementally on each sell.
-	// A more sophisticated approach would match entry/exit pairs, but for MVP
-	// we compute realized P&L as the fill notional with sign based on side.
+	// Compute realized P&L using position tracking.
+	// BUY = opening position: update avg entry, no realized P&L.
+	// SELL = closing position: realized P&L = (sell_price - avg_entry) × quantity.
+	posKey := fmt.Sprintf("%s:%s:%s", event.TenantID, string(event.EnvMode), symbol)
 	var fillPnL float64
 	switch side {
-	case "sell":
-		// Selling closes a long — P&L depends on entry price which we don't track here.
-		// The circuit breaker will query the daily_pnl table for cumulative realized P&L.
-		// For now, record the notional value as a tracking entry; the actual P&L
-		// calculation is done by comparing fills within the day.
-		fillPnL = quantity * price // sell proceeds (positive)
-	case "buy":
-		fillPnL = -(quantity * price) // buy cost (negative)
+	case "buy", "BUY":
+		pos := lw.positions[posKey]
+		if pos == nil {
+			pos = &positionEntry{}
+			lw.positions[posKey] = pos
+		}
+		// Update weighted average entry price.
+		totalCost := pos.avgEntry*pos.quantity + price*quantity
+		pos.quantity += quantity
+		if pos.quantity > 0 {
+			pos.avgEntry = totalCost / pos.quantity
+		}
+		fillPnL = 0 // opening a position has no realized P&L
+	case "sell", "SELL":
+		pos := lw.positions[posKey]
+		if pos != nil && pos.quantity > 0 {
+			sellQty := quantity
+			if sellQty > pos.quantity {
+				sellQty = pos.quantity
+			}
+			fillPnL = (price - pos.avgEntry) * sellQty
+			pos.quantity -= sellQty
+			if pos.quantity <= 0 {
+				pos.quantity = 0
+				pos.avgEntry = 0
+			}
+		} else {
+			// No tracked position — cannot compute realized P&L, record zero.
+			lw.log.Warn().Str("symbol", symbol).Msg("ledger writer: sell without tracked position, recording zero P&L")
+			fillPnL = 0
+		}
 	}
 
 	// Get or create daily accumulator.

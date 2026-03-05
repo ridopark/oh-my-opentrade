@@ -102,6 +102,16 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		return nil
 	}
 
+	// 1b. Reject SHORT direction — paper account does not support short selling.
+	if intent.Direction == domain.DirectionShort {
+		l.Warn().Msg("SHORT direction rejected — account does not support short selling")
+		if s.metrics != nil {
+			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "short_disabled").Inc()
+		}
+		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusRejected))
+		return nil
+	}
+
 	// 2. Validate risk.
 	if err := s.riskEngine.Validate(intent, s.accountEquity); err != nil {
 		l.Warn().Err(err).Msg("order intent rejected by risk engine")
@@ -169,9 +179,9 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	s.emit(ctx, domain.EventOrderSubmitted, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusSubmitted))
 
 	// 7. Persist the order record.
-	side := "sell"
+	side := "SELL"
 	if intent.Direction == domain.DirectionLong {
-		side = "buy"
+		side = "BUY"
 	}
 	order := domain.BrokerOrder{
 		Time:          time.Now().UTC(),
@@ -246,9 +256,9 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 	}
 
 	// Persist trade.
-	side := "sell"
+	side := "SELL"
 	if intent.Direction == domain.DirectionLong {
-		side = "buy"
+		side = "BUY"
 	}
 	trade, err := domain.NewTrade(now, tenantID, envMode, uuid.New(), intent.Symbol, side, intent.Quantity, fillPrice, 0, "filled")
 	if err != nil {
