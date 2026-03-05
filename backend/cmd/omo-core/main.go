@@ -325,6 +325,14 @@ func main() {
 		omhttp.StaticChecker("monitor"),
 		omhttp.StaticChecker("execution"),
 		omhttp.StaticChecker("strategy"),
+		omhttp.FeedChecker("ws_feed", func() (bool, string) {
+			fh := alpacaAdapter.WSClient().FeedHealth()
+			if fh.IsHealthy() {
+				return true, ""
+			}
+			detail := fmt.Sprintf("state=%s connected=%v last_bar_age=%s", fh.State, fh.Connected, fh.LastBarAge.Round(time.Second))
+			return false, detail
+		}),
 	)
 	imux.Handle("/healthz/services", healthHandler)
 

@@ -37,6 +37,7 @@ type WSClient struct {
 	cancel    context.CancelFunc
 	mu        sync.Mutex
 	metrics   *metrics.Metrics
+	tracker   *feedTracker
 
 	// connectFactory builds a real alpacastream.StocksClient and returns its Connect func.
 	// Overridable in tests.
@@ -56,6 +57,7 @@ func NewWSClient(dataURL string, apiKey string, apiSecret string, feed string, f
 		apiSecret: apiSecret,
 		feed:      feed,
 		fetcher:   fetcher,
+		tracker:   newFeedTracker(),
 	}
 	ws.connectFactory = ws.defaultConnectFactory
 	return ws
@@ -63,6 +65,9 @@ func NewWSClient(dataURL string, apiKey string, apiSecret string, feed string, f
 
 // SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
 func (w *WSClient) SetMetrics(m *metrics.Metrics) { w.metrics = m }
+
+// FeedHealth returns a point-in-time snapshot of WebSocket feed status.
+func (w *WSClient) FeedHealth() FeedHealth { return w.tracker.Snapshot() }
 
 // defaultConnectFactory builds a real Alpaca SDK StocksClient and returns its Connect method.
 // The returned connectFn blocks until the stream is fully terminated (not just established).
@@ -94,7 +99,6 @@ func (w *WSClient) defaultConnectFactory(symStrs []string, barHandler func(alpac
 		}
 	}
 }
-
 
 // ParseBarMessage converts raw Alpaca bar JSON into a domain.MarketBar.
 func (w *WSClient) ParseBarMessage(data []byte) (domain.MarketBar, error) {
@@ -157,17 +161,30 @@ func barKey(bar domain.MarketBar) string {
 	return fmt.Sprintf("%s@%s", bar.Symbol.String(), bar.Time.UTC().Format(time.RFC3339))
 }
 
+// maxDedupEntries caps the dedup map to prevent unbounded memory growth.
+const maxDedupEntries = 10_000
+
+// maxConsecutiveFailsBeforeError is the hard limit on consecutive connect
+// failures (without any successful streaming) before StreamBars returns an error.
+const maxConsecutiveFailsBeforeError = 50
+
+// staleFeedThresholdRTH is how long we wait without a bar during RTH
+// before the watchdog forces a reconnect. 1-min bars + generous slack.
+const staleFeedThresholdRTH = 90 * time.Second
+
+// staleFeedCheckInterval is how often the watchdog checks for stale feed.
+const staleFeedCheckInterval = 15 * time.Second
+
 // StreamBars connects to the Alpaca WebSocket market data feed and streams
 // minute bars for the requested symbols until ctx is cancelled.
 //
-// Ghost-session handling:
-//   - When a connection limit (406) is detected, instead of a flat 95s sleep,
-//     StreamBars probes reconnect on a schedule (10s→20s→…→95s) with ±10% jitter,
-//     stopping as soon as Connect succeeds.
-//   - If a BarFetcher was provided at construction, a REST poller goroutine fires
-//     during the ghost window, polling every 5s and forwarding bars to handler.
-//   - On WS resume, a final gap-fill fetch is done and bars are deduplicated
-//     against what the REST poller already emitted.
+// Hardening features:
+//   - Exponential backoff with full jitter (aggressive RTH / relaxed off-hours)
+//   - Circuit breaker for fatal errors (auth, permission)
+//   - Stale feed watchdog: forces reconnect if no bars during RTH
+//   - Bounded dedup map (10k entries max)
+//   - Max consecutive fail limit (50 attempts → error)
+//   - Ghost-session handling with REST bridge and probe schedule
 func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ domain.Timeframe, handler ports.BarHandler) error {
 	if len(symbols) == 0 {
 		return nil
@@ -185,12 +202,10 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 	w.mu.Unlock()
 	defer cancel()
 
-	const (
-		retryInterval    = 5 * time.Second
-		restPollInterval = 5 * time.Second
-	)
+	const restPollInterval = 5 * time.Second
 
 	attempt := 0
+	consecutiveFails := 0 // counts attempts without successful streaming
 
 	// dedup tracks bar keys emitted by the REST poller so WS resume can skip duplicates.
 	// Protected by dedupMu.
@@ -201,6 +216,11 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 	// to window REST poll requests.
 	lastBarTime := make(map[domain.Symbol]time.Time)
 	var lastBarMu sync.Mutex
+
+	// staleCancelFn cancels the current connection when the watchdog detects stale feed.
+	// Set per-connection; nil when no watchdog is active.
+	var staleCancelFn context.CancelFunc
+	var staleCancelMu sync.Mutex
 
 	// callHandler deduplicates by (symbol, timestamp) and forwards new bars to handler.
 	// Both REST and WS paths record seen keys; either skips if already seen.
@@ -213,6 +233,10 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			return nil
 		}
 		dedup[key] = struct{}{}
+		// Bound dedup map: if it grows too large, reset it.
+		if len(dedup) > maxDedupEntries {
+			dedup = make(map[string]struct{})
+		}
 		dedupMu.Unlock()
 
 		lastBarMu.Lock()
@@ -220,6 +244,9 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			lastBarTime[bar.Symbol] = bar.Time
 		}
 		lastBarMu.Unlock()
+
+		// Record bar in health tracker.
+		w.tracker.recordBar()
 
 		source := "ws"
 		if fromREST {
@@ -239,19 +266,46 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		return err
 	}
 
+	w.tracker.setState("reconnecting")
+
 	for {
 		if streamCtx.Err() != nil {
+			w.tracker.setState("stopped")
 			return nil // context cancelled — clean shutdown
+		}
+
+		// Circuit breaker check.
+		if ok, wait := w.tracker.cb.Allow(); !ok {
+			w.tracker.setState("circuit_open")
+			log.Warn().Dur("wait", wait).Msg("circuit breaker open — waiting before retry")
+			if w.metrics != nil {
+				w.metrics.WS.ReconnectsTotal.WithLabelValues(w.feed, "circuit_open").Inc()
+			}
+			select {
+			case <-time.After(wait):
+			case <-streamCtx.Done():
+				w.tracker.setState("stopped")
+				return nil
+			}
+		}
+
+		// Max consecutive failures check.
+		if consecutiveFails >= maxConsecutiveFailsBeforeError {
+			w.tracker.setState("stopped")
+			return fmt.Errorf("alpaca ws: %d consecutive connect failures without successful streaming — giving up", consecutiveFails)
 		}
 
 		attempt++
 		if attempt > 1 {
+			w.tracker.incReconnect()
+			w.tracker.setState("reconnecting")
 			if w.metrics != nil {
 				reason := "transient"
 				w.metrics.WS.ReconnectsTotal.WithLabelValues(w.feed, reason).Inc()
 			}
 			log.Info().
 				Int("attempt", attempt).
+				Int("consecutive_fails", consecutiveFails).
 				Strs("symbols", symStrs).
 				Msg("reconnecting to Alpaca WebSocket stream")
 		}
@@ -282,26 +336,71 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 
 		connect := w.connectFactory(symStrs, barHandler, tradeHandler)
 
+		// Create a per-connection context that the stale watchdog can cancel.
+		connCtx, connCancel := context.WithCancel(streamCtx)
+		staleCancelMu.Lock()
+		staleCancelFn = connCancel
+		staleCancelMu.Unlock()
+
+		// Start stale feed watchdog.
+		watchdogDone := make(chan struct{})
+		go func() {
+			defer close(watchdogDone)
+			w.staleFeedWatchdog(connCtx, &staleCancelMu, &staleCancelFn)
+		}()
+
+		w.tracker.setConnected(true)
+		w.tracker.setState("streaming")
 		if w.metrics != nil {
 			w.metrics.WS.Connected.WithLabelValues(w.feed).Set(1)
 		}
 		connectedAt := time.Now()
-		connErr := connect(streamCtx)
+		connErr := connect(connCtx)
+
+		// Stop watchdog.
+		connCancel()
+		<-watchdogDone
+		staleCancelMu.Lock()
+		staleCancelFn = nil
+		staleCancelMu.Unlock()
+
+		w.tracker.setConnected(false)
 		if w.metrics != nil {
 			w.metrics.WS.Connected.WithLabelValues(w.feed).Set(0)
 		}
-		// If context was cancelled, this is an intentional shutdown — stop.
+
+		// If top-level context was cancelled, this is an intentional shutdown.
 		if streamCtx.Err() != nil {
+			w.tracker.setState("stopped")
 			return nil
 		}
 
+		// Record error for health tracking.
+		w.tracker.recordError(connErr)
+
+		// Classify error.
+		errClass := classifyError(connErr)
+
+		// Check for stale-triggered reconnect (connCtx cancelled but streamCtx still alive).
+		wasStaleReset := connCtx.Err() != nil && streamCtx.Err() == nil && connErr == nil
+		if wasStaleReset {
+			w.tracker.incStaleReset()
+			if w.metrics != nil {
+				w.metrics.WS.ReconnectsTotal.WithLabelValues(w.feed, "stale").Inc()
+			}
+			log.Warn().Msg("stale feed watchdog triggered reconnect")
+			// Use aggressive backoff for stale resets.
+			errClass = ErrTransient
+		}
+
+		// Record in circuit breaker.
+		w.tracker.cb.Record(errClass)
+
 		// Determine if this is a ghost-session / connection-limit scenario.
 		isConnLimit := false
-		if connErr != nil {
-			isConnLimit = strings.Contains(connErr.Error(), "connection limit exceeded") ||
-				strings.Contains(connErr.Error(), "max reconnect limit") ||
-				strings.Contains(connErr.Error(), "406")
-		} else {
+		if errClass == ErrGhost {
+			isConnLimit = true
+		} else if connErr == nil && !wasStaleReset {
 			// nil = clean close from Alpaca.
 			// Only retry fast if we're in core market hours AND the stream was genuinely
 			// live (≥10s). A flash-close (<10s) means the previous session is still
@@ -312,22 +411,39 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			}
 		}
 
+		if errClass == ErrFatal {
+			// Fatal error — circuit breaker handles backoff; log clearly.
+			log.Error().Err(connErr).Int("attempt", attempt).
+				Int("cb_fails", w.tracker.cb.ConsecutiveFails()).
+				Msg("Alpaca stream fatal error (auth/permission) — circuit breaker will gate retries")
+			consecutiveFails++
+			continue
+		}
+
 		if !isConnLimit {
-			// Normal transient error — fast retry.
+			// Normal transient error — policy-based backoff.
+			consecutiveFails++
+			policy := selectPolicy()
+			wait := policy.backoff(consecutiveFails - 1)
 			if connErr != nil {
-				log.Error().Err(connErr).Int("attempt", attempt).Dur("retry_in", retryInterval).Msg("Alpaca stream disconnected with error, reconnecting")
+				log.Error().Err(connErr).Int("attempt", attempt).Dur("retry_in", wait).Msg("Alpaca stream disconnected with error, reconnecting")
 			} else {
-				log.Warn().Int("attempt", attempt).Dur("retry_in", retryInterval).Msg("Alpaca stream nil close during core market hours, reconnecting")
+				log.Warn().Int("attempt", attempt).Dur("retry_in", wait).Msg("Alpaca stream clean close during core market hours, reconnecting")
 			}
 			select {
-			case <-time.After(retryInterval):
+			case <-time.After(wait):
 			case <-streamCtx.Done():
+				w.tracker.setState("stopped")
 				return nil
 			}
 			continue
 		}
 
 		// Ghost-session scenario — probe reconnect with REST bridge.
+		w.tracker.incGhostWindow()
+		w.tracker.setState("ghost_probe")
+		consecutiveFails++ // count ghost windows as a fail until streaming resumes
+		ghostStart := time.Now()
 		if w.metrics != nil {
 			w.metrics.WS.ReconnectsTotal.WithLabelValues(w.feed, "ghost").Inc()
 		}
@@ -366,6 +482,7 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 				if pollCancel != nil {
 					pollCancel()
 				}
+				w.tracker.setState("stopped")
 				return nil
 			}
 
@@ -386,6 +503,7 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 				if pollCancel != nil {
 					pollCancel()
 				}
+				w.tracker.setState("stopped")
 				return nil
 			}
 
@@ -418,6 +536,11 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 				reconnected = true
 			}
 		} // end for !reconnected
+
+		// Record ghost window duration.
+		ghostDur := time.Since(ghostStart)
+		log.Info().Dur("ghost_duration", ghostDur).Msg("ghost session resolved")
+
 		// Stop REST poller.
 		if pollCancel != nil {
 			pollCancel()
@@ -428,8 +551,49 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			w.gapFill(streamCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler)
 		}
 
-		// Reset attempt counter — we've successfully reconnected.
+		// Reset counters — we've successfully reconnected.
 		attempt = 0
+		consecutiveFails = 0
+	}
+}
+
+// staleFeedWatchdog monitors the feed during RTH and cancels the connection
+// context if no bars arrive within staleFeedThresholdRTH. This forces a reconnect
+// for zombie connections where TCP is alive but no data flows.
+func (w *WSClient) staleFeedWatchdog(ctx context.Context, cancelMu *sync.Mutex, cancelFn *context.CancelFunc) {
+	ticker := time.NewTicker(staleFeedCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !isCoreMarketHours() {
+				continue // only enforce during RTH
+			}
+
+			w.tracker.mu.Lock()
+			lastBar := w.tracker.lastBarAt
+			w.tracker.mu.Unlock()
+
+			if lastBar.IsZero() {
+				continue // no bars yet — skip (initial warmup)
+			}
+
+			age := time.Since(lastBar)
+			if age > staleFeedThresholdRTH {
+				log.Warn().Dur("bar_age", age).Dur("threshold", staleFeedThresholdRTH).
+					Msg("stale feed watchdog: no bars received within threshold — forcing reconnect")
+
+				cancelMu.Lock()
+				if *cancelFn != nil {
+					(*cancelFn)()
+				}
+				cancelMu.Unlock()
+				return
+			}
+		}
 	}
 }
 
@@ -559,6 +723,7 @@ func (w *WSClient) Close() error {
 		}
 		w.mu.Unlock()
 	})
+	w.tracker.setState("stopped")
 	return nil
 }
 

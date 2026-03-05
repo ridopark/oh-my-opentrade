@@ -71,6 +71,18 @@ func StaticChecker(name string) HealthChecker {
 	}
 }
 
+
+// FeedChecker returns a HealthChecker for the WebSocket market-data feed.
+// healthFn should return (isHealthy, detail). The detail is only shown when unhealthy.
+func FeedChecker(name string, healthFn func() (bool, string)) HealthChecker {
+	return func(_ context.Context) ServiceStatus {
+		ok, detail := healthFn()
+		if ok {
+			return ServiceStatus{Name: name, Healthy: true}
+		}
+		return ServiceStatus{Name: name, Healthy: false, Detail: detail}
+	}
+}
 func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	if r.Method == http.MethodOptions {
