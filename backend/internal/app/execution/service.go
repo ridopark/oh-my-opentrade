@@ -123,7 +123,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			if s.metrics != nil {
 				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "position_gate").Inc()
 			}
-			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusRejected))
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
 			return nil
 		}
 	}
@@ -134,7 +134,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		if s.metrics != nil {
 			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "short_disabled").Inc()
 		}
-		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusRejected))
+		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, "SHORT direction not supported — paper account cannot short sell"))
 		return nil
 	}
 
@@ -144,7 +144,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		if s.metrics != nil {
 			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "risk").Inc()
 		}
-		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusRejected))
+		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
 		return nil
 	}
 
@@ -154,7 +154,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		if s.metrics != nil {
 			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "validation").Inc()
 		}
-		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusRejected))
+		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
 		return nil
 	}
 	l.Info().Msg("order intent validated — passed risk and slippage checks")

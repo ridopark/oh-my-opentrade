@@ -71,6 +71,7 @@ export interface OrderIntentEvent {
   rationale: string;
   confidence: number;
   status?: OrderIntentStatus;
+  reason?: string;
 }
 
 // State / Indicators (maps to domain.IndicatorSnapshot + MarketRegime)

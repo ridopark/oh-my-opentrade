@@ -87,6 +87,7 @@ type OrderIntentEventPayload struct {
 	Rationale      string  `json:"rationale"`
 	Confidence     float64 `json:"confidence"`
 	Status         string  `json:"status"`
+	Reason         string  `json:"reason,omitempty"`
 }
 
 // NewOrderIntentEventPayload converts an OrderIntent into the SSE wire shape.
@@ -104,6 +105,14 @@ func NewOrderIntentEventPayload(intent OrderIntent, status OrderIntentStatus) Or
 		Confidence:     intent.Confidence,
 		Status:         status,
 	}
+}
+
+// NewOrderIntentRejectedPayload is like NewOrderIntentEventPayload but includes
+// the specific reason the intent was rejected (risk, slippage, position gate, etc.).
+func NewOrderIntentRejectedPayload(intent OrderIntent, reason string) OrderIntentEventPayload {
+	p := NewOrderIntentEventPayload(intent, OrderIntentStatusRejected)
+	p.Reason = reason
+	return p
 }
 
 // NewOrderIntent creates a validated OrderIntent.
