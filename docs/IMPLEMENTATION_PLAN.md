@@ -106,30 +106,30 @@ Last Updated: March 4, 2026 (Session 5 — Gap Analysis + New Phases 11-14)
 | 42 | Alpaca paper trading order submission verification | ✅ Done — Account equity ($30,965.59), order submit/status/cancel lifecycle, quote retrieval all verified via smoke tests. |
 | 43 | Integration test: Alpaca WS → Ingestion → TimescaleDB round-trip | ✅ Done |
 | 44 | Integration test: SetupDetected → Debate → OrderIntent → Execution → Order | ✅ Done |
-| 45 | Strategy DNA parameter tuning for live conditions | 🟡 In Progress — DNA reviewed, params reasonable for ORB strategy. Regime filter allows TREND only (conservative). **Bugs to fix:** `min_confidence` hardcoded to 0.75 (should use DNA value); verify `min_rvol` wiring from DNA → ORB tracker. |
+| 45 | Strategy DNA parameter tuning for live conditions | ✅ Done — DNA params (min_rvol=0.5, min_confidence=0.40) now flow to ORB tracker via `SetORBConfig()` |
 | 46 | Notification wiring (Telegram/Discord alerts on order events) | ✅ Done |
 | 47 | CI/CD pipeline setup (GitHub Actions) | ✅ Done |
 
-### Phase 10 — Hardening & Infrastructure 🔲
+### Phase 10 — Hardening & Infrastructure ✅
 | # | Item | Status |
 |---|------|--------|
-| 48 | Backtesting framework — Replay historical bars through event pipeline with 5bps slippage model (PRD §3 nightly evolution) | 🔲 Not Started |
-| 49 | Candlestick chart mode (lightweight-charts supports it natively) | 🔲 Not Started |
-| 50 | Auto-reconnect for Alpaca WebSocket with exponential backoff | 🔲 Not Started |
-| 51 | Performance dashboard — P&L tracking, win rate, max drawdown, Sharpe ratio (PRD §7) | 🔲 Not Started |
-| 52 | Observability stack — Prometheus metrics + Grafana dashboards for system health | 🔲 Not Started |
-| 53 | TanStack Query migration — Replace raw fetch() in dashboard pages with useQuery hooks (package already installed) | 🔲 Not Started |
+| 48 | Backtesting framework — Replay historical bars through event pipeline with 5bps slippage model (PRD §3 nightly evolution) | ✅ Done — `omo-replay --backtest` with SimBroker, equity curve, trade stats |
+| 49 | Candlestick chart mode (lightweight-charts supports it natively) | ✅ Done — Line/Candle toggle with OHLCV + volume histogram + EMA overlays |
+| 50 | Auto-reconnect for Alpaca WebSocket with exponential backoff | ✅ Done — Exponential backoff, health monitoring, connection state tracking |
+| 51 | Performance dashboard — P&L tracking, win rate, max drawdown, Sharpe ratio (PRD §7) | ✅ Done — `/performance` page with equity curve, daily P&L, trade stats |
+| 52 | Observability stack — Prometheus metrics + Grafana dashboards for system health | ✅ Done — Prometheus metrics endpoint, Grafana provisioned dashboards |
+| 53 | TanStack Query migration — Replace raw fetch() in dashboard pages with useQuery hooks (package already installed) | ✅ Done — All dashboard pages migrated to TanStack Query hooks |
 
-### Phase 11 — Multi-Timeframe Analysis (MTFA) 🔲
+### Phase 11 — Multi-Timeframe Analysis (MTFA) ✅
 
 PRD §4.2 requires anchor (5m/15m) + trigger (1m) separation. Currently the monitor only processes 1m bars with no explicit anchor/trigger distinction.
 
 | # | Item | Status |
 |---|------|--------|
-| 54 | Multi-timeframe bar aggregation — Aggregate 1m bars into 5m/15m candles in the monitor service | 🔲 Not Started |
-| 55 | Anchor regime detection — Compute regime (trend/balance/reversal) on 5m/15m timeframes | 🔲 Not Started |
-| 56 | Trigger entry logic — Use 1m bars for entry/exit signals, gated by 5m/15m anchor regime | 🔲 Not Started |
-| 57 | MTFA integration tests — Verify anchor+trigger pipeline end-to-end | 🔲 Not Started |
+| 54 | Multi-timeframe bar aggregation — Aggregate 1m bars into 5m/15m candles in the monitor service | ✅ Done — BarAggregator domain type with 11 TDD tests |
+| 55 | Anchor regime detection — Compute regime (trend/balance/reversal) on 5m/15m timeframes | ✅ Done — RegimeDetector with hysteresis on 5m/15m anchor timeframes |
+| 56 | Trigger entry logic — Use 1m bars for entry/exit signals, gated by 5m/15m anchor regime | ✅ Done — ORB strategy gates on AnchorRegimes from 5m/15m |
+| 57 | MTFA integration tests — Verify anchor+trigger pipeline end-to-end | ✅ Done — 13 integration tests in mtfa_test.go |
 
 ### Phase 12 — Pre-Market Screener & Approval Workflow 🔲
 
@@ -446,13 +446,16 @@ Makefile                       14 targets (build, test, test-integration, migrat
 - [x] Full test suite passes: 320+ tests across 16 packages, zero failures
 - [x] omo-core startup sequence verified: all services subscribe, config loads from .env, WebSocket streams
 
-### Phase 10–14 — Remaining PRD Features 🔲
-- [ ] Backtesting framework replays historical data (#48)
-- [ ] WebSocket auto-reconnects on disconnect (#50)
-- [ ] P&L tracking dashboard (#51)
-- [ ] Observability stack (#52)
-- [ ] TanStack Query migration (#53)
-- [ ] Multi-timeframe anchor/trigger separation (#54-57)
+### Phase 10–11 — Completed ✅
+- [x] Backtesting framework replays historical data (#48)
+- [x] Candlestick chart mode (#49)
+- [x] WebSocket auto-reconnects on disconnect (#50)
+- [x] P&L tracking dashboard (#51)
+- [x] Observability stack (#52)
+- [x] TanStack Query migration (#53)
+- [x] Multi-timeframe anchor/trigger separation (#54-57)
+
+### Phase 12–14 — Remaining PRD Features 🔲
 - [ ] Pre-market screener service (#58-59)
 - [ ] DNA approval workflow + UI (#60-62)
 - [ ] AVWAP strategy (#63)
@@ -477,7 +480,7 @@ Makefile                       14 targets (build, test, test-integration, migrat
 
 **Symbols tracked** (from config.yaml): AAPL, MSFT, GOOGL, AMZN, TSLA, SOXL, U, PLTR, SPY, META
 
-**Strategy DNA files**: 1 strategy — `orb_break_retest.toml` (ORB 30min, RVOL ≥ 1.5, confidence ≥ 0.65, TREND regime only)
+**Strategy DNA files**: 1 strategy — `orb_break_retest.toml` (ORB 30min, RVOL ≥ 0.5, confidence ≥ 0.40, TREND regime only)
 
 ---
 
@@ -512,11 +515,11 @@ Comprehensive comparison of PRD v11.0 features vs actual implementation status (
 
 | PRD Feature | PRD Section | Status | Gap |
 |---|---|---|---|
-| Multi-Timeframe Analysis | §4.2 | Timeframe values exist (1m/5m/15m) | No explicit anchor (5m/15m) + trigger (1m) separation; monitor processes 1m only |
+| Multi-Timeframe Analysis | §4.2 | ✅ Fully Implemented | Bar aggregation (1m→5m/15m), anchor regime detection with hysteresis, trigger gating in ORB strategy |
 | Options Trading | §4 | Contract selection + order execution | Only LONG direction, TREND regime; no full options strategy |
-| TanStack Query | §2 Frontend | Package installed | Dashboard pages use raw fetch() instead of useQuery hooks |
+| TanStack Query | §2 Frontend | ✅ Fully Implemented | All dashboard pages use useQuery hooks |
 | Multi-Account Execution | §4 | Schema + kill switch tenant isolation | Runtime is single-account via .env; no multi-account orchestration |
-| Phase 9 Paper Trading | §9 | 8/11 items done | Needs market-hours E2E verification; min_rvol bug; min_confidence hardcode |
+| Phase 9 Paper Trading | §9 | 10/11 items done | Needs market-hours E2E verification (#39) |
 
 ### ❌ Not Implemented
 
@@ -528,14 +531,14 @@ Comprehensive comparison of PRD v11.0 features vs actual implementation status (
 | AI-Enhanced Scalping Strategy | §4.3 #3 | Phase 13 #64 | No RSI/Stoch mean-reversion strategy; depends on MTFA |
 | Nightly Evolution Cycle | §3 | Phase 14 #67-68 | No automated AI analysis of trades or DNA parameter optimization |
 | Corporate Action Check | §3 | Phase 14 #69 | No dividend/split filtering for active tickers |
-| Backtesting Framework (5bps slippage) | §3 | Phase 10 #48 | No historical replay through event pipeline |
-| Performance Dashboard (P&L, win rate) | §7 | Phase 10 #51 | No P&L tracking or performance metrics |
-| Observability (Prometheus/Grafana) | Ops | Phase 10 #52 | No system health metrics |
-| WebSocket Auto-Reconnect | Ops | Phase 10 #50 | No reconnection logic on disconnect |
+| ~~Backtesting Framework (5bps slippage)~~ | ~~§3~~ | ~~Phase 10 #48~~ | ✅ Implemented — `omo-replay --backtest` |
+| ~~Performance Dashboard (P&L, win rate)~~ | ~~§7~~ | ~~Phase 10 #51~~ | ✅ Implemented — `/performance` page |
+| ~~Observability (Prometheus/Grafana)~~ | ~~Ops~~ | ~~Phase 10 #52~~ | ✅ Implemented — Prometheus + Grafana |
+| ~~WebSocket Auto-Reconnect~~ | ~~Ops~~ | ~~Phase 10 #50~~ | ✅ Implemented — Exponential backoff |
 
 ### 🐛 Known Bugs
 
 | Bug | Location | Impact |
 |---|---|---|
-| `min_rvol` not connected to monitor | orb_tracker.go / monitor service | RVOL IS used in ORB tracker for breakout confirmation, but DNA `min_rvol` may not flow through to all code paths |
-| `min_confidence` hardcodes 0.75 | strategy service | DNA value for min_confidence is ignored; strategy service uses hardcoded 0.75 threshold |
+| ~~`min_rvol` not connected to monitor~~ | ~~orb_tracker.go / monitor service~~ | ✅ Fixed — DNA `min_rvol` flows via `SetORBConfig()` |
+| ~~`min_confidence` hardcodes 0.75~~ | ~~strategy service~~ | ✅ Fixed — DNA `min_confidence` flows via `SetORBConfig()` |
