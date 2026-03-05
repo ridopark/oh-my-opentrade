@@ -60,6 +60,7 @@ services:
     environment:
       - TIMESCALEDB_HOST=timescaledb
       - TIMESCALEDB_PORT=5432
+      - STRATEGY_V2=true
     ports:
       - "8080:8080"
     networks:
