@@ -35,8 +35,8 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/logger"
-	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 )
@@ -440,19 +440,19 @@ func main() {
 			return
 		}
 		type pnlJSON struct {
-			Date      string  `json:"date"`
-			Realized  float64 `json:"realized_pnl"`
-			Unrealized float64 `json:"unrealized_pnl"`
-			TradeCount int     `json:"trade_count"`
+			Date        string  `json:"date"`
+			Realized    float64 `json:"realized_pnl"`
+			Unrealized  float64 `json:"unrealized_pnl"`
+			TradeCount  int     `json:"trade_count"`
 			MaxDrawdown float64 `json:"max_drawdown"`
 		}
 		var results []pnlJSON
 		for _, p := range pnlData {
 			results = append(results, pnlJSON{
-				Date:       p.Date.Format("2006-01-02"),
-				Realized:   p.RealizedPnL,
-				Unrealized: p.UnrealizedPnL,
-				TradeCount: p.TradeCount,
+				Date:        p.Date.Format("2006-01-02"),
+				Realized:    p.RealizedPnL,
+				Unrealized:  p.UnrealizedPnL,
+				TradeCount:  p.TradeCount,
 				MaxDrawdown: p.MaxDrawdown,
 			})
 		}
@@ -531,6 +531,8 @@ func main() {
 				Msg("ORB warmup complete")
 		}
 	}
+
+	monitorSvc.InitAggregators(symbols, todayOpen)
 
 	log.Info().
 		Strs("symbols", symbolStrings(symbols)).

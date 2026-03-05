@@ -44,22 +44,22 @@ func NewMarketBar(t time.Time, sym Symbol, tf Timeframe, open, high, low, close,
 
 // OrderIntent represents a validated intent to place an order, pending broker submission.
 type OrderIntent struct {
-	ID             uuid.UUID   `json:"id"`
-	TenantID       string      `json:"tenantId"`
-	EnvMode        EnvMode     `json:"envMode"`
-	Symbol         Symbol      `json:"symbol"`
-	Direction      Direction   `json:"direction"`
-	LimitPrice     float64     `json:"limitPrice"`
-	StopLoss       float64     `json:"stopLoss"`
-	MaxSlippageBPS int         `json:"maxSlippageBPS"`
-	Quantity       float64     `json:"quantity"`
-	Strategy       string      `json:"strategy"`
-	Rationale      string      `json:"rationale"`
-	Confidence     float64     `json:"confidence"`
-	IdempotencyKey string      `json:"idempotencyKey"`
+	ID             uuid.UUID `json:"id"`
+	TenantID       string    `json:"tenantId"`
+	EnvMode        EnvMode   `json:"envMode"`
+	Symbol         Symbol    `json:"symbol"`
+	Direction      Direction `json:"direction"`
+	LimitPrice     float64   `json:"limitPrice"`
+	StopLoss       float64   `json:"stopLoss"`
+	MaxSlippageBPS int       `json:"maxSlippageBPS"`
+	Quantity       float64   `json:"quantity"`
+	Strategy       string    `json:"strategy"`
+	Rationale      string    `json:"rationale"`
+	Confidence     float64   `json:"confidence"`
+	IdempotencyKey string    `json:"idempotencyKey"`
 	// Options-specific fields (nil/zero for equity orders)
-	Instrument    *Instrument  `json:"instrument,omitempty"`
-	MaxLossUSD    float64      `json:"maxLossUSD,omitempty"`
+	Instrument *Instrument `json:"instrument,omitempty"`
+	MaxLossUSD float64     `json:"maxLossUSD,omitempty"`
 }
 
 // OrderIntentStatus indicates where in the pipeline an order intent currently sits.
@@ -203,17 +203,18 @@ func NewOptionOrderIntent(
 
 // IndicatorSnapshot holds a point-in-time snapshot of technical indicators.
 type IndicatorSnapshot struct {
-	Time      time.Time
-	Symbol    Symbol
-	Timeframe Timeframe
-	RSI       float64
-	StochK    float64
-	StochD    float64
-	EMA9      float64
-	EMA21     float64
-	VWAP      float64
-	Volume    float64
-	VolumeSMA float64
+	Time          time.Time
+	Symbol        Symbol
+	Timeframe     Timeframe
+	RSI           float64
+	StochK        float64
+	StochD        float64
+	EMA9          float64
+	EMA21         float64
+	VWAP          float64
+	Volume        float64
+	VolumeSMA     float64
+	AnchorRegimes map[Timeframe]MarketRegime `json:"anchorRegimes,omitempty"`
 }
 
 // NewIndicatorSnapshot creates a validated IndicatorSnapshot. RSI must be in [0,100].
@@ -332,7 +333,7 @@ type BrokerOrder struct {
 	Quantity      float64
 	LimitPrice    float64
 	StopLoss      float64
-	Status        string    // submitted | filled | cancelled | expired
+	Status        string // submitted | filled | cancelled | expired
 	FilledAt      *time.Time
 	FilledPrice   float64
 	FilledQty     float64
@@ -340,13 +341,13 @@ type BrokerOrder struct {
 
 // DailyPnL tracks realized and unrealized P&L for a single trading day.
 type DailyPnL struct {
-	Date         time.Time
-	TenantID     string
-	EnvMode      EnvMode
-	RealizedPnL  float64
+	Date          time.Time
+	TenantID      string
+	EnvMode       EnvMode
+	RealizedPnL   float64
 	UnrealizedPnL float64
-	TradeCount   int
-	MaxDrawdown  float64
+	TradeCount    int
+	MaxDrawdown   float64
 }
 
 // NewDailyPnL creates a validated DailyPnL. TradeCount must not be negative.

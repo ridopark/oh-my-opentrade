@@ -43,8 +43,9 @@ func NewIndicatorCalculator() *IndicatorCalculator {
 	}
 }
 
-func (ic *IndicatorCalculator) ResetSession(symbol string) {
-	state, ok := ic.states[symbol]
+func (ic *IndicatorCalculator) ResetSession(symbol, timeframe string) {
+	key := symbol + ":" + timeframe
+	state, ok := ic.states[key]
 	if !ok {
 		return
 	}
@@ -77,11 +78,11 @@ func smaWindow(values []float64, period int) float64 {
 // Update processes a new market bar, updates internal state, and returns
 // a point-in-time snapshot of the computed technical indicators.
 func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnapshot {
-	symStr := bar.Symbol.String()
-	state, ok := ic.states[symStr]
+	key := bar.Symbol.String() + ":" + bar.Timeframe.String()
+	state, ok := ic.states[key]
 	if !ok {
 		state = &symbolState{}
-		ic.states[symStr] = state
+		ic.states[key] = state
 	}
 
 	state.closes = append(state.closes, bar.Close)

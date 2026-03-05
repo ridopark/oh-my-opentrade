@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
@@ -24,6 +25,8 @@ type Service struct {
 	mu             sync.Mutex
 	lastSnaps      map[string]domain.IndicatorSnapshot
 	liveBars       map[string]int
+	aggregators    map[string]*domain.BarAggregator
+	anchorRegimes  map[string]domain.MarketRegime
 	log            zerolog.Logger
 }
 
@@ -37,6 +40,8 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 		orbTracker:     NewORBTracker(),
 		lastSnaps:      make(map[string]domain.IndicatorSnapshot),
 		liveBars:       make(map[string]int),
+		aggregators:    make(map[string]*domain.BarAggregator),
+		anchorRegimes:  make(map[string]domain.MarketRegime),
 		log:            log,
 	}
 }
@@ -44,7 +49,33 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 func (s *Service) ResetSessionIndicators(symbol string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.calculator.ResetSession(symbol)
+	s.calculator.ResetSession(symbol, "1m")
+	s.calculator.ResetSession(symbol, "5m")
+	s.calculator.ResetSession(symbol, "15m")
+}
+
+func (s *Service) InitAggregators(symbols []domain.Symbol, sessionOpen time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sym := range symbols {
+		symStr := sym.String()
+		for _, tf := range []domain.Timeframe{"5m", "15m"} {
+			key := symStr + ":" + tf.String()
+			agg, err := domain.NewBarAggregator(sym, tf, sessionOpen)
+			if err != nil {
+				continue
+			}
+			s.aggregators[key] = agg
+		}
+	}
+}
+
+func (s *Service) ResetAggregators(sessionOpen time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, agg := range s.aggregators {
+		agg.Reset(sessionOpen)
+	}
 }
 
 // Start subscribes the service to incoming sanitized market data events.
@@ -66,17 +97,69 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	if !ok {
 		return fmt.Errorf("monitor: payload is not a MarketBar, got %T", event.Payload)
 	}
+	if bar.Timeframe != "1m" {
+		return nil
+	}
 
 	l := s.log.With().
 		Str("symbol", string(bar.Symbol)).
 		Str("timeframe", string(bar.Timeframe)).
 		Logger()
 
+	var publishStrict []domain.Event
+	var publishBestEffort []domain.Event
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	snap := s.calculator.Update(bar)
 	symStr := bar.Symbol.String()
+
+	for _, tf := range []domain.Timeframe{"5m", "15m"} {
+		aggKey := symStr + ":" + tf.String()
+		agg, exists := s.aggregators[aggKey]
+		if !exists {
+			continue
+		}
+		closed, ok := agg.Push(bar)
+		if !ok {
+			continue
+		}
+
+		barEv, err := domain.NewEvent(
+			domain.EventMarketBarSanitized,
+			event.TenantID,
+			event.EnvMode,
+			event.IdempotencyKey+"-"+tf.String()+"-htf-bar",
+			closed,
+		)
+		if err == nil {
+			publishBestEffort = append(publishBestEffort, *barEv)
+		}
+
+		htfSnap := s.calculator.Update(closed)
+		reg, changedAnchor := s.regimeDetector.Detect(htfSnap)
+		s.anchorRegimes[aggKey] = reg
+		if changedAnchor {
+			regimeShiftedEv, err := domain.NewEvent(
+				domain.EventRegimeShifted,
+				event.TenantID,
+				event.EnvMode,
+				event.IdempotencyKey+"-"+tf.String()+"-regime-shifted",
+				reg,
+			)
+			if err == nil {
+				publishBestEffort = append(publishBestEffort, *regimeShiftedEv)
+			}
+		}
+	}
+
+	snap.AnchorRegimes = make(map[domain.Timeframe]domain.MarketRegime)
+	for _, tf := range []domain.Timeframe{"5m", "15m"} {
+		aggKey := symStr + ":" + tf.String()
+		if reg, ok := s.anchorRegimes[aggKey]; ok {
+			snap.AnchorRegimes[tf] = reg
+		}
+	}
 
 	s.liveBars[symStr]++
 
@@ -100,12 +183,10 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		snap,
 	)
 	if err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("monitor: failed to create state updated event: %w", err)
 	}
-
-	if err := s.eventBus.Publish(ctx, *stateUpdatedEv); err != nil {
-		return fmt.Errorf("monitor: failed to publish state updated event: %w", err)
-	}
+	publishStrict = append(publishStrict, *stateUpdatedEv)
 
 	regime, changed := s.regimeDetector.Detect(snap)
 	l.Debug().
@@ -123,11 +204,10 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 			regime,
 		)
 		if err != nil {
+			s.mu.Unlock()
 			return fmt.Errorf("monitor: failed to create regime shifted event: %w", err)
 		}
-		if err := s.eventBus.Publish(ctx, *regimeShiftedEv); err != nil {
-			return fmt.Errorf("monitor: failed to publish regime shifted event: %w", err)
-		}
+		publishStrict = append(publishStrict, *regimeShiftedEv)
 	}
 
 	if s.liveBars[symStr] < settlingBars {
@@ -135,6 +215,15 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		s.orbTracker.OnBar(bar, snap, cfg, true)
 		l.Debug().Msg(fmt.Sprintf("settling: %d/%d bars, suppressing setup detection", s.liveBars[symStr], settlingBars))
 		s.lastSnaps[symStr] = snap
+		s.mu.Unlock()
+		for _, ev := range publishStrict {
+			if err := s.eventBus.Publish(ctx, ev); err != nil {
+				return fmt.Errorf("monitor: failed to publish event %s: %w", ev.Type, err)
+			}
+		}
+		for _, ev := range publishBestEffort {
+			_ = s.eventBus.Publish(ctx, ev)
+		}
 		return nil
 	}
 
@@ -162,14 +251,23 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 			*setup,
 		)
 		if err != nil {
+			s.mu.Unlock()
 			return fmt.Errorf("monitor: failed to create setup detected event: %w", err)
 		}
-		if err := s.eventBus.Publish(ctx, *setupEv); err != nil {
-			return fmt.Errorf("monitor: failed to publish setup detected event: %w", err)
-		}
+		publishStrict = append(publishStrict, *setupEv)
 	}
 
 	s.lastSnaps[symStr] = snap
+	s.mu.Unlock()
+
+	for _, ev := range publishStrict {
+		if err := s.eventBus.Publish(ctx, ev); err != nil {
+			return fmt.Errorf("monitor: failed to publish event %s: %w", ev.Type, err)
+		}
+	}
+	for _, ev := range publishBestEffort {
+		_ = s.eventBus.Publish(ctx, ev)
+	}
 
 	return nil
 }

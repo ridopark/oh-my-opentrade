@@ -28,13 +28,19 @@ func clamp(v, min, max float64) float64 {
 // RegimeDetector maintains state and detects market regime shifts
 // based on incoming technical indicator snapshots.
 type RegimeDetector struct {
-	lastRegimes map[string]domain.RegimeType
+	states map[string]*regimeState
+}
+
+type regimeState struct {
+	confirmedRegime domain.RegimeType
+	pendingRegime   domain.RegimeType
+	pendingCount    int
 }
 
 // NewRegimeDetector creates a new RegimeDetector.
 func NewRegimeDetector() *RegimeDetector {
 	return &RegimeDetector{
-		lastRegimes: make(map[string]domain.RegimeType),
+		states: make(map[string]*regimeState),
 	}
 }
 
@@ -42,7 +48,7 @@ func NewRegimeDetector() *RegimeDetector {
 // market regime, and returns the regime along with a boolean indicating
 // if the regime has changed since the last snapshot.
 func (rd *RegimeDetector) Detect(snapshot domain.IndicatorSnapshot) (domain.MarketRegime, bool) {
-	symStr := snapshot.Symbol.String()
+	key := snapshot.Symbol.String() + ":" + snapshot.Timeframe.String()
 
 	emaDiff := 0.0
 	if snapshot.EMA21 != 0 {
@@ -77,11 +83,46 @@ func (rd *RegimeDetector) Detect(snapshot domain.IndicatorSnapshot) (domain.Mark
 
 	regime, _ := domain.NewMarketRegime(snapshot.Symbol, snapshot.Timeframe, regimeType, time.Now(), strength)
 
-	lastType, exists := rd.lastRegimes[symStr]
-	changed := !exists || lastType != regimeType
+	const minAnchorBarsForRegime = 3
+	st, exists := rd.states[key]
+	if !exists {
+		st = &regimeState{confirmedRegime: regimeType}
+		rd.states[key] = st
+		return regime, true
+	}
 
-	if changed {
-		rd.lastRegimes[symStr] = regimeType
+	isAnchorTF := snapshot.Timeframe != "1m"
+	changed := false
+
+	if !isAnchorTF {
+
+		if st.confirmedRegime != regimeType {
+			st.confirmedRegime = regimeType
+			st.pendingRegime = ""
+			st.pendingCount = 0
+			changed = true
+		}
+		return regime, changed
+	}
+
+	if st.confirmedRegime == regimeType {
+		st.pendingRegime = ""
+		st.pendingCount = 0
+		return regime, false
+	}
+
+	if st.pendingRegime != regimeType {
+		st.pendingRegime = regimeType
+		st.pendingCount = 1
+		return regime, false
+	}
+
+	st.pendingCount++
+	if st.pendingCount >= minAnchorBarsForRegime {
+		st.confirmedRegime = regimeType
+		st.pendingRegime = ""
+		st.pendingCount = 0
+		changed = true
 	}
 
 	return regime, changed

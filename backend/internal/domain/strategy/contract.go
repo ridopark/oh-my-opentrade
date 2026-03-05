@@ -115,12 +115,18 @@ type Context interface {
 // Strategies receive this from the central indicator computation pipeline.
 // This is optional — strategies that compute their own indicators can ignore it.
 type IndicatorData struct {
-	RSI       float64
-	StochK    float64
-	StochD    float64
-	EMA9      float64
-	EMA21     float64
-	VWAP      float64
-	Volume    float64
-	VolumeSMA float64
+	RSI           float64
+	StochK        float64
+	StochD        float64
+	EMA9          float64
+	EMA21         float64
+	VWAP          float64
+	Volume        float64
+	VolumeSMA     float64
+	AnchorRegimes map[string]AnchorRegime
+}
+
+type AnchorRegime struct {
+	Type     string
+	Strength float64
 }

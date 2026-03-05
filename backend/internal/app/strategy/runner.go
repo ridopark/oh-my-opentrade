@@ -49,6 +49,7 @@ func NewRunner(
 		indicators: make(map[string]strat.IndicatorData),
 	}
 }
+
 // Router returns the underlying router for registration.
 func (r *Runner) Router() *Router { return r.router }
 
@@ -79,17 +80,32 @@ func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error
 	}
 	r.mu.Lock()
 	r.indicators[snap.Symbol.String()] = strat.IndicatorData{
-		RSI:       snap.RSI,
-		StochK:    snap.StochK,
-		StochD:    snap.StochD,
-		EMA9:      snap.EMA9,
-		EMA21:     snap.EMA21,
-		VWAP:      snap.VWAP,
-		Volume:    snap.Volume,
-		VolumeSMA: snap.VolumeSMA,
+		RSI:           snap.RSI,
+		StochK:        snap.StochK,
+		StochD:        snap.StochD,
+		EMA9:          snap.EMA9,
+		EMA21:         snap.EMA21,
+		VWAP:          snap.VWAP,
+		Volume:        snap.Volume,
+		VolumeSMA:     snap.VolumeSMA,
+		AnchorRegimes: convertAnchorRegimes(snap.AnchorRegimes),
 	}
 	r.mu.Unlock()
 	return nil
+}
+
+func convertAnchorRegimes(regimes map[domain.Timeframe]domain.MarketRegime) map[string]strat.AnchorRegime {
+	if len(regimes) == 0 {
+		return nil
+	}
+	result := make(map[string]strat.AnchorRegime, len(regimes))
+	for tf, r := range regimes {
+		result[tf.String()] = strat.AnchorRegime{
+			Type:     r.Type.String(),
+			Strength: r.Strength,
+		}
+	}
+	return result
 }
 
 // handleBar processes a MarketBarSanitized event by routing to assigned instances.

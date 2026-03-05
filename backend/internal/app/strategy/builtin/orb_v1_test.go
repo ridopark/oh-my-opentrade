@@ -289,3 +289,83 @@ func TestORBStrategy_NoSignalAfterDone(t *testing.T) {
 func TestORBStrategy_ImplementsInterface(t *testing.T) {
 	var _ strat.Strategy = (*builtin.ORBStrategy)(nil)
 }
+
+// runORBToRetest drives the ORB strategy through its full cycle
+// (30 range bars → transition → breakout → retest) with the given
+// AnchorRegimes set on each bar. Returns the final state and signals
+// from the retest bar.
+func runORBToRetest(t *testing.T, anchorRegimes map[string]strat.AnchorRegime) (strat.State, []strat.Signal) {
+	t.Helper()
+	s := builtin.NewORBStrategy()
+	ctx := newTestContext(time.Now())
+	st, err := s.Init(ctx, "AAPL", orbParams(), nil)
+	require.NoError(t, err)
+
+	indicators := strat.IndicatorData{Volume: 10, VolumeSMA: 10, AnchorRegimes: anchorRegimes}
+
+	// Phase 1: Form the opening range (30 bars)
+	for i := 0; i < 30; i++ {
+		bt := time.Date(2025, 3, 4, 14, 30+i, 0, 0, time.UTC)
+		bar := strat.Bar{Time: bt, Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}
+		orbSt := st.(*builtin.ORBState)
+		orbSt.SetIndicators(indicators)
+		st, _, err = s.OnBar(ctx, "AAPL", bar, st)
+		require.NoError(t, err)
+	}
+
+	// Phase 2: Transition to RANGE_SET
+	postRange := time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC)
+	orbSt := st.(*builtin.ORBState)
+	orbSt.SetIndicators(indicators)
+	st, _, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: postRange, Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}, st)
+	require.NoError(t, err)
+
+	// Phase 3: Breakout bar
+	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
+	orbSt = st.(*builtin.ORBState)
+	orbSt.SetIndicators(strat.IndicatorData{Volume: 50, VolumeSMA: 10, AnchorRegimes: anchorRegimes})
+	st, _, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: breakT, Open: 100, High: 104, Low: 100, Close: 104, Volume: 50}, st)
+	require.NoError(t, err)
+
+	// Phase 4: Retest bar — this is where the signal (or gating) happens
+	retestT := breakT.Add(time.Minute)
+	orbSt = st.(*builtin.ORBState)
+	orbSt.SetIndicators(strat.IndicatorData{Volume: 20, VolumeSMA: 10, AnchorRegimes: anchorRegimes})
+	st, signals, err := s.OnBar(ctx, "AAPL", strat.Bar{Time: retestT, Open: 104, High: 104, Low: 101, Close: 103, Volume: 20}, st)
+	require.NoError(t, err)
+	return st, signals
+}
+
+func TestORBStrategy_AnchorRegimeGating_TrendAllows(t *testing.T) {
+	regimes := map[string]strat.AnchorRegime{
+		"5m": {Type: "TREND", Strength: 0.8},
+	}
+	_, signals := runORBToRetest(t, regimes)
+	require.Len(t, signals, 1, "TREND anchor regime should allow signal")
+	assert.Equal(t, strat.SignalEntry, signals[0].Type)
+	assert.Equal(t, strat.SideBuy, signals[0].Side)
+	assert.Equal(t, "TREND", signals[0].Tags["regime_anchor"])
+}
+
+func TestORBStrategy_AnchorRegimeGating_BalanceAllows(t *testing.T) {
+	regimes := map[string]strat.AnchorRegime{
+		"5m": {Type: "BALANCE", Strength: 0.5},
+	}
+	_, signals := runORBToRetest(t, regimes)
+	require.Len(t, signals, 1, "BALANCE anchor regime should allow signal")
+	assert.Equal(t, "BALANCE", signals[0].Tags["regime_anchor"])
+}
+
+func TestORBStrategy_AnchorRegimeGating_ReversalBlocks(t *testing.T) {
+	regimes := map[string]strat.AnchorRegime{
+		"5m": {Type: "REVERSAL", Strength: 0.9},
+	}
+	_, signals := runORBToRetest(t, regimes)
+	assert.Empty(t, signals, "REVERSAL anchor regime should suppress signal")
+}
+
+func TestORBStrategy_AnchorRegimeGating_NilAllows(t *testing.T) {
+	_, signals := runORBToRetest(t, nil)
+	require.Len(t, signals, 1, "nil AnchorRegimes should allow signal (backward compat)")
+	assert.Equal(t, "none", signals[0].Tags["regime_anchor"])
+}

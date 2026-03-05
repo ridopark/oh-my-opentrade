@@ -95,6 +95,16 @@ func (s *ORBStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, st 
 		return orbState, nil, nil
 	}
 
+	// Anchor regime gating: suppress entry if 5m anchor regime is REVERSAL.
+	// TREND and BALANCE allow signals; nil/empty AnchorRegimes = no gating (backward compat).
+	anchorTag := "none"
+	if ar, ok := orbState.Indicators.AnchorRegimes["5m"]; ok {
+		anchorTag = ar.Type
+		if ar.Type == "REVERSAL" {
+			return orbState, nil, nil
+		}
+	}
+
 	// Convert SetupCondition → Signal.
 	instanceID, _ := strat.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
 	side := strat.SideBuy
@@ -109,12 +119,13 @@ func (s *ORBStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, st 
 		side,
 		clampStrength(setup.Confidence),
 		map[string]string{
-			"ref_price": fmt.Sprintf("%.4f", setup.BarClose),
-			"trigger":   setup.Trigger,
-			"orb_high":  fmt.Sprintf("%.4f", setup.ORBHigh),
-			"orb_low":   fmt.Sprintf("%.4f", setup.ORBLow),
-			"rvol":      fmt.Sprintf("%.2f", setup.RVOL),
-			"bar_close": fmt.Sprintf("%.4f", setup.BarClose),
+			"ref_price":    fmt.Sprintf("%.4f", setup.BarClose),
+			"trigger":      setup.Trigger,
+			"orb_high":     fmt.Sprintf("%.4f", setup.ORBHigh),
+			"orb_low":      fmt.Sprintf("%.4f", setup.ORBLow),
+			"rvol":         fmt.Sprintf("%.2f", setup.RVOL),
+			"bar_close":    fmt.Sprintf("%.4f", setup.BarClose),
+			"regime_anchor": anchorTag,
 		},
 	)
 	if err != nil {
