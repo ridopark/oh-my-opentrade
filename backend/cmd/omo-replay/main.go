@@ -254,11 +254,14 @@ func main() {
 		// No-op RepositoryPort for execution service (no DB writes in backtest).
 		nRepo := &noopRepo{}
 
+		execLog := log.With().Str("component", "execution").Logger()
+		posGate := execution.NewPositionGate(simBrokerInst, execLog)
 		execSvc := execution.NewService(
 			eventBus, simBrokerInst, nRepo,
 			riskEngine, slippageGuard, killSwitch,
 			dailyLossBreaker, initialEquity,
-			log.With().Str("component", "execution").Logger(),
+			execLog,
+			execution.WithPositionGate(posGate),
 		)
 		if err := execSvc.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start execution service")

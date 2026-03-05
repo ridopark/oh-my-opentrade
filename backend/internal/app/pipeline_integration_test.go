@@ -106,7 +106,8 @@ func TestIntegration_FullPipeline_SetupToOrder(t *testing.T) {
 	riskEngine := execution.NewRiskEngine(0.02)
 	slippageGuard := execution.NewSlippageGuard(&mockQuoteProvider{})
 	killSwitch := execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, time.Now)
-	executionSvc := execution.NewService(bus, mockB, mockRepo, riskEngine, slippageGuard, killSwitch, 100000.0, log)
+	posGate := execution.NewPositionGate(mockB, log)
+	executionSvc := execution.NewService(bus, mockB, mockRepo, riskEngine, slippageGuard, killSwitch, nil, 100000.0, log, execution.WithPositionGate(posGate))
 
 	require.NoError(t, debateSvc.Start(ctx))
 	require.NoError(t, executionSvc.Start(ctx))
@@ -167,7 +168,8 @@ func TestIntegration_LowConfidence_NoOrder(t *testing.T) {
 	riskEngine := execution.NewRiskEngine(0.02)
 	slippageGuard := execution.NewSlippageGuard(&mockQuoteProvider{})
 	killSwitch := execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, time.Now)
-	executionSvc := execution.NewService(bus, mockB, mockRepo, riskEngine, slippageGuard, killSwitch, 100000.0, log)
+	posGate2 := execution.NewPositionGate(mockB, log)
+	executionSvc := execution.NewService(bus, mockB, mockRepo, riskEngine, slippageGuard, killSwitch, nil, 100000.0, log, execution.WithPositionGate(posGate2))
 
 	require.NoError(t, debateSvc.Start(ctx))
 	require.NoError(t, executionSvc.Start(ctx))
