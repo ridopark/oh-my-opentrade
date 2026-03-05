@@ -2,6 +2,7 @@ package hooks_yaegi_test
 
 import (
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -224,13 +225,13 @@ func TestExecutor_SuccessResetsConsecutive(t *testing.T) {
 }
 
 func TestExecutor_Metrics(t *testing.T) {
-	step := 0
+	var step atomic.Int64
 	boom1 := errors.New("boom1")
 	boom2 := errors.New("boom2")
 	boom3 := errors.New("boom3")
 	fn := hooks_yaegi.HookFunc(func(params map[string]any, bar map[string]any) (map[string]any, error) {
-		step++
-		switch step {
+		cur := step.Add(1)
+		switch cur {
 		case 1:
 			time.Sleep(50 * time.Millisecond)
 			return map[string]any{"never": true}, nil
