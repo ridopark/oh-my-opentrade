@@ -1,0 +1,50 @@
+schema_version = 2
+
+[strategy]
+id = "ai_scalping_v1"
+version = "1.0.0"
+name = "AI-Enhanced Scalping"
+description = "RSI/Stoch mean-reversion with AI async debate overlay"
+author = "system"
+created_at = "2026-03-05T00:00:00Z"
+
+[lifecycle]
+state = "LiveActive"
+paper_only = false
+
+[routing]
+symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META"]
+timeframes = ["1m"]
+priority = 60
+conflict_policy = "priority_wins"
+exclusive_per_symbol = false
+watchlist_mode = "intersection"
+
+[params]
+rsi_long = 30.0
+rsi_short = 70.0
+stoch_long = 20.0
+stoch_short = 80.0
+rsi_exit_mid = 50.0
+allow_regimes = ["BALANCE", "REVERSAL"]
+cooldown_seconds = 60
+max_trades_per_day = 10
+ai_enabled = true
+ai_mode = "async_debate_adjust"
+ai_timeout_seconds = 3
+ai_min_confidence = 0.65
+ai_veto_on_strong_opposite = true
+size_mult_min = 0.5
+size_mult_base = 1.0
+size_mult_max = 1.5
+stop_bps = 25
+limit_offset_bps = 5
+risk_per_trade_bps = 10
+
+[regime_filter]
+enabled = false
+allowed_regimes = ["BALANCE", "REVERSAL"]
+min_atr_pct = 0.8
+
+[hooks]
+signals = { engine = "builtin", name = "ai_scalping_v1" }

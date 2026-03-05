@@ -176,51 +176,89 @@ func main() {
 	if useStrategyV2 {
 		const specDir = "configs/strategies"
 		specStore := store_fs.NewStore(specDir, strategy.LoadSpecFile)
-		orbID, _ := strat.NewStrategyID("orb_break_retest")
-		spec, err := specStore.GetLatest(context.Background(), orbID)
-		if err != nil {
-			log.Fatal().Err(err).Msg("strategy v2: failed to load orb_break_retest spec")
-		}
 
-		// Register the builtin ORB strategy in the in-memory registry.
+		// Register all builtin strategies in the in-memory registry.
 		registry := strategy.NewMemRegistry()
-		orbStrategy := builtin.NewORBStrategy()
-		if err := registry.Register(orbStrategy); err != nil {
-			log.Fatal().Err(err).Msg("strategy v2: failed to register ORB strategy")
+		for _, s := range []strat.Strategy{
+			builtin.NewORBStrategy(),
+			builtin.NewAVWAPStrategy(),
+			builtin.NewAIScalperStrategy(),
+		} {
+			if err := registry.Register(s); err != nil {
+				log.Fatal().Err(err).Str("strategy", s.Meta().ID.String()).Msg("strategy v2: failed to register builtin strategy")
+			}
 		}
 
-		// Create the router and wire instances for each symbol.
+		// Load all specs from the store.
+		allSpecs, err := specStore.List(context.Background(), nil)
+		if err != nil {
+			log.Fatal().Err(err).Msg("strategy v2: failed to list specs")
+		}
+		if len(allSpecs) == 0 {
+			log.Fatal().Msg("strategy v2: no strategy specs found")
+		}
+
+		// Create the router and wire instances for each spec × symbol.
 		router := strategy.NewRouter()
 		stratLog := slog.Default()
-		for _, sym := range spec.Routing.Symbols {
-			instanceID, _ := strat.NewInstanceID(fmt.Sprintf("%s:%s:%s", spec.ID, spec.Version, sym))
-			inst := strategy.NewInstance(instanceID, orbStrategy, spec.Params, strategy.InstanceAssignment{
-				Symbols:  []string{sym},
-				Priority: spec.Routing.Priority,
-			}, strat.LifecycleLiveActive, stratLog)
-			initCtx := strategy.NewContext(time.Now(), stratLog, nil)
-			if err := inst.InitSymbol(initCtx, sym, nil); err != nil {
-				log.Fatal().Err(err).Str("symbol", sym).Msg("strategy v2: failed to init symbol")
+		var symRouterSpecs []symbolrouter.StrategySpec
+		allSymbols := make(map[string]struct{})
+		totalInstances := 0
+
+		for _, spec := range allSpecs {
+			impl, err := registry.Get(spec.ID)
+			if err != nil {
+				log.Warn().Str("spec_id", spec.ID.String()).Msg("strategy v2: no builtin implementation for spec, skipping")
+				continue
 			}
-			router.Register(inst)
+
+			for _, sym := range spec.Routing.Symbols {
+				instanceID, _ := strat.NewInstanceID(fmt.Sprintf("%s:%s:%s", spec.ID, spec.Version, sym))
+				inst := strategy.NewInstance(instanceID, impl, spec.Params, strategy.InstanceAssignment{
+					Symbols:  []string{sym},
+					Priority: spec.Routing.Priority,
+				}, strat.LifecycleLiveActive, stratLog)
+				initCtx := strategy.NewContext(time.Now(), stratLog, nil)
+				if err := inst.InitSymbol(initCtx, sym, nil); err != nil {
+					log.Fatal().Err(err).
+						Str("strategy", spec.ID.String()).
+						Str("symbol", sym).
+						Msg("strategy v2: failed to init symbol")
+				}
+				router.Register(inst)
+				allSymbols[sym] = struct{}{}
+				totalInstances++
+			}
+
+			symRouterSpecs = append(symRouterSpecs, symbolrouter.StrategySpec{
+				Key:           spec.ID.String(),
+				BaseSymbols:   spec.Routing.Symbols,
+				WatchlistMode: spec.Routing.WatchlistMode,
+			})
+
+			log.Info().
+				Str("strategy", spec.ID.String()).
+				Str("version", spec.Version.String()).
+				Int("symbols", len(spec.Routing.Symbols)).
+				Int("priority", spec.Routing.Priority).
+				Msg("strategy v2: spec loaded")
 		}
 
 		strategyRunner = strategy.NewRunner(eventBus, router, "default", domain.EnvModePaper, stratLog)
 		riskSizer = strategy.NewRiskSizer(eventBus, specStore, accountEquity, stratLog)
 		lifecycleSvc = strategy.NewLifecycleService(router, stratLog)
 
+		// Also set ORB params on monitor for backward compatibility.
+		orbID, _ := strat.NewStrategyID("orb_break_retest")
+		if orbSpec, err := specStore.GetLatest(context.Background(), orbID); err == nil {
+			monitorSvc.SetORBConfig(orbSpec.Params)
+		}
+
 		log.Info().
-			Int("symbols", len(spec.Routing.Symbols)).
-			Str("spec_version", spec.Version.String()).
+			Int("specs", len(allSpecs)).
+			Int("instances", totalInstances).
 			Msg("strategy v2 pipeline initialized")
 
-		symRouterSpecs := []symbolrouter.StrategySpec{
-			{
-				Key:           string(spec.ID),
-				BaseSymbols:   spec.Routing.Symbols,
-				WatchlistMode: spec.Routing.WatchlistMode,
-			},
-		}
 		symRouter = symbolrouter.NewService(
 			eventBus,
 			symRouterSpecs,
@@ -229,7 +267,12 @@ func main() {
 			log.With().Str("component", "symbolrouter").Logger(),
 		)
 
-		monitorSvc.SetBaseSymbols(spec.Routing.Symbols)
+		// Deduplicate symbols for monitor base symbols.
+		baseSymbols := make([]string, 0, len(allSymbols))
+		for sym := range allSymbols {
+			baseSymbols = append(baseSymbols, sym)
+		}
+		monitorSvc.SetBaseSymbols(baseSymbols)
 	}
 
 	// 5c. Initialize AI debate service (only if enabled in config)
