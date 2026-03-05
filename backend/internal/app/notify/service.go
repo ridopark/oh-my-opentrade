@@ -63,8 +63,13 @@ func (s *Service) Start(ctx context.Context) error {
 
 func (s *Service) fmtOrderSubmitted(ev domain.Event) string {
 	if p, ok := ev.Payload.(domain.OrderIntentEventPayload); ok {
-		return fmt.Sprintf("📤 Order Submitted: %s %s @ $%.2f (qty: %.2f)",
+		msg := fmt.Sprintf("📤 Order Submitted: %s %s @ $%.2f (qty: %.2f)",
 			p.Direction, p.Symbol, p.LimitPrice, p.Quantity)
+		msg += fmt.Sprintf("\n📊 Strategy: %s | Confidence: %.0f%%", p.Strategy, p.Confidence*100)
+		if p.Rationale != "" {
+			msg += fmt.Sprintf("\n💡 Rationale: %s", p.Rationale)
+		}
+		return msg
 	}
 	return "📤 Order Submitted"
 }
@@ -114,5 +119,18 @@ func (s *Service) fmtCircuitBreaker(ev domain.Event) string {
 }
 
 func (s *Service) fmtDebateCompleted(ev domain.Event) string {
+	if d, ok := ev.Payload.(domain.AdvisoryDecision); ok {
+		msg := fmt.Sprintf("🤖 AI Debate — %s (Confidence: %.0f%%)", d.Direction, d.Confidence*100)
+		if d.BullArgument != "" {
+			msg += fmt.Sprintf("\n🟢 Bull: %s", d.BullArgument)
+		}
+		if d.BearArgument != "" {
+			msg += fmt.Sprintf("\n🔴 Bear: %s", d.BearArgument)
+		}
+		if d.JudgeReasoning != "" {
+			msg += fmt.Sprintf("\n⚖️ Judge: %s", d.JudgeReasoning)
+		}
+		return msg
+	}
 	return "🤖 AI Debate completed"
 }

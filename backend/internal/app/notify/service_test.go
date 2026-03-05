@@ -63,6 +63,9 @@ func TestService_SubscribesToOrderEvents(t *testing.T) {
 	assert.Equal(t, "tenant-1", msgs[0].TenantID)
 	assert.Contains(t, msgs[0].Message, "Order Submitted")
 	assert.Contains(t, msgs[0].Message, "AAPL")
+	assert.Contains(t, msgs[0].Message, "Strategy: test")
+	assert.Contains(t, msgs[0].Message, "Rationale: test rationale")
+	assert.Contains(t, msgs[0].Message, "80%")
 }
 
 func TestService_KillSwitchNotification(t *testing.T) {
@@ -154,6 +157,38 @@ func TestService_IntentRejectedNotification(t *testing.T) {
 	assert.Contains(t, msgs[0].Message, "Intent Rejected")
 	assert.Contains(t, msgs[0].Message, "AAPL")
 	assert.Contains(t, msgs[0].Message, "risk 850.00 exceeds maximum risk 620.00")
+}
+
+func TestService_DebateCompletedNotification(t *testing.T) {
+	bus := memory.NewBus()
+	notifier := &mockNotifier{}
+	svc := notify.NewService(bus, notifier, zerolog.Nop())
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	decision := domain.AdvisoryDecision{
+		Direction:      domain.DirectionLong,
+		Confidence:     0.85,
+		Rationale:      "Strong momentum with volume confirmation",
+		BullArgument:   "RSI shows oversold bounce with increasing volume",
+		BearArgument:   "Resistance at 160 could cap upside",
+		JudgeReasoning: "Momentum outweighs resistance risk — go long",
+	}
+	ev, err := domain.NewEvent(domain.EventDebateCompleted, "tenant-1", domain.EnvModePaper, "debate-1", decision)
+	require.NoError(t, err)
+
+	err = bus.Publish(context.Background(), *ev)
+	require.NoError(t, err)
+
+	msgs := notifier.getMessages()
+	require.Len(t, msgs, 1)
+	assert.Contains(t, msgs[0].Message, "AI Debate")
+	assert.Contains(t, msgs[0].Message, "LONG")
+	assert.Contains(t, msgs[0].Message, "85%")
+	assert.Contains(t, msgs[0].Message, "Bull: RSI shows oversold bounce")
+	assert.Contains(t, msgs[0].Message, "Bear: Resistance at 160")
+	assert.Contains(t, msgs[0].Message, "Judge: Momentum outweighs resistance")
 }
 
 func TestService_MultipleEventsNotifyAll(t *testing.T) {
