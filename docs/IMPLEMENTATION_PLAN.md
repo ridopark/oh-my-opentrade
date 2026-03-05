@@ -1,6 +1,6 @@
 # Implementation Plan: oh-my-opentrade
 
-Last Updated: March 5, 2026 (Session 6 — Phase 12 Complete)
+Last Updated: March 5, 2026 (Session 7 — Phase 13 Complete)
 
 ## Section 1: Progress Summary
 
@@ -143,16 +143,16 @@ PRD §3 requires 08:30–09:15 screener for "Stocks in Play" and 09:15–09:30 u
 | 61 | DNA approval UI — Dashboard page with DNA diff view + approve/reject buttons (PRD §7) | ✅ Done — Master-detail layout, TOML diff viewer, approve/reject actions, sidebar nav |
 | 62 | Morning approval gate — Block strategy execution until DNA changes are approved (09:15–09:30 window) | ✅ Done — Gate in monitor before SetupDetected, IsDNAApproved() check, fail-open on errors |
 
-### Phase 13 — Additional Strategies 🔲
+### Phase 13 — Additional Strategies ✅
 
-PRD §4.3 specifies 3 pluggable strategies. Only ORB is implemented.
+PRD §4.3 specifies 3 pluggable strategies. All 3 now implemented: ORB (Phase 6), AVWAP + AI Scalper (Phase 13). Multi-strategy pipeline runs all 3 concurrently with priority ordering (ORB=100, AVWAP=80, Scalper=60).
 
 | # | Item | Status |
 |---|------|--------|
-| 63 | AVWAP strategy — Anchored VWAP breakout/bounce strategy using existing VWAP indicator (PRD §4.3 #2) | 🔲 Not Started |
-| 64 | AI-Enhanced Scalping strategy — RSI/Stoch mean-reversion aligned with 5m regime (PRD §4.3 #3, depends on Phase 11 MTFA) | 🔲 Not Started |
-| 65 | Strategy TOML configs — Create `avwap.toml` and `ai_scalping.toml` DNA files | 🔲 Not Started |
-| 66 | Multi-strategy integration tests — Verify multiple strategies run simultaneously per symbol | 🔲 Not Started |
+| 63 | AVWAP strategy — Anchored VWAP breakout/bounce with reusable `AnchoredVWAPCalc` domain calculator, `LevelsPort` for anchor points, breakout/bounce/exit signals (PRD §4.3 #2) | ✅ Done |
+| 64 | AI-Enhanced Scalping strategy — RSI/Stoch mean-reversion with hard regime gating (5m BALANCE only), async AI debate as size/veto adjuster via `OnEvent`, cross-up/down entry signals (PRD §4.3 #3) | ✅ Done |
+| 65 | Strategy TOML configs — `avwap.toml` (priority=80, 44 lines) and `ai_scalping.toml` (priority=60, 50 lines) DNA files | ✅ Done |
+| 66 | Multi-strategy integration tests — 7 tests: priority ordering, symbol dedup, 3-strategy coexistence, signal routing | ✅ Done |
 
 ### Phase 14 — Nightly Evolution & Corporate Actions 🔲
 
@@ -343,7 +343,7 @@ backend/
       strategy/                store.go, registry.go
       options_market_data.go   Options data port
     app/
-      strategy/                runner.go, router.go, instance.go, risk_sizer.go, swap_manager.go, lifecycle_svc.go, spec_loader.go, registry_mem.go, builtin/orb_v1.go
+      strategy/                runner.go, router.go, instance.go, risk_sizer.go, swap_manager.go, lifecycle_svc.go, spec_loader.go, registry_mem.go, builtin/{orb_v1.go, avwap_v1.go, ai_scalping_v1.go}
       ingestion/               Z-score filter, bar processing
         integration_test.go    Integration: WS → Ingestion → DB round-trip
       monitor/                 Service, indicators, regime & setup detectors
@@ -458,10 +458,13 @@ Makefile                       14 targets (build, test, test-integration, migrat
 ### Phase 12 — Completed ✅
 - [x] Pre-market screener service (#58-59)
 - [x] DNA approval workflow + UI (#60-62)
-- [ ] AVWAP strategy (#63)
-- [ ] AI-Enhanced Scalping strategy (#64)
-- [ ] Nightly evolution cycle (#67-68)
-- [ ] Corporate action check (#69)
+
+### Phase 13 — Completed ✅
+- [x] AVWAP strategy: AnchoredVWAPCalc (domain), LevelsPort, breakout/bounce/exit signals (#63)
+- [x] AI-Enhanced Scalping: RSI/Stoch cross + 5m regime gating + async AI debate (#64)
+- [x] Strategy TOML configs: avwap.toml (priority=80) + ai_scalping.toml (priority=60) (#65)
+- [x] Multi-strategy integration tests: 7 tests covering priority, dedup, coexistence (#66)
+- [x] main.go refactored: dynamic multi-strategy registration from spec store
 ---
 
 ## Section 7: Data State
@@ -482,7 +485,7 @@ Makefile                       14 targets (build, test, test-integration, migrat
 
 **Symbols tracked** (from config.yaml): AAPL, MSFT, GOOGL, AMZN, TSLA, SOXL, U, PLTR, SPY, META
 
-**Strategy DNA files**: 1 strategy — `orb_break_retest.toml` (ORB 30min, RVOL ≥ 0.5, confidence ≥ 0.40, TREND regime only)
+**Strategy DNA files**: 3 strategies — `orb_break_retest.toml` (priority=100), `avwap.toml` (priority=80), `ai_scalping.toml` (priority=60)
 
 ---
 
@@ -500,6 +503,9 @@ Comprehensive comparison of PRD v11.0 features vs actual implementation status (
 | Regime Detection | §4.2 | RegimeDetector: TREND/BALANCE/REVERSAL classification |
 | Adversarial AI Debate (Bull/Bear/Judge) | §5.2 | Debate service with OpenRouter, structured JSON output |
 | ORB Break & Retest Strategy | §4.3 #1 | Full implementation: ORBTracker + ORBStrategy + TOML config |
+| AVWAP Breakout/Bounce Strategy | §4.3 #2 | AnchoredVWAPCalc domain calculator, LevelsPort, breakout/bounce/exit signals, priority=80 |
+| AI-Enhanced Scalping Strategy | §4.3 #3 | RSI/Stoch mean-reversion, 5m regime gating, async AI debate size/veto, priority=60 |
+| Multi-Strategy Pipeline | §4.3 | Dynamic registration from spec store, priority-based conflict resolution, 3 concurrent strategies |
 | Kill Switch (3 stops/2min → 15min halt) | §6 | Kill switch module with tenant+symbol isolation |
 | Risk Engine (2% max, mandatory SL, LIMIT only) | §6 | Execution service with deterministic Go risk checks |
 | Slippage Guard | §6 | Bid/ask comparison against max_slippage_bps |
@@ -529,8 +535,8 @@ Comprehensive comparison of PRD v11.0 features vs actual implementation status (
 |---|---|---|---|
 | ~~Pre-Market Screener (08:30–09:15)~~ | ~~§3~~ | ~~Phase 12 #58-59~~ | ✅ Implemented — Screener service with gap/RVOL/news scoring, symbol routing |
 | ~~Morning DNA Approval Workflow (09:15–09:30)~~ | ~~§3, §7~~ | ~~Phase 12 #60-62~~ | ✅ Implemented — Full approval workflow + dashboard UI |
-| AVWAP Strategy | §4.3 #2 | Phase 13 #63 | VWAP indicator exists but no anchored breakout strategy |
-| AI-Enhanced Scalping Strategy | §4.3 #3 | Phase 13 #64 | No RSI/Stoch mean-reversion strategy; depends on MTFA |
+| ~~AVWAP Strategy~~ | ~~§4.3 #2~~ | ~~Phase 13 #63~~ | ✅ Implemented — AnchoredVWAPCalc, LevelsPort, breakout/bounce/exit signals |
+| ~~AI-Enhanced Scalping Strategy~~ | ~~§4.3 #3~~ | ~~Phase 13 #64~~ | ✅ Implemented — RSI/Stoch mean-reversion, 5m regime gating, async AI debate |
 | Nightly Evolution Cycle | §3 | Phase 14 #67-68 | No automated AI analysis of trades or DNA parameter optimization |
 | Corporate Action Check | §3 | Phase 14 #69 | No dividend/split filtering for active tickers |
 | ~~Backtesting Framework (5bps slippage)~~ | ~~§3~~ | ~~Phase 10 #48~~ | ✅ Implemented — `omo-replay --backtest` |
