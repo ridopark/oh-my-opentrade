@@ -90,19 +90,15 @@ export default function PerformancePage() {
   useEffect(() => {
     if (!chartContainerRef.current || !dashboardData) return;
 
-    // Cleanup previous chart
-    if (chartRef.current) {
-      chartRef.current.remove();
-    }
 
     const chart = createChart(chartContainerRef.current, {
       layout: {
         background: { type: ColorType.Solid, color: "transparent" },
-        textColor: "hsl(var(--muted-foreground))",
+        textColor: "rgba(148, 163, 184, 1)", // slate-400
       },
       grid: {
-        vertLines: { color: "hsl(var(--border))" },
-        horzLines: { color: "hsl(var(--border))" },
+        vertLines: { color: "rgba(148, 163, 184, 0.15)" },
+        horzLines: { color: "rgba(148, 163, 184, 0.15)" },
       },
       width: chartContainerRef.current.clientWidth,
       height: 300,
@@ -143,9 +139,8 @@ export default function PerformancePage() {
 
     return () => {
       resizeObserver.disconnect();
-      if (chartRef.current) {
-        chartRef.current.remove();
-      }
+      chart.remove();
+      chartRef.current = null;
     };
   }, [dashboardData]);
 
