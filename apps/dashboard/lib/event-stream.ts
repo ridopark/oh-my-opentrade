@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback, useState } from "react";
-import type { DomainEvent, EventType } from "@/lib/types";
+import type { DomainEvent, EventType, DebateEvent } from "@/lib/types";
 
 interface UseEventStreamOptions {
   url?: string;
@@ -121,6 +121,39 @@ export function useOrderIntentEvents(maxEvents = 50) {
         e.type === "OrderSubmitted"
     ),
   };
+}
+
+export function useExecutionEvents(maxEvents = 100) {
+  const { events, ...rest } = useEventStream({
+    eventTypes: [
+      "OrderIntentCreated",
+      "OrderIntentValidated",
+      "OrderIntentRejected",
+      "OrderSubmitted",
+      "DebateCompleted",
+    ],
+    maxEvents,
+  });
+
+  // Separate order events and debate events
+  const orders = events.filter(
+    (e) =>
+      e.type === "OrderIntentCreated" ||
+      e.type === "OrderIntentValidated" ||
+      e.type === "OrderIntentRejected" ||
+      e.type === "OrderSubmitted"
+  );
+
+  // Build debate lookup by symbol for correlation
+  const debateMap = new Map<string, DebateEvent>();
+  events
+    .filter((e) => e.type === "DebateCompleted")
+    .forEach((e) => {
+      const debate = e.payload as DebateEvent;
+      debateMap.set(debate.symbol, debate);
+    });
+
+  return { ...rest, orders, debates: debateMap };
 }
 
 export function useStateEvents(maxEvents = 20) {
