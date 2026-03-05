@@ -56,6 +56,7 @@ interface DisplayOrder {
   rationale: string;
   confidence: number;
   status: string;
+  reason?: string;
   occurredAt: string;
   source: "live" | "historical";
   // Fill data (historical only)
@@ -214,6 +215,12 @@ function OrderDetailSheet({
             <div className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">
               {order.rationale || "No rationale provided."}
             </div>
+            {order.status === "rejected" && order.reason && (
+              <div className="rounded-md border border-red-500/30 bg-red-500/5 p-3 text-sm text-red-400">
+                <span className="font-semibold">Rejection Reason:</span>{" "}
+                {order.reason}
+              </div>
+            )}
           </div>
 
           {/* Order Details Grid */}
@@ -408,6 +415,7 @@ export default function ExecutionPage() {
       rationale: p.rationale,
       confidence: p.confidence,
       status: status ?? "unknown",
+      reason: p.reason,
       occurredAt: e.occurredAt,
       source: "live" as const,
       debate:
@@ -607,7 +615,14 @@ export default function ExecutionPage() {
                       <ConfidenceCell value={order.confidence} />
                     </TableCell>
                     <TableCell>
-                      <StatusBadge status={order.status ?? "unknown"} />
+                      <div>
+                        <StatusBadge status={order.status ?? "unknown"} />
+                        {order.status === "rejected" && order.reason && (
+                          <p className="mt-1 text-[11px] leading-tight text-red-400/80 max-w-[200px] truncate" title={order.reason}>
+                            {order.reason}
+                          </p>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="text-right font-mono tabular-nums">
                       {order.quantity}

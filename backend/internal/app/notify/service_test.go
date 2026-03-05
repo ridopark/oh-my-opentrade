@@ -142,7 +142,7 @@ func TestService_IntentRejectedNotification(t *testing.T) {
 	require.NoError(t, err)
 
 	intent := createTestOrderIntent(t)
-	payload := domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusRejected)
+	payload := domain.NewOrderIntentRejectedPayload(intent, "risk 850.00 exceeds maximum risk 620.00 (2.0% of 31000.00 equity)")
 	ev, err := domain.NewEvent(domain.EventOrderIntentRejected, "tenant-1", domain.EnvModePaper, "rej-1", payload)
 	require.NoError(t, err)
 
@@ -152,6 +152,8 @@ func TestService_IntentRejectedNotification(t *testing.T) {
 	msgs := notifier.getMessages()
 	require.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0].Message, "Intent Rejected")
+	assert.Contains(t, msgs[0].Message, "AAPL")
+	assert.Contains(t, msgs[0].Message, "risk 850.00 exceeds maximum risk 620.00")
 }
 
 func TestService_MultipleEventsNotifyAll(t *testing.T) {
