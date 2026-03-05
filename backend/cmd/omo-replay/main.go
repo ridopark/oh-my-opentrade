@@ -31,6 +31,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/oh-my-opentrade/backend/internal/logger"
 	"github.com/rs/zerolog"
 )
@@ -740,6 +741,9 @@ func (n *noopRepo) SaveOrder(_ context.Context, _ domain.BrokerOrder) error { re
 func (n *noopRepo) UpdateOrderFill(_ context.Context, _ string, _ time.Time, _, _ float64) error {
 	return nil
 }
+func (n *noopRepo) ListTrades(_ context.Context, _ ports.TradeQuery) (ports.TradePage, error) {
+	return ports.TradePage{}, nil
+}
 
 // noopPnLRepo implements ports.PnLPort as a no-op for backtest mode.
 // LedgerWriter calls UpsertDailyPnL/SaveEquityPoint which we discard.
@@ -755,4 +759,13 @@ func (n *noopPnLRepo) GetEquityCurve(_ context.Context, _ string, _ domain.EnvMo
 }
 func (n *noopPnLRepo) GetDailyRealizedPnL(_ context.Context, _ string, _ domain.EnvMode, _ time.Time) (float64, error) {
 	return 0, nil
+}
+func (n *noopPnLRepo) GetBucketedEquityCurve(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time, _ string) ([]domain.EquityPoint, error) {
+	return nil, nil
+}
+func (n *noopPnLRepo) GetMaxDrawdown(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (float64, error) {
+	return 0, nil
+}
+func (n *noopPnLRepo) GetSharpe(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (*float64, error) {
+	return nil, nil
 }

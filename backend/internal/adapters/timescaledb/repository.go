@@ -3,6 +3,7 @@ package timescaledb
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
 const (
@@ -265,4 +267,71 @@ func (r *Repository) UpdateOrderFill(ctx context.Context, brokerOrderID string, 
 		return fmt.Errorf("timescaledb: update order fill: %w", err)
 	}
 	return nil
+}
+
+// ListTrades retrieves trades with optional filters and keyset pagination.
+func (r *Repository) ListTrades(ctx context.Context, q ports.TradeQuery) (ports.TradePage, error) {
+	var b strings.Builder
+	b.WriteString(`SELECT time, trade_id, symbol, side, quantity, price, commission, status
+		FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4`)
+
+	args := []any{q.TenantID, string(q.EnvMode), q.From, q.To}
+	argIdx := 5
+
+	if q.Symbol != "" {
+		fmt.Fprintf(&b, " AND symbol = $%d", argIdx)
+		args = append(args, q.Symbol)
+		argIdx++
+	}
+	if q.Side != "" {
+		fmt.Fprintf(&b, " AND side = $%d", argIdx)
+		args = append(args, q.Side)
+		argIdx++
+	}
+	if q.CursorTime != nil && q.CursorID != "" {
+		fmt.Fprintf(&b, " AND (time, trade_id::text) < ($%d, $%d)", argIdx, argIdx+1)
+		args = append(args, *q.CursorTime, q.CursorID)
+		argIdx += 2
+	}
+
+	limit := q.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	fmt.Fprintf(&b, " ORDER BY time DESC, trade_id DESC LIMIT $%d", argIdx)
+	args = append(args, limit+1) // fetch one extra to detect next page
+
+	rows, err := r.db.QueryContext(ctx, b.String(), args...)
+	if err != nil {
+		r.log.Error().Err(err).Msg("failed to list trades")
+		return ports.TradePage{}, fmt.Errorf("timescaledb: list trades: %w", err)
+	}
+	defer rows.Close()
+
+	var trades []domain.Trade
+	for rows.Next() {
+		var t domain.Trade
+		var sym string
+		if err := rows.Scan(&t.Time, &t.TradeID, &sym, &t.Side, &t.Quantity, &t.Price, &t.Commission, &t.Status); err != nil {
+			return ports.TradePage{}, fmt.Errorf("timescaledb: scan trade row: %w", err)
+		}
+		t.Symbol = domain.Symbol(sym)
+		t.TenantID = q.TenantID
+		t.EnvMode = q.EnvMode
+		trades = append(trades, t)
+	}
+	if err := rows.Err(); err != nil {
+		return ports.TradePage{}, fmt.Errorf("timescaledb: iterate trades: %w", err)
+	}
+
+	var nextCursor string
+	if len(trades) > limit {
+		last := trades[limit-1]
+		// Encode cursor as base64(time|trade_id)
+		cursorData := fmt.Sprintf("%s|%s", last.Time.Format(time.RFC3339Nano), last.TradeID.String())
+		nextCursor = base64.URLEncoding.EncodeToString([]byte(cursorData))
+		trades = trades[:limit]
+	}
+
+	return ports.TradePage{Items: trades, NextCursor: nextCursor}, nil
 }

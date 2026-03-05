@@ -382,8 +382,13 @@ func main() {
 			}
 			results = append(results, o)
 		}
-		json.NewEncoder(w).Encode(results)
+	json.NewEncoder(w).Encode(results)
 	})
+
+	// Performance dashboard API
+	perfHandler := omhttp.NewPerformanceHandler(pnlRepo, repo, httpLog)
+	mux.Handle("/performance/", perfHandler)
+
 	mux.HandleFunc("/pnl", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Content-Type", "application/json")

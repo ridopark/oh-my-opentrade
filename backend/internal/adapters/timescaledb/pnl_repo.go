@@ -34,8 +34,43 @@ const (
 	querySelectEquityCurve = `SELECT time, equity, cash, drawdown FROM equity_curve
 		WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4
 		ORDER BY time`
-)
 
+	querySelectBucketedEquity = `SELECT
+		time_bucket($1::interval, time) AS ts,
+		last(equity, time) AS equity,
+		last(cash, time) AS cash,
+		last(drawdown, time) AS drawdown
+		FROM equity_curve
+		WHERE account_id = $2 AND env_mode = $3 AND time >= $4 AND time <= $5
+		GROUP BY ts
+		ORDER BY ts`
+
+	querySelectMaxDrawdown = `SELECT COALESCE(MIN(drawdown), 0) FROM equity_curve
+		WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4`
+
+	querySelectSharpe = `WITH eod AS (
+		SELECT
+			(time_bucket('1 day', time))::date AS trade_date,
+			last(equity, time) AS equity
+		FROM equity_curve
+		WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4
+		GROUP BY 1
+	),
+	rets AS (
+		SELECT
+			trade_date,
+			(equity / lag(equity) OVER (ORDER BY trade_date) - 1.0) AS r
+		FROM eod
+	)
+	SELECT
+		CASE
+			WHEN COUNT(r) FILTER (WHERE r IS NOT NULL) >= 2
+			 AND stddev_samp(r) FILTER (WHERE r IS NOT NULL) > 0
+			THEN sqrt(252) * avg(r) FILTER (WHERE r IS NOT NULL) / stddev_samp(r) FILTER (WHERE r IS NOT NULL)
+			ELSE NULL
+		END AS sharpe
+	FROM rets`
+)
 // PnLRepository implements ports.PnLPort using TimescaleDB.
 type PnLRepository struct {
 	db  DBTX
@@ -143,4 +178,59 @@ func (r *PnLRepository) GetEquityCurve(ctx context.Context, tenantID string, env
 		return nil, fmt.Errorf("timescaledb: iterate equity curve: %w", err)
 	}
 	return results, nil
+}
+
+// GetBucketedEquityCurve returns equity points downsampled by the given bucket interval.
+func (r *PnLRepository) GetBucketedEquityCurve(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time, bucket string) ([]domain.EquityPoint, error) {
+	rows, err := r.db.QueryContext(ctx, querySelectBucketedEquity, bucket, tenantID, string(envMode), from, to)
+	if err != nil {
+		r.log.Error().Err(err).
+			Str("tenant_id", tenantID).
+			Str("bucket", bucket).
+			Msg("failed to query bucketed equity curve")
+		return nil, fmt.Errorf("timescaledb: get bucketed equity curve: %w", err)
+	}
+	defer rows.Close()
+
+	var results []domain.EquityPoint
+	for rows.Next() {
+		var pt domain.EquityPoint
+		if err := rows.Scan(&pt.Time, &pt.Equity, &pt.Cash, &pt.Drawdown); err != nil {
+			return nil, fmt.Errorf("timescaledb: scan bucketed equity point: %w", err)
+		}
+		pt.TenantID = tenantID
+		pt.EnvMode = envMode
+		results = append(results, pt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("timescaledb: iterate bucketed equity curve: %w", err)
+	}
+	return results, nil
+}
+
+// GetMaxDrawdown returns the worst (most negative) drawdown value in the time range.
+func (r *PnLRepository) GetMaxDrawdown(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) (float64, error) {
+	row := r.db.QueryRowContext(ctx, querySelectMaxDrawdown, tenantID, string(envMode), from, to)
+	var dd float64
+	if err := row.Scan(&dd); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("timescaledb: get max drawdown: %w", err)
+	}
+	return dd, nil
+}
+
+// GetSharpe computes the annualized Sharpe ratio from daily equity returns.
+// Returns nil if insufficient data (fewer than 2 days or zero variance).
+func (r *PnLRepository) GetSharpe(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) (*float64, error) {
+	row := r.db.QueryRowContext(ctx, querySelectSharpe, tenantID, string(envMode), from, to)
+	var sharpe *float64
+	if err := row.Scan(&sharpe); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("timescaledb: get sharpe: %w", err)
+	}
+	return sharpe, nil
 }

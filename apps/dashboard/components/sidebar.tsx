@@ -9,6 +9,7 @@ import {
   Dna,
   Activity,
   Layers,
+  TrendingUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -16,6 +17,7 @@ const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/debates", label: "Debates", icon: Swords },
   { href: "/execution", label: "Execution", icon: ListOrdered },
+  { href: "/performance", label: "Performance", icon: TrendingUp },
   { href: "/dna", label: "Strategy DNA", icon: Dna },
   { href: "/strategies", label: "Strategies", icon: Layers },
 ];

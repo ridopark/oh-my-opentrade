@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
 // mockQuoteProvider is used for testing slippage guard
@@ -117,6 +118,10 @@ func (m *mockRepository) SaveOrder(ctx context.Context, order domain.BrokerOrder
 
 func (m *mockRepository) UpdateOrderFill(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64) error {
 	return nil
+}
+
+func (m *mockRepository) ListTrades(_ context.Context, _ ports.TradeQuery) (ports.TradePage, error) {
+	return ports.TradePage{}, nil
 }
 
 // createTestOrderIntent creates a valid domain.OrderIntent for testing.

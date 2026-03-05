@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/stretchr/testify/require"
 )
 
@@ -83,4 +84,8 @@ func (m *mockRepository) SaveOrder(ctx context.Context, order domain.BrokerOrder
 
 func (m *mockRepository) UpdateOrderFill(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64) error {
 	return nil
+}
+
+func (m *mockRepository) ListTrades(_ context.Context, _ ports.TradeQuery) (ports.TradePage, error) {
+	return ports.TradePage{}, nil
 }

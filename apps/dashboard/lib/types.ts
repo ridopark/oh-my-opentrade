@@ -131,3 +131,58 @@ export interface SystemHealth {
   uptime: string;
   lastEventAt: string;
 }
+
+// Performance Dashboard types (backend: /performance/dashboard + /performance/trades)
+
+export interface PerformanceSummary {
+  total_pnl: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  num_trades: number;
+  winning_days: number;
+  losing_days: number;
+  win_rate: number | null;
+  sharpe: number | null;
+  max_drawdown_pct: number;
+  gross_profit: number;
+  gross_loss: number;
+  profit_factor: number | null;
+}
+
+export interface EquityPoint {
+  time: string; // RFC3339
+  equity: number;
+  cash: number;
+  drawdown_pct: number;
+}
+
+export interface DailyPnlEntry {
+  date: string; // YYYY-MM-DD
+  realized_pnl: number;
+  unrealized_pnl: number;
+  trade_count: number;
+  max_drawdown: number;
+}
+
+export interface PerformanceDashboard {
+  range: { from: string; to: string; bucket: string };
+  summary: PerformanceSummary;
+  equity: EquityPoint[];
+  daily_pnl: DailyPnlEntry[];
+}
+
+export interface TradeEntry {
+  time: string; // RFC3339
+  trade_id: string;
+  symbol: string;
+  side: string;
+  quantity: number;
+  price: number;
+  commission: number;
+  status: string;
+}
+
+export interface TradesResponse {
+  items: TradeEntry[];
+  next_cursor?: string;
+}

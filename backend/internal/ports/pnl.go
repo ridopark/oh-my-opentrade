@@ -24,4 +24,15 @@ type PnLPort interface {
 	// GetDailyRealizedPnL returns the cumulative realized P&L for the current day.
 	// This is the hot path used by the circuit breaker on every order.
 	GetDailyRealizedPnL(ctx context.Context, tenantID string, envMode domain.EnvMode, date time.Time) (float64, error)
+
+	// GetBucketedEquityCurve returns equity points bucketed by the given interval.
+	// Uses TimescaleDB time_bucket for efficient downsampling.
+	GetBucketedEquityCurve(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time, bucket string) ([]domain.EquityPoint, error)
+
+	// GetMaxDrawdown returns the worst drawdown value in the given time range.
+	GetMaxDrawdown(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) (float64, error)
+
+	// GetSharpe computes the annualized Sharpe ratio from daily equity returns.
+	// Returns nil if insufficient data (< 2 days or zero stdev).
+	GetSharpe(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) (*float64, error)
 }

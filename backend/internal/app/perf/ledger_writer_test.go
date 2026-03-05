@@ -80,6 +80,18 @@ func (m *mockPnLRepo) GetDailyRealizedPnL(_ context.Context, _ string, _ domain.
 	return 0, nil
 }
 
+func (m *mockPnLRepo) GetBucketedEquityCurve(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time, _ string) ([]domain.EquityPoint, error) {
+	return nil, nil
+}
+
+func (m *mockPnLRepo) GetMaxDrawdown(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (float64, error) {
+	return 0, nil
+}
+
+func (m *mockPnLRepo) GetSharpe(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (*float64, error) {
+	return nil, nil
+}
+
 type mockBroker struct{}
 
 func (m *mockBroker) SubmitOrder(_ context.Context, _ domain.OrderIntent) (string, error) {

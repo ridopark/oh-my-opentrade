@@ -116,6 +116,10 @@ func (m *mockRepository) UpdateOrderFill(ctx context.Context, brokerOrderID stri
 	return nil
 }
 
+func (m *mockRepository) ListTrades(_ context.Context, _ ports.TradeQuery) (ports.TradePage, error) {
+	return ports.TradePage{}, nil
+}
+
 // 6. NotifierPort
 type mockNotifier struct{}
 

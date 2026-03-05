@@ -1,0 +1,482 @@
+"use client";
+
+import { useEffect, useRef, useState, useCallback } from "react";
+import {
+  createChart,
+  ColorType,
+  type IChartApi,
+  type Time,
+  LineSeries,
+} from "lightweight-charts";
+import {
+  TrendingUp,
+  TrendingDown,
+  BarChart3,
+  DollarSign,
+  Activity,
+  Percent,
+  Hash,
+  Scale,
+  type LucideIcon,
+} from "lucide-react";
+
+
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import type {
+  PerformanceDashboard,
+  TradeEntry,
+  TradesResponse,
+} from "@/lib/types";
+
+// Helper for formatting currency
+const formatCurrency = (val: number) =>
+  new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+  }).format(val);
+
+// Helper for formatting percentage
+const formatPercent = (val: number) =>
+  new Intl.NumberFormat("en-US", {
+    style: "percent",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(val / 100);
+
+// Helper for formatting large numbers
+const formatNumber = (val: number) =>
+  new Intl.NumberFormat("en-US").format(val);
+
+type RangeOption = "7d" | "30d" | "90d" | "all";
+
+export default function PerformancePage() {
+  const [range, setRange] = useState<RangeOption>("30d");
+  const [dashboardData, setDashboardData] = useState<PerformanceDashboard | null>(
+    null
+  );
+  const [trades, setTrades] = useState<TradeEntry[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | undefined>(undefined);
+  const [loadingDashboard, setLoadingDashboard] = useState(true);
+  const [loadingTrades, setLoadingTrades] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+
+  // Fetch dashboard data
+  const fetchDashboard = useCallback(async () => {
+    try {
+      setLoadingDashboard(true);
+      setError(null);
+      const res = await fetch(`/api/performance/dashboard?range=${range}`);
+      if (!res.ok) throw new Error("Failed to fetch performance data");
+      const data = await res.json();
+      setDashboardData(data);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to load performance data");
+    } finally {
+      setLoadingDashboard(false);
+    }
+  }, [range]);
+
+  // Fetch trades (initial)
+  const fetchTrades = useCallback(async () => {
+    try {
+      setLoadingTrades(true);
+      const res = await fetch(
+        `/api/performance/trades?range=${range}&limit=50`
+      );
+      if (!res.ok) throw new Error("Failed to fetch trades");
+      const data: TradesResponse = await res.json();
+      setTrades(data.items);
+      setNextCursor(data.next_cursor);
+    } catch (err) {
+      console.error(err);
+      // Don't block UI if trades fail, just show empty
+    } finally {
+      setLoadingTrades(false);
+    }
+  }, [range]);
+
+  // Load more trades
+  const loadMoreTrades = async () => {
+    if (!nextCursor) return;
+    try {
+      setLoadingMore(true);
+      const res = await fetch(
+        `/api/performance/trades?cursor=${encodeURIComponent(nextCursor)}`
+      );
+      if (!res.ok) throw new Error("Failed to load more trades");
+      const data: TradesResponse = await res.json();
+      setTrades((prev) => [...prev, ...data.items]);
+      setNextCursor(data.next_cursor);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  // Initial load
+  useEffect(() => {
+    fetchDashboard();
+    fetchTrades();
+  }, [fetchDashboard, fetchTrades]);
+
+  // Equity Chart
+  useEffect(() => {
+    if (!chartContainerRef.current || !dashboardData) return;
+
+    // Cleanup previous chart
+    if (chartRef.current) {
+      chartRef.current.remove();
+    }
+
+    const chart = createChart(chartContainerRef.current, {
+      layout: {
+        background: { type: ColorType.Solid, color: "transparent" },
+        textColor: "hsl(var(--muted-foreground))",
+      },
+      grid: {
+        vertLines: { color: "hsl(var(--border))" },
+        horzLines: { color: "hsl(var(--border))" },
+      },
+      width: chartContainerRef.current.clientWidth,
+      height: 300,
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+      },
+    });
+
+    const equitySeries = chart.addSeries(LineSeries, {
+      color: "#10b981", // emerald-500
+      lineWidth: 2,
+    });
+
+
+    // Transform data
+    const data = dashboardData.equity.map((pt) => ({
+      time: (new Date(pt.time).getTime() / 1000) as Time,
+      value: pt.equity,
+    }));
+
+    equitySeries.setData(data);
+    chart.timeScale().fitContent();
+
+    chartRef.current = chart;
+
+    // Responsive resize
+    const handleResize = () => {
+      if (chartContainerRef.current && chartRef.current) {
+        chartRef.current.applyOptions({
+          width: chartContainerRef.current.clientWidth,
+        });
+      }
+    };
+
+    const resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(chartContainerRef.current);
+
+    return () => {
+      resizeObserver.disconnect();
+      if (chartRef.current) {
+        chartRef.current.remove();
+      }
+    };
+  }, [dashboardData]);
+
+  if (loadingDashboard) {
+    return (
+      <div className="flex h-96 items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-emerald-500" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex h-96 flex-col items-center justify-center gap-4">
+        <p className="text-destructive">{error}</p>
+        <Button onClick={fetchDashboard}>Retry</Button>
+      </div>
+    );
+  }
+
+  const { summary, daily_pnl } = dashboardData!;
+
+  return (
+    <div className="space-y-8">
+      {/* Header & Range Selector */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Performance</h1>
+          <p className="text-muted-foreground">
+            Track your trading performance and metrics.
+          </p>
+        </div>
+        <div className="flex items-center rounded-lg border bg-card p-1">
+          {(["7d", "30d", "90d", "all"] as RangeOption[]).map((opt) => (
+            <button
+              key={opt}
+              onClick={() => setRange(opt)}
+              className={cn(
+                "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                range === opt
+                  ? "bg-primary text-primary-foreground shadow-sm"
+                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              )}
+            >
+              {opt.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Summary Stats Grid */}
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <StatCard
+          title="Total P&L"
+          value={formatCurrency(summary.total_pnl)}
+          icon={DollarSign}
+          trend={summary.total_pnl >= 0 ? "up" : "down"}
+          className={
+            summary.total_pnl >= 0 ? "text-emerald-500" : "text-rose-500"
+          }
+        />
+        <StatCard
+          title="Sharpe Ratio"
+          value={summary.sharpe?.toFixed(2) ?? "—"}
+          icon={Activity}
+        />
+        <StatCard
+          title="Max Drawdown"
+          value={formatPercent(summary.max_drawdown_pct)}
+          icon={TrendingDown}
+          className="text-rose-500"
+        />
+        <StatCard
+          title="Win Rate"
+          value={
+            summary.win_rate !== null
+              ? formatPercent(summary.win_rate * 100)
+              : "—"
+          }
+          icon={Percent}
+        />
+        <StatCard
+          title="Profit Factor"
+          value={summary.profit_factor?.toFixed(2) ?? "—"}
+          icon={Scale}
+        />
+        <StatCard
+          title="Total Trades"
+          value={formatNumber(summary.num_trades)}
+          icon={Hash}
+        />
+      </div>
+
+      {/* Charts Section */}
+      <div className="grid gap-4 lg:grid-cols-1">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <TrendingUp className="h-5 w-5 text-emerald-500" />
+              Equity Curve
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div ref={chartContainerRef} className="h-[300px] w-full" />
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Daily P&L Bars */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <BarChart3 className="h-5 w-5 text-blue-500" />
+            Daily P&L
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="h-[200px] w-full overflow-x-auto">
+            <div className="flex h-full items-end gap-1 pb-6 pt-2 min-w-max px-2">
+              {daily_pnl.length === 0 ? (
+                <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                  No data for this period
+                </div>
+              ) : (
+                daily_pnl.map((day) => {
+                  const isPositive = day.realized_pnl >= 0;
+                  const maxAbs = Math.max(
+                    ...daily_pnl.map((d) => Math.abs(d.realized_pnl))
+                  );
+                  // Min height 4px so 0 is visible as a line
+                  const heightPct =
+                    maxAbs > 0
+                      ? (Math.abs(day.realized_pnl) / maxAbs) * 100
+                      : 0;
+
+                  return (
+                    <div
+                      key={day.date}
+                      className="group relative flex flex-col items-center justify-end h-full w-3 sm:w-4"
+                    >
+                      <div
+                        style={{ height: `${Math.max(heightPct, 2)}%` }}
+                        className={cn(
+                          "w-full rounded-t-sm transition-all hover:opacity-80",
+                          isPositive ? "bg-emerald-500" : "bg-rose-500"
+                        )}
+                      />
+                      {/* Tooltip */}
+                      <div className="absolute bottom-full mb-2 hidden w-max rounded bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md group-hover:block z-50">
+                        <div className="font-bold">{day.date}</div>
+                        <div
+                          className={
+                            isPositive ? "text-emerald-500" : "text-rose-500"
+                          }
+                        >
+                          {formatCurrency(day.realized_pnl)}
+                        </div>
+                        <div className="text-muted-foreground">
+                          {day.trade_count} trades
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Trades Table */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Trades</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {trades.length === 0 && !loadingTrades ? (
+            <div className="text-center text-muted-foreground py-8">
+              No trades in this period
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Time</TableHead>
+                    <TableHead>Symbol</TableHead>
+                    <TableHead>Side</TableHead>
+                    <TableHead className="text-right">Qty</TableHead>
+                    <TableHead className="text-right">Price</TableHead>
+                    <TableHead className="text-right">Comm</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {trades.map((trade) => (
+                    <TableRow key={trade.trade_id}>
+                      <TableCell className="font-mono text-xs text-muted-foreground">
+                        {new Date(trade.time).toLocaleString()}
+                      </TableCell>
+                      <TableCell className="font-medium">
+                        {trade.symbol}
+                      </TableCell>
+                      <TableCell>
+                        <span
+                          className={cn(
+                            "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+                            trade.side === "BUY"
+                              ? "bg-emerald-500/10 text-emerald-500"
+                              : "bg-rose-500/10 text-rose-500"
+                          )}
+                        >
+                          {trade.side}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {trade.quantity}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {formatCurrency(trade.price)}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-muted-foreground">
+                        {formatCurrency(trade.commission)}
+                      </TableCell>
+                      <TableCell>
+                        <span className="text-xs text-muted-foreground uppercase">
+                          {trade.status}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+
+              {nextCursor && (
+                <div className="flex justify-center pt-4">
+                  <Button
+                    variant="outline"
+                    onClick={loadMoreTrades}
+                    disabled={loadingMore}
+                  >
+                    {loadingMore ? "Loading..." : "Load More"}
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function StatCard({
+  title,
+  value,
+  icon: Icon,
+  className,
+}: {
+  title: string;
+  value: string;
+  icon: LucideIcon;
+  trend?: "up" | "down";
+  className?: string;
+}) {
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">
+          {title}
+        </CardTitle>
+        <Icon className="h-4 w-4 text-muted-foreground" />
+      </CardHeader>
+      <CardContent>
+        <div className={cn("text-2xl font-bold", className)}>{value}</div>
+      </CardContent>
+    </Card>
+  );
+}
