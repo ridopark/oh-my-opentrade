@@ -17,10 +17,15 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
+	"github.com/oh-my-opentrade/backend/internal/adapters/simbroker"
 	"github.com/oh-my-opentrade/backend/internal/adapters/strategy/store_fs"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
+	"github.com/oh-my-opentrade/backend/internal/app/backtest"
+	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
+	"github.com/oh-my-opentrade/backend/internal/app/perf"
+	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy/builtin"
 	"github.com/oh-my-opentrade/backend/internal/config"
@@ -32,12 +37,16 @@ import (
 
 func main() {
 	var (
-		symbolsFlag string
-		fromFlag    string
-		toFlag      string
-		speedFlag   string
-		configPath  string
-		envPath     string
+		symbolsFlag    string
+		fromFlag       string
+		toFlag         string
+		speedFlag      string
+		configPath     string
+		envPath        string
+		backtestFlag   bool
+		initialEquity  float64
+		slippageBPS    int64
+		outputJSON     string
 	)
 
 	flag.StringVar(&symbolsFlag, "symbols", "", "Comma-separated symbols to replay (default: use config file symbols)")
@@ -46,6 +55,10 @@ func main() {
 	flag.StringVar(&speedFlag, "speed", "max", "Replay speed: max, 1x, 10x, or any float (e.g. 2.5)")
 	flag.StringVar(&configPath, "config", "configs/config.yaml", "Path to YAML config file")
 	flag.StringVar(&envPath, "env-file", ".env", "Path to .env file")
+	flag.BoolVar(&backtestFlag, "backtest", false, "Enable backtest mode: wire full execution pipeline with SimBroker")
+	flag.Float64Var(&initialEquity, "initial-equity", 100000.0, "Initial account equity for backtest (default: 100000)")
+	flag.Int64Var(&slippageBPS, "slippage-bps", 5, "Slippage in basis points for SimBroker fills (default: 5)")
+	flag.StringVar(&outputJSON, "output-json", "", "Path to write backtest results as JSON (backtest mode only)")
 	flag.Parse()
 
 	logLevel := zerolog.InfoLevel
@@ -185,7 +198,7 @@ func main() {
 	}
 
 	strategyRunner := strategy.NewRunner(eventBus, router, "default", domain.EnvModePaper, stratLog)
-	riskSizer := strategy.NewRiskSizer(eventBus, specStore, 100000.0, stratLog)
+	riskSizer := strategy.NewRiskSizer(eventBus, specStore, initialEquity, stratLog)
 
 	var (
 		signalsMu         sync.Mutex
@@ -193,6 +206,8 @@ func main() {
 		intentsGenerated  int
 		lastSignalSummary string
 		lastIntentSummary string
+		simBrokerInst     *simbroker.Broker
+		collectorInst     *backtest.Collector
 	)
 	if err := eventBus.Subscribe(ctx, domain.EventSignalCreated, func(_ context.Context, ev domain.Event) error {
 		signalsMu.Lock()
@@ -203,28 +218,96 @@ func main() {
 	}); err != nil {
 		log.Fatal().Err(err).Msg("failed to subscribe SignalCreated counter")
 	}
-	if err := eventBus.Subscribe(ctx, domain.EventOrderIntentCreated, func(_ context.Context, ev domain.Event) error {
-		intent, ok := ev.Payload.(domain.OrderIntent)
-		if ok {
-			log.Info().
-				Str("intent_id", intent.ID.String()).
-				Str("symbol", intent.Symbol.String()).
-				Str("direction", intent.Direction.String()).
-				Float64("qty", intent.Quantity).
-				Float64("limit", intent.LimitPrice).
-				Float64("stop", intent.StopLoss).
-				Float64("confidence", intent.Confidence).
-				Msg("MOCK EXECUTION: OrderIntentCreated")
-		} else {
-			log.Info().Str("payload_type", fmt.Sprintf("%T", ev.Payload)).Msg("MOCK EXECUTION: OrderIntentCreated")
+
+	if backtestFlag {
+		// --- Backtest mode: wire full execution pipeline with SimBroker ---
+		log.Info().
+			Float64("initial_equity", initialEquity).
+			Int64("slippage_bps", slippageBPS).
+			Msg("backtest mode enabled — wiring SimBroker + execution pipeline")
+
+		simBrokerInst = simbroker.New(simbroker.Config{SlippageBPS: slippageBPS}, log.With().Str("component", "simbroker").Logger())
+
+		// Passthrough QuoteProvider: returns SimBroker's last bar close as bid/ask.
+		quoteProvider := &simQuoteProvider{broker: simBrokerInst}
+
+		// Execution pipeline components.
+		riskEngine := execution.NewRiskEngine(0.02) // 2% max risk per trade
+		slippageGuard := execution.NewSlippageGuard(quoteProvider)
+		killSwitch := execution.NewKillSwitch(3, 30*time.Minute, time.Hour, time.Now)
+
+		// LedgerWriter needs a PnLPort but we don't persist to DB in backtest.
+		nPnL := &noopPnLRepo{}
+		ledgerWriter := perf.NewLedgerWriter(eventBus, nPnL, simBrokerInst, initialEquity, log.With().Str("component", "ledger_writer").Logger())
+
+		// DailyLossBreaker uses LedgerWriter as in-memory PnL source.
+		dailyLossBreaker := risk.NewDailyLossBreaker(
+			cfg.Trading.MaxDailyLossPct/100.0, // config stores as percentage, e.g. 5.0 → 0.05
+			cfg.Trading.MaxDailyLossUSD,
+			ledgerWriter,
+			time.Now,
+			log.With().Str("component", "daily_loss_breaker").Logger(),
+		)
+
+		// No-op RepositoryPort for execution service (no DB writes in backtest).
+		nRepo := &noopRepo{}
+
+		execSvc := execution.NewService(
+			eventBus, simBrokerInst, nRepo,
+			riskEngine, slippageGuard, killSwitch,
+			dailyLossBreaker, initialEquity,
+			log.With().Str("component", "execution").Logger(),
+		)
+		if err := execSvc.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start execution service")
 		}
-		signalsMu.Lock()
-		defer signalsMu.Unlock()
-		intentsGenerated++
-		lastIntentSummary = fmt.Sprintf("%T", ev.Payload)
-		return nil
-	}); err != nil {
-		log.Fatal().Err(err).Msg("failed to subscribe OrderIntentCreated mock execution")
+		if err := ledgerWriter.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start ledger writer")
+		}
+
+		// Backtest collector subscribes to FillReceived + MarketBarReceived.
+		collectorInst, err = backtest.NewCollector(eventBus, backtest.Config{
+			InitialEquity: initialEquity,
+		}, log.With().Str("component", "backtest_collector").Logger())
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to create backtest collector")
+		}
+
+		// Count intents via event tracer (already subscribed) instead of separate handler.
+		if err := eventBus.Subscribe(ctx, domain.EventOrderIntentCreated, func(_ context.Context, ev domain.Event) error {
+			signalsMu.Lock()
+			defer signalsMu.Unlock()
+			intentsGenerated++
+			lastIntentSummary = fmt.Sprintf("%T", ev.Payload)
+			return nil
+		}); err != nil {
+			log.Fatal().Err(err).Msg("failed to subscribe OrderIntentCreated counter")
+		}
+	} else {
+		// --- Replay-only mode: mock execution (log intents, no fills) ---
+		if err := eventBus.Subscribe(ctx, domain.EventOrderIntentCreated, func(_ context.Context, ev domain.Event) error {
+			intent, ok := ev.Payload.(domain.OrderIntent)
+			if ok {
+				log.Info().
+					Str("intent_id", intent.ID.String()).
+					Str("symbol", intent.Symbol.String()).
+					Str("direction", intent.Direction.String()).
+					Float64("qty", intent.Quantity).
+					Float64("limit", intent.LimitPrice).
+					Float64("stop", intent.StopLoss).
+					Float64("confidence", intent.Confidence).
+					Msg("MOCK EXECUTION: OrderIntentCreated")
+			} else {
+				log.Info().Str("payload_type", fmt.Sprintf("%T", ev.Payload)).Msg("MOCK EXECUTION: OrderIntentCreated")
+			}
+			signalsMu.Lock()
+			defer signalsMu.Unlock()
+			intentsGenerated++
+			lastIntentSummary = fmt.Sprintf("%T", ev.Payload)
+			return nil
+		}); err != nil {
+			log.Fatal().Err(err).Msg("failed to subscribe OrderIntentCreated mock execution")
+		}
 	}
 
 	if err := ingestionSvc.Start(ctx); err != nil {
@@ -307,6 +390,12 @@ func main() {
 			}
 			_ = s.pop()
 
+			// In backtest mode, feed SimBroker the bar close price BEFORE publishing
+			// so fills use the correct price.
+			if simBrokerInst != nil {
+				simBrokerInst.UpdatePrice(bar.Symbol, bar.Close, bar.Time)
+			}
+
 			evt, err := domain.NewEvent(domain.EventMarketBarReceived, tenantID, envMode, bar.Time.String()+string(bar.Symbol), bar)
 			if err != nil {
 				log.Error().Err(err).Str("symbol", bar.Symbol.String()).Msg("failed to create MarketBarReceived event")
@@ -370,6 +459,19 @@ func main() {
 	sort.Strings(keys)
 	for _, k := range keys {
 		fmt.Printf("- %s: %d\n", k, eventCounts[k])
+	}
+
+	// Backtest results.
+	if backtestFlag && collectorInst != nil {
+		result := collectorInst.Result()
+		result.PrintReport()
+		if outputJSON != "" {
+			if err := result.WriteJSON(outputJSON); err != nil {
+				log.Error().Err(err).Str("path", outputJSON).Msg("failed to write backtest JSON")
+			} else {
+				log.Info().Str("path", outputJSON).Msg("backtest results written to JSON")
+			}
+		}
 	}
 }
 
@@ -600,4 +702,57 @@ func timeframeDuration(tf domain.Timeframe) (time.Duration, error) {
 	default:
 		return 0, fmt.Errorf("unknown timeframe: %s", tf)
 	}
+}
+
+// --- No-op adapters for backtest mode (no DB writes) ---
+
+// simQuoteProvider returns the SimBroker's last bar close as bid/ask
+// so the SlippageGuard passes in backtest mode.
+type simQuoteProvider struct {
+	broker *simbroker.Broker
+}
+
+func (p *simQuoteProvider) GetQuote(_ context.Context, symbol domain.Symbol) (float64, float64, error) {
+	price, ok := p.broker.GetPrice(symbol)
+	if !ok {
+		return 0, 0, fmt.Errorf("simQuoteProvider: no price for %s", symbol)
+	}
+	return price, price, nil
+}
+
+// noopRepo implements ports.RepositoryPort as a no-op for backtest mode.
+// Execution service calls SaveOrder/UpdateOrderFill/SaveTrade which we discard.
+type noopRepo struct{}
+
+func (n *noopRepo) SaveMarketBar(_ context.Context, _ domain.MarketBar) error { return nil }
+func (n *noopRepo) GetMarketBars(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _, _ time.Time) ([]domain.MarketBar, error) {
+	return nil, nil
+}
+func (n *noopRepo) SaveTrade(_ context.Context, _ domain.Trade) error    { return nil }
+func (n *noopRepo) GetTrades(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) ([]domain.Trade, error) {
+	return nil, nil
+}
+func (n *noopRepo) SaveStrategyDNA(_ context.Context, _ domain.StrategyDNA) error { return nil }
+func (n *noopRepo) GetLatestStrategyDNA(_ context.Context, _ string, _ domain.EnvMode) (*domain.StrategyDNA, error) {
+	return nil, nil
+}
+func (n *noopRepo) SaveOrder(_ context.Context, _ domain.BrokerOrder) error { return nil }
+func (n *noopRepo) UpdateOrderFill(_ context.Context, _ string, _ time.Time, _, _ float64) error {
+	return nil
+}
+
+// noopPnLRepo implements ports.PnLPort as a no-op for backtest mode.
+// LedgerWriter calls UpsertDailyPnL/SaveEquityPoint which we discard.
+type noopPnLRepo struct{}
+
+func (n *noopPnLRepo) UpsertDailyPnL(_ context.Context, _ domain.DailyPnL) error { return nil }
+func (n *noopPnLRepo) GetDailyPnL(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) ([]domain.DailyPnL, error) {
+	return nil, nil
+}
+func (n *noopPnLRepo) SaveEquityPoint(_ context.Context, _ domain.EquityPoint) error { return nil }
+func (n *noopPnLRepo) GetEquityCurve(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) ([]domain.EquityPoint, error) {
+	return nil, nil
+}
+func (n *noopPnLRepo) GetDailyRealizedPnL(_ context.Context, _ string, _ domain.EnvMode, _ time.Time) (float64, error) {
+	return 0, nil
 }
