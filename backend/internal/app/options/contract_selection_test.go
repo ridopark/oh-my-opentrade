@@ -158,40 +158,41 @@ func TestSelectBestContract_RejectsHighIV(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestSelectBestContract_RejectsShortDirection(t *testing.T) {
+func TestSelectBestContract_AcceptsShortDirection(t *testing.T) {
 	now := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 	svc := options.NewContractSelectionService(defaultConstraints(), func() time.Time { return now })
 
+	// SHORT direction should select from the chain (put deltas are negative)
 	chain := []domain.OptionContractSnapshot{
-		makeSnapshot("AAPL", 40, 190.0, 0.48, 3.0, 3.20, 0.30, 200, now),
+		makeSnapshot("AAPL", 40, 190.0, -0.48, 3.0, 3.20, 0.30, 200, now),
 	}
-	_, err := svc.SelectBestContract(domain.DirectionShort, domain.RegimeTrend, chain)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "short direction")
+	best, err := svc.SelectBestContract(domain.DirectionShort, domain.RegimeTrend, chain)
+	require.NoError(t, err)
+	assert.InDelta(t, -0.48, best.Greeks.Delta, 1e-9)
 }
 
-func TestSelectBestContract_RejectsBalanceRegime(t *testing.T) {
+func TestSelectBestContract_AcceptsBalanceRegime(t *testing.T) {
 	now := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 	svc := options.NewContractSelectionService(defaultConstraints(), func() time.Time { return now })
 
 	chain := []domain.OptionContractSnapshot{
 		makeSnapshot("AAPL", 40, 190.0, 0.48, 3.0, 3.20, 0.30, 200, now),
 	}
-	_, err := svc.SelectBestContract(domain.DirectionLong, domain.RegimeBalance, chain)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "regime")
+	best, err := svc.SelectBestContract(domain.DirectionLong, domain.RegimeBalance, chain)
+	require.NoError(t, err)
+	assert.InDelta(t, 0.48, best.Greeks.Delta, 1e-9)
 }
 
-func TestSelectBestContract_RejectsReversalRegime(t *testing.T) {
+func TestSelectBestContract_AcceptsReversalRegime(t *testing.T) {
 	now := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 	svc := options.NewContractSelectionService(defaultConstraints(), func() time.Time { return now })
 
 	chain := []domain.OptionContractSnapshot{
 		makeSnapshot("AAPL", 40, 190.0, 0.48, 3.0, 3.20, 0.30, 200, now),
 	}
-	_, err := svc.SelectBestContract(domain.DirectionLong, domain.RegimeReversal, chain)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "regime")
+	best, err := svc.SelectBestContract(domain.DirectionLong, domain.RegimeReversal, chain)
+	require.NoError(t, err)
+	assert.InDelta(t, 0.48, best.Greeks.Delta, 1e-9)
 }
 
 func TestSelectBestContract_AbsDeltaForPuts(t *testing.T) {
@@ -205,4 +206,44 @@ func TestSelectBestContract_AbsDeltaForPuts(t *testing.T) {
 	best, err := svc.SelectBestContract(domain.DirectionLong, domain.RegimeTrend, chain)
 	require.NoError(t, err)
 	assert.InDelta(t, -0.48, best.Greeks.Delta, 1e-9)
+}
+
+func TestSelectBestContract_ShortDirectionWithBalance(t *testing.T) {
+	now := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	svc := options.NewContractSelectionService(defaultConstraints(), func() time.Time { return now })
+
+	// SHORT + BALANCE: should work with put contracts
+	chain := []domain.OptionContractSnapshot{
+		makeSnapshot("AAPL", 40, 190.0, -0.50, 3.0, 3.20, 0.30, 200, now),
+		makeSnapshot("AAPL", 40, 185.0, -0.42, 2.5, 2.70, 0.30, 200, now),
+	}
+	best, err := svc.SelectBestContract(domain.DirectionShort, domain.RegimeBalance, chain)
+	require.NoError(t, err)
+	// midpoint = 0.475; |0.50 - 0.475| = 0.025, |0.42 - 0.475| = 0.055; picks -0.50
+	assert.InDelta(t, -0.50, best.Greeks.Delta, 1e-9)
+}
+
+func TestSelectBestContract_ShortDirectionWithReversal(t *testing.T) {
+	now := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	svc := options.NewContractSelectionService(defaultConstraints(), func() time.Time { return now })
+
+	// SHORT + REVERSAL: should work with put contracts
+	chain := []domain.OptionContractSnapshot{
+		makeSnapshot("AAPL", 40, 190.0, -0.45, 3.0, 3.20, 0.30, 200, now),
+	}
+	best, err := svc.SelectBestContract(domain.DirectionShort, domain.RegimeReversal, chain)
+	require.NoError(t, err)
+	assert.InDelta(t, -0.45, best.Greeks.Delta, 1e-9)
+}
+
+func TestSelectBestContract_RejectsInvalidDirection(t *testing.T) {
+	now := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	svc := options.NewContractSelectionService(defaultConstraints(), func() time.Time { return now })
+
+	chain := []domain.OptionContractSnapshot{
+		makeSnapshot("AAPL", 40, 190.0, 0.48, 3.0, 3.20, 0.30, 200, now),
+	}
+	_, err := svc.SelectBestContract(domain.Direction("INVALID"), domain.RegimeTrend, chain)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported direction")
 }

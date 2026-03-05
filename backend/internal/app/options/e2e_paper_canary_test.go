@@ -222,7 +222,7 @@ func TestE2E_PaperCanary_LongCallOptionTrade(t *testing.T) {
 	assert.Equal(t, "paper-order-abc123", orderID)
 }
 
-func TestE2E_PaperCanary_ShortRejectedAtSelectionLayer(t *testing.T) {
+func TestE2E_PaperCanary_ShortAcceptedAtSelectionLayer(t *testing.T) {
 	now := time.Date(2025, 3, 2, 12, 0, 0, 0, time.UTC)
 	expiry := now.AddDate(0, 0, 40)
 
@@ -254,9 +254,10 @@ func TestE2E_PaperCanary_ShortRejectedAtSelectionLayer(t *testing.T) {
 	}
 	selSvc := options.NewContractSelectionService(constraints, func() time.Time { return now })
 
-	_, err := selSvc.SelectBestContract(domain.DirectionShort, domain.RegimeTrend, chain)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "short direction")
+	selected, err := selSvc.SelectBestContract(domain.DirectionShort, domain.RegimeTrend, chain)
+	require.NoError(t, err)
+	assert.Equal(t, domain.OptionRightPut, selected.OptionContract.Right)
+	assert.InDelta(t, -0.48, selected.Greeks.Delta, 1e-9)
 }
 
 func TestE2E_PaperCanary_RiskRejectsOversizedTrade(t *testing.T) {

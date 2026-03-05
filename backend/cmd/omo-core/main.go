@@ -36,6 +36,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy/builtin"
 	"github.com/oh-my-opentrade/backend/internal/app/symbolrouter"
+	"github.com/oh-my-opentrade/backend/internal/app/orchestrator"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -173,9 +174,12 @@ func main() {
 	var riskSizer *strategy.RiskSizer
 	var lifecycleSvc *strategy.LifecycleService
 	var symRouter *symbolrouter.Service
+	var specStore *store_fs.Store
+	var router *strategy.Router
+	var symRouterSpecs []symbolrouter.StrategySpec
 	if useStrategyV2 {
 		const specDir = "configs/strategies"
-		specStore := store_fs.NewStore(specDir, strategy.LoadSpecFile)
+		specStore = store_fs.NewStore(specDir, strategy.LoadSpecFile)
 
 		// Register all builtin strategies in the in-memory registry.
 		registry := strategy.NewMemRegistry()
@@ -199,9 +203,9 @@ func main() {
 		}
 
 		// Create the router and wire instances for each spec × symbol.
-		router := strategy.NewRouter()
+		router = strategy.NewRouter()
 		stratLog := slog.Default()
-		var symRouterSpecs []symbolrouter.StrategySpec
+		// symRouterSpecs is hoisted above for multi-account access.
 		allSymbols := make(map[string]struct{})
 		totalInstances := 0
 
@@ -275,6 +279,96 @@ func main() {
 		monitorSvc.SetBaseSymbols(baseSymbols)
 	}
 
+	// 5b-multi: Multi-account orchestrator (feature-flagged).
+	var orch *orchestrator.AccountOrchestrator
+	if cfg.MultiAccount && useStrategyV2 {
+		accounts, err := config.LoadAccounts("configs/accounts.toml")
+		if err != nil {
+			log.Fatal().Err(err).Msg("multi-account: failed to load accounts.toml")
+		}
+		shared := orchestrator.SharedDeps{
+			EventBus:   eventBus,
+			Repo:       repo,
+			PnLRepo:    pnlRepo,
+			MarketData: alpacaAdapter,
+			SpecStore:  nil, // not used directly by orchestrator
+			Metrics:    nil, // wired later after metrics.New()
+			Log:        log.With().Str("component", "orchestrator").Logger(),
+		}
+		orch = orchestrator.New(shared)
+
+		for _, acct := range accounts {
+			acctLog := log.With().Str("tenant", acct.TenantID).Logger()
+			acctAlpacaCfg := acct.ToAlpacaConfig()
+			acctAdapter, err := alpaca.NewAdapter(acctAlpacaCfg, acctLog.With().Str("component", "alpaca").Logger())
+			if err != nil {
+				log.Fatal().Err(err).Str("tenant", acct.TenantID).Msg("multi-account: failed to create Alpaca adapter")
+			}
+
+			acctEquity := 100000.0
+			if eq, eqErr := acctAdapter.GetAccountEquity(context.Background()); eqErr == nil {
+				acctEquity = eq
+				acctLog.Info().Float64("equity", eq).Msg("account equity fetched")
+			} else {
+				acctLog.Warn().Err(eqErr).Float64("fallback", acctEquity).Msg("using fallback equity")
+			}
+
+			acctLedger := perf.NewLedgerWriter(eventBus, pnlRepo, acctAdapter, acctEquity, acctLog.With().Str("component", "ledger").Logger())
+			acctBreaker := risk.NewDailyLossBreaker(
+				cfg.Trading.MaxDailyLossPct/100.0,
+				cfg.Trading.MaxDailyLossUSD,
+				acctLedger,
+				time.Now,
+				acctLog.With().Str("component", "daily_loss_breaker").Logger(),
+			)
+			acctExec := execution.NewService(
+				eventBus, acctAdapter, repo,
+				execution.NewRiskEngine(cfg.Trading.MaxRiskPercent),
+				execution.NewSlippageGuard(acctAdapter),
+				execution.NewKillSwitch(
+					cfg.Trading.KillSwitchMaxStops,
+					cfg.Trading.KillSwitchWindow,
+					cfg.Trading.KillSwitchHaltDuration,
+					time.Now,
+				),
+				acctBreaker,
+				acctEquity,
+				acctLog.With().Str("component", "execution").Logger(),
+			)
+
+			// Per-account strategy pipeline reuses shared router + specStore
+			acctStratLog := slog.Default()
+			acctRunner := strategy.NewRunner(eventBus, router, acct.TenantID, domain.EnvModePaper, acctStratLog)
+			acctRiskSizer := strategy.NewRiskSizer(eventBus, specStore, acctEquity, acctStratLog)
+			acctLifecycle := strategy.NewLifecycleService(router, acctStratLog)
+			acctSymRouter := symbolrouter.NewService(
+				eventBus, symRouterSpecs, acct.TenantID, domain.EnvModePaper,
+				acctLog.With().Str("component", "symbolrouter").Logger(),
+			)
+
+			handle := &orchestrator.AccountHandle{
+				TenantID:         acct.TenantID,
+				Label:            acct.Label,
+				EnvMode:          domain.EnvModePaper,
+				Equity:           acctAdapter,
+				Close:            acctAdapter,
+				Execution:        acctExec,
+				LedgerWriter:     acctLedger,
+				DailyLossBreaker: acctBreaker,
+				StrategyRunner:   acctRunner,
+				RiskSizer:        acctRiskSizer,
+				Lifecycle:        acctLifecycle,
+				SymbolRouter:     acctSymRouter,
+			}
+			if err := orch.Add(handle); err != nil {
+				log.Fatal().Err(err).Str("tenant", acct.TenantID).Msg("multi-account: failed to add account")
+			}
+			acctLog.Info().Str("label", acct.Label).Msg("multi-account: account wired")
+		}
+
+		log.Info().Int("accounts", len(accounts)).Msg("multi-account orchestrator initialized")
+	}
+
 	// 5c. Initialize AI debate service (only if enabled in config)
 	var debateSvc *debate.Service
 	if cfg.AI.Enabled {
@@ -328,6 +422,11 @@ func main() {
 			log.Fatal().Err(err).Msg("failed to start symbol router v2")
 		}
 	}
+	if orch != nil {
+		if err := orch.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start multi-account orchestrator")
+		}
+	}
 	if err := notifySvc.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start notification service")
 	}
@@ -368,12 +467,14 @@ func main() {
 	if !useStrategyV2 {
 		go dnaManager.Watch(ctx, dnaPath, func(updated *strategy.StrategyDNA) {
 			strategySvc.RegisterDNA(updated)
-			publishDNAVersionDetected(ctx, eventBus, log, dnaPath, updated.ID)
+			publishDNAVersionDetected(ctx, eventBus, log, dnaPath, updated.ID, orch != nil)
 			log.Info().Str("strategy_id", updated.ID).Str("version", updated.Version).Msg("strategy DNA hot-reloaded")
 		})
 	}
 	log.Info().Msg("all services started")
 	// 5c (continued): periodic account equity refresh every 5 minutes.
+	// Skipped when multi-account is active — orchestrator handles per-account refresh.
+	if orch == nil {
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
@@ -396,6 +497,7 @@ func main() {
 			}
 		}
 	}()
+	}
 
 	// 6a. Start SSE handler — subscribes to the event bus and fans out to HTTP clients.
 	sseLog := log.With().Str("component", "sse").Logger()
@@ -419,6 +521,9 @@ func main() {
 	alpacaAdapter.WSClient().SetMetrics(met)
 	if useStrategyV2 {
 		strategyRunner.SetMetrics(met)
+	}
+	if orch != nil {
+		orch.SetMetrics(met)
 	}
 	imux := &metrics.InstrumentedMux{Mux: http.NewServeMux(), Metrics: met}
 	imux.Handle("/bars", omhttp.NewBarsHandler(repo, alpacaAdapter, httpLog))
@@ -546,7 +651,11 @@ func main() {
 				to = t
 			}
 		}
-		pnlData, err := pnlRepo.GetDailyPnL(r.Context(), "default", envMode, from, to)
+		tenantID := r.URL.Query().Get("tenant")
+		if tenantID == "" {
+			tenantID = "default"
+		}
+		pnlData, err := pnlRepo.GetDailyPnL(r.Context(), tenantID, envMode, from, to)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 			return
@@ -652,7 +761,11 @@ func main() {
 		Msg("starting WebSocket stream")
 	go func() {
 		barHandler := func(bCtx context.Context, bar domain.MarketBar) error {
-			evt, err := domain.NewEvent(domain.EventMarketBarReceived, "default", domain.EnvModePaper, bar.Time.String()+string(bar.Symbol), bar)
+			barTenant := "default"
+			if orch != nil {
+				barTenant = "system"
+			}
+			evt, err := domain.NewEvent(domain.EventMarketBarReceived, barTenant, domain.EnvModePaper, bar.Time.String()+string(bar.Symbol), bar)
 			if err != nil {
 				log.Error().Err(err).Str("symbol", string(bar.Symbol)).Msg("failed to create bar event")
 				return nil
@@ -677,6 +790,9 @@ func main() {
 	// 9. Graceful shutdown — close WebSocket FIRST so Alpaca receives an RFC6455
 	// close frame and immediately releases the session slot. Only then cancel the
 	// context so the stream goroutine and services can exit cleanly.
+	if orch != nil {
+		orch.Stop()
+	}
 	if err := alpacaAdapter.Close(); err != nil {
 		log.Error().Err(err).Msg("error closing Alpaca adapter")
 	}
@@ -692,7 +808,7 @@ func main() {
 	log.Info().Msg("shutdown complete")
 }
 
-func publishDNAVersionDetected(ctx context.Context, bus ports.EventBusPort, log zerolog.Logger, filePath, strategyKey string) {
+func publishDNAVersionDetected(ctx context.Context, bus ports.EventBusPort, log zerolog.Logger, filePath, strategyKey string, multiAccount bool) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		log.Error().Err(err).Str("path", filePath).Msg("failed to read dna toml")
@@ -706,7 +822,11 @@ func publishDNAVersionDetected(ctx context.Context, bus ports.EventBusPort, log 
 		ContentHash: hash,
 		DetectedAt:  time.Now().UTC(),
 	}
-	ev, err := domain.NewEvent(domain.EventDNAVersionDetected, "default", domain.EnvModePaper, hash+"-"+strategyKey, payload)
+	dnaTenant := "default"
+	if multiAccount {
+		dnaTenant = "system"
+	}
+	ev, err := domain.NewEvent(domain.EventDNAVersionDetected, dnaTenant, domain.EnvModePaper, hash+"-"+strategyKey, payload)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to create DNAVersionDetected event")
 		return

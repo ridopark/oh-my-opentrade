@@ -1,6 +1,6 @@
 # Implementation Plan: oh-my-opentrade
 
-Last Updated: March 5, 2026 (Session 7 — Phase 13 Complete)
+Last Updated: March 5, 2026 (Session 8 — Phase 13.5 Complete: Dynamic Metrics + Options Expansion + Multi-Account)
 
 ## Section 1: Progress Summary
 
@@ -160,10 +160,13 @@ PRD §3 nightly cycle: AI analyzes trades, updates DNA, runs backtests. Corporat
 
 | # | Item | Status |
 |---|------|--------|
-| 67 | Nightly evolution service — Analyze ThoughtLogs + trade P&L, propose DNA parameter changes | 🔲 Not Started |
-| 68 | Automated backtesting — Run proposed DNA changes through backtester with 5bps slippage before applying (depends on Phase 10 #48) | 🔲 Not Started |
-| 69 | Corporate action check — Filter out tickers with upcoming splits/dividends from active trading (PRD §3) | 🔲 Not Started |
-| 70 | Evolution audit trail — Log all DNA mutations with before/after + backtest results to strategy_dna_history | 🔲 Not Started |
+| 67 | Nightly evolution service — Analyze ThoughtLogs + trade P&L, propose DNA parameter changes | 🟡 Not Started |
+| 68 | Automated backtesting — Run proposed DNA changes through backtester with 5bps slippage before applying (depends on Phase 10 #48) | 🟡 Not Started |
+| 69 | Corporate action check — Filter out tickers with upcoming splits/dividends from active trading (PRD §3) | 🟡 Not Started |
+| 70 | Evolution audit trail — Log all DNA mutations with before/after + backtest results to strategy_dna_history | 🟡 Not Started |
+| 71 | Dynamic strategy metrics labels — Replace hardcoded `"orb_break_retest"` with dynamic strategy ID in Prometheus metric labels (Runner + ExecutionService) | ✅ Done |
+| 72 | Options trading expansion — SHORT direction support, all regime types, regime-parameterized constraints, `OPTIONS_V2` feature flag | ✅ Done |
+| 73 | Multi-account execution — `accounts.toml` config, `AccountOrchestrator` with per-account stack (Alpaca adapter, execution, ledger, strategy pipeline), `MULTI_ACCOUNT` feature flag, metrics wiring, equity refresh loops | ✅ Done |
 ---
 
 ## Section 2: Dependency Graph
@@ -353,7 +356,8 @@ backend/
         setup_detector.go      Setup detection logic
       execution/               Risk engine, kill switch, slippage guard
       debate/                  AI adversarial debate orchestration
-      options/                 Options contract selection & risk
+      options/                 Options contract selection, risk, regime constraints
+      orchestrator/             Multi-account orchestrator (AccountOrchestrator, per-account stack wiring)
       notify/                  Notification service (event bus → notifier)
       backfill/                Chunked historical download
       pipeline_integration_test.go  Integration: Setup → Debate → Order pipeline
@@ -465,6 +469,12 @@ Makefile                       14 targets (build, test, test-integration, migrat
 - [x] Strategy TOML configs: avwap.toml (priority=80) + ai_scalping.toml (priority=60) (#65)
 - [x] Multi-strategy integration tests: 7 tests covering priority, dedup, coexistence (#66)
 - [x] main.go refactored: dynamic multi-strategy registration from spec store
+
+### Phase 13.5 — Tech Debt + Expansion ✅
+- [x] Dynamic strategy metrics labels: Runner + ExecutionService use dynamic strategy ID instead of hardcoded `"orb_break_retest"` (#71)
+- [x] Options trading expansion: SHORT direction, all regime types, regime-parameterized constraints, `OPTIONS_V2` feature flag (#72)
+- [x] Multi-account execution: `accounts.toml` config, `AccountOrchestrator` (246 lines, 11 tests), per-account stack, `MULTI_ACCOUNT` feature flag, shared market data, per-account equity refresh (#73)
+- [x] Dead code removed: `bootstrap.go` leftover from failed delegation
 ---
 
 ## Section 7: Data State
@@ -486,6 +496,8 @@ Makefile                       14 targets (build, test, test-integration, migrat
 **Symbols tracked** (from config.yaml): AAPL, MSFT, GOOGL, AMZN, TSLA, SOXL, U, PLTR, SPY, META
 
 **Strategy DNA files**: 3 strategies — `orb_break_retest.toml` (priority=100), `avwap.toml` (priority=80), `ai_scalping.toml` (priority=60)
+
+**Multi-account config**: `configs/accounts.toml` — 2 accounts (default paper + secondary paper), activated via `MULTI_ACCOUNT=true` env var
 
 ---
 
@@ -524,9 +536,9 @@ Comprehensive comparison of PRD v11.0 features vs actual implementation status (
 | PRD Feature | PRD Section | Status | Gap |
 |---|---|---|---|
 | Multi-Timeframe Analysis | §4.2 | ✅ Fully Implemented | Bar aggregation (1m→5m/15m), anchor regime detection with hysteresis, trigger gating in ORB strategy |
-| Options Trading | §4 | Contract selection + order execution | Only LONG direction, TREND regime; no full options strategy |
+| Options Trading | §4 | ✅ Fully Implemented | Contract selection + order execution, SHORT direction, all regime types, regime-parameterized constraints (OPTIONS_V2 flag) |
 | TanStack Query | §2 Frontend | ✅ Fully Implemented | All dashboard pages use useQuery hooks |
-| Multi-Account Execution | §4 | Schema + kill switch tenant isolation | Runtime is single-account via .env; no multi-account orchestration |
+| Multi-Account Execution | §4 | ✅ Fully Implemented | `accounts.toml` config, `AccountOrchestrator`, per-account stack (broker+execution+ledger+strategy), `MULTI_ACCOUNT` feature flag, shared market data, per-account equity refresh |
 | Phase 9 Paper Trading | §9 | 10/11 items done | Needs market-hours E2E verification (#39) |
 
 ### ❌ Not Implemented

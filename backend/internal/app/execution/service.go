@@ -106,7 +106,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	if err := s.riskEngine.Validate(intent, s.accountEquity); err != nil {
 		l.Warn().Err(err).Msg("order intent rejected by risk engine")
 		if s.metrics != nil {
-			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", "orb_break_retest", "risk").Inc()
+			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "risk").Inc()
 		}
 		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusRejected))
 		return nil
@@ -116,7 +116,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	if err := s.slippageGuard.Check(ctx, intent); err != nil {
 		l.Warn().Err(err).Msg("order intent rejected by slippage guard")
 		if s.metrics != nil {
-			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", "orb_break_retest", "validation").Inc()
+			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "validation").Inc()
 		}
 		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusRejected))
 		return nil
@@ -150,9 +150,9 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			if intent.Direction == domain.DirectionLong {
 				side = "buy"
 			}
-			s.metrics.Orders.Total.WithLabelValues("alpaca", "orb_break_retest", side, "limit", "rejected").Inc()
-			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", "orb_break_retest", "api").Inc()
-			s.metrics.Orders.SubmitLat.WithLabelValues("alpaca", "orb_break_retest", "limit").Observe(time.Since(submitStart).Seconds())
+			s.metrics.Orders.Total.WithLabelValues("alpaca", intent.Strategy, side, "limit", "rejected").Inc()
+			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "api").Inc()
+			s.metrics.Orders.SubmitLat.WithLabelValues("alpaca", intent.Strategy, "limit").Observe(time.Since(submitStart).Seconds())
 		}
 		s.emit(ctx, domain.EventOrderRejected, event.TenantID, event.EnvMode, intent.ID.String(), err.Error())
 		return nil
@@ -162,8 +162,8 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		if intent.Direction == domain.DirectionLong {
 			side = "buy"
 		}
-		s.metrics.Orders.Total.WithLabelValues("alpaca", "orb_break_retest", side, "limit", "placed").Inc()
-		s.metrics.Orders.SubmitLat.WithLabelValues("alpaca", "orb_break_retest", "limit").Observe(time.Since(submitStart).Seconds())
+		s.metrics.Orders.Total.WithLabelValues("alpaca", intent.Strategy, side, "limit", "placed").Inc()
+		s.metrics.Orders.SubmitLat.WithLabelValues("alpaca", intent.Strategy, "limit").Observe(time.Since(submitStart).Seconds())
 	}
 	l.Info().Str("broker_order_id", brokerOrderID).Msg("order submitted to broker")
 	s.emit(ctx, domain.EventOrderSubmitted, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusSubmitted))
@@ -278,8 +278,8 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 
 	// Record fill metrics.
 	if s.metrics != nil {
-		s.metrics.Orders.FillsTotal.WithLabelValues("alpaca", "orb_break_retest", side, "filled").Inc()
-		s.metrics.Orders.FillLat.WithLabelValues("alpaca", "orb_break_retest").Observe(time.Since(submitStart).Seconds())
+		s.metrics.Orders.FillsTotal.WithLabelValues("alpaca", intent.Strategy, side, "filled").Inc()
+		s.metrics.Orders.FillLat.WithLabelValues("alpaca", intent.Strategy).Observe(time.Since(submitStart).Seconds())
 	}
 }
 

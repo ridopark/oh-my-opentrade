@@ -172,7 +172,11 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 			continue
 		}
 		if r.metrics != nil {
-			r.metrics.Strategy.SignalsTotal.WithLabelValues("orb_break_retest", string(sig.Type), string(sig.Side)).Inc()
+			strategyLabel := "unknown"
+			if sid, ok := parseStrategyIDFromInstance(sig.StrategyInstanceID); ok {
+				strategyLabel = sid.String()
+			}
+			r.metrics.Strategy.SignalsTotal.WithLabelValues(strategyLabel, string(sig.Type), string(sig.Side)).Inc()
 		}
 		if err := r.emitSignal(ctx, event.TenantID, event.EnvMode, sig); err != nil {
 			r.logger.Error("failed to emit SignalCreated",
@@ -185,7 +189,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 
 	// Record strategy loop duration.
 	if r.metrics != nil {
-		r.metrics.Strategy.LoopDuration.WithLabelValues("orb_break_retest", "handle_bar").Observe(time.Since(loopStart).Seconds())
+		r.metrics.Strategy.LoopDuration.WithLabelValues("all", "handle_bar").Observe(time.Since(loopStart).Seconds())
 	}
 
 	return nil

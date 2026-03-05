@@ -1,0 +1,24 @@
+# Multi-account configuration for oh-my-opentrade.
+# Each [[accounts]] entry defines a separate trading account with its own
+# credentials, risk limits, and broker connection.
+#
+# Environment variables are NOT expanded here — set them in .env or shell.
+# The loader reads env var names from env_key_id / env_secret_key fields.
+#
+# Enable with MULTI_ACCOUNT=true in .env or environment.
+
+[[accounts]]
+label      = "primary"
+tenant_id  = "primary"
+env_key_id     = "APCA_API_KEY_ID"
+env_secret_key = "APCA_API_SECRET_KEY"
+base_url   = "https://paper-api.alpaca.markets"
+paper_mode = true
+
+[[accounts]]
+label      = "secondary"
+tenant_id  = "secondary"
+env_key_id     = "APCA_API_KEY_ID_2"
+env_secret_key = "APCA_API_SECRET_KEY_2"
+base_url   = "https://paper-api.alpaca.markets"
+paper_mode = true

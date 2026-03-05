@@ -3,7 +3,6 @@ package alpaca
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,14 +13,18 @@ import (
 )
 
 // SubmitOptionOrder submits an option order to the Alpaca REST API.
-// MVP rules:
-//   - Only buying options is supported (DirectionLong). DirectionShort returns an error.
-//   - time_in_force is always "day" for options.
-//   - No stop_price in the request body (risk controlled via MaxLossUSD).
-//   - symbol is the OCC contract symbol from intent.Instrument.Symbol.
+// Direction mapping:
+//   - DirectionLong  → side="buy"  (buy to open)
+//   - DirectionShort → side="sell" (sell to close / defined-risk spread leg)
+//
+// time_in_force is always "day" for options.
+// No stop_price in the request body (risk controlled via MaxLossUSD).
+// symbol is the OCC contract symbol from intent.Instrument.Symbol.
 func (c *RESTClient) SubmitOptionOrder(ctx context.Context, intent domain.OrderIntent) (string, error) {
+	// Map direction to Alpaca order side.
+	side := "buy"
 	if intent.Direction == domain.DirectionShort {
-		return "", errors.New("alpaca: MVP does not support selling options")
+		side = "sell"
 	}
 
 	sym := ""
@@ -34,7 +37,7 @@ func (c *RESTClient) SubmitOptionOrder(ctx context.Context, intent domain.OrderI
 	reqBody := map[string]interface{}{
 		"symbol":        sym,
 		"qty":           fmt.Sprintf("%g", intent.Quantity),
-		"side":          "buy",
+		"side":          side,
 		"type":          "limit",
 		"time_in_force": "day",
 		"limit_price":   intent.LimitPrice,

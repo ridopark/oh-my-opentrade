@@ -41,3 +41,21 @@ min_atr_pct = 0.8
 
 [hooks]
 signals = { engine = "builtin", name = "orb_v1" }
+
+[options]
+enabled = false
+
+[options.defaults]
+min_dte = 35
+max_dte = 45
+target_delta_low = 0.40
+target_delta_high = 0.55
+min_open_interest = 100
+max_spread_pct = 0.10
+max_iv = 1.0
+
+[options.regime_overrides.BALANCE]
+target_delta_low = 0.30
+target_delta_high = 0.45
+min_dte = 30
+max_dte = 50

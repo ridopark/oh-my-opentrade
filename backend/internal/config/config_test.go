@@ -319,6 +319,86 @@ symbols:
 	require.Error(t, err)
 }
 
+func TestConfig_OptionsV2_Default(t *testing.T) {
+	tempDir := t.TempDir()
+
+	envPath := writeFile(t, tempDir, ".env", "APCA_API_KEY_ID=k\nAPCA_API_SECRET_KEY=s")
+	yamlPath := writeFile(t, tempDir, "config.yaml", `alpaca:
+  base_url: https://paper-api.alpaca.markets
+database:
+  host: localhost
+  user: opentrade
+  dbname: opentrade
+symbols:
+  symbols: [AAPL]
+  timeframe: 1m`)
+
+	cfg, err := Load(envPath, yamlPath)
+	require.NoError(t, err)
+	assert.False(t, cfg.OptionsV2)
+}
+
+func TestConfig_OptionsV2_Enabled(t *testing.T) {
+	tempDir := t.TempDir()
+
+	envPath := writeFile(t, tempDir, ".env", "APCA_API_KEY_ID=k\nAPCA_API_SECRET_KEY=s")
+	yamlPath := writeFile(t, tempDir, "config.yaml", `alpaca:
+  base_url: https://paper-api.alpaca.markets
+database:
+  host: localhost
+  user: opentrade
+  dbname: opentrade
+symbols:
+  symbols: [AAPL]
+  timeframe: 1m`)
+
+	t.Setenv("OPTIONS_V2", "true")
+
+	cfg, err := Load(envPath, yamlPath)
+	require.NoError(t, err)
+	assert.True(t, cfg.OptionsV2)
+}
+
+func TestConfig_MultiAccount_Default(t *testing.T) {
+	tempDir := t.TempDir()
+
+	envPath := writeFile(t, tempDir, ".env", "APCA_API_KEY_ID=k\nAPCA_API_SECRET_KEY=s")
+	yamlPath := writeFile(t, tempDir, "config.yaml", `alpaca:
+  base_url: https://paper-api.alpaca.markets
+database:
+  host: localhost
+  user: opentrade
+  dbname: opentrade
+symbols:
+  symbols: [AAPL]
+  timeframe: 1m`)
+
+	cfg, err := Load(envPath, yamlPath)
+	require.NoError(t, err)
+	assert.False(t, cfg.MultiAccount)
+}
+
+func TestConfig_MultiAccount_Enabled(t *testing.T) {
+	tempDir := t.TempDir()
+
+	envPath := writeFile(t, tempDir, ".env", "APCA_API_KEY_ID=k\nAPCA_API_SECRET_KEY=s")
+	yamlPath := writeFile(t, tempDir, "config.yaml", `alpaca:
+  base_url: https://paper-api.alpaca.markets
+database:
+  host: localhost
+  user: opentrade
+  dbname: opentrade
+symbols:
+  symbols: [AAPL]
+  timeframe: 1m`)
+
+	t.Setenv("MULTI_ACCOUNT", "true")
+
+	cfg, err := Load(envPath, yamlPath)
+	require.NoError(t, err)
+	assert.True(t, cfg.MultiAccount)
+}
+
 func TestLoad_EnvOverridesAlpacaBaseURL(t *testing.T) {
 	// Arrange
 	tempDir := t.TempDir()

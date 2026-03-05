@@ -20,6 +20,8 @@ type Config struct {
 	Server       ServerConfig       `yaml:"server"`
 	AI           AIConfig           `yaml:"ai"`
 	Notification NotificationConfig `yaml:"notification"`
+	OptionsV2    bool               `yaml:"-"`
+	MultiAccount bool               `yaml:"-"`
 }
 
 // AlpacaConfig represents the Alpaca broker configuration.
@@ -105,7 +107,7 @@ type rawConfig struct {
 }
 
 const (
-defaultDBPort          = 5432
+	defaultDBPort          = 5432
 	defaultDBSSLMode       = "disable"
 	defaultDBMaxPoolSize   = 10
 	defaultServerPort      = 8080
@@ -122,6 +124,7 @@ defaultDBPort          = 5432
 	defaultAIBaseURL       = "https://openrouter.ai/api"
 	defaultAIMinConfidence = 0.6
 )
+
 // Load loads the configuration from env and yaml files.
 // The loading sequence is: .env → YAML → env overlay → defaults → validate
 func Load(envPath, yamlPath string) (*Config, error) {
@@ -138,7 +141,7 @@ func Load(envPath, yamlPath string) (*Config, error) {
 
 	// Apply defaults
 	raw := rawConfig{
-Alpaca: AlpacaConfig{
+		Alpaca: AlpacaConfig{
 			PaperMode: true,
 			DataURL:   defaultDataURL,
 			Feed:      defaultFeed,
@@ -209,7 +212,7 @@ Alpaca: AlpacaConfig{
 	}
 
 	// 3. Overlay environment variables
-if val := os.Getenv("APCA_API_KEY_ID"); val != "" {
+	if val := os.Getenv("APCA_API_KEY_ID"); val != "" {
 		cfg.Alpaca.APIKeyID = val
 	}
 	if val := os.Getenv("APCA_API_SECRET_KEY"); val != "" {
@@ -260,6 +263,12 @@ if val := os.Getenv("APCA_API_KEY_ID"); val != "" {
 	}
 	if val := os.Getenv("DISCORD_WEBHOOK_URL"); val != "" {
 		cfg.Notification.DiscordWebhookURL = val
+	}
+	if val := os.Getenv("OPTIONS_V2"); val == "true" {
+		cfg.OptionsV2 = true
+	}
+	if val := os.Getenv("MULTI_ACCOUNT"); val == "true" {
+		cfg.MultiAccount = true
 	}
 
 	// Validate configuration

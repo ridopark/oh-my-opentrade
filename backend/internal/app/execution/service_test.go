@@ -6,10 +6,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rs/zerolog"
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -86,7 +89,7 @@ func TestService_RiskRejection(t *testing.T) {
 		execution.NewRiskEngine(0.02),
 		execution.NewSlippageGuard(quoteProvider),
 		execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, nowFunc),
-		nil, // dailyLossBreaker
+		nil,   // dailyLossBreaker
 		100.0, // tiny equity → risk rejection
 		zerolog.Nop(),
 	)
@@ -215,6 +218,108 @@ func TestService_EmitsCircuitBreakerOnKillSwitch(t *testing.T) {
 
 	assert.Contains(t, emittedEvents, domain.EventCircuitBreakerTripped)
 	assert.Equal(t, 2, broker.SubmitOrderCalls, "Should have stopped after 2 calls before tripping on 3rd")
+}
+
+func TestService_DynamicMetricLabels(t *testing.T) {
+	bus := memory.NewBus()
+	broker := &mockBroker{}
+	repo := &mockRepository{}
+	quoteProvider := &mockQuoteProvider{Bid: 49950.0, Ask: 50050.0}
+
+	riskEngine := execution.NewRiskEngine(0.02)
+	slippageGuard := execution.NewSlippageGuard(quoteProvider)
+	nowFunc := func() time.Time { return time.Now() }
+	killSwitch := execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, nowFunc)
+
+	svc := execution.NewService(bus, broker, repo, riskEngine, slippageGuard, killSwitch, nil, 100000.0, zerolog.Nop())
+	m := metrics.New("test", "test", "test", false)
+	svc.SetMetrics(m)
+
+	require.NoError(t, svc.Start(context.Background()))
+
+	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
+	require.NoError(t, bus.Publish(context.Background(), intentEvt))
+
+	assert.Equal(t, 1, broker.SubmitOrderCalls)
+
+	placed := counterValue(t, m.Reg, "omo_orders_total", map[string]string{
+		"venue":      "alpaca",
+		"strategy":   "strategy-1",
+		"side":       "buy",
+		"order_type": "limit",
+		"result":     "placed",
+	})
+	assert.Equal(t, float64(1), placed)
+
+	obs := histogramSampleCount(t, m.Reg, "omo_order_submit_latency_seconds", map[string]string{
+		"venue":      "alpaca",
+		"strategy":   "strategy-1",
+		"order_type": "limit",
+	})
+	require.Equal(t, uint64(1), obs)
+}
+
+func histogramSampleCount(t *testing.T, reg *prometheus.Registry, metricName string, wantLabels map[string]string) uint64 {
+	t.Helper()
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	for _, mf := range mfs {
+		if mf.GetName() != metricName {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			if labelsMatch(m.GetLabel(), wantLabels) {
+				h := m.GetHistogram()
+				require.NotNil(t, h)
+				return h.GetSampleCount()
+			}
+		}
+	}
+
+	require.FailNow(t, "histogram metric not found", "%s labels=%v", metricName, wantLabels)
+	return 0
+}
+
+func counterValue(t *testing.T, reg *prometheus.Registry, metricName string, wantLabels map[string]string) float64 {
+	t.Helper()
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	for _, mf := range mfs {
+		if mf.GetName() != metricName {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			if labelsMatch(m.GetLabel(), wantLabels) {
+				c := m.GetCounter()
+				require.NotNil(t, c)
+				return c.GetValue()
+			}
+		}
+	}
+
+	require.FailNow(t, "counter metric not found", "%s labels=%v", metricName, wantLabels)
+	return 0
+}
+
+func labelsMatch(got []*dto.LabelPair, want map[string]string) bool {
+	if len(want) == 0 {
+		return true
+	}
+
+	gotMap := make(map[string]string, len(got))
+	for _, lp := range got {
+		gotMap[lp.GetName()] = lp.GetValue()
+	}
+	for k, v := range want {
+		if gotMap[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func subscribeAll(t *testing.T, bus *memory.Bus, events []string, dest *[]string) {

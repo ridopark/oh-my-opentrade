@@ -146,7 +146,10 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 			}
 		}
 		c.openBuys[symbol] = opens
-		c.cash += quantity * price
+		// Only credit cash for the matched quantity, not the full sell quantity.
+		// Any excess (sell > open buys) is unmatched and should not affect cash.
+		matchedQty := quantity - remainQty
+		c.cash += matchedQty * price
 		tr.PnL = realizedPnL
 	}
 

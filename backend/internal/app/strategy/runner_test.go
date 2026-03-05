@@ -10,6 +10,9 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -398,6 +401,47 @@ func TestRunner_ProcessBar_SingleInstance_Signal(t *testing.T) {
 	assert.Equal(t, 0.85, signals[0].Strength)
 }
 
+func TestRunner_ProcessBar_DynamicMetricLabels(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	m := metrics.New("test", "test", "test", false)
+	runner.SetMetrics(m)
+
+	fs := newFakeStrategy("alpha_strat", "1.0.0")
+	fs.onBarFunc = func(_ strat.Context, symbol string, _ strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+		iid, _ := strat.NewInstanceID("alpha_strat:1.0.0:" + symbol)
+		sig, _ := strat.NewSignal(iid, symbol, strat.SignalEntry, strat.SideBuy, 0.8, nil)
+		return st, []strat.Signal{sig}, nil
+	}
+
+	id, _ := strat.NewInstanceID("alpha_strat:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols:  []string{"AAPL"},
+		Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	tctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(tctx, "AAPL", nil))
+	router.Register(inst)
+
+	ctx := context.Background()
+	require.NoError(t, runner.Start(ctx))
+
+	sym, _ := domain.NewSymbol("AAPL")
+	bar, _ := domain.NewMarketBar(time.Now(), sym, "1m", 100, 101, 99, 100, 10)
+	ev, _ := domain.NewEvent(domain.EventMarketBarSanitized, "test-tenant", envMode, "bar-1", bar)
+	require.NoError(t, bus.Publish(ctx, *ev))
+
+	count := counterValue(t, m.Reg, "omo_strategy_signals_total", map[string]string{"strategy": "alpha_strat", "signal": "entry", "direction": "buy"})
+	assert.Equal(t, float64(1), count)
+
+	obs := histogramSampleCount(t, m.Reg, "omo_strategy_loop_duration_seconds", map[string]string{"strategy": "all", "phase": "handle_bar"})
+	require.Equal(t, uint64(1), obs)
+}
+
 func TestRunner_ProcessBar_MultipleInstances(t *testing.T) {
 	bus := memory.NewBus()
 	router := strategy.NewRouter()
@@ -543,4 +587,67 @@ func TestRunner_HandleBar_NoSignalForUnassignedSymbol(t *testing.T) {
 	require.NoError(t, bus.Publish(ctx, *ev))
 
 	assert.Empty(t, received, "no signal for unassigned symbol")
+}
+
+func histogramSampleCount(t *testing.T, reg *prometheus.Registry, metricName string, wantLabels map[string]string) uint64 {
+	t.Helper()
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	for _, mf := range mfs {
+		if mf.GetName() != metricName {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			if labelsMatch(m.GetLabel(), wantLabels) {
+				h := m.GetHistogram()
+				require.NotNil(t, h)
+				return h.GetSampleCount()
+			}
+		}
+	}
+
+	require.FailNow(t, "histogram metric not found", "%s labels=%v", metricName, wantLabels)
+	return 0
+}
+
+func counterValue(t *testing.T, reg *prometheus.Registry, metricName string, wantLabels map[string]string) float64 {
+	t.Helper()
+
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+
+	for _, mf := range mfs {
+		if mf.GetName() != metricName {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			if labelsMatch(m.GetLabel(), wantLabels) {
+				c := m.GetCounter()
+				require.NotNil(t, c)
+				return c.GetValue()
+			}
+		}
+	}
+
+	require.FailNow(t, "counter metric not found", "%s labels=%v", metricName, wantLabels)
+	return 0
+}
+
+func labelsMatch(got []*dto.LabelPair, want map[string]string) bool {
+	if len(want) == 0 {
+		return true
+	}
+
+	gotMap := make(map[string]string, len(got))
+	for _, lp := range got {
+		gotMap[lp.GetName()] = lp.GetValue()
+	}
+	for k, v := range want {
+		if gotMap[k] != v {
+			return false
+		}
+	}
+	return true
 }

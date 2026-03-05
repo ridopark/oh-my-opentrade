@@ -75,10 +75,29 @@ func TestRESTClient_SubmitOptionOrder_HappyPath(t *testing.T) {
 // ─────────────────────────────────────────────
 
 func TestRESTClient_SubmitOptionOrder_ShortDirection(t *testing.T) {
-	limiter := NewRateLimiter(200)
-	client := NewRESTClient("http://localhost:9999", "test-key", "test-secret", limiter, zerolog.Nop())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v2/orders", r.URL.Path)
+		assert.Equal(t, "POST", r.Method)
 
-	// Build intent manually because NewOptionOrderIntent validates direction
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		var req map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &req))
+
+		// SHORT direction should map to side="sell"
+		assert.Equal(t, "sell", req["side"])
+		assert.Equal(t, "AAPL270119C00190000", req["symbol"])
+		assert.Equal(t, "limit", req["type"])
+		assert.Equal(t, "day", req["time_in_force"])
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id": "opt-short-order-123"}`))
+	}))
+	defer server.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+
 	inst, _ := domain.NewInstrument(domain.InstrumentTypeOption, "AAPL270119C00190000", "AAPL")
 	intent := domain.OrderIntent{
 		Instrument: &inst,
@@ -90,9 +109,9 @@ func TestRESTClient_SubmitOptionOrder_ShortDirection(t *testing.T) {
 		MaxLossUSD: 200.0,
 	}
 
-	_, err := client.SubmitOptionOrder(context.Background(), intent)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "MVP does not support selling options")
+	orderID, err := client.SubmitOptionOrder(context.Background(), intent)
+	require.NoError(t, err)
+	assert.Equal(t, "opt-short-order-123", orderID)
 }
 
 // ─────────────────────────────────────────────
@@ -172,4 +191,28 @@ func TestAdapter_SubmitOrder_EquityPath(t *testing.T) {
 	orderID, err := adapter.SubmitOrder(context.Background(), intent)
 	require.NoError(t, err)
 	assert.Equal(t, "equity-order-id", orderID)
+}
+
+func TestRESTClient_SubmitOptionOrder_LongSendsBuy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		var req map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &req))
+
+		// LONG direction should map to side="buy"
+		assert.Equal(t, "buy", req["side"])
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id": "opt-long-order-456"}`))
+	}))
+	defer server.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+
+	intent := makeOptionIntent(t, domain.DirectionLong)
+	orderID, err := client.SubmitOptionOrder(context.Background(), intent)
+	require.NoError(t, err)
+	assert.Equal(t, "opt-long-order-456", orderID)
 }
