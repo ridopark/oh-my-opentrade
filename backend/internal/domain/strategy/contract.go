@@ -32,6 +32,19 @@ type Strategy interface {
 	OnEvent(ctx Context, symbol string, evt any, st State) (next State, signals []Signal, err error)
 }
 
+// ReplayableStrategy is an opt-in interface for strategies that support
+// replay-aware warmup. When implemented, the runner calls ReplayOnBar
+// during warmup instead of OnBar, allowing the strategy to pass replay=true
+// to its internal state machine. This prevents replayed historical bars
+// from firing live signals while still reconstructing internal state.
+type ReplayableStrategy interface {
+	Strategy
+	// ReplayOnBar processes a historical bar for state recovery.
+	// It updates internal state but never produces signals.
+	// The indicators parameter provides pre-computed indicator data.
+	ReplayOnBar(ctx Context, symbol string, bar Bar, st State, indicators IndicatorData) (State, error)
+}
+
 // Meta holds immutable metadata about a strategy implementation.
 type Meta struct {
 	ID          StrategyID

@@ -181,7 +181,7 @@ func TestMultiStrategy_WarmupBarsSpec(t *testing.T) {
 		strategy strat.Strategy
 		expected int
 	}{
-		{builtin.NewORBStrategy(), 30},
+		{builtin.NewORBStrategy(), 0},
 		{builtin.NewAVWAPStrategy(), 30},
 		{builtin.NewAIScalperStrategy(), 30},
 	}

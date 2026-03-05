@@ -35,7 +35,7 @@ func NewORBStrategy() *ORBStrategy {
 }
 
 func (s *ORBStrategy) Meta() strat.Meta { return s.meta }
-func (s *ORBStrategy) WarmupBars() int  { return 30 } // ORB window minutes
+func (s *ORBStrategy) WarmupBars() int  { return 0 } // replay handles state recovery
 
 // Init creates initial state for a symbol. If prior state is provided and
 // compatible, it restores from that state (restart recovery).
@@ -119,12 +119,12 @@ func (s *ORBStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, st 
 		side,
 		clampStrength(setup.Confidence),
 		map[string]string{
-			"ref_price":    fmt.Sprintf("%.4f", setup.BarClose),
-			"trigger":      setup.Trigger,
-			"orb_high":     fmt.Sprintf("%.4f", setup.ORBHigh),
-			"orb_low":      fmt.Sprintf("%.4f", setup.ORBLow),
-			"rvol":         fmt.Sprintf("%.2f", setup.RVOL),
-			"bar_close":    fmt.Sprintf("%.4f", setup.BarClose),
+			"ref_price":     fmt.Sprintf("%.4f", setup.BarClose),
+			"trigger":       setup.Trigger,
+			"orb_high":      fmt.Sprintf("%.4f", setup.ORBHigh),
+			"orb_low":       fmt.Sprintf("%.4f", setup.ORBLow),
+			"rvol":          fmt.Sprintf("%.2f", setup.RVOL),
+			"bar_close":     fmt.Sprintf("%.4f", setup.BarClose),
 			"regime_anchor": anchorTag,
 		},
 	)
@@ -133,6 +133,36 @@ func (s *ORBStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, st 
 	}
 
 	return orbState, []strat.Signal{sig}, nil
+}
+
+// ReplayOnBar processes a historical bar for state recovery.
+// It feeds the bar through the ORBTracker with replay=true, which reconstructs
+// the opening range and state machine without firing live signals.
+func (s *ORBStrategy) ReplayOnBar(ctx strat.Context, symbol string, bar strat.Bar, st strat.State, indicators strat.IndicatorData) (strat.State, error) {
+	orbState, ok := st.(*ORBState)
+	if !ok {
+		return st, fmt.Errorf("ORBStrategy.ReplayOnBar: expected *ORBState, got %T", st)
+	}
+
+	// Inject indicators for snapshot building.
+	orbState.SetIndicators(indicators)
+
+	// Convert strategy.Bar → domain.MarketBar for the ORBTracker.
+	sym, err := domain.NewSymbol(symbol)
+	if err != nil {
+		return st, fmt.Errorf("ORBStrategy.ReplayOnBar: invalid symbol: %w", err)
+	}
+	domBar, err := domain.NewMarketBar(bar.Time, sym, "1m", bar.Open, bar.High, bar.Low, bar.Close, bar.Volume)
+	if err != nil {
+		return st, fmt.Errorf("ORBStrategy.ReplayOnBar: invalid bar: %w", err)
+	}
+
+	snap := orbState.BuildSnapshot(sym, bar.Time)
+
+	// Delegate to tracker with replay=true — state advances but no signal fires.
+	orbState.Tracker.OnBar(domBar, snap, orbState.Config, true)
+
+	return orbState, nil
 }
 
 // OnEvent is a no-op for the ORB strategy — it only reacts to bars.

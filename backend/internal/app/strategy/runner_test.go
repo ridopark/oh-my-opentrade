@@ -26,6 +26,17 @@ type fakeStrategy struct {
 	onEventFn func(ctx strat.Context, symbol string, evt any, st strat.State) (strat.State, []strat.Signal, error)
 }
 
+// fakeReplayableStrategy extends fakeStrategy with ReplayOnBar
+type fakeReplayableStrategy struct {
+	fakeStrategy
+	replayCount int
+}
+
+func (f *fakeReplayableStrategy) ReplayOnBar(_ strat.Context, _ string, _ strat.Bar, st strat.State, _ strat.IndicatorData) (strat.State, error) {
+	f.replayCount++
+	return st, nil
+}
+
 func newFakeStrategy(id, version string) *fakeStrategy {
 	sid, _ := strat.NewStrategyID(id)
 	ver, _ := strat.NewVersion(version)
@@ -633,6 +644,42 @@ func TestRunner_WarmUp_ReplaysBarsAndWarmsInstance(t *testing.T) {
 	sigs, err := runner.ProcessBar(ctx, "AAPL", strat.Bar{Time: time.Now(), Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}, strat.IndicatorData{Volume: 10})
 	require.NoError(t, err)
 	require.Len(t, sigs, 1)
+}
+
+func TestRunner_WarmUp_UsesReplayOnBarForReplayableStrategy(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	fs := &fakeReplayableStrategy{}
+	fs.meta = func() strat.Meta {
+		sid, _ := strat.NewStrategyID("replay_strat")
+		ver, _ := strat.NewVersion("1.0.0")
+		return strat.Meta{ID: sid, Version: ver, Name: "Replay Test", Author: "test"}
+	}()
+	fs.warmup = 3
+
+	id, _ := strat.NewInstanceID("replay_strat:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{Symbols: []string{"AAPL"}, Priority: 100}, strat.LifecycleLiveActive, nil)
+	tctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(tctx, "AAPL", nil))
+	router.Register(inst)
+
+	sym, _ := domain.NewSymbol("AAPL")
+	b1, _ := domain.NewMarketBar(time.Now().Add(-3*time.Minute), sym, "1m", 100, 101, 99, 100, 10)
+	b2, _ := domain.NewMarketBar(time.Now().Add(-2*time.Minute), sym, "1m", 101, 102, 100, 101, 11)
+	b3, _ := domain.NewMarketBar(time.Now().Add(-1*time.Minute), sym, "1m", 102, 103, 101, 102, 12)
+	bars := []domain.MarketBar{b1, b2, b3}
+
+	snapshotFn := func(bar domain.MarketBar) strat.IndicatorData {
+		return strat.IndicatorData{RSI: 50, Volume: bar.Volume}
+	}
+
+	n := runner.WarmUp("AAPL", bars, snapshotFn)
+	assert.Equal(t, 3, n)
+	assert.Equal(t, 3, fs.replayCount)
+	assert.True(t, inst.IsWarmedUp("AAPL"))
 }
 
 func TestRunner_WarmUp_NoMatchingInstances(t *testing.T) {

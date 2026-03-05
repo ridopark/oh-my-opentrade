@@ -58,7 +58,94 @@ func TestORBStrategy_Meta(t *testing.T) {
 
 func TestORBStrategy_WarmupBars(t *testing.T) {
 	s := builtin.NewORBStrategy()
-	assert.Equal(t, 30, s.WarmupBars())
+	assert.Equal(t, 0, s.WarmupBars())
+}
+
+func TestORBStrategy_ReplayOnBar_ReconstructsState(t *testing.T) {
+	s := builtin.NewORBStrategy()
+	ctx := newTestContext(time.Now())
+	st, err := s.Init(ctx, "AAPL", orbParams(), nil)
+	require.NoError(t, err)
+
+	indicators := strat.IndicatorData{Volume: 10, VolumeSMA: 10}
+
+	// Replay 30 range bars (9:30-9:59 UTC=14:30-14:59)
+	for i := 0; i < 30; i++ {
+		bt := time.Date(2025, 3, 4, 14, 30+i, 0, 0, time.UTC)
+		bar := strat.Bar{Time: bt, Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}
+		st, err = s.ReplayOnBar(ctx, "AAPL", bar, st, indicators)
+		require.NoError(t, err)
+	}
+
+	// Replay transition bar
+	postRange := time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC)
+	st, err = s.ReplayOnBar(ctx, "AAPL", strat.Bar{Time: postRange, Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}, st, indicators)
+	require.NoError(t, err)
+
+	// Replay breakout bar with high volume
+	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
+	highVolInd := strat.IndicatorData{Volume: 50, VolumeSMA: 10}
+	st, err = s.ReplayOnBar(ctx, "AAPL", strat.Bar{Time: breakT, Open: 100, High: 104, Low: 100, Close: 104, Volume: 50}, st, highVolInd)
+	require.NoError(t, err)
+
+	// Replay retest bar — should NOT produce signals (replay=true)
+	retestT := breakT.Add(time.Minute)
+	retestInd := strat.IndicatorData{Volume: 20, VolumeSMA: 10}
+	st, err = s.ReplayOnBar(ctx, "AAPL", strat.Bar{Time: retestT, Open: 104, High: 104, Low: 101, Close: 103, Volume: 20}, st, retestInd)
+	require.NoError(t, err)
+
+	// Now a live bar should NOT produce signals because the tracker already fired
+	// during replay (state is DONE_FOR_SESSION)
+	orbSt := st.(*builtin.ORBState)
+	orbSt.SetIndicators(strat.IndicatorData{Volume: 20, VolumeSMA: 10})
+	st, signals, err := s.OnBar(ctx, "AAPL", strat.Bar{Time: retestT.Add(time.Minute), Open: 103, High: 105, Low: 102, Close: 104, Volume: 20}, st)
+	require.NoError(t, err)
+	assert.Empty(t, signals, "tracker should be DONE_FOR_SESSION after replay through full cycle")
+}
+
+func TestORBStrategy_ReplayOnBar_PartialReplay_ThenLiveSignal(t *testing.T) {
+	s := builtin.NewORBStrategy()
+	ctx := newTestContext(time.Now())
+	st, err := s.Init(ctx, "AAPL", orbParams(), nil)
+	require.NoError(t, err)
+
+	indicators := strat.IndicatorData{Volume: 10, VolumeSMA: 10}
+
+	// Replay only range bars (no breakout yet)
+	for i := 0; i < 30; i++ {
+		bt := time.Date(2025, 3, 4, 14, 30+i, 0, 0, time.UTC)
+		bar := strat.Bar{Time: bt, Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}
+		st, err = s.ReplayOnBar(ctx, "AAPL", bar, st, indicators)
+		require.NoError(t, err)
+	}
+
+	// Replay transition to RANGE_SET
+	postRange := time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC)
+	st, err = s.ReplayOnBar(ctx, "AAPL", strat.Bar{Time: postRange, Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}, st, indicators)
+	require.NoError(t, err)
+
+	// Now live bars should be able to produce a signal (range is set, breakout hasn't happened)
+	// Live breakout
+	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
+	orbSt := st.(*builtin.ORBState)
+	orbSt.SetIndicators(strat.IndicatorData{Volume: 50, VolumeSMA: 10})
+	st, signals, err := s.OnBar(ctx, "AAPL", strat.Bar{Time: breakT, Open: 100, High: 104, Low: 100, Close: 104, Volume: 50}, st)
+	require.NoError(t, err)
+	assert.Empty(t, signals, "breakout bar should not emit signal yet")
+
+	// Live retest
+	retestT := breakT.Add(time.Minute)
+	orbSt = st.(*builtin.ORBState)
+	orbSt.SetIndicators(strat.IndicatorData{Volume: 20, VolumeSMA: 10})
+	st, signals, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: retestT, Open: 104, High: 104, Low: 101, Close: 103, Volume: 20}, st)
+	require.NoError(t, err)
+	require.Len(t, signals, 1, "live retest after replayed range should produce signal")
+	assert.Equal(t, strat.SignalEntry, signals[0].Type)
+	assert.Equal(t, strat.SideBuy, signals[0].Side)
+}
+
+func TestORBStrategy_ImplementsReplayableStrategy(t *testing.T) {
+	var _ strat.ReplayableStrategy = (*builtin.ORBStrategy)(nil)
 }
 
 func TestORBStrategy_Init_Fresh(t *testing.T) {

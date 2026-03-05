@@ -141,7 +141,9 @@ func (inst *Instance) OnBar(ctx strat.Context, symbol string, bar strat.Bar, ind
 }
 
 // WarmupOnBar processes a bar for warmup purposes only — bypasses lifecycle
-// check and always suppresses signals. Used by SwapManager for shadow instances.
+// check and always suppresses signals. If the strategy implements
+// ReplayableStrategy, it calls ReplayOnBar instead of OnBar to enable
+// replay-aware state recovery (e.g., ORB tracker with replay=true).
 func (inst *Instance) WarmupOnBar(ctx strat.Context, symbol string, bar strat.Bar, indicators strat.IndicatorData) error {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
@@ -151,19 +153,28 @@ func (inst *Instance) WarmupOnBar(ctx strat.Context, symbol string, bar strat.Ba
 		return fmt.Errorf("instance %s: symbol %s not initialized", inst.id, symbol)
 	}
 
-	type indicatorSetter interface {
-		SetIndicators(strat.IndicatorData)
-	}
-	if setter, ok := state.(indicatorSetter); ok {
-		setter.SetIndicators(indicators)
-	}
+	// Check if strategy supports replay-aware warmup.
+	if r, ok := inst.strategy.(strat.ReplayableStrategy); ok {
+		next, err := r.ReplayOnBar(ctx, symbol, bar, state, indicators)
+		if err != nil {
+			return fmt.Errorf("instance %s: ReplayOnBar %s: %w", inst.id, symbol, err)
+		}
+		inst.states[symbol] = next
+	} else {
+		// Non-replayable strategies: inject indicators, call OnBar, discard signals.
+		type indicatorSetter interface {
+			SetIndicators(strat.IndicatorData)
+		}
+		if setter, ok := state.(indicatorSetter); ok {
+			setter.SetIndicators(indicators)
+		}
 
-	next, _, err := inst.strategy.OnBar(ctx, symbol, bar, state)
-	if err != nil {
-		return fmt.Errorf("instance %s: WarmupOnBar %s: %w", inst.id, symbol, err)
+		next, _, err := inst.strategy.OnBar(ctx, symbol, bar, state)
+		if err != nil {
+			return fmt.Errorf("instance %s: WarmupOnBar %s: %w", inst.id, symbol, err)
+		}
+		inst.states[symbol] = next
 	}
-
-	inst.states[symbol] = next
 
 	if inst.warmupLeft[symbol] > 0 {
 		inst.warmupLeft[symbol]--
