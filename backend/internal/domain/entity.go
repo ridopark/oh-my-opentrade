@@ -60,6 +60,7 @@ type OrderIntent struct {
 	// Options-specific fields (nil/zero for equity orders)
 	Instrument *Instrument `json:"instrument,omitempty"`
 	MaxLossUSD float64     `json:"maxLossUSD,omitempty"`
+	IsExit     bool         `json:"isExit,omitempty"`
 }
 
 // OrderIntentStatus indicates where in the pipeline an order intent currently sits.
