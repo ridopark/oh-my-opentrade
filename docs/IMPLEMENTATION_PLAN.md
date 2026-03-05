@@ -1,6 +1,6 @@
 # Implementation Plan: oh-my-opentrade
 
-Last Updated: March 4, 2026 (Session 5 — Gap Analysis + New Phases 11-14)
+Last Updated: March 5, 2026 (Session 6 — Phase 12 Complete)
 
 ## Section 1: Progress Summary
 
@@ -131,17 +131,17 @@ PRD §4.2 requires anchor (5m/15m) + trigger (1m) separation. Currently the moni
 | 56 | Trigger entry logic — Use 1m bars for entry/exit signals, gated by 5m/15m anchor regime | ✅ Done — ORB strategy gates on AnchorRegimes from 5m/15m |
 | 57 | MTFA integration tests — Verify anchor+trigger pipeline end-to-end | ✅ Done — 13 integration tests in mtfa_test.go |
 
-### Phase 12 — Pre-Market Screener & Approval Workflow 🔲
+### Phase 12 — Pre-Market Screener & Approval Workflow ✅
 
-PRD §3 requires 08:30–09:15 screener for "Stocks in Play" and 09:15–09:30 user approval of overnight DNA changes. Neither exists.
+PRD §3 requires 08:30–09:15 screener for "Stocks in Play" and 09:15–09:30 user approval of overnight DNA changes.
 
 | # | Item | Status |
 |---|------|--------|
-| 58 | Screener service — Scan configured universe for Gap%, RVOL, and news at 08:30 ET | 🔲 Not Started |
-| 59 | Screener → monitor symbol routing — Feed screener output into monitor's active symbol list | 🔲 Not Started |
-| 60 | DNA approval workflow (backend) — State machine for DNA change approval (pending → approved / rejected) | 🔲 Not Started |
-| 61 | DNA approval UI — Dashboard page with DNA diff view + approve/reject buttons (PRD §7) | 🔲 Not Started |
-| 62 | Morning approval gate — Block strategy execution until DNA changes are approved (09:15–09:30 window) | 🔲 Not Started |
+| 58 | Screener service — Scan configured universe for Gap%, RVOL, and news at 08:30 ET | ✅ Done — Event-driven scheduler, gap/RVOL/news scoring, Alpaca snapshots adapter, TimescaleDB repo |
+| 59 | Screener → monitor symbol routing — Feed screener output into monitor's active symbol list | ✅ Done — Pure resolver (replace|union|intersection|static), event-driven SymbolRouter, monitor symbol filtering |
+| 60 | DNA approval workflow (backend) — State machine for DNA change approval (pending → approved / rejected) | ✅ Done — Domain types, versioning, approval service, REST API, TimescaleDB repo |
+| 61 | DNA approval UI — Dashboard page with DNA diff view + approve/reject buttons (PRD §7) | ✅ Done — Master-detail layout, TOML diff viewer, approve/reject actions, sidebar nav |
+| 62 | Morning approval gate — Block strategy execution until DNA changes are approved (09:15–09:30 window) | ✅ Done — Gate in monitor before SetupDetected, IsDNAApproved() check, fail-open on errors |
 
 ### Phase 13 — Additional Strategies 🔲
 
@@ -455,9 +455,9 @@ Makefile                       14 targets (build, test, test-integration, migrat
 - [x] TanStack Query migration (#53)
 - [x] Multi-timeframe anchor/trigger separation (#54-57)
 
-### Phase 12–14 — Remaining PRD Features 🔲
-- [ ] Pre-market screener service (#58-59)
-- [ ] DNA approval workflow + UI (#60-62)
+### Phase 12 — Completed ✅
+- [x] Pre-market screener service (#58-59)
+- [x] DNA approval workflow + UI (#60-62)
 - [ ] AVWAP strategy (#63)
 - [ ] AI-Enhanced Scalping strategy (#64)
 - [ ] Nightly evolution cycle (#67-68)
@@ -475,6 +475,8 @@ Makefile                       14 targets (build, test, test-integration, migrat
 5. `005_create_strategy_dna_history`
 6. `006_create_orders`
 7. `007_market_bars_unique`
+8. `008_create_pnl`
+9. `010_create_screener_results`
 
 **Migration Runner**: Use `./scripts/migrate.sh` to apply migrations.
 
@@ -525,8 +527,8 @@ Comprehensive comparison of PRD v11.0 features vs actual implementation status (
 
 | PRD Feature | PRD Section | New Phase | Notes |
 |---|---|---|---|
-| Pre-Market Screener (08:30–09:15) | §3 | Phase 12 #58-59 | No screener service; no universe scan for Gap%, RVOL, news |
-| Morning DNA Approval Workflow (09:15–09:30) | §3, §7 | Phase 12 #60-62 | DNA page is display-only; no approve/reject mechanism |
+| ~~Pre-Market Screener (08:30–09:15)~~ | ~~§3~~ | ~~Phase 12 #58-59~~ | ✅ Implemented — Screener service with gap/RVOL/news scoring, symbol routing |
+| ~~Morning DNA Approval Workflow (09:15–09:30)~~ | ~~§3, §7~~ | ~~Phase 12 #60-62~~ | ✅ Implemented — Full approval workflow + dashboard UI |
 | AVWAP Strategy | §4.3 #2 | Phase 13 #63 | VWAP indicator exists but no anchored breakout strategy |
 | AI-Enhanced Scalping Strategy | §4.3 #3 | Phase 13 #64 | No RSI/Stoch mean-reversion strategy; depends on MTFA |
 | Nightly Evolution Cycle | §3 | Phase 14 #67-68 | No automated AI analysis of trades or DNA parameter optimization |
