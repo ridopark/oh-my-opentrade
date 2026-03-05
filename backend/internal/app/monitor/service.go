@@ -42,6 +42,35 @@ type Service struct {
 	strategyKey      string
 }
 
+// GetLastSnapshot returns the most recently cached IndicatorSnapshot for the given symbol.
+// Returns false if no snapshot has been cached yet.
+func (s *Service) GetLastSnapshot(symbol string) (domain.IndicatorSnapshot, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap, ok := s.lastSnaps[symbol]
+	return snap, ok
+}
+
+// BarSnapshot pairs a market bar with its computed indicator snapshot.
+type BarSnapshot struct {
+	Bar      domain.MarketBar
+	Snapshot domain.IndicatorSnapshot
+}
+
+// WarmUpAndCollect processes historical bars through the indicator calculator
+// and returns per-bar indicator snapshots. It does NOT emit events or persist data.
+// Returns a slice of (MarketBar, IndicatorSnapshot) pairs for use by downstream warmup consumers.
+func (s *Service) WarmUpAndCollect(bars []domain.MarketBar) []BarSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]BarSnapshot, 0, len(bars))
+	for _, bar := range bars {
+		snap := s.calculator.Update(bar)
+		result = append(result, BarSnapshot{Bar: bar, Snapshot: snap})
+	}
+	return result
+}
+
 // NewService creates a new monitor Service.
 func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zerolog.Logger) *Service {
 	return &Service{

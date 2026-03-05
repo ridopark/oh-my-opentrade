@@ -589,6 +589,72 @@ func TestRunner_HandleBar_NoSignalForUnassignedSymbol(t *testing.T) {
 	assert.Empty(t, received, "no signal for unassigned symbol")
 }
 
+func TestRunner_WarmUp_ReplaysBarsAndWarmsInstance(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	fs := newFakeStrategy("test_strat", "1.0.0")
+	fs.warmup = 3
+	callCount := 0
+	fs.onBarFunc = func(_ strat.Context, symbol string, _ strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+		callCount++
+		iid, _ := strat.NewInstanceID("test_strat:1.0.0:" + symbol)
+		sig, _ := strat.NewSignal(iid, symbol, strat.SignalEntry, strat.SideBuy, 0.8, nil)
+		return st, []strat.Signal{sig}, nil
+	}
+
+	id, _ := strat.NewInstanceID("test_strat:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{Symbols: []string{"AAPL"}, Priority: 100}, strat.LifecycleLiveActive, nil)
+	tctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(tctx, "AAPL", nil))
+	router.Register(inst)
+
+	sym, _ := domain.NewSymbol("AAPL")
+	b1, _ := domain.NewMarketBar(time.Now().Add(-3*time.Minute), sym, "1m", 100, 101, 99, 100, 10)
+	b2, _ := domain.NewMarketBar(time.Now().Add(-2*time.Minute), sym, "1m", 101, 102, 100, 101, 11)
+	b3, _ := domain.NewMarketBar(time.Now().Add(-1*time.Minute), sym, "1m", 102, 103, 101, 102, 12)
+	bars := []domain.MarketBar{b1, b2, b3}
+
+	snapCalls := 0
+	snapshotFn := func(bar domain.MarketBar) strat.IndicatorData {
+		snapCalls++
+		return strat.IndicatorData{RSI: 50, Volume: bar.Volume}
+	}
+
+	n := runner.WarmUp("AAPL", bars, snapshotFn)
+	assert.Equal(t, 3, n)
+	assert.Equal(t, 3, snapCalls)
+	assert.Equal(t, 3, callCount)
+	assert.True(t, inst.IsWarmedUp("AAPL"))
+
+	ctx := context.Background()
+	sigs, err := runner.ProcessBar(ctx, "AAPL", strat.Bar{Time: time.Now(), Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}, strat.IndicatorData{Volume: 10})
+	require.NoError(t, err)
+	require.Len(t, sigs, 1)
+}
+
+func TestRunner_WarmUp_NoMatchingInstances(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	sym, _ := domain.NewSymbol("AAPL")
+	bar, _ := domain.NewMarketBar(time.Now(), sym, "1m", 100, 101, 99, 100, 10)
+
+	called := false
+	snapshotFn := func(_ domain.MarketBar) strat.IndicatorData {
+		called = true
+		return strat.IndicatorData{}
+	}
+
+	n := runner.WarmUp("AAPL", []domain.MarketBar{bar}, snapshotFn)
+	assert.Equal(t, 0, n)
+	assert.False(t, called)
+}
+
 func histogramSampleCount(t *testing.T, reg *prometheus.Registry, metricName string, wantLabels map[string]string) uint64 {
 	t.Helper()
 

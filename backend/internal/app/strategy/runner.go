@@ -29,6 +29,10 @@ type Runner struct {
 	metrics     *metrics.Metrics
 }
 
+// IndicatorSnapshotFunc maps a market bar to indicator data.
+// Used for warmup without introducing an import cycle with the monitor package.
+type IndicatorSnapshotFunc func(domain.MarketBar) strat.IndicatorData
+
 // NewRunner creates a StrategyRunner.
 func NewRunner(
 	eventBus ports.EventBusPort,
@@ -235,6 +239,49 @@ func (r *Runner) ProcessBar(ctx context.Context, symbol string, bar strat.Bar, i
 	}
 
 	return allSignals, nil
+}
+
+// WarmUp replays historical bars through matching instances for warmup.
+// It calls WarmupOnBar on each matching instance and suppresses event emission.
+// Returns the number of bars processed.
+func (r *Runner) WarmUp(symbol string, bars []domain.MarketBar, snapshotFn IndicatorSnapshotFunc) int {
+	if len(bars) == 0 {
+		return 0
+	}
+	instances := r.router.InstancesForSymbol(symbol)
+	if len(instances) == 0 {
+		return 0
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var lastIndicators strat.IndicatorData
+	for _, bar := range bars {
+		indicators := snapshotFn(bar)
+		indicators.Volume = bar.Volume
+		lastIndicators = indicators
+
+		sBar := domainBarToStratBar(bar)
+		for _, inst := range instances {
+			instCtx := &instanceContext{
+				now:    bar.Time,
+				logger: r.logger.With("instance_id", inst.ID().String(), "symbol", symbol),
+				emit:   func(_ any) error { return nil },
+			}
+			if err := inst.WarmupOnBar(instCtx, symbol, sBar, indicators); err != nil {
+				r.logger.Error("instance WarmupOnBar failed",
+					"instance_id", inst.ID().String(),
+					"symbol", symbol,
+					"error", err,
+				)
+			}
+		}
+	}
+
+	r.indicators[symbol] = lastIndicators
+
+	return len(bars)
 }
 
 // emitSignal publishes a SignalCreated domain event.

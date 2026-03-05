@@ -30,13 +30,13 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/notify"
+	"github.com/oh-my-opentrade/backend/internal/app/orchestrator"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
 	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	screenerapp "github.com/oh-my-opentrade/backend/internal/app/screener"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy/builtin"
 	"github.com/oh-my-opentrade/backend/internal/app/symbolrouter"
-	"github.com/oh-my-opentrade/backend/internal/app/orchestrator"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -475,28 +475,28 @@ func main() {
 	// 5c (continued): periodic account equity refresh every 5 minutes.
 	// Skipped when multi-account is active — orchestrator handles per-account refresh.
 	if orch == nil {
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if eq, err := alpacaAdapter.GetAccountEquity(ctx); err == nil {
-					executionSvc.SetAccountEquity(eq)
-					ledgerWriter.SetAccountEquity(eq)
-					strategySvc.SetAccountEquity(eq)
-					if riskSizer != nil {
-						riskSizer.SetAccountEquity(eq)
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if eq, err := alpacaAdapter.GetAccountEquity(ctx); err == nil {
+						executionSvc.SetAccountEquity(eq)
+						ledgerWriter.SetAccountEquity(eq)
+						strategySvc.SetAccountEquity(eq)
+						if riskSizer != nil {
+							riskSizer.SetAccountEquity(eq)
+						}
+						log.Info().Float64("equity", eq).Msg("account equity refreshed")
+					} else {
+						log.Warn().Err(err).Msg("failed to refresh account equity")
 					}
-					log.Info().Float64("equity", eq).Msg("account equity refreshed")
-				} else {
-					log.Warn().Err(err).Msg("failed to refresh account equity")
 				}
 			}
-		}
-	}()
+		}()
 	}
 
 	// 6a. Start SSE handler — subscribes to the event bus and fans out to HTTP clients.
@@ -715,6 +715,7 @@ func main() {
 		Time("warmup_from", warmupFrom).
 		Time("warmup_to", warmupTo).
 		Msg("warming indicators from previous RTH session")
+	warmupBarsCache := make(map[string][]domain.MarketBar)
 	for _, sym := range symbols {
 		bars, err := alpacaAdapter.GetHistoricalBars(ctx, sym, timeframe, warmupFrom, warmupTo)
 		if err != nil {
@@ -723,10 +724,41 @@ func main() {
 		}
 		n := monitorSvc.WarmUp(bars)
 		monitorSvc.ResetSessionIndicators(sym.String())
+		warmupBarsCache[string(sym)] = bars
 		warmupLog.Info().
 			Str("symbol", string(sym)).
 			Int("bars", n).
 			Msg("indicator warmup complete")
+	}
+
+	var runnerWarmupCalc *monitor.IndicatorCalculator
+	var runnerWarmupSnapshotFn strategy.IndicatorSnapshotFunc
+	if useStrategyV2 && strategyRunner != nil {
+		runnerWarmupCalc = monitor.NewIndicatorCalculator()
+		runnerWarmupSnapshotFn = func(bar domain.MarketBar) strat.IndicatorData {
+			snap := runnerWarmupCalc.Update(bar)
+			return strat.IndicatorData{
+				RSI:       snap.RSI,
+				StochK:    snap.StochK,
+				StochD:    snap.StochD,
+				EMA9:      snap.EMA9,
+				EMA21:     snap.EMA21,
+				VWAP:      snap.VWAP,
+				Volume:    snap.Volume,
+				VolumeSMA: snap.VolumeSMA,
+			}
+		}
+		for _, sym := range symbols {
+			bars := warmupBarsCache[string(sym)]
+			if len(bars) == 0 {
+				continue
+			}
+			n := strategyRunner.WarmUp(string(sym), bars, runnerWarmupSnapshotFn)
+			warmupLog.Info().
+				Str("symbol", string(sym)).
+				Int("bars", n).
+				Msg("strategy runner warmup complete")
+		}
 	}
 
 	loc, err := time.LoadLocation("America/New_York")
@@ -746,6 +778,27 @@ func main() {
 				continue
 			}
 			monitorSvc.WarmUpORB(orbBars)
+			if useStrategyV2 && strategyRunner != nil {
+				if runnerWarmupCalc == nil {
+					runnerWarmupCalc = monitor.NewIndicatorCalculator()
+				}
+				if runnerWarmupSnapshotFn == nil {
+					runnerWarmupSnapshotFn = func(bar domain.MarketBar) strat.IndicatorData {
+						snap := runnerWarmupCalc.Update(bar)
+						return strat.IndicatorData{
+							RSI:       snap.RSI,
+							StochK:    snap.StochK,
+							StochD:    snap.StochD,
+							EMA9:      snap.EMA9,
+							EMA21:     snap.EMA21,
+							VWAP:      snap.VWAP,
+							Volume:    snap.Volume,
+							VolumeSMA: snap.VolumeSMA,
+						}
+					}
+				}
+				_ = strategyRunner.WarmUp(string(sym), orbBars, runnerWarmupSnapshotFn)
+			}
 			warmupLog.Info().
 				Str("symbol", string(sym)).
 				Int("bars", len(orbBars)).
