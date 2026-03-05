@@ -1,0 +1,47 @@
+groups:
+  - name: omo-trading
+    rules:
+      - alert: CircuitBreakerActive
+        expr: omo_risk_circuit_breaker_active == 1
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Circuit breaker is active — trading halted"
+          description: "The daily loss circuit breaker has tripped. All new order execution is blocked."
+
+      - alert: WebSocketDisconnected
+        expr: omo_ws_connected == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "WebSocket disconnected for >30s"
+          description: "Alpaca market data WebSocket has been disconnected for more than 30 seconds."
+
+      - alert: NoBarsReceived
+        expr: rate(omo_bars_received_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No bars received in 5 minutes"
+          description: "The ingestion service has not received any market data bars in the last 5 minutes."
+
+      - alert: HighOrderRejectRate
+        expr: rate(omo_order_rejects_total[10m]) / (rate(omo_orders_total[10m]) + 1e-10) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Order reject rate >5%"
+          description: "More than 5% of orders have been rejected over the last 10 minutes."
+
+      - alert: HTTP5xxElevated
+        expr: rate(omo_http_requests_total{code=~"5.."}[5m]) / (rate(omo_http_requests_total[5m]) + 1e-10) > 0.02
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP 5xx error rate >2%"
+          description: "More than 2% of HTTP requests are returning 5xx status codes."

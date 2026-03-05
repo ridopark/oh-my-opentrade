@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
 	"github.com/rs/zerolog"
 )
 
@@ -26,6 +27,7 @@ type DailyLossBreaker struct {
 	pnlSource  DailyPnLSource
 	nowFunc    func() time.Time
 	log        zerolog.Logger
+	metrics    *metrics.Metrics
 
 	mu       sync.Mutex
 	haltDate string // YYYY-MM-DD when halted; empty = not halted
@@ -43,6 +45,9 @@ func NewDailyLossBreaker(maxLossPct, maxLossUSD float64, pnlSource DailyPnLSourc
 	}
 }
 
+// SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
+func (d *DailyLossBreaker) SetMetrics(m *metrics.Metrics) { d.metrics = m }
+
 // Check evaluates whether trading should be halted for the given tenant.
 // It returns an error if the daily loss circuit breaker is tripped.
 // accountEquity is the current account equity used for percentage calculation.
@@ -59,6 +64,9 @@ func (d *DailyLossBreaker) Check(tenantID string, envMode domain.EnvMode, accoun
 
 	// If already halted today, reject immediately.
 	if d.haltDate == today {
+		if d.metrics != nil {
+			d.metrics.Risk.ChecksTotal.WithLabelValues("daily_loss", "halted").Inc()
+		}
 		return fmt.Errorf("daily loss circuit breaker: trading halted for %s on %s", tenantID, today)
 	}
 
@@ -67,6 +75,9 @@ func (d *DailyLossBreaker) Check(tenantID string, envMode domain.EnvMode, accoun
 
 	// Only check for losses (negative P&L).
 	if dailyPnL >= 0 {
+		if d.metrics != nil {
+			d.metrics.Risk.ChecksTotal.WithLabelValues("daily_loss", "pass").Inc()
+		}
 		return nil
 	}
 
@@ -80,6 +91,11 @@ func (d *DailyLossBreaker) Check(tenantID string, envMode domain.EnvMode, accoun
 			Float64("max_loss_usd", d.maxLossUSD).
 			Str("tenant_id", tenantID).
 			Msg("daily loss circuit breaker tripped: absolute USD limit exceeded")
+		if d.metrics != nil {
+			d.metrics.Risk.CBTripsTotal.WithLabelValues("usd_limit").Inc()
+			d.metrics.Risk.CBActive.WithLabelValues("daily_loss").Set(1)
+			d.metrics.Risk.ChecksTotal.WithLabelValues("daily_loss", "tripped").Inc()
+		}
 		return fmt.Errorf("daily loss circuit breaker: loss $%.2f exceeds max $%.2f", loss, d.maxLossUSD)
 	}
 
@@ -95,10 +111,18 @@ func (d *DailyLossBreaker) Check(tenantID string, envMode domain.EnvMode, accoun
 				Float64("account_equity", accountEquity).
 				Str("tenant_id", tenantID).
 				Msg("daily loss circuit breaker tripped: percentage limit exceeded")
+			if d.metrics != nil {
+				d.metrics.Risk.CBTripsTotal.WithLabelValues("pct_limit").Inc()
+				d.metrics.Risk.CBActive.WithLabelValues("daily_loss").Set(1)
+				d.metrics.Risk.ChecksTotal.WithLabelValues("daily_loss", "tripped").Inc()
+			}
 			return fmt.Errorf("daily loss circuit breaker: loss %.2f%% exceeds max %.2f%%", lossPct*100, d.maxLossPct*100)
 		}
 	}
 
+	if d.metrics != nil {
+		d.metrics.Risk.ChecksTotal.WithLabelValues("daily_loss", "pass").Inc()
+	}
 	return nil
 }
 

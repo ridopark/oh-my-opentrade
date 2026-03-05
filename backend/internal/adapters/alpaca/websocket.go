@@ -1,7 +1,7 @@
 package alpaca
 
 import (
-"context"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
@@ -35,6 +36,7 @@ type WSClient struct {
 	closeOnce sync.Once
 	cancel    context.CancelFunc
 	mu        sync.Mutex
+	metrics   *metrics.Metrics
 
 	// connectFactory builds a real alpacastream.StocksClient and returns its Connect func.
 	// Overridable in tests.
@@ -58,6 +60,9 @@ func NewWSClient(dataURL string, apiKey string, apiSecret string, feed string, f
 	ws.connectFactory = ws.defaultConnectFactory
 	return ws
 }
+
+// SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
+func (w *WSClient) SetMetrics(m *metrics.Metrics) { w.metrics = m }
 
 // defaultConnectFactory builds a real Alpaca SDK StocksClient and returns its Connect method.
 // The returned connectFn blocks until the stream is fully terminated (not just established).
@@ -200,6 +205,7 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 	// callHandler deduplicates by (symbol, timestamp) and forwards new bars to handler.
 	// Both REST and WS paths record seen keys; either skips if already seen.
 	callHandler := func(bCtx context.Context, bar domain.MarketBar, fromREST bool) error {
+		start := time.Now()
 		key := barKey(bar)
 		dedupMu.Lock()
 		if _, seen := dedup[key]; seen {
@@ -215,8 +221,22 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		}
 		lastBarMu.Unlock()
 
-		_ = fromREST // both paths are now symmetric; kept for tracing if needed
-		return handler(bCtx, bar)
+		source := "ws"
+		if fromREST {
+			source = "rest"
+		}
+		err := handler(bCtx, bar)
+		if w.metrics != nil {
+			w.metrics.WS.MessagesTotal.WithLabelValues(w.feed, "bar").Inc()
+			w.metrics.WS.LastMsgTimestamp.WithLabelValues(w.feed).Set(float64(time.Now().Unix()))
+			result := "ok"
+			if err != nil {
+				result = "error"
+			}
+			w.metrics.WS.MsgProcDuration.WithLabelValues(w.feed, "bar", result).Observe(time.Since(start).Seconds())
+			_ = source // source available for future per-source breakdown
+		}
+		return err
 	}
 
 	for {
@@ -226,6 +246,10 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 
 		attempt++
 		if attempt > 1 {
+			if w.metrics != nil {
+				reason := "transient"
+				w.metrics.WS.ReconnectsTotal.WithLabelValues(w.feed, reason).Inc()
+			}
 			log.Info().
 				Int("attempt", attempt).
 				Strs("symbols", symStrs).
@@ -258,9 +282,14 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 
 		connect := w.connectFactory(symStrs, barHandler, tradeHandler)
 
+		if w.metrics != nil {
+			w.metrics.WS.Connected.WithLabelValues(w.feed).Set(1)
+		}
 		connectedAt := time.Now()
 		connErr := connect(streamCtx)
-
+		if w.metrics != nil {
+			w.metrics.WS.Connected.WithLabelValues(w.feed).Set(0)
+		}
 		// If context was cancelled, this is an intentional shutdown — stop.
 		if streamCtx.Err() != nil {
 			return nil
@@ -299,6 +328,9 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		}
 
 		// Ghost-session scenario — probe reconnect with REST bridge.
+		if w.metrics != nil {
+			w.metrics.WS.ReconnectsTotal.WithLabelValues(w.feed, "ghost").Inc()
+		}
 		if connErr != nil {
 			log.Warn().Int("attempt", attempt).
 				Msg("Alpaca WebSocket: connection limit exceeded — probing reconnect with REST bridge")

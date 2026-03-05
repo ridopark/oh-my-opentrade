@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
@@ -17,6 +19,7 @@ type Service struct {
 	filter     *ZScoreFilter
 	mu         sync.Mutex
 	log        zerolog.Logger
+	metrics    *metrics.Metrics
 }
 
 // NewService creates a new ingestion Service.
@@ -28,6 +31,9 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, filter *
 		log:        log,
 	}
 }
+
+// SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
+func (s *Service) SetMetrics(m *metrics.Metrics) { s.metrics = m }
 
 // Start subscribes the service to incoming market data events.
 func (s *Service) Start(ctx context.Context) error {
@@ -49,6 +55,8 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		return fmt.Errorf("ingestion: payload is not a MarketBar, got %T", event.Payload)
 	}
 
+	start := time.Now()
+
 	l := s.log.With().
 		Str("symbol", string(bar.Symbol)).
 		Str("timeframe", string(bar.Timeframe)).
@@ -58,12 +66,21 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Record bar received.
+	if s.metrics != nil {
+		s.metrics.Bars.ReceivedTotal.WithLabelValues("ws", string(bar.Symbol), string(bar.Timeframe)).Inc()
+	}
+
 	suspect := s.filter.Check(bar)
 	if suspect {
 		bar.Suspect = true
 		l.Warn().
 			Float64("close", bar.Close).
-			Msg("bar flagged as suspect by Z-score filter — rejecting")
+			Msg("bar flagged as suspect by Z-score filter \u2014 rejecting")
+
+		if s.metrics != nil {
+			s.metrics.Bars.DroppedTotal.WithLabelValues("ws", "zscore").Inc()
+		}
 
 		emittedEvent, err := domain.NewEvent(
 			domain.EventMarketBarRejected,
@@ -103,6 +120,11 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 
 	if err := s.eventBus.Publish(ctx, *emittedEvent); err != nil {
 		return fmt.Errorf("ingestion: failed to publish sanitized event: %w", err)
+	}
+
+	// Record processing latency for successfully processed bars.
+	if s.metrics != nil {
+		s.metrics.Bars.ProcLatency.WithLabelValues("ws", string(bar.Timeframe)).Observe(time.Since(start).Seconds())
 	}
 
 	return nil

@@ -36,6 +36,8 @@ import (
 	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/logger"
 	"github.com/oh-my-opentrade/backend/internal/ports"
+	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 )
 
@@ -296,10 +298,22 @@ func main() {
 
 	// 6b. Start HTTP server for the SSE endpoint.
 	httpLog := log.With().Str("component", "http").Logger()
-	mux := http.NewServeMux()
-	mux.Handle("/bars", omhttp.NewBarsHandler(repo, alpacaAdapter, httpLog))
-	mux.Handle("/events", sseHandler)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	// Initialize Prometheus metrics and instrumented mux.
+	met := metrics.New("dev", "unknown", "main", useStrategyV2)
+
+	// Wire Prometheus metrics into subsystems.
+	executionSvc.SetMetrics(met)
+	ingestionSvc.SetMetrics(met)
+	dailyLossBreaker.SetMetrics(met)
+	ledgerWriter.SetMetrics(met)
+	alpacaAdapter.WSClient().SetMetrics(met)
+	if useStrategyV2 {
+		strategyRunner.SetMetrics(met)
+	}
+	imux := &metrics.InstrumentedMux{Mux: http.NewServeMux(), Metrics: met}
+	imux.Handle("/bars", omhttp.NewBarsHandler(repo, alpacaAdapter, httpLog))
+	imux.Handle("/events", sseHandler)
+	imux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
@@ -312,16 +326,16 @@ func main() {
 		omhttp.StaticChecker("execution"),
 		omhttp.StaticChecker("strategy"),
 	)
-	mux.Handle("/healthz/services", healthHandler)
+	imux.Handle("/healthz/services", healthHandler)
 
 	const strategyBasePath = "configs/strategies"
 	strategyHandler := omhttp.NewStrategyHandler(dnaManager, strategyBasePath, httpLog)
-	mux.Handle("/strategies/", strategyHandler)
+	imux.Handle("/strategies/", strategyHandler)
 	if useStrategyV2 {
 		lifecycleHandler := omhttp.NewLifecycleHandler(lifecycleSvc, httpLog)
-		mux.Handle("/strategies/v2/", lifecycleHandler)
+		imux.Handle("/strategies/v2/", lifecycleHandler)
 	}
-	mux.HandleFunc("/strategies/current", func(w http.ResponseWriter, r *http.Request) {
+	imux.HandleFunc("/strategies/current", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodOptions {
@@ -348,7 +362,7 @@ func main() {
 			Parameters:  dna.Parameters,
 		})
 	})
-	mux.HandleFunc("/orb", func(w http.ResponseWriter, r *http.Request) {
+	imux.HandleFunc("/orb", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Content-Type", "application/json")
 		type orbJSON struct {
@@ -382,14 +396,14 @@ func main() {
 			}
 			results = append(results, o)
 		}
-	json.NewEncoder(w).Encode(results)
+		json.NewEncoder(w).Encode(results)
 	})
 
 	// Performance dashboard API
 	perfHandler := omhttp.NewPerformanceHandler(pnlRepo, repo, httpLog)
-	mux.Handle("/performance/", perfHandler)
+	imux.Handle("/performance/", perfHandler)
 
-	mux.HandleFunc("/pnl", func(w http.ResponseWriter, r *http.Request) {
+	imux.HandleFunc("/pnl", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodOptions {
@@ -439,9 +453,12 @@ func main() {
 		}
 		json.NewEncoder(w).Encode(results)
 	})
+
+	// Prometheus metrics endpoint (not instrumented by InstrumentedMux to avoid recursion).
+	imux.Mux.Handle("/metrics", promhttp.HandlerFor(met.Reg, promhttp.HandlerOpts{}))
 	httpServer := &http.Server{
 		Addr:         ":8080",
-		Handler:      middleware.AccessLog(httpLog)(mux),
+		Handler:      middleware.AccessLog(httpLog)(imux.Mux),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 0, // SSE streams are long-lived — no write timeout
 		IdleTimeout:  120 * time.Second,

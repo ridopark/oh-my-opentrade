@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
@@ -19,6 +20,7 @@ type LedgerWriter struct {
 	pnlRepo  ports.PnLPort
 	broker   ports.BrokerPort
 	log      zerolog.Logger
+	metrics  *metrics.Metrics
 
 	mu            sync.Mutex
 	dailyPnL      map[string]*dailyAccum // key: tenantID:envMode:date
@@ -64,6 +66,9 @@ func (lw *LedgerWriter) SetAccountEquity(equity float64) {
 		lw.peakEquity = equity
 	}
 }
+
+// SetMetrics wires Prometheus metrics into the ledger writer.
+func (lw *LedgerWriter) SetMetrics(m *metrics.Metrics) { lw.metrics = m }
 
 // Start subscribes the ledger writer to FillReceived events.
 func (lw *LedgerWriter) Start(ctx context.Context) error {
@@ -134,6 +139,14 @@ func (lw *LedgerWriter) handleFill(ctx context.Context, event domain.Event) erro
 		if drawdown > accum.maxDrawdown {
 			accum.maxDrawdown = drawdown
 		}
+	}
+
+	// Update Prometheus P&L gauges.
+	if lw.metrics != nil {
+		lw.metrics.PnL.RealizedUSD.Set(accum.realizedPnL)
+		lw.metrics.PnL.DayUSD.Set(accum.realizedPnL)
+		lw.metrics.PnL.DayDDUSD.Set(accum.maxDrawdown * lw.peakEquity)
+		lw.metrics.PnL.EquityUSD.Set(currentEquity)
 	}
 
 	// Persist daily P&L.

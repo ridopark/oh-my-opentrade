@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
@@ -25,6 +26,7 @@ type Runner struct {
 	tenantID    string
 	envMode     domain.EnvMode
 	indicators  map[string]strat.IndicatorData // cached per-symbol indicators from StateUpdated
+	metrics     *metrics.Metrics
 }
 
 // NewRunner creates a StrategyRunner.
@@ -52,6 +54,9 @@ func (r *Runner) Router() *Router { return r.router }
 
 // SetSwapManager attaches a SwapManager to feed shadow instances during bar processing.
 func (r *Runner) SetSwapManager(sm *SwapManager) { r.swapManager = sm }
+
+// SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
+func (r *Runner) SetMetrics(m *metrics.Metrics) { r.metrics = m }
 
 // Start subscribes the runner to MarketBarSanitized and StateUpdated events on the event bus.
 func (r *Runner) Start(ctx context.Context) error {
@@ -94,6 +99,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		return fmt.Errorf("strategy runner: payload is not a MarketBar, got %T", event.Payload)
 	}
 
+	loopStart := time.Now()
 	symbol := bar.Symbol.String()
 	instances := r.router.InstancesForSymbol(symbol)
 	if len(instances) == 0 {
@@ -149,6 +155,9 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		if !sig.Type.IsActionable() {
 			continue
 		}
+		if r.metrics != nil {
+			r.metrics.Strategy.SignalsTotal.WithLabelValues("orb_break_retest", string(sig.Type), string(sig.Side)).Inc()
+		}
 		if err := r.emitSignal(ctx, event.TenantID, event.EnvMode, sig); err != nil {
 			r.logger.Error("failed to emit SignalCreated",
 				"instance_id", sig.StrategyInstanceID.String(),
@@ -156,6 +165,11 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 				"error", err,
 			)
 		}
+	}
+
+	// Record strategy loop duration.
+	if r.metrics != nil {
+		r.metrics.Strategy.LoopDuration.WithLabelValues("orb_break_retest", "handle_bar").Observe(time.Since(loopStart).Seconds())
 	}
 
 	return nil

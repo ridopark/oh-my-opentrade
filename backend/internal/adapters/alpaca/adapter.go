@@ -107,3 +107,6 @@ func (a *Adapter) GetOptionChain(ctx context.Context, underlying domain.Symbol, 
 func (a *Adapter) GetAccountEquity(ctx context.Context) (float64, error) {
 	return a.rest.GetAccountEquity(ctx)
 }
+
+// WSClient returns the underlying WebSocket client for metrics wiring.
+func (a *Adapter) WSClient() *WSClient { return a.ws }
