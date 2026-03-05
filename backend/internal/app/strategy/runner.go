@@ -24,6 +24,7 @@ type Runner struct {
 	logger      *slog.Logger
 	tenantID    string
 	envMode     domain.EnvMode
+	indicators  map[string]strat.IndicatorData // cached per-symbol indicators from StateUpdated
 }
 
 // NewRunner creates a StrategyRunner.
@@ -38,26 +39,51 @@ func NewRunner(
 		logger = slog.Default()
 	}
 	return &Runner{
-		eventBus: eventBus,
-		router:   router,
-		logger:   logger.With("component", "strategy_runner"),
-		tenantID: tenantID,
-		envMode:  envMode,
+		eventBus:   eventBus,
+		router:     router,
+		logger:     logger.With("component", "strategy_runner"),
+		tenantID:   tenantID,
+		envMode:    envMode,
+		indicators: make(map[string]strat.IndicatorData),
 	}
 }
-
 // Router returns the underlying router for registration.
 func (r *Runner) Router() *Router { return r.router }
 
 // SetSwapManager attaches a SwapManager to feed shadow instances during bar processing.
 func (r *Runner) SetSwapManager(sm *SwapManager) { r.swapManager = sm }
 
-// Start subscribes the runner to MarketBarSanitized events on the event bus.
+// Start subscribes the runner to MarketBarSanitized and StateUpdated events on the event bus.
 func (r *Runner) Start(ctx context.Context) error {
 	if err := r.eventBus.Subscribe(ctx, domain.EventMarketBarSanitized, r.handleBar); err != nil {
 		return fmt.Errorf("strategy runner: failed to subscribe to MarketBarSanitized: %w", err)
 	}
+	if err := r.eventBus.Subscribe(ctx, domain.EventStateUpdated, r.handleStateUpdated); err != nil {
+		return fmt.Errorf("strategy runner: failed to subscribe to StateUpdated: %w", err)
+	}
 	r.logger.Info("strategy runner subscribed to MarketBarSanitized events")
+	return nil
+}
+
+// handleStateUpdated caches indicator data from StateUpdated events.
+// This data is used by handleBar to inject indicators into strategy instances.
+func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error {
+	snap, ok := event.Payload.(domain.IndicatorSnapshot)
+	if !ok {
+		return nil
+	}
+	r.mu.Lock()
+	r.indicators[snap.Symbol.String()] = strat.IndicatorData{
+		RSI:       snap.RSI,
+		StochK:    snap.StochK,
+		StochD:    snap.StochD,
+		EMA9:      snap.EMA9,
+		EMA21:     snap.EMA21,
+		VWAP:      snap.VWAP,
+		Volume:    snap.Volume,
+		VolumeSMA: snap.VolumeSMA,
+	}
+	r.mu.Unlock()
 	return nil
 }
 
@@ -77,14 +103,9 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	// Convert domain.MarketBar → strat.Bar
 	sBar := domainBarToStratBar(bar)
 
-	// Build indicator data from the event context.
-	// Note: indicators are injected via the instance's SetIndicators mechanism.
-	// The runner passes empty IndicatorData; the monitor's StateUpdated event
-	// provides indicators separately. When wired into main.go (Phase E),
-	// the runner will receive indicator snapshots alongside bars.
-	indicators := strat.IndicatorData{
-		Volume: bar.Volume,
-	}
+	// Use cached indicators from StateUpdated events, with current bar volume.
+	indicators := r.indicators[symbol]
+	indicators.Volume = bar.Volume
 
 	r.mu.Lock()
 	defer r.mu.Unlock()

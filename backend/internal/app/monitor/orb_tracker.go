@@ -289,6 +289,10 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 				sess.State = ORBStateSignalFired
 				sess.SignalsFired++
 				sess.State = ORBStateDoneForSession
+				// Filter: reject if computed confidence is below the DNA min_confidence threshold.
+				if setup.Confidence < cfg.MinConfidence {
+					return nil, false
+				}
 				if replay {
 					return nil, false
 				}

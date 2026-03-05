@@ -122,7 +122,7 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 		qty,
 		strategyName,
 		"computed by strategy DNA engine",
-		0.75, // default confidence
+		orbConfidenceFromDNA(dna), // use DNA min_confidence as default signal confidence
 		intentID.String(),
 	)
 	if err != nil {
@@ -230,6 +230,26 @@ func extractInt(params map[string]any, key string) (int, bool) {
 		return int(rv.Float()), true
 	}
 	return 0, false
+}
+
+// orbConfidenceFromDNA extracts min_confidence from the DNA parameters.
+// Falls back to 0.65 (the ORBConfig default) if no DNA is registered.
+func orbConfidenceFromDNA(dna *StrategyDNA) float64 {
+	if dna == nil {
+		return 0.65
+	}
+	v, ok := dna.Parameters["min_confidence"]
+	if !ok {
+		return 0.65
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Float32, reflect.Float64:
+		return rv.Float()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int())
+	}
+	return 0.65
 }
 
 // runScript executes a Go script via Yaegi.
