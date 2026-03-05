@@ -2,6 +2,7 @@ package monitor_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -317,4 +318,112 @@ func TestService_SettlingGuard_SuppressesSetupDetectionForFirstBars(t *testing.T
 	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, retestT, 104, 104, 101, 103, 20)))
 
 	assert.Greater(t, setupCount, 0, "should emit SetupDetected once settling complete")
+}
+
+func TestService_DNAGate_BlocksUnapprovedSetup(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
+
+	gate := &mockDNAGate{approved: false}
+	svc.SetDNAGate(gate, "orb_break_retest")
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	var setupCount int
+	bus.Subscribe(context.Background(), domain.EventSetupDetected, func(ctx context.Context, ev domain.Event) error {
+		setupCount++
+		return nil
+	})
+
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	// Same bar pattern that triggers setup in TestService_EmitsSetupDetected
+	base := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
+	for i := 0; i < 30; i++ {
+		bt := base.Add(time.Duration(i) * time.Minute)
+		bar := createBarAtTime(t, sym, bt, 100, 101, 99, 100, 10)
+		_ = bus.Publish(context.Background(), createTestEvent(t, bar))
+	}
+	post := time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC)
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, post, 100, 101, 99, 100, 10)))
+	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, breakT, 100, 104, 100, 104, 50)))
+	retestT := breakT.Add(time.Minute)
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, retestT, 104, 104, 101, 103, 20)))
+
+	assert.Equal(t, 0, setupCount, "DNA gate must block SetupDetected when DNA not approved")
+	assert.Greater(t, gate.calls, 0, "gate should have been called")
+}
+
+func TestService_DNAGate_AllowsApprovedSetup(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
+
+	gate := &mockDNAGate{approved: true}
+	svc.SetDNAGate(gate, "orb_break_retest")
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	var setupCount int
+	bus.Subscribe(context.Background(), domain.EventSetupDetected, func(ctx context.Context, ev domain.Event) error {
+		setupCount++
+		return nil
+	})
+
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	base := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
+	for i := 0; i < 30; i++ {
+		bt := base.Add(time.Duration(i) * time.Minute)
+		bar := createBarAtTime(t, sym, bt, 100, 101, 99, 100, 10)
+		_ = bus.Publish(context.Background(), createTestEvent(t, bar))
+	}
+	post := time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC)
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, post, 100, 101, 99, 100, 10)))
+	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, breakT, 100, 104, 100, 104, 50)))
+	retestT := breakT.Add(time.Minute)
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, retestT, 104, 104, 101, 103, 20)))
+
+	assert.Greater(t, setupCount, 0, "DNA gate must allow SetupDetected when DNA is approved")
+}
+
+func TestService_DNAGate_ErrorIsPermissive(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
+
+	gate := &mockDNAGate{approved: false, err: errors.New("db down")}
+	svc.SetDNAGate(gate, "orb_break_retest")
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	var setupCount int
+	bus.Subscribe(context.Background(), domain.EventSetupDetected, func(ctx context.Context, ev domain.Event) error {
+		setupCount++
+		return nil
+	})
+
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	base := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
+	for i := 0; i < 30; i++ {
+		bt := base.Add(time.Duration(i) * time.Minute)
+		bar := createBarAtTime(t, sym, bt, 100, 101, 99, 100, 10)
+		_ = bus.Publish(context.Background(), createTestEvent(t, bar))
+	}
+	post := time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC)
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, post, 100, 101, 99, 100, 10)))
+	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, breakT, 100, 104, 100, 104, 50)))
+	retestT := breakT.Add(time.Minute)
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, retestT, 104, 104, 101, 103, 20)))
+
+	// Error in gate check should be permissive — setup still goes through
+	assert.Greater(t, setupCount, 0, "gate error must be permissive (allow setup through)")
 }

@@ -11,6 +11,12 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// DNAGateChecker decides whether a strategy's DNA is approved for trading.
+// If no checker is set on the service, all setups pass through (backward compat).
+type DNAGateChecker interface {
+	IsDNAApproved(ctx context.Context, strategyKey string) (bool, error)
+}
+
 const settlingBars = 5
 
 // Service is the monitor application service.
@@ -29,6 +35,8 @@ type Service struct {
 	aggregators    map[string]*domain.BarAggregator
 	anchorRegimes  map[string]domain.MarketRegime
 	log            zerolog.Logger
+	dnaGate     DNAGateChecker
+	strategyKey string
 }
 
 // NewService creates a new monitor Service.
@@ -61,6 +69,20 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 		Float64("min_confidence", s.orbCfg.MinConfidence).
 		Int("orb_window_minutes", s.orbCfg.WindowMinutes).
 		Msg("ORB config set from DNA parameters")
+}
+
+// SetDNAGate installs a gate checker that blocks SetupDetected events when the
+// active DNA version for strategyKey is not approved. If checker is nil the gate
+// is disabled and all setups pass through.
+func (s *Service) SetDNAGate(checker DNAGateChecker, strategyKey string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dnaGate = checker
+	s.strategyKey = strategyKey
+	s.log.Info().
+		Str("strategy_key", strategyKey).
+		Bool("gate_enabled", checker != nil).
+		Msg("DNA gate configured")
 }
 
 func (s *Service) ResetSessionIndicators(symbol string) {
@@ -249,27 +271,43 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 
 	setup, detected := s.orbTracker.OnBar(bar, snap, s.orbCfg, false)
 	if detected && setup != nil {
-		setup.Regime = regime
-		l.Info().
-			Str("direction", string(setup.Direction)).
-			Str("trigger", setup.Trigger).
-			Float64("orb_high", setup.ORBHigh).
-			Float64("orb_low", setup.ORBLow).
-			Float64("rvol", setup.RVOL).
-			Float64("confidence", setup.Confidence).
-			Msg("ORB setup detected")
-		setupEv, err := domain.NewEvent(
-			domain.EventSetupDetected,
-			event.TenantID,
-			event.EnvMode,
-			event.IdempotencyKey+"-setup-detected",
-			*setup,
-		)
-		if err != nil {
-			s.mu.Unlock()
-			return fmt.Errorf("monitor: failed to create setup detected event: %w", err)
+		// DNA approval gate: suppress setup if DNA is not approved.
+		if s.dnaGate != nil {
+			approved, gateErr := s.dnaGate.IsDNAApproved(ctx, s.strategyKey)
+			if gateErr != nil {
+				l.Warn().Err(gateErr).Msg("DNA gate check failed, allowing setup")
+			} else if !approved {
+				l.Warn().
+					Str("strategy_key", s.strategyKey).
+					Str("direction", string(setup.Direction)).
+					Float64("confidence", setup.Confidence).
+					Msg("setup blocked: DNA version not approved")
+				detected = false
+			}
 		}
-		publishStrict = append(publishStrict, *setupEv)
+		if detected {
+			setup.Regime = regime
+			l.Info().
+				Str("direction", string(setup.Direction)).
+				Str("trigger", setup.Trigger).
+				Float64("orb_high", setup.ORBHigh).
+				Float64("orb_low", setup.ORBLow).
+				Float64("rvol", setup.RVOL).
+				Float64("confidence", setup.Confidence).
+				Msg("ORB setup detected")
+			setupEv, err := domain.NewEvent(
+				domain.EventSetupDetected,
+				event.TenantID,
+				event.EnvMode,
+				event.IdempotencyKey+"-setup-detected",
+				*setup,
+			)
+			if err != nil {
+				s.mu.Unlock()
+				return fmt.Errorf("monitor: failed to create setup detected event: %w", err)
+			}
+			publishStrict = append(publishStrict, *setupEv)
+		}
 	}
 
 	s.lastSnaps[symStr] = snap

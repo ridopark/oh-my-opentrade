@@ -89,3 +89,15 @@ func (m *mockRepository) UpdateOrderFill(ctx context.Context, brokerOrderID stri
 func (m *mockRepository) ListTrades(_ context.Context, _ ports.TradeQuery) (ports.TradePage, error) {
 	return ports.TradePage{}, nil
 }
+
+// mockDNAGate implements monitor.DNAGateChecker for tests.
+type mockDNAGate struct {
+	approved bool
+	err      error
+	calls    int
+}
+
+func (m *mockDNAGate) IsDNAApproved(_ context.Context, _ string) (bool, error) {
+	m.calls++
+	return m.approved, m.err
+}

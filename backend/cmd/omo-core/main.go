@@ -148,6 +148,7 @@ func main() {
 	log.Info().Int("active", len(notifiers)).Msg("notification adapters initialized")
 
 	dnaApprovalSvc := dnaapproval.NewService(dnaApprovalRepo, eventBus, log.With().Str("component", "dnaapproval").Logger())
+	monitorSvc.SetDNAGate(dnaApprovalSvc, "orb_break_retest")
 
 	// 5b. Initialize strategy pipeline
 	useStrategyV2 := os.Getenv("STRATEGY_V2") == "true"

@@ -231,3 +231,13 @@ func (s *Service) IsVersionApproved(ctx context.Context, strategyKey, contentHas
 	}
 	return active.ContentHash == contentHash, nil
 }
+
+// IsDNAApproved returns true when an active (approved) DNA version exists for
+// the given strategy. It satisfies monitor.DNAGateChecker.
+func (s *Service) IsDNAApproved(ctx context.Context, strategyKey string) (bool, error) {
+	v, err := s.repo.GetActiveDNAVersion(ctx, strategyKey)
+	if err != nil {
+		return false, fmt.Errorf("dnaapproval: check approved: %w", err)
+	}
+	return v != nil, nil
+}
