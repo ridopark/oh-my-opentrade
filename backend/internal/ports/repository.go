@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/domain/dnaapproval"
 )
 
 // RepositoryPort defines the interface for data persistence operations.
@@ -25,13 +26,13 @@ type RepositoryPort interface {
 
 // TradeQuery defines the filter and pagination parameters for listing trades.
 type TradeQuery struct {
-	TenantID string
-	EnvMode  domain.EnvMode
-	From     time.Time
-	To       time.Time
-	Symbol   string // optional filter
-	Side     string // optional filter: BUY or SELL
-	Limit    int    // max rows to return
+	TenantID   string
+	EnvMode    domain.EnvMode
+	From       time.Time
+	To         time.Time
+	Symbol     string     // optional filter
+	Side       string     // optional filter: BUY or SELL
+	Limit      int        // max rows to return
 	CursorTime *time.Time // keyset cursor: trades before this time
 	CursorID   string     // keyset cursor: trade_id at cursor time
 }
@@ -40,4 +41,15 @@ type TradeQuery struct {
 type TradePage struct {
 	Items      []domain.Trade
 	NextCursor string // opaque cursor for next page, empty if no more
+}
+
+type DNAApprovalRepoPort interface {
+	SaveDNAVersion(ctx context.Context, v dnaapproval.DNAVersion) error
+	GetDNAVersion(ctx context.Context, id string) (*dnaapproval.DNAVersion, error)
+	GetDNAVersionByHash(ctx context.Context, strategyKey, contentHash string) (*dnaapproval.DNAVersion, error)
+	SaveDNAApproval(ctx context.Context, a dnaapproval.DNAApproval) error
+	UpdateDNAApproval(ctx context.Context, id string, status dnaapproval.DNAStatus, decidedBy string, comment string) error
+	GetDNAApproval(ctx context.Context, id string) (*dnaapproval.DNAApproval, error)
+	ListPendingApprovals(ctx context.Context) ([]dnaapproval.DNAApproval, error)
+	GetActiveDNAVersion(ctx context.Context, strategyKey string) (*dnaapproval.DNAVersion, error)
 }

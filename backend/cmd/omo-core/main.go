@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -23,6 +25,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/strategy/store_fs"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/app/debate"
+	"github.com/oh-my-opentrade/backend/internal/app/dnaapproval"
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
@@ -88,6 +91,7 @@ func main() {
 	log.Info().Msg("TimescaleDB connected")
 	repo := timescaledb.NewRepositoryWithLogger(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "timescaledb").Logger())
 	pnlRepo := timescaledb.NewPnLRepository(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "pnl").Logger())
+	dnaApprovalRepo := timescaledb.NewDNAApprovalRepo(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "dna_approval_repo").Logger())
 
 	// 5. Initialize application services
 	ingestionLog := log.With().Str("component", "ingestion").Logger()
@@ -142,6 +146,8 @@ func main() {
 	notifyLog := log.With().Str("component", "notify").Logger()
 	notifySvc := notify.NewService(eventBus, multiNotifier, notifyLog)
 	log.Info().Int("active", len(notifiers)).Msg("notification adapters initialized")
+
+	dnaApprovalSvc := dnaapproval.NewService(dnaApprovalRepo, eventBus, log.With().Str("component", "dnaapproval").Logger())
 
 	// 5b. Initialize strategy pipeline
 	useStrategyV2 := os.Getenv("STRATEGY_V2") == "true"
@@ -256,10 +262,14 @@ func main() {
 	if err := notifySvc.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start notification service")
 	}
+	if err := dnaApprovalSvc.Start(ctx); err != nil {
+		log.Fatal().Err(err).Msg("failed to start dna approval service")
+	}
 	// 5b (continued): hot-reload DNA after all services are started
 	if !useStrategyV2 {
 		go dnaManager.Watch(ctx, dnaPath, func(updated *strategy.StrategyDNA) {
 			strategySvc.RegisterDNA(updated)
+			publishDNAVersionDetected(ctx, eventBus, log, dnaPath, updated.ID)
 			log.Info().Str("strategy_id", updated.ID).Str("version", updated.Version).Msg("strategy DNA hot-reloaded")
 		})
 	}
@@ -340,6 +350,8 @@ func main() {
 	const strategyBasePath = "configs/strategies"
 	strategyHandler := omhttp.NewStrategyHandler(dnaManager, strategyBasePath, httpLog)
 	imux.Handle("/strategies/", strategyHandler)
+	dnaApprovalHandler := omhttp.NewDNAApprovalHandler(dnaApprovalSvc, httpLog)
+	imux.Handle("/api/dna/", dnaApprovalHandler)
 	if useStrategyV2 {
 		lifecycleHandler := omhttp.NewLifecycleHandler(lifecycleSvc, httpLog)
 		imux.Handle("/strategies/v2/", lifecycleHandler)
@@ -579,6 +591,30 @@ func main() {
 		log.Error().Err(err).Msg("error closing DB connection")
 	}
 	log.Info().Msg("shutdown complete")
+}
+
+func publishDNAVersionDetected(ctx context.Context, bus ports.EventBusPort, log zerolog.Logger, filePath, strategyKey string) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		log.Error().Err(err).Str("path", filePath).Msg("failed to read dna toml")
+		return
+	}
+	sum := sha256.Sum256(data)
+	hash := hex.EncodeToString(sum[:])
+	payload := dnaapproval.VersionDetectedPayload{
+		StrategyKey: strategyKey,
+		ContentTOML: string(data),
+		ContentHash: hash,
+		DetectedAt:  time.Now().UTC(),
+	}
+	ev, err := domain.NewEvent(domain.EventDNAVersionDetected, "default", domain.EnvModePaper, hash+"-"+strategyKey, payload)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to create DNAVersionDetected event")
+		return
+	}
+	if err := bus.Publish(ctx, *ev); err != nil {
+		log.Error().Err(err).Msg("failed to publish DNAVersionDetected event")
+	}
 }
 
 // symbolStrings converts []domain.Symbol to []string for log fields.
