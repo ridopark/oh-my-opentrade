@@ -24,9 +24,18 @@ type Service struct {
 	slippageGuard    *SlippageGuard
 	killSwitch       *KillSwitch
 	dailyLossBreaker *risk.DailyLossBreaker
+	positionGate     *PositionGate
 	accountEquity    float64
 	log              zerolog.Logger
 	metrics          *metrics.Metrics
+}
+
+// Option is a functional option for Service.
+type Option func(*Service)
+
+// WithPositionGate attaches a PositionGate to the execution pipeline.
+func WithPositionGate(pg *PositionGate) Option {
+	return func(s *Service) { s.positionGate = pg }
 }
 
 // NewService creates a new execution Service.
@@ -40,8 +49,9 @@ func NewService(
 	dailyLossBreaker *risk.DailyLossBreaker,
 	accountEquity float64,
 	log zerolog.Logger,
+	opts ...Option,
 ) *Service {
-	return &Service{
+	s := &Service{
 		eventBus:         eventBus,
 		broker:           broker,
 		repo:             repo,
@@ -52,6 +62,10 @@ func NewService(
 		accountEquity:    accountEquity,
 		log:              log,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // SetAccountEquity updates the account equity used by the risk engine.
@@ -100,6 +114,18 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		l.Warn().Msg("kill switch engaged — trading halted for symbol")
 		s.emit(ctx, domain.EventKillSwitchEngaged, event.TenantID, event.EnvMode, event.IdempotencyKey, nil)
 		return nil
+	}
+
+	// 1a. Position gate — reject duplicate/conflicting entries.
+	if s.positionGate != nil {
+		if err := s.positionGate.Check(ctx, intent); err != nil {
+			l.Warn().Err(err).Msg("order intent rejected by position gate")
+			if s.metrics != nil {
+				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "position_gate").Inc()
+			}
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusRejected))
+			return nil
+		}
 	}
 
 	// 1b. Reject SHORT direction — paper account does not support short selling.
@@ -178,6 +204,11 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	l.Info().Str("broker_order_id", brokerOrderID).Msg("order submitted to broker")
 	s.emit(ctx, domain.EventOrderSubmitted, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusSubmitted))
 
+	// 6a. Mark inflight to prevent duplicate entries while awaiting fill.
+	if s.positionGate != nil && isEntry(intent) {
+		s.positionGate.MarkInflight(event.TenantID, event.EnvMode, intent.Symbol)
+	}
+
 	// 7. Persist the order record.
 	side := "SELL"
 	if intent.Direction == domain.DirectionLong {
@@ -211,6 +242,11 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 func (s *Service) pollForFill(tenantID string, envMode domain.EnvMode, intent domain.OrderIntent, brokerOrderID string, submitStart time.Time, l zerolog.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+
+	// Clear inflight lock on all exit paths (fill, cancel, timeout).
+	if s.positionGate != nil && isEntry(intent) {
+		defer s.positionGate.ClearInflight(tenantID, envMode, intent.Symbol)
+	}
 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()

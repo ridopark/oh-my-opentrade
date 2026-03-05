@@ -142,6 +142,7 @@ func newTestHandle(tenantID string, bus ports.EventBusPort) *AccountHandle {
 	pnlRepo := &mockPnLRepo{}
 	log := zerolog.Nop()
 
+	posGate := execution.NewPositionGate(broker, log)
 	execSvc := execution.NewService(
 		bus, broker, repo,
 		execution.NewRiskEngine(0.02),
@@ -150,6 +151,7 @@ func newTestHandle(tenantID string, bus ports.EventBusPort) *AccountHandle {
 		risk.NewDailyLossBreaker(2.0, 1000, &mockDailyPnLSource{}, time.Now, log),
 		100000.0,
 		log,
+		execution.WithPositionGate(posGate),
 	)
 
 	lw := perf.NewLedgerWriter(bus, pnlRepo, broker, 100000.0, log)

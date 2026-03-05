@@ -331,3 +331,188 @@ func subscribeAll(t *testing.T, bus *memory.Bus, events []string, dest *[]string
 		require.NoError(t, err)
 	}
 }
+
+// ---------- Position gate integration tests ----------
+
+func TestService_PositionGate_RejectsDuplicateEntry(t *testing.T) {
+	bus := memory.NewBus()
+	broker := &mockBroker{
+		GetPositionsFunc: func(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
+			// Simulate an existing long position in BTCUSD.
+			trade, _ := domain.NewTrade(time.Now(), tenantID, envMode, [16]byte{}, "BTCUSD", "BUY", 1.0, 50000, 0, "filled")
+			return []domain.Trade{trade}, nil
+		},
+	}
+	repo := &mockRepository{}
+	quoteProvider := &mockQuoteProvider{Bid: 49950.0, Ask: 50050.0}
+
+	nowFunc := func() time.Time { return time.Now() }
+	posGate := execution.NewPositionGate(broker, zerolog.Nop())
+	svc := execution.NewService(bus, broker, repo,
+		execution.NewRiskEngine(0.02),
+		execution.NewSlippageGuard(quoteProvider),
+		execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, nowFunc),
+		nil,
+		100000.0,
+		zerolog.Nop(),
+		execution.WithPositionGate(posGate),
+	)
+
+	require.NoError(t, svc.Start(context.Background()))
+
+	var emittedEvents []string
+	subscribeAll(t, bus, []string{
+		domain.EventOrderIntentRejected,
+	}, &emittedEvents)
+
+	// Try to enter LONG on BTCUSD when we already have a long position.
+	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
+	require.NoError(t, bus.Publish(context.Background(), intentEvt))
+
+	assert.Equal(t, 0, broker.SubmitOrderCalls, "should not submit when position already exists")
+	assert.Contains(t, emittedEvents, domain.EventOrderIntentRejected)
+}
+
+func TestService_PositionGate_AllowsEntryWhenFlat(t *testing.T) {
+	bus := memory.NewBus()
+	broker := &mockBroker{
+		GetPositionsFunc: func(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
+			return []domain.Trade{}, nil // no positions
+		},
+	}
+	repo := &mockRepository{}
+	quoteProvider := &mockQuoteProvider{Bid: 49950.0, Ask: 50050.0}
+
+	nowFunc := func() time.Time { return time.Now() }
+	posGate := execution.NewPositionGate(broker, zerolog.Nop())
+	svc := execution.NewService(bus, broker, repo,
+		execution.NewRiskEngine(0.02),
+		execution.NewSlippageGuard(quoteProvider),
+		execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, nowFunc),
+		nil,
+		100000.0,
+		zerolog.Nop(),
+		execution.WithPositionGate(posGate),
+	)
+
+	require.NoError(t, svc.Start(context.Background()))
+
+	var emittedEvents []string
+	subscribeAll(t, bus, []string{
+		domain.EventOrderIntentValidated,
+		domain.EventOrderSubmitted,
+	}, &emittedEvents)
+
+	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
+	require.NoError(t, bus.Publish(context.Background(), intentEvt))
+
+	assert.Equal(t, 1, broker.SubmitOrderCalls, "should submit when flat")
+	assert.Contains(t, emittedEvents, domain.EventOrderSubmitted)
+}
+
+func TestService_PositionGate_InflightBlocksSecondEntry(t *testing.T) {
+	bus := memory.NewBus()
+	// GetPositions returns flat (no positions) so the gate won't reject on position grounds.
+	// GetOrderStatus blocks forever so pollForFill never clears inflight.
+	broker := &mockBroker{
+		GetPositionsFunc: func(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
+			return []domain.Trade{}, nil
+		},
+		GetOrderStatusFunc: func(ctx context.Context, orderID string) (string, error) {
+			// Block forever — simulate slow fill so inflight is never cleared.
+			select {}
+		},
+	}
+	repo := &mockRepository{}
+	quoteProvider := &mockQuoteProvider{Bid: 49950.0, Ask: 50050.0}
+
+	nowFunc := func() time.Time { return time.Now() }
+	posGate := execution.NewPositionGate(broker, zerolog.Nop())
+	svc := execution.NewService(bus, broker, repo,
+		execution.NewRiskEngine(0.02),
+		execution.NewSlippageGuard(quoteProvider),
+		execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, nowFunc),
+		nil,
+		100000.0,
+		zerolog.Nop(),
+		execution.WithPositionGate(posGate),
+	)
+
+	require.NoError(t, svc.Start(context.Background()))
+
+	var rejectedEvents []string
+	subscribeAll(t, bus, []string{
+		domain.EventOrderIntentRejected,
+	}, &rejectedEvents)
+
+	// First intent: flat + no inflight → should be submitted and mark inflight.
+	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
+	require.NoError(t, bus.Publish(context.Background(), intentEvt))
+	assert.Equal(t, 1, broker.SubmitOrderCalls, "first entry should be submitted")
+
+	// Give the goroutine a moment to start pollForFill (which blocks).
+	time.Sleep(20 * time.Millisecond)
+
+	// Second intent: same symbol, should be rejected by inflight lock.
+	intentEvt2 := createOrderIntentEvent(t, domain.DirectionLong)
+	require.NoError(t, bus.Publish(context.Background(), intentEvt2))
+	assert.Equal(t, 1, broker.SubmitOrderCalls, "second entry should be blocked by inflight lock")
+	assert.Contains(t, rejectedEvents, domain.EventOrderIntentRejected)
+}
+
+func TestService_PositionGate_InflightClearedAfterFill(t *testing.T) {
+	bus := memory.NewBus()
+	fillCh := make(chan struct{})
+	broker := &mockBroker{
+		GetPositionsFunc: func(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
+			return []domain.Trade{}, nil
+		},
+		GetOrderStatusFunc: func(ctx context.Context, orderID string) (string, error) {
+			return "filled", nil
+		},
+	}
+	repo := &mockRepository{}
+	quoteProvider := &mockQuoteProvider{Bid: 49950.0, Ask: 50050.0}
+
+	nowFunc := func() time.Time { return time.Now() }
+	posGate := execution.NewPositionGate(broker, zerolog.Nop())
+	svc := execution.NewService(bus, broker, repo,
+		execution.NewRiskEngine(0.02),
+		execution.NewSlippageGuard(quoteProvider),
+		execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, nowFunc),
+		nil,
+		100000.0,
+		zerolog.Nop(),
+		execution.WithPositionGate(posGate),
+	)
+
+	require.NoError(t, svc.Start(context.Background()))
+
+	// Subscribe to FillReceived so we know when the fill is processed.
+	_ = bus.Subscribe(context.Background(), domain.EventFillReceived, func(ctx context.Context, event domain.Event) error {
+		close(fillCh)
+		return nil
+	})
+
+	// First entry — submitted, inflight marked, then pollForFill returns "filled" immediately.
+	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
+	require.NoError(t, bus.Publish(context.Background(), intentEvt))
+	assert.Equal(t, 1, broker.SubmitOrderCalls)
+
+	// Wait for the fill event (pollForFill runs in a goroutine with 5s ticker, but
+	// first tick is immediate after 5s — we need to wait for it).
+	// Actually pollForFill uses time.NewTicker(5s) so first tick is after 5s.
+	// That's too slow for a test. We'll wait up to 10 seconds.
+	select {
+	case <-fillCh:
+		// Fill processed, inflight should be cleared.
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for fill event")
+	}
+
+	// Now that inflight is cleared, a second entry for the same symbol should succeed.
+	// (GetPositions returns flat, so no position-based rejection either.)
+	intentEvt2 := createOrderIntentEvent(t, domain.DirectionLong)
+	require.NoError(t, bus.Publish(context.Background(), intentEvt2))
+	assert.Equal(t, 2, broker.SubmitOrderCalls, "second entry should be allowed after fill clears inflight")
+}
