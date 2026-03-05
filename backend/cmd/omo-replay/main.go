@@ -169,6 +169,7 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Str("path", specPath).Msg("failed to load strategy spec")
 	}
+	monitorSvc.SetORBConfig(spec.Params)
 
 	registry := strategy.NewMemRegistry()
 	orbStrategy := builtin.NewORBStrategy()

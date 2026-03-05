@@ -22,6 +22,7 @@ type Service struct {
 	calculator     *IndicatorCalculator
 	regimeDetector *RegimeDetector
 	orbTracker     *ORBTracker
+	orbCfg         ORBConfig
 	mu             sync.Mutex
 	lastSnaps      map[string]domain.IndicatorSnapshot
 	liveBars       map[string]int
@@ -38,12 +39,28 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 		calculator:     NewIndicatorCalculator(),
 		regimeDetector: NewRegimeDetector(),
 		orbTracker:     NewORBTracker(),
+		orbCfg:         DefaultORBConfig(),
 		lastSnaps:      make(map[string]domain.IndicatorSnapshot),
 		liveBars:       make(map[string]int),
 		aggregators:    make(map[string]*domain.BarAggregator),
 		anchorRegimes:  make(map[string]domain.MarketRegime),
 		log:            log,
 	}
+}
+
+// SetORBConfig overrides the default ORB configuration with values from
+// strategy DNA parameters. This must be called before Start() to ensure
+// the ORB tracker uses DNA-configured thresholds (min_rvol, min_confidence, etc.)
+// instead of hardcoded defaults.
+	func (s *Service) SetORBConfig(params map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.orbCfg = NewORBConfigFromDNA(params)
+	s.log.Info().
+		Float64("min_rvol", s.orbCfg.MinRVOL).
+		Float64("min_confidence", s.orbCfg.MinConfidence).
+		Int("orb_window_minutes", s.orbCfg.WindowMinutes).
+		Msg("ORB config set from DNA parameters")
 }
 
 func (s *Service) ResetSessionIndicators(symbol string) {
@@ -211,8 +228,7 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	}
 
 	if s.liveBars[symStr] < settlingBars {
-		cfg := DefaultORBConfig()
-		s.orbTracker.OnBar(bar, snap, cfg, true)
+	s.orbTracker.OnBar(bar, snap, s.orbCfg, true)
 		l.Debug().Msg(fmt.Sprintf("settling: %d/%d bars, suppressing setup detection", s.liveBars[symStr], settlingBars))
 		s.lastSnaps[symStr] = snap
 		s.mu.Unlock()
@@ -231,8 +247,7 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	_ = hasLast
 	_ = lastSnap
 
-	orbCfg := DefaultORBConfig()
-	setup, detected := s.orbTracker.OnBar(bar, snap, orbCfg, false)
+	setup, detected := s.orbTracker.OnBar(bar, snap, s.orbCfg, false)
 	if detected && setup != nil {
 		setup.Regime = regime
 		l.Info().
@@ -275,10 +290,9 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 func (s *Service) WarmUpORB(bars []domain.MarketBar) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cfg := DefaultORBConfig()
 	for _, bar := range bars {
 		snap := s.calculator.Update(bar)
-		s.orbTracker.OnBar(bar, snap, cfg, true)
+		s.orbTracker.OnBar(bar, snap, s.orbCfg, true)
 	}
 }
 

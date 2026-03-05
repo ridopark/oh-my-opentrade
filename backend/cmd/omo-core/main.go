@@ -153,6 +153,7 @@ func main() {
 	const dnaPath = "configs/strategies/orb_break_retest.toml"
 	if dna, err := dnaManager.Load(dnaPath); err == nil {
 		strategySvc.RegisterDNA(dna)
+		monitorSvc.SetORBConfig(dna.Parameters)
 		log.Info().Str("strategy_id", dna.ID).Str("version", dna.Version).Msg("strategy DNA loaded")
 	} else {
 		log.Info().Err(err).Msg("no strategy DNA file found, using deterministic defaults")

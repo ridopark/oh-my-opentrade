@@ -21,8 +21,8 @@ exclusive_per_symbol = false
 
 [params]
 orb_window_minutes = 30
-min_rvol = 1.5
-min_confidence = 0.65
+min_rvol = 0.5
+min_confidence = 0.40
 breakout_confirm_bps = 2
 touch_tolerance_bps = 2
 hold_confirm_bps = 0
@@ -34,7 +34,7 @@ limit_offset_bps = 5
 risk_per_trade_bps = 10
 
 [regime_filter]
-enabled = true
+enabled = false
 allowed_regimes = ["TREND"]
 min_atr_pct = 0.8
 

@@ -49,9 +49,11 @@ func (ic *IndicatorCalculator) ResetSession(symbol, timeframe string) {
 	if !ok {
 		return
 	}
+	// Only reset VWAP (session-specific). Keep volumes intact so VolumeSMA
+	// rolling window stays valid — otherwise the truncation in Update() will
+	// repeatedly slice volumes back to 0 because closes/highs/lows are still full.
 	state.vwapNumerator = 0
 	state.vwapDenom = 0
-	state.volumes = state.volumes[:0]
 }
 
 // smaSlice computes the mean of a slice of float64 values.
