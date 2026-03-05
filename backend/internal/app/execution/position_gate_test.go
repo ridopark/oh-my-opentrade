@@ -30,7 +30,7 @@ func makeIntent(t *testing.T, symbol string, dir domain.Direction) domain.OrderI
 func makeTrade(symbol, side string, qty float64) domain.Trade {
 	t, _ := domain.NewTrade(
 		time.Now(), "tenant-1", domain.EnvModePaper, uuid.New(),
-		domain.Symbol(symbol), side, qty, 50000, 0, "filled",
+		domain.Symbol(symbol), side, qty, 50000, 0, "filled", "strategy-1", "test",
 	)
 	return t
 }

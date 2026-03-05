@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m' # No Color
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+FAILED=0
+
+printf "${YELLOW}Running pre-commit checks...${NC}\n\n"
+
+# ─── Backend: Go vet ──────────────────────────────────────────────
+printf "${YELLOW}[1/3] Backend lint (go vet)...${NC}\n"
+if (cd "$REPO_ROOT/backend" && go vet ./...); then
+    printf "${GREEN}  ✓ go vet passed${NC}\n\n"
+else
+    printf "${RED}  ✗ go vet failed${NC}\n\n"
+    FAILED=1
+fi
+
+# ─── Backend: Go test ─────────────────────────────────────────────
+printf "${YELLOW}[2/3] Backend tests (go test)...${NC}\n"
+if (cd "$REPO_ROOT/backend" && go test ./...); then
+    printf "${GREEN}  ✓ go test passed${NC}\n\n"
+else
+    printf "${RED}  ✗ go test failed${NC}\n\n"
+    FAILED=1
+fi
+
+# ─── Frontend: ESLint ─────────────────────────────────────────────
+printf "${YELLOW}[3/3] Frontend lint (eslint)...${NC}\n"
+if [ -d "$REPO_ROOT/apps/dashboard/node_modules" ]; then
+    if (cd "$REPO_ROOT/apps/dashboard" && npx eslint); then
+        printf "${GREEN}  ✓ eslint passed${NC}\n\n"
+    else
+        printf "${RED}  ✗ eslint failed${NC}\n\n"
+        FAILED=1
+    fi
+else
+    printf "${YELLOW}  ⚠ Skipped: node_modules not installed (run 'npm install' in apps/dashboard)${NC}\n\n"
+fi
+
+# ─── Result ───────────────────────────────────────────────────────
+if [ "$FAILED" -ne 0 ]; then
+    printf "${RED}Pre-commit checks failed. Commit aborted.${NC}\n"
+    printf "Fix the issues above, then try again.\n"
+    printf "To bypass (not recommended): git commit --no-verify\n"
+    exit 1
+fi
+
+printf "${GREEN}All pre-commit checks passed!${NC}\n"
+exit 0
