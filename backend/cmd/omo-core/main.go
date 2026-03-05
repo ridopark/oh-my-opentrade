@@ -123,6 +123,7 @@ func main() {
 	}
 	ledgerWriter := perf.NewLedgerWriter(eventBus, pnlRepo, alpacaAdapter, accountEquity, log.With().Str("component", "ledger").Logger())
 	dailyLossBreaker := risk.NewDailyLossBreaker(cfg.Trading.MaxDailyLossPct/100.0, cfg.Trading.MaxDailyLossUSD, ledgerWriter, time.Now, log.With().Str("component", "daily_loss_breaker").Logger())
+	positionGate := execution.NewPositionGate(alpacaAdapter, executionLog)
 	executionSvc := execution.NewService(
 		eventBus,
 		alpacaAdapter, // BrokerPort
@@ -133,6 +134,7 @@ func main() {
 		dailyLossBreaker,
 		accountEquity,
 		executionLog,
+		execution.WithPositionGate(positionGate),
 	)
 
 	// 5a. Initialize notification adapters (gracefully no-op if tokens not set)
@@ -321,6 +323,8 @@ func main() {
 				time.Now,
 				acctLog.With().Str("component", "daily_loss_breaker").Logger(),
 			)
+			acctExecLog := acctLog.With().Str("component", "execution").Logger()
+			acctPosGate := execution.NewPositionGate(acctAdapter, acctExecLog)
 			acctExec := execution.NewService(
 				eventBus, acctAdapter, repo,
 				execution.NewRiskEngine(cfg.Trading.MaxRiskPercent),
@@ -333,7 +337,8 @@ func main() {
 				),
 				acctBreaker,
 				acctEquity,
-				acctLog.With().Str("component", "execution").Logger(),
+				acctExecLog,
+				execution.WithPositionGate(acctPosGate),
 			)
 
 			// Per-account strategy pipeline reuses shared router + specStore
