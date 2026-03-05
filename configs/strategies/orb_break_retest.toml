@@ -33,6 +33,7 @@ max_signals_per_session = 1
 stop_bps = 25
 limit_offset_bps = 5
 risk_per_trade_bps = 10
+max_position_bps = 1000
 
 [regime_filter]
 enabled = false

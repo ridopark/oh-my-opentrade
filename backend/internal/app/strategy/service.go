@@ -103,6 +103,24 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 		}
 	}
 
+	// Clamp position size so notional exposure does not exceed max_position_bps of equity.
+	maxPositionBPS := 1000 // default 10% of equity
+	if dna != nil {
+		if v, ok := extractInt(dna.Parameters, "max_position_bps"); ok && v > 0 {
+			maxPositionBPS = v
+		}
+	}
+	if limitPrice > 0 {
+		maxNotional := (float64(maxPositionBPS) / 10000.0) * equity
+		maxQty := math.Floor(maxNotional / limitPrice)
+		if maxQty < 1 {
+			maxQty = 1
+		}
+		if qty > maxQty {
+			qty = maxQty
+		}
+	}
+
 	// 5. Build OrderIntent.
 	intentID := uuid.New()
 	strategyName := "default"

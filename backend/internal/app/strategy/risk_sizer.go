@@ -140,6 +140,31 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		}
 	}
 
+	// Clamp position size so notional exposure does not exceed max_position_bps of equity.
+	maxPositionBPS := 1000 // default 10% of equity
+	if spec != nil {
+		if v, ok := extractInt(spec.Params, "max_position_bps"); ok && v > 0 {
+			maxPositionBPS = v
+		}
+	}
+	if limitPrice > 0 {
+		maxNotional := (float64(maxPositionBPS) / 10000.0) * equity
+		maxQty := math.Floor(maxNotional / limitPrice)
+		if maxQty < 1 {
+			maxQty = 1
+		}
+		if qty > maxQty {
+			rs.logger.Info("position size clamped by max_position_bps",
+				"original_qty", qty,
+				"clamped_qty", maxQty,
+				"max_position_bps", maxPositionBPS,
+				"limit_price", limitPrice,
+				"equity", equity,
+			)
+			qty = maxQty
+		}
+	}
+
 	direction := domain.DirectionLong
 	if sig.Side == strat.SideSell {
 		direction = domain.DirectionShort
