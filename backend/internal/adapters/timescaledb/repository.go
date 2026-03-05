@@ -289,6 +289,11 @@ func (r *Repository) ListTrades(ctx context.Context, q ports.TradeQuery) (ports.
 		args = append(args, q.Side)
 		argIdx++
 	}
+	if q.Strategy != "" {
+		fmt.Fprintf(&b, " AND strategy = $%d", argIdx)
+		args = append(args, q.Strategy)
+		argIdx++
+	}
 	if q.CursorTime != nil && q.CursorID != "" {
 		fmt.Fprintf(&b, " AND (time, trade_id::text) < ($%d, $%d)", argIdx, argIdx+1)
 		args = append(args, *q.CursorTime, q.CursorID)

@@ -96,6 +96,27 @@ func (m *mockPnLRepo) GetMaxDrawdown(_ context.Context, _ string, _ domain.EnvMo
 func (m *mockPnLRepo) GetSharpe(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (*float64, error) {
 	return nil, nil
 }
+func (m *mockPnLRepo) UpsertStrategyDailyPnL(_ context.Context, _ domain.StrategyDailyPnL) error {
+	return nil
+}
+func (m *mockPnLRepo) GetStrategyDailyPnL(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) ([]domain.StrategyDailyPnL, error) {
+	return nil, nil
+}
+func (m *mockPnLRepo) SaveStrategyEquityPoint(_ context.Context, _ domain.StrategyEquityPoint) error {
+	return nil
+}
+func (m *mockPnLRepo) GetStrategyEquityCurve(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) ([]domain.StrategyEquityPoint, error) {
+	return nil, nil
+}
+func (m *mockPnLRepo) SaveStrategySignalEvent(_ context.Context, _ domain.StrategySignalEvent) error {
+	return nil
+}
+func (m *mockPnLRepo) GetStrategySignalEvents(_ context.Context, _ ports.StrategySignalQuery) (ports.StrategySignalPage, error) {
+	return ports.StrategySignalPage{}, nil
+}
+func (m *mockPnLRepo) GetStrategyDashboard(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) (domain.StrategyDashboard, error) {
+	return domain.StrategyDashboard{}, nil
+}
 
 // mockEquitySource implements EquitySource with configurable return value.
 type mockEquitySource struct {

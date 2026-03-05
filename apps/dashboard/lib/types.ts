@@ -248,3 +248,93 @@ export interface HistoricalOrdersResponse {
   items: HistoricalOrder[];
   next_cursor?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Per-Strategy Performance types (backend: /api/strategies/)
+// ---------------------------------------------------------------------------
+
+export interface StrategyInfo {
+  id: string;
+  name: string;
+  version: string;
+  symbols: string[];
+  priority: number;
+  active: boolean;
+}
+
+export interface StrategyPerfSummary {
+  totalRealizedPnl: number;
+  totalFees: number;
+  totalTrades: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+  profitFactor: number;
+  grossProfit: number;
+  grossLoss: number;
+  maxDrawdown?: number;
+  sharpe?: number;
+}
+
+export interface StrategyDailyPnLEntry {
+  Day: string; // RFC3339 (Go default — no json tag)
+  Strategy: string;
+  RealizedPnL: number;
+  Fees: number;
+  TradeCount: number;
+  WinCount: number;
+  LossCount: number;
+  GrossProfit: number;
+  GrossLoss: number;
+}
+
+export interface StrategyEquityPointEntry {
+  Time: string; // RFC3339 (Go default — no json tag)
+  Strategy: string;
+  Equity: number;
+  RealizedPnLToDate: number;
+  FeesToDate: number;
+  TradeCountToDate: number;
+}
+
+export interface SymbolAttribution {
+  symbol: string;
+  realizedPnl: number;
+  tradeCount: number;
+  winCount: number;
+  lossCount: number;
+}
+
+export interface StrategyDashboard {
+  strategy: string;
+  summary: StrategyPerfSummary;
+  dailyPnl: StrategyDailyPnLEntry[];
+  equityCurve: StrategyEquityPointEntry[];
+  bySymbol: SymbolAttribution[];
+}
+
+export interface StateSnapshot {
+  strategy: string;
+  symbol: string;
+  kind: string;
+  asOf: string; // RFC3339
+  payload: Record<string, unknown>;
+}
+
+export interface StrategySignalEvent {
+  TS: string; // RFC3339 (Go default — no json tag)
+  Strategy: string;
+  SignalID: string;
+  Symbol: string;
+  Kind: string; // entry, exit, scale_in, scale_out
+  Side: string; // BUY, SELL
+  Status: string; // generated, validated, executed, suppressed, rejected, debate_override
+  Reason: string;
+  Confidence: number;
+  Payload: Record<string, unknown> | null;
+}
+
+export interface StrategySignalsResponse {
+  items: StrategySignalEvent[];
+  next_cursor?: string;
+}

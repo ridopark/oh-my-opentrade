@@ -41,6 +41,8 @@ const (
 	EventScreenerTicked          EventType = "ScreenerTicked"
 	EventScreenerCompleted       EventType = "ScreenerCompleted"
 	EventEffectiveSymbolsUpdated EventType = "EffectiveSymbolsUpdated"
+	EventStrategySignalLifecycle EventType = "StrategySignalLifecycle"
+	EventStrategyStateSnapshot   EventType = "StrategyStateSnapshot"
 )
 
 // Event represents a domain event in the trading pipeline.

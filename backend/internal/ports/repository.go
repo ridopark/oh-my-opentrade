@@ -41,6 +41,7 @@ type TradeQuery struct {
 	To         time.Time
 	Symbol     string     // optional filter
 	Side       string     // optional filter: BUY or SELL
+	Strategy   string     // optional filter
 	Limit      int        // max rows to return
 	CursorTime *time.Time // keyset cursor: trades before this time
 	CursorID   string     // keyset cursor: trade_id at cursor time

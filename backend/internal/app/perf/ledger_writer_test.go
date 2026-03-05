@@ -49,9 +49,11 @@ func (m *mockEventBus) Unsubscribe(_ context.Context, _ domain.EventType, _ port
 }
 
 type mockPnLRepo struct {
-	mu      sync.Mutex
-	upserts []domain.DailyPnL
-	points  []domain.EquityPoint
+	mu           sync.Mutex
+	upserts      []domain.DailyPnL
+	points       []domain.EquityPoint
+	stratUpserts []domain.StrategyDailyPnL
+	stratPoints  []domain.StrategyEquityPoint
 }
 
 func (m *mockPnLRepo) UpsertDailyPnL(_ context.Context, pnl domain.DailyPnL) error {
@@ -90,6 +92,33 @@ func (m *mockPnLRepo) GetMaxDrawdown(_ context.Context, _ string, _ domain.EnvMo
 
 func (m *mockPnLRepo) GetSharpe(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (*float64, error) {
 	return nil, nil
+}
+func (m *mockPnLRepo) UpsertStrategyDailyPnL(_ context.Context, pnl domain.StrategyDailyPnL) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stratUpserts = append(m.stratUpserts, pnl)
+	return nil
+}
+func (m *mockPnLRepo) GetStrategyDailyPnL(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) ([]domain.StrategyDailyPnL, error) {
+	return nil, nil
+}
+func (m *mockPnLRepo) SaveStrategyEquityPoint(_ context.Context, pt domain.StrategyEquityPoint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stratPoints = append(m.stratPoints, pt)
+	return nil
+}
+func (m *mockPnLRepo) GetStrategyEquityCurve(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) ([]domain.StrategyEquityPoint, error) {
+	return nil, nil
+}
+func (m *mockPnLRepo) SaveStrategySignalEvent(_ context.Context, _ domain.StrategySignalEvent) error {
+	return nil
+}
+func (m *mockPnLRepo) GetStrategySignalEvents(_ context.Context, _ ports.StrategySignalQuery) (ports.StrategySignalPage, error) {
+	return ports.StrategySignalPage{}, nil
+}
+func (m *mockPnLRepo) GetStrategyDashboard(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) (domain.StrategyDashboard, error) {
+	return domain.StrategyDashboard{}, nil
 }
 
 type mockBroker struct{}
@@ -365,4 +394,192 @@ func TestLedgerWriter_BuyProducesZeroPnL(t *testing.T) {
 	require.Len(t, repo.upserts, 1)
 	assert.Equal(t, 0.0, repo.upserts[0].RealizedPnL)  // buy = zero realized P&L
 	assert.Equal(t, 100000.0, repo.points[0].Equity)     // equity unchanged on buy
+}
+
+func makeStrategyFillEvent(t *testing.T, symbol, side string, quantity, price float64, strategy string) domain.Event {
+	t.Helper()
+	evt, err := domain.NewEvent(domain.EventFillReceived, "default", domain.EnvModePaper, "idem-"+symbol+"-"+strategy, map[string]any{
+		"broker_order_id": "order-123",
+		"intent_id":       "intent-123",
+		"symbol":          symbol,
+		"side":            side,
+		"quantity":        quantity,
+		"price":           price,
+		"strategy":        strategy,
+		"filled_at":       time.Now(),
+	})
+	require.NoError(t, err)
+	return *evt
+}
+
+// --- per-strategy dual-write tests ---
+
+func TestLedgerWriter_StrategyDualWrite_BuySellRecordsPnL(t *testing.T) {
+	bus := newMockEventBus()
+	repo := &mockPnLRepo{}
+	broker := &mockBroker{}
+	log := zerolog.Nop()
+
+	lw := perf.NewLedgerWriter(bus, repo, broker, 100000.0, log)
+	err := lw.Start(context.Background())
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	// Buy 10 AAPL @ $150 via orb_break_retest
+	err = bus.Publish(ctx, makeStrategyFillEvent(t, "AAPL", "buy", 10, 150.0, "orb_break_retest"))
+	require.NoError(t, err)
+
+	// Sell 10 AAPL @ $160 via orb_break_retest (realized = $100)
+	err = bus.Publish(ctx, makeStrategyFillEvent(t, "AAPL", "sell", 10, 160.0, "orb_break_retest"))
+	require.NoError(t, err)
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+
+	// Global P&L still works
+	require.Len(t, repo.upserts, 2)
+	assert.InDelta(t, 100.0, repo.upserts[1].RealizedPnL, 0.01)
+
+	// Per-strategy P&L was dual-written
+	require.Len(t, repo.stratUpserts, 2)
+	assert.Equal(t, "orb_break_retest", repo.stratUpserts[0].Strategy)
+	assert.Equal(t, 0.0, repo.stratUpserts[0].RealizedPnL) // buy = zero
+	assert.Equal(t, 1, repo.stratUpserts[0].TradeCount)
+
+	assert.Equal(t, "orb_break_retest", repo.stratUpserts[1].Strategy)
+	assert.InDelta(t, 100.0, repo.stratUpserts[1].RealizedPnL, 0.01) // sell
+	assert.Equal(t, 2, repo.stratUpserts[1].TradeCount)
+	assert.Equal(t, 1, repo.stratUpserts[1].WinCount)
+	assert.Equal(t, 0, repo.stratUpserts[1].LossCount)
+	assert.InDelta(t, 100.0, repo.stratUpserts[1].GrossProfit, 0.01)
+
+	// Per-strategy equity points were dual-written
+	require.Len(t, repo.stratPoints, 2)
+	assert.Equal(t, "orb_break_retest", repo.stratPoints[0].Strategy)
+	assert.Equal(t, "orb_break_retest", repo.stratPoints[1].Strategy)
+	assert.InDelta(t, 100.0, repo.stratPoints[1].RealizedPnLToDate, 0.01)
+	assert.Equal(t, 2, repo.stratPoints[1].TradeCountToDate)
+}
+
+func TestLedgerWriter_StrategyDualWrite_NoStrategySkipsDualWrite(t *testing.T) {
+	bus := newMockEventBus()
+	repo := &mockPnLRepo{}
+	broker := &mockBroker{}
+	log := zerolog.Nop()
+
+	lw := perf.NewLedgerWriter(bus, repo, broker, 100000.0, log)
+	err := lw.Start(context.Background())
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	// Fill without strategy field (legacy behavior)
+	err = bus.Publish(ctx, makeFillEvent(t, "AAPL", "buy", 10, 150.0))
+	require.NoError(t, err)
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+
+	// Global P&L should be written
+	require.Len(t, repo.upserts, 1)
+
+	// Per-strategy should NOT be written
+	assert.Len(t, repo.stratUpserts, 0)
+	assert.Len(t, repo.stratPoints, 0)
+}
+
+func TestLedgerWriter_StrategyDualWrite_MultipleStrategiesSameSymbol(t *testing.T) {
+	bus := newMockEventBus()
+	repo := &mockPnLRepo{}
+	broker := &mockBroker{}
+	log := zerolog.Nop()
+
+	lw := perf.NewLedgerWriter(bus, repo, broker, 100000.0, log)
+	err := lw.Start(context.Background())
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	// ORB buys 10 AAPL @ $100
+	err = bus.Publish(ctx, makeStrategyFillEvent(t, "AAPL", "buy", 10, 100.0, "orb_break_retest"))
+	require.NoError(t, err)
+
+	// AVWAP buys 5 AAPL @ $105
+	err = bus.Publish(ctx, makeStrategyFillEvent(t, "AAPL", "buy", 5, 105.0, "avwap_v1"))
+	require.NoError(t, err)
+
+	// ORB sells 10 AAPL @ $110 (realized = (110-100)*10 = $100)
+	err = bus.Publish(ctx, makeStrategyFillEvent(t, "AAPL", "sell", 10, 110.0, "orb_break_retest"))
+	require.NoError(t, err)
+
+	// AVWAP sells 5 AAPL @ $108 (realized = (108-105)*5 = $15)
+	err = bus.Publish(ctx, makeStrategyFillEvent(t, "AAPL", "sell", 5, 108.0, "avwap_v1"))
+	require.NoError(t, err)
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+
+	// Global: 4 fills total, cumulative P&L = 100 + 15 = 115
+	// Note: global position tracking sees 15 shares bought then 15 sold
+	// Buy 10@100 → avg=100, Buy 5@105 → avg=(1000+525)/15=101.67
+	// Sell 10@110 → PnL = (110-101.67)*10 = 83.33, remaining 5@101.67
+	// Sell 5@108 → PnL = (108-101.67)*5 = 31.67
+	// Total global PnL = 83.33 + 31.67 = 115.0
+	require.Len(t, repo.upserts, 4)
+	assert.InDelta(t, 115.0, repo.upserts[3].RealizedPnL, 0.01)
+
+	// Per-strategy: 4 fills (2 per strategy)
+	require.Len(t, repo.stratUpserts, 4)
+
+	// Find the last ORB and AVWAP upserts
+	var lastORB, lastAVWAP domain.StrategyDailyPnL
+	for _, u := range repo.stratUpserts {
+		switch u.Strategy {
+		case "orb_break_retest":
+			lastORB = u
+		case "avwap_v1":
+			lastAVWAP = u
+		}
+	}
+
+	assert.InDelta(t, 100.0, lastORB.RealizedPnL, 0.01)
+	assert.Equal(t, 2, lastORB.TradeCount)
+	assert.Equal(t, 1, lastORB.WinCount)
+
+	assert.InDelta(t, 15.0, lastAVWAP.RealizedPnL, 0.01)
+	assert.Equal(t, 2, lastAVWAP.TradeCount)
+	assert.Equal(t, 1, lastAVWAP.WinCount)
+}
+
+func TestLedgerWriter_StrategyDualWrite_LossTracking(t *testing.T) {
+	bus := newMockEventBus()
+	repo := &mockPnLRepo{}
+	broker := &mockBroker{}
+	log := zerolog.Nop()
+
+	lw := perf.NewLedgerWriter(bus, repo, broker, 100000.0, log)
+	err := lw.Start(context.Background())
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	// Buy 10 @ $150
+	err = bus.Publish(ctx, makeStrategyFillEvent(t, "AAPL", "buy", 10, 150.0, "orb_break_retest"))
+	require.NoError(t, err)
+
+	// Sell 10 @ $140 — loss of $100
+	err = bus.Publish(ctx, makeStrategyFillEvent(t, "AAPL", "sell", 10, 140.0, "orb_break_retest"))
+	require.NoError(t, err)
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+
+	require.Len(t, repo.stratUpserts, 2)
+	last := repo.stratUpserts[1]
+	assert.InDelta(t, -100.0, last.RealizedPnL, 0.01)
+	assert.Equal(t, 0, last.WinCount)
+	assert.Equal(t, 1, last.LossCount)
+	assert.Equal(t, 0.0, last.GrossProfit)
+	assert.InDelta(t, -100.0, last.GrossLoss, 0.01)
 }

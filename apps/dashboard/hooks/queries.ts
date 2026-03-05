@@ -8,6 +8,10 @@ import type {
   PerformanceDashboard,
   TradesResponse,
   StrategyDNA,
+  StrategyInfo,
+  StrategyDashboard,
+  StateSnapshot,
+  StrategySignalsResponse,
 } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -22,6 +26,13 @@ export const queryKeys = {
     ["performance", "dashboard", range] as const,
   performanceTrades: (range: string) =>
     ["performance", "trades", range] as const,
+  strategyList: ["strategies", "perf", "list"] as const,
+  strategyDashboard: (id: string, range: string) =>
+    ["strategies", "perf", id, "dashboard", range] as const,
+  strategyState: (id: string) =>
+    ["strategies", "perf", id, "state"] as const,
+  strategySignals: (id: string) =>
+    ["strategies", "perf", id, "signals"] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -190,5 +201,56 @@ export function useLifecycleAction() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.strategyInstances });
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Per-strategy performance
+// ---------------------------------------------------------------------------
+
+export function useStrategyList() {
+  return useQuery({
+    queryKey: queryKeys.strategyList,
+    queryFn: () => fetchJSON<StrategyInfo[]>("/api/strategies/"),
+  });
+}
+
+export function useStrategyDashboard(strategyID: string, range: string) {
+  return useQuery({
+    queryKey: queryKeys.strategyDashboard(strategyID, range),
+    queryFn: () =>
+      fetchJSON<StrategyDashboard>(
+        `/api/strategies/${encodeURIComponent(strategyID)}/dashboard?range=${range}`,
+      ),
+    enabled: !!strategyID,
+  });
+}
+
+export function useStrategyState(strategyID: string) {
+  return useQuery({
+    queryKey: queryKeys.strategyState(strategyID),
+    queryFn: () =>
+      fetchJSON<StateSnapshot[]>(
+        `/api/strategies/${encodeURIComponent(strategyID)}/state`,
+      ),
+    enabled: !!strategyID,
+    refetchInterval: 15_000,
+  });
+}
+
+export function useStrategySignals(strategyID: string) {
+  return useInfiniteQuery({
+    queryKey: queryKeys.strategySignals(strategyID),
+    queryFn: ({ pageParam }) => {
+      const params = pageParam
+        ? `cursor=${encodeURIComponent(pageParam)}`
+        : "limit=50";
+      return fetchJSON<StrategySignalsResponse>(
+        `/api/strategies/${encodeURIComponent(strategyID)}/signals?${params}`,
+      );
+    },
+    enabled: !!strategyID,
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.next_cursor,
   });
 }
