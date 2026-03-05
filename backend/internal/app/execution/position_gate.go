@@ -109,17 +109,10 @@ func (g *PositionGate) ClearInflight(tenantID string, envMode domain.EnvMode, sy
 
 // isEntry returns true if the intent opens or increases a position.
 func isEntry(intent domain.OrderIntent) bool {
-	// LONG direction = buy entry; SHORT could be short entry.
-	// Exit signals are emitted as the opposite direction (LONG position exits via SHORT/sell).
-	// In our system, strategies emit exit signals with a specific signal type that gets
-	// converted to an OrderIntent. The convention:
-	//   - DirectionLong = buying / entering long
-	//   - DirectionShort = selling / exiting or entering short
-	//
-	// Since the system currently rejects ALL short orders anyway (step 1b),
-	// any LONG intent reaching the gate is an entry attempt.
-	// For future-proofing, we'll check the direction:
-	return intent.Direction == domain.DirectionLong
+	// Use the IsExit field set by the risk sizer to distinguish exit orders
+	// from new position entries. This decouples the entry check from direction,
+	// since both new short entries and long-position exits use DirectionShort.
+	return !intent.IsExit
 }
 
 // positionSide returns the net side ("BUY"/"SELL") and total quantity from positions.

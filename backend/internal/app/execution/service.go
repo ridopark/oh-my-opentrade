@@ -128,8 +128,9 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		}
 	}
 
-	// 1b. Reject SHORT direction — paper account does not support short selling.
-	if intent.Direction == domain.DirectionShort {
+	// 1b. Reject SHORT direction for new entries — paper account does not support short selling.
+	// Exit orders (selling to close a long position) use DirectionShort but must be allowed through.
+	if intent.Direction == domain.DirectionShort && !intent.IsExit {
 		l.Warn().Msg("SHORT direction rejected — account does not support short selling")
 		if s.metrics != nil {
 			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "short_disabled").Inc()

@@ -194,6 +194,9 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 	if err != nil {
 		return fmt.Errorf("risk sizer: failed to create order intent: %w", err)
 	}
+	if sig.Type == strat.SignalExit {
+		intent.IsExit = true
+	}
 
 	rs.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)
 	return nil
