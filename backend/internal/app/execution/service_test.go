@@ -29,7 +29,7 @@ func setupTestService(t *testing.T) (*execution.Service, *memory.Bus, *mockBroke
 	nowFunc := func() time.Time { return time.Now() }
 	killSwitch := execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, nowFunc)
 
-	svc := execution.NewService(bus, broker, repo, riskEngine, slippageGuard, killSwitch, 100000.0, zerolog.Nop())
+	svc := execution.NewService(bus, broker, repo, riskEngine, slippageGuard, killSwitch, nil, 100000.0, zerolog.Nop())
 
 	return svc, bus, broker, quoteProvider
 }
@@ -86,6 +86,7 @@ func TestService_RiskRejection(t *testing.T) {
 		execution.NewRiskEngine(0.02),
 		execution.NewSlippageGuard(quoteProvider),
 		execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, nowFunc),
+		nil, // dailyLossBreaker
 		100.0, // tiny equity → risk rejection
 		zerolog.Nop(),
 	)
@@ -139,7 +140,7 @@ func TestService_KillSwitchHalted(t *testing.T) {
 	killSwitch := execution.NewKillSwitch(1, 2*time.Minute, 15*time.Minute, nowFunc)
 	_ = killSwitch.RecordStop("tenant-1", "BTCUSD") // trip it immediately
 
-	svc := execution.NewService(bus, broker, repo, execution.NewRiskEngine(0.02), execution.NewSlippageGuard(quoteProvider), killSwitch, 100000.0, zerolog.Nop())
+	svc := execution.NewService(bus, broker, repo, execution.NewRiskEngine(0.02), execution.NewSlippageGuard(quoteProvider), killSwitch, nil, 100000.0, zerolog.Nop())
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)

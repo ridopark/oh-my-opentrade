@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
@@ -15,14 +16,15 @@ import (
 // It subscribes to OrderIntentCreated events and runs each through a validation
 // pipeline: kill switch → risk → slippage → broker submission.
 type Service struct {
-	eventBus      ports.EventBusPort
-	broker        ports.BrokerPort
-	repo          ports.RepositoryPort
-	riskEngine    *RiskEngine
-	slippageGuard *SlippageGuard
-	killSwitch    *KillSwitch
-	accountEquity float64
-	log           zerolog.Logger
+	eventBus         ports.EventBusPort
+	broker           ports.BrokerPort
+	repo             ports.RepositoryPort
+	riskEngine       *RiskEngine
+	slippageGuard    *SlippageGuard
+	killSwitch       *KillSwitch
+	dailyLossBreaker *risk.DailyLossBreaker
+	accountEquity    float64
+	log              zerolog.Logger
 }
 
 // NewService creates a new execution Service.
@@ -33,18 +35,20 @@ func NewService(
 	riskEngine *RiskEngine,
 	slippageGuard *SlippageGuard,
 	killSwitch *KillSwitch,
+	dailyLossBreaker *risk.DailyLossBreaker,
 	accountEquity float64,
 	log zerolog.Logger,
 ) *Service {
 	return &Service{
-		eventBus:      eventBus,
-		broker:        broker,
-		repo:          repo,
-		riskEngine:    riskEngine,
-		slippageGuard: slippageGuard,
-		killSwitch:    killSwitch,
-		accountEquity: accountEquity,
-		log:           log,
+		eventBus:         eventBus,
+		broker:           broker,
+		repo:             repo,
+		riskEngine:       riskEngine,
+		slippageGuard:    slippageGuard,
+		killSwitch:       killSwitch,
+		dailyLossBreaker: dailyLossBreaker,
+		accountEquity:    accountEquity,
+		log:              log,
 	}
 }
 
@@ -109,14 +113,23 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	l.Info().Msg("order intent validated — passed risk and slippage checks")
 	s.emit(ctx, domain.EventOrderIntentValidated, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusValidated))
 
-	// 4. Record stop — if this trips the circuit breaker, abort before broker submission.
+	// 4. Record stop — if this trips the kill switch, abort before broker submission.
 	if err := s.killSwitch.RecordStop(event.TenantID, intent.Symbol); err != nil {
-		l.Warn().Err(err).Msg("circuit breaker tripped — aborting broker submission")
+		l.Warn().Err(err).Msg("kill switch tripped — aborting broker submission")
 		s.emit(ctx, domain.EventCircuitBreakerTripped, event.TenantID, event.EnvMode, event.IdempotencyKey, err.Error())
 		return nil
 	}
 
-	// 5. Submit to broker.
+	// 5. Check daily loss circuit breaker.
+	if s.dailyLossBreaker != nil {
+		if err := s.dailyLossBreaker.Check(event.TenantID, event.EnvMode, s.accountEquity); err != nil {
+			l.Warn().Err(err).Msg("daily loss circuit breaker tripped — aborting broker submission")
+			s.emit(ctx, domain.EventCircuitBreakerTripped, event.TenantID, event.EnvMode, event.IdempotencyKey, err.Error())
+			return nil
+		}
+	}
+
+	// 6. Submit to broker.
 	brokerOrderID, err := s.broker.SubmitOrder(ctx, intent)
 	if err != nil {
 		l.Error().Err(err).Msg("broker rejected order")
@@ -126,7 +139,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	l.Info().Str("broker_order_id", brokerOrderID).Msg("order submitted to broker")
 	s.emit(ctx, domain.EventOrderSubmitted, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusSubmitted))
 
-	// 6. Persist the order record.
+	// 7. Persist the order record.
 	side := "sell"
 	if intent.Direction == domain.DirectionLong {
 		side = "buy"
@@ -148,7 +161,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		l.Error().Err(saveErr).Msg("failed to persist order — continuing to poll")
 	}
 
-	// 7. Poll for fill in background (up to 2 minutes, 5-second intervals).
+	// 8. Poll for fill in background (up to 2 minutes, 5-second intervals).
 	go s.pollForFill(event.TenantID, event.EnvMode, intent, brokerOrderID, l)
 
 	return nil

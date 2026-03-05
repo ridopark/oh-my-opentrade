@@ -66,6 +66,8 @@ type TradingConfig struct {
 	KillSwitchMaxStops     int           `yaml:"kill_switch_max_stops"`
 	KillSwitchWindow       time.Duration `yaml:"-"`
 	KillSwitchHaltDuration time.Duration `yaml:"-"`
+	MaxDailyLossPct        float64       `yaml:"max_daily_loss_pct"`
+	MaxDailyLossUSD        float64       `yaml:"max_daily_loss_usd"`
 }
 
 // SymbolsConfig represents the symbols to trade and their timeframe.
@@ -87,6 +89,8 @@ type rawTradingConfig struct {
 	KillSwitchMaxStops     int     `yaml:"kill_switch_max_stops"`
 	KillSwitchWindow       string  `yaml:"kill_switch_window"`
 	KillSwitchHaltDuration string  `yaml:"kill_switch_halt_duration"`
+	MaxDailyLossPct        float64 `yaml:"max_daily_loss_pct"`
+	MaxDailyLossUSD        float64 `yaml:"max_daily_loss_usd"`
 }
 
 // rawConfig represents the unparsed application configuration.
@@ -113,6 +117,8 @@ defaultDBPort          = 5432
 	defaultKillMaxStops    = 3
 	defaultKillWindow      = "2m"
 	defaultKillHalt        = "15m"
+	defaultMaxDailyLossPct = 5.0  // 5% of account equity
+	defaultMaxDailyLossUSD = 5000 // absolute USD cap
 	defaultAIBaseURL       = "https://openrouter.ai/api"
 	defaultAIMinConfidence = 0.6
 )
@@ -148,6 +154,8 @@ Alpaca: AlpacaConfig{
 			KillSwitchMaxStops:     defaultKillMaxStops,
 			KillSwitchWindow:       defaultKillWindow,
 			KillSwitchHaltDuration: defaultKillHalt,
+			MaxDailyLossPct:        defaultMaxDailyLossPct,
+			MaxDailyLossUSD:        defaultMaxDailyLossUSD,
 		},
 		Server: ServerConfig{
 			Port:     defaultServerPort,
@@ -191,6 +199,8 @@ Alpaca: AlpacaConfig{
 			KillSwitchMaxStops:     raw.Trading.KillSwitchMaxStops,
 			KillSwitchWindow:       killSwitchWindow,
 			KillSwitchHaltDuration: killSwitchHalt,
+			MaxDailyLossPct:        raw.Trading.MaxDailyLossPct,
+			MaxDailyLossUSD:        raw.Trading.MaxDailyLossUSD,
 		},
 		Symbols:      raw.Symbols,
 		Server:       raw.Server,

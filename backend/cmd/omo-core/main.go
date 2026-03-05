@@ -27,6 +27,8 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/notify"
+	"github.com/oh-my-opentrade/backend/internal/app/perf"
+	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy/builtin"
 	"github.com/oh-my-opentrade/backend/internal/config"
@@ -83,6 +85,7 @@ func main() {
 	}
 	log.Info().Msg("TimescaleDB connected")
 	repo := timescaledb.NewRepositoryWithLogger(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "timescaledb").Logger())
+	pnlRepo := timescaledb.NewPnLRepository(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "pnl").Logger())
 
 	// 5. Initialize application services
 	ingestionLog := log.With().Str("component", "ingestion").Logger()
@@ -109,6 +112,8 @@ func main() {
 	} else {
 		log.Warn().Err(err).Float64("fallback_equity", accountEquity).Msg("failed to fetch account equity, using fallback")
 	}
+	ledgerWriter := perf.NewLedgerWriter(eventBus, pnlRepo, alpacaAdapter, accountEquity, log.With().Str("component", "ledger").Logger())
+	dailyLossBreaker := risk.NewDailyLossBreaker(cfg.Trading.MaxDailyLossPct/100.0, cfg.Trading.MaxDailyLossUSD, ledgerWriter, time.Now, log.With().Str("component", "daily_loss_breaker").Logger())
 	executionSvc := execution.NewService(
 		eventBus,
 		alpacaAdapter, // BrokerPort
@@ -116,6 +121,7 @@ func main() {
 		riskEngine,
 		slippageGuard,
 		killSwitch,
+		dailyLossBreaker,
 		accountEquity,
 		executionLog,
 	)
@@ -220,6 +226,9 @@ func main() {
 	if err := monitorSvc.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start monitor")
 	}
+	if err := ledgerWriter.Start(ctx); err != nil {
+		log.Fatal().Err(err).Msg("failed to start ledger writer")
+	}
 	if err := executionSvc.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start execution")
 	}
@@ -263,6 +272,7 @@ func main() {
 			case <-ticker.C:
 				if eq, err := alpacaAdapter.GetAccountEquity(ctx); err == nil {
 					executionSvc.SetAccountEquity(eq)
+					ledgerWriter.SetAccountEquity(eq)
 					strategySvc.SetAccountEquity(eq)
 					if riskSizer != nil {
 						riskSizer.SetAccountEquity(eq)
@@ -371,6 +381,56 @@ func main() {
 				o.BreakRVOL = sess.Breakout.RVOL
 			}
 			results = append(results, o)
+		}
+		json.NewEncoder(w).Encode(results)
+	})
+	mux.HandleFunc("/pnl", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		envMode := domain.EnvModePaper
+		now := time.Now().UTC()
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		// Default: last 30 days
+		from := today.AddDate(0, 0, -30)
+		to := today
+		if qFrom := r.URL.Query().Get("from"); qFrom != "" {
+			if t, err := time.Parse("2006-01-02", qFrom); err == nil {
+				from = t
+			}
+		}
+		if qTo := r.URL.Query().Get("to"); qTo != "" {
+			if t, err := time.Parse("2006-01-02", qTo); err == nil {
+				to = t
+			}
+		}
+		pnlData, err := pnlRepo.GetDailyPnL(r.Context(), "default", envMode, from, to)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		type pnlJSON struct {
+			Date      string  `json:"date"`
+			Realized  float64 `json:"realized_pnl"`
+			Unrealized float64 `json:"unrealized_pnl"`
+			TradeCount int     `json:"trade_count"`
+			MaxDrawdown float64 `json:"max_drawdown"`
+		}
+		var results []pnlJSON
+		for _, p := range pnlData {
+			results = append(results, pnlJSON{
+				Date:       p.Date.Format("2006-01-02"),
+				Realized:   p.RealizedPnL,
+				Unrealized: p.UnrealizedPnL,
+				TradeCount: p.TradeCount,
+				MaxDrawdown: p.MaxDrawdown,
+			})
+		}
+		if results == nil {
+			results = []pnlJSON{}
 		}
 		json.NewEncoder(w).Encode(results)
 	})

@@ -337,3 +337,55 @@ type BrokerOrder struct {
 	FilledPrice   float64
 	FilledQty     float64
 }
+
+// DailyPnL tracks realized and unrealized P&L for a single trading day.
+type DailyPnL struct {
+	Date         time.Time
+	TenantID     string
+	EnvMode      EnvMode
+	RealizedPnL  float64
+	UnrealizedPnL float64
+	TradeCount   int
+	MaxDrawdown  float64
+}
+
+// NewDailyPnL creates a validated DailyPnL. TradeCount must not be negative.
+func NewDailyPnL(date time.Time, tenantID string, envMode EnvMode, realizedPnL, unrealizedPnL float64, tradeCount int, maxDrawdown float64) (DailyPnL, error) {
+	if tradeCount < 0 {
+		return DailyPnL{}, errors.New("trade count cannot be negative")
+	}
+	return DailyPnL{
+		Date:          date,
+		TenantID:      tenantID,
+		EnvMode:       envMode,
+		RealizedPnL:   realizedPnL,
+		UnrealizedPnL: unrealizedPnL,
+		TradeCount:    tradeCount,
+		MaxDrawdown:   maxDrawdown,
+	}, nil
+}
+
+// EquityPoint represents a single point on the equity curve.
+type EquityPoint struct {
+	Time     time.Time
+	TenantID string
+	EnvMode  EnvMode
+	Equity   float64
+	Cash     float64
+	Drawdown float64
+}
+
+// NewEquityPoint creates a validated EquityPoint. Equity must not be negative.
+func NewEquityPoint(t time.Time, tenantID string, envMode EnvMode, equity, cash, drawdown float64) (EquityPoint, error) {
+	if equity < 0 {
+		return EquityPoint{}, errors.New("equity cannot be negative")
+	}
+	return EquityPoint{
+		Time:     t,
+		TenantID: tenantID,
+		EnvMode:  envMode,
+		Equity:   equity,
+		Cash:     cash,
+		Drawdown: drawdown,
+	}, nil
+}

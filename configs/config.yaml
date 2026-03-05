@@ -22,6 +22,8 @@ trading:
   kill_switch_max_stops: 3
   kill_switch_window: "2m"
   kill_switch_halt_duration: "15m"
+  max_daily_loss_pct: 5.0           # halt trading if daily loss exceeds 5% of equity
+  max_daily_loss_usd: 5000           # halt trading if daily loss exceeds $5000
 
 symbols:
   symbols:
