@@ -98,7 +98,7 @@ func TestSmoke_AlpacaPaperGetQuote(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	bid, ask, err := client.GetQuote(ctx, "AAPL")
+	bid, ask, err := client.GetQuote(ctx, dataURL, "AAPL")
 	require.NoError(t, err, "get quote failed")
 	require.Greater(t, bid, 0.0, "bid should be positive")
 	require.Greater(t, ask, 0.0, "ask should be positive")

@@ -100,7 +100,7 @@ func (a *Adapter) GetPositions(ctx context.Context, tenantID string, envMode dom
 
 // GetQuote fetches the latest bid and ask prices for a symbol.
 func (a *Adapter) GetQuote(ctx context.Context, symbol domain.Symbol) (float64, float64, error) {
-	return a.rest.GetQuote(ctx, symbol)
+	return a.rest.GetQuote(ctx, a.dataURL, symbol)
 }
 
 // GetOptionChain fetches option contract snapshots for the given underlying, expiry, and right.

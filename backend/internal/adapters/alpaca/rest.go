@@ -223,10 +223,21 @@ func (c *RESTClient) GetPositions(ctx context.Context, tenantID string, envMode 
 	return trades, nil
 }
 
-// GetQuote queries the latest quote for a given symbol.
-func (c *RESTClient) GetQuote(ctx context.Context, symbol domain.Symbol) (bid float64, ask float64, err error) {
-	resp, err := c.doReq(ctx, http.MethodGet, pathStocks+symbol.String()+"/quotes/latest", nil)
+// GetQuote queries the latest quote for a given symbol from the Alpaca data API.
+func (c *RESTClient) GetQuote(ctx context.Context, dataURL string, symbol domain.Symbol) (bid float64, ask float64, err error) {
+	path := fmt.Sprintf("/v2/stocks/%s/quotes/latest?feed=iex", symbol.String())
+	urlStr := strings.TrimSuffix(dataURL, "/") + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	req.Header.Set(headerAPIKey, c.apiKey)
+	req.Header.Set(headerAPISecret, c.apiSecret)
 
+	if err := c.limiter.Wait(ctx); err != nil {
+		return 0, 0, err
+	}
+	resp, err := c.client.Do(req)
 	if err != nil {
 		c.log.Error().Err(err).Str("symbol", symbol.String()).Msg("get quote HTTP request failed")
 		return 0, 0, err

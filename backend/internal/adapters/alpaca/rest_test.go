@@ -196,6 +196,7 @@ func TestRESTClient_GetQuote_Success(t *testing.T) {
 	// Arrange
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v2/stocks/AAPL/quotes/latest", r.URL.Path)
+		assert.Equal(t, "iex", r.URL.Query().Get("feed"))
 		assert.Equal(t, "GET", r.Method)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"quote": {"bp": 150.10, "ap": 150.20, "bs": 100, "as": 200}}`))
@@ -208,7 +209,7 @@ func TestRESTClient_GetQuote_Success(t *testing.T) {
 	sym, _ := domain.NewSymbol("AAPL")
 
 	// Act
-	bid, ask, err := client.GetQuote(context.Background(), sym)
+	bid, ask, err := client.GetQuote(context.Background(), server.URL, sym)
 
 	// Assert
 	require.NoError(t, err)
@@ -229,7 +230,7 @@ func TestRESTClient_GetQuote_Error(t *testing.T) {
 	sym, _ := domain.NewSymbol("AAPL")
 
 	// Act
-	_, _, err := client.GetQuote(context.Background(), sym)
+	_, _, err := client.GetQuote(context.Background(), server.URL, sym)
 
 	// Assert
 	require.Error(t, err)
@@ -258,7 +259,7 @@ func TestRESTClient_UsesRateLimiter(t *testing.T) {
 
 	start := time.Now()
 	// Next call should wait ~1s
-	_, _, err := client.GetQuote(ctx, sym)
+	_, _, err := client.GetQuote(ctx, server.URL, sym)
 	require.NoError(t, err)
 	duration := time.Since(start)
 	assert.GreaterOrEqual(t, duration.Milliseconds(), int64(900), "REST client should block due to rate limit")
