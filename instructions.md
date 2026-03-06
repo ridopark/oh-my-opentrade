@@ -1,5 +1,8 @@
 # Developer Instructions
 
+## Last OpenCode Session
+opencode -s ses_3472f60fdffeS3ASnzTaiZ08v2
+
 ## Git Worktrees & Multi-Agent Workflows
 
 Git worktrees let you check out multiple branches simultaneously in separate directories — no stashing or switching required. This is especially useful for running parallel Claude Code agents on different tasks.
