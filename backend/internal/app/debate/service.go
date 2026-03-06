@@ -139,6 +139,12 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 		return nil
 	}
 
+	intent.Meta = map[string]string{
+		"bull":  decision.BullArgument,
+		"bear":  decision.BearArgument,
+		"judge": decision.JudgeReasoning,
+	}
+
 	l.Info().Str("intent_id", intentID.String()).Msg("order intent created from AI debate")
 	s.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)
 

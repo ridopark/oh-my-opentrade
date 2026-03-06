@@ -77,7 +77,16 @@ type OptionCandidate struct {
 
 // debateRequest carries optional context that modifies debate behavior.
 type debateRequest struct {
-	optionChain *OptionChainSummary
+	optionChain   *OptionChainSummary
+	signalContext *signalContext // signal metadata from strategy pipeline
+}
+
+// signalContext carries strategy signal metadata for enriched prompts.
+type signalContext struct {
+	tags       map[string]string
+	signalType string  // "entry", "exit", "adjust", "flat"
+	side       string  // "buy", "sell"
+	strength   float64 // [0,1]
 }
 
 // ─────────────────────────────────────────────
@@ -94,6 +103,24 @@ func WithOptionChain(chain OptionChainSummary) DebateOption {
 	return func(raw any) {
 		if dr, ok := raw.(*debateRequest); ok {
 			dr.optionChain = &chain
+		}
+	}
+}
+
+// WithSignalContext attaches strategy signal metadata to the debate request.
+// When present, the prompt will include a "Signal Context" section with signal type,
+// side, strength, and any associated tags (e.g. AVWAP setup name, reference price).
+// PRIVACY BOUNDARY: tags come from the strategy pipeline and contain only public-facing
+// metadata (setup name, reference price, regime). No DNA parameters or proprietary logic.
+func WithSignalContext(tags map[string]string, signalType, side string, strength float64) DebateOption {
+	return func(raw any) {
+		if dr, ok := raw.(*debateRequest); ok {
+			dr.signalContext = &signalContext{
+				tags:       tags,
+				signalType: signalType,
+				side:       side,
+				strength:   strength,
+			}
 		}
 	}
 }
@@ -186,7 +213,7 @@ func (a *Advisor) RequestDebate(
 conduct a structured Bull vs Bear debate and render a Judge verdict.
 Respond ONLY with valid JSON — no markdown fences, no extra text.`
 
-	userPrompt := buildPrompt(symbol, regime, indicators, dr.optionChain)
+	userPrompt := buildPrompt(symbol, regime, indicators, dr.optionChain, dr.signalContext)
 
 	reqBody, err := json.Marshal(chatRequest{
 		Model: a.model,
@@ -281,7 +308,10 @@ Respond ONLY with valid JSON — no markdown fences, no extra text.`
 //
 // When chain is non-nil, public option market data (delta, IV, bid/ask, OI, DTE, symbol)
 // is appended as a separate section — these are standard market data fields, not proprietary.
-func buildPrompt(symbol domain.Symbol, regime domain.MarketRegime, indicators domain.IndicatorSnapshot, chain *OptionChainSummary) string {
+//
+// When sigCtx is non-nil, strategy signal metadata (type, side, strength, tags) is appended.
+// Tags contain only public-facing metadata (setup name, ref price, regime) — no DNA parameters.
+func buildPrompt(symbol domain.Symbol, regime domain.MarketRegime, indicators domain.IndicatorSnapshot, chain *OptionChainSummary, sigCtx *signalContext) string {
 	// Select the appropriate JSON response template depending on whether we have option context.
 	var jsonTemplate string
 	if chain != nil {
@@ -331,6 +361,20 @@ Technical Indicators:
 		indicators.EMA21,
 		indicators.VWAP,
 	)
+	// Append signal context section when strategy signal metadata is present.
+	if sigCtx != nil {
+		var sb strings.Builder
+		sb.WriteString(prompt)
+		sb.WriteString(fmt.Sprintf("\n\nSignal Context:\n  Type: %s\n  Side: %s\n  Strength: %.2f",
+			sigCtx.signalType, sigCtx.side, sigCtx.strength))
+		if len(sigCtx.tags) > 0 {
+			sb.WriteString("\n  Tags:")
+			for k, v := range sigCtx.tags {
+				sb.WriteString(fmt.Sprintf("\n    %s: %s", k, v))
+			}
+		}
+		prompt = sb.String()
+	}
 
 	// Append option chain section when candidates are present.
 	if chain != nil && len(chain.Candidates) > 0 {

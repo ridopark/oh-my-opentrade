@@ -16,7 +16,7 @@ import (
 	stratports "github.com/oh-my-opentrade/backend/internal/ports/strategy"
 )
 
-// RiskSizer subscribes to SignalCreated events and converts strategy Signals
+// RiskSizer subscribes to SignalEnriched events and converts enriched signals
 // into OrderIntents after applying position sizing and risk checks.
 type RiskSizer struct {
 	eventBus      ports.EventBusPort
@@ -41,12 +41,12 @@ func NewRiskSizer(eventBus ports.EventBusPort, specStore stratports.SpecStore, e
 	}
 }
 
-// Start subscribes the RiskSizer to SignalCreated events on the event bus.
+// Start subscribes the RiskSizer to SignalEnriched events on the event bus.
 func (rs *RiskSizer) Start(ctx context.Context) error {
-	if err := rs.eventBus.Subscribe(ctx, domain.EventSignalCreated, rs.handleSignal); err != nil {
-		return fmt.Errorf("risk sizer: failed to subscribe to SignalCreated: %w", err)
+	if err := rs.eventBus.Subscribe(ctx, domain.EventSignalEnriched, rs.handleSignal); err != nil {
+		return fmt.Errorf("risk sizer: failed to subscribe to SignalEnriched: %w", err)
 	}
-	rs.logger.Info("risk sizer subscribed to SignalCreated events")
+	rs.logger.Info("risk sizer subscribed to SignalEnriched events")
 	return nil
 }
 
@@ -62,16 +62,18 @@ func (rs *RiskSizer) SetAccountEquity(equity float64) {
 }
 
 func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error {
-	sig, ok := event.Payload.(strat.Signal)
+	enrichment, ok := event.Payload.(domain.SignalEnrichment)
 	if !ok {
 		return nil
 	}
 
-	if !sig.Type.IsActionable() {
+	sigRef := enrichment.Signal
+
+	if sigRef.SignalType == "flat" {
 		return nil
 	}
 
-	strategyID, hasStrategyID := parseStrategyIDFromInstance(sig.StrategyInstanceID)
+	strategyID, hasStrategyID := parseStrategyIDFromInstance(strat.InstanceID(sigRef.StrategyInstanceID))
 	var spec *stratports.Spec
 	if rs.specStore != nil && hasStrategyID {
 		got, err := rs.specStore.GetLatest(ctx, strategyID)
@@ -99,23 +101,23 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		}
 	}
 
-	refStr, ok := sig.Tags["ref_price"]
+	refStr, ok := sigRef.Tags["ref_price"]
 	if !ok || strings.TrimSpace(refStr) == "" {
-		rs.logger.Warn("signal missing ref_price; skipping", "instance_id", sig.StrategyInstanceID.String(), "symbol", sig.Symbol, "type", sig.Type.String(), "side", sig.Side.String())
+		rs.logger.Warn("signal missing ref_price; skipping", "instance_id", sigRef.StrategyInstanceID, "symbol", sigRef.Symbol, "type", sigRef.SignalType, "side", sigRef.Side)
 		return nil
 	}
 	refPrice, err := strconv.ParseFloat(refStr, 64)
 	if err != nil || refPrice <= 0 {
-		rs.logger.Warn("signal has invalid ref_price; skipping", "ref_price", refStr, "instance_id", sig.StrategyInstanceID.String(), "symbol", sig.Symbol, "error", err)
+		rs.logger.Warn("signal has invalid ref_price; skipping", "ref_price", refStr, "instance_id", sigRef.StrategyInstanceID, "symbol", sigRef.Symbol, "error", err)
 		return nil
 	}
 
 	limitPrice := refPrice
 	stopLoss := refPrice
-	if sig.Type == strat.SignalEntry {
+	if sigRef.SignalType == strat.SignalEntry.String() {
 		limitMult := 1.0 + float64(limitOffsetBPS)/10000.0
 		stopMult := 1.0 - float64(stopBPS)/10000.0
-		if sig.Side == strat.SideSell {
+		if sigRef.Side == strat.SideSell.String() {
 			limitMult = 1.0 - float64(limitOffsetBPS)/10000.0
 			stopMult = 1.0 + float64(stopBPS)/10000.0
 		}
@@ -166,8 +168,8 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 	}
 
 	direction := domain.DirectionLong
-	if sig.Side == strat.SideSell {
-		if sig.Type == strat.SignalExit {
+	if sigRef.Side == strat.SideSell.String() {
+		if sigRef.SignalType == strat.SignalExit.String() {
 			direction = domain.DirectionCloseLong
 		} else {
 			direction = domain.DirectionShort
@@ -180,23 +182,34 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 	}
 
 	intentID := uuid.New()
+	rationale := enrichment.Rationale
+	if rationale == "" {
+		rationale = fmt.Sprintf("signal: %s %s strength=%.2f", sigRef.SignalType, sigRef.Side, enrichment.Confidence)
+	}
 	intent, err := domain.NewOrderIntent(
 		intentID,
 		event.TenantID,
 		event.EnvMode,
-		domain.Symbol(sig.Symbol),
+		domain.Symbol(sigRef.Symbol),
 		direction,
 		limitPrice,
 		stopLoss,
 		10,
 		qty,
 		strategyName,
-		fmt.Sprintf("signal: %s %s strength=%.2f", sig.Type, sig.Side, sig.Strength),
-		sig.Strength,
+		rationale,
+		enrichment.Confidence,
 		intentID.String(),
 	)
 	if err != nil {
 		return fmt.Errorf("risk sizer: failed to create order intent: %w", err)
+	}
+
+	intent.Meta = map[string]string{
+		"bull":              enrichment.BullArgument,
+		"bear":              enrichment.BearArgument,
+		"judge":             enrichment.JudgeReasoning,
+		"enrichment_status": string(enrichment.Status),
 	}
 
 	rs.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)
