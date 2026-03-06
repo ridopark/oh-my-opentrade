@@ -19,6 +19,8 @@ priority = 60
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
 watchlist_mode = "intersection"
+asset_classes = ["EQUITY"]
+asset_classes = ["EQUITY"]
 
 [params]
 rsi_long = 30.0
