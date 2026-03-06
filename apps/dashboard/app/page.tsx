@@ -237,7 +237,7 @@ export default function DashboardPage() {
               </CardTitle>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              NYSE / NASDAQ — ET hours
+              NYSE / NASDAQ — ET hours · Crypto 24/7
             </p>
           </CardContent>
         </Card>

@@ -90,9 +90,17 @@ type SymbolsConfig struct {
 
 
 // Normalize migrates flat Symbols/Timeframe into Groups for backward compat.
-// If Groups is already populated, does nothing.
+// If Groups is already populated, it populates the flat Symbols field from Groups.
+// If only Symbols is set, it wraps them in a single EQUITY group.
 func (sc *SymbolsConfig) Normalize() {
 	if len(sc.Groups) > 0 {
+		// Reverse-populate flat Symbols from Groups for backward compat.
+		if len(sc.Symbols) == 0 {
+			sc.Symbols = sc.AllSymbols()
+			if sc.Timeframe == "" && len(sc.Groups) > 0 {
+				sc.Timeframe = sc.Groups[0].Timeframe
+			}
+		}
 		return
 	}
 	if len(sc.Symbols) > 0 {
