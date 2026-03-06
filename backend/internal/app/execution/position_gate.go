@@ -15,10 +15,11 @@ import (
 // the broker's current positions and an in-memory inflight lock.
 // It is the last line of defense before order submission.
 type PositionGate struct {
-	broker   ports.BrokerPort
-	log      zerolog.Logger
-	mu       sync.Mutex
-	inflight map[inflightKey]struct{}
+	broker       ports.BrokerPort
+	log          zerolog.Logger
+	mu           sync.Mutex
+	inflight     map[inflightKey]struct{}
+	exitInflight map[inflightKey]struct{}
 }
 
 type inflightKey struct {
@@ -30,9 +31,10 @@ type inflightKey struct {
 // NewPositionGate creates a PositionGate backed by the given broker.
 func NewPositionGate(broker ports.BrokerPort, log zerolog.Logger) *PositionGate {
 	return &PositionGate{
-		broker:   broker,
-		log:      log,
-		inflight: make(map[inflightKey]struct{}),
+		broker:       broker,
+		log:          log,
+		inflight:     make(map[inflightKey]struct{}),
+		exitInflight: make(map[inflightKey]struct{}),
 	}
 }
 
@@ -89,6 +91,16 @@ func (g *PositionGate) Check(ctx context.Context, intent domain.OrderIntent) err
 		g.log.Warn().Str("symbol", string(intent.Symbol)).Msg("position gate: no position to exit")
 		return ErrNoPositionToExit
 	}
+
+	// Check exit inflight lock.
+	g.mu.Lock()
+	_, exitLocked := g.exitInflight[inflightKey{TenantID: intent.TenantID, EnvMode: intent.EnvMode, Symbol: intent.Symbol}]
+	g.mu.Unlock()
+	if exitLocked {
+		g.log.Warn().Str("symbol", string(intent.Symbol)).Msg("position gate: inflight exit exists")
+		return ErrInflightExit
+	}
+
 	return nil
 }
 
@@ -106,6 +118,28 @@ func (g *PositionGate) ClearInflight(tenantID string, envMode domain.EnvMode, sy
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	delete(g.inflight, inflightKey{TenantID: tenantID, EnvMode: envMode, Symbol: symbol})
+}
+
+// TryMarkInflightExit atomically attempts to set the exit inflight lock.
+// Returns true if the lock was acquired (no prior exit inflight).
+// Returns false if an exit is already inflight for this key.
+func (g *PositionGate) TryMarkInflightExit(tenantID string, envMode domain.EnvMode, symbol domain.Symbol) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	key := inflightKey{TenantID: tenantID, EnvMode: envMode, Symbol: symbol}
+	if _, exists := g.exitInflight[key]; exists {
+		return false
+	}
+	g.exitInflight[key] = struct{}{}
+	return true
+}
+
+// ClearInflightExit removes the exit inflight lock for a symbol, typically after
+// a fill, cancel, reject, or timeout event clears the pending exit.
+func (g *PositionGate) ClearInflightExit(tenantID string, envMode domain.EnvMode, symbol domain.Symbol) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.exitInflight, inflightKey{TenantID: tenantID, EnvMode: envMode, Symbol: symbol})
 }
 
 // isEntry returns true if the intent opens or increases a position.
@@ -139,5 +173,6 @@ var (
 	ErrAlreadyInPosition = fmt.Errorf("position_gate: already_in_position")
 	ErrConflictPosition  = fmt.Errorf("position_gate: conflict")
 	ErrInflightEntry     = fmt.Errorf("position_gate: inflight")
+	ErrInflightExit      = fmt.Errorf("position_gate: inflight_exit")
 	ErrNoPositionToExit  = fmt.Errorf("position_gate: no_position_to_exit")
 )

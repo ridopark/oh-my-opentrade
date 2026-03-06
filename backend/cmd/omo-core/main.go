@@ -33,6 +33,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/notify"
 	"github.com/oh-my-opentrade/backend/internal/app/orchestrator"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
+	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
 	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	screenerapp "github.com/oh-my-opentrade/backend/internal/app/screener"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
@@ -144,6 +145,12 @@ func main() {
 		executionLog,
 		execOpts...,
 	)
+
+	// 5a-risk: Active position monitor (price cache + exit rule evaluation).
+	priceCacheLog := log.With().Str("component", "price_cache").Logger()
+	priceCache := positionmonitor.NewPriceCache(priceCacheLog)
+	posMonitorLog := log.With().Str("component", "position_monitor").Logger()
+	posMonitor := positionmonitor.NewService(eventBus, priceCache, positionGate, "default", domain.EnvModePaper, posMonitorLog)
 
 	// 5a. Initialize notification adapters (gracefully no-op if tokens not set)
 	var notifiers []ports.NotifierPort
@@ -444,6 +451,12 @@ func main() {
 	}
 	if err := executionSvc.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start execution")
+	}
+	if err := priceCache.Start(ctx, eventBus); err != nil {
+		log.Fatal().Err(err).Msg("failed to start price cache")
+	}
+	if err := posMonitor.Start(ctx); err != nil {
+		log.Fatal().Err(err).Msg("failed to start position monitor")
 	}
 	if !useStrategyV2 {
 		if err := strategySvc.Start(ctx); err != nil {

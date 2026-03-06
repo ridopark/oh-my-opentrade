@@ -61,3 +61,23 @@ target_delta_low = 0.30
 target_delta_high = 0.45
 min_dte = 30
 max_dte = 50
+
+[[exit_rules]]
+type = "TRAILING_STOP"
+[exit_rules.params]
+pct = 0.02
+
+[[exit_rules]]
+type = "PROFIT_TARGET"
+[exit_rules.params]
+pct = 0.03
+
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 5
+
+[[exit_rules]]
+type = "MAX_LOSS"
+[exit_rules.params]
+pct = 0.025
