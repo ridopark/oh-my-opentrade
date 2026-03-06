@@ -218,7 +218,7 @@ func TestService_EmitsSetupDetected(t *testing.T) {
 		return nil
 	})
 
-	sym, _ := domain.NewSymbol("BTC/USD")
+	sym, _ := domain.NewSymbol("AAPL")
 
 	base := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
 	for i := 0; i < 30; i++ {
@@ -410,7 +410,7 @@ func TestService_SettlingGuard_SuppressesSetupDetectionForFirstBars(t *testing.T
 		return nil
 	})
 
-	sym, _ := domain.NewSymbol("BTC/USD")
+	sym, _ := domain.NewSymbol("AAPL")
 
 	base := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
 	for i := 0; i < 30; i++ {
@@ -448,7 +448,7 @@ func TestService_DNAGate_BlocksUnapprovedSetup(t *testing.T) {
 		return nil
 	})
 
-	sym, _ := domain.NewSymbol("BTC/USD")
+	sym, _ := domain.NewSymbol("AAPL")
 
 	// Same bar pattern that triggers setup in TestService_EmitsSetupDetected
 	base := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
@@ -485,7 +485,7 @@ func TestService_DNAGate_AllowsApprovedSetup(t *testing.T) {
 		return nil
 	})
 
-	sym, _ := domain.NewSymbol("BTC/USD")
+	sym, _ := domain.NewSymbol("AAPL")
 
 	base := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
 	for i := 0; i < 30; i++ {
@@ -520,7 +520,7 @@ func TestService_DNAGate_ErrorIsPermissive(t *testing.T) {
 		return nil
 	})
 
-	sym, _ := domain.NewSymbol("BTC/USD")
+	sym, _ := domain.NewSymbol("AAPL")
 
 	base := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
 	for i := 0; i < 30; i++ {
