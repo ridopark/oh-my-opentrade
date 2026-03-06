@@ -196,6 +196,18 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	)
 	// Emit SignalCreated events for each actionable signal.
 	for _, sig := range allSignals {
+		// Suppress equity signals outside Regular Trading Hours (9:30-16:00 ET).
+		if !domain.Symbol(sig.Symbol).IsCryptoSymbol() {
+			cal := domain.CalendarFor(domain.AssetClassEquity)
+			if !cal.IsOpen(bar.Time) {
+				r.logger.Info("suppressing equity signal outside RTH",
+					"symbol", sig.Symbol,
+					"bar_time", bar.Time,
+				)
+				continue
+			}
+		}
+
 		if !sig.Type.IsActionable() {
 			continue
 		}

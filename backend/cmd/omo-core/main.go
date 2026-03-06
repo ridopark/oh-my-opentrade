@@ -269,6 +269,7 @@ func main() {
 		signalEnricher = strategy.NewSignalDebateEnricher(eventBus, aiAdvisor, stratLog,
 			strategy.WithRepository(repo),
 			strategy.WithMarketDataProvider(monitorSvc.GetLastSnapshot),
+			strategy.WithDebateTimeout(30*time.Second),
 		)
 		riskSizer = strategy.NewRiskSizer(eventBus, specStore, accountEquity, stratLog)
 		lifecycleSvc = strategy.NewLifecycleService(router, stratLog)
