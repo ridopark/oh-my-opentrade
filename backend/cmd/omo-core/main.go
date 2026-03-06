@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"os/signal"
 	"syscall"
 	"time"
@@ -125,6 +126,12 @@ func main() {
 	signalTracker := perf.NewSignalTracker(eventBus, pnlRepo, log.With().Str("component", "signal_tracker").Logger())
 	dailyLossBreaker := risk.NewDailyLossBreaker(cfg.Trading.MaxDailyLossPct/100.0, cfg.Trading.MaxDailyLossUSD, ledgerWriter, time.Now, log.With().Str("component", "daily_loss_breaker").Logger())
 	positionGate := execution.NewPositionGate(alpacaAdapter, executionLog)
+	execOpts := []execution.Option{execution.WithPositionGate(positionGate)}
+	if os.Getenv("DTBP_FALLBACK") == "true" {
+		bpGuard := execution.NewBuyingPowerGuard(alpacaAdapter, executionLog)
+		execOpts = append(execOpts, execution.WithBuyingPowerGuard(bpGuard))
+		log.Info().Msg("DTBP fallback enabled — buying power guard active")
+	}
 	executionSvc := execution.NewService(
 		eventBus,
 		alpacaAdapter, // BrokerPort
@@ -135,7 +142,7 @@ func main() {
 		dailyLossBreaker,
 		accountEquity,
 		executionLog,
-		execution.WithPositionGate(positionGate),
+		execOpts...,
 	)
 
 	// 5a. Initialize notification adapters (gracefully no-op if tokens not set)
@@ -163,13 +170,20 @@ func main() {
 	dnaManager := strategy.NewDNAManager()
 	strategySvc := strategy.NewService(eventBus)
 	strategySvc.SetAccountEquity(accountEquity)
-	const dnaPath = "configs/strategies/orb_break_retest.toml"
-	if dna, err := dnaManager.Load(dnaPath); err == nil {
-		strategySvc.RegisterDNA(dna)
-		monitorSvc.SetORBConfig(dna.Parameters)
-		log.Info().Str("strategy_id", dna.ID).Str("version", dna.Version).Msg("strategy DNA loaded")
-	} else {
-		log.Info().Err(err).Msg("no strategy DNA file found, using deterministic defaults")
+	// Load ALL strategy DNA TOML files from configs/strategies/
+	dnaPaths, _ := filepath.Glob("configs/strategies/*.toml")
+	for _, p := range dnaPaths {
+		dna, err := dnaManager.Load(p)
+		if err != nil {
+			log.Warn().Err(err).Str("path", p).Msg("failed to load strategy DNA")
+			continue
+		}
+		log.Info().Str("strategy_id", dna.ID).Str("version", dna.Version).Str("path", p).Msg("strategy DNA loaded")
+		// v1 backward compat: register ORB DNA with legacy services
+		if dna.ID == "orb_break_retest" {
+			strategySvc.RegisterDNA(dna)
+			monitorSvc.SetORBConfig(dna.Parameters)
+		}
 	}
 
 	// Create AI advisor port — used by both v2 SignalDebateEnricher and v1 debate.Service.
@@ -500,13 +514,18 @@ func main() {
 			log.Fatal().Err(err).Msg("failed to start screener service")
 		}
 	}
-	// 5b (continued): hot-reload DNA after all services are started
+// 5b (continued): hot-reload DNA after all services are started
 	if !useStrategyV2 {
-		go dnaManager.Watch(ctx, dnaPath, func(updated *strategy.StrategyDNA) {
-			strategySvc.RegisterDNA(updated)
-			publishDNAVersionDetected(ctx, eventBus, log, dnaPath, updated.ID, orch != nil)
-			log.Info().Str("strategy_id", updated.ID).Str("version", updated.Version).Msg("strategy DNA hot-reloaded")
-		})
+		for _, p := range dnaPaths {
+			watchPath := p // capture for goroutine
+			go dnaManager.Watch(ctx, watchPath, func(updated *strategy.StrategyDNA) {
+				if updated.ID == "orb_break_retest" {
+					strategySvc.RegisterDNA(updated)
+				}
+				publishDNAVersionDetected(ctx, eventBus, log, watchPath, updated.ID, orch != nil)
+				log.Info().Str("strategy_id", updated.ID).Str("version", updated.Version).Msg("strategy DNA hot-reloaded")
+			})
+		}
 	}
 	log.Info().Msg("all services started")
 	// 5c (continued): periodic account equity refresh every 5 minutes.
@@ -625,6 +644,31 @@ func main() {
 			Description: dna.Description,
 			Parameters:  dna.Parameters,
 		})
+	})
+	imux.HandleFunc("/strategies/dna/all", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		type dnaJSON struct {
+			ID          string         `json:"id"`
+			Version     string         `json:"version"`
+			Description string         `json:"description,omitempty"`
+			Parameters  map[string]any `json:"parameters"`
+		}
+		all := dnaManager.GetAll()
+		out := make([]dnaJSON, 0, len(all))
+		for _, dna := range all {
+			out = append(out, dnaJSON{
+				ID:          dna.ID,
+				Version:     dna.Version,
+				Description: dna.Description,
+				Parameters:  dna.Parameters,
+			})
+		}
+		json.NewEncoder(w).Encode(out)
 	})
 	imux.HandleFunc("/orb", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")

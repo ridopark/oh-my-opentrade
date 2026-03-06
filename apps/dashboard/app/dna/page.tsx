@@ -12,8 +12,8 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Dna, ArrowRight, TrendingUp, TrendingDown, Minus } from "lucide-react";
-import { useMemo } from "react";
-import { useCurrentStrategy } from "@/hooks/queries";
+import { useMemo, useState } from "react";
+import { useCurrentStrategy, useAllStrategiesDNA } from "@/hooks/queries";
 
 function isStrategyDNAPayload(payload: unknown): payload is StrategyDNAEvent {
   if (!payload || typeof payload !== "object") return false;
@@ -185,7 +185,8 @@ function DNAView({ dna, previous }: { dna: StrategyDNA; previous: StrategyDNA | 
 
 export default function DNAPage() {
   const { states, connected } = useStateEvents(50);
-  const { data: fetchedDNA } = useCurrentStrategy();
+  const { data: allDNAs, isLoading } = useAllStrategiesDNA();
+  const [activeTab, setActiveTab] = useState<string | null>(null);
 
   // Find the latest DNA event from SSE stream
   const latestDNA = useMemo(() => {
@@ -197,30 +198,18 @@ export default function DNAPage() {
     return null;
   }, [states]);
 
-  // Priority: SSE event > REST fetch > hardcoded fallback
-  const currentDNA = latestDNA?.current ?? fetchedDNA ?? {
-    id: "orb_break_retest",
-    version: 1,
-    description: "Opening Range Breakout — Break & Retest",
-    parameters: {
-      orb_window_minutes: 30,
-      min_rvol: 1.5,
-      max_risk_bps: 200,
-      limit_offset_bps: 5,
-      stop_bps_below_low: 10,
-      min_confidence: 0.65,
-      breakout_confirm_bps: 2,
-      touch_tolerance_bps: 2,
-      hold_confirm_bps: 0,
-      max_retest_bars: 15,
-      allow_missing_range_bars: 1,
-      max_signals_per_session: 1,
-    },
-    performanceMetrics: {},
-  };
-  const previousDNA = latestDNA?.previous ?? null;
-  const strategyName = currentDNA.id || "orb_break_retest";
-  const strategyDescription = currentDNA.description || "Active strategy DNA — Paper trading mode";
+  // Build strategy list from REST fetch
+  const strategies = allDNAs ?? [];
+  const selectedId = activeTab ?? strategies[0]?.id ?? null;
+  const selectedDNA = strategies.find((s) => s.id === selectedId) ?? null;
+
+  // If SSE pushes an update for the selected strategy, overlay it
+  const currentDNA = (latestDNA && latestDNA.current.id === selectedId)
+    ? latestDNA.current
+    : selectedDNA;
+  const previousDNA = (latestDNA && latestDNA.current.id === selectedId)
+    ? latestDNA.previous
+    : null;
 
   return (
     <div className="space-y-6">
@@ -232,62 +221,92 @@ export default function DNAPage() {
             Strategy DNA
           </h1>
           <p className="text-sm text-muted-foreground">
-            Current strategy configuration and performance metrics
+            Strategy configuration and performance metrics
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className="font-mono">
-            v{currentDNA.version}
-          </Badge>
-          {previousDNA && (
-            <Badge
-              variant="outline"
-              className="bg-yellow-500/10 text-yellow-400"
-            >
-              Changed from v{previousDNA.version}
-            </Badge>
-          )}
-          <Badge
-            variant={connected ? "default" : "destructive"}
-            className="gap-1"
-          >
-            <div
-              className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-400 animate-pulse" : "bg-red-400"}`}
-            />
-            {connected ? "Live" : "Offline"}
-          </Badge>
-        </div>
+        <Badge
+          variant={connected ? "default" : "destructive"}
+          className="gap-1"
+        >
+          <div
+            className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-400 animate-pulse" : "bg-red-400"}`}
+          />
+          {connected ? "Live" : "Offline"}
+        </Badge>
       </div>
 
-      {/* DNA Card */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle>
-                {strategyName}{" "}
-                <Badge variant="outline" className="ml-2 font-mono text-xs">
-                  v{currentDNA.version}
+      {/* Strategy Tabs */}
+      {strategies.length > 1 && (
+        <div className="flex gap-1 rounded-lg border border-border bg-muted/30 p-1">
+          {strategies.map((s) => (
+            <button
+              key={s.id}
+              onClick={() => setActiveTab(s.id)}
+              className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
+                s.id === selectedId
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {s.id}
+              <span className="ml-2 font-mono text-xs text-muted-foreground">
+                v{s.version}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Loading / Empty state */}
+      {isLoading && (
+        <Card>
+          <CardContent className="py-12 text-center text-muted-foreground">
+            Loading strategy DNA…
+          </CardContent>
+        </Card>
+      )}
+      {!isLoading && strategies.length === 0 && (
+        <Card>
+          <CardContent className="py-12 text-center text-muted-foreground">
+            No strategies loaded. Check that TOML files exist in configs/strategies/.
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Selected DNA Card */}
+      {currentDNA && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>
+                  {currentDNA.id}{" "}
+                  <Badge variant="outline" className="ml-2 font-mono text-xs">
+                    v{currentDNA.version}
+                  </Badge>
+                </CardTitle>
+                <CardDescription>
+                  {currentDNA.description || "Strategy configuration"}
+                </CardDescription>
+              </div>
+              {previousDNA && (
+                <Badge
+                  variant="outline"
+                  className="bg-yellow-500/10 text-yellow-400"
+                >
+                  Changed from v{previousDNA.version}
                 </Badge>
-              </CardTitle>
-              <CardDescription>
-                {strategyDescription}
-              </CardDescription>
+              )}
             </div>
-            {!latestDNA && !fetchedDNA && (
-              <Badge variant="outline" className="text-xs text-muted-foreground">
-                Default config (awaiting backend)
-              </Badge>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent>
-          <DNAView dna={currentDNA} previous={previousDNA} />
-        </CardContent>
-      </Card>
+          </CardHeader>
+          <CardContent>
+            <DNAView dna={currentDNA} previous={previousDNA} />
+          </CardContent>
+        </Card>
+      )}
 
       {/* DNA Diff */}
-      {previousDNA && (
+      {previousDNA && currentDNA && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">
@@ -299,8 +318,7 @@ export default function DNAPage() {
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {Object.keys(currentDNA.parameters)
-                .filter(
+              {Object.keys(currentDNA.parameters).filter(
                   (key) =>
                     previousDNA.parameters[key] !== currentDNA.parameters[key]
                 )
