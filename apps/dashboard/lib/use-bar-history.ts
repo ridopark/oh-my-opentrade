@@ -18,6 +18,7 @@ export type BarHistory = Record<string, OHLCBar[]>;
 const SYMBOLS = [
   "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA",
   "SOXL", "U", "PLTR", "SPY", "META",
+  "BTC/USD", "ETH/USD",
 ];
 const MAX_BARS_PER_SYMBOL = 390; // ~1 full trading day at 1m
 

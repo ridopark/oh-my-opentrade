@@ -5,6 +5,8 @@ alpaca:
   # API credentials are loaded from .env (APCA_API_KEY_ID, APCA_API_SECRET_KEY)
   base_url: "https://paper-api.alpaca.markets"
   data_url: "https://data.alpaca.markets"
+  crypto_data_url: "wss://stream.data.alpaca.markets"
+  crypto_feed: "us"
   paper_mode: true
 
 database:
@@ -26,18 +28,25 @@ trading:
   max_daily_loss_usd: 5000           # halt trading if daily loss exceeds $5000
 
 symbols:
-  symbols:
-    - "AAPL"
-    - "MSFT"
-    - "GOOGL"
-    - "AMZN"
-    - "TSLA"
-    - "SOXL"
-    - "U"
-    - "PLTR"
-    - "SPY"
-    - "META"
-  timeframe: "1m"
+  groups:
+    - asset_class: "EQUITY"
+      symbols:
+        - "AAPL"
+        - "MSFT"
+        - "GOOGL"
+        - "AMZN"
+        - "TSLA"
+        - "SOXL"
+        - "U"
+        - "PLTR"
+        - "SPY"
+        - "META"
+      timeframe: "1m"
+    - asset_class: "CRYPTO"
+      symbols:
+        - "BTC/USD"
+        - "ETH/USD"
+      timeframe: "1m"
 
 server:
   port: 8080

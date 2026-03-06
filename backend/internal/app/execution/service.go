@@ -128,14 +128,20 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		}
 	}
 
-	// 1b. Reject SHORT direction — paper account does not support short selling.
+	// 1b. Reject SHORT direction — short selling not supported for this asset class.
 	// Exit orders now use DirectionCloseLong, so this only catches new short entries.
 	if intent.Direction == domain.DirectionShort {
-		l.Warn().Msg("SHORT direction rejected — account does not support short selling")
+		reason := "SHORT direction not supported"
+		if intent.AssetClass == domain.AssetClassCrypto {
+			reason = "SHORT direction not supported — crypto is long-only on Alpaca"
+		} else {
+			reason = "SHORT direction not supported — paper account cannot short sell"
+		}
+		l.Warn().Str("asset_class", intent.AssetClass.String()).Msg(reason)
 		if s.metrics != nil {
 			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "short_disabled").Inc()
 		}
-		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, "SHORT direction not supported — paper account cannot short sell"))
+		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, reason))
 		return nil
 	}
 

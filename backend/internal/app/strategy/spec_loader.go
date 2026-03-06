@@ -91,6 +91,7 @@ type rawLifecycleSection struct {
 type rawRoutingSection struct {
 	Symbols            []string `toml:"symbols"`
 	Timeframes         []string `toml:"timeframes"`
+	AssetClasses       []string `toml:"asset_classes"`
 	Priority           *int     `toml:"priority"`
 	ConflictPolicy     *string  `toml:"conflict_policy"`
 	ExclusivePerSymbol *bool    `toml:"exclusive_per_symbol"`
@@ -261,6 +262,7 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 		Routing: portstrategy.RoutingConfig{
 			Symbols:            raw.Routing.Symbols,
 			Timeframes:         timeframes,
+			AssetClasses:       raw.Routing.AssetClasses,
 			Priority:           priority,
 			ConflictPolicy:     conflict,
 			ExclusivePerSymbol: exclusive,

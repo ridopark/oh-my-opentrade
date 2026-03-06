@@ -47,7 +47,12 @@ export function isMarketOpen(): boolean {
   const minutes = eastern.getMinutes();
   const time = hours * 60 + minutes;
 
-  // Market hours: Mon-Fri, 9:30 AM - 4:00 PM ET
+  // NYSE hours: Mon-Fri, 9:30 AM - 4:00 PM ET
   if (day === 0 || day === 6) return false;
   return time >= 570 && time < 960; // 9:30=570, 16:00=960
+}
+
+/** Returns true for crypto symbols (contain '/'). Crypto markets are 24/7. */
+export function isCryptoSymbol(symbol: string): boolean {
+  return symbol.includes("/");
 }

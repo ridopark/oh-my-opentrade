@@ -61,6 +61,7 @@ type LifecycleConfig struct {
 type RoutingConfig struct {
 	Symbols            []string
 	Timeframes         []string
+	AssetClasses       []string
 	Priority           int
 	ConflictPolicy     domstrategy.ConflictPolicy
 	ExclusivePerSymbol bool

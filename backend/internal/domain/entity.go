@@ -58,9 +58,10 @@ type OrderIntent struct {
 	Confidence     float64   `json:"confidence"`
 	IdempotencyKey string    `json:"idempotencyKey"`
 	// Options-specific fields (nil/zero for equity orders)
-	Instrument *Instrument       `json:"instrument,omitempty"`
-	MaxLossUSD float64           `json:"maxLossUSD,omitempty"`
-	Meta       map[string]string `json:"meta,omitempty"`
+	Instrument     *Instrument `json:"instrument,omitempty"`
+	AssetClass     AssetClass `json:"assetClass"`
+	MaxLossUSD     float64           `json:"maxLossUSD,omitempty"`
+	Meta           map[string]string `json:"meta,omitempty"`
 }
 
 // OrderIntentStatus indicates where in the pipeline an order intent currently sits.
@@ -311,6 +312,7 @@ type Trade struct {
 	Status     string
 	Strategy   string
 	Rationale  string
+	AssetClass AssetClass
 }
 
 // NewTrade creates a validated Trade. Quantity must not be negative.
