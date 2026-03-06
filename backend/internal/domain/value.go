@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // EnvMode represents the execution environment (paper trading vs live).
@@ -61,6 +62,30 @@ func NewSymbol(s string) (Symbol, error) {
 	return Symbol(s), nil
 }
 
+// ToSlashFormat converts a no-slash crypto symbol to slash format.
+// "BTCUSD" → "BTC/USD". If already has slash or is not a crypto symbol, returns as-is.
+func (s Symbol) ToSlashFormat() Symbol {
+	str := string(s)
+	if strings.Contains(str, "/") {
+		return s
+	}
+	if len(str) >= 6 && strings.HasSuffix(str, "USD") {
+		return Symbol(str[:len(str)-3] + "/" + "USD")
+	}
+	return s
+}
+
+// ToNoSlashFormat removes slashes from a symbol. "BTC/USD" → "BTCUSD".
+func (s Symbol) ToNoSlashFormat() Symbol {
+	return Symbol(strings.ReplaceAll(string(s), "/", ""))
+}
+
+// IsCryptoSymbol returns true if the symbol is in crypto format (contains "/" and ends with "/USD").
+func (s Symbol) IsCryptoSymbol() bool {
+	str := string(s)
+	return strings.Contains(str, "/") && strings.HasSuffix(str, "/USD")
+}
+
 // Timeframe represents a candle interval.
 type Timeframe string
 
@@ -96,4 +121,33 @@ func NewRegimeType(r string) (RegimeType, error) {
 	default:
 		return "", fmt.Errorf("invalid regime type: %q", r)
 	}
+}
+
+// AssetClass represents the asset class for trading (EQUITY or CRYPTO).
+type AssetClass string
+
+const (
+	AssetClassEquity AssetClass = "EQUITY"
+	AssetClassCrypto AssetClass = "CRYPTO"
+)
+
+func (a AssetClass) String() string { return string(a) }
+
+func NewAssetClass(a string) (AssetClass, error) {
+	switch AssetClass(a) {
+	case AssetClassEquity, AssetClassCrypto:
+		return AssetClass(a), nil
+	default:
+		return "", fmt.Errorf("invalid asset class: %q", a)
+	}
+}
+
+// Is24x7 returns true if the asset class trades 24/7 (Crypto), false for traditional market hours (Equity).
+func (a AssetClass) Is24x7() bool {
+	return a == AssetClassCrypto
+}
+
+// SupportsShort returns true if short selling is supported for this asset class.
+func (a AssetClass) SupportsShort() bool {
+	return a == AssetClassEquity
 }
