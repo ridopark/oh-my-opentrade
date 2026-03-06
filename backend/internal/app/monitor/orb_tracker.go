@@ -152,6 +152,13 @@ func NewORBTracker() *ORBTracker {
 	return &ORBTracker{sessions: make(map[string]*ORBSession), logger: slog.Default()}
 }
 
+// NewORBTrackerWithSource creates an ORBTracker whose log lines include a
+// "source" field (e.g. "monitor" or "strategy") so callers can distinguish
+// which tracker produced a given log entry.
+func NewORBTrackerWithSource(source string) *ORBTracker {
+	return &ORBTracker{sessions: make(map[string]*ORBSession), logger: slog.Default().With("source", source)}
+}
+
 func (t *ORBTracker) SetLogger(l *slog.Logger) {
 	if l != nil {
 		t.logger = l

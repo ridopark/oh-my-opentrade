@@ -333,7 +333,7 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 	if intent.Direction == domain.DirectionLong {
 		side = "BUY"
 	}
-	trade, err := domain.NewTrade(now, tenantID, envMode, uuid.New(), intent.Symbol, side, intent.Quantity, fillPrice, 0, "filled", intent.Strategy, intent.Rationale)
+	trade, err := domain.NewTrade(now, tenantID, envMode, uuid.New(), intent.Symbol, side, intent.Quantity, fillPrice, 0, "FILLED", intent.Strategy, intent.Rationale)
 	if err != nil {
 		l.Error().Err(err).Msg("failed to construct trade on fill")
 	} else {

@@ -172,9 +172,23 @@ func main() {
 		log.Info().Err(err).Msg("no strategy DNA file found, using deterministic defaults")
 	}
 
-	// v2 — new StrategyRunner + RiskSizer pipeline (feature-flagged)
+	// Create AI advisor port — used by both v2 SignalDebateEnricher and v1 debate.Service.
+	var aiAdvisor ports.AIAdvisorPort
+	if cfg.AI.Enabled {
+		aiAdvisor = llm.NewAdvisor(cfg.AI.BaseURL, cfg.AI.Model, cfg.AI.APIKey, nil)
+		log.Info().
+			Str("base_url", cfg.AI.BaseURL).
+			Str("model", cfg.AI.Model).
+			Msg("AI advisor initialized (real LLM)")
+	} else {
+		aiAdvisor = llm.NewNoOpAdvisor()
+		log.Info().Msg("AI advisor initialized (no-op — LLM disabled)")
+	}
+
+	// v2 — new StrategyRunner + RiskSizer + SignalDebateEnricher pipeline (feature-flagged)
 	var strategyRunner *strategy.Runner
 	var riskSizer *strategy.RiskSizer
+	var signalEnricher *strategy.SignalDebateEnricher
 	var lifecycleSvc *strategy.LifecycleService
 	var symRouter *symbolrouter.Service
 	var specStore *store_fs.Store
@@ -252,6 +266,10 @@ func main() {
 		}
 
 		strategyRunner = strategy.NewRunner(eventBus, router, "default", domain.EnvModePaper, stratLog)
+		signalEnricher = strategy.NewSignalDebateEnricher(eventBus, aiAdvisor, stratLog,
+			strategy.WithRepository(repo),
+			strategy.WithMarketDataProvider(monitorSvc.GetLastSnapshot),
+		)
 		riskSizer = strategy.NewRiskSizer(eventBus, specStore, accountEquity, stratLog)
 		lifecycleSvc = strategy.NewLifecycleService(router, stratLog)
 
@@ -264,7 +282,8 @@ func main() {
 		log.Info().
 			Int("specs", len(allSpecs)).
 			Int("instances", totalInstances).
-			Msg("strategy v2 pipeline initialized")
+			Bool("ai_enabled", cfg.AI.Enabled).
+			Msg("strategy v2 pipeline initialized (runner → enricher → riskSizer)")
 
 		symRouter = symbolrouter.NewService(
 			eventBus,
@@ -375,18 +394,16 @@ func main() {
 		log.Info().Int("accounts", len(accounts)).Msg("multi-account orchestrator initialized")
 	}
 
-	// 5c. Initialize AI debate service (only if enabled in config)
+	// 5c. Initialize AI debate service (v1 path — only if enabled in config)
 	var debateSvc *debate.Service
 	if cfg.AI.Enabled {
 		debateLog := log.With().Str("component", "debate").Logger()
-		aiAdvisor := llm.NewAdvisor(cfg.AI.BaseURL, cfg.AI.Model, cfg.AI.APIKey, nil)
 		debateSvc = debate.NewService(eventBus, aiAdvisor, repo, cfg.AI.MinConfidence, debateLog)
 		log.Info().
 			Float64("min_confidence", cfg.AI.MinConfidence).
-			Str("base_url", cfg.AI.BaseURL).
-			Msg("AI debate service enabled")
+			Msg("AI debate service enabled (v1 path)")
 	} else {
-		log.Info().Msg("AI debate service disabled (set LLM_ENABLED=true to enable)")
+		log.Info().Msg("AI debate service disabled (v1 path — set LLM_ENABLED=true to enable)")
 	}
 
 	// 6. Start services (subscribe to event bus)
@@ -422,9 +439,13 @@ func main() {
 		if err := strategyRunner.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start strategy runner v2")
 		}
+		if err := signalEnricher.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start signal debate enricher v2")
+		}
 		if err := riskSizer.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start risk sizer v2")
 		}
+		log.Info().Msg("v2 pipeline started: runner → enricher → riskSizer")
 	}
 	if symRouter != nil {
 		if err := symRouter.Start(ctx); err != nil {

@@ -46,6 +46,9 @@ symbols:
       symbols:
         - "BTC/USD"
         - "ETH/USD"
+        - "SOL/USD"
+        - "AVAX/USD"
+        - "DOGE/USD"
       timeframe: "1m"
 
 server:

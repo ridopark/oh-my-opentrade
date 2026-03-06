@@ -21,13 +21,14 @@ type MarketBar struct {
 	Suspect   bool
 }
 
-// NewMarketBar creates a validated MarketBar. High must be >= Low and Volume must be positive.
+// NewMarketBar creates a validated MarketBar. High must be >= Low and Volume must be non-negative.
+// Crypto markets legitimately emit zero-volume bars during low-activity periods.
 func NewMarketBar(t time.Time, sym Symbol, tf Timeframe, open, high, low, close, volume float64) (MarketBar, error) {
 	if high < low {
 		return MarketBar{}, errors.New("high cannot be less than low")
 	}
-	if volume <= 0 {
-		return MarketBar{}, errors.New("volume must be greater than zero")
+	if volume < 0 {
+		return MarketBar{}, errors.New("volume must not be negative")
 	}
 	return MarketBar{
 		Time:      t,

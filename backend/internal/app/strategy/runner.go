@@ -26,6 +26,7 @@ type Runner struct {
 	tenantID    string
 	envMode     domain.EnvMode
 	indicators  map[string]strat.IndicatorData // cached per-symbol indicators from StateUpdated
+	indLogOnce  map[string]bool
 	metrics     *metrics.Metrics
 }
 
@@ -51,6 +52,7 @@ func NewRunner(
 		tenantID:   tenantID,
 		envMode:    envMode,
 		indicators: make(map[string]strat.IndicatorData),
+		indLogOnce: make(map[string]bool),
 	}
 }
 
@@ -123,6 +125,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	symbol := bar.Symbol.String()
 	instances := r.router.InstancesForSymbol(symbol)
 	if len(instances) == 0 {
+		r.logger.Info("no instances for symbol", "symbol", symbol)
 		return nil
 	}
 
@@ -130,8 +133,20 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	sBar := domainBarToStratBar(bar)
 
 	// Use cached indicators from StateUpdated events, with current bar volume.
+	r.mu.Lock()
 	indicators := r.indicators[symbol]
 	indicators.Volume = bar.Volume
+	if !r.indLogOnce[symbol] {
+		if indicators.RSI == 0 || indicators.VolumeSMA == 0 {
+			r.logger.Debug("indicators may not be populated yet",
+				"symbol", symbol,
+				"rsi", indicators.RSI,
+				"volumeSMA", indicators.VolumeSMA,
+			)
+			r.indLogOnce[symbol] = true
+		}
+	}
+	r.mu.Unlock()
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -170,6 +185,15 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		r.swapManager.OnBarProcessed(swapCtx, symbol, sBar, indicators)
 	}
 
+	r.logger.Info("bar processed",
+		"symbol", symbol,
+		"instances", len(instances),
+		"signals", len(allSignals),
+		"rsi", indicators.RSI,
+		"volumeSMA", indicators.VolumeSMA,
+		"volume", bar.Volume,
+		"close", bar.Close,
+	)
 	// Emit SignalCreated events for each actionable signal.
 	for _, sig := range allSignals {
 		if !sig.Type.IsActionable() {

@@ -58,6 +58,48 @@ func TestAVWAPStrategy_Init_Fresh(t *testing.T) {
 	assert.True(t, ok, "Init should return *AVWAPState")
 }
 
+func TestAVWAPStrategy_Init_MultiAnchorsAndWarmup(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	start := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
+	ctx := newTestContext(start)
+	params := avwapParams()
+	params["anchors"] = []any{"pd_high", "pd_low", "session_open"}
+
+	st, err := s.Init(ctx, "AAPL", params, nil)
+	require.NoError(t, err)
+
+	avwapSt := st.(*builtin.AVWAPState)
+
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+	for i := 0; i < 5; i++ {
+		b := strat.Bar{Time: start.Add(time.Duration(i) * time.Minute), Open: 100, High: 110, Low: 90, Close: 105, Volume: 10}
+		st, err = s.ReplayOnBar(ctx, "AAPL", b, st, ind)
+		require.NoError(t, err)
+	}
+
+	values := avwapSt.Calc.Values()
+	require.Len(t, values, 3)
+	assert.Contains(t, values, "pd_high")
+	assert.Contains(t, values, "pd_low")
+	assert.Contains(t, values, "session_open")
+
+	bars := []strat.Bar{
+		{Time: start.Add(10 * time.Minute), Open: 100, High: 112, Low: 92, Close: 112, Volume: 10},
+		{Time: start.Add(11 * time.Minute), Open: 112, High: 120, Low: 100, Close: 120, Volume: 10},
+		{Time: start.Add(12 * time.Minute), Open: 120, High: 128, Low: 108, Close: 128, Volume: 20},
+	}
+
+	var signals []strat.Signal
+	for i, b := range bars {
+		st, signals = feedAVWAPBar(t, s, ctx, "AAPL", st, b, ind)
+		if i < len(bars)-1 {
+			assert.Empty(t, signals)
+		}
+	}
+	require.Len(t, signals, 1)
+	assert.Contains(t, signals[0].Tags, "anchor")
+}
+
 func TestAVWAPStrategy_ImplementsInterface(t *testing.T) {
 	var _ strat.Strategy = (*builtin.AVWAPStrategy)(nil)
 }

@@ -134,12 +134,16 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 
 	maxRiskUSD := (float64(riskPerTradeBPS) / 10000.0) * equity
 	riskPerShare := math.Abs(limitPrice - stopLoss)
-	qty := 1.0
+	qty := 0.0
 	if riskPerShare > 0 && maxRiskUSD > 0 {
-		computed := math.Floor(maxRiskUSD / riskPerShare)
-		if computed >= 1 {
-			qty = computed
-		}
+		qty = maxRiskUSD / riskPerShare
+	}
+	if qty <= 0 {
+		qty = maxRiskUSD / limitPrice // fallback: risk budget as notional
+	}
+	if qty <= 0 {
+		rs.logger.Warn("computed zero quantity; skipping", "symbol", sigRef.Symbol, "equity", equity, "limit_price", limitPrice)
+		return nil
 	}
 
 	// Clamp position size so notional exposure does not exceed max_position_bps of equity.
@@ -151,10 +155,7 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 	}
 	if limitPrice > 0 {
 		maxNotional := (float64(maxPositionBPS) / 10000.0) * equity
-		maxQty := math.Floor(maxNotional / limitPrice)
-		if maxQty < 1 {
-			maxQty = 1
-		}
+		maxQty := maxNotional / limitPrice
 		if qty > maxQty {
 			rs.logger.Info("position size clamped by max_position_bps",
 				"original_qty", qty,

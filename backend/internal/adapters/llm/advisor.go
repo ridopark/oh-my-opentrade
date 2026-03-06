@@ -278,6 +278,12 @@ Respond ONLY with valid JSON — no markdown fences, no extra text.`
 		}
 	}
 
+	// NEUTRAL means the AI advises no trade — return nil decision (no error).
+	// The enricher falls back to the original signal confidence.
+	if strings.EqualFold(result.Direction, "NEUTRAL") {
+		return nil, nil
+	}
+
 	direction, err := domain.NewDirection(result.Direction)
 	if err != nil {
 		return nil, fmt.Errorf("llm: invalid direction in AI response %q: %w", result.Direction, err)

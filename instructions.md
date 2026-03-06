@@ -74,3 +74,37 @@ This removes references to any worktrees whose directories no longer exist on di
    git worktree remove ../omo-task-b
    git worktree prune
    ```
+
+## Tmux Quick Reference
+
+### View Backend/Dashboard Logs
+
+```bash
+tmux attach-session -t omo-core        # backend logs
+tmux attach-session -t omo-dashboard   # dashboard logs
+tmux list-sessions                     # check sessions
+```
+
+### Detach from Tmux (without killing the process)
+
+Press `Ctrl+B` then `D`
+
+## Debug Logging
+
+The backend uses **zerolog**. Log level is controlled via the `LOG_LEVEL` env var (not the `log_level` field in `config.yaml`).
+
+### Enable debug logs
+
+```bash
+LOG_LEVEL=debug go run ./cmd/omo-core/
+```
+
+### With pretty (human-readable) output
+
+```bash
+LOG_LEVEL=debug LOG_PRETTY=true go run ./cmd/omo-core/
+```
+
+### Available log levels
+
+`trace` | `debug` | `info` (default) | `warn` | `error` | `fatal` | `panic`

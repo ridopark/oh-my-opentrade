@@ -158,3 +158,48 @@ func (c *RESTClient) GetCryptoSnapshot(ctx context.Context, dataURL string, symb
 	}
 	return out, nil
 }
+
+// GetCryptoQuote fetches the latest bid/ask quote for a crypto symbol.
+// Endpoint: /v1beta3/crypto/us/latest/quotes?symbols={sym}
+func (c *RESTClient) GetCryptoQuote(ctx context.Context, dataURL string, symbol domain.Symbol) (bid float64, ask float64, err error) {
+	symStr := symbol.String()
+	path := fmt.Sprintf("/v1beta3/crypto/us/latest/quotes?symbols=%s", symStr)
+	resp, err := c.doReqDataAPI(ctx, dataURL, http.MethodGet, path, nil, reqOpts{priority: PriorityTrading, maxRetries: 3})
+	if err != nil {
+		c.log.Error().Err(err).Str("symbol", symStr).Msg("crypto quote HTTP request failed")
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		c.log.Error().Int("status", resp.StatusCode).Str("symbol", symStr).Msg("crypto quote failed")
+		return 0, 0, fmt.Errorf("alpaca: get crypto quote failed (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var res struct {
+		Quotes map[string]struct {
+			BP float64 `json:"bp"`
+			AP float64 `json:"ap"`
+		} `json:"quotes"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&res); err != nil {
+		return 0, 0, fmt.Errorf("alpaca: decode crypto quote: %w", err)
+	}
+
+	q, ok := res.Quotes[symStr]
+	if !ok {
+		// Try no-slash variant (Alpaca may return either format)
+		noSlash := string(symbol.ToNoSlashFormat())
+		q, ok = res.Quotes[noSlash]
+	}
+	if !ok {
+		return 0, 0, fmt.Errorf("alpaca: crypto quote not found for %s", symStr)
+	}
+
+	c.log.Debug().
+		Str("symbol", symStr).
+		Float64("bid", q.BP).
+		Float64("ask", q.AP).
+		Msg("crypto quote retrieved")
+	return q.BP, q.AP, nil
+}
