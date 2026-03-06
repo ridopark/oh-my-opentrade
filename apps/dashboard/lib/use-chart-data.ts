@@ -17,6 +17,7 @@ export type BarsBySymbol = Record<string, OHLCBar[]>;
 export const SYMBOLS = [
   "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA",
   "SOXL", "U", "PLTR", "SPY", "META",
+  "BTC/USD", "ETH/USD",
 ];
 
 /** How many bars to request per fetch window */

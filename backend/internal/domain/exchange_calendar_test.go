@@ -292,3 +292,62 @@ func TestPreviousRTHSession_NormalWednesday(t *testing.T) {
 		t.Fatalf("end: expected %v, got %v", expEnd, end)
 	}
 }
+
+func TestNYSECalendar_IsOpen(t *testing.T) {
+	loc := mustLoadNY(t)
+	cal := NYSECalendar{}
+	
+	// Weekday 10AM ET = open
+	open := time.Date(2026, time.March, 4, 10, 0, 0, 0, loc) // Wednesday
+	if !cal.IsOpen(open) {
+		t.Fatal("expected NYSE open on Wednesday 10AM ET")
+	}
+	
+	// Saturday = closed
+	sat := time.Date(2026, time.March, 7, 10, 0, 0, 0, loc)
+	if cal.IsOpen(sat) {
+		t.Fatal("expected NYSE closed on Saturday")
+	}
+	
+	// Holiday (MLK Day 2026 = Jan 19) = closed
+	holiday := time.Date(2026, time.January, 19, 10, 0, 0, 0, loc)
+	if cal.IsOpen(holiday) {
+		t.Fatal("expected NYSE closed on MLK Day")
+	}
+	
+	// After hours 5PM = closed
+	afterHours := time.Date(2026, time.March, 4, 17, 0, 0, 0, loc)
+	if cal.IsOpen(afterHours) {
+		t.Fatal("expected NYSE closed at 5PM ET")
+	}
+}
+
+func TestCrypto24x7Calendar_IsOpen(t *testing.T) {
+	cal := Crypto24x7Calendar{}
+	loc := mustLoadNY(t)
+	
+	// Always true
+	times := []time.Time{
+		time.Date(2026, time.March, 7, 3, 0, 0, 0, loc),    // Saturday 3AM
+		time.Date(2026, time.March, 8, 12, 0, 0, 0, loc),   // Sunday noon
+		time.Date(2026, time.January, 19, 10, 0, 0, 0, loc), // MLK Day
+		time.Date(2026, time.March, 4, 10, 0, 0, 0, loc),    // Normal Wednesday
+	}
+	for _, tt := range times {
+		if !cal.IsOpen(tt) {
+			t.Fatalf("expected Crypto24x7 open at %v", tt)
+		}
+	}
+}
+
+func TestCalendarFor(t *testing.T) {
+	nyseCal := CalendarFor(AssetClassEquity)
+	if _, ok := nyseCal.(NYSECalendar); !ok {
+		t.Fatal("expected NYSECalendar for Equity")
+	}
+	
+	cryptoCal := CalendarFor(AssetClassCrypto)
+	if _, ok := cryptoCal.(Crypto24x7Calendar); !ok {
+		t.Fatal("expected Crypto24x7Calendar for Crypto")
+	}
+}

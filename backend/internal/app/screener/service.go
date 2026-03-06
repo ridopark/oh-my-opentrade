@@ -35,11 +35,12 @@ type Config struct {
 }
 
 type Service struct {
-	log      zerolog.Logger
-	cfg      Config
-	tenantID string
-	envMode  string
-	symbols  []string
+	log        zerolog.Logger
+	cfg        Config
+	tenantID   string
+	envMode    string
+	symbols    []string
+	assetClass domain.AssetClass
 
 	bus       Bus
 	snapshots ports.SnapshotPort
@@ -56,6 +57,7 @@ func NewService(
 	tenantID string,
 	envMode string,
 	symbols []string,
+	assetClass domain.AssetClass,
 	bus Bus,
 	snapshots ports.SnapshotPort,
 	marketData MarketDataProvider,
@@ -107,17 +109,18 @@ func NewService(
 	}
 
 	return &Service{
-		log:       log,
-		cfg:       cfg,
-		tenantID:  tenantID,
-		envMode:   envMode,
-		symbols:   append([]string(nil), symbols...),
-		bus:       bus,
-		snapshots: snapshots,
-		market:    marketData,
-		repo:      repo,
-		news:      news,
-		now:       time.Now,
+		log:        log,
+		cfg:        cfg,
+		tenantID:   tenantID,
+		envMode:    envMode,
+		symbols:    append([]string(nil), symbols...),
+		assetClass: assetClass,
+		bus:        bus,
+		snapshots:  snapshots,
+		market:     marketData,
+		repo:       repo,
+		news:       news,
+		now:        time.Now,
 	}, nil
 }
 
@@ -147,7 +150,7 @@ func (s *Service) schedulerLoop(ctx context.Context) {
 		}
 
 		next := nextRunTimeET(s.now(), s.cfg.RunAtHourET, s.cfg.RunAtMinuteET)
-		if isNonTradingDay(next) {
+		if !s.assetClass.Is24x7() && isNonTradingDay(next) {
 			next = nextRunTimeET(next.Add(24*time.Hour), s.cfg.RunAtHourET, s.cfg.RunAtMinuteET)
 		}
 		sleep := time.Until(next)
@@ -161,7 +164,7 @@ func (s *Service) schedulerLoop(ctx context.Context) {
 			}
 		}
 
-		if isNonTradingDay(next) {
+		if !s.assetClass.Is24x7() && isNonTradingDay(next) {
 			continue
 		}
 
@@ -253,7 +256,7 @@ func (s *Service) RunScreen(ctx context.Context, asOfET time.Time) error {
 
 		price := snap.PreMarketPrice
 		ps := screenerdomain.PriceSourcePreMarket
-		if price == nil {
+		if s.assetClass.Is24x7() || price == nil {
 			price = snap.LastTradePrice
 			ps = screenerdomain.PriceSourceLastTrade
 		}

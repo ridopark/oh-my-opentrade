@@ -32,6 +32,8 @@ type AlpacaConfig struct {
 	DataURL      string `yaml:"data_url"`
 	Feed         string `yaml:"feed"`
 	PaperMode    bool   `yaml:"paper_mode"`
+	CryptoDataURL string `yaml:"crypto_data_url"`
+	CryptoFeed    string `yaml:"crypto_feed"`
 }
 
 // AIConfig holds configuration for the AI adversarial debate system.
@@ -72,10 +74,64 @@ type TradingConfig struct {
 	MaxDailyLossUSD        float64       `yaml:"max_daily_loss_usd"`
 }
 
+// SymbolGroupConfig represents a group of symbols sharing the same asset class and timeframe.
+type SymbolGroupConfig struct {
+	AssetClass string   `yaml:"asset_class"`
+	Symbols    []string `yaml:"symbols"`
+	Timeframe  string   `yaml:"timeframe"`
+}
+
 // SymbolsConfig represents the symbols to trade and their timeframe.
 type SymbolsConfig struct {
-	Symbols   []string `yaml:"symbols"`
-	Timeframe string   `yaml:"timeframe"`
+	Groups    []SymbolGroupConfig `yaml:"groups,omitempty"`
+	Symbols   []string            `yaml:"symbols,omitempty"`   // backward compat
+	Timeframe string              `yaml:"timeframe,omitempty"` // backward compat
+}
+
+
+// Normalize migrates flat Symbols/Timeframe into Groups for backward compat.
+// If Groups is already populated, it populates the flat Symbols field from Groups.
+// If only Symbols is set, it wraps them in a single EQUITY group.
+func (sc *SymbolsConfig) Normalize() {
+	if len(sc.Groups) > 0 {
+		// Reverse-populate flat Symbols from Groups for backward compat.
+		if len(sc.Symbols) == 0 {
+			sc.Symbols = sc.AllSymbols()
+			if sc.Timeframe == "" && len(sc.Groups) > 0 {
+				sc.Timeframe = sc.Groups[0].Timeframe
+			}
+		}
+		return
+	}
+	if len(sc.Symbols) > 0 {
+		sc.Groups = []SymbolGroupConfig{
+			{
+				AssetClass: "EQUITY",
+				Symbols:    sc.Symbols,
+				Timeframe:  sc.Timeframe,
+			},
+		}
+	}
+}
+
+// SymbolsByAssetClass returns symbols matching the given asset class.
+func (sc *SymbolsConfig) SymbolsByAssetClass(ac string) []string {
+	var result []string
+	for _, g := range sc.Groups {
+		if g.AssetClass == ac {
+			result = append(result, g.Symbols...)
+		}
+	}
+	return result
+}
+
+// AllSymbols returns all symbols across all groups.
+func (sc *SymbolsConfig) AllSymbols() []string {
+	var result []string
+	for _, g := range sc.Groups {
+		result = append(result, g.Symbols...)
+	}
+	return result
 }
 
 // ServerConfig represents the HTTP server configuration.
@@ -123,6 +179,8 @@ const (
 	defaultMaxDailyLossUSD = 5000 // absolute USD cap
 	defaultAIBaseURL       = "https://openrouter.ai/api"
 	defaultAIMinConfidence = 0.6
+	defaultCryptoDataURL   = "wss://stream.data.alpaca.markets"
+	defaultCryptoFeed      = "us"
 )
 
 // Load loads the configuration from env and yaml files.
@@ -142,9 +200,11 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	// Apply defaults
 	raw := rawConfig{
 		Alpaca: AlpacaConfig{
-			PaperMode: true,
-			DataURL:   defaultDataURL,
-			Feed:      defaultFeed,
+			PaperMode:     true,
+			DataURL:       defaultDataURL,
+			Feed:          defaultFeed,
+			CryptoDataURL: defaultCryptoDataURL,
+			CryptoFeed:    defaultCryptoFeed,
 		},
 		Database: DatabaseConfig{
 			Port:        defaultDBPort,
@@ -174,6 +234,7 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	if err := yaml.Unmarshal(yamlBytes, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse YAML file: %w", err)
 	}
+	raw.Symbols.Normalize()
 
 	var killSwitchWindow time.Duration
 	if raw.Trading.KillSwitchWindow != "" {
@@ -226,6 +287,12 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	}
 	if val := os.Getenv("APCA_DATA_URL"); val != "" {
 		cfg.Alpaca.DataURL = val
+	}
+	if val := os.Getenv("APCA_CRYPTO_DATA_URL"); val != "" {
+		cfg.Alpaca.CryptoDataURL = val
+	}
+	if val := os.Getenv("APCA_CRYPTO_FEED"); val != "" {
+		cfg.Alpaca.CryptoFeed = val
 	}
 	if val := os.Getenv("TIMESCALEDB_PASSWORD"); val != "" {
 		cfg.Database.Password = val
@@ -314,18 +381,22 @@ func validate(cfg *Config) error {
 	if cfg.Trading.MaxRiskPercent < 0 {
 		return fmt.Errorf("config validation: maxRiskPercent cannot be negative")
 	}
-	if len(cfg.Symbols.Symbols) == 0 {
-		return fmt.Errorf("config validation: symbols cannot be empty")
+	if len(cfg.Symbols.Groups) == 0 {
+		return fmt.Errorf("config validation: symbols groups cannot be empty")
 	}
 	validTimeframes := map[string]bool{
-		"1m":  true,
-		"5m":  true,
-		"15m": true,
-		"1h":  true,
-		"1d":  true,
+		"1m": true, "5m": true, "15m": true, "1h": true, "1d": true,
 	}
-	if !validTimeframes[cfg.Symbols.Timeframe] {
-		return fmt.Errorf("config validation: invalid timeframe %q", cfg.Symbols.Timeframe)
+	for _, g := range cfg.Symbols.Groups {
+		if g.AssetClass != "EQUITY" && g.AssetClass != "CRYPTO" {
+			return fmt.Errorf("config validation: invalid asset class %q", g.AssetClass)
+		}
+		if len(g.Symbols) == 0 {
+			return fmt.Errorf("config validation: symbol group %q has no symbols", g.AssetClass)
+		}
+		if !validTimeframes[g.Timeframe] {
+			return fmt.Errorf("config validation: invalid timeframe %q for group %q", g.Timeframe, g.AssetClass)
+		}
 	}
 	if cfg.Database.Host == "" {
 		return fmt.Errorf("config validation: database host cannot be empty")

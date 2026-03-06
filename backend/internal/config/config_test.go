@@ -476,3 +476,100 @@ symbols:
 	require.NoError(t, err)
 	assert.Equal(t, "https://paper-api.alpaca.markets", cfg.Alpaca.BaseURL)
 }
+
+func TestSymbolsConfig_Normalize_BackwardCompat(t *testing.T) {
+	sc := SymbolsConfig{
+		Symbols:   []string{"AAPL", "MSFT"},
+		Timeframe: "1m",
+	}
+	sc.Normalize()
+	require.Len(t, sc.Groups, 1)
+	assert.Equal(t, "EQUITY", sc.Groups[0].AssetClass)
+	assert.Equal(t, []string{"AAPL", "MSFT"}, sc.Groups[0].Symbols)
+	assert.Equal(t, "1m", sc.Groups[0].Timeframe)
+}
+
+func TestSymbolsConfig_Normalize_AlreadyGrouped(t *testing.T) {
+	sc := SymbolsConfig{
+		Groups: []SymbolGroupConfig{
+			{AssetClass: "CRYPTO", Symbols: []string{"BTC/USD"}, Timeframe: "1m"},
+		},
+	}
+	sc.Normalize()
+	require.Len(t, sc.Groups, 1) // unchanged
+	assert.Equal(t, "CRYPTO", sc.Groups[0].AssetClass)
+}
+
+func TestSymbolsConfig_SymbolsByAssetClass(t *testing.T) {
+	sc := SymbolsConfig{
+		Groups: []SymbolGroupConfig{
+			{AssetClass: "EQUITY", Symbols: []string{"AAPL", "MSFT"}, Timeframe: "1m"},
+			{AssetClass: "CRYPTO", Symbols: []string{"BTC/USD", "ETH/USD"}, Timeframe: "1m"},
+		},
+	}
+	assert.Equal(t, []string{"AAPL", "MSFT"}, sc.SymbolsByAssetClass("EQUITY"))
+	assert.Equal(t, []string{"BTC/USD", "ETH/USD"}, sc.SymbolsByAssetClass("CRYPTO"))
+	assert.Nil(t, sc.SymbolsByAssetClass("FOREX"))
+}
+
+
+func TestLoad_CryptoConfigDefaults(t *testing.T) {
+	// Arrange
+	tempDir := t.TempDir()
+
+	envContent := `APCA_API_KEY_ID=test-key
+APCA_API_SECRET_KEY=test-secret`
+	envPath := writeFile(t, tempDir, ".env", envContent)
+
+	yamlContent := `alpaca:
+  base_url: https://paper-api.alpaca.markets
+database:
+  host: localhost
+  user: opentrade
+  dbname: opentrade
+symbols:
+  symbols:
+    - AAPL
+  timeframe: 1m`
+	yamlPath := writeFile(t, tempDir, "config.yaml", yamlContent)
+
+	// Act
+	cfg, err := Load(envPath, yamlPath)
+
+	// Assert
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	// Verify crypto defaults are applied
+	assert.Equal(t, "wss://stream.data.alpaca.markets", cfg.Alpaca.CryptoDataURL)
+	assert.Equal(t, "us", cfg.Alpaca.CryptoFeed)
+}
+
+func TestLoad_CryptoConfigEnvOverride(t *testing.T) {
+	// Arrange
+	tempDir := t.TempDir()
+
+	envPath := writeFile(t, tempDir, ".env", "APCA_API_KEY_ID=test\nAPCA_API_SECRET_KEY=test")
+
+	yamlContent := `alpaca:
+  base_url: https://paper-api.alpaca.markets
+  crypto_data_url: wss://yaml-stream.example.com
+  crypto_feed: iex
+database:
+  host: localhost
+symbols:
+  symbols: [AAPL]
+  timeframe: 1m`
+	yamlPath := writeFile(t, tempDir, "config.yaml", yamlContent)
+
+	t.Setenv("APCA_CRYPTO_DATA_URL", "wss://env-stream.example.com")
+	t.Setenv("APCA_CRYPTO_FEED", "sip")
+
+	// Act
+	cfg, err := Load(envPath, yamlPath)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, "wss://env-stream.example.com", cfg.Alpaca.CryptoDataURL)
+	assert.Equal(t, "sip", cfg.Alpaca.CryptoFeed)
+}

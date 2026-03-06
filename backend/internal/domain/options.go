@@ -17,6 +17,7 @@ type InstrumentType string
 const (
 	InstrumentTypeEquity InstrumentType = "EQUITY"
 	InstrumentTypeOption InstrumentType = "OPTION"
+	InstrumentTypeCrypto InstrumentType = "CRYPTO"
 )
 
 // ─────────────────────────────────────────────
@@ -77,7 +78,7 @@ type Instrument struct {
 // For options, UnderlyingSymbol must not be empty.
 // For equities, UnderlyingSymbol may be empty.
 func NewInstrument(itype InstrumentType, sym string, underlying string) (Instrument, error) {
-	if itype != InstrumentTypeEquity && itype != InstrumentTypeOption {
+	if itype != InstrumentTypeEquity && itype != InstrumentTypeOption && itype != InstrumentTypeCrypto {
 		return Instrument{}, fmt.Errorf("invalid instrument type: %q", itype)
 	}
 	if sym == "" {

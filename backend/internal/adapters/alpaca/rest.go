@@ -323,6 +323,7 @@ func (c *RESTClient) GetPositions(ctx context.Context, tenantID string, envMode 
 		Side          string `json:"side"`
 		AvgEntryPrice string `json:"avg_entry_price"`
 		CurrentPrice  string `json:"current_price"`
+		AssetClass    string `json:"asset_class"`
 	}
 	if err := json.NewDecoder(respBody).Decode(&rawPositions); err != nil {
 		return nil, err
@@ -344,6 +345,17 @@ func (c *RESTClient) GetPositions(ctx context.Context, tenantID string, envMode 
 			continue
 		}
 
+		// Normalize crypto symbols: Alpaca returns "BTCUSD" but we use "BTC/USD".
+		sym = sym.ToSlashFormat()
+
+		// Determine asset class from Alpaca's asset_class field.
+		var ac domain.AssetClass
+		if sym.IsCryptoSymbol() || rp.AssetClass == "crypto" {
+			ac = domain.AssetClassCrypto
+		} else {
+			ac = domain.AssetClassEquity
+		}
+
 		trades = append(trades, domain.Trade{
 			Time:       time.Now(),
 			TenantID:   tenantID,
@@ -355,6 +367,7 @@ func (c *RESTClient) GetPositions(ctx context.Context, tenantID string, envMode 
 			Price:      price,
 			Commission: 0,
 			Status:     "open",
+			AssetClass: ac,
 		})
 	}
 	c.log.Debug().Int("count", len(trades)).Msg("positions retrieved")
