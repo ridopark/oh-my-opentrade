@@ -367,3 +367,139 @@ func TestAIScalperState_MarshalUnmarshal(t *testing.T) {
 	assert.Equal(t, st.LastBarClose, restored.LastBarClose)
 	assert.Equal(t, st.Config, restored.Config)
 }
+
+func TestAIScalperStrategy_OnEvent_FillConfirmation(t *testing.T) {
+	s := builtin.NewAIScalperStrategy()
+	ctx := newTestContext(time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "AAPL", aiScalperParams(), nil)
+	require.NoError(t, err)
+
+	scalperSt := st.(*builtin.AIScalperState)
+	scalperSt.PendingEntry = strat.SideBuy
+	scalperSt.PendingEntryAt = ctx.Now()
+
+	st2, signals, err := s.OnEvent(ctx, "AAPL", strat.FillConfirmation{Symbol: "AAPL", Side: strat.SideBuy, Price: 150.0, Quantity: 10}, st)
+	require.NoError(t, err)
+	assert.Empty(t, signals)
+
+	scalperSt2 := st2.(*builtin.AIScalperState)
+	assert.Equal(t, strat.SideBuy, scalperSt2.PositionSide, "fill should promote PendingEntry to PositionSide")
+	assert.Equal(t, strat.Side(""), scalperSt2.PendingEntry, "PendingEntry should be cleared after fill")
+	assert.True(t, scalperSt2.PendingEntryAt.IsZero(), "PendingEntryAt should be reset")
+}
+
+func TestAIScalperStrategy_OnEvent_EntryRejection(t *testing.T) {
+	s := builtin.NewAIScalperStrategy()
+	ctx := newTestContext(time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "AAPL", aiScalperParams(), nil)
+	require.NoError(t, err)
+
+	scalperSt := st.(*builtin.AIScalperState)
+	scalperSt.PendingEntry = strat.SideBuy
+	scalperSt.PendingEntryAt = ctx.Now()
+
+	st2, signals, err := s.OnEvent(ctx, "AAPL", strat.EntryRejection{Symbol: "AAPL", Side: strat.SideBuy, Reason: "DTBP exhausted"}, st)
+	require.NoError(t, err)
+	assert.Empty(t, signals)
+
+	scalperSt2 := st2.(*builtin.AIScalperState)
+	assert.Equal(t, strat.Side(""), scalperSt2.PositionSide, "PositionSide should remain empty after rejection")
+	assert.Equal(t, strat.Side(""), scalperSt2.PendingEntry, "PendingEntry should be cleared after rejection")
+	assert.True(t, scalperSt2.PendingEntryAt.IsZero(), "PendingEntryAt should be reset")
+}
+
+func TestAIScalperStrategy_PendingEntryBlocksExit(t *testing.T) {
+	s := builtin.NewAIScalperStrategy()
+	ctx := newTestContext(time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "AAPL", aiScalperParams(), nil)
+	require.NoError(t, err)
+
+	// Simulate a pending entry — position not confirmed yet.
+	scalperSt := st.(*builtin.AIScalperState)
+	// scalperSt.PositionSide is empty — entry not yet confirmed.
+	scalperSt.PendingEntry = strat.SideBuy
+	scalperSt.PendingEntryAt = ctx.Now()
+	scalperSt.SetIndicators(strat.IndicatorData{RSI: 55, StochK: 10, StochD: 12})
+
+	// RSI > exit_mid would normally trigger exit, but PendingEntry should block it.
+	st2, signals, err := s.OnBar(ctx, "AAPL", strat.Bar{Time: ctx.Now(), Close: 101}, st)
+	require.NoError(t, err)
+	assert.Empty(t, signals, "should not emit exit while PendingEntry is set")
+	_ = st2
+}
+
+func TestAIScalperStrategy_PendingEntryBlocksNewEntry(t *testing.T) {
+	s := builtin.NewAIScalperStrategy()
+	ctx := newTestContext(time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "AAPL", aiScalperParams(), nil)
+	require.NoError(t, err)
+
+	// Set up cross for bar 1.
+	scalperSt := st.(*builtin.AIScalperState)
+	scalperSt.SetIndicators(strat.IndicatorData{RSI: 25, StochK: 15, StochD: 18})
+	st, _, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: ctx.Now(), Close: 100}, st)
+	require.NoError(t, err)
+
+	// Bar 2: triggers entry → sets PendingEntry.
+	scalperSt = st.(*builtin.AIScalperState)
+	scalperSt.SetIndicators(strat.IndicatorData{RSI: 25, StochK: 19, StochD: 18})
+	st, signals, err := s.OnBar(ctx, "AAPL", strat.Bar{Time: ctx.Now().Add(time.Minute), Close: 101}, st)
+	require.NoError(t, err)
+	require.Len(t, signals, 1)
+
+	scalperSt = st.(*builtin.AIScalperState)
+	assert.Equal(t, strat.SideBuy, scalperSt.PendingEntry, "PendingEntry should be set")
+	assert.Equal(t, strat.Side(""), scalperSt.PositionSide, "PositionSide should remain empty until fill")
+
+	// Bar 3: same conditions, but should be blocked because PendingEntry is set.
+	scalperSt.SetIndicators(strat.IndicatorData{RSI: 25, StochK: 15, StochD: 18})
+	st, _, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: ctx.Now().Add(2 * time.Minute), Close: 100}, st)
+	require.NoError(t, err)
+
+	scalperSt = st.(*builtin.AIScalperState)
+	scalperSt.SetIndicators(strat.IndicatorData{RSI: 25, StochK: 19, StochD: 18})
+	st, signals, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: ctx.Now().Add(3 * time.Minute), Close: 101}, st)
+	require.NoError(t, err)
+	assert.Empty(t, signals, "should not emit second entry while PendingEntry is set")
+}
+
+func TestAIScalperStrategy_PendingEntryTimeout(t *testing.T) {
+	s := builtin.NewAIScalperStrategy()
+	ctx := newTestContext(time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "AAPL", aiScalperParams(), nil)
+	require.NoError(t, err)
+
+	scalperSt := st.(*builtin.AIScalperState)
+	scalperSt.PendingEntry = strat.SideBuy
+	scalperSt.PendingEntryAt = ctx.Now().Add(-6 * time.Minute) // 6 min ago, past the 5 min timeout
+	scalperSt.SetIndicators(strat.IndicatorData{RSI: 40, StochK: 50, StochD: 50})
+
+	st2, _, err := s.OnBar(ctx, "AAPL", strat.Bar{Time: ctx.Now(), Close: 100}, st)
+	require.NoError(t, err)
+
+	scalperSt2 := st2.(*builtin.AIScalperState)
+	assert.Equal(t, strat.Side(""), scalperSt2.PendingEntry, "PendingEntry should be cleared after timeout")
+	assert.True(t, scalperSt2.PendingEntryAt.IsZero(), "PendingEntryAt should be reset after timeout")
+}
+
+func TestAIScalperState_MarshalUnmarshal_PendingEntry(t *testing.T) {
+	now := time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC)
+	st := &builtin.AIScalperState{
+		Symbol:         "AAPL",
+		PositionSide:   strat.Side(""),
+		PendingEntry:   strat.SideBuy,
+		PendingEntryAt: now,
+		Config:         builtin.AIScalperConfig{RSILong: 30, RSIShort: 70, StochLong: 20, StochShort: 80, RSIExitMid: 50, AllowRegimes: []string{"BALANCE"}, CooldownSeconds: 60, MaxTradesPerDay: 10},
+	}
+
+	data, err := st.Marshal()
+	require.NoError(t, err)
+	require.NotEmpty(t, data)
+
+	restored := &builtin.AIScalperState{}
+	require.NoError(t, restored.Unmarshal(data))
+
+	assert.Equal(t, strat.SideBuy, restored.PendingEntry)
+	assert.True(t, now.Equal(restored.PendingEntryAt))
+	assert.Equal(t, strat.Side(""), restored.PositionSide)
+}

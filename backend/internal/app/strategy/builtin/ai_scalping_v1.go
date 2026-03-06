@@ -59,6 +59,8 @@ type AIScalperState struct {
 	TradesToday        int
 	CooldownUntil      time.Time
 	PositionSide       strat.Side
+	PendingEntry       strat.Side // set on signal emission, cleared on fill/rejection
+	PendingEntryAt     time.Time  // when PendingEntry was set (for timeout recovery)
 	PendingAIRequestID string
 	LastAIVerdict      string
 	LastAIConfidence   float64
@@ -115,6 +117,8 @@ func (s *AIScalperStrategy) Init(ctx strat.Context, symbol string, params map[st
 			st.TradesToday = aiPrior.TradesToday
 			st.CooldownUntil = aiPrior.CooldownUntil
 			st.PositionSide = aiPrior.PositionSide
+			st.PendingEntry = aiPrior.PendingEntry
+			st.PendingEntryAt = aiPrior.PendingEntryAt
 			st.PendingAIRequestID = aiPrior.PendingAIRequestID
 			st.LastAIVerdict = aiPrior.LastAIVerdict
 			st.LastAIConfidence = aiPrior.LastAIConfidence
@@ -141,6 +145,20 @@ func (s *AIScalperStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Ba
 	now := bar.Time
 	if ctx != nil {
 		now = ctx.Now()
+	}
+
+	// Pending-entry timeout: if we've been waiting for a fill/rejection for more
+	// than 5 minutes, assume the event was lost and clear the pending state.
+	const pendingEntryTimeout = 5 * time.Minute
+	if aiSt.PendingEntry != "" && now.Sub(aiSt.PendingEntryAt) > pendingEntryTimeout {
+		if ctx != nil && ctx.Logger() != nil {
+			ctx.Logger().Warn("PendingEntry timeout — clearing",
+				"side", aiSt.PendingEntry,
+				"pending_since", aiSt.PendingEntryAt,
+			)
+		}
+		aiSt.PendingEntry = ""
+		aiSt.PendingEntryAt = time.Time{}
 	}
 
 	// Read current indicators.
@@ -180,7 +198,7 @@ func (s *AIScalperStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Ba
 	cooldown := time.Duration(cfg.CooldownSeconds) * time.Second
 
 	// 1. Exit signals (always checked, even during cooldown).
-	if aiSt.PositionSide == strat.SideBuy {
+	if aiSt.PositionSide == strat.SideBuy && aiSt.PendingEntry == "" {
 		exitLong := rsi >= cfg.RSIExitMid || stochK >= cfg.StochShort || regimeIsTrend
 		if exitLong {
 			sig, err := strat.NewSignal(instanceID, symbol, strat.SignalExit, strat.SideSell, 0.8, map[string]string{
@@ -196,7 +214,7 @@ func (s *AIScalperStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Ba
 			return aiSt, []strat.Signal{sig}, nil
 		}
 	}
-	if aiSt.PositionSide == strat.SideSell {
+	if aiSt.PositionSide == strat.SideSell && aiSt.PendingEntry == "" {
 		exitShort := rsi <= (100-cfg.RSIExitMid) || stochK <= cfg.StochLong || regimeIsTrend
 		if exitShort {
 			sig, err := strat.NewSignal(instanceID, symbol, strat.SignalExit, strat.SideBuy, 0.8, map[string]string{
@@ -222,7 +240,7 @@ func (s *AIScalperStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Ba
 	}
 
 	// 3. Only entries if flat and regime allowed.
-	if aiSt.PositionSide != "" {
+	if aiSt.PositionSide != "" || aiSt.PendingEntry != "" {
 		return aiSt, nil, nil
 	}
 	if !regimeAllowed {
@@ -250,7 +268,8 @@ func (s *AIScalperStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Ba
 		if err != nil {
 			return aiSt, nil, err
 		}
-		aiSt.PositionSide = strat.SideBuy
+		aiSt.PendingEntry = strat.SideBuy
+		aiSt.PendingEntryAt = now
 		aiSt.TradesToday++
 		aiSt.CooldownUntil = now.Add(cooldown)
 		aiSt.LastBarClose = bar.Close
@@ -278,7 +297,8 @@ func (s *AIScalperStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Ba
 		if err != nil {
 			return aiSt, nil, err
 		}
-		aiSt.PositionSide = strat.SideSell
+		aiSt.PendingEntry = strat.SideSell
+		aiSt.PendingEntryAt = now
 		aiSt.TradesToday++
 		aiSt.CooldownUntil = now.Add(cooldown)
 		aiSt.LastBarClose = bar.Close
@@ -288,18 +308,54 @@ func (s *AIScalperStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Ba
 	return aiSt, nil, nil
 }
 
-// OnEvent handles AI debate results and other async events.
+// OnEvent handles fill confirmations, entry rejections, AI debate results,
+// and other async events.
 func (s *AIScalperStrategy) OnEvent(ctx strat.Context, symbol string, evt any, st strat.State) (strat.State, []strat.Signal, error) {
 	aiSt, ok := st.(*AIScalperState)
 	if !ok {
 		return st, nil, fmt.Errorf("AIScalperStrategy.OnEvent: expected *AIScalperState, got %T", st)
 	}
 
-	result, ok := evt.(AIDebateResult)
-	if !ok {
+	switch e := evt.(type) {
+	case strat.FillConfirmation:
+		// Entry was filled — promote PendingEntry to confirmed PositionSide.
+		if aiSt.PendingEntry != "" {
+			aiSt.PositionSide = aiSt.PendingEntry
+			aiSt.PendingEntry = ""
+			aiSt.PendingEntryAt = time.Time{}
+			if ctx != nil && ctx.Logger() != nil {
+				ctx.Logger().Info("entry filled — position confirmed",
+					"side", aiSt.PositionSide,
+					"price", e.Price,
+				)
+			}
+		}
+		return aiSt, nil, nil
+
+	case strat.EntryRejection:
+		// Entry was rejected — clear PendingEntry so strategy can re-evaluate.
+		if aiSt.PendingEntry != "" {
+			if ctx != nil && ctx.Logger() != nil {
+				ctx.Logger().Warn("entry rejected — clearing pending state",
+					"side", aiSt.PendingEntry,
+					"reason", e.Reason,
+				)
+			}
+			aiSt.PendingEntry = ""
+			aiSt.PendingEntryAt = time.Time{}
+		}
+		return aiSt, nil, nil
+
+	case AIDebateResult:
+		return s.handleAIDebate(ctx, symbol, e, aiSt)
+
+	default:
 		return st, nil, nil
 	}
+}
 
+// handleAIDebate processes AI debate results (extracted from OnEvent for clarity).
+func (s *AIScalperStrategy) handleAIDebate(ctx strat.Context, symbol string, result AIDebateResult, aiSt *AIScalperState) (strat.State, []strat.Signal, error) {
 	// Ignore if request ID doesn't match pending.
 	if result.RequestID != aiSt.PendingAIRequestID {
 		return aiSt, nil, nil
@@ -378,6 +434,8 @@ type aiScalperStateJSON struct {
 	TradesToday        int                 `json:"trades_today"`
 	CooldownUntil      time.Time           `json:"cooldown_until"`
 	PositionSide       strat.Side          `json:"position_side"`
+	PendingEntry       strat.Side          `json:"pending_entry"`
+	PendingEntryAt     time.Time           `json:"pending_entry_at"`
 	PendingAIRequestID string              `json:"pending_ai_request_id"`
 	LastAIVerdict      string              `json:"last_ai_verdict"`
 	LastAIConfidence   float64             `json:"last_ai_confidence"`
@@ -396,6 +454,8 @@ func (s *AIScalperState) Marshal() ([]byte, error) {
 		TradesToday:        s.TradesToday,
 		CooldownUntil:      s.CooldownUntil,
 		PositionSide:       s.PositionSide,
+		PendingEntry:       s.PendingEntry,
+		PendingEntryAt:     s.PendingEntryAt,
 		PendingAIRequestID: s.PendingAIRequestID,
 		LastAIVerdict:      s.LastAIVerdict,
 		LastAIConfidence:   s.LastAIConfidence,
@@ -419,6 +479,8 @@ func (s *AIScalperState) Unmarshal(data []byte) error {
 	s.TradesToday = j.TradesToday
 	s.CooldownUntil = j.CooldownUntil
 	s.PositionSide = j.PositionSide
+	s.PendingEntry = j.PendingEntry
+	s.PendingEntryAt = j.PendingEntryAt
 	s.PendingAIRequestID = j.PendingAIRequestID
 	s.LastAIVerdict = j.LastAIVerdict
 	s.LastAIConfidence = j.LastAIConfidence

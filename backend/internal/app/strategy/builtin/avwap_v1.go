@@ -58,15 +58,17 @@ type AVWAPConfig struct {
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
 type AVWAPState struct {
-	Symbol        string
-	Calc          *strat.AnchoredVWAPCalc
-	Indicators    strat.IndicatorData
-	AboveCount    map[string]int
-	BelowCount    map[string]int
-	TradesToday   int
-	CooldownUntil time.Time
-	PositionSide  strat.Side
-	Config        AVWAPConfig
+	Symbol         string
+	Calc           *strat.AnchoredVWAPCalc
+	Indicators     strat.IndicatorData
+	AboveCount     map[string]int
+	BelowCount     map[string]int
+	TradesToday    int
+	CooldownUntil  time.Time
+	PositionSide   strat.Side
+	PendingEntry   strat.Side // set on signal emission, cleared on fill/rejection
+	PendingEntryAt time.Time  // when PendingEntry was set (for timeout recovery)
+	Config         AVWAPConfig
 }
 
 // SetIndicators implements the indicatorSetter interface.
@@ -205,6 +207,8 @@ func (s *AVWAPStrategy) Init(ctx strat.Context, symbol string, params map[string
 			st.TradesToday = avwapPrior.TradesToday
 			st.CooldownUntil = avwapPrior.CooldownUntil
 			st.PositionSide = avwapPrior.PositionSide
+			st.PendingEntry = avwapPrior.PendingEntry
+			st.PendingEntryAt = avwapPrior.PendingEntryAt
 			st.Config = cfg
 		} else if ctx != nil && ctx.Logger() != nil {
 			ctx.Logger().Warn("AVWAPStrategy: incompatible prior state, starting fresh", "symbol", symbol)
@@ -225,6 +229,15 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 	now := bar.Time
 	if ctx != nil {
 		now = ctx.Now()
+	}
+
+	// Pending-entry timeout: if entry signal was emitted but no fill/rejection after 5 min, reset.
+	if avwapSt.PendingEntry != "" && now.Sub(avwapSt.PendingEntryAt) > 5*time.Minute {
+		if ctx != nil && ctx.Logger() != nil {
+			ctx.Logger().Warn("AVWAPStrategy: pending entry timed out, resetting", "symbol", symbol, "side", avwapSt.PendingEntry)
+		}
+		avwapSt.PendingEntry = ""
+		avwapSt.PendingEntryAt = time.Time{}
 	}
 
 	// 1. Cooldown / max trades gate.
@@ -272,7 +285,7 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 	cooldown := time.Duration(cfg.CooldownSeconds) * time.Second
 
 	// 5. Exit signals (check even if cooldown would block new entries).
-	if avwapSt.PositionSide == strat.SideBuy {
+	if avwapSt.PositionSide == strat.SideBuy && avwapSt.PendingEntry == "" {
 		for _, belowCnt := range avwapSt.BelowCount {
 			if belowCnt >= cfg.ExitHoldBars {
 				sig, err := strat.NewSignal(instanceID, symbol, strat.SignalExit, strat.SideSell, 0.8, map[string]string{
@@ -289,7 +302,7 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 			}
 		}
 	}
-	if avwapSt.PositionSide == strat.SideSell {
+	if avwapSt.PositionSide == strat.SideSell && avwapSt.PendingEntry == "" {
 		for _, aboveCnt := range avwapSt.AboveCount {
 			if aboveCnt >= cfg.ExitHoldBars {
 				sig, err := strat.NewSignal(instanceID, symbol, strat.SignalExit, strat.SideBuy, 0.8, map[string]string{
@@ -308,7 +321,7 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 	}
 
 	// 6. Only entries if flat and regime allowed.
-	if avwapSt.PositionSide != "" {
+	if avwapSt.PositionSide != "" || avwapSt.PendingEntry != "" {
 		return avwapSt, nil, nil
 	}
 	if !regimeAllowed {
@@ -342,7 +355,8 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 				if err != nil {
 					return avwapSt, nil, err
 				}
-				avwapSt.PositionSide = strat.SideBuy
+				avwapSt.PendingEntry = strat.SideBuy
+				avwapSt.PendingEntryAt = now
 				avwapSt.TradesToday++
 				avwapSt.CooldownUntil = now.Add(cooldown)
 				return avwapSt, []strat.Signal{sig}, nil
@@ -371,7 +385,8 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 				if err != nil {
 					return avwapSt, nil, err
 				}
-				avwapSt.PositionSide = strat.SideSell
+				avwapSt.PendingEntry = strat.SideSell
+				avwapSt.PendingEntryAt = now
 				avwapSt.TradesToday++
 				avwapSt.CooldownUntil = now.Add(cooldown)
 				return avwapSt, []strat.Signal{sig}, nil
@@ -404,7 +419,8 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 				if err != nil {
 					return avwapSt, nil, err
 				}
-				avwapSt.PositionSide = strat.SideBuy
+				avwapSt.PendingEntry = strat.SideBuy
+				avwapSt.PendingEntryAt = now
 				avwapSt.TradesToday++
 				avwapSt.CooldownUntil = now.Add(cooldown)
 				return avwapSt, []strat.Signal{sig}, nil
@@ -435,7 +451,8 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 				if err != nil {
 					return avwapSt, nil, err
 				}
-				avwapSt.PositionSide = strat.SideSell
+				avwapSt.PendingEntry = strat.SideSell
+				avwapSt.PendingEntryAt = now
 				avwapSt.TradesToday++
 				avwapSt.CooldownUntil = now.Add(cooldown)
 				return avwapSt, []strat.Signal{sig}, nil
@@ -446,24 +463,55 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 	return avwapSt, nil, nil
 }
 
-// OnEvent is a no-op for the AVWAP strategy — it only reacts to bars.
+// OnEvent handles fill confirmations and entry rejections for AVWAP strategy.
 func (s *AVWAPStrategy) OnEvent(ctx strat.Context, symbol string, evt any, st strat.State) (strat.State, []strat.Signal, error) {
-	return st, nil, nil
+	avwapSt, ok := st.(*AVWAPState)
+	if !ok {
+		return st, nil, fmt.Errorf("AVWAPStrategy.OnEvent: expected *AVWAPState, got %T", st)
+	}
+
+	switch e := evt.(type) {
+	case strat.FillConfirmation:
+		if avwapSt.PendingEntry != "" {
+			avwapSt.PositionSide = avwapSt.PendingEntry
+			avwapSt.PendingEntry = ""
+			avwapSt.PendingEntryAt = time.Time{}
+			if ctx != nil && ctx.Logger() != nil {
+				ctx.Logger().Info("AVWAPStrategy: fill confirmed, position active", "symbol", symbol, "side", avwapSt.PositionSide, "price", e.Price)
+			}
+		}
+		return avwapSt, nil, nil
+
+	case strat.EntryRejection:
+		if avwapSt.PendingEntry != "" {
+			if ctx != nil && ctx.Logger() != nil {
+				ctx.Logger().Warn("AVWAPStrategy: entry rejected, clearing pending", "symbol", symbol, "side", avwapSt.PendingEntry, "reason", e.Reason)
+			}
+			avwapSt.PendingEntry = ""
+			avwapSt.PendingEntryAt = time.Time{}
+		}
+		return avwapSt, nil, nil
+
+	default:
+		return avwapSt, nil, nil
+	}
 }
 
 // --- Serialization ---
 
 type avwapStateJSON struct {
-	Symbol        string                             `json:"symbol"`
-	Config        AVWAPConfig                        `json:"config"`
-	CalcStates    map[string]strat.AnchoredVWAPState `json:"calc_states"`
-	Anchors       []strat.AnchorPoint                `json:"anchors"`
-	AboveCount    map[string]int                     `json:"above_count"`
-	BelowCount    map[string]int                     `json:"below_count"`
-	TradesToday   int                                `json:"trades_today"`
-	CooldownUntil time.Time                          `json:"cooldown_until"`
-	PositionSide  strat.Side                         `json:"position_side"`
-	Indicators    strat.IndicatorData                `json:"indicators"`
+	Symbol         string                             `json:"symbol"`
+	Config         AVWAPConfig                        `json:"config"`
+	CalcStates     map[string]strat.AnchoredVWAPState `json:"calc_states"`
+	Anchors        []strat.AnchorPoint                `json:"anchors"`
+	AboveCount     map[string]int                     `json:"above_count"`
+	BelowCount     map[string]int                     `json:"below_count"`
+	TradesToday    int                                `json:"trades_today"`
+	CooldownUntil  time.Time                          `json:"cooldown_until"`
+	PositionSide   strat.Side                         `json:"position_side"`
+	PendingEntry   strat.Side                         `json:"pending_entry"`
+	PendingEntryAt time.Time                          `json:"pending_entry_at"`
+	Indicators     strat.IndicatorData                `json:"indicators"`
 }
 
 func (s *AVWAPState) Marshal() ([]byte, error) {
@@ -475,16 +523,18 @@ func (s *AVWAPState) Marshal() ([]byte, error) {
 	}
 
 	j := avwapStateJSON{
-		Symbol:        s.Symbol,
-		Config:        s.Config,
-		CalcStates:    s.Calc.States(),
-		Anchors:       anchors,
-		AboveCount:    s.AboveCount,
-		BelowCount:    s.BelowCount,
-		TradesToday:   s.TradesToday,
-		CooldownUntil: s.CooldownUntil,
-		PositionSide:  s.PositionSide,
-		Indicators:    s.Indicators,
+		Symbol:         s.Symbol,
+		Config:         s.Config,
+		CalcStates:     s.Calc.States(),
+		Anchors:        anchors,
+		AboveCount:     s.AboveCount,
+		BelowCount:     s.BelowCount,
+		TradesToday:    s.TradesToday,
+		CooldownUntil:  s.CooldownUntil,
+		PositionSide:   s.PositionSide,
+		PendingEntry:   s.PendingEntry,
+		PendingEntryAt: s.PendingEntryAt,
+		Indicators:     s.Indicators,
 	}
 	return json.Marshal(j)
 }
@@ -501,6 +551,8 @@ func (s *AVWAPState) Unmarshal(data []byte) error {
 	s.TradesToday = j.TradesToday
 	s.CooldownUntil = j.CooldownUntil
 	s.PositionSide = j.PositionSide
+	s.PendingEntry = j.PendingEntry
+	s.PendingEntryAt = j.PendingEntryAt
 	s.Indicators = j.Indicators
 
 	s.Calc = strat.NewAnchoredVWAPCalc()

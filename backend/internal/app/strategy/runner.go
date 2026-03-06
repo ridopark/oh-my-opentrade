@@ -65,13 +65,20 @@ func (r *Runner) SetSwapManager(sm *SwapManager) { r.swapManager = sm }
 // SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
 func (r *Runner) SetMetrics(m *metrics.Metrics) { r.metrics = m }
 
-// Start subscribes the runner to MarketBarSanitized and StateUpdated events on the event bus.
+// Start subscribes the runner to MarketBarSanitized, StateUpdated, FillReceived,
+// and OrderIntentRejected events on the event bus.
 func (r *Runner) Start(ctx context.Context) error {
 	if err := r.eventBus.Subscribe(ctx, domain.EventMarketBarSanitized, r.handleBar); err != nil {
 		return fmt.Errorf("strategy runner: failed to subscribe to MarketBarSanitized: %w", err)
 	}
 	if err := r.eventBus.Subscribe(ctx, domain.EventStateUpdated, r.handleStateUpdated); err != nil {
 		return fmt.Errorf("strategy runner: failed to subscribe to StateUpdated: %w", err)
+	}
+	if err := r.eventBus.Subscribe(ctx, domain.EventFillReceived, r.handleFill); err != nil {
+		return fmt.Errorf("strategy runner: failed to subscribe to FillReceived: %w", err)
+	}
+	if err := r.eventBus.Subscribe(ctx, domain.EventOrderIntentRejected, r.handleRejection); err != nil {
+		return fmt.Errorf("strategy runner: failed to subscribe to OrderIntentRejected: %w", err)
 	}
 	r.logger.Info("strategy runner subscribed to MarketBarSanitized events")
 	return nil
@@ -348,6 +355,153 @@ func (r *Runner) emitDomainEvent(ctx context.Context, tenantID string, envMode d
 		return err
 	}
 	return r.eventBus.Publish(ctx, *ev)
+}
+
+// handleFill routes a FillReceived event to the matching strategy instance.
+// The strategy uses this to confirm its entry and transition from PendingEntry
+// to an actual PositionSide.
+func (r *Runner) handleFill(_ context.Context, event domain.Event) error {
+	payload, ok := event.Payload.(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	symbol, _ := payload["symbol"].(string)
+	strategyName, _ := payload["strategy"].(string)
+	side, _ := payload["side"].(string)
+	qty, _ := payload["quantity"].(float64)
+	price, _ := payload["price"].(float64)
+
+	if symbol == "" || strategyName == "" {
+		return nil
+	}
+
+	inst := r.findInstanceByStrategyAndSymbol(strategyName, symbol)
+	if inst == nil {
+		r.logger.Debug("handleFill: no matching instance", "strategy", strategyName, "symbol", symbol)
+		return nil
+	}
+
+	// Map side string to strat.Side.
+	var fillSide strat.Side
+	switch side {
+	case "BUY":
+		fillSide = strat.SideBuy
+	case "SELL":
+		fillSide = strat.SideSell
+	default:
+		r.logger.Warn("handleFill: unknown side", "side", side)
+		return nil
+	}
+
+	instCtx := &instanceContext{
+		now:    time.Now(),
+		logger: r.logger.With("instance_id", inst.ID().String(), "symbol", symbol),
+		emit:   func(_ any) error { return nil },
+	}
+
+	confirmation := strat.FillConfirmation{
+		Symbol:   symbol,
+		Side:     fillSide,
+		Quantity: qty,
+		Price:    price,
+	}
+
+	r.mu.Lock()
+	signals, err := inst.OnEvent(instCtx, symbol, confirmation)
+	r.mu.Unlock()
+
+	if err != nil {
+		r.logger.Error("handleFill: OnEvent failed",
+			"instance_id", inst.ID().String(),
+			"symbol", symbol,
+			"error", err,
+		)
+		return nil
+	}
+
+	_ = signals // Fill confirmations should not produce new signals.
+	r.logger.Info("handleFill: routed to strategy",
+		"instance_id", inst.ID().String(),
+		"symbol", symbol,
+		"side", side,
+		"price", price,
+	)
+	return nil
+}
+
+// handleRejection routes an OrderIntentRejected event to the matching strategy
+// instance. Only entry rejections (LONG, SHORT) are forwarded — exit rejections
+// don't need feedback because re-emission on the next bar is the correct retry.
+func (r *Runner) handleRejection(_ context.Context, event domain.Event) error {
+	payload, ok := event.Payload.(domain.OrderIntentEventPayload)
+	if !ok {
+		return nil
+	}
+
+	// Only forward entry rejections. Exit rejections (CLOSE_LONG, CLOSE_SHORT)
+	// don't need strategy feedback — the strategy will re-emit on next bar.
+	var rejSide strat.Side
+	switch domain.Direction(payload.Direction) {
+	case domain.DirectionLong:
+		rejSide = strat.SideBuy
+	case domain.DirectionShort:
+		rejSide = strat.SideSell
+	default:
+		return nil // exit rejection — ignore
+	}
+
+	inst := r.findInstanceByStrategyAndSymbol(payload.Strategy, payload.Symbol)
+	if inst == nil {
+		r.logger.Debug("handleRejection: no matching instance", "strategy", payload.Strategy, "symbol", payload.Symbol)
+		return nil
+	}
+
+	instCtx := &instanceContext{
+		now:    time.Now(),
+		logger: r.logger.With("instance_id", inst.ID().String(), "symbol", payload.Symbol),
+		emit:   func(_ any) error { return nil },
+	}
+
+	rejection := strat.EntryRejection{
+		Symbol: payload.Symbol,
+		Side:   rejSide,
+		Reason: payload.Reason,
+	}
+
+	r.mu.Lock()
+	signals, err := inst.OnEvent(instCtx, payload.Symbol, rejection)
+	r.mu.Unlock()
+
+	if err != nil {
+		r.logger.Error("handleRejection: OnEvent failed",
+			"instance_id", inst.ID().String(),
+			"symbol", payload.Symbol,
+			"error", err,
+		)
+		return nil
+	}
+
+	_ = signals // Entry rejections should not produce new signals.
+	r.logger.Info("handleRejection: routed to strategy",
+		"instance_id", inst.ID().String(),
+		"symbol", payload.Symbol,
+		"side", rejSide,
+		"reason", payload.Reason,
+	)
+	return nil
+}
+
+// findInstanceByStrategyAndSymbol finds the instance assigned to a given symbol
+// whose strategy Meta().ID matches strategyName. Returns nil if not found.
+func (r *Runner) findInstanceByStrategyAndSymbol(strategyName, symbol string) *Instance {
+	instances := r.router.InstancesForSymbol(symbol)
+	for _, inst := range instances {
+		if inst.Strategy().Meta().ID.String() == strategyName {
+			return inst
+		}
+	}
+	return nil
 }
 
 // domainBarToStratBar converts a domain.MarketBar to a strategy.Bar.

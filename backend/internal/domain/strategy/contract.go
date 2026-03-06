@@ -143,3 +143,21 @@ type AnchorRegime struct {
 	Type     string
 	Strength float64
 }
+
+// FillConfirmation is sent to a strategy when its entry order is filled.
+// The strategy should transition from PendingEntry to confirmed PositionSide.
+type FillConfirmation struct {
+	Symbol   string
+	Side     Side // SideBuy or SideSell — the side that was filled
+	Quantity float64
+	Price    float64
+}
+
+// EntryRejection is sent to a strategy when its entry signal is rejected
+// downstream (risk, position gate, broker, etc.). The strategy should clear
+// its PendingEntry state so it can re-evaluate on the next bar.
+type EntryRejection struct {
+	Symbol string
+	Side   Side   // the side that was rejected
+	Reason string
+}
