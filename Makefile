@@ -3,7 +3,8 @@ BINARY_NAME := omo-core
 BACKEND_DIR := backend
 BIN_DIR := $(BACKEND_DIR)/bin
 
-.PHONY: all build backfill test test-v test-race test-cover test-integration clean lint migrate fmt debug-chrome debug-chrome-headless install-hooks
+.PHONY: all build backfill test test-v test-race test-cover test-integration clean lint migrate fmt debug-chrome debug-chrome-headless install-hooks \
+	prod-logs prod-logs-signals prod-logs-orders prod-logs-exits prod-logs-errors prod-logs-tail
 
 all: test build
 
@@ -71,3 +72,34 @@ debug-chrome-headless:
 install-hooks:
 	git config core.hooksPath .githooks
 	@echo "Git hooks installed (.githooks/pre-commit)"
+
+# ---------------------------------------------------------------------------
+# Production Logs (OCI VM)
+# ---------------------------------------------------------------------------
+PROD_HOST := ubuntu@132.145.217.41
+PROD_LOGS := ssh $(PROD_HOST) "docker logs omo-core 2>&1"
+PROD_LINES ?= 30
+
+## Show recent production logs (PROD_LINES=50 to override)
+prod-logs-tail:
+	@$(PROD_LOGS) | tail -$(PROD_LINES)
+
+## Search production logs for signal activity (entries + exits)
+prod-logs-signals:
+	@$(PROD_LOGS) | grep -iE "(signal_created|SignalExit|SignalEntry|signal.*exit|signal.*entry)" | tail -$(PROD_LINES) || echo "No signal activity found"
+
+## Search production logs for order/intent activity
+prod-logs-orders:
+	@$(PROD_LOGS) | grep -iE "(intent|order|submitted|filled|rejected|signal)" | tail -$(PROD_LINES) || echo "No order activity found"
+
+## Search production logs for exit/close activity
+prod-logs-exits:
+	@$(PROD_LOGS) | grep -iE "(CLOSE_LONG|CLOSE_SHORT|exit_qty|exit.*submit|exit.*intent|direction.*CLOSE)" | tail -$(PROD_LINES) || echo "No exit activity found"
+
+## Search production logs for errors and warnings
+prod-logs-errors:
+	@$(PROD_LOGS) | grep -iE "(error|ERR|panic|fatal|WARN)" | tail -$(PROD_LINES) || echo "No errors found"
+
+## Free-text search production logs (usage: make prod-logs Q="your search term")
+prod-logs:
+	@$(PROD_LOGS) | grep -iE "$(Q)" | tail -$(PROD_LINES) || echo "No matches for '$(Q)'"
