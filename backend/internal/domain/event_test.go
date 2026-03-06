@@ -78,4 +78,6 @@ func TestEventTypeConstants(t *testing.T) {
 	assert.Equal(t, "PositionUpdated", domain.EventPositionUpdated)
 	assert.Equal(t, "KillSwitchEngaged", domain.EventKillSwitchEngaged)
 	assert.Equal(t, "CircuitBreakerTripped", domain.EventCircuitBreakerTripped)
+	assert.Equal(t, "SignalDebateRequested", domain.EventSignalDebateRequested)
+	assert.Equal(t, "SignalEnriched", domain.EventSignalEnriched)
 }

@@ -38,6 +38,8 @@ const (
 	EventOptionChainReceived     EventType = "OptionChainReceived"
 	EventOptionContractSelected  EventType = "OptionContractSelected"
 	EventSignalCreated           EventType = "SignalCreated"
+	EventSignalDebateRequested   EventType = "SignalDebateRequested"
+	EventSignalEnriched          EventType = "SignalEnriched"
 	EventScreenerTicked          EventType = "ScreenerTicked"
 	EventScreenerCompleted       EventType = "ScreenerCompleted"
 	EventEffectiveSymbolsUpdated EventType = "EffectiveSymbolsUpdated"
