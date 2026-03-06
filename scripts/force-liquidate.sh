@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Configuration - Update these with your Paper keys
-API_KEY="PK5XDG5CFUABPGU465IPQVTIHM"
-API_SECRET="2EqxsBLpcbK3vFotJ9UAjnXSR3u77Kmogint5Houi7Ev"
+API_KEY="YOUR_PAPER_KEY"
+API_SECRET="YOUR_PAPER_SECRET"
 BASE_URL="https://paper-api.alpaca.markets"
 
 SYMBOL=$1
