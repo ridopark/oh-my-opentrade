@@ -58,8 +58,9 @@ type OrderIntent struct {
 	Confidence     float64   `json:"confidence"`
 	IdempotencyKey string    `json:"idempotencyKey"`
 	// Options-specific fields (nil/zero for equity orders)
-	Instrument *Instrument `json:"instrument,omitempty"`
-	MaxLossUSD float64     `json:"maxLossUSD,omitempty"`
+	Instrument *Instrument       `json:"instrument,omitempty"`
+	MaxLossUSD float64           `json:"maxLossUSD,omitempty"`
+	Meta       map[string]string `json:"meta,omitempty"`
 }
 
 // OrderIntentStatus indicates where in the pipeline an order intent currently sits.
@@ -76,18 +77,19 @@ const (
 // It embeds the intent fields and adds a Status so the frontend can derive
 // the current lifecycle stage from a single payload.
 type OrderIntentEventPayload struct {
-	ID             string  `json:"id"`
-	Symbol         string  `json:"symbol"`
-	Direction      string  `json:"direction"`
-	LimitPrice     float64 `json:"limitPrice"`
-	StopLoss       float64 `json:"stopLoss"`
-	MaxSlippageBPS int     `json:"maxSlippageBPS"`
-	Quantity       float64 `json:"quantity"`
-	Strategy       string  `json:"strategy"`
-	Rationale      string  `json:"rationale"`
-	Confidence     float64 `json:"confidence"`
-	Status         string  `json:"status"`
-	Reason         string  `json:"reason,omitempty"`
+	ID             string            `json:"id"`
+	Symbol         string            `json:"symbol"`
+	Direction      string            `json:"direction"`
+	LimitPrice     float64           `json:"limitPrice"`
+	StopLoss       float64           `json:"stopLoss"`
+	MaxSlippageBPS int               `json:"maxSlippageBPS"`
+	Quantity       float64           `json:"quantity"`
+	Strategy       string            `json:"strategy"`
+	Rationale      string            `json:"rationale"`
+	Confidence     float64           `json:"confidence"`
+	Status         string            `json:"status"`
+	Reason         string            `json:"reason,omitempty"`
+	Meta           map[string]string `json:"meta,omitempty"`
 }
 
 // NewOrderIntentEventPayload converts an OrderIntent into the SSE wire shape.
@@ -104,6 +106,7 @@ func NewOrderIntentEventPayload(intent OrderIntent, status OrderIntentStatus) Or
 		Rationale:      intent.Rationale,
 		Confidence:     intent.Confidence,
 		Status:         status,
+		Meta:           intent.Meta,
 	}
 }
 

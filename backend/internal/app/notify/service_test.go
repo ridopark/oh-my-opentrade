@@ -220,6 +220,81 @@ func TestService_MultipleEventsNotifyAll(t *testing.T) {
 	assert.Len(t, msgs, 3, "should receive notifications for all 3 event types")
 }
 
+func TestService_SignalEnrichedNotification(t *testing.T) {
+	bus := memory.NewBus()
+	notifier := &mockNotifier{}
+	svc := notify.NewService(bus, notifier, zerolog.Nop())
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: "strat-1",
+			Symbol:             "AAPL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.42,
+			Tags:               map[string]string{"tf": "1m"},
+		},
+		Status:         domain.EnrichmentOK,
+		Confidence:     0.87,
+		Rationale:      "AI says this is a good entry",
+		Direction:      domain.DirectionLong,
+		BullArgument:   "Trend + momentum align",
+		BearArgument:   "Macro headline risk",
+		JudgeReasoning: "Bull case stronger; proceed carefully",
+	}
+
+	ev, err := domain.NewEvent(domain.EventSignalEnriched, "tenant-1", domain.EnvModePaper, "sig-1", enrichment)
+	require.NoError(t, err)
+
+	err = bus.Publish(context.Background(), *ev)
+	require.NoError(t, err)
+
+	msgs := notifier.getMessages()
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "tenant-1", msgs[0].TenantID)
+	assert.Contains(t, msgs[0].Message, "Signal Enriched")
+	assert.Contains(t, msgs[0].Message, "AAPL")
+	assert.Contains(t, msgs[0].Message, "entry")
+	assert.Contains(t, msgs[0].Message, "buy")
+	assert.Contains(t, msgs[0].Message, "[ok]")
+	assert.Contains(t, msgs[0].Message, "Confidence: 87%")
+	assert.Contains(t, msgs[0].Message, "Bull: Trend + momentum align")
+	assert.Contains(t, msgs[0].Message, "Bear: Macro headline risk")
+	assert.Contains(t, msgs[0].Message, "Judge: Bull case stronger")
+}
+
+func TestService_OrderSubmittedWithMeta(t *testing.T) {
+	bus := memory.NewBus()
+	notifier := &mockNotifier{}
+	svc := notify.NewService(bus, notifier, zerolog.Nop())
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	intent := createTestOrderIntent(t)
+	intent.Meta = map[string]string{
+		"bull":  "RSI reset + trend continuation",
+		"bear":  "Earnings gap risk",
+		"judge": "Edge positive; size appropriately",
+	}
+
+	payload := domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusSubmitted)
+	ev, err := domain.NewEvent(domain.EventOrderSubmitted, "tenant-1", domain.EnvModePaper, "key-meta-1", payload)
+	require.NoError(t, err)
+
+	err = bus.Publish(context.Background(), *ev)
+	require.NoError(t, err)
+
+	msgs := notifier.getMessages()
+	require.Len(t, msgs, 1)
+	assert.Contains(t, msgs[0].Message, "Bull: RSI reset + trend continuation")
+	assert.Contains(t, msgs[0].Message, "Bear: Earnings gap risk")
+	assert.Contains(t, msgs[0].Message, "Judge: Edge positive")
+}
+
 func createTestOrderIntent(t *testing.T) domain.OrderIntent {
 	t.Helper()
 	intent, err := domain.NewOrderIntent(

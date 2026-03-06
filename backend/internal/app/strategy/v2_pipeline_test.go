@@ -2,6 +2,7 @@ package strategy_test
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
@@ -57,8 +58,11 @@ func TestV2Pipeline_BarToOrderIntent(t *testing.T) {
 		"risk_per_trade_bps": int64(10),
 	}}}
 	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	advisor := &fakeAIAdvisor{err: errors.New("ai unavailable")}
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil)
 
 	require.NoError(t, runner.Start(ctx))
+	require.NoError(t, enricher.Start(ctx))
 	require.NoError(t, rs.Start(ctx))
 
 	received := subscribeOrderIntentCreated(t, bus)
@@ -117,8 +121,11 @@ func TestV2Pipeline_NoSignal_NoOrderIntent(t *testing.T) {
 		"risk_per_trade_bps": int64(10),
 	}}}
 	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	advisor := &fakeAIAdvisor{err: errors.New("ai unavailable")}
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil)
 
 	require.NoError(t, runner.Start(ctx))
+	require.NoError(t, enricher.Start(ctx))
 	require.NoError(t, rs.Start(ctx))
 
 	received := subscribeOrderIntentCreated(t, bus)
@@ -180,8 +187,11 @@ func TestV2Pipeline_UnassignedSymbol_NoOrderIntent(t *testing.T) {
 		"risk_per_trade_bps": int64(10),
 	}}}
 	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	advisor := &fakeAIAdvisor{err: errors.New("ai unavailable")}
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil)
 
 	require.NoError(t, runner.Start(ctx))
+	require.NoError(t, enricher.Start(ctx))
 	require.NoError(t, rs.Start(ctx))
 
 	received := subscribeOrderIntentCreated(t, bus)

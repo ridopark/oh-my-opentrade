@@ -41,6 +41,7 @@ func (s *Service) Start(ctx context.Context) error {
 		{domain.EventKillSwitchEngaged, s.fmtKillSwitch},
 		{domain.EventCircuitBreakerTripped, s.fmtCircuitBreaker},
 		{domain.EventDebateCompleted, s.fmtDebateCompleted},
+		{domain.EventSignalEnriched, s.fmtSignalEnriched},
 	}
 
 	for _, e := range events {
@@ -75,9 +76,38 @@ func (s *Service) fmtOrderSubmitted(ev domain.Event) string {
 		if p.Rationale != "" {
 			msg += fmt.Sprintf("\n💡 Rationale: %s", p.Rationale)
 		}
+		if bull, ok := p.Meta["bull"]; ok && bull != "" {
+			msg += fmt.Sprintf("\n🟢 Bull: %s", bull)
+		}
+		if bear, ok := p.Meta["bear"]; ok && bear != "" {
+			msg += fmt.Sprintf("\n🔴 Bear: %s", bear)
+		}
+		if judge, ok := p.Meta["judge"]; ok && judge != "" {
+			msg += fmt.Sprintf("\n⚖️ Judge: %s", judge)
+		}
 		return msg
 	}
 	return "📤 Order Submitted"
+}
+
+func (s *Service) fmtSignalEnriched(ev domain.Event) string {
+	if e, ok := ev.Payload.(domain.SignalEnrichment); ok {
+		emoji := "🧠"
+		msg := fmt.Sprintf("%s Signal Enriched: %s %s %s [%s] (Confidence: %.0f%%)",
+			emoji, e.Signal.SignalType, e.Signal.Side, e.Signal.Symbol,
+			string(e.Status), e.Confidence*100)
+		if e.BullArgument != "" {
+			msg += fmt.Sprintf("\n🟢 Bull: %s", e.BullArgument)
+		}
+		if e.BearArgument != "" {
+			msg += fmt.Sprintf("\n🔴 Bear: %s", e.BearArgument)
+		}
+		if e.JudgeReasoning != "" {
+			msg += fmt.Sprintf("\n⚖️ Judge: %s", e.JudgeReasoning)
+		}
+		return msg
+	}
+	return "🧠 Signal Enriched"
 }
 
 func (s *Service) fmtOrderAccepted(ev domain.Event) string {
