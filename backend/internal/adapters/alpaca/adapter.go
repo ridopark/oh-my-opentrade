@@ -3,6 +3,7 @@ package alpaca
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/config"
@@ -15,11 +16,12 @@ const defaultRateLimit = 200
 
 // Adapter implements both market data and broker interfaces for Alpaca.
 type Adapter struct {
-	rest    *RESTClient
-	ws      *WSClient
-	dataURL string
-	posC    *positionCache
-	log     zerolog.Logger
+	rest     *RESTClient
+	ws       *WSClient
+	cryptoWs *CryptoWSClient
+	dataURL  string
+	posC     *positionCache
+	log      zerolog.Logger
 }
 
 var _ ports.SnapshotPort = (*Adapter)(nil)
@@ -44,26 +46,75 @@ func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
 
 	// Wire the REST fetcher into the WS client so it can poll during ghost windows.
 	fetcher := func(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
+		if symbol.IsCryptoSymbol() {
+			return rest.GetCryptoHistoricalBars(ctx, dataURL, symbol, timeframe, from, to)
+		}
 		return rest.GetHistoricalBars(ctx, dataURL, symbol, timeframe, from, to)
 	}
 	ws := NewWSClient(cfg.DataURL, cfg.APIKeyID, cfg.APISecretKey, cfg.Feed, fetcher)
 
+	// Create crypto WebSocket client for streaming crypto bars.
+	cryptoWs, err := NewCryptoWSClient(cfg.CryptoDataURL, cfg.APIKeyID, cfg.APISecretKey, cfg.CryptoFeed)
+	if err != nil {
+		return nil, fmt.Errorf("create crypto WS client: %w", err)
+	}
+
 	return &Adapter{
-		rest:    rest,
-		ws:      ws,
-		dataURL: dataURL,
-		posC:    newPositionCache(2 * time.Second),
-		log:     log,
+		rest:     rest,
+		ws:       ws,
+		cryptoWs: cryptoWs,
+		dataURL:  dataURL,
+		posC:     newPositionCache(2 * time.Second),
+		log:      log,
 	}, nil
 }
 
 // StreamBars starts streaming market data bars for the requested symbols.
+// Crypto symbols are dispatched to the CryptoWSClient; equity symbols to the StocksClient.
 func (a *Adapter) StreamBars(ctx context.Context, symbols []domain.Symbol, timeframe domain.Timeframe, handler ports.BarHandler) error {
-	return a.ws.StreamBars(ctx, symbols, timeframe, handler)
+	var equitySyms, cryptoSyms []domain.Symbol
+	for _, s := range symbols {
+		if s.IsCryptoSymbol() {
+			cryptoSyms = append(cryptoSyms, s)
+		} else {
+			equitySyms = append(equitySyms, s)
+		}
+	}
+
+	errCh := make(chan error, 2)
+
+	if len(cryptoSyms) > 0 {
+		go func() {
+			errCh <- a.cryptoWs.StreamBars(ctx, cryptoSyms, timeframe, handler)
+		}()
+	} else {
+		errCh <- nil
+	}
+
+	if len(equitySyms) > 0 {
+		go func() {
+			errCh <- a.ws.StreamBars(ctx, equitySyms, timeframe, handler)
+		}()
+	} else {
+		errCh <- nil
+	}
+
+	// Wait for both streams to finish; return the first non-nil error.
+	var firstErr error
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // GetHistoricalBars fetches historical OHLCV bars from the Alpaca data API.
+// Crypto symbols are routed to the crypto endpoint; equity symbols to the stocks endpoint.
 func (a *Adapter) GetHistoricalBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
+	if symbol.IsCryptoSymbol() {
+		return a.rest.GetCryptoHistoricalBars(ctx, a.dataURL, symbol, timeframe, from, to)
+	}
 	return a.rest.GetHistoricalBars(ctx, a.dataURL, symbol, timeframe, from, to)
 }
 
@@ -73,12 +124,31 @@ func (a *Adapter) GetSnapshots(ctx context.Context, symbols []string, asOf time.
 
 // Close safely closes the adapter and underlying connections.
 func (a *Adapter) Close() error {
-	return a.ws.Close()
+	var errs []error
+	if err := a.ws.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	if a.cryptoWs != nil {
+		if err := a.cryptoWs.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // SubmitOrder places an order through the Alpaca REST API.
-// If the intent carries an options instrument, it dispatches to SubmitOptionOrder.
+// Crypto orders are validated (long-only) before submission.
+// Options orders are dispatched to SubmitOptionOrder.
 func (a *Adapter) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (string, error) {
+	// Crypto guard: reject short selling for crypto assets.
+	if intent.AssetClass == domain.AssetClassCrypto {
+		if intent.Direction == domain.DirectionShort {
+			return "", errors.New("crypto does not support short selling")
+		}
+		// Ensure symbol is in slash format for the Alpaca API.
+		intent.Symbol = intent.Symbol.ToSlashFormat()
+	}
+
 	if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
 		id, err := a.rest.SubmitOptionOrder(ctx, intent)
 		if err == nil {
