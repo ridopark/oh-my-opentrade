@@ -4,6 +4,7 @@ import (
 	"context"
 
 	domstrategy "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	"github.com/oh-my-opentrade/backend/internal/domain"
 )
 
 // SpecStore defines the persistence interface for strategy specifications.
@@ -49,6 +50,7 @@ type Spec struct {
 	Routing   RoutingConfig
 	Params    map[string]any
 	Hooks     map[string]HookRef
+	ExitRules []domain.ExitRule
 }
 
 // LifecycleConfig holds lifecycle-related settings from the TOML spec.

@@ -45,6 +45,7 @@ const (
 	EventEffectiveSymbolsUpdated EventType = "EffectiveSymbolsUpdated"
 	EventStrategySignalLifecycle EventType = "StrategySignalLifecycle"
 	EventStrategyStateSnapshot   EventType = "StrategyStateSnapshot"
+	EventExitTriggered           EventType = "ExitTriggered"
 )
 
 // Event represents a domain event in the trading pipeline.

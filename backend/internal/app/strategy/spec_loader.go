@@ -10,6 +10,7 @@ import (
 	"github.com/BurntSushi/toml"
 	domstrategy "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	portstrategy "github.com/oh-my-opentrade/backend/internal/ports/strategy"
+	"github.com/oh-my-opentrade/backend/internal/domain"
 )
 
 type SpecLoader struct{}
@@ -57,6 +58,11 @@ type rawHookRef struct {
 	Name       string `toml:"name"`
 	Entrypoint string `toml:"entrypoint"`
 	Source     string `toml:"source"`
+}
+
+type rawExitRule struct {
+	Type   string             `toml:"type"`
+	Params map[string]float64 `toml:"params"`
 }
 
 func (r rawHookRef) toHookRef() (portstrategy.HookRef, error) {
@@ -171,6 +177,7 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 		Parameters    map[string]any        `toml:"parameters"` // allow old key
 		RegimeFilter  map[string]any        `toml:"regime_filter"`
 		Hooks         map[string]rawHookRef `toml:"hooks"`
+		ExitRules []rawExitRule            `toml:"exit_rules"`
 	}
 
 	if _, err := toml.Decode(content, &raw); err != nil {
@@ -248,6 +255,20 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 		hooks[name] = ref
 	}
 
+	// Parse exit rules.
+	var exitRules []domain.ExitRule
+	for i, r := range raw.ExitRules {
+		rt, err := domain.NewExitRuleType(r.Type)
+		if err != nil {
+			return portstrategy.Spec{}, fmt.Errorf("strategy spec: invalid exit_rules[%d].type: %w", i, err)
+		}
+		er, err := domain.NewExitRule(rt, r.Params)
+		if err != nil {
+			return portstrategy.Spec{}, fmt.Errorf("strategy spec: invalid exit_rules[%d]: %w", i, err)
+		}
+		exitRules = append(exitRules, er)
+	}
+
 	return portstrategy.Spec{
 		SchemaVersion: 2,
 		ID:            id,
@@ -268,8 +289,9 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 			ExclusivePerSymbol: exclusive,
 			WatchlistMode:      watchlistMode,
 		},
-		Params: params,
-		Hooks:  hooks,
+		Params:    params,
+		Hooks:     hooks,
+		ExitRules: exitRules,
 	}, nil
 }
 
