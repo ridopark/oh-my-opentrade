@@ -175,10 +175,15 @@ func main() {
 	// Create AI advisor port — used by both v2 SignalDebateEnricher and v1 debate.Service.
 	var aiAdvisor ports.AIAdvisorPort
 	if cfg.AI.Enabled {
-		aiAdvisor = llm.NewAdvisor(cfg.AI.BaseURL, cfg.AI.Model, cfg.AI.APIKey, nil)
+		var advisorOpts []llm.AdvisorOption
+		if cfg.AI.ProviderSort != "" {
+			advisorOpts = append(advisorOpts, llm.WithProviderRouting(cfg.AI.ProviderSort, nil))
+		}
+		aiAdvisor = llm.NewAdvisor(cfg.AI.BaseURL, cfg.AI.Model, cfg.AI.APIKey, nil, advisorOpts...)
 		log.Info().
 			Str("base_url", cfg.AI.BaseURL).
 			Str("model", cfg.AI.Model).
+			Str("provider_sort", cfg.AI.ProviderSort).
 			Msg("AI advisor initialized (real LLM)")
 	} else {
 		aiAdvisor = llm.NewNoOpAdvisor()

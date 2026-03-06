@@ -341,3 +341,72 @@ func TestAdvisor_RequestDebate_NeutralDirection(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, decision, "NEUTRAL direction should return nil decision, not an error")
 }
+
+func TestAdvisor_ProviderRouting_IncludedWhenSet(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := json.NewDecoder(r.Body).Decode(&capturedBody)
+		assert.NoError(t, err)
+		validCompletionResponse(w, "LONG", "rationale", "bull", "bear", "judge", 0.80)
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient,
+		llm.WithProviderRouting("latency", nil))
+
+	_, err := advisor.RequestDebate(context.Background(), "BTCUSD", getMockMarketRegime(), getMockIndicatorSnapshot())
+	require.NoError(t, err)
+
+	// Provider field must be present with sort=latency.
+	prov, ok := capturedBody["provider"].(map[string]interface{})
+	require.True(t, ok, "request body must contain a 'provider' object")
+	assert.Equal(t, "latency", prov["sort"])
+}
+
+func TestAdvisor_ProviderRouting_OmittedWhenNotSet(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := json.NewDecoder(r.Body).Decode(&capturedBody)
+		assert.NoError(t, err)
+		validCompletionResponse(w, "LONG", "rationale", "bull", "bear", "judge", 0.80)
+	}))
+	defer server.Close()
+
+	// No WithProviderRouting option — provider field must NOT appear in JSON.
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+
+	_, err := advisor.RequestDebate(context.Background(), "BTCUSD", getMockMarketRegime(), getMockIndicatorSnapshot())
+	require.NoError(t, err)
+
+	_, exists := capturedBody["provider"]
+	assert.False(t, exists, "provider field must be omitted when not configured")
+}
+
+func TestAdvisor_ProviderRouting_WithPreferredMaxLatency(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := json.NewDecoder(r.Body).Decode(&capturedBody)
+		assert.NoError(t, err)
+		validCompletionResponse(w, "LONG", "rationale", "bull", "bear", "judge", 0.80)
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient,
+		llm.WithProviderRouting("", map[string]float64{"p90": 2.0}))
+
+	_, err := advisor.RequestDebate(context.Background(), "BTCUSD", getMockMarketRegime(), getMockIndicatorSnapshot())
+	require.NoError(t, err)
+
+	prov, ok := capturedBody["provider"].(map[string]interface{})
+	require.True(t, ok, "request body must contain a 'provider' object")
+	// sort should NOT be present (empty string → omitempty).
+	_, hasSortKey := prov["sort"]
+	assert.False(t, hasSortKey, "empty sort should be omitted")
+	// preferred_max_latency should be present.
+	latency, ok := prov["preferred_max_latency"].(map[string]interface{})
+	require.True(t, ok, "provider must contain preferred_max_latency")
+	assert.InDelta(t, 2.0, latency["p90"], 0.001)
+}

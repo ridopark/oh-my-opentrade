@@ -182,6 +182,44 @@ func TestRESTClient_SubmitOrder_FractionalQtyUsesDayTIF(t *testing.T) {
 	assert.Equal(t, "fractional-order-123", orderID)
 }
 
+func TestRESTClient_SubmitOrder_CryptoFractionalKeepsGTC(t *testing.T) {
+	// Arrange — crypto fractional quantities must keep "gtc" (Alpaca crypto doesn't support "day")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+
+		var req map[string]interface{}
+		err = json.Unmarshal(body, &req)
+		require.NoError(t, err)
+
+		// Crypto fractional qty must use "gtc", NOT "day"
+		assert.Equal(t, "0.5", req["qty"])
+		assert.Equal(t, "gtc", req["time_in_force"])
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id": "crypto-fractional-order-123"}`))
+	}))
+	defer server.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+
+	intent := domain.OrderIntent{
+		Symbol:     "ETH/USD",
+		Direction:  domain.DirectionLong,
+		Quantity:   0.5,
+		LimitPrice: 2000.0,
+		StopLoss:   0,
+	}
+
+	// Act
+	orderID, err := client.SubmitOrder(context.Background(), intent)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, "crypto-fractional-order-123", orderID)
+}
+
 func TestRESTClient_SubmitOrder_Error(t *testing.T) {
 	// Arrange
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

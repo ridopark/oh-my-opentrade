@@ -43,6 +43,7 @@ type AIConfig struct {
 	APIKey        string  `yaml:"api_key"`
 	MinConfidence float64 `yaml:"min_confidence"`
 	Enabled       bool    `yaml:"enabled"`
+	ProviderSort  string  `yaml:"provider_sort"` // OpenRouter provider routing sort (e.g. "latency")
 }
 
 // NotificationConfig holds credentials for notification adapters.
@@ -321,6 +322,9 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	}
 	if val := os.Getenv("LLM_ENABLED"); val == "true" {
 		cfg.AI.Enabled = true
+	}
+	if val := os.Getenv("LLM_PROVIDER_SORT"); val != "" {
+		cfg.AI.ProviderSort = val
 	}
 	if val := os.Getenv("TELEGRAM_BOT_TOKEN"); val != "" {
 		cfg.Notification.TelegramBotToken = val
