@@ -81,7 +81,7 @@ func TestService_ExitOrderPassesPipeline(t *testing.T) {
 	broker.GetPositionsFunc = func(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
 		trade, _ := domain.NewTrade(
 			time.Now(), tenantID, envMode, uuid.New(),
-			"BTCUSD", "long", 1.0, 50000, 0, "filled", "strategy-1", "test",
+			"BTCUSD", "long", 1.0, 50000, 0, "FILLED", "strategy-1", "test",
 		)
 		return []domain.Trade{trade}, nil
 	}
@@ -394,7 +394,7 @@ func TestService_PositionGate_RejectsDuplicateEntry(t *testing.T) {
 	broker := &mockBroker{
 		GetPositionsFunc: func(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
 			// Simulate an existing long position in BTCUSD.
-			trade, _ := domain.NewTrade(time.Now(), tenantID, envMode, [16]byte{}, "BTCUSD", "BUY", 1.0, 50000, 0, "filled", "strategy-1", "test")
+			trade, _ := domain.NewTrade(time.Now(), tenantID, envMode, [16]byte{}, "BTCUSD", "BUY", 1.0, 50000, 0, "FILLED", "strategy-1", "test")
 			return []domain.Trade{trade}, nil
 		},
 	}

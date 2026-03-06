@@ -78,7 +78,7 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 		repo:           repo,
 		calculator:     NewIndicatorCalculator(),
 		regimeDetector: NewRegimeDetector(),
-		orbTracker:     NewORBTracker(),
+		orbTracker:     NewORBTrackerWithSource("monitor"),
 		orbCfg:         DefaultORBConfig(),
 		lastSnaps:      make(map[string]domain.IndicatorSnapshot),
 		liveBars:       make(map[string]int),

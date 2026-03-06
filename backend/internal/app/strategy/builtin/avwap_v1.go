@@ -31,6 +31,15 @@ func NewAVWAPStrategy() *AVWAPStrategy {
 
 func (s *AVWAPStrategy) Meta() strat.Meta { return s.meta }
 func (s *AVWAPStrategy) WarmupBars() int  { return 30 }
+func (s *AVWAPStrategy) ReplayOnBar(_ strat.Context, _ string, bar strat.Bar, st strat.State, indicators strat.IndicatorData) (strat.State, error) {
+	avwapSt, ok := st.(*AVWAPState)
+	if !ok {
+		return st, fmt.Errorf("AVWAPStrategy.ReplayOnBar: expected *AVWAPState, got %T", st)
+	}
+	avwapSt.Indicators = indicators
+	avwapSt.Calc.Update(bar.Time, bar.High, bar.Low, bar.Close, bar.Volume)
+	return avwapSt, nil
+}
 
 // AVWAPConfig holds strategy parameters parsed from DNA.
 type AVWAPConfig struct {
@@ -156,12 +165,29 @@ func (s *AVWAPStrategy) Init(ctx strat.Context, symbol string, params map[string
 	cfg := parseAVWAPConfig(params)
 	calc := strat.NewAnchoredVWAPCalc()
 
-	// Add default session_open anchor at current time.
-	var anchorTime time.Time
-	if ctx != nil {
-		anchorTime = ctx.Now()
+	anchorNames := getStringSlice(params, "anchors", []string{"session_open"})
+	added := 0
+	for _, name := range anchorNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		var anchorTime time.Time
+		if name == "session_open" {
+			if ctx != nil {
+				anchorTime = ctx.Now()
+			}
+		}
+		calc.AddAnchor(strat.AnchorPoint{Name: name, AnchorTime: anchorTime})
+		added++
 	}
-	calc.AddAnchor(strat.AnchorPoint{Name: "session_open", AnchorTime: anchorTime})
+	if added == 0 {
+		var anchorTime time.Time
+		if ctx != nil {
+			anchorTime = ctx.Now()
+		}
+		calc.AddAnchor(strat.AnchorPoint{Name: "session_open", AnchorTime: anchorTime})
+	}
 
 	st := &AVWAPState{
 		Symbol:     symbol,

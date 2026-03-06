@@ -41,7 +41,7 @@ func (s *ORBStrategy) WarmupBars() int  { return 0 } // replay handles state rec
 // compatible, it restores from that state (restart recovery).
 func (s *ORBStrategy) Init(ctx strat.Context, symbol string, params map[string]any, prior strat.State) (strat.State, error) {
 	cfg := monitor.NewORBConfigFromDNA(params)
-	tracker := monitor.NewORBTracker()
+	tracker := monitor.NewORBTrackerWithSource("strategy")
 
 	st := &ORBState{
 		Tracker: tracker,
@@ -239,7 +239,7 @@ func (s *ORBState) Unmarshal(data []byte) error {
 	s.Symbol = j.Symbol
 	s.Config = j.Config
 	s.Indicators = j.Indicators
-	s.Tracker = monitor.NewORBTracker()
+	s.Tracker = monitor.NewORBTrackerWithSource("strategy")
 	// Session restoration: the tracker manages sessions internally.
 	// If we had a session snapshot, we'd need to inject it.
 	// For now, the ORB range is recoverable via bar replay (existing warmup path).

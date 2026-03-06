@@ -12,11 +12,16 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
+// MarketDataProvider returns the latest indicator snapshot for a symbol.
+// Used to feed real-time market data into the AI debate prompt.
+type MarketDataProvider func(symbol string) (domain.IndicatorSnapshot, bool)
+
 type SignalDebateEnricher struct {
-	eventBus      ports.EventBusPort
-	aiAdvisor     ports.AIAdvisorPort
-	repo          ports.RepositoryPort
-	debateTimeout time.Duration
+	eventBus       ports.EventBusPort
+	aiAdvisor      ports.AIAdvisorPort
+	repo           ports.RepositoryPort
+	debateTimeout  time.Duration
+	marketData     MarketDataProvider
 
 	makeDebateOpts func(sig strat.Signal) []ports.DebateOption
 	logger         *slog.Logger
@@ -41,6 +46,12 @@ func WithDebateOptionFactory(fn func(strat.Signal) []ports.DebateOption) Enriche
 func WithRepository(repo ports.RepositoryPort) EnricherOption {
 	return func(e *SignalDebateEnricher) {
 		e.repo = repo
+	}
+}
+
+func WithMarketDataProvider(fn MarketDataProvider) EnricherOption {
+	return func(e *SignalDebateEnricher) {
+		e.marketData = fn
 	}
 }
 
@@ -118,11 +129,26 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 		debateOpts = e.makeDebateOpts(sig)
 	}
 
+	// Fetch real-time market data for the AI prompt.
+	var indicators domain.IndicatorSnapshot
+	var regime domain.MarketRegime
+	if e.marketData != nil {
+		if snap, ok := e.marketData(sig.Symbol); ok {
+			indicators = snap
+			// Use the best available anchor regime (prefer 5m, then 15m).
+			if r, ok := snap.AnchorRegimes["5m"]; ok {
+				regime = r
+			} else if r, ok := snap.AnchorRegimes["15m"]; ok {
+				regime = r
+			}
+		}
+	}
+
 	decision, err := e.aiAdvisor.RequestDebate(
 		advCtx,
 		domain.Symbol(sig.Symbol),
-		domain.MarketRegime{},
-		domain.IndicatorSnapshot{},
+		regime,
+		indicators,
 		debateOpts...,
 	)
 
@@ -142,10 +168,26 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 		return nil
 	}
 
+	// AI returned NEUTRAL or no decision — treat as skipped, proceed with original signal.
+	if err == nil && decision == nil {
+		e.logger.Info("AI debate neutral — proceeding with original signal", "symbol", sig.Symbol)
+		enrichment := domain.SignalEnrichment{
+			Signal:     ref,
+			Status:     domain.EnrichmentSkipped,
+			Confidence: sig.Strength,
+			Rationale:  fmt.Sprintf("signal: %s %s strength=%.2f (AI neutral)", sig.Type, sig.Side, sig.Strength),
+			Direction:  direction,
+		}
+		e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
+		e.saveThoughtLog(ctx, event, enrichment)
+		return nil
+	}
+
 	status := domain.EnrichmentError
 	if errors.Is(err, context.DeadlineExceeded) {
 		status = domain.EnrichmentTimeout
 	}
+	e.logger.Warn("AI debate failed", "symbol", sig.Symbol, "error", err)
 
 	enrichment := domain.SignalEnrichment{
 		Signal:     ref,
@@ -153,9 +195,6 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 		Confidence: sig.Strength,
 		Rationale:  fmt.Sprintf("signal: %s %s strength=%.2f (AI %s)", sig.Type, sig.Side, sig.Strength, status),
 		Direction:  direction,
-	}
-	if err == nil && decision == nil {
-		enrichment.Rationale = fmt.Sprintf("signal: %s %s strength=%.2f (AI %s)", sig.Type, sig.Side, sig.Strength, domain.EnrichmentError)
 	}
 
 	e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)

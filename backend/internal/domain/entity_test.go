@@ -34,14 +34,15 @@ func TestMarketBar(t *testing.T) {
 		assert.ErrorContains(t, err, "high cannot be less than low")
 	})
 
-	t.Run("invalid - zero volume", func(t *testing.T) {
-		_, err := domain.NewMarketBar(now, sym, tf, 50000.0, 50100.0, 49900.0, 50050.0, 0)
-		assert.ErrorContains(t, err, "volume must be greater than zero")
+	t.Run("valid - zero volume (crypto idle bar)", func(t *testing.T) {
+		bar, err := domain.NewMarketBar(now, sym, tf, 50000.0, 50100.0, 49900.0, 50050.0, 0)
+		require.NoError(t, err)
+		assert.Equal(t, 0.0, bar.Volume)
 	})
 
 	t.Run("invalid - negative volume", func(t *testing.T) {
 		_, err := domain.NewMarketBar(now, sym, tf, 50000.0, 50100.0, 49900.0, 50050.0, -5.0)
-		assert.ErrorContains(t, err, "volume must be greater than zero")
+		assert.ErrorContains(t, err, "volume must not be negative")
 	})
 }
 

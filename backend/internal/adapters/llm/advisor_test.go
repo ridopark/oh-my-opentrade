@@ -327,3 +327,17 @@ func TestAdvisor_NoMinInterval_AllCallsSucceed(t *testing.T) {
 
 	assert.Equal(t, 2, callCount)
 }
+
+func TestAdvisor_RequestDebate_NeutralDirection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		validCompletionResponse(w, "NEUTRAL", "no clear edge", "bull case", "bear case", "judge neutral", 0.5)
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+
+	decision, err := advisor.RequestDebate(context.Background(), "BTCUSD", getMockMarketRegime(), getMockIndicatorSnapshot())
+
+	require.NoError(t, err)
+	assert.Nil(t, decision, "NEUTRAL direction should return nil decision, not an error")
+}

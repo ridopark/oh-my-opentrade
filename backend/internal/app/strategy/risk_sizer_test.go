@@ -494,10 +494,10 @@ func TestRiskSizer_HandleSignal_MaxPositionBPS_Clamp(t *testing.T) {
 	// limit = 300 * 1.0005 = 300.15, stop = 300 * 0.9975 = 299.25
 	// riskPerShare = |300.15 - 299.25| = 0.90
 	// maxRiskUSD = (100/10000) * 100000 = 1000
-	// risk-based qty = floor(1000 / 0.90) = 1111
+	// risk-based qty = 1000 / 0.90 = 1111.11 (fractional)
 	// maxNotional = (500/10000) * 100000 = 5000
-	// maxQty = floor(5000 / 300.15) = 16
-	assert.Equal(t, 16.0, intent.Quantity, "qty should be clamped by max_position_bps")
+	// maxQty = 5000 / 300.15 = 16.658 (fractional)
+	assert.InDelta(t, 5000.0/300.15, intent.Quantity, 0.01, "qty should be clamped by max_position_bps")
 }
 
 func TestRiskSizer_HandleSignal_MaxPositionBPS_NoClamp(t *testing.T) {
@@ -579,6 +579,8 @@ func TestRiskSizer_HandleSignal_MaxPositionBPS_Default(t *testing.T) {
 
 	evs := waitForEvents(t, received, 1)
 	intent := evs[0].Payload.(domain.OrderIntent)
-	// With default max_position_bps=1000 (10%), the 36-share position gets clamped to 10.
-	assert.Equal(t, 10.0, intent.Quantity, "GOOGL qty should be clamped by default max_position_bps=1000")
+	// With default max_position_bps=1000 (10%), fractional position clamped.
+	// limitPrice = 298.72 * 1.0005 = 298.86936, maxNotional = 0.10 * 30965 = 3096.5
+	// maxQty = 3096.5 / 298.86936 = 10.36 (fractional)
+	assert.InDelta(t, 3096.5/298.86936, intent.Quantity, 0.01, "GOOGL qty should be clamped by default max_position_bps=1000")
 }

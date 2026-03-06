@@ -17,11 +17,13 @@ import (
 )
 
 type fakeAIAdvisor struct {
-	decision *domain.AdvisoryDecision
-	err      error
-	delay    time.Duration
-	calls    int
-	lastOpts []ports.DebateOption
+	decision       *domain.AdvisoryDecision
+	err            error
+	delay          time.Duration
+	calls          int
+	lastOpts       []ports.DebateOption
+	lastRegime     domain.MarketRegime
+	lastIndicators domain.IndicatorSnapshot
 }
 
 type mockRepository struct {
@@ -75,6 +77,8 @@ func (m *mockRepository) GetThoughtLogsByIntentID(context.Context, string) ([]do
 func (f *fakeAIAdvisor) RequestDebate(ctx context.Context, symbol domain.Symbol, regime domain.MarketRegime, indicators domain.IndicatorSnapshot, opts ...ports.DebateOption) (*domain.AdvisoryDecision, error) {
 	f.calls++
 	f.lastOpts = opts
+	f.lastRegime = regime
+	f.lastIndicators = indicators
 	if f.delay > 0 {
 		select {
 		case <-time.After(f.delay):
@@ -338,4 +342,140 @@ func TestSignalDebateEnricher_NoRepoNoError(t *testing.T) {
 	publishSignalCreated(t, bus, sig)
 
 	_ = waitForEvents(t, received, 1)
+}
+
+func TestSignalDebateEnricher_WithMarketDataProvider(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
+		Direction:  domain.DirectionLong,
+		Confidence: 0.85,
+		Rationale:  "strong momentum",
+	}}
+
+	provider := func(symbol string) (domain.IndicatorSnapshot, bool) {
+		if symbol == "BTC/USD" {
+			return domain.IndicatorSnapshot{
+				Symbol:    "BTC/USD",
+				Timeframe: "5m",
+				RSI:       62.5,
+				StochK:    71.0,
+				StochD:    68.0,
+				EMA9:      85000.0,
+				EMA21:     84500.0,
+				VWAP:      84800.0,
+				AnchorRegimes: map[domain.Timeframe]domain.MarketRegime{
+					"5m": {
+						Symbol:    "BTC/USD",
+						Timeframe: "5m",
+						Type:      "bullish",
+						Strength:  0.75,
+					},
+				},
+			}, true
+		}
+		return domain.IndicatorSnapshot{}, false
+	}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil,
+		strategy.WithMarketDataProvider(provider),
+	)
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:BTC/USD")
+	sig, _ := strat.NewSignal(iid, "BTC/USD", strat.SignalEntry, strat.SideBuy, 0.9, map[string]string{"ref_price": "85000"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+
+	// AI advisor should have received real market data, not zeros.
+	assert.Equal(t, 1, advisor.calls)
+	assert.InDelta(t, 62.5, advisor.lastIndicators.RSI, 0.001)
+	assert.InDelta(t, 71.0, advisor.lastIndicators.StochK, 0.001)
+	assert.InDelta(t, 68.0, advisor.lastIndicators.StochD, 0.001)
+	assert.InDelta(t, 85000.0, advisor.lastIndicators.EMA9, 0.001)
+	assert.InDelta(t, 84500.0, advisor.lastIndicators.EMA21, 0.001)
+	assert.InDelta(t, 84800.0, advisor.lastIndicators.VWAP, 0.001)
+
+	// Regime should come from AnchorRegimes["5m"].
+	assert.Equal(t, domain.RegimeType("bullish"), advisor.lastRegime.Type)
+	assert.InDelta(t, 0.75, advisor.lastRegime.Strength, 0.001)
+
+	// Enrichment should be OK with AI-supplied values.
+	assert.Equal(t, domain.EnrichmentOK, got.Status)
+	assert.InDelta(t, 0.85, got.Confidence, 0.001)
+	assert.Equal(t, domain.DirectionLong, got.Direction)
+}
+
+func TestSignalDebateEnricher_MarketDataProvider_FallbackTo15m(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
+		Direction:  domain.DirectionShort,
+		Confidence: 0.70,
+		Rationale:  "weakness",
+	}}
+
+	provider := func(symbol string) (domain.IndicatorSnapshot, bool) {
+		return domain.IndicatorSnapshot{
+			RSI: 35.0,
+			AnchorRegimes: map[domain.Timeframe]domain.MarketRegime{
+				"15m": {
+					Type:     "bearish",
+					Strength: 0.60,
+				},
+			},
+		}, true
+	}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil,
+		strategy.WithMarketDataProvider(provider),
+	)
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:ETH/USD")
+	sig, _ := strat.NewSignal(iid, "ETH/USD", strat.SignalEntry, strat.SideSell, 0.8, map[string]string{"ref_price": "2500"})
+	publishSignalCreated(t, bus, sig)
+
+	_ = waitForEvents(t, received, 1)
+
+	// Should fall back to 15m regime when 5m is absent.
+	assert.Equal(t, domain.RegimeType("bearish"), advisor.lastRegime.Type)
+	assert.InDelta(t, 0.60, advisor.lastRegime.Strength, 0.001)
+	assert.InDelta(t, 35.0, advisor.lastIndicators.RSI, 0.001)
+}
+
+func TestSignalDebateEnricher_MarketDataProvider_SymbolNotFound(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
+		Direction:  domain.DirectionLong,
+		Confidence: 0.50,
+		Rationale:  "no data",
+	}}
+
+	// Provider that never finds any symbol.
+	provider := func(symbol string) (domain.IndicatorSnapshot, bool) {
+		return domain.IndicatorSnapshot{}, false
+	}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil,
+		strategy.WithMarketDataProvider(provider),
+	)
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.7, map[string]string{"ref_price": "150"})
+	publishSignalCreated(t, bus, sig)
+
+	_ = waitForEvents(t, received, 1)
+
+	// Should still call AI, but with zero indicators/regime.
+	assert.Equal(t, 1, advisor.calls)
+	assert.InDelta(t, 0.0, advisor.lastIndicators.RSI, 0.001)
+	assert.InDelta(t, 0.0, advisor.lastRegime.Strength, 0.001)
 }

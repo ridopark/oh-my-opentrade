@@ -61,8 +61,9 @@ func TestCryptoBarToMarketBar_ZeroVolume(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 
-	_, err := CryptoBarToMarketBar(cb)
-	assert.Error(t, err, "zero volume should fail domain validation")
+	bar, err := CryptoBarToMarketBar(cb)
+	require.NoError(t, err, "zero volume is valid for crypto idle bars")
+	assert.Equal(t, 0.0, bar.Volume)
 }
 
 func TestNewCryptoWSClient_RequiresCredentials(t *testing.T) {
