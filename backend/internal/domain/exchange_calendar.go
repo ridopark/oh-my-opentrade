@@ -138,3 +138,76 @@ func PreviousRTHSession(now time.Time) (start, end time.Time) {
 	end = time.Date(useDay.Year(), useDay.Month(), useDay.Day(), h, m, 0, 0, loc)
 	return start, end
 }
+
+// TradingCalendar defines market session queries for an asset class.
+type TradingCalendar interface {
+	IsOpen(t time.Time) bool
+	SessionOpen(t time.Time) time.Time
+	SessionClose(t time.Time) time.Time
+	PreviousSession(now time.Time) (start, end time.Time)
+}
+
+// NYSECalendar implements TradingCalendar for US equity markets.
+type NYSECalendar struct{}
+
+func (c NYSECalendar) IsOpen(t time.Time) bool {
+	loc, _ := time.LoadLocation("America/New_York")
+	et := t.In(loc)
+	if !isNYSETradingDay(et) {
+		return false
+	}
+	open := time.Date(et.Year(), et.Month(), et.Day(), 9, 30, 0, 0, loc)
+	h, m := NYSECloseTime(et)
+	close := time.Date(et.Year(), et.Month(), et.Day(), h, m, 0, 0, loc)
+	return !et.Before(open) && et.Before(close)
+}
+
+func (c NYSECalendar) SessionOpen(t time.Time) time.Time {
+	loc, _ := time.LoadLocation("America/New_York")
+	et := t.In(loc)
+	return time.Date(et.Year(), et.Month(), et.Day(), 9, 30, 0, 0, loc)
+}
+
+func (c NYSECalendar) SessionClose(t time.Time) time.Time {
+	loc, _ := time.LoadLocation("America/New_York")
+	et := t.In(loc)
+	h, m := NYSECloseTime(et)
+	if h == 0 && m == 0 {
+		return time.Date(et.Year(), et.Month(), et.Day(), 16, 0, 0, 0, loc)
+	}
+	return time.Date(et.Year(), et.Month(), et.Day(), h, m, 0, 0, loc)
+}
+
+func (c NYSECalendar) PreviousSession(now time.Time) (start, end time.Time) {
+	return PreviousRTHSession(now)
+}
+
+// Crypto24x7Calendar implements TradingCalendar for 24/7 crypto markets.
+type Crypto24x7Calendar struct{}
+
+func (c Crypto24x7Calendar) IsOpen(_ time.Time) bool { return true }
+
+func (c Crypto24x7Calendar) SessionOpen(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func (c Crypto24x7Calendar) SessionClose(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, time.UTC)
+}
+
+func (c Crypto24x7Calendar) PreviousSession(now time.Time) (start, end time.Time) {
+	yesterday := now.UTC().AddDate(0, 0, -1)
+	start = time.Date(yesterday.Year(), yesterday.Month(), yesterday.Day(), 0, 0, 0, 0, time.UTC)
+	end = time.Date(yesterday.Year(), yesterday.Month(), yesterday.Day(), 23, 59, 59, 0, time.UTC)
+	return start, end
+}
+
+// CalendarFor returns the appropriate TradingCalendar for the given asset class.
+func CalendarFor(ac AssetClass) TradingCalendar {
+	switch ac {
+	case AssetClassCrypto:
+		return Crypto24x7Calendar{}
+	default:
+		return NYSECalendar{}
+	}
+}

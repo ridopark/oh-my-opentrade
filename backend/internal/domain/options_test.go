@@ -17,6 +17,7 @@ import (
 func TestInstrumentType_Constants(t *testing.T) {
 	assert.Equal(t, domain.InstrumentType("EQUITY"), domain.InstrumentTypeEquity)
 	assert.Equal(t, domain.InstrumentType("OPTION"), domain.InstrumentTypeOption)
+	assert.Equal(t, domain.InstrumentType("CRYPTO"), domain.InstrumentTypeCrypto)
 }
 
 // ─────────────────────────────────────────────
@@ -90,6 +91,14 @@ func TestNewInstrument_EmptyType(t *testing.T) {
 func TestNewInstrument_EmptySymbol(t *testing.T) {
 	_, err := domain.NewInstrument(domain.InstrumentTypeOption, "", "AAPL")
 	require.Error(t, err)
+}
+
+func TestNewInstrument_CryptoValid(t *testing.T) {
+	inst, err := domain.NewInstrument(domain.InstrumentTypeCrypto, "BTC/USD", "")
+	require.NoError(t, err)
+	assert.Equal(t, domain.InstrumentTypeCrypto, inst.Type)
+	assert.Equal(t, domain.Symbol("BTC/USD"), inst.Symbol)
+	assert.Equal(t, domain.Symbol(""), inst.UnderlyingSymbol)
 }
 
 // ─────────────────────────────────────────────

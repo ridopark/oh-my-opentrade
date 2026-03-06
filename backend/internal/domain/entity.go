@@ -60,6 +60,7 @@ type OrderIntent struct {
 	// Options-specific fields (nil/zero for equity orders)
 	Instrument *Instrument `json:"instrument,omitempty"`
 	MaxLossUSD float64     `json:"maxLossUSD,omitempty"`
+	AssetClass     AssetClass `json:"assetClass"`
 }
 
 // OrderIntentStatus indicates where in the pipeline an order intent currently sits.
@@ -308,6 +309,7 @@ type Trade struct {
 	Status     string
 	Strategy   string
 	Rationale  string
+	AssetClass AssetClass
 }
 
 // NewTrade creates a validated Trade. Quantity must not be negative.
