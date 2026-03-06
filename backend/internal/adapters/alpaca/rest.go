@@ -210,9 +210,10 @@ func (c *RESTClient) SubmitOrder(ctx context.Context, intent domain.OrderIntent)
 		side = "buy"
 	}
 
-	// Alpaca requires TIF="day" for fractional share orders.
+	// Alpaca requires TIF="day" for fractional equity orders.
+	// Crypto orders only support "gtc" or "ioc" — never "day".
 	tif := "gtc"
-	if intent.Quantity != math.Floor(intent.Quantity) {
+	if !intent.Symbol.IsCryptoSymbol() && intent.Quantity != math.Floor(intent.Quantity) {
 		tif = "day"
 	}
 

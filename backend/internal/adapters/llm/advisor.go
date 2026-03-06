@@ -20,10 +20,19 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
+// providerRouting configures provider-level routing options for OpenRouter.
+// See https://openrouter.ai/docs/features/provider-routing
+// Fields are omitempty so the struct is a no-op for non-OpenRouter endpoints.
+type providerRouting struct {
+	Sort                string         `json:"sort,omitempty"`
+	PreferredMaxLatency map[string]float64 `json:"preferred_max_latency,omitempty"`
+}
+
 // chatRequest is the JSON body sent to the /v1/chat/completions endpoint.
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
+	Model    string           `json:"model"`
+	Messages []chatMessage    `json:"messages"`
+	Provider *providerRouting `json:"provider,omitempty"`
 }
 
 // chatChoice is a single choice in the OpenAI-compatible response.
@@ -140,6 +149,7 @@ type Advisor struct {
 	apiKey      string // optional — sent as Authorization: Bearer <key> when non-empty
 	httpClient  *http.Client
 	minInterval time.Duration // 0 means no rate limiting
+	provider    *providerRouting // optional — OpenRouter provider routing config
 	mu          sync.Mutex
 	lastCall    time.Time
 }
@@ -152,6 +162,19 @@ type AdvisorOption func(*Advisor)
 // hitting the endpoint. Use this to stay within free-tier rate limits.
 func WithMinInterval(d time.Duration) AdvisorOption {
 	return func(a *Advisor) { a.minInterval = d }
+}
+
+// WithProviderRouting sets OpenRouter provider-level routing options.
+// This is a no-op for non-OpenRouter endpoints because the field is omitempty.
+// Example: WithProviderRouting("latency", nil) sorts providers by latency.
+// Example: WithProviderRouting("", map[string]float64{"p90": 2.0}) sets preferred max latency.
+func WithProviderRouting(sort string, preferredMaxLatency map[string]float64) AdvisorOption {
+	return func(a *Advisor) {
+		a.provider = &providerRouting{
+			Sort:                sort,
+			PreferredMaxLatency: preferredMaxLatency,
+		}
+	}
 }
 
 // NewAdvisor creates a new Advisor targeting the given base URL.
@@ -221,6 +244,7 @@ Respond ONLY with valid JSON — no markdown fences, no extra text.`
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},
 		},
+		Provider: a.provider,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("llm: failed to marshal request: %w", err)
