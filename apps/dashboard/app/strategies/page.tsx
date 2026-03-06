@@ -19,7 +19,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Layers, Pause, Archive, ArrowUpCircle, TrendingUp } from "lucide-react";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   useStrategyInstances,
   useStrategyList,
@@ -38,6 +38,23 @@ export default function StrategiesPage() {
 
   const { data: strategies = [] } = useStrategyList();
 
+  // Group raw per-instance entries into one card per unique strategy ID
+  const groupedStrategies = useMemo(() => {
+    const map = new Map<string, StrategyInfo>();
+    for (const s of strategies) {
+      const existing = map.get(s.id);
+      if (existing) {
+        // Merge symbols (deduplicated), keep highest priority, active if any active
+        const merged = new Set([...existing.symbols, ...s.symbols]);
+        existing.symbols = [...merged];
+        existing.priority = Math.max(existing.priority, s.priority);
+        existing.active = existing.active || s.active;
+      } else {
+        map.set(s.id, { ...s, symbols: [...s.symbols] });
+      }
+    }
+    return [...map.values()];
+  }, [strategies]);
   const promoteInstance = usePromoteInstance();
   const lifecycleAction = useLifecycleAction();
 
@@ -139,9 +156,9 @@ export default function StrategiesPage() {
       </div>
 
       {/* Strategy Performance Overview */}
-      {strategies.length > 0 && (
+      {groupedStrategies.length > 0 && (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {strategies.map((strat: StrategyInfo) => (
+          {groupedStrategies.map((strat: StrategyInfo) => (
             <Link key={strat.id} href={`/strategies/${strat.id}`}>
               <Card className="hover:border-emerald-500/50 transition-colors cursor-pointer">
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">

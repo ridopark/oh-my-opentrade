@@ -25,6 +25,7 @@ type Service struct {
 	killSwitch       *KillSwitch
 	dailyLossBreaker *risk.DailyLossBreaker
 	positionGate     *PositionGate
+	buyingPowerGuard *BuyingPowerGuard
 	accountEquity    float64
 	log              zerolog.Logger
 	metrics          *metrics.Metrics
@@ -36,6 +37,12 @@ type Option func(*Service)
 // WithPositionGate attaches a PositionGate to the execution pipeline.
 func WithPositionGate(pg *PositionGate) Option {
 	return func(s *Service) { s.positionGate = pg }
+}
+
+// WithBuyingPowerGuard attaches a BuyingPowerGuard to the execution pipeline.
+// Only set when DTBP_FALLBACK=true.
+func WithBuyingPowerGuard(bpg *BuyingPowerGuard) Option {
+	return func(s *Service) { s.buyingPowerGuard = bpg }
 }
 
 // NewService creates a new execution Service.
@@ -183,6 +190,18 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		if err := s.dailyLossBreaker.Check(event.TenantID, event.EnvMode, s.accountEquity); err != nil {
 			l.Warn().Err(err).Msg("daily loss circuit breaker tripped — aborting broker submission")
 			s.emit(ctx, domain.EventCircuitBreakerTripped, event.TenantID, event.EnvMode, event.IdempotencyKey, err.Error())
+			return nil
+		}
+	}
+
+	// 5b. Buying power guard — pre-check DTBP for equity entries (only when DTBP_FALLBACK enabled).
+	if s.buyingPowerGuard != nil {
+		if err := s.buyingPowerGuard.Check(ctx, intent); err != nil {
+			l.Warn().Err(err).Msg("order intent rejected by buying power guard")
+			if s.metrics != nil {
+				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "buying_power").Inc()
+			}
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
 			return nil
 		}
 	}

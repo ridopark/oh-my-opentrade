@@ -22,6 +22,7 @@ export const queryKeys = {
   health: ["health", "services"] as const,
   strategyInstances: ["strategies", "instances"] as const,
   currentStrategy: ["strategies", "current"] as const,
+  allStrategiesDNA: ["strategies", "dna", "all"] as const,
   performanceDashboard: (range: string) =>
     ["performance", "dashboard", range] as const,
   performanceTrades: (range: string) =>
@@ -122,6 +123,29 @@ export function useCurrentStrategy() {
         parameters: data.parameters,
         performanceMetrics: {},
       };
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// All strategy DNAs
+// ---------------------------------------------------------------------------
+
+export function useAllStrategiesDNA() {
+  return useQuery({
+    queryKey: queryKeys.allStrategiesDNA,
+    queryFn: async (): Promise<StrategyDNA[]> => {
+      const res = await fetch("/api/strategies/dna");
+      if (!res.ok) return [];
+      const data = await res.json();
+      if (!Array.isArray(data)) return [];
+      return data.map((d: Record<string, unknown>) => ({
+        id: (d.id as string) ?? "",
+        version: d.version as number ?? 1,
+        description: d.description as string | undefined,
+        parameters: (d.parameters as Record<string, string | number | boolean>) ?? {},
+        performanceMetrics: {},
+      }));
     },
   });
 }

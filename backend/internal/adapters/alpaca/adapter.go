@@ -214,6 +214,20 @@ func (a *Adapter) GetAccountEquity(ctx context.Context) (float64, error) {
 	return a.rest.GetAccountEquity(ctx)
 }
 
+// GetAccountBuyingPower fetches DTBP, effective buying power, and PDT flag from Alpaca.
+// Satisfies ports.AccountPort.
+func (a *Adapter) GetAccountBuyingPower(ctx context.Context) (ports.BuyingPower, error) {
+	bp, err := a.rest.GetAccountBuyingPower(ctx)
+	if err != nil {
+		return ports.BuyingPower{}, err
+	}
+	return ports.BuyingPower{
+		DayTradingBuyingPower: bp.DayTradingBuyingPower,
+		EffectiveBuyingPower:  bp.EffectiveBuyingPower,
+		PatternDayTrader:      bp.PatternDayTrader,
+	}, nil
+}
+
 // WSClient returns the underlying WebSocket client for metrics wiring.
 func (a *Adapter) WSClient() *WSClient { return a.ws }
 

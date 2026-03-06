@@ -531,6 +531,48 @@ func (c *RESTClient) GetAccountEquity(ctx context.Context) (float64, error) {
 	return equity, nil
 }
 
+// AccountBuyingPower holds the buying power fields from the Alpaca /v2/account response.
+type AccountBuyingPower struct {
+	DayTradingBuyingPower float64
+	EffectiveBuyingPower  float64
+	PatternDayTrader      bool
+}
+
+// GetAccountBuyingPower fetches DTBP, effective buying power, and PDT flag from /v2/account.
+func (c *RESTClient) GetAccountBuyingPower(ctx context.Context) (AccountBuyingPower, error) {
+	resp, err := c.doReqWithOpts(ctx, http.MethodGet, "/v2/account", nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
+	if err != nil {
+		c.log.Error().Err(err).Msg("get account buying power HTTP request failed")
+		return AccountBuyingPower{}, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		c.log.Error().Int("status", resp.StatusCode).Msg("get account buying power failed")
+		return AccountBuyingPower{}, fmt.Errorf("alpaca: get account buying power failed (status %d): %s", resp.StatusCode, string(body))
+	}
+	var res struct {
+		DayTradingBuyingPower string `json:"daytrading_buying_power"`
+		EffectiveBuyingPower  string `json:"effective_buying_power"`
+		PatternDayTrader      bool   `json:"pattern_day_trader"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return AccountBuyingPower{}, fmt.Errorf("alpaca: failed to decode account buying power: %w", err)
+	}
+	dtbp, _ := strconv.ParseFloat(res.DayTradingBuyingPower, 64)
+	ebp, _ := strconv.ParseFloat(res.EffectiveBuyingPower, 64)
+	c.log.Debug().
+		Float64("dtbp", dtbp).
+		Float64("effective_bp", ebp).
+		Bool("pdt", res.PatternDayTrader).
+		Msg("account buying power retrieved")
+	return AccountBuyingPower{
+		DayTradingBuyingPower: dtbp,
+		EffectiveBuyingPower:  ebp,
+		PatternDayTrader:      res.PatternDayTrader,
+	}, nil
+}
+
 // ClosedOrder represents a closed/filled order from the Alpaca REST API.
 type ClosedOrder struct {
 	ID             string  `json:"id"`
