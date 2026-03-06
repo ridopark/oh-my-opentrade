@@ -107,7 +107,7 @@ func TestRunScreen_HappyPath(t *testing.T) {
 	}}
 	repo := &mockRepo{}
 
-	svc, err := NewService(zerolog.Nop(), Config{Enabled: true, RVOLLookbackDays: 3, TopN: 2}, "default", "paper", []string{"AAA", "BBB"}, bus, snaps, md, repo, nil)
+	svc, err := NewService(zerolog.Nop(), Config{Enabled: true, RVOLLookbackDays: 3, TopN: 2}, "default", "paper", []string{"AAA", "BBB"}, domain.AssetClassEquity, bus, snaps, md, repo, nil)
 	if err != nil {
 		t.Fatalf("NewService err: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestRunScreen_MissingSnapshotStillSucceeds(t *testing.T) {
 	}}
 	repo := &mockRepo{}
 
-	svc, err := NewService(zerolog.Nop(), Config{Enabled: true, RVOLLookbackDays: 1, TopN: 2}, "default", "paper", []string{"AAA", "MISSING"}, bus, snaps, md, repo, nil)
+	svc, err := NewService(zerolog.Nop(), Config{Enabled: true, RVOLLookbackDays: 1, TopN: 2}, "default", "paper", []string{"AAA", "MISSING"}, domain.AssetClassEquity, bus, snaps, md, repo, nil)
 	if err != nil {
 		t.Fatalf("NewService err: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestRunScreen_WithNewsScoring(t *testing.T) {
 	repo := &mockRepo{}
 	news := &mockNews{scores: map[string]float64{"AAA": 0.8}}
 
-	svc, err := NewService(zerolog.Nop(), Config{Enabled: true, RVOLLookbackDays: 1, TopN: 1, EnableNewsScoring: true, GapWeight: 1, RVOLWeight: 1, NewsWeight: 0.5}, "default", "paper", []string{"AAA"}, bus, snaps, md, repo, news)
+	svc, err := NewService(zerolog.Nop(), Config{Enabled: true, RVOLLookbackDays: 1, TopN: 1, EnableNewsScoring: true, GapWeight: 1, RVOLWeight: 1, NewsWeight: 0.5}, "default", "paper", []string{"AAA"}, domain.AssetClassEquity, bus, snaps, md, repo, news)
 	if err != nil {
 		t.Fatalf("NewService err: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestRunScreen_RankingSortedByTotalScoreDesc(t *testing.T) {
 	}}
 	repo := &mockRepo{}
 
-	svc, err := NewService(zerolog.Nop(), Config{Enabled: true, RVOLLookbackDays: 1, TopN: 2}, "default", "paper", []string{"LOW", "HIGH"}, bus, snaps, md, repo, nil)
+	svc, err := NewService(zerolog.Nop(), Config{Enabled: true, RVOLLookbackDays: 1, TopN: 2}, "default", "paper", []string{"LOW", "HIGH"}, domain.AssetClassEquity, bus, snaps, md, repo, nil)
 	if err != nil {
 		t.Fatalf("NewService err: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestAvgDailyVolume(t *testing.T) {
 	}}
 	repo := &mockRepo{}
 
-	svc, err := NewService(zerolog.Nop(), Config{Enabled: true, RVOLLookbackDays: 3, TopN: 1}, "default", "paper", []string{"AAA"}, bus, snaps, md, repo, nil)
+	svc, err := NewService(zerolog.Nop(), Config{Enabled: true, RVOLLookbackDays: 3, TopN: 1}, "default", "paper", []string{"AAA"}, domain.AssetClassEquity, bus, snaps, md, repo, nil)
 	if err != nil {
 		t.Fatalf("NewService err: %v", err)
 	}

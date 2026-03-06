@@ -3,6 +3,7 @@ package builtin
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -43,6 +44,7 @@ type AVWAPConfig struct {
 	CooldownSeconds int
 	MaxTradesPerDay int
 	AllowRegimes    []string
+	Direction       string
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -123,6 +125,14 @@ func getStringSlice(m map[string]any, key string, def []string) []string {
 	}
 	return def
 }
+func getString(m map[string]any, key string, def string) string {
+	if v, ok := m[key]; ok {
+		if s, ok2 := v.(string); ok2 {
+			return s
+		}
+	}
+	return def
+}
 
 func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 	cfg := AVWAPConfig{
@@ -135,6 +145,7 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		CooldownSeconds: getInt(params, "cooldown_seconds", 120),
 		MaxTradesPerDay: getInt(params, "max_trades_per_day", 3),
 		AllowRegimes:    getStringSlice(params, "allow_regimes", []string{"BALANCE", "REVERSAL"}),
+		Direction:       getString(params, "direction", ""),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
 	return cfg
@@ -311,6 +322,11 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 				return avwapSt, []strat.Signal{sig}, nil
 			}
 
+			// Direction guard: skip short entries in long-only mode (e.g. crypto).
+			if strings.EqualFold(cfg.Direction, "LONG") {
+				continue
+			}
+
 			// Short breakout.
 			if avwapSt.BelowCount[anchorName] >= cfg.HoldBars && volumeOK {
 				if regimeTag == "REVERSAL" {
@@ -366,6 +382,11 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 				avwapSt.TradesToday++
 				avwapSt.CooldownUntil = now.Add(cooldown)
 				return avwapSt, []strat.Signal{sig}, nil
+			}
+
+			// Direction guard: skip short entries in long-only mode (e.g. crypto).
+			if strings.EqualFold(cfg.Direction, "LONG") {
+				continue
 			}
 
 			// Short bounce: touches AVWAP + RSI > min + bearish candle.

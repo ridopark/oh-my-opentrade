@@ -15,6 +15,7 @@ import (
 type InstanceAssignment struct {
 	Symbols        []string
 	Timeframes     []string
+	AssetClasses   []string
 	Priority       int
 	ConflictPolicy strat.ConflictPolicy
 }

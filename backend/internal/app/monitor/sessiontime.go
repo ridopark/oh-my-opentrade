@@ -45,3 +45,33 @@ func IsWithinORBWindow(barTime time.Time, windowMinutes int) bool {
 	endExclusive := openET.Add(time.Duration(windowMinutes) * time.Minute)
 	return (et.Equal(openET) || et.After(openET)) && et.Before(endExclusive)
 }
+
+// SessionKeyForAsset returns a session key appropriate for the asset class.
+// Crypto uses UTC date; equity uses Eastern Time date.
+func SessionKeyForAsset(t time.Time, ac domain.AssetClass) string {
+	if ac.Is24x7() {
+		u := t.UTC()
+		return fmt.Sprintf("%04d-%02d-%02d", u.Year(), int(u.Month()), u.Day())
+	}
+	return SessionKeyET(t)
+}
+
+// RTHOpenUTCForAsset returns the session open time in UTC for the given asset class.
+// Crypto sessions open at midnight UTC; equity uses NYSE 9:30 ET.
+func RTHOpenUTCForAsset(t time.Time, ac domain.AssetClass) time.Time {
+	if ac.Is24x7() {
+		u := t.UTC()
+		return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
+	}
+	return RTHOpenUTC(t)
+}
+
+// RTHEndUTCForAsset returns the session end time in UTC for the given asset class.
+// Crypto sessions end at 23:59:59 UTC; equity uses NYSE close time.
+func RTHEndUTCForAsset(t time.Time, ac domain.AssetClass) time.Time {
+	if ac.Is24x7() {
+		u := t.UTC()
+		return time.Date(u.Year(), u.Month(), u.Day(), 23, 59, 59, 0, time.UTC)
+	}
+	return RTHEndUTC(t)
+}

@@ -459,6 +459,7 @@ func main() {
 			"default",
 			string(domain.EnvModePaper),
 			cfg.Symbols.Symbols,
+			domain.AssetClassEquity,
 			eventBus,
 			alpacaAdapter,
 			alpacaAdapter,
