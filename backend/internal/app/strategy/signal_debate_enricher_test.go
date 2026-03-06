@@ -1,0 +1,341 @@
+package strategy_test
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
+	"github.com/oh-my-opentrade/backend/internal/app/strategy"
+	"github.com/oh-my-opentrade/backend/internal/domain"
+	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	"github.com/oh-my-opentrade/backend/internal/ports"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+type fakeAIAdvisor struct {
+	decision *domain.AdvisoryDecision
+	err      error
+	delay    time.Duration
+	calls    int
+	lastOpts []ports.DebateOption
+}
+
+type mockRepository struct {
+	mu          sync.Mutex
+	thoughtLogs []domain.ThoughtLog
+}
+
+func (m *mockRepository) SaveMarketBar(context.Context, domain.MarketBar) error { return nil }
+
+func (m *mockRepository) GetMarketBars(context.Context, domain.Symbol, domain.Timeframe, time.Time, time.Time) ([]domain.MarketBar, error) {
+	return nil, nil
+}
+
+func (m *mockRepository) SaveTrade(context.Context, domain.Trade) error { return nil }
+
+func (m *mockRepository) GetTrades(context.Context, string, domain.EnvMode, time.Time, time.Time) ([]domain.Trade, error) {
+	return nil, nil
+}
+
+func (m *mockRepository) SaveStrategyDNA(context.Context, domain.StrategyDNA) error { return nil }
+
+func (m *mockRepository) GetLatestStrategyDNA(context.Context, string, domain.EnvMode) (*domain.StrategyDNA, error) {
+	return nil, nil
+}
+
+func (m *mockRepository) SaveOrder(context.Context, domain.BrokerOrder) error { return nil }
+
+func (m *mockRepository) UpdateOrderFill(context.Context, string, time.Time, float64, float64) error {
+	return nil
+}
+
+func (m *mockRepository) ListTrades(context.Context, ports.TradeQuery) (ports.TradePage, error) {
+	return ports.TradePage{}, nil
+}
+
+func (m *mockRepository) ListOrders(context.Context, ports.OrderQuery) (ports.OrderPage, error) {
+	return ports.OrderPage{}, nil
+}
+
+func (m *mockRepository) SaveThoughtLog(_ context.Context, tl domain.ThoughtLog) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.thoughtLogs = append(m.thoughtLogs, tl)
+	return nil
+}
+
+func (m *mockRepository) GetThoughtLogsByIntentID(context.Context, string) ([]domain.ThoughtLog, error) {
+	return nil, nil
+}
+
+func (f *fakeAIAdvisor) RequestDebate(ctx context.Context, symbol domain.Symbol, regime domain.MarketRegime, indicators domain.IndicatorSnapshot, opts ...ports.DebateOption) (*domain.AdvisoryDecision, error) {
+	f.calls++
+	f.lastOpts = opts
+	if f.delay > 0 {
+		select {
+		case <-time.After(f.delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.decision, nil
+}
+
+func subscribeSignalEnriched(t *testing.T, bus *memory.Bus) <-chan domain.Event {
+	t.Helper()
+	ch := make(chan domain.Event, 10)
+	ctx := context.Background()
+	require.NoError(t, bus.Subscribe(ctx, domain.EventSignalEnriched, func(_ context.Context, ev domain.Event) error {
+		ch <- ev
+		return nil
+	}))
+	return ch
+}
+
+func noEventsReceived(t *testing.T, ch <-chan domain.Event) {
+	t.Helper()
+	select {
+	case ev := <-ch:
+		require.FailNow(t, "unexpected event received", "type=%s", ev.Type)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestSignalDebateEnricher_EntrySignal_AISuccess(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
+		Direction:      domain.DirectionLong,
+		Confidence:     0.91,
+		Rationale:      "r",
+		BullArgument:   "b",
+		BearArgument:   "br",
+		JudgeReasoning: "j",
+	}}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil)
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "100"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	require.Equal(t, domain.EventSignalEnriched, evs[0].Type)
+	got, ok := evs[0].Payload.(domain.SignalEnrichment)
+	require.True(t, ok)
+
+	assert.Equal(t, domain.EnrichmentOK, got.Status)
+	assert.InDelta(t, 0.91, got.Confidence, 0.0000001)
+	assert.Equal(t, "r", got.Rationale)
+	assert.Equal(t, domain.DirectionLong, got.Direction)
+	assert.Equal(t, "b", got.BullArgument)
+	assert.Equal(t, "br", got.BearArgument)
+	assert.Equal(t, "j", got.JudgeReasoning)
+
+	assert.Equal(t, string(iid), got.Signal.StrategyInstanceID)
+	assert.Equal(t, "AAPL", got.Signal.Symbol)
+	assert.Equal(t, strat.SignalEntry.String(), got.Signal.SignalType)
+	assert.Equal(t, strat.SideBuy.String(), got.Signal.Side)
+	assert.InDelta(t, 0.8, got.Signal.Strength, 0.0000001)
+	assert.Equal(t, sig.Tags, got.Signal.Tags)
+}
+
+func TestSignalDebateEnricher_EntrySignal_AITimeout(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{delay: 10 * time.Second}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil, strategy.WithDebateTimeout(100*time.Millisecond))
+	require.NoError(t, enricher.Start(context.Background()))
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.42, map[string]string{"ref_price": "100"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+	assert.Equal(t, domain.EnrichmentTimeout, got.Status)
+	assert.InDelta(t, sig.Strength, got.Confidence, 0.0000001)
+	assert.NotEmpty(t, got.Rationale)
+	assert.Equal(t, domain.DirectionLong, got.Direction)
+	assert.Empty(t, got.BullArgument)
+	assert.Empty(t, got.BearArgument)
+	assert.Empty(t, got.JudgeReasoning)
+}
+
+func TestSignalDebateEnricher_EntrySignal_AIError(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{err: errors.New("llm down")}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil, strategy.WithDebateTimeout(200*time.Millisecond))
+	require.NoError(t, enricher.Start(context.Background()))
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideSell, 0.77, map[string]string{"ref_price": "100"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+	assert.Equal(t, domain.EnrichmentError, got.Status)
+	assert.InDelta(t, sig.Strength, got.Confidence, 0.0000001)
+	assert.NotEmpty(t, got.Rationale)
+	assert.Equal(t, domain.DirectionShort, got.Direction)
+}
+
+func TestSignalDebateEnricher_ExitSignal_Skipped(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{Confidence: 0.99}}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil)
+	require.NoError(t, enricher.Start(context.Background()))
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalExit, strat.SideSell, 0.66, map[string]string{"ref_price": "100"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+	assert.Equal(t, domain.EnrichmentSkipped, got.Status)
+	assert.InDelta(t, sig.Strength, got.Confidence, 0.0000001)
+	assert.Equal(t, domain.DirectionCloseLong, got.Direction)
+	assert.Equal(t, 0, advisor.calls)
+}
+
+func TestSignalDebateEnricher_FlatSignal_Ignored(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{Confidence: 0.99}}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil)
+	require.NoError(t, enricher.Start(context.Background()))
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalFlat, strat.SideBuy, 0.5, map[string]string{"ref_price": "100"})
+	publishSignalCreated(t, bus, sig)
+
+	noEventsReceived(t, received)
+	assert.Equal(t, 0, advisor.calls)
+}
+
+func TestSignalDebateEnricher_NonSignalPayload_Ignored(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{Confidence: 0.99}}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil)
+	require.NoError(t, enricher.Start(context.Background()))
+	received := subscribeSignalEnriched(t, bus)
+
+	ctx := context.Background()
+	envMode := mustEnvMode(t)
+	ev, err := domain.NewEvent(domain.EventSignalCreated, "t1", envMode, "nonsig-1", "not-a-signal")
+	require.NoError(t, err)
+	require.NoError(t, bus.Publish(ctx, *ev))
+
+	noEventsReceived(t, received)
+}
+
+func TestSignalDebateEnricher_PassesSignalContext(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{Direction: domain.DirectionLong, Confidence: 0.5}}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil,
+		strategy.WithDebateOptionFactory(func(sig strat.Signal) []ports.DebateOption {
+			return []ports.DebateOption{func(any) {}}
+		}),
+	)
+	require.NoError(t, enricher.Start(context.Background()))
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.9, map[string]string{"ref_price": "100", "tag1": "v"})
+	publishSignalCreated(t, bus, sig)
+
+	_ = waitForEvents(t, received, 1)
+	assert.Equal(t, 1, advisor.calls)
+	assert.Greater(t, len(advisor.lastOpts), 0)
+}
+
+func TestSignalDebateEnricher_SavesThoughtLogOnAISuccess(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
+		Direction:      domain.DirectionLong,
+		Confidence:     0.91,
+		Rationale:      "r",
+		BullArgument:   "b",
+		BearArgument:   "br",
+		JudgeReasoning: "j",
+	}}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil, strategy.WithRepository(repo))
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "100"})
+	publishSignalCreated(t, bus, sig)
+
+	_ = waitForEvents(t, received, 1)
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	require.Len(t, repo.thoughtLogs, 1)
+	got := repo.thoughtLogs[0]
+	assert.Equal(t, "SignalEnriched", got.EventType)
+	assert.NotEmpty(t, got.BullArgument)
+	assert.NotEmpty(t, got.BearArgument)
+	assert.NotEmpty(t, got.JudgeReasoning)
+}
+
+func TestSignalDebateEnricher_SavesThoughtLogOnFallback(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	advisor := &fakeAIAdvisor{err: errors.New("llm down")}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil, strategy.WithRepository(repo), strategy.WithDebateTimeout(200*time.Millisecond))
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.77, map[string]string{"ref_price": "100"})
+	publishSignalCreated(t, bus, sig)
+
+	_ = waitForEvents(t, received, 1)
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	require.Len(t, repo.thoughtLogs, 1)
+	got := repo.thoughtLogs[0]
+	assert.Equal(t, "SignalEnriched", got.EventType)
+	assert.Empty(t, got.BullArgument)
+	assert.NotEmpty(t, got.Rationale)
+}
+
+func TestSignalDebateEnricher_NoRepoNoError(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{Direction: domain.DirectionLong, Confidence: 0.5}}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil)
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "100"})
+	publishSignalCreated(t, bus, sig)
+
+	_ = waitForEvents(t, received, 1)
+}
