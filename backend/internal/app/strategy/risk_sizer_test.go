@@ -90,6 +90,15 @@ func publishSignalCreated(t *testing.T, bus *memory.Bus, sig strat.Signal) {
 	require.NoError(t, bus.Publish(ctx, *ev))
 }
 
+func publishSignalEnriched(t *testing.T, bus *memory.Bus, enrichment domain.SignalEnrichment) {
+	t.Helper()
+	ctx := context.Background()
+	envMode := mustEnvMode(t)
+	ev, err := domain.NewEvent(domain.EventSignalEnriched, "t1", envMode, "enriched-1", enrichment)
+	require.NoError(t, err)
+	require.NoError(t, bus.Publish(ctx, *ev))
+}
+
 func TestRiskSizer_HandleSignal_Entry_Buy(t *testing.T) {
 	bus := memory.NewBus()
 	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
@@ -106,8 +115,24 @@ func TestRiskSizer_HandleSignal_Entry_Buy(t *testing.T) {
 	received := subscribeOrderIntentCreated(t, bus)
 
 	iid, _ := strat.NewInstanceID("orb_break:1.0.0:AAPL")
-	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "100"})
-	publishSignalCreated(t, bus, sig)
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "100"},
+		},
+		Status:         domain.EnrichmentOK,
+		Confidence:     0.8,
+		Rationale:      "AI enriched rationale",
+		Direction:      domain.DirectionLong,
+		BullArgument:   "bull thesis",
+		BearArgument:   "bear thesis",
+		JudgeReasoning: "judge says bull wins",
+	}
+	publishSignalEnriched(t, bus, enrichment)
 
 	evs := waitForEvents(t, received, 1)
 	require.Equal(t, domain.EventOrderIntentCreated, evs[0].Type)
@@ -120,6 +145,12 @@ func TestRiskSizer_HandleSignal_Entry_Buy(t *testing.T) {
 	assert.InDelta(t, 100*(1+0.0005), intent.LimitPrice, 0.0000001)
 	assert.InDelta(t, 100*(1-0.0025), intent.StopLoss, 0.0000001)
 	assert.Equal(t, 10, intent.MaxSlippageBPS)
+	assert.Equal(t, map[string]string{
+		"bull":              enrichment.BullArgument,
+		"bear":              enrichment.BearArgument,
+		"judge":             enrichment.JudgeReasoning,
+		"enrichment_status": string(enrichment.Status),
+	}, intent.Meta)
 }
 
 func TestRiskSizer_HandleSignal_Entry_Sell(t *testing.T) {
@@ -135,8 +166,21 @@ func TestRiskSizer_HandleSignal_Entry_Sell(t *testing.T) {
 	received := subscribeOrderIntentCreated(t, bus)
 
 	iid, _ := strat.NewInstanceID("orb_break:1.0.0:AAPL")
-	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideSell, 0.9, map[string]string{"ref_price": "100"})
-	publishSignalCreated(t, bus, sig)
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "entry",
+			Side:               "sell",
+			Strength:           0.9,
+			Tags:               map[string]string{"ref_price": "100"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.9,
+		Rationale:  "AI enriched rationale",
+		Direction:  domain.DirectionShort,
+	}
+	publishSignalEnriched(t, bus, enrichment)
 
 	evs := waitForEvents(t, received, 1)
 	intent := evs[0].Payload.(domain.OrderIntent)
@@ -158,8 +202,21 @@ func TestRiskSizer_HandleSignal_Exit_SetsDirectionCloseLong(t *testing.T) {
 	received := subscribeOrderIntentCreated(t, bus)
 
 	iid, _ := strat.NewInstanceID("orb_break:1.0.0:AAPL")
-	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalExit, strat.SideSell, 0.8, map[string]string{"ref_price": "100"})
-	publishSignalCreated(t, bus, sig)
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "exit",
+			Side:               "sell",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "100"},
+		},
+		Status:     domain.EnrichmentSkipped,
+		Confidence: 0.8,
+		Rationale:  "exit signal",
+		Direction:  domain.DirectionCloseLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
 
 	evs := waitForEvents(t, received, 1)
 	intent := evs[0].Payload.(domain.OrderIntent)
@@ -180,8 +237,21 @@ func TestRiskSizer_HandleSignal_Entry_IsNotExit(t *testing.T) {
 	received := subscribeOrderIntentCreated(t, bus)
 
 	iid, _ := strat.NewInstanceID("orb_break:1.0.0:AAPL")
-	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "100"})
-	publishSignalCreated(t, bus, sig)
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "100"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.8,
+		Rationale:  "AI enriched rationale",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
 
 	evs := waitForEvents(t, received, 1)
 	intent := evs[0].Payload.(domain.OrderIntent)
@@ -196,8 +266,21 @@ func TestRiskSizer_HandleSignal_FlatIgnored(t *testing.T) {
 	received := subscribeOrderIntentCreated(t, bus)
 
 	iid, _ := strat.NewInstanceID("orb_break:1.0.0:AAPL")
-	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalFlat, strat.SideBuy, 0.5, map[string]string{"ref_price": "100"})
-	publishSignalCreated(t, bus, sig)
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "flat",
+			Side:               "buy",
+			Strength:           0.5,
+			Tags:               map[string]string{"ref_price": "100"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.5,
+		Rationale:  "flat",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
 
 	select {
 	case <-received:
@@ -214,8 +297,21 @@ func TestRiskSizer_HandleSignal_NoRefPrice(t *testing.T) {
 	received := subscribeOrderIntentCreated(t, bus)
 
 	iid, _ := strat.NewInstanceID("orb_break:1.0.0:AAPL")
-	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{})
-	publishSignalCreated(t, bus, sig)
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.8,
+			Tags:               map[string]string{},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.8,
+		Rationale:  "AI enriched rationale",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
 
 	select {
 	case <-received:
@@ -233,8 +329,21 @@ func TestRiskSizer_HandleSignal_SpecNotFound(t *testing.T) {
 	received := subscribeOrderIntentCreated(t, bus)
 
 	iid, _ := strat.NewInstanceID("orb_break:1.0.0:AAPL")
-	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.7, map[string]string{"ref_price": "100"})
-	publishSignalCreated(t, bus, sig)
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.7,
+			Tags:               map[string]string{"ref_price": "100"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.7,
+		Rationale:  "AI enriched rationale",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
 
 	evs := waitForEvents(t, received, 1)
 	intent := evs[0].Payload.(domain.OrderIntent)
@@ -254,8 +363,21 @@ func TestRiskSizer_HandleSignal_PositionSizing(t *testing.T) {
 	received := subscribeOrderIntentCreated(t, bus)
 
 	iid, _ := strat.NewInstanceID("orb_break:1.0.0:AAPL")
-	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "100"})
-	publishSignalCreated(t, bus, sig)
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "100"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.8,
+		Rationale:  "AI enriched rationale",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
 
 	evs := waitForEvents(t, received, 1)
 	intent := evs[0].Payload.(domain.OrderIntent)
@@ -276,8 +398,21 @@ func TestRiskSizer_SetAccountEquity(t *testing.T) {
 	rs.SetAccountEquity(50000)
 
 	iid, _ := strat.NewInstanceID("orb_break:1.0.0:AAPL")
-	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "100"})
-	publishSignalCreated(t, bus, sig)
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "100"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.8,
+		Rationale:  "AI enriched rationale",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
 
 	intent := waitForEvents(t, received, 1)[0].Payload.(domain.OrderIntent)
 	assert.Equal(t, 20.0, intent.Quantity)
@@ -291,8 +426,21 @@ func TestRiskSizer_Start_SubscribesCorrectly(t *testing.T) {
 	received := subscribeOrderIntentCreated(t, bus)
 
 	iid, _ := strat.NewInstanceID("orb_break:1.0.0:AAPL")
-	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "100"})
-	publishSignalCreated(t, bus, sig)
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "100"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.8,
+		Rationale:  "AI enriched rationale",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
 
 	_ = waitForEvents(t, received, 1)
 }
@@ -324,8 +472,21 @@ func TestRiskSizer_HandleSignal_MaxPositionBPS_Clamp(t *testing.T) {
 	received := subscribeOrderIntentCreated(t, bus)
 
 	iid, _ := strat.NewInstanceID("orb_break:1.0.0:GOOGL")
-	sig, _ := strat.NewSignal(iid, "GOOGL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "300"})
-	publishSignalCreated(t, bus, sig)
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "GOOGL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "300"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.8,
+		Rationale:  "AI enriched rationale",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
 
 	evs := waitForEvents(t, received, 1)
 	intent := evs[0].Payload.(domain.OrderIntent)
@@ -358,8 +519,21 @@ func TestRiskSizer_HandleSignal_MaxPositionBPS_NoClamp(t *testing.T) {
 	received := subscribeOrderIntentCreated(t, bus)
 
 	iid, _ := strat.NewInstanceID("orb_break:1.0.0:AAPL")
-	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "100"})
-	publishSignalCreated(t, bus, sig)
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "100"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.8,
+		Rationale:  "AI enriched rationale",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
 
 	evs := waitForEvents(t, received, 1)
 	intent := evs[0].Payload.(domain.OrderIntent)
@@ -387,8 +561,21 @@ func TestRiskSizer_HandleSignal_MaxPositionBPS_Default(t *testing.T) {
 	received := subscribeOrderIntentCreated(t, bus)
 
 	iid, _ := strat.NewInstanceID("orb_break:1.0.0:GOOGL")
-	sig, _ := strat.NewSignal(iid, "GOOGL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "298.72"})
-	publishSignalCreated(t, bus, sig)
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "GOOGL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "298.72"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.8,
+		Rationale:  "AI enriched rationale",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
 
 	evs := waitForEvents(t, received, 1)
 	intent := evs[0].Payload.(domain.OrderIntent)

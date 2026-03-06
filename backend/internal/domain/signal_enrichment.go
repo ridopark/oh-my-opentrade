@@ -1,0 +1,44 @@
+package domain
+
+// EnrichmentStatus indicates the outcome of the AI enrichment attempt.
+type EnrichmentStatus string
+
+const (
+	// EnrichmentOK means the AI advisor returned a valid debate result.
+	EnrichmentOK EnrichmentStatus = "ok"
+	// EnrichmentTimeout means the AI advisor did not respond within the deadline.
+	EnrichmentTimeout EnrichmentStatus = "timeout"
+	// EnrichmentError means the AI advisor returned an error.
+	EnrichmentError EnrichmentStatus = "error"
+	// EnrichmentSkipped means the signal was not eligible for debate (e.g. exit signals).
+	EnrichmentSkipped EnrichmentStatus = "skipped"
+)
+
+// SignalRef identifies the original strategy signal that triggered enrichment.
+// It carries enough context for downstream consumers (RiskSizer) to reconstruct
+// the OrderIntent without needing the full strat.Signal (which lives in the
+// strategy domain package, not the core domain).
+type SignalRef struct {
+	StrategyInstanceID string            `json:"strategyInstanceId"`
+	Symbol             string            `json:"symbol"`
+	SignalType         string            `json:"signalType"` // "entry", "exit", "adjust", "flat"
+	Side               string            `json:"side"`       // "buy", "sell"
+	Strength           float64           `json:"strength"`   // original signal strength [0,1]
+	Tags               map[string]string `json:"tags"`       // original signal metadata
+}
+
+// SignalEnrichment is the event payload for EventSignalEnriched.
+// It always contains the original signal reference and enrichment status.
+// When AI enrichment succeeds (Status == EnrichmentOK), the advisory fields
+// are populated with bull/bear/judge reasoning and an adjusted confidence.
+// When AI is unavailable, the fields fall back to the original signal values.
+type SignalEnrichment struct {
+	Signal         SignalRef        `json:"signal"`
+	Status         EnrichmentStatus `json:"status"`
+	Confidence     float64          `json:"confidence"`     // AI-adjusted or original strength
+	Rationale      string           `json:"rationale"`      // AI rationale or generic signal string
+	Direction      Direction        `json:"direction"`      // AI direction or derived from signal side
+	BullArgument   string           `json:"bullArgument"`   // empty on fallback
+	BearArgument   string           `json:"bearArgument"`   // empty on fallback
+	JudgeReasoning string           `json:"judgeReasoning"` // empty on fallback
+}
