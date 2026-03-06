@@ -212,3 +212,8 @@ func (a *Adapter) GetAccountEquity(ctx context.Context) (float64, error) {
 
 // WSClient returns the underlying WebSocket client for metrics wiring.
 func (a *Adapter) WSClient() *WSClient { return a.ws }
+
+// GetClosedOrders fetches all closed orders from Alpaca within the given time range.
+func (a *Adapter) GetClosedOrders(ctx context.Context, after, until time.Time) ([]ClosedOrder, error) {
+	return a.rest.GetClosedOrders(ctx, after, until)
+}
