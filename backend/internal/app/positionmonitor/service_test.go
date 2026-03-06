@@ -8,7 +8,9 @@ import (
 
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	domstrategy "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
+	portstrategy "github.com/oh-my-opentrade/backend/internal/ports/strategy"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -64,7 +66,10 @@ func (m *mockEventBus) totalPublished() int {
 	return len(m.published)
 }
 
-type mockBroker struct{}
+type mockBroker struct {
+	positions []domain.Trade
+	posErr    error
+}
 
 func (m *mockBroker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (string, error) {
 	return "", nil
@@ -74,6 +79,62 @@ func (m *mockBroker) GetOrderStatus(ctx context.Context, orderID string) (string
 	return "", nil
 }
 func (m *mockBroker) GetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
+	return m.positions, m.posErr
+}
+
+type mockRepo struct {
+	trades    []domain.Trade
+	tradesErr error
+}
+
+func (m *mockRepo) SaveMarketBar(ctx context.Context, bar domain.MarketBar) error { return nil }
+func (m *mockRepo) GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
+	return nil, nil
+}
+func (m *mockRepo) SaveTrade(ctx context.Context, trade domain.Trade) error { return nil }
+func (m *mockRepo) GetTrades(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) ([]domain.Trade, error) {
+	return m.trades, m.tradesErr
+}
+func (m *mockRepo) SaveStrategyDNA(ctx context.Context, dna domain.StrategyDNA) error { return nil }
+func (m *mockRepo) GetLatestStrategyDNA(ctx context.Context, tenantID string, envMode domain.EnvMode) (*domain.StrategyDNA, error) {
+	return nil, nil
+}
+func (m *mockRepo) SaveOrder(ctx context.Context, order domain.BrokerOrder) error { return nil }
+func (m *mockRepo) UpdateOrderFill(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64) error {
+	return nil
+}
+func (m *mockRepo) ListTrades(ctx context.Context, q ports.TradeQuery) (ports.TradePage, error) {
+	return ports.TradePage{}, nil
+}
+func (m *mockRepo) ListOrders(ctx context.Context, q ports.OrderQuery) (ports.OrderPage, error) {
+	return ports.OrderPage{}, nil
+}
+func (m *mockRepo) SaveThoughtLog(ctx context.Context, tl domain.ThoughtLog) error { return nil }
+func (m *mockRepo) GetThoughtLogsByIntentID(ctx context.Context, intentID string) ([]domain.ThoughtLog, error) {
+	return nil, nil
+}
+
+type mockSpecStore struct {
+	specs map[string]*portstrategy.Spec
+}
+
+func (m *mockSpecStore) List(ctx context.Context, filter *portstrategy.SpecFilter) ([]portstrategy.Spec, error) {
+	return nil, nil
+}
+func (m *mockSpecStore) Get(ctx context.Context, id domstrategy.StrategyID, version domstrategy.Version) (*portstrategy.Spec, error) {
+	return nil, nil
+}
+func (m *mockSpecStore) GetLatest(ctx context.Context, id domstrategy.StrategyID) (*portstrategy.Spec, error) {
+	if m.specs == nil {
+		return nil, assert.AnError
+	}
+	if spec, ok := m.specs[id.String()]; ok {
+		return spec, nil
+	}
+	return nil, assert.AnError
+}
+func (m *mockSpecStore) Save(ctx context.Context, spec portstrategy.Spec) error { return nil }
+func (m *mockSpecStore) Watch(ctx context.Context) (<-chan domstrategy.StrategyID, error) {
 	return nil, nil
 }
 
@@ -319,4 +380,247 @@ func TestService_tick_ExitPendingTimeoutClearsLock(t *testing.T) {
 
 	svc.tick()
 	assert.False(t, pos.ExitPending)
+}
+
+func TestService_bootstrapPositions_RestoresOMOPositionThatExistsOnBroker(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+
+	broker := &mockBroker{positions: []domain.Trade{{
+		Symbol:     domain.Symbol("AAPL"),
+		Quantity:   10,
+		Price:      150,
+		AssetClass: domain.AssetClassEquity,
+		TenantID:   "tenant-1",
+		EnvMode:    domain.EnvModePaper,
+	}}}
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+
+	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	repo := &mockRepo{trades: []domain.Trade{{
+		Symbol:     domain.Symbol("AAPL"),
+		Side:       "BUY",
+		Price:      150,
+		Quantity:   10,
+		Strategy:   "orb_break_retest",
+		AssetClass: domain.AssetClassEquity,
+		Time:       now.Add(-10 * time.Minute),
+		TenantID:   "tenant-1",
+		EnvMode:    domain.EnvModePaper,
+	}}}
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithBroker(broker),
+		WithRepo(repo),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.bootstrapPositions(context.Background())
+
+	require.Equal(t, 1, svc.PositionCount())
+	pos, ok := svc.positions["tenant-1:Paper:AAPL"]
+	require.True(t, ok)
+	assert.Equal(t, 150.0, pos.EntryPrice)
+	assert.Equal(t, 10.0, pos.Quantity)
+	assert.Equal(t, "orb_break_retest", pos.Strategy)
+}
+
+func TestService_bootstrapPositions_SkipsPositionsNotOnBroker(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	broker := &mockBroker{positions: nil}
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+
+	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	repo := &mockRepo{trades: []domain.Trade{{
+		Symbol:     domain.Symbol("AAPL"),
+		Side:       "BUY",
+		Price:      150,
+		Quantity:   10,
+		Strategy:   "orb_break_retest",
+		AssetClass: domain.AssetClassEquity,
+		Time:       now.Add(-10 * time.Minute),
+		TenantID:   "tenant-1",
+		EnvMode:    domain.EnvModePaper,
+	}}}
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithBroker(broker),
+		WithRepo(repo),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.bootstrapPositions(context.Background())
+	assert.Equal(t, 0, svc.PositionCount())
+}
+
+func TestService_bootstrapPositions_SkipsManuallyOpenedBrokerPositions(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	broker := &mockBroker{positions: []domain.Trade{{
+		Symbol:     domain.Symbol("TSLA"),
+		Quantity:   5,
+		Price:      200,
+		AssetClass: domain.AssetClassEquity,
+		TenantID:   "tenant-1",
+		EnvMode:    domain.EnvModePaper,
+	}}}
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+
+	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	repo := &mockRepo{trades: []domain.Trade{{
+		Symbol:     domain.Symbol("AAPL"),
+		Side:       "BUY",
+		Price:      150,
+		Quantity:   10,
+		Strategy:   "orb_break_retest",
+		AssetClass: domain.AssetClassEquity,
+		Time:       now.Add(-10 * time.Minute),
+		TenantID:   "tenant-1",
+		EnvMode:    domain.EnvModePaper,
+	}}}
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithBroker(broker),
+		WithRepo(repo),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.bootstrapPositions(context.Background())
+	assert.Equal(t, 0, svc.PositionCount())
+}
+
+func TestService_bootstrapPositions_HandlesClosedPositionsCorrectly(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	broker := &mockBroker{positions: nil}
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+
+	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	repo := &mockRepo{trades: []domain.Trade{
+		{
+			Symbol:     domain.Symbol("AAPL"),
+			Side:       "BUY",
+			Price:      150,
+			Quantity:   10,
+			Strategy:   "orb_break_retest",
+			AssetClass: domain.AssetClassEquity,
+			Time:       now.Add(-20 * time.Minute),
+			TenantID:   "tenant-1",
+			EnvMode:    domain.EnvModePaper,
+		},
+		{
+			Symbol:     domain.Symbol("AAPL"),
+			Side:       "SELL",
+			Price:      155,
+			Quantity:   10,
+			Strategy:   "orb_break_retest",
+			AssetClass: domain.AssetClassEquity,
+			Time:       now.Add(-10 * time.Minute),
+			TenantID:   "tenant-1",
+			EnvMode:    domain.EnvModePaper,
+		},
+	}}
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithBroker(broker),
+		WithRepo(repo),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.bootstrapPositions(context.Background())
+	assert.Equal(t, 0, svc.PositionCount())
+}
+
+func TestService_bootstrapPositions_HandlesPartialFills(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+
+	broker := &mockBroker{positions: []domain.Trade{{
+		Symbol:     domain.Symbol("AAPL"),
+		Quantity:   5,
+		Price:      155,
+		AssetClass: domain.AssetClassEquity,
+		TenantID:   "tenant-1",
+		EnvMode:    domain.EnvModePaper,
+	}}}
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+
+	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	repo := &mockRepo{trades: []domain.Trade{
+		{
+			Symbol:     domain.Symbol("AAPL"),
+			Side:       "BUY",
+			Price:      150,
+			Quantity:   10,
+			Strategy:   "orb_break_retest",
+			AssetClass: domain.AssetClassEquity,
+			Time:       now.Add(-20 * time.Minute),
+			TenantID:   "tenant-1",
+			EnvMode:    domain.EnvModePaper,
+		},
+		{
+			Symbol:     domain.Symbol("AAPL"),
+			Side:       "SELL",
+			Price:      152,
+			Quantity:   5,
+			Strategy:   "orb_break_retest",
+			AssetClass: domain.AssetClassEquity,
+			Time:       now.Add(-10 * time.Minute),
+			TenantID:   "tenant-1",
+			EnvMode:    domain.EnvModePaper,
+		},
+	}}
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithBroker(broker),
+		WithRepo(repo),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.bootstrapPositions(context.Background())
+	require.Equal(t, 1, svc.PositionCount())
+	pos, ok := svc.positions["tenant-1:Paper:AAPL"]
+	require.True(t, ok)
+	assert.Equal(t, 5.0, pos.Quantity)
+	assert.Equal(t, 155.0, pos.EntryPrice)
+}
+
+func TestService_resolveExitRules_UsesSpecStoreWhenAvailable(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	trailing := mustExitRule(t, domain.ExitRuleTrailingStop, map[string]float64{"pct": 0.05})
+	eod := mustExitRule(t, domain.ExitRuleEODFlatten, map[string]float64{"minutes_before_close": 5})
+	ss := &mockSpecStore{specs: map[string]*portstrategy.Spec{
+		"orb_break_retest": {
+			ID:      domstrategy.StrategyID("orb_break_retest"),
+			Version: domstrategy.Version("1.0.0"),
+			ExitRules: []domain.ExitRule{
+				trailing,
+				eod,
+			},
+		},
+	}}
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(), WithSpecStore(ss))
+
+	rules := svc.resolveExitRules(context.Background(), "orb_break_retest")
+	require.Len(t, rules, 2)
+	assert.Equal(t, trailing, rules[0])
+	assert.Equal(t, eod, rules[1])
+}
+
+func TestService_resolveExitRules_FallsBackToDefaultsWhenSpecStoreIsNil(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop())
+
+	rules := svc.resolveExitRules(context.Background(), "any_strategy")
+	require.Len(t, rules, 2)
+	assert.Equal(t, domain.ExitRuleMaxLoss, rules[0].Type)
+	assert.Equal(t, domain.ExitRuleEODFlatten, rules[1].Type)
 }

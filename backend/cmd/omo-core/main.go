@@ -150,7 +150,10 @@ func main() {
 	priceCacheLog := log.With().Str("component", "price_cache").Logger()
 	priceCache := positionmonitor.NewPriceCache(priceCacheLog)
 	posMonitorLog := log.With().Str("component", "position_monitor").Logger()
-	posMonitor := positionmonitor.NewService(eventBus, priceCache, positionGate, "default", domain.EnvModePaper, posMonitorLog)
+	posMonitor := positionmonitor.NewService(eventBus, priceCache, positionGate, "default", domain.EnvModePaper, posMonitorLog,
+		positionmonitor.WithBroker(alpacaAdapter),
+		positionmonitor.WithRepo(repo),
+	)
 
 	// 5a. Initialize notification adapters (gracefully no-op if tokens not set)
 	var notifiers []ports.NotifierPort
@@ -223,6 +226,7 @@ func main() {
 	if useStrategyV2 {
 		const specDir = "configs/strategies"
 		specStore = store_fs.NewStore(specDir, strategy.LoadSpecFile)
+		posMonitor.SetSpecStore(specStore)
 
 		// Register all builtin strategies in the in-memory registry.
 		registry := strategy.NewMemRegistry()

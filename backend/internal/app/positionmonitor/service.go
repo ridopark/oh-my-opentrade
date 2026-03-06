@@ -3,13 +3,16 @@ package positionmonitor
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	domstrategy "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
+	portstrategy "github.com/oh-my-opentrade/backend/internal/ports/strategy"
 	"github.com/rs/zerolog"
 )
 
@@ -25,6 +28,9 @@ type Service struct {
 	eventBus     ports.EventBusPort
 	priceCache   ports.PriceCachePort
 	positionGate *execution.PositionGate
+	broker       ports.BrokerPort
+	repo         ports.RepositoryPort
+	specStore    portstrategy.SpecStore
 	log          zerolog.Logger
 	nowFunc      func() time.Time
 
@@ -83,6 +89,26 @@ func WithNowFunc(fn func() time.Time) Option {
 	return func(s *Service) { s.nowFunc = fn }
 }
 
+// WithBroker injects a BrokerPort for startup position bootstrap.
+func WithBroker(b ports.BrokerPort) Option {
+	return func(s *Service) { s.broker = b }
+}
+
+// WithRepo injects a RepositoryPort for startup position bootstrap.
+func WithRepo(r ports.RepositoryPort) Option {
+	return func(s *Service) { s.repo = r }
+}
+
+// WithSpecStore injects a SpecStore for resolving exit rules during bootstrap.
+func WithSpecStore(ss portstrategy.SpecStore) Option {
+	return func(s *Service) { s.specStore = ss }
+}
+
+// SetSpecStore sets the spec store after construction (for deferred wiring).
+func (s *Service) SetSpecStore(ss portstrategy.SpecStore) {
+	s.specStore = ss
+}
+
 // NewService creates a new position monitor service.
 func NewService(
 	eventBus ports.EventBusPort,
@@ -120,6 +146,9 @@ func (s *Service) Start(ctx context.Context) error {
 		return fmt.Errorf("position_monitor: failed to subscribe to FillReceived: %w", err)
 	}
 
+	// Bootstrap: seed monitor with OMO-opened positions that are still on the broker.
+	s.bootstrapPositions(ctx)
+
 	// Outbox publisher goroutine — reads exit intents and publishes them.
 	go s.runOutbox(ctx)
 
@@ -129,8 +158,154 @@ func (s *Service) Start(ctx context.Context) error {
 	s.log.Info().
 		Dur("tick_interval", s.tickInterval).
 		Dur("max_price_staleness", s.maxPriceStaleness).
+		Int("bootstrapped_positions", len(s.positions)).
 		Msg("position monitor started")
 	return nil
+}
+
+// bootstrapPositions seeds the monitor with OMO-opened positions that still exist on the broker.
+// It cross-references broker positions with our trade DB to identify positions that OMO opened.
+// Positions opened manually by the user on the broker are NOT bootstrapped.
+func (s *Service) bootstrapPositions(ctx context.Context) {
+	if s.broker == nil || s.repo == nil {
+		s.log.Debug().Msg("bootstrap skipped — broker or repo not configured")
+		return
+	}
+
+	// 1. Query broker for all current positions.
+	brokerPositions, err := s.broker.GetPositions(ctx, s.tenantID, s.envMode)
+	if err != nil {
+		s.log.Warn().Err(err).Msg("bootstrap: failed to query broker positions — skipping")
+		return
+	}
+	if len(brokerPositions) == 0 {
+		s.log.Debug().Msg("bootstrap: no open broker positions")
+		return
+	}
+
+	// Build a lookup of broker positions by symbol.
+	brokerBySymbol := make(map[domain.Symbol]domain.Trade, len(brokerPositions))
+	for _, bp := range brokerPositions {
+		brokerBySymbol[bp.Symbol] = bp
+	}
+
+	// 2. Query our trade DB for recent BUY fills to identify OMO-opened positions.
+	//    We look back 30 days to cover long-held positions (especially crypto).
+	now := s.nowFunc()
+	from := now.Add(-30 * 24 * time.Hour)
+	trades, err := s.repo.GetTrades(ctx, s.tenantID, s.envMode, from, now)
+	if err != nil {
+		s.log.Warn().Err(err).Msg("bootstrap: failed to query trade history — skipping")
+		return
+	}
+
+	// 3. Compute net OMO position per symbol from trade history.
+	//    Positive net qty = we have a long; negative = short (not currently supported).
+	type omoEntry struct {
+		netQty   float64
+		avgEntry float64 // weighted average entry price
+		entryAt  time.Time
+		strategy string
+		asset    domain.AssetClass
+	}
+	omoPositions := make(map[domain.Symbol]*omoEntry)
+	for _, t := range trades {
+		e, exists := omoPositions[t.Symbol]
+		if !exists {
+			e = &omoEntry{}
+			omoPositions[t.Symbol] = e
+		}
+
+		switch strings.ToUpper(t.Side) {
+		case "BUY":
+			// Weighted average entry price on buys.
+			totalCost := e.avgEntry*e.netQty + t.Price*t.Quantity
+			e.netQty += t.Quantity
+			if e.netQty > 0 {
+				e.avgEntry = totalCost / e.netQty
+			}
+			e.entryAt = t.Time
+			e.strategy = t.Strategy
+			e.asset = t.AssetClass
+		case "SELL":
+			e.netQty -= t.Quantity
+			if e.netQty <= 0 {
+				// Position fully closed — clear.
+				e.netQty = 0
+				e.avgEntry = 0
+			}
+		}
+	}
+
+	// 4. For each OMO position with net qty > 0 that also exists on the broker, seed the monitor.
+	bootstrapped := 0
+	for sym, omo := range omoPositions {
+		if omo.netQty <= 0 {
+			continue
+		}
+		bp, onBroker := brokerBySymbol[sym]
+		if !onBroker {
+			// OMO thinks we have a position but broker disagrees — stale trade data.
+			s.log.Warn().Str("symbol", string(sym)).Msg("bootstrap: OMO trade found but no broker position — skipping")
+			continue
+		}
+
+		// Use broker's actual qty/price as the source of truth for current state.
+		entryPrice := bp.Price // avg_entry_price from broker
+		quantity := bp.Quantity
+		assetClass := bp.AssetClass
+		strategy := omo.strategy
+		entryTime := omo.entryAt
+
+		// Look up exit rules from strategy spec.
+		exitRules := s.resolveExitRules(ctx, strategy)
+
+		pos, err := domain.NewMonitoredPosition(
+			sym, entryPrice, entryTime,
+			strategy, assetClass, exitRules,
+			s.tenantID, s.envMode, quantity,
+		)
+		if err != nil {
+			s.log.Warn().Err(err).Str("symbol", string(sym)).Msg("bootstrap: failed to create monitored position")
+			continue
+		}
+
+		key := pos.PositionKey()
+		s.positions[key] = &pos
+		bootstrapped++
+		s.log.Info().
+			Str("symbol", string(sym)).
+			Float64("entry_price", entryPrice).
+			Float64("quantity", quantity).
+			Str("strategy", strategy).
+			Int("exit_rules", len(exitRules)).
+			Msg("bootstrap: position restored from trade history")
+	}
+
+	s.log.Info().Int("bootstrapped", bootstrapped).Int("broker_total", len(brokerPositions)).Msg("bootstrap complete")
+}
+
+// resolveExitRules looks up exit rules from the strategy spec store.
+// Falls back to conservative defaults if the spec store is unavailable or the strategy has no rules.
+func (s *Service) resolveExitRules(ctx context.Context, strategy string) []domain.ExitRule {
+	if s.specStore != nil && strategy != "" {
+		spec, err := s.specStore.GetLatest(ctx, domstrategy.StrategyID(strategy))
+		if err == nil && len(spec.ExitRules) > 0 {
+			s.log.Debug().Str("strategy", strategy).Int("rules", len(spec.ExitRules)).Msg("bootstrap: exit rules from spec")
+			return spec.ExitRules
+		}
+	}
+
+	// Conservative defaults: max loss at 5% and EOD flatten 5 min before close.
+	var defaults []domain.ExitRule
+	if r, err := domain.NewExitRule(domain.ExitRuleMaxLoss, map[string]float64{"pct": 0.05}); err == nil {
+		defaults = append(defaults, r)
+	}
+	if r, err := domain.NewExitRule(domain.ExitRuleEODFlatten, map[string]float64{"minutes_before_close": 5}); err == nil {
+		defaults = append(defaults, r)
+	}
+	s.log.Debug().Str("strategy", strategy).Msg("bootstrap: using default exit rules")
+	return defaults
 }
 
 // handleFillEvent is the EventBusPort handler. It enqueues fills without processing
