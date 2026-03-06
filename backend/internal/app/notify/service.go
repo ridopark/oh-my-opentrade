@@ -3,11 +3,21 @@ package notify
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
+
+// etLoc is the Eastern Time location used for notification timestamps.
+var etLoc = func() *time.Location {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		panic("notify: failed to load America/New_York timezone: " + err.Error())
+	}
+	return loc
+}()
 
 // Service subscribes to trading-relevant events on the event bus and fans out
 // notifications to all configured NotifierPort implementations (Telegram, Discord, etc.).
@@ -48,7 +58,7 @@ func (s *Service) Start(ctx context.Context) error {
 		formatter := e.formatter // capture for closure
 		eventType := e.eventType
 		handler := func(ctx context.Context, ev domain.Event) error {
-			msg := formatter(ev)
+			msg := fmt.Sprintf("[%s] %s", ev.OccurredAt.In(etLoc).Format("15:04:05"), formatter(ev))
 			if err := s.notifier.Notify(ctx, ev.TenantID, msg); err != nil {
 				s.log.Warn().Err(err).Str("event", eventType).Msg("notification failed")
 			}
