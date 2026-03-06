@@ -394,3 +394,75 @@ func (c *RESTClient) GetAccountEquity(ctx context.Context) (float64, error) {
 	c.log.Info().Float64("equity", equity).Msg("account equity retrieved")
 	return equity, nil
 }
+
+// ClosedOrder represents a closed/filled order from the Alpaca REST API.
+type ClosedOrder struct {
+	ID             string  `json:"id"`
+	Symbol         string  `json:"symbol"`
+	Qty            string  `json:"qty"`
+	FilledQty      string  `json:"filled_qty"`
+	FilledAvgPrice string  `json:"filled_avg_price"`
+	Side           string  `json:"side"`
+	Type           string  `json:"type"`
+	Status         string  `json:"status"`
+	FilledAt       *string `json:"filled_at"`
+	SubmittedAt    string  `json:"submitted_at"`
+	CreatedAt      string  `json:"created_at"`
+}
+
+// GetClosedOrders fetches all closed orders from Alpaca, paginating via the
+// created_at timestamp. It returns orders in ascending chronological order.
+func (c *RESTClient) GetClosedOrders(ctx context.Context, after, until time.Time) ([]ClosedOrder, error) {
+	var allOrders []ClosedOrder
+	// Alpaca paginates closed orders using 'after' and 'until' timestamps.
+	// We request in ascending order (oldest first) and walk forward.
+	currentAfter := after
+
+	for {
+		path := fmt.Sprintf("/v2/orders?status=closed&limit=500&direction=asc&after=%s&until=%s",
+			currentAfter.UTC().Format(time.RFC3339),
+			until.UTC().Format(time.RFC3339),
+		)
+
+		resp, err := c.doReq(ctx, http.MethodGet, path, nil)
+		if err != nil {
+			c.log.Error().Err(err).Msg("get closed orders HTTP request failed")
+			return nil, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			c.log.Error().Int("status", resp.StatusCode).Msg("get closed orders failed")
+			return nil, fmt.Errorf("alpaca: get closed orders failed (status %d): %s", resp.StatusCode, string(body))
+		}
+
+		var page []ClosedOrder
+		if err := json.Unmarshal(body, &page); err != nil {
+			return nil, fmt.Errorf("alpaca: failed to decode closed orders: %w", err)
+		}
+
+		if len(page) == 0 {
+			break
+		}
+
+		allOrders = append(allOrders, page...)
+
+		// If we got fewer than 500, we've reached the end.
+		if len(page) < 500 {
+			break
+		}
+
+		// Move the cursor forward to the last order's created_at time.
+		lastCreated := page[len(page)-1].CreatedAt
+		parsed, err := time.Parse(time.RFC3339Nano, lastCreated)
+		if err != nil {
+			c.log.Warn().Str("created_at", lastCreated).Err(err).Msg("failed to parse last order created_at for pagination")
+			break
+		}
+		currentAfter = parsed
+	}
+
+	c.log.Info().Int("count", len(allOrders)).Msg("closed orders retrieved")
+	return allOrders, nil
+}
