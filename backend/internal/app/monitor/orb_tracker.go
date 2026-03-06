@@ -185,6 +185,12 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 	}
 
 	sym := bar.Symbol.String()
+
+	// ORB is an equity-only strategy — crypto has no opening range.
+	if bar.Symbol.IsCryptoSymbol() {
+		return nil, false
+	}
+
 	key := SessionKeyET(bar.Time)
 	sess, ok := t.sessions[sym]
 	if !ok || sess == nil || sess.SessionKey != key {
