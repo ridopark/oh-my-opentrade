@@ -852,3 +852,342 @@ func labelsMatch(got []*dto.LabelPair, want map[string]string) bool {
 	}
 	return true
 }
+
+// --- handleFill / handleRejection routing tests ---
+
+func TestRunner_HandleFill_RoutesToMatchingInstance(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	var gotEvt any
+	var gotSymbol string
+	fs := newFakeStrategy("alpha_strat", "1.0.0")
+	fs.onEventFn = func(_ strat.Context, symbol string, evt any, st strat.State) (strat.State, []strat.Signal, error) {
+		gotEvt = evt
+		gotSymbol = symbol
+		return st, nil, nil
+	}
+
+	id, _ := strat.NewInstanceID("alpha_strat:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols: []string{"AAPL"}, Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	tctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(tctx, "AAPL", nil))
+	router.Register(inst)
+
+	ctx := context.Background()
+	require.NoError(t, runner.Start(ctx))
+
+	// Publish a FillReceived event with map payload (as execution service does).
+	fillPayload := map[string]any{
+		"broker_order_id": "ord-123",
+		"intent_id":       "intent-1",
+		"symbol":          "AAPL",
+		"side":            "BUY",
+		"quantity":        float64(10),
+		"price":           float64(150.5),
+		"filled_at":       time.Now(),
+		"strategy":        "alpha_strat",
+	}
+	ev, _ := domain.NewEvent(domain.EventFillReceived, "test-tenant", envMode, "fill-1", fillPayload)
+	require.NoError(t, bus.Publish(ctx, *ev))
+
+	// Verify the strategy instance received a FillConfirmation.
+	require.NotNil(t, gotEvt, "OnEvent should have been called")
+	fill, ok := gotEvt.(strat.FillConfirmation)
+	require.True(t, ok, "event should be FillConfirmation, got %T", gotEvt)
+	assert.Equal(t, "AAPL", fill.Symbol)
+	assert.Equal(t, strat.SideBuy, fill.Side)
+	assert.Equal(t, float64(10), fill.Quantity)
+	assert.Equal(t, float64(150.5), fill.Price)
+	assert.Equal(t, "AAPL", gotSymbol)
+}
+
+func TestRunner_HandleFill_IgnoresUnknownSymbol(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	called := false
+	fs := newFakeStrategy("alpha_strat", "1.0.0")
+	fs.onEventFn = func(_ strat.Context, _ string, _ any, st strat.State) (strat.State, []strat.Signal, error) {
+		called = true
+		return st, nil, nil
+	}
+
+	id, _ := strat.NewInstanceID("alpha_strat:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols: []string{"AAPL"}, Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	tctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(tctx, "AAPL", nil))
+	router.Register(inst)
+
+	ctx := context.Background()
+	require.NoError(t, runner.Start(ctx))
+
+	// Publish fill for a symbol no instance handles.
+	fillPayload := map[string]any{
+		"symbol":   "TSLA",
+		"side":     "BUY",
+		"quantity": float64(5),
+		"price":    float64(200),
+		"strategy": "alpha_strat",
+	}
+	ev, _ := domain.NewEvent(domain.EventFillReceived, "test-tenant", envMode, "fill-2", fillPayload)
+	require.NoError(t, bus.Publish(ctx, *ev))
+
+	assert.False(t, called, "OnEvent should not be called for unknown symbol")
+}
+
+func TestRunner_HandleFill_SellSide(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	var gotEvt any
+	fs := newFakeStrategy("alpha_strat", "1.0.0")
+	fs.onEventFn = func(_ strat.Context, _ string, evt any, st strat.State) (strat.State, []strat.Signal, error) {
+		gotEvt = evt
+		return st, nil, nil
+	}
+
+	id, _ := strat.NewInstanceID("alpha_strat:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols: []string{"AAPL"}, Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	tctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(tctx, "AAPL", nil))
+	router.Register(inst)
+
+	ctx := context.Background()
+	require.NoError(t, runner.Start(ctx))
+
+	fillPayload := map[string]any{
+		"symbol":   "AAPL",
+		"side":     "SELL",
+		"quantity": float64(5),
+		"price":    float64(155),
+		"strategy": "alpha_strat",
+	}
+	ev, _ := domain.NewEvent(domain.EventFillReceived, "test-tenant", envMode, "fill-3", fillPayload)
+	require.NoError(t, bus.Publish(ctx, *ev))
+
+	require.NotNil(t, gotEvt)
+	fill, ok := gotEvt.(strat.FillConfirmation)
+	require.True(t, ok)
+	assert.Equal(t, strat.SideSell, fill.Side)
+}
+
+func TestRunner_HandleFill_IgnoresUnknownSide(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	called := false
+	fs := newFakeStrategy("alpha_strat", "1.0.0")
+	fs.onEventFn = func(_ strat.Context, _ string, _ any, st strat.State) (strat.State, []strat.Signal, error) {
+		called = true
+		return st, nil, nil
+	}
+
+	id, _ := strat.NewInstanceID("alpha_strat:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols: []string{"AAPL"}, Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	tctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(tctx, "AAPL", nil))
+	router.Register(inst)
+
+	ctx := context.Background()
+	require.NoError(t, runner.Start(ctx))
+
+	fillPayload := map[string]any{
+		"symbol":   "AAPL",
+		"side":     "UNKNOWN_SIDE",
+		"quantity": float64(5),
+		"price":    float64(155),
+		"strategy": "alpha_strat",
+	}
+	ev, _ := domain.NewEvent(domain.EventFillReceived, "test-tenant", envMode, "fill-4", fillPayload)
+	require.NoError(t, bus.Publish(ctx, *ev))
+
+	assert.False(t, called, "OnEvent should not be called for unknown side")
+}
+
+func TestRunner_HandleRejection_RoutesToMatchingInstance(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	var gotEvt any
+	var gotSymbol string
+	fs := newFakeStrategy("beta_strat", "1.0.0")
+	fs.onEventFn = func(_ strat.Context, symbol string, evt any, st strat.State) (strat.State, []strat.Signal, error) {
+		gotEvt = evt
+		gotSymbol = symbol
+		return st, nil, nil
+	}
+
+	id, _ := strat.NewInstanceID("beta_strat:1.0.0:MSFT")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols: []string{"MSFT"}, Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	tctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(tctx, "MSFT", nil))
+	router.Register(inst)
+
+	ctx := context.Background()
+	require.NoError(t, runner.Start(ctx))
+
+	// Publish an OrderIntentRejected event with LONG direction (entry rejection).
+	rejPayload := domain.OrderIntentEventPayload{
+		ID:        "intent-1",
+		Symbol:    "MSFT",
+		Direction: string(domain.DirectionLong),
+		Strategy:  "beta_strat",
+		Reason:    "DTBP exhausted",
+	}
+	ev, _ := domain.NewEvent(domain.EventOrderIntentRejected, "test-tenant", envMode, "rej-1", rejPayload)
+	require.NoError(t, bus.Publish(ctx, *ev))
+
+	// Verify the strategy instance received an EntryRejection.
+	require.NotNil(t, gotEvt, "OnEvent should have been called")
+	rej, ok := gotEvt.(strat.EntryRejection)
+	require.True(t, ok, "event should be EntryRejection, got %T", gotEvt)
+	assert.Equal(t, "MSFT", rej.Symbol)
+	assert.Equal(t, strat.SideBuy, rej.Side)
+	assert.Equal(t, "DTBP exhausted", rej.Reason)
+	assert.Equal(t, "MSFT", gotSymbol)
+}
+
+func TestRunner_HandleRejection_ShortDirection(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	var gotEvt any
+	fs := newFakeStrategy("beta_strat", "1.0.0")
+	fs.onEventFn = func(_ strat.Context, _ string, evt any, st strat.State) (strat.State, []strat.Signal, error) {
+		gotEvt = evt
+		return st, nil, nil
+	}
+
+	id, _ := strat.NewInstanceID("beta_strat:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols: []string{"AAPL"}, Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	tctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(tctx, "AAPL", nil))
+	router.Register(inst)
+
+	ctx := context.Background()
+	require.NoError(t, runner.Start(ctx))
+
+	rejPayload := domain.OrderIntentEventPayload{
+		ID:        "intent-2",
+		Symbol:    "AAPL",
+		Direction: string(domain.DirectionShort),
+		Strategy:  "beta_strat",
+		Reason:    "risk limit",
+	}
+	ev, _ := domain.NewEvent(domain.EventOrderIntentRejected, "test-tenant", envMode, "rej-2", rejPayload)
+	require.NoError(t, bus.Publish(ctx, *ev))
+
+	require.NotNil(t, gotEvt)
+	rej, ok := gotEvt.(strat.EntryRejection)
+	require.True(t, ok)
+	assert.Equal(t, strat.SideSell, rej.Side)
+	assert.Equal(t, "risk limit", rej.Reason)
+}
+
+func TestRunner_HandleRejection_IgnoresExitRejection(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	called := false
+	fs := newFakeStrategy("beta_strat", "1.0.0")
+	fs.onEventFn = func(_ strat.Context, _ string, _ any, st strat.State) (strat.State, []strat.Signal, error) {
+		called = true
+		return st, nil, nil
+	}
+
+	id, _ := strat.NewInstanceID("beta_strat:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols: []string{"AAPL"}, Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	tctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(tctx, "AAPL", nil))
+	router.Register(inst)
+
+	ctx := context.Background()
+	require.NoError(t, runner.Start(ctx))
+
+	// CLOSE_LONG is an exit rejection — should be ignored.
+	rejPayload := domain.OrderIntentEventPayload{
+		ID:        "intent-3",
+		Symbol:    "AAPL",
+		Direction: string(domain.DirectionCloseLong),
+		Strategy:  "beta_strat",
+		Reason:    "slippage",
+	}
+	ev, _ := domain.NewEvent(domain.EventOrderIntentRejected, "test-tenant", envMode, "rej-3", rejPayload)
+	require.NoError(t, bus.Publish(ctx, *ev))
+
+	assert.False(t, called, "OnEvent should not be called for exit rejections")
+}
+
+func TestRunner_HandleRejection_IgnoresUnknownSymbol(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	called := false
+	fs := newFakeStrategy("beta_strat", "1.0.0")
+	fs.onEventFn = func(_ strat.Context, _ string, _ any, st strat.State) (strat.State, []strat.Signal, error) {
+		called = true
+		return st, nil, nil
+	}
+
+	id, _ := strat.NewInstanceID("beta_strat:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols: []string{"AAPL"}, Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	tctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(tctx, "AAPL", nil))
+	router.Register(inst)
+
+	ctx := context.Background()
+	require.NoError(t, runner.Start(ctx))
+
+	rejPayload := domain.OrderIntentEventPayload{
+		ID:        "intent-4",
+		Symbol:    "TSLA",
+		Direction: string(domain.DirectionLong),
+		Strategy:  "beta_strat",
+		Reason:    "DTBP exhausted",
+	}
+	ev, _ := domain.NewEvent(domain.EventOrderIntentRejected, "test-tenant", envMode, "rej-4", rejPayload)
+	require.NoError(t, bus.Publish(ctx, *ev))
+
+	assert.False(t, called, "OnEvent should not be called for unknown symbol")
+}

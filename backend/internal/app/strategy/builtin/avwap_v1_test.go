@@ -286,8 +286,13 @@ func TestAVWAPStrategy_Exit_LongPosition(t *testing.T) {
 		st, _ = feedAVWAPBar(t, s, ctx, "AAPL", st, b, ind)
 	}
 	avwapSt := st.(*builtin.AVWAPState)
-	require.Equal(t, strat.SideBuy, avwapSt.PositionSide)
+	require.Equal(t, strat.SideBuy, avwapSt.PendingEntry, "entry should set PendingEntry")
 
+	// Simulate fill confirmation to promote PendingEntry → PositionSide.
+	st, _, err = s.OnEvent(ctx, "AAPL", strat.FillConfirmation{Symbol: "AAPL", Side: strat.SideBuy, Price: 128}, st)
+	require.NoError(t, err)
+	avwapSt = st.(*builtin.AVWAPState)
+	require.Equal(t, strat.SideBuy, avwapSt.PositionSide, "fill should confirm position")
 	// Move past cooldown.
 	ctx.now = ctx.now.Add(2 * time.Second)
 
@@ -353,7 +358,7 @@ func TestAVWAPStrategy_MaxTradesPerDay(t *testing.T) {
 	assert.Empty(t, signals, "max trades reached, should block entry")
 }
 
-func TestAVWAPStrategy_OnEvent_Noop(t *testing.T) {
+func TestAVWAPStrategy_OnEvent_UnrecognizedEvent(t *testing.T) {
 	s := builtin.NewAVWAPStrategy()
 	ctx := newTestContext(time.Now())
 	st, err := s.Init(ctx, "AAPL", avwapParams(), nil)
@@ -361,8 +366,8 @@ func TestAVWAPStrategy_OnEvent_Noop(t *testing.T) {
 
 	st2, signals, err := s.OnEvent(ctx, "AAPL", "some_event", st)
 	require.NoError(t, err)
-	assert.Equal(t, st, st2)
-	assert.Nil(t, signals)
+	assert.Empty(t, signals)
+	_ = st2
 }
 
 func TestAVWAPState_MarshalUnmarshal(t *testing.T) {
@@ -396,4 +401,152 @@ func TestAVWAPState_MarshalUnmarshal(t *testing.T) {
 	assert.NotNil(t, restored.Calc)
 	_, ok := restored.AboveCount["session_open"]
 	assert.True(t, ok)
+}
+
+func TestAVWAPStrategy_OnEvent_FillConfirmation(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	ctx := newTestContext(time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "AAPL", avwapParams(), nil)
+	require.NoError(t, err)
+
+	avwapSt := st.(*builtin.AVWAPState)
+	avwapSt.PendingEntry = strat.SideBuy
+	avwapSt.PendingEntryAt = ctx.Now()
+
+	st2, signals, err := s.OnEvent(ctx, "AAPL", strat.FillConfirmation{Symbol: "AAPL", Side: strat.SideBuy, Price: 150.0, Quantity: 10}, st)
+	require.NoError(t, err)
+	assert.Empty(t, signals)
+
+	avwapSt2 := st2.(*builtin.AVWAPState)
+	assert.Equal(t, strat.SideBuy, avwapSt2.PositionSide, "fill should promote PendingEntry to PositionSide")
+	assert.Equal(t, strat.Side(""), avwapSt2.PendingEntry, "PendingEntry should be cleared after fill")
+	assert.True(t, avwapSt2.PendingEntryAt.IsZero(), "PendingEntryAt should be reset")
+}
+
+func TestAVWAPStrategy_OnEvent_EntryRejection(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	ctx := newTestContext(time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "AAPL", avwapParams(), nil)
+	require.NoError(t, err)
+
+	avwapSt := st.(*builtin.AVWAPState)
+	avwapSt.PendingEntry = strat.SideSell
+	avwapSt.PendingEntryAt = ctx.Now()
+
+	st2, signals, err := s.OnEvent(ctx, "AAPL", strat.EntryRejection{Symbol: "AAPL", Side: strat.SideSell, Reason: "risk limit"}, st)
+	require.NoError(t, err)
+	assert.Empty(t, signals)
+
+	avwapSt2 := st2.(*builtin.AVWAPState)
+	assert.Equal(t, strat.Side(""), avwapSt2.PositionSide, "PositionSide should remain empty after rejection")
+	assert.Equal(t, strat.Side(""), avwapSt2.PendingEntry, "PendingEntry should be cleared after rejection")
+	assert.True(t, avwapSt2.PendingEntryAt.IsZero(), "PendingEntryAt should be reset")
+}
+
+func TestAVWAPStrategy_PendingEntryBlocksExit(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	start := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
+	ctx := newTestContext(start)
+	params := avwapParams()
+	params["cooldown_seconds"] = 1
+	st, err := s.Init(ctx, "AAPL", params, nil)
+	require.NoError(t, err)
+
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+
+	// Enter long via breakout.
+	entryBars := []strat.Bar{
+		{Time: start, Open: 100, High: 112, Low: 92, Close: 112, Volume: 10},
+		{Time: start.Add(time.Minute), Open: 112, High: 120, Low: 100, Close: 120, Volume: 10},
+		{Time: start.Add(2 * time.Minute), Open: 120, High: 128, Low: 108, Close: 128, Volume: 20},
+	}
+	for _, b := range entryBars {
+		st, _ = feedAVWAPBar(t, s, ctx, "AAPL", st, b, ind)
+	}
+	avwapSt := st.(*builtin.AVWAPState)
+	require.Equal(t, strat.SideBuy, avwapSt.PendingEntry, "should have PendingEntry set")
+	require.Equal(t, strat.Side(""), avwapSt.PositionSide, "PositionSide should be empty until fill")
+
+	// Move past cooldown.
+	ctx.now = ctx.now.Add(2 * time.Second)
+
+	// Two bars below AVWAP — would normally exit, but PendingEntry should block it.
+	exitBar1 := strat.Bar{Time: start.Add(3 * time.Minute), Open: 128, High: 130, Low: 80, Close: 80, Volume: 10}
+	exitBar2 := strat.Bar{Time: start.Add(4 * time.Minute), Open: 80, High: 90, Low: 70, Close: 70, Volume: 10}
+	st, signals := feedAVWAPBar(t, s, ctx, "AAPL", st, exitBar1, ind)
+	assert.Empty(t, signals)
+	_, signals = feedAVWAPBar(t, s, ctx, "AAPL", st, exitBar2, ind)
+	assert.Empty(t, signals, "should not emit exit while PendingEntry is set")
+}
+
+func TestAVWAPStrategy_PendingEntryBlocksNewEntry(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	start := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
+	ctx := newTestContext(start)
+	st, err := s.Init(ctx, "AAPL", avwapParams(), nil)
+	require.NoError(t, err)
+
+	avwapSt := st.(*builtin.AVWAPState)
+	avwapSt.PendingEntry = strat.SideBuy
+	avwapSt.PendingEntryAt = ctx.Now()
+
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+
+	// Feed bars that would normally trigger breakout.
+	bars := []strat.Bar{
+		{Time: start, Open: 100, High: 112, Low: 92, Close: 112, Volume: 10},
+		{Time: start.Add(time.Minute), Open: 112, High: 120, Low: 100, Close: 120, Volume: 10},
+		{Time: start.Add(2 * time.Minute), Open: 120, High: 128, Low: 108, Close: 128, Volume: 20},
+	}
+	var signals []strat.Signal
+	for _, b := range bars {
+		st, signals = feedAVWAPBar(t, s, ctx, "AAPL", st, b, ind)
+		assert.Empty(t, signals, "should not emit entry while PendingEntry is set")
+	}
+}
+
+func TestAVWAPStrategy_PendingEntryTimeout(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	start := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
+	ctx := newTestContext(start)
+	st, err := s.Init(ctx, "AAPL", avwapParams(), nil)
+	require.NoError(t, err)
+
+	avwapSt := st.(*builtin.AVWAPState)
+	avwapSt.PendingEntry = strat.SideBuy
+	avwapSt.PendingEntryAt = start.Add(-6 * time.Minute) // 6 min ago, past the 5 min timeout
+
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+	bar := strat.Bar{Time: start, Open: 100, High: 100, Low: 100, Close: 100, Volume: 10}
+	st2, _ := feedAVWAPBar(t, s, ctx, "AAPL", st, bar, ind)
+
+	avwapSt2 := st2.(*builtin.AVWAPState)
+	assert.Equal(t, strat.Side(""), avwapSt2.PendingEntry, "PendingEntry should be cleared after timeout")
+	assert.True(t, avwapSt2.PendingEntryAt.IsZero(), "PendingEntryAt should be reset after timeout")
+}
+
+func TestAVWAPState_MarshalUnmarshal_PendingEntry(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	start := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
+	ctx := newTestContext(start)
+	st, err := s.Init(ctx, "AAPL", avwapParams(), nil)
+	require.NoError(t, err)
+
+	ind := strat.IndicatorData{RSI: 55, Volume: 5000, VolumeSMA: 4500}
+	st, _ = feedAVWAPBar(t, s, ctx, "AAPL", st, strat.Bar{Time: start, Open: 100, High: 100, Low: 100, Close: 100, Volume: 10}, ind)
+
+	avwapSt := st.(*builtin.AVWAPState)
+	avwapSt.PendingEntry = strat.SideSell
+	avwapSt.PendingEntryAt = start
+
+	data, err := avwapSt.Marshal()
+	require.NoError(t, err)
+	require.NotEmpty(t, data)
+
+	restored := &builtin.AVWAPState{}
+	err = restored.Unmarshal(data)
+	require.NoError(t, err)
+	assert.Equal(t, strat.SideSell, restored.PendingEntry)
+	assert.True(t, start.Equal(restored.PendingEntryAt))
+	assert.Equal(t, strat.Side(""), restored.PositionSide)
 }
