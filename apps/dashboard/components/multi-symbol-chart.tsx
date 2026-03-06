@@ -53,16 +53,18 @@ function timeToET(utcSecs: number): number {
 }
 // Palette for 10 symbols — vibrant enough to distinguish on dark background
 const SYMBOL_COLORS: Record<string, string> = {
-  AAPL:  "#60a5fa", // blue-400
-  MSFT:  "#34d399", // emerald-400
-  GOOGL: "#f59e0b", // amber-500
-  AMZN:  "#f87171", // red-400
-  TSLA:  "#a78bfa", // violet-400
-  SOXL:  "#fb923c", // orange-400
-  U:     "#38bdf8", // sky-400
-  PLTR:  "#e879f9", // fuchsia-400
-  SPY:   "#4ade80", // green-400
-  META:  "#fbbf24", // yellow-400
+  AAPL:      "#60a5fa", // blue-400
+  MSFT:      "#34d399", // emerald-400
+  GOOGL:     "#f59e0b", // amber-500
+  AMZN:      "#f87171", // red-400
+  TSLA:      "#a78bfa", // violet-400
+  SOXL:      "#fb923c", // orange-400
+  U:         "#38bdf8", // sky-400
+  PLTR:      "#e879f9", // fuchsia-400
+  SPY:       "#4ade80", // green-400
+  META:      "#fbbf24", // yellow-400
+  "BTC/USD": "#f97316", // orange-500
+  "ETH/USD": "#06b6d4", // cyan-500
 };
 
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "1d"] as const;

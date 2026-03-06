@@ -714,36 +714,83 @@ func main() {
 		}
 	}()
 
-	symbols := make([]domain.Symbol, len(cfg.Symbols.Symbols))
-	for i, s := range cfg.Symbols.Symbols {
+	// Build per-asset-class symbol lists + combined list.
+	equityStrs := cfg.Symbols.SymbolsByAssetClass("EQUITY")
+	cryptoStrs := cfg.Symbols.SymbolsByAssetClass("CRYPTO")
+	allStrs := cfg.Symbols.AllSymbols()
+
+	equitySymbols := make([]domain.Symbol, len(equityStrs))
+	for i, s := range equityStrs {
+		equitySymbols[i] = domain.Symbol(s)
+	}
+	cryptoSymbols := make([]domain.Symbol, len(cryptoStrs))
+	for i, s := range cryptoStrs {
+		cryptoSymbols[i] = domain.Symbol(s)
+	}
+	symbols := make([]domain.Symbol, len(allStrs))
+	for i, s := range allStrs {
 		symbols[i] = domain.Symbol(s)
 	}
 	timeframe := domain.Timeframe(cfg.Symbols.Timeframe)
 
+	log.Info().
+		Strs("equity_symbols", equityStrs).
+		Strs("crypto_symbols", cryptoStrs).
+		Int("total_symbols", len(symbols)).
+		Msg("symbol lists initialized")
+
 	warmupLog := log.With().Str("component", "warmup").Logger()
-	prevStart, prevEnd := domain.PreviousRTHSession(time.Now())
-	warmupFrom := prevEnd.Add(-120 * time.Minute)
-	warmupTo := prevEnd
-	warmupLog.Info().
-		Time("prev_session_start", prevStart).
-		Time("prev_session_end", prevEnd).
-		Time("warmup_from", warmupFrom).
-		Time("warmup_to", warmupTo).
-		Msg("warming indicators from previous RTH session")
 	warmupBarsCache := make(map[string][]domain.MarketBar)
-	for _, sym := range symbols {
-		bars, err := alpacaAdapter.GetHistoricalBars(ctx, sym, timeframe, warmupFrom, warmupTo)
-		if err != nil {
-			warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("warmup fetch failed, starting cold")
-			continue
-		}
-		n := monitorSvc.WarmUp(bars)
-		monitorSvc.ResetSessionIndicators(sym.String())
-		warmupBarsCache[string(sym)] = bars
+
+	// Equity warmup: use previous NYSE RTH session.
+	if len(equitySymbols) > 0 {
+		prevStart, prevEnd := domain.PreviousRTHSession(time.Now())
+		warmupFrom := prevEnd.Add(-120 * time.Minute)
+		warmupTo := prevEnd
 		warmupLog.Info().
-			Str("symbol", string(sym)).
-			Int("bars", n).
-			Msg("indicator warmup complete")
+			Time("prev_session_start", prevStart).
+			Time("prev_session_end", prevEnd).
+			Time("warmup_from", warmupFrom).
+			Time("warmup_to", warmupTo).
+			Msg("warming equity indicators from previous RTH session")
+		for _, sym := range equitySymbols {
+			bars, err := alpacaAdapter.GetHistoricalBars(ctx, sym, timeframe, warmupFrom, warmupTo)
+			if err != nil {
+				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("equity warmup fetch failed, starting cold")
+				continue
+			}
+			n := monitorSvc.WarmUp(bars)
+			monitorSvc.ResetSessionIndicators(sym.String())
+			warmupBarsCache[string(sym)] = bars
+			warmupLog.Info().
+				Str("symbol", string(sym)).
+				Int("bars", n).
+				Msg("equity indicator warmup complete")
+		}
+	}
+
+	// Crypto warmup: 24/7 market, use last 2 hours.
+	if len(cryptoSymbols) > 0 {
+		cryptoWarmupTo := time.Now().UTC()
+		cryptoWarmupFrom := cryptoWarmupTo.Add(-120 * time.Minute)
+		warmupLog.Info().
+			Time("warmup_from", cryptoWarmupFrom).
+			Time("warmup_to", cryptoWarmupTo).
+			Msg("warming crypto indicators from last 2 hours")
+		for _, sym := range cryptoSymbols {
+			bars, err := alpacaAdapter.GetHistoricalBars(ctx, sym, timeframe, cryptoWarmupFrom, cryptoWarmupTo)
+			if err != nil {
+				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("crypto warmup fetch failed, starting cold")
+				continue
+			}
+			n := monitorSvc.WarmUp(bars)
+			monitorSvc.ResetSessionIndicators(sym.String())
+			warmupBarsCache[string(sym)] = bars
+			warmupLog.Info().
+				Str("symbol", string(sym)).
+				Int("bars", n).
+				Msg("crypto indicator warmup complete")
+		}
 	}
 
 	var runnerWarmupCalc *monitor.IndicatorCalculator
@@ -786,7 +833,7 @@ func main() {
 	todayOpen := time.Date(nowET.Year(), nowET.Month(), nowET.Day(), 9, 30, 0, 0, loc)
 	if isOpen && nowET.After(todayOpen) {
 		warmupLog.Info().Msg("replaying current-session bars for ORB state recovery")
-		for _, sym := range symbols {
+		for _, sym := range equitySymbols {
 			orbBars, err := alpacaAdapter.GetHistoricalBars(ctx, sym, timeframe, todayOpen.UTC(), time.Now())
 			if err != nil {
 				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("ORB warmup fetch failed")
