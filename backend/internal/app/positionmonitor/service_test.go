@@ -119,7 +119,13 @@ type mockSpecStore struct {
 }
 
 func (m *mockSpecStore) List(ctx context.Context, filter *portstrategy.SpecFilter) ([]portstrategy.Spec, error) {
-	return nil, nil
+	var result []portstrategy.Spec
+	for _, sp := range m.specs {
+		if sp != nil {
+			result = append(result, *sp)
+		}
+	}
+	return result, nil
 }
 func (m *mockSpecStore) Get(ctx context.Context, id domstrategy.StrategyID, version domstrategy.Version) (*portstrategy.Spec, error) {
 	return nil, nil
@@ -606,7 +612,7 @@ func TestService_resolveExitRules_UsesSpecStoreWhenAvailable(t *testing.T) {
 
 	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(), WithSpecStore(ss))
 
-	rules := svc.resolveExitRules(context.Background(), "orb_break_retest")
+	rules := svc.resolveExitRules(context.Background(), "orb_break_retest", domain.AssetClassEquity)
 	require.Len(t, rules, 2)
 	assert.Equal(t, trailing, rules[0])
 	assert.Equal(t, eod, rules[1])
@@ -619,7 +625,7 @@ func TestService_resolveExitRules_FallsBackToDefaultsWhenSpecStoreIsNil(t *testi
 
 	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop())
 
-	rules := svc.resolveExitRules(context.Background(), "any_strategy")
+	rules := svc.resolveExitRules(context.Background(), "any_strategy", domain.AssetClassEquity)
 	require.Len(t, rules, 2)
 	assert.Equal(t, domain.ExitRuleMaxLoss, rules[0].Type)
 	assert.Equal(t, domain.ExitRuleEODFlatten, rules[1].Type)

@@ -258,7 +258,7 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 		entryTime := omo.entryAt
 
 		// Look up exit rules from strategy spec.
-		exitRules := s.resolveExitRules(ctx, strategy)
+		exitRules := s.resolveExitRules(ctx, strategy, assetClass)
 
 		pos, err := domain.NewMonitoredPosition(
 			sym, entryPrice, entryTime,
@@ -286,14 +286,50 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 }
 
 // resolveExitRules looks up exit rules from the strategy spec store.
+// When multiple specs share the same strategy ID (e.g. equity vs crypto variants),
+// it prefers the spec whose asset_classes include the given assetClass.
 // Falls back to conservative defaults if the spec store is unavailable or the strategy has no rules.
-func (s *Service) resolveExitRules(ctx context.Context, strategy string) []domain.ExitRule {
+func (s *Service) resolveExitRules(ctx context.Context, strategy string, assetClass domain.AssetClass) []domain.ExitRule {
 	if s.specStore != nil && strategy != "" {
-		spec, err := s.specStore.GetLatest(ctx, domstrategy.StrategyID(strategy))
-		if err == nil && len(spec.ExitRules) > 0 {
-			s.log.Debug().Str("strategy", strategy).Int("rules", len(spec.ExitRules)).Msg("bootstrap: exit rules from spec")
-			return spec.ExitRules
+		// List all specs and find the best match: same ID + matching asset class.
+		all, err := s.specStore.List(ctx, nil)
+		if err != nil {
+			s.log.Warn().Err(err).Str("strategy", strategy).Msg("bootstrap: failed to list specs for exit rule resolution")
+		} else {
+			var bestMatch *portstrategy.Spec
+			var fallbackMatch *portstrategy.Spec
+			for i := range all {
+				sp := &all[i]
+				if sp.ID != domstrategy.StrategyID(strategy) {
+					continue
+				}
+				// Check if this spec's asset_classes includes our asset class.
+				if matchesAssetClass(sp.Routing.AssetClasses, assetClass) {
+					if bestMatch == nil || compareSpecPriority(sp, bestMatch) > 0 {
+						bestMatch = sp
+					}
+				} else if fallbackMatch == nil {
+					fallbackMatch = sp
+				}
+			}
+			chosen := bestMatch
+			if chosen == nil {
+				chosen = fallbackMatch
+			}
+			if chosen != nil && len(chosen.ExitRules) > 0 {
+				s.log.Info().
+					Str("strategy", strategy).
+					Str("asset_class", string(assetClass)).
+					Int("rules", len(chosen.ExitRules)).
+					Msg("bootstrap: exit rules from spec")
+				return chosen.ExitRules
+			}
+			if chosen != nil {
+				s.log.Warn().Str("strategy", strategy).Str("asset_class", string(assetClass)).Msg("bootstrap: spec found but has no exit rules")
+			}
 		}
+	} else if s.specStore == nil {
+		s.log.Warn().Msg("bootstrap: specStore is nil \u2014 cannot resolve exit rules")
 	}
 
 	// Conservative defaults: max loss at 5% and EOD flatten 5 min before close.
@@ -306,6 +342,31 @@ func (s *Service) resolveExitRules(ctx context.Context, strategy string) []domai
 	}
 	s.log.Debug().Str("strategy", strategy).Msg("bootstrap: using default exit rules")
 	return defaults
+}
+
+// matchesAssetClass returns true if the spec's asset_classes list contains the given asset class,
+// or if the list is empty (meaning it applies to all).
+func matchesAssetClass(specClasses []string, ac domain.AssetClass) bool {
+	if len(specClasses) == 0 {
+		return true // no restriction
+	}
+	for _, c := range specClasses {
+		if strings.EqualFold(c, string(ac)) {
+			return true
+		}
+	}
+	return false
+}
+
+// compareSpecPriority compares two specs; higher priority wins, then higher version.
+func compareSpecPriority(a, b *portstrategy.Spec) int {
+	if a.Routing.Priority != b.Routing.Priority {
+		if a.Routing.Priority > b.Routing.Priority {
+			return 1
+		}
+		return -1
+	}
+	return 0
 }
 
 // handleFillEvent is the EventBusPort handler. It enqueues fills without processing
