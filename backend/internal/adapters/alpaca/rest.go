@@ -210,12 +210,18 @@ func (c *RESTClient) SubmitOrder(ctx context.Context, intent domain.OrderIntent)
 		side = "buy"
 	}
 
+	// Alpaca requires TIF="day" for fractional share orders.
+	tif := "gtc"
+	if intent.Quantity != math.Floor(intent.Quantity) {
+		tif = "day"
+	}
+
 	reqBody := map[string]interface{}{
 		"symbol":        intent.Symbol.String(),
 		"qty":           fmt.Sprintf("%g", intent.Quantity),
 		"side":          side,
 		"type":          "limit",
-		"time_in_force": "gtc",
+		"time_in_force": tif,
 		"limit_price":   math.Round(intent.LimitPrice*100) / 100,
 	}
 	if intent.StopLoss > 0 {

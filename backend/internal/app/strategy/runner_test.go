@@ -442,7 +442,7 @@ func TestRunner_ProcessBar_DynamicMetricLabels(t *testing.T) {
 	require.NoError(t, runner.Start(ctx))
 
 	sym, _ := domain.NewSymbol("AAPL")
-	bar, _ := domain.NewMarketBar(time.Now(), sym, "1m", 100, 101, 99, 100, 10)
+	bar, _ := domain.NewMarketBar(time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC), sym, "1m", 100, 101, 99, 100, 10)
 	ev, _ := domain.NewEvent(domain.EventMarketBarSanitized, "test-tenant", envMode, "bar-1", bar)
 	require.NoError(t, bus.Publish(ctx, *ev))
 
@@ -510,6 +510,94 @@ func TestRunner_ProcessBar_MultipleInstances(t *testing.T) {
 	assert.True(t, sides[strat.SideSell])
 }
 
+func TestRunner_HandleBar_SuppressesEquitySignalOutsideRTH(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	fs := newFakeStrategy("test_strat", "1.0.0")
+	fs.onBarFunc = func(_ strat.Context, symbol string, _ strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+		iid, _ := strat.NewInstanceID("test_strat:1.0.0:" + symbol)
+		sig, _ := strat.NewSignal(iid, symbol, strat.SignalEntry, strat.SideBuy, 0.9, nil)
+		return st, []strat.Signal{sig}, nil
+	}
+
+	id, _ := strat.NewInstanceID("test_strat:1.0.0:AAPL")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols:  []string{"AAPL"},
+		Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	tctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(tctx, "AAPL", nil))
+	router.Register(inst)
+
+	// Subscribe to SignalCreated events.
+	var received []domain.Event
+	ctx := context.Background()
+	require.NoError(t, bus.Subscribe(ctx, domain.EventSignalCreated, func(_ context.Context, ev domain.Event) error {
+		received = append(received, ev)
+		return nil
+	}))
+
+	require.NoError(t, runner.Start(ctx))
+
+	// Publish a MarketBarSanitized event with pre-market time (7:00 AM ET = 12:00 UTC)
+	preMarketTime := time.Date(2025, 3, 4, 12, 0, 0, 0, time.UTC)
+	sym, _ := domain.NewSymbol("AAPL")
+	bar, _ := domain.NewMarketBar(preMarketTime, sym, "1m", 100, 101, 99, 100, 10)
+	ev, _ := domain.NewEvent(domain.EventMarketBarSanitized, "test-tenant", envMode, "bar-1", bar)
+	require.NoError(t, bus.Publish(ctx, *ev))
+
+	// Verify SignalCreated was NOT emitted (RTH gate suppressed it)
+	assert.Empty(t, received, "equity signal outside RTH should be suppressed")
+}
+
+func TestRunner_HandleBar_AllowsCryptoSignalOutsideRTH(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	fs := newFakeStrategy("test_strat", "1.0.0")
+	fs.onBarFunc = func(_ strat.Context, symbol string, _ strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+		iid, _ := strat.NewInstanceID("test_strat:1.0.0:" + symbol)
+		sig, _ := strat.NewSignal(iid, symbol, strat.SignalEntry, strat.SideBuy, 0.9, nil)
+		return st, []strat.Signal{sig}, nil
+	}
+
+	id, _ := strat.NewInstanceID("test_strat:1.0.0:BTC/USD")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols:  []string{"BTC/USD"},
+		Priority: 100,
+	}, strat.LifecycleLiveActive, nil)
+
+	tctx := newTestCtx()
+	require.NoError(t, inst.InitSymbol(tctx, "BTC/USD", nil))
+	router.Register(inst)
+
+	// Subscribe to SignalCreated events.
+	var received []domain.Event
+	ctx := context.Background()
+	require.NoError(t, bus.Subscribe(ctx, domain.EventSignalCreated, func(_ context.Context, ev domain.Event) error {
+		received = append(received, ev)
+		return nil
+	}))
+
+	require.NoError(t, runner.Start(ctx))
+
+	// Publish a MarketBarSanitized event with pre-market time (7:00 AM ET = 12:00 UTC)
+	preMarketTime := time.Date(2025, 3, 4, 12, 0, 0, 0, time.UTC)
+	sym, _ := domain.NewSymbol("BTC/USD")
+	bar, _ := domain.NewMarketBar(preMarketTime, sym, "1m", 100, 101, 99, 100, 10)
+	ev, _ := domain.NewEvent(domain.EventMarketBarSanitized, "test-tenant", envMode, "bar-1", bar)
+	require.NoError(t, bus.Publish(ctx, *ev))
+
+	// Verify SignalCreated WAS emitted (crypto not gated by RTH)
+	require.Len(t, received, 1, "crypto signal outside RTH should be allowed")
+	assert.Equal(t, domain.EventSignalCreated, received[0].Type)
+}
 func TestRunner_HandleBar_EmitsSignalCreated(t *testing.T) {
 	bus := memory.NewBus()
 	router := strategy.NewRouter()
@@ -546,7 +634,7 @@ func TestRunner_HandleBar_EmitsSignalCreated(t *testing.T) {
 
 	// Publish a MarketBarSanitized event.
 	sym, _ := domain.NewSymbol("AAPL")
-	bar, _ := domain.NewMarketBar(time.Now(), sym, "1m", 100, 101, 99, 100, 10)
+	bar, _ := domain.NewMarketBar(time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC), sym, "1m", 100, 101, 99, 100, 10)
 	ev, _ := domain.NewEvent(domain.EventMarketBarSanitized, "test-tenant", envMode, "bar-1", bar)
 	require.NoError(t, bus.Publish(ctx, *ev))
 
@@ -593,7 +681,7 @@ func TestRunner_HandleBar_NoSignalForUnassignedSymbol(t *testing.T) {
 
 	// Publish bar for TSLA (not assigned).
 	sym, _ := domain.NewSymbol("TSLA")
-	bar, _ := domain.NewMarketBar(time.Now(), sym, "1m", 200, 202, 199, 201, 20)
+	bar, _ := domain.NewMarketBar(time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC), sym, "1m", 200, 202, 199, 201, 20)
 	ev, _ := domain.NewEvent(domain.EventMarketBarSanitized, "test-tenant", envMode, "bar-tsla-1", bar)
 	require.NoError(t, bus.Publish(ctx, *ev))
 

@@ -69,7 +69,7 @@ func TestV2Pipeline_BarToOrderIntent(t *testing.T) {
 
 	sym, err := domain.NewSymbol("AAPL")
 	require.NoError(t, err)
-	bar, err := domain.NewMarketBar(time.Now(), sym, "1m", 150, 151, 149, 150, 10)
+	bar, err := domain.NewMarketBar(time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC), sym, "1m", 150, 151, 149, 150, 10)
 	require.NoError(t, err)
 	ev, err := domain.NewEvent(domain.EventMarketBarSanitized, "t1", envMode, "bar-1", bar)
 	require.NoError(t, err)

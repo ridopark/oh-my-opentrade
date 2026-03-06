@@ -143,6 +143,45 @@ func TestRESTClient_SubmitOrder_LimitNoStopPrice(t *testing.T) {
 	assert.Equal(t, "limit-order-123", orderID)
 }
 
+func TestRESTClient_SubmitOrder_FractionalQtyUsesDayTIF(t *testing.T) {
+	// Arrange — verify fractional quantities use "day" TIF instead of "gtc"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+
+		var req map[string]interface{}
+		err = json.Unmarshal(body, &req)
+		require.NoError(t, err)
+
+		// Fractional qty should use "day" TIF
+		assert.Equal(t, "10.5", req["qty"])
+		assert.Equal(t, "day", req["time_in_force"])
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id": "fractional-order-123"}`))
+	}))
+	defer server.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+
+	// OrderIntent with fractional quantity
+	intent := domain.OrderIntent{
+		Symbol:     "AAPL",
+		Direction:  domain.DirectionLong,
+		Quantity:   10.5,
+		LimitPrice: 150.0,
+		StopLoss:   0,
+	}
+
+	// Act
+	orderID, err := client.SubmitOrder(context.Background(), intent)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, "fractional-order-123", orderID)
+}
+
 func TestRESTClient_SubmitOrder_Error(t *testing.T) {
 	// Arrange
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
