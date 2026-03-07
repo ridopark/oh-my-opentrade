@@ -185,10 +185,16 @@ func (r *PnLRepository) GetStrategySignalEvents(ctx context.Context, q ports.Str
 	var b strings.Builder
 	b.WriteString(`SELECT ts, strategy, signal_id, symbol, kind, side, status, reason, confidence, payload
 		FROM strategy_signal_events
-		WHERE account_id = $1 AND env_mode = $2 AND strategy = $3 AND ts >= $4 AND ts <= $5`)
+		WHERE account_id = $1 AND env_mode = $2 AND ts >= $3 AND ts <= $4`)
 
-	args := []any{q.TenantID, string(q.EnvMode), q.Strategy, q.From, q.To}
-	argIdx := 6
+	args := []any{q.TenantID, string(q.EnvMode), q.From, q.To}
+	argIdx := 5
+
+	if q.Strategy != "" {
+		fmt.Fprintf(&b, " AND strategy = $%d", argIdx)
+		args = append(args, q.Strategy)
+		argIdx++
+	}
 
 	if q.Symbol != "" {
 		fmt.Fprintf(&b, " AND symbol = $%d", argIdx)

@@ -135,6 +135,22 @@ function computeRSI(data: OHLCBar[], period: number = 14): LineData[] {
   return out;
 }
 
+function findNearestBar(bars: OHLCBar[], time: number): OHLCBar | undefined {
+  if (bars.length === 0) return undefined;
+  let lo = 0;
+  let hi = bars.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (bars[mid].time < time) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo === 0) return bars[0];
+  if (lo >= bars.length) return bars[bars.length - 1];
+  const prevDist = Math.abs(bars[lo - 1].time - time);
+  const currDist = Math.abs(bars[lo].time - time);
+  return prevDist <= currDist ? bars[lo - 1] : bars[lo];
+}
+
 const MAX_EMPTY_FETCHES = 10;
 const LOAD_MORE_DEBOUNCE_MS = 200;
 
@@ -556,14 +572,17 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
     volumeSeriesRef.current.setData(volumes);
 
     if (signalOverlayRef.current) {
-      if (signals && signals.length > 0) {
+      if (signals && signals.length > 0 && data.length > 0) {
         const barMap = new Map(data.map(d => [d.time, d]));
         const markerData: SignalMarkerData[] = signals
           .map(s => {
-            const bar = barMap.get(s.time);
+            let bar = barMap.get(s.time);
+            if (!bar) {
+              bar = findNearestBar(data, s.time);
+            }
             if (!bar) return null;
             return {
-              time: s.time as Time,
+              time: bar.time as Time,
               price: s.side === "buy" ? bar.low : bar.high,
               side: s.side,
               label: s.strategy
