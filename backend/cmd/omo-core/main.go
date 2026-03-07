@@ -9,8 +9,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -28,6 +28,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/debate"
 	"github.com/oh-my-opentrade/backend/internal/app/dnaapproval"
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
+	"github.com/oh-my-opentrade/backend/internal/app/formingbar"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/notify"
@@ -80,7 +81,11 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to create Alpaca adapter")
 	}
-	log.Info().Msg("Alpaca adapter initialized")
+	if cfg.Alpaca.DataAPIKeyID != "" {
+		log.Info().Msg("Alpaca adapter initialized (separate data credentials)")
+	} else {
+		log.Info().Msg("Alpaca adapter initialized")
+	}
 
 	// 4. Initialize TimescaleDB repository
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
@@ -531,7 +536,7 @@ func main() {
 			log.Fatal().Err(err).Msg("failed to start screener service")
 		}
 	}
-// 5b (continued): hot-reload DNA after all services are started
+	// 5b (continued): hot-reload DNA after all services are started
 	if !useStrategyV2 {
 		for _, p := range dnaPaths {
 			watchPath := p // capture for goroutine
@@ -604,6 +609,20 @@ func main() {
 	imux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+	imux.HandleFunc("/state", func(w http.ResponseWriter, r *http.Request) {
+		sym := r.URL.Query().Get("symbol")
+		if sym == "" {
+			http.Error(w, "symbol required", http.StatusBadRequest)
+			return
+		}
+		snap, ok := monitorSvc.GetLastSnapshot(sym)
+		if !ok {
+			http.Error(w, "no state for symbol", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(snap)
 	})
 
 	// Health and strategy endpoints.
@@ -957,6 +976,23 @@ func main() {
 	}
 
 	monitorSvc.InitAggregators(symbols, todayOpen)
+
+	// 7a. Start forming-bar service for real-time chart candle formation.
+	formingBarLog := log.With().Str("component", "formingbar").Logger()
+	formingBarSvc := formingbar.NewService(eventBus, formingBarLog)
+	if err := formingBarSvc.Start(ctx); err != nil {
+		log.Fatal().Err(err).Msg("failed to start forming bar service")
+	}
+
+	// 7b. Wire trade handler → publishes EventTradeReceived for forming bar aggregation.
+	alpacaAdapter.SetTradeHandler(func(tCtx context.Context, trade domain.MarketTrade) error {
+		evt, err := domain.NewEvent(domain.EventTradeReceived, "system", domain.EnvModePaper,
+			fmt.Sprintf("trade-%s-%d", trade.Symbol, trade.Time.UnixNano()), trade)
+		if err != nil {
+			return nil
+		}
+		return eventBus.Publish(tCtx, *evt)
+	})
 
 	log.Info().
 		Strs("symbols", symbolStrings(symbols)).

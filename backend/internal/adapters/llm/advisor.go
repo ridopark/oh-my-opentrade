@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
@@ -24,7 +24,7 @@ type chatMessage struct {
 // See https://openrouter.ai/docs/features/provider-routing
 // Fields are omitempty so the struct is a no-op for non-OpenRouter endpoints.
 type providerRouting struct {
-	Sort                string         `json:"sort,omitempty"`
+	Sort                string             `json:"sort,omitempty"`
 	PreferredMaxLatency map[string]float64 `json:"preferred_max_latency,omitempty"`
 }
 
@@ -148,7 +148,7 @@ type Advisor struct {
 	model       string
 	apiKey      string // optional — sent as Authorization: Bearer <key> when non-empty
 	httpClient  *http.Client
-	minInterval time.Duration // 0 means no rate limiting
+	minInterval time.Duration    // 0 means no rate limiting
 	provider    *providerRouting // optional — OpenRouter provider routing config
 	mu          sync.Mutex
 	lastCall    time.Time
@@ -391,6 +391,23 @@ Technical Indicators:
 		indicators.EMA21,
 		indicators.VWAP,
 	)
+
+	// Append multi-timeframe anchor regimes when available.
+	// AnchorRegimes carries HTF regime classifications (e.g. 5m, 15m) that provide
+	// the LLM with broader market context beyond the primary 1m indicators.
+	if len(indicators.AnchorRegimes) > 0 {
+		var sb strings.Builder
+		sb.WriteString(prompt)
+		sb.WriteString("\n\nMulti-Timeframe Regimes:")
+		for _, tf := range []domain.Timeframe{"1m", "5m", "15m", "1h", "1d"} {
+			r, ok := indicators.AnchorRegimes[tf]
+			if !ok {
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("\n  %s: %s (strength: %.2f)", tf, r.Type, r.Strength))
+		}
+		prompt = sb.String()
+	}
 	// Append signal context section when strategy signal metadata is present.
 	if sigCtx != nil {
 		var sb strings.Builder

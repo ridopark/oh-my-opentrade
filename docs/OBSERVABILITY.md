@@ -1,12 +1,12 @@
-# Observability: Prometheus & Grafana
+# Observability: Metrics & Logs
 
-oh-my-opentrade ships with a full observability stack: **Prometheus** for metrics collection and alerting, **Grafana** for dashboards.
+oh-my-opentrade ships with a full observability stack: **Prometheus** for metrics, **Loki** for logs, **Fluent Bit** as log collector, and **Grafana** for dashboards.
 
 ## Quick Start
 
 ```bash
-# Start everything (including Prometheus + Grafana)
-docker compose -f deployments/docker-compose.yml up -d
+# Start omo-core + dashboard + full monitoring stack
+./scripts/start.sh
 ```
 
 ## Access Points
@@ -14,21 +14,21 @@ docker compose -f deployments/docker-compose.yml up -d
 | Service | URL | Credentials |
 |---------|-----|-------------|
 | **Prometheus** | http://localhost:9090 | none (open) |
+| **Loki** | http://localhost:3100 | none (open) |
 | **Grafana** | http://localhost:3001 | admin / admin (or `GRAFANA_ADMIN_PASSWORD` from `.env`) |
 | **Raw metrics** | http://localhost:8080/metrics | omo-core exposes this endpoint directly |
 
 ## Architecture
 
 ```
-omo-core :8080/metrics ──── scraped every 5s ────► Prometheus :9090
-                                                        │
-                                                        ▼
-                                                   Grafana :3001
-                                                   (auto-provisioned datasource)
+omo-core :8080/metrics ──(scraped every 5s)──► Prometheus :9090 ──► Grafana :3001
+omo-core stdout ──► log file ──► Fluent Bit ──► Loki :3100 ──────► Grafana :3001
 ```
 
 - **Prometheus** scrapes `omo-core:8080/metrics` every 5 seconds (configured in `deployments/monitoring/prometheus.yml`)
-- **Grafana** has Prometheus auto-provisioned as the default datasource via `deployments/monitoring/grafana/provisioning/datasources/prometheus.yml`
+- **Fluent Bit** tails `logs/omo-core.log` and pushes entries to Loki
+- **Loki** stores logs in filesystem mode with auto-provisioned datasource in Grafana
+- **Grafana** has Prometheus and Loki auto-provisioned as datasources
 - A pre-built **"Trading Ops"** dashboard is auto-loaded from `deployments/monitoring/grafana/dashboards/trading-ops.json`
 - Alert rules are defined in `deployments/monitoring/alerts.yml`
 
@@ -52,6 +52,31 @@ The auto-provisioned dashboard includes:
 - Strategy signal counts
 - P&L and equity tracking
 - WebSocket connection health
+
+## Log Aggregation
+
+### How It Works
+omo-core stdout is redirected to `logs/omo-core.log` by `start.sh`. Fluent Bit tails that file and pushes to Loki. Grafana queries Loki via auto-provisioned datasource.
+
+### Useful LogQL Queries
+
+```logql
+# All omo-core logs
+{job="omo-core"}
+
+# Filter by log level
+{job="omo-core"} |= "ERR"
+{job="omo-core"} |= "WARN"
+
+# Search for specific symbol activity
+{job="omo-core"} |= "AAPL"
+
+# Filter by component
+{job="omo-core"} |= "component=execution"
+
+# Orders and fills
+{job="omo-core"} |= "order" |= "filled"
+```
 
 ## All Available Metrics
 
@@ -223,13 +248,17 @@ omo_positions_shares
 
 ```
 deployments/
-  docker-compose.yml                              # Prometheus + Grafana services
+  docker-compose.monitoring.yml                    # Local-dev: Prometheus + Grafana + Loki + Fluent Bit
   monitoring/
-    prometheus.yml                                 # Scrape config (5s interval)
+    prometheus.yml                                 # Scrape config (Docker network)
+    prometheus.local.yml                           # Scrape config (host network, local dev)
     alerts.yml                                     # Alert rules
+    loki.yml                                       # Loki storage config (filesystem mode)
+    fluent-bit.conf                                # Fluent Bit input/output config
     grafana/
       provisioning/
         datasources/prometheus.yml                 # Auto-provision Prometheus datasource
+        datasources/loki.yml                       # Auto-provision Loki datasource
         dashboards/default.yml                     # Dashboard file provider config
       dashboards/
         trading-ops.json                           # Pre-built Trading Ops dashboard
@@ -251,6 +280,15 @@ backend/internal/observability/metrics/
 - **Scrape interval**: 5s (configurable in `deployments/monitoring/prometheus.yml`)
 - **Retention**: 30 days (`--storage.tsdb.retention.time=30d`)
 - **Reload**: Hot-reload enabled via `--web.enable-lifecycle` (POST to `http://localhost:9090/-/reload`)
+
+### Loki
+- **Storage**: filesystem mode (local volume, no S3 required)
+- **Retention**: 7 days (configurable in loki.yml)
+
+### Fluent Bit
+- **Input**: tails `logs/omo-core.log`
+- **Output**: pushes to Loki at `http://loki:3100`
+- **Labels**: `job=omo-core`
 
 ### Grafana
 - **Anonymous access**: Enabled as Viewer (no login needed to browse dashboards)

@@ -10,7 +10,7 @@ import { ArrowUp, ArrowDown, Activity, Zap } from "lucide-react";
 import { useChartData, type OHLCBar } from "@/lib/use-chart-data";
 import { useStrategyList } from "@/hooks/queries";
 import type { ChartSignal } from "@/components/trading-signal-chart";
-import type { StrategySignalEvent } from "@/lib/types";
+import type { StrategySignalEvent, RegimeType } from "@/lib/types";
 
 const TradingChart = dynamic(() => import("@/components/trading-signal-chart"), {
   ssr: false,
@@ -32,6 +32,7 @@ export default function TradingSignalPage() {
 
   const [signals, setSignals] = useState<ChartSignal[]>([]);
   const [recentSignalEvents, setRecentSignalEvents] = useState<StrategySignalEvent[]>([]);
+  const [regimeBySymbol, setRegimeBySymbol] = useState<Record<string, { regime: RegimeType; strength: number; rsi: number }>>({});
 
   const { data: strategies } = useStrategyList();
   const availableSymbols = useMemo(() => {
@@ -63,6 +64,22 @@ export default function TradingSignalPage() {
     }
   }, [symbol, availableSymbols, setSymbol]);
 
+  useEffect(() => {
+    if (!symbol) return;
+    fetch(`/api/state?symbol=${encodeURIComponent(symbol)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((snap) => {
+        if (!snap) return;
+        const currentRegime = snap.anchorRegimes?.[snap.Timeframe];
+        if (!currentRegime) return;
+        setRegimeBySymbol((prev) => ({
+          ...prev,
+          [snap.Symbol]: { regime: currentRegime.Type, strength: currentRegime.Strength, rsi: snap.RSI },
+        }));
+      })
+      .catch(() => {});
+  }, [symbol]);
+
   const chartSymbols = useMemo(() => symbol ? [symbol] : [], [symbol]);
   const { barsBySymbol, loading, loadMore } = useChartData(timeframe, "/api/events", chartSymbols.length > 0 ? chartSymbols : undefined);
   const bars: OHLCBar[] = barsBySymbol[symbol] ?? [];
@@ -75,16 +92,41 @@ export default function TradingSignalPage() {
         const envelope = JSON.parse(e.data) as { payload: StrategySignalEvent };
         const sig = envelope.payload;
         if (!sig?.Symbol || !sig?.TS) return;
+        console.log(`[SSE] StrategySignalLifecycle`, sig.Symbol, sig);
 
         const side = sig.Side?.toLowerCase() === "sell" ? "sell" as const : "buy" as const;
         const time = Math.floor(new Date(sig.TS).getTime() / 1000);
 
         setSignals((prev) => {
-          const next = [...prev, { time, side, strategy: sig.Strategy, confidence: sig.Confidence }];
+          if (sig.SignalID && prev.some((s) => s.signalId === sig.SignalID)) return prev;
+          const next = [...prev, { time, side, strategy: sig.Strategy, confidence: sig.Confidence, signalId: sig.SignalID }];
           return next.slice(-200);
         });
 
         setRecentSignalEvents((prev) => [sig, ...prev].slice(0, 20));
+      } catch {
+        // noop
+      }
+    });
+
+    es.addEventListener("StateUpdated", (e: MessageEvent) => {
+      try {
+        const envelope = JSON.parse(e.data) as {
+          payload: {
+            Symbol: string;
+            Timeframe: string;
+            RSI: number;
+            anchorRegimes?: Record<string, { Type: RegimeType; Strength: number }>;
+          };
+        };
+        const snap = envelope.payload;
+        if (!snap?.Symbol) return;
+        const currentRegime = snap.anchorRegimes?.[snap.Timeframe];
+        if (!currentRegime) return;
+        setRegimeBySymbol((prev) => ({
+          ...prev,
+          [snap.Symbol]: { regime: currentRegime.Type, strength: currentRegime.Strength, rsi: snap.RSI },
+        }));
       } catch {
         // noop
       }
@@ -302,6 +344,57 @@ export default function TradingSignalPage() {
                   </>
                 )}
               </div>
+              {regimeBySymbol[symbol] && (
+                <div className="mt-4 pt-4 border-t border-border/50">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs text-muted-foreground">Market Regime</span>
+                    <Badge
+                      className={
+                        regimeBySymbol[symbol].regime === "TREND"
+                          ? "bg-emerald-500/15 text-emerald-500 border-emerald-500/30 hover:bg-emerald-500/25"
+                          : regimeBySymbol[symbol].regime === "REVERSAL"
+                            ? "bg-red-500/15 text-red-500 border-red-500/30 hover:bg-red-500/25"
+                            : "bg-amber-500/15 text-amber-500 border-amber-500/30 hover:bg-amber-500/25"
+                      }
+                      variant="outline"
+                    >
+                      {regimeBySymbol[symbol].regime}
+                    </Badge>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">Strength</span>
+                    <div className="flex-1 h-2 bg-secondary rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-500 ${
+                          regimeBySymbol[symbol].regime === "TREND"
+                            ? "bg-emerald-500"
+                            : regimeBySymbol[symbol].regime === "REVERSAL"
+                              ? "bg-red-500"
+                              : "bg-amber-500"
+                        }`}
+                        style={{ width: `${Math.min(regimeBySymbol[symbol].strength * 100, 100)}%` }}
+                      />
+                    </div>
+                    <span className="text-xs font-mono text-muted-foreground w-10 text-right">
+                      {(regimeBySymbol[symbol].strength * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                  {regimeBySymbol[symbol].rsi > 0 && (
+                    <div className="flex items-center gap-2 mt-2">
+                      <span className="text-xs text-muted-foreground">RSI</span>
+                      <span className={`text-sm font-mono font-medium ${
+                        regimeBySymbol[symbol].rsi > 70
+                          ? "text-red-500"
+                          : regimeBySymbol[symbol].rsi < 30
+                            ? "text-emerald-500"
+                            : "text-foreground"
+                      }`}>
+                        {regimeBySymbol[symbol].rsi.toFixed(1)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
             </CardContent>
           </Card>
 

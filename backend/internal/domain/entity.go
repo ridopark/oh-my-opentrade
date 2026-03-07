@@ -59,10 +59,10 @@ type OrderIntent struct {
 	Confidence     float64   `json:"confidence"`
 	IdempotencyKey string    `json:"idempotencyKey"`
 	// Options-specific fields (nil/zero for equity orders)
-	Instrument     *Instrument `json:"instrument,omitempty"`
-	AssetClass     AssetClass `json:"assetClass"`
-	MaxLossUSD     float64           `json:"maxLossUSD,omitempty"`
-	Meta           map[string]string `json:"meta,omitempty"`
+	Instrument *Instrument       `json:"instrument,omitempty"`
+	AssetClass AssetClass        `json:"assetClass"`
+	MaxLossUSD float64           `json:"maxLossUSD,omitempty"`
+	Meta       map[string]string `json:"meta,omitempty"`
 }
 
 // OrderIntentStatus indicates where in the pipeline an order intent currently sits.
@@ -138,7 +138,7 @@ func NewOrderIntent(
 	if idempotencyKey == "" {
 		return OrderIntent{}, errors.New("idempotency key is required")
 	}
-	if stopLoss <= 0 {
+	if stopLoss <= 0 && !dir.IsExit() {
 		return OrderIntent{}, errors.New("stop loss must be greater than zero")
 	}
 	if limitPrice <= 0 {
@@ -428,4 +428,26 @@ type ThoughtLog struct {
 	JudgeReasoning string
 	Rationale      string
 	IntentID       string // stored in payload JSONB
+}
+
+// MarketTrade represents a single trade tick from the exchange.
+// Used for real-time chart candle formation only — not persisted.
+type MarketTrade struct {
+	Time   time.Time `json:"time"`
+	Symbol Symbol    `json:"symbol"`
+	Price  float64   `json:"price"`
+	Size   float64   `json:"size"`
+}
+
+// FormingBar represents a partial (in-progress) OHLCV candle for the current bucket.
+// Sent to the frontend via SSE so the chart can show a forming candle in real-time.
+type FormingBar struct {
+	Time      time.Time `json:"time"`
+	Symbol    Symbol    `json:"symbol"`
+	Timeframe Timeframe `json:"timeframe"`
+	Open      float64   `json:"open"`
+	High      float64   `json:"high"`
+	Low       float64   `json:"low"`
+	Close     float64   `json:"close"`
+	Volume    float64   `json:"volume"`
 }

@@ -25,3 +25,6 @@ apps/dashboard/.next/
 
 # Docker
 *.log
+
+# Runtime logs
+logs/

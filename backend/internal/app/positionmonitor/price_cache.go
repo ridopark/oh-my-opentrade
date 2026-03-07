@@ -41,7 +41,7 @@ func (pc *PriceCache) handleBar(_ context.Context, event domain.Event) error {
 	pc.mu.Lock()
 	pc.prices[bar.Symbol] = ports.PriceSnapshot{
 		Price:      bar.Close,
-		ObservedAt: bar.Time,
+		ObservedAt: time.Now(), // Use arrival time, not bar open time — 1-min bars arrive ~60s after bar.Time
 	}
 	pc.mu.Unlock()
 	return nil

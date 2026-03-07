@@ -3,7 +3,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   createChart,
-  createSeriesMarkers,
   ColorType,
   LineSeries,
   CandlestickSeries,
@@ -17,9 +16,9 @@ import {
   type LineData,
   type LogicalRange,
   type MouseEventParams,
-  type SeriesMarker,
 } from "lightweight-charts";
 import type { OHLCBar } from "@/lib/use-chart-data";
+import { SignalMarkerOverlay, type SignalMarkerData } from "@/lib/signal-markers";
 
 /** Convert a UTC unix timestamp to a Date in America/New_York timezone parts. */
 function toET(utcSeconds: number): { year: string; month: string; day: string; hour: string; minute: string } {
@@ -39,6 +38,7 @@ export interface ChartSignal {
   side: "buy" | "sell";
   strategy?: string;
   confidence?: number;
+  signalId?: string;
 }
 
 interface TradingSignalChartProps {
@@ -155,6 +155,7 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
   const bbMiddleRef = useRef<ISeriesApi<"Line", Time> | null>(null);
   const bbLowerRef = useRef<ISeriesApi<"Line", Time> | null>(null);
   const rsiSeriesRef = useRef<ISeriesApi<"Line", Time> | null>(null);
+  const signalOverlayRef = useRef<SignalMarkerOverlay | null>(null);
 
   const onLoadMoreRef = useRef(onLoadMore);
   onLoadMoreRef.current = onLoadMore;
@@ -256,6 +257,10 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
       wickDownColor: '#ef4444',
     });
     candleSeriesRef.current = candleSeries;
+
+    const signalOverlay = new SignalMarkerOverlay();
+    candleSeries.attachPrimitive(signalOverlay);
+    signalOverlayRef.current = signalOverlay;
 
     const handleMainCrosshair = (param: MouseEventParams<Time>) => {
       if (!param.point || !param.time || param.point.x < 0) {
@@ -363,6 +368,7 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
       bbUpperRef.current = null;
       bbMiddleRef.current = null;
       bbLowerRef.current = null;
+      signalOverlayRef.current = null;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -549,19 +555,27 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
     candleSeriesRef.current.setData(candles);
     volumeSeriesRef.current.setData(volumes);
 
-    if (signals && signals.length > 0) {
-      const markers: SeriesMarker<Time>[] = signals.map((s) => ({
-        time: s.time as Time,
-        position: s.side === "buy" ? ("belowBar" as const) : ("aboveBar" as const),
-        color: s.side === "buy" ? "#10b981" : "#ef4444",
-        shape: s.side === "buy" ? ("arrowUp" as const) : ("arrowDown" as const),
-        text: s.strategy
-          ? `${s.side === "buy" ? "Buy" : "Sell"} (${s.strategy})`
-          : s.side === "buy" ? "Buy" : "Sell",
-      }));
-      createSeriesMarkers(candleSeriesRef.current, markers);
-    } else {
-      createSeriesMarkers(candleSeriesRef.current, []);
+    if (signalOverlayRef.current) {
+      if (signals && signals.length > 0) {
+        const barMap = new Map(data.map(d => [d.time, d]));
+        const markerData: SignalMarkerData[] = signals
+          .map(s => {
+            const bar = barMap.get(s.time);
+            if (!bar) return null;
+            return {
+              time: s.time as Time,
+              price: s.side === "buy" ? bar.low : bar.high,
+              side: s.side,
+              label: s.strategy
+                ? `${s.side === "buy" ? "Buy" : "Sell"} (${s.strategy})`
+                : s.side === "buy" ? "Buy" : "Sell",
+            };
+          })
+          .filter((d): d is SignalMarkerData => d !== null);
+        signalOverlayRef.current.setSignals(markerData);
+      } else {
+        signalOverlayRef.current.setSignals([]);
+      }
     }
 
     if (showEMA && ema12SeriesRef.current && ema26SeriesRef.current) {

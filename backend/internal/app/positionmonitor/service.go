@@ -41,7 +41,7 @@ type Service struct {
 
 	// State owned exclusively by the tick goroutine.
 	positions map[string]*domain.MonitoredPosition // key: PositionKey()
-	mu        sync.RWMutex // protects positions for concurrent reads (e.g. PositionCount)
+	mu        sync.RWMutex                         // protects positions for concurrent reads (e.g. PositionCount)
 
 	// Config.
 	tickInterval      time.Duration
@@ -568,9 +568,9 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 		pos.EnvMode,
 		pos.Symbol,
 		domain.DirectionCloseLong,
-		currentPrice,   // limit price = current price for market-like exit
-		currentPrice/2, // stop loss = half current price (safety fallback)
-		0,              // no slippage check for exits
+		currentPrice, // limit price = current price for market-like exit
+		0,            // no stop loss for exits — plain limit order
+		0,            // no slippage check for exits
 		pos.Quantity,
 		pos.Strategy,
 		fmt.Sprintf("exit_monitor:%s:%s", rule.Type, reason),

@@ -286,6 +286,9 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 
 	s.liveBars[symStr]++
 
+	regime, changed := s.regimeDetector.Detect(snap)
+	snap.AnchorRegimes[bar.Timeframe] = regime
+
 	l.Debug().
 		Float64("close", bar.Close).
 		Float64("volume", bar.Volume).
@@ -296,6 +299,8 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		Float64("ema21", snap.EMA21).
 		Float64("vwap", snap.VWAP).
 		Float64("volume_sma", snap.VolumeSMA).
+		Str("regime", string(regime.Type)).
+		Float64("regime_strength", regime.Strength).
 		Msg("indicator snapshot")
 
 	stateUpdatedEv, err := domain.NewEvent(
@@ -311,7 +316,6 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	}
 	publishStrict = append(publishStrict, *stateUpdatedEv)
 
-	regime, changed := s.regimeDetector.Detect(snap)
 	l.Debug().
 		Str("regime", string(regime.Type)).
 		Float64("strength", regime.Strength).
@@ -426,12 +430,28 @@ func (s *Service) GetORBSession(symbol string) *ORBSession {
 
 // WarmUp seeds the indicator calculator with historical bars without emitting
 // any events or persisting data. It must be called before streaming begins.
+// The final snapshot (with regime detection) is cached so that /state can
+// return data immediately after startup without waiting for a live bar.
 // Returns the number of bars processed.
 func (s *Service) WarmUp(bars []domain.MarketBar) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var lastSnap domain.IndicatorSnapshot
+	var lastBar domain.MarketBar
 	for _, bar := range bars {
-		s.calculator.Update(bar)
+		lastSnap = s.calculator.Update(bar)
+		lastBar = bar
+	}
+	if len(bars) > 0 {
+		symStr := lastBar.Symbol.String()
+
+		// Run regime detection on the final snapshot so anchorRegimes is populated.
+		regime, _ := s.regimeDetector.Detect(lastSnap)
+		lastSnap.AnchorRegimes = map[domain.Timeframe]domain.MarketRegime{
+			lastBar.Timeframe: regime,
+		}
+
+		s.lastSnaps[symStr] = lastSnap
 	}
 	return len(bars)
 }

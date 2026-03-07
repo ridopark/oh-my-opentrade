@@ -32,10 +32,13 @@ if tmux has-session -t "$OMO_SESSION" 2>/dev/null; then
   warn "$OMO_SESSION tmux session already exists — skipping"
 else
   kill_port "$OMO_PORT"
+  mkdir -p "$ROOT_DIR/logs"
+  : > "$ROOT_DIR/logs/omo-core.log"
   info "Building omo-core..."
   (cd "$ROOT_DIR/backend" && go build -o bin/omo-core ./cmd/omo-core)
   info "Starting omo-core in tmux session..."
-  tmux new-session -d -s "$OMO_SESSION" -c "$ROOT_DIR" "$ROOT_DIR/backend/bin/omo-core"
+  tmux new-session -d -s "$OMO_SESSION" -c "$ROOT_DIR" \
+    "$ROOT_DIR/backend/bin/omo-core 2>&1 | tee -a $ROOT_DIR/logs/omo-core.log"
   info "omo-core started  →  tmux attach -t $OMO_SESSION"
 fi
 
@@ -53,4 +56,5 @@ echo ""
 info "All services launched. Useful commands:"
 echo "  tmux attach -t $OMO_SESSION      # view backend logs"
 echo "  tmux attach -t $DASH_SESSION   # view dashboard logs"
-echo "  ./scripts/shutdown.sh            # stop everything"
+echo "  ./scripts/shutdown.sh            # stop omo-core + dashboard"
+echo "  ./scripts/start-infra.sh         # start monitoring stack"

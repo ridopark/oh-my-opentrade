@@ -167,6 +167,67 @@ func TestAdvisor_RequestDebate_SendsStructuredPrompt(t *testing.T) {
 	assert.Contains(t, content, "50500") // VWAP
 }
 
+func TestAdvisor_RequestDebate_PromptIncludesAnchorRegimes(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := json.NewDecoder(r.Body).Decode(&capturedBody)
+		assert.NoError(t, err)
+		validCompletionResponse(w, "LONG", "rationale", "bull", "bear", "judge", 0.80)
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+
+	snap := getMockIndicatorSnapshot(func(s *domain.IndicatorSnapshot) {
+		s.AnchorRegimes = map[domain.Timeframe]domain.MarketRegime{
+			"1m":  {Symbol: "BTCUSD", Timeframe: "1m", Type: domain.RegimeTrend, Strength: 0.80},
+			"5m":  {Symbol: "BTCUSD", Timeframe: "5m", Type: domain.RegimeBalance, Strength: 0.55},
+			"15m": {Symbol: "BTCUSD", Timeframe: "15m", Type: domain.RegimeReversal, Strength: 0.90},
+		}
+	})
+	regime := getMockMarketRegime()
+
+	_, err := advisor.RequestDebate(context.Background(), "BTCUSD", regime, snap)
+	require.NoError(t, err)
+
+	messages, ok := capturedBody["messages"].([]interface{})
+	require.True(t, ok)
+	userMsg := messages[len(messages)-1].(map[string]interface{})
+	content := userMsg["content"].(string)
+
+	assert.Contains(t, content, "Multi-Timeframe Regimes:")
+	assert.Contains(t, content, "1m: TREND (strength: 0.80)")
+	assert.Contains(t, content, "5m: BALANCE (strength: 0.55)")
+	assert.Contains(t, content, "15m: REVERSAL (strength: 0.90)")
+}
+
+func TestAdvisor_RequestDebate_NoAnchorRegimes_OmitsSection(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := json.NewDecoder(r.Body).Decode(&capturedBody)
+		assert.NoError(t, err)
+		validCompletionResponse(w, "LONG", "rationale", "bull", "bear", "judge", 0.80)
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+
+	snap := getMockIndicatorSnapshot()
+	regime := getMockMarketRegime()
+
+	_, err := advisor.RequestDebate(context.Background(), "BTCUSD", regime, snap)
+	require.NoError(t, err)
+
+	messages, ok := capturedBody["messages"].([]interface{})
+	require.True(t, ok)
+	userMsg := messages[len(messages)-1].(map[string]interface{})
+	content := userMsg["content"].(string)
+
+	assert.NotContains(t, content, "Multi-Timeframe Regimes:")
+}
+
 func TestAdvisor_RequestDebate_HTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

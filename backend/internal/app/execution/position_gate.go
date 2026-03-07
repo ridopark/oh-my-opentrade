@@ -92,15 +92,6 @@ func (g *PositionGate) Check(ctx context.Context, intent domain.OrderIntent) err
 		return ErrNoPositionToExit
 	}
 
-	// Check exit inflight lock.
-	g.mu.Lock()
-	_, exitLocked := g.exitInflight[inflightKey{TenantID: intent.TenantID, EnvMode: intent.EnvMode, Symbol: intent.Symbol}]
-	g.mu.Unlock()
-	if exitLocked {
-		g.log.Warn().Str("symbol", string(intent.Symbol)).Msg("position gate: inflight exit exists")
-		return ErrInflightExit
-	}
-
 	return nil
 }
 

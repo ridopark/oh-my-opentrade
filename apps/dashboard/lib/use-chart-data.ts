@@ -277,11 +277,12 @@ export function useChartData(
   useEffect(() => {
     const es = new EventSource(sseUrl);
 
-    es.addEventListener('MarketBarSanitized', (e: MessageEvent) => {
+    const handleBarEvent = (e: MessageEvent) => {
       try {
         const envelope = JSON.parse(e.data) as { payload: MarketBarEvent };
         const bar = envelope.payload;
         if (!bar?.symbol || !bar?.time) return;
+        console.log(`[SSE] ${envelope.type ?? e.type}`, bar.symbol, bar);
 
         const ohlc = toOHLC(bar);
         const tf = timeframeRef.current;
@@ -294,13 +295,13 @@ export function useChartData(
         barsRef.current = next;
         setBarsBySymbol(next);
       } catch {
-        // SSE parse error — ignore malformed events
       }
-    });
-
-    es.onerror = () => {
-      // EventSource auto-reconnects; state is preserved
     };
+
+    es.addEventListener('MarketBarSanitized', handleBarEvent);
+    es.addEventListener('FormingBar', handleBarEvent);
+
+    es.onerror = () => {};
 
     return () => es.close();
   }, [sseUrl]);

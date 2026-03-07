@@ -26,14 +26,40 @@ type Config struct {
 
 // AlpacaConfig represents the Alpaca broker configuration.
 type AlpacaConfig struct {
-	APIKeyID     string `yaml:"api_key_id"`
-	APISecretKey string `yaml:"api_secret_key"`
-	BaseURL      string `yaml:"base_url"`
-	DataURL      string `yaml:"data_url"`
-	Feed         string `yaml:"feed"`
-	PaperMode    bool   `yaml:"paper_mode"`
+	APIKeyID      string `yaml:"api_key_id"`
+	APISecretKey  string `yaml:"api_secret_key"`
+	BaseURL       string `yaml:"base_url"`
+	DataURL       string `yaml:"data_url"`
+	Feed          string `yaml:"feed"`
+	PaperMode     bool   `yaml:"paper_mode"`
 	CryptoDataURL string `yaml:"crypto_data_url"`
 	CryptoFeed    string `yaml:"crypto_feed"`
+
+	// Separate credentials for market data API (optional).
+	// When set, these keys are used for data streaming (REST + WebSocket)
+	// while the primary keys above are used for trading (orders, positions).
+	// This allows using a paid data plan on a paper trading account.
+	// Falls back to the primary APIKeyID/APISecretKey if not set.
+	DataAPIKeyID     string `yaml:"data_api_key_id"`
+	DataAPISecretKey string `yaml:"data_api_secret_key"`
+}
+
+// EffectiveDataAPIKeyID returns the API key to use for market data connections.
+// Falls back to the primary APIKeyID if no separate data key is configured.
+func (c AlpacaConfig) EffectiveDataAPIKeyID() string {
+	if c.DataAPIKeyID != "" {
+		return c.DataAPIKeyID
+	}
+	return c.APIKeyID
+}
+
+// EffectiveDataAPISecretKey returns the API secret to use for market data connections.
+// Falls back to the primary APISecretKey if no separate data secret is configured.
+func (c AlpacaConfig) EffectiveDataAPISecretKey() string {
+	if c.DataAPISecretKey != "" {
+		return c.DataAPISecretKey
+	}
+	return c.APISecretKey
 }
 
 // AIConfig holds configuration for the AI adversarial debate system.
@@ -88,7 +114,6 @@ type SymbolsConfig struct {
 	Symbols   []string            `yaml:"symbols,omitempty"`   // backward compat
 	Timeframe string              `yaml:"timeframe,omitempty"` // backward compat
 }
-
 
 // Normalize migrates flat Symbols/Timeframe into Groups for backward compat.
 // If Groups is already populated, it populates the flat Symbols field from Groups.
@@ -294,6 +319,12 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	}
 	if val := os.Getenv("APCA_CRYPTO_FEED"); val != "" {
 		cfg.Alpaca.CryptoFeed = val
+	}
+	if val := os.Getenv("APCA_DATA_API_KEY_ID"); val != "" {
+		cfg.Alpaca.DataAPIKeyID = val
+	}
+	if val := os.Getenv("APCA_DATA_API_SECRET_KEY"); val != "" {
+		cfg.Alpaca.DataAPISecretKey = val
 	}
 	if val := os.Getenv("TIMESCALEDB_PASSWORD"); val != "" {
 		cfg.Database.Password = val

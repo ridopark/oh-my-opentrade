@@ -18,6 +18,7 @@ type CryptoWSClient struct {
 	apiKey        string
 	apiSecret     string
 	feed          string // e.g. "us"
+	tradeHandler  ports.TradeHandler
 	closeOnce     sync.Once
 	cancel        context.CancelFunc
 	mu            sync.Mutex
@@ -46,6 +47,9 @@ func NewCryptoWSClient(cryptoDataURL, apiKey, apiSecret, feed string) (*CryptoWS
 		feed:          feed,
 	}, nil
 }
+
+// SetTradeHandler sets the callback for forwarding raw crypto trade ticks.
+func (c *CryptoWSClient) SetTradeHandler(h ports.TradeHandler) { c.tradeHandler = h }
 
 // ErrCryptoWSMissingCredentials is returned when API key or secret is empty.
 var ErrCryptoWSMissingCredentials = errors.New("crypto websocket requires API key and secret")
@@ -76,10 +80,29 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		_ = handler(streamCtx, bar)
 	}
 
+	tradeHandler := func(ct alpacastream.CryptoTrade) {
+		if c.tradeHandler == nil {
+			return
+		}
+		sym, err := domain.NewSymbol(ct.Symbol)
+		if err != nil {
+			return
+		}
+		sym = sym.ToSlashFormat()
+		mt := domain.MarketTrade{
+			Time:   ct.Timestamp,
+			Symbol: sym,
+			Price:  ct.Price,
+			Size:   ct.Size,
+		}
+		_ = c.tradeHandler(streamCtx, mt)
+	}
+
 	sc := alpacastream.NewCryptoClient(
 		c.feed,
 		alpacastream.WithCredentials(c.apiKey, c.apiSecret),
 		alpacastream.WithCryptoBars(barHandler, symStrs...),
+		alpacastream.WithCryptoTrades(tradeHandler, symStrs...),
 	)
 
 	if err := sc.Connect(streamCtx); err != nil {

@@ -23,7 +23,8 @@ export type EventType =
   | "FillReceived"
   | "PositionUpdated"
   | "KillSwitchEngaged"
-  | "CircuitBreakerTripped";
+  | "CircuitBreakerTripped"
+  | "FormingBar";
 
 // Base domain event envelope
 export interface DomainEvent<T = unknown> {
