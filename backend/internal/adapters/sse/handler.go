@@ -149,6 +149,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	h.log.Info().Str("remote", r.RemoteAddr).Int("total_clients", clientCount).Msg("SSE client connected")
 
+	// Flush headers + initial keepalive immediately so the client (and any
+	// proxy like Next.js) sees the 200 response without waiting for the
+	// first event or the 30-second keepalive timer.
+	fmt.Fprintf(w, ": keepalive\n\n")
+	flusher.Flush()
+
 	defer func() {
 		h.mu.Lock()
 		delete(h.clients, c)
