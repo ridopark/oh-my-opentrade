@@ -6,7 +6,6 @@ import {
   LayoutDashboard,
   Swords,
   ListOrdered,
-  Dna,
   Activity,
   Layers,
   TrendingUp,
@@ -22,7 +21,6 @@ const navItems = [
   { href: "/debates", label: "Debates", icon: Swords },
   { href: "/execution", label: "Execution", icon: ListOrdered },
   { href: "/performance", label: "Performance", icon: TrendingUp },
-  { href: "/dna", label: "Strategy DNA", icon: Dna },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   { href: "/strategies", label: "Strategies", icon: Layers },
 
