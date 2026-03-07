@@ -3,22 +3,28 @@ package execution
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	"github.com/oh-my-opentrade/backend/internal/domain"
-	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
 
-// Service is the execution application service.
-// It subscribes to OrderIntentCreated events and runs each through a validation
-// pipeline: kill switch → risk → slippage → broker submission.
+type pendingOrder struct {
+	intent      domain.OrderIntent
+	tenantID    string
+	envMode     domain.EnvMode
+	submitStart time.Time
+}
+
 type Service struct {
 	eventBus         ports.EventBusPort
 	broker           ports.BrokerPort
+	orderStream      ports.OrderStreamPort
 	repo             ports.RepositoryPort
 	riskEngine       *RiskEngine
 	slippageGuard    *SlippageGuard
@@ -29,6 +35,7 @@ type Service struct {
 	accountEquity    float64
 	log              zerolog.Logger
 	metrics          *metrics.Metrics
+	pendingOrders    sync.Map // brokerOrderID → *pendingOrder
 }
 
 // Option is a functional option for Service.
@@ -43,6 +50,10 @@ func WithPositionGate(pg *PositionGate) Option {
 // Only set when DTBP_FALLBACK=true.
 func WithBuyingPowerGuard(bpg *BuyingPowerGuard) Option {
 	return func(s *Service) { s.buyingPowerGuard = bpg }
+}
+
+func WithOrderStream(os ports.OrderStreamPort) Option {
+	return func(s *Service) { s.orderStream = os }
 }
 
 // NewService creates a new execution Service.
@@ -87,12 +98,22 @@ func (s *Service) SetAccountEquity(equity float64) {
 // SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
 func (s *Service) SetMetrics(m *metrics.Metrics) { s.metrics = m }
 
-// Start subscribes the service to OrderIntentCreated events on the event bus.
 func (s *Service) Start(ctx context.Context) error {
 	if err := s.eventBus.Subscribe(ctx, domain.EventOrderIntentCreated, s.handleIntent); err != nil {
 		return fmt.Errorf("execution: failed to subscribe to OrderIntentCreated: %w", err)
 	}
 	s.log.Info().Msg("subscribed to OrderIntentCreated events")
+
+	if s.orderStream != nil {
+		ch, err := s.orderStream.SubscribeOrderUpdates(ctx)
+		if err != nil {
+			return fmt.Errorf("execution: failed to subscribe to order stream: %w", err)
+		}
+		go s.runFillListener(ctx, ch)
+		go s.runReconciliationLoop(ctx)
+		s.log.Info().Msg("WebSocket fill listener and reconciliation loop started")
+	}
+
 	return nil
 }
 
@@ -287,8 +308,18 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		l.Error().Err(saveErr).Msg("failed to persist order — continuing to poll")
 	}
 
-	// 8. Poll for fill in background (up to 2 minutes, 5-second intervals).
-	go s.pollForFill(event.TenantID, event.EnvMode, intent, brokerOrderID, submitStart, l)
+	// 8. Register intent for fill correlation and start fill detection.
+	s.pendingOrders.Store(brokerOrderID, &pendingOrder{
+		intent:      intent,
+		tenantID:    event.TenantID,
+		envMode:     event.EnvMode,
+		submitStart: submitStart,
+	})
+
+	if s.orderStream == nil {
+		// Fallback: poll for fill when no WebSocket stream is available (backtest, replay).
+		go s.pollForFill(event.TenantID, event.EnvMode, intent, brokerOrderID, submitStart, l)
+	}
 
 	return nil
 }
@@ -298,8 +329,8 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 func (s *Service) pollForFill(tenantID string, envMode domain.EnvMode, intent domain.OrderIntent, brokerOrderID string, submitStart time.Time, l zerolog.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	defer s.pendingOrders.Delete(brokerOrderID)
 
-	// Clear inflight lock on all exit paths (fill, cancel, timeout).
 	if s.positionGate != nil && isEntry(intent) {
 		defer s.positionGate.ClearInflight(tenantID, envMode, intent.Symbol)
 	}
@@ -386,8 +417,197 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 	}
 }
 
-// emit publishes a domain event on the event bus, discarding creation/publish errors
-// (events are best-effort; the pipeline should not fail due to event emission).
+func (s *Service) runFillListener(ctx context.Context, ch <-chan ports.OrderUpdate) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case update, ok := <-ch:
+			if !ok {
+				return
+			}
+			s.handleOrderUpdate(update)
+		}
+	}
+}
+
+func (s *Service) handleOrderUpdate(update ports.OrderUpdate) {
+	l := s.log.With().
+		Str("broker_order_id", update.BrokerOrderID).
+		Str("event", update.Event).
+		Logger()
+
+	switch update.Event {
+	case "fill", "partial_fill":
+		s.handleStreamFill(update, l)
+	case "canceled", "cancelled", "expired", "rejected":
+		l.Info().Msg("order terminal via stream")
+		s.cleanupPendingOrder(update.BrokerOrderID)
+	}
+}
+
+const fastFillRetryDelay = 500 * time.Millisecond
+const fastFillMaxRetries = 3
+
+func (s *Service) handleStreamFill(update ports.OrderUpdate, l zerolog.Logger) {
+	raw, ok := s.pendingOrders.Load(update.BrokerOrderID)
+	if !ok {
+		for i := 0; i < fastFillMaxRetries; i++ {
+			time.Sleep(fastFillRetryDelay)
+			raw, ok = s.pendingOrders.Load(update.BrokerOrderID)
+			if ok {
+				break
+			}
+		}
+		if !ok {
+			l.Warn().Msg("fill received for unknown order (not in pending map)")
+			return
+		}
+	}
+
+	po := raw.(*pendingOrder)
+
+	if update.Event == "fill" {
+		s.pendingOrders.Delete(update.BrokerOrderID)
+	}
+
+	fillPrice := update.Price
+	if fillPrice <= 0 {
+		fillPrice = update.FilledAvgPrice
+	}
+	if fillPrice <= 0 {
+		fillPrice = po.intent.LimitPrice
+	}
+
+	fillQty := update.Qty
+	if fillQty <= 0 {
+		fillQty = update.FilledQty
+	}
+	if fillQty <= 0 {
+		fillQty = po.intent.Quantity
+	}
+
+	s.handleFillWithPrice(po, update.BrokerOrderID, fillPrice, fillQty, update.FilledAt, l)
+}
+
+func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fillPrice, fillQty float64, filledAt time.Time, l zerolog.Logger) {
+	ctx := context.Background()
+
+	if err := s.repo.UpdateOrderFill(ctx, brokerOrderID, filledAt, fillPrice, fillQty); err != nil {
+		l.Error().Err(err).Msg("failed to update order fill")
+	}
+
+	side := "SELL"
+	if po.intent.Direction == domain.DirectionLong {
+		side = "BUY"
+	}
+	trade, err := domain.NewTrade(filledAt, po.tenantID, po.envMode, uuid.New(), po.intent.Symbol, side, fillQty, fillPrice, 0, "FILLED", po.intent.Strategy, po.intent.Rationale)
+	if err != nil {
+		l.Error().Err(err).Msg("failed to construct trade on fill")
+	} else {
+		if err := s.repo.SaveTrade(ctx, trade); err != nil {
+			l.Error().Err(err).Msg("failed to save trade on fill")
+		}
+	}
+
+	s.emit(ctx, domain.EventFillReceived, po.tenantID, po.envMode, brokerOrderID, map[string]any{
+		"broker_order_id": brokerOrderID,
+		"intent_id":       po.intent.ID.String(),
+		"symbol":          string(po.intent.Symbol),
+		"side":            side,
+		"quantity":        fillQty,
+		"price":           fillPrice,
+		"filled_at":       filledAt,
+		"strategy":        po.intent.Strategy,
+		"asset_class":     string(po.intent.AssetClass),
+	})
+
+	l.Info().
+		Str("broker_order_id", brokerOrderID).
+		Float64("fill_price", fillPrice).
+		Float64("quantity", fillQty).
+		Msg("order filled — trade persisted and FillReceived emitted")
+
+	if s.metrics != nil {
+		s.metrics.Orders.FillsTotal.WithLabelValues("alpaca", po.intent.Strategy, side, "filled").Inc()
+		s.metrics.Orders.FillLat.WithLabelValues("alpaca", po.intent.Strategy).Observe(time.Since(po.submitStart).Seconds())
+	}
+
+	if s.positionGate != nil && isEntry(po.intent) {
+		s.positionGate.ClearInflight(po.tenantID, po.envMode, po.intent.Symbol)
+	}
+}
+
+func (s *Service) cleanupPendingOrder(brokerOrderID string) {
+	if raw, ok := s.pendingOrders.LoadAndDelete(brokerOrderID); ok {
+		po := raw.(*pendingOrder)
+		if s.positionGate != nil && isEntry(po.intent) {
+			s.positionGate.ClearInflight(po.tenantID, po.envMode, po.intent.Symbol)
+		}
+	}
+}
+
+const reconcileInterval = 60 * time.Second
+
+func (s *Service) runReconciliationLoop(ctx context.Context) {
+	ticker := time.NewTicker(reconcileInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.reconcilePendingOrders(ctx)
+		}
+	}
+}
+
+func (s *Service) reconcilePendingOrders(ctx context.Context) {
+	s.pendingOrders.Range(func(key, value any) bool {
+		brokerOrderID := key.(string)
+		po := value.(*pendingOrder)
+
+		// Skip orders that are too new (avoid racing with WS).
+		if time.Since(po.submitStart) < 10*time.Second {
+			return true
+		}
+
+		status, err := s.broker.GetOrderStatus(ctx, brokerOrderID)
+		if err != nil {
+			s.log.Warn().Err(err).Str("broker_order_id", brokerOrderID).Msg("reconcile: status check failed")
+			return true
+		}
+
+		l := s.log.With().Str("broker_order_id", brokerOrderID).Str("status", status).Logger()
+
+		switch status {
+		case "filled":
+			l.Info().Msg("reconcile: detected fill via REST fallback")
+			s.handleStreamFill(ports.OrderUpdate{
+				BrokerOrderID:  brokerOrderID,
+				Event:          "fill",
+				Qty:            po.intent.Quantity,
+				Price:          po.intent.LimitPrice,
+				FilledAvgPrice: po.intent.LimitPrice,
+				FilledQty:      po.intent.Quantity,
+				FilledAt:       time.Now().UTC(),
+			}, l)
+		case "canceled", "cancelled", "expired", "rejected":
+			l.Info().Msg("reconcile: order terminal via REST fallback")
+			s.cleanupPendingOrder(brokerOrderID)
+		}
+
+		// Expire stale pending orders (> 2 minutes old).
+		if time.Since(po.submitStart) > 2*time.Minute {
+			l.Warn().Msg("reconcile: pending order expired")
+			s.cleanupPendingOrder(brokerOrderID)
+		}
+
+		return true
+	})
+}
+
 func (s *Service) emit(ctx context.Context, eventType string, tenantID string, envMode domain.EnvMode, idempotencyKey string, payload any) {
 	ev, err := domain.NewEvent(eventType, tenantID, envMode, idempotencyKey, payload)
 	if err != nil {

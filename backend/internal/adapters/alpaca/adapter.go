@@ -16,12 +16,13 @@ const defaultRateLimit = 200
 
 // Adapter implements both market data and broker interfaces for Alpaca.
 type Adapter struct {
-	rest     *RESTClient
-	ws       *WSClient
-	cryptoWs *CryptoWSClient
-	dataURL  string
-	posC     *positionCache
-	log      zerolog.Logger
+	rest        *RESTClient
+	ws          *WSClient
+	cryptoWs    *CryptoWSClient
+	tradeStream *TradeStreamClient
+	dataURL     string
+	posC        *positionCache
+	log         zerolog.Logger
 }
 
 var _ ports.SnapshotPort = (*Adapter)(nil)
@@ -63,13 +64,16 @@ func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
 		return nil, fmt.Errorf("create crypto WS client: %w", err)
 	}
 
+	tradeStream := NewTradeStreamClient(cfg.BaseURL, cfg.APIKeyID, cfg.APISecretKey, cfg.PaperMode, log)
+
 	return &Adapter{
-		rest:     rest,
-		ws:       ws,
-		cryptoWs: cryptoWs,
-		dataURL:  dataURL,
-		posC:     newPositionCache(2 * time.Second),
-		log:      log,
+		rest:        rest,
+		ws:          ws,
+		cryptoWs:    cryptoWs,
+		tradeStream: tradeStream,
+		dataURL:     dataURL,
+		posC:        newPositionCache(2 * time.Second),
+		log:         log,
 	}, nil
 }
 
@@ -139,6 +143,17 @@ func (a *Adapter) Close() error {
 	}
 	return errors.Join(errs...)
 }
+
+// SubscribeOrderUpdates returns a channel that streams real-time order
+// updates from Alpaca's trading WebSocket. Satisfies ports.OrderStreamPort.
+func (a *Adapter) SubscribeOrderUpdates(ctx context.Context) (<-chan ports.OrderUpdate, error) {
+	ch := make(chan ports.OrderUpdate, 64)
+	go a.tradeStream.Run(ctx, ch)
+	return ch, nil
+}
+
+// TradeStream returns the underlying TradeStreamClient for metrics wiring.
+func (a *Adapter) TradeStream() *TradeStreamClient { return a.tradeStream }
 
 // SubmitOrder places an order through the Alpaca REST API.
 // Crypto orders are validated (long-only) before submission.

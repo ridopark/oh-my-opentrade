@@ -59,7 +59,7 @@ type fillMsg struct {
 	FilledAt   time.Time
 	Strategy   string
 	AssetClass domain.AssetClass
-	ExitRules  []domain.ExitRule
+	ExitRules  []domain.ExitRule // set by bootstrap; nil from live fill events
 }
 
 // outboxMsg is an exit intent ready for publication on the event bus.
@@ -383,6 +383,7 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 	quantity, _ := payload["quantity"].(float64)
 	strategy, _ := payload["strategy"].(string)
 	filledAt, _ := payload["filled_at"].(time.Time)
+	assetClass, _ := payload["asset_class"].(string)
 
 	if symbol == "" || price <= 0 || quantity <= 0 {
 		return nil
@@ -390,12 +391,13 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 
 	select {
 	case s.fills <- fillMsg{
-		Symbol:   domain.Symbol(symbol),
-		Side:     side,
-		Price:    price,
-		Quantity: quantity,
-		FilledAt: filledAt,
-		Strategy: strategy,
+		Symbol:     domain.Symbol(symbol),
+		Side:       side,
+		Price:      price,
+		Quantity:   quantity,
+		FilledAt:   filledAt,
+		Strategy:   strategy,
+		AssetClass: domain.AssetClass(assetClass),
 	}:
 	default:
 		s.log.Warn().Str("symbol", symbol).Msg("position monitor: fill channel full, dropping fill")
@@ -429,26 +431,34 @@ func (s *Service) processFill(fill fillMsg) {
 	key := fmt.Sprintf("%s:%s:%s", s.tenantID, s.envMode, fill.Symbol)
 
 	if fill.Side == "SELL" {
-		// Exit fill — remove position from monitoring.
-		if pos, exists := s.positions[key]; exists {
+		pos, exists := s.positions[key]
+		if !exists {
+			return
+		}
+
+		pos.Quantity -= fill.Quantity
+		if pos.Quantity <= 1e-9 {
 			s.log.Info().
 				Str("symbol", string(fill.Symbol)).
 				Float64("exit_price", fill.Price).
-				Msg("position closed — removing from monitor")
-
-			// Clear exit inflight lock.
+				Msg("position fully closed — removing from monitor")
 			if s.positionGate != nil {
 				s.positionGate.ClearInflightExit(pos.TenantID, pos.EnvMode, pos.Symbol)
 			}
 			delete(s.positions, key)
+		} else {
+			pos.ExitPending = false
+			s.log.Info().
+				Str("symbol", string(fill.Symbol)).
+				Float64("exit_price", fill.Price).
+				Float64("remaining_qty", pos.Quantity).
+				Msg("position partially closed — still monitoring")
 		}
 		return
 	}
 
-	// Entry fill — add or update monitored position.
 	existing, exists := s.positions[key]
 	if exists {
-		// Scale-in: update average entry price, quantity, and water marks.
 		totalQty := existing.Quantity + fill.Quantity
 		existing.EntryPrice = (existing.EntryPrice*existing.Quantity + fill.Price*fill.Quantity) / totalQty
 		existing.Quantity = totalQty
@@ -461,10 +471,9 @@ func (s *Service) processFill(fill fillMsg) {
 		return
 	}
 
-	// New position — look up exit rules from strategy config.
 	exitRules := fill.ExitRules
 	if exitRules == nil {
-		exitRules = []domain.ExitRule{}
+		exitRules = s.resolveExitRules(context.Background(), fill.Strategy, fill.AssetClass)
 	}
 
 	pos, err := domain.NewMonitoredPosition(

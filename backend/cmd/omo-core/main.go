@@ -133,7 +133,10 @@ func main() {
 	signalTracker := perf.NewSignalTracker(eventBus, pnlRepo, log.With().Str("component", "signal_tracker").Logger())
 	dailyLossBreaker := risk.NewDailyLossBreaker(cfg.Trading.MaxDailyLossPct/100.0, cfg.Trading.MaxDailyLossUSD, ledgerWriter, time.Now, log.With().Str("component", "daily_loss_breaker").Logger())
 	positionGate := execution.NewPositionGate(alpacaAdapter, executionLog)
-	execOpts := []execution.Option{execution.WithPositionGate(positionGate)}
+	execOpts := []execution.Option{
+		execution.WithPositionGate(positionGate),
+		execution.WithOrderStream(alpacaAdapter),
+	}
 	if os.Getenv("DTBP_FALLBACK") == "true" {
 		bpGuard := execution.NewBuyingPowerGuard(alpacaAdapter, executionLog)
 		execOpts = append(execOpts, execution.WithBuyingPowerGuard(bpGuard))
@@ -396,6 +399,7 @@ func main() {
 				acctEquity,
 				acctExecLog,
 				execution.WithPositionGate(acctPosGate),
+				execution.WithOrderStream(acctAdapter),
 			)
 
 			// Per-account strategy pipeline reuses shared router + specStore
@@ -598,6 +602,13 @@ func main() {
 	dailyLossBreaker.SetMetrics(met)
 	ledgerWriter.SetMetrics(met)
 	alpacaAdapter.WSClient().SetMetrics(met)
+	alpacaAdapter.TradeStream().SetOnConnect(func(connected bool) {
+		if connected {
+			met.Orders.TradeWSConnected.Set(1)
+		} else {
+			met.Orders.TradeWSConnected.Set(0)
+		}
+	})
 	if useStrategyV2 {
 		strategyRunner.SetMetrics(met)
 	}
