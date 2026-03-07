@@ -428,11 +428,6 @@ func (s *Service) GetORBSession(symbol string) *ORBSession {
 	return s.orbTracker.GetSession(symbol)
 }
 
-// WarmUp seeds the indicator calculator with historical bars without emitting
-// any events or persisting data. It must be called before streaming begins.
-// The final snapshot (with regime detection) is cached so that /state can
-// return data immediately after startup without waiting for a live bar.
-// Returns the number of bars processed.
 func (s *Service) WarmUp(bars []domain.MarketBar) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -441,14 +436,36 @@ func (s *Service) WarmUp(bars []domain.MarketBar) int {
 	for _, bar := range bars {
 		lastSnap = s.calculator.Update(bar)
 		lastBar = bar
+
+		symStr := bar.Symbol.String()
+		for _, tf := range []domain.Timeframe{"5m", "15m"} {
+			aggKey := symStr + ":" + tf.String()
+			agg, exists := s.aggregators[aggKey]
+			if !exists {
+				continue
+			}
+			closed, ok := agg.Push(bar)
+			if !ok {
+				continue
+			}
+			htfSnap := s.calculator.Update(closed)
+			reg, _ := s.regimeDetector.Detect(htfSnap)
+			s.anchorRegimes[aggKey] = reg
+		}
 	}
 	if len(bars) > 0 {
 		symStr := lastBar.Symbol.String()
 
-		// Run regime detection on the final snapshot so anchorRegimes is populated.
 		regime, _ := s.regimeDetector.Detect(lastSnap)
+
 		lastSnap.AnchorRegimes = map[domain.Timeframe]domain.MarketRegime{
 			lastBar.Timeframe: regime,
+		}
+		for _, tf := range []domain.Timeframe{"5m", "15m"} {
+			aggKey := symStr + ":" + tf.String()
+			if reg, ok := s.anchorRegimes[aggKey]; ok {
+				lastSnap.AnchorRegimes[tf] = reg
+			}
 		}
 
 		s.lastSnaps[symStr] = lastSnap
