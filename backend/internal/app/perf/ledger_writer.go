@@ -12,11 +12,10 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// positionEntry tracks the average entry price and quantity for one symbol
-// within a tenant+envMode context. Used to compute realized P&L on sells.
 type positionEntry struct {
 	avgEntry float64
 	quantity float64
+	entryAt  time.Time
 }
 
 // LedgerWriter subscribes to FillReceived events and maintains the daily P&L
@@ -30,14 +29,14 @@ type LedgerWriter struct {
 	metrics  *metrics.Metrics
 
 	mu            sync.Mutex
-	dailyPnL      map[string]*dailyAccum     // key: tenantID:envMode:date
-	positions     map[string]*positionEntry   // key: tenantID:envMode:symbol
+	dailyPnL      map[string]*dailyAccum    // key: tenantID:envMode:date
+	positions     map[string]*positionEntry // key: tenantID:envMode:symbol
 	peakEquity    float64
 	accountEquity float64
 
 	// Per-strategy tracking (dual-write).
-	stratDailyPnL  map[string]*stratDayAccum    // key: tenantID:envMode:strategy:date
-	stratPositions map[string]*positionEntry     // key: tenantID:envMode:strategy:symbol
+	stratDailyPnL  map[string]*stratDayAccum // key: tenantID:envMode:strategy:date
+	stratPositions map[string]*positionEntry // key: tenantID:envMode:strategy:symbol
 }
 
 // dailyAccum accumulates realized P&L and trade count for a single day.
@@ -75,14 +74,14 @@ func NewLedgerWriter(
 	return &LedgerWriter{
 		eventBus:       eventBus,
 		pnlRepo:        pnlRepo,
-		broker:          broker,
-		log:             log,
-		dailyPnL:        make(map[string]*dailyAccum),
-		positions:       make(map[string]*positionEntry),
-		peakEquity:      accountEquity,
-		accountEquity:   accountEquity,
-		stratDailyPnL:   make(map[string]*stratDayAccum),
-		stratPositions:  make(map[string]*positionEntry),
+		broker:         broker,
+		log:            log,
+		dailyPnL:       make(map[string]*dailyAccum),
+		positions:      make(map[string]*positionEntry),
+		peakEquity:     accountEquity,
+		accountEquity:  accountEquity,
+		stratDailyPnL:  make(map[string]*stratDayAccum),
+		stratPositions: make(map[string]*positionEntry),
 	}
 }
 
@@ -129,25 +128,24 @@ func (lw *LedgerWriter) handleFill(ctx context.Context, event domain.Event) erro
 	lw.mu.Lock()
 	defer lw.mu.Unlock()
 
-	// Compute realized P&L using position tracking.
-	// BUY = opening position: update avg entry, no realized P&L.
-	// SELL = closing position: realized P&L = (sell_price - avg_entry) × quantity.
+	now := time.Now().UTC()
+
 	posKey := fmt.Sprintf("%s:%s:%s", event.TenantID, string(event.EnvMode), symbol)
 	var fillPnL float64
+	var realizedPayload *domain.TradeRealizedPayload
 	switch side {
 	case "buy", "BUY":
 		pos := lw.positions[posKey]
 		if pos == nil {
-			pos = &positionEntry{}
+			pos = &positionEntry{entryAt: now}
 			lw.positions[posKey] = pos
 		}
-		// Update weighted average entry price.
 		totalCost := pos.avgEntry*pos.quantity + price*quantity
 		pos.quantity += quantity
 		if pos.quantity > 0 {
 			pos.avgEntry = totalCost / pos.quantity
 		}
-		fillPnL = 0 // opening a position has no realized P&L
+		fillPnL = 0
 	case "sell", "SELL":
 		pos := lw.positions[posKey]
 		if pos != nil && pos.quantity > 0 {
@@ -155,21 +153,42 @@ func (lw *LedgerWriter) handleFill(ctx context.Context, event domain.Event) erro
 			if sellQty > pos.quantity {
 				sellQty = pos.quantity
 			}
-			fillPnL = (price - pos.avgEntry) * sellQty
+			entryPrice := pos.avgEntry
+			entryAt := pos.entryAt
+			fillPnL = (price - entryPrice) * sellQty
+
+			var pnlPct float64
+			if entryPrice > 0 {
+				pnlPct = (price - entryPrice) / entryPrice * 100
+			}
+
+			realizedPayload = &domain.TradeRealizedPayload{
+				Symbol:       domain.Symbol(symbol),
+				Side:         side,
+				Quantity:     sellQty,
+				ExitPrice:    price,
+				EntryPrice:   entryPrice,
+				RealizedPnL:  fillPnL,
+				PnLPct:       pnlPct,
+				Strategy:     strategy,
+				HoldDuration: now.Sub(entryAt),
+			}
+
 			pos.quantity -= sellQty
 			if pos.quantity <= 0 {
 				pos.quantity = 0
 				pos.avgEntry = 0
 			}
 		} else {
-			// No tracked position — cannot compute realized P&L, record zero.
 			lw.log.Warn().Str("symbol", symbol).Msg("ledger writer: sell without tracked position, recording zero P&L")
 			fillPnL = 0
 		}
 	}
 
-	// Get or create daily accumulator.
-	now := time.Now().UTC()
+	if realizedPayload != nil {
+		lw.emitTradeRealized(ctx, event.TenantID, event.EnvMode, symbol, *realizedPayload)
+	}
+
 	dateKey := fmt.Sprintf("%s:%s:%s", event.TenantID, string(event.EnvMode), now.Format("2006-01-02"))
 	accum, exists := lw.dailyPnL[dateKey]
 	if !exists {
@@ -341,4 +360,16 @@ func (lw *LedgerWriter) GetDailyRealizedPnL(tenantID string, envMode domain.EnvM
 		return 0
 	}
 	return accum.realizedPnL
+}
+
+func (lw *LedgerWriter) emitTradeRealized(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol string, payload domain.TradeRealizedPayload) {
+	idempotencyKey := fmt.Sprintf("REALIZED:%s:%s:%s:%d", tenantID, envMode, symbol, time.Now().UnixNano())
+	ev, err := domain.NewEvent(domain.EventTradeRealized, tenantID, envMode, idempotencyKey, payload)
+	if err != nil {
+		lw.log.Warn().Err(err).Str("symbol", symbol).Msg("ledger writer: failed to create TradeRealized event")
+		return
+	}
+	if pubErr := lw.eventBus.Publish(ctx, *ev); pubErr != nil {
+		lw.log.Warn().Err(pubErr).Str("symbol", symbol).Msg("ledger writer: failed to publish TradeRealized event")
+	}
 }

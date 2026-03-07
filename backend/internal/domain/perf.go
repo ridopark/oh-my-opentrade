@@ -6,6 +6,21 @@ import (
 	"time"
 )
 
+// TradeRealizedPayload is the event payload emitted when a position is fully or
+// partially closed, carrying the realized P&L for the exit fill. It is used by
+// the notification service to display P&L in messaging platforms.
+type TradeRealizedPayload struct {
+	Symbol       Symbol
+	Side         string  // "SELL" (or "BUY" for short covers in the future)
+	Quantity     float64 // quantity sold in this fill
+	ExitPrice    float64 // fill price of the exit
+	EntryPrice   float64 // weighted average entry price
+	RealizedPnL  float64 // absolute P&L in dollars: (exit - entry) * qty
+	PnLPct       float64 // percentage P&L: (exit - entry) / entry * 100
+	Strategy     string
+	HoldDuration time.Duration // time between entry and exit
+}
+
 // StrategyDailyPnL tracks per-strategy realized P&L for a single trading day.
 // Stored in the strategy_daily_pnl table, keyed by (TenantID, EnvMode, Strategy, Day).
 type StrategyDailyPnL struct {

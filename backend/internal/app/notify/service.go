@@ -48,6 +48,7 @@ func (s *Service) Start(ctx context.Context) error {
 		{domain.EventOrderRejected, s.fmtOrderRejected},
 		{domain.EventOrderIntentRejected, s.fmtOrderIntentRejected},
 		{domain.EventFillReceived, s.fmtFillReceived},
+		{domain.EventTradeRealized, s.fmtTradeRealized},
 		{domain.EventKillSwitchEngaged, s.fmtKillSwitch},
 		{domain.EventCircuitBreakerTripped, s.fmtCircuitBreaker},
 		{domain.EventDebateCompleted, s.fmtDebateCompleted},
@@ -142,6 +143,52 @@ func (s *Service) fmtFillReceived(ev domain.Event) string {
 		return fmt.Sprintf("💰 Fill: %s %s — %.2f shares @ $%.2f", side, sym, qty, price)
 	}
 	return "💰 Order Filled"
+}
+
+func (s *Service) fmtTradeRealized(ev domain.Event) string {
+	p, ok := ev.Payload.(domain.TradeRealizedPayload)
+	if !ok {
+		return ""
+	}
+
+	pnlEmoji := "📈"
+	if p.RealizedPnL < 0 {
+		pnlEmoji = "📉"
+	}
+
+	sign := "+"
+	if p.RealizedPnL < 0 {
+		sign = "-"
+	}
+	absPnL := p.RealizedPnL
+	if absPnL < 0 {
+		absPnL = -absPnL
+	}
+
+	msg := fmt.Sprintf("%s P&L: %s$%.2f (%+.2f%%)", pnlEmoji, sign, absPnL, p.PnLPct)
+	msg += fmt.Sprintf(" | Entry: $%.2f", p.EntryPrice)
+
+	if p.HoldDuration > 0 {
+		msg += fmt.Sprintf(" | Held: %s", fmtDuration(p.HoldDuration))
+	}
+
+	return msg
+}
+
+func fmtDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	totalMin := int(d.Minutes())
+	if totalMin < 60 {
+		return fmt.Sprintf("%dm", totalMin)
+	}
+	h := totalMin / 60
+	m := totalMin % 60
+	if m == 0 {
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dh %dm", h, m)
 }
 
 func (s *Service) fmtKillSwitch(ev domain.Event) string {

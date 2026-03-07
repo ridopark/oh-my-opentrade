@@ -47,6 +47,7 @@ const (
 	EventStrategyStateSnapshot   EventType = "StrategyStateSnapshot"
 	EventExitTriggered           EventType = "ExitTriggered"
 	EventTradeReceived           EventType = "TradeReceived"
+	EventTradeRealized           EventType = "TradeRealized"
 	EventFormingBar              EventType = "FormingBar"
 )
 
