@@ -86,15 +86,6 @@ func (s *Service) fmtOrderSubmitted(ev domain.Event) string {
 		if p.Rationale != "" {
 			msg += fmt.Sprintf("\n💡 Rationale: %s", p.Rationale)
 		}
-		if bull, ok := p.Meta["bull"]; ok && bull != "" {
-			msg += fmt.Sprintf("\n🟢 Bull: %s", bull)
-		}
-		if bear, ok := p.Meta["bear"]; ok && bear != "" {
-			msg += fmt.Sprintf("\n🔴 Bear: %s", bear)
-		}
-		if judge, ok := p.Meta["judge"]; ok && judge != "" {
-			msg += fmt.Sprintf("\n⚖️ Judge: %s", judge)
-		}
 		return msg
 	}
 	return "📤 Order Submitted"

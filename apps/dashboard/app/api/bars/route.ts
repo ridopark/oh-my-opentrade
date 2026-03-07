@@ -25,7 +25,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   try {
     const res = await fetch(url, {
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(30000),
       headers: { Accept: "application/json" },
     });
 

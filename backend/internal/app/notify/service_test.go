@@ -290,9 +290,14 @@ func TestService_OrderSubmittedWithMeta(t *testing.T) {
 
 	msgs := notifier.getMessages()
 	require.Len(t, msgs, 1)
-	assert.Contains(t, msgs[0].Message, "Bull: RSI reset + trend continuation")
-	assert.Contains(t, msgs[0].Message, "Bear: Earnings gap risk")
-	assert.Contains(t, msgs[0].Message, "Judge: Edge positive")
+	// Bull/Bear/Judge should NOT appear in OrderSubmitted (shown only in SignalEnriched)
+	assert.NotContains(t, msgs[0].Message, "Bull:")
+	assert.NotContains(t, msgs[0].Message, "Bear:")
+	assert.NotContains(t, msgs[0].Message, "Judge:")
+	// Core order details should still be present
+	assert.Contains(t, msgs[0].Message, "Order Submitted")
+	assert.Contains(t, msgs[0].Message, "AAPL")
+	assert.Contains(t, msgs[0].Message, "Strategy: test")
 }
 
 func createTestOrderIntent(t *testing.T) domain.OrderIntent {

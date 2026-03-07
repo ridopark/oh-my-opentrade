@@ -108,3 +108,5 @@ LOG_LEVEL=debug LOG_PRETTY=true go run ./cmd/omo-core/
 ### Available log levels
 
 `trace` | `debug` | `info` (default) | `warn` | `error` | `fatal` | `panic`
+
+---
