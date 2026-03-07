@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
 
@@ -37,18 +38,21 @@ type position struct {
 	avgCost  float64
 }
 
-// Broker is a simulated broker for backtesting that implements ports.BrokerPort.
-// It fills orders instantly at the last known bar close price with configurable slippage.
+// Broker is a simulated broker for backtesting that implements ports.BrokerPort
+// and ports.OrderStreamPort. It fills orders instantly at the last known bar
+// close price with configurable slippage.
 type Broker struct {
 	slippageBPS int64
 	log         zerolog.Logger
 
 	mu        sync.RWMutex
-	prices    map[domain.Symbol]float64   // latest close price per symbol
-	barTimes  map[domain.Symbol]time.Time // latest bar time per symbol
-	orders    map[string]*simOrder        // orderID → order
-	positions map[string]*position        // symbol → aggregated position
+	prices    map[domain.Symbol]float64
+	barTimes  map[domain.Symbol]time.Time
+	orders    map[string]*simOrder
+	positions map[string]*position
 	orderSeq  atomic.Int64
+
+	fillCh chan ports.OrderUpdate
 }
 
 // New creates a new SimBroker with the given configuration.
@@ -63,6 +67,7 @@ func New(cfg Config, log zerolog.Logger) *Broker {
 		barTimes:    make(map[domain.Symbol]time.Time),
 		orders:      make(map[string]*simOrder),
 		positions:   make(map[string]*position),
+		fillCh:      make(chan ports.OrderUpdate, 256),
 	}
 }
 
@@ -177,6 +182,20 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 		Int64("slippage_bps", b.slippageBPS).
 		Msg("order filled")
 
+	// Non-blocking send to fill channel for OrderStreamPort consumers.
+	select {
+	case b.fillCh <- ports.OrderUpdate{
+		BrokerOrderID:  orderID,
+		Event:          "fill",
+		Qty:            intent.Quantity,
+		Price:          fillPrice,
+		FilledQty:      intent.Quantity,
+		FilledAvgPrice: fillPrice,
+		FilledAt:       barTime,
+	}:
+	default:
+	}
+
 	return orderID, nil
 }
 
@@ -249,4 +268,8 @@ func (b *Broker) GetPrice(symbol domain.Symbol) (float64, bool) {
 	defer b.mu.RUnlock()
 	p, ok := b.prices[symbol]
 	return p, ok
+}
+
+func (b *Broker) SubscribeOrderUpdates(_ context.Context) (<-chan ports.OrderUpdate, error) {
+	return b.fillCh, nil
 }

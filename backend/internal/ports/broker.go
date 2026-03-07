@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 )
@@ -12,4 +13,29 @@ type BrokerPort interface {
 	CancelOrder(ctx context.Context, orderID string) error
 	GetOrderStatus(ctx context.Context, orderID string) (string, error)
 	GetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error)
+}
+
+// OrderUpdate represents a real-time order status change received from the
+// broker's streaming API. It carries enough information for the execution
+// service to correlate, persist, and emit fill events without additional
+// REST calls.
+type OrderUpdate struct {
+	BrokerOrderID  string
+	Event          string  // "fill", "partial_fill", "canceled", "cancelled", "expired", "rejected", "new", "accepted"
+	Qty            float64 // incremental: quantity filled in THIS specific fill
+	Price          float64 // incremental: execution price for THIS specific fill
+	FilledQty      float64 // cumulative: total quantity filled so far across all fills
+	FilledAvgPrice float64 // cumulative: volume-weighted average price across all fills
+	FilledAt       time.Time
+}
+
+// OrderStreamPort defines a push-based interface for receiving real-time
+// order updates from the broker. Implementations must handle connection
+// lifecycle (auth, reconnect) internally and deliver events on the returned
+// channel until ctx is cancelled.
+type OrderStreamPort interface {
+	// SubscribeOrderUpdates returns a channel that receives order status
+	// changes in real time. The channel is closed when ctx is cancelled
+	// or the stream terminates. Callers should range over the channel.
+	SubscribeOrderUpdates(ctx context.Context) (<-chan OrderUpdate, error)
 }
