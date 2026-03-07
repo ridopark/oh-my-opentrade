@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useRef, useCallback, useState, useMemo } from "react";
 import type { DomainEvent, EventType, DebateEvent } from "@/lib/types";
 
 interface UseEventStreamOptions {
@@ -33,6 +33,10 @@ export function useEventStream({
     setState((prev) => ({ ...prev, events: [] }));
   }, []);
 
+  // Stabilize eventTypes reference to prevent useEffect re-triggering on every render
+  const eventTypesKey = eventTypes ? JSON.stringify(eventTypes) : "all";
+  const stableEventTypes = useMemo(() => eventTypes, [eventTypesKey]);
+
   useEffect(() => {
     const eventSource = new EventSource(url);
     eventSourceRef.current = eventSource;
@@ -50,7 +54,7 @@ export function useEventStream({
     };
 
     // Listen to all known event types
-    const allTypes: EventType[] = eventTypes ?? [
+    const allTypes: EventType[] = stableEventTypes ?? [
       "MarketBarSanitized",
       "DebateCompleted",
       "OrderIntentCreated",
@@ -84,7 +88,7 @@ export function useEventStream({
       eventSource.close();
       eventSourceRef.current = null;
     };
-  }, [url, maxEvents, eventTypes]);
+  }, [url, maxEvents, stableEventTypes]);
 
   return { ...state, clearEvents };
 }
