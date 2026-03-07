@@ -11,12 +11,14 @@ import {
   Layers,
   TrendingUp,
   ShieldCheck,
+  HeartPulse,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/services", label: "Services", icon: HeartPulse },
   { href: "/debates", label: "Debates", icon: Swords },
   { href: "/execution", label: "Execution", icon: ListOrdered },
   { href: "/performance", label: "Performance", icon: TrendingUp },
