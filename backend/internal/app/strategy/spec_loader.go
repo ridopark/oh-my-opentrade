@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/oh-my-opentrade/backend/internal/domain"
 	domstrategy "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	portstrategy "github.com/oh-my-opentrade/backend/internal/ports/strategy"
-	"github.com/oh-my-opentrade/backend/internal/domain"
 )
 
 type SpecLoader struct{}
@@ -176,8 +176,9 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 		Params        map[string]any        `toml:"params"`
 		Parameters    map[string]any        `toml:"parameters"` // allow old key
 		RegimeFilter  map[string]any        `toml:"regime_filter"`
+		DynamicRisk   map[string]any        `toml:"dynamic_risk"`
 		Hooks         map[string]rawHookRef `toml:"hooks"`
-		ExitRules []rawExitRule            `toml:"exit_rules"`
+		ExitRules     []rawExitRule         `toml:"exit_rules"`
 	}
 
 	if _, err := toml.Decode(content, &raw); err != nil {
@@ -244,6 +245,9 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 	mergeInto(params, raw.Params)
 	for k, v := range raw.RegimeFilter {
 		params["regime_filter."+k] = v
+	}
+	for k, v := range raw.DynamicRisk {
+		params["dynamic_risk."+k] = v
 	}
 
 	hooks := make(map[string]portstrategy.HookRef)

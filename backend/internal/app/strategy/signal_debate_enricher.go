@@ -17,11 +17,11 @@ import (
 type MarketDataProvider func(symbol string) (domain.IndicatorSnapshot, bool)
 
 type SignalDebateEnricher struct {
-	eventBus       ports.EventBusPort
-	aiAdvisor      ports.AIAdvisorPort
-	repo           ports.RepositoryPort
-	debateTimeout  time.Duration
-	marketData     MarketDataProvider
+	eventBus      ports.EventBusPort
+	aiAdvisor     ports.AIAdvisorPort
+	repo          ports.RepositoryPort
+	debateTimeout time.Duration
+	marketData    MarketDataProvider
 
 	makeDebateOpts func(sig strat.Signal) []ports.DebateOption
 	logger         *slog.Logger
@@ -162,6 +162,7 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 			BullArgument:   decision.BullArgument,
 			BearArgument:   decision.BearArgument,
 			JudgeReasoning: decision.JudgeReasoning,
+			RiskModifier:   decision.RiskModifier,
 		}
 		e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
 		e.saveThoughtLog(ctx, event, enrichment)

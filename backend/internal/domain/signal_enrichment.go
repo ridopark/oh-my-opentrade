@@ -27,6 +27,25 @@ type SignalRef struct {
 	Tags               map[string]string `json:"tags"`       // original signal metadata
 }
 
+// RiskModifier is a structured enum output by the AI judge to influence risk sizing.
+// Unlike free-text JudgeReasoning, this is a constrained enum safe for execution logic.
+type RiskModifier string
+
+const (
+	RiskModifierTight  RiskModifier = "TIGHT"
+	RiskModifierNormal RiskModifier = "NORMAL"
+	RiskModifierWide   RiskModifier = "WIDE"
+)
+
+func NewRiskModifier(s string) RiskModifier {
+	switch RiskModifier(s) {
+	case RiskModifierTight, RiskModifierNormal, RiskModifierWide:
+		return RiskModifier(s)
+	default:
+		return RiskModifierNormal
+	}
+}
+
 // SignalEnrichment is the event payload for EventSignalEnriched.
 // It always contains the original signal reference and enrichment status.
 // When AI enrichment succeeds (Status == EnrichmentOK), the advisory fields
@@ -41,4 +60,5 @@ type SignalEnrichment struct {
 	BullArgument   string           `json:"bullArgument"`   // empty on fallback
 	BearArgument   string           `json:"bearArgument"`   // empty on fallback
 	JudgeReasoning string           `json:"judgeReasoning"` // empty on fallback
+	RiskModifier   RiskModifier     `json:"riskModifier"`   // TIGHT, NORMAL, WIDE — empty defaults to NORMAL
 }

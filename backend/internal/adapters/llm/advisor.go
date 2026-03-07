@@ -45,7 +45,6 @@ type chatCompletionResponse struct {
 	Choices []chatChoice `json:"choices"`
 }
 
-// debateResult is the structured JSON the LLM is instructed to return inside its message.
 type debateResult struct {
 	Direction      string  `json:"direction"`
 	Confidence     float64 `json:"confidence"`
@@ -53,13 +52,12 @@ type debateResult struct {
 	BullArgument   string  `json:"bull_argument"`
 	BearArgument   string  `json:"bear_argument"`
 	JudgeReasoning string  `json:"judge_reasoning"`
+	RiskModifier   string  `json:"risk_modifier"`
 	ContractSymbol string  `json:"contract_symbol"`
 	MaxLossUSD     float64 `json:"max_loss_usd"`
 	ExitRules      string  `json:"exit_rules"`
 }
 
-// responseTemplate is the JSON schema shown to the LLM in the prompt.
-// Marshaled via encoding/json to guarantee valid JSON in every prompt.
 type responseTemplate struct {
 	Direction      string  `json:"direction"`
 	Confidence     float64 `json:"confidence"`
@@ -67,6 +65,7 @@ type responseTemplate struct {
 	BullArgument   string  `json:"bull_argument"`
 	BearArgument   string  `json:"bear_argument"`
 	JudgeReasoning string  `json:"judge_reasoning"`
+	RiskModifier   string  `json:"risk_modifier"`
 	ContractSymbol string  `json:"contract_symbol,omitempty"`
 	MaxLossUSD     float64 `json:"max_loss_usd,omitempty"`
 	ExitRules      string  `json:"exit_rules,omitempty"`
@@ -80,6 +79,7 @@ func buildResponseTemplate(withOptions bool) string {
 		BullArgument:   "key bullish thesis with supporting data",
 		BearArgument:   "key bearish thesis with supporting data",
 		JudgeReasoning: "risk-reward verdict weighing both sides and worst-case scenario",
+		RiskModifier:   "TIGHT | NORMAL | WIDE",
 	}
 	if withOptions {
 		tmpl.ContractSymbol = "AAPL240119C00190000"
@@ -267,6 +267,7 @@ func (a *Advisor) RequestDebate(
 	systemPrompt := `You are a Professional Risk Manager overseeing an adversarial trading debate.
 Evaluate each setup through a structured Bull vs Bear debate, then render a Judge verdict.
 The Judge must weigh risk-reward asymmetry, position sizing implications, and worst-case scenarios before ruling.
+Set risk_modifier to control position sizing: TIGHT (reduce size and tighten stop for uncertain setups), NORMAL (standard sizing), or WIDE (wider stop for high-conviction trending setups).
 Respond ONLY with valid JSON — no markdown fences, no extra text.`
 
 	userPrompt := buildPrompt(symbol, regime, indicators, dr.optionChain, dr.signalContext)
@@ -353,6 +354,7 @@ Respond ONLY with valid JSON — no markdown fences, no extra text.`
 		BullArgument:   result.BullArgument,
 		BearArgument:   result.BearArgument,
 		JudgeReasoning: result.JudgeReasoning,
+		RiskModifier:   domain.NewRiskModifier(result.RiskModifier),
 		ContractSymbol: result.ContractSymbol,
 		MaxLossUSD:     result.MaxLossUSD,
 		ExitRules:      result.ExitRules,

@@ -392,7 +392,6 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 		}
 	}
 
-	// Emit fill event.
 	s.emit(ctx, domain.EventFillReceived, tenantID, envMode, brokerOrderID, map[string]any{
 		"broker_order_id": brokerOrderID,
 		"intent_id":       intent.ID.String(),
@@ -402,6 +401,7 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 		"price":           fillPrice,
 		"filled_at":       now,
 		"strategy":        intent.Strategy,
+		"risk_modifier":   intent.Meta["risk_modifier"],
 	})
 
 	l.Info().
