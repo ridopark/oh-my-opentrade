@@ -37,9 +37,6 @@ const SERVICE_ICONS: Record<string, React.ElementType> = {
 export default function ServicesPage() {
   const { serviceHistories, statusChanges, overall, isLoading } = useServiceHistory();
 
-  // Sort services to keep consistent order or by health? 
-  // Requirement says "Service detail cards (one per service)"
-  // Let's sort by name or specific order: timescaledb, ingestion, strategy, execution, monitor, ws_feed
   const ORDER = ["timescaledb", "ingestion", "strategy", "execution", "monitor", "ws_feed"];
   const sortedServices = Array.from(serviceHistories.values()).sort((a, b) => {
     return ORDER.indexOf(a.name) - ORDER.indexOf(b.name);
@@ -179,11 +176,6 @@ export default function ServicesPage() {
                       <span>{service.lastChecked ? relativeTime(service.lastChecked.toISOString()) : "—"}</span>
                     </div>
                     <div className="flex items-center gap-0.5 h-3">
-                      {/* Render exactly 60 dots max, or pad if fewer? 
-                          Let's just render what we have. Right-aligned?
-                          Flex gap-0.5 might be too wide for 60 dots.
-                          Let's try to fit them. 
-                      */}
                       {service.entries.slice().reverse().map((entry, i) => (
                         <div
                           key={i}
@@ -193,7 +185,6 @@ export default function ServicesPage() {
                           title={entry.timestamp.toLocaleTimeString()}
                         />
                       ))}
-                      {/* Fill empty spots? No, just show recorded history */}
                     </div>
                   </div>
                 </CardContent>

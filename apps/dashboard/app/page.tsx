@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 
 import { useServiceHealth } from "@/hooks/queries";
 import { useEventStream } from "@/lib/event-stream";
@@ -261,7 +262,8 @@ export default function DashboardPage() {
         </Card>
 
         {/* Services / health */}
-        <Card>
+        <Link href="/services">
+        <Card className="hover:border-emerald-500/50 transition-colors cursor-pointer">
           <CardHeader className="pb-2">
             <CardDescription className="flex items-center gap-2">
               <Container className="h-4 w-4" />
@@ -291,6 +293,7 @@ export default function DashboardPage() {
             </p>
           </CardContent>
         </Card>
+        </Link>
 
         {/* Last Event */}
         <Card>
