@@ -505,7 +505,7 @@ export default function StrategyDetailPage({
                     </TableHeader>
                     <TableBody>
                       {signals.map((sig) => (
-                        <TableRow key={sig.SignalID}>
+                        <TableRow key={`${sig.SignalID}-${sig.TS}`}>
                           <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                             {new Date(sig.TS).toLocaleString()}
                           </TableCell>

@@ -105,7 +105,8 @@ function mergeLiveBar(bars: OHLCBar[], liveBar: OHLCBar, tf: string): OHLCBar[] 
  */
 export function useChartData(
   timeframe: string,
-  sseUrl = "/api/events"
+  sseUrl = "/api/events",
+  symbols: string[] = SYMBOLS,
 ): {
   barsBySymbol: BarsBySymbol;
   dataTimeframe: string;
@@ -123,7 +124,10 @@ export function useChartData(
   const timeframeRef = useRef(timeframe);
   timeframeRef.current = timeframe;
 
-  // In-flight guard: Set of "tf|fromISO|toISO" fetch keys
+  const symbolsKey = symbols.join(',');
+  const symbolsRef = useRef(symbols);
+  symbolsRef.current = symbols;
+
   const inFlight = useRef<Set<string>>(new Set());
 
   // Pagination cursor for loadMore — tracks how far back we've fetched
@@ -147,7 +151,7 @@ export function useChartData(
 
       try {
         const params = new URLSearchParams({
-          symbols: SYMBOLS.join(','),
+          symbols: symbolsRef.current.join(','),
           timeframe: timeframeRef.current,
           from: from.toISOString(),
           to: to.toISOString(),
@@ -158,7 +162,7 @@ export function useChartData(
         console.log('[useChartData] fetch response', { status: res.status, ok: res.ok });
         if (!res.ok) {
           console.warn('[useChartData] fetch failed with status', res.status);
-          return 0;
+          return -1; // Distinguish error from empty response
         }
         const rows: MarketBarEvent[] = await res.json();
         if (!Array.isArray(rows)) {
@@ -184,7 +188,7 @@ export function useChartData(
         return rows.length;
       } catch (err) {
         console.error('[useChartData] fetchBars error', err);
-        return 0;
+        return -1;
       } finally {
         inFlight.current.delete(key);
         if (showLoading) setLoading(false);
@@ -212,7 +216,7 @@ export function useChartData(
     const from = new Date(to.getTime() - Math.max(windowMs, minLookbackMs));
     console.log('[useChartData] initial load for timeframe', timeframe, { from: from.toISOString(), to: to.toISOString(), windowBars: FETCH_WINDOW });
     fetchBars(from, to, true);
-  }, [timeframe, fetchBars]);
+  }, [timeframe, fetchBars, symbolsKey]);
 
   // loadMore: fetch an older window ending before the given timestamp.
   // Maintains an internal cursor so that consecutive calls with the same
@@ -245,16 +249,16 @@ export function useChartData(
       // Show loadingMore spinner for the entire retry chain
       setLoadingMore(true);
       const count = await fetchBars(from, to, false);
-      if (count === 0) {
+      if (count < 0) {
+        console.warn('[useChartData] loadMore fetch error — stopping retry chain');
+        setLoadingMore(false);
+      } else if (count === 0) {
         emptyFetchCountRef.current += 1;
         const nextScale = Math.pow(2, Math.min(emptyFetchCountRef.current, MAX_WINDOW_SCALE));
         console.log('[useChartData] loadMore got 0 bars — emptyFetchCount now',
           emptyFetchCountRef.current, '| next window scale:', nextScale, 'x');
-        // Auto-retry with wider window if under the limit, so the user
-        // doesn't have to keep panning through overnight/weekend gaps.
         if (emptyFetchCountRef.current < MAX_AUTO_RETRIES) {
           console.log('[useChartData] auto-retrying with wider window…');
-          // Use setTimeout to avoid deep recursion and let React batch
           setTimeout(() => loadMore(beforeTs), 50);
         } else {
           console.log('[useChartData] exhausted', MAX_AUTO_RETRIES, 'auto-retries — giving up');
@@ -279,7 +283,6 @@ export function useChartData(
         const bar = envelope.payload;
         if (!bar?.symbol || !bar?.time) return;
 
-        console.log('[useChartData] SSE bar received', { symbol: bar.symbol, time: bar.time, tf: timeframeRef.current });
         const ohlc = toOHLC(bar);
         const tf = timeframeRef.current;
         const current = barsRef.current;
@@ -290,21 +293,35 @@ export function useChartData(
         };
         barsRef.current = next;
         setBarsBySymbol(next);
-      } catch (err) {
-        console.error('[useChartData] SSE parse error', err);
+      } catch {
+        // SSE parse error — ignore malformed events
       }
     });
 
-    es.onerror = (err) => {
-      console.warn('[useChartData] SSE error / reconnecting', err);
-    };
-
     es.onerror = () => {
-      // auto-retries; state is preserved
+      // EventSource auto-reconnects; state is preserved
     };
 
     return () => es.close();
   }, [sseUrl]);
+
+  // Polling fallback — fetch recent bars every 30s to catch new data
+  // when SSE events aren't flowing (e.g. after-hours, reconnection gaps)
+  useEffect(() => {
+    const POLL_INTERVAL_MS = 30_000;
+
+    const poll = () => {
+      const syms = symbolsRef.current;
+      if (syms.length === 0) return;
+
+      const to = new Date();
+      const from = new Date(to.getTime() - 5 * 60 * 1000);
+      fetchBars(from, to, false);
+    };
+
+    const id = setInterval(poll, POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [fetchBars]);
 
   return { barsBySymbol, dataTimeframe, loading, loadingMore, loadMore };
 }

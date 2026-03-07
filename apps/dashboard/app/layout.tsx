@@ -28,11 +28,11 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased overflow-hidden`}
       >
         <QueryProvider>
           <Sidebar />
-          <main className="ml-56 min-h-screen bg-background p-6">
+          <main className="ml-0 md:ml-56 h-screen bg-background p-3 md:p-6 overflow-y-auto">
             {children}
           </main>
         </QueryProvider>
