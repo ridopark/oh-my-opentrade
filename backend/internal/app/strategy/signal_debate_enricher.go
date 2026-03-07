@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -12,9 +13,9 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
-// MarketDataProvider returns the latest indicator snapshot for a symbol.
-// Used to feed real-time market data into the AI debate prompt.
 type MarketDataProvider func(symbol string) (domain.IndicatorSnapshot, bool)
+
+type PositionLookup func(symbol string) (domain.MonitoredPosition, bool)
 
 type SignalDebateEnricher struct {
 	eventBus      ports.EventBusPort
@@ -22,6 +23,7 @@ type SignalDebateEnricher struct {
 	repo          ports.RepositoryPort
 	debateTimeout time.Duration
 	marketData    MarketDataProvider
+	posLookup     PositionLookup
 
 	makeDebateOpts func(sig strat.Signal) []ports.DebateOption
 	logger         *slog.Logger
@@ -52,6 +54,12 @@ func WithRepository(repo ports.RepositoryPort) EnricherOption {
 func WithMarketDataProvider(fn MarketDataProvider) EnricherOption {
 	return func(e *SignalDebateEnricher) {
 		e.marketData = fn
+	}
+}
+
+func WithPositionLookup(fn PositionLookup) EnricherOption {
+	return func(e *SignalDebateEnricher) {
+		e.posLookup = fn
 	}
 }
 
@@ -110,6 +118,17 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 			Confidence: sig.Strength,
 			Direction:  direction,
 			Rationale:  fmt.Sprintf("exit signal: %s strength=%.2f", sig.Side, sig.Strength),
+		}
+		if e.posLookup != nil {
+			if pos, ok := e.posLookup(sig.Symbol); ok {
+				refPrice, _ := strconv.ParseFloat(sig.Tags["ref_price"], 64)
+				if refPrice > 0 && pos.EntryPrice > 0 {
+					enrichment.EntryPrice = pos.EntryPrice
+					enrichment.UnrealizedPnLPct = pos.UnrealizedPnLPct(refPrice)
+					enrichment.UnrealizedPnLUSD = (refPrice - pos.EntryPrice) * pos.Quantity
+					enrichment.HasPnL = true
+				}
+			}
 		}
 		e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
 		e.saveThoughtLog(ctx, event, enrichment)

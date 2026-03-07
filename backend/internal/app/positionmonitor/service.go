@@ -702,3 +702,15 @@ func (s *Service) PositionCount() int {
 	defer s.mu.RUnlock()
 	return len(s.positions)
 }
+
+// LookupPosition returns a copy of the MonitoredPosition for the given symbol, if one exists.
+func (s *Service) LookupPosition(symbol string) (domain.MonitoredPosition, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	key := fmt.Sprintf("%s:%s:%s", s.tenantID, s.envMode, symbol)
+	pos, ok := s.positions[key]
+	if !ok {
+		return domain.MonitoredPosition{}, false
+	}
+	return *pos, true
+}

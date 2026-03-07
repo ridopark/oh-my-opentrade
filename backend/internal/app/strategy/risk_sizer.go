@@ -161,7 +161,7 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		stopLoss = refPrice * stopMult
 	} else {
 		limitPrice = refPrice
-		stopLoss = refPrice
+		stopLoss = 0
 	}
 
 	rs.mu.RLock()

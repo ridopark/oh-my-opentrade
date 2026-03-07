@@ -266,6 +266,82 @@ func TestService_SignalEnrichedNotification(t *testing.T) {
 	assert.Contains(t, msgs[0].Message, "Judge: Bull case stronger")
 }
 
+func TestService_SignalEnrichedExitWithPnL(t *testing.T) {
+	bus := memory.NewBus()
+	notifier := &mockNotifier{}
+	svc := notify.NewService(bus, notifier, zerolog.Nop())
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: "avwap_v1:1.0.0:BTC/USD",
+			Symbol:             "BTC/USD",
+			SignalType:         "exit",
+			Side:               "sell",
+			Strength:           0.80,
+		},
+		Status:           domain.EnrichmentSkipped,
+		Confidence:       0.80,
+		Direction:        domain.DirectionCloseLong,
+		Rationale:        "exit signal: sell strength=0.80",
+		HasPnL:           true,
+		EntryPrice:       90000.0,
+		UnrealizedPnLPct: 0.05,
+		UnrealizedPnLUSD: 500.0,
+	}
+
+	ev, err := domain.NewEvent(domain.EventSignalEnriched, "tenant-1", domain.EnvModePaper, "exit-1", enrichment)
+	require.NoError(t, err)
+
+	err = bus.Publish(context.Background(), *ev)
+	require.NoError(t, err)
+
+	msgs := notifier.getMessages()
+	require.Len(t, msgs, 1)
+	assert.Contains(t, msgs[0].Message, "Signal Enriched")
+	assert.Contains(t, msgs[0].Message, "exit")
+	assert.Contains(t, msgs[0].Message, "BTC/USD")
+	assert.Contains(t, msgs[0].Message, "Est. P&L: +$500.00 (+5.00%)")
+	assert.Contains(t, msgs[0].Message, "Entry: $90000.00")
+}
+
+func TestService_SignalEnrichedExitNegativePnL(t *testing.T) {
+	bus := memory.NewBus()
+	notifier := &mockNotifier{}
+	svc := notify.NewService(bus, notifier, zerolog.Nop())
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			Symbol:     "BTC/USD",
+			SignalType: "exit",
+			Side:       "sell",
+			Strength:   0.80,
+		},
+		Status:           domain.EnrichmentSkipped,
+		Confidence:       0.80,
+		Direction:        domain.DirectionCloseLong,
+		HasPnL:           true,
+		EntryPrice:       95000.0,
+		UnrealizedPnLPct: -0.03,
+	}
+
+	ev, err := domain.NewEvent(domain.EventSignalEnriched, "tenant-1", domain.EnvModePaper, "exit-2", enrichment)
+	require.NoError(t, err)
+
+	err = bus.Publish(context.Background(), *ev)
+	require.NoError(t, err)
+
+	msgs := notifier.getMessages()
+	require.Len(t, msgs, 1)
+	assert.Contains(t, msgs[0].Message, "📉")
+	assert.Contains(t, msgs[0].Message, "Est. P&L:")
+}
+
 func TestService_OrderSubmittedWithMeta(t *testing.T) {
 	bus := memory.NewBus()
 	notifier := &mockNotifier{}

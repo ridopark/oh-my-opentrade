@@ -98,6 +98,19 @@ func (s *Service) fmtSignalEnriched(ev domain.Event) string {
 		msg := fmt.Sprintf("%s Signal Enriched: %s %s %s [%s] (Confidence: %.0f%%)",
 			emoji, e.Signal.SignalType, e.Signal.Side, e.Signal.Symbol,
 			string(e.Status), e.Confidence*100)
+		if e.HasPnL {
+			pnlEmoji := "📈"
+			if e.UnrealizedPnLPct < 0 {
+				pnlEmoji = "📉"
+			}
+			sign := "+"
+			absUSD := e.UnrealizedPnLUSD
+			if absUSD < 0 {
+				sign = "-"
+				absUSD = -absUSD
+			}
+			msg += fmt.Sprintf("\n%s Est. P&L: %s$%.2f (%+.2f%%) | Entry: $%.2f", pnlEmoji, sign, absUSD, e.UnrealizedPnLPct*100, e.EntryPrice)
+		}
 		if e.BullArgument != "" {
 			msg += fmt.Sprintf("\n🟢 Bull: %s", e.BullArgument)
 		}
