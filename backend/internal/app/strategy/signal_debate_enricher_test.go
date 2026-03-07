@@ -216,6 +216,57 @@ func TestSignalDebateEnricher_ExitSignal_Skipped(t *testing.T) {
 	assert.Equal(t, 0, advisor.calls)
 }
 
+func TestSignalDebateEnricher_ExitSignal_WithPnL(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{Confidence: 0.99}}
+
+	posLookup := func(symbol string) (domain.MonitoredPosition, bool) {
+		if symbol == "AAPL" {
+			pos, _ := domain.NewMonitoredPosition("AAPL", 95.0, time.Now(), "avwap_v1", domain.AssetClassEquity, nil, "t1", domain.EnvModePaper, 10)
+			return pos, true
+		}
+		return domain.MonitoredPosition{}, false
+	}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil,
+		strategy.WithPositionLookup(posLookup),
+	)
+	require.NoError(t, enricher.Start(context.Background()))
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalExit, strat.SideSell, 0.80, map[string]string{"ref_price": "100"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+	assert.Equal(t, domain.EnrichmentSkipped, got.Status)
+	assert.True(t, got.HasPnL)
+	assert.InDelta(t, 95.0, got.EntryPrice, 0.001)
+	assert.InDelta(t, 0.05263, got.UnrealizedPnLPct, 0.001) // (100-95)/95 ≈ 5.26%
+	assert.Equal(t, 0, advisor.calls)
+}
+
+func TestSignalDebateEnricher_ExitSignal_NoPnLWithoutLookup(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{Confidence: 0.99}}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil)
+	require.NoError(t, enricher.Start(context.Background()))
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalExit, strat.SideSell, 0.66, map[string]string{"ref_price": "100"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+	assert.Equal(t, domain.EnrichmentSkipped, got.Status)
+	assert.False(t, got.HasPnL)
+	assert.InDelta(t, 0.0, got.EntryPrice, 0.001)
+	assert.InDelta(t, 0.0, got.UnrealizedPnLPct, 0.001)
+}
+
 func TestSignalDebateEnricher_FlatSignal_Ignored(t *testing.T) {
 	bus := memory.NewBus()
 	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{Confidence: 0.99}}

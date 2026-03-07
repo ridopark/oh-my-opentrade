@@ -61,4 +61,10 @@ type SignalEnrichment struct {
 	BearArgument   string           `json:"bearArgument"`   // empty on fallback
 	JudgeReasoning string           `json:"judgeReasoning"` // empty on fallback
 	RiskModifier   RiskModifier     `json:"riskModifier"`   // TIGHT, NORMAL, WIDE — empty defaults to NORMAL
+
+	// Exit-signal P&L context (populated only for exit signals when position data is available).
+	EntryPrice       float64 `json:"entryPrice,omitempty"`       // 0 when unavailable
+	UnrealizedPnLPct float64 `json:"unrealizedPnlPct,omitempty"` // decimal (0.05 = 5%), 0 when unavailable
+	UnrealizedPnLUSD float64 `json:"unrealizedPnlUsd,omitempty"` // dollar amount, 0 when unavailable
+	HasPnL           bool    `json:"hasPnl,omitempty"`           // true when P&L fields are populated
 }

@@ -308,6 +308,7 @@ func main() {
 		signalEnricher = strategy.NewSignalDebateEnricher(eventBus, aiAdvisor, stratLog,
 			strategy.WithRepository(repo),
 			strategy.WithMarketDataProvider(monitorSvc.GetLastSnapshot),
+			strategy.WithPositionLookup(posMonitor.LookupPosition),
 			strategy.WithDebateTimeout(30*time.Second),
 		)
 		riskSizer = strategy.NewRiskSizer(eventBus, specStore, accountEquity, stratLog)
