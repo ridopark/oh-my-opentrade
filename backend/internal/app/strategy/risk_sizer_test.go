@@ -150,6 +150,8 @@ func TestRiskSizer_HandleSignal_Entry_Buy(t *testing.T) {
 		"bear":              enrichment.BearArgument,
 		"judge":             enrichment.JudgeReasoning,
 		"enrichment_status": string(enrichment.Status),
+		"risk_modifier":     string(enrichment.RiskModifier),
+		"dynamic_stop_bps":  "25",
 	}, intent.Meta)
 }
 
@@ -583,4 +585,116 @@ func TestRiskSizer_HandleSignal_MaxPositionBPS_Default(t *testing.T) {
 	// limitPrice = 298.72 * 1.0005 = 298.86936, maxNotional = 0.10 * 30965 = 3096.5
 	// maxQty = 3096.5 / 298.86936 = 10.36 (fractional)
 	assert.InDelta(t, 3096.5/298.86936, intent.Quantity, 0.01, "GOOGL qty should be clamped by default max_position_bps=1000")
+}
+
+func TestRiskSizer_DynamicRisk_ConfidenceGate(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"limit_offset_bps":            int64(5),
+		"stop_bps":                    int64(25),
+		"risk_per_trade_bps":          int64(10),
+		"dynamic_risk.enabled":        true,
+		"dynamic_risk.min_confidence": 0.70,
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	received := subscribeOrderIntentCreated(t, bus)
+
+	iid, _ := strat.NewInstanceID("orb_break:1.0.0:AAPL")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.5,
+			Tags:               map[string]string{"ref_price": "100"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.50,
+		Rationale:  "low confidence",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	select {
+	case <-received:
+		require.FailNow(t, "unexpected event")
+	case <-time.After(50 * time.Millisecond):
+		assert.True(t, true)
+	}
+}
+
+func TestRiskSizer_DynamicRisk_ConfidenceScaling(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"limit_offset_bps":            int64(0),
+		"stop_bps":                    int64(250),
+		"risk_per_trade_bps":          int64(10),
+		"dynamic_risk.enabled":        true,
+		"dynamic_risk.min_confidence": 0.60,
+		"dynamic_risk.risk_scale_min": 0.50,
+		"dynamic_risk.risk_scale_max": 1.00,
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	received := subscribeOrderIntentCreated(t, bus)
+
+	iid, _ := strat.NewInstanceID("orb_break:1.0.0:AAPL")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "100"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.80,
+		Rationale:  "high confidence",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, received, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+	assert.Equal(t, 32.0, intent.Quantity)
+}
+
+func TestRiskSizer_DynamicRisk_DisabledPassthrough(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"limit_offset_bps":     int64(0),
+		"stop_bps":             int64(250),
+		"risk_per_trade_bps":   int64(10),
+		"dynamic_risk.enabled": false,
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	received := subscribeOrderIntentCreated(t, bus)
+
+	iid, _ := strat.NewInstanceID("orb_break:1.0.0:AAPL")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.5,
+			Tags:               map[string]string{"ref_price": "100"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.50,
+		Rationale:  "low confidence but dynamic risk disabled",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, received, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+	assert.Equal(t, 40.0, intent.Quantity)
 }

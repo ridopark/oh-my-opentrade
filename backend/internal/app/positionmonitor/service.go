@@ -52,14 +52,15 @@ type Service struct {
 
 // fillMsg is the internal message type enqueued when a FillReceived event arrives.
 type fillMsg struct {
-	Symbol     domain.Symbol
-	Side       string
-	Price      float64
-	Quantity   float64
-	FilledAt   time.Time
-	Strategy   string
-	AssetClass domain.AssetClass
-	ExitRules  []domain.ExitRule // set by bootstrap; nil from live fill events
+	Symbol       domain.Symbol
+	Side         string
+	Price        float64
+	Quantity     float64
+	FilledAt     time.Time
+	Strategy     string
+	AssetClass   domain.AssetClass
+	ExitRules    []domain.ExitRule // set by bootstrap; nil from live fill events
+	RiskModifier domain.RiskModifier
 }
 
 // outboxMsg is an exit intent ready for publication on the event bus.
@@ -384,6 +385,7 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 	strategy, _ := payload["strategy"].(string)
 	filledAt, _ := payload["filled_at"].(time.Time)
 	assetClass, _ := payload["asset_class"].(string)
+	riskModStr, _ := payload["risk_modifier"].(string)
 
 	if symbol == "" || price <= 0 || quantity <= 0 {
 		return nil
@@ -391,13 +393,14 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 
 	select {
 	case s.fills <- fillMsg{
-		Symbol:     domain.Symbol(symbol),
-		Side:       side,
-		Price:      price,
-		Quantity:   quantity,
-		FilledAt:   filledAt,
-		Strategy:   strategy,
-		AssetClass: domain.AssetClass(assetClass),
+		Symbol:       domain.Symbol(symbol),
+		Side:         side,
+		Price:        price,
+		Quantity:     quantity,
+		FilledAt:     filledAt,
+		Strategy:     strategy,
+		AssetClass:   domain.AssetClass(assetClass),
+		RiskModifier: domain.NewRiskModifier(riskModStr),
 	}:
 	default:
 		s.log.Warn().Str("symbol", symbol).Msg("position monitor: fill channel full, dropping fill")
@@ -475,6 +478,7 @@ func (s *Service) processFill(fill fillMsg) {
 	if exitRules == nil {
 		exitRules = s.resolveExitRules(context.Background(), fill.Strategy, fill.AssetClass)
 	}
+	exitRules = applyRiskModifierToExitRules(exitRules, fill.RiskModifier)
 
 	pos, err := domain.NewMonitoredPosition(
 		fill.Symbol, fill.Price, fill.FilledAt,
@@ -651,6 +655,40 @@ func (s *Service) emit(ctx context.Context, eventType string, tenantID string, e
 		return
 	}
 	_ = s.eventBus.Publish(ctx, *ev)
+}
+
+// applyRiskModifierToExitRules scales TRAILING_STOP and MAX_LOSS pct params
+// based on the AI judge's risk modifier. TIGHT tightens stops (0.7x),
+// WIDE gives more room (1.5x). NORMAL/empty returns rules unchanged.
+func applyRiskModifierToExitRules(rules []domain.ExitRule, modifier domain.RiskModifier) []domain.ExitRule {
+	if modifier == domain.RiskModifierNormal || modifier == "" {
+		return rules
+	}
+
+	var mult float64
+	switch modifier {
+	case domain.RiskModifierTight:
+		mult = 0.70
+	case domain.RiskModifierWide:
+		mult = 1.50
+	default:
+		return rules
+	}
+
+	scaled := make([]domain.ExitRule, len(rules))
+	for i, r := range rules {
+		if (r.Type == domain.ExitRuleTrailingStop || r.Type == domain.ExitRuleMaxLoss) && r.Params["pct"] > 0 {
+			newParams := make(map[string]float64, len(r.Params))
+			for k, v := range r.Params {
+				newParams[k] = v
+			}
+			newParams["pct"] = r.Params["pct"] * mult
+			scaled[i] = domain.ExitRule{Type: r.Type, Params: newParams}
+		} else {
+			scaled[i] = r
+		}
+	}
+	return scaled
 }
 
 // Stop signals the actor goroutines to shut down.

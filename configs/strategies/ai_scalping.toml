@@ -50,3 +50,13 @@ min_atr_pct = 0.8
 
 [hooks]
 signals = { engine = "builtin", name = "ai_scalping_v1" }
+
+[dynamic_risk]
+enabled = true
+min_confidence = 0.60
+risk_scale_min = 0.50
+risk_scale_max = 1.00
+stop_tight_mult = 0.70
+stop_wide_mult = 1.50
+size_tight_mult = 0.70
+size_wide_mult = 1.20

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -101,6 +102,41 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		}
 	}
 
+	dynCfg := extractDynamicRiskConfig(spec)
+
+	if sigRef.SignalType == strat.SignalEntry.String() {
+		profile := domain.ComputeRiskProfile(
+			domain.BaseRiskParams{RiskPerTradeBPS: riskPerTradeBPS, StopBPS: stopBPS},
+			enrichment,
+			dynCfg,
+		)
+
+		if profile.Gated {
+			rs.logger.Info("signal gated by dynamic risk",
+				"symbol", sigRef.Symbol,
+				"confidence", enrichment.Confidence,
+				"reason", profile.GateReason,
+			)
+			return nil
+		}
+
+		if dynCfg.Enabled {
+			rs.logger.Info("dynamic risk applied",
+				"symbol", sigRef.Symbol,
+				"confidence", enrichment.Confidence,
+				"risk_modifier", string(enrichment.RiskModifier),
+				"scale_factor", profile.ScaleFactor,
+				"base_risk_bps", riskPerTradeBPS,
+				"adjusted_risk_bps", profile.RiskPerTradeBPS,
+				"base_stop_bps", stopBPS,
+				"adjusted_stop_bps", profile.StopBPS,
+			)
+		}
+
+		riskPerTradeBPS = profile.RiskPerTradeBPS
+		stopBPS = profile.StopBPS
+	}
+
 	refStr, ok := sigRef.Tags["ref_price"]
 	if !ok || strings.TrimSpace(refStr) == "" {
 		rs.logger.Warn("signal missing ref_price; skipping", "instance_id", sigRef.StrategyInstanceID, "symbol", sigRef.Symbol, "type", sigRef.SignalType, "side", sigRef.Side)
@@ -139,15 +175,14 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		qty = maxRiskUSD / riskPerShare
 	}
 	if qty <= 0 {
-		qty = maxRiskUSD / limitPrice // fallback: risk budget as notional
+		qty = maxRiskUSD / limitPrice
 	}
 	if qty <= 0 {
 		rs.logger.Warn("computed zero quantity; skipping", "symbol", sigRef.Symbol, "equity", equity, "limit_price", limitPrice)
 		return nil
 	}
 
-	// Clamp position size so notional exposure does not exceed max_position_bps of equity.
-	maxPositionBPS := 1000 // default 10% of equity
+	maxPositionBPS := 1000
 	if spec != nil {
 		if v, ok := extractInt(spec.Params, "max_position_bps"); ok && v > 0 {
 			maxPositionBPS = v
@@ -211,6 +246,8 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		"bear":              enrichment.BearArgument,
 		"judge":             enrichment.JudgeReasoning,
 		"enrichment_status": string(enrichment.Status),
+		"risk_modifier":     string(enrichment.RiskModifier),
+		"dynamic_stop_bps":  strconv.Itoa(stopBPS),
 	}
 
 	rs.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)
@@ -237,4 +274,66 @@ func parseStrategyIDFromInstance(instanceID strat.InstanceID) (strat.StrategyID,
 		return "", false
 	}
 	return sid, true
+}
+
+func extractDynamicRiskConfig(spec *stratports.Spec) domain.DynamicRiskConfig {
+	cfg := domain.DefaultDynamicRiskConfig()
+	if spec == nil {
+		return cfg
+	}
+
+	if v, ok := extractBool(spec.Params, "dynamic_risk.enabled"); ok {
+		cfg.Enabled = v
+	}
+	if v, ok := extractFloat(spec.Params, "dynamic_risk.min_confidence"); ok {
+		cfg.MinConfidence = v
+	}
+	if v, ok := extractFloat(spec.Params, "dynamic_risk.risk_scale_min"); ok {
+		cfg.RiskScaleMin = v
+	}
+	if v, ok := extractFloat(spec.Params, "dynamic_risk.risk_scale_max"); ok {
+		cfg.RiskScaleMax = v
+	}
+	if v, ok := extractFloat(spec.Params, "dynamic_risk.stop_tight_mult"); ok {
+		cfg.StopTightMult = v
+	}
+	if v, ok := extractFloat(spec.Params, "dynamic_risk.stop_wide_mult"); ok {
+		cfg.StopWideMult = v
+	}
+	if v, ok := extractFloat(spec.Params, "dynamic_risk.size_tight_mult"); ok {
+		cfg.SizeTightMult = v
+	}
+	if v, ok := extractFloat(spec.Params, "dynamic_risk.size_wide_mult"); ok {
+		cfg.SizeWideMult = v
+	}
+
+	return cfg
+}
+
+func extractFloat(params map[string]any, key string) (float64, bool) {
+	v, ok := params[key]
+	if !ok {
+		return 0, false
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Float32, reflect.Float64:
+		return rv.Float(), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return float64(rv.Uint()), true
+	}
+	return 0, false
+}
+
+func extractBool(params map[string]any, key string) (bool, bool) {
+	v, ok := params[key]
+	if !ok {
+		return false, false
+	}
+	if b, ok := v.(bool); ok {
+		return b, true
+	}
+	return false, false
 }

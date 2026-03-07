@@ -8,6 +8,7 @@ type AdvisoryDecision struct {
 	BullArgument   string
 	BearArgument   string
 	JudgeReasoning string
+	RiskModifier   RiskModifier
 
 	// Options-specific fields — zero values are valid for equity debates.
 	ContractSymbol string  // e.g. "AAPL240119C00190000" — empty for equity debates
