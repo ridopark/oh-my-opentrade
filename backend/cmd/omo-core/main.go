@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -654,6 +655,63 @@ func main() {
 		stratPerfHandler := omhttp.NewStrategyPerfHandler(strategyRunner, pnlRepo, httpLog)
 		imux.Handle("/api/strategies/", stratPerfHandler)
 	}
+	// Cross-strategy recent signals endpoint (used by dashboard main page).
+	imux.HandleFunc("/api/signals/recent", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		q := r.URL.Query()
+		limit := 50
+		if raw := q.Get("limit"); raw != "" {
+			if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+				if v > 200 {
+					v = 200
+				}
+				limit = v
+			}
+		}
+		now := time.Now().UTC()
+		from := now.AddDate(0, 0, -7)
+		to := now
+		if raw := q.Get("from"); raw != "" {
+			if t, err := time.Parse(time.RFC3339, raw); err == nil {
+				from = t
+			}
+		}
+		if raw := q.Get("to"); raw != "" {
+			if t, err := time.Parse(time.RFC3339, raw); err == nil {
+				to = t
+			}
+		}
+		query := ports.StrategySignalQuery{
+			TenantID: "default",
+			EnvMode:  domain.EnvModePaper,
+			Symbol:   q.Get("symbol"),
+			From:     from,
+			To:       to,
+			Limit:    limit,
+		}
+		page, err := pnlRepo.GetStrategySignalEvents(r.Context(), query)
+		if err != nil {
+			httpLog.Error().Err(err).Msg("failed to query recent signals")
+			http.Error(w, `{"error":"signal query failed"}`, http.StatusInternalServerError)
+			return
+		}
+		type recentSignalsResponse struct {
+			Items      []domain.StrategySignalEvent `json:"items"`
+			NextCursor string                       `json:"next_cursor,omitempty"`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(recentSignalsResponse{Items: page.Items, NextCursor: page.NextCursor})
+	})
 	imux.HandleFunc("/strategies/current", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Content-Type", "application/json")

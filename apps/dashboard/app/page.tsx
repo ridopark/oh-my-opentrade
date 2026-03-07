@@ -80,6 +80,34 @@ export default function TradingSignalPage() {
       .catch(() => {});
   }, [symbol]);
 
+  useEffect(() => {
+    if (!symbol) return;
+    fetch(`/api/signals/recent?symbol=${encodeURIComponent(symbol)}&limit=50`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { items: StrategySignalEvent[] } | null) => {
+        if (!data?.items?.length) return;
+        setRecentSignalEvents((prev) => {
+          const existingIds = new Set(prev.map((e) => `${e.SignalID}:${e.Status}`));
+          const newItems = data.items.filter((e) => !existingIds.has(`${e.SignalID}:${e.Status}`));
+          return [...newItems, ...prev].slice(0, 50);
+        });
+        setSignals((prev) => {
+          const existingIds = new Set(prev.map((s) => s.signalId));
+          const newSignals = data.items
+            .filter((sig) => sig.SignalID && !existingIds.has(sig.SignalID))
+            .map((sig) => ({
+              time: Math.floor(new Date(sig.TS).getTime() / 1000),
+              side: (sig.Side?.toLowerCase() === "sell" ? "sell" : "buy") as "buy" | "sell",
+              strategy: sig.Strategy,
+              confidence: sig.Confidence,
+              signalId: sig.SignalID,
+            }));
+          return [...prev, ...newSignals].slice(-200);
+        });
+      })
+      .catch(() => {});
+  }, [symbol]);
+
   const chartSymbols = useMemo(() => symbol ? [symbol] : [], [symbol]);
   const { barsBySymbol, loading, loadMore } = useChartData(timeframe, "/api/events", chartSymbols.length > 0 ? chartSymbols : undefined);
   const bars: OHLCBar[] = barsBySymbol[symbol] ?? [];
