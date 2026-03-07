@@ -89,24 +89,49 @@ tmux list-sessions                     # check sessions
 
 Press `Ctrl+B` then `D`
 
-## Debug Logging
+## Debugging & Troubleshooting
+
+### Grafana Logs (preferred)
+
+All omo-core logs are streamed to Grafana via Loki. Use this as the primary debugging tool.
+
+1. Open http://localhost:3001/explore
+2. Select **Loki** from the datasource dropdown
+3. Query: `{job="omo-core"}`
+
+Useful LogQL filters:
+
+```logql
+{job="omo-core"} |= "ERR"                         # errors only
+{job="omo-core"} |= "WARN"                        # warnings
+{job="omo-core"} |= "AAPL"                        # specific symbol
+{job="omo-core"} |= "order" |= "filled"           # order fills
+{job="omo-core"} |= "component=execution"         # specific component
+{job="omo-core"} |= "panic"                       # panics/crashes
+```
+
+Requires infra to be running (`./scripts/start-infra.sh`).
+
+### Tmux Logs (fallback)
+
+If Grafana is not running, attach to the tmux session directly:
+
+```bash
+tmux attach-session -t omo-core        # backend logs
+tmux attach-session -t omo-dashboard   # dashboard logs
+```
+
+Detach with `Ctrl+B` then `D`.
+
+### Log Level
 
 The backend uses **zerolog**. Log level is controlled via the `LOG_LEVEL` env var (not the `log_level` field in `config.yaml`).
 
-### Enable debug logs
-
 ```bash
 LOG_LEVEL=debug go run ./cmd/omo-core/
+LOG_LEVEL=debug LOG_PRETTY=true go run ./cmd/omo-core/   # human-readable
 ```
 
-### With pretty (human-readable) output
-
-```bash
-LOG_LEVEL=debug LOG_PRETTY=true go run ./cmd/omo-core/
-```
-
-### Available log levels
-
-`trace` | `debug` | `info` (default) | `warn` | `error` | `fatal` | `panic`
+Available levels: `trace` | `debug` | `info` (default) | `warn` | `error` | `fatal` | `panic`
 
 ---

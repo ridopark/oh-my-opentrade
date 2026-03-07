@@ -13,7 +13,7 @@ state = "LiveActive"
 paper_only = false
 
 [routing]
-symbols = ["BTC/USD", "BTC/USDT", "ETH/USD", "SOL/USD", "AVAX/USD", "DOGE/USD", "PEPE/USD"]
+symbols = ["BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "DOGE/USD", "PEPE/USD"]
 timeframes = ["1m"]
 priority = 70
 conflict_policy = "priority_wins"

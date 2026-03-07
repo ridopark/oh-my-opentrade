@@ -44,17 +44,21 @@ func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
 		dataURL = "https://data.alpaca.markets"
 	}
 
+	dataKey := cfg.EffectiveDataAPIKeyID()
+	dataSecret := cfg.EffectiveDataAPISecretKey()
+
 	// Wire the REST fetcher into the WS client so it can poll during ghost windows.
+	dataREST := NewRESTClient(cfg.BaseURL, dataKey, dataSecret, limiter, restLog)
 	fetcher := func(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
 		if symbol.IsCryptoSymbol() {
-			return rest.GetCryptoHistoricalBars(ctx, dataURL, symbol, timeframe, from, to)
+			return dataREST.GetCryptoHistoricalBars(ctx, dataURL, symbol, timeframe, from, to)
 		}
-		return rest.GetHistoricalBars(ctx, dataURL, symbol, timeframe, from, to)
+		return dataREST.GetHistoricalBars(ctx, dataURL, symbol, timeframe, from, to)
 	}
-	ws := NewWSClient(cfg.DataURL, cfg.APIKeyID, cfg.APISecretKey, cfg.Feed, fetcher)
+	ws := NewWSClient(cfg.DataURL, dataKey, dataSecret, cfg.Feed, fetcher)
 
 	// Create crypto WebSocket client for streaming crypto bars.
-	cryptoWs, err := NewCryptoWSClient(cfg.CryptoDataURL, cfg.APIKeyID, cfg.APISecretKey, cfg.CryptoFeed)
+	cryptoWs, err := NewCryptoWSClient(cfg.CryptoDataURL, dataKey, dataSecret, cfg.CryptoFeed)
 	if err != nil {
 		return nil, fmt.Errorf("create crypto WS client: %w", err)
 	}
@@ -226,6 +230,14 @@ func (a *Adapter) GetAccountBuyingPower(ctx context.Context) (ports.BuyingPower,
 		EffectiveBuyingPower:  bp.EffectiveBuyingPower,
 		PatternDayTrader:      bp.PatternDayTrader,
 	}, nil
+}
+
+// SetTradeHandler sets the trade tick callback on both equity and crypto WS clients.
+func (a *Adapter) SetTradeHandler(h ports.TradeHandler) {
+	a.ws.SetTradeHandler(h)
+	if a.cryptoWs != nil {
+		a.cryptoWs.SetTradeHandler(h)
+	}
 }
 
 // WSClient returns the underlying WebSocket client for metrics wiring.

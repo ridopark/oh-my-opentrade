@@ -74,6 +74,7 @@ export function useEventStream({
       eventSource.addEventListener(type, (e: MessageEvent) => {
         try {
           const event: DomainEvent = JSON.parse(e.data);
+          console.log(`[SSE] ${event.type}`, event);
           setState((prev) => ({
             ...prev,
             events: [event, ...prev.events].slice(0, maxEvents),

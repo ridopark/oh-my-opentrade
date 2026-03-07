@@ -28,16 +28,17 @@ type connectFn func(ctx context.Context) error
 
 // WSClient handles WebSocket connections for Alpaca market data.
 type WSClient struct {
-	dataURL   string
-	apiKey    string
-	apiSecret string
-	feed      string
-	fetcher   BarFetcher // REST poller fallback; nil disables polling
-	closeOnce sync.Once
-	cancel    context.CancelFunc
-	mu        sync.Mutex
-	metrics   *metrics.Metrics
-	tracker   *feedTracker
+	dataURL      string
+	apiKey       string
+	apiSecret    string
+	feed         string
+	fetcher      BarFetcher // REST poller fallback; nil disables polling
+	tradeHandler ports.TradeHandler
+	closeOnce    sync.Once
+	cancel       context.CancelFunc
+	mu           sync.Mutex
+	metrics      *metrics.Metrics
+	tracker      *feedTracker
 
 	// connectFactory builds a real alpacastream.StocksClient and returns its Connect func.
 	// Overridable in tests.
@@ -65,6 +66,9 @@ func NewWSClient(dataURL string, apiKey string, apiSecret string, feed string, f
 
 // SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
 func (w *WSClient) SetMetrics(m *metrics.Metrics) { w.metrics = m }
+
+// SetTradeHandler sets the callback for forwarding raw trade ticks.
+func (w *WSClient) SetTradeHandler(h ports.TradeHandler) { w.tradeHandler = h }
 
 // FeedHealth returns a point-in-time snapshot of WebSocket feed status.
 func (w *WSClient) FeedHealth() FeedHealth { return w.tracker.Snapshot() }
@@ -327,11 +331,21 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			}
 		}
 
-		// Dummy trade handler to keep connection alive.
-		// Alpaca SDK bug: Connect() returns immediately if only bars are subscribed.
-		// Adding trade subscription keeps the WebSocket open to receive bars.
-		tradeHandler := func(_ alpacastream.Trade) {
-			// Ignore trades — this handler exists only to keep the connection alive.
+		tradeHandler := func(t alpacastream.Trade) {
+			if w.tradeHandler == nil {
+				return
+			}
+			sym, err := domain.NewSymbol(t.Symbol)
+			if err != nil {
+				return
+			}
+			mt := domain.MarketTrade{
+				Time:   t.Timestamp,
+				Symbol: sym,
+				Price:  t.Price,
+				Size:   float64(t.Size),
+			}
+			_ = w.tradeHandler(streamCtx, mt)
 		}
 
 		connect := w.connectFactory(symStrs, barHandler, tradeHandler)

@@ -46,6 +46,8 @@ const (
 	EventStrategySignalLifecycle EventType = "StrategySignalLifecycle"
 	EventStrategyStateSnapshot   EventType = "StrategyStateSnapshot"
 	EventExitTriggered           EventType = "ExitTriggered"
+	EventTradeReceived           EventType = "TradeReceived"
+	EventFormingBar              EventType = "FormingBar"
 )
 
 // Event represents a domain event in the trading pipeline.

@@ -32,4 +32,4 @@ else
   warn "dashboard tmux session not found — already stopped?"
 fi
 
-info "All services stopped."
+info "All services stopped. Monitoring stack (Grafana, Prometheus, Loki, Fluent Bit) left running."
