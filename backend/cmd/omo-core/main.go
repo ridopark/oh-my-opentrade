@@ -849,6 +849,15 @@ func main() {
 	warmupLog := log.With().Str("component", "warmup").Logger()
 	warmupBarsCache := make(map[string][]domain.MarketBar)
 
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		loc = time.FixedZone("EST", -5*3600)
+	}
+	nowET := time.Now().In(loc)
+	todayOpen := time.Date(nowET.Year(), nowET.Month(), nowET.Day(), 9, 30, 0, 0, loc)
+
+	monitorSvc.InitAggregators(symbols, todayOpen)
+
 	// Equity warmup: use previous NYSE RTH session.
 	if len(equitySymbols) > 0 {
 		prevStart, prevEnd := domain.PreviousRTHSession(time.Now())
@@ -930,14 +939,8 @@ func main() {
 		}
 	}
 
-	loc, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		loc = time.FixedZone("EST", -5*3600)
-	}
-	nowET := time.Now().In(loc)
 	isWeekday := nowET.Weekday() != time.Saturday && nowET.Weekday() != time.Sunday
 	isOpen := !domain.IsNYSEHoliday(nowET) && isWeekday
-	todayOpen := time.Date(nowET.Year(), nowET.Month(), nowET.Day(), 9, 30, 0, 0, loc)
 	if isOpen && nowET.After(todayOpen) {
 		warmupLog.Info().Msg("replaying current-session bars for ORB state recovery")
 		for _, sym := range equitySymbols {
@@ -974,8 +977,6 @@ func main() {
 				Msg("ORB warmup complete")
 		}
 	}
-
-	monitorSvc.InitAggregators(symbols, todayOpen)
 
 	// 7a. Start forming-bar service for real-time chart candle formation.
 	formingBarLog := log.With().Str("component", "formingbar").Logger()
