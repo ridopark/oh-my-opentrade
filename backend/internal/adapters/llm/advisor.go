@@ -58,6 +58,38 @@ type debateResult struct {
 	ExitRules      string  `json:"exit_rules"`
 }
 
+// responseTemplate is the JSON schema shown to the LLM in the prompt.
+// Marshaled via encoding/json to guarantee valid JSON in every prompt.
+type responseTemplate struct {
+	Direction      string  `json:"direction"`
+	Confidence     float64 `json:"confidence"`
+	Rationale      string  `json:"rationale"`
+	BullArgument   string  `json:"bull_argument"`
+	BearArgument   string  `json:"bear_argument"`
+	JudgeReasoning string  `json:"judge_reasoning"`
+	ContractSymbol string  `json:"contract_symbol,omitempty"`
+	MaxLossUSD     float64 `json:"max_loss_usd,omitempty"`
+	ExitRules      string  `json:"exit_rules,omitempty"`
+}
+
+func buildResponseTemplate(withOptions bool) string {
+	tmpl := responseTemplate{
+		Direction:      "LONG | SHORT | NEUTRAL",
+		Confidence:     0.85,
+		Rationale:      "concise risk-adjusted reasoning",
+		BullArgument:   "key bullish thesis with supporting data",
+		BearArgument:   "key bearish thesis with supporting data",
+		JudgeReasoning: "risk-reward verdict weighing both sides and worst-case scenario",
+	}
+	if withOptions {
+		tmpl.ContractSymbol = "AAPL240119C00190000"
+		tmpl.MaxLossUSD = 320.0
+		tmpl.ExitRules = "Exit at 2x premium ($640) or 21 days before expiry, whichever comes first"
+	}
+	b, _ := json.MarshalIndent(tmpl, "", "  ")
+	return string(b)
+}
+
 // ─────────────────────────────────────────────
 // Option chain types (public market data only)
 // ─────────────────────────────────────────────
@@ -232,8 +264,9 @@ func (a *Advisor) RequestDebate(
 		opt(dr)
 	}
 
-	systemPrompt := `You are an adversarial trading debate system. When given a trade setup, 
-conduct a structured Bull vs Bear debate and render a Judge verdict.
+	systemPrompt := `You are a Professional Risk Manager overseeing an adversarial trading debate.
+Evaluate each setup through a structured Bull vs Bear debate, then render a Judge verdict.
+The Judge must weigh risk-reward asymmetry, position sizing implications, and worst-case scenarios before ruling.
 Respond ONLY with valid JSON — no markdown fences, no extra text.`
 
 	userPrompt := buildPrompt(symbol, regime, indicators, dr.optionChain, dr.signalContext)
@@ -341,34 +374,44 @@ Respond ONLY with valid JSON — no markdown fences, no extra text.`
 //
 // When sigCtx is non-nil, strategy signal metadata (type, side, strength, tags) is appended.
 // Tags contain only public-facing metadata (setup name, ref price, regime) — no DNA parameters.
-func buildPrompt(symbol domain.Symbol, regime domain.MarketRegime, indicators domain.IndicatorSnapshot, chain *OptionChainSummary, sigCtx *signalContext) string {
-	// Select the appropriate JSON response template depending on whether we have option context.
-	var jsonTemplate string
-	if chain != nil {
-		jsonTemplate = `{
-  "direction": "LONG" or "SHORT",
-  "confidence": 0.0 to 1.0,
-  "rationale": "...",
-  "bull_argument": "...",
-  "bear_argument": "...",
-  "judge_reasoning": "...",
-  "contract_symbol": "AAPL240119C00190000",
-  "max_loss_usd": 320.0,
-  "exit_rules": "Exit at 2x premium ($640) or 21 days before expiry, whichever comes first"
-}`
-	} else {
-		jsonTemplate = `{
-  "direction": "LONG" or "SHORT",
-  "confidence": 0.0 to 1.0,
-  "rationale": "...",
-  "bull_argument": "...",
-  "bear_argument": "...",
-  "judge_reasoning": "..."
-}`
+func vwapPosition(ema9, vwap float64) string {
+	if vwap == 0 {
+		return "N/A"
 	}
+	distPct := ((ema9 - vwap) / vwap) * 100
+	switch {
+	case distPct >= 2.0:
+		return fmt.Sprintf("+%.2f%% above VWAP (overextended)", distPct)
+	case distPct >= 0:
+		return fmt.Sprintf("+%.2f%% above VWAP", distPct)
+	case distPct > -2.0:
+		return fmt.Sprintf("%.2f%% below VWAP", distPct)
+	default:
+		return fmt.Sprintf("%.2f%% below VWAP (overextended)", distPct)
+	}
+}
 
-	prompt := fmt.Sprintf(
-		`Analyze this trade setup and respond ONLY with this JSON structure (no markdown, no extra text):
+func emaTrend(ema9, ema21 float64) string {
+	if ema21 == 0 {
+		return "N/A"
+	}
+	spreadPct := ((ema9 - ema21) / ema21) * 100
+	if spreadPct > 0 {
+		return fmt.Sprintf("Bullish Cross (EMA9 > EMA21, spread: +%.2f%%)", spreadPct)
+	}
+	if spreadPct < 0 {
+		return fmt.Sprintf("Bearish Divergence (EMA9 < EMA21, spread: %.2f%%)", spreadPct)
+	}
+	return "Flat (EMA9 = EMA21)"
+}
+
+func buildPrompt(symbol domain.Symbol, regime domain.MarketRegime, indicators domain.IndicatorSnapshot, chain *OptionChainSummary, sigCtx *signalContext) string {
+	jsonTemplate := buildResponseTemplate(chain != nil)
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf(
+		`Analyze this trade setup and respond ONLY with valid JSON matching this schema (no markdown, no extra text).
+Direction must be "LONG", "SHORT", or "NEUTRAL". Confidence must be 0.0 to 1.0.
 %s
 
 Symbol: %s
@@ -379,7 +422,9 @@ Technical Indicators:
   StochD: %.2f
   EMA9: %.2f
   EMA21: %.2f
-  VWAP: %.2f`,
+  EMA Trend: %s
+  VWAP: %.2f
+  VWAP Position: %s`,
 		jsonTemplate,
 		symbol.String(),
 		regime.Type.String(),
@@ -389,29 +434,35 @@ Technical Indicators:
 		indicators.StochD,
 		indicators.EMA9,
 		indicators.EMA21,
+		emaTrend(indicators.EMA9, indicators.EMA21),
 		indicators.VWAP,
-	)
+		vwapPosition(indicators.EMA9, indicators.VWAP),
+	))
 
-	// Append multi-timeframe anchor regimes when available.
-	// AnchorRegimes carries HTF regime classifications (e.g. 5m, 15m) that provide
-	// the LLM with broader market context beyond the primary 1m indicators.
 	if len(indicators.AnchorRegimes) > 0 {
-		var sb strings.Builder
-		sb.WriteString(prompt)
+		primaryTF := domain.Timeframe("")
+		for _, tf := range []domain.Timeframe{"1d", "1h", "15m", "5m"} {
+			if _, ok := indicators.AnchorRegimes[tf]; ok {
+				primaryTF = tf
+				break
+			}
+		}
+
 		sb.WriteString("\n\nMulti-Timeframe Regimes:")
 		for _, tf := range []domain.Timeframe{"1m", "5m", "15m", "1h", "1d"} {
 			r, ok := indicators.AnchorRegimes[tf]
 			if !ok {
 				continue
 			}
-			sb.WriteString(fmt.Sprintf("\n  %s: %s (strength: %.2f)", tf, r.Type, r.Strength))
+			label := ""
+			if tf == primaryTF {
+				label = " (Primary Context)"
+			}
+			sb.WriteString(fmt.Sprintf("\n  %s: %s (strength: %.2f)%s", tf, r.Type, r.Strength, label))
 		}
-		prompt = sb.String()
 	}
-	// Append signal context section when strategy signal metadata is present.
+
 	if sigCtx != nil {
-		var sb strings.Builder
-		sb.WriteString(prompt)
 		sb.WriteString(fmt.Sprintf("\n\nSignal Context:\n  Type: %s\n  Side: %s\n  Strength: %.2f",
 			sigCtx.signalType, sigCtx.side, sigCtx.strength))
 		if len(sigCtx.tags) > 0 {
@@ -420,16 +471,10 @@ Technical Indicators:
 				sb.WriteString(fmt.Sprintf("\n    %s: %s", k, v))
 			}
 		}
-		prompt = sb.String()
 	}
 
-	// Append option chain section when candidates are present.
 	if chain != nil && len(chain.Candidates) > 0 {
-		var sb strings.Builder
-		sb.WriteString(prompt)
-		sb.WriteString("\n\nOption Chain Candidates (top ")
-		sb.WriteString(fmt.Sprintf("%d", len(chain.Candidates)))
-		sb.WriteString(" by delta proximity):\n")
+		sb.WriteString(fmt.Sprintf("\n\nOption Chain Candidates (top %d by delta proximity):\n", len(chain.Candidates)))
 		for i, c := range chain.Candidates {
 			sb.WriteString(fmt.Sprintf(
 				"  %d. %-25s delta=%.2f  IV=%.1f%%  bid=$%.2f  ask=$%.2f  OI=%-6d DTE=%d\n",
@@ -444,8 +489,7 @@ Technical Indicators:
 			))
 		}
 		sb.WriteString("\nYou MUST select exactly one contract from the candidates above. You MUST NOT propose a short option position.")
-		return sb.String()
 	}
 
-	return prompt
+	return sb.String()
 }

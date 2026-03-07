@@ -150,14 +150,22 @@ func TestAdvisor_RequestDebate_SendsStructuredPrompt(t *testing.T) {
 
 	require.NotNil(t, capturedBody)
 
-	// Must use OpenAI-compatible messages format
 	messages, ok := capturedBody["messages"].([]interface{})
 	require.True(t, ok, "request body must contain a 'messages' array")
 	require.GreaterOrEqual(t, len(messages), 2, "must have at least system + user messages")
 
-	// User message must contain trading data
+	sysMsg := messages[0].(map[string]interface{})
+	sysContent := sysMsg["content"].(string)
+	assert.Contains(t, sysContent, "Professional Risk Manager")
+	assert.Contains(t, sysContent, "worst-case scenarios")
+
 	userMsg := messages[len(messages)-1].(map[string]interface{})
 	content := userMsg["content"].(string)
+
+	assert.Contains(t, content, `"bull_argument"`)
+	assert.Contains(t, content, `"judge_reasoning"`)
+	assert.Contains(t, content, `"LONG | SHORT | NEUTRAL"`)
+
 	assert.Contains(t, content, "BTCUSD")
 	assert.Contains(t, content, "BALANCE")
 	assert.Contains(t, content, "55")    // RSI
@@ -165,6 +173,15 @@ func TestAdvisor_RequestDebate_SendsStructuredPrompt(t *testing.T) {
 	assert.Contains(t, content, "51000") // EMA9
 	assert.Contains(t, content, "50000") // EMA21
 	assert.Contains(t, content, "50500") // VWAP
+
+	// EMA9=51000 > EMA21=50000 → Bullish Cross with +2.00% spread
+	assert.Contains(t, content, "EMA Trend:")
+	assert.Contains(t, content, "Bullish Cross")
+	assert.Contains(t, content, "+2.00%")
+
+	// EMA9=51000 vs VWAP=50500 → +0.99% above VWAP
+	assert.Contains(t, content, "VWAP Position:")
+	assert.Contains(t, content, "above VWAP")
 }
 
 func TestAdvisor_RequestDebate_PromptIncludesAnchorRegimes(t *testing.T) {
@@ -199,7 +216,8 @@ func TestAdvisor_RequestDebate_PromptIncludesAnchorRegimes(t *testing.T) {
 	assert.Contains(t, content, "Multi-Timeframe Regimes:")
 	assert.Contains(t, content, "1m: TREND (strength: 0.80)")
 	assert.Contains(t, content, "5m: BALANCE (strength: 0.55)")
-	assert.Contains(t, content, "15m: REVERSAL (strength: 0.90)")
+	assert.Contains(t, content, "15m: REVERSAL (strength: 0.90) (Primary Context)")
+	assert.NotContains(t, content, "1m: TREND (strength: 0.80) (Primary Context)")
 }
 
 func TestAdvisor_RequestDebate_NoAnchorRegimes_OmitsSection(t *testing.T) {
@@ -226,6 +244,68 @@ func TestAdvisor_RequestDebate_NoAnchorRegimes_OmitsSection(t *testing.T) {
 	content := userMsg["content"].(string)
 
 	assert.NotContains(t, content, "Multi-Timeframe Regimes:")
+}
+
+func TestAdvisor_RequestDebate_BearishDivergenceAndBelowVWAP(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := json.NewDecoder(r.Body).Decode(&capturedBody)
+		assert.NoError(t, err)
+		validCompletionResponse(w, "SHORT", "rationale", "bull", "bear", "judge", 0.75)
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+
+	snap := getMockIndicatorSnapshot(func(s *domain.IndicatorSnapshot) {
+		s.EMA9 = 49000.0
+		s.EMA21 = 50000.0
+		s.VWAP = 50500.0
+	})
+
+	_, err := advisor.RequestDebate(context.Background(), "BTCUSD", getMockMarketRegime(), snap)
+	require.NoError(t, err)
+
+	messages, ok := capturedBody["messages"].([]interface{})
+	require.True(t, ok)
+	userMsg := messages[len(messages)-1].(map[string]interface{})
+	content := userMsg["content"].(string)
+
+	assert.Contains(t, content, "Bearish Divergence")
+	assert.Contains(t, content, "EMA9 < EMA21")
+	assert.Contains(t, content, "below VWAP")
+}
+
+func TestAdvisor_RequestDebate_OverextendedVWAP(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := json.NewDecoder(r.Body).Decode(&capturedBody)
+		assert.NoError(t, err)
+		validCompletionResponse(w, "LONG", "rationale", "bull", "bear", "judge", 0.80)
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+
+	snap := getMockIndicatorSnapshot(func(s *domain.IndicatorSnapshot) {
+		s.EMA9 = 52000.0
+		s.EMA21 = 50000.0
+		s.VWAP = 50000.0
+	})
+
+	_, err := advisor.RequestDebate(context.Background(), "BTCUSD", getMockMarketRegime(), snap)
+	require.NoError(t, err)
+
+	messages, ok := capturedBody["messages"].([]interface{})
+	require.True(t, ok)
+	userMsg := messages[len(messages)-1].(map[string]interface{})
+	content := userMsg["content"].(string)
+
+	// EMA9=52000 vs VWAP=50000 → +4.00% → overextended
+	assert.Contains(t, content, "overextended")
+	assert.Contains(t, content, "+4.00%")
 }
 
 func TestAdvisor_RequestDebate_HTTPError(t *testing.T) {
