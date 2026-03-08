@@ -51,10 +51,13 @@ func (f *ZScoreFilter) Check(bar domain.MarketBar) bool {
 	priceMean, priceStdDev := calculateStats(window.prices)
 	volMean, volStdDev := calculateStats(window.volumes)
 
-	priceZ := calculateZScore(bar.Close, priceMean, priceStdDev)
+	closeZ := calculateZScore(bar.Close, priceMean, priceStdDev)
+	highZ := calculateZScore(bar.High, priceMean, priceStdDev)
+	lowZ := calculateZScore(bar.Low, priceMean, priceStdDev)
 	volZ := calculateZScore(bar.Volume, volMean, volStdDev)
 
-	suspect := priceZ > f.priceThreshold && volZ < defaultVolumeThreshold
+	priceAnomaly := closeZ > f.priceThreshold || highZ > f.priceThreshold || lowZ > f.priceThreshold
+	suspect := priceAnomaly && volZ < defaultVolumeThreshold
 
 	// Add to rolling window, dropping the oldest value
 	// We might choose to NOT add anomalous data, but the prompt
