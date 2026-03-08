@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -321,6 +322,7 @@ type Trade struct {
 	Strategy   string
 	Rationale  string
 	AssetClass AssetClass
+	Thesis     json.RawMessage
 }
 
 // NewTrade creates a validated Trade. Quantity must not be negative.

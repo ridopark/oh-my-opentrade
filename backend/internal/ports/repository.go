@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -14,6 +15,7 @@ type RepositoryPort interface {
 	GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error)
 	SaveTrade(ctx context.Context, trade domain.Trade) error
 	GetTrades(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) ([]domain.Trade, error)
+	UpdateTradeThesis(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol, thesis json.RawMessage) error
 	SaveStrategyDNA(ctx context.Context, dna domain.StrategyDNA) error
 	GetLatestStrategyDNA(ctx context.Context, tenantID string, envMode domain.EnvMode) (*domain.StrategyDNA, error)
 	SaveOrder(ctx context.Context, order domain.BrokerOrder) error

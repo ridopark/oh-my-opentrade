@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -774,6 +775,9 @@ func (n *noopRepo) ListOrders(_ context.Context, _ ports.OrderQuery) (ports.Orde
 func (n *noopRepo) SaveThoughtLog(_ context.Context, _ domain.ThoughtLog) error { return nil }
 func (n *noopRepo) GetThoughtLogsByIntentID(_ context.Context, _ string) ([]domain.ThoughtLog, error) {
 	return nil, nil
+}
+func (n *noopRepo) UpdateTradeThesis(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol, _ json.RawMessage) error {
+	return nil
 }
 
 // noopPnLRepo implements ports.PnLPort as a no-op for backtest mode.

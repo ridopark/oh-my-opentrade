@@ -787,6 +787,168 @@ func TestRiskSizer_DynamicRisk_ConfidenceScaling(t *testing.T) {
 	assert.Equal(t, 32.0, intent.Quantity)
 }
 
+func publishFillReceived(t *testing.T, bus *memory.Bus, symbol, side string) {
+	t.Helper()
+	ctx := context.Background()
+	envMode := mustEnvMode(t)
+	ev, err := domain.NewEvent(domain.EventFillReceived, "t1", envMode, "fill-"+symbol+"-"+side, map[string]any{
+		"symbol": symbol,
+		"side":   side,
+	})
+	require.NoError(t, err)
+	require.NoError(t, bus.Publish(ctx, *ev))
+}
+
+func TestRiskSizer_ExitCooldown_BlocksReentry(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"stop_bps":           int64(25),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	created := subscribeOrderIntentCreated(t, bus)
+	rejected := subscribeOrderIntentRejected(t, bus)
+
+	publishFillReceived(t, bus, "AAPL", "SELL")
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "100"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.8,
+		Rationale:  "bullish signal",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, rejected, 1)
+	payload, ok := evs[0].Payload.(domain.OrderIntentEventPayload)
+	require.True(t, ok)
+	assert.Equal(t, "AAPL", payload.Symbol)
+	assert.Contains(t, payload.Reason, "exit_cooldown")
+	assert.Equal(t, domain.OrderIntentStatusRejected, payload.Status)
+
+	select {
+	case <-created:
+		t.Fatal("expected no OrderIntentCreated during cooldown")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestRiskSizer_ExitCooldown_BuyFillDoesNotSetCooldown(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"stop_bps":           int64(25),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	created := subscribeOrderIntentCreated(t, bus)
+
+	publishFillReceived(t, bus, "AAPL", "BUY")
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "100"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.8,
+		Rationale:  "bullish signal",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, created, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+	assert.Equal(t, domain.DirectionLong, intent.Direction)
+}
+
+func TestRiskSizer_ExitCooldown_ExitSignalsUnaffected(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"stop_bps":           int64(25),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	created := subscribeOrderIntentCreated(t, bus)
+
+	publishFillReceived(t, bus, "AAPL", "SELL")
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "exit",
+			Side:               "sell",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "100"},
+		},
+		Status:     domain.EnrichmentSkipped,
+		Confidence: 0.8,
+		Rationale:  "exit signal",
+		Direction:  domain.DirectionCloseLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, created, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+	assert.Equal(t, domain.DirectionCloseLong, intent.Direction)
+}
+
+func TestRiskSizer_ExitCooldown_DifferentSymbolUnaffected(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"stop_bps":           int64(25),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	created := subscribeOrderIntentCreated(t, bus)
+
+	publishFillReceived(t, bus, "AAPL", "SELL")
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:MSFT")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "MSFT",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "400"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.8,
+		Rationale:  "bullish signal",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, created, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+	assert.Equal(t, domain.Symbol("MSFT"), intent.Symbol)
+}
+
 func TestRiskSizer_DynamicRisk_DisabledPassthrough(t *testing.T) {
 	bus := memory.NewBus()
 	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{

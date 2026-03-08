@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -71,6 +72,9 @@ func (m *mockRepo) ListOrders(_ context.Context, _ ports.OrderQuery) (ports.Orde
 func (m *mockRepo) SaveThoughtLog(_ context.Context, _ domain.ThoughtLog) error { return nil }
 func (m *mockRepo) GetThoughtLogsByIntentID(_ context.Context, _ string) ([]domain.ThoughtLog, error) {
 	return nil, nil
+}
+func (m *mockRepo) UpdateTradeThesis(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol, _ json.RawMessage) error {
+	return nil
 }
 
 // mockPnLRepo implements ports.PnLPort (needed for perf.NewLedgerWriter).

@@ -81,4 +81,5 @@ func TestEventTypeConstants(t *testing.T) {
 	assert.Equal(t, "SignalDebateRequested", domain.EventSignalDebateRequested)
 	assert.Equal(t, "SignalEnriched", domain.EventSignalEnriched)
 	assert.Equal(t, "ExitOrderTerminal", domain.EventExitOrderTerminal)
+	assert.Equal(t, "RiskDowngraded", domain.EventRiskDowngraded)
 }

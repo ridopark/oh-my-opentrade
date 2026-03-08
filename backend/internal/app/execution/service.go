@@ -102,7 +102,10 @@ func (s *Service) Start(ctx context.Context) error {
 	if err := s.eventBus.Subscribe(ctx, domain.EventOrderIntentCreated, s.handleIntent); err != nil {
 		return fmt.Errorf("execution: failed to subscribe to OrderIntentCreated: %w", err)
 	}
-	s.log.Info().Msg("subscribed to OrderIntentCreated events")
+	if err := s.eventBus.Subscribe(ctx, domain.EventRiskDowngraded, s.handleRiskDowngrade); err != nil {
+		return fmt.Errorf("execution: failed to subscribe to RiskDowngraded: %w", err)
+	}
+	s.log.Info().Msg("subscribed to OrderIntentCreated and RiskDowngraded events")
 
 	if s.orderStream != nil {
 		ch, err := s.orderStream.SubscribeOrderUpdates(ctx)
@@ -137,8 +140,8 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		Float64("quantity", intent.Quantity).
 		Msg("order intent received, starting execution pipeline")
 
-	// 1. Check kill switch before any work.
-	if s.killSwitch.IsHalted(event.TenantID, intent.Symbol) {
+	// 1. Check kill switch before any work (skip for exits — closing reduces exposure).
+	if !intent.Direction.IsExit() && s.killSwitch.IsHalted(event.TenantID, intent.Symbol) {
 		l.Warn().Msg("kill switch engaged — trading halted for symbol")
 		s.emit(ctx, domain.EventKillSwitchEngaged, event.TenantID, event.EnvMode, event.IdempotencyKey, nil)
 		return nil
@@ -200,10 +203,13 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	s.emit(ctx, domain.EventOrderIntentValidated, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusValidated))
 
 	// 4. Record stop — if this trips the kill switch, abort before broker submission.
-	if err := s.killSwitch.RecordStop(event.TenantID, intent.Symbol); err != nil {
-		l.Warn().Err(err).Msg("kill switch tripped — aborting broker submission")
-		s.emit(ctx, domain.EventCircuitBreakerTripped, event.TenantID, event.EnvMode, event.IdempotencyKey, err.Error())
-		return nil
+	// Skip for exits — only new entries should count toward the whipsaw circuit breaker.
+	if !intent.Direction.IsExit() {
+		if err := s.killSwitch.RecordStop(event.TenantID, intent.Symbol); err != nil {
+			l.Warn().Err(err).Msg("kill switch tripped — aborting broker submission")
+			s.emit(ctx, domain.EventCircuitBreakerTripped, event.TenantID, event.EnvMode, event.IdempotencyKey, err.Error())
+			return nil
+		}
 	}
 
 	// 5. Check daily loss circuit breaker.
@@ -458,6 +464,52 @@ func (s *Service) runFillListener(ctx context.Context, ch <-chan ports.OrderUpda
 			s.handleOrderUpdate(update)
 		}
 	}
+}
+
+func (s *Service) handleRiskDowngrade(ctx context.Context, event domain.Event) error {
+	payload, ok := event.Payload.(map[string]any)
+	if !ok {
+		return nil
+	}
+	symbol, _ := payload["symbol"].(string)
+	if symbol == "" {
+		return nil
+	}
+
+	var cancelled int
+	s.pendingOrders.Range(func(key, value any) bool {
+		brokerOrderID := key.(string)
+		po := value.(*pendingOrder)
+		if string(po.intent.Symbol) != symbol {
+			return true
+		}
+		if po.intent.Direction.IsExit() {
+			return true
+		}
+
+		s.log.Warn().
+			Str("symbol", symbol).
+			Str("broker_order_id", brokerOrderID).
+			Msg("cancelling pending entry order due to risk downgrade")
+
+		if err := s.broker.CancelOrder(ctx, brokerOrderID); err != nil {
+			s.log.Warn().Err(err).
+				Str("broker_order_id", brokerOrderID).
+				Msg("failed to cancel pending order on risk downgrade — may already be terminal")
+		} else {
+			cancelled++
+		}
+		return true
+	})
+
+	if cancelled > 0 {
+		s.log.Info().
+			Str("symbol", symbol).
+			Int("cancelled", cancelled).
+			Msg("pending entry orders cancelled due to risk downgrade")
+	}
+
+	return nil
 }
 
 func (s *Service) handleOrderUpdate(update ports.OrderUpdate) {
