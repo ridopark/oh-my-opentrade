@@ -77,6 +77,12 @@ func (ft *feedTracker) recordBar() {
 	ft.mu.Unlock()
 }
 
+func (ft *feedTracker) resetBarTimer() {
+	ft.mu.Lock()
+	ft.lastBarAt = time.Now()
+	ft.mu.Unlock()
+}
+
 func (ft *feedTracker) recordError(err error) {
 	ft.mu.Lock()
 	if err != nil {

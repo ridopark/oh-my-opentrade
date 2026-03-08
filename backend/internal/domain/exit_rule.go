@@ -23,6 +23,18 @@ const (
 
 func (e ExitRuleType) String() string { return string(e) }
 
+// RequiresPrice reports whether this exit rule type needs a live, non-stale
+// price to evaluate. Time-only rules (MAX_HOLDING_TIME, EOD_FLATTEN) return
+// false so the position monitor can fire them even during data outages.
+func (e ExitRuleType) RequiresPrice() bool {
+	switch e {
+	case ExitRuleMaxHoldingTime, ExitRuleEODFlatten:
+		return false
+	default:
+		return true
+	}
+}
+
 // NewExitRuleType validates an exit rule type string.
 func NewExitRuleType(s string) (ExitRuleType, error) {
 	switch ExitRuleType(s) {
@@ -78,22 +90,23 @@ type EntryThesis struct {
 // MonitoredPosition tracks an open position with its high-water mark and exit rules.
 // It is owned by the position monitor actor and must not be shared across goroutines.
 type MonitoredPosition struct {
-	Symbol         Symbol
-	EntryPrice     float64
-	EntryTime      time.Time
-	HighWaterMark  float64
-	LowWaterMark   float64
-	Strategy       string
-	AssetClass     AssetClass
-	ExitRules      []ExitRule
-	TenantID       string
-	EnvMode        EnvMode
-	Quantity       float64
-	ExitPending    bool // true when an exit intent has been emitted and is awaiting terminal outcome
-	ExitPendingAt  time.Time
-	ExitOrderID    string       // broker order ID of the active exit order (for cancel-and-chase)
-	ExitRetryCount int          // number of exit attempts; used to escalate price aggressiveness
-	EntryThesis    *EntryThesis // nil if no AI enrichment was available at entry
+	Symbol           Symbol
+	EntryPrice       float64
+	EntryTime        time.Time
+	HighWaterMark    float64
+	LowWaterMark     float64
+	Strategy         string
+	AssetClass       AssetClass
+	ExitRules        []ExitRule
+	InitialExitRules []ExitRule // original config values; never modified after creation
+	TenantID         string
+	EnvMode          EnvMode
+	Quantity         float64
+	ExitPending      bool // true when an exit intent has been emitted and is awaiting terminal outcome
+	ExitPendingAt    time.Time
+	ExitOrderID      string       // broker order ID of the active exit order (for cancel-and-chase)
+	ExitRetryCount   int          // number of exit attempts; used to escalate price aggressiveness
+	EntryThesis      *EntryThesis // nil if no AI enrichment was available at entry
 
 	LastRevaluation   *RiskRevaluation `json:"lastRevaluation,omitempty"`
 	LastRevaluationAt time.Time        `json:"lastRevaluationAt,omitempty"`
@@ -119,19 +132,29 @@ func NewMonitoredPosition(
 	if quantity <= 0 {
 		return MonitoredPosition{}, fmt.Errorf("quantity must be positive, got %v", quantity)
 	}
+	initialRules := make([]ExitRule, len(exitRules))
+	for i, r := range exitRules {
+		params := make(map[string]float64, len(r.Params))
+		for k, v := range r.Params {
+			params[k] = v
+		}
+		initialRules[i] = ExitRule{Type: r.Type, Params: params}
+	}
+
 	return MonitoredPosition{
-		Symbol:        symbol,
-		EntryPrice:    entryPrice,
-		EntryTime:     entryTime,
-		HighWaterMark: entryPrice,
-		LowWaterMark:  entryPrice,
-		Strategy:      strategy,
-		AssetClass:    assetClass,
-		ExitRules:     exitRules,
-		TenantID:      tenantID,
-		EnvMode:       envMode,
-		Quantity:      quantity,
-		CustomState:   make(map[string]float64),
+		Symbol:           symbol,
+		EntryPrice:       entryPrice,
+		EntryTime:        entryTime,
+		HighWaterMark:    entryPrice,
+		LowWaterMark:     entryPrice,
+		Strategy:         strategy,
+		AssetClass:       assetClass,
+		ExitRules:        exitRules,
+		InitialExitRules: initialRules,
+		TenantID:         tenantID,
+		EnvMode:          envMode,
+		Quantity:         quantity,
+		CustomState:      make(map[string]float64),
 	}, nil
 }
 
