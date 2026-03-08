@@ -250,13 +250,14 @@ func (r *Revaluator) triggerExit(ctx context.Context, pos domain.MonitoredPositi
 	idempotencyKey := fmt.Sprintf("REVAL_EXIT:%s:%s:%s:%d",
 		pos.TenantID, pos.EnvMode, pos.Symbol, pos.EntryTime.Unix())
 
+	exitPrice := currentPrice * 0.98 // IOC aggressive: 2% buffer for sells
 	intent, err := domain.NewOrderIntent(
 		uuid.New(),
 		pos.TenantID,
 		pos.EnvMode,
 		pos.Symbol,
 		domain.DirectionCloseLong,
-		currentPrice,
+		exitPrice,
 		0,
 		0,
 		pos.Quantity,
@@ -269,6 +270,8 @@ func (r *Revaluator) triggerExit(ctx context.Context, pos domain.MonitoredPositi
 		r.log.Error().Err(err).Str("symbol", string(pos.Symbol)).Msg("failed to create revaluation exit intent")
 		return
 	}
+	intent.OrderType = "limit"
+	intent.TimeInForce = "ioc"
 
 	r.emit(ctx, domain.EventOrderIntentCreated, pos.TenantID, pos.EnvMode, idempotencyKey, intent)
 
