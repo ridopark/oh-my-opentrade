@@ -50,6 +50,7 @@ symbols:
         - "SOL/USD"
         - "AVAX/USD"
         - "DOGE/USD"
+        - "PEPE/USD"
       timeframe: "1m"
 
 server:
