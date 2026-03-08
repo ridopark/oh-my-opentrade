@@ -60,3 +60,7 @@ stop_tight_mult = 0.70
 stop_wide_mult = 1.50
 size_tight_mult = 0.70
 size_wide_mult = 1.20
+
+[risk_revaluation]
+enabled = true
+interval_minutes = 5

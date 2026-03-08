@@ -46,6 +46,7 @@ const (
 	EventStrategySignalLifecycle EventType = "StrategySignalLifecycle"
 	EventStrategyStateSnapshot   EventType = "StrategyStateSnapshot"
 	EventExitTriggered           EventType = "ExitTriggered"
+	EventRiskRevaluated          EventType = "RiskRevaluated"
 	EventTradeReceived           EventType = "TradeReceived"
 	EventTradeRealized           EventType = "TradeRealized"
 	EventFormingBar              EventType = "FormingBar"

@@ -714,3 +714,37 @@ func (s *Service) LookupPosition(symbol string) (domain.MonitoredPosition, bool)
 	}
 	return *pos, true
 }
+
+func (s *Service) ListPositions() []domain.MonitoredPosition {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	positions := make([]domain.MonitoredPosition, 0, len(s.positions))
+	for _, pos := range s.positions {
+		positions = append(positions, *pos)
+	}
+	return positions
+}
+
+func (s *Service) ApplyRevaluation(key string, result *domain.RiskRevaluation) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pos, ok := s.positions[key]
+	if !ok {
+		return
+	}
+	pos.LastRevaluation = result
+	pos.LastRevaluationAt = result.EvaluatedAt
+	if result.Action == domain.RiskActionTighten {
+		pos.ExitRules = applyRiskModifierToExitRules(pos.ExitRules, result.UpdatedModifier)
+	}
+}
+
+func (s *Service) SetEntryThesis(key string, thesis *domain.EntryThesis) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pos, ok := s.positions[key]
+	if !ok {
+		return
+	}
+	pos.EntryThesis = thesis
+}

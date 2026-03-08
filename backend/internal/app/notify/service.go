@@ -53,6 +53,7 @@ func (s *Service) Start(ctx context.Context) error {
 		{domain.EventCircuitBreakerTripped, s.fmtCircuitBreaker},
 		{domain.EventDebateCompleted, s.fmtDebateCompleted},
 		{domain.EventSignalEnriched, s.fmtSignalEnriched},
+		{domain.EventRiskRevaluated, s.fmtRiskRevaluated},
 	}
 
 	for _, e := range events {
@@ -230,4 +231,48 @@ func (s *Service) fmtDebateCompleted(ev domain.Event) string {
 		return msg
 	}
 	return "🤖 AI Debate completed"
+}
+
+func (s *Service) fmtRiskRevaluated(ev domain.Event) string {
+	r, ok := ev.Payload.(domain.RiskRevaluationEvent)
+	if !ok {
+		return "🔍 Risk Re-evaluation completed"
+	}
+
+	thesisEmoji := "✅"
+	switch r.ThesisStatus {
+	case domain.ThesisDegrading:
+		thesisEmoji = "⚠️"
+	case domain.ThesisInvalidated:
+		thesisEmoji = "🚨"
+	}
+
+	actionEmoji := "📊"
+	switch r.Action {
+	case domain.RiskActionTighten:
+		actionEmoji = "🔒"
+	case domain.RiskActionScaleOut:
+		actionEmoji = "📉"
+	case domain.RiskActionExit:
+		actionEmoji = "🚪"
+	}
+
+	pnlEmoji := "📈"
+	if r.UnrealizedPnL < 0 {
+		pnlEmoji = "📉"
+	}
+
+	msg := fmt.Sprintf("🔍 Risk Re-evaluation: %s (%s)", r.Symbol, r.Strategy)
+	msg += fmt.Sprintf("\n%s Position: Entry $%.2f → Now $%.2f (%+.2f%%)",
+		pnlEmoji, r.EntryPrice, r.CurrentPrice, r.UnrealizedPnL*100)
+	msg += fmt.Sprintf("\n⏱️ Held: %s", r.HoldDuration)
+	msg += fmt.Sprintf("\n%s Thesis: %s", thesisEmoji, r.ThesisStatus)
+	msg += fmt.Sprintf("\n%s Action: %s (Risk: %s, Confidence: %.0f%%)",
+		actionEmoji, r.Action, r.UpdatedModifier, r.Confidence*100)
+
+	if r.Reasoning != "" {
+		msg += fmt.Sprintf("\n💡 %s", r.Reasoning)
+	}
+
+	return msg
 }

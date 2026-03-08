@@ -164,6 +164,34 @@ func main() {
 		positionmonitor.WithRepo(repo),
 	)
 
+	// 5a-risk-reval: Position revaluator (AI-driven periodic risk re-evaluation).
+	var riskAssessor ports.RiskAssessorPort
+	if cfg.AI.Enabled {
+		var raOpts []llm.RiskAssessorOption
+		if cfg.AI.ProviderSort != "" {
+			raOpts = append(raOpts, llm.WithRiskAssessorProviderRouting(cfg.AI.ProviderSort, nil))
+		}
+		riskAssessor = llm.NewRiskAssessor(cfg.AI.BaseURL, cfg.AI.Model, cfg.AI.APIKey, nil, raOpts...)
+		log.Info().Msg("Risk assessor initialized (real LLM)")
+	} else {
+		riskAssessor = llm.NewNoOpRiskAssessor()
+		log.Info().Msg("Risk assessor initialized (no-op — LLM disabled)")
+	}
+	revaluatorInterval := 5 * time.Minute
+	posRevaluator := positionmonitor.NewRevaluator(
+		posMonitor,
+		riskAssessor,
+		eventBus,
+		func(symbol string) (domain.IndicatorSnapshot, bool) {
+			return monitorSvc.GetLastSnapshot(symbol)
+		},
+		nil,
+		revaluatorInterval,
+		"default",
+		domain.EnvModePaper,
+		log.With().Str("component", "position_revaluator").Logger(),
+	)
+
 	// 5a. Initialize notification adapters (gracefully no-op if tokens not set)
 	var notifiers []ports.NotifierPort
 	if cfg.Notification.TelegramBotToken != "" && cfg.Notification.TelegramChatID != "" {
@@ -472,6 +500,9 @@ func main() {
 	}
 	if err := posMonitor.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start position monitor")
+	}
+	if err := posRevaluator.Start(ctx); err != nil {
+		log.Fatal().Err(err).Msg("failed to start position revaluator")
 	}
 	if !useStrategyV2 {
 		if err := strategySvc.Start(ctx); err != nil {
