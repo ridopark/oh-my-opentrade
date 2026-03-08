@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -231,22 +232,89 @@ func (s *Service) getOrGenerateChart(ctx context.Context, symbol string) ([]byte
 }
 
 func (s *Service) fmtOrderSubmitted(ev domain.Event) string {
-	if p, ok := ev.Payload.(domain.OrderIntentEventPayload); ok {
-		emoji := "📤"
-		action := "Order Submitted"
-		if p.Direction == string(domain.DirectionCloseLong) {
-			emoji = "📕"
-			action = "Exit Submitted"
-		}
-		msg := fmt.Sprintf("%s %s: %s %s @ $%.2f (qty: %.2f)",
-			emoji, action, p.Direction, p.Symbol, p.LimitPrice, p.Quantity)
-		msg += fmt.Sprintf("\n📊 Strategy: %s | Confidence: %.0f%%", p.Strategy, p.Confidence*100)
-		if p.Rationale != "" {
-			msg += fmt.Sprintf("\n💡 Rationale: %s", p.Rationale)
-		}
-		return msg
+	p, ok := ev.Payload.(domain.OrderIntentEventPayload)
+	if !ok {
+		return "📤 Order Submitted"
 	}
-	return "📤 Order Submitted"
+
+	emoji := "📤"
+	action := "Order Submitted"
+	isExit := p.Direction == string(domain.DirectionCloseLong)
+	if isExit {
+		emoji = "📕"
+		action = "Exit Submitted"
+	}
+	msg := fmt.Sprintf("%s %s: %s %s @ $%.2f (qty: %.2f)",
+		emoji, action, p.Direction, p.Symbol, p.LimitPrice, p.Quantity)
+	msg += fmt.Sprintf("\n📊 Strategy: %s | Confidence: %.0f%%", p.Strategy, p.Confidence*100)
+
+	if !isExit && p.StopLoss > 0 {
+		stopPct := (p.LimitPrice - p.StopLoss) / p.LimitPrice * 100
+		msg += fmt.Sprintf("\n🛑 Stop Loss: $%.2f (%.2f%%)", p.StopLoss, stopPct)
+	}
+
+	if !isExit {
+		if raw, ok := p.Meta["exit_rules"]; ok {
+			msg += fmtExitRules(raw, p.LimitPrice)
+		}
+	}
+
+	if p.Rationale != "" {
+		msg += fmt.Sprintf("\n💡 Rationale: %s", p.Rationale)
+	}
+	return msg
+}
+
+func fmtExitRules(rawJSON string, entryPrice float64) string {
+	type ruleWire struct {
+		Type   string             `json:"type"`
+		Params map[string]float64 `json:"params"`
+	}
+	var rules []ruleWire
+	if err := json.Unmarshal([]byte(rawJSON), &rules); err != nil || len(rules) == 0 {
+		return ""
+	}
+
+	msg := "\n📐 Exit Rules:"
+	for _, r := range rules {
+		switch r.Type {
+		case "VOLATILITY_STOP":
+			if m, ok := r.Params["atr_multiplier"]; ok {
+				msg += fmt.Sprintf("\n  VOLATILITY_STOP: %.1fx ATR", m)
+			}
+		case "SD_TARGET":
+			if sd, ok := r.Params["sd_level"]; ok {
+				msg += fmt.Sprintf("\n  SD_TARGET: %.1f SD", sd)
+			}
+		case "MAX_LOSS":
+			if pct, ok := r.Params["pct"]; ok {
+				msg += fmt.Sprintf("\n  MAX_LOSS: %.1f%%", pct*100)
+				if entryPrice > 0 {
+					msg += fmt.Sprintf(" ($%.2f)", entryPrice*(1-pct))
+				}
+			}
+		case "MAX_HOLDING_TIME":
+			if min, ok := r.Params["minutes"]; ok {
+				msg += fmt.Sprintf("\n  MAX_HOLD: %.0fm", min)
+			}
+		case "STAGNATION_EXIT":
+			if min, ok := r.Params["minutes"]; ok {
+				msg += fmt.Sprintf("\n  STAGNATION: %.0fm", min)
+				if sd, ok := r.Params["sd_threshold"]; ok {
+					msg += fmt.Sprintf(" (< %.1f SD move)", sd)
+				}
+			}
+		case "TRAILING_STOP":
+			if pct, ok := r.Params["pct"]; ok {
+				msg += fmt.Sprintf("\n  TRAILING_STOP: %.2f%%", pct*100)
+			}
+		case "STEP_STOP":
+			msg += "\n  STEP_STOP: enabled"
+		default:
+			msg += fmt.Sprintf("\n  %s", r.Type)
+		}
+	}
+	return msg
 }
 
 func (s *Service) fmtSignalEnriched(ev domain.Event) string {

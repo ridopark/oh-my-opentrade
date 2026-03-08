@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -439,6 +440,20 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		"enrichment_status": string(enrichment.Status),
 		"risk_modifier":     string(enrichment.RiskModifier),
 		"dynamic_stop_bps":  strconv.Itoa(stopBPS),
+	}
+
+	if spec != nil && len(spec.ExitRules) > 0 {
+		type ruleWire struct {
+			Type   string             `json:"type"`
+			Params map[string]float64 `json:"params"`
+		}
+		wire := make([]ruleWire, len(spec.ExitRules))
+		for i, r := range spec.ExitRules {
+			wire[i] = ruleWire{Type: string(r.Type), Params: r.Params}
+		}
+		if raw, err := json.Marshal(wire); err == nil {
+			intent.Meta["exit_rules"] = string(raw)
+		}
 	}
 
 	rs.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)
