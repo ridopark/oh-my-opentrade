@@ -241,9 +241,10 @@ func (a *Adapter) GetAccountBuyingPower(ctx context.Context) (ports.BuyingPower,
 		return ports.BuyingPower{}, err
 	}
 	return ports.BuyingPower{
-		DayTradingBuyingPower: bp.DayTradingBuyingPower,
-		EffectiveBuyingPower:  bp.EffectiveBuyingPower,
-		PatternDayTrader:      bp.PatternDayTrader,
+		DayTradingBuyingPower:    bp.DayTradingBuyingPower,
+		EffectiveBuyingPower:     bp.EffectiveBuyingPower,
+		NonMarginableBuyingPower: bp.NonMarginableBuyingPower,
+		PatternDayTrader:         bp.PatternDayTrader,
 	}, nil
 }
 

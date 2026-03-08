@@ -266,7 +266,7 @@ func main() {
 		if err := execSvc.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start execution service")
 		}
-		if err := ledgerWriter.Start(ctx); err != nil {
+		if err := ledgerWriter.Start(ctx, "backtest", domain.EnvModePaper); err != nil {
 			log.Fatal().Err(err).Msg("failed to start ledger writer")
 		}
 

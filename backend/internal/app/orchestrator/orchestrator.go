@@ -168,7 +168,7 @@ func (o *AccountOrchestrator) startAccount(h *AccountHandle) error {
 	if h.LedgerWriter == nil || h.Execution == nil {
 		return fmt.Errorf("orchestrator: tenant %q missing required services", h.TenantID)
 	}
-	if err := h.LedgerWriter.Start(ctx); err != nil {
+	if err := h.LedgerWriter.Start(ctx, h.TenantID, h.EnvMode); err != nil {
 		return fmt.Errorf("orchestrator: tenant %q ledger start: %w", h.TenantID, err)
 	}
 	if err := h.Execution.Start(ctx); err != nil {

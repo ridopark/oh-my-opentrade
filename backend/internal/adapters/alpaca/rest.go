@@ -533,9 +533,10 @@ func (c *RESTClient) GetAccountEquity(ctx context.Context) (float64, error) {
 
 // AccountBuyingPower holds the buying power fields from the Alpaca /v2/account response.
 type AccountBuyingPower struct {
-	DayTradingBuyingPower float64
-	EffectiveBuyingPower  float64
-	PatternDayTrader      bool
+	DayTradingBuyingPower    float64
+	EffectiveBuyingPower     float64
+	NonMarginableBuyingPower float64
+	PatternDayTrader         bool
 }
 
 // GetAccountBuyingPower fetches DTBP, effective buying power, and PDT flag from /v2/account.
@@ -552,24 +553,28 @@ func (c *RESTClient) GetAccountBuyingPower(ctx context.Context) (AccountBuyingPo
 		return AccountBuyingPower{}, fmt.Errorf("alpaca: get account buying power failed (status %d): %s", resp.StatusCode, string(body))
 	}
 	var res struct {
-		DayTradingBuyingPower string `json:"daytrading_buying_power"`
-		EffectiveBuyingPower  string `json:"effective_buying_power"`
-		PatternDayTrader      bool   `json:"pattern_day_trader"`
+		DayTradingBuyingPower    string `json:"daytrading_buying_power"`
+		EffectiveBuyingPower     string `json:"effective_buying_power"`
+		NonMarginableBuyingPower string `json:"non_marginable_buying_power"`
+		PatternDayTrader         bool   `json:"pattern_day_trader"`
 	}
 	if err := json.Unmarshal(body, &res); err != nil {
 		return AccountBuyingPower{}, fmt.Errorf("alpaca: failed to decode account buying power: %w", err)
 	}
 	dtbp, _ := strconv.ParseFloat(res.DayTradingBuyingPower, 64)
 	ebp, _ := strconv.ParseFloat(res.EffectiveBuyingPower, 64)
+	nmbp, _ := strconv.ParseFloat(res.NonMarginableBuyingPower, 64)
 	c.log.Debug().
 		Float64("dtbp", dtbp).
 		Float64("effective_bp", ebp).
+		Float64("non_marginable_bp", nmbp).
 		Bool("pdt", res.PatternDayTrader).
 		Msg("account buying power retrieved")
 	return AccountBuyingPower{
-		DayTradingBuyingPower: dtbp,
-		EffectiveBuyingPower:  ebp,
-		PatternDayTrader:      res.PatternDayTrader,
+		DayTradingBuyingPower:    dtbp,
+		EffectiveBuyingPower:     ebp,
+		NonMarginableBuyingPower: nmbp,
+		PatternDayTrader:         res.PatternDayTrader,
 	}, nil
 }
 
