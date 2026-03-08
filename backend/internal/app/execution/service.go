@@ -227,7 +227,19 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		}
 	}
 
-	// 5a. For exit intents, resolve the full position quantity from the broker.
+	// 5c. For exit intents, acquire exit inflight lock to prevent double-selling.
+	if intent.Direction.IsExit() && s.positionGate != nil {
+		if !s.positionGate.TryMarkInflightExit(event.TenantID, event.EnvMode, intent.Symbol) {
+			l.Warn().Msg("exit already inflight — rejecting to prevent double-sell")
+			if s.metrics != nil {
+				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "inflight_exit").Inc()
+			}
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, "position_gate: inflight_exit"))
+			return nil
+		}
+	}
+
+	// 5d. For exit intents, resolve the full position quantity from the broker.
 	if intent.Direction.IsExit() {
 		positions, posErr := s.broker.GetPositions(ctx, event.TenantID, event.EnvMode)
 		if posErr != nil {
@@ -247,6 +259,14 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			return nil
 		}
 		intent.Quantity = posQty
+		if intent.TimeInForce == "" {
+			intent.TimeInForce = "ioc"
+			buffer := 0.002 // 20bps for crypto
+			if intent.AssetClass != domain.AssetClassCrypto {
+				buffer = 0.001 // 10bps for equities
+			}
+			intent.LimitPrice = intent.LimitPrice * (1 - buffer)
+		}
 		l.Info().Float64("exit_qty", posQty).Msg("resolved exit quantity from broker position")
 	}
 
@@ -263,6 +283,13 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			s.metrics.Orders.Total.WithLabelValues("alpaca", intent.Strategy, side, "limit", "rejected").Inc()
 			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "api").Inc()
 			s.metrics.Orders.SubmitLat.WithLabelValues("alpaca", intent.Strategy, "limit").Observe(time.Since(submitStart).Seconds())
+		}
+		if intent.Direction.IsExit() && s.positionGate != nil {
+			s.positionGate.ClearInflightExit(event.TenantID, event.EnvMode, intent.Symbol)
+			s.emit(ctx, domain.EventExitOrderTerminal, event.TenantID, event.EnvMode, intent.ID.String(), map[string]any{
+				"symbol":          string(intent.Symbol),
+				"broker_order_id": "",
+			})
 		}
 		s.emit(ctx, domain.EventOrderRejected, event.TenantID, event.EnvMode, intent.ID.String(), err.Error())
 		return nil
@@ -535,16 +562,28 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 		s.metrics.Orders.FillLat.WithLabelValues("alpaca", po.intent.Strategy).Observe(time.Since(po.submitStart).Seconds())
 	}
 
-	if s.positionGate != nil && isEntry(po.intent) {
-		s.positionGate.ClearInflight(po.tenantID, po.envMode, po.intent.Symbol)
+	if s.positionGate != nil {
+		if isEntry(po.intent) {
+			s.positionGate.ClearInflight(po.tenantID, po.envMode, po.intent.Symbol)
+		}
 	}
 }
 
 func (s *Service) cleanupPendingOrder(brokerOrderID string) {
-	if raw, ok := s.pendingOrders.LoadAndDelete(brokerOrderID); ok {
-		po := raw.(*pendingOrder)
-		if s.positionGate != nil && isEntry(po.intent) {
+	raw, ok := s.pendingOrders.LoadAndDelete(brokerOrderID)
+	if !ok {
+		return
+	}
+	po := raw.(*pendingOrder)
+	if s.positionGate != nil {
+		if isEntry(po.intent) {
 			s.positionGate.ClearInflight(po.tenantID, po.envMode, po.intent.Symbol)
+		} else if po.intent.Direction.IsExit() {
+			s.positionGate.ClearInflightExit(po.tenantID, po.envMode, po.intent.Symbol)
+			s.emit(context.Background(), domain.EventExitOrderTerminal, po.tenantID, po.envMode, brokerOrderID, map[string]any{
+				"symbol":          string(po.intent.Symbol),
+				"broker_order_id": brokerOrderID,
+			})
 		}
 	}
 }
