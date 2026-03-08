@@ -2,6 +2,7 @@ package strategy_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -72,6 +73,9 @@ func (m *mockRepository) SaveThoughtLog(_ context.Context, tl domain.ThoughtLog)
 
 func (m *mockRepository) GetThoughtLogsByIntentID(context.Context, string) ([]domain.ThoughtLog, error) {
 	return nil, nil
+}
+func (m *mockRepository) UpdateTradeThesis(context.Context, string, domain.EnvMode, domain.Symbol, json.RawMessage) error {
+	return nil
 }
 
 func (f *fakeAIAdvisor) RequestDebate(ctx context.Context, symbol domain.Symbol, regime domain.MarketRegime, indicators domain.IndicatorSnapshot, opts ...ports.DebateOption) (*domain.AdvisoryDecision, error) {

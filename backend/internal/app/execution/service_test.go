@@ -216,6 +216,87 @@ func TestService_KillSwitchHalted(t *testing.T) {
 	assert.Contains(t, emittedEvents, domain.EventKillSwitchEngaged)
 }
 
+func TestService_KillSwitchDoesNotBlockExitIntents(t *testing.T) {
+	bus := memory.NewBus()
+	broker := &mockBroker{
+		GetPositionsFunc: func(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
+			trade, _ := domain.NewTrade(
+				time.Now(), tenantID, envMode, uuid.New(),
+				"BTCUSD", "long", 1.0, 50000, 0, "FILLED", "strategy-1", "test",
+			)
+			return []domain.Trade{trade}, nil
+		},
+	}
+	repo := &mockRepository{}
+	quoteProvider := &mockQuoteProvider{Bid: 49950.0, Ask: 50050.0}
+
+	nowFunc := func() time.Time { return time.Now() }
+	killSwitch := execution.NewKillSwitch(1, 2*time.Minute, 15*time.Minute, nowFunc)
+	_ = killSwitch.RecordStop("tenant-1", "BTCUSD") // trip it immediately
+
+	svc := execution.NewService(bus, broker, repo,
+		execution.NewRiskEngine(0.02),
+		execution.NewSlippageGuard(quoteProvider),
+		killSwitch, nil, 100000.0, zerolog.Nop(),
+	)
+
+	require.NoError(t, svc.Start(context.Background()))
+
+	var emittedEvents []string
+	subscribeAll(t, bus, []string{
+		domain.EventOrderSubmitted,
+		domain.EventKillSwitchEngaged,
+	}, &emittedEvents)
+
+	exitEvt := createExitOrderIntentEvent(t, domain.DirectionCloseLong)
+	require.NoError(t, bus.Publish(context.Background(), exitEvt))
+
+	assert.Equal(t, 1, broker.SubmitOrderCalls, "exit should reach broker even with kill switch tripped")
+	assert.Contains(t, emittedEvents, domain.EventOrderSubmitted)
+	assert.NotContains(t, emittedEvents, domain.EventKillSwitchEngaged)
+}
+
+func TestService_ExitIntentsDoNotTripKillSwitch(t *testing.T) {
+	bus := memory.NewBus()
+	broker := &mockBroker{
+		GetPositionsFunc: func(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
+			trade, _ := domain.NewTrade(
+				time.Now(), tenantID, envMode, uuid.New(),
+				"BTCUSD", "long", 1.0, 50000, 0, "FILLED", "strategy-1", "test",
+			)
+			return []domain.Trade{trade}, nil
+		},
+	}
+	repo := &mockRepository{}
+	quoteProvider := &mockQuoteProvider{Bid: 49950.0, Ask: 50050.0}
+
+	nowFunc := func() time.Time { return time.Now() }
+	killSwitch := execution.NewKillSwitch(1, 2*time.Minute, 15*time.Minute, nowFunc)
+
+	svc := execution.NewService(bus, broker, repo,
+		execution.NewRiskEngine(0.02),
+		execution.NewSlippageGuard(quoteProvider),
+		killSwitch, nil, 100000.0, zerolog.Nop(),
+	)
+
+	require.NoError(t, svc.Start(context.Background()))
+
+	var emittedEvents []string
+	subscribeAll(t, bus, []string{
+		domain.EventCircuitBreakerTripped,
+		domain.EventOrderSubmitted,
+	}, &emittedEvents)
+
+	// Submit 3 exit intents — none should trip the kill switch (maxStops=1).
+	for i := 0; i < 3; i++ {
+		exitEvt := createExitOrderIntentEvent(t, domain.DirectionCloseLong)
+		require.NoError(t, bus.Publish(context.Background(), exitEvt))
+	}
+
+	assert.NotContains(t, emittedEvents, domain.EventCircuitBreakerTripped)
+	assert.False(t, killSwitch.IsHalted("tenant-1", "BTCUSD"), "exits should not trip the kill switch")
+}
+
 func TestService_BrokerError(t *testing.T) {
 	svc, bus, broker, _ := setupTestService(t)
 	err := svc.Start(context.Background())

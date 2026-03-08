@@ -104,7 +104,7 @@ func (r *Revaluator) handleSignalEnriched(_ context.Context, event domain.Event)
 	return nil
 }
 
-func (r *Revaluator) handleFillReceived(_ context.Context, event domain.Event) error {
+func (r *Revaluator) handleFillReceived(ctx context.Context, event domain.Event) error {
 	payload, ok := event.Payload.(map[string]any)
 	if !ok {
 		return nil
@@ -128,12 +128,13 @@ func (r *Revaluator) handleFillReceived(_ context.Context, event domain.Event) e
 
 	key := fmt.Sprintf("%s:%s:%s", r.tenantID, r.envMode, symbol)
 	r.posMonitor.SetEntryThesis(key, thesis)
+	r.posMonitor.PersistThesis(ctx, domain.Symbol(symbol), thesis)
 
 	r.log.Info().
 		Str("symbol", symbol).
 		Float64("confidence", thesis.Confidence).
 		Str("direction", string(thesis.Direction)).
-		Msg("entry thesis attached to monitored position")
+		Msg("entry thesis attached and persisted")
 
 	return nil
 }
@@ -237,6 +238,16 @@ func (r *Revaluator) evaluatePosition(ctx context.Context, pos domain.MonitoredP
 		Str("action", string(result.Action)).
 		Float64("confidence", result.Confidence).
 		Msg("risk re-evaluation complete")
+
+	if result.ThesisStatus == domain.ThesisDegrading || result.ThesisStatus == domain.ThesisInvalidated {
+		downgradeKey := fmt.Sprintf("DOWNGRADE:%s:%s:%s:%d", pos.TenantID, pos.EnvMode, pos.Symbol, time.Now().Unix())
+		r.emit(ctx, domain.EventRiskDowngraded, pos.TenantID, pos.EnvMode, downgradeKey, map[string]any{
+			"symbol":        string(pos.Symbol),
+			"thesis_status": string(result.ThesisStatus),
+			"action":        string(result.Action),
+			"confidence":    result.Confidence,
+		})
+	}
 
 	switch result.Action {
 	case domain.RiskActionTighten:

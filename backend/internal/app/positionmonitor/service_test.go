@@ -2,6 +2,7 @@ package positionmonitor
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -122,6 +123,9 @@ func (m *mockRepo) ListOrders(ctx context.Context, q ports.OrderQuery) (ports.Or
 func (m *mockRepo) SaveThoughtLog(ctx context.Context, tl domain.ThoughtLog) error { return nil }
 func (m *mockRepo) GetThoughtLogsByIntentID(ctx context.Context, intentID string) ([]domain.ThoughtLog, error) {
 	return nil, nil
+}
+func (m *mockRepo) UpdateTradeThesis(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol, _ json.RawMessage) error {
+	return nil
 }
 
 type mockSpecStore struct {

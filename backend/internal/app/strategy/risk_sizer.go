@@ -23,6 +23,11 @@ import (
 // the block auto-expires rather than persisting indefinitely.
 const revalStateTTL = 10 * time.Minute
 
+// defaultExitCooldown is how long after an exit fill new entry signals
+// are blocked for the same symbol. Prevents whipsaw sell-then-rebuy
+// across strategy instances.
+const defaultExitCooldown = 60 * time.Second
+
 // RiskSizer subscribes to SignalEnriched events and converts enriched signals
 // into OrderIntents after applying position sizing and risk checks.
 type RiskSizer struct {
@@ -31,6 +36,7 @@ type RiskSizer struct {
 	mu            sync.RWMutex
 	accountEquity float64
 	revalState    sync.Map // symbol (string) → *domain.RiskRevaluation
+	exitCooldowns sync.Map // symbol (string) → time.Time (last exit fill timestamp)
 	logger        *slog.Logger
 }
 
@@ -56,7 +62,10 @@ func (rs *RiskSizer) Start(ctx context.Context) error {
 	if err := rs.eventBus.Subscribe(ctx, domain.EventRiskRevaluated, rs.handleRevaluation); err != nil {
 		return fmt.Errorf("risk sizer: failed to subscribe to RiskRevaluated: %w", err)
 	}
-	rs.logger.Info("risk sizer subscribed to SignalEnriched and RiskRevaluated events")
+	if err := rs.eventBus.Subscribe(ctx, domain.EventFillReceived, rs.handleFillForCooldown); err != nil {
+		return fmt.Errorf("risk sizer: failed to subscribe to FillReceived: %w", err)
+	}
+	rs.logger.Info("risk sizer subscribed to SignalEnriched, RiskRevaluated, and FillReceived events")
 	return nil
 }
 
@@ -85,6 +94,40 @@ func (rs *RiskSizer) handleRevaluation(_ context.Context, event domain.Event) er
 
 	rs.revalState.Store(sym, &reval.RiskRevaluation)
 	return nil
+}
+
+func (rs *RiskSizer) handleFillForCooldown(_ context.Context, event domain.Event) error {
+	payload, ok := event.Payload.(map[string]any)
+	if !ok {
+		return nil
+	}
+	symbol, _ := payload["symbol"].(string)
+	side, _ := payload["side"].(string)
+	if symbol == "" || side != "SELL" {
+		return nil
+	}
+	rs.exitCooldowns.Store(symbol, time.Now())
+	rs.logger.Info("exit cooldown set",
+		"symbol", symbol,
+		"cooldown", defaultExitCooldown.String(),
+	)
+	return nil
+}
+
+func (rs *RiskSizer) isSymbolInCooldown(symbol string) (time.Time, bool) {
+	raw, ok := rs.exitCooldowns.Load(symbol)
+	if !ok {
+		return time.Time{}, false
+	}
+	exitTime, ok := raw.(time.Time)
+	if !ok {
+		return time.Time{}, false
+	}
+	if time.Since(exitTime) > defaultExitCooldown {
+		rs.exitCooldowns.Delete(symbol)
+		return time.Time{}, false
+	}
+	return exitTime, true
 }
 
 func (rs *RiskSizer) isSymbolDegraded(symbol string) (*domain.RiskRevaluation, bool) {
@@ -169,6 +212,34 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 				Direction: string(signalDir),
 				Strategy:  strategyName,
 				Reason:    fmt.Sprintf("revaluation_gate: thesis %s (confidence %.0f%%)", reval.ThesisStatus, reval.Confidence*100),
+				Status:    domain.OrderIntentStatusRejected,
+			}
+			rs.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, rejection.ID, rejection)
+			return nil
+		}
+	}
+
+	if sigRef.SignalType == strat.SignalEntry.String() {
+		if exitTime, coolingDown := rs.isSymbolInCooldown(sigRef.Symbol); coolingDown {
+			strategyName := "unknown"
+			if hasStrategyID {
+				strategyName = strategyID.String()
+			}
+			signalDir := domain.DirectionLong
+			if sigRef.Side == strat.SideSell.String() {
+				signalDir = domain.DirectionShort
+			}
+			rs.logger.Warn("exit cooldown gate: entry blocked — recent exit",
+				"symbol", sigRef.Symbol,
+				"last_exit_at", exitTime,
+				"cooldown", defaultExitCooldown.String(),
+			)
+			rejection := domain.OrderIntentEventPayload{
+				ID:        uuid.NewString(),
+				Symbol:    sigRef.Symbol,
+				Direction: string(signalDir),
+				Strategy:  strategyName,
+				Reason:    fmt.Sprintf("exit_cooldown: last exit %.0fs ago (cooldown %s)", time.Since(exitTime).Seconds(), defaultExitCooldown),
 				Status:    domain.OrderIntentStatusRejected,
 			}
 			rs.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, rejection.ID, rejection)

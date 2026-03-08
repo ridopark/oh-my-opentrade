@@ -2,6 +2,7 @@ package monitor_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -95,6 +96,9 @@ func (m *mockRepository) ListOrders(_ context.Context, _ ports.OrderQuery) (port
 func (m *mockRepository) SaveThoughtLog(_ context.Context, _ domain.ThoughtLog) error { return nil }
 func (m *mockRepository) GetThoughtLogsByIntentID(_ context.Context, _ string) ([]domain.ThoughtLog, error) {
 	return nil, nil
+}
+func (m *mockRepository) UpdateTradeThesis(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol, _ json.RawMessage) error {
+	return nil
 }
 
 // mockDNAGate implements monitor.DNAGateChecker for tests.

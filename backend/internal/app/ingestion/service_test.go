@@ -1,18 +1,19 @@
 package ingestion_test
 
 import (
-"context"
-"errors"
-"testing"
-"time"
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+	"time"
 
-"github.com/rs/zerolog"
-"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
-"github.com/oh-my-opentrade/backend/internal/app/ingestion"
-"github.com/oh-my-opentrade/backend/internal/domain"
-"github.com/oh-my-opentrade/backend/internal/ports"
-"github.com/stretchr/testify/assert"
-"github.com/stretchr/testify/require"
+	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
+	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
+	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/ports"
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type mockRepository struct {
@@ -59,6 +60,9 @@ func (m *mockRepository) ListOrders(_ context.Context, _ ports.OrderQuery) (port
 func (m *mockRepository) SaveThoughtLog(_ context.Context, _ domain.ThoughtLog) error { return nil }
 func (m *mockRepository) GetThoughtLogsByIntentID(_ context.Context, _ string) ([]domain.ThoughtLog, error) {
 	return nil, nil
+}
+func (m *mockRepository) UpdateTradeThesis(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol, _ json.RawMessage) error {
+	return nil
 }
 
 func createTestEvent(t *testing.T, payload any) domain.Event {

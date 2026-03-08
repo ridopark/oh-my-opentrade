@@ -18,12 +18,12 @@ import (
 const (
 	queryInsertMarketBar   = `INSERT INTO market_bars (time, account_id, env_mode, symbol, timeframe, open, high, low, close, volume, suspect) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (symbol, timeframe, time) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume, suspect=EXCLUDED.suspect`
 	querySelectMarketBars  = `SELECT time, symbol, timeframe, open, high, low, close, volume, suspect FROM market_bars WHERE symbol = $1 AND timeframe = $2 AND time >= $3 AND time < $4 ORDER BY time`
-	queryInsertTrade       = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status, strategy, rationale) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
-	querySelectTrades      = `SELECT time, trade_id, symbol, side, quantity, price, commission, status, COALESCE(strategy, ''), COALESCE(rationale, '') FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4 ORDER BY time`
+	queryInsertTrade       = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status, strategy, rationale, thesis) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
+	querySelectTrades      = `SELECT time, trade_id, symbol, side, quantity, price, commission, status, COALESCE(strategy, ''), COALESCE(rationale, ''), thesis FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4 ORDER BY time`
 	queryInsertStrategyDNA = `INSERT INTO strategy_dna_history (time, account_id, env_mode, strategy_id, version, parameters, performance) VALUES ($1, $2, $3, $4, $5, $6, $7)`
 	querySelectLatestDNA   = `SELECT time, strategy_id, version, parameters, performance FROM strategy_dna_history WHERE account_id = $1 AND env_mode = $2 ORDER BY time DESC LIMIT 1`
-	queryInsertOrder     = `INSERT INTO orders (time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, strategy, rationale, confidence) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (broker_order_id) DO NOTHING`
-	queryUpdateOrderFill = `UPDATE orders SET status = 'filled', filled_at = $2, filled_price = $3, filled_qty = $4 WHERE broker_order_id = $1`
+	queryInsertOrder       = `INSERT INTO orders (time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, strategy, rationale, confidence) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (broker_order_id) DO NOTHING`
+	queryUpdateOrderFill   = `UPDATE orders SET status = 'filled', filled_at = $2, filled_price = $3, filled_qty = $4 WHERE broker_order_id = $1`
 )
 
 // SaveMarketBar saves a single OHLCV candle.
@@ -48,11 +48,11 @@ func (r *Repository) SaveMarketBars(ctx context.Context, bars []domain.MarketBar
 	if len(bars) == 0 {
 		return 0, nil
 	}
-	
+
 	// Build batched INSERT ... VALUES (...), (...), ... ON CONFLICT DO UPDATE
 	var b strings.Builder
 	b.WriteString("INSERT INTO market_bars (time, account_id, env_mode, symbol, timeframe, open, high, low, close, volume, suspect) VALUES ")
-	
+
 	args := make([]any, 0, len(bars)*11)
 	idx := 0
 	for _, bar := range bars {
@@ -68,13 +68,13 @@ func (r *Repository) SaveMarketBars(ctx context.Context, bars []domain.MarketBar
 		args = append(args, bar.Time, "", string(domain.EnvModePaper), string(bar.Symbol), string(bar.Timeframe), bar.Open, bar.High, bar.Low, bar.Close, bar.Volume, bar.Suspect)
 		idx++
 	}
-	
+
 	if idx == 0 {
 		return 0, nil
 	}
-	
+
 	b.WriteString(" ON CONFLICT (symbol, timeframe, time) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume, suspect=EXCLUDED.suspect")
-	
+
 	_, err := r.db.ExecContext(ctx, b.String(), args...)
 	if err != nil {
 		r.log.Error().Err(err).Int("batch_size", idx).Msg("failed to save market bars batch")
@@ -119,7 +119,7 @@ func (r *Repository) GetLatestMarketBarTime(ctx context.Context, symbol domain.S
 	row := r.db.QueryRowContext(ctx,
 		"SELECT MAX(time) FROM market_bars WHERE symbol = $1 AND timeframe = $2",
 		string(symbol), string(timeframe))
-	
+
 	var t *time.Time
 	if err := row.Scan(&t); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -133,7 +133,11 @@ func (r *Repository) GetLatestMarketBarTime(ctx context.Context, symbol domain.S
 // SaveTrade saves a completed or in-progress trade execution.
 // It persists the trade details including tenant and environment mode.
 func (r *Repository) SaveTrade(ctx context.Context, trade domain.Trade) error {
-	_, err := r.db.ExecContext(ctx, queryInsertTrade, trade.Time, trade.TenantID, string(trade.EnvMode), trade.TradeID, string(trade.Symbol), trade.Side, trade.Quantity, trade.Price, trade.Commission, trade.Status, trade.Strategy, trade.Rationale)
+	var thesisArg any
+	if len(trade.Thesis) > 0 {
+		thesisArg = []byte(trade.Thesis)
+	}
+	_, err := r.db.ExecContext(ctx, queryInsertTrade, trade.Time, trade.TenantID, string(trade.EnvMode), trade.TradeID, string(trade.Symbol), trade.Side, trade.Quantity, trade.Price, trade.Commission, trade.Status, trade.Strategy, trade.Rationale, thesisArg)
 	if err != nil {
 		r.log.Error().Err(err).
 			Str("symbol", string(trade.Symbol)).
@@ -162,12 +166,16 @@ func (r *Repository) GetTrades(ctx context.Context, tenantID string, envMode dom
 	for rows.Next() {
 		var trade domain.Trade
 		var sym string
-		if err := rows.Scan(&trade.Time, &trade.TradeID, &sym, &trade.Side, &trade.Quantity, &trade.Price, &trade.Commission, &trade.Status, &trade.Strategy, &trade.Rationale); err != nil {
+		var thesis []byte
+		if err := rows.Scan(&trade.Time, &trade.TradeID, &sym, &trade.Side, &trade.Quantity, &trade.Price, &trade.Commission, &trade.Status, &trade.Strategy, &trade.Rationale, &thesis); err != nil {
 			return nil, fmt.Errorf("timescaledb: scan trade: %w", err)
 		}
 		trade.Symbol = domain.Symbol(sym)
 		trade.TenantID = tenantID
 		trade.EnvMode = envMode
+		if len(thesis) > 0 {
+			trade.Thesis = json.RawMessage(thesis)
+		}
 		trades = append(trades, trade)
 	}
 	if err := rows.Err(); err != nil {
@@ -415,6 +423,23 @@ func (r *Repository) ListOrders(ctx context.Context, q ports.OrderQuery) (ports.
 	}
 
 	return ports.OrderPage{Items: orders, NextCursor: nextCursor}, nil
+}
+
+func (r *Repository) UpdateTradeThesis(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol, thesis json.RawMessage) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE trades SET thesis = $1
+		 WHERE account_id = $2 AND env_mode = $3 AND symbol = $4 AND side = 'BUY' AND thesis IS NULL
+		 AND time = (SELECT MAX(time) FROM trades WHERE account_id = $2 AND env_mode = $3 AND symbol = $4 AND side = 'BUY')`,
+		[]byte(thesis), tenantID, string(envMode), string(symbol),
+	)
+	if err != nil {
+		r.log.Error().Err(err).
+			Str("symbol", string(symbol)).
+			Str("tenant_id", tenantID).
+			Msg("failed to update trade thesis")
+		return fmt.Errorf("timescaledb: update trade thesis: %w", err)
+	}
+	return nil
 }
 
 // SaveThoughtLog persists an AI debate reasoning record.

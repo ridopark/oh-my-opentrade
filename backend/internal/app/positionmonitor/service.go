@@ -2,6 +2,7 @@ package positionmonitor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -240,6 +241,7 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 		entryAt  time.Time
 		strategy string
 		asset    domain.AssetClass
+		thesis   json.RawMessage
 	}
 	omoPositions := make(map[domain.Symbol]*omoEntry)
 	for _, t := range trades {
@@ -251,7 +253,6 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 
 		switch strings.ToUpper(t.Side) {
 		case "BUY":
-			// Weighted average entry price on buys.
 			totalCost := e.avgEntry*e.netQty + t.Price*t.Quantity
 			e.netQty += t.Quantity
 			if e.netQty > 0 {
@@ -260,6 +261,9 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 			e.entryAt = t.Time
 			e.strategy = t.Strategy
 			e.asset = t.AssetClass
+			if len(t.Thesis) > 0 {
+				e.thesis = t.Thesis
+			}
 		case "SELL":
 			e.netQty -= t.Quantity
 			if e.netQty <= 0 {
@@ -303,6 +307,14 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 			continue
 		}
 
+		if len(omo.thesis) > 0 {
+			var thesis domain.EntryThesis
+			if err := json.Unmarshal(omo.thesis, &thesis); err == nil {
+				pos.EntryThesis = &thesis
+				s.log.Info().Str("symbol", string(sym)).Msg("bootstrap: entry thesis restored from trade history")
+			}
+		}
+
 		key := pos.PositionKey()
 		s.positions[key] = &pos
 		bootstrapped++
@@ -312,6 +324,7 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 			Float64("quantity", quantity).
 			Str("strategy", strategy).
 			Int("exit_rules", len(exitRules)).
+			Bool("has_thesis", pos.EntryThesis != nil).
 			Msg("bootstrap: position restored from trade history")
 	}
 
@@ -955,6 +968,24 @@ func (s *Service) SetEntryThesis(key string, thesis *domain.EntryThesis) {
 		return
 	}
 	pos.EntryThesis = thesis
+}
+
+// PersistThesis serialises the entry thesis to JSON and writes it to the most
+// recent BUY trade for the given symbol. This ensures thesis survives restarts.
+func (s *Service) PersistThesis(ctx context.Context, symbol domain.Symbol, thesis *domain.EntryThesis) {
+	if s.repo == nil || thesis == nil {
+		return
+	}
+	raw, err := json.Marshal(thesis)
+	if err != nil {
+		s.log.Warn().Err(err).Str("symbol", string(symbol)).Msg("persist thesis: marshal failed")
+		return
+	}
+	if err := s.repo.UpdateTradeThesis(ctx, s.tenantID, s.envMode, symbol, raw); err != nil {
+		s.log.Warn().Err(err).Str("symbol", string(symbol)).Msg("persist thesis: DB update failed")
+		return
+	}
+	s.log.Info().Str("symbol", string(symbol)).Msg("entry thesis persisted to trade record")
 }
 
 func isForcedExit(ruleType domain.ExitRuleType) bool {
