@@ -279,7 +279,7 @@ export function useChartData(
 
     const handleBarEvent = (e: MessageEvent) => {
       try {
-        const envelope = JSON.parse(e.data) as { payload: MarketBarEvent };
+        const envelope = JSON.parse(e.data) as { type?: string, payload: MarketBarEvent };
         const bar = envelope.payload;
         if (!bar?.symbol || !bar?.time) return;
         console.log(`[SSE] ${envelope.type ?? e.type}`, bar.symbol, bar);
