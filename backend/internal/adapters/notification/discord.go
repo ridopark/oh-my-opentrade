@@ -9,11 +9,19 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"strconv"
+	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
 var _ ports.ImageNotifierPort = (*DiscordNotifier)(nil)
+
+const (
+	maxRetries       = 2
+	defaultRetryWait = 1 * time.Second
+	maxRetryWait     = 10 * time.Second
+)
 
 type DiscordNotifier struct {
 	webhookURL string
@@ -44,28 +52,19 @@ func (d *DiscordNotifier) Notify(ctx context.Context, tenantID, message string) 
 		return fmt.Errorf("discord: marshal payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.webhookURL, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("discord: create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("discord: send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("discord: unexpected status %d", resp.StatusCode)
-	}
-
-	return nil
+	return d.doWithRetry(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.webhookURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
 }
 
 func (d *DiscordNotifier) NotifyWithImage(ctx context.Context, tenantID, message string, image ports.Attachment) error {
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
 
 	embedPayload := map[string]any{
 		"content": fmt.Sprintf("[%s] %s", tenantID, message),
@@ -101,21 +100,61 @@ func (d *DiscordNotifier) NotifyWithImage(ctx context.Context, tenantID, message
 		return fmt.Errorf("discord: close multipart: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.webhookURL, &body)
-	if err != nil {
-		return fmt.Errorf("discord: create request: %w", err)
-	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	bodyBytes := buf.Bytes()
+	contentType := writer.FormDataContentType()
 
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("discord: send request: %w", err)
-	}
-	defer resp.Body.Close()
+	return d.doWithRetry(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.webhookURL, bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", contentType)
+		return req, nil
+	})
+}
 
-	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("discord: unexpected status %d", resp.StatusCode)
-	}
+func (d *DiscordNotifier) doWithRetry(ctx context.Context, buildReq func() (*http.Request, error)) error {
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		req, err := buildReq()
+		if err != nil {
+			return fmt.Errorf("discord: create request: %w", err)
+		}
 
+		resp, err := d.client.Do(req)
+		if err != nil {
+			return fmt.Errorf("discord: send request: %w", err)
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNoContent {
+			return nil
+		}
+
+		if resp.StatusCode != http.StatusTooManyRequests || attempt == maxRetries {
+			return fmt.Errorf("discord: unexpected status %d", resp.StatusCode)
+		}
+
+		wait := parseRetryAfter(resp.Header.Get("Retry-After"))
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return nil
+}
+
+func parseRetryAfter(header string) time.Duration {
+	if header == "" {
+		return defaultRetryWait
+	}
+	secs, err := strconv.ParseFloat(header, 64)
+	if err != nil || secs <= 0 {
+		return defaultRetryWait
+	}
+	wait := time.Duration(secs*1000) * time.Millisecond
+	if wait > maxRetryWait {
+		return maxRetryWait
+	}
+	return wait
 }
