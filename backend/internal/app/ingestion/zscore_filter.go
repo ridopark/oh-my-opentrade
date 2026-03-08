@@ -6,31 +6,82 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/domain"
 )
 
-const defaultVolumeThreshold = 2.0 // secondary threshold for volume
+const defaultVolumeThreshold = 2.0
 
-// rollingWindow stores values for calculating mean and stddev.
+// Per-asset-class bar-over-bar deviation thresholds.
+// Crypto 3%: catches Alpaca phantom wicks (2.8%) while allowing liquidation cascades.
+// Equity 10%: aligned with LULD Tier 1/2 circuit breaker bands; covers halt resumes and open gaps.
+const (
+	DeviationCrypto  = 0.03
+	DeviationEquity  = 0.10
+	DeviationDefault = 0.10
+)
+
 type rollingWindow struct {
-	prices  []float64
-	volumes []float64
+	prices    []float64
+	volumes   []float64
+	lastClose float64
+	seeded    bool
 }
 
-// ZScoreFilter maintains rolling windows per symbol for anomaly detection.
 type ZScoreFilter struct {
-	windowSize     int
-	priceThreshold float64 // Default: 4.0 (4 sigma)
-	windows        map[domain.Symbol]*rollingWindow
+	windowSize       int
+	priceThreshold   float64
+	defaultDeviation float64
+	symbolDeviation  map[domain.Symbol]float64
+	windows          map[domain.Symbol]*rollingWindow
 }
 
-// NewZScoreFilter initializes a new ZScoreFilter.
 func NewZScoreFilter(windowSize int, priceThreshold float64) *ZScoreFilter {
 	return &ZScoreFilter{
-		windowSize:     windowSize,
-		priceThreshold: priceThreshold,
-		windows:        make(map[domain.Symbol]*rollingWindow),
+		windowSize:       windowSize,
+		priceThreshold:   priceThreshold,
+		defaultDeviation: DeviationDefault,
+		symbolDeviation:  make(map[domain.Symbol]float64),
+		windows:          make(map[domain.Symbol]*rollingWindow),
 	}
 }
 
-// Check computes the Z-score for the new bar and returns true if it is suspect.
+func (f *ZScoreFilter) SetMaxDeviation(symbol domain.Symbol, maxDev float64) {
+	f.symbolDeviation[symbol] = maxDev
+}
+
+func (f *ZScoreFilter) maxDeviationFor(symbol domain.Symbol) float64 {
+	if dev, ok := f.symbolDeviation[symbol]; ok {
+		return dev
+	}
+	return f.defaultDeviation
+}
+
+// Seed pre-fills the rolling window from historical bars, eliminating the warmup blind spot after restarts.
+// Bars must be chronological (oldest first).
+func (f *ZScoreFilter) Seed(symbol domain.Symbol, bars []domain.MarketBar) int {
+	if len(bars) == 0 {
+		return 0
+	}
+
+	window := &rollingWindow{
+		prices:  make([]float64, 0, f.windowSize),
+		volumes: make([]float64, 0, f.windowSize),
+	}
+
+	start := 0
+	if len(bars) > f.windowSize {
+		start = len(bars) - f.windowSize
+	}
+
+	for _, bar := range bars[start:] {
+		window.prices = append(window.prices, bar.Close)
+		window.volumes = append(window.volumes, bar.Volume)
+	}
+
+	window.lastClose = bars[len(bars)-1].Close
+	window.seeded = true
+
+	f.windows[symbol] = window
+	return len(window.prices)
+}
+
 func (f *ZScoreFilter) Check(bar domain.MarketBar) bool {
 	window, exists := f.windows[bar.Symbol]
 	if !exists {
@@ -41,10 +92,24 @@ func (f *ZScoreFilter) Check(bar domain.MarketBar) bool {
 		f.windows[bar.Symbol] = window
 	}
 
-	// Not enough data
+	// Layer 1: bar-over-bar deviation — works from bar #1, no warmup needed.
+	if window.seeded {
+		ref := window.lastClose
+		if ref > 0 {
+			for _, v := range []float64{bar.Open, bar.High, bar.Low, bar.Close} {
+				if math.Abs(v-ref)/ref > f.maxDeviationFor(bar.Symbol) {
+					return true
+				}
+			}
+		}
+	}
+
+	// Layer 2: Z-score statistical filter — needs full window.
 	if len(window.prices) < f.windowSize {
 		window.prices = append(window.prices, bar.Close)
 		window.volumes = append(window.volumes, bar.Volume)
+		window.lastClose = bar.Close
+		window.seeded = true
 		return false
 	}
 
@@ -59,22 +124,15 @@ func (f *ZScoreFilter) Check(bar domain.MarketBar) bool {
 	priceAnomaly := closeZ > f.priceThreshold || highZ > f.priceThreshold || lowZ > f.priceThreshold
 	suspect := priceAnomaly && volZ < defaultVolumeThreshold
 
-	// Add to rolling window, dropping the oldest value
-	// We might choose to NOT add anomalous data, but the prompt
-	// says "The filter maintains a rolling window of closing prices per symbol. For each new bar: 1. Compute ... 2. Calculate... 3. If ... reject".
-	// Let's NOT poison the window if it's suspect. If it passes, add it.
-	// Actually, wait, it says "For each new bar: 1. Compute mean...". This means we compute using the EXISTING window.
-	// It doesn't explicitly mention whether to add anomalies. Let's add them regardless or skip.
-	// Often anomalies are skipped to avoid window poisoning. Let's skip them.
 	if !suspect {
 		window.prices = append(window.prices[1:], bar.Close)
 		window.volumes = append(window.volumes[1:], bar.Volume)
+		window.lastClose = bar.Close
 	}
 
 	return suspect
 }
 
-// calculateStats calculates the mean and standard deviation of a slice.
 func calculateStats(values []float64) (mean float64, stdDev float64) {
 	if len(values) == 0 {
 		return 0, 0
@@ -95,13 +153,11 @@ func calculateStats(values []float64) (mean float64, stdDev float64) {
 	return mean, stdDev
 }
 
-// calculateZScore computes the z-score of a value given mean and stddev.
 func calculateZScore(value, mean, stdDev float64) float64 {
 	if stdDev == 0 {
 		if value == mean {
 			return 0.0
 		}
-		// If stddev is 0 but value is different, it's an infinite z-score (large anomaly).
 		return math.Inf(1)
 	}
 	return math.Abs(value-mean) / stdDev

@@ -110,7 +110,7 @@ func main() {
 	monitorLog := log.With().Str("component", "monitor").Logger()
 	executionLog := log.With().Str("component", "execution").Logger()
 
-	zscoreFilter := ingestion.NewZScoreFilter(20, 4.0) // 20-bar rolling window, 4σ threshold
+	zscoreFilter := ingestion.NewZScoreFilter(20, 4.0)
 	ingestionSvc := ingestion.NewService(eventBus, repo, zscoreFilter, ingestionLog)
 
 	monitorSvc := monitor.NewService(eventBus, repo, monitorLog)
@@ -967,6 +967,13 @@ func main() {
 		Int("total_symbols", len(symbols)).
 		Msg("symbol lists initialized")
 
+	for _, sym := range cryptoSymbols {
+		zscoreFilter.SetMaxDeviation(sym, ingestion.DeviationCrypto)
+	}
+	for _, sym := range equitySymbols {
+		zscoreFilter.SetMaxDeviation(sym, ingestion.DeviationEquity)
+	}
+
 	warmupLog := log.With().Str("component", "warmup").Logger()
 	warmupBarsCache := make(map[string][]domain.MarketBar)
 
@@ -1027,6 +1034,16 @@ func main() {
 				Str("symbol", string(sym)).
 				Int("bars", n).
 				Msg("crypto indicator warmup complete")
+		}
+	}
+
+	for _, sym := range symbols {
+		if bars, ok := warmupBarsCache[string(sym)]; ok && len(bars) > 0 {
+			n := zscoreFilter.Seed(sym, bars)
+			warmupLog.Info().
+				Str("symbol", string(sym)).
+				Int("bars", n).
+				Msg("zscore filter seeded")
 		}
 	}
 
