@@ -728,28 +728,13 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 		Str("symbol", string(pos.Symbol)).
 		Int("retry_count", pos.ExitRetryCount).
 		Msg("exit pending timeout — will retry with escalated price")
-
-	if s.positionGate != nil {
-		s.positionGate.ClearInflightExit(pos.TenantID, pos.EnvMode, pos.Symbol)
-	}
 }
 
 // triggerExit marks a position as exit-pending and emits an exit order intent.
 func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRule, reason string, currentPrice float64, now time.Time) {
-	// Try to acquire exit inflight lock.
-	if s.positionGate != nil {
-		if !s.positionGate.TryMarkInflightExit(pos.TenantID, pos.EnvMode, pos.Symbol) {
-			s.log.Warn().
-				Str("symbol", string(pos.Symbol)).
-				Msg("exit inflight lock already held — skipping")
-			return
-		}
-	}
-
 	pos.ExitPending = true
 	pos.ExitPendingAt = now
 
-	// Include retry count in idempotency key so retries aren't deduplicated.
 	idempotencyKey := fmt.Sprintf("EXIT:%s:%s:%s:%d:%s:%d",
 		pos.TenantID, pos.EnvMode, pos.Symbol, pos.EntryTime.Unix(), rule.Type, pos.ExitRetryCount)
 
@@ -776,11 +761,7 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 	}
 	if err != nil {
 		s.log.Error().Err(err).Str("symbol", string(pos.Symbol)).Msg("failed to create exit order intent")
-		// Rollback locks.
 		pos.ExitPending = false
-		if s.positionGate != nil {
-			s.positionGate.ClearInflightExit(pos.TenantID, pos.EnvMode, pos.Symbol)
-		}
 		return
 	}
 
@@ -795,7 +776,6 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 		EnvMode:      pos.EnvMode,
 	}
 
-	// Enqueue to outbox — never publish directly from tick goroutine.
 	select {
 	case s.outbox <- outboxMsg{
 		Intent:         intent,
@@ -807,9 +787,6 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 	default:
 		s.log.Error().Str("symbol", string(pos.Symbol)).Msg("outbox full — dropping exit intent")
 		pos.ExitPending = false
-		if s.positionGate != nil {
-			s.positionGate.ClearInflightExit(pos.TenantID, pos.EnvMode, pos.Symbol)
-		}
 	}
 }
 
