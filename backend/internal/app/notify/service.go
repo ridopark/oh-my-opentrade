@@ -308,7 +308,7 @@ func (s *Service) fmtFillReceived(ev domain.Event) string {
 		side, _ := m["side"].(string)
 		qty, _ := m["quantity"].(float64)
 		price, _ := m["price"].(float64)
-		return fmt.Sprintf("💰 Fill: %s %s — %.2f shares @ $%.2f", side, sym, qty, price)
+		return fmt.Sprintf("💰 Fill: %s %s — %g shares @ $%.2f", side, sym, qty, price)
 	}
 	return "💰 Order Filled"
 }

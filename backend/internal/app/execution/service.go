@@ -276,7 +276,9 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		s.metrics.Orders.SubmitLat.WithLabelValues("alpaca", intent.Strategy, "limit").Observe(time.Since(submitStart).Seconds())
 	}
 	l.Info().Str("broker_order_id", brokerOrderID).Msg("order submitted to broker")
-	s.emit(ctx, domain.EventOrderSubmitted, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusSubmitted))
+	submittedPayload := domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusSubmitted)
+	submittedPayload.BrokerOrderID = brokerOrderID
+	s.emit(ctx, domain.EventOrderSubmitted, event.TenantID, event.EnvMode, intent.ID.String(), submittedPayload)
 
 	// 6a. Mark inflight to prevent duplicate entries while awaiting fill.
 	if s.positionGate != nil && isEntry(intent) {

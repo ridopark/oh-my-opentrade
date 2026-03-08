@@ -72,20 +72,22 @@ type EntryThesis struct {
 // MonitoredPosition tracks an open position with its high-water mark and exit rules.
 // It is owned by the position monitor actor and must not be shared across goroutines.
 type MonitoredPosition struct {
-	Symbol        Symbol
-	EntryPrice    float64
-	EntryTime     time.Time
-	HighWaterMark float64
-	LowWaterMark  float64
-	Strategy      string
-	AssetClass    AssetClass
-	ExitRules     []ExitRule
-	TenantID      string
-	EnvMode       EnvMode
-	Quantity      float64
-	ExitPending   bool // true when an exit intent has been emitted and is awaiting terminal outcome
-	ExitPendingAt time.Time
-	EntryThesis   *EntryThesis // nil if no AI enrichment was available at entry
+	Symbol         Symbol
+	EntryPrice     float64
+	EntryTime      time.Time
+	HighWaterMark  float64
+	LowWaterMark   float64
+	Strategy       string
+	AssetClass     AssetClass
+	ExitRules      []ExitRule
+	TenantID       string
+	EnvMode        EnvMode
+	Quantity       float64
+	ExitPending    bool // true when an exit intent has been emitted and is awaiting terminal outcome
+	ExitPendingAt  time.Time
+	ExitOrderID    string       // broker order ID of the active exit order (for cancel-and-chase)
+	ExitRetryCount int          // number of exit attempts; used to escalate price aggressiveness
+	EntryThesis    *EntryThesis // nil if no AI enrichment was available at entry
 
 	LastRevaluation   *RiskRevaluation `json:"lastRevaluation,omitempty"`
 	LastRevaluationAt time.Time        `json:"lastRevaluationAt,omitempty"`

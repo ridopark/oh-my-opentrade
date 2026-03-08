@@ -58,6 +58,10 @@ type OrderIntent struct {
 	Rationale      string    `json:"rationale"`
 	Confidence     float64   `json:"confidence"`
 	IdempotencyKey string    `json:"idempotencyKey"`
+	// Execution control: override broker order type and time-in-force.
+	// Empty values fall back to adapter defaults ("limit" / "gtc").
+	OrderType   string `json:"orderType,omitempty"`   // "limit", "market", "stop_limit"
+	TimeInForce string `json:"timeInForce,omitempty"` // "gtc", "ioc", "day"
 	// Options-specific fields (nil/zero for equity orders)
 	Instrument *Instrument       `json:"instrument,omitempty"`
 	AssetClass AssetClass        `json:"assetClass"`
@@ -91,6 +95,7 @@ type OrderIntentEventPayload struct {
 	Confidence     float64           `json:"confidence"`
 	Status         string            `json:"status"`
 	Reason         string            `json:"reason,omitempty"`
+	BrokerOrderID  string            `json:"brokerOrderId,omitempty"`
 	Meta           map[string]string `json:"meta,omitempty"`
 }
 

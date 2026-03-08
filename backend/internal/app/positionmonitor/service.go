@@ -35,9 +35,10 @@ type Service struct {
 	nowFunc      func() time.Time
 
 	// Actor channels.
-	fills  chan fillMsg
-	outbox chan outboxMsg
-	stopCh chan struct{}
+	fills         chan fillMsg
+	exitSubmitted chan exitOrderSubmittedMsg
+	outbox        chan outboxMsg
+	stopCh        chan struct{}
 
 	// State owned exclusively by the tick goroutine.
 	positions map[string]*domain.MonitoredPosition // key: PositionKey()
@@ -71,6 +72,17 @@ type outboxMsg struct {
 	EnvMode        domain.EnvMode
 	IdempotencyKey string
 }
+
+type exitOrderSubmittedMsg struct {
+	Symbol        domain.Symbol
+	BrokerOrderID string
+	Direction     string
+}
+
+const (
+	exitPendingTimeout = 10 * time.Second
+	maxExitRetries     = 3
+)
 
 // Option is a functional option for the Service.
 type Option func(*Service)
@@ -127,6 +139,7 @@ func NewService(
 		log:               log.With().Str("service", "position_monitor").Logger(),
 		nowFunc:           time.Now,
 		fills:             make(chan fillMsg, 256),
+		exitSubmitted:     make(chan exitOrderSubmittedMsg, 64),
 		outbox:            make(chan outboxMsg, 64),
 		stopCh:            make(chan struct{}),
 		positions:         make(map[string]*domain.MonitoredPosition),
@@ -145,6 +158,9 @@ func NewService(
 func (s *Service) Start(ctx context.Context) error {
 	if err := s.eventBus.Subscribe(ctx, domain.EventFillReceived, s.handleFillEvent); err != nil {
 		return fmt.Errorf("position_monitor: failed to subscribe to FillReceived: %w", err)
+	}
+	if err := s.eventBus.Subscribe(ctx, domain.EventOrderSubmitted, s.handleOrderSubmitted); err != nil {
+		return fmt.Errorf("position_monitor: failed to subscribe to OrderSubmitted: %w", err)
 	}
 
 	// Bootstrap: seed monitor with OMO-opened positions that are still on the broker.
@@ -408,6 +424,31 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 	return nil
 }
 
+func (s *Service) handleOrderSubmitted(_ context.Context, event domain.Event) error {
+	payload, ok := event.Payload.(domain.OrderIntentEventPayload)
+	if !ok {
+		return nil
+	}
+	if payload.BrokerOrderID == "" {
+		return nil
+	}
+	dir, _ := domain.NewDirection(payload.Direction)
+	if !dir.IsExit() {
+		return nil
+	}
+
+	select {
+	case s.exitSubmitted <- exitOrderSubmittedMsg{
+		Symbol:        domain.Symbol(payload.Symbol),
+		BrokerOrderID: payload.BrokerOrderID,
+		Direction:     payload.Direction,
+	}:
+	default:
+		s.log.Warn().Str("symbol", payload.Symbol).Msg("position monitor: exitSubmitted channel full")
+	}
+	return nil
+}
+
 // runTickLoop is the main actor goroutine. It owns all position state.
 func (s *Service) runTickLoop(ctx context.Context) {
 	ticker := time.NewTicker(s.tickInterval)
@@ -421,10 +462,27 @@ func (s *Service) runTickLoop(ctx context.Context) {
 			return
 		case fill := <-s.fills:
 			s.processFill(fill)
+		case msg := <-s.exitSubmitted:
+			s.processExitSubmitted(msg)
 		case <-ticker.C:
 			s.tick()
 		}
 	}
+}
+
+func (s *Service) processExitSubmitted(msg exitOrderSubmittedMsg) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := fmt.Sprintf("%s:%s:%s", s.tenantID, s.envMode, msg.Symbol)
+	pos, ok := s.positions[key]
+	if !ok {
+		return
+	}
+	pos.ExitOrderID = msg.BrokerOrderID
+	s.log.Debug().
+		Str("symbol", string(msg.Symbol)).
+		Str("broker_order_id", msg.BrokerOrderID).
+		Msg("exit order ID tracked")
 }
 
 // processFill handles a fill within the actor goroutine.
@@ -450,11 +508,14 @@ func (s *Service) processFill(fill fillMsg) {
 			}
 			delete(s.positions, key)
 		} else {
-			pos.ExitPending = false
+			// Keep ExitPending=true: the broker order is still active for the
+			// remaining quantity. Clearing it would let the tick loop fire
+			// another full-qty exit, causing double-sells.
 			s.log.Info().
 				Str("symbol", string(fill.Symbol)).
 				Float64("exit_price", fill.Price).
 				Float64("remaining_qty", pos.Quantity).
+				Bool("exit_pending", pos.ExitPending).
 				Msg("position partially closed — still monitoring")
 		}
 		return
@@ -507,15 +568,8 @@ func (s *Service) tick() {
 
 	for _, pos := range s.positions {
 		if pos.ExitPending {
-			// Check for exit pending timeout (30 seconds).
-			if now.Sub(pos.ExitPendingAt) > 30*time.Second {
-				s.log.Warn().
-					Str("symbol", string(pos.Symbol)).
-					Msg("exit pending timeout — clearing lock")
-				pos.ExitPending = false
-				if s.positionGate != nil {
-					s.positionGate.ClearInflightExit(pos.TenantID, pos.EnvMode, pos.Symbol)
-				}
+			if now.Sub(pos.ExitPendingAt) > exitPendingTimeout {
+				s.handleExitTimeout(pos)
 			}
 			continue
 		}
@@ -555,6 +609,35 @@ func (s *Service) tick() {
 	}
 }
 
+func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
+	if pos.ExitOrderID != "" && s.broker != nil {
+		if err := s.broker.CancelOrder(context.Background(), pos.ExitOrderID); err != nil {
+			s.log.Warn().Err(err).
+				Str("symbol", string(pos.Symbol)).
+				Str("broker_order_id", pos.ExitOrderID).
+				Msg("failed to cancel stale exit order — may already be terminal")
+		} else {
+			s.log.Info().
+				Str("symbol", string(pos.Symbol)).
+				Str("broker_order_id", pos.ExitOrderID).
+				Msg("cancelled stale exit order")
+		}
+	}
+
+	pos.ExitPending = false
+	pos.ExitOrderID = ""
+	pos.ExitRetryCount++
+
+	s.log.Warn().
+		Str("symbol", string(pos.Symbol)).
+		Int("retry_count", pos.ExitRetryCount).
+		Msg("exit pending timeout — will retry with escalated price")
+
+	if s.positionGate != nil {
+		s.positionGate.ClearInflightExit(pos.TenantID, pos.EnvMode, pos.Symbol)
+	}
+}
+
 // triggerExit marks a position as exit-pending and emits an exit order intent.
 func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRule, reason string, currentPrice float64, now time.Time) {
 	// Try to acquire exit inflight lock.
@@ -570,26 +653,31 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 	pos.ExitPending = true
 	pos.ExitPendingAt = now
 
-	// Build deterministic idempotency key.
-	idempotencyKey := fmt.Sprintf("EXIT:%s:%s:%s:%d:%s",
-		pos.TenantID, pos.EnvMode, pos.Symbol, pos.EntryTime.Unix(), rule.Type)
+	// Include retry count in idempotency key so retries aren't deduplicated.
+	idempotencyKey := fmt.Sprintf("EXIT:%s:%s:%s:%d:%s:%d",
+		pos.TenantID, pos.EnvMode, pos.Symbol, pos.EntryTime.Unix(), rule.Type, pos.ExitRetryCount)
 
-	// Create exit order intent.
+	exitPrice, orderType, tif := exitOrderParams(rule.Type, currentPrice, pos.ExitRetryCount)
+
 	intent, err := domain.NewOrderIntent(
 		uuid.New(),
 		pos.TenantID,
 		pos.EnvMode,
 		pos.Symbol,
 		domain.DirectionCloseLong,
-		currentPrice, // limit price = current price for market-like exit
-		0,            // no stop loss for exits — plain limit order
-		0,            // no slippage check for exits
+		exitPrice,
+		0,
+		0,
 		pos.Quantity,
 		pos.Strategy,
 		fmt.Sprintf("exit_monitor:%s:%s", rule.Type, reason),
-		1.0, // max confidence for rule-based exits
+		1.0,
 		idempotencyKey,
 	)
+	if err == nil {
+		intent.OrderType = orderType
+		intent.TimeInForce = tif
+	}
 	if err != nil {
 		s.log.Error().Err(err).Str("symbol", string(pos.Symbol)).Msg("failed to create exit order intent")
 		// Rollback locks.
@@ -747,4 +835,29 @@ func (s *Service) SetEntryThesis(key string, thesis *domain.EntryThesis) {
 		return
 	}
 	pos.EntryThesis = thesis
+}
+
+func isForcedExit(ruleType domain.ExitRuleType) bool {
+	switch ruleType {
+	case domain.ExitRuleMaxHoldingTime, domain.ExitRuleMaxLoss, domain.ExitRuleEODFlatten:
+		return true
+	default:
+		return false
+	}
+}
+
+// exitOrderParams determines order type, price, and TIF based on exit rule
+// and retry count. Forced exits escalate: 2% → 3% → 5% → market.
+func exitOrderParams(ruleType domain.ExitRuleType, currentPrice float64, retryCount int) (price float64, orderType, tif string) {
+	if !isForcedExit(ruleType) {
+		return currentPrice, "limit", ""
+	}
+
+	if retryCount >= maxExitRetries {
+		return currentPrice, "market", "ioc"
+	}
+
+	buffers := []float64{0.02, 0.03, 0.05}
+	buf := buffers[retryCount]
+	return currentPrice * (1 - buf), "limit", "ioc"
 }

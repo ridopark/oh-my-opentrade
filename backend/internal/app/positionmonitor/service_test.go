@@ -82,6 +82,16 @@ func (m *mockBroker) GetPositions(ctx context.Context, tenantID string, envMode 
 	return m.positions, m.posErr
 }
 
+type mockBrokerWithCancel struct {
+	mockBroker
+	lastCancelledID string
+}
+
+func (m *mockBrokerWithCancel) CancelOrder(_ context.Context, orderID string) error {
+	m.lastCancelledID = orderID
+	return nil
+}
+
 type mockRepo struct {
 	trades    []domain.Trade
 	tradesErr error
@@ -382,10 +392,178 @@ func TestService_tick_ExitPendingTimeoutClearsLock(t *testing.T) {
 	pos := svc.positions["tenant-1:Paper:AAPL"]
 	require.NotNil(t, pos)
 	pos.ExitPending = true
-	pos.ExitPendingAt = now.Add(-31 * time.Second)
+	pos.ExitPendingAt = now.Add(-11 * time.Second)
 
 	svc.tick()
 	assert.False(t, pos.ExitPending)
+}
+
+func TestService_tick_ExitTimeoutIncrementsRetryCount(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(), WithNowFunc(func() time.Time { return now }))
+
+	svc.processFill(fillMsg{
+		Symbol:     domain.Symbol("AAPL"),
+		Side:       "BUY",
+		Price:      150,
+		Quantity:   10,
+		FilledAt:   now.Add(-5 * time.Minute),
+		Strategy:   "orb_break_retest",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules:  []domain.ExitRule{},
+	})
+
+	pos := svc.positions["tenant-1:Paper:AAPL"]
+	require.NotNil(t, pos)
+	pos.ExitPending = true
+	pos.ExitPendingAt = now.Add(-11 * time.Second)
+	pos.ExitRetryCount = 0
+
+	svc.tick()
+	assert.False(t, pos.ExitPending)
+	assert.Equal(t, 1, pos.ExitRetryCount)
+}
+
+func TestService_tick_ExitTimeoutCancelsStaleOrder(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	broker := &mockBrokerWithCancel{}
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+
+	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithNowFunc(func() time.Time { return now }),
+		WithBroker(broker),
+	)
+
+	svc.processFill(fillMsg{
+		Symbol:     domain.Symbol("BTC/USD"),
+		Side:       "BUY",
+		Price:      67000,
+		Quantity:   0.15,
+		FilledAt:   now.Add(-5 * time.Minute),
+		Strategy:   "avwap_v1",
+		AssetClass: domain.AssetClassCrypto,
+		ExitRules:  []domain.ExitRule{},
+	})
+
+	pos := svc.positions["tenant-1:Paper:BTC/USD"]
+	require.NotNil(t, pos)
+	pos.ExitPending = true
+	pos.ExitPendingAt = now.Add(-11 * time.Second)
+	pos.ExitOrderID = "stale-order-123"
+
+	svc.tick()
+	assert.False(t, pos.ExitPending)
+	assert.Equal(t, "", pos.ExitOrderID)
+	assert.Equal(t, 1, pos.ExitRetryCount)
+	assert.Equal(t, "stale-order-123", broker.lastCancelledID)
+}
+
+func TestService_partialFill_KeepsExitPending(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop())
+
+	svc.processFill(fillMsg{
+		Symbol:     domain.Symbol("BTC/USD"),
+		Side:       "BUY",
+		Price:      67000,
+		Quantity:   0.15,
+		FilledAt:   time.Now(),
+		Strategy:   "avwap_v1",
+		AssetClass: domain.AssetClassCrypto,
+		ExitRules:  []domain.ExitRule{},
+	})
+
+	pos := svc.positions["tenant-1:Paper:BTC/USD"]
+	require.NotNil(t, pos)
+	pos.ExitPending = true
+	pos.ExitOrderID = "exit-order-123"
+
+	svc.processFill(fillMsg{
+		Symbol:   domain.Symbol("BTC/USD"),
+		Side:     "SELL",
+		Price:    66900,
+		Quantity: 0.05,
+	})
+
+	assert.Equal(t, 1, svc.PositionCount())
+	assert.True(t, pos.ExitPending, "partial fill must NOT clear ExitPending")
+	assert.InEpsilon(t, 0.10, pos.Quantity, 0.001)
+}
+
+func TestExitOrderParams_Escalation(t *testing.T) {
+	price := 67000.0
+
+	t.Run("retry 0: 2% buffer IOC", func(t *testing.T) {
+		p, ot, tif := exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 0)
+		assert.InEpsilon(t, price*0.98, p, 0.01)
+		assert.Equal(t, "limit", ot)
+		assert.Equal(t, "ioc", tif)
+	})
+
+	t.Run("retry 1: 3% buffer IOC", func(t *testing.T) {
+		p, ot, tif := exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 1)
+		assert.InEpsilon(t, price*0.97, p, 0.01)
+		assert.Equal(t, "limit", ot)
+		assert.Equal(t, "ioc", tif)
+	})
+
+	t.Run("retry 2: 5% buffer IOC", func(t *testing.T) {
+		p, ot, tif := exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 2)
+		assert.InEpsilon(t, price*0.95, p, 0.01)
+		assert.Equal(t, "limit", ot)
+		assert.Equal(t, "ioc", tif)
+	})
+
+	t.Run("retry 3+: market order", func(t *testing.T) {
+		_, ot, tif := exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 3)
+		assert.Equal(t, "market", ot)
+		assert.Equal(t, "ioc", tif)
+	})
+
+	t.Run("non-forced exit: regular limit", func(t *testing.T) {
+		p, ot, tif := exitOrderParams(domain.ExitRuleTrailingStop, price, 0)
+		assert.Equal(t, price, p)
+		assert.Equal(t, "limit", ot)
+		assert.Equal(t, "", tif)
+	})
+}
+
+func TestService_processExitSubmitted_TracksOrderID(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop())
+
+	svc.processFill(fillMsg{
+		Symbol:     domain.Symbol("BTC/USD"),
+		Side:       "BUY",
+		Price:      67000,
+		Quantity:   0.15,
+		FilledAt:   time.Now(),
+		Strategy:   "avwap_v1",
+		AssetClass: domain.AssetClassCrypto,
+		ExitRules:  []domain.ExitRule{},
+	})
+
+	svc.processExitSubmitted(exitOrderSubmittedMsg{
+		Symbol:        domain.Symbol("BTC/USD"),
+		BrokerOrderID: "broker-exit-456",
+		Direction:     "CLOSE_LONG",
+	})
+
+	pos := svc.positions["tenant-1:Paper:BTC/USD"]
+	require.NotNil(t, pos)
+	assert.Equal(t, "broker-exit-456", pos.ExitOrderID)
 }
 
 func TestService_bootstrapPositions_RestoresOMOPositionThatExistsOnBroker(t *testing.T) {

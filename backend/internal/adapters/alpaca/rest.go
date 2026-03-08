@@ -210,23 +210,37 @@ func (c *RESTClient) SubmitOrder(ctx context.Context, intent domain.OrderIntent)
 		side = "buy"
 	}
 
-	// Alpaca requires TIF="day" for fractional equity orders.
-	// Crypto orders only support "gtc" or "ioc" — never "day".
-	tif := "gtc"
-	if !intent.Symbol.IsCryptoSymbol() && intent.Quantity != math.Floor(intent.Quantity) {
-		tif = "day"
+	// Determine order type: respect intent override, else default to "limit".
+	orderType := intent.OrderType
+	if orderType == "" {
+		orderType = "limit"
+	}
+	if intent.StopLoss > 0 {
+		orderType = "stop_limit"
+	}
+
+	// Determine TIF: respect intent override, else apply Alpaca's constraints.
+	// Crypto only supports "gtc" or "ioc" — never "day".
+	// Equity fractional orders require "day".
+	tif := intent.TimeInForce
+	if tif == "" {
+		tif = "gtc"
+		if !intent.Symbol.IsCryptoSymbol() && intent.Quantity != math.Floor(intent.Quantity) {
+			tif = "day"
+		}
 	}
 
 	reqBody := map[string]interface{}{
 		"symbol":        intent.Symbol.String(),
 		"qty":           fmt.Sprintf("%g", intent.Quantity),
 		"side":          side,
-		"type":          "limit",
+		"type":          orderType,
 		"time_in_force": tif,
-		"limit_price":   math.Round(intent.LimitPrice*100) / 100,
+	}
+	if orderType != "market" {
+		reqBody["limit_price"] = math.Round(intent.LimitPrice*100) / 100
 	}
 	if intent.StopLoss > 0 {
-		reqBody["type"] = "stop_limit"
 		reqBody["stop_price"] = math.Round(intent.StopLoss*100) / 100
 	}
 
