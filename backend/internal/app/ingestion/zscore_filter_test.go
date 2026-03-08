@@ -40,59 +40,62 @@ func TestZScoreFilter_PassesNormalBar(t *testing.T) {
 	filter := ingestion.NewZScoreFilter(5, 4.0)
 	sym, _ := domain.NewSymbol("BTC/USD")
 
-	// Fill window
 	for i := 0; i < 5; i++ {
-		suspect := filter.Check(createBar(t, sym, 100.0, 10.0))
+		suspect := filter.Check(createBar(t, sym, 10000.0, 10.0))
 		assert.False(t, suspect)
 	}
 
-	// Normal bar (mean=100, stddev=0 -> wait, if stddev is 0, it should pass)
-	// Let's create some variance
+	// Use higher base prices so small moves stay under 1.5% deviation.
 	filter = ingestion.NewZScoreFilter(5, 4.0)
 	for i := 0; i < 5; i++ {
-		// prices: 98, 99, 100, 101, 102 (mean 100, stddev ~1.41)
-		// volumes: 10
-		suspect := filter.Check(createBar(t, sym, 98.0+float64(i), 10.0))
+		// prices: 9998..10002 (mean 10000, stddev ~1.41)
+		suspect := filter.Check(createBar(t, sym, 9998.0+float64(i), 10.0))
 		assert.False(t, suspect)
 	}
 
-	// 103 is z=3/1.41 = 2.12 < 4.0
-	suspect := filter.Check(createBar(t, sym, 103.0, 10.0))
+	// 10003: deviation from lastClose(10002) = 0.01%, z = 3/1.41 = 2.12 < 4.0
+	suspect := filter.Check(createBar(t, sym, 10003.0, 10.0))
 	assert.False(t, suspect, "Normal bar should pass")
 }
 
-func TestZScoreFilter_InsufficientData(t *testing.T) {
+func TestZScoreFilter_InsufficientData_NormalBar(t *testing.T) {
 	filter := ingestion.NewZScoreFilter(100, 4.0)
 	sym, _ := domain.NewSymbol("BTC/USD")
 
-	// Only 10 bars, less than window size
 	for i := 0; i < 10; i++ {
 		suspect := filter.Check(createBar(t, sym, 100.0, 10.0))
 		assert.False(t, suspect, "Should pass when insufficient data")
 	}
 
-	// Even an extreme outlier should pass if insufficient data
-	suspect := filter.Check(createBar(t, sym, 99999.0, 10.0))
-	assert.False(t, suspect, "Should pass outlier when insufficient data")
+	// Small deviation (1%) passes during warmup — Layer 1 allows, Layer 2 inactive.
+	suspect := filter.Check(createBar(t, sym, 101.0, 10.0))
+	assert.False(t, suspect, "Small deviation should pass during warmup")
+}
+
+func TestZScoreFilter_DeviationRejectsDuringWarmup(t *testing.T) {
+	filter := ingestion.NewZScoreFilter(100, 4.0)
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	filter.Check(createBar(t, sym, 100.0, 10.0))
+
+	// Extreme outlier caught by bar-over-bar deviation even during warmup.
+	suspect := filter.Check(createBar(t, sym, 200.0, 10.0))
+	assert.True(t, suspect, "Extreme deviation should be rejected even during warmup")
 }
 
 func TestZScoreFilter_DetectsAnomaly(t *testing.T) {
 	filter := ingestion.NewZScoreFilter(5, 4.0)
 	sym, _ := domain.NewSymbol("BTC/USD")
 
+	// Use prices 9800-9802 so a +6 move is only ~0.06% (passes Layer 1)
+	// but 6/stddev(~1.41) = z≈4.24 > 4.0 triggers Layer 2.
 	for i := 0; i < 5; i++ {
-		// prices: 98, 99, 100, 101, 102
-		// volumes: 10, 10, 10, 10, 10
-		suspect := filter.Check(createBar(t, sym, 98.0+float64(i), 10.0))
+		suspect := filter.Check(createBar(t, sym, 9800.0+float64(i), 10.0))
 		assert.False(t, suspect)
 	}
 
-	// Mean = 100, StdDev = sqrt(2) = ~1.414
-	// 4 sigma = 4 * 1.414 = 5.65
-	// Price 106 -> diff 6 -> z = 4.24 > 4.0
-	// Volume 10 -> mean 10, stddev 0 -> z = 0 < 2.0 (secondary threshold)
-	// So it SHOULD reject!
-	suspect := filter.Check(createBar(t, sym, 106.0, 10.0))
+	// Price 9808: diff=6 from mean 9802, z = 6/1.414 = 4.24 > 4.0. Volume z=0 < 2.0 → rejected.
+	suspect := filter.Check(createBar(t, sym, 9808.0, 10.0))
 	assert.True(t, suspect, "Anomalous bar without matching volume should be rejected")
 }
 
@@ -100,17 +103,16 @@ func TestZScoreFilter_AnomalyWithMatchingVolumePasses(t *testing.T) {
 	filter := ingestion.NewZScoreFilter(5, 4.0)
 	sym, _ := domain.NewSymbol("BTC/USD")
 
+	// Use prices 9800-9802 so a move to 9806 is only ~0.04% (passes Layer 1 at 1.5%)
+	// but still triggers the Z-score (Layer 2).
 	for i := 0; i < 5; i++ {
-		// prices: 98, 99, 100, 101, 102
-		// volumes: 8, 9, 10, 11, 12 (mean 10, stddev ~1.41)
-		suspect := filter.Check(createBar(t, sym, 98.0+float64(i), 8.0+float64(i)))
+		suspect := filter.Check(createBar(t, sym, 9800.0+float64(i), 8.0+float64(i)))
 		assert.False(t, suspect)
 	}
 
-	// Price 106 -> z = 4.24 > 4.0
-	// Volume 16 -> diff 6 -> z = 4.24 > 2.0 (assuming secondary is 2.0)
-	// Since volume matches the anomaly, it should pass!
-	suspect := filter.Check(createBar(t, sym, 106.0, 16.0))
+	// Price 9808: z = 6/1.414 = 4.24 > 4.0, volume 16: z = 6/1.414 = 4.24 > 2.0.
+	// Both price and volume anomalous → volume confirms the move → passes.
+	suspect := filter.Check(createBar(t, sym, 9808.0, 16.0))
 	assert.False(t, suspect, "Anomalous bar WITH matching volume should pass")
 }
 
@@ -118,25 +120,14 @@ func TestZScoreFilter_RollingWindow(t *testing.T) {
 	filter := ingestion.NewZScoreFilter(3, 4.0)
 	sym, _ := domain.NewSymbol("BTC/USD")
 
-	// P1: 100, P2: 100, P3: 100
-	filter.Check(createBar(t, sym, 100.0, 10.0))
-	filter.Check(createBar(t, sym, 100.0, 10.0))
-	filter.Check(createBar(t, sym, 100.0, 10.0))
+	filter.Check(createBar(t, sym, 10000.0, 10.0))
+	filter.Check(createBar(t, sym, 10000.0, 10.0))
+	filter.Check(createBar(t, sym, 10000.0, 10.0))
 
-	// Now window is full. If we push 200, it's an anomaly because stddev is 0 (all 100s)
-	// Wait, if stddev is 0, any diff > 0 is inf z-score, so it's > 4.0.
-	// We check 200 with low volume.
-	suspect := filter.Check(createBar(t, sym, 200.0, 10.0))
-	assert.True(t, suspect, "First outlier rejected")
-
-	// The outlier itself should still be added to the rolling window?
-	// Ah! Does the filter add the rejected bar to the window?
-	// Usually, anomalous bars are NOT added to the rolling window to prevent poisoning!
-	// Wait, the prompt doesn't specify. Let's assume we do add it, or we don't.
-	// Let's assume we add it because "For each new bar: 1. Compute ... 2. Calculate ... 3. If suspect... reject"
-	// But wait, the prompt says "The filter maintains a rolling window of closing prices per symbol. For each new bar: 1. Compute mean... 2. Calculate z... 3. If z > ... reject. 4. Otherwise pass".
-	// It doesn't explicitly say "add to window". But we must add it to the window at some point.
-	// Normally we add before or after. If we add *before* computing, the anomaly poisons its own detection. So we add *after* checking. If it's a suspect, do we add it? Probably not, or it poisons the window. Let's NOT add suspects.
+	// stddev=0, any diff > 0 → infinite z-score. Also 10001 vs 10000 = 0.01% < 1.5%.
+	// So this tests Layer 2 (Z-score) rejection with zero stddev.
+	suspect := filter.Check(createBar(t, sym, 10001.0, 10.0))
+	assert.True(t, suspect, "Non-zero diff with zero stddev should be rejected")
 }
 
 func TestZScoreFilter_SeparatePerSymbol(t *testing.T) {
@@ -158,14 +149,12 @@ func TestZScoreFilter_DetectsHighWickAnomaly(t *testing.T) {
 	filter := ingestion.NewZScoreFilter(5, 4.0)
 	sym, _ := domain.NewSymbol("BTC/USD")
 
-	// prices: 98..102, volumes: 8..12 (mean=100/10, stddev≈1.41)
 	for i := 0; i < 5; i++ {
-		filter.Check(createBar(t, sym, 98.0+float64(i), 8.0+float64(i)))
+		filter.Check(createBar(t, sym, 9998.0+float64(i), 8.0+float64(i)))
 	}
 
-	// Close=100 is normal (z≈0), but High=130 is anomalous (z≈21).
-	// Volume=10 → z≈0, well below secondary threshold.
-	suspect := filter.Check(createBarOHLC(t, sym, 100.0, 130.0, 99.0, 100.0, 10.0))
+	// High=10200 vs lastClose=10002: deviation 1.98% > 1.5% → caught by Layer 1.
+	suspect := filter.Check(createBarOHLC(t, sym, 10000.0, 10200.0, 9999.0, 10000.0, 10.0))
 	assert.True(t, suspect, "Bar with anomalous high wick should be rejected")
 }
 
@@ -174,11 +163,11 @@ func TestZScoreFilter_DetectsLowWickAnomaly(t *testing.T) {
 	sym, _ := domain.NewSymbol("BTC/USD")
 
 	for i := 0; i < 5; i++ {
-		filter.Check(createBar(t, sym, 98.0+float64(i), 8.0+float64(i)))
+		filter.Check(createBar(t, sym, 9998.0+float64(i), 8.0+float64(i)))
 	}
 
-	// Close=100 is normal, but Low=70 is anomalous (z≈21).
-	suspect := filter.Check(createBarOHLC(t, sym, 100.0, 101.0, 70.0, 100.0, 10.0))
+	// Low=9800 vs lastClose=10002: deviation 2.02% > 1.5% → caught by Layer 1.
+	suspect := filter.Check(createBarOHLC(t, sym, 10000.0, 10001.0, 9800.0, 10000.0, 10.0))
 	assert.True(t, suspect, "Bar with anomalous low wick should be rejected")
 }
 
@@ -187,12 +176,81 @@ func TestZScoreFilter_NormalWickPasses(t *testing.T) {
 	sym, _ := domain.NewSymbol("BTC/USD")
 
 	for i := 0; i < 5; i++ {
-		filter.Check(createBar(t, sym, 98.0+float64(i), 10.0))
+		filter.Check(createBar(t, sym, 9998.0+float64(i), 10.0))
 	}
 
-	// Close=101, High=102, Low=99 — all within normal range.
-	suspect := filter.Check(createBarOHLC(t, sym, 100.0, 102.0, 99.0, 101.0, 10.0))
+	// OHLC all within 1.5% of lastClose(10002) AND within 4σ of close mean(10000, stddev≈1.41).
+	// highZ = |10005-10000|/1.414 = 3.54 < 4.0, lowZ = |9995-10000|/1.414 = 3.54 < 4.0.
+	suspect := filter.Check(createBarOHLC(t, sym, 10000.0, 10005.0, 9995.0, 10001.0, 10.0))
 	assert.False(t, suspect, "Bar with normal wicks should pass")
+}
+
+func TestZScoreFilter_SeedEliminatesWarmupBlindSpot(t *testing.T) {
+	filter := ingestion.NewZScoreFilter(5, 4.0)
+	sym, _ := domain.NewSymbol("BTC/USD")
+	filter.SetMaxDeviation(sym, ingestion.DeviationCrypto)
+
+	seedBars := make([]domain.MarketBar, 5)
+	for i := range seedBars {
+		seedBars[i] = createBar(t, sym, 67000.0+float64(i), 100.0)
+	}
+	n := filter.Seed(sym, seedBars)
+	assert.Equal(t, 5, n)
+
+	// Phantom wick: high=$69,450 vs lastClose=67004 → deviation 3.65% > 3% (crypto).
+	suspect := filter.Check(createBarOHLC(t, sym, 67005.0, 69450.0, 67000.0, 67005.0, 100.0))
+	assert.True(t, suspect, "Phantom wick should be caught immediately after seeded restart")
+}
+
+func TestZScoreFilter_SeedPartialWindow(t *testing.T) {
+	filter := ingestion.NewZScoreFilter(20, 4.0)
+	sym, _ := domain.NewSymbol("BTC/USD")
+	filter.SetMaxDeviation(sym, ingestion.DeviationCrypto)
+
+	seedBars := make([]domain.MarketBar, 10)
+	for i := range seedBars {
+		seedBars[i] = createBar(t, sym, 67000.0+float64(i), 100.0)
+	}
+	n := filter.Seed(sym, seedBars)
+	assert.Equal(t, 10, n)
+
+	// Phantom: high=$69,450 vs lastClose=67009 → 3.65% > 3% (crypto) → caught.
+	suspect := filter.Check(createBarOHLC(t, sym, 67010.0, 69450.0, 67005.0, 67010.0, 100.0))
+	assert.True(t, suspect, "Layer 1 catches phantom even with partial Z-score window")
+
+	suspect = filter.Check(createBar(t, sym, 67010.0, 100.0))
+	assert.False(t, suspect, "Normal bar should pass after partial seed")
+}
+
+func TestZScoreFilter_SeedEmptyBars(t *testing.T) {
+	filter := ingestion.NewZScoreFilter(5, 4.0)
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	n := filter.Seed(sym, nil)
+	assert.Equal(t, 0, n)
+
+	// No seed → no lastClose → Layer 1 inactive. First bar always passes.
+	suspect := filter.Check(createBar(t, sym, 99999.0, 10.0))
+	assert.False(t, suspect, "First bar with no seed should pass (no reference)")
+}
+
+func TestZScoreFilter_PerAssetClassDeviation(t *testing.T) {
+	filter := ingestion.NewZScoreFilter(5, 4.0)
+	btc, _ := domain.NewSymbol("BTC/USD")
+	aapl, _ := domain.NewSymbol("AAPL")
+	filter.SetMaxDeviation(btc, ingestion.DeviationCrypto)
+	filter.SetMaxDeviation(aapl, ingestion.DeviationEquity)
+
+	filter.Check(createBar(t, btc, 67000.0, 100.0))
+	filter.Check(createBar(t, aapl, 200.0, 100.0))
+
+	// BTC: 5% move ($70,350) → 3350/67000 = 5% > 3% (crypto) → rejected.
+	suspect := filter.Check(createBar(t, btc, 70350.0, 100.0))
+	assert.True(t, suspect, "5% BTC move should be rejected with crypto threshold")
+
+	// AAPL: 5% move ($210) → 10/200 = 5% < 10% (equity) → passes Layer 1.
+	suspect = filter.Check(createBar(t, aapl, 210.0, 100.0))
+	assert.False(t, suspect, "5% AAPL move should pass with equity threshold")
 }
 
 func TestZScoreFilter_ZeroStdDev(t *testing.T) {
