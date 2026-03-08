@@ -211,7 +211,7 @@ func (r *Revaluator) evaluatePosition(ctx context.Context, pos domain.MonitoredP
 	}
 
 	key := pos.PositionKey()
-	r.posMonitor.ApplyRevaluation(key, result)
+	ruleChanges := r.posMonitor.ApplyRevaluation(key, result)
 
 	currentPrice := indicators.EMA9
 	if currentPrice == 0 {
@@ -227,6 +227,7 @@ func (r *Revaluator) evaluatePosition(ctx context.Context, pos domain.MonitoredP
 		HoldDuration:    formatDuration(time.Since(pos.EntryTime)),
 		TenantID:        pos.TenantID,
 		EnvMode:         pos.EnvMode,
+		RuleChanges:     ruleChanges,
 	}
 
 	idempotencyKey := fmt.Sprintf("REVAL:%s:%s:%s:%d", pos.TenantID, pos.EnvMode, pos.Symbol, time.Now().Unix())
