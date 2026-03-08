@@ -537,7 +537,77 @@ func TestExitOrderParams_Escalation(t *testing.T) {
 	})
 }
 
-func TestService_processExitSubmitted_TracksOrderID(t *testing.T) {
+func TestService_processExitSubmitted_TracksOrderIDAndSetsExitPending(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	now := time.Date(2026, 3, 7, 22, 35, 0, 0, time.UTC)
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.processFill(fillMsg{
+		Symbol:     domain.Symbol("BTC/USD"),
+		Side:       "BUY",
+		Price:      67000,
+		Quantity:   0.15,
+		FilledAt:   now,
+		Strategy:   "avwap_v1",
+		AssetClass: domain.AssetClassCrypto,
+		ExitRules:  []domain.ExitRule{},
+	})
+
+	svc.processExitSubmitted(exitOrderSubmittedMsg{
+		Symbol:        domain.Symbol("BTC/USD"),
+		BrokerOrderID: "broker-exit-456",
+		Direction:     "CLOSE_LONG",
+	})
+
+	pos := svc.positions["tenant-1:Paper:BTC/USD"]
+	require.NotNil(t, pos)
+	assert.Equal(t, "broker-exit-456", pos.ExitOrderID)
+	assert.True(t, pos.ExitPending, "processExitSubmitted must set ExitPending=true")
+	assert.Equal(t, now, pos.ExitPendingAt)
+}
+
+func TestService_processExitSubmitted_DoesNotResetExitPendingAt(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	now := time.Date(2026, 3, 7, 22, 35, 0, 0, time.UTC)
+	earlier := now.Add(-5 * time.Second)
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.processFill(fillMsg{
+		Symbol:     domain.Symbol("BTC/USD"),
+		Side:       "BUY",
+		Price:      67000,
+		Quantity:   0.15,
+		FilledAt:   now,
+		Strategy:   "avwap_v1",
+		AssetClass: domain.AssetClassCrypto,
+		ExitRules:  []domain.ExitRule{},
+	})
+
+	pos := svc.positions["tenant-1:Paper:BTC/USD"]
+	pos.ExitPending = true
+	pos.ExitPendingAt = earlier
+
+	svc.processExitSubmitted(exitOrderSubmittedMsg{
+		Symbol:        domain.Symbol("BTC/USD"),
+		BrokerOrderID: "broker-exit-789",
+		Direction:     "CLOSE_LONG",
+	})
+
+	assert.True(t, pos.ExitPending)
+	assert.Equal(t, earlier, pos.ExitPendingAt, "must not reset ExitPendingAt if already pending")
+}
+
+func TestService_processExitTerminal_ClearsExitPending(t *testing.T) {
 	bus := &mockEventBus{}
 	pc := NewPriceCache(zerolog.Nop())
 	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
@@ -555,15 +625,50 @@ func TestService_processExitSubmitted_TracksOrderID(t *testing.T) {
 		ExitRules:  []domain.ExitRule{},
 	})
 
-	svc.processExitSubmitted(exitOrderSubmittedMsg{
+	pos := svc.positions["tenant-1:Paper:BTC/USD"]
+	pos.ExitPending = true
+	pos.ExitOrderID = "exit-order-ABC"
+	pos.ExitRetryCount = 0
+
+	svc.processExitTerminal(exitOrderTerminalMsg{
 		Symbol:        domain.Symbol("BTC/USD"),
-		BrokerOrderID: "broker-exit-456",
-		Direction:     "CLOSE_LONG",
+		BrokerOrderID: "exit-order-ABC",
+	})
+
+	assert.False(t, pos.ExitPending, "terminal event must clear ExitPending")
+	assert.Equal(t, "", pos.ExitOrderID)
+	assert.Equal(t, 1, pos.ExitRetryCount)
+}
+
+func TestService_processExitTerminal_IgnoresMismatchedOrderID(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop())
+
+	svc.processFill(fillMsg{
+		Symbol:     domain.Symbol("BTC/USD"),
+		Side:       "BUY",
+		Price:      67000,
+		Quantity:   0.15,
+		FilledAt:   time.Now(),
+		Strategy:   "avwap_v1",
+		AssetClass: domain.AssetClassCrypto,
+		ExitRules:  []domain.ExitRule{},
 	})
 
 	pos := svc.positions["tenant-1:Paper:BTC/USD"]
-	require.NotNil(t, pos)
-	assert.Equal(t, "broker-exit-456", pos.ExitOrderID)
+	pos.ExitPending = true
+	pos.ExitOrderID = "current-exit-order"
+
+	svc.processExitTerminal(exitOrderTerminalMsg{
+		Symbol:        domain.Symbol("BTC/USD"),
+		BrokerOrderID: "stale-old-order",
+	})
+
+	assert.True(t, pos.ExitPending, "must NOT clear ExitPending for mismatched order ID")
+	assert.Equal(t, "current-exit-order", pos.ExitOrderID)
 }
 
 func TestService_bootstrapPositions_RestoresOMOPositionThatExistsOnBroker(t *testing.T) {

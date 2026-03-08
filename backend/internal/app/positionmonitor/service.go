@@ -37,6 +37,7 @@ type Service struct {
 	// Actor channels.
 	fills         chan fillMsg
 	exitSubmitted chan exitOrderSubmittedMsg
+	exitTerminal  chan exitOrderTerminalMsg
 	outbox        chan outboxMsg
 	stopCh        chan struct{}
 
@@ -79,6 +80,11 @@ type exitOrderSubmittedMsg struct {
 	Symbol        domain.Symbol
 	BrokerOrderID string
 	Direction     string
+}
+
+type exitOrderTerminalMsg struct {
+	Symbol        domain.Symbol
+	BrokerOrderID string
 }
 
 const (
@@ -146,6 +152,7 @@ func NewService(
 		nowFunc:           time.Now,
 		fills:             make(chan fillMsg, 256),
 		exitSubmitted:     make(chan exitOrderSubmittedMsg, 64),
+		exitTerminal:      make(chan exitOrderTerminalMsg, 64),
 		outbox:            make(chan outboxMsg, 64),
 		stopCh:            make(chan struct{}),
 		positions:         make(map[string]*domain.MonitoredPosition),
@@ -167,6 +174,9 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 	if err := s.eventBus.Subscribe(ctx, domain.EventOrderSubmitted, s.handleOrderSubmitted); err != nil {
 		return fmt.Errorf("position_monitor: failed to subscribe to OrderSubmitted: %w", err)
+	}
+	if err := s.eventBus.Subscribe(ctx, domain.EventExitOrderTerminal, s.handleExitOrderTerminal); err != nil {
+		return fmt.Errorf("position_monitor: failed to subscribe to ExitOrderTerminal: %w", err)
 	}
 
 	// Bootstrap: seed monitor with OMO-opened positions that are still on the broker.
@@ -430,6 +440,28 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 	return nil
 }
 
+func (s *Service) handleExitOrderTerminal(_ context.Context, event domain.Event) error {
+	payload, ok := event.Payload.(map[string]any)
+	if !ok {
+		return nil
+	}
+	symbol, _ := payload["symbol"].(string)
+	brokerOrderID, _ := payload["broker_order_id"].(string)
+	if symbol == "" {
+		return nil
+	}
+
+	select {
+	case s.exitTerminal <- exitOrderTerminalMsg{
+		Symbol:        domain.Symbol(symbol),
+		BrokerOrderID: brokerOrderID,
+	}:
+	default:
+		s.log.Warn().Str("symbol", symbol).Msg("position monitor: exitTerminal channel full")
+	}
+	return nil
+}
+
 func (s *Service) handleOrderSubmitted(_ context.Context, event domain.Event) error {
 	payload, ok := event.Payload.(domain.OrderIntentEventPayload)
 	if !ok {
@@ -470,6 +502,8 @@ func (s *Service) runTickLoop(ctx context.Context) {
 			s.processFill(fill)
 		case msg := <-s.exitSubmitted:
 			s.processExitSubmitted(msg)
+		case msg := <-s.exitTerminal:
+			s.processExitTerminal(msg)
 		case <-ticker.C:
 			s.tick()
 		}
@@ -485,10 +519,39 @@ func (s *Service) processExitSubmitted(msg exitOrderSubmittedMsg) {
 		return
 	}
 	pos.ExitOrderID = msg.BrokerOrderID
-	s.log.Debug().
+	if !pos.ExitPending {
+		pos.ExitPending = true
+		pos.ExitPendingAt = s.nowFunc()
+	}
+	s.log.Info().
 		Str("symbol", string(msg.Symbol)).
 		Str("broker_order_id", msg.BrokerOrderID).
-		Msg("exit order ID tracked")
+		Bool("exit_pending", pos.ExitPending).
+		Msg("exit order tracked — position locked for exit")
+}
+
+// processExitTerminal clears ExitPending when an exit order is canceled, rejected, or expired.
+// This allows the position monitor's tick loop to re-evaluate exit rules and retry.
+func (s *Service) processExitTerminal(msg exitOrderTerminalMsg) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := fmt.Sprintf("%s:%s:%s", s.tenantID, s.envMode, msg.Symbol)
+	pos, ok := s.positions[key]
+	if !ok {
+		return
+	}
+	// Only clear if this terminal event matches the tracked exit order.
+	if pos.ExitOrderID != "" && pos.ExitOrderID != msg.BrokerOrderID {
+		return
+	}
+	pos.ExitPending = false
+	pos.ExitOrderID = ""
+	pos.ExitRetryCount++
+	s.log.Info().
+		Str("symbol", string(msg.Symbol)).
+		Str("broker_order_id", msg.BrokerOrderID).
+		Int("retry_count", pos.ExitRetryCount).
+		Msg("exit order terminal — unlocking position for retry")
 }
 
 // processFill handles a fill within the actor goroutine.
