@@ -98,12 +98,37 @@ func (lw *LedgerWriter) SetAccountEquity(equity float64) {
 // SetMetrics wires Prometheus metrics into the ledger writer.
 func (lw *LedgerWriter) SetMetrics(m *metrics.Metrics) { lw.metrics = m }
 
-// Start subscribes the ledger writer to FillReceived events.
-func (lw *LedgerWriter) Start(ctx context.Context) error {
+// Start bootstraps positions from the broker and subscribes to FillReceived events.
+func (lw *LedgerWriter) Start(ctx context.Context, tenantID string, envMode domain.EnvMode) error {
+	positions, err := lw.broker.GetPositions(ctx, tenantID, envMode)
+	if err != nil {
+		return fmt.Errorf("perf: ledger writer failed to bootstrap positions from broker: %w", err)
+	}
+
+	lw.mu.Lock()
+	now := time.Now()
+	for _, pos := range positions {
+		if pos.Quantity <= 0 || pos.Side == "sell" || pos.Side == "short" {
+			continue
+		}
+		posKey := fmt.Sprintf("%s:%s:%s", tenantID, string(envMode), string(pos.Symbol))
+		lw.positions[posKey] = &positionEntry{
+			avgEntry: pos.Price,
+			quantity: pos.Quantity,
+			entryAt:  now,
+		}
+		lw.log.Info().
+			Str("symbol", string(pos.Symbol)).
+			Float64("qty", pos.Quantity).
+			Float64("avg_entry", pos.Price).
+			Msg("bootstrapped position from broker")
+	}
+	lw.mu.Unlock()
+
 	if err := lw.eventBus.Subscribe(ctx, domain.EventFillReceived, lw.handleFill); err != nil {
 		return fmt.Errorf("perf: ledger writer failed to subscribe to FillReceived: %w", err)
 	}
-	lw.log.Info().Msg("ledger writer subscribed to FillReceived events")
+	lw.log.Info().Int("bootstrapped", len(positions)).Msg("ledger writer started")
 	return nil
 }
 

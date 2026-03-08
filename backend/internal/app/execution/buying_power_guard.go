@@ -24,20 +24,7 @@ func NewBuyingPowerGuard(account ports.AccountPort, log zerolog.Logger) *BuyingP
 	return &BuyingPowerGuard{account: account, log: log}
 }
 
-// Check verifies that the account has sufficient buying power for an equity entry order.
-//
-// Logic:
-//  1. Skip check entirely for crypto orders (PDT rules don't apply) and exit orders.
-//  2. Fetch account buying power from the broker.
-//  3. If the account is PDT and DTBP > 0, check order cost against DTBP.
-//  4. If the account is PDT and DTBP == 0 (Alpaca bug), fall back to effective_buying_power.
-//  5. If the account is not PDT, check order cost against effective_buying_power.
 func (g *BuyingPowerGuard) Check(ctx context.Context, intent domain.OrderIntent) error {
-	// Skip crypto — PDT rules don't apply.
-	if intent.AssetClass == domain.AssetClassCrypto {
-		return nil
-	}
-	// Skip exit orders — closing reduces exposure.
 	if intent.Direction.IsExit() {
 		return nil
 	}
@@ -45,14 +32,32 @@ func (g *BuyingPowerGuard) Check(ctx context.Context, intent domain.OrderIntent)
 	bp, err := g.account.GetAccountBuyingPower(ctx)
 	if err != nil {
 		g.log.Error().Err(err).Msg("buying power guard: failed to fetch buying power — allowing order through")
-		return nil // fail-open: don't block orders if we can't fetch account info
+		return nil
 	}
 
 	orderCost := intent.LimitPrice * intent.Quantity
 
+	if intent.AssetClass == domain.AssetClassCrypto {
+		return g.checkCrypto(bp, orderCost)
+	}
+	return g.checkEquity(bp, orderCost)
+}
+
+func (g *BuyingPowerGuard) checkCrypto(bp ports.BuyingPower, orderCost float64) error {
+	if orderCost > bp.NonMarginableBuyingPower {
+		return fmt.Errorf("buying_power: crypto order cost $%.2f exceeds non-marginable buying power $%.2f",
+			orderCost, bp.NonMarginableBuyingPower)
+	}
+	g.log.Debug().
+		Float64("order_cost", orderCost).
+		Float64("non_marginable_bp", bp.NonMarginableBuyingPower).
+		Msg("buying power check passed (crypto)")
+	return nil
+}
+
+func (g *BuyingPowerGuard) checkEquity(bp ports.BuyingPower, orderCost float64) error {
 	if bp.PatternDayTrader {
 		if bp.DayTradingBuyingPower > 0 {
-			// Normal PDT account — check DTBP.
 			if orderCost > bp.DayTradingBuyingPower {
 				return fmt.Errorf("buying_power: order cost $%.2f exceeds day trading buying power $%.2f",
 					orderCost, bp.DayTradingBuyingPower)
@@ -64,7 +69,6 @@ func (g *BuyingPowerGuard) Check(ctx context.Context, intent domain.OrderIntent)
 			return nil
 		}
 
-		// DTBP == 0 (Alpaca paper bug) — fall back to effective buying power.
 		g.log.Warn().
 			Float64("dtbp", bp.DayTradingBuyingPower).
 			Float64("effective_bp", bp.EffectiveBuyingPower).
@@ -81,7 +85,6 @@ func (g *BuyingPowerGuard) Check(ctx context.Context, intent domain.OrderIntent)
 		return nil
 	}
 
-	// Non-PDT account — check effective buying power.
 	if orderCost > bp.EffectiveBuyingPower {
 		return fmt.Errorf("buying_power: order cost $%.2f exceeds effective buying power $%.2f",
 			orderCost, bp.EffectiveBuyingPower)

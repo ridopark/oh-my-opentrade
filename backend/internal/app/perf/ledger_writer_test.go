@@ -160,7 +160,7 @@ func TestLedgerWriter_HandlesFillAndPersists(t *testing.T) {
 	log := zerolog.Nop()
 
 	lw := perf.NewLedgerWriter(bus, repo, broker, 100000.0, log)
-	err := lw.Start(context.Background())
+	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	// Buy 10 shares at $150 to establish position
@@ -182,7 +182,7 @@ func TestLedgerWriter_HandlesFillAndPersists(t *testing.T) {
 
 	// Verify equity points were saved (one per fill)
 	require.Len(t, repo.points, 2)
-	assert.Equal(t, 100000.0, repo.points[0].Equity)   // buy: no P&L change
+	assert.Equal(t, 100000.0, repo.points[0].Equity)         // buy: no P&L change
 	assert.InDelta(t, 100100.0, repo.points[1].Equity, 0.01) // sell: 100k + 100 realized
 }
 
@@ -193,7 +193,7 @@ func TestLedgerWriter_AccumulatesMultipleFills(t *testing.T) {
 	log := zerolog.Nop()
 
 	lw := perf.NewLedgerWriter(bus, repo, broker, 100000.0, log)
-	err := lw.Start(context.Background())
+	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -226,7 +226,7 @@ func TestLedgerWriter_GetDailyRealizedPnL(t *testing.T) {
 	log := zerolog.Nop()
 
 	lw := perf.NewLedgerWriter(bus, repo, broker, 100000.0, log)
-	err := lw.Start(context.Background())
+	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	// Initially zero
@@ -260,7 +260,7 @@ func TestLedgerWriter_SetAccountEquity(t *testing.T) {
 	lw.SetAccountEquity(75000.0)
 
 	// Start and process a buy+sell to see the new equity reflected
-	err := lw.Start(context.Background())
+	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	// Buy 1 @ $100
@@ -287,7 +287,7 @@ func TestLedgerWriter_IgnoresInvalidPayload(t *testing.T) {
 	log := zerolog.Nop()
 
 	lw := perf.NewLedgerWriter(bus, repo, broker, 100000.0, log)
-	err := lw.Start(context.Background())
+	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	// Publish event with wrong payload type
@@ -307,7 +307,7 @@ func TestLedgerWriter_PartialSellRealizesPartialPnL(t *testing.T) {
 	log := zerolog.Nop()
 
 	lw := perf.NewLedgerWriter(bus, repo, broker, 100000.0, log)
-	err := lw.Start(context.Background())
+	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -333,7 +333,7 @@ func TestLedgerWriter_MultipleBuysAverageEntry(t *testing.T) {
 	log := zerolog.Nop()
 
 	lw := perf.NewLedgerWriter(bus, repo, broker, 100000.0, log)
-	err := lw.Start(context.Background())
+	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -361,7 +361,7 @@ func TestLedgerWriter_SellWithoutPositionRecordsZero(t *testing.T) {
 	log := zerolog.Nop()
 
 	lw := perf.NewLedgerWriter(bus, repo, broker, 100000.0, log)
-	err := lw.Start(context.Background())
+	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	// Sell without any prior buy — should record zero P&L (not a crash)
@@ -382,7 +382,7 @@ func TestLedgerWriter_BuyProducesZeroPnL(t *testing.T) {
 	log := zerolog.Nop()
 
 	lw := perf.NewLedgerWriter(bus, repo, broker, 100000.0, log)
-	err := lw.Start(context.Background())
+	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	// Buy fill should not affect realized P&L at all
@@ -392,8 +392,8 @@ func TestLedgerWriter_BuyProducesZeroPnL(t *testing.T) {
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
 	require.Len(t, repo.upserts, 1)
-	assert.Equal(t, 0.0, repo.upserts[0].RealizedPnL)  // buy = zero realized P&L
-	assert.Equal(t, 100000.0, repo.points[0].Equity)     // equity unchanged on buy
+	assert.Equal(t, 0.0, repo.upserts[0].RealizedPnL) // buy = zero realized P&L
+	assert.Equal(t, 100000.0, repo.points[0].Equity)  // equity unchanged on buy
 }
 
 func makeStrategyFillEvent(t *testing.T, symbol, side string, quantity, price float64, strategy string) domain.Event {
@@ -421,7 +421,7 @@ func TestLedgerWriter_StrategyDualWrite_BuySellRecordsPnL(t *testing.T) {
 	log := zerolog.Nop()
 
 	lw := perf.NewLedgerWriter(bus, repo, broker, 100000.0, log)
-	err := lw.Start(context.Background())
+	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -469,7 +469,7 @@ func TestLedgerWriter_StrategyDualWrite_NoStrategySkipsDualWrite(t *testing.T) {
 	log := zerolog.Nop()
 
 	lw := perf.NewLedgerWriter(bus, repo, broker, 100000.0, log)
-	err := lw.Start(context.Background())
+	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -496,7 +496,7 @@ func TestLedgerWriter_StrategyDualWrite_MultipleStrategiesSameSymbol(t *testing.
 	log := zerolog.Nop()
 
 	lw := perf.NewLedgerWriter(bus, repo, broker, 100000.0, log)
-	err := lw.Start(context.Background())
+	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -559,7 +559,7 @@ func TestLedgerWriter_StrategyDualWrite_LossTracking(t *testing.T) {
 	log := zerolog.Nop()
 
 	lw := perf.NewLedgerWriter(bus, repo, broker, 100000.0, log)
-	err := lw.Start(context.Background())
+	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	ctx := context.Background()

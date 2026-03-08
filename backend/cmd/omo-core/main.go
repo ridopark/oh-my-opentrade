@@ -491,7 +491,7 @@ func main() {
 	if err := monitorSvc.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start monitor")
 	}
-	if err := ledgerWriter.Start(ctx); err != nil {
+	if err := ledgerWriter.Start(ctx, "default", domain.EnvModePaper); err != nil {
 		log.Fatal().Err(err).Msg("failed to start ledger writer")
 	}
 	if err := signalTracker.Start(ctx); err != nil {
