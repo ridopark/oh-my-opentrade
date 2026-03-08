@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -17,6 +18,11 @@ import (
 	stratports "github.com/oh-my-opentrade/backend/internal/ports/strategy"
 )
 
+// revalStateTTL is how long a degraded revaluation blocks new entries.
+// After the position closes, no new revaluations fire; this TTL ensures
+// the block auto-expires rather than persisting indefinitely.
+const revalStateTTL = 10 * time.Minute
+
 // RiskSizer subscribes to SignalEnriched events and converts enriched signals
 // into OrderIntents after applying position sizing and risk checks.
 type RiskSizer struct {
@@ -24,6 +30,7 @@ type RiskSizer struct {
 	specStore     stratports.SpecStore
 	mu            sync.RWMutex
 	accountEquity float64
+	revalState    sync.Map // symbol (string) → *domain.RiskRevaluation
 	logger        *slog.Logger
 }
 
@@ -42,12 +49,14 @@ func NewRiskSizer(eventBus ports.EventBusPort, specStore stratports.SpecStore, e
 	}
 }
 
-// Start subscribes the RiskSizer to SignalEnriched events on the event bus.
 func (rs *RiskSizer) Start(ctx context.Context) error {
 	if err := rs.eventBus.Subscribe(ctx, domain.EventSignalEnriched, rs.handleSignal); err != nil {
 		return fmt.Errorf("risk sizer: failed to subscribe to SignalEnriched: %w", err)
 	}
-	rs.logger.Info("risk sizer subscribed to SignalEnriched events")
+	if err := rs.eventBus.Subscribe(ctx, domain.EventRiskRevaluated, rs.handleRevaluation); err != nil {
+		return fmt.Errorf("risk sizer: failed to subscribe to RiskRevaluated: %w", err)
+	}
+	rs.logger.Info("risk sizer subscribed to SignalEnriched and RiskRevaluated events")
 	return nil
 }
 
@@ -60,6 +69,38 @@ func (rs *RiskSizer) SetAccountEquity(equity float64) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	rs.accountEquity = equity
+}
+
+func (rs *RiskSizer) handleRevaluation(_ context.Context, event domain.Event) error {
+	reval, ok := event.Payload.(domain.RiskRevaluationEvent)
+	if !ok {
+		return nil
+	}
+
+	sym := string(reval.Symbol)
+	if reval.ThesisStatus == domain.ThesisIntact {
+		rs.revalState.Delete(sym)
+		return nil
+	}
+
+	rs.revalState.Store(sym, &reval.RiskRevaluation)
+	return nil
+}
+
+func (rs *RiskSizer) isSymbolDegraded(symbol string) (*domain.RiskRevaluation, bool) {
+	raw, ok := rs.revalState.Load(symbol)
+	if !ok {
+		return nil, false
+	}
+	reval, ok := raw.(*domain.RiskRevaluation)
+	if !ok {
+		return nil, false
+	}
+	if time.Since(reval.EvaluatedAt) > revalStateTTL {
+		rs.revalState.Delete(symbol)
+		return nil, false
+	}
+	return reval, true
 }
 
 func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error {
@@ -104,6 +145,35 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		}
 		rs.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, rejection.ID, rejection)
 		return nil
+	}
+
+	if sigRef.SignalType == strat.SignalEntry.String() {
+		if reval, degraded := rs.isSymbolDegraded(sigRef.Symbol); degraded {
+			strategyName := "unknown"
+			if hasStrategyID {
+				strategyName = strategyID.String()
+			}
+			signalDir := domain.DirectionLong
+			if sigRef.Side == strat.SideSell.String() {
+				signalDir = domain.DirectionShort
+			}
+			rs.logger.Warn("revaluation gate: entry blocked — thesis degraded",
+				"symbol", sigRef.Symbol,
+				"thesis_status", string(reval.ThesisStatus),
+				"reval_action", string(reval.Action),
+				"reval_confidence", reval.Confidence,
+			)
+			rejection := domain.OrderIntentEventPayload{
+				ID:        uuid.NewString(),
+				Symbol:    sigRef.Symbol,
+				Direction: string(signalDir),
+				Strategy:  strategyName,
+				Reason:    fmt.Sprintf("revaluation_gate: thesis %s (confidence %.0f%%)", reval.ThesisStatus, reval.Confidence*100),
+				Status:    domain.OrderIntentStatusRejected,
+			}
+			rs.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, rejection.ID, rejection)
+			return nil
+		}
 	}
 
 	var spec *stratports.Spec

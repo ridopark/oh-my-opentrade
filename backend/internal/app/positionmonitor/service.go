@@ -927,7 +927,23 @@ func (s *Service) ApplyRevaluation(key string, result *domain.RiskRevaluation) {
 	pos.LastRevaluation = result
 	pos.LastRevaluationAt = result.EvaluatedAt
 	if result.Action == domain.RiskActionTighten {
+		oldRules := pos.ExitRules
 		pos.ExitRules = applyRiskModifierToExitRules(pos.ExitRules, result.UpdatedModifier)
+		for i, newRule := range pos.ExitRules {
+			if i < len(oldRules) {
+				for k, newV := range newRule.Params {
+					if oldV, exists := oldRules[i].Params[k]; exists && oldV != newV {
+						s.log.Info().
+							Str("symbol", string(pos.Symbol)).
+							Str("rule", string(newRule.Type)).
+							Str("param", k).
+							Float64("old_value", oldV).
+							Float64("new_value", newV).
+							Msg("exit rule tightened")
+					}
+				}
+			}
+		}
 	}
 }
 
