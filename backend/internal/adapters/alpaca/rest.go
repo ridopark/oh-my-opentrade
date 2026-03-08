@@ -474,6 +474,7 @@ func (c *RESTClient) GetHistoricalBars(ctx context.Context, dataURL string, symb
 				c.log.Warn().Err(err).Str("symbol", symbol.String()).Msg("skipping invalid historical bar")
 				continue
 			}
+			bar.TradeCount = b.N
 			bars = append(bars, bar)
 		}
 
@@ -492,12 +493,14 @@ func (c *RESTClient) GetHistoricalBars(ctx context.Context, dataURL string, symb
 
 // historicalBar is the JSON shape for a single bar from Alpaca's REST bar endpoints.
 type historicalBar struct {
-	T time.Time `json:"t"`
-	O float64   `json:"o"`
-	H float64   `json:"h"`
-	L float64   `json:"l"`
-	C float64   `json:"c"`
-	V float64   `json:"v"`
+	T  time.Time `json:"t"`
+	O  float64   `json:"o"`
+	H  float64   `json:"h"`
+	L  float64   `json:"l"`
+	C  float64   `json:"c"`
+	V  float64   `json:"v"`
+	N  uint64    `json:"n"`
+	VW float64   `json:"vw"`
 }
 
 // toAlpacaTimeframe converts our short timeframe strings to Alpaca API format.

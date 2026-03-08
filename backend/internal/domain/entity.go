@@ -20,6 +20,14 @@ type MarketBar struct {
 	Close     float64
 	Volume    float64
 	Suspect   bool
+
+	// Microstructure metadata from broker feed.
+	TradeCount uint64 // number of trades in this bar (0 if unavailable)
+
+	// Spike repair metadata — populated by AdaptiveFilter when High/Low are clamped.
+	Repaired     bool    // true if High/Low were clamped by the adaptive spike filter
+	OriginalHigh float64 // pre-repair High (0 if not repaired)
+	OriginalLow  float64 // pre-repair Low (0 if not repaired)
 }
 
 // NewMarketBar creates a validated MarketBar. High must be >= Low and Volume must be non-negative.

@@ -7,6 +7,7 @@ type BarMetrics struct {
 	ReceivedTotal *prometheus.CounterVec
 	ProcLatency   *prometheus.HistogramVec
 	DroppedTotal  *prometheus.CounterVec
+	RepairedTotal *prometheus.CounterVec
 	QueueDepth    *prometheus.GaugeVec
 }
 
@@ -28,11 +29,16 @@ func newBarMetrics(reg *prometheus.Registry) BarMetrics {
 			Help: "Total bars dropped by source and reason.",
 		}, []string{"source", "reason"}),
 
+		RepairedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "omo_bars_repaired_total",
+			Help: "Total bars repaired (High/Low clamped) by source and gate.",
+		}, []string{"source", "gate"}),
+
 		QueueDepth: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "omo_bar_pipeline_queue_depth",
 			Help: "Current depth of the bar processing queue.",
 		}, []string{"source"}),
 	}
-	reg.MustRegister(m.ReceivedTotal, m.ProcLatency, m.DroppedTotal, m.QueueDepth)
+	reg.MustRegister(m.ReceivedTotal, m.ProcLatency, m.DroppedTotal, m.RepairedTotal, m.QueueDepth)
 	return m
 }

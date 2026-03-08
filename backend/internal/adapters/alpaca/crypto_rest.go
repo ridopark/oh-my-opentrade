@@ -98,6 +98,7 @@ func (c *RESTClient) GetCryptoHistoricalBars(ctx context.Context, dataURL string
 				c.log.Warn().Err(err).Str("symbol", symStr).Msg("skipping invalid crypto historical bar")
 				continue
 			}
+			bar.TradeCount = b.N
 			bars = append(bars, bar)
 		}
 

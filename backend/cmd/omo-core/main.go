@@ -110,8 +110,8 @@ func main() {
 	monitorLog := log.With().Str("component", "monitor").Logger()
 	executionLog := log.With().Str("component", "execution").Logger()
 
-	zscoreFilter := ingestion.NewZScoreFilter(20, 4.0)
-	ingestionSvc := ingestion.NewService(eventBus, repo, zscoreFilter, ingestionLog)
+	spikeFilter := ingestion.NewAdaptiveFilter(20, 4.0)
+	ingestionSvc := ingestion.NewService(eventBus, repo, spikeFilter, ingestionLog)
 
 	monitorSvc := monitor.NewService(eventBus, repo, monitorLog)
 
@@ -968,10 +968,10 @@ func main() {
 		Msg("symbol lists initialized")
 
 	for _, sym := range cryptoSymbols {
-		zscoreFilter.SetMaxDeviation(sym, ingestion.DeviationCrypto)
+		spikeFilter.SetMaxDeviation(sym, ingestion.DeviationCrypto)
 	}
 	for _, sym := range equitySymbols {
-		zscoreFilter.SetMaxDeviation(sym, ingestion.DeviationEquity)
+		spikeFilter.SetMaxDeviation(sym, ingestion.DeviationEquity)
 	}
 
 	warmupLog := log.With().Str("component", "warmup").Logger()
@@ -1039,11 +1039,11 @@ func main() {
 
 	for _, sym := range symbols {
 		if bars, ok := warmupBarsCache[string(sym)]; ok && len(bars) > 0 {
-			n := zscoreFilter.Seed(sym, bars)
+			n := spikeFilter.Seed(sym, bars)
 			warmupLog.Info().
 				Str("symbol", string(sym)).
 				Int("bars", n).
-				Msg("zscore filter seeded")
+				Msg("adaptive spike filter seeded")
 		}
 	}
 

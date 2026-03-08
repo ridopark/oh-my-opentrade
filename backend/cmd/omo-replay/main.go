@@ -158,7 +158,7 @@ func main() {
 	ingestionSvc := ingestion.NewService(
 		eventBus,
 		repo,
-		ingestion.NewZScoreFilter(20, 4.0),
+		ingestion.NewAdaptiveFilter(20, 4.0),
 		log.With().Str("component", "ingestion").Logger(),
 	)
 	monitorSvc := monitor.NewService(eventBus, repo, log.With().Str("component", "monitor").Logger())

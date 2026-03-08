@@ -84,7 +84,7 @@ func startIngestionService(t *testing.T, ctx context.Context, db *sql.DB) (*memo
 	log := zerolog.Nop()
 	repo := timescaledb.NewRepositoryWithLogger(timescaledb.NewSqlDB(db), log)
 	bus := memory.NewBus()
-	filter := ingestion.NewZScoreFilter(5, 4.0)
+	filter := ingestion.NewAdaptiveFilter(5, 4.0)
 	svc := ingestion.NewService(bus, repo, filter, log)
 
 	require.NoError(t, svc.Start(ctx))

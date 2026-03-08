@@ -80,7 +80,7 @@ func createTestEvent(t *testing.T, payload any) domain.Event {
 func TestService_StartSubscribes(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	filter := ingestion.NewZScoreFilter(5, 4.0)
+	filter := ingestion.NewAdaptiveFilter(5, 4.0)
 	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
 
 	err := svc.Start(context.Background())
@@ -95,7 +95,7 @@ func TestService_StartSubscribes(t *testing.T) {
 func TestService_SanitizesCleanBar(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	filter := ingestion.NewZScoreFilter(5, 4.0) // needs 5 for active filter
+	filter := ingestion.NewAdaptiveFilter(5, 4.0) // needs 5 for active filter
 	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
 
 	err := svc.Start(context.Background())
@@ -133,7 +133,7 @@ func TestService_SanitizesCleanBar(t *testing.T) {
 func TestService_RejectsAnomalousBar(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	filter := ingestion.NewZScoreFilter(5, 4.0)
+	filter := ingestion.NewAdaptiveFilter(5, 4.0)
 	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -180,7 +180,7 @@ func TestService_RejectsAnomalousBar(t *testing.T) {
 func TestService_InvalidPayload(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	filter := ingestion.NewZScoreFilter(5, 4.0)
+	filter := ingestion.NewAdaptiveFilter(5, 4.0)
 	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
 
 	err := svc.HandleMarketBar(context.Background(), createTestEvent(t, "not a bar"))
@@ -193,7 +193,7 @@ func TestService_RepositoryErrorPropagates(t *testing.T) {
 	repo := &mockRepository{
 		saveErr: errors.New("db error"),
 	}
-	filter := ingestion.NewZScoreFilter(5, 4.0)
+	filter := ingestion.NewAdaptiveFilter(5, 4.0)
 	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
 
 	sym, _ := domain.NewSymbol("BTC/USD")
