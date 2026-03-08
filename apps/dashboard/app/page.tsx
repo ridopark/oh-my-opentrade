@@ -111,8 +111,9 @@ export default function TradingSignalPage() {
   }, [symbol]);
 
   const chartSymbols = useMemo(() => symbol ? [symbol] : [], [symbol]);
-  const { barsBySymbol, loading, loadMore } = useChartData(timeframe, "/api/events", chartSymbols.length > 0 ? chartSymbols : undefined);
+  const { barsBySymbol, loading, loadMore, formingSymbols } = useChartData(timeframe, "/api/events", chartSymbols.length > 0 ? chartSymbols : undefined);
   const bars: OHLCBar[] = barsBySymbol[symbol] ?? [];
+  const formingTime = formingSymbols[symbol] ?? null;
 
   useEffect(() => {
     const es = new EventSource("/api/events");
@@ -321,6 +322,7 @@ export default function TradingSignalPage() {
               showBollinger={indicators.bb}
               showRSI={indicators.rsi}
               onLoadMore={loadMore}
+              formingTime={formingTime}
             />
           )}
           {!loading && bars.length === 0 && (

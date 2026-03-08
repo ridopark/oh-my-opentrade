@@ -212,7 +212,13 @@ export function MultiSymbolChart() {
   } | null>(null);
 
 
-  const { barsBySymbol, dataTimeframe, loading, loadingMore, loadMore } = useChartData(timeframe);
+  const { barsBySymbol, dataTimeframe, loading, loadingMore, loadMore, formingSymbols } = useChartData(timeframe);
+
+  // Refs for animation loop — avoids re-creating the rAF loop on every data update
+  const formingSymbolsRef = useRef(formingSymbols);
+  formingSymbolsRef.current = formingSymbols;
+  const barsBySymbolRef = useRef(barsBySymbol);
+  barsBySymbolRef.current = barsBySymbol;
 
   // Stable ref so the range-change handler always sees the latest loadMore
   const loadMoreRef = useRef(loadMore);
@@ -614,6 +620,60 @@ export function MultiSymbolChart() {
     return () => chart.unsubscribeCrosshairMove(handler);
   }, [chartMode, candleSymbol]);
 
+  // Forming candle pulsation — animate the latest candle when it's still forming
+  useEffect(() => {
+    if (chartMode !== 'candle') return;
+
+    let animId: number;
+
+    const pulse = () => {
+      const candleSeries = candleSeriesRef.current;
+      if (!candleSeries) {
+        animId = requestAnimationFrame(pulse);
+        return;
+      }
+
+      const formingTime = formingSymbolsRef.current[candleSymbol];
+      if (formingTime == null) {
+        animId = requestAnimationFrame(pulse);
+        return;
+      }
+
+      const bars = barsBySymbolRef.current[candleSymbol];
+      if (!bars?.length) {
+        animId = requestAnimationFrame(pulse);
+        return;
+      }
+
+      const lastBar = bars[bars.length - 1];
+      if (lastBar.time !== formingTime) {
+        animId = requestAnimationFrame(pulse);
+        return;
+      }
+
+      const phase = (Math.sin(Date.now() * Math.PI / 500) + 1) / 2;
+      const isBullish = lastBar.close >= lastBar.open;
+      const baseRgb = isBullish ? '34, 197, 94' : '239, 68, 68';
+      const alpha = 0.3 + phase * 0.7;
+      const wickAlpha = 0.4 + phase * 0.6;
+
+      candleSeries.update({
+        time: timeToET(lastBar.time) as Time,
+        open: lastBar.open,
+        high: lastBar.high,
+        low: lastBar.low,
+        close: lastBar.close,
+        color: `rgba(${baseRgb}, ${alpha})`,
+        borderColor: `rgba(${baseRgb}, ${alpha})`,
+        wickColor: `rgba(${baseRgb}, ${wickAlpha})`,
+      });
+
+      animId = requestAnimationFrame(pulse);
+    };
+
+    animId = requestAnimationFrame(pulse);
+    return () => cancelAnimationFrame(animId);
+  }, [chartMode, candleSymbol]);
 
   // Update series data whenever barsBySymbol changes
   useEffect(() => {

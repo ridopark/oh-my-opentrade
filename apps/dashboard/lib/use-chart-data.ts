@@ -113,11 +113,13 @@ export function useChartData(
   loading: boolean;
   loadingMore: boolean;
   loadMore: (beforeTs: number) => void;
+  formingSymbols: Record<string, number>;
 } {
   const [barsBySymbol, setBarsBySymbol] = useState<BarsBySymbol>({});
   const [dataTimeframe, setDataTimeframe] = useState(timeframe);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [formingSymbols, setFormingSymbols] = useState<Record<string, number>>({});
 
   // Stable ref so SSE handler always reads current state
   const barsRef = useRef<BarsBySymbol>({});
@@ -202,6 +204,7 @@ export function useChartData(
     // Reset state for new timeframe
     barsRef.current = {};
     setBarsBySymbol({});
+    setFormingSymbols({});
     inFlight.current.clear();
     loadMoreCursorRef.current = null;
     emptyFetchCountRef.current = 0;
@@ -288,9 +291,27 @@ export function useChartData(
         const tf = timeframeRef.current;
         const current = barsRef.current;
         const prev = current[bar.symbol] ?? [];
+
+        const isForming = envelope.type === 'FormingBar';
+        // FormingBar is a cumulative snapshot → replace on 1m, merge on higher TFs.
+        const updated = isForming && tf === '1m'
+          ? upsertBar(prev, ohlc)
+          : mergeLiveBar(prev, ohlc, tf);
+
+        if (isForming) {
+          const bucket = bucketStart(ohlc.time, tf);
+          setFormingSymbols(prev => ({ ...prev, [bar.symbol]: bucket }));
+        } else {
+          setFormingSymbols(prev => {
+            const next = { ...prev };
+            delete next[bar.symbol];
+            return next;
+          });
+        }
+
         const next: BarsBySymbol = {
           ...current,
-          [bar.symbol]: mergeLiveBar(prev, ohlc, tf),
+          [bar.symbol]: updated,
         };
         barsRef.current = next;
         setBarsBySymbol(next);
@@ -324,5 +345,5 @@ export function useChartData(
     return () => clearInterval(id);
   }, [fetchBars]);
 
-  return { barsBySymbol, dataTimeframe, loading, loadingMore, loadMore };
+  return { barsBySymbol, dataTimeframe, loading, loadingMore, loadMore, formingSymbols };
 }

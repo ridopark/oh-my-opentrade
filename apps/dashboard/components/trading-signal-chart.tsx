@@ -54,6 +54,7 @@ interface TradingSignalChartProps {
   showBollinger?: boolean;
   showRSI?: boolean;
   onLoadMore?: (beforeTs: number) => void;
+  formingTime?: number | null;
 }
 
 function getViewKey(symbol: string, timeframe: string) {
@@ -157,7 +158,7 @@ const MAX_EMPTY_FETCHES = 10;
 const LOAD_MORE_DEBOUNCE_MS = 200;
 
 const TradingSignalChart = (props: TradingSignalChartProps) => {
-  const { data, signals, width, height, symbol = '', timeframe = '1m', showEMA, showBollinger, showRSI, onLoadMore } = props;
+  const { data, signals, width, height, symbol = '', timeframe = '1m', showEMA, showBollinger, showRSI, onLoadMore, formingTime } = props;
 
   const mainContainerRef = useRef<HTMLDivElement>(null);
   const rsiContainerRef = useRef<HTMLDivElement>(null);
@@ -187,6 +188,10 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
 
   const dataRef = useRef(data);
   dataRef.current = data;
+  const formingTimeRef = useRef(formingTime);
+  formingTimeRef.current = formingTime;
+  const timeframeRef = useRef(timeframe);
+  timeframeRef.current = timeframe;
   
   const rsiDataMapRef = useRef(new Map<Time, number>());
   const viewSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -665,7 +670,65 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
     }
   }, [data, signals, showEMA, showBollinger, showRSI]);
 
-  // 6. RESIZE / OPTIONS UPDATE
+  // 6. Forming candle pulsation — always pulses the latest candle
+  useEffect(() => {
+    let animId: number;
+    let prevPulseTime: number | null = null;
+
+    const pulse = () => {
+      const candleSeries = candleSeriesRef.current;
+      const bars = dataRef.current;
+
+      if (!candleSeries || !bars.length) {
+        animId = requestAnimationFrame(pulse);
+        return;
+      }
+
+      const lastBar = bars[bars.length - 1];
+
+      if (prevPulseTime !== null && prevPulseTime !== lastBar.time) {
+        const oldBar = bars.find(b => b.time === prevPulseTime);
+        if (oldBar) {
+          const wasUp = oldBar.close >= oldBar.open;
+          candleSeries.update({
+            time: oldBar.time as Time,
+            open: oldBar.open,
+            high: oldBar.high,
+            low: oldBar.low,
+            close: oldBar.close,
+            color: wasUp ? '#10b981' : '#ef4444',
+            borderColor: wasUp ? '#10b981' : '#ef4444',
+            wickColor: wasUp ? '#10b981' : '#ef4444',
+          });
+        }
+      }
+      prevPulseTime = lastBar.time as number;
+
+      const phase = (Math.sin(Date.now() * Math.PI / 500) + 1) / 2;
+      const isBullish = lastBar.close >= lastBar.open;
+      const baseRgb = isBullish ? '16, 185, 129' : '239, 68, 68';
+      const alpha = 0.3 + phase * 0.7;
+      const wickAlpha = 0.4 + phase * 0.6;
+
+      candleSeries.update({
+        time: lastBar.time as Time,
+        open: lastBar.open,
+        high: lastBar.high,
+        low: lastBar.low,
+        close: lastBar.close,
+        color: `rgba(${baseRgb}, ${alpha})`,
+        borderColor: `rgba(${baseRgb}, ${alpha})`,
+        wickColor: `rgba(${baseRgb}, ${wickAlpha})`,
+      });
+
+      animId = requestAnimationFrame(pulse);
+    };
+
+    animId = requestAnimationFrame(pulse);
+    return () => cancelAnimationFrame(animId);
+  }, []);
+
+  // 7. RESIZE / OPTIONS UPDATE
   useEffect(() => {
     if (chartRef.current) {
       chartRef.current.applyOptions({ width, height: chartHeight });
