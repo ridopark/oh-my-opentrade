@@ -55,6 +55,20 @@ func (r ExitRule) Param(key string, fallback float64) float64 {
 	return fallback
 }
 
+// EntryThesis captures the AI judge's reasoning at position entry time.
+// Stored on MonitoredPosition so the Risk Agent can compare "what we believed
+// at entry" vs "what's true now" during periodic re-evaluation.
+type EntryThesis struct {
+	BullArgument   string       `json:"bullArgument"`
+	BearArgument   string       `json:"bearArgument"`
+	JudgeReasoning string       `json:"judgeReasoning"`
+	Rationale      string       `json:"rationale"`
+	Confidence     float64      `json:"confidence"`
+	RiskModifier   RiskModifier `json:"riskModifier"`
+	Direction      Direction    `json:"direction"`
+	EntryRegime    string       `json:"entryRegime"` // regime type at entry (e.g. "BALANCE", "TREND_UP")
+}
+
 // MonitoredPosition tracks an open position with its high-water mark and exit rules.
 // It is owned by the position monitor actor and must not be shared across goroutines.
 type MonitoredPosition struct {
@@ -71,6 +85,10 @@ type MonitoredPosition struct {
 	Quantity      float64
 	ExitPending   bool // true when an exit intent has been emitted and is awaiting terminal outcome
 	ExitPendingAt time.Time
+	EntryThesis   *EntryThesis // nil if no AI enrichment was available at entry
+
+	LastRevaluation   *RiskRevaluation `json:"lastRevaluation,omitempty"`
+	LastRevaluationAt time.Time        `json:"lastRevaluationAt,omitempty"`
 }
 
 // NewMonitoredPosition creates a MonitoredPosition with high/low water marks initialized to entry price.
