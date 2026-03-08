@@ -289,6 +289,19 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 				"confidence", enrichment.Confidence,
 				"reason", profile.GateReason,
 			)
+			stratName := "unknown"
+			if hasStrategyID {
+				stratName = strategyID.String()
+			}
+			gated := domain.SignalGatedPayload{
+				Symbol:     sigRef.Symbol,
+				Side:       sigRef.Side,
+				SignalType: sigRef.SignalType,
+				Strategy:   stratName,
+				Confidence: enrichment.Confidence,
+				Reason:     profile.GateReason,
+			}
+			rs.emit(ctx, domain.EventSignalGated, event.TenantID, event.EnvMode, uuid.NewString(), gated)
 			return nil
 		}
 
