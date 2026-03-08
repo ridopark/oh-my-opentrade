@@ -77,6 +77,8 @@ type NotificationConfig struct {
 	TelegramBotToken  string `yaml:"telegram_bot_token"`
 	TelegramChatID    string `yaml:"telegram_chat_id"`
 	DiscordWebhookURL string `yaml:"discord_webhook_url"`
+	KakaoRestAPIKey   string `yaml:"kakao_rest_api_key"`
+	KakaoRedirectURI  string `yaml:"kakao_redirect_uri"`
 }
 
 // DatabaseConfig represents the database connection configuration.
@@ -365,6 +367,12 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	}
 	if val := os.Getenv("DISCORD_WEBHOOK_URL"); val != "" {
 		cfg.Notification.DiscordWebhookURL = val
+	}
+	if val := os.Getenv("KAKAO_REST_API_KEY"); val != "" {
+		cfg.Notification.KakaoRestAPIKey = val
+	}
+	if val := os.Getenv("KAKAO_REDIRECT_URI"); val != "" {
+		cfg.Notification.KakaoRedirectURI = val
 	}
 	if val := os.Getenv("OPTIONS_V2"); val == "true" {
 		cfg.OptionsV2 = true
