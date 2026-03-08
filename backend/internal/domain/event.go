@@ -53,7 +53,13 @@ const (
 	EventTradeReceived           EventType = "TradeReceived"
 	EventTradeRealized           EventType = "TradeRealized"
 	EventFormingBar              EventType = "FormingBar"
+	EventFeedDegraded            EventType = "FeedDegraded"
 )
+
+type FeedDegradedPayload struct {
+	Feed   string
+	Reason string
+}
 
 // Event represents a domain event in the trading pipeline.
 // Events are immutable once created and carry an idempotency key

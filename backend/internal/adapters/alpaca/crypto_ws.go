@@ -21,8 +21,10 @@ type CryptoWSClient struct {
 	cryptoDataURL string
 	apiKey        string
 	apiSecret     string
-	feed          string // e.g. "us"
+	feed          string     // e.g. "us"
+	fetcher       BarFetcher // REST polling fallback; nil disables polling
 	tradeHandler  ports.TradeHandler
+	onDegraded    func(reason string)
 	log           zerolog.Logger
 	tracker       *feedTracker
 	closeOnce     sync.Once
@@ -33,7 +35,7 @@ type CryptoWSClient struct {
 // NewCryptoWSClient creates a new CryptoWSClient.
 // cryptoDataURL is the base WebSocket URL (e.g. "wss://stream.data.alpaca.markets").
 // feed is the crypto feed name (e.g. "us").
-func NewCryptoWSClient(cryptoDataURL, apiKey, apiSecret, feed string, log zerolog.Logger) (*CryptoWSClient, error) {
+func NewCryptoWSClient(cryptoDataURL, apiKey, apiSecret, feed string, fetcher BarFetcher, log zerolog.Logger) (*CryptoWSClient, error) {
 	if apiKey == "" {
 		return nil, ErrCryptoWSMissingCredentials
 	}
@@ -51,13 +53,15 @@ func NewCryptoWSClient(cryptoDataURL, apiKey, apiSecret, feed string, log zerolo
 		apiKey:        apiKey,
 		apiSecret:     apiSecret,
 		feed:          feed,
+		fetcher:       fetcher,
 		log:           log.With().Str("component", "crypto_ws").Logger(),
 		tracker:       newFeedTracker(),
 	}, nil
 }
 
-// SetTradeHandler sets the callback for forwarding raw crypto trade ticks.
 func (c *CryptoWSClient) SetTradeHandler(h ports.TradeHandler) { c.tradeHandler = h }
+
+func (c *CryptoWSClient) SetDegradedCallback(fn func(reason string)) { c.onDegraded = fn }
 
 // FeedHealth returns a point-in-time snapshot of crypto WebSocket feed status.
 func (c *CryptoWSClient) FeedHealth() FeedHealth { return c.tracker.Snapshot() }
@@ -83,6 +87,37 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 	c.cancel = cancel
 	c.mu.Unlock()
 	defer cancel()
+
+	const cryptoRestPollInterval = 60 * time.Second
+
+	var dedupMu sync.Mutex
+	dedup := make(map[string]struct{})
+
+	lastBarTime := make(map[domain.Symbol]time.Time)
+	var lastBarMu sync.Mutex
+
+	callHandler := func(bCtx context.Context, bar domain.MarketBar, fromREST bool) error {
+		key := barKey(bar)
+		dedupMu.Lock()
+		if _, seen := dedup[key]; seen {
+			dedupMu.Unlock()
+			return nil
+		}
+		dedup[key] = struct{}{}
+		if len(dedup) > maxDedupEntries {
+			dedup = make(map[string]struct{})
+		}
+		dedupMu.Unlock()
+
+		lastBarMu.Lock()
+		if bar.Time.After(lastBarTime[bar.Symbol]) {
+			lastBarTime[bar.Symbol] = bar.Time
+		}
+		lastBarMu.Unlock()
+
+		c.tracker.recordBar()
+		return handler(bCtx, bar)
+	}
 
 	c.tracker.setState("reconnecting")
 	attempt := 0
@@ -139,8 +174,7 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			if err != nil {
 				return
 			}
-			c.tracker.recordBar()
-			_ = handler(connCtx, bar)
+			_ = callHandler(connCtx, bar, false)
 		}
 
 		tradeHandler := func(ct alpacastream.CryptoTrade) {
@@ -211,11 +245,25 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			continue
 		}
 
-		// Reset fail counter if we streamed successfully for > 30s.
 		if time.Since(connectedAt) > 30*time.Second {
 			consecutiveFails = 0
 		} else {
 			consecutiveFails++
+		}
+
+		var pollCancel context.CancelFunc
+		if wasStaleReset && c.fetcher != nil {
+			dedupMu.Lock()
+			dedup = make(map[string]struct{})
+			dedupMu.Unlock()
+
+			if c.onDegraded != nil {
+				c.onDegraded("crypto WebSocket stale — falling back to REST polling")
+			}
+
+			pollCtx, pCancel := context.WithCancel(streamCtx)
+			pollCancel = pCancel
+			go c.cryptoRestPoller(pollCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler, cryptoRestPollInterval)
 		}
 
 		policy := selectPolicy()
@@ -226,8 +274,115 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		select {
 		case <-time.After(wait):
 		case <-streamCtx.Done():
+			if pollCancel != nil {
+				pollCancel()
+			}
 			c.tracker.setState("stopped")
 			return nil
+		}
+
+		if pollCancel != nil {
+			pollCancel()
+		}
+
+		// Gap-fill: catch bars between last REST poll and WS resume.
+		if c.fetcher != nil {
+			c.cryptoGapFill(streamCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler)
+		}
+	}
+}
+
+func (c *CryptoWSClient) cryptoRestPoller(
+	ctx context.Context,
+	symbols []domain.Symbol,
+	timeframe domain.Timeframe,
+	lastBarTime map[domain.Symbol]time.Time,
+	lastBarMu *sync.Mutex,
+	dedupMu *sync.Mutex,
+	dedup map[string]struct{},
+	callHandler func(context.Context, domain.MarketBar, bool) error,
+	pollInterval time.Duration,
+) {
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	pollOnce := func() {
+		now := time.Now()
+		for _, sym := range symbols {
+			lastBarMu.Lock()
+			from := lastBarTime[sym]
+			lastBarMu.Unlock()
+
+			if from.IsZero() {
+				from = now.Add(-2 * pollInterval)
+			} else {
+				from = from.Add(time.Second)
+			}
+
+			bars, err := c.fetcher(ctx, sym, timeframe, from, now)
+			if err != nil {
+				if ctx.Err() == nil {
+					c.log.Warn().Err(err).Str("symbol", string(sym)).Msg("crypto REST poller: fetch failed")
+				}
+				continue
+			}
+
+			for _, bar := range bars {
+				if err := callHandler(ctx, bar, true); err != nil {
+					if ctx.Err() == nil {
+						c.log.Warn().Err(err).Str("symbol", string(sym)).Msg("crypto REST poller: handler error")
+					}
+				}
+			}
+		}
+	}
+
+	pollOnce()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pollOnce()
+		}
+	}
+}
+
+func (c *CryptoWSClient) cryptoGapFill(
+	ctx context.Context,
+	symbols []domain.Symbol,
+	timeframe domain.Timeframe,
+	lastBarTime map[domain.Symbol]time.Time,
+	lastBarMu *sync.Mutex,
+	dedupMu *sync.Mutex,
+	dedup map[string]struct{},
+	callHandler func(context.Context, domain.MarketBar, bool) error,
+) {
+	now := time.Now()
+	for _, sym := range symbols {
+		lastBarMu.Lock()
+		from := lastBarTime[sym]
+		lastBarMu.Unlock()
+
+		if from.IsZero() {
+			continue
+		}
+		from = from.Add(time.Second)
+
+		bars, err := c.fetcher(ctx, sym, timeframe, from, now)
+		if err != nil {
+			if ctx.Err() == nil {
+				c.log.Warn().Err(err).Str("symbol", string(sym)).Msg("crypto gap-fill: fetch failed")
+			}
+			continue
+		}
+		for _, bar := range bars {
+			if err := callHandler(ctx, bar, true); err != nil {
+				if ctx.Err() == nil {
+					c.log.Warn().Err(err).Str("symbol", string(sym)).Msg("crypto gap-fill: handler error")
+				}
+			}
 		}
 	}
 }
