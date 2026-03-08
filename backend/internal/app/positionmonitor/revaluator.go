@@ -166,7 +166,7 @@ func (r *Revaluator) evaluateAll(ctx context.Context) {
 		}
 
 		if pos.EntryThesis == nil {
-			r.log.Debug().Str("symbol", string(pos.Symbol)).Msg("skipping — no entry thesis")
+			r.log.Info().Str("symbol", string(pos.Symbol)).Msg("skipping re-evaluation — no entry thesis attached")
 			continue
 		}
 
@@ -239,6 +239,12 @@ func (r *Revaluator) evaluatePosition(ctx context.Context, pos domain.MonitoredP
 		Msg("risk re-evaluation complete")
 
 	switch result.Action {
+	case domain.RiskActionTighten:
+		r.log.Info().
+			Str("symbol", string(pos.Symbol)).
+			Str("updated_modifier", string(result.UpdatedModifier)).
+			Float64("confidence", result.Confidence).
+			Msg("TIGHTEN applied — exit rules adjusted, new entries blocked")
 	case domain.RiskActionExit:
 		r.triggerExit(ctx, pos, result, currentPrice)
 	case domain.RiskActionScaleOut:
