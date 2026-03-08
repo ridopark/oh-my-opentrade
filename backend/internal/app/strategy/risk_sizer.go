@@ -272,6 +272,12 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		return fmt.Errorf("risk sizer: failed to create order intent: %w", err)
 	}
 
+	if domain.Symbol(sigRef.Symbol).IsCryptoSymbol() {
+		intent.AssetClass = domain.AssetClassCrypto
+	} else {
+		intent.AssetClass = domain.AssetClassEquity
+	}
+
 	intent.Meta = map[string]string{
 		"bull":              enrichment.BullArgument,
 		"bear":              enrichment.BearArgument,
