@@ -49,6 +49,7 @@ const (
 	EventExitOrderTerminal       EventType = "ExitOrderTerminal"
 	EventRiskRevaluated          EventType = "RiskRevaluated"
 	EventRiskDowngraded          EventType = "RiskDowngraded"
+	EventSignalGated             EventType = "SignalGated"
 	EventTradeReceived           EventType = "TradeReceived"
 	EventTradeRealized           EventType = "TradeRealized"
 	EventFormingBar              EventType = "FormingBar"

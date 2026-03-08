@@ -95,6 +95,7 @@ func (s *Service) Start(ctx context.Context) error {
 		{domain.EventCircuitBreakerTripped, s.fmtCircuitBreaker, false},
 		{domain.EventDebateCompleted, s.fmtDebateCompleted, false},
 		{domain.EventSignalEnriched, s.fmtSignalEnriched, false},
+		{domain.EventSignalGated, s.fmtSignalGated, false},
 		{domain.EventRiskRevaluated, s.fmtRiskRevaluated, false},
 	}
 
@@ -278,6 +279,14 @@ func (s *Service) fmtSignalEnriched(ev domain.Event) string {
 		return msg
 	}
 	return "🧠 Signal Enriched"
+}
+
+func (s *Service) fmtSignalGated(ev domain.Event) string {
+	if p, ok := ev.Payload.(domain.SignalGatedPayload); ok {
+		return fmt.Sprintf("🚫 Signal Blocked: %s %s %s — %s\n📊 Strategy: %s | Confidence: %.0f%%",
+			p.SignalType, p.Side, p.Symbol, p.Reason, p.Strategy, p.Confidence*100)
+	}
+	return "🚫 Signal Blocked by risk gate"
 }
 
 func (s *Service) fmtOrderAccepted(ev domain.Event) string {

@@ -96,3 +96,12 @@ func (e SignalEnrichment) AIDirectionConflict() bool {
 		return false
 	}
 }
+
+type SignalGatedPayload struct {
+	Symbol     string  `json:"symbol"`
+	Side       string  `json:"side"`
+	SignalType string  `json:"signalType"`
+	Strategy   string  `json:"strategy"`
+	Confidence float64 `json:"confidence"`
+	Reason     string  `json:"reason"`
+}
