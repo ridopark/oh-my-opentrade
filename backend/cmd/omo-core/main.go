@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
+	"github.com/oh-my-opentrade/backend/internal/adapters/charting"
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
 	omhttp "github.com/oh-my-opentrade/backend/internal/adapters/http"
 	"github.com/oh-my-opentrade/backend/internal/adapters/llm"
@@ -204,7 +205,11 @@ func main() {
 	}
 	multiNotifier := notification.NewMultiNotifier(notifiers...)
 	notifyLog := log.With().Str("component", "notify").Logger()
-	notifySvc := notify.NewService(eventBus, multiNotifier, notifyLog)
+	chartGen := charting.NewGonumChartGenerator()
+	notifySvc := notify.NewService(eventBus, multiNotifier, notifyLog,
+		notify.WithChartGenerator(chartGen),
+		notify.WithRepository(repo),
+	)
 	log.Info().Int("active", len(notifiers)).Msg("notification adapters initialized")
 
 	dnaApprovalSvc := dnaapproval.NewService(dnaApprovalRepo, eventBus, log.With().Str("component", "dnaapproval").Logger())
@@ -1138,6 +1143,7 @@ func main() {
 		log.Error().Err(err).Msg("error closing Alpaca adapter")
 	}
 	cancel() // Cancel context to stop all services
+	notifySvc.Stop()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {

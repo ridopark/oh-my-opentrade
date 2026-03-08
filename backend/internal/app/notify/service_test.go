@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
@@ -15,7 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// mockNotifier records all Notify calls for assertion.
 type mockNotifier struct {
 	mu       sync.Mutex
 	messages []notifyCall
@@ -41,6 +41,21 @@ func (m *mockNotifier) getMessages() []notifyCall {
 	return out
 }
 
+func (m *mockNotifier) waitForMessages(n int, timeout time.Duration) []notifyCall {
+	deadline := time.After(timeout)
+	for {
+		msgs := m.getMessages()
+		if len(msgs) >= n {
+			return msgs
+		}
+		select {
+		case <-deadline:
+			return msgs
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
 func TestService_SubscribesToOrderEvents(t *testing.T) {
 	bus := memory.NewBus()
 	notifier := &mockNotifier{}
@@ -48,8 +63,8 @@ func TestService_SubscribesToOrderEvents(t *testing.T) {
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
+	defer svc.Stop()
 
-	// Publish an OrderSubmitted event
 	intent := createTestOrderIntent(t)
 	payload := domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusSubmitted)
 	ev, err := domain.NewEvent(domain.EventOrderSubmitted, "tenant-1", domain.EnvModePaper, "key-1", payload)
@@ -58,7 +73,7 @@ func TestService_SubscribesToOrderEvents(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.getMessages()
+	msgs := notifier.waitForMessages(1, 2*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "tenant-1", msgs[0].TenantID)
 	assert.Contains(t, msgs[0].Message, "Order Submitted")
@@ -75,6 +90,7 @@ func TestService_KillSwitchNotification(t *testing.T) {
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
+	defer svc.Stop()
 
 	ev, err := domain.NewEvent(domain.EventKillSwitchEngaged, "tenant-1", domain.EnvModePaper, "ks-1", nil)
 	require.NoError(t, err)
@@ -82,7 +98,7 @@ func TestService_KillSwitchNotification(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.getMessages()
+	msgs := notifier.waitForMessages(1, 2*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0].Message, "KILL SWITCH")
 }
@@ -94,6 +110,7 @@ func TestService_CircuitBreakerNotification(t *testing.T) {
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
+	defer svc.Stop()
 
 	ev, err := domain.NewEvent(domain.EventCircuitBreakerTripped, "tenant-1", domain.EnvModePaper, "cb-1", "3 stops in 2 minutes")
 	require.NoError(t, err)
@@ -101,7 +118,7 @@ func TestService_CircuitBreakerNotification(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.getMessages()
+	msgs := notifier.waitForMessages(1, 2*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0].Message, "CIRCUIT BREAKER")
 	assert.Contains(t, msgs[0].Message, "3 stops in 2 minutes")
@@ -114,6 +131,7 @@ func TestService_FillNotification(t *testing.T) {
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
+	defer svc.Stop()
 
 	fillPayload := map[string]any{
 		"broker_order_id": "ord-123",
@@ -129,7 +147,7 @@ func TestService_FillNotification(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.getMessages()
+	msgs := notifier.waitForMessages(1, 2*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0].Message, "Fill")
 	assert.Contains(t, msgs[0].Message, "AAPL")
@@ -143,6 +161,7 @@ func TestService_IntentRejectedNotification(t *testing.T) {
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
+	defer svc.Stop()
 
 	intent := createTestOrderIntent(t)
 	payload := domain.NewOrderIntentRejectedPayload(intent, "risk 850.00 exceeds maximum risk 620.00 (2.0% of 31000.00 equity)")
@@ -152,7 +171,7 @@ func TestService_IntentRejectedNotification(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.getMessages()
+	msgs := notifier.waitForMessages(1, 2*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0].Message, "Intent Rejected")
 	assert.Contains(t, msgs[0].Message, "AAPL")
@@ -166,6 +185,7 @@ func TestService_DebateCompletedNotification(t *testing.T) {
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
+	defer svc.Stop()
 
 	decision := domain.AdvisoryDecision{
 		Direction:      domain.DirectionLong,
@@ -181,7 +201,7 @@ func TestService_DebateCompletedNotification(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.getMessages()
+	msgs := notifier.waitForMessages(1, 2*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0].Message, "AI Debate")
 	assert.Contains(t, msgs[0].Message, "LONG")
@@ -198,8 +218,8 @@ func TestService_MultipleEventsNotifyAll(t *testing.T) {
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
+	defer svc.Stop()
 
-	// Fire multiple event types
 	events := []struct {
 		eventType string
 		payload   any
@@ -216,7 +236,7 @@ func TestService_MultipleEventsNotifyAll(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	msgs := notifier.getMessages()
+	msgs := notifier.waitForMessages(3, 2*time.Second)
 	assert.Len(t, msgs, 3, "should receive notifications for all 3 event types")
 }
 
@@ -227,6 +247,7 @@ func TestService_SignalEnrichedNotification(t *testing.T) {
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
+	defer svc.Stop()
 
 	enrichment := domain.SignalEnrichment{
 		Signal: domain.SignalRef{
@@ -252,7 +273,7 @@ func TestService_SignalEnrichedNotification(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.getMessages()
+	msgs := notifier.waitForMessages(1, 2*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "tenant-1", msgs[0].TenantID)
 	assert.Contains(t, msgs[0].Message, "Signal Enriched")
@@ -273,6 +294,7 @@ func TestService_SignalEnrichedExitWithPnL(t *testing.T) {
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
+	defer svc.Stop()
 
 	enrichment := domain.SignalEnrichment{
 		Signal: domain.SignalRef{
@@ -298,7 +320,7 @@ func TestService_SignalEnrichedExitWithPnL(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.getMessages()
+	msgs := notifier.waitForMessages(1, 2*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0].Message, "Signal Enriched")
 	assert.Contains(t, msgs[0].Message, "exit")
@@ -314,6 +336,7 @@ func TestService_SignalEnrichedExitNegativePnL(t *testing.T) {
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
+	defer svc.Stop()
 
 	enrichment := domain.SignalEnrichment{
 		Signal: domain.SignalRef{
@@ -336,7 +359,7 @@ func TestService_SignalEnrichedExitNegativePnL(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.getMessages()
+	msgs := notifier.waitForMessages(1, 2*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0].Message, "📉")
 	assert.Contains(t, msgs[0].Message, "Est. P&L:")
@@ -349,6 +372,7 @@ func TestService_OrderSubmittedWithMeta(t *testing.T) {
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
+	defer svc.Stop()
 
 	intent := createTestOrderIntent(t)
 	intent.Meta = map[string]string{
@@ -364,13 +388,11 @@ func TestService_OrderSubmittedWithMeta(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.getMessages()
+	msgs := notifier.waitForMessages(1, 2*time.Second)
 	require.Len(t, msgs, 1)
-	// Bull/Bear/Judge should NOT appear in OrderSubmitted (shown only in SignalEnriched)
 	assert.NotContains(t, msgs[0].Message, "Bull:")
 	assert.NotContains(t, msgs[0].Message, "Bear:")
 	assert.NotContains(t, msgs[0].Message, "Judge:")
-	// Core order details should still be present
 	assert.Contains(t, msgs[0].Message, "Order Submitted")
 	assert.Contains(t, msgs[0].Message, "AAPL")
 	assert.Contains(t, msgs[0].Message, "Strategy: test")
