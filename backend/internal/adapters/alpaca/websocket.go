@@ -331,6 +331,7 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 				log.Warn().Err(err).Str("symbol", bar.Symbol).Msg("alpaca stream: invalid bar")
 				return
 			}
+			domainBar.TradeCount = bar.TradeCount
 			if err := callHandler(streamCtx, domainBar, false); err != nil {
 				log.Warn().Err(err).Str("symbol", bar.Symbol).Msg("alpaca stream: bar handler error")
 			}

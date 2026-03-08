@@ -230,7 +230,6 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 	}
 }
 
-// CryptoBarToMarketBar converts an Alpaca SDK CryptoBar to a domain.MarketBar.
 func CryptoBarToMarketBar(cb alpacastream.CryptoBar) (domain.MarketBar, error) {
 	sym, err := domain.NewSymbol(cb.Symbol)
 	if err != nil {
@@ -238,7 +237,12 @@ func CryptoBarToMarketBar(cb alpacastream.CryptoBar) (domain.MarketBar, error) {
 	}
 	sym = sym.ToSlashFormat()
 	tf, _ := domain.NewTimeframe("1m")
-	return domain.NewMarketBar(cb.Timestamp, sym, tf, cb.Open, cb.High, cb.Low, cb.Close, cb.Volume)
+	bar, err := domain.NewMarketBar(cb.Timestamp, sym, tf, cb.Open, cb.High, cb.Low, cb.Close, cb.Volume)
+	if err != nil {
+		return bar, err
+	}
+	bar.TradeCount = cb.TradeCount
+	return bar, nil
 }
 
 // Close terminates the crypto WebSocket connection.
