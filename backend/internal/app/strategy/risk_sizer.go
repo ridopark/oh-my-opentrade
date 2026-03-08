@@ -75,6 +75,37 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 	}
 
 	strategyID, hasStrategyID := parseStrategyIDFromInstance(strat.InstanceID(sigRef.StrategyInstanceID))
+
+	// AI direction gate: reject entry signals when the AI debate explicitly
+	// disagrees with the strategy's direction. The AI can veto but not invent trades.
+	if enrichment.AIDirectionConflict() {
+		strategyName := "unknown"
+		if hasStrategyID {
+			strategyName = strategyID.String()
+		}
+		signalDirection := domain.DirectionLong
+		if sigRef.Side == strat.SideSell.String() {
+			signalDirection = domain.DirectionShort
+		}
+		rs.logger.Warn("AI direction gate: signal rejected",
+			"symbol", sigRef.Symbol,
+			"signal_side", sigRef.Side,
+			"ai_direction", string(enrichment.Direction),
+			"ai_rationale", enrichment.Rationale,
+			"confidence", enrichment.Confidence,
+		)
+		rejection := domain.OrderIntentEventPayload{
+			ID:        uuid.NewString(),
+			Symbol:    sigRef.Symbol,
+			Direction: string(signalDirection),
+			Strategy:  strategyName,
+			Reason:    "ai_direction_conflict: AI recommended " + string(enrichment.Direction),
+			Status:    domain.OrderIntentStatusRejected,
+		}
+		rs.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, rejection.ID, rejection)
+		return nil
+	}
+
 	var spec *stratports.Spec
 	if rs.specStore != nil && hasStrategyID {
 		got, err := rs.specStore.GetLatest(ctx, strategyID)

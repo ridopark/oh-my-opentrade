@@ -68,3 +68,31 @@ type SignalEnrichment struct {
 	UnrealizedPnLUSD float64 `json:"unrealizedPnlUsd,omitempty"` // dollar amount, 0 when unavailable
 	HasPnL           bool    `json:"hasPnl,omitempty"`           // true when P&L fields are populated
 }
+
+// AIDirectionConflict returns true when the AI debate succeeded and recommended
+// a direction that conflicts with the original strategy signal. This is used as
+// a gate: the AI can veto a signal but cannot invent new trades.
+//
+// Conflict matrix (entry signals only):
+//
+//	Signal Side "buy"  + AI Direction SHORT → conflict
+//	Signal Side "sell" + AI Direction LONG  → conflict
+//
+// Returns false when the AI was skipped, timed out, or errored — in those cases
+// the system falls back to the strategy's original signal.
+func (e SignalEnrichment) AIDirectionConflict() bool {
+	if e.Status != EnrichmentOK {
+		return false
+	}
+	if e.Signal.SignalType != "entry" {
+		return false
+	}
+	switch e.Signal.Side {
+	case "buy":
+		return e.Direction == DirectionShort
+	case "sell":
+		return e.Direction == DirectionLong
+	default:
+		return false
+	}
+}
