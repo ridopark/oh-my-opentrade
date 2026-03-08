@@ -36,6 +36,8 @@ function toET(utcSeconds: number): { year: string; month: string; day: string; h
 export interface ChartSignal {
   time: number; // Unix seconds
   side: "buy" | "sell";
+  kind: "entry" | "exit";
+  status: string;
   strategy?: string;
   confidence?: number;
   signalId?: string;
@@ -581,14 +583,21 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
               bar = findNearestBar(data, s.time);
             }
             if (!bar) return null;
-            return {
-              time: bar.time as Time,
-              price: s.side === "buy" ? bar.low : bar.high,
-              side: s.side,
-              label: s.strategy
-                ? `${s.side === "buy" ? "Buy" : "Sell"} (${s.strategy})`
-                : s.side === "buy" ? "Buy" : "Sell",
-            };
+              let labelPrefix = "";
+              if (s.side === "buy" && s.kind === "entry") labelPrefix = "Long";
+              else if (s.side === "sell" && s.kind === "exit") labelPrefix = "Exit";
+              else if (s.side === "sell" && s.kind === "entry") labelPrefix = "Short";
+              else if (s.side === "buy" && s.kind === "exit") labelPrefix = "Cover";
+              else labelPrefix = s.side === "buy" ? "Buy" : "Sell";
+
+              return {
+                time: bar.time as Time,
+                price: s.side === "buy" ? bar.low : bar.high,
+                side: s.side,
+                kind: s.kind,
+                executed: s.status === "executed",
+                label: s.strategy ? `${labelPrefix} (${s.strategy})` : labelPrefix,
+              };
           })
           .filter((d): d is SignalMarkerData => d !== null);
         signalOverlayRef.current.setSignals(markerData);

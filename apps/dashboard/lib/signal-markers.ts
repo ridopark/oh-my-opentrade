@@ -24,6 +24,8 @@ export interface SignalMarkerData {
   time: Time;
   price: number; // bar low (buy) or bar high (sell) for y-positioning
   side: "buy" | "sell";
+  kind: "entry" | "exit";
+  executed: boolean;
   label: string; // e.g. "Buy (awap_v1)"
 }
 
@@ -37,6 +39,8 @@ interface MarkerRenderInfo {
   x: number;
   y: number;
   side: "buy" | "sell";
+  kind: "entry" | "exit";
+  executed: boolean;
   label: string;
 }
 
@@ -62,7 +66,36 @@ class SignalMarkerRenderer implements IPrimitivePaneRenderer {
         if (m.y < -50 || m.y > vh + 50) continue;
 
         const isBuy = m.side === "buy";
-        const bgColor = isBuy ? "#10b981" : "#ef4444";
+        const isEntry = m.kind === "entry";
+
+        let strokeColor: string;
+        let fillColor: string;
+        
+        // 4 signal types: emerald/orange/rose/sky based on side + kind
+        if (isBuy && isEntry) {
+          // Open Long: Emerald #10b981
+          strokeColor = "#10b981";
+          fillColor = "#10b981";
+        } else if (!isBuy && !isEntry) {
+          // Close Long: Orange #f59e0b
+          strokeColor = "#f59e0b";
+          fillColor = "transparent";
+        } else if (!isBuy && isEntry) {
+          // Open Short: Rose #e11d48
+          strokeColor = "#e11d48";
+          fillColor = "#e11d48";
+        } else {
+          // Close Short: Sky #0ea5e9
+          strokeColor = "#0ea5e9";
+          fillColor = "transparent";
+        }
+
+        const isSolid = fillColor !== "transparent";
+
+        ctx.save();
+        if (!m.executed) {
+          ctx.globalAlpha = 0.35;
+        }
 
         // --- Measure text ---
         ctx.font = "bold 10px var(--font-geist-mono, monospace)";
@@ -82,6 +115,8 @@ class SignalMarkerRenderer implements IPrimitivePaneRenderer {
         let boxY: number;
         let tipY: number;
 
+        // BUY-side markers go BELOW the bar with arrow pointing UP.
+        // SELL-side markers go ABOVE the bar with arrow pointing DOWN.
         if (isBuy) {
           tipY = m.y + gap;
           boxY = tipY + arrowH;
@@ -102,7 +137,9 @@ class SignalMarkerRenderer implements IPrimitivePaneRenderer {
         ctx.shadowOffsetX = 0;
         ctx.shadowOffsetY = 2;
 
-        ctx.fillStyle = bgColor;
+        ctx.fillStyle = strokeColor; // For the shadow trick and solid fill
+        ctx.strokeStyle = strokeColor;
+        ctx.lineWidth = 2;
 
         // --- Arrow ---
         ctx.beginPath();
@@ -116,21 +153,36 @@ class SignalMarkerRenderer implements IPrimitivePaneRenderer {
           ctx.lineTo(m.x + arrowHW, tipY - arrowH);
         }
         ctx.closePath();
-        ctx.fill();
+        
+        if (isSolid) {
+          ctx.fill();
+        } else {
+          ctx.stroke();
+          // Clear shadow for subsequent draws
+          ctx.shadowColor = "transparent"; 
+        }
 
         // --- Rounded rect ---
         ctx.beginPath();
         ctx.roundRect(boxX, boxY, boxW, boxH, r);
-        ctx.fill();
+        
+        if (isSolid) {
+          ctx.fill();
+        } else {
+          ctx.shadowColor = "rgba(0, 0, 0, 0.5)"; // Ensure shadow applies to stroke if needed
+          ctx.stroke();
+        }
 
         ctx.restore();
 
         // --- Text ---
-        ctx.fillStyle = "#ffffff";
+        ctx.fillStyle = isSolid ? "#ffffff" : strokeColor;
         ctx.font = "bold 10px var(--font-geist-mono, monospace)";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText(m.label, boxCenterX, boxY + boxH / 2);
+        
+        ctx.restore(); // Restore globalAlpha
       }
     });
   }
@@ -164,7 +216,7 @@ class SignalMarkerPaneView implements IPrimitivePaneView {
       if (x === null) continue;
       const y = series.priceToCoordinate(s.price);
       if (y === null) continue;
-      this._markers.push({ x, y, side: s.side, label: s.label });
+      this._markers.push({ x, y, side: s.side, kind: s.kind, executed: s.executed, label: s.label });
     }
   }
 

@@ -98,6 +98,8 @@ export default function TradingSignalPage() {
             .map((sig) => ({
               time: Math.floor(new Date(sig.TS).getTime() / 1000),
               side: (sig.Side?.toLowerCase() === "sell" ? "sell" : "buy") as "buy" | "sell",
+              kind: (sig.Kind?.toLowerCase() === "exit" ? "exit" : "entry") as "entry" | "exit",
+              status: sig.Status ?? "generated",
               strategy: sig.Strategy,
               confidence: sig.Confidence,
               signalId: sig.SignalID,
@@ -123,11 +125,12 @@ export default function TradingSignalPage() {
         console.log(`[SSE] StrategySignalLifecycle`, sig.Symbol, sig);
 
         const side = sig.Side?.toLowerCase() === "sell" ? "sell" as const : "buy" as const;
+        const kind = sig.Kind?.toLowerCase() === "exit" ? "exit" as const : "entry" as const;
         const time = Math.floor(new Date(sig.TS).getTime() / 1000);
 
         setSignals((prev) => {
           if (sig.SignalID && prev.some((s) => s.signalId === sig.SignalID)) return prev;
-          const next = [...prev, { time, side, strategy: sig.Strategy, confidence: sig.Confidence, signalId: sig.SignalID }];
+          const next = [...prev, { time, side, kind, status: sig.Status ?? "generated", strategy: sig.Strategy, confidence: sig.Confidence, signalId: sig.SignalID }];
           return next.slice(-200);
         });
 
@@ -439,21 +442,34 @@ export default function TradingSignalPage() {
                   No signals yet. Signals appear when strategies generate buy/sell decisions.
                 </p>
               )}
-              {recentSignalEvents.slice(0, 8).map((sig, idx) => (
+              {recentSignalEvents.slice(0, 8).map((sig, idx) => {
+                const isBuy = sig.Side?.toLowerCase() === "buy";
+                const isEntry = sig.Kind?.toLowerCase() !== "exit";
+                let badgeText = "";
+                let badgeClass = "";
+                
+                if (isBuy && isEntry) {
+                  badgeText = "LONG";
+                  badgeClass = "bg-emerald-500 hover:bg-emerald-600 text-white";
+                } else if (!isBuy && !isEntry) {
+                  badgeText = "EXIT";
+                  badgeClass = "bg-orange-500 hover:bg-orange-600 text-white";
+                } else if (!isBuy && isEntry) {
+                  badgeText = "SHORT";
+                  badgeClass = "bg-rose-600 hover:bg-rose-700 text-white";
+                } else {
+                  badgeText = "COVER";
+                  badgeClass = "bg-sky-500 hover:bg-sky-600 text-white";
+                }
+
+                return (
                 <div
                   key={`${sig.SignalID}-${idx}`}
                   className="flex items-center justify-between border-b border-border/50 last:border-0 pb-3 last:pb-0"
                 >
                   <div className="flex items-center gap-3">
-                    <Badge
-                      variant={sig.Side?.toLowerCase() === "buy" ? "default" : "destructive"}
-                      className={
-                        sig.Side?.toLowerCase() === "buy"
-                          ? "bg-emerald-500 hover:bg-emerald-600"
-                          : ""
-                      }
-                    >
-                      {sig.Side?.toUpperCase()}
+                    <Badge variant="default" className={badgeClass}>
+                      {badgeText}
                     </Badge>
                     <div className="flex flex-col">
                       <span className="font-bold text-sm">{sig.Symbol}</span>
@@ -474,7 +490,7 @@ export default function TradingSignalPage() {
                       <div className="flex items-center gap-1">
                         <div className="w-12 h-1.5 bg-secondary rounded-full overflow-hidden">
                           <div
-                            className={`h-full ${sig.Side?.toLowerCase() === "buy" ? "bg-emerald-500" : "bg-red-500"}`}
+                            className={`h-full ${isBuy ? "bg-emerald-500" : "bg-red-500"}`}
                             style={{ width: `${sig.Confidence * 100}%` }}
                           />
                         </div>
@@ -482,7 +498,7 @@ export default function TradingSignalPage() {
                     )}
                   </div>
                 </div>
-              ))}
+              )})}
             </CardContent>
           </Card>
         </aside>
