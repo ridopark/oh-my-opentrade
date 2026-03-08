@@ -101,6 +101,8 @@ func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error
 		VWAP:          snap.VWAP,
 		Volume:        snap.Volume,
 		VolumeSMA:     snap.VolumeSMA,
+		ATR:           snap.ATR,
+		VWAPSD:        snap.VWAPSD,
 		AnchorRegimes: convertAnchorRegimes(snap.AnchorRegimes),
 	}
 	r.mu.Unlock()

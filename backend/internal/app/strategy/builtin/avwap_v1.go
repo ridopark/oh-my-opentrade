@@ -38,22 +38,41 @@ func (s *AVWAPStrategy) ReplayOnBar(_ strat.Context, _ string, bar strat.Bar, st
 	}
 	avwapSt.Indicators = indicators
 	avwapSt.Calc.Update(bar.Time, bar.High, bar.Low, bar.Close, bar.Volume)
+
+	cap := avwapSt.Config.HigherLowsBars
+	if cap < 2 {
+		cap = 3
+	}
+	avwapSt.RecentLows = append(avwapSt.RecentLows, bar.Low)
+	if len(avwapSt.RecentLows) > cap {
+		avwapSt.RecentLows = avwapSt.RecentLows[len(avwapSt.RecentLows)-cap:]
+	}
+	avwapSt.RecentHighs = append(avwapSt.RecentHighs, bar.High)
+	if len(avwapSt.RecentHighs) > cap {
+		avwapSt.RecentHighs = avwapSt.RecentHighs[len(avwapSt.RecentHighs)-cap:]
+	}
+
 	return avwapSt, nil
 }
 
 // AVWAPConfig holds strategy parameters parsed from DNA.
 type AVWAPConfig struct {
-	BreakoutEnabled bool
-	HoldBars        int
-	VolumeMult      float64
-	BounceEnabled   bool
-	RSIBounceMax    float64
-	RSIBounceMin    float64
-	ExitHoldBars    int
-	CooldownSeconds int
-	MaxTradesPerDay int
-	AllowRegimes    []string
-	Direction       string
+	BreakoutEnabled   bool
+	HoldBars          int
+	VolumeMult        float64
+	BounceEnabled     bool
+	RSIBounceMax      float64
+	RSIBounceMin      float64
+	ExitHoldBars      int
+	CooldownSeconds   int
+	MaxTradesPerDay   int
+	AllowRegimes      []string
+	Direction         string
+	RequireHigherLows bool
+	HigherLowsBars    int
+	MiddayTrapShield  bool
+	MiddayVolumeMult  float64
+	AssetClass        string
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -69,6 +88,8 @@ type AVWAPState struct {
 	PendingEntry   strat.Side // set on signal emission, cleared on fill/rejection
 	PendingEntryAt time.Time  // when PendingEntry was set (for timeout recovery)
 	Config         AVWAPConfig
+	RecentLows     []float64
+	RecentHighs    []float64
 }
 
 // SetIndicators implements the indicatorSetter interface.
@@ -145,18 +166,57 @@ func getString(m map[string]any, key string, def string) string {
 	return def
 }
 
+var etLocation *time.Location
+
+func init() {
+	var err error
+	etLocation, err = time.LoadLocation("America/New_York")
+	if err != nil {
+		panic("failed to load America/New_York timezone: " + err.Error())
+	}
+}
+
+func hasHigherLows(lows []float64) bool {
+	if len(lows) < 2 {
+		return false
+	}
+	for i := 1; i < len(lows); i++ {
+		if lows[i] <= lows[i-1] {
+			return false
+		}
+	}
+	return true
+}
+
+func hasLowerHighs(highs []float64) bool {
+	if len(highs) < 2 {
+		return false
+	}
+	for i := 1; i < len(highs); i++ {
+		if highs[i] >= highs[i-1] {
+			return false
+		}
+	}
+	return true
+}
+
 func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 	cfg := AVWAPConfig{
-		BreakoutEnabled: getBool(params, "breakout_enabled", true),
-		HoldBars:        getInt(params, "hold_bars", 2),
-		VolumeMult:      getFloat64(params, "volume_mult", 1.5),
-		BounceEnabled:   getBool(params, "bounce_enabled", true),
-		RSIBounceMax:    getFloat64(params, "rsi_bounce_max", 30),
-		ExitHoldBars:    getInt(params, "exit_hold_bars", 2),
-		CooldownSeconds: getInt(params, "cooldown_seconds", 120),
-		MaxTradesPerDay: getInt(params, "max_trades_per_day", 3),
-		AllowRegimes:    getStringSlice(params, "allow_regimes", []string{"BALANCE", "REVERSAL"}),
-		Direction:       getString(params, "direction", ""),
+		BreakoutEnabled:   getBool(params, "breakout_enabled", true),
+		HoldBars:          getInt(params, "hold_bars", 2),
+		VolumeMult:        getFloat64(params, "volume_mult", 1.5),
+		BounceEnabled:     getBool(params, "bounce_enabled", true),
+		RSIBounceMax:      getFloat64(params, "rsi_bounce_max", 30),
+		ExitHoldBars:      getInt(params, "exit_hold_bars", 2),
+		CooldownSeconds:   getInt(params, "cooldown_seconds", 120),
+		MaxTradesPerDay:   getInt(params, "max_trades_per_day", 3),
+		AllowRegimes:      getStringSlice(params, "allow_regimes", []string{"BALANCE", "REVERSAL"}),
+		Direction:         getString(params, "direction", ""),
+		RequireHigherLows: getBool(params, "require_higher_lows", false),
+		HigherLowsBars:    getInt(params, "higher_lows_bars", 3),
+		MiddayTrapShield:  getBool(params, "midday_trap_shield", false),
+		MiddayVolumeMult:  getFloat64(params, "midday_volume_mult", 2.0),
+		AssetClass:        getString(params, "asset_class", ""),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
 	return cfg
@@ -252,6 +312,16 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 	avwapSt.Calc.Update(bar.Time, bar.High, bar.Low, bar.Close, bar.Volume)
 	avwapValues := avwapSt.Calc.Values()
 
+	// 2b. Update recent lows/highs sliding window for higher-lows filter.
+	avwapSt.RecentLows = append(avwapSt.RecentLows, bar.Low)
+	if len(avwapSt.RecentLows) > cfg.HigherLowsBars {
+		avwapSt.RecentLows = avwapSt.RecentLows[len(avwapSt.RecentLows)-cfg.HigherLowsBars:]
+	}
+	avwapSt.RecentHighs = append(avwapSt.RecentHighs, bar.High)
+	if len(avwapSt.RecentHighs) > cfg.HigherLowsBars {
+		avwapSt.RecentHighs = avwapSt.RecentHighs[len(avwapSt.RecentHighs)-cfg.HigherLowsBars:]
+	}
+
 	// 3. Regime gating.
 	regimeAllowed := false
 	regimeTag := "none"
@@ -342,6 +412,9 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 				if regimeTag == "REVERSAL" {
 					continue
 				}
+				if cfg.RequireHigherLows && !hasHigherLows(avwapSt.RecentLows) {
+					continue
+				}
 				sig, err := strat.NewSignal(instanceID, symbol, strat.SignalEntry, strat.SideBuy, 0.7, map[string]string{
 					"ref_price": fmt.Sprintf("%.4f", bar.Close),
 					"setup":     "avwap_breakout",
@@ -371,6 +444,19 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 			if avwapSt.BelowCount[anchorName] >= cfg.HoldBars && volumeOK {
 				if regimeTag == "REVERSAL" {
 					continue
+				}
+				if cfg.RequireHigherLows && !hasLowerHighs(avwapSt.RecentHighs) {
+					continue
+				}
+				if cfg.MiddayTrapShield && strings.EqualFold(cfg.AssetClass, "EQUITY") {
+					barET := bar.Time.In(etLocation)
+					hour := barET.Hour()
+					if hour >= 11 && hour < 13 {
+						middayVolOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.MiddayVolumeMult*avwapSt.Indicators.VolumeSMA
+						if !middayVolOK {
+							continue
+						}
+					}
 				}
 				sig, err := strat.NewSignal(instanceID, symbol, strat.SignalEntry, strat.SideSell, 0.7, map[string]string{
 					"ref_price": fmt.Sprintf("%.4f", bar.Close),
@@ -512,6 +598,8 @@ type avwapStateJSON struct {
 	PendingEntry   strat.Side                         `json:"pending_entry"`
 	PendingEntryAt time.Time                          `json:"pending_entry_at"`
 	Indicators     strat.IndicatorData                `json:"indicators"`
+	RecentLows     []float64                          `json:"recent_lows,omitempty"`
+	RecentHighs    []float64                          `json:"recent_highs,omitempty"`
 }
 
 func (s *AVWAPState) Marshal() ([]byte, error) {
@@ -535,6 +623,8 @@ func (s *AVWAPState) Marshal() ([]byte, error) {
 		PendingEntry:   s.PendingEntry,
 		PendingEntryAt: s.PendingEntryAt,
 		Indicators:     s.Indicators,
+		RecentLows:     s.RecentLows,
+		RecentHighs:    s.RecentHighs,
 	}
 	return json.Marshal(j)
 }
@@ -554,6 +644,8 @@ func (s *AVWAPState) Unmarshal(data []byte) error {
 	s.PendingEntry = j.PendingEntry
 	s.PendingEntryAt = j.PendingEntryAt
 	s.Indicators = j.Indicators
+	s.RecentLows = j.RecentLows
+	s.RecentHighs = j.RecentHighs
 
 	s.Calc = strat.NewAnchoredVWAPCalc()
 	s.Calc.Restore(j.Anchors, j.CalcStates)

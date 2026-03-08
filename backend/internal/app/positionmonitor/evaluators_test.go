@@ -99,7 +99,7 @@ func TestEvaluate_TrailingStop(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			triggered, reason := Evaluate(tc.rule, tc.pos, tc.current, entryTime)
+			triggered, reason := Evaluate(tc.rule, tc.pos, tc.current, entryTime, EvalContext{})
 			assert.Equal(t, tc.want, triggered)
 			if tc.wantReason {
 				assert.NotEmpty(t, reason)
@@ -158,7 +158,7 @@ func TestEvaluate_ProfitTarget(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			triggered, reason := Evaluate(tc.rule, pos, tc.current, now)
+			triggered, reason := Evaluate(tc.rule, pos, tc.current, now, EvalContext{})
 			assert.Equal(t, tc.want, triggered)
 			if tc.wantReason {
 				assert.NotEmpty(t, reason)
@@ -216,7 +216,7 @@ func TestEvaluate_TimeExit(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			triggered, reason := Evaluate(tc.rule, pos, 0, tc.now)
+			triggered, reason := Evaluate(tc.rule, pos, 0, tc.now, EvalContext{})
 			assert.Equal(t, tc.want, triggered)
 			if tc.wantReason {
 				assert.NotEmpty(t, reason)
@@ -274,7 +274,7 @@ func TestEvaluate_EODFlatten(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			triggered, reason := Evaluate(tc.rule, pos, 0, tc.now)
+			triggered, reason := Evaluate(tc.rule, pos, 0, tc.now, EvalContext{})
 			assert.Equal(t, tc.want, triggered)
 			if tc.wantReason {
 				assert.NotEmpty(t, reason)
@@ -336,7 +336,7 @@ func TestEvaluate_MaxHoldingTime(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			triggered, reason := Evaluate(tc.rule, tc.pos, 0, tc.now)
+			triggered, reason := Evaluate(tc.rule, tc.pos, 0, tc.now, EvalContext{})
 			assert.Equal(t, tc.want, triggered)
 			if tc.wantReason {
 				assert.NotEmpty(t, reason)
@@ -395,7 +395,7 @@ func TestEvaluate_MaxLoss(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			triggered, reason := Evaluate(tc.rule, pos, tc.current, now)
+			triggered, reason := Evaluate(tc.rule, pos, tc.current, now, EvalContext{})
 			assert.Equal(t, tc.want, triggered)
 			if tc.wantReason {
 				assert.NotEmpty(t, reason)
@@ -407,13 +407,353 @@ func TestEvaluate_MaxLoss(t *testing.T) {
 	}
 }
 
+func TestEvaluate_VolatilityStop(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+	pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+
+	rule, err := domain.NewExitRule(domain.ExitRuleVolatilityStop, map[string]float64{"atr_multiplier": 1.5})
+	require.NoError(t, err)
+	zeroRule, err := domain.NewExitRule(domain.ExitRuleVolatilityStop, map[string]float64{"atr_multiplier": 0})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name        string
+		rule        domain.ExitRule
+		current     float64
+		ctx         EvalContext
+		want        bool
+		reasonMatch string
+	}{
+		{
+			name:        "triggers when price below entry minus 1.5*ATR",
+			rule:        rule,
+			current:     95.0,
+			ctx:         EvalContext{ATR: 3.0},
+			want:        true,
+			reasonMatch: "volatility_stop",
+		},
+		{
+			name:    "does not trigger when price above stop level",
+			rule:    rule,
+			current: 99.0,
+			ctx:     EvalContext{ATR: 1.0},
+			want:    false,
+		},
+		{
+			name:    "does not trigger when ATR is zero (warmup)",
+			rule:    rule,
+			current: 90.0,
+			ctx:     EvalContext{ATR: 0},
+			want:    false,
+		},
+		{
+			name:    "does not trigger when atr_multiplier is zero",
+			rule:    zeroRule,
+			current: 90.0,
+			ctx:     EvalContext{ATR: 5.0},
+			want:    false,
+		},
+		{
+			name:        "triggers at exact stop price boundary",
+			rule:        rule,
+			current:     95.5,
+			ctx:         EvalContext{ATR: 3.0},
+			want:        true,
+			reasonMatch: "volatility_stop",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			triggered, reason := Evaluate(tc.rule, pos, tc.current, now, tc.ctx)
+			assert.Equal(t, tc.want, triggered)
+			if tc.reasonMatch != "" {
+				assert.Contains(t, reason, tc.reasonMatch)
+			} else {
+				assert.Empty(t, reason)
+			}
+		})
+	}
+}
+
+func TestEvaluate_SDTarget(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+	pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+
+	rule := domain.ExitRule{
+		Type:   domain.ExitRuleSDTarget,
+		Params: map[string]float64{"sd_level": 2.0},
+	}
+	zeroRule := domain.ExitRule{
+		Type:   domain.ExitRuleSDTarget,
+		Params: map[string]float64{"sd_level": 0},
+	}
+
+	// VWAP=150, SD=1.2 → +2.0 SD band = 150 + 2*1.2 = 152.4
+	sdBands := map[float64]float64{
+		1.0: 151.2,
+		2.0: 152.4,
+		2.5: 153.0,
+	}
+
+	tests := []struct {
+		name        string
+		rule        domain.ExitRule
+		current     float64
+		ctx         EvalContext
+		want        bool
+		reasonMatch string
+	}{
+		{
+			name:        "triggers when price reaches +2.0 SD band",
+			rule:        rule,
+			current:     152.5,
+			ctx:         EvalContext{VWAPValue: 150.0, SDBands: sdBands},
+			want:        true,
+			reasonMatch: "sd_target",
+		},
+		{
+			name:    "does not trigger when price below SD band",
+			rule:    rule,
+			current: 151.0,
+			ctx:     EvalContext{VWAPValue: 150.0, SDBands: sdBands},
+			want:    false,
+		},
+		{
+			name:        "triggers at exact band price",
+			rule:        rule,
+			current:     152.4,
+			ctx:         EvalContext{VWAPValue: 150.0, SDBands: sdBands},
+			want:        true,
+			reasonMatch: "sd_target",
+		},
+		{
+			name:    "does not trigger when SDBands is nil (warmup)",
+			rule:    rule,
+			current: 200.0,
+			ctx:     EvalContext{VWAPValue: 150.0},
+			want:    false,
+		},
+		{
+			name:    "does not trigger when sd_level is zero",
+			rule:    zeroRule,
+			current: 200.0,
+			ctx:     EvalContext{VWAPValue: 150.0, SDBands: sdBands},
+			want:    false,
+		},
+		{
+			name:    "does not trigger when requested level not in SDBands",
+			rule:    domain.ExitRule{Type: domain.ExitRuleSDTarget, Params: map[string]float64{"sd_level": 3.0}},
+			current: 200.0,
+			ctx:     EvalContext{VWAPValue: 150.0, SDBands: sdBands},
+			want:    false,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			triggered, reason := Evaluate(tc.rule, pos, tc.current, now, tc.ctx)
+			assert.Equal(t, tc.want, triggered)
+			if tc.reasonMatch != "" {
+				assert.Contains(t, reason, tc.reasonMatch)
+			} else {
+				assert.Empty(t, reason)
+			}
+		})
+	}
+}
+
+func TestUpdateStepStopState(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+
+	// VWAP=100, SD=2 → bands: +1.0=102, +2.0=104, +3.0=106
+	sdBands := map[float64]float64{
+		1.0: 102.0,
+		2.0: 104.0,
+		3.0: 106.0,
+	}
+	ctx := EvalContext{VWAPValue: 100.0, SDBands: sdBands}
+
+	t.Run("crosses +1.0 SD sets stop to entry (breakeven)", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		UpdateStepStopState(pos, 102.5, ctx)
+		assert.Equal(t, 1.0, pos.CustomState["highest_sd_crossed"])
+		assert.Equal(t, 100.0, pos.CustomState["step_stop_level"])
+	})
+
+	t.Run("crosses +2.0 SD sets stop to +1.0 SD band", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		UpdateStepStopState(pos, 104.5, ctx)
+		assert.Equal(t, 2.0, pos.CustomState["highest_sd_crossed"])
+		assert.Equal(t, 102.0, pos.CustomState["step_stop_level"])
+	})
+
+	t.Run("crosses +3.0 SD sets stop to +2.0 SD band", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		UpdateStepStopState(pos, 106.5, ctx)
+		assert.Equal(t, 3.0, pos.CustomState["highest_sd_crossed"])
+		assert.Equal(t, 104.0, pos.CustomState["step_stop_level"])
+	})
+
+	t.Run("stop only ratchets up, never down", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		// First: cross +2.0 SD → stop at +1.0 SD (102)
+		UpdateStepStopState(pos, 104.5, ctx)
+		assert.Equal(t, 102.0, pos.CustomState["step_stop_level"])
+
+		// Price drops back below +2.0 SD — stop must NOT decrease
+		UpdateStepStopState(pos, 101.0, ctx)
+		assert.Equal(t, 102.0, pos.CustomState["step_stop_level"])
+		assert.Equal(t, 2.0, pos.CustomState["highest_sd_crossed"])
+	})
+
+	t.Run("no-op when SDBands is nil", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		UpdateStepStopState(pos, 200.0, EvalContext{})
+		assert.Equal(t, 0.0, pos.CustomState["step_stop_level"])
+	})
+
+	t.Run("progressive ratcheting across ticks", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+
+		// Tick 1: price at 102.5 → crosses +1.0 SD → stop = entry (100)
+		UpdateStepStopState(pos, 102.5, ctx)
+		assert.Equal(t, 1.0, pos.CustomState["highest_sd_crossed"])
+		assert.Equal(t, 100.0, pos.CustomState["step_stop_level"])
+
+		// Tick 2: price at 104.5 → crosses +2.0 SD → stop = +1.0 SD (102)
+		UpdateStepStopState(pos, 104.5, ctx)
+		assert.Equal(t, 2.0, pos.CustomState["highest_sd_crossed"])
+		assert.Equal(t, 102.0, pos.CustomState["step_stop_level"])
+
+		// Tick 3: price at 106.5 → crosses +3.0 SD → stop = +2.0 SD (104)
+		UpdateStepStopState(pos, 106.5, ctx)
+		assert.Equal(t, 3.0, pos.CustomState["highest_sd_crossed"])
+		assert.Equal(t, 104.0, pos.CustomState["step_stop_level"])
+	})
+}
+
+func TestEvaluate_StepStop(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+
+	rule := domain.ExitRule{Type: domain.ExitRuleStepStop, Params: map[string]float64{}}
+	ctx := EvalContext{VWAPValue: 100.0}
+
+	t.Run("triggers when price below step stop level", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		pos.CustomState["step_stop_level"] = 102.0
+		pos.CustomState["highest_sd_crossed"] = 2.0
+
+		triggered, reason := Evaluate(rule, pos, 101.5, now, ctx)
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "step_stop")
+	})
+
+	t.Run("does not trigger when price above step stop level", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		pos.CustomState["step_stop_level"] = 102.0
+		pos.CustomState["highest_sd_crossed"] = 2.0
+
+		triggered, reason := Evaluate(rule, pos, 103.0, now, ctx)
+		assert.False(t, triggered)
+		assert.Empty(t, reason)
+	})
+
+	t.Run("does not trigger when step stop level is zero (not yet activated)", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+
+		triggered, reason := Evaluate(rule, pos, 50.0, now, ctx)
+		assert.False(t, triggered)
+		assert.Empty(t, reason)
+	})
+
+	t.Run("triggers at exact stop level boundary", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		pos.CustomState["step_stop_level"] = 102.0
+		pos.CustomState["highest_sd_crossed"] = 2.0
+
+		triggered, reason := Evaluate(rule, pos, 102.0, now, ctx)
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "step_stop")
+	})
+}
+
+func TestEvaluate_StagnationExit(t *testing.T) {
+	etLoc := mustETLocation(t)
+	rule := domain.ExitRule{
+		Type:   domain.ExitRuleStagnationExit,
+		Params: map[string]float64{"minutes": 30, "sd_threshold": 1.0},
+	}
+
+	sdBands := map[float64]float64{1.0: 102.0, 2.0: 104.0}
+	ctx := EvalContext{VWAPValue: 100.0, SDBands: sdBands}
+
+	t.Run("triggers after stagnation period without reaching SD band", func(t *testing.T) {
+		now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+		pos := newTestMonitoredPosition(t, 100, now.Add(-35*time.Minute), domain.AssetClassEquity)
+
+		triggered, reason := Evaluate(rule, pos, 101.0, now, ctx)
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "stagnation_exit")
+	})
+
+	t.Run("does not trigger before stagnation period expires", func(t *testing.T) {
+		now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+		pos := newTestMonitoredPosition(t, 100, now.Add(-20*time.Minute), domain.AssetClassEquity)
+
+		triggered, _ := Evaluate(rule, pos, 101.0, now, ctx)
+		assert.False(t, triggered)
+	})
+
+	t.Run("does not trigger if price reached SD band", func(t *testing.T) {
+		now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+		pos := newTestMonitoredPosition(t, 100, now.Add(-35*time.Minute), domain.AssetClassEquity)
+
+		triggered, _ := Evaluate(rule, pos, 102.5, now, ctx)
+		assert.False(t, triggered)
+	})
+
+	t.Run("disabled when step-stop has activated", func(t *testing.T) {
+		now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+		pos := newTestMonitoredPosition(t, 100, now.Add(-35*time.Minute), domain.AssetClassEquity)
+		pos.CustomState["highest_sd_crossed"] = 1.0
+
+		triggered, _ := Evaluate(rule, pos, 101.0, now, ctx)
+		assert.False(t, triggered)
+	})
+
+	t.Run("does not trigger when minutes param is zero", func(t *testing.T) {
+		now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+		pos := newTestMonitoredPosition(t, 100, now.Add(-60*time.Minute), domain.AssetClassEquity)
+		zeroRule := domain.ExitRule{Type: domain.ExitRuleStagnationExit, Params: map[string]float64{"minutes": 0}}
+
+		triggered, _ := Evaluate(zeroRule, pos, 101.0, now, ctx)
+		assert.False(t, triggered)
+	})
+
+	t.Run("works without SDBands (always triggers after timeout)", func(t *testing.T) {
+		now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+		pos := newTestMonitoredPosition(t, 100, now.Add(-35*time.Minute), domain.AssetClassEquity)
+
+		triggered, reason := Evaluate(rule, pos, 101.0, now, EvalContext{VWAPValue: 100.0})
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "stagnation_exit")
+	})
+}
+
 func TestEvaluate_UnknownRuleType(t *testing.T) {
 	etLoc := mustETLocation(t)
 	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
 	pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
 
 	rule := domain.ExitRule{Type: domain.ExitRuleType("SOMETHING_ELSE"), Params: map[string]float64{"pct": 0.01}}
-	triggered, reason := Evaluate(rule, pos, 101, now)
+	triggered, reason := Evaluate(rule, pos, 101, now, EvalContext{})
 	assert.False(t, triggered)
 	assert.Empty(t, reason)
 }

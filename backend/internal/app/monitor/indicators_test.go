@@ -119,6 +119,55 @@ func TestIndicators_VWAP(t *testing.T) {
 	assert.InDelta(t, 16.666, snap.VWAP, 0.01, "multiple bars VWAP cumulative")
 }
 
+func TestIndicators_ATR_InsufficientData(t *testing.T) {
+	calc := monitor.NewIndicatorCalculator()
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	snap := calc.Update(createBarDetailed(t, sym, 100, 105, 95, 100, 10))
+	assert.Equal(t, 0.0, snap.ATR, "ATR should be zero with insufficient data")
+
+	for i := 1; i < 14; i++ {
+		snap = calc.Update(createBarDetailed(t, sym, 100, 105, 95, 100, 10))
+	}
+	assert.Equal(t, 0.0, snap.ATR, "ATR should be zero before warmup (need 15 bars)")
+}
+
+func TestIndicators_ATR_AfterWarmup(t *testing.T) {
+	calc := monitor.NewIndicatorCalculator()
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	var snap domain.IndicatorSnapshot
+	for i := 0; i < 16; i++ {
+		snap = calc.Update(createBarDetailed(t, sym, 100, 110, 90, 100, 10))
+	}
+	assert.Greater(t, snap.ATR, 0.0, "ATR should be positive after warmup")
+	assert.InDelta(t, 20.0, snap.ATR, 0.5, "ATR of constant H=110,L=90 bars should be ~20")
+}
+
+func TestIndicators_ATR_KnownValues(t *testing.T) {
+	calc := monitor.NewIndicatorCalculator()
+	sym, _ := domain.NewSymbol("AAPL")
+
+	// 15 bars with High-Low=10 and no gaps → True Range = 10 for each → ATR = 10
+	for i := 0; i < 15; i++ {
+		base := 100.0 + float64(i)
+		calc.Update(createBarDetailed(t, sym, base, base+5, base-5, base, 10))
+	}
+	snap := calc.Update(createBarDetailed(t, sym, 115, 120, 110, 115, 10))
+	assert.InDelta(t, 10.0, snap.ATR, 1.0, "ATR of H-L=10 bars should be ~10")
+}
+
+func TestIndicators_ATR_ZeroVolatility(t *testing.T) {
+	calc := monitor.NewIndicatorCalculator()
+	sym, _ := domain.NewSymbol("AAPL")
+
+	var snap domain.IndicatorSnapshot
+	for i := 0; i < 16; i++ {
+		snap = calc.Update(createBarDetailed(t, sym, 100, 100, 100, 100, 10))
+	}
+	assert.InDelta(t, 0.0, snap.ATR, 1e-10, "ATR of zero-volatility bars should be zero")
+}
+
 func TestIndicators_VolumeSMA(t *testing.T) {
 	calc := monitor.NewIndicatorCalculator()
 	sym, _ := domain.NewSymbol("BTC/USD")

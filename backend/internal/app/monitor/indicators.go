@@ -1,6 +1,8 @@
 package monitor
 
 import (
+	"math"
+
 	"github.com/oh-my-opentrade/backend/internal/domain"
 )
 
@@ -11,6 +13,7 @@ const (
 	emaPeriod9      = 9
 	emaPeriod21     = 21
 	volumeSMAPeriod = 20
+	atrPeriod       = 14
 	maxWindowSize   = 50
 )
 
@@ -28,6 +31,11 @@ type symbolState struct {
 	ema21Init     bool
 	vwapNumerator float64
 	vwapDenom     float64
+	vwapM2        float64 // Welford's online variance accumulator for VWAP SD
+	atr           float64
+	atrInit       bool
+	prevClose     float64
+	prevCloseSet  bool
 }
 
 // IndicatorCalculator maintains state and computes technical indicators
@@ -54,6 +62,7 @@ func (ic *IndicatorCalculator) ResetSession(symbol, timeframe string) {
 	// repeatedly slice volumes back to 0 because closes/highs/lows are still full.
 	state.vwapNumerator = 0
 	state.vwapDenom = 0
+	state.vwapM2 = 0
 }
 
 // smaSlice computes the mean of a slice of float64 values.
@@ -99,13 +108,24 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 		state.volumes = state.volumes[1:]
 	}
 
-	// VWAP
+	// VWAP + Welford's online variance for SD bands
 	typical := (bar.High + bar.Low + bar.Close) / 3.0
+	oldVWAP := 0.0
+	if state.vwapDenom > 0 {
+		oldVWAP = state.vwapNumerator / state.vwapDenom
+	}
 	state.vwapNumerator += typical * bar.Volume
 	state.vwapDenom += bar.Volume
 	vwap := 0.0
 	if state.vwapDenom > 0 {
 		vwap = state.vwapNumerator / state.vwapDenom
+	}
+	if bar.Volume > 0 {
+		state.vwapM2 += bar.Volume * (typical - oldVWAP) * (typical - vwap)
+	}
+	vwapSD := 0.0
+	if state.vwapDenom > 0 && state.vwapM2 > 0 {
+		vwapSD = math.Sqrt(state.vwapM2 / state.vwapDenom)
 	}
 
 	// RSI (Simple Moving Average of last 14 changes to pass the strict test)
@@ -189,6 +209,22 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 		volumeSMA = smaWindow(state.volumes, volumeSMAPeriod)
 	}
 
+	// ATR (Wilder smoothing)
+	atr := state.atr
+	if state.prevCloseSet {
+		tr := trueRange(bar.High, bar.Low, state.prevClose)
+		if !state.atrInit && len(state.closes) >= atrPeriod+1 {
+			atr = computeInitialATR(state.highs, state.lows, state.closes, atrPeriod)
+			state.atr = atr
+			state.atrInit = true
+		} else if state.atrInit {
+			atr = (state.atr*float64(atrPeriod-1) + tr) / float64(atrPeriod)
+			state.atr = atr
+		}
+	}
+	state.prevClose = bar.Close
+	state.prevCloseSet = true
+
 	snap, err := domain.NewIndicatorSnapshot(
 		bar.Time, bar.Symbol, bar.Timeframe,
 		rsi, stochK, stochD, state.ema9, state.ema21, vwap, bar.Volume, volumeSMA,
@@ -196,5 +232,40 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 	if err != nil {
 		return domain.IndicatorSnapshot{}
 	}
+	if state.atrInit {
+		snap.ATR = atr
+	}
+	if vwapSD > 0 {
+		snap.VWAPSD = vwapSD
+	}
 	return snap
+}
+
+func trueRange(high, low, prevClose float64) float64 {
+	hl := high - low
+	hc := high - prevClose
+	if hc < 0 {
+		hc = -hc
+	}
+	lc := low - prevClose
+	if lc < 0 {
+		lc = -lc
+	}
+	m := hl
+	if hc > m {
+		m = hc
+	}
+	if lc > m {
+		m = lc
+	}
+	return m
+}
+
+func computeInitialATR(highs, lows, closes []float64, period int) float64 {
+	n := len(closes)
+	sum := 0.0
+	for i := n - period; i < n; i++ {
+		sum += trueRange(highs[i], lows[i], closes[i-1])
+	}
+	return sum / float64(period)
 }

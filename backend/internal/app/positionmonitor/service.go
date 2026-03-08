@@ -44,6 +44,8 @@ type Service struct {
 	positions map[string]*domain.MonitoredPosition // key: PositionKey()
 	mu        sync.RWMutex                         // protects positions for concurrent reads (e.g. PositionCount)
 
+	snapshotFn IndicatorSnapshotFunc
+
 	// Config.
 	tickInterval      time.Duration
 	maxPriceStaleness time.Duration
@@ -120,6 +122,10 @@ func WithSpecStore(ss portstrategy.SpecStore) Option {
 // SetSpecStore sets the spec store after construction (for deferred wiring).
 func (s *Service) SetSpecStore(ss portstrategy.SpecStore) {
 	s.specStore = ss
+}
+
+func WithSnapshotFunc(fn IndicatorSnapshotFunc) Option {
+	return func(s *Service) { s.snapshotFn = fn }
 }
 
 // NewService creates a new position monitor service.
@@ -588,9 +594,23 @@ func (s *Service) tick() {
 		price := snap.Price
 		pos.UpdateWaterMarks(price)
 
-		// Evaluate each exit rule.
+		evalCtx := EvalContext{}
+		if s.snapshotFn != nil {
+			if indSnap, ok := s.snapshotFn(string(pos.Symbol)); ok {
+				evalCtx.ATR = indSnap.ATR
+				evalCtx.VWAPValue = indSnap.VWAP
+				if indSnap.VWAPSD > 0 {
+					evalCtx.SDBands = make(map[float64]float64)
+					for _, level := range []float64{0.5, 1.0, 1.5, 2.0, 2.5, 3.0} {
+						evalCtx.SDBands[level] = indSnap.VWAP + level*indSnap.VWAPSD
+					}
+				}
+			}
+		}
+		UpdateStepStopState(pos, price, evalCtx)
+
 		for _, rule := range pos.ExitRules {
-			triggered, reason := Evaluate(rule, pos, price, now)
+			triggered, reason := Evaluate(rule, pos, price, now, evalCtx)
 			if !triggered {
 				continue
 			}
@@ -765,7 +785,28 @@ func applyRiskModifierToExitRules(rules []domain.ExitRule, modifier domain.RiskM
 
 	scaled := make([]domain.ExitRule, len(rules))
 	for i, r := range rules {
-		if (r.Type == domain.ExitRuleTrailingStop || r.Type == domain.ExitRuleMaxLoss) && r.Params["pct"] > 0 {
+		if r.Type == domain.ExitRuleVolatilityStop && r.Params["atr_multiplier"] > 0 {
+			newParams := make(map[string]float64, len(r.Params))
+			for k, v := range r.Params {
+				newParams[k] = v
+			}
+			newParams["atr_multiplier"] = r.Params["atr_multiplier"] * mult
+			scaled[i] = domain.ExitRule{Type: r.Type, Params: newParams}
+		} else if r.Type == domain.ExitRuleSDTarget && r.Params["sd_level"] > 0 {
+			newParams := make(map[string]float64, len(r.Params))
+			for k, v := range r.Params {
+				newParams[k] = v
+			}
+			newParams["sd_level"] = r.Params["sd_level"] * mult
+			scaled[i] = domain.ExitRule{Type: r.Type, Params: newParams}
+		} else if r.Type == domain.ExitRuleStagnationExit && r.Params["minutes"] > 0 {
+			newParams := make(map[string]float64, len(r.Params))
+			for k, v := range r.Params {
+				newParams[k] = v
+			}
+			newParams["minutes"] = r.Params["minutes"] * mult
+			scaled[i] = domain.ExitRule{Type: r.Type, Params: newParams}
+		} else if (r.Type == domain.ExitRuleTrailingStop || r.Type == domain.ExitRuleMaxLoss) && r.Params["pct"] > 0 {
 			newParams := make(map[string]float64, len(r.Params))
 			for k, v := range r.Params {
 				newParams[k] = v

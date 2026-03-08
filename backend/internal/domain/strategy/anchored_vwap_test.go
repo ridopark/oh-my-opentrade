@@ -1,6 +1,7 @@
 package strategy_test
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -160,4 +161,130 @@ func TestAnchoredVWAPCalc_AVWAP_StatesAndRestore(t *testing.T) {
 	}
 
 	assert.Equal(t, baselineVals, c2.Values())
+}
+
+func TestAnchoredVWAPState_SD_SingleBar(t *testing.T) {
+	t0 := time.Date(2026, 1, 2, 9, 30, 0, 0, time.UTC)
+	c := strategy.NewAnchoredVWAPCalc()
+	c.AddAnchor(strategy.AnchorPoint{Name: "test", AnchorTime: t0})
+	c.Update(t0.Add(time.Minute), 102, 98, 100, 1000) // tp=100
+
+	states := c.States()
+	st := states["test"]
+	assert.Equal(t, 0.0, st.SD(), "single bar should have zero SD")
+	assert.Equal(t, 0.0, st.Variance())
+}
+
+func TestAnchoredVWAPState_SD_KnownValues(t *testing.T) {
+	t0 := time.Date(2026, 1, 2, 9, 30, 0, 0, time.UTC)
+	c := strategy.NewAnchoredVWAPCalc()
+	c.AddAnchor(strategy.AnchorPoint{Name: "test", AnchorTime: t0})
+
+	// Bar 1: tp=(102+98+100)/3=100, v=1000
+	// Bar 2: tp=(105+101+103)/3=103, v=2000
+	// Bar 3: tp=(108+102+105)/3=105, v=3000
+	c.Update(t0.Add(1*time.Minute), 102, 98, 100, 1000)
+	c.Update(t0.Add(2*time.Minute), 105, 101, 103, 2000)
+	c.Update(t0.Add(3*time.Minute), 108, 102, 105, 3000)
+
+	states := c.States()
+	st := states["test"]
+
+	// Manual Welford:
+	// Bar1: old=0, new=100, M2=1000*(100-0)*(100-100)=0
+	// Bar2: old=100, new=102, M2=0+2000*(103-100)*(103-102)=6000
+	// Bar3: old=102, new=103.5, M2=6000+3000*(105-102)*(105-103.5)=19500
+	// Var = 19500/6000 = 3.25, SD = sqrt(3.25) ≈ 1.80278
+	assert.InDelta(t, 3.25, st.Variance(), 1e-9)
+	assert.InDelta(t, math.Sqrt(3.25), st.SD(), 1e-9)
+}
+
+func TestAnchoredVWAPCalc_SDBands_SingleAnchor(t *testing.T) {
+	t0 := time.Date(2026, 1, 2, 9, 30, 0, 0, time.UTC)
+	c := strategy.NewAnchoredVWAPCalc()
+	c.AddAnchor(strategy.AnchorPoint{Name: "test", AnchorTime: t0})
+
+	c.Update(t0.Add(1*time.Minute), 102, 98, 100, 1000)
+	c.Update(t0.Add(2*time.Minute), 105, 101, 103, 2000)
+	c.Update(t0.Add(3*time.Minute), 108, 102, 105, 3000)
+
+	sd := math.Sqrt(3.25) // ≈ 1.80278
+	vwap := 103.5
+
+	upper, lower, ok := c.SDBands("test", 2.0)
+	require.True(t, ok)
+	assert.InDelta(t, vwap+2.0*sd, upper, 1e-9)
+	assert.InDelta(t, vwap-2.0*sd, lower, 1e-9)
+
+	upper1, lower1, ok := c.SDBands("test", 1.0)
+	require.True(t, ok)
+	assert.InDelta(t, vwap+sd, upper1, 1e-9)
+	assert.InDelta(t, vwap-sd, lower1, 1e-9)
+}
+
+func TestAnchoredVWAPCalc_SDBands_NotFound(t *testing.T) {
+	c := strategy.NewAnchoredVWAPCalc()
+	_, _, ok := c.SDBands("nonexistent", 2.0)
+	assert.False(t, ok)
+}
+
+func TestAnchoredVWAPCalc_SDBands_SingleBarReturnsNotOK(t *testing.T) {
+	t0 := time.Date(2026, 1, 2, 9, 30, 0, 0, time.UTC)
+	c := strategy.NewAnchoredVWAPCalc()
+	c.AddAnchor(strategy.AnchorPoint{Name: "test", AnchorTime: t0})
+	c.Update(t0.Add(time.Minute), 100, 100, 100, 1000)
+
+	_, _, ok := c.SDBands("test", 2.0)
+	assert.False(t, ok, "single bar has M2=0, bands should be unavailable")
+}
+
+func TestAnchoredVWAPCalc_AllSDBands(t *testing.T) {
+	t0 := time.Date(2026, 1, 2, 9, 30, 0, 0, time.UTC)
+	c := strategy.NewAnchoredVWAPCalc()
+	c.AddAnchor(strategy.AnchorPoint{Name: "a", AnchorTime: t0})
+	c.AddAnchor(strategy.AnchorPoint{Name: "b", AnchorTime: t0})
+
+	c.Update(t0.Add(1*time.Minute), 102, 98, 100, 1000)
+	c.Update(t0.Add(2*time.Minute), 105, 101, 103, 2000)
+	c.Update(t0.Add(3*time.Minute), 108, 102, 105, 3000)
+
+	bands := c.AllSDBands(2.0)
+	require.Len(t, bands, 2)
+	assert.Contains(t, bands, "a")
+	assert.Contains(t, bands, "b")
+
+	sd := math.Sqrt(3.25)
+	vwap := 103.5
+	for _, pair := range bands {
+		assert.InDelta(t, vwap+2.0*sd, pair[0], 1e-9)
+		assert.InDelta(t, vwap-2.0*sd, pair[1], 1e-9)
+	}
+}
+
+func TestAnchoredVWAPState_SD_RestorePreservesM2(t *testing.T) {
+	t0 := time.Date(2026, 1, 2, 9, 30, 0, 0, time.UTC)
+	c := strategy.NewAnchoredVWAPCalc()
+	c.AddAnchor(strategy.AnchorPoint{Name: "test", AnchorTime: t0})
+
+	c.Update(t0.Add(1*time.Minute), 102, 98, 100, 1000)
+	c.Update(t0.Add(2*time.Minute), 105, 101, 103, 2000)
+	c.Update(t0.Add(3*time.Minute), 108, 102, 105, 3000)
+
+	savedStates := c.States()
+	origSD := savedStates["test"].SD()
+	require.Greater(t, origSD, 0.0)
+
+	c2 := strategy.NewAnchoredVWAPCalc()
+	c2.Restore([]strategy.AnchorPoint{{Name: "test", AnchorTime: t0}}, savedStates)
+
+	restoredStates := c2.States()
+	assert.InDelta(t, origSD, restoredStates["test"].SD(), 1e-15)
+	assert.InDelta(t, savedStates["test"].M2, restoredStates["test"].M2, 1e-15)
+}
+
+func TestAnchoredVWAPState_SD_BackwardCompat_ZeroM2(t *testing.T) {
+	st := strategy.AnchoredVWAPState{CumPV: 100000, CumV: 1000, M2: 0}
+	assert.Equal(t, 100.0, st.Value())
+	assert.Equal(t, 0.0, st.SD(), "zero M2 should return SD=0, not NaN")
+	assert.Equal(t, 0.0, st.Variance())
 }

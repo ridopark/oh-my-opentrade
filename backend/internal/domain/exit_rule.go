@@ -15,6 +15,10 @@ const (
 	ExitRuleEODFlatten     ExitRuleType = "EOD_FLATTEN"
 	ExitRuleMaxHoldingTime ExitRuleType = "MAX_HOLDING_TIME"
 	ExitRuleMaxLoss        ExitRuleType = "MAX_LOSS"
+	ExitRuleVolatilityStop ExitRuleType = "VOLATILITY_STOP"
+	ExitRuleSDTarget       ExitRuleType = "SD_TARGET"
+	ExitRuleStepStop       ExitRuleType = "STEP_STOP"
+	ExitRuleStagnationExit ExitRuleType = "STAGNATION_EXIT"
 )
 
 func (e ExitRuleType) String() string { return string(e) }
@@ -23,7 +27,9 @@ func (e ExitRuleType) String() string { return string(e) }
 func NewExitRuleType(s string) (ExitRuleType, error) {
 	switch ExitRuleType(s) {
 	case ExitRuleTrailingStop, ExitRuleProfitTarget, ExitRuleTimeExit,
-		ExitRuleEODFlatten, ExitRuleMaxHoldingTime, ExitRuleMaxLoss:
+		ExitRuleEODFlatten, ExitRuleMaxHoldingTime, ExitRuleMaxLoss,
+		ExitRuleVolatilityStop, ExitRuleSDTarget, ExitRuleStepStop,
+		ExitRuleStagnationExit:
 		return ExitRuleType(s), nil
 	default:
 		return "", fmt.Errorf("invalid exit rule type: %q", s)
@@ -91,6 +97,8 @@ type MonitoredPosition struct {
 
 	LastRevaluation   *RiskRevaluation `json:"lastRevaluation,omitempty"`
 	LastRevaluationAt time.Time        `json:"lastRevaluationAt,omitempty"`
+
+	CustomState map[string]float64 `json:"customState,omitempty"`
 }
 
 // NewMonitoredPosition creates a MonitoredPosition with high/low water marks initialized to entry price.
@@ -123,6 +131,7 @@ func NewMonitoredPosition(
 		TenantID:      tenantID,
 		EnvMode:       envMode,
 		Quantity:      quantity,
+		CustomState:   make(map[string]float64),
 	}, nil
 }
 

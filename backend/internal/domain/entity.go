@@ -233,6 +233,8 @@ type IndicatorSnapshot struct {
 	VWAP          float64
 	Volume        float64
 	VolumeSMA     float64
+	ATR           float64
+	VWAPSD        float64                    `json:"vwapSD,omitempty"`
 	AnchorRegimes map[Timeframe]MarketRegime `json:"anchorRegimes,omitempty"`
 }
 
