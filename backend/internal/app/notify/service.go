@@ -441,6 +441,13 @@ func (s *Service) fmtRiskRevaluated(ev domain.Event) string {
 	msg += fmt.Sprintf("\n%s Action: %s (Risk: %s, Confidence: %.0f%%)",
 		actionEmoji, r.Action, r.UpdatedModifier, r.Confidence*100)
 
+	if len(r.RuleChanges) > 0 {
+		msg += "\n📐 Exit Rule Changes:"
+		for _, ch := range r.RuleChanges {
+			msg += fmt.Sprintf("\n  %s [%s]: %.4f → %.4f", ch.Rule, ch.Param, ch.OldValue, ch.NewValue)
+		}
+	}
+
 	if r.Reasoning != "" {
 		msg += fmt.Sprintf("\n💡 %s", r.Reasoning)
 	}

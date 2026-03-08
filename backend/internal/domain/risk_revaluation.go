@@ -33,14 +33,21 @@ type RiskRevaluation struct {
 	EvaluatedAt     time.Time    `json:"evaluatedAt"`
 }
 
-// RiskRevaluationEvent is the event payload emitted after a position risk re-evaluation.
+type ExitRuleChange struct {
+	Rule     string  `json:"rule"`
+	Param    string  `json:"param"`
+	OldValue float64 `json:"oldValue"`
+	NewValue float64 `json:"newValue"`
+}
+
 type RiskRevaluationEvent struct {
 	RiskRevaluation
-	Strategy      string  `json:"strategy"`
-	EntryPrice    float64 `json:"entryPrice"`
-	CurrentPrice  float64 `json:"currentPrice"`
-	UnrealizedPnL float64 `json:"unrealizedPnl"`
-	HoldDuration  string  `json:"holdDuration"`
-	TenantID      string  `json:"tenantId"`
-	EnvMode       EnvMode `json:"envMode"`
+	Strategy      string           `json:"strategy"`
+	EntryPrice    float64          `json:"entryPrice"`
+	CurrentPrice  float64          `json:"currentPrice"`
+	UnrealizedPnL float64          `json:"unrealizedPnl"`
+	HoldDuration  string           `json:"holdDuration"`
+	TenantID      string           `json:"tenantId"`
+	EnvMode       EnvMode          `json:"envMode"`
+	RuleChanges   []ExitRuleChange `json:"ruleChanges,omitempty"`
 }

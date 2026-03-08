@@ -950,34 +950,45 @@ func (s *Service) ListPositions() []domain.MonitoredPosition {
 	return positions
 }
 
-func (s *Service) ApplyRevaluation(key string, result *domain.RiskRevaluation) {
+func (s *Service) ApplyRevaluation(key string, result *domain.RiskRevaluation) []domain.ExitRuleChange {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pos, ok := s.positions[key]
 	if !ok {
-		return
+		return nil
 	}
 	pos.LastRevaluation = result
 	pos.LastRevaluationAt = result.EvaluatedAt
-	if result.Action == domain.RiskActionTighten {
-		oldRules := pos.ExitRules
-		pos.ExitRules = applyRiskModifierToExitRules(pos.InitialExitRules, result.UpdatedModifier)
-		for i, newRule := range pos.ExitRules {
-			if i < len(oldRules) {
-				for k, newV := range newRule.Params {
-					if oldV, exists := oldRules[i].Params[k]; exists && oldV != newV {
-						s.log.Info().
-							Str("symbol", string(pos.Symbol)).
-							Str("rule", string(newRule.Type)).
-							Str("param", k).
-							Float64("old_value", oldV).
-							Float64("new_value", newV).
-							Msg("exit rule tightened")
-					}
+	if result.Action != domain.RiskActionTighten {
+		return nil
+	}
+
+	oldRules := pos.ExitRules
+	pos.ExitRules = applyRiskModifierToExitRules(pos.InitialExitRules, result.UpdatedModifier)
+
+	var changes []domain.ExitRuleChange
+	for i, newRule := range pos.ExitRules {
+		if i < len(oldRules) {
+			for k, newV := range newRule.Params {
+				if oldV, exists := oldRules[i].Params[k]; exists && oldV != newV {
+					changes = append(changes, domain.ExitRuleChange{
+						Rule:     string(newRule.Type),
+						Param:    k,
+						OldValue: oldV,
+						NewValue: newV,
+					})
+					s.log.Info().
+						Str("symbol", string(pos.Symbol)).
+						Str("rule", string(newRule.Type)).
+						Str("param", k).
+						Float64("old_value", oldV).
+						Float64("new_value", newV).
+						Msg("exit rule tightened")
 				}
 			}
 		}
 	}
+	return changes
 }
 
 func (s *Service) SetEntryThesis(key string, thesis *domain.EntryThesis) {
