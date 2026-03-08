@@ -96,6 +96,19 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 	lastBarTime := make(map[domain.Symbol]time.Time)
 	var lastBarMu sync.Mutex
 
+	var restPollMu sync.Mutex
+	var restPollCancel context.CancelFunc
+	restPollerWasStarted := false
+
+	stopRestPoller := func() {
+		restPollMu.Lock()
+		defer restPollMu.Unlock()
+		if restPollCancel != nil {
+			restPollCancel()
+			restPollCancel = nil
+		}
+	}
+
 	callHandler := func(bCtx context.Context, bar domain.MarketBar, fromREST bool) error {
 		key := barKey(bar)
 		dedupMu.Lock()
@@ -174,7 +187,8 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			if err != nil {
 				return
 			}
-			_ = callHandler(connCtx, bar, false)
+			stopRestPoller()
+			_ = callHandler(streamCtx, bar, false)
 		}
 
 		tradeHandler := func(ct alpacastream.CryptoTrade) {
@@ -221,6 +235,10 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 
 		c.tracker.setConnected(false)
 
+		stopRestPoller()
+		hadPoller := restPollerWasStarted
+		restPollerWasStarted = false
+
 		if streamCtx.Err() != nil {
 			c.tracker.setState("stopped")
 			return nil
@@ -238,6 +256,10 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 
 		c.tracker.cb.Record(errClass)
 
+		if hadPoller && c.fetcher != nil {
+			c.cryptoGapFill(streamCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler)
+		}
+
 		if errClass == ErrFatal {
 			c.log.Error().Err(connErr).Int("attempt", attempt).
 				Msg("crypto stream fatal error — circuit breaker will gate retries")
@@ -245,13 +267,6 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			continue
 		}
 
-		if time.Since(connectedAt) > 30*time.Second {
-			consecutiveFails = 0
-		} else {
-			consecutiveFails++
-		}
-
-		var pollCancel context.CancelFunc
 		if wasStaleReset && c.fetcher != nil {
 			dedupMu.Lock()
 			dedup = make(map[string]struct{})
@@ -262,8 +277,17 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			}
 
 			pollCtx, pCancel := context.WithCancel(streamCtx)
-			pollCancel = pCancel
+			restPollMu.Lock()
+			restPollCancel = pCancel
+			restPollMu.Unlock()
+			restPollerWasStarted = true
 			go c.cryptoRestPoller(pollCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler, cryptoRestPollInterval)
+		}
+
+		if time.Since(connectedAt) > 30*time.Second {
+			consecutiveFails = 0
+		} else {
+			consecutiveFails++
 		}
 
 		policy := selectPolicy()
@@ -274,20 +298,9 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		select {
 		case <-time.After(wait):
 		case <-streamCtx.Done():
-			if pollCancel != nil {
-				pollCancel()
-			}
+			stopRestPoller()
 			c.tracker.setState("stopped")
 			return nil
-		}
-
-		if pollCancel != nil {
-			pollCancel()
-		}
-
-		// Gap-fill: catch bars between last REST poll and WS resume.
-		if c.fetcher != nil {
-			c.cryptoGapFill(streamCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler)
 		}
 	}
 }
