@@ -59,7 +59,7 @@ func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
 	ws := NewWSClient(cfg.DataURL, dataKey, dataSecret, cfg.Feed, fetcher)
 
 	// Create crypto WebSocket client for streaming crypto bars.
-	cryptoWs, err := NewCryptoWSClient(cfg.CryptoDataURL, dataKey, dataSecret, cfg.CryptoFeed, log)
+	cryptoWs, err := NewCryptoWSClient(cfg.CryptoDataURL, dataKey, dataSecret, cfg.CryptoFeed, fetcher, log)
 	if err != nil {
 		return nil, fmt.Errorf("create crypto WS client: %w", err)
 	}
@@ -256,8 +256,9 @@ func (a *Adapter) SetTradeHandler(h ports.TradeHandler) {
 	}
 }
 
-// WSClient returns the underlying WebSocket client for metrics wiring.
 func (a *Adapter) WSClient() *WSClient { return a.ws }
+
+func (a *Adapter) CryptoWSClient() *CryptoWSClient { return a.cryptoWs }
 
 // GetClosedOrders fetches all closed orders from Alpaca within the given time range.
 func (a *Adapter) GetClosedOrders(ctx context.Context, after, until time.Time) ([]ClosedOrder, error) {

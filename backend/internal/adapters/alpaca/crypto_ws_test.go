@@ -68,21 +68,21 @@ func TestCryptoBarToMarketBar_ZeroVolume(t *testing.T) {
 }
 
 func TestNewCryptoWSClient_RequiresCredentials(t *testing.T) {
-	_, err := NewCryptoWSClient("wss://test", "", "secret", "us", zerolog.Nop())
+	_, err := NewCryptoWSClient("wss://test", "", "secret", "us", nil, zerolog.Nop())
 	assert.ErrorIs(t, err, ErrCryptoWSMissingCredentials)
 
-	_, err = NewCryptoWSClient("wss://test", "key", "", "us", zerolog.Nop())
+	_, err = NewCryptoWSClient("wss://test", "key", "", "us", nil, zerolog.Nop())
 	assert.ErrorIs(t, err, ErrCryptoWSMissingCredentials)
 }
 
 func TestNewCryptoWSClient_DefaultFeed(t *testing.T) {
-	client, err := NewCryptoWSClient("wss://test", "key", "secret", "", zerolog.Nop())
+	client, err := NewCryptoWSClient("wss://test", "key", "secret", "", nil, zerolog.Nop())
 	require.NoError(t, err)
 	assert.Equal(t, "us", client.feed)
 }
 
 func TestNewCryptoWSClient_DefaultURL(t *testing.T) {
-	client, err := NewCryptoWSClient("", "key", "secret", "us", zerolog.Nop())
+	client, err := NewCryptoWSClient("", "key", "secret", "us", nil, zerolog.Nop())
 	require.NoError(t, err)
 	assert.Equal(t, "wss://stream.data.alpaca.markets", client.cryptoDataURL)
 }

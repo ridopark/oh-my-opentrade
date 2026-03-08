@@ -97,6 +97,7 @@ func (s *Service) Start(ctx context.Context) error {
 		{domain.EventSignalEnriched, s.fmtSignalEnriched, false},
 		{domain.EventSignalGated, s.fmtSignalGated, false},
 		{domain.EventRiskRevaluated, s.fmtRiskRevaluated, false},
+		{domain.EventFeedDegraded, s.fmtFeedDegraded, false},
 	}
 
 	for _, e := range events {
@@ -394,6 +395,13 @@ func (s *Service) fmtDebateCompleted(ev domain.Event) string {
 		return msg
 	}
 	return "🤖 AI Debate completed"
+}
+
+func (s *Service) fmtFeedDegraded(ev domain.Event) string {
+	if p, ok := ev.Payload.(domain.FeedDegradedPayload); ok {
+		return fmt.Sprintf("⚠️ Feed Degraded [%s]: %s", p.Feed, p.Reason)
+	}
+	return "⚠️ Market data feed degraded"
 }
 
 func (s *Service) fmtRiskRevaluated(ev domain.Event) string {

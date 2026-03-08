@@ -1133,6 +1133,16 @@ func main() {
 		return eventBus.Publish(tCtx, *evt)
 	})
 
+	alpacaAdapter.CryptoWSClient().SetDegradedCallback(func(reason string) {
+		evt, err := domain.NewEvent(domain.EventFeedDegraded, "system", domain.EnvModePaper,
+			fmt.Sprintf("feed-degraded-%d", time.Now().UnixNano()),
+			domain.FeedDegradedPayload{Feed: "crypto", Reason: reason})
+		if err != nil {
+			return
+		}
+		_ = eventBus.Publish(ctx, *evt)
+	})
+
 	log.Info().
 		Strs("symbols", symbolStrings(symbols)).
 		Str("timeframe", string(timeframe)).
