@@ -203,6 +203,13 @@ func main() {
 		notifiers = append(notifiers, notification.NewDiscordNotifier(cfg.Notification.DiscordWebhookURL, nil))
 		log.Info().Msg("Discord notifier enabled")
 	}
+	tokenStore := timescaledb.NewTokenStore(timescaledb.NewSqlDB(sqlDB))
+	var kakaoNotifier *notification.KakaoNotifier
+	if cfg.Notification.KakaoRestAPIKey != "" {
+		kakaoNotifier = notification.NewKakaoNotifier(cfg.Notification.KakaoRestAPIKey, tokenStore, nil)
+		notifiers = append(notifiers, kakaoNotifier)
+		log.Info().Msg("KakaoTalk notifier enabled")
+	}
 	multiNotifier := notification.NewMultiNotifier(notifiers...)
 	notifyLog := log.With().Str("component", "notify").Logger()
 	chartGen := charting.NewGonumChartGenerator()
@@ -697,6 +704,14 @@ func main() {
 	imux.Handle("/strategies/", strategyHandler)
 	dnaApprovalHandler := omhttp.NewDNAApprovalHandler(dnaApprovalSvc, httpLog)
 	imux.Handle("/api/dna/", dnaApprovalHandler)
+	if kakaoNotifier != nil {
+		kakaoRedirectURI := cfg.Notification.KakaoRedirectURI
+		if kakaoRedirectURI == "" {
+			kakaoRedirectURI = fmt.Sprintf("http://localhost:%d/api/v1/notifications/kakao/callback", cfg.Server.Port)
+		}
+		kakaoHandler := omhttp.NewKakaoHandler(kakaoNotifier, tokenStore, kakaoNotifier, cfg.Notification.KakaoRestAPIKey, kakaoRedirectURI, httpLog)
+		imux.Handle("/api/v1/notifications/kakao/", kakaoHandler)
+	}
 	if useStrategyV2 {
 		lifecycleHandler := omhttp.NewLifecycleHandler(lifecycleSvc, httpLog)
 		imux.Handle("/strategies/v2/", lifecycleHandler)
