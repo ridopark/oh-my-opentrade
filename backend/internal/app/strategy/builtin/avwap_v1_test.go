@@ -550,3 +550,275 @@ func TestAVWAPState_MarshalUnmarshal_PendingEntry(t *testing.T) {
 	assert.True(t, start.Equal(restored.PendingEntryAt))
 	assert.Equal(t, strat.Side(""), restored.PositionSide)
 }
+
+// --- Higher Lows / Lower Highs tests ---
+
+func higherLowsParams() map[string]any {
+	p := avwapParams()
+	p["require_higher_lows"] = true
+	p["higher_lows_bars"] = 3
+	return p
+}
+
+func TestAVWAPStrategy_HigherLows_BlocksBreakoutWithoutPattern(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	start := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
+	ctx := newTestContext(start)
+	st, err := s.Init(ctx, "AAPL", higherLowsParams(), nil)
+	require.NoError(t, err)
+
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+
+	bars := []strat.Bar{
+		{Time: start, Open: 100, High: 112, Low: 95, Close: 112, Volume: 10},
+		{Time: start.Add(time.Minute), Open: 112, High: 120, Low: 90, Close: 120, Volume: 10}, // low 90 < 95: NOT higher
+		{Time: start.Add(2 * time.Minute), Open: 120, High: 128, Low: 108, Close: 128, Volume: 20},
+	}
+
+	var signals []strat.Signal
+	for _, b := range bars {
+		st, signals = feedAVWAPBar(t, s, ctx, "AAPL", st, b, ind)
+	}
+	assert.Empty(t, signals, "non-increasing lows should block long breakout")
+}
+
+func TestAVWAPStrategy_HigherLows_AllowsBreakoutWithPattern(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	start := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
+	ctx := newTestContext(start)
+	st, err := s.Init(ctx, "AAPL", higherLowsParams(), nil)
+	require.NoError(t, err)
+
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+
+	bars := []strat.Bar{
+		{Time: start, Open: 100, High: 112, Low: 92, Close: 112, Volume: 10},
+		{Time: start.Add(time.Minute), Open: 112, High: 120, Low: 100, Close: 120, Volume: 10},     // low 100 > 92
+		{Time: start.Add(2 * time.Minute), Open: 120, High: 128, Low: 108, Close: 128, Volume: 20}, // low 108 > 100
+	}
+
+	var signals []strat.Signal
+	for _, b := range bars {
+		st, signals = feedAVWAPBar(t, s, ctx, "AAPL", st, b, ind)
+	}
+	require.Len(t, signals, 1, "strictly increasing lows should allow long breakout")
+	assert.Equal(t, strat.SideBuy, signals[0].Side)
+}
+
+func TestAVWAPStrategy_HigherLows_DisabledByDefault(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	start := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
+	ctx := newTestContext(start)
+	st, err := s.Init(ctx, "AAPL", avwapParams(), nil)
+	require.NoError(t, err)
+
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+
+	bars := []strat.Bar{
+		{Time: start, Open: 100, High: 112, Low: 95, Close: 112, Volume: 10},
+		{Time: start.Add(time.Minute), Open: 112, High: 120, Low: 90, Close: 120, Volume: 10}, // low 90 < 95: NOT higher
+		{Time: start.Add(2 * time.Minute), Open: 120, High: 128, Low: 108, Close: 128, Volume: 20},
+	}
+
+	var signals []strat.Signal
+	for _, b := range bars {
+		st, signals = feedAVWAPBar(t, s, ctx, "AAPL", st, b, ind)
+	}
+	require.Len(t, signals, 1, "with RequireHigherLows=false (default), breakout should fire regardless")
+	assert.Equal(t, strat.SideBuy, signals[0].Side)
+}
+
+func TestAVWAPStrategy_LowerHighs_BlocksShortBreakout(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	start := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
+	ctx := newTestContext(start)
+	st, err := s.Init(ctx, "AAPL", higherLowsParams(), nil)
+	require.NoError(t, err)
+
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+
+	bars := []strat.Bar{
+		{Time: start, Open: 130, High: 135, Low: 110, Close: 110, Volume: 10},
+		{Time: start.Add(time.Minute), Open: 110, High: 140, Low: 95, Close: 95, Volume: 10}, // high 140 > 135: NOT lower
+		{Time: start.Add(2 * time.Minute), Open: 95, High: 100, Low: 80, Close: 80, Volume: 20},
+	}
+
+	var signals []strat.Signal
+	for _, b := range bars {
+		st, signals = feedAVWAPBar(t, s, ctx, "AAPL", st, b, ind)
+	}
+	assert.Empty(t, signals, "non-decreasing highs should block short breakout")
+}
+
+// --- Midday Trap Shield tests ---
+
+func middayTrapParams() map[string]any {
+	p := avwapParams()
+	p["midday_trap_shield"] = true
+	p["midday_volume_mult"] = 2.0
+	p["asset_class"] = "EQUITY"
+	return p
+}
+
+func TestAVWAPStrategy_MiddayTrapShield_BlocksLowVolumeShort(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	et, _ := time.LoadLocation("America/New_York")
+	start := time.Date(2025, 3, 4, 12, 0, 0, 0, et)
+	ctx := newTestContext(start)
+	st, err := s.Init(ctx, "AAPL", middayTrapParams(), nil)
+	require.NoError(t, err)
+
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+
+	bars := []strat.Bar{
+		{Time: start, Open: 130, High: 135, Low: 110, Close: 110, Volume: 10},
+		{Time: start.Add(time.Minute), Open: 110, High: 115, Low: 95, Close: 95, Volume: 10},
+		{Time: start.Add(2 * time.Minute), Open: 95, High: 98, Low: 80, Close: 80, Volume: 18}, // 18 < 2.0*10 = 20
+	}
+
+	var signals []strat.Signal
+	for _, b := range bars {
+		st, signals = feedAVWAPBar(t, s, ctx, "AAPL", st, b, ind)
+	}
+	assert.Empty(t, signals, "midday low-volume short should be blocked")
+}
+
+func TestAVWAPStrategy_MiddayTrapShield_AllowsHighVolumeShort(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	et, _ := time.LoadLocation("America/New_York")
+	start := time.Date(2025, 3, 4, 12, 0, 0, 0, et)
+	ctx := newTestContext(start)
+	st, err := s.Init(ctx, "AAPL", middayTrapParams(), nil)
+	require.NoError(t, err)
+
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+
+	bars := []strat.Bar{
+		{Time: start, Open: 130, High: 135, Low: 110, Close: 110, Volume: 10},
+		{Time: start.Add(time.Minute), Open: 110, High: 115, Low: 95, Close: 95, Volume: 10},
+		{Time: start.Add(2 * time.Minute), Open: 95, High: 98, Low: 80, Close: 80, Volume: 25}, // 25 > 2.0*10 = 20
+	}
+
+	var signals []strat.Signal
+	for _, b := range bars {
+		st, signals = feedAVWAPBar(t, s, ctx, "AAPL", st, b, ind)
+	}
+	require.Len(t, signals, 1, "midday high-volume short should be allowed")
+	assert.Equal(t, strat.SideSell, signals[0].Side)
+}
+
+func TestAVWAPStrategy_MiddayTrapShield_IgnoresCrypto(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	et, _ := time.LoadLocation("America/New_York")
+	start := time.Date(2025, 3, 4, 12, 0, 0, 0, et)
+	ctx := newTestContext(start)
+	params := avwapParams()
+	params["midday_trap_shield"] = true
+	params["midday_volume_mult"] = 2.0
+	params["asset_class"] = "CRYPTO"
+	st, err := s.Init(ctx, "BTCUSD", params, nil)
+	require.NoError(t, err)
+
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+
+	bars := []strat.Bar{
+		{Time: start, Open: 130, High: 135, Low: 110, Close: 110, Volume: 10},
+		{Time: start.Add(time.Minute), Open: 110, High: 115, Low: 95, Close: 95, Volume: 10},
+		{Time: start.Add(2 * time.Minute), Open: 95, High: 98, Low: 80, Close: 80, Volume: 18}, // low volume but crypto
+	}
+
+	var signals []strat.Signal
+	for _, b := range bars {
+		st, signals = feedAVWAPBar(t, s, ctx, "BTCUSD", st, b, ind)
+	}
+	require.Len(t, signals, 1, "midday trap shield should not apply to crypto")
+	assert.Equal(t, strat.SideSell, signals[0].Side)
+}
+
+func TestAVWAPStrategy_MiddayTrapShield_IgnoresLongEntries(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	et, _ := time.LoadLocation("America/New_York")
+	start := time.Date(2025, 3, 4, 12, 0, 0, 0, et)
+	ctx := newTestContext(start)
+	st, err := s.Init(ctx, "AAPL", middayTrapParams(), nil)
+	require.NoError(t, err)
+
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+
+	bars := []strat.Bar{
+		{Time: start, Open: 100, High: 112, Low: 92, Close: 112, Volume: 10},
+		{Time: start.Add(time.Minute), Open: 112, High: 120, Low: 100, Close: 120, Volume: 10},
+		{Time: start.Add(2 * time.Minute), Open: 120, High: 128, Low: 108, Close: 128, Volume: 18}, // low volume but LONG
+	}
+
+	var signals []strat.Signal
+	for _, b := range bars {
+		st, signals = feedAVWAPBar(t, s, ctx, "AAPL", st, b, ind)
+	}
+	require.Len(t, signals, 1, "midday trap shield should not affect long entries")
+	assert.Equal(t, strat.SideBuy, signals[0].Side)
+}
+
+func TestAVWAPStrategy_MiddayTrapShield_IgnoresOutsideWindow(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	et, _ := time.LoadLocation("America/New_York")
+
+	for _, hour := range []int{10, 14} {
+		t.Run(time.Date(2025, 3, 4, hour, 0, 0, 0, et).Format("15:04"), func(t *testing.T) {
+			start := time.Date(2025, 3, 4, hour, 0, 0, 0, et)
+			ctx := newTestContext(start)
+			st, err := s.Init(ctx, "AAPL", middayTrapParams(), nil)
+			require.NoError(t, err)
+
+			ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+
+			bars := []strat.Bar{
+				{Time: start, Open: 130, High: 135, Low: 110, Close: 110, Volume: 10},
+				{Time: start.Add(time.Minute), Open: 110, High: 115, Low: 95, Close: 95, Volume: 10},
+				{Time: start.Add(2 * time.Minute), Open: 95, High: 98, Low: 80, Close: 80, Volume: 18}, // low volume but outside window
+			}
+
+			var signals []strat.Signal
+			for _, b := range bars {
+				st, signals = feedAVWAPBar(t, s, ctx, "AAPL", st, b, ind)
+			}
+			require.Len(t, signals, 1, "outside midday window, short should fire")
+			assert.Equal(t, strat.SideSell, signals[0].Side)
+		})
+	}
+}
+
+// --- Serialization: RecentLows/RecentHighs ---
+
+func TestAVWAPState_MarshalUnmarshal_RecentLows(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	start := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
+	ctx := newTestContext(start)
+	st, err := s.Init(ctx, "AAPL", higherLowsParams(), nil)
+	require.NoError(t, err)
+
+	ind := strat.IndicatorData{VolumeSMA: 10}
+
+	bars := []strat.Bar{
+		{Time: start, Open: 100, High: 112, Low: 92, Close: 105, Volume: 10},
+		{Time: start.Add(time.Minute), Open: 105, High: 115, Low: 98, Close: 110, Volume: 10},
+		{Time: start.Add(2 * time.Minute), Open: 110, High: 120, Low: 104, Close: 115, Volume: 10},
+	}
+
+	for _, b := range bars {
+		st, _ = feedAVWAPBar(t, s, ctx, "AAPL", st, b, ind)
+	}
+
+	avwapSt := st.(*builtin.AVWAPState)
+	require.Equal(t, []float64{92, 98, 104}, avwapSt.RecentLows)
+	require.Equal(t, []float64{112, 115, 120}, avwapSt.RecentHighs)
+
+	data, err := avwapSt.Marshal()
+	require.NoError(t, err)
+
+	restored := &builtin.AVWAPState{}
+	err = restored.Unmarshal(data)
+	require.NoError(t, err)
+	assert.Equal(t, []float64{92, 98, 104}, restored.RecentLows)
+	assert.Equal(t, []float64{112, 115, 120}, restored.RecentHighs)
+}

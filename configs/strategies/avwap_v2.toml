@@ -1,0 +1,95 @@
+schema_version = 2
+
+[strategy]
+id = "avwap_v1"
+version = "2.0.0"
+name = "AVWAP Breakout/Bounce v2"
+description = "Anchored VWAP strategy with volatility-adaptive exits (ATR stops, SD targets, step-stops)"
+author = "system"
+created_at = "2026-03-08T00:00:00Z"
+
+[lifecycle]
+state = "PaperOnly"
+paper_only = true
+
+[routing]
+symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META"]
+timeframes = ["1m"]
+priority = 80
+conflict_policy = "priority_wins"
+exclusive_per_symbol = false
+watchlist_mode = "intersection"
+asset_classes = ["EQUITY"]
+
+[params]
+anchors = ["pd_high", "pd_low", "on_high", "on_low", "or_high", "or_low", "session_open"]
+breakout_enabled = true
+hold_bars = 2
+volume_mult = 1.5
+bounce_enabled = true
+rsi_bounce_max = 30.0
+exit_hold_bars = 2
+cooldown_seconds = 120
+max_trades_per_day = 3
+allow_regimes = ["BALANCE", "REVERSAL"]
+asset_class = "EQUITY"
+require_higher_lows = true
+higher_lows_bars = 3
+midday_trap_shield = true
+midday_volume_mult = 2.0
+stop_bps = 25
+limit_offset_bps = 5
+risk_per_trade_bps = 10
+max_position_bps = 1000
+
+[regime_filter]
+enabled = false
+allowed_regimes = ["BALANCE", "REVERSAL"]
+min_atr_pct = 0.8
+
+[hooks]
+signals = { engine = "builtin", name = "avwap_v1" }
+
+[dynamic_risk]
+enabled = true
+min_confidence = 0.60
+risk_scale_min = 0.50
+risk_scale_max = 1.00
+stop_tight_mult = 0.70
+stop_wide_mult = 1.50
+size_tight_mult = 0.70
+size_wide_mult = 1.20
+
+[risk_revaluation]
+enabled = true
+interval_minutes = 5
+
+[[exit_rules]]
+type = "VOLATILITY_STOP"
+[exit_rules.params]
+atr_multiplier = 1.5
+
+[[exit_rules]]
+type = "SD_TARGET"
+[exit_rules.params]
+sd_level = 2.0
+
+[[exit_rules]]
+type = "STEP_STOP"
+[exit_rules.params]
+
+[[exit_rules]]
+type = "STAGNATION_EXIT"
+[exit_rules.params]
+minutes = 30
+sd_threshold = 1.0
+
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 5
+
+[[exit_rules]]
+type = "MAX_LOSS"
+[exit_rules.params]
+pct = 0.03

@@ -1,6 +1,9 @@
 package strategy
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 type AnchorPoint struct {
 	Name       string
@@ -11,6 +14,7 @@ type AnchorPoint struct {
 type AnchoredVWAPState struct {
 	CumPV float64
 	CumV  float64
+	M2    float64 `json:"m2"` // Welford's online variance accumulator (volume-weighted)
 }
 
 func (s AnchoredVWAPState) Value() float64 {
@@ -18,6 +22,25 @@ func (s AnchoredVWAPState) Value() float64 {
 		return 0
 	}
 	return s.CumPV / s.CumV
+}
+
+// Variance returns the volume-weighted population variance of typical prices.
+// Returns 0 if insufficient data (CumV == 0) or M2 not yet populated (backward compat).
+func (s AnchoredVWAPState) Variance() float64 {
+	if s.CumV == 0 || s.M2 == 0 {
+		return 0
+	}
+	return s.M2 / s.CumV
+}
+
+// SD returns the volume-weighted standard deviation of typical prices around VWAP.
+// Returns 0 if insufficient data or M2 not yet populated.
+func (s AnchoredVWAPState) SD() float64 {
+	v := s.Variance()
+	if v <= 0 {
+		return 0
+	}
+	return math.Sqrt(v)
 }
 
 type AnchoredVWAPCalc struct {
@@ -64,9 +87,58 @@ func (c *AnchoredVWAPCalc) Update(barTime time.Time, high, low, close_, volume f
 			}
 			e.active = true
 		}
+		// Welford's online variance: capture old VWAP before update
+		oldVWAP := e.state.Value()
+
 		e.state.CumPV += pv
 		e.state.CumV += volume
+
+		// Welford's: M2 += volume * (tp - oldVWAP) * (tp - newVWAP)
+		newVWAP := e.state.Value()
+		e.state.M2 += volume * (tp - oldVWAP) * (tp - newVWAP)
 	}
+}
+
+// SDBands returns VWAP ± (level × SD) for the named anchor.
+// Returns (upper, lower, true) if the anchor exists and has valid SD data.
+// Returns (0, 0, false) if anchor not found, not active, or M2 not populated.
+func (c *AnchoredVWAPCalc) SDBands(name string, level float64) (upper, lower float64, ok bool) {
+	if c == nil {
+		return 0, 0, false
+	}
+	e, exists := c.anchors[name]
+	if !exists || e == nil || !e.active {
+		return 0, 0, false
+	}
+	sd := e.state.SD()
+	if sd == 0 {
+		return 0, 0, false
+	}
+	vwap := e.state.Value()
+	offset := level * sd
+	return vwap + offset, vwap - offset, true
+}
+
+// AllSDBands returns SD bands at the given level for all active anchors.
+// Keys are anchor names, values are {upper, lower} pairs.
+func (c *AnchoredVWAPCalc) AllSDBands(level float64) map[string][2]float64 {
+	out := make(map[string][2]float64)
+	if c == nil {
+		return out
+	}
+	for name, e := range c.anchors {
+		if !e.active {
+			continue
+		}
+		sd := e.state.SD()
+		if sd == 0 {
+			continue
+		}
+		vwap := e.state.Value()
+		offset := level * sd
+		out[name] = [2]float64{vwap + offset, vwap - offset}
+	}
+	return out
 }
 
 func (c *AnchoredVWAPCalc) Values() map[string]float64 {

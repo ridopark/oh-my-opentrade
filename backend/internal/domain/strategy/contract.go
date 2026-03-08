@@ -136,6 +136,8 @@ type IndicatorData struct {
 	VWAP          float64
 	Volume        float64
 	VolumeSMA     float64
+	ATR           float64
+	VWAPSD        float64
 	AnchorRegimes map[string]AnchorRegime
 }
 
@@ -158,6 +160,6 @@ type FillConfirmation struct {
 // its PendingEntry state so it can re-evaluate on the next bar.
 type EntryRejection struct {
 	Symbol string
-	Side   Side   // the side that was rejected
+	Side   Side // the side that was rejected
 	Reason string
 }

@@ -7,10 +7,27 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/domain"
 )
 
+// EvalContext carries indicator data and mutable position state into exit rule
+// evaluators. Existing evaluators ignore these fields; future evaluators
+// (VOLATILITY_STOP, SD_TARGET, STEP_STOP, STAGNATION_EXIT) will consume them.
+type EvalContext struct {
+	// ATR is the latest Average True Range (period-14) value computed on 1m bar close.
+	// Zero during warmup (< 15 bars) — evaluators must guard against this.
+	ATR float64
+
+	// VWAPValue is the current session VWAP price level.
+	VWAPValue float64
+
+	// SDBands maps standard-deviation multipliers to their absolute price levels.
+	// e.g. {1.0: 151.20, 2.0: 152.40, 2.5: 153.00} for a VWAP of 150.00.
+	// Nil or empty during warmup.
+	SDBands map[float64]float64
+}
+
 // Evaluate dispatches to the appropriate exit rule evaluator.
 // Returns (triggered bool, reason string).
 // All evaluators are pure functions — no side effects, no I/O.
-func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time) (bool, string) {
+func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time, ctx EvalContext) (bool, string) {
 	switch rule.Type {
 	case domain.ExitRuleTrailingStop:
 		return evaluateTrailingStop(rule, pos, currentPrice)
@@ -24,6 +41,14 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 		return evaluateMaxHoldingTime(rule, pos, now)
 	case domain.ExitRuleMaxLoss:
 		return evaluateMaxLoss(rule, pos, currentPrice)
+	case domain.ExitRuleVolatilityStop:
+		return evaluateVolatilityStop(rule, pos, currentPrice, ctx)
+	case domain.ExitRuleSDTarget:
+		return evaluateSDTarget(rule, pos, currentPrice, ctx)
+	case domain.ExitRuleStepStop:
+		return evaluateStepStop(rule, pos, currentPrice, ctx)
+	case domain.ExitRuleStagnationExit:
+		return evaluateStagnationExit(rule, pos, currentPrice, now, ctx)
 	default:
 		return false, ""
 	}
@@ -154,6 +179,165 @@ func evaluateMaxLoss(rule domain.ExitRule, pos *domain.MonitoredPosition, curren
 			-pnl*100, pct*100, pos.EntryPrice, currentPrice)
 	}
 	return false, ""
+}
+
+// evaluateVolatilityStop triggers when price drops below entry minus ATR × multiplier.
+//
+// Params:
+//
+//	"atr_multiplier" — multiplier for ATR distance (e.g. 1.5 = stop at entry - 1.5*ATR)
+func evaluateVolatilityStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext) (bool, string) {
+	mult := rule.Param("atr_multiplier", 0)
+	if mult <= 0 {
+		return false, ""
+	}
+	if ctx.ATR <= 0 {
+		return false, ""
+	}
+
+	stopPrice := pos.EntryPrice - (ctx.ATR * mult)
+	if currentPrice <= stopPrice {
+		return true, fmt.Sprintf("volatility_stop: price %.4f <= stop %.4f (entry=%.4f, ATR=%.6f, mult=%.1f)",
+			currentPrice, stopPrice, pos.EntryPrice, ctx.ATR, mult)
+	}
+	return false, ""
+}
+
+// evaluateSDTarget triggers when price reaches the VWAP + sd_level × SD band.
+// For long positions, this is a profit target when price rises to the upper band.
+//
+// Params:
+//
+//	"sd_level" — SD multiplier for the target band (e.g. 2.0 = VWAP + 2.0*SD)
+func evaluateSDTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext) (bool, string) {
+	sdLevel := rule.Param("sd_level", 0)
+	if sdLevel <= 0 {
+		return false, ""
+	}
+	if len(ctx.SDBands) == 0 {
+		return false, ""
+	}
+
+	targetPrice, ok := ctx.SDBands[sdLevel]
+	if !ok {
+		return false, ""
+	}
+
+	if currentPrice >= targetPrice {
+		return true, fmt.Sprintf("sd_target: price %.4f >= +%.1f SD band %.4f (vwap=%.4f)",
+			currentPrice, sdLevel, targetPrice, ctx.VWAPValue)
+	}
+	return false, ""
+}
+
+// evaluateStepStop triggers when price drops below a dynamically ratcheted stop level.
+// The stop level is set by the tick loop in service.go (NOT here) based on SD bands crossed.
+// This evaluator only READS pos.CustomState["step_stop_level"] — it never mutates state.
+//
+// Params: none (stop level comes from CustomState, set by tick loop)
+func evaluateStepStop(_ domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext) (bool, string) {
+	if pos.CustomState == nil {
+		return false, ""
+	}
+	stopLevel := pos.CustomState["step_stop_level"]
+	if stopLevel <= 0 {
+		return false, ""
+	}
+
+	if currentPrice <= stopLevel {
+		highestSD := pos.CustomState["highest_sd_crossed"]
+		return true, fmt.Sprintf("step_stop: price %.4f <= stop %.4f (highest_sd=+%.1f, vwap=%.4f)",
+			currentPrice, stopLevel, highestSD, ctx.VWAPValue)
+	}
+	return false, ""
+}
+
+// UpdateStepStopState ratchets the step-stop level based on SD band crossings.
+// Called from the tick loop BEFORE exit rule evaluation. Mutation is intentionally
+// separated from the evaluator to maintain evaluator purity (Metis directive).
+//
+// Logic:
+//
+//	Price crosses +1.0 SD → stop = entry price (breakeven)
+//	Price crosses +2.0 SD → stop = +1.0 SD band price
+//	Price crosses +3.0 SD → stop = +2.0 SD band price
+//
+// The stop only ratchets UP (tightens), never down.
+func UpdateStepStopState(pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext) {
+	if pos.CustomState == nil || len(ctx.SDBands) == 0 {
+		return
+	}
+
+	levels := []float64{3.0, 2.5, 2.0, 1.5, 1.0}
+	prevHighest := pos.CustomState["highest_sd_crossed"]
+
+	// Find the highest SD level crossed this tick (descending scan, first match wins)
+	newHighest := prevHighest
+	for _, level := range levels {
+		bandPrice, ok := ctx.SDBands[level]
+		if !ok {
+			continue
+		}
+		if currentPrice >= bandPrice && level > newHighest {
+			newHighest = level
+			break
+		}
+	}
+
+	if newHighest <= prevHighest {
+		return
+	}
+
+	pos.CustomState["highest_sd_crossed"] = newHighest
+
+	var newStop float64
+	if newHighest <= 1.0 {
+		newStop = pos.EntryPrice
+	} else {
+		lockLevel := newHighest - 1.0
+		if lockPrice, exists := ctx.SDBands[lockLevel]; exists {
+			newStop = lockPrice
+		} else {
+			newStop = pos.EntryPrice
+		}
+	}
+
+	if newStop > pos.CustomState["step_stop_level"] {
+		pos.CustomState["step_stop_level"] = newStop
+	}
+}
+
+// evaluateStagnationExit triggers when a position fails to reach the target SD band
+// within a time limit. Disabled once step-stop has activated (highest_sd_crossed > 0).
+//
+// Params:
+//
+//	"minutes"      — max minutes from entry before stagnation exit (e.g. 30)
+//	"sd_threshold" — SD level that must be reached to avoid exit (default: 1.0)
+func evaluateStagnationExit(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time, ctx EvalContext) (bool, string) {
+	minutes := rule.Param("minutes", 0)
+	if minutes <= 0 {
+		return false, ""
+	}
+
+	if pos.CustomState != nil && pos.CustomState["highest_sd_crossed"] > 0 {
+		return false, ""
+	}
+
+	held := now.Sub(pos.EntryTime).Minutes()
+	if held < minutes {
+		return false, ""
+	}
+
+	sdThreshold := rule.Param("sd_threshold", 1.0)
+	if len(ctx.SDBands) > 0 {
+		if bandPrice, ok := ctx.SDBands[sdThreshold]; ok && currentPrice >= bandPrice {
+			return false, ""
+		}
+	}
+
+	return true, fmt.Sprintf("stagnation_exit: held %.1f min >= limit %.0f min without reaching +%.1f SD (price=%.4f, vwap=%.4f)",
+		held, minutes, sdThreshold, currentPrice, ctx.VWAPValue)
 }
 
 // etLocation returns the America/New_York timezone.
