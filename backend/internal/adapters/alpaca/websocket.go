@@ -176,6 +176,11 @@ const maxConsecutiveFailsBeforeError = 50
 // before the watchdog forces a reconnect. 1-min bars + generous slack.
 const staleFeedThresholdRTH = 90 * time.Second
 
+// staleFeedThresholdOffHours is the stale feed threshold outside RTH.
+// Crypto trades 24/7 but volume is sparse on weekends — 10 min allows
+// for legitimate quiet periods while catching dead connections.
+const staleFeedThresholdOffHours = 10 * time.Minute
+
 // staleFeedCheckInterval is how often the watchdog checks for stale feed.
 const staleFeedCheckInterval = 15 * time.Second
 
@@ -360,7 +365,7 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		watchdogDone := make(chan struct{})
 		go func() {
 			defer close(watchdogDone)
-			w.staleFeedWatchdog(connCtx, &staleCancelMu, &staleCancelFn)
+			staleFeedWatchdog(connCtx, w.tracker, &staleCancelMu, &staleCancelFn)
 		}()
 
 		w.tracker.setConnected(true)
@@ -571,10 +576,11 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 	}
 }
 
-// staleFeedWatchdog monitors the feed during RTH and cancels the connection
-// context if no bars arrive within staleFeedThresholdRTH. This forces a reconnect
-// for zombie connections where TCP is alive but no data flows.
-func (w *WSClient) staleFeedWatchdog(ctx context.Context, cancelMu *sync.Mutex, cancelFn *context.CancelFunc) {
+// staleFeedWatchdog monitors the feed and cancels the connection context if no
+// bars arrive within the adaptive threshold (tight during RTH, relaxed off-hours).
+// This forces a reconnect for zombie connections where TCP is alive but no data flows.
+// Shared by both equity WSClient and CryptoWSClient.
+func staleFeedWatchdog(ctx context.Context, tracker *feedTracker, cancelMu *sync.Mutex, cancelFn *context.CancelFunc) {
 	ticker := time.NewTicker(staleFeedCheckInterval)
 	defer ticker.Stop()
 
@@ -583,21 +589,22 @@ func (w *WSClient) staleFeedWatchdog(ctx context.Context, cancelMu *sync.Mutex, 
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if !isCoreMarketHours() {
-				continue // only enforce during RTH
+			threshold := staleFeedThresholdOffHours
+			if isCoreMarketHours() {
+				threshold = staleFeedThresholdRTH
 			}
 
-			w.tracker.mu.Lock()
-			lastBar := w.tracker.lastBarAt
-			w.tracker.mu.Unlock()
+			tracker.mu.Lock()
+			lastBar := tracker.lastBarAt
+			tracker.mu.Unlock()
 
 			if lastBar.IsZero() {
-				continue // no bars yet — skip (initial warmup)
+				continue
 			}
 
 			age := time.Since(lastBar)
-			if age > staleFeedThresholdRTH {
-				log.Warn().Dur("bar_age", age).Dur("threshold", staleFeedThresholdRTH).
+			if age > threshold {
+				log.Warn().Dur("bar_age", age).Dur("threshold", threshold).
 					Msg("stale feed watchdog: no bars received within threshold — forcing reconnect")
 
 				cancelMu.Lock()

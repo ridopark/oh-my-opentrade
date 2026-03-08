@@ -21,9 +21,9 @@ const (
 	maxReconnectBackoff = 60 * time.Second
 	initialBackoff      = 1 * time.Second
 	// Alpaca's trading stream is idle outside market hours and between
-	// trade updates. We use a long read timeout to avoid false disconnects.
-	// The coder/websocket library handles ping/pong keepalives automatically.
-	wsReadTimeout = 5 * time.Minute
+	// trade updates. The coder/websocket library handles ping/pong
+	// keepalives automatically, so we rely on the parent context for
+	// read cancellation instead of a per-read timeout.
 )
 
 type tradeStreamMsg struct {
@@ -182,9 +182,7 @@ func (ts *TradeStreamClient) connectAndStream(ctx context.Context, ch chan<- por
 			return nil
 		}
 
-		readCtx, readCancel := context.WithTimeout(ctx, wsReadTimeout)
-		_, msgBytes, err := conn.Read(readCtx)
-		readCancel()
+		_, msgBytes, err := conn.Read(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
