@@ -84,9 +84,9 @@ func TestWSClient_Close_Idempotent(t *testing.T) {
 
 func TestDeriveStreamURL(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		want    string
+		name  string
+		input string
+		want  string
 	}{
 		{
 			name:  "production data URL",
@@ -110,7 +110,6 @@ func TestDeriveStreamURL(t *testing.T) {
 		})
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // Helper: make a domain.MarketBar for testing
@@ -229,13 +228,13 @@ func TestStreamBars_ConnLimit_ProbesAndReconnects(t *testing.T) {
 	}
 
 	// Sequence:
-//  1. 406 error → enter probe loop
-//  2. probe returns 406 → still ghost
-//  3. probe succeeds (nil quickly) → ghost cleared → outer loop makes live connect
-//  4. live connect blocks until ctx cancelled
+	//  1. 406 error → enter probe loop
+	//  2. probe returns 406 → still ghost
+	//  3. probe succeeds (nil quickly) → ghost cleared → outer loop makes live connect
+	//  4. live connect blocks until ctx cancelled
 	ws := makeWSClientWithFakeConnect(nil,
-		fakeConnectError("connection limit exceeded"),  // outer connect → 406
-		fakeConnectError("406 connection limit exceeded"), // probe 1 → still ghost
+		fakeConnectError("connection limit exceeded"),      // outer connect → 406
+		fakeConnectError("406 connection limit exceeded"),  // probe 1 → still ghost
 		fakeConnectError("ghost cleared: different error"), // probe 2 → non-406 → ghost gone
 		// final connect: block until done
 	)
@@ -380,7 +379,7 @@ func TestStreamBars_Deduplication(t *testing.T) {
 					Symbol:    "AAPL",
 					Timestamp: barTime,
 					Open:      100, High: 100, Low: 100, Close: 100,
-					Volume:    100,
+					Volume: 100,
 				}
 				barHandler(bar)
 				<-ctx.Done()
@@ -598,7 +597,7 @@ func TestStaleFeedWatchdog_CancelsOnTimeout(t *testing.T) {
 	}
 	cancelMu.Unlock()
 
-	go ws.staleFeedWatchdog(ctx, &cancelMu, &cancelFn)
+	go staleFeedWatchdog(ctx, ws.tracker, &cancelMu, &cancelFn)
 
 	select {
 	case <-cancelled:

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	alpacastream "github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -67,21 +68,21 @@ func TestCryptoBarToMarketBar_ZeroVolume(t *testing.T) {
 }
 
 func TestNewCryptoWSClient_RequiresCredentials(t *testing.T) {
-	_, err := NewCryptoWSClient("wss://test", "", "secret", "us")
+	_, err := NewCryptoWSClient("wss://test", "", "secret", "us", zerolog.Nop())
 	assert.ErrorIs(t, err, ErrCryptoWSMissingCredentials)
 
-	_, err = NewCryptoWSClient("wss://test", "key", "", "us")
+	_, err = NewCryptoWSClient("wss://test", "key", "", "us", zerolog.Nop())
 	assert.ErrorIs(t, err, ErrCryptoWSMissingCredentials)
 }
 
 func TestNewCryptoWSClient_DefaultFeed(t *testing.T) {
-	client, err := NewCryptoWSClient("wss://test", "key", "secret", "")
+	client, err := NewCryptoWSClient("wss://test", "key", "secret", "", zerolog.Nop())
 	require.NoError(t, err)
 	assert.Equal(t, "us", client.feed)
 }
 
 func TestNewCryptoWSClient_DefaultURL(t *testing.T) {
-	client, err := NewCryptoWSClient("", "key", "secret", "us")
+	client, err := NewCryptoWSClient("", "key", "secret", "us", zerolog.Nop())
 	require.NoError(t, err)
 	assert.Equal(t, "wss://stream.data.alpaca.markets", client.cryptoDataURL)
 }
