@@ -362,6 +362,8 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		staleCancelFn = connCancel
 		staleCancelMu.Unlock()
 
+		w.tracker.resetBarTimer()
+
 		// Start stale feed watchdog.
 		watchdogDone := make(chan struct{})
 		go func() {

@@ -122,6 +122,8 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		var staleCancelMu sync.Mutex
 		staleCancelFn := connCancel
 
+		c.tracker.resetBarTimer()
+
 		watchdogDone := make(chan struct{})
 		go func() {
 			defer close(watchdogDone)

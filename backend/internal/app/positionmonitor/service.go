@@ -621,7 +621,6 @@ func (s *Service) processFill(fill fillMsg) {
 	if exitRules == nil {
 		exitRules = s.resolveExitRules(context.Background(), fill.Strategy, fill.AssetClass)
 	}
-	exitRules = applyRiskModifierToExitRules(exitRules, fill.RiskModifier)
 
 	pos, err := domain.NewMonitoredPosition(
 		fill.Symbol, fill.Price, fill.FilledAt,
@@ -632,6 +631,7 @@ func (s *Service) processFill(fill fillMsg) {
 		s.log.Error().Err(err).Str("symbol", string(fill.Symbol)).Msg("failed to create monitored position")
 		return
 	}
+	pos.ExitRules = applyRiskModifierToExitRules(pos.InitialExitRules, fill.RiskModifier)
 
 	s.positions[key] = &pos
 	s.log.Info().
@@ -643,6 +643,8 @@ func (s *Service) processFill(fill fillMsg) {
 }
 
 // tick evaluates all exit rules against all monitored positions.
+// Time-only rules (MAX_HOLDING_TIME, EOD_FLATTEN) are evaluated even when
+// price data is stale so positions are never stuck past their time limits.
 func (s *Service) tick() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -656,14 +658,39 @@ func (s *Service) tick() {
 			continue
 		}
 
-		// Get latest price.
 		snap, ok := s.priceCache.LatestPrice(pos.Symbol)
-		if !ok {
+		priceAvailable := ok && now.Sub(snap.ObservedAt) <= s.maxPriceStaleness
+
+		// Phase 1: time-only rules — always evaluated, no price dependency.
+		for _, rule := range pos.ExitRules {
+			if rule.Type.RequiresPrice() {
+				continue
+			}
+			triggered, reason := Evaluate(rule, pos, 0, now, EvalContext{})
+			if !triggered {
+				continue
+			}
+
+			exitPrice := s.resolveExitPrice(pos, snap, priceAvailable)
+			s.log.Info().
+				Str("symbol", string(pos.Symbol)).
+				Str("rule", string(rule.Type)).
+				Str("reason", reason).
+				Float64("price", exitPrice).
+				Float64("entry_price", pos.EntryPrice).
+				Bool("price_stale", !priceAvailable).
+				Msg("exit rule triggered")
+
+			s.triggerExit(pos, rule, reason, exitPrice, now)
+			break
+		}
+
+		if pos.ExitPending {
 			continue
 		}
 
-		// Check price staleness.
-		if now.Sub(snap.ObservedAt) > s.maxPriceStaleness {
+		// Phase 2: price-dependent rules — only with fresh price data.
+		if !priceAvailable {
 			continue
 		}
 
@@ -686,6 +713,9 @@ func (s *Service) tick() {
 		UpdateStepStopState(pos, price, evalCtx)
 
 		for _, rule := range pos.ExitRules {
+			if !rule.Type.RequiresPrice() {
+				continue
+			}
 			triggered, reason := Evaluate(rule, pos, price, now, evalCtx)
 			if !triggered {
 				continue
@@ -700,9 +730,22 @@ func (s *Service) tick() {
 				Msg("exit rule triggered")
 
 			s.triggerExit(pos, rule, reason, price, now)
-			break // Only one exit per tick per position.
+			break
 		}
 	}
+}
+
+// resolveExitPrice returns the best available price for an exit order.
+// When live price is available, uses it directly. When stale, falls back to
+// the last known price. When no price exists at all, uses the entry price.
+func (s *Service) resolveExitPrice(pos *domain.MonitoredPosition, snap ports.PriceSnapshot, priceAvailable bool) float64 {
+	if priceAvailable {
+		return snap.Price
+	}
+	if snap.Price > 0 {
+		return snap.Price
+	}
+	return pos.EntryPrice
 }
 
 func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
@@ -918,7 +961,7 @@ func (s *Service) ApplyRevaluation(key string, result *domain.RiskRevaluation) {
 	pos.LastRevaluationAt = result.EvaluatedAt
 	if result.Action == domain.RiskActionTighten {
 		oldRules := pos.ExitRules
-		pos.ExitRules = applyRiskModifierToExitRules(pos.ExitRules, result.UpdatedModifier)
+		pos.ExitRules = applyRiskModifierToExitRules(pos.InitialExitRules, result.UpdatedModifier)
 		for i, newRule := range pos.ExitRules {
 			if i < len(oldRules) {
 				for k, newV := range newRule.Params {
