@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -10,7 +11,6 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// etLoc is the Eastern Time location used for notification timestamps.
 var etLoc = func() *time.Location {
 	loc, err := time.LoadLocation("America/New_York")
 	if err != nil {
@@ -19,59 +19,213 @@ var etLoc = func() *time.Location {
 	return loc
 }()
 
-// Service subscribes to trading-relevant events on the event bus and fans out
-// notifications to all configured NotifierPort implementations (Telegram, Discord, etc.).
+const (
+	jobQueueSize  = 100
+	workerCount   = 3
+	chartCacheTTL = 5 * time.Minute
+)
+
+type notifyJob struct {
+	event     domain.Event
+	eventType string
+	message   string
+	withChart bool
+}
+
+type chartCacheEntry struct {
+	data      []byte
+	createdAt time.Time
+}
+
 type Service struct {
 	eventBus ports.EventBusPort
 	notifier ports.NotifierPort
+	chartGen ports.ChartGeneratorPort
+	repo     ports.RepositoryPort
 	log      zerolog.Logger
+	jobs     chan notifyJob
+	wg       sync.WaitGroup
+
+	cacheMu    sync.RWMutex
+	chartCache map[string]chartCacheEntry
 }
 
-// NewService creates a new notification Service.
-// notifier is expected to be a MultiNotifier (or any NotifierPort).
-func NewService(eventBus ports.EventBusPort, notifier ports.NotifierPort, log zerolog.Logger) *Service {
-	return &Service{
-		eventBus: eventBus,
-		notifier: notifier,
-		log:      log,
+type Option func(*Service)
+
+func WithChartGenerator(cg ports.ChartGeneratorPort) Option {
+	return func(s *Service) { s.chartGen = cg }
+}
+
+func WithRepository(repo ports.RepositoryPort) Option {
+	return func(s *Service) { s.repo = repo }
+}
+
+func NewService(eventBus ports.EventBusPort, notifier ports.NotifierPort, log zerolog.Logger, opts ...Option) *Service {
+	s := &Service{
+		eventBus:   eventBus,
+		notifier:   notifier,
+		log:        log,
+		jobs:       make(chan notifyJob, jobQueueSize),
+		chartCache: make(map[string]chartCacheEntry),
 	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
-// Start subscribes the service to order-lifecycle and safety events on the event bus.
 func (s *Service) Start(ctx context.Context) error {
+	for i := 0; i < workerCount; i++ {
+		s.wg.Add(1)
+		go s.worker(ctx, i)
+	}
+
 	events := []struct {
 		eventType string
 		formatter func(domain.Event) string
+		chart     bool
 	}{
-		{domain.EventOrderSubmitted, s.fmtOrderSubmitted},
-		{domain.EventOrderAccepted, s.fmtOrderAccepted},
-		{domain.EventOrderRejected, s.fmtOrderRejected},
-		{domain.EventOrderIntentRejected, s.fmtOrderIntentRejected},
-		{domain.EventFillReceived, s.fmtFillReceived},
-		{domain.EventTradeRealized, s.fmtTradeRealized},
-		{domain.EventKillSwitchEngaged, s.fmtKillSwitch},
-		{domain.EventCircuitBreakerTripped, s.fmtCircuitBreaker},
-		{domain.EventDebateCompleted, s.fmtDebateCompleted},
-		{domain.EventSignalEnriched, s.fmtSignalEnriched},
-		{domain.EventRiskRevaluated, s.fmtRiskRevaluated},
+		{domain.EventOrderSubmitted, s.fmtOrderSubmitted, true},
+		{domain.EventOrderAccepted, s.fmtOrderAccepted, false},
+		{domain.EventOrderRejected, s.fmtOrderRejected, false},
+		{domain.EventOrderIntentRejected, s.fmtOrderIntentRejected, false},
+		{domain.EventFillReceived, s.fmtFillReceived, false},
+		{domain.EventTradeRealized, s.fmtTradeRealized, false},
+		{domain.EventKillSwitchEngaged, s.fmtKillSwitch, false},
+		{domain.EventCircuitBreakerTripped, s.fmtCircuitBreaker, false},
+		{domain.EventDebateCompleted, s.fmtDebateCompleted, false},
+		{domain.EventSignalEnriched, s.fmtSignalEnriched, false},
+		{domain.EventRiskRevaluated, s.fmtRiskRevaluated, false},
 	}
 
 	for _, e := range events {
-		formatter := e.formatter // capture for closure
+		formatter := e.formatter
 		eventType := e.eventType
+		withChart := e.chart
 		handler := func(ctx context.Context, ev domain.Event) error {
 			msg := fmt.Sprintf("[%s] %s", ev.OccurredAt.In(etLoc).Format("15:04:05"), formatter(ev))
-			if err := s.notifier.Notify(ctx, ev.TenantID, msg); err != nil {
-				s.log.Warn().Err(err).Str("event", eventType).Msg("notification failed")
+			job := notifyJob{
+				event:     ev,
+				eventType: eventType,
+				message:   msg,
+				withChart: withChart,
 			}
-			return nil // notification failures are non-fatal
+			select {
+			case s.jobs <- job:
+			default:
+				s.log.Warn().Str("event", eventType).Msg("notification queue full, dropping")
+			}
+			return nil
 		}
 		if err := s.eventBus.Subscribe(ctx, eventType, handler); err != nil {
 			return fmt.Errorf("notify: failed to subscribe to %s: %w", eventType, err)
 		}
 	}
-	s.log.Info().Int("event_types", len(events)).Msg("notification service subscribed to events")
+	s.log.Info().Int("event_types", len(events)).Int("workers", workerCount).Msg("notification service started (async)")
 	return nil
+}
+
+func (s *Service) Stop() {
+	close(s.jobs)
+	s.wg.Wait()
+}
+
+func (s *Service) worker(ctx context.Context, id int) {
+	defer s.wg.Done()
+	for job := range s.jobs {
+		s.processJob(ctx, id, job)
+	}
+}
+
+func (s *Service) processJob(ctx context.Context, workerID int, job notifyJob) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error().Int("worker", workerID).Interface("panic", r).Str("event", job.eventType).Msg("worker panic recovered")
+		}
+	}()
+
+	jobCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if !job.withChart || s.chartGen == nil || s.repo == nil {
+		if err := s.notifier.Notify(jobCtx, job.event.TenantID, job.message); err != nil {
+			s.log.Warn().Err(err).Str("event", job.eventType).Msg("notification failed")
+		}
+		return
+	}
+
+	symbol := s.extractSymbol(job.event)
+	if symbol == "" {
+		if err := s.notifier.Notify(jobCtx, job.event.TenantID, job.message); err != nil {
+			s.log.Warn().Err(err).Str("event", job.eventType).Msg("notification failed")
+		}
+		return
+	}
+
+	imgNotifier, supportsImage := s.notifier.(ports.ImageNotifierPort)
+	if !supportsImage {
+		if err := s.notifier.Notify(jobCtx, job.event.TenantID, job.message); err != nil {
+			s.log.Warn().Err(err).Str("event", job.eventType).Msg("notification failed")
+		}
+		return
+	}
+
+	chartPNG, err := s.getOrGenerateChart(jobCtx, symbol)
+	if err != nil {
+		s.log.Warn().Err(err).Str("symbol", symbol).Msg("chart generation failed, sending text-only")
+		if err := s.notifier.Notify(jobCtx, job.event.TenantID, job.message); err != nil {
+			s.log.Warn().Err(err).Str("event", job.eventType).Msg("notification failed")
+		}
+		return
+	}
+
+	attachment := ports.Attachment{
+		Data:     chartPNG,
+		Filename: fmt.Sprintf("%s_chart.png", symbol),
+	}
+	if err := imgNotifier.NotifyWithImage(jobCtx, job.event.TenantID, job.message, attachment); err != nil {
+		s.log.Warn().Err(err).Str("event", job.eventType).Msg("image notification failed")
+	}
+}
+
+func (s *Service) extractSymbol(ev domain.Event) string {
+	if p, ok := ev.Payload.(domain.OrderIntentEventPayload); ok {
+		return p.Symbol
+	}
+	return ""
+}
+
+func (s *Service) getOrGenerateChart(ctx context.Context, symbol string) ([]byte, error) {
+	s.cacheMu.RLock()
+	if entry, ok := s.chartCache[symbol]; ok && time.Since(entry.createdAt) < chartCacheTTL {
+		s.cacheMu.RUnlock()
+		return entry.data, nil
+	}
+	s.cacheMu.RUnlock()
+
+	now := time.Now()
+	loc, _ := time.LoadLocation("America/New_York")
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 4, 0, 0, 0, loc)
+
+	bars, err := s.repo.GetMarketBars(ctx, domain.Symbol(symbol), "1Min", dayStart, now)
+	if err != nil {
+		return nil, fmt.Errorf("fetch bars for %s: %w", symbol, err)
+	}
+	if len(bars) < 2 {
+		return nil, fmt.Errorf("insufficient bars for %s: got %d", symbol, len(bars))
+	}
+
+	title := fmt.Sprintf("%s — %s", symbol, now.In(loc).Format("Jan 02"))
+	chartPNG, err := s.chartGen.GenerateCandlestickChart(ctx, bars, title)
+	if err != nil {
+		return nil, fmt.Errorf("render chart for %s: %w", symbol, err)
+	}
+
+	s.cacheMu.Lock()
+	s.chartCache[symbol] = chartCacheEntry{data: chartPNG, createdAt: now}
+	s.cacheMu.Unlock()
+
+	return chartPNG, nil
 }
 
 func (s *Service) fmtOrderSubmitted(ev domain.Event) string {
