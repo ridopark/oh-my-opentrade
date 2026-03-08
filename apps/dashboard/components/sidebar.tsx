@@ -13,6 +13,7 @@ import {
   HeartPulse,
   Menu,
   X,
+  Settings,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -26,7 +27,7 @@ const navItems = [
   { href: "/performance", label: "Performance", icon: TrendingUp },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   { href: "/strategies", label: "Strategies", icon: Layers },
-
+  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export function Sidebar() {
