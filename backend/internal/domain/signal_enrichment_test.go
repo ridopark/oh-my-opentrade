@@ -96,6 +96,36 @@ func TestSignalEnrichment_ExitSkipped(t *testing.T) {
 	assert.Equal(t, domain.DirectionCloseLong, enrichment.Direction)
 }
 
+func TestSignalEnrichment_AIDirectionConflict(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   domain.EnrichmentStatus
+		sigType  string
+		sigSide  string
+		aiDir    domain.Direction
+		conflict bool
+	}{
+		{"buy signal + AI SHORT = conflict", domain.EnrichmentOK, "entry", "buy", domain.DirectionShort, true},
+		{"sell signal + AI LONG = conflict", domain.EnrichmentOK, "entry", "sell", domain.DirectionLong, true},
+		{"buy signal + AI LONG = no conflict", domain.EnrichmentOK, "entry", "buy", domain.DirectionLong, false},
+		{"sell signal + AI SHORT = no conflict", domain.EnrichmentOK, "entry", "sell", domain.DirectionShort, false},
+		{"AI timeout = no conflict (fallback)", domain.EnrichmentTimeout, "entry", "buy", domain.DirectionShort, false},
+		{"AI error = no conflict (fallback)", domain.EnrichmentError, "entry", "buy", domain.DirectionShort, false},
+		{"AI skipped = no conflict (fallback)", domain.EnrichmentSkipped, "entry", "buy", domain.DirectionShort, false},
+		{"exit signal = no conflict (exits skip gate)", domain.EnrichmentOK, "exit", "sell", domain.DirectionLong, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := domain.SignalEnrichment{
+				Signal:    domain.SignalRef{SignalType: tt.sigType, Side: tt.sigSide},
+				Status:    tt.status,
+				Direction: tt.aiDir,
+			}
+			assert.Equal(t, tt.conflict, e.AIDirectionConflict())
+		})
+	}
+}
+
 func TestSignalEnrichment_EventRoundTrip(t *testing.T) {
 	// Ensure SignalEnrichment can be used as event payload.
 	envMode, _ := domain.NewEnvMode("Paper")

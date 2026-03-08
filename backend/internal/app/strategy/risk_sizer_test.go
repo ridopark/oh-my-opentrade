@@ -539,7 +539,130 @@ func TestRiskSizer_HandleSignal_MaxPositionBPS_NoClamp(t *testing.T) {
 
 	evs := waitForEvents(t, received, 1)
 	intent := evs[0].Payload.(domain.OrderIntent)
-	assert.Equal(t, 40.0, intent.Quantity, "qty should NOT be clamped (risk-based qty below cap)")
+	assert.Equal(t, 40.0, intent.Quantity)
+}
+
+func subscribeOrderIntentRejected(t *testing.T, bus *memory.Bus) <-chan domain.Event {
+	t.Helper()
+	ch := make(chan domain.Event, 10)
+	ctx := context.Background()
+	require.NoError(t, bus.Subscribe(ctx, domain.EventOrderIntentRejected, func(_ context.Context, ev domain.Event) error {
+		ch <- ev
+		return nil
+	}))
+	return ch
+}
+
+func TestRiskSizer_AIDirectionGate_RejectsConflictingSignal(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"stop_bps":           int64(25),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	created := subscribeOrderIntentCreated(t, bus)
+	rejected := subscribeOrderIntentRejected(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:BTC/USD")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "BTC/USD",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.7,
+			Tags:               map[string]string{"ref_price": "67953"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.75,
+		Rationale:  "Overbought conditions suggest pullback",
+		Direction:  domain.DirectionShort,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, rejected, 1)
+	payload, ok := evs[0].Payload.(domain.OrderIntentEventPayload)
+	require.True(t, ok)
+	assert.Equal(t, "BTC/USD", payload.Symbol)
+	assert.Equal(t, string(domain.DirectionLong), payload.Direction)
+	assert.Equal(t, "avwap_v1", payload.Strategy)
+	assert.Contains(t, payload.Reason, "ai_direction_conflict")
+	assert.Equal(t, domain.OrderIntentStatusRejected, payload.Status)
+
+	select {
+	case <-created:
+		t.Fatal("expected no OrderIntentCreated event when AI direction conflicts")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestRiskSizer_AIDirectionGate_AllowsMatchingDirection(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"stop_bps":           int64(25),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	created := subscribeOrderIntentCreated(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:BTC/USD")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "BTC/USD",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.7,
+			Tags:               map[string]string{"ref_price": "67000"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.85,
+		Rationale:  "Strong bullish momentum confirms entry",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, created, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+	assert.Equal(t, domain.DirectionLong, intent.Direction)
+	assert.Equal(t, "Strong bullish momentum confirms entry", intent.Rationale)
+}
+
+func TestRiskSizer_AIDirectionGate_FallbackOnTimeout(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"stop_bps":           int64(25),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	created := subscribeOrderIntentCreated(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:BTC/USD")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "BTC/USD",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.7,
+			Tags:               map[string]string{"ref_price": "67000"},
+		},
+		Status:     domain.EnrichmentTimeout,
+		Confidence: 0.7,
+		Rationale:  "signal: entry buy strength=0.70 (AI timeout)",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, created, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+	assert.Equal(t, domain.DirectionLong, intent.Direction)
 }
 
 func TestRiskSizer_HandleSignal_MaxPositionBPS_Default(t *testing.T) {
