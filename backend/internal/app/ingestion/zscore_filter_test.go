@@ -11,11 +11,25 @@ import (
 )
 
 func createBar(t *testing.T, symbol domain.Symbol, closePrice, volume float64) domain.MarketBar {
+	t.Helper()
 	bar, err := domain.NewMarketBar(
 		time.Now(),
 		symbol,
 		"1m",
 		closePrice, closePrice, closePrice, closePrice, // O,H,L,C
+		volume,
+	)
+	require.NoError(t, err)
+	return bar
+}
+
+func createBarOHLC(t *testing.T, symbol domain.Symbol, open, high, low, close, volume float64) domain.MarketBar {
+	t.Helper()
+	bar, err := domain.NewMarketBar(
+		time.Now(),
+		symbol,
+		"1m",
+		open, high, low, close,
 		volume,
 	)
 	require.NoError(t, err)
@@ -138,6 +152,47 @@ func TestZScoreFilter_SeparatePerSymbol(t *testing.T) {
 	// Send an outlier for ETH. It should pass because ETH window is not full (0 bars).
 	suspect := filter.Check(createBar(t, symETH, 999.0, 10.0))
 	assert.False(t, suspect, "ETH has insufficient data, should pass")
+}
+
+func TestZScoreFilter_DetectsHighWickAnomaly(t *testing.T) {
+	filter := ingestion.NewZScoreFilter(5, 4.0)
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	// prices: 98..102, volumes: 8..12 (mean=100/10, stddev≈1.41)
+	for i := 0; i < 5; i++ {
+		filter.Check(createBar(t, sym, 98.0+float64(i), 8.0+float64(i)))
+	}
+
+	// Close=100 is normal (z≈0), but High=130 is anomalous (z≈21).
+	// Volume=10 → z≈0, well below secondary threshold.
+	suspect := filter.Check(createBarOHLC(t, sym, 100.0, 130.0, 99.0, 100.0, 10.0))
+	assert.True(t, suspect, "Bar with anomalous high wick should be rejected")
+}
+
+func TestZScoreFilter_DetectsLowWickAnomaly(t *testing.T) {
+	filter := ingestion.NewZScoreFilter(5, 4.0)
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	for i := 0; i < 5; i++ {
+		filter.Check(createBar(t, sym, 98.0+float64(i), 8.0+float64(i)))
+	}
+
+	// Close=100 is normal, but Low=70 is anomalous (z≈21).
+	suspect := filter.Check(createBarOHLC(t, sym, 100.0, 101.0, 70.0, 100.0, 10.0))
+	assert.True(t, suspect, "Bar with anomalous low wick should be rejected")
+}
+
+func TestZScoreFilter_NormalWickPasses(t *testing.T) {
+	filter := ingestion.NewZScoreFilter(5, 4.0)
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	for i := 0; i < 5; i++ {
+		filter.Check(createBar(t, sym, 98.0+float64(i), 10.0))
+	}
+
+	// Close=101, High=102, Low=99 — all within normal range.
+	suspect := filter.Check(createBarOHLC(t, sym, 100.0, 102.0, 99.0, 101.0, 10.0))
+	assert.False(t, suspect, "Bar with normal wicks should pass")
 }
 
 func TestZScoreFilter_ZeroStdDev(t *testing.T) {

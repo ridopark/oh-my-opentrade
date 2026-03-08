@@ -75,7 +75,11 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	if suspect {
 		bar.Suspect = true
 		l.Warn().
+			Float64("open", bar.Open).
+			Float64("high", bar.High).
+			Float64("low", bar.Low).
 			Float64("close", bar.Close).
+			Float64("volume", bar.Volume).
 			Msg("bar flagged as suspect by Z-score filter \u2014 rejecting")
 
 		if s.metrics != nil {
