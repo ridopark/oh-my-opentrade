@@ -306,7 +306,15 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			}
 		}
 
+		var wsBarCount atomic.Int64
+
 		barHandler := func(bar alpacastream.Bar) {
+			n := wsBarCount.Add(1)
+			if n == 1 {
+				log.Info().Str("symbol", bar.Symbol).Time("bar_time", bar.Timestamp).
+					Float64("close", bar.Close).Uint64("volume", bar.Volume).
+					Msg("equity WS: first bar received after connect")
+			}
 			sym, err := domain.NewSymbol(bar.Symbol)
 			if err != nil {
 				log.Warn().Err(err).Str("symbol", bar.Symbol).Msg("alpaca stream: invalid symbol")
@@ -364,7 +372,17 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			w.metrics.WS.Connected.WithLabelValues(w.feed).Set(1)
 		}
 		connectedAt := time.Now()
+		wsBarCount.Store(0)
+		log.Info().Strs("symbols", symStrs).Int("attempt", attempt).
+			Msg("equity WS: connected, waiting for bars")
 		connErr := connect(connCtx)
+
+		barsReceived := wsBarCount.Load()
+		connDur := time.Since(connectedAt)
+		log.Info().Err(connErr).Int64("bars_received", barsReceived).
+			Dur("connected_for", connDur).
+			Bool("ctx_canceled", connCtx.Err() != nil).
+			Msg("equity WS: connection ended")
 
 		// Stop watchdog.
 		connCancel()
