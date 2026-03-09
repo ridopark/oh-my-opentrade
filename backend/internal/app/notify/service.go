@@ -564,9 +564,9 @@ func (s *Service) fmtRiskRevaluated(ev domain.Event) string {
 		msg += "\n📐 Exit Rule Changes:"
 		for _, ch := range r.RuleChanges {
 			line := fmt.Sprintf("\n  %s [%s]: %.4f → %.4f", ch.Rule, ch.Param, ch.OldValue, ch.NewValue)
-			if ch.Param == "pct" && r.EntryPrice > 0 {
-				oldDollar := ch.OldValue * r.EntryPrice
-				newDollar := ch.NewValue * r.EntryPrice
+			if ch.Param == "pct" && r.CurrentPrice > 0 {
+				oldDollar := ch.OldValue * r.CurrentPrice
+				newDollar := ch.NewValue * r.CurrentPrice
 				line += fmt.Sprintf(" ($%.2f → $%.2f)", oldDollar, newDollar)
 			}
 			msg += line
