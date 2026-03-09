@@ -595,6 +595,65 @@ func (c *RESTClient) GetAccountBuyingPower(ctx context.Context) (AccountBuyingPo
 	}, nil
 }
 
+// CancelOpenOrders cancels all open orders for a given symbol and side on Alpaca.
+// It queries open orders via GET /v2/orders?status=open&symbols={symbol}&side={side},
+// then cancels each one via DELETE /v2/orders/{id}.
+// Returns the number of successfully cancelled orders.
+func (c *RESTClient) CancelOpenOrders(ctx context.Context, symbol domain.Symbol, side string) (int, error) {
+	// Alpaca orders API uses no-slash format for crypto (e.g. "ETHUSD" not "ETH/USD").
+	symStr := strings.ReplaceAll(symbol.String(), "/", "")
+	path := fmt.Sprintf("%s?status=open&symbols=%s&side=%s", pathOrders, symStr, side)
+
+	resp, err := c.doReqWithOpts(ctx, http.MethodGet, path, nil, reqOpts{priority: PriorityTrading, maxRetries: 3})
+	if err != nil {
+		c.log.Error().Err(err).Str("symbol", symStr).Str("side", side).Msg("list open orders HTTP request failed")
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		c.log.Error().Int("status", resp.StatusCode).Str("symbol", symStr).Msg("list open orders failed")
+		return 0, fmt.Errorf("alpaca: list open orders failed (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var orders []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &orders); err != nil {
+		return 0, fmt.Errorf("alpaca: failed to decode open orders: %w", err)
+	}
+
+	if len(orders) == 0 {
+		return 0, nil
+	}
+
+	cancelled := 0
+	for _, o := range orders {
+		cancelResp, cancelErr := c.doReqWithOpts(ctx, http.MethodDelete, pathOrders+"/"+o.ID, nil, reqOpts{priority: PriorityTrading, maxRetries: 2})
+		if cancelErr != nil {
+			c.log.Warn().Err(cancelErr).Str("order_id", o.ID).Msg("cancel open order HTTP request failed")
+			continue
+		}
+		cancelBody, _ := io.ReadAll(cancelResp.Body)
+		cancelResp.Body.Close()
+
+		if cancelResp.StatusCode >= 200 && cancelResp.StatusCode < 300 {
+			cancelled++
+			c.log.Info().Str("order_id", o.ID).Str("symbol", symStr).Msg("cancelled stale open order")
+		} else {
+			// 422 or 500 typically means order already filled/cancelled — not a real error.
+			c.log.Warn().
+				Int("status", cancelResp.StatusCode).
+				Str("order_id", o.ID).
+				Str("response", string(cancelBody)).
+				Msg("cancel open order returned non-2xx — order may already be terminal")
+		}
+	}
+
+	return cancelled, nil
+}
+
 // ClosedOrder represents a closed/filled order from the Alpaca REST API.
 type ClosedOrder struct {
 	ID             string  `json:"id"`

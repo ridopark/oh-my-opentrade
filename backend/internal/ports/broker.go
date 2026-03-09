@@ -11,6 +11,7 @@ import (
 type BrokerPort interface {
 	SubmitOrder(ctx context.Context, intent domain.OrderIntent) (orderID string, err error)
 	CancelOrder(ctx context.Context, orderID string) error
+	CancelOpenOrders(ctx context.Context, symbol domain.Symbol, side string) (int, error)
 	GetOrderStatus(ctx context.Context, orderID string) (string, error)
 	GetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error)
 }
