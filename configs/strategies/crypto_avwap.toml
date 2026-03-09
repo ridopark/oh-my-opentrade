@@ -57,9 +57,9 @@ size_tight_mult = 0.70
 size_wide_mult = 1.20
 
 [[exit_rules]]
-type = "TRAILING_STOP"
+type = "VOLATILITY_STOP"
 [exit_rules.params]
-pct = 0.02
+atr_multiplier = 2.5
 
 [[exit_rules]]
 type = "PROFIT_TARGET"

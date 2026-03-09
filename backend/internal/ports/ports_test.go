@@ -50,6 +50,9 @@ func (m *mockBroker) GetOrderStatus(ctx context.Context, orderID string) (string
 func (m *mockBroker) GetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
 	return []domain.Trade{{}}, nil
 }
+func (m *mockBroker) CancelOpenOrders(_ context.Context, _ domain.Symbol, _ string) (int, error) {
+	return 0, nil
+}
 
 // 3. AIAdvisorPort
 type mockAIAdvisor struct{}
