@@ -236,6 +236,9 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 		_ = infra.eventBus.Publish(ctx, *evt)
 	})
 
+	infra.alpacaAdapter.WSClient().SetPipelineHealth(svc.ingestion)
+	infra.alpacaAdapter.CryptoWSClient().SetPipelineHealth(svc.ingestion)
+
 	infra.alpacaAdapter.CryptoWSClient().SetCircuitBreakerCallback(func(consecutiveFails int, blockedFor time.Duration) {
 		evt, err := domain.NewEvent(domain.EventWSCircuitBreakerTripped, "system", domain.EnvModePaper,
 			fmt.Sprintf("ws-cb-tripped-%d", time.Now().UnixNano()),

@@ -20,6 +20,9 @@ type FeedHealth struct {
 	CircuitState     string        `json:"circuit_state"`   // "closed", "open", "half_open"
 	StaleResets      int           `json:"stale_resets"`    // times watchdog forced reconnect
 	GhostWindowCount int           `json:"ghost_window_count"`
+
+	PipelineLastBarAge time.Duration `json:"pipeline_last_bar_age_ms"`
+	PipelineHealthy    bool          `json:"pipeline_healthy"`
 }
 
 // IsHealthy returns true if the feed is usable.

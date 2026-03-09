@@ -16,6 +16,8 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
 	"github.com/oh-my-opentrade/backend/internal/ports"
+	"os"
+	"runtime/pprof"
 )
 
 // BarFetcher is a function that retrieves historical bars from the REST API.
@@ -28,17 +30,18 @@ type connectFn func(ctx context.Context) error
 
 // WSClient handles WebSocket connections for Alpaca market data.
 type WSClient struct {
-	dataURL      string
-	apiKey       string
-	apiSecret    string
-	feed         string
-	fetcher      BarFetcher // REST poller fallback; nil disables polling
-	tradeHandler ports.TradeHandler
-	closeOnce    sync.Once
-	cancel       context.CancelFunc
-	mu           sync.Mutex
-	metrics      *metrics.Metrics
-	tracker      *feedTracker
+	dataURL        string
+	apiKey         string
+	apiSecret      string
+	feed           string
+	fetcher        BarFetcher // REST poller fallback; nil disables polling
+	tradeHandler   ports.TradeHandler
+	pipelineHealth ports.PipelineHealthReporter
+	closeOnce      sync.Once
+	cancel         context.CancelFunc
+	mu             sync.Mutex
+	metrics        *metrics.Metrics
+	tracker        *feedTracker
 
 	// connectFactory builds a real alpacastream.StocksClient and returns its Connect func.
 	// Overridable in tests.
@@ -70,8 +73,21 @@ func (w *WSClient) SetMetrics(m *metrics.Metrics) { w.metrics = m }
 // SetTradeHandler sets the callback for forwarding raw trade ticks.
 func (w *WSClient) SetTradeHandler(h ports.TradeHandler) { w.tradeHandler = h }
 
+// SetPipelineHealth injects pipeline liveness reporter for dual-track watchdog.
+func (w *WSClient) SetPipelineHealth(ph ports.PipelineHealthReporter) { w.pipelineHealth = ph }
+
 // FeedHealth returns a point-in-time snapshot of WebSocket feed status.
-func (w *WSClient) FeedHealth() FeedHealth { return w.tracker.Snapshot() }
+func (w *WSClient) FeedHealth() FeedHealth {
+	fh := w.tracker.Snapshot()
+	if w.pipelineHealth != nil {
+		last := w.pipelineHealth.LastProcessedAt("equity")
+		if !last.IsZero() {
+			fh.PipelineLastBarAge = time.Since(last)
+			fh.PipelineHealthy = !IsPipelineDeadlocked(fh.LastBarAge, fh.PipelineLastBarAge)
+		}
+	}
+	return fh
+}
 
 // defaultConnectFactory builds a real Alpaca SDK StocksClient and returns its Connect method.
 // The returned connectFn blocks until the stream is fully terminated (not just established).
@@ -417,11 +433,10 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 
 		w.tracker.resetBarTimer()
 
-		// Start stale feed watchdog.
 		watchdogDone := make(chan struct{})
 		go func() {
 			defer close(watchdogDone)
-			staleFeedWatchdog(connCtx, w.tracker, &staleCancelMu, &staleCancelFn, staleFeedThresholdRTH, isCoreMarketHours)
+			staleFeedWatchdog(connCtx, w.tracker, &staleCancelMu, &staleCancelFn, staleFeedThresholdRTH, isCoreMarketHours, w.pipelineHealth, "equity")
 		}()
 
 		w.tracker.setConnected(true)
@@ -689,11 +704,30 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 	}
 }
 
-// staleFeedWatchdog monitors the feed and cancels the connection context if no
-// bars arrive within the given threshold. shouldMonitor controls whether checks
-// run at all (equity passes isCoreMarketHours to skip off-hours; crypto passes
-// a func returning true). Shared by both equity WSClient and CryptoWSClient.
-func staleFeedWatchdog(ctx context.Context, tracker *feedTracker, cancelMu *sync.Mutex, cancelFn *context.CancelFunc, threshold time.Duration, shouldMonitor func() bool) {
+const (
+	pipelineStaleThreshold  = 30 * time.Second
+	networkHealthyThreshold = 10 * time.Second
+)
+
+// IsPipelineDeadlocked returns true when the network is actively delivering
+// bars but the processing pipeline has stalled — indicating a deadlock.
+func IsPipelineDeadlocked(networkAge, pipelineAge time.Duration) bool {
+	return networkAge < networkHealthyThreshold && pipelineAge > pipelineStaleThreshold
+}
+
+func dumpGoroutineProfile() string {
+	ts := time.Now().Format("20060102-150405")
+	path := fmt.Sprintf("/tmp/omo-pipeline-deadlock-%s.prof", ts)
+	f, err := os.Create(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	_ = pprof.Lookup("goroutine").WriteTo(f, 1)
+	return path
+}
+
+func staleFeedWatchdog(ctx context.Context, tracker *feedTracker, cancelMu *sync.Mutex, cancelFn *context.CancelFunc, threshold time.Duration, shouldMonitor func() bool, pipeline ports.PipelineHealthReporter, feedType string) {
 	ticker := time.NewTicker(staleFeedCheckInterval)
 	defer ticker.Stop()
 
@@ -714,9 +748,27 @@ func staleFeedWatchdog(ctx context.Context, tracker *feedTracker, cancelMu *sync
 				continue
 			}
 
-			age := time.Since(lastBar)
-			if age > threshold {
-				log.Warn().Dur("bar_age", age).Dur("threshold", threshold).
+			networkAge := time.Since(lastBar)
+
+			if pipeline != nil {
+				pipelineLast := pipeline.LastProcessedAt(feedType)
+				if !pipelineLast.IsZero() {
+					pipelineAge := time.Since(pipelineLast)
+					if IsPipelineDeadlocked(networkAge, pipelineAge) {
+						profPath := dumpGoroutineProfile()
+						log.Fatal().
+							Dur("network_age", networkAge).
+							Dur("pipeline_age", pipelineAge).
+							Str("feed_type", feedType).
+							Str("goroutine_dump", profPath).
+							Msg("pipeline deadlock detected: network healthy but pipeline stalled — forcing restart")
+						return
+					}
+				}
+			}
+
+			if networkAge > threshold {
+				log.Warn().Dur("bar_age", networkAge).Dur("threshold", threshold).
 					Msg("stale feed watchdog: no bars received within threshold — forcing reconnect")
 
 				cancelMu.Lock()
