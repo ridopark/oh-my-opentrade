@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	alpacastream "github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
@@ -195,11 +196,17 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		c.tracker.setConnected(true)
 		c.tracker.setState("streaming")
 		connectedAt := time.Now()
+		var cryptoBarCount atomic.Int64
 
 		barHandler := func(cb alpacastream.CryptoBar) {
 			bar, err := CryptoBarToMarketBar(cb)
 			if err != nil {
 				return
+			}
+			if cryptoBarCount.Add(1) == 1 {
+				c.log.Info().Str("symbol", string(bar.Symbol)).Time("bar_time", bar.Time).
+					Float64("close", bar.Close).Float64("volume", bar.Volume).
+					Msg("crypto WS: first bar received after connect")
 			}
 			c.tracker.clearStaleAlert()
 			stopRestPoller()
@@ -231,6 +238,8 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			alpacastream.WithCryptoTrades(tradeHandler, symStrs...),
 		)
 
+		c.log.Info().Strs("symbols", symStrs).Int("attempt", attempt).
+			Msg("crypto WS: connecting")
 		var connErr error
 		if err := sc.Connect(connCtx); err != nil {
 			connErr = err
@@ -241,6 +250,12 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			case <-connCtx.Done():
 			}
 		}
+
+		barsReceived := cryptoBarCount.Load()
+		c.log.Info().Err(connErr).Int64("bars_received", barsReceived).
+			Dur("connected_for", time.Since(connectedAt)).
+			Bool("ctx_canceled", connCtx.Err() != nil).
+			Msg("crypto WS: connection ended")
 
 		connCancel()
 		<-watchdogDone
