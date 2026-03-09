@@ -79,9 +79,15 @@ func (m *mockEventBus) Subscribe(ctx context.Context, eventType domain.EventType
 	return nil
 }
 
+func (m *mockEventBus) SubscribeAsync(ctx context.Context, eventType domain.EventType, handler ports.EventHandler) error {
+	return m.Subscribe(ctx, eventType, handler)
+}
+
 func (m *mockEventBus) Unsubscribe(ctx context.Context, eventType domain.EventType, handler ports.EventHandler) error {
 	return nil
 }
+
+func (m *mockEventBus) Close() {}
 
 // 5. RepositoryPort
 type mockRepository struct{}

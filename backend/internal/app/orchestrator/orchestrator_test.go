@@ -26,9 +26,13 @@ func (m *mockEventBus) Publish(_ context.Context, _ domain.Event) error { return
 func (m *mockEventBus) Subscribe(_ context.Context, _ domain.EventType, _ ports.EventHandler) error {
 	return nil
 }
+func (m *mockEventBus) SubscribeAsync(_ context.Context, et domain.EventType, h ports.EventHandler) error {
+	return m.Subscribe(context.Background(), et, h)
+}
 func (m *mockEventBus) Unsubscribe(_ context.Context, _ domain.EventType, _ ports.EventHandler) error {
 	return nil
 }
+func (m *mockEventBus) Close() {}
 
 // mockBroker implements ports.BrokerPort (needed for execution.NewService and perf.NewLedgerWriter).
 type mockBroker struct{}

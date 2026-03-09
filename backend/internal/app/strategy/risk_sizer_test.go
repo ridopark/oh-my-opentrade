@@ -812,6 +812,7 @@ func TestRiskSizer_ExitCooldown_BlocksReentry(t *testing.T) {
 	rejected := subscribeOrderIntentRejected(t, bus)
 
 	publishFillReceived(t, bus, "AAPL", "SELL")
+	bus.Flush()
 
 	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
 	enrichment := domain.SignalEnrichment{
@@ -856,6 +857,7 @@ func TestRiskSizer_ExitCooldown_BuyFillDoesNotSetCooldown(t *testing.T) {
 	created := subscribeOrderIntentCreated(t, bus)
 
 	publishFillReceived(t, bus, "AAPL", "BUY")
+	bus.Flush()
 
 	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
 	enrichment := domain.SignalEnrichment{
@@ -891,6 +893,7 @@ func TestRiskSizer_ExitCooldown_ExitSignalsUnaffected(t *testing.T) {
 	created := subscribeOrderIntentCreated(t, bus)
 
 	publishFillReceived(t, bus, "AAPL", "SELL")
+	bus.Flush()
 
 	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
 	enrichment := domain.SignalEnrichment{
@@ -926,6 +929,7 @@ func TestRiskSizer_ExitCooldown_DifferentSymbolUnaffected(t *testing.T) {
 	created := subscribeOrderIntentCreated(t, bus)
 
 	publishFillReceived(t, bus, "AAPL", "SELL")
+	bus.Flush()
 
 	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:MSFT")
 	enrichment := domain.SignalEnrichment{

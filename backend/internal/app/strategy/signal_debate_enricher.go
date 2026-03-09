@@ -82,7 +82,7 @@ func NewSignalDebateEnricher(eventBus ports.EventBusPort, aiAdvisor ports.AIAdvi
 }
 
 func (e *SignalDebateEnricher) Start(ctx context.Context) error {
-	if err := e.eventBus.Subscribe(ctx, domain.EventSignalCreated, e.handleSignal); err != nil {
+	if err := e.eventBus.SubscribeAsync(ctx, domain.EventSignalCreated, e.handleSignal); err != nil {
 		return fmt.Errorf("signal debate enricher: failed to subscribe to SignalCreated: %w", err)
 	}
 	e.logger.Info("signal debate enricher subscribed to SignalCreated events")

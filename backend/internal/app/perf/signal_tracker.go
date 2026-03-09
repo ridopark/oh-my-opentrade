@@ -52,7 +52,7 @@ func (st *SignalTracker) Start(ctx context.Context) error {
 	if err := st.eventBus.Subscribe(ctx, domain.EventOrderIntentRejected, st.handleIntentRejected); err != nil {
 		return fmt.Errorf("perf: signal tracker failed to subscribe to OrderIntentRejected: %w", err)
 	}
-	if err := st.eventBus.Subscribe(ctx, domain.EventFillReceived, st.handleFill); err != nil {
+	if err := st.eventBus.SubscribeAsync(ctx, domain.EventFillReceived, st.handleFill); err != nil {
 		return fmt.Errorf("perf: signal tracker failed to subscribe to FillReceived: %w", err)
 	}
 	st.log.Info().Msg("signal tracker subscribed to signal lifecycle events")

@@ -60,7 +60,7 @@ func (r *Revaluator) Start(ctx context.Context) error {
 	if err := r.eventBus.Subscribe(ctx, domain.EventSignalEnriched, r.handleSignalEnriched); err != nil {
 		return fmt.Errorf("position revaluator: failed to subscribe to SignalEnriched: %w", err)
 	}
-	if err := r.eventBus.Subscribe(ctx, domain.EventFillReceived, r.handleFillReceived); err != nil {
+	if err := r.eventBus.SubscribeAsync(ctx, domain.EventFillReceived, r.handleFillReceived); err != nil {
 		return fmt.Errorf("position revaluator: failed to subscribe to FillReceived: %w", err)
 	}
 

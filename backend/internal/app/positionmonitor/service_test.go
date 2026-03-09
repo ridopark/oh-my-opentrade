@@ -45,9 +45,15 @@ func (m *mockEventBus) Subscribe(ctx context.Context, eventType domain.EventType
 	return nil
 }
 
+func (m *mockEventBus) SubscribeAsync(ctx context.Context, et domain.EventType, h ports.EventHandler) error {
+	return m.Subscribe(ctx, et, h)
+}
+
 func (m *mockEventBus) Unsubscribe(context.Context, domain.EventType, ports.EventHandler) error {
 	return nil
 }
+
+func (m *mockEventBus) Close() {}
 
 func (m *mockEventBus) publishedCount(eventType domain.EventType) int {
 	m.mu.Lock()

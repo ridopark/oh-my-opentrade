@@ -74,7 +74,7 @@ func (r *Runner) Start(ctx context.Context) error {
 	if err := r.eventBus.Subscribe(ctx, domain.EventStateUpdated, r.handleStateUpdated); err != nil {
 		return fmt.Errorf("strategy runner: failed to subscribe to StateUpdated: %w", err)
 	}
-	if err := r.eventBus.Subscribe(ctx, domain.EventFillReceived, r.handleFill); err != nil {
+	if err := r.eventBus.SubscribeAsync(ctx, domain.EventFillReceived, r.handleFill); err != nil {
 		return fmt.Errorf("strategy runner: failed to subscribe to FillReceived: %w", err)
 	}
 	if err := r.eventBus.Subscribe(ctx, domain.EventOrderIntentRejected, r.handleRejection); err != nil {

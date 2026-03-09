@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/pprof"
 	"strconv"
 	"time"
 
@@ -84,6 +85,12 @@ func initHTTPServer(ctx context.Context, cfg *config.Config, infra *infraDeps, s
 }
 
 func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *infraDeps, svc *appServices, httpLog zerolog.Logger, sseHandler *sse.Handler) {
+	imux.Mux.HandleFunc("/debug/pprof/", pprof.Index)
+	imux.Mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	imux.Mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	imux.Mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	imux.Mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
 	imux.Handle("/bars", omhttp.NewBarsHandler(infra.repo, infra.alpacaAdapter, httpLog))
 	imux.Handle("/events", sseHandler)
 	imux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
