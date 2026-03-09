@@ -111,14 +111,53 @@ jobs:
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
+        env:
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+          APCA_API_BASE_URL: ${{ secrets.APCA_API_BASE_URL }}
+          APCA_DATA_API_KEY_ID: ${{ secrets.APCA_DATA_API_KEY_ID }}
+          APCA_DATA_API_SECRET_KEY: ${{ secrets.APCA_DATA_API_SECRET_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          TIMESCALEDB_PASSWORD: ${{ secrets.TIMESCALEDB_PASSWORD }}
         with:
           host: ${{ secrets.OCI_HOST }}
           username: ${{ secrets.OCI_USER }}
           key: ${{ secrets.OCI_SSH_KEY }}
+          envs: APCA_API_KEY_ID,APCA_API_SECRET_KEY,APCA_API_BASE_URL,APCA_DATA_API_KEY_ID,APCA_DATA_API_SECRET_KEY,DISCORD_WEBHOOK_URL,LLM_API_KEY,TIMESCALEDB_PASSWORD
           script: |
             set -e
             cd ~/oh-my-opentrade
             git pull origin main
+
+            # Generate .env from GitHub secrets + defaults
+            cat > .env <<EOF
+            # Alpaca API
+            APCA_API_KEY_ID=${APCA_API_KEY_ID}
+            APCA_API_SECRET_KEY=${APCA_API_SECRET_KEY}
+            APCA_API_BASE_URL=${APCA_API_BASE_URL}
+            APCA_DATA_API_KEY_ID=${APCA_DATA_API_KEY_ID}
+            APCA_DATA_API_SECRET_KEY=${APCA_DATA_API_SECRET_KEY}
+
+            # TimescaleDB
+            TIMESCALEDB_HOST=localhost
+            TIMESCALEDB_PORT=5432
+            TIMESCALEDB_USER=opentrade
+            TIMESCALEDB_PASSWORD=${TIMESCALEDB_PASSWORD}
+            TIMESCALEDB_NAME=opentrade
+
+            # Notifications
+            DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}
+
+            # LLM
+            LLM_ENABLED=true
+            LLM_BASE_URL=https://openrouter.ai/api
+            LLM_MODEL=anthropic/claude-sonnet-4
+            LLM_MIN_CONFIDENCE=0.6
+            LLM_API_KEY=${LLM_API_KEY}
+            EOF
+            chmod 600 .env
+
             docker compose -f deployments/docker-compose.yml up -d --build --remove-orphans
             echo "Waiting for containers to stabilize..."
             sleep 5
