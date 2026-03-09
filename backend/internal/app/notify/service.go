@@ -561,13 +561,19 @@ func (s *Service) fmtRiskRevaluated(ev domain.Event) string {
 		actionEmoji, r.Action, r.UpdatedModifier, r.Confidence*100)
 
 	if len(r.RuleChanges) > 0 {
-		msg += "\n📐 Exit Rule Changes:"
+		msg += "\n📐 Exit Rules:"
 		for _, ch := range r.RuleChanges {
-			line := fmt.Sprintf("\n  %s [%s]: %.4f → %.4f", ch.Rule, ch.Param, ch.OldValue, ch.NewValue)
-			if ch.Param == "pct" && r.CurrentPrice > 0 {
-				oldDollar := ch.OldValue * r.CurrentPrice
-				newDollar := ch.NewValue * r.CurrentPrice
-				line += fmt.Sprintf(" ($%.2f → $%.2f)", oldDollar, newDollar)
+			var line string
+			if ch.OldValue != ch.NewValue {
+				line = fmt.Sprintf("\n  %s [%s]: %.4f → %.4f", ch.Rule, ch.Param, ch.OldValue, ch.NewValue)
+				if ch.Param == "pct" && r.CurrentPrice > 0 {
+					line += fmt.Sprintf(" ($%.2f → $%.2f)", ch.OldValue*r.CurrentPrice, ch.NewValue*r.CurrentPrice)
+				}
+			} else {
+				line = fmt.Sprintf("\n  %s [%s]: %.4f", ch.Rule, ch.Param, ch.NewValue)
+				if ch.Param == "pct" && r.CurrentPrice > 0 {
+					line += fmt.Sprintf(" ($%.2f)", ch.NewValue*r.CurrentPrice)
+				}
 			}
 			msg += line
 		}
