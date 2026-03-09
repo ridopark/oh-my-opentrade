@@ -17,6 +17,10 @@ import (
 
 const cryptoStaleThreshold = 30 * time.Minute
 
+// cryptoConnectFn is the signature for the underlying crypto WebSocket connect call.
+// Injected at construction time so tests can replace it with a fake.
+type cryptoConnectFn func(ctx context.Context) error
+
 // CryptoWSClient handles WebSocket connections for Alpaca crypto market data.
 // It uses a separate stream.CryptoClient (not the StocksClient used for equities)
 // and includes reconnect, watchdog, and circuit breaker hardening.
@@ -34,6 +38,8 @@ type CryptoWSClient struct {
 	closeOnce            sync.Once
 	cancel               context.CancelFunc
 	mu                   sync.Mutex
+
+	connectFactory func(symStrs []string, barHandler func(alpacastream.CryptoBar), tradeHandler func(alpacastream.CryptoTrade)) cryptoConnectFn
 }
 
 // NewCryptoWSClient creates a new CryptoWSClient.
@@ -52,7 +58,7 @@ func NewCryptoWSClient(cryptoDataURL, apiKey, apiSecret, feed string, fetcher Ba
 	if cryptoDataURL == "" {
 		cryptoDataURL = "wss://stream.data.alpaca.markets"
 	}
-	return &CryptoWSClient{
+	c := &CryptoWSClient{
 		cryptoDataURL: cryptoDataURL,
 		apiKey:        apiKey,
 		apiSecret:     apiSecret,
@@ -60,7 +66,9 @@ func NewCryptoWSClient(cryptoDataURL, apiKey, apiSecret, feed string, fetcher Ba
 		fetcher:       fetcher,
 		log:           log.With().Str("component", "crypto_ws").Logger(),
 		tracker:       newFeedTracker(),
-	}, nil
+	}
+	c.connectFactory = c.defaultConnectFactory
+	return c, nil
 }
 
 func (c *CryptoWSClient) SetTradeHandler(h ports.TradeHandler) { c.tradeHandler = h }
@@ -76,6 +84,26 @@ func (c *CryptoWSClient) FeedHealth() FeedHealth { return c.tracker.Snapshot() }
 
 // ErrCryptoWSMissingCredentials is returned when API key or secret is empty.
 var ErrCryptoWSMissingCredentials = errors.New("crypto websocket requires API key and secret")
+
+func (c *CryptoWSClient) defaultConnectFactory(symStrs []string, barHandler func(alpacastream.CryptoBar), tradeHandler func(alpacastream.CryptoTrade)) cryptoConnectFn {
+	sc := alpacastream.NewCryptoClient(
+		c.feed,
+		alpacastream.WithCredentials(c.apiKey, c.apiSecret),
+		alpacastream.WithCryptoBars(barHandler, symStrs...),
+		alpacastream.WithCryptoTrades(tradeHandler, symStrs...),
+	)
+	return func(ctx context.Context) error {
+		if err := sc.Connect(ctx); err != nil {
+			return err
+		}
+		select {
+		case err := <-sc.Terminated():
+			return err
+		case <-ctx.Done():
+			return nil
+		}
+	}
+}
 
 // StreamBars connects to the Alpaca crypto WebSocket and streams bars for the
 // requested symbols. It reconnects with exponential backoff on failure and uses
@@ -231,25 +259,10 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			_ = c.tradeHandler(connCtx, mt)
 		}
 
-		sc := alpacastream.NewCryptoClient(
-			c.feed,
-			alpacastream.WithCredentials(c.apiKey, c.apiSecret),
-			alpacastream.WithCryptoBars(barHandler, symStrs...),
-			alpacastream.WithCryptoTrades(tradeHandler, symStrs...),
-		)
-
+		connect := c.connectFactory(symStrs, barHandler, tradeHandler)
 		c.log.Info().Strs("symbols", symStrs).Int("attempt", attempt).
 			Msg("crypto WS: connecting")
-		var connErr error
-		if err := sc.Connect(connCtx); err != nil {
-			connErr = err
-		} else {
-			select {
-			case err := <-sc.Terminated():
-				connErr = err
-			case <-connCtx.Done():
-			}
-		}
+		connErr := connect(connCtx)
 
 		barsReceived := cryptoBarCount.Load()
 		c.log.Info().Err(connErr).Int64("bars_received", barsReceived).

@@ -189,6 +189,7 @@ const staleFeedCheckInterval = 15 * time.Second
 //   - Bounded dedup map (10k entries max)
 //   - Max consecutive fail limit (50 attempts → error)
 //   - Ghost-session handling with REST bridge and probe schedule
+//   - REST polling fallback during stale feed resets
 func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ domain.Timeframe, handler ports.BarHandler) error {
 	if len(symbols) == 0 {
 		return nil
@@ -220,6 +221,19 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 	// to window REST poll requests.
 	lastBarTime := make(map[domain.Symbol]time.Time)
 	var lastBarMu sync.Mutex
+
+	var restPollMu sync.Mutex
+	var restPollCancel context.CancelFunc
+	restPollerWasStarted := false
+
+	stopRestPoller := func() {
+		restPollMu.Lock()
+		defer restPollMu.Unlock()
+		if restPollCancel != nil {
+			restPollCancel()
+			restPollCancel = nil
+		}
+	}
 
 	// staleCancelFn cancels the current connection when the watchdog detects stale feed.
 	// Set per-connection; nil when no watchdog is active.
@@ -270,6 +284,18 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		return err
 	}
 
+	startRestPoller := func() {
+		if w.fetcher == nil {
+			return
+		}
+		pollCtx, pCancel := context.WithCancel(streamCtx)
+		restPollMu.Lock()
+		restPollCancel = pCancel
+		restPollMu.Unlock()
+		restPollerWasStarted = true
+		go w.restPoller(pollCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler, restPollInterval)
+	}
+
 	w.tracker.setState("reconnecting")
 
 	for {
@@ -314,6 +340,7 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 				log.Info().Str("symbol", bar.Symbol).Time("bar_time", bar.Timestamp).
 					Float64("close", bar.Close).Uint64("volume", bar.Volume).
 					Msg("equity WS: first bar received after connect")
+				stopRestPoller()
 			}
 			sym, err := domain.NewSymbol(bar.Symbol)
 			if err != nil {
@@ -396,8 +423,13 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			w.metrics.WS.Connected.WithLabelValues(w.feed).Set(0)
 		}
 
+		stopRestPoller()
+		hadPoller := restPollerWasStarted
+		restPollerWasStarted = false
+
 		// If top-level context was canceled, this is an intentional shutdown.
 		if streamCtx.Err() != nil {
+			stopRestPoller()
 			w.tracker.setState("stopped")
 			return nil
 		}
@@ -409,6 +441,19 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		wasStaleReset := HandleStaleReset(connCtx, streamCtx, connErr, w.tracker, log.Logger)
 		if wasStaleReset && w.metrics != nil {
 			w.metrics.WS.ReconnectsTotal.WithLabelValues(w.feed, "stale").Inc()
+		}
+
+		// Gap-fill after REST poller was active.
+		if hadPoller && w.fetcher != nil {
+			w.gapFill(streamCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler)
+		}
+
+		// Start REST poller on stale reset to bridge data during reconnect.
+		if wasStaleReset && w.fetcher != nil {
+			dedupMu.Lock()
+			dedup = make(map[string]struct{})
+			dedupMu.Unlock()
+			startRestPoller()
 		}
 
 		// Determine if this is a ghost-session / connection-limit scenario.
@@ -431,6 +476,9 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			log.Error().Err(connErr).Int("attempt", attempt).
 				Int("cb_fails", w.tracker.cb.ConsecutiveFails()).
 				Msg("Alpaca stream fatal error (auth/permission) — circuit breaker will gate retries")
+			if hadPoller && w.fetcher != nil {
+				startRestPoller()
+			}
 			consecutiveFails++
 			continue
 		}
@@ -438,6 +486,10 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		if !isConnLimit {
 			// Normal transient error — policy-based backoff.
 			consecutiveFails++
+			// BUG FIX: restart REST poller if one was running before the failed reconnect
+			if !wasStaleReset && hadPoller && w.fetcher != nil {
+				startRestPoller()
+			}
 			wait, shouldContinue := CalculateBackoff(errClass, wasStaleReset, connErr, connectedAt, consecutiveFails, attempt, log.Logger)
 			if !shouldContinue {
 				consecutiveFails++
@@ -446,6 +498,7 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			select {
 			case <-time.After(wait):
 			case <-streamCtx.Done():
+				stopRestPoller()
 				w.tracker.setState("stopped")
 				return nil
 			}
@@ -453,6 +506,7 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		}
 
 		// Ghost-session scenario — probe reconnect with REST bridge.
+		stopRestPoller() // stop any stale-triggered REST poller before ghost takes over
 		w.tracker.incGhostWindow()
 		w.tracker.setState("ghost_probe")
 		ghostStart := time.Now()
@@ -709,20 +763,60 @@ func (w *WSClient) gapFill(
 	}
 }
 
-// isCoreMarketHours reports whether the current time falls within IEX core market
-// hours in CST (America/Chicago): 08:30–15:00.
-// Only during this window is the stream rock-solid; pre/post-market and off-hours
-// all produce frequent nil closes that risk ghost sessions on Alpaca's side.
+// isCoreMarketHours reports whether the current time falls within US equity core
+// market hours in the America/Chicago timezone: 08:30–15:00 local.
+//
+// When the Go timezone database is available (normal images), time.LoadLocation
+// handles DST automatically. For distroless images without tzdata, we fall back
+// to computing the offset manually: UTC-5 during CDT, UTC-6 during CST.
 func isCoreMarketHours() bool {
 	cst, err := time.LoadLocation("America/Chicago")
 	if err != nil {
-		// If the timezone DB is unavailable (distroless image), fall back to UTC-6.
-		cst = time.FixedZone("CST", -6*60*60)
+		// Distroless fallback: compute UTC offset based on DST rules.
+		// US DST: second Sunday of March 02:00 → first Sunday of November 02:00.
+		cst = chicagoFallbackZone()
 	}
 	now := time.Now().In(cst)
 	h, m, _ := now.Clock()
 	minutes := h*60 + m
-	return minutes >= 8*60+30 && minutes < 15*60 // 08:30–15:00 CST
+	return minutes >= 8*60+30 && minutes < 15*60 // 08:30–15:00 Chicago local
+}
+
+// chicagoFallbackZone returns a fixed time.Location for America/Chicago
+// that accounts for US Daylight Saving Time. Used only when the system
+// timezone database is unavailable (e.g. distroless containers).
+func chicagoFallbackZone() *time.Location {
+	now := time.Now().UTC()
+	if isDST(now) {
+		return time.FixedZone("CDT", -5*60*60)
+	}
+	return time.FixedZone("CST", -6*60*60)
+}
+
+// isDST reports whether the given UTC time falls within US Daylight Saving Time.
+// DST starts: second Sunday of March at 02:00 CST (08:00 UTC).
+// DST ends: first Sunday of November at 02:00 CDT (07:00 UTC).
+func isDST(utcNow time.Time) bool {
+	year := utcNow.Year()
+
+	// Find second Sunday of March.
+	march1 := time.Date(year, time.March, 1, 0, 0, 0, 0, time.UTC)
+	daysToSunday := (7 - int(march1.Weekday())) % 7
+	secondSunday := march1.AddDate(0, 0, daysToSunday+7)
+	// DST starts at 02:00 CST = 08:00 UTC on that Sunday.
+	dstStart := time.Date(year, time.March, secondSunday.Day(), 8, 0, 0, 0, time.UTC)
+
+	// Find first Sunday of November.
+	nov1 := time.Date(year, time.November, 1, 0, 0, 0, 0, time.UTC)
+	daysToSunday = (7 - int(nov1.Weekday())) % 7
+	if daysToSunday == 0 {
+		daysToSunday = 0 // Nov 1 is already Sunday
+	}
+	firstSunday := nov1.AddDate(0, 0, daysToSunday)
+	// DST ends at 02:00 CDT = 07:00 UTC on that Sunday.
+	dstEnd := time.Date(year, time.November, firstSunday.Day(), 7, 0, 0, 0, time.UTC)
+
+	return utcNow.After(dstStart) && utcNow.Before(dstEnd)
 }
 
 // Close safely cancels any active WebSocket stream.
