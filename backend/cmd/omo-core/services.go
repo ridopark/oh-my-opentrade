@@ -67,10 +67,10 @@ type appServices struct {
 	router         *strategy.Router
 	symRouterSpecs []symbolrouter.StrategySpec
 
-	orchestrator  *orchestrator.AccountOrchestrator
-	debateSvc     *debate.Service
-	aiAdvisor     ports.AIAdvisorPort
-	kakaoNotifier *notification.KakaoNotifier
+	orchestrator *orchestrator.AccountOrchestrator
+	debateSvc    *debate.Service
+	aiAdvisor    ports.AIAdvisorPort
+	// kakaoNotifier *notification.KakaoNotifier — disabled
 
 	accountEquity float64
 	useStrategyV2 bool
@@ -181,11 +181,13 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 		notifiers = append(notifiers, notification.NewDiscordNotifier(cfg.Notification.DiscordWebhookURL, nil, discordLog))
 		log.Info().Msg("Discord notifier enabled")
 	}
-	if cfg.Notification.KakaoRestAPIKey != "" {
-		svc.kakaoNotifier = notification.NewKakaoNotifier(cfg.Notification.KakaoRestAPIKey, infra.tokenStore, nil)
-		notifiers = append(notifiers, svc.kakaoNotifier)
-		log.Info().Msg("KakaoTalk notifier enabled")
-	}
+	// KakaoTalk notifier disabled — was generating persistent log noise with no token configured.
+	// To re-enable, uncomment and ensure KAKAO_REST_API_KEY is set + OAuth token acquired.
+	// if cfg.Notification.KakaoRestAPIKey != "" {
+	// 	svc.kakaoNotifier = notification.NewKakaoNotifier(cfg.Notification.KakaoRestAPIKey, infra.tokenStore, nil)
+	// 	notifiers = append(notifiers, svc.kakaoNotifier)
+	// 	log.Info().Msg("KakaoTalk notifier enabled")
+	// }
 	multiNotifier := notification.NewMultiNotifier(notifiers...)
 	notifyLog := log.With().Str("component", "notify").Logger()
 	chartGen := charting.NewGonumChartGenerator()
