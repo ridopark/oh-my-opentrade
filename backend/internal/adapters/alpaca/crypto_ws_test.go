@@ -3,6 +3,7 @@ package alpaca
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -90,6 +91,147 @@ func TestNewCryptoWSClient_DefaultURL(t *testing.T) {
 	client, err := NewCryptoWSClient("", "key", "secret", "us", nil, zerolog.Nop())
 	require.NoError(t, err)
 	assert.Equal(t, "wss://stream.data.alpaca.markets", client.cryptoDataURL)
+}
+
+func fakeCryptoConnectError(msg string) func(ctx context.Context) error {
+	return func(ctx context.Context) error {
+		return errors.New(msg)
+	}
+}
+
+func makeCryptoWSClientWithFakeConnect(fetcher BarFetcher, connects ...func(ctx context.Context) error) *CryptoWSClient {
+	client, _ := NewCryptoWSClient("wss://test", "key", "secret", "us", fetcher, zerolog.Nop())
+	var mu sync.Mutex
+	idx := 0
+	client.connectFactory = func(symStrs []string, _ func(alpacastream.CryptoBar), _ func(alpacastream.CryptoTrade)) cryptoConnectFn {
+		return func(ctx context.Context) error {
+			mu.Lock()
+			i := idx
+			if i < len(connects) {
+				idx++
+			}
+			mu.Unlock()
+			if i < len(connects) {
+				return connects[i](ctx)
+			}
+			<-ctx.Done()
+			return nil
+		}
+	}
+	return client
+}
+
+func TestCryptoStreamBars_GhostSessionProbe(t *testing.T) {
+	origSchedule := probeSchedule
+	probeSchedule = []time.Duration{5 * time.Millisecond, 5 * time.Millisecond}
+	defer func() { probeSchedule = origSchedule }()
+
+	handler := func(_ context.Context, _ domain.MarketBar) error { return nil }
+
+	client := makeCryptoWSClientWithFakeConnect(nil,
+		fakeCryptoConnectError("connection limit exceeded"),
+		fakeCryptoConnectError("406 connection limit exceeded"),
+		fakeCryptoConnectError("ghost cleared: different error"),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sym, err := domain.NewSymbol("BTC/USD")
+	require.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- client.StreamBars(ctx, []domain.Symbol{sym}, domain.Timeframe("1m"), handler)
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("StreamBars did not return after context cancel")
+	}
+}
+
+func TestCryptoStreamBars_GhostSessionRESTBridge(t *testing.T) {
+	origSchedule := probeSchedule
+	probeSchedule = []time.Duration{50 * time.Millisecond}
+	defer func() { probeSchedule = origSchedule }()
+
+	sym, err := domain.NewSymbol("BTC/USD")
+	require.NoError(t, err)
+	tf, _ := domain.NewTimeframe("1m")
+	barTime := time.Date(2025, 3, 9, 12, 0, 0, 0, time.UTC)
+
+	var fetchCount atomic.Int32
+	fetcher := func(ctx context.Context, s domain.Symbol, _ domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
+		fetchCount.Add(1)
+		bar, _ := domain.NewMarketBar(barTime, sym, tf, 60000, 61000, 59000, 60500, 1.5)
+		return []domain.MarketBar{bar}, nil
+	}
+
+	var handlerCount atomic.Int32
+	handler := func(_ context.Context, _ domain.MarketBar) error {
+		handlerCount.Add(1)
+		return nil
+	}
+
+	client := makeCryptoWSClientWithFakeConnect(fetcher,
+		fakeCryptoConnectError("connection limit exceeded"),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- client.StreamBars(ctx, []domain.Symbol{sym}, domain.Timeframe("1m"), handler)
+	}()
+
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("StreamBars did not return after context cancel")
+	}
+
+	assert.GreaterOrEqual(t, int(fetchCount.Load()), 1, "REST poller should have fetched bars")
+	assert.GreaterOrEqual(t, int(handlerCount.Load()), 1, "handler should have received at least one bar from REST poller")
+}
+
+func TestCryptoStreamBars_GhostSessionCancelDuringProbe(t *testing.T) {
+	origSchedule := probeSchedule
+	probeSchedule = []time.Duration{10 * time.Second}
+	defer func() { probeSchedule = origSchedule }()
+
+	client := makeCryptoWSClientWithFakeConnect(nil,
+		fakeCryptoConnectError("connection limit exceeded"),
+	)
+
+	sym, err := domain.NewSymbol("BTC/USD")
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var streamErr error
+	done := make(chan struct{})
+	go func() {
+		streamErr = client.StreamBars(ctx, []domain.Symbol{sym}, domain.Timeframe("1m"),
+			func(_ context.Context, _ domain.MarketBar) error { return nil })
+		close(done)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		assert.NoError(t, streamErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("StreamBars did not respect context cancellation during probe sleep")
+	}
 }
 
 // slow test (~20s): waits for staleFeedWatchdog interval

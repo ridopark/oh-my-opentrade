@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -340,40 +341,153 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			continue
 		}
 
-		if wasStaleReset && c.fetcher != nil {
-			dedupMu.Lock()
-			dedup = make(map[string]struct{})
-			dedupMu.Unlock()
+		// Determine if this is a ghost-session / connection-limit scenario.
+		isConnLimit := errClass == ErrGhost
 
-			if c.onDegraded != nil && c.tracker.tryMarkStaleAlert() {
-				c.onDegraded("crypto WebSocket stale — falling back to REST polling")
+		if !isConnLimit {
+			// Non-ghost path: stale reset handling + normal backoff.
+			if wasStaleReset && c.fetcher != nil {
+				dedupMu.Lock()
+				dedup = make(map[string]struct{})
+				dedupMu.Unlock()
+
+				if c.onDegraded != nil && c.tracker.tryMarkStaleAlert() {
+					c.onDegraded("crypto WebSocket stale — falling back to REST polling")
+				}
+
+				startRestPoller()
 			}
 
-			startRestPoller()
+			// BUG FIX: When a REST poller was running but the WS reconnect
+			// failed (non-stale), the poller was killed at cleanup (above)
+			// and never restarted — causing silent data loss. Restart it
+			// so bars keep flowing while WS retries.
+			if !wasStaleReset && hadPoller && c.fetcher != nil {
+				startRestPoller()
+			}
+
+			wait, resetCounter := CalculateCryptoBackoff(errClass, connErr, connectedAt, consecutiveFails, attempt, c.log)
+			if resetCounter {
+				consecutiveFails = 0
+			} else {
+				consecutiveFails++
+			}
+
+			select {
+			case <-time.After(wait):
+			case <-streamCtx.Done():
+				stopRestPoller()
+				c.tracker.setState("stopped")
+				return nil
+			}
+			continue
 		}
 
-		// BUG FIX: When a REST poller was running but the WS reconnect
-		// failed (non-stale), the poller was killed at cleanup (above)
-		// and never restarted — causing silent data loss. Restart it
-		// so bars keep flowing while WS retries.
-		if !wasStaleReset && hadPoller && c.fetcher != nil {
-			startRestPoller()
+		// ── Ghost-session scenario — probe reconnect with REST bridge ──
+		stopRestPoller() // stop any stale-triggered REST poller before ghost takes over
+		c.tracker.incGhostWindow()
+		c.tracker.setState("ghost_probe")
+		ghostStart := time.Now()
+
+		c.log.Warn().Int("attempt", attempt).
+			Msg("crypto WebSocket: connection limit exceeded — probing reconnect with REST bridge")
+
+		// Clear dedup set so next WS session starts fresh.
+		dedupMu.Lock()
+		dedup = make(map[string]struct{})
+		dedupMu.Unlock()
+
+		// Start REST bridge poller if a fetcher is available.
+		var ghostPollCancel context.CancelFunc
+		if c.fetcher != nil {
+			pollCtx, pCancel := context.WithCancel(streamCtx)
+			ghostPollCancel = pCancel
+			go c.cryptoRestPoller(pollCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler, cryptoRestPollInterval)
 		}
 
-		wait, resetCounter := CalculateCryptoBackoff(errClass, connErr, connectedAt, consecutiveFails, attempt, c.log)
-		if resetCounter {
-			consecutiveFails = 0
-		} else {
-			consecutiveFails++
+		// Probe reconnect loop.
+		probeIdx := 0
+		reconnected := false
+		for !reconnected {
+			wait := ghostWait(probeIdx)
+			probeIdx++
+			c.log.Info().Dur("retry_in", wait).Int("probe", probeIdx).Msg("crypto ghost session: probing reconnect")
+
+			select {
+			case <-time.After(wait):
+			case <-streamCtx.Done():
+				if ghostPollCancel != nil {
+					ghostPollCancel()
+				}
+				c.tracker.setState("stopped")
+				return nil
+			}
+
+			// Probe: try connecting and watch for a real bar to arrive.
+			var probeGotBar atomic.Bool
+			probeBarHandler := func(cb alpacastream.CryptoBar) {
+				probeGotBar.Store(true)
+				bar, err := CryptoBarToMarketBar(cb)
+				if err != nil {
+					return
+				}
+				_ = callHandler(streamCtx, bar, false)
+			}
+			probeTradeHandler := func(ct alpacastream.CryptoTrade) {} // no-op during probe
+			probeConnect := c.connectFactory(symStrs, probeBarHandler, probeTradeHandler)
+			probeCtx, probeCancel := context.WithTimeout(streamCtx, 8*time.Second)
+			probeErr := probeConnect(probeCtx)
+			probeCancel()
+
+			if streamCtx.Err() != nil {
+				if ghostPollCancel != nil {
+					ghostPollCancel()
+				}
+				c.tracker.setState("stopped")
+				return nil
+			}
+
+			if probeGotBar.Load() {
+				c.log.Info().Int("probe", probeIdx).Msg("crypto ghost session: bar received during probe — ghost cleared")
+				reconnected = true
+				continue
+			}
+
+			// No bar received. Classify by error.
+			isStillGhost := probeErr != nil && (strings.Contains(probeErr.Error(), "connection limit exceeded") ||
+				strings.Contains(probeErr.Error(), "406") ||
+				strings.Contains(probeErr.Error(), "max reconnect limit"))
+			switch {
+			case probeErr == nil:
+				c.log.Info().Int("probe", probeIdx).Msg("crypto ghost session: clean probe close — ghost cleared")
+				reconnected = true
+			case probeCtx.Err() == context.DeadlineExceeded:
+				c.log.Info().Int("probe", probeIdx).Msg("crypto ghost session: probe timeout with no bar — still alive")
+			case isStillGhost:
+				c.log.Info().Int("probe", probeIdx).Err(probeErr).Msg("crypto ghost session: still alive, continuing probes")
+			default:
+				c.log.Info().Int("probe", probeIdx).Err(probeErr).Msg("crypto ghost session: non-406 error — ghost cleared")
+				reconnected = true
+			}
+		} // end for !reconnected
+
+		// Record ghost window duration.
+		ghostDur := time.Since(ghostStart)
+		c.log.Info().Dur("ghost_duration", ghostDur).Msg("crypto ghost session resolved")
+
+		// Stop REST poller.
+		if ghostPollCancel != nil {
+			ghostPollCancel()
 		}
 
-		select {
-		case <-time.After(wait):
-		case <-streamCtx.Done():
-			stopRestPoller()
-			c.tracker.setState("stopped")
-			return nil
+		// Gap-fill: fetch any bars missed between last REST poll and WS resume.
+		if c.fetcher != nil {
+			c.cryptoGapFill(streamCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler)
 		}
+
+		// Reset counters — we've successfully probed through the ghost.
+		attempt = 0
+		consecutiveFails = 0
 	}
 }
 
