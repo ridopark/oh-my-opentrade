@@ -49,6 +49,7 @@ type feedTracker struct {
 	reconnectCount   int
 	staleResets      int
 	ghostWindowCount int
+	staleAlertSent   bool
 	cb               *CircuitBreaker
 }
 
@@ -106,6 +107,22 @@ func (ft *feedTracker) incStaleReset() {
 func (ft *feedTracker) incGhostWindow() {
 	ft.mu.Lock()
 	ft.ghostWindowCount++
+	ft.mu.Unlock()
+}
+
+func (ft *feedTracker) tryMarkStaleAlert() bool {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	if ft.staleAlertSent {
+		return false
+	}
+	ft.staleAlertSent = true
+	return true
+}
+
+func (ft *feedTracker) clearStaleAlert() {
+	ft.mu.Lock()
+	ft.staleAlertSent = false
 	ft.mu.Unlock()
 }
 

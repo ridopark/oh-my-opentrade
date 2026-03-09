@@ -597,7 +597,7 @@ func TestStaleFeedWatchdog_CancelsOnTimeout(t *testing.T) {
 	}
 	cancelMu.Unlock()
 
-	go staleFeedWatchdog(ctx, ws.tracker, &cancelMu, &cancelFn)
+	go staleFeedWatchdog(ctx, ws.tracker, &cancelMu, &cancelFn, staleFeedThresholdRTH, isCoreMarketHours)
 
 	select {
 	case <-cancelled:
