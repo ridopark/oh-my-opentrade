@@ -32,6 +32,7 @@ type CryptoWSClient struct {
 	feed                 string     // e.g. "us"
 	fetcher              BarFetcher // REST polling fallback; nil disables polling
 	tradeHandler         ports.TradeHandler
+	pipelineHealth       ports.PipelineHealthReporter
 	onDegraded           func(reason string)
 	onCircuitBreakerOpen func(consecutiveFails int, blockedFor time.Duration)
 	log                  zerolog.Logger
@@ -74,6 +75,9 @@ func NewCryptoWSClient(cryptoDataURL, apiKey, apiSecret, feed string, fetcher Ba
 
 func (c *CryptoWSClient) SetTradeHandler(h ports.TradeHandler) { c.tradeHandler = h }
 
+// SetPipelineHealth injects pipeline liveness reporter for dual-track watchdog.
+func (c *CryptoWSClient) SetPipelineHealth(ph ports.PipelineHealthReporter) { c.pipelineHealth = ph }
+
 func (c *CryptoWSClient) SetDegradedCallback(fn func(reason string)) { c.onDegraded = fn }
 
 func (c *CryptoWSClient) SetCircuitBreakerCallback(fn func(consecutiveFails int, blockedFor time.Duration)) {
@@ -81,7 +85,17 @@ func (c *CryptoWSClient) SetCircuitBreakerCallback(fn func(consecutiveFails int,
 }
 
 // FeedHealth returns a point-in-time snapshot of crypto WebSocket feed status.
-func (c *CryptoWSClient) FeedHealth() FeedHealth { return c.tracker.Snapshot() }
+func (c *CryptoWSClient) FeedHealth() FeedHealth {
+	fh := c.tracker.Snapshot()
+	if c.pipelineHealth != nil {
+		last := c.pipelineHealth.LastProcessedAt("crypto")
+		if !last.IsZero() {
+			fh.PipelineLastBarAge = time.Since(last)
+			fh.PipelineHealthy = !IsPipelineDeadlocked(fh.LastBarAge, fh.PipelineLastBarAge)
+		}
+	}
+	return fh
+}
 
 // ErrCryptoWSMissingCredentials is returned when API key or secret is empty.
 var ErrCryptoWSMissingCredentials = errors.New("crypto websocket requires API key and secret")
@@ -225,7 +239,7 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		watchdogDone := make(chan struct{})
 		go func() {
 			defer close(watchdogDone)
-			staleFeedWatchdog(connCtx, c.tracker, &staleCancelMu, &staleCancelFn, cryptoStaleThreshold, func() bool { return true })
+			staleFeedWatchdog(connCtx, c.tracker, &staleCancelMu, &staleCancelFn, cryptoStaleThreshold, func() bool { return true }, c.pipelineHealth, "crypto")
 		}()
 
 		c.tracker.setConnected(true)

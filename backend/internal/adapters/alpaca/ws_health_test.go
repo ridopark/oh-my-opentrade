@@ -137,10 +137,38 @@ func TestFeedHealth_IsHealthy_RTH_Stale(t *testing.T) {
 
 func TestFeedTracker_Snapshot_CircuitStateReflected(t *testing.T) {
 	ft := newFeedTracker()
-	// Trip the circuit breaker.
 	for i := 0; i < 5; i++ {
 		ft.cb.Record(ErrFatal)
 	}
 	snap := ft.Snapshot()
 	assert.Equal(t, "open", snap.CircuitState)
+}
+
+func TestIsPipelineDeadlocked(t *testing.T) {
+	tests := []struct {
+		name       string
+		networkAge time.Duration
+		pipeAge    time.Duration
+		want       bool
+	}{
+		{"both_healthy", 2 * time.Second, 5 * time.Second, false},
+		{"network_healthy_pipeline_stale", 3 * time.Second, 45 * time.Second, true},
+		{"network_stale_pipeline_stale", 2 * time.Minute, 2 * time.Minute, false},
+		{"network_borderline_pipeline_stale", 10 * time.Second, 45 * time.Second, false},
+		{"network_healthy_pipeline_borderline", 3 * time.Second, 30 * time.Second, false},
+		{"network_healthy_pipeline_just_over", 3 * time.Second, 31 * time.Second, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsPipelineDeadlocked(tt.networkAge, tt.pipeAge)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestFeedHealth_PipelineFields_Default(t *testing.T) {
+	ft := newFeedTracker()
+	snap := ft.Snapshot()
+	assert.Equal(t, time.Duration(0), snap.PipelineLastBarAge)
+	assert.False(t, snap.PipelineHealthy)
 }

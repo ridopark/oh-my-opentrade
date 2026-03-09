@@ -246,3 +246,75 @@ func TestService_AsyncWriterBypassesSyncSave(t *testing.T) {
 	bars := batchSaver.allBars()
 	assert.Len(t, bars, 1, "bar should be flushed via async writer")
 }
+
+func TestService_ImplementsPipelineHealthReporter(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	filter := ingestion.NewAdaptiveFilter(5, 4.0)
+	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
+
+	var _ ports.PipelineHealthReporter = svc
+}
+
+func TestService_LastProcessedAt_InitializedOnConstruction(t *testing.T) {
+	before := time.Now()
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	filter := ingestion.NewAdaptiveFilter(5, 4.0)
+	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
+	after := time.Now()
+
+	equityLast := svc.LastProcessedAt("equity")
+	cryptoLast := svc.LastProcessedAt("crypto")
+
+	assert.False(t, equityLast.IsZero())
+	assert.False(t, cryptoLast.IsZero())
+	assert.True(t, !equityLast.Before(before) && !equityLast.After(after))
+	assert.True(t, !cryptoLast.Before(before) && !cryptoLast.After(after))
+}
+
+func TestService_LastProcessedAt_UnknownFeedType(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	filter := ingestion.NewAdaptiveFilter(5, 4.0)
+	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
+
+	assert.True(t, svc.LastProcessedAt("options").IsZero())
+	assert.True(t, svc.LastProcessedAt("").IsZero())
+}
+
+func TestService_HandleMarketBar_UpdatesEquityLiveness(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	filter := ingestion.NewAdaptiveFilter(5, 4.0)
+	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
+	require.NoError(t, svc.Start(context.Background()))
+
+	sym, _ := domain.NewSymbol("AAPL")
+	bar := createBar(t, sym, 150.0, 1000.0)
+
+	before := time.Now()
+	err := bus.Publish(context.Background(), createTestEvent(t, bar))
+	require.NoError(t, err)
+
+	equityLast := svc.LastProcessedAt("equity")
+	assert.True(t, !equityLast.Before(before))
+}
+
+func TestService_HandleMarketBar_UpdatesCryptoLiveness(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	filter := ingestion.NewAdaptiveFilter(5, 4.0)
+	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
+	require.NoError(t, svc.Start(context.Background()))
+
+	sym, _ := domain.NewSymbol("BTC/USD")
+	bar := createBar(t, sym, 50000.0, 100.0)
+
+	before := time.Now()
+	err := bus.Publish(context.Background(), createTestEvent(t, bar))
+	require.NoError(t, err)
+
+	cryptoLast := svc.LastProcessedAt("crypto")
+	assert.True(t, !cryptoLast.Before(before))
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -20,14 +21,51 @@ type Service struct {
 	mu         sync.Mutex
 	log        zerolog.Logger
 	metrics    *metrics.Metrics
+
+	// Pipeline liveness tracking — lock-free atomics on the hot path.
+	// Stores time.Now().UnixNano() after each bar completes processing.
+	// Initialized to now in constructor to prevent false stale on startup.
+	lastEquityProcessedNano atomic.Int64
+	lastCryptoProcessedNano atomic.Int64
 }
 
 func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, filter *AdaptiveFilter, log zerolog.Logger) *Service {
-	return &Service{
+	s := &Service{
 		eventBus:   eventBus,
 		repository: repo,
 		filter:     filter,
 		log:        log,
+	}
+	now := time.Now().UnixNano()
+	s.lastEquityProcessedNano.Store(now)
+	s.lastCryptoProcessedNano.Store(now)
+	return s
+}
+
+// LastProcessedAt returns when the pipeline last processed a bar for the given
+// feed type ("equity" or "crypto"). Used by feed watchdogs for deadlock detection.
+func (s *Service) LastProcessedAt(feedType string) time.Time {
+	var nano int64
+	switch feedType {
+	case "equity":
+		nano = s.lastEquityProcessedNano.Load()
+	case "crypto":
+		nano = s.lastCryptoProcessedNano.Load()
+	default:
+		return time.Time{}
+	}
+	if nano == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nano)
+}
+
+func (s *Service) recordPipelineLiveness(sym domain.Symbol) {
+	now := time.Now().UnixNano()
+	if sym.IsCryptoSymbol() {
+		s.lastCryptoProcessedNano.Store(now)
+	} else {
+		s.lastEquityProcessedNano.Store(now)
 	}
 }
 
@@ -108,6 +146,7 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		if err := s.eventBus.Publish(ctx, *emittedEvent); err != nil {
 			return fmt.Errorf("ingestion: failed to publish rejected event: %w", err)
 		}
+		s.recordPipelineLiveness(bar.Symbol)
 		return nil
 
 	case FilterRepaired:
@@ -150,6 +189,7 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	if err := s.eventBus.Publish(ctx, *emittedEvent); err != nil {
 		return fmt.Errorf("ingestion: failed to publish sanitized event: %w", err)
 	}
+	s.recordPipelineLiveness(bar.Symbol)
 
 	if s.metrics != nil {
 		s.metrics.Bars.ProcLatency.WithLabelValues("ws", string(bar.Timeframe)).Observe(time.Since(start).Seconds())
