@@ -139,6 +139,15 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		return handler(bCtx, bar)
 	}
 
+	startRestPoller := func() {
+		pollCtx, pCancel := context.WithCancel(streamCtx)
+		restPollMu.Lock()
+		restPollCancel = pCancel
+		restPollMu.Unlock()
+		restPollerWasStarted = true
+		go c.cryptoRestPoller(pollCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler, cryptoRestPollInterval)
+	}
+
 	c.tracker.setState("reconnecting")
 	attempt := 0
 	consecutiveFails := 0
@@ -261,6 +270,11 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		if errClass == ErrFatal {
 			c.log.Error().Err(connErr).Int("attempt", attempt).
 				Msg("crypto stream fatal error — circuit breaker will gate retries")
+			// Keep REST poller alive during fatal WS errors so bars
+			// continue flowing while the circuit breaker gates retries.
+			if hadPoller && c.fetcher != nil {
+				startRestPoller()
+			}
 			consecutiveFails++
 			continue
 		}
@@ -274,12 +288,15 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 				c.onDegraded("crypto WebSocket stale — falling back to REST polling")
 			}
 
-			pollCtx, pCancel := context.WithCancel(streamCtx)
-			restPollMu.Lock()
-			restPollCancel = pCancel
-			restPollMu.Unlock()
-			restPollerWasStarted = true
-			go c.cryptoRestPoller(pollCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler, cryptoRestPollInterval)
+			startRestPoller()
+		}
+
+		// BUG FIX: When a REST poller was running but the WS reconnect
+		// failed (non-stale), the poller was killed at cleanup (above)
+		// and never restarted — causing silent data loss. Restart it
+		// so bars keep flowing while WS retries.
+		if !wasStaleReset && hadPoller && c.fetcher != nil {
+			startRestPoller()
 		}
 
 		wait, resetCounter := CalculateCryptoBackoff(errClass, connErr, connectedAt, consecutiveFails, attempt, c.log)
