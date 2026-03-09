@@ -39,6 +39,7 @@ import (
 
 type appServices struct {
 	ingestion        *ingestion.Service
+	barWriter        *ingestion.AsyncBarWriter
 	monitor          *monitor.Service
 	execution        *execution.Service
 	priceCache       *positionmonitor.PriceCache
@@ -84,6 +85,10 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 
 	svc.spikeFilter = ingestion.NewAdaptiveFilter(20, 4.0)
 	svc.ingestion = ingestion.NewService(infra.eventBus, infra.repo, svc.spikeFilter, ingestionLog)
+
+	svc.barWriter = ingestion.NewAsyncBarWriter(infra.repo, ingestionLog)
+	svc.barWriter.Start()
+	svc.ingestion.SetBarWriter(svc.barWriter)
 
 	svc.monitor = monitor.NewService(infra.eventBus, infra.repo, monitorLog)
 
