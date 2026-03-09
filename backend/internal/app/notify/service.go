@@ -12,13 +12,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-var etLoc = func() *time.Location {
-	loc, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		panic("notify: failed to load America/New_York timezone: " + err.Error())
-	}
-	return loc
-}()
+var etLoc *time.Location
 
 const (
 	jobQueueSize  = 100
@@ -61,7 +55,14 @@ func WithRepository(repo ports.RepositoryPort) Option {
 	return func(s *Service) { s.repo = repo }
 }
 
-func NewService(eventBus ports.EventBusPort, notifier ports.NotifierPort, log zerolog.Logger, opts ...Option) *Service {
+func NewService(eventBus ports.EventBusPort, notifier ports.NotifierPort, log zerolog.Logger, opts ...Option) (*Service, error) {
+	if etLoc == nil {
+		loc, err := time.LoadLocation("America/New_York")
+		if err != nil {
+			return nil, fmt.Errorf("notify: failed to load America/New_York timezone: %w", err)
+		}
+		etLoc = loc
+	}
 	s := &Service{
 		eventBus:   eventBus,
 		notifier:   notifier,
@@ -72,7 +73,7 @@ func NewService(eventBus ports.EventBusPort, notifier ports.NotifierPort, log ze
 	for _, o := range opts {
 		o(s)
 	}
-	return s
+	return s, nil
 }
 
 func (s *Service) Start(ctx context.Context) error {

@@ -3,6 +3,7 @@ package builtin
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -172,7 +173,7 @@ func init() {
 	var err error
 	etLocation, err = time.LoadLocation("America/New_York")
 	if err != nil {
-		panic("failed to load America/New_York timezone: " + err.Error())
+		log.Fatalf("failed to load America/New_York timezone: %v", err)
 	}
 }
 
