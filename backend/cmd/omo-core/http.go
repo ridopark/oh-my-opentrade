@@ -135,14 +135,15 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	imux.Handle("/strategies/", strategyHandler)
 	dnaApprovalHandler := omhttp.NewDNAApprovalHandler(svc.dnaApproval, httpLog)
 	imux.Handle("/api/dna/", dnaApprovalHandler)
-	if svc.kakaoNotifier != nil {
-		kakaoRedirectURI := cfg.Notification.KakaoRedirectURI
-		if kakaoRedirectURI == "" {
-			kakaoRedirectURI = fmt.Sprintf("http://localhost:%d/api/v1/notifications/kakao/callback", cfg.Server.Port)
-		}
-		kakaoHandler := omhttp.NewKakaoHandler(svc.kakaoNotifier, infra.tokenStore, svc.kakaoNotifier, cfg.Notification.KakaoRestAPIKey, kakaoRedirectURI, httpLog)
-		imux.Handle("/api/v1/notifications/kakao/", kakaoHandler)
-	}
+	// KakaoTalk routes disabled — notifier is disabled.
+	// if svc.kakaoNotifier != nil {
+	// 	kakaoRedirectURI := cfg.Notification.KakaoRedirectURI
+	// 	if kakaoRedirectURI == "" {
+	// 		kakaoRedirectURI = fmt.Sprintf("http://localhost:%d/api/v1/notifications/kakao/callback", cfg.Server.Port)
+	// 	}
+	// 	kakaoHandler := omhttp.NewKakaoHandler(svc.kakaoNotifier, infra.tokenStore, svc.kakaoNotifier, cfg.Notification.KakaoRestAPIKey, kakaoRedirectURI, httpLog)
+	// 	imux.Handle("/api/v1/notifications/kakao/", kakaoHandler)
+	// }
 	if svc.useStrategyV2 {
 		lifecycleHandler := omhttp.NewLifecycleHandler(svc.lifecycleSvc, httpLog)
 		imux.Handle("/strategies/v2/", lifecycleHandler)
