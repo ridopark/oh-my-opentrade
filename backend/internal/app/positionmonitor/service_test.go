@@ -130,6 +130,9 @@ func (m *mockRepo) GetThoughtLogsByIntentID(ctx context.Context, intentID string
 func (m *mockRepo) UpdateTradeThesis(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol, _ json.RawMessage) error {
 	return nil
 }
+func (m *mockRepo) GetMaxBarHighSince(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _ time.Time) (float64, error) {
+	return 0, nil
+}
 
 type mockSpecStore struct {
 	specs map[string]*portstrategy.Spec

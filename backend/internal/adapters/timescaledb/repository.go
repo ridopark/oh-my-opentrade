@@ -130,6 +130,18 @@ func (r *Repository) GetLatestMarketBarTime(ctx context.Context, symbol domain.S
 	return t, nil
 }
 
+func (r *Repository) GetMaxBarHighSince(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, since time.Time) (float64, error) {
+	row := r.db.QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(high), 0) FROM market_bars WHERE symbol = $1 AND timeframe = $2 AND time >= $3",
+		string(symbol), string(timeframe), since)
+
+	var maxHigh float64
+	if err := row.Scan(&maxHigh); err != nil {
+		return 0, fmt.Errorf("timescaledb: get max bar high since: %w", err)
+	}
+	return maxHigh, nil
+}
+
 // SaveTrade saves a completed or in-progress trade execution.
 // It persists the trade details including tenant and environment mode.
 func (r *Repository) SaveTrade(ctx context.Context, trade domain.Trade) error {

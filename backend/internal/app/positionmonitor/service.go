@@ -315,6 +315,15 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 			}
 		}
 
+		if maxHigh, err := s.repo.GetMaxBarHighSince(ctx, sym, "1m", entryTime); err == nil && maxHigh > pos.HighWaterMark {
+			pos.HighWaterMark = maxHigh
+			s.log.Info().
+				Str("symbol", string(sym)).
+				Float64("hwm_restored", maxHigh).
+				Float64("entry_price", entryPrice).
+				Msg("bootstrap: high water mark restored from bar data")
+		}
+
 		key := pos.PositionKey()
 		s.positions[key] = &pos
 		bootstrapped++
@@ -325,6 +334,7 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 			Str("strategy", strategy).
 			Int("exit_rules", len(exitRules)).
 			Bool("has_thesis", pos.EntryThesis != nil).
+			Float64("high_water_mark", pos.HighWaterMark).
 			Msg("bootstrap: position restored from trade history")
 	}
 
@@ -965,7 +975,27 @@ func (s *Service) ApplyRevaluation(key string, result *domain.RiskRevaluation) [
 	}
 
 	oldRules := pos.ExitRules
-	pos.ExitRules = applyRiskModifierToExitRules(pos.InitialExitRules, result.UpdatedModifier)
+	candidateRules := applyRiskModifierToExitRules(pos.InitialExitRules, result.UpdatedModifier)
+
+	for i, newRule := range candidateRules {
+		if i < len(oldRules) {
+			for k, newV := range newRule.Params {
+				if oldV, exists := oldRules[i].Params[k]; exists && newV > oldV {
+					s.log.Warn().
+						Str("symbol", string(pos.Symbol)).
+						Str("rule", string(newRule.Type)).
+						Str("param", k).
+						Float64("old_value", oldV).
+						Float64("new_value", newV).
+						Str("modifier", string(result.UpdatedModifier)).
+						Msg("TIGHTEN rejected — modifier would loosen exit rule")
+					return nil
+				}
+			}
+		}
+	}
+
+	pos.ExitRules = candidateRules
 
 	var changes []domain.ExitRuleChange
 	for i, newRule := range pos.ExitRules {

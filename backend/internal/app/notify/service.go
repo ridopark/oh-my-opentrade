@@ -553,8 +553,8 @@ func (s *Service) fmtRiskRevaluated(ev domain.Event) string {
 	}
 
 	msg := fmt.Sprintf("🔍 Risk Re-evaluation: %s (%s)", r.Symbol, r.Strategy)
-	msg += fmt.Sprintf("\n%s Position: Entry $%.2f → Now $%.2f (%+.2f%%)",
-		pnlEmoji, r.EntryPrice, r.CurrentPrice, r.UnrealizedPnL*100)
+	msg += fmt.Sprintf("\n%s Position: Entry $%.2f → Now $%.2f (%+.2f%%) | HWM $%.2f",
+		pnlEmoji, r.EntryPrice, r.CurrentPrice, r.UnrealizedPnL*100, r.HighWaterMark)
 	msg += fmt.Sprintf("\n⏱️ Held: %s", r.HoldDuration)
 	msg += fmt.Sprintf("\n%s Thesis: %s", thesisEmoji, r.ThesisStatus)
 	msg += fmt.Sprintf("\n%s Action: %s (Risk: %s, Confidence: %.0f%%)",
@@ -567,12 +567,15 @@ func (s *Service) fmtRiskRevaluated(ev domain.Event) string {
 			if ch.OldValue != ch.NewValue {
 				line = fmt.Sprintf("\n  %s [%s]: %.4f → %.4f", ch.Rule, ch.Param, ch.OldValue, ch.NewValue)
 				if ch.Param == "pct" && r.CurrentPrice > 0 {
-					line += fmt.Sprintf(" ($%.2f → $%.2f)", ch.OldValue*r.CurrentPrice, ch.NewValue*r.CurrentPrice)
+					oldTrigger := exitTriggerPrice(ch.Rule, ch.OldValue, r.EntryPrice, r.HighWaterMark)
+					newTrigger := exitTriggerPrice(ch.Rule, ch.NewValue, r.EntryPrice, r.HighWaterMark)
+					line += fmt.Sprintf(" (@ $%.2f → @ $%.2f)", oldTrigger, newTrigger)
 				}
 			} else {
 				line = fmt.Sprintf("\n  %s [%s]: %.4f", ch.Rule, ch.Param, ch.NewValue)
 				if ch.Param == "pct" && r.CurrentPrice > 0 {
-					line += fmt.Sprintf(" ($%.2f)", ch.NewValue*r.CurrentPrice)
+					trigger := exitTriggerPrice(ch.Rule, ch.NewValue, r.EntryPrice, r.HighWaterMark)
+					line += fmt.Sprintf(" (@ $%.2f)", trigger)
 				}
 			}
 			msg += line
@@ -584,4 +587,17 @@ func (s *Service) fmtRiskRevaluated(ev domain.Event) string {
 	}
 
 	return msg
+}
+
+func exitTriggerPrice(rule string, pct, entryPrice, highWaterMark float64) float64 {
+	switch rule {
+	case "TRAILING_STOP":
+		return highWaterMark * (1 - pct)
+	case "PROFIT_TARGET":
+		return entryPrice * (1 + pct)
+	case "MAX_LOSS":
+		return entryPrice * (1 - pct)
+	default:
+		return pct * entryPrice
+	}
 }
