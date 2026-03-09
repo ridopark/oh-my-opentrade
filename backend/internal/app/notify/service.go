@@ -517,8 +517,8 @@ func (s *Service) fmtStaleOrderCancelled(ev domain.Event) string {
 
 func (s *Service) fmtSystemStarted(ev domain.Event) string {
 	if p, ok := ev.Payload.(domain.SystemStartedPayload); ok {
-		return fmt.Sprintf("✅ System Started: omo-core %s — %s mode, %d symbols streaming",
-			p.Version, p.EnvMode, len(p.Strategies))
+		return fmt.Sprintf("✅ System Started: omo-core — %s mode, %d symbols streaming",
+			p.EnvMode, len(p.Strategies))
 	}
 	return "✅ System started"
 }
