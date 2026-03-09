@@ -202,4 +202,8 @@ if isinstance(data, list):
 fi
 
 echo
+warn "Restart omo-core — position monitor bootstraps from trade DB on startup and has no hot-reload."
+warn "Without restart, it will keep monitoring/revaluating liquidated positions as if they're still open."
+warn "Run: ./scripts/shutdown.sh && ./scripts/start.sh"
+echo
 info "Done. Broker + DB are in sync."
