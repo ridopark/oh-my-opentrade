@@ -47,11 +47,7 @@ func TestService_StartSubscribes(t *testing.T) {
 	err = bus.Publish(context.Background(), intentEvt)
 	assert.NoError(t, err)
 
-	// Since the stub handles the event and returns immediately (or fails),
-	// wait a tiny bit to ensure async processing if any, though memory bus is sync in same goroutine usually.
-	time.Sleep(10 * time.Millisecond)
-
-	// With a full implementation, the service processes the event through the pipeline.
+	bus.Flush()
 	assert.Equal(t, 1, broker.SubmitOrderCalls)
 }
 
@@ -69,6 +65,7 @@ func TestService_FullPipelineSuccess(t *testing.T) {
 	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
 	err = bus.Publish(context.Background(), intentEvt)
 	assert.NoError(t, err)
+	bus.Flush()
 
 	assert.Equal(t, 1, broker.SubmitOrderCalls)
 	assert.Contains(t, emittedEvents, domain.EventOrderIntentValidated)
@@ -99,8 +96,7 @@ func TestService_ExitOrderPassesPipeline(t *testing.T) {
 	intentEvt := createExitOrderIntentEvent(t, domain.DirectionCloseLong)
 	err = bus.Publish(context.Background(), intentEvt)
 	assert.NoError(t, err)
-
-	time.Sleep(10 * time.Millisecond)
+	bus.Flush()
 
 	assert.Equal(t, 1, broker.SubmitOrderCalls, "exit order should reach broker")
 	assert.Contains(t, emittedEvents, domain.EventOrderIntentValidated)
@@ -122,8 +118,7 @@ func TestService_NewShortEntryStillRejected(t *testing.T) {
 	intentEvt := createOrderIntentEvent(t, domain.DirectionShort)
 	err = bus.Publish(context.Background(), intentEvt)
 	assert.NoError(t, err)
-
-	time.Sleep(10 * time.Millisecond)
+	bus.Flush()
 
 	assert.Equal(t, 0, broker.SubmitOrderCalls, "new short entry should be rejected")
 	assert.Contains(t, emittedEvents, domain.EventOrderIntentRejected)
@@ -160,6 +155,7 @@ func TestService_RiskRejection(t *testing.T) {
 	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
 	err = bus.Publish(context.Background(), intentEvt)
 	assert.NoError(t, err)
+	bus.Flush()
 
 	assert.Equal(t, 0, broker.SubmitOrderCalls)
 	assert.Contains(t, emittedEvents, domain.EventOrderIntentRejected)
@@ -182,6 +178,7 @@ func TestService_SlippageRejection(t *testing.T) {
 	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
 	err = bus.Publish(context.Background(), intentEvt)
 	assert.NoError(t, err)
+	bus.Flush()
 
 	assert.Equal(t, 0, broker.SubmitOrderCalls)
 	assert.Contains(t, emittedEvents, domain.EventOrderIntentRejected)
@@ -211,6 +208,7 @@ func TestService_KillSwitchHalted(t *testing.T) {
 	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
 	err = bus.Publish(context.Background(), intentEvt)
 	assert.NoError(t, err)
+	bus.Flush()
 
 	assert.Equal(t, 0, broker.SubmitOrderCalls)
 	assert.Contains(t, emittedEvents, domain.EventKillSwitchEngaged)
@@ -250,6 +248,7 @@ func TestService_KillSwitchDoesNotBlockExitIntents(t *testing.T) {
 
 	exitEvt := createExitOrderIntentEvent(t, domain.DirectionCloseLong)
 	require.NoError(t, bus.Publish(context.Background(), exitEvt))
+	bus.Flush()
 
 	assert.Equal(t, 1, broker.SubmitOrderCalls, "exit should reach broker even with kill switch tripped")
 	assert.Contains(t, emittedEvents, domain.EventOrderSubmitted)
@@ -292,6 +291,7 @@ func TestService_ExitIntentsDoNotTripKillSwitch(t *testing.T) {
 		exitEvt := createExitOrderIntentEvent(t, domain.DirectionCloseLong)
 		require.NoError(t, bus.Publish(context.Background(), exitEvt))
 	}
+	bus.Flush()
 
 	assert.NotContains(t, emittedEvents, domain.EventCircuitBreakerTripped)
 	assert.False(t, killSwitch.IsHalted("tenant-1", "BTCUSD"), "exits should not trip the kill switch")
@@ -314,6 +314,7 @@ func TestService_BrokerError(t *testing.T) {
 	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
 	err = bus.Publish(context.Background(), intentEvt)
 	assert.NoError(t, err)
+	bus.Flush()
 
 	assert.Equal(t, 1, broker.SubmitOrderCalls)
 	assert.Contains(t, emittedEvents, domain.EventOrderRejected)
@@ -328,9 +329,9 @@ func TestService_InvalidPayload(t *testing.T) {
 	badEvt, _ := domain.NewEvent(domain.EventOrderIntentCreated, "tenant-1", domain.EnvModePaper, "key", "invalid-payload-string")
 
 	err = bus.Publish(context.Background(), *badEvt)
-	assert.NoError(t, err) // publish succeeds, but handler should error internally
+	assert.NoError(t, err)
+	bus.Flush()
 
-	// We can't easily assert the internal error, but we can ensure no broker calls and no success events
 	assert.Equal(t, 0, broker.SubmitOrderCalls)
 }
 
@@ -349,8 +350,11 @@ func TestService_EmitsCircuitBreakerOnKillSwitch(t *testing.T) {
 	// Publish 3 intents: first 2 succeed (RecordStop ok), 3rd trips circuit breaker
 	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
 	_ = bus.Publish(context.Background(), intentEvt)
+	bus.Flush()
 	_ = bus.Publish(context.Background(), intentEvt)
+	bus.Flush()
 	_ = bus.Publish(context.Background(), intentEvt)
+	bus.Flush()
 
 	assert.Contains(t, emittedEvents, domain.EventCircuitBreakerTripped)
 	assert.Equal(t, 2, broker.SubmitOrderCalls, "Should have stopped after 2 calls before tripping on 3rd")
@@ -375,6 +379,7 @@ func TestService_DynamicMetricLabels(t *testing.T) {
 
 	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
 	require.NoError(t, bus.Publish(context.Background(), intentEvt))
+	bus.Flush()
 
 	assert.Equal(t, 1, broker.SubmitOrderCalls)
 
@@ -504,6 +509,7 @@ func TestService_PositionGate_RejectsDuplicateEntry(t *testing.T) {
 	// Try to enter LONG on BTCUSD when we already have a long position.
 	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
 	require.NoError(t, bus.Publish(context.Background(), intentEvt))
+	bus.Flush()
 
 	assert.Equal(t, 0, broker.SubmitOrderCalls, "should not submit when position already exists")
 	assert.Contains(t, emittedEvents, domain.EventOrderIntentRejected)
@@ -541,6 +547,7 @@ func TestService_PositionGate_AllowsEntryWhenFlat(t *testing.T) {
 
 	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
 	require.NoError(t, bus.Publish(context.Background(), intentEvt))
+	bus.Flush()
 
 	assert.Equal(t, 1, broker.SubmitOrderCalls, "should submit when flat")
 	assert.Contains(t, emittedEvents, domain.EventOrderSubmitted)
@@ -584,14 +591,14 @@ func TestService_PositionGate_InflightBlocksSecondEntry(t *testing.T) {
 	// First intent: flat + no inflight → should be submitted and mark inflight.
 	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
 	require.NoError(t, bus.Publish(context.Background(), intentEvt))
+	bus.Flush()
 	assert.Equal(t, 1, broker.SubmitOrderCalls, "first entry should be submitted")
 
-	// Give the goroutine a moment to start pollForFill (which blocks).
 	time.Sleep(20 * time.Millisecond)
 
-	// Second intent: same symbol, should be rejected by inflight lock.
 	intentEvt2 := createOrderIntentEvent(t, domain.DirectionLong)
 	require.NoError(t, bus.Publish(context.Background(), intentEvt2))
+	bus.Flush()
 	assert.Equal(t, 1, broker.SubmitOrderCalls, "second entry should be blocked by inflight lock")
 	assert.Contains(t, rejectedEvents, domain.EventOrderIntentRejected)
 }
@@ -633,6 +640,7 @@ func TestService_PositionGate_InflightClearedAfterFill(t *testing.T) {
 	// First entry — submitted, inflight marked, then pollForFill returns "filled" immediately.
 	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
 	require.NoError(t, bus.Publish(context.Background(), intentEvt))
+	bus.Flush()
 	assert.Equal(t, 1, broker.SubmitOrderCalls)
 
 	// Wait for the fill event (pollForFill runs in a goroutine with 5s ticker, but
@@ -650,5 +658,6 @@ func TestService_PositionGate_InflightClearedAfterFill(t *testing.T) {
 	// (GetPositions returns flat, so no position-based rejection either.)
 	intentEvt2 := createOrderIntentEvent(t, domain.DirectionLong)
 	require.NoError(t, bus.Publish(context.Background(), intentEvt2))
+	bus.Flush()
 	assert.Equal(t, 2, broker.SubmitOrderCalls, "second entry should be allowed after fill clears inflight")
 }

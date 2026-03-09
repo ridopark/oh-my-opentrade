@@ -81,9 +81,15 @@ func (b *fakeBus) Subscribe(_ context.Context, t domain.EventType, h ports.Event
 	return nil
 }
 
+func (b *fakeBus) SubscribeAsync(_ context.Context, t domain.EventType, h ports.EventHandler) error {
+	return b.Subscribe(context.Background(), t, h)
+}
+
 func (b *fakeBus) Unsubscribe(_ context.Context, _ domain.EventType, _ ports.EventHandler) error {
 	return nil
 }
+
+func (b *fakeBus) Close() {}
 
 func (b *fakeBus) count(t domain.EventType) int {
 	b.mu.Lock()

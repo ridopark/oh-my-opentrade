@@ -44,12 +44,18 @@ func (b *fakeEventBus) Subscribe(_ context.Context, t domain.EventType, h ports.
 	return nil
 }
 
+func (b *fakeEventBus) SubscribeAsync(_ context.Context, t domain.EventType, h ports.EventHandler) error {
+	return b.Subscribe(context.Background(), t, h)
+}
+
 func (b *fakeEventBus) Unsubscribe(_ context.Context, t domain.EventType, _ ports.EventHandler) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.handlers, t)
 	return nil
 }
+
+func (b *fakeEventBus) Close() {}
 
 func (b *fakeEventBus) eventsOfType(t domain.EventType) []domain.Event {
 	b.mu.Lock()

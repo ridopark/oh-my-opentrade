@@ -43,9 +43,15 @@ func (m *signalTrackerEventBus) Subscribe(_ context.Context, eventType domain.Ev
 	return nil
 }
 
+func (m *signalTrackerEventBus) SubscribeAsync(_ context.Context, et domain.EventType, h ports.EventHandler) error {
+	return m.Subscribe(context.Background(), et, h)
+}
+
 func (m *signalTrackerEventBus) Unsubscribe(_ context.Context, _ domain.EventType, _ ports.EventHandler) error {
 	return nil
 }
+
+func (m *signalTrackerEventBus) Close() {}
 
 type signalTrackerPnLRepo struct {
 	mu     sync.Mutex

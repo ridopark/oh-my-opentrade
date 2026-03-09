@@ -46,8 +46,9 @@ func waitForShutdown(cancel context.CancelFunc, server *http.Server, infra *infr
 	if err := infra.alpacaAdapter.Close(); err != nil {
 		log.Error().Err(err).Msg("error closing Alpaca adapter")
 	}
-	cancel() // Cancel context to stop all services
+	cancel()
 	svc.notifySvc.Stop()
+	infra.eventBus.Close()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {

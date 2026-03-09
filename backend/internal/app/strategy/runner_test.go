@@ -895,8 +895,8 @@ func TestRunner_HandleFill_RoutesToMatchingInstance(t *testing.T) {
 	}
 	ev, _ := domain.NewEvent(domain.EventFillReceived, "test-tenant", envMode, "fill-1", fillPayload)
 	require.NoError(t, bus.Publish(ctx, *ev))
+	bus.Flush()
 
-	// Verify the strategy instance received a FillConfirmation.
 	require.NotNil(t, gotEvt, "OnEvent should have been called")
 	fill, ok := gotEvt.(strat.FillConfirmation)
 	require.True(t, ok, "event should be FillConfirmation, got %T", gotEvt)
@@ -942,6 +942,7 @@ func TestRunner_HandleFill_IgnoresUnknownSymbol(t *testing.T) {
 	}
 	ev, _ := domain.NewEvent(domain.EventFillReceived, "test-tenant", envMode, "fill-2", fillPayload)
 	require.NoError(t, bus.Publish(ctx, *ev))
+	bus.Flush()
 
 	assert.False(t, called, "OnEvent should not be called for unknown symbol")
 }
@@ -980,6 +981,7 @@ func TestRunner_HandleFill_SellSide(t *testing.T) {
 	}
 	ev, _ := domain.NewEvent(domain.EventFillReceived, "test-tenant", envMode, "fill-3", fillPayload)
 	require.NoError(t, bus.Publish(ctx, *ev))
+	bus.Flush()
 
 	require.NotNil(t, gotEvt)
 	fill, ok := gotEvt.(strat.FillConfirmation)
@@ -1021,6 +1023,7 @@ func TestRunner_HandleFill_IgnoresUnknownSide(t *testing.T) {
 	}
 	ev, _ := domain.NewEvent(domain.EventFillReceived, "test-tenant", envMode, "fill-4", fillPayload)
 	require.NoError(t, bus.Publish(ctx, *ev))
+	bus.Flush()
 
 	assert.False(t, called, "OnEvent should not be called for unknown side")
 }

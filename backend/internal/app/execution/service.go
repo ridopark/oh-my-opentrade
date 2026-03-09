@@ -105,10 +105,10 @@ func (s *Service) SetAccountEquity(equity float64) {
 func (s *Service) SetMetrics(m *metrics.Metrics) { s.metrics = m }
 
 func (s *Service) Start(ctx context.Context) error {
-	if err := s.eventBus.Subscribe(ctx, domain.EventOrderIntentCreated, s.handleIntent); err != nil {
+	if err := s.eventBus.SubscribeAsync(ctx, domain.EventOrderIntentCreated, s.handleIntent); err != nil {
 		return fmt.Errorf("execution: failed to subscribe to OrderIntentCreated: %w", err)
 	}
-	if err := s.eventBus.Subscribe(ctx, domain.EventRiskDowngraded, s.handleRiskDowngrade); err != nil {
+	if err := s.eventBus.SubscribeAsync(ctx, domain.EventRiskDowngraded, s.handleRiskDowngrade); err != nil {
 		return fmt.Errorf("execution: failed to subscribe to RiskDowngraded: %w", err)
 	}
 	s.log.Info().Msg("subscribed to OrderIntentCreated and RiskDowngraded events")

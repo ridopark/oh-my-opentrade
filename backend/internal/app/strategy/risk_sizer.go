@@ -63,7 +63,7 @@ func (rs *RiskSizer) Start(ctx context.Context) error {
 	if err := rs.eventBus.Subscribe(ctx, domain.EventRiskRevaluated, rs.handleRevaluation); err != nil {
 		return fmt.Errorf("risk sizer: failed to subscribe to RiskRevaluated: %w", err)
 	}
-	if err := rs.eventBus.Subscribe(ctx, domain.EventFillReceived, rs.handleFillForCooldown); err != nil {
+	if err := rs.eventBus.SubscribeAsync(ctx, domain.EventFillReceived, rs.handleFillForCooldown); err != nil {
 		return fmt.Errorf("risk sizer: failed to subscribe to FillReceived: %w", err)
 	}
 	rs.logger.Info("risk sizer subscribed to SignalEnriched, RiskRevaluated, and FillReceived events")

@@ -13,5 +13,7 @@ type EventHandler func(ctx context.Context, event domain.Event) error
 type EventBusPort interface {
 	Publish(ctx context.Context, event domain.Event) error
 	Subscribe(ctx context.Context, eventType domain.EventType, handler EventHandler) error
+	SubscribeAsync(ctx context.Context, eventType domain.EventType, handler EventHandler) error
 	Unsubscribe(ctx context.Context, eventType domain.EventType, handler EventHandler) error
+	Close()
 }

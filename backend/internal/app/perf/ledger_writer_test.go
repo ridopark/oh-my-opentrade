@@ -44,9 +44,15 @@ func (m *mockEventBus) Subscribe(_ context.Context, eventType domain.EventType, 
 	return nil
 }
 
+func (m *mockEventBus) SubscribeAsync(_ context.Context, et domain.EventType, h ports.EventHandler) error {
+	return m.Subscribe(context.Background(), et, h)
+}
+
 func (m *mockEventBus) Unsubscribe(_ context.Context, _ domain.EventType, _ ports.EventHandler) error {
 	return nil
 }
+
+func (m *mockEventBus) Close() {}
 
 type mockPnLRepo struct {
 	mu           sync.Mutex

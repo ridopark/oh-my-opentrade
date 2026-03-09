@@ -125,7 +125,7 @@ func (lw *LedgerWriter) Start(ctx context.Context, tenantID string, envMode doma
 	}
 	lw.mu.Unlock()
 
-	if err := lw.eventBus.Subscribe(ctx, domain.EventFillReceived, lw.handleFill); err != nil {
+	if err := lw.eventBus.SubscribeAsync(ctx, domain.EventFillReceived, lw.handleFill); err != nil {
 		return fmt.Errorf("perf: ledger writer failed to subscribe to FillReceived: %w", err)
 	}
 	lw.log.Info().Int("bootstrapped", len(positions)).Msg("ledger writer started")
