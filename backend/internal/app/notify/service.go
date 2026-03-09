@@ -255,7 +255,7 @@ func (s *Service) fmtOrderSubmitted(ev domain.Event) string {
 
 	if !isExit {
 		if raw, ok := p.Meta["exit_rules"]; ok {
-			msg += fmtExitRules(raw, p.LimitPrice)
+			msg += fmtExitRules(raw, p.LimitPrice, p.Meta)
 		}
 	}
 
@@ -265,7 +265,7 @@ func (s *Service) fmtOrderSubmitted(ev domain.Event) string {
 	return msg
 }
 
-func fmtExitRules(rawJSON string, entryPrice float64) string {
+func fmtExitRules(rawJSON string, entryPrice float64, meta map[string]string) string {
 	type ruleWire struct {
 		Type   string             `json:"type"`
 		Params map[string]float64 `json:"params"`
@@ -281,10 +281,16 @@ func fmtExitRules(rawJSON string, entryPrice float64) string {
 		case "VOLATILITY_STOP":
 			if m, ok := r.Params["atr_multiplier"]; ok {
 				msg += fmt.Sprintf("\n  VOLATILITY_STOP: %.1fx ATR", m)
+				if price, ok := meta["exit_price_volatility_stop"]; ok {
+					msg += fmt.Sprintf(" ($%s)", price)
+				}
 			}
 		case "SD_TARGET":
 			if sd, ok := r.Params["sd_level"]; ok {
 				msg += fmt.Sprintf("\n  SD_TARGET: %.1f SD", sd)
+				if price, ok := meta["exit_price_sd_target"]; ok {
+					msg += fmt.Sprintf(" ($%s)", price)
+				}
 			}
 		case "MAX_LOSS":
 			if pct, ok := r.Params["pct"]; ok {
@@ -303,13 +309,22 @@ func fmtExitRules(rawJSON string, entryPrice float64) string {
 				if sd, ok := r.Params["sd_threshold"]; ok {
 					msg += fmt.Sprintf(" (< %.1f SD move)", sd)
 				}
+				if price, ok := meta["exit_price_stagnation"]; ok {
+					msg += fmt.Sprintf(" ($%s)", price)
+				}
 			}
 		case "TRAILING_STOP":
 			if pct, ok := r.Params["pct"]; ok {
 				msg += fmt.Sprintf("\n  TRAILING_STOP: %.2f%%", pct*100)
+				if price, ok := meta["exit_price_trailing_stop"]; ok {
+					msg += fmt.Sprintf(" ($%s)", price)
+				}
 			}
 		case "STEP_STOP":
 			msg += "\n  STEP_STOP: enabled"
+			if price, ok := meta["exit_price_step_stop"]; ok {
+				msg += fmt.Sprintf(" ($%s)", price)
+			}
 		default:
 			msg += fmt.Sprintf("\n  %s", r.Type)
 		}

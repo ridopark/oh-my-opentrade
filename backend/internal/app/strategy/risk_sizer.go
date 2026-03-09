@@ -454,6 +454,33 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		if raw, err := json.Marshal(wire); err == nil {
 			intent.Meta["exit_rules"] = string(raw)
 		}
+
+		atr, _ := strconv.ParseFloat(sigRef.Tags["ind_atr"], 64)
+		vwap, _ := strconv.ParseFloat(sigRef.Tags["ind_vwap"], 64)
+		vwapSD, _ := strconv.ParseFloat(sigRef.Tags["ind_vwap_sd"], 64)
+
+		for _, r := range spec.ExitRules {
+			switch r.Type {
+			case domain.ExitRuleVolatilityStop:
+				if mult := r.Param("atr_multiplier", 0); mult > 0 && atr > 0 {
+					intent.Meta["exit_price_volatility_stop"] = fmt.Sprintf("%.2f", limitPrice-(atr*mult))
+				}
+			case domain.ExitRuleSDTarget:
+				if sd := r.Param("sd_level", 0); sd > 0 && vwap > 0 && vwapSD > 0 {
+					intent.Meta["exit_price_sd_target"] = fmt.Sprintf("%.2f", vwap+(sd*vwapSD))
+				}
+			case domain.ExitRuleTrailingStop:
+				if pct := r.Param("pct", 0); pct > 0 {
+					intent.Meta["exit_price_trailing_stop"] = fmt.Sprintf("%.2f", limitPrice*(1-pct))
+				}
+			case domain.ExitRuleStepStop:
+				intent.Meta["exit_price_step_stop"] = fmt.Sprintf("%.2f", limitPrice)
+			case domain.ExitRuleStagnationExit:
+				if sdThresh := r.Param("sd_threshold", 1.0); vwap > 0 && vwapSD > 0 {
+					intent.Meta["exit_price_stagnation"] = fmt.Sprintf("%.2f", vwap+(sdThresh*vwapSD))
+				}
+			}
+		}
 	}
 
 	rs.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)
