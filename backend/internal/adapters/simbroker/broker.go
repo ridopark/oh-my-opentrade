@@ -134,17 +134,16 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 
 	switch side {
 	case "buy":
-		if pos.quantity == 0 {
+		switch {
+		case pos.quantity == 0:
 			pos.side = "buy"
 			pos.avgCost = fillPrice
 			pos.quantity = intent.Quantity
-		} else if pos.side == "buy" {
-			// Adding to long position — weighted average cost.
+		case pos.side == "buy":
 			totalCost := pos.avgCost*pos.quantity + fillPrice*intent.Quantity
 			pos.quantity += intent.Quantity
 			pos.avgCost = totalCost / pos.quantity
-		} else {
-			// Closing short position.
+		default:
 			pos.quantity -= intent.Quantity
 			if pos.quantity <= 0 {
 				pos.quantity = -pos.quantity
@@ -153,16 +152,16 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			}
 		}
 	case "sell":
-		if pos.quantity == 0 {
+		switch {
+		case pos.quantity == 0:
 			pos.side = "sell"
 			pos.avgCost = fillPrice
 			pos.quantity = intent.Quantity
-		} else if pos.side == "sell" {
+		case pos.side == "sell":
 			totalCost := pos.avgCost*pos.quantity + fillPrice*intent.Quantity
 			pos.quantity += intent.Quantity
 			pos.avgCost = totalCost / pos.quantity
-		} else {
-			// Closing long position.
+		default:
 			pos.quantity -= intent.Quantity
 			if pos.quantity <= 0 {
 				pos.quantity = -pos.quantity

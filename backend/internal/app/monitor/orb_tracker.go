@@ -239,11 +239,10 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 			sess.State = ORBStateRangeSet
 			t.logger.Info("orb: range set", "symbol", sym, "high", sess.OrbHigh, "low", sess.OrbLow, "bars", sess.RangeBarCount)
 			return t.onRangeSetBar(sess, bar, snap, cfg)
-		} else {
-			sess.State = ORBStateInvalid
-			t.logger.Warn("orb: invalid range", "symbol", sym, "bars", sess.RangeBarCount, "required", required)
-			return nil, false
 		}
+		sess.State = ORBStateInvalid
+		t.logger.Warn("orb: invalid range", "symbol", sym, "bars", sess.RangeBarCount, "required", required)
+		return nil, false
 
 	case ORBStateRangeSet:
 		return t.onRangeSetBar(sess, bar, snap, cfg)
@@ -261,12 +260,13 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 		}
 
 		confirmBps := float64(cfg.BreakoutConfirmBps) / 10000.0
-		if sess.Breakout.Direction == domain.DirectionLong {
+		switch sess.Breakout.Direction {
+		case domain.DirectionLong:
 			if bar.Close < sess.OrbLow*(1.0-confirmBps) {
 				sess.State = ORBStateDoneForSession
 				return nil, false
 			}
-		} else if sess.Breakout.Direction == domain.DirectionShort {
+		case domain.DirectionShort:
 			if bar.Close > sess.OrbHigh*(1.0+confirmBps) {
 				sess.State = ORBStateDoneForSession
 				return nil, false

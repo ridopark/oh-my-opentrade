@@ -56,7 +56,7 @@ func (rd *RegimeDetector) Detect(snapshot domain.IndicatorSnapshot) (domain.Mark
 	}
 	absEmaDiff := math.Abs(emaDiff)
 
-	regimeType := domain.RegimeBalance
+	var regimeType domain.RegimeType
 	strength := 0.0
 
 	// 1. REVERSAL check
@@ -67,16 +67,15 @@ func (rd *RegimeDetector) Detect(snapshot domain.IndicatorSnapshot) (domain.Mark
 		isReversal = true
 	}
 
-	if isReversal {
+	switch {
+	case isReversal:
 		regimeType = domain.RegimeReversal
 		strength = math.Abs(snapshot.RSI-50.0) / 50.0
 		strength = clamp(strength, 0, 1)
-	} else if absEmaDiff > emaDivergenceThreshold {
-		// 2. TREND check
+	case absEmaDiff > emaDivergenceThreshold:
 		regimeType = domain.RegimeTrend
 		strength = clamp(absEmaDiff*strengthScale, 0, 1)
-	} else {
-		// 3. BALANCE (default)
+	default:
 		regimeType = domain.RegimeBalance
 		strength = clamp(1.0-(absEmaDiff*strengthScale), 0, 1)
 	}

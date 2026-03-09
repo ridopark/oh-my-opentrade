@@ -108,7 +108,7 @@ func (e *HookExecutor) Execute(ctx context.Context, params map[string]any, bar m
 	case <-callCtx.Done():
 		atomic.AddUint64(&e.timeouts, 1)
 		e.recordFailure()
-		return nil, fmt.Errorf("%w: %v", ErrHookTimeout, callCtx.Err())
+		return nil, fmt.Errorf("%w: %w", ErrHookTimeout, callCtx.Err())
 	case r := <-resCh:
 		if r.err != nil {
 			atomic.AddUint64(&e.failures, 1)

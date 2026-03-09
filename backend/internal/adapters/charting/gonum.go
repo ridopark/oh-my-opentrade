@@ -59,16 +59,16 @@ func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars [
 	p.Title.TextStyle.Color = textColor
 	p.BackgroundColor = bgColor
 
-	p.X.LineStyle.Color = textColor
+	p.X.Color = textColor
 	p.X.Label.TextStyle.Color = textColor
 	p.X.Tick.Label.Color = textColor
-	p.X.Tick.LineStyle.Color = textColor
+	p.X.Tick.Color = textColor
 	p.X.Tick.Marker = plot.TimeTicks{Format: "15:04"}
 
-	p.Y.LineStyle.Color = textColor
+	p.Y.Color = textColor
 	p.Y.Label.TextStyle.Color = textColor
 	p.Y.Tick.Label.Color = textColor
-	p.Y.Tick.LineStyle.Color = textColor
+	p.Y.Tick.Color = textColor
 	p.Y.Label.Text = "$"
 
 	p.Add(candles)

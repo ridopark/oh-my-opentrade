@@ -80,7 +80,7 @@ func (s *Service) SetEntryThesis(key string, thesis *domain.EntryThesis) {
 	pos.EntryThesis = thesis
 }
 
-// PersistThesis serialises the entry thesis to JSON and writes it to the most
+// PersistThesis serializes the entry thesis to JSON and writes it to the most
 // recent BUY trade for the given symbol. This ensures thesis survives restarts.
 func (s *Service) PersistThesis(ctx context.Context, symbol domain.Symbol, thesis *domain.EntryThesis) {
 	if s.repo == nil || thesis == nil {
@@ -118,35 +118,36 @@ func applyRiskModifierToExitRules(rules []domain.ExitRule, modifier domain.RiskM
 
 	scaled := make([]domain.ExitRule, len(rules))
 	for i, r := range rules {
-		if r.Type == domain.ExitRuleVolatilityStop && r.Params["atr_multiplier"] > 0 {
+		switch {
+		case r.Type == domain.ExitRuleVolatilityStop && r.Params["atr_multiplier"] > 0:
 			newParams := make(map[string]float64, len(r.Params))
 			for k, v := range r.Params {
 				newParams[k] = v
 			}
 			newParams["atr_multiplier"] = r.Params["atr_multiplier"] * mult
 			scaled[i] = domain.ExitRule{Type: r.Type, Params: newParams}
-		} else if r.Type == domain.ExitRuleSDTarget && r.Params["sd_level"] > 0 {
+		case r.Type == domain.ExitRuleSDTarget && r.Params["sd_level"] > 0:
 			newParams := make(map[string]float64, len(r.Params))
 			for k, v := range r.Params {
 				newParams[k] = v
 			}
 			newParams["sd_level"] = r.Params["sd_level"] * mult
 			scaled[i] = domain.ExitRule{Type: r.Type, Params: newParams}
-		} else if r.Type == domain.ExitRuleStagnationExit && r.Params["minutes"] > 0 {
+		case r.Type == domain.ExitRuleStagnationExit && r.Params["minutes"] > 0:
 			newParams := make(map[string]float64, len(r.Params))
 			for k, v := range r.Params {
 				newParams[k] = v
 			}
 			newParams["minutes"] = r.Params["minutes"] * mult
 			scaled[i] = domain.ExitRule{Type: r.Type, Params: newParams}
-		} else if (r.Type == domain.ExitRuleTrailingStop || r.Type == domain.ExitRuleMaxLoss) && r.Params["pct"] > 0 {
+		case (r.Type == domain.ExitRuleTrailingStop || r.Type == domain.ExitRuleMaxLoss) && r.Params["pct"] > 0:
 			newParams := make(map[string]float64, len(r.Params))
 			for k, v := range r.Params {
 				newParams[k] = v
 			}
 			newParams["pct"] = r.Params["pct"] * mult
 			scaled[i] = domain.ExitRule{Type: r.Type, Params: newParams}
-		} else {
+		default:
 			scaled[i] = r
 		}
 	}

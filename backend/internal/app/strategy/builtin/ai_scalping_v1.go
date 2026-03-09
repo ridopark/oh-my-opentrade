@@ -5,21 +5,21 @@ import (
 	"fmt"
 	"time"
 
-	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
 
 // AIScalperStrategy implements RSI/Stochastic mean-reversion scalping
 // with optional AI debate overlay for sizing/veto.
 type AIScalperStrategy struct {
-	meta strat.Meta
+	meta start.Meta
 }
 
 // NewAIScalperStrategy creates a new AI-Enhanced Scalping strategy.
 func NewAIScalperStrategy() *AIScalperStrategy {
-	id, _ := strat.NewStrategyID("ai_scalping_v1")
-	ver, _ := strat.NewVersion("1.0.0")
+	id, _ := start.NewStrategyID("ai_scalping_v1")
+	ver, _ := start.NewVersion("1.0.0")
 	return &AIScalperStrategy{
-		meta: strat.Meta{
+		meta: start.Meta{
 			ID:          id,
 			Version:     ver,
 			Name:        "AI-Enhanced Scalping",
@@ -29,7 +29,7 @@ func NewAIScalperStrategy() *AIScalperStrategy {
 	}
 }
 
-func (s *AIScalperStrategy) Meta() strat.Meta { return s.meta }
+func (s *AIScalperStrategy) Meta() start.Meta { return s.meta }
 func (s *AIScalperStrategy) WarmupBars() int  { return 30 }
 
 // AIScalperConfig holds strategy parameters parsed from DNA.
@@ -53,13 +53,13 @@ type AIScalperConfig struct {
 // AIScalperState is the per-symbol state for the AI scalping strategy.
 type AIScalperState struct {
 	Symbol             string
-	Indicators         strat.IndicatorData
+	Indicators         start.IndicatorData
 	PrevStochK         float64
 	PrevStochD         float64
 	TradesToday        int
 	CooldownUntil      time.Time
-	PositionSide       strat.Side
-	PendingEntry       strat.Side // set on signal emission, cleared on fill/rejection
+	PositionSide       start.Side
+	PendingEntry       start.Side // set on signal emission, cleared on fill/rejection
 	PendingEntryAt     time.Time  // when PendingEntry was set (for timeout recovery)
 	PendingAIRequestID string
 	LastAIVerdict      string
@@ -71,7 +71,7 @@ type AIScalperState struct {
 }
 
 // SetIndicators implements the indicatorSetter interface.
-func (s *AIScalperState) SetIndicators(ind strat.IndicatorData) {
+func (s *AIScalperState) SetIndicators(ind start.IndicatorData) {
 	s.Indicators = ind
 }
 
@@ -102,7 +102,7 @@ func parseAIScalperConfig(params map[string]any) AIScalperConfig {
 }
 
 // Init creates initial state for a symbol.
-func (s *AIScalperStrategy) Init(ctx strat.Context, symbol string, params map[string]any, prior strat.State) (strat.State, error) {
+func (s *AIScalperStrategy) Init(ctx start.Context, symbol string, params map[string]any, prior start.State) (start.State, error) {
 	cfg := parseAIScalperConfig(params)
 
 	st := &AIScalperState{
@@ -135,7 +135,7 @@ func (s *AIScalperStrategy) Init(ctx strat.Context, symbol string, params map[st
 }
 
 // OnBar processes a bar and emits scalping entry/exit signals.
-func (s *AIScalperStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+func (s *AIScalperStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st start.State) (start.State, []start.Signal, error) {
 	aiSt, ok := st.(*AIScalperState)
 	if !ok {
 		return st, nil, fmt.Errorf("AIScalperStrategy.OnBar: expected *AIScalperState, got %T", st)
@@ -194,14 +194,14 @@ func (s *AIScalperStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Ba
 		}
 	}
 
-	instanceID, _ := strat.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
+	instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
 	cooldown := time.Duration(cfg.CooldownSeconds) * time.Second
 
 	// 1. Exit signals (always checked, even during cooldown).
-	if aiSt.PositionSide == strat.SideBuy && aiSt.PendingEntry == "" {
+	if aiSt.PositionSide == start.SideBuy && aiSt.PendingEntry == "" {
 		exitLong := rsi >= cfg.RSIExitMid || stochK >= cfg.StochShort || regimeIsTrend
 		if exitLong {
-			sig, err := strat.NewSignal(instanceID, symbol, strat.SignalExit, strat.SideSell, 0.8, map[string]string{
+			sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideSell, 0.8, map[string]string{
 				"ref_price": fmt.Sprintf("%.4f", bar.Close),
 				"setup":     "ai_scalp_exit",
 				"regime_5m": regimeTag,
@@ -211,13 +211,13 @@ func (s *AIScalperStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Ba
 			}
 			aiSt.PositionSide = ""
 			aiSt.CooldownUntil = now.Add(cooldown)
-			return aiSt, []strat.Signal{sig}, nil
+			return aiSt, []start.Signal{sig}, nil
 		}
 	}
-	if aiSt.PositionSide == strat.SideSell && aiSt.PendingEntry == "" {
+	if aiSt.PositionSide == start.SideSell && aiSt.PendingEntry == "" {
 		exitShort := rsi <= (100-cfg.RSIExitMid) || stochK <= cfg.StochLong || regimeIsTrend
 		if exitShort {
-			sig, err := strat.NewSignal(instanceID, symbol, strat.SignalExit, strat.SideBuy, 0.8, map[string]string{
+			sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideBuy, 0.8, map[string]string{
 				"ref_price": fmt.Sprintf("%.4f", bar.Close),
 				"setup":     "ai_scalp_exit",
 				"regime_5m": regimeTag,
@@ -227,7 +227,7 @@ func (s *AIScalperStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Ba
 			}
 			aiSt.PositionSide = ""
 			aiSt.CooldownUntil = now.Add(cooldown)
-			return aiSt, []strat.Signal{sig}, nil
+			return aiSt, []start.Signal{sig}, nil
 		}
 	}
 
@@ -264,16 +264,16 @@ func (s *AIScalperStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Ba
 			tags["ai_requested"] = "true"
 			tags["ai_request_id"] = reqID
 		}
-		sig, err := strat.NewSignal(instanceID, symbol, strat.SignalEntry, strat.SideBuy, 0.7, tags)
+		sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, 0.7, tags)
 		if err != nil {
 			return aiSt, nil, err
 		}
-		aiSt.PendingEntry = strat.SideBuy
+		aiSt.PendingEntry = start.SideBuy
 		aiSt.PendingEntryAt = now
 		aiSt.TradesToday++
 		aiSt.CooldownUntil = now.Add(cooldown)
 		aiSt.LastBarClose = bar.Close
-		return aiSt, []strat.Signal{sig}, nil
+		return aiSt, []start.Signal{sig}, nil
 	}
 
 	// 5. Short entry: RSI > RSIShort AND StochK > StochShort AND crossDown.
@@ -293,16 +293,16 @@ func (s *AIScalperStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Ba
 			tags["ai_requested"] = "true"
 			tags["ai_request_id"] = reqID
 		}
-		sig, err := strat.NewSignal(instanceID, symbol, strat.SignalEntry, strat.SideSell, 0.7, tags)
+		sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.7, tags)
 		if err != nil {
 			return aiSt, nil, err
 		}
-		aiSt.PendingEntry = strat.SideSell
+		aiSt.PendingEntry = start.SideSell
 		aiSt.PendingEntryAt = now
 		aiSt.TradesToday++
 		aiSt.CooldownUntil = now.Add(cooldown)
 		aiSt.LastBarClose = bar.Close
-		return aiSt, []strat.Signal{sig}, nil
+		return aiSt, []start.Signal{sig}, nil
 	}
 
 	return aiSt, nil, nil
@@ -310,14 +310,14 @@ func (s *AIScalperStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Ba
 
 // OnEvent handles fill confirmations, entry rejections, AI debate results,
 // and other async events.
-func (s *AIScalperStrategy) OnEvent(ctx strat.Context, symbol string, evt any, st strat.State) (strat.State, []strat.Signal, error) {
+func (s *AIScalperStrategy) OnEvent(ctx start.Context, symbol string, evt any, st start.State) (start.State, []start.Signal, error) {
 	aiSt, ok := st.(*AIScalperState)
 	if !ok {
 		return st, nil, fmt.Errorf("AIScalperStrategy.OnEvent: expected *AIScalperState, got %T", st)
 	}
 
 	switch e := evt.(type) {
-	case strat.FillConfirmation:
+	case start.FillConfirmation:
 		// Entry was filled — promote PendingEntry to confirmed PositionSide.
 		if aiSt.PendingEntry != "" {
 			aiSt.PositionSide = aiSt.PendingEntry
@@ -332,7 +332,7 @@ func (s *AIScalperStrategy) OnEvent(ctx strat.Context, symbol string, evt any, s
 		}
 		return aiSt, nil, nil
 
-	case strat.EntryRejection:
+	case start.EntryRejection:
 		// Entry was rejected — clear PendingEntry so strategy can re-evaluate.
 		if aiSt.PendingEntry != "" {
 			if ctx != nil && ctx.Logger() != nil {
@@ -355,13 +355,13 @@ func (s *AIScalperStrategy) OnEvent(ctx strat.Context, symbol string, evt any, s
 }
 
 // handleAIDebate processes AI debate results (extracted from OnEvent for clarity).
-func (s *AIScalperStrategy) handleAIDebate(ctx strat.Context, symbol string, result AIDebateResult, aiSt *AIScalperState) (strat.State, []strat.Signal, error) {
+func (s *AIScalperStrategy) handleAIDebate(ctx start.Context, symbol string, result AIDebateResult, aiSt *AIScalperState) (start.State, []start.Signal, error) {
 	// Ignore if request ID doesn't match pending.
 	if result.RequestID != aiSt.PendingAIRequestID {
 		return aiSt, nil, nil
 	}
 
-	instanceID, _ := strat.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
+	instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
 
 	now := time.Now()
 	if ctx != nil {
@@ -377,11 +377,11 @@ func (s *AIScalperStrategy) handleAIDebate(ctx strat.Context, symbol string, res
 	switch result.Verdict {
 	case "veto":
 		// Veto: flatten position.
-		exitSide := strat.SideSell
-		if aiSt.PositionSide == strat.SideSell {
-			exitSide = strat.SideBuy
+		exitSide := start.SideSell
+		if aiSt.PositionSide == start.SideSell {
+			exitSide = start.SideBuy
 		}
-		sig, err := strat.NewSignal(instanceID, symbol, strat.SignalFlat, exitSide, 0.9, map[string]string{
+		sig, err := start.NewSignal(instanceID, symbol, start.SignalFlat, exitSide, 0.9, map[string]string{
 			"ref_price":  fmt.Sprintf("%.4f", aiSt.LastBarClose),
 			"setup":      "ai_veto",
 			"ai_verdict": "veto",
@@ -391,13 +391,13 @@ func (s *AIScalperStrategy) handleAIDebate(ctx strat.Context, symbol string, res
 			return aiSt, nil, err
 		}
 		aiSt.PositionSide = ""
-		return aiSt, []strat.Signal{sig}, nil
+		return aiSt, []start.Signal{sig}, nil
 
 	case "bull", "bear":
 		// Adjust sizing based on agreement with position direction.
 		var sizeMult float64
-		agrees := (result.Verdict == "bull" && aiSt.PositionSide == strat.SideBuy) ||
-			(result.Verdict == "bear" && aiSt.PositionSide == strat.SideSell)
+		agrees := (result.Verdict == "bull" && aiSt.PositionSide == start.SideBuy) ||
+			(result.Verdict == "bear" && aiSt.PositionSide == start.SideSell)
 		if agrees {
 			sizeMult = aiSt.Config.SizeMultMax
 		} else {
@@ -405,7 +405,7 @@ func (s *AIScalperStrategy) handleAIDebate(ctx strat.Context, symbol string, res
 		}
 		aiSt.LastSizeMult = sizeMult
 
-		sig, err := strat.NewSignal(instanceID, symbol, strat.SignalAdjust, aiSt.PositionSide, 0.7, map[string]string{
+		sig, err := start.NewSignal(instanceID, symbol, start.SignalAdjust, aiSt.PositionSide, 0.7, map[string]string{
 			"ref_price":  fmt.Sprintf("%.4f", aiSt.LastBarClose),
 			"setup":      "ai_adjust",
 			"ai_verdict": result.Verdict,
@@ -415,7 +415,7 @@ func (s *AIScalperStrategy) handleAIDebate(ctx strat.Context, symbol string, res
 		if err != nil {
 			return aiSt, nil, err
 		}
-		return aiSt, []strat.Signal{sig}, nil
+		return aiSt, []start.Signal{sig}, nil
 
 	default:
 		// neutral or unknown — no action.
@@ -428,13 +428,13 @@ func (s *AIScalperStrategy) handleAIDebate(ctx strat.Context, symbol string, res
 type aiScalperStateJSON struct {
 	Symbol             string              `json:"symbol"`
 	Config             AIScalperConfig     `json:"config"`
-	Indicators         strat.IndicatorData `json:"indicators"`
+	Indicators         start.IndicatorData `json:"indicators"`
 	PrevStochK         float64             `json:"prev_stoch_k"`
 	PrevStochD         float64             `json:"prev_stoch_d"`
 	TradesToday        int                 `json:"trades_today"`
 	CooldownUntil      time.Time           `json:"cooldown_until"`
-	PositionSide       strat.Side          `json:"position_side"`
-	PendingEntry       strat.Side          `json:"pending_entry"`
+	PositionSide       start.Side          `json:"position_side"`
+	PendingEntry       start.Side          `json:"pending_entry"`
 	PendingEntryAt     time.Time           `json:"pending_entry_at"`
 	PendingAIRequestID string              `json:"pending_ai_request_id"`
 	LastAIVerdict      string              `json:"last_ai_verdict"`

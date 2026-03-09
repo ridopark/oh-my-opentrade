@@ -6,6 +6,7 @@ package metrics
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 )
 
 // Metrics holds every Prometheus collector used by omo-core, grouped by
@@ -31,8 +32,8 @@ func New(version, commit, branch string, strategyV2 bool) *Metrics {
 	reg := prometheus.NewRegistry()
 
 	// Optionally include Go runtime / process collectors.
-	reg.MustRegister(prometheus.NewGoCollector())
-	reg.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+	reg.MustRegister(collectors.NewGoCollector())
+	reg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 
 	buildInfo := prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "omo_build_info",

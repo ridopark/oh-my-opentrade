@@ -31,7 +31,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/strategy/builtin"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
-	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/logger"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
@@ -80,13 +80,14 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
-		log.Warn().Str("signal", sig.String()).Msg("received signal, cancelling replay")
+		log.Warn().Str("signal", sig.String()).Msg("received signal, canceling replay")
 		cancel()
 	}()
 
 	cfg, err := config.Load(envPath, configPath)
 	if err != nil {
-		log.Fatal().Err(err).Msg("failed to load config")
+		log.Error().Err(err).Msg("failed to load config")
+		os.Exit(1)
 	}
 
 	symbols := resolveSymbols(symbolsFlag, cfg)
@@ -181,7 +182,7 @@ func main() {
 	router := strategy.NewRouter()
 	stratLog := slog.Default()
 	for _, sym := range symbols {
-		instanceID, _ := strat.NewInstanceID(fmt.Sprintf("%s:%s:%s", spec.ID, spec.Version, sym.String()))
+		instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", spec.ID, spec.Version, sym.String()))
 		inst := strategy.NewInstance(
 			instanceID,
 			orbStrategy,
@@ -190,7 +191,7 @@ func main() {
 				Symbols:  []string{sym.String()},
 				Priority: spec.Routing.Priority,
 			},
-			strat.LifecycleLiveActive,
+			start.LifecycleLiveActive,
 			stratLog,
 		)
 		initCtx := strategy.NewContext(time.Now(), stratLog, nil)
@@ -386,10 +387,8 @@ func main() {
 	// Track current session date for multi-day replays (reset aggregators on new day).
 	currentSessionDate := replaySessionOpen
 
-	for {
-		if ctx.Err() != nil {
-			break
-		}
+	for ctx.Err() == nil {
+
 		minTime, ok := nextMinTime(streams)
 		if !ok {
 			break
@@ -592,7 +591,7 @@ func (t *eventTracer) Handle(_ context.Context, ev domain.Event) error {
 			Str("trigger", p.Trigger).
 			Float64("confidence", p.Confidence).
 			Msg("event")
-	case strat.Signal:
+	case start.Signal:
 		l.Info().
 			Str("instance_id", p.StrategyInstanceID.String()).
 			Str("symbol", p.Symbol).

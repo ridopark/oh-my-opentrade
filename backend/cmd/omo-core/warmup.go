@@ -11,7 +11,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
-	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/rs/zerolog"
 )
 
@@ -142,9 +142,9 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 	var runnerWarmupSnapshotFn strategy.IndicatorSnapshotFunc
 	if svc.useStrategyV2 && svc.strategyRunner != nil {
 		runnerWarmupCalc = monitor.NewIndicatorCalculator()
-		runnerWarmupSnapshotFn = func(bar domain.MarketBar) strat.IndicatorData {
+		runnerWarmupSnapshotFn = func(bar domain.MarketBar) start.IndicatorData {
 			snap := runnerWarmupCalc.Update(bar)
-			return strat.IndicatorData{
+			return start.IndicatorData{
 				RSI:       snap.RSI,
 				StochK:    snap.StochK,
 				StochD:    snap.StochD,
@@ -184,9 +184,9 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 					runnerWarmupCalc = monitor.NewIndicatorCalculator()
 				}
 				if runnerWarmupSnapshotFn == nil {
-					runnerWarmupSnapshotFn = func(bar domain.MarketBar) strat.IndicatorData {
+					runnerWarmupSnapshotFn = func(bar domain.MarketBar) start.IndicatorData {
 						snap := runnerWarmupCalc.Update(bar)
-						return strat.IndicatorData{
+						return start.IndicatorData{
 							RSI:       snap.RSI,
 							StochK:    snap.StochK,
 							StochD:    snap.StochD,

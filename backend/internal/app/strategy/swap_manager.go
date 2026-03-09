@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
 
 // SwapRequest represents a pending blue/green swap. The "green" (new) instance
@@ -14,8 +14,8 @@ import (
 // it starts in Draft lifecycle. Once it finishes warmup on ALL assigned symbols,
 // the swap is executed atomically at the next bar boundary.
 type SwapRequest struct {
-	OldInstanceID strat.InstanceID
-	NewInstance   *Instance
+	OldInstanceID  start.InstanceID
+	NewInstance    *Instance
 	pendingSymbols map[string]bool
 }
 
@@ -41,7 +41,7 @@ func (sr *SwapRequest) IsPending() bool {
 type SwapManager struct {
 	mu      sync.Mutex
 	router  *Router
-	pending map[strat.InstanceID]*SwapRequest // keyed by OLD instance ID
+	pending map[start.InstanceID]*SwapRequest // keyed by OLD instance ID
 	logger  *slog.Logger
 }
 
@@ -53,7 +53,7 @@ func NewSwapManager(router *Router, logger *slog.Logger) *SwapManager {
 	}
 	return &SwapManager{
 		router:  router,
-		pending: make(map[strat.InstanceID]*SwapRequest),
+		pending: make(map[start.InstanceID]*SwapRequest),
 		logger:  logger.With("component", "swap_manager"),
 	}
 }
@@ -67,7 +67,7 @@ func NewSwapManager(router *Router, logger *slog.Logger) *SwapManager {
 // - The old instance is not found in the router
 // - A swap is already pending for the old instance
 // - Initialization fails for any symbol
-func (sm *SwapManager) RequestSwap(oldID strat.InstanceID, newInst *Instance) error {
+func (sm *SwapManager) RequestSwap(oldID start.InstanceID, newInst *Instance) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -77,16 +77,16 @@ func (sm *SwapManager) RequestSwap(oldID strat.InstanceID, newInst *Instance) er
 
 	oldInst, ok := sm.router.Instance(oldID)
 	if !ok {
-		return fmt.Errorf("%w: %s", strat.ErrInstanceNotFound, oldID)
+		return fmt.Errorf("%w: %s", start.ErrInstanceNotFound, oldID)
 	}
 
-	newInst.SetLifecycle(strat.LifecycleDraft)
+	newInst.SetLifecycle(start.LifecycleDraft)
 
 	symbols := newInst.Assignment().Symbols
 	pendingSymbols := make(map[string]bool, len(symbols))
 
 	for _, sym := range symbols {
-		var prior strat.State
+		var prior start.State
 
 		if oldState, found := oldInst.GetState(sym); found {
 			prior = oldState
@@ -134,7 +134,7 @@ func (sm *SwapManager) RequestSwap(oldID strat.InstanceID, newInst *Instance) er
 // and triggers the atomic swap if warmup is complete.
 //
 // Returns a list of completed swap descriptions (for logging/events).
-func (sm *SwapManager) OnBarProcessed(ctx strat.Context, symbol string, bar strat.Bar, indicators strat.IndicatorData) []CompletedSwap {
+func (sm *SwapManager) OnBarProcessed(ctx start.Context, symbol string, bar start.Bar, indicators start.IndicatorData) []CompletedSwap {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -172,17 +172,17 @@ func (sm *SwapManager) OnBarProcessed(ctx strat.Context, symbol string, bar stra
 
 // CompletedSwap describes a swap that was successfully executed.
 type CompletedSwap struct {
-	OldInstanceID strat.InstanceID
-	NewInstanceID strat.InstanceID
-	OldLifecycle  strat.LifecycleState
+	OldInstanceID start.InstanceID
+	NewInstanceID start.InstanceID
+	OldLifecycle  start.LifecycleState
 }
 
 // executeSwap performs the atomic swap: promotes new instance to old's lifecycle,
 // archives the old instance, and atomically replaces in the router.
 // Must be called with sm.mu held.
-func (sm *SwapManager) executeSwap(oldID strat.InstanceID, req *SwapRequest) CompletedSwap {
+func (sm *SwapManager) executeSwap(oldID start.InstanceID, req *SwapRequest) CompletedSwap {
 	oldInst, _ := sm.router.Instance(oldID)
-	oldLifecycle := strat.LifecyclePaperActive
+	oldLifecycle := start.LifecyclePaperActive
 	if oldInst != nil {
 		oldLifecycle = oldInst.Lifecycle()
 	}
@@ -192,7 +192,7 @@ func (sm *SwapManager) executeSwap(oldID strat.InstanceID, req *SwapRequest) Com
 	replaced := sm.router.Replace(oldID, req.NewInstance)
 
 	if replaced != nil {
-		replaced.SetLifecycle(strat.LifecycleArchived)
+		replaced.SetLifecycle(start.LifecycleArchived)
 	}
 
 	sm.logger.Info("swap completed",
@@ -216,21 +216,21 @@ func (sm *SwapManager) PendingSwaps() int {
 }
 
 // CancelSwap cancels a pending swap for the given old instance ID.
-// Returns true if a swap was cancelled, false if none was pending.
-func (sm *SwapManager) CancelSwap(oldID strat.InstanceID) bool {
+// Returns true if a swap was canceled, false if none was pending.
+func (sm *SwapManager) CancelSwap(oldID start.InstanceID) bool {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	if _, exists := sm.pending[oldID]; exists {
 		delete(sm.pending, oldID)
-		sm.logger.Info("swap cancelled", "old_instance", oldID.String())
+		sm.logger.Info("swap canceled", "old_instance", oldID.String())
 		return true
 	}
 	return false
 }
 
 // HasPendingSwap returns true if there's a pending swap for the given old instance.
-func (sm *SwapManager) HasPendingSwap(oldID strat.InstanceID) bool {
+func (sm *SwapManager) HasPendingSwap(oldID start.InstanceID) bool {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	_, exists := sm.pending[oldID]

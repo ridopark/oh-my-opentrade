@@ -131,7 +131,7 @@ func TestOptionsRiskEngine_ZeroQuantity(t *testing.T) {
 	}
 	err := eng.ValidateOptionIntent(intent, 10_000.0)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Quantity")
+	assert.Contains(t, err.Error(), "quantity")
 }
 
 // ─────────────────────────────────────────────

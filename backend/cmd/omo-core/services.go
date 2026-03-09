@@ -32,7 +32,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/symbolrouter"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
-	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
@@ -251,7 +251,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 
 	// Register all builtin strategies in the in-memory registry.
 	registry := strategy.NewMemRegistry()
-	for _, s := range []strat.Strategy{
+	for _, s := range []start.Strategy{
 		builtin.NewORBStrategy(),
 		builtin.NewAVWAPStrategy(),
 		builtin.NewAIScalperStrategy(),
@@ -284,11 +284,11 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		}
 
 		for _, sym := range spec.Routing.Symbols {
-			instanceID, _ := strat.NewInstanceID(fmt.Sprintf("%s:%s:%s", spec.ID, spec.Version, sym))
+			instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", spec.ID, spec.Version, sym))
 			inst := strategy.NewInstance(instanceID, impl, spec.Params, strategy.InstanceAssignment{
 				Symbols:  []string{sym},
 				Priority: spec.Routing.Priority,
-			}, strat.LifecycleLiveActive, stratLog)
+			}, start.LifecycleLiveActive, stratLog)
 			initCtx := strategy.NewContext(time.Now(), stratLog, nil)
 			if err := inst.InitSymbol(initCtx, sym, nil); err != nil {
 				log.Fatal().Err(err).
@@ -326,7 +326,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	svc.lifecycleSvc = strategy.NewLifecycleService(svc.router, stratLog)
 
 	// Also set ORB params on monitor for backward compatibility.
-	orbID, _ := strat.NewStrategyID("orb_break_retest")
+	orbID, _ := start.NewStrategyID("orb_break_retest")
 	if orbSpec, err := svc.specStore.GetLatest(context.Background(), orbID); err == nil {
 		svc.monitor.SetORBConfig(orbSpec.Params)
 	}

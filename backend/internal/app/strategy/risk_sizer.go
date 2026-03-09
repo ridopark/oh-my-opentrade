@@ -14,7 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/domain"
-	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	stratports "github.com/oh-my-opentrade/backend/internal/ports/strategy"
 )
@@ -159,7 +159,7 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		return nil
 	}
 
-	strategyID, hasStrategyID := parseStrategyIDFromInstance(strat.InstanceID(sigRef.StrategyInstanceID))
+	strategyID, hasStrategyID := parseStrategyIDFromInstance(start.InstanceID(sigRef.StrategyInstanceID))
 
 	// AI direction gate: reject entry signals when the AI debate explicitly
 	// disagrees with the strategy's direction. The AI can veto but not invent trades.
@@ -169,7 +169,7 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 			strategyName = strategyID.String()
 		}
 		signalDirection := domain.DirectionLong
-		if sigRef.Side == strat.SideSell.String() {
+		if sigRef.Side == start.SideSell.String() {
 			signalDirection = domain.DirectionShort
 		}
 		rs.logger.Warn("AI direction gate: signal rejected",
@@ -191,14 +191,14 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		return nil
 	}
 
-	if sigRef.SignalType == strat.SignalEntry.String() {
+	if sigRef.SignalType == start.SignalEntry.String() {
 		if reval, degraded := rs.isSymbolDegraded(sigRef.Symbol); degraded {
 			strategyName := "unknown"
 			if hasStrategyID {
 				strategyName = strategyID.String()
 			}
 			signalDir := domain.DirectionLong
-			if sigRef.Side == strat.SideSell.String() {
+			if sigRef.Side == start.SideSell.String() {
 				signalDir = domain.DirectionShort
 			}
 			rs.logger.Warn("revaluation gate: entry blocked — thesis degraded",
@@ -220,14 +220,14 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		}
 	}
 
-	if sigRef.SignalType == strat.SignalEntry.String() {
+	if sigRef.SignalType == start.SignalEntry.String() {
 		if exitTime, coolingDown := rs.isSymbolInCooldown(sigRef.Symbol); coolingDown {
 			strategyName := "unknown"
 			if hasStrategyID {
 				strategyName = strategyID.String()
 			}
 			signalDir := domain.DirectionLong
-			if sigRef.Side == strat.SideSell.String() {
+			if sigRef.Side == start.SideSell.String() {
 				signalDir = domain.DirectionShort
 			}
 			rs.logger.Warn("exit cooldown gate: entry blocked — recent exit",
@@ -277,7 +277,7 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 
 	dynCfg := extractDynamicRiskConfig(spec)
 
-	if sigRef.SignalType == strat.SignalEntry.String() {
+	if sigRef.SignalType == start.SignalEntry.String() {
 		profile := domain.ComputeRiskProfile(
 			domain.BaseRiskParams{RiskPerTradeBPS: riskPerTradeBPS, StopBPS: stopBPS},
 			enrichment,
@@ -334,12 +334,11 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		return nil
 	}
 
-	limitPrice := refPrice
-	stopLoss := refPrice
-	if sigRef.SignalType == strat.SignalEntry.String() {
+	var limitPrice, stopLoss float64
+	if sigRef.SignalType == start.SignalEntry.String() {
 		limitMult := 1.0 + float64(limitOffsetBPS)/10000.0
 		stopMult := 1.0 - float64(stopBPS)/10000.0
-		if sigRef.Side == strat.SideSell.String() {
+		if sigRef.Side == start.SideSell.String() {
 			limitMult = 1.0 - float64(limitOffsetBPS)/10000.0
 			stopMult = 1.0 + float64(stopBPS)/10000.0
 		}
@@ -390,8 +389,8 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 	}
 
 	direction := domain.DirectionLong
-	if sigRef.Side == strat.SideSell.String() {
-		if sigRef.SignalType == strat.SignalExit.String() {
+	if sigRef.Side == start.SideSell.String() {
+		if sigRef.SignalType == start.SignalExit.String() {
 			direction = domain.DirectionCloseLong
 		} else {
 			direction = domain.DirectionShort
@@ -497,12 +496,12 @@ func (rs *RiskSizer) emit(ctx context.Context, eventType string, tenantID string
 
 // parseStrategyIDFromInstance extracts the strategy ID from an InstanceID.
 // InstanceID format: "strategy_id:version:symbol" or arbitrary string.
-func parseStrategyIDFromInstance(instanceID strat.InstanceID) (strat.StrategyID, bool) {
+func parseStrategyIDFromInstance(instanceID start.InstanceID) (start.StrategyID, bool) {
 	parts := strings.SplitN(string(instanceID), ":", 3)
 	if len(parts) < 1 {
 		return "", false
 	}
-	sid, err := strat.NewStrategyID(parts[0])
+	sid, err := start.NewStrategyID(parts[0])
 	if err != nil {
 		return "", false
 	}

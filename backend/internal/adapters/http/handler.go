@@ -38,7 +38,7 @@ type HealthResponse struct {
 type HealthChecker func(ctx context.Context) ServiceStatus
 
 // HealthHandler returns a handler that runs all registered checks and
-// serialises the result as JSON.  Overall status is 200 when all services
+// serializes the result as JSON.  Overall status is 200 when all services
 // are healthy, 503 otherwise.
 type HealthHandler struct {
 	checks []HealthChecker
@@ -70,7 +70,6 @@ func StaticChecker(name string) HealthChecker {
 		return ServiceStatus{Name: name, Healthy: true}
 	}
 }
-
 
 // FeedChecker returns a HealthChecker for the WebSocket market-data feed.
 // healthFn should return (isHealthy, detail). The detail is only shown when unhealthy.
@@ -159,7 +158,9 @@ func (h *StrategyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *StrategyHandler) putScript(w http.ResponseWriter, r *http.Request, id string) {
-	var req struct{ Script string `json:"script"` }
+	var req struct {
+		Script string `json:"script"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON: %s", err), http.StatusBadRequest)
 		return

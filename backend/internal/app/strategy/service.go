@@ -276,7 +276,7 @@ func orbConfidenceFromDNA(dna *StrategyDNA) float64 {
 //	func Compute(close, low float64, stopBPS, limitOffsetBPS int) (float64, float64)
 func runScript(script string, close, low float64, stopBPS, limitOffsetBPS int) (limitPrice, stopLoss float64, err error) {
 	i := interp.New(interp.Options{})
-	i.Use(stdlib.Symbols)
+	_ = i.Use(stdlib.Symbols)
 
 	if _, err = i.Eval(script); err != nil {
 		return 0, 0, fmt.Errorf("strategy: script eval error: %w", err)

@@ -3,6 +3,7 @@ package timescaledb
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -59,7 +60,7 @@ func (s *TokenStore) LoadToken(ctx context.Context, provider, tenantID string) (
 		&token.ExpiresAt, &token.UpdatedAt,
 	)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("timescaledb: load token: %w", err)

@@ -144,11 +144,12 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 		avgGain := upCount / float64(rsiPeriod)
 		avgLoss := downCount / float64(rsiPeriod)
 
-		if avgLoss == 0 {
+		switch {
+		case avgLoss == 0:
 			rsi = 100.0
-		} else if avgGain == 0 {
+		case avgGain == 0:
 			rsi = 0.0
-		} else {
+		default:
 			rs := avgGain / avgLoss
 			rsi = 100.0 - (100.0 / (1.0 + rs))
 		}

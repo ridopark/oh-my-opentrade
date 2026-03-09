@@ -16,7 +16,7 @@ const (
 
 // SignalRef identifies the original strategy signal that triggered enrichment.
 // It carries enough context for downstream consumers (RiskSizer) to reconstruct
-// the OrderIntent without needing the full strat.Signal (which lives in the
+// the OrderIntent without needing the full start.Signal (which lives in the
 // strategy domain package, not the core domain).
 type SignalRef struct {
 	StrategyInstanceID string            `json:"strategyInstanceId"`

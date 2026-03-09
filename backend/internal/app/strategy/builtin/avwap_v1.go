@@ -7,20 +7,20 @@ import (
 	"strings"
 	"time"
 
-	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
 
 // AVWAPStrategy implements breakout and bounce entries anchored to VWAP levels.
 type AVWAPStrategy struct {
-	meta strat.Meta
+	meta start.Meta
 }
 
 // NewAVWAPStrategy creates a new AVWAP Breakout/Bounce strategy.
 func NewAVWAPStrategy() *AVWAPStrategy {
-	id, _ := strat.NewStrategyID("avwap_v1")
-	ver, _ := strat.NewVersion("1.0.0")
+	id, _ := start.NewStrategyID("avwap_v1")
+	ver, _ := start.NewVersion("1.0.0")
 	return &AVWAPStrategy{
-		meta: strat.Meta{
+		meta: start.Meta{
 			ID:          id,
 			Version:     ver,
 			Name:        "AVWAP Breakout/Bounce",
@@ -30,9 +30,9 @@ func NewAVWAPStrategy() *AVWAPStrategy {
 	}
 }
 
-func (s *AVWAPStrategy) Meta() strat.Meta { return s.meta }
+func (s *AVWAPStrategy) Meta() start.Meta { return s.meta }
 func (s *AVWAPStrategy) WarmupBars() int  { return 30 }
-func (s *AVWAPStrategy) ReplayOnBar(_ strat.Context, _ string, bar strat.Bar, st strat.State, indicators strat.IndicatorData) (strat.State, error) {
+func (s *AVWAPStrategy) ReplayOnBar(_ start.Context, _ string, bar start.Bar, st start.State, indicators start.IndicatorData) (start.State, error) {
 	avwapSt, ok := st.(*AVWAPState)
 	if !ok {
 		return st, fmt.Errorf("AVWAPStrategy.ReplayOnBar: expected *AVWAPState, got %T", st)
@@ -79,14 +79,14 @@ type AVWAPConfig struct {
 // AVWAPState is the per-symbol state for the AVWAP strategy.
 type AVWAPState struct {
 	Symbol         string
-	Calc           *strat.AnchoredVWAPCalc
-	Indicators     strat.IndicatorData
+	Calc           *start.AnchoredVWAPCalc
+	Indicators     start.IndicatorData
 	AboveCount     map[string]int
 	BelowCount     map[string]int
 	TradesToday    int
 	CooldownUntil  time.Time
-	PositionSide   strat.Side
-	PendingEntry   strat.Side // set on signal emission, cleared on fill/rejection
+	PositionSide   start.Side
+	PendingEntry   start.Side // set on signal emission, cleared on fill/rejection
 	PendingEntryAt time.Time  // when PendingEntry was set (for timeout recovery)
 	Config         AVWAPConfig
 	RecentLows     []float64
@@ -94,7 +94,7 @@ type AVWAPState struct {
 }
 
 // SetIndicators implements the indicatorSetter interface.
-func (s *AVWAPState) SetIndicators(ind strat.IndicatorData) {
+func (s *AVWAPState) SetIndicators(ind start.IndicatorData) {
 	s.Indicators = ind
 }
 
@@ -224,9 +224,9 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 }
 
 // Init creates initial state for a symbol.
-func (s *AVWAPStrategy) Init(ctx strat.Context, symbol string, params map[string]any, prior strat.State) (strat.State, error) {
+func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string]any, prior start.State) (start.State, error) {
 	cfg := parseAVWAPConfig(params)
-	calc := strat.NewAnchoredVWAPCalc()
+	calc := start.NewAnchoredVWAPCalc()
 
 	anchorNames := getStringSlice(params, "anchors", []string{"session_open"})
 	added := 0
@@ -241,7 +241,7 @@ func (s *AVWAPStrategy) Init(ctx strat.Context, symbol string, params map[string
 				anchorTime = ctx.Now()
 			}
 		}
-		calc.AddAnchor(strat.AnchorPoint{Name: name, AnchorTime: anchorTime})
+		calc.AddAnchor(start.AnchorPoint{Name: name, AnchorTime: anchorTime})
 		added++
 	}
 	if added == 0 {
@@ -249,7 +249,7 @@ func (s *AVWAPStrategy) Init(ctx strat.Context, symbol string, params map[string
 		if ctx != nil {
 			anchorTime = ctx.Now()
 		}
-		calc.AddAnchor(strat.AnchorPoint{Name: "session_open", AnchorTime: anchorTime})
+		calc.AddAnchor(start.AnchorPoint{Name: "session_open", AnchorTime: anchorTime})
 	}
 
 	st := &AVWAPState{
@@ -280,7 +280,7 @@ func (s *AVWAPStrategy) Init(ctx strat.Context, symbol string, params map[string
 }
 
 // OnBar processes a bar and emits breakout/bounce/exit signals.
-func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st start.State) (start.State, []start.Signal, error) {
 	avwapSt, ok := st.(*AVWAPState)
 	if !ok {
 		return st, nil, fmt.Errorf("AVWAPStrategy.OnBar: expected *AVWAPState, got %T", st)
@@ -340,26 +340,27 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 
 	// 4. Update AboveCount/BelowCount for each active anchor.
 	for anchorName, avwapValue := range avwapValues {
-		if bar.Close > avwapValue {
+		switch {
+		case bar.Close > avwapValue:
 			avwapSt.AboveCount[anchorName]++
 			avwapSt.BelowCount[anchorName] = 0
-		} else if bar.Close < avwapValue {
+		case bar.Close < avwapValue:
 			avwapSt.BelowCount[anchorName]++
 			avwapSt.AboveCount[anchorName] = 0
-		} else {
+		default:
 			avwapSt.AboveCount[anchorName] = 0
 			avwapSt.BelowCount[anchorName] = 0
 		}
 	}
 
-	instanceID, _ := strat.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
+	instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
 	cooldown := time.Duration(cfg.CooldownSeconds) * time.Second
 
 	// 5. Exit signals (check even if cooldown would block new entries).
-	if avwapSt.PositionSide == strat.SideBuy && avwapSt.PendingEntry == "" {
+	if avwapSt.PositionSide == start.SideBuy && avwapSt.PendingEntry == "" {
 		for _, belowCnt := range avwapSt.BelowCount {
 			if belowCnt >= cfg.ExitHoldBars {
-				sig, err := strat.NewSignal(instanceID, symbol, strat.SignalExit, strat.SideSell, 0.8, map[string]string{
+				sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideSell, 0.8, map[string]string{
 					"ref_price": fmt.Sprintf("%.4f", bar.Close),
 					"setup":     "avwap_exit",
 					"regime_5m": regimeTag,
@@ -369,14 +370,14 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 				}
 				avwapSt.PositionSide = ""
 				avwapSt.CooldownUntil = now.Add(cooldown)
-				return avwapSt, []strat.Signal{sig}, nil
+				return avwapSt, []start.Signal{sig}, nil
 			}
 		}
 	}
-	if avwapSt.PositionSide == strat.SideSell && avwapSt.PendingEntry == "" {
+	if avwapSt.PositionSide == start.SideSell && avwapSt.PendingEntry == "" {
 		for _, aboveCnt := range avwapSt.AboveCount {
 			if aboveCnt >= cfg.ExitHoldBars {
-				sig, err := strat.NewSignal(instanceID, symbol, strat.SignalExit, strat.SideBuy, 0.8, map[string]string{
+				sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideBuy, 0.8, map[string]string{
 					"ref_price": fmt.Sprintf("%.4f", bar.Close),
 					"setup":     "avwap_exit",
 					"regime_5m": regimeTag,
@@ -386,7 +387,7 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 				}
 				avwapSt.PositionSide = ""
 				avwapSt.CooldownUntil = now.Add(cooldown)
-				return avwapSt, []strat.Signal{sig}, nil
+				return avwapSt, []start.Signal{sig}, nil
 			}
 		}
 	}
@@ -416,7 +417,7 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 				if cfg.RequireHigherLows && !hasHigherLows(avwapSt.RecentLows) {
 					continue
 				}
-				sig, err := strat.NewSignal(instanceID, symbol, strat.SignalEntry, strat.SideBuy, 0.7, map[string]string{
+				sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, 0.7, map[string]string{
 					"ref_price": fmt.Sprintf("%.4f", bar.Close),
 					"setup":     "avwap_breakout",
 					"anchor":    anchorName,
@@ -429,11 +430,11 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 				if err != nil {
 					return avwapSt, nil, err
 				}
-				avwapSt.PendingEntry = strat.SideBuy
+				avwapSt.PendingEntry = start.SideBuy
 				avwapSt.PendingEntryAt = now
 				avwapSt.TradesToday++
 				avwapSt.CooldownUntil = now.Add(cooldown)
-				return avwapSt, []strat.Signal{sig}, nil
+				return avwapSt, []start.Signal{sig}, nil
 			}
 
 			// Direction guard: skip short entries in long-only mode (e.g. crypto).
@@ -459,7 +460,7 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 						}
 					}
 				}
-				sig, err := strat.NewSignal(instanceID, symbol, strat.SignalEntry, strat.SideSell, 0.7, map[string]string{
+				sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.7, map[string]string{
 					"ref_price": fmt.Sprintf("%.4f", bar.Close),
 					"setup":     "avwap_breakout",
 					"anchor":    anchorName,
@@ -472,11 +473,11 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 				if err != nil {
 					return avwapSt, nil, err
 				}
-				avwapSt.PendingEntry = strat.SideSell
+				avwapSt.PendingEntry = start.SideSell
 				avwapSt.PendingEntryAt = now
 				avwapSt.TradesToday++
 				avwapSt.CooldownUntil = now.Add(cooldown)
-				return avwapSt, []strat.Signal{sig}, nil
+				return avwapSt, []start.Signal{sig}, nil
 			}
 		}
 	}
@@ -494,7 +495,7 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 				if bar.Close <= bar.Open {
 					continue
 				}
-				sig, err := strat.NewSignal(instanceID, symbol, strat.SignalEntry, strat.SideBuy, 0.6, map[string]string{
+				sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, 0.6, map[string]string{
 					"ref_price": fmt.Sprintf("%.4f", bar.Close),
 					"setup":     "avwap_bounce",
 					"anchor":    anchorName,
@@ -506,11 +507,11 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 				if err != nil {
 					return avwapSt, nil, err
 				}
-				avwapSt.PendingEntry = strat.SideBuy
+				avwapSt.PendingEntry = start.SideBuy
 				avwapSt.PendingEntryAt = now
 				avwapSt.TradesToday++
 				avwapSt.CooldownUntil = now.Add(cooldown)
-				return avwapSt, []strat.Signal{sig}, nil
+				return avwapSt, []start.Signal{sig}, nil
 			}
 
 			// Direction guard: skip short entries in long-only mode (e.g. crypto).
@@ -526,7 +527,7 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 				if bar.Close >= bar.Open {
 					continue
 				}
-				sig, err := strat.NewSignal(instanceID, symbol, strat.SignalEntry, strat.SideSell, 0.6, map[string]string{
+				sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.6, map[string]string{
 					"ref_price": fmt.Sprintf("%.4f", bar.Close),
 					"setup":     "avwap_bounce",
 					"anchor":    anchorName,
@@ -538,11 +539,11 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 				if err != nil {
 					return avwapSt, nil, err
 				}
-				avwapSt.PendingEntry = strat.SideSell
+				avwapSt.PendingEntry = start.SideSell
 				avwapSt.PendingEntryAt = now
 				avwapSt.TradesToday++
 				avwapSt.CooldownUntil = now.Add(cooldown)
-				return avwapSt, []strat.Signal{sig}, nil
+				return avwapSt, []start.Signal{sig}, nil
 			}
 		}
 	}
@@ -551,14 +552,14 @@ func (s *AVWAPStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, s
 }
 
 // OnEvent handles fill confirmations and entry rejections for AVWAP strategy.
-func (s *AVWAPStrategy) OnEvent(ctx strat.Context, symbol string, evt any, st strat.State) (strat.State, []strat.Signal, error) {
+func (s *AVWAPStrategy) OnEvent(ctx start.Context, symbol string, evt any, st start.State) (start.State, []start.Signal, error) {
 	avwapSt, ok := st.(*AVWAPState)
 	if !ok {
 		return st, nil, fmt.Errorf("AVWAPStrategy.OnEvent: expected *AVWAPState, got %T", st)
 	}
 
 	switch e := evt.(type) {
-	case strat.FillConfirmation:
+	case start.FillConfirmation:
 		if avwapSt.PendingEntry != "" {
 			avwapSt.PositionSide = avwapSt.PendingEntry
 			avwapSt.PendingEntry = ""
@@ -569,7 +570,7 @@ func (s *AVWAPStrategy) OnEvent(ctx strat.Context, symbol string, evt any, st st
 		}
 		return avwapSt, nil, nil
 
-	case strat.EntryRejection:
+	case start.EntryRejection:
 		if avwapSt.PendingEntry != "" {
 			if ctx != nil && ctx.Logger() != nil {
 				ctx.Logger().Warn("AVWAPStrategy: entry rejected, clearing pending", "symbol", symbol, "side", avwapSt.PendingEntry, "reason", e.Reason)
@@ -589,26 +590,26 @@ func (s *AVWAPStrategy) OnEvent(ctx strat.Context, symbol string, evt any, st st
 type avwapStateJSON struct {
 	Symbol         string                             `json:"symbol"`
 	Config         AVWAPConfig                        `json:"config"`
-	CalcStates     map[string]strat.AnchoredVWAPState `json:"calc_states"`
-	Anchors        []strat.AnchorPoint                `json:"anchors"`
+	CalcStates     map[string]start.AnchoredVWAPState `json:"calc_states"`
+	Anchors        []start.AnchorPoint                `json:"anchors"`
 	AboveCount     map[string]int                     `json:"above_count"`
 	BelowCount     map[string]int                     `json:"below_count"`
 	TradesToday    int                                `json:"trades_today"`
 	CooldownUntil  time.Time                          `json:"cooldown_until"`
-	PositionSide   strat.Side                         `json:"position_side"`
-	PendingEntry   strat.Side                         `json:"pending_entry"`
+	PositionSide   start.Side                         `json:"position_side"`
+	PendingEntry   start.Side                         `json:"pending_entry"`
 	PendingEntryAt time.Time                          `json:"pending_entry_at"`
-	Indicators     strat.IndicatorData                `json:"indicators"`
+	Indicators     start.IndicatorData                `json:"indicators"`
 	RecentLows     []float64                          `json:"recent_lows,omitempty"`
 	RecentHighs    []float64                          `json:"recent_highs,omitempty"`
 }
 
 func (s *AVWAPState) Marshal() ([]byte, error) {
 	// Extract anchor points for serialization.
-	anchors := make([]strat.AnchorPoint, 0)
 	avwapValues := s.Calc.Values()
+	anchors := make([]start.AnchorPoint, 0, len(avwapValues))
 	for name := range avwapValues {
-		anchors = append(anchors, strat.AnchorPoint{Name: name})
+		anchors = append(anchors, start.AnchorPoint{Name: name})
 	}
 
 	j := avwapStateJSON{
@@ -648,7 +649,7 @@ func (s *AVWAPState) Unmarshal(data []byte) error {
 	s.RecentLows = j.RecentLows
 	s.RecentHighs = j.RecentHighs
 
-	s.Calc = strat.NewAnchoredVWAPCalc()
+	s.Calc = start.NewAnchoredVWAPCalc()
 	s.Calc.Restore(j.Anchors, j.CalcStates)
 
 	if s.AboveCount == nil {

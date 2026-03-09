@@ -510,10 +510,10 @@ func (s *Service) fmtFillPollTimeout(ev domain.Event) string {
 
 func (s *Service) fmtStaleOrderCancelled(ev domain.Event) string {
 	if p, ok := ev.Payload.(domain.StaleOrderCancelledPayload); ok {
-		return fmt.Sprintf("🗑️ Stale Order Cancelled: %s %s — order %s expired after %.0fs (strategy: %s)",
+		return fmt.Sprintf("🗑️ Stale Order Canceled: %s %s — order %s expired after %.0fs (strategy: %s)",
 			p.Direction, string(p.Symbol), p.BrokerOrderID, p.AgeSeconds, p.Strategy)
 	}
-	return "🗑️ Stale order force-cancelled"
+	return "🗑️ Stale order force-canceled"
 }
 
 func (s *Service) fmtSystemStarted(ev domain.Event) string {

@@ -2,11 +2,12 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
-	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/rs/zerolog"
 )
 
@@ -40,7 +41,7 @@ func (h *LifecycleHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodPost && len(parts) == 5 && parts[2] == "instances" {
-		instanceID, err := strat.NewInstanceID(parts[3])
+		instanceID, err := start.NewInstanceID(parts[3])
 		if err != nil {
 			h.jsonError(w, http.StatusBadRequest, "invalid instance id")
 			return
@@ -73,7 +74,7 @@ func (h *LifecycleHandler) handleListInstances(w http.ResponseWriter) {
 	}
 }
 
-func (h *LifecycleHandler) handlePromote(w http.ResponseWriter, r *http.Request, instanceID strat.InstanceID) {
+func (h *LifecycleHandler) handlePromote(w http.ResponseWriter, r *http.Request, instanceID start.InstanceID) {
 	var req struct {
 		Target string `json:"target"`
 	}
@@ -86,7 +87,7 @@ func (h *LifecycleHandler) handlePromote(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	target, err := strat.NewLifecycleState(req.Target)
+	target, err := start.NewLifecycleState(req.Target)
 	if err != nil {
 		h.jsonError(w, http.StatusBadRequest, "invalid target lifecycle")
 		return
@@ -101,7 +102,7 @@ func (h *LifecycleHandler) handlePromote(w http.ResponseWriter, r *http.Request,
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
-func (h *LifecycleHandler) handleDeactivate(w http.ResponseWriter, instanceID strat.InstanceID) {
+func (h *LifecycleHandler) handleDeactivate(w http.ResponseWriter, instanceID start.InstanceID) {
 	if err := h.svc.Deactivate(instanceID); err != nil {
 		h.writeSvcErr(w, err)
 		return
@@ -110,7 +111,7 @@ func (h *LifecycleHandler) handleDeactivate(w http.ResponseWriter, instanceID st
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
-func (h *LifecycleHandler) handleArchive(w http.ResponseWriter, instanceID strat.InstanceID) {
+func (h *LifecycleHandler) handleArchive(w http.ResponseWriter, instanceID start.InstanceID) {
 	if err := h.svc.Archive(instanceID); err != nil {
 		h.writeSvcErr(w, err)
 		return
@@ -122,7 +123,7 @@ func (h *LifecycleHandler) handleArchive(w http.ResponseWriter, instanceID strat
 func (h *LifecycleHandler) writeSvcErr(w http.ResponseWriter, err error) {
 	status := http.StatusBadRequest
 	msg := err.Error()
-	if err == strat.ErrInstanceNotFound {
+	if errors.Is(err, start.ErrInstanceNotFound) {
 		status = http.StatusNotFound
 		msg = "instance not found"
 	}

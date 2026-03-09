@@ -22,7 +22,7 @@ type BrokerPort interface {
 // REST calls.
 type OrderUpdate struct {
 	BrokerOrderID  string
-	Event          string  // "fill", "partial_fill", "canceled", "cancelled", "expired", "rejected", "new", "accepted"
+	Event          string  // "fill", "partial_fill", "canceled", "canceled", "expired", "rejected", "new", "accepted"
 	Qty            float64 // incremental: quantity filled in THIS specific fill
 	Price          float64 // incremental: execution price for THIS specific fill
 	FilledQty      float64 // cumulative: total quantity filled so far across all fills
@@ -33,10 +33,10 @@ type OrderUpdate struct {
 // OrderStreamPort defines a push-based interface for receiving real-time
 // order updates from the broker. Implementations must handle connection
 // lifecycle (auth, reconnect) internally and deliver events on the returned
-// channel until ctx is cancelled.
+// channel until ctx is canceled.
 type OrderStreamPort interface {
 	// SubscribeOrderUpdates returns a channel that receives order status
-	// changes in real time. The channel is closed when ctx is cancelled
+	// changes in real time. The channel is closed when ctx is canceled
 	// or the stream terminates. Callers should range over the channel.
 	SubscribeOrderUpdates(ctx context.Context) (<-chan OrderUpdate, error)
 }

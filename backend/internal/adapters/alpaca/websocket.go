@@ -76,7 +76,7 @@ func (w *WSClient) FeedHealth() FeedHealth { return w.tracker.Snapshot() }
 // defaultConnectFactory builds a real Alpaca SDK StocksClient and returns its Connect method.
 // The returned connectFn blocks until the stream is fully terminated (not just established).
 // Connect() on the SDK returns nil once the connection is *established*; actual disconnect
-// is signalled via sc.Terminated(). We block on Terminated() so the caller sees a return
+// is signaled via sc.Terminated(). We block on Terminated() so the caller sees a return
 // only when the stream has truly ended.
 func (w *WSClient) defaultConnectFactory(symStrs []string, barHandler func(alpacastream.Bar), tradeHandler func(alpacastream.Trade)) connectFn {
 	wsBaseURL := deriveStreamURL(w.dataURL)
@@ -99,7 +99,7 @@ func (w *WSClient) defaultConnectFactory(symStrs []string, barHandler func(alpac
 		case err := <-sc.Terminated():
 			return err // nil = clean close; non-nil = error
 		case <-ctx.Done():
-			return nil // caller cancelled — clean shutdown
+			return nil // caller canceled — clean shutdown
 		}
 	}
 }
@@ -180,7 +180,7 @@ const staleFeedThresholdRTH = 90 * time.Second
 const staleFeedCheckInterval = 15 * time.Second
 
 // StreamBars connects to the Alpaca WebSocket market data feed and streams
-// minute bars for the requested symbols until ctx is cancelled.
+// minute bars for the requested symbols until ctx is canceled.
 //
 // Hardening features:
 //   - Exponential backoff with full jitter (aggressive RTH / relaxed off-hours)
@@ -275,7 +275,7 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 	for {
 		if streamCtx.Err() != nil {
 			w.tracker.setState("stopped")
-			return nil // context cancelled — clean shutdown
+			return nil // context canceled — clean shutdown
 		}
 
 		// Circuit breaker check.
@@ -378,7 +378,7 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			w.metrics.WS.Connected.WithLabelValues(w.feed).Set(0)
 		}
 
-		// If top-level context was cancelled, this is an intentional shutdown.
+		// If top-level context was canceled, this is an intentional shutdown.
 		if streamCtx.Err() != nil {
 			w.tracker.setState("stopped")
 			return nil
@@ -387,7 +387,7 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		// Classify error and record in circuit breaker.
 		errClass := ClassifyAndRecordError(connErr, w.tracker)
 
-		// Check for stale-triggered reconnect (connCtx cancelled but streamCtx still alive).
+		// Check for stale-triggered reconnect (connCtx canceled but streamCtx still alive).
 		wasStaleReset := HandleStaleReset(connCtx, streamCtx, connErr, w.tracker, log.Logger)
 		if wasStaleReset && w.metrics != nil {
 			w.metrics.WS.ReconnectsTotal.WithLabelValues(w.feed, "stale").Inc()
@@ -437,7 +437,6 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		// Ghost-session scenario — probe reconnect with REST bridge.
 		w.tracker.incGhostWindow()
 		w.tracker.setState("ghost_probe")
-		consecutiveFails++ // count ghost windows as a fail until streaming resumes
 		ghostStart := time.Now()
 		if w.metrics != nil {
 			w.metrics.WS.ReconnectsTotal.WithLabelValues(w.feed, "ghost").Inc()
@@ -513,19 +512,17 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			isStillGhost := probeErr != nil && (strings.Contains(probeErr.Error(), "connection limit exceeded") ||
 				strings.Contains(probeErr.Error(), "406") ||
 				strings.Contains(probeErr.Error(), "max reconnect limit"))
-			if probeErr == nil || probeCtx.Err() == context.DeadlineExceeded {
-				// nil = clean close (ghost gone); DeadlineExceeded with no bar = ghost still alive.
-				// Only treat nil as cleared.
-				if probeErr == nil {
-					log.Info().Int("probe", probeIdx).Msg("ghost session: clean probe close — ghost cleared")
-					reconnected = true
-				} else {
-					// DeadlineExceeded, no bar — SDK was mid-retry, ghost still alive.
-					log.Info().Int("probe", probeIdx).Msg("ghost session: probe timeout with no bar — still alive")
-				}
-			} else if isStillGhost {
+			switch {
+			case probeErr == nil:
+				// nil = clean close (ghost gone).
+				log.Info().Int("probe", probeIdx).Msg("ghost session: clean probe close — ghost cleared")
+				reconnected = true
+			case probeCtx.Err() == context.DeadlineExceeded:
+				// DeadlineExceeded, no bar — SDK was mid-retry, ghost still alive.
+				log.Info().Int("probe", probeIdx).Msg("ghost session: probe timeout with no bar — still alive")
+			case isStillGhost:
 				log.Info().Int("probe", probeIdx).Err(probeErr).Msg("ghost session: still alive, continuing probes")
-			} else {
+			default:
 				// Some other error — treat as ghost gone.
 				log.Info().Int("probe", probeIdx).Err(probeErr).Msg("ghost session: non-406 error — ghost cleared")
 				reconnected = true

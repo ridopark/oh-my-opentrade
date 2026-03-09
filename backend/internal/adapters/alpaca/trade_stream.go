@@ -83,7 +83,7 @@ func NewTradeStreamClient(baseURL, apiKey, apiSecret string, paperMode bool, log
 }
 
 func defaultDial(ctx context.Context, url string) (*websocket.Conn, error) {
-	conn, _, err := websocket.Dial(ctx, url, nil)
+	conn, _, err := websocket.Dial(ctx, url, nil) //nolint:bodyclose // websocket.Dial returns *websocket.Conn, not http.Response
 	return conn, err
 }
 
@@ -125,7 +125,7 @@ func (ts *TradeStreamClient) nextBackoff() time.Duration {
 
 // Run connects to the Alpaca trade stream and sends order updates to the
 // provided channel. It reconnects with exponential backoff on failure.
-// The channel is closed when ctx is cancelled.
+// The channel is closed when ctx is canceled.
 func (ts *TradeStreamClient) Run(ctx context.Context, ch chan<- ports.OrderUpdate) {
 	defer close(ch)
 

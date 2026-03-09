@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
-	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
 
 // InstanceAssignment defines which symbols a strategy instance is responsible for.
@@ -17,30 +17,30 @@ type InstanceAssignment struct {
 	Timeframes     []string
 	AssetClasses   []string
 	Priority       int
-	ConflictPolicy strat.ConflictPolicy
+	ConflictPolicy start.ConflictPolicy
 }
 
 // Instance wraps a Strategy implementation with per-symbol state management
 // and routing assignment. It is the unit of execution within the StrategyRunner.
 type Instance struct {
 	mu         sync.Mutex
-	id         strat.InstanceID
-	strategy   strat.Strategy
+	id         start.InstanceID
+	strategy   start.Strategy
 	params     map[string]any
 	assignment InstanceAssignment
-	lifecycle  strat.LifecycleState
-	states     map[string]strat.State // per-symbol state
+	lifecycle  start.LifecycleState
+	states     map[string]start.State // per-symbol state
 	warmupLeft map[string]int         // bars remaining for warmup per symbol
 	logger     *slog.Logger
 }
 
 // NewInstance creates a new strategy instance with the given assignment.
 func NewInstance(
-	id strat.InstanceID,
-	strategy strat.Strategy,
+	id start.InstanceID,
+	strategy start.Strategy,
 	params map[string]any,
 	assignment InstanceAssignment,
-	lifecycle strat.LifecycleState,
+	lifecycle start.LifecycleState,
 	logger *slog.Logger,
 ) *Instance {
 	if logger == nil {
@@ -52,30 +52,30 @@ func NewInstance(
 		params:     params,
 		assignment: assignment,
 		lifecycle:  lifecycle,
-		states:     make(map[string]strat.State),
+		states:     make(map[string]start.State),
 		warmupLeft: make(map[string]int),
 		logger:     logger.With("instance_id", id.String()),
 	}
 }
 
 // ID returns the instance identifier.
-func (inst *Instance) ID() strat.InstanceID { return inst.id }
+func (inst *Instance) ID() start.InstanceID { return inst.id }
 
 // Strategy returns the underlying strategy implementation.
-func (inst *Instance) Strategy() strat.Strategy { return inst.strategy }
+func (inst *Instance) Strategy() start.Strategy { return inst.strategy }
 
 // Assignment returns the routing assignment.
 func (inst *Instance) Assignment() InstanceAssignment { return inst.assignment }
 
 // Lifecycle returns the current lifecycle state.
-func (inst *Instance) Lifecycle() strat.LifecycleState {
+func (inst *Instance) Lifecycle() start.LifecycleState {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 	return inst.lifecycle
 }
 
 // SetLifecycle updates the lifecycle state.
-func (inst *Instance) SetLifecycle(state strat.LifecycleState) {
+func (inst *Instance) SetLifecycle(state start.LifecycleState) {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 	inst.lifecycle = state
@@ -90,7 +90,7 @@ func (inst *Instance) IsActive() bool {
 
 // InitSymbol initializes the strategy for a specific symbol.
 // Must be called before processing bars for that symbol.
-func (inst *Instance) InitSymbol(ctx strat.Context, symbol string, prior strat.State) error {
+func (inst *Instance) InitSymbol(ctx start.Context, symbol string, prior start.State) error {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 
@@ -106,7 +106,7 @@ func (inst *Instance) InitSymbol(ctx strat.Context, symbol string, prior strat.S
 
 // OnBar processes a bar for the given symbol. Returns signals produced.
 // If the instance is still warming up for the symbol, signals are suppressed.
-func (inst *Instance) OnBar(ctx strat.Context, symbol string, bar strat.Bar, indicators strat.IndicatorData) ([]strat.Signal, error) {
+func (inst *Instance) OnBar(ctx start.Context, symbol string, bar start.Bar, indicators start.IndicatorData) ([]start.Signal, error) {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 
@@ -121,7 +121,7 @@ func (inst *Instance) OnBar(ctx strat.Context, symbol string, bar strat.Bar, ind
 
 	// Inject indicators into state if it supports the SetIndicators interface.
 	type indicatorSetter interface {
-		SetIndicators(strat.IndicatorData)
+		SetIndicators(start.IndicatorData)
 	}
 	if setter, ok := state.(indicatorSetter); ok {
 		setter.SetIndicators(indicators)
@@ -164,7 +164,7 @@ func (inst *Instance) OnBar(ctx strat.Context, symbol string, bar strat.Bar, ind
 // check and always suppresses signals. If the strategy implements
 // ReplayableStrategy, it calls ReplayOnBar instead of OnBar to enable
 // replay-aware state recovery (e.g., ORB tracker with replay=true).
-func (inst *Instance) WarmupOnBar(ctx strat.Context, symbol string, bar strat.Bar, indicators strat.IndicatorData) error {
+func (inst *Instance) WarmupOnBar(ctx start.Context, symbol string, bar start.Bar, indicators start.IndicatorData) error {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 
@@ -174,7 +174,7 @@ func (inst *Instance) WarmupOnBar(ctx strat.Context, symbol string, bar strat.Ba
 	}
 
 	// Check if strategy supports replay-aware warmup.
-	if r, ok := inst.strategy.(strat.ReplayableStrategy); ok {
+	if r, ok := inst.strategy.(start.ReplayableStrategy); ok {
 		next, err := r.ReplayOnBar(ctx, symbol, bar, state, indicators)
 		if err != nil {
 			return fmt.Errorf("instance %s: ReplayOnBar %s: %w", inst.id, symbol, err)
@@ -183,7 +183,7 @@ func (inst *Instance) WarmupOnBar(ctx strat.Context, symbol string, bar strat.Ba
 	} else {
 		// Non-replayable strategies: inject indicators, call OnBar, discard signals.
 		type indicatorSetter interface {
-			SetIndicators(strat.IndicatorData)
+			SetIndicators(start.IndicatorData)
 		}
 		if setter, ok := state.(indicatorSetter); ok {
 			setter.SetIndicators(indicators)
@@ -204,7 +204,7 @@ func (inst *Instance) WarmupOnBar(ctx strat.Context, symbol string, bar strat.Ba
 }
 
 // OnEvent processes a non-bar event for the given symbol.
-func (inst *Instance) OnEvent(ctx strat.Context, symbol string, evt any) ([]strat.Signal, error) {
+func (inst *Instance) OnEvent(ctx start.Context, symbol string, evt any) ([]start.Signal, error) {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 
@@ -234,7 +234,7 @@ func (inst *Instance) IsWarmedUp(symbol string) bool {
 }
 
 // GetState returns the current state for a symbol (for persistence/inspection).
-func (inst *Instance) GetState(symbol string) (strat.State, bool) {
+func (inst *Instance) GetState(symbol string) (start.State, bool) {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 	st, ok := inst.states[symbol]
@@ -296,7 +296,7 @@ func (inst *Instance) AllSnapshots() []domain.StateSnapshot {
 	return snaps
 }
 
-// instanceContext implements strat.Context for use within the runner.
+// instanceContext implements start.Context for use within the runner.
 type instanceContext struct {
 	now    time.Time
 	logger *slog.Logger
@@ -307,9 +307,9 @@ func (c *instanceContext) Now() time.Time                { return c.now }
 func (c *instanceContext) Logger() *slog.Logger          { return c.logger }
 func (c *instanceContext) EmitDomainEvent(evt any) error { return c.emit(evt) }
 
-// NewContext creates a strat.Context for use outside the runner (e.g., main.go wiring).
+// NewContext creates a start.Context for use outside the runner (e.g., main.go wiring).
 // The emit function is called when a strategy invokes EmitDomainEvent; pass nil for a no-op.
-func NewContext(now time.Time, logger *slog.Logger, emit func(evt any) error) strat.Context {
+func NewContext(now time.Time, logger *slog.Logger, emit func(evt any) error) start.Context {
 	if logger == nil {
 		logger = slog.Default()
 	}

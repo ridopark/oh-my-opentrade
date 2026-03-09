@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/domain"
-	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
@@ -25,14 +25,14 @@ type Runner struct {
 	logger      *slog.Logger
 	tenantID    string
 	envMode     domain.EnvMode
-	indicators  map[string]strat.IndicatorData // cached per-symbol indicators from StateUpdated
+	indicators  map[string]start.IndicatorData // cached per-symbol indicators from StateUpdated
 	indLogOnce  map[string]bool
 	metrics     *metrics.Metrics
 }
 
 // IndicatorSnapshotFunc maps a market bar to indicator data.
 // Used for warmup without introducing an import cycle with the monitor package.
-type IndicatorSnapshotFunc func(domain.MarketBar) strat.IndicatorData
+type IndicatorSnapshotFunc func(domain.MarketBar) start.IndicatorData
 
 // NewRunner creates a StrategyRunner.
 func NewRunner(
@@ -51,7 +51,7 @@ func NewRunner(
 		logger:     logger.With("component", "strategy_runner"),
 		tenantID:   tenantID,
 		envMode:    envMode,
-		indicators: make(map[string]strat.IndicatorData),
+		indicators: make(map[string]start.IndicatorData),
 		indLogOnce: make(map[string]bool),
 	}
 }
@@ -92,7 +92,7 @@ func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error
 		return nil
 	}
 	r.mu.Lock()
-	r.indicators[snap.Symbol.String()] = strat.IndicatorData{
+	r.indicators[snap.Symbol.String()] = start.IndicatorData{
 		RSI:           snap.RSI,
 		StochK:        snap.StochK,
 		StochD:        snap.StochD,
@@ -109,13 +109,13 @@ func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error
 	return nil
 }
 
-func convertAnchorRegimes(regimes map[domain.Timeframe]domain.MarketRegime) map[string]strat.AnchorRegime {
+func convertAnchorRegimes(regimes map[domain.Timeframe]domain.MarketRegime) map[string]start.AnchorRegime {
 	if len(regimes) == 0 {
 		return nil
 	}
-	result := make(map[string]strat.AnchorRegime, len(regimes))
+	result := make(map[string]start.AnchorRegime, len(regimes))
 	for tf, r := range regimes {
-		result[tf.String()] = strat.AnchorRegime{
+		result[tf.String()] = start.AnchorRegime{
 			Type:     r.Type.String(),
 			Strength: r.Strength,
 		}
@@ -138,7 +138,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		return nil
 	}
 
-	// Convert domain.MarketBar → strat.Bar
+	// Convert domain.MarketBar → start.Bar
 	sBar := domainBarToStratBar(bar)
 
 	// Use cached indicators from StateUpdated events, with current bar volume.
@@ -160,7 +160,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	var allSignals []strat.Signal
+	var allSignals []start.Signal
 
 	for _, inst := range instances {
 		now := time.Now()
@@ -246,7 +246,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 
 // ProcessBar allows direct bar processing without going through the event bus.
 // Useful for testing and warmup scenarios.
-func (r *Runner) ProcessBar(ctx context.Context, symbol string, bar strat.Bar, indicators strat.IndicatorData) ([]strat.Signal, error) {
+func (r *Runner) ProcessBar(ctx context.Context, symbol string, bar start.Bar, indicators start.IndicatorData) ([]start.Signal, error) {
 	instances := r.router.InstancesForSymbol(symbol)
 	if len(instances) == 0 {
 		return nil, nil
@@ -255,7 +255,7 @@ func (r *Runner) ProcessBar(ctx context.Context, symbol string, bar strat.Bar, i
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	var allSignals []strat.Signal
+	var allSignals []start.Signal
 
 	for _, inst := range instances {
 		now := time.Now()
@@ -301,7 +301,7 @@ func (r *Runner) WarmUp(symbol string, bars []domain.MarketBar, snapshotFn Indic
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	var lastIndicators strat.IndicatorData
+	var lastIndicators start.IndicatorData
 	for _, bar := range bars {
 		indicators := snapshotFn(bar)
 		indicators.Volume = bar.Volume
@@ -330,7 +330,7 @@ func (r *Runner) WarmUp(symbol string, bars []domain.MarketBar, snapshotFn Indic
 }
 
 // emitSignal publishes a SignalCreated domain event.
-func (r *Runner) emitSignal(ctx context.Context, tenantID string, envMode domain.EnvMode, sig strat.Signal) error {
+func (r *Runner) emitSignal(ctx context.Context, tenantID string, envMode domain.EnvMode, sig start.Signal) error {
 	ev, err := domain.NewEvent(
 		domain.EventSignalCreated,
 		tenantID,
@@ -384,13 +384,13 @@ func (r *Runner) handleFill(_ context.Context, event domain.Event) error {
 		return nil
 	}
 
-	// Map side string to strat.Side.
-	var fillSide strat.Side
+	// Map side string to start.Side.
+	var fillSide start.Side
 	switch side {
 	case "BUY":
-		fillSide = strat.SideBuy
+		fillSide = start.SideBuy
 	case "SELL":
-		fillSide = strat.SideSell
+		fillSide = start.SideSell
 	default:
 		r.logger.Warn("handleFill: unknown side", "side", side)
 		return nil
@@ -402,7 +402,7 @@ func (r *Runner) handleFill(_ context.Context, event domain.Event) error {
 		emit:   func(_ any) error { return nil },
 	}
 
-	confirmation := strat.FillConfirmation{
+	confirmation := start.FillConfirmation{
 		Symbol:   symbol,
 		Side:     fillSide,
 		Quantity: qty,
@@ -443,12 +443,12 @@ func (r *Runner) handleRejection(_ context.Context, event domain.Event) error {
 
 	// Only forward entry rejections. Exit rejections (CLOSE_LONG, CLOSE_SHORT)
 	// don't need strategy feedback — the strategy will re-emit on next bar.
-	var rejSide strat.Side
+	var rejSide start.Side
 	switch domain.Direction(payload.Direction) {
 	case domain.DirectionLong:
-		rejSide = strat.SideBuy
+		rejSide = start.SideBuy
 	case domain.DirectionShort:
-		rejSide = strat.SideSell
+		rejSide = start.SideSell
 	default:
 		return nil // exit rejection — ignore
 	}
@@ -465,7 +465,7 @@ func (r *Runner) handleRejection(_ context.Context, event domain.Event) error {
 		emit:   func(_ any) error { return nil },
 	}
 
-	rejection := strat.EntryRejection{
+	rejection := start.EntryRejection{
 		Symbol: payload.Symbol,
 		Side:   rejSide,
 		Reason: payload.Reason,
@@ -507,8 +507,8 @@ func (r *Runner) findInstanceByStrategyAndSymbol(strategyName, symbol string) *I
 }
 
 // domainBarToStratBar converts a domain.MarketBar to a strategy.Bar.
-func domainBarToStratBar(bar domain.MarketBar) strat.Bar {
-	return strat.Bar{
+func domainBarToStratBar(bar domain.MarketBar) start.Bar {
+	return start.Bar{
 		Time:   bar.Time,
 		Open:   bar.Open,
 		High:   bar.High,

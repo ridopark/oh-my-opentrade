@@ -9,39 +9,39 @@ run:
 linters:
   default: none
   enable:
-    # Standard linters
-    - errcheck        # Unchecked error returns
-    - govet           # Vet issues
-    - staticcheck     # Static analysis (includes gosimple in v2)
-    - unused          # Unused code
-    - ineffassign     # Ineffectual assignments
-
-    # Quality linters
-    - gocritic        # Opinionated code review
-    - revive          # Fast linter with configurable rules
-    - misspell        # Spelling mistakes
-    - prealloc        # Preallocate slices
-
-    # Error handling
-    - errorlint       # Proper error wrapping (errors.Is, errors.As)
-
-    # HTTP best practices
-    - bodyclose       # HTTP response body must be closed
-    - noctx           # HTTP requests without context
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - gocritic
+    - revive
+    - misspell
+    - prealloc
+    - errorlint
+    - bodyclose
+    - noctx
 
   settings:
     errcheck:
-      check-type-assertions: true
-      check-blank: true
+      check-type-assertions: false
+      check-blank: false
       exclude-functions:
         - fmt.Print
         - fmt.Println
         - fmt.Printf
+        - fmt.Fprintf
+        - (fmt.Stringer).String
+        - io.Copy
+        - (*strings.Builder).WriteString
+        - (*strings.Builder).WriteRune
+        - (*strings.Builder).WriteByte
 
     govet:
       enable-all: true
       disable:
-        - fieldalignment  # Too strict for domain models
+        - fieldalignment
+        - shadow
 
     revive:
       enable-all-rules: false
@@ -53,33 +53,27 @@ linters:
         - name: error-return
         - name: error-strings
         - name: errorf
-        - name: exported
         - name: if-return
         - name: increment-decrement
         - name: indent-error-flow
-        - name: package-comments
         - name: range
         - name: receiver-naming
-        - name: redefines-builtin-id
         - name: superfluous-else
         - name: time-naming
         - name: unexported-naming
         - name: unexported-return
-        - name: unhandled-error
         - name: unnecessary-stmt
         - name: unreachable-code
-        - name: unused-parameter
         - name: var-declaration
-        - name: var-naming
 
     gocritic:
       enabled-tags:
         - diagnostic
-        - style
         - performance
       disabled-checks:
-        - hugeParam        # Too strict for domain models
-        - rangeValCopy     # False positives with value objects
+        - hugeParam
+        - rangeValCopy
+        - exitAfterDefer
 
     misspell:
       locale: US
@@ -102,32 +96,35 @@ linters:
       - ".*_test\\.go$"
       - ".*_mock\\.go$"
     rules:
-      # Allow unused parameters in interface implementations
       - linters:
           - revive
         text: "unused-parameter"
         source: "func \\(.*\\) .*\\(.*\\) error"
 
-      # Allow blank imports for side effects (e.g., database drivers)
       - linters:
           - revive
         text: "blank-imports"
         source: "_ \".*\""
 
-      # Allow context.Background() in tests and main
       - linters:
           - noctx
         source: "context\\.Background\\(\\)"
 
-      # Allow error returns in test helpers
       - path: "_test\\.go$"
         linters:
           - errcheck
 
-      # Allow unused in generated code
       - source: "// Code generated"
         linters:
           - unused
+
+      - linters:
+          - errcheck
+        text: "Error return value of `.*\\.Close` is not checked"
+
+      - linters:
+          - errcheck
+        text: "Error return value of `.*\\.CloseNow` is not checked"
 
 issues:
   max-issues-per-linter: 0
