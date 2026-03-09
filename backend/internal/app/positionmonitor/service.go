@@ -716,7 +716,8 @@ func (s *Service) tick() {
 			if !rule.Type.RequiresPrice() {
 				continue
 			}
-			triggered, reason := Evaluate(rule, pos, price, now, evalCtx)
+			adjusted := sessionAdjustRule(rule, pos.AssetClass, now)
+			triggered, reason := Evaluate(adjusted, pos, price, now, evalCtx)
 			if !triggered {
 				continue
 			}

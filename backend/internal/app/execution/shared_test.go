@@ -60,6 +60,9 @@ func (m *mockBroker) GetPositions(ctx context.Context, tenantID string, envMode 
 	}
 	return []domain.Trade{}, nil
 }
+func (m *mockBroker) CancelOpenOrders(_ context.Context, _ domain.Symbol, _ string) (int, error) {
+	return 0, nil
+}
 
 // mockRepository is used for testing
 type mockRepository struct {

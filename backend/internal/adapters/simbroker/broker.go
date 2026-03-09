@@ -242,6 +242,10 @@ func (b *Broker) GetPositions(_ context.Context, _ string, _ domain.EnvMode) ([]
 	return trades, nil
 }
 
+func (b *Broker) CancelOpenOrders(_ context.Context, _ domain.Symbol, _ string) (int, error) {
+	return 0, nil
+}
+
 // GetFillPrice returns the fill price for a given order ID. Used by the backtest
 // collector to access actual fill details without relying on status string parsing.
 func (b *Broker) GetFillPrice(orderID string) (float64, bool) {

@@ -91,6 +91,7 @@ Determine if the thesis is still valid, degrading, or invalidated.
 Recommend: HOLD (thesis intact), TIGHTEN (increase caution), SCALE_OUT (reduce exposure), or EXIT (thesis broken).
 Set updated_modifier: TIGHT (reduce risk), NORMAL (maintain), or WIDE (give room).
 scale_out_pct is 0.0 unless action is SCALE_OUT (then 0.25–0.75).
+IMPORTANT: Factor in volume and liquidity conditions. During low-volume periods (off-peak hours, weekends), TIGHTEN is risky because tight stops get triggered by noise/flash wicks in thin markets. Prefer HOLD with WIDE modifier during low liquidity unless thesis is clearly invalidated.
 Respond ONLY with valid JSON — no markdown fences, no extra text.`
 
 	userPrompt := buildRiskAssessmentPrompt(position, indicators, regime)
@@ -274,6 +275,29 @@ Current Market State:
 		}
 	}
 
+	rvol := 0.0
+	if indicators.VolumeSMA > 0 {
+		rvol = indicators.Volume / indicators.VolumeSMA
+	}
+	liqRegime := classifyLiquidityRegime(rvol, time.Now())
+	sb.WriteString(fmt.Sprintf(`
+
+Volume & Liquidity:
+  Current Volume: %.2f
+  Volume SMA(20): %.2f
+  Relative Volume: %.2fx %s
+  ATR(14): %.4f
+  Liquidity Regime: %s`,
+		indicators.Volume,
+		indicators.VolumeSMA,
+		rvol, rvolLabel(rvol),
+		indicators.ATR,
+		liqRegime,
+	))
+	if liqRegime == "LOW" {
+		sb.WriteString("\n  ⚠ LOW LIQUIDITY: Tight stops risk triggering on noise/flash wicks. Consider wider stops or HOLD.")
+	}
+
 	return sb.String()
 }
 
@@ -291,6 +315,41 @@ func formatHoldDuration(d time.Duration) string {
 		return fmt.Sprintf("%dh", h)
 	}
 	return fmt.Sprintf("%dh %dm", h, m)
+}
+
+func rvolLabel(rvol float64) string {
+	switch {
+	case rvol >= 1.5:
+		return "(HIGH)"
+	case rvol >= 0.7:
+		return "(NORMAL)"
+	case rvol > 0:
+		return "(LOW)"
+	default:
+		return "(N/A)"
+	}
+}
+
+func classifyLiquidityRegime(rvol float64, now time.Time) string {
+	hour := now.UTC().Hour()
+	isWeekend := now.UTC().Weekday() == time.Saturday || now.UTC().Weekday() == time.Sunday
+
+	if rvol > 0 && rvol < 0.5 {
+		return "LOW"
+	}
+
+	if isWeekend || hour >= 22 || hour < 8 {
+		if rvol > 0 && rvol >= 1.0 {
+			return "MEDIUM"
+		}
+		return "LOW"
+	}
+
+	if hour >= 13 && hour <= 18 {
+		return "HIGH"
+	}
+
+	return "MEDIUM"
 }
 
 // NoOpRiskAssessor implements ports.RiskAssessorPort but always returns nil.
