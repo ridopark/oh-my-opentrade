@@ -110,7 +110,7 @@ func (s *Service) Start(ctx context.Context) error {
 		eventType := e.eventType
 		withChart := e.chart
 		handler := func(ctx context.Context, ev domain.Event) error {
-			msg := fmt.Sprintf("[%s] %s", ev.OccurredAt.In(etLoc).Format("15:04:05"), formatter(ev))
+			msg := fmt.Sprintf("[%s] %s\n", ev.OccurredAt.In(etLoc).Format("15:04:05"), formatter(ev))
 			job := notifyJob{
 				event:     ev,
 				eventType: eventType,
