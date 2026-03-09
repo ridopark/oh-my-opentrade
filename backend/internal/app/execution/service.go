@@ -276,6 +276,14 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		l.Info().Float64("exit_qty", posQty).Msg("resolved exit quantity from broker position")
 	}
 
+	// 5e. Cancel stale open buy orders for this symbol to prevent position doubling and wash trades.
+	cancelSide := "buy"
+	if cancelled, cancelErr := s.broker.CancelOpenOrders(ctx, intent.Symbol, cancelSide); cancelErr != nil {
+		l.Warn().Err(cancelErr).Msg("failed to cancel open orders — proceeding with submission")
+	} else if cancelled > 0 {
+		l.Info().Int("cancelled", cancelled).Str("side", cancelSide).Msg("cancelled stale open orders before submission")
+	}
+
 	// 6. Submit to broker.
 	submitStart := time.Now()
 	brokerOrderID, err := s.broker.SubmitOrder(ctx, intent)
@@ -691,8 +699,13 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 			s.cleanupPendingOrder(brokerOrderID)
 		}
 
-		// Expire stale pending orders (> 2 minutes old).
+		// Expire stale pending orders (> 2 minutes old) — cancel on broker first.
 		if time.Since(po.submitStart) > 2*time.Minute {
+			if err := s.broker.CancelOrder(ctx, brokerOrderID); err != nil {
+				l.Warn().Err(err).Msg("reconcile: failed to cancel stale order on broker — may already be terminal")
+			} else {
+				l.Info().Msg("reconcile: cancelled stale order on broker")
+			}
 			l.Warn().Msg("reconcile: pending order expired")
 			s.cleanupPendingOrder(brokerOrderID)
 		}

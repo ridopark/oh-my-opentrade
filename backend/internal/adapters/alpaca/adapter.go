@@ -191,6 +191,11 @@ func (a *Adapter) CancelOrder(ctx context.Context, orderID string) error {
 	return a.rest.CancelOrder(ctx, orderID)
 }
 
+// CancelOpenOrders cancels all open orders for a symbol and side on Alpaca.
+func (a *Adapter) CancelOpenOrders(ctx context.Context, symbol domain.Symbol, side string) (int, error) {
+	return a.rest.CancelOpenOrders(ctx, symbol, side)
+}
+
 // GetOrderStatus fetches the current status of an Alpaca order.
 func (a *Adapter) GetOrderStatus(ctx context.Context, orderID string) (string, error) {
 	return a.rest.GetOrderStatus(ctx, orderID)
