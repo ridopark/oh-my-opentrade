@@ -116,7 +116,24 @@ jobs:
           username: ${{ secrets.OCI_USER }}
           key: ${{ secrets.OCI_SSH_KEY }}
           script: |
+            set -e
             cd ~/oh-my-opentrade
             git pull origin main
             docker compose -f deployments/docker-compose.yml up -d --build --remove-orphans
+            echo "Waiting for containers to stabilize..."
+            sleep 5
+            docker compose -f deployments/docker-compose.yml ps --format json | python3 -c "
+            import json, sys
+            lines = sys.stdin.read().strip().split('\n')
+            failed = []
+            for line in lines:
+                c = json.loads(line)
+                if c.get('State') != 'running' and c.get('Name') not in ('omo-migrate',):
+                    failed.append(f\"{c['Name']}: {c['State']}\")
+            if failed:
+                print('DEPLOY FAILED - containers not running:')
+                for f in failed: print(f'  {f}')
+                sys.exit(1)
+            print('All containers healthy')
+            "
             docker compose -f deployments/docker-compose.yml logs --tail=20 omo-core

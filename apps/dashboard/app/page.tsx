@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import React, { useState, useMemo, useEffect, useRef, useCallback, Suspense } from "react";
 import dynamic from "next/dynamic";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,6 +25,14 @@ const TIMEFRAMES = ["1m", "5m", "15m", "1h", "1d"] as const;
 type Timeframe = (typeof TIMEFRAMES)[number];
 
 export default function TradingSignalPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center h-screen text-muted-foreground">Loading...</div>}>
+      <TradingSignalContent />
+    </Suspense>
+  );
+}
+
+function TradingSignalContent() {
   const [timeframe, setTimeframe] = useState<Timeframe>("1m");
   const [containerDimensions, setContainerDimensions] = useState({ width: 0, height: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
