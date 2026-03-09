@@ -632,6 +632,8 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 	if s.positionGate != nil {
 		if isEntry(po.intent) {
 			s.positionGate.ClearInflight(po.tenantID, po.envMode, po.intent.Symbol)
+		} else if po.intent.Direction.IsExit() {
+			s.positionGate.ClearInflightExit(po.tenantID, po.envMode, po.intent.Symbol)
 		}
 	}
 }
