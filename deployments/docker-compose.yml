@@ -73,11 +73,28 @@ services:
     restart: unless-stopped
     depends_on:
       - omo-core
-    ports:
-      - "3000:3000"
+    expose:
+      - "3000"
     environment:
       - NODE_ENV=production
       - BACKEND_URL=http://omo-core:8080
+    networks:
+      - default
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: omo-caddy
+    restart: unless-stopped
+    depends_on:
+      - dashboard
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
     networks:
       - default
 
@@ -124,4 +141,8 @@ volumes:
   prometheus_data:
     driver: local
   grafana_data:
+    driver: local
+  caddy_data:
+    driver: local
+  caddy_config:
     driver: local
