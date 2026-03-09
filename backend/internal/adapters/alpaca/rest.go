@@ -223,15 +223,20 @@ func (c *RESTClient) SubmitOrder(ctx context.Context, intent domain.OrderIntent)
 		orderType = "stop_limit"
 	}
 
-	// Determine TIF: respect intent override, else apply Alpaca's constraints.
-	// Crypto only supports "gtc" or "ioc" — never "day".
-	// Equity fractional orders require "day".
 	tif := intent.TimeInForce
 	if tif == "" {
 		tif = "gtc"
-		if !intent.Symbol.IsCryptoSymbol() && intent.Quantity != math.Floor(intent.Quantity) {
-			tif = "day"
+	}
+	isFractional := intent.Quantity != math.Floor(intent.Quantity)
+	if isFractional && !intent.Symbol.IsCryptoSymbol() {
+		if tif != "day" {
+			c.log.Info().
+				Str("symbol", intent.Symbol.String()).
+				Str("original_tif", tif).
+				Float64("qty", intent.Quantity).
+				Msg("overriding TIF to day for fractional equity order")
 		}
+		tif = "day"
 	}
 
 	reqBody := map[string]interface{}{

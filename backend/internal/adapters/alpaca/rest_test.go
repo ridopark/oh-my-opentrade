@@ -220,6 +220,158 @@ func TestRESTClient_SubmitOrder_CryptoFractionalKeepsGTC(t *testing.T) {
 	assert.Equal(t, "crypto-fractional-order-123", orderID)
 }
 
+func TestRESTClient_SubmitOrder_FractionalEquityOverridesIOCToDayTIF(t *testing.T) {
+	// Arrange — fractional equity exit with TIF="ioc" from execution service
+	// must be overridden to "day" by the adapter (Alpaca rejects fractional + ioc)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+
+		var req map[string]interface{}
+		err = json.Unmarshal(body, &req)
+		require.NoError(t, err)
+
+		// Adapter MUST override "ioc" → "day" for fractional equity
+		assert.Equal(t, "2.5", req["qty"])
+		assert.Equal(t, "day", req["time_in_force"], "fractional equity must use TIF=day, even when intent says ioc")
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id": "frac-exit-day-123"}`))
+	}))
+	defer server.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+
+	intent := domain.OrderIntent{
+		Symbol:      "META",
+		Direction:   domain.DirectionCloseLong,
+		Quantity:    2.5,
+		LimitPrice:  580.0,
+		TimeInForce: "ioc", // set by execution service for exits
+	}
+
+	// Act
+	orderID, err := client.SubmitOrder(context.Background(), intent)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, "frac-exit-day-123", orderID)
+}
+
+func TestRESTClient_SubmitOrder_FractionalEquityOverridesGTCToDayTIF(t *testing.T) {
+	// Arrange — fractional equity entry with explicit TIF="gtc"
+	// must be overridden to "day" (Alpaca rejects fractional + gtc)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+
+		var req map[string]interface{}
+		err = json.Unmarshal(body, &req)
+		require.NoError(t, err)
+
+		assert.Equal(t, "0.75", req["qty"])
+		assert.Equal(t, "day", req["time_in_force"], "fractional equity must use TIF=day, even when intent says gtc")
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id": "frac-entry-day-123"}`))
+	}))
+	defer server.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+
+	intent := domain.OrderIntent{
+		Symbol:      "AAPL",
+		Direction:   domain.DirectionLong,
+		Quantity:    0.75,
+		LimitPrice:  190.0,
+		TimeInForce: "gtc", // explicit gtc, but fractional → must become day
+	}
+
+	// Act
+	orderID, err := client.SubmitOrder(context.Background(), intent)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, "frac-entry-day-123", orderID)
+}
+
+func TestRESTClient_SubmitOrder_WholeQtyKeepsIOCTIF(t *testing.T) {
+	// Arrange — whole-number equity with TIF="ioc" must NOT be overridden
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+
+		var req map[string]interface{}
+		err = json.Unmarshal(body, &req)
+		require.NoError(t, err)
+
+		assert.Equal(t, "10", req["qty"])
+		assert.Equal(t, "ioc", req["time_in_force"], "whole-number equity should keep ioc TIF")
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id": "whole-ioc-123"}`))
+	}))
+	defer server.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+
+	intent := domain.OrderIntent{
+		Symbol:      "META",
+		Direction:   domain.DirectionCloseLong,
+		Quantity:    10,
+		LimitPrice:  580.0,
+		TimeInForce: "ioc",
+	}
+
+	// Act
+	orderID, err := client.SubmitOrder(context.Background(), intent)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, "whole-ioc-123", orderID)
+}
+
+func TestRESTClient_SubmitOrder_CryptoFractionalKeepsIOCTIF(t *testing.T) {
+	// Arrange — crypto fractional with TIF="ioc" must NOT be overridden
+	// (crypto supports ioc/gtc, the day constraint is equity-only)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+
+		var req map[string]interface{}
+		err = json.Unmarshal(body, &req)
+		require.NoError(t, err)
+
+		assert.Equal(t, "0.5", req["qty"])
+		assert.Equal(t, "ioc", req["time_in_force"], "crypto fractional should keep ioc TIF")
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id": "crypto-ioc-123"}`))
+	}))
+	defer server.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(server.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+
+	intent := domain.OrderIntent{
+		Symbol:      "ETH/USD",
+		Direction:   domain.DirectionCloseLong,
+		Quantity:    0.5,
+		LimitPrice:  3500.0,
+		TimeInForce: "ioc",
+	}
+
+	// Act
+	orderID, err := client.SubmitOrder(context.Background(), intent)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, "crypto-ioc-123", orderID)
+}
+
 func TestRESTClient_SubmitOrder_Error(t *testing.T) {
 	// Arrange
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
