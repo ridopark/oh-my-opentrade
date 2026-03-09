@@ -1,6 +1,7 @@
 # Binaries
 backend/bin/
 backend/omo-core
+backend/omo-replay
 
 # Environment
 .env
@@ -28,3 +29,6 @@ apps/dashboard/.next/
 
 # Runtime logs
 logs/
+
+# Debug screenshots
+/*.png
