@@ -582,7 +582,7 @@ func (c *RESTClient) GetAccountBuyingPower(ctx context.Context) (AccountBuyingPo
 	var res struct {
 		DayTradingBuyingPower    string `json:"daytrading_buying_power"`
 		EffectiveBuyingPower     string `json:"effective_buying_power"`
-		NonMarginableBuyingPower string `json:"non_marginable_buying_power"`
+		NonMarginableBuyingPower string `json:"non_marginable_buying_power"` //nolint:misspell // Alpaca API field name
 		PatternDayTrader         bool   `json:"pattern_day_trader"`
 	}
 	if err := json.Unmarshal(body, &res); err != nil {
