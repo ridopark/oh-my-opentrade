@@ -229,9 +229,13 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 	stopRestPoller := func() {
 		restPollMu.Lock()
 		defer restPollMu.Unlock()
+		wasActive := restPollCancel != nil
 		if restPollCancel != nil {
 			restPollCancel()
 			restPollCancel = nil
+		}
+		if wasActive {
+			log.Info().Str("feed", w.feed).Msg("equity REST poller: STOPPED")
 		}
 	}
 
@@ -293,6 +297,8 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		restPollCancel = pCancel
 		restPollMu.Unlock()
 		restPollerWasStarted = true
+		log.Info().Str("feed", w.feed).Int("symbols", len(symbols)).Dur("interval", restPollInterval).
+			Msg("equity REST poller: STARTED")
 		go w.restPoller(pollCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler, restPollInterval)
 	}
 
@@ -439,6 +445,15 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 
 		// Check for stale-triggered reconnect (connCtx canceled but streamCtx still alive).
 		wasStaleReset := HandleStaleReset(connCtx, streamCtx, connErr, w.tracker, log.Logger)
+		errClassName := [...]string{"transient", "ghost", "fatal"}
+		ecName := "unknown"
+		if int(errClass) < len(errClassName) {
+			ecName = errClassName[errClass]
+		}
+		log.Info().Str("feed", w.feed).Bool("was_stale_reset", wasStaleReset).
+			Bool("has_fetcher", w.fetcher != nil).Str("err_class", ecName).
+			Int64("ws_bars", wsBarCount.Load()).
+			Msg("equity WS: reconnect decision point")
 		if wasStaleReset && w.metrics != nil {
 			w.metrics.WS.ReconnectsTotal.WithLabelValues(w.feed, "stale").Inc()
 		}
@@ -675,12 +690,17 @@ func (w *WSClient) restPoller(
 	callHandler func(context.Context, domain.MarketBar, bool) error,
 	pollInterval time.Duration,
 ) {
+	log.Info().Str("feed", w.feed).Int("symbols", len(symbols)).Dur("interval", pollInterval).
+		Msg("equity REST poller goroutine: entered")
+	defer log.Info().Str("feed", w.feed).Msg("equity REST poller goroutine: exiting")
+
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	// pollOnce performs a single poll cycle for all symbols.
 	pollOnce := func() {
 		now := time.Now()
+		totalBars := 0
 		for _, sym := range symbols {
 			lastBarMu.Lock()
 			from := lastBarTime[sym]
@@ -700,6 +720,7 @@ func (w *WSClient) restPoller(
 				continue
 			}
 
+			totalBars += len(bars)
 			for _, bar := range bars {
 				if err := callHandler(ctx, bar, true); err != nil {
 					if ctx.Err() == nil {
@@ -707,6 +728,10 @@ func (w *WSClient) restPoller(
 					}
 				}
 			}
+		}
+		if ctx.Err() == nil {
+			log.Info().Str("feed", w.feed).Int("bars_delivered", totalBars).Int("symbols_polled", len(symbols)).
+				Msg("equity REST poller: poll cycle complete")
 		}
 	}
 

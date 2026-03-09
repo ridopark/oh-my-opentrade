@@ -139,9 +139,13 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 	stopRestPoller := func() {
 		restPollMu.Lock()
 		defer restPollMu.Unlock()
+		wasActive := restPollCancel != nil
 		if restPollCancel != nil {
 			restPollCancel()
 			restPollCancel = nil
+		}
+		if wasActive {
+			c.log.Info().Msg("crypto REST poller: STOPPED")
 		}
 	}
 
@@ -174,6 +178,8 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		restPollCancel = pCancel
 		restPollMu.Unlock()
 		restPollerWasStarted = true
+		c.log.Info().Int("symbols", len(symbols)).Dur("interval", cryptoRestPollInterval).
+			Msg("crypto REST poller: STARTED")
 		go c.cryptoRestPoller(pollCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler, cryptoRestPollInterval)
 	}
 
@@ -355,11 +361,16 @@ func (c *CryptoWSClient) cryptoRestPoller(
 	callHandler func(context.Context, domain.MarketBar, bool) error,
 	pollInterval time.Duration,
 ) {
+	c.log.Info().Int("symbols", len(symbols)).Dur("interval", pollInterval).
+		Msg("crypto REST poller goroutine: entered")
+	defer c.log.Info().Msg("crypto REST poller goroutine: exiting")
+
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	pollOnce := func() {
 		now := time.Now()
+		totalBars := 0
 		for _, sym := range symbols {
 			lastBarMu.Lock()
 			from := lastBarTime[sym]
@@ -379,6 +390,7 @@ func (c *CryptoWSClient) cryptoRestPoller(
 				continue
 			}
 
+			totalBars += len(bars)
 			for _, bar := range bars {
 				if err := callHandler(ctx, bar, true); err != nil {
 					if ctx.Err() == nil {
@@ -386,6 +398,10 @@ func (c *CryptoWSClient) cryptoRestPoller(
 					}
 				}
 			}
+		}
+		if ctx.Err() == nil {
+			c.log.Info().Int("bars_delivered", totalBars).Int("symbols_polled", len(symbols)).
+				Msg("crypto REST poller: poll cycle complete")
 		}
 	}
 
