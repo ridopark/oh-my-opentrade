@@ -127,10 +127,3 @@ func ni64(v *int64) any {
 	}
 	return *v
 }
-
-func ns(v *string) any {
-	if v == nil {
-		return nil
-	}
-	return *v
-}

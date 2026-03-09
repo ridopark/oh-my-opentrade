@@ -128,7 +128,7 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 			s.log.Info().
 				Str("symbol", string(pos.Symbol)).
 				Str("broker_order_id", pos.ExitOrderID).
-				Msg("cancelled stale exit order")
+				Msg("canceled stale exit order")
 		}
 	}
 

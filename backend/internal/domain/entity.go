@@ -370,7 +370,7 @@ type BrokerOrder struct {
 	Quantity      float64
 	LimitPrice    float64
 	StopLoss      float64
-	Status        string // submitted | filled | cancelled | expired
+	Status        string // submitted | filled | canceled | expired
 	FilledAt      *time.Time
 	FilledPrice   float64
 	FilledQty     float64

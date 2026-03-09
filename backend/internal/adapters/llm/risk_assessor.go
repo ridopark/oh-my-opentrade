@@ -195,8 +195,7 @@ func buildRiskAssessmentPrompt(pos domain.MonitoredPosition, indicators domain.I
 	holdDuration := time.Since(pos.EntryTime)
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf(
-		`Evaluate this open position and respond ONLY with valid JSON matching this schema (no markdown, no extra text).
+	fmt.Fprintf(&sb, `Evaluate this open position and respond ONLY with valid JSON matching this schema (no markdown, no extra text).
 %s
 
 Position Details:
@@ -219,11 +218,10 @@ Position Details:
 		formatHoldDuration(holdDuration),
 		pos.HighWaterMark,
 		drawdownPct*100,
-		pos.Strategy,
-	))
+		pos.Strategy)
 
 	if pos.EntryThesis != nil {
-		sb.WriteString(fmt.Sprintf(`
+		fmt.Fprintf(&sb, `
 
 Entry Thesis (what we believed when entering):
   Direction: %s
@@ -233,20 +231,19 @@ Entry Thesis (what we believed when entering):
 			pos.EntryThesis.Direction,
 			pos.EntryThesis.Confidence*100,
 			pos.EntryThesis.RiskModifier,
-			pos.EntryThesis.EntryRegime,
-		))
+			pos.EntryThesis.EntryRegime)
 		if pos.EntryThesis.BullArgument != "" {
-			sb.WriteString(fmt.Sprintf("\n  Bull Thesis: %s", pos.EntryThesis.BullArgument))
+			fmt.Fprintf(&sb, "\n  Bull Thesis: %s", pos.EntryThesis.BullArgument)
 		}
 		if pos.EntryThesis.BearArgument != "" {
-			sb.WriteString(fmt.Sprintf("\n  Bear Thesis: %s", pos.EntryThesis.BearArgument))
+			fmt.Fprintf(&sb, "\n  Bear Thesis: %s", pos.EntryThesis.BearArgument)
 		}
 		if pos.EntryThesis.JudgeReasoning != "" {
-			sb.WriteString(fmt.Sprintf("\n  Judge Reasoning: %s", pos.EntryThesis.JudgeReasoning))
+			fmt.Fprintf(&sb, "\n  Judge Reasoning: %s", pos.EntryThesis.JudgeReasoning)
 		}
 	}
 
-	sb.WriteString(fmt.Sprintf(`
+	fmt.Fprintf(&sb, `
 
 Current Market State:
   Regime: %s (strength: %.2f)
@@ -267,12 +264,11 @@ Current Market State:
 		indicators.EMA21,
 		emaTrend(indicators.EMA9, indicators.EMA21),
 		indicators.VWAP,
-		vwapPosition(indicators.EMA9, indicators.VWAP),
-	))
+		vwapPosition(indicators.EMA9, indicators.VWAP))
 
 	if pos.EntryThesis != nil && pos.EntryThesis.EntryRegime != "" {
 		if pos.EntryThesis.EntryRegime != regime.Type.String() {
-			sb.WriteString(fmt.Sprintf("\n  ⚠ REGIME CHANGED: %s → %s", pos.EntryThesis.EntryRegime, regime.Type.String()))
+			fmt.Fprintf(&sb, "\n  ⚠ REGIME CHANGED: %s → %s", pos.EntryThesis.EntryRegime, regime.Type.String())
 		}
 	}
 
@@ -281,7 +277,7 @@ Current Market State:
 		rvol = indicators.Volume / indicators.VolumeSMA
 	}
 	liqRegime := classifyLiquidityRegime(rvol, time.Now())
-	sb.WriteString(fmt.Sprintf(`
+	fmt.Fprintf(&sb, `
 
 Volume & Liquidity:
   Current Volume: %.2f
@@ -293,8 +289,7 @@ Volume & Liquidity:
 		indicators.VolumeSMA,
 		rvol, rvolLabel(rvol),
 		indicators.ATR,
-		liqRegime,
-	))
+		liqRegime)
 	if liqRegime == "LOW" {
 		sb.WriteString("\n  ⚠ LOW LIQUIDITY: Tight stops risk triggering on noise/flash wicks. Consider wider stops or HOLD.")
 	}

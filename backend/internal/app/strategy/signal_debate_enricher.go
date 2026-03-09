@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
-	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
@@ -25,7 +25,7 @@ type SignalDebateEnricher struct {
 	marketData    MarketDataProvider
 	posLookup     PositionLookup
 
-	makeDebateOpts func(sig strat.Signal) []ports.DebateOption
+	makeDebateOpts func(sig start.Signal) []ports.DebateOption
 	logger         *slog.Logger
 }
 
@@ -39,7 +39,7 @@ func WithDebateTimeout(d time.Duration) EnricherOption {
 	}
 }
 
-func WithDebateOptionFactory(fn func(strat.Signal) []ports.DebateOption) EnricherOption {
+func WithDebateOptionFactory(fn func(start.Signal) []ports.DebateOption) EnricherOption {
 	return func(e *SignalDebateEnricher) {
 		e.makeDebateOpts = fn
 	}
@@ -90,7 +90,7 @@ func (e *SignalDebateEnricher) Start(ctx context.Context) error {
 }
 
 func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Event) error {
-	sig, ok := event.Payload.(strat.Signal)
+	sig, ok := event.Payload.(start.Signal)
 	if !ok {
 		return nil
 	}
@@ -107,9 +107,9 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 		Tags:               sig.Tags,
 	}
 
-	if sig.Type == strat.SignalExit {
+	if sig.Type == start.SignalExit {
 		direction := domain.DirectionLong
-		if sig.Side == strat.SideSell {
+		if sig.Side == start.SideSell {
 			direction = domain.DirectionCloseLong
 		}
 		enrichment := domain.SignalEnrichment{
@@ -136,7 +136,7 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 	}
 
 	direction := domain.DirectionLong
-	if sig.Side == strat.SideSell {
+	if sig.Side == start.SideSell {
 		direction = domain.DirectionShort
 	}
 

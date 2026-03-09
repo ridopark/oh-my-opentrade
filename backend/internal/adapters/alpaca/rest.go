@@ -96,10 +96,6 @@ func (c *RESTClient) doReqWithOpts(ctx context.Context, method, path string, bod
 	return c.doReqFullWithPath(ctx, method, urlStr, path, body, opts)
 }
 
-func (c *RESTClient) doReqFull(ctx context.Context, method, fullURL string, body io.Reader, opts reqOpts) (*http.Response, error) {
-	return c.doReqFullWithPath(ctx, method, fullURL, "", body, opts)
-}
-
 func (c *RESTClient) doReqFullWithPath(ctx context.Context, method, fullURL, pathForLog string, body io.Reader, opts reqOpts) (*http.Response, error) {
 	opts = normalizeReqOpts(opts)
 
@@ -292,7 +288,7 @@ func (c *RESTClient) CancelOrder(ctx context.Context, orderID string) error {
 		c.log.Error().Int("status", resp.StatusCode).Str("order_id", orderID).Msg("cancel order rejected by Alpaca")
 		return fmt.Errorf("alpaca: cancel order failed (status %d): %s", resp.StatusCode, string(body))
 	}
-	c.log.Info().Str("order_id", orderID).Msg("order cancelled")
+	c.log.Info().Str("order_id", orderID).Msg("order canceled")
 	return nil
 }
 
@@ -572,7 +568,7 @@ func (c *RESTClient) GetAccountBuyingPower(ctx context.Context) (AccountBuyingPo
 	var res struct {
 		DayTradingBuyingPower    string `json:"daytrading_buying_power"`
 		EffectiveBuyingPower     string `json:"effective_buying_power"`
-		NonMarginableBuyingPower string `json:"non_marginable_buying_power"`
+		NonMarginableBuyingPower string `json:"non_marginal_buying_power"`
 		PatternDayTrader         bool   `json:"pattern_day_trader"`
 	}
 	if err := json.Unmarshal(body, &res); err != nil {
@@ -584,7 +580,7 @@ func (c *RESTClient) GetAccountBuyingPower(ctx context.Context) (AccountBuyingPo
 	c.log.Debug().
 		Float64("dtbp", dtbp).
 		Float64("effective_bp", ebp).
-		Float64("non_marginable_bp", nmbp).
+		Float64("non_marginal_bp", nmbp).
 		Bool("pdt", res.PatternDayTrader).
 		Msg("account buying power retrieved")
 	return AccountBuyingPower{
@@ -598,7 +594,7 @@ func (c *RESTClient) GetAccountBuyingPower(ctx context.Context) (AccountBuyingPo
 // CancelOpenOrders cancels all open orders for a given symbol and side on Alpaca.
 // It queries open orders via GET /v2/orders?status=open&symbols={symbol}&side={side},
 // then cancels each one via DELETE /v2/orders/{id}.
-// Returns the number of successfully cancelled orders.
+// Returns the number of successfully canceled orders.
 func (c *RESTClient) CancelOpenOrders(ctx context.Context, symbol domain.Symbol, side string) (int, error) {
 	// Alpaca orders API uses no-slash format for crypto (e.g. "ETHUSD" not "ETH/USD").
 	symStr := strings.ReplaceAll(symbol.String(), "/", "")
@@ -628,7 +624,7 @@ func (c *RESTClient) CancelOpenOrders(ctx context.Context, symbol domain.Symbol,
 		return 0, nil
 	}
 
-	cancelled := 0
+	canceled := 0
 	for _, o := range orders {
 		cancelResp, cancelErr := c.doReqWithOpts(ctx, http.MethodDelete, pathOrders+"/"+o.ID, nil, reqOpts{priority: PriorityTrading, maxRetries: 2})
 		if cancelErr != nil {
@@ -639,10 +635,10 @@ func (c *RESTClient) CancelOpenOrders(ctx context.Context, symbol domain.Symbol,
 		cancelResp.Body.Close()
 
 		if cancelResp.StatusCode >= 200 && cancelResp.StatusCode < 300 {
-			cancelled++
-			c.log.Info().Str("order_id", o.ID).Str("symbol", symStr).Msg("cancelled stale open order")
+			canceled++
+			c.log.Info().Str("order_id", o.ID).Str("symbol", symStr).Msg("canceled stale open order")
 		} else {
-			// 422 or 500 typically means order already filled/cancelled — not a real error.
+			// 422 or 500 typically means order already filled/canceled — not a real error.
 			c.log.Warn().
 				Int("status", cancelResp.StatusCode).
 				Str("order_id", o.ID).
@@ -651,7 +647,7 @@ func (c *RESTClient) CancelOpenOrders(ctx context.Context, symbol domain.Symbol,
 		}
 	}
 
-	return cancelled, nil
+	return canceled, nil
 }
 
 // ClosedOrder represents a closed/filled order from the Alpaca REST API.

@@ -3,8 +3,8 @@ package strategy
 import (
 	"context"
 
-	domstrategy "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	domstrategy "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
 
 // SpecStore defines the persistence interface for strategy specifications.
@@ -26,7 +26,7 @@ type SpecStore interface {
 
 	// Watch returns a channel that emits spec IDs whenever a spec file changes.
 	// Implementations should detect filesystem changes or database updates.
-	// The channel is closed when the context is cancelled.
+	// The channel is closed when the context is canceled.
 	Watch(ctx context.Context) (<-chan domstrategy.StrategyID, error)
 }
 

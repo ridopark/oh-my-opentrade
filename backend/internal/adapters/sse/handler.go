@@ -80,7 +80,7 @@ func NewHandler(bus ports.EventBusPort, log zerolog.Logger) *Handler {
 }
 
 // Start subscribes to all domain event types and begins forwarding events to
-// connected clients.  It blocks until ctx is cancelled.
+// connected clients.  It blocks until ctx is canceled.
 func (h *Handler) Start(ctx context.Context) error {
 	for _, et := range eventTypes {
 		et := et // capture loop variable

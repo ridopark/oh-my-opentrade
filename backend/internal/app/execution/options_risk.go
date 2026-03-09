@@ -58,7 +58,7 @@ func (e *OptionsRiskEngine) ValidateOptionIntent(intent domain.OrderIntent, acco
 		return errors.New("MaxLossUSD must be > 0 for option orders")
 	}
 	if intent.Quantity <= 0 {
-		return fmt.Errorf("Quantity must be > 0, got %g", intent.Quantity)
+		return fmt.Errorf("quantity must be > 0, got %g", intent.Quantity)
 	}
 
 	maxAllowed := e.maxRiskPct * accountEquity
@@ -80,8 +80,8 @@ func (e *OptionsRiskEngine) ValidateOptionLiquidity(snap domain.OptionContractSn
 			snap.OpenInterest, e.minOpenInterest,
 		)
 	}
-	if snap.OptionQuote.Ask > 0 {
-		spreadPct := (snap.OptionQuote.Ask - snap.OptionQuote.Bid) / snap.OptionQuote.Ask
+	if snap.Ask > 0 {
+		spreadPct := (snap.Ask - snap.Bid) / snap.Ask
 		if spreadPct > e.maxSpreadPct {
 			return fmt.Errorf(
 				"bid-ask spread %.2f%% exceeds maximum %.2f%%",
@@ -95,10 +95,10 @@ func (e *OptionsRiskEngine) ValidateOptionLiquidity(snap domain.OptionContractSn
 // ValidateOptionVolatility checks that the contract's implied volatility
 // is below the engine's ceiling.
 func (e *OptionsRiskEngine) ValidateOptionVolatility(snap domain.OptionContractSnapshot) error {
-	if snap.Greeks.IV > e.maxIVCeiling {
+	if snap.IV > e.maxIVCeiling {
 		return fmt.Errorf(
 			"implied volatility %.2f exceeds ceiling %.2f",
-			snap.Greeks.IV, e.maxIVCeiling,
+			snap.IV, e.maxIVCeiling,
 		)
 	}
 	return nil

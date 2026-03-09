@@ -143,14 +143,14 @@ func CalculateCryptoBackoff(
 	return wait, resetCounter
 }
 
-// WaitForRetry waits for the specified duration or until context is cancelled.
-// Returns true if context was cancelled (shutdown), false if wait completed.
+// WaitForRetry waits for the specified duration or until context is canceled.
+// Returns true if context was canceled (shutdown), false if wait completed.
 func WaitForRetry(ctx context.Context, wait time.Duration) bool {
 	select {
 	case <-time.After(wait):
 		return false // wait completed
 	case <-ctx.Done():
-		return true // context cancelled
+		return true // context canceled
 	}
 }
 

@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/domain"
-	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
@@ -60,7 +60,7 @@ func (st *SignalTracker) Start(ctx context.Context) error {
 }
 
 func (st *SignalTracker) handleSignalCreated(ctx context.Context, event domain.Event) error {
-	sig, ok := event.Payload.(strat.Signal)
+	sig, ok := event.Payload.(start.Signal)
 	if !ok {
 		return nil
 	}
@@ -293,7 +293,7 @@ func deriveKindSideFromDirection(direction string) (string, string) {
 	}
 }
 
-func parseStrategyIDFromInstanceLocal(instanceID strat.InstanceID) (string, bool) {
+func parseStrategyIDFromInstanceLocal(instanceID start.InstanceID) (string, bool) {
 	parts := strings.SplitN(instanceID.String(), ":", 3)
 	if len(parts) < 1 {
 		return "", false

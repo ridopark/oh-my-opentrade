@@ -4,23 +4,23 @@ import (
 	"sort"
 	"sync"
 
-	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
 
 // Router maintains the mapping from symbols to strategy instances and
 // handles conflict resolution when multiple instances target the same symbol.
 type Router struct {
 	mu        sync.RWMutex
-	instances map[strat.InstanceID]*Instance
+	instances map[start.InstanceID]*Instance
 	// symbolMap: symbol → sorted list of instance IDs (by priority descending)
-	symbolMap map[string][]strat.InstanceID
+	symbolMap map[string][]start.InstanceID
 }
 
 // NewRouter creates an empty Router.
 func NewRouter() *Router {
 	return &Router{
-		instances: make(map[strat.InstanceID]*Instance),
-		symbolMap: make(map[string][]strat.InstanceID),
+		instances: make(map[start.InstanceID]*Instance),
+		symbolMap: make(map[string][]start.InstanceID),
 	}
 }
 
@@ -55,7 +55,7 @@ func (r *Router) Register(inst *Instance) {
 }
 
 // Unregister removes a strategy instance from the routing table.
-func (r *Router) Unregister(id strat.InstanceID) {
+func (r *Router) Unregister(id start.InstanceID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -83,7 +83,7 @@ func (r *Router) Unregister(id strat.InstanceID) {
 // Replace atomically swaps an old instance for a new one in the routing table.
 // Both operations happen under a single lock so no bar can be processed between
 // unregister and register. Returns the old instance (or nil if not found).
-func (r *Router) Replace(oldID strat.InstanceID, newInst *Instance) *Instance {
+func (r *Router) Replace(oldID start.InstanceID, newInst *Instance) *Instance {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -163,7 +163,7 @@ func (r *Router) AllInstances() []*Instance {
 }
 
 // Instance returns a specific instance by ID.
-func (r *Router) Instance(id strat.InstanceID) (*Instance, bool) {
+func (r *Router) Instance(id start.InstanceID) (*Instance, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	inst, ok := r.instances[id]

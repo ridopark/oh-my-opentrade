@@ -50,13 +50,14 @@ func (a *BarAggregator) Push(bar MarketBar) (closed MarketBar, ok bool) {
 		return MarketBar{}, false
 	}
 
-	if a.cur == nil {
+	switch {
+	case a.cur == nil:
 		a.startNew(end, dur, bar)
-	} else if end.After(a.curEnd) {
+	case end.After(a.curEnd):
 		out := *a.cur
 		a.startNew(end, dur, bar)
 		return out, true
-	} else {
+	default:
 		a.apply(bar)
 	}
 

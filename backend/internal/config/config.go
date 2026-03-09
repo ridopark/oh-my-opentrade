@@ -412,7 +412,7 @@ func loadEnvFile(path string) error {
 			key := strings.TrimSpace(parts[0])
 			val := strings.TrimSpace(parts[1])
 			if _, exists := os.LookupEnv(key); !exists {
-				os.Setenv(key, val)
+				_ = os.Setenv(key, val)
 			}
 		}
 	}

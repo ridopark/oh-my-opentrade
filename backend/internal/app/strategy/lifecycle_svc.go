@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"sort"
 
-	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
 
 type InstanceInfo struct {
@@ -28,14 +28,14 @@ func NewLifecycleService(router *Router, logger *slog.Logger) *LifecycleService 
 	return &LifecycleService{router: router, logger: logger}
 }
 
-func (s *LifecycleService) Promote(instanceID strat.InstanceID, target strat.LifecycleState) error {
+func (s *LifecycleService) Promote(instanceID start.InstanceID, target start.LifecycleState) error {
 	inst, ok := s.router.Instance(instanceID)
 	if !ok {
-		return strat.ErrInstanceNotFound
+		return start.ErrInstanceNotFound
 	}
 
 	current := inst.Lifecycle()
-	if err := strat.ValidateTransition(current, target); err != nil {
+	if err := start.ValidateTransition(current, target); err != nil {
 		return err
 	}
 
@@ -49,12 +49,12 @@ func (s *LifecycleService) Promote(instanceID strat.InstanceID, target strat.Lif
 	return nil
 }
 
-func (s *LifecycleService) Deactivate(instanceID strat.InstanceID) error {
-	return s.Promote(instanceID, strat.LifecycleDeactivated)
+func (s *LifecycleService) Deactivate(instanceID start.InstanceID) error {
+	return s.Promote(instanceID, start.LifecycleDeactivated)
 }
 
-func (s *LifecycleService) Archive(instanceID strat.InstanceID) error {
-	return s.Promote(instanceID, strat.LifecycleArchived)
+func (s *LifecycleService) Archive(instanceID start.InstanceID) error {
+	return s.Promote(instanceID, start.LifecycleArchived)
 }
 
 func (s *LifecycleService) ListInstances() []InstanceInfo {

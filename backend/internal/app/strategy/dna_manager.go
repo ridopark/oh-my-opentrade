@@ -147,7 +147,7 @@ func (m *DNAManager) GetAll() []*StrategyDNA {
 }
 
 // Watch polls path every 5 seconds and calls onChange whenever the file's
-// modification time changes. Stops when ctx is cancelled.
+// modification time changes. Stops when ctx is canceled.
 func (m *DNAManager) Watch(ctx context.Context, path string, onChange func(*StrategyDNA)) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()

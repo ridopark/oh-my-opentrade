@@ -411,8 +411,7 @@ func buildPrompt(symbol domain.Symbol, regime domain.MarketRegime, indicators do
 	jsonTemplate := buildResponseTemplate(chain != nil)
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf(
-		`Analyze this trade setup and respond ONLY with valid JSON matching this schema (no markdown, no extra text).
+	fmt.Fprintf(&sb, `Analyze this trade setup and respond ONLY with valid JSON matching this schema (no markdown, no extra text).
 Direction must be "LONG", "SHORT", or "NEUTRAL". Confidence must be 0.0 to 1.0.
 %s
 
@@ -438,8 +437,7 @@ Technical Indicators:
 		indicators.EMA21,
 		emaTrend(indicators.EMA9, indicators.EMA21),
 		indicators.VWAP,
-		vwapPosition(indicators.EMA9, indicators.VWAP),
-	))
+		vwapPosition(indicators.EMA9, indicators.VWAP))
 
 	if len(indicators.AnchorRegimes) > 0 {
 		primaryTF := domain.Timeframe("")
@@ -460,26 +458,25 @@ Technical Indicators:
 			if tf == primaryTF {
 				label = " (Primary Context)"
 			}
-			sb.WriteString(fmt.Sprintf("\n  %s: %s (strength: %.2f)%s", tf, r.Type, r.Strength, label))
+			fmt.Fprintf(&sb, "\n  %s: %s (strength: %.2f)%s", tf, r.Type, r.Strength, label)
 		}
 	}
 
 	if sigCtx != nil {
-		sb.WriteString(fmt.Sprintf("\n\nSignal Context:\n  Type: %s\n  Side: %s\n  Strength: %.2f",
-			sigCtx.signalType, sigCtx.side, sigCtx.strength))
+		fmt.Fprintf(&sb, "\n\nSignal Context:\n  Type: %s\n  Side: %s\n  Strength: %.2f",
+			sigCtx.signalType, sigCtx.side, sigCtx.strength)
 		if len(sigCtx.tags) > 0 {
 			sb.WriteString("\n  Tags:")
 			for k, v := range sigCtx.tags {
-				sb.WriteString(fmt.Sprintf("\n    %s: %s", k, v))
+				fmt.Fprintf(&sb, "\n    %s: %s", k, v)
 			}
 		}
 	}
 
 	if chain != nil && len(chain.Candidates) > 0 {
-		sb.WriteString(fmt.Sprintf("\n\nOption Chain Candidates (top %d by delta proximity):\n", len(chain.Candidates)))
+		fmt.Fprintf(&sb, "\n\nOption Chain Candidates (top %d by delta proximity):\n", len(chain.Candidates))
 		for i, c := range chain.Candidates {
-			sb.WriteString(fmt.Sprintf(
-				"  %d. %-25s delta=%.2f  IV=%.1f%%  bid=$%.2f  ask=$%.2f  OI=%-6d DTE=%d\n",
+			fmt.Fprintf(&sb, "  %d. %-25s delta=%.2f  IV=%.1f%%  bid=$%.2f  ask=$%.2f  OI=%-6d DTE=%d\n",
 				i+1,
 				c.ContractSymbol,
 				c.Delta,
@@ -487,8 +484,7 @@ Technical Indicators:
 				c.Bid,
 				c.Ask,
 				c.OpenInterest,
-				c.DTE,
-			))
+				c.DTE)
 		}
 		sb.WriteString("\nYou MUST select exactly one contract from the candidates above. You MUST NOT propose a short option position.")
 	}

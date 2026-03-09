@@ -45,12 +45,12 @@ func (g *BuyingPowerGuard) Check(ctx context.Context, intent domain.OrderIntent)
 
 func (g *BuyingPowerGuard) checkCrypto(bp ports.BuyingPower, orderCost float64) error {
 	if orderCost > bp.NonMarginableBuyingPower {
-		return fmt.Errorf("buying_power: crypto order cost $%.2f exceeds non-marginable buying power $%.2f",
+		return fmt.Errorf("buying_power: crypto order cost $%.2f exceeds non-marginal buying power $%.2f",
 			orderCost, bp.NonMarginableBuyingPower)
 	}
 	g.log.Debug().
 		Float64("order_cost", orderCost).
-		Float64("non_marginable_bp", bp.NonMarginableBuyingPower).
+		Float64("non_marginal_bp", bp.NonMarginableBuyingPower).
 		Msg("buying power check passed (crypto)")
 	return nil
 }

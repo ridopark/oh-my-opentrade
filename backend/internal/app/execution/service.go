@@ -182,7 +182,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	// 1b. Reject SHORT direction — short selling not supported for this asset class.
 	// Exit orders now use DirectionCloseLong, so this only catches new short entries.
 	if intent.Direction == domain.DirectionShort {
-		reason := "SHORT direction not supported"
+		var reason string
 		if intent.AssetClass == domain.AssetClassCrypto {
 			reason = "SHORT direction not supported — crypto is long-only on Alpaca"
 		} else {
@@ -291,17 +291,17 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			if intent.AssetClass != domain.AssetClassCrypto {
 				buffer = 0.001 // 10bps for equities
 			}
-			intent.LimitPrice = intent.LimitPrice * (1 - buffer)
+			intent.LimitPrice *= (1 - buffer)
 		}
 		l.Info().Float64("exit_qty", posQty).Msg("resolved exit quantity from broker position")
 	}
 
 	// 5e. Cancel stale open buy orders for this symbol to prevent position doubling and wash trades.
 	cancelSide := "buy"
-	if cancelled, cancelErr := s.broker.CancelOpenOrders(ctx, intent.Symbol, cancelSide); cancelErr != nil {
+	if canceled, cancelErr := s.broker.CancelOpenOrders(ctx, intent.Symbol, cancelSide); cancelErr != nil {
 		l.Warn().Err(cancelErr).Msg("failed to cancel open orders — proceeding with submission")
-	} else if cancelled > 0 {
-		l.Info().Int("cancelled", cancelled).Str("side", cancelSide).Msg("cancelled stale open orders before submission")
+	} else if canceled > 0 {
+		l.Info().Int("canceled", canceled).Str("side", cancelSide).Msg("canceled stale open orders before submission")
 	}
 
 	// 6. Submit to broker.
@@ -390,7 +390,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	return nil
 }
 
-// pollForFill polls broker.GetOrderStatus until the order is filled, cancelled,
+// pollForFill polls broker.GetOrderStatus until the order is filled, canceled,
 // or the 2-minute timeout is reached. On fill it persists a Trade and emits FillReceived.
 func (s *Service) pollForFill(tenantID string, envMode domain.EnvMode, intent domain.OrderIntent, brokerOrderID string, submitStart time.Time, l zerolog.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -429,7 +429,7 @@ func (s *Service) pollForFill(tenantID string, envMode domain.EnvMode, intent do
 			case "filled":
 				s.handleFill(tenantID, envMode, intent, brokerOrderID, submitStart, l)
 				return
-			case "canceled", "cancelled", "expired", "rejected":
+			case "canceled", "expired", "rejected":
 				l.Info().Str("broker_order_id", brokerOrderID).Str("status", status).Msg("fill poll: order terminal without fill")
 				return
 			}
@@ -514,7 +514,7 @@ func (s *Service) handleRiskDowngrade(ctx context.Context, event domain.Event) e
 		return nil
 	}
 
-	var cancelled int
+	var canceled int
 	s.pendingOrders.Range(func(key, value any) bool {
 		brokerOrderID := key.(string)
 		po := value.(*pendingOrder)
@@ -528,23 +528,23 @@ func (s *Service) handleRiskDowngrade(ctx context.Context, event domain.Event) e
 		s.log.Warn().
 			Str("symbol", symbol).
 			Str("broker_order_id", brokerOrderID).
-			Msg("cancelling pending entry order due to risk downgrade")
+			Msg("canceling pending entry order due to risk downgrade")
 
 		if err := s.broker.CancelOrder(ctx, brokerOrderID); err != nil {
 			s.log.Warn().Err(err).
 				Str("broker_order_id", brokerOrderID).
 				Msg("failed to cancel pending order on risk downgrade — may already be terminal")
 		} else {
-			cancelled++
+			canceled++
 		}
 		return true
 	})
 
-	if cancelled > 0 {
+	if canceled > 0 {
 		s.log.Info().
 			Str("symbol", symbol).
-			Int("cancelled", cancelled).
-			Msg("pending entry orders cancelled due to risk downgrade")
+			Int("canceled", canceled).
+			Msg("pending entry orders canceled due to risk downgrade")
 	}
 
 	return nil
@@ -559,7 +559,7 @@ func (s *Service) handleOrderUpdate(update ports.OrderUpdate) {
 	switch update.Event {
 	case "fill", "partial_fill":
 		s.handleStreamFill(update, l)
-	case "canceled", "cancelled", "expired", "rejected":
+	case "canceled", "expired", "rejected":
 		l.Info().Msg("order terminal via stream")
 		s.cleanupPendingOrder(update.BrokerOrderID)
 	}
@@ -726,7 +726,7 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 				FilledQty:      po.intent.Quantity,
 				FilledAt:       time.Now().UTC(),
 			}, l)
-		case "canceled", "cancelled", "expired", "rejected":
+		case "canceled", "expired", "rejected":
 			l.Info().Msg("reconcile: order terminal via REST fallback")
 			s.cleanupPendingOrder(brokerOrderID)
 		}
@@ -736,7 +736,7 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 			if err := s.broker.CancelOrder(ctx, brokerOrderID); err != nil {
 				l.Warn().Err(err).Msg("reconcile: failed to cancel stale order on broker — may already be terminal")
 			} else {
-				l.Info().Msg("reconcile: cancelled stale order on broker")
+				l.Info().Msg("reconcile: canceled stale order on broker")
 			}
 			l.Warn().Msg("reconcile: pending order expired")
 			s.emit(ctx, domain.EventStaleOrderCancelled, po.tenantID, po.envMode, brokerOrderID, domain.StaleOrderCancelledPayload{

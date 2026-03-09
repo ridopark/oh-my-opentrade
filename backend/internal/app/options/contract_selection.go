@@ -87,7 +87,7 @@ func (s *ContractSelectionService) SelectBestContract(
 			continue
 		}
 
-		absDelta := math.Abs(snap.Greeks.Delta)
+		absDelta := math.Abs(snap.Delta)
 		if absDelta < active.TargetDeltaLow || absDelta > active.TargetDeltaHigh {
 			continue
 		}
@@ -96,14 +96,14 @@ func (s *ContractSelectionService) SelectBestContract(
 			continue
 		}
 
-		if snap.OptionQuote.Ask > 0 {
-			spreadPct := (snap.OptionQuote.Ask - snap.OptionQuote.Bid) / snap.OptionQuote.Ask
+		if snap.Ask > 0 {
+			spreadPct := (snap.Ask - snap.Bid) / snap.Ask
 			if spreadPct > active.MaxSpreadPct {
 				continue
 			}
 		}
 
-		if snap.Greeks.IV > active.MaxIV {
+		if snap.IV > active.MaxIV {
 			continue
 		}
 

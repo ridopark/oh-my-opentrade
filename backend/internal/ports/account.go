@@ -6,7 +6,7 @@ import "context"
 type BuyingPower struct {
 	DayTradingBuyingPower    float64
 	EffectiveBuyingPower     float64
-	NonMarginableBuyingPower float64 // crypto buying power (non-marginable cash)
+	NonMarginableBuyingPower float64 // crypto buying power (non-marginal cash)
 	PatternDayTrader         bool
 }
 

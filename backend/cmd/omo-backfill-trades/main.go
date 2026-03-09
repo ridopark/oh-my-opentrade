@@ -118,7 +118,7 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
-		log.Warn().Str("signal", sig.String()).Msg("received signal, cancelling...")
+		log.Warn().Str("signal", sig.String()).Msg("received signal, canceling...")
 		cancel()
 	}()
 
@@ -130,7 +130,8 @@ func main() {
 
 	orders, err := alpacaAdapter.GetClosedOrders(ctx, fromTime, toTime)
 	if err != nil {
-		log.Fatal().Err(err).Msg("failed to fetch closed orders")
+		log.Error().Err(err).Msg("failed to fetch closed orders")
+		os.Exit(1)
 	}
 	log.Info().Int("total_orders", len(orders)).Msg("fetched orders from Alpaca")
 
@@ -170,9 +171,10 @@ func main() {
 
 		// Normalize side to uppercase (DB constraint: 'BUY' or 'SELL')
 		side := o.Side
-		if side == "buy" {
+		switch side {
+		case "buy":
 			side = "BUY"
-		} else if side == "sell" {
+		case "sell":
 			side = "SELL"
 		}
 
@@ -225,7 +227,7 @@ func main() {
 	insertedCount := 0
 	for _, t := range trades {
 		if ctx.Err() != nil {
-			log.Warn().Msg("context cancelled, stopping trade insertion")
+			log.Warn().Msg("context canceled, stopping trade insertion")
 			break
 		}
 		if err := repo.SaveTrade(ctx, t.trade); err != nil {
@@ -334,7 +336,7 @@ func main() {
 	eqCount := 0
 	for _, entry := range dailyEntries {
 		if ctx.Err() != nil {
-			log.Warn().Msg("context cancelled, stopping P&L persistence")
+			log.Warn().Msg("context canceled, stopping P&L persistence")
 			break
 		}
 

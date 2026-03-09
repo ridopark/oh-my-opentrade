@@ -156,12 +156,13 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
-		log.Warn().Str("signal", sig.String()).Msg("received signal, cancelling backfill...")
+		log.Warn().Str("signal", sig.String()).Msg("received signal, canceling backfill...")
 		cancel()
 	}()
 
 	if err := svc.Run(ctx); err != nil {
-		log.Fatal().Err(err).Msg("backfill failed")
+		log.Error().Err(err).Msg("backfill failed")
+		os.Exit(1)
 	}
 	log.Info().Msg("backfill finished successfully")
 }

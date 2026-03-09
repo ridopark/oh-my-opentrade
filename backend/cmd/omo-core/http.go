@@ -102,7 +102,7 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(snap)
+		_ = json.NewEncoder(w).Encode(snap)
 	})
 
 	// Health and strategy endpoints.
@@ -219,7 +219,7 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 			return
 		}
 		dna := all[0]
-		json.NewEncoder(w).Encode(dnaJSON{
+		_ = json.NewEncoder(w).Encode(dnaJSON{
 			ID:          dna.ID,
 			Version:     dna.Version,
 			Description: dna.Description,
@@ -249,7 +249,7 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 				Parameters:  dna.Parameters,
 			})
 		}
-		json.NewEncoder(w).Encode(out)
+		_ = json.NewEncoder(w).Encode(out)
 	})
 	imux.HandleFunc("/orb", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -285,7 +285,7 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 			}
 			results = append(results, o)
 		}
-		json.NewEncoder(w).Encode(results)
+		_ = json.NewEncoder(w).Encode(results)
 	})
 
 	// Performance dashboard API
@@ -324,7 +324,7 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 		}
 		pnlData, err := infra.pnlRepo.GetDailyPnL(r.Context(), tenantID, envMode, from, to)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
 			return
 		}
 		type pnlJSON struct {
@@ -347,6 +347,6 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 		if results == nil {
 			results = []pnlJSON{}
 		}
-		json.NewEncoder(w).Encode(results)
+		_ = json.NewEncoder(w).Encode(results)
 	})
 }

@@ -9,22 +9,22 @@ import (
 
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/domain"
-	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
 
 // ORBStrategy wraps the existing ORBTracker as a Strategy implementation.
 // It delegates bar processing to ORBTracker and converts SetupConditions
 // into strategy Signals.
 type ORBStrategy struct {
-	meta strat.Meta
+	meta start.Meta
 }
 
 // NewORBStrategy creates a new ORB Break & Retest strategy.
 func NewORBStrategy() *ORBStrategy {
-	id, _ := strat.NewStrategyID("orb_break_retest")
-	ver, _ := strat.NewVersion("1.0.0")
+	id, _ := start.NewStrategyID("orb_break_retest")
+	ver, _ := start.NewVersion("1.0.0")
 	return &ORBStrategy{
-		meta: strat.Meta{
+		meta: start.Meta{
 			ID:          id,
 			Version:     ver,
 			Name:        "ORB Break & Retest",
@@ -34,12 +34,12 @@ func NewORBStrategy() *ORBStrategy {
 	}
 }
 
-func (s *ORBStrategy) Meta() strat.Meta { return s.meta }
+func (s *ORBStrategy) Meta() start.Meta { return s.meta }
 func (s *ORBStrategy) WarmupBars() int  { return 0 } // replay handles state recovery
 
 // Init creates initial state for a symbol. If prior state is provided and
 // compatible, it restores from that state (restart recovery).
-func (s *ORBStrategy) Init(ctx strat.Context, symbol string, params map[string]any, prior strat.State) (strat.State, error) {
+func (s *ORBStrategy) Init(ctx start.Context, symbol string, params map[string]any, prior start.State) (start.State, error) {
 	cfg := monitor.NewORBConfigFromDNA(params)
 	tracker := monitor.NewORBTrackerWithSource("strategy")
 
@@ -55,12 +55,9 @@ func (s *ORBStrategy) Init(ctx strat.Context, symbol string, params map[string]a
 			// Reuse the tracker with its session state intact.
 			st.Tracker = orbPrior.Tracker
 			st.Config = cfg // Use new config (may have been updated).
-		} else {
-			// Incompatible state type — start fresh. Log if possible.
-			if ctx != nil && ctx.Logger() != nil {
-				ctx.Logger().Warn("ORBStrategy: incompatible prior state, starting fresh",
-					"symbol", symbol)
-			}
+		} else if ctx != nil && ctx.Logger() != nil {
+			ctx.Logger().Warn("ORBStrategy: incompatible prior state, starting fresh",
+				"symbol", symbol)
 		}
 	}
 
@@ -69,7 +66,7 @@ func (s *ORBStrategy) Init(ctx strat.Context, symbol string, params map[string]a
 
 // OnBar processes a market bar through the ORBTracker and converts any
 // detected setup condition into a Signal.
-func (s *ORBStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+func (s *ORBStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st start.State) (start.State, []start.Signal, error) {
 	orbState, ok := st.(*ORBState)
 	if !ok {
 		return st, nil, fmt.Errorf("ORBStrategy.OnBar: expected *ORBState, got %T", st)
@@ -106,16 +103,16 @@ func (s *ORBStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, st 
 	}
 
 	// Convert SetupCondition → Signal.
-	instanceID, _ := strat.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
-	side := strat.SideBuy
+	instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
+	side := start.SideBuy
 	if setup.Direction == domain.DirectionShort {
-		side = strat.SideSell
+		side = start.SideSell
 	}
 
-	sig, err := strat.NewSignal(
+	sig, err := start.NewSignal(
 		instanceID,
 		symbol,
-		strat.SignalEntry,
+		start.SignalEntry,
 		side,
 		clampStrength(setup.Confidence),
 		map[string]string{
@@ -132,13 +129,13 @@ func (s *ORBStrategy) OnBar(ctx strat.Context, symbol string, bar strat.Bar, st 
 		return orbState, nil, fmt.Errorf("ORBStrategy.OnBar: signal creation failed: %w", err)
 	}
 
-	return orbState, []strat.Signal{sig}, nil
+	return orbState, []start.Signal{sig}, nil
 }
 
 // ReplayOnBar processes a historical bar for state recovery.
 // It feeds the bar through the ORBTracker with replay=true, which reconstructs
 // the opening range and state machine without firing live signals.
-func (s *ORBStrategy) ReplayOnBar(ctx strat.Context, symbol string, bar strat.Bar, st strat.State, indicators strat.IndicatorData) (strat.State, error) {
+func (s *ORBStrategy) ReplayOnBar(ctx start.Context, symbol string, bar start.Bar, st start.State, indicators start.IndicatorData) (start.State, error) {
 	orbState, ok := st.(*ORBState)
 	if !ok {
 		return st, fmt.Errorf("ORBStrategy.ReplayOnBar: expected *ORBState, got %T", st)
@@ -166,7 +163,7 @@ func (s *ORBStrategy) ReplayOnBar(ctx strat.Context, symbol string, bar strat.Ba
 }
 
 // OnEvent is a no-op for the ORB strategy — it only reacts to bars.
-func (s *ORBStrategy) OnEvent(ctx strat.Context, symbol string, evt any, st strat.State) (strat.State, []strat.Signal, error) {
+func (s *ORBStrategy) OnEvent(ctx start.Context, symbol string, evt any, st start.State) (start.State, []start.Signal, error) {
 	return st, nil, nil
 }
 
@@ -186,12 +183,12 @@ type ORBState struct {
 	Tracker    *monitor.ORBTracker
 	Config     monitor.ORBConfig
 	Symbol     string
-	Indicators strat.IndicatorData // cached from last bar
+	Indicators start.IndicatorData // cached from last bar
 }
 
 // SetIndicators updates the cached indicator data. Called by the runner
 // before each OnBar to provide pre-computed indicators.
-func (s *ORBState) SetIndicators(ind strat.IndicatorData) {
+func (s *ORBState) SetIndicators(ind start.IndicatorData) {
 	s.Indicators = ind
 }
 
@@ -216,7 +213,7 @@ type orbStateJSON struct {
 	Symbol     string              `json:"symbol"`
 	Config     monitor.ORBConfig   `json:"config"`
 	Session    *monitor.ORBSession `json:"session,omitempty"`
-	Indicators strat.IndicatorData `json:"indicators"`
+	Indicators start.IndicatorData `json:"indicators"`
 }
 
 // Marshal serializes the ORBState for persistence/recovery.

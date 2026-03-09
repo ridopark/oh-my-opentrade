@@ -56,7 +56,7 @@ func (p BackoffPolicy) backoff(attempt int) time.Duration {
 // Error classification
 // ---------------------------------------------------------------------------
 
-// ErrorClass categorises a connect/stream error.
+// ErrorClass categorizes a connect/stream error.
 type ErrorClass int
 
 const (
