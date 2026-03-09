@@ -1,0 +1,3 @@
+ohmyopentrade.ridopark.com {
+	reverse_proxy dashboard:3000
+}
