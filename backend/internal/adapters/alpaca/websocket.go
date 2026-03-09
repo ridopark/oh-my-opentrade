@@ -80,26 +80,23 @@ func (w *WSClient) FeedHealth() FeedHealth { return w.tracker.Snapshot() }
 // only when the stream has truly ended.
 func (w *WSClient) defaultConnectFactory(symStrs []string, barHandler func(alpacastream.Bar), tradeHandler func(alpacastream.Trade)) connectFn {
 	wsBaseURL := deriveStreamURL(w.dataURL)
-	sc := alpacastream.NewStocksClient(
-		w.feed,
-		alpacastream.WithCredentials(w.apiKey, w.apiSecret),
-		alpacastream.WithBaseURL(wsBaseURL),
-		alpacastream.WithBars(barHandler, symStrs...),
-		alpacastream.WithTrades(tradeHandler, symStrs...),     // keeps connection alive
-		alpacastream.WithReconnectSettings(1, 90*time.Second), // single SDK retry at 90s; outer loop owns all reconnect logic
-	)
 	return func(ctx context.Context) error {
+		sc := alpacastream.NewStocksClient(
+			w.feed,
+			alpacastream.WithCredentials(w.apiKey, w.apiSecret),
+			alpacastream.WithBaseURL(wsBaseURL),
+			alpacastream.WithBars(barHandler, symStrs...),
+			alpacastream.WithTrades(tradeHandler, symStrs...),
+			alpacastream.WithReconnectSettings(1, 0),
+		)
 		if err := sc.Connect(ctx); err != nil {
-			// Connection failed to establish — return immediately.
 			return err
 		}
-		// Connection established successfully. Block until the stream terminates.
-		// sc.Terminated() receives when the SDK's internal goroutines exit.
 		select {
 		case err := <-sc.Terminated():
-			return err // nil = clean close; non-nil = error
+			return err
 		case <-ctx.Done():
-			return nil // caller canceled — clean shutdown
+			return nil
 		}
 	}
 }
