@@ -72,48 +72,52 @@ function TradingSignalContent() {
     }
   }, [symbol, availableSymbols, setSymbol]);
 
+  // Fetch state and recent signals in parallel for the current symbol
   useEffect(() => {
     if (!symbol) return;
-    fetch(`/api/state?symbol=${encodeURIComponent(symbol)}`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((snap) => {
-        if (!snap) return;
-        const currentRegime = snap.anchorRegimes?.[snap.Timeframe];
-        if (!currentRegime) return;
-        setRegimeBySymbol((prev) => ({
-          ...prev,
-          [snap.Symbol]: { regime: currentRegime.Type, strength: currentRegime.Strength, rsi: snap.RSI },
-        }));
-      })
-      .catch(() => {});
-  }, [symbol]);
 
-  useEffect(() => {
-    if (!symbol) return;
-    fetch(`/api/signals/recent?symbol=${encodeURIComponent(symbol)}&limit=50`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { items: StrategySignalEvent[] } | null) => {
-        if (!data?.items?.length) return;
-        setRecentSignalEvents((prev) => {
-          const existingIds = new Set(prev.map((e) => `${e.SignalID}:${e.Status}`));
-          const newItems = data.items.filter((e) => !existingIds.has(`${e.SignalID}:${e.Status}`));
-          return [...newItems, ...prev].slice(0, 50);
-        });
-        setSignals((prev) => {
-          const existingIds = new Set(prev.map((s) => s.signalId));
-          const newSignals = data.items
-            .filter((sig) => sig.SignalID && !existingIds.has(sig.SignalID))
-            .map((sig) => ({
-              time: Math.floor(new Date(sig.TS).getTime() / 1000),
-              side: (sig.Side?.toLowerCase() === "sell" ? "sell" : "buy") as "buy" | "sell",
-              kind: (sig.Kind?.toLowerCase() === "exit" ? "exit" : "entry") as "entry" | "exit",
-              status: sig.Status ?? "generated",
-              strategy: sig.Strategy,
-              confidence: sig.Confidence,
-              signalId: sig.SignalID,
+    Promise.all([
+      fetch(`/api/state?symbol=${encodeURIComponent(symbol)}`)
+        .then((res) => (res.ok ? res.json() : null)),
+      fetch(`/api/signals/recent?symbol=${encodeURIComponent(symbol)}&limit=50`)
+        .then((res) => (res.ok ? res.json() : null)),
+    ])
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .then(([snap, data]: [any, { items: StrategySignalEvent[] } | null]) => {
+        // Process state snapshot
+        if (snap) {
+          const currentRegime = snap.anchorRegimes?.[snap.Timeframe];
+          if (currentRegime) {
+            setRegimeBySymbol((prev) => ({
+              ...prev,
+              [snap.Symbol]: { regime: currentRegime.Type, strength: currentRegime.Strength, rsi: snap.RSI },
             }));
-          return [...prev, ...newSignals].slice(-200);
-        });
+          }
+        }
+
+        // Process recent signals
+        if (data?.items?.length) {
+          setRecentSignalEvents((prev) => {
+            const existingIds = new Set(prev.map((e) => `${e.SignalID}:${e.Status}`));
+            const newItems = data.items.filter((e) => !existingIds.has(`${e.SignalID}:${e.Status}`));
+            return [...newItems, ...prev].slice(0, 50);
+          });
+          setSignals((prev) => {
+            const existingIds = new Set(prev.map((s) => s.signalId));
+            const newSignals = data.items
+              .filter((sig) => sig.SignalID && !existingIds.has(sig.SignalID))
+              .map((sig) => ({
+                time: Math.floor(new Date(sig.TS).getTime() / 1000),
+                side: (sig.Side?.toLowerCase() === "sell" ? "sell" : "buy") as "buy" | "sell",
+                kind: (sig.Kind?.toLowerCase() === "exit" ? "exit" : "entry") as "entry" | "exit",
+                status: sig.Status ?? "generated",
+                strategy: sig.Strategy,
+                confidence: sig.Confidence,
+                signalId: sig.SignalID,
+              }));
+            return [...prev, ...newSignals].slice(-200);
+          });
+        }
       })
       .catch(() => {});
   }, [symbol]);
