@@ -131,7 +131,9 @@ jobs:
           script: |
             set -e
             cd ~/oh-my-opentrade
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
+            git clean -fd deployments/
 
             # Generate .env from GitHub secrets + defaults
             cat > .env <<EOF
