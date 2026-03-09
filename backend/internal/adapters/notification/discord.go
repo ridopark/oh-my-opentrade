@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"net/textproto"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/ports"
+	"github.com/rs/zerolog"
 )
 
 var _ ports.ImageNotifierPort = (*DiscordNotifier)(nil)
@@ -21,20 +23,32 @@ const (
 	maxRetries       = 2
 	defaultRetryWait = 1 * time.Second
 	maxRetryWait     = 10 * time.Second
+	cooldownTTL      = 60 * time.Second
+	maxCooldownKeys  = 500
 )
 
 type DiscordNotifier struct {
 	webhookURL string
 	client     *http.Client
+	log        zerolog.Logger
+
+	cooldownMu sync.RWMutex
+	cooldown   map[string]time.Time
 }
 
-func NewDiscordNotifier(webhookURL string, client *http.Client) *DiscordNotifier {
+func NewDiscordNotifier(webhookURL string, client *http.Client, log ...zerolog.Logger) *DiscordNotifier {
 	if client == nil {
 		client = http.DefaultClient
+	}
+	l := zerolog.Nop()
+	if len(log) > 0 {
+		l = log[0]
 	}
 	return &DiscordNotifier{
 		webhookURL: webhookURL,
 		client:     client,
+		log:        l,
+		cooldown:   make(map[string]time.Time),
 	}
 }
 
@@ -43,6 +57,10 @@ type discordPayload struct {
 }
 
 func (d *DiscordNotifier) Notify(ctx context.Context, tenantID, message string) error {
+	if d.isCoolingDown(message) {
+		return nil
+	}
+
 	payload := discordPayload{
 		Content: fmt.Sprintf("[%s] %s", tenantID, message),
 	}
@@ -52,7 +70,7 @@ func (d *DiscordNotifier) Notify(ctx context.Context, tenantID, message string) 
 		return fmt.Errorf("discord: marshal payload: %w", err)
 	}
 
-	return d.doWithRetry(ctx, func() (*http.Request, error) {
+	err = d.doWithRetry(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.webhookURL, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
@@ -60,9 +78,17 @@ func (d *DiscordNotifier) Notify(ctx context.Context, tenantID, message string) 
 		req.Header.Set("Content-Type", "application/json")
 		return req, nil
 	})
+	if err != nil {
+		d.log.Error().Err(err).Str("tenant", tenantID).Msg("CRITICAL: discord webhook failed after retries — alert may be lost")
+	}
+	return err
 }
 
 func (d *DiscordNotifier) NotifyWithImage(ctx context.Context, tenantID, message string, image ports.Attachment) error {
+	if d.isCoolingDown(message) {
+		return nil
+	}
+
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
@@ -103,7 +129,7 @@ func (d *DiscordNotifier) NotifyWithImage(ctx context.Context, tenantID, message
 	bodyBytes := buf.Bytes()
 	contentType := writer.FormDataContentType()
 
-	return d.doWithRetry(ctx, func() (*http.Request, error) {
+	err = d.doWithRetry(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.webhookURL, bytes.NewReader(bodyBytes))
 		if err != nil {
 			return nil, err
@@ -111,6 +137,37 @@ func (d *DiscordNotifier) NotifyWithImage(ctx context.Context, tenantID, message
 		req.Header.Set("Content-Type", contentType)
 		return req, nil
 	})
+	if err != nil {
+		d.log.Error().Err(err).Str("tenant", tenantID).Msg("CRITICAL: discord image webhook failed after retries — alert may be lost")
+	}
+	return err
+}
+
+func (d *DiscordNotifier) isCoolingDown(message string) bool {
+	if len(message) > 80 {
+		message = message[:80]
+	}
+
+	now := time.Now()
+	d.cooldownMu.RLock()
+	if expiry, ok := d.cooldown[message]; ok && now.Before(expiry) {
+		d.cooldownMu.RUnlock()
+		return true
+	}
+	d.cooldownMu.RUnlock()
+
+	d.cooldownMu.Lock()
+	defer d.cooldownMu.Unlock()
+
+	if len(d.cooldown) >= maxCooldownKeys {
+		for k, exp := range d.cooldown {
+			if now.After(exp) {
+				delete(d.cooldown, k)
+			}
+		}
+	}
+	d.cooldown[message] = now.Add(cooldownTTL)
+	return false
 }
 
 func (d *DiscordNotifier) doWithRetry(ctx context.Context, buildReq func() (*http.Request, error)) error {

@@ -385,6 +385,13 @@ func (s *Service) pollForFill(tenantID string, envMode domain.EnvMode, intent do
 		select {
 		case <-ctx.Done():
 			l.Warn().Str("broker_order_id", brokerOrderID).Msg("fill poll timed out — order not filled within 2 minutes")
+			s.emit(context.Background(), domain.EventFillPollTimeout, tenantID, envMode, brokerOrderID, domain.FillPollTimeoutPayload{
+				Symbol:        intent.Symbol,
+				BrokerOrderID: brokerOrderID,
+				Strategy:      intent.Strategy,
+				Direction:     string(intent.Direction),
+				Quantity:      intent.Quantity,
+			})
 			return
 		case <-ticker.C:
 			status, err := s.broker.GetOrderStatus(ctx, brokerOrderID)
@@ -707,6 +714,13 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 				l.Info().Msg("reconcile: cancelled stale order on broker")
 			}
 			l.Warn().Msg("reconcile: pending order expired")
+			s.emit(ctx, domain.EventStaleOrderCancelled, po.tenantID, po.envMode, brokerOrderID, domain.StaleOrderCancelledPayload{
+				Symbol:        po.intent.Symbol,
+				BrokerOrderID: brokerOrderID,
+				Strategy:      po.intent.Strategy,
+				Direction:     string(po.intent.Direction),
+				AgeSeconds:    time.Since(po.submitStart).Seconds(),
+			})
 			s.cleanupPendingOrder(brokerOrderID)
 		}
 

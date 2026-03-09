@@ -200,7 +200,8 @@ func main() {
 		log.Info().Msg("Telegram notifier enabled")
 	}
 	if cfg.Notification.DiscordWebhookURL != "" {
-		notifiers = append(notifiers, notification.NewDiscordNotifier(cfg.Notification.DiscordWebhookURL, nil))
+		discordLog := log.With().Str("component", "discord").Logger()
+		notifiers = append(notifiers, notification.NewDiscordNotifier(cfg.Notification.DiscordWebhookURL, nil, discordLog))
 		log.Info().Msg("Discord notifier enabled")
 	}
 	tokenStore := timescaledb.NewTokenStore(timescaledb.NewSqlDB(sqlDB))
@@ -1143,6 +1144,20 @@ func main() {
 		_ = eventBus.Publish(ctx, *evt)
 	})
 
+	alpacaAdapter.CryptoWSClient().SetCircuitBreakerCallback(func(consecutiveFails int, blockedFor time.Duration) {
+		evt, err := domain.NewEvent(domain.EventWSCircuitBreakerTripped, "system", domain.EnvModePaper,
+			fmt.Sprintf("ws-cb-tripped-%d", time.Now().UnixNano()),
+			domain.WSCircuitBreakerTrippedPayload{
+				Feed:              "crypto",
+				ConsecutiveFails:  consecutiveFails,
+				BlockedForSeconds: blockedFor.Seconds(),
+			})
+		if err != nil {
+			return
+		}
+		_ = eventBus.Publish(ctx, *evt)
+	})
+
 	log.Info().
 		Strs("symbols", symbolStrings(symbols)).
 		Str("timeframe", string(timeframe)).
@@ -1168,6 +1183,20 @@ func main() {
 		}
 	}()
 	log.Info().Msg("ready — WebSocket streaming active")
+
+	{
+		stratNames := symbolStrings(symbols)
+		evt, err := domain.NewEvent(domain.EventSystemStarted, "system", domain.EnvModePaper,
+			fmt.Sprintf("system-started-%d", time.Now().UnixNano()),
+			domain.SystemStartedPayload{
+				Version:    "dev",
+				EnvMode:    string(domain.EnvModePaper),
+				Strategies: stratNames,
+			})
+		if err == nil {
+			_ = eventBus.Publish(ctx, *evt)
+		}
+	}
 
 	// 8. Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
