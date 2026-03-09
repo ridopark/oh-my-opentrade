@@ -47,6 +47,11 @@ func (s *Service) Start(ctx context.Context) error {
 // It verifies the event payload, passes it through the Z-score filter,
 // and then either persists the bar and emits a sanitized event or
 // emits a rejected event without saving.
+//
+// IMPORTANT: The mutex only protects the adaptive filter's internal state
+// (rolling averages, z-scores). DB writes and downstream event publishing
+// run WITHOUT the mutex to avoid blocking the entire bar pipeline during
+// potentially slow operations (LLM calls, broker API, DB writes).
 func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error {
 	bar, ok := event.Payload.(domain.MarketBar)
 	if !ok {
@@ -61,14 +66,16 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		Time("bar_time", bar.Time).
 		Logger()
 
+	// Hold the mutex ONLY for the adaptive filter — it has internal state
+	// (running averages, z-scores) that requires serialized access.
+	// Everything after this block (DB writes, event publishing, downstream
+	// pipeline) runs concurrently.
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.metrics != nil {
 		s.metrics.Bars.ReceivedTotal.WithLabelValues("ws", string(bar.Symbol), string(bar.Timeframe)).Inc()
 	}
-
 	result := s.filter.Process(bar)
+	s.mu.Unlock()
 
 	switch result.Status {
 	case FilterRejected:

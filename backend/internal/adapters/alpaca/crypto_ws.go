@@ -233,19 +233,37 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		connectedAt := time.Now()
 		var cryptoBarCount atomic.Int64
 
-		barHandler := func(cb alpacastream.CryptoBar) {
-			bar, err := CryptoBarToMarketBar(cb)
-			if err != nil {
-				return
+		// Buffered channel decouples SDK callback from downstream processing.
+		// SDK's connReader goroutine never blocks on slow handlers (LLM, DB, broker).
+		barCh := make(chan alpacastream.CryptoBar, 100)
+		barProcessDone := make(chan struct{})
+		go func() {
+			defer close(barProcessDone)
+			for cb := range barCh {
+				bar, err := CryptoBarToMarketBar(cb)
+				if err != nil {
+					continue
+				}
+				_ = callHandler(streamCtx, bar, false)
 			}
+		}()
+
+		barHandler := func(cb alpacastream.CryptoBar) {
 			if cryptoBarCount.Add(1) == 1 {
-				c.log.Info().Str("symbol", string(bar.Symbol)).Time("bar_time", bar.Time).
-					Float64("close", bar.Close).Float64("volume", bar.Volume).
-					Msg("crypto WS: first bar received after connect")
+				bar, err := CryptoBarToMarketBar(cb)
+				if err == nil {
+					c.log.Info().Str("symbol", string(bar.Symbol)).Time("bar_time", bar.Time).
+						Float64("close", bar.Close).Float64("volume", bar.Volume).
+						Msg("crypto WS: first bar received after connect")
+				}
 			}
 			c.tracker.clearStaleAlert()
 			stopRestPoller()
-			_ = callHandler(streamCtx, bar, false)
+			select {
+			case barCh <- cb:
+			default:
+				c.log.Warn().Str("symbol", cb.Symbol).Msg("crypto WS: bar channel full, dropping bar")
+			}
 		}
 
 		tradeHandler := func(ct alpacastream.CryptoTrade) {
@@ -270,6 +288,9 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		c.log.Info().Strs("symbols", symStrs).Int("attempt", attempt).
 			Msg("crypto WS: connecting")
 		connErr := connect(connCtx)
+
+		close(barCh)
+		<-barProcessDone
 
 		barsReceived := cryptoBarCount.Load()
 		c.log.Info().Err(connErr).Int64("bars_received", barsReceived).

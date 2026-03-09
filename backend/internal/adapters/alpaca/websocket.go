@@ -336,12 +336,34 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		}
 
 		var wsBarCount atomic.Int64
-		// IEX feed sometimes delivers 1-2 bars at the first minute boundary then
-		// goes silent. Require bars from 2+ distinct minutes before trusting the
-		// stream and stopping the REST poller.
 		const wsMinutesToTrust = 2
 		var wsMinuteMu sync.Mutex
 		wsMinutesSeen := make(map[int64]struct{})
+
+		// Buffered channel decouples SDK callback from downstream processing.
+		// SDK's connReader goroutine never blocks on slow handlers (LLM, DB, broker).
+		barCh := make(chan alpacastream.Bar, 100)
+		barProcessDone := make(chan struct{})
+		go func() {
+			defer close(barProcessDone)
+			for bar := range barCh {
+				sym, err := domain.NewSymbol(bar.Symbol)
+				if err != nil {
+					log.Warn().Err(err).Str("symbol", bar.Symbol).Msg("alpaca stream: invalid symbol")
+					continue
+				}
+				tf, _ := domain.NewTimeframe("1m")
+				domainBar, err := domain.NewMarketBar(bar.Timestamp, sym, tf, bar.Open, bar.High, bar.Low, bar.Close, float64(bar.Volume))
+				if err != nil {
+					log.Warn().Err(err).Str("symbol", bar.Symbol).Msg("alpaca stream: invalid bar")
+					continue
+				}
+				domainBar.TradeCount = bar.TradeCount
+				if err := callHandler(streamCtx, domainBar, false); err != nil {
+					log.Warn().Err(err).Str("symbol", bar.Symbol).Msg("alpaca stream: bar handler error")
+				}
+			}
+		}()
 
 		barHandler := func(bar alpacastream.Bar) {
 			n := wsBarCount.Add(1)
@@ -361,20 +383,10 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 					Msg("equity WS: stream trusted — stopping REST poller")
 				stopRestPoller()
 			}
-			sym, err := domain.NewSymbol(bar.Symbol)
-			if err != nil {
-				log.Warn().Err(err).Str("symbol", bar.Symbol).Msg("alpaca stream: invalid symbol")
-				return
-			}
-			tf, _ := domain.NewTimeframe("1m")
-			domainBar, err := domain.NewMarketBar(bar.Timestamp, sym, tf, bar.Open, bar.High, bar.Low, bar.Close, float64(bar.Volume))
-			if err != nil {
-				log.Warn().Err(err).Str("symbol", bar.Symbol).Msg("alpaca stream: invalid bar")
-				return
-			}
-			domainBar.TradeCount = bar.TradeCount
-			if err := callHandler(streamCtx, domainBar, false); err != nil {
-				log.Warn().Err(err).Str("symbol", bar.Symbol).Msg("alpaca stream: bar handler error")
+			select {
+			case barCh <- bar:
+			default:
+				log.Warn().Str("symbol", bar.Symbol).Msg("equity WS: bar channel full, dropping bar")
 			}
 		}
 
@@ -422,6 +434,9 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		log.Info().Strs("symbols", symStrs).Int("attempt", attempt).
 			Msg("equity WS: connected, waiting for bars")
 		connErr := connect(connCtx)
+
+		close(barCh)
+		<-barProcessDone
 
 		barsReceived := wsBarCount.Load()
 		connDur := time.Since(connectedAt)
@@ -471,9 +486,15 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			w.metrics.WS.ReconnectsTotal.WithLabelValues(w.feed, "stale").Inc()
 		}
 
-		// Gap-fill after REST poller was active.
+		// Gap-fill after REST poller was active (async with timeout to avoid
+		// blocking the reconnect loop — gapFill calls callHandler which can
+		// block on downstream processing).
 		if hadPoller && w.fetcher != nil {
-			w.gapFill(streamCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler)
+			go func() {
+				gfCtx, gfCancel := context.WithTimeout(streamCtx, 30*time.Second)
+				defer gfCancel()
+				w.gapFill(gfCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler)
+			}()
 		}
 
 		// Start REST poller on stale reset to bridge data during reconnect.
@@ -586,7 +607,17 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			var probeGotBar atomic.Bool
 			probeBarHandler := func(bar alpacastream.Bar) {
 				probeGotBar.Store(true)
-				barHandler(bar) // forward to real handler
+				sym, err := domain.NewSymbol(bar.Symbol)
+				if err != nil {
+					return
+				}
+				tf, _ := domain.NewTimeframe("1m")
+				domainBar, err := domain.NewMarketBar(bar.Timestamp, sym, tf, bar.Open, bar.High, bar.Low, bar.Close, float64(bar.Volume))
+				if err != nil {
+					return
+				}
+				domainBar.TradeCount = bar.TradeCount
+				_ = callHandler(streamCtx, domainBar, false)
 			}
 			probeConnect := w.connectFactory(symStrs, probeBarHandler, tradeHandler)
 			probeCtx, probeCancel := context.WithTimeout(streamCtx, 8*time.Second)
@@ -638,9 +669,14 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			pollCancel()
 		}
 
-		// Gap-fill: fetch any bars missed between last REST poll and WS resume.
+		// Gap-fill: fetch any bars missed between last REST poll and WS resume
+		// (async to avoid blocking the reconnect loop).
 		if w.fetcher != nil {
-			w.gapFill(streamCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler)
+			go func() {
+				gfCtx, gfCancel := context.WithTimeout(streamCtx, 30*time.Second)
+				defer gfCancel()
+				w.gapFill(gfCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler)
+			}()
 		}
 
 		// Reset counters — we've successfully reconnected.
