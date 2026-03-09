@@ -264,9 +264,6 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		}
 		lastBarMu.Unlock()
 
-		// Record bar in health tracker.
-		w.tracker.recordBar()
-
 		source := "ws"
 		if fromREST {
 			source = "rest"
@@ -335,6 +332,9 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			}
 		}
 
+		// Create a per-connection context that the stale watchdog can cancel.
+		connCtx, connCancel := context.WithCancel(streamCtx)
+
 		var wsBarCount atomic.Int64
 		const wsMinutesToTrust = 2
 		var wsMinuteMu sync.Mutex
@@ -366,6 +366,7 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		}()
 
 		barHandler := func(bar alpacastream.Bar) {
+			w.tracker.recordBar()
 			n := wsBarCount.Add(1)
 			if n == 1 {
 				log.Info().Str("symbol", bar.Symbol).Time("bar_time", bar.Timestamp).
@@ -384,6 +385,7 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 				stopRestPoller()
 			}
 			select {
+			case <-connCtx.Done():
 			case barCh <- bar:
 			default:
 				log.Warn().Str("symbol", bar.Symbol).Msg("equity WS: bar channel full, dropping bar")
@@ -409,8 +411,6 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 
 		connect := w.connectFactory(symStrs, barHandler, tradeHandler)
 
-		// Create a per-connection context that the stale watchdog can cancel.
-		connCtx, connCancel := context.WithCancel(streamCtx)
 		staleCancelMu.Lock()
 		staleCancelFn = connCancel
 		staleCancelMu.Unlock()
@@ -436,7 +436,11 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		connErr := connect(connCtx)
 
 		close(barCh)
-		<-barProcessDone
+		select {
+		case <-barProcessDone:
+		case <-time.After(5 * time.Second):
+			log.Warn().Msg("equity WS: bar processing drain timed out — abandoning goroutine")
+		}
 
 		barsReceived := wsBarCount.Load()
 		connDur := time.Since(connectedAt)

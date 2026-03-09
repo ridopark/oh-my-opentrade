@@ -169,7 +169,6 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		}
 		lastBarMu.Unlock()
 
-		c.tracker.recordBar()
 		return handler(bCtx, bar)
 	}
 
@@ -249,6 +248,7 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		}()
 
 		barHandler := func(cb alpacastream.CryptoBar) {
+			c.tracker.recordBar()
 			if cryptoBarCount.Add(1) == 1 {
 				bar, err := CryptoBarToMarketBar(cb)
 				if err == nil {
@@ -260,6 +260,7 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			c.tracker.clearStaleAlert()
 			stopRestPoller()
 			select {
+			case <-connCtx.Done():
 			case barCh <- cb:
 			default:
 				c.log.Warn().Str("symbol", cb.Symbol).Msg("crypto WS: bar channel full, dropping bar")
@@ -290,7 +291,11 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		connErr := connect(connCtx)
 
 		close(barCh)
-		<-barProcessDone
+		select {
+		case <-barProcessDone:
+		case <-time.After(5 * time.Second):
+			c.log.Warn().Msg("crypto WS: bar processing drain timed out — abandoning goroutine")
+		}
 
 		barsReceived := cryptoBarCount.Load()
 		c.log.Info().Err(connErr).Int64("bars_received", barsReceived).
