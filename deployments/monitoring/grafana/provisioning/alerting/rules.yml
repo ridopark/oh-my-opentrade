@@ -1,0 +1,194 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: omo-trading-prometheus
+    interval: 1m
+    rules:
+      - uid: circuit-breaker-active
+        title: CircuitBreakerActive
+        condition: A
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: omo_risk_circuit_breaker_active == 1
+              interval: ""
+              refId: A
+        noDataState: NoData
+        execErrState: Alerting
+        for: 0s
+        annotations:
+          summary: "Circuit breaker is active — trading halted"
+          description: "The daily loss circuit breaker has tripped. All new order execution is blocked."
+        labels:
+          severity: critical
+
+      - uid: websocket-disconnected
+        title: WebSocketDisconnected
+        condition: A
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: omo_ws_connected == 0
+              interval: ""
+              refId: A
+        noDataState: NoData
+        execErrState: Alerting
+        for: 30s
+        annotations:
+          summary: "WebSocket disconnected for >30s"
+          description: "Alpaca market data WebSocket has been disconnected for more than 30 seconds."
+        labels:
+          severity: critical
+
+      - uid: no-bars-received
+        title: NoBarsReceived
+        condition: A
+        data:
+          - refId: A
+            queryType: range
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: rate(omo_bars_received_total[5m]) == 0
+              interval: ""
+              refId: A
+        noDataState: NoData
+        execErrState: Alerting
+        for: 5m
+        annotations:
+          summary: "No bars received in 5 minutes"
+          description: "The ingestion service has not received any market data bars in the last 5 minutes."
+        labels:
+          severity: warning
+
+      - uid: high-order-reject-rate
+        title: HighOrderRejectRate
+        condition: A
+        data:
+          - refId: A
+            queryType: range
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: rate(omo_order_rejects_total[10m]) / (rate(omo_orders_total[10m]) + 1e-10) > 0.05
+              interval: ""
+              refId: A
+        noDataState: NoData
+        execErrState: Alerting
+        for: 5m
+        annotations:
+          summary: "Order reject rate >5%"
+          description: "More than 5% of orders have been rejected over the last 10 minutes."
+        labels:
+          severity: warning
+
+      - uid: http-5xx-elevated
+        title: HTTP5xxElevated
+        condition: A
+        data:
+          - refId: A
+            queryType: range
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: rate(omo_http_requests_total{code=~"5.."}[5m]) / (rate(omo_http_requests_total[5m]) + 1e-10) > 0.02
+              interval: ""
+              refId: A
+        noDataState: NoData
+        execErrState: Alerting
+        for: 5m
+        annotations:
+          summary: "HTTP 5xx error rate >2%"
+          description: "More than 2% of HTTP requests are returning 5xx status codes."
+        labels:
+          severity: warning
+
+  - orgId: 1
+    name: omo-infrastructure-loki
+    interval: 1m
+    rules:
+      - uid: service-restart-flapping
+        title: ServiceRestartFlapping
+        condition: A
+        data:
+          - refId: A
+            queryType: range
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki
+            model:
+              expr: count_over_time({job="omo-core"} |= "notification service started" [5m]) > 1
+              interval: ""
+              refId: A
+        noDataState: NoData
+        execErrState: Alerting
+        for: 0s
+        annotations:
+          summary: "Service restart flapping detected"
+          description: "The omo-core service has restarted multiple times in the last 5 minutes."
+        labels:
+          severity: warning
+
+      - uid: high-error-log-rate
+        title: HighErrorLogRate
+        condition: A
+        data:
+          - refId: A
+            queryType: range
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki
+            model:
+              expr: sum(count_over_time({job="omo-core"} |~ "level.*error" [5m])) > 20
+              interval: ""
+              refId: A
+        noDataState: NoData
+        execErrState: Alerting
+        for: 0s
+        annotations:
+          summary: "High error log rate detected"
+          description: "More than 20 error-level logs have been recorded in the last 5 minutes."
+        labels:
+          severity: warning
+
+      - uid: database-connection-error
+        title: DatabaseConnectionError
+        condition: A
+        data:
+          - refId: A
+            queryType: range
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki
+            model:
+              expr: count_over_time({job="omo-core"} |~ "database|postgres" |~ "connection.*error|error.*connection" [5m]) > 0
+              interval: ""
+              refId: A
+        noDataState: NoData
+        execErrState: Alerting
+        for: 0s
+        annotations:
+          summary: "Database connection error detected"
+          description: "Database or PostgreSQL connection errors have been detected in the logs."
+        labels:
+          severity: critical

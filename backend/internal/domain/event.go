@@ -54,11 +54,52 @@ const (
 	EventTradeRealized           EventType = "TradeRealized"
 	EventFormingBar              EventType = "FormingBar"
 	EventFeedDegraded            EventType = "FeedDegraded"
+
+	// Connectivity & system events.
+	EventBrokerAPIError          EventType = "BrokerAPIError"
+	EventWSCircuitBreakerTripped EventType = "WSCircuitBreakerTripped"
+	EventFillPollTimeout         EventType = "FillPollTimeout"
+	EventStaleOrderCancelled     EventType = "StaleOrderCancelled"
+	EventSystemStarted           EventType = "SystemStarted"
 )
 
 type FeedDegradedPayload struct {
 	Feed   string
 	Reason string
+}
+
+type BrokerAPIErrorPayload struct {
+	Endpoint   string
+	StatusCode int
+	Message    string
+}
+
+type WSCircuitBreakerTrippedPayload struct {
+	Feed              string
+	ConsecutiveFails  int
+	BlockedForSeconds float64
+}
+
+type FillPollTimeoutPayload struct {
+	Symbol        Symbol
+	BrokerOrderID string
+	Strategy      string
+	Direction     string
+	Quantity      float64
+}
+
+type StaleOrderCancelledPayload struct {
+	Symbol        Symbol
+	BrokerOrderID string
+	Strategy      string
+	Direction     string
+	AgeSeconds    float64
+}
+
+type SystemStartedPayload struct {
+	Version    string
+	EnvMode    string
+	Strategies []string
 }
 
 // Event represents a domain event in the trading pipeline.

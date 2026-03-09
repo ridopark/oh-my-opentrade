@@ -18,18 +18,19 @@ import (
 // It uses a separate stream.CryptoClient (not the StocksClient used for equities)
 // and includes reconnect, watchdog, and circuit breaker hardening.
 type CryptoWSClient struct {
-	cryptoDataURL string
-	apiKey        string
-	apiSecret     string
-	feed          string     // e.g. "us"
-	fetcher       BarFetcher // REST polling fallback; nil disables polling
-	tradeHandler  ports.TradeHandler
-	onDegraded    func(reason string)
-	log           zerolog.Logger
-	tracker       *feedTracker
-	closeOnce     sync.Once
-	cancel        context.CancelFunc
-	mu            sync.Mutex
+	cryptoDataURL        string
+	apiKey               string
+	apiSecret            string
+	feed                 string     // e.g. "us"
+	fetcher              BarFetcher // REST polling fallback; nil disables polling
+	tradeHandler         ports.TradeHandler
+	onDegraded           func(reason string)
+	onCircuitBreakerOpen func(consecutiveFails int, blockedFor time.Duration)
+	log                  zerolog.Logger
+	tracker              *feedTracker
+	closeOnce            sync.Once
+	cancel               context.CancelFunc
+	mu                   sync.Mutex
 }
 
 // NewCryptoWSClient creates a new CryptoWSClient.
@@ -62,6 +63,10 @@ func NewCryptoWSClient(cryptoDataURL, apiKey, apiSecret, feed string, fetcher Ba
 func (c *CryptoWSClient) SetTradeHandler(h ports.TradeHandler) { c.tradeHandler = h }
 
 func (c *CryptoWSClient) SetDegradedCallback(fn func(reason string)) { c.onDegraded = fn }
+
+func (c *CryptoWSClient) SetCircuitBreakerCallback(fn func(consecutiveFails int, blockedFor time.Duration)) {
+	c.onCircuitBreakerOpen = fn
+}
 
 // FeedHealth returns a point-in-time snapshot of crypto WebSocket feed status.
 func (c *CryptoWSClient) FeedHealth() FeedHealth { return c.tracker.Snapshot() }
@@ -145,6 +150,9 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		if ok, wait := c.tracker.cb.Allow(); !ok {
 			c.tracker.setState("circuit_open")
 			c.log.Warn().Dur("wait", wait).Msg("circuit breaker open — waiting before retry")
+			if c.onCircuitBreakerOpen != nil {
+				c.onCircuitBreakerOpen(c.tracker.cb.ConsecutiveFails(), wait)
+			}
 			select {
 			case <-time.After(wait):
 			case <-streamCtx.Done():

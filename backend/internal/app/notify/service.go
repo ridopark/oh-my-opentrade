@@ -99,6 +99,10 @@ func (s *Service) Start(ctx context.Context) error {
 		{domain.EventSignalGated, s.fmtSignalGated, false},
 		{domain.EventRiskRevaluated, s.fmtRiskRevaluated, false},
 		{domain.EventFeedDegraded, s.fmtFeedDegraded, false},
+		{domain.EventWSCircuitBreakerTripped, s.fmtWSCircuitBreaker, false},
+		{domain.EventFillPollTimeout, s.fmtFillPollTimeout, false},
+		{domain.EventStaleOrderCancelled, s.fmtStaleOrderCancelled, false},
+		{domain.EventSystemStarted, s.fmtSystemStarted, false},
 	}
 
 	for _, e := range events {
@@ -485,6 +489,38 @@ func (s *Service) fmtFeedDegraded(ev domain.Event) string {
 		return fmt.Sprintf("⚠️ Feed Degraded [%s]: %s", p.Feed, p.Reason)
 	}
 	return "⚠️ Market data feed degraded"
+}
+
+func (s *Service) fmtWSCircuitBreaker(ev domain.Event) string {
+	if p, ok := ev.Payload.(domain.WSCircuitBreakerTrippedPayload); ok {
+		return fmt.Sprintf("🔌 WS Circuit Breaker Open [%s]: %d consecutive failures — retries blocked for %.0fs",
+			p.Feed, p.ConsecutiveFails, p.BlockedForSeconds)
+	}
+	return "🔌 WebSocket circuit breaker tripped — retries blocked"
+}
+
+func (s *Service) fmtFillPollTimeout(ev domain.Event) string {
+	if p, ok := ev.Payload.(domain.FillPollTimeoutPayload); ok {
+		return fmt.Sprintf("⏰ Fill Poll Timeout: %s %s %s — order %s not filled within 2m (qty: %.2f)",
+			p.Direction, string(p.Symbol), p.Strategy, p.BrokerOrderID, p.Quantity)
+	}
+	return "⏰ Fill poll timed out — order not filled within 2 minutes"
+}
+
+func (s *Service) fmtStaleOrderCancelled(ev domain.Event) string {
+	if p, ok := ev.Payload.(domain.StaleOrderCancelledPayload); ok {
+		return fmt.Sprintf("🗑️ Stale Order Cancelled: %s %s — order %s expired after %.0fs (strategy: %s)",
+			p.Direction, string(p.Symbol), p.BrokerOrderID, p.AgeSeconds, p.Strategy)
+	}
+	return "🗑️ Stale order force-cancelled"
+}
+
+func (s *Service) fmtSystemStarted(ev domain.Event) string {
+	if p, ok := ev.Payload.(domain.SystemStartedPayload); ok {
+		return fmt.Sprintf("✅ System Started: omo-core %s — %s mode, %d symbols streaming",
+			p.Version, p.EnvMode, len(p.Strategies))
+	}
+	return "✅ System started"
 }
 
 func (s *Service) fmtRiskRevaluated(ev domain.Event) string {
