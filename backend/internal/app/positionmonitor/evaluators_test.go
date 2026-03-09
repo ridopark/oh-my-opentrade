@@ -745,6 +745,57 @@ func TestEvaluate_StagnationExit(t *testing.T) {
 		assert.True(t, triggered)
 		assert.Contains(t, reason, "stagnation_exit")
 	})
+
+	t.Run("profit gate skips exit when position is profitable", func(t *testing.T) {
+		gatedRule := domain.ExitRule{
+			Type:   domain.ExitRuleStagnationExit,
+			Params: map[string]float64{"minutes": 30, "sd_threshold": 1.0, "profit_gate_pct": 0.005},
+		}
+		now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+		pos := newTestMonitoredPosition(t, 100, now.Add(-35*time.Minute), domain.AssetClassEquity)
+
+		// +1.34% P&L exceeds 0.5% gate — should NOT trigger
+		triggered, _ := Evaluate(gatedRule, pos, 101.34, now, ctx)
+		assert.False(t, triggered)
+	})
+
+	t.Run("profit gate still exits when position is losing", func(t *testing.T) {
+		gatedRule := domain.ExitRule{
+			Type:   domain.ExitRuleStagnationExit,
+			Params: map[string]float64{"minutes": 30, "sd_threshold": 1.0, "profit_gate_pct": 0.005},
+		}
+		now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+		pos := newTestMonitoredPosition(t, 100, now.Add(-35*time.Minute), domain.AssetClassEquity)
+
+		// -0.5% P&L below gate — should trigger stagnation exit
+		triggered, reason := Evaluate(gatedRule, pos, 99.5, now, ctx)
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "stagnation_exit")
+	})
+
+	t.Run("profit gate still exits when profit below threshold", func(t *testing.T) {
+		gatedRule := domain.ExitRule{
+			Type:   domain.ExitRuleStagnationExit,
+			Params: map[string]float64{"minutes": 30, "sd_threshold": 1.0, "profit_gate_pct": 0.005},
+		}
+		now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+		pos := newTestMonitoredPosition(t, 100, now.Add(-35*time.Minute), domain.AssetClassEquity)
+
+		// +0.3% P&L below 0.5% gate — should still trigger
+		triggered, reason := Evaluate(gatedRule, pos, 100.3, now, ctx)
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "stagnation_exit")
+	})
+
+	t.Run("profit gate disabled when param is zero (backward compat)", func(t *testing.T) {
+		now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+		pos := newTestMonitoredPosition(t, 100, now.Add(-35*time.Minute), domain.AssetClassEquity)
+
+		// Original rule has no profit_gate_pct — +1.34% should still trigger
+		triggered, reason := Evaluate(rule, pos, 101.34, now, ctx)
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "stagnation_exit")
+	})
 }
 
 func TestEvaluate_UnknownRuleType(t *testing.T) {

@@ -336,6 +336,16 @@ func evaluateStagnationExit(rule domain.ExitRule, pos *domain.MonitoredPosition,
 		}
 	}
 
+	// Profit gate: if the position is profitable beyond the threshold,
+	// skip the stagnation exit and let the trailing stop protect gains.
+	profitGatePct := rule.Param("profit_gate_pct", 0)
+	if profitGatePct > 0 && pos.EntryPrice > 0 {
+		pnlPct := (currentPrice - pos.EntryPrice) / pos.EntryPrice
+		if pnlPct > profitGatePct {
+			return false, ""
+		}
+	}
+
 	return true, fmt.Sprintf("stagnation_exit: held %.1f min >= limit %.0f min without reaching +%.1f SD (price=%.4f, vwap=%.4f)",
 		held, minutes, sdThreshold, currentPrice, ctx.VWAPValue)
 }

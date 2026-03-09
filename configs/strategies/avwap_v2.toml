@@ -83,6 +83,7 @@ type = "STAGNATION_EXIT"
 [exit_rules.params]
 minutes = 30
 sd_threshold = 1.0
+profit_gate_pct = 0.005
 
 [[exit_rules]]
 type = "EOD_FLATTEN"
