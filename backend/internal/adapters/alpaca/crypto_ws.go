@@ -86,13 +86,14 @@ func (c *CryptoWSClient) FeedHealth() FeedHealth { return c.tracker.Snapshot() }
 var ErrCryptoWSMissingCredentials = errors.New("crypto websocket requires API key and secret")
 
 func (c *CryptoWSClient) defaultConnectFactory(symStrs []string, barHandler func(alpacastream.CryptoBar), tradeHandler func(alpacastream.CryptoTrade)) cryptoConnectFn {
-	sc := alpacastream.NewCryptoClient(
-		c.feed,
-		alpacastream.WithCredentials(c.apiKey, c.apiSecret),
-		alpacastream.WithCryptoBars(barHandler, symStrs...),
-		alpacastream.WithCryptoTrades(tradeHandler, symStrs...),
-	)
 	return func(ctx context.Context) error {
+		sc := alpacastream.NewCryptoClient(
+			c.feed,
+			alpacastream.WithCredentials(c.apiKey, c.apiSecret),
+			alpacastream.WithCryptoBars(barHandler, symStrs...),
+			alpacastream.WithCryptoTrades(tradeHandler, symStrs...),
+			alpacastream.WithReconnectSettings(1, 0),
+		)
 		if err := sc.Connect(ctx); err != nil {
 			return err
 		}
