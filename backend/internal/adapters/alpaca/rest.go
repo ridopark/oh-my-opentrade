@@ -33,9 +33,17 @@ type RESTClient struct {
 	baseURL   string
 	apiKey    string
 	apiSecret string
+	feed      string
 	limiter   *RateLimiter
 	client    *http.Client
 	log       zerolog.Logger
+}
+
+func (c *RESTClient) equityFeed() string {
+	if c.feed != "" {
+		return c.feed
+	}
+	return "iex"
 }
 
 type reqOpts struct {
@@ -393,7 +401,7 @@ func (c *RESTClient) GetPositions(ctx context.Context, tenantID string, envMode 
 
 // GetQuote queries the latest quote for a given symbol from the Alpaca data API.
 func (c *RESTClient) GetQuote(ctx context.Context, dataURL string, symbol domain.Symbol) (bid float64, ask float64, err error) {
-	path := fmt.Sprintf("/v2/stocks/%s/quotes/latest?feed=iex", symbol.String())
+	path := fmt.Sprintf("/v2/stocks/%s/quotes/latest?feed=%s", symbol.String(), c.equityFeed())
 	urlStr := strings.TrimSuffix(dataURL, "/") + path
 	resp, err := c.doReqFullWithPath(ctx, http.MethodGet, urlStr, path, nil, reqOpts{priority: PriorityTrading, maxRetries: 3})
 	if err != nil {
@@ -433,10 +441,11 @@ func (c *RESTClient) GetHistoricalBars(ctx context.Context, dataURL string, symb
 	nextToken := ""
 
 	for {
-		path := fmt.Sprintf("/v2/stocks/%s/bars?timeframe=%s&start=%s&end=%s&limit=1000&feed=iex",
+		path := fmt.Sprintf("/v2/stocks/%s/bars?timeframe=%s&start=%s&end=%s&limit=1000&feed=%s",
 			symbol.String(), tf,
 			from.UTC().Format(time.RFC3339),
 			to.UTC().Format(time.RFC3339),
+			c.equityFeed(),
 		)
 		if nextToken != "" {
 			path += "&page_token=" + nextToken

@@ -39,6 +39,7 @@ func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
 	limiter := NewPriorityRateLimiter(defaultRateLimit, 120)
 	restLog := log.With().Str("client", "rest").Logger()
 	rest := NewRESTClient(cfg.BaseURL, cfg.APIKeyID, cfg.APISecretKey, limiter, restLog)
+	rest.feed = cfg.Feed
 
 	dataURL := cfg.DataURL
 	if dataURL == "" {
@@ -48,8 +49,8 @@ func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
 	dataKey := cfg.EffectiveDataAPIKeyID()
 	dataSecret := cfg.EffectiveDataAPISecretKey()
 
-	// Wire the REST fetcher into the WS client so it can poll during ghost windows.
 	dataREST := NewRESTClient(cfg.BaseURL, dataKey, dataSecret, limiter, restLog)
+	dataREST.feed = cfg.Feed
 	fetcher := func(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
 		if symbol.IsCryptoSymbol() {
 			return dataREST.GetCryptoHistoricalBars(ctx, dataURL, symbol, timeframe, from, to)
