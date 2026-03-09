@@ -137,6 +137,9 @@ func (m *mockRepository) GetThoughtLogsByIntentID(_ context.Context, _ string) (
 func (m *mockRepository) UpdateTradeThesis(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol, _ json.RawMessage) error {
 	return nil
 }
+func (m *mockRepository) GetMaxBarHighSince(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _ time.Time) (float64, error) {
+	return 0, nil
+}
 
 // createTestOrderIntent creates a valid domain.OrderIntent for testing.
 func createTestOrderIntent(t *testing.T) domain.OrderIntent {

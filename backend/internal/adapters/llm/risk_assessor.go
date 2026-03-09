@@ -90,8 +90,9 @@ Compare the original entry thesis against current market conditions.
 Determine if the thesis is still valid, degrading, or invalidated.
 Recommend: HOLD (thesis intact), TIGHTEN (increase caution), SCALE_OUT (reduce exposure), or EXIT (thesis broken).
 Set updated_modifier: TIGHT (reduce risk), NORMAL (maintain), or WIDE (give room).
+CONSTRAINT: If action is TIGHTEN, updated_modifier MUST be TIGHT. WIDE is only valid with HOLD.
 scale_out_pct is 0.0 unless action is SCALE_OUT (then 0.25–0.75).
-IMPORTANT: Factor in volume and liquidity conditions. During low-volume periods (off-peak hours, weekends), TIGHTEN is risky because tight stops get triggered by noise/flash wicks in thin markets. Prefer HOLD with WIDE modifier during low liquidity unless thesis is clearly invalidated.
+IMPORTANT: Factor in volume and liquidity conditions. During low-volume periods (off-peak hours, weekends), prefer HOLD with WIDE modifier during low liquidity unless thesis is clearly invalidated.
 Respond ONLY with valid JSON — no markdown fences, no extra text.`
 
 	userPrompt := buildRiskAssessmentPrompt(position, indicators, regime)

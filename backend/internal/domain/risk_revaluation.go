@@ -45,6 +45,7 @@ type RiskRevaluationEvent struct {
 	Strategy      string           `json:"strategy"`
 	EntryPrice    float64          `json:"entryPrice"`
 	CurrentPrice  float64          `json:"currentPrice"`
+	HighWaterMark float64          `json:"highWaterMark"`
 	UnrealizedPnL float64          `json:"unrealizedPnl"`
 	HoldDuration  string           `json:"holdDuration"`
 	TenantID      string           `json:"tenantId"`

@@ -223,6 +223,7 @@ func (r *Revaluator) evaluatePosition(ctx context.Context, pos domain.MonitoredP
 		Strategy:        pos.Strategy,
 		EntryPrice:      pos.EntryPrice,
 		CurrentPrice:    currentPrice,
+		HighWaterMark:   pos.HighWaterMark,
 		UnrealizedPnL:   pos.UnrealizedPnLPct(currentPrice),
 		HoldDuration:    formatDuration(time.Since(pos.EntryTime)),
 		TenantID:        pos.TenantID,

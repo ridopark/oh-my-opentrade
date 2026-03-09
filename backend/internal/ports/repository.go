@@ -28,6 +28,10 @@ type RepositoryPort interface {
 	// ListOrders retrieves orders with optional filters and keyset pagination.
 	ListOrders(ctx context.Context, q OrderQuery) (OrderPage, error)
 
+	// GetMaxBarHighSince returns the maximum bar high price for a symbol since a given time.
+	// Returns 0 if no bars exist in the range.
+	GetMaxBarHighSince(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, since time.Time) (float64, error)
+
 	// SaveThoughtLog persists an AI debate thought log record.
 	SaveThoughtLog(ctx context.Context, tl domain.ThoughtLog) error
 
