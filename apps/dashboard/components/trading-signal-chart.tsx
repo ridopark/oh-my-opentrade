@@ -299,7 +299,6 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
 
       if (candleData && 'open' in candleData) {
         const timeVal = param.time as number;
-        const dateObj = new Date(timeVal * 1000);
         const et = toET(timeVal);
         const dateStr = `${et.year}-${et.month}-${et.day} ${et.hour}:${et.minute}`;
 

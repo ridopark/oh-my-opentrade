@@ -59,9 +59,10 @@ func (m *mockNotifier) waitForMessages(n int, timeout time.Duration) []notifyCal
 func TestService_SubscribesToOrderEvents(t *testing.T) {
 	bus := memory.NewBus()
 	notifier := &mockNotifier{}
-	svc := notify.NewService(bus, notifier, zerolog.Nop())
+	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
+	require.NoError(t, err)
 
-	err := svc.Start(context.Background())
+	err = svc.Start(context.Background())
 	require.NoError(t, err)
 	defer svc.Stop()
 
@@ -86,9 +87,10 @@ func TestService_SubscribesToOrderEvents(t *testing.T) {
 func TestService_KillSwitchNotification(t *testing.T) {
 	bus := memory.NewBus()
 	notifier := &mockNotifier{}
-	svc := notify.NewService(bus, notifier, zerolog.Nop())
+	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
+	require.NoError(t, err)
 
-	err := svc.Start(context.Background())
+	err = svc.Start(context.Background())
 	require.NoError(t, err)
 	defer svc.Stop()
 
@@ -106,9 +108,10 @@ func TestService_KillSwitchNotification(t *testing.T) {
 func TestService_CircuitBreakerNotification(t *testing.T) {
 	bus := memory.NewBus()
 	notifier := &mockNotifier{}
-	svc := notify.NewService(bus, notifier, zerolog.Nop())
+	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
+	require.NoError(t, err)
 
-	err := svc.Start(context.Background())
+	err = svc.Start(context.Background())
 	require.NoError(t, err)
 	defer svc.Stop()
 
@@ -127,9 +130,10 @@ func TestService_CircuitBreakerNotification(t *testing.T) {
 func TestService_FillNotification(t *testing.T) {
 	bus := memory.NewBus()
 	notifier := &mockNotifier{}
-	svc := notify.NewService(bus, notifier, zerolog.Nop())
+	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
+	require.NoError(t, err)
 
-	err := svc.Start(context.Background())
+	err = svc.Start(context.Background())
 	require.NoError(t, err)
 	defer svc.Stop()
 
@@ -157,9 +161,10 @@ func TestService_FillNotification(t *testing.T) {
 func TestService_IntentRejectedNotification(t *testing.T) {
 	bus := memory.NewBus()
 	notifier := &mockNotifier{}
-	svc := notify.NewService(bus, notifier, zerolog.Nop())
+	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
+	require.NoError(t, err)
 
-	err := svc.Start(context.Background())
+	err = svc.Start(context.Background())
 	require.NoError(t, err)
 	defer svc.Stop()
 
@@ -181,9 +186,10 @@ func TestService_IntentRejectedNotification(t *testing.T) {
 func TestService_DebateCompletedNotification(t *testing.T) {
 	bus := memory.NewBus()
 	notifier := &mockNotifier{}
-	svc := notify.NewService(bus, notifier, zerolog.Nop())
+	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
+	require.NoError(t, err)
 
-	err := svc.Start(context.Background())
+	err = svc.Start(context.Background())
 	require.NoError(t, err)
 	defer svc.Stop()
 
@@ -214,9 +220,10 @@ func TestService_DebateCompletedNotification(t *testing.T) {
 func TestService_MultipleEventsNotifyAll(t *testing.T) {
 	bus := memory.NewBus()
 	notifier := &mockNotifier{}
-	svc := notify.NewService(bus, notifier, zerolog.Nop())
+	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
+	require.NoError(t, err)
 
-	err := svc.Start(context.Background())
+	err = svc.Start(context.Background())
 	require.NoError(t, err)
 	defer svc.Stop()
 
@@ -243,9 +250,10 @@ func TestService_MultipleEventsNotifyAll(t *testing.T) {
 func TestService_SignalEnrichedNotification(t *testing.T) {
 	bus := memory.NewBus()
 	notifier := &mockNotifier{}
-	svc := notify.NewService(bus, notifier, zerolog.Nop())
+	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
+	require.NoError(t, err)
 
-	err := svc.Start(context.Background())
+	err = svc.Start(context.Background())
 	require.NoError(t, err)
 	defer svc.Stop()
 
@@ -290,9 +298,10 @@ func TestService_SignalEnrichedNotification(t *testing.T) {
 func TestService_SignalEnrichedExitWithPnL(t *testing.T) {
 	bus := memory.NewBus()
 	notifier := &mockNotifier{}
-	svc := notify.NewService(bus, notifier, zerolog.Nop())
+	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
+	require.NoError(t, err)
 
-	err := svc.Start(context.Background())
+	err = svc.Start(context.Background())
 	require.NoError(t, err)
 	defer svc.Stop()
 
@@ -332,9 +341,10 @@ func TestService_SignalEnrichedExitWithPnL(t *testing.T) {
 func TestService_SignalEnrichedExitNegativePnL(t *testing.T) {
 	bus := memory.NewBus()
 	notifier := &mockNotifier{}
-	svc := notify.NewService(bus, notifier, zerolog.Nop())
+	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
+	require.NoError(t, err)
 
-	err := svc.Start(context.Background())
+	err = svc.Start(context.Background())
 	require.NoError(t, err)
 	defer svc.Stop()
 
@@ -368,9 +378,10 @@ func TestService_SignalEnrichedExitNegativePnL(t *testing.T) {
 func TestService_OrderSubmittedWithMeta(t *testing.T) {
 	bus := memory.NewBus()
 	notifier := &mockNotifier{}
-	svc := notify.NewService(bus, notifier, zerolog.Nop())
+	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
+	require.NoError(t, err)
 
-	err := svc.Start(context.Background())
+	err = svc.Start(context.Background())
 	require.NoError(t, err)
 	defer svc.Stop()
 

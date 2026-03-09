@@ -634,7 +634,7 @@ export function MultiSymbolChart() {
       }
 
       const formingTime = formingSymbolsRef.current[candleSymbol];
-      if (formingTime == null) {
+      if (formingTime === undefined || formingTime === null) {
         animId = requestAnimationFrame(pulse);
         return;
       }

@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
+
 
 const navItems = [
   { href: "/", label: "Trading Signals", icon: TrendingUp },
