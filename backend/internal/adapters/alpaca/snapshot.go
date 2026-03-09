@@ -17,7 +17,7 @@ func (c *RESTClient) GetSnapshots(ctx context.Context, dataURL string, symbols [
 		return map[string]ports.Snapshot{}, nil
 	}
 
-	path := "/v2/stocks/snapshots?symbols=" + strings.Join(symbols, ",") + "&feed=iex"
+	path := "/v2/stocks/snapshots?symbols=" + strings.Join(symbols, ",") + "&feed=" + c.equityFeed()
 	resp, err := c.doReqDataAPI(ctx, dataURL, http.MethodGet, path, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
 	if err != nil {
 		c.log.Error().Err(err).Msg("snapshots HTTP request failed")
