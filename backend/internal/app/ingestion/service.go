@@ -16,6 +16,7 @@ type Service struct {
 	eventBus   ports.EventBusPort
 	repository ports.RepositoryPort
 	filter     *AdaptiveFilter
+	barWriter  *AsyncBarWriter // optional: when set, DB writes are async
 	mu         sync.Mutex
 	log        zerolog.Logger
 	metrics    *metrics.Metrics
@@ -30,8 +31,9 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, filter *
 	}
 }
 
-// SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
 func (s *Service) SetMetrics(m *metrics.Metrics) { s.metrics = m }
+
+func (s *Service) SetBarWriter(w *AsyncBarWriter) { s.barWriter = w }
 
 // Start subscribes the service to incoming market data events.
 func (s *Service) Start(ctx context.Context) error {
@@ -124,12 +126,16 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		}
 	}
 
-	if err := s.repository.SaveMarketBar(ctx, result.Bar); err != nil {
-		l.Error().Err(err).Msg("failed to save market bar to repository")
-		return fmt.Errorf("ingestion: failed to save market bar: %w", err)
+	if s.barWriter != nil {
+		s.barWriter.Enqueue(result.Bar)
+		l.Debug().Float64("close", result.Bar.Close).Bool("repaired", result.Bar.Repaired).Msg("market bar enqueued for async save")
+	} else {
+		if err := s.repository.SaveMarketBar(ctx, result.Bar); err != nil {
+			l.Error().Err(err).Msg("failed to save market bar to repository")
+			return fmt.Errorf("ingestion: failed to save market bar: %w", err)
+		}
+		l.Debug().Float64("close", result.Bar.Close).Bool("repaired", result.Bar.Repaired).Msg("market bar saved")
 	}
-
-	l.Debug().Float64("close", result.Bar.Close).Bool("repaired", result.Bar.Repaired).Msg("market bar saved")
 
 	emittedEvent, err := domain.NewEvent(
 		domain.EventMarketBarSanitized,

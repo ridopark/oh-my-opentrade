@@ -47,6 +47,7 @@ func waitForShutdown(cancel context.CancelFunc, server *http.Server, infra *infr
 		log.Error().Err(err).Msg("error closing Alpaca adapter")
 	}
 	cancel()
+	svc.barWriter.Close()
 	svc.notifySvc.Stop()
 	infra.eventBus.Close()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)

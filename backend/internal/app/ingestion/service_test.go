@@ -206,3 +206,43 @@ func TestService_RepositoryErrorPropagates(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "db error")
 }
+
+func TestService_AsyncWriterBypassesSyncSave(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	filter := ingestion.NewAdaptiveFilter(5, 4.0)
+	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
+
+	batchSaver := &mockBatchSaver{}
+	writer := ingestion.NewAsyncBarWriter(batchSaver, zerolog.Nop(),
+		ingestion.WithBatchSize(100),
+		ingestion.WithFlushInterval(50*time.Millisecond),
+		ingestion.WithChannelSize(100),
+	)
+	writer.Start()
+	defer writer.Close()
+
+	svc.SetBarWriter(writer)
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	var emitted domain.Event
+	bus.Subscribe(context.Background(), domain.EventMarketBarSanitized, func(ctx context.Context, ev domain.Event) error {
+		emitted = ev
+		return nil
+	})
+
+	sym, _ := domain.NewSymbol("BTC/USD")
+	bar := createBar(t, sym, 100.0, 10.0)
+	err = bus.Publish(context.Background(), createTestEvent(t, bar))
+	require.NoError(t, err)
+
+	assert.Empty(t, repo.savedBars, "sync repo should NOT be called when writer is set")
+
+	assert.Equal(t, domain.EventMarketBarSanitized, emitted.Type, "sanitized event must still be published")
+
+	writer.Close()
+	bars := batchSaver.allBars()
+	assert.Len(t, bars, 1, "bar should be flushed via async writer")
+}
