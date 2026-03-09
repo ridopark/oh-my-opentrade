@@ -1,0 +1,132 @@
+# golangci-lint configuration for oh-my-opentrade backend
+# Go 1.24 production codebase with hexagonal architecture
+
+run:
+  go: '1.24'
+  timeout: 3m
+  skip-dirs:
+    - bin
+    - vendor
+  skip-files:
+    - ".*_test.go$"
+    - ".*_mock.go$"
+
+linters:
+  enable:
+    # Standard linters
+    - errcheck        # Unchecked error returns
+    - govet           # Vet issues
+    - staticcheck     # Static analysis
+    - unused          # Unused code
+    - gosimple        # Code simplification
+    - ineffassign     # Ineffectual assignments
+    
+    # Quality linters
+    - gocritic        # Opinionated code review
+    - revive          # Fast linter with configurable rules
+    - misspell        # Spelling mistakes
+    - prealloc        # Preallocate slices
+    
+    # Error handling
+    - errorlint       # Proper error wrapping (errors.Is, errors.As)
+    
+    # HTTP best practices
+    - bodyclose       # HTTP response body must be closed
+    - noctx           # HTTP requests without context
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+    exclude-functions:
+      - fmt.Print
+      - fmt.Println
+      - fmt.Printf
+
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment  # Too strict for domain models
+
+  revive:
+    enable-all-rules: false
+    rules:
+      - name: blank-imports
+      - name: context-as-argument
+      - name: context-keys-type
+      - name: error-naming
+      - name: error-return
+      - name: error-strings
+      - name: errorf
+      - name: exported
+      - name: if-return
+      - name: increment-decrement
+      - name: indent-error-flow
+      - name: package-comments
+      - name: range
+      - name: receiver-naming
+      - name: redefines-builtin-id
+      - name: superfluous-else
+      - name: time-naming
+      - name: unexported-naming
+      - name: unexported-return
+      - name: unhandled-error
+      - name: unnecessary-stmt
+      - name: unreachable-code
+      - name: unused-parameter
+      - name: var-declaration
+      - name: var-naming
+
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+      - performance
+    disabled-checks:
+      - hugeParam        # Too strict for domain models
+      - rangeValCopy     # False positives with value objects
+
+  misspell:
+    locale: US
+
+  prealloc:
+    simple: true
+    range-loops: true
+    for-loops: true
+
+  errorlint:
+    errorf: true
+    asserts: true
+    comparison: true
+
+issues:
+  exclude-rules:
+    # Allow unused parameters in interface implementations
+    - linters:
+        - revive
+      text: "unused-parameter"
+      source: "func \\(.*\\) .*\\(.*\\) error"
+    
+    # Allow blank imports for side effects (e.g., database drivers)
+    - linters:
+        - revive
+      text: "blank-imports"
+      source: "_ \".*\""
+    
+    # Allow context.Background() in tests and main
+    - linters:
+        - noctx
+      source: "context\\.Background\\(\\)"
+    
+    # Allow error returns in test helpers
+    - linters:
+        - errcheck
+      path: "_test\\.go$"
+    
+    # Allow unused in generated code
+    - linters:
+        - unused
+      source: "// Code generated"
+
+  max-issues-per-linter: 0
+  max-same-issues: 0

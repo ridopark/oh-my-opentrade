@@ -12,7 +12,13 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+var tracer = otel.Tracer("omo-core/execution")
 
 type pendingOrder struct {
 	intent      domain.OrderIntent
@@ -122,10 +128,24 @@ func (s *Service) Start(ctx context.Context) error {
 
 // handleIntent processes a single OrderIntentCreated event through the execution pipeline.
 func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
+	ctx, span := tracer.Start(ctx, "execution.handleIntent",
+		trace.WithSpanKind(trace.SpanKindInternal),
+	)
+	defer span.End()
+
 	intent, ok := event.Payload.(domain.OrderIntent)
 	if !ok {
 		return nil
 	}
+
+	span.SetAttributes(
+		attribute.String("order.symbol", string(intent.Symbol)),
+		attribute.String("order.direction", string(intent.Direction)),
+		attribute.String("order.intent_id", intent.ID.String()),
+		attribute.String("order.strategy", intent.Strategy),
+		attribute.Float64("order.quantity", intent.Quantity),
+		attribute.Float64("order.limit_price", intent.LimitPrice),
+	)
 
 	l := s.log.With().
 		Str("symbol", string(intent.Symbol)).
@@ -288,6 +308,8 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	submitStart := time.Now()
 	brokerOrderID, err := s.broker.SubmitOrder(ctx, intent)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "broker rejected order")
 		l.Error().Err(err).Msg("broker rejected order")
 		if s.metrics != nil {
 			side := "sell"
@@ -316,6 +338,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		s.metrics.Orders.Total.WithLabelValues("alpaca", intent.Strategy, side, "limit", "placed").Inc()
 		s.metrics.Orders.SubmitLat.WithLabelValues("alpaca", intent.Strategy, "limit").Observe(time.Since(submitStart).Seconds())
 	}
+	span.SetAttributes(attribute.String("order.broker_order_id", brokerOrderID))
 	l.Info().Str("broker_order_id", brokerOrderID).Msg("order submitted to broker")
 	submittedPayload := domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusSubmitted)
 	submittedPayload.BrokerOrderID = brokerOrderID

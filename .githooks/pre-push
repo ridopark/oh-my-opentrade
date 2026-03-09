@@ -12,12 +12,12 @@ FAILED=0
 
 printf "${YELLOW}Running pre-push checks...${NC}\n\n"
 
-# ─── Backend: Go vet ──────────────────────────────────────────────
-printf "${YELLOW}[1/3] Backend lint (go vet)...${NC}\n"
-if (cd "$REPO_ROOT/backend" && go vet ./...); then
-    printf "${GREEN}  ✓ go vet passed${NC}\n\n"
+# ─── Backend: golangci-lint ──────────────────────────────────────
+printf "${YELLOW}[1/3] Backend lint (golangci-lint)...${NC}\n"
+if (cd "$REPO_ROOT/backend" && golangci-lint run ./...); then
+    printf "${GREEN}  ✓ golangci-lint passed${NC}\n\n"
 else
-    printf "${RED}  ✗ go vet failed${NC}\n\n"
+    printf "${RED}  ✗ golangci-lint failed${NC}\n\n"
     FAILED=1
 fi
 
