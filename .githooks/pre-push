@@ -10,6 +10,8 @@ NC='\033[0m' # No Color
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 FAILED=0
 
+export PATH="$HOME/go/bin:$PATH"
+
 printf "${YELLOW}Running pre-push checks...${NC}\n\n"
 
 # ─── Backend: golangci-lint ──────────────────────────────────────
