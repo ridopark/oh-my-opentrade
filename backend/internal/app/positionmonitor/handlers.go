@@ -2,6 +2,7 @@ package positionmonitor
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -63,6 +64,30 @@ func (s *Service) handleExitOrderTerminal(_ context.Context, event domain.Event)
 	}:
 	default:
 		s.log.Warn().Str("symbol", symbol).Msg("position monitor: exitTerminal channel full")
+	}
+	return nil
+}
+
+func (s *Service) handleExitRejected(_ context.Context, event domain.Event) error {
+	payload, ok := event.Payload.(domain.OrderIntentEventPayload)
+	if !ok {
+		return nil
+	}
+	dir, _ := domain.NewDirection(payload.Direction)
+	if !dir.IsExit() {
+		return nil
+	}
+	if !strings.Contains(payload.Reason, "no_position_to_exit") {
+		return nil
+	}
+
+	select {
+	case s.exitRejected <- exitRejectedMsg{
+		Symbol: domain.Symbol(payload.Symbol),
+		Reason: payload.Reason,
+	}:
+	default:
+		s.log.Warn().Str("symbol", payload.Symbol).Msg("position monitor: exitRejected channel full")
 	}
 	return nil
 }

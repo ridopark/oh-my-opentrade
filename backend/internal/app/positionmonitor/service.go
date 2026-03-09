@@ -35,6 +35,7 @@ type Service struct {
 	fills         chan fillMsg
 	exitSubmitted chan exitOrderSubmittedMsg
 	exitTerminal  chan exitOrderTerminalMsg
+	exitRejected  chan exitRejectedMsg
 	outbox        chan outboxMsg
 	stopCh        chan struct{}
 
@@ -82,6 +83,11 @@ type exitOrderSubmittedMsg struct {
 type exitOrderTerminalMsg struct {
 	Symbol        domain.Symbol
 	BrokerOrderID string
+}
+
+type exitRejectedMsg struct {
+	Symbol domain.Symbol
+	Reason string
 }
 
 const (
@@ -150,6 +156,7 @@ func NewService(
 		fills:             make(chan fillMsg, 256),
 		exitSubmitted:     make(chan exitOrderSubmittedMsg, 64),
 		exitTerminal:      make(chan exitOrderTerminalMsg, 64),
+		exitRejected:      make(chan exitRejectedMsg, 64),
 		outbox:            make(chan outboxMsg, 64),
 		stopCh:            make(chan struct{}),
 		positions:         make(map[string]*domain.MonitoredPosition),
@@ -174,6 +181,9 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 	if err := s.eventBus.Subscribe(ctx, domain.EventExitOrderTerminal, s.handleExitOrderTerminal); err != nil {
 		return fmt.Errorf("position_monitor: failed to subscribe to ExitOrderTerminal: %w", err)
+	}
+	if err := s.eventBus.Subscribe(ctx, domain.EventOrderIntentRejected, s.handleExitRejected); err != nil {
+		return fmt.Errorf("position_monitor: failed to subscribe to OrderIntentRejected: %w", err)
 	}
 
 	// Bootstrap: seed monitor with OMO-opened positions that are still on the broker.
@@ -210,6 +220,8 @@ func (s *Service) runTickLoop(ctx context.Context) {
 			s.processExitSubmitted(msg)
 		case msg := <-s.exitTerminal:
 			s.processExitTerminal(msg)
+		case msg := <-s.exitRejected:
+			s.processExitRejected(msg)
 		case <-ticker.C:
 			s.tick()
 		}
@@ -258,6 +270,27 @@ func (s *Service) processExitTerminal(msg exitOrderTerminalMsg) {
 		Str("broker_order_id", msg.BrokerOrderID).
 		Int("retry_count", pos.ExitRetryCount).
 		Msg("exit order terminal — unlocking position for retry")
+}
+
+// processExitRejected removes a ghost position when the broker confirms no position exists.
+func (s *Service) processExitRejected(msg exitRejectedMsg) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := fmt.Sprintf("%s:%s:%s", s.tenantID, s.envMode, msg.Symbol)
+	pos, ok := s.positions[key]
+	if !ok {
+		return
+	}
+
+	s.log.Warn().
+		Str("symbol", string(msg.Symbol)).
+		Str("reason", msg.Reason).
+		Msg("exit rejected with no_position_to_exit — removing ghost position from monitor")
+
+	if s.positionGate != nil {
+		s.positionGate.ClearInflightExit(pos.TenantID, pos.EnvMode, pos.Symbol)
+	}
+	delete(s.positions, key)
 }
 
 // processFill handles a fill within the actor goroutine.

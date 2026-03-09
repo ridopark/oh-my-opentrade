@@ -917,6 +917,177 @@ func TestService_resolveExitRules_UsesSpecStoreWhenAvailable(t *testing.T) {
 	assert.Equal(t, eod, rules[1])
 }
 
+func TestService_processExitRejected_RemovesPositionOnNoPositionToExit(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop())
+
+	svc.processFill(fillMsg{
+		Symbol:     domain.Symbol("AVAX/USD"),
+		Side:       "BUY",
+		Price:      25.0,
+		Quantity:   100,
+		FilledAt:   time.Now(),
+		Strategy:   "crypto_avwap_v2",
+		AssetClass: domain.AssetClassCrypto,
+		ExitRules:  []domain.ExitRule{},
+	})
+	require.Equal(t, 1, svc.PositionCount())
+
+	svc.processExitRejected(exitRejectedMsg{
+		Symbol: domain.Symbol("AVAX/USD"),
+		Reason: "position_gate: no_position_to_exit",
+	})
+
+	assert.Equal(t, 0, svc.PositionCount())
+}
+
+func TestService_processExitRejected_IgnoresUnknownSymbol(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop())
+
+	svc.processFill(fillMsg{
+		Symbol:     domain.Symbol("AVAX/USD"),
+		Side:       "BUY",
+		Price:      25.0,
+		Quantity:   100,
+		FilledAt:   time.Now(),
+		Strategy:   "crypto_avwap_v2",
+		AssetClass: domain.AssetClassCrypto,
+		ExitRules:  []domain.ExitRule{},
+	})
+	require.Equal(t, 1, svc.PositionCount())
+
+	svc.processExitRejected(exitRejectedMsg{
+		Symbol: domain.Symbol("BTC/USD"),
+		Reason: "position_gate: no_position_to_exit",
+	})
+
+	assert.Equal(t, 1, svc.PositionCount(), "must not remove unrelated positions")
+}
+
+func TestService_handleExitRejected_IgnoresNonExitDirections(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop())
+
+	svc.processFill(fillMsg{
+		Symbol:     domain.Symbol("AVAX/USD"),
+		Side:       "BUY",
+		Price:      25.0,
+		Quantity:   100,
+		FilledAt:   time.Now(),
+		Strategy:   "crypto_avwap_v2",
+		AssetClass: domain.AssetClassCrypto,
+		ExitRules:  []domain.ExitRule{},
+	})
+
+	payload := domain.OrderIntentEventPayload{
+		Symbol:    "AVAX/USD",
+		Direction: "OPEN_LONG",
+		Reason:    "position_gate: no_position_to_exit",
+		Status:    "rejected",
+	}
+	ev, err := domain.NewEvent(domain.EventOrderIntentRejected, "tenant-1", domain.EnvModePaper, "reject-1", payload)
+	require.NoError(t, err)
+
+	err = svc.handleExitRejected(context.Background(), *ev)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, svc.PositionCount(), "must not enqueue for non-exit directions")
+}
+
+func TestService_handleExitRejected_IgnoresOtherRejectionReasons(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop())
+
+	svc.processFill(fillMsg{
+		Symbol:     domain.Symbol("AVAX/USD"),
+		Side:       "BUY",
+		Price:      25.0,
+		Quantity:   100,
+		FilledAt:   time.Now(),
+		Strategy:   "crypto_avwap_v2",
+		AssetClass: domain.AssetClassCrypto,
+		ExitRules:  []domain.ExitRule{},
+	})
+
+	payload := domain.OrderIntentEventPayload{
+		Symbol:    "AVAX/USD",
+		Direction: "CLOSE_LONG",
+		Reason:    "position_gate: inflight_exit",
+		Status:    "rejected",
+	}
+	ev, err := domain.NewEvent(domain.EventOrderIntentRejected, "tenant-1", domain.EnvModePaper, "reject-2", payload)
+	require.NoError(t, err)
+
+	err = svc.handleExitRejected(context.Background(), *ev)
+	require.NoError(t, err)
+
+	select {
+	case <-svc.exitRejected:
+		t.Fatal("must not enqueue for non-no_position_to_exit reasons")
+	default:
+	}
+
+	assert.Equal(t, 1, svc.PositionCount(), "position must remain")
+}
+
+func TestService_ExitRejected_FullIntegration_BreaksRetryLoop(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	now := time.Date(2026, 3, 9, 10, 0, 0, 0, time.UTC)
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithNowFunc(func() time.Time { return now }),
+		WithTickInterval(10*time.Millisecond),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, svc.Start(ctx))
+	defer svc.Stop()
+
+	fillPayload := map[string]any{
+		"symbol":      "AVAX/USD",
+		"side":        "BUY",
+		"price":       float64(25.0),
+		"quantity":    float64(100),
+		"filled_at":   now,
+		"strategy":    "crypto_avwap_v2",
+		"asset_class": "Crypto",
+	}
+	fillEv, err := domain.NewEvent(domain.EventFillReceived, "tenant-1", domain.EnvModePaper, "fill-avax", fillPayload)
+	require.NoError(t, err)
+	require.NoError(t, bus.Publish(ctx, *fillEv))
+
+	require.Eventually(t, func() bool { return svc.PositionCount() == 1 }, 500*time.Millisecond, 10*time.Millisecond)
+
+	rejectPayload := domain.OrderIntentEventPayload{
+		Symbol:    "AVAX/USD",
+		Direction: "CLOSE_LONG",
+		Reason:    "position_gate: no_position_to_exit",
+		Status:    "rejected",
+	}
+	rejectEv, err := domain.NewEvent(domain.EventOrderIntentRejected, "tenant-1", domain.EnvModePaper, "reject-avax", rejectPayload)
+	require.NoError(t, err)
+	require.NoError(t, bus.Publish(ctx, *rejectEv))
+
+	require.Eventually(t, func() bool { return svc.PositionCount() == 0 }, 500*time.Millisecond, 10*time.Millisecond,
+		"position must be removed after no_position_to_exit rejection")
+}
+
 func TestService_resolveExitRules_FallsBackToDefaultsWhenSpecStoreIsNil(t *testing.T) {
 	bus := &mockEventBus{}
 	pc := NewPriceCache(zerolog.Nop())
