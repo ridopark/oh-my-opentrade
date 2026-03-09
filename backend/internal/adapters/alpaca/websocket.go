@@ -176,11 +176,6 @@ const maxConsecutiveFailsBeforeError = 50
 // before the watchdog forces a reconnect. 1-min bars + generous slack.
 const staleFeedThresholdRTH = 90 * time.Second
 
-// staleFeedThresholdOffHours is the stale feed threshold outside RTH.
-// Crypto trades 24/7 but volume is sparse on weekends — 10 min allows
-// for legitimate quiet periods while catching dead connections.
-const staleFeedThresholdOffHours = 10 * time.Minute
-
 // staleFeedCheckInterval is how often the watchdog checks for stale feed.
 const staleFeedCheckInterval = 15 * time.Second
 
@@ -368,7 +363,7 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		watchdogDone := make(chan struct{})
 		go func() {
 			defer close(watchdogDone)
-			staleFeedWatchdog(connCtx, w.tracker, &staleCancelMu, &staleCancelFn)
+			staleFeedWatchdog(connCtx, w.tracker, &staleCancelMu, &staleCancelFn, staleFeedThresholdRTH, isCoreMarketHours)
 		}()
 
 		w.tracker.setConnected(true)
@@ -580,10 +575,10 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 }
 
 // staleFeedWatchdog monitors the feed and cancels the connection context if no
-// bars arrive within the adaptive threshold (tight during RTH, relaxed off-hours).
-// This forces a reconnect for zombie connections where TCP is alive but no data flows.
-// Shared by both equity WSClient and CryptoWSClient.
-func staleFeedWatchdog(ctx context.Context, tracker *feedTracker, cancelMu *sync.Mutex, cancelFn *context.CancelFunc) {
+// bars arrive within the given threshold. shouldMonitor controls whether checks
+// run at all (equity passes isCoreMarketHours to skip off-hours; crypto passes
+// a func returning true). Shared by both equity WSClient and CryptoWSClient.
+func staleFeedWatchdog(ctx context.Context, tracker *feedTracker, cancelMu *sync.Mutex, cancelFn *context.CancelFunc, threshold time.Duration, shouldMonitor func() bool) {
 	ticker := time.NewTicker(staleFeedCheckInterval)
 	defer ticker.Stop()
 
@@ -592,9 +587,8 @@ func staleFeedWatchdog(ctx context.Context, tracker *feedTracker, cancelMu *sync
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			threshold := staleFeedThresholdOffHours
-			if isCoreMarketHours() {
-				threshold = staleFeedThresholdRTH
+			if !shouldMonitor() {
+				continue
 			}
 
 			tracker.mu.Lock()

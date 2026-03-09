@@ -14,6 +14,8 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
+const cryptoStaleThreshold = 30 * time.Minute
+
 // CryptoWSClient handles WebSocket connections for Alpaca crypto market data.
 // It uses a separate stream.CryptoClient (not the StocksClient used for equities)
 // and includes reconnect, watchdog, and circuit breaker hardening.
@@ -183,7 +185,7 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		watchdogDone := make(chan struct{})
 		go func() {
 			defer close(watchdogDone)
-			staleFeedWatchdog(connCtx, c.tracker, &staleCancelMu, &staleCancelFn)
+			staleFeedWatchdog(connCtx, c.tracker, &staleCancelMu, &staleCancelFn, cryptoStaleThreshold, func() bool { return true })
 		}()
 
 		c.tracker.setConnected(true)
@@ -195,6 +197,7 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			if err != nil {
 				return
 			}
+			c.tracker.clearStaleAlert()
 			stopRestPoller()
 			_ = callHandler(streamCtx, bar, false)
 		}
@@ -280,7 +283,7 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			dedup = make(map[string]struct{})
 			dedupMu.Unlock()
 
-			if c.onDegraded != nil {
+			if c.onDegraded != nil && c.tracker.tryMarkStaleAlert() {
 				c.onDegraded("crypto WebSocket stale — falling back to REST polling")
 			}
 
