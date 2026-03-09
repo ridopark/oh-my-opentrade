@@ -339,6 +339,12 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		}
 
 		var wsBarCount atomic.Int64
+		// IEX feed sometimes delivers 1-2 bars at the first minute boundary then
+		// goes silent. Require bars from 2+ distinct minutes before trusting the
+		// stream and stopping the REST poller.
+		const wsMinutesToTrust = 2
+		var wsMinuteMu sync.Mutex
+		wsMinutesSeen := make(map[int64]struct{})
 
 		barHandler := func(bar alpacastream.Bar) {
 			n := wsBarCount.Add(1)
@@ -346,6 +352,16 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 				log.Info().Str("symbol", bar.Symbol).Time("bar_time", bar.Timestamp).
 					Float64("close", bar.Close).Uint64("volume", bar.Volume).
 					Msg("equity WS: first bar received after connect")
+			}
+			minuteKey := bar.Timestamp.Truncate(time.Minute).Unix()
+			wsMinuteMu.Lock()
+			prevLen := len(wsMinutesSeen)
+			wsMinutesSeen[minuteKey] = struct{}{}
+			newLen := len(wsMinutesSeen)
+			wsMinuteMu.Unlock()
+			if newLen >= wsMinutesToTrust && prevLen < wsMinutesToTrust {
+				log.Info().Int("distinct_minutes", newLen).Int64("ws_bars", n).
+					Msg("equity WS: stream trusted — stopping REST poller")
 				stopRestPoller()
 			}
 			sym, err := domain.NewSymbol(bar.Symbol)
