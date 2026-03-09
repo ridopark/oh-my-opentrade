@@ -22,6 +22,7 @@ type Runner struct {
 	eventBus    ports.EventBusPort
 	router      *Router
 	swapManager *SwapManager
+	posLookup   PositionLookupFunc
 	logger      *slog.Logger
 	tenantID    string
 	envMode     domain.EnvMode
@@ -64,6 +65,8 @@ func (r *Runner) SetSwapManager(sm *SwapManager) { r.swapManager = sm }
 
 // SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
 func (r *Runner) SetMetrics(m *metrics.Metrics) { r.metrics = m }
+
+func (r *Runner) SetPositionLookup(fn PositionLookupFunc) { r.posLookup = fn }
 
 // Start subscribes the runner to MarketBarSanitized, StateUpdated, FillReceived,
 // and OrderIntentRejected events on the event bus.
@@ -203,7 +206,8 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		"volume", bar.Volume,
 		"close", bar.Close,
 	)
-	// Emit SignalCreated events for each actionable signal.
+	allSignals = ReconcileSignals(allSignals, r.posLookup, r.logger)
+
 	for _, sig := range allSignals {
 		// Suppress equity signals outside Regular Trading Hours (9:30-16:00 ET).
 		if !domain.Symbol(sig.Symbol).IsCryptoSymbol() {

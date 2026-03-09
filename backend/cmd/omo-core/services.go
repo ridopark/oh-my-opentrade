@@ -321,6 +321,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	}
 
 	svc.strategyRunner = strategy.NewRunner(infra.eventBus, svc.router, "default", domain.EnvModePaper, stratLog)
+	svc.strategyRunner.SetPositionLookup(svc.posMonitor.LookupPosition)
 	svc.signalEnricher = strategy.NewSignalDebateEnricher(infra.eventBus, svc.aiAdvisor, stratLog,
 		strategy.WithRepository(infra.repo),
 		strategy.WithMarketDataProvider(svc.monitor.GetLastSnapshot),
@@ -424,6 +425,7 @@ func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, lo
 		// Per-account strategy pipeline reuses shared router + specStore
 		acctStratLog := slog.Default()
 		acctRunner := strategy.NewRunner(infra.eventBus, svc.router, acct.TenantID, domain.EnvModePaper, acctStratLog)
+		acctRunner.SetPositionLookup(svc.posMonitor.LookupPosition)
 		acctRiskSizer := strategy.NewRiskSizer(infra.eventBus, svc.specStore, acctEquity, acctStratLog)
 		acctLifecycle := strategy.NewLifecycleService(svc.router, acctStratLog)
 		acctSymRouter := symbolrouter.NewService(
