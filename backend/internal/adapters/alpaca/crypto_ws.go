@@ -149,9 +149,7 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			return nil
 		}
 
-		if ok, wait := c.tracker.cb.Allow(); !ok {
-			c.tracker.setState("circuit_open")
-			c.log.Warn().Dur("wait", wait).Msg("circuit breaker open — waiting before retry")
+		if ok, wait := CheckCircuitBreaker(c.tracker, c.log); !ok {
 			if c.onCircuitBreakerOpen != nil {
 				c.onCircuitBreakerOpen(c.tracker.cb.ConsecutiveFails(), wait)
 			}
@@ -163,17 +161,14 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			}
 		}
 
-		if consecutiveFails >= maxConsecutiveFailsBeforeError {
+		if CheckMaxConsecutiveFails(consecutiveFails) {
 			c.tracker.setState("stopped")
 			return fmt.Errorf("crypto ws: %d consecutive connect failures — giving up", consecutiveFails)
 		}
 
-		attempt++
-		if attempt > 1 {
+		if IncrementAttempt(&attempt, consecutiveFails, symStrs, c.log) {
 			c.tracker.incReconnect()
 			c.tracker.setState("reconnecting")
-			c.log.Info().Int("attempt", attempt).Strs("symbols", symStrs).
-				Msg("reconnecting to Alpaca crypto WebSocket")
 		}
 
 		connCtx, connCancel := context.WithCancel(streamCtx)
@@ -255,17 +250,9 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			return nil
 		}
 
-		c.tracker.recordError(connErr)
-		errClass := classifyError(connErr)
+		errClass := ClassifyAndRecordError(connErr, c.tracker)
 
-		wasStaleReset := connCtx.Err() != nil && streamCtx.Err() == nil && connErr == nil
-		if wasStaleReset {
-			c.tracker.incStaleReset()
-			c.log.Warn().Msg("stale feed watchdog triggered crypto reconnect")
-			errClass = ErrTransient
-		}
-
-		c.tracker.cb.Record(errClass)
+		wasStaleReset := HandleStaleReset(connCtx, streamCtx, connErr, c.tracker, c.log)
 
 		if hadPoller && c.fetcher != nil {
 			c.cryptoGapFill(streamCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler)
@@ -295,16 +282,12 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			go c.cryptoRestPoller(pollCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler, cryptoRestPollInterval)
 		}
 
-		if time.Since(connectedAt) > 30*time.Second {
+		wait, resetCounter := CalculateCryptoBackoff(errClass, connErr, connectedAt, consecutiveFails, attempt, c.log)
+		if resetCounter {
 			consecutiveFails = 0
 		} else {
 			consecutiveFails++
 		}
-
-		policy := selectPolicy()
-		wait := policy.backoff(consecutiveFails)
-		c.log.Warn().Err(connErr).Int("attempt", attempt).Dur("retry_in", wait).
-			Msg("crypto stream disconnected, reconnecting")
 
 		select {
 		case <-time.After(wait):

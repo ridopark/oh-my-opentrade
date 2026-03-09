@@ -279,9 +279,7 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		}
 
 		// Circuit breaker check.
-		if ok, wait := w.tracker.cb.Allow(); !ok {
-			w.tracker.setState("circuit_open")
-			log.Warn().Dur("wait", wait).Msg("circuit breaker open — waiting before retry")
+		if ok, wait := CheckCircuitBreaker(w.tracker, log.Logger); !ok {
 			if w.metrics != nil {
 				w.metrics.WS.ReconnectsTotal.WithLabelValues(w.feed, "circuit_open").Inc()
 			}
@@ -294,24 +292,18 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		}
 
 		// Max consecutive failures check.
-		if consecutiveFails >= maxConsecutiveFailsBeforeError {
+		if CheckMaxConsecutiveFails(consecutiveFails) {
 			w.tracker.setState("stopped")
 			return fmt.Errorf("alpaca ws: %d consecutive connect failures without successful streaming — giving up", consecutiveFails)
 		}
 
-		attempt++
-		if attempt > 1 {
+		if IncrementAttempt(&attempt, consecutiveFails, symStrs, log.Logger) {
 			w.tracker.incReconnect()
 			w.tracker.setState("reconnecting")
 			if w.metrics != nil {
 				reason := "transient"
 				w.metrics.WS.ReconnectsTotal.WithLabelValues(w.feed, reason).Inc()
 			}
-			log.Info().
-				Int("attempt", attempt).
-				Int("consecutive_fails", consecutiveFails).
-				Strs("symbols", symStrs).
-				Msg("reconnecting to Alpaca WebSocket stream")
 		}
 
 		barHandler := func(bar alpacastream.Bar) {
@@ -392,26 +384,14 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			return nil
 		}
 
-		// Record error for health tracking.
-		w.tracker.recordError(connErr)
-
-		// Classify error.
-		errClass := classifyError(connErr)
+		// Classify error and record in circuit breaker.
+		errClass := ClassifyAndRecordError(connErr, w.tracker)
 
 		// Check for stale-triggered reconnect (connCtx cancelled but streamCtx still alive).
-		wasStaleReset := connCtx.Err() != nil && streamCtx.Err() == nil && connErr == nil
-		if wasStaleReset {
-			w.tracker.incStaleReset()
-			if w.metrics != nil {
-				w.metrics.WS.ReconnectsTotal.WithLabelValues(w.feed, "stale").Inc()
-			}
-			log.Warn().Msg("stale feed watchdog triggered reconnect")
-			// Use aggressive backoff for stale resets.
-			errClass = ErrTransient
+		wasStaleReset := HandleStaleReset(connCtx, streamCtx, connErr, w.tracker, log.Logger)
+		if wasStaleReset && w.metrics != nil {
+			w.metrics.WS.ReconnectsTotal.WithLabelValues(w.feed, "stale").Inc()
 		}
-
-		// Record in circuit breaker.
-		w.tracker.cb.Record(errClass)
 
 		// Determine if this is a ghost-session / connection-limit scenario.
 		isConnLimit := false
@@ -440,12 +420,10 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		if !isConnLimit {
 			// Normal transient error — policy-based backoff.
 			consecutiveFails++
-			policy := selectPolicy()
-			wait := policy.backoff(consecutiveFails - 1)
-			if connErr != nil {
-				log.Error().Err(connErr).Int("attempt", attempt).Dur("retry_in", wait).Msg("Alpaca stream disconnected with error, reconnecting")
-			} else {
-				log.Warn().Int("attempt", attempt).Dur("retry_in", wait).Msg("Alpaca stream clean close during core market hours, reconnecting")
+			wait, shouldContinue := CalculateBackoff(errClass, wasStaleReset, connErr, connectedAt, consecutiveFails, attempt, log.Logger)
+			if !shouldContinue {
+				consecutiveFails++
+				continue
 			}
 			select {
 			case <-time.After(wait):
