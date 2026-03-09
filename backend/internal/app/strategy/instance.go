@@ -140,6 +140,23 @@ func (inst *Instance) OnBar(ctx strat.Context, symbol string, bar strat.Bar, ind
 		return nil, nil
 	}
 
+	// Annotate signals with indicator snapshot so downstream consumers
+	// (RiskSizer, Notification) can compute dollar-level exit prices.
+	for i := range signals {
+		if signals[i].Tags == nil {
+			signals[i].Tags = make(map[string]string)
+		}
+		if _, exists := signals[i].Tags["ind_atr"]; !exists && indicators.ATR > 0 {
+			signals[i].Tags["ind_atr"] = fmt.Sprintf("%f", indicators.ATR)
+		}
+		if _, exists := signals[i].Tags["ind_vwap"]; !exists && indicators.VWAP > 0 {
+			signals[i].Tags["ind_vwap"] = fmt.Sprintf("%f", indicators.VWAP)
+		}
+		if _, exists := signals[i].Tags["ind_vwap_sd"]; !exists && indicators.VWAPSD > 0 {
+			signals[i].Tags["ind_vwap_sd"] = fmt.Sprintf("%f", indicators.VWAPSD)
+		}
+	}
+
 	return signals, nil
 }
 
