@@ -46,8 +46,8 @@ func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
 		dataURL = "https://data.alpaca.markets"
 	}
 
-	dataKey := cfg.EffectiveDataAPIKeyID()
-	dataSecret := cfg.EffectiveDataAPISecretKey()
+	dataKey := cfg.EffectiveEquityDataAPIKeyID()
+	dataSecret := cfg.EffectiveEquityDataAPISecretKey()
 
 	dataREST := NewRESTClient(cfg.BaseURL, dataKey, dataSecret, limiter, restLog)
 	dataREST.feed = cfg.Feed
@@ -59,8 +59,9 @@ func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
 	}
 	ws := NewWSClient(cfg.DataURL, dataKey, dataSecret, cfg.Feed, fetcher)
 
-	// Create crypto WebSocket client for streaming crypto bars.
-	cryptoWs, err := NewCryptoWSClient(cfg.CryptoDataURL, dataKey, dataSecret, cfg.CryptoFeed, fetcher, log)
+	cryptoDataKey := cfg.EffectiveCryptoDataAPIKeyID()
+	cryptoDataSecret := cfg.EffectiveCryptoDataAPISecretKey()
+	cryptoWs, err := NewCryptoWSClient(cfg.CryptoDataURL, cryptoDataKey, cryptoDataSecret, cfg.CryptoFeed, fetcher, log)
 	if err != nil {
 		return nil, fmt.Errorf("create crypto WS client: %w", err)
 	}

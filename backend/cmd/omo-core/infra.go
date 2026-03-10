@@ -69,9 +69,12 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to create Alpaca adapter")
 	}
-	if cfg.Alpaca.DataAPIKeyID != "" {
-		log.Info().Msg("Alpaca adapter initialized (separate data credentials)")
-	} else {
+	switch {
+	case cfg.Alpaca.CryptoDataAPIKeyID != "":
+		log.Info().Msg("Alpaca adapter initialized (separate equity + crypto data credentials)")
+	case cfg.Alpaca.EquityDataAPIKeyID != "":
+		log.Info().Msg("Alpaca adapter initialized (separate equity data credentials)")
+	default:
 		log.Info().Msg("Alpaca adapter initialized")
 	}
 
