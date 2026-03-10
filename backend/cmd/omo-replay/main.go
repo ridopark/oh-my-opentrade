@@ -830,3 +830,9 @@ func (n *noopPnLRepo) GetStrategySignalEvents(_ context.Context, _ ports.Strateg
 func (n *noopPnLRepo) GetStrategyDashboard(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) (domain.StrategyDashboard, error) {
 	return domain.StrategyDashboard{}, nil
 }
+func (n *noopPnLRepo) ListStrategySummaries(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) ([]domain.StrategySummaryRow, error) {
+	return nil, nil
+}
+func (n *noopPnLRepo) ListSymbolAttribution(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) ([]domain.SymbolAttribution, error) {
+	return nil, nil
+}

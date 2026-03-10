@@ -40,6 +40,12 @@ type PnLPort interface {
 	// Returns nil if insufficient data or zero downside deviation.
 	GetSortino(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) (*float64, error)
 
+	// ListStrategySummaries returns aggregated P&L metrics for all strategies in a date range.
+	ListStrategySummaries(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) ([]domain.StrategySummaryRow, error)
+
+	// ListSymbolAttribution returns per-symbol P&L breakdown. If strategy is empty, returns across all strategies.
+	ListSymbolAttribution(ctx context.Context, tenantID string, envMode domain.EnvMode, strategy string, from, to time.Time) ([]domain.SymbolAttribution, error)
+
 	// --- Per-strategy performance methods ---
 
 	// UpsertStrategyDailyPnL inserts or updates the per-strategy daily P&L record.

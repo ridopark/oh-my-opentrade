@@ -64,6 +64,20 @@ const (
 		WHERE t.account_id = $1 AND t.env_mode = $2 AND t.strategy = $3 AND t.time >= $4 AND t.time <= $5
 		GROUP BY t.symbol
 		ORDER BY realized_pnl DESC`
+
+	querySelectAllStrategySummaries = `SELECT
+		strategy,
+		COALESCE(SUM(realized_pnl), 0),
+		COALESCE(SUM(fees), 0),
+		COALESCE(SUM(trade_count), 0),
+		COALESCE(SUM(win_count), 0),
+		COALESCE(SUM(loss_count), 0),
+		COALESCE(SUM(gross_profit), 0),
+		COALESCE(SUM(gross_loss), 0)
+		FROM strategy_daily_pnl
+		WHERE account_id = $1 AND env_mode = $2 AND date >= $3 AND date <= $4
+		GROUP BY strategy
+		ORDER BY SUM(realized_pnl) DESC`
 )
 
 // UpsertStrategyDailyPnL inserts or updates the per-strategy daily P&L record.
@@ -318,4 +332,68 @@ func (r *PnLRepository) GetStrategyDashboard(ctx context.Context, tenantID strin
 	}
 
 	return dash, nil
+}
+
+func (r *PnLRepository) ListStrategySummaries(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) ([]domain.StrategySummaryRow, error) {
+	rows, err := r.db.QueryContext(ctx, querySelectAllStrategySummaries, tenantID, string(envMode), from, to)
+	if err != nil {
+		r.log.Error().Err(err).Msg("failed to query strategy summaries")
+		return nil, fmt.Errorf("timescaledb: list strategy summaries: %w", err)
+	}
+	defer rows.Close()
+
+	var results []domain.StrategySummaryRow
+	for rows.Next() {
+		var row domain.StrategySummaryRow
+		if err := rows.Scan(
+			&row.Strategy, &row.RealizedPnL, &row.Fees,
+			&row.TotalTrades, &row.WinCount, &row.LossCount,
+			&row.GrossProfit, &row.GrossLoss,
+		); err != nil {
+			return nil, fmt.Errorf("timescaledb: scan strategy summary: %w", err)
+		}
+		results = append(results, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("timescaledb: iterate strategy summaries: %w", err)
+	}
+	return results, nil
+}
+
+func (r *PnLRepository) ListSymbolAttribution(ctx context.Context, tenantID string, envMode domain.EnvMode, strategy string, from, to time.Time) ([]domain.SymbolAttribution, error) {
+	var b strings.Builder
+	b.WriteString(`SELECT t.symbol,
+		COALESCE(SUM(CASE WHEN t.side = 'SELL' THEN (t.price * t.quantity) ELSE -(t.price * t.quantity) END), 0) AS realized_pnl,
+		COUNT(*) AS trade_count,
+		COUNT(*) FILTER (WHERE t.side = 'SELL' AND t.price > 0) AS win_count,
+		0 AS loss_count
+		FROM trades t
+		WHERE t.account_id = $1 AND t.env_mode = $2 AND t.time >= $3 AND t.time <= $4`)
+
+	args := []any{tenantID, string(envMode), from, to}
+	if strategy != "" {
+		b.WriteString(` AND t.strategy = $5`)
+		args = append(args, strategy)
+	}
+	b.WriteString(` GROUP BY t.symbol ORDER BY realized_pnl DESC`)
+
+	rows, err := r.db.QueryContext(ctx, b.String(), args...)
+	if err != nil {
+		r.log.Error().Err(err).Msg("failed to query symbol attribution")
+		return nil, fmt.Errorf("timescaledb: list symbol attribution: %w", err)
+	}
+	defer rows.Close()
+
+	var results []domain.SymbolAttribution
+	for rows.Next() {
+		var attr domain.SymbolAttribution
+		if err := rows.Scan(&attr.Symbol, &attr.RealizedPnL, &attr.TradeCount, &attr.WinCount, &attr.LossCount); err != nil {
+			return nil, fmt.Errorf("timescaledb: scan symbol attribution: %w", err)
+		}
+		results = append(results, attr)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("timescaledb: iterate symbol attribution: %w", err)
+	}
+	return results, nil
 }

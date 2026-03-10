@@ -41,13 +41,16 @@ func (h *PerformanceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Route based on path suffix
 	path := r.URL.Path
 	switch {
 	case strings.HasSuffix(path, "/dashboard"):
 		h.serveDashboard(w, r)
 	case strings.HasSuffix(path, "/trades"):
 		h.serveTrades(w, r)
+	case strings.HasSuffix(path, "/strategies"):
+		h.serveStrategies(w, r)
+	case strings.HasSuffix(path, "/symbols"):
+		h.serveSymbols(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -210,6 +213,7 @@ func (h *PerformanceHandler) serveTrades(w http.ResponseWriter, r *http.Request)
 		To:       to,
 		Symbol:   q.Get("symbol"),
 		Side:     strings.ToUpper(q.Get("side")),
+		Strategy: q.Get("strategy"),
 		Limit:    limit,
 	}
 
@@ -256,6 +260,85 @@ func (h *PerformanceHandler) serveTrades(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		h.log.Error().Err(err).Msg("failed to encode trades response")
+	}
+}
+
+// ---------- Strategies ----------
+
+type strategyRowJSON struct {
+	Strategy     string   `json:"strategy"`
+	RealizedPnL  float64  `json:"realized_pnl"`
+	Fees         float64  `json:"fees"`
+	TotalTrades  int      `json:"total_trades"`
+	WinCount     int      `json:"win_count"`
+	LossCount    int      `json:"loss_count"`
+	WinRate      *float64 `json:"win_rate"`
+	ProfitFactor *float64 `json:"profit_factor"`
+	GrossProfit  float64  `json:"gross_profit"`
+	GrossLoss    float64  `json:"gross_loss"`
+}
+
+func (h *PerformanceHandler) serveStrategies(w http.ResponseWriter, r *http.Request) {
+	from, to := parseRange(r)
+	ctx := r.Context()
+
+	rows, err := h.pnlRepo.ListStrategySummaries(ctx, "default", domain.EnvModePaper, from, to)
+	if err != nil {
+		h.log.Error().Err(err).Msg("failed to list strategy summaries")
+		http.Error(w, `{"error":"strategy summaries query failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	items := make([]strategyRowJSON, 0, len(rows))
+	for _, row := range rows {
+		item := strategyRowJSON{
+			Strategy:    row.Strategy,
+			RealizedPnL: row.RealizedPnL,
+			Fees:        row.Fees,
+			TotalTrades: row.TotalTrades,
+			WinCount:    row.WinCount,
+			LossCount:   row.LossCount,
+			GrossProfit: row.GrossProfit,
+			GrossLoss:   row.GrossLoss,
+		}
+		if row.TotalTrades > 0 {
+			wr := float64(row.WinCount) / float64(row.TotalTrades)
+			item.WinRate = &wr
+		}
+		if row.GrossLoss != 0 {
+			pf := row.GrossProfit / (-row.GrossLoss)
+			item.ProfitFactor = &pf
+		}
+		items = append(items, item)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(items); err != nil {
+		h.log.Error().Err(err).Msg("failed to encode strategy summaries")
+	}
+}
+
+// ---------- Symbols ----------
+
+func (h *PerformanceHandler) serveSymbols(w http.ResponseWriter, r *http.Request) {
+	from, to := parseRange(r)
+	ctx := r.Context()
+	strategy := r.URL.Query().Get("strategy")
+
+	attrs, err := h.pnlRepo.ListSymbolAttribution(ctx, "default", domain.EnvModePaper, strategy, from, to)
+	if err != nil {
+		h.log.Error().Err(err).Msg("failed to list symbol attribution")
+		http.Error(w, `{"error":"symbol attribution query failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if attrs == nil {
+		attrs = []domain.SymbolAttribution{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(attrs); err != nil {
+		h.log.Error().Err(err).Msg("failed to encode symbol attribution")
 	}
 }
 
