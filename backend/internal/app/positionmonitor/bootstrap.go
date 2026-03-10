@@ -101,8 +101,18 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 			continue
 		}
 
-		// Use broker's actual qty/price as the source of truth for current state.
-		entryPrice := bp.Price // avg_entry_price from broker
+		// Skip dust positions (notional < $1) — remnants from IOC partial fills.
+		if bp.Quantity*bp.Price < 1.0 {
+			s.log.Info().
+				Str("symbol", string(sym)).
+				Float64("qty", bp.Quantity).
+				Float64("price", bp.Price).
+				Float64("notional", bp.Quantity*bp.Price).
+				Msg("bootstrap: skipping dust position — notional < $1")
+			continue
+		}
+
+		entryPrice := bp.Price
 		quantity := bp.Quantity
 		assetClass := bp.AssetClass
 		strategy := omo.strategy

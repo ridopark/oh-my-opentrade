@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -655,9 +656,11 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 	if s.positionGate != nil {
 		if isEntry(po.intent) {
 			s.positionGate.ClearInflight(po.tenantID, po.envMode, po.intent.Symbol)
-		} else if po.intent.Direction.IsExit() {
-			s.positionGate.ClearInflightExit(po.tenantID, po.envMode, po.intent.Symbol)
 		}
+		// Exit fills do NOT clear the inflight exit gate. For IOC orders, WS delivers
+		// partial_fill then canceled. Clearing on partial_fill lets the position monitor
+		// fire another exit before the cancel arrives — creating an infinite dust loop.
+		// Only cleanupPendingOrder (terminal event) clears the exit gate.
 	}
 }
 
@@ -671,13 +674,71 @@ func (s *Service) cleanupPendingOrder(brokerOrderID string) {
 		if isEntry(po.intent) {
 			s.positionGate.ClearInflight(po.tenantID, po.envMode, po.intent.Symbol)
 		} else if po.intent.Direction.IsExit() {
-			s.positionGate.ClearInflightExit(po.tenantID, po.envMode, po.intent.Symbol)
+			isFullExit := po.intent.Direction == domain.DirectionCloseLong &&
+				!strings.Contains(po.intent.Rationale, "SCALE_OUT")
+
+			if isFullExit {
+				go s.sweepDustPosition(po.tenantID, po.envMode, po.intent.Symbol, brokerOrderID)
+			} else {
+				s.positionGate.ClearInflightExit(po.tenantID, po.envMode, po.intent.Symbol)
+			}
+
 			s.emit(context.Background(), domain.EventExitOrderTerminal, po.tenantID, po.envMode, brokerOrderID, map[string]any{
 				"symbol":          string(po.intent.Symbol),
 				"broker_order_id": brokerOrderID,
 			})
 		}
 	}
+}
+
+func (s *Service) sweepDustPosition(tenantID string, envMode domain.EnvMode, symbol domain.Symbol, brokerOrderID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	l := s.log.With().
+		Str("symbol", string(symbol)).
+		Str("broker_order_id", brokerOrderID).
+		Str("component", "dust_sweep").
+		Logger()
+
+	remainingQty, err := s.broker.GetPosition(ctx, symbol)
+	if err != nil {
+		l.Warn().Err(err).Msg("dust sweep: failed to query broker — clearing gate for retry")
+		if s.positionGate != nil {
+			s.positionGate.ClearInflightExit(tenantID, envMode, symbol)
+		}
+		return
+	}
+
+	if remainingQty <= 0 {
+		l.Info().Msg("dust sweep: broker confirms fully closed")
+		if s.positionGate != nil {
+			s.positionGate.ClearInflightExit(tenantID, envMode, symbol)
+		}
+		return
+	}
+
+	l.Info().Float64("remaining_qty", remainingQty).
+		Msg("dust sweep: remainder detected — sending DELETE to sweep")
+
+	if err := s.broker.ClosePosition(ctx, symbol); err != nil {
+		l.Error().Err(err).Msg("dust sweep: DELETE failed — clearing gate for retry")
+		if s.positionGate != nil {
+			s.positionGate.ClearInflightExit(tenantID, envMode, symbol)
+		}
+		return
+	}
+
+	l.Info().Msg("dust sweep: DELETE accepted — fills will arrive via WS")
+
+	// Keep exit gate locked while Alpaca processes the sweep market order.
+	// Clear after delay to give the WS fill time to arrive and remove the position.
+	go func() {
+		time.Sleep(5 * time.Second)
+		if s.positionGate != nil {
+			s.positionGate.ClearInflightExit(tenantID, envMode, symbol)
+		}
+	}()
 }
 
 const reconcileInterval = 60 * time.Second

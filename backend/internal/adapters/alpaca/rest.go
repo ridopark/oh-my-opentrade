@@ -404,6 +404,64 @@ func (c *RESTClient) GetPositions(ctx context.Context, tenantID string, envMode 
 	return trades, nil
 }
 
+func (c *RESTClient) GetPosition(ctx context.Context, symbol domain.Symbol) (float64, error) {
+	symStr := strings.ReplaceAll(symbol.String(), "/", "")
+	path := pathPositions + "/" + symStr
+
+	resp, err := c.doReqWithOpts(ctx, http.MethodGet, path, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode == http.StatusNotFound {
+		return 0, nil
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("alpaca: get position failed (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var res struct {
+		Qty string `json:"qty"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return 0, fmt.Errorf("alpaca: failed to decode position response: %w", err)
+	}
+	qty, err := strconv.ParseFloat(res.Qty, 64)
+	if err != nil {
+		return 0, fmt.Errorf("alpaca: failed to parse position qty %q: %w", res.Qty, err)
+	}
+	return qty, nil
+}
+
+func (c *RESTClient) ClosePosition(ctx context.Context, symbol domain.Symbol) error {
+	symStr := strings.ReplaceAll(symbol.String(), "/", "")
+	path := pathPositions + "/" + symStr
+
+	resp, err := c.doReqWithOpts(ctx, http.MethodDelete, path, nil, reqOpts{priority: PriorityTrading, maxRetries: 2})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	// 404/422 = position already gone — success (idempotent).
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == 422 {
+		c.log.Info().Int("status", resp.StatusCode).Str("symbol", symStr).
+			Msg("close position: already gone")
+		return nil
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("alpaca: close position failed (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	c.log.Info().Str("symbol", symStr).Msg("close position: DELETE accepted — sweep market order created")
+	return nil
+}
+
 // GetQuote queries the latest quote for a given symbol from the Alpaca data API.
 func (c *RESTClient) GetQuote(ctx context.Context, dataURL string, symbol domain.Symbol) (bid float64, ask float64, err error) {
 	path := fmt.Sprintf("/v2/stocks/%s/quotes/latest?feed=%s", symbol.String(), c.equityFeed())

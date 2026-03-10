@@ -50,6 +50,10 @@ func (m *mockBroker) GetPositions(_ context.Context, _ string, _ domain.EnvMode)
 func (m *mockBroker) CancelOpenOrders(_ context.Context, _ domain.Symbol, _ string) (int, error) {
 	return 0, nil
 }
+func (m *mockBroker) GetPosition(_ context.Context, _ domain.Symbol) (float64, error) {
+	return 0, nil
+}
+func (m *mockBroker) ClosePosition(_ context.Context, _ domain.Symbol) error { return nil }
 
 // mockRepo implements ports.RepositoryPort (needed for execution.NewService).
 type mockRepo struct{}

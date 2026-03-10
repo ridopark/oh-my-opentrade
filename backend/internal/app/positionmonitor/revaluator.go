@@ -166,6 +166,16 @@ func (r *Revaluator) evaluateAll(ctx context.Context) {
 			return
 		}
 
+		// Skip dust positions — remnants from IOC partial fills awaiting broker sweep.
+		if pos.Quantity > 0 && pos.EntryPrice > 0 && pos.Quantity*pos.EntryPrice < 1.0 {
+			r.log.Debug().
+				Str("symbol", string(pos.Symbol)).
+				Float64("quantity", pos.Quantity).
+				Float64("notional", pos.Quantity*pos.EntryPrice).
+				Msg("skipping dust position — notional < $1")
+			continue
+		}
+
 		if pos.EntryThesis == nil {
 			r.log.Info().Str("symbol", string(pos.Symbol)).Msg("skipping re-evaluation — no entry thesis attached")
 			continue

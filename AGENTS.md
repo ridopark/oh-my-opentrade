@@ -55,7 +55,25 @@ curl -sG 'http://localhost:3100/loki/api/v1/query_range' \
   --data-urlencode 'direction=forward'
 ```
 
-Logs are structured JSON. Parse with `python3 -c "import json, sys; ..."` to extract fields. Key components to filter: `execution`, `alpaca`, `position_monitor`, `risk_sizer`, `signal_debate_enricher`.
+**IMPORTANT: Loki log format is double-wrapped JSON.** Each Loki result value is `[timestamp, message_string]` where `message_string` is itself a JSON object with a `"log"` key containing the actual structured log line. You must unwrap twice:
+
+```python
+# Correct parsing pattern for Loki query results:
+for stream in data["data"]["result"]:
+    for ts, msg in stream["values"]:
+        outer = json.loads(msg)        # {"log": "<actual log line>"}
+        log_line = outer.get("log", msg)
+        # log_line is now the actual structured log, e.g.:
+        # '{"level":"info","service":"omo-core","component":"position_monitor",...,"message":"position fully closed"}'
+        # For structured fields, parse again:
+        parsed = json.loads(log_line) if log_line.startswith("{") else {}
+        # Some log lines are plain text (Go slog default format):
+        # '2026/03/09 23:18:00 INFO exit cooldown set component=risk_sizer symbol=BTC/USD ...'
+```
+
+**Do NOT** try to parse `msg` directly as the application log — it will appear empty because all fields are nested inside the `"log"` key.
+
+Key components to filter: `execution`, `alpaca`, `position_monitor`, `risk_sizer`, `signal_debate_enricher`.
 
 ## Checking Current Positions & P&L
 
