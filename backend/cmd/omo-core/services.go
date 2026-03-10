@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,6 +15,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/notification"
 	"github.com/oh-my-opentrade/backend/internal/adapters/strategy/store_fs"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
+	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
 	"github.com/oh-my-opentrade/backend/internal/app/debate"
 	"github.com/oh-my-opentrade/backend/internal/app/dnaapproval"
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
@@ -28,7 +28,6 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	screenerapp "github.com/oh-my-opentrade/backend/internal/app/screener"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
-	"github.com/oh-my-opentrade/backend/internal/app/strategy/builtin"
 	"github.com/oh-my-opentrade/backend/internal/app/symbolrouter"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -79,27 +78,33 @@ type appServices struct {
 func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) *appServices {
 	svc := &appServices{}
 
-	ingestionLog := log.With().Str("component", "ingestion").Logger()
-	monitorLog := log.With().Str("component", "monitor").Logger()
-	executionLog := log.With().Str("component", "execution").Logger()
-
-	svc.spikeFilter = ingestion.NewAdaptiveFilter(20, 4.0)
-	svc.ingestion = ingestion.NewService(infra.eventBus, infra.repo, svc.spikeFilter, ingestionLog)
-
-	svc.barWriter = ingestion.NewAsyncBarWriter(infra.repo, ingestionLog)
+	// Ingestion (spike filter + bar writer + service)
+	ingBundle, err := bootstrap.BuildIngestion(bootstrap.IngestionDeps{
+		EventBus: infra.eventBus,
+		Repo:     infra.repo,
+		BarSaver: infra.repo,
+		Logger:   log,
+	})
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to build ingestion")
+	}
+	svc.spikeFilter = ingBundle.Filter
+	svc.ingestion = ingBundle.Service
+	svc.barWriter = ingBundle.BarWriter
 	svc.barWriter.Start()
-	svc.ingestion.SetBarWriter(svc.barWriter)
 
-	svc.monitor = monitor.NewService(infra.eventBus, infra.repo, monitorLog)
+	// Monitor
+	monitorSvc, err := bootstrap.BuildMonitor(bootstrap.MonitorDeps{
+		EventBus: infra.eventBus,
+		Repo:     infra.repo,
+		Logger:   log,
+	})
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to build monitor")
+	}
+	svc.monitor = monitorSvc
 
-	riskEngine := execution.NewRiskEngine(cfg.Trading.MaxRiskPercent)
-	slippageGuard := execution.NewSlippageGuard(infra.alpacaAdapter)
-	killSwitch := execution.NewKillSwitch(
-		cfg.Trading.KillSwitchMaxStops,
-		cfg.Trading.KillSwitchWindow,
-		cfg.Trading.KillSwitchHaltDuration,
-		time.Now,
-	)
+	// Account equity (must be fetched before building execution)
 	svc.accountEquity = 100000.0 // fallback
 	if equity, err := infra.alpacaAdapter.GetAccountEquity(context.Background()); err == nil {
 		svc.accountEquity = equity
@@ -107,40 +112,52 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	} else {
 		log.Warn().Err(err).Float64("fallback_equity", svc.accountEquity).Msg("failed to fetch account equity, using fallback")
 	}
-	svc.ledgerWriter = perf.NewLedgerWriter(infra.eventBus, infra.pnlRepo, infra.alpacaAdapter, infra.repo, svc.accountEquity, log.With().Str("component", "ledger").Logger())
-	svc.signalTracker = perf.NewSignalTracker(infra.eventBus, infra.pnlRepo, log.With().Str("component", "signal_tracker").Logger())
-	svc.dailyLossBreaker = risk.NewDailyLossBreaker(cfg.Trading.MaxDailyLossPct/100.0, cfg.Trading.MaxDailyLossUSD, svc.ledgerWriter, time.Now, log.With().Str("component", "daily_loss_breaker").Logger())
-	positionGate := execution.NewPositionGate(infra.alpacaAdapter, executionLog)
-	execOpts := []execution.Option{
-		execution.WithPositionGate(positionGate),
-		execution.WithOrderStream(infra.alpacaAdapter),
-	}
+
+	// Execution guard chain (via shared bootstrap builder)
+	var acctPort ports.AccountPort
 	if os.Getenv("DTBP_FALLBACK") == "true" {
-		bpGuard := execution.NewBuyingPowerGuard(infra.alpacaAdapter, executionLog)
-		execOpts = append(execOpts, execution.WithBuyingPowerGuard(bpGuard))
+		acctPort = infra.alpacaAdapter
 		log.Info().Msg("DTBP fallback enabled — buying power guard active")
 	}
-	svc.execution = execution.NewService(
-		infra.eventBus,
-		infra.alpacaAdapter, // BrokerPort
-		infra.repo,
-		riskEngine,
-		slippageGuard,
-		killSwitch,
-		svc.dailyLossBreaker,
-		svc.accountEquity,
-		executionLog,
-		execOpts...,
-	)
+	execBundle, err := bootstrap.BuildExecutionService(bootstrap.ExecutionDeps{
+		EventBus:      infra.eventBus,
+		Broker:        infra.alpacaAdapter,
+		Repo:          infra.repo,
+		QuoteProvider: infra.alpacaAdapter,
+		AccountPort:   acctPort,
+		PnLRepo:       infra.pnlRepo,
+		TradeReader:   infra.repo,
+		Clock:         time.Now,
+		Config:        cfg,
+		InitialEquity: svc.accountEquity,
+		Logger:        log,
+	})
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to build execution service")
+	}
+	execution.WithOrderStream(infra.alpacaAdapter)(execBundle.Service)
+	svc.execution = execBundle.Service
+	svc.ledgerWriter = execBundle.LedgerWriter
+	svc.dailyLossBreaker = execBundle.DailyLossBreaker
+	svc.signalTracker = perf.NewSignalTracker(infra.eventBus, infra.pnlRepo, log.With().Str("component", "signal_tracker").Logger())
 
-	// 5a-risk: Active position monitor (price cache + exit rule evaluation).
-	priceCacheLog := log.With().Str("component", "price_cache").Logger()
-	svc.priceCache = positionmonitor.NewPriceCache(priceCacheLog)
-	posMonitorLog := log.With().Str("component", "position_monitor").Logger()
-	svc.posMonitor = positionmonitor.NewService(infra.eventBus, svc.priceCache, positionGate, "default", domain.EnvModePaper, posMonitorLog,
-		positionmonitor.WithBroker(infra.alpacaAdapter),
-		positionmonitor.WithRepo(infra.repo),
-	)
+	// Position monitor (price cache + exit rule evaluation, via shared bootstrap builder)
+	posMonBundle, err := bootstrap.BuildPositionMonitor(bootstrap.PosMonitorDeps{
+		EventBus:     infra.eventBus,
+		PositionGate: execBundle.PositionGate,
+		Broker:       infra.alpacaAdapter,
+		Repo:         infra.repo,
+		TenantID:     "default",
+		EnvMode:      domain.EnvModePaper,
+		Clock:        time.Now,
+		IsBacktest:   false,
+		Logger:       log,
+	})
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to build position monitor")
+	}
+	svc.priceCache = posMonBundle.PriceCache
+	svc.posMonitor = posMonBundle.Service
 
 	// 5a-risk-reval: Position revaluator (AI-driven periodic risk re-evaluation).
 	var riskAssessor ports.RiskAssessorPort
@@ -256,98 +273,48 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	svc.specStore = store_fs.NewStore(specDir, strategy.LoadSpecFile)
 	svc.posMonitor.SetSpecStore(svc.specStore)
 
-	// Register all builtin strategies in the in-memory registry.
-	registry := strategy.NewMemRegistry()
-	for _, s := range []start.Strategy{
-		builtin.NewORBStrategy(),
-		builtin.NewAVWAPStrategy(),
-		builtin.NewAIScalperStrategy(),
-	} {
-		if err := registry.Register(s); err != nil {
-			log.Fatal().Err(err).Str("strategy", s.Meta().ID.String()).Msg("strategy v2: failed to register builtin strategy")
-		}
+	pipeline, err := bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
+		EventBus:        infra.eventBus,
+		SpecStore:       svc.specStore,
+		AIAdvisor:       svc.aiAdvisor,
+		PositionLookup:  svc.posMonitor.LookupPosition,
+		MarketDataFn:    svc.monitor.GetLastSnapshot,
+		Repo:            infra.repo,
+		TenantID:        "default",
+		EnvMode:         domain.EnvModePaper,
+		Equity:          svc.accountEquity,
+		Clock:           time.Now,
+		DisableEnricher: false,
+		Logger:          log,
+	})
+	if err != nil {
+		log.Fatal().Err(err).Msg("strategy v2: failed to build pipeline")
 	}
+	svc.strategyRunner = pipeline.Runner
+	svc.router = pipeline.Router
+	svc.signalEnricher = pipeline.Enricher
+	svc.riskSizer = pipeline.RiskSizer
+	svc.lifecycleSvc = pipeline.LifecycleSvc
 
-	// Load all specs from the store.
 	allSpecs, err := svc.specStore.List(context.Background(), nil)
 	if err != nil {
-		log.Fatal().Err(err).Msg("strategy v2: failed to list specs")
+		log.Fatal().Err(err).Msg("strategy v2: failed to list specs for symbol router")
 	}
-	if len(allSpecs) == 0 {
-		log.Fatal().Msg("strategy v2: no strategy specs found")
-	}
-
-	// Create the router and wire instances for each spec × symbol.
-	svc.router = strategy.NewRouter()
-	stratLog := slog.Default()
-	allSymbols := make(map[string]struct{})
-	totalInstances := 0
-
 	for _, spec := range allSpecs {
-		// Look up the builtin implementation by the hook's signal engine name,
-		// not by the config's strategy ID. This allows multiple configs (e.g.
-		// avwap_v1, avwap_v2, crypto_avwap_v2) to share the same builtin
-		// implementation while maintaining distinct trade-level identity.
 		hookRef, hasHook := spec.Hooks["signals"]
 		if !hasHook {
-			log.Warn().Str("spec_id", spec.ID.String()).Msg("strategy v2: spec has no signals hook, skipping")
 			continue
 		}
-		implID, err := start.NewStrategyID(hookRef.Name)
-		if err != nil {
-			log.Warn().Str("spec_id", spec.ID.String()).Str("hook_name", hookRef.Name).Err(err).Msg("strategy v2: invalid hook signal name, skipping")
+		if _, err := start.NewStrategyID(hookRef.Name); err != nil {
 			continue
 		}
-		impl, err := registry.Get(implID)
-		if err != nil {
-			log.Warn().Str("spec_id", spec.ID.String()).Str("impl_id", implID.String()).Msg("strategy v2: no builtin implementation for hook, skipping")
-			continue
-		}
-
-		for _, sym := range spec.Routing.Symbols {
-			instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", spec.ID, spec.Version, sym))
-			inst := strategy.NewInstance(instanceID, impl, spec.Params, strategy.InstanceAssignment{
-				Symbols:  []string{sym},
-				Priority: spec.Routing.Priority,
-			}, start.LifecycleLiveActive, stratLog)
-			initCtx := strategy.NewContext(time.Now(), stratLog, nil)
-			if err := inst.InitSymbol(initCtx, sym, nil); err != nil {
-				log.Fatal().Err(err).
-					Str("strategy", spec.ID.String()).
-					Str("symbol", sym).
-					Msg("strategy v2: failed to init symbol")
-			}
-			svc.router.Register(inst)
-			allSymbols[sym] = struct{}{}
-			totalInstances++
-		}
-
 		svc.symRouterSpecs = append(svc.symRouterSpecs, symbolrouter.StrategySpec{
 			Key:           spec.ID.String(),
 			BaseSymbols:   spec.Routing.Symbols,
 			WatchlistMode: spec.Routing.WatchlistMode,
 		})
-
-		log.Info().
-			Str("strategy", spec.ID.String()).
-			Str("version", spec.Version.String()).
-			Int("symbols", len(spec.Routing.Symbols)).
-			Int("priority", spec.Routing.Priority).
-			Msg("strategy v2: spec loaded")
 	}
 
-	svc.strategyRunner = strategy.NewRunner(infra.eventBus, svc.router, "default", domain.EnvModePaper, stratLog)
-	svc.strategyRunner.SetPositionLookup(svc.posMonitor.LookupPosition)
-	svc.signalEnricher = strategy.NewSignalDebateEnricher(infra.eventBus, svc.aiAdvisor, stratLog,
-		strategy.WithRepository(infra.repo),
-		strategy.WithMarketDataProvider(svc.monitor.GetLastSnapshot),
-		strategy.WithPositionLookup(svc.posMonitor.LookupPosition),
-		strategy.WithDebateTimeout(30*time.Second),
-	)
-	svc.riskSizer = strategy.NewRiskSizer(infra.eventBus, svc.specStore, svc.accountEquity, stratLog)
-	svc.lifecycleSvc = strategy.NewLifecycleService(svc.router, stratLog)
-
-	// Also set ORB params on monitor for backward compatibility.
 	orbID, _ := start.NewStrategyID("orb_break_retest")
 	if orbSpec, err := svc.specStore.GetLatest(context.Background(), orbID); err == nil {
 		svc.monitor.SetORBConfig(orbSpec.Params)
@@ -355,7 +322,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 
 	log.Info().
 		Int("specs", len(allSpecs)).
-		Int("instances", totalInstances).
+		Int("symbols", len(pipeline.BaseSymbols)).
 		Bool("ai_enabled", cfg.AI.Enabled).
 		Msg("strategy v2 pipeline initialized (runner → enricher → riskSizer)")
 
@@ -367,12 +334,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		log.With().Str("component", "symbolrouter").Logger(),
 	)
 
-	// Deduplicate symbols for monitor base symbols.
-	baseSymbols := make([]string, 0, len(allSymbols))
-	for sym := range allSymbols {
-		baseSymbols = append(baseSymbols, sym)
-	}
-	svc.monitor.SetBaseSymbols(baseSymbols)
+	svc.monitor.SetBaseSymbols(pipeline.BaseSymbols)
 }
 
 func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, log zerolog.Logger) {
