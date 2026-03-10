@@ -3,9 +3,11 @@ package positionmonitor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	domstrategy "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	portstrategy "github.com/oh-my-opentrade/backend/internal/ports/strategy"
@@ -96,8 +98,31 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 		}
 		bp, onBroker := brokerBySymbol[sym]
 		if !onBroker {
-			// OMO thinks we have a position but broker disagrees — stale trade data.
-			s.log.Warn().Str("symbol", string(sym)).Msg("bootstrap: OMO trade found but no broker position — skipping")
+			s.log.Warn().
+				Str("symbol", string(sym)).
+				Float64("orphan_qty", omo.netQty).
+				Float64("avg_entry", omo.avgEntry).
+				Msg("bootstrap: OMO trade found but no broker position — inserting reconciliation SELL")
+
+			if s.repo != nil {
+				trade, tErr := domain.NewTrade(
+					now, s.tenantID, s.envMode, uuid.New(),
+					sym, "SELL", omo.netQty, omo.avgEntry, 0,
+					"FILLED", "reconciliation",
+					fmt.Sprintf("bootstrap cleanup: orphaned %.8f %s (no broker position)", omo.netQty, sym),
+				)
+				if tErr != nil {
+					s.log.Error().Err(tErr).Str("symbol", string(sym)).Msg("bootstrap: failed to construct reconciliation trade")
+				} else if sErr := s.repo.SaveTrade(ctx, trade); sErr != nil {
+					s.log.Error().Err(sErr).Str("symbol", string(sym)).Msg("bootstrap: failed to save reconciliation trade")
+				} else {
+					s.log.Info().
+						Str("symbol", string(sym)).
+						Float64("qty", omo.netQty).
+						Str("trade_id", trade.TradeID.String()).
+						Msg("bootstrap: reconciliation SELL inserted to zero out orphaned position")
+				}
+			}
 			continue
 		}
 

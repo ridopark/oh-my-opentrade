@@ -16,14 +16,17 @@ import (
 )
 
 const (
-	queryInsertMarketBar   = `INSERT INTO market_bars (time, account_id, env_mode, symbol, timeframe, open, high, low, close, volume, suspect) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (symbol, timeframe, time) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume, suspect=EXCLUDED.suspect`
-	querySelectMarketBars  = `SELECT time, symbol, timeframe, open, high, low, close, volume, suspect FROM market_bars WHERE symbol = $1 AND timeframe = $2 AND time >= $3 AND time < $4 ORDER BY time`
-	queryInsertTrade       = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status, strategy, rationale, thesis) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
-	querySelectTrades      = `SELECT time, trade_id, symbol, side, quantity, price, commission, status, COALESCE(strategy, ''), COALESCE(rationale, ''), thesis FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4 ORDER BY time`
-	queryInsertStrategyDNA = `INSERT INTO strategy_dna_history (time, account_id, env_mode, strategy_id, version, parameters, performance) VALUES ($1, $2, $3, $4, $5, $6, $7)`
-	querySelectLatestDNA   = `SELECT time, strategy_id, version, parameters, performance FROM strategy_dna_history WHERE account_id = $1 AND env_mode = $2 ORDER BY time DESC LIMIT 1`
-	queryInsertOrder       = `INSERT INTO orders (time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, strategy, rationale, confidence) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (broker_order_id) DO NOTHING`
-	queryUpdateOrderFill   = `UPDATE orders SET status = 'filled', filled_at = $2, filled_price = $3, filled_qty = $4 WHERE broker_order_id = $1`
+	queryInsertMarketBar      = `INSERT INTO market_bars (time, account_id, env_mode, symbol, timeframe, open, high, low, close, volume, suspect) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (symbol, timeframe, time) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume, suspect=EXCLUDED.suspect`
+	querySelectMarketBars     = `SELECT time, symbol, timeframe, open, high, low, close, volume, suspect FROM market_bars WHERE symbol = $1 AND timeframe = $2 AND time >= $3 AND time < $4 ORDER BY time`
+	queryInsertTrade          = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status, strategy, rationale, thesis) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
+	querySelectTrades         = `SELECT time, trade_id, symbol, side, quantity, price, commission, status, COALESCE(strategy, ''), COALESCE(rationale, ''), thesis FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4 ORDER BY time`
+	queryInsertStrategyDNA    = `INSERT INTO strategy_dna_history (time, account_id, env_mode, strategy_id, version, parameters, performance) VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	querySelectLatestDNA      = `SELECT time, strategy_id, version, parameters, performance FROM strategy_dna_history WHERE account_id = $1 AND env_mode = $2 ORDER BY time DESC LIMIT 1`
+	queryInsertOrder          = `INSERT INTO orders (time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, strategy, rationale, confidence) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (broker_order_id) DO NOTHING`
+	queryUpdateOrderFill      = `UPDATE orders SET status = 'filled', filled_at = $2, filled_price = $3, filled_qty = $4 WHERE broker_order_id = $1`
+	queryGetNonTerminalOrders = `SELECT time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, COALESCE(filled_at, '0001-01-01'::timestamptz), COALESCE(filled_price, 0), COALESCE(filled_qty, 0), COALESCE(strategy, ''), COALESCE(rationale, ''), COALESCE(confidence, 0) FROM orders WHERE account_id = $1 AND env_mode = $2 AND status NOT IN ('filled', 'canceled', 'expired', 'rejected') ORDER BY time ASC`
+	queryGetRecordedFillQty   = `SELECT COALESCE(SUM(quantity), 0) FROM trades WHERE account_id = $1 AND env_mode = $2 AND symbol = $3 AND side = $4 AND time >= $5`
+	queryUpdateOrderStatus    = `UPDATE orders SET status = $2 WHERE broker_order_id = $1`
 )
 
 // SaveMarketBar saves a single OHLCV candle.
@@ -530,4 +533,61 @@ func (r *Repository) GetThoughtLogsByIntentID(ctx context.Context, intentID stri
 		return nil, fmt.Errorf("timescaledb: iterate thought logs: %w", err)
 	}
 	return logs, nil
+}
+
+func (r *Repository) GetNonTerminalOrders(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.BrokerOrder, error) {
+	rows, err := r.db.QueryContext(ctx, queryGetNonTerminalOrders, tenantID, string(envMode))
+	if err != nil {
+		r.log.Error().Err(err).
+			Str("tenant_id", tenantID).
+			Str("env_mode", string(envMode)).
+			Msg("failed to query non-terminal orders")
+		return nil, fmt.Errorf("timescaledb: get non-terminal orders: %w", err)
+	}
+	defer rows.Close()
+
+	var orders []domain.BrokerOrder
+	for rows.Next() {
+		var o domain.BrokerOrder
+		var sym, acct, env string
+		var filledAt time.Time
+		if err := rows.Scan(&o.Time, &acct, &env, &o.IntentID, &o.BrokerOrderID, &sym, &o.Side, &o.Quantity, &o.LimitPrice, &o.StopLoss, &o.Status,
+			&filledAt, &o.FilledPrice, &o.FilledQty,
+			&o.Strategy, &o.Rationale, &o.Confidence); err != nil {
+			return nil, fmt.Errorf("timescaledb: scan non-terminal order: %w", err)
+		}
+		o.Symbol = domain.Symbol(sym)
+		o.TenantID = acct
+		o.EnvMode = domain.EnvMode(env)
+		if !filledAt.IsZero() {
+			o.FilledAt = &filledAt
+		}
+		orders = append(orders, o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("timescaledb: iterate non-terminal orders: %w", err)
+	}
+	return orders, nil
+}
+
+func (r *Repository) GetRecordedFillQty(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol, side string, since time.Time) (float64, error) {
+	row := r.db.QueryRowContext(ctx, queryGetRecordedFillQty, tenantID, string(envMode), string(symbol), side, since)
+
+	var qty float64
+	if err := row.Scan(&qty); err != nil {
+		return 0, fmt.Errorf("timescaledb: get recorded fill qty: %w", err)
+	}
+	return qty, nil
+}
+
+func (r *Repository) UpdateOrderStatus(ctx context.Context, brokerOrderID string, status string) error {
+	_, err := r.db.ExecContext(ctx, queryUpdateOrderStatus, brokerOrderID, status)
+	if err != nil {
+		r.log.Error().Err(err).
+			Str("broker_order_id", brokerOrderID).
+			Str("status", status).
+			Msg("failed to update order status")
+		return fmt.Errorf("timescaledb: update order status: %w", err)
+	}
+	return nil
 }

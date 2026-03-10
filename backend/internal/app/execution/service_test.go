@@ -40,7 +40,7 @@ func setupTestService(t *testing.T) (*execution.Service, *memory.Bus, *mockBroke
 
 func TestService_StartSubscribes(t *testing.T) {
 	svc, bus, broker, _ := setupTestService(t)
-	err := svc.Start(context.Background())
+	err := svc.Start(context.Background(), "test", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
@@ -53,7 +53,7 @@ func TestService_StartSubscribes(t *testing.T) {
 
 func TestService_FullPipelineSuccess(t *testing.T) {
 	svc, bus, broker, _ := setupTestService(t)
-	err := svc.Start(context.Background())
+	err := svc.Start(context.Background(), "test", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	var emittedEvents []string
@@ -82,7 +82,7 @@ func TestService_ExitOrderPassesPipeline(t *testing.T) {
 		)
 		return []domain.Trade{trade}, nil
 	}
-	err := svc.Start(context.Background())
+	err := svc.Start(context.Background(), "test", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	var emittedEvents []string
@@ -105,7 +105,7 @@ func TestService_ExitOrderPassesPipeline(t *testing.T) {
 
 func TestService_NewShortEntryStillRejected(t *testing.T) {
 	svc, bus, broker, _ := setupTestService(t)
-	err := svc.Start(context.Background())
+	err := svc.Start(context.Background(), "test", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	var emittedEvents []string
@@ -144,7 +144,7 @@ func TestService_RiskRejection(t *testing.T) {
 		zerolog.Nop(),
 	)
 
-	err := svc.Start(context.Background())
+	err := svc.Start(context.Background(), "test", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	var emittedEvents []string
@@ -163,7 +163,7 @@ func TestService_RiskRejection(t *testing.T) {
 
 func TestService_SlippageRejection(t *testing.T) {
 	svc, bus, broker, quoteProvider := setupTestService(t)
-	err := svc.Start(context.Background())
+	err := svc.Start(context.Background(), "test", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	// Make quote provider return massive spread to fail slippage
@@ -197,7 +197,7 @@ func TestService_KillSwitchHalted(t *testing.T) {
 
 	svc := execution.NewService(bus, broker, repo, execution.NewRiskEngine(0.02), execution.NewSlippageGuard(quoteProvider), killSwitch, nil, 100000.0, zerolog.Nop())
 
-	err := svc.Start(context.Background())
+	err := svc.Start(context.Background(), "test", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	var emittedEvents []string
@@ -238,7 +238,7 @@ func TestService_KillSwitchDoesNotBlockExitIntents(t *testing.T) {
 		killSwitch, nil, 100000.0, zerolog.Nop(),
 	)
 
-	require.NoError(t, svc.Start(context.Background()))
+	require.NoError(t, svc.Start(context.Background(), "test", domain.EnvModePaper))
 
 	var emittedEvents []string
 	subscribeAll(t, bus, []string{
@@ -278,7 +278,7 @@ func TestService_ExitIntentsDoNotTripKillSwitch(t *testing.T) {
 		killSwitch, nil, 100000.0, zerolog.Nop(),
 	)
 
-	require.NoError(t, svc.Start(context.Background()))
+	require.NoError(t, svc.Start(context.Background(), "test", domain.EnvModePaper))
 
 	var emittedEvents []string
 	subscribeAll(t, bus, []string{
@@ -299,7 +299,7 @@ func TestService_ExitIntentsDoNotTripKillSwitch(t *testing.T) {
 
 func TestService_BrokerError(t *testing.T) {
 	svc, bus, broker, _ := setupTestService(t)
-	err := svc.Start(context.Background())
+	err := svc.Start(context.Background(), "test", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	broker.SubmitOrderFunc = func(ctx context.Context, intent domain.OrderIntent) (string, error) {
@@ -322,7 +322,7 @@ func TestService_BrokerError(t *testing.T) {
 
 func TestService_InvalidPayload(t *testing.T) {
 	svc, bus, broker, _ := setupTestService(t)
-	err := svc.Start(context.Background())
+	err := svc.Start(context.Background(), "test", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	// Publish an event with a wrong payload type
@@ -337,7 +337,7 @@ func TestService_InvalidPayload(t *testing.T) {
 
 func TestService_EmitsCircuitBreakerOnKillSwitch(t *testing.T) {
 	svc, bus, broker, _ := setupTestService(t)
-	err := svc.Start(context.Background())
+	err := svc.Start(context.Background(), "test", domain.EnvModePaper)
 	require.NoError(t, err)
 
 	// Note: Circuit breaker is tripped when RecordStop is called for the Nth time.
@@ -375,7 +375,7 @@ func TestService_DynamicMetricLabels(t *testing.T) {
 	m := metrics.New("test", "test", "test", false)
 	svc.SetMetrics(m)
 
-	require.NoError(t, svc.Start(context.Background()))
+	require.NoError(t, svc.Start(context.Background(), "test", domain.EnvModePaper))
 
 	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
 	require.NoError(t, bus.Publish(context.Background(), intentEvt))
@@ -499,7 +499,7 @@ func TestService_PositionGate_RejectsDuplicateEntry(t *testing.T) {
 		execution.WithPositionGate(posGate),
 	)
 
-	require.NoError(t, svc.Start(context.Background()))
+	require.NoError(t, svc.Start(context.Background(), "test", domain.EnvModePaper))
 
 	var emittedEvents []string
 	subscribeAll(t, bus, []string{
@@ -537,7 +537,7 @@ func TestService_PositionGate_AllowsEntryWhenFlat(t *testing.T) {
 		execution.WithPositionGate(posGate),
 	)
 
-	require.NoError(t, svc.Start(context.Background()))
+	require.NoError(t, svc.Start(context.Background(), "test", domain.EnvModePaper))
 
 	var emittedEvents []string
 	subscribeAll(t, bus, []string{
@@ -581,7 +581,7 @@ func TestService_PositionGate_InflightBlocksSecondEntry(t *testing.T) {
 		execution.WithPositionGate(posGate),
 	)
 
-	require.NoError(t, svc.Start(context.Background()))
+	require.NoError(t, svc.Start(context.Background(), "test", domain.EnvModePaper))
 
 	var rejectedEvents []string
 	subscribeAll(t, bus, []string{
@@ -629,7 +629,7 @@ func TestService_PositionGate_InflightClearedAfterFill(t *testing.T) {
 		execution.WithPositionGate(posGate),
 	)
 
-	require.NoError(t, svc.Start(context.Background()))
+	require.NoError(t, svc.Start(context.Background(), "test", domain.EnvModePaper))
 
 	// Subscribe to FillReceived so we know when the fill is processed.
 	_ = bus.Subscribe(context.Background(), domain.EventFillReceived, func(ctx context.Context, event domain.Event) error {

@@ -154,7 +154,12 @@ func (m *mockBroker) CancelOpenOrders(_ context.Context, _ domain.Symbol, _ stri
 func (m *mockBroker) GetPosition(_ context.Context, _ domain.Symbol) (float64, error) {
 	return 0, nil
 }
-func (m *mockBroker) ClosePosition(_ context.Context, _ domain.Symbol) error { return nil }
+func (m *mockBroker) ClosePosition(_ context.Context, _ domain.Symbol) (string, error) {
+	return "", nil
+}
+func (m *mockBroker) GetOrderDetails(_ context.Context, _ string) (ports.OrderDetails, error) {
+	return ports.OrderDetails{}, nil
+}
 
 // mockTradeReader implements perf.TradeReaderPort for replay tests.
 type mockTradeReader struct {
