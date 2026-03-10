@@ -116,7 +116,7 @@ func (s *ORBStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st 
 		side,
 		clampStrength(setup.Confidence),
 		map[string]string{
-			"ref_price":     fmt.Sprintf("%.4f", setup.BarClose),
+			"ref_price":     fmt.Sprintf("%.10f", setup.BarClose),
 			"trigger":       setup.Trigger,
 			"orb_high":      fmt.Sprintf("%.4f", setup.ORBHigh),
 			"orb_low":       fmt.Sprintf("%.4f", setup.ORBLow),

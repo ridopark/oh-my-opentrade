@@ -224,7 +224,7 @@ func (s *Service) getOrGenerateChart(ctx context.Context, symbol string) ([]byte
 	loc, _ := time.LoadLocation("America/New_York")
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 4, 0, 0, 0, loc)
 
-	bars, err := s.repo.GetMarketBars(ctx, domain.Symbol(symbol), "1Min", dayStart, now)
+	bars, err := s.repo.GetMarketBars(ctx, domain.Symbol(symbol), "1m", dayStart, now)
 	if err != nil {
 		return nil, fmt.Errorf("fetch bars for %s: %w", symbol, err)
 	}

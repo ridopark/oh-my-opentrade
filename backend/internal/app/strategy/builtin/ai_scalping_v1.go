@@ -202,7 +202,7 @@ func (s *AIScalperStrategy) OnBar(ctx start.Context, symbol string, bar start.Ba
 		exitLong := rsi >= cfg.RSIExitMid || stochK >= cfg.StochShort || regimeIsTrend
 		if exitLong {
 			sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideSell, 0.8, map[string]string{
-				"ref_price": fmt.Sprintf("%.4f", bar.Close),
+				"ref_price": fmt.Sprintf("%.10f", bar.Close),
 				"setup":     "ai_scalp_exit",
 				"regime_5m": regimeTag,
 			})
@@ -218,7 +218,7 @@ func (s *AIScalperStrategy) OnBar(ctx start.Context, symbol string, bar start.Ba
 		exitShort := rsi <= (100-cfg.RSIExitMid) || stochK <= cfg.StochLong || regimeIsTrend
 		if exitShort {
 			sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideBuy, 0.8, map[string]string{
-				"ref_price": fmt.Sprintf("%.4f", bar.Close),
+				"ref_price": fmt.Sprintf("%.10f", bar.Close),
 				"setup":     "ai_scalp_exit",
 				"regime_5m": regimeTag,
 			})
@@ -250,7 +250,7 @@ func (s *AIScalperStrategy) OnBar(ctx start.Context, symbol string, bar start.Ba
 	// 4. Long entry: RSI < RSILong AND StochK < StochLong AND crossUp.
 	if rsi < cfg.RSILong && stochK < cfg.StochLong && crossUp {
 		tags := map[string]string{
-			"ref_price": fmt.Sprintf("%.4f", bar.Close),
+			"ref_price": fmt.Sprintf("%.10f", bar.Close),
 			"setup":     "ai_scalp_long",
 			"cross":     "up",
 			"rsi":       fmt.Sprintf("%.2f", rsi),
@@ -279,7 +279,7 @@ func (s *AIScalperStrategy) OnBar(ctx start.Context, symbol string, bar start.Ba
 	// 5. Short entry: RSI > RSIShort AND StochK > StochShort AND crossDown.
 	if rsi > cfg.RSIShort && stochK > cfg.StochShort && crossDown {
 		tags := map[string]string{
-			"ref_price": fmt.Sprintf("%.4f", bar.Close),
+			"ref_price": fmt.Sprintf("%.10f", bar.Close),
 			"setup":     "ai_scalp_short",
 			"cross":     "down",
 			"rsi":       fmt.Sprintf("%.2f", rsi),
@@ -382,7 +382,7 @@ func (s *AIScalperStrategy) handleAIDebate(ctx start.Context, symbol string, res
 			exitSide = start.SideBuy
 		}
 		sig, err := start.NewSignal(instanceID, symbol, start.SignalFlat, exitSide, 0.9, map[string]string{
-			"ref_price":  fmt.Sprintf("%.4f", aiSt.LastBarClose),
+			"ref_price":  fmt.Sprintf("%.10f", aiSt.LastBarClose),
 			"setup":      "ai_veto",
 			"ai_verdict": "veto",
 			"ai_conf":    fmt.Sprintf("%.2f", result.Confidence),
@@ -406,7 +406,7 @@ func (s *AIScalperStrategy) handleAIDebate(ctx start.Context, symbol string, res
 		aiSt.LastSizeMult = sizeMult
 
 		sig, err := start.NewSignal(instanceID, symbol, start.SignalAdjust, aiSt.PositionSide, 0.7, map[string]string{
-			"ref_price":  fmt.Sprintf("%.4f", aiSt.LastBarClose),
+			"ref_price":  fmt.Sprintf("%.10f", aiSt.LastBarClose),
 			"setup":      "ai_adjust",
 			"ai_verdict": result.Verdict,
 			"ai_conf":    fmt.Sprintf("%.2f", result.Confidence),
