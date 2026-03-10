@@ -806,6 +806,9 @@ func (n *noopPnLRepo) GetMaxDrawdown(_ context.Context, _ string, _ domain.EnvMo
 func (n *noopPnLRepo) GetSharpe(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (*float64, error) {
 	return nil, nil
 }
+func (n *noopPnLRepo) GetSortino(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (*float64, error) {
+	return nil, nil
+}
 func (n *noopPnLRepo) UpsertStrategyDailyPnL(_ context.Context, _ domain.StrategyDailyPnL) error {
 	return nil
 }

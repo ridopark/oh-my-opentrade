@@ -99,6 +99,9 @@ func (m *mockPnLRepo) GetMaxDrawdown(_ context.Context, _ string, _ domain.EnvMo
 func (m *mockPnLRepo) GetSharpe(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (*float64, error) {
 	return nil, nil
 }
+func (m *mockPnLRepo) GetSortino(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (*float64, error) {
+	return nil, nil
+}
 func (m *mockPnLRepo) UpsertStrategyDailyPnL(_ context.Context, pnl domain.StrategyDailyPnL) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

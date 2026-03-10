@@ -87,6 +87,9 @@ func (m *signalTrackerPnLRepo) GetMaxDrawdown(_ context.Context, _ string, _ dom
 func (m *signalTrackerPnLRepo) GetSharpe(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (*float64, error) {
 	return nil, nil
 }
+func (m *signalTrackerPnLRepo) GetSortino(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (*float64, error) {
+	return nil, nil
+}
 func (m *signalTrackerPnLRepo) UpsertStrategyDailyPnL(_ context.Context, _ domain.StrategyDailyPnL) error {
 	return nil
 }
