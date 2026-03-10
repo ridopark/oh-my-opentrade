@@ -110,3 +110,64 @@ func TestReconcile_HandlesBrokerAPIError(t *testing.T) {
 	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "AAPL")
 	assert.Equal(t, 0, svc.ghostMissCounts[key])
 }
+
+type capturingRepo struct {
+	mockRepo
+	savedTrades []domain.Trade
+}
+
+func (r *capturingRepo) SaveTrade(_ context.Context, trade domain.Trade) error {
+	r.savedTrades = append(r.savedTrades, trade)
+	return nil
+}
+
+func newTestServiceWithBrokerAndRepo(broker *mockBroker, repo *capturingRepo) *Service {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+	return NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithBroker(broker),
+		WithRepo(repo),
+	)
+}
+
+func TestReconcile_QuantitySyncFromBroker(t *testing.T) {
+	broker := &mockBroker{
+		positions: []domain.Trade{{Symbol: domain.Symbol("AAPL"), Quantity: 8}},
+	}
+	svc := newTestServiceWithBroker(broker)
+	seedPosition(t, svc, "AAPL")
+
+	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "AAPL")
+	require.Equal(t, 10.0, svc.positions[key].Quantity)
+
+	svc.reconcileWithBroker(context.Background())
+
+	assert.Equal(t, 1, svc.PositionCount())
+	assert.Equal(t, 8.0, svc.positions[key].Quantity)
+}
+
+func TestReconcile_DBOrphanPatching(t *testing.T) {
+	broker := &mockBroker{positions: nil}
+	repo := &capturingRepo{}
+	svc := newTestServiceWithBrokerAndRepo(broker, repo)
+	seedPosition(t, svc, "AAPL")
+	require.Equal(t, 1, svc.PositionCount())
+
+	svc.reconcileWithBroker(context.Background())
+	svc.reconcileWithBroker(context.Background())
+	assert.Empty(t, repo.savedTrades, "no DB write before ghost threshold")
+
+	svc.reconcileWithBroker(context.Background())
+	assert.Equal(t, 0, svc.PositionCount(), "ghost removed after threshold")
+
+	require.Len(t, repo.savedTrades, 1)
+	reconcileTrade := repo.savedTrades[0]
+	assert.Equal(t, "SELL", reconcileTrade.Side)
+	assert.Equal(t, domain.Symbol("AAPL"), reconcileTrade.Symbol)
+	assert.Equal(t, 10.0, reconcileTrade.Quantity)
+	assert.Equal(t, 100.0, reconcileTrade.Price)
+	assert.Equal(t, "reconciliation", reconcileTrade.Strategy)
+	assert.Equal(t, "FILLED", reconcileTrade.Status)
+	assert.Contains(t, reconcileTrade.Rationale, "auto-reconcile")
+}
