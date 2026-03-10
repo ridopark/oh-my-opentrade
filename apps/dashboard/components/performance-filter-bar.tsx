@@ -23,6 +23,7 @@ interface PerformanceFilterBarProps {
 }
 
 const RANGE_PRESETS = [
+  { label: "1D", value: "1d" },
   { label: "7D", value: "7d" },
   { label: "30D", value: "30d" },
   { label: "90D", value: "90d" },
@@ -84,7 +85,7 @@ export function PerformanceFilterBar({
   const toDate = filters.to ? new Date(filters.to) : undefined;
 
   return (
-    <div className={cn("flex flex-col sm:flex-row flex-wrap gap-4 items-start sm:items-center", className)}>
+    <div className={cn("flex flex-col sm:flex-row flex-wrap gap-3 items-start sm:items-center", className)}>
       {/* Range Presets */}
       <div className="flex bg-muted p-1 rounded-md">
         {RANGE_PRESETS.map((preset) => {
@@ -96,7 +97,7 @@ export function PerformanceFilterBar({
               size="sm"
               onClick={() => handleRangePreset(preset.value)}
               className={cn(
-                "px-4 py-1 h-8",
+                "px-3 py-1 h-8",
                 isActive ? "shadow-sm" : "hover:bg-transparent hover:text-foreground text-muted-foreground"
               )}
             >
@@ -111,7 +112,7 @@ export function PerformanceFilterBar({
         from={fromDate}
         to={toDate}
         onChange={handleDateRange}
-        className="w-[260px]"
+        className="w-[220px]"
       />
 
       {/* Optional Strategy Filter */}

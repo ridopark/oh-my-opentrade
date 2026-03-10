@@ -498,12 +498,10 @@ func (r *Runner) handleRejection(_ context.Context, event domain.Event) error {
 	return nil
 }
 
-// findInstanceByStrategyAndSymbol finds the instance assigned to a given symbol
-// whose strategy Meta().ID matches strategyName. Returns nil if not found.
 func (r *Runner) findInstanceByStrategyAndSymbol(strategyName, symbol string) *Instance {
 	instances := r.router.InstancesForSymbol(symbol)
 	for _, inst := range instances {
-		if inst.Strategy().Meta().ID.String() == strategyName {
+		if inst.configStrategyID() == strategyName {
 			return inst
 		}
 	}
@@ -532,14 +530,13 @@ type StrategyInfo struct {
 	Active   bool     `json:"active"`
 }
 
-// ListStrategies returns metadata for all registered strategy instances.
 func (r *Runner) ListStrategies() []StrategyInfo {
 	instances := r.router.AllInstances()
 	infos := make([]StrategyInfo, 0, len(instances))
 	for _, inst := range instances {
 		meta := inst.Strategy().Meta()
 		infos = append(infos, StrategyInfo{
-			ID:       meta.ID.String(),
+			ID:       inst.configStrategyID(),
 			Name:     meta.Name,
 			Version:  meta.Version.String(),
 			Symbols:  inst.Assignment().Symbols,
@@ -550,12 +547,11 @@ func (r *Runner) ListStrategies() []StrategyInfo {
 	return infos
 }
 
-// StrategySnapshots returns all state snapshots for a given strategy ID.
 func (r *Runner) StrategySnapshots(strategyID string) []domain.StateSnapshot {
 	instances := r.router.AllInstances()
 	var snaps []domain.StateSnapshot
 	for _, inst := range instances {
-		if inst.Strategy().Meta().ID.String() != strategyID {
+		if inst.configStrategyID() != strategyID {
 			continue
 		}
 		snaps = append(snaps, inst.AllSnapshots()...)
@@ -563,11 +559,10 @@ func (r *Runner) StrategySnapshots(strategyID string) []domain.StateSnapshot {
 	return snaps
 }
 
-// StrategySnapshot returns the state snapshot for a specific strategy + symbol.
 func (r *Runner) StrategySnapshot(strategyID, symbol string) (domain.StateSnapshot, bool) {
 	instances := r.router.AllInstances()
 	for _, inst := range instances {
-		if inst.Strategy().Meta().ID.String() != strategyID {
+		if inst.configStrategyID() != strategyID {
 			continue
 		}
 		if snap, ok := inst.Snapshot(symbol); ok {
