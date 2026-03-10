@@ -77,10 +77,10 @@ func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars [
 	dc := draw.New(canvas)
 	p.Draw(dc)
 
-	png := vgimg.PngCanvas{Canvas: canvas}
+	jpg := vgimg.JpegCanvas{Canvas: canvas}
 	var buf bytes.Buffer
-	if _, err := png.WriteTo(&buf); err != nil {
-		return nil, fmt.Errorf("encoding png: %w", err)
+	if _, err := jpg.WriteTo(&buf); err != nil {
+		return nil, fmt.Errorf("encoding jpeg: %w", err)
 	}
 	return buf.Bytes(), nil
 }

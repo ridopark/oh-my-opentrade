@@ -161,7 +161,7 @@ func (s *Service) processJob(ctx context.Context, workerID int, job notifyJob) {
 		}
 	}()
 
-	jobCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	jobCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
 	if !job.withChart || s.chartGen == nil || s.repo == nil {
@@ -187,7 +187,9 @@ func (s *Service) processJob(ctx context.Context, workerID int, job notifyJob) {
 		return
 	}
 
-	chartPNG, err := s.getOrGenerateChart(jobCtx, symbol)
+	chartCtx, cancelChart := context.WithTimeout(jobCtx, 5*time.Second)
+	chartPNG, err := s.getOrGenerateChart(chartCtx, symbol)
+	cancelChart()
 	if err != nil {
 		s.log.Warn().Err(err).Str("symbol", symbol).Msg("chart generation failed, sending text-only")
 		if err := s.notifier.Notify(jobCtx, job.event.TenantID, job.message); err != nil {
@@ -198,7 +200,7 @@ func (s *Service) processJob(ctx context.Context, workerID int, job notifyJob) {
 
 	attachment := ports.Attachment{
 		Data:     chartPNG,
-		Filename: fmt.Sprintf("%s_chart.png", symbol),
+		Filename: fmt.Sprintf("%s_chart.jpg", symbol),
 	}
 	if err := imgNotifier.NotifyWithImage(jobCtx, job.event.TenantID, job.message, attachment); err != nil {
 		s.log.Warn().Err(err).Str("event", job.eventType).Msg("image notification failed")

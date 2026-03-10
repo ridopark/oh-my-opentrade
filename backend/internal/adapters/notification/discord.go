@@ -113,7 +113,7 @@ func (d *DiscordNotifier) NotifyWithImage(ctx context.Context, tenantID, message
 
 	partHeader := make(textproto.MIMEHeader)
 	partHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="files[0]"; filename=%q`, image.Filename))
-	partHeader.Set("Content-Type", "image/png")
+	partHeader.Set("Content-Type", "image/jpeg")
 	part, err := writer.CreatePart(partHeader)
 	if err != nil {
 		return fmt.Errorf("discord: create file part: %w", err)
