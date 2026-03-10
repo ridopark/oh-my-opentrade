@@ -39,6 +39,8 @@ type Bus struct {
 
 	closeMu sync.Mutex
 	closed  bool
+
+	pending sync.WaitGroup
 }
 
 // NewBus creates a new in-memory event bus.
@@ -98,9 +100,11 @@ func (b *Bus) Publish(ctx context.Context, event domain.Event) error {
 	// context lifecycle — they may outlive the publisher call.
 	asyncCtx := context.WithoutCancel(ctx)
 	for _, sub := range asyncCopy {
+		b.pending.Add(1)
 		select {
 		case sub.ch <- asyncTask{ctx: asyncCtx, event: event}:
 		default:
+			b.pending.Done() // undo: event was dropped, not dispatched
 			slog.Warn("async event bus: channel full, dropping event",
 				"event_type", event.Type,
 				"event_id", event.ID,
@@ -155,13 +159,16 @@ func (b *Bus) SubscribeAsync(ctx context.Context, eventType domain.EventType, ha
 				}
 				continue
 			}
-			if err := sub.handler(task.ctx, task.event); err != nil {
-				slog.Error("async event handler error",
-					"event_type", task.event.Type,
-					"event_id", task.event.ID,
-					"error", err,
-				)
-			}
+			func() {
+				defer b.pending.Done()
+				if err := sub.handler(task.ctx, task.event); err != nil {
+					slog.Error("async event handler error",
+						"event_type", task.event.Type,
+						"event_id", task.event.ID,
+						"error", err,
+					)
+				}
+			}()
 		}
 	}()
 
@@ -202,6 +209,10 @@ func (b *Bus) Flush() {
 		}()
 	}
 	wg.Wait()
+}
+
+func (b *Bus) WaitPending() {
+	b.pending.Wait()
 }
 
 // Unsubscribe removes a handler for the specified event type.

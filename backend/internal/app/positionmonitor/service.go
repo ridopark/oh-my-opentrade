@@ -50,6 +50,10 @@ type Service struct {
 	maxPriceStaleness time.Duration
 	tenantID          string
 	envMode           domain.EnvMode
+
+	// Backtest mode flags.
+	disableTickLoop  bool // prevents runTickLoop goroutine from starting
+	disableReconcile bool // prevents bootstrapPositions from running at Start
 }
 
 // fillMsg is the internal message type enqueued when a FillReceived event arrives.
@@ -133,6 +137,18 @@ func (s *Service) SetSpecStore(ss portstrategy.SpecStore) {
 	s.specStore = ss
 }
 
+// WithDisableTickLoop prevents the runTickLoop goroutine from starting in Start().
+// Used in backtest mode where EvalExitRules is called explicitly per bar.
+func WithDisableTickLoop() Option {
+	return func(s *Service) { s.disableTickLoop = true }
+}
+
+// WithDisableReconcile prevents bootstrapPositions from running in Start().
+// Used in backtest mode where there are no broker positions to reconcile.
+func WithDisableReconcile() Option {
+	return func(s *Service) { s.disableReconcile = true }
+}
+
 func WithSnapshotFunc(fn IndicatorSnapshotFunc) Option {
 	return func(s *Service) { s.snapshotFn = fn }
 }
@@ -187,13 +203,17 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 
 	// Bootstrap: seed monitor with OMO-opened positions that are still on the broker.
-	s.bootstrapPositions(ctx)
+	if !s.disableReconcile {
+		s.bootstrapPositions(ctx)
+	}
 
 	// Outbox publisher goroutine — reads exit intents and publishes them.
 	go s.runOutbox(ctx)
 
 	// Actor tick loop — the single goroutine that owns all mutable state.
-	go s.runTickLoop(ctx)
+	if !s.disableTickLoop {
+		go s.runTickLoop(ctx)
+	}
 
 	s.log.Info().
 		Dur("tick_interval", s.tickInterval).
@@ -366,6 +386,38 @@ func (s *Service) processFill(fill fillMsg) {
 		Float64("quantity", fill.Quantity).
 		Int("exit_rules", len(exitRules)).
 		Msg("new position added to monitor")
+}
+
+// EvalExitRules synchronously evaluates exit rules for all active positions
+// using the provided barTime as the current time. Used in backtest mode where
+// the tick loop is disabled and exit evaluation is driven per-bar.
+func (s *Service) EvalExitRules(barTime time.Time) {
+	origNow := s.nowFunc
+	s.nowFunc = func() time.Time { return barTime }
+	defer func() { s.nowFunc = origNow }()
+
+	s.drainFills()
+	s.tick()
+}
+
+// drainFills non-blockingly reads all pending messages from actor channels
+// and processes them. Used before EvalExitRules to ensure fills from the
+// current bar are incorporated before exit evaluation.
+func (s *Service) drainFills() {
+	for {
+		select {
+		case fill := <-s.fills:
+			s.processFill(fill)
+		case msg := <-s.exitSubmitted:
+			s.processExitSubmitted(msg)
+		case msg := <-s.exitTerminal:
+			s.processExitTerminal(msg)
+		case msg := <-s.exitRejected:
+			s.processExitRejected(msg)
+		default:
+			return
+		}
+	}
 }
 
 // Stop signals the actor goroutines to shut down.

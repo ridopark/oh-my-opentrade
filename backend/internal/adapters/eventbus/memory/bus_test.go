@@ -463,3 +463,81 @@ func TestBus_SubscribeAsync_ConcurrentPublish(t *testing.T) {
 
 	assert.True(t, atomic.LoadInt32(&totalProcessed) > 0)
 }
+
+// 19. TestWaitPending_DrainsAsyncHandlers
+func TestWaitPending_DrainsAsyncHandlers(t *testing.T) {
+	bus := memory.NewBus()
+	defer bus.Close()
+	ctx := context.Background()
+
+	var completed int32
+
+	handler := func(_ context.Context, _ domain.Event) error {
+		time.Sleep(50 * time.Millisecond)
+		atomic.StoreInt32(&completed, 1)
+		return nil
+	}
+
+	require.NoError(t, bus.SubscribeAsync(ctx, domain.EventMarketBarReceived, handler))
+
+	event, err := domain.NewEvent(domain.EventMarketBarReceived, "tenant-1", domain.EnvModePaper, "idem-1", nil)
+	require.NoError(t, err)
+	require.NoError(t, bus.Publish(ctx, *event))
+
+	bus.WaitPending()
+
+	assert.Equal(t, int32(1), atomic.LoadInt32(&completed))
+}
+
+// 20. TestWaitPending_NoOp
+func TestWaitPending_NoOp(t *testing.T) {
+	bus := memory.NewBus()
+	defer bus.Close()
+
+	done := make(chan struct{})
+	go func() {
+		bus.WaitPending()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("WaitPending blocked with no pending events")
+	}
+}
+
+// 21. TestWaitPending_CascadingEvents
+func TestWaitPending_CascadingEvents(t *testing.T) {
+	bus := memory.NewBus()
+	defer bus.Close()
+	ctx := context.Background()
+
+	var handlerACalled, handlerBCalled int32
+
+	handlerB := func(_ context.Context, _ domain.Event) error {
+		time.Sleep(20 * time.Millisecond)
+		atomic.StoreInt32(&handlerBCalled, 1)
+		return nil
+	}
+	require.NoError(t, bus.SubscribeAsync(ctx, domain.EventOrderSubmitted, handlerB))
+
+	handlerA := func(ctx2 context.Context, _ domain.Event) error {
+		atomic.StoreInt32(&handlerACalled, 1)
+		evt, err := domain.NewEvent(domain.EventOrderSubmitted, "tenant-1", domain.EnvModePaper, "idem-2", nil)
+		if err != nil {
+			return err
+		}
+		return bus.Publish(ctx2, *evt)
+	}
+	require.NoError(t, bus.SubscribeAsync(ctx, domain.EventMarketBarReceived, handlerA))
+
+	event, err := domain.NewEvent(domain.EventMarketBarReceived, "tenant-1", domain.EnvModePaper, "idem-1", nil)
+	require.NoError(t, err)
+	require.NoError(t, bus.Publish(ctx, *event))
+
+	bus.WaitPending()
+
+	assert.Equal(t, int32(1), atomic.LoadInt32(&handlerACalled), "handler A should have completed")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&handlerBCalled), "handler B should have completed")
+}
