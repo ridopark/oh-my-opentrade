@@ -73,7 +73,7 @@ func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars [
 
 	p.Add(candles)
 
-	canvas := vgimg.New(vg.Points(1200), vg.Points(600))
+	canvas := vgimg.New(vg.Points(800), vg.Points(400))
 	dc := draw.New(canvas)
 	p.Draw(dc)
 
