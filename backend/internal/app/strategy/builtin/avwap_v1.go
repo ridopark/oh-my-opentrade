@@ -361,7 +361,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		for _, belowCnt := range avwapSt.BelowCount {
 			if belowCnt >= cfg.ExitHoldBars {
 				sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideSell, 0.8, map[string]string{
-					"ref_price": fmt.Sprintf("%.4f", bar.Close),
+					"ref_price": fmt.Sprintf("%.10f", bar.Close),
 					"setup":     "avwap_exit",
 					"regime_5m": regimeTag,
 				})
@@ -378,7 +378,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		for _, aboveCnt := range avwapSt.AboveCount {
 			if aboveCnt >= cfg.ExitHoldBars {
 				sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideBuy, 0.8, map[string]string{
-					"ref_price": fmt.Sprintf("%.4f", bar.Close),
+					"ref_price": fmt.Sprintf("%.10f", bar.Close),
 					"setup":     "avwap_exit",
 					"regime_5m": regimeTag,
 				})
@@ -418,7 +418,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 					continue
 				}
 				sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, 0.7, map[string]string{
-					"ref_price": fmt.Sprintf("%.4f", bar.Close),
+					"ref_price": fmt.Sprintf("%.10f", bar.Close),
 					"setup":     "avwap_breakout",
 					"anchor":    anchorName,
 					"avwap":     fmt.Sprintf("%.4f", avwapValue),
@@ -461,7 +461,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 					}
 				}
 				sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.7, map[string]string{
-					"ref_price": fmt.Sprintf("%.4f", bar.Close),
+					"ref_price": fmt.Sprintf("%.10f", bar.Close),
 					"setup":     "avwap_breakout",
 					"anchor":    anchorName,
 					"avwap":     fmt.Sprintf("%.4f", avwapValue),
@@ -496,7 +496,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 					continue
 				}
 				sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, 0.6, map[string]string{
-					"ref_price": fmt.Sprintf("%.4f", bar.Close),
+					"ref_price": fmt.Sprintf("%.10f", bar.Close),
 					"setup":     "avwap_bounce",
 					"anchor":    anchorName,
 					"avwap":     fmt.Sprintf("%.4f", avwapValue),
@@ -528,7 +528,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 					continue
 				}
 				sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.6, map[string]string{
-					"ref_price": fmt.Sprintf("%.4f", bar.Close),
+					"ref_price": fmt.Sprintf("%.10f", bar.Close),
 					"setup":     "avwap_bounce",
 					"anchor":    anchorName,
 					"avwap":     fmt.Sprintf("%.4f", avwapValue),

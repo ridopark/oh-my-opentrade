@@ -38,7 +38,7 @@ type DiscordNotifier struct {
 
 func NewDiscordNotifier(webhookURL string, client *http.Client, log ...zerolog.Logger) *DiscordNotifier {
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: 15 * time.Second}
 	}
 	l := zerolog.Nop()
 	if len(log) > 0 {
@@ -179,6 +179,19 @@ func (d *DiscordNotifier) doWithRetry(ctx context.Context, buildReq func() (*htt
 
 		resp, err := d.client.Do(req)
 		if err != nil {
+			if attempt < maxRetries {
+				wait := defaultRetryWait * time.Duration(1<<uint(attempt))
+				if wait > maxRetryWait {
+					wait = maxRetryWait
+				}
+				d.log.Warn().Err(err).Int("attempt", attempt+1).Dur("backoff", wait).Msg("discord: transient error, retrying")
+				select {
+				case <-time.After(wait):
+					continue
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
 			return fmt.Errorf("discord: send request: %w", err)
 		}
 		resp.Body.Close()
@@ -187,16 +200,31 @@ func (d *DiscordNotifier) doWithRetry(ctx context.Context, buildReq func() (*htt
 			return nil
 		}
 
-		if resp.StatusCode != http.StatusTooManyRequests || attempt == maxRetries {
-			return fmt.Errorf("discord: unexpected status %d", resp.StatusCode)
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxRetries {
+			wait := parseRetryAfter(resp.Header.Get("Retry-After"))
+			select {
+			case <-time.After(wait):
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 
-		wait := parseRetryAfter(resp.Header.Get("Retry-After"))
-		select {
-		case <-time.After(wait):
-		case <-ctx.Done():
-			return ctx.Err()
+		if resp.StatusCode >= 500 && attempt < maxRetries {
+			wait := defaultRetryWait * time.Duration(1<<uint(attempt))
+			if wait > maxRetryWait {
+				wait = maxRetryWait
+			}
+			d.log.Warn().Int("status", resp.StatusCode).Int("attempt", attempt+1).Dur("backoff", wait).Msg("discord: server error, retrying")
+			select {
+			case <-time.After(wait):
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
+
+		return fmt.Errorf("discord: unexpected status %d", resp.StatusCode)
 	}
 	return nil
 }

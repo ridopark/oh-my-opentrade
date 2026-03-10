@@ -510,6 +510,18 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 		log.Fatal().Err(err).Msg("failed to start dna approval service")
 	}
 
+	// Seed initial DNA version detection for all loaded strategy TOMLs.
+	// Without this, the DNA approval table stays empty until a file is
+	// hot-reloaded, which means the DNA gate blocks strategies forever.
+	for _, p := range svc.dnaPaths {
+		dna, err := svc.dnaManager.Load(p)
+		if err != nil {
+			continue
+		}
+		publishDNAVersionDetected(ctx, infra.eventBus, log, p, dna.ID, svc.orchestrator != nil)
+	}
+	log.Info().Int("strategies", len(svc.dnaPaths)).Msg("initial DNA versions published for approval")
+
 	screenerEnabled := os.Getenv("SCREENER_ENABLED") == "true"
 	if screenerEnabled {
 		screenerRepo := timescaledb.NewScreenerRepo(timescaledb.NewSqlDB(infra.sqlDB), log.With().Str("component", "screener_repo").Logger())

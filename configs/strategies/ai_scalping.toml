@@ -64,3 +64,23 @@ size_wide_mult = 1.20
 [risk_revaluation]
 enabled = true
 interval_minutes = 5
+
+[[exit_rules]]
+type = "TRAILING_STOP"
+[exit_rules.params]
+pct = 0.015
+
+[[exit_rules]]
+type = "PROFIT_TARGET"
+[exit_rules.params]
+pct = 0.02
+
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 5
+
+[[exit_rules]]
+type = "MAX_LOSS"
+[exit_rules.params]
+pct = 0.02

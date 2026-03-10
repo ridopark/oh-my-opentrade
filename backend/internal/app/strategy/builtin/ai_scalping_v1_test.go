@@ -85,7 +85,7 @@ func TestAIScalperStrategy_LongEntry(t *testing.T) {
 	assert.Equal(t, "up", sig.Tags["cross"])
 	assert.Equal(t, "true", sig.Tags["ai_requested"])
 	assert.NotEmpty(t, sig.Tags["ai_request_id"])
-	assert.Equal(t, "101.2345", sig.Tags["ref_price"])
+	assert.Equal(t, "101.2345000000", sig.Tags["ref_price"])
 }
 
 func TestAIScalperStrategy_ShortEntry(t *testing.T) {
