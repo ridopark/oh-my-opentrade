@@ -11,7 +11,6 @@ import {
 import {
   TrendingUp,
   TrendingDown,
-  BarChart3,
   DollarSign,
   Activity,
   Percent,
@@ -24,22 +23,20 @@ import {
   usePerformanceDashboard,
   usePerformanceTrades,
   usePerformanceStrategies,
+  usePerformanceSymbols,
   PerformanceFilters,
 } from "@/hooks/queries";
+import { DrawdownChart } from "@/components/charts/drawdown-chart";
+import { DailyPnlChart } from "@/components/charts/daily-pnl-chart";
+import { SymbolAttributionChart } from "@/components/charts/symbol-attribution-chart";
+import { StrategyComparisonTable } from "@/components/strategy-comparison-table";
+import { TradeLogTable } from "@/components/trade-log-table";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { PerformanceFilterBar } from "@/components/performance-filter-bar";
@@ -75,7 +72,6 @@ export default function PerformancePage() {
 
   const {
     data: tradesData,
-    isLoading: loadingTrades,
     hasNextPage,
     fetchNextPage,
     isFetchingNextPage,
@@ -83,6 +79,8 @@ export default function PerformancePage() {
 
   const { data: strategies } = usePerformanceStrategies(filters);
   const strategyNames = strategies?.map((s) => s.strategy) || [];
+
+  const { data: symbolData } = usePerformanceSymbols(filters);
 
   // Flatten all pages into a single trades array
   const trades = tradesData?.pages.flatMap((page) => page.items) ?? [];
@@ -165,7 +163,7 @@ export default function PerformancePage() {
     );
   }
 
-  const { summary, daily_pnl } = dashboardData!;
+  const { summary, daily_pnl, drawdown } = dashboardData!;
 
   return (
     <div className="space-y-8">
@@ -255,149 +253,21 @@ export default function PerformancePage() {
             <div ref={chartContainerRef} className="h-[300px] w-full" />
           </CardContent>
         </Card>
+        <DrawdownChart data={drawdown} />
       </div>
 
-      {/* Daily P&L Bars */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <BarChart3 className="h-5 w-5 text-blue-500" />
-            Daily P&L
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="h-[200px] w-full overflow-x-auto">
-            <div className="flex h-full items-end gap-1 pb-6 pt-2 min-w-max px-2">
-              {daily_pnl.length === 0 ? (
-                <div className="flex h-full w-full items-center justify-center text-muted-foreground">
-                  No data for this period
-                </div>
-              ) : (
-                daily_pnl.map((day) => {
-                  const isPositive = day.realized_pnl >= 0;
-                  const maxAbs = Math.max(
-                    ...daily_pnl.map((d) => Math.abs(d.realized_pnl))
-                  );
-                  // Min height 4px so 0 is visible as a line
-                  const heightPct =
-                    maxAbs > 0
-                      ? (Math.abs(day.realized_pnl) / maxAbs) * 100
-                      : 0;
+      <DailyPnlChart data={daily_pnl} />
 
-                  return (
-                    <div
-                      key={day.date}
-                      className="group relative flex flex-col items-center justify-end h-full w-3 sm:w-4"
-                    >
-                      <div
-                        style={{ height: `${Math.max(heightPct, 2)}%` }}
-                        className={cn(
-                          "w-full rounded-t-sm transition-all hover:opacity-80",
-                          isPositive ? "bg-emerald-500" : "bg-rose-500"
-                        )}
-                      />
-                      {/* Tooltip */}
-                      <div className="absolute bottom-full mb-2 hidden w-max rounded bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md group-hover:block z-50">
-                        <div className="font-bold">{day.date}</div>
-                        <div
-                          className={
-                            isPositive ? "text-emerald-500" : "text-rose-500"
-                          }
-                        >
-                          {formatCurrency(day.realized_pnl)}
-                        </div>
-                        <div className="text-muted-foreground">
-                          {day.trade_count} trades
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      <StrategyComparisonTable data={strategies} />
 
-      {/* Trades Table */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Trades</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {trades.length === 0 && !loadingTrades ? (
-            <div className="text-center text-muted-foreground py-8">
-              No trades in this period
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Time</TableHead>
-                    <TableHead>Symbol</TableHead>
-                    <TableHead>Side</TableHead>
-                    <TableHead className="text-right">Qty</TableHead>
-                    <TableHead className="text-right">Price</TableHead>
-                    <TableHead className="text-right">Comm</TableHead>
-                    <TableHead>Status</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {trades.map((trade) => (
-                    <TableRow key={trade.trade_id}>
-                      <TableCell className="font-mono text-xs text-muted-foreground">
-                        {new Date(trade.time).toLocaleString()}
-                      </TableCell>
-                      <TableCell className="font-medium">
-                        {trade.symbol}
-                      </TableCell>
-                      <TableCell>
-                        <span
-                          className={cn(
-                            "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
-                            trade.side === "BUY"
-                              ? "bg-emerald-500/10 text-emerald-500"
-                              : "bg-rose-500/10 text-rose-500"
-                          )}
-                        >
-                          {trade.side}
-                        </span>
-                      </TableCell>
-                      <TableCell className="text-right font-mono">
-                        {trade.quantity}
-                      </TableCell>
-                      <TableCell className="text-right font-mono">
-                        {formatCurrency(trade.price)}
-                      </TableCell>
-                      <TableCell className="text-right font-mono text-muted-foreground">
-                        {formatCurrency(trade.commission)}
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-xs text-muted-foreground uppercase">
-                          {trade.status}
-                        </span>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+      <SymbolAttributionChart data={symbolData} />
 
-              {hasNextPage && (
-                <div className="flex justify-center pt-4">
-                  <Button
-                    variant="outline"
-                    onClick={() => fetchNextPage()}
-                    disabled={isFetchingNextPage}
-                  >
-                    {isFetchingNextPage ? "Loading..." : "Load More"}
-                  </Button>
-                </div>
-              )}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <TradeLogTable
+        trades={trades}
+        hasNextPage={hasNextPage}
+        isFetchingNextPage={isFetchingNextPage}
+        onLoadMore={() => fetchNextPage()}
+      />
     </div>
   );
 }
