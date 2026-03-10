@@ -41,6 +41,7 @@ stop_bps = 30
 limit_offset_bps = 5
 risk_per_trade_bps = 10
 max_position_bps = 1000
+max_spread_bps = 25
 
 [regime_filter]
 enabled = false
