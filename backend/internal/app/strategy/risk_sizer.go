@@ -27,7 +27,9 @@ const revalStateTTL = 10 * time.Minute
 // defaultExitCooldown is how long after an exit fill new entry signals
 // are blocked for the same symbol. Prevents whipsaw sell-then-rebuy
 // across strategy instances.
-const defaultExitCooldown = 60 * time.Second
+// 15 minutes: industry standard for 1-min bar strategies is 3-5 bars minimum;
+// 15 min provides sufficient price discovery and prevents churn loops.
+const defaultExitCooldown = 15 * time.Minute
 
 // RiskSizer subscribes to SignalEnriched events and converts enriched signals
 // into OrderIntents after applying position sizing and risk checks.
