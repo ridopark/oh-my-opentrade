@@ -1,0 +1,87 @@
+schema_version = 2
+
+[strategy]
+id = "break_retest_v1"
+version = "1.0.0"
+name = "Break & Retest"
+description = "Structural breakout with retest confirmation, Fibonacci confluence, and market structure trend filter"
+author = "system"
+created_at = "2026-03-10T00:00:00Z"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+symbols = ["BTC/USD", "ETH/USD"]
+timeframes = ["5m"]
+priority = 100
+conflict_policy = "priority_wins"
+exclusive_per_symbol = true
+asset_classes = ["CRYPTO"]
+
+[params]
+pivot_lookback = 5
+vol_surge_mult = 2.0
+body_range_ratio = 0.7
+atr_breakout_mult = 1.5
+breakout_buffer_atr = 0.2
+max_wick_ratio = 0.3
+retest_band_atr = 0.15
+retest_expiry_bars = 20
+invalidation_atr = 0.5
+fib_confluence_atr = 0.1
+engulf_body_mult = 2.0
+stop_mode = "retest_low"
+tp1_mode = "breakout_peak"
+tp2_mode = "fib_1618_ext"
+min_rr_ratio = 2.0
+stop_bps = 50
+limit_offset_bps = 5
+risk_per_trade_bps = 100
+max_position_bps = 1000
+ai_enabled = true
+ai_timeout_seconds = 5
+ai_min_confidence = 0.65
+size_mult_min = 0.5
+size_mult_base = 1.0
+size_mult_max = 1.5
+cooldown_seconds = 300
+max_trades_per_day = 5
+
+[regime_filter]
+enabled = true
+allowed_regimes = ["TREND"]
+min_atr_pct = 0.8
+
+[hooks]
+signals = { engine = "builtin", name = "break_retest_v1" }
+
+[dynamic_risk]
+enabled = true
+min_confidence = 0.60
+risk_scale_min = 0.50
+risk_scale_max = 1.00
+stop_tight_mult = 0.70
+stop_wide_mult = 1.50
+size_tight_mult = 0.70
+size_wide_mult = 1.20
+
+[risk_revaluation]
+enabled = true
+interval_minutes = 5
+
+[[exit_rules]]
+type = "TRAILING_STOP"
+[exit_rules.params]
+pct = 0.03
+
+[[exit_rules]]
+type = "PROFIT_TARGET"
+[exit_rules.params]
+pct = 0.05
+
+[[exit_rules]]
+type = "MAX_LOSS"
+[exit_rules.params]
+pct = 0.025
