@@ -12,6 +12,9 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const minTightenConfidence = 0.85
+const revalAdjustmentCooldown = 15 * time.Minute
+
 type IndicatorSnapshotFunc func(symbol string) (domain.IndicatorSnapshot, bool)
 type RegimeFunc func(symbol string) (domain.MarketRegime, bool)
 
@@ -26,7 +29,8 @@ type Revaluator struct {
 	envMode    domain.EnvMode
 	log        zerolog.Logger
 
-	pendingTheses sync.Map // symbol → *domain.EntryThesis (cached until fill creates the position)
+	pendingTheses  sync.Map // symbol → *domain.EntryThesis (cached until fill creates the position)
+	lastAdjustment sync.Map // symbol → time.Time (cooldown after exit rule adjustment)
 }
 
 func NewRevaluator(
@@ -220,8 +224,43 @@ func (r *Revaluator) evaluatePosition(ctx context.Context, pos domain.MonitoredP
 		return
 	}
 
+	if result.Action == domain.RiskActionTighten && result.Confidence < minTightenConfidence {
+		r.log.Info().
+			Str("symbol", string(pos.Symbol)).
+			Float64("confidence", result.Confidence).
+			Float64("threshold", minTightenConfidence).
+			Msg("revaluator: TIGHTEN skipped — confidence below threshold")
+		result.Action = domain.RiskActionHold
+	}
+
 	key := pos.PositionKey()
+
+	if result.Action == domain.RiskActionTighten {
+		if lastAdj, ok := r.lastAdjustment.Load(string(pos.Symbol)); ok {
+			if time.Since(lastAdj.(time.Time)) < revalAdjustmentCooldown {
+				r.log.Info().
+					Str("symbol", string(pos.Symbol)).
+					Dur("cooldown_remaining", revalAdjustmentCooldown-time.Since(lastAdj.(time.Time))).
+					Msg("revaluator: TIGHTEN skipped — adjustment cooldown active")
+				result.Action = domain.RiskActionHold
+			}
+		}
+	}
+
 	ruleChanges := r.posMonitor.ApplyRevaluation(key, result)
+
+	if result.Action == domain.RiskActionTighten && len(ruleChanges) > 0 {
+		hasActualChange := false
+		for _, rc := range ruleChanges {
+			if rc.OldValue != rc.NewValue {
+				hasActualChange = true
+				break
+			}
+		}
+		if hasActualChange {
+			r.lastAdjustment.Store(string(pos.Symbol), time.Now())
+		}
+	}
 
 	currentPrice := indicators.EMA9
 	if currentPrice == 0 {

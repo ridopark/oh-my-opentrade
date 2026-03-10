@@ -99,7 +99,7 @@ func (s *Service) PersistThesis(ctx context.Context, symbol domain.Symbol, thesi
 }
 
 // applyRiskModifierToExitRules scales TRAILING_STOP and MAX_LOSS pct params
-// based on the AI judge's risk modifier. TIGHT tightens stops (0.7x),
+// based on the AI judge's risk modifier. TIGHT tightens stops (0.9x per cycle),
 // WIDE gives more room (1.5x). NORMAL/empty returns rules unchanged.
 func applyRiskModifierToExitRules(rules []domain.ExitRule, modifier domain.RiskModifier) []domain.ExitRule {
 	if modifier == domain.RiskModifierNormal || modifier == "" {
@@ -109,7 +109,7 @@ func applyRiskModifierToExitRules(rules []domain.ExitRule, modifier domain.RiskM
 	var mult float64
 	switch modifier {
 	case domain.RiskModifierTight:
-		mult = 0.70
+		mult = 0.90
 	case domain.RiskModifierWide:
 		mult = 1.50
 	default:
