@@ -101,6 +101,7 @@ func fakeCryptoConnectError(msg string) func(ctx context.Context) error {
 
 func makeCryptoWSClientWithFakeConnect(fetcher BarFetcher, connects ...func(ctx context.Context) error) *CryptoWSClient {
 	client, _ := NewCryptoWSClient("wss://test", "key", "secret", "us", fetcher, zerolog.Nop())
+	client.startupDelay = 0
 	var mu sync.Mutex
 	idx := 0
 	client.connectFactory = func(symStrs []string, _ func(alpacastream.CryptoBar), _ func(alpacastream.CryptoTrade)) cryptoConnectFn {
@@ -234,6 +235,13 @@ func TestCryptoStreamBars_GhostSessionCancelDuringProbe(t *testing.T) {
 	}
 }
 
+func TestGhostProbeConstants(t *testing.T) {
+	assert.Equal(t, 3, maxGhostProbes, "ghost probes should be capped at 3")
+	assert.Equal(t, 2*time.Minute, ghostColdTurkeyPeriod, "cold turkey should be 2 minutes")
+	assert.Equal(t, 8*time.Second, cryptoStartupDelay, "startup delay should be 8 seconds")
+	assert.Equal(t, 30*time.Second, minCryptoBackoff, "min crypto backoff should be 30 seconds")
+}
+
 // slow test (~20s): waits for staleFeedWatchdog interval
 func TestCryptoStreamBars_RESTPollerRestartsOnFailedReconnect(t *testing.T) {
 	sym, err := domain.NewSymbol("BTC/USD")
@@ -250,6 +258,7 @@ func TestCryptoStreamBars_RESTPollerRestartsOnFailedReconnect(t *testing.T) {
 
 	client, err := NewCryptoWSClient("wss://test", "key", "secret", "us", fetcher, zerolog.Nop())
 	require.NoError(t, err)
+	client.startupDelay = 0
 
 	var callIdx atomic.Int32
 	client.connectFactory = func(symStrs []string, barHandler func(alpacastream.CryptoBar), tradeHandler func(alpacastream.CryptoTrade)) cryptoConnectFn {

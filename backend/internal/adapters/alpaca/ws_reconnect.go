@@ -137,6 +137,9 @@ func CalculateCryptoBackoff(
 
 	policy := selectPolicy()
 	wait := policy.backoff(consecutiveFails)
+	if wait < minCryptoBackoff {
+		wait = minCryptoBackoff
+	}
 	logger.Warn().Err(connErr).Int("attempt", attempt).Dur("retry_in", wait).
 		Msg("crypto stream disconnected, reconnecting")
 
