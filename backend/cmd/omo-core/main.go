@@ -33,19 +33,24 @@ func main() {
 
 func waitForShutdown(cancel context.CancelFunc, server *http.Server, infra *infraDeps, svc *appServices, log zerolog.Logger) {
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	sig := <-sigCh
 	log.Info().Str("signal", sig.String()).Msg("received signal, shutting down")
 
-	// Graceful shutdown — close WebSocket FIRST so Alpaca receives an RFC6455
-	// close frame and immediately releases the session slot. Only then cancel the
-	// context so the stream goroutine and services can exit cleanly.
+	// 1. Send shutdown notification FIRST (uses fresh context, independent of app lifecycle).
+	svc.notifySvc.NotifySync("🛑 System Stopped: omo-core — shutting down (signal: " + sig.String() + ")")
+
+	// 2. Stop orchestrator (no new trades).
 	if svc.orchestrator != nil {
 		svc.orchestrator.Stop()
 	}
+
+	// 3. Close WebSocket connections — waits up to 3s for RFC6455 close frames.
 	if err := infra.alpacaAdapter.Close(); err != nil {
 		log.Error().Err(err).Msg("error closing Alpaca adapter")
 	}
+
+	// 4. Cancel app context so stream goroutines and services exit.
 	cancel()
 	svc.barWriter.Close()
 	svc.notifySvc.Stop()

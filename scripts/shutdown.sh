@@ -15,7 +15,11 @@ warn()  { echo -e "${YELLOW}[shutdown]${NC} $*"; }
 # ── Stop omo-core ────────────────────────────────────────────
 if tmux has-session -t "$OMO_SESSION" 2>/dev/null; then
   tmux send-keys -t "$OMO_SESSION" C-c
-  sleep 1
+  info "waiting for omo-core to finish graceful shutdown..."
+  for i in $(seq 1 15); do
+    pgrep -f "bin/omo-core" > /dev/null || break
+    sleep 1
+  done
   tmux kill-session -t "$OMO_SESSION" 2>/dev/null || true
   info "omo-core stopped"
 else

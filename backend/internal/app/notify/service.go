@@ -138,6 +138,15 @@ func (s *Service) Stop() {
 	s.wg.Wait()
 }
 
+func (s *Service) NotifySync(msg string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	formatted := fmt.Sprintf("[%s] %s\n", time.Now().In(etLoc).Format("15:04:05"), msg)
+	if err := s.notifier.Notify(ctx, "system", formatted); err != nil {
+		s.log.Warn().Err(err).Msg("sync notification failed")
+	}
+}
+
 func (s *Service) worker(ctx context.Context, id int) {
 	defer s.wg.Done()
 	for job := range s.jobs {
