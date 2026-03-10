@@ -368,13 +368,13 @@ func (s *Service) fmtOrderSubmitted(ev domain.Event) string {
 		emoji = "📕"
 		action = "Exit Submitted"
 	}
-	msg := fmt.Sprintf("%s %s: %s %s @ $%.2f (qty: %.2f)",
-		emoji, action, p.Direction, p.Symbol, p.LimitPrice, p.Quantity)
+	msg := fmt.Sprintf("%s %s: %s %s @ $%s (qty: %g)",
+		emoji, action, p.Direction, p.Symbol, domain.FmtPrice(p.LimitPrice), p.Quantity)
 	msg += fmt.Sprintf("\n📊 Strategy: %s | Confidence: %.0f%%", p.Strategy, p.Confidence*100)
 
 	if !isExit && p.StopLoss > 0 {
 		stopPct := (p.LimitPrice - p.StopLoss) / p.LimitPrice * 100
-		msg += fmt.Sprintf("\n🛑 Stop Loss: $%.2f (%.2f%%)", p.StopLoss, stopPct)
+		msg += fmt.Sprintf("\n🛑 Stop Loss: $%s (%.2f%%)", domain.FmtPrice(p.StopLoss), stopPct)
 	}
 
 	if !isExit {
@@ -420,7 +420,7 @@ func fmtExitRules(rawJSON string, entryPrice float64, meta map[string]string) st
 			if pct, ok := r.Params["pct"]; ok {
 				msg += fmt.Sprintf("\n  MAX_LOSS: %.1f%%", pct*100)
 				if entryPrice > 0 {
-					msg += fmt.Sprintf(" ($%.2f)", entryPrice*(1-pct))
+					msg += fmt.Sprintf(" ($%s)", domain.FmtPrice(entryPrice*(1-pct)))
 				}
 			}
 		case "MAX_HOLDING_TIME":
@@ -473,7 +473,7 @@ func (s *Service) fmtSignalEnriched(ev domain.Event) string {
 				sign = "-"
 				absUSD = -absUSD
 			}
-			msg += fmt.Sprintf("\n%s Est. P&L: %s$%.2f (%+.2f%%) | Entry: $%.2f", pnlEmoji, sign, absUSD, e.UnrealizedPnLPct*100, e.EntryPrice)
+			msg += fmt.Sprintf("\n%s Est. P&L: %s$%.2f (%+.2f%%) | Entry: $%s", pnlEmoji, sign, absUSD, e.UnrealizedPnLPct*100, domain.FmtPrice(e.EntryPrice))
 		}
 		if e.BullArgument != "" {
 			msg += fmt.Sprintf("\n🟢 Bull: %s", e.BullArgument)
@@ -525,7 +525,7 @@ func (s *Service) fmtFillReceived(ev domain.Event) string {
 		side, _ := m["side"].(string)
 		qty, _ := m["quantity"].(float64)
 		price, _ := m["price"].(float64)
-		return fmt.Sprintf("💰 Fill: %s %s — %g shares @ $%.2f", side, sym, qty, price)
+		return fmt.Sprintf("💰 Fill: %s %s — %g shares @ $%s", side, sym, qty, domain.FmtPrice(price))
 	}
 	return "💰 Order Filled"
 }
@@ -551,7 +551,7 @@ func (s *Service) fmtTradeRealized(ev domain.Event) string {
 	}
 
 	msg := fmt.Sprintf("%s P&L: %s$%.2f (%+.2f%%)", pnlEmoji, sign, absPnL, p.PnLPct)
-	msg += fmt.Sprintf(" | Entry: $%.2f", p.EntryPrice)
+	msg += fmt.Sprintf(" | Entry: $%s", domain.FmtPrice(p.EntryPrice))
 
 	if p.HoldDuration > 0 {
 		msg += fmt.Sprintf(" | Held: %s", fmtDuration(p.HoldDuration))
@@ -621,7 +621,7 @@ func (s *Service) fmtWSCircuitBreaker(ev domain.Event) string {
 
 func (s *Service) fmtFillPollTimeout(ev domain.Event) string {
 	if p, ok := ev.Payload.(domain.FillPollTimeoutPayload); ok {
-		return fmt.Sprintf("⏰ Fill Poll Timeout: %s %s %s — order %s not filled within 2m (qty: %.2f)",
+		return fmt.Sprintf("⏰ Fill Poll Timeout: %s %s %s — order %s not filled within 2m (qty: %g)",
 			p.Direction, string(p.Symbol), p.Strategy, p.BrokerOrderID, p.Quantity)
 	}
 	return "⏰ Fill poll timed out — order not filled within 2 minutes"
@@ -673,8 +673,8 @@ func (s *Service) fmtRiskRevaluated(ev domain.Event) string {
 	}
 
 	msg := fmt.Sprintf("🔍 Risk Re-evaluation: %s (%s)", r.Symbol, r.Strategy)
-	msg += fmt.Sprintf("\n%s Position: Entry $%.2f → Now $%.2f (%+.2f%%) | HWM $%.2f",
-		pnlEmoji, r.EntryPrice, r.CurrentPrice, r.UnrealizedPnL*100, r.HighWaterMark)
+	msg += fmt.Sprintf("\n%s Position: Entry $%s → Now $%s (%+.2f%%) | HWM $%s",
+		pnlEmoji, domain.FmtPrice(r.EntryPrice), domain.FmtPrice(r.CurrentPrice), r.UnrealizedPnL*100, domain.FmtPrice(r.HighWaterMark))
 	msg += fmt.Sprintf("\n⏱️ Held: %s", r.HoldDuration)
 	msg += fmt.Sprintf("\n%s Thesis: %s", thesisEmoji, r.ThesisStatus)
 	msg += fmt.Sprintf("\n%s Action: %s (Risk: %s, Confidence: %.0f%%)",
@@ -689,13 +689,13 @@ func (s *Service) fmtRiskRevaluated(ev domain.Event) string {
 				if ch.Param == "pct" && r.CurrentPrice > 0 {
 					oldTrigger := exitTriggerPrice(ch.Rule, ch.OldValue, r.EntryPrice, r.HighWaterMark)
 					newTrigger := exitTriggerPrice(ch.Rule, ch.NewValue, r.EntryPrice, r.HighWaterMark)
-					line += fmt.Sprintf(" (@ $%.2f → @ $%.2f)", oldTrigger, newTrigger)
+					line += fmt.Sprintf(" (@ $%s → @ $%s)", domain.FmtPrice(oldTrigger), domain.FmtPrice(newTrigger))
 				}
 			} else {
 				line = fmt.Sprintf("\n  %s [%s]: %.4f", ch.Rule, ch.Param, ch.NewValue)
 				if ch.Param == "pct" && r.CurrentPrice > 0 {
 					trigger := exitTriggerPrice(ch.Rule, ch.NewValue, r.EntryPrice, r.HighWaterMark)
-					line += fmt.Sprintf(" (@ $%.2f)", trigger)
+					line += fmt.Sprintf(" (@ $%s)", domain.FmtPrice(trigger))
 				}
 			}
 			msg += line
