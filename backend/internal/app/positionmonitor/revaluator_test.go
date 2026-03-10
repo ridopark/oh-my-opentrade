@@ -381,8 +381,8 @@ func TestRevaluator_ApplyRevaluation_TightenModifiesExitRules(t *testing.T) {
 
 	pos, ok := posMonitor.LookupPosition("AAPL")
 	require.True(t, ok)
-	// TIGHT multiplier is 0.70, so 0.02 * 0.70 = 0.014
-	assert.InDelta(t, 0.014, pos.ExitRules[0].Params["pct"], 0.001)
+	// TIGHT multiplier is 0.90, so 0.02 * 0.90 = 0.018
+	assert.InDelta(t, 0.018, pos.ExitRules[0].Params["pct"], 0.001)
 }
 
 func TestRevaluator_EndToEnd_EnrichThenFillAttachesThesis(t *testing.T) {
