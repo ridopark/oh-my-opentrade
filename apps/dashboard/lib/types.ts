@@ -149,6 +149,14 @@ export interface PerformanceSummary {
   gross_profit: number;
   gross_loss: number;
   profit_factor: number | null;
+  sortino: number | null;
+  expectancy: number | null;
+  cagr: number | null;
+}
+
+export interface DrawdownPoint {
+  time: string;
+  drawdown_pct: number;
 }
 
 export interface EquityPoint {
@@ -171,6 +179,20 @@ export interface PerformanceDashboard {
   summary: PerformanceSummary;
   equity: EquityPoint[];
   daily_pnl: DailyPnlEntry[];
+  drawdown: DrawdownPoint[];
+}
+
+export interface StrategyRow {
+  strategy: string;
+  realized_pnl: number;
+  fees: number;
+  total_trades: number;
+  win_count: number;
+  loss_count: number;
+  win_rate: number | null;
+  profit_factor: number | null;
+  gross_profit: number;
+  gross_loss: number;
 }
 
 export interface TradeEntry {

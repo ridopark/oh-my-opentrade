@@ -23,6 +23,8 @@ import {
 import {
   usePerformanceDashboard,
   usePerformanceTrades,
+  usePerformanceStrategies,
+  PerformanceFilters,
 } from "@/hooks/queries";
 import {
   Card,
@@ -40,6 +42,7 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { PerformanceFilterBar } from "@/components/performance-filter-bar";
 
 // Helper for formatting currency
 const formatCurrency = (val: number) =>
@@ -60,17 +63,15 @@ const formatPercent = (val: number) =>
 const formatNumber = (val: number) =>
   new Intl.NumberFormat("en-US").format(val);
 
-type RangeOption = "7d" | "30d" | "90d" | "all";
-
 export default function PerformancePage() {
-  const [range, setRange] = useState<RangeOption>("30d");
+  const [filters, setFilters] = useState<PerformanceFilters>({ range: "30d" });
 
   const {
     data: dashboardData,
     isLoading: loadingDashboard,
     error: dashboardError,
     refetch: refetchDashboard,
-  } = usePerformanceDashboard(range);
+  } = usePerformanceDashboard(filters);
 
   const {
     data: tradesData,
@@ -78,7 +79,10 @@ export default function PerformancePage() {
     hasNextPage,
     fetchNextPage,
     isFetchingNextPage,
-  } = usePerformanceTrades(range);
+  } = usePerformanceTrades(filters);
+
+  const { data: strategies } = usePerformanceStrategies(filters);
+  const strategyNames = strategies?.map((s) => s.strategy) || [];
 
   // Flatten all pages into a single trades array
   const trades = tradesData?.pages.flatMap((page) => page.items) ?? [];
@@ -173,26 +177,15 @@ export default function PerformancePage() {
             Track your trading performance and metrics.
           </p>
         </div>
-        <div className="flex items-center rounded-lg border bg-card p-1">
-          {(["7d", "30d", "90d", "all"] as RangeOption[]).map((opt) => (
-            <button
-              key={opt}
-              onClick={() => setRange(opt)}
-              className={cn(
-                "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-                range === opt
-                  ? "bg-primary text-primary-foreground shadow-sm"
-                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-              )}
-            >
-              {opt.toUpperCase()}
-            </button>
-          ))}
-        </div>
+        <PerformanceFilterBar
+          filters={filters}
+          onFiltersChange={setFilters}
+          strategies={strategyNames}
+        />
       </div>
 
       {/* Summary Stats Grid */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         <StatCard
           title="Total P&L"
           value={formatCurrency(summary.total_pnl)}
@@ -226,6 +219,21 @@ export default function PerformancePage() {
           title="Profit Factor"
           value={summary.profit_factor?.toFixed(2) ?? "—"}
           icon={Scale}
+        />
+        <StatCard
+          title="Sortino Ratio"
+          value={summary.sortino?.toFixed(2) ?? "—"}
+          icon={Activity}
+        />
+        <StatCard
+          title="Expectancy"
+          value={summary.expectancy ? formatCurrency(summary.expectancy) : "—"}
+          icon={DollarSign}
+        />
+        <StatCard
+          title="CAGR"
+          value={summary.cagr !== null ? formatPercent(summary.cagr * 100) : "—"}
+          icon={TrendingUp}
         />
         <StatCard
           title="Total Trades"
