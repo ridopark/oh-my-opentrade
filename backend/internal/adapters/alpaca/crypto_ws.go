@@ -115,7 +115,7 @@ func (c *CryptoWSClient) defaultConnectFactory(symStrs []string, barHandler func
 			alpacastream.WithCredentials(c.apiKey, c.apiSecret),
 			alpacastream.WithCryptoBars(barHandler, symStrs...),
 			alpacastream.WithCryptoTrades(tradeHandler, symStrs...),
-			alpacastream.WithReconnectSettings(3, 5*time.Second),
+			alpacastream.WithReconnectSettings(1, 0),
 		)
 		if err := sc.Connect(ctx); err != nil {
 			return err

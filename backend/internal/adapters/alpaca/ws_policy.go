@@ -96,8 +96,12 @@ func classifyError(connErr error) ErrorClass {
 	lower := strings.ToLower(msg)
 
 	// Ghost-session / connection-limit (string fallback).
+	// "max reconnect limit" catches the case where the SDK's internal auth retries
+	// see 406 but the final wrapped error degrades to "auth timeout" or "EOF".
+	// Safe because true fatal errors (ErrInvalidCredentials) are caught above via errors.Is.
 	if strings.Contains(msg, "connection limit exceeded") ||
-		strings.Contains(msg, "406") {
+		strings.Contains(msg, "406") ||
+		strings.Contains(msg, "max reconnect limit") {
 		return ErrGhost
 	}
 
