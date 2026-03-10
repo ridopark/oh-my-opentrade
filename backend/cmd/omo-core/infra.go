@@ -69,14 +69,7 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to create Alpaca adapter")
 	}
-	switch {
-	case cfg.Alpaca.CryptoDataAPIKeyID != "":
-		log.Info().Msg("Alpaca adapter initialized (separate equity + crypto data credentials)")
-	case cfg.Alpaca.EquityDataAPIKeyID != "":
-		log.Info().Msg("Alpaca adapter initialized (separate equity data credentials)")
-	default:
-		log.Info().Msg("Alpaca adapter initialized")
-	}
+	log.Info().Msg("Alpaca adapter initialized")
 
 	// TimescaleDB repository
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",

@@ -34,54 +34,6 @@ type AlpacaConfig struct {
 	PaperMode     bool   `yaml:"paper_mode"`
 	CryptoDataURL string `yaml:"crypto_data_url"`
 	CryptoFeed    string `yaml:"crypto_feed"`
-
-	// Separate credentials for equity market data streaming (optional).
-	// Alpaca enforces 1 WS connection per API key — equity and crypto
-	// need separate keys to avoid contention.
-	// Falls back to the primary APIKeyID/APISecretKey if not set.
-	EquityDataAPIKeyID     string `yaml:"equity_data_api_key_id"`
-	EquityDataAPISecretKey string `yaml:"equity_data_api_secret_key"`
-
-	// Separate credentials for crypto market data streaming (optional).
-	// Falls back to EffectiveEquityDataAPI keys if not set.
-	CryptoDataAPIKeyID     string `yaml:"crypto_data_api_key_id"`
-	CryptoDataAPISecretKey string `yaml:"crypto_data_api_secret_key"`
-}
-
-// EffectiveEquityDataAPIKeyID returns the API key for equity data streams.
-// Falls back to the primary APIKeyID if not set.
-func (c AlpacaConfig) EffectiveEquityDataAPIKeyID() string {
-	if c.EquityDataAPIKeyID != "" {
-		return c.EquityDataAPIKeyID
-	}
-	return c.APIKeyID
-}
-
-// EffectiveEquityDataAPISecretKey returns the API secret for equity data streams.
-// Falls back to the primary APISecretKey if not set.
-func (c AlpacaConfig) EffectiveEquityDataAPISecretKey() string {
-	if c.EquityDataAPISecretKey != "" {
-		return c.EquityDataAPISecretKey
-	}
-	return c.APISecretKey
-}
-
-// EffectiveCryptoDataAPIKeyID returns the API key for crypto data streams.
-// Falls back to EffectiveEquityDataAPIKeyID if not set.
-func (c AlpacaConfig) EffectiveCryptoDataAPIKeyID() string {
-	if c.CryptoDataAPIKeyID != "" {
-		return c.CryptoDataAPIKeyID
-	}
-	return c.EffectiveEquityDataAPIKeyID()
-}
-
-// EffectiveCryptoDataAPISecretKey returns the API secret for crypto data streams.
-// Falls back to EffectiveEquityDataAPISecretKey if not set.
-func (c AlpacaConfig) EffectiveCryptoDataAPISecretKey() string {
-	if c.CryptoDataAPISecretKey != "" {
-		return c.CryptoDataAPISecretKey
-	}
-	return c.EffectiveEquityDataAPISecretKey()
 }
 
 // AIConfig holds configuration for the AI adversarial debate system.
@@ -230,7 +182,7 @@ const (
 	defaultAIBaseURL       = "https://openrouter.ai/api"
 	defaultAIMinConfidence = 0.6
 	defaultCryptoDataURL   = "wss://stream.data.alpaca.markets"
-	defaultCryptoFeed      = "us"
+	defaultCryptoFeed      = "us-1"
 )
 
 // Load loads the configuration from env and yaml files.
@@ -344,18 +296,7 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	if val := os.Getenv("APCA_CRYPTO_FEED"); val != "" {
 		cfg.Alpaca.CryptoFeed = val
 	}
-	if val := os.Getenv("APCA_EQUITY_DATA_API_KEY_ID"); val != "" {
-		cfg.Alpaca.EquityDataAPIKeyID = val
-	}
-	if val := os.Getenv("APCA_EQUITY_DATA_API_SECRET_KEY"); val != "" {
-		cfg.Alpaca.EquityDataAPISecretKey = val
-	}
-	if val := os.Getenv("APCA_CRYPTO_DATA_API_KEY_ID"); val != "" {
-		cfg.Alpaca.CryptoDataAPIKeyID = val
-	}
-	if val := os.Getenv("APCA_CRYPTO_DATA_API_SECRET_KEY"); val != "" {
-		cfg.Alpaca.CryptoDataAPISecretKey = val
-	}
+
 	if val := os.Getenv("TIMESCALEDB_PASSWORD"); val != "" {
 		cfg.Database.Password = val
 	}

@@ -3,11 +3,10 @@
 
 alpaca:
   # API credentials are loaded from .env (APCA_API_KEY_ID, APCA_API_SECRET_KEY)
-  # Separate data credentials: APCA_DATA_API_KEY_ID, APCA_DATA_API_SECRET_KEY
   base_url: "https://paper-api.alpaca.markets"
   data_url: "https://data.alpaca.markets"
   crypto_data_url: "wss://stream.data.alpaca.markets"
-  crypto_feed: "us"
+  crypto_feed: "us-1"
   paper_mode: true
 
 database:

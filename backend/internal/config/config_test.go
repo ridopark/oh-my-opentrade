@@ -512,7 +512,6 @@ func TestSymbolsConfig_SymbolsByAssetClass(t *testing.T) {
 	assert.Nil(t, sc.SymbolsByAssetClass("FOREX"))
 }
 
-
 func TestLoad_CryptoConfigDefaults(t *testing.T) {
 	// Arrange
 	tempDir := t.TempDir()
@@ -542,7 +541,7 @@ symbols:
 
 	// Verify crypto defaults are applied
 	assert.Equal(t, "wss://stream.data.alpaca.markets", cfg.Alpaca.CryptoDataURL)
-	assert.Equal(t, "us", cfg.Alpaca.CryptoFeed)
+	assert.Equal(t, "us-1", cfg.Alpaca.CryptoFeed)
 }
 
 func TestLoad_CryptoConfigEnvOverride(t *testing.T) {
