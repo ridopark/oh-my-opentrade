@@ -92,10 +92,10 @@ func TestClassifyError_Ghost(t *testing.T) {
 	}
 }
 
-func TestClassifyError_MaxReconnectLimit_WithoutSDKError_IsTransient(t *testing.T) {
+func TestClassifyError_MaxReconnectLimit_WithoutSDKError_IsGhost(t *testing.T) {
 	err := errors.New("max reconnect limit has been reached, last error: auth timeout")
-	assert.Equal(t, ErrTransient, classifyError(err),
-		"'max reconnect limit' without SDK ErrConnectionLimitExceeded should be transient, not ghost")
+	assert.Equal(t, ErrGhost, classifyError(err),
+		"'max reconnect limit' indicates SDK exhausted retries against 406 — classify as ghost")
 }
 
 func TestClassifyError_Fatal(t *testing.T) {
