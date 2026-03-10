@@ -164,7 +164,39 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 			warmupLog.Info().
 				Str("symbol", string(sym)).
 				Int("bars", n).
-				Msg("strategy runner warmup complete")
+				Msg("strategy runner warmup complete (1m)")
+		}
+
+		svc.strategyRunner.InitAggregators(todayOpen)
+
+		htfReqs := collectHTFWarmupReqs(svc.strategyRunner)
+		if len(htfReqs) > 0 {
+			warmupLog.Info().Int("htf_pairs", len(htfReqs)).Msg("warming up HTF strategies")
+		}
+		for _, req := range htfReqs {
+			var from, to time.Time
+			if req.symbol.IsCryptoSymbol() {
+				to = time.Now().UTC()
+				from = to.Add(-req.lookback)
+			} else {
+				_, prevEnd := domain.PreviousRTHSession(time.Now())
+				to = prevEnd
+				from = to.Add(-req.lookback)
+			}
+			bars, err := infra.alpacaAdapter.GetHistoricalBars(ctx, req.symbol, req.timeframe, from, to)
+			if err != nil {
+				warmupLog.Warn().Err(err).
+					Str("symbol", string(req.symbol)).
+					Str("timeframe", string(req.timeframe)).
+					Msg("HTF warmup fetch failed, starting cold")
+				continue
+			}
+			n := svc.strategyRunner.WarmUpTF(string(req.symbol), string(req.timeframe), bars, runnerWarmupSnapshotFn)
+			warmupLog.Info().
+				Str("symbol", string(req.symbol)).
+				Str("timeframe", string(req.timeframe)).
+				Int("bars", n).
+				Msg("HTF strategy warmup complete")
 		}
 	}
 
@@ -300,4 +332,50 @@ func symbolStrings(syms []domain.Symbol) []string {
 		out[i] = string(s)
 	}
 	return out
+}
+
+type htfWarmupReq struct {
+	symbol    domain.Symbol
+	timeframe domain.Timeframe
+	lookback  time.Duration
+}
+
+func collectHTFWarmupReqs(runner *strategy.Runner) []htfWarmupReq {
+	seen := make(map[string]struct{})
+	var reqs []htfWarmupReq
+	for _, inst := range runner.Router().AllInstances() {
+		tfs := inst.Assignment().Timeframes
+		if len(tfs) == 0 {
+			continue
+		}
+		warmupBars := inst.Strategy().WarmupBars()
+		for _, tf := range tfs {
+			if tf == "1m" {
+				continue
+			}
+			for _, sym := range inst.Assignment().Symbols {
+				key := sym + ":" + tf
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				var barDur time.Duration
+				switch tf {
+				case "5m":
+					barDur = 5 * time.Minute
+				case "15m":
+					barDur = 15 * time.Minute
+				default:
+					barDur = time.Minute
+				}
+				lookback := time.Duration(float64(warmupBars) * float64(barDur) * 1.2)
+				reqs = append(reqs, htfWarmupReq{
+					symbol:    domain.Symbol(sym),
+					timeframe: domain.Timeframe(tf),
+					lookback:  lookback,
+				})
+			}
+		}
+	}
+	return reqs
 }

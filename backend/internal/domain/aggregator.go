@@ -30,6 +30,25 @@ func NewBarAggregator(symbol Symbol, targetTF Timeframe, sessionOpen time.Time) 
 	}, nil
 }
 
+// NewClockAlignedAggregator creates an aggregator using UTC clock-aligned buckets.
+// For 5m: buckets are 00:00, 00:05, 00:10, ... aligned to UTC.
+// This is appropriate for 24/7 markets (crypto) that have no session open concept.
+// It works by anchoring to the Unix epoch (1970-01-01 00:00:00 UTC), which naturally
+// aligns all bucket boundaries with clock minutes.
+func NewClockAlignedAggregator(symbol Symbol, targetTF Timeframe) (*BarAggregator, error) {
+	if targetTF != "5m" && targetTF != "15m" {
+		return nil, fmt.Errorf("invalid target timeframe: %q", targetTF)
+	}
+	epoch := time.Unix(0, 0).UTC()
+	return &BarAggregator{
+		symbol:      symbol,
+		tf:          targetTF,
+		sessionOpen: epoch,
+		cur:         nil,
+		curEnd:      time.Time{},
+	}, nil
+}
+
 func (a *BarAggregator) Push(bar MarketBar) (closed MarketBar, ok bool) {
 	if bar.Symbol != a.symbol {
 		return MarketBar{}, false
