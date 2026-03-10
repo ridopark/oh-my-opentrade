@@ -16,14 +16,28 @@ type PriceCache struct {
 	mu     sync.RWMutex
 	prices map[domain.Symbol]ports.PriceSnapshot
 	log    zerolog.Logger
+	clock  func() time.Time
+}
+
+// PriceCacheOption is a functional option for PriceCache.
+type PriceCacheOption func(*PriceCache)
+
+// WithClock injects a deterministic clock for testing.
+func WithClock(fn func() time.Time) PriceCacheOption {
+	return func(pc *PriceCache) { pc.clock = fn }
 }
 
 // NewPriceCache creates a PriceCache.
-func NewPriceCache(log zerolog.Logger) *PriceCache {
-	return &PriceCache{
+func NewPriceCache(log zerolog.Logger, opts ...PriceCacheOption) *PriceCache {
+	pc := &PriceCache{
 		prices: make(map[domain.Symbol]ports.PriceSnapshot),
 		log:    log.With().Str("component", "price_cache").Logger(),
+		clock:  time.Now,
 	}
+	for _, opt := range opts {
+		opt(pc)
+	}
+	return pc
 }
 
 // Start subscribes to MarketBarSanitized events to maintain the price cache.
@@ -41,7 +55,7 @@ func (pc *PriceCache) handleBar(_ context.Context, event domain.Event) error {
 	pc.mu.Lock()
 	pc.prices[bar.Symbol] = ports.PriceSnapshot{
 		Price:      bar.Close,
-		ObservedAt: time.Now(), // Use arrival time, not bar open time — 1-min bars arrive ~60s after bar.Time
+		ObservedAt: pc.clock(), // Use arrival time, not bar open time — 1-min bars arrive ~60s after bar.Time
 	}
 	pc.mu.Unlock()
 	return nil

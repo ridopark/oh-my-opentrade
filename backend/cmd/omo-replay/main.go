@@ -2,38 +2,36 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
+	"github.com/oh-my-opentrade/backend/internal/adapters/llm"
+	"github.com/oh-my-opentrade/backend/internal/adapters/noop"
 	"github.com/oh-my-opentrade/backend/internal/adapters/simbroker"
 	"github.com/oh-my-opentrade/backend/internal/adapters/strategy/store_fs"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/app/backtest"
-	"github.com/oh-my-opentrade/backend/internal/app/execution"
-	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
+	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
-	"github.com/oh-my-opentrade/backend/internal/app/risk"
+	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
-	"github.com/oh-my-opentrade/backend/internal/app/strategy/builtin"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/logger"
-	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
 
@@ -49,6 +47,7 @@ func main() {
 		initialEquity float64
 		slippageBPS   int64
 		outputJSON    string
+		noAIFlag      bool
 	)
 
 	flag.StringVar(&symbolsFlag, "symbols", "", "Comma-separated symbols to replay (default: use config file symbols)")
@@ -61,6 +60,7 @@ func main() {
 	flag.Float64Var(&initialEquity, "initial-equity", 100000.0, "Initial account equity for backtest (default: 100000)")
 	flag.Int64Var(&slippageBPS, "slippage-bps", 5, "Slippage in basis points for SimBroker fills (default: 5)")
 	flag.StringVar(&outputJSON, "output-json", "", "Path to write backtest results as JSON (backtest mode only)")
+	flag.BoolVar(&noAIFlag, "no-ai", true, "Disable AI signal debate enricher (default: true for backtest)")
 	flag.Parse()
 
 	logLevel := zerolog.InfoLevel
@@ -156,53 +156,38 @@ func main() {
 	log.Info().Msg("TimescaleDB connected")
 	repo := timescaledb.NewRepositoryWithLogger(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "timescaledb").Logger())
 
-	ingestionSvc := ingestion.NewService(
-		eventBus,
-		repo,
-		ingestion.NewAdaptiveFilter(20, 4.0),
-		log.With().Str("component", "ingestion").Logger(),
-	)
-	monitorSvc := monitor.NewService(eventBus, repo, log.With().Str("component", "monitor").Logger())
+	var currentBarTime atomic.Value
+	currentBarTime.Store(time.Now())
+	clockFn := func() time.Time {
+		return currentBarTime.Load().(time.Time)
+	}
+
+	ingBundle, err := bootstrap.BuildIngestion(bootstrap.IngestionDeps{
+		EventBus:   eventBus,
+		Repo:       repo,
+		IsBacktest: true,
+		Logger:     log,
+	})
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to build ingestion")
+	}
+
+	monitorSvc, err := bootstrap.BuildMonitor(bootstrap.MonitorDeps{
+		EventBus: eventBus,
+		Repo:     repo,
+		Logger:   log,
+	})
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to build monitor")
+	}
 
 	const specDir = "configs/strategies"
-	const specPath = "configs/strategies/orb_break_retest.toml"
 	specStore := store_fs.NewStore(specDir, strategy.LoadSpecFile)
-	spec, err := strategy.LoadSpecFile(specPath)
-	if err != nil {
-		log.Fatal().Err(err).Str("path", specPath).Msg("failed to load strategy spec")
-	}
-	monitorSvc.SetORBConfig(spec.Params)
 
-	registry := strategy.NewMemRegistry()
-	orbStrategy := builtin.NewORBStrategy()
-	if err := registry.Register(orbStrategy); err != nil {
-		log.Fatal().Err(err).Msg("failed to register builtin ORB strategy")
+	orbID, _ := start.NewStrategyID("orb_break_retest")
+	if orbSpec, err := specStore.GetLatest(context.Background(), orbID); err == nil {
+		monitorSvc.SetORBConfig(orbSpec.Params)
 	}
-
-	router := strategy.NewRouter()
-	stratLog := slog.Default()
-	for _, sym := range symbols {
-		instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", spec.ID, spec.Version, sym.String()))
-		inst := strategy.NewInstance(
-			instanceID,
-			orbStrategy,
-			spec.Params,
-			strategy.InstanceAssignment{
-				Symbols:  []string{sym.String()},
-				Priority: spec.Routing.Priority,
-			},
-			start.LifecycleLiveActive,
-			stratLog,
-		)
-		initCtx := strategy.NewContext(time.Now(), stratLog, nil)
-		if err := inst.InitSymbol(initCtx, sym.String(), nil); err != nil {
-			log.Fatal().Err(err).Str("symbol", sym.String()).Msg("strategy v2: failed to init symbol")
-		}
-		router.Register(inst)
-	}
-
-	strategyRunner := strategy.NewRunner(eventBus, router, "default", domain.EnvModePaper, stratLog)
-	riskSizer := strategy.NewRiskSizer(eventBus, specStore, initialEquity, stratLog)
 
 	var (
 		signalsMu         sync.Mutex
@@ -212,6 +197,8 @@ func main() {
 		lastIntentSummary string
 		simBrokerInst     *simbroker.Broker
 		collectorInst     *backtest.Collector
+		posMonSvc         *positionmonitor.Service // non-nil in backtest mode
+		pipeline          *bootstrap.StrategyPipeline
 	)
 	if err := eventBus.Subscribe(ctx, domain.EventSignalCreated, func(_ context.Context, ev domain.Event) error {
 		signalsMu.Lock()
@@ -224,53 +211,76 @@ func main() {
 	}
 
 	if backtestFlag {
-		// --- Backtest mode: wire full execution pipeline with SimBroker ---
 		log.Info().
 			Float64("initial_equity", initialEquity).
 			Int64("slippage_bps", slippageBPS).
+			Bool("no_ai", noAIFlag).
 			Msg("backtest mode enabled — wiring SimBroker + execution pipeline")
 
-		simBrokerInst = simbroker.New(simbroker.Config{SlippageBPS: slippageBPS}, log.With().Str("component", "simbroker").Logger())
+		simBrokerInst = simbroker.New(simbroker.Config{
+			SlippageBPS:   slippageBPS,
+			InitialEquity: initialEquity,
+		}, log.With().Str("component", "simbroker").Logger())
 
-		// Passthrough QuoteProvider: returns SimBroker's last bar close as bid/ask.
-		quoteProvider := &simQuoteProvider{broker: simBrokerInst}
-
-		// Execution pipeline components.
-		riskEngine := execution.NewRiskEngine(0.02) // 2% max risk per trade
-		slippageGuard := execution.NewSlippageGuard(quoteProvider)
-		killSwitch := execution.NewKillSwitch(3, 30*time.Minute, time.Hour, time.Now)
-
-		// LedgerWriter needs a PnLPort but we don't persist to DB in backtest.
-		nPnL := &noopPnLRepo{}
-		ledgerWriter := perf.NewLedgerWriter(eventBus, nPnL, simBrokerInst, nil, initialEquity, log.With().Str("component", "ledger_writer").Logger())
-
-		// DailyLossBreaker uses LedgerWriter as in-memory PnL source.
-		dailyLossBreaker := risk.NewDailyLossBreaker(
-			cfg.Trading.MaxDailyLossPct/100.0, // config stores as percentage, e.g. 5.0 → 0.05
-			cfg.Trading.MaxDailyLossUSD,
-			ledgerWriter,
-			time.Now,
-			log.With().Str("component", "daily_loss_breaker").Logger(),
-		)
-
-		// No-op RepositoryPort for execution service (no DB writes in backtest).
-		nRepo := &noopRepo{}
-
-		execLog := log.With().Str("component", "execution").Logger()
-		posGate := execution.NewPositionGate(simBrokerInst, execLog)
-		execSvc := execution.NewService(
-			eventBus, simBrokerInst, nRepo,
-			riskEngine, slippageGuard, killSwitch,
-			dailyLossBreaker, initialEquity,
-			execLog,
-			execution.WithPositionGate(posGate),
-		)
-		if err := execSvc.Start(ctx); err != nil {
-			log.Fatal().Err(err).Msg("failed to start execution service")
+		execBundle, err := bootstrap.BuildExecutionService(bootstrap.ExecutionDeps{
+			EventBus:      eventBus,
+			Broker:        simBrokerInst,
+			Repo:          &noop.NoopRepo{},
+			QuoteProvider: simBrokerInst,
+			AccountPort:   simBrokerInst,
+			PnLRepo:       &noop.NoopPnLRepo{},
+			TradeReader:   nil,
+			Clock:         clockFn,
+			Config:        cfg,
+			InitialEquity: initialEquity,
+			Logger:        log,
+		})
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to build execution service")
 		}
-		if err := ledgerWriter.Start(ctx, "backtest", domain.EnvModePaper); err != nil {
-			log.Fatal().Err(err).Msg("failed to start ledger writer")
+
+		posMonBundle, err := bootstrap.BuildPositionMonitor(bootstrap.PosMonitorDeps{
+			EventBus:     eventBus,
+			PositionGate: execBundle.PositionGate,
+			Broker:       simBrokerInst,
+			SpecStore:    specStore,
+			TenantID:     "default",
+			EnvMode:      domain.EnvModePaper,
+			Clock:        clockFn,
+			IsBacktest:   true,
+			Logger:       log,
+		})
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to build position monitor")
 		}
+		posMonSvc = posMonBundle.Service
+
+		pipeline, err = bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
+			EventBus:        eventBus,
+			SpecStore:       specStore,
+			AIAdvisor:       llm.NewNoOpAdvisor(),
+			PositionLookup:  posMonBundle.Service.LookupPosition,
+			MarketDataFn:    monitorSvc.GetLastSnapshot,
+			Repo:            nil,
+			TenantID:        "default",
+			EnvMode:         domain.EnvModePaper,
+			Equity:          initialEquity,
+			Clock:           clockFn,
+			DisableEnricher: noAIFlag,
+			Logger:          log,
+		})
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to build strategy pipeline")
+		}
+
+		if pipeline.Enricher == nil {
+			if err := eventBus.Subscribe(ctx, domain.EventSignalCreated, signalPassthrough(eventBus, log)); err != nil {
+				log.Fatal().Err(err).Msg("failed to subscribe signal passthrough")
+			}
+		}
+
+		signalTracker := perf.NewSignalTracker(eventBus, &noop.NoopPnLRepo{}, log.With().Str("component", "signal_tracker").Logger())
+		monitorSvc.SetBaseSymbols(pipeline.BaseSymbols)
 
 		// Backtest collector subscribes to FillReceived + MarketBarReceived.
 		collectorInst, err = backtest.NewCollector(eventBus, backtest.Config{
@@ -280,7 +290,6 @@ func main() {
 			log.Fatal().Err(err).Msg("failed to create backtest collector")
 		}
 
-		// Count intents via event tracer (already subscribed) instead of separate handler.
 		if err := eventBus.Subscribe(ctx, domain.EventOrderIntentCreated, func(_ context.Context, ev domain.Event) error {
 			signalsMu.Lock()
 			defer signalsMu.Unlock()
@@ -290,8 +299,68 @@ func main() {
 		}); err != nil {
 			log.Fatal().Err(err).Msg("failed to subscribe OrderIntentCreated counter")
 		}
+
+		if err := ingBundle.Service.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start ingestion")
+		}
+		if err := monitorSvc.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start monitor")
+		}
+		if err := execBundle.LedgerWriter.Start(ctx, "backtest", domain.EnvModePaper); err != nil {
+			log.Fatal().Err(err).Msg("failed to start ledger writer")
+		}
+		if err := signalTracker.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start signal tracker")
+		}
+		if err := execBundle.Service.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start execution service")
+		}
+		if err := posMonBundle.PriceCache.Start(ctx, eventBus); err != nil {
+			log.Fatal().Err(err).Msg("failed to start price cache")
+		}
+		if err := posMonBundle.Service.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start position monitor")
+		}
+		if err := pipeline.Runner.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start strategy runner")
+		}
+		if pipeline.Enricher != nil {
+			if err := pipeline.Enricher.Start(ctx); err != nil {
+				log.Fatal().Err(err).Msg("failed to start signal debate enricher")
+			}
+		}
+		if err := pipeline.RiskSizer.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start risk sizer")
+		}
+
 	} else {
-		// --- Replay-only mode: mock execution (log intents, no fills) ---
+		var err error
+		pipeline, err = bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
+			EventBus:        eventBus,
+			SpecStore:       specStore,
+			AIAdvisor:       llm.NewNoOpAdvisor(),
+			PositionLookup:  nil,
+			MarketDataFn:    monitorSvc.GetLastSnapshot,
+			Repo:            nil,
+			TenantID:        "default",
+			EnvMode:         domain.EnvModePaper,
+			Equity:          initialEquity,
+			Clock:           clockFn,
+			DisableEnricher: noAIFlag,
+			Logger:          log,
+		})
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to build strategy pipeline")
+		}
+
+		monitorSvc.SetBaseSymbols(pipeline.BaseSymbols)
+
+		if pipeline.Enricher == nil {
+			if err := eventBus.Subscribe(ctx, domain.EventSignalCreated, signalPassthrough(eventBus, log)); err != nil {
+				log.Fatal().Err(err).Msg("failed to subscribe signal passthrough")
+			}
+		}
+
 		if err := eventBus.Subscribe(ctx, domain.EventOrderIntentCreated, func(_ context.Context, ev domain.Event) error {
 			intent, ok := ev.Payload.(domain.OrderIntent)
 			if ok {
@@ -315,23 +384,28 @@ func main() {
 		}); err != nil {
 			log.Fatal().Err(err).Msg("failed to subscribe OrderIntentCreated mock execution")
 		}
-	}
 
-	if err := ingestionSvc.Start(ctx); err != nil {
-		log.Fatal().Err(err).Msg("failed to start ingestion")
-	}
-	if err := monitorSvc.Start(ctx); err != nil {
-		log.Fatal().Err(err).Msg("failed to start monitor")
-	}
-	if err := strategyRunner.Start(ctx); err != nil {
-		log.Fatal().Err(err).Msg("failed to start strategy runner v2")
-	}
-	if err := riskSizer.Start(ctx); err != nil {
-		log.Fatal().Err(err).Msg("failed to start risk sizer v2")
+		if err := ingBundle.Service.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start ingestion")
+		}
+		if err := monitorSvc.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start monitor")
+		}
+		if err := pipeline.Runner.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start strategy runner")
+		}
+		if pipeline.Enricher != nil {
+			if err := pipeline.Enricher.Start(ctx); err != nil {
+				log.Fatal().Err(err).Msg("failed to start signal debate enricher")
+			}
+		}
+		if err := pipeline.RiskSizer.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start risk sizer")
+		}
 	}
 
 	warmupLog := log.With().Str("component", "warmup").Logger()
-	prevStart, prevEnd := domain.PreviousRTHSession(time.Now())
+	prevStart, prevEnd := domain.PreviousRTHSession(fromTime)
 	warmupFrom := prevEnd.Add(-120 * barDur)
 	warmupTo := prevEnd
 	warmupLog.Info().
@@ -340,15 +414,50 @@ func main() {
 		Time("warmup_from", warmupFrom).
 		Time("warmup_to", warmupTo).
 		Msg("warming indicators from previous RTH session")
+
+	warmupBarsCache := make(map[string][]domain.MarketBar, len(symbols))
 	for _, sym := range symbols {
 		bars, err := repo.GetMarketBars(ctx, sym, timeframe, warmupFrom, warmupTo)
 		if err != nil {
 			warmupLog.Warn().Err(err).Str("symbol", sym.String()).Msg("warmup fetch failed, starting cold")
 			continue
 		}
+		warmupBarsCache[sym.String()] = bars
 		n := monitorSvc.WarmUp(bars)
 		monitorSvc.ResetSessionIndicators(sym.String())
 		warmupLog.Info().Str("symbol", sym.String()).Int("bars", n).Msg("indicator warmup complete")
+	}
+
+	for _, sym := range symbols {
+		if bars, ok := warmupBarsCache[sym.String()]; ok && len(bars) > 0 {
+			n := ingBundle.Filter.Seed(sym, bars)
+			warmupLog.Info().Str("symbol", sym.String()).Int("bars", n).Msg("adaptive spike filter seeded")
+		}
+	}
+
+	if pipeline != nil && pipeline.Runner != nil {
+		runnerCalc := monitor.NewIndicatorCalculator()
+		snapshotFn := func(bar domain.MarketBar) start.IndicatorData {
+			snap := runnerCalc.Update(bar)
+			return start.IndicatorData{
+				RSI:       snap.RSI,
+				StochK:    snap.StochK,
+				StochD:    snap.StochD,
+				EMA9:      snap.EMA9,
+				EMA21:     snap.EMA21,
+				VWAP:      snap.VWAP,
+				Volume:    snap.Volume,
+				VolumeSMA: snap.VolumeSMA,
+			}
+		}
+		for _, sym := range symbols {
+			bars := warmupBarsCache[sym.String()]
+			if len(bars) == 0 {
+				continue
+			}
+			n := pipeline.Runner.WarmUp(sym.String(), bars, snapshotFn)
+			warmupLog.Info().Str("symbol", sym.String()).Int("bars", n).Msg("strategy runner warmup complete")
+		}
 	}
 
 	// Initialize MTFA aggregators so 1m bars produce 5m/15m candles + anchor regime.
@@ -396,6 +505,8 @@ func main() {
 
 		groupsProcessed++
 
+		currentBarTime.Store(minTime)
+
 		// Reset MTFA aggregators on new trading day boundary.
 		minET := minTime.In(loc)
 		dayOpen := time.Date(minET.Year(), minET.Month(), minET.Day(), 9, 30, 0, 0, loc)
@@ -436,6 +547,14 @@ func main() {
 				continue
 			}
 			barsProcessed++
+		}
+
+		if backtestFlag {
+			eventBus.WaitPending()
+			if posMonSvc != nil {
+				posMonSvc.EvalExitRules(minTime)
+				eventBus.WaitPending()
+			}
 		}
 
 		if ctx.Err() != nil {
@@ -648,7 +767,44 @@ func allEventTypes() []domain.EventType {
 		domain.EventOptionChainReceived,
 		domain.EventOptionContractSelected,
 		domain.EventSignalCreated,
+		domain.EventSignalEnriched,
 		"StrategyDomainEvent",
+	}
+}
+
+func signalPassthrough(bus *memory.Bus, log zerolog.Logger) func(context.Context, domain.Event) error {
+	return func(ctx context.Context, ev domain.Event) error {
+		sig, ok := ev.Payload.(start.Signal)
+		if !ok {
+			return nil
+		}
+		direction := domain.DirectionLong
+		if sig.Side == start.SideSell {
+			direction = domain.DirectionShort
+		}
+		if sig.Type == start.SignalExit {
+			direction = domain.DirectionCloseLong
+		}
+		enrichment := domain.SignalEnrichment{
+			Signal: domain.SignalRef{
+				StrategyInstanceID: string(sig.StrategyInstanceID),
+				Symbol:             sig.Symbol,
+				SignalType:         sig.Type.String(),
+				Side:               sig.Side.String(),
+				Strength:           sig.Strength,
+				Tags:               sig.Tags,
+			},
+			Status:     domain.EnrichmentSkipped,
+			Confidence: sig.Strength,
+			Direction:  direction,
+			Rationale:  fmt.Sprintf("passthrough (no-ai): %s %s strength=%.2f", sig.Type, sig.Side, sig.Strength),
+		}
+		enrichedEvt, err := domain.NewEvent(domain.EventSignalEnriched, ev.TenantID, ev.EnvMode, ev.IdempotencyKey+"-enriched", enrichment)
+		if err != nil {
+			log.Error().Err(err).Msg("failed to create enriched event in passthrough")
+			return nil
+		}
+		return bus.Publish(ctx, *enrichedEvt)
 	}
 }
 
@@ -727,112 +883,4 @@ func timeframeDuration(tf domain.Timeframe) (time.Duration, error) {
 	default:
 		return 0, fmt.Errorf("unknown timeframe: %s", tf)
 	}
-}
-
-// --- No-op adapters for backtest mode (no DB writes) ---
-
-// simQuoteProvider returns the SimBroker's last bar close as bid/ask
-// so the SlippageGuard passes in backtest mode.
-type simQuoteProvider struct {
-	broker *simbroker.Broker
-}
-
-func (p *simQuoteProvider) GetQuote(_ context.Context, symbol domain.Symbol) (float64, float64, error) {
-	price, ok := p.broker.GetPrice(symbol)
-	if !ok {
-		return 0, 0, fmt.Errorf("simQuoteProvider: no price for %s", symbol)
-	}
-	return price, price, nil
-}
-
-// noopRepo implements ports.RepositoryPort as a no-op for backtest mode.
-// Execution service calls SaveOrder/UpdateOrderFill/SaveTrade which we discard.
-type noopRepo struct{}
-
-func (n *noopRepo) SaveMarketBar(_ context.Context, _ domain.MarketBar) error { return nil }
-func (n *noopRepo) GetMarketBars(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _, _ time.Time) ([]domain.MarketBar, error) {
-	return nil, nil
-}
-func (n *noopRepo) SaveTrade(_ context.Context, _ domain.Trade) error { return nil }
-func (n *noopRepo) GetTrades(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) ([]domain.Trade, error) {
-	return nil, nil
-}
-func (n *noopRepo) SaveStrategyDNA(_ context.Context, _ domain.StrategyDNA) error { return nil }
-func (n *noopRepo) GetLatestStrategyDNA(_ context.Context, _ string, _ domain.EnvMode) (*domain.StrategyDNA, error) {
-	return nil, nil
-}
-func (n *noopRepo) SaveOrder(_ context.Context, _ domain.BrokerOrder) error { return nil }
-func (n *noopRepo) UpdateOrderFill(_ context.Context, _ string, _ time.Time, _, _ float64) error {
-	return nil
-}
-func (n *noopRepo) ListTrades(_ context.Context, _ ports.TradeQuery) (ports.TradePage, error) {
-	return ports.TradePage{}, nil
-}
-func (n *noopRepo) ListOrders(_ context.Context, _ ports.OrderQuery) (ports.OrderPage, error) {
-	return ports.OrderPage{}, nil
-}
-func (n *noopRepo) SaveThoughtLog(_ context.Context, _ domain.ThoughtLog) error { return nil }
-func (n *noopRepo) GetThoughtLogsByIntentID(_ context.Context, _ string) ([]domain.ThoughtLog, error) {
-	return nil, nil
-}
-func (n *noopRepo) UpdateTradeThesis(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol, _ json.RawMessage) error {
-	return nil
-}
-func (n *noopRepo) GetMaxBarHighSince(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _ time.Time) (float64, error) {
-	return 0, nil
-}
-
-// noopPnLRepo implements ports.PnLPort as a no-op for backtest mode.
-// LedgerWriter calls UpsertDailyPnL/SaveEquityPoint which we discard.
-type noopPnLRepo struct{}
-
-func (n *noopPnLRepo) UpsertDailyPnL(_ context.Context, _ domain.DailyPnL) error { return nil }
-func (n *noopPnLRepo) GetDailyPnL(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) ([]domain.DailyPnL, error) {
-	return nil, nil
-}
-func (n *noopPnLRepo) SaveEquityPoint(_ context.Context, _ domain.EquityPoint) error { return nil }
-func (n *noopPnLRepo) GetEquityCurve(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) ([]domain.EquityPoint, error) {
-	return nil, nil
-}
-func (n *noopPnLRepo) GetDailyRealizedPnL(_ context.Context, _ string, _ domain.EnvMode, _ time.Time) (float64, error) {
-	return 0, nil
-}
-func (n *noopPnLRepo) GetBucketedEquityCurve(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time, _ string) ([]domain.EquityPoint, error) {
-	return nil, nil
-}
-func (n *noopPnLRepo) GetMaxDrawdown(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (float64, error) {
-	return 0, nil
-}
-func (n *noopPnLRepo) GetSharpe(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (*float64, error) {
-	return nil, nil
-}
-func (n *noopPnLRepo) GetSortino(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (*float64, error) {
-	return nil, nil
-}
-func (n *noopPnLRepo) UpsertStrategyDailyPnL(_ context.Context, _ domain.StrategyDailyPnL) error {
-	return nil
-}
-func (n *noopPnLRepo) GetStrategyDailyPnL(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) ([]domain.StrategyDailyPnL, error) {
-	return nil, nil
-}
-func (n *noopPnLRepo) SaveStrategyEquityPoint(_ context.Context, _ domain.StrategyEquityPoint) error {
-	return nil
-}
-func (n *noopPnLRepo) GetStrategyEquityCurve(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) ([]domain.StrategyEquityPoint, error) {
-	return nil, nil
-}
-func (n *noopPnLRepo) SaveStrategySignalEvent(_ context.Context, _ domain.StrategySignalEvent) error {
-	return nil
-}
-func (n *noopPnLRepo) GetStrategySignalEvents(_ context.Context, _ ports.StrategySignalQuery) (ports.StrategySignalPage, error) {
-	return ports.StrategySignalPage{}, nil
-}
-func (n *noopPnLRepo) GetStrategyDashboard(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) (domain.StrategyDashboard, error) {
-	return domain.StrategyDashboard{}, nil
-}
-func (n *noopPnLRepo) ListStrategySummaries(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) ([]domain.StrategySummaryRow, error) {
-	return nil, nil
-}
-func (n *noopPnLRepo) ListSymbolAttribution(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) ([]domain.SymbolAttribution, error) {
-	return nil, nil
 }

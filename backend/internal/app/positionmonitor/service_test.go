@@ -1100,3 +1100,199 @@ func TestService_resolveExitRules_FallsBackToDefaultsWhenSpecStoreIsNil(t *testi
 	assert.Equal(t, domain.ExitRuleMaxLoss, rules[0].Type)
 	assert.Equal(t, domain.ExitRuleEODFlatten, rules[1].Type)
 }
+
+// ---------------------------------------------------------------------------
+// Backtest-mode tests
+// ---------------------------------------------------------------------------
+
+type mockBrokerWithTracking struct {
+	mockBroker
+	mu                 sync.Mutex
+	getPositionsCalled bool
+}
+
+func (m *mockBrokerWithTracking) GetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
+	m.mu.Lock()
+	m.getPositionsCalled = true
+	m.mu.Unlock()
+	return m.mockBroker.GetPositions(ctx, tenantID, envMode)
+}
+
+func TestEvalExitRules_TriggersEODFlatten(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	et, _ := time.LoadLocation("America/New_York")
+	entryTime := time.Date(2026, 3, 10, 10, 0, 0, 0, et) // Tuesday 10:00 ET
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithNowFunc(func() time.Time { return entryTime }),
+		WithDisableTickLoop(),
+		WithDisableReconcile(),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, svc.Start(ctx))
+	defer svc.Stop()
+
+	svc.processFill(fillMsg{
+		Symbol:     domain.Symbol("AAPL"),
+		Side:       "BUY",
+		Price:      150,
+		Quantity:   10,
+		FilledAt:   entryTime,
+		Strategy:   "orb_break_retest",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules: []domain.ExitRule{
+			mustExitRule(t, domain.ExitRuleEODFlatten, map[string]float64{"minutes_before_close": 5}),
+		},
+	})
+	require.Equal(t, 1, svc.PositionCount())
+
+	barTime := time.Date(2026, 3, 10, 15, 56, 0, 0, et) // 15:56 ET — 4 min before close
+	pc.UpdatePrice(domain.Symbol("AAPL"), 155, barTime)
+
+	svc.EvalExitRules(barTime)
+
+	require.Eventually(t, func() bool {
+		return bus.publishedCount(domain.EventExitTriggered) == 1 &&
+			bus.publishedCount(domain.EventOrderIntentCreated) == 1
+	}, 500*time.Millisecond, 10*time.Millisecond)
+}
+
+func TestEvalExitRules_DrainsFillsBeforeEval(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	et, _ := time.LoadLocation("America/New_York")
+	entryTime := time.Date(2026, 3, 10, 10, 0, 0, 0, et)
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithNowFunc(func() time.Time { return entryTime }),
+		WithDisableTickLoop(),
+		WithDisableReconcile(),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, svc.Start(ctx))
+	defer svc.Stop()
+
+	// Enqueue fill via channel (as the event bus handler would).
+	svc.fills <- fillMsg{
+		Symbol:     domain.Symbol("MSFT"),
+		Side:       "BUY",
+		Price:      400,
+		Quantity:   5,
+		FilledAt:   entryTime,
+		Strategy:   "orb_break_retest",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules: []domain.ExitRule{
+			mustExitRule(t, domain.ExitRuleEODFlatten, map[string]float64{"minutes_before_close": 5}),
+		},
+	}
+
+	barTime := time.Date(2026, 3, 10, 15, 56, 0, 0, et)
+	pc.UpdatePrice(domain.Symbol("MSFT"), 410, barTime)
+
+	// EvalExitRules should drain the pending fill first, then evaluate.
+	svc.EvalExitRules(barTime)
+
+	assert.Equal(t, 1, svc.PositionCount(), "fill should be drained and processed")
+
+	require.Eventually(t, func() bool {
+		return bus.publishedCount(domain.EventExitTriggered) == 1
+	}, 500*time.Millisecond, 10*time.Millisecond)
+}
+
+func TestDisableTickLoop_NoTickFires(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	now := time.Date(2026, 3, 10, 15, 56, 0, 0, time.UTC)
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithNowFunc(func() time.Time { return now }),
+		WithTickInterval(5*time.Millisecond),
+		WithDisableTickLoop(),
+		WithDisableReconcile(),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, svc.Start(ctx))
+	defer svc.Stop()
+
+	svc.processFill(fillMsg{
+		Symbol:     domain.Symbol("AAPL"),
+		Side:       "BUY",
+		Price:      150,
+		Quantity:   10,
+		FilledAt:   now.Add(-5 * time.Minute),
+		Strategy:   "orb_break_retest",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules: []domain.ExitRule{
+			mustExitRule(t, domain.ExitRuleEODFlatten, map[string]float64{"minutes_before_close": 5}),
+		},
+	})
+
+	pos := svc.positions["tenant-1:Paper:AAPL"]
+	require.NotNil(t, pos)
+	pos.HighWaterMark = 200
+	pc.UpdatePrice(domain.Symbol("AAPL"), 180, now)
+
+	// With 5ms tick interval, multiple ticks would fire in 100ms if enabled.
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, 0, bus.totalPublished(), "tick loop disabled — no events should be published")
+}
+
+func TestWithDisableReconcile_SkipsBootstrap(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+
+	broker := &mockBrokerWithTracking{
+		mockBroker: mockBroker{positions: []domain.Trade{{
+			Symbol:     domain.Symbol("AAPL"),
+			Quantity:   10,
+			Price:      150,
+			AssetClass: domain.AssetClassEquity,
+			TenantID:   "tenant-1",
+			EnvMode:    domain.EnvModePaper,
+		}}},
+	}
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+
+	repo := &mockRepo{trades: []domain.Trade{{
+		Symbol:     domain.Symbol("AAPL"),
+		Side:       "BUY",
+		Price:      150,
+		Quantity:   10,
+		Strategy:   "orb_break_retest",
+		AssetClass: domain.AssetClassEquity,
+		Time:       time.Now().Add(-10 * time.Minute),
+		TenantID:   "tenant-1",
+		EnvMode:    domain.EnvModePaper,
+	}}}
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithBroker(broker),
+		WithRepo(repo),
+		WithDisableReconcile(),
+		WithDisableTickLoop(),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, svc.Start(ctx))
+	defer svc.Stop()
+
+	broker.mu.Lock()
+	called := broker.getPositionsCalled
+	broker.mu.Unlock()
+
+	assert.False(t, called, "GetPositions must not be called when reconcile is disabled")
+	assert.Equal(t, 0, svc.PositionCount(), "no positions should be bootstrapped")
+}

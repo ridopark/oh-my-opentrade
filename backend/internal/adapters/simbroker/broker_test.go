@@ -8,11 +8,17 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/adapters/simbroker"
+	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var _ ports.BrokerPort = (*simbroker.Broker)(nil)
+var _ execution.QuoteProvider = (*simbroker.Broker)(nil)
+var _ ports.AccountPort = (*simbroker.Broker)(nil)
 
 func newIntent(sym domain.Symbol, dir domain.Direction, qty float64) domain.OrderIntent {
 	return domain.OrderIntent{
@@ -370,4 +376,137 @@ func TestSubmitOrder_ConcurrentDoesNotPanic(t *testing.T) {
 	assert.Len(t, ids, n)
 	orders, _ := b.Stats()
 	assert.Equal(t, n, orders)
+}
+
+func TestGetQuote(t *testing.T) {
+	log := zerolog.Nop()
+	bps := int64(10)
+	b := simbroker.New(simbroker.Config{SlippageBPS: bps}, log)
+
+	sym := domain.Symbol("SPY")
+	price := 100.0
+	b.UpdatePrice(sym, price, time.Unix(1700002000, 0).UTC())
+
+	bid, ask, err := b.GetQuote(context.Background(), sym)
+	require.NoError(t, err)
+
+	spreadHalf := price * float64(bps) / 10000.0 / 2.0
+	assert.InEpsilon(t, price-spreadHalf, bid, 1e-12)
+	assert.InEpsilon(t, price+spreadHalf, ask, 1e-12)
+	assert.Less(t, bid, price)
+	assert.Greater(t, ask, price)
+}
+
+func TestGetQuote_NoPrice(t *testing.T) {
+	log := zerolog.Nop()
+	b := simbroker.New(simbroker.Config{SlippageBPS: 5}, log)
+
+	_, _, err := b.GetQuote(context.Background(), domain.Symbol("UNKNOWN"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no price available")
+}
+
+func TestGetAccountBuyingPower(t *testing.T) {
+	log := zerolog.Nop()
+	equity := 100_000.0
+	b := simbroker.New(simbroker.Config{SlippageBPS: 5, InitialEquity: equity}, log)
+
+	bp, err := b.GetAccountBuyingPower(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, equity, bp.DayTradingBuyingPower)
+	assert.Equal(t, equity, bp.EffectiveBuyingPower)
+
+	sym := domain.Symbol("SPY")
+	price := 50.0
+	b.UpdatePrice(sym, price, time.Unix(1700003000, 0).UTC())
+
+	_, err = b.SubmitOrder(context.Background(), newIntent(sym, domain.DirectionLong, 100))
+	require.NoError(t, err)
+
+	bp, err = b.GetAccountBuyingPower(context.Background())
+	require.NoError(t, err)
+
+	fillPrice := price + slippage(price, 5)
+	expectedCash := equity - fillPrice*100
+	assert.InEpsilon(t, expectedCash, bp.DayTradingBuyingPower, 1e-9)
+	assert.InEpsilon(t, expectedCash, bp.EffectiveBuyingPower, 1e-9)
+}
+
+func TestGetAccountEquity(t *testing.T) {
+	log := zerolog.Nop()
+	equity := 100_000.0
+	b := simbroker.New(simbroker.Config{SlippageBPS: 5, InitialEquity: equity}, log)
+
+	eq, err := b.GetAccountEquity(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, equity, eq)
+
+	sym := domain.Symbol("AAPL")
+	buyPrice := 100.0
+	b.UpdatePrice(sym, buyPrice, time.Unix(1700004000, 0).UTC())
+
+	_, err = b.SubmitOrder(context.Background(), newIntent(sym, domain.DirectionLong, 10))
+	require.NoError(t, err)
+
+	newPrice := 110.0
+	b.UpdatePrice(sym, newPrice, time.Unix(1700004001, 0).UTC())
+
+	eq, err = b.GetAccountEquity(context.Background())
+	require.NoError(t, err)
+	assert.Greater(t, eq, equity)
+}
+
+func TestGetAccountBuyingPower_IncreasesOnSell(t *testing.T) {
+	log := zerolog.Nop()
+	equity := 100_000.0
+	b := simbroker.New(simbroker.Config{SlippageBPS: 5, InitialEquity: equity}, log)
+	ctx := context.Background()
+
+	sym := domain.Symbol("TSLA")
+	b.UpdatePrice(sym, 200.0, time.Unix(1700005000, 0).UTC())
+
+	_, err := b.SubmitOrder(ctx, newIntent(sym, domain.DirectionLong, 50))
+	require.NoError(t, err)
+
+	bpAfterBuy, err := b.GetAccountBuyingPower(ctx)
+	require.NoError(t, err)
+	assert.Less(t, bpAfterBuy.DayTradingBuyingPower, equity)
+
+	b.UpdatePrice(sym, 210.0, time.Unix(1700005001, 0).UTC())
+	_, err = b.SubmitOrder(ctx, newIntent(sym, domain.DirectionShort, 50))
+	require.NoError(t, err)
+
+	bpAfterSell, err := b.GetAccountBuyingPower(ctx)
+	require.NoError(t, err)
+	assert.Greater(t, bpAfterSell.DayTradingBuyingPower, bpAfterBuy.DayTradingBuyingPower)
+}
+
+func TestGetAccountEquity_BuySellCycle(t *testing.T) {
+	log := zerolog.Nop()
+	equity := 50_000.0
+	b := simbroker.New(simbroker.Config{SlippageBPS: 5, InitialEquity: equity}, log)
+	ctx := context.Background()
+
+	sym := domain.Symbol("GOOG")
+	b.UpdatePrice(sym, 150.0, time.Unix(1700006000, 0).UTC())
+
+	_, err := b.SubmitOrder(ctx, newIntent(sym, domain.DirectionLong, 20))
+	require.NoError(t, err)
+
+	b.UpdatePrice(sym, 160.0, time.Unix(1700006001, 0).UTC())
+	eqMid, err := b.GetAccountEquity(ctx)
+	require.NoError(t, err)
+	assert.Greater(t, eqMid, equity)
+
+	_, err = b.SubmitOrder(ctx, newIntent(sym, domain.DirectionShort, 20))
+	require.NoError(t, err)
+
+	eqFinal, err := b.GetAccountEquity(ctx)
+	require.NoError(t, err)
+
+	positions, err := b.GetPositions(ctx, "tenant-1", domain.EnvModePaper)
+	require.NoError(t, err)
+	assert.Empty(t, positions)
+
+	assert.Greater(t, eqFinal, equity)
 }
