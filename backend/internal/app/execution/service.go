@@ -29,20 +29,22 @@ type pendingOrder struct {
 }
 
 type Service struct {
-	eventBus         ports.EventBusPort
-	broker           ports.BrokerPort
-	orderStream      ports.OrderStreamPort
-	repo             ports.RepositoryPort
-	riskEngine       *RiskEngine
-	slippageGuard    *SlippageGuard
-	killSwitch       *KillSwitch
-	dailyLossBreaker *risk.DailyLossBreaker
-	positionGate     *PositionGate
-	buyingPowerGuard *BuyingPowerGuard
-	accountEquity    float64
-	log              zerolog.Logger
-	metrics          *metrics.Metrics
-	pendingOrders    sync.Map // brokerOrderID → *pendingOrder
+	eventBus           ports.EventBusPort
+	broker             ports.BrokerPort
+	orderStream        ports.OrderStreamPort
+	repo               ports.RepositoryPort
+	riskEngine         *RiskEngine
+	slippageGuard      *SlippageGuard
+	spreadGuard        *SpreadGuard
+	tradingWindowGuard *TradingWindowGuard
+	killSwitch         *KillSwitch
+	dailyLossBreaker   *risk.DailyLossBreaker
+	positionGate       *PositionGate
+	buyingPowerGuard   *BuyingPowerGuard
+	accountEquity      float64
+	log                zerolog.Logger
+	metrics            *metrics.Metrics
+	pendingOrders      sync.Map // brokerOrderID → *pendingOrder
 }
 
 // Option is a functional option for Service.
@@ -57,6 +59,14 @@ func WithPositionGate(pg *PositionGate) Option {
 // Only set when DTBP_FALLBACK=true.
 func WithBuyingPowerGuard(bpg *BuyingPowerGuard) Option {
 	return func(s *Service) { s.buyingPowerGuard = bpg }
+}
+
+func WithSpreadGuard(sg *SpreadGuard) Option {
+	return func(s *Service) { s.spreadGuard = sg }
+}
+
+func WithTradingWindowGuard(twg *TradingWindowGuard) Option {
+	return func(s *Service) { s.tradingWindowGuard = twg }
 }
 
 func WithOrderStream(os ports.OrderStreamPort) Option {
@@ -220,7 +230,31 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			return nil
 		}
 	}
-	l.Info().Msg("order intent validated — passed risk and slippage checks")
+	// 3a. Trading window gate — reject entries outside allowed hours (opt-in via Meta).
+	if !intent.Direction.IsExit() && s.tradingWindowGuard != nil {
+		if err := s.tradingWindowGuard.Check(intent); err != nil {
+			l.Warn().Err(err).Msg("order intent rejected by trading window guard")
+			if s.metrics != nil {
+				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "trading_window").Inc()
+			}
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
+			return nil
+		}
+	}
+
+	// 3b. Spread gate — reject entries when bid-ask spread is too wide (opt-in via Meta).
+	if !intent.Direction.IsExit() && s.spreadGuard != nil {
+		if err := s.spreadGuard.Check(ctx, intent); err != nil {
+			l.Warn().Err(err).Msg("order intent rejected by spread guard")
+			if s.metrics != nil {
+				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "spread").Inc()
+			}
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
+			return nil
+		}
+	}
+
+	l.Info().Msg("order intent validated — passed risk, slippage, and market quality checks")
 	s.emit(ctx, domain.EventOrderIntentValidated, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusValidated))
 
 	// 4. Record stop — if this trips the kill switch, abort before broker submission.

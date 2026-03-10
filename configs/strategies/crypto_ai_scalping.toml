@@ -42,6 +42,11 @@ stop_bps = 45
 limit_offset_bps = 8
 risk_per_trade_bps = 10
 max_position_bps = 1000
+max_spread_bps = 25
+allowed_hours_start = "08:00"
+allowed_hours_end = "17:00"
+allowed_hours_tz = "America/New_York"
+skip_weekends = true
 
 [regime_filter]
 enabled = false
