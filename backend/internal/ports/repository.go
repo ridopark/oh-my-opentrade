@@ -43,6 +43,18 @@ type RepositoryPort interface {
 
 	// GetThoughtLogsByIntentID retrieves thought logs linked to a specific order intent.
 	GetThoughtLogsByIntentID(ctx context.Context, intentID string) ([]domain.ThoughtLog, error)
+
+	// GetNonTerminalOrders returns all orders that haven't reached a terminal state
+	// (filled/canceled/expired/rejected). Used at startup to reconcile pending orders.
+	GetNonTerminalOrders(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.BrokerOrder, error)
+
+	// GetRecordedFillQty returns the total recorded fill quantity for a symbol+side since a given time.
+	// Used during startup fill reconciliation to determine how much has already been recorded.
+	GetRecordedFillQty(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol, side string, since time.Time) (float64, error)
+
+	// UpdateOrderStatus sets the status of an order by broker_order_id.
+	// Used to mark orders as canceled/expired without a fill during reconciliation.
+	UpdateOrderStatus(ctx context.Context, brokerOrderID string, status string) error
 }
 
 // TradeQuery defines the filter and pagination parameters for listing trades.

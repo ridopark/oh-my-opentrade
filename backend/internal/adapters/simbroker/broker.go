@@ -266,8 +266,12 @@ func (b *Broker) GetPosition(_ context.Context, symbol domain.Symbol) (float64, 
 	return pos.quantity, nil
 }
 
-func (b *Broker) ClosePosition(_ context.Context, _ domain.Symbol) error {
-	return nil
+func (b *Broker) ClosePosition(_ context.Context, _ domain.Symbol) (string, error) {
+	return "", nil
+}
+
+func (b *Broker) GetOrderDetails(_ context.Context, _ string) (ports.OrderDetails, error) {
+	return ports.OrderDetails{}, nil
 }
 
 // GetFillPrice returns the fill price for a given order ID. Used by the backtest

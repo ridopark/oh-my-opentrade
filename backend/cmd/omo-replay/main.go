@@ -312,7 +312,7 @@ func main() {
 		if err := signalTracker.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start signal tracker")
 		}
-		if err := execBundle.Service.Start(ctx); err != nil {
+		if err := execBundle.Service.Start(ctx, "backtest", domain.EnvModePaper); err != nil {
 			log.Fatal().Err(err).Msg("failed to start execution service")
 		}
 		if err := posMonBundle.PriceCache.Start(ctx, eventBus); err != nil {

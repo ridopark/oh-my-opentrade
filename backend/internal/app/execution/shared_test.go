@@ -68,8 +68,12 @@ func (m *mockBroker) GetPosition(_ context.Context, _ domain.Symbol) (float64, e
 	return 0, nil
 }
 
-func (m *mockBroker) ClosePosition(_ context.Context, _ domain.Symbol) error {
-	return nil
+func (m *mockBroker) ClosePosition(_ context.Context, _ domain.Symbol) (string, error) {
+	return "", nil
+}
+
+func (m *mockBroker) GetOrderDetails(_ context.Context, _ string) (ports.OrderDetails, error) {
+	return ports.OrderDetails{}, nil
 }
 
 // mockRepository is used for testing
@@ -150,6 +154,15 @@ func (m *mockRepository) GetMaxBarHighSince(_ context.Context, _ domain.Symbol, 
 }
 func (m *mockRepository) GetLatestThesisForSymbol(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol) (json.RawMessage, error) {
 	return nil, nil
+}
+func (m *mockRepository) GetNonTerminalOrders(_ context.Context, _ string, _ domain.EnvMode) ([]domain.BrokerOrder, error) {
+	return nil, nil
+}
+func (m *mockRepository) GetRecordedFillQty(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol, _ string, _ time.Time) (float64, error) {
+	return 0, nil
+}
+func (m *mockRepository) UpdateOrderStatus(_ context.Context, _ string, _ string) error {
+	return nil
 }
 
 // createTestOrderIntent creates a valid domain.OrderIntent for testing.

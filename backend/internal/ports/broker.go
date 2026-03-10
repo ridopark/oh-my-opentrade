@@ -18,8 +18,23 @@ type BrokerPort interface {
 	// Returns (0, nil) if no position exists — this is not an error.
 	GetPosition(ctx context.Context, symbol domain.Symbol) (qty float64, err error)
 	// ClosePosition liquidates any remaining position for a symbol via broker-native API.
-	// Returns nil if the position was already fully closed (broker returns 404/422).
-	ClosePosition(ctx context.Context, symbol domain.Symbol) error
+	// Returns ("", nil) if the position was already fully closed (broker returns 404/422).
+	ClosePosition(ctx context.Context, symbol domain.Symbol) (orderID string, err error)
+	// GetOrderDetails returns full order details from the broker including cumulative fill info.
+	GetOrderDetails(ctx context.Context, orderID string) (OrderDetails, error)
+}
+
+// OrderDetails contains full order information from the broker, including
+// cumulative fill data needed for fill reconciliation.
+type OrderDetails struct {
+	BrokerOrderID  string
+	Status         string
+	FilledQty      float64
+	FilledAvgPrice float64
+	FilledAt       time.Time
+	Symbol         string
+	Side           string
+	Qty            float64
 }
 
 // OrderUpdate represents a real-time order status change received from the

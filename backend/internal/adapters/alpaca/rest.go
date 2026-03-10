@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
 
@@ -335,6 +336,60 @@ func (c *RESTClient) GetOrderStatus(ctx context.Context, orderID string) (string
 	return res.Status, nil
 }
 
+func (c *RESTClient) GetOrderDetails(ctx context.Context, orderID string) (ports.OrderDetails, error) {
+	resp, err := c.doReqWithOpts(ctx, http.MethodGet, pathOrders+"/"+orderID, nil, reqOpts{priority: PriorityBackground, maxRetries: 2})
+	if err != nil {
+		c.log.Error().Err(err).Str("order_id", orderID).Msg("get order details HTTP request failed")
+		return ports.OrderDetails{}, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		c.log.Error().Int("status", resp.StatusCode).Str("order_id", orderID).Msg("get order details failed")
+		return ports.OrderDetails{}, fmt.Errorf("alpaca: get order details failed (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var raw struct {
+		ID             string  `json:"id"`
+		Symbol         string  `json:"symbol"`
+		Side           string  `json:"side"`
+		Qty            string  `json:"qty"`
+		FilledQty      string  `json:"filled_qty"`
+		FilledAvgPrice string  `json:"filled_avg_price"`
+		Status         string  `json:"status"`
+		FilledAt       *string `json:"filled_at"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return ports.OrderDetails{}, fmt.Errorf("alpaca: failed to decode order details: %w", err)
+	}
+
+	qty, _ := strconv.ParseFloat(raw.Qty, 64)
+	filledQty, _ := strconv.ParseFloat(raw.FilledQty, 64)
+	filledAvgPrice, _ := strconv.ParseFloat(raw.FilledAvgPrice, 64)
+
+	var filledAt time.Time
+	if raw.FilledAt != nil && *raw.FilledAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, *raw.FilledAt); err == nil {
+			filledAt = t
+		}
+	}
+
+	c.log.Debug().Str("order_id", orderID).Str("status", raw.Status).
+		Float64("filled_qty", filledQty).Float64("filled_avg_price", filledAvgPrice).
+		Msg("order details retrieved")
+
+	return ports.OrderDetails{
+		BrokerOrderID:  raw.ID,
+		Status:         raw.Status,
+		FilledQty:      filledQty,
+		FilledAvgPrice: filledAvgPrice,
+		FilledAt:       filledAt,
+		Symbol:         raw.Symbol,
+		Side:           raw.Side,
+		Qty:            qty,
+	}, nil
+}
+
 // GetPositions retrieves all current positions.
 func (c *RESTClient) GetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
 	resp, err := c.doReqWithOpts(ctx, http.MethodGet, pathPositions, nil, reqOpts{priority: PriorityTrading, maxRetries: 3})
@@ -440,30 +495,37 @@ func (c *RESTClient) GetPosition(ctx context.Context, symbol domain.Symbol) (flo
 	return qty, nil
 }
 
-func (c *RESTClient) ClosePosition(ctx context.Context, symbol domain.Symbol) error {
+func (c *RESTClient) ClosePosition(ctx context.Context, symbol domain.Symbol) (string, error) {
 	symStr := strings.ReplaceAll(symbol.String(), "/", "")
 	path := pathPositions + "/" + symStr
 
 	resp, err := c.doReqWithOpts(ctx, http.MethodDelete, path, nil, reqOpts{priority: PriorityTrading, maxRetries: 2})
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 
-	// 404/422 = position already gone — success (idempotent).
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == 422 {
 		c.log.Info().Int("status", resp.StatusCode).Str("symbol", symStr).
 			Msg("close position: already gone")
-		return nil
+		return "", nil
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("alpaca: close position failed (status %d): %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("alpaca: close position failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	c.log.Info().Str("symbol", symStr).Msg("close position: DELETE accepted — sweep market order created")
-	return nil
+	var res struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return "", fmt.Errorf("alpaca: failed to decode close position response: %w", err)
+	}
+
+	c.log.Info().Str("symbol", symStr).Str("order_id", res.ID).
+		Msg("close position: DELETE accepted — sweep market order created")
+	return res.ID, nil
 }
 
 // GetQuote queries the latest quote for a given symbol from the Alpaca data API.

@@ -2,6 +2,8 @@ package execution
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"strings"
 	"sync"
@@ -46,6 +48,8 @@ type Service struct {
 	log                zerolog.Logger
 	metrics            *metrics.Metrics
 	pendingOrders      sync.Map // brokerOrderID → *pendingOrder
+	tenantID           string
+	envMode            domain.EnvMode
 }
 
 // Option is a functional option for Service.
@@ -121,7 +125,10 @@ func (s *Service) SetAccountEquity(equity float64) {
 // SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
 func (s *Service) SetMetrics(m *metrics.Metrics) { s.metrics = m }
 
-func (s *Service) Start(ctx context.Context) error {
+func (s *Service) Start(ctx context.Context, tenantID string, envMode domain.EnvMode) error {
+	s.tenantID = tenantID
+	s.envMode = envMode
+
 	if err := s.eventBus.SubscribeAsync(ctx, domain.EventOrderIntentCreated, s.handleIntent); err != nil {
 		return fmt.Errorf("execution: failed to subscribe to OrderIntentCreated: %w", err)
 	}
@@ -129,6 +136,8 @@ func (s *Service) Start(ctx context.Context) error {
 		return fmt.Errorf("execution: failed to subscribe to RiskDowngraded: %w", err)
 	}
 	s.log.Info().Msg("subscribed to OrderIntentCreated and RiskDowngraded events")
+
+	s.reconcileOnBoot(ctx)
 
 	if s.orderStream != nil {
 		ch, err := s.orderStream.SubscribeOrderUpdates(ctx)
@@ -141,6 +150,149 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// reconcileOnBoot runs once at startup BEFORE the WS listener starts.
+// It queries the DB for non-terminal orders and compares their recorded fill qty
+// against the broker's cumulative fill qty. Any delta is inserted as a synthetic
+// trade to bring the DB in sync with the broker (source of truth).
+func (s *Service) reconcileOnBoot(ctx context.Context) {
+	l := s.log.With().Str("component", "reconcile_on_boot").Logger()
+	l.Info().Msg("starting startup fill reconciliation")
+
+	orders, err := s.repo.GetNonTerminalOrders(ctx, s.tenantID, s.envMode)
+	if err != nil {
+		l.Error().Err(err).Msg("failed to query non-terminal orders — skipping reconciliation")
+		return
+	}
+
+	if len(orders) == 0 {
+		l.Info().Msg("no non-terminal orders to reconcile")
+		return
+	}
+
+	reconciled, updated := 0, 0
+	for _, order := range orders {
+		ol := l.With().
+			Str("broker_order_id", order.BrokerOrderID).
+			Str("symbol", string(order.Symbol)).
+			Str("side", order.Side).
+			Logger()
+
+		details, err := s.broker.GetOrderDetails(ctx, order.BrokerOrderID)
+		if err != nil {
+			ol.Warn().Err(err).Msg("reconcile: failed to get order details — skipping")
+			continue
+		}
+
+		if details.Status == "canceled" || details.Status == "expired" || details.Status == "rejected" {
+			if err := s.repo.UpdateOrderStatus(ctx, order.BrokerOrderID, details.Status); err != nil {
+				ol.Error().Err(err).Msg("reconcile: failed to update terminal status")
+			} else {
+				ol.Info().Str("status", details.Status).Msg("reconcile: marked order terminal")
+				updated++
+			}
+			continue
+		}
+
+		if details.FilledQty <= 0 {
+			ol.Debug().Str("status", details.Status).Msg("reconcile: order has no fills yet — skipping")
+			continue
+		}
+
+		dbFilledQty, err := s.repo.GetRecordedFillQty(ctx, s.tenantID, s.envMode, order.Symbol, order.Side, order.Time.Add(-1*time.Minute))
+		if err != nil {
+			ol.Error().Err(err).Msg("reconcile: failed to query recorded fill qty")
+			continue
+		}
+
+		delta := details.FilledQty - dbFilledQty
+		if delta < 1e-9 {
+			ol.Debug().
+				Float64("broker_filled", details.FilledQty).
+				Float64("db_filled", dbFilledQty).
+				Msg("reconcile: DB is in sync — no delta")
+			if details.Status == "filled" {
+				if err := s.repo.UpdateOrderStatus(ctx, order.BrokerOrderID, "filled"); err != nil {
+					ol.Error().Err(err).Msg("reconcile: failed to update order status to filled")
+				}
+			}
+			continue
+		}
+
+		tradeID := deterministicTradeID(order.BrokerOrderID, details.FilledQty)
+		fillTime := details.FilledAt
+		if fillTime.IsZero() {
+			fillTime = time.Now().UTC()
+		}
+
+		trade, tErr := domain.NewTrade(
+			fillTime, s.tenantID, s.envMode, tradeID,
+			order.Symbol, order.Side, delta, details.FilledAvgPrice, 0,
+			"FILLED", order.Strategy,
+			fmt.Sprintf("reconcile_on_boot: missed %.8f (broker=%.8f db=%.8f) for order %s", delta, details.FilledQty, dbFilledQty, order.BrokerOrderID),
+		)
+		if tErr != nil {
+			ol.Error().Err(tErr).Msg("reconcile: failed to construct synthetic trade")
+			continue
+		}
+
+		if sErr := s.repo.SaveTrade(ctx, trade); sErr != nil {
+			ol.Error().Err(sErr).Msg("reconcile: failed to save synthetic trade")
+			continue
+		}
+
+		if details.Status == "filled" {
+			if uErr := s.repo.UpdateOrderFill(ctx, order.BrokerOrderID, fillTime, details.FilledAvgPrice, details.FilledQty); uErr != nil {
+				ol.Error().Err(uErr).Msg("reconcile: failed to update order fill record")
+			}
+			if uErr := s.repo.UpdateOrderStatus(ctx, order.BrokerOrderID, "filled"); uErr != nil {
+				ol.Error().Err(uErr).Msg("reconcile: failed to update order status to filled")
+			}
+		}
+
+		reconciled++
+		ol.Info().
+			Float64("delta", delta).
+			Float64("broker_filled", details.FilledQty).
+			Float64("db_filled", dbFilledQty).
+			Float64("fill_price", details.FilledAvgPrice).
+			Str("trade_id", tradeID.String()).
+			Msg("reconcile: synthetic fill inserted for missed quantity")
+
+		s.emit(ctx, domain.EventFillReceived, s.tenantID, s.envMode, order.BrokerOrderID, map[string]any{
+			"broker_order_id": order.BrokerOrderID,
+			"symbol":          string(order.Symbol),
+			"side":            order.Side,
+			"quantity":        delta,
+			"price":           details.FilledAvgPrice,
+			"filled_at":       fillTime,
+			"strategy":        order.Strategy,
+			"synthetic":       true,
+		})
+	}
+
+	l.Info().
+		Int("orders_checked", len(orders)).
+		Int("fills_reconciled", reconciled).
+		Int("statuses_updated", updated).
+		Msg("startup fill reconciliation complete")
+}
+
+// deterministicTradeID generates an idempotent UUID from the broker order ID and cumulative
+// filled qty. Running reconciliation multiple times with the same data produces the same
+// trade ID, making the operation safe to repeat (INSERT will conflict on duplicate trade_id).
+func deterministicTradeID(brokerOrderID string, cumulativeFilledQty float64) uuid.UUID {
+	h := sha256.New()
+	h.Write([]byte(brokerOrderID))
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], uint64(cumulativeFilledQty*1e8))
+	h.Write(buf[:])
+	sum := h.Sum(nil)
+	id, _ := uuid.FromBytes(sum[:16])
+	id[6] = (id[6] & 0x0f) | 0x50 // version 5
+	id[8] = (id[8] & 0x3f) | 0x80 // variant RFC 4122
+	return id
 }
 
 // handleIntent processes a single OrderIntentCreated event through the execution pipeline.
@@ -337,13 +489,10 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		intent.Quantity = posQty
 		if intent.TimeInForce == "" {
 			intent.TimeInForce = "ioc"
-			buffer := 0.002 // 20bps for crypto
-			if intent.AssetClass != domain.AssetClassCrypto {
-				buffer = 0.001 // 10bps for equities
-			}
+			buffer := exitLimitBuffer(intent.Symbol, intent.AssetClass)
 			intent.LimitPrice *= (1 - buffer)
 		}
-		l.Info().Float64("exit_qty", posQty).Msg("resolved exit quantity from broker position")
+		l.Info().Float64("exit_qty", posQty).Float64("exit_buffer_bps", exitLimitBuffer(intent.Symbol, intent.AssetClass)*10000).Msg("resolved exit quantity from broker position")
 	}
 
 	// 5e. Cancel stale open buy orders for this symbol to prevent position doubling and wash trades.
@@ -741,8 +890,13 @@ func (s *Service) cleanupPendingOrder(brokerOrderID string) {
 }
 
 func (s *Service) sweepDustPosition(tenantID string, envMode domain.EnvMode, symbol domain.Symbol, brokerOrderID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	defer func() {
+		if s.positionGate != nil {
+			s.positionGate.ClearInflightExit(tenantID, envMode, symbol)
+		}
+	}()
 
 	l := s.log.With().
 		Str("symbol", string(symbol)).
@@ -753,48 +907,98 @@ func (s *Service) sweepDustPosition(tenantID string, envMode domain.EnvMode, sym
 	remainingQty, err := s.broker.GetPosition(ctx, symbol)
 	if err != nil {
 		l.Warn().Err(err).Msg("dust sweep: failed to query broker — clearing gate for retry")
-		if s.positionGate != nil {
-			s.positionGate.ClearInflightExit(tenantID, envMode, symbol)
-		}
 		return
 	}
 
 	if remainingQty <= 0 {
 		l.Info().Msg("dust sweep: broker confirms fully closed")
-		if s.positionGate != nil {
-			s.positionGate.ClearInflightExit(tenantID, envMode, symbol)
-		}
 		return
 	}
 
 	l.Info().Float64("remaining_qty", remainingQty).
 		Msg("dust sweep: remainder detected — sending DELETE to sweep")
 
-	if err := s.broker.ClosePosition(ctx, symbol); err != nil {
+	sweepOrderID, err := s.broker.ClosePosition(ctx, symbol)
+	if err != nil {
 		l.Error().Err(err).Msg("dust sweep: DELETE failed — clearing gate for retry")
-		if s.positionGate != nil {
-			s.positionGate.ClearInflightExit(tenantID, envMode, symbol)
-		}
 		return
 	}
 
-	l.Info().Msg("dust sweep: DELETE accepted — fills will arrive via WS")
+	if sweepOrderID == "" {
+		l.Info().Msg("dust sweep: position already closed (404/422)")
+		return
+	}
 
-	// Keep exit gate locked while Alpaca processes the sweep market order.
-	// Clear after delay to give the WS fill time to arrive and remove the position.
-	go func() {
-		time.Sleep(5 * time.Second)
-		if s.positionGate != nil {
-			s.positionGate.ClearInflightExit(tenantID, envMode, symbol)
+	l.Info().Str("sweep_order_id", sweepOrderID).Msg("dust sweep: DELETE accepted — polling for fill confirmation")
+
+	// Poll broker for fill instead of relying on WS (the sweep creates a new order ID
+	// that isn't in pendingOrders, so WS fills would be silently dropped).
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			l.Warn().Str("sweep_order_id", sweepOrderID).Msg("dust sweep: timed out waiting for fill — will be caught by reconciliation")
+			return
+		case <-ticker.C:
+			details, err := s.broker.GetOrderDetails(ctx, sweepOrderID)
+			if err != nil {
+				l.Warn().Err(err).Str("sweep_order_id", sweepOrderID).Msg("dust sweep: failed to get order details — retrying")
+				continue
+			}
+
+			switch details.Status {
+			case "filled":
+				l.Info().
+					Str("sweep_order_id", sweepOrderID).
+					Float64("filled_qty", details.FilledQty).
+					Float64("filled_avg_price", details.FilledAvgPrice).
+					Msg("dust sweep: fill confirmed via REST — recording trade")
+
+				fillTime := details.FilledAt
+				if fillTime.IsZero() {
+					fillTime = time.Now().UTC()
+				}
+				trade, tErr := domain.NewTrade(fillTime, tenantID, envMode, uuid.New(), symbol, "SELL", details.FilledQty, details.FilledAvgPrice, 0, "FILLED", "dust_sweep", fmt.Sprintf("sweep remainder after exit %s", brokerOrderID))
+				if tErr != nil {
+					l.Error().Err(tErr).Msg("dust sweep: failed to construct trade")
+					return
+				}
+				if sErr := s.repo.SaveTrade(ctx, trade); sErr != nil {
+					l.Error().Err(sErr).Msg("dust sweep: failed to save trade")
+					return
+				}
+
+				s.emit(ctx, domain.EventFillReceived, tenantID, envMode, sweepOrderID, map[string]any{
+					"broker_order_id": sweepOrderID,
+					"symbol":          string(symbol),
+					"side":            "SELL",
+					"quantity":        details.FilledQty,
+					"price":           details.FilledAvgPrice,
+					"filled_at":       fillTime,
+					"strategy":        "dust_sweep",
+				})
+				return
+
+			case "canceled", "expired", "rejected":
+				l.Warn().Str("sweep_order_id", sweepOrderID).Str("status", details.Status).Msg("dust sweep: order terminal without fill")
+				return
+			}
+			// "new", "accepted", "pending_new", "partially_filled" — keep polling
 		}
-	}()
+	}
 }
 
 const reconcileInterval = 60 * time.Second
+const dbReconcileInterval = 5 * time.Minute
 
 func (s *Service) runReconciliationLoop(ctx context.Context) {
 	ticker := time.NewTicker(reconcileInterval)
 	defer ticker.Stop()
+
+	dbTicker := time.NewTicker(dbReconcileInterval)
+	defer dbTicker.Stop()
 
 	for {
 		select {
@@ -802,6 +1006,8 @@ func (s *Service) runReconciliationLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.reconcilePendingOrders(ctx)
+		case <-dbTicker.C:
+			s.reconcileOnBoot(ctx)
 		}
 	}
 }
@@ -869,6 +1075,25 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 
 		return true
 	})
+}
+
+// exitLimitBuffer returns the IOC limit price buffer (as a fraction) for exit orders.
+// Wide-spread crypto assets get a larger buffer to avoid instant cancellation.
+func exitLimitBuffer(sym domain.Symbol, ac domain.AssetClass) float64 {
+	if ac != domain.AssetClassCrypto {
+		return 0.001 // 10bps for equities
+	}
+	// Illiquid altcoins need wider buffers; their spreads often exceed 50bps.
+	s := sym.String()
+	switch {
+	case strings.Contains(s, "DOGE"),
+		strings.Contains(s, "PEPE"),
+		strings.Contains(s, "AVAX"),
+		strings.Contains(s, "SHIB"):
+		return 0.01 // 100bps for illiquid altcoins
+	default:
+		return 0.005 // 50bps for liquid crypto (BTC, ETH, SOL)
+	}
 }
 
 func (s *Service) emit(ctx context.Context, eventType string, tenantID string, envMode domain.EnvMode, idempotencyKey string, payload any) {

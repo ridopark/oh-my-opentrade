@@ -61,3 +61,17 @@ func (n *NoopRepo) UpdateTradeThesis(_ context.Context, _ string, _ domain.EnvMo
 func (n *NoopRepo) GetMaxBarHighSince(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _ time.Time) (float64, error) {
 	return 0, nil
 }
+
+func (n *NoopRepo) GetLatestThesisForSymbol(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol) (json.RawMessage, error) {
+	return nil, nil
+}
+
+func (n *NoopRepo) GetNonTerminalOrders(_ context.Context, _ string, _ domain.EnvMode) ([]domain.BrokerOrder, error) {
+	return nil, nil
+}
+
+func (n *NoopRepo) GetRecordedFillQty(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol, _ string, _ time.Time) (float64, error) {
+	return 0, nil
+}
+
+func (n *NoopRepo) UpdateOrderStatus(_ context.Context, _ string, _ string) error { return nil }

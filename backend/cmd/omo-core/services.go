@@ -460,7 +460,7 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 	if err := svc.signalTracker.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start signal tracker")
 	}
-	if err := svc.execution.Start(ctx); err != nil {
+	if err := svc.execution.Start(ctx, "default", domain.EnvModePaper); err != nil {
 		log.Fatal().Err(err).Msg("failed to start execution")
 	}
 	if err := svc.priceCache.Start(ctx, infra.eventBus); err != nil {

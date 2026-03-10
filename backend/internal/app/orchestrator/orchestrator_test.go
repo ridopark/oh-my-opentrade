@@ -53,7 +53,12 @@ func (m *mockBroker) CancelOpenOrders(_ context.Context, _ domain.Symbol, _ stri
 func (m *mockBroker) GetPosition(_ context.Context, _ domain.Symbol) (float64, error) {
 	return 0, nil
 }
-func (m *mockBroker) ClosePosition(_ context.Context, _ domain.Symbol) error { return nil }
+func (m *mockBroker) ClosePosition(_ context.Context, _ domain.Symbol) (string, error) {
+	return "", nil
+}
+func (m *mockBroker) GetOrderDetails(_ context.Context, _ string) (ports.OrderDetails, error) {
+	return ports.OrderDetails{}, nil
+}
 
 // mockRepo implements ports.RepositoryPort (needed for execution.NewService).
 type mockRepo struct{}
@@ -93,6 +98,13 @@ func (m *mockRepo) GetMaxBarHighSince(_ context.Context, _ domain.Symbol, _ doma
 func (m *mockRepo) GetLatestThesisForSymbol(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol) (json.RawMessage, error) {
 	return nil, nil
 }
+func (m *mockRepo) GetNonTerminalOrders(_ context.Context, _ string, _ domain.EnvMode) ([]domain.BrokerOrder, error) {
+	return nil, nil
+}
+func (m *mockRepo) GetRecordedFillQty(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol, _ string, _ time.Time) (float64, error) {
+	return 0, nil
+}
+func (m *mockRepo) UpdateOrderStatus(_ context.Context, _ string, _ string) error { return nil }
 
 // mockPnLRepo implements ports.PnLPort (needed for perf.NewLedgerWriter).
 type mockPnLRepo struct{}

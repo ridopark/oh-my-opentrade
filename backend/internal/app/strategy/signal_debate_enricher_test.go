@@ -83,6 +83,13 @@ func (m *mockRepository) GetMaxBarHighSince(context.Context, domain.Symbol, doma
 func (m *mockRepository) GetLatestThesisForSymbol(context.Context, string, domain.EnvMode, domain.Symbol) (json.RawMessage, error) {
 	return nil, nil
 }
+func (m *mockRepository) GetNonTerminalOrders(context.Context, string, domain.EnvMode) ([]domain.BrokerOrder, error) {
+	return nil, nil
+}
+func (m *mockRepository) GetRecordedFillQty(context.Context, string, domain.EnvMode, domain.Symbol, string, time.Time) (float64, error) {
+	return 0, nil
+}
+func (m *mockRepository) UpdateOrderStatus(context.Context, string, string) error { return nil }
 
 func (f *fakeAIAdvisor) RequestDebate(ctx context.Context, symbol domain.Symbol, regime domain.MarketRegime, indicators domain.IndicatorSnapshot, opts ...ports.DebateOption) (*domain.AdvisoryDecision, error) {
 	f.calls++
