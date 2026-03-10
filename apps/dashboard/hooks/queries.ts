@@ -12,21 +12,35 @@ import type {
   StrategyDashboard,
   StateSnapshot,
   StrategySignalsResponse,
+  StrategyRow,
+  SymbolAttribution,
 } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Query keys — centralised to avoid typos & enable targeted invalidation
 // ---------------------------------------------------------------------------
 
+export interface PerformanceFilters {
+  from?: string;  // RFC3339
+  to?: string;    // RFC3339
+  range?: string; // "7d" | "30d" | "90d" | "all"
+  strategy?: string;
+  symbol?: string;
+}
+
 export const queryKeys = {
   health: ["health", "services"] as const,
   strategyInstances: ["strategies", "instances"] as const,
   currentStrategy: ["strategies", "current"] as const,
   allStrategiesDNA: ["strategies", "dna", "all"] as const,
-  performanceDashboard: (range: string) =>
-    ["performance", "dashboard", range] as const,
-  performanceTrades: (range: string) =>
-    ["performance", "trades", range] as const,
+  performanceDashboard: (filters: PerformanceFilters) =>
+    ["performance", "dashboard", filters] as const,
+  performanceTrades: (filters: PerformanceFilters) =>
+    ["performance", "trades", filters] as const,
+  performanceStrategies: (filters: PerformanceFilters) =>
+    ["performance", "strategies", filters] as const,
+  performanceSymbols: (filters: PerformanceFilters) =>
+    ["performance", "symbols", filters] as const,
   strategyList: ["strategies", "perf", "list"] as const,
   strategyDashboard: (id: string, range: string) =>
     ["strategies", "perf", id, "dashboard", range] as const,
@@ -154,13 +168,30 @@ export function useAllStrategiesDNA() {
 // Performance dashboard
 // ---------------------------------------------------------------------------
 
-export function usePerformanceDashboard(range: string) {
+function buildFilterQuery(filters: PerformanceFilters): string {
+  const params = new URLSearchParams();
+  if (filters.from && filters.to) {
+    params.set("from", filters.from);
+    params.set("to", filters.to);
+  } else if (filters.range) {
+    params.set("range", filters.range);
+  }
+  if (filters.strategy && filters.strategy !== "all") {
+    params.set("strategy", filters.strategy);
+  }
+  if (filters.symbol && filters.symbol !== "all") {
+    params.set("symbol", filters.symbol);
+  }
+  return params.toString();
+}
+
+export function usePerformanceDashboard(filters: PerformanceFilters) {
   return useQuery({
-    queryKey: queryKeys.performanceDashboard(range),
-    queryFn: () =>
-      fetchJSON<PerformanceDashboard>(
-        `/api/performance/dashboard?range=${range}`,
-      ),
+    queryKey: queryKeys.performanceDashboard(filters),
+    queryFn: () => {
+      const qs = buildFilterQuery(filters);
+      return fetchJSON<PerformanceDashboard>(`/api/performance/dashboard?${qs}`);
+    },
   });
 }
 
@@ -168,19 +199,42 @@ export function usePerformanceDashboard(range: string) {
 // Performance trades (cursor-based infinite query)
 // ---------------------------------------------------------------------------
 
-export function usePerformanceTrades(range: string) {
+export function usePerformanceTrades(filters: PerformanceFilters) {
   return useInfiniteQuery({
-    queryKey: queryKeys.performanceTrades(range),
+    queryKey: queryKeys.performanceTrades(filters),
     queryFn: ({ pageParam }) => {
+      const qs = buildFilterQuery(filters);
       const params = pageParam
-        ? `cursor=${encodeURIComponent(pageParam)}`
-        : `range=${range}&limit=50`;
-      return fetchJSON<TradesResponse>(
-        `/api/performance/trades?${params}`,
-      );
+        ? `cursor=${encodeURIComponent(pageParam)}&${qs}`
+        : `${qs}&limit=50`;
+      return fetchJSON<TradesResponse>(`/api/performance/trades?${params}`);
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.next_cursor,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Performance strategies and symbols
+// ---------------------------------------------------------------------------
+
+export function usePerformanceStrategies(filters: PerformanceFilters) {
+  return useQuery({
+    queryKey: queryKeys.performanceStrategies(filters),
+    queryFn: () => {
+      const qs = buildFilterQuery(filters);
+      return fetchJSON<StrategyRow[]>(`/api/performance/strategies?${qs}`);
+    },
+  });
+}
+
+export function usePerformanceSymbols(filters: PerformanceFilters) {
+  return useQuery({
+    queryKey: queryKeys.performanceSymbols(filters),
+    queryFn: () => {
+      const qs = buildFilterQuery(filters);
+      return fetchJSON<SymbolAttribution[]>(`/api/performance/symbols?${qs}`);
+    },
   });
 }
 
