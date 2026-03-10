@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +16,13 @@ import (
 )
 
 const cryptoStaleThreshold = 30 * time.Minute
+
+const (
+	maxGhostProbes        = 3
+	ghostColdTurkeyPeriod = 2 * time.Minute
+	cryptoStartupDelay    = 8 * time.Second
+	minCryptoBackoff      = 30 * time.Second
+)
 
 // cryptoConnectFn is the signature for the underlying crypto WebSocket connect call.
 // Injected at construction time so tests can replace it with a fake.
@@ -41,6 +47,7 @@ type CryptoWSClient struct {
 	cancel               context.CancelFunc
 	mu                   sync.Mutex
 
+	startupDelay   time.Duration // delay before first connection; allows previous session to expire
 	connectFactory func(symStrs []string, barHandler func(alpacastream.CryptoBar), tradeHandler func(alpacastream.CryptoTrade)) cryptoConnectFn
 }
 
@@ -68,6 +75,7 @@ func NewCryptoWSClient(cryptoDataURL, apiKey, apiSecret, feed string, fetcher Ba
 		fetcher:       fetcher,
 		log:           log.With().Str("component", "crypto_ws").Logger(),
 		tracker:       newFeedTracker(),
+		startupDelay:  cryptoStartupDelay,
 	}
 	c.connectFactory = c.defaultConnectFactory
 	return c, nil
@@ -107,7 +115,7 @@ func (c *CryptoWSClient) defaultConnectFactory(symStrs []string, barHandler func
 			alpacastream.WithCredentials(c.apiKey, c.apiSecret),
 			alpacastream.WithCryptoBars(barHandler, symStrs...),
 			alpacastream.WithCryptoTrades(tradeHandler, symStrs...),
-			alpacastream.WithReconnectSettings(1, 0),
+			alpacastream.WithReconnectSettings(3, 5*time.Second),
 		)
 		if err := sc.Connect(ctx); err != nil {
 			return err
@@ -137,6 +145,16 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 	symStrs := make([]string, len(symbols))
 	for i, s := range symbols {
 		symStrs[i] = string(s)
+	}
+
+	if c.startupDelay > 0 {
+		c.log.Info().Dur("delay", c.startupDelay).
+			Msg("crypto WS: startup delay before connecting")
+		select {
+		case <-time.After(c.startupDelay):
+		case <-ctx.Done():
+			return nil
+		}
 	}
 
 	streamCtx, cancel := context.WithCancel(ctx)
@@ -424,13 +442,13 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			go c.cryptoRestPoller(pollCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler, cryptoRestPollInterval)
 		}
 
-		// Probe reconnect loop.
 		probeIdx := 0
 		reconnected := false
-		for !reconnected {
+		for !reconnected && probeIdx < maxGhostProbes {
 			wait := ghostWait(probeIdx)
 			probeIdx++
-			c.log.Info().Dur("retry_in", wait).Int("probe", probeIdx).Msg("crypto ghost session: probing reconnect")
+			c.log.Info().Dur("retry_in", wait).Int("probe", probeIdx).Int("max", maxGhostProbes).
+				Msg("crypto ghost session: probing reconnect")
 
 			select {
 			case <-time.After(wait):
@@ -442,7 +460,6 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 				return nil
 			}
 
-			// Probe: try connecting and watch for a real bar to arrive.
 			var probeGotBar atomic.Bool
 			probeBarHandler := func(cb alpacastream.CryptoBar) {
 				probeGotBar.Store(true)
@@ -452,7 +469,7 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 				}
 				_ = callHandler(streamCtx, bar, false)
 			}
-			probeTradeHandler := func(ct alpacastream.CryptoTrade) {} // no-op during probe
+			probeTradeHandler := func(ct alpacastream.CryptoTrade) {}
 			probeConnect := c.connectFactory(symStrs, probeBarHandler, probeTradeHandler)
 			probeCtx, probeCancel := context.WithTimeout(streamCtx, 8*time.Second)
 			probeErr := probeConnect(probeCtx)
@@ -467,44 +484,52 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			}
 
 			if probeGotBar.Load() {
-				c.log.Info().Int("probe", probeIdx).Msg("crypto ghost session: bar received during probe — ghost cleared")
+				c.log.Info().Int("probe", probeIdx).Msg("crypto ghost session: bar received — ghost cleared")
 				reconnected = true
 				continue
 			}
 
-			// No bar received. Classify by error.
-			isStillGhost := probeErr != nil && (strings.Contains(probeErr.Error(), "connection limit exceeded") ||
-				strings.Contains(probeErr.Error(), "406") ||
-				strings.Contains(probeErr.Error(), "max reconnect limit"))
+			isStillGhost := probeErr != nil && errors.Is(probeErr, alpacastream.ErrConnectionLimitExceeded)
 			switch {
 			case probeErr == nil:
-				c.log.Info().Int("probe", probeIdx).Msg("crypto ghost session: clean probe close — ghost cleared")
+				c.log.Info().Int("probe", probeIdx).Msg("crypto ghost session: clean close — ghost cleared")
 				reconnected = true
 			case probeCtx.Err() == context.DeadlineExceeded:
-				c.log.Info().Int("probe", probeIdx).Msg("crypto ghost session: probe timeout with no bar — still alive")
+				c.log.Info().Int("probe", probeIdx).Msg("crypto ghost session: probe timeout — still alive")
 			case isStillGhost:
-				c.log.Info().Int("probe", probeIdx).Err(probeErr).Msg("crypto ghost session: still alive, continuing probes")
+				c.log.Info().Int("probe", probeIdx).Err(probeErr).Msg("crypto ghost session: 406 — still alive")
 			default:
 				c.log.Info().Int("probe", probeIdx).Err(probeErr).Msg("crypto ghost session: non-406 error — ghost cleared")
 				reconnected = true
 			}
-		} // end for !reconnected
+		}
 
-		// Record ghost window duration.
-		ghostDur := time.Since(ghostStart)
-		c.log.Info().Dur("ghost_duration", ghostDur).Msg("crypto ghost session resolved")
-
-		// Stop REST poller.
 		if ghostPollCancel != nil {
 			ghostPollCancel()
 		}
 
-		// Gap-fill: fetch any bars missed between last REST poll and WS resume.
+		ghostDur := time.Since(ghostStart)
+
+		if !reconnected {
+			c.log.Warn().Int("probes", probeIdx).Dur("cold_turkey", ghostColdTurkeyPeriod).
+				Msg("crypto ghost session: max probes reached — entering cold turkey silence to let Alpaca session expire")
+			c.tracker.setState("cold_turkey")
+			select {
+			case <-time.After(ghostColdTurkeyPeriod):
+			case <-streamCtx.Done():
+				c.tracker.setState("stopped")
+				return nil
+			}
+			c.log.Info().Dur("ghost_duration", ghostDur+ghostColdTurkeyPeriod).
+				Msg("crypto ghost session: cold turkey complete — resuming reconnect loop")
+		} else {
+			c.log.Info().Dur("ghost_duration", ghostDur).Msg("crypto ghost session resolved")
+		}
+
 		if c.fetcher != nil {
 			c.cryptoGapFill(streamCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler)
 		}
 
-		// Reset counters — we've successfully probed through the ghost.
 		attempt = 0
 		consecutiveFails = 0
 	}

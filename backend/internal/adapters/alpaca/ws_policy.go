@@ -1,11 +1,14 @@
 package alpaca
 
 import (
+	"errors"
 	"math"
 	"math/rand"
 	"strings"
 	"sync"
 	"time"
+
+	alpacastream "github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
 )
 
 // ---------------------------------------------------------------------------
@@ -68,18 +71,32 @@ const (
 	ErrFatal
 )
 
-// classifyError inspects an error string and returns its class.
+// classifyError inspects an error and returns its class.
+// It first checks SDK typed errors (via errors.Is) for reliable classification,
+// then falls back to string matching for non-SDK errors.
 // connErr may be nil (clean close) — caller handles nil separately.
 func classifyError(connErr error) ErrorClass {
 	if connErr == nil {
 		return ErrTransient
 	}
+
+	// Prefer SDK typed errors — these survive fmt.Errorf("%w") wrapping.
+	if errors.Is(connErr, alpacastream.ErrConnectionLimitExceeded) {
+		return ErrGhost
+	}
+	if errors.Is(connErr, alpacastream.ErrInvalidCredentials) ||
+		errors.Is(connErr, alpacastream.ErrInsufficientSubscription) ||
+		errors.Is(connErr, alpacastream.ErrInsufficientScope) {
+		return ErrFatal
+	}
+
+	// Fall back to string matching for errors not wrapped with SDK types
+	// (e.g., connection failures, timeouts, EOF).
 	msg := connErr.Error()
 	lower := strings.ToLower(msg)
 
-	// Ghost-session / connection-limit.
+	// Ghost-session / connection-limit (string fallback).
 	if strings.Contains(msg, "connection limit exceeded") ||
-		strings.Contains(msg, "max reconnect limit") ||
 		strings.Contains(msg, "406") {
 		return ErrGhost
 	}

@@ -3,8 +3,11 @@ package alpaca
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
+	"os"
+	"runtime/pprof"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,8 +19,6 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
 	"github.com/oh-my-opentrade/backend/internal/ports"
-	"os"
-	"runtime/pprof"
 )
 
 // BarFetcher is a function that retrieves historical bars from the REST API.
@@ -607,13 +608,14 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 			go w.restPoller(pollCtx, symbols, domain.Timeframe("1m"), lastBarTime, &lastBarMu, &dedupMu, dedup, callHandler, restPollInterval)
 		}
 
-		// Probe reconnect loop.
+		// Probe reconnect loop — capped at maxGhostProbes to prevent infinite loops.
 		probeIdx := 0
 		reconnected := false
-		for !reconnected {
+		for !reconnected && probeIdx < maxGhostProbes {
 			wait := ghostWait(probeIdx)
 			probeIdx++
-			log.Info().Dur("retry_in", wait).Int("probe", probeIdx).Msg("ghost session: probing reconnect")
+			log.Info().Dur("retry_in", wait).Int("probe", probeIdx).Int("max", maxGhostProbes).
+				Msg("ghost session: probing reconnect")
 
 			select {
 			case <-time.After(wait):
@@ -663,10 +665,8 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 				continue
 			}
 
-			// No bar received. Classify by error.
-			isStillGhost := probeErr != nil && (strings.Contains(probeErr.Error(), "connection limit exceeded") ||
-				strings.Contains(probeErr.Error(), "406") ||
-				strings.Contains(probeErr.Error(), "max reconnect limit"))
+			// No bar received. Classify by error using SDK typed errors.
+			isStillGhost := probeErr != nil && errors.Is(probeErr, alpacastream.ErrConnectionLimitExceeded)
 			switch {
 			case probeErr == nil:
 				// nil = clean close (ghost gone).
@@ -676,21 +676,37 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 				// DeadlineExceeded, no bar — SDK was mid-retry, ghost still alive.
 				log.Info().Int("probe", probeIdx).Msg("ghost session: probe timeout with no bar — still alive")
 			case isStillGhost:
-				log.Info().Int("probe", probeIdx).Err(probeErr).Msg("ghost session: still alive, continuing probes")
+				log.Info().Int("probe", probeIdx).Err(probeErr).Msg("ghost session: 406 — still alive")
 			default:
 				// Some other error — treat as ghost gone.
 				log.Info().Int("probe", probeIdx).Err(probeErr).Msg("ghost session: non-406 error — ghost cleared")
 				reconnected = true
 			}
-		} // end for !reconnected
-
-		// Record ghost window duration.
-		ghostDur := time.Since(ghostStart)
-		log.Info().Dur("ghost_duration", ghostDur).Msg("ghost session resolved")
+		}
 
 		// Stop REST poller.
 		if pollCancel != nil {
 			pollCancel()
+		}
+
+		ghostDur := time.Since(ghostStart)
+
+		// If max probes exhausted without reconnection, enter cold turkey silence
+		// to let Alpaca's server-side session timeout expire naturally (~60-90s).
+		if !reconnected {
+			log.Warn().Int("probes", probeIdx).Dur("cold_turkey", ghostColdTurkeyPeriod).
+				Msg("ghost session: max probes reached — entering cold turkey silence to let Alpaca session expire")
+			w.tracker.setState("cold_turkey")
+			select {
+			case <-time.After(ghostColdTurkeyPeriod):
+			case <-streamCtx.Done():
+				w.tracker.setState("stopped")
+				return nil
+			}
+			log.Info().Dur("ghost_duration", ghostDur+ghostColdTurkeyPeriod).
+				Msg("ghost session: cold turkey complete — resuming reconnect loop")
+		} else {
+			log.Info().Dur("ghost_duration", ghostDur).Msg("ghost session resolved")
 		}
 
 		// Gap-fill: fetch any bars missed between last REST poll and WS resume

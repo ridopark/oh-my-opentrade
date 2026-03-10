@@ -2,9 +2,12 @@ package alpaca
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	alpacastream "github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -73,35 +76,48 @@ func TestClassifyError_Nil(t *testing.T) {
 
 func TestClassifyError_Ghost(t *testing.T) {
 	tests := []struct {
-		msg string
+		name string
+		err  error
 	}{
-		{"connection limit exceeded"},
-		{"max reconnect limit"},
-		{"406 connection limit exceeded"},
-		{"upstream returned 406"},
+		{"string: connection limit exceeded", errors.New("connection limit exceeded")},
+		{"string: 406 in message", errors.New("406 connection limit exceeded")},
+		{"string: upstream 406", errors.New("upstream returned 406")},
+		{"sdk: ErrConnectionLimitExceeded", alpacastream.ErrConnectionLimitExceeded},
+		{"sdk: wrapped ErrConnectionLimitExceeded", fmt.Errorf("max reconnect limit has been reached, last error: %w", alpacastream.ErrConnectionLimitExceeded)},
 	}
 	for _, tc := range tests {
-		t.Run(tc.msg, func(t *testing.T) {
-			assert.Equal(t, ErrGhost, classifyError(errors.New(tc.msg)))
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, ErrGhost, classifyError(tc.err))
 		})
 	}
 }
 
+func TestClassifyError_MaxReconnectLimit_WithoutSDKError_IsTransient(t *testing.T) {
+	err := errors.New("max reconnect limit has been reached, last error: auth timeout")
+	assert.Equal(t, ErrTransient, classifyError(err),
+		"'max reconnect limit' without SDK ErrConnectionLimitExceeded should be transient, not ghost")
+}
+
 func TestClassifyError_Fatal(t *testing.T) {
 	tests := []struct {
-		msg string
+		name string
+		err  error
 	}{
-		{"authentication failed"},
-		{"Authentication Failed"},
-		{"forbidden"},
-		{"401 unauthorized"},
-		{"403 access denied"},
-		{"invalid api key"},
-		{"not authorized to access this resource"},
+		{"string: authentication failed", errors.New("authentication failed")},
+		{"string: Authentication Failed", errors.New("Authentication Failed")},
+		{"string: forbidden", errors.New("forbidden")},
+		{"string: 401 unauthorized", errors.New("401 unauthorized")},
+		{"string: 403 access denied", errors.New("403 access denied")},
+		{"string: invalid api key", errors.New("invalid api key")},
+		{"string: not authorized", errors.New("not authorized to access this resource")},
+		{"sdk: ErrInvalidCredentials", alpacastream.ErrInvalidCredentials},
+		{"sdk: ErrInsufficientSubscription", alpacastream.ErrInsufficientSubscription},
+		{"sdk: ErrInsufficientScope", alpacastream.ErrInsufficientScope},
+		{"sdk: wrapped ErrInvalidCredentials", fmt.Errorf("max reconnect limit: %w", alpacastream.ErrInvalidCredentials)},
 	}
 	for _, tc := range tests {
-		t.Run(tc.msg, func(t *testing.T) {
-			assert.Equal(t, ErrFatal, classifyError(errors.New(tc.msg)))
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, ErrFatal, classifyError(tc.err))
 		})
 	}
 }
@@ -202,6 +218,15 @@ func TestCircuitBreaker_GhostResetsCounter(t *testing.T) {
 	cb.Record(ErrGhost)
 	assert.Equal(t, 0, cb.ConsecutiveFails())
 	assert.Equal(t, CircuitClosed, cb.State())
+}
+
+func TestCalculateCryptoBackoff_RespectsMinFloor(t *testing.T) {
+	logger := zerolog.Nop()
+	for i := 0; i < 20; i++ {
+		wait, _ := CalculateCryptoBackoff(ErrTransient, errors.New("reset"), time.Now(), i, i+1, logger)
+		assert.GreaterOrEqual(t, wait, minCryptoBackoff,
+			"crypto backoff at attempt %d should be >= %v", i, minCryptoBackoff)
+	}
 }
 
 func TestCircuitState_String(t *testing.T) {
