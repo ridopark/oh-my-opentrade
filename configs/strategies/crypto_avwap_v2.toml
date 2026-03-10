@@ -1,7 +1,7 @@
 schema_version = 2
 
 [strategy]
-id = "avwap_v1"
+id = "crypto_avwap_v2"
 version = "2.0.0"
 name = "AVWAP Breakout/Bounce v2 (Crypto)"
 description = "Anchored VWAP strategy with volatility-adaptive exits — long-only for crypto pairs"

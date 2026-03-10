@@ -284,9 +284,23 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	totalInstances := 0
 
 	for _, spec := range allSpecs {
-		impl, err := registry.Get(spec.ID)
+		// Look up the builtin implementation by the hook's signal engine name,
+		// not by the config's strategy ID. This allows multiple configs (e.g.
+		// avwap_v1, avwap_v2, crypto_avwap_v2) to share the same builtin
+		// implementation while maintaining distinct trade-level identity.
+		hookRef, hasHook := spec.Hooks["signals"]
+		if !hasHook {
+			log.Warn().Str("spec_id", spec.ID.String()).Msg("strategy v2: spec has no signals hook, skipping")
+			continue
+		}
+		implID, err := start.NewStrategyID(hookRef.Name)
 		if err != nil {
-			log.Warn().Str("spec_id", spec.ID.String()).Msg("strategy v2: no builtin implementation for spec, skipping")
+			log.Warn().Str("spec_id", spec.ID.String()).Str("hook_name", hookRef.Name).Err(err).Msg("strategy v2: invalid hook signal name, skipping")
+			continue
+		}
+		impl, err := registry.Get(implID)
+		if err != nil {
+			log.Warn().Str("spec_id", spec.ID.String()).Str("impl_id", implID.String()).Msg("strategy v2: no builtin implementation for hook, skipping")
 			continue
 		}
 

@@ -366,6 +366,8 @@ func parseRange(r *http.Request) (time.Time, time.Time) {
 
 	// Named range
 	switch q.Get("range") {
+	case "1d":
+		return now.AddDate(0, 0, -1), to
 	case "7d":
 		return now.AddDate(0, 0, -7), to
 	case "90d":

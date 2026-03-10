@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +61,14 @@ func NewInstance(
 
 // ID returns the instance identifier.
 func (inst *Instance) ID() start.InstanceID { return inst.id }
+
+func (inst *Instance) configStrategyID() string {
+	parts := strings.SplitN(string(inst.id), ":", 2)
+	if len(parts) > 0 {
+		return parts[0]
+	}
+	return inst.strategy.Meta().ID.String()
+}
 
 // Strategy returns the underlying strategy implementation.
 func (inst *Instance) Strategy() start.Strategy { return inst.strategy }
@@ -140,8 +149,10 @@ func (inst *Instance) OnBar(ctx start.Context, symbol string, bar start.Bar, ind
 		return nil, nil
 	}
 
-	// Annotate signals with indicator snapshot so downstream consumers
-	// (RiskSizer, Notification) can compute dollar-level exit prices.
+	for i := range signals {
+		signals[i].StrategyInstanceID = inst.id
+	}
+
 	for i := range signals {
 		if signals[i].Tags == nil {
 			signals[i].Tags = make(map[string]string)
@@ -261,10 +272,11 @@ func (inst *Instance) Snapshot(symbol string) (domain.StateSnapshot, bool) {
 		return domain.StateSnapshot{}, false
 	}
 
+	configID := inst.configStrategyID()
 	return domain.StateSnapshot{
-		Strategy: inst.strategy.Meta().ID.String(),
+		Strategy: configID,
 		Symbol:   symbol,
-		Kind:     inst.strategy.Meta().ID.String(),
+		Kind:     configID,
 		AsOf:     time.Now(),
 		Payload:  json.RawMessage(data),
 	}, true
@@ -275,6 +287,7 @@ func (inst *Instance) AllSnapshots() []domain.StateSnapshot {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 
+	configID := inst.configStrategyID()
 	snaps := make([]domain.StateSnapshot, 0, len(inst.states))
 	for symbol, st := range inst.states {
 		data, err := st.Marshal()
@@ -286,9 +299,9 @@ func (inst *Instance) AllSnapshots() []domain.StateSnapshot {
 			continue
 		}
 		snaps = append(snaps, domain.StateSnapshot{
-			Strategy: inst.strategy.Meta().ID.String(),
+			Strategy: configID,
 			Symbol:   symbol,
-			Kind:     inst.strategy.Meta().ID.String(),
+			Kind:     configID,
 			AsOf:     time.Now(),
 			Payload:  json.RawMessage(data),
 		})

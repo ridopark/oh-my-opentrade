@@ -65,7 +65,7 @@ const formatNumber = (val: number) =>
 // URL ↔ filter sync helpers
 // ---------------------------------------------------------------------------
 
-const VALID_RANGES = new Set(["7d", "30d", "90d", "all"]);
+const VALID_RANGES = new Set(["1d", "7d", "30d", "90d", "all"]);
 
 function filtersFromParams(params: URLSearchParams): PerformanceFilters {
   const from = params.get("from") ?? undefined;
@@ -254,7 +254,7 @@ function PerformanceContent() {
       </div>
 
       {/* Summary Stats Grid */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      <div className="grid gap-2 grid-cols-3 lg:grid-cols-5 xl:grid-cols-9">
         <StatCard
           title="Total P&L"
           value={formatCurrency(summary.total_pnl)}
@@ -355,17 +355,16 @@ function StatCard({
   trend?: "up" | "down";
   className?: string;
 }) {
-
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">
+    <Card className="gap-0 py-2">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 px-3 pb-0">
+        <CardTitle className="text-[11px] font-medium text-muted-foreground truncate">
           {title}
         </CardTitle>
-        <Icon className="h-4 w-4 text-muted-foreground" />
+        <Icon className="h-3 w-3 text-muted-foreground shrink-0" />
       </CardHeader>
-      <CardContent>
-        <div className={cn("text-2xl font-bold", className)}>{value}</div>
+      <CardContent className="px-3 pt-0.5">
+        <div className={cn("text-sm font-semibold", className)}>{value}</div>
       </CardContent>
     </Card>
   );
