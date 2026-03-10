@@ -107,7 +107,7 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	} else {
 		log.Warn().Err(err).Float64("fallback_equity", svc.accountEquity).Msg("failed to fetch account equity, using fallback")
 	}
-	svc.ledgerWriter = perf.NewLedgerWriter(infra.eventBus, infra.pnlRepo, infra.alpacaAdapter, svc.accountEquity, log.With().Str("component", "ledger").Logger())
+	svc.ledgerWriter = perf.NewLedgerWriter(infra.eventBus, infra.pnlRepo, infra.alpacaAdapter, infra.repo, svc.accountEquity, log.With().Str("component", "ledger").Logger())
 	svc.signalTracker = perf.NewSignalTracker(infra.eventBus, infra.pnlRepo, log.With().Str("component", "signal_tracker").Logger())
 	svc.dailyLossBreaker = risk.NewDailyLossBreaker(cfg.Trading.MaxDailyLossPct/100.0, cfg.Trading.MaxDailyLossUSD, svc.ledgerWriter, time.Now, log.With().Str("component", "daily_loss_breaker").Logger())
 	positionGate := execution.NewPositionGate(infra.alpacaAdapter, executionLog)
@@ -397,7 +397,7 @@ func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, lo
 			acctLog.Warn().Err(eqErr).Float64("fallback", acctEquity).Msg("using fallback equity")
 		}
 
-		acctLedger := perf.NewLedgerWriter(infra.eventBus, infra.pnlRepo, acctAdapter, acctEquity, acctLog.With().Str("component", "ledger").Logger())
+		acctLedger := perf.NewLedgerWriter(infra.eventBus, infra.pnlRepo, acctAdapter, infra.repo, acctEquity, acctLog.With().Str("component", "ledger").Logger())
 		acctBreaker := risk.NewDailyLossBreaker(
 			cfg.Trading.MaxDailyLossPct/100.0,
 			cfg.Trading.MaxDailyLossUSD,

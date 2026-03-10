@@ -242,7 +242,7 @@ func main() {
 
 		// LedgerWriter needs a PnLPort but we don't persist to DB in backtest.
 		nPnL := &noopPnLRepo{}
-		ledgerWriter := perf.NewLedgerWriter(eventBus, nPnL, simBrokerInst, initialEquity, log.With().Str("component", "ledger_writer").Logger())
+		ledgerWriter := perf.NewLedgerWriter(eventBus, nPnL, simBrokerInst, nil, initialEquity, log.With().Str("component", "ledger_writer").Logger())
 
 		// DailyLossBreaker uses LedgerWriter as in-memory PnL source.
 		dailyLossBreaker := risk.NewDailyLossBreaker(

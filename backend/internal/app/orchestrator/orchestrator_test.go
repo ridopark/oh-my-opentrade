@@ -196,7 +196,7 @@ func newTestHandle(tenantID string, bus ports.EventBusPort) *AccountHandle {
 		execution.WithPositionGate(posGate),
 	)
 
-	lw := perf.NewLedgerWriter(bus, pnlRepo, broker, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, pnlRepo, broker, nil, 100000.0, log)
 
 	return &AccountHandle{
 		TenantID:     tenantID,

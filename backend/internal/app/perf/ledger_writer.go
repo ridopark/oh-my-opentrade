@@ -3,6 +3,7 @@ package perf
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,6 +12,12 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
+
+// TradeReaderPort is a narrow interface for reading trades from the repository.
+// Used by LedgerWriter to replay today's trades on startup.
+type TradeReaderPort interface {
+	GetTrades(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) ([]domain.Trade, error)
+}
 
 type positionEntry struct {
 	avgEntry float64
@@ -22,11 +29,12 @@ type positionEntry struct {
 // ledger and equity curve. It is the single writer for both daily_pnl and
 // equity_curve tables.
 type LedgerWriter struct {
-	eventBus ports.EventBusPort
-	pnlRepo  ports.PnLPort
-	broker   ports.BrokerPort
-	log      zerolog.Logger
-	metrics  *metrics.Metrics
+	eventBus    ports.EventBusPort
+	pnlRepo     ports.PnLPort
+	broker      ports.BrokerPort
+	tradeReader TradeReaderPort
+	log         zerolog.Logger
+	metrics     *metrics.Metrics
 
 	mu            sync.Mutex
 	dailyPnL      map[string]*dailyAccum    // key: tenantID:envMode:date
@@ -63,11 +71,11 @@ type stratDayAccum struct {
 	grossLoss   float64
 }
 
-// NewLedgerWriter creates a new LedgerWriter.
 func NewLedgerWriter(
 	eventBus ports.EventBusPort,
 	pnlRepo ports.PnLPort,
 	broker ports.BrokerPort,
+	tradeReader TradeReaderPort,
 	accountEquity float64,
 	log zerolog.Logger,
 ) *LedgerWriter {
@@ -75,6 +83,7 @@ func NewLedgerWriter(
 		eventBus:       eventBus,
 		pnlRepo:        pnlRepo,
 		broker:         broker,
+		tradeReader:    tradeReader,
 		log:            log,
 		dailyPnL:       make(map[string]*dailyAccum),
 		positions:      make(map[string]*positionEntry),
@@ -125,6 +134,10 @@ func (lw *LedgerWriter) Start(ctx context.Context, tenantID string, envMode doma
 	}
 	lw.mu.Unlock()
 
+	if err := lw.replayTodaysTrades(ctx, tenantID, envMode); err != nil {
+		return fmt.Errorf("perf: ledger writer failed to replay today's trades: %w", err)
+	}
+
 	if err := lw.eventBus.SubscribeAsync(ctx, domain.EventFillReceived, lw.handleFill); err != nil {
 		return fmt.Errorf("perf: ledger writer failed to subscribe to FillReceived: %w", err)
 	}
@@ -132,7 +145,6 @@ func (lw *LedgerWriter) Start(ctx context.Context, tenantID string, envMode doma
 	return nil
 }
 
-// handleFill processes a single FillReceived event, updating P&L and equity.
 func (lw *LedgerWriter) handleFill(ctx context.Context, event domain.Event) error {
 	payload, ok := event.Payload.(map[string]any)
 	if !ok {
@@ -150,12 +162,38 @@ func (lw *LedgerWriter) handleFill(ctx context.Context, event domain.Event) erro
 		return nil
 	}
 
+	lw.processFill(ctx, event.TenantID, event.EnvMode, symbol, side, quantity, price, strategy, time.Now().UTC(), true)
+	return nil
+}
+
+func (lw *LedgerWriter) replayTodaysTrades(ctx context.Context, tenantID string, envMode domain.EnvMode) error {
+	if lw.tradeReader == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	trades, err := lw.tradeReader.GetTrades(ctx, tenantID, envMode, todayStart, now)
+	if err != nil {
+		return fmt.Errorf("failed to query today's trades: %w", err)
+	}
+	replayed := 0
+	for _, t := range trades {
+		if strings.ToUpper(t.Status) != "FILLED" {
+			continue
+		}
+		lw.processFill(ctx, tenantID, envMode, string(t.Symbol), strings.ToUpper(t.Side), t.Quantity, t.Price, t.Strategy, t.Time, false)
+		replayed++
+	}
+	lw.log.Info().Int("replayed", replayed).Int("total_trades", len(trades)).Msg("ledger writer: replayed today's trades")
+	return nil
+}
+
+//nolint:cyclop // extracted from handleFill to share with replayTodaysTrades
+func (lw *LedgerWriter) processFill(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol, side string, quantity, price float64, strategy string, now time.Time, persist bool) {
 	lw.mu.Lock()
 	defer lw.mu.Unlock()
 
-	now := time.Now().UTC()
-
-	posKey := fmt.Sprintf("%s:%s:%s", event.TenantID, string(event.EnvMode), symbol)
+	posKey := fmt.Sprintf("%s:%s:%s", tenantID, string(envMode), symbol)
 	var fillPnL float64
 	var realizedPayload *domain.TradeRealizedPayload
 	switch side {
@@ -210,17 +248,17 @@ func (lw *LedgerWriter) handleFill(ctx context.Context, event domain.Event) erro
 		}
 	}
 
-	if realizedPayload != nil {
-		lw.emitTradeRealized(ctx, event.TenantID, event.EnvMode, symbol, *realizedPayload)
+	if persist && realizedPayload != nil {
+		lw.emitTradeRealized(ctx, tenantID, envMode, symbol, *realizedPayload)
 	}
 
-	dateKey := fmt.Sprintf("%s:%s:%s", event.TenantID, string(event.EnvMode), now.Format("2006-01-02"))
+	dateKey := fmt.Sprintf("%s:%s:%s", tenantID, string(envMode), now.Format("2006-01-02"))
 	accum, exists := lw.dailyPnL[dateKey]
 	if !exists {
 		accum = &dailyAccum{
 			date:     time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC),
-			tenantID: event.TenantID,
-			envMode:  event.EnvMode,
+			tenantID: tenantID,
+			envMode:  envMode,
 		}
 		lw.dailyPnL[dateKey] = accum
 	}
@@ -228,7 +266,6 @@ func (lw *LedgerWriter) handleFill(ctx context.Context, event domain.Event) erro
 	accum.realizedPnL += fillPnL
 	accum.tradeCount++
 
-	// Update drawdown tracking.
 	currentEquity := lw.accountEquity + accum.realizedPnL
 	if currentEquity < lw.peakEquity {
 		drawdown := (lw.peakEquity - currentEquity) / lw.peakEquity
@@ -237,43 +274,41 @@ func (lw *LedgerWriter) handleFill(ctx context.Context, event domain.Event) erro
 		}
 	}
 
-	// Update Prometheus P&L gauges.
-	if lw.metrics != nil {
-		lw.metrics.PnL.RealizedUSD.Set(accum.realizedPnL)
-		lw.metrics.PnL.DayUSD.Set(accum.realizedPnL)
-		lw.metrics.PnL.DayDDUSD.Set(accum.maxDrawdown * lw.peakEquity)
-		lw.metrics.PnL.EquityUSD.Set(currentEquity)
+	if persist {
+		if lw.metrics != nil {
+			lw.metrics.PnL.RealizedUSD.Set(accum.realizedPnL)
+			lw.metrics.PnL.DayUSD.Set(accum.realizedPnL)
+			lw.metrics.PnL.DayDDUSD.Set(accum.maxDrawdown * lw.peakEquity)
+			lw.metrics.PnL.EquityUSD.Set(currentEquity)
+		}
+
+		pnl := domain.DailyPnL{
+			Date:        accum.date,
+			TenantID:    accum.tenantID,
+			EnvMode:     accum.envMode,
+			RealizedPnL: accum.realizedPnL,
+			TradeCount:  accum.tradeCount,
+			MaxDrawdown: accum.maxDrawdown,
+		}
+		if err := lw.pnlRepo.UpsertDailyPnL(ctx, pnl); err != nil {
+			lw.log.Error().Err(err).Str("symbol", symbol).Msg("ledger writer: failed to upsert daily P&L")
+		}
+
+		pt := domain.EquityPoint{
+			Time:     now,
+			TenantID: tenantID,
+			EnvMode:  envMode,
+			Equity:   currentEquity,
+			Cash:     lw.accountEquity,
+			Drawdown: accum.maxDrawdown,
+		}
+		if err := lw.pnlRepo.SaveEquityPoint(ctx, pt); err != nil {
+			lw.log.Error().Err(err).Str("symbol", symbol).Msg("ledger writer: failed to save equity point")
+		}
 	}
 
-	// Persist daily P&L.
-	pnl := domain.DailyPnL{
-		Date:        accum.date,
-		TenantID:    accum.tenantID,
-		EnvMode:     accum.envMode,
-		RealizedPnL: accum.realizedPnL,
-		TradeCount:  accum.tradeCount,
-		MaxDrawdown: accum.maxDrawdown,
-	}
-	if err := lw.pnlRepo.UpsertDailyPnL(ctx, pnl); err != nil {
-		lw.log.Error().Err(err).Str("symbol", symbol).Msg("ledger writer: failed to upsert daily P&L")
-	}
-
-	// Persist equity curve point.
-	pt := domain.EquityPoint{
-		Time:     now,
-		TenantID: event.TenantID,
-		EnvMode:  event.EnvMode,
-		Equity:   currentEquity,
-		Cash:     lw.accountEquity, // pre-trade cash baseline
-		Drawdown: accum.maxDrawdown,
-	}
-	if err := lw.pnlRepo.SaveEquityPoint(ctx, pt); err != nil {
-		lw.log.Error().Err(err).Str("symbol", symbol).Msg("ledger writer: failed to save equity point")
-	}
-
-	// --- Per-strategy dual-write ---
 	if strategy != "" {
-		stratPosKey := fmt.Sprintf("%s:%s:%s:%s", event.TenantID, string(event.EnvMode), strategy, symbol)
+		stratPosKey := fmt.Sprintf("%s:%s:%s:%s", tenantID, string(envMode), strategy, symbol)
 		var stratFillPnL float64
 		switch side {
 		case "buy", "BUY":
@@ -304,14 +339,13 @@ func (lw *LedgerWriter) handleFill(ctx context.Context, event domain.Event) erro
 			}
 		}
 
-		// Get or create per-strategy daily accumulator.
-		stratDateKey := fmt.Sprintf("%s:%s:%s:%s", event.TenantID, string(event.EnvMode), strategy, now.Format("2006-01-02"))
+		stratDateKey := fmt.Sprintf("%s:%s:%s:%s", tenantID, string(envMode), strategy, now.Format("2006-01-02"))
 		sAccum, sExists := lw.stratDailyPnL[stratDateKey]
 		if !sExists {
 			sAccum = &stratDayAccum{
 				day:      time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC),
-				tenantID: event.TenantID,
-				envMode:  event.EnvMode,
+				tenantID: tenantID,
+				envMode:  envMode,
 				strategy: strategy,
 			}
 			lw.stratDailyPnL[stratDateKey] = sAccum
@@ -323,38 +357,38 @@ func (lw *LedgerWriter) handleFill(ctx context.Context, event domain.Event) erro
 			sAccum.grossProfit += stratFillPnL
 		} else if stratFillPnL < 0 {
 			sAccum.lossCount++
-			sAccum.grossLoss += stratFillPnL // negative value
+			sAccum.grossLoss += stratFillPnL
 		}
 
-		// Persist per-strategy daily P&L.
-		stratPnL := domain.StrategyDailyPnL{
-			Day:         sAccum.day,
-			TenantID:    sAccum.tenantID,
-			EnvMode:     sAccum.envMode,
-			Strategy:    sAccum.strategy,
-			RealizedPnL: sAccum.realizedPnL,
-			TradeCount:  sAccum.tradeCount,
-			WinCount:    sAccum.winCount,
-			LossCount:   sAccum.lossCount,
-			GrossProfit: sAccum.grossProfit,
-			GrossLoss:   sAccum.grossLoss,
-		}
-		if err := lw.pnlRepo.UpsertStrategyDailyPnL(ctx, stratPnL); err != nil {
-			lw.log.Error().Err(err).Str("symbol", symbol).Str("strategy", strategy).Msg("ledger writer: failed to upsert strategy daily P&L")
-		}
+		if persist {
+			stratPnL := domain.StrategyDailyPnL{
+				Day:         sAccum.day,
+				TenantID:    sAccum.tenantID,
+				EnvMode:     sAccum.envMode,
+				Strategy:    sAccum.strategy,
+				RealizedPnL: sAccum.realizedPnL,
+				TradeCount:  sAccum.tradeCount,
+				WinCount:    sAccum.winCount,
+				LossCount:   sAccum.lossCount,
+				GrossProfit: sAccum.grossProfit,
+				GrossLoss:   sAccum.grossLoss,
+			}
+			if err := lw.pnlRepo.UpsertStrategyDailyPnL(ctx, stratPnL); err != nil {
+				lw.log.Error().Err(err).Str("symbol", symbol).Str("strategy", strategy).Msg("ledger writer: failed to upsert strategy daily P&L")
+			}
 
-		// Persist per-strategy equity point.
-		stratPt := domain.StrategyEquityPoint{
-			Time:              now,
-			TenantID:          event.TenantID,
-			EnvMode:           event.EnvMode,
-			Strategy:          strategy,
-			Equity:            sAccum.realizedPnL, // strategy equity = cumulative realized P&L for this strategy
-			RealizedPnLToDate: sAccum.realizedPnL,
-			TradeCountToDate:  sAccum.tradeCount,
-		}
-		if err := lw.pnlRepo.SaveStrategyEquityPoint(ctx, stratPt); err != nil {
-			lw.log.Error().Err(err).Str("symbol", symbol).Str("strategy", strategy).Msg("ledger writer: failed to save strategy equity point")
+			stratPt := domain.StrategyEquityPoint{
+				Time:              now,
+				TenantID:          tenantID,
+				EnvMode:           envMode,
+				Strategy:          strategy,
+				Equity:            sAccum.realizedPnL,
+				RealizedPnLToDate: sAccum.realizedPnL,
+				TradeCountToDate:  sAccum.tradeCount,
+			}
+			if err := lw.pnlRepo.SaveStrategyEquityPoint(ctx, stratPt); err != nil {
+				lw.log.Error().Err(err).Str("symbol", symbol).Str("strategy", strategy).Msg("ledger writer: failed to save strategy equity point")
+			}
 		}
 	}
 
@@ -365,11 +399,8 @@ func (lw *LedgerWriter) handleFill(ctx context.Context, event domain.Event) erro
 		Float64("quantity", quantity).
 		Float64("price", price).
 		Float64("fill_pnl", fillPnL).
-		Float64("daily_realized_pnl", accum.realizedPnL).
-		Int("daily_trade_count", accum.tradeCount).
+		Bool("persisted", persist).
 		Msg("ledger writer: fill recorded")
-
-	return nil
 }
 
 // GetDailyRealizedPnL returns the in-memory cumulative realized P&L for today.
