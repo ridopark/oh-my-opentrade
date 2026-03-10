@@ -371,6 +371,7 @@ func encodeV2(spec portstrategy.Spec) ([]byte, error) {
 			ConflictPolicy     string   `toml:"conflict_policy"`
 			ExclusivePerSymbol bool     `toml:"exclusive_per_symbol"`
 			AssetClasses       []string `toml:"asset_classes,omitempty"`
+			AllowedDirections  []string `toml:"allowed_directions,omitempty"`
 		} `toml:"routing"`
 		Params       map[string]any               `toml:"params"`
 		RegimeFilter map[string]any               `toml:"regime_filter"`
@@ -397,6 +398,7 @@ func encodeV2(spec portstrategy.Spec) ([]byte, error) {
 	raw.Routing.ConflictPolicy = spec.Routing.ConflictPolicy.String()
 	raw.Routing.ExclusivePerSymbol = spec.Routing.ExclusivePerSymbol
 	raw.Routing.AssetClasses = spec.Routing.AssetClasses
+	raw.Routing.AllowedDirections = spec.Routing.AllowedDirections
 
 	var b strings.Builder
 	enc := toml.NewEncoder(&b)

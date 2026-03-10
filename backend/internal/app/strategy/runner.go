@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -207,6 +208,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		"close", bar.Close,
 	)
 	allSignals = ReconcileSignals(allSignals, r.posLookup, r.logger)
+	allSignals = r.filterByAllowedDirections(allSignals)
 
 	for _, sig := range allSignals {
 		// Suppress equity signals outside Regular Trading Hours (9:30-16:00 ET).
@@ -330,7 +332,57 @@ func (r *Runner) WarmUp(symbol string, bars []domain.MarketBar, snapshotFn Indic
 
 	r.indicators[symbol] = lastIndicators
 
+	for _, inst := range instances {
+		inst.ClearPendingState(symbol)
+	}
+
 	return len(bars)
+}
+
+func (r *Runner) filterByAllowedDirections(signals []start.Signal) []start.Signal {
+	filtered := signals[:0]
+	for _, sig := range signals {
+		if sig.Type != start.SignalEntry {
+			filtered = append(filtered, sig)
+			continue
+		}
+
+		inst, ok := r.router.Instance(sig.StrategyInstanceID)
+		if !ok {
+			filtered = append(filtered, sig)
+			continue
+		}
+
+		allowed := inst.Assignment().AllowedDirections
+		if len(allowed) == 0 {
+			filtered = append(filtered, sig)
+			continue
+		}
+
+		direction := "LONG"
+		if sig.Side == start.SideSell {
+			direction = "SHORT"
+		}
+
+		ok = false
+		for _, d := range allowed {
+			if strings.EqualFold(d, direction) {
+				ok = true
+				break
+			}
+		}
+		if ok {
+			filtered = append(filtered, sig)
+		} else {
+			r.logger.Debug("filtered entry signal by allowed_directions",
+				"symbol", sig.Symbol,
+				"side", sig.Side,
+				"direction", direction,
+				"instance_id", sig.StrategyInstanceID.String(),
+			)
+		}
+	}
+	return filtered
 }
 
 // emitSignal publishes a SignalCreated domain event.

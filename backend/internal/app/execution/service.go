@@ -828,6 +828,14 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 
 		// Expire stale pending orders (> 2 minutes old) — cancel on broker first.
 		if time.Since(po.submitStart) > 2*time.Minute {
+			if status, err := s.broker.GetOrderStatus(ctx, brokerOrderID); err == nil {
+				switch status {
+				case "filled", "canceled", "expired", "rejected":
+					l.Info().Str("status", status).Msg("reconcile: stale order already terminal — skipping cancel")
+					s.cleanupPendingOrder(brokerOrderID)
+					return true
+				}
+			}
 			if err := s.broker.CancelOrder(ctx, brokerOrderID); err != nil {
 				l.Warn().Err(err).Msg("reconcile: failed to cancel stale order on broker — may already be terminal")
 			} else {

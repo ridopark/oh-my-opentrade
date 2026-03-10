@@ -32,6 +32,12 @@ type RepositoryPort interface {
 	// Returns 0 if no bars exist in the range.
 	GetMaxBarHighSince(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, since time.Time) (float64, error)
 
+	// GetLatestThesisForSymbol returns the most recent non-null thesis JSON from the
+	// trades table for the given symbol. Used during bootstrap to retroactively restore
+	// entry theses for positions that lost their thesis due to crash timing.
+	// Returns (nil, nil) when no thesis exists.
+	GetLatestThesisForSymbol(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol) (json.RawMessage, error)
+
 	// SaveThoughtLog persists an AI debate thought log record.
 	SaveThoughtLog(ctx context.Context, tl domain.ThoughtLog) error
 

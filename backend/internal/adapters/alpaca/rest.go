@@ -247,10 +247,10 @@ func (c *RESTClient) SubmitOrder(ctx context.Context, intent domain.OrderIntent)
 		"time_in_force": tif,
 	}
 	if orderType != "market" {
-		reqBody["limit_price"] = math.Round(intent.LimitPrice*100) / 100
+		reqBody["limit_price"] = roundPrice(intent.LimitPrice)
 	}
 	if intent.StopLoss > 0 {
-		reqBody["stop_price"] = math.Round(intent.StopLoss*100) / 100
+		reqBody["stop_price"] = roundPrice(intent.StopLoss)
 	}
 
 	b, _ := json.Marshal(reqBody)
@@ -298,7 +298,11 @@ func (c *RESTClient) CancelOrder(ctx context.Context, orderID string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		c.log.Error().Int("status", resp.StatusCode).Str("order_id", orderID).Msg("cancel order rejected by Alpaca")
+		if resp.StatusCode == 422 {
+			c.log.Warn().Int("status", resp.StatusCode).Str("order_id", orderID).Msg("cancel order rejected — order likely already terminal")
+		} else {
+			c.log.Error().Int("status", resp.StatusCode).Str("order_id", orderID).Msg("cancel order rejected by Alpaca")
+		}
 		return fmt.Errorf("alpaca: cancel order failed (status %d): %s", resp.StatusCode, string(body))
 	}
 	c.log.Info().Str("order_id", orderID).Msg("order canceled")
@@ -792,4 +796,24 @@ func (c *RESTClient) GetClosedOrders(ctx context.Context, after, until time.Time
 
 	c.log.Info().Int("count", len(allOrders)).Msg("closed orders retrieved")
 	return allOrders, nil
+}
+
+func roundPrice(v float64) string {
+	if v == 0 {
+		return "0"
+	}
+	abs := v
+	if abs < 0 {
+		abs = -abs
+	}
+	switch {
+	case abs >= 1.0:
+		return strconv.FormatFloat(v, 'f', 2, 64)
+	case abs >= 0.01:
+		return strconv.FormatFloat(v, 'f', 4, 64)
+	case abs >= 0.0001:
+		return strconv.FormatFloat(v, 'f', 6, 64)
+	default:
+		return strconv.FormatFloat(v, 'f', 8, 64)
+	}
 }

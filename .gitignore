@@ -30,5 +30,8 @@ apps/dashboard/.next/
 # Runtime logs
 logs/
 
+# Temp
+tmp/
+
 # Debug screenshots
 /*.png

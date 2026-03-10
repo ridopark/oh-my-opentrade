@@ -67,6 +67,9 @@ func (m *mockRepository) UpdateTradeThesis(_ context.Context, _ string, _ domain
 func (m *mockRepository) GetMaxBarHighSince(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _ time.Time) (float64, error) {
 	return 0, nil
 }
+func (m *mockRepository) GetLatestThesisForSymbol(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol) (json.RawMessage, error) {
+	return nil, nil
+}
 
 func createTestEvent(t *testing.T, payload any) domain.Event {
 	ev, err := domain.NewEvent(
