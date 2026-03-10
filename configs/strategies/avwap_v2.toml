@@ -17,7 +17,7 @@ symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", 
 timeframes = ["1m"]
 priority = 80
 conflict_policy = "priority_wins"
-exclusive_per_symbol = false
+exclusive_per_symbol = true
 watchlist_mode = "intersection"
 asset_classes = ["EQUITY"]
 allowed_directions = ["LONG"]
@@ -38,9 +38,9 @@ require_higher_lows = true
 higher_lows_bars = 3
 midday_trap_shield = true
 midday_volume_mult = 2.0
-stop_bps = 25
+stop_bps = 50
 limit_offset_bps = 5
-risk_per_trade_bps = 10
+risk_per_trade_bps = 100
 max_position_bps = 1000
 
 [regime_filter]
