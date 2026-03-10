@@ -178,7 +178,7 @@ func (lw *LedgerWriter) replayTodaysTrades(ctx context.Context, tenantID string,
 	}
 	replayed := 0
 	for _, t := range trades {
-		if strings.ToUpper(t.Status) != "FILLED" {
+		if !strings.EqualFold(t.Status, "FILLED") {
 			continue
 		}
 		lw.processFill(ctx, tenantID, envMode, string(t.Symbol), strings.ToUpper(t.Side), t.Quantity, t.Price, t.Strategy, t.Time, false)
