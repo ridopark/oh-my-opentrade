@@ -17,7 +17,8 @@ import (
 
 // Config holds SimBroker configuration.
 type Config struct {
-	SlippageBPS int64 // slippage in basis points (default 5 per PRD)
+	SlippageBPS   int64   // slippage in basis points (default 5 per PRD)
+	InitialEquity float64 // starting cash/equity for the simulated account (default 100000)
 }
 
 // simOrder tracks a submitted order and its fill details.
@@ -42,14 +43,16 @@ type position struct {
 // and ports.OrderStreamPort. It fills orders instantly at the last known bar
 // close price with configurable slippage.
 type Broker struct {
-	slippageBPS int64
-	log         zerolog.Logger
+	slippageBPS   int64
+	initialEquity float64
+	log           zerolog.Logger
 
 	mu        sync.RWMutex
 	prices    map[domain.Symbol]float64
 	barTimes  map[domain.Symbol]time.Time
 	orders    map[string]*simOrder
 	positions map[string]*position
+	cash      float64
 	orderSeq  atomic.Int64
 
 	fillCh chan ports.OrderUpdate
@@ -58,16 +61,22 @@ type Broker struct {
 // New creates a new SimBroker with the given configuration.
 func New(cfg Config, log zerolog.Logger) *Broker {
 	if cfg.SlippageBPS == 0 {
-		cfg.SlippageBPS = 5 // PRD default: 5 bps
+		cfg.SlippageBPS = 5
+	}
+	equity := cfg.InitialEquity
+	if equity == 0 {
+		equity = 100_000
 	}
 	return &Broker{
-		slippageBPS: cfg.SlippageBPS,
-		log:         log.With().Str("component", "simbroker").Logger(),
-		prices:      make(map[domain.Symbol]float64),
-		barTimes:    make(map[domain.Symbol]time.Time),
-		orders:      make(map[string]*simOrder),
-		positions:   make(map[string]*position),
-		fillCh:      make(chan ports.OrderUpdate, 256),
+		slippageBPS:   cfg.SlippageBPS,
+		initialEquity: equity,
+		log:           log.With().Str("component", "simbroker").Logger(),
+		prices:        make(map[domain.Symbol]float64),
+		barTimes:      make(map[domain.Symbol]time.Time),
+		orders:        make(map[string]*simOrder),
+		positions:     make(map[string]*position),
+		cash:          equity,
+		fillCh:        make(chan ports.OrderUpdate, 256),
 	}
 }
 
@@ -134,6 +143,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 
 	switch side {
 	case "buy":
+		b.cash -= fillPrice * intent.Quantity
 		switch {
 		case pos.quantity == 0:
 			pos.side = "buy"
@@ -152,6 +162,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			}
 		}
 	case "sell":
+		b.cash += fillPrice * intent.Quantity
 		switch {
 		case pos.quantity == 0:
 			pos.side = "sell"
@@ -271,6 +282,50 @@ func (b *Broker) GetPrice(symbol domain.Symbol) (float64, bool) {
 	defer b.mu.RUnlock()
 	p, ok := b.prices[symbol]
 	return p, ok
+}
+
+func (b *Broker) GetQuote(_ context.Context, symbol domain.Symbol) (bid float64, ask float64, err error) {
+	b.mu.RLock()
+	lastPrice, ok := b.prices[symbol]
+	b.mu.RUnlock()
+	if !ok {
+		return 0, 0, fmt.Errorf("simbroker: no price available for %s", symbol)
+	}
+	spreadHalf := lastPrice * float64(b.slippageBPS) / 10000.0 / 2.0
+	return lastPrice - spreadHalf, lastPrice + spreadHalf, nil
+}
+
+func (b *Broker) GetAccountBuyingPower(_ context.Context) (ports.BuyingPower, error) {
+	b.mu.RLock()
+	cash := b.cash
+	b.mu.RUnlock()
+	return ports.BuyingPower{
+		DayTradingBuyingPower: cash,
+		EffectiveBuyingPower:  cash,
+	}, nil
+}
+
+func (b *Broker) GetAccountEquity(_ context.Context) (float64, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	equity := b.cash
+	for _, pos := range b.positions {
+		if pos.quantity <= 0 {
+			continue
+		}
+		currentPrice, ok := b.prices[pos.symbol]
+		if !ok {
+			currentPrice = pos.avgCost
+		}
+		switch pos.side {
+		case "buy":
+			equity += currentPrice * pos.quantity
+		case "sell":
+			equity += (2*pos.avgCost - currentPrice) * pos.quantity
+		}
+	}
+	return equity, nil
 }
 
 func (b *Broker) SubscribeOrderUpdates(_ context.Context) (<-chan ports.OrderUpdate, error) {
