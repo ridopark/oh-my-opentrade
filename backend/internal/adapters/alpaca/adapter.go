@@ -46,10 +46,7 @@ func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
 		dataURL = "https://data.alpaca.markets"
 	}
 
-	dataKey := cfg.EffectiveEquityDataAPIKeyID()
-	dataSecret := cfg.EffectiveEquityDataAPISecretKey()
-
-	dataREST := NewRESTClient(cfg.BaseURL, dataKey, dataSecret, limiter, restLog)
+	dataREST := NewRESTClient(cfg.BaseURL, cfg.APIKeyID, cfg.APISecretKey, limiter, restLog)
 	dataREST.feed = cfg.Feed
 	fetcher := func(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
 		if symbol.IsCryptoSymbol() {
@@ -57,11 +54,9 @@ func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
 		}
 		return dataREST.GetHistoricalBars(ctx, dataURL, symbol, timeframe, from, to)
 	}
-	ws := NewWSClient(cfg.DataURL, dataKey, dataSecret, cfg.Feed, fetcher)
+	ws := NewWSClient(cfg.DataURL, cfg.APIKeyID, cfg.APISecretKey, cfg.Feed, fetcher)
 
-	cryptoDataKey := cfg.EffectiveCryptoDataAPIKeyID()
-	cryptoDataSecret := cfg.EffectiveCryptoDataAPISecretKey()
-	cryptoWs, err := NewCryptoWSClient(cfg.CryptoDataURL, cryptoDataKey, cryptoDataSecret, cfg.CryptoFeed, fetcher, log)
+	cryptoWs, err := NewCryptoWSClient(cfg.CryptoDataURL, cfg.APIKeyID, cfg.APISecretKey, cfg.CryptoFeed, fetcher, log)
 	if err != nil {
 		return nil, fmt.Errorf("create crypto WS client: %w", err)
 	}
