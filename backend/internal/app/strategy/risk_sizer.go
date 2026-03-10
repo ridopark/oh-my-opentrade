@@ -441,6 +441,10 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		"dynamic_stop_bps":  strconv.Itoa(stopBPS),
 	}
 
+	if spec != nil {
+		propagateGuardParams(spec.Params, intent.Meta)
+	}
+
 	if spec != nil && len(spec.ExitRules) > 0 {
 		type ruleWire struct {
 			Type   string             `json:"type"`
@@ -540,6 +544,24 @@ func extractDynamicRiskConfig(spec *stratports.Spec) domain.DynamicRiskConfig {
 	}
 
 	return cfg
+}
+
+var guardParamKeys = []string{
+	"max_spread_bps",
+	"allowed_hours_start",
+	"allowed_hours_end",
+	"allowed_hours_tz",
+	"skip_weekends",
+}
+
+func propagateGuardParams(params map[string]any, meta map[string]string) {
+	for _, key := range guardParamKeys {
+		v, ok := params[key]
+		if !ok {
+			continue
+		}
+		meta[key] = fmt.Sprintf("%v", v)
+	}
 }
 
 func extractFloat(params map[string]any, key string) (float64, bool) {

@@ -75,6 +75,8 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 
 	execOpts := []execution.Option{
 		execution.WithPositionGate(posGate),
+		execution.WithSpreadGuard(execution.NewSpreadGuard(deps.QuoteProvider, execLog)),
+		execution.WithTradingWindowGuard(execution.NewTradingWindowGuard(execLog)),
 	}
 	if deps.AccountPort != nil {
 		bpGuard := execution.NewBuyingPowerGuard(deps.AccountPort, execLog)
