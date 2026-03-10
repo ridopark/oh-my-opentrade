@@ -13,7 +13,7 @@ state = "LiveActive"
 paper_only = false
 
 [routing]
-symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META"]
+symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META", "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "DOGE/USD", "PEPE/USD"]
 timeframes = ["1m"]
 priority = 60
 conflict_policy = "priority_wins"
