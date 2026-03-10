@@ -216,8 +216,14 @@ func (a *Adapter) GetPositions(ctx context.Context, tenantID string, envMode dom
 	return pos, nil
 }
 
-// GetQuote fetches the latest bid and ask prices for a symbol.
-// Routes crypto symbols to the v1beta3 crypto quote endpoint.
+func (a *Adapter) GetPosition(ctx context.Context, symbol domain.Symbol) (float64, error) {
+	return a.rest.GetPosition(ctx, symbol)
+}
+
+func (a *Adapter) ClosePosition(ctx context.Context, symbol domain.Symbol) error {
+	return a.rest.ClosePosition(ctx, symbol)
+}
+
 func (a *Adapter) GetQuote(ctx context.Context, symbol domain.Symbol) (float64, float64, error) {
 	if symbol.IsCryptoSymbol() {
 		return a.rest.GetCryptoQuote(ctx, a.dataURL, symbol)

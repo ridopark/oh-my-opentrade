@@ -64,6 +64,14 @@ func (m *mockBroker) CancelOpenOrders(_ context.Context, _ domain.Symbol, _ stri
 	return 0, nil
 }
 
+func (m *mockBroker) GetPosition(_ context.Context, _ domain.Symbol) (float64, error) {
+	return 0, nil
+}
+
+func (m *mockBroker) ClosePosition(_ context.Context, _ domain.Symbol) error {
+	return nil
+}
+
 // mockRepository is used for testing
 type mockRepository struct {
 	SaveTradeFunc            func(ctx context.Context, trade domain.Trade) error

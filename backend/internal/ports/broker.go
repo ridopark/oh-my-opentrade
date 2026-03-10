@@ -14,6 +14,12 @@ type BrokerPort interface {
 	CancelOpenOrders(ctx context.Context, symbol domain.Symbol, side string) (int, error)
 	GetOrderStatus(ctx context.Context, orderID string) (string, error)
 	GetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error)
+	// GetPosition returns the current quantity held for a single symbol.
+	// Returns (0, nil) if no position exists — this is not an error.
+	GetPosition(ctx context.Context, symbol domain.Symbol) (qty float64, err error)
+	// ClosePosition liquidates any remaining position for a symbol via broker-native API.
+	// Returns nil if the position was already fully closed (broker returns 404/422).
+	ClosePosition(ctx context.Context, symbol domain.Symbol) error
 }
 
 // OrderUpdate represents a real-time order status change received from the
