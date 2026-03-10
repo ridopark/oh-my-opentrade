@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,8 @@ const (
 	jobQueueSize  = 100
 	workerCount   = 3
 	chartCacheTTL = 5 * time.Minute
+	batchWindow   = 3 * time.Second
+	maxBatchAge   = 10 * time.Second
 )
 
 type notifyJob struct {
@@ -32,6 +35,14 @@ type chartCacheEntry struct {
 	createdAt time.Time
 }
 
+type batchEntry struct {
+	parts     []string
+	withChart bool
+	lastEvent domain.Event
+	timer     *time.Timer
+	createdAt time.Time
+}
+
 type Service struct {
 	eventBus ports.EventBusPort
 	notifier ports.NotifierPort
@@ -43,6 +54,9 @@ type Service struct {
 
 	cacheMu    sync.RWMutex
 	chartCache map[string]chartCacheEntry
+
+	batchMu sync.Mutex
+	batches map[string]*batchEntry
 }
 
 type Option func(*Service)
@@ -69,6 +83,7 @@ func NewService(eventBus ports.EventBusPort, notifier ports.NotifierPort, log ze
 		log:        log,
 		jobs:       make(chan notifyJob, jobQueueSize),
 		chartCache: make(map[string]chartCacheEntry),
+		batches:    make(map[string]*batchEntry),
 	}
 	for _, o := range opts {
 		o(s)
@@ -111,18 +126,19 @@ func (s *Service) Start(ctx context.Context) error {
 		eventType := e.eventType
 		withChart := e.chart
 		handler := func(ctx context.Context, ev domain.Event) error {
-			msg := fmt.Sprintf("[%s] %s\n───", ev.OccurredAt.In(etLoc).Format("15:04:05"), formatter(ev))
-			job := notifyJob{
-				event:     ev,
-				eventType: eventType,
-				message:   msg,
-				withChart: withChart,
+			msg := fmt.Sprintf("[%s] %s", ev.OccurredAt.In(etLoc).Format("15:04:05"), formatter(ev))
+			symbol := s.symbolFromEvent(ev)
+			if symbol == "" {
+				// No symbol — send immediately with separator.
+				s.enqueueJob(notifyJob{
+					event:     ev,
+					eventType: eventType,
+					message:   msg + "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+					withChart: withChart,
+				})
+				return nil
 			}
-			select {
-			case s.jobs <- job:
-			default:
-				s.log.Warn().Str("event", eventType).Msg("notification queue full, dropping")
-			}
+			s.addToBatch(symbol, msg, withChart, ev, eventType)
 			return nil
 		}
 		if err := s.eventBus.Subscribe(ctx, eventType, handler); err != nil {
@@ -134,8 +150,100 @@ func (s *Service) Start(ctx context.Context) error {
 }
 
 func (s *Service) Stop() {
+	s.flushAllBatches()
 	close(s.jobs)
 	s.wg.Wait()
+}
+
+func (s *Service) enqueueJob(job notifyJob) {
+	select {
+	case s.jobs <- job:
+	default:
+		s.log.Warn().Str("event", job.eventType).Msg("notification queue full, dropping")
+	}
+}
+
+func (s *Service) symbolFromEvent(ev domain.Event) string {
+	switch p := ev.Payload.(type) {
+	case domain.OrderIntentEventPayload:
+		return p.Symbol
+	case domain.SignalEnrichment:
+		return p.Signal.Symbol
+	case domain.SignalGatedPayload:
+		return p.Symbol
+	case domain.TradeRealizedPayload:
+		return string(p.Symbol)
+	case domain.RiskRevaluationEvent:
+		return string(p.Symbol)
+	case domain.FillPollTimeoutPayload:
+		return string(p.Symbol)
+	case domain.StaleOrderCancelledPayload:
+		return string(p.Symbol)
+	case map[string]any:
+		if sym, ok := p["symbol"].(string); ok {
+			return sym
+		}
+	}
+	return ""
+}
+
+func (s *Service) addToBatch(symbol, msg string, withChart bool, ev domain.Event, eventType string) {
+	s.batchMu.Lock()
+	defer s.batchMu.Unlock()
+
+	entry, exists := s.batches[symbol]
+	if !exists {
+		entry = &batchEntry{createdAt: time.Now()}
+		s.batches[symbol] = entry
+	}
+
+	entry.parts = append(entry.parts, msg)
+	entry.withChart = entry.withChart || withChart
+	entry.lastEvent = ev
+
+	if entry.timer != nil {
+		entry.timer.Stop()
+	}
+
+	if time.Since(entry.createdAt) >= maxBatchAge {
+		s.flushBatchLocked(symbol)
+		return
+	}
+
+	entry.timer = time.AfterFunc(batchWindow, func() {
+		s.batchMu.Lock()
+		defer s.batchMu.Unlock()
+		s.flushBatchLocked(symbol)
+	})
+}
+
+func (s *Service) flushBatchLocked(symbol string) {
+	entry, exists := s.batches[symbol]
+	if !exists {
+		return
+	}
+	delete(s.batches, symbol)
+
+	if entry.timer != nil {
+		entry.timer.Stop()
+	}
+
+	combined := strings.Join(entry.parts, "\n") + "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+	s.enqueueJob(notifyJob{
+		event:     entry.lastEvent,
+		eventType: "batch",
+		message:   combined,
+		withChart: entry.withChart,
+	})
+}
+
+func (s *Service) flushAllBatches() {
+	s.batchMu.Lock()
+	defer s.batchMu.Unlock()
+	for symbol := range s.batches {
+		s.flushBatchLocked(symbol)
+	}
 }
 
 func (s *Service) NotifySync(msg string) {

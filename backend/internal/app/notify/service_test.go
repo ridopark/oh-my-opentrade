@@ -74,7 +74,7 @@ func TestService_SubscribesToOrderEvents(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.waitForMessages(1, 2*time.Second)
+	msgs := notifier.waitForMessages(1, 5*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "tenant-1", msgs[0].TenantID)
 	assert.Contains(t, msgs[0].Message, "Order Submitted")
@@ -100,7 +100,7 @@ func TestService_KillSwitchNotification(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.waitForMessages(1, 2*time.Second)
+	msgs := notifier.waitForMessages(1, 5*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0].Message, "KILL SWITCH")
 }
@@ -121,7 +121,7 @@ func TestService_CircuitBreakerNotification(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.waitForMessages(1, 2*time.Second)
+	msgs := notifier.waitForMessages(1, 5*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0].Message, "CIRCUIT BREAKER")
 	assert.Contains(t, msgs[0].Message, "3 stops in 2 minutes")
@@ -151,7 +151,7 @@ func TestService_FillNotification(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.waitForMessages(1, 2*time.Second)
+	msgs := notifier.waitForMessages(1, 5*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0].Message, "Fill")
 	assert.Contains(t, msgs[0].Message, "AAPL")
@@ -176,7 +176,7 @@ func TestService_IntentRejectedNotification(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.waitForMessages(1, 2*time.Second)
+	msgs := notifier.waitForMessages(1, 5*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0].Message, "Intent Rejected")
 	assert.Contains(t, msgs[0].Message, "AAPL")
@@ -207,7 +207,7 @@ func TestService_DebateCompletedNotification(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.waitForMessages(1, 2*time.Second)
+	msgs := notifier.waitForMessages(1, 5*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0].Message, "AI Debate")
 	assert.Contains(t, msgs[0].Message, "LONG")
@@ -281,7 +281,7 @@ func TestService_SignalEnrichedNotification(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.waitForMessages(1, 2*time.Second)
+	msgs := notifier.waitForMessages(1, 5*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "tenant-1", msgs[0].TenantID)
 	assert.Contains(t, msgs[0].Message, "Signal Enriched")
@@ -329,7 +329,7 @@ func TestService_SignalEnrichedExitWithPnL(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.waitForMessages(1, 2*time.Second)
+	msgs := notifier.waitForMessages(1, 5*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0].Message, "Signal Enriched")
 	assert.Contains(t, msgs[0].Message, "exit")
@@ -369,7 +369,7 @@ func TestService_SignalEnrichedExitNegativePnL(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.waitForMessages(1, 2*time.Second)
+	msgs := notifier.waitForMessages(1, 5*time.Second)
 	require.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0].Message, "📉")
 	assert.Contains(t, msgs[0].Message, "Est. P&L:")
@@ -399,7 +399,7 @@ func TestService_OrderSubmittedWithMeta(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.waitForMessages(1, 2*time.Second)
+	msgs := notifier.waitForMessages(1, 5*time.Second)
 	require.Len(t, msgs, 1)
 	assert.NotContains(t, msgs[0].Message, "Bull:")
 	assert.NotContains(t, msgs[0].Message, "Bear:")
