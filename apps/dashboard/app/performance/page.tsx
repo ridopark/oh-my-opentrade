@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import {
   createChart,
   ColorType,
@@ -60,8 +61,78 @@ const formatPercent = (val: number) =>
 const formatNumber = (val: number) =>
   new Intl.NumberFormat("en-US").format(val);
 
+// ---------------------------------------------------------------------------
+// URL ↔ filter sync helpers
+// ---------------------------------------------------------------------------
+
+const VALID_RANGES = new Set(["7d", "30d", "90d", "all"]);
+
+function filtersFromParams(params: URLSearchParams): PerformanceFilters {
+  const from = params.get("from") ?? undefined;
+  const to = params.get("to") ?? undefined;
+  const range = params.get("range") ?? undefined;
+  const strategy = params.get("strategy") ?? undefined;
+  const symbol = params.get("symbol") ?? undefined;
+
+  // Custom date range takes precedence over range preset
+  if (from && to) {
+    return { from, to, strategy, symbol };
+  }
+  return {
+    range: range && VALID_RANGES.has(range) ? range : "30d",
+    strategy,
+    symbol,
+  };
+}
+
+function filtersToParams(filters: PerformanceFilters): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filters.from && filters.to) {
+    params.set("from", filters.from);
+    params.set("to", filters.to);
+  } else if (filters.range && filters.range !== "30d") {
+    // Omit range=30d (the default) to keep URLs clean
+    params.set("range", filters.range);
+  }
+  if (filters.strategy) params.set("strategy", filters.strategy);
+  if (filters.symbol) params.set("symbol", filters.symbol);
+  return params;
+}
+
+// ---------------------------------------------------------------------------
+// Page wrapper (Suspense required for useSearchParams)
+// ---------------------------------------------------------------------------
+
 export default function PerformancePage() {
-  const [filters, setFilters] = useState<PerformanceFilters>({ range: "30d" });
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-96 items-center justify-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-emerald-500" />
+        </div>
+      }
+    >
+      <PerformanceContent />
+    </Suspense>
+  );
+}
+
+function PerformanceContent() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  const [filters, setFiltersState] = useState<PerformanceFilters>(() =>
+    filtersFromParams(searchParams),
+  );
+
+  const setFilters = useCallback(
+    (next: PerformanceFilters) => {
+      setFiltersState(next);
+      const qs = filtersToParams(next).toString();
+      router.replace(qs ? `?${qs}` : "/performance", { scroll: false });
+    },
+    [router],
+  );
 
   const {
     data: dashboardData,
