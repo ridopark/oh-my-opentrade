@@ -156,6 +156,18 @@ type StateSnapshot struct {
 	Payload  json.RawMessage `json:"payload"`
 }
 
+// StrategySummaryRow holds aggregated metrics for one strategy in a comparison list.
+type StrategySummaryRow struct {
+	Strategy    string  `json:"strategy"`
+	RealizedPnL float64 `json:"realized_pnl"`
+	Fees        float64 `json:"fees"`
+	TotalTrades int     `json:"total_trades"`
+	WinCount    int     `json:"win_count"`
+	LossCount   int     `json:"loss_count"`
+	GrossProfit float64 `json:"gross_profit"`
+	GrossLoss   float64 `json:"gross_loss"`
+}
+
 // StrategyDashboard aggregates per-strategy performance metrics for the API.
 type StrategyDashboard struct {
 	Strategy    string                `json:"strategy"`

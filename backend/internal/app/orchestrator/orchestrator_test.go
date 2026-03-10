@@ -134,6 +134,12 @@ func (m *mockPnLRepo) GetStrategySignalEvents(_ context.Context, _ ports.Strateg
 func (m *mockPnLRepo) GetStrategyDashboard(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) (domain.StrategyDashboard, error) {
 	return domain.StrategyDashboard{}, nil
 }
+func (m *mockPnLRepo) ListStrategySummaries(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) ([]domain.StrategySummaryRow, error) {
+	return nil, nil
+}
+func (m *mockPnLRepo) ListSymbolAttribution(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) ([]domain.SymbolAttribution, error) {
+	return nil, nil
+}
 
 // mockEquitySource implements EquitySource with configurable return value.
 type mockEquitySource struct {

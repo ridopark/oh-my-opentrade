@@ -108,6 +108,12 @@ func (m *signalTrackerPnLRepo) GetStrategySignalEvents(_ context.Context, _ port
 func (m *signalTrackerPnLRepo) GetStrategyDashboard(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) (domain.StrategyDashboard, error) {
 	return domain.StrategyDashboard{}, nil
 }
+func (m *signalTrackerPnLRepo) ListStrategySummaries(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) ([]domain.StrategySummaryRow, error) {
+	return nil, nil
+}
+func (m *signalTrackerPnLRepo) ListSymbolAttribution(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) ([]domain.SymbolAttribution, error) {
+	return nil, nil
+}
 
 func signalTrackerMakeSignalEvent(t *testing.T, instanceID string, symbol string, signalType strat.SignalType, side strat.Side, strength float64) domain.Event {
 	t.Helper()
