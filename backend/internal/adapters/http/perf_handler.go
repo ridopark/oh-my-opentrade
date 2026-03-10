@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -89,12 +90,18 @@ type dailyPnlJSON struct {
 
 func (h *PerformanceHandler) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	from, to := parseRange(r)
-	bucket := parseBucket(r, to.Sub(from))
 	ctx := r.Context()
 	envMode := domain.EnvModePaper
 	tenantID := "default"
+	strategy := r.URL.Query().Get("strategy")
 
-	// Fetch data in sequence (simple, correct; parallelism can be added later if needed)
+	if strategy != "" {
+		h.serveStrategyDashboard(ctx, w, r, tenantID, envMode, strategy, from, to)
+		return
+	}
+
+	bucket := parseBucket(r, to.Sub(from))
+
 	equityPts, err := h.pnlRepo.GetBucketedEquityCurve(ctx, tenantID, envMode, from, to, bucket)
 	if err != nil {
 		h.log.Error().Err(err).Msg("failed to get bucketed equity curve")
@@ -126,7 +133,6 @@ func (h *PerformanceHandler) serveDashboard(w http.ResponseWriter, r *http.Reque
 		h.log.Error().Err(err).Msg("failed to get sortino")
 	}
 
-	// Fetch full-resolution equity for drawdown curve and CAGR
 	fullEquity, err := h.pnlRepo.GetEquityCurve(ctx, tenantID, envMode, from, to)
 	if err != nil {
 		h.log.Error().Err(err).Msg("failed to get full equity curve")
@@ -136,7 +142,6 @@ func (h *PerformanceHandler) serveDashboard(w http.ResponseWriter, r *http.Reque
 	summary := domain.ComputeSummary(dailyData, maxDD, sharpe, sortino, fullEquity)
 	drawdown := domain.ComputeDrawdownCurve(fullEquity)
 
-	// Build response
 	equity := make([]equityPointJSON, 0, len(equityPts))
 	for _, pt := range equityPts {
 		equity = append(equity, equityPointJSON{
@@ -158,6 +163,53 @@ func (h *PerformanceHandler) serveDashboard(w http.ResponseWriter, r *http.Reque
 		})
 	}
 
+	h.writeDashboard(w, from, to, parseBucket(r, to.Sub(from)), summary, equity, daily, drawdown)
+}
+
+func (h *PerformanceHandler) serveStrategyDashboard(
+	ctx context.Context, w http.ResponseWriter, r *http.Request,
+	tenantID string, envMode domain.EnvMode,
+	strategy string, from, to time.Time,
+) {
+	stratDaily, err := h.pnlRepo.GetStrategyDailyPnL(ctx, tenantID, envMode, strategy, from, to)
+	if err != nil {
+		h.log.Error().Err(err).Str("strategy", strategy).Msg("failed to get strategy daily P&L")
+		http.Error(w, `{"error":"strategy daily pnl query failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	stratEquity, err := h.pnlRepo.GetStrategyEquityCurve(ctx, tenantID, envMode, strategy, from, to)
+	if err != nil {
+		h.log.Error().Err(err).Str("strategy", strategy).Msg("failed to get strategy equity curve")
+		http.Error(w, `{"error":"strategy equity curve query failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	equityPts := domain.StrategyEquityToEquityPoints(stratEquity)
+	summary := domain.ComputeSummaryFromStrategyPnL(stratDaily, equityPts)
+	drawdown := domain.ComputeDrawdownCurve(equityPts)
+
+	equity := dedupeEquityByTime(equityPts)
+
+	daily := make([]dailyPnlJSON, 0, len(stratDaily))
+	for _, d := range stratDaily {
+		daily = append(daily, dailyPnlJSON{
+			Date:        d.Day.Format("2006-01-02"),
+			RealizedPnL: d.RealizedPnL,
+			TradeCount:  d.TradeCount,
+		})
+	}
+
+	h.writeDashboard(w, from, to, parseBucket(r, to.Sub(from)), summary, equity, daily, drawdown)
+}
+
+func (h *PerformanceHandler) writeDashboard(
+	w http.ResponseWriter,
+	from, to time.Time, bucket string,
+	summary domain.PerformanceSummary,
+	equity []equityPointJSON, daily []dailyPnlJSON,
+	drawdown []domain.DrawdownPoint,
+) {
 	resp := dashboardResponse{
 		Range: rangeInfo{
 			From:   from.UTC().Format(time.RFC3339),
@@ -169,7 +221,6 @@ func (h *PerformanceHandler) serveDashboard(w http.ResponseWriter, r *http.Reque
 		DailyPnL: daily,
 		Drawdown: drawdown,
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		h.log.Error().Err(err).Msg("failed to encode dashboard response")
@@ -340,6 +391,28 @@ func (h *PerformanceHandler) serveSymbols(w http.ResponseWriter, r *http.Request
 	if err := json.NewEncoder(w).Encode(attrs); err != nil {
 		h.log.Error().Err(err).Msg("failed to encode symbol attribution")
 	}
+}
+
+// dedupeEquityByTime keeps the last equity point per unique second.
+// lightweight-charts requires strictly ascending timestamps.
+func dedupeEquityByTime(pts []domain.EquityPoint) []equityPointJSON {
+	if len(pts) == 0 {
+		return nil
+	}
+	out := make([]equityPointJSON, 0, len(pts))
+	for i, pt := range pts {
+		ts := pt.Time.UTC().Truncate(time.Second)
+		j := equityPointJSON{
+			Time:   ts.Format(time.RFC3339),
+			Equity: pt.Equity,
+		}
+		if i > 0 && ts.Equal(pts[i-1].Time.UTC().Truncate(time.Second)) {
+			out[len(out)-1] = j
+		} else {
+			out = append(out, j)
+		}
+	}
+	return out
 }
 
 // ---------- Helpers ----------
