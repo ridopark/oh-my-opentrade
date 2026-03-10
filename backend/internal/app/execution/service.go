@@ -40,6 +40,7 @@ type Service struct {
 	killSwitch         *KillSwitch
 	dailyLossBreaker   *risk.DailyLossBreaker
 	positionGate       *PositionGate
+	exposureGuard      *ExposureGuard
 	buyingPowerGuard   *BuyingPowerGuard
 	accountEquity      float64
 	log                zerolog.Logger
@@ -55,8 +56,10 @@ func WithPositionGate(pg *PositionGate) Option {
 	return func(s *Service) { s.positionGate = pg }
 }
 
-// WithBuyingPowerGuard attaches a BuyingPowerGuard to the execution pipeline.
-// Only set when DTBP_FALLBACK=true.
+func WithExposureGuard(eg *ExposureGuard) Option {
+	return func(s *Service) { s.exposureGuard = eg }
+}
+
 func WithBuyingPowerGuard(bpg *BuyingPowerGuard) Option {
 	return func(s *Service) { s.buyingPowerGuard = bpg }
 }
@@ -110,6 +113,9 @@ func (s *Service) SetAccountEquity(equity float64) {
 		return
 	}
 	s.accountEquity = equity
+	if s.exposureGuard != nil {
+		s.exposureGuard.UpdateCaps(equity)
+	}
 }
 
 // SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
@@ -190,8 +196,17 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		}
 	}
 
-	// 1b. Reject SHORT direction — short selling not supported for this asset class.
-	// Exit orders now use DirectionCloseLong, so this only catches new short entries.
+	if s.exposureGuard != nil {
+		if err := s.exposureGuard.Check(ctx, intent); err != nil {
+			l.Warn().Err(err).Msg("order intent rejected by exposure guard")
+			if s.metrics != nil {
+				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "exposure").Inc()
+			}
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
+			return nil
+		}
+	}
+
 	if intent.Direction == domain.DirectionShort {
 		var reason string
 		if intent.AssetClass == domain.AssetClassCrypto {
