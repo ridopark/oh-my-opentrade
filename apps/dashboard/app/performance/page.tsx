@@ -161,8 +161,7 @@ function PerformanceContent() {
 
   // Equity Chart
   useEffect(() => {
-    if (!chartContainerRef.current || !dashboardData) return;
-
+    if (!chartContainerRef.current || !dashboardData || !dashboardData.equity?.length) return;
 
     const chart = createChart(chartContainerRef.current, {
       layout: {
