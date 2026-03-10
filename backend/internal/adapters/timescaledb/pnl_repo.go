@@ -70,7 +70,31 @@ const (
 			ELSE NULL
 		END AS sharpe
 	FROM rets`
+
+	querySelectSortino = `WITH eod AS (
+		SELECT
+			(time_bucket('1 day', time))::date AS trade_date,
+			last(equity, time) AS equity
+		FROM equity_curve
+		WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4
+		GROUP BY 1
+	),
+	rets AS (
+		SELECT
+			(equity / lag(equity) OVER (ORDER BY trade_date) - 1.0) AS r
+		FROM eod
+	)
+	SELECT
+		CASE
+			WHEN COUNT(r) FILTER (WHERE r IS NOT NULL) >= 2
+			 AND sqrt(avg(r * r) FILTER (WHERE r IS NOT NULL AND r < 0)) > 0
+			THEN sqrt(252) * avg(r) FILTER (WHERE r IS NOT NULL)
+			     / sqrt(avg(r * r) FILTER (WHERE r IS NOT NULL AND r < 0))
+			ELSE NULL
+		END AS sortino
+	FROM rets`
 )
+
 // PnLRepository implements ports.PnLPort using TimescaleDB.
 type PnLRepository struct {
 	db  DBTX
@@ -233,4 +257,18 @@ func (r *PnLRepository) GetSharpe(ctx context.Context, tenantID string, envMode 
 		return nil, fmt.Errorf("timescaledb: get sharpe: %w", err)
 	}
 	return sharpe, nil
+}
+
+// GetSortino computes the annualized Sortino ratio from daily equity returns.
+// Returns nil if insufficient data (fewer than 2 days or zero downside deviation).
+func (r *PnLRepository) GetSortino(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) (*float64, error) {
+	row := r.db.QueryRowContext(ctx, querySelectSortino, tenantID, string(envMode), from, to)
+	var sortino *float64
+	if err := row.Scan(&sortino); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("timescaledb: get sortino: %w", err)
+	}
+	return sortino, nil
 }

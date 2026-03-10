@@ -3,7 +3,6 @@ package http
 import (
 	"encoding/base64"
 	"encoding/json"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -57,31 +56,17 @@ func (h *PerformanceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // ---------- Dashboard ----------
 
 type dashboardResponse struct {
-	Range    rangeInfo         `json:"range"`
-	Summary  summaryStats      `json:"summary"`
-	Equity   []equityPointJSON `json:"equity"`
-	DailyPnL []dailyPnlJSON    `json:"daily_pnl"`
+	Range    rangeInfo                 `json:"range"`
+	Summary  domain.PerformanceSummary `json:"summary"`
+	Equity   []equityPointJSON         `json:"equity"`
+	DailyPnL []dailyPnlJSON            `json:"daily_pnl"`
+	Drawdown []domain.DrawdownPoint    `json:"drawdown"`
 }
 
 type rangeInfo struct {
 	From   string `json:"from"`
 	To     string `json:"to"`
 	Bucket string `json:"bucket"`
-}
-
-type summaryStats struct {
-	TotalPnL       float64  `json:"total_pnl"`
-	RealizedPnL    float64  `json:"realized_pnl"`
-	UnrealizedPnL  float64  `json:"unrealized_pnl"`
-	NumTrades      int      `json:"num_trades"`
-	WinningDays    int      `json:"winning_days"`
-	LosingDays     int      `json:"losing_days"`
-	WinRate        *float64 `json:"win_rate"`
-	Sharpe         *float64 `json:"sharpe"`
-	MaxDrawdownPct float64  `json:"max_drawdown_pct"`
-	GrossProfit    float64  `json:"gross_profit"`
-	GrossLoss      float64  `json:"gross_loss"`
-	ProfitFactor   *float64 `json:"profit_factor"`
 }
 
 type equityPointJSON struct {
@@ -131,11 +116,22 @@ func (h *PerformanceHandler) serveDashboard(w http.ResponseWriter, r *http.Reque
 	sharpe, err := h.pnlRepo.GetSharpe(ctx, tenantID, envMode, from, to)
 	if err != nil {
 		h.log.Error().Err(err).Msg("failed to get sharpe")
-		// non-fatal: continue without sharpe
 	}
 
-	// Compute summary from daily P&L data
-	summary := computeSummary(dailyData, maxDD, sharpe)
+	sortino, err := h.pnlRepo.GetSortino(ctx, tenantID, envMode, from, to)
+	if err != nil {
+		h.log.Error().Err(err).Msg("failed to get sortino")
+	}
+
+	// Fetch full-resolution equity for drawdown curve and CAGR
+	fullEquity, err := h.pnlRepo.GetEquityCurve(ctx, tenantID, envMode, from, to)
+	if err != nil {
+		h.log.Error().Err(err).Msg("failed to get full equity curve")
+		fullEquity = nil
+	}
+
+	summary := domain.ComputeSummary(dailyData, maxDD, sharpe, sortino, fullEquity)
+	drawdown := domain.ComputeDrawdownCurve(fullEquity)
 
 	// Build response
 	equity := make([]equityPointJSON, 0, len(equityPts))
@@ -168,45 +164,13 @@ func (h *PerformanceHandler) serveDashboard(w http.ResponseWriter, r *http.Reque
 		Summary:  summary,
 		Equity:   equity,
 		DailyPnL: daily,
+		Drawdown: drawdown,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		h.log.Error().Err(err).Msg("failed to encode dashboard response")
 	}
-}
-
-func computeSummary(daily []domain.DailyPnL, maxDD float64, sharpe *float64) summaryStats {
-	var s summaryStats
-	s.MaxDrawdownPct = maxDD
-	s.Sharpe = sharpe
-
-	for _, d := range daily {
-		s.RealizedPnL += d.RealizedPnL
-		s.UnrealizedPnL += d.UnrealizedPnL
-		s.NumTrades += d.TradeCount
-
-		if d.RealizedPnL > 0 {
-			s.WinningDays++
-			s.GrossProfit += d.RealizedPnL
-		} else if d.RealizedPnL < 0 {
-			s.LosingDays++
-			s.GrossLoss += math.Abs(d.RealizedPnL)
-		}
-	}
-	s.TotalPnL = s.RealizedPnL + s.UnrealizedPnL
-
-	totalDays := s.WinningDays + s.LosingDays
-	if totalDays > 0 {
-		wr := float64(s.WinningDays) / float64(totalDays)
-		s.WinRate = &wr
-	}
-	if s.GrossLoss > 0 {
-		pf := s.GrossProfit / s.GrossLoss
-		s.ProfitFactor = &pf
-	}
-
-	return s
 }
 
 // ---------- Trades ----------

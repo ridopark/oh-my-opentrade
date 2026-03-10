@@ -36,6 +36,10 @@ type PnLPort interface {
 	// Returns nil if insufficient data (< 2 days or zero stdev).
 	GetSharpe(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) (*float64, error)
 
+	// GetSortino computes the annualized Sortino ratio from daily equity returns.
+	// Returns nil if insufficient data or zero downside deviation.
+	GetSortino(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) (*float64, error)
+
 	// --- Per-strategy performance methods ---
 
 	// UpsertStrategyDailyPnL inserts or updates the per-strategy daily P&L record.
@@ -65,7 +69,7 @@ type StrategySignalQuery struct {
 	TenantID   string
 	EnvMode    domain.EnvMode
 	Strategy   string
-	Symbol     string     // optional filter
+	Symbol     string // optional filter
 	From       time.Time
 	To         time.Time
 	Limit      int
