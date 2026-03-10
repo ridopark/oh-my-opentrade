@@ -99,7 +99,7 @@ type exitRejectedMsg struct {
 const (
 	exitPendingTimeout       = 10 * time.Second
 	maxExitRetries           = 3
-	defaultReconcileInterval = 60 * time.Second
+	defaultReconcileInterval = 5 * time.Minute
 	ghostMissThreshold       = 3 // consecutive broker-miss checks before removing a ghost position
 )
 
