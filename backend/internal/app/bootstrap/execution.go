@@ -75,6 +75,7 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 
 	execOpts := []execution.Option{
 		execution.WithPositionGate(posGate),
+		execution.WithExposureGuard(execution.NewExposureGuard(deps.Broker, deps.InitialEquity, execLog)),
 		execution.WithSpreadGuard(execution.NewSpreadGuard(deps.QuoteProvider, execLog)),
 		execution.WithTradingWindowGuard(execution.NewTradingWindowGuard(execLog)),
 	}
