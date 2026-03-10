@@ -39,8 +39,8 @@ func TestRESTClient_SubmitOrder_Success(t *testing.T) {
 		assert.Equal(t, "buy", req["side"])
 		assert.Equal(t, "stop_limit", req["type"])
 		assert.Equal(t, "gtc", req["time_in_force"])
-		assert.Equal(t, 150.0, req["limit_price"])
-		assert.Equal(t, 145.0, req["stop_price"])
+		assert.Equal(t, "150.00", req["limit_price"])
+		assert.Equal(t, "145.00", req["stop_price"])
 
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"id": "order-uuid-123", "status": "new", "symbol": "AAPL", "qty": "10", "side": "buy", "type": "limit", "time_in_force": "gtc"}`))
@@ -75,9 +75,9 @@ func TestRESTClient_SubmitOrder_RoundsSubPennyPrices(t *testing.T) {
 		err = json.Unmarshal(body, &req)
 		require.NoError(t, err)
 
-		// Sub-penny prices must be rounded to 2 decimal places
-		assert.Equal(t, 260.25, req["limit_price"])
-		assert.Equal(t, 255.16, req["stop_price"])
+		// Sub-penny prices must be rounded and sent as strings
+		assert.Equal(t, "260.25", req["limit_price"])
+		assert.Equal(t, "255.16", req["stop_price"])
 
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"id": "rounded-order-123"}`))
@@ -614,4 +614,21 @@ func TestRESTClient_DoReq_ContextCancellationDuringRetry(t *testing.T) {
 	}
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestRoundPrice(t *testing.T) {
+	tests := []struct {
+		input    float64
+		expected string
+	}{
+		{308.52, "308.52"},
+		{0.05, "0.0500"},
+		{0.000011, "0.00001100"},
+		{0.0, "0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.expected, func(t *testing.T) {
+			assert.Equal(t, tt.expected, roundPrice(tt.input))
+		})
+	}
 }

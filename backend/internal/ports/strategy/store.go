@@ -64,6 +64,7 @@ type RoutingConfig struct {
 	Symbols            []string
 	Timeframes         []string
 	AssetClasses       []string
+	AllowedDirections  []string
 	Priority           int
 	ConflictPolicy     domstrategy.ConflictPolicy
 	ExclusivePerSymbol bool

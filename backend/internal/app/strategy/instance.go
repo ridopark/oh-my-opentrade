@@ -14,11 +14,12 @@ import (
 
 // InstanceAssignment defines which symbols a strategy instance is responsible for.
 type InstanceAssignment struct {
-	Symbols        []string
-	Timeframes     []string
-	AssetClasses   []string
-	Priority       int
-	ConflictPolicy start.ConflictPolicy
+	Symbols           []string
+	Timeframes        []string
+	AssetClasses      []string
+	AllowedDirections []string
+	Priority          int
+	ConflictPolicy    start.ConflictPolicy
 }
 
 // Instance wraps a Strategy implementation with per-symbol state management
@@ -235,6 +236,23 @@ func (inst *Instance) OnEvent(ctx start.Context, symbol string, evt any) ([]star
 
 	inst.states[symbol] = next
 	return signals, nil
+}
+
+func (inst *Instance) ClearPendingState(symbol string) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
+	state, ok := inst.states[symbol]
+	if !ok {
+		return
+	}
+
+	type pendingClearer interface {
+		ClearPendingEntry()
+	}
+	if clearer, ok := state.(pendingClearer); ok {
+		clearer.ClearPendingEntry()
+	}
 }
 
 // IsWarmedUp returns true if the symbol has passed the warmup period.

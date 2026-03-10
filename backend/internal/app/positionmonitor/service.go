@@ -40,13 +40,15 @@ type Service struct {
 	stopCh        chan struct{}
 
 	// State owned exclusively by the tick goroutine.
-	positions map[string]*domain.MonitoredPosition // key: PositionKey()
-	mu        sync.RWMutex                         // protects positions for concurrent reads (e.g. PositionCount)
+	positions       map[string]*domain.MonitoredPosition // key: PositionKey()
+	ghostMissCounts map[string]int                       // key: position key → consecutive broker-miss count
+	mu              sync.RWMutex                         // protects positions for concurrent reads (e.g. PositionCount)
 
 	snapshotFn IndicatorSnapshotFunc
 
 	// Config.
 	tickInterval      time.Duration
+	reconcileInterval time.Duration
 	maxPriceStaleness time.Duration
 	tenantID          string
 	envMode           domain.EnvMode
@@ -95,8 +97,10 @@ type exitRejectedMsg struct {
 }
 
 const (
-	exitPendingTimeout = 10 * time.Second
-	maxExitRetries     = 3
+	exitPendingTimeout       = 10 * time.Second
+	maxExitRetries           = 3
+	defaultReconcileInterval = 60 * time.Second
+	ghostMissThreshold       = 3 // consecutive broker-miss checks before removing a ghost position
 )
 
 // Option is a functional option for the Service.
@@ -115,6 +119,11 @@ func WithMaxPriceStaleness(d time.Duration) Option {
 // WithNowFunc injects a deterministic clock for testing.
 func WithNowFunc(fn func() time.Time) Option {
 	return func(s *Service) { s.nowFunc = fn }
+}
+
+// WithReconcileInterval overrides the default broker reconciliation interval (60 seconds).
+func WithReconcileInterval(d time.Duration) Option {
+	return func(s *Service) { s.reconcileInterval = d }
 }
 
 // WithBroker injects a BrokerPort for startup position bootstrap.
@@ -176,7 +185,9 @@ func NewService(
 		outbox:            make(chan outboxMsg, 64),
 		stopCh:            make(chan struct{}),
 		positions:         make(map[string]*domain.MonitoredPosition),
+		ghostMissCounts:   make(map[string]int),
 		tickInterval:      1 * time.Second,
+		reconcileInterval: defaultReconcileInterval,
 		maxPriceStaleness: 30 * time.Second,
 		tenantID:          tenantID,
 		envMode:           envMode,
@@ -228,6 +239,9 @@ func (s *Service) runTickLoop(ctx context.Context) {
 	ticker := time.NewTicker(s.tickInterval)
 	defer ticker.Stop()
 
+	reconcileTicker := time.NewTicker(s.reconcileInterval)
+	defer reconcileTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -242,6 +256,8 @@ func (s *Service) runTickLoop(ctx context.Context) {
 			s.processExitTerminal(msg)
 		case msg := <-s.exitRejected:
 			s.processExitRejected(msg)
+		case <-reconcileTicker.C:
+			s.reconcileWithBroker(ctx)
 		case <-ticker.C:
 			s.tick()
 		}

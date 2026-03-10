@@ -308,6 +308,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		if _, err := start.NewStrategyID(hookRef.Name); err != nil {
 			continue
 		}
+
 		svc.symRouterSpecs = append(svc.symRouterSpecs, symbolrouter.StrategySpec{
 			Key:           spec.ID.String(),
 			BaseSymbols:   spec.Routing.Symbols,

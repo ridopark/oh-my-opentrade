@@ -20,6 +20,7 @@ conflict_policy = "priority_wins"
 exclusive_per_symbol = false
 watchlist_mode = "intersection"
 asset_classes = ["EQUITY"]
+allowed_directions = ["LONG"]
 
 [params]
 orb_window_minutes = 30

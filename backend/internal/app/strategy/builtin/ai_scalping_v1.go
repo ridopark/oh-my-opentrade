@@ -75,6 +75,11 @@ func (s *AIScalperState) SetIndicators(ind start.IndicatorData) {
 	s.Indicators = ind
 }
 
+func (s *AIScalperState) ClearPendingEntry() {
+	s.PendingEntry = ""
+	s.PendingEntryAt = time.Time{}
+}
+
 // AIDebateResult is the event payload returned by the AI debate system.
 type AIDebateResult struct {
 	RequestID  string

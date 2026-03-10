@@ -98,6 +98,11 @@ func (s *AVWAPState) SetIndicators(ind start.IndicatorData) {
 	s.Indicators = ind
 }
 
+func (s *AVWAPState) ClearPendingEntry() {
+	s.PendingEntry = ""
+	s.PendingEntryAt = time.Time{}
+}
+
 // --- param helpers (shared by strategies in this package) ---
 
 func getFloat64(m map[string]any, key string, def float64) float64 {

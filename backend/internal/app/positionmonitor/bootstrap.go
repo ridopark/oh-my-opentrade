@@ -139,6 +139,16 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 			}
 		}
 
+		if pos.EntryThesis == nil {
+			if thesisJSON, err := s.repo.GetLatestThesisForSymbol(ctx, s.tenantID, s.envMode, sym); err == nil && len(thesisJSON) > 0 {
+				var thesis domain.EntryThesis
+				if err := json.Unmarshal(thesisJSON, &thesis); err == nil {
+					pos.EntryThesis = &thesis
+					s.log.Info().Str("symbol", string(sym)).Msg("bootstrap: entry thesis restored via retroactive lookup")
+				}
+			}
+		}
+
 		if maxHigh, err := s.repo.GetMaxBarHighSince(ctx, sym, "1m", entryTime); err == nil && maxHigh > pos.HighWaterMark {
 			pos.HighWaterMark = maxHigh
 			s.log.Info().

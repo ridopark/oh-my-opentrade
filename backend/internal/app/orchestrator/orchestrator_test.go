@@ -90,6 +90,9 @@ func (m *mockRepo) UpdateTradeThesis(_ context.Context, _ string, _ domain.EnvMo
 func (m *mockRepo) GetMaxBarHighSince(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _ time.Time) (float64, error) {
 	return 0, nil
 }
+func (m *mockRepo) GetLatestThesisForSymbol(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol) (json.RawMessage, error) {
+	return nil, nil
+}
 
 // mockPnLRepo implements ports.PnLPort (needed for perf.NewLedgerWriter).
 type mockPnLRepo struct{}

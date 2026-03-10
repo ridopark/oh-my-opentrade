@@ -109,6 +109,9 @@ func (m *mockBrokerWithCancel) CancelOrder(_ context.Context, orderID string) er
 type mockRepo struct {
 	trades    []domain.Trade
 	tradesErr error
+
+	latestThesis    json.RawMessage
+	latestThesisErr error
 }
 
 func (m *mockRepo) SaveMarketBar(ctx context.Context, bar domain.MarketBar) error { return nil }
@@ -142,6 +145,9 @@ func (m *mockRepo) UpdateTradeThesis(_ context.Context, _ string, _ domain.EnvMo
 }
 func (m *mockRepo) GetMaxBarHighSince(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _ time.Time) (float64, error) {
 	return 0, nil
+}
+func (m *mockRepo) GetLatestThesisForSymbol(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol) (json.RawMessage, error) {
+	return m.latestThesis, m.latestThesisErr
 }
 
 type mockSpecStore struct {
@@ -1090,6 +1096,145 @@ func TestService_ExitRejected_FullIntegration_BreaksRetryLoop(t *testing.T) {
 
 	require.Eventually(t, func() bool { return svc.PositionCount() == 0 }, 500*time.Millisecond, 10*time.Millisecond,
 		"position must be removed after no_position_to_exit rejection")
+}
+
+func TestService_bootstrapPositions_RetroactiveThesisLookupWhenTradeHasNoThesis(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+
+	broker := &mockBroker{positions: []domain.Trade{{
+		Symbol:     domain.Symbol("AAPL"),
+		Quantity:   10,
+		Price:      150,
+		AssetClass: domain.AssetClassEquity,
+		TenantID:   "tenant-1",
+		EnvMode:    domain.EnvModePaper,
+	}}}
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+
+	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	repo := &mockRepo{
+		trades: []domain.Trade{{
+			Symbol:     domain.Symbol("AAPL"),
+			Side:       "BUY",
+			Price:      150,
+			Quantity:   10,
+			Strategy:   "ai_scalping",
+			AssetClass: domain.AssetClassEquity,
+			Time:       now.Add(-10 * time.Minute),
+			TenantID:   "tenant-1",
+			EnvMode:    domain.EnvModePaper,
+			// Thesis is nil — simulates crash between fill and PersistThesis
+		}},
+		latestThesis: json.RawMessage(`{"bullArgument":"strong breakout","bearArgument":"high RSI","confidence":0.85,"direction":"LONG","riskModifier":"NORMAL"}`),
+	}
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithBroker(broker),
+		WithRepo(repo),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.bootstrapPositions(context.Background())
+
+	require.Equal(t, 1, svc.PositionCount())
+	pos, ok := svc.positions["tenant-1:Paper:AAPL"]
+	require.True(t, ok)
+	require.NotNil(t, pos.EntryThesis, "thesis should be restored via retroactive lookup")
+	assert.Equal(t, "strong breakout", pos.EntryThesis.BullArgument)
+	assert.Equal(t, "high RSI", pos.EntryThesis.BearArgument)
+	assert.InDelta(t, 0.85, pos.EntryThesis.Confidence, 0.001)
+}
+
+func TestService_bootstrapPositions_RetroactiveThesisSkippedWhenTradeHasThesis(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+
+	broker := &mockBroker{positions: []domain.Trade{{
+		Symbol:     domain.Symbol("AAPL"),
+		Quantity:   10,
+		Price:      150,
+		AssetClass: domain.AssetClassEquity,
+		TenantID:   "tenant-1",
+		EnvMode:    domain.EnvModePaper,
+	}}}
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+
+	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	repo := &mockRepo{
+		trades: []domain.Trade{{
+			Symbol:     domain.Symbol("AAPL"),
+			Side:       "BUY",
+			Price:      150,
+			Quantity:   10,
+			Strategy:   "ai_scalping",
+			AssetClass: domain.AssetClassEquity,
+			Time:       now.Add(-10 * time.Minute),
+			TenantID:   "tenant-1",
+			EnvMode:    domain.EnvModePaper,
+			Thesis:     json.RawMessage(`{"bullArgument":"from trade record","bearArgument":"bear case","confidence":0.90,"direction":"LONG","riskModifier":"TIGHT"}`),
+		}},
+		latestThesis: json.RawMessage(`{"bullArgument":"stale thesis","confidence":0.50}`),
+	}
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithBroker(broker),
+		WithRepo(repo),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.bootstrapPositions(context.Background())
+
+	require.Equal(t, 1, svc.PositionCount())
+	pos, ok := svc.positions["tenant-1:Paper:AAPL"]
+	require.True(t, ok)
+	require.NotNil(t, pos.EntryThesis)
+	assert.Equal(t, "from trade record", pos.EntryThesis.BullArgument, "should use thesis from trade record, not retroactive lookup")
+	assert.InDelta(t, 0.90, pos.EntryThesis.Confidence, 0.001)
+}
+
+func TestService_bootstrapPositions_RetroactiveThesisHandlesNoThesisInDB(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+
+	broker := &mockBroker{positions: []domain.Trade{{
+		Symbol:     domain.Symbol("AAPL"),
+		Quantity:   10,
+		Price:      150,
+		AssetClass: domain.AssetClassEquity,
+		TenantID:   "tenant-1",
+		EnvMode:    domain.EnvModePaper,
+	}}}
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+
+	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	repo := &mockRepo{
+		trades: []domain.Trade{{
+			Symbol:     domain.Symbol("AAPL"),
+			Side:       "BUY",
+			Price:      150,
+			Quantity:   10,
+			Strategy:   "ai_scalping",
+			AssetClass: domain.AssetClassEquity,
+			Time:       now.Add(-10 * time.Minute),
+			TenantID:   "tenant-1",
+			EnvMode:    domain.EnvModePaper,
+		}},
+		latestThesis: nil,
+	}
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithBroker(broker),
+		WithRepo(repo),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.bootstrapPositions(context.Background())
+
+	require.Equal(t, 1, svc.PositionCount())
+	pos, ok := svc.positions["tenant-1:Paper:AAPL"]
+	require.True(t, ok)
+	assert.Nil(t, pos.EntryThesis, "no thesis should be attached when DB has no thesis either")
 }
 
 func TestService_resolveExitRules_FallsBackToDefaultsWhenSpecStoreIsNil(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -65,9 +66,16 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 	log.Info().Msg("event bus initialized")
 
 	// Alpaca adapter (MarketDataPort + BrokerPort + QuoteProvider)
-	alpacaAdapter, err := alpaca.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca").Logger())
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to create Alpaca adapter")
+	var alpacaAdapter *alpaca.Adapter
+	if err := retryWithBackoff(log, "alpaca_adapter", 5, 2*time.Second, 30*time.Second, func() error {
+		a, err := alpaca.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca").Logger())
+		if err != nil {
+			return err
+		}
+		alpacaAdapter = a
+		return nil
+	}); err != nil {
+		log.Fatal().Err(err).Msg("failed to create Alpaca adapter after retries")
 	}
 	log.Info().Msg("Alpaca adapter initialized")
 
@@ -79,8 +87,10 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 		log.Fatal().Err(err).Msg("failed to parse DB config")
 	}
 	sqlDB := stdlib.OpenDB(*pgxCfg)
-	if err := sqlDB.PingContext(context.Background()); err != nil {
-		log.Fatal().Err(err).Msg("failed to connect to TimescaleDB")
+	if err := retryWithBackoff(log, "timescaledb_ping", 5, 1*time.Second, 15*time.Second, func() error {
+		return sqlDB.PingContext(context.Background())
+	}); err != nil {
+		log.Fatal().Err(err).Msg("failed to connect to TimescaleDB after retries")
 	}
 	log.Info().Msg("TimescaleDB connected")
 
@@ -99,4 +109,28 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 		tokenStore:      tokenStore,
 		tracerProvider:  tp,
 	}
+}
+
+// retryWithBackoff retries fn with exponential backoff. Returns nil on
+// success, or the last error after maxAttempts exhausted.
+func retryWithBackoff(log zerolog.Logger, desc string, maxAttempts int, initialDelay, maxDelay time.Duration, fn func() error) error {
+	delay := initialDelay
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := fn(); err != nil {
+			lastErr = err
+			if attempt == maxAttempts {
+				break
+			}
+			log.Warn().Err(err).Str("operation", desc).Int("attempt", attempt).Dur("retry_in", delay).Msg("retrying after failure")
+			time.Sleep(delay)
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+			continue
+		}
+		return nil
+	}
+	return lastErr
 }

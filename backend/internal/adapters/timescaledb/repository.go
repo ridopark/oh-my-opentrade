@@ -454,6 +454,27 @@ func (r *Repository) UpdateTradeThesis(ctx context.Context, tenantID string, env
 	return nil
 }
 
+func (r *Repository) GetLatestThesisForSymbol(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol) (json.RawMessage, error) {
+	row := r.db.QueryRowContext(ctx,
+		`SELECT thesis FROM trades
+		 WHERE account_id = $1 AND env_mode = $2 AND symbol = $3 AND thesis IS NOT NULL
+		 ORDER BY time DESC LIMIT 1`,
+		tenantID, string(envMode), string(symbol),
+	)
+
+	var thesis []byte
+	if err := row.Scan(&thesis); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("timescaledb: get latest thesis for symbol: %w", err)
+	}
+	if len(thesis) == 0 {
+		return nil, nil
+	}
+	return json.RawMessage(thesis), nil
+}
+
 // SaveThoughtLog persists an AI debate reasoning record.
 func (r *Repository) SaveThoughtLog(ctx context.Context, tl domain.ThoughtLog) error {
 	payload, _ := json.Marshal(map[string]string{"intent_id": tl.IntentID})

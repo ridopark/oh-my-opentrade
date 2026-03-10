@@ -80,6 +80,9 @@ func (m *mockRepository) UpdateTradeThesis(context.Context, string, domain.EnvMo
 func (m *mockRepository) GetMaxBarHighSince(context.Context, domain.Symbol, domain.Timeframe, time.Time) (float64, error) {
 	return 0, nil
 }
+func (m *mockRepository) GetLatestThesisForSymbol(context.Context, string, domain.EnvMode, domain.Symbol) (json.RawMessage, error) {
+	return nil, nil
+}
 
 func (f *fakeAIAdvisor) RequestDebate(ctx context.Context, symbol domain.Symbol, regime domain.MarketRegime, indicators domain.IndicatorSnapshot, opts ...ports.DebateOption) (*domain.AdvisoryDecision, error) {
 	f.calls++

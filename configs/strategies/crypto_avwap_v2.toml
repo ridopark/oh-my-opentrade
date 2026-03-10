@@ -20,6 +20,7 @@ conflict_policy = "priority_wins"
 exclusive_per_symbol = false
 watchlist_mode = "intersection"
 asset_classes = ["CRYPTO"]
+allowed_directions = ["LONG"]
 
 [params]
 anchors = ["pd_high", "pd_low", "on_high", "on_low", "session_open"]

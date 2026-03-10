@@ -63,6 +63,9 @@ services:
       - STRATEGY_V2=true
     ports:
       - "8080:8080"
+    # Healthcheck: distroless image has no shell/curl/wget. Liveness is
+    # monitored via Prometheus scraping :8080/metrics. Startup resilience
+    # is handled by retry-with-backoff in initInfra (infra.go).
     networks:
       - default
   dashboard:

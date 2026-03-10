@@ -51,6 +51,7 @@ Determines which symbols and timeframes the strategy receives data for.
 | `exclusive_per_symbol` | bool | If `true`, only one instance of this strategy runs per symbol. |
 | `watchlist_mode` | string | `"intersection"` means only trade symbols that appear in both the strategy list and the active watchlist. |
 | `asset_classes` | string[] | Asset class filter: `"EQUITY"`, `"CRYPTO"`. |
+| `allowed_directions` | string[] | Signal directions this strategy may emit: `"LONG"`, `"SHORT"`. Omit to allow all. Entry signals with disallowed directions are filtered before enrichment. Exit signals are never filtered. |
 
 ---
 
