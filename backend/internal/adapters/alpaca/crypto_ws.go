@@ -116,6 +116,11 @@ func (c *CryptoWSClient) defaultConnectFactory(symStrs []string, barHandler func
 		case err := <-sc.Terminated():
 			return err
 		case <-ctx.Done():
+			// Wait for SDK to send RFC6455 close frame before returning.
+			select {
+			case <-sc.Terminated():
+			case <-time.After(3 * time.Second):
+			}
 			return nil
 		}
 	}
