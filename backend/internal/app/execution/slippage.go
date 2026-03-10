@@ -40,13 +40,13 @@ func (s *SlippageGuard) Check(ctx context.Context, intent domain.OrderIntent) er
 	switch intent.Direction {
 	case domain.DirectionLong:
 		if ask > intent.LimitPrice+tolerance {
-			return fmt.Errorf("slippage exceeded for %s long: ask %.2f > limit %.2f + tolerance %.2f",
-				intent.Symbol, ask, intent.LimitPrice, tolerance)
+			return fmt.Errorf("slippage exceeded for %s long: ask %s > limit %s + tolerance %s",
+				intent.Symbol, domain.FmtPrice(ask), domain.FmtPrice(intent.LimitPrice), domain.FmtPrice(tolerance))
 		}
 	case domain.DirectionShort:
 		if bid < intent.LimitPrice-tolerance {
-			return fmt.Errorf("slippage exceeded for %s short: bid %.2f < limit %.2f - tolerance %.2f",
-				intent.Symbol, bid, intent.LimitPrice, tolerance)
+			return fmt.Errorf("slippage exceeded for %s short: bid %s < limit %s - tolerance %s",
+				intent.Symbol, domain.FmtPrice(bid), domain.FmtPrice(intent.LimitPrice), domain.FmtPrice(tolerance))
 		}
 	}
 

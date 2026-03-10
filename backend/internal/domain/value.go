@@ -151,3 +151,25 @@ func (a AssetClass) Is24x7() bool {
 func (a AssetClass) SupportsShort() bool {
 	return a == AssetClassEquity
 }
+
+// FmtPrice formats a price with appropriate decimal precision based on magnitude.
+// Sub-penny assets (e.g., PEPE at $0.000012) show up to 8 decimals;
+// normal assets use 2 decimals.
+func FmtPrice(v float64) string {
+	abs := v
+	if abs < 0 {
+		abs = -abs
+	}
+	switch {
+	case abs == 0:
+		return "0"
+	case abs >= 1.0:
+		return fmt.Sprintf("%.2f", v)
+	case abs >= 0.01:
+		return fmt.Sprintf("%.4f", v)
+	case abs >= 0.0001:
+		return fmt.Sprintf("%.6f", v)
+	default:
+		return fmt.Sprintf("%.8f", v)
+	}
+}
