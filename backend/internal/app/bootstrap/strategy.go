@@ -98,8 +98,10 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 		for _, sym := range spec.Routing.Symbols {
 			instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", spec.ID, spec.Version, sym))
 			inst := strategy.NewInstance(instanceID, impl, spec.Params, strategy.InstanceAssignment{
-				Symbols:  []string{sym},
-				Priority: spec.Routing.Priority,
+				Symbols:           []string{sym},
+				Timeframes:        spec.Routing.Timeframes,
+				Priority:          spec.Routing.Priority,
+				AllowedDirections: spec.Routing.AllowedDirections,
 			}, start.LifecycleLiveActive, stratLog)
 
 			initCtx := strategy.NewContext(clockFn(), stratLog, nil)

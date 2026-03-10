@@ -30,6 +30,7 @@ type Runner struct {
 	indicators  map[string]start.IndicatorData // cached per-symbol indicators from StateUpdated
 	indLogOnce  map[string]bool
 	metrics     *metrics.Metrics
+	aggregators map[string]*domain.BarAggregator // key: "symbol:timeframe"
 }
 
 // IndicatorSnapshotFunc maps a market bar to indicator data.
@@ -48,13 +49,14 @@ func NewRunner(
 		logger = slog.Default()
 	}
 	return &Runner{
-		eventBus:   eventBus,
-		router:     router,
-		logger:     logger.With("component", "strategy_runner"),
-		tenantID:   tenantID,
-		envMode:    envMode,
-		indicators: make(map[string]start.IndicatorData),
-		indLogOnce: make(map[string]bool),
+		eventBus:    eventBus,
+		router:      router,
+		logger:      logger.With("component", "strategy_runner"),
+		tenantID:    tenantID,
+		envMode:     envMode,
+		indicators:  make(map[string]start.IndicatorData),
+		indLogOnce:  make(map[string]bool),
+		aggregators: make(map[string]*domain.BarAggregator),
 	}
 }
 
@@ -68,6 +70,46 @@ func (r *Runner) SetSwapManager(sm *SwapManager) { r.swapManager = sm }
 func (r *Runner) SetMetrics(m *metrics.Metrics) { r.metrics = m }
 
 func (r *Runner) SetPositionLookup(fn PositionLookupFunc) { r.posLookup = fn }
+
+// InitAggregators creates BarAggregators for all non-1m timeframes needed by registered instances.
+// Must be called after all instances are registered and before Start().
+func (r *Runner) InitAggregators(sessionOpen time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, inst := range r.router.AllInstances() {
+		tfs := inst.Assignment().Timeframes
+		if len(tfs) == 0 {
+			tfs = []string{"1m"}
+		}
+		for _, tf := range tfs {
+			if tf == "1m" {
+				continue
+			}
+			for _, sym := range inst.Assignment().Symbols {
+				key := sym + ":" + tf
+				if _, exists := r.aggregators[key]; exists {
+					continue
+				}
+				domSym := domain.Symbol(sym)
+				domTF := domain.Timeframe(tf)
+				var agg *domain.BarAggregator
+				var err error
+				if domSym.IsCryptoSymbol() {
+					agg, err = domain.NewClockAlignedAggregator(domSym, domTF)
+				} else {
+					agg, err = domain.NewBarAggregator(domSym, domTF, sessionOpen)
+				}
+				if err != nil {
+					r.logger.Error("failed to create aggregator", "symbol", sym, "timeframe", tf, "error", err)
+					continue
+				}
+				r.aggregators[key] = agg
+				r.logger.Info("HTF aggregator created", "symbol", sym, "timeframe", tf)
+			}
+		}
+	}
+}
 
 // Start subscribes the runner to MarketBarSanitized, StateUpdated, FillReceived,
 // and OrderIntentRejected events on the event bus.
@@ -128,6 +170,8 @@ func convertAnchorRegimes(regimes map[domain.Timeframe]domain.MarketRegime) map[
 }
 
 // handleBar processes a MarketBarSanitized event by routing to assigned instances.
+// 1m bars go directly to 1m-configured instances (zero behavioral change).
+// For HTF instances, bars are aggregated via BarAggregator and delivered on completion.
 func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	bar, ok := event.Payload.(domain.MarketBar)
 	if !ok {
@@ -142,10 +186,6 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		return nil
 	}
 
-	// Convert domain.MarketBar → start.Bar
-	sBar := domainBarToStratBar(bar)
-
-	// Use cached indicators from StateUpdated events, with current bar volume.
 	r.mu.Lock()
 	indicators := r.indicators[symbol]
 	indicators.Volume = bar.Volume
@@ -164,9 +204,26 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	var oneMinInstances []*Instance
+	htfNeeded := make(map[string][]*Instance)
+	for _, inst := range instances {
+		tfs := inst.Assignment().Timeframes
+		if len(tfs) == 0 {
+			tfs = []string{"1m"}
+		}
+		for _, tf := range tfs {
+			if tf == "1m" {
+				oneMinInstances = append(oneMinInstances, inst)
+			} else {
+				htfNeeded[tf] = append(htfNeeded[tf], inst)
+			}
+		}
+	}
+
+	sBar := domainBarToStratBar(bar)
 	var allSignals []start.Signal
 
-	for _, inst := range instances {
+	for _, inst := range oneMinInstances {
 		now := time.Now()
 		instCtx := &instanceContext{
 			now:    now,
@@ -175,7 +232,6 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 				return r.emitDomainEvent(ctx, event.TenantID, event.EnvMode, evt)
 			},
 		}
-
 		signals, err := inst.OnBar(instCtx, symbol, sBar, indicators)
 		if err != nil {
 			r.logger.Error("instance OnBar failed",
@@ -183,10 +239,43 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 				"symbol", symbol,
 				"error", err,
 			)
-			continue // Don't let one instance failure stop others.
+			continue
 		}
-
 		allSignals = append(allSignals, signals...)
+	}
+
+	for tf, htfInsts := range htfNeeded {
+		key := symbol + ":" + tf
+		agg, ok := r.aggregators[key]
+		if !ok {
+			continue
+		}
+		closed, emitted := agg.Push(bar)
+		if !emitted {
+			continue
+		}
+		htfBar := domainBarToStratBar(closed)
+		for _, inst := range htfInsts {
+			now := time.Now()
+			instCtx := &instanceContext{
+				now:    now,
+				logger: r.logger.With("instance_id", inst.ID().String(), "symbol", symbol),
+				emit: func(evt any) error {
+					return r.emitDomainEvent(ctx, event.TenantID, event.EnvMode, evt)
+				},
+			}
+			signals, err := inst.OnBar(instCtx, symbol, htfBar, indicators)
+			if err != nil {
+				r.logger.Error("instance OnBar failed (HTF)",
+					"instance_id", inst.ID().String(),
+					"symbol", symbol,
+					"timeframe", tf,
+					"error", err,
+				)
+				continue
+			}
+			allSignals = append(allSignals, signals...)
+		}
 	}
 
 	if r.swapManager != nil {
@@ -200,7 +289,8 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 
 	r.logger.Info("bar processed",
 		"symbol", symbol,
-		"instances", len(instances),
+		"instances_1m", len(oneMinInstances),
+		"htf_timeframes", len(htfNeeded),
 		"signals", len(allSignals),
 		"rsi", indicators.RSI,
 		"volumeSMA", indicators.VolumeSMA,
@@ -211,7 +301,6 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	allSignals = r.filterByAllowedDirections(allSignals)
 
 	for _, sig := range allSignals {
-		// Suppress equity signals outside Regular Trading Hours (9:30-16:00 ET).
 		if !domain.Symbol(sig.Symbol).IsCryptoSymbol() {
 			cal := domain.CalendarFor(domain.AssetClassEquity)
 			if !cal.IsOpen(bar.Time) {
@@ -242,7 +331,6 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		}
 	}
 
-	// Record strategy loop duration.
 	if r.metrics != nil {
 		r.metrics.Strategy.LoopDuration.WithLabelValues("all", "handle_bar").Observe(time.Since(loopStart).Seconds())
 	}
@@ -292,15 +380,37 @@ func (r *Runner) ProcessBar(ctx context.Context, symbol string, bar start.Bar, i
 	return allSignals, nil
 }
 
-// WarmUp replays historical bars through matching instances for warmup.
-// It calls WarmupOnBar on each matching instance and suppresses event emission.
-// Returns the number of bars processed.
+// WarmUp replays 1m historical bars through matching 1m instances for warmup.
+// Backward-compatible wrapper around WarmUpTF.
 func (r *Runner) WarmUp(symbol string, bars []domain.MarketBar, snapshotFn IndicatorSnapshotFunc) int {
+	return r.WarmUpTF(symbol, "1m", bars, snapshotFn)
+}
+
+// WarmUpTF replays historical bars of a specific timeframe through matching instances.
+// Only instances configured for the given timeframe will receive the bars.
+func (r *Runner) WarmUpTF(symbol string, tf string, bars []domain.MarketBar, snapshotFn IndicatorSnapshotFunc) int {
 	if len(bars) == 0 {
 		return 0
 	}
 	instances := r.router.InstancesForSymbol(symbol)
 	if len(instances) == 0 {
+		return 0
+	}
+
+	var matched []*Instance
+	for _, inst := range instances {
+		tfs := inst.Assignment().Timeframes
+		if len(tfs) == 0 {
+			tfs = []string{"1m"}
+		}
+		for _, itf := range tfs {
+			if itf == tf {
+				matched = append(matched, inst)
+				break
+			}
+		}
+	}
+	if len(matched) == 0 {
 		return 0
 	}
 
@@ -314,7 +424,7 @@ func (r *Runner) WarmUp(symbol string, bars []domain.MarketBar, snapshotFn Indic
 		lastIndicators = indicators
 
 		sBar := domainBarToStratBar(bar)
-		for _, inst := range instances {
+		for _, inst := range matched {
 			instCtx := &instanceContext{
 				now:    bar.Time,
 				logger: r.logger.With("instance_id", inst.ID().String(), "symbol", symbol),
@@ -332,7 +442,7 @@ func (r *Runner) WarmUp(symbol string, bars []domain.MarketBar, snapshotFn Indic
 
 	r.indicators[symbol] = lastIndicators
 
-	for _, inst := range instances {
+	for _, inst := range matched {
 		inst.ClearPendingState(symbol)
 	}
 
