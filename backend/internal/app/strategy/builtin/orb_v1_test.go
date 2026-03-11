@@ -564,3 +564,83 @@ func TestORBStrategy_AnchorRegimeGating_NilAllows(t *testing.T) {
 	require.Len(t, signals, 1, "nil AnchorRegimes should allow signal (backward compat)")
 	assert.Equal(t, "none", signals[0].Tags["regime_anchor"])
 }
+
+func runORBToRetestWithHTF(t *testing.T, htf map[string]strat.HTFIndicator, htfBiasEnabled bool) (strat.State, []strat.Signal) {
+	t.Helper()
+	s := builtin.NewORBStrategy()
+	ctx := newTestContext(time.Now())
+	params := orbParams()
+	params["htf_bias_enabled"] = htfBiasEnabled
+	st, err := s.Init(ctx, "AAPL", params, nil)
+	require.NoError(t, err)
+
+	indicators := strat.IndicatorData{Volume: 10, VolumeSMA: 10, HTF: htf}
+
+	for i := 0; i < 30; i++ {
+		bt := time.Date(2025, 3, 4, 14, 30+i, 0, 0, time.UTC)
+		bar := strat.Bar{Time: bt, Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}
+		orbSt := st.(*builtin.ORBState)
+		orbSt.SetIndicators(indicators)
+		st, _, err = s.OnBar(ctx, "AAPL", bar, st)
+		require.NoError(t, err)
+	}
+
+	postRange := time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC)
+	orbSt := st.(*builtin.ORBState)
+	orbSt.SetIndicators(indicators)
+	st, _, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: postRange, Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}, st)
+	require.NoError(t, err)
+
+	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
+	orbSt = st.(*builtin.ORBState)
+	orbSt.SetIndicators(strat.IndicatorData{Volume: 50, VolumeSMA: 10, HTF: htf})
+	st, _, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: breakT, Open: 100, High: 104, Low: 100, Close: 104, Volume: 50}, st)
+	require.NoError(t, err)
+
+	retestT := breakT.Add(time.Minute)
+	orbSt = st.(*builtin.ORBState)
+	orbSt.SetIndicators(strat.IndicatorData{Volume: 20, VolumeSMA: 10, HTF: htf})
+	st, signals, err := s.OnBar(ctx, "AAPL", strat.Bar{Time: retestT, Open: 104, High: 104, Low: 101, Close: 103, Volume: 20}, st)
+	require.NoError(t, err)
+	return st, signals
+}
+
+func TestORBStrategy_HTFBias_BullishAllowsLong(t *testing.T) {
+	htf := map[string]strat.HTFIndicator{
+		"1d": {EMA200: 200, Bias: "BULLISH"},
+	}
+	_, signals := runORBToRetestWithHTF(t, htf, true)
+	require.Len(t, signals, 1, "BULLISH bias should allow LONG signal")
+	assert.Equal(t, "BULLISH", signals[0].Tags["htf_bias"])
+}
+
+func TestORBStrategy_HTFBias_BearishBlocksLong(t *testing.T) {
+	htf := map[string]strat.HTFIndicator{
+		"1d": {EMA200: 200, Bias: "BEARISH"},
+	}
+	_, signals := runORBToRetestWithHTF(t, htf, true)
+	assert.Empty(t, signals, "BEARISH bias should block LONG signal")
+}
+
+func TestORBStrategy_HTFBias_NeutralAllowsLong(t *testing.T) {
+	htf := map[string]strat.HTFIndicator{
+		"1d": {EMA200: 200, Bias: "NEUTRAL"},
+	}
+	_, signals := runORBToRetestWithHTF(t, htf, true)
+	require.Len(t, signals, 1, "NEUTRAL bias should allow LONG signal")
+}
+
+func TestORBStrategy_HTFBias_DisabledAllowsAll(t *testing.T) {
+	htf := map[string]strat.HTFIndicator{
+		"1d": {EMA200: 200, Bias: "BEARISH"},
+	}
+	_, signals := runORBToRetestWithHTF(t, htf, false)
+	require.Len(t, signals, 1, "disabled HTF bias should allow all signals")
+	assert.Equal(t, "none", signals[0].Tags["htf_bias"])
+}
+
+func TestORBStrategy_HTFBias_MissingHTFAllows(t *testing.T) {
+	_, signals := runORBToRetestWithHTF(t, nil, true)
+	require.Len(t, signals, 1, "missing HTF data should allow signal (graceful degradation)")
+	assert.Equal(t, "none", signals[0].Tags["htf_bias"])
+}

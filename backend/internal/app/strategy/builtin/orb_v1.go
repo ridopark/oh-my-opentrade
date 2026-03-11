@@ -92,8 +92,6 @@ func (s *ORBStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st 
 		return orbState, nil, nil
 	}
 
-	// Anchor regime gating: suppress entry if 5m anchor regime is REVERSAL.
-	// TREND and BALANCE allow signals; nil/empty AnchorRegimes = no gating (backward compat).
 	anchorTag := "none"
 	if ar, ok := orbState.Indicators.AnchorRegimes["5m"]; ok {
 		anchorTag = ar.Type
@@ -102,7 +100,19 @@ func (s *ORBStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st 
 		}
 	}
 
-	// Convert SetupCondition → Signal.
+	htfBiasTag := "none"
+	if orbState.Config.HTFBiasEnabled {
+		if daily, ok := orbState.Indicators.HTF["1d"]; ok && daily.Bias != "" {
+			htfBiasTag = daily.Bias
+			switch {
+			case setup.Direction == domain.DirectionLong && daily.Bias == "BEARISH":
+				return orbState, nil, nil
+			case setup.Direction == domain.DirectionShort && daily.Bias == "BULLISH":
+				return orbState, nil, nil
+			}
+		}
+	}
+
 	instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
 	side := start.SideBuy
 	if setup.Direction == domain.DirectionShort {
@@ -123,6 +133,7 @@ func (s *ORBStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st 
 			"rvol":          fmt.Sprintf("%.2f", setup.RVOL),
 			"bar_close":     fmt.Sprintf("%.4f", setup.BarClose),
 			"regime_anchor": anchorTag,
+			"htf_bias":      htfBiasTag,
 		},
 	)
 	if err != nil {
