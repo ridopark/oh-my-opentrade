@@ -88,19 +88,28 @@ func TestORBStrategy_ReplayOnBar_ReconstructsState(t *testing.T) {
 	st, err = s.ReplayOnBar(ctx, "AAPL", strat.Bar{Time: breakT, Open: 100, High: 104, Low: 100, Close: 104, Volume: 50}, st, highVolInd)
 	require.NoError(t, err)
 
-	// Replay retest bar — should NOT produce signals (replay=true)
+	// Replay retest bar — signal suppressed, state cycles back to RANGE_SET
 	retestT := breakT.Add(time.Minute)
 	retestInd := strat.IndicatorData{Volume: 20, VolumeSMA: 10}
 	st, err = s.ReplayOnBar(ctx, "AAPL", strat.Bar{Time: retestT, Open: 104, High: 104, Low: 101, Close: 103, Volume: 20}, st, retestInd)
 	require.NoError(t, err)
 
-	// Now a live bar should NOT produce signals because the tracker already fired
-	// during replay (state is DONE_FOR_SESSION)
+	// After replay-suppressed signal, state cycles to RANGE_SET.
+	// A live breakout bar triggers AWAITING_RETEST (no signal yet).
 	orbSt := st.(*builtin.ORBState)
-	orbSt.SetIndicators(strat.IndicatorData{Volume: 20, VolumeSMA: 10})
-	st, signals, err := s.OnBar(ctx, "AAPL", strat.Bar{Time: retestT.Add(time.Minute), Open: 103, High: 105, Low: 102, Close: 104, Volume: 20}, st)
+	orbSt.SetIndicators(strat.IndicatorData{Volume: 50, VolumeSMA: 10})
+	st, signals, err := s.OnBar(ctx, "AAPL", strat.Bar{Time: retestT.Add(time.Minute), Open: 103, High: 105, Low: 102, Close: 104, Volume: 50}, st)
 	require.NoError(t, err)
-	assert.Empty(t, signals, "tracker should be DONE_FOR_SESSION after replay through full cycle")
+	assert.Empty(t, signals, "breakout bar does not emit signal")
+
+	// Live retest bar — should now produce a signal (replay didn't consume session)
+	orbSt = st.(*builtin.ORBState)
+	orbSt.SetIndicators(strat.IndicatorData{Volume: 20, VolumeSMA: 10})
+	st, signals, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: retestT.Add(2 * time.Minute), Open: 104, High: 104, Low: 101, Close: 103, Volume: 20}, st)
+	require.NoError(t, err)
+	require.Len(t, signals, 1, "live signal should fire after replay-suppressed cycle")
+	assert.Equal(t, strat.SignalEntry, signals[0].Type)
+	assert.Equal(t, strat.SideBuy, signals[0].Side)
 }
 
 func TestORBStrategy_ReplayOnBar_PartialReplay_ThenLiveSignal(t *testing.T) {
@@ -371,6 +380,105 @@ func TestORBStrategy_NoSignalAfterDone(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, signals, "no signals after DONE_FOR_SESSION")
 	}
+}
+
+func TestORBStrategy_CyclesBackToRangeSet_MultipleSignals(t *testing.T) {
+	s := builtin.NewORBStrategy()
+	ctx := newTestContext(time.Now())
+	params := orbParams()
+	params["max_signals_per_session"] = 3
+	st, err := s.Init(ctx, "AAPL", params, nil)
+	require.NoError(t, err)
+
+	// Form range: 30 bars
+	for i := 0; i < 30; i++ {
+		bt := time.Date(2025, 3, 4, 14, 30+i, 0, 0, time.UTC)
+		orbSt := st.(*builtin.ORBState)
+		orbSt.SetIndicators(strat.IndicatorData{Volume: 10, VolumeSMA: 10})
+		st, _, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: bt, Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}, st)
+		require.NoError(t, err)
+	}
+
+	// Transition to RANGE_SET
+	postRange := time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC)
+	orbSt := st.(*builtin.ORBState)
+	orbSt.SetIndicators(strat.IndicatorData{Volume: 10, VolumeSMA: 10})
+	st, _, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: postRange, Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}, st)
+	require.NoError(t, err)
+
+	baseTime := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
+
+	for sig := 0; sig < 2; sig++ {
+		offset := time.Duration(sig*10) * time.Minute
+
+		// Breakout
+		orbSt = st.(*builtin.ORBState)
+		orbSt.SetIndicators(strat.IndicatorData{Volume: 50, VolumeSMA: 10})
+		st, signals, err := s.OnBar(ctx, "AAPL", strat.Bar{Time: baseTime.Add(offset), Open: 100, High: 104, Low: 100, Close: 104, Volume: 50}, st)
+		require.NoError(t, err)
+		assert.Empty(t, signals)
+
+		// Retest
+		orbSt = st.(*builtin.ORBState)
+		orbSt.SetIndicators(strat.IndicatorData{Volume: 20, VolumeSMA: 10})
+		st, signals, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: baseTime.Add(offset + time.Minute), Open: 104, High: 104, Low: 101, Close: 103, Volume: 20}, st)
+		require.NoError(t, err)
+		require.Len(t, signals, 1, "signal #%d should fire", sig+1)
+		assert.Equal(t, strat.SignalEntry, signals[0].Type)
+	}
+}
+
+func TestORBStrategy_RetestTimeout_CyclesBack(t *testing.T) {
+	s := builtin.NewORBStrategy()
+	ctx := newTestContext(time.Now())
+	params := orbParams()
+	params["max_retest_bars"] = 3
+	st, err := s.Init(ctx, "AAPL", params, nil)
+	require.NoError(t, err)
+
+	// Form range
+	for i := 0; i < 30; i++ {
+		bt := time.Date(2025, 3, 4, 14, 30+i, 0, 0, time.UTC)
+		orbSt := st.(*builtin.ORBState)
+		orbSt.SetIndicators(strat.IndicatorData{Volume: 10, VolumeSMA: 10})
+		st, _, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: bt, Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}, st)
+		require.NoError(t, err)
+	}
+
+	// Transition
+	postRange := time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC)
+	orbSt := st.(*builtin.ORBState)
+	orbSt.SetIndicators(strat.IndicatorData{Volume: 10, VolumeSMA: 10})
+	st, _, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: postRange, Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}, st)
+	require.NoError(t, err)
+
+	// Breakout
+	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
+	orbSt = st.(*builtin.ORBState)
+	orbSt.SetIndicators(strat.IndicatorData{Volume: 50, VolumeSMA: 10})
+	st, _, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: breakT, Open: 100, High: 104, Low: 100, Close: 104, Volume: 50}, st)
+	require.NoError(t, err)
+
+	// 4 bars without retest — exceeds max_retest_bars=3, should cycle to RANGE_SET
+	for i := 1; i <= 4; i++ {
+		orbSt = st.(*builtin.ORBState)
+		orbSt.SetIndicators(strat.IndicatorData{Volume: 10, VolumeSMA: 10})
+		st, _, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: breakT.Add(time.Duration(i) * time.Minute), Open: 104, High: 105, Low: 103, Close: 104, Volume: 10}, st)
+		require.NoError(t, err)
+	}
+
+	// After timeout cycle, a new breakout+retest should produce a signal
+	newBreakT := breakT.Add(5 * time.Minute)
+	orbSt = st.(*builtin.ORBState)
+	orbSt.SetIndicators(strat.IndicatorData{Volume: 50, VolumeSMA: 10})
+	st, _, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: newBreakT, Open: 104, High: 108, Low: 104, Close: 108, Volume: 50}, st)
+	require.NoError(t, err)
+
+	orbSt = st.(*builtin.ORBState)
+	orbSt.SetIndicators(strat.IndicatorData{Volume: 20, VolumeSMA: 10})
+	st, signals, err := s.OnBar(ctx, "AAPL", strat.Bar{Time: newBreakT.Add(time.Minute), Open: 108, High: 108, Low: 101, Close: 103, Volume: 20}, st)
+	require.NoError(t, err)
+	require.Len(t, signals, 1, "signal should fire after retest timeout cycle")
 }
 
 func TestORBStrategy_ImplementsInterface(t *testing.T) {

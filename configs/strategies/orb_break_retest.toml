@@ -23,19 +23,22 @@ asset_classes = ["EQUITY"]
 allowed_directions = ["LONG"]
 
 [params]
-orb_window_minutes = 30
+orb_window_minutes = 60
 min_rvol = 0.5
 min_confidence = 0.40
 breakout_confirm_bps = 2
 touch_tolerance_bps = 2
 hold_confirm_bps = 0
-max_retest_bars = 15
-allow_missing_bars = 1
-max_signals_per_session = 1
+max_retest_bars = 20
+allow_missing_bars = 2
+max_signals_per_session = 3
 stop_bps = 50
 limit_offset_bps = 5
 risk_per_trade_bps = 100
 max_position_bps = 1000
+allowed_hours_start = "10:30"
+allowed_hours_end = "15:30"
+allowed_hours_tz = "America/New_York"
 
 [regime_filter]
 enabled = false

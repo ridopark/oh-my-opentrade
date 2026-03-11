@@ -179,6 +179,16 @@ func (t *ORBTracker) ResetSession(symbol string) {
 	delete(t.sessions, symbol)
 }
 
+// cycleToRangeSet resets the breakout/retest tracking within a session so the
+// tracker watches for the next breakout from the same opening range.
+// The range itself (OrbHigh/OrbLow) is preserved.
+func (t *ORBTracker) cycleToRangeSet(sess *ORBSession) {
+	sess.State = ORBStateRangeSet
+	sess.Breakout = BreakoutInfo{}
+	sess.Retest = RetestInfo{}
+	sess.BarsSinceBreakout = 0
+}
+
 func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, cfg ORBConfig, replay bool) (*SetupCondition, bool) {
 	if t.sessions == nil {
 		t.sessions = make(map[string]*ORBSession)
@@ -254,8 +264,8 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 		}
 		sess.BarsSinceBreakout++
 		if sess.BarsSinceBreakout > cfg.MaxRetestBars {
-			sess.State = ORBStateDoneForSession
-			t.logger.Info("orb: retest timeout", "symbol", sym, "bars_since_breakout", sess.BarsSinceBreakout, "max", cfg.MaxRetestBars)
+			t.logger.Info("orb: retest timeout, cycling to RANGE_SET", "symbol", sym, "bars_since_breakout", sess.BarsSinceBreakout, "max", cfg.MaxRetestBars)
+			t.cycleToRangeSet(sess)
 			return nil, false
 		}
 
@@ -263,12 +273,14 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 		switch sess.Breakout.Direction {
 		case domain.DirectionLong:
 			if bar.Close < sess.OrbLow*(1.0-confirmBps) {
-				sess.State = ORBStateDoneForSession
+				t.logger.Info("orb: breakout invalidated, cycling to RANGE_SET", "symbol", sym, "direction", "LONG")
+				t.cycleToRangeSet(sess)
 				return nil, false
 			}
 		case domain.DirectionShort:
 			if bar.Close > sess.OrbHigh*(1.0+confirmBps) {
-				sess.State = ORBStateDoneForSession
+				t.logger.Info("orb: breakout invalidated, cycling to RANGE_SET", "symbol", sym, "direction", "SHORT")
+				t.cycleToRangeSet(sess)
 				return nil, false
 			}
 		}
@@ -314,17 +326,23 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 					RVOL:       sess.Breakout.RVOL,
 					Confidence: orbConfidence(sess, bar, cfg),
 				}
-				sess.State = ORBStateSignalFired
-				sess.SignalsFired++
-				sess.State = ORBStateDoneForSession
-				// Filter: reject if computed confidence is below the DNA min_confidence threshold.
 				if setup.Confidence < cfg.MinConfidence {
-					t.logger.Info("orb: low confidence", "symbol", sym, "confidence", setup.Confidence, "min", cfg.MinConfidence)
+					t.logger.Info("orb: low confidence, cycling to RANGE_SET", "symbol", sym, "confidence", setup.Confidence, "min", cfg.MinConfidence)
+					t.cycleToRangeSet(sess)
 					return nil, false
 				}
 				if replay {
-					t.logger.Info("orb: replay signal suppressed", "symbol", sym, "direction", sess.Breakout.Direction)
+					t.logger.Info("orb: replay signal suppressed, cycling to RANGE_SET", "symbol", sym, "direction", sess.Breakout.Direction)
+					t.cycleToRangeSet(sess)
 					return nil, false
+				}
+				sess.SignalsFired++
+				if sess.SignalsFired >= cfg.MaxSignalsPerSession {
+					sess.State = ORBStateDoneForSession
+					t.logger.Info("orb: max signals reached", "symbol", sym, "fired", sess.SignalsFired, "max", cfg.MaxSignalsPerSession)
+				} else {
+					t.cycleToRangeSet(sess)
+					t.logger.Info("orb: signal fired, cycling to RANGE_SET", "symbol", sym, "fired", sess.SignalsFired, "max", cfg.MaxSignalsPerSession)
 				}
 				return setup, true
 			}
