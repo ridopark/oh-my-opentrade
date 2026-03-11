@@ -546,6 +546,10 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 				if pct := r.Param("pct", 0); pct > 0 {
 					intent.Meta["exit_price_trailing_stop"] = fmt.Sprintf("%.2f", limitPrice*(1-pct))
 				}
+			case domain.ExitRuleProfitTarget:
+				if pct := r.Param("pct", 0); pct > 0 {
+					intent.Meta["exit_price_profit_target"] = fmt.Sprintf("%.2f", limitPrice*(1+pct))
+				}
 			case domain.ExitRuleStepStop:
 				intent.Meta["exit_price_step_stop"] = fmt.Sprintf("%.2f", limitPrice)
 			case domain.ExitRuleStagnationExit:

@@ -224,12 +224,10 @@ func (s *Service) addToBatch(symbol, msg string, withChart bool, ev domain.Event
 					entry.priceLevels = append(entry.priceLevels,
 						domain.PriceLevel{Label: fmt.Sprintf("Stop $%s", domain.FmtPrice(p.StopLoss)), Price: p.StopLoss, Color: "red"})
 				}
-				if target, ok := p.Meta["exit_price_sd_target"]; ok {
-					if tp, err := strconv.ParseFloat(target, 64); err == nil && tp > 0 {
-						entry.priceLevels = append(entry.priceLevels,
-							domain.PriceLevel{Label: fmt.Sprintf("Target $%s", domain.FmtPrice(tp)), Price: tp, Color: "blue"})
-						s.entryTargets[p.Symbol] = tp
-					}
+				if tp := bestTargetPrice(p.Meta); tp > 0 {
+					entry.priceLevels = append(entry.priceLevels,
+						domain.PriceLevel{Label: fmt.Sprintf("Target $%s", domain.FmtPrice(tp)), Price: tp, Color: "blue"})
+					s.entryTargets[p.Symbol] = tp
 				}
 			}
 		case domain.TradeRealizedPayload:
@@ -503,6 +501,13 @@ func fmtExitRules(rawJSON string, entryPrice float64, meta map[string]string) st
 					msg += fmt.Sprintf(" ($%s)", price)
 				}
 			}
+		case "PROFIT_TARGET":
+			if pct, ok := r.Params["pct"]; ok {
+				msg += fmt.Sprintf("\n  PROFIT_TARGET: %.1f%%", pct*100)
+				if price, ok := meta["exit_price_profit_target"]; ok {
+					msg += fmt.Sprintf(" ($%s)", price)
+				}
+			}
 		case "STEP_STOP":
 			msg += "\n  STEP_STOP: enabled"
 			if price, ok := meta["exit_price_step_stop"]; ok {
@@ -513,6 +518,20 @@ func fmtExitRules(rawJSON string, entryPrice float64, meta map[string]string) st
 		}
 	}
 	return msg
+}
+
+// bestTargetPrice returns the best available profit-target price from order
+// intent Meta, checking keys in priority order: SD_TARGET (VWAP-based) first,
+// then PROFIT_TARGET (percentage-based). Returns 0 if none found.
+func bestTargetPrice(meta map[string]string) float64 {
+	for _, key := range []string{"exit_price_sd_target", "exit_price_profit_target"} {
+		if raw, ok := meta[key]; ok {
+			if v, err := strconv.ParseFloat(raw, 64); err == nil && v > 0 {
+				return v
+			}
+		}
+	}
+	return 0
 }
 
 func (s *Service) fmtSignalEnriched(ev domain.Event) string {
