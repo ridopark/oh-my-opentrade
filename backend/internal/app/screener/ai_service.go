@@ -130,8 +130,78 @@ func (s *AIService) Start(ctx context.Context) error {
 		s.log.Info().Msg("ai screener disabled")
 		return nil
 	}
+	s.bootstrapFromDB(ctx)
 	go s.schedulerLoop(ctx)
 	return nil
+}
+
+func (s *AIService) bootstrapFromDB(ctx context.Context) {
+	specs, err := s.specStore.List(ctx, nil)
+	if err != nil {
+		s.log.Warn().Err(err).Msg("ai screener bootstrap: failed to list specs")
+		return
+	}
+
+	restored := 0
+	for _, spec := range specs {
+		if spec.Screening.Description == "" {
+			continue
+		}
+		strategyKey := string(spec.ID)
+		results, err := s.repo.GetLatestAIResults(ctx, s.tenantID, s.envMode, strategyKey)
+		if err != nil {
+			s.log.Warn().Err(err).Str("strategy", strategyKey).Msg("ai screener bootstrap: failed to load results")
+			continue
+		}
+		if len(results) == 0 {
+			continue
+		}
+
+		ranked := make([]screenerdomain.AIRankedSymbol, 0, len(results))
+		for _, r := range results {
+			ranked = append(ranked, screenerdomain.AIRankedSymbol{
+				Symbol:    r.Symbol,
+				Score:     r.Score,
+				Rationale: r.Rationale,
+			})
+		}
+
+		payload := screenerdomain.AIScreenerCompletedPayload{
+			RunID:       results[0].RunID,
+			AsOf:        results[0].AsOf,
+			StrategyKey: strategyKey,
+			Model:       results[0].Model,
+			Candidates:  len(results),
+			Ranked:      ranked,
+			LatencyMS:   0,
+		}
+		ev, err := domain.NewEvent(
+			domain.EventAIScreenerCompleted,
+			s.tenantID,
+			domain.EnvMode(s.envMode),
+			results[0].RunID+"-bootstrap-"+strategyKey,
+			payload,
+		)
+		if err != nil {
+			s.log.Warn().Err(err).Str("strategy", strategyKey).Msg("ai screener bootstrap: failed to create event")
+			continue
+		}
+		if err := s.bus.Publish(ctx, *ev); err != nil {
+			s.log.Warn().Err(err).Str("strategy", strategyKey).Msg("ai screener bootstrap: failed to publish event")
+			continue
+		}
+		restored++
+		s.log.Info().
+			Str("strategy", strategyKey).
+			Str("run_id", results[0].RunID).
+			Time("as_of", results[0].AsOf).
+			Int("symbols", len(ranked)).
+			Msg("ai screener bootstrap: restored from DB")
+	}
+
+	if restored > 0 {
+		s.log.Info().Int("strategies_restored", restored).Msg("ai screener bootstrap: complete")
+	}
 }
 
 func (s *AIService) schedulerLoop(ctx context.Context) {
@@ -488,36 +558,50 @@ func (s *AIService) sendRunSummary(ctx context.Context, results []aiStrategyResu
 		return
 	}
 
-	var sb strings.Builder
-	sb.WriteString("🔬 **AI Pre-Market Screener**\n")
-	fmt.Fprintf(&sb, "⏰ %s ET | Duration: **%s**\n", asOfET.Format("15:04"), fmtDurationShort(duration))
-	fmt.Fprintf(&sb, "🌐 Universe: %d → Snapshots: %d → Pass0: **%d**\n\n", universe, snapshots, pass0)
+	notifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
 	succeeded, failed := 0, 0
 	for _, r := range results {
 		if r.Err != nil {
 			failed++
-			fmt.Fprintf(&sb, "❌ **%s** — %s\n", r.StrategyKey, shortenError(r.Err))
 		} else {
 			succeeded++
-			if len(r.TopPicks) > 0 {
-				fmt.Fprintf(&sb, "✅ **%s** (%dms)\n", r.StrategyKey, r.LatencyMS)
-				for _, p := range r.TopPicks {
-					rationale := truncate(p.Rationale, 80)
-					fmt.Fprintf(&sb, "   • **%s** [%d/5] — %s\n", p.Symbol, p.Score, rationale)
-				}
-			} else {
-				fmt.Fprintf(&sb, "✅ **%s** — no strong picks (%dms)\n", r.StrategyKey, r.LatencyMS)
+		}
+	}
+
+	var header strings.Builder
+	header.WriteString("🔬 **AI Pre-Market Screener**\n")
+	fmt.Fprintf(&header, "⏰ %s ET | Duration: **%s**\n", asOfET.Format("15:04"), fmtDurationShort(duration))
+	fmt.Fprintf(&header, "🌐 Universe: %d → Snapshots: %d → Pass0: **%d**\n", universe, snapshots, pass0)
+	fmt.Fprintf(&header, "📊 **%d/%d strategies succeeded**", succeeded, len(results))
+	if failed > 0 {
+		header.WriteString("\n")
+		for _, r := range results {
+			if r.Err != nil {
+				fmt.Fprintf(&header, "❌ **%s** — %s\n", r.StrategyKey, shortenError(r.Err))
 			}
 		}
 	}
 
-	fmt.Fprintf(&sb, "\n📊 **%d/%d strategies succeeded**", succeeded, len(results))
+	if err := s.notifier.Notify(notifyCtx, s.tenantID, header.String()); err != nil {
+		s.log.Warn().Err(err).Msg("ai screener: failed to send header notification")
+	}
 
-	notifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := s.notifier.Notify(notifyCtx, s.tenantID, sb.String()); err != nil {
-		s.log.Warn().Err(err).Msg("ai screener: failed to send run summary notification")
+	for _, r := range results {
+		if r.Err != nil || len(r.TopPicks) == 0 {
+			continue
+		}
+
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "🎯 **%s** (%dms)\n", r.StrategyKey, r.LatencyMS)
+		for _, p := range r.TopPicks {
+			fmt.Fprintf(&sb, "• **%s** [%d/5] — %s\n", p.Symbol, p.Score, p.Rationale)
+		}
+
+		if err := s.notifier.Notify(notifyCtx, s.tenantID, sb.String()); err != nil {
+			s.log.Warn().Err(err).Str("strategy", r.StrategyKey).Msg("ai screener: failed to send strategy notification")
+		}
 	}
 }
 
