@@ -547,3 +547,201 @@ func TestSignalDebateEnricher_MarketDataProvider_SymbolNotFound(t *testing.T) {
 	assert.InDelta(t, 0.0, advisor.lastIndicators.RSI, 0.001)
 	assert.InDelta(t, 0.0, advisor.lastRegime.Strength, 0.001)
 }
+
+type fakeStrategyPerf struct {
+	summary *domain.StrategyPerformanceSummary
+	err     error
+}
+
+func (f *fakeStrategyPerf) GetPerformanceSummary(
+	_ context.Context, _ string, _ domain.EnvMode,
+	_ string, _ string, _ time.Duration,
+) (*domain.StrategyPerformanceSummary, error) {
+	return f.summary, f.err
+}
+
+func TestSignalDebateEnricher_PerfVeto_NegativeExpectancy(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
+		Direction:  domain.DirectionLong,
+		Confidence: 0.85,
+		Rationale:  "should not be called",
+	}}
+	perf := &fakeStrategyPerf{summary: &domain.StrategyPerformanceSummary{
+		Strategy: "avwap_v1",
+		Symbol:   "BTC/USD",
+		Overall: domain.StrategyRegimeStats{
+			TradeCount: 12,
+			Expectancy: -1.50,
+		},
+	}}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil,
+		strategy.WithStrategyPerformance(perf),
+	)
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:BTC/USD")
+	sig, _ := strat.NewSignal(iid, "BTC/USD", strat.SignalEntry, strat.SideBuy, 0.9, map[string]string{"ref_price": "85000"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+
+	assert.Equal(t, domain.EnrichmentSkipped, got.Status)
+	assert.InDelta(t, 0.1, got.Confidence, 0.0000001)
+	assert.Contains(t, got.Rationale, "pre-LLM veto")
+	assert.Equal(t, domain.DirectionLong, got.Direction)
+	assert.Equal(t, 0, advisor.calls, "AI advisor must NOT be called on veto")
+}
+
+func TestSignalDebateEnricher_PerfVeto_PositiveExpectancy(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
+		Direction:  domain.DirectionLong,
+		Confidence: 0.80,
+		Rationale:  "momentum confirmed",
+	}}
+	perf := &fakeStrategyPerf{summary: &domain.StrategyPerformanceSummary{
+		Strategy: "avwap_v1",
+		Symbol:   "AAPL",
+		Overall: domain.StrategyRegimeStats{
+			TradeCount: 15,
+			Expectancy: 2.30,
+		},
+	}}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil,
+		strategy.WithStrategyPerformance(perf),
+	)
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "180"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+
+	assert.Equal(t, domain.EnrichmentOK, got.Status)
+	assert.InDelta(t, 0.80, got.Confidence, 0.0000001)
+	assert.Equal(t, 1, advisor.calls, "AI advisor must be called when expectancy is positive")
+}
+
+func TestSignalDebateEnricher_PerfVeto_InsufficientTrades(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
+		Direction:  domain.DirectionLong,
+		Confidence: 0.75,
+		Rationale:  "too few trades to veto",
+	}}
+	perf := &fakeStrategyPerf{summary: &domain.StrategyPerformanceSummary{
+		Strategy: "avwap_v1",
+		Symbol:   "AAPL",
+		Overall: domain.StrategyRegimeStats{
+			TradeCount: 3,
+			Expectancy: -5.00,
+		},
+	}}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil,
+		strategy.WithStrategyPerformance(perf),
+	)
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.7, map[string]string{"ref_price": "150"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+
+	assert.Equal(t, domain.EnrichmentOK, got.Status)
+	assert.Equal(t, 1, advisor.calls, "AI advisor must be called when trade count < minTrades")
+}
+
+func TestSignalDebateEnricher_PerfVeto_LookupError(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
+		Direction:  domain.DirectionLong,
+		Confidence: 0.70,
+		Rationale:  "perf lookup failed gracefully",
+	}}
+	perf := &fakeStrategyPerf{err: errors.New("db connection lost")}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil,
+		strategy.WithStrategyPerformance(perf),
+	)
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:ETH/USD")
+	sig, _ := strat.NewSignal(iid, "ETH/USD", strat.SignalEntry, strat.SideBuy, 0.65, map[string]string{"ref_price": "3200"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+
+	assert.Equal(t, domain.EnrichmentOK, got.Status)
+	assert.Equal(t, 1, advisor.calls, "AI advisor must be called on perf lookup error (graceful degradation)")
+}
+
+func TestSignalDebateEnricher_PerfVeto_NilSummary(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
+		Direction:  domain.DirectionShort,
+		Confidence: 0.60,
+		Rationale:  "no perf data available",
+	}}
+	perf := &fakeStrategyPerf{summary: nil, err: nil}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil,
+		strategy.WithStrategyPerformance(perf),
+	)
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideSell, 0.7, map[string]string{"ref_price": "175"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+
+	assert.Equal(t, domain.EnrichmentOK, got.Status)
+	assert.Equal(t, domain.DirectionShort, got.Direction)
+	assert.Equal(t, 1, advisor.calls, "AI advisor must be called when summary is nil")
+}
+
+func TestSignalDebateEnricher_NoStratPerf(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
+		Direction:  domain.DirectionLong,
+		Confidence: 0.88,
+		Rationale:  "no stratPerf wired",
+	}}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil)
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "200"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+
+	assert.Equal(t, domain.EnrichmentOK, got.Status)
+	assert.InDelta(t, 0.88, got.Confidence, 0.0000001)
+	assert.Equal(t, 1, advisor.calls, "AI advisor must be called when no stratPerf is wired")
+}

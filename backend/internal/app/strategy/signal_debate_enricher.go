@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -21,6 +22,7 @@ type SignalDebateEnricher struct {
 	eventBus      ports.EventBusPort
 	aiAdvisor     ports.AIAdvisorPort
 	repo          ports.RepositoryPort
+	stratPerf     ports.StrategyPerformancePort
 	debateTimeout time.Duration
 	marketData    MarketDataProvider
 	posLookup     PositionLookup
@@ -60,6 +62,12 @@ func WithMarketDataProvider(fn MarketDataProvider) EnricherOption {
 func WithPositionLookup(fn PositionLookup) EnricherOption {
 	return func(e *SignalDebateEnricher) {
 		e.posLookup = fn
+	}
+}
+
+func WithStrategyPerformance(port ports.StrategyPerformancePort) EnricherOption {
+	return func(e *SignalDebateEnricher) {
+		e.stratPerf = port
 	}
 }
 
@@ -163,6 +171,39 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 		}
 	}
 
+	if e.stratPerf != nil {
+		strategyName := extractStrategyName(sig.StrategyInstanceID)
+		summary, perfErr := e.stratPerf.GetPerformanceSummary(
+			ctx, event.TenantID, event.EnvMode,
+			strategyName, sig.Symbol, 30*24*time.Hour,
+		)
+		if perfErr != nil {
+			e.logger.Warn("strategy perf lookup failed", "symbol", sig.Symbol, "error", perfErr)
+		} else if summary != nil {
+			debateOpts = append(debateOpts, ports.WithStrategyPerformance(summary))
+
+			const minTradesForVeto = 5
+			if summary.HasNegativeExpectancy(regime.Type, minTradesForVeto) {
+				e.logger.Warn("pre-LLM veto: negative expectancy",
+					"symbol", sig.Symbol,
+					"regime", regime.Type,
+					"expectancy", summary.Overall.Expectancy,
+					"trades", summary.Overall.TradeCount,
+				)
+				enrichment := domain.SignalEnrichment{
+					Signal:     ref,
+					Status:     domain.EnrichmentSkipped,
+					Confidence: 0.1,
+					Rationale:  fmt.Sprintf("pre-LLM veto: negative expectancy $%.2f/trade in %s (%d trades)", summary.Overall.Expectancy, regime.Type, summary.Overall.TradeCount),
+					Direction:  direction,
+				}
+				e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
+				e.saveThoughtLog(ctx, event, enrichment)
+				return nil
+			}
+		}
+	}
+
 	decision, err := e.aiAdvisor.RequestDebate(
 		advCtx,
 		domain.Symbol(sig.Symbol),
@@ -242,6 +283,14 @@ func (e *SignalDebateEnricher) saveThoughtLog(ctx context.Context, event domain.
 	if err := e.repo.SaveThoughtLog(ctx, tl); err != nil {
 		e.logger.Error("failed to save thought log", "error", err)
 	}
+}
+
+func extractStrategyName(instanceID start.InstanceID) string {
+	parts := strings.SplitN(string(instanceID), ":", 3)
+	if len(parts) >= 1 {
+		return parts[0]
+	}
+	return string(instanceID)
 }
 
 func (e *SignalDebateEnricher) emit(ctx context.Context, eventType string, tenantID string, envMode domain.EnvMode, idempotencyKey string, payload any) {

@@ -22,7 +22,8 @@ type StrategyDeps struct {
 	AIAdvisor       ports.AIAdvisorPort
 	PositionLookup  func(symbol string) (domain.MonitoredPosition, bool)
 	MarketDataFn    func(symbol string) (domain.IndicatorSnapshot, bool)
-	Repo            ports.RepositoryPort // nil = skip thought log persistence
+	Repo            ports.RepositoryPort
+	StratPerf       ports.StrategyPerformancePort
 	TenantID        string
 	EnvMode         domain.EnvMode
 	Equity          float64
@@ -129,6 +130,9 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 		}
 		if deps.PositionLookup != nil {
 			opts = append(opts, strategy.WithPositionLookup(deps.PositionLookup))
+		}
+		if deps.StratPerf != nil {
+			opts = append(opts, strategy.WithStrategyPerformance(deps.StratPerf))
 		}
 		opts = append(opts, strategy.WithDebateTimeout(30*time.Second))
 		enricher = strategy.NewSignalDebateEnricher(deps.EventBus, deps.AIAdvisor, stratLog, opts...)
