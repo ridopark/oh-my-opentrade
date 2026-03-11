@@ -135,6 +135,13 @@ func (c *RESTClient) ListTradeable(ctx context.Context, assetClass domain.AssetC
 			continue
 		}
 
+		// For crypto, only keep /USD pairs — Alpaca lists /USDT, /USDC, etc.
+		// as tradeable but doesn't serve market data (bars) for them.
+		if ac == domain.AssetClassCrypto && !strings.HasSuffix(a.Symbol, "/USD") {
+			skipped++
+			continue
+		}
+
 		assets = append(assets, ports.Asset{
 			Symbol:     a.Symbol,
 			Name:       a.Name,
