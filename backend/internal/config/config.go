@@ -56,6 +56,7 @@ type AIScreenerConfig struct {
 	AIRunAtMinuteET      int      `yaml:"ai_run_at_minute_et"`
 	Pass0MinPrice        float64  `yaml:"pass0_min_price"`
 	Pass0MinVolume       int64    `yaml:"pass0_min_volume"`
+	Pass0MinADV          int64    `yaml:"pass0_min_adv"`
 	Pass0MinGapPct       float64  `yaml:"pass0_min_gap_pct"`
 	MaxCandidatesPerCall int      `yaml:"max_candidates_per_call"`
 	TopNPerStrategy      int      `yaml:"top_n_per_strategy"`
@@ -432,6 +433,9 @@ func applyAIScreenerDefaults(c AIScreenerConfig) AIScreenerConfig {
 	}
 	if c.Pass0MinVolume == 0 {
 		c.Pass0MinVolume = 50000
+	}
+	if c.Pass0MinADV == 0 {
+		c.Pass0MinADV = 500_000
 	}
 	if c.MaxCandidatesPerCall == 0 {
 		c.MaxCandidatesPerCall = 20

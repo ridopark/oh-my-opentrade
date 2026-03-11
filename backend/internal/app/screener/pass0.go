@@ -15,8 +15,16 @@ func Pass0Filter(snapshots map[string]ports.Snapshot, cfg config.AIScreenerConfi
 			continue
 		}
 
-		if snap.PreMarketVolume != nil && *snap.PreMarketVolume <= cfg.Pass0MinVolume {
+		// Pre-market volume: reject if nil (no pre-market activity) or below threshold.
+		if snap.PreMarketVolume == nil || *snap.PreMarketVolume <= cfg.Pass0MinVolume {
 			continue
+		}
+
+		// Average daily volume: reject if nil or below threshold.
+		if cfg.Pass0MinADV > 0 {
+			if snap.PrevDailyVolume == nil || *snap.PrevDailyVolume < cfg.Pass0MinADV {
+				continue
+			}
 		}
 
 		gapPct := computeGapPct(snap.PrevClose, price)

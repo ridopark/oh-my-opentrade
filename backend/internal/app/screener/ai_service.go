@@ -463,6 +463,16 @@ func (s *AIService) runForStrategy(
 
 	maxCandidates := s.cfg.MaxCandidatesPerCall
 	if maxCandidates > 0 && len(symbols) > maxCandidates {
+		sort.Slice(symbols, func(i, j int) bool {
+			advI, advJ := int64(0), int64(0)
+			if snap, ok := snaps[symbols[i]]; ok && snap.PrevDailyVolume != nil {
+				advI = *snap.PrevDailyVolume
+			}
+			if snap, ok := snaps[symbols[j]]; ok && snap.PrevDailyVolume != nil {
+				advJ = *snap.PrevDailyVolume
+			}
+			return advI > advJ
+		})
 		symbols = symbols[:maxCandidates]
 	}
 
