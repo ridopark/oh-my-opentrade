@@ -28,8 +28,8 @@ description = "Anchored VWAP strategy that enters on breakouts above or bounces 
 [params]
 anchors = ["pd_high", "pd_low", "on_high", "on_low", "or_high", "or_low", "session_open"]
 breakout_enabled = true
-hold_bars = 2
-volume_mult = 1.5
+hold_bars = 3
+volume_mult = 2.0
 bounce_enabled = true
 rsi_bounce_max = 30.0
 exit_hold_bars = 2
@@ -51,7 +51,7 @@ signals = { engine = "builtin", name = "avwap_v1" }
 
 [dynamic_risk]
 enabled = true
-min_confidence = 0.60
+min_confidence = 0.70
 risk_scale_min = 0.50
 risk_scale_max = 1.00
 stop_tight_mult = 0.70
