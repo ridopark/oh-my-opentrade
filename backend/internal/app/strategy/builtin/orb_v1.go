@@ -119,22 +119,36 @@ func (s *ORBStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st 
 		side = start.SideSell
 	}
 
+	tags := map[string]string{
+		"ref_price":     fmt.Sprintf("%.10f", setup.BarClose),
+		"trigger":       setup.Trigger,
+		"orb_high":      fmt.Sprintf("%.4f", setup.ORBHigh),
+		"orb_low":       fmt.Sprintf("%.4f", setup.ORBLow),
+		"rvol":          fmt.Sprintf("%.2f", setup.RVOL),
+		"bar_close":     fmt.Sprintf("%.4f", setup.BarClose),
+		"regime_anchor": anchorTag,
+		"htf_bias":      htfBiasTag,
+	}
+
+	if orbState.Config.ATRMultiplier > 0 && orbState.Indicators.ATR > 0 {
+		atrStop := orbState.Indicators.ATR * orbState.Config.ATRMultiplier
+		var stopPrice float64
+		if setup.Direction == domain.DirectionLong {
+			stopPrice = setup.BarClose - atrStop
+		} else {
+			stopPrice = setup.BarClose + atrStop
+		}
+		tags["stop_price"] = fmt.Sprintf("%.10f", stopPrice)
+		tags["atr_stop_distance"] = fmt.Sprintf("%.4f", atrStop)
+	}
+
 	sig, err := start.NewSignal(
 		instanceID,
 		symbol,
 		start.SignalEntry,
 		side,
 		clampStrength(setup.Confidence),
-		map[string]string{
-			"ref_price":     fmt.Sprintf("%.10f", setup.BarClose),
-			"trigger":       setup.Trigger,
-			"orb_high":      fmt.Sprintf("%.4f", setup.ORBHigh),
-			"orb_low":       fmt.Sprintf("%.4f", setup.ORBLow),
-			"rvol":          fmt.Sprintf("%.2f", setup.RVOL),
-			"bar_close":     fmt.Sprintf("%.4f", setup.BarClose),
-			"regime_anchor": anchorTag,
-			"htf_bias":      htfBiasTag,
-		},
+		tags,
 	)
 	if err != nil {
 		return orbState, nil, fmt.Errorf("ORBStrategy.OnBar: signal creation failed: %w", err)

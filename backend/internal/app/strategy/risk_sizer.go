@@ -372,6 +372,12 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		}
 		limitPrice = refPrice * limitMult
 		stopLoss = refPrice * stopMult
+
+		if spStr, ok := sigRef.Tags["stop_price"]; ok {
+			if sp, err := strconv.ParseFloat(spStr, 64); err == nil && sp > 0 {
+				stopLoss = sp
+			}
+		}
 	} else {
 		limitPrice = refPrice
 		stopLoss = 0
