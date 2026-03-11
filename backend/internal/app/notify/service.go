@@ -24,10 +24,11 @@ const (
 )
 
 type notifyJob struct {
-	event     domain.Event
-	eventType string
-	message   string
-	withChart bool
+	event       domain.Event
+	eventType   string
+	message     string
+	withChart   bool
+	priceLevels []domain.PriceLevel
 }
 
 type chartCacheEntry struct {
@@ -36,11 +37,12 @@ type chartCacheEntry struct {
 }
 
 type batchEntry struct {
-	parts     []string
-	withChart bool
-	lastEvent domain.Event
-	timer     *time.Timer
-	createdAt time.Time
+	parts       []string
+	withChart   bool
+	lastEvent   domain.Event
+	timer       *time.Timer
+	createdAt   time.Time
+	priceLevels []domain.PriceLevel
 }
 
 type Service struct {
@@ -107,7 +109,7 @@ func (s *Service) Start(ctx context.Context) error {
 		{domain.EventOrderRejected, s.fmtOrderRejected, false},
 		{domain.EventOrderIntentRejected, s.fmtOrderIntentRejected, false},
 		{domain.EventFillReceived, s.fmtFillReceived, false},
-		{domain.EventTradeRealized, s.fmtTradeRealized, false},
+		{domain.EventTradeRealized, s.fmtTradeRealized, true},
 		{domain.EventKillSwitchEngaged, s.fmtKillSwitch, false},
 		{domain.EventCircuitBreakerTripped, s.fmtCircuitBreaker, false},
 		{domain.EventDebateCompleted, s.fmtDebateCompleted, false},
@@ -206,6 +208,14 @@ func (s *Service) addToBatch(symbol, msg string, withChart bool, ev domain.Event
 	entry.withChart = entry.withChart || withChart
 	entry.lastEvent = ev
 
+	if p, ok := ev.Payload.(domain.TradeRealizedPayload); ok && len(entry.priceLevels) == 0 {
+		entry.priceLevels = []domain.PriceLevel{
+			{Label: fmt.Sprintf("Entry $%s", domain.FmtPrice(p.EntryPrice)), Price: p.EntryPrice, Color: "green"},
+			{Label: fmt.Sprintf("Exit $%s", domain.FmtPrice(p.ExitPrice)), Price: p.ExitPrice, Color: "red"},
+		}
+		entry.withChart = true
+	}
+
 	if entry.timer != nil {
 		entry.timer.Stop()
 	}
@@ -236,10 +246,11 @@ func (s *Service) flushBatchLocked(symbol string) {
 	combined := strings.Join(entry.parts, "\n") + "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 	s.enqueueJob(notifyJob{
-		event:     entry.lastEvent,
-		eventType: "batch",
-		message:   combined,
-		withChart: entry.withChart,
+		event:       entry.lastEvent,
+		eventType:   "batch",
+		message:     combined,
+		withChart:   entry.withChart,
+		priceLevels: entry.priceLevels,
 	})
 }
 
@@ -301,7 +312,7 @@ func (s *Service) processJob(ctx context.Context, workerID int, job notifyJob) {
 	}
 
 	chartCtx, cancelChart := context.WithTimeout(jobCtx, 5*time.Second)
-	chartPNG, err := s.getOrGenerateChart(chartCtx, symbol)
+	chartPNG, err := s.getOrGenerateChart(chartCtx, symbol, job.priceLevels)
 	cancelChart()
 	if err != nil {
 		s.log.Warn().Err(err).Str("symbol", symbol).Msg("chart generation failed, sending text-only")
@@ -321,19 +332,26 @@ func (s *Service) processJob(ctx context.Context, workerID int, job notifyJob) {
 }
 
 func (s *Service) extractSymbol(ev domain.Event) string {
-	if p, ok := ev.Payload.(domain.OrderIntentEventPayload); ok {
+	switch p := ev.Payload.(type) {
+	case domain.OrderIntentEventPayload:
 		return p.Symbol
+	case domain.TradeRealizedPayload:
+		return string(p.Symbol)
 	}
 	return ""
 }
 
-func (s *Service) getOrGenerateChart(ctx context.Context, symbol string) ([]byte, error) {
-	s.cacheMu.RLock()
-	if entry, ok := s.chartCache[symbol]; ok && time.Since(entry.createdAt) < chartCacheTTL {
+func (s *Service) getOrGenerateChart(ctx context.Context, symbol string, levels []domain.PriceLevel) ([]byte, error) {
+	hasLevels := len(levels) > 0
+
+	if !hasLevels {
+		s.cacheMu.RLock()
+		if entry, ok := s.chartCache[symbol]; ok && time.Since(entry.createdAt) < chartCacheTTL {
+			s.cacheMu.RUnlock()
+			return entry.data, nil
+		}
 		s.cacheMu.RUnlock()
-		return entry.data, nil
 	}
-	s.cacheMu.RUnlock()
 
 	now := time.Now()
 	loc, _ := time.LoadLocation("America/New_York")
@@ -348,14 +366,16 @@ func (s *Service) getOrGenerateChart(ctx context.Context, symbol string) ([]byte
 	}
 
 	title := fmt.Sprintf("%s — %s", symbol, now.In(loc).Format("Jan 02"))
-	chartPNG, err := s.chartGen.GenerateCandlestickChart(ctx, bars, title)
+	chartPNG, err := s.chartGen.GenerateCandlestickChart(ctx, bars, title, levels)
 	if err != nil {
 		return nil, fmt.Errorf("render chart for %s: %w", symbol, err)
 	}
 
-	s.cacheMu.Lock()
-	s.chartCache[symbol] = chartCacheEntry{data: chartPNG, createdAt: now}
-	s.cacheMu.Unlock()
+	if !hasLevels {
+		s.cacheMu.Lock()
+		s.chartCache[symbol] = chartCacheEntry{data: chartPNG, createdAt: now}
+		s.cacheMu.Unlock()
+	}
 
 	return chartPNG, nil
 }

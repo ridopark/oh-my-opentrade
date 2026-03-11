@@ -6,6 +6,14 @@ import (
 	"strings"
 )
 
+// PriceLevel represents a horizontal price line to overlay on a chart
+// (e.g. entry price, exit/target price).
+type PriceLevel struct {
+	Label string  // display label, e.g. "Entry $675.97"
+	Price float64 // Y-axis value
+	Color string  // semantic color: "green", "red", "blue"
+}
+
 // EnvMode represents the execution environment (paper trading vs live).
 type EnvMode string
 

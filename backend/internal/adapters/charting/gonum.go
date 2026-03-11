@@ -12,6 +12,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/pplcc/plotext/custplotter"
 	"gonum.org/v1/plot"
+	"gonum.org/v1/plot/plotter"
 	"gonum.org/v1/plot/vg"
 	"gonum.org/v1/plot/vg/draw"
 	"gonum.org/v1/plot/vg/vgimg"
@@ -19,10 +20,8 @@ import (
 
 var _ ports.ChartGeneratorPort = (*GonumChartGenerator)(nil)
 
-// GonumChartGenerator renders candlestick chart PNGs using gonum/plot and plotext.
 type GonumChartGenerator struct{}
 
-// NewGonumChartGenerator returns a ready-to-use chart generator.
 func NewGonumChartGenerator() *GonumChartGenerator {
 	return &GonumChartGenerator{}
 }
@@ -36,7 +35,13 @@ func (d barData) TOHLCV(i int) (float64, float64, float64, float64, float64, flo
 	return float64(b.Time.Unix()), b.Open, b.High, b.Low, b.Close, b.Volume
 }
 
-func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars []domain.MarketBar, title string) ([]byte, error) {
+var levelColors = map[string]color.RGBA{
+	"green": {R: 38, G: 166, B: 154, A: 200},
+	"red":   {R: 239, G: 83, B: 80, A: 200},
+	"blue":  {R: 52, G: 152, B: 219, A: 200},
+}
+
+func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars []domain.MarketBar, title string, levels []domain.PriceLevel) ([]byte, error) {
 	if len(bars) < 2 {
 		return nil, fmt.Errorf("need at least 2 bars, got %d", len(bars))
 	}
@@ -72,6 +77,41 @@ func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars [
 	p.Y.Label.Text = "$"
 
 	p.Add(candles)
+
+	xMin := float64(bars[0].Time.Unix())
+	xMax := float64(bars[len(bars)-1].Time.Unix())
+
+	for _, lvl := range levels {
+		if lvl.Price <= 0 {
+			continue
+		}
+
+		pts := make(plotter.XYs, 2)
+		pts[0] = plotter.XY{X: xMin, Y: lvl.Price}
+		pts[1] = plotter.XY{X: xMax, Y: lvl.Price}
+
+		line, err := plotter.NewLine(pts)
+		if err != nil {
+			continue
+		}
+
+		c := levelColors["blue"]
+		if mapped, ok := levelColors[lvl.Color]; ok {
+			c = mapped
+		}
+		line.Color = c
+		line.Width = vg.Points(1.5)
+		line.Dashes = []vg.Length{vg.Points(6), vg.Points(3)}
+
+		p.Add(line)
+		p.Legend.Add(lvl.Label, line)
+	}
+
+	if len(levels) > 0 {
+		p.Legend.TextStyle.Color = textColor
+		p.Legend.Top = true
+		p.Legend.Left = true
+	}
 
 	canvas := vgimg.New(vg.Points(800), vg.Points(400))
 	dc := draw.New(canvas)
