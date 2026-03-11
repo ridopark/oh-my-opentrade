@@ -94,6 +94,10 @@ type rawLifecycleSection struct {
 	PaperOnly *bool   `toml:"paper_only"`
 }
 
+type rawScreeningSection struct {
+	Description string `toml:"description"`
+}
+
 type rawRoutingSection struct {
 	Symbols            []string `toml:"symbols"`
 	Timeframes         []string `toml:"timeframes"`
@@ -174,6 +178,7 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 		Strategy      rawStrategySection `toml:"strategy"`
 		Lifecycle     rawLifecycleSection
 		Routing       rawRoutingSection
+		Screening     rawScreeningSection
 		Params        map[string]any        `toml:"params"`
 		Parameters    map[string]any        `toml:"parameters"` // allow old key
 		RegimeFilter  map[string]any        `toml:"regime_filter"`
@@ -294,6 +299,9 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 			ConflictPolicy:     conflict,
 			ExclusivePerSymbol: exclusive,
 			WatchlistMode:      watchlistMode,
+		},
+		Screening: portstrategy.ScreeningConfig{
+			Description: raw.Screening.Description,
 		},
 		Params:    params,
 		Hooks:     hooks,

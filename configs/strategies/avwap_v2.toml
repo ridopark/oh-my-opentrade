@@ -22,6 +22,9 @@ watchlist_mode = "intersection"
 asset_classes = ["EQUITY"]
 allowed_directions = ["LONG"]
 
+[screening]
+description = "Enhanced anchored VWAP strategy with higher-lows confirmation and midday chop protection. Enters on VWAP breakouts or bounces only when price structure shows consecutive higher lows. Ideal candidates have strong morning volume, clean VWAP level respect, and moderate volatility. Avoids midday low-volume traps. Best suited for large-cap equities with institutional flow that creates reliable anchored VWAP levels."
+
 [params]
 anchors = ["pd_high", "pd_low", "on_high", "on_low", "or_high", "or_low", "session_open"]
 breakout_enabled = true

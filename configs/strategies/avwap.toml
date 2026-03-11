@@ -22,6 +22,9 @@ watchlist_mode = "intersection"
 asset_classes = ["EQUITY"]
 allowed_directions = ["LONG"]
 
+[screening]
+description = "Anchored VWAP strategy that enters on breakouts above or bounces off key VWAP levels (previous-day high/low, overnight high/low, opening range). Ideal candidates have clear respect for VWAP levels historically, moderate gap with volume to establish new anchor points, and balanced or reversal regimes where VWAP acts as dynamic support/resistance. Avoid low-volume symbols where VWAP is unreliable."
+
 [params]
 anchors = ["pd_high", "pd_low", "on_high", "on_low", "or_high", "or_low", "session_open"]
 breakout_enabled = true

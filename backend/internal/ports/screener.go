@@ -13,6 +13,8 @@ type Snapshot struct {
 	PreMarketPrice  *float64
 	PreMarketVolume *int64
 	LastTradePrice  *float64
+	DailyVolume     *int64
+	PrevDailyVolume *int64
 }
 
 type SnapshotPort interface {
@@ -21,6 +23,11 @@ type SnapshotPort interface {
 
 type ScreenerRepoPort interface {
 	SaveResults(ctx context.Context, results []screener.ScreenerResult) error
+}
+
+type AIScreenerRepoPort interface {
+	SaveAIResults(ctx context.Context, results []screener.AIScreenerResult) error
+	GetLatestAIResults(ctx context.Context, tenantID, envMode, strategyKey string) ([]screener.AIScreenerResult, error)
 }
 
 type NewsScorerPort interface {

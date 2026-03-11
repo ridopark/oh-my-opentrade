@@ -123,6 +123,145 @@ func TestService_PublishesEffectiveSymbolsUpdated_MultipleStrategies(t *testing.
 	assert.Equal(t, "screener", p2.Source)
 }
 
+func TestService_AIScreenerCompleted_Replace(t *testing.T) {
+	ctx := context.Background()
+	bus := memory.NewBus()
+
+	svc := symbolrouter.NewService(
+		bus,
+		[]symbolrouter.StrategySpec{
+			{Key: "break_retest", BaseSymbols: []string{"AAPL", "TSLA"}, WatchlistMode: "replace"},
+		},
+		"tenant123",
+		domain.EnvModePaper,
+		zerolog.Nop(),
+	)
+
+	var got domain.Event
+	err := bus.Subscribe(ctx, domain.EventEffectiveSymbolsUpdated, func(_ context.Context, ev domain.Event) error {
+		got = ev
+		return nil
+	})
+	require.NoError(t, err)
+
+	err = svc.Start(ctx)
+	require.NoError(t, err)
+
+	aiPayload := screener.AIScreenerCompletedPayload{
+		RunID:       "ai-run-1",
+		AsOf:        time.Now().UTC(),
+		StrategyKey: "break_retest",
+		Model:       "qwen/qwen3-next-80b:free",
+		Candidates:  3,
+		Ranked: []screener.AIRankedSymbol{
+			{Symbol: "NVDA", Score: 5, Rationale: "strong momentum"},
+			{Symbol: "AMD", Score: 4, Rationale: "solid gap"},
+		},
+		LatencyMS: 150,
+	}
+	inEvt, err := domain.NewEvent(domain.EventAIScreenerCompleted, "tenant123", domain.EnvModePaper, "ai-screener-1", aiPayload)
+	require.NoError(t, err)
+
+	err = bus.Publish(ctx, *inEvt)
+	require.NoError(t, err)
+
+	assert.Equal(t, domain.EventEffectiveSymbolsUpdated, got.Type)
+	p, ok := got.Payload.(screener.EffectiveSymbolsUpdatedPayload)
+	require.True(t, ok)
+	assert.Equal(t, "break_retest", p.StrategyKey)
+	assert.Equal(t, "ai-run-1", p.RunID)
+	assert.Equal(t, "replace", p.Mode)
+	assert.Equal(t, "ai:screener", p.Source)
+	assert.Equal(t, []string{"NVDA", "AMD"}, p.Symbols)
+}
+
+func TestService_AIScreenerCompleted_Intersection(t *testing.T) {
+	ctx := context.Background()
+	bus := memory.NewBus()
+
+	svc := symbolrouter.NewService(
+		bus,
+		[]symbolrouter.StrategySpec{
+			{Key: "avwap", BaseSymbols: []string{"AAPL", "NVDA", "TSLA"}, WatchlistMode: "intersection"},
+		},
+		"tenant123",
+		domain.EnvModePaper,
+		zerolog.Nop(),
+	)
+
+	var got domain.Event
+	err := bus.Subscribe(ctx, domain.EventEffectiveSymbolsUpdated, func(_ context.Context, ev domain.Event) error {
+		got = ev
+		return nil
+	})
+	require.NoError(t, err)
+
+	err = svc.Start(ctx)
+	require.NoError(t, err)
+
+	aiPayload := screener.AIScreenerCompletedPayload{
+		RunID:       "ai-run-2",
+		AsOf:        time.Now().UTC(),
+		StrategyKey: "avwap",
+		Model:       "test-model",
+		Candidates:  3,
+		Ranked: []screener.AIRankedSymbol{
+			{Symbol: "NVDA", Score: 5},
+			{Symbol: "AMD", Score: 4},
+			{Symbol: "AAPL", Score: 3},
+		},
+	}
+	inEvt, err := domain.NewEvent(domain.EventAIScreenerCompleted, "tenant123", domain.EnvModePaper, "ai-screener-2", aiPayload)
+	require.NoError(t, err)
+
+	err = bus.Publish(ctx, *inEvt)
+	require.NoError(t, err)
+
+	p := got.Payload.(screener.EffectiveSymbolsUpdatedPayload)
+	assert.Equal(t, "ai:intersection", p.Source)
+	assert.Equal(t, []string{"NVDA", "AAPL"}, p.Symbols)
+}
+
+func TestService_AIScreenerCompleted_UnknownStrategy(t *testing.T) {
+	ctx := context.Background()
+	bus := memory.NewBus()
+
+	svc := symbolrouter.NewService(
+		bus,
+		[]symbolrouter.StrategySpec{
+			{Key: "break_retest", BaseSymbols: []string{"AAPL"}, WatchlistMode: "replace"},
+		},
+		"tenant123",
+		domain.EnvModePaper,
+		zerolog.Nop(),
+	)
+
+	var published int
+	err := bus.Subscribe(ctx, domain.EventEffectiveSymbolsUpdated, func(_ context.Context, ev domain.Event) error {
+		published++
+		return nil
+	})
+	require.NoError(t, err)
+
+	err = svc.Start(ctx)
+	require.NoError(t, err)
+
+	aiPayload := screener.AIScreenerCompletedPayload{
+		RunID:       "ai-run-3",
+		AsOf:        time.Now().UTC(),
+		StrategyKey: "nonexistent",
+		Model:       "test-model",
+		Ranked:      []screener.AIRankedSymbol{{Symbol: "AAPL", Score: 5}},
+	}
+	inEvt, err := domain.NewEvent(domain.EventAIScreenerCompleted, "tenant123", domain.EnvModePaper, "ai-screener-3", aiPayload)
+	require.NoError(t, err)
+
+	err = bus.Publish(ctx, *inEvt)
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, published)
+}
+
 func TestService_InvalidPayloadType_ReturnsError(t *testing.T) {
 	ctx := context.Background()
 	bus := memory.NewBus()

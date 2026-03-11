@@ -48,9 +48,14 @@ type Spec struct {
 
 	Lifecycle LifecycleConfig
 	Routing   RoutingConfig
+	Screening ScreeningConfig
 	Params    map[string]any
 	Hooks     map[string]HookRef
 	ExitRules []domain.ExitRule
+}
+
+type ScreeningConfig struct {
+	Description string // Level 2: what kind of setup this strategy looks for (sent to LLM)
 }
 
 // LifecycleConfig holds lifecycle-related settings from the TOML spec.

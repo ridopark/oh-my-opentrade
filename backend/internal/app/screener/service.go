@@ -86,9 +86,6 @@ func NewService(
 	if cfg.RunAtHourET == 0 {
 		cfg.RunAtHourET = 8
 	}
-	if cfg.RunAtMinuteET == 0 {
-		cfg.RunAtMinuteET = 30
-	}
 	if cfg.RVOLLookbackDays == 0 {
 		cfg.RVOLLookbackDays = 20
 	}

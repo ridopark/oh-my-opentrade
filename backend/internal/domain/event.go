@@ -42,6 +42,7 @@ const (
 	EventSignalEnriched          EventType = "SignalEnriched"
 	EventScreenerTicked          EventType = "ScreenerTicked"
 	EventScreenerCompleted       EventType = "ScreenerCompleted"
+	EventAIScreenerCompleted     EventType = "AIScreenerCompleted"
 	EventEffectiveSymbolsUpdated EventType = "EffectiveSymbolsUpdated"
 	EventStrategySignalLifecycle EventType = "StrategySignalLifecycle"
 	EventStrategyStateSnapshot   EventType = "StrategyStateSnapshot"

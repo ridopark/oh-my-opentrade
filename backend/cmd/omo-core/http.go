@@ -93,6 +93,34 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 
 	imux.Handle("/bars", omhttp.NewBarsHandler(infra.repo, infra.alpacaAdapter, httpLog))
 	imux.Handle("/events", sseHandler)
+
+	imux.Mux.HandleFunc("/debug/ai-screener/run", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		if svc.aiScreenerSvc == nil {
+			http.Error(w, `{"error":"ai screener not enabled — set AI_SCREENER_ENABLED=true and STRATEGY_V2=true"}`, http.StatusServiceUnavailable)
+			return
+		}
+		loc, _ := time.LoadLocation("America/New_York")
+		asOfET := time.Now().In(loc)
+		httpLog.Info().Time("as_of_et", asOfET).Msg("debug: triggering AI screener run")
+
+		go func() {
+			if err := svc.aiScreenerSvc.RunAIScreen(context.Background(), asOfET); err != nil {
+				httpLog.Error().Err(err).Msg("debug: AI screener run failed")
+			} else {
+				httpLog.Info().Msg("debug: AI screener run completed")
+			}
+		}()
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status": "started",
+			"as_of":  asOfET.Format(time.RFC3339),
+		})
+	})
 	imux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))

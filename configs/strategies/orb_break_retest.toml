@@ -22,6 +22,9 @@ watchlist_mode = "intersection"
 asset_classes = ["EQUITY"]
 allowed_directions = ["LONG"]
 
+[screening]
+description = "Opening Range Breakout strategy that waits for price to break the first-hour range, then retests the breakout level before entry. Ideal candidates have a well-defined opening range with strong volume, relative volume above average, and directional conviction from the open. Favors stocks with news catalysts or sector momentum that create decisive opening moves. Avoid symbols with extremely wide opening ranges (high ATR) that make stop placement impractical."
+
 [params]
 orb_window_minutes = 60
 min_rvol = 0.5

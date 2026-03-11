@@ -22,6 +22,9 @@ watchlist_mode = "intersection"
 asset_classes = ["CRYPTO"]
 allowed_directions = ["LONG"]
 
+[screening]
+description = "Mean-reversion scalping tuned for crypto volatility. Buys oversold conditions and exits at the mean. Needs crypto pairs with tight spreads and deep liquidity during US trading hours. Ideal candidates show range-bound behavior with clear support/resistance, high 24h volume relative to peers, and stable funding rates. Avoid trending crypto with parabolic moves — this strategy profits from oscillation, not momentum."
+
 [params]
 rsi_long = 30.0
 rsi_short = 70.0

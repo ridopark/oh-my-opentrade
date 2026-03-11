@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/config"
@@ -124,7 +125,44 @@ func (a *Adapter) GetHistoricalBars(ctx context.Context, symbol domain.Symbol, t
 }
 
 func (a *Adapter) GetSnapshots(ctx context.Context, symbols []string, asOf time.Time) (map[string]ports.Snapshot, error) {
-	return a.rest.GetSnapshots(ctx, a.dataURL, symbols)
+	var equitySyms, cryptoSyms []string
+	for _, s := range symbols {
+		if strings.Contains(s, "/") {
+			cryptoSyms = append(cryptoSyms, s)
+		} else {
+			equitySyms = append(equitySyms, s)
+		}
+	}
+
+	out := make(map[string]ports.Snapshot, len(symbols))
+
+	if len(equitySyms) > 0 {
+		snaps, err := a.rest.GetSnapshots(ctx, a.dataURL, equitySyms)
+		if err != nil {
+			a.log.Warn().Err(err).Int("count", len(equitySyms)).Msg("equity snapshots failed")
+		} else {
+			for k, v := range snaps {
+				out[k] = v
+			}
+		}
+	}
+
+	if len(cryptoSyms) > 0 {
+		snaps, err := a.rest.GetCryptoSnapshot(ctx, a.dataURL, cryptoSyms)
+		if err != nil {
+			a.log.Warn().Err(err).Int("count", len(cryptoSyms)).Msg("crypto snapshots failed")
+		} else {
+			for k, v := range snaps {
+				out[k] = v
+			}
+		}
+	}
+
+	return out, nil
+}
+
+func (a *Adapter) ListTradeable(ctx context.Context, assetClass domain.AssetClass) ([]ports.Asset, error) {
+	return a.rest.ListTradeable(ctx, assetClass)
 }
 
 // Close safely closes the adapter and underlying connections.
