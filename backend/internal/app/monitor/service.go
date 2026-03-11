@@ -41,6 +41,7 @@ type Service struct {
 	anchorRegimes    map[string]domain.MarketRegime
 	lastHTFSnaps     map[string]domain.IndicatorSnapshot
 	htfStatic        map[string]domain.HTFData
+	readySymbols     map[string]struct{}
 	log              zerolog.Logger
 	dnaGate          DNAGateChecker
 	strategyKey      string
@@ -157,6 +158,9 @@ func (s *Service) SetBaseSymbols(symbols []string) {
 		s.baseSymbols[sym] = struct{}{}
 	}
 	s.effectiveSymbols = nil
+	if s.readySymbols == nil {
+		s.readySymbols = make(map[string]struct{})
+	}
 	s.log.Info().Strs("symbols", symbols).Msg("base symbols configured")
 }
 
@@ -166,9 +170,45 @@ func (s *Service) isAllowedSymbolLocked(sym string) bool {
 	}
 	if s.effectiveSymbols != nil {
 		_, ok := s.effectiveSymbols[sym]
-		return ok
+		if !ok {
+			return false
+		}
+		if s.readySymbols != nil {
+			_, ready := s.readySymbols[sym]
+			return ready
+		}
+		return true
 	}
 	_, ok := s.baseSymbols[sym]
+	if !ok {
+		return false
+	}
+	if s.readySymbols != nil {
+		_, ready := s.readySymbols[sym]
+		return ready
+	}
+	return true
+}
+
+func (s *Service) MarkReady(symbols ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readySymbols == nil {
+		s.readySymbols = make(map[string]struct{})
+	}
+	for _, sym := range symbols {
+		s.readySymbols[sym] = struct{}{}
+	}
+	s.log.Info().Strs("symbols", symbols).Int("total_ready", len(s.readySymbols)).Msg("symbols marked ready")
+}
+
+func (s *Service) IsReady(sym string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readySymbols == nil {
+		return false
+	}
+	_, ok := s.readySymbols[sym]
 	return ok
 }
 

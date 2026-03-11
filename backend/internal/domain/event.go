@@ -55,6 +55,7 @@ const (
 	EventTradeRealized           EventType = "TradeRealized"
 	EventFormingBar              EventType = "FormingBar"
 	EventFeedDegraded            EventType = "FeedDegraded"
+	EventExitCircuitBroken       EventType = "ExitCircuitBroken"
 
 	// Connectivity & system events.
 	EventBrokerAPIError          EventType = "BrokerAPIError"
@@ -62,7 +63,13 @@ const (
 	EventFillPollTimeout         EventType = "FillPollTimeout"
 	EventStaleOrderCancelled     EventType = "StaleOrderCancelled"
 	EventSystemStarted           EventType = "SystemStarted"
+	EventSymbolsActivated        EventType = "SymbolsActivated"
 )
+
+type SymbolsActivatedPayload struct {
+	Symbols []string
+	Source  string
+}
 
 type FeedDegradedPayload struct {
 	Feed   string
@@ -95,6 +102,12 @@ type StaleOrderCancelledPayload struct {
 	Strategy      string
 	Direction     string
 	AgeSeconds    float64
+}
+
+type ExitCircuitBrokenPayload struct {
+	Symbol       Symbol
+	Failures     int
+	CooldownSecs float64
 }
 
 type SystemStartedPayload struct {

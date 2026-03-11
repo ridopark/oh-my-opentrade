@@ -102,14 +102,19 @@ func (s *ORBStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st 
 
 	htfBiasTag := "none"
 	if orbState.Config.HTFBiasEnabled {
-		if daily, ok := orbState.Indicators.HTF["1d"]; ok && daily.Bias != "" {
-			htfBiasTag = daily.Bias
-			switch {
-			case setup.Direction == domain.DirectionLong && daily.Bias == "BEARISH":
-				return orbState, nil, nil
-			case setup.Direction == domain.DirectionShort && daily.Bias == "BULLISH":
-				return orbState, nil, nil
-			}
+		daily, ok := orbState.Indicators.HTF["1d"]
+		if !ok || daily.Bias == "" {
+			// Fail-closed: no HTF data → block signal for safety.
+			// This prevents unfiltered trades on symbols that haven't
+			// completed HTF warmup (e.g., dynamically screened symbols).
+			return orbState, nil, nil
+		}
+		htfBiasTag = daily.Bias
+		switch {
+		case setup.Direction == domain.DirectionLong && daily.Bias == "BEARISH":
+			return orbState, nil, nil
+		case setup.Direction == domain.DirectionShort && daily.Bias == "BULLISH":
+			return orbState, nil, nil
 		}
 	}
 
