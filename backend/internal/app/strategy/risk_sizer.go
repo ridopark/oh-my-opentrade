@@ -31,6 +31,8 @@ const revalStateTTL = 10 * time.Minute
 // 15 min provides sufficient price discovery and prevents churn loops.
 const defaultExitCooldown = 15 * time.Minute
 
+const aiDirectionMinConfidence = 0.5
+
 // RiskSizer subscribes to SignalEnriched events and converts enriched signals
 // into OrderIntents after applying position sizing and risk checks.
 type RiskSizer struct {
@@ -163,9 +165,7 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 
 	strategyID, hasStrategyID := parseStrategyIDFromInstance(start.InstanceID(sigRef.StrategyInstanceID))
 
-	// AI direction gate: reject entry signals when the AI debate explicitly
-	// disagrees with the strategy's direction. The AI can veto but not invent trades.
-	if enrichment.AIDirectionConflict() {
+	if enrichment.AIDirectionConflict(aiDirectionMinConfidence) {
 		strategyName := "unknown"
 		if hasStrategyID {
 			strategyName = strategyID.String()
@@ -180,6 +180,7 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 			"ai_direction", string(enrichment.Direction),
 			"ai_rationale", enrichment.Rationale,
 			"confidence", enrichment.Confidence,
+			"min_confidence", aiDirectionMinConfidence,
 		)
 		rejection := domain.OrderIntentEventPayload{
 			ID:        uuid.NewString(),
@@ -289,6 +290,7 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 	limitOffsetBPS := 5
 	stopBPS := 25
 	riskPerTradeBPS := 10
+	maxSlippageBPS := 10
 	if spec != nil {
 		if v, ok := extractInt(spec.Params, "limit_offset_bps"); ok {
 			limitOffsetBPS = v
@@ -300,6 +302,9 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 			riskPerTradeBPS = v
 		} else if v, ok := extractInt(spec.Params, "max_risk_bps"); ok {
 			riskPerTradeBPS = v
+		}
+		if v, ok := extractInt(spec.Params, "max_slippage_bps"); ok {
+			maxSlippageBPS = v
 		}
 	}
 
@@ -449,7 +454,7 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		direction,
 		limitPrice,
 		stopLoss,
-		10,
+		maxSlippageBPS,
 		qty,
 		strategyName,
 		rationale,

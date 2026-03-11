@@ -78,18 +78,25 @@ type SignalEnrichment struct {
 // a direction that conflicts with the original strategy signal. This is used as
 // a gate: the AI can veto a signal but cannot invent new trades.
 //
+// minConfidence sets the minimum AI confidence required for a veto. Below this
+// threshold the AI opinion is considered too weak to override the strategy.
+//
 // Conflict matrix (entry signals only):
 //
-//	Signal Side "buy"  + AI Direction SHORT → conflict
-//	Signal Side "sell" + AI Direction LONG  → conflict
+//	Signal Side "buy"  + AI Direction SHORT → conflict (if confidence >= minConfidence)
+//	Signal Side "sell" + AI Direction LONG  → conflict (if confidence >= minConfidence)
 //
-// Returns false when the AI was skipped, timed out, or errored — in those cases
-// the system falls back to the strategy's original signal.
-func (e SignalEnrichment) AIDirectionConflict() bool {
+// Returns false when the AI was skipped, timed out, errored, or when confidence
+// is below minConfidence — in those cases the system falls back to the strategy's
+// original signal.
+func (e SignalEnrichment) AIDirectionConflict(minConfidence float64) bool {
 	if e.Status != EnrichmentOK {
 		return false
 	}
 	if e.Signal.SignalType != "entry" {
+		return false
+	}
+	if e.Confidence < minConfidence {
 		return false
 	}
 	switch e.Signal.Side {

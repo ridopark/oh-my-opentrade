@@ -598,6 +598,46 @@ func TestRiskSizer_AIDirectionGate_RejectsConflictingSignal(t *testing.T) {
 	}
 }
 
+func TestRiskSizer_AIDirectionGate_LowConfidenceBypassesVeto(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"stop_bps":           int64(25),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	created := subscribeOrderIntentCreated(t, bus)
+	rejected := subscribeOrderIntentRejected(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:BTC/USD")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "BTC/USD",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.7,
+			Tags:               map[string]string{"ref_price": "67000"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.35,
+		Rationale:  "Weak bearish signal with low conviction",
+		Direction:  domain.DirectionShort,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, created, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+	assert.Equal(t, domain.DirectionLong, intent.Direction)
+
+	select {
+	case <-rejected:
+		t.Fatal("low-confidence AI conflict should not reject the signal")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestRiskSizer_AIDirectionGate_AllowsMatchingDirection(t *testing.T) {
 	bus := memory.NewBus()
 	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
