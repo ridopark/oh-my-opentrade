@@ -78,27 +78,32 @@ enabled = true
 interval_minutes = 5
 
 [[exit_rules]]
-type = "BREAKEVEN_STOP"
+type = "VOLATILITY_STOP"
 [exit_rules.params]
-activation_pct = 0.003
-buffer_pct = 0.001
-
-[[exit_rules]]
-type = "TRAILING_STOP"
-[exit_rules.params]
-pct = 0.015
+atr_multiplier = 2.5
 
 [[exit_rules]]
 type = "SD_TARGET"
 [exit_rules.params]
-sd_level = 1.0
+sd_level = 1.5
 
 [[exit_rules]]
-type = "MAX_LOSS"
+type = "STEP_STOP"
 [exit_rules.params]
-pct = 0.03
+
+[[exit_rules]]
+type = "STAGNATION_EXIT"
+[exit_rules.params]
+minutes = 30
+sd_threshold = 1.0
+profit_gate_pct = 0.005
 
 [[exit_rules]]
 type = "MAX_HOLDING_TIME"
 [exit_rules.params]
 minutes = 120
+
+[[exit_rules]]
+type = "MAX_LOSS"
+[exit_rules.params]
+pct = 0.03
