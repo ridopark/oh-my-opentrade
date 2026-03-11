@@ -192,7 +192,7 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 				)
 				enrichment := domain.SignalEnrichment{
 					Signal:     ref,
-					Status:     domain.EnrichmentSkipped,
+					Status:     domain.EnrichmentVetoed,
 					Confidence: 0.1,
 					Rationale:  fmt.Sprintf("pre-LLM veto: negative expectancy $%.2f/trade in %s (%d trades)", summary.Overall.Expectancy, regime.Type, summary.Overall.TradeCount),
 					Direction:  direction,
