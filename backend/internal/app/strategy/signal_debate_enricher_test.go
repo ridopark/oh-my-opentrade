@@ -577,6 +577,11 @@ func TestSignalDebateEnricher_PerfVeto_NegativeExpectancy(t *testing.T) {
 			TradeCount: 12,
 			Expectancy: -1.50,
 		},
+		BySymbol: &domain.StrategyRegimeStats{
+			Symbol:     "BTC/USD",
+			TradeCount: 12,
+			Expectancy: -1.50,
+		},
 	}}
 
 	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil,

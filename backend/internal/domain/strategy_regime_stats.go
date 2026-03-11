@@ -30,15 +30,23 @@ type StrategyPerformanceSummary struct {
 // HasNegativeExpectancy returns true if the given regime (or overall when regime
 // is empty) has negative expectancy with at least minTrades data points.
 func (s *StrategyPerformanceSummary) HasNegativeExpectancy(regime RegimeType, minTrades int) bool {
-	// Check per-regime first.
 	for _, r := range s.ByRegime {
 		if r.Regime == regime && r.TradeCount >= minTrades {
 			return r.Expectancy < 0
 		}
 	}
-	// Fall back to overall.
 	if s.Overall.TradeCount >= minTrades {
 		return s.Overall.Expectancy < 0
 	}
 	return false
+}
+
+// HasNegativeExpectancyForSymbol checks per-symbol stats only. Returns false
+// if no symbol-level data exists or insufficient trades — never falls back to
+// overall strategy stats, so one bad symbol can't block all others.
+func (s *StrategyPerformanceSummary) HasNegativeExpectancyForSymbol(minTrades int) bool {
+	if s.BySymbol == nil || s.BySymbol.TradeCount < minTrades {
+		return false
+	}
+	return s.BySymbol.Expectancy < 0
 }
