@@ -569,6 +569,19 @@ func (s *Service) fmtSignalEnriched(ev domain.Event) string {
 		if e.JudgeReasoning != "" {
 			msg += fmt.Sprintf("\n⚖️ Judge: %s", e.JudgeReasoning)
 		}
+		if len(e.NewsHeadlines) > 0 {
+			msg += "\n📰 News:"
+			limit := len(e.NewsHeadlines)
+			if limit > 3 {
+				limit = 3
+			}
+			for _, h := range e.NewsHeadlines[:limit] {
+				msg += fmt.Sprintf("\n  • %s", h)
+			}
+			if len(e.NewsHeadlines) > 3 {
+				msg += fmt.Sprintf("\n  … +%d more", len(e.NewsHeadlines)-3)
+			}
+		}
 		return msg
 	}
 	return "🧠 Signal Enriched"

@@ -213,6 +213,7 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 		}
 	}
 
+	var newsHeadlines []string
 	if e.newsProvider != nil {
 		newsItems, newsErr := e.newsProvider(ctx, sig.Symbol)
 		if newsErr != nil {
@@ -220,6 +221,9 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 		}
 		if len(newsItems) > 0 {
 			debateOpts = append(debateOpts, ports.WithNews(newsItems))
+			for _, n := range newsItems {
+				newsHeadlines = append(newsHeadlines, n.Headline)
+			}
 			e.logger.Info("news context attached to AI debate",
 				"symbol", sig.Symbol,
 				"headlines", len(newsItems),
@@ -257,6 +261,7 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 			BearArgument:   decision.BearArgument,
 			JudgeReasoning: decision.JudgeReasoning,
 			RiskModifier:   decision.RiskModifier,
+			NewsHeadlines:  newsHeadlines,
 		}
 		e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
 		e.saveThoughtLog(ctx, event, enrichment)
@@ -267,11 +272,12 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 	if err == nil && decision == nil {
 		e.logger.Info("AI debate neutral — proceeding with original signal", "symbol", sig.Symbol)
 		enrichment := domain.SignalEnrichment{
-			Signal:     ref,
-			Status:     domain.EnrichmentSkipped,
-			Confidence: sig.Strength,
-			Rationale:  fmt.Sprintf("signal: %s %s strength=%.2f (AI neutral)", sig.Type, sig.Side, sig.Strength),
-			Direction:  direction,
+			Signal:        ref,
+			Status:        domain.EnrichmentSkipped,
+			Confidence:    sig.Strength,
+			Rationale:     fmt.Sprintf("signal: %s %s strength=%.2f (AI neutral)", sig.Type, sig.Side, sig.Strength),
+			Direction:     direction,
+			NewsHeadlines: newsHeadlines,
 		}
 		e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
 		e.saveThoughtLog(ctx, event, enrichment)
@@ -285,11 +291,12 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 	e.logger.Warn("AI debate failed", "symbol", sig.Symbol, "error", err)
 
 	enrichment := domain.SignalEnrichment{
-		Signal:     ref,
-		Status:     status,
-		Confidence: sig.Strength,
-		Rationale:  fmt.Sprintf("signal: %s %s strength=%.2f (AI %s)", sig.Type, sig.Side, sig.Strength, status),
-		Direction:  direction,
+		Signal:        ref,
+		Status:        status,
+		Confidence:    sig.Strength,
+		Rationale:     fmt.Sprintf("signal: %s %s strength=%.2f (AI %s)", sig.Type, sig.Side, sig.Strength, status),
+		Direction:     direction,
+		NewsHeadlines: newsHeadlines,
 	}
 
 	e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
