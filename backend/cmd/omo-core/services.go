@@ -45,6 +45,7 @@ type appServices struct {
 	posMonitor       *positionmonitor.Service
 	posRevaluator    *positionmonitor.Revaluator
 	notifySvc        *notify.Service
+	notifier         ports.NotifierPort
 	dnaApproval      *dnaapproval.Service
 	ledgerWriter     *perf.LedgerWriter
 	signalTracker    *perf.SignalTracker
@@ -65,6 +66,8 @@ type appServices struct {
 	specStore      *store_fs.Store
 	router         *strategy.Router
 	symRouterSpecs []symbolrouter.StrategySpec
+
+	aiScreenerSvc *screenerapp.AIService
 
 	orchestrator *orchestrator.AccountOrchestrator
 	debateSvc    *debate.Service
@@ -206,6 +209,7 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	// 	log.Info().Msg("KakaoTalk notifier enabled")
 	// }
 	multiNotifier := notification.NewMultiNotifier(notifiers...)
+	svc.notifier = multiNotifier
 	notifyLog := log.With().Str("component", "notify").Logger()
 	chartGen := charting.NewGonumChartGenerator()
 	var notifyErr error
@@ -553,6 +557,36 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 		if err := screenerSvc.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start screener service")
 		}
+	}
+
+	if cfg.AIScreener.Enabled && svc.useStrategyV2 {
+		aiScreenerRepo := timescaledb.NewAIScreenerRepo(timescaledb.NewSqlDB(infra.sqlDB), log.With().Str("component", "ai_screener_repo").Logger())
+		aiScreenerSvc, err := screenerapp.NewAIService(
+			log.With().Str("component", "ai_screener").Logger(),
+			cfg.AIScreener,
+			cfg.AI,
+			"default",
+			string(domain.EnvModePaper),
+			infra.eventBus,
+			infra.alpacaAdapter,
+			infra.alpacaAdapter,
+			infra.alpacaAdapter,
+			aiScreenerRepo,
+			svc.specStore,
+			svc.notifier,
+		)
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to create AI screener service")
+		}
+		if err := aiScreenerSvc.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start AI screener service")
+		}
+		svc.aiScreenerSvc = aiScreenerSvc
+		log.Info().
+			Strs("models", cfg.AIScreener.Models).
+			Int("ai_run_hour_et", cfg.AIScreener.AIRunAtHourET).
+			Int("ai_run_minute_et", cfg.AIScreener.AIRunAtMinuteET).
+			Msg("AI screener service started")
 	}
 	// 5b (continued): hot-reload DNA after all services are started
 	if !svc.useStrategyV2 {

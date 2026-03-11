@@ -20,6 +20,9 @@ conflict_policy = "priority_wins"
 exclusive_per_symbol = true
 asset_classes = ["CRYPTO", "EQUITY"]
 
+[screening]
+description = "Structural breakout strategy that enters when price breaks above a key pivot high with strong volume confirmation, then waits for a controlled pullback to retest the broken level as support. Ideal candidates show elevated relative volume (RVOL > 1.5), clean multi-bar pivot structures, and a pre-market gap indicating institutional interest. Favors trending regimes with expanding ATR."
+
 [params]
 pivot_lookback = 5
 vol_surge_mult = 2.0

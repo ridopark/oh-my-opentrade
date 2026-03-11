@@ -19,6 +19,7 @@ type Config struct {
 	Symbols      SymbolsConfig      `yaml:"symbols"`
 	Server       ServerConfig       `yaml:"server"`
 	AI           AIConfig           `yaml:"ai"`
+	AIScreener   AIScreenerConfig   `yaml:"ai_screener"`
 	Notification NotificationConfig `yaml:"notification"`
 	OptionsV2    bool               `yaml:"-"`
 	MultiAccount bool               `yaml:"-"`
@@ -44,6 +45,20 @@ type AIConfig struct {
 	MinConfidence float64 `yaml:"min_confidence"`
 	Enabled       bool    `yaml:"enabled"`
 	ProviderSort  string  `yaml:"provider_sort"` // OpenRouter provider routing sort (e.g. "latency")
+}
+
+type AIScreenerConfig struct {
+	Enabled              bool     `yaml:"enabled"`
+	Models               []string `yaml:"models"`
+	NumericRunAtHourET   int      `yaml:"numeric_run_at_hour_et"`
+	NumericRunAtMinuteET int      `yaml:"numeric_run_at_minute_et"`
+	AIRunAtHourET        int      `yaml:"ai_run_at_hour_et"`
+	AIRunAtMinuteET      int      `yaml:"ai_run_at_minute_et"`
+	Pass0MinPrice        float64  `yaml:"pass0_min_price"`
+	Pass0MinVolume       int64    `yaml:"pass0_min_volume"`
+	Pass0MinGapPct       float64  `yaml:"pass0_min_gap_pct"`
+	MaxCandidatesPerCall int      `yaml:"max_candidates_per_call"`
+	TopNPerStrategy      int      `yaml:"top_n_per_strategy"`
 }
 
 // NotificationConfig holds credentials for notification adapters.
@@ -153,7 +168,6 @@ type rawTradingConfig struct {
 	MaxDailyLossUSD        float64 `yaml:"max_daily_loss_usd"`
 }
 
-// rawConfig represents the unparsed application configuration.
 type rawConfig struct {
 	Alpaca       AlpacaConfig       `yaml:"alpaca"`
 	Database     DatabaseConfig     `yaml:"database"`
@@ -161,6 +175,7 @@ type rawConfig struct {
 	Symbols      SymbolsConfig      `yaml:"symbols"`
 	Server       ServerConfig       `yaml:"server"`
 	AI           AIConfig           `yaml:"ai"`
+	AIScreener   AIScreenerConfig   `yaml:"ai_screener"`
 	Notification NotificationConfig `yaml:"notification"`
 }
 
@@ -231,6 +246,9 @@ func Load(envPath, yamlPath string) (*Config, error) {
 			MinConfidence: defaultAIMinConfidence,
 			Enabled:       false,
 		},
+		AIScreener: AIScreenerConfig{
+			Enabled: true,
+		},
 	}
 
 	if err := yaml.Unmarshal(yamlBytes, &raw); err != nil {
@@ -271,6 +289,7 @@ func Load(envPath, yamlPath string) (*Config, error) {
 		Symbols:      raw.Symbols,
 		Server:       raw.Server,
 		AI:           raw.AI,
+		AIScreener:   applyAIScreenerDefaults(raw.AIScreener),
 		Notification: raw.Notification,
 	}
 
@@ -343,6 +362,9 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	if val := os.Getenv("KAKAO_REDIRECT_URI"); val != "" {
 		cfg.Notification.KakaoRedirectURI = val
 	}
+	if val := os.Getenv("AI_SCREENER_ENABLED"); val != "" {
+		cfg.AIScreener.Enabled = val == "true"
+	}
 	if val := os.Getenv("OPTIONS_V2"); val == "true" {
 		cfg.OptionsV2 = true
 	}
@@ -386,6 +408,38 @@ func loadEnvFile(path string) error {
 		}
 	}
 	return scanner.Err()
+}
+
+func applyAIScreenerDefaults(c AIScreenerConfig) AIScreenerConfig {
+	if len(c.Models) == 0 {
+		c.Models = []string{
+			"qwen/qwen3-next-80b:free",
+			"stepfun/step-3.5-flash:free",
+			"meta-llama/llama-3.3-70b:free",
+		}
+	}
+	if c.NumericRunAtHourET == 0 {
+		c.NumericRunAtHourET = 8
+	}
+	if c.AIRunAtHourET == 0 {
+		c.AIRunAtHourET = 8
+	}
+	if c.AIRunAtMinuteET == 0 {
+		c.AIRunAtMinuteET = 35
+	}
+	if c.Pass0MinPrice == 0 {
+		c.Pass0MinPrice = 5.0
+	}
+	if c.Pass0MinVolume == 0 {
+		c.Pass0MinVolume = 10000
+	}
+	if c.MaxCandidatesPerCall == 0 {
+		c.MaxCandidatesPerCall = 20
+	}
+	if c.TopNPerStrategy == 0 {
+		c.TopNPerStrategy = 10
+	}
+	return c
 }
 
 // validate checks if the given configuration is valid.

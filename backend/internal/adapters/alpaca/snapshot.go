@@ -36,6 +36,7 @@ func (c *RESTClient) GetSnapshots(ctx context.Context, dataURL string, symbols [
 		} `json:"latestTrade"`
 		PrevDailyBar *struct {
 			C *float64 `json:"c"`
+			V *int64   `json:"v"`
 		} `json:"prevDailyBar"`
 		MinuteBar *struct {
 			C *float64 `json:"c"`
@@ -66,12 +67,23 @@ func (c *RESTClient) GetSnapshots(ctx context.Context, dataURL string, symbols [
 			pmVol = r.MinuteBar.V
 		}
 
+		var dailyVol *int64
+		if r.DailyBar != nil {
+			dailyVol = r.DailyBar.V
+		}
+		var prevDailyVol *int64
+		if r.PrevDailyBar != nil {
+			prevDailyVol = r.PrevDailyBar.V
+		}
+
 		out[sym] = ports.Snapshot{
 			Symbol:          sym,
 			PrevClose:       prevClose,
 			PreMarketPrice:  pmPrice,
 			PreMarketVolume: pmVol,
 			LastTradePrice:  lastTrade,
+			DailyVolume:     dailyVol,
+			PrevDailyVolume: prevDailyVol,
 		}
 	}
 	return out, nil

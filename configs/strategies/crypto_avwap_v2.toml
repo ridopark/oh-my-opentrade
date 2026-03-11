@@ -22,6 +22,9 @@ watchlist_mode = "intersection"
 asset_classes = ["CRYPTO"]
 allowed_directions = ["LONG"]
 
+[screening]
+description = "Anchored VWAP strategy for crypto with spread protection and higher-lows confirmation. Enters on VWAP breakouts or bounces when price structure confirms accumulation. Ideal candidates have tight bid-ask spreads, respect for key VWAP anchors (previous-day high/low, session open), and sufficient volume for reliable VWAP calculation. Favors established crypto pairs with institutional participation. Avoid illiquid altcoins with wide spreads."
+
 [params]
 anchors = ["pd_high", "pd_low", "on_high", "on_low", "session_open"]
 breakout_enabled = true
