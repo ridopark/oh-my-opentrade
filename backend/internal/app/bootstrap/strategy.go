@@ -23,6 +23,7 @@ type StrategyDeps struct {
 	AIAdvisor       ports.AIAdvisorPort
 	PositionLookup  func(symbol string) (domain.MonitoredPosition, bool)
 	MarketDataFn    func(symbol string) (domain.IndicatorSnapshot, bool)
+	NewsProvider    strategy.NewsProvider
 	Repo            ports.RepositoryPort
 	StratPerf       ports.StrategyPerformancePort
 	TenantID        string
@@ -135,6 +136,9 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 		}
 		if deps.StratPerf != nil {
 			opts = append(opts, strategy.WithStrategyPerformance(deps.StratPerf))
+		}
+		if deps.NewsProvider != nil {
+			opts = append(opts, strategy.WithNewsProvider(deps.NewsProvider))
 		}
 		opts = append(opts, strategy.WithDebateTimeout(30*time.Second))
 		enricher = strategy.NewSignalDebateEnricher(deps.EventBus, deps.AIAdvisor, stratLog, opts...)

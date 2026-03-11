@@ -18,6 +18,8 @@ type MarketDataProvider func(symbol string) (domain.IndicatorSnapshot, bool)
 
 type PositionLookup func(symbol string) (domain.MonitoredPosition, bool)
 
+type NewsProvider func(ctx context.Context, symbol string) ([]domain.NewsItem, error)
+
 type SignalDebateEnricher struct {
 	eventBus      ports.EventBusPort
 	aiAdvisor     ports.AIAdvisorPort
@@ -26,6 +28,7 @@ type SignalDebateEnricher struct {
 	debateTimeout time.Duration
 	marketData    MarketDataProvider
 	posLookup     PositionLookup
+	newsProvider  NewsProvider
 
 	makeDebateOpts func(sig start.Signal) []ports.DebateOption
 	logger         *slog.Logger
@@ -68,6 +71,12 @@ func WithPositionLookup(fn PositionLookup) EnricherOption {
 func WithStrategyPerformance(port ports.StrategyPerformancePort) EnricherOption {
 	return func(e *SignalDebateEnricher) {
 		e.stratPerf = port
+	}
+}
+
+func WithNewsProvider(fn NewsProvider) EnricherOption {
+	return func(e *SignalDebateEnricher) {
+		e.newsProvider = fn
 	}
 }
 
@@ -201,6 +210,31 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 				e.saveThoughtLog(ctx, event, enrichment)
 				return nil
 			}
+		}
+	}
+
+	if e.newsProvider != nil {
+		newsItems, newsErr := e.newsProvider(ctx, sig.Symbol)
+		if newsErr != nil {
+			e.logger.Warn("news fetch failed", "symbol", sig.Symbol, "error", newsErr)
+		}
+		if len(newsItems) > 0 {
+			debateOpts = append(debateOpts, ports.WithNews(newsItems))
+			e.logger.Info("news context attached to AI debate",
+				"symbol", sig.Symbol,
+				"headlines", len(newsItems),
+			)
+		} else {
+			enrichment := domain.SignalEnrichment{
+				Signal:     ref,
+				Status:     domain.EnrichmentSkipped,
+				Confidence: sig.Strength,
+				Rationale:  fmt.Sprintf("signal: %s %s strength=%.2f (no recent news — AI skipped)", sig.Type, sig.Side, sig.Strength),
+				Direction:  direction,
+			}
+			e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
+			e.saveThoughtLog(ctx, event, enrichment)
+			return nil
 		}
 	}
 

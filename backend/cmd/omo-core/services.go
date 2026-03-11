@@ -75,6 +75,7 @@ type appServices struct {
 	orchestrator *orchestrator.AccountOrchestrator
 	debateSvc    *debate.Service
 	aiAdvisor    ports.AIAdvisorPort
+	newsClient   *alpaca.NewsClient
 	// kakaoNotifier *notification.KakaoNotifier — disabled
 
 	accountEquity float64
@@ -261,11 +262,12 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 			advisorOpts = append(advisorOpts, llm.WithProviderRouting(cfg.AI.ProviderSort, nil))
 		}
 		svc.aiAdvisor = llm.NewAdvisor(cfg.AI.BaseURL, cfg.AI.Model, cfg.AI.APIKey, nil, advisorOpts...)
+		svc.newsClient = alpaca.NewNewsClient(cfg.Alpaca.DataURL, cfg.Alpaca.APIKeyID, cfg.Alpaca.APISecretKey, nil)
 		log.Info().
 			Str("base_url", cfg.AI.BaseURL).
 			Str("model", cfg.AI.Model).
 			Str("provider_sort", cfg.AI.ProviderSort).
-			Msg("AI advisor initialized (real LLM)")
+			Msg("AI advisor initialized (real LLM + news-gated)")
 	} else {
 		svc.aiAdvisor = llm.NewNoOpAdvisor()
 		log.Info().Msg("AI advisor initialized (no-op — LLM disabled)")
@@ -280,12 +282,21 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	svc.specStore = store_fs.NewStore(specDir, strategy.LoadSpecFile)
 	svc.posMonitor.SetSpecStore(svc.specStore)
 
+	var newsProvider strategy.NewsProvider
+	if svc.newsClient != nil {
+		nc := svc.newsClient
+		newsProvider = func(ctx context.Context, symbol string) ([]domain.NewsItem, error) {
+			return nc.GetRecentNews(ctx, symbol, 4*time.Hour)
+		}
+	}
+
 	pipeline, err := bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
 		EventBus:        infra.eventBus,
 		SpecStore:       svc.specStore,
 		AIAdvisor:       svc.aiAdvisor,
 		PositionLookup:  svc.posMonitor.LookupPosition,
 		MarketDataFn:    svc.monitor.GetLastSnapshot,
+		NewsProvider:    newsProvider,
 		Repo:            infra.repo,
 		StratPerf:       infra.stratPerfRepo,
 		TenantID:        "default",
