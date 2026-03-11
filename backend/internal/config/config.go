@@ -413,9 +413,9 @@ func loadEnvFile(path string) error {
 func applyAIScreenerDefaults(c AIScreenerConfig) AIScreenerConfig {
 	if len(c.Models) == 0 {
 		c.Models = []string{
-			"qwen/qwen3-next-80b:free",
-			"stepfun/step-3.5-flash:free",
-			"meta-llama/llama-3.3-70b:free",
+			"google/gemini-2.5-flash-lite",
+			"deepseek/deepseek-chat-v3",
+			"anthropic/claude-3.5-haiku",
 		}
 	}
 	if c.NumericRunAtHourET == 0 {
@@ -428,10 +428,10 @@ func applyAIScreenerDefaults(c AIScreenerConfig) AIScreenerConfig {
 		c.AIRunAtMinuteET = 35
 	}
 	if c.Pass0MinPrice == 0 {
-		c.Pass0MinPrice = 5.0
+		c.Pass0MinPrice = 10.0
 	}
 	if c.Pass0MinVolume == 0 {
-		c.Pass0MinVolume = 10000
+		c.Pass0MinVolume = 50000
 	}
 	if c.MaxCandidatesPerCall == 0 {
 		c.MaxCandidatesPerCall = 20

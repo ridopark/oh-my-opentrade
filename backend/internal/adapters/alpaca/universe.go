@@ -22,21 +22,36 @@ var allowedExchanges = map[string]bool{
 	"BATS":   true,
 }
 
-func isScreenableEquity(exchange, symbol, name string) bool {
+func isScreenableEquity(exchange, symbol, name string, shortable, marginable, fractionable bool) bool {
 	if !allowedExchanges[exchange] {
 		return false
 	}
-	nameUpper := strings.ToUpper(name)
-	if strings.Contains(nameUpper, "WARRANT") ||
-		strings.Contains(nameUpper, " RIGHT") ||
-		strings.Contains(nameUpper, " UNIT") ||
-		strings.HasSuffix(nameUpper, " UNITS") {
+	if !shortable && !marginable {
 		return false
 	}
-	if strings.Contains(symbol, " ") {
+	if !fractionable {
+		return false
+	}
+	nameUpper := strings.ToUpper(name)
+	for _, pattern := range junkNamePatterns {
+		if strings.Contains(nameUpper, pattern) {
+			return false
+		}
+	}
+	if strings.Contains(symbol, " ") || strings.Contains(symbol, "-") {
 		return false
 	}
 	return true
+}
+
+var junkNamePatterns = []string{
+	"WARRANT",
+	" RIGHT",
+	" UNIT",
+	"ACQUISITION CORP",
+	"BLANK CHECK",
+	"DEPOSITARY",
+	"PREFERRED",
 }
 
 type cachedAssets struct {
@@ -95,6 +110,8 @@ func (c *RESTClient) ListTradeable(ctx context.Context, assetClass domain.AssetC
 		Name         string `json:"name"`
 		Status       string `json:"status"`
 		Tradable     bool   `json:"tradable"`
+		Shortable    bool   `json:"shortable"`
+		Marginable   bool   `json:"marginable"`
 		Fractionable bool   `json:"fractionable"`
 	}
 	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&raw); err != nil {
@@ -113,7 +130,7 @@ func (c *RESTClient) ListTradeable(ctx context.Context, assetClass domain.AssetC
 		}
 
 		// For equities, filter out junk to reduce universe from ~12K to ~3K.
-		if ac == domain.AssetClassEquity && !isScreenableEquity(a.Exchange, a.Symbol, a.Name) {
+		if ac == domain.AssetClassEquity && !isScreenableEquity(a.Exchange, a.Symbol, a.Name, a.Shortable, a.Marginable, a.Fractionable) {
 			skipped++
 			continue
 		}
