@@ -182,7 +182,7 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 		} else if summary != nil {
 			debateOpts = append(debateOpts, ports.WithStrategyPerformance(summary))
 
-			const minTradesForVeto = 5
+			const minTradesForVeto = 20
 			if summary.HasNegativeExpectancyForSymbol(minTradesForVeto) {
 				symStats := summary.BySymbol
 				e.logger.Warn("pre-LLM veto: negative expectancy for symbol",

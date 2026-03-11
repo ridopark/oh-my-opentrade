@@ -20,17 +20,24 @@ const querySelectStrategyPerfOverall = `SELECT
 	WHERE account_id = $1 AND env_mode = $2 AND strategy = $3 AND date >= $4`
 
 // Phase A: strategy_daily_pnl has no symbol column, so per-symbol stats
-// come from the trades table directly.
-const querySelectStrategyPerfBySymbol = `SELECT
-	COUNT(*) FILTER (WHERE side IN ('BUY', 'SELL')),
-	COUNT(*) FILTER (WHERE side = 'SELL' AND price * quantity > 0),
-	0,
-	COALESCE(SUM(CASE WHEN side = 'SELL' THEN price * quantity ELSE -(price * quantity) END), 0),
-	COALESCE(SUM(CASE WHEN side = 'SELL' AND price * quantity > 0 THEN price * quantity ELSE 0 END), 0),
-	COALESCE(SUM(CASE WHEN side = 'SELL' AND price * quantity <= 0 THEN price * quantity ELSE 0 END), 0)
+// come from the trades table directly. Uses avg BUY price to compute
+// realized P&L per SELL (round-trip). Each SELL counts as one completed trade.
+const querySelectStrategyPerfBySymbol = `WITH buy_avg AS (
+	SELECT COALESCE(SUM(price * quantity) / NULLIF(SUM(quantity), 0), 0) as avg_price
 	FROM trades
 	WHERE account_id = $1 AND env_mode = $2 AND strategy = $3 AND symbol = $4
-	  AND status = 'FILLED' AND time >= $5`
+	  AND status = 'FILLED' AND time >= $5 AND side = 'BUY'
+)
+SELECT
+	COUNT(*),
+	COUNT(*) FILTER (WHERE t.price > b.avg_price),
+	COUNT(*) FILTER (WHERE t.price <= b.avg_price AND b.avg_price > 0),
+	COALESCE(SUM((t.price - b.avg_price) * t.quantity), 0),
+	COALESCE(SUM(CASE WHEN t.price > b.avg_price THEN (t.price - b.avg_price) * t.quantity ELSE 0 END), 0),
+	COALESCE(SUM(CASE WHEN t.price <= b.avg_price AND b.avg_price > 0 THEN (t.price - b.avg_price) * t.quantity ELSE 0 END), 0)
+FROM trades t, buy_avg b
+WHERE t.account_id = $1 AND t.env_mode = $2 AND t.strategy = $3 AND t.symbol = $4
+  AND t.status = 'FILLED' AND t.time >= $5 AND t.side = 'SELL'`
 
 // StrategyPerfRepo implements ports.StrategyPerformancePort using TimescaleDB.
 type StrategyPerfRepo struct {
