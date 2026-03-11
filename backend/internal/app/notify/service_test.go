@@ -295,7 +295,7 @@ func TestService_SignalEnrichedNotification(t *testing.T) {
 	assert.Contains(t, msgs[0].Message, "Judge: Bull case stronger")
 }
 
-func TestService_SignalEnrichedExitWithPnL(t *testing.T) {
+func TestService_SignalEnrichedExitSuppressed(t *testing.T) {
 	bus := memory.NewBus()
 	notifier := &mockNotifier{}
 	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
@@ -329,50 +329,9 @@ func TestService_SignalEnrichedExitWithPnL(t *testing.T) {
 	err = bus.Publish(context.Background(), *ev)
 	require.NoError(t, err)
 
-	msgs := notifier.waitForMessages(1, 5*time.Second)
-	require.Len(t, msgs, 1)
-	assert.Contains(t, msgs[0].Message, "Signal Enriched")
-	assert.Contains(t, msgs[0].Message, "exit")
-	assert.Contains(t, msgs[0].Message, "BTC/USD")
-	assert.Contains(t, msgs[0].Message, "Est. P&L: **+$500.00 (+5.00%)**")
-	assert.Contains(t, msgs[0].Message, "Entry: $90000.00")
-}
-
-func TestService_SignalEnrichedExitNegativePnL(t *testing.T) {
-	bus := memory.NewBus()
-	notifier := &mockNotifier{}
-	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
-	require.NoError(t, err)
-
-	err = svc.Start(context.Background())
-	require.NoError(t, err)
-	defer svc.Stop()
-
-	enrichment := domain.SignalEnrichment{
-		Signal: domain.SignalRef{
-			Symbol:     "BTC/USD",
-			SignalType: "exit",
-			Side:       "sell",
-			Strength:   0.80,
-		},
-		Status:           domain.EnrichmentSkipped,
-		Confidence:       0.80,
-		Direction:        domain.DirectionCloseLong,
-		HasPnL:           true,
-		EntryPrice:       95000.0,
-		UnrealizedPnLPct: -0.03,
-	}
-
-	ev, err := domain.NewEvent(domain.EventSignalEnriched, "tenant-1", domain.EnvModePaper, "exit-2", enrichment)
-	require.NoError(t, err)
-
-	err = bus.Publish(context.Background(), *ev)
-	require.NoError(t, err)
-
-	msgs := notifier.waitForMessages(1, 5*time.Second)
-	require.Len(t, msgs, 1)
-	assert.Contains(t, msgs[0].Message, "📉")
-	assert.Contains(t, msgs[0].Message, "Est. P&L:")
+	time.Sleep(500 * time.Millisecond)
+	msgs := notifier.getMessages()
+	assert.Len(t, msgs, 0, "exit signal enrichment should not produce a notification")
 }
 
 func TestService_OrderSubmittedWithMeta(t *testing.T) {
