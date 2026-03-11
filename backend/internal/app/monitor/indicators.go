@@ -12,6 +12,7 @@ const (
 	stochDPeriod    = 3
 	emaPeriod9      = 9
 	emaPeriod21     = 21
+	emaPeriod50     = 50
 	volumeSMAPeriod = 20
 	atrPeriod       = 14
 	maxWindowSize   = 50
@@ -27,8 +28,10 @@ type symbolState struct {
 	stochKs       []float64
 	ema9          float64
 	ema21         float64
+	ema50         float64
 	ema9Init      bool
 	ema21Init     bool
+	ema50Init     bool
 	vwapNumerator float64
 	vwapDenom     float64
 	vwapM2        float64 // Welford's online variance accumulator for VWAP SD
@@ -204,7 +207,15 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 		state.ema21 = (bar.Close-state.ema21)*multiplier + state.ema21
 	}
 
-	// VolumeSMA
+	// EMA50
+	if !state.ema50Init && len(state.closes) >= emaPeriod50 {
+		state.ema50 = smaWindow(state.closes, emaPeriod50)
+		state.ema50Init = true
+	} else if state.ema50Init {
+		multiplier := 2.0 / (float64(emaPeriod50) + 1.0)
+		state.ema50 = (bar.Close-state.ema50)*multiplier + state.ema50
+	}
+
 	volumeSMA := 0.0
 	if len(state.volumes) >= volumeSMAPeriod {
 		volumeSMA = smaWindow(state.volumes, volumeSMAPeriod)
@@ -232,6 +243,9 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 	)
 	if err != nil {
 		return domain.IndicatorSnapshot{}
+	}
+	if state.ema50Init {
+		snap.EMA50 = state.ema50
 	}
 	if state.atrInit {
 		snap.ATR = atr

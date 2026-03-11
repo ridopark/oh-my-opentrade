@@ -229,6 +229,13 @@ func NewOptionOrderIntent(
 	}, nil
 }
 
+// HTFData holds higher-timeframe indicator values attached to a lower-timeframe snapshot.
+type HTFData struct {
+	EMA50  float64 `json:"ema50,omitempty"`
+	EMA200 float64 `json:"ema200,omitempty"`
+	Bias   string  `json:"bias,omitempty"`
+}
+
 // IndicatorSnapshot holds a point-in-time snapshot of technical indicators.
 type IndicatorSnapshot struct {
 	Time          time.Time
@@ -239,12 +246,14 @@ type IndicatorSnapshot struct {
 	StochD        float64
 	EMA9          float64
 	EMA21         float64
+	EMA50         float64
 	VWAP          float64
 	Volume        float64
 	VolumeSMA     float64
 	ATR           float64
 	VWAPSD        float64                    `json:"vwapSD,omitempty"`
 	AnchorRegimes map[Timeframe]MarketRegime `json:"anchorRegimes,omitempty"`
+	HTF           map[Timeframe]HTFData      `json:"htf,omitempty"`
 }
 
 // NewIndicatorSnapshot creates a validated IndicatorSnapshot. RSI must be in [0,100].
