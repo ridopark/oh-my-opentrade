@@ -73,9 +73,15 @@ enabled = true
 interval_minutes = 5
 
 [[exit_rules]]
+type = "BREAKEVEN_STOP"
+[exit_rules.params]
+activation_pct = 0.002
+buffer_pct = 0.0005
+
+[[exit_rules]]
 type = "TRAILING_STOP"
 [exit_rules.params]
-pct = 0.025
+pct = 0.008
 
 [[exit_rules]]
 type = "PROFIT_TARGET"

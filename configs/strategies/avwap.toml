@@ -64,14 +64,20 @@ enabled = true
 interval_minutes = 5
 
 [[exit_rules]]
-type = "TRAILING_STOP"
+type = "BREAKEVEN_STOP"
 [exit_rules.params]
-pct = 0.02
+activation_pct = 0.003
+buffer_pct = 0.0005
 
 [[exit_rules]]
-type = "PROFIT_TARGET"
+type = "TRAILING_STOP"
 [exit_rules.params]
-pct = 0.03
+pct = 0.008
+
+[[exit_rules]]
+type = "SD_TARGET"
+[exit_rules.params]
+sd_level = 1.8
 
 [[exit_rules]]
 type = "EOD_FLATTEN"

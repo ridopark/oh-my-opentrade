@@ -81,6 +81,15 @@ func (s *Service) tick() {
 		UpdateStepStopState(pos, price, evalCtx)
 
 		for _, rule := range pos.ExitRules {
+			if rule.Type == domain.ExitRuleBreakevenStop {
+				UpdateBreakevenStopState(pos, price,
+					rule.Param("activation_pct", 0),
+					rule.Param("buffer_pct", 0))
+				break
+			}
+		}
+
+		for _, rule := range pos.ExitRules {
 			if !rule.Type.RequiresPrice() {
 				continue
 			}

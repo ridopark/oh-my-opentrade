@@ -19,6 +19,7 @@ const (
 	ExitRuleSDTarget       ExitRuleType = "SD_TARGET"
 	ExitRuleStepStop       ExitRuleType = "STEP_STOP"
 	ExitRuleStagnationExit ExitRuleType = "STAGNATION_EXIT"
+	ExitRuleBreakevenStop  ExitRuleType = "BREAKEVEN_STOP"
 )
 
 func (e ExitRuleType) String() string { return string(e) }
@@ -41,7 +42,7 @@ func NewExitRuleType(s string) (ExitRuleType, error) {
 	case ExitRuleTrailingStop, ExitRuleProfitTarget, ExitRuleTimeExit,
 		ExitRuleEODFlatten, ExitRuleMaxHoldingTime, ExitRuleMaxLoss,
 		ExitRuleVolatilityStop, ExitRuleSDTarget, ExitRuleStepStop,
-		ExitRuleStagnationExit:
+		ExitRuleStagnationExit, ExitRuleBreakevenStop:
 		return ExitRuleType(s), nil
 	default:
 		return "", fmt.Errorf("invalid exit rule type: %q", s)
@@ -187,6 +188,37 @@ func (mp *MonitoredPosition) DrawdownFromHighPct(currentPrice float64) float64 {
 // PositionKey returns a unique key for this position within a tenant/env scope.
 func (mp *MonitoredPosition) PositionKey() string {
 	return fmt.Sprintf("%s:%s:%s", mp.TenantID, mp.EnvMode, mp.Symbol)
+}
+
+// ValidateExitRules checks for contradictions across a set of exit rules.
+// Returns an error if trailing stop percentage >= max loss percentage,
+// which makes the trailing stop dead code (MAX_LOSS always fires first
+// when HWM ≈ entry price).
+func ValidateExitRules(rules []ExitRule) error {
+	var trailingPct, maxLossPct float64
+	var hasTrailing, hasMaxLoss bool
+
+	for _, r := range rules {
+		switch r.Type {
+		case ExitRuleTrailingStop:
+			trailingPct = r.Param("pct", 0)
+			hasTrailing = true
+		case ExitRuleMaxLoss:
+			maxLossPct = r.Param("pct", 0)
+			hasMaxLoss = true
+		}
+	}
+
+	if hasTrailing && hasMaxLoss && trailingPct > 0 && maxLossPct > 0 {
+		if trailingPct >= maxLossPct {
+			return fmt.Errorf(
+				"TRAILING_STOP pct (%.4f) must be less than MAX_LOSS pct (%.4f); "+
+					"trailing stop is dead code when >= max_loss (MAX_LOSS always fires first when HWM ≈ entry)",
+				trailingPct, maxLossPct)
+		}
+	}
+
+	return nil
 }
 
 // ExitTriggered is the event payload when a position monitor exit condition fires.

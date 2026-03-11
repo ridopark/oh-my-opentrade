@@ -115,6 +115,80 @@ func TestLoadSpecFile_ErrorsOnInvalidSchemaVersion(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestLoadSpecFile_ErrorsWhenTrailingStopGteMaxLoss(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.toml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+schema_version = 2
+
+[strategy]
+id = "test_strategy"
+version = "1.0.0"
+name = "Test"
+description = "x"
+author = "system"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+symbols = ["AAPL"]
+timeframes = ["1m"]
+
+[[exit_rules]]
+type = "TRAILING_STOP"
+[exit_rules.params]
+pct = 0.03
+
+[[exit_rules]]
+type = "MAX_LOSS"
+[exit_rules.params]
+pct = 0.02
+`), 0o644))
+
+	_, err := strategy.LoadSpecFile(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "TRAILING_STOP")
+	assert.Contains(t, err.Error(), "MAX_LOSS")
+}
+
+func TestLoadSpecFile_PassesWhenTrailingStopLtMaxLoss(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.toml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+schema_version = 2
+
+[strategy]
+id = "test_strategy"
+version = "1.0.0"
+name = "Test"
+description = "x"
+author = "system"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+symbols = ["AAPL"]
+timeframes = ["1m"]
+
+[[exit_rules]]
+type = "TRAILING_STOP"
+[exit_rules.params]
+pct = 0.01
+
+[[exit_rules]]
+type = "MAX_LOSS"
+[exit_rules.params]
+pct = 0.025
+`), 0o644))
+
+	_, err := strategy.LoadSpecFile(path)
+	require.NoError(t, err)
+}
+
 func TestLoadSpecFile_ErrorsOnInvalidID(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.toml")
