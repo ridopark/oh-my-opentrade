@@ -33,6 +33,25 @@ const defaultExitCooldown = 15 * time.Minute
 
 const aiDirectionMinConfidence = 0.5
 
+var etLocation *time.Location
+
+func init() {
+	var err error
+	etLocation, err = time.LoadLocation("America/New_York")
+	if err != nil {
+		panic("failed to load America/New_York timezone: " + err.Error())
+	}
+}
+
+func isCryptoRTH(now time.Time) bool {
+	et := now.In(etLocation)
+	if et.Weekday() == time.Saturday || et.Weekday() == time.Sunday {
+		return false
+	}
+	hour := et.Hour()
+	return hour >= 8 && hour < 17
+}
+
 // RiskSizer subscribes to SignalEnriched events and converts enriched signals
 // into OrderIntents after applying position sizing and risk checks.
 type RiskSizer struct {
@@ -43,6 +62,7 @@ type RiskSizer struct {
 	revalState    sync.Map // symbol (string) → *domain.RiskRevaluation
 	exitCooldowns sync.Map // symbol (string) → time.Time (last exit fill timestamp)
 	logger        *slog.Logger
+	nowFn         func() time.Time
 }
 
 func NewRiskSizer(eventBus ports.EventBusPort, specStore stratports.SpecStore, equity float64, logger *slog.Logger) *RiskSizer {
@@ -57,8 +77,11 @@ func NewRiskSizer(eventBus ports.EventBusPort, specStore stratports.SpecStore, e
 		specStore:     specStore,
 		accountEquity: equity,
 		logger:        logger.With("component", "risk_sizer"),
+		nowFn:         time.Now,
 	}
 }
+
+func (rs *RiskSizer) SetNowFn(fn func() time.Time) { rs.nowFn = fn }
 
 func (rs *RiskSizer) Start(ctx context.Context) error {
 	if err := rs.eventBus.Subscribe(ctx, domain.EventSignalEnriched, rs.handleSignal); err != nil {
@@ -305,6 +328,14 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		}
 		if v, ok := extractInt(spec.Params, "max_slippage_bps"); ok {
 			maxSlippageBPS = v
+		}
+		if !isCryptoRTH(rs.nowFn()) {
+			if v, ok := extractInt(spec.Params, "limit_offset_bps_offhours"); ok {
+				limitOffsetBPS = v
+			}
+			if v, ok := extractInt(spec.Params, "max_slippage_bps_offhours"); ok {
+				maxSlippageBPS = v
+			}
 		}
 	}
 

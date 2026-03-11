@@ -155,6 +155,129 @@ func TestRiskSizer_HandleSignal_Entry_Buy(t *testing.T) {
 	}, intent.Meta)
 }
 
+func TestRiskSizer_OffhoursSlippage_WidensDuringOffhours(t *testing.T) {
+	et, _ := time.LoadLocation("America/New_York")
+	offhours := time.Date(2026, 3, 11, 3, 0, 0, 0, et) // Wednesday 3:00 AM ET
+
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"limit_offset_bps":          int64(15),
+		"limit_offset_bps_offhours": int64(30),
+		"max_slippage_bps":          int64(20),
+		"max_slippage_bps_offhours": int64(40),
+		"stop_bps":                  int64(60),
+		"risk_per_trade_bps":        int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	rs.SetNowFn(func() time.Time { return offhours })
+	require.NoError(t, rs.Start(context.Background()))
+
+	received := subscribeOrderIntentCreated(t, bus)
+
+	iid, _ := strat.NewInstanceID("crypto_avwap_v2:1.0.0:BTC/USD")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "BTC/USD",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.7,
+			Tags:               map[string]string{"ref_price": "70000"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.7,
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, received, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+	assert.InDelta(t, 70000*(1+0.003), intent.LimitPrice, 0.01)
+	assert.Equal(t, 40, intent.MaxSlippageBPS)
+}
+
+func TestRiskSizer_OffhoursSlippage_UsesRTHDuringMarketHours(t *testing.T) {
+	et, _ := time.LoadLocation("America/New_York")
+	rth := time.Date(2026, 3, 11, 10, 30, 0, 0, et) // Wednesday 10:30 AM ET
+
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"limit_offset_bps":          int64(15),
+		"limit_offset_bps_offhours": int64(30),
+		"max_slippage_bps":          int64(20),
+		"max_slippage_bps_offhours": int64(40),
+		"stop_bps":                  int64(60),
+		"risk_per_trade_bps":        int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	rs.SetNowFn(func() time.Time { return rth })
+	require.NoError(t, rs.Start(context.Background()))
+
+	received := subscribeOrderIntentCreated(t, bus)
+
+	iid, _ := strat.NewInstanceID("crypto_avwap_v2:1.0.0:BTC/USD")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "BTC/USD",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.7,
+			Tags:               map[string]string{"ref_price": "70000"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.7,
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, received, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+	assert.InDelta(t, 70000*(1+0.0015), intent.LimitPrice, 0.01)
+	assert.Equal(t, 20, intent.MaxSlippageBPS)
+}
+
+func TestRiskSizer_OffhoursSlippage_WeekendIsOffhours(t *testing.T) {
+	et, _ := time.LoadLocation("America/New_York")
+	saturday := time.Date(2026, 3, 14, 12, 0, 0, 0, et) // Saturday noon ET
+
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"limit_offset_bps":          int64(15),
+		"limit_offset_bps_offhours": int64(30),
+		"max_slippage_bps":          int64(20),
+		"max_slippage_bps_offhours": int64(40),
+		"stop_bps":                  int64(60),
+		"risk_per_trade_bps":        int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	rs.SetNowFn(func() time.Time { return saturday })
+	require.NoError(t, rs.Start(context.Background()))
+
+	received := subscribeOrderIntentCreated(t, bus)
+
+	iid, _ := strat.NewInstanceID("crypto_avwap_v2:1.0.0:BTC/USD")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "BTC/USD",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.7,
+			Tags:               map[string]string{"ref_price": "70000"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.7,
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, received, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+	assert.InDelta(t, 70000*(1+0.003), intent.LimitPrice, 0.01)
+	assert.Equal(t, 40, intent.MaxSlippageBPS)
+}
+
 func TestRiskSizer_HandleSignal_Entry_Sell(t *testing.T) {
 	bus := memory.NewBus()
 	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
