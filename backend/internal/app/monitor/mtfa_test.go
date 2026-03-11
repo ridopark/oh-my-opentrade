@@ -487,3 +487,62 @@ func TestMTFA_5mOHLCVCorrectness(t *testing.T) {
 	assert.Equal(t, 100.5, htf.Close, "5m Close should be last bar's Close")
 	assert.Equal(t, 1000.0, htf.Volume, "5m Volume should be sum of all volumes")
 }
+
+// ─── Test 14: 60 × 1m bars produce a 1h HTF bar via event bus ──────────────
+
+func TestMTFA_1hBarAggregation(t *testing.T) {
+	sym := domain.Symbol("AAPL")
+	_, bus := setupMTFAService(t, sym)
+	bc := newBarCollector(t, bus, "1h")
+
+	feedBars(t, bus, sym, 0, 60, 150.0, 1000)
+
+	bars := bc.get()
+	require.NotEmpty(t, bars, "expected at least one 1h HTF bar after 60 1m bars")
+	assert.Equal(t, domain.Timeframe("1h"), bars[0].Timeframe)
+	assert.Equal(t, sym, bars[0].Symbol)
+}
+
+// ─── Test 15: 1h anchor regime enriches 1m snapshot after 60 bars ───────────
+
+func TestMTFA_1hAnchorRegimeEnrichment(t *testing.T) {
+	sym := domain.Symbol("AAPL")
+	_, bus := setupMTFAService(t, sym)
+	sc := newSnapCollector(t, bus)
+
+	// Feed 60 bars to close the first 1h bucket, then 1 more so the 1m snapshot
+	// is enriched with the cached 1h anchor regime.
+	feedBars(t, bus, sym, 0, 61, 150.0, 1000)
+
+	snaps := sc.get()
+	require.NotEmpty(t, snaps)
+
+	last := snaps[len(snaps)-1]
+	require.NotNil(t, last.AnchorRegimes, "AnchorRegimes should be non-nil after 1h bar closes")
+	_, has1h := last.AnchorRegimes[domain.Timeframe("1h")]
+	assert.True(t, has1h, "AnchorRegimes should contain a 1h entry after 60 bars close")
+}
+
+// ─── Test 16: Adding 1h aggregator does not break existing 5m bars ──────────
+
+func TestMTFA_1hDoesNotBreak5m(t *testing.T) {
+	sym := domain.Symbol("AAPL")
+	_, bus := setupMTFAService(t, sym)
+	bc5m := newBarCollector(t, bus, "5m")
+	bc1h := newBarCollector(t, bus, "1h")
+
+	// Feed 60 bars → should produce 12 complete 5m candles + 1 complete 1h candle.
+	feedBars(t, bus, sym, 0, 60, 150.0, 1000)
+
+	bars5m := bc5m.get()
+	bars1h := bc1h.get()
+
+	assert.GreaterOrEqual(t, len(bars5m), 12, "60 1m bars should produce at least 12 complete 5m candles")
+	assert.GreaterOrEqual(t, len(bars1h), 1, "60 1m bars should produce at least 1 complete 1h candle")
+
+	// All 5m bars should be correctly typed.
+	for _, b := range bars5m {
+		assert.Equal(t, domain.Timeframe("5m"), b.Timeframe)
+		assert.Equal(t, sym, b.Symbol)
+	}
+}

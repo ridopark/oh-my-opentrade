@@ -20,6 +20,8 @@ type DNAGateChecker interface {
 
 const settlingBars = 5
 
+var anchorTimeframes = []domain.Timeframe{"5m", "15m", "1h"}
+
 // Service is the monitor application service.
 // It subscribes to MarketBarSanitized events, computes technical indicators,
 // detects market regime shifts, and identifies trade setups.
@@ -37,6 +39,8 @@ type Service struct {
 	liveBars         map[string]int
 	aggregators      map[string]*domain.BarAggregator
 	anchorRegimes    map[string]domain.MarketRegime
+	lastHTFSnaps     map[string]domain.IndicatorSnapshot
+	htfStatic        map[string]domain.HTFData
 	log              zerolog.Logger
 	dnaGate          DNAGateChecker
 	strategyKey      string
@@ -69,6 +73,34 @@ func (s *Service) WarmUpAndCollect(bars []domain.MarketBar) []BarSnapshot {
 		result = append(result, BarSnapshot{Bar: bar, Snapshot: snap})
 	}
 	return result
+}
+
+func (s *Service) SetStaticHTFData(sym string, tf domain.Timeframe, data domain.HTFData) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.htfStatic == nil {
+		s.htfStatic = make(map[string]domain.HTFData)
+	}
+	s.htfStatic[sym+":"+tf.String()] = data
+}
+
+func (s *Service) WarmUpHTF(bars []domain.MarketBar) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var lastSnap domain.IndicatorSnapshot
+	for _, bar := range bars {
+		lastSnap = s.calculator.Update(bar)
+	}
+	if len(bars) > 0 {
+		sym := bars[0].Symbol.String()
+		tf := bars[0].Timeframe.String()
+		key := sym + ":" + tf
+		if s.lastHTFSnaps == nil {
+			s.lastHTFSnaps = make(map[string]domain.IndicatorSnapshot)
+		}
+		s.lastHTFSnaps[key] = lastSnap
+	}
+	return len(bars)
 }
 
 // NewService creates a new monitor Service.
@@ -144,8 +176,9 @@ func (s *Service) ResetSessionIndicators(symbol string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calculator.ResetSession(symbol, "1m")
-	s.calculator.ResetSession(symbol, "5m")
-	s.calculator.ResetSession(symbol, "15m")
+	for _, tf := range anchorTimeframes {
+		s.calculator.ResetSession(symbol, tf.String())
+	}
 }
 
 func (s *Service) InitAggregators(symbols []domain.Symbol, sessionOpen time.Time) {
@@ -153,7 +186,7 @@ func (s *Service) InitAggregators(symbols []domain.Symbol, sessionOpen time.Time
 	defer s.mu.Unlock()
 	for _, sym := range symbols {
 		symStr := sym.String()
-		for _, tf := range []domain.Timeframe{"5m", "15m"} {
+		for _, tf := range anchorTimeframes {
 			key := symStr + ":" + tf.String()
 			agg, err := domain.NewBarAggregator(sym, tf, sessionOpen)
 			if err != nil {
@@ -237,7 +270,7 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	snap := s.calculator.Update(bar)
 	symStr := bar.Symbol.String()
 
-	for _, tf := range []domain.Timeframe{"5m", "15m"} {
+	for _, tf := range anchorTimeframes {
 		aggKey := symStr + ":" + tf.String()
 		agg, exists := s.aggregators[aggKey]
 		if !exists {
@@ -274,10 +307,17 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 				publishBestEffort = append(publishBestEffort, *regimeShiftedEv)
 			}
 		}
+
+		if tf == "1h" {
+			if s.lastHTFSnaps == nil {
+				s.lastHTFSnaps = make(map[string]domain.IndicatorSnapshot)
+			}
+			s.lastHTFSnaps[aggKey] = htfSnap
+		}
 	}
 
 	snap.AnchorRegimes = make(map[domain.Timeframe]domain.MarketRegime)
-	for _, tf := range []domain.Timeframe{"5m", "15m"} {
+	for _, tf := range anchorTimeframes {
 		aggKey := symStr + ":" + tf.String()
 		if reg, ok := s.anchorRegimes[aggKey]; ok {
 			snap.AnchorRegimes[tf] = reg
@@ -438,7 +478,7 @@ func (s *Service) WarmUp(bars []domain.MarketBar) int {
 		lastBar = bar
 
 		symStr := bar.Symbol.String()
-		for _, tf := range []domain.Timeframe{"5m", "15m"} {
+		for _, tf := range anchorTimeframes {
 			aggKey := symStr + ":" + tf.String()
 			agg, exists := s.aggregators[aggKey]
 			if !exists {
@@ -451,6 +491,12 @@ func (s *Service) WarmUp(bars []domain.MarketBar) int {
 			htfSnap := s.calculator.Update(closed)
 			reg, _ := s.regimeDetector.Detect(htfSnap)
 			s.anchorRegimes[aggKey] = reg
+			if tf == "1h" {
+				if s.lastHTFSnaps == nil {
+					s.lastHTFSnaps = make(map[string]domain.IndicatorSnapshot)
+				}
+				s.lastHTFSnaps[aggKey] = htfSnap
+			}
 		}
 	}
 	if len(bars) > 0 {
@@ -461,7 +507,7 @@ func (s *Service) WarmUp(bars []domain.MarketBar) int {
 		lastSnap.AnchorRegimes = map[domain.Timeframe]domain.MarketRegime{
 			lastBar.Timeframe: regime,
 		}
-		for _, tf := range []domain.Timeframe{"5m", "15m"} {
+		for _, tf := range anchorTimeframes {
 			aggKey := symStr + ":" + tf.String()
 			if reg, ok := s.anchorRegimes[aggKey]; ok {
 				lastSnap.AnchorRegimes[tf] = reg
