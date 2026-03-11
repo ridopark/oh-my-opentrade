@@ -574,12 +574,12 @@ func TestSignalDebateEnricher_PerfVeto_NegativeExpectancy(t *testing.T) {
 		Strategy: "avwap_v1",
 		Symbol:   "BTC/USD",
 		Overall: domain.StrategyRegimeStats{
-			TradeCount: 12,
+			TradeCount: 25,
 			Expectancy: -1.50,
 		},
 		BySymbol: &domain.StrategyRegimeStats{
 			Symbol:     "BTC/USD",
-			TradeCount: 12,
+			TradeCount: 25,
 			Expectancy: -1.50,
 		},
 	}}

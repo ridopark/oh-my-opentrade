@@ -950,6 +950,166 @@ func TestRiskSizer_DynamicRisk_ConfidenceScaling(t *testing.T) {
 	assert.Equal(t, 32.0, intent.Quantity)
 }
 
+func publishFillReceivedWithPrice(t *testing.T, bus *memory.Bus, symbol, side string, price float64) {
+	t.Helper()
+	ctx := context.Background()
+	envMode := mustEnvMode(t)
+	ev, err := domain.NewEvent(domain.EventFillReceived, "t1", envMode, "fill-"+symbol+"-"+side+"-"+time.Now().Format("150405.000"), map[string]any{
+		"symbol": symbol,
+		"side":   side,
+		"price":  price,
+	})
+	require.NoError(t, err)
+	require.NoError(t, bus.Publish(ctx, *ev))
+}
+
+func TestRiskSizer_CircuitBreaker_BlocksAfterConsecutiveLosses(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"stop_bps":           int64(25),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	now := time.Now()
+	rs.SetNowFn(func() time.Time { return now })
+	require.NoError(t, rs.Start(context.Background()))
+
+	created := subscribeOrderIntentCreated(t, bus)
+	rejected := subscribeOrderIntentRejected(t, bus)
+
+	for i := 0; i < 3; i++ {
+		publishFillReceivedWithPrice(t, bus, "AAPL", "BUY", 100.0)
+		bus.Flush()
+		publishFillReceivedWithPrice(t, bus, "AAPL", "SELL", 98.0)
+		bus.Flush()
+	}
+
+	// Advance past exit cooldown (15m) but within circuit breaker cooldown (60m)
+	now = now.Add(16 * time.Minute)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "AAPL",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "97"},
+		},
+		Status:     domain.EnrichmentSkipped,
+		Confidence: 0.8,
+		Rationale:  "bullish signal",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, rejected, 1)
+	payload, ok := evs[0].Payload.(domain.OrderIntentEventPayload)
+	require.True(t, ok)
+	assert.Equal(t, "AAPL", payload.Symbol)
+	assert.Contains(t, payload.Reason, "circuit_breaker")
+	assert.Contains(t, payload.Reason, "3 consecutive losses")
+
+	select {
+	case <-created:
+		t.Fatal("expected no OrderIntentCreated when circuit breaker active")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestRiskSizer_CircuitBreaker_ResetsOnWin(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"stop_bps":           int64(25),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	created := subscribeOrderIntentCreated(t, bus)
+
+	publishFillReceivedWithPrice(t, bus, "MSFT", "BUY", 400.0)
+	bus.Flush()
+	publishFillReceivedWithPrice(t, bus, "MSFT", "SELL", 395.0)
+	bus.Flush()
+	publishFillReceivedWithPrice(t, bus, "MSFT", "BUY", 394.0)
+	bus.Flush()
+	publishFillReceivedWithPrice(t, bus, "MSFT", "SELL", 390.0)
+	bus.Flush()
+	publishFillReceivedWithPrice(t, bus, "MSFT", "BUY", 389.0)
+	bus.Flush()
+	publishFillReceivedWithPrice(t, bus, "MSFT", "SELL", 392.0)
+	bus.Flush()
+
+	now := time.Now()
+	rs.SetNowFn(func() time.Time { return now.Add(16 * time.Minute) })
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:MSFT")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "MSFT",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "391"},
+		},
+		Status:     domain.EnrichmentSkipped,
+		Confidence: 0.8,
+		Rationale:  "bullish signal",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, created, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+	assert.Equal(t, domain.Symbol("MSFT"), intent.Symbol)
+}
+
+func TestRiskSizer_CircuitBreaker_ExpiresAfterCooldown(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"stop_bps":           int64(25),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	created := subscribeOrderIntentCreated(t, bus)
+
+	for i := 0; i < 3; i++ {
+		publishFillReceivedWithPrice(t, bus, "TSLA", "BUY", 250.0)
+		bus.Flush()
+		publishFillReceivedWithPrice(t, bus, "TSLA", "SELL", 245.0)
+		bus.Flush()
+	}
+
+	now := time.Now()
+	rs.SetNowFn(func() time.Time { return now.Add(61 * time.Minute) })
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:TSLA")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "TSLA",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.8,
+			Tags:               map[string]string{"ref_price": "244"},
+		},
+		Status:     domain.EnrichmentSkipped,
+		Confidence: 0.8,
+		Rationale:  "bullish signal after cooldown",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, created, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+	assert.Equal(t, domain.Symbol("TSLA"), intent.Symbol)
+}
+
 func publishFillReceived(t *testing.T, bus *memory.Bus, symbol, side string) {
 	t.Helper()
 	ctx := context.Background()

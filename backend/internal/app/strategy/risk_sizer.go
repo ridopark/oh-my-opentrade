@@ -31,6 +31,9 @@ const revalStateTTL = 10 * time.Minute
 // 15 min provides sufficient price discovery and prevents churn loops.
 const defaultExitCooldown = 15 * time.Minute
 
+const maxConsecutiveLosses = 3
+const circuitBreakerCooldown = 60 * time.Minute
+
 const aiDirectionMinConfidence = 0.5
 
 var etLocation *time.Location
@@ -52,6 +55,12 @@ func isCryptoRTH(now time.Time) bool {
 	return hour >= 8 && hour < 17
 }
 
+type lossRecord struct {
+	Count      int
+	LastLossAt time.Time
+	EntryPrice float64
+}
+
 // RiskSizer subscribes to SignalEnriched events and converts enriched signals
 // into OrderIntents after applying position sizing and risk checks.
 type RiskSizer struct {
@@ -61,6 +70,7 @@ type RiskSizer struct {
 	accountEquity float64
 	revalState    sync.Map // symbol (string) → *domain.RiskRevaluation
 	exitCooldowns sync.Map // symbol (string) → time.Time (last exit fill timestamp)
+	lossTrackers  sync.Map // symbol (string) → *lossRecord
 	logger        *slog.Logger
 	nowFn         func() time.Time
 }
@@ -131,14 +141,47 @@ func (rs *RiskSizer) handleFillForCooldown(_ context.Context, event domain.Event
 	}
 	symbol, _ := payload["symbol"].(string)
 	side, _ := payload["side"].(string)
-	if symbol == "" || side != "SELL" {
+	if symbol == "" {
 		return nil
 	}
-	rs.exitCooldowns.Store(symbol, time.Now())
+
+	price, _ := payload["price"].(float64)
+
+	if side == "BUY" && price > 0 {
+		raw, _ := rs.lossTrackers.LoadOrStore(symbol, &lossRecord{})
+		rec := raw.(*lossRecord)
+		rec.EntryPrice = price
+		return nil
+	}
+
+	if side != "SELL" {
+		return nil
+	}
+
+	rs.exitCooldowns.Store(symbol, rs.nowFn())
 	rs.logger.Info("exit cooldown set",
 		"symbol", symbol,
 		"cooldown", defaultExitCooldown.String(),
 	)
+
+	if price > 0 {
+		raw, _ := rs.lossTrackers.LoadOrStore(symbol, &lossRecord{})
+		rec := raw.(*lossRecord)
+		if rec.EntryPrice > 0 && price < rec.EntryPrice {
+			rec.Count++
+			rec.LastLossAt = rs.nowFn()
+			rs.logger.Warn("consecutive loss recorded",
+				"symbol", symbol,
+				"count", rec.Count,
+				"entry_price", rec.EntryPrice,
+				"exit_price", price,
+			)
+		} else if rec.EntryPrice > 0 {
+			rec.Count = 0
+		}
+		rec.EntryPrice = 0
+	}
+
 	return nil
 }
 
@@ -151,11 +194,30 @@ func (rs *RiskSizer) isSymbolInCooldown(symbol string) (time.Time, bool) {
 	if !ok {
 		return time.Time{}, false
 	}
-	if time.Since(exitTime) > defaultExitCooldown {
+	if rs.nowFn().Sub(exitTime) > defaultExitCooldown {
 		rs.exitCooldowns.Delete(symbol)
 		return time.Time{}, false
 	}
 	return exitTime, true
+}
+
+func (rs *RiskSizer) isCircuitBroken(symbol string) (*lossRecord, bool) {
+	raw, ok := rs.lossTrackers.Load(symbol)
+	if !ok {
+		return nil, false
+	}
+	rec, ok := raw.(*lossRecord)
+	if !ok {
+		return nil, false
+	}
+	if rec.Count < maxConsecutiveLosses {
+		return nil, false
+	}
+	if rs.nowFn().Sub(rec.LastLossAt) > circuitBreakerCooldown {
+		rs.lossTrackers.Delete(symbol)
+		return nil, false
+	}
+	return rec, true
 }
 
 func (rs *RiskSizer) isSymbolDegraded(symbol string) (*domain.RiskRevaluation, bool) {
@@ -292,7 +354,36 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 				Symbol:    sigRef.Symbol,
 				Direction: string(signalDir),
 				Strategy:  strategyName,
-				Reason:    fmt.Sprintf("exit_cooldown: last exit %.0fs ago (cooldown %s)", time.Since(exitTime).Seconds(), defaultExitCooldown),
+				Reason:    fmt.Sprintf("exit_cooldown: last exit %.0fs ago (cooldown %s)", rs.nowFn().Sub(exitTime).Seconds(), defaultExitCooldown),
+				Status:    domain.OrderIntentStatusRejected,
+			}
+			rs.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, rejection.ID, rejection)
+			return nil
+		}
+	}
+
+	if sigRef.SignalType == start.SignalEntry.String() {
+		if rec, broken := rs.isCircuitBroken(sigRef.Symbol); broken {
+			strategyName := "unknown"
+			if hasStrategyID {
+				strategyName = strategyID.String()
+			}
+			signalDir := domain.DirectionLong
+			if sigRef.Side == start.SideSell.String() {
+				signalDir = domain.DirectionShort
+			}
+			cooldownLeft := circuitBreakerCooldown - rs.nowFn().Sub(rec.LastLossAt)
+			rs.logger.Warn("circuit breaker gate: entry blocked — consecutive losses",
+				"symbol", sigRef.Symbol,
+				"consecutive_losses", rec.Count,
+				"cooldown_remaining", cooldownLeft.Round(time.Second).String(),
+			)
+			rejection := domain.OrderIntentEventPayload{
+				ID:        uuid.NewString(),
+				Symbol:    sigRef.Symbol,
+				Direction: string(signalDir),
+				Strategy:  strategyName,
+				Reason:    fmt.Sprintf("circuit_breaker: %d consecutive losses (cooldown %s remaining)", rec.Count, cooldownLeft.Round(time.Second)),
 				Status:    domain.OrderIntentStatusRejected,
 			}
 			rs.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, rejection.ID, rejection)
