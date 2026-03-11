@@ -37,10 +37,11 @@ func TestRESTClient_SubmitOrder_Success(t *testing.T) {
 		// Alpaca accepts qty as string
 		assert.Equal(t, "10", req["qty"])
 		assert.Equal(t, "buy", req["side"])
-		assert.Equal(t, "stop_limit", req["type"])
+		assert.Equal(t, "limit", req["type"])
 		assert.Equal(t, "gtc", req["time_in_force"])
 		assert.Equal(t, "150.00", req["limit_price"])
-		assert.Equal(t, "145.00", req["stop_price"])
+		_, hasStopPrice := req["stop_price"]
+		assert.False(t, hasStopPrice, "StopLoss is for position monitoring, not broker stop_price")
 
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"id": "order-uuid-123", "status": "new", "symbol": "AAPL", "qty": "10", "side": "buy", "type": "limit", "time_in_force": "gtc"}`))
@@ -77,7 +78,8 @@ func TestRESTClient_SubmitOrder_RoundsSubPennyPrices(t *testing.T) {
 
 		// Sub-penny prices must be rounded and sent as strings
 		assert.Equal(t, "260.25", req["limit_price"])
-		assert.Equal(t, "255.16", req["stop_price"])
+		_, hasStopPrice := req["stop_price"]
+		assert.False(t, hasStopPrice, "StopLoss should not be sent as stop_price")
 
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"id": "rounded-order-123"}`))

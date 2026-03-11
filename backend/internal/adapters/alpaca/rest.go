@@ -220,9 +220,6 @@ func (c *RESTClient) SubmitOrder(ctx context.Context, intent domain.OrderIntent)
 	if orderType == "" {
 		orderType = "limit"
 	}
-	if intent.StopLoss > 0 {
-		orderType = "stop_limit"
-	}
 
 	tif := intent.TimeInForce
 	if tif == "" {
@@ -249,9 +246,6 @@ func (c *RESTClient) SubmitOrder(ctx context.Context, intent domain.OrderIntent)
 	}
 	if orderType != "market" {
 		reqBody["limit_price"] = roundPrice(intent.LimitPrice)
-	}
-	if intent.StopLoss > 0 {
-		reqBody["stop_price"] = roundPrice(intent.StopLoss)
 	}
 
 	b, _ := json.Marshal(reqBody)
