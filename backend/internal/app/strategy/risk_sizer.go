@@ -193,6 +193,32 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		return nil
 	}
 
+	if enrichment.Status == domain.EnrichmentVetoed && sigRef.SignalType == start.SignalEntry.String() {
+		strategyName := "unknown"
+		if hasStrategyID {
+			strategyName = strategyID.String()
+		}
+		signalDir := domain.DirectionLong
+		if sigRef.Side == start.SideSell.String() {
+			signalDir = domain.DirectionShort
+		}
+		rs.logger.Warn("veto gate: entry blocked — enrichment vetoed",
+			"symbol", sigRef.Symbol,
+			"rationale", enrichment.Rationale,
+			"confidence", enrichment.Confidence,
+		)
+		rejection := domain.OrderIntentEventPayload{
+			ID:        uuid.NewString(),
+			Symbol:    sigRef.Symbol,
+			Direction: string(signalDir),
+			Strategy:  strategyName,
+			Reason:    "veto: " + enrichment.Rationale,
+			Status:    domain.OrderIntentStatusRejected,
+		}
+		rs.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, rejection.ID, rejection)
+		return nil
+	}
+
 	if sigRef.SignalType == start.SignalEntry.String() {
 		if reval, degraded := rs.isSymbolDegraded(sigRef.Symbol); degraded {
 			strategyName := "unknown"

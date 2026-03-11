@@ -12,6 +12,7 @@ func TestEnrichmentStatus_Constants(t *testing.T) {
 	assert.Equal(t, domain.EnrichmentStatus("timeout"), domain.EnrichmentTimeout)
 	assert.Equal(t, domain.EnrichmentStatus("error"), domain.EnrichmentError)
 	assert.Equal(t, domain.EnrichmentStatus("skipped"), domain.EnrichmentSkipped)
+	assert.Equal(t, domain.EnrichmentStatus("vetoed"), domain.EnrichmentVetoed)
 }
 
 func TestSignalEnrichment_Populated(t *testing.T) {
@@ -112,6 +113,7 @@ func TestSignalEnrichment_AIDirectionConflict(t *testing.T) {
 		{"AI timeout = no conflict (fallback)", domain.EnrichmentTimeout, "entry", "buy", domain.DirectionShort, false},
 		{"AI error = no conflict (fallback)", domain.EnrichmentError, "entry", "buy", domain.DirectionShort, false},
 		{"AI skipped = no conflict (fallback)", domain.EnrichmentSkipped, "entry", "buy", domain.DirectionShort, false},
+		{"AI vetoed = no conflict (handled by veto gate)", domain.EnrichmentVetoed, "entry", "buy", domain.DirectionShort, false},
 		{"exit signal = no conflict (exits skip gate)", domain.EnrichmentOK, "exit", "sell", domain.DirectionLong, false},
 	}
 	for _, tt := range tests {

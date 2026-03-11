@@ -953,6 +953,86 @@ func TestRiskSizer_ExitCooldown_DifferentSymbolUnaffected(t *testing.T) {
 	assert.Equal(t, domain.Symbol("MSFT"), intent.Symbol)
 }
 
+func TestRiskSizer_VetoGate_BlocksVetoedSignal(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"stop_bps":           int64(25),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	created := subscribeOrderIntentCreated(t, bus)
+	rejected := subscribeOrderIntentRejected(t, bus)
+
+	iid, _ := strat.NewInstanceID("crypto_avwap_v2:1.0.0:BTC/USD")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "BTC/USD",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.1,
+			Tags:               map[string]string{"ref_price": "70124.29"},
+		},
+		Status:     domain.EnrichmentVetoed,
+		Confidence: 0.1,
+		Rationale:  "pre-LLM veto: negative expectancy $-12.63/trade in BALANCE (31 trades)",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, rejected, 1)
+	payload, ok := evs[0].Payload.(domain.OrderIntentEventPayload)
+	require.True(t, ok)
+	assert.Equal(t, "BTC/USD", payload.Symbol)
+	assert.Equal(t, string(domain.DirectionLong), payload.Direction)
+	assert.Equal(t, "crypto_avwap_v2", payload.Strategy)
+	assert.Contains(t, payload.Reason, "veto:")
+	assert.Contains(t, payload.Reason, "negative expectancy")
+	assert.Equal(t, domain.OrderIntentStatusRejected, payload.Status)
+
+	select {
+	case <-created:
+		t.Fatal("expected no OrderIntentCreated when signal is vetoed")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestRiskSizer_VetoGate_SkippedSignalStillProceeds(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"stop_bps":           int64(25),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	created := subscribeOrderIntentCreated(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:BTC/USD")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "BTC/USD",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.7,
+			Tags:               map[string]string{"ref_price": "67000"},
+		},
+		Status:     domain.EnrichmentSkipped,
+		Confidence: 0.7,
+		Rationale:  "signal: entry buy strength=0.70 (AI neutral)",
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, created, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+	assert.Equal(t, domain.DirectionLong, intent.Direction)
+	assert.Equal(t, domain.Symbol("BTC/USD"), intent.Symbol)
+}
+
 func TestRiskSizer_DynamicRisk_DisabledPassthrough(t *testing.T) {
 	bus := memory.NewBus()
 	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{

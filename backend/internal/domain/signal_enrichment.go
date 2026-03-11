@@ -11,7 +11,12 @@ const (
 	// EnrichmentError means the AI advisor returned an error.
 	EnrichmentError EnrichmentStatus = "error"
 	// EnrichmentSkipped means the signal was not eligible for debate (e.g. exit signals).
+	// Skipped signals proceed with original strategy logic (fallback behavior).
 	EnrichmentSkipped EnrichmentStatus = "skipped"
+	// EnrichmentVetoed means the signal was explicitly rejected by a pre-debate veto
+	// (e.g. negative expectancy). Unlike EnrichmentSkipped, vetoed signals MUST NOT
+	// proceed to order submission.
+	EnrichmentVetoed EnrichmentStatus = "vetoed"
 )
 
 // SignalRef identifies the original strategy signal that triggered enrichment.
