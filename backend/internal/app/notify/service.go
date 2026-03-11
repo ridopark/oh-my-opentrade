@@ -126,7 +126,11 @@ func (s *Service) Start(ctx context.Context) error {
 		eventType := e.eventType
 		withChart := e.chart
 		handler := func(ctx context.Context, ev domain.Event) error {
-			msg := fmt.Sprintf("[%s] %s", ev.OccurredAt.In(etLoc).Format("15:04:05"), formatter(ev))
+			formatted := formatter(ev)
+			if formatted == "" {
+				return nil
+			}
+			msg := fmt.Sprintf("[%s] %s", ev.OccurredAt.In(etLoc).Format("15:04:05"), formatted)
 			symbol := s.symbolFromEvent(ev)
 			if symbol == "" {
 				// No symbol — send immediately with separator.
@@ -458,10 +462,17 @@ func fmtExitRules(rawJSON string, entryPrice float64, meta map[string]string) st
 
 func (s *Service) fmtSignalEnriched(ev domain.Event) string {
 	if e, ok := ev.Payload.(domain.SignalEnrichment); ok {
+		if e.Signal.SignalType == "exit" {
+			return ""
+		}
 		emoji := "🧠"
+		statusLabel := string(e.Status)
+		if e.Status == domain.EnrichmentSkipped {
+			statusLabel = "AI discussion skipped"
+		}
 		msg := fmt.Sprintf("%s **Signal Enriched:** %s %s **%s** [%s] (Confidence: **%.0f%%**)",
 			emoji, e.Signal.SignalType, e.Signal.Side, e.Signal.Symbol,
-			string(e.Status), e.Confidence*100)
+			statusLabel, e.Confidence*100)
 		if e.HasPnL {
 			pnlEmoji := "📈"
 			if e.UnrealizedPnLPct < 0 {
