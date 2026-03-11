@@ -640,10 +640,22 @@ func TestORBStrategy_HTFBias_DisabledAllowsAll(t *testing.T) {
 	assert.Equal(t, "none", signals[0].Tags["htf_bias"])
 }
 
-func TestORBStrategy_HTFBias_MissingHTFAllows(t *testing.T) {
+func TestORBStrategy_HTFBias_MissingHTFBlocks(t *testing.T) {
 	_, signals := runORBToRetestWithHTF(t, nil, true)
-	require.Len(t, signals, 1, "missing HTF data should allow signal (graceful degradation)")
-	assert.Equal(t, "none", signals[0].Tags["htf_bias"])
+	assert.Empty(t, signals, "missing HTF data should BLOCK signal (fail-closed safety gate)")
+}
+
+func TestORBStrategy_HTFBias_EmptyBiasBlocks(t *testing.T) {
+	htf := map[string]strat.HTFIndicator{
+		"1d": {EMA200: 200, Bias: ""},
+	}
+	_, signals := runORBToRetestWithHTF(t, htf, true)
+	assert.Empty(t, signals, "empty bias string should BLOCK signal (fail-closed)")
+}
+
+func TestORBStrategy_HTFBias_DisabledAllowsWithoutHTF(t *testing.T) {
+	_, signals := runORBToRetestWithHTF(t, nil, false)
+	require.Len(t, signals, 1, "disabled HTF bias should allow signal even without HTF data")
 }
 
 func runORBWithATR(t *testing.T, atrMultiplier float64, atrValue float64) (strat.State, []strat.Signal) {

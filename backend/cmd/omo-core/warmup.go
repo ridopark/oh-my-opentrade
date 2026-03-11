@@ -242,6 +242,13 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 				Msg("ORB warmup complete")
 		}
 	}
+
+	readyStrs := make([]string, len(syms.all))
+	for i, s := range syms.all {
+		readyStrs[i] = string(s)
+	}
+	svc.monitor.MarkReady(readyStrs...)
+	warmupLog.Info().Int("symbols", len(readyStrs)).Msg("all base symbols marked ready")
 }
 
 func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, syms symbolLists, log zerolog.Logger) {

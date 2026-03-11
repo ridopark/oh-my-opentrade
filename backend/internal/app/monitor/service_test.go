@@ -109,6 +109,7 @@ func TestService_SymbolFilter_AllowsBaseSymbol(t *testing.T) {
 	repo := &mockRepository{}
 	svc := monitor.NewService(bus, repo, zerolog.Nop())
 	svc.SetBaseSymbols([]string{"AAPL"})
+	svc.MarkReady("AAPL")
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -133,6 +134,7 @@ func TestService_EffectiveSymbolsUpdated_OverridesBase(t *testing.T) {
 	repo := &mockRepository{}
 	svc := monitor.NewService(bus, repo, zerolog.Nop())
 	svc.SetBaseSymbols([]string{"AAPL", "MSFT"})
+	svc.MarkReady("AAPL", "MSFT", "TSLA")
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -165,6 +167,55 @@ func TestService_EffectiveSymbolsUpdated_OverridesBase(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, count)
+}
+
+func TestService_ReadinessGate_BlocksUnreadySymbols(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc.SetBaseSymbols([]string{"AAPL", "MSFT"})
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	var count int
+	err = bus.Subscribe(context.Background(), domain.EventStateUpdated, func(ctx context.Context, ev domain.Event) error {
+		count++
+		return nil
+	})
+	require.NoError(t, err)
+
+	symAAPL, _ := domain.NewSymbol("AAPL")
+	err = bus.Publish(context.Background(), createTestEvent(t, createBar(t, symAAPL, 100.0, 10.0)))
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "unready symbol should be blocked")
+
+	svc.MarkReady("AAPL")
+
+	err = bus.Publish(context.Background(), createTestEvent(t, createBar(t, symAAPL, 101.0, 10.0)))
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "ready symbol should be processed")
+}
+
+func TestService_ReadinessGate_NoBaseSymbols_AllAllowed(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	svc := monitor.NewService(bus, repo, zerolog.Nop())
+
+	err := svc.Start(context.Background())
+	require.NoError(t, err)
+
+	var count int
+	err = bus.Subscribe(context.Background(), domain.EventStateUpdated, func(ctx context.Context, ev domain.Event) error {
+		count++
+		return nil
+	})
+	require.NoError(t, err)
+
+	sym, _ := domain.NewSymbol("AAPL")
+	err = bus.Publish(context.Background(), createTestEvent(t, createBar(t, sym, 100.0, 10.0)))
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "no base symbols configured = allow all (backward compat)")
 }
 
 func TestService_EmitsRegimeShifted(t *testing.T) {
