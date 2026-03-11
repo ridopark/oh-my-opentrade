@@ -248,6 +248,9 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 		readyStrs[i] = string(s)
 	}
 	svc.monitor.MarkReady(readyStrs...)
+	if svc.activationSvc != nil {
+		svc.activationSvc.MarkWarmed(readyStrs...)
+	}
 	warmupLog.Info().Int("symbols", len(readyStrs)).Msg("all base symbols marked ready")
 }
 

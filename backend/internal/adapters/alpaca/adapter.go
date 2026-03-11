@@ -306,6 +306,22 @@ func (a *Adapter) SetTradeHandler(h ports.TradeHandler) {
 	}
 }
 
+// SubscribeSymbols dynamically adds symbols to the active WebSocket stream.
+// Equity symbols route to the StocksClient; crypto symbols are no-ops (crypto
+// streams already cover all symbols in the feed).
+func (a *Adapter) SubscribeSymbols(ctx context.Context, symbols []domain.Symbol) error {
+	var equitySyms []domain.Symbol
+	for _, s := range symbols {
+		if !s.IsCryptoSymbol() {
+			equitySyms = append(equitySyms, s)
+		}
+	}
+	if len(equitySyms) == 0 {
+		return nil
+	}
+	return a.ws.SubscribeSymbols(ctx, equitySyms)
+}
+
 func (a *Adapter) WSClient() *WSClient { return a.ws }
 
 func (a *Adapter) CryptoWSClient() *CryptoWSClient { return a.cryptoWs }

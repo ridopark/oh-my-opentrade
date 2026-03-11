@@ -15,6 +15,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/notification"
 	"github.com/oh-my-opentrade/backend/internal/adapters/strategy/store_fs"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
+	"github.com/oh-my-opentrade/backend/internal/app/activation"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
 	"github.com/oh-my-opentrade/backend/internal/app/debate"
 	"github.com/oh-my-opentrade/backend/internal/app/dnaapproval"
@@ -67,7 +68,9 @@ type appServices struct {
 	router         *strategy.Router
 	symRouterSpecs []symbolrouter.StrategySpec
 
-	aiScreenerSvc *screenerapp.AIService
+	aiScreenerSvc     *screenerapp.AIService
+	activationSvc     *activation.Service
+	pipelineActivator *bootstrap.PipelineActivator
 
 	orchestrator *orchestrator.AccountOrchestrator
 	debateSvc    *debate.Service
@@ -300,6 +303,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	svc.signalEnricher = pipeline.Enricher
 	svc.riskSizer = pipeline.RiskSizer
 	svc.lifecycleSvc = pipeline.LifecycleSvc
+	svc.pipelineActivator = pipeline.Activator
 
 	allSpecs, err := svc.specStore.List(context.Background(), nil)
 	if err != nil {
@@ -504,6 +508,25 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 			log.Fatal().Err(err).Msg("failed to start symbol router v2")
 		}
 	}
+
+	if svc.useStrategyV2 {
+		actLog := log.With().Str("component", "activation").Logger()
+		svc.activationSvc = activation.NewService(
+			actLog,
+			infra.eventBus,
+			svc.monitor,
+			infra.alpacaAdapter,
+			infra.alpacaAdapter,
+			svc.spikeFilter,
+			svc.pipelineActivator,
+			domain.Timeframe(cfg.Symbols.Timeframe),
+		)
+		if err := svc.activationSvc.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start activation service")
+		}
+		log.Info().Msg("activation service started")
+	}
+
 	if svc.orchestrator != nil {
 		if err := svc.orchestrator.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start multi-account orchestrator")
