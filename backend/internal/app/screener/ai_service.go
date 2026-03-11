@@ -267,19 +267,21 @@ func (s *AIService) needsCatchUpScreen() bool {
 	if err != nil {
 		return true
 	}
+	foundTodayResult := false
 	for _, spec := range specs {
 		if spec.Screening.Description == "" {
 			continue
 		}
 		results, err := s.repo.GetLatestAIResults(context.Background(), s.tenantID, s.envMode, string(spec.ID))
 		if err != nil || len(results) == 0 {
-			return true
+			continue
 		}
-		if results[0].AsOf.In(loc).Before(todayStart) {
-			return true
+		if !results[0].AsOf.In(loc).Before(todayStart) {
+			foundTodayResult = true
+			break
 		}
 	}
-	return false
+	return !foundTodayResult
 }
 
 func filterByAssetClass(symbols []string, assetClasses []string) []string {
