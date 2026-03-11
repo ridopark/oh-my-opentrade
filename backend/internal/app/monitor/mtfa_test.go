@@ -546,3 +546,54 @@ func TestMTFA_1hDoesNotBreak5m(t *testing.T) {
 		assert.Equal(t, sym, b.Symbol)
 	}
 }
+
+// ─── Test 17: Static 1D HTFData appears on 1m snapshot ──────────────────────
+
+func TestMTFA_StaticDailyHTFDataOnSnapshot(t *testing.T) {
+	sym := domain.Symbol("AAPL")
+	svc, bus := setupMTFAService(t, sym)
+	sc := newSnapCollector(t, bus)
+
+	svc.SetStaticHTFData("AAPL", "1d", domain.HTFData{EMA200: 200.0, Bias: "BULLISH"})
+
+	feedBars(t, bus, sym, 0, 6, 250.0, 1000)
+
+	snaps := sc.get()
+	require.NotEmpty(t, snaps)
+	last := snaps[len(snaps)-1]
+
+	require.NotNil(t, last.HTF, "HTF map should be populated when static data is set")
+	daily, ok := last.HTF[domain.Timeframe("1d")]
+	require.True(t, ok, "HTF should contain 1d entry")
+	assert.Equal(t, 200.0, daily.EMA200)
+	assert.Equal(t, "BULLISH", daily.Bias, "price 250 > EMA200 200 → BULLISH")
+}
+
+// ─── Test 18: Bias recomputes dynamically from current price ────────────────
+
+func TestMTFA_DailyBiasRecomputesFromPrice(t *testing.T) {
+	sym := domain.Symbol("AAPL")
+	svc, bus := setupMTFAService(t, sym)
+	sc := newSnapCollector(t, bus)
+
+	svc.SetStaticHTFData("AAPL", "1d", domain.HTFData{EMA200: 100.0})
+
+	feedBars(t, bus, sym, 0, 1, 80.0, 1000)
+	snaps := sc.get()
+	last := snaps[len(snaps)-1]
+	require.NotNil(t, last.HTF)
+	assert.Equal(t, "BEARISH", last.HTF[domain.Timeframe("1d")].Bias, "price 80 < EMA200 100 → BEARISH")
+}
+
+// ─── Test 19: No HTF data when nothing configured ──────────────────────────
+
+func TestMTFA_NoHTFDataWhenEmpty(t *testing.T) {
+	sym := domain.Symbol("AAPL")
+	_, bus := setupMTFAService(t, sym)
+	sc := newSnapCollector(t, bus)
+
+	feedBars(t, bus, sym, 0, 3, 150.0, 1000)
+	snaps := sc.get()
+	last := snaps[len(snaps)-1]
+	assert.Nil(t, last.HTF, "HTF should be nil when no HTF data is configured")
+}

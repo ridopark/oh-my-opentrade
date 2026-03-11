@@ -324,6 +324,8 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		}
 	}
 
+	snap.HTF = s.buildHTFMap(symStr, bar.Close)
+
 	s.liveBars[symStr]++
 
 	regime, changed := s.regimeDetector.Detect(snap)
@@ -453,6 +455,34 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	return nil
 }
 
+func (s *Service) buildHTFMap(sym string, currentClose float64) map[domain.Timeframe]domain.HTFData {
+	htf := make(map[domain.Timeframe]domain.HTFData)
+
+	hourlyKey := sym + ":1h"
+	if hSnap, ok := s.lastHTFSnaps[hourlyKey]; ok && hSnap.EMA50 > 0 {
+		htf[domain.Timeframe("1h")] = domain.HTFData{EMA50: hSnap.EMA50}
+	}
+
+	dailyKey := sym + ":1d"
+	if dStatic, ok := s.htfStatic[dailyKey]; ok && dStatic.EMA200 > 0 {
+		bias := "NEUTRAL"
+		if currentClose > dStatic.EMA200*1.005 {
+			bias = "BULLISH"
+		} else if currentClose < dStatic.EMA200*0.995 {
+			bias = "BEARISH"
+		}
+		htf[domain.Timeframe("1d")] = domain.HTFData{
+			EMA200: dStatic.EMA200,
+			Bias:   bias,
+		}
+	}
+
+	if len(htf) == 0 {
+		return nil
+	}
+	return htf
+}
+
 func (s *Service) WarmUpORB(bars []domain.MarketBar) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -513,6 +543,8 @@ func (s *Service) WarmUp(bars []domain.MarketBar) int {
 				lastSnap.AnchorRegimes[tf] = reg
 			}
 		}
+
+		lastSnap.HTF = s.buildHTFMap(symStr, lastBar.Close)
 
 		s.lastSnaps[symStr] = lastSnap
 	}
