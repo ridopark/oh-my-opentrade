@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,8 +60,9 @@ type Service struct {
 	cacheMu    sync.RWMutex
 	chartCache map[string]chartCacheEntry
 
-	batchMu sync.Mutex
-	batches map[string]*batchEntry
+	batchMu      sync.Mutex
+	batches      map[string]*batchEntry
+	entryTargets map[string]float64
 }
 
 type Option func(*Service)
@@ -82,12 +84,13 @@ func NewService(eventBus ports.EventBusPort, notifier ports.NotifierPort, log ze
 		etLoc = loc
 	}
 	s := &Service{
-		eventBus:   eventBus,
-		notifier:   notifier,
-		log:        log,
-		jobs:       make(chan notifyJob, jobQueueSize),
-		chartCache: make(map[string]chartCacheEntry),
-		batches:    make(map[string]*batchEntry),
+		eventBus:     eventBus,
+		notifier:     notifier,
+		log:          log,
+		jobs:         make(chan notifyJob, jobQueueSize),
+		chartCache:   make(map[string]chartCacheEntry),
+		batches:      make(map[string]*batchEntry),
+		entryTargets: make(map[string]float64),
 	}
 	for _, o := range opts {
 		o(s)
@@ -221,11 +224,23 @@ func (s *Service) addToBatch(symbol, msg string, withChart bool, ev domain.Event
 					entry.priceLevels = append(entry.priceLevels,
 						domain.PriceLevel{Label: fmt.Sprintf("Stop $%s", domain.FmtPrice(p.StopLoss)), Price: p.StopLoss, Color: "red"})
 				}
+				if target, ok := p.Meta["exit_price_sd_target"]; ok {
+					if tp, err := strconv.ParseFloat(target, 64); err == nil && tp > 0 {
+						entry.priceLevels = append(entry.priceLevels,
+							domain.PriceLevel{Label: fmt.Sprintf("Target $%s", domain.FmtPrice(tp)), Price: tp, Color: "blue"})
+						s.entryTargets[p.Symbol] = tp
+					}
+				}
 			}
 		case domain.TradeRealizedPayload:
 			entry.priceLevels = []domain.PriceLevel{
 				{Label: fmt.Sprintf("Entry $%s", domain.FmtPrice(p.EntryPrice)), Price: p.EntryPrice, Color: "green"},
 				{Label: fmt.Sprintf("Exit $%s", domain.FmtPrice(p.ExitPrice)), Price: p.ExitPrice, Color: "red"},
+			}
+			if tp, ok := s.entryTargets[string(p.Symbol)]; ok {
+				entry.priceLevels = append(entry.priceLevels,
+					domain.PriceLevel{Label: fmt.Sprintf("Target $%s", domain.FmtPrice(tp)), Price: tp, Color: "blue"})
+				delete(s.entryTargets, string(p.Symbol))
 			}
 			entry.withChart = true
 		}
