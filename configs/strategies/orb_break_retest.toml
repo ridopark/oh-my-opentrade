@@ -35,6 +35,7 @@ hold_confirm_bps = 0
 max_retest_bars = 20
 allow_missing_bars = 2
 max_signals_per_session = 3
+htf_bias_enabled = true
 stop_bps = 50
 limit_offset_bps = 5
 risk_per_trade_bps = 100

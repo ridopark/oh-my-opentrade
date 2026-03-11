@@ -32,6 +32,7 @@ type ORBConfig struct {
 	MaxRetestBars        int
 	AllowMissingBars     int
 	MaxSignalsPerSession int
+	HTFBiasEnabled       bool
 }
 
 func DefaultORBConfig() ORBConfig {
@@ -96,6 +97,20 @@ func orbExtractFloat(params map[string]any, key string, fallback float64) float6
 	}
 }
 
+func orbExtractBool(params map[string]any, key string, fallback bool) bool {
+	if params == nil {
+		return fallback
+	}
+	v, ok := params[key]
+	if !ok || v == nil {
+		return fallback
+	}
+	if b, ok := v.(bool); ok {
+		return b
+	}
+	return fallback
+}
+
 func NewORBConfigFromDNA(params map[string]any) ORBConfig {
 	def := DefaultORBConfig()
 	return ORBConfig{
@@ -108,6 +123,7 @@ func NewORBConfigFromDNA(params map[string]any) ORBConfig {
 		MaxRetestBars:        orbExtractInt(params, "max_retest_bars", def.MaxRetestBars),
 		AllowMissingBars:     orbExtractInt(params, "allow_missing_range_bars", def.AllowMissingBars),
 		MaxSignalsPerSession: orbExtractInt(params, "max_signals_per_session", def.MaxSignalsPerSession),
+		HTFBiasEnabled:       orbExtractBool(params, "htf_bias_enabled", false),
 	}
 }
 
