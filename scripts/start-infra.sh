@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MONITORING_COMPOSE="$ROOT_DIR/deployments/docker-compose.monitoring.yml"
+ENV_FILE="$ROOT_DIR/.env"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -18,7 +19,7 @@ else
   export HOST_IP
   HOST_IP=$(hostname -I | awk '{print $1}')
   info "Starting infra... [HOST_IP=$HOST_IP]"
-  docker compose -f "$MONITORING_COMPOSE" up -d
+  docker compose --env-file "$ENV_FILE" -f "$MONITORING_COMPOSE" up -d
   info "TimescaleDB  localhost:5432"
   info "Grafana      http://localhost:3001"
   info "Prometheus   http://localhost:9090"
