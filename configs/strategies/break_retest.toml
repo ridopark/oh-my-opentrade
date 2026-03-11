@@ -18,6 +18,7 @@ timeframes = ["5m"]
 priority = 100
 conflict_policy = "priority_wins"
 exclusive_per_symbol = true
+watchlist_mode = "replace"
 asset_classes = ["CRYPTO", "EQUITY"]
 
 [screening]
