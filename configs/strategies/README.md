@@ -144,7 +144,7 @@ Signals generated outside these windows are simply dropped — the strategy will
 | `touch_tolerance_bps` | int | How close price must come to the range boundary to count as a "retest" (bps). |
 | `hold_confirm_bps` | int | Price must hold above breakout level by this many bps after retest. |
 | `max_retest_bars` | int | Maximum bars to wait for a retest after the initial breakout. |
-| `allow_missing_bars` | int | Number of bars allowed to be missing (gaps) during retest window. |
+| `allow_missing_range_bars` | int | Number of bars allowed to be missing during the opening range formation window. Higher values tolerate less-liquid symbols (e.g., 20 out of 60-min window requires only 40 bars). |
 | `max_signals_per_session` | int | Max breakout signals to act on per session. |
 
 ### AI Scalping strategies (`ai_scalping`, `crypto_ai_scalping`)

@@ -3,6 +3,7 @@ apiVersion: 1
 groups:
   - orgId: 1
     name: omo-trading-prometheus
+    folder: OMO Alerts
     interval: 1m
     rules:
       - uid: circuit-breaker-active
@@ -122,6 +123,7 @@ groups:
 
   - orgId: 1
     name: omo-infrastructure-loki
+    folder: OMO Alerts
     interval: 1m
     rules:
       - uid: service-restart-flapping
