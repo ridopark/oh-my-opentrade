@@ -1,21 +1,21 @@
 schema_version = 2
 
 [strategy]
-id = "crypto_avwap_v2"
+id = "crypto_avwap_v2_alts"
 version = "2.0.0"
-name = "AVWAP Breakout/Bounce v2 (Crypto)"
-description = "Anchored VWAP strategy with volatility-adaptive exits — long-only for crypto pairs"
+name = "AVWAP Breakout/Bounce v2 (Crypto Alts)"
+description = "Anchored VWAP strategy with tighter risk params for higher-volatility altcoins"
 author = "system"
-created_at = "2026-03-08T00:00:00Z"
+created_at = "2026-03-11T00:00:00Z"
 
 [lifecycle]
 state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["BTC/USD", "ETH/USD"]
+symbols = ["SOL/USD", "AVAX/USD", "DOGE/USD", "PEPE/USD"]
 timeframes = ["1m"]
-priority = 70
+priority = 65
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
 watchlist_mode = "replace"
@@ -23,7 +23,7 @@ asset_classes = ["CRYPTO"]
 allowed_directions = ["LONG"]
 
 [screening]
-description = "Anchored VWAP strategy for crypto with spread protection and higher-lows confirmation. Enters on VWAP breakouts or bounces when price structure confirms accumulation. Ideal candidates have tight bid-ask spreads, respect for key VWAP anchors (previous-day high/low, session open), and sufficient volume for reliable VWAP calculation. Favors established crypto pairs with institutional participation. Avoid illiquid altcoins with wide spreads."
+description = "Anchored VWAP strategy for higher-volatility altcoins with tighter risk controls. Same signal logic as crypto_avwap_v2 but with reduced ATR multiplier (1.5x vs 2.5x), smaller position caps, and wider spread tolerance for altcoin microstructure. Only trades REVERSAL regimes."
 
 [params]
 anchors = ["pd_high", "pd_low", "on_high", "on_low", "session_open"]
@@ -33,22 +33,22 @@ volume_mult = 2.0
 bounce_enabled = true
 rsi_bounce_max = 30.0
 exit_hold_bars = 2
-cooldown_seconds = 120
-max_trades_per_day = 5
+cooldown_seconds = 180
+max_trades_per_day = 3
 allow_regimes = ["REVERSAL"]
 direction = "LONG"
 asset_class = "CRYPTO"
 require_higher_lows = true
 higher_lows_bars = 3
 midday_trap_shield = false
-stop_bps = 60
-limit_offset_bps = 15
-limit_offset_bps_offhours = 30
-max_slippage_bps = 20
-max_slippage_bps_offhours = 40
-risk_per_trade_bps = 100
-max_position_bps = 500
-max_spread_bps = 25
+stop_bps = 80
+limit_offset_bps = 20
+limit_offset_bps_offhours = 40
+max_slippage_bps = 30
+max_slippage_bps_offhours = 50
+risk_per_trade_bps = 75
+max_position_bps = 300
+max_spread_bps = 40
 allowed_hours_start = "08:00"
 allowed_hours_end = "17:00"
 allowed_hours_tz = "America/New_York"
@@ -56,7 +56,7 @@ skip_weekends = true
 
 [regime_filter]
 enabled = false
-allowed_regimes = ["BALANCE", "REVERSAL"]
+allowed_regimes = ["REVERSAL"]
 min_atr_pct = 0.8
 
 [hooks]
@@ -75,7 +75,7 @@ size_wide_mult = 1.20
 [[exit_rules]]
 type = "VOLATILITY_STOP"
 [exit_rules.params]
-atr_multiplier = 2.5
+atr_multiplier = 1.5
 
 [[exit_rules]]
 type = "SD_TARGET"
@@ -96,9 +96,9 @@ profit_gate_pct = 0.005
 [[exit_rules]]
 type = "MAX_HOLDING_TIME"
 [exit_rules.params]
-minutes = 240
+minutes = 180
 
 [[exit_rules]]
 type = "MAX_LOSS"
 [exit_rules.params]
-pct = 0.03
+pct = 0.025
