@@ -1,6 +1,7 @@
 package builtin_test
 
 import (
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -643,4 +644,70 @@ func TestORBStrategy_HTFBias_MissingHTFAllows(t *testing.T) {
 	_, signals := runORBToRetestWithHTF(t, nil, true)
 	require.Len(t, signals, 1, "missing HTF data should allow signal (graceful degradation)")
 	assert.Equal(t, "none", signals[0].Tags["htf_bias"])
+}
+
+func runORBWithATR(t *testing.T, atrMultiplier float64, atrValue float64) (strat.State, []strat.Signal) {
+	t.Helper()
+	s := builtin.NewORBStrategy()
+	ctx := newTestContext(time.Now())
+	params := orbParams()
+	params["atr_multiplier"] = atrMultiplier
+	st, err := s.Init(ctx, "AAPL", params, nil)
+	require.NoError(t, err)
+
+	indicators := strat.IndicatorData{Volume: 10, VolumeSMA: 10, ATR: atrValue}
+
+	for i := 0; i < 30; i++ {
+		bt := time.Date(2025, 3, 4, 14, 30+i, 0, 0, time.UTC)
+		bar := strat.Bar{Time: bt, Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}
+		orbSt := st.(*builtin.ORBState)
+		orbSt.SetIndicators(indicators)
+		st, _, err = s.OnBar(ctx, "AAPL", bar, st)
+		require.NoError(t, err)
+	}
+
+	postRange := time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC)
+	orbSt := st.(*builtin.ORBState)
+	orbSt.SetIndicators(indicators)
+	st, _, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: postRange, Open: 100, High: 101, Low: 99, Close: 100, Volume: 10}, st)
+	require.NoError(t, err)
+
+	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
+	orbSt = st.(*builtin.ORBState)
+	orbSt.SetIndicators(strat.IndicatorData{Volume: 50, VolumeSMA: 10, ATR: atrValue})
+	st, _, err = s.OnBar(ctx, "AAPL", strat.Bar{Time: breakT, Open: 100, High: 104, Low: 100, Close: 104, Volume: 50}, st)
+	require.NoError(t, err)
+
+	retestT := breakT.Add(time.Minute)
+	orbSt = st.(*builtin.ORBState)
+	orbSt.SetIndicators(strat.IndicatorData{Volume: 20, VolumeSMA: 10, ATR: atrValue})
+	st, signals, err := s.OnBar(ctx, "AAPL", strat.Bar{Time: retestT, Open: 104, High: 104, Low: 101, Close: 103, Volume: 20}, st)
+	require.NoError(t, err)
+	return st, signals
+}
+
+func TestORBStrategy_ATRStop_EmitsStopPriceTag(t *testing.T) {
+	_, signals := runORBWithATR(t, 2.0, 1.5)
+	require.Len(t, signals, 1)
+	sp, ok := signals[0].Tags["stop_price"]
+	require.True(t, ok, "signal should have stop_price tag when ATR multiplier > 0")
+	assert.Contains(t, signals[0].Tags, "atr_stop_distance")
+
+	spFloat := 0.0
+	fmt.Sscanf(sp, "%f", &spFloat)
+	assert.InDelta(t, 103.0-3.0, spFloat, 0.01, "stop_price = close(103) - ATR(1.5)*mult(2.0)")
+}
+
+func TestORBStrategy_ATRStop_ZeroMultiplierNoTag(t *testing.T) {
+	_, signals := runORBWithATR(t, 0.0, 1.5)
+	require.Len(t, signals, 1)
+	_, ok := signals[0].Tags["stop_price"]
+	assert.False(t, ok, "no stop_price tag when ATR multiplier is 0")
+}
+
+func TestORBStrategy_ATRStop_ZeroATRNoTag(t *testing.T) {
+	_, signals := runORBWithATR(t, 2.0, 0.0)
+	require.Len(t, signals, 1)
+	_, ok := signals[0].Tags["stop_price"]
+	assert.False(t, ok, "no stop_price tag when ATR is 0")
 }

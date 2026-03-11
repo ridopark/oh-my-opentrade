@@ -33,6 +33,7 @@ type ORBConfig struct {
 	AllowMissingBars     int
 	MaxSignalsPerSession int
 	HTFBiasEnabled       bool
+	ATRMultiplier        float64
 }
 
 func DefaultORBConfig() ORBConfig {
@@ -124,6 +125,7 @@ func NewORBConfigFromDNA(params map[string]any) ORBConfig {
 		AllowMissingBars:     orbExtractInt(params, "allow_missing_range_bars", def.AllowMissingBars),
 		MaxSignalsPerSession: orbExtractInt(params, "max_signals_per_session", def.MaxSignalsPerSession),
 		HTFBiasEnabled:       orbExtractBool(params, "htf_bias_enabled", false),
+		ATRMultiplier:        orbExtractFloat(params, "atr_multiplier", 0),
 	}
 }
 
