@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 )
@@ -25,4 +26,20 @@ func WithStrategyPerformance(summary *domain.StrategyPerformanceSummary) DebateO
 			setter.SetStrategyPerformance(summary)
 		}
 	}
+}
+
+type NewsSetter interface {
+	SetNews(items []domain.NewsItem)
+}
+
+func WithNews(items []domain.NewsItem) DebateOption {
+	return func(raw any) {
+		if setter, ok := raw.(NewsSetter); ok {
+			setter.SetNews(items)
+		}
+	}
+}
+
+type NewsPort interface {
+	GetRecentNews(ctx context.Context, symbol string, since time.Duration) ([]domain.NewsItem, error)
 }

@@ -120,10 +120,15 @@ type debateRequest struct {
 	optionChain   *OptionChainSummary
 	signalContext *signalContext
 	perfSummary   *domain.StrategyPerformanceSummary
+	newsItems     []domain.NewsItem
 }
 
 func (dr *debateRequest) SetStrategyPerformance(summary *domain.StrategyPerformanceSummary) {
 	dr.perfSummary = summary
+}
+
+func (dr *debateRequest) SetNews(items []domain.NewsItem) {
+	dr.newsItems = items
 }
 
 // signalContext carries strategy signal metadata for enriched prompts.
@@ -506,6 +511,25 @@ Technical Indicators:
 		if ps.HasNegativeExpectancy(regime.Type, 5) {
 			sb.WriteString("\n  ⚠ Negative expectancy in current regime")
 		}
+	}
+
+	if len(dr.newsItems) > 0 {
+		sb.WriteString("\n\nRecent News Headlines (most recent first):")
+		for i, item := range dr.newsItems {
+			fmt.Fprintf(&sb, "\n  %d. [%s] %s (%s)",
+				i+1,
+				item.CreatedAt.Format("2006-01-02 15:04"),
+				item.Headline,
+				item.Source)
+			if item.Summary != "" {
+				summary := item.Summary
+				if len(summary) > 200 {
+					summary = summary[:200] + "..."
+				}
+				fmt.Fprintf(&sb, "\n     %s", summary)
+			}
+		}
+		sb.WriteString("\n\nWeigh these headlines when evaluating the trade. News catalysts (earnings, FDA, macro events) can override technical signals.")
 	}
 
 	if chain != nil && len(chain.Candidates) > 0 {

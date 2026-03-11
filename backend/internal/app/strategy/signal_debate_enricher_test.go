@@ -753,3 +753,123 @@ func TestSignalDebateEnricher_NoStratPerf(t *testing.T) {
 	assert.InDelta(t, 0.88, got.Confidence, 0.0000001)
 	assert.Equal(t, 1, advisor.calls, "AI advisor must be called when no stratPerf is wired")
 }
+
+func TestSignalDebateEnricher_NewsGated_NoNews_SkipsAI(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
+		Direction:  domain.DirectionLong,
+		Confidence: 0.85,
+		Rationale:  "should not be called",
+	}}
+
+	emptyNewsProvider := func(_ context.Context, _ string) ([]domain.NewsItem, error) {
+		return nil, nil
+	}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil,
+		strategy.WithNewsProvider(emptyNewsProvider),
+	)
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "150"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+
+	assert.Equal(t, domain.EnrichmentSkipped, got.Status)
+	assert.Contains(t, got.Rationale, "no recent news")
+	assert.InDelta(t, 0.8, got.Confidence, 0.0000001)
+	assert.Equal(t, 0, advisor.calls, "AI must NOT be called when no news")
+}
+
+func TestSignalDebateEnricher_NewsGated_WithNews_CallsAI(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
+		Direction:  domain.DirectionLong,
+		Confidence: 0.90,
+		Rationale:  "bullish earnings catalyst",
+	}}
+
+	newsProvider := func(_ context.Context, _ string) ([]domain.NewsItem, error) {
+		return []domain.NewsItem{
+			{ID: "1", Headline: "Apple Beats Earnings", Source: "reuters", CreatedAt: time.Now()},
+		}, nil
+	}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil,
+		strategy.WithNewsProvider(newsProvider),
+	)
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "150"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+
+	assert.Equal(t, domain.EnrichmentOK, got.Status)
+	assert.InDelta(t, 0.90, got.Confidence, 0.0000001)
+	assert.Equal(t, 1, advisor.calls, "AI must be called when news exists")
+}
+
+func TestSignalDebateEnricher_NewsGated_Error_SkipsAI(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
+		Direction:  domain.DirectionLong,
+		Confidence: 0.85,
+		Rationale:  "should not be called",
+	}}
+
+	failingNewsProvider := func(_ context.Context, _ string) ([]domain.NewsItem, error) {
+		return nil, errors.New("news API down")
+	}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil,
+		strategy.WithNewsProvider(failingNewsProvider),
+	)
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "150"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+
+	assert.Equal(t, domain.EnrichmentSkipped, got.Status)
+	assert.Contains(t, got.Rationale, "no recent news")
+	assert.Equal(t, 0, advisor.calls, "AI must NOT be called when news fetch fails")
+}
+
+func TestSignalDebateEnricher_NilNewsProvider_CallsAI(t *testing.T) {
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
+		Direction:  domain.DirectionLong,
+		Confidence: 0.85,
+		Rationale:  "technical signal confirmed",
+	}}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil)
+	require.NoError(t, enricher.Start(context.Background()))
+
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.8, map[string]string{"ref_price": "150"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+
+	assert.Equal(t, domain.EnrichmentOK, got.Status)
+	assert.Equal(t, 1, advisor.calls, "AI must be called when no newsProvider is set (backward compat)")
+}
