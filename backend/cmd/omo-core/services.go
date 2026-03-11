@@ -280,6 +280,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		PositionLookup:  svc.posMonitor.LookupPosition,
 		MarketDataFn:    svc.monitor.GetLastSnapshot,
 		Repo:            infra.repo,
+		StratPerf:       infra.stratPerfRepo,
 		TenantID:        "default",
 		EnvMode:         domain.EnvModePaper,
 		Equity:          svc.accountEquity,

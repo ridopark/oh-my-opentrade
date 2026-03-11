@@ -116,10 +116,14 @@ type OptionCandidate struct {
 // debateRequest — internal carrier for RequestDebate options
 // ─────────────────────────────────────────────
 
-// debateRequest carries optional context that modifies debate behavior.
 type debateRequest struct {
 	optionChain   *OptionChainSummary
-	signalContext *signalContext // signal metadata from strategy pipeline
+	signalContext *signalContext
+	perfSummary   *domain.StrategyPerformanceSummary
+}
+
+func (dr *debateRequest) SetStrategyPerformance(summary *domain.StrategyPerformanceSummary) {
+	dr.perfSummary = summary
 }
 
 // signalContext carries strategy signal metadata for enriched prompts.
@@ -270,7 +274,7 @@ The Judge must weigh risk-reward asymmetry, position sizing implications, and wo
 Set risk_modifier to control position sizing: TIGHT (reduce size and tighten stop for uncertain setups), NORMAL (standard sizing), or WIDE (wider stop for high-conviction trending setups).
 Respond ONLY with valid JSON — no markdown fences, no extra text.`
 
-	userPrompt := buildPrompt(symbol, regime, indicators, dr.optionChain, dr.signalContext)
+	userPrompt := buildPrompt(symbol, regime, indicators, dr)
 
 	reqBody, err := json.Marshal(chatRequest{
 		Model: a.model,
@@ -407,7 +411,9 @@ func emaTrend(ema9, ema21 float64) string {
 	return "Flat (EMA9 = EMA21)"
 }
 
-func buildPrompt(symbol domain.Symbol, regime domain.MarketRegime, indicators domain.IndicatorSnapshot, chain *OptionChainSummary, sigCtx *signalContext) string {
+func buildPrompt(symbol domain.Symbol, regime domain.MarketRegime, indicators domain.IndicatorSnapshot, dr *debateRequest) string {
+	chain := dr.optionChain
+	sigCtx := dr.signalContext
 	jsonTemplate := buildResponseTemplate(chain != nil)
 
 	var sb strings.Builder
@@ -470,6 +476,35 @@ Technical Indicators:
 			for k, v := range sigCtx.tags {
 				fmt.Fprintf(&sb, "\n    %s: %s", k, v)
 			}
+		}
+	}
+
+	if ps := dr.perfSummary; ps != nil && ps.Overall.TradeCount > 0 {
+		days := int(ps.Overall.Period.Hours() / 24)
+		o := ps.Overall
+		fmt.Fprintf(&sb, "\n\nStrategy Track Record (last %d days):", days)
+		fmt.Fprintf(&sb, "\n  Overall: %d trades, Win Rate: %.0f%% (%d/%d), Expectancy: $%.2f/trade",
+			o.TradeCount, o.WinRate*100, o.WinCount, o.TradeCount, o.Expectancy)
+		if o.TotalPnL != 0 {
+			fmt.Fprintf(&sb, ", Total P&L: $%.2f", o.TotalPnL)
+		}
+		if bs := ps.BySymbol; bs != nil && bs.TradeCount > 0 {
+			fmt.Fprintf(&sb, "\n  %s only: %d trades, Win Rate: %.0f%%, Expectancy: $%.2f/trade",
+				bs.Symbol, bs.TradeCount, bs.WinRate*100, bs.Expectancy)
+		}
+		for _, r := range ps.ByRegime {
+			if r.TradeCount == 0 {
+				continue
+			}
+			label := r.Regime.String()
+			if r.Regime == regime.Type {
+				label += " (CURRENT)"
+			}
+			fmt.Fprintf(&sb, "\n  %s: %d trades, Win Rate: %.0f%%, Expectancy: $%.2f/trade",
+				label, r.TradeCount, r.WinRate*100, r.Expectancy)
+		}
+		if ps.HasNegativeExpectancy(regime.Type, 5) {
+			sb.WriteString("\n  ⚠ Negative expectancy in current regime")
 		}
 	}
 

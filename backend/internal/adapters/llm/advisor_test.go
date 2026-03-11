@@ -10,6 +10,7 @@ import (
 
 	"github.com/oh-my-opentrade/backend/internal/adapters/llm"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -550,4 +551,246 @@ func TestAdvisor_ProviderRouting_WithPreferredMaxLatency(t *testing.T) {
 	latency, ok := prov["preferred_max_latency"].(map[string]interface{})
 	require.True(t, ok, "provider must contain preferred_max_latency")
 	assert.InDelta(t, 2.0, latency["p90"], 0.001)
+}
+
+// --- Strategy Track Record prompt tests ---
+
+func TestAdvisor_RequestDebate_PromptIncludesStrategyTrackRecord(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := json.NewDecoder(r.Body).Decode(&capturedBody)
+		assert.NoError(t, err)
+		validCompletionResponse(w, "LONG", "rationale", "bull", "bear", "judge", 0.80)
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+
+	summary := &domain.StrategyPerformanceSummary{
+		Strategy: "test-strategy",
+		Symbol:   "BTC/USD",
+		Overall: domain.StrategyRegimeStats{
+			Period:     30 * 24 * time.Hour,
+			TradeCount: 10,
+			WinCount:   6,
+			LossCount:  4,
+			WinRate:    0.60,
+			Expectancy: 2.50,
+			TotalPnL:   25.00,
+		},
+	}
+
+	_, err := advisor.RequestDebate(context.Background(), "BTCUSD", getMockMarketRegime(), getMockIndicatorSnapshot(),
+		ports.WithStrategyPerformance(summary))
+	require.NoError(t, err)
+
+	messages, ok := capturedBody["messages"].([]interface{})
+	require.True(t, ok)
+	userMsg := messages[len(messages)-1].(map[string]interface{})
+	content := userMsg["content"].(string)
+
+	assert.Contains(t, content, "Strategy Track Record")
+	assert.Contains(t, content, "10 trades")
+	assert.Contains(t, content, "Win Rate: 60%")
+	assert.Contains(t, content, "Expectancy: $2.50/trade")
+	assert.Contains(t, content, "Total P&L: $25.00")
+}
+
+func TestAdvisor_RequestDebate_PromptIncludesPerSymbolStats(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := json.NewDecoder(r.Body).Decode(&capturedBody)
+		assert.NoError(t, err)
+		validCompletionResponse(w, "LONG", "rationale", "bull", "bear", "judge", 0.80)
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+
+	summary := &domain.StrategyPerformanceSummary{
+		Strategy: "test-strategy",
+		Symbol:   "BTC/USD",
+		Overall: domain.StrategyRegimeStats{
+			Period:     30 * 24 * time.Hour,
+			TradeCount: 10,
+			WinCount:   6,
+			WinRate:    0.60,
+			Expectancy: 2.50,
+		},
+		BySymbol: &domain.StrategyRegimeStats{
+			Symbol:     "BTC/USD",
+			TradeCount: 5,
+			WinCount:   4,
+			WinRate:    0.80,
+			Expectancy: 3.00,
+		},
+	}
+
+	_, err := advisor.RequestDebate(context.Background(), "BTCUSD", getMockMarketRegime(), getMockIndicatorSnapshot(),
+		ports.WithStrategyPerformance(summary))
+	require.NoError(t, err)
+
+	messages, ok := capturedBody["messages"].([]interface{})
+	require.True(t, ok)
+	userMsg := messages[len(messages)-1].(map[string]interface{})
+	content := userMsg["content"].(string)
+
+	assert.Contains(t, content, "BTC/USD only: 5 trades, Win Rate: 80%")
+}
+
+func TestAdvisor_RequestDebate_PromptIncludesRegimeStats(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := json.NewDecoder(r.Body).Decode(&capturedBody)
+		assert.NoError(t, err)
+		validCompletionResponse(w, "LONG", "rationale", "bull", "bear", "judge", 0.80)
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+
+	summary := &domain.StrategyPerformanceSummary{
+		Strategy: "test-strategy",
+		Symbol:   "BTC/USD",
+		Overall: domain.StrategyRegimeStats{
+			Period:     30 * 24 * time.Hour,
+			TradeCount: 15,
+			WinCount:   9,
+			WinRate:    0.60,
+			Expectancy: 2.00,
+		},
+		ByRegime: []domain.StrategyRegimeStats{
+			{
+				Regime:     domain.RegimeTrend,
+				TradeCount: 8,
+				WinCount:   6,
+				WinRate:    0.75,
+				Expectancy: 3.50,
+			},
+			{
+				Regime:     domain.RegimeBalance,
+				TradeCount: 7,
+				WinCount:   3,
+				WinRate:    0.43,
+				Expectancy: 0.50,
+			},
+		},
+	}
+
+	_, err := advisor.RequestDebate(context.Background(), "BTCUSD", getMockMarketRegime(), getMockIndicatorSnapshot(),
+		ports.WithStrategyPerformance(summary))
+	require.NoError(t, err)
+
+	messages, ok := capturedBody["messages"].([]interface{})
+	require.True(t, ok)
+	userMsg := messages[len(messages)-1].(map[string]interface{})
+	content := userMsg["content"].(string)
+
+	assert.Contains(t, content, "TREND (CURRENT): 8 trades")
+	assert.Contains(t, content, "BALANCE: 7 trades")
+}
+
+func TestAdvisor_RequestDebate_PromptNegativeExpectancyWarning(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := json.NewDecoder(r.Body).Decode(&capturedBody)
+		assert.NoError(t, err)
+		validCompletionResponse(w, "LONG", "rationale", "bull", "bear", "judge", 0.80)
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+
+	summary := &domain.StrategyPerformanceSummary{
+		Strategy: "test-strategy",
+		Symbol:   "BTC/USD",
+		Overall: domain.StrategyRegimeStats{
+			Period:     30 * 24 * time.Hour,
+			TradeCount: 10,
+			WinCount:   3,
+			LossCount:  7,
+			WinRate:    0.30,
+			Expectancy: -1.00,
+			TotalPnL:   -10.00,
+		},
+		ByRegime: []domain.StrategyRegimeStats{
+			{
+				Regime:     domain.RegimeTrend,
+				TradeCount: 6,
+				WinCount:   2,
+				WinRate:    0.33,
+				Expectancy: -1.50,
+			},
+		},
+	}
+
+	_, err := advisor.RequestDebate(context.Background(), "BTCUSD", getMockMarketRegime(), getMockIndicatorSnapshot(),
+		ports.WithStrategyPerformance(summary))
+	require.NoError(t, err)
+
+	messages, ok := capturedBody["messages"].([]interface{})
+	require.True(t, ok)
+	userMsg := messages[len(messages)-1].(map[string]interface{})
+	content := userMsg["content"].(string)
+
+	assert.Contains(t, content, "⚠ Negative expectancy")
+}
+
+func TestAdvisor_RequestDebate_PromptOmitsTrackRecordWhenNil(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := json.NewDecoder(r.Body).Decode(&capturedBody)
+		assert.NoError(t, err)
+		validCompletionResponse(w, "LONG", "rationale", "bull", "bear", "judge", 0.80)
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+
+	_, err := advisor.RequestDebate(context.Background(), "BTCUSD", getMockMarketRegime(), getMockIndicatorSnapshot())
+	require.NoError(t, err)
+
+	messages, ok := capturedBody["messages"].([]interface{})
+	require.True(t, ok)
+	userMsg := messages[len(messages)-1].(map[string]interface{})
+	content := userMsg["content"].(string)
+
+	assert.NotContains(t, content, "Strategy Track Record")
+}
+
+func TestAdvisor_RequestDebate_PromptOmitsTrackRecordWhenZeroTrades(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := json.NewDecoder(r.Body).Decode(&capturedBody)
+		assert.NoError(t, err)
+		validCompletionResponse(w, "LONG", "rationale", "bull", "bear", "judge", 0.80)
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+
+	summary := &domain.StrategyPerformanceSummary{
+		Strategy: "test-strategy",
+		Overall: domain.StrategyRegimeStats{
+			Period:     30 * 24 * time.Hour,
+			TradeCount: 0,
+		},
+	}
+
+	_, err := advisor.RequestDebate(context.Background(), "BTCUSD", getMockMarketRegime(), getMockIndicatorSnapshot(),
+		ports.WithStrategyPerformance(summary))
+	require.NoError(t, err)
+
+	messages, ok := capturedBody["messages"].([]interface{})
+	require.True(t, ok)
+	userMsg := messages[len(messages)-1].(map[string]interface{})
+	content := userMsg["content"].(string)
+
+	assert.NotContains(t, content, "Strategy Track Record")
 }

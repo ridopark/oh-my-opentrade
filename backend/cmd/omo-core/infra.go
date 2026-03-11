@@ -25,6 +25,7 @@ type infraDeps struct {
 	sqlDB           *sql.DB
 	repo            *timescaledb.Repository
 	pnlRepo         *timescaledb.PnLRepository
+	stratPerfRepo   *timescaledb.StrategyPerfRepo
 	dnaApprovalRepo *timescaledb.DNAApprovalRepo
 	tokenStore      *timescaledb.TokenStore
 	tracerProvider  *sdktrace.TracerProvider
@@ -96,6 +97,7 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 
 	repo := timescaledb.NewRepositoryWithLogger(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "timescaledb").Logger())
 	pnlRepo := timescaledb.NewPnLRepository(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "pnl").Logger())
+	stratPerfRepo := timescaledb.NewStrategyPerfRepo(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "strategy_perf").Logger())
 	dnaApprovalRepo := timescaledb.NewDNAApprovalRepo(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "dna_approval_repo").Logger())
 	tokenStore := timescaledb.NewTokenStore(timescaledb.NewSqlDB(sqlDB))
 
@@ -105,6 +107,7 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 		sqlDB:           sqlDB,
 		repo:            repo,
 		pnlRepo:         pnlRepo,
+		stratPerfRepo:   stratPerfRepo,
 		dnaApprovalRepo: dnaApprovalRepo,
 		tokenStore:      tokenStore,
 		tracerProvider:  tp,
