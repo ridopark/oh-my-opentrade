@@ -122,6 +122,11 @@ func evaluateTimeExit(rule domain.ExitRule, pos *domain.MonitoredPosition, now t
 //
 //	"minutes_before_close" — minutes before session close to flatten (default: 5)
 func evaluateEODFlatten(rule domain.ExitRule, pos *domain.MonitoredPosition, now time.Time) (bool, string) {
+	// EOD_FLATTEN is not applicable to 24/7 markets (crypto has no session close).
+	if pos.AssetClass == domain.AssetClassCrypto {
+		return false, ""
+	}
+
 	minutesBefore := rule.Param("minutes_before_close", 5)
 	if minutesBefore <= 0 {
 		return false, ""
