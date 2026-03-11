@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -39,12 +40,19 @@ type aiChatCompletionResponse struct {
 	Choices []aiChatChoice `json:"choices"`
 }
 
+type aiTopPick struct {
+	Symbol    string
+	Score     int
+	Rationale string
+}
+
 type aiStrategyResult struct {
 	StrategyKey string
 	Model       string
 	Candidates  int
 	Scored      int
 	LatencyMS   int64
+	TopPicks    []aiTopPick
 	Err         error
 }
 
@@ -424,6 +432,17 @@ func (s *AIService) runForStrategy(
 		})
 	}
 
+	sort.Slice(ranked, func(i, j int) bool { return ranked[i].Score > ranked[j].Score })
+	for _, r := range ranked {
+		if r.Score >= 3 {
+			result.TopPicks = append(result.TopPicks, aiTopPick{
+				Symbol:    r.Symbol,
+				Score:     r.Score,
+				Rationale: r.Rationale,
+			})
+		}
+	}
+
 	if len(results) > 0 {
 		if err := s.repo.SaveAIResults(ctx, results); err != nil {
 			return fmt.Errorf("ai_screener: save results for %s: %w", strategyKey, err)
@@ -481,7 +500,15 @@ func (s *AIService) sendRunSummary(ctx context.Context, results []aiStrategyResu
 			fmt.Fprintf(&sb, "❌ **%s** — %s\n", r.StrategyKey, shortenError(r.Err))
 		} else {
 			succeeded++
-			fmt.Fprintf(&sb, "✅ **%s** — %d scored | %s | %dms\n", r.StrategyKey, r.Scored, r.Model, r.LatencyMS)
+			if len(r.TopPicks) > 0 {
+				fmt.Fprintf(&sb, "✅ **%s** (%dms)\n", r.StrategyKey, r.LatencyMS)
+				for _, p := range r.TopPicks {
+					rationale := truncate(p.Rationale, 80)
+					fmt.Fprintf(&sb, "   • **%s** [%d/5] — %s\n", p.Symbol, p.Score, rationale)
+				}
+			} else {
+				fmt.Fprintf(&sb, "✅ **%s** — no strong picks (%dms)\n", r.StrategyKey, r.LatencyMS)
+			}
 		}
 	}
 
