@@ -76,20 +76,25 @@ enabled = true
 interval_minutes = 5
 
 [[exit_rules]]
-type = "BREAKEVEN_STOP"
+type = "VOLATILITY_STOP"
 [exit_rules.params]
-activation_pct = 0.005
-buffer_pct = 0.001
+atr_multiplier = 2.0
 
 [[exit_rules]]
-type = "TRAILING_STOP"
+type = "SD_TARGET"
 [exit_rules.params]
-pct = 0.015
+sd_level = 2.0
 
 [[exit_rules]]
-type = "PROFIT_TARGET"
+type = "STEP_STOP"
 [exit_rules.params]
-pct = 0.05
+
+[[exit_rules]]
+type = "STAGNATION_EXIT"
+[exit_rules.params]
+minutes = 45
+sd_threshold = 1.0
+profit_gate_pct = 0.005
 
 [[exit_rules]]
 type = "EOD_FLATTEN"
