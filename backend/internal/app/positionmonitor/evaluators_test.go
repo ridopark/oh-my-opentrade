@@ -798,6 +798,115 @@ func TestEvaluate_StagnationExit(t *testing.T) {
 	})
 }
 
+func TestUpdateBreakevenStopState(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+
+	t.Run("activates when P&L crosses activation threshold", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		// Price at 100.40 → +0.4% P&L, activation at 0.3%
+		UpdateBreakevenStopState(pos, 100.40, 0.003, 0.0005)
+		assert.Equal(t, 1.0, pos.CustomState["breakeven_activated"])
+		// Stop level = entry * (1 + buffer) = 100 * 1.0005 = 100.05
+		assert.InDelta(t, 100.05, pos.CustomState["breakeven_stop_level"], 0.001)
+	})
+
+	t.Run("does not activate when P&L below threshold", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		// Price at 100.20 → +0.2% P&L, activation at 0.3%
+		UpdateBreakevenStopState(pos, 100.20, 0.003, 0.0005)
+		assert.Equal(t, 0.0, pos.CustomState["breakeven_activated"])
+		assert.Equal(t, 0.0, pos.CustomState["breakeven_stop_level"])
+	})
+
+	t.Run("stop level locks after activation", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		// First tick: activate at +0.4%
+		UpdateBreakevenStopState(pos, 100.40, 0.003, 0.0005)
+		assert.Equal(t, 1.0, pos.CustomState["breakeven_activated"])
+		stopLevel := pos.CustomState["breakeven_stop_level"]
+
+		// Second tick: price drops — stop must NOT change
+		UpdateBreakevenStopState(pos, 99.50, 0.003, 0.0005)
+		assert.Equal(t, stopLevel, pos.CustomState["breakeven_stop_level"])
+		assert.Equal(t, 1.0, pos.CustomState["breakeven_activated"])
+	})
+
+	t.Run("no-op when activation_pct is zero", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		UpdateBreakevenStopState(pos, 105.0, 0, 0.0005)
+		assert.Equal(t, 0.0, pos.CustomState["breakeven_activated"])
+	})
+
+	t.Run("no-op when CustomState is nil", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		pos.CustomState = nil
+		UpdateBreakevenStopState(pos, 105.0, 0.003, 0.0005)
+		assert.Nil(t, pos.CustomState)
+	})
+
+	t.Run("activates at exact threshold boundary", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 1000, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		// entry=1000, price=1003 → P&L = 3/1000 = 0.003 exactly (no float rounding)
+		UpdateBreakevenStopState(pos, 1003, 0.003, 0.0005)
+		assert.Equal(t, 1.0, pos.CustomState["breakeven_activated"])
+	})
+}
+
+func TestEvaluate_BreakevenStop(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+
+	rule := domain.ExitRule{Type: domain.ExitRuleBreakevenStop, Params: map[string]float64{}}
+
+	t.Run("triggers when price below breakeven stop level", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		pos.CustomState["breakeven_activated"] = 1
+		pos.CustomState["breakeven_stop_level"] = 100.05
+
+		triggered, reason := Evaluate(rule, pos, 100.00, now, EvalContext{})
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "breakeven_stop")
+	})
+
+	t.Run("does not trigger when price above stop level", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		pos.CustomState["breakeven_activated"] = 1
+		pos.CustomState["breakeven_stop_level"] = 100.05
+
+		triggered, reason := Evaluate(rule, pos, 100.10, now, EvalContext{})
+		assert.False(t, triggered)
+		assert.Empty(t, reason)
+	})
+
+	t.Run("does not trigger when not activated", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+
+		triggered, reason := Evaluate(rule, pos, 50.0, now, EvalContext{})
+		assert.False(t, triggered)
+		assert.Empty(t, reason)
+	})
+
+	t.Run("triggers at exact stop level boundary", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		pos.CustomState["breakeven_activated"] = 1
+		pos.CustomState["breakeven_stop_level"] = 100.05
+
+		triggered, reason := Evaluate(rule, pos, 100.05, now, EvalContext{})
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "breakeven_stop")
+	})
+
+	t.Run("does not trigger when CustomState is nil", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		pos.CustomState = nil
+
+		triggered, reason := Evaluate(rule, pos, 50.0, now, EvalContext{})
+		assert.False(t, triggered)
+		assert.Empty(t, reason)
+	})
+}
+
 func TestEvaluate_UnknownRuleType(t *testing.T) {
 	etLoc := mustETLocation(t)
 	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)

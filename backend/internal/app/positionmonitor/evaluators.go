@@ -49,6 +49,8 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 		return evaluateStepStop(rule, pos, currentPrice, ctx)
 	case domain.ExitRuleStagnationExit:
 		return evaluateStagnationExit(rule, pos, currentPrice, now, ctx)
+	case domain.ExitRuleBreakevenStop:
+		return evaluateBreakevenStop(rule, pos, currentPrice)
 	default:
 		return false, ""
 	}
@@ -353,6 +355,51 @@ func evaluateStagnationExit(rule domain.ExitRule, pos *domain.MonitoredPosition,
 
 	return true, fmt.Sprintf("stagnation_exit: held %.1f min >= limit %.0f min without reaching +%.1f SD (price=%.4f, vwap=%.4f)",
 		held, minutes, sdThreshold, currentPrice, ctx.VWAPValue)
+}
+
+// UpdateBreakevenStopState activates the breakeven stop once unrealized P&L
+// crosses the activation threshold. Once activated, the stop level is fixed at
+// entry price + buffer. Called from the tick loop BEFORE exit rule evaluation.
+//
+// Params (from rule):
+//
+//	"activation_pct" — P&L percentage that triggers activation (e.g. 0.003 = 0.3%)
+//	"buffer_pct"     — buffer above entry as a decimal (e.g. 0.0005 = 0.05%)
+func UpdateBreakevenStopState(pos *domain.MonitoredPosition, currentPrice float64, activationPct, bufferPct float64) {
+	if pos.CustomState == nil || activationPct <= 0 {
+		return
+	}
+	// Once activated, the stop level is locked — never re-calculate.
+	if pos.CustomState["breakeven_activated"] > 0 {
+		return
+	}
+	pnlPct := pos.UnrealizedPnLPct(currentPrice)
+	if pnlPct >= activationPct {
+		pos.CustomState["breakeven_activated"] = 1
+		pos.CustomState["breakeven_stop_level"] = pos.EntryPrice * (1 + bufferPct)
+	}
+}
+
+// evaluateBreakevenStop triggers when price drops below the breakeven stop level.
+// The stop level is set by UpdateBreakevenStopState — this evaluator only reads state.
+//
+// Params: none (stop level comes from CustomState, set by tick loop)
+func evaluateBreakevenStop(_ domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64) (bool, string) {
+	if pos.CustomState == nil {
+		return false, ""
+	}
+	if pos.CustomState["breakeven_activated"] == 0 {
+		return false, ""
+	}
+	stopLevel := pos.CustomState["breakeven_stop_level"]
+	if stopLevel <= 0 {
+		return false, ""
+	}
+	if currentPrice <= stopLevel {
+		return true, fmt.Sprintf("breakeven_stop: price %.4f <= stop %.4f (entry=%.4f, buffer=%.4f)",
+			currentPrice, stopLevel, pos.EntryPrice, stopLevel-pos.EntryPrice)
+	}
+	return false, ""
 }
 
 // etLocation returns the America/New_York timezone.

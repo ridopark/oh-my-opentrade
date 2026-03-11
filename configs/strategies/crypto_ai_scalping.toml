@@ -78,9 +78,15 @@ enabled = true
 interval_minutes = 5
 
 [[exit_rules]]
+type = "BREAKEVEN_STOP"
+[exit_rules.params]
+activation_pct = 0.003
+buffer_pct = 0.001
+
+[[exit_rules]]
 type = "TRAILING_STOP"
 [exit_rules.params]
-pct = 0.03
+pct = 0.015
 
 [[exit_rules]]
 type = "SD_TARGET"

@@ -83,9 +83,15 @@ size_tight_mult = 0.70
 size_wide_mult = 1.50
 
 [[exit_rules]]
+type = "BREAKEVEN_STOP"
+[exit_rules.params]
+activation_pct = 0.005
+buffer_pct = 0.001
+
+[[exit_rules]]
 type = "TRAILING_STOP"
 [exit_rules.params]
-pct = 0.02
+pct = 0.01
 
 [[exit_rules]]
 type = "PROFIT_TARGET"

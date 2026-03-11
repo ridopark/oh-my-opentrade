@@ -279,6 +279,10 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 		exitRules = append(exitRules, er)
 	}
 
+	if err := domain.ValidateExitRules(exitRules); err != nil {
+		return portstrategy.Spec{}, fmt.Errorf("strategy spec %q: %w", path, err)
+	}
+
 	return portstrategy.Spec{
 		SchemaVersion: 2,
 		ID:            id,
