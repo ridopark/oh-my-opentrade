@@ -133,12 +133,20 @@ type IndicatorData struct {
 	StochD        float64
 	EMA9          float64
 	EMA21         float64
+	EMA50         float64
 	VWAP          float64
 	Volume        float64
 	VolumeSMA     float64
 	ATR           float64
 	VWAPSD        float64
 	AnchorRegimes map[string]AnchorRegime
+	HTF           map[string]HTFIndicator
+}
+
+type HTFIndicator struct {
+	EMA50  float64
+	EMA200 float64
+	Bias   string
 }
 
 type AnchorRegime struct {

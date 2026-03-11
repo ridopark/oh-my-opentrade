@@ -168,6 +168,49 @@ func TestIndicators_ATR_ZeroVolatility(t *testing.T) {
 	assert.InDelta(t, 0.0, snap.ATR, 1e-10, "ATR of zero-volatility bars should be zero")
 }
 
+func TestIndicators_EMA50_InitializesAtBar50(t *testing.T) {
+	calc := monitor.NewIndicatorCalculator()
+	sym, _ := domain.NewSymbol("AAPL")
+
+	var snap domain.IndicatorSnapshot
+	for i := 0; i < 49; i++ {
+		snap = calc.Update(createBar(t, sym, 100.0, 10.0))
+	}
+	assert.Equal(t, 0.0, snap.EMA50, "EMA50 should be zero before 50 bars")
+
+	snap = calc.Update(createBar(t, sym, 100.0, 10.0))
+	assert.InDelta(t, 100.0, snap.EMA50, 0.01, "EMA50 should initialize to SMA at bar 50")
+}
+
+func TestIndicators_EMA50_ExponentialAfterInit(t *testing.T) {
+	calc := monitor.NewIndicatorCalculator()
+	sym, _ := domain.NewSymbol("AAPL")
+
+	for i := 0; i < 50; i++ {
+		calc.Update(createBar(t, sym, 100.0, 10.0))
+	}
+
+	var snap domain.IndicatorSnapshot
+	for i := 0; i < 10; i++ {
+		snap = calc.Update(createBar(t, sym, 200.0, 10.0))
+	}
+	assert.Greater(t, snap.EMA50, 100.0, "EMA50 should rise toward 200 in uptrend")
+	assert.Less(t, snap.EMA50, 200.0, "EMA50 should lag behind close in uptrend")
+}
+
+func TestIndicators_EMA50_IndependentFromEMA9EMA21(t *testing.T) {
+	calc := monitor.NewIndicatorCalculator()
+	sym, _ := domain.NewSymbol("AAPL")
+
+	var snap domain.IndicatorSnapshot
+	for i := 0; i < 60; i++ {
+		snap = calc.Update(createBar(t, sym, 100.0+float64(i), 10.0))
+	}
+	assert.NotEqual(t, snap.EMA9, snap.EMA50)
+	assert.NotEqual(t, snap.EMA21, snap.EMA50)
+	assert.Greater(t, snap.EMA9, snap.EMA50, "EMA9 reacts faster in uptrend")
+}
+
 func TestIndicators_VolumeSMA(t *testing.T) {
 	calc := monitor.NewIndicatorCalculator()
 	sym, _ := domain.NewSymbol("BTC/USD")

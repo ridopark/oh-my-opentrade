@@ -144,12 +144,14 @@ func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error
 		StochD:        snap.StochD,
 		EMA9:          snap.EMA9,
 		EMA21:         snap.EMA21,
+		EMA50:         snap.EMA50,
 		VWAP:          snap.VWAP,
 		Volume:        snap.Volume,
 		VolumeSMA:     snap.VolumeSMA,
 		ATR:           snap.ATR,
 		VWAPSD:        snap.VWAPSD,
 		AnchorRegimes: convertAnchorRegimes(snap.AnchorRegimes),
+		HTF:           convertHTFData(snap.HTF),
 	}
 	r.mu.Unlock()
 	return nil
@@ -164,6 +166,21 @@ func convertAnchorRegimes(regimes map[domain.Timeframe]domain.MarketRegime) map[
 		result[tf.String()] = start.AnchorRegime{
 			Type:     r.Type.String(),
 			Strength: r.Strength,
+		}
+	}
+	return result
+}
+
+func convertHTFData(htf map[domain.Timeframe]domain.HTFData) map[string]start.HTFIndicator {
+	if len(htf) == 0 {
+		return nil
+	}
+	result := make(map[string]start.HTFIndicator, len(htf))
+	for tf, d := range htf {
+		result[tf.String()] = start.HTFIndicator{
+			EMA50:  d.EMA50,
+			EMA200: d.EMA200,
+			Bias:   d.Bias,
 		}
 	}
 	return result
