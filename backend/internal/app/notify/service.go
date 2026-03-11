@@ -118,6 +118,7 @@ func (s *Service) Start(ctx context.Context) error {
 		{domain.EventWSCircuitBreakerTripped, s.fmtWSCircuitBreaker, false},
 		{domain.EventFillPollTimeout, s.fmtFillPollTimeout, false},
 		{domain.EventStaleOrderCancelled, s.fmtStaleOrderCancelled, false},
+		{domain.EventExitCircuitBroken, s.fmtExitCircuitBroken, false},
 		{domain.EventSystemStarted, s.fmtSystemStarted, false},
 	}
 
@@ -644,6 +645,14 @@ func (s *Service) fmtStaleOrderCancelled(ev domain.Event) string {
 			p.Direction, string(p.Symbol), p.BrokerOrderID, p.AgeSeconds, p.Strategy)
 	}
 	return "🗑️ Stale order force-canceled"
+}
+
+func (s *Service) fmtExitCircuitBroken(ev domain.Event) string {
+	if p, ok := ev.Payload.(domain.ExitCircuitBrokenPayload); ok {
+		return fmt.Sprintf("🚨 **Exit Circuit Breaker:** **%s** — %d consecutive exit failures, blocked for %.0fs. Broker may be rejecting all sells for this symbol.",
+			string(p.Symbol), p.Failures, p.CooldownSecs)
+	}
+	return "🚨 Exit circuit breaker tripped — exit retries blocked"
 }
 
 func (s *Service) fmtSystemStarted(ev domain.Event) string {
