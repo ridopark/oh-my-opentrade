@@ -34,6 +34,7 @@ type ORBConfig struct {
 	MaxSignalsPerSession int
 	HTFBiasEnabled       bool
 	ATRMultiplier        float64
+	SweepCooldownBars    int
 }
 
 func DefaultORBConfig() ORBConfig {
@@ -126,6 +127,7 @@ func NewORBConfigFromDNA(params map[string]any) ORBConfig {
 		MaxSignalsPerSession: orbExtractInt(params, "max_signals_per_session", def.MaxSignalsPerSession),
 		HTFBiasEnabled:       orbExtractBool(params, "htf_bias_enabled", false),
 		ATRMultiplier:        orbExtractFloat(params, "atr_multiplier", 0),
+		SweepCooldownBars:    orbExtractInt(params, "sweep_cooldown_bars", 0),
 	}
 }
 
@@ -159,6 +161,7 @@ type ORBSession struct {
 	Retest            RetestInfo
 	SignalsFired      int
 	BarsSinceBreakout int
+	SweepCooldown     int
 }
 
 type ORBTracker struct {
@@ -373,6 +376,21 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 }
 
 func (t *ORBTracker) onRangeSetBar(sess *ORBSession, bar domain.MarketBar, snap domain.IndicatorSnapshot, cfg ORBConfig) (*SetupCondition, bool) {
+	if cfg.SweepCooldownBars > 0 {
+		wickAbove := bar.High > sess.OrbHigh && bar.Close <= sess.OrbHigh
+		wickBelow := bar.Low < sess.OrbLow && bar.Close >= sess.OrbLow
+		if wickAbove || wickBelow {
+			sess.SweepCooldown = cfg.SweepCooldownBars
+			t.logger.Info("orb: liquidity sweep detected", "symbol", sess.Symbol, "high", bar.High, "low", bar.Low, "close", bar.Close, "cooldown", cfg.SweepCooldownBars)
+			return nil, false
+		}
+
+		if sess.SweepCooldown > 0 {
+			sess.SweepCooldown--
+			return nil, false
+		}
+	}
+
 	var rvol float64
 	if snap.VolumeSMA > 0 {
 		rvol = bar.Volume / snap.VolumeSMA
