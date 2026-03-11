@@ -3,6 +3,7 @@ package activation
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -136,9 +137,13 @@ func (s *Service) diffNewSymbols(effective []string) []string {
 	defer s.mu.Unlock()
 	var newSyms []string
 	for _, sym := range effective {
-		if _, ok := s.warmedSymbols[sym]; !ok {
-			newSyms = append(newSyms, sym)
+		if _, ok := s.warmedSymbols[sym]; ok {
+			continue
 		}
+		if strings.Contains(sym, "/") && !strings.HasSuffix(sym, "/USD") {
+			continue
+		}
+		newSyms = append(newSyms, sym)
 	}
 	return newSyms
 }
