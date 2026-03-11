@@ -39,10 +39,10 @@ allow_regimes = ["BALANCE", "REVERSAL"]
 stop_bps = 50
 limit_offset_bps = 5
 risk_per_trade_bps = 100
-max_position_bps = 1000
+max_position_bps = 700
 
 [regime_filter]
-enabled = false
+enabled = true
 allowed_regimes = ["BALANCE", "REVERSAL"]
 min_atr_pct = 0.8
 

@@ -66,10 +66,10 @@ enabled = true
 min_confidence = 0.60
 risk_scale_min = 0.50
 risk_scale_max = 1.00
-stop_tight_mult = 0.70
+stop_tight_mult = 0.60
 stop_wide_mult = 1.50
 size_tight_mult = 0.70
-size_wide_mult = 1.20
+size_wide_mult = 1.50
 
 [risk_revaluation]
 enabled = true
@@ -84,6 +84,11 @@ pct = 0.03
 type = "PROFIT_TARGET"
 [exit_rules.params]
 pct = 0.05
+
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 5
 
 [[exit_rules]]
 type = "MAX_LOSS"

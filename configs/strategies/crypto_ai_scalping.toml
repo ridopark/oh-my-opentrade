@@ -26,10 +26,10 @@ allowed_directions = ["LONG"]
 description = "Mean-reversion scalping tuned for crypto volatility. Buys oversold conditions and exits at the mean. Needs crypto pairs with tight spreads and deep liquidity during US trading hours. Ideal candidates show range-bound behavior with clear support/resistance, high 24h volume relative to peers, and stable funding rates. Avoid trending crypto with parabolic moves — this strategy profits from oscillation, not momentum."
 
 [params]
-rsi_long = 30.0
-rsi_short = 70.0
-stoch_long = 20.0
-stoch_short = 80.0
+rsi_long = 25.0
+rsi_short = 75.0
+stoch_long = 15.0
+stoch_short = 85.0
 rsi_exit_mid = 50.0
 allow_regimes = ["BALANCE", "REVERSAL"]
 cooldown_seconds = 90
@@ -49,6 +49,7 @@ max_slippage_bps = 20
 max_slippage_bps_offhours = 40
 risk_per_trade_bps = 100
 max_position_bps = 1000
+max_spread_bps = 40
 allowed_hours_start = "08:00"
 allowed_hours_end = "17:00"
 allowed_hours_tz = "America/New_York"
@@ -66,11 +67,11 @@ signals = { engine = "builtin", name = "ai_scalping_v1" }
 enabled = true
 min_confidence = 0.60
 risk_scale_min = 0.50
-risk_scale_max = 1.00
-stop_tight_mult = 0.70
-stop_wide_mult = 1.50
-size_tight_mult = 0.70
-size_wide_mult = 1.20
+risk_scale_max = 0.90
+stop_tight_mult = 0.80
+stop_wide_mult = 1.30
+size_tight_mult = 0.60
+size_wide_mult = 1.00
 
 [risk_revaluation]
 enabled = true
