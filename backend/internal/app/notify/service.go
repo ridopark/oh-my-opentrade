@@ -27,6 +27,7 @@ type notifyJob struct {
 	event       domain.Event
 	eventType   string
 	message     string
+	symbol      string
 	withChart   bool
 	priceLevels []domain.PriceLevel
 }
@@ -38,6 +39,7 @@ type chartCacheEntry struct {
 
 type batchEntry struct {
 	parts       []string
+	symbol      string
 	withChart   bool
 	lastEvent   domain.Event
 	timer       *time.Timer
@@ -200,7 +202,7 @@ func (s *Service) addToBatch(symbol, msg string, withChart bool, ev domain.Event
 
 	entry, exists := s.batches[symbol]
 	if !exists {
-		entry = &batchEntry{createdAt: time.Now()}
+		entry = &batchEntry{symbol: symbol, createdAt: time.Now()}
 		s.batches[symbol] = entry
 	}
 
@@ -208,12 +210,25 @@ func (s *Service) addToBatch(symbol, msg string, withChart bool, ev domain.Event
 	entry.withChart = entry.withChart || withChart
 	entry.lastEvent = ev
 
-	if p, ok := ev.Payload.(domain.TradeRealizedPayload); ok && len(entry.priceLevels) == 0 {
-		entry.priceLevels = []domain.PriceLevel{
-			{Label: fmt.Sprintf("Entry $%s", domain.FmtPrice(p.EntryPrice)), Price: p.EntryPrice, Color: "green"},
-			{Label: fmt.Sprintf("Exit $%s", domain.FmtPrice(p.ExitPrice)), Price: p.ExitPrice, Color: "red"},
+	if len(entry.priceLevels) == 0 {
+		switch p := ev.Payload.(type) {
+		case domain.OrderIntentEventPayload:
+			isEntry := p.Direction != string(domain.DirectionCloseLong)
+			if isEntry && p.LimitPrice > 0 {
+				entry.priceLevels = append(entry.priceLevels,
+					domain.PriceLevel{Label: fmt.Sprintf("Entry $%s", domain.FmtPrice(p.LimitPrice)), Price: p.LimitPrice, Color: "green"})
+				if p.StopLoss > 0 {
+					entry.priceLevels = append(entry.priceLevels,
+						domain.PriceLevel{Label: fmt.Sprintf("Stop $%s", domain.FmtPrice(p.StopLoss)), Price: p.StopLoss, Color: "red"})
+				}
+			}
+		case domain.TradeRealizedPayload:
+			entry.priceLevels = []domain.PriceLevel{
+				{Label: fmt.Sprintf("Entry $%s", domain.FmtPrice(p.EntryPrice)), Price: p.EntryPrice, Color: "green"},
+				{Label: fmt.Sprintf("Exit $%s", domain.FmtPrice(p.ExitPrice)), Price: p.ExitPrice, Color: "red"},
+			}
+			entry.withChart = true
 		}
-		entry.withChart = true
 	}
 
 	if entry.timer != nil {
@@ -248,6 +263,7 @@ func (s *Service) flushBatchLocked(symbol string) {
 	s.enqueueJob(notifyJob{
 		event:       entry.lastEvent,
 		eventType:   "batch",
+		symbol:      entry.symbol,
 		message:     combined,
 		withChart:   entry.withChart,
 		priceLevels: entry.priceLevels,
@@ -295,7 +311,10 @@ func (s *Service) processJob(ctx context.Context, workerID int, job notifyJob) {
 		return
 	}
 
-	symbol := s.extractSymbol(job.event)
+	symbol := job.symbol
+	if symbol == "" {
+		symbol = s.extractSymbol(job.event)
+	}
 	if symbol == "" {
 		if err := s.notifier.Notify(jobCtx, job.event.TenantID, job.message); err != nil {
 			s.log.Warn().Err(err).Str("event", job.eventType).Msg("notification failed")
