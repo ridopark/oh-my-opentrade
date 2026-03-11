@@ -211,6 +211,56 @@ func TestIndicators_EMA50_IndependentFromEMA9EMA21(t *testing.T) {
 	assert.Greater(t, snap.EMA9, snap.EMA50, "EMA9 reacts faster in uptrend")
 }
 
+func TestComputeStaticEMA_InsufficientData(t *testing.T) {
+	assert.Equal(t, 0.0, monitor.ComputeStaticEMA(nil, 10))
+	assert.Equal(t, 0.0, monitor.ComputeStaticEMA([]float64{1, 2}, 10))
+	assert.Equal(t, 0.0, monitor.ComputeStaticEMA([]float64{1}, 0))
+}
+
+func TestComputeStaticEMA_ConstantPrice(t *testing.T) {
+	closes := make([]float64, 200)
+	for i := range closes {
+		closes[i] = 50.0
+	}
+	assert.InDelta(t, 50.0, monitor.ComputeStaticEMA(closes, 200), 0.001)
+}
+
+func TestComputeStaticEMA_ExactPeriod(t *testing.T) {
+	closes := make([]float64, 9)
+	for i := range closes {
+		closes[i] = float64(i + 1)
+	}
+	assert.InDelta(t, 5.0, monitor.ComputeStaticEMA(closes, 9), 0.001)
+}
+
+func TestComputeStaticEMA_UpTrend(t *testing.T) {
+	closes := make([]float64, 50)
+	for i := range closes {
+		closes[i] = float64(i + 1)
+	}
+	ema := monitor.ComputeStaticEMA(closes, 10)
+	assert.Greater(t, ema, 0.0)
+	assert.Less(t, ema, 50.0)
+	assert.Greater(t, ema, 25.0, "EMA should track recent prices in uptrend")
+}
+
+func TestComputeStaticEMA_MatchesStreaming(t *testing.T) {
+	closes := make([]float64, 50)
+	for i := range closes {
+		closes[i] = 100.0 + float64(i)
+	}
+	staticEMA := monitor.ComputeStaticEMA(closes, 50)
+
+	calc := monitor.NewIndicatorCalculator()
+	sym, _ := domain.NewSymbol("AAPL")
+	var snap domain.IndicatorSnapshot
+	for _, c := range closes {
+		snap = calc.Update(createBar(t, sym, c, 10.0))
+	}
+	assert.InDelta(t, snap.EMA50, staticEMA, 0.001,
+		"ComputeStaticEMA should match streaming EMA50 for identical input")
+}
+
 func TestIndicators_VolumeSMA(t *testing.T) {
 	calc := monitor.NewIndicatorCalculator()
 	sym, _ := domain.NewSymbol("BTC/USD")
