@@ -218,8 +218,9 @@ func main() {
 			Msg("backtest mode enabled — wiring SimBroker + execution pipeline")
 
 		simBrokerInst = simbroker.New(simbroker.Config{
-			SlippageBPS:   slippageBPS,
-			InitialEquity: initialEquity,
+			SlippageBPS:     slippageBPS,
+			InitialEquity:   initialEquity,
+			DisableFillChan: true,
 		}, log.With().Str("component", "simbroker").Logger())
 
 		execBundle, err := bootstrap.BuildExecutionService(bootstrap.ExecutionDeps{
@@ -233,6 +234,7 @@ func main() {
 			Clock:         clockFn,
 			Config:        cfg,
 			InitialEquity: initialEquity,
+			IsBacktest:    true,
 			Logger:        log,
 		})
 		if err != nil {
@@ -244,6 +246,7 @@ func main() {
 			PositionGate: execBundle.PositionGate,
 			Broker:       simBrokerInst,
 			SpecStore:    specStore,
+			SnapshotFn:   monitorSvc.GetLastSnapshot,
 			TenantID:     "default",
 			EnvMode:      domain.EnvModePaper,
 			Clock:        clockFn,
@@ -425,6 +428,7 @@ func main() {
 		warmupBarsCache[sym.String()] = bars
 		n := monitorSvc.WarmUp(bars)
 		monitorSvc.ResetSessionIndicators(sym.String())
+		monitorSvc.MarkReady(sym.String())
 		warmupLog.Info().Str("symbol", sym.String()).Int("bars", n).Msg("indicator warmup complete")
 	}
 

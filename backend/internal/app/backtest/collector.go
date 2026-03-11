@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -115,15 +116,14 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 
 	tr := TradeRecord{
 		Symbol:   symbol,
-		Side:     side,
+		Side:     strings.ToLower(side),
 		Quantity: quantity,
 		Price:    price,
 		FilledAt: filledAt,
 	}
 
-	switch side {
+	switch strings.ToLower(side) {
 	case "buy":
-		// Opening a long: record as open buy; deduct cash.
 		c.openBuys[symbol] = append(c.openBuys[symbol], tr)
 		c.cash -= quantity * price
 	case "sell":

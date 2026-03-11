@@ -17,8 +17,9 @@ import (
 
 // Config holds SimBroker configuration.
 type Config struct {
-	SlippageBPS   int64   // slippage in basis points (default 5 per PRD)
-	InitialEquity float64 // starting cash/equity for the simulated account (default 100000)
+	SlippageBPS     int64   // slippage in basis points (default 5 per PRD)
+	InitialEquity   float64 // starting cash/equity for the simulated account (default 100000)
+	DisableFillChan bool    // skip fillCh sends; set when syncFill handles fills directly
 }
 
 // simOrder tracks a submitted order and its fill details.
@@ -43,9 +44,10 @@ type position struct {
 // and ports.OrderStreamPort. It fills orders instantly at the last known bar
 // close price with configurable slippage.
 type Broker struct {
-	slippageBPS   int64
-	initialEquity float64
-	log           zerolog.Logger
+	slippageBPS     int64
+	initialEquity   float64
+	disableFillChan bool
+	log             zerolog.Logger
 
 	mu        sync.RWMutex
 	prices    map[domain.Symbol]float64
@@ -68,15 +70,16 @@ func New(cfg Config, log zerolog.Logger) *Broker {
 		equity = 100_000
 	}
 	return &Broker{
-		slippageBPS:   cfg.SlippageBPS,
-		initialEquity: equity,
-		log:           log.With().Str("component", "simbroker").Logger(),
-		prices:        make(map[domain.Symbol]float64),
-		barTimes:      make(map[domain.Symbol]time.Time),
-		orders:        make(map[string]*simOrder),
-		positions:     make(map[string]*position),
-		cash:          equity,
-		fillCh:        make(chan ports.OrderUpdate, 256),
+		slippageBPS:     cfg.SlippageBPS,
+		initialEquity:   equity,
+		disableFillChan: cfg.DisableFillChan,
+		log:             log.With().Str("component", "simbroker").Logger(),
+		prices:          make(map[domain.Symbol]float64),
+		barTimes:        make(map[domain.Symbol]time.Time),
+		orders:          make(map[string]*simOrder),
+		positions:       make(map[string]*position),
+		cash:            equity,
+		fillCh:          make(chan ports.OrderUpdate, 256),
 	}
 }
 
@@ -193,17 +196,20 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 		Msg("order filled")
 
 	// Non-blocking send to fill channel for OrderStreamPort consumers.
-	select {
-	case b.fillCh <- ports.OrderUpdate{
-		BrokerOrderID:  orderID,
-		Event:          "fill",
-		Qty:            intent.Quantity,
-		Price:          fillPrice,
-		FilledQty:      intent.Quantity,
-		FilledAvgPrice: fillPrice,
-		FilledAt:       barTime,
-	}:
-	default:
+	// Skipped when DisableFillChan is set (syncFill mode handles fills inline).
+	if !b.disableFillChan {
+		select {
+		case b.fillCh <- ports.OrderUpdate{
+			BrokerOrderID:  orderID,
+			Event:          "fill",
+			Qty:            intent.Quantity,
+			Price:          fillPrice,
+			FilledQty:      intent.Quantity,
+			FilledAvgPrice: fillPrice,
+			FilledAt:       barTime,
+		}:
+		default:
+		}
 	}
 
 	return orderID, nil
@@ -270,8 +276,19 @@ func (b *Broker) ClosePosition(_ context.Context, _ domain.Symbol) (string, erro
 	return "", nil
 }
 
-func (b *Broker) GetOrderDetails(_ context.Context, _ string) (ports.OrderDetails, error) {
-	return ports.OrderDetails{}, nil
+func (b *Broker) GetOrderDetails(_ context.Context, orderID string) (ports.OrderDetails, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	ord, ok := b.orders[orderID]
+	if !ok {
+		return ports.OrderDetails{}, fmt.Errorf("simbroker: order %s not found", orderID)
+	}
+	return ports.OrderDetails{
+		Status:         "filled",
+		FilledQty:      ord.fillQty,
+		FilledAvgPrice: ord.fillPrice,
+		FilledAt:       ord.filledAt,
+	}, nil
 }
 
 // GetFillPrice returns the fill price for a given order ID. Used by the backtest

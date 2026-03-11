@@ -17,6 +17,7 @@ import (
 type ExecutionDeps struct {
 	EventBus      ports.EventBusPort
 	Broker        ports.BrokerPort
+	OrderStream   ports.OrderStreamPort // nil = poll fallback; set for SimBroker stream fills
 	Repo          ports.RepositoryPort
 	QuoteProvider execution.QuoteProvider // bid/ask for SlippageGuard
 	AccountPort   ports.AccountPort       // nil = skip BuyingPowerGuard
@@ -78,6 +79,12 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 		execution.WithExposureGuard(execution.NewExposureGuard(deps.Broker, deps.InitialEquity, execLog)),
 		execution.WithSpreadGuard(execution.NewSpreadGuard(deps.QuoteProvider, execLog)),
 		execution.WithTradingWindowGuard(execution.NewTradingWindowGuard(execLog)),
+	}
+	if deps.OrderStream != nil {
+		execOpts = append(execOpts, execution.WithOrderStream(deps.OrderStream))
+	}
+	if deps.IsBacktest {
+		execOpts = append(execOpts, execution.WithSyncFill())
 	}
 	if deps.AccountPort != nil {
 		bpGuard := execution.NewBuyingPowerGuard(deps.AccountPort, execLog)
