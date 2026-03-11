@@ -256,6 +256,28 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 	return snap
 }
 
+// ComputeStaticEMA computes an EMA over a slice of close prices using the
+// standard seed-with-SMA approach. Returns 0 if len(closes) < period.
+// This is used for offline/static computation (e.g., Daily EMA200 from
+// historical bars) where the streaming IndicatorCalculator's maxWindowSize
+// would be insufficient.
+func ComputeStaticEMA(closes []float64, period int) float64 {
+	if len(closes) < period || period <= 0 {
+		return 0
+	}
+	sum := 0.0
+	for i := 0; i < period; i++ {
+		sum += closes[i]
+	}
+	ema := sum / float64(period)
+
+	multiplier := 2.0 / (float64(period) + 1.0)
+	for i := period; i < len(closes); i++ {
+		ema = (closes[i]-ema)*multiplier + ema
+	}
+	return ema
+}
+
 func trueRange(high, low, prevClose float64) float64 {
 	hl := high - low
 	hc := high - prevClose

@@ -138,6 +138,8 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 		}
 	}
 
+	warmupHTF(ctx, infra, svc, syms, warmupLog)
+
 	var runnerWarmupCalc *monitor.IndicatorCalculator
 	var runnerWarmupSnapshotFn strategy.IndicatorSnapshotFunc
 	if svc.useStrategyV2 && svc.strategyRunner != nil {
@@ -336,6 +338,82 @@ func symbolStrings(syms []domain.Symbol) []string {
 	return out
 }
 
+func warmupHTF(ctx context.Context, infra *infraDeps, svc *appServices, syms symbolLists, log zerolog.Logger) {
+	const (
+		hourlyBarsNeeded = 50
+		dailyBarsNeeded  = 200
+	)
+
+	if len(syms.all) == 0 {
+		return
+	}
+
+	log.Info().Int("symbols", len(syms.all)).Msg("starting HTF warmup (1H EMA50, 1D EMA200)")
+
+	_, prevEnd := domain.PreviousRTHSession(time.Now())
+	cryptoNow := time.Now().UTC()
+
+	for _, sym := range syms.all {
+		var hourlyTo, dailyTo time.Time
+		if sym.IsCryptoSymbol() {
+			hourlyTo = cryptoNow
+			dailyTo = cryptoNow
+		} else {
+			hourlyTo = prevEnd
+			dailyTo = prevEnd
+		}
+
+		hourlyFrom := hourlyTo.Add(-time.Duration(float64(hourlyBarsNeeded)*1.3) * time.Hour)
+		bars1h, err := infra.alpacaAdapter.GetHistoricalBars(ctx, sym, "1h", hourlyFrom, hourlyTo)
+		if err != nil {
+			log.Warn().Err(err).Str("symbol", string(sym)).Msg("1H warmup fetch failed")
+		} else if len(bars1h) > 0 {
+			n := svc.monitor.WarmUpHTF(bars1h)
+			log.Info().Str("symbol", string(sym)).Int("bars", n).Msg("1H EMA50 warmup complete")
+		}
+
+		dailyFrom := dailyTo.Add(-time.Duration(float64(dailyBarsNeeded)*1.5) * 24 * time.Hour)
+		bars1d, err := infra.alpacaAdapter.GetHistoricalBars(ctx, sym, "1d", dailyFrom, dailyTo)
+		if err != nil {
+			log.Warn().Err(err).Str("symbol", string(sym)).Msg("1D warmup fetch failed")
+			continue
+		}
+		if len(bars1d) < dailyBarsNeeded {
+			log.Warn().Str("symbol", string(sym)).Int("bars", len(bars1d)).
+				Int("needed", dailyBarsNeeded).Msg("insufficient daily bars for EMA200")
+		}
+
+		closes := make([]float64, len(bars1d))
+		for i, b := range bars1d {
+			closes[i] = b.Close
+		}
+		ema200 := monitor.ComputeStaticEMA(closes, dailyBarsNeeded)
+
+		if ema200 > 0 {
+			lastClose := bars1d[len(bars1d)-1].Close
+			bias := "NEUTRAL"
+			if lastClose > ema200*1.005 {
+				bias = "BULLISH"
+			} else if lastClose < ema200*0.995 {
+				bias = "BEARISH"
+			}
+
+			svc.monitor.SetStaticHTFData(string(sym), "1d", domain.HTFData{
+				EMA200: ema200,
+				Bias:   bias,
+			})
+			log.Info().Str("symbol", string(sym)).
+				Float64("ema200", ema200).
+				Float64("last_close", lastClose).
+				Str("bias", bias).
+				Int("bars", len(bars1d)).
+				Msg("1D EMA200 warmup complete")
+		}
+	}
+
+	log.Info().Msg("HTF warmup finished")
+}
+
 type htfWarmupReq struct {
 	symbol    domain.Symbol
 	timeframe domain.Timeframe
@@ -367,6 +445,10 @@ func collectHTFWarmupReqs(runner *strategy.Runner) []htfWarmupReq {
 					barDur = 5 * time.Minute
 				case "15m":
 					barDur = 15 * time.Minute
+				case "1h":
+					barDur = time.Hour
+				case "1d":
+					barDur = 24 * time.Hour
 				default:
 					barDur = time.Minute
 				}
