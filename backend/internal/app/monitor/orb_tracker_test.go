@@ -191,10 +191,10 @@ func TestORBTracker_RetestTimeout(t *testing.T) {
 		bt := breakT.Add(time.Duration(i+1) * time.Minute)
 		tr.OnBar(createBarAt(t, sym, bt, 104, 105, 103, 104, 10), createSnap(sym, bt, 10, 10), cfg, false)
 	}
-	require.Equal(t, monitor.ORBStateDoneForSession, tr.GetSession(sym.String()).State)
+	require.Equal(t, monitor.ORBStateRangeSet, tr.GetSession(sym.String()).State, "retest timeout should cycle to RANGE_SET")
 }
 
-func TestORBTracker_ChopInvalidation_DoneForSession(t *testing.T) {
+func TestORBTracker_ChopInvalidation_CyclesToRangeSet(t *testing.T) {
 	sym, _ := domain.NewSymbol("AAPL")
 	tr := monitor.NewORBTracker()
 	cfg := monitor.DefaultORBConfig()
@@ -213,7 +213,7 @@ func TestORBTracker_ChopInvalidation_DoneForSession(t *testing.T) {
 	bar := createBarAt(t, sym, invalidateT, 104, 104, 90, 90, 10)
 	snap := createSnap(sym, invalidateT, 10, 10)
 	tr.OnBar(bar, snap, cfg, false)
-	require.Equal(t, monitor.ORBStateDoneForSession, tr.GetSession(sym.String()).State)
+	require.Equal(t, monitor.ORBStateRangeSet, tr.GetSession(sym.String()).State, "breakout invalidation should cycle to RANGE_SET")
 }
 
 func TestORBTracker_ReplayMode_NoSetupReturned(t *testing.T) {
@@ -234,7 +234,7 @@ func TestORBTracker_ReplayMode_NoSetupReturned(t *testing.T) {
 	setup, detected := tr.OnBar(createBarAt(t, sym, retestT, 104, 104, 101, 103, 20), createSnap(sym, retestT, 20, 10), cfg, true)
 	require.False(t, detected)
 	require.Nil(t, setup)
-	require.Equal(t, monitor.ORBStateDoneForSession, tr.GetSession(sym.String()).State)
+	require.Equal(t, monitor.ORBStateRangeSet, tr.GetSession(sym.String()).State, "replay-suppressed signal should cycle to RANGE_SET")
 }
 
 func TestORBTracker_ConfidenceFormula(t *testing.T) {
