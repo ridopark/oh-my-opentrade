@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -158,6 +159,34 @@ func (s *AIService) schedulerLoop(ctx context.Context) {
 	}
 }
 
+func filterByAssetClass(symbols []string, assetClasses []string) []string {
+	if len(assetClasses) == 0 {
+		return symbols
+	}
+	wantCrypto, wantEquity := false, false
+	for _, ac := range assetClasses {
+		switch strings.ToUpper(ac) {
+		case "CRYPTO":
+			wantCrypto = true
+		case "EQUITY":
+			wantEquity = true
+		}
+	}
+	if wantCrypto && wantEquity {
+		return symbols
+	}
+	var out []string
+	for _, sym := range symbols {
+		isCrypto := strings.Contains(sym, "/")
+		if isCrypto && wantCrypto {
+			out = append(out, sym)
+		} else if !isCrypto && wantEquity {
+			out = append(out, sym)
+		}
+	}
+	return out
+}
+
 const snapshotBatchSize = 500
 
 func (s *AIService) RunAIScreen(ctx context.Context, asOfET time.Time) error {
@@ -215,8 +244,20 @@ func (s *AIService) RunAIScreen(ctx context.Context, asOfET time.Time) error {
 
 	results := make([]aiStrategyResult, 0, len(activeSpecs))
 	for _, spec := range activeSpecs {
-		r := aiStrategyResult{StrategyKey: string(spec.ID), Candidates: len(passed)}
-		if err := s.runForStrategy(ctx, spec, passedSnaps, passed, runID, asOfET, &r); err != nil {
+		filtered := filterByAssetClass(passed, spec.Routing.AssetClasses)
+		filteredSnaps := make(map[string]ports.Snapshot, len(filtered))
+		for _, sym := range filtered {
+			if snap, ok := passedSnaps[sym]; ok {
+				filteredSnaps[sym] = snap
+			}
+		}
+		r := aiStrategyResult{StrategyKey: string(spec.ID), Candidates: len(filtered)}
+		if len(filtered) == 0 {
+			s.log.Info().Str("strategy", string(spec.ID)).Strs("asset_classes", spec.Routing.AssetClasses).Msg("ai screener: no candidates for asset class")
+			results = append(results, r)
+			continue
+		}
+		if err := s.runForStrategy(ctx, spec, filteredSnaps, filtered, runID, asOfET, &r); err != nil {
 			r.Err = err
 			s.log.Error().Err(err).Str("strategy", string(spec.ID)).Msg("ai screener: strategy run failed")
 		}
@@ -462,6 +503,13 @@ func fmtDurationShort(d time.Duration) string {
 	return fmt.Sprintf("%dm %ds", m, secs)
 }
 
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
+}
+
 func shortenError(err error) string {
 	msg := err.Error()
 	if idx := strings.LastIndex(msg, ": "); idx > 0 && idx < len(msg)-2 {
@@ -496,7 +544,7 @@ func (s *AIService) callModel(ctx context.Context, model, prompt string) (string
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.aiCfg.BaseURL+"/v1/chat/completions", bytes.NewReader(reqBody))
@@ -517,7 +565,8 @@ func (s *AIService) callModel(ctx context.Context, model, prompt string) (string
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("endpoint returned status %d", resp.StatusCode)
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("endpoint returned status %d: %s", resp.StatusCode, truncate(string(respBody), 200))
 	}
 
 	var completion aiChatCompletionResponse
