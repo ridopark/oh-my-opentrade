@@ -52,7 +52,7 @@ allowed_regimes = ["TREND"]
 min_atr_pct = 0.8
 
 [hooks]
-signals = { engine = "builtin", name = "orb_v1" }
+signals = { engine = "builtin", name = "orb_break_retest" }
 
 [options]
 enabled = false

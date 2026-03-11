@@ -50,6 +50,10 @@ type WSClient struct {
 	activeBarHandler   func(alpacastream.Bar)
 	activeTradeHandler func(alpacastream.Trade)
 
+	// pendingSymbols holds symbols queued for subscription before WS connects.
+	// Protected by mu. Drained automatically after Connect() succeeds.
+	pendingSymbols []domain.Symbol
+
 	// connectFactory builds a real alpacastream.StocksClient and returns its Connect func.
 	// Overridable in tests.
 	connectFactory func(symStrs []string, barHandler func(alpacastream.Bar), tradeHandler func(alpacastream.Trade)) connectFn
@@ -128,6 +132,8 @@ func (w *WSClient) defaultConnectFactory(symStrs []string, barHandler func(alpac
 			return err
 		}
 
+		w.drainPendingSubscriptions()
+
 		defer func() {
 			w.mu.Lock()
 			w.activeClient = nil
@@ -149,19 +155,24 @@ func (w *WSClient) defaultConnectFactory(symStrs []string, barHandler func(alpac
 	}
 }
 
-// SubscribeSymbols adds new symbols to the active WebSocket stream.
-// Returns ErrNoActiveClient if no stream is currently connected.
 func (w *WSClient) SubscribeSymbols(ctx context.Context, symbols []domain.Symbol) error {
 	w.mu.Lock()
 	sc := w.activeClient
 	barH := w.activeBarHandler
 	tradeH := w.activeTradeHandler
+	if sc == nil {
+		w.pendingSymbols = append(w.pendingSymbols, symbols...)
+		w.mu.Unlock()
+		log.Info().Int("queued", len(symbols)).Int("total_pending", len(w.pendingSymbols)).
+			Msg("equity WS: queued symbols for subscription (no active client)")
+		return nil
+	}
 	w.mu.Unlock()
 
-	if sc == nil {
-		return ErrNoActiveClient
-	}
+	return w.subscribeNow(sc, barH, tradeH, symbols)
+}
 
+func (w *WSClient) subscribeNow(sc *alpacastream.StocksClient, barH func(alpacastream.Bar), tradeH func(alpacastream.Trade), symbols []domain.Symbol) error {
 	symStrs := make([]string, len(symbols))
 	for i, s := range symbols {
 		symStrs[i] = string(s)
@@ -178,7 +189,25 @@ func (w *WSClient) SubscribeSymbols(ctx context.Context, symbols []domain.Symbol
 	return nil
 }
 
-// ErrNoActiveClient is returned when SubscribeSymbols is called without an active WS connection.
+func (w *WSClient) drainPendingSubscriptions() {
+	w.mu.Lock()
+	pending := w.pendingSymbols
+	w.pendingSymbols = nil
+	sc := w.activeClient
+	barH := w.activeBarHandler
+	tradeH := w.activeTradeHandler
+	w.mu.Unlock()
+
+	if len(pending) == 0 || sc == nil {
+		return
+	}
+
+	log.Info().Int("count", len(pending)).Msg("equity WS: draining pending subscriptions")
+	if err := w.subscribeNow(sc, barH, tradeH, pending); err != nil {
+		log.Error().Err(err).Int("count", len(pending)).Msg("equity WS: failed to drain pending subscriptions")
+	}
+}
+
 var ErrNoActiveClient = errors.New("no active WebSocket client")
 
 // ParseBarMessage converts raw Alpaca bar JSON into a domain.MarketBar.
