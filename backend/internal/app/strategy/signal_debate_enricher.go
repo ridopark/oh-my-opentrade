@@ -175,7 +175,7 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 		strategyName := extractStrategyName(sig.StrategyInstanceID)
 		summary, perfErr := e.stratPerf.GetPerformanceSummary(
 			ctx, event.TenantID, event.EnvMode,
-			strategyName, sig.Symbol, 30*24*time.Hour,
+			strategyName, sig.Symbol, 7*24*time.Hour,
 		)
 		if perfErr != nil {
 			e.logger.Warn("strategy perf lookup failed", "symbol", sig.Symbol, "error", perfErr)
@@ -183,18 +183,18 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 			debateOpts = append(debateOpts, ports.WithStrategyPerformance(summary))
 
 			const minTradesForVeto = 5
-			if summary.HasNegativeExpectancy(regime.Type, minTradesForVeto) {
-				e.logger.Warn("pre-LLM veto: negative expectancy",
+			if summary.HasNegativeExpectancyForSymbol(minTradesForVeto) {
+				symStats := summary.BySymbol
+				e.logger.Warn("pre-LLM veto: negative expectancy for symbol",
 					"symbol", sig.Symbol,
-					"regime", regime.Type,
-					"expectancy", summary.Overall.Expectancy,
-					"trades", summary.Overall.TradeCount,
+					"expectancy", symStats.Expectancy,
+					"trades", symStats.TradeCount,
 				)
 				enrichment := domain.SignalEnrichment{
 					Signal:     ref,
 					Status:     domain.EnrichmentVetoed,
 					Confidence: 0.1,
-					Rationale:  fmt.Sprintf("pre-LLM veto: negative expectancy $%.2f/trade in %s (%d trades)", summary.Overall.Expectancy, regime.Type, summary.Overall.TradeCount),
+					Rationale:  fmt.Sprintf("pre-LLM veto: negative expectancy $%.2f/trade for %s (%d trades, 7d)", symStats.Expectancy, sig.Symbol, symStats.TradeCount),
 					Direction:  direction,
 				}
 				e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
