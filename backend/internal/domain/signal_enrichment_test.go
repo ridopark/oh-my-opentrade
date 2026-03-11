@@ -99,31 +99,36 @@ func TestSignalEnrichment_ExitSkipped(t *testing.T) {
 
 func TestSignalEnrichment_AIDirectionConflict(t *testing.T) {
 	tests := []struct {
-		name     string
-		status   domain.EnrichmentStatus
-		sigType  string
-		sigSide  string
-		aiDir    domain.Direction
-		conflict bool
+		name          string
+		status        domain.EnrichmentStatus
+		sigType       string
+		sigSide       string
+		aiDir         domain.Direction
+		confidence    float64
+		minConfidence float64
+		conflict      bool
 	}{
-		{"buy signal + AI SHORT = conflict", domain.EnrichmentOK, "entry", "buy", domain.DirectionShort, true},
-		{"sell signal + AI LONG = conflict", domain.EnrichmentOK, "entry", "sell", domain.DirectionLong, true},
-		{"buy signal + AI LONG = no conflict", domain.EnrichmentOK, "entry", "buy", domain.DirectionLong, false},
-		{"sell signal + AI SHORT = no conflict", domain.EnrichmentOK, "entry", "sell", domain.DirectionShort, false},
-		{"AI timeout = no conflict (fallback)", domain.EnrichmentTimeout, "entry", "buy", domain.DirectionShort, false},
-		{"AI error = no conflict (fallback)", domain.EnrichmentError, "entry", "buy", domain.DirectionShort, false},
-		{"AI skipped = no conflict (fallback)", domain.EnrichmentSkipped, "entry", "buy", domain.DirectionShort, false},
-		{"AI vetoed = no conflict (handled by veto gate)", domain.EnrichmentVetoed, "entry", "buy", domain.DirectionShort, false},
-		{"exit signal = no conflict (exits skip gate)", domain.EnrichmentOK, "exit", "sell", domain.DirectionLong, false},
+		{"buy signal + AI SHORT = conflict", domain.EnrichmentOK, "entry", "buy", domain.DirectionShort, 0.75, 0.5, true},
+		{"sell signal + AI LONG = conflict", domain.EnrichmentOK, "entry", "sell", domain.DirectionLong, 0.80, 0.5, true},
+		{"buy signal + AI LONG = no conflict", domain.EnrichmentOK, "entry", "buy", domain.DirectionLong, 0.80, 0.5, false},
+		{"sell signal + AI SHORT = no conflict", domain.EnrichmentOK, "entry", "sell", domain.DirectionShort, 0.80, 0.5, false},
+		{"AI timeout = no conflict (fallback)", domain.EnrichmentTimeout, "entry", "buy", domain.DirectionShort, 0.80, 0.5, false},
+		{"AI error = no conflict (fallback)", domain.EnrichmentError, "entry", "buy", domain.DirectionShort, 0.80, 0.5, false},
+		{"AI skipped = no conflict (fallback)", domain.EnrichmentSkipped, "entry", "buy", domain.DirectionShort, 0.80, 0.5, false},
+		{"AI vetoed = no conflict (handled by veto gate)", domain.EnrichmentVetoed, "entry", "buy", domain.DirectionShort, 0.80, 0.5, false},
+		{"exit signal = no conflict (exits skip gate)", domain.EnrichmentOK, "exit", "sell", domain.DirectionLong, 0.80, 0.5, false},
+		{"low confidence conflict = no veto", domain.EnrichmentOK, "entry", "buy", domain.DirectionShort, 0.35, 0.5, false},
+		{"confidence at threshold = conflict", domain.EnrichmentOK, "entry", "buy", domain.DirectionShort, 0.50, 0.5, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			e := domain.SignalEnrichment{
-				Signal:    domain.SignalRef{SignalType: tt.sigType, Side: tt.sigSide},
-				Status:    tt.status,
-				Direction: tt.aiDir,
+				Signal:     domain.SignalRef{SignalType: tt.sigType, Side: tt.sigSide},
+				Status:     tt.status,
+				Direction:  tt.aiDir,
+				Confidence: tt.confidence,
 			}
-			assert.Equal(t, tt.conflict, e.AIDirectionConflict())
+			assert.Equal(t, tt.conflict, e.AIDirectionConflict(tt.minConfidence))
 		})
 	}
 }
