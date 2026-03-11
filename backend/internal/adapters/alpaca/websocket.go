@@ -44,6 +44,12 @@ type WSClient struct {
 	metrics        *metrics.Metrics
 	tracker        *feedTracker
 
+	// activeClient is the currently connected StocksClient, if any.
+	// Protected by mu. Used for dynamic symbol subscription via SubscribeSymbols.
+	activeClient       *alpacastream.StocksClient
+	activeBarHandler   func(alpacastream.Bar)
+	activeTradeHandler func(alpacastream.Trade)
+
 	// connectFactory builds a real alpacastream.StocksClient and returns its Connect func.
 	// Overridable in tests.
 	connectFactory func(symStrs []string, barHandler func(alpacastream.Bar), tradeHandler func(alpacastream.Trade)) connectFn
@@ -106,14 +112,34 @@ func (w *WSClient) defaultConnectFactory(symStrs []string, barHandler func(alpac
 			alpacastream.WithTrades(tradeHandler, symStrs...),
 			alpacastream.WithReconnectSettings(1, 0),
 		)
+
+		w.mu.Lock()
+		w.activeClient = sc
+		w.activeBarHandler = barHandler
+		w.activeTradeHandler = tradeHandler
+		w.mu.Unlock()
+
 		if err := sc.Connect(ctx); err != nil {
+			w.mu.Lock()
+			w.activeClient = nil
+			w.activeBarHandler = nil
+			w.activeTradeHandler = nil
+			w.mu.Unlock()
 			return err
 		}
+
+		defer func() {
+			w.mu.Lock()
+			w.activeClient = nil
+			w.activeBarHandler = nil
+			w.activeTradeHandler = nil
+			w.mu.Unlock()
+		}()
+
 		select {
 		case err := <-sc.Terminated():
 			return err
 		case <-ctx.Done():
-			// Wait for SDK to send RFC6455 close frame before returning.
 			select {
 			case <-sc.Terminated():
 			case <-time.After(3 * time.Second):
@@ -122,6 +148,38 @@ func (w *WSClient) defaultConnectFactory(symStrs []string, barHandler func(alpac
 		}
 	}
 }
+
+// SubscribeSymbols adds new symbols to the active WebSocket stream.
+// Returns ErrNoActiveClient if no stream is currently connected.
+func (w *WSClient) SubscribeSymbols(ctx context.Context, symbols []domain.Symbol) error {
+	w.mu.Lock()
+	sc := w.activeClient
+	barH := w.activeBarHandler
+	tradeH := w.activeTradeHandler
+	w.mu.Unlock()
+
+	if sc == nil {
+		return ErrNoActiveClient
+	}
+
+	symStrs := make([]string, len(symbols))
+	for i, s := range symbols {
+		symStrs[i] = string(s)
+	}
+
+	if err := sc.SubscribeToBars(barH, symStrs...); err != nil {
+		return fmt.Errorf("subscribe bars: %w", err)
+	}
+	if err := sc.SubscribeToTrades(tradeH, symStrs...); err != nil {
+		return fmt.Errorf("subscribe trades: %w", err)
+	}
+
+	log.Info().Strs("symbols", symStrs).Msg("equity WS: dynamically subscribed new symbols")
+	return nil
+}
+
+// ErrNoActiveClient is returned when SubscribeSymbols is called without an active WS connection.
+var ErrNoActiveClient = errors.New("no active WebSocket client")
 
 // ParseBarMessage converts raw Alpaca bar JSON into a domain.MarketBar.
 func (w *WSClient) ParseBarMessage(data []byte) (domain.MarketBar, error) {

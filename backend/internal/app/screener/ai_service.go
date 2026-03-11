@@ -205,6 +205,13 @@ func (s *AIService) bootstrapFromDB(ctx context.Context) {
 }
 
 func (s *AIService) schedulerLoop(ctx context.Context) {
+	if s.needsCatchUpScreen() {
+		s.log.Info().Msg("ai screener: missed today's scheduled run — running catch-up")
+		if err := s.RunAIScreen(ctx, s.now()); err != nil {
+			s.log.Error().Err(err).Msg("ai screener catch-up run failed")
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -235,6 +242,44 @@ func (s *AIService) schedulerLoop(ctx context.Context) {
 			s.log.Error().Err(err).Msg("ai screener run failed")
 		}
 	}
+}
+
+func (s *AIService) needsCatchUpScreen() bool {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return false
+	}
+	nowET := s.now().In(loc)
+
+	if isNonTradingDay(nowET) {
+		return false
+	}
+
+	scheduled := time.Date(nowET.Year(), nowET.Month(), nowET.Day(),
+		s.cfg.AIRunAtHourET, s.cfg.AIRunAtMinuteET, 0, 0, loc)
+	if nowET.Before(scheduled) {
+		return false
+	}
+
+	todayStart := time.Date(nowET.Year(), nowET.Month(), nowET.Day(), 0, 0, 0, 0, loc)
+
+	specs, err := s.specStore.List(context.Background(), nil)
+	if err != nil {
+		return true
+	}
+	for _, spec := range specs {
+		if spec.Screening.Description == "" {
+			continue
+		}
+		results, err := s.repo.GetLatestAIResults(context.Background(), s.tenantID, s.envMode, string(spec.ID))
+		if err != nil || len(results) == 0 {
+			return true
+		}
+		if results[0].AsOf.In(loc).Before(todayStart) {
+			return true
+		}
+	}
+	return false
 }
 
 func filterByAssetClass(symbols []string, assetClasses []string) []string {

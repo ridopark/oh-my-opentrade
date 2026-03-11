@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy/builtin"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -41,6 +42,7 @@ type StrategyPipeline struct {
 	RiskSizer    *strategy.RiskSizer
 	LifecycleSvc *strategy.LifecycleService
 	BaseSymbols  []string
+	Activator    *PipelineActivator
 }
 
 // BuildStrategyPipeline constructs the canonical strategy v2 pipeline:
@@ -146,6 +148,15 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 		baseSymbols = append(baseSymbols, sym)
 	}
 
+	activator := &PipelineActivator{
+		runner:   runner,
+		router:   router,
+		registry: registry,
+		specs:    allSpecs,
+		logger:   slog.Default(),
+		clock:    clockFn,
+	}
+
 	return &StrategyPipeline{
 		Runner:       runner,
 		Router:       router,
@@ -153,5 +164,107 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 		RiskSizer:    riskSizer,
 		LifecycleSvc: lifecycleSvc,
 		BaseSymbols:  baseSymbols,
+		Activator:    activator,
 	}, nil
+}
+
+// PipelineActivator creates and registers strategy instances for dynamically
+// screened symbols. Satisfies activation.StrategyActivator.
+type PipelineActivator struct {
+	runner   *strategy.Runner
+	router   *strategy.Router
+	registry *strategy.MemRegistry
+	specs    []stratports.Spec
+	logger   *slog.Logger
+	clock    func() time.Time
+}
+
+func (pa *PipelineActivator) ActivateSymbol(symbol string, bars1m, barsHTF []domain.MarketBar, sessionOpen time.Time) {
+	for _, spec := range pa.specs {
+		hookRef, hasHook := spec.Hooks["signals"]
+		if !hasHook {
+			continue
+		}
+		implID, err := start.NewStrategyID(hookRef.Name)
+		if err != nil {
+			continue
+		}
+		impl, err := pa.registry.Get(implID)
+		if err != nil {
+			continue
+		}
+
+		existing := pa.router.InstancesForSymbol(symbol)
+		alreadyRegistered := false
+		for _, inst := range existing {
+			if inst.Strategy().Meta().ID == implID {
+				alreadyRegistered = true
+				break
+			}
+		}
+		if alreadyRegistered {
+			continue
+		}
+
+		instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s:dynamic", spec.ID, spec.Version, symbol))
+		inst := strategy.NewInstance(instanceID, impl, spec.Params, strategy.InstanceAssignment{
+			Symbols:           []string{symbol},
+			Timeframes:        spec.Routing.Timeframes,
+			Priority:          spec.Routing.Priority,
+			AllowedDirections: spec.Routing.AllowedDirections,
+		}, start.LifecycleLiveActive, pa.logger)
+
+		initCtx := strategy.NewContext(pa.clock(), pa.logger, nil)
+		if err := inst.InitSymbol(initCtx, symbol, nil); err != nil {
+			pa.logger.Warn("activation: failed to init symbol", "spec", spec.ID.String(), "symbol", symbol, "error", err)
+			continue
+		}
+
+		pa.router.Register(inst)
+	}
+
+	snapshotFn := makeSnapshotFn()
+	if len(bars1m) > 0 {
+		pa.runner.WarmUp(symbol, bars1m, snapshotFn)
+	}
+	for _, tf := range collectHTFTimeframes(pa.router, symbol) {
+		if len(barsHTF) > 0 {
+			pa.runner.WarmUpTF(symbol, tf, barsHTF, snapshotFn)
+		}
+	}
+	pa.runner.InitAggregators(sessionOpen)
+}
+
+func makeSnapshotFn() strategy.IndicatorSnapshotFunc {
+	calc := monitor.NewIndicatorCalculator()
+	return func(bar domain.MarketBar) start.IndicatorData {
+		snap := calc.Update(bar)
+		return start.IndicatorData{
+			RSI:       snap.RSI,
+			StochK:    snap.StochK,
+			StochD:    snap.StochD,
+			EMA9:      snap.EMA9,
+			EMA21:     snap.EMA21,
+			EMA50:     snap.EMA50,
+			VWAP:      snap.VWAP,
+			Volume:    snap.Volume,
+			VolumeSMA: snap.VolumeSMA,
+		}
+	}
+}
+
+func collectHTFTimeframes(router *strategy.Router, symbol string) []string {
+	seen := make(map[string]struct{})
+	for _, inst := range router.InstancesForSymbol(symbol) {
+		for _, tf := range inst.Assignment().Timeframes {
+			if tf != "1m" {
+				seen[tf] = struct{}{}
+			}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for tf := range seen {
+		result = append(result, tf)
+	}
+	return result
 }
