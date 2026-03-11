@@ -185,14 +185,18 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 			continue
 		}
 
-		if details.Status == "canceled" || details.Status == "expired" || details.Status == "rejected" {
+		isTerminal := details.Status == "canceled" || details.Status == "expired" || details.Status == "rejected"
+		if isTerminal {
 			if err := s.repo.UpdateOrderStatus(ctx, order.BrokerOrderID, details.Status); err != nil {
 				ol.Error().Err(err).Msg("reconcile: failed to update terminal status")
 			} else {
 				ol.Info().Str("status", details.Status).Msg("reconcile: marked order terminal")
 				updated++
 			}
-			continue
+			if details.FilledQty <= 0 {
+				continue
+			}
+			ol.Info().Float64("filled_qty", details.FilledQty).Msg("reconcile: terminal order has fills — checking for missed trades")
 		}
 
 		if details.FilledQty <= 0 {
@@ -242,12 +246,12 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 			continue
 		}
 
-		if details.Status == "filled" {
-			if uErr := s.repo.UpdateOrderFill(ctx, order.BrokerOrderID, fillTime, details.FilledAvgPrice, details.FilledQty); uErr != nil {
-				ol.Error().Err(uErr).Msg("reconcile: failed to update order fill record")
-			}
-			if uErr := s.repo.UpdateOrderStatus(ctx, order.BrokerOrderID, "filled"); uErr != nil {
-				ol.Error().Err(uErr).Msg("reconcile: failed to update order status to filled")
+		if uErr := s.repo.UpdateOrderFill(ctx, order.BrokerOrderID, fillTime, details.FilledAvgPrice, details.FilledQty); uErr != nil {
+			ol.Error().Err(uErr).Msg("reconcile: failed to update order fill record")
+		}
+		if !isTerminal {
+			if uErr := s.repo.UpdateOrderStatus(ctx, order.BrokerOrderID, details.Status); uErr != nil {
+				ol.Error().Err(uErr).Msg("reconcile: failed to update order status")
 			}
 		}
 
@@ -1017,51 +1021,49 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 		brokerOrderID := key.(string)
 		po := value.(*pendingOrder)
 
-		// Skip orders that are too new (avoid racing with WS).
 		if time.Since(po.submitStart) < 10*time.Second {
 			return true
 		}
 
-		status, err := s.broker.GetOrderStatus(ctx, brokerOrderID)
+		details, err := s.broker.GetOrderDetails(ctx, brokerOrderID)
 		if err != nil {
-			s.log.Warn().Err(err).Str("broker_order_id", brokerOrderID).Msg("reconcile: status check failed")
+			s.log.Warn().Err(err).Str("broker_order_id", brokerOrderID).Msg("reconcile: order details check failed")
 			return true
 		}
 
-		l := s.log.With().Str("broker_order_id", brokerOrderID).Str("status", status).Logger()
+		l := s.log.With().Str("broker_order_id", brokerOrderID).Str("status", details.Status).Logger()
 
-		switch status {
+		switch details.Status {
 		case "filled":
-			l.Info().Msg("reconcile: detected fill via REST fallback")
-			s.handleStreamFill(ports.OrderUpdate{
-				BrokerOrderID:  brokerOrderID,
-				Event:          "fill",
-				Qty:            po.intent.Quantity,
-				Price:          po.intent.LimitPrice,
-				FilledAvgPrice: po.intent.LimitPrice,
-				FilledQty:      po.intent.Quantity,
-				FilledAt:       time.Now().UTC(),
-			}, l)
+			l.Info().Msg("reconcile: detected fill via REST")
+			s.recordFillFromDetails(po, brokerOrderID, details, l)
+			s.cleanupPendingOrder(brokerOrderID)
+
 		case "canceled", "expired", "rejected":
-			l.Info().Msg("reconcile: order terminal via REST fallback")
+			if details.FilledQty > 0 {
+				l.Info().Float64("filled_qty", details.FilledQty).Msg("reconcile: terminal order has partial fills — recording")
+				s.recordFillFromDetails(po, brokerOrderID, details, l)
+			}
+			l.Info().Msg("reconcile: order terminal via REST")
 			s.cleanupPendingOrder(brokerOrderID)
 		}
 
-		// Expire stale pending orders (> 2 minutes old) — cancel on broker first.
 		if time.Since(po.submitStart) > 2*time.Minute {
-			if status, err := s.broker.GetOrderStatus(ctx, brokerOrderID); err == nil {
-				switch status {
-				case "filled", "canceled", "expired", "rejected":
-					l.Info().Str("status", status).Msg("reconcile: stale order already terminal — skipping cancel")
-					s.cleanupPendingOrder(brokerOrderID)
-					return true
-				}
+			if details.Status == "filled" || details.Status == "canceled" || details.Status == "expired" || details.Status == "rejected" {
+				return true
 			}
 			if err := s.broker.CancelOrder(ctx, brokerOrderID); err != nil {
-				l.Warn().Err(err).Msg("reconcile: failed to cancel stale order on broker — may already be terminal")
+				l.Warn().Err(err).Msg("reconcile: failed to cancel stale order — may already be terminal")
 			} else {
 				l.Info().Msg("reconcile: canceled stale order on broker")
 			}
+
+			postCancel, err := s.broker.GetOrderDetails(ctx, brokerOrderID)
+			if err == nil && postCancel.FilledQty > 0 {
+				l.Info().Float64("filled_qty", postCancel.FilledQty).Msg("reconcile: stale order had fills before cancel — recording")
+				s.recordFillFromDetails(po, brokerOrderID, postCancel, l)
+			}
+
 			l.Warn().Msg("reconcile: pending order expired")
 			s.emit(ctx, domain.EventStaleOrderCancelled, po.tenantID, po.envMode, brokerOrderID, domain.StaleOrderCancelledPayload{
 				Symbol:        po.intent.Symbol,
@@ -1075,6 +1077,24 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 
 		return true
 	})
+}
+
+// recordFillFromDetails records a fill using actual broker data instead of intent data.
+// Uses GetOrderDetails response for accurate fill price and quantity.
+func (s *Service) recordFillFromDetails(po *pendingOrder, brokerOrderID string, details ports.OrderDetails, l zerolog.Logger) {
+	fillPrice := details.FilledAvgPrice
+	if fillPrice <= 0 {
+		fillPrice = po.intent.LimitPrice
+	}
+	fillQty := details.FilledQty
+	if fillQty <= 0 {
+		fillQty = po.intent.Quantity
+	}
+	filledAt := details.FilledAt
+	if filledAt.IsZero() {
+		filledAt = time.Now().UTC()
+	}
+	s.handleFillWithPrice(po, brokerOrderID, fillPrice, fillQty, filledAt, l)
 }
 
 // exitLimitBuffer returns the IOC limit price buffer (as a fraction) for exit orders.
