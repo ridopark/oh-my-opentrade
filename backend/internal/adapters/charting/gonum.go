@@ -113,6 +113,31 @@ func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars [
 		p.Legend.Left = true
 	}
 
+	// Expand Y-axis to include all price levels so lines are never clipped.
+	yMin, yMax := bars[0].Low, bars[0].High
+	for _, b := range bars[1:] {
+		if b.Low < yMin {
+			yMin = b.Low
+		}
+		if b.High > yMax {
+			yMax = b.High
+		}
+	}
+	for _, lvl := range levels {
+		if lvl.Price <= 0 {
+			continue
+		}
+		if lvl.Price < yMin {
+			yMin = lvl.Price
+		}
+		if lvl.Price > yMax {
+			yMax = lvl.Price
+		}
+	}
+	pad := (yMax - yMin) * 0.03
+	p.Y.Min = yMin - pad
+	p.Y.Max = yMax + pad
+
 	canvas := vgimg.New(vg.Points(800), vg.Points(400))
 	dc := draw.New(canvas)
 	p.Draw(dc)
