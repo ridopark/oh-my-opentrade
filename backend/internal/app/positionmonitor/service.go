@@ -47,11 +47,12 @@ type Service struct {
 	snapshotFn IndicatorSnapshotFunc
 
 	// Config.
-	tickInterval      time.Duration
-	reconcileInterval time.Duration
-	maxPriceStaleness time.Duration
-	tenantID          string
-	envMode           domain.EnvMode
+	tickInterval            time.Duration
+	reconcileInterval       time.Duration
+	globalReconcileInterval time.Duration
+	maxPriceStaleness       time.Duration
+	tenantID                string
+	envMode                 domain.EnvMode
 
 	// Backtest mode flags.
 	disableTickLoop  bool // prevents runTickLoop goroutine from starting
@@ -97,10 +98,11 @@ type exitRejectedMsg struct {
 }
 
 const (
-	exitPendingTimeout       = 10 * time.Second
-	maxExitRetries           = 3
-	defaultReconcileInterval = 5 * time.Minute
-	ghostMissThreshold       = 3 // consecutive broker-miss checks before removing a ghost position
+	exitPendingTimeout             = 10 * time.Second
+	maxExitRetries                 = 3
+	defaultReconcileInterval       = 5 * time.Minute
+	defaultGlobalReconcileInterval = 5 * time.Minute
+	ghostMissThreshold             = 3
 )
 
 // Option is a functional option for the Service.
@@ -173,24 +175,25 @@ func NewService(
 	opts ...Option,
 ) *Service {
 	s := &Service{
-		eventBus:          eventBus,
-		priceCache:        priceCache,
-		positionGate:      positionGate,
-		log:               log.With().Str("service", "position_monitor").Logger(),
-		nowFunc:           time.Now,
-		fills:             make(chan fillMsg, 256),
-		exitSubmitted:     make(chan exitOrderSubmittedMsg, 64),
-		exitTerminal:      make(chan exitOrderTerminalMsg, 64),
-		exitRejected:      make(chan exitRejectedMsg, 64),
-		outbox:            make(chan outboxMsg, 64),
-		stopCh:            make(chan struct{}),
-		positions:         make(map[string]*domain.MonitoredPosition),
-		ghostMissCounts:   make(map[string]int),
-		tickInterval:      1 * time.Second,
-		reconcileInterval: defaultReconcileInterval,
-		maxPriceStaleness: 30 * time.Second,
-		tenantID:          tenantID,
-		envMode:           envMode,
+		eventBus:                eventBus,
+		priceCache:              priceCache,
+		positionGate:            positionGate,
+		log:                     log.With().Str("service", "position_monitor").Logger(),
+		nowFunc:                 time.Now,
+		fills:                   make(chan fillMsg, 256),
+		exitSubmitted:           make(chan exitOrderSubmittedMsg, 64),
+		exitTerminal:            make(chan exitOrderTerminalMsg, 64),
+		exitRejected:            make(chan exitRejectedMsg, 64),
+		outbox:                  make(chan outboxMsg, 64),
+		stopCh:                  make(chan struct{}),
+		positions:               make(map[string]*domain.MonitoredPosition),
+		ghostMissCounts:         make(map[string]int),
+		tickInterval:            1 * time.Second,
+		reconcileInterval:       defaultReconcileInterval,
+		globalReconcileInterval: defaultGlobalReconcileInterval,
+		maxPriceStaleness:       30 * time.Second,
+		tenantID:                tenantID,
+		envMode:                 envMode,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -242,6 +245,9 @@ func (s *Service) runTickLoop(ctx context.Context) {
 	reconcileTicker := time.NewTicker(s.reconcileInterval)
 	defer reconcileTicker.Stop()
 
+	globalReconcileTicker := time.NewTicker(s.globalReconcileInterval)
+	defer globalReconcileTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -258,6 +264,8 @@ func (s *Service) runTickLoop(ctx context.Context) {
 			s.processExitRejected(msg)
 		case <-reconcileTicker.C:
 			s.reconcileWithBroker(ctx)
+		case <-globalReconcileTicker.C:
+			s.reconcileGlobal(ctx)
 		case <-ticker.C:
 			s.tick()
 		}

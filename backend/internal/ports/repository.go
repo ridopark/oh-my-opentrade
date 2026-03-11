@@ -55,6 +55,11 @@ type RepositoryPort interface {
 	// UpdateOrderStatus sets the status of an order by broker_order_id.
 	// Used to mark orders as canceled/expired without a fill during reconciliation.
 	UpdateOrderStatus(ctx context.Context, brokerOrderID string, status string) error
+
+	// GetNetPositions returns the net quantity per symbol from the trades table.
+	// Only returns symbols with |net_qty| > epsilon (1e-10).
+	// Used by global portfolio reconciliation to detect DB-vs-broker drift.
+	GetNetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) (map[domain.Symbol]float64, error)
 }
 
 // TradeQuery defines the filter and pagination parameters for listing trades.

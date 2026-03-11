@@ -90,6 +90,9 @@ func (m *mockRepository) GetRecordedFillQty(context.Context, string, domain.EnvM
 	return 0, nil
 }
 func (m *mockRepository) UpdateOrderStatus(context.Context, string, string) error { return nil }
+func (m *mockRepository) GetNetPositions(context.Context, string, domain.EnvMode) (map[domain.Symbol]float64, error) {
+	return nil, nil
+}
 
 func (f *fakeAIAdvisor) RequestDebate(ctx context.Context, symbol domain.Symbol, regime domain.MarketRegime, indicators domain.IndicatorSnapshot, opts ...ports.DebateOption) (*domain.AdvisoryDecision, error) {
 	f.calls++

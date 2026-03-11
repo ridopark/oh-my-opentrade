@@ -43,6 +43,7 @@ type OrderDetails struct {
 // REST calls.
 type OrderUpdate struct {
 	BrokerOrderID  string
+	ExecutionID    string  // unique fill execution ID from broker (Alpaca WS "execution_id")
 	Event          string  // "fill", "partial_fill", "canceled", "canceled", "expired", "rejected", "new", "accepted"
 	Qty            float64 // incremental: quantity filled in THIS specific fill
 	Price          float64 // incremental: execution price for THIS specific fill

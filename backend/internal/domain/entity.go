@@ -317,20 +317,21 @@ func NewStrategyDNA(id uuid.UUID, tenantID string, envMode EnvMode, version int,
 
 // Trade represents a completed or in-progress trade execution.
 type Trade struct {
-	Time       time.Time
-	TenantID   string
-	EnvMode    EnvMode
-	TradeID    uuid.UUID
-	Symbol     Symbol
-	Side       string
-	Quantity   float64
-	Price      float64
-	Commission float64
-	Status     string
-	Strategy   string
-	Rationale  string
-	AssetClass AssetClass
-	Thesis     json.RawMessage
+	Time        time.Time
+	TenantID    string
+	EnvMode     EnvMode
+	TradeID     uuid.UUID
+	ExecutionID string // broker fill execution ID for WS dedup (empty for reconciliation/sweep trades)
+	Symbol      Symbol
+	Side        string
+	Quantity    float64
+	Price       float64
+	Commission  float64
+	Status      string
+	Strategy    string
+	Rationale   string
+	AssetClass  AssetClass
+	Thesis      json.RawMessage
 }
 
 // NewTrade creates a validated Trade. Quantity must not be negative.

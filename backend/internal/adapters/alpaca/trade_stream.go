@@ -32,11 +32,12 @@ type tradeStreamMsg struct {
 }
 
 type tradeUpdateData struct {
-	Event     string         `json:"event"`
-	Price     string         `json:"price"`
-	Qty       string         `json:"qty"`
-	Timestamp string         `json:"timestamp"`
-	Order     tradeOrderData `json:"order"`
+	Event       string         `json:"event"`
+	ExecutionID string         `json:"execution_id"`
+	Price       string         `json:"price"`
+	Qty         string         `json:"qty"`
+	Timestamp   string         `json:"timestamp"`
+	Order       tradeOrderData `json:"order"`
 }
 
 type tradeOrderData struct {
@@ -297,6 +298,7 @@ func (ts *TradeStreamClient) parseTradeUpdate(data json.RawMessage) (ports.Order
 
 	return ports.OrderUpdate{
 		BrokerOrderID:  tu.Order.ID,
+		ExecutionID:    tu.ExecutionID,
 		Event:          tu.Event,
 		Qty:            qty,
 		Price:          price,
