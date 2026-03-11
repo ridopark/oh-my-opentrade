@@ -525,6 +525,13 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		}
 		if intent.Direction.IsExit() && s.positionGate != nil {
 			s.positionGate.ClearInflightExit(event.TenantID, event.EnvMode, intent.Symbol)
+			if tripped := s.positionGate.RecordExitFailure(event.TenantID, event.EnvMode, intent.Symbol); tripped {
+				s.emit(ctx, domain.EventExitCircuitBroken, event.TenantID, event.EnvMode, intent.ID.String(), domain.ExitCircuitBrokenPayload{
+					Symbol:       intent.Symbol,
+					Failures:     maxExitFailures,
+					CooldownSecs: exitCooldownDuration.Seconds(),
+				})
+			}
 			s.emit(ctx, domain.EventExitOrderTerminal, event.TenantID, event.EnvMode, intent.ID.String(), map[string]any{
 				"symbol":          string(intent.Symbol),
 				"broker_order_id": "",
@@ -859,6 +866,8 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 	if s.positionGate != nil {
 		if isEntry(po.intent) {
 			s.positionGate.ClearInflight(po.tenantID, po.envMode, po.intent.Symbol)
+		} else if po.intent.Direction.IsExit() {
+			s.positionGate.ResetExitFailures(po.tenantID, po.envMode, po.intent.Symbol)
 		}
 		// Exit fills do NOT clear the inflight exit gate. For IOC orders, WS delivers
 		// partial_fill then canceled. Clearing on partial_fill lets the position monitor
@@ -886,6 +895,14 @@ func (s *Service) cleanupPendingOrder(brokerOrderID string) {
 				s.positionGate.ClearInflightExit(po.tenantID, po.envMode, po.intent.Symbol)
 			}
 
+			if tripped := s.positionGate.RecordExitFailure(po.tenantID, po.envMode, po.intent.Symbol); tripped {
+				s.emit(context.Background(), domain.EventExitCircuitBroken, po.tenantID, po.envMode, brokerOrderID, domain.ExitCircuitBrokenPayload{
+					Symbol:       po.intent.Symbol,
+					Failures:     maxExitFailures,
+					CooldownSecs: exitCooldownDuration.Seconds(),
+				})
+			}
+
 			s.emit(context.Background(), domain.EventExitOrderTerminal, po.tenantID, po.envMode, brokerOrderID, map[string]any{
 				"symbol":          string(po.intent.Symbol),
 				"broker_order_id": brokerOrderID,
@@ -897,9 +914,13 @@ func (s *Service) cleanupPendingOrder(brokerOrderID string) {
 func (s *Service) sweepDustPosition(tenantID string, envMode domain.EnvMode, symbol domain.Symbol, brokerOrderID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	sweepFilled := false
 	defer func() {
 		if s.positionGate != nil {
 			s.positionGate.ClearInflightExit(tenantID, envMode, symbol)
+			if sweepFilled {
+				s.positionGate.ResetExitFailures(tenantID, envMode, symbol)
+			}
 		}
 	}()
 
@@ -917,6 +938,7 @@ func (s *Service) sweepDustPosition(tenantID string, envMode domain.EnvMode, sym
 
 	if remainingQty <= 0 {
 		l.Info().Msg("dust sweep: broker confirms fully closed")
+		sweepFilled = true
 		return
 	}
 
@@ -984,6 +1006,7 @@ func (s *Service) sweepDustPosition(tenantID string, envMode domain.EnvMode, sym
 					"filled_at":       fillTime,
 					"strategy":        "dust_sweep",
 				})
+				sweepFilled = true
 				return
 
 			case "canceled", "expired", "rejected":

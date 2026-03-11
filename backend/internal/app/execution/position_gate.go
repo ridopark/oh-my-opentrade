@@ -5,11 +5,22 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
+
+const (
+	maxExitFailures      = 3
+	exitCooldownDuration = 5 * time.Minute
+)
+
+type exitFailState struct {
+	failures    int
+	cooldownEnd time.Time
+}
 
 // PositionGate prevents duplicate and conflicting entries by checking
 // the broker's current positions and an in-memory inflight lock.
@@ -20,6 +31,7 @@ type PositionGate struct {
 	mu           sync.Mutex
 	inflight     map[inflightKey]struct{}
 	exitInflight map[inflightKey]struct{}
+	exitFails    map[inflightKey]*exitFailState
 }
 
 type inflightKey struct {
@@ -35,6 +47,7 @@ func NewPositionGate(broker ports.BrokerPort, log zerolog.Logger) *PositionGate 
 		log:          log,
 		inflight:     make(map[inflightKey]struct{}),
 		exitInflight: make(map[inflightKey]struct{}),
+		exitFails:    make(map[inflightKey]*exitFailState),
 	}
 }
 
@@ -112,13 +125,22 @@ func (g *PositionGate) ClearInflight(tenantID string, envMode domain.EnvMode, sy
 }
 
 // TryMarkInflightExit atomically attempts to set the exit inflight lock.
-// Returns true if the lock was acquired (no prior exit inflight).
-// Returns false if an exit is already inflight for this key.
+// Returns true if the lock was acquired (no prior exit inflight and no cooldown).
+// Returns false if an exit is already inflight or the symbol is in cooldown
+// after repeated broker failures.
 func (g *PositionGate) TryMarkInflightExit(tenantID string, envMode domain.EnvMode, symbol domain.Symbol) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	key := inflightKey{TenantID: tenantID, EnvMode: envMode, Symbol: symbol}
 	if _, exists := g.exitInflight[key]; exists {
+		return false
+	}
+	if fs, ok := g.exitFails[key]; ok && time.Now().Before(fs.cooldownEnd) {
+		g.log.Warn().
+			Str("symbol", string(symbol)).
+			Int("failures", fs.failures).
+			Time("cooldown_until", fs.cooldownEnd).
+			Msg("position gate: exit blocked by circuit breaker cooldown")
 		return false
 	}
 	g.exitInflight[key] = struct{}{}
@@ -131,6 +153,51 @@ func (g *PositionGate) ClearInflightExit(tenantID string, envMode domain.EnvMode
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	delete(g.exitInflight, inflightKey{TenantID: tenantID, EnvMode: envMode, Symbol: symbol})
+}
+
+// RecordExitFailure increments the failure counter for a symbol's exit attempts.
+// Returns true when maxExitFailures is reached and cooldown is activated.
+func (g *PositionGate) RecordExitFailure(tenantID string, envMode domain.EnvMode, symbol domain.Symbol) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	key := inflightKey{TenantID: tenantID, EnvMode: envMode, Symbol: symbol}
+	fs, ok := g.exitFails[key]
+	if !ok {
+		fs = &exitFailState{}
+		g.exitFails[key] = fs
+	}
+	fs.failures++
+	if fs.failures >= maxExitFailures {
+		fs.cooldownEnd = time.Now().Add(exitCooldownDuration)
+		g.log.Error().
+			Str("symbol", string(symbol)).
+			Int("failures", fs.failures).
+			Dur("cooldown", exitCooldownDuration).
+			Msg("exit circuit breaker tripped — cooldown activated")
+		return true
+	}
+	g.log.Warn().
+		Str("symbol", string(symbol)).
+		Int("failures", fs.failures).
+		Int("max", maxExitFailures).
+		Msg("exit failure recorded")
+	return false
+}
+
+// ResetExitFailures clears the failure counter for a symbol after a successful exit fill.
+func (g *PositionGate) ResetExitFailures(tenantID string, envMode domain.EnvMode, symbol domain.Symbol) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.exitFails, inflightKey{TenantID: tenantID, EnvMode: envMode, Symbol: symbol})
+}
+
+// ExitCooldownActive returns true if the symbol is currently in exit cooldown.
+func (g *PositionGate) ExitCooldownActive(tenantID string, envMode domain.EnvMode, symbol domain.Symbol) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	key := inflightKey{TenantID: tenantID, EnvMode: envMode, Symbol: symbol}
+	fs, ok := g.exitFails[key]
+	return ok && time.Now().Before(fs.cooldownEnd)
 }
 
 // isEntry returns true if the intent opens or increases a position.
