@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,13 +57,87 @@ type discordPayload struct {
 	Content string `json:"content"`
 }
 
+type discordEmbed struct {
+	Description string       `json:"description,omitempty"`
+	Color       int          `json:"color,omitempty"`
+	Footer      *embedFooter `json:"footer,omitempty"`
+	Image       *embedImage  `json:"image,omitempty"`
+}
+
+type embedFooter struct {
+	Text string `json:"text"`
+}
+
+type embedImage struct {
+	URL string `json:"url"`
+}
+
+type discordEmbedPayload struct {
+	Embeds []discordEmbed `json:"embeds"`
+}
+
+const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+func detectEmbedColor(message string) int {
+	const (
+		colorRed    = 0xe74c3c
+		colorGreen  = 0x2ecc71
+		colorYellow = 0xf39c12
+		colorBlue   = 0x3498db
+		colorPurple = 0x9b59b6
+		colorGray   = 0x95a5a6
+	)
+
+	switch {
+	case strings.Contains(message, "🚨"),
+		strings.Contains(message, "🔴"),
+		strings.Contains(message, "❌"):
+		return colorRed
+	case strings.Contains(message, "📉"):
+		return colorRed
+	case strings.Contains(message, "💰"),
+		strings.Contains(message, "📈"):
+		return colorGreen
+	case strings.Contains(message, "✅"):
+		return colorGreen
+	case strings.Contains(message, "⚠️"),
+		strings.Contains(message, "🚫"),
+		strings.Contains(message, "⏰"),
+		strings.Contains(message, "🗑️"),
+		strings.Contains(message, "🔌"):
+		return colorYellow
+	case strings.Contains(message, "🔍"):
+		return colorPurple
+	case strings.Contains(message, "🧠"),
+		strings.Contains(message, "📤"),
+		strings.Contains(message, "📕"),
+		strings.Contains(message, "🤖"):
+		return colorBlue
+	default:
+		return colorGray
+	}
+}
+
+func stripSeparator(message string) string {
+	msg := strings.TrimRight(message, " \n")
+	msg = strings.TrimSuffix(msg, separator)
+	return strings.TrimRight(msg, " \n")
+}
+
 func (d *DiscordNotifier) Notify(ctx context.Context, tenantID, message string) error {
 	if d.isCoolingDown(message) {
 		return nil
 	}
 
-	payload := discordPayload{
-		Content: fmt.Sprintf("[%s] %s", tenantID, message),
+	desc := stripSeparator(message)
+	payload := discordEmbedPayload{
+		Embeds: []discordEmbed{
+			{
+				Description: desc,
+				Color:       detectEmbedColor(desc),
+				Footer:      &embedFooter{Text: fmt.Sprintf("omo-core • %s", tenantID)},
+			},
+		},
 	}
 
 	body, err := json.Marshal(payload)
@@ -92,12 +167,17 @@ func (d *DiscordNotifier) NotifyWithImage(ctx context.Context, tenantID, message
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
+	desc := stripSeparator(message)
 	embedPayload := map[string]any{
-		"content": fmt.Sprintf("[%s] %s", tenantID, message),
 		"embeds": []map[string]any{
 			{
+				"description": desc,
+				"color":       detectEmbedColor(desc),
 				"image": map[string]string{
 					"url": fmt.Sprintf("attachment://%s", image.Filename),
+				},
+				"footer": map[string]string{
+					"text": fmt.Sprintf("omo-core • %s", tenantID),
 				},
 			},
 		},

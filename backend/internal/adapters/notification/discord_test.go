@@ -12,7 +12,15 @@ import (
 )
 
 func TestDiscordNotifier_Notify_Success(t *testing.T) {
-	var capturedBody map[string]string
+	var capturedBody struct {
+		Embeds []struct {
+			Description string `json:"description"`
+			Color       int    `json:"color"`
+			Footer      struct {
+				Text string `json:"text"`
+			} `json:"footer"`
+		} `json:"embeds"`
+	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -28,8 +36,18 @@ func TestDiscordNotifier_Notify_Success(t *testing.T) {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 
-	if capturedBody["content"] != "[tenant-B] trade executed" {
-		t.Errorf("expected content=[tenant-B] trade executed, got: %s", capturedBody["content"])
+	if len(capturedBody.Embeds) != 1 {
+		t.Fatalf("expected 1 embed, got: %d", len(capturedBody.Embeds))
+	}
+	embed := capturedBody.Embeds[0]
+	if embed.Description != "trade executed" {
+		t.Errorf("expected description=trade executed, got: %s", embed.Description)
+	}
+	if embed.Footer.Text != "omo-core • tenant-B" {
+		t.Errorf("expected footer=omo-core • tenant-B, got: %s", embed.Footer.Text)
+	}
+	if embed.Color == 0 {
+		t.Error("expected non-zero embed color")
 	}
 }
 

@@ -289,7 +289,7 @@ func TestService_SignalEnrichedNotification(t *testing.T) {
 	assert.Contains(t, msgs[0].Message, "entry")
 	assert.Contains(t, msgs[0].Message, "buy")
 	assert.Contains(t, msgs[0].Message, "[ok]")
-	assert.Contains(t, msgs[0].Message, "Confidence: 87%")
+	assert.Contains(t, msgs[0].Message, "Confidence: **87%**")
 	assert.Contains(t, msgs[0].Message, "Bull: Trend + momentum align")
 	assert.Contains(t, msgs[0].Message, "Bear: Macro headline risk")
 	assert.Contains(t, msgs[0].Message, "Judge: Bull case stronger")
@@ -334,7 +334,7 @@ func TestService_SignalEnrichedExitWithPnL(t *testing.T) {
 	assert.Contains(t, msgs[0].Message, "Signal Enriched")
 	assert.Contains(t, msgs[0].Message, "exit")
 	assert.Contains(t, msgs[0].Message, "BTC/USD")
-	assert.Contains(t, msgs[0].Message, "Est. P&L: +$500.00 (+5.00%)")
+	assert.Contains(t, msgs[0].Message, "Est. P&L: **+$500.00 (+5.00%)**")
 	assert.Contains(t, msgs[0].Message, "Entry: $90000.00")
 }
 

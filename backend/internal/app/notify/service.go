@@ -368,13 +368,13 @@ func (s *Service) fmtOrderSubmitted(ev domain.Event) string {
 		emoji = "📕"
 		action = "Exit Submitted"
 	}
-	msg := fmt.Sprintf("%s %s: %s %s @ $%s (qty: %g)",
+	msg := fmt.Sprintf("%s **%s:** %s **%s** @ **$%s** (qty: %g)",
 		emoji, action, p.Direction, p.Symbol, domain.FmtPrice(p.LimitPrice), p.Quantity)
-	msg += fmt.Sprintf("\n📊 Strategy: %s | Confidence: %.0f%%", p.Strategy, p.Confidence*100)
+	msg += fmt.Sprintf("\n📊 Strategy: %s | Confidence: **%.0f%%**", p.Strategy, p.Confidence*100)
 
 	if !isExit && p.StopLoss > 0 {
 		stopPct := (p.LimitPrice - p.StopLoss) / p.LimitPrice * 100
-		msg += fmt.Sprintf("\n🛑 Stop Loss: $%s (%.2f%%)", domain.FmtPrice(p.StopLoss), stopPct)
+		msg += fmt.Sprintf("\n🛑 Stop Loss: **$%s** (%.2f%%)", domain.FmtPrice(p.StopLoss), stopPct)
 	}
 
 	if !isExit {
@@ -459,7 +459,7 @@ func fmtExitRules(rawJSON string, entryPrice float64, meta map[string]string) st
 func (s *Service) fmtSignalEnriched(ev domain.Event) string {
 	if e, ok := ev.Payload.(domain.SignalEnrichment); ok {
 		emoji := "🧠"
-		msg := fmt.Sprintf("%s Signal Enriched: %s %s %s [%s] (Confidence: %.0f%%)",
+		msg := fmt.Sprintf("%s **Signal Enriched:** %s %s **%s** [%s] (Confidence: **%.0f%%**)",
 			emoji, e.Signal.SignalType, e.Signal.Side, e.Signal.Symbol,
 			string(e.Status), e.Confidence*100)
 		if e.HasPnL {
@@ -473,7 +473,7 @@ func (s *Service) fmtSignalEnriched(ev domain.Event) string {
 				sign = "-"
 				absUSD = -absUSD
 			}
-			msg += fmt.Sprintf("\n%s Est. P&L: %s$%.2f (%+.2f%%) | Entry: $%s", pnlEmoji, sign, absUSD, e.UnrealizedPnLPct*100, domain.FmtPrice(e.EntryPrice))
+			msg += fmt.Sprintf("\n%s Est. P&L: **%s$%.2f (%+.2f%%)** | Entry: $%s", pnlEmoji, sign, absUSD, e.UnrealizedPnLPct*100, domain.FmtPrice(e.EntryPrice))
 		}
 		if e.BullArgument != "" {
 			msg += fmt.Sprintf("\n🟢 Bull: %s", e.BullArgument)
@@ -491,7 +491,7 @@ func (s *Service) fmtSignalEnriched(ev domain.Event) string {
 
 func (s *Service) fmtSignalGated(ev domain.Event) string {
 	if p, ok := ev.Payload.(domain.SignalGatedPayload); ok {
-		return fmt.Sprintf("🚫 Signal Blocked: %s %s %s — %s\n📊 Strategy: %s | Confidence: %.0f%%",
+		return fmt.Sprintf("🚫 **Signal Blocked:** %s %s **%s** — %s\n📊 Strategy: %s | Confidence: **%.0f%%**",
 			p.SignalType, p.Side, p.Symbol, p.Reason, p.Strategy, p.Confidence*100)
 	}
 	return "🚫 Signal Blocked by risk gate"
@@ -511,9 +511,9 @@ func (s *Service) fmtOrderRejected(ev domain.Event) string {
 func (s *Service) fmtOrderIntentRejected(ev domain.Event) string {
 	if p, ok := ev.Payload.(domain.OrderIntentEventPayload); ok {
 		if p.Reason != "" {
-			return fmt.Sprintf("⚠️ Intent Rejected: %s %s — %s", p.Direction, p.Symbol, p.Reason)
+			return fmt.Sprintf("⚠️ **Intent Rejected:** %s **%s** — %s", p.Direction, p.Symbol, p.Reason)
 		}
-		return fmt.Sprintf("⚠️ Intent Rejected: %s %s — failed risk/slippage check",
+		return fmt.Sprintf("⚠️ **Intent Rejected:** %s **%s** — failed risk/slippage check",
 			p.Direction, p.Symbol)
 	}
 	return "⚠️ Order Intent Rejected (risk/slippage check failed)"
@@ -525,7 +525,7 @@ func (s *Service) fmtFillReceived(ev domain.Event) string {
 		side, _ := m["side"].(string)
 		qty, _ := m["quantity"].(float64)
 		price, _ := m["price"].(float64)
-		return fmt.Sprintf("💰 Fill: %s %s — %g shares @ $%s", side, sym, qty, domain.FmtPrice(price))
+		return fmt.Sprintf("💰 **Fill:** %s **%s** — %g shares @ **$%s**", side, sym, qty, domain.FmtPrice(price))
 	}
 	return "💰 Order Filled"
 }
@@ -550,7 +550,7 @@ func (s *Service) fmtTradeRealized(ev domain.Event) string {
 		absPnL = -absPnL
 	}
 
-	msg := fmt.Sprintf("%s P&L: %s$%.2f (%+.2f%%)", pnlEmoji, sign, absPnL, p.PnLPct)
+	msg := fmt.Sprintf("%s **P&L: %s$%.2f (%+.2f%%)**", pnlEmoji, sign, absPnL, p.PnLPct)
 	msg += fmt.Sprintf(" | Entry: $%s", domain.FmtPrice(p.EntryPrice))
 
 	if p.HoldDuration > 0 {
@@ -577,19 +577,19 @@ func fmtDuration(d time.Duration) string {
 }
 
 func (s *Service) fmtKillSwitch(ev domain.Event) string {
-	return "🚨 KILL SWITCH ENGAGED — Trading halted for symbol"
+	return "🚨 **KILL SWITCH ENGAGED** — Trading halted for symbol"
 }
 
 func (s *Service) fmtCircuitBreaker(ev domain.Event) string {
 	if reason, ok := ev.Payload.(string); ok {
-		return fmt.Sprintf("🔴 CIRCUIT BREAKER TRIPPED: %s", reason)
+		return fmt.Sprintf("🔴 **CIRCUIT BREAKER TRIPPED:** %s", reason)
 	}
-	return "🔴 CIRCUIT BREAKER TRIPPED — System-wide trading halt"
+	return "🔴 **CIRCUIT BREAKER TRIPPED** — System-wide trading halt"
 }
 
 func (s *Service) fmtDebateCompleted(ev domain.Event) string {
 	if d, ok := ev.Payload.(domain.AdvisoryDecision); ok {
-		msg := fmt.Sprintf("🤖 AI Debate — %s (Confidence: %.0f%%)", d.Direction, d.Confidence*100)
+		msg := fmt.Sprintf("🤖 **AI Debate** — %s (Confidence: **%.0f%%**)", d.Direction, d.Confidence*100)
 		if d.BullArgument != "" {
 			msg += fmt.Sprintf("\n🟢 Bull: %s", d.BullArgument)
 		}
@@ -606,14 +606,14 @@ func (s *Service) fmtDebateCompleted(ev domain.Event) string {
 
 func (s *Service) fmtFeedDegraded(ev domain.Event) string {
 	if p, ok := ev.Payload.(domain.FeedDegradedPayload); ok {
-		return fmt.Sprintf("⚠️ Feed Degraded [%s]: %s", p.Feed, p.Reason)
+		return fmt.Sprintf("⚠️ **Feed Degraded** [%s]: %s", p.Feed, p.Reason)
 	}
 	return "⚠️ Market data feed degraded"
 }
 
 func (s *Service) fmtWSCircuitBreaker(ev domain.Event) string {
 	if p, ok := ev.Payload.(domain.WSCircuitBreakerTrippedPayload); ok {
-		return fmt.Sprintf("🔌 WS Circuit Breaker Open [%s]: %d consecutive failures — retries blocked for %.0fs",
+		return fmt.Sprintf("🔌 **WS Circuit Breaker Open** [%s]: %d consecutive failures — retries blocked for %.0fs",
 			p.Feed, p.ConsecutiveFails, p.BlockedForSeconds)
 	}
 	return "🔌 WebSocket circuit breaker tripped — retries blocked"
@@ -621,7 +621,7 @@ func (s *Service) fmtWSCircuitBreaker(ev domain.Event) string {
 
 func (s *Service) fmtFillPollTimeout(ev domain.Event) string {
 	if p, ok := ev.Payload.(domain.FillPollTimeoutPayload); ok {
-		return fmt.Sprintf("⏰ Fill Poll Timeout: %s %s %s — order %s not filled within 2m (qty: %g)",
+		return fmt.Sprintf("⏰ **Fill Poll Timeout:** %s **%s** %s — order %s not filled within 2m (qty: %g)",
 			p.Direction, string(p.Symbol), p.Strategy, p.BrokerOrderID, p.Quantity)
 	}
 	return "⏰ Fill poll timed out — order not filled within 2 minutes"
@@ -629,7 +629,7 @@ func (s *Service) fmtFillPollTimeout(ev domain.Event) string {
 
 func (s *Service) fmtStaleOrderCancelled(ev domain.Event) string {
 	if p, ok := ev.Payload.(domain.StaleOrderCancelledPayload); ok {
-		return fmt.Sprintf("🗑️ Stale Order Canceled: %s %s — order %s expired after %.0fs (strategy: %s)",
+		return fmt.Sprintf("🗑️ **Stale Order Canceled:** %s **%s** — order %s expired after %.0fs (strategy: %s)",
 			p.Direction, string(p.Symbol), p.BrokerOrderID, p.AgeSeconds, p.Strategy)
 	}
 	return "🗑️ Stale order force-canceled"
@@ -637,7 +637,7 @@ func (s *Service) fmtStaleOrderCancelled(ev domain.Event) string {
 
 func (s *Service) fmtSystemStarted(ev domain.Event) string {
 	if p, ok := ev.Payload.(domain.SystemStartedPayload); ok {
-		return fmt.Sprintf("✅ System Started: omo-core — %s mode, %d symbols streaming",
+		return fmt.Sprintf("✅ **System Started:** omo-core — **%s** mode, %d symbols streaming",
 			p.EnvMode, len(p.Strategies))
 	}
 	return "✅ System started"
@@ -672,12 +672,12 @@ func (s *Service) fmtRiskRevaluated(ev domain.Event) string {
 		pnlEmoji = "📉"
 	}
 
-	msg := fmt.Sprintf("🔍 Risk Re-evaluation: %s (%s)", r.Symbol, r.Strategy)
-	msg += fmt.Sprintf("\n%s Position: Entry $%s → Now $%s (%+.2f%%) | HWM $%s",
+	msg := fmt.Sprintf("🔍 **Risk Re-evaluation:** **%s** (%s)", r.Symbol, r.Strategy)
+	msg += fmt.Sprintf("\n%s Position: Entry **$%s** → Now **$%s** (%+.2f%%) | HWM $%s",
 		pnlEmoji, domain.FmtPrice(r.EntryPrice), domain.FmtPrice(r.CurrentPrice), r.UnrealizedPnL*100, domain.FmtPrice(r.HighWaterMark))
 	msg += fmt.Sprintf("\n⏱️ Held: %s", r.HoldDuration)
 	msg += fmt.Sprintf("\n%s Thesis: %s", thesisEmoji, r.ThesisStatus)
-	msg += fmt.Sprintf("\n%s Action: %s (Risk: %s, Confidence: %.0f%%)",
+	msg += fmt.Sprintf("\n%s Action: **%s** (Risk: %s, Confidence: **%.0f%%**)",
 		actionEmoji, r.Action, r.UpdatedModifier, r.Confidence*100)
 
 	if len(r.RuleChanges) > 0 {
