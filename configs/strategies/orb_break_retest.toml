@@ -37,6 +37,7 @@ allow_missing_bars = 2
 max_signals_per_session = 3
 htf_bias_enabled = true
 atr_multiplier = 2.0
+sweep_cooldown_bars = 3
 stop_bps = 50
 limit_offset_bps = 5
 risk_per_trade_bps = 100

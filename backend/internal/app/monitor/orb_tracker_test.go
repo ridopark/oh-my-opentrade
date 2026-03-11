@@ -302,3 +302,63 @@ func TestORBTracker_ShortBreakoutFlow(t *testing.T) {
 	require.NotNil(t, setup)
 	require.Equal(t, domain.DirectionShort, setup.Direction)
 }
+
+func setupRangeSetTracker(t *testing.T, cfg monitor.ORBConfig) (*monitor.ORBTracker, domain.Symbol) {
+	t.Helper()
+	sym, _ := domain.NewSymbol("AAPL")
+	tr := monitor.NewORBTracker()
+	for i := 0; i < 30; i++ {
+		bt := time.Date(2025, 3, 4, 14, 30+i, 0, 0, time.UTC)
+		tr.OnBar(createBarAt(t, sym, bt, 100, 101, 99, 100, 10), createSnap(sym, bt, 10, 10), cfg, false)
+	}
+	post := time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC)
+	tr.OnBar(createBarAt(t, sym, post, 100, 101, 99, 100, 10), createSnap(sym, post, 10, 10), cfg, false)
+	require.Equal(t, monitor.ORBStateRangeSet, tr.GetSession(sym.String()).State)
+	return tr, sym
+}
+
+func TestORBTracker_SweepDetection_BlocksBreakout(t *testing.T) {
+	cfg := monitor.DefaultORBConfig()
+	cfg.SweepCooldownBars = 3
+	tr, sym := setupRangeSetTracker(t, cfg)
+
+	sweepT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
+	_, detected := tr.OnBar(createBarAt(t, sym, sweepT, 100, 102, 99, 100, 50), createSnap(sym, sweepT, 50, 10), cfg, false)
+	require.False(t, detected, "sweep bar should not produce breakout")
+	require.Equal(t, monitor.ORBStateRangeSet, tr.GetSession(sym.String()).State)
+}
+
+func TestORBTracker_SweepCooldown_ExpiresThenAllows(t *testing.T) {
+	cfg := monitor.DefaultORBConfig()
+	cfg.SweepCooldownBars = 2
+	tr, sym := setupRangeSetTracker(t, cfg)
+
+	sweepT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
+	tr.OnBar(createBarAt(t, sym, sweepT, 100, 102, 99, 100, 50), createSnap(sym, sweepT, 50, 10), cfg, false)
+
+	for i := 1; i <= 2; i++ {
+		bt := sweepT.Add(time.Duration(i) * time.Minute)
+		_, detected := tr.OnBar(createBarAt(t, sym, bt, 100, 100.5, 99.5, 100, 10), createSnap(sym, bt, 10, 10), cfg, false)
+		require.False(t, detected, "cooldown bar %d should suppress", i)
+	}
+
+	breakT := sweepT.Add(3 * time.Minute)
+	_, detected := tr.OnBar(createBarAt(t, sym, breakT, 100, 105, 100, 104, 50), createSnap(sym, breakT, 50, 10), cfg, false)
+	require.False(t, detected, "breakout bar moves to AWAITING_RETEST, no signal yet")
+	require.Equal(t, monitor.ORBStateAwaitingRetest, tr.GetSession(sym.String()).State)
+}
+
+func TestORBTracker_SweepDisabled_AllowsImmediately(t *testing.T) {
+	cfg := monitor.DefaultORBConfig()
+	cfg.SweepCooldownBars = 0
+	tr, sym := setupRangeSetTracker(t, cfg)
+
+	sweepT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
+	_, detected := tr.OnBar(createBarAt(t, sym, sweepT, 100, 102, 99, 100, 50), createSnap(sym, sweepT, 50, 10), cfg, false)
+	require.False(t, detected, "no signal from sweep-like bar without breakout close")
+
+	breakT := sweepT.Add(time.Minute)
+	_, detected = tr.OnBar(createBarAt(t, sym, breakT, 100, 105, 100, 104, 50), createSnap(sym, breakT, 50, 10), cfg, false)
+	require.False(t, detected, "breakout moves to AWAITING_RETEST")
+	require.Equal(t, monitor.ORBStateAwaitingRetest, tr.GetSession(sym.String()).State)
+}
