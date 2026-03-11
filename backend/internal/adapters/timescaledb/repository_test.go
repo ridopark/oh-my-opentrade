@@ -119,7 +119,7 @@ func TestRepository_SaveMarketBar_Success(t *testing.T) {
 	db := &mockDB{
 		execFunc: func(ctx context.Context, query string, args ...any) (sql.Result, error) {
 			assert.True(t, strings.Contains(query, "INSERT INTO market_bars"), "query must contain table name")
-			
+
 			// Expected args: time, "", "Paper", symbol, timeframe, open, high, low, close, volume, suspect
 			assert.Equal(t, bar.Time, args[0])
 			assert.Equal(t, "", args[1])
@@ -132,7 +132,7 @@ func TestRepository_SaveMarketBar_Success(t *testing.T) {
 			assert.Equal(t, bar.Close, args[8])
 			assert.Equal(t, bar.Volume, args[9])
 			assert.Equal(t, bar.Suspect, args[10])
-			
+
 			return mockResult{affected: 1}, nil
 		},
 	}
@@ -262,10 +262,10 @@ func TestRepository_GetTrades_Success(t *testing.T) {
 			assert.True(t, strings.Contains(query, "WHERE"), "query must have WHERE clause")
 			assert.True(t, strings.Contains(query, "ORDER BY time"), "query must be ordered")
 
-			// time, trade_id, symbol, side, quantity, price, commission, status
+			// time, trade_id, execution_id, symbol, side, quantity, price, commission, status, strategy, rationale, thesis
 			rows := &mockRows{
 				data: [][]any{
-					{tradeTime, tradeID, "AAPL", "BUY", 10.0, 150.0, 1.5, "FILLED"},
+					{tradeTime, tradeID, "", "AAPL", "BUY", 10.0, 150.0, 1.5, "FILLED", "", "", json.RawMessage(nil)},
 				},
 			}
 			return rows, nil
@@ -306,7 +306,7 @@ func TestRepository_SaveStrategyDNA_Success(t *testing.T) {
 func TestRepository_GetLatestStrategyDNA_Success(t *testing.T) {
 	dnaTime := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
 	id := uuid.New()
-	
+
 	paramsJSON := json.RawMessage(`{"p1":"v1"}`)
 	metricsJSON := json.RawMessage(`{"m1":1.0}`)
 

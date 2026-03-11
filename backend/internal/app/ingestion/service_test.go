@@ -79,6 +79,9 @@ func (m *mockRepository) GetRecordedFillQty(_ context.Context, _ string, _ domai
 func (m *mockRepository) UpdateOrderStatus(_ context.Context, _ string, _ string) error {
 	return nil
 }
+func (m *mockRepository) GetNetPositions(_ context.Context, _ string, _ domain.EnvMode) (map[domain.Symbol]float64, error) {
+	return nil, nil
+}
 
 func createTestEvent(t *testing.T, payload any) domain.Event {
 	ev, err := domain.NewEvent(

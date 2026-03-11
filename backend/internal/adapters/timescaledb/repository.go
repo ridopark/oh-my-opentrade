@@ -18,8 +18,8 @@ import (
 const (
 	queryInsertMarketBar      = `INSERT INTO market_bars (time, account_id, env_mode, symbol, timeframe, open, high, low, close, volume, suspect) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (symbol, timeframe, time) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume, suspect=EXCLUDED.suspect`
 	querySelectMarketBars     = `SELECT time, symbol, timeframe, open, high, low, close, volume, suspect FROM market_bars WHERE symbol = $1 AND timeframe = $2 AND time >= $3 AND time < $4 ORDER BY time`
-	queryInsertTrade          = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status, strategy, rationale, thesis) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
-	querySelectTrades         = `SELECT time, trade_id, symbol, side, quantity, price, commission, status, COALESCE(strategy, ''), COALESCE(rationale, ''), thesis FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4 ORDER BY time`
+	queryInsertTrade          = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status, strategy, rationale, thesis, execution_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (trade_id, time) DO NOTHING`
+	querySelectTrades         = `SELECT time, trade_id, COALESCE(execution_id, ''), symbol, side, quantity, price, commission, status, COALESCE(strategy, ''), COALESCE(rationale, ''), thesis FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4 ORDER BY time`
 	queryInsertStrategyDNA    = `INSERT INTO strategy_dna_history (time, account_id, env_mode, strategy_id, version, parameters, performance) VALUES ($1, $2, $3, $4, $5, $6, $7)`
 	querySelectLatestDNA      = `SELECT time, strategy_id, version, parameters, performance FROM strategy_dna_history WHERE account_id = $1 AND env_mode = $2 ORDER BY time DESC LIMIT 1`
 	queryInsertOrder          = `INSERT INTO orders (time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, strategy, rationale, confidence) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (broker_order_id) DO NOTHING`
@@ -27,6 +27,7 @@ const (
 	queryGetNonTerminalOrders = `SELECT time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, COALESCE(filled_at, '0001-01-01'::timestamptz), COALESCE(filled_price, 0), COALESCE(filled_qty, 0), COALESCE(strategy, ''), COALESCE(rationale, ''), COALESCE(confidence, 0) FROM orders WHERE account_id = $1 AND env_mode = $2 AND status NOT IN ('filled', 'canceled', 'expired', 'rejected') ORDER BY time ASC`
 	queryGetRecordedFillQty   = `SELECT COALESCE(SUM(quantity), 0) FROM trades WHERE account_id = $1 AND env_mode = $2 AND symbol = $3 AND side = $4 AND time >= $5`
 	queryUpdateOrderStatus    = `UPDATE orders SET status = $2 WHERE broker_order_id = $1`
+	queryGetNetPositions      = `SELECT symbol, SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END) AS net_qty FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= NOW() - INTERVAL '30 days' GROUP BY symbol HAVING ABS(SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END)) > 1e-10`
 )
 
 // SaveMarketBar saves a single OHLCV candle.
@@ -152,8 +153,16 @@ func (r *Repository) SaveTrade(ctx context.Context, trade domain.Trade) error {
 	if len(trade.Thesis) > 0 {
 		thesisArg = []byte(trade.Thesis)
 	}
-	_, err := r.db.ExecContext(ctx, queryInsertTrade, trade.Time, trade.TenantID, string(trade.EnvMode), trade.TradeID, string(trade.Symbol), trade.Side, trade.Quantity, trade.Price, trade.Commission, trade.Status, trade.Strategy, trade.Rationale, thesisArg)
+	var execIDArg any
+	if trade.ExecutionID != "" {
+		execIDArg = trade.ExecutionID
+	}
+	_, err := r.db.ExecContext(ctx, queryInsertTrade, trade.Time, trade.TenantID, string(trade.EnvMode), trade.TradeID, string(trade.Symbol), trade.Side, trade.Quantity, trade.Price, trade.Commission, trade.Status, trade.Strategy, trade.Rationale, thesisArg, execIDArg)
 	if err != nil {
+		if strings.Contains(err.Error(), "idx_trades_execution_id") {
+			r.log.Debug().Str("execution_id", trade.ExecutionID).Msg("duplicate fill ignored (execution_id conflict)")
+			return nil
+		}
 		r.log.Error().Err(err).
 			Str("symbol", string(trade.Symbol)).
 			Str("trade_id", trade.TradeID.String()).
@@ -182,7 +191,7 @@ func (r *Repository) GetTrades(ctx context.Context, tenantID string, envMode dom
 		var trade domain.Trade
 		var sym string
 		var thesis []byte
-		if err := rows.Scan(&trade.Time, &trade.TradeID, &sym, &trade.Side, &trade.Quantity, &trade.Price, &trade.Commission, &trade.Status, &trade.Strategy, &trade.Rationale, &thesis); err != nil {
+		if err := rows.Scan(&trade.Time, &trade.TradeID, &trade.ExecutionID, &sym, &trade.Side, &trade.Quantity, &trade.Price, &trade.Commission, &trade.Status, &trade.Strategy, &trade.Rationale, &thesis); err != nil {
 			return nil, fmt.Errorf("timescaledb: scan trade: %w", err)
 		}
 		trade.Symbol = domain.Symbol(sym)
@@ -296,7 +305,7 @@ func (r *Repository) UpdateOrderFill(ctx context.Context, brokerOrderID string, 
 // ListTrades retrieves trades with optional filters and keyset pagination.
 func (r *Repository) ListTrades(ctx context.Context, q ports.TradeQuery) (ports.TradePage, error) {
 	var b strings.Builder
-	b.WriteString(`SELECT time, trade_id, symbol, side, quantity, price, commission, status, COALESCE(strategy, ''), COALESCE(rationale, '')
+	b.WriteString(`SELECT time, trade_id, COALESCE(execution_id, ''), symbol, side, quantity, price, commission, status, COALESCE(strategy, ''), COALESCE(rationale, '')
 		FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4`)
 
 	args := []any{q.TenantID, string(q.EnvMode), q.From, q.To}
@@ -341,7 +350,7 @@ func (r *Repository) ListTrades(ctx context.Context, q ports.TradeQuery) (ports.
 	for rows.Next() {
 		var t domain.Trade
 		var sym string
-		if err := rows.Scan(&t.Time, &t.TradeID, &sym, &t.Side, &t.Quantity, &t.Price, &t.Commission, &t.Status, &t.Strategy, &t.Rationale); err != nil {
+		if err := rows.Scan(&t.Time, &t.TradeID, &t.ExecutionID, &sym, &t.Side, &t.Quantity, &t.Price, &t.Commission, &t.Status, &t.Strategy, &t.Rationale); err != nil {
 			return ports.TradePage{}, fmt.Errorf("timescaledb: scan trade row: %w", err)
 		}
 		t.Symbol = domain.Symbol(sym)
@@ -590,4 +599,23 @@ func (r *Repository) UpdateOrderStatus(ctx context.Context, brokerOrderID string
 		return fmt.Errorf("timescaledb: update order status: %w", err)
 	}
 	return nil
+}
+
+func (r *Repository) GetNetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) (map[domain.Symbol]float64, error) {
+	rows, err := r.db.QueryContext(ctx, queryGetNetPositions, tenantID, string(envMode))
+	if err != nil {
+		return nil, fmt.Errorf("timescaledb: get net positions: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[domain.Symbol]float64)
+	for rows.Next() {
+		var sym string
+		var qty float64
+		if err := rows.Scan(&sym, &qty); err != nil {
+			return nil, fmt.Errorf("timescaledb: scan net position: %w", err)
+		}
+		result[domain.Symbol(sym)] = qty
+	}
+	return result, rows.Err()
 }

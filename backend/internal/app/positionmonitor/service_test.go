@@ -161,6 +161,9 @@ func (m *mockRepo) GetRecordedFillQty(_ context.Context, _ string, _ domain.EnvM
 	return 0, nil
 }
 func (m *mockRepo) UpdateOrderStatus(_ context.Context, _ string, _ string) error { return nil }
+func (m *mockRepo) GetNetPositions(_ context.Context, _ string, _ domain.EnvMode) (map[domain.Symbol]float64, error) {
+	return nil, nil
+}
 
 type mockSpecStore struct {
 	specs map[string]*portstrategy.Spec

@@ -809,10 +809,10 @@ func (s *Service) handleStreamFill(update ports.OrderUpdate, l zerolog.Logger) {
 		fillQty = po.intent.Quantity
 	}
 
-	s.handleFillWithPrice(po, update.BrokerOrderID, fillPrice, fillQty, update.FilledAt, l)
+	s.handleFillWithPrice(po, update.BrokerOrderID, fillPrice, fillQty, update.FilledAt, update.ExecutionID, l)
 }
 
-func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fillPrice, fillQty float64, filledAt time.Time, l zerolog.Logger) {
+func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fillPrice, fillQty float64, filledAt time.Time, executionID string, l zerolog.Logger) {
 	ctx := context.Background()
 
 	if err := s.repo.UpdateOrderFill(ctx, brokerOrderID, filledAt, fillPrice, fillQty); err != nil {
@@ -827,6 +827,7 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 	if err != nil {
 		l.Error().Err(err).Msg("failed to construct trade on fill")
 	} else {
+		trade.ExecutionID = executionID
 		if err := s.repo.SaveTrade(ctx, trade); err != nil {
 			l.Error().Err(err).Msg("failed to save trade on fill")
 		}
@@ -1094,7 +1095,7 @@ func (s *Service) recordFillFromDetails(po *pendingOrder, brokerOrderID string, 
 	if filledAt.IsZero() {
 		filledAt = time.Now().UTC()
 	}
-	s.handleFillWithPrice(po, brokerOrderID, fillPrice, fillQty, filledAt, l)
+	s.handleFillWithPrice(po, brokerOrderID, fillPrice, fillQty, filledAt, "", l)
 }
 
 // exitLimitBuffer returns the IOC limit price buffer (as a fraction) for exit orders.

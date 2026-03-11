@@ -110,3 +110,83 @@ func (s *Service) reconcileWithBroker(ctx context.Context) {
 		}
 	}
 }
+
+// reconcileGlobal performs a full portfolio audit by comparing the entire trades DB
+// against the broker's position list. Unlike reconcileWithBroker (which only checks
+// in-memory monitored positions), this catches "invisible" orphans — DB residuals
+// left behind after a position was fully closed and removed from the monitor.
+func (s *Service) reconcileGlobal(ctx context.Context) {
+	if s.broker == nil || s.repo == nil {
+		return
+	}
+
+	brokerPositions, err := s.broker.GetPositions(ctx, s.tenantID, s.envMode)
+	if err != nil {
+		s.log.Warn().Err(err).Msg("global-reconcile: failed to query broker positions — skipping")
+		return
+	}
+	brokerBySymbol := make(map[domain.Symbol]float64, len(brokerPositions))
+	for _, bp := range brokerPositions {
+		brokerBySymbol[bp.Symbol] = bp.Quantity
+	}
+
+	dbPositions, err := s.repo.GetNetPositions(ctx, s.tenantID, s.envMode)
+	if err != nil {
+		s.log.Warn().Err(err).Msg("global-reconcile: failed to query DB net positions — skipping")
+		return
+	}
+
+	reconciled := 0
+	for sym, dbQty := range dbPositions {
+		if dbQty <= 1e-10 {
+			continue
+		}
+
+		brokerQty, onBroker := brokerBySymbol[sym]
+
+		if !onBroker {
+			s.log.Warn().
+				Str("symbol", string(sym)).
+				Float64("db_net_qty", dbQty).
+				Msg("global-reconcile: DB orphan detected — inserting reconciliation SELL")
+
+			trade := domain.Trade{
+				Time:      s.nowFunc(),
+				TenantID:  s.tenantID,
+				EnvMode:   s.envMode,
+				TradeID:   uuid.New(),
+				Symbol:    sym,
+				Side:      "SELL",
+				Quantity:  dbQty,
+				Price:     0,
+				Status:    "FILLED",
+				Strategy:  "reconciliation",
+				Rationale: fmt.Sprintf("global-reconcile: DB net %.10f but no broker position", dbQty),
+			}
+			if err := s.repo.SaveTrade(ctx, trade); err != nil {
+				s.log.Error().Err(err).Str("symbol", string(sym)).Msg("global-reconcile: failed to save reconciliation SELL")
+			} else {
+				reconciled++
+				s.log.Info().
+					Str("symbol", string(sym)).
+					Float64("quantity", dbQty).
+					Msg("global-reconcile: reconciliation SELL inserted")
+			}
+			continue
+		}
+
+		drift := math.Abs(dbQty - brokerQty)
+		if drift > 1e-6 {
+			s.log.Warn().
+				Str("symbol", string(sym)).
+				Float64("db_qty", dbQty).
+				Float64("broker_qty", brokerQty).
+				Float64("drift", drift).
+				Msg("global-reconcile: quantity drift detected (informational)")
+		}
+	}
+
+	if reconciled > 0 {
+		s.log.Info().Int("reconciled", reconciled).Msg("global-reconcile: cycle complete")
+	}
+}
