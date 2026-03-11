@@ -593,7 +593,7 @@ func TestSignalDebateEnricher_PerfVeto_NegativeExpectancy(t *testing.T) {
 	evs := waitForEvents(t, received, 1)
 	got := evs[0].Payload.(domain.SignalEnrichment)
 
-	assert.Equal(t, domain.EnrichmentSkipped, got.Status)
+	assert.Equal(t, domain.EnrichmentVetoed, got.Status)
 	assert.InDelta(t, 0.1, got.Confidence, 0.0000001)
 	assert.Contains(t, got.Rationale, "pre-LLM veto")
 	assert.Equal(t, domain.DirectionLong, got.Direction)
