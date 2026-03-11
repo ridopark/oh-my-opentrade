@@ -154,6 +154,7 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 		PositionGate: execBundle.PositionGate,
 		Broker:       infra.alpacaAdapter,
 		Repo:         infra.repo,
+		SnapshotFn:   svc.monitor.GetLastSnapshot,
 		TenantID:     "default",
 		EnvMode:      domain.EnvModePaper,
 		Clock:        time.Now,

@@ -15,9 +15,10 @@ import (
 type PosMonitorDeps struct {
 	EventBus     ports.EventBusPort
 	PositionGate *execution.PositionGate
-	Broker       ports.BrokerPort       // optional — used in live mode for bootstrap reconciliation
-	Repo         ports.RepositoryPort   // optional — used in live mode for bootstrap reconciliation
-	SpecStore    portstrategy.SpecStore // optional — set on service if non-nil
+	Broker       ports.BrokerPort                      // optional — used in live mode for bootstrap reconciliation
+	Repo         ports.RepositoryPort                  // optional — used in live mode for bootstrap reconciliation
+	SpecStore    portstrategy.SpecStore                // optional — set on service if non-nil
+	SnapshotFn   positionmonitor.IndicatorSnapshotFunc // optional — ATR/VWAP/SD for exit rule evaluation
 	TenantID     string
 	EnvMode      domain.EnvMode
 	Clock        func() time.Time
@@ -44,6 +45,10 @@ func BuildPositionMonitor(deps PosMonitorDeps) (*PosMonitorBundle, error) {
 	priceCache := positionmonitor.NewPriceCache(priceCacheLog, positionmonitor.WithClock(deps.Clock))
 
 	var opts []positionmonitor.Option
+
+	if deps.SnapshotFn != nil {
+		opts = append(opts, positionmonitor.WithSnapshotFunc(deps.SnapshotFn))
+	}
 
 	if deps.IsBacktest {
 		opts = append(opts,

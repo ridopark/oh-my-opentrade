@@ -415,6 +415,12 @@ func (s *Service) processFill(fill fillMsg) {
 // EvalExitRules synchronously evaluates exit rules for all active positions
 // using the provided barTime as the current time. Used in backtest mode where
 // the tick loop is disabled and exit evaluation is driven per-bar.
+//
+// After tick() triggers exits, drainOutbox() publishes the resulting
+// OrderIntentCreated events synchronously so that WaitPending() correctly
+// tracks the downstream execution handler. Without this, the runOutbox
+// goroutine may publish after WaitPending returns, causing exit fills to
+// use the next bar's price.
 func (s *Service) EvalExitRules(barTime time.Time) {
 	origNow := s.nowFunc
 	s.nowFunc = func() time.Time { return barTime }
@@ -422,6 +428,24 @@ func (s *Service) EvalExitRules(barTime time.Time) {
 
 	s.drainFills()
 	s.tick()
+	s.drainOutbox()
+}
+
+// drainOutbox non-blockingly reads all pending exit intents from the outbox
+// channel and publishes them synchronously on the event bus. This ensures
+// exit OrderIntentCreated events are dispatched (and tracked by WaitPending)
+// before EvalExitRules returns.
+func (s *Service) drainOutbox() {
+	ctx := context.Background()
+	for {
+		select {
+		case msg := <-s.outbox:
+			s.emit(ctx, domain.EventExitTriggered, msg.TenantID, msg.EnvMode, msg.IdempotencyKey, msg.ExitTriggered)
+			s.emit(ctx, domain.EventOrderIntentCreated, msg.TenantID, msg.EnvMode, msg.Intent.IdempotencyKey, msg.Intent)
+		default:
+			return
+		}
+	}
 }
 
 // drainFills non-blockingly reads all pending messages from actor channels

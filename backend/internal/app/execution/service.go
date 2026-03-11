@@ -50,6 +50,7 @@ type Service struct {
 	pendingOrders      sync.Map // brokerOrderID → *pendingOrder
 	tenantID           string
 	envMode            domain.EnvMode
+	syncFill           bool
 }
 
 // Option is a functional option for Service.
@@ -78,6 +79,10 @@ func WithTradingWindowGuard(twg *TradingWindowGuard) Option {
 
 func WithOrderStream(os ports.OrderStreamPort) Option {
 	return func(s *Service) { s.orderStream = os }
+}
+
+func WithSyncFill() Option {
+	return func(s *Service) { s.syncFill = true }
 }
 
 // NewService creates a new execution Service.
@@ -585,15 +590,36 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	}
 
 	// 8. Register intent for fill correlation and start fill detection.
-	s.pendingOrders.Store(brokerOrderID, &pendingOrder{
+	po := &pendingOrder{
 		intent:      intent,
 		tenantID:    event.TenantID,
 		envMode:     event.EnvMode,
 		submitStart: submitStart,
-	})
+	}
+	s.pendingOrders.Store(brokerOrderID, po)
 
-	if s.orderStream == nil {
-		// Fallback: poll for fill when no WebSocket stream is available (backtest, replay).
+	if s.syncFill {
+		s.pendingOrders.Delete(brokerOrderID)
+		details, err := s.broker.GetOrderDetails(ctx, brokerOrderID)
+		fillPrice := details.FilledAvgPrice
+		if fillPrice <= 0 {
+			fillPrice = intent.LimitPrice
+		}
+		fillQty := details.FilledQty
+		if fillQty <= 0 {
+			fillQty = intent.Quantity
+		}
+		filledAt := details.FilledAt
+		if filledAt.IsZero() {
+			filledAt = submitStart
+		}
+		if err != nil {
+			fillPrice = intent.LimitPrice
+			fillQty = intent.Quantity
+			filledAt = submitStart
+		}
+		s.handleFillWithPrice(po, brokerOrderID, fillPrice, fillQty, filledAt, "", l)
+	} else if s.orderStream == nil {
 		go s.pollForFill(event.TenantID, event.EnvMode, intent, brokerOrderID, submitStart, l)
 	}
 
