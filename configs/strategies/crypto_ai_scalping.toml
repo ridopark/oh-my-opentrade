@@ -18,7 +18,7 @@ timeframes = ["1m"]
 priority = 60
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
-watchlist_mode = "replace"
+watchlist_mode = "union"
 asset_classes = ["CRYPTO"]
 allowed_directions = ["LONG"]
 

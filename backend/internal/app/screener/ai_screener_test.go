@@ -66,6 +66,7 @@ func TestPass0Filter(t *testing.T) {
 	cfg := config.AIScreenerConfig{
 		Pass0MinPrice:  5.0,
 		Pass0MinVolume: 1000,
+		Pass0MinADV:    500_000,
 		Pass0MinGapPct: 1.0,
 	}
 
@@ -75,6 +76,7 @@ func TestPass0Filter(t *testing.T) {
 			PrevClose:       f64(10),
 			PreMarketPrice:  f64(11.5),
 			PreMarketVolume: i64(5000),
+			PrevDailyVolume: i64(1_000_000),
 			LastTradePrice:  f64(11),
 		},
 		"LOW_PRICE": {
@@ -82,6 +84,7 @@ func TestPass0Filter(t *testing.T) {
 			PrevClose:       f64(3),
 			PreMarketPrice:  f64(3.5),
 			PreMarketVolume: i64(5000),
+			PrevDailyVolume: i64(1_000_000),
 			LastTradePrice:  f64(3.2),
 		},
 		"LOW_VOL": {
@@ -89,6 +92,7 @@ func TestPass0Filter(t *testing.T) {
 			PrevClose:       f64(10),
 			PreMarketPrice:  f64(12),
 			PreMarketVolume: i64(500),
+			PrevDailyVolume: i64(1_000_000),
 			LastTradePrice:  f64(11),
 		},
 		"LOW_GAP": {
@@ -96,7 +100,32 @@ func TestPass0Filter(t *testing.T) {
 			PrevClose:       f64(100),
 			PreMarketPrice:  f64(100.5),
 			PreMarketVolume: i64(5000),
+			PrevDailyVolume: i64(1_000_000),
 			LastTradePrice:  f64(100.3),
+		},
+		"NIL_PM_VOL": {
+			Symbol:          "NIL_PM_VOL",
+			PrevClose:       f64(10),
+			PreMarketPrice:  f64(11.5),
+			PreMarketVolume: nil,
+			PrevDailyVolume: i64(1_000_000),
+			LastTradePrice:  f64(11),
+		},
+		"LOW_ADV": {
+			Symbol:          "LOW_ADV",
+			PrevClose:       f64(10),
+			PreMarketPrice:  f64(11.5),
+			PreMarketVolume: i64(5000),
+			PrevDailyVolume: i64(100_000),
+			LastTradePrice:  f64(11),
+		},
+		"NIL_ADV": {
+			Symbol:          "NIL_ADV",
+			PrevClose:       f64(10),
+			PreMarketPrice:  f64(11.5),
+			PreMarketVolume: i64(5000),
+			PrevDailyVolume: nil,
+			LastTradePrice:  f64(11),
 		},
 	}
 
@@ -111,10 +140,33 @@ func TestPass0Filter(t *testing.T) {
 }
 
 func TestPass0Filter_EmptySnapshots(t *testing.T) {
-	cfg := config.AIScreenerConfig{Pass0MinPrice: 5.0, Pass0MinVolume: 1000, Pass0MinGapPct: 1.0}
+	cfg := config.AIScreenerConfig{Pass0MinPrice: 5.0, Pass0MinVolume: 1000, Pass0MinADV: 500_000, Pass0MinGapPct: 1.0}
 	passed := Pass0Filter(map[string]ports.Snapshot{}, cfg)
 	if len(passed) != 0 {
 		t.Fatalf("expected empty, got %d", len(passed))
+	}
+}
+
+func TestPass0Filter_ADVDisabledWhenZero(t *testing.T) {
+	cfg := config.AIScreenerConfig{
+		Pass0MinPrice:  5.0,
+		Pass0MinVolume: 1000,
+		Pass0MinADV:    0,
+		Pass0MinGapPct: 1.0,
+	}
+	snaps := map[string]ports.Snapshot{
+		"NO_ADV_CHECK": {
+			Symbol:          "NO_ADV_CHECK",
+			PrevClose:       f64(10),
+			PreMarketPrice:  f64(11.5),
+			PreMarketVolume: i64(5000),
+			PrevDailyVolume: nil,
+			LastTradePrice:  f64(11),
+		},
+	}
+	passed := Pass0Filter(snaps, cfg)
+	if len(passed) != 1 {
+		t.Fatalf("expected 1 pass with ADV disabled, got %d", len(passed))
 	}
 }
 
