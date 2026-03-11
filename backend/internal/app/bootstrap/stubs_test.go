@@ -35,6 +35,14 @@ func (stubBroker) GetOrderStatus(context.Context, string) (string, error) { retu
 func (stubBroker) GetPositions(context.Context, string, domain.EnvMode) ([]domain.Trade, error) {
 	return nil, nil
 }
+func (stubBroker) GetPosition(context.Context, domain.Symbol) (float64, error) { return 0, nil }
+func (stubBroker) ClosePosition(context.Context, domain.Symbol) (string, error) {
+	return "", nil
+}
+func (stubBroker) GetOrderDetails(context.Context, string) (ports.OrderDetails, error) {
+	return ports.OrderDetails{}, nil
+}
+func (stubBroker) GetAccountEquity(context.Context) (float64, error) { return 100000, nil }
 
 type stubRepo struct{}
 
@@ -90,3 +98,13 @@ func (stubRepo) ListPendingApprovals(context.Context) ([]dnaapproval.DNAApproval
 func (stubRepo) GetActiveDNAVersion(context.Context, string) (*dnaapproval.DNAVersion, error) {
 	return nil, nil
 }
+func (stubRepo) GetLatestThesisForSymbol(context.Context, string, domain.EnvMode, domain.Symbol) (json.RawMessage, error) {
+	return nil, nil
+}
+func (stubRepo) GetNonTerminalOrders(context.Context, string, domain.EnvMode) ([]domain.BrokerOrder, error) {
+	return nil, nil
+}
+func (stubRepo) GetRecordedFillQty(context.Context, string, domain.EnvMode, domain.Symbol, string, time.Time) (float64, error) {
+	return 0, nil
+}
+func (stubRepo) UpdateOrderStatus(context.Context, string, string) error { return nil }

@@ -168,7 +168,7 @@ func TestPipelineIntegration(t *testing.T) {
 		{"monitor", func() error { return monitorSvc.Start(ctx) }},
 		{"ledgerWriter", func() error { return execBundle.LedgerWriter.Start(ctx, "test", domain.EnvModePaper) }},
 		{"signalTracker", func() error { return signalTracker.Start(ctx) }},
-		{"execution", func() error { return execBundle.Service.Start(ctx) }},
+		{"execution", func() error { return execBundle.Service.Start(ctx, "test", domain.EnvModePaper) }},
 		{"priceCache", func() error { return posMonBundle.PriceCache.Start(ctx, eventBus) }},
 		{"posMonitor", func() error { return posMonBundle.Service.Start(ctx) }},
 		{"runner", func() error { return pipeline.Runner.Start(ctx) }},
