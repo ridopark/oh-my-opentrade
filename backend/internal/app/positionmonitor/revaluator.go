@@ -12,7 +12,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-const minTightenConfidence = 0.85
+const minTightenConfidence = 0.70
 const revalAdjustmentCooldown = 15 * time.Minute
 
 type IndicatorSnapshotFunc func(symbol string) (domain.IndicatorSnapshot, bool)
