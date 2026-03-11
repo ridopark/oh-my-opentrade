@@ -228,6 +228,17 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 				"symbol", sig.Symbol,
 				"headlines", len(newsItems),
 			)
+		} else {
+			enrichment := domain.SignalEnrichment{
+				Signal:     ref,
+				Status:     domain.EnrichmentSkipped,
+				Confidence: sig.Strength,
+				Rationale:  fmt.Sprintf("signal: %s %s strength=%.2f (no recent news — AI skipped)", sig.Type, sig.Side, sig.Strength),
+				Direction:  direction,
+			}
+			e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
+			e.saveThoughtLog(ctx, event, enrichment)
+			return nil
 		}
 	}
 
