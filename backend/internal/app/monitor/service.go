@@ -139,6 +139,47 @@ func (s *Service) SetORBConfig(params map[string]any) {
 // SetDNAGate installs a gate checker that blocks SetupDetected events when the
 // active DNA version for strategyKey is not approved. If checker is nil the gate
 // is disabled and all setups pass through.
+func (s *Service) RegisterEMAConfig(symbols []string, timeframes []string, params map[string]any) {
+	fast, slow := extractIntParam(params, "ema_fast", 0), extractIntParam(params, "ema_slow", 0)
+	threshold := extractFloat64Param(params, "ema_divergence_threshold_pct", 0) / 100.0
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sym := range symbols {
+		for _, tf := range timeframes {
+			if fast > 0 && slow > 0 && fast < slow {
+				s.calculator.RegisterEMAConfig(sym, tf, fast, slow)
+			}
+			if threshold > 0 {
+				s.regimeDetector.RegisterDivergenceThreshold(sym, tf, threshold)
+			}
+		}
+	}
+}
+
+func extractIntParam(params map[string]any, key string, def int) int {
+	if v, ok := params[key]; ok {
+		switch n := v.(type) {
+		case int:
+			return n
+		case int64:
+			return int(n)
+		case float64:
+			return int(n)
+		}
+	}
+	return def
+}
+
+func extractFloat64Param(params map[string]any, key string, def float64) float64 {
+	if v, ok := params[key]; ok {
+		if n, ok := v.(float64); ok {
+			return n
+		}
+	}
+	return def
+}
+
 func (s *Service) SetDNAGate(checker DNAGateChecker, strategyKey string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

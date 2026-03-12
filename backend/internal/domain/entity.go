@@ -247,6 +247,10 @@ type IndicatorSnapshot struct {
 	EMA9          float64
 	EMA21         float64
 	EMA50         float64
+	EMAFast       float64
+	EMASlow       float64
+	EMAFastPeriod int
+	EMASlowPeriod int
 	VWAP          float64
 	Volume        float64
 	VolumeSMA     float64
