@@ -262,13 +262,6 @@ func (s *Service) addToBatch(symbol, msg string, withChart bool, ev domain.Event
 
 		opts := ports.ChartOptions{}
 		opts.Levels = append(opts.Levels, domain.PriceLevel{
-			Label:     fmt.Sprintf("Entry $%s", domain.FmtPrice(p.EntryPrice)),
-			Price:     p.EntryPrice,
-			Color:     "green",
-			StartTime: info.entryTime,
-			EndTime:   exitTime,
-		})
-		opts.Levels = append(opts.Levels, domain.PriceLevel{
 			Label:     fmt.Sprintf("Exit $%s", domain.FmtPrice(p.ExitPrice)),
 			Price:     p.ExitPrice,
 			Color:     "silver",
