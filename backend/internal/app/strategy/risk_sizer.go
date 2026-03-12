@@ -578,7 +578,7 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 	// the options pipeline instead of creating an equity OrderIntent.
 	if sigRef.SignalType == start.SignalEntry.String() &&
 		spec != nil && spec.Options != nil && spec.Options.Enabled &&
-		rs.optionsMarket != nil && rs.contractSelector != nil {
+		rs.optionsMarket != nil {
 		return rs.handleOptionsSignal(ctx, event, enrichment, sigRef, spec, direction, strategyName, refPrice, limitPrice, equity)
 	}
 
