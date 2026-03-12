@@ -1221,7 +1221,13 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 			s.cleanupPendingOrder(brokerOrderID)
 		}
 
-		if time.Since(po.submitStart) > 2*time.Minute {
+		// Options limit orders sit on the book all day — Alpaca auto-cancels them at 3:55 PM.
+		// Use a much longer stale timeout so we don't prematurely cancel them.
+		staleTimeout := 2 * time.Minute
+		if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {
+			staleTimeout = 4 * time.Hour
+		}
+		if time.Since(po.submitStart) > staleTimeout {
 			if details.Status == "filled" || details.Status == "canceled" || details.Status == "expired" || details.Status == "rejected" {
 				return true
 			}
