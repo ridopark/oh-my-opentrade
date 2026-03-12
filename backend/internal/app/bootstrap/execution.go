@@ -92,12 +92,13 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 		execOpts = append(execOpts, execution.WithBuyingPowerGuard(bpGuard))
 	}
 	if deps.EnableOptions {
+		optsCfg := cfg.Trading.OptionsRisk
 		ore := execution.NewOptionsRiskEngine(
 			cfg.Trading.MaxRiskPercent/100.0,
-			10,   // minOpenInterest
-			0.15, // maxSpreadPct (15%)
-			1.0,  // maxIVCeiling (100%)
-			7,    // minDTE
+			optsCfg.MinOpenInterest,
+			optsCfg.MaxSpreadPct,
+			optsCfg.MaxIVCeiling,
+			optsCfg.MinDTE,
 			deps.Clock,
 		)
 		execOpts = append(execOpts, execution.WithOptionsRiskEngine(ore))
