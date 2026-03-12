@@ -70,6 +70,29 @@ func (d barData) TOHLCV(i int) (float64, float64, float64, float64, float64, flo
 	return float64(b.Time.Unix()), b.Open, b.High, b.Low, b.Close, b.Volume
 }
 
+// vLine draws a full-height vertical line at a fixed X (data coordinate).
+// It implements plot.Plotter directly so it can draw in canvas space at
+// render time — avoiding the chicken-and-egg of reading p.Y.Min/Max before
+// p.Draw() has resolved the axis range (which starts at ±Inf).
+type vLine struct {
+	x float64
+	draw.LineStyle
+}
+
+func (v vLine) Plot(c draw.Canvas, p *plot.Plot) {
+	trX, _ := p.Transforms(&c)
+	cx := trX(v.x)
+	if !c.ContainsX(cx) {
+		return
+	}
+	c.StrokeLine2(v.LineStyle, cx, c.Min.Y, cx, c.Max.Y)
+}
+
+func (v vLine) Thumbnail(c *draw.Canvas) {
+	midY := (c.Min.Y + c.Max.Y) / 2
+	c.StrokeLine2(v.LineStyle, c.Min.X, midY, c.Max.X, midY)
+}
+
 var levelColors = map[string]color.RGBA{
 	"green":  {R: 76, G: 175, B: 80, A: 220},
 	"red":    {R: 239, G: 83, B: 80, A: 220},
@@ -216,31 +239,25 @@ func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars [
 			x = xMax
 		}
 
-		// Use a tiny X offset so gonum doesn't treat the two-point line as
-		// degenerate (ΔX=0). The offset is sub-second and invisible at chart scale.
-		pts := make(plotter.XYs, 2)
-		pts[0] = plotter.XY{X: x, Y: yMin - yPad}
-		pts[1] = plotter.XY{X: x + 0.01, Y: yMax + yPad}
-
-		vline, err := plotter.NewLine(pts)
-		if err != nil {
-			continue
-		}
-
 		c := levelColors["green"]
 		if mapped, ok := levelColors[mk.Color]; ok {
 			c = mapped
 		}
 		c.A = 220
-		vline.Color = c
-		vline.Width = vg.Points(1.5)
-		vline.Dashes = []vg.Length{vg.Points(5), vg.Points(3)}
 
-		p.Add(vline)
-		p.Legend.Add(mk.Label, vline)
+		vl := vLine{
+			x: x,
+			LineStyle: draw.LineStyle{
+				Color:  c,
+				Width:  vg.Points(1.5),
+				Dashes: []vg.Length{vg.Points(5), vg.Points(3)},
+			},
+		}
+		p.Add(vl)
+		p.Legend.Add(mk.Label, vl)
 	}
 
-	if len(opts.Levels) > 0 {
+	if len(opts.Levels) > 0 || len(opts.Markers) > 0 {
 		p.Legend.TextStyle.Color = textColor
 		p.Legend.Top = true
 		p.Legend.Left = true
