@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
+	alpacaadapter "github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
 	"github.com/oh-my-opentrade/backend/internal/adapters/llm"
 	"github.com/oh-my-opentrade/backend/internal/adapters/noop"
@@ -197,8 +198,11 @@ func main() {
 		lastIntentSummary string
 		simBrokerInst     *simbroker.Broker
 		collectorInst     *backtest.Collector
-		posMonSvc         *positionmonitor.Service // non-nil in backtest mode
+		posMonSvc         *positionmonitor.Service
+		posMonPriceCache  *positionmonitor.PriceCache
 		pipeline          *bootstrap.StrategyPipeline
+		optionBarsCache   map[domain.Symbol][]domain.MarketBar
+		optionBarsMu      sync.Mutex
 	)
 	if err := eventBus.Subscribe(ctx, domain.EventSignalCreated, func(_ context.Context, ev domain.Event) error {
 		signalsMu.Lock()
@@ -257,6 +261,48 @@ func main() {
 			log.Fatal().Err(err).Msg("failed to build position monitor")
 		}
 		posMonSvc = posMonBundle.Service
+		posMonPriceCache = posMonBundle.PriceCache
+		optionBarsCache = make(map[domain.Symbol][]domain.MarketBar)
+
+		if cfg.Alpaca.APIKeyID != "" {
+			alpacaAdapt, alpacaErr := alpacaadapter.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca_replay").Logger())
+			if alpacaErr != nil {
+				log.Warn().Err(alpacaErr).Msg("backtest: failed to create alpaca adapter — options bar fetching disabled")
+			} else {
+				if err := eventBus.Subscribe(ctx, domain.EventFillReceived, func(_ context.Context, ev domain.Event) error {
+					payload, ok := ev.Payload.(map[string]any)
+					if !ok {
+						return nil
+					}
+					instrType, _ := payload["instrument_type"].(string)
+					if instrType != string(domain.InstrumentTypeOption) {
+						return nil
+					}
+					symStr, _ := payload["symbol"].(string)
+					if symStr == "" {
+						return nil
+					}
+					sym := domain.Symbol(symStr)
+
+					go func() {
+						bars, fetchErr := alpacaAdapt.GetHistoricalOptionBars(ctx, []domain.Symbol{sym}, fromTime, toTime)
+						if fetchErr != nil {
+							log.Warn().Err(fetchErr).Str("symbol", symStr).Msg("backtest: failed to fetch historical option bars")
+							return
+						}
+						optionBarsMu.Lock()
+						for s, b := range bars {
+							optionBarsCache[s] = b
+						}
+						optionBarsMu.Unlock()
+						log.Info().Str("symbol", symStr).Int("bars", len(bars[sym])).Msg("backtest: options bars loaded for price injection")
+					}()
+					return nil
+				}); err != nil {
+					log.Fatal().Err(err).Msg("failed to subscribe FillReceived for options bars")
+				}
+			}
+		}
 
 		pipeline, err = bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
 			EventBus:        eventBus,
@@ -567,6 +613,18 @@ func main() {
 		if backtestFlag {
 			eventBus.WaitPending()
 			if posMonSvc != nil {
+				if posMonPriceCache != nil {
+					optionBarsMu.Lock()
+					for sym, bars := range optionBarsCache {
+						for i := len(bars) - 1; i >= 0; i-- {
+							if !bars[i].Time.After(minTime) {
+								posMonPriceCache.UpdatePrice(sym, bars[i].Close, bars[i].Time)
+								break
+							}
+						}
+					}
+					optionBarsMu.Unlock()
+				}
 				posMonSvc.EvalExitRules(minTime)
 				eventBus.WaitPending()
 			}
