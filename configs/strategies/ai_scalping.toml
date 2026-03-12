@@ -13,7 +13,7 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META"]
+symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "U", "PLTR", "META", "NVDA", "AMD"]
 timeframes = ["1m"]
 priority = 60
 conflict_policy = "priority_wins"
@@ -32,7 +32,7 @@ stoch_long = 20.0
 stoch_short = 80.0
 rsi_exit_mid = 50.0
 allow_regimes = ["BALANCE", "REVERSAL"]
-cooldown_seconds = 60
+cooldown_seconds = 300
 max_trades_per_day = 10
 ai_enabled = true
 ai_mode = "async_debate_adjust"
@@ -75,7 +75,7 @@ interval_minutes = 5
 [[exit_rules]]
 type = "VOLATILITY_STOP"
 [exit_rules.params]
-atr_multiplier = 3.0
+atr_multiplier = 1.5
 
 [[exit_rules]]
 type = "SD_TARGET"

@@ -191,7 +191,7 @@ func TestSignalDebateEnricher_EntrySignal_AITimeout(t *testing.T) {
 	evs := waitForEvents(t, received, 1)
 	got := evs[0].Payload.(domain.SignalEnrichment)
 	assert.Equal(t, domain.EnrichmentTimeout, got.Status)
-	assert.InDelta(t, sig.Strength, got.Confidence, 0.0000001)
+	assert.InDelta(t, 0.65, got.Confidence, 0.0000001)
 	assert.NotEmpty(t, got.Rationale)
 	assert.Equal(t, domain.DirectionLong, got.Direction)
 	assert.Empty(t, got.BullArgument)
@@ -214,7 +214,7 @@ func TestSignalDebateEnricher_EntrySignal_AIError(t *testing.T) {
 	evs := waitForEvents(t, received, 1)
 	got := evs[0].Payload.(domain.SignalEnrichment)
 	assert.Equal(t, domain.EnrichmentError, got.Status)
-	assert.InDelta(t, sig.Strength, got.Confidence, 0.0000001)
+	assert.InDelta(t, 0.65, got.Confidence, 0.0000001)
 	assert.NotEmpty(t, got.Rationale)
 	assert.Equal(t, domain.DirectionShort, got.Direction)
 }
@@ -757,12 +757,12 @@ func TestSignalDebateEnricher_NoStratPerf(t *testing.T) {
 	assert.Equal(t, 1, advisor.calls, "AI advisor must be called when no stratPerf is wired")
 }
 
-func TestSignalDebateEnricher_NewsGated_NoNews_SkipsAI(t *testing.T) {
+func TestSignalDebateEnricher_NewsGated_NoNews_CallsAI(t *testing.T) {
 	bus := memory.NewBus()
 	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
 		Direction:  domain.DirectionLong,
 		Confidence: 0.85,
-		Rationale:  "should not be called",
+		Rationale:  "technical signal confirmed",
 	}}
 
 	emptyNewsProvider := func(_ context.Context, _ string) ([]domain.NewsItem, error) {
@@ -783,10 +783,9 @@ func TestSignalDebateEnricher_NewsGated_NoNews_SkipsAI(t *testing.T) {
 	evs := waitForEvents(t, received, 1)
 	got := evs[0].Payload.(domain.SignalEnrichment)
 
-	assert.Equal(t, domain.EnrichmentSkipped, got.Status)
-	assert.Contains(t, got.Rationale, "no recent news")
-	assert.InDelta(t, 0.8, got.Confidence, 0.0000001)
-	assert.Equal(t, 0, advisor.calls, "AI must NOT be called when no news")
+	assert.Equal(t, domain.EnrichmentOK, got.Status)
+	assert.InDelta(t, 0.85, got.Confidence, 0.0000001)
+	assert.Equal(t, 1, advisor.calls, "AI must be called even when no news")
 }
 
 func TestSignalDebateEnricher_NewsGated_WithNews_CallsAI(t *testing.T) {
@@ -822,12 +821,12 @@ func TestSignalDebateEnricher_NewsGated_WithNews_CallsAI(t *testing.T) {
 	assert.Equal(t, 1, advisor.calls, "AI must be called when news exists")
 }
 
-func TestSignalDebateEnricher_NewsGated_Error_SkipsAI(t *testing.T) {
+func TestSignalDebateEnricher_NewsGated_Error_CallsAI(t *testing.T) {
 	bus := memory.NewBus()
 	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{
 		Direction:  domain.DirectionLong,
 		Confidence: 0.85,
-		Rationale:  "should not be called",
+		Rationale:  "technical signal confirmed",
 	}}
 
 	failingNewsProvider := func(_ context.Context, _ string) ([]domain.NewsItem, error) {
@@ -848,9 +847,9 @@ func TestSignalDebateEnricher_NewsGated_Error_SkipsAI(t *testing.T) {
 	evs := waitForEvents(t, received, 1)
 	got := evs[0].Payload.(domain.SignalEnrichment)
 
-	assert.Equal(t, domain.EnrichmentSkipped, got.Status)
-	assert.Contains(t, got.Rationale, "no recent news")
-	assert.Equal(t, 0, advisor.calls, "AI must NOT be called when news fetch fails")
+	assert.Equal(t, domain.EnrichmentOK, got.Status)
+	assert.InDelta(t, 0.85, got.Confidence, 0.0000001)
+	assert.Equal(t, 1, advisor.calls, "AI must be called even when news fetch fails")
 }
 
 func TestSignalDebateEnricher_NilNewsProvider_CallsAI(t *testing.T) {

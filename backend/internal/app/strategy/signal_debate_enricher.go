@@ -214,12 +214,14 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 	}
 
 	var newsHeadlines []string
+	hasNews := false
 	if e.newsProvider != nil {
 		newsItems, newsErr := e.newsProvider(ctx, sig.Symbol)
 		if newsErr != nil {
 			e.logger.Warn("news fetch failed", "symbol", sig.Symbol, "error", newsErr)
 		}
 		if len(newsItems) > 0 {
+			hasNews = true
 			debateOpts = append(debateOpts, ports.WithNews(newsItems))
 			for _, n := range newsItems {
 				newsHeadlines = append(newsHeadlines, n.Headline)
@@ -229,17 +231,17 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 				"headlines", len(newsItems),
 			)
 		} else {
-			enrichment := domain.SignalEnrichment{
-				Signal:     ref,
-				Status:     domain.EnrichmentSkipped,
-				Confidence: sig.Strength,
-				Rationale:  fmt.Sprintf("signal: %s %s strength=%.2f (no recent news — AI skipped)", sig.Type, sig.Side, sig.Strength),
-				Direction:  direction,
-			}
-			e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
-			e.saveThoughtLog(ctx, event, enrichment)
-			return nil
+			e.logger.Info("no recent news — proceeding to AI debate without news context", "symbol", sig.Symbol)
 		}
+	}
+
+	// fallbackConfidence is used when AI is unavailable (timeout/error/neutral).
+	// When there is no news context, use 0.65 (below dynamic_risk min_confidence=0.70)
+	// so the risk sizer applies conservative sizing. When news is present, the signal
+	// already carries validated context so we trust sig.Strength.
+	fallbackConfidence := sig.Strength
+	if !hasNews {
+		fallbackConfidence = 0.65
 	}
 
 	decision, err := e.aiAdvisor.RequestDebate(
@@ -274,7 +276,7 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 		enrichment := domain.SignalEnrichment{
 			Signal:        ref,
 			Status:        domain.EnrichmentSkipped,
-			Confidence:    sig.Strength,
+			Confidence:    fallbackConfidence,
 			Rationale:     fmt.Sprintf("signal: %s %s strength=%.2f (AI neutral)", sig.Type, sig.Side, sig.Strength),
 			Direction:     direction,
 			NewsHeadlines: newsHeadlines,
@@ -293,7 +295,7 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 	enrichment := domain.SignalEnrichment{
 		Signal:        ref,
 		Status:        status,
-		Confidence:    sig.Strength,
+		Confidence:    fallbackConfidence,
 		Rationale:     fmt.Sprintf("signal: %s %s strength=%.2f (AI %s)", sig.Type, sig.Side, sig.Strength, status),
 		Direction:     direction,
 		NewsHeadlines: newsHeadlines,

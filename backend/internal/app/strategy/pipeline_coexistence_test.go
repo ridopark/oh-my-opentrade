@@ -273,7 +273,7 @@ func TestE2E_AVWAPSignal_AITimeout_ProducesFallbackOrderIntent(t *testing.T) {
 	assert.Equal(t, "avwap_v1", intent.Strategy)
 	assert.Equal(t, domain.Symbol("AAPL"), intent.Symbol)
 	assert.Equal(t, domain.DirectionLong, intent.Direction)
-	assert.InDelta(t, sig.Strength, intent.Confidence, 0.0000001)
+	assert.InDelta(t, 0.65, intent.Confidence, 0.0000001)
 	assert.Contains(t, intent.Rationale, "timeout")
 	assert.Equal(t, 40.0, intent.Quantity)
 }
