@@ -273,9 +273,8 @@ func (a *Adapter) GetQuote(ctx context.Context, symbol domain.Symbol) (float64, 
 	return a.rest.GetQuote(ctx, a.dataURL, symbol)
 }
 
-// GetOptionChain fetches option contract snapshots for the given underlying, expiry, and right.
 func (a *Adapter) GetOptionChain(ctx context.Context, underlying domain.Symbol, expiry time.Time, right domain.OptionRight) ([]domain.OptionContractSnapshot, error) {
-	return a.rest.GetOptionChain(ctx, underlying, expiry, right)
+	return a.rest.GetOptionChain(ctx, a.dataURL, underlying, expiry, right)
 }
 
 // GetAccountEquity fetches the current paper account equity from Alpaca.
