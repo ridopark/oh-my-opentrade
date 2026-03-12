@@ -37,6 +37,23 @@ func Pass0Filter(snapshots map[string]ports.Snapshot, cfg config.AIScreenerConfi
 	return passed
 }
 
+func excludeStatic(candidates, staticSymbols []string) []string {
+	if len(staticSymbols) == 0 {
+		return candidates
+	}
+	staticSet := make(map[string]struct{}, len(staticSymbols))
+	for _, sym := range staticSymbols {
+		staticSet[sym] = struct{}{}
+	}
+	out := make([]string, 0, len(candidates))
+	for _, sym := range candidates {
+		if _, ok := staticSet[sym]; !ok {
+			out = append(out, sym)
+		}
+	}
+	return out
+}
+
 func pickPrice(snap ports.Snapshot) float64 {
 	if snap.PreMarketPrice != nil && *snap.PreMarketPrice > 0 {
 		return *snap.PreMarketPrice

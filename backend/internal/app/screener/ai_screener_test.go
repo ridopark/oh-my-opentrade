@@ -260,3 +260,55 @@ func TestParseAIScreenerResponse_NoJSON(t *testing.T) {
 		t.Fatalf("expected error for no JSON")
 	}
 }
+
+func TestExcludeStatic(t *testing.T) {
+	cases := []struct {
+		name       string
+		candidates []string
+		static     []string
+		want       []string
+	}{
+		{
+			name:       "removes static symbols",
+			candidates: []string{"AAPL", "TSLA", "NVDA", "AMD"},
+			static:     []string{"AAPL", "TSLA"},
+			want:       []string{"NVDA", "AMD"},
+		},
+		{
+			name:       "empty static returns all",
+			candidates: []string{"AAPL", "NVDA"},
+			static:     []string{},
+			want:       []string{"AAPL", "NVDA"},
+		},
+		{
+			name:       "all static returns empty",
+			candidates: []string{"AAPL", "TSLA"},
+			static:     []string{"AAPL", "TSLA"},
+			want:       []string{},
+		},
+		{
+			name:       "no overlap returns all",
+			candidates: []string{"NVDA", "AMD"},
+			static:     []string{"AAPL", "TSLA"},
+			want:       []string{"NVDA", "AMD"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := excludeStatic(tc.candidates, tc.static)
+			if len(got) != len(tc.want) {
+				t.Fatalf("expected %v, got %v", tc.want, got)
+			}
+			wantSet := make(map[string]struct{}, len(tc.want))
+			for _, s := range tc.want {
+				wantSet[s] = struct{}{}
+			}
+			for _, s := range got {
+				if _, ok := wantSet[s]; !ok {
+					t.Errorf("unexpected symbol %q in result", s)
+				}
+			}
+		})
+	}
+}

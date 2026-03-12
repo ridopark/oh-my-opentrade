@@ -458,7 +458,7 @@ func (s *AIService) runForStrategy(
 	asOfET time.Time,
 	result *aiStrategyResult,
 ) error {
-	symbols := candidateSymbols
+	symbols := excludeStatic(candidateSymbols, spec.Routing.Symbols)
 	if len(symbols) == 0 {
 		return nil
 	}
