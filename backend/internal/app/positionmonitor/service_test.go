@@ -94,6 +94,7 @@ func (m *mockBroker) GetPositions(ctx context.Context, tenantID string, envMode 
 func (m *mockBroker) CancelOpenOrders(_ context.Context, _ domain.Symbol, _ string) (int, error) {
 	return 0, nil
 }
+func (m *mockBroker) CancelAllOpenOrders(_ context.Context) (int, error) { return 0, nil }
 func (m *mockBroker) GetPosition(_ context.Context, _ domain.Symbol) (float64, error) {
 	return 0, nil
 }

@@ -262,6 +262,10 @@ func (b *Broker) CancelOpenOrders(_ context.Context, _ domain.Symbol, _ string) 
 	return 0, nil
 }
 
+func (b *Broker) CancelAllOpenOrders(_ context.Context) (int, error) {
+	return 0, nil
+}
+
 func (b *Broker) GetPosition(_ context.Context, symbol domain.Symbol) (float64, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
