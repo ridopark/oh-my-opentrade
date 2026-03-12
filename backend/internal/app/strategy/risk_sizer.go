@@ -64,15 +64,16 @@ type lossRecord struct {
 // RiskSizer subscribes to SignalEnriched events and converts enriched signals
 // into OrderIntents after applying position sizing and risk checks.
 type RiskSizer struct {
-	eventBus      ports.EventBusPort
-	specStore     stratports.SpecStore
-	mu            sync.RWMutex
-	accountEquity float64
-	revalState    sync.Map // symbol (string) → *domain.RiskRevaluation
-	exitCooldowns sync.Map // symbol (string) → time.Time (last exit fill timestamp)
-	lossTrackers  sync.Map // symbol (string) → *lossRecord
-	logger        *slog.Logger
-	nowFn         func() time.Time
+	eventBus             ports.EventBusPort
+	specStore            stratports.SpecStore
+	mu                   sync.RWMutex
+	accountEquity        float64
+	revalState           sync.Map // symbol (string) → *domain.RiskRevaluation
+	exitCooldowns        sync.Map // symbol (string) → time.Time (last exit fill timestamp)
+	lossTrackers         sync.Map // symbol (string) → *lossRecord
+	logger               *slog.Logger
+	nowFn                func() time.Time
+	exitCooldownDuration time.Duration
 }
 
 func NewRiskSizer(eventBus ports.EventBusPort, specStore stratports.SpecStore, equity float64, logger *slog.Logger) *RiskSizer {
@@ -83,15 +84,17 @@ func NewRiskSizer(eventBus ports.EventBusPort, specStore stratports.SpecStore, e
 		equity = 100000.0
 	}
 	return &RiskSizer{
-		eventBus:      eventBus,
-		specStore:     specStore,
-		accountEquity: equity,
-		logger:        logger.With("component", "risk_sizer"),
-		nowFn:         time.Now,
+		eventBus:             eventBus,
+		specStore:            specStore,
+		accountEquity:        equity,
+		logger:               logger.With("component", "risk_sizer"),
+		nowFn:                time.Now,
+		exitCooldownDuration: defaultExitCooldown,
 	}
 }
 
-func (rs *RiskSizer) SetNowFn(fn func() time.Time) { rs.nowFn = fn }
+func (rs *RiskSizer) SetNowFn(fn func() time.Time)    { rs.nowFn = fn }
+func (rs *RiskSizer) SetExitCooldown(d time.Duration) { rs.exitCooldownDuration = d }
 
 func (rs *RiskSizer) Start(ctx context.Context) error {
 	if err := rs.eventBus.Subscribe(ctx, domain.EventSignalEnriched, rs.handleSignal); err != nil {
@@ -161,7 +164,7 @@ func (rs *RiskSizer) handleFillForCooldown(_ context.Context, event domain.Event
 	rs.exitCooldowns.Store(symbol, rs.nowFn())
 	rs.logger.Info("exit cooldown set",
 		"symbol", symbol,
-		"cooldown", defaultExitCooldown.String(),
+		"cooldown", rs.exitCooldownDuration.String(),
 	)
 
 	if price > 0 {
@@ -194,7 +197,7 @@ func (rs *RiskSizer) isSymbolInCooldown(symbol string) (time.Time, bool) {
 	if !ok {
 		return time.Time{}, false
 	}
-	if rs.nowFn().Sub(exitTime) > defaultExitCooldown {
+	if rs.nowFn().Sub(exitTime) > rs.exitCooldownDuration {
 		rs.exitCooldowns.Delete(symbol)
 		return time.Time{}, false
 	}
@@ -229,7 +232,7 @@ func (rs *RiskSizer) isSymbolDegraded(symbol string) (*domain.RiskRevaluation, b
 	if !ok {
 		return nil, false
 	}
-	if time.Since(reval.EvaluatedAt) > revalStateTTL {
+	if rs.nowFn().Sub(reval.EvaluatedAt) > revalStateTTL {
 		rs.revalState.Delete(symbol)
 		return nil, false
 	}
@@ -347,14 +350,14 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 			rs.logger.Warn("exit cooldown gate: entry blocked — recent exit",
 				"symbol", sigRef.Symbol,
 				"last_exit_at", exitTime,
-				"cooldown", defaultExitCooldown.String(),
+				"cooldown", rs.exitCooldownDuration.String(),
 			)
 			rejection := domain.OrderIntentEventPayload{
 				ID:        uuid.NewString(),
 				Symbol:    sigRef.Symbol,
 				Direction: string(signalDir),
 				Strategy:  strategyName,
-				Reason:    fmt.Sprintf("exit_cooldown: last exit %.0fs ago (cooldown %s)", rs.nowFn().Sub(exitTime).Seconds(), defaultExitCooldown),
+				Reason:    fmt.Sprintf("exit_cooldown: last exit %.0fs ago (cooldown %s)", rs.nowFn().Sub(exitTime).Seconds(), rs.exitCooldownDuration),
 				Status:    domain.OrderIntentStatusRejected,
 			}
 			rs.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, rejection.ID, rejection)
