@@ -60,7 +60,11 @@ func (g *ExposureGuard) Check(ctx context.Context, intent domain.OrderIntent) er
 	}
 
 	intentCluster := classifySymbol(intent.Symbol)
+	isOption := intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption
 	intentNotional := intent.Quantity * intent.LimitPrice
+	if isOption && intent.MaxLossUSD > 0 {
+		intentNotional = intent.MaxLossUSD
+	}
 	projectedExposure := exposure[intentCluster] + intentNotional
 	cap := g.caps[intentCluster]
 

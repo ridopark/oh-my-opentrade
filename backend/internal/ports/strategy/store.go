@@ -52,6 +52,7 @@ type Spec struct {
 	Params    map[string]any
 	Hooks     map[string]HookRef
 	ExitRules []domain.ExitRule
+	Options   *domain.OptionsConfig
 }
 
 type ScreeningConfig struct {

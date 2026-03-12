@@ -345,6 +345,16 @@ type Trade struct {
 	Rationale   string
 	AssetClass  AssetClass
 	Thesis      json.RawMessage
+
+	InstrumentType InstrumentType
+	OptionSymbol   string
+	Underlying     string
+	Strike         float64
+	Expiry         time.Time
+	OptionRight    string
+	Premium        float64
+	DeltaAtEntry   float64
+	IVAtEntry      float64
 }
 
 // NewTrade creates a validated Trade. Quantity must not be negative.
@@ -391,6 +401,13 @@ type BrokerOrder struct {
 	Strategy      string
 	Rationale     string
 	Confidence    float64
+
+	InstrumentType InstrumentType
+	OptionSymbol   string
+	Underlying     string
+	Strike         float64
+	Expiry         time.Time
+	OptionRight    string
 }
 
 // DailyPnL tracks realized and unrealized P&L for a single trading day.

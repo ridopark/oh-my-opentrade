@@ -24,21 +24,32 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 	filledAt, _ := payload["filled_at"].(time.Time)
 	assetClass, _ := payload["asset_class"].(string)
 	riskModStr, _ := payload["risk_modifier"].(string)
+	instrumentType, _ := payload["instrument_type"].(string)
+	optionRight, _ := payload["option_right"].(string)
+	optionExpiryStr, _ := payload["option_expiry"].(string)
 
 	if symbol == "" || price <= 0 || quantity <= 0 {
 		return nil
 	}
 
+	var optionExpiry time.Time
+	if optionExpiryStr != "" {
+		optionExpiry, _ = time.Parse("2006-01-02", optionExpiryStr)
+	}
+
 	select {
 	case s.fills <- fillMsg{
-		Symbol:       domain.Symbol(symbol),
-		Side:         side,
-		Price:        price,
-		Quantity:     quantity,
-		FilledAt:     filledAt,
-		Strategy:     strategy,
-		AssetClass:   domain.AssetClass(assetClass),
-		RiskModifier: domain.NewRiskModifier(riskModStr),
+		Symbol:         domain.Symbol(symbol),
+		Side:           side,
+		Price:          price,
+		Quantity:       quantity,
+		FilledAt:       filledAt,
+		Strategy:       strategy,
+		AssetClass:     domain.AssetClass(assetClass),
+		RiskModifier:   domain.NewRiskModifier(riskModStr),
+		InstrumentType: domain.InstrumentType(instrumentType),
+		OptionExpiry:   optionExpiry,
+		OptionRight:    optionRight,
 	}:
 	default:
 		s.log.Warn().Str("symbol", symbol).Msg("position monitor: fill channel full, dropping fill")

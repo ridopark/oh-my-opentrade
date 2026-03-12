@@ -109,6 +109,22 @@ type rawRoutingSection struct {
 	WatchlistMode      *string  `toml:"watchlist_mode"`
 }
 
+type rawOptionsDefaults struct {
+	MinDTE          int     `toml:"min_dte"`
+	MaxDTE          int     `toml:"max_dte"`
+	TargetDeltaLow  float64 `toml:"target_delta_low"`
+	TargetDeltaHigh float64 `toml:"target_delta_high"`
+	MinOpenInterest int     `toml:"min_open_interest"`
+	MaxSpreadPct    float64 `toml:"max_spread_pct"`
+	MaxIV           float64 `toml:"max_iv"`
+}
+
+type rawOptionsSection struct {
+	Enabled         bool                          `toml:"enabled"`
+	Defaults        rawOptionsDefaults            `toml:"defaults"`
+	RegimeOverrides map[string]rawOptionsDefaults `toml:"regime_overrides"`
+}
+
 func loadV1(content, path string) (portstrategy.Spec, error) {
 	var raw struct {
 		Strategy     rawStrategySection `toml:"strategy"`
@@ -185,6 +201,7 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 		DynamicRisk   map[string]any        `toml:"dynamic_risk"`
 		Hooks         map[string]rawHookRef `toml:"hooks"`
 		ExitRules     []rawExitRule         `toml:"exit_rules"`
+		Options       *rawOptionsSection    `toml:"options"`
 	}
 
 	if _, err := toml.Decode(content, &raw); err != nil {
@@ -283,6 +300,19 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 		return portstrategy.Spec{}, fmt.Errorf("strategy spec %q: %w", path, err)
 	}
 
+	var optsCfg *domain.OptionsConfig
+	if raw.Options != nil {
+		overrides := make(map[string]domain.ContractSelectionConstraints, len(raw.Options.RegimeOverrides))
+		for k, v := range raw.Options.RegimeOverrides {
+			overrides[k] = rawOptsToDomain(v)
+		}
+		optsCfg = &domain.OptionsConfig{
+			Enabled:         raw.Options.Enabled,
+			Defaults:        rawOptsToDomain(raw.Options.Defaults),
+			RegimeOverrides: overrides,
+		}
+	}
+
 	return portstrategy.Spec{
 		SchemaVersion: 2,
 		ID:            id,
@@ -310,7 +340,20 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 		Params:    params,
 		Hooks:     hooks,
 		ExitRules: exitRules,
+		Options:   optsCfg,
 	}, nil
+}
+
+func rawOptsToDomain(r rawOptionsDefaults) domain.ContractSelectionConstraints {
+	return domain.ContractSelectionConstraints{
+		MinDTE:          r.MinDTE,
+		MaxDTE:          r.MaxDTE,
+		TargetDeltaLow:  r.TargetDeltaLow,
+		TargetDeltaHigh: r.TargetDeltaHigh,
+		MinOpenInterest: r.MinOpenInterest,
+		MaxSpreadPct:    r.MaxSpreadPct,
+		MaxIV:           r.MaxIV,
+	}
 }
 
 func mergeInto(dst, src map[string]any) {

@@ -70,6 +70,11 @@ type fillMsg struct {
 	AssetClass   domain.AssetClass
 	ExitRules    []domain.ExitRule // set by bootstrap; nil from live fill events
 	RiskModifier domain.RiskModifier
+
+	// Option metadata (populated only for option fills).
+	InstrumentType domain.InstrumentType
+	OptionExpiry   time.Time
+	OptionRight    string
 }
 
 // outboxMsg is an exit intent ready for publication on the event bus.
@@ -402,6 +407,12 @@ func (s *Service) processFill(fill fillMsg) {
 		return
 	}
 	pos.ExitRules = applyRiskModifierToExitRules(pos.InitialExitRules, fill.RiskModifier)
+
+	if fill.InstrumentType == domain.InstrumentTypeOption {
+		pos.InstrumentType = fill.InstrumentType
+		pos.OptionExpiry = fill.OptionExpiry
+		pos.OptionRight = fill.OptionRight
+	}
 
 	s.positions[key] = &pos
 	s.log.Info().

@@ -27,6 +27,9 @@ func NewSlippageGuard(quoteProvider QuoteProvider) *SlippageGuard {
 // of the order intent. For longs, the ask must not exceed limitPrice + tolerance.
 // For shorts, the bid must not fall below limitPrice - tolerance.
 func (s *SlippageGuard) Check(ctx context.Context, intent domain.OrderIntent) error {
+	if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
+		return nil
+	}
 	bid, ask, err := s.provider.GetQuote(ctx, intent.Symbol)
 	if err != nil {
 		return fmt.Errorf("slippage check: %w", err)
