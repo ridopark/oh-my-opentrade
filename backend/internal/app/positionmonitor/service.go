@@ -43,6 +43,7 @@ type Service struct {
 	positions            map[string]*domain.MonitoredPosition // key: PositionKey()
 	ghostMissCounts      map[string]int                       // key: position key → consecutive broker-miss count
 	pendingGlobalOrphans map[domain.Symbol]int                // key: symbol → consecutive global-reconcile misses
+	pendingGlobalDrifts  map[domain.Symbol]int                // key: symbol → consecutive broker>DB drift observations
 	mu                   sync.RWMutex                         // protects positions for concurrent reads (e.g. PositionCount)
 
 	snapshotFn          IndicatorSnapshotFunc
@@ -208,6 +209,7 @@ func NewService(
 		positions:               make(map[string]*domain.MonitoredPosition),
 		ghostMissCounts:         make(map[string]int),
 		pendingGlobalOrphans:    make(map[domain.Symbol]int),
+		pendingGlobalDrifts:     make(map[domain.Symbol]int),
 		tickInterval:            1 * time.Second,
 		optionsPollInterval:     30 * time.Second,
 		reconcileInterval:       defaultReconcileInterval,

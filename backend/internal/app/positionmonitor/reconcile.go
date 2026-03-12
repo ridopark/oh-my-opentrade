@@ -111,10 +111,6 @@ func (s *Service) reconcileWithBroker(ctx context.Context) {
 	}
 }
 
-// reconcileGlobal performs a full portfolio audit by comparing the entire trades DB
-// against the broker's position list. Unlike reconcileWithBroker (which only checks
-// in-memory monitored positions), this catches "invisible" orphans — DB residuals
-// left behind after a position was fully closed and removed from the monitor.
 func (s *Service) reconcileGlobal(ctx context.Context) {
 	if s.broker == nil || s.repo == nil {
 		return
@@ -138,8 +134,50 @@ func (s *Service) reconcileGlobal(ctx context.Context) {
 
 	reconciled := 0
 	for sym, dbQty := range dbPositions {
+		if dbQty < -1e-10 {
+			absQty := math.Abs(dbQty)
+			avgEntry, priceErr := s.repo.GetAvgEntryPrice(ctx, s.tenantID, s.envMode, sym)
+			if priceErr != nil {
+				s.log.Warn().Err(priceErr).Str("symbol", string(sym)).
+					Msg("global-reconcile: could not fetch avg entry price for negative net — using 0")
+			}
+			s.log.Warn().
+				Str("symbol", string(sym)).
+				Float64("db_net_qty", dbQty).
+				Float64("correction_qty", absQty).
+				Msg("global-reconcile: negative DB net detected — inserting reconciliation BUY")
+			trade := domain.Trade{
+				Time:      s.nowFunc(),
+				TenantID:  s.tenantID,
+				EnvMode:   s.envMode,
+				TradeID:   uuid.New(),
+				Symbol:    sym,
+				Side:      "BUY",
+				Quantity:  absQty,
+				Price:     avgEntry,
+				Status:    "FILLED",
+				Strategy:  "reconciliation",
+				Rationale: fmt.Sprintf("global-reconcile: negative DB net %.10f — inserting BUY to zero out accounting error", dbQty),
+			}
+			if err := s.repo.SaveTrade(ctx, trade); err != nil {
+				s.log.Error().Err(err).Str("symbol", string(sym)).
+					Msg("global-reconcile: failed to save negative-net reconciliation BUY")
+			} else {
+				reconciled++
+				s.log.Info().
+					Str("symbol", string(sym)).
+					Float64("quantity", absQty).
+					Float64("price", avgEntry).
+					Msg("global-reconcile: reconciliation BUY inserted for negative net")
+			}
+			delete(s.pendingGlobalOrphans, sym)
+			delete(s.pendingGlobalDrifts, sym)
+			continue
+		}
+
 		if dbQty <= 1e-10 {
 			delete(s.pendingGlobalOrphans, sym)
+			delete(s.pendingGlobalDrifts, sym)
 			continue
 		}
 
@@ -199,14 +237,74 @@ func (s *Service) reconcileGlobal(ctx context.Context) {
 
 		delete(s.pendingGlobalOrphans, sym)
 
-		drift := math.Abs(dbQty - brokerQty)
-		if drift > 1e-6 {
+		if brokerQty > dbQty+1e-6 {
+			s.pendingGlobalDrifts[sym]++
+			missCount := s.pendingGlobalDrifts[sym]
+			delta := brokerQty - dbQty
+
+			if missCount < globalOrphanMissThreshold {
+				s.log.Warn().
+					Str("symbol", string(sym)).
+					Float64("db_qty", dbQty).
+					Float64("broker_qty", brokerQty).
+					Float64("delta", delta).
+					Int("miss_count", missCount).
+					Int("threshold", globalOrphanMissThreshold).
+					Msg("global-reconcile: broker>DB drift candidate — observing before writing BUY")
+				continue
+			}
+
 			s.log.Warn().
 				Str("symbol", string(sym)).
 				Float64("db_qty", dbQty).
 				Float64("broker_qty", brokerQty).
-				Float64("drift", drift).
-				Msg("global-reconcile: quantity drift detected (informational)")
+				Float64("delta", delta).
+				Int("miss_count", missCount).
+				Msg("global-reconcile: broker>DB drift confirmed — inserting reconciliation BUY")
+
+			avgEntry, priceErr := s.repo.GetAvgEntryPrice(ctx, s.tenantID, s.envMode, sym)
+			if priceErr != nil {
+				s.log.Warn().Err(priceErr).Str("symbol", string(sym)).
+					Msg("global-reconcile: could not fetch avg entry price for drift — using 0")
+			}
+
+			trade := domain.Trade{
+				Time:      s.nowFunc(),
+				TenantID:  s.tenantID,
+				EnvMode:   s.envMode,
+				TradeID:   uuid.New(),
+				Symbol:    sym,
+				Side:      "BUY",
+				Quantity:  delta,
+				Price:     avgEntry,
+				Status:    "FILLED",
+				Strategy:  "reconciliation",
+				Rationale: fmt.Sprintf("global-reconcile: broker qty %.10f > DB qty %.10f for %d consecutive checks — inserting BUY for delta %.10f", brokerQty, dbQty, missCount, delta),
+			}
+			if err := s.repo.SaveTrade(ctx, trade); err != nil {
+				s.log.Error().Err(err).Str("symbol", string(sym)).
+					Msg("global-reconcile: failed to save drift reconciliation BUY")
+			} else {
+				reconciled++
+				delete(s.pendingGlobalDrifts, sym)
+				s.log.Info().
+					Str("symbol", string(sym)).
+					Float64("quantity", delta).
+					Float64("price", avgEntry).
+					Msg("global-reconcile: drift reconciliation BUY inserted")
+			}
+			continue
+		}
+
+		delete(s.pendingGlobalDrifts, sym)
+
+		if dbQty > brokerQty+1e-6 {
+			s.log.Warn().
+				Str("symbol", string(sym)).
+				Float64("db_qty", dbQty).
+				Float64("broker_qty", brokerQty).
+				Float64("drift", dbQty-brokerQty).
+				Msg("global-reconcile: DB>broker drift detected (informational)")
 		}
 	}
 

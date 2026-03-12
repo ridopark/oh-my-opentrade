@@ -794,6 +794,48 @@ func (c *RESTClient) CancelOpenOrders(ctx context.Context, symbol domain.Symbol,
 	return canceled, nil
 }
 
+func (c *RESTClient) CancelAllOpenOrders(ctx context.Context) (int, error) {
+	resp, err := c.doReqWithOpts(ctx, http.MethodDelete, pathOrders, nil, reqOpts{
+		priority:   PriorityTrading,
+		maxRetries: 3,
+	})
+	if err != nil {
+		c.log.Error().Err(err).Msg("cancel all open orders HTTP request failed")
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusMultiStatus {
+		c.log.Error().Int("status", resp.StatusCode).Msg("cancel all open orders failed")
+		return 0, fmt.Errorf("alpaca: cancel all open orders failed (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var results []struct {
+		ID     string `json:"id"`
+		Status int    `json:"status"`
+	}
+	if err := json.Unmarshal(body, &results); err != nil {
+		c.log.Debug().Msg("cancel all open orders: empty response — no orders to cancel")
+		return 0, nil
+	}
+
+	canceled := 0
+	for _, r := range results {
+		if r.Status >= 200 && r.Status < 300 {
+			canceled++
+		} else {
+			c.log.Warn().Str("order_id", r.ID).Int("status", r.Status).
+				Msg("cancel all: individual order cancel returned non-2xx")
+		}
+	}
+
+	c.log.Info().Int("canceled", canceled).Int("total", len(results)).
+		Msg("cancel all open orders complete")
+	return canceled, nil
+}
+
 // ClosedOrder represents a closed/filled order from the Alpaca REST API.
 type ClosedOrder struct {
 	ID             string  `json:"id"`

@@ -22,6 +22,10 @@ type BrokerPort interface {
 	ClosePosition(ctx context.Context, symbol domain.Symbol) (orderID string, err error)
 	// GetOrderDetails returns full order details from the broker including cumulative fill info.
 	GetOrderDetails(ctx context.Context, orderID string) (OrderDetails, error)
+	// CancelAllOpenOrders cancels every open order on the broker account.
+	// Used at startup to clear stale orders from a prior session.
+	// Returns the number of orders that were successfully canceled.
+	CancelAllOpenOrders(ctx context.Context) (int, error)
 }
 
 // OrderDetails contains full order information from the broker, including
