@@ -1,5 +1,9 @@
 apiVersion: 1
 
+deleteRules:
+  - orgId: 1
+    uid: websocket-disconnected
+
 groups:
   - orgId: 1
     name: omo-trading-prometheus
