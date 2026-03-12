@@ -9,29 +9,13 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/domain"
 )
 
-// ContractSelectionConstraints holds all parameters for filtering and selecting
-// an option contract from a chain.
-type ContractSelectionConstraints struct {
-	MinDTE          int     `toml:"min_dte"`
-	MaxDTE          int     `toml:"max_dte"`
-	TargetDeltaLow  float64 `toml:"target_delta_low"`
-	TargetDeltaHigh float64 `toml:"target_delta_high"`
-	MinOpenInterest int     `toml:"min_open_interest"`
-	MaxSpreadPct    float64 `toml:"max_spread_pct"`
-	MaxIV           float64 `toml:"max_iv"`
-}
-
-// ContractSelectionService selects the best option contract from a chain
-// based on configured constraints and market regime.
 type ContractSelectionService struct {
-	constraints       ContractSelectionConstraints
-	regimeConstraints RegimeConstraintsMap
+	constraints       domain.ContractSelectionConstraints
+	regimeConstraints domain.RegimeConstraintsMap
 	now               func() time.Time
 }
 
-// NewContractSelectionService creates a ContractSelectionService.
-// now is injected for testability; pass time.Now in production.
-func NewContractSelectionService(constraints ContractSelectionConstraints, now func() time.Time) *ContractSelectionService {
+func NewContractSelectionService(constraints domain.ContractSelectionConstraints, now func() time.Time) *ContractSelectionService {
 	return &ContractSelectionService{
 		constraints:       constraints,
 		regimeConstraints: nil,
@@ -40,8 +24,8 @@ func NewContractSelectionService(constraints ContractSelectionConstraints, now f
 }
 
 func NewContractSelectionServiceWithRegimes(
-	defaults ContractSelectionConstraints,
-	regimes RegimeConstraintsMap,
+	defaults domain.ContractSelectionConstraints,
+	regimes domain.RegimeConstraintsMap,
 	now func() time.Time,
 ) *ContractSelectionService {
 	return &ContractSelectionService{
@@ -51,9 +35,6 @@ func NewContractSelectionServiceWithRegimes(
 	}
 }
 
-// SelectBestContract selects the best option contract from the chain given
-// a trading direction and market regime.
-// Returns error if no contracts pass all filters, or if direction/regime is unsupported.
 func (s *ContractSelectionService) SelectBestContract(
 	direction domain.Direction,
 	regime domain.RegimeType,
@@ -68,7 +49,7 @@ func (s *ContractSelectionService) SelectBestContract(
 
 	active := s.constraints
 	if s.regimeConstraints != nil {
-		if c, ok := s.regimeConstraints[RegimeConstraintKey{Direction: direction, Regime: regime}]; ok {
+		if c, ok := s.regimeConstraints[domain.RegimeConstraintKey{Direction: direction, Regime: regime}]; ok {
 			active = c
 		}
 	}

@@ -51,6 +51,10 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 		return evaluateStagnationExit(rule, pos, currentPrice, now, ctx)
 	case domain.ExitRuleBreakevenStop:
 		return evaluateBreakevenStop(rule, pos, currentPrice)
+	case domain.ExitRuleDTEFloor:
+		return evaluateDTEFloor(rule, pos, now)
+	case domain.ExitRuleExpiryWatch:
+		return evaluateExpiryWatch(rule, pos, now)
 	default:
 		return false, ""
 	}
@@ -402,7 +406,44 @@ func evaluateBreakevenStop(_ domain.ExitRule, pos *domain.MonitoredPosition, cur
 	return false, ""
 }
 
-// etLocation returns the America/New_York timezone.
+func evaluateDTEFloor(rule domain.ExitRule, pos *domain.MonitoredPosition, now time.Time) (bool, string) {
+	if pos.InstrumentType != domain.InstrumentTypeOption || pos.OptionExpiry.IsZero() {
+		return false, ""
+	}
+	floor := int(rule.Param("dte", 7))
+	if floor <= 0 {
+		return false, ""
+	}
+	dte := int(pos.OptionExpiry.Sub(now).Hours() / 24)
+	if dte <= floor {
+		return true, fmt.Sprintf("dte_floor: %d days to expiry <= floor %d (expiry=%s)",
+			dte, floor, pos.OptionExpiry.Format("2006-01-02"))
+	}
+	return false, ""
+}
+
+func evaluateExpiryWatch(rule domain.ExitRule, pos *domain.MonitoredPosition, now time.Time) (bool, string) {
+	if pos.InstrumentType != domain.InstrumentTypeOption || pos.OptionExpiry.IsZero() {
+		return false, ""
+	}
+	pctElapsed := rule.Param("pct_elapsed", 0.5)
+	if pctElapsed <= 0 || pctElapsed > 1 {
+		return false, ""
+	}
+	totalDuration := pos.OptionExpiry.Sub(pos.EntryTime)
+	if totalDuration <= 0 {
+		return false, ""
+	}
+	elapsed := now.Sub(pos.EntryTime)
+	ratio := elapsed.Seconds() / totalDuration.Seconds()
+	if ratio >= pctElapsed {
+		dte := int(pos.OptionExpiry.Sub(now).Hours() / 24)
+		return true, fmt.Sprintf("expiry_watch: %.0f%% of contract duration elapsed (%d DTE remaining, threshold %.0f%%)",
+			ratio*100, dte, pctElapsed*100)
+	}
+	return false, ""
+}
+
 func etLocation() *time.Location {
 	loc, err := time.LoadLocation("America/New_York")
 	if err != nil {

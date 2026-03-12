@@ -25,6 +25,9 @@ func NewSpreadGuard(quoteProvider QuoteProvider, log zerolog.Logger) *SpreadGuar
 }
 
 func (g *SpreadGuard) Check(ctx context.Context, intent domain.OrderIntent) error {
+	if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
+		return nil
+	}
 	raw, ok := intent.Meta["max_spread_bps"]
 	if !ok || raw == "" {
 		return nil // not configured — allow

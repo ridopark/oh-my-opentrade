@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +45,7 @@ type Service struct {
 	positionGate       *PositionGate
 	exposureGuard      *ExposureGuard
 	buyingPowerGuard   *BuyingPowerGuard
+	optionsRiskEngine  *OptionsRiskEngine
 	accountEquity      float64
 	log                zerolog.Logger
 	metrics            *metrics.Metrics
@@ -71,6 +73,10 @@ func WithBuyingPowerGuard(bpg *BuyingPowerGuard) Option {
 
 func WithSpreadGuard(sg *SpreadGuard) Option {
 	return func(s *Service) { s.spreadGuard = sg }
+}
+
+func WithOptionsRiskEngine(ore *OptionsRiskEngine) Option {
+	return func(s *Service) { s.optionsRiskEngine = ore }
 }
 
 func WithTradingWindowGuard(twg *TradingWindowGuard) Option {
@@ -384,14 +390,26 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	}
 
 	// 2. Validate risk (skip for exit orders — closing reduces exposure).
+	isOptionOrder := intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption
 	if !intent.Direction.IsExit() {
-		if err := s.riskEngine.Validate(intent, s.accountEquity); err != nil {
-			l.Warn().Err(err).Msg("order intent rejected by risk engine")
-			if s.metrics != nil {
-				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "risk").Inc()
+		if isOptionOrder && s.optionsRiskEngine != nil {
+			if err := s.optionsRiskEngine.ValidateOptionIntent(intent, s.accountEquity); err != nil {
+				l.Warn().Err(err).Msg("order intent rejected by options risk engine")
+				if s.metrics != nil {
+					s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "options_risk").Inc()
+				}
+				s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
+				return nil
 			}
-			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
-			return nil
+		} else if !isOptionOrder {
+			if err := s.riskEngine.Validate(intent, s.accountEquity); err != nil {
+				l.Warn().Err(err).Msg("order intent rejected by risk engine")
+				if s.metrics != nil {
+					s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "risk").Inc()
+				}
+				s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
+				return nil
+			}
 		}
 	}
 
@@ -585,6 +603,20 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		Rationale:     intent.Rationale,
 		Confidence:    intent.Confidence,
 	}
+	if isOptionOrder {
+		order.InstrumentType = domain.InstrumentTypeOption
+		order.OptionSymbol = intent.Instrument.Symbol.String()
+		order.Underlying = string(intent.Instrument.UnderlyingSymbol)
+		if r := intent.Meta["option_right"]; r != "" {
+			order.OptionRight = r
+		}
+		if s, err := strconv.ParseFloat(intent.Meta["strike"], 64); err == nil {
+			order.Strike = s
+		}
+		if exp, err := time.Parse("2006-01-02", intent.Meta["expiry"]); err == nil {
+			order.Expiry = exp
+		}
+	}
 	if saveErr := s.repo.SaveOrder(ctx, order); saveErr != nil {
 		l.Error().Err(saveErr).Msg("failed to persist order — continuing to poll")
 	}
@@ -696,12 +728,33 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 	if err != nil {
 		l.Error().Err(err).Msg("failed to construct trade on fill")
 	} else {
+		if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
+			trade.InstrumentType = domain.InstrumentTypeOption
+			trade.OptionSymbol = intent.Instrument.Symbol.String()
+			trade.Underlying = string(intent.Instrument.UnderlyingSymbol)
+			trade.OptionRight = intent.Meta["option_right"]
+			if s, err := strconv.ParseFloat(intent.Meta["strike"], 64); err == nil {
+				trade.Strike = s
+			}
+			if exp, err := time.Parse("2006-01-02", intent.Meta["expiry"]); err == nil {
+				trade.Expiry = exp
+			}
+			if p, err := strconv.ParseFloat(intent.Meta["premium"], 64); err == nil {
+				trade.Premium = p
+			}
+			if d, err := strconv.ParseFloat(intent.Meta["delta_at_entry"], 64); err == nil {
+				trade.DeltaAtEntry = d
+			}
+			if iv, err := strconv.ParseFloat(intent.Meta["iv_at_entry"], 64); err == nil {
+				trade.IVAtEntry = iv
+			}
+		}
 		if err := s.repo.SaveTrade(ctx, trade); err != nil {
 			l.Error().Err(err).Msg("failed to save trade on fill")
 		}
 	}
 
-	s.emit(ctx, domain.EventFillReceived, tenantID, envMode, brokerOrderID, map[string]any{
+	fillPayload := map[string]any{
 		"broker_order_id": brokerOrderID,
 		"intent_id":       intent.ID.String(),
 		"symbol":          string(intent.Symbol),
@@ -711,7 +764,13 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 		"filled_at":       now,
 		"strategy":        intent.Strategy,
 		"risk_modifier":   intent.Meta["risk_modifier"],
-	})
+	}
+	if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
+		fillPayload["instrument_type"] = string(domain.InstrumentTypeOption)
+		fillPayload["option_right"] = intent.Meta["option_right"]
+		fillPayload["option_expiry"] = intent.Meta["expiry"]
+	}
+	s.emit(ctx, domain.EventFillReceived, tenantID, envMode, brokerOrderID, fillPayload)
 
 	l.Info().
 		Str("broker_order_id", brokerOrderID).
@@ -871,12 +930,33 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 		l.Error().Err(err).Msg("failed to construct trade on fill")
 	} else {
 		trade.ExecutionID = executionID
+		if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {
+			trade.InstrumentType = domain.InstrumentTypeOption
+			trade.OptionSymbol = po.intent.Instrument.Symbol.String()
+			trade.Underlying = string(po.intent.Instrument.UnderlyingSymbol)
+			trade.OptionRight = po.intent.Meta["option_right"]
+			if s, err := strconv.ParseFloat(po.intent.Meta["strike"], 64); err == nil {
+				trade.Strike = s
+			}
+			if exp, err := time.Parse("2006-01-02", po.intent.Meta["expiry"]); err == nil {
+				trade.Expiry = exp
+			}
+			if p, err := strconv.ParseFloat(po.intent.Meta["premium"], 64); err == nil {
+				trade.Premium = p
+			}
+			if d, err := strconv.ParseFloat(po.intent.Meta["delta_at_entry"], 64); err == nil {
+				trade.DeltaAtEntry = d
+			}
+			if iv, err := strconv.ParseFloat(po.intent.Meta["iv_at_entry"], 64); err == nil {
+				trade.IVAtEntry = iv
+			}
+		}
 		if err := s.repo.SaveTrade(ctx, trade); err != nil {
 			l.Error().Err(err).Msg("failed to save trade on fill")
 		}
 	}
 
-	s.emit(ctx, domain.EventFillReceived, po.tenantID, po.envMode, brokerOrderID, map[string]any{
+	fillPayload := map[string]any{
 		"broker_order_id": brokerOrderID,
 		"intent_id":       po.intent.ID.String(),
 		"symbol":          string(po.intent.Symbol),
@@ -886,7 +966,13 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 		"filled_at":       filledAt,
 		"strategy":        po.intent.Strategy,
 		"asset_class":     string(po.intent.AssetClass),
-	})
+	}
+	if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {
+		fillPayload["instrument_type"] = string(domain.InstrumentTypeOption)
+		fillPayload["option_right"] = po.intent.Meta["option_right"]
+		fillPayload["option_expiry"] = po.intent.Meta["expiry"]
+	}
+	s.emit(ctx, domain.EventFillReceived, po.tenantID, po.envMode, brokerOrderID, fillPayload)
 
 	l.Info().
 		Str("broker_order_id", brokerOrderID).

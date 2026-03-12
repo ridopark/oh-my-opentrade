@@ -18,11 +18,11 @@ import (
 const (
 	queryInsertMarketBar      = `INSERT INTO market_bars (time, account_id, env_mode, symbol, timeframe, open, high, low, close, volume, suspect) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (symbol, timeframe, time) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume, suspect=EXCLUDED.suspect`
 	querySelectMarketBars     = `SELECT time, symbol, timeframe, open, high, low, close, volume, suspect FROM market_bars WHERE symbol = $1 AND timeframe = $2 AND time >= $3 AND time < $4 ORDER BY time`
-	queryInsertTrade          = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status, strategy, rationale, thesis, execution_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (trade_id, time) DO NOTHING`
+	queryInsertTrade          = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status, strategy, rationale, thesis, execution_id, instrument_type, option_symbol, underlying, strike, expiry, option_right, premium, delta_at_entry, iv_at_entry) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) ON CONFLICT (trade_id, time) DO NOTHING`
 	querySelectTrades         = `SELECT time, trade_id, COALESCE(execution_id, ''), symbol, side, quantity, price, commission, status, COALESCE(strategy, ''), COALESCE(rationale, ''), thesis FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4 ORDER BY time`
 	queryInsertStrategyDNA    = `INSERT INTO strategy_dna_history (time, account_id, env_mode, strategy_id, version, parameters, performance) VALUES ($1, $2, $3, $4, $5, $6, $7)`
 	querySelectLatestDNA      = `SELECT time, strategy_id, version, parameters, performance FROM strategy_dna_history WHERE account_id = $1 AND env_mode = $2 ORDER BY time DESC LIMIT 1`
-	queryInsertOrder          = `INSERT INTO orders (time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, strategy, rationale, confidence) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (broker_order_id) DO NOTHING`
+	queryInsertOrder          = `INSERT INTO orders (time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, strategy, rationale, confidence, instrument_type, option_symbol, underlying, strike, expiry, option_right) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) ON CONFLICT (broker_order_id) DO NOTHING`
 	queryUpdateOrderFill      = `UPDATE orders SET status = 'filled', filled_at = $2, filled_price = $3, filled_qty = $4 WHERE broker_order_id = $1`
 	queryGetNonTerminalOrders = `SELECT time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, COALESCE(filled_at, '0001-01-01'::timestamptz), COALESCE(filled_price, 0), COALESCE(filled_qty, 0), COALESCE(strategy, ''), COALESCE(rationale, ''), COALESCE(confidence, 0) FROM orders WHERE account_id = $1 AND env_mode = $2 AND status NOT IN ('filled', 'canceled', 'expired', 'rejected') ORDER BY time ASC`
 	queryGetRecordedFillQty   = `SELECT COALESCE(SUM(quantity), 0) FROM trades WHERE account_id = $1 AND env_mode = $2 AND symbol = $3 AND side = $4 AND time >= $5`
@@ -158,7 +158,26 @@ func (r *Repository) SaveTrade(ctx context.Context, trade domain.Trade) error {
 	if trade.ExecutionID != "" {
 		execIDArg = trade.ExecutionID
 	}
-	_, err := r.db.ExecContext(ctx, queryInsertTrade, trade.Time, trade.TenantID, string(trade.EnvMode), trade.TradeID, string(trade.Symbol), trade.Side, trade.Quantity, trade.Price, trade.Commission, trade.Status, trade.Strategy, trade.Rationale, thesisArg, execIDArg)
+	instType := string(trade.InstrumentType)
+	if instType == "" {
+		instType = "EQUITY"
+	}
+	var optSym, underlying, optRight *string
+	var strike, premium, deltaEntry, ivEntry *float64
+	var expiry *time.Time
+	if trade.InstrumentType == domain.InstrumentTypeOption {
+		optSym = &trade.OptionSymbol
+		underlying = &trade.Underlying
+		optRight = &trade.OptionRight
+		strike = &trade.Strike
+		premium = &trade.Premium
+		deltaEntry = &trade.DeltaAtEntry
+		ivEntry = &trade.IVAtEntry
+		if !trade.Expiry.IsZero() {
+			expiry = &trade.Expiry
+		}
+	}
+	_, err := r.db.ExecContext(ctx, queryInsertTrade, trade.Time, trade.TenantID, string(trade.EnvMode), trade.TradeID, string(trade.Symbol), trade.Side, trade.Quantity, trade.Price, trade.Commission, trade.Status, trade.Strategy, trade.Rationale, thesisArg, execIDArg, instType, optSym, underlying, strike, expiry, optRight, premium, deltaEntry, ivEntry)
 	if err != nil {
 		if strings.Contains(err.Error(), "idx_trades_execution_id") {
 			r.log.Debug().Str("execution_id", trade.ExecutionID).Msg("duplicate fill ignored (execution_id conflict)")
@@ -274,6 +293,22 @@ func (r *Repository) GetLatestStrategyDNA(ctx context.Context, tenantID string, 
 
 // SaveOrder persists a submitted broker order.
 func (r *Repository) SaveOrder(ctx context.Context, order domain.BrokerOrder) error {
+	instType := string(order.InstrumentType)
+	if instType == "" {
+		instType = "EQUITY"
+	}
+	var optSym, underlying, optRight *string
+	var strike *float64
+	var expiry *time.Time
+	if order.InstrumentType == domain.InstrumentTypeOption {
+		optSym = &order.OptionSymbol
+		underlying = &order.Underlying
+		optRight = &order.OptionRight
+		strike = &order.Strike
+		if !order.Expiry.IsZero() {
+			expiry = &order.Expiry
+		}
+	}
 	_, err := r.db.ExecContext(ctx, queryInsertOrder,
 		order.Time, order.TenantID, string(order.EnvMode),
 		order.IntentID, order.BrokerOrderID,
@@ -281,6 +316,7 @@ func (r *Repository) SaveOrder(ctx context.Context, order domain.BrokerOrder) er
 		order.Quantity, order.LimitPrice, order.StopLoss,
 		order.Status,
 		order.Strategy, order.Rationale, order.Confidence,
+		instType, optSym, underlying, strike, expiry, optRight,
 	)
 	if err != nil {
 		r.log.Error().Err(err).

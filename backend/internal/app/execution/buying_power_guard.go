@@ -37,6 +37,10 @@ func (g *BuyingPowerGuard) Check(ctx context.Context, intent domain.OrderIntent)
 
 	orderCost := intent.LimitPrice * intent.Quantity
 
+	if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
+		orderCost = intent.LimitPrice * 100 * intent.Quantity
+	}
+
 	if intent.AssetClass == domain.AssetClassCrypto {
 		return g.checkCrypto(bp, orderCost)
 	}

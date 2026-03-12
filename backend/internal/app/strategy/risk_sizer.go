@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/oh-my-opentrade/backend/internal/app/options"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
@@ -74,6 +75,8 @@ type RiskSizer struct {
 	logger               *slog.Logger
 	nowFn                func() time.Time
 	exitCooldownDuration time.Duration
+	optionsMarket        ports.OptionsMarketDataPort
+	contractSelector     *options.ContractSelectionService
 }
 
 func NewRiskSizer(eventBus ports.EventBusPort, specStore stratports.SpecStore, equity float64, logger *slog.Logger) *RiskSizer {
@@ -95,6 +98,11 @@ func NewRiskSizer(eventBus ports.EventBusPort, specStore stratports.SpecStore, e
 
 func (rs *RiskSizer) SetNowFn(fn func() time.Time)    { rs.nowFn = fn }
 func (rs *RiskSizer) SetExitCooldown(d time.Duration) { rs.exitCooldownDuration = d }
+
+func (rs *RiskSizer) SetOptionsMarket(m ports.OptionsMarketDataPort) { rs.optionsMarket = m }
+func (rs *RiskSizer) SetContractSelector(s *options.ContractSelectionService) {
+	rs.contractSelector = s
+}
 
 func (rs *RiskSizer) Start(ctx context.Context) error {
 	if err := rs.eventBus.Subscribe(ctx, domain.EventSignalEnriched, rs.handleSignal); err != nil {
@@ -566,6 +574,14 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		strategyName = strategyID.String()
 	}
 
+	// Options branch: when the strategy has options enabled, route through
+	// the options pipeline instead of creating an equity OrderIntent.
+	if sigRef.SignalType == start.SignalEntry.String() &&
+		spec != nil && spec.Options != nil && spec.Options.Enabled &&
+		rs.optionsMarket != nil && rs.contractSelector != nil {
+		return rs.handleOptionsSignal(ctx, event, enrichment, sigRef, spec, direction, strategyName, refPrice, limitPrice, equity)
+	}
+
 	intentID := uuid.New()
 	rationale := enrichment.Rationale
 	if rationale == "" {
@@ -656,6 +672,185 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 
 	rs.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)
 	return nil
+}
+
+func (rs *RiskSizer) handleOptionsSignal(
+	ctx context.Context,
+	event domain.Event,
+	enrichment domain.SignalEnrichment,
+	sigRef domain.SignalRef,
+	spec *stratports.Spec,
+	direction domain.Direction,
+	strategyName string,
+	refPrice float64,
+	limitPrice float64,
+	equity float64,
+) error {
+	optRight := domain.OptionRightCall
+	if direction == domain.DirectionShort {
+		optRight = domain.OptionRightPut
+	}
+
+	regime := domain.RegimeTrend
+	if regStr, ok := sigRef.Tags["regime_5m"]; ok && regStr != "none" {
+		if parsed, err := domain.NewRegimeType(regStr); err == nil {
+			regime = parsed
+		}
+	}
+
+	targetDTE := spec.Options.Defaults.MinDTE +
+		(spec.Options.Defaults.MaxDTE-spec.Options.Defaults.MinDTE)/2
+	targetExpiry := rs.nowFn().AddDate(0, 0, targetDTE)
+
+	chain, err := rs.optionsMarket.GetOptionChain(
+		ctx,
+		domain.Symbol(sigRef.Symbol),
+		targetExpiry,
+		optRight,
+	)
+	if err != nil {
+		rs.logger.Error("options chain fetch failed",
+			"symbol", sigRef.Symbol,
+			"option_right", string(optRight),
+			"error", err,
+		)
+		return nil
+	}
+	if len(chain) == 0 {
+		rs.logger.Warn("empty options chain — skipping options path",
+			"symbol", sigRef.Symbol,
+			"option_right", string(optRight),
+			"target_expiry", targetExpiry,
+		)
+		return nil
+	}
+
+	selector := rs.buildContractSelector(spec.Options)
+	best, err := selector.SelectBestContract(direction, regime, chain)
+	if err != nil {
+		rs.logger.Warn("no suitable option contract found",
+			"symbol", sigRef.Symbol,
+			"option_right", string(optRight),
+			"regime", string(regime),
+			"error", err,
+		)
+		return nil
+	}
+
+	midPrice := (best.Bid + best.Ask) / 2
+	if midPrice <= 0 {
+		midPrice = best.Last
+	}
+	if midPrice <= 0 {
+		rs.logger.Warn("option contract has no valid price — skipping",
+			"contract", string(best.ContractSymbol),
+		)
+		return nil
+	}
+
+	riskPerTradeBPS := 10
+	if v, ok := extractInt(spec.Params, "risk_per_trade_bps"); ok {
+		riskPerTradeBPS = v
+	} else if v, ok := extractInt(spec.Params, "max_risk_bps"); ok {
+		riskPerTradeBPS = v
+	}
+
+	maxRiskUSD := (float64(riskPerTradeBPS) / 10000.0) * equity
+	premiumPerContract := midPrice * float64(best.Multiplier)
+	qty := math.Floor(maxRiskUSD / premiumPerContract)
+	if qty <= 0 {
+		qty = 1
+	}
+	maxLossUSD := premiumPerContract * qty
+
+	inst, err := domain.NewInstrument(
+		domain.InstrumentTypeOption,
+		string(best.ContractSymbol),
+		sigRef.Symbol,
+	)
+	if err != nil {
+		return fmt.Errorf("risk sizer: failed to create option instrument: %w", err)
+	}
+
+	intentID := uuid.New()
+	rationale := enrichment.Rationale
+	if rationale == "" {
+		rationale = fmt.Sprintf("option: %s %s delta=%.2f DTE=%d",
+			optRight, best.ContractSymbol, best.Delta, int(best.Expiry.Sub(rs.nowFn()).Hours()/24))
+	}
+
+	intent, err := domain.NewOptionOrderIntent(
+		intentID,
+		event.TenantID,
+		event.EnvMode,
+		inst,
+		domain.DirectionLong,
+		midPrice,
+		qty,
+		strategyName,
+		rationale,
+		enrichment.Confidence,
+		intentID.String(),
+		maxLossUSD,
+	)
+	if err != nil {
+		return fmt.Errorf("risk sizer: failed to create option order intent: %w", err)
+	}
+
+	intent.AssetClass = domain.AssetClassEquity
+	intent.Meta = map[string]string{
+		"instrument_type":   "OPTION",
+		"option_right":      string(optRight),
+		"underlying":        sigRef.Symbol,
+		"strike":            fmt.Sprintf("%.2f", best.Strike),
+		"expiry":            best.Expiry.Format("2006-01-02"),
+		"delta_at_entry":    fmt.Sprintf("%.4f", best.Delta),
+		"iv_at_entry":       fmt.Sprintf("%.4f", best.IV),
+		"premium":           fmt.Sprintf("%.2f", midPrice),
+		"open_interest":     strconv.Itoa(best.OpenInterest),
+		"enrichment_status": string(enrichment.Status),
+		"risk_modifier":     string(enrichment.RiskModifier),
+		"bull":              enrichment.BullArgument,
+		"bear":              enrichment.BearArgument,
+		"judge":             enrichment.JudgeReasoning,
+	}
+
+	if len(spec.ExitRules) > 0 {
+		type ruleWire struct {
+			Type   string             `json:"type"`
+			Params map[string]float64 `json:"params"`
+		}
+		wire := make([]ruleWire, len(spec.ExitRules))
+		for i, r := range spec.ExitRules {
+			wire[i] = ruleWire{Type: string(r.Type), Params: r.Params}
+		}
+		if raw, err := json.Marshal(wire); err == nil {
+			intent.Meta["exit_rules"] = string(raw)
+		}
+	}
+
+	rs.logger.Info("options order intent created",
+		"symbol", sigRef.Symbol,
+		"contract", string(best.ContractSymbol),
+		"right", string(optRight),
+		"strike", best.Strike,
+		"expiry", best.Expiry.Format("2006-01-02"),
+		"delta", best.Delta,
+		"premium", midPrice,
+		"qty", qty,
+		"max_loss_usd", maxLossUSD,
+	)
+
+	rs.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)
+	return nil
+}
+
+func (rs *RiskSizer) buildContractSelector(cfg *domain.OptionsConfig) *options.ContractSelectionService {
+	if rs.contractSelector != nil {
+		return rs.contractSelector
+	}
+	regimes := cfg.ToRegimeConstraintsMap()
+	return options.NewContractSelectionServiceWithRegimes(cfg.Defaults, regimes, rs.nowFn)
 }
 
 func (rs *RiskSizer) emit(ctx context.Context, eventType string, tenantID string, envMode domain.EnvMode, idempotencyKey string, payload any) {

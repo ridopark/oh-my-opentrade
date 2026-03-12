@@ -20,6 +20,8 @@ const (
 	ExitRuleStepStop       ExitRuleType = "STEP_STOP"
 	ExitRuleStagnationExit ExitRuleType = "STAGNATION_EXIT"
 	ExitRuleBreakevenStop  ExitRuleType = "BREAKEVEN_STOP"
+	ExitRuleDTEFloor       ExitRuleType = "DTE_FLOOR"
+	ExitRuleExpiryWatch    ExitRuleType = "EXPIRY_WATCH"
 )
 
 func (e ExitRuleType) String() string { return string(e) }
@@ -29,7 +31,7 @@ func (e ExitRuleType) String() string { return string(e) }
 // false so the position monitor can fire them even during data outages.
 func (e ExitRuleType) RequiresPrice() bool {
 	switch e {
-	case ExitRuleMaxHoldingTime, ExitRuleEODFlatten:
+	case ExitRuleMaxHoldingTime, ExitRuleEODFlatten, ExitRuleDTEFloor, ExitRuleExpiryWatch:
 		return false
 	default:
 		return true
@@ -42,7 +44,8 @@ func NewExitRuleType(s string) (ExitRuleType, error) {
 	case ExitRuleTrailingStop, ExitRuleProfitTarget, ExitRuleTimeExit,
 		ExitRuleEODFlatten, ExitRuleMaxHoldingTime, ExitRuleMaxLoss,
 		ExitRuleVolatilityStop, ExitRuleSDTarget, ExitRuleStepStop,
-		ExitRuleStagnationExit, ExitRuleBreakevenStop:
+		ExitRuleStagnationExit, ExitRuleBreakevenStop,
+		ExitRuleDTEFloor, ExitRuleExpiryWatch:
 		return ExitRuleType(s), nil
 	default:
 		return "", fmt.Errorf("invalid exit rule type: %q", s)
@@ -111,6 +114,10 @@ type MonitoredPosition struct {
 
 	LastRevaluation   *RiskRevaluation `json:"lastRevaluation,omitempty"`
 	LastRevaluationAt time.Time        `json:"lastRevaluationAt,omitempty"`
+
+	InstrumentType InstrumentType `json:"instrumentType,omitempty"`
+	OptionExpiry   time.Time      `json:"optionExpiry,omitempty"`
+	OptionRight    string         `json:"optionRight,omitempty"`
 
 	CustomState map[string]float64 `json:"customState,omitempty"`
 }
