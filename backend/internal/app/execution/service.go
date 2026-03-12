@@ -822,9 +822,19 @@ func (s *Service) handleStreamFill(update ports.OrderUpdate, l zerolog.Logger) {
 
 	po := raw.(*pendingOrder)
 
-	if update.Event == "fill" {
-		s.pendingOrders.Delete(update.BrokerOrderID)
+	// partial_fill: broker is working the order in multiple micro-executions.
+	// Alpaca paper API often sends partial_fill with qty=0, making it impossible
+	// to record accurate incremental trade rows. Skip recording — the terminal
+	// "fill" event carries the definitive filled_qty and filled_avg_price.
+	if update.Event == "partial_fill" {
+		l.Debug().
+			Float64("incremental_qty", update.Qty).
+			Float64("cumulative_qty", update.FilledQty).
+			Msg("partial fill received — deferring trade record to terminal fill event")
+		return
 	}
+
+	s.pendingOrders.Delete(update.BrokerOrderID)
 
 	fillPrice := update.Price
 	if fillPrice <= 0 {
