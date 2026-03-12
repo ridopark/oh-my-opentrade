@@ -64,10 +64,13 @@ type alpacaOptionSnapshot struct {
 	} `json:"greeks"`
 	ImpliedVolatility float64 `json:"impliedVolatility"`
 	LatestQuote       struct {
-		BP float64 `json:"bp"` // bid price
-		AP float64 `json:"ap"` // ask price
-		C  float64 `json:"c"`  // last price
+		BP float64 `json:"bp"`
+		AP float64 `json:"ap"`
+		// C is a trade condition code string ("A", "I", etc.) — not a price; omitted.
 	} `json:"latestQuote"`
+	LatestTrade struct {
+		P float64 `json:"p"` // last trade price
+	} `json:"latestTrade"`
 	OpenInterest int `json:"openInterest"`
 }
 
@@ -205,7 +208,7 @@ func (c *RESTClient) GetOptionChain(
 			OptionQuote: domain.OptionQuote{
 				Bid:       snap.LatestQuote.BP,
 				Ask:       snap.LatestQuote.AP,
-				Last:      snap.LatestQuote.C,
+				Last:      snap.LatestTrade.P,
 				Timestamp: time.Now(),
 			},
 			Greeks:       greeks,
