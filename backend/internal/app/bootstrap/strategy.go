@@ -84,6 +84,13 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 	}
 
 	for _, spec := range allSpecs {
+		// Skip deactivated strategies entirely — they should not register instances or
+		// consume symbols. The PipelineActivator also enforces this for dynamic symbols.
+		if !spec.Lifecycle.State.IsActive() {
+			deps.Logger.Info().Str("spec_id", spec.ID.String()).Str("state", spec.Lifecycle.State.String()).Msg("bootstrap: strategy: spec is not active, skipping")
+			continue
+		}
+
 		hookRef, hasHook := spec.Hooks["signals"]
 		if !hasHook {
 			deps.Logger.Warn().Str("spec_id", spec.ID.String()).Msg("bootstrap: strategy: spec has no signals hook, skipping")
@@ -107,7 +114,7 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 				Timeframes:        spec.Routing.Timeframes,
 				Priority:          spec.Routing.Priority,
 				AllowedDirections: spec.Routing.AllowedDirections,
-			}, start.LifecycleLiveActive, stratLog)
+			}, spec.Lifecycle.State, stratLog)
 
 			initCtx := strategy.NewContext(clockFn(), stratLog, nil)
 			if err := inst.InitSymbol(initCtx, sym, nil); err != nil {
@@ -189,6 +196,10 @@ type PipelineActivator struct {
 
 func (pa *PipelineActivator) ActivateSymbol(symbol string, bars1m, barsHTF []domain.MarketBar, sessionOpen time.Time) {
 	for _, spec := range pa.specs {
+		if !spec.Lifecycle.State.IsActive() {
+			continue
+		}
+
 		hookRef, hasHook := spec.Hooks["signals"]
 		if !hasHook {
 			continue
@@ -220,7 +231,7 @@ func (pa *PipelineActivator) ActivateSymbol(symbol string, bars1m, barsHTF []dom
 			Timeframes:        spec.Routing.Timeframes,
 			Priority:          spec.Routing.Priority,
 			AllowedDirections: spec.Routing.AllowedDirections,
-		}, start.LifecycleLiveActive, pa.logger)
+		}, spec.Lifecycle.State, pa.logger)
 
 		initCtx := strategy.NewContext(pa.clock(), pa.logger, nil)
 		if err := inst.InitSymbol(initCtx, symbol, nil); err != nil {
