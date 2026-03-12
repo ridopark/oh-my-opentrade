@@ -609,10 +609,10 @@ func (s *Service) fmtOrderRejected(ev domain.Event) string {
 func (s *Service) fmtOrderIntentRejected(ev domain.Event) string {
 	if p, ok := ev.Payload.(domain.OrderIntentEventPayload); ok {
 		if p.Reason != "" {
-			return fmt.Sprintf("⚠️ **Intent Rejected:** %s **%s** — %s", p.Direction, p.Symbol, p.Reason)
+			return fmt.Sprintf("⚠️ **Intent Rejected:** %s **%s** — %s\n📊 Strategy: %s", p.Direction, p.Symbol, p.Reason, p.Strategy)
 		}
-		return fmt.Sprintf("⚠️ **Intent Rejected:** %s **%s** — failed risk/slippage check",
-			p.Direction, p.Symbol)
+		return fmt.Sprintf("⚠️ **Intent Rejected:** %s **%s** — failed risk/slippage check\n📊 Strategy: %s",
+			p.Direction, p.Symbol, p.Strategy)
 	}
 	return "⚠️ Order Intent Rejected (risk/slippage check failed)"
 }
