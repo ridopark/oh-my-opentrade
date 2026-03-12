@@ -9,8 +9,8 @@ author = "system"
 created_at = "2026-03-05T00:00:00Z"
 
 [lifecycle]
-state = "LiveActive"
-paper_only = false
+state = "PaperActive"
+paper_only = true
 
 [routing]
 symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META"]
