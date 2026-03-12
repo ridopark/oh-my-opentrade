@@ -244,15 +244,19 @@ func makeSnapshotFn() strategy.IndicatorSnapshotFunc {
 	return func(bar domain.MarketBar) start.IndicatorData {
 		snap := calc.Update(bar)
 		return start.IndicatorData{
-			RSI:       snap.RSI,
-			StochK:    snap.StochK,
-			StochD:    snap.StochD,
-			EMA9:      snap.EMA9,
-			EMA21:     snap.EMA21,
-			EMA50:     snap.EMA50,
-			VWAP:      snap.VWAP,
-			Volume:    snap.Volume,
-			VolumeSMA: snap.VolumeSMA,
+			RSI:           snap.RSI,
+			StochK:        snap.StochK,
+			StochD:        snap.StochD,
+			EMA9:          snap.EMA9,
+			EMA21:         snap.EMA21,
+			EMA50:         snap.EMA50,
+			EMAFast:       snap.EMAFast,
+			EMASlow:       snap.EMASlow,
+			EMAFastPeriod: snap.EMAFastPeriod,
+			EMASlowPeriod: snap.EMASlowPeriod,
+			VWAP:          snap.VWAP,
+			Volume:        snap.Volume,
+			VolumeSMA:     snap.VolumeSMA,
 		}
 	}
 }

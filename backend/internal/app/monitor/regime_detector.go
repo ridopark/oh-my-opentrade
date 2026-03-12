@@ -8,13 +8,12 @@ import (
 )
 
 const (
-	emaDivergenceThreshold = 0.01 // 1% EMA divergence for TREND detection
-	rsiOverbought          = 70.0
-	rsiOversold            = 30.0
-	strengthScale          = 20.0 // multiplier for normalizing EMA diff to strength
+	defaultEmaDivergenceThreshold = 0.01
+	rsiOverbought                 = 70.0
+	rsiOversold                   = 30.0
+	strengthScale                 = 20.0
 )
 
-// clamp restricts a value to a given minimum and maximum range.
 func clamp(v, min, max float64) float64 {
 	if v < min {
 		return min
@@ -25,10 +24,9 @@ func clamp(v, min, max float64) float64 {
 	return v
 }
 
-// RegimeDetector maintains state and detects market regime shifts
-// based on incoming technical indicator snapshots.
 type RegimeDetector struct {
-	states map[string]*regimeState
+	states     map[string]*regimeState
+	thresholds map[string]float64
 }
 
 type regimeState struct {
@@ -37,10 +35,16 @@ type regimeState struct {
 	pendingCount    int
 }
 
-// NewRegimeDetector creates a new RegimeDetector.
 func NewRegimeDetector() *RegimeDetector {
 	return &RegimeDetector{
-		states: make(map[string]*regimeState),
+		states:     make(map[string]*regimeState),
+		thresholds: make(map[string]float64),
+	}
+}
+
+func (rd *RegimeDetector) RegisterDivergenceThreshold(symbol, timeframe string, threshold float64) {
+	if threshold > 0 {
+		rd.thresholds[symbol+":"+timeframe] = threshold
 	}
 }
 
@@ -50,16 +54,25 @@ func NewRegimeDetector() *RegimeDetector {
 func (rd *RegimeDetector) Detect(snapshot domain.IndicatorSnapshot) (domain.MarketRegime, bool) {
 	key := snapshot.Symbol.String() + ":" + snapshot.Timeframe.String()
 
+	fast, slow := snapshot.EMA9, snapshot.EMA21
+	if snapshot.EMAFast != 0 && snapshot.EMASlow != 0 {
+		fast, slow = snapshot.EMAFast, snapshot.EMASlow
+	}
+
 	emaDiff := 0.0
-	if snapshot.EMA21 != 0 {
-		emaDiff = (snapshot.EMA9 - snapshot.EMA21) / snapshot.EMA21
+	if slow != 0 {
+		emaDiff = (fast - slow) / slow
 	}
 	absEmaDiff := math.Abs(emaDiff)
+
+	threshold := defaultEmaDivergenceThreshold
+	if t, ok := rd.thresholds[key]; ok {
+		threshold = t
+	}
 
 	var regimeType domain.RegimeType
 	strength := 0.0
 
-	// 1. REVERSAL check
 	isReversal := false
 	if snapshot.RSI > rsiOverbought && snapshot.StochK < snapshot.StochD {
 		isReversal = true
@@ -72,7 +85,7 @@ func (rd *RegimeDetector) Detect(snapshot domain.IndicatorSnapshot) (domain.Mark
 		regimeType = domain.RegimeReversal
 		strength = math.Abs(snapshot.RSI-50.0) / 50.0
 		strength = clamp(strength, 0, 1)
-	case absEmaDiff > emaDivergenceThreshold:
+	case absEmaDiff > threshold:
 		regimeType = domain.RegimeTrend
 		strength = clamp(absEmaDiff*strengthScale, 0, 1)
 	default:

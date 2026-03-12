@@ -337,6 +337,10 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		})
 	}
 
+	for _, spec := range allSpecs {
+		svc.monitor.RegisterEMAConfig(spec.Routing.Symbols, spec.Routing.Timeframes, spec.Params)
+	}
+
 	orbID, _ := start.NewStrategyID("orb_break_retest")
 	if orbSpec, err := svc.specStore.GetLatest(context.Background(), orbID); err == nil {
 		svc.monitor.SetORBConfig(orbSpec.Params)

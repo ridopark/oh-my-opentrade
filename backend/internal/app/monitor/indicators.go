@@ -32,6 +32,10 @@ type symbolState struct {
 	ema9Init      bool
 	ema21Init     bool
 	ema50Init     bool
+	emaFast       float64
+	emaSlow       float64
+	emaFastInit   bool
+	emaSlowInit   bool
 	vwapNumerator float64
 	vwapDenom     float64
 	vwapM2        float64 // Welford's online variance accumulator for VWAP SD
@@ -41,17 +45,31 @@ type symbolState struct {
 	prevCloseSet  bool
 }
 
+type emaConfig struct {
+	fastPeriod int
+	slowPeriod int
+}
+
 // IndicatorCalculator maintains state and computes technical indicators
 // for streams of market bars.
 type IndicatorCalculator struct {
-	states map[string]*symbolState
+	states     map[string]*symbolState
+	emaConfigs map[string]emaConfig
 }
 
-// NewIndicatorCalculator creates a new IndicatorCalculator.
 func NewIndicatorCalculator() *IndicatorCalculator {
 	return &IndicatorCalculator{
-		states: make(map[string]*symbolState),
+		states:     make(map[string]*symbolState),
+		emaConfigs: make(map[string]emaConfig),
 	}
+}
+
+func (ic *IndicatorCalculator) RegisterEMAConfig(symbol, timeframe string, fastPeriod, slowPeriod int) {
+	if fastPeriod <= 0 || slowPeriod <= 0 || fastPeriod >= slowPeriod {
+		return
+	}
+	key := symbol + ":" + timeframe
+	ic.emaConfigs[key] = emaConfig{fastPeriod: fastPeriod, slowPeriod: slowPeriod}
 }
 
 func (ic *IndicatorCalculator) ResetSession(symbol, timeframe string) {
@@ -216,6 +234,24 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 		state.ema50 = (bar.Close-state.ema50)*multiplier + state.ema50
 	}
 
+	customEMA, hasCustom := ic.emaConfigs[key]
+	if hasCustom {
+		if !state.emaFastInit && len(state.closes) >= customEMA.fastPeriod {
+			state.emaFast = smaWindow(state.closes, customEMA.fastPeriod)
+			state.emaFastInit = true
+		} else if state.emaFastInit {
+			mult := 2.0 / (float64(customEMA.fastPeriod) + 1.0)
+			state.emaFast = (bar.Close-state.emaFast)*mult + state.emaFast
+		}
+		if !state.emaSlowInit && len(state.closes) >= customEMA.slowPeriod {
+			state.emaSlow = smaWindow(state.closes, customEMA.slowPeriod)
+			state.emaSlowInit = true
+		} else if state.emaSlowInit {
+			mult := 2.0 / (float64(customEMA.slowPeriod) + 1.0)
+			state.emaSlow = (bar.Close-state.emaSlow)*mult + state.emaSlow
+		}
+	}
+
 	volumeSMA := 0.0
 	if len(state.volumes) >= volumeSMAPeriod {
 		volumeSMA = smaWindow(state.volumes, volumeSMAPeriod)
@@ -246,6 +282,16 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 	}
 	if state.ema50Init {
 		snap.EMA50 = state.ema50
+	}
+	if hasCustom {
+		if state.emaFastInit {
+			snap.EMAFast = state.emaFast
+			snap.EMAFastPeriod = customEMA.fastPeriod
+		}
+		if state.emaSlowInit {
+			snap.EMASlow = state.emaSlow
+			snap.EMASlowPeriod = customEMA.slowPeriod
+		}
 	}
 	if state.atrInit {
 		snap.ATR = atr

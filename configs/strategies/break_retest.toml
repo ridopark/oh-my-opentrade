@@ -52,6 +52,8 @@ size_mult_base = 1.0
 size_mult_max = 1.5
 cooldown_seconds = 300
 max_trades_per_day = 5
+ema_fast = 20
+ema_slow = 50
 
 [regime_filter]
 enabled = true

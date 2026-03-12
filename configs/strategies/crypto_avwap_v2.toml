@@ -49,6 +49,7 @@ max_slippage_bps_offhours = 40
 risk_per_trade_bps = 100
 max_position_bps = 500
 max_spread_bps = 25
+ema_divergence_threshold_pct = 2.0
 
 [regime_filter]
 enabled = false

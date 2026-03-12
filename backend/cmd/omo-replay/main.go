@@ -451,14 +451,18 @@ func main() {
 		snapshotFn := func(bar domain.MarketBar) start.IndicatorData {
 			snap := runnerCalc.Update(bar)
 			return start.IndicatorData{
-				RSI:       snap.RSI,
-				StochK:    snap.StochK,
-				StochD:    snap.StochD,
-				EMA9:      snap.EMA9,
-				EMA21:     snap.EMA21,
-				VWAP:      snap.VWAP,
-				Volume:    snap.Volume,
-				VolumeSMA: snap.VolumeSMA,
+				RSI:           snap.RSI,
+				StochK:        snap.StochK,
+				StochD:        snap.StochD,
+				EMA9:          snap.EMA9,
+				EMA21:         snap.EMA21,
+				EMAFast:       snap.EMAFast,
+				EMASlow:       snap.EMASlow,
+				EMAFastPeriod: snap.EMAFastPeriod,
+				EMASlowPeriod: snap.EMASlowPeriod,
+				VWAP:          snap.VWAP,
+				Volume:        snap.Volume,
+				VolumeSMA:     snap.VolumeSMA,
 			}
 		}
 		for _, sym := range symbols {
