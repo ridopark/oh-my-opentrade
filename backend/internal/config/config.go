@@ -84,13 +84,21 @@ type DatabaseConfig struct {
 
 // TradingConfig represents the trading rules and parameters.
 type TradingConfig struct {
-	MaxRiskPercent         float64       `yaml:"max_risk_percent"`
-	DefaultSlippageBPS     int           `yaml:"default_slippage_bps"`
-	KillSwitchMaxStops     int           `yaml:"kill_switch_max_stops"`
-	KillSwitchWindow       time.Duration `yaml:"-"`
-	KillSwitchHaltDuration time.Duration `yaml:"-"`
-	MaxDailyLossPct        float64       `yaml:"max_daily_loss_pct"`
-	MaxDailyLossUSD        float64       `yaml:"max_daily_loss_usd"`
+	MaxRiskPercent         float64           `yaml:"max_risk_percent"`
+	DefaultSlippageBPS     int               `yaml:"default_slippage_bps"`
+	KillSwitchMaxStops     int               `yaml:"kill_switch_max_stops"`
+	KillSwitchWindow       time.Duration     `yaml:"-"`
+	KillSwitchHaltDuration time.Duration     `yaml:"-"`
+	MaxDailyLossPct        float64           `yaml:"max_daily_loss_pct"`
+	MaxDailyLossUSD        float64           `yaml:"max_daily_loss_usd"`
+	OptionsRisk            OptionsRiskConfig `yaml:"options_risk"`
+}
+
+type OptionsRiskConfig struct {
+	MinOpenInterest int     `yaml:"min_open_interest"`
+	MaxSpreadPct    float64 `yaml:"max_spread_pct"`
+	MaxIVCeiling    float64 `yaml:"max_iv_ceiling"`
+	MinDTE          int     `yaml:"min_dte"`
 }
 
 // SymbolGroupConfig represents a group of symbols sharing the same asset class and timeframe.
@@ -160,13 +168,14 @@ type ServerConfig struct {
 
 // rawTradingConfig represents the unparsed trading configuration.
 type rawTradingConfig struct {
-	MaxRiskPercent         float64 `yaml:"max_risk_percent"`
-	DefaultSlippageBPS     int     `yaml:"default_slippage_bps"`
-	KillSwitchMaxStops     int     `yaml:"kill_switch_max_stops"`
-	KillSwitchWindow       string  `yaml:"kill_switch_window"`
-	KillSwitchHaltDuration string  `yaml:"kill_switch_halt_duration"`
-	MaxDailyLossPct        float64 `yaml:"max_daily_loss_pct"`
-	MaxDailyLossUSD        float64 `yaml:"max_daily_loss_usd"`
+	MaxRiskPercent         float64           `yaml:"max_risk_percent"`
+	DefaultSlippageBPS     int               `yaml:"default_slippage_bps"`
+	KillSwitchMaxStops     int               `yaml:"kill_switch_max_stops"`
+	KillSwitchWindow       string            `yaml:"kill_switch_window"`
+	KillSwitchHaltDuration string            `yaml:"kill_switch_halt_duration"`
+	MaxDailyLossPct        float64           `yaml:"max_daily_loss_pct"`
+	MaxDailyLossUSD        float64           `yaml:"max_daily_loss_usd"`
+	OptionsRisk            OptionsRiskConfig `yaml:"options_risk"`
 }
 
 type rawConfig struct {
@@ -199,6 +208,11 @@ const (
 	defaultAIMinConfidence = 0.6
 	defaultCryptoDataURL   = "wss://stream.data.alpaca.markets"
 	defaultCryptoFeed      = "us-1"
+
+	defaultOptionsMinOI     = 10
+	defaultOptionsMaxSpread = 0.15
+	defaultOptionsMaxIV     = 1.0
+	defaultOptionsMinDTE    = 7
 )
 
 // Load loads the configuration from env and yaml files.
@@ -237,6 +251,12 @@ func Load(envPath, yamlPath string) (*Config, error) {
 			KillSwitchHaltDuration: defaultKillHalt,
 			MaxDailyLossPct:        defaultMaxDailyLossPct,
 			MaxDailyLossUSD:        defaultMaxDailyLossUSD,
+			OptionsRisk: OptionsRiskConfig{
+				MinOpenInterest: defaultOptionsMinOI,
+				MaxSpreadPct:    defaultOptionsMaxSpread,
+				MaxIVCeiling:    defaultOptionsMaxIV,
+				MinDTE:          defaultOptionsMinDTE,
+			},
 		},
 		Server: ServerConfig{
 			Port:     defaultServerPort,
@@ -286,6 +306,7 @@ func Load(envPath, yamlPath string) (*Config, error) {
 			KillSwitchHaltDuration: killSwitchHalt,
 			MaxDailyLossPct:        raw.Trading.MaxDailyLossPct,
 			MaxDailyLossUSD:        raw.Trading.MaxDailyLossUSD,
+			OptionsRisk:            raw.Trading.OptionsRisk,
 		},
 		Symbols:      raw.Symbols,
 		Server:       raw.Server,
