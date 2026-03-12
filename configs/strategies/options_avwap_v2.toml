@@ -43,7 +43,7 @@ midday_trap_shield = true
 midday_volume_mult = 2.0
 stop_bps = 50
 limit_offset_bps = 5
-risk_per_trade_bps = 100
+risk_per_trade_bps = 280
 max_position_bps = 500
 
 [regime_filter]
