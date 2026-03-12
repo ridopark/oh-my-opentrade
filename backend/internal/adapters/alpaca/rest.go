@@ -235,6 +235,18 @@ func (c *RESTClient) SubmitOrder(ctx context.Context, intent domain.OrderIntent)
 				Msg("overriding TIF to day for fractional equity order")
 		}
 		tif = "day"
+		// Fractional equity SELL limit orders with TIF=day can miss their limit price and
+		// stay open all day, holding the full position qty and blocking all subsequent exit
+		// attempts with 403 "held_for_orders". Switch to market order so the exit fills
+		// immediately at the best available price and never creates a stuck open order.
+		if side == "sell" && orderType == "limit" {
+			c.log.Info().
+				Str("symbol", intent.Symbol.String()).
+				Str("original_order_type", orderType).
+				Float64("qty", intent.Quantity).
+				Msg("overriding limit to market for fractional equity sell — prevents held_for_orders storm")
+			orderType = "market"
+		}
 	}
 
 	reqBody := map[string]interface{}{

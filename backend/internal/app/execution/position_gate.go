@@ -15,6 +15,7 @@ import (
 const (
 	maxExitFailures      = 3
 	exitCooldownDuration = 5 * time.Minute
+	inflightStaleTTL     = 5 * time.Minute
 )
 
 type exitFailState struct {
@@ -22,14 +23,11 @@ type exitFailState struct {
 	cooldownEnd time.Time
 }
 
-// PositionGate prevents duplicate and conflicting entries by checking
-// the broker's current positions and an in-memory inflight lock.
-// It is the last line of defense before order submission.
 type PositionGate struct {
 	broker       ports.BrokerPort
 	log          zerolog.Logger
 	mu           sync.Mutex
-	inflight     map[inflightKey]struct{}
+	inflight     map[inflightKey]time.Time
 	exitInflight map[inflightKey]struct{}
 	exitFails    map[inflightKey]*exitFailState
 }
@@ -45,7 +43,7 @@ func NewPositionGate(broker ports.BrokerPort, log zerolog.Logger) *PositionGate 
 	return &PositionGate{
 		broker:       broker,
 		log:          log,
-		inflight:     make(map[inflightKey]struct{}),
+		inflight:     make(map[inflightKey]time.Time),
 		exitInflight: make(map[inflightKey]struct{}),
 		exitFails:    make(map[inflightKey]*exitFailState),
 	}
@@ -57,7 +55,16 @@ func (g *PositionGate) Check(ctx context.Context, intent domain.OrderIntent) err
 	// 1. Check inflight lock for entry intents.
 	if isEntry(intent) {
 		g.mu.Lock()
-		_, locked := g.inflight[inflightKey{TenantID: intent.TenantID, EnvMode: intent.EnvMode, Symbol: intent.Symbol}]
+		key := inflightKey{TenantID: intent.TenantID, EnvMode: intent.EnvMode, Symbol: intent.Symbol}
+		lockedAt, locked := g.inflight[key]
+		if locked && time.Since(lockedAt) > inflightStaleTTL {
+			g.log.Warn().
+				Str("symbol", string(intent.Symbol)).
+				Dur("age", time.Since(lockedAt)).
+				Msg("position gate: stale inflight lock expired — clearing")
+			delete(g.inflight, key)
+			locked = false
+		}
 		g.mu.Unlock()
 		if locked {
 			g.log.Warn().Str("symbol", string(intent.Symbol)).Msg("position gate: inflight entry exists")
@@ -113,7 +120,7 @@ func (g *PositionGate) Check(ctx context.Context, intent domain.OrderIntent) err
 func (g *PositionGate) MarkInflight(tenantID string, envMode domain.EnvMode, symbol domain.Symbol) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.inflight[inflightKey{TenantID: tenantID, EnvMode: envMode, Symbol: symbol}] = struct{}{}
+	g.inflight[inflightKey{TenantID: tenantID, EnvMode: envMode, Symbol: symbol}] = time.Now()
 }
 
 // ClearInflight removes the inflight lock for a symbol, typically after

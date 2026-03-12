@@ -40,9 +40,10 @@ type Service struct {
 	stopCh        chan struct{}
 
 	// State owned exclusively by the tick goroutine.
-	positions       map[string]*domain.MonitoredPosition // key: PositionKey()
-	ghostMissCounts map[string]int                       // key: position key → consecutive broker-miss count
-	mu              sync.RWMutex                         // protects positions for concurrent reads (e.g. PositionCount)
+	positions            map[string]*domain.MonitoredPosition // key: PositionKey()
+	ghostMissCounts      map[string]int                       // key: position key → consecutive broker-miss count
+	pendingGlobalOrphans map[domain.Symbol]int                // key: symbol → consecutive global-reconcile misses
+	mu                   sync.RWMutex                         // protects positions for concurrent reads (e.g. PositionCount)
 
 	snapshotFn IndicatorSnapshotFunc
 
@@ -108,6 +109,13 @@ const (
 	defaultReconcileInterval       = 5 * time.Minute
 	defaultGlobalReconcileInterval = 5 * time.Minute
 	ghostMissThreshold             = 3
+	// globalOrphanMissThreshold is the number of consecutive reconcileGlobal cycles
+	// that must observe a symbol missing from the broker before a reconciliation SELL
+	// is written to the DB. Two misses at the default 5-minute interval means the
+	// absence must be confirmed for at least 10 minutes, guarding against the
+	// false-positive where a transient Alpaca API hiccup returns an empty position
+	// list and the reconciler prematurely zeros out a live DB position.
+	globalOrphanMissThreshold = 2
 )
 
 // Option is a functional option for the Service.
@@ -193,6 +201,7 @@ func NewService(
 		stopCh:                  make(chan struct{}),
 		positions:               make(map[string]*domain.MonitoredPosition),
 		ghostMissCounts:         make(map[string]int),
+		pendingGlobalOrphans:    make(map[domain.Symbol]int),
 		tickInterval:            1 * time.Second,
 		reconcileInterval:       defaultReconcileInterval,
 		globalReconcileInterval: defaultGlobalReconcileInterval,

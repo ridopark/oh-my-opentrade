@@ -139,16 +139,31 @@ func (s *Service) reconcileGlobal(ctx context.Context) {
 	reconciled := 0
 	for sym, dbQty := range dbPositions {
 		if dbQty <= 1e-10 {
+			delete(s.pendingGlobalOrphans, sym)
 			continue
 		}
 
 		brokerQty, onBroker := brokerBySymbol[sym]
 
 		if !onBroker {
+			s.pendingGlobalOrphans[sym]++
+			missCount := s.pendingGlobalOrphans[sym]
+
+			if missCount < globalOrphanMissThreshold {
+				s.log.Warn().
+					Str("symbol", string(sym)).
+					Float64("db_net_qty", dbQty).
+					Int("miss_count", missCount).
+					Int("threshold", globalOrphanMissThreshold).
+					Msg("global-reconcile: DB orphan candidate — observing before writing SELL")
+				continue
+			}
+
 			s.log.Warn().
 				Str("symbol", string(sym)).
 				Float64("db_net_qty", dbQty).
-				Msg("global-reconcile: DB orphan detected — inserting reconciliation SELL")
+				Int("miss_count", missCount).
+				Msg("global-reconcile: DB orphan confirmed — inserting reconciliation SELL")
 
 			avgEntry, priceErr := s.repo.GetAvgEntryPrice(ctx, s.tenantID, s.envMode, sym)
 			if priceErr != nil {
@@ -166,12 +181,13 @@ func (s *Service) reconcileGlobal(ctx context.Context) {
 				Price:     avgEntry,
 				Status:    "FILLED",
 				Strategy:  "reconciliation",
-				Rationale: fmt.Sprintf("global-reconcile: DB net %.10f but no broker position", dbQty),
+				Rationale: fmt.Sprintf("global-reconcile: DB net %.10f but no broker position for %d consecutive checks", dbQty, missCount),
 			}
 			if err := s.repo.SaveTrade(ctx, trade); err != nil {
 				s.log.Error().Err(err).Str("symbol", string(sym)).Msg("global-reconcile: failed to save reconciliation SELL")
 			} else {
 				reconciled++
+				delete(s.pendingGlobalOrphans, sym)
 				s.log.Info().
 					Str("symbol", string(sym)).
 					Float64("quantity", dbQty).
@@ -180,6 +196,8 @@ func (s *Service) reconcileGlobal(ctx context.Context) {
 			}
 			continue
 		}
+
+		delete(s.pendingGlobalOrphans, sym)
 
 		drift := math.Abs(dbQty - brokerQty)
 		if drift > 1e-6 {
