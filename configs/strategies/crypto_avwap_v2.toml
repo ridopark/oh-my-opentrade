@@ -72,7 +72,7 @@ size_wide_mult = 1.20
 [[exit_rules]]
 type = "VOLATILITY_STOP"
 [exit_rules.params]
-atr_multiplier = 2.5
+atr_multiplier = 4.0
 
 [[exit_rules]]
 type = "SD_TARGET"

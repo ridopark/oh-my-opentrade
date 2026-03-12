@@ -45,6 +45,9 @@ stop_bps = 50
 limit_offset_bps = 5
 risk_per_trade_bps = 100
 max_position_bps = 1000
+allowed_hours_start = "09:30"
+allowed_hours_end = "15:45"
+allowed_hours_tz = "America/New_York"
 
 [regime_filter]
 enabled = false
@@ -71,7 +74,7 @@ interval_minutes = 5
 [[exit_rules]]
 type = "VOLATILITY_STOP"
 [exit_rules.params]
-atr_multiplier = 1.5
+atr_multiplier = 3.0
 
 [[exit_rules]]
 type = "SD_TARGET"
@@ -92,7 +95,7 @@ profit_gate_pct = 0.005
 [[exit_rules]]
 type = "EOD_FLATTEN"
 [exit_rules.params]
-minutes_before_close = 5
+minutes_before_close = 15
 
 [[exit_rules]]
 type = "MAX_LOSS"

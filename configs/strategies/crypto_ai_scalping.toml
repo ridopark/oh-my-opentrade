@@ -64,7 +64,7 @@ signals = { engine = "builtin", name = "ai_scalping_v1" }
 
 [dynamic_risk]
 enabled = true
-min_confidence = 0.60
+min_confidence = 0.70
 risk_scale_min = 0.50
 risk_scale_max = 0.90
 stop_tight_mult = 0.80
@@ -79,7 +79,7 @@ interval_minutes = 5
 [[exit_rules]]
 type = "VOLATILITY_STOP"
 [exit_rules.params]
-atr_multiplier = 2.5
+atr_multiplier = 4.0
 
 [[exit_rules]]
 type = "SD_TARGET"
