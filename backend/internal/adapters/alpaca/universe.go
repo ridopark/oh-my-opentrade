@@ -52,6 +52,7 @@ var junkNamePatterns = []string{
 	"BLANK CHECK",
 	"DEPOSITARY",
 	"PREFERRED",
+	" ETF",
 }
 
 type cachedAssets struct {
