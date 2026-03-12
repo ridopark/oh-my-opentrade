@@ -20,6 +20,32 @@ const (
 	InstrumentTypeCrypto InstrumentType = "CRYPTO"
 )
 
+// IsOCCSymbol reports whether s looks like an OCC option symbol.
+// OCC format: 1–6 uppercase letters, followed by YYMMDD, C or P, and 8 strike digits.
+// Minimum length is 15 chars (1-char underlying + 6 date + 1 right + 8 strike = 16; realistically ≥15).
+func IsOCCSymbol(s Symbol) bool {
+	str := string(s)
+	if len(str) < 15 {
+		return false
+	}
+	suffix := str[len(str)-15:]
+	rightChar := suffix[6]
+	if rightChar != 'C' && rightChar != 'P' {
+		return false
+	}
+	for _, c := range suffix[:6] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	for _, c := range suffix[7:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // ─────────────────────────────────────────────
 // OptionRight
 // ─────────────────────────────────────────────

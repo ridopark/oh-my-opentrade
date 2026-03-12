@@ -22,6 +22,14 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 		return
 	}
 
+	// 0. Cancel all open orders from any prior session.
+	// At startup our in-memory state is lost, so every open order is stale.
+	if canceled, err := s.broker.CancelAllOpenOrders(ctx); err != nil {
+		s.log.Warn().Err(err).Msg("bootstrap: failed to cancel stale open orders — proceeding anyway")
+	} else if canceled > 0 {
+		s.log.Info().Int("canceled", canceled).Msg("bootstrap: canceled stale open orders from prior session")
+	}
+
 	// 1. Query broker for all current positions.
 	brokerPositions, err := s.broker.GetPositions(ctx, s.tenantID, s.envMode)
 	if err != nil {
@@ -172,6 +180,10 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 					s.log.Info().Str("symbol", string(sym)).Msg("bootstrap: entry thesis restored via retroactive lookup")
 				}
 			}
+		}
+
+		if domain.IsOCCSymbol(sym) {
+			pos.InstrumentType = domain.InstrumentTypeOption
 		}
 
 		if maxHigh, err := s.repo.GetMaxBarHighSince(ctx, sym, "1m", entryTime); err == nil && maxHigh > pos.HighWaterMark {
