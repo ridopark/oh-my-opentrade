@@ -272,6 +272,77 @@ func (c *RESTClient) GetOptionPrices(ctx context.Context, dataURL string, symbol
 	return result, nil
 }
 
+func (c *RESTClient) GetHistoricalOptionBars(ctx context.Context, dataURL string, symbols []domain.Symbol, start, end time.Time) (map[domain.Symbol][]domain.MarketBar, error) {
+	if len(symbols) == 0 {
+		return nil, nil
+	}
+
+	syms := make([]string, len(symbols))
+	for i, s := range symbols {
+		syms[i] = string(s)
+	}
+
+	result := make(map[domain.Symbol][]domain.MarketBar, len(symbols))
+	nextToken := ""
+
+	for {
+		path := fmt.Sprintf(
+			"/v1beta1/options/bars?symbols=%s&timeframe=1Min&start=%s&end=%s&limit=10000",
+			strings.Join(syms, ","),
+			start.UTC().Format(time.RFC3339),
+			end.UTC().Format(time.RFC3339),
+		)
+		if nextToken != "" {
+			path += "&page_token=" + nextToken
+		}
+
+		resp, err := c.doReqDataAPI(ctx, dataURL, http.MethodGet, path, nil, reqOpts{priority: PriorityBackground, maxRetries: 2})
+		if err != nil {
+			return nil, fmt.Errorf("alpaca: get historical option bars: %w", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("alpaca: get historical option bars failed (status %d): %s", resp.StatusCode, string(body))
+		}
+
+		var page struct {
+			Bars map[string][]struct {
+				T time.Time `json:"t"`
+				O float64   `json:"o"`
+				H float64   `json:"h"`
+				L float64   `json:"l"`
+				C float64   `json:"c"`
+				V float64   `json:"v"`
+			} `json:"bars"`
+			NextPageToken string `json:"next_page_token"`
+		}
+		if err := json.Unmarshal(body, &page); err != nil {
+			return nil, fmt.Errorf("alpaca: decode historical option bars: %w", err)
+		}
+
+		for symStr, rawBars := range page.Bars {
+			sym := domain.Symbol(symStr)
+			tf := domain.Timeframe("1m")
+			for _, b := range rawBars {
+				bar, err := domain.NewMarketBar(b.T, sym, tf, b.O, b.H, b.L, b.C, b.V)
+				if err != nil {
+					continue
+				}
+				result[sym] = append(result[sym], bar)
+			}
+		}
+
+		if page.NextPageToken == "" {
+			break
+		}
+		nextToken = page.NextPageToken
+	}
+
+	return result, nil
+}
+
 // parseOCCSymbol parses an OCC option ticker into an OptionContract.
 // OCC format: {UNDERLYING (1-6 chars)}{YYMMDD}{C|P}{8-digit strike * 1000}
 // Example: AAPL240119C00190000
