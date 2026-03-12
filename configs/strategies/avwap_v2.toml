@@ -84,6 +84,7 @@ sd_level = 2.0
 [[exit_rules]]
 type = "STEP_STOP"
 [exit_rules.params]
+min_hold_bars = 3
 
 [[exit_rules]]
 type = "STAGNATION_EXIT"
