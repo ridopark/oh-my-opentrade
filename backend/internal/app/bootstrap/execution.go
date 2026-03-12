@@ -27,6 +27,7 @@ type ExecutionDeps struct {
 	Config        *config.Config
 	InitialEquity float64
 	IsBacktest    bool
+	EnableOptions bool
 	Logger        zerolog.Logger
 }
 
@@ -89,6 +90,17 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 	if deps.AccountPort != nil {
 		bpGuard := execution.NewBuyingPowerGuard(deps.AccountPort, execLog)
 		execOpts = append(execOpts, execution.WithBuyingPowerGuard(bpGuard))
+	}
+	if deps.EnableOptions {
+		ore := execution.NewOptionsRiskEngine(
+			cfg.Trading.MaxRiskPercent/100.0,
+			10,   // minOpenInterest
+			0.15, // maxSpreadPct (15%)
+			1.0,  // maxIVCeiling (100%)
+			7,    // minDTE
+			deps.Clock,
+		)
+		execOpts = append(execOpts, execution.WithOptionsRiskEngine(ore))
 	}
 
 	svc := execution.NewService(

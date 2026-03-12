@@ -26,6 +26,7 @@ type StrategyDeps struct {
 	NewsProvider    strategy.NewsProvider
 	Repo            ports.RepositoryPort
 	StratPerf       ports.StrategyPerformancePort
+	OptionsMarket   ports.OptionsMarketDataPort
 	TenantID        string
 	EnvMode         domain.EnvMode
 	Equity          float64
@@ -145,6 +146,9 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 	}
 
 	riskSizer := strategy.NewRiskSizer(deps.EventBus, deps.SpecStore, deps.Equity, stratLog)
+	if deps.OptionsMarket != nil {
+		riskSizer.SetOptionsMarket(deps.OptionsMarket)
+	}
 	lifecycleSvc := strategy.NewLifecycleService(router, stratLog)
 
 	baseSymbols := make([]string, 0, len(allSymbols))
