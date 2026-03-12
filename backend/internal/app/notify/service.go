@@ -269,10 +269,11 @@ func (s *Service) addToBatch(symbol, msg string, withChart bool, ev domain.Event
 			EndTime:   exitTime,
 		})
 		opts.Levels = append(opts.Levels, domain.PriceLevel{
-			Label:   fmt.Sprintf("Exit $%s", domain.FmtPrice(p.ExitPrice)),
-			Price:   p.ExitPrice,
-			Color:   "silver",
-			EndTime: exitTime,
+			Label:     fmt.Sprintf("Exit $%s", domain.FmtPrice(p.ExitPrice)),
+			Price:     p.ExitPrice,
+			Color:     "silver",
+			StartTime: info.entryTime,
+			EndTime:   exitTime,
 		})
 		if info.target > 0 {
 			opts.Levels = append(opts.Levels, domain.PriceLevel{
@@ -303,6 +304,10 @@ func (s *Service) addToBatch(symbol, msg string, withChart bool, ev domain.Event
 			PnLPct:       p.PnLPct,
 			PnLUSD:       absPnL,
 			HoldDuration: fmtDuration(p.HoldDuration),
+		}
+		if !info.entryTime.IsZero() {
+			opts.WindowStart = info.entryTime
+			opts.WindowEnd = exitTime
 		}
 		entry.chartOpts = opts
 		entry.chartSet = true
@@ -452,9 +457,19 @@ func (s *Service) getOrGenerateChart(ctx context.Context, symbol string, opts po
 
 	now := time.Now()
 	loc, _ := time.LoadLocation("America/New_York")
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 4, 0, 0, 0, loc)
 
-	bars, err := s.repo.GetMarketBars(ctx, domain.Symbol(symbol), "1m", dayStart, now)
+	barStart := time.Date(now.Year(), now.Month(), now.Day(), 4, 0, 0, 0, loc)
+	barEnd := now
+	if !opts.WindowStart.IsZero() && !opts.WindowEnd.IsZero() {
+		padding := opts.WindowEnd.Sub(opts.WindowStart) / 3
+		if padding < 15*time.Minute {
+			padding = 15 * time.Minute
+		}
+		barStart = opts.WindowStart.Add(-padding)
+		barEnd = opts.WindowEnd.Add(padding)
+	}
+
+	bars, err := s.repo.GetMarketBars(ctx, domain.Symbol(symbol), "1m", barStart, barEnd)
 	if err != nil {
 		return nil, fmt.Errorf("fetch bars for %s: %w", symbol, err)
 	}
