@@ -759,7 +759,13 @@ func (rs *RiskSizer) handleOptionsSignal(
 	premiumPerContract := midPrice * float64(best.Multiplier)
 	qty := math.Floor(maxRiskUSD / premiumPerContract)
 	if qty <= 0 {
-		qty = 1
+		rs.logger.Warn("option contract premium exceeds risk budget — skipping trade",
+			"contract", string(best.ContractSymbol),
+			"premium_per_contract", premiumPerContract,
+			"max_risk_usd", maxRiskUSD,
+			"risk_per_trade_bps", riskPerTradeBPS,
+		)
+		return nil
 	}
 	maxLossUSD := premiumPerContract * qty
 
