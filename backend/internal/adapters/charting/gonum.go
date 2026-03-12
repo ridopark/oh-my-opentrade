@@ -216,9 +216,11 @@ func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars [
 			x = xMax
 		}
 
+		// Use a tiny X offset so gonum doesn't treat the two-point line as
+		// degenerate (ΔX=0). The offset is sub-second and invisible at chart scale.
 		pts := make(plotter.XYs, 2)
-		pts[0] = plotter.XY{X: x, Y: p.Y.Min}
-		pts[1] = plotter.XY{X: x, Y: p.Y.Max}
+		pts[0] = plotter.XY{X: x, Y: yMin - yPad}
+		pts[1] = plotter.XY{X: x + 0.01, Y: yMax + yPad}
 
 		vline, err := plotter.NewLine(pts)
 		if err != nil {
@@ -229,12 +231,13 @@ func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars [
 		if mapped, ok := levelColors[mk.Color]; ok {
 			c = mapped
 		}
-		c.A = 100
+		c.A = 220
 		vline.Color = c
-		vline.Width = vg.Points(1)
-		vline.Dashes = []vg.Length{vg.Points(4), vg.Points(4)}
+		vline.Width = vg.Points(1.5)
+		vline.Dashes = []vg.Length{vg.Points(5), vg.Points(3)}
 
 		p.Add(vline)
+		p.Legend.Add(mk.Label, vline)
 	}
 
 	if len(opts.Levels) > 0 {
