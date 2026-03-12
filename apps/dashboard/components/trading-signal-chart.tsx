@@ -10,6 +10,7 @@ import {
   CrosshairMode,
   type IChartApi,
   type ISeriesApi,
+  type IPriceLine,
   type Time,
   type CandlestickData,
   type HistogramData,
@@ -41,6 +42,9 @@ export interface ChartSignal {
   strategy?: string;
   confidence?: number;
   signalId?: string;
+  entryPrice?: number;
+  stopPrice?: number;
+  targetPrice?: number;
 }
 
 interface TradingSignalChartProps {
@@ -175,6 +179,9 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
   const bbLowerRef = useRef<ISeriesApi<"Line", Time> | null>(null);
   const rsiSeriesRef = useRef<ISeriesApi<"Line", Time> | null>(null);
   const signalOverlayRef = useRef<SignalMarkerOverlay | null>(null);
+  const entryLineRef = useRef<IPriceLine | null>(null);
+  const stopLineRef = useRef<IPriceLine | null>(null);
+  const targetLineRef = useRef<IPriceLine | null>(null);
 
   const onLoadMoreRef = useRef(onLoadMore);
   onLoadMoreRef.current = onLoadMore;
@@ -669,7 +676,56 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
     }
   }, [data, signals, showEMA, showBollinger, showRSI]);
 
-  // 6. Forming candle pulsation — always pulses the latest candle
+  // 6. PRICE LINES — horizontal stop/entry/target for most recent executed entry signal
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series) return;
+
+    if (entryLineRef.current) { series.removePriceLine(entryLineRef.current); entryLineRef.current = null; }
+    if (stopLineRef.current) { series.removePriceLine(stopLineRef.current); stopLineRef.current = null; }
+    if (targetLineRef.current) { series.removePriceLine(targetLineRef.current); targetLineRef.current = null; }
+
+    if (!signals || signals.length === 0) return;
+
+    const lastExit = [...signals].reverse().find((s) => s.kind === "exit" && s.status === "executed");
+    const lastEntry = [...signals].reverse().find((s) => s.kind === "entry" && s.status === "executed" && (s.entryPrice || s.stopPrice));
+
+    if (!lastEntry) return;
+    if (lastExit && lastExit.time > lastEntry.time) return;
+
+    if (lastEntry.entryPrice) {
+      entryLineRef.current = series.createPriceLine({
+        price: lastEntry.entryPrice,
+        color: "#10b981",
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: `Entry $${lastEntry.entryPrice.toFixed(2)}`,
+      });
+    }
+    if (lastEntry.stopPrice) {
+      stopLineRef.current = series.createPriceLine({
+        price: lastEntry.stopPrice,
+        color: "#ef4444",
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: `Stop $${lastEntry.stopPrice.toFixed(2)}`,
+      });
+    }
+    if (lastEntry.targetPrice) {
+      targetLineRef.current = series.createPriceLine({
+        price: lastEntry.targetPrice,
+        color: "#f59e0b",
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: `Target $${lastEntry.targetPrice.toFixed(2)}`,
+      });
+    }
+  }, [signals]);
+
+  // 7. Forming candle pulsation — always pulses the latest candle
   useEffect(() => {
     let animId: number;
     let prevPulseTime: number | null = null;
@@ -727,7 +783,7 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
     return () => cancelAnimationFrame(animId);
   }, []);
 
-  // 7. RESIZE / OPTIONS UPDATE
+  // 8. RESIZE / OPTIONS UPDATE
   useEffect(() => {
     if (chartRef.current) {
       chartRef.current.applyOptions({ width, height: chartHeight });
