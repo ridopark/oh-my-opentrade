@@ -34,20 +34,21 @@ func (s *AIScalperStrategy) WarmupBars() int  { return 30 }
 
 // AIScalperConfig holds strategy parameters parsed from DNA.
 type AIScalperConfig struct {
-	RSILong          float64
-	RSIShort         float64
-	StochLong        float64
-	StochShort       float64
-	RSIExitMid       float64
-	AllowRegimes     []string
-	CooldownSeconds  int
-	MaxTradesPerDay  int
-	AIEnabled        bool
-	AITimeoutSeconds int
-	AIMinConfidence  float64
-	SizeMultMin      float64
-	SizeMultBase     float64
-	SizeMultMax      float64
+	RSILong           float64
+	RSIShort          float64
+	StochLong         float64
+	StochShort        float64
+	RSIExitMid        float64
+	AllowRegimes      []string
+	CooldownSeconds   int
+	MaxTradesPerDay   int
+	AIEnabled         bool
+	AITimeoutSeconds  int
+	AIMinConfidence   float64
+	SizeMultMin       float64
+	SizeMultBase      float64
+	SizeMultMax       float64
+	RequireStochCross bool
 }
 
 // AIScalperState is the per-symbol state for the AI scalping strategy.
@@ -89,20 +90,21 @@ type AIDebateResult struct {
 
 func parseAIScalperConfig(params map[string]any) AIScalperConfig {
 	return AIScalperConfig{
-		RSILong:          getFloat64(params, "rsi_long", 30),
-		RSIShort:         getFloat64(params, "rsi_short", 70),
-		StochLong:        getFloat64(params, "stoch_long", 20),
-		StochShort:       getFloat64(params, "stoch_short", 80),
-		RSIExitMid:       getFloat64(params, "rsi_exit_mid", 50),
-		AllowRegimes:     getStringSlice(params, "allow_regimes", []string{"BALANCE", "REVERSAL"}),
-		CooldownSeconds:  getInt(params, "cooldown_seconds", 60),
-		MaxTradesPerDay:  getInt(params, "max_trades_per_day", 10),
-		AIEnabled:        getBool(params, "ai_enabled", false),
-		AITimeoutSeconds: getInt(params, "ai_timeout_seconds", 5),
-		AIMinConfidence:  getFloat64(params, "ai_min_confidence", 0.65),
-		SizeMultMin:      getFloat64(params, "size_mult_min", 0.5),
-		SizeMultBase:     getFloat64(params, "size_mult_base", 1.0),
-		SizeMultMax:      getFloat64(params, "size_mult_max", 1.5),
+		RSILong:           getFloat64(params, "rsi_long", 30),
+		RSIShort:          getFloat64(params, "rsi_short", 70),
+		StochLong:         getFloat64(params, "stoch_long", 20),
+		StochShort:        getFloat64(params, "stoch_short", 80),
+		RSIExitMid:        getFloat64(params, "rsi_exit_mid", 50),
+		AllowRegimes:      getStringSlice(params, "allow_regimes", []string{"BALANCE", "REVERSAL"}),
+		CooldownSeconds:   getInt(params, "cooldown_seconds", 60),
+		MaxTradesPerDay:   getInt(params, "max_trades_per_day", 10),
+		AIEnabled:         getBool(params, "ai_enabled", false),
+		AITimeoutSeconds:  getInt(params, "ai_timeout_seconds", 5),
+		AIMinConfidence:   getFloat64(params, "ai_min_confidence", 0.65),
+		SizeMultMin:       getFloat64(params, "size_mult_min", 0.5),
+		SizeMultBase:      getFloat64(params, "size_mult_base", 1.0),
+		SizeMultMax:       getFloat64(params, "size_mult_max", 1.5),
+		RequireStochCross: getBool(params, "require_stoch_cross", true),
 	}
 }
 
@@ -236,7 +238,6 @@ func (s *AIScalperStrategy) OnBar(ctx start.Context, symbol string, bar start.Ba
 		}
 	}
 
-	// 2. Cooldown / max trades gate (only blocks entries).
 	if now.Before(aiSt.CooldownUntil) {
 		return aiSt, nil, nil
 	}
@@ -244,7 +245,6 @@ func (s *AIScalperStrategy) OnBar(ctx start.Context, symbol string, bar start.Ba
 		return aiSt, nil, nil
 	}
 
-	// 3. Only entries if flat and regime allowed.
 	if aiSt.PositionSide != "" || aiSt.PendingEntry != "" {
 		return aiSt, nil, nil
 	}
@@ -252,8 +252,8 @@ func (s *AIScalperStrategy) OnBar(ctx start.Context, symbol string, bar start.Ba
 		return aiSt, nil, nil
 	}
 
-	// 4. Long entry: RSI < RSILong AND StochK < StochLong AND crossUp.
-	if rsi < cfg.RSILong && stochK < cfg.StochLong && crossUp {
+	longCross := !cfg.RequireStochCross || crossUp
+	if rsi < cfg.RSILong && stochK < cfg.StochLong && longCross {
 		tags := map[string]string{
 			"ref_price": fmt.Sprintf("%.10f", bar.Close),
 			"setup":     "ai_scalp_long",
@@ -281,8 +281,8 @@ func (s *AIScalperStrategy) OnBar(ctx start.Context, symbol string, bar start.Ba
 		return aiSt, []start.Signal{sig}, nil
 	}
 
-	// 5. Short entry: RSI > RSIShort AND StochK > StochShort AND crossDown.
-	if rsi > cfg.RSIShort && stochK > cfg.StochShort && crossDown {
+	shortCross := !cfg.RequireStochCross || crossDown
+	if rsi > cfg.RSIShort && stochK > cfg.StochShort && shortCross {
 		tags := map[string]string{
 			"ref_price": fmt.Sprintf("%.10f", bar.Close),
 			"setup":     "ai_scalp_short",
