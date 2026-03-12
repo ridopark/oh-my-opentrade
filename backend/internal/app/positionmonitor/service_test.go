@@ -74,14 +74,17 @@ func (m *mockEventBus) totalPublished() int {
 }
 
 type mockBroker struct {
-	positions []domain.Trade
-	posErr    error
+	positions          []domain.Trade
+	posErr             error
+	cancelErr          error
+	orderDetailsResult ports.OrderDetails
+	orderDetailsErr    error
 }
 
 func (m *mockBroker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (string, error) {
 	return "", nil
 }
-func (m *mockBroker) CancelOrder(ctx context.Context, orderID string) error { return nil }
+func (m *mockBroker) CancelOrder(ctx context.Context, orderID string) error { return m.cancelErr }
 func (m *mockBroker) GetOrderStatus(ctx context.Context, orderID string) (string, error) {
 	return "", nil
 }
@@ -98,7 +101,7 @@ func (m *mockBroker) ClosePosition(_ context.Context, _ domain.Symbol) (string, 
 	return "", nil
 }
 func (m *mockBroker) GetOrderDetails(_ context.Context, _ string) (ports.OrderDetails, error) {
-	return ports.OrderDetails{}, nil
+	return m.orderDetailsResult, m.orderDetailsErr
 }
 
 type mockBrokerWithCancel struct {
