@@ -27,9 +27,31 @@ func FormatOCCSymbol(underlying string, expiry time.Time, right domain.OptionRig
 	return fmt.Sprintf("%s%s%s%08d", underlying, dateStr, rightChar, strikeInt)
 }
 
-// alpacaOptionsSnapshotResponse is the raw Alpaca API response for option snapshots.
+// alpacaOptionsContractListResponse is the Alpaca broker API response for listing option contracts.
+// Endpoint: GET /v2/options/contracts
+type alpacaOptionsContractListResponse struct {
+	OptionContracts []alpacaOptionsContractItem `json:"option_contracts"`
+	NextPageToken   *string                     `json:"next_page_token"`
+}
+
+type alpacaOptionsContractItem struct {
+	Symbol           string `json:"symbol"`
+	UnderlyingSymbol string `json:"underlying_symbol"`
+	ExpirationDate   string `json:"expiration_date"`
+	StrikePrice      string `json:"strike_price"`
+	Type             string `json:"type"` // "call" or "put"
+	Style            string `json:"style"`
+	Multiplier       string `json:"multiplier"`
+	OpenInterest     string `json:"open_interest"`
+	Tradable         bool   `json:"tradable"`
+	Status           string `json:"status"`
+}
+
+// alpacaOptionsSnapshotResponse is the Alpaca data API response for option snapshots.
+// Endpoint: GET /v1beta1/options/snapshots
 type alpacaOptionsSnapshotResponse struct {
-	Snapshots map[string]alpacaOptionSnapshot `json:"snapshots"`
+	Snapshots     map[string]alpacaOptionSnapshot `json:"snapshots"`
+	NextPageToken *string                         `json:"next_page_token"`
 }
 
 type alpacaOptionSnapshot struct {
@@ -49,10 +71,16 @@ type alpacaOptionSnapshot struct {
 	OpenInterest int `json:"openInterest"`
 }
 
-// GetOptionChain retrieves option contract snapshots from Alpaca for the given
+// GetOptionChain retrieves option contract snapshots with greeks and quotes for the given
 // underlying symbol, expiry date, and option right (call/put).
+//
+// Two-step process:
+//  1. Fetch OCC contract symbols from the broker API (/v2/options/contracts).
+//  2. Fetch live snapshots (greeks, bid/ask, IV) from the data API
+//     (/v1beta1/options/snapshots).
 func (c *RESTClient) GetOptionChain(
 	ctx context.Context,
+	dataURL string,
 	underlying domain.Symbol,
 	expiry time.Time,
 	right domain.OptionRight,
@@ -61,43 +89,110 @@ func (c *RESTClient) GetOptionChain(
 		return nil, fmt.Errorf("underlying symbol must not be empty")
 	}
 
+	// ── Step 1: list contract OCC symbols from the broker API ───────────────
 	rightStr := strings.ToLower(string(right)) // "call" or "put"
 	expiryStr := expiry.Format("2006-01-02")   // YYYY-MM-DD
 
-	path := fmt.Sprintf(
-		"/v2/options/contracts?underlying_symbols=%s&expiration_date=%s&type=%s&feed=indicative",
+	contractsPath := fmt.Sprintf(
+		"/v2/options/contracts?underlying_symbols=%s&expiration_date=%s&type=%s&limit=250",
 		underlying.String(), expiryStr, rightStr,
 	)
 
-	resp, err := c.doReqWithOpts(ctx, http.MethodGet, path, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
+	contractsResp, err := c.doReqWithOpts(ctx, http.MethodGet, contractsPath, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("alpaca: list option contracts: %w", err)
 	}
-	defer resp.Body.Close()
+	defer contractsResp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("alpaca: get option chain failed (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	var raw alpacaOptionsSnapshotResponse
-	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&raw); err != nil {
-		return nil, fmt.Errorf("alpaca: decode option chain response: %w", err)
+	contractsBody, _ := io.ReadAll(contractsResp.Body)
+	if contractsResp.StatusCode < 200 || contractsResp.StatusCode >= 300 {
+		return nil, fmt.Errorf("alpaca: list option contracts failed (status %d): %s", contractsResp.StatusCode, string(contractsBody))
 	}
 
-	snapshots := make([]domain.OptionContractSnapshot, 0, len(raw.Snapshots))
-	for contractSym, snap := range raw.Snapshots {
-		// Parse the OCC symbol to extract contract details
-		contract, err := parseOCCSymbol(contractSym)
+	var contractList alpacaOptionsContractListResponse
+	if err := json.NewDecoder(bytes.NewReader(contractsBody)).Decode(&contractList); err != nil {
+		return nil, fmt.Errorf("alpaca: decode option contracts list: %w", err)
+	}
+
+	if len(contractList.OptionContracts) == 0 {
+		return nil, nil
+	}
+
+	// Collect tradable OCC symbols.
+	occSymbols := make([]string, 0, len(contractList.OptionContracts))
+	for _, c := range contractList.OptionContracts {
+		if c.Tradable && c.Status == "active" {
+			occSymbols = append(occSymbols, c.Symbol)
+		}
+	}
+	if len(occSymbols) == 0 {
+		return nil, nil
+	}
+
+	// ── Step 2: fetch snapshots (greeks, quotes) from data API ──────────────
+	// Alpaca's snapshot endpoint accepts up to 100 symbols per request.
+	const snapshotBatchSize = 100
+	allSnapshots := make(map[string]alpacaOptionSnapshot, len(occSymbols))
+
+	for i := 0; i < len(occSymbols); i += snapshotBatchSize {
+		end := i + snapshotBatchSize
+		if end > len(occSymbols) {
+			end = len(occSymbols)
+		}
+		batch := occSymbols[i:end]
+
+		snapshotPath := fmt.Sprintf(
+			"/v1beta1/options/snapshots?symbols=%s&feed=indicative",
+			strings.Join(batch, ","),
+		)
+
+		snapResp, err := c.doReqDataAPI(ctx, dataURL, http.MethodGet, snapshotPath, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
 		if err != nil {
-			// Skip malformed symbols
+			return nil, fmt.Errorf("alpaca: fetch option snapshots: %w", err)
+		}
+		defer snapResp.Body.Close()
+
+		snapBody, _ := io.ReadAll(snapResp.Body)
+		if snapResp.StatusCode < 200 || snapResp.StatusCode >= 300 {
+			return nil, fmt.Errorf("alpaca: fetch option snapshots failed (status %d): %s", snapResp.StatusCode, string(snapBody))
+		}
+
+		var snapPage alpacaOptionsSnapshotResponse
+		if err := json.NewDecoder(bytes.NewReader(snapBody)).Decode(&snapPage); err != nil {
+			return nil, fmt.Errorf("alpaca: decode option snapshots: %w", err)
+		}
+
+		for sym, snap := range snapPage.Snapshots {
+			allSnapshots[sym] = snap
+		}
+	}
+
+	// ── Merge contract list with snapshot data ───────────────────────────────
+	snapshots := make([]domain.OptionContractSnapshot, 0, len(allSnapshots))
+	for _, item := range contractList.OptionContracts {
+		if !item.Tradable || item.Status != "active" {
+			continue
+		}
+		snap, hasSnap := allSnapshots[item.Symbol]
+		if !hasSnap {
+			// No live snapshot for this contract — skip it.
+			continue
+		}
+
+		contract, err := parseOCCSymbol(item.Symbol)
+		if err != nil {
 			continue
 		}
 
 		greeks, err := domain.NewGreeks(snap.Greeks.Delta, snap.Greeks.Gamma, snap.Greeks.Theta, snap.Greeks.Vega, snap.Greeks.Rho, snap.ImpliedVolatility)
 		if err != nil {
-			// Use zero greeks if validation fails
 			greeks = domain.Greeks{}
+		}
+
+		oi := snap.OpenInterest
+		if oi == 0 {
+			// Fall back to broker-side open interest (end-of-day figure).
+			fmt.Sscanf(item.OpenInterest, "%d", &oi)
 		}
 
 		snapshot := domain.OptionContractSnapshot{
@@ -109,7 +204,7 @@ func (c *RESTClient) GetOptionChain(
 				Timestamp: time.Now(),
 			},
 			Greeks:       greeks,
-			OpenInterest: snap.OpenInterest,
+			OpenInterest: oi,
 		}
 		snapshots = append(snapshots, snapshot)
 	}
@@ -123,12 +218,6 @@ func (c *RESTClient) GetOptionChain(
 func parseOCCSymbol(occ string) (domain.OptionContract, error) {
 	if len(occ) < 15 {
 		return domain.OptionContract{}, fmt.Errorf("OCC symbol too short: %q", occ)
-	}
-
-	// Find right char (C or P) position by scanning from position 6 backwards from end
-	// The date is always 6 digits, right char 1 char, strike 8 chars = 15 chars from end
-	if len(occ) < 15 {
-		return domain.OptionContract{}, fmt.Errorf("OCC symbol malformed: %q", occ)
 	}
 
 	// Last 15 chars = 6 (date) + 1 (right) + 8 (strike)
