@@ -21,6 +21,20 @@ const TradingChart = dynamic(() => import("@/components/trading-signal-chart"), 
   ),
 });
 
+function getPayloadPrices(payload: Record<string, unknown> | null): {
+  entryPrice?: number;
+  stopPrice?: number;
+  targetPrice?: number;
+} {
+  if (!payload) return {};
+  const meta = payload.meta as Record<string, string | number> | undefined;
+  return {
+    entryPrice: typeof payload.limitPrice === "number" ? payload.limitPrice : undefined,
+    stopPrice: typeof payload.stopLoss === "number" ? payload.stopLoss : undefined,
+    targetPrice: meta?.target_price ? parseFloat(String(meta.target_price)) : undefined,
+  };
+}
+
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "1d"] as const;
 type Timeframe = (typeof TIMEFRAMES)[number];
 
@@ -103,10 +117,11 @@ function TradingSignalContent() {
             return [...newItems, ...prev].slice(0, 50);
           });
           setSignals((prev) => {
-            const existingIds = new Set(prev.map((s) => s.signalId));
-            const newSignals = data.items
-              .filter((sig) => sig.SignalID && !existingIds.has(sig.SignalID))
-              .map((sig) => ({
+            const next = [...prev];
+            for (const sig of data.items) {
+              if (!sig.SignalID) continue;
+              const prices = getPayloadPrices(sig.Payload);
+              const mapped = {
                 time: Math.floor(new Date(sig.TS).getTime() / 1000),
                 side: (sig.Side?.toLowerCase() === "sell" ? "sell" : "buy") as "buy" | "sell",
                 kind: (sig.Kind?.toLowerCase() === "exit" ? "exit" : "entry") as "entry" | "exit",
@@ -114,8 +129,16 @@ function TradingSignalContent() {
                 strategy: sig.Strategy,
                 confidence: sig.Confidence,
                 signalId: sig.SignalID,
-              }));
-            return [...prev, ...newSignals].slice(-200);
+                ...prices,
+              };
+              const idx = next.findIndex((s) => s.signalId === sig.SignalID);
+              if (idx >= 0) {
+                next[idx] = { ...next[idx], ...mapped };
+              } else {
+                next.push(mapped);
+              }
+            }
+            return next.slice(-200);
           });
         }
       })
@@ -142,9 +165,15 @@ function TradingSignalContent() {
         const time = Math.floor(new Date(sig.TS).getTime() / 1000);
 
         setSignals((prev) => {
-          if (sig.SignalID && prev.some((s) => s.signalId === sig.SignalID)) return prev;
-          const next = [...prev, { time, side, kind, status: sig.Status ?? "generated", strategy: sig.Strategy, confidence: sig.Confidence, signalId: sig.SignalID }];
-          return next.slice(-200);
+          const prices = getPayloadPrices(sig.Payload);
+          const mapped = { time, side, kind, status: sig.Status ?? "generated", strategy: sig.Strategy, confidence: sig.Confidence, signalId: sig.SignalID, ...prices };
+          const idx = prev.findIndex((s) => s.signalId === sig.SignalID);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = { ...prev[idx], ...mapped };
+            return next;
+          }
+          return [...prev, mapped].slice(-200);
         });
 
         setRecentSignalEvents((prev) => [sig, ...prev].slice(0, 20));
