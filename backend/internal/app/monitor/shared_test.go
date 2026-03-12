@@ -118,6 +118,9 @@ func (m *mockRepository) UpdateOrderStatus(_ context.Context, _ string, _ string
 func (m *mockRepository) GetNetPositions(_ context.Context, _ string, _ domain.EnvMode) (map[domain.Symbol]float64, error) {
 	return nil, nil
 }
+func (m *mockRepository) GetAvgEntryPrice(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol) (float64, error) {
+	return 0, nil
+}
 
 // mockDNAGate implements monitor.DNAGateChecker for tests.
 type mockDNAGate struct {

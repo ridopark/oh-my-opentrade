@@ -111,3 +111,6 @@ func (stubRepo) UpdateOrderStatus(context.Context, string, string) error { retur
 func (stubRepo) GetNetPositions(context.Context, string, domain.EnvMode) (map[domain.Symbol]float64, error) {
 	return nil, nil
 }
+func (stubRepo) GetAvgEntryPrice(context.Context, string, domain.EnvMode, domain.Symbol) (float64, error) {
+	return 0, nil
+}

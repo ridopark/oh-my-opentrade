@@ -79,3 +79,7 @@ func (n *NoopRepo) UpdateOrderStatus(_ context.Context, _ string, _ string) erro
 func (n *NoopRepo) GetNetPositions(_ context.Context, _ string, _ domain.EnvMode) (map[domain.Symbol]float64, error) {
 	return nil, nil
 }
+
+func (n *NoopRepo) GetAvgEntryPrice(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol) (float64, error) {
+	return 0, nil
+}

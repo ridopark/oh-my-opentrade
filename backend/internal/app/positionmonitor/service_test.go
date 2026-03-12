@@ -164,6 +164,9 @@ func (m *mockRepo) UpdateOrderStatus(_ context.Context, _ string, _ string) erro
 func (m *mockRepo) GetNetPositions(_ context.Context, _ string, _ domain.EnvMode) (map[domain.Symbol]float64, error) {
 	return nil, nil
 }
+func (m *mockRepo) GetAvgEntryPrice(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol) (float64, error) {
+	return 0, nil
+}
 
 type mockSpecStore struct {
 	specs map[string]*portstrategy.Spec

@@ -93,6 +93,9 @@ func (m *mockRepository) UpdateOrderStatus(context.Context, string, string) erro
 func (m *mockRepository) GetNetPositions(context.Context, string, domain.EnvMode) (map[domain.Symbol]float64, error) {
 	return nil, nil
 }
+func (m *mockRepository) GetAvgEntryPrice(context.Context, string, domain.EnvMode, domain.Symbol) (float64, error) {
+	return 0, nil
+}
 
 func (f *fakeAIAdvisor) RequestDebate(ctx context.Context, symbol domain.Symbol, regime domain.MarketRegime, indicators domain.IndicatorSnapshot, opts ...ports.DebateOption) (*domain.AdvisoryDecision, error) {
 	f.calls++
