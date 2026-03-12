@@ -581,21 +581,21 @@ func TestUpdateStepStopState(t *testing.T) {
 
 	t.Run("crosses +1.0 SD sets stop to entry (breakeven)", func(t *testing.T) {
 		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
-		UpdateStepStopState(pos, 102.5, ctx)
+		UpdateStepStopState(pos, 102.5, ctx, now, 0.0)
 		assert.Equal(t, 1.0, pos.CustomState["highest_sd_crossed"])
 		assert.Equal(t, 100.0, pos.CustomState["step_stop_level"])
 	})
 
 	t.Run("crosses +2.0 SD sets stop to +1.0 SD band", func(t *testing.T) {
 		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
-		UpdateStepStopState(pos, 104.5, ctx)
+		UpdateStepStopState(pos, 104.5, ctx, now, 0.0)
 		assert.Equal(t, 2.0, pos.CustomState["highest_sd_crossed"])
 		assert.Equal(t, 102.0, pos.CustomState["step_stop_level"])
 	})
 
 	t.Run("crosses +3.0 SD sets stop to +2.0 SD band", func(t *testing.T) {
 		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
-		UpdateStepStopState(pos, 106.5, ctx)
+		UpdateStepStopState(pos, 106.5, ctx, now, 0.0)
 		assert.Equal(t, 3.0, pos.CustomState["highest_sd_crossed"])
 		assert.Equal(t, 104.0, pos.CustomState["step_stop_level"])
 	})
@@ -603,18 +603,18 @@ func TestUpdateStepStopState(t *testing.T) {
 	t.Run("stop only ratchets up, never down", func(t *testing.T) {
 		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
 		// First: cross +2.0 SD → stop at +1.0 SD (102)
-		UpdateStepStopState(pos, 104.5, ctx)
+		UpdateStepStopState(pos, 104.5, ctx, now, 0.0)
 		assert.Equal(t, 102.0, pos.CustomState["step_stop_level"])
 
 		// Price drops back below +2.0 SD — stop must NOT decrease
-		UpdateStepStopState(pos, 101.0, ctx)
+		UpdateStepStopState(pos, 101.0, ctx, now, 0.0)
 		assert.Equal(t, 102.0, pos.CustomState["step_stop_level"])
 		assert.Equal(t, 2.0, pos.CustomState["highest_sd_crossed"])
 	})
 
 	t.Run("no-op when SDBands is nil", func(t *testing.T) {
 		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
-		UpdateStepStopState(pos, 200.0, EvalContext{})
+		UpdateStepStopState(pos, 200.0, EvalContext{}, now, 0.0)
 		assert.Equal(t, 0.0, pos.CustomState["step_stop_level"])
 	})
 
@@ -622,19 +622,35 @@ func TestUpdateStepStopState(t *testing.T) {
 		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
 
 		// Tick 1: price at 102.5 → crosses +1.0 SD → stop = entry (100)
-		UpdateStepStopState(pos, 102.5, ctx)
+		UpdateStepStopState(pos, 102.5, ctx, now, 0.0)
 		assert.Equal(t, 1.0, pos.CustomState["highest_sd_crossed"])
 		assert.Equal(t, 100.0, pos.CustomState["step_stop_level"])
 
 		// Tick 2: price at 104.5 → crosses +2.0 SD → stop = +1.0 SD (102)
-		UpdateStepStopState(pos, 104.5, ctx)
+		UpdateStepStopState(pos, 104.5, ctx, now, 0.0)
 		assert.Equal(t, 2.0, pos.CustomState["highest_sd_crossed"])
 		assert.Equal(t, 102.0, pos.CustomState["step_stop_level"])
 
 		// Tick 3: price at 106.5 → crosses +3.0 SD → stop = +2.0 SD (104)
-		UpdateStepStopState(pos, 106.5, ctx)
+		UpdateStepStopState(pos, 106.5, ctx, now, 0.0)
 		assert.Equal(t, 3.0, pos.CustomState["highest_sd_crossed"])
 		assert.Equal(t, 104.0, pos.CustomState["step_stop_level"])
+	})
+
+	t.Run("min_hold_bars suppresses ratchet while within hold period", func(t *testing.T) {
+		entryTime := now.Add(-2 * time.Minute)
+		pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+		UpdateStepStopState(pos, 102.5, ctx, now, 3.0)
+		assert.Equal(t, 0.0, pos.CustomState["highest_sd_crossed"], "should not ratchet within hold period")
+		assert.Equal(t, 0.0, pos.CustomState["step_stop_level"])
+	})
+
+	t.Run("min_hold_bars allows ratchet once hold period elapsed", func(t *testing.T) {
+		entryTime := now.Add(-4 * time.Minute)
+		pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+		UpdateStepStopState(pos, 102.5, ctx, now, 3.0)
+		assert.Equal(t, 1.0, pos.CustomState["highest_sd_crossed"], "should ratchet after hold period")
+		assert.Equal(t, 100.0, pos.CustomState["step_stop_level"])
 	})
 }
 

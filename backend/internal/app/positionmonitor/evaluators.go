@@ -274,8 +274,19 @@ func evaluateStepStop(_ domain.ExitRule, pos *domain.MonitoredPosition, currentP
 //	Price crosses +3.0 SD → stop = +2.0 SD band price
 //
 // The stop only ratchets UP (tightens), never down.
-func UpdateStepStopState(pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext) {
+//
+// minHoldBars suppresses ratcheting until at least that many 1-minute bars have
+// elapsed since entry. This prevents an instant stop-out when the entry price is
+// near a SD band and the stop would fire on the very first tick.
+// Pass 0 (or a negative value) to disable the hold guard.
+func UpdateStepStopState(pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext, now time.Time, minHoldBars float64) {
 	if pos.CustomState == nil || len(ctx.SDBands) == 0 {
+		return
+	}
+
+	// Honor min_hold_bars: suppress step-stop ratcheting until N 1-minute bars
+	// have elapsed since entry.
+	if minHoldBars > 0 && now.Sub(pos.EntryTime) < time.Duration(float64(time.Minute)*minHoldBars) {
 		return
 	}
 

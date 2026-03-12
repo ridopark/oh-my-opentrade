@@ -78,7 +78,14 @@ func (s *Service) tick() {
 				}
 			}
 		}
-		UpdateStepStopState(pos, price, evalCtx)
+		var stepStopMinHoldBars float64
+		for _, r := range pos.ExitRules {
+			if r.Type == domain.ExitRuleStepStop {
+				stepStopMinHoldBars = r.Param("min_hold_bars", 0)
+				break
+			}
+		}
+		UpdateStepStopState(pos, price, evalCtx, now, stepStopMinHoldBars)
 
 		for _, rule := range pos.ExitRules {
 			if rule.Type == domain.ExitRuleBreakevenStop {

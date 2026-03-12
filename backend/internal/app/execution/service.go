@@ -1070,20 +1070,42 @@ func (s *Service) sweepDustPosition(tenantID string, envMode domain.EnvMode, sym
 	}
 
 	l.Info().Float64("remaining_qty", remainingQty).
-		Msg("dust sweep: remainder detected — sending DELETE to sweep")
+		Msg("dust sweep: remainder detected — submitting targeted market sell")
 
-	sweepOrderID, err := s.broker.ClosePosition(ctx, symbol)
+	sweepIntent, intentErr := domain.NewOrderIntent(
+		uuid.New(),
+		tenantID,
+		envMode,
+		symbol,
+		domain.DirectionCloseLong,
+		1.0,
+		0,
+		0,
+		remainingQty,
+		"dust_sweep",
+		fmt.Sprintf("sweep remainder after exit %s", brokerOrderID),
+		1.0,
+		fmt.Sprintf("SWEEP:%s:%s:%s:%s", tenantID, string(envMode), string(symbol), brokerOrderID),
+	)
+	if intentErr != nil {
+		l.Error().Err(intentErr).Msg("dust sweep: failed to create sweep intent — clearing gate for retry")
+		return
+	}
+	sweepIntent.OrderType = "market"
+	sweepIntent.TimeInForce = "ioc"
+
+	sweepOrderID, err := s.broker.SubmitOrder(ctx, sweepIntent)
 	if err != nil {
-		l.Error().Err(err).Msg("dust sweep: DELETE failed — clearing gate for retry")
+		l.Error().Err(err).Msg("dust sweep: market sell failed — clearing gate for retry")
 		return
 	}
 
 	if sweepOrderID == "" {
-		l.Info().Msg("dust sweep: position already closed (404/422)")
+		l.Info().Msg("dust sweep: position already closed")
 		return
 	}
 
-	l.Info().Str("sweep_order_id", sweepOrderID).Msg("dust sweep: DELETE accepted — polling for fill confirmation")
+	l.Info().Str("sweep_order_id", sweepOrderID).Msg("dust sweep: market sell accepted — polling for fill confirmation")
 
 	// Poll broker for fill instead of relying on WS (the sweep creates a new order ID
 	// that isn't in pendingOrders, so WS fills would be silently dropped).
