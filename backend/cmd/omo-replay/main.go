@@ -332,6 +332,13 @@ func main() {
 				log.Fatal().Err(err).Msg("failed to start signal debate enricher")
 			}
 		}
+		// Inject replay clock into risk sizer so exit cooldowns and circuit
+		// breakers use simulated bar time instead of wall-clock time.
+		pipeline.RiskSizer.SetNowFn(clockFn)
+		if backtestFlag {
+			pipeline.RiskSizer.SetExitCooldown(3 * time.Minute)
+		}
+
 		if err := pipeline.RiskSizer.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start risk sizer")
 		}
@@ -574,6 +581,8 @@ func main() {
 			}
 		}
 	}
+
+	cancel()
 
 	eventCounts := tracer.Counts()
 	signalsMu.Lock()
