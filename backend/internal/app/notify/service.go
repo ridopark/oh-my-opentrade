@@ -271,7 +271,7 @@ func (s *Service) addToBatch(symbol, msg string, withChart bool, ev domain.Event
 		opts.Levels = append(opts.Levels, domain.PriceLevel{
 			Label:   fmt.Sprintf("Exit $%s", domain.FmtPrice(p.ExitPrice)),
 			Price:   p.ExitPrice,
-			Color:   "red",
+			Color:   "silver",
 			EndTime: exitTime,
 		})
 		if info.target > 0 {

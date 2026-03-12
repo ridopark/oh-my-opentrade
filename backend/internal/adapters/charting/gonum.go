@@ -71,9 +71,10 @@ func (d barData) TOHLCV(i int) (float64, float64, float64, float64, float64, flo
 }
 
 var levelColors = map[string]color.RGBA{
-	"green": {R: 76, G: 175, B: 80, A: 220},
-	"red":   {R: 239, G: 83, B: 80, A: 220},
-	"blue":  {R: 52, G: 152, B: 219, A: 220},
+	"green":  {R: 76, G: 175, B: 80, A: 220},
+	"red":    {R: 239, G: 83, B: 80, A: 220},
+	"blue":   {R: 52, G: 152, B: 219, A: 220},
+	"silver": {R: 180, G: 180, B: 180, A: 220},
 }
 
 func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars []domain.MarketBar, title string, opts ports.ChartOptions) ([]byte, error) {
