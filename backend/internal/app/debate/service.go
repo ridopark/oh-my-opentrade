@@ -99,6 +99,10 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 		l.Error().Err(err).Msg("AI advisor error — skipping debate")
 		return nil
 	}
+	if decision == nil {
+		l.Info().Msg("AI advisor returned NEUTRAL — no trade")
+		return nil
+	}
 
 	l.Info().
 		Float64("confidence", decision.Confidence).
