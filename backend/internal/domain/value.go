@@ -4,14 +4,24 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
-// PriceLevel represents a horizontal price line to overlay on a chart
-// (e.g. entry price, exit/target price).
+// PriceLevel represents a horizontal price line to overlay on a chart.
 type PriceLevel struct {
-	Label string  // display label, e.g. "Entry $675.97"
-	Price float64 // Y-axis value
-	Color string  // semantic color: "green", "red", "blue"
+	Label     string
+	Price     float64
+	Color     string    // semantic color: "green", "red", "blue"
+	StartTime time.Time // if non-zero, line starts at this time instead of chart xMin
+	EndTime   time.Time // if non-zero, line ends at this time instead of chart xMax
+}
+
+// TimeMarker represents a vertical line at a specific timestamp on the chart,
+// used to mark when a trade entry or exit occurred on the time axis.
+type TimeMarker struct {
+	Time  time.Time
+	Label string
+	Color string
 }
 
 // EnvMode represents the execution environment (paper trading vs live).

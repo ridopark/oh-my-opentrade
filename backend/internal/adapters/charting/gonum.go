@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"image/color"
+	"time"
 
 	_ "codeberg.org/go-fonts/liberation/liberationsansregular"
 
@@ -17,6 +18,39 @@ import (
 	"gonum.org/v1/plot/vg/draw"
 	"gonum.org/v1/plot/vg/vgimg"
 )
+
+// etTimeTicks is a custom plot.Ticker that formats X-axis timestamps in
+// America/New_York time instead of UTC.
+type etTimeTicks struct {
+	inner  plot.TimeTicks
+	loc    *time.Location
+	format string
+}
+
+func newETTimeTicks(format string) etTimeTicks {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		// Fallback to UTC if tz data unavailable (shouldn't happen in production).
+		loc = time.UTC
+	}
+	return etTimeTicks{
+		inner:  plot.TimeTicks{Format: format},
+		loc:    loc,
+		format: format,
+	}
+}
+
+func (t etTimeTicks) Ticks(min, max float64) []plot.Tick {
+	ticks := t.inner.Ticks(min, max)
+	for i, tk := range ticks {
+		if tk.Label == "" {
+			continue
+		}
+		ts := time.Unix(int64(tk.Value), 0).In(t.loc)
+		ticks[i].Label = ts.Format(t.format)
+	}
+	return ticks
+}
 
 var _ ports.ChartGeneratorPort = (*GonumChartGenerator)(nil)
 
@@ -41,7 +75,7 @@ var levelColors = map[string]color.RGBA{
 	"blue":  {R: 52, G: 152, B: 219, A: 200},
 }
 
-func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars []domain.MarketBar, title string, levels []domain.PriceLevel) ([]byte, error) {
+func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars []domain.MarketBar, title string, opts ports.ChartOptions) ([]byte, error) {
 	if len(bars) < 2 {
 		return nil, fmt.Errorf("need at least 2 bars, got %d", len(bars))
 	}
@@ -59,16 +93,35 @@ func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars [
 	candles.ColorDown = redDown
 	candles.CandleWidth = vg.Points(4)
 
+	chartTitle := title
+	if opts.PnL != nil {
+		pnl := opts.PnL
+		sign := "+"
+		if pnl.PnLPct < 0 {
+			sign = ""
+		}
+		chartTitle = fmt.Sprintf("%s  ·  %s%.1f%%  $%.0f  %s", title, sign, pnl.PnLPct, pnl.PnLUSD, pnl.HoldDuration)
+	}
+
 	p := plot.New()
-	p.Title.Text = title
-	p.Title.TextStyle.Color = textColor
+	p.Title.Text = chartTitle
 	p.BackgroundColor = bgColor
+
+	if opts.PnL != nil {
+		if opts.PnL.PnLPct >= 0 {
+			p.Title.TextStyle.Color = color.RGBA{R: 38, G: 166, B: 154, A: 255}
+		} else {
+			p.Title.TextStyle.Color = color.RGBA{R: 239, G: 83, B: 80, A: 255}
+		}
+	} else {
+		p.Title.TextStyle.Color = textColor
+	}
 
 	p.X.Color = textColor
 	p.X.Label.TextStyle.Color = textColor
 	p.X.Tick.Label.Color = textColor
 	p.X.Tick.Color = textColor
-	p.X.Tick.Marker = plot.TimeTicks{Format: "15:04"}
+	p.X.Tick.Marker = newETTimeTicks("15:04")
 
 	p.Y.Color = textColor
 	p.Y.Label.TextStyle.Color = textColor
@@ -81,14 +134,32 @@ func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars [
 	xMin := float64(bars[0].Time.Unix())
 	xMax := float64(bars[len(bars)-1].Time.Unix())
 
-	for _, lvl := range levels {
+	for _, lvl := range opts.Levels {
 		if lvl.Price <= 0 {
 			continue
 		}
 
+		lineXMin := xMin
+		lineXMax := xMax
+		if !lvl.StartTime.IsZero() {
+			clamped := float64(lvl.StartTime.Unix())
+			if clamped > lineXMin {
+				lineXMin = clamped
+			}
+		}
+		if !lvl.EndTime.IsZero() {
+			clamped := float64(lvl.EndTime.Unix())
+			if clamped < lineXMax {
+				lineXMax = clamped
+			}
+		}
+		if lineXMin > lineXMax {
+			lineXMin = lineXMax
+		}
+
 		pts := make(plotter.XYs, 2)
-		pts[0] = plotter.XY{X: xMin, Y: lvl.Price}
-		pts[1] = plotter.XY{X: xMax, Y: lvl.Price}
+		pts[0] = plotter.XY{X: lineXMin, Y: lvl.Price}
+		pts[1] = plotter.XY{X: lineXMax, Y: lvl.Price}
 
 		line, err := plotter.NewLine(pts)
 		if err != nil {
@@ -107,13 +178,48 @@ func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars [
 		p.Legend.Add(lvl.Label, line)
 	}
 
-	if len(levels) > 0 {
+	for _, mk := range opts.Markers {
+		if mk.Time.IsZero() {
+			continue
+		}
+		x := float64(mk.Time.Unix())
+		if x < xMin {
+			x = xMin
+		}
+		if x > xMax {
+			x = xMax
+		}
+
+		pts := make(plotter.XYs, 2)
+		pts[0] = plotter.XY{X: x, Y: 0}
+		pts[1] = plotter.XY{X: x, Y: 1e9}
+
+		vline, err := plotter.NewLine(pts)
+		if err != nil {
+			continue
+		}
+
+		c := levelColors["green"]
+		if mapped, ok := levelColors[mk.Color]; ok {
+			c = mapped
+		}
+		c.A = 120
+		vline.Color = c
+		vline.Width = vg.Points(1)
+		vline.Dashes = []vg.Length{vg.Points(4), vg.Points(4)}
+
+		p.Add(vline)
+		if mk.Label != "" {
+			p.Legend.Add(mk.Label, vline)
+		}
+	}
+
+	if len(opts.Levels) > 0 || len(opts.Markers) > 0 {
 		p.Legend.TextStyle.Color = textColor
 		p.Legend.Top = true
 		p.Legend.Left = true
 	}
 
-	// Expand Y-axis to include all price levels so lines are never clipped.
 	yMin, yMax := bars[0].Low, bars[0].High
 	for _, b := range bars[1:] {
 		if b.Low < yMin {
@@ -123,7 +229,7 @@ func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars [
 			yMax = b.High
 		}
 	}
-	for _, lvl := range levels {
+	for _, lvl := range opts.Levels {
 		if lvl.Price <= 0 {
 			continue
 		}
