@@ -3,6 +3,7 @@ package positionmonitor
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -136,6 +137,11 @@ func (s *Service) resolveExitPrice(pos *domain.MonitoredPosition, snap ports.Pri
 func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 	if pos.ExitOrderID != "" && s.broker != nil {
 		if err := s.broker.CancelOrder(context.Background(), pos.ExitOrderID); err != nil {
+			if strings.Contains(err.Error(), "filled") {
+				if s.reconcileFilledOrder(pos) {
+					return
+				}
+			}
 			s.log.Warn().Err(err).
 				Str("symbol", string(pos.Symbol)).
 				Str("broker_order_id", pos.ExitOrderID).
@@ -156,6 +162,66 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 		Str("symbol", string(pos.Symbol)).
 		Int("retry_count", pos.ExitRetryCount).
 		Msg("exit pending timeout — will retry with escalated price")
+}
+
+func (s *Service) reconcileFilledOrder(pos *domain.MonitoredPosition) bool {
+	ctx := context.Background()
+
+	details, err := s.broker.GetOrderDetails(ctx, pos.ExitOrderID)
+	if err != nil {
+		s.log.Warn().Err(err).
+			Str("symbol", string(pos.Symbol)).
+			Str("broker_order_id", pos.ExitOrderID).
+			Msg("exit-timeout: could not fetch order details for filled order — will retry exit")
+		return false
+	}
+
+	missingQty := pos.Quantity
+	if details.FilledQty < missingQty-1e-9 {
+		s.log.Warn().
+			Str("symbol", string(pos.Symbol)).
+			Float64("broker_filled_qty", details.FilledQty).
+			Float64("monitor_remaining_qty", missingQty).
+			Msg("exit-timeout: broker filled qty less than remaining — will retry exit")
+		return false
+	}
+
+	if s.repo != nil {
+		trade := domain.Trade{
+			Time:      s.nowFunc(),
+			TenantID:  s.tenantID,
+			EnvMode:   s.envMode,
+			TradeID:   uuid.New(),
+			Symbol:    pos.Symbol,
+			Side:      "SELL",
+			Quantity:  missingQty,
+			Price:     details.FilledAvgPrice,
+			Status:    "FILLED",
+			Strategy:  pos.Strategy,
+			Rationale: fmt.Sprintf("exit-timeout: fill reconciliation for order %s (missed WS fill events)", pos.ExitOrderID),
+		}
+		if err := s.repo.SaveTrade(ctx, trade); err != nil {
+			s.log.Error().Err(err).
+				Str("symbol", string(pos.Symbol)).
+				Str("broker_order_id", pos.ExitOrderID).
+				Msg("exit-timeout: failed to save reconciliation fill — will retry exit")
+			return false
+		}
+	}
+
+	s.log.Info().
+		Str("symbol", string(pos.Symbol)).
+		Str("broker_order_id", pos.ExitOrderID).
+		Float64("missing_qty", missingQty).
+		Float64("fill_price", details.FilledAvgPrice).
+		Msg("exit-timeout: filled order reconciled — closing position")
+
+	if s.positionGate != nil {
+		s.positionGate.ClearInflightExit(pos.TenantID, pos.EnvMode, pos.Symbol)
+	}
+	key := fmt.Sprintf("%s:%s:%s", s.tenantID, s.envMode, pos.Symbol)
+	delete(s.positions, key)
+	return true
 }
 
 // triggerExit marks a position as exit-pending and emits an exit order intent.
