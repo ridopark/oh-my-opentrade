@@ -14,7 +14,7 @@ paper_only = true
 
 [routing]
 symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "U", "PLTR", "META", "NVDA", "AMD"]
-timeframes = ["1m"]
+timeframes = ["5m"]
 priority = 60
 conflict_policy = "priority_wins"
 exclusive_per_symbol = true
@@ -32,8 +32,8 @@ stoch_long = 20.0
 stoch_short = 80.0
 rsi_exit_mid = 50.0
 allow_regimes = ["BALANCE", "REVERSAL"]
-cooldown_seconds = 300
-max_trades_per_day = 10
+cooldown_seconds = 600
+max_trades_per_day = 8
 ai_enabled = true
 ai_mode = "async_debate_adjust"
 ai_timeout_seconds = 3
@@ -53,7 +53,7 @@ allowed_hours_tz = "America/New_York"
 [regime_filter]
 enabled = true
 allowed_regimes = ["BALANCE", "REVERSAL"]
-min_atr_pct = 0.8
+min_atr_pct = 0.7
 
 [hooks]
 signals = { engine = "builtin", name = "ai_scalping_v1" }
@@ -85,12 +85,12 @@ sd_level = 1.5
 [[exit_rules]]
 type = "STEP_STOP"
 [exit_rules.params]
-min_hold_bars = 3
+min_hold_bars = 2
 
 [[exit_rules]]
 type = "STAGNATION_EXIT"
 [exit_rules.params]
-minutes = 20
+minutes = 40
 sd_threshold = 1.0
 profit_gate_pct = 0.003
 
