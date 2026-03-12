@@ -29,8 +29,8 @@ groups:
         labels:
           severity: critical
 
-      - uid: websocket-disconnected
-        title: WebSocketDisconnected
+      - uid: crypto-websocket-disconnected
+        title: CryptoWebSocketDisconnected
         condition: A
         data:
           - refId: A
@@ -40,15 +40,45 @@ groups:
               to: 0
             datasourceUid: prometheus
             model:
-              expr: omo_ws_connected == 0
+              expr: omo_ws_connected{feed="crypto"} == 0
               interval: ""
               refId: A
         noDataState: NoData
         execErrState: Alerting
         for: 30s
         annotations:
-          summary: "WebSocket disconnected for >30s"
-          description: "Alpaca market data WebSocket has been disconnected for more than 30 seconds."
+          summary: "Crypto WebSocket disconnected for >30s"
+          description: "Alpaca crypto market data WebSocket (24/7) has been disconnected for more than 30 seconds."
+        labels:
+          severity: critical
+
+      - uid: equity-websocket-disconnected
+        title: EquityWebSocketDisconnected
+        condition: A
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                omo_ws_connected{feed="sip"} == 0
+                and on()
+                (
+                  (hour() * 60 + minute() >= 810 and hour() * 60 + minute() < 1260)
+                  and
+                  (day_of_week() >= 1 and day_of_week() <= 5)
+                )
+              interval: ""
+              refId: A
+        noDataState: NoData
+        execErrState: Alerting
+        for: 30s
+        annotations:
+          summary: "Equity WebSocket disconnected during market hours"
+          description: "Alpaca equity (SIP) WebSocket has been disconnected for more than 30 seconds during market hours."
         labels:
           severity: critical
 
@@ -63,7 +93,14 @@ groups:
               to: 0
             datasourceUid: prometheus
             model:
-              expr: rate(omo_bars_received_total[5m]) == 0
+              expr: |
+                rate(omo_bars_received_total[5m]) == 0
+                and on()
+                (
+                  (hour() * 60 + minute() >= 810 and hour() * 60 + minute() < 1260)
+                  and
+                  (day_of_week() >= 1 and day_of_week() <= 5)
+                )
               interval: ""
               refId: A
         noDataState: NoData
@@ -71,7 +108,7 @@ groups:
         for: 5m
         annotations:
           summary: "No bars received in 5 minutes"
-          description: "The ingestion service has not received any market data bars in the last 5 minutes."
+          description: "The ingestion service has not received any market data bars in the last 5 minutes during market hours."
         labels:
           severity: warning
 

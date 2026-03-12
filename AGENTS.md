@@ -155,3 +155,11 @@ cd apps/dashboard && npm run dev
 # Docker Compose
 docker compose -f deployments/docker-compose.yml up
 ```
+
+## Current Time
+
+Always get the current time from the system — never guess or infer it from logs.
+
+```bash
+date && TZ=America/New_York date
+```
