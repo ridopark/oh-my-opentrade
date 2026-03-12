@@ -19,7 +19,7 @@ database:
   max_pool_size: 10
 
 trading:
-  max_risk_percent: 2.0
+  max_risk_percent: 5.0
   default_slippage_bps: 10
   kill_switch_max_stops: 3
   kill_switch_window: "2m"
