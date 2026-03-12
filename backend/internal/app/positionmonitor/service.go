@@ -45,7 +45,9 @@ type Service struct {
 	pendingGlobalOrphans map[domain.Symbol]int                // key: symbol → consecutive global-reconcile misses
 	mu                   sync.RWMutex                         // protects positions for concurrent reads (e.g. PositionCount)
 
-	snapshotFn IndicatorSnapshotFunc
+	snapshotFn          IndicatorSnapshotFunc
+	optionsPricePort    ports.OptionsPricePort
+	optionsPollInterval time.Duration
 
 	// Config.
 	tickInterval            time.Duration
@@ -177,6 +179,10 @@ func WithSnapshotFunc(fn IndicatorSnapshotFunc) Option {
 	return func(s *Service) { s.snapshotFn = fn }
 }
 
+func WithOptionsPricePort(p ports.OptionsPricePort) Option {
+	return func(s *Service) { s.optionsPricePort = p }
+}
+
 // NewService creates a new position monitor service.
 func NewService(
 	eventBus ports.EventBusPort,
@@ -203,6 +209,7 @@ func NewService(
 		ghostMissCounts:         make(map[string]int),
 		pendingGlobalOrphans:    make(map[domain.Symbol]int),
 		tickInterval:            1 * time.Second,
+		optionsPollInterval:     30 * time.Second,
 		reconcileInterval:       defaultReconcileInterval,
 		globalReconcileInterval: defaultGlobalReconcileInterval,
 		maxPriceStaleness:       30 * time.Second,
@@ -262,6 +269,14 @@ func (s *Service) runTickLoop(ctx context.Context) {
 	globalReconcileTicker := time.NewTicker(s.globalReconcileInterval)
 	defer globalReconcileTicker.Stop()
 
+	var optionsPollTicker *time.Ticker
+	var optionsPollCh <-chan time.Time
+	if s.optionsPricePort != nil {
+		optionsPollTicker = time.NewTicker(s.optionsPollInterval)
+		defer optionsPollTicker.Stop()
+		optionsPollCh = optionsPollTicker.C
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -280,9 +295,49 @@ func (s *Service) runTickLoop(ctx context.Context) {
 			s.reconcileWithBroker(ctx)
 		case <-globalReconcileTicker.C:
 			s.reconcileGlobal(ctx)
+		case <-optionsPollCh:
+			go s.pollOptionPrices(ctx)
 		case <-ticker.C:
 			s.tick()
 		}
+	}
+}
+
+func (s *Service) pollOptionPrices(ctx context.Context) {
+	s.mu.RLock()
+	var symbols []domain.Symbol
+	for _, pos := range s.positions {
+		if pos.InstrumentType == domain.InstrumentTypeOption {
+			symbols = append(symbols, pos.Symbol)
+		}
+	}
+	s.mu.RUnlock()
+
+	if len(symbols) == 0 {
+		return
+	}
+
+	quotes, err := s.optionsPricePort.GetOptionPrices(ctx, symbols)
+	if err != nil {
+		s.log.Warn().Err(err).Msg("options price poll failed")
+		return
+	}
+
+	now := s.nowFunc()
+	updated := 0
+	for sym, q := range quotes {
+		mid := (q.Bid + q.Ask) / 2
+		if mid <= 0 {
+			mid = q.Last
+		}
+		if mid > 0 {
+			s.priceCache.UpdatePrice(sym, mid, now)
+			updated++
+		}
+	}
+
+	if updated > 0 {
+		s.log.Info().Int("updated", updated).Msg("options price poll: cache refreshed")
 	}
 }
 

@@ -220,6 +220,58 @@ func (c *RESTClient) GetOptionChain(
 	return snapshots, nil
 }
 
+// GetOptionPrices fetches live bid/ask/last quotes for a specific list of OCC contract symbols.
+// Calls /v1beta1/options/snapshots directly — no broker contract lookup needed.
+func (c *RESTClient) GetOptionPrices(ctx context.Context, dataURL string, symbols []domain.Symbol) (map[domain.Symbol]domain.OptionQuote, error) {
+	if len(symbols) == 0 {
+		return nil, nil
+	}
+
+	syms := make([]string, len(symbols))
+	for i, s := range symbols {
+		syms[i] = string(s)
+	}
+
+	const batchSize = 100
+	result := make(map[domain.Symbol]domain.OptionQuote, len(symbols))
+
+	for i := 0; i < len(syms); i += batchSize {
+		end := i + batchSize
+		if end > len(syms) {
+			end = len(syms)
+		}
+		batch := syms[i:end]
+
+		snapshotPath := fmt.Sprintf("/v1beta1/options/snapshots?symbols=%s&feed=indicative", strings.Join(batch, ","))
+		resp, err := c.doReqDataAPI(ctx, dataURL, http.MethodGet, snapshotPath, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
+		if err != nil {
+			return nil, fmt.Errorf("alpaca: get option prices: %w", err)
+		}
+		defer resp.Body.Close()
+
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("alpaca: get option prices failed (status %d): %s", resp.StatusCode, string(body))
+		}
+
+		var page alpacaOptionsSnapshotResponse
+		if err := json.NewDecoder(bytes.NewReader(body)).Decode(&page); err != nil {
+			return nil, fmt.Errorf("alpaca: decode option prices: %w", err)
+		}
+
+		for sym, snap := range page.Snapshots {
+			result[domain.Symbol(sym)] = domain.OptionQuote{
+				Bid:       snap.LatestQuote.BP,
+				Ask:       snap.LatestQuote.AP,
+				Last:      snap.LatestTrade.P,
+				Timestamp: time.Now(),
+			}
+		}
+	}
+
+	return result, nil
+}
+
 // parseOCCSymbol parses an OCC option ticker into an OptionContract.
 // OCC format: {UNDERLYING (1-6 chars)}{YYMMDD}{C|P}{8-digit strike * 1000}
 // Example: AAPL240119C00190000

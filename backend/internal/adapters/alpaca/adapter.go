@@ -277,6 +277,10 @@ func (a *Adapter) GetOptionChain(ctx context.Context, underlying domain.Symbol, 
 	return a.rest.GetOptionChain(ctx, a.dataURL, underlying, expiry, right)
 }
 
+func (a *Adapter) GetOptionPrices(ctx context.Context, symbols []domain.Symbol) (map[domain.Symbol]domain.OptionQuote, error) {
+	return a.rest.GetOptionPrices(ctx, a.dataURL, symbols)
+}
+
 // GetAccountEquity fetches the current paper account equity from Alpaca.
 func (a *Adapter) GetAccountEquity(ctx context.Context) (float64, error) {
 	return a.rest.GetAccountEquity(ctx)
