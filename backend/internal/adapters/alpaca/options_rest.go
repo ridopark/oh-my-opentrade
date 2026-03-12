@@ -89,13 +89,18 @@ func (c *RESTClient) GetOptionChain(
 		return nil, fmt.Errorf("underlying symbol must not be empty")
 	}
 
-	// ── Step 1: list contract OCC symbols from the broker API ───────────────
-	rightStr := strings.ToLower(string(right)) // "call" or "put"
-	expiryStr := expiry.Format("2006-01-02")   // YYYY-MM-DD
+	rightStr := strings.ToLower(string(right))
+
+	// Use a ±7 day window around the target expiry to find the nearest listed
+	// expiry. Options expire on Fridays and monthlies; an exact date match is
+	// rarely available, so we widen the search and let the caller's DTE filter
+	// (in ContractSelectionService) narrow it down.
+	expiryFrom := expiry.AddDate(0, 0, -7).Format("2006-01-02")
+	expiryTo := expiry.AddDate(0, 0, 7).Format("2006-01-02")
 
 	contractsPath := fmt.Sprintf(
-		"/v2/options/contracts?underlying_symbols=%s&expiration_date=%s&type=%s&limit=250",
-		underlying.String(), expiryStr, rightStr,
+		"/v2/options/contracts?underlying_symbols=%s&expiration_date_gte=%s&expiration_date_lte=%s&type=%s&limit=250",
+		underlying.String(), expiryFrom, expiryTo, rightStr,
 	)
 
 	contractsResp, err := c.doReqWithOpts(ctx, http.MethodGet, contractsPath, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
