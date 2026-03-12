@@ -219,7 +219,6 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	r.mu.Unlock()
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	var oneMinInstances []*Instance
 	htfNeeded := make(map[string][]*Instance)
@@ -304,6 +303,14 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		r.swapManager.OnBarProcessed(swapCtx, symbol, sBar, indicators)
 	}
 
+	allSignals = ReconcileSignals(allSignals, r.posLookup, r.logger)
+	allSignals = r.filterByAllowedDirections(allSignals)
+
+	// Unlock BEFORE signal emission. The emitSignal cascade can trigger sync
+	// handlers (e.g. handleRejection) that also acquire r.mu — holding the lock
+	// here would cause a self-deadlock. All state reads/writes are complete.
+	r.mu.Unlock()
+
 	r.logger.Info("bar processed",
 		"symbol", symbol,
 		"instances_1m", len(oneMinInstances),
@@ -314,8 +321,6 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		"volume", bar.Volume,
 		"close", bar.Close,
 	)
-	allSignals = ReconcileSignals(allSignals, r.posLookup, r.logger)
-	allSignals = r.filterByAllowedDirections(allSignals)
 
 	for _, sig := range allSignals {
 		if !domain.Symbol(sig.Symbol).IsCryptoSymbol() {
