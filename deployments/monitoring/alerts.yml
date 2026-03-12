@@ -10,23 +10,46 @@ groups:
           summary: "Circuit breaker is active — trading halted"
           description: "The daily loss circuit breaker has tripped. All new order execution is blocked."
 
-      - alert: WebSocketDisconnected
-        expr: omo_ws_connected == 0
+      - alert: CryptoWebSocketDisconnected
+        expr: omo_ws_connected{feed="crypto"} == 0
         for: 30s
         labels:
           severity: critical
         annotations:
-          summary: "WebSocket disconnected for >30s"
-          description: "Alpaca market data WebSocket has been disconnected for more than 30 seconds."
+          summary: "Crypto WebSocket disconnected for >30s"
+          description: "Alpaca crypto market data WebSocket (24/7) has been disconnected for more than 30 seconds."
+
+      - alert: EquityWebSocketDisconnected
+        expr: >
+          omo_ws_connected{feed="sip"} == 0
+          and on()
+          (
+            (hour() * 60 + minute() >= 810 and hour() * 60 + minute() < 1260)
+            and
+            (day_of_week() >= 1 and day_of_week() <= 5)
+          )
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Equity WebSocket disconnected during market hours"
+          description: "Alpaca equity (SIP) WebSocket has been disconnected for more than 30 seconds during market hours."
 
       - alert: NoBarsReceived
-        expr: rate(omo_bars_received_total[5m]) == 0
+        expr: >
+          rate(omo_bars_received_total[5m]) == 0
+          and on()
+          (
+            (hour() * 60 + minute() >= 810 and hour() * 60 + minute() < 1260)
+            and
+            (day_of_week() >= 1 and day_of_week() <= 5)
+          )
         for: 5m
         labels:
           severity: warning
         annotations:
           summary: "No bars received in 5 minutes"
-          description: "The ingestion service has not received any market data bars in the last 5 minutes."
+          description: "The ingestion service has not received any market data bars in the last 5 minutes during market hours."
 
       - alert: HighOrderRejectRate
         expr: rate(omo_order_rejects_total[10m]) / (rate(omo_orders_total[10m]) + 1e-10) > 0.05
