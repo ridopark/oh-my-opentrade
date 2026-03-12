@@ -452,6 +452,9 @@ func (s *Service) getOrGenerateChart(ctx context.Context, symbol string, opts po
 	loc, _ := time.LoadLocation("America/New_York")
 
 	barStart := time.Date(now.Year(), now.Month(), now.Day(), 4, 0, 0, 0, loc)
+	if barStart.After(now) {
+		barStart = now.Add(-4 * time.Hour)
+	}
 	barEnd := now
 	if !opts.WindowStart.IsZero() && !opts.WindowEnd.IsZero() {
 		padding := opts.WindowEnd.Sub(opts.WindowStart) / 3
