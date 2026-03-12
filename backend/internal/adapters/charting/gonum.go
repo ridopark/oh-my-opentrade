@@ -19,12 +19,12 @@ import (
 	"gonum.org/v1/plot/vg/vgimg"
 )
 
-// etTimeTicks is a custom plot.Ticker that formats X-axis timestamps in
-// America/New_York time instead of UTC.
+// etTimeTicks is a custom plot.Ticker that places ticks at regular hourly
+// intervals and formats them in America/New_York time.
 type etTimeTicks struct {
-	inner  plot.TimeTicks
-	loc    *time.Location
-	format string
+	loc      *time.Location
+	interval time.Duration
+	format   string
 }
 
 func newETTimeTicks(format string) etTimeTicks {
@@ -33,21 +33,22 @@ func newETTimeTicks(format string) etTimeTicks {
 		// Fallback to UTC if tz data unavailable (shouldn't happen in production).
 		loc = time.UTC
 	}
-	return etTimeTicks{
-		inner:  plot.TimeTicks{Format: format},
-		loc:    loc,
-		format: format,
-	}
+	return etTimeTicks{loc: loc, interval: 30 * time.Minute, format: format}
 }
 
 func (t etTimeTicks) Ticks(min, max float64) []plot.Tick {
-	ticks := t.inner.Ticks(min, max)
-	for i, tk := range ticks {
-		if tk.Label == "" {
-			continue
-		}
-		ts := time.Unix(int64(tk.Value), 0).In(t.loc)
-		ticks[i].Label = ts.Format(t.format)
+	start := time.Unix(int64(min), 0).In(t.loc)
+	end := time.Unix(int64(max), 0).In(t.loc)
+
+	intervalSec := t.interval.Seconds()
+	alignedStart := time.Unix(int64(start.Unix()/int64(intervalSec)+1)*int64(intervalSec), 0).In(t.loc)
+
+	var ticks []plot.Tick
+	for ts := alignedStart; !ts.After(end); ts = ts.Add(t.interval) {
+		ticks = append(ticks, plot.Tick{
+			Value: float64(ts.Unix()),
+			Label: ts.Format(t.format),
+		})
 	}
 	return ticks
 }
@@ -70,9 +71,9 @@ func (d barData) TOHLCV(i int) (float64, float64, float64, float64, float64, flo
 }
 
 var levelColors = map[string]color.RGBA{
-	"green": {R: 38, G: 166, B: 154, A: 200},
-	"red":   {R: 239, G: 83, B: 80, A: 200},
-	"blue":  {R: 52, G: 152, B: 219, A: 200},
+	"green": {R: 76, G: 175, B: 80, A: 220},
+	"red":   {R: 239, G: 83, B: 80, A: 220},
+	"blue":  {R: 52, G: 152, B: 219, A: 220},
 }
 
 func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars []domain.MarketBar, title string, opts ports.ChartOptions) ([]byte, error) {
@@ -134,6 +135,30 @@ func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars [
 	xMin := float64(bars[0].Time.Unix())
 	xMax := float64(bars[len(bars)-1].Time.Unix())
 
+	yMin, yMax := bars[0].Low, bars[0].High
+	for _, b := range bars[1:] {
+		if b.Low < yMin {
+			yMin = b.Low
+		}
+		if b.High > yMax {
+			yMax = b.High
+		}
+	}
+	for _, lvl := range opts.Levels {
+		if lvl.Price <= 0 {
+			continue
+		}
+		if lvl.Price < yMin {
+			yMin = lvl.Price
+		}
+		if lvl.Price > yMax {
+			yMax = lvl.Price
+		}
+	}
+	yPad := (yMax - yMin) * 0.03
+	p.Y.Min = yMin - yPad
+	p.Y.Max = yMax + yPad
+
 	for _, lvl := range opts.Levels {
 		if lvl.Price <= 0 {
 			continue
@@ -191,8 +216,8 @@ func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars [
 		}
 
 		pts := make(plotter.XYs, 2)
-		pts[0] = plotter.XY{X: x, Y: 0}
-		pts[1] = plotter.XY{X: x, Y: 1e9}
+		pts[0] = plotter.XY{X: x, Y: p.Y.Min}
+		pts[1] = plotter.XY{X: x, Y: p.Y.Max}
 
 		vline, err := plotter.NewLine(pts)
 		if err != nil {
@@ -203,46 +228,19 @@ func (g *GonumChartGenerator) GenerateCandlestickChart(_ context.Context, bars [
 		if mapped, ok := levelColors[mk.Color]; ok {
 			c = mapped
 		}
-		c.A = 120
+		c.A = 100
 		vline.Color = c
 		vline.Width = vg.Points(1)
 		vline.Dashes = []vg.Length{vg.Points(4), vg.Points(4)}
 
 		p.Add(vline)
-		if mk.Label != "" {
-			p.Legend.Add(mk.Label, vline)
-		}
 	}
 
-	if len(opts.Levels) > 0 || len(opts.Markers) > 0 {
+	if len(opts.Levels) > 0 {
 		p.Legend.TextStyle.Color = textColor
 		p.Legend.Top = true
 		p.Legend.Left = true
 	}
-
-	yMin, yMax := bars[0].Low, bars[0].High
-	for _, b := range bars[1:] {
-		if b.Low < yMin {
-			yMin = b.Low
-		}
-		if b.High > yMax {
-			yMax = b.High
-		}
-	}
-	for _, lvl := range opts.Levels {
-		if lvl.Price <= 0 {
-			continue
-		}
-		if lvl.Price < yMin {
-			yMin = lvl.Price
-		}
-		if lvl.Price > yMax {
-			yMax = lvl.Price
-		}
-	}
-	pad := (yMax - yMin) * 0.03
-	p.Y.Min = yMin - pad
-	p.Y.Max = yMax + pad
 
 	canvas := vgimg.New(vg.Points(800), vg.Points(400))
 	dc := draw.New(canvas)
