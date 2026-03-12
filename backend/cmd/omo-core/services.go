@@ -159,6 +159,7 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 		Broker:       infra.alpacaAdapter,
 		Repo:         infra.repo,
 		SnapshotFn:   svc.monitor.GetLastSnapshot,
+		OptionsPrice: infra.alpacaAdapter,
 		TenantID:     "default",
 		EnvMode:      domain.EnvModePaper,
 		Clock:        time.Now,
