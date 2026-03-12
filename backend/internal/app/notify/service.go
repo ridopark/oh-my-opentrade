@@ -25,12 +25,12 @@ const (
 )
 
 type notifyJob struct {
-	event       domain.Event
-	eventType   string
-	message     string
-	symbol      string
-	withChart   bool
-	priceLevels []domain.PriceLevel
+	event     domain.Event
+	eventType string
+	message   string
+	symbol    string
+	withChart bool
+	chartOpts ports.ChartOptions
 }
 
 type chartCacheEntry struct {
@@ -39,13 +39,14 @@ type chartCacheEntry struct {
 }
 
 type batchEntry struct {
-	parts       []string
-	symbol      string
-	withChart   bool
-	lastEvent   domain.Event
-	timer       *time.Timer
-	createdAt   time.Time
-	priceLevels []domain.PriceLevel
+	parts     []string
+	symbol    string
+	withChart bool
+	lastEvent domain.Event
+	timer     *time.Timer
+	createdAt time.Time
+	chartOpts ports.ChartOptions
+	chartSet  bool
 }
 
 type Service struct {
@@ -60,9 +61,14 @@ type Service struct {
 	cacheMu    sync.RWMutex
 	chartCache map[string]chartCacheEntry
 
-	batchMu      sync.Mutex
-	batches      map[string]*batchEntry
-	entryTargets map[string]float64
+	batchMu    sync.Mutex
+	batches    map[string]*batchEntry
+	entryInfos map[string]entryInfo
+}
+
+type entryInfo struct {
+	target    float64
+	entryTime time.Time
 }
 
 type Option func(*Service)
@@ -84,13 +90,13 @@ func NewService(eventBus ports.EventBusPort, notifier ports.NotifierPort, log ze
 		etLoc = loc
 	}
 	s := &Service{
-		eventBus:     eventBus,
-		notifier:     notifier,
-		log:          log,
-		jobs:         make(chan notifyJob, jobQueueSize),
-		chartCache:   make(map[string]chartCacheEntry),
-		batches:      make(map[string]*batchEntry),
-		entryTargets: make(map[string]float64),
+		eventBus:   eventBus,
+		notifier:   notifier,
+		log:        log,
+		jobs:       make(chan notifyJob, jobQueueSize),
+		chartCache: make(map[string]chartCacheEntry),
+		batches:    make(map[string]*batchEntry),
+		entryInfos: make(map[string]entryInfo),
 	}
 	for _, o := range opts {
 		o(s)
@@ -213,35 +219,94 @@ func (s *Service) addToBatch(symbol, msg string, withChart bool, ev domain.Event
 	entry.withChart = entry.withChart || withChart
 	entry.lastEvent = ev
 
-	if len(entry.priceLevels) == 0 {
-		switch p := ev.Payload.(type) {
-		case domain.OrderIntentEventPayload:
-			isEntry := p.Direction != string(domain.DirectionCloseLong)
-			if isEntry && p.LimitPrice > 0 {
-				entry.priceLevels = append(entry.priceLevels,
-					domain.PriceLevel{Label: fmt.Sprintf("Entry $%s", domain.FmtPrice(p.LimitPrice)), Price: p.LimitPrice, Color: "green"})
-				if p.StopLoss > 0 {
-					entry.priceLevels = append(entry.priceLevels,
-						domain.PriceLevel{Label: fmt.Sprintf("Stop $%s", domain.FmtPrice(p.StopLoss)), Price: p.StopLoss, Color: "red"})
-				}
-				if tp := bestTargetPrice(p.Meta); tp > 0 {
-					entry.priceLevels = append(entry.priceLevels,
-						domain.PriceLevel{Label: fmt.Sprintf("Target $%s", domain.FmtPrice(tp)), Price: tp, Color: "blue"})
-					s.entryTargets[p.Symbol] = tp
-				}
+	switch p := ev.Payload.(type) {
+	case domain.OrderIntentEventPayload:
+		if !entry.chartSet && p.Direction != string(domain.DirectionCloseLong) && p.LimitPrice > 0 {
+			entryTime := ev.OccurredAt
+			opts := ports.ChartOptions{}
+			opts.Levels = append(opts.Levels, domain.PriceLevel{
+				Label:     fmt.Sprintf("Entry $%s", domain.FmtPrice(p.LimitPrice)),
+				Price:     p.LimitPrice,
+				Color:     "green",
+				StartTime: entryTime,
+			})
+			if p.StopLoss > 0 {
+				opts.Levels = append(opts.Levels, domain.PriceLevel{
+					Label:     fmt.Sprintf("Stop $%s", domain.FmtPrice(p.StopLoss)),
+					Price:     p.StopLoss,
+					Color:     "red",
+					StartTime: entryTime,
+				})
 			}
-		case domain.TradeRealizedPayload:
-			entry.priceLevels = []domain.PriceLevel{
-				{Label: fmt.Sprintf("Entry $%s", domain.FmtPrice(p.EntryPrice)), Price: p.EntryPrice, Color: "green"},
-				{Label: fmt.Sprintf("Exit $%s", domain.FmtPrice(p.ExitPrice)), Price: p.ExitPrice, Color: "red"},
+			if tp := bestTargetPrice(p.Meta); tp > 0 {
+				opts.Levels = append(opts.Levels, domain.PriceLevel{
+					Label:     fmt.Sprintf("Target $%s", domain.FmtPrice(tp)),
+					Price:     tp,
+					Color:     "blue",
+					StartTime: entryTime,
+				})
+				s.entryInfos[p.Symbol] = entryInfo{target: tp, entryTime: entryTime}
 			}
-			if tp, ok := s.entryTargets[string(p.Symbol)]; ok {
-				entry.priceLevels = append(entry.priceLevels,
-					domain.PriceLevel{Label: fmt.Sprintf("Target $%s", domain.FmtPrice(tp)), Price: tp, Color: "blue"})
-				delete(s.entryTargets, string(p.Symbol))
-			}
-			entry.withChart = true
+			opts.Markers = append(opts.Markers, domain.TimeMarker{
+				Time:  entryTime,
+				Label: "Entry",
+				Color: "green",
+			})
+			entry.chartOpts = opts
+			entry.chartSet = true
 		}
+	case domain.TradeRealizedPayload:
+		exitTime := ev.OccurredAt
+		info := s.entryInfos[string(p.Symbol)]
+		delete(s.entryInfos, string(p.Symbol))
+
+		opts := ports.ChartOptions{}
+		opts.Levels = append(opts.Levels, domain.PriceLevel{
+			Label:     fmt.Sprintf("Entry $%s", domain.FmtPrice(p.EntryPrice)),
+			Price:     p.EntryPrice,
+			Color:     "green",
+			StartTime: info.entryTime,
+			EndTime:   exitTime,
+		})
+		opts.Levels = append(opts.Levels, domain.PriceLevel{
+			Label:   fmt.Sprintf("Exit $%s", domain.FmtPrice(p.ExitPrice)),
+			Price:   p.ExitPrice,
+			Color:   "red",
+			EndTime: exitTime,
+		})
+		if info.target > 0 {
+			opts.Levels = append(opts.Levels, domain.PriceLevel{
+				Label:     fmt.Sprintf("Target $%s", domain.FmtPrice(info.target)),
+				Price:     info.target,
+				Color:     "blue",
+				StartTime: info.entryTime,
+				EndTime:   exitTime,
+			})
+		}
+		if !info.entryTime.IsZero() {
+			opts.Markers = append(opts.Markers, domain.TimeMarker{
+				Time:  info.entryTime,
+				Label: "Entry",
+				Color: "green",
+			})
+		}
+		opts.Markers = append(opts.Markers, domain.TimeMarker{
+			Time:  exitTime,
+			Label: "Exit",
+			Color: "red",
+		})
+		absPnL := p.RealizedPnL
+		if absPnL < 0 {
+			absPnL = -absPnL
+		}
+		opts.PnL = &ports.ChartPnL{
+			PnLPct:       p.PnLPct,
+			PnLUSD:       absPnL,
+			HoldDuration: fmtDuration(p.HoldDuration),
+		}
+		entry.chartOpts = opts
+		entry.chartSet = true
+		entry.withChart = true
 	}
 
 	if entry.timer != nil {
@@ -274,12 +339,12 @@ func (s *Service) flushBatchLocked(symbol string) {
 	combined := strings.Join(entry.parts, "\n") + "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 	s.enqueueJob(notifyJob{
-		event:       entry.lastEvent,
-		eventType:   "batch",
-		symbol:      entry.symbol,
-		message:     combined,
-		withChart:   entry.withChart,
-		priceLevels: entry.priceLevels,
+		event:     entry.lastEvent,
+		eventType: "batch",
+		symbol:    entry.symbol,
+		message:   combined,
+		withChart: entry.withChart,
+		chartOpts: entry.chartOpts,
 	})
 }
 
@@ -344,7 +409,7 @@ func (s *Service) processJob(ctx context.Context, workerID int, job notifyJob) {
 	}
 
 	chartCtx, cancelChart := context.WithTimeout(jobCtx, 5*time.Second)
-	chartPNG, err := s.getOrGenerateChart(chartCtx, symbol, job.priceLevels)
+	chartPNG, err := s.getOrGenerateChart(chartCtx, symbol, job.chartOpts)
 	cancelChart()
 	if err != nil {
 		s.log.Warn().Err(err).Str("symbol", symbol).Msg("chart generation failed, sending text-only")
@@ -373,10 +438,10 @@ func (s *Service) extractSymbol(ev domain.Event) string {
 	return ""
 }
 
-func (s *Service) getOrGenerateChart(ctx context.Context, symbol string, levels []domain.PriceLevel) ([]byte, error) {
-	hasLevels := len(levels) > 0
+func (s *Service) getOrGenerateChart(ctx context.Context, symbol string, opts ports.ChartOptions) ([]byte, error) {
+	hasAnnotations := len(opts.Levels) > 0 || len(opts.Markers) > 0 || opts.PnL != nil
 
-	if !hasLevels {
+	if !hasAnnotations {
 		s.cacheMu.RLock()
 		if entry, ok := s.chartCache[symbol]; ok && time.Since(entry.createdAt) < chartCacheTTL {
 			s.cacheMu.RUnlock()
@@ -398,12 +463,12 @@ func (s *Service) getOrGenerateChart(ctx context.Context, symbol string, levels 
 	}
 
 	title := fmt.Sprintf("%s — %s", symbol, now.In(loc).Format("Jan 02"))
-	chartPNG, err := s.chartGen.GenerateCandlestickChart(ctx, bars, title, levels)
+	chartPNG, err := s.chartGen.GenerateCandlestickChart(ctx, bars, title, opts)
 	if err != nil {
 		return nil, fmt.Errorf("render chart for %s: %w", symbol, err)
 	}
 
-	if !hasLevels {
+	if !hasAnnotations {
 		s.cacheMu.Lock()
 		s.chartCache[symbol] = chartCacheEntry{data: chartPNG, createdAt: now}
 		s.cacheMu.Unlock()
