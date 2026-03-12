@@ -137,6 +137,7 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 		Clock:         time.Now,
 		Config:        cfg,
 		InitialEquity: svc.accountEquity,
+		EnableOptions: true,
 		Logger:        log,
 	})
 	if err != nil {
@@ -300,6 +301,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		NewsProvider:    newsProvider,
 		Repo:            infra.repo,
 		StratPerf:       infra.stratPerfRepo,
+		OptionsMarket:   infra.alpacaAdapter,
 		TenantID:        "default",
 		EnvMode:         domain.EnvModePaper,
 		Equity:          svc.accountEquity,
