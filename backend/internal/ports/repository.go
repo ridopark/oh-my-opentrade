@@ -60,6 +60,11 @@ type RepositoryPort interface {
 	// Only returns symbols with |net_qty| > epsilon (1e-10).
 	// Used by global portfolio reconciliation to detect DB-vs-broker drift.
 	GetNetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) (map[domain.Symbol]float64, error)
+
+	// GetAvgEntryPrice returns the volume-weighted average BUY price for a symbol
+	// over the last 30 days. Returns 0 if no BUY trades exist.
+	// Used by global reconciliation to write zero-free reconciliation SELL trades.
+	GetAvgEntryPrice(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol) (float64, error)
 }
 
 // TradeQuery defines the filter and pagination parameters for listing trades.

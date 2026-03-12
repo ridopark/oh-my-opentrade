@@ -150,6 +150,11 @@ func (s *Service) reconcileGlobal(ctx context.Context) {
 				Float64("db_net_qty", dbQty).
 				Msg("global-reconcile: DB orphan detected — inserting reconciliation SELL")
 
+			avgEntry, priceErr := s.repo.GetAvgEntryPrice(ctx, s.tenantID, s.envMode, sym)
+			if priceErr != nil {
+				s.log.Warn().Err(priceErr).Str("symbol", string(sym)).Msg("global-reconcile: could not fetch avg entry price — using 0")
+			}
+
 			trade := domain.Trade{
 				Time:      s.nowFunc(),
 				TenantID:  s.tenantID,
@@ -158,7 +163,7 @@ func (s *Service) reconcileGlobal(ctx context.Context) {
 				Symbol:    sym,
 				Side:      "SELL",
 				Quantity:  dbQty,
-				Price:     0,
+				Price:     avgEntry,
 				Status:    "FILLED",
 				Strategy:  "reconciliation",
 				Rationale: fmt.Sprintf("global-reconcile: DB net %.10f but no broker position", dbQty),
@@ -170,6 +175,7 @@ func (s *Service) reconcileGlobal(ctx context.Context) {
 				s.log.Info().
 					Str("symbol", string(sym)).
 					Float64("quantity", dbQty).
+					Float64("price", avgEntry).
 					Msg("global-reconcile: reconciliation SELL inserted")
 			}
 			continue

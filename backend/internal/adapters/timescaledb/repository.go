@@ -28,6 +28,7 @@ const (
 	queryGetRecordedFillQty   = `SELECT COALESCE(SUM(quantity), 0) FROM trades WHERE account_id = $1 AND env_mode = $2 AND symbol = $3 AND side = $4 AND time >= $5`
 	queryUpdateOrderStatus    = `UPDATE orders SET status = $2 WHERE broker_order_id = $1`
 	queryGetNetPositions      = `SELECT symbol, SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END) AS net_qty FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= NOW() - INTERVAL '30 days' GROUP BY symbol HAVING ABS(SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END)) > 1e-10`
+	queryGetAvgEntryPrice     = `SELECT COALESCE(SUM(quantity * price) / NULLIF(SUM(quantity), 0), 0) FROM trades WHERE account_id = $1 AND env_mode = $2 AND symbol = $3 AND side = 'BUY' AND price > 0 AND time >= NOW() - INTERVAL '30 days'`
 )
 
 // SaveMarketBar saves a single OHLCV candle.
@@ -618,4 +619,13 @@ func (r *Repository) GetNetPositions(ctx context.Context, tenantID string, envMo
 		result[domain.Symbol(sym)] = qty
 	}
 	return result, rows.Err()
+}
+
+func (r *Repository) GetAvgEntryPrice(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol) (float64, error) {
+	var avg float64
+	err := r.db.QueryRowContext(ctx, queryGetAvgEntryPrice, tenantID, string(envMode), string(symbol)).Scan(&avg)
+	if err != nil {
+		return 0, fmt.Errorf("timescaledb: get avg entry price: %w", err)
+	}
+	return avg, nil
 }
