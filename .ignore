@@ -1,0 +1,23 @@
+# Ignore build artifacts and dependencies
+bin/
+obj/
+vendor/
+node_modules/
+
+# Ignore local trading logs (These are likely massive token sinks!)
+logs/
+*.log
+data/trading_history/
+
+# Ignore environment/secrets
+.env
+*.pem
+
+# Ignore large documentation or assets
+docs/images/
+temp/
+.sisyphus
+.ruff_cache
+.opencode
+.githooks
+.tmp

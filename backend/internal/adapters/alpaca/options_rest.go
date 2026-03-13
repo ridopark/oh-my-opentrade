@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -158,9 +159,8 @@ func (c *RESTClient) GetOptionChain(
 		if err != nil {
 			return nil, fmt.Errorf("alpaca: fetch option snapshots: %w", err)
 		}
-		defer snapResp.Body.Close()
-
 		snapBody, _ := io.ReadAll(snapResp.Body)
+		snapResp.Body.Close()
 		if snapResp.StatusCode < 200 || snapResp.StatusCode >= 300 {
 			return nil, fmt.Errorf("alpaca: fetch option snapshots failed (status %d): %s", snapResp.StatusCode, string(snapBody))
 		}
@@ -200,7 +200,9 @@ func (c *RESTClient) GetOptionChain(
 		oi := snap.OpenInterest
 		if oi == 0 {
 			// Fall back to broker-side open interest (end-of-day figure).
-			fmt.Sscanf(item.OpenInterest, "%d", &oi)
+			if parsed, err := strconv.Atoi(item.OpenInterest); err == nil {
+				oi = parsed
+			}
 		}
 
 		snapshot := domain.OptionContractSnapshot{
@@ -247,9 +249,8 @@ func (c *RESTClient) GetOptionPrices(ctx context.Context, dataURL string, symbol
 		if err != nil {
 			return nil, fmt.Errorf("alpaca: get option prices: %w", err)
 		}
-		defer resp.Body.Close()
-
 		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return nil, fmt.Errorf("alpaca: get option prices failed (status %d): %s", resp.StatusCode, string(body))
 		}

@@ -185,11 +185,11 @@ func (s *Service) collectSymbol(
 
 	var callIV, putIV, atmStrike float64
 	if atmCall != nil {
-		callIV = atmCall.Greeks.IV
+		callIV = atmCall.IV
 		atmStrike = atmCall.Strike
 	}
 	if atmPut != nil {
-		putIV = atmPut.Greeks.IV
+		putIV = atmPut.IV
 		if atmStrike == 0 {
 			atmStrike = atmPut.Strike
 		}
@@ -238,7 +238,7 @@ func findATMContract(chain []domain.OptionContractSnapshot, spot float64) *domai
 		return math.Abs(chain[i].Strike-spot) < math.Abs(chain[j].Strike-spot)
 	})
 	for i := range chain {
-		if chain[i].Greeks.IV > 0 {
+		if chain[i].IV > 0 {
 			return &chain[i]
 		}
 	}
