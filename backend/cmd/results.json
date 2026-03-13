@@ -1,0 +1,410 @@
+{
+  "initial_equity": 100000,
+  "final_equity": 100049.97236048443,
+  "total_return_pct": 0.04997236048443301,
+  "total_pnl": 49.97236048443301,
+  "trade_count": 23,
+  "win_count": 10,
+  "loss_count": 13,
+  "win_rate_pct": 43.47826086956522,
+  "max_drawdown_pct": 0.08868227015727322,
+  "sharpe_ratio": 0.015187922019003803,
+  "profit_factor": 1.2775045572127244,
+  "avg_win": 23.00499815020836,
+  "avg_loss": 13.852124693665976,
+  "largest_win": 49.131946347431935,
+  "largest_loss": -44.86199658494332,
+  "trades": [
+    {
+      "symbol": "TSLA",
+      "side": "buy",
+      "quantity": 22.5748221315655,
+      "price": 442.971375,
+      "filled_at": "2025-11-10T09:11:00-06:00",
+      "strategy": "avwap_v2"
+    },
+    {
+      "symbol": "TSLA",
+      "side": "sell",
+      "quantity": 22.5748221315655,
+      "price": 442.01,
+      "filled_at": "2025-11-10T09:16:00-06:00",
+      "strategy": "avwap_v2",
+      "pnl": -21.70286962673451
+    },
+    {
+      "symbol": "SPY",
+      "side": "buy",
+      "quantity": 14.722890810164795,
+      "price": 679.2144375,
+      "filled_at": "2025-11-10T09:17:00-06:00",
+      "strategy": "avwap_v2"
+    },
+    {
+      "symbol": "SPY",
+      "side": "sell",
+      "quantity": 14.722890810164795,
+      "price": 679.02,
+      "filled_at": "2025-11-10T09:24:00-06:00",
+      "strategy": "avwap_v2",
+      "pnl": -2.8626820819021406
+    },
+    {
+      "symbol": "AAPL",
+      "side": "buy",
+      "quantity": 36.96103283318773,
+      "price": 270.55521,
+      "filled_at": "2025-11-10T10:02:00-06:00",
+      "strategy": "avwap_v2"
+    },
+    {
+      "symbol": "AAPL",
+      "side": "sell",
+      "quantity": 36.96103283318773,
+      "price": 270.12,
+      "filled_at": "2025-11-10T10:04:00-06:00",
+      "strategy": "avwap_v2",
+      "pnl": -16.08581109933103
+    },
+    {
+      "symbol": "META",
+      "side": "buy",
+      "quantity": 15.900164646999928,
+      "price": 628.924305,
+      "filled_at": "2025-11-10T10:08:00-06:00",
+      "strategy": "avwap_v2"
+    },
+    {
+      "symbol": "META",
+      "side": "sell",
+      "quantity": 15.900164646999928,
+      "price": 631.56,
+      "filled_at": "2025-11-10T10:38:00-06:00",
+      "strategy": "avwap_v2",
+      "pnl": 41.90798445927354
+    },
+    {
+      "symbol": "GOOGL",
+      "side": "buy",
+      "quantity": 34.995282023565785,
+      "price": 285.752805,
+      "filled_at": "2025-11-10T10:55:00-06:00",
+      "strategy": "avwap_v2"
+    },
+    {
+      "symbol": "GOOGL",
+      "side": "sell",
+      "quantity": 34.995282023565785,
+      "price": 286.49,
+      "filled_at": "2025-11-10T11:25:00-06:00",
+      "strategy": "avwap_v2",
+      "pnl": 25.798346931362076
+    },
+    {
+      "symbol": "MSFT",
+      "side": "buy",
+      "quantity": 19.882638748260643,
+      "price": 502.95135,
+      "filled_at": "2025-11-10T11:43:00-06:00",
+      "strategy": "avwap_v2"
+    },
+    {
+      "symbol": "MSFT",
+      "side": "sell",
+      "quantity": 19.882638748260643,
+      "price": 504.05,
+      "filled_at": "2025-11-10T12:14:00-06:00",
+      "strategy": "ai_scalping_v1",
+      "pnl": 21.844061060776966
+    },
+    {
+      "symbol": "AAPL",
+      "side": "buy",
+      "quantity": 37.055583356506965,
+      "price": 269.864865,
+      "filled_at": "2025-11-10T12:29:00-06:00",
+      "strategy": "avwap_v2"
+    },
+    {
+      "symbol": "AAPL",
+      "side": "sell",
+      "quantity": 37.055583356506965,
+      "price": 270.21,
+      "filled_at": "2025-11-10T13:00:00-06:00",
+      "strategy": "avwap_v2",
+      "pnl": 12.789178761746944
+    },
+    {
+      "symbol": "TSLA",
+      "side": "buy",
+      "quantity": 22.553936498670062,
+      "price": 443.38158000000004,
+      "filled_at": "2025-11-10T13:03:00-06:00",
+      "strategy": "avwap_v2"
+    },
+    {
+      "symbol": "AMZN",
+      "side": "buy",
+      "quantity": 40.17283962520348,
+      "price": 248.92440000000002,
+      "filled_at": "2025-11-10T13:05:00-06:00",
+      "strategy": "avwap_v2"
+    },
+    {
+      "symbol": "AMZN",
+      "side": "sell",
+      "quantity": 40.17283962520348,
+      "price": 248.59,
+      "filled_at": "2025-11-10T13:15:00-06:00",
+      "strategy": "avwap_v2",
+      "pnl": -13.433797570668705
+    },
+    {
+      "symbol": "TSLA",
+      "side": "sell",
+      "quantity": 22.553936498670062,
+      "price": 445.56,
+      "filled_at": "2025-11-10T13:34:00-06:00",
+      "strategy": "avwap_v2",
+      "pnl": 49.131946347431935
+    },
+    {
+      "symbol": "TSLA",
+      "side": "buy",
+      "quantity": 15.964636050485884,
+      "price": 438.469125,
+      "filled_at": "2025-11-11T08:49:00-06:00",
+      "strategy": "ai_scalping_v1"
+    },
+    {
+      "symbol": "TSLA",
+      "side": "sell",
+      "quantity": 15.964636050485884,
+      "price": 438.35,
+      "filled_at": "2025-11-11T09:04:00-06:00",
+      "strategy": "ai_scalping_v1",
+      "pnl": -1.90178726951408
+    },
+    {
+      "symbol": "MSFT",
+      "side": "buy",
+      "quantity": 13.875890978393238,
+      "price": 504.47211000000004,
+      "filled_at": "2025-11-11T09:34:00-06:00",
+      "strategy": "ai_scalping_v1"
+    },
+    {
+      "symbol": "MSFT",
+      "side": "sell",
+      "quantity": 13.875890978393238,
+      "price": 503.77,
+      "filled_at": "2025-11-11T09:40:00-06:00",
+      "strategy": "ai_scalping_v1",
+      "pnl": -9.74240181484053
+    },
+    {
+      "symbol": "AMZN",
+      "side": "buy",
+      "quantity": 40.17929931962786,
+      "price": 248.88438,
+      "filled_at": "2025-11-11T10:23:00-06:00",
+      "strategy": "avwap_v2"
+    },
+    {
+      "symbol": "AMZN",
+      "side": "sell",
+      "quantity": 40.17929931962786,
+      "price": 248.295,
+      "filled_at": "2025-11-11T10:26:00-06:00",
+      "strategy": "avwap_v2",
+      "pnl": -23.68087543300249
+    },
+    {
+      "symbol": "AAPL",
+      "side": "buy",
+      "quantity": 36.550144440688314,
+      "price": 273.59673,
+      "filled_at": "2025-11-11T11:23:00-06:00",
+      "strategy": "avwap_v2"
+    },
+    {
+      "symbol": "AAPL",
+      "side": "sell",
+      "quantity": 36.550144440688314,
+      "price": 273.57,
+      "filled_at": "2025-11-11T11:24:00-06:00",
+      "strategy": "ai_scalping_v1",
+      "pnl": -0.9769853608991007
+    },
+    {
+      "symbol": "AMZN",
+      "side": "buy",
+      "quantity": 40.106747316522714,
+      "price": 249.334605,
+      "filled_at": "2025-11-11T12:20:00-06:00",
+      "strategy": "avwap_v2"
+    },
+    {
+      "symbol": "AMZN",
+      "side": "sell",
+      "quantity": 40.106747316522714,
+      "price": 249.21,
+      "filled_at": "2025-11-11T12:20:00-06:00",
+      "strategy": "avwap_v2",
+      "pnl": -4.997501249375413
+    },
+    {
+      "symbol": "TSLA",
+      "side": "buy",
+      "quantity": 16.13509927845911,
+      "price": 433.83681,
+      "filled_at": "2025-11-12T08:59:00-06:00",
+      "strategy": "ai_scalping_v1"
+    },
+    {
+      "symbol": "TSLA",
+      "side": "sell",
+      "quantity": 16.13509927845911,
+      "price": 435.625,
+      "filled_at": "2025-11-12T09:09:00-06:00",
+      "strategy": "ai_scalping_v1",
+      "pnl": 28.852623178747567
+    },
+    {
+      "symbol": "GOOGL",
+      "side": "buy",
+      "quantity": 24.45858925425334,
+      "price": 286.1980275,
+      "filled_at": "2025-11-12T09:44:00-06:00",
+      "strategy": "ai_scalping_v1"
+    },
+    {
+      "symbol": "GOOGL",
+      "side": "sell",
+      "quantity": 24.45858925425334,
+      "price": 285.62,
+      "filled_at": "2025-11-12T09:51:00-06:00",
+      "strategy": "ai_scalping_v1",
+      "pnl": -14.137737200163382
+    },
+    {
+      "symbol": "TSLA",
+      "side": "buy",
+      "quantity": 16.34811259930705,
+      "price": 428.183985,
+      "filled_at": "2025-11-12T10:14:00-06:00",
+      "strategy": "ai_scalping_v1"
+    },
+    {
+      "symbol": "TSLA",
+      "side": "sell",
+      "quantity": 16.34811259930705,
+      "price": 429.86,
+      "filled_at": "2025-11-12T10:19:00-06:00",
+      "strategy": "ai_scalping_v1",
+      "pnl": 27.399681938127717
+    },
+    {
+      "symbol": "AMZN",
+      "side": "buy",
+      "quantity": 28.630771981525715,
+      "price": 244.492185,
+      "filled_at": "2025-11-12T10:49:00-06:00",
+      "strategy": "ai_scalping_v1"
+    },
+    {
+      "symbol": "GOOGL",
+      "side": "buy",
+      "quantity": 24.63600327162604,
+      "price": 284.1369975,
+      "filled_at": "2025-11-12T10:49:00-06:00",
+      "strategy": "ai_scalping_v1"
+    },
+    {
+      "symbol": "AMZN",
+      "side": "sell",
+      "quantity": 28.630771981525715,
+      "price": 244.695,
+      "filled_at": "2025-11-12T10:54:00-06:00",
+      "strategy": "ai_scalping_v1",
+      "pnl": 5.806750019432762
+    },
+    {
+      "symbol": "GOOGL",
+      "side": "sell",
+      "quantity": 24.63600327162604,
+      "price": 284.525,
+      "filled_at": "2025-11-12T11:05:00-06:00",
+      "strategy": "ai_scalping_v1",
+      "pnl": 9.558830859398356
+    },
+    {
+      "symbol": "TSLA",
+      "side": "buy",
+      "quantity": 16.74645575319045,
+      "price": 417.998895,
+      "filled_at": "2025-11-13T08:49:00-06:00",
+      "strategy": "ai_scalping_v1"
+    },
+    {
+      "symbol": "TSLA",
+      "side": "sell",
+      "quantity": 16.74645575319045,
+      "price": 415.32,
+      "filled_at": "2025-11-13T08:58:00-06:00",
+      "strategy": "ai_scalping_v1",
+      "pnl": -44.86199658494332
+    },
+    {
+      "symbol": "AMZN",
+      "side": "buy",
+      "quantity": 29.058860111830533,
+      "price": 240.890385,
+      "filled_at": "2025-11-13T09:54:00-06:00",
+      "strategy": "ai_scalping_v1"
+    },
+    {
+      "symbol": "AMZN",
+      "side": "sell",
+      "quantity": 29.058860111830533,
+      "price": 240.29,
+      "filled_at": "2025-11-13T09:55:00-06:00",
+      "strategy": "ai_scalping_v1",
+      "pnl": -17.44650372824187
+    },
+    {
+      "symbol": "AMZN",
+      "side": "buy",
+      "quantity": 29.67763202174099,
+      "price": 235.867875,
+      "filled_at": "2025-11-14T13:39:00-06:00",
+      "strategy": "ai_scalping_v1"
+    },
+    {
+      "symbol": "AMZN",
+      "side": "sell",
+      "quantity": 29.67763202174099,
+      "price": 235.59,
+      "filled_at": "2025-11-14T13:40:00-06:00",
+      "strategy": "ai_scalping_v1",
+      "pnl": -8.246671998041116
+    },
+    {
+      "symbol": "AMZN",
+      "side": "buy",
+      "quantity": 30.315445856083187,
+      "price": 230.905395,
+      "filled_at": "2025-11-17T12:59:00-06:00",
+      "strategy": "ai_scalping_v1"
+    },
+    {
+      "symbol": "AMZN",
+      "side": "sell",
+      "quantity": 30.315445856083187,
+      "price": 231.135,
+      "filled_at": "2025-11-17T13:09:00-06:00",
+      "strategy": "ai_scalping_v1",
+      "pnl": 6.960577945785746
+    }
+  ]
+}

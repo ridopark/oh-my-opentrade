@@ -33,6 +33,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/logger"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
 
@@ -193,8 +194,8 @@ func main() {
 	var (
 		signalsMu         sync.Mutex
 		signalsGenerated  int
+		signalsByStrategy = make(map[string]int)
 		intentsGenerated  int
-		lastSignalSummary string
 		lastIntentSummary string
 		simBrokerInst     *simbroker.Broker
 		collectorInst     *backtest.Collector
@@ -208,7 +209,10 @@ func main() {
 		signalsMu.Lock()
 		defer signalsMu.Unlock()
 		signalsGenerated++
-		lastSignalSummary = fmt.Sprintf("%T", ev.Payload)
+		if sig, ok := ev.Payload.(start.Signal); ok {
+			parts := strings.SplitN(string(sig.StrategyInstanceID), ":", 2)
+			signalsByStrategy[parts[0]]++
+		}
 		return nil
 	}); err != nil {
 		log.Fatal().Err(err).Msg("failed to subscribe SignalCreated counter")
@@ -264,11 +268,13 @@ func main() {
 		posMonPriceCache = posMonBundle.PriceCache
 		optionBarsCache = make(map[domain.Symbol][]domain.MarketBar)
 
+		var alpacaAdapt *alpacaadapter.Adapter
 		if cfg.Alpaca.APIKeyID != "" {
-			alpacaAdapt, alpacaErr := alpacaadapter.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca_replay").Logger())
+			a, alpacaErr := alpacaadapter.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca_replay").Logger())
 			if alpacaErr != nil {
-				log.Warn().Err(alpacaErr).Msg("backtest: failed to create alpaca adapter — options bar fetching disabled")
+				log.Warn().Err(alpacaErr).Msg("backtest: failed to create alpaca adapter — options chain and bar fetching disabled")
 			} else {
+				alpacaAdapt = a
 				if err := eventBus.Subscribe(ctx, domain.EventFillReceived, func(_ context.Context, ev domain.Event) error {
 					payload, ok := ev.Payload.(map[string]any)
 					if !ok {
@@ -304,12 +310,21 @@ func main() {
 			}
 		}
 
+		var optionsMarket ports.OptionsMarketDataPort
+		if alpacaAdapt != nil {
+			optionsMarket = newCachingOptionsMarket(alpacaAdapt)
+			log.Info().Msg("backtest: options chain data enabled via Alpaca (cached per symbol+right)")
+		} else {
+			log.Warn().Msg("backtest: no Alpaca adapter — options_ai_scalping signals will be skipped")
+		}
+
 		pipeline, err = bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
 			EventBus:        eventBus,
 			SpecStore:       specStore,
 			AIAdvisor:       llm.NewNoOpAdvisor(),
 			PositionLookup:  posMonBundle.Service.LookupPosition,
 			MarketDataFn:    monitorSvc.GetLastSnapshot,
+			OptionsMarket:   optionsMarket,
 			Repo:            nil,
 			TenantID:        "default",
 			EnvMode:         domain.EnvModePaper,
@@ -492,6 +507,12 @@ func main() {
 		}
 	}
 
+	// Initialize MTFA aggregators so 1m bars produce 5m/15m candles + anchor regime.
+	loc, _ := time.LoadLocation("America/New_York")
+	fromET := fromTime.In(loc)
+	replaySessionOpen := time.Date(fromET.Year(), fromET.Month(), fromET.Day(), 9, 30, 0, 0, loc)
+	monitorSvc.InitAggregators(symbols, replaySessionOpen)
+
 	if pipeline != nil && pipeline.Runner != nil {
 		runnerCalc := monitor.NewIndicatorCalculator()
 		snapshotFn := func(bar domain.MarketBar) start.IndicatorData {
@@ -519,13 +540,15 @@ func main() {
 			n := pipeline.Runner.WarmUp(sym.String(), bars, snapshotFn)
 			warmupLog.Info().Str("symbol", sym.String()).Int("bars", n).Msg("strategy runner warmup complete")
 		}
+		// Initialize HTF aggregators AFTER warmup so the runner can aggregate
+		// 1m replay bars into 5m/15m candles for HTF strategy instances.
+		// This must be called after all instances are registered (via WarmUp) but
+		// before the replay loop starts emitting MarketBarSanitized events.
+		pipeline.Runner.InitAggregators(replaySessionOpen)
+		warmupLog.Info().Time("session_open", replaySessionOpen).Msg("strategy runner HTF aggregators initialized")
+		pipeline.Runner.ClearAllPendingStates()
+		warmupLog.Info().Msg("strategy runner pending states cleared after warmup")
 	}
-
-	// Initialize MTFA aggregators so 1m bars produce 5m/15m candles + anchor regime.
-	loc, _ := time.LoadLocation("America/New_York")
-	fromET := fromTime.In(loc)
-	replaySessionOpen := time.Date(fromET.Year(), fromET.Month(), fromET.Day(), 9, 30, 0, 0, loc)
-	monitorSvc.InitAggregators(symbols, replaySessionOpen)
 	log.Info().Time("session_open", replaySessionOpen).Msg("MTFA aggregators initialized for replay")
 
 	log.Info().
@@ -649,25 +672,43 @@ func main() {
 	eventCounts := tracer.Counts()
 	signalsMu.Lock()
 	sigN := signalsGenerated
+	sigByStrat := make(map[string]int, len(signalsByStrategy))
+	for k, v := range signalsByStrategy {
+		sigByStrat[k] = v
+	}
 	intN := intentsGenerated
-	lastSig := lastSignalSummary
 	lastIntent := lastIntentSummary
 	signalsMu.Unlock()
+
+	var rthSuppressed int64
+	if pipeline != nil && pipeline.Runner != nil {
+		rthSuppressed = pipeline.Runner.SignalsRTHSuppressed()
+	}
 
 	log.Info().
 		Int("bars_processed", barsProcessed).
 		Int("timestamp_groups", groupsProcessed).
-		Int("signals", sigN).
+		Int("signals_rth", sigN).
+		Int64("signals_suppressed_rth", rthSuppressed).
 		Int("order_intents", intN).
 		Msg("replay complete")
 
 	fmt.Println("\n=== REPLAY SUMMARY ===")
-	fmt.Printf("Bars processed: %d\n", barsProcessed)
-	fmt.Printf("Timestamp groups: %d\n", groupsProcessed)
-	fmt.Printf("Signals created: %d\n", sigN)
-	fmt.Printf("Order intents created: %d\n", intN)
-	if lastSig != "" {
-		fmt.Printf("Last signal payload type: %s\n", lastSig)
+	fmt.Printf("Bars processed:      %d\n", barsProcessed)
+	fmt.Printf("Timestamp groups:    %d\n", groupsProcessed)
+	fmt.Printf("Signals (RTH):       %d\n", sigN)
+	fmt.Printf("Signals suppressed:  %d  (pre-market / outside RTH)\n", rthSuppressed)
+	fmt.Printf("Order intents:       %d\n", intN)
+	if len(sigByStrat) > 0 {
+		fmt.Println("\nSignals by strategy:")
+		stratKeys := make([]string, 0, len(sigByStrat))
+		for k := range sigByStrat {
+			stratKeys = append(stratKeys, k)
+		}
+		sort.Strings(stratKeys)
+		for _, k := range stratKeys {
+			fmt.Printf("  %-30s %d\n", k, sigByStrat[k])
+		}
 	}
 	if lastIntent != "" {
 		fmt.Printf("Last intent payload type: %s\n", lastIntent)
@@ -843,6 +884,7 @@ func allEventTypes() []domain.EventType {
 		domain.EventOptionContractSelected,
 		domain.EventSignalCreated,
 		domain.EventSignalEnriched,
+		domain.EventSignalGated,
 		"StrategyDomainEvent",
 	}
 }

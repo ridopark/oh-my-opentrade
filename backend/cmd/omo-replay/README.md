@@ -22,6 +22,20 @@ go run ./cmd/omo-replay/ \
 Wires the **full execution pipeline** — SimBroker, risk engine, slippage guard, kill switch, daily loss breaker, position gate, position monitor, and trade collector — achieving pipeline parity with `omo-core`. Produces a performance report with trade-level results.
 
 ```bash
+cd /home/ridopark/src/oh-my-opentrade/backend/cmd
+go run ./omo-replay/ \
+  --backtest \
+  --from 2026-03-09 --to 2026-03-12 \
+  --symbols AAPL,MSFT,GOOGL,AMZN,TSLA,SPY,META,NVDA \
+  --initial-equity 100000 \
+  --slippage-bps 5 \
+  --no-ai \
+  --config /home/ridopark/src/oh-my-opentrade/configs/config.yaml \
+  --env-file /home/ridopark/src/oh-my-opentrade/.env \
+  --output-json results.json \
+  > test.log 2>&1
+
+
 go run ./cmd/omo-replay/ \
   --backtest \
   --from 2025-06-02 --to 2025-06-03 \

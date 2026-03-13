@@ -87,9 +87,10 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 		// Skip deactivated strategies entirely — they should not register instances or
 		// consume symbols. The PipelineActivator also enforces this for dynamic symbols.
 		if !spec.Lifecycle.State.IsActive() {
-			deps.Logger.Info().Str("spec_id", spec.ID.String()).Str("state", spec.Lifecycle.State.String()).Msg("bootstrap: strategy: spec is not active, skipping")
+			deps.Logger.Debug().Str("spec_id", spec.ID.String()).Str("state", spec.Lifecycle.State.String()).Msg("bootstrap: strategy: spec is not active, skipping")
 			continue
 		}
+		deps.Logger.Info().Str("spec_id", spec.ID.String()).Str("state", spec.Lifecycle.State.String()).Msg("bootstrap: strategy: activating spec")
 
 		hookRef, hasHook := spec.Hooks["signals"]
 		if !hasHook {
