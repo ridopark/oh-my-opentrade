@@ -39,7 +39,6 @@ services:
       - ../scripts/migrate.sh:/migrate.sh:ro
     command: ["/bin/sh", "/migrate.sh", "/migrations"]
 
-
   omo-core:
     build:
       context: ..
@@ -68,6 +67,7 @@ services:
     # is handled by retry-with-backoff in initInfra (infra.go).
     networks:
       - default
+
   dashboard:
     build:
       context: ..
@@ -81,23 +81,8 @@ services:
     environment:
       - NODE_ENV=production
       - BACKEND_URL=http://omo-core:8080
-    networks:
-      - default
-
-  caddy:
-    image: caddy:2-alpine
-    container_name: omo-caddy
-    restart: unless-stopped
-    depends_on:
-      - dashboard
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
+      - "3000:3000"      
     networks:
       - default
 
@@ -144,8 +129,4 @@ volumes:
   prometheus_data:
     driver: local
   grafana_data:
-    driver: local
-  caddy_data:
-    driver: local
-  caddy_config:
     driver: local
