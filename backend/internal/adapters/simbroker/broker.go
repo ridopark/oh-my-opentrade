@@ -99,27 +99,60 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	lastPrice, ok := b.prices[intent.Symbol]
-	if !ok || lastPrice <= 0 {
-		return "", fmt.Errorf("simbroker: no price available for %s — cannot fill order", intent.Symbol)
+	isOption := intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption
+
+	priceSymbol := intent.Symbol
+	if isOption && intent.Instrument.UnderlyingSymbol != "" {
+		priceSymbol = intent.Instrument.UnderlyingSymbol
 	}
 
-	barTime := b.barTimes[intent.Symbol]
+	lastPrice, ok := b.prices[priceSymbol]
+	if (!ok || lastPrice <= 0) && !isOption {
+		if intent.Direction.IsExit() {
+			if pos, posOk := b.positions[string(intent.Symbol)]; posOk && pos.avgCost > 0 {
+				lastPrice = pos.avgCost
+				ok = true
+			}
+		}
+		if !ok || lastPrice <= 0 {
+			return "", fmt.Errorf("simbroker: no price available for %s — cannot fill order", priceSymbol)
+		}
+	}
 
-	// Calculate fill price with slippage.
-	slippage := lastPrice * float64(b.slippageBPS) / 10000.0
+	barTime := b.barTimes[priceSymbol]
 
-	side := "sell"
 	var fillPrice float64
-	switch intent.Direction {
-	case domain.DirectionLong:
-		side = "buy"
-		fillPrice = lastPrice + slippage // buy at slightly higher price
-	case domain.DirectionShort:
-		side = "sell"
-		fillPrice = lastPrice - slippage // sell at slightly lower price
-	default:
-		fillPrice = lastPrice
+	side := "sell"
+	if isOption {
+		if intent.Direction.IsExit() {
+			pos := b.positions[string(intent.Symbol)]
+			if pos != nil && pos.avgCost > 0 {
+				fillPrice = pos.avgCost
+			} else if intent.LimitPrice > 0 {
+				fillPrice = intent.LimitPrice
+			} else {
+				fillPrice = 0.01
+			}
+			side = "sell"
+		} else {
+			if intent.LimitPrice <= 0 {
+				return "", fmt.Errorf("simbroker: options entry has no limit price for %s", intent.Symbol)
+			}
+			fillPrice = intent.LimitPrice
+			side = "buy"
+		}
+	} else {
+		slippage := lastPrice * float64(b.slippageBPS) / 10000.0
+		switch intent.Direction {
+		case domain.DirectionLong:
+			side = "buy"
+			fillPrice = lastPrice + slippage
+		case domain.DirectionShort:
+			side = "sell"
+			fillPrice = lastPrice - slippage
+		default:
+			fillPrice = lastPrice
+		}
 	}
 
 	// Generate order ID.

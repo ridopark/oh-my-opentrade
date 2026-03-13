@@ -79,7 +79,7 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 		execution.WithPositionGate(posGate),
 		execution.WithExposureGuard(execution.NewExposureGuard(deps.Broker, deps.InitialEquity, execLog)),
 		execution.WithSpreadGuard(execution.NewSpreadGuard(deps.QuoteProvider, execLog)),
-		execution.WithTradingWindowGuard(execution.NewTradingWindowGuard(execLog)),
+		execution.WithTradingWindowGuard(execution.NewTradingWindowGuardWithClock(deps.Clock, execLog)),
 	}
 	if deps.OrderStream != nil {
 		execOpts = append(execOpts, execution.WithOrderStream(deps.OrderStream))

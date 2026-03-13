@@ -32,6 +32,7 @@ type TradeRecord struct {
 	Quantity float64   `json:"quantity"`
 	Price    float64   `json:"price"`
 	FilledAt time.Time `json:"filled_at"`
+	Strategy string    `json:"strategy,omitempty"`
 	PnL      float64   `json:"pnl,omitempty"`
 }
 
@@ -106,6 +107,7 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 	quantity, _ := payload["quantity"].(float64)
 	price, _ := payload["price"].(float64)
 	filledAt, _ := payload["filled_at"].(time.Time)
+	strategy, _ := payload["strategy"].(string)
 
 	if symbol == "" || quantity == 0 {
 		return nil
@@ -120,6 +122,7 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 		Quantity: quantity,
 		Price:    price,
 		FilledAt: filledAt,
+		Strategy: strategy,
 	}
 
 	switch strings.ToLower(side) {
@@ -324,12 +327,16 @@ func (r *Result) PrintReport() {
 		copy(sorted, r.Trades)
 		sort.Slice(sorted, func(i, j int) bool { return sorted[i].FilledAt.Before(sorted[j].FilledAt) })
 		for _, t := range sorted {
+			strat := t.Strategy
+			if strat == "" {
+				strat = "unknown"
+			}
 			if t.Side == "sell" {
-				fmt.Printf("  %s %s %s %.0f @ $%.2f  P&L: $%.2f\n",
-					t.FilledAt.Format("2006-01-02 15:04"), t.Side, t.Symbol, t.Quantity, t.Price, t.PnL)
+				fmt.Printf("  %s [%s] %s %s %.0f @ $%.2f  P&L: $%.2f\n",
+					t.FilledAt.Format("2006-01-02 15:04"), strat, t.Side, t.Symbol, t.Quantity, t.Price, t.PnL)
 			} else {
-				fmt.Printf("  %s %s %s %.0f @ $%.2f\n",
-					t.FilledAt.Format("2006-01-02 15:04"), t.Side, t.Symbol, t.Quantity, t.Price)
+				fmt.Printf("  %s [%s] %s %s %.0f @ $%.2f\n",
+					t.FilledAt.Format("2006-01-02 15:04"), strat, t.Side, t.Symbol, t.Quantity, t.Price)
 			}
 		}
 	}

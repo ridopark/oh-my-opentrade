@@ -9,7 +9,7 @@ author = "system"
 created_at = "2026-03-08T00:00:00Z"
 
 [lifecycle]
-state = "Deactivated"
+state = "PaperActive"
 paper_only = true
 
 [routing]
@@ -28,14 +28,14 @@ description = "Enhanced anchored VWAP strategy with higher-lows confirmation and
 [params]
 anchors = ["pd_high", "pd_low", "on_high", "on_low", "or_high", "or_low", "session_open"]
 breakout_enabled = true
-hold_bars = 3
+hold_bars = 8
 volume_mult = 2.0
 bounce_enabled = true
 rsi_bounce_max = 30.0
 exit_hold_bars = 2
 cooldown_seconds = 120
 max_trades_per_day = 3
-allow_regimes = ["BALANCE", "REVERSAL"]
+allow_regimes = ["TREND"]
 asset_class = "EQUITY"
 require_higher_lows = true
 higher_lows_bars = 3

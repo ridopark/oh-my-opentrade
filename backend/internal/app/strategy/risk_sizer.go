@@ -474,6 +474,7 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 
 		if dynCfg.Enabled {
 			rs.logger.Info("dynamic risk applied",
+				"strategy", strategyID.String(),
 				"symbol", sigRef.Symbol,
 				"confidence", enrichment.Confidence,
 				"risk_modifier", string(enrichment.RiskModifier),
@@ -550,6 +551,8 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		maxQty := maxNotional / limitPrice
 		if qty > maxQty {
 			rs.logger.Info("position size clamped by max_position_bps",
+				"strategy", strategyID.String(),
+				"symbol", sigRef.Symbol,
 				"original_qty", qty,
 				"clamped_qty", maxQty,
 				"max_position_bps", maxPositionBPS,

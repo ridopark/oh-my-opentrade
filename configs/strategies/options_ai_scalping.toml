@@ -62,12 +62,12 @@ signals = { engine = "builtin", name = "ai_scalping_v1" }
 enabled = true
 
 [options.defaults]
-min_dte = 35
+min_dte = 14
 max_dte = 45
 target_delta_low = 0.40
 target_delta_high = 0.55
 min_open_interest = 100
-max_spread_pct = 0.10
+max_spread_pct = 0.09
 max_iv = 1.0
 
 [options.regime_overrides.BALANCE]

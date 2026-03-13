@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,18 +20,23 @@ import (
 // It subscribes to MarketBarSanitized events, dispatches bars to matching
 // instances via the Router, and emits SignalCreated events for each signal.
 type Runner struct {
-	mu          sync.Mutex
-	eventBus    ports.EventBusPort
-	router      *Router
-	swapManager *SwapManager
-	posLookup   PositionLookupFunc
-	logger      *slog.Logger
-	tenantID    string
-	envMode     domain.EnvMode
-	indicators  map[string]start.IndicatorData // cached per-symbol indicators from StateUpdated
-	indLogOnce  map[string]bool
-	metrics     *metrics.Metrics
-	aggregators map[string]*domain.BarAggregator // key: "symbol:timeframe"
+	mu                   sync.Mutex
+	eventBus             ports.EventBusPort
+	router               *Router
+	swapManager          *SwapManager
+	posLookup            PositionLookupFunc
+	logger               *slog.Logger
+	tenantID             string
+	envMode              domain.EnvMode
+	indicators           map[string]start.IndicatorData
+	indLogOnce           map[string]bool
+	metrics              *metrics.Metrics
+	aggregators          map[string]*domain.BarAggregator
+	signalsRTHSuppressed atomic.Int64
+}
+
+func (r *Runner) SignalsRTHSuppressed() int64 {
+	return r.signalsRTHSuppressed.Load()
 }
 
 // IndicatorSnapshotFunc maps a market bar to indicator data.
@@ -244,9 +250,8 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	var allSignals []start.Signal
 
 	for _, inst := range oneMinInstances {
-		now := time.Now()
 		instCtx := &instanceContext{
-			now:    now,
+			now:    bar.Time,
 			logger: r.logger.With("instance_id", inst.ID().String(), "symbol", symbol),
 			emit: func(evt any) error {
 				return r.emitDomainEvent(ctx, event.TenantID, event.EnvMode, evt)
@@ -276,9 +281,8 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		}
 		htfBar := domainBarToStratBar(closed)
 		for _, inst := range htfInsts {
-			now := time.Now()
 			instCtx := &instanceContext{
-				now:    now,
+				now:    closed.Time,
 				logger: r.logger.With("instance_id", inst.ID().String(), "symbol", symbol),
 				emit: func(evt any) error {
 					return r.emitDomainEvent(ctx, event.TenantID, event.EnvMode, evt)
@@ -300,7 +304,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 
 	if r.swapManager != nil {
 		swapCtx := &instanceContext{
-			now:    time.Now(),
+			now:    bar.Time,
 			logger: r.logger.With("symbol", symbol),
 			emit:   func(_ any) error { return nil },
 		}
@@ -330,10 +334,22 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		if !domain.Symbol(sig.Symbol).IsCryptoSymbol() {
 			cal := domain.CalendarFor(domain.AssetClassEquity)
 			if !cal.IsOpen(bar.Time) {
+				r.signalsRTHSuppressed.Add(1)
 				r.logger.Info("suppressing equity signal outside RTH",
 					"symbol", sig.Symbol,
 					"bar_time", bar.Time,
 				)
+				if sig.Type == start.SignalEntry {
+					if inst, ok := r.router.Instance(sig.StrategyInstanceID); ok {
+						instCtx := &instanceContext{
+							now:    bar.Time,
+							logger: r.logger.With("instance_id", sig.StrategyInstanceID.String(), "symbol", sig.Symbol),
+							emit:   func(_ any) error { return nil },
+						}
+						rejection := start.EntryRejection{Symbol: sig.Symbol, Side: sig.Side, Reason: "outside RTH"}
+						_, _ = inst.OnEvent(instCtx, sig.Symbol, rejection)
+					}
+				}
 				continue
 			}
 		}
@@ -473,6 +489,14 @@ func (r *Runner) WarmUpTF(symbol string, tf string, bars []domain.MarketBar, sna
 	}
 
 	return len(bars)
+}
+
+func (r *Runner) ClearAllPendingStates() {
+	for _, inst := range r.router.AllInstances() {
+		for _, sym := range inst.Assignment().Symbols {
+			inst.ClearPendingState(sym)
+		}
+	}
 }
 
 func (r *Runner) filterByAllowedDirections(signals []start.Signal) []start.Signal {
