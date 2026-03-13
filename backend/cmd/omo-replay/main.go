@@ -182,7 +182,7 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to build monitor")
 	}
 
-	const specDir = "configs/strategies"
+	const specDir = "/home/ridopark/src/oh-my-opentrade/configs/strategies"
 	specStore := store_fs.NewStore(specDir, strategy.LoadSpecFile)
 
 	orbID, _ := start.NewStrategyID("orb_break_retest")

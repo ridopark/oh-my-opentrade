@@ -3,6 +3,7 @@ package timescaledb
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -93,7 +94,7 @@ func (r *IVRepository) GetLatestIV(ctx context.Context, symbol domain.Symbol) (d
 	var sym string
 	err := row.Scan(&snap.Time, &sym, &snap.ATMIV, &snap.ATMStrike, &snap.SpotPrice, &snap.CallIV, &snap.PutIV)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return domain.IVSnapshot{}, fmt.Errorf("no IV snapshots for %s", symbol)
 		}
 		return domain.IVSnapshot{}, err
@@ -111,7 +112,7 @@ func (r *IVRepository) GetIVStats(ctx context.Context, symbol domain.Symbol, asO
 	var total int
 	err := row.Scan(&currentIV, &low, &high, &total, &ivRank, &ivPct)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return domain.IVStats{}, fmt.Errorf("no IV data for %s in lookback window", symbol)
 		}
 		return domain.IVStats{}, err

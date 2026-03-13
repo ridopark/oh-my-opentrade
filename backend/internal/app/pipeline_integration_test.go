@@ -128,6 +128,9 @@ func (m *mockRepository) UpdateOrderStatus(_ context.Context, _ string, _ string
 func (m *mockRepository) GetNetPositions(_ context.Context, _ string, _ domain.EnvMode) (map[domain.Symbol]float64, error) {
 	return nil, nil
 }
+func (m *mockRepository) GetAvgEntryPrice(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol) (float64, error) {
+	return 0, nil
+}
 
 type mockQuoteProvider struct{}
 
@@ -152,7 +155,7 @@ func TestIntegration_FullPipeline_SetupToOrder(t *testing.T) {
 	executionSvc := execution.NewService(bus, mockB, mockRepo, riskEngine, slippageGuard, killSwitch, nil, 100000.0, log, execution.WithPositionGate(posGate))
 
 	require.NoError(t, debateSvc.Start(ctx))
-	require.NoError(t, executionSvc.Start(ctx))
+	require.NoError(t, executionSvc.Start(ctx, "tenant-1", domain.EnvModePaper))
 
 	submittedCh := make(chan domain.Event, 1)
 	require.NoError(t, bus.Subscribe(ctx, domain.EventOrderSubmitted, func(ctx context.Context, event domain.Event) error {
@@ -214,7 +217,7 @@ func TestIntegration_LowConfidence_NoOrder(t *testing.T) {
 	executionSvc := execution.NewService(bus, mockB, mockRepo, riskEngine, slippageGuard, killSwitch, nil, 100000.0, log, execution.WithPositionGate(posGate2))
 
 	require.NoError(t, debateSvc.Start(ctx))
-	require.NoError(t, executionSvc.Start(ctx))
+	require.NoError(t, executionSvc.Start(ctx, "tenant-1", domain.EnvModePaper))
 
 	debateCompletedCh := make(chan domain.Event, 1)
 	intentCreatedCh := make(chan domain.Event, 1)

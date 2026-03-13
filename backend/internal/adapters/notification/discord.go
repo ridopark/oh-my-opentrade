@@ -53,10 +53,6 @@ func NewDiscordNotifier(webhookURL string, client *http.Client, log ...zerolog.L
 	}
 }
 
-type discordPayload struct {
-	Content string `json:"content"`
-}
-
 type discordEmbed struct {
 	Description string       `json:"description,omitempty"`
 	Color       int          `json:"color,omitempty"`

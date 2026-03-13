@@ -22,11 +22,11 @@ var allowedExchanges = map[string]bool{
 	"BATS":   true,
 }
 
-func isScreenableEquity(exchange, symbol, name string, shortable, marginable, fractionable bool) bool {
+func isScreenableEquity(exchange, symbol, name string, shortable, marginable, fractionable bool) bool { //nolint:misspell
 	if !allowedExchanges[exchange] {
 		return false
 	}
-	if !shortable && !marginable {
+	if !shortable && !marginable { //nolint:misspell
 		return false
 	}
 	if !fractionable {
@@ -112,7 +112,7 @@ func (c *RESTClient) ListTradeable(ctx context.Context, assetClass domain.AssetC
 		Status       string `json:"status"`
 		Tradable     bool   `json:"tradable"`
 		Shortable    bool   `json:"shortable"`
-		Marginable   bool   `json:"marginable"`
+		Marginable   bool   `json:"marginable"` //nolint:misspell
 		Fractionable bool   `json:"fractionable"`
 	}
 	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&raw); err != nil {
@@ -131,7 +131,7 @@ func (c *RESTClient) ListTradeable(ctx context.Context, assetClass domain.AssetC
 		}
 
 		// For equities, filter out junk to reduce universe from ~12K to ~3K.
-		if ac == domain.AssetClassEquity && !isScreenableEquity(a.Exchange, a.Symbol, a.Name, a.Shortable, a.Marginable, a.Fractionable) {
+		if ac == domain.AssetClassEquity && !isScreenableEquity(a.Exchange, a.Symbol, a.Name, a.Shortable, a.Marginable, a.Fractionable) { //nolint:misspell
 			skipped++
 			continue
 		}
