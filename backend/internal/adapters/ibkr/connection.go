@@ -38,6 +38,9 @@ type connection struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	mu      sync.RWMutex
+
+	reconnectSubs []func()
+	subsMu        sync.Mutex
 }
 
 func newConnection(cfg config.IBKRConfig, log zerolog.Logger) (*connection, error) {
@@ -103,10 +106,27 @@ func (c *connection) keepAlive() {
 					}
 				} else {
 					delay = reconnectInitialDelay
+					c.fireReconnectCallbacks()
 				}
 				ticker.Reset(delay)
 			}
 		}
+	}
+}
+
+func (c *connection) OnReconnect(fn func()) {
+	c.subsMu.Lock()
+	defer c.subsMu.Unlock()
+	c.reconnectSubs = append(c.reconnectSubs, fn)
+}
+
+func (c *connection) fireReconnectCallbacks() {
+	c.subsMu.Lock()
+	fns := make([]func(), len(c.reconnectSubs))
+	copy(fns, c.reconnectSubs)
+	c.subsMu.Unlock()
+	for _, fn := range fns {
+		go fn()
 	}
 }
 
