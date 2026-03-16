@@ -96,6 +96,9 @@ func (a *Adapter) GetHistoricalBars(ctx context.Context, symbol domain.Symbol, t
 		return nil, ctx.Err()
 	}
 
+	a.conn.symHook.set(string(symbol))
+	defer a.conn.symHook.clear()
+
 	historicalLastCall.mu.Lock()
 	since := time.Since(historicalLastCall.time)
 	if since < historicalMinInterval {
@@ -123,7 +126,7 @@ func (a *Adapter) GetHistoricalBars(ctx context.Context, symbol domain.Symbol, t
 	}
 	reqCh := make(chan reqResult, 1)
 	go func() {
-		ch, cancel := ib.ReqHistoricalData(contract, endDT, duration, barSize, "MIDPOINT", false, 2)
+		ch, cancel := ib.ReqHistoricalData(contract, endDT, duration, barSize, "TRADES", false, 2)
 		reqCh <- reqResult{ch, cancel}
 	}()
 
