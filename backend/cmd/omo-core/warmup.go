@@ -431,13 +431,36 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 	log.Info().Msg("ready — WebSocket streaming active")
 
 	{
+		broker := "alpaca"
+		ibkrConnected := false
+		if infra.concreteIBKR != nil {
+			broker = "ibkr"
+			ibkrConnected = infra.concreteIBKR.IsConnected()
+		}
+		var equityCount, cryptoCount int
+		for _, s := range syms.all {
+			if s.IsCryptoSymbol() {
+				cryptoCount++
+			} else {
+				equityCount++
+			}
+		}
+		allSyms := symbolStrings(syms.all)
 		stratNames := symbolStrings(syms.all)
 		evt, err := domain.NewEvent(domain.EventSystemStarted, "system", domain.EnvModePaper,
 			fmt.Sprintf("system-started-%d", time.Now().UnixNano()),
 			domain.SystemStartedPayload{
-				Version:    "dev",
-				EnvMode:    string(domain.EnvModePaper),
-				Strategies: stratNames,
+				Version:         "dev",
+				EnvMode:         string(domain.EnvModePaper),
+				Broker:          broker,
+				Symbols:         allSyms,
+				EquityCount:     equityCount,
+				CryptoCount:     cryptoCount,
+				IBKRConnected:   ibkrConnected,
+				IBKRPaperMode:   infra.ibkrPaperMode,
+				EMA200Succeeded: infra.startup.EMA200Succeeded,
+				EMA200Failed:    infra.startup.EMA200Failed,
+				Strategies:      stratNames,
 			})
 		if err == nil {
 			_ = infra.eventBus.Publish(ctx, *evt)
@@ -529,6 +552,9 @@ func warmupHTF(ctx context.Context, infra *infraDeps, svc *appServices, syms sym
 				Str("bias", bias).
 				Int("bars", len(bars1d)).
 				Msg("1D EMA200 warmup complete")
+			infra.startup.EMA200Succeeded++
+		} else {
+			infra.startup.EMA200Failed = append(infra.startup.EMA200Failed, string(sym))
 		}
 	}
 

@@ -111,9 +111,17 @@ type ExitCircuitBrokenPayload struct {
 }
 
 type SystemStartedPayload struct {
-	Version    string
-	EnvMode    string
-	Strategies []string
+	Version         string
+	EnvMode         string
+	Broker          string
+	Symbols         []string
+	EquityCount     int
+	CryptoCount     int
+	IBKRConnected   bool
+	IBKRPaperMode   bool
+	EMA200Succeeded int
+	EMA200Failed    []string
+	Strategies      []string
 }
 
 // Event represents a domain event in the trading pipeline.

@@ -36,6 +36,11 @@ type brokerAdapter interface {
 	SubscribeSymbols(ctx context.Context, symbols []domain.Symbol) error
 }
 
+type startupReport struct {
+	EMA200Succeeded int
+	EMA200Failed    []string
+}
+
 type infraDeps struct {
 	eventBus        *memory.Bus
 	broker          brokerAdapter
@@ -48,6 +53,8 @@ type infraDeps struct {
 	dnaApprovalRepo *timescaledb.DNAApprovalRepo
 	tokenStore      *timescaledb.TokenStore
 	tracerProvider  *sdktrace.TracerProvider
+	startup         startupReport
+	ibkrPaperMode   bool
 }
 
 func initLogger() zerolog.Logger {
@@ -166,6 +173,7 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 		dnaApprovalRepo: dnaApprovalRepo,
 		tokenStore:      tokenStore,
 		tracerProvider:  tp,
+		ibkrPaperMode:   cfg.IBKR.PaperMode,
 	}
 }
 
