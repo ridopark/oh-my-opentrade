@@ -4,10 +4,31 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
+	"github.com/scmhub/ibsync"
 )
+
+const allAccountTags = "NetLiquidation,BuyingPower,DayTradingBuyingPower,PatternDayTrader"
+
+func (a *Adapter) cachedAccountSummary(ib ibClient) (ibsync.AccountSummary, error) {
+	a.acctCache.mu.Lock()
+	defer a.acctCache.mu.Unlock()
+
+	if time.Since(a.acctCache.fetchedAt) < accountSummaryCacheTTL && len(a.acctCache.summary) > 0 {
+		return a.acctCache.summary, nil
+	}
+
+	summary, err := ib.ReqAccountSummary("All", allAccountTags)
+	if err != nil {
+		return nil, fmt.Errorf("ibkr: ReqAccountSummary: %w", err)
+	}
+	a.acctCache.summary = summary
+	a.acctCache.fetchedAt = time.Now()
+	return summary, nil
+}
 
 func (a *Adapter) GetAccountBuyingPower(_ context.Context) (ports.BuyingPower, error) {
 	ib := a.conn.IB()
@@ -15,9 +36,9 @@ func (a *Adapter) GetAccountBuyingPower(_ context.Context) (ports.BuyingPower, e
 		return ports.BuyingPower{}, fmt.Errorf("ibkr: not connected")
 	}
 
-	summary, err := ib.ReqAccountSummary("All", "BuyingPower,DayTradingBuyingPower,PatternDayTrader")
+	summary, err := a.cachedAccountSummary(ib)
 	if err != nil {
-		return ports.BuyingPower{}, fmt.Errorf("ibkr: ReqAccountSummary: %w", err)
+		return ports.BuyingPower{}, err
 	}
 
 	var bp ports.BuyingPower
@@ -40,14 +61,13 @@ func (a *Adapter) GetAccountEquity(_ context.Context) (float64, error) {
 		return 0, fmt.Errorf("ibkr: not connected")
 	}
 
-	summary, err := ib.ReqAccountSummary("All", "NetLiquidation")
+	summary, err := a.cachedAccountSummary(ib)
 	if err != nil {
-		return 0, fmt.Errorf("ibkr: ReqAccountSummary: %w", err)
+		return 0, err
 	}
 	for _, v := range summary {
 		if v.Tag == "NetLiquidation" {
-			equity, err := strconv.ParseFloat(v.Value, 64)
-			return equity, err
+			return strconv.ParseFloat(v.Value, 64)
 		}
 	}
 	return 0, fmt.Errorf("ibkr: NetLiquidation tag not found in account summary")

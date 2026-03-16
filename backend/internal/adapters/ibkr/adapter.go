@@ -3,11 +3,13 @@ package ibkr
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
+	"github.com/scmhub/ibsync"
 )
 
 var (
@@ -20,6 +22,14 @@ var (
 	_ ports.SnapshotPort          = (*Adapter)(nil)
 )
 
+const accountSummaryCacheTTL = 30 * time.Second
+
+type accountSummaryCache struct {
+	mu        sync.Mutex
+	summary   ibsync.AccountSummary
+	fetchedAt time.Time
+}
+
 type Adapter struct {
 	conn *connection
 	cfg  config.IBKRConfig
@@ -30,6 +40,8 @@ type Adapter struct {
 	barTF     domain.Timeframe
 	barHdl    ports.BarHandler
 	streaming map[domain.Symbol]struct{}
+
+	acctCache accountSummaryCache
 }
 
 func NewAdapter(cfg config.IBKRConfig, log zerolog.Logger) (*Adapter, error) {
