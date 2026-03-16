@@ -143,7 +143,7 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	})
 
 	// Health and strategy endpoints.
-	healthHandler := omhttp.NewHealthHandler(httpLog,
+	healthChecks := []omhttp.HealthChecker{
 		omhttp.DBChecker(infra.sqlDB),
 		omhttp.StaticChecker("ingestion"),
 		omhttp.StaticChecker("monitor"),
@@ -160,7 +160,16 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 			detail := fmt.Sprintf("state=%s connected=%v last_bar_age=%s", fh.State, fh.Connected, fh.LastBarAge.Round(time.Second))
 			return false, detail
 		}),
-	)
+	}
+	if infra.concreteIBKR != nil {
+		healthChecks = append(healthChecks, omhttp.FeedChecker("ibkr_gateway", func() (bool, string) {
+			if infra.concreteIBKR.IsConnected() {
+				return true, ""
+			}
+			return false, "IB Gateway not connected"
+		}))
+	}
+	healthHandler := omhttp.NewHealthHandler(httpLog, healthChecks...)
 	imux.Handle("/healthz/services", healthHandler)
 
 	const strategyBasePath = "configs/strategies"

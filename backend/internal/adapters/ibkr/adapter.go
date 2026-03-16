@@ -45,6 +45,10 @@ func NewAdapter(cfg config.IBKRConfig, log zerolog.Logger) (*Adapter, error) {
 	}, nil
 }
 
+func (a *Adapter) IsConnected() bool {
+	return a.conn.isConnected()
+}
+
 // NewAdapterWithClient creates an Adapter using an already-connected ibClient.
 // Used in tests to inject a mock ibClient without a real IB Gateway connection.
 func NewAdapterWithClient(client ibClient, log zerolog.Logger) *Adapter {

@@ -356,6 +356,14 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 		log.Fatal().Err(err).Msg("failed to start forming bar service")
 	}
 
+	if infra.concreteIBKR != nil {
+		log.Info().
+			Bool("ibkr_connected", infra.concreteIBKR.IsConnected()).
+			Str("market_data", "ibkr_realtime_bars").
+			Str("historical", "alpaca_rest").
+			Msg("ibkr: live market data mode")
+	}
+
 	if infra.concreteAlpaca != nil {
 		infra.concreteAlpaca.SetTradeHandler(func(tCtx context.Context, trade domain.MarketTrade) error {
 			evt, err := domain.NewEvent(domain.EventTradeReceived, "system", domain.EnvModePaper,
