@@ -487,11 +487,17 @@ func warmupHTF(ctx context.Context, infra *infraDeps, svc *appServices, syms sym
 			log.Info().Str("symbol", string(sym)).Int("bars", n).Msg("1H EMA50 warmup complete")
 		}
 
-		dailyFrom := dailyTo.Add(-time.Duration(float64(dailyBarsNeeded)*1.5) * 24 * time.Hour)
+		dailyFrom := dailyTo.Add(-time.Duration(float64(dailyBarsNeeded)*2.0) * 24 * time.Hour)
 		bars1d, err := fetchBarsForWarmup(ctx, infra.repo, infra.broker, sym, "1d", dailyFrom, dailyTo, log)
 		if err != nil {
 			log.Warn().Err(err).Str("symbol", string(sym)).Msg("1D warmup fetch failed")
 			continue
+		}
+		if len(bars1d) < dailyBarsNeeded {
+			if brokerBars, berr := infra.broker.GetHistoricalBars(ctx, sym, "1d", dailyFrom, dailyTo); berr == nil && len(brokerBars) > len(bars1d) {
+				log.Debug().Str("symbol", string(sym)).Int("db_bars", len(bars1d)).Int("broker_bars", len(brokerBars)).Msg("daily bars supplemented from broker")
+				bars1d = brokerBars
+			}
 		}
 		if len(bars1d) < dailyBarsNeeded {
 			log.Warn().Str("symbol", string(sym)).Int("bars", len(bars1d)).
