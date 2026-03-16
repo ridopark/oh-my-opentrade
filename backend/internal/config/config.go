@@ -29,11 +29,12 @@ type Config struct {
 
 // IBKRConfig holds connection parameters for the IB Gateway adapter.
 type IBKRConfig struct {
-	Host      string `yaml:"host"`
-	Port      int    `yaml:"port"`
-	ClientID  int    `yaml:"client_id"`
-	PaperMode bool   `yaml:"paper_mode"`
-	AccountID string `yaml:"account_id"` // optional, empty = all accounts
+	Host           string `yaml:"host"`
+	Port           int    `yaml:"port"`
+	ClientID       int    `yaml:"client_id"`
+	PaperMode      bool   `yaml:"paper_mode"`
+	AccountID      string `yaml:"account_id"`
+	MarketDataType int    `yaml:"market_data_type"`
 }
 
 // AlpacaConfig represents the Alpaca broker configuration.
@@ -376,6 +377,11 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	}
 	if val := os.Getenv("IBKR_ACCOUNT_ID"); val != "" {
 		cfg.IBKR.AccountID = val
+	}
+	if val := os.Getenv("IBKR_MARKET_DATA_TYPE"); val != "" {
+		if t, err := strconv.Atoi(val); err == nil {
+			cfg.IBKR.MarketDataType = t
+		}
 	}
 
 	if val := os.Getenv("TIMESCALEDB_PASSWORD"); val != "" {
