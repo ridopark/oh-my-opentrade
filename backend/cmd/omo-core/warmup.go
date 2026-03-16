@@ -518,7 +518,13 @@ func warmupHTF(ctx context.Context, infra *infraDeps, svc *appServices, syms sym
 			dailyTo = prevEnd
 		}
 
-		hourlyFrom := hourlyTo.Add(-time.Duration(float64(hourlyBarsNeeded)*1.3) * time.Hour)
+		var hourlyLookback time.Duration
+		if sym.IsCryptoSymbol() {
+			hourlyLookback = time.Duration(float64(hourlyBarsNeeded)*1.3) * time.Hour
+		} else {
+			hourlyLookback = 15 * 24 * time.Hour
+		}
+		hourlyFrom := hourlyTo.Add(-hourlyLookback)
 		bars1h, err := fetchBarsForWarmup(ctx, infra.repo, infra.broker, sym, "1h", hourlyFrom, hourlyTo, log)
 		if err != nil {
 			log.Warn().Err(err).Str("symbol", string(sym)).Msg("1H warmup fetch failed")
