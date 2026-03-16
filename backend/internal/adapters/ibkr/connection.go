@@ -98,6 +98,12 @@ func (c *connection) connect() error {
 		return fmt.Errorf("ibkr connect %s:%d clientID=%d: %w", c.cfg.Host, port, c.cfg.ClientID, err)
 	}
 
+	mdType := int64(1)
+	if c.cfg.PaperMode {
+		mdType = 3
+	}
+	ib.ReqMarketDataType(mdType)
+
 	c.mu.Lock()
 	c.ib = ib
 	c.mu.Unlock()
@@ -107,6 +113,7 @@ func (c *connection) connect() error {
 		Int("port", port).
 		Int("client_id", c.cfg.ClientID).
 		Bool("paper", c.cfg.PaperMode).
+		Int64("market_data_type", mdType).
 		Msg("ibkr: connected")
 	return nil
 }
