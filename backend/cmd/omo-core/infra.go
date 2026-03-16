@@ -37,6 +37,8 @@ type brokerAdapter interface {
 }
 
 type startupReport struct {
+	EMA50Succeeded  int
+	EMA50Failed     []string
 	EMA200Succeeded int
 	EMA200Failed    []string
 }

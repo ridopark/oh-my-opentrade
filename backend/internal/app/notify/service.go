@@ -842,14 +842,20 @@ func (s *Service) fmtSystemStarted(ev domain.Event) string {
 		dataSource = "IBKR real-time bars + Alpaca REST historical"
 	}
 
-	ema200Line := fmt.Sprintf("✅ %d/%d warmed up", p.EMA200Succeeded, p.EMA200Succeeded+len(p.EMA200Failed))
-	if len(p.EMA200Failed) > 0 {
-		failed := strings.Join(p.EMA200Failed, ", ")
-		if len(p.EMA200Failed) > 4 {
-			failed = strings.Join(p.EMA200Failed[:4], ", ") + fmt.Sprintf(" +%d more", len(p.EMA200Failed)-4)
+	fmtEMALine := func(succeeded int, failed []string) string {
+		total := succeeded + len(failed)
+		line := fmt.Sprintf("✅ %d/%d", succeeded, total)
+		if len(failed) > 0 {
+			names := strings.Join(failed, ", ")
+			if len(failed) > 4 {
+				names = strings.Join(failed[:4], ", ") + fmt.Sprintf(" +%d", len(failed)-4)
+			}
+			line += fmt.Sprintf(" ⚠️ %s", names)
 		}
-		ema200Line += fmt.Sprintf(" ⚠️ failed: %s", failed)
+		return line
 	}
+	ema50Line := fmtEMALine(p.EMA50Succeeded, p.EMA50Failed)
+	ema200Line := fmtEMALine(p.EMA200Succeeded, p.EMA200Failed)
 
 	var stratLines []string
 	for _, name := range p.Strategies {
@@ -870,7 +876,8 @@ func (s *Service) fmtSystemStarted(ev domain.Event) string {
 		fmt.Sprintf("📋 **Mode:** %s | **Broker:** %s", p.EnvMode, brokerStatus),
 		fmt.Sprintf("📡 **Data:** %s", dataSource),
 		fmt.Sprintf("📊 **Symbols:** %d total — %d equity, %d crypto", len(p.Symbols), p.EquityCount, p.CryptoCount),
-		fmt.Sprintf("📈 **EMA200:** %s", ema200Line),
+		fmt.Sprintf("📈 **EMA50 (1H):** %s", ema50Line),
+		fmt.Sprintf("📈 **EMA200 (1D):** %s", ema200Line),
 		fmt.Sprintf("🎯 **Strategies (%d):**", len(p.Strategies)),
 		stratSection,
 	}, "\n")

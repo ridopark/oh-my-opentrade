@@ -119,6 +119,8 @@ type SystemStartedPayload struct {
 	CryptoCount     int
 	IBKRConnected   bool
 	IBKRPaperMode   bool
+	EMA50Succeeded  int
+	EMA50Failed     []string
 	EMA200Succeeded int
 	EMA200Failed    []string
 	Strategies      []string
