@@ -91,6 +91,17 @@ Press `Ctrl+B` then `D`
 
 ## Debugging & Troubleshooting
 
+### IB Gateway VNC (visual debugging)
+
+Connect to the IB Gateway container desktop to inspect settings, check market data subscriptions, or configure API permissions:
+
+```bash
+vncviewer localhost:5900
+# Password: password
+```
+
+Useful for: Configure → API → Precautions, checking entitlements, manual login issues.
+
 ### Grafana Logs (preferred)
 
 All omo-core logs are streamed to Grafana via Loki. Use this as the primary debugging tool.
