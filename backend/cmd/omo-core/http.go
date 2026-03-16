@@ -41,14 +41,16 @@ func initHTTPServer(ctx context.Context, cfg *config.Config, infra *infraDeps, s
 	svc.ingestion.SetMetrics(met)
 	svc.dailyLossBreaker.SetMetrics(met)
 	svc.ledgerWriter.SetMetrics(met)
-	infra.alpacaAdapter.WSClient().SetMetrics(met)
-	infra.alpacaAdapter.TradeStream().SetOnConnect(func(connected bool) {
-		if connected {
-			met.Orders.TradeWSConnected.Set(1)
-		} else {
-			met.Orders.TradeWSConnected.Set(0)
-		}
-	})
+	if infra.concreteAlpaca != nil {
+		infra.concreteAlpaca.WSClient().SetMetrics(met)
+		infra.concreteAlpaca.TradeStream().SetOnConnect(func(connected bool) {
+			if connected {
+				met.Orders.TradeWSConnected.Set(1)
+			} else {
+				met.Orders.TradeWSConnected.Set(0)
+			}
+		})
+	}
 	if svc.useStrategyV2 {
 		svc.strategyRunner.SetMetrics(met)
 	}
@@ -148,7 +150,10 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 		omhttp.StaticChecker("execution"),
 		omhttp.StaticChecker("strategy"),
 		omhttp.FeedChecker("ws_feed", func() (bool, string) {
-			fh := infra.alpacaAdapter.WSClient().FeedHealth()
+			if infra.concreteAlpaca == nil {
+				return true, ""
+			}
+			fh := infra.concreteAlpaca.WSClient().FeedHealth()
 			if fh.IsHealthy() {
 				return true, ""
 			}

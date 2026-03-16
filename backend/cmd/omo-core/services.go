@@ -268,7 +268,9 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 			advisorOpts = append(advisorOpts, llm.WithProviderRouting(cfg.AI.ProviderSort, nil))
 		}
 		svc.aiAdvisor = llm.NewAdvisor(cfg.AI.BaseURL, cfg.AI.Model, cfg.AI.APIKey, nil, advisorOpts...)
-		svc.newsClient = alpaca.NewNewsClient(cfg.Alpaca.DataURL, cfg.Alpaca.APIKeyID, cfg.Alpaca.APISecretKey, nil)
+		if cfg.Broker != "ibkr" {
+			svc.newsClient = alpaca.NewNewsClient(cfg.Alpaca.DataURL, cfg.Alpaca.APIKeyID, cfg.Alpaca.APISecretKey, nil)
+		}
 		log.Info().
 			Str("base_url", cfg.AI.BaseURL).
 			Str("model", cfg.AI.Model).

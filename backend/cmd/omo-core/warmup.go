@@ -270,42 +270,43 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 		log.Fatal().Err(err).Msg("failed to start forming bar service")
 	}
 
-	// 7b. Wire trade handler → publishes EventTradeReceived for forming bar aggregation.
-	infra.alpacaAdapter.SetTradeHandler(func(tCtx context.Context, trade domain.MarketTrade) error {
-		evt, err := domain.NewEvent(domain.EventTradeReceived, "system", domain.EnvModePaper,
-			fmt.Sprintf("trade-%s-%d", trade.Symbol, trade.Time.UnixNano()), trade)
-		if err != nil {
-			return nil
-		}
-		return infra.eventBus.Publish(tCtx, *evt)
-	})
+	if infra.concreteAlpaca != nil {
+		infra.concreteAlpaca.SetTradeHandler(func(tCtx context.Context, trade domain.MarketTrade) error {
+			evt, err := domain.NewEvent(domain.EventTradeReceived, "system", domain.EnvModePaper,
+				fmt.Sprintf("trade-%s-%d", trade.Symbol, trade.Time.UnixNano()), trade)
+			if err != nil {
+				return nil
+			}
+			return infra.eventBus.Publish(tCtx, *evt)
+		})
 
-	infra.alpacaAdapter.CryptoWSClient().SetDegradedCallback(func(reason string) {
-		evt, err := domain.NewEvent(domain.EventFeedDegraded, "system", domain.EnvModePaper,
-			fmt.Sprintf("feed-degraded-%d", time.Now().UnixNano()),
-			domain.FeedDegradedPayload{Feed: "crypto", Reason: reason})
-		if err != nil {
-			return
-		}
-		_ = infra.eventBus.Publish(ctx, *evt)
-	})
+		infra.concreteAlpaca.CryptoWSClient().SetDegradedCallback(func(reason string) {
+			evt, err := domain.NewEvent(domain.EventFeedDegraded, "system", domain.EnvModePaper,
+				fmt.Sprintf("feed-degraded-%d", time.Now().UnixNano()),
+				domain.FeedDegradedPayload{Feed: "crypto", Reason: reason})
+			if err != nil {
+				return
+			}
+			_ = infra.eventBus.Publish(ctx, *evt)
+		})
 
-	infra.alpacaAdapter.WSClient().SetPipelineHealth(svc.ingestion)
-	infra.alpacaAdapter.CryptoWSClient().SetPipelineHealth(svc.ingestion)
+		infra.concreteAlpaca.WSClient().SetPipelineHealth(svc.ingestion)
+		infra.concreteAlpaca.CryptoWSClient().SetPipelineHealth(svc.ingestion)
 
-	infra.alpacaAdapter.CryptoWSClient().SetCircuitBreakerCallback(func(consecutiveFails int, blockedFor time.Duration) {
-		evt, err := domain.NewEvent(domain.EventWSCircuitBreakerTripped, "system", domain.EnvModePaper,
-			fmt.Sprintf("ws-cb-tripped-%d", time.Now().UnixNano()),
-			domain.WSCircuitBreakerTrippedPayload{
-				Feed:              "crypto",
-				ConsecutiveFails:  consecutiveFails,
-				BlockedForSeconds: blockedFor.Seconds(),
-			})
-		if err != nil {
-			return
-		}
-		_ = infra.eventBus.Publish(ctx, *evt)
-	})
+		infra.concreteAlpaca.CryptoWSClient().SetCircuitBreakerCallback(func(consecutiveFails int, blockedFor time.Duration) {
+			evt, err := domain.NewEvent(domain.EventWSCircuitBreakerTripped, "system", domain.EnvModePaper,
+				fmt.Sprintf("ws-cb-tripped-%d", time.Now().UnixNano()),
+				domain.WSCircuitBreakerTrippedPayload{
+					Feed:              "crypto",
+					ConsecutiveFails:  consecutiveFails,
+					BlockedForSeconds: blockedFor.Seconds(),
+				})
+			if err != nil {
+				return
+			}
+			_ = infra.eventBus.Publish(ctx, *evt)
+		})
+	}
 
 	log.Info().
 		Strs("symbols", symbolStrings(syms.all)).
