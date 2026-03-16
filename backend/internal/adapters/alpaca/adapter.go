@@ -338,7 +338,9 @@ func (a *Adapter) GetAccountBuyingPower(ctx context.Context) (ports.BuyingPower,
 
 // SetTradeHandler sets the trade tick callback on both equity and crypto WS clients.
 func (a *Adapter) SetTradeHandler(h ports.TradeHandler) {
-	a.ws.SetTradeHandler(h)
+	if a.ws != nil {
+		a.ws.SetTradeHandler(h)
+	}
 	if a.cryptoWs != nil {
 		a.cryptoWs.SetTradeHandler(h)
 	}
