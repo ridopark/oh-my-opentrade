@@ -252,7 +252,6 @@ func Load(envPath, yamlPath string) (*Config, error) {
 		},
 		IBKR: IBKRConfig{
 			Host:      "localhost",
-			Port:      4002,
 			ClientID:  1,
 			PaperMode: true,
 		},
