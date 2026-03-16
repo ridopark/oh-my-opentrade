@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/config"
@@ -11,27 +12,43 @@ import (
 	"github.com/scmhub/ibsync"
 )
 
+type symbolHook struct {
+	sym atomic.Pointer[string]
+}
+
+func (h *symbolHook) Run(e *zerolog.Event, _ zerolog.Level, _ string) {
+	if s := h.sym.Load(); s != nil {
+		e.Str("symbol", *s)
+	}
+}
+
+func (h *symbolHook) set(sym string) { h.sym.Store(&sym) }
+func (h *symbolHook) clear()         { h.sym.Store(nil) }
+
 const (
 	reconnectInitialDelay = 5 * time.Second
 	reconnectMaxDelay     = 60 * time.Second
 )
 
 type connection struct {
-	ib     *ibsync.IB
-	cfg    config.IBKRConfig
-	log    zerolog.Logger
-	ctx    context.Context
-	cancel context.CancelFunc
-	mu     sync.RWMutex
+	ib      *ibsync.IB
+	cfg     config.IBKRConfig
+	log     zerolog.Logger
+	symHook *symbolHook
+	ctx     context.Context
+	cancel  context.CancelFunc
+	mu      sync.RWMutex
 }
 
 func newConnection(cfg config.IBKRConfig, log zerolog.Logger) (*connection, error) {
+	hook := &symbolHook{}
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &connection{
-		cfg:    cfg,
-		log:    log,
-		ctx:    ctx,
-		cancel: cancel,
+		cfg:     cfg,
+		log:     log.Hook(hook),
+		symHook: hook,
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 	if err := c.connect(); err != nil {
 		cancel()
