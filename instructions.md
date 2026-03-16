@@ -100,6 +100,8 @@ vncviewer localhost:5900
 # Password: password
 ```
 
+Only port 5900 (TigerVNC) is exposed — the browser-based viewer (6080) is not available in this setup.
+
 Useful for: Configure → API → Precautions, checking entitlements, manual login issues.
 
 ### Grafana Logs (preferred)
