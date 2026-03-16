@@ -12,13 +12,15 @@ type barAggregator struct {
 	timeframe domain.Timeframe
 	period    time.Duration
 
-	open     float64
-	high     float64
-	low      float64
-	close    float64
-	volume   float64
-	barStart time.Time
-	hasData  bool
+	open      float64
+	high      float64
+	low       float64
+	close     float64
+	volume    float64
+	vwapNumer float64
+	vwapDenom float64
+	barStart  time.Time
+	hasData   bool
 }
 
 func newBarAggregator(symbol domain.Symbol, tf domain.Timeframe) *barAggregator {
@@ -27,6 +29,10 @@ func newBarAggregator(symbol domain.Symbol, tf domain.Timeframe) *barAggregator 
 		timeframe: tf,
 		period:    timeframePeriod(tf),
 	}
+}
+
+func (a *barAggregator) Feed(rtb ibsync.RealTimeBar) *domain.MarketBar {
+	return a.add(rtb)
 }
 
 func (a *barAggregator) add(rtb ibsync.RealTimeBar) *domain.MarketBar {
@@ -46,7 +52,11 @@ func (a *barAggregator) add(rtb ibsync.RealTimeBar) *domain.MarketBar {
 			a.low = rtb.Low
 		}
 		a.close = rtb.Close
-		a.volume += rtb.Volume.Float()
+		vol := rtb.Volume.Float()
+		wap := rtb.Wap.Float()
+		a.volume += vol
+		a.vwapNumer += wap * vol
+		a.vwapDenom += vol
 		return nil
 	}
 
@@ -71,7 +81,11 @@ func (a *barAggregator) reset(barStart time.Time, rtb ibsync.RealTimeBar) {
 	a.high = rtb.High
 	a.low = rtb.Low
 	a.close = rtb.Close
-	a.volume = rtb.Volume.Float()
+	vol := rtb.Volume.Float()
+	wap := rtb.Wap.Float()
+	a.volume = vol
+	a.vwapNumer = wap * vol
+	a.vwapDenom = vol
 	a.hasData = true
 }
 

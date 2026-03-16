@@ -12,10 +12,15 @@ import (
 	"github.com/scmhub/ibsync"
 )
 
+const maxRealTimeBarsSymbols = 50
+
 func (a *Adapter) StreamBars(ctx context.Context, symbols []domain.Symbol, tf domain.Timeframe, handler ports.BarHandler) error {
+	if len(symbols) > maxRealTimeBarsSymbols {
+		return fmt.Errorf("ibkr: StreamBars: pacing limit exceeded: max %d symbols, got %d", maxRealTimeBarsSymbols, len(symbols))
+	}
 	ib := a.conn.IB()
 	if ib == nil {
-		return fmt.Errorf("ibkr: not connected")
+		return fmt.Errorf("ibkr: StreamBars: not connected")
 	}
 
 	a.streamMu.Lock()
@@ -24,54 +29,97 @@ func (a *Adapter) StreamBars(ctx context.Context, symbols []domain.Symbol, tf do
 	a.barHdl = handler
 	a.streamMu.Unlock()
 
+	var wg sync.WaitGroup
+	var cancelMu sync.Mutex
+	cancelFuncs := make([]ibsync.CancelFunc, 0, len(symbols))
+
 	for _, sym := range symbols {
 		a.streamMu.Lock()
 		a.streaming[sym] = struct{}{}
 		a.streamMu.Unlock()
-		a.startSymbolStream(ctx, sym, tf, handler)
+
+		contract := newContract(sym)
+		barCh, cancel := ib.ReqRealTimeBars(contract, 5, "TRADES", false)
+
+		cancelMu.Lock()
+		cancelFuncs = append(cancelFuncs, cancel)
+		cancelMu.Unlock()
+
+		wg.Add(1)
+		go func(symbol domain.Symbol, ch <-chan ibsync.RealTimeBar) {
+			defer wg.Done()
+			agg := newBarAggregator(symbol, tf)
+			for {
+				select {
+				case rtb, ok := <-ch:
+					if !ok {
+						return
+					}
+					if mb := agg.add(rtb); mb != nil {
+						if err := handler(ctx, *mb); err != nil {
+							a.log.Error().Err(err).Str("symbol", string(symbol)).Msg("ibkr: bar handler error")
+						}
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}(sym, barCh)
 	}
 
-	<-ctx.Done()
+	a.conn.OnReconnect(func() {
+		a.streamMu.RLock()
+		hdl := a.barHdl
+		tf := a.barTF
+		streamCtx := a.barCtx
+		syms := make([]domain.Symbol, 0, len(a.streaming))
+		for s := range a.streaming {
+			syms = append(syms, s)
+		}
+		a.streamMu.RUnlock()
+		if hdl == nil || streamCtx == nil {
+			return
+		}
+		_ = a.StreamBars(streamCtx.(context.Context), syms, tf, hdl)
+	})
+
+	go func() {
+		<-ctx.Done()
+		cancelMu.Lock()
+		for _, cancel := range cancelFuncs {
+			cancel()
+		}
+		cancelMu.Unlock()
+		wg.Wait()
+	}()
+
 	return nil
 }
 
-const barPollInterval = 65 * time.Second
+func (a *Adapter) SubscribeSymbols(ctx context.Context, symbols []domain.Symbol) error {
+	a.streamMu.RLock()
+	hdl := a.barHdl
+	tf := a.barTF
+	streamCtx := a.barCtx
+	a.streamMu.RUnlock()
 
-func (a *Adapter) startSymbolStream(ctx context.Context, sym domain.Symbol, tf domain.Timeframe, handler ports.BarHandler) {
-	go func() {
-		var lastBarTime time.Time
-		ticker := time.NewTicker(barPollInterval)
-		defer ticker.Stop()
-		a.log.Info().Str("symbol", string(sym)).Msg("ibkr: bar polling started")
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				from := time.Now().Add(-10 * time.Minute)
-				to := time.Now()
-				bars, err := a.GetHistoricalBars(ctx, sym, tf, from, to)
-				if err != nil {
-					a.log.Warn().Err(err).Str("symbol", string(sym)).Msg("ibkr: bar poll failed")
-					continue
-				}
-				newBars := 0
-				for _, bar := range bars {
-					if bar.Time.After(lastBarTime) {
-						lastBarTime = bar.Time
-						if err := handler(ctx, bar); err != nil {
-							a.log.Error().Err(err).Str("symbol", string(sym)).Msg("ibkr: bar handler error")
-						}
-						newBars++
-					}
-				}
-				if newBars > 0 {
-					a.log.Info().Str("symbol", string(sym)).Int("new_bars", newBars).Msg("ibkr: bars polled")
-				}
+	if hdl != nil && streamCtx != nil {
+		newSyms := make([]domain.Symbol, 0)
+		a.streamMu.Lock()
+		for _, s := range symbols {
+			if _, exists := a.streaming[s]; !exists {
+				newSyms = append(newSyms, s)
+				a.streaming[s] = struct{}{}
 			}
 		}
-	}()
+		a.streamMu.Unlock()
+		if len(newSyms) == 0 {
+			return nil
+		}
+		return a.StreamBars(streamCtx.(context.Context), newSyms, tf, hdl)
+	}
+	noop := func(_ context.Context, _ domain.MarketBar) error { return nil }
+	return a.StreamBars(ctx, symbols, "1m", noop)
 }
 
 const (
@@ -175,44 +223,6 @@ func (a *Adapter) GetHistoricalBars(ctx context.Context, symbol domain.Symbol, t
 
 func (a *Adapter) Close() error {
 	return a.conn.disconnect()
-}
-
-func (a *Adapter) SubscribeSymbols(ctx context.Context, symbols []domain.Symbol) error {
-	a.streamMu.RLock()
-	hdl := a.barHdl
-	tf := a.barTF
-	streamCtx := a.barCtx
-	a.streamMu.RUnlock()
-
-	if hdl == nil {
-		return nil
-	}
-
-	ib := a.conn.IB()
-	if ib == nil {
-		return fmt.Errorf("ibkr: not connected")
-	}
-
-	for _, sym := range symbols {
-		a.streamMu.Lock()
-		_, already := a.streaming[sym]
-		if !already {
-			a.streaming[sym] = struct{}{}
-		}
-		a.streamMu.Unlock()
-
-		if already {
-			continue
-		}
-
-		streamContext := streamCtx
-		if streamContext == nil {
-			streamContext = ctx
-		}
-		a.startSymbolStream(streamContext.(context.Context), sym, tf, hdl)
-		a.log.Info().Str("symbol", string(sym)).Msg("ibkr: subscribed new symbol to real-time bars")
-	}
-	return nil
 }
 
 func durationStr(from, to time.Time) string {
