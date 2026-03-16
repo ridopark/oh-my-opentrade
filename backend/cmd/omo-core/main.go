@@ -46,7 +46,7 @@ func waitForShutdown(cancel context.CancelFunc, server *http.Server, infra *infr
 	}
 
 	// 3. Close WebSocket connections — waits up to 3s for RFC6455 close frames.
-	if err := infra.alpacaAdapter.Close(); err != nil {
+	if err := infra.broker.Close(); err != nil {
 		log.Error().Err(err).Msg("error closing Alpaca adapter")
 	}
 

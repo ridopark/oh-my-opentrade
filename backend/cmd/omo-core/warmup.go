@@ -175,7 +175,7 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 			Time("warmup_to", warmupTo).
 			Msg("warming equity indicators from previous RTH session")
 		for _, sym := range syms.equity {
-			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaAdapter, sym, syms.timeframe, warmupFrom, warmupTo, warmupLog)
+			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.broker, sym, syms.timeframe, warmupFrom, warmupTo, warmupLog)
 			if err != nil {
 				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("equity warmup fetch failed, starting cold")
 				continue
@@ -199,7 +199,7 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 			Time("warmup_to", cryptoWarmupTo).
 			Msg("warming crypto indicators from last 2 hours")
 		for _, sym := range syms.crypto {
-			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaAdapter, sym, syms.timeframe, cryptoWarmupFrom, cryptoWarmupTo, warmupLog)
+			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.broker, sym, syms.timeframe, cryptoWarmupFrom, cryptoWarmupTo, warmupLog)
 			if err != nil {
 				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("crypto warmup fetch failed, starting cold")
 				continue
@@ -276,7 +276,7 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 				to = prevEnd
 				from = to.Add(-req.lookback)
 			}
-			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaAdapter, req.symbol, req.timeframe, from, to, warmupLog)
+			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.broker, req.symbol, req.timeframe, from, to, warmupLog)
 			if err != nil {
 				warmupLog.Warn().Err(err).
 					Str("symbol", string(req.symbol)).
@@ -298,7 +298,7 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 	if isOpen && nowET.After(todayOpen) {
 		warmupLog.Info().Msg("replaying current-session bars for ORB state recovery")
 		for _, sym := range syms.equity {
-			orbBars, err := fetchIntraSessionBarsWithGapFill(ctx, infra.repo, infra.alpacaAdapter, sym, syms.timeframe, todayOpen.UTC(), time.Now(), warmupLog)
+			orbBars, err := fetchIntraSessionBarsWithGapFill(ctx, infra.repo, infra.broker, sym, syms.timeframe, todayOpen.UTC(), time.Now(), warmupLog)
 			if err != nil {
 				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("ORB warmup fetch failed")
 				continue
@@ -414,7 +414,7 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 			}
 			return nil
 		}
-		if err := infra.alpacaAdapter.StreamBars(ctx, syms.all, syms.timeframe, barHandler); err != nil {
+		if err := infra.broker.StreamBars(ctx, syms.all, syms.timeframe, barHandler); err != nil {
 			log.Error().Err(err).Msg("WebSocket stream error")
 		}
 	}()
@@ -469,7 +469,7 @@ func warmupHTF(ctx context.Context, infra *infraDeps, svc *appServices, syms sym
 		}
 
 		hourlyFrom := hourlyTo.Add(-time.Duration(float64(hourlyBarsNeeded)*1.3) * time.Hour)
-		bars1h, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaAdapter, sym, "1h", hourlyFrom, hourlyTo, log)
+		bars1h, err := fetchBarsForWarmup(ctx, infra.repo, infra.broker, sym, "1h", hourlyFrom, hourlyTo, log)
 		if err != nil {
 			log.Warn().Err(err).Str("symbol", string(sym)).Msg("1H warmup fetch failed")
 		} else if len(bars1h) > 0 {
@@ -478,7 +478,7 @@ func warmupHTF(ctx context.Context, infra *infraDeps, svc *appServices, syms sym
 		}
 
 		dailyFrom := dailyTo.Add(-time.Duration(float64(dailyBarsNeeded)*1.5) * 24 * time.Hour)
-		bars1d, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaAdapter, sym, "1d", dailyFrom, dailyTo, log)
+		bars1d, err := fetchBarsForWarmup(ctx, infra.repo, infra.broker, sym, "1d", dailyFrom, dailyTo, log)
 		if err != nil {
 			log.Warn().Err(err).Str("symbol", string(sym)).Msg("1D warmup fetch failed")
 			continue
