@@ -17,6 +17,15 @@ func (a *Adapter) SubmitOrder(_ context.Context, intent domain.OrderIntent) (str
 	if ib == nil {
 		return "", fmt.Errorf("ibkr: not connected")
 	}
+	if intent.Quantity <= 0 {
+		return "", fmt.Errorf("ibkr: SubmitOrder: quantity must be positive, got %f", intent.Quantity)
+	}
+
+	a.log.Debug().
+		Str("symbol", string(intent.Symbol)).
+		Float64("qty", intent.Quantity).
+		Str("direction", string(intent.Direction)).
+		Msg("ibkr: SubmitOrder called")
 
 	contract := newContract(intent.Symbol)
 
@@ -54,6 +63,8 @@ func (a *Adapter) CancelOrder(_ context.Context, orderID string) error {
 	if ib == nil {
 		return fmt.Errorf("ibkr: not connected")
 	}
+
+	a.log.Debug().Str("order_id", orderID).Msg("ibkr: CancelOrder called")
 
 	id, err := strconv.ParseInt(orderID, 10, 64)
 	if err != nil {
@@ -168,6 +179,13 @@ func (a *Adapter) GetPositions(_ context.Context, tenantID string, envMode domai
 	positions := ib.Positions()
 	trades := make([]domain.Trade, 0, len(positions))
 	for _, p := range positions {
+		if a.cfg.AccountID != "" && p.Account != a.cfg.AccountID {
+			a.log.Debug().
+				Str("account", p.Account).
+				Str("wanted", a.cfg.AccountID).
+				Msg("ibkr: skipping position from different account")
+			continue
+		}
 		qty := p.Position.Float()
 		if qty == 0 {
 			continue
