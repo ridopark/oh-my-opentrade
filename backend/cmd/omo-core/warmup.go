@@ -374,32 +374,34 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 			return infra.eventBus.Publish(tCtx, *evt)
 		})
 
-		infra.concreteAlpaca.CryptoWSClient().SetDegradedCallback(func(reason string) {
-			evt, err := domain.NewEvent(domain.EventFeedDegraded, "system", domain.EnvModePaper,
-				fmt.Sprintf("feed-degraded-%d", time.Now().UnixNano()),
-				domain.FeedDegradedPayload{Feed: "crypto", Reason: reason})
-			if err != nil {
-				return
-			}
-			_ = infra.eventBus.Publish(ctx, *evt)
-		})
+		if infra.concreteAlpaca.WSClient() != nil {
+			infra.concreteAlpaca.CryptoWSClient().SetDegradedCallback(func(reason string) {
+				evt, err := domain.NewEvent(domain.EventFeedDegraded, "system", domain.EnvModePaper,
+					fmt.Sprintf("feed-degraded-%d", time.Now().UnixNano()),
+					domain.FeedDegradedPayload{Feed: "crypto", Reason: reason})
+				if err != nil {
+					return
+				}
+				_ = infra.eventBus.Publish(ctx, *evt)
+			})
 
-		infra.concreteAlpaca.WSClient().SetPipelineHealth(svc.ingestion)
-		infra.concreteAlpaca.CryptoWSClient().SetPipelineHealth(svc.ingestion)
+			infra.concreteAlpaca.WSClient().SetPipelineHealth(svc.ingestion)
+			infra.concreteAlpaca.CryptoWSClient().SetPipelineHealth(svc.ingestion)
 
-		infra.concreteAlpaca.CryptoWSClient().SetCircuitBreakerCallback(func(consecutiveFails int, blockedFor time.Duration) {
-			evt, err := domain.NewEvent(domain.EventWSCircuitBreakerTripped, "system", domain.EnvModePaper,
-				fmt.Sprintf("ws-cb-tripped-%d", time.Now().UnixNano()),
-				domain.WSCircuitBreakerTrippedPayload{
-					Feed:              "crypto",
-					ConsecutiveFails:  consecutiveFails,
-					BlockedForSeconds: blockedFor.Seconds(),
-				})
-			if err != nil {
-				return
-			}
-			_ = infra.eventBus.Publish(ctx, *evt)
-		})
+			infra.concreteAlpaca.CryptoWSClient().SetCircuitBreakerCallback(func(consecutiveFails int, blockedFor time.Duration) {
+				evt, err := domain.NewEvent(domain.EventWSCircuitBreakerTripped, "system", domain.EnvModePaper,
+					fmt.Sprintf("ws-cb-tripped-%d", time.Now().UnixNano()),
+					domain.WSCircuitBreakerTrippedPayload{
+						Feed:              "crypto",
+						ConsecutiveFails:  consecutiveFails,
+						BlockedForSeconds: blockedFor.Seconds(),
+					})
+				if err != nil {
+					return
+				}
+				_ = infra.eventBus.Publish(ctx, *evt)
+			})
+		}
 	}
 
 	log.Info().
