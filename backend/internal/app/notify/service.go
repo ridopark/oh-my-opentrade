@@ -851,20 +851,28 @@ func (s *Service) fmtSystemStarted(ev domain.Event) string {
 		ema200Line += fmt.Sprintf(" ⚠️ failed: %s", failed)
 	}
 
-	stratLine := fmt.Sprintf("%d active", len(p.Strategies))
-	if len(p.Strategies) <= 5 {
-		stratLine = strings.Join(p.Strategies, ", ")
-	} else {
-		stratLine = strings.Join(p.Strategies[:5], ", ") + fmt.Sprintf(" +%d more", len(p.Strategies)-5)
+	var stratLines []string
+	for _, name := range p.Strategies {
+		syms := p.StrategySymbols[name]
+		symStr := strings.Join(syms, ", ")
+		if len(syms) > 8 {
+			symStr = strings.Join(syms[:8], ", ") + fmt.Sprintf(" +%d", len(syms)-8)
+		}
+		stratLines = append(stratLines, fmt.Sprintf("  • **%s** (%d): %s", name, len(syms), symStr))
+	}
+	stratSection := strings.Join(stratLines, "\n")
+	if stratSection == "" {
+		stratSection = "  none"
 	}
 
 	return strings.Join([]string{
-		fmt.Sprintf("✅ **System Started: omo-core**"),
+		"✅ **System Started: omo-core**",
 		fmt.Sprintf("📋 **Mode:** %s | **Broker:** %s", p.EnvMode, brokerStatus),
 		fmt.Sprintf("📡 **Data:** %s", dataSource),
 		fmt.Sprintf("📊 **Symbols:** %d total — %d equity, %d crypto", len(p.Symbols), p.EquityCount, p.CryptoCount),
 		fmt.Sprintf("📈 **EMA200:** %s", ema200Line),
-		fmt.Sprintf("🎯 **Strategies:** %s", stratLine),
+		fmt.Sprintf("🎯 **Strategies (%d):**", len(p.Strategies)),
+		stratSection,
 	}, "\n")
 }
 

@@ -446,7 +446,18 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 			}
 		}
 		allSyms := symbolStrings(syms.all)
-		stratNames := symbolStrings(syms.all)
+
+		strategySymbols := make(map[string][]string)
+		var stratNames []string
+		if svc.strategyRunner != nil {
+			for _, info := range svc.strategyRunner.ListStrategies() {
+				if _, seen := strategySymbols[info.ID]; !seen {
+					stratNames = append(stratNames, info.ID)
+				}
+				strategySymbols[info.ID] = append(strategySymbols[info.ID], info.Symbols...)
+			}
+		}
+
 		evt, err := domain.NewEvent(domain.EventSystemStarted, "system", domain.EnvModePaper,
 			fmt.Sprintf("system-started-%d", time.Now().UnixNano()),
 			domain.SystemStartedPayload{
@@ -461,6 +472,7 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 				EMA200Succeeded: infra.startup.EMA200Succeeded,
 				EMA200Failed:    infra.startup.EMA200Failed,
 				Strategies:      stratNames,
+				StrategySymbols: strategySymbols,
 			})
 		if err == nil {
 			_ = infra.eventBus.Publish(ctx, *evt)

@@ -122,6 +122,7 @@ type SystemStartedPayload struct {
 	EMA200Succeeded int
 	EMA200Failed    []string
 	Strategies      []string
+	StrategySymbols map[string][]string
 }
 
 // Event represents a domain event in the trading pipeline.
