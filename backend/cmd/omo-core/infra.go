@@ -38,8 +38,9 @@ type brokerAdapter interface {
 
 type infraDeps struct {
 	eventBus        *memory.Bus
-	broker   brokerAdapter
+	broker          brokerAdapter
 	concreteAlpaca  *alpaca.Adapter
+	concreteIBKR    *ibkr.Adapter
 	sqlDB           *sql.DB
 	repo            *timescaledb.Repository
 	pnlRepo         *timescaledb.PnLRepository
@@ -86,20 +87,37 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 
 	var broker brokerAdapter
 	var concreteAlpaca *alpaca.Adapter
+	var concreteIBKR *ibkr.Adapter
 
 	switch cfg.Broker {
 	case "ibkr":
+		if err := retryWithBackoff(log, "alpaca_adapter_rest", 5, 2*time.Second, 30*time.Second, func() error {
+			a, err := alpaca.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca").Logger(), alpaca.WithNoStream())
+			if err != nil {
+				return err
+			}
+			concreteAlpaca = a
+			return nil
+		}); err != nil {
+			log.Fatal().Err(err).Msg("failed to create Alpaca adapter (REST mode) after retries")
+		}
+
 		if err := retryWithBackoff(log, "ibkr_adapter", 10, 5*time.Second, 60*time.Second, func() error {
 			a, err := ibkr.NewAdapter(cfg.IBKR, log.With().Str("component", "ibkr").Logger())
 			if err != nil {
 				return err
 			}
-			broker = a
+			concreteIBKR = a
 			return nil
 		}); err != nil {
 			log.Fatal().Err(err).Msg("failed to connect to IB Gateway after retries")
 		}
-		log.Info().Str("host", cfg.IBKR.Host).Int("port", cfg.IBKR.Port).Msg("IBKR adapter initialized")
+
+		broker = ibkr.NewCompositeAdapter(concreteIBKR, concreteAlpaca, log)
+		log.Info().
+			Str("host", cfg.IBKR.Host).
+			Int("port", cfg.IBKR.Port).
+			Msg("broker initialized: IBKR live + Alpaca historical")
 	default:
 		if err := retryWithBackoff(log, "alpaca_adapter", 5, 2*time.Second, 30*time.Second, func() error {
 			a, err := alpaca.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca").Logger())
@@ -138,8 +156,9 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 
 	return &infraDeps{
 		eventBus:        eventBus,
-		broker:   broker,
+		broker:          broker,
 		concreteAlpaca:  concreteAlpaca,
+		concreteIBKR:    concreteIBKR,
 		sqlDB:           sqlDB,
 		repo:            repo,
 		pnlRepo:         pnlRepo,
