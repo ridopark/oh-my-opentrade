@@ -184,7 +184,6 @@ func (a *Adapter) GetHistoricalBars(ctx context.Context, symbol domain.Symbol, t
 	case r := <-reqCh:
 		barsCh = r.ch
 		cancelReq = r.cancel
-		defer cancelReq()
 	case <-tCtx.Done():
 		a.log.Warn().Str("symbol", string(symbol)).Str("tf", string(tf)).Msg("ibkr: historical data request timed out (connecting)")
 		return nil, nil
@@ -215,6 +214,7 @@ func (a *Adapter) GetHistoricalBars(ctx context.Context, symbol domain.Symbol, t
 				Volume:    b.Volume.Float(),
 			})
 		case <-tCtx.Done():
+			cancelReq()
 			a.log.Warn().Str("symbol", string(symbol)).Str("tf", string(tf)).Msg("ibkr: historical data request timed out")
 			return bars, nil
 		}
