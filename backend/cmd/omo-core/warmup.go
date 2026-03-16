@@ -451,6 +451,9 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 		var stratNames []string
 		if svc.strategyRunner != nil {
 			for _, info := range svc.strategyRunner.ListStrategies() {
+				if !info.Active {
+					continue
+				}
 				if _, seen := strategySymbols[info.ID]; !seen {
 					stratNames = append(stratNames, info.ID)
 				}
