@@ -11,17 +11,35 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
+	"github.com/oh-my-opentrade/backend/internal/adapters/ibkr"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/config"
+	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/logger"
 	"github.com/oh-my-opentrade/backend/internal/observability/tracing"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
+type brokerAdapter interface {
+	ports.BrokerPort
+	ports.OrderStreamPort
+	ports.MarketDataPort
+	ports.AccountPort
+	ports.SnapshotPort
+	ports.OptionsMarketDataPort
+	ports.OptionsPricePort
+	ports.UniverseProviderPort
+	GetQuote(ctx context.Context, symbol domain.Symbol) (float64, float64, error)
+	GetAccountEquity(ctx context.Context) (float64, error)
+	SubscribeSymbols(ctx context.Context, symbols []domain.Symbol) error
+}
+
 type infraDeps struct {
 	eventBus        *memory.Bus
-	alpacaAdapter   *alpaca.Adapter
+	alpacaAdapter   brokerAdapter
+	concreteAlpaca  *alpaca.Adapter
 	sqlDB           *sql.DB
 	repo            *timescaledb.Repository
 	pnlRepo         *timescaledb.PnLRepository
@@ -66,19 +84,36 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 	eventBus := memory.NewBus()
 	log.Info().Msg("event bus initialized")
 
-	// Alpaca adapter (MarketDataPort + BrokerPort + QuoteProvider)
-	var alpacaAdapter *alpaca.Adapter
-	if err := retryWithBackoff(log, "alpaca_adapter", 5, 2*time.Second, 30*time.Second, func() error {
-		a, err := alpaca.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca").Logger())
-		if err != nil {
-			return err
+	var alpacaAdapter brokerAdapter
+	var concreteAlpaca *alpaca.Adapter
+
+	switch cfg.Broker {
+	case "ibkr":
+		if err := retryWithBackoff(log, "ibkr_adapter", 10, 5*time.Second, 60*time.Second, func() error {
+			a, err := ibkr.NewAdapter(cfg.IBKR, log.With().Str("component", "ibkr").Logger())
+			if err != nil {
+				return err
+			}
+			alpacaAdapter = a
+			return nil
+		}); err != nil {
+			log.Fatal().Err(err).Msg("failed to connect to IB Gateway after retries")
 		}
-		alpacaAdapter = a
-		return nil
-	}); err != nil {
-		log.Fatal().Err(err).Msg("failed to create Alpaca adapter after retries")
+		log.Info().Str("host", cfg.IBKR.Host).Int("port", cfg.IBKR.Port).Msg("IBKR adapter initialized")
+	default:
+		if err := retryWithBackoff(log, "alpaca_adapter", 5, 2*time.Second, 30*time.Second, func() error {
+			a, err := alpaca.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca").Logger())
+			if err != nil {
+				return err
+			}
+			concreteAlpaca = a
+			return nil
+		}); err != nil {
+			log.Fatal().Err(err).Msg("failed to create Alpaca adapter after retries")
+		}
+		alpacaAdapter = concreteAlpaca
+		log.Info().Msg("Alpaca adapter initialized")
 	}
-	log.Info().Msg("Alpaca adapter initialized")
 
 	// TimescaleDB repository
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
@@ -104,6 +139,7 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 	return &infraDeps{
 		eventBus:        eventBus,
 		alpacaAdapter:   alpacaAdapter,
+		concreteAlpaca:  concreteAlpaca,
 		sqlDB:           sqlDB,
 		repo:            repo,
 		pnlRepo:         pnlRepo,

@@ -14,7 +14,7 @@ paper_only = true
 
 [routing]
 symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META"]
-timeframes = ["1m"]
+timeframes = ["5m"]
 priority = 80
 conflict_policy = "priority_wins"
 exclusive_per_symbol = true
@@ -39,7 +39,7 @@ allow_regimes = ["TREND"]
 asset_class = "EQUITY"
 require_higher_lows = true
 higher_lows_bars = 3
-midday_trap_shield = true
+midday_trap_shield = false
 midday_volume_mult = 2.0
 stop_bps = 50
 limit_offset_bps = 5
@@ -51,7 +51,7 @@ allowed_hours_tz = "America/New_York"
 
 [regime_filter]
 enabled = false
-allowed_regimes = ["BALANCE", "REVERSAL"]
+allowed_regimes = ["TREND"]
 min_atr_pct = 0.8
 
 [hooks]
@@ -69,7 +69,7 @@ size_wide_mult = 1.20
 
 [risk_revaluation]
 enabled = true
-interval_minutes = 5
+interval_minutes = 30
 
 [[exit_rules]]
 type = "VOLATILITY_STOP"

@@ -14,6 +14,8 @@ import (
 // Config represents the complete application configuration.
 type Config struct {
 	Alpaca       AlpacaConfig       `yaml:"alpaca"`
+	IBKR         IBKRConfig         `yaml:"ibkr"`
+	Broker       string             `yaml:"-"`
 	Database     DatabaseConfig     `yaml:"database"`
 	Trading      TradingConfig      `yaml:"trading"`
 	Symbols      SymbolsConfig      `yaml:"symbols"`
@@ -23,6 +25,14 @@ type Config struct {
 	Notification NotificationConfig `yaml:"notification"`
 	OptionsV2    bool               `yaml:"-"`
 	MultiAccount bool               `yaml:"-"`
+}
+
+// IBKRConfig holds connection parameters for the IB Gateway adapter.
+type IBKRConfig struct {
+	Host      string `yaml:"host"`
+	Port      int    `yaml:"port"`
+	ClientID  int    `yaml:"client_id"`
+	PaperMode bool   `yaml:"paper_mode"`
 }
 
 // AlpacaConfig represents the Alpaca broker configuration.
@@ -180,6 +190,7 @@ type rawTradingConfig struct {
 
 type rawConfig struct {
 	Alpaca       AlpacaConfig       `yaml:"alpaca"`
+	IBKR         IBKRConfig         `yaml:"ibkr"`
 	Database     DatabaseConfig     `yaml:"database"`
 	Trading      rawTradingConfig   `yaml:"trading"`
 	Symbols      SymbolsConfig      `yaml:"symbols"`
@@ -237,6 +248,12 @@ func Load(envPath, yamlPath string) (*Config, error) {
 			Feed:          defaultFeed,
 			CryptoDataURL: defaultCryptoDataURL,
 			CryptoFeed:    defaultCryptoFeed,
+		},
+		IBKR: IBKRConfig{
+			Host:      "localhost",
+			Port:      4002,
+			ClientID:  1,
+			PaperMode: true,
 		},
 		Database: DatabaseConfig{
 			Port:        defaultDBPort,
@@ -297,6 +314,7 @@ func Load(envPath, yamlPath string) (*Config, error) {
 
 	cfg := &Config{
 		Alpaca:   raw.Alpaca,
+		IBKR:     raw.IBKR,
 		Database: raw.Database,
 		Trading: TradingConfig{
 			MaxRiskPercent:         raw.Trading.MaxRiskPercent,
@@ -336,6 +354,25 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	}
 	if val := os.Getenv("APCA_CRYPTO_FEED"); val != "" {
 		cfg.Alpaca.CryptoFeed = val
+	}
+
+	if val := os.Getenv("BROKER"); val != "" {
+		cfg.Broker = val
+	} else {
+		cfg.Broker = "alpaca"
+	}
+	if val := os.Getenv("IBKR_GATEWAY_HOST"); val != "" {
+		cfg.IBKR.Host = val
+	}
+	if val := os.Getenv("IBKR_GATEWAY_PORT"); val != "" {
+		if p, err := strconv.Atoi(val); err == nil {
+			cfg.IBKR.Port = p
+		}
+	}
+	if val := os.Getenv("IBKR_CLIENT_ID"); val != "" {
+		if id, err := strconv.Atoi(val); err == nil {
+			cfg.IBKR.ClientID = id
+		}
 	}
 
 	if val := os.Getenv("TIMESCALEDB_PASSWORD"); val != "" {
@@ -492,14 +529,16 @@ func validate(cfg *Config) error {
 	if cfg.Database.Host == "" {
 		return fmt.Errorf("config validation: database host cannot be empty")
 	}
-	if cfg.Alpaca.APIKeyID == "" {
-		return fmt.Errorf("config validation: alpaca API key ID cannot be empty")
-	}
-	if cfg.Alpaca.APISecretKey == "" {
-		return fmt.Errorf("config validation: alpaca API secret key cannot be empty")
-	}
-	if cfg.Alpaca.BaseURL == "" {
-		return fmt.Errorf("config validation: alpaca base URL cannot be empty")
+	if cfg.Broker != "ibkr" {
+		if cfg.Alpaca.APIKeyID == "" {
+			return fmt.Errorf("config validation: alpaca API key ID cannot be empty")
+		}
+		if cfg.Alpaca.APISecretKey == "" {
+			return fmt.Errorf("config validation: alpaca API secret key cannot be empty")
+		}
+		if cfg.Alpaca.BaseURL == "" {
+			return fmt.Errorf("config validation: alpaca base URL cannot be empty")
+		}
 	}
 	return nil
 }

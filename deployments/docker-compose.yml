@@ -1,4 +1,28 @@
 services:
+  ib-gateway:
+    image: gnzsnz/ib-gateway:stable
+    container_name: omo-ib-gateway
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    ports:
+      - "4002:4004"   # Paper Trading API (host:4002 → socat:4004 → IB Gateway:4002)
+      - "5900:5900"   # VNC (optional visual debugging)
+    environment:
+      - TRADING_MODE=paper
+      - READ_ONLY=no
+      - READ_ONLY_API=no
+      - TWS_ACCEPT_INCOMING_CONNECTION=yes
+      - VNC_SERVER_PASSWORD=${VNC_PASS:-password}
+    volumes:
+      - ibgateway_jts:/home/ibgateway/Jts
+    healthcheck:
+      test: ["CMD-SHELL", "echo > /dev/tcp/localhost/4002 2>/dev/null && echo ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+
   timescaledb:
     image: timescale/timescaledb:latest-pg16
     container_name: omo-timescaledb
@@ -60,6 +84,10 @@ services:
       - TIMESCALEDB_HOST=timescaledb
       - TIMESCALEDB_PORT=5432
       - STRATEGY_V2=true
+      - BROKER=${BROKER:-alpaca}
+      - IBKR_GATEWAY_HOST=ib-gateway
+      - IBKR_GATEWAY_PORT=4002
+      - IBKR_CLIENT_ID=${IBKR_CLIENT_ID:-1}
     ports:
       - "8080:8080"
     # Healthcheck: distroless image has no shell/curl/wget. Liveness is
@@ -129,4 +157,6 @@ volumes:
   prometheus_data:
     driver: local
   grafana_data:
+    driver: local
+  ibgateway_jts:
     driver: local
