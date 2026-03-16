@@ -93,7 +93,7 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	imux.Mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	imux.Mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 
-	imux.Handle("/bars", omhttp.NewBarsHandler(infra.repo, infra.alpacaAdapter, httpLog))
+	imux.Handle("/bars", omhttp.NewBarsHandler(infra.repo, infra.broker, httpLog))
 	imux.Handle("/events", sseHandler)
 
 	imux.Mux.HandleFunc("/debug/ai-screener/run", func(w http.ResponseWriter, r *http.Request) {

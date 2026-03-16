@@ -116,7 +116,7 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 
 	// Account equity (must be fetched before building execution)
 	svc.accountEquity = 100000.0 // fallback
-	if equity, err := infra.alpacaAdapter.GetAccountEquity(context.Background()); err == nil {
+	if equity, err := infra.broker.GetAccountEquity(context.Background()); err == nil {
 		svc.accountEquity = equity
 		log.Info().Float64("equity", equity).Msg("account equity fetched from broker")
 	} else {
@@ -126,14 +126,14 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	// Execution guard chain (via shared bootstrap builder)
 	var acctPort ports.AccountPort
 	if os.Getenv("DTBP_FALLBACK") == "true" {
-		acctPort = infra.alpacaAdapter
+		acctPort = infra.broker
 		log.Info().Msg("DTBP fallback enabled — buying power guard active")
 	}
 	execBundle, err := bootstrap.BuildExecutionService(bootstrap.ExecutionDeps{
 		EventBus:      infra.eventBus,
-		Broker:        infra.alpacaAdapter,
+		Broker:        infra.broker,
 		Repo:          infra.repo,
-		QuoteProvider: infra.alpacaAdapter,
+		QuoteProvider: infra.broker,
 		AccountPort:   acctPort,
 		PnLRepo:       infra.pnlRepo,
 		TradeReader:   infra.repo,
@@ -146,7 +146,7 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to build execution service")
 	}
-	execution.WithOrderStream(infra.alpacaAdapter)(execBundle.Service)
+	execution.WithOrderStream(infra.broker)(execBundle.Service)
 	svc.execution = execBundle.Service
 	svc.ledgerWriter = execBundle.LedgerWriter
 	svc.dailyLossBreaker = execBundle.DailyLossBreaker
@@ -156,10 +156,10 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	posMonBundle, err := bootstrap.BuildPositionMonitor(bootstrap.PosMonitorDeps{
 		EventBus:     infra.eventBus,
 		PositionGate: execBundle.PositionGate,
-		Broker:       infra.alpacaAdapter,
+		Broker:       infra.broker,
 		Repo:         infra.repo,
 		SnapshotFn:   svc.monitor.GetLastSnapshot,
-		OptionsPrice: infra.alpacaAdapter,
+		OptionsPrice: infra.broker,
 		TenantID:     "default",
 		EnvMode:      domain.EnvModePaper,
 		Clock:        time.Now,
@@ -307,7 +307,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		NewsProvider:    newsProvider,
 		Repo:            infra.repo,
 		StratPerf:       infra.stratPerfRepo,
-		OptionsMarket:   infra.alpacaAdapter,
+		OptionsMarket:   infra.broker,
 		TenantID:        "default",
 		EnvMode:         domain.EnvModePaper,
 		Equity:          svc.accountEquity,
@@ -384,7 +384,7 @@ func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, lo
 		EventBus:   infra.eventBus,
 		Repo:       infra.repo,
 		PnLRepo:    infra.pnlRepo,
-		MarketData: infra.alpacaAdapter,
+		MarketData: infra.broker,
 		SpecStore:  nil, // not used directly by orchestrator
 		Metrics:    nil, // wired later after metrics.New()
 		Log:        log.With().Str("component", "orchestrator").Logger(),
@@ -539,8 +539,8 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 			actLog,
 			infra.eventBus,
 			svc.monitor,
-			infra.alpacaAdapter,
-			infra.alpacaAdapter,
+			infra.broker,
+			infra.broker,
 			svc.spikeFilter,
 			svc.pipelineActivator,
 			domain.Timeframe(cfg.Symbols.Timeframe),
@@ -593,8 +593,8 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 			cfg.Symbols.Symbols,
 			domain.AssetClassEquity,
 			infra.eventBus,
-			infra.alpacaAdapter,
-			infra.alpacaAdapter,
+			infra.broker,
+			infra.broker,
 			screenerRepo,
 			nil,
 		)
@@ -615,9 +615,9 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 			"default",
 			string(domain.EnvModePaper),
 			infra.eventBus,
-			infra.alpacaAdapter,
-			infra.alpacaAdapter,
-			infra.alpacaAdapter,
+			infra.broker,
+			infra.broker,
+			infra.broker,
 			aiScreenerRepo,
 			svc.specStore,
 			svc.notifier,
@@ -660,7 +660,7 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					if eq, err := infra.alpacaAdapter.GetAccountEquity(ctx); err == nil {
+					if eq, err := infra.broker.GetAccountEquity(ctx); err == nil {
 						svc.execution.SetAccountEquity(eq)
 						svc.ledgerWriter.SetAccountEquity(eq)
 						svc.strategySvc.SetAccountEquity(eq)
@@ -686,8 +686,8 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 				RunAtHourET:   16,
 				RunAtMinuteET: 15,
 			},
-			infra.alpacaAdapter,
-			infra.alpacaAdapter,
+			infra.broker,
+			infra.broker,
 			ivRepo,
 			log.With().Str("component", "iv_collector").Logger(),
 		)

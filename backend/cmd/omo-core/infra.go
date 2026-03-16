@@ -38,7 +38,7 @@ type brokerAdapter interface {
 
 type infraDeps struct {
 	eventBus        *memory.Bus
-	alpacaAdapter   brokerAdapter
+	broker   brokerAdapter
 	concreteAlpaca  *alpaca.Adapter
 	sqlDB           *sql.DB
 	repo            *timescaledb.Repository
@@ -84,7 +84,7 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 	eventBus := memory.NewBus()
 	log.Info().Msg("event bus initialized")
 
-	var alpacaAdapter brokerAdapter
+	var broker brokerAdapter
 	var concreteAlpaca *alpaca.Adapter
 
 	switch cfg.Broker {
@@ -94,7 +94,7 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 			if err != nil {
 				return err
 			}
-			alpacaAdapter = a
+			broker = a
 			return nil
 		}); err != nil {
 			log.Fatal().Err(err).Msg("failed to connect to IB Gateway after retries")
@@ -111,7 +111,7 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 		}); err != nil {
 			log.Fatal().Err(err).Msg("failed to create Alpaca adapter after retries")
 		}
-		alpacaAdapter = concreteAlpaca
+		broker = concreteAlpaca
 		log.Info().Msg("Alpaca adapter initialized")
 	}
 
@@ -138,7 +138,7 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 
 	return &infraDeps{
 		eventBus:        eventBus,
-		alpacaAdapter:   alpacaAdapter,
+		broker:   broker,
 		concreteAlpaca:  concreteAlpaca,
 		sqlDB:           sqlDB,
 		repo:            repo,
