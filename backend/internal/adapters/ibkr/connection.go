@@ -61,17 +61,41 @@ func newConnection(cfg config.IBKRConfig, log zerolog.Logger) (*connection, erro
 	return c, nil
 }
 
+const (
+	portLive  = 4001
+	portPaper = 4002
+)
+
+func (c *connection) effectivePort() int {
+	if c.cfg.Port != 0 {
+		return c.cfg.Port
+	}
+	if c.cfg.PaperMode {
+		return portPaper
+	}
+	return portLive
+}
+
 func (c *connection) connect() error {
+	port := c.effectivePort()
+
+	if c.cfg.PaperMode && port == portLive {
+		c.log.Warn().Int("port", port).Msg("ibkr: PaperMode=true but connecting to live port 4001 — intended?")
+	}
+	if !c.cfg.PaperMode && port == portPaper {
+		c.log.Warn().Int("port", port).Msg("ibkr: PaperMode=false but connecting to paper port 4002 — intended?")
+	}
+
 	ib := ibsync.NewIB()
 	ib.SetLogger(c.log)
 
 	ibCfg := ibsync.NewConfig(
 		ibsync.WithHost(c.cfg.Host),
-		ibsync.WithPort(c.cfg.Port),
+		ibsync.WithPort(port),
 		ibsync.WithClientID(int64(c.cfg.ClientID)),
 	)
 	if err := ib.Connect(ibCfg); err != nil {
-		return fmt.Errorf("ibkr connect %s:%d clientID=%d: %w", c.cfg.Host, c.cfg.Port, c.cfg.ClientID, err)
+		return fmt.Errorf("ibkr connect %s:%d clientID=%d: %w", c.cfg.Host, port, c.cfg.ClientID, err)
 	}
 
 	c.mu.Lock()
@@ -80,8 +104,9 @@ func (c *connection) connect() error {
 
 	c.log.Info().
 		Str("host", c.cfg.Host).
-		Int("port", c.cfg.Port).
+		Int("port", port).
 		Int("client_id", c.cfg.ClientID).
+		Bool("paper", c.cfg.PaperMode).
 		Msg("ibkr: connected")
 	return nil
 }
