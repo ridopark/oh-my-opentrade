@@ -99,7 +99,9 @@ func (c *connection) connect() error {
 	}
 
 	mdType := int64(1)
-	if c.cfg.PaperMode {
+	if c.cfg.MarketDataType != 0 {
+		mdType = int64(c.cfg.MarketDataType)
+	} else if c.cfg.PaperMode {
 		mdType = 3
 	}
 	ib.ReqMarketDataType(mdType)
