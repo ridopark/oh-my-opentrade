@@ -4,14 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/scmhub/ibsync"
 )
 
-const orderPollInterval = 500 * time.Millisecond
+const orderPollInterval = 200 * time.Millisecond
 
 func (a *Adapter) SubscribeOrderUpdates(ctx context.Context) (<-chan ports.OrderUpdate, error) {
 	ib := a.conn.IB()
@@ -20,11 +19,11 @@ func (a *Adapter) SubscribeOrderUpdates(ctx context.Context) (<-chan ports.Order
 	}
 
 	out := make(chan ports.OrderUpdate, 64)
-	go a.pollOrderUpdates(ctx, ib, out)
+	go a.pollOrderUpdates(ctx, out)
 	return out, nil
 }
 
-func (a *Adapter) pollOrderUpdates(ctx context.Context, ib ibClient, out chan<- ports.OrderUpdate) {
+func (a *Adapter) pollOrderUpdates(ctx context.Context, out chan<- ports.OrderUpdate) {
 	defer close(out)
 
 	type tradeState struct {
@@ -32,7 +31,6 @@ func (a *Adapter) pollOrderUpdates(ctx context.Context, ib ibClient, out chan<- 
 		filled float64
 	}
 	seen := make(map[int64]tradeState)
-	var mu sync.Mutex
 
 	ticker := time.NewTicker(orderPollInterval)
 	defer ticker.Stop()
@@ -42,8 +40,11 @@ func (a *Adapter) pollOrderUpdates(ctx context.Context, ib ibClient, out chan<- 
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			ib := a.conn.IB()
+			if ib == nil {
+				continue
+			}
 			trades := ib.Trades()
-			mu.Lock()
 			for _, t := range trades {
 				if t.Order == nil {
 					continue
@@ -56,26 +57,19 @@ func (a *Adapter) pollOrderUpdates(ctx context.Context, ib ibClient, out chan<- 
 				prev, existed := seen[id]
 				seen[id] = cur
 
-				if !existed {
-					select {
-					case out <- tradeToOrderUpdate(t):
-					case <-ctx.Done():
-						mu.Unlock()
-						return
-					}
-					continue
-				}
+				shouldEmit := !existed ||
+					cur.status != prev.status ||
+					(cur.status == ibsync.Submitted && cur.filled > prev.filled)
 
-				if cur.status != prev.status || (cur.status == ibsync.Submitted && cur.filled > prev.filled) {
+				if shouldEmit {
+					update := tradeToOrderUpdate(t)
 					select {
-					case out <- tradeToOrderUpdate(t):
+					case out <- update:
 					case <-ctx.Done():
-						mu.Unlock()
 						return
 					}
 				}
 			}
-			mu.Unlock()
 		}
 	}
 }
