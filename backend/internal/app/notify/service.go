@@ -818,11 +818,54 @@ func (s *Service) fmtExitCircuitBroken(ev domain.Event) string {
 }
 
 func (s *Service) fmtSystemStarted(ev domain.Event) string {
-	if p, ok := ev.Payload.(domain.SystemStartedPayload); ok {
-		return fmt.Sprintf("✅ **System Started:** omo-core — **%s** mode, %d symbols streaming",
-			p.EnvMode, len(p.Strategies))
+	p, ok := ev.Payload.(domain.SystemStartedPayload)
+	if !ok {
+		return "✅ System started"
 	}
-	return "✅ System started"
+
+	brokerStatus := fmt.Sprintf("%s", strings.ToUpper(p.Broker))
+	if p.Broker == "ibkr" {
+		if p.IBKRConnected {
+			brokerStatus += " 🟢 connected"
+		} else {
+			brokerStatus += " 🔴 disconnected"
+		}
+		if p.IBKRPaperMode {
+			brokerStatus += " (delayed data)"
+		} else {
+			brokerStatus += " (live data)"
+		}
+	}
+
+	dataSource := "Alpaca WebSocket + Alpaca REST historical"
+	if p.Broker == "ibkr" {
+		dataSource = "IBKR real-time bars + Alpaca REST historical"
+	}
+
+	ema200Line := fmt.Sprintf("✅ %d/%d warmed up", p.EMA200Succeeded, p.EMA200Succeeded+len(p.EMA200Failed))
+	if len(p.EMA200Failed) > 0 {
+		failed := strings.Join(p.EMA200Failed, ", ")
+		if len(p.EMA200Failed) > 4 {
+			failed = strings.Join(p.EMA200Failed[:4], ", ") + fmt.Sprintf(" +%d more", len(p.EMA200Failed)-4)
+		}
+		ema200Line += fmt.Sprintf(" ⚠️ failed: %s", failed)
+	}
+
+	stratLine := fmt.Sprintf("%d active", len(p.Strategies))
+	if len(p.Strategies) <= 5 {
+		stratLine = strings.Join(p.Strategies, ", ")
+	} else {
+		stratLine = strings.Join(p.Strategies[:5], ", ") + fmt.Sprintf(" +%d more", len(p.Strategies)-5)
+	}
+
+	return strings.Join([]string{
+		fmt.Sprintf("✅ **System Started: omo-core**"),
+		fmt.Sprintf("📋 **Mode:** %s | **Broker:** %s", p.EnvMode, brokerStatus),
+		fmt.Sprintf("📡 **Data:** %s", dataSource),
+		fmt.Sprintf("📊 **Symbols:** %d total — %d equity, %d crypto", len(p.Symbols), p.EquityCount, p.CryptoCount),
+		fmt.Sprintf("📈 **EMA200:** %s", ema200Line),
+		fmt.Sprintf("🎯 **Strategies:** %s", stratLine),
+	}, "\n")
 }
 
 func (s *Service) fmtRiskRevaluated(ev domain.Event) string {
