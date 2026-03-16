@@ -24,7 +24,7 @@ func (a *Adapter) SubscribeOrderUpdates(ctx context.Context) (<-chan ports.Order
 	return out, nil
 }
 
-func (a *Adapter) pollOrderUpdates(ctx context.Context, ib *ibsync.IB, out chan<- ports.OrderUpdate) {
+func (a *Adapter) pollOrderUpdates(ctx context.Context, ib ibClient, out chan<- ports.OrderUpdate) {
 	defer close(out)
 
 	type tradeState struct {

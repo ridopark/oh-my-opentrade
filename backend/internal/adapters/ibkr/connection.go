@@ -31,7 +31,7 @@ const (
 )
 
 type connection struct {
-	ib      *ibsync.IB
+	ib      ibClient
 	cfg     config.IBKRConfig
 	log     zerolog.Logger
 	symHook *symbolHook
@@ -126,7 +126,7 @@ func (c *connection) disconnect() error {
 	return c.ib.Disconnect()
 }
 
-func (c *connection) IB() *ibsync.IB {
+func (c *connection) IB() ibClient {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.ib
