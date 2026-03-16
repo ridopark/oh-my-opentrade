@@ -28,13 +28,32 @@ type Adapter struct {
 
 var _ ports.SnapshotPort = (*Adapter)(nil)
 
+// adapterOptions holds functional options for NewAdapter.
+type adapterOptions struct {
+	noStream bool
+}
+
+// Option is a functional option for NewAdapter.
+type Option func(*adapterOptions)
+
+// WithNoStream skips initializing the WebSocket market data streams.
+// Use when the adapter is only needed for REST (historical bars, options).
+func WithNoStream() Option {
+	return func(o *adapterOptions) { o.noStream = true }
+}
+
 // NewAdapter creates a new Alpaca Adapter.
-func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
+func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger, opts ...Option) (*Adapter, error) {
 	if cfg.APIKeyID == "" {
 		return nil, errors.New("APIKeyID is required")
 	}
 	if cfg.APISecretKey == "" {
 		return nil, errors.New("APISecretKey is required")
+	}
+
+	o := &adapterOptions{}
+	for _, opt := range opts {
+		opt(o)
 	}
 
 	limiter := NewPriorityRateLimiter(defaultRateLimit, 120)
@@ -55,14 +74,22 @@ func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger) (*Adapter, error) {
 		}
 		return dataREST.GetHistoricalBars(ctx, dataURL, symbol, timeframe, from, to)
 	}
-	ws := NewWSClient(cfg.DataURL, cfg.APIKeyID, cfg.APISecretKey, cfg.Feed, fetcher)
 
-	cryptoWs, err := NewCryptoWSClient(cfg.CryptoDataURL, cfg.APIKeyID, cfg.APISecretKey, cfg.CryptoFeed, fetcher, log)
-	if err != nil {
-		return nil, fmt.Errorf("create crypto WS client: %w", err)
+	var ws *WSClient
+	var cryptoWs *CryptoWSClient
+	var tradeStream *TradeStreamClient
+
+	if !o.noStream {
+		ws = NewWSClient(cfg.DataURL, cfg.APIKeyID, cfg.APISecretKey, cfg.Feed, fetcher)
+
+		var err error
+		cryptoWs, err = NewCryptoWSClient(cfg.CryptoDataURL, cfg.APIKeyID, cfg.APISecretKey, cfg.CryptoFeed, fetcher, log)
+		if err != nil {
+			return nil, fmt.Errorf("create crypto WS client: %w", err)
+		}
+
+		tradeStream = NewTradeStreamClient(cfg.BaseURL, cfg.APIKeyID, cfg.APISecretKey, cfg.PaperMode, log)
 	}
-
-	tradeStream := NewTradeStreamClient(cfg.BaseURL, cfg.APIKeyID, cfg.APISecretKey, cfg.PaperMode, log)
 
 	return &Adapter{
 		rest:        rest,

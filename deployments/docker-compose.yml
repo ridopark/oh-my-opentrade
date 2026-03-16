@@ -88,6 +88,7 @@ services:
       - IBKR_GATEWAY_HOST=ib-gateway
       - IBKR_GATEWAY_PORT=4002
       - IBKR_CLIENT_ID=${IBKR_CLIENT_ID:-1}
+      - IBKR_ACCOUNT_ID=""
     ports:
       - "8080:8080"
     # Healthcheck: distroless image has no shell/curl/wget. Liveness is

@@ -572,3 +572,28 @@ symbols:
 	assert.Equal(t, "wss://env-stream.example.com", cfg.Alpaca.CryptoDataURL)
 	assert.Equal(t, "sip", cfg.Alpaca.CryptoFeed)
 }
+
+func TestIBKRConfig_AccountIDFromEnv(t *testing.T) {
+	// Arrange
+	tempDir := t.TempDir()
+
+	envPath := writeFile(t, tempDir, ".env", "APCA_API_KEY_ID=test\nAPCA_API_SECRET_KEY=test")
+
+	yamlContent := `alpaca:
+  base_url: https://paper-api.alpaca.markets
+database:
+  host: localhost
+symbols:
+  symbols: [AAPL]
+  timeframe: 1m`
+	yamlPath := writeFile(t, tempDir, "config.yaml", yamlContent)
+
+	t.Setenv("IBKR_ACCOUNT_ID", "DU123456")
+
+	// Act
+	cfg, err := Load(envPath, yamlPath)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, "DU123456", cfg.IBKR.AccountID)
+}
