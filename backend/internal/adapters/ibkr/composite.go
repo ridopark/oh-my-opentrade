@@ -55,103 +55,107 @@ var (
 // ── BrokerPort → IBKR ────────────────────────────────────────────────────────
 
 func (c *CompositeAdapter) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (string, error) {
-	panic("CompositeAdapter.SubmitOrder: not implemented — implement in Task 4")
+	return c.ibkr.SubmitOrder(ctx, intent)
 }
 
 func (c *CompositeAdapter) CancelOrder(ctx context.Context, orderID string) error {
-	panic("CompositeAdapter.CancelOrder: not implemented — implement in Task 4")
+	return c.ibkr.CancelOrder(ctx, orderID)
 }
 
 func (c *CompositeAdapter) CancelOpenOrders(ctx context.Context, symbol domain.Symbol, side string) (int, error) {
-	panic("CompositeAdapter.CancelOpenOrders: not implemented — implement in Task 4")
+	return c.ibkr.CancelOpenOrders(ctx, symbol, side)
 }
 
 func (c *CompositeAdapter) GetOrderStatus(ctx context.Context, orderID string) (string, error) {
-	panic("CompositeAdapter.GetOrderStatus: not implemented — implement in Task 4")
+	return c.ibkr.GetOrderStatus(ctx, orderID)
 }
 
 func (c *CompositeAdapter) GetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
-	panic("CompositeAdapter.GetPositions: not implemented — implement in Task 4")
+	return c.ibkr.GetPositions(ctx, tenantID, envMode)
 }
 
 func (c *CompositeAdapter) GetPosition(ctx context.Context, symbol domain.Symbol) (float64, error) {
-	panic("CompositeAdapter.GetPosition: not implemented — implement in Task 4")
+	return c.ibkr.GetPosition(ctx, symbol)
 }
 
 func (c *CompositeAdapter) ClosePosition(ctx context.Context, symbol domain.Symbol) (string, error) {
-	panic("CompositeAdapter.ClosePosition: not implemented — implement in Task 4")
+	return c.ibkr.ClosePosition(ctx, symbol)
 }
 
 func (c *CompositeAdapter) GetOrderDetails(ctx context.Context, orderID string) (ports.OrderDetails, error) {
-	panic("CompositeAdapter.GetOrderDetails: not implemented — implement in Task 4")
+	return c.ibkr.GetOrderDetails(ctx, orderID)
 }
 
 func (c *CompositeAdapter) CancelAllOpenOrders(ctx context.Context) (int, error) {
-	panic("CompositeAdapter.CancelAllOpenOrders: not implemented — implement in Task 4")
+	return c.ibkr.CancelAllOpenOrders(ctx)
 }
 
 // ── OrderStreamPort → IBKR ───────────────────────────────────────────────────
 
 func (c *CompositeAdapter) SubscribeOrderUpdates(ctx context.Context) (<-chan ports.OrderUpdate, error) {
-	panic("CompositeAdapter.SubscribeOrderUpdates: not implemented — implement in Task 4")
+	return c.ibkr.SubscribeOrderUpdates(ctx)
 }
 
 // ── MarketDataPort → IBKR (live) / Alpaca (historical) ───────────────────────
 
 func (c *CompositeAdapter) StreamBars(ctx context.Context, symbols []domain.Symbol, tf domain.Timeframe, handler ports.BarHandler) error {
-	panic("CompositeAdapter.StreamBars: not implemented — implement in Task 4")
+	return c.ibkr.StreamBars(ctx, symbols, tf, handler)
 }
 
 func (c *CompositeAdapter) GetHistoricalBars(ctx context.Context, symbol domain.Symbol, tf domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
-	panic("CompositeAdapter.GetHistoricalBars: not implemented — implement in Task 4")
+	return c.alpaca.GetHistoricalBars(ctx, symbol, tf, from, to)
 }
 
 // ── AccountPort → IBKR ───────────────────────────────────────────────────────
 
 func (c *CompositeAdapter) GetAccountBuyingPower(ctx context.Context) (ports.BuyingPower, error) {
-	panic("CompositeAdapter.GetAccountBuyingPower: not implemented — implement in Task 4")
+	return c.ibkr.GetAccountBuyingPower(ctx)
 }
 
 // ── SnapshotPort → Alpaca ────────────────────────────────────────────────────
 
 func (c *CompositeAdapter) GetSnapshots(ctx context.Context, symbols []string, asOf time.Time) (map[string]ports.Snapshot, error) {
-	panic("CompositeAdapter.GetSnapshots: not implemented — implement in Task 4")
+	return c.alpaca.GetSnapshots(ctx, symbols, asOf)
 }
 
 // ── OptionsMarketDataPort → Alpaca ───────────────────────────────────────────
 
 func (c *CompositeAdapter) GetOptionChain(ctx context.Context, underlying domain.Symbol, expiry time.Time, right domain.OptionRight) ([]domain.OptionContractSnapshot, error) {
-	panic("CompositeAdapter.GetOptionChain: not implemented — implement in Task 4")
+	return c.alpaca.GetOptionChain(ctx, underlying, expiry, right)
 }
 
 // ── OptionsPricePort → Alpaca ────────────────────────────────────────────────
 
 func (c *CompositeAdapter) GetOptionPrices(ctx context.Context, symbols []domain.Symbol) (map[domain.Symbol]domain.OptionQuote, error) {
-	panic("CompositeAdapter.GetOptionPrices: not implemented — implement in Task 4")
+	return c.alpaca.GetOptionPrices(ctx, symbols)
 }
 
 // ── UniverseProviderPort → Alpaca ────────────────────────────────────────────
 
 func (c *CompositeAdapter) ListTradeable(ctx context.Context, assetClass domain.AssetClass) ([]ports.Asset, error) {
-	panic("CompositeAdapter.ListTradeable: not implemented — implement in Task 4")
+	return c.alpaca.ListTradeable(ctx, assetClass)
 }
 
-// ── Extra brokerAdapter methods (not in standard ports) → IBKR ───────────────
+// ── Extra brokerAdapter methods (not in standard ports) ──────────────────────
 
+// GetQuote returns bid/ask for a symbol via IBKR Snapshot.
 func (c *CompositeAdapter) GetQuote(ctx context.Context, symbol domain.Symbol) (float64, float64, error) {
-	panic("CompositeAdapter.GetQuote: not implemented — implement in Task 4")
+	return c.ibkr.GetQuote(ctx, symbol)
 }
 
+// GetAccountEquity returns total account equity from IBKR.
 func (c *CompositeAdapter) GetAccountEquity(ctx context.Context) (float64, error) {
-	panic("CompositeAdapter.GetAccountEquity: not implemented — implement in Task 4")
+	return c.ibkr.GetAccountEquity(ctx)
 }
 
+// SubscribeSymbols starts bar streaming for additional symbols via IBKR.
 func (c *CompositeAdapter) SubscribeSymbols(ctx context.Context, symbols []domain.Symbol) error {
-	panic("CompositeAdapter.SubscribeSymbols: not implemented — implement in Task 4")
+	return c.ibkr.SubscribeSymbols(ctx, symbols)
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
+// Close shuts down both IBKR and Alpaca adapters.
 func (c *CompositeAdapter) Close() error {
 	ibErr := c.ibkr.Close()
 	alpErr := c.alpaca.Close()

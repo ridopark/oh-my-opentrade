@@ -1,6 +1,7 @@
 package ibkr
 
 import (
+	"context"
 	"sync"
 
 	"github.com/oh-my-opentrade/backend/internal/config"
@@ -42,4 +43,29 @@ func NewAdapter(cfg config.IBKRConfig, log zerolog.Logger) (*Adapter, error) {
 		log:       log,
 		streaming: make(map[domain.Symbol]struct{}),
 	}, nil
+}
+
+// NewAdapterWithClient creates an Adapter using an already-connected ibClient.
+// Used in tests to inject a mock ibClient without a real IB Gateway connection.
+func NewAdapterWithClient(client ibClient, log zerolog.Logger) *Adapter {
+	_, cancel := context.WithCancel(context.Background())
+	conn := &connection{ib: client, log: log, cancel: cancel}
+	return &Adapter{
+		conn:      conn,
+		log:       log,
+		streaming: make(map[domain.Symbol]struct{}),
+	}
+}
+
+// NewAdapterWithClientAndCfg creates an Adapter with an injected ibClient and config.
+// Used in tests that need to verify config-driven behavior (e.g. AccountID filtering).
+func NewAdapterWithClientAndCfg(client ibClient, cfg config.IBKRConfig, log zerolog.Logger) *Adapter {
+	_, cancel := context.WithCancel(context.Background())
+	conn := &connection{ib: client, log: log, cancel: cancel}
+	return &Adapter{
+		conn:      conn,
+		cfg:       cfg,
+		log:       log,
+		streaming: make(map[domain.Symbol]struct{}),
+	}
 }
