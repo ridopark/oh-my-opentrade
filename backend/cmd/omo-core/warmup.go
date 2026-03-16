@@ -472,6 +472,8 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 				CryptoCount:     cryptoCount,
 				IBKRConnected:   ibkrConnected,
 				IBKRPaperMode:   infra.ibkrPaperMode,
+				EMA50Succeeded:  infra.startup.EMA50Succeeded,
+				EMA50Failed:     infra.startup.EMA50Failed,
 				EMA200Succeeded: infra.startup.EMA200Succeeded,
 				EMA200Failed:    infra.startup.EMA200Failed,
 				Strategies:      stratNames,
@@ -520,9 +522,17 @@ func warmupHTF(ctx context.Context, infra *infraDeps, svc *appServices, syms sym
 		bars1h, err := fetchBarsForWarmup(ctx, infra.repo, infra.broker, sym, "1h", hourlyFrom, hourlyTo, log)
 		if err != nil {
 			log.Warn().Err(err).Str("symbol", string(sym)).Msg("1H warmup fetch failed")
-		} else if len(bars1h) > 0 {
+			infra.startup.EMA50Failed = append(infra.startup.EMA50Failed, string(sym))
+		} else if len(bars1h) >= hourlyBarsNeeded {
 			n := svc.monitor.WarmUpHTF(bars1h)
 			log.Info().Str("symbol", string(sym)).Int("bars", n).Msg("1H EMA50 warmup complete")
+			infra.startup.EMA50Succeeded++
+		} else {
+			if len(bars1h) > 0 {
+				n := svc.monitor.WarmUpHTF(bars1h)
+				log.Warn().Str("symbol", string(sym)).Int("bars", len(bars1h)).Int("needed", hourlyBarsNeeded).Int("processed", n).Msg("insufficient 1H bars for EMA50")
+			}
+			infra.startup.EMA50Failed = append(infra.startup.EMA50Failed, string(sym))
 		}
 
 		dailyFrom := dailyTo.Add(-time.Duration(float64(dailyBarsNeeded)*2.0) * 24 * time.Hour)
