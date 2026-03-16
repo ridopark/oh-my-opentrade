@@ -526,6 +526,12 @@ func warmupHTF(ctx context.Context, infra *infraDeps, svc *appServices, syms sym
 		}
 		hourlyFrom := hourlyTo.Add(-hourlyLookback)
 		bars1h, err := fetchBarsForWarmup(ctx, infra.repo, infra.broker, sym, "1h", hourlyFrom, hourlyTo, log)
+		if err == nil && len(bars1h) < hourlyBarsNeeded {
+			if brokerBars, berr := infra.broker.GetHistoricalBars(ctx, sym, "1h", hourlyFrom, hourlyTo); berr == nil && len(brokerBars) > len(bars1h) {
+				log.Debug().Str("symbol", string(sym)).Int("db_bars", len(bars1h)).Int("broker_bars", len(brokerBars)).Msg("1H bars supplemented from broker")
+				bars1h = brokerBars
+			}
+		}
 		if err != nil {
 			log.Warn().Err(err).Str("symbol", string(sym)).Msg("1H warmup fetch failed")
 			infra.startup.EMA50Failed = append(infra.startup.EMA50Failed, string(sym))
