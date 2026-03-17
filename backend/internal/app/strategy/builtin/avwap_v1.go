@@ -74,6 +74,7 @@ type AVWAPConfig struct {
 	MiddayTrapShield  bool
 	MiddayVolumeMult  float64
 	AssetClass        string
+	Anchors           []string
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -96,6 +97,22 @@ type AVWAPState struct {
 // SetIndicators implements the indicatorSetter interface.
 func (s *AVWAPState) SetIndicators(ind start.IndicatorData) {
 	s.Indicators = ind
+}
+
+func (s *AVWAPState) AnchorNames() []string { return s.Config.Anchors }
+
+func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
+	calc := start.NewAnchoredVWAPCalc()
+	for name, t := range anchorTimes {
+		if t.IsZero() {
+			continue
+		}
+		calc.AddAnchor(start.AnchorPoint{Name: name, AnchorTime: t})
+	}
+	s.Calc = calc
+	s.AboveCount = make(map[string]int)
+	s.BelowCount = make(map[string]int)
+	s.TradesToday = 0
 }
 
 func (s *AVWAPState) ClearPendingEntry() {
@@ -223,6 +240,7 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		MiddayTrapShield:  getBool(params, "midday_trap_shield", false),
 		MiddayVolumeMult:  getFloat64(params, "midday_volume_mult", 2.0),
 		AssetClass:        getString(params, "asset_class", ""),
+		Anchors:           getStringSlice(params, "anchors", []string{"session_open"}),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
 	return cfg

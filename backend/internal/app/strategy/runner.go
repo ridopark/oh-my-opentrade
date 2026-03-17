@@ -33,10 +33,40 @@ type Runner struct {
 	metrics              *metrics.Metrics
 	aggregators          map[string]*domain.BarAggregator
 	signalsRTHSuppressed atomic.Int64
+	anchorResolver       func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
+	lastSessionDate      map[string]string
 }
 
 func (r *Runner) SignalsRTHSuppressed() int64 {
 	return r.signalsRTHSuppressed.Load()
+}
+
+func (r *Runner) SetAnchorResolver(fn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time) {
+	r.anchorResolver = fn
+	r.lastSessionDate = make(map[string]string)
+}
+
+type anchorResettable interface {
+	AnchorNames() []string
+	ResetAnchors(map[string]time.Time)
+}
+
+func (r *Runner) resolveSessionAnchors(symbol string, barTime time.Time) {
+	instances := r.router.InstancesForSymbol(symbol)
+	for _, inst := range instances {
+		st, ok := inst.GetState(symbol)
+		if !ok {
+			continue
+		}
+		if ar, ok := st.(anchorResettable); ok {
+			names := ar.AnchorNames()
+			resolved := r.anchorResolver(symbol, barTime, names)
+			if len(resolved) > 0 {
+				ar.ResetAnchors(resolved)
+				r.logger.Info("reset AVWAP anchors for new session", "symbol", symbol, "anchors", len(resolved))
+			}
+		}
+	}
 }
 
 // IndicatorSnapshotFunc maps a market bar to indicator data.
@@ -207,6 +237,16 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 
 	loopStart := time.Now()
 	symbol := bar.Symbol.String()
+
+	if r.anchorResolver != nil {
+		loc, _ := time.LoadLocation("America/New_York")
+		barDate := bar.Time.In(loc).Format("2006-01-02")
+		if r.lastSessionDate[symbol] != barDate {
+			r.lastSessionDate[symbol] = barDate
+			r.resolveSessionAnchors(symbol, bar.Time)
+		}
+	}
+
 	instances := r.router.InstancesForSymbol(symbol)
 	if len(instances) == 0 {
 		r.logger.Info("no instances for symbol", "symbol", symbol)
