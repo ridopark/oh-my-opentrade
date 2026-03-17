@@ -27,19 +27,19 @@ description = "Structural breakout strategy that enters when price breaks above 
 [params]
 pivot_lookback = 5
 vol_surge_mult = 2.0
-body_range_ratio = 0.7
-atr_breakout_mult = 1.5
-breakout_buffer_atr = 0.2
-max_wick_ratio = 0.3
-retest_band_atr = 0.15
-retest_expiry_bars = 20
-invalidation_atr = 0.5
-fib_confluence_atr = 0.1
-engulf_body_mult = 2.0
+body_range_ratio = 0.5
+atr_breakout_mult = 1.0
+breakout_buffer_atr = 0.3
+max_wick_ratio = 0.5
+retest_band_atr = 0.25
+retest_expiry_bars = 30
+invalidation_atr = 0.7
+fib_confluence_atr = 0.2
+engulf_body_mult = 1.5
 stop_mode = "retest_low"
 tp1_mode = "breakout_peak"
 tp2_mode = "fib_1618_ext"
-min_rr_ratio = 2.0
+min_rr_ratio = 1.5
 stop_bps = 50
 limit_offset_bps = 5
 risk_per_trade_bps = 100
@@ -50,15 +50,15 @@ ai_min_confidence = 0.65
 size_mult_min = 0.5
 size_mult_base = 1.0
 size_mult_max = 1.5
-cooldown_seconds = 300
-max_trades_per_day = 5
+cooldown_seconds = 120
+max_trades_per_day = 10
 ema_fast = 20
 ema_slow = 50
 
 [regime_filter]
-enabled = true
-allowed_regimes = ["TREND"]
-min_atr_pct = 0.8
+enabled = false
+allowed_regimes = ["TREND", "BALANCE", "REVERSAL"]
+min_atr_pct = 0.5
 
 [hooks]
 signals = { engine = "builtin", name = "break_retest_v1" }
