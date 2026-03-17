@@ -165,7 +165,7 @@ jobs:
 
             docker compose -f deployments/docker-compose.yml up -d --build --remove-orphans
             echo "Waiting for containers to stabilize..."
-            sleep 5
+            sleep 120
             docker compose -f deployments/docker-compose.yml ps --format json | python3 -c "
             import json, sys
             lines = sys.stdin.read().strip().split('\n')
