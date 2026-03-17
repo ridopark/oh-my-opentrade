@@ -155,7 +155,8 @@ func (s *Service) Start(ctx context.Context, tenantID string, envMode domain.Env
 		ch, err := s.orderStream.SubscribeOrderUpdates(ctx)
 		if err != nil {
 			if errors.Is(err, ports.ErrBrokerNotAvailable) {
-				s.log.Warn().Msg("order stream not available — fill listener deferred until broker connects")
+				s.log.Warn().Msg("order stream not available — retrying in background until broker connects")
+				go s.retryFillListener(ctx)
 			} else {
 				return fmt.Errorf("execution: failed to subscribe to order stream: %w", err)
 			}
@@ -167,6 +168,34 @@ func (s *Service) Start(ctx context.Context, tenantID string, envMode domain.Env
 	}
 
 	return nil
+}
+
+func (s *Service) retryFillListener(ctx context.Context) {
+	delay := 5 * time.Second
+	maxDelay := 30 * time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		ch, err := s.orderStream.SubscribeOrderUpdates(ctx)
+		if err != nil {
+			if errors.Is(err, ports.ErrBrokerNotAvailable) {
+				delay *= 2
+				if delay > maxDelay {
+					delay = maxDelay
+				}
+				continue
+			}
+			s.log.Error().Err(err).Msg("fill listener retry failed with unexpected error")
+			return
+		}
+		go s.runFillListener(ctx, ch)
+		go s.runReconciliationLoop(ctx)
+		s.log.Info().Msg("fill listener connected after deferred retry")
+		return
+	}
 }
 
 // reconcileOnBoot runs once at startup BEFORE the WS listener starts.
