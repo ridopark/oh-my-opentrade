@@ -351,12 +351,21 @@ func (r *Runner) Run(ctx context.Context) error {
 		Time("warmup_to", warmupTo).
 		Msg("warming indicators")
 
+	const minWarmupBars = 250
 	warmupBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
 	for _, sym := range r.cfg.Symbols {
 		bars, fetchErr := repo.GetMarketBars(ctx, sym, replayTimeframe, warmupFrom, warmupTo)
 		if fetchErr != nil {
 			r.log.Warn().Err(fetchErr).Str("symbol", sym.String()).Msg("warmup fetch failed")
 			continue
+		}
+		if len(bars) < minWarmupBars {
+			extendedFrom := warmupFrom.Add(-7 * 24 * time.Hour)
+			extBars, extErr := repo.GetMarketBars(ctx, sym, replayTimeframe, extendedFrom, warmupTo)
+			if extErr == nil && len(extBars) > len(bars) {
+				bars = extBars
+				r.log.Info().Str("symbol", sym.String()).Int("bars", len(bars)).Msg("extended warmup window for sparse symbol")
+			}
 		}
 		warmupBarsCache[sym.String()] = bars
 		n := monitorSvc.WarmUp(bars)
