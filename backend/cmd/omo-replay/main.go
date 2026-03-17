@@ -34,28 +34,33 @@ import (
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/logger"
 	"github.com/oh-my-opentrade/backend/internal/ports"
+	portstrategy "github.com/oh-my-opentrade/backend/internal/ports/strategy"
 	"github.com/rs/zerolog"
 )
 
 func main() {
 	var (
-		symbolsFlag   string
-		fromFlag      string
-		toFlag        string
-		speedFlag     string
-		configPath    string
-		envPath       string
-		backtestFlag  bool
-		initialEquity float64
-		slippageBPS   int64
-		outputJSON    string
-		noAIFlag      bool
+		symbolsFlag    string
+		fromFlag       string
+		toFlag         string
+		speedFlag      string
+		timeframeFlag  string
+		strategiesFlag string
+		configPath     string
+		envPath        string
+		backtestFlag   bool
+		initialEquity  float64
+		slippageBPS    int64
+		outputJSON     string
+		noAIFlag       bool
 	)
 
 	flag.StringVar(&symbolsFlag, "symbols", "", "Comma-separated symbols to replay (default: use config file symbols)")
 	flag.StringVar(&fromFlag, "from", "", "Start time (RFC3339 or YYYY-MM-DD)")
 	flag.StringVar(&toFlag, "to", "", "End time (RFC3339 or YYYY-MM-DD) (default: now)")
 	flag.StringVar(&speedFlag, "speed", "max", "Replay speed: max, 1x, 10x, or any float (e.g. 2.5)")
+	flag.StringVar(&timeframeFlag, "timeframe", "", "Bar timeframe: 1m, 5m, 15m, 1h (default: use config file)")
+	flag.StringVar(&strategiesFlag, "strategies", "", "Comma-separated strategy IDs to run (default: all strategies)")
 	flag.StringVar(&configPath, "config", "configs/config.yaml", "Path to YAML config file")
 	flag.StringVar(&envPath, "env-file", ".env", "Path to .env file")
 	flag.BoolVar(&backtestFlag, "backtest", false, "Enable backtest mode: wire full execution pipeline with SimBroker")
@@ -96,10 +101,12 @@ func main() {
 	if len(symbols) == 0 {
 		log.Fatal().Msg("no symbols specified — use --symbols or configure in config.yaml")
 	}
-	timeframe := domain.Timeframe(cfg.Symbols.Timeframe)
+	timeframe := resolveTimeframe(timeframeFlag, cfg)
 	if _, err := domain.NewTimeframe(timeframe.String()); err != nil {
 		log.Fatal().Err(err).Str("timeframe", timeframe.String()).Msg("invalid timeframe")
 	}
+
+	strategyIDs := resolveStrategies(strategiesFlag)
 	barDur, err := timeframeDuration(timeframe)
 	if err != nil {
 		log.Fatal().Err(err).Str("timeframe", timeframe.String()).Msg("unsupported timeframe")
@@ -184,7 +191,11 @@ func main() {
 	}
 
 	const specDir = "/home/ridopark/src/oh-my-opentrade/configs/strategies"
-	specStore := store_fs.NewStore(specDir, strategy.LoadSpecFile)
+	var specStore portstrategy.SpecStore = store_fs.NewStore(specDir, strategy.LoadSpecFile)
+	if len(strategyIDs) > 0 {
+		specStore = &filteredSpecStore{inner: specStore, allowed: strategyIDs}
+		log.Info().Strs("strategies", strategyIDs).Msg("strategy filter applied")
+	}
 
 	orbID, _ := start.NewStrategyID("orb_break_retest")
 	if orbSpec, err := specStore.GetLatest(context.Background(), orbID); err == nil {
@@ -945,6 +956,28 @@ func resolveSymbols(symbolsFlag string, cfg *config.Config) []domain.Symbol {
 	return out
 }
 
+func resolveTimeframe(flag string, cfg *config.Config) domain.Timeframe {
+	if strings.TrimSpace(flag) != "" {
+		return domain.Timeframe(strings.TrimSpace(flag))
+	}
+	return domain.Timeframe(cfg.Symbols.Timeframe)
+}
+
+func resolveStrategies(flag string) []string {
+	if strings.TrimSpace(flag) == "" {
+		return nil
+	}
+	parts := strings.Split(flag, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		s := strings.TrimSpace(p)
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func symbolStrings(syms []domain.Symbol) []string {
 	out := make([]string, len(syms))
 	for i, s := range syms {
@@ -1000,4 +1033,45 @@ func timeframeDuration(tf domain.Timeframe) (time.Duration, error) {
 	default:
 		return 0, fmt.Errorf("unknown timeframe: %s", tf)
 	}
+}
+
+// filteredSpecStore wraps a SpecStore and only returns strategies whose IDs
+// are in the allowed list. Mirrors the same pattern used by backtest.Runner.
+type filteredSpecStore struct {
+	inner   portstrategy.SpecStore
+	allowed []string
+}
+
+func (f *filteredSpecStore) List(ctx context.Context, filter *portstrategy.SpecFilter) ([]portstrategy.Spec, error) {
+	all, err := f.inner.List(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	allow := make(map[string]bool, len(f.allowed))
+	for _, id := range f.allowed {
+		allow[id] = true
+	}
+	var out []portstrategy.Spec
+	for _, s := range all {
+		if allow[string(s.ID)] {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+func (f *filteredSpecStore) Get(ctx context.Context, id start.StrategyID, version start.Version) (*portstrategy.Spec, error) {
+	return f.inner.Get(ctx, id, version)
+}
+
+func (f *filteredSpecStore) GetLatest(ctx context.Context, id start.StrategyID) (*portstrategy.Spec, error) {
+	return f.inner.GetLatest(ctx, id)
+}
+
+func (f *filteredSpecStore) Save(ctx context.Context, spec portstrategy.Spec) error {
+	return f.inner.Save(ctx, spec)
+}
+
+func (f *filteredSpecStore) Watch(ctx context.Context) (<-chan start.StrategyID, error) {
+	return f.inner.Watch(ctx)
 }
