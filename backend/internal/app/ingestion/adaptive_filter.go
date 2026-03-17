@@ -44,6 +44,7 @@ type AdaptiveFilter struct {
 	windows          map[domain.Symbol]*rollingWindow
 	atrState         map[domain.Symbol]*RollingATR
 	volState         map[domain.Symbol]*RollingVolSMA
+	passthrough      bool
 }
 
 func NewAdaptiveFilter(windowSize int, priceThreshold float64) *AdaptiveFilter {
@@ -140,7 +141,12 @@ type FilterResult struct {
 	Gate   RepairGate
 }
 
+func (f *AdaptiveFilter) SetPassthrough(v bool) { f.passthrough = v }
+
 func (f *AdaptiveFilter) Process(bar domain.MarketBar) FilterResult {
+	if f.passthrough {
+		return FilterResult{Bar: bar, Status: FilterPass}
+	}
 	w, atr, vol := f.ensureState(bar.Symbol)
 	atrSeeded := atr.Seeded()
 	atrVal := atr.Value()
