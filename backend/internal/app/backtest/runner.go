@@ -342,29 +342,50 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("subscribe emitter: %w", subErr)
 	}
 
-	// --- Warmup ---
+	// --- Load replay bars first (needed to determine warmup endpoint) ---
 
-	prevStart, prevEnd := domain.PreviousRTHSession(r.cfg.From)
-	warmupFrom := r.cfg.From.Add(-7 * 24 * time.Hour)
-	warmupTo := r.cfg.From
-	_ = prevEnd
-	r.log.Info().
-		Time("prev_session_start", prevStart).
-		Time("prev_session_end", prevEnd).
-		Time("warmup_from", warmupFrom).
-		Time("warmup_to", warmupTo).
-		Msg("warming indicators")
+	type barStream struct {
+		symbol domain.Symbol
+		bars   []domain.MarketBar
+		idx    int
+	}
+
+	streams := make([]*barStream, 0, len(r.cfg.Symbols))
+	totalBars := 0
+	firstBarTime := make(map[string]time.Time)
+	for _, sym := range r.cfg.Symbols {
+		bars, fetchErr := repo.GetMarketBars(ctx, sym, replayTimeframe, r.cfg.From, r.cfg.To)
+		if fetchErr != nil {
+			r.status.Store("error")
+			return fmt.Errorf("load bars for %s: %w", sym, fetchErr)
+		}
+		streams = append(streams, &barStream{symbol: sym, bars: bars})
+		totalBars += len(bars)
+		if len(bars) > 0 {
+			firstBarTime[sym.String()] = bars[0].Time
+		}
+		r.log.Info().Str("symbol", sym.String()).Int("bars", len(bars)).Msg("loaded bars")
+	}
+	sort.Slice(streams, func(i, j int) bool { return streams[i].symbol.String() < streams[j].symbol.String() })
+
+	// --- Warmup (uses actual first bar time as endpoint) ---
 
 	const minWarmupBars = 250
 	warmupBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
 	for _, sym := range r.cfg.Symbols {
-		bars, fetchErr := repo.GetMarketBars(ctx, sym, replayTimeframe, warmupFrom, warmupTo)
+		warmupEnd := r.cfg.From
+		if t, ok := firstBarTime[sym.String()]; ok {
+			warmupEnd = t
+		}
+		warmupStart := warmupEnd.Add(-7 * 24 * time.Hour)
+
+		bars, fetchErr := repo.GetMarketBars(ctx, sym, replayTimeframe, warmupStart, warmupEnd)
 		if fetchErr != nil {
 			r.log.Warn().Err(fetchErr).Str("symbol", sym.String()).Msg("warmup fetch failed")
 		}
 		if len(bars) < minWarmupBars && r.marketData != nil {
-			apiFrom := warmupTo.Add(-30 * 24 * time.Hour)
-			apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, apiFrom, warmupTo)
+			apiFrom := warmupEnd.Add(-30 * 24 * time.Hour)
+			apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, apiFrom, warmupEnd)
 			if apiErr == nil && len(apiBars) > len(bars) {
 				r.log.Info().Str("symbol", sym.String()).Int("db_bars", len(bars)).Int("api_bars", len(apiBars)).Msg("fetched warmup bars from market data API")
 				for _, b := range apiBars {
@@ -379,7 +400,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		n := monitorSvc.WarmUp(bars)
 		monitorSvc.ResetSessionIndicators(sym.String())
 		monitorSvc.MarkReady(sym.String())
-		r.log.Info().Str("symbol", sym.String()).Int("warmup_bars", n).Msg("indicator warmup done")
+		r.log.Info().Str("symbol", sym.String()).Int("warmup_bars", n).Time("warmup_end", warmupEnd).Msg("indicator warmup done")
 	}
 
 	for _, sym := range r.cfg.Symbols {
@@ -406,13 +427,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		pipeline.Runner.ClearAllPendingStates()
 	}
 
-	// --- Load replay bars ---
-
-	type barStream struct {
-		symbol domain.Symbol
-		bars   []domain.MarketBar
-		idx    int
-	}
 	peekBar := func(s *barStream) (domain.MarketBar, bool) {
 		if s == nil || s.idx >= len(s.bars) {
 			return domain.MarketBar{}, false
@@ -424,20 +438,6 @@ func (r *Runner) Run(ctx context.Context) error {
 			s.idx++
 		}
 	}
-
-	streams := make([]*barStream, 0, len(r.cfg.Symbols))
-	totalBars := 0
-	for _, sym := range r.cfg.Symbols {
-		bars, fetchErr := repo.GetMarketBars(ctx, sym, replayTimeframe, r.cfg.From, r.cfg.To)
-		if fetchErr != nil {
-			r.status.Store("error")
-			return fmt.Errorf("load bars for %s: %w", sym, fetchErr)
-		}
-		streams = append(streams, &barStream{symbol: sym, bars: bars})
-		totalBars += len(bars)
-		r.log.Info().Str("symbol", sym.String()).Int("bars", len(bars)).Msg("loaded bars")
-	}
-	sort.Slice(streams, func(i, j int) bool { return streams[i].symbol.String() < streams[j].symbol.String() })
 
 	// --- Start services ---
 
