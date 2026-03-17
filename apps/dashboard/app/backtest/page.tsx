@@ -316,7 +316,15 @@ function TopBar({
       </label>
 
       <div className="flex items-center gap-2 ml-auto shrink-0">
-        {isRunning && (
+        {isRunning && !progress && (
+          <>
+            <div className="h-4 w-4 animate-spin rounded-full border-b-2 border-emerald-500" />
+            <span className="text-[10px] font-mono text-muted-foreground">Starting…</span>
+            <button onClick={onCancel} className="px-1.5 py-0.5 text-[10px] font-mono rounded text-red-400 hover:bg-red-500/10 transition-colors">✕</button>
+          </>
+        )}
+
+        {isRunning && progress && (
           <>
             <button onClick={status === "paused" ? onResume : onPause}
               className="px-2 py-1 text-xs font-mono rounded bg-white/10 text-foreground hover:bg-white/15 transition-colors">
@@ -422,7 +430,7 @@ function MiniChart({
         horzLine: { color: "rgba(148, 163, 184, 0.2)", width: 1 as const, style: 3 as const, labelBackgroundColor: "#1f2937" },
       },
       rightPriceScale: { borderColor: "rgba(148, 163, 184, 0.1)", scaleMargins: { top: 0.05, bottom: 0.15 } },
-      timeScale: { borderColor: "rgba(148, 163, 184, 0.1)", timeVisible: true, rightOffset: 5 },
+      timeScale: { borderColor: "rgba(148, 163, 184, 0.1)", timeVisible: true, rightOffset: 5, fixLeftEdge: true, fixRightEdge: true },
     });
     chartRef.current = chart;
 
@@ -783,13 +791,16 @@ function EquityCurveInline({ data }: { data: { time: number; value: number }[] }
       layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: "rgba(148, 163, 184, 0.6)", fontFamily: "var(--font-geist-mono, monospace)", fontSize: 10 },
       grid: { vertLines: { visible: false }, horzLines: { color: "rgba(148, 163, 184, 0.05)" } },
       rightPriceScale: { borderVisible: false },
-      timeScale: { borderVisible: false, timeVisible: true },
+      timeScale: { borderVisible: false, timeVisible: true, fixLeftEdge: true, fixRightEdge: true },
       crosshair: { mode: CrosshairMode.Normal },
     });
     chartRef.current = chart;
     const series = chart.addSeries(LineSeries, { color: "#10b981", lineWidth: 2, priceLineVisible: false, lastValueVisible: true });
     seriesRef.current = series;
-    const observer = new ResizeObserver((entries) => { for (const entry of entries) chart.applyOptions({ width: entry.contentRect.width, height: entry.contentRect.height }); });
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) chart.applyOptions({ width: entry.contentRect.width, height: entry.contentRect.height });
+      chart.timeScale().fitContent();
+    });
     observer.observe(containerRef.current);
     return () => { observer.disconnect(); chart.remove(); chartRef.current = null; seriesRef.current = null; };
   }, []);
