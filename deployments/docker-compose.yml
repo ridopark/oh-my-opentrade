@@ -4,25 +4,24 @@ services:
     container_name: omo-ib-gateway
     restart: unless-stopped
     env_file:
-      - ../.env
+    - ../.env
     ports:
-      - "4002:4004"   # API (host:4002 → socat → IB Gateway internal)
-      - "5900:5900"   # VNC (optional visual debugging)
+    - 4002:4004
+    - 5900:5900
     environment:
-      - TRADING_MODE=paper
-      - READ_ONLY=no
-      - READ_ONLY_API=no
-      - TWS_ACCEPT_INCOMING_CONNECTION=yes
-      - TWS_ACCEPT_INCOMING=accept
-      - EXISTING_SESSION_DETECTED_ACTION=primary
-      - AUTO_RESTART_TIME=11:55 PM
-      - RELOGIN_AFTER_2FA_TIMEOUT=60
-      - VNC_SERVER_PASSWORD=${VNC_PASS:-password}
+    - TRADING_MODE=paper
+    - READ_ONLY=no
+    - READ_ONLY_API=no
+    - TWS_ACCEPT_INCOMING_CONNECTION=yes
+    - TWS_ACCEPT_INCOMING=accept
+    - EXISTING_SESSION_DETECTED_ACTION=primary
+    - AUTO_RESTART_TIME=11:55 PM
+    - RELOGIN_AFTER_2FA_TIMEOUT=60
+    - VNC_SERVER_PASSWORD=${VNC_PASS:-password}
     volumes:
-      - ibgateway_jts:/home/ibgateway/Jts
+    - ibgateway_jts:/home/ibgateway/Jts
     healthcheck:
       disable: true
-
   timescaledb:
     image: timescale/timescaledb:latest-pg16
     container_name: omo-timescaledb
@@ -32,71 +31,68 @@ services:
       POSTGRES_PASSWORD: ${TIMESCALEDB_PASSWORD:-changeme}
       POSTGRES_DB: opentrade
     ports:
-      - "5432:5432"
+    - 5432:5432
     volumes:
-      - timescaledb_data:/var/lib/postgresql/data
-      # Note: Migrations must be run manually (e.g., via `make migrate` or psql)
-      # Do NOT mount them to /docker-entrypoint-initdb.d as it runs .down.sql files too.
+    - timescaledb_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U opentrade -d opentrade"]
+      test:
+      - CMD-SHELL
+      - pg_isready -U opentrade -d opentrade
       interval: 5s
       timeout: 5s
       retries: 5
-
   migrate:
     image: postgres:16-alpine
     container_name: omo-migrate
-    restart: "no"
+    restart: 'no'
     depends_on:
       timescaledb:
         condition: service_healthy
     env_file:
-      - ../.env
+    - ../.env
     environment:
       PGHOST: timescaledb
-      PGPORT: "5432"
+      PGPORT: '5432'
       PGUSER: opentrade
       PGPASSWORD: ${TIMESCALEDB_PASSWORD:-changeme}
       PGDATABASE: opentrade
     volumes:
-      - ../migrations:/migrations:ro
-      - ../scripts/migrate.sh:/migrate.sh:ro
-    command: ["/bin/sh", "/migrate.sh", "/migrations"]
-
+    - ../migrations:/migrations:ro
+    - ../scripts/migrate.sh:/migrate.sh:ro
+    command:
+    - /bin/sh
+    - /migrate.sh
+    - /migrations
   omo-core:
     build:
       context: ..
       dockerfile: deployments/Dockerfile
     container_name: omo-core
     restart: unless-stopped
-    stop_grace_period: 10s  # Give WebSocket close frame time to reach Alpaca before SIGKILL
+    stop_grace_period: 10s
     depends_on:
       timescaledb:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
     env_file:
-      - ../.env
+    - ../.env
     volumes:
-      - ../configs:/configs:ro
-      - ../migrations:/migrations:ro
+    - ../configs:/configs:ro
+    - ../migrations:/migrations:ro
     environment:
-      - TIMESCALEDB_HOST=timescaledb
-      - TIMESCALEDB_PORT=5432
-      - STRATEGY_V2=true
-      - BROKER=${BROKER:-alpaca}
-      - IBKR_GATEWAY_HOST=ib-gateway
-      - IBKR_GATEWAY_PORT=4002
-      - IBKR_CLIENT_ID=${IBKR_CLIENT_ID:-1}
-      - IBKR_ACCOUNT_ID=""
+    - TIMESCALEDB_HOST=timescaledb
+    - TIMESCALEDB_PORT=5432
+    - STRATEGY_V2=true
+    - BROKER=${BROKER:-alpaca}
+    - IBKR_GATEWAY_HOST=ib-gateway
+    - IBKR_GATEWAY_PORT=4002
+    - IBKR_CLIENT_ID=${IBKR_CLIENT_ID:-1}
+    - IBKR_ACCOUNT_ID=""
     ports:
-      - "8080:8080"
-    # Healthcheck: distroless image has no shell/curl/wget. Liveness is
-    # monitored via Prometheus scraping :8080/metrics. Startup resilience
-    # is handled by retry-with-backoff in initInfra (infra.go).
+    - 8080:8080
     networks:
-      - default
-
+    - default
   dashboard:
     build:
       context: ..
@@ -104,56 +100,54 @@ services:
     container_name: omo-dashboard
     restart: unless-stopped
     depends_on:
-      - omo-core
+    - omo-core
     expose:
-      - "3000"
+    - '3000'
     environment:
-      - NODE_ENV=production
-      - BACKEND_URL=http://omo-core:8080
+    - NODE_ENV=production
+    - BACKEND_URL=http://omo-core:8080
     ports:
-      - "3000:3000"      
+    - 3000:3000
     networks:
-      - default
-
+    - default
   prometheus:
     image: prom/prometheus:v2.52.0
     container_name: omo-prometheus
     restart: unless-stopped
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
-      - prometheus_data:/prometheus
+    - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+    - prometheus_data:/prometheus
     command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.retention.time=30d
-      - --web.enable-lifecycle
+    - --config.file=/etc/prometheus/prometheus.yml
+    - --storage.tsdb.retention.time=30d
+    - --web.enable-lifecycle
     ports:
-      - "9090:9090"
+    - 9090:9090
     networks:
-      - default
-
+    - default
   grafana:
     image: grafana/grafana:10.4.2
     container_name: omo-grafana
     restart: unless-stopped
     depends_on:
-      - prometheus
+    - prometheus
     volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - grafana_data:/var/lib/grafana
+    - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    - grafana_data:/var/lib/grafana
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    - GF_SECURITY_ADMIN_USER=admin
+    - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+    - GF_AUTH_ANONYMOUS_ENABLED=true
+    - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-https://discordapp.com/api/webhooks/null}
     ports:
-      - "3001:3000"
+    - 3001:3000
     healthcheck:
       disable: true
     networks:
-      - default
-
+    - default
 volumes:
   timescaledb_data:
     driver: local
