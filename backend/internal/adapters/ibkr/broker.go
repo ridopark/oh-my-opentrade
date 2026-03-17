@@ -88,9 +88,10 @@ func (a *Adapter) CancelOpenOrders(_ context.Context, symbol domain.Symbol, side
 
 	sym := strings.ToUpper(string(symbol))
 	action := strings.ToUpper(side)
-	if action == "LONG" {
+	switch action {
+	case "LONG":
 		action = "BUY"
-	} else if action == "SHORT" {
+	case "SHORT":
 		action = "SELL"
 	}
 
@@ -99,7 +100,7 @@ func (a *Adapter) CancelOpenOrders(_ context.Context, symbol domain.Symbol, side
 		if t.Contract == nil || t.Order == nil {
 			continue
 		}
-		if strings.ToUpper(t.Contract.Symbol) == sym && strings.ToUpper(t.Order.Action) == action {
+		if strings.EqualFold(t.Contract.Symbol, sym) && strings.EqualFold(t.Order.Action, action) {
 			ib.CancelOrder(t.Order, ibsync.NewOrderCancel())
 			count++
 		}
@@ -218,7 +219,7 @@ func (a *Adapter) GetPosition(_ context.Context, symbol domain.Symbol) (float64,
 
 	sym := strings.ToUpper(string(symbol))
 	for _, p := range ib.Positions() {
-		if strings.ToUpper(p.Contract.Symbol) == sym {
+		if strings.EqualFold(p.Contract.Symbol, sym) {
 			return p.Position.Float(), nil
 		}
 	}
@@ -234,7 +235,7 @@ func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string
 	sym := strings.ToUpper(string(symbol))
 	var qty float64
 	for _, p := range ib.Positions() {
-		if strings.ToUpper(p.Contract.Symbol) == sym {
+		if strings.EqualFold(p.Contract.Symbol, sym) {
 			qty = p.Position.Float()
 			break
 		}
@@ -298,7 +299,7 @@ func mapStatus(s ibsync.Status) string {
 	switch s {
 	case ibsync.Filled:
 		return "filled"
-	case ibsync.Cancelled, ibsync.ApiCancelled:
+	case ibsync.Cancelled, ibsync.ApiCancelled: //nolint:misspell // external ibsync constant
 		return "canceled"
 	case ibsync.Inactive:
 		return "expired"

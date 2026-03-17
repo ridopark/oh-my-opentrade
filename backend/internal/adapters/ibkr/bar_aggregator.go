@@ -44,7 +44,7 @@ func (a *barAggregator) add(rtb ibsync.RealTimeBar) *domain.MarketBar {
 		return nil
 	}
 
-	if barStart == a.barStart {
+	if barStart.Equal(a.barStart) {
 		if rtb.High > a.high {
 			a.high = rtb.High
 		}

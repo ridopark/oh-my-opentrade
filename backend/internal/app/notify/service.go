@@ -823,7 +823,7 @@ func (s *Service) fmtSystemStarted(ev domain.Event) string {
 		return "✅ System started"
 	}
 
-	brokerStatus := fmt.Sprintf("%s", strings.ToUpper(p.Broker))
+	brokerStatus := strings.ToUpper(p.Broker)
 	if p.Broker == "ibkr" {
 		if p.IBKRConnected {
 			brokerStatus += " 🟢 connected"
