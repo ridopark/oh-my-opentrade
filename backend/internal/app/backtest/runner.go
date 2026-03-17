@@ -418,6 +418,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.log.Info().Str("symbol", sym.String()).Int("warmup_bars", n).Time("warmup_end", warmupEnd).Msg("indicator warmup done")
 	}
 
+	for _, s := range streams {
+		replayBars := s.bars
+		if len(replayBars) > 0 {
+			bridgeCount := 50
+			if bridgeCount > len(replayBars) {
+				bridgeCount = len(replayBars)
+			}
+			monitorSvc.WarmUp(replayBars[:bridgeCount])
+		}
+	}
+
 	for _, sym := range r.cfg.Symbols {
 		if bars, ok := warmupBarsCache[sym.String()]; ok && len(bars) > 0 {
 			ingBundle.Filter.Seed(sym, bars)
