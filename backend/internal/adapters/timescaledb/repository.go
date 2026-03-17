@@ -47,6 +47,41 @@ func (r *Repository) SaveMarketBar(ctx context.Context, bar domain.MarketBar) er
 	return nil
 }
 
+type DataGap struct {
+	Start    time.Time
+	End      time.Time
+	Duration time.Duration
+}
+
+func (r *Repository) FindDataGaps(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time, minGap time.Duration) ([]DataGap, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		WITH bars AS (
+			SELECT time, LEAD(time) OVER (ORDER BY time) as next_time
+			FROM market_bars
+			WHERE symbol = $1 AND timeframe = $2 AND time >= $3 AND time < $4
+		)
+		SELECT time, next_time
+		FROM bars
+		WHERE next_time - time > $5::interval
+		ORDER BY time`,
+		string(symbol), string(timeframe), from, to, fmt.Sprintf("%d seconds", int(minGap.Seconds())))
+	if err != nil {
+		return nil, fmt.Errorf("timescaledb: find data gaps: %w", err)
+	}
+	defer rows.Close()
+
+	var gaps []DataGap
+	for rows.Next() {
+		var g DataGap
+		if scanErr := rows.Scan(&g.Start, &g.End); scanErr != nil {
+			continue
+		}
+		g.Duration = g.End.Sub(g.Start)
+		gaps = append(gaps, g)
+	}
+	return gaps, nil
+}
+
 // SaveMarketBars upserts a batch of market bars in a single INSERT statement.
 // It returns the number of bars processed. Bars with volume <= 0 are skipped.
 func (r *Repository) SaveMarketBars(ctx context.Context, bars []domain.MarketBar) (int, error) {
