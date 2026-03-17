@@ -13,7 +13,7 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META"]
+symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META", "NVDA"]
 timeframes = ["5m"]
 priority = 80
 conflict_policy = "priority_wins"
@@ -29,12 +29,12 @@ description = "Enhanced anchored VWAP strategy with higher-lows confirmation and
 anchors = ["pd_high", "pd_low", "on_high", "on_low", "or_high", "or_low", "session_open"]
 breakout_enabled = true
 hold_bars = 8
-volume_mult = 2.0
+volume_mult = 1.5
 bounce_enabled = true
-rsi_bounce_max = 30.0
+rsi_bounce_max = 35.0
 exit_hold_bars = 2
-cooldown_seconds = 120
-max_trades_per_day = 3
+cooldown_seconds = 90
+max_trades_per_day = 5
 allow_regimes = ["TREND"]
 asset_class = "EQUITY"
 require_higher_lows = true
