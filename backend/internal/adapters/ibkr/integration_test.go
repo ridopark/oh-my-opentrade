@@ -1,4 +1,4 @@
-//go:build integration
+//go:build ibkr
 
 package ibkr_test
 
