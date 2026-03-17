@@ -2,6 +2,7 @@ package perf
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -111,7 +112,12 @@ func (lw *LedgerWriter) SetMetrics(m *metrics.Metrics) { lw.metrics = m }
 func (lw *LedgerWriter) Start(ctx context.Context, tenantID string, envMode domain.EnvMode) error {
 	positions, err := lw.broker.GetPositions(ctx, tenantID, envMode)
 	if err != nil {
-		return fmt.Errorf("perf: ledger writer failed to bootstrap positions from broker: %w", err)
+		if errors.Is(err, ports.ErrBrokerNotAvailable) {
+			lw.log.Warn().Msg("broker not available — starting with empty positions (will sync when available)")
+			positions = nil
+		} else {
+			return fmt.Errorf("perf: ledger writer failed to bootstrap positions from broker: %w", err)
+		}
 	}
 
 	lw.mu.Lock()

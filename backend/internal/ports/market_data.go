@@ -2,10 +2,13 @@ package ports
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 )
+
+var ErrBrokerNotAvailable = errors.New("broker not available")
 
 // BarHandler is a callback function for processing incoming market bars.
 type BarHandler func(ctx context.Context, bar domain.MarketBar) error

@@ -111,22 +111,33 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 			log.Fatal().Err(err).Msg("failed to create Alpaca adapter (REST mode) after retries")
 		}
 
-		if err := retryWithBackoff(log, "ibkr_adapter", 10, 5*time.Second, 60*time.Second, func() error {
-			a, err := ibkr.NewAdapter(cfg.IBKR, log.With().Str("component", "ibkr").Logger())
-			if err != nil {
-				return err
-			}
-			concreteIBKR = a
-			return nil
-		}); err != nil {
-			log.Fatal().Err(err).Msg("failed to connect to IB Gateway after retries")
-		}
+		composite := ibkr.NewCompositeAdapter(nil, concreteAlpaca, log)
+		broker = composite
+		log.Info().Msg("broker initialized: Alpaca-only (IBKR connecting in background)")
 
-		broker = ibkr.NewCompositeAdapter(concreteIBKR, concreteAlpaca, log)
-		log.Info().
-			Str("host", cfg.IBKR.Host).
-			Int("port", cfg.IBKR.Port).
-			Msg("broker initialized: IBKR live + Alpaca historical")
+		go func() {
+			ibkrLog := log.With().Str("component", "ibkr_deferred").Logger()
+			delay := 5 * time.Second
+			maxDelay := 60 * time.Second
+			for {
+				a, err := ibkr.NewAdapter(cfg.IBKR, log.With().Str("component", "ibkr").Logger())
+				if err == nil {
+					concreteIBKR = a
+					composite.SetIBKR(a)
+					ibkrLog.Info().
+						Str("host", cfg.IBKR.Host).
+						Int("port", cfg.IBKR.Port).
+						Msg("IBKR connected — broker upgraded to composite mode")
+					return
+				}
+				ibkrLog.Warn().Err(err).Dur("retry_in", delay).Msg("IBKR not available, retrying")
+				time.Sleep(delay)
+				delay *= 2
+				if delay > maxDelay {
+					delay = maxDelay
+				}
+			}
+		}()
 	default:
 		if err := retryWithBackoff(log, "alpaca_adapter", 5, 2*time.Second, 30*time.Second, func() error {
 			a, err := alpaca.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca").Logger())

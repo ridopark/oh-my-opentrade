@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -153,11 +154,16 @@ func (s *Service) Start(ctx context.Context, tenantID string, envMode domain.Env
 	if s.orderStream != nil {
 		ch, err := s.orderStream.SubscribeOrderUpdates(ctx)
 		if err != nil {
-			return fmt.Errorf("execution: failed to subscribe to order stream: %w", err)
+			if errors.Is(err, ports.ErrBrokerNotAvailable) {
+				s.log.Warn().Msg("order stream not available — fill listener deferred until broker connects")
+			} else {
+				return fmt.Errorf("execution: failed to subscribe to order stream: %w", err)
+			}
+		} else {
+			go s.runFillListener(ctx, ch)
+			go s.runReconciliationLoop(ctx)
+			s.log.Info().Msg("WebSocket fill listener and reconciliation loop started")
 		}
-		go s.runFillListener(ctx, ch)
-		go s.runReconciliationLoop(ctx)
-		s.log.Info().Msg("WebSocket fill listener and reconciliation loop started")
 	}
 
 	return nil
