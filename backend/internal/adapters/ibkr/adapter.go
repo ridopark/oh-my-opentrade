@@ -22,7 +22,7 @@ var (
 	_ ports.SnapshotPort          = (*Adapter)(nil)
 )
 
-const accountSummaryCacheTTL = 30 * time.Second
+const accountSummaryCacheTTL = 5 * time.Minute
 
 type accountSummaryCache struct {
 	mu        sync.Mutex
@@ -49,12 +49,18 @@ func NewAdapter(cfg config.IBKRConfig, log zerolog.Logger) (*Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{
+	a := &Adapter{
 		conn:      conn,
 		cfg:       cfg,
 		log:       log,
 		streaming: make(map[domain.Symbol]struct{}),
-	}, nil
+	}
+	conn.OnReconnect(func() {
+		a.acctCache.mu.Lock()
+		a.acctCache.fetchedAt = time.Time{}
+		a.acctCache.mu.Unlock()
+	})
+	return a, nil
 }
 
 func (a *Adapter) IsConnected() bool {

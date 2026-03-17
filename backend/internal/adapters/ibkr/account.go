@@ -23,6 +23,10 @@ func (a *Adapter) cachedAccountSummary(ib ibClient) (ibsync.AccountSummary, erro
 
 	summary, err := ib.ReqAccountSummary("All", allAccountTags)
 	if err != nil {
+		if len(a.acctCache.summary) > 0 {
+			a.log.Warn().Err(err).Msg("ibkr: ReqAccountSummary failed, using stale cache")
+			return a.acctCache.summary, nil
+		}
 		return nil, fmt.Errorf("ibkr: ReqAccountSummary: %w", err)
 	}
 	a.acctCache.summary = summary
