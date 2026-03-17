@@ -105,6 +105,7 @@ type OrderIntentEventPayload struct {
 	Status         string            `json:"status"`
 	Reason         string            `json:"reason,omitempty"`
 	BrokerOrderID  string            `json:"brokerOrderId,omitempty"`
+	Broker         string            `json:"broker,omitempty"`
 	Meta           map[string]string `json:"meta,omitempty"`
 }
 

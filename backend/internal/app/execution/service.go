@@ -54,12 +54,17 @@ type Service struct {
 	tenantID           string
 	envMode            domain.EnvMode
 	syncFill           bool
+	brokerName         string
 }
 
 // Option is a functional option for Service.
 type Option func(*Service)
 
 // WithPositionGate attaches a PositionGate to the execution pipeline.
+func WithBrokerName(name string) Option {
+	return func(s *Service) { s.brokerName = name }
+}
+
 func WithPositionGate(pg *PositionGate) Option {
 	return func(s *Service) { s.positionGate = pg }
 }
@@ -620,6 +625,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	l.Info().Str("broker_order_id", brokerOrderID).Msg("order submitted to broker")
 	submittedPayload := domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusSubmitted)
 	submittedPayload.BrokerOrderID = brokerOrderID
+	submittedPayload.Broker = s.brokerName
 	s.emit(ctx, domain.EventOrderSubmitted, event.TenantID, event.EnvMode, intent.ID.String(), submittedPayload)
 
 	// 7. Persist the order record.

@@ -503,7 +503,11 @@ func (s *Service) fmtOrderSubmitted(ev domain.Event) string {
 	}
 	msg := fmt.Sprintf("%s **%s:** %s **%s** @ **$%s** (qty: %g)",
 		emoji, action, p.Direction, p.Symbol, domain.FmtPrice(p.LimitPrice), p.Quantity)
-	msg += fmt.Sprintf("\n📊 Strategy: %s | Confidence: **%.0f%%**", p.Strategy, p.Confidence*100)
+	brokerLabel := p.Broker
+	if brokerLabel == "" {
+		brokerLabel = "alpaca"
+	}
+	msg += fmt.Sprintf("\n📊 Strategy: %s | Confidence: **%.0f%%** | Broker: **%s**", p.Strategy, p.Confidence*100, strings.ToUpper(brokerLabel))
 
 	if !isExit && p.StopLoss > 0 {
 		stopPct := (p.LimitPrice - p.StopLoss) / p.LimitPrice * 100
