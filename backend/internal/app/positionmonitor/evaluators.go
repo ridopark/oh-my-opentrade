@@ -192,11 +192,12 @@ func evaluateMaxLoss(rule domain.ExitRule, pos *domain.MonitoredPosition, curren
 	return false, ""
 }
 
-// evaluateVolatilityStop triggers when price drops below entry minus ATR × multiplier.
+// evaluateVolatilityStop triggers when price drops below high-water mark minus ATR × multiplier.
+// This is a true trailing stop that uses the highest price reached, not entry price.
 //
 // Params:
 //
-//	"atr_multiplier" — multiplier for ATR distance (e.g. 1.5 = stop at entry - 1.5*ATR)
+//	"atr_multiplier" — multiplier for ATR distance (e.g. 1.5 = stop at hwm - 1.5*ATR)
 func evaluateVolatilityStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext) (bool, string) {
 	mult := rule.Param("atr_multiplier", 0)
 	if mult <= 0 {
@@ -206,10 +207,10 @@ func evaluateVolatilityStop(rule domain.ExitRule, pos *domain.MonitoredPosition,
 		return false, ""
 	}
 
-	stopPrice := pos.EntryPrice - (ctx.ATR * mult)
+	stopPrice := pos.HighWaterMark - (ctx.ATR * mult)
 	if currentPrice <= stopPrice {
-		return true, fmt.Sprintf("volatility_stop: price %.4f <= stop %.4f (entry=%.4f, ATR=%.6f, mult=%.1f)",
-			currentPrice, stopPrice, pos.EntryPrice, ctx.ATR, mult)
+		return true, fmt.Sprintf("volatility_stop: price %.4f <= stop %.4f (hwm=%.4f, ATR=%.6f, mult=%.1f)",
+			currentPrice, stopPrice, pos.HighWaterMark, ctx.ATR, mult)
 	}
 	return false, ""
 }

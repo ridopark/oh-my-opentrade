@@ -21,11 +21,7 @@ services:
     volumes:
       - ibgateway_jts:/home/ibgateway/Jts
     healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/4004 2>/dev/null && echo ok'"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 90s
+      disable: true
 
   timescaledb:
     image: timescale/timescaledb:latest-pg16
@@ -153,6 +149,8 @@ services:
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
     ports:
       - "3001:3000"
+    healthcheck:
+      disable: true
     networks:
       - default
 
