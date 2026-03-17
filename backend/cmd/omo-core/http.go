@@ -96,7 +96,11 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	imux.Handle("/bars", omhttp.NewBarsHandler(infra.repo, infra.broker, httpLog))
 	imux.Handle("/events", sseHandler)
 
-	backtestHandler := omhttp.NewBacktestHandler(infra.sqlDB, cfg, httpLog)
+	var backtestMarketData ports.MarketDataPort
+	if infra.concreteAlpaca != nil {
+		backtestMarketData = infra.concreteAlpaca
+	}
+	backtestHandler := omhttp.NewBacktestHandler(infra.sqlDB, cfg, backtestMarketData, httpLog)
 	imux.Handle("/backtest/", backtestHandler)
 
 	imux.Mux.HandleFunc("/debug/ai-screener/run", func(w http.ResponseWriter, r *http.Request) {
