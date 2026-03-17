@@ -34,10 +34,11 @@ func (a *Adapter) SubmitOrder(_ context.Context, intent domain.OrderIntent) (str
 	isCrypto := intent.Symbol.IsCryptoSymbol()
 	isFractional := !isCrypto && qty != math.Floor(qty)
 
-	order := &ibsync.Order{}
+	order := ibsync.NewOrder()
 	order.Action = directionToAction(intent.Direction)
 	order.OrderType = intentOrderType(intent.OrderType)
 	order.TIF = intentTIF(intent.TimeInForce)
+	order.RouteMarketableToBbo = 0
 
 	if isFractional && intent.LimitPrice > 0 {
 		cashAmount := qty * intent.LimitPrice
