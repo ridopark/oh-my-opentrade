@@ -363,9 +363,43 @@ func (r *Runner) Run(ctx context.Context) error {
 		idx    int
 	}
 
-	// Gap detection skipped for backtests — overnight/weekend gaps are unfillable
-	// (market closed) and the API calls waste ~90s returning 1 bar each time.
-	// Trading-hours data is already complete from live ingestion.
+	loc, _ := time.LoadLocation("America/New_York")
+
+	r.emitter.EmitSetup("Checking for data gaps…")
+	if r.marketData != nil {
+		var gapWg sync.WaitGroup
+		for _, sym := range r.cfg.Symbols {
+			gapWg.Add(1)
+			go func(sym domain.Symbol) {
+				defer gapWg.Done()
+				gaps, gapErr := repo.FindDataGaps(ctx, sym, replayTimeframe, r.cfg.From, r.cfg.To, gapThreshold)
+				if gapErr != nil {
+					r.log.Warn().Err(gapErr).Str("symbol", sym.String()).Msg("gap detection failed")
+					return
+				}
+				for _, g := range gaps {
+					if !isRTHGap(g.Start, g.End, loc) {
+						continue
+					}
+					r.log.Info().Str("symbol", sym.String()).Time("start", g.Start).Time("end", g.End).Dur("duration", g.Duration).Msg("detected RTH data gap — fetching from API")
+					apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, g.Start.Add(time.Minute), g.End)
+					if apiErr != nil {
+						r.log.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("failed to fetch gap bars")
+						continue
+					}
+					if len(apiBars) > 0 {
+						saved, saveErr := repo.SaveMarketBars(ctx, apiBars)
+						if saveErr != nil {
+							r.log.Warn().Err(saveErr).Msg("failed to persist gap bars")
+						} else {
+							r.log.Info().Str("symbol", sym.String()).Int("fetched", len(apiBars)).Int("saved", saved).Msg("filled RTH data gap")
+						}
+					}
+				}
+			}(sym)
+		}
+		gapWg.Wait()
+	}
 
 	r.emitter.EmitSetup("Loading market data…")
 	streams := make([]*barStream, 0, len(r.cfg.Symbols))
@@ -486,7 +520,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
-	loc, _ := time.LoadLocation("America/New_York")
 	fromET := r.cfg.From.In(loc)
 	replaySessionOpen := time.Date(fromET.Year(), fromET.Month(), fromET.Day(), 9, 30, 0, 0, loc)
 	monitorSvc.InitAggregators(r.cfg.Symbols, replaySessionOpen)
@@ -829,6 +862,17 @@ func symbolStrings(syms []domain.Symbol) []string {
 }
 
 const gapThreshold = 4 * time.Hour
+
+func isRTHGap(gapStart, gapEnd time.Time, loc *time.Location) bool {
+	startET := gapStart.In(loc)
+	endET := gapEnd.In(loc)
+	if startET.Weekday() == time.Saturday || startET.Weekday() == time.Sunday {
+		return false
+	}
+	rthOpen := time.Date(startET.Year(), startET.Month(), startET.Day(), 9, 30, 0, 0, loc)
+	rthClose := time.Date(startET.Year(), startET.Month(), startET.Day(), 16, 0, 0, 0, loc)
+	return startET.After(rthOpen) && endET.Before(rthClose)
+}
 
 type filteredSpecStore struct {
 	inner   portstrategy.SpecStore
