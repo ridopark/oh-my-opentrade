@@ -6,13 +6,15 @@ services:
     env_file:
       - ../.env
     ports:
-      - "4002:4004"   # Paper Trading API (host:4002 → socat:4004 → IB Gateway:4002)
+      - "4002:4004"   # API (host:4002 → socat → IB Gateway internal)
       - "5900:5900"   # VNC (optional visual debugging)
     environment:
       - TRADING_MODE=paper
       - READ_ONLY=no
       - READ_ONLY_API=no
       - TWS_ACCEPT_INCOMING_CONNECTION=yes
+      - TWS_ACCEPT_INCOMING=accept
+      - EXISTING_SESSION_DETECTED_ACTION=primary
       - AUTO_RESTART_TIME=11:55 PM
       - RELOGIN_AFTER_2FA_TIMEOUT=60
       - VNC_SERVER_PASSWORD=${VNC_PASS:-password}

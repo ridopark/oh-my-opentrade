@@ -7,7 +7,7 @@ import (
 	"github.com/scmhub/ibsync"
 )
 
-const cryptoExchange = "PAXOS"
+const cryptoExchange = "ZEROHASH"
 
 func newContract(symbol domain.Symbol) *ibsync.Contract {
 	if symbol.IsCryptoSymbol() {
