@@ -202,6 +202,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	defer cancel()
 
 	r.status.Store("running")
+	r.emitter.EmitSetup("Initializing pipeline…")
 	r.log.Info().
 		Strs("symbols", symbolStrings(r.cfg.Symbols)).
 		Time("from", r.cfg.From).
@@ -362,6 +363,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		idx    int
 	}
 
+	r.emitter.EmitSetup("Checking for data gaps…")
 	if r.marketData != nil {
 		for _, sym := range r.cfg.Symbols {
 			gaps, gapErr := repo.FindDataGaps(ctx, sym, replayTimeframe, r.cfg.From, r.cfg.To, gapThreshold)
@@ -388,6 +390,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	r.emitter.EmitSetup("Loading market data…")
 	streams := make([]*barStream, 0, len(r.cfg.Symbols))
 	totalBars := 0
 	firstBarTime := make(map[string]time.Time)
@@ -408,6 +411,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// --- Warmup (uses actual first bar time as endpoint) ---
 
+	r.emitter.EmitSetup("Warming up indicators…")
 	const minWarmupBars = 250
 	warmupBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
 	for _, sym := range r.cfg.Symbols {
@@ -500,7 +504,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
-	// --- Start services ---
+	r.emitter.EmitSetup("Starting services…")
 
 	if startErr := ingBundle.Service.Start(ctx); startErr != nil {
 		r.status.Store("error")
@@ -547,7 +551,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("start risk sizer: %w", startErr)
 	}
 
-	// --- Replay loop ---
+	r.emitter.EmitSetup("Replaying bars…")
 
 	const tenantID = "default"
 	envMode := domain.EnvModePaper

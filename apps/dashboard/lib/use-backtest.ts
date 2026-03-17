@@ -91,6 +91,7 @@ export interface UseBacktestReturn {
   status: BacktestStatus;
   backtestId: string | null;
   progress: BacktestProgress | null;
+  setupStage: string | null;
   bars: Map<string, BacktestBar[]>;
   signals: BacktestSignal[];
   trades: BacktestTrade[];
@@ -115,6 +116,7 @@ export function useBacktest(): UseBacktestReturn {
   const [metrics, setMetrics] = useState<BacktestMetrics | null>(null);
   const [equityCurve, setEquityCurve] = useState<{ time: number; value: number }[]>([]);
   const [result, setResult] = useState<BacktestResult | null>(null);
+  const [setupStage, setSetupStage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const esRef = useRef<EventSource | null>(null);
@@ -170,6 +172,7 @@ export function useBacktest(): UseBacktestReturn {
     esRef.current = es;
 
     const eventTypes = [
+      "backtest:setup",
       "backtest:candle",
       "backtest:signal",
       "backtest:signal_enriched",
@@ -188,6 +191,11 @@ export function useBacktest(): UseBacktestReturn {
           const data = envelope.data ?? envelope;
 
           switch (type) {
+            case "backtest:setup": {
+              const stage = (data as { stage?: string }).stage ?? null;
+              setSetupStage(stage);
+              break;
+            }
             case "backtest:candle": {
               const bar = data as BacktestBar;
               const sym = bar.symbol;
@@ -224,6 +232,7 @@ export function useBacktest(): UseBacktestReturn {
               const p = data as BacktestProgress;
               progressRef.current = p;
               setProgress(p);
+              setSetupStage(null);
               break;
             }
             case "backtest:complete": {
@@ -256,6 +265,7 @@ export function useBacktest(): UseBacktestReturn {
     setError(null);
     setResult(null);
     setProgress(null);
+    setSetupStage(null);
     setMetrics(null);
     barsRef.current = new Map();
     signalsRef.current = [];
@@ -336,6 +346,7 @@ export function useBacktest(): UseBacktestReturn {
     status,
     backtestId,
     progress,
+    setupStage,
     bars,
     signals,
     trades,
