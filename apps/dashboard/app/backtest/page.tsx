@@ -126,7 +126,7 @@ export default function BacktestPage() {
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              {tab === "trades" ? `Trade Log (${bt.trades.length})` : tab === "results" ? "Results" : "Equity Curve"}
+              {tab === "trades" ? `Positions (${Math.floor(bt.trades.length / 2)})` : tab === "results" ? "Results" : "Equity Curve"}
               {bottomTab === tab && (
                 <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />
               )}
@@ -594,39 +594,128 @@ function MiniChart({
   );
 }
 
+interface Position {
+  symbol: string;
+  strategy: string;
+  entry: BacktestTrade;
+  exit: BacktestTrade | null;
+  qty: number;
+  entryPrice: number;
+  exitPrice: number | null;
+  pnl: number | null;
+  pnlPct: number | null;
+  entryTime: string;
+  exitTime: string | null;
+}
+
+function groupPositions(trades: BacktestTrade[]): Position[] {
+  const openPositions = new Map<string, BacktestTrade>();
+  const positions: Position[] = [];
+
+  for (const t of trades) {
+    const isBuy = t.side?.toLowerCase() === "buy";
+    const key = `${t.symbol}:${t.strategy ?? ""}`;
+
+    if (isBuy) {
+      openPositions.set(key, t);
+    } else {
+      const entry = openPositions.get(key);
+      if (entry) {
+        openPositions.delete(key);
+        const qty = entry.quantity ?? 0;
+        const entryPx = entry.price ?? 0;
+        const exitPx = t.price ?? 0;
+        const pnl = (exitPx - entryPx) * qty;
+        const pnlPct = entryPx > 0 ? ((exitPx - entryPx) / entryPx) * 100 : 0;
+        positions.push({
+          symbol: t.symbol,
+          strategy: t.strategy ?? "",
+          entry,
+          exit: t,
+          qty,
+          entryPrice: entryPx,
+          exitPrice: exitPx,
+          pnl,
+          pnlPct,
+          entryTime: entry.filled_at ?? "",
+          exitTime: t.filled_at ?? "",
+        });
+      }
+    }
+  }
+
+  for (const [, entry] of openPositions) {
+    positions.push({
+      symbol: entry.symbol,
+      strategy: entry.strategy ?? "",
+      entry,
+      exit: null,
+      qty: entry.quantity ?? 0,
+      entryPrice: entry.price ?? 0,
+      exitPrice: null,
+      pnl: null,
+      pnlPct: null,
+      entryTime: entry.filled_at ?? "",
+      exitTime: null,
+    });
+  }
+
+  return positions;
+}
+
 function TradeLogInline({ trades }: { trades: BacktestTrade[] }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => { scrollRef.current && (scrollRef.current.scrollTop = scrollRef.current.scrollHeight); }, [trades.length]);
 
-  if (trades.length === 0) {
+  const positions = useMemo(() => groupPositions(trades), [trades]);
+
+  if (positions.length === 0 && trades.length === 0) {
     return <div className="flex items-center justify-center h-full text-xs text-muted-foreground">No trades yet</div>;
   }
+
+  const fmtTime = (s: string | null) => {
+    if (!s) return "—";
+    return new Date(s).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+  };
 
   return (
     <div ref={scrollRef} className="h-full overflow-y-auto">
       <table className="w-full text-xs font-mono">
         <thead className="sticky top-0 bg-card">
           <tr className="text-[10px] text-muted-foreground uppercase">
-            <th className="text-left px-4 py-1.5">Time</th>
+            <th className="text-left px-4 py-1.5">#</th>
             <th className="text-left px-2 py-1.5">Symbol</th>
-            <th className="text-left px-2 py-1.5">Side</th>
-            <th className="text-right px-2 py-1.5">Qty</th>
-            <th className="text-right px-2 py-1.5">Price</th>
             <th className="text-left px-2 py-1.5">Strategy</th>
+            <th className="text-right px-2 py-1.5">Qty</th>
+            <th className="text-right px-2 py-1.5">Entry</th>
+            <th className="text-left px-2 py-1.5">Entry Time</th>
+            <th className="text-right px-2 py-1.5">Exit</th>
+            <th className="text-left px-2 py-1.5">Exit Time</th>
+            <th className="text-right px-4 py-1.5">P&L</th>
           </tr>
         </thead>
         <tbody>
-          {trades.map((t, i) => {
-            const isBuy = t.side?.toLowerCase() === "buy";
-            const time = t.filled_at ? new Date(t.filled_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "—";
+          {positions.map((p, i) => {
+            const isOpen = p.exit === null;
+            const isWin = p.pnl !== null && p.pnl > 0;
+            const isLoss = p.pnl !== null && p.pnl < 0;
             return (
-              <tr key={i} className={`border-t border-border/30 ${isBuy ? "bg-emerald-500/[0.03]" : "bg-red-500/[0.03]"}`}>
-                <td className="px-4 py-1 text-muted-foreground">{time}</td>
-                <td className="px-2 py-1 text-foreground">{t.symbol}</td>
-                <td className={`px-2 py-1 ${isBuy ? "text-emerald-400" : "text-red-400"}`}>{t.side?.toUpperCase()}</td>
-                <td className="px-2 py-1 text-right text-foreground">{t.quantity?.toFixed?.(0) ?? "—"}</td>
-                <td className="px-2 py-1 text-right text-foreground">${t.price?.toFixed?.(2) ?? "—"}</td>
-                <td className="px-2 py-1 text-muted-foreground">{t.strategy ?? "—"}</td>
+              <tr key={i} className={`border-t border-border/30 ${isWin ? "bg-emerald-500/[0.03]" : isLoss ? "bg-red-500/[0.03]" : ""}`}>
+                <td className="px-4 py-1 text-muted-foreground">{i + 1}</td>
+                <td className="px-2 py-1 text-foreground">{p.symbol}</td>
+                <td className="px-2 py-1 text-muted-foreground">{p.strategy}</td>
+                <td className="px-2 py-1 text-right text-foreground">{p.qty.toFixed(0)}</td>
+                <td className="px-2 py-1 text-right text-emerald-400">${p.entryPrice.toFixed(2)}</td>
+                <td className="px-2 py-1 text-muted-foreground">{fmtTime(p.entryTime)}</td>
+                <td className="px-2 py-1 text-right text-red-400">{p.exitPrice !== null ? `$${p.exitPrice.toFixed(2)}` : "—"}</td>
+                <td className="px-2 py-1 text-muted-foreground">{fmtTime(p.exitTime)}</td>
+                <td className={`px-4 py-1 text-right font-medium ${isWin ? "text-emerald-400" : isLoss ? "text-red-400" : "text-muted-foreground"}`}>
+                  {p.pnl !== null ? (
+                    <span>{p.pnl >= 0 ? "+" : ""}{formatCurrency(p.pnl)} <span className="text-[10px]">({p.pnlPct! >= 0 ? "+" : ""}{p.pnlPct!.toFixed(2)}%)</span></span>
+                  ) : (
+                    <span className="text-amber-400">open</span>
+                  )}
+                </td>
               </tr>
             );
           })}

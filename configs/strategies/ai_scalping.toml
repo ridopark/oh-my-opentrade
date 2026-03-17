@@ -31,9 +31,9 @@ rsi_short = 70.0
 stoch_long = 20.0
 stoch_short = 80.0
 rsi_exit_mid = 50.0
-allow_regimes = ["TREND"]
-cooldown_seconds = 600
-max_trades_per_day = 8
+allow_regimes = ["TREND", "BALANCE", "REVERSAL"]
+cooldown_seconds = 120
+max_trades_per_day = 15
 ai_enabled = true
 ai_mode = "async_debate_adjust"
 ai_timeout_seconds = 3
@@ -51,9 +51,9 @@ allowed_hours_end = "15:45"
 allowed_hours_tz = "America/New_York"
 
 [regime_filter]
-enabled = true
-allowed_regimes = ["BALANCE", "REVERSAL"]
-min_atr_pct = 0.7
+enabled = false
+allowed_regimes = ["BALANCE", "REVERSAL", "TREND"]
+min_atr_pct = 0.5
 
 [hooks]
 signals = { engine = "builtin", name = "ai_scalping_v1" }
