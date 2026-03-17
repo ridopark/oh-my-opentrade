@@ -365,47 +365,81 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	r.emitter.EmitSetup("Checking for data gaps…")
 	if r.marketData != nil {
+		var gapWg sync.WaitGroup
 		for _, sym := range r.cfg.Symbols {
-			gaps, gapErr := repo.FindDataGaps(ctx, sym, replayTimeframe, r.cfg.From, r.cfg.To, gapThreshold)
-			if gapErr != nil {
-				r.log.Warn().Err(gapErr).Str("symbol", sym.String()).Msg("gap detection failed")
-				continue
-			}
-			for _, g := range gaps {
-				r.log.Info().Str("symbol", sym.String()).Time("start", g.Start).Time("end", g.End).Dur("duration", g.Duration).Msg("detected data gap — fetching from API")
-				apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, g.Start.Add(time.Minute), g.End)
-				if apiErr != nil {
-					r.log.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("failed to fetch gap bars")
-					continue
+			gapWg.Add(1)
+			go func(sym domain.Symbol) {
+				defer gapWg.Done()
+				gaps, gapErr := repo.FindDataGaps(ctx, sym, replayTimeframe, r.cfg.From, r.cfg.To, gapThreshold)
+				if gapErr != nil {
+					r.log.Warn().Err(gapErr).Str("symbol", sym.String()).Msg("gap detection failed")
+					return
 				}
-				if len(apiBars) > 0 {
-					saved, saveErr := repo.SaveMarketBars(ctx, apiBars)
-					if saveErr != nil {
-						r.log.Warn().Err(saveErr).Msg("failed to persist gap bars")
-					} else {
-						r.log.Info().Str("symbol", sym.String()).Int("fetched", len(apiBars)).Int("saved", saved).Msg("filled data gap")
+				for _, g := range gaps {
+					r.log.Info().Str("symbol", sym.String()).Time("start", g.Start).Time("end", g.End).Dur("duration", g.Duration).Msg("detected data gap — fetching from API")
+					apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, g.Start.Add(time.Minute), g.End)
+					if apiErr != nil {
+						r.log.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("failed to fetch gap bars")
+						continue
+					}
+					if len(apiBars) > 0 {
+						saved, saveErr := repo.SaveMarketBars(ctx, apiBars)
+						if saveErr != nil {
+							r.log.Warn().Err(saveErr).Msg("failed to persist gap bars")
+						} else {
+							r.log.Info().Str("symbol", sym.String()).Int("fetched", len(apiBars)).Int("saved", saved).Msg("filled data gap")
+						}
 					}
 				}
-			}
+			}(sym)
 		}
+		gapWg.Wait()
 	}
 
 	r.emitter.EmitSetup("Loading market data…")
 	streams := make([]*barStream, 0, len(r.cfg.Symbols))
 	totalBars := 0
 	firstBarTime := make(map[string]time.Time)
-	for _, sym := range r.cfg.Symbols {
-		bars, fetchErr := repo.GetMarketBars(ctx, sym, replayTimeframe, r.cfg.From, r.cfg.To)
-		if fetchErr != nil {
+	{
+		type loadResult struct {
+			stream       *barStream
+			firstBarTime time.Time
+		}
+		results := make([]loadResult, len(r.cfg.Symbols))
+		var loadErr atomic.Value
+		var loadWg sync.WaitGroup
+		for i, sym := range r.cfg.Symbols {
+			loadWg.Add(1)
+			go func(i int, sym domain.Symbol) {
+				defer loadWg.Done()
+				bars, fetchErr := repo.GetMarketBars(ctx, sym, replayTimeframe, r.cfg.From, r.cfg.To)
+				if fetchErr != nil {
+					loadErr.Store(fmt.Errorf("load bars for %s: %w", sym, fetchErr))
+					return
+				}
+				var fbt time.Time
+				if len(bars) > 0 {
+					fbt = bars[0].Time
+				}
+				results[i] = loadResult{stream: &barStream{symbol: sym, bars: bars}, firstBarTime: fbt}
+				r.log.Info().Str("symbol", sym.String()).Int("bars", len(bars)).Msg("loaded bars")
+			}(i, sym)
+		}
+		loadWg.Wait()
+		if v := loadErr.Load(); v != nil {
 			r.status.Store("error")
-			return fmt.Errorf("load bars for %s: %w", sym, fetchErr)
+			return v.(error)
 		}
-		streams = append(streams, &barStream{symbol: sym, bars: bars})
-		totalBars += len(bars)
-		if len(bars) > 0 {
-			firstBarTime[sym.String()] = bars[0].Time
+		for _, res := range results {
+			if res.stream == nil {
+				continue
+			}
+			streams = append(streams, res.stream)
+			totalBars += len(res.stream.bars)
+			if !res.firstBarTime.IsZero() {
+				firstBarTime[res.stream.symbol.String()] = res.firstBarTime
+			}
 		}
-		r.log.Info().Str("symbol", sym.String()).Int("bars", len(bars)).Msg("loaded bars")
 	}
 	sort.Slice(streams, func(i, j int) bool { return streams[i].symbol.String() < streams[j].symbol.String() })
 
@@ -414,38 +448,54 @@ func (r *Runner) Run(ctx context.Context) error {
 	r.emitter.EmitSetup("Warming up indicators…")
 	const minWarmupBars = 250
 	warmupBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
-	for _, sym := range r.cfg.Symbols {
-		warmupEnd := r.cfg.From
-		if t, ok := firstBarTime[sym.String()]; ok {
-			warmupEnd = t
+	{
+		type warmupResult struct {
+			sym  string
+			bars []domain.MarketBar
 		}
-		warmupStart := warmupEnd.Add(-7 * 24 * time.Hour)
-
-		bars, fetchErr := repo.GetMarketBars(ctx, sym, replayTimeframe, warmupStart, warmupEnd)
-		if fetchErr != nil {
-			r.log.Warn().Err(fetchErr).Str("symbol", sym.String()).Msg("warmup fetch failed")
-		}
-		if len(bars) < minWarmupBars && r.marketData != nil {
-			apiFrom := warmupEnd.Add(-30 * 24 * time.Hour)
-			apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, apiFrom, warmupEnd)
-			if apiErr == nil && len(apiBars) > len(bars) {
-				r.log.Info().Str("symbol", sym.String()).Int("db_bars", len(bars)).Int("api_bars", len(apiBars)).Msg("fetched warmup bars from market data API")
-				for _, b := range apiBars {
-					_ = repo.SaveMarketBar(ctx, b)
+		warmupResults := make([]warmupResult, len(r.cfg.Symbols))
+		var warmupWg sync.WaitGroup
+		for i, sym := range r.cfg.Symbols {
+			warmupWg.Add(1)
+			go func(i int, sym domain.Symbol) {
+				defer warmupWg.Done()
+				warmupEnd := r.cfg.From
+				if t, ok := firstBarTime[sym.String()]; ok {
+					warmupEnd = t
 				}
-				bars = apiBars
-			} else if apiErr != nil {
-				r.log.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("API warmup fetch failed")
-			}
+				warmupStart := warmupEnd.Add(-7 * 24 * time.Hour)
+
+				bars, fetchErr := repo.GetMarketBars(ctx, sym, replayTimeframe, warmupStart, warmupEnd)
+				if fetchErr != nil {
+					r.log.Warn().Err(fetchErr).Str("symbol", sym.String()).Msg("warmup fetch failed")
+				}
+				if len(bars) < minWarmupBars && r.marketData != nil {
+					apiFrom := warmupEnd.Add(-30 * 24 * time.Hour)
+					apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, apiFrom, warmupEnd)
+					if apiErr == nil && len(apiBars) > len(bars) {
+						r.log.Info().Str("symbol", sym.String()).Int("db_bars", len(bars)).Int("api_bars", len(apiBars)).Msg("fetched warmup bars from market data API")
+						for _, b := range apiBars {
+							_ = repo.SaveMarketBar(ctx, b)
+						}
+						bars = apiBars
+					} else if apiErr != nil {
+						r.log.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("API warmup fetch failed")
+					}
+				}
+				if len(bars) > minWarmupBars {
+					bars = bars[len(bars)-minWarmupBars:]
+				}
+				warmupResults[i] = warmupResult{sym: sym.String(), bars: bars}
+			}(i, sym)
 		}
-		if len(bars) > minWarmupBars {
-			bars = bars[len(bars)-minWarmupBars:]
+		warmupWg.Wait()
+		for _, res := range warmupResults {
+			warmupBarsCache[res.sym] = res.bars
+			n := monitorSvc.WarmUp(res.bars)
+			monitorSvc.ResetSessionIndicators(res.sym)
+			monitorSvc.MarkReady(res.sym)
+			r.log.Info().Str("symbol", res.sym).Int("warmup_bars", n).Msg("indicator warmup done")
 		}
-		warmupBarsCache[sym.String()] = bars
-		n := monitorSvc.WarmUp(bars)
-		monitorSvc.ResetSessionIndicators(sym.String())
-		monitorSvc.MarkReady(sym.String())
-		r.log.Info().Str("symbol", sym.String()).Int("warmup_bars", n).Time("warmup_end", warmupEnd).Msg("indicator warmup done")
 	}
 
 	for _, s := range streams {
