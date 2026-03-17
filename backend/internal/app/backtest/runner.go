@@ -342,8 +342,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	// --- Warmup ---
 
 	prevStart, prevEnd := domain.PreviousRTHSession(r.cfg.From)
-	warmupFrom := r.cfg.From.Add(-24 * time.Hour)
-	warmupTo := prevEnd
+	warmupFrom := r.cfg.From.Add(-7 * 24 * time.Hour)
+	warmupTo := r.cfg.From
+	_ = prevEnd
 	r.log.Info().
 		Time("prev_session_start", prevStart).
 		Time("prev_session_end", prevEnd).
@@ -360,11 +361,14 @@ func (r *Runner) Run(ctx context.Context) error {
 			continue
 		}
 		if len(bars) < minWarmupBars {
-			extendedFrom := warmupFrom.Add(-7 * 24 * time.Hour)
-			extBars, extErr := repo.GetMarketBars(ctx, sym, replayTimeframe, extendedFrom, warmupTo)
-			if extErr == nil && len(extBars) > len(bars) {
-				bars = extBars
-				r.log.Info().Str("symbol", sym.String()).Int("bars", len(bars)).Msg("extended warmup window for sparse symbol")
+			allBars, allErr := repo.GetMarketBars(ctx, sym, replayTimeframe, warmupFrom.Add(-30*24*time.Hour), r.cfg.To)
+			if allErr == nil && len(allBars) > len(bars) {
+				if len(allBars) > minWarmupBars {
+					bars = allBars[:minWarmupBars]
+				} else {
+					bars = allBars
+				}
+				r.log.Info().Str("symbol", sym.String()).Int("bars", len(bars)).Msg("extended warmup for sparse symbol")
 			}
 		}
 		warmupBarsCache[sym.String()] = bars
