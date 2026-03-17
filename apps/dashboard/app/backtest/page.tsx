@@ -500,6 +500,7 @@ function MiniChart({
     const ema21Data = sorted.filter((b) => b.ema21 && b.ema21 > 0).map((b) => ({ time: b.time as Time, value: b.ema21! }));
     const ema50Data = sorted.filter((b) => b.ema50 && b.ema50 > 0).map((b) => ({ time: b.time as Time, value: b.ema50! }));
     const ema200Data = sorted.filter((b) => b.ema200 && b.ema200 > 0).map((b) => ({ time: b.time as Time, value: b.ema200! }));
+
     if (ema9Ref.current) ema9Ref.current.setData(ema9Data);
     if (ema21Ref.current) ema21Ref.current.setData(ema21Data);
     if (ema50Ref.current) ema50Ref.current.setData(ema50Data);
