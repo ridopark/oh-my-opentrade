@@ -174,7 +174,7 @@ func main() {
 
 	ingBundle, err := bootstrap.BuildIngestion(bootstrap.IngestionDeps{
 		EventBus:   eventBus,
-		Repo:       repo,
+		Repo:       &noop.NoopRepo{},
 		IsBacktest: true,
 		Logger:     log,
 	})
