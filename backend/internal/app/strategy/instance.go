@@ -84,7 +84,6 @@ func (inst *Instance) Lifecycle() start.LifecycleState {
 	return inst.lifecycle
 }
 
-// SetLifecycle updates the lifecycle state.
 func (inst *Instance) SetLifecycle(state start.LifecycleState) {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
