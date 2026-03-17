@@ -47,12 +47,12 @@ func main() {
 
 	time.Sleep(3 * time.Second)
 
-	fmt.Println("\n=== TEST 2: BUY 5.7 SOXL @ $55.50 (fractional → rounds to 5) ===")
+	fmt.Println("\n=== TEST 2: BUY 1.5 AAPL @ $255.00 (fractional → cashQty) ===")
 	id2, err := adapter.SubmitOrder(ctx, domain.OrderIntent{
-		Symbol:     "SOXL",
+		Symbol:     "AAPL",
 		Direction:  domain.DirectionLong,
-		Quantity:   5.7,
-		LimitPrice: 55.50,
+		Quantity:   1.5,
+		LimitPrice: 255.00,
 		OrderType:  "limit",
 	})
 	if err != nil {
