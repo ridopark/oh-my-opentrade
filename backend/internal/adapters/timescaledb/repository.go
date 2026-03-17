@@ -89,7 +89,23 @@ func (r *Repository) SaveMarketBars(ctx context.Context, bars []domain.MarketBar
 		return 0, nil
 	}
 
-	// Build batched INSERT ... VALUES (...), (...), ... ON CONFLICT DO UPDATE
+	const maxBatchSize = 5000
+	if len(bars) > maxBatchSize {
+		total := 0
+		for i := 0; i < len(bars); i += maxBatchSize {
+			end := i + maxBatchSize
+			if end > len(bars) {
+				end = len(bars)
+			}
+			n, err := r.SaveMarketBars(ctx, bars[i:end])
+			total += n
+			if err != nil {
+				return total, err
+			}
+		}
+		return total, nil
+	}
+
 	var b strings.Builder
 	b.WriteString("INSERT INTO market_bars (time, account_id, env_mode, symbol, timeframe, open, high, low, close, volume, suspect) VALUES ")
 
