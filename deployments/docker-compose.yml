@@ -21,7 +21,7 @@ services:
     volumes:
       - ibgateway_jts:/home/ibgateway/Jts
     healthcheck:
-      test: ["CMD-SHELL", "echo > /dev/tcp/localhost/4002 2>/dev/null && echo ok"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/4004 2>/dev/null && echo ok'"]
       interval: 10s
       timeout: 5s
       retries: 12
