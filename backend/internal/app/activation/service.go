@@ -85,6 +85,46 @@ func (s *Service) MarkWarmed(symbols ...string) {
 	}
 }
 
+// retryFetchBars fetches historical bars with exponential backoff if broker is not available.
+// This handles the case where IBKR is connecting in the background and not yet ready.
+func (s *Service) retryFetchBars(ctx context.Context, sym domain.Symbol, timeframe string, from, to time.Time, l zerolog.Logger) ([]domain.MarketBar, error) {
+	const maxAttempts = 10
+	delay := 500 * time.Millisecond
+	const maxDelay = 10 * time.Second
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		bars, err := s.data.GetHistoricalBars(ctx, sym, domain.Timeframe(timeframe), from, to)
+		if err == nil {
+			return bars, nil
+		}
+
+		// Check if error is due to broker not being available (IBKR still connecting)
+		if !strings.Contains(err.Error(), "broker not available") {
+			// Not a broker availability issue, return immediately
+			return nil, err
+		}
+
+		// If this is the last attempt, return the error
+		if attempt == maxAttempts {
+			return nil, err
+		}
+
+		// Exponential backoff
+		l.Warn().Err(err).Int("attempt", attempt).Dur("retry_in", delay).Msg("broker not available, retrying bars fetch")
+		select {
+		case <-time.After(delay):
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	return nil, fmt.Errorf("failed to fetch bars after %d attempts", maxAttempts)
+}
+
 func (s *Service) handleEffectiveSymbolsUpdated(ctx context.Context, evt domain.Event) error {
 	payload, ok := evt.Payload.(screener.EffectiveSymbolsUpdatedPayload)
 	if !ok {
@@ -218,7 +258,7 @@ func (s *Service) activateOne(ctx context.Context, symbol string) error {
 	}
 
 	hourlyFrom := hourlyTo.Add(-time.Duration(float64(hourlyBarsNeeded)*1.3) * time.Hour)
-	bars1h, err := s.data.GetHistoricalBars(ctx, sym, "1h", hourlyFrom, hourlyTo)
+	bars1h, err := s.retryFetchBars(ctx, sym, "1h", hourlyFrom, hourlyTo, l)
 	if err != nil {
 		l.Warn().Err(err).Msg("1H warmup fetch failed")
 	} else if len(bars1h) > 0 {
@@ -227,7 +267,7 @@ func (s *Service) activateOne(ctx context.Context, symbol string) error {
 	}
 
 	dailyFrom := dailyTo.Add(-time.Duration(float64(dailyBarsNeeded)*1.5) * 24 * time.Hour)
-	bars1d, err := s.data.GetHistoricalBars(ctx, sym, "1d", dailyFrom, dailyTo)
+	bars1d, err := s.retryFetchBars(ctx, sym, "1d", dailyFrom, dailyTo, l)
 	if err != nil {
 		return fmt.Errorf("1D warmup fetch failed for %s: %w", symbol, err)
 	}
@@ -257,7 +297,7 @@ func (s *Service) activateOne(ctx context.Context, symbol string) error {
 	}
 
 	warmupFrom := warmupTo.Add(-120 * time.Minute)
-	bars1m, err := s.data.GetHistoricalBars(ctx, sym, s.baseTimeframe, warmupFrom, warmupTo)
+	bars1m, err := s.retryFetchBars(ctx, sym, string(s.baseTimeframe), warmupFrom, warmupTo, l)
 	if err != nil {
 		l.Warn().Err(err).Msg("1m indicator warmup fetch failed")
 	} else if len(bars1m) > 0 {
@@ -291,7 +331,7 @@ func (s *Service) activateOne(ctx context.Context, symbol string) error {
 	isWeekday := nowET.Weekday() != time.Saturday && nowET.Weekday() != time.Sunday
 	isOpen := !domain.IsNYSEHoliday(nowET) && isWeekday
 	if isOpen && nowET.After(todayOpen) {
-		orbBars, err := s.data.GetHistoricalBars(ctx, sym, s.baseTimeframe, todayOpen.UTC(), time.Now())
+		orbBars, err := s.retryFetchBars(ctx, sym, string(s.baseTimeframe), todayOpen.UTC(), time.Now(), l)
 		if err != nil {
 			l.Warn().Err(err).Msg("ORB replay fetch failed")
 		} else if len(orbBars) > 0 {
