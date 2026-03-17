@@ -16,9 +16,10 @@ func main() {
 	log := zerolog.New(os.Stdout).With().Timestamp().Logger()
 
 	cfg := config.IBKRConfig{
-		Host:     "localhost",
-		Port:     4002,
-		ClientID: 99,
+		Host:      "localhost",
+		Port:      4002,
+		ClientID:  99,
+		PaperMode: true,
 	}
 
 	adapter, err := ibkr.NewAdapter(cfg, log)
