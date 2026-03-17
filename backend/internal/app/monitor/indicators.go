@@ -13,9 +13,10 @@ const (
 	emaPeriod9      = 9
 	emaPeriod21     = 21
 	emaPeriod50     = 50
+	emaPeriod200    = 200
 	volumeSMAPeriod = 20
 	atrPeriod       = 14
-	maxWindowSize   = 50
+	maxWindowSize   = 250
 )
 
 // symbolState tracks the internal state required to compute technical indicators
@@ -29,9 +30,11 @@ type symbolState struct {
 	ema9          float64
 	ema21         float64
 	ema50         float64
+	ema200        float64
 	ema9Init      bool
 	ema21Init     bool
 	ema50Init     bool
+	ema200Init    bool
 	emaFast       float64
 	emaSlow       float64
 	emaFastInit   bool
@@ -234,6 +237,14 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 		state.ema50 = (bar.Close-state.ema50)*multiplier + state.ema50
 	}
 
+	if !state.ema200Init && len(state.closes) >= emaPeriod200 {
+		state.ema200 = smaWindow(state.closes, emaPeriod200)
+		state.ema200Init = true
+	} else if state.ema200Init {
+		multiplier := 2.0 / (float64(emaPeriod200) + 1.0)
+		state.ema200 = (bar.Close-state.ema200)*multiplier + state.ema200
+	}
+
 	customEMA, hasCustom := ic.emaConfigs[key]
 	if hasCustom {
 		if !state.emaFastInit && len(state.closes) >= customEMA.fastPeriod {
@@ -282,6 +293,9 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 	}
 	if state.ema50Init {
 		snap.EMA50 = state.ema50
+	}
+	if state.ema200Init {
+		snap.EMA200 = state.ema200
 	}
 	if hasCustom {
 		if state.emaFastInit {

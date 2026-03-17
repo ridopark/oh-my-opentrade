@@ -1,0 +1,60 @@
+schema_version = 2
+
+[strategy]
+id = "backtest_test"
+version = "1.0.0"
+name = "Backtest Test (Loose RSI Scalping)"
+description = "Loose AI scalping config for backtest testing — fires on RSI<40, exits on RSI>55"
+author = "system"
+created_at = "2026-03-16T00:00:00Z"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SPY", "META", "NVDA"]
+timeframes = ["1m"]
+priority = 200
+conflict_policy = "priority_wins"
+exclusive_per_symbol = false
+watchlist_mode = "replace"
+asset_classes = ["EQUITY"]
+allowed_directions = ["LONG"]
+
+[params]
+rsi_long = 50.0
+rsi_short = 55.0
+stoch_long = 50.0
+stoch_short = 55.0
+rsi_exit_mid = 52.0
+cooldown_seconds = 60
+max_trades_per_day = 20
+stop_bps = 30
+limit_offset_bps = 3
+risk_per_trade_bps = 50
+max_position_bps = 500
+
+[regime_filter]
+enabled = false
+
+[hooks]
+signals = { engine = "builtin", name = "ai_scalping_v1" }
+
+[dynamic_risk]
+enabled = false
+
+[[exit_rules]]
+type = "VOLATILITY_STOP"
+[exit_rules.params]
+atr_multiplier = 2.0
+
+[[exit_rules]]
+type = "MAX_LOSS"
+[exit_rules.params]
+pct = 0.02
+
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 5

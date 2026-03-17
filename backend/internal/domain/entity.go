@@ -247,6 +247,7 @@ type IndicatorSnapshot struct {
 	EMA9          float64
 	EMA21         float64
 	EMA50         float64
+	EMA200        float64
 	EMAFast       float64
 	EMASlow       float64
 	EMAFastPeriod int
