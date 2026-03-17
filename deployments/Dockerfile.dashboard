@@ -4,6 +4,7 @@ WORKDIR /app
 COPY apps/dashboard/package*.json ./
 RUN npm ci
 COPY apps/dashboard/ ./
+ENV BACKEND_URL=http://omo-core:8080
 RUN npm run build
 
 # Stage 2: production runner
