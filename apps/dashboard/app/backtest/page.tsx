@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import {
   createChart,
   ColorType,
@@ -20,6 +20,7 @@ import {
   type BacktestTrade,
   type BacktestMetrics,
   type BacktestProgress,
+  type BacktestResult,
 } from "@/lib/use-backtest";
 import { Button } from "@/components/ui/button";
 
@@ -487,8 +488,6 @@ function MiniChart({
     if (!candleRef.current || !volumeRef.current || bars.length === 0) return;
 
     if (bars.length === lastBarCountRef.current) return;
-    const prevCount = lastBarCountRef.current;
-
     const deduped = new Map<number, BacktestBar>();
     for (const b of bars) deduped.set(b.time, b);
     const sorted = Array.from(deduped.values()).sort((a, b) => a.time - b.time);
@@ -664,8 +663,8 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
 }
 
 function TradeLogInline({ trades }: { trades: BacktestTrade[] }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { scrollRef.current && (scrollRef.current.scrollTop = scrollRef.current.scrollHeight); }, [trades.length]);
+   const scrollRef = useRef<HTMLDivElement>(null);
+   useEffect(() => { if (scrollRef.current) { scrollRef.current.scrollTop = scrollRef.current.scrollHeight; } }, [trades.length]);
 
   const positions = useMemo(() => groupPositions(trades), [trades]);
 
@@ -696,7 +695,6 @@ function TradeLogInline({ trades }: { trades: BacktestTrade[] }) {
         </thead>
         <tbody>
           {positions.map((p, i) => {
-            const isOpen = p.exit === null;
             const isWin = p.pnl !== null && p.pnl > 0;
             const isLoss = p.pnl !== null && p.pnl < 0;
             return (
@@ -728,7 +726,7 @@ function TradeLogInline({ trades }: { trades: BacktestTrade[] }) {
 function MetricsPanelInline({
   metrics, result, initialEquity,
 }: {
-  metrics: BacktestMetrics | null; result: any | null; initialEquity: number;
+  metrics: BacktestMetrics | null; result: BacktestResult | null; initialEquity: number;
 }) {
   const m = result ?? metrics;
   if (!m) {

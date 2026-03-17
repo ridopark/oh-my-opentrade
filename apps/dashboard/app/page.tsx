@@ -154,11 +154,10 @@ function TradingSignalContent() {
     const es = new EventSource("/api/events");
 
     es.addEventListener("StrategySignalLifecycle", (e: MessageEvent) => {
-      try {
-        const envelope = JSON.parse(e.data) as { payload: StrategySignalEvent };
-        const sig = envelope.payload;
-        if (!sig?.Symbol || !sig?.TS) return;
-        console.log(`[SSE] StrategySignalLifecycle`, sig.Symbol, sig);
+       try {
+         const envelope = JSON.parse(e.data) as { payload: StrategySignalEvent };
+         const sig = envelope.payload;
+         if (!sig?.Symbol || !sig?.TS) return;
 
         const side = sig.Side?.toLowerCase() === "sell" ? "sell" as const : "buy" as const;
         const kind = sig.Kind?.toLowerCase() === "exit" ? "exit" as const : "entry" as const;
