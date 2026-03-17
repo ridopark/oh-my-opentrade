@@ -141,6 +141,7 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 		Config:        cfg,
 		InitialEquity: svc.accountEquity,
 		EnableOptions: true,
+		BrokerName:    cfg.Broker,
 		Logger:        log,
 	})
 	if err != nil {

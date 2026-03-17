@@ -28,6 +28,7 @@ type ExecutionDeps struct {
 	InitialEquity float64
 	IsBacktest    bool
 	EnableOptions bool
+	BrokerName    string
 	Logger        zerolog.Logger
 }
 
@@ -91,6 +92,10 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 		bpGuard := execution.NewBuyingPowerGuard(deps.AccountPort, execLog)
 		execOpts = append(execOpts, execution.WithBuyingPowerGuard(bpGuard))
 	}
+	if deps.BrokerName != "" {
+		execOpts = append(execOpts, execution.WithBrokerName(deps.BrokerName))
+	}
+
 	if deps.EnableOptions {
 		optsCfg := cfg.Trading.OptionsRisk
 		ore := execution.NewOptionsRiskEngine(
