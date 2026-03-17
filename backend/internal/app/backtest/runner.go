@@ -26,6 +26,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	portstrategy "github.com/oh-my-opentrade/backend/internal/ports/strategy"
 	"github.com/rs/zerolog"
 )
@@ -55,11 +56,12 @@ type ProgressInfo struct {
 
 // Runner executes a single backtest using an isolated event bus and SimBroker.
 type Runner struct {
-	id     string
-	cfg    RunConfig
-	db     *sql.DB
-	appCfg *config.Config
-	log    zerolog.Logger
+	id         string
+	cfg        RunConfig
+	db         *sql.DB
+	appCfg     *config.Config
+	marketData ports.MarketDataPort
+	log        zerolog.Logger
 
 	eventBus  *memory.Bus
 	collector *Collector
@@ -84,19 +86,20 @@ func generateID() string {
 }
 
 // NewRunner creates a backtest Runner with an isolated event bus.
-func NewRunner(cfg RunConfig, db *sql.DB, appCfg *config.Config, log zerolog.Logger) *Runner {
+func NewRunner(cfg RunConfig, db *sql.DB, appCfg *config.Config, marketData ports.MarketDataPort, log zerolog.Logger) *Runner {
 	id := generateID()
 	rlog := log.With().Str("backtest_id", id).Str("component", "backtest_runner").Logger()
 
 	r := &Runner{
-		id:       id,
-		cfg:      cfg,
-		db:       db,
-		appCfg:   appCfg,
-		log:      rlog,
-		eventBus: memory.NewBus(),
-		emitter:  NewEmitter(rlog, cfg.Timeframe),
-		pauseCh:  make(chan struct{}),
+		id:         id,
+		cfg:        cfg,
+		db:         db,
+		appCfg:     appCfg,
+		marketData: marketData,
+		log:        rlog,
+		eventBus:   memory.NewBus(),
+		emitter:    NewEmitter(rlog, cfg.Timeframe),
+		pauseCh:    make(chan struct{}),
 	}
 
 	delay, _ := parseSpeedToDelay(cfg.Speed, cfg.Timeframe)
@@ -352,18 +355,31 @@ func (r *Runner) Run(ctx context.Context) error {
 		Time("warmup_to", warmupTo).
 		Msg("warming indicators")
 
+	const minWarmupBars = 250
 	warmupBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
 	for _, sym := range r.cfg.Symbols {
 		bars, fetchErr := repo.GetMarketBars(ctx, sym, replayTimeframe, warmupFrom, warmupTo)
 		if fetchErr != nil {
 			r.log.Warn().Err(fetchErr).Str("symbol", sym.String()).Msg("warmup fetch failed")
-			continue
+		}
+		if len(bars) < minWarmupBars && r.marketData != nil {
+			apiFrom := warmupTo.Add(-30 * 24 * time.Hour)
+			apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, apiFrom, warmupTo)
+			if apiErr == nil && len(apiBars) > len(bars) {
+				r.log.Info().Str("symbol", sym.String()).Int("db_bars", len(bars)).Int("api_bars", len(apiBars)).Msg("fetched warmup bars from market data API")
+				for _, b := range apiBars {
+					_ = repo.SaveMarketBar(ctx, b)
+				}
+				bars = apiBars
+			} else if apiErr != nil {
+				r.log.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("API warmup fetch failed")
+			}
 		}
 		warmupBarsCache[sym.String()] = bars
 		n := monitorSvc.WarmUp(bars)
 		monitorSvc.ResetSessionIndicators(sym.String())
 		monitorSvc.MarkReady(sym.String())
-		r.log.Debug().Str("symbol", sym.String()).Int("bars", n).Msg("indicator warmup done")
+		r.log.Info().Str("symbol", sym.String()).Int("warmup_bars", n).Msg("indicator warmup done")
 	}
 
 	for _, sym := range r.cfg.Symbols {

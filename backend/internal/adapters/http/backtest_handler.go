@@ -15,6 +15,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/backtest"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
 
@@ -37,20 +38,22 @@ type backtestControlRequest struct {
 
 // BacktestHandler manages backtest lifecycle via HTTP endpoints.
 type BacktestHandler struct {
-	db     *sql.DB
-	appCfg *config.Config
-	log    zerolog.Logger
+	db         *sql.DB
+	appCfg     *config.Config
+	marketData ports.MarketDataPort
+	log        zerolog.Logger
 
 	mu     sync.RWMutex
-	active *backtest.Runner // max 1 concurrent backtest (MVP)
+	active *backtest.Runner
 }
 
 // NewBacktestHandler creates a handler for backtest HTTP endpoints.
-func NewBacktestHandler(db *sql.DB, appCfg *config.Config, log zerolog.Logger) *BacktestHandler {
+func NewBacktestHandler(db *sql.DB, appCfg *config.Config, marketData ports.MarketDataPort, log zerolog.Logger) *BacktestHandler {
 	return &BacktestHandler{
-		db:     db,
-		appCfg: appCfg,
-		log:    log.With().Str("component", "backtest_http").Logger(),
+		db:         db,
+		appCfg:     appCfg,
+		marketData: marketData,
+		log:        log.With().Str("component", "backtest_http").Logger(),
 	}
 }
 
@@ -180,7 +183,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		Speed:         speed,
 		NoAI:          req.NoAI,
 		Strategies:    req.Strategies,
-	}, h.db, h.appCfg, h.log)
+	}, h.db, h.appCfg, h.marketData, h.log)
 
 	h.active = runner
 	h.mu.Unlock()
