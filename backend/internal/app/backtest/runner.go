@@ -327,7 +327,19 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	signalTracker := perf.NewSignalTracker(r.eventBus, &noop.NoopPnLRepo{}, r.log.With().Str("component", "signal_tracker").Logger())
-	monitorSvc.SetBaseSymbols(pipeline.BaseSymbols)
+
+	symSet := make(map[string]struct{})
+	for _, s := range pipeline.BaseSymbols {
+		symSet[s] = struct{}{}
+	}
+	for _, s := range r.cfg.Symbols {
+		symSet[s.String()] = struct{}{}
+	}
+	allSymbols := make([]string, 0, len(symSet))
+	for s := range symSet {
+		allSymbols = append(allSymbols, s)
+	}
+	monitorSvc.SetBaseSymbols(allSymbols)
 
 	r.collector, err = NewCollector(r.eventBus, Config{InitialEquity: r.cfg.InitialEquity}, r.log.With().Str("component", "backtest_collector").Logger())
 	if err != nil {
@@ -395,6 +407,9 @@ func (r *Runner) Run(ctx context.Context) error {
 			} else if apiErr != nil {
 				r.log.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("API warmup fetch failed")
 			}
+		}
+		if len(bars) > minWarmupBars {
+			bars = bars[len(bars)-minWarmupBars:]
 		}
 		warmupBarsCache[sym.String()] = bars
 		n := monitorSvc.WarmUp(bars)
