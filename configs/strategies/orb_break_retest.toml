@@ -36,7 +36,7 @@ max_retest_bars = 20
 allow_missing_range_bars = 20
 max_signals_per_session = 3
 htf_bias_enabled = true
-atr_multiplier = 2.0
+atr_multiplier = 3.0
 sweep_cooldown_bars = 3
 stop_bps = 50
 limit_offset_bps = 5
@@ -85,7 +85,7 @@ size_wide_mult = 1.50
 [[exit_rules]]
 type = "VOLATILITY_STOP"
 [exit_rules.params]
-atr_multiplier = 2.0
+atr_multiplier = 3.0
 
 [[exit_rules]]
 type = "SD_TARGET"
