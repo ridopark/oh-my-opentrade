@@ -13,6 +13,8 @@ services:
       - READ_ONLY=no
       - READ_ONLY_API=no
       - TWS_ACCEPT_INCOMING_CONNECTION=yes
+      - AUTO_RESTART_TIME=11:55 PM
+      - RELOGIN_AFTER_2FA_TIMEOUT=60
       - VNC_SERVER_PASSWORD=${VNC_PASS:-password}
     volumes:
       - ibgateway_jts:/home/ibgateway/Jts
