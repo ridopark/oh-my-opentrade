@@ -371,6 +371,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.status.Store("error")
 			return fmt.Errorf("load bars for %s: %w", sym, fetchErr)
 		}
+
+		if r.marketData != nil && len(bars) > 1 {
+			bars = r.fillGaps(ctx, repo, sym, replayTimeframe, bars)
+		}
+
 		streams = append(streams, &barStream{symbol: sym, bars: bars})
 		totalBars += len(bars)
 		if len(bars) > 0 {
@@ -783,6 +788,59 @@ func symbolStrings(syms []domain.Symbol) []string {
 		out[i] = s.String()
 	}
 	return out
+}
+
+const gapThreshold = 4 * time.Hour
+
+type barRepo interface {
+	SaveMarketBars(ctx context.Context, bars []domain.MarketBar) (int, error)
+	GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error)
+}
+
+func (r *Runner) fillGaps(ctx context.Context, repo barRepo, sym domain.Symbol, tf domain.Timeframe, bars []domain.MarketBar) []domain.MarketBar {
+	filled := false
+	for i := 1; i < len(bars); i++ {
+		gap := bars[i].Time.Sub(bars[i-1].Time)
+		if gap <= gapThreshold {
+			continue
+		}
+
+		gapStart := bars[i-1].Time.Add(time.Minute)
+		gapEnd := bars[i].Time
+		r.log.Info().
+			Str("symbol", sym.String()).
+			Time("gap_start", gapStart).
+			Time("gap_end", gapEnd).
+			Dur("gap_duration", gap).
+			Msg("detected data gap — fetching from market data API")
+
+		apiBars, err := r.marketData.GetHistoricalBars(ctx, sym, tf, gapStart, gapEnd)
+		if err != nil {
+			r.log.Warn().Err(err).Str("symbol", sym.String()).Msg("failed to fetch gap bars from API")
+			continue
+		}
+		if len(apiBars) == 0 {
+			continue
+		}
+
+		if _, saveErr := repo.SaveMarketBars(ctx, apiBars); saveErr != nil {
+			r.log.Warn().Err(saveErr).Str("symbol", sym.String()).Int("bars", len(apiBars)).Msg("failed to persist gap bars")
+		}
+
+		r.log.Info().Str("symbol", sym.String()).Int("fetched", len(apiBars)).Msg("filled data gap")
+		filled = true
+	}
+
+	if !filled {
+		return bars
+	}
+
+	allBars, err := repo.GetMarketBars(ctx, sym, tf, bars[0].Time, bars[len(bars)-1].Time.Add(time.Minute))
+	if err != nil {
+		r.log.Warn().Err(err).Msg("failed to reload bars after gap fill")
+		return bars
+	}
+	return allBars
 }
 
 type filteredSpecStore struct {
