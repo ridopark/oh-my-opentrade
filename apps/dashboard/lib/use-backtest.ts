@@ -237,8 +237,8 @@ export function useBacktest(): UseBacktestReturn {
       });
     }
 
-    es.onerror = () => {};
-  }, [cleanup, scheduleFlush, progress]);
+     es.onerror = () => {};
+   }, [cleanup, scheduleFlush]);
 
   const fetchResults = async (id: string) => {
     try {

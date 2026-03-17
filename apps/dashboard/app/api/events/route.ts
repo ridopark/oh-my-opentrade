@@ -22,7 +22,7 @@ export const runtime = "nodejs";
 /** Minimal structured logger for server-side Next.js routes. */
 const log = {
   info: (msg: string, fields?: Record<string, unknown>) =>
-    console.log(JSON.stringify({ level: "info", route: "/api/events", msg, ...fields })),
+    console.warn(JSON.stringify({ level: "info", route: "/api/events", msg, ...fields })),
   warn: (msg: string, fields?: Record<string, unknown>) =>
     console.warn(JSON.stringify({ level: "warn", route: "/api/events", msg, ...fields })),
   error: (msg: string, fields?: Record<string, unknown>) =>

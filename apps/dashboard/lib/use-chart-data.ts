@@ -140,64 +140,57 @@ export function useChartData(
   // window so we can jump over overnight, weekend, and holiday gaps.
   const emptyFetchCountRef = useRef(0);
 
-  const fetchBars = useCallback(
-    async (from: Date, to: Date, showLoading: boolean) => {
-      const key = `${timeframeRef.current}|${from.toISOString()}|${to.toISOString()}`;
-      console.log('[useChartData] fetchBars called', { tf: timeframeRef.current, from: from.toISOString(), to: to.toISOString(), showLoading, alreadyInFlight: inFlight.current.has(key) });
-      if (inFlight.current.has(key)) {
-        console.log('[useChartData] fetchBars SKIPPED — already in-flight', key);
-        return 0;
-      }
-      inFlight.current.add(key);
-      if (showLoading) setLoading(true);
+   const fetchBars = useCallback(
+     async (from: Date, to: Date, showLoading: boolean) => {
+       const key = `${timeframeRef.current}|${from.toISOString()}|${to.toISOString()}`;
+       if (inFlight.current.has(key)) {
+         return 0;
+       }
+       inFlight.current.add(key);
+       if (showLoading) setLoading(true);
 
-      try {
-        const params = new URLSearchParams({
-          symbols: symbolsRef.current.join(','),
-          timeframe: timeframeRef.current,
-          from: from.toISOString(),
-          to: to.toISOString(),
-        });
-        const url = `/api/bars?${params}`;
-        console.log('[useChartData] fetching', url);
-        const res = await fetch(url);
-        console.log('[useChartData] fetch response', { status: res.status, ok: res.ok });
-        if (!res.ok) {
-          console.warn('[useChartData] fetch failed with status', res.status);
-          return -1; // Distinguish error from empty response
-        }
-        const rows: MarketBarEvent[] = await res.json();
-        if (!Array.isArray(rows)) {
-          console.warn('[useChartData] unexpected response shape', rows);
-          return 0;
-        }
-        console.log('[useChartData] received', rows.length, 'bars');
+       try {
+         const params = new URLSearchParams({
+           symbols: symbolsRef.current.join(','),
+           timeframe: timeframeRef.current,
+           from: from.toISOString(),
+           to: to.toISOString(),
+         });
+         const url = `/api/bars?${params}`;
+         const res = await fetch(url);
+         if (!res.ok) {
+           console.warn('[useChartData] fetch failed with status', res.status);
+           return -1; // Distinguish error from empty response
+         }
+         const rows: MarketBarEvent[] = await res.json();
+         if (!Array.isArray(rows)) {
+           console.warn('[useChartData] unexpected response shape', rows);
+           return 0;
+         }
 
-        // Merge new bars into current state (prepend older bars)
-        const current = barsRef.current;
-        const next: BarsBySymbol = { ...current };
-        for (const row of rows) {
-          if (!row?.symbol) continue;
-          const ohlc = toOHLC(row);
-          const prev = next[row.symbol] ?? [];
-          next[row.symbol] = upsertBar(prev, ohlc);
-        }
-        const symbolCounts = Object.fromEntries(Object.entries(next).map(([s, b]) => [s, b.length]));
-        console.log('[useChartData] updated barsBySymbol counts', symbolCounts);
-        barsRef.current = next;
-        setBarsBySymbol(next);
-        setDataTimeframe(timeframeRef.current);
-        return rows.length;
-      } catch (err) {
-        console.error('[useChartData] fetchBars error', err);
-        return -1;
-      } finally {
-        inFlight.current.delete(key);
-        if (showLoading) setLoading(false);
-      }
-    },
-    []
-  );
+         // Merge new bars into current state (prepend older bars)
+         const current = barsRef.current;
+         const next: BarsBySymbol = { ...current };
+         for (const row of rows) {
+           if (!row?.symbol) continue;
+           const ohlc = toOHLC(row);
+           const prev = next[row.symbol] ?? [];
+           next[row.symbol] = upsertBar(prev, ohlc);
+         }
+         barsRef.current = next;
+         setBarsBySymbol(next);
+         setDataTimeframe(timeframeRef.current);
+         return rows.length;
+       } catch (err) {
+         console.error('[useChartData] fetchBars error', err);
+         return -1;
+       } finally {
+         inFlight.current.delete(key);
+         if (showLoading) setLoading(false);
+       }
+     },
+     []
+   );
 
   // Initial load / timeframe switch
   useEffect(() => {
@@ -209,16 +202,15 @@ export function useChartData(
     loadMoreCursorRef.current = null;
     emptyFetchCountRef.current = 0;
 
-    const to = new Date();
-    const mins = TF_MINUTES[timeframe] ?? 1;
-    // Always look back at least 2 calendar days so pre-market loads still
-    // capture the most recent completed trading session (US market opens
-    // 14:30 UTC; a 5h window at 13:00 UTC would miss yesterday entirely).
-    const minLookbackMs = 2 * 24 * 60 * 60 * 1000;
-    const windowMs = FETCH_WINDOW * mins * 60 * 1000;
-    const from = new Date(to.getTime() - Math.max(windowMs, minLookbackMs));
-    console.log('[useChartData] initial load for timeframe', timeframe, { from: from.toISOString(), to: to.toISOString(), windowBars: FETCH_WINDOW });
-    fetchBars(from, to, true);
+     const to = new Date();
+     const mins = TF_MINUTES[timeframe] ?? 1;
+     // Always look back at least 2 calendar days so pre-market loads still
+     // capture the most recent completed trading session (US market opens
+     // 14:30 UTC; a 5h window at 13:00 UTC would miss yesterday entirely).
+     const minLookbackMs = 2 * 24 * 60 * 60 * 1000;
+     const windowMs = FETCH_WINDOW * mins * 60 * 1000;
+     const from = new Date(to.getTime() - Math.max(windowMs, minLookbackMs));
+     fetchBars(from, to, true);
   }, [timeframe, fetchBars, symbolsKey]);
 
   // loadMore: fetch an older window ending before the given timestamp.
@@ -242,36 +234,25 @@ export function useChartData(
       const scale = Math.pow(2, Math.min(emptyFetchCountRef.current, MAX_WINDOW_SCALE));
       const windowMs = baseWindowMs * scale;
       const from = new Date(to.getTime() - windowMs);
-      // Advance cursor to `from` so next call pages further back
-      loadMoreCursorRef.current = Math.floor(from.getTime() / 1000);
-      console.log('[useChartData] loadMore triggered', {
-        beforeTs, effectiveTo, beforeDate: to.toISOString(),
-        tf: timeframeRef.current, from: from.toISOString(),
-        scale, emptyFetches: emptyFetchCountRef.current,
-      });
-      // Show loadingMore spinner for the entire retry chain
-      setLoadingMore(true);
-      const count = await fetchBars(from, to, false);
-      if (count < 0) {
-        console.warn('[useChartData] loadMore fetch error — stopping retry chain');
-        setLoadingMore(false);
-      } else if (count === 0) {
-        emptyFetchCountRef.current += 1;
-        const nextScale = Math.pow(2, Math.min(emptyFetchCountRef.current, MAX_WINDOW_SCALE));
-        console.log('[useChartData] loadMore got 0 bars — emptyFetchCount now',
-          emptyFetchCountRef.current, '| next window scale:', nextScale, 'x');
-        if (emptyFetchCountRef.current < MAX_AUTO_RETRIES) {
-          console.log('[useChartData] auto-retrying with wider window…');
-          setTimeout(() => loadMore(beforeTs), 50);
-        } else {
-          console.log('[useChartData] exhausted', MAX_AUTO_RETRIES, 'auto-retries — giving up');
-          setLoadingMore(false);
-        }
-      } else {
-        emptyFetchCountRef.current = 0;
-        console.log('[useChartData] loadMore got', count, 'bars — emptyFetchCount reset');
-        setLoadingMore(false);
-      }
+       // Advance cursor to `from` so next call pages further back
+       loadMoreCursorRef.current = Math.floor(from.getTime() / 1000);
+       // Show loadingMore spinner for the entire retry chain
+       setLoadingMore(true);
+       const count = await fetchBars(from, to, false);
+       if (count < 0) {
+         console.warn('[useChartData] loadMore fetch error — stopping retry chain');
+         setLoadingMore(false);
+       } else if (count === 0) {
+         emptyFetchCountRef.current += 1;
+         if (emptyFetchCountRef.current < MAX_AUTO_RETRIES) {
+           setTimeout(() => loadMore(beforeTs), 50);
+         } else {
+           setLoadingMore(false);
+         }
+       } else {
+         emptyFetchCountRef.current = 0;
+         setLoadingMore(false);
+       }
     },
     [fetchBars]
   );
@@ -281,11 +262,10 @@ export function useChartData(
     const es = new EventSource(sseUrl);
 
     const handleBarEvent = (e: MessageEvent) => {
-      try {
-        const envelope = JSON.parse(e.data) as { type?: string, payload: MarketBarEvent };
-        const bar = envelope.payload;
-        if (!bar?.symbol || !bar?.time) return;
-        console.log(`[SSE] ${envelope.type ?? e.type}`, bar.symbol, bar);
+       try {
+         const envelope = JSON.parse(e.data) as { type?: string, payload: MarketBarEvent };
+         const bar = envelope.payload;
+         if (!bar?.symbol || !bar?.time) return;
 
         const ohlc = toOHLC(bar);
         const tf = timeframeRef.current;

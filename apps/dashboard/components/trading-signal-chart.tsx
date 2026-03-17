@@ -672,9 +672,9 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
           rsiChartRef.current?.timeScale().fitContent();
         }
       }
-      requestAnimationFrame(() => { suppressViewSaveRef.current = false; });
-    }
-  }, [data, signals, showEMA, showBollinger, showRSI]);
+       requestAnimationFrame(() => { suppressViewSaveRef.current = false; });
+     }
+   }, [data, signals, showEMA, showBollinger, showRSI, initialView]);
 
   // 6. PRICE LINES — horizontal stop/entry/target for most recent executed entry signal
   useEffect(() => {

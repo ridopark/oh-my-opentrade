@@ -258,22 +258,17 @@ export function MultiSymbolChart() {
   // IMPORTANT: Capture the current visible range BEFORE resetting, so we can restore
   // the same calendar window after the new timeframe's data loads.
   useEffect(() => {
-    // Capture visible range from the chart (ET fake-UTC timestamps)
-    const chart = chartRef.current;
-    if (chart) {
-      const vr = chart.timeScale().getVisibleRange();
-      if (vr) {
-        savedVisibleRangeRef.current = {
-          from: vr.from as number,
-          to: vr.to as number,
-        };
-        console.log('[Chart] timeframe changing — saved visible range',
-          savedVisibleRangeRef.current,
-          new Date((savedVisibleRangeRef.current.from) * 1000).toISOString(),
-          '→',
-          new Date((savedVisibleRangeRef.current.to) * 1000).toISOString());
-      }
-    }
+     // Capture visible range from the chart (ET fake-UTC timestamps)
+     const chart = chartRef.current;
+     if (chart) {
+       const vr = chart.timeScale().getVisibleRange();
+       if (vr) {
+         savedVisibleRangeRef.current = {
+           from: vr.from as number,
+           to: vr.to as number,
+         };
+       }
+     }
     // Reset candle mode refs on timeframe change
     if (candleSeriesRef.current) candleSeriesRef.current.setData([]);
     if (volumeSeriesRef.current) volumeSeriesRef.current.setData([]);
@@ -286,15 +281,14 @@ export function MultiSymbolChart() {
       const series = seriesRef.current[symbol];
       if (series) series.setData([]);
     }
-    if (shadingHostRef.current) shadingHostRef.current.setData([]);
-    if (shadingRef.current) shadingRef.current.setGaps([]);
-    seededRef.current = false;
-    oldestTsRef.current = null;
-    noProgressCountRef.current = 0;
-    noMoreDataRef.current = false;
-    prevLoadMoreOldestRef.current = null;
-    console.log('[Chart] timeframe changed to', timeframe, '— resetting all pagination guards');
-  }, [timeframe]);
+     if (shadingHostRef.current) shadingHostRef.current.setData([]);
+     if (shadingRef.current) shadingRef.current.setGaps([]);
+     seededRef.current = false;
+     oldestTsRef.current = null;
+     noProgressCountRef.current = 0;
+     noMoreDataRef.current = false;
+     prevLoadMoreOldestRef.current = null;
+   }, [timeframe]);
 
   // Create chart once on mount
   useEffect(() => {
@@ -382,31 +376,23 @@ export function MultiSymbolChart() {
         if (ts === null) return;
         if (noMoreDataRef.current) return;
 
-        // Check if previous loadMore made progress (oldestTs moved backward)
-        const prevSnapshot = prevLoadMoreOldestRef.current;
-        if (prevSnapshot !== null && ts >= prevSnapshot) {
-          // No progress since last loadMore call
-          noProgressCountRef.current += 1;
-          console.log('[Chart] debounce: no progress since last loadMore — noProgressCount:',
-            noProgressCountRef.current, '/', MAX_EMPTY_FETCHES,
-            '| oldestTs still at', ts, new Date(ts * 1000).toISOString());
-          if (noProgressCountRef.current >= MAX_EMPTY_FETCHES) {
-            noMoreDataRef.current = true;
-            console.log('[Chart] no older data after', MAX_EMPTY_FETCHES,
-              'consecutive empty fetches — suppressing further loadMore');
-            return;
-          }
-        } else if (prevSnapshot !== null) {
-          // Progress was made — reset counter
-          noProgressCountRef.current = 0;
-          console.log('[Chart] debounce: progress detected — oldestTs moved from',
-            prevSnapshot, 'to', ts, '| counter reset');
-        }
+         // Check if previous loadMore made progress (oldestTs moved backward)
+         const prevSnapshot = prevLoadMoreOldestRef.current;
+         if (prevSnapshot !== null && ts >= prevSnapshot) {
+           // No progress since last loadMore call
+           noProgressCountRef.current += 1;
+           if (noProgressCountRef.current >= MAX_EMPTY_FETCHES) {
+             noMoreDataRef.current = true;
+             return;
+           }
+         } else if (prevSnapshot !== null) {
+           // Progress was made — reset counter
+           noProgressCountRef.current = 0;
+         }
 
-        // Snapshot current oldestTs before triggering loadMore
-        prevLoadMoreOldestRef.current = ts;
-        console.log('[Chart] debounce fired — calling loadMore with oldestTs:', ts, new Date(ts * 1000).toISOString());
-        loadMoreRef.current(ts);
+         // Snapshot current oldestTs before triggering loadMore
+         prevLoadMoreOldestRef.current = ts;
+         loadMoreRef.current(ts);
       }, 200);
     });
 
@@ -741,43 +727,35 @@ export function MultiSymbolChart() {
       }
     }
 
-    if (newOldest !== null) {
-      const prevOldest = oldestTsRef.current;
-      oldestTsRef.current = newOldest;
-      if (prevOldest === null || newOldest < prevOldest) {
-        console.log('[Chart] barsBySymbol updated — oldestTs moved backward to', newOldest,
-          new Date(newOldest * 1000).toISOString());
-      }
-    }
+     if (newOldest !== null) {
+       oldestTsRef.current = newOldest;
+     }
     // Seed logic: restore saved visible range (from previous timeframe) or fitContent on first-ever load
     if (!seededRef.current && dataTimeframe === timeframe && newOldest !== null) {
       seededRef.current = true;
       const chart = chartRef.current;
       const saved = savedVisibleRangeRef.current;
-      if (chart && saved) {
-        // Activate cooldown to suppress loadMore triggers while range settles
-        seedCooldownRef.current = true;
-        // Restore the same calendar window the user was looking at
-        try {
-          chart.timeScale().setVisibleRange({
-            from: saved.from as Time,
-            to: saved.to as Time,
-          });
-          console.log('[Chart] restored visible range from saved', saved);
-        } catch (err) {
-          // Fallback to fitContent if setVisibleRange fails (e.g., no data in that range)
-          console.warn('[Chart] setVisibleRange failed, falling back to fitContent', err);
-          chart.timeScale().fitContent();
-        }
-        savedVisibleRangeRef.current = null; // Consume the saved range
-        // Release cooldown after a brief delay so the range-change handler
-        // doesn't immediately trigger a loadMore cascade.
-        setTimeout(() => { seedCooldownRef.current = false; }, 500);
-      } else {
-        // First-ever load — no previous range to restore
-        chart?.timeScale().fitContent();
-        console.log('[Chart] fitContent called (initial seed — no saved range)');
-      }
+       if (chart && saved) {
+         // Activate cooldown to suppress loadMore triggers while range settles
+         seedCooldownRef.current = true;
+         // Restore the same calendar window the user was looking at
+         try {
+           chart.timeScale().setVisibleRange({
+             from: saved.from as Time,
+             to: saved.to as Time,
+           });
+         } catch {
+           // Fallback to fitContent if setVisibleRange fails (e.g., no data in that range)
+           chart.timeScale().fitContent();
+         }
+         savedVisibleRangeRef.current = null; // Consume the saved range
+         // Release cooldown after a brief delay so the range-change handler
+         // doesn't immediately trigger a loadMore cascade.
+         setTimeout(() => { seedCooldownRef.current = false; }, 500);
+       } else {
+         // First-ever load — no previous range to restore
+         chart?.timeScale().fitContent();
+       }
     }
   }, [barsBySymbol, timeframe, dataTimeframe, chartMode, candleSymbol]);
 

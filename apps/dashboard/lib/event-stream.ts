@@ -33,9 +33,8 @@ export function useEventStream({
     setState((prev) => ({ ...prev, events: [] }));
   }, []);
 
-  // Stabilize eventTypes reference to prevent useEffect re-triggering on every render
-  const eventTypesKey = eventTypes ? JSON.stringify(eventTypes) : "all";
-  const stableEventTypes = useMemo(() => eventTypes, [eventTypesKey]);
+   // Stabilize eventTypes reference to prevent useEffect re-triggering on every render
+   const stableEventTypes = useMemo(() => eventTypes, [eventTypes]);
 
   useEffect(() => {
     const eventSource = new EventSource(url);
@@ -70,20 +69,19 @@ export function useEventStream({
       "CircuitBreakerTripped",
     ];
 
-    for (const type of allTypes) {
-      eventSource.addEventListener(type, (e: MessageEvent) => {
-        try {
-          const event: DomainEvent = JSON.parse(e.data);
-          console.log(`[SSE] ${event.type}`, event);
-          setState((prev) => ({
-            ...prev,
-            events: [event, ...prev.events].slice(0, maxEvents),
-          }));
-        } catch {
-          // Skip malformed events
-        }
-      });
-    }
+     for (const type of allTypes) {
+       eventSource.addEventListener(type, (e: MessageEvent) => {
+         try {
+           const event: DomainEvent = JSON.parse(e.data);
+           setState((prev) => ({
+             ...prev,
+             events: [event, ...prev.events].slice(0, maxEvents),
+           }));
+         } catch {
+           // Skip malformed events
+         }
+       });
+     }
 
     return () => {
       eventSource.close();
