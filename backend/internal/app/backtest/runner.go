@@ -173,7 +173,7 @@ func (r *Runner) SetSpeed(speedStr string) error {
 
 // Cancel stops a running backtest.
 func (r *Runner) Cancel() {
-	r.status.Store("cancelled")
+	r.status.Store("canceled")
 	if r.cancelFn != nil {
 		r.cancelFn()
 	}
@@ -477,6 +477,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 		pipeline.Runner.InitAggregators(replaySessionOpen)
 		pipeline.Runner.ClearAllPendingStates()
+
+		sessionResolver := NewSessionResolver(loc)
+		for _, sym := range r.cfg.Symbols {
+			if loadErr := sessionResolver.Load(ctx, r.db, sym, r.cfg.From, r.cfg.To); loadErr != nil {
+				r.log.Warn().Err(loadErr).Str("symbol", sym.String()).Msg("failed to load session data for anchor resolution")
+			}
+		}
+		pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
+		r.log.Info().Msg("session anchor resolver configured for strategy runner")
 	}
 
 	peekBar := func(s *barStream) (domain.MarketBar, bool) {
@@ -677,7 +686,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	r.result.Store(&finalResult)
 	r.emitter.EmitComplete(&finalResult)
 
-	if r.Status() != "cancelled" {
+	if r.Status() != "canceled" {
 		r.status.Store("completed")
 	}
 
@@ -784,23 +793,6 @@ func parseFloat(s string) (float64, error) {
 	var f float64
 	_, err := fmt.Sscanf(s, "%f", &f)
 	return f, err
-}
-
-func timeframeToDuration(tf domain.Timeframe) (time.Duration, error) {
-	switch tf {
-	case "1m":
-		return time.Minute, nil
-	case "5m":
-		return 5 * time.Minute, nil
-	case "15m":
-		return 15 * time.Minute, nil
-	case "1h":
-		return time.Hour, nil
-	case "1d":
-		return 24 * time.Hour, nil
-	default:
-		return 0, fmt.Errorf("unknown timeframe: %s", tf)
-	}
 }
 
 func symbolStrings(syms []domain.Symbol) []string {
