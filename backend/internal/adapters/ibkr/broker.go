@@ -32,6 +32,7 @@ func (a *Adapter) SubmitOrder(_ context.Context, intent domain.OrderIntent) (str
 
 	qty := intent.Quantity
 	isCrypto := intent.Symbol.IsCryptoSymbol()
+	isFractional := !isCrypto && qty != math.Floor(qty)
 
 	order := ibsync.NewOrder()
 	order.Action = directionToAction(intent.Direction)
@@ -39,13 +40,21 @@ func (a *Adapter) SubmitOrder(_ context.Context, intent domain.OrderIntent) (str
 	order.TIF = intentTIF(intent.TimeInForce)
 	order.RouteMarketableToBbo = 0
 
-	if !isCrypto {
+	switch {
+	case isFractional && !a.cfg.PaperMode && intent.LimitPrice > 0:
+		cashAmount := math.Round(qty*intent.LimitPrice*100) / 100
+		order.CashQty = cashAmount
+		order.TotalQuantity = ibsync.StringToDecimal("0")
+		a.log.Info().Float64("cash_qty", cashAmount).Float64("shares", qty).Msg("ibkr: live fractional order via cashQty")
+	case !isCrypto:
 		qty = math.Floor(qty)
 		if qty <= 0 {
 			return "", fmt.Errorf("ibkr: equity order quantity rounds to zero (original: %f)", intent.Quantity)
 		}
+		order.TotalQuantity = ibsync.StringToDecimal(strconv.FormatFloat(qty, 'f', -1, 64))
+	default:
+		order.TotalQuantity = ibsync.StringToDecimal(strconv.FormatFloat(qty, 'f', -1, 64))
 	}
-	order.TotalQuantity = ibsync.StringToDecimal(strconv.FormatFloat(qty, 'f', -1, 64))
 
 	if order.OrderType == "LMT" || order.OrderType == "STP LMT" {
 		order.LmtPrice = intent.LimitPrice
