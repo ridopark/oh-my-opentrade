@@ -13,7 +13,7 @@ state = "Deactivated"
 paper_only = false
 
 [routing]
-symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META"]
+symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META", "NVDA"]
 timeframes = ["1m"]
 priority = 80
 conflict_policy = "priority_wins"
