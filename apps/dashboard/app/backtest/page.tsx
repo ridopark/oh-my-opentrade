@@ -1,0 +1,721 @@
+"use client";
+
+import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import {
+  createChart,
+  ColorType,
+  CandlestickSeries,
+  HistogramSeries,
+  LineSeries,
+  CrosshairMode,
+  type IChartApi,
+  type ISeriesApi,
+  type Time,
+} from "lightweight-charts";
+import { SignalMarkerOverlay, type SignalMarkerData } from "@/lib/signal-markers";
+import {
+  useBacktest,
+  type BacktestConfig,
+  type BacktestBar,
+  type BacktestTrade,
+  type BacktestMetrics,
+  type BacktestProgress,
+} from "@/lib/use-backtest";
+import { Button } from "@/components/ui/button";
+
+const SPEED_OPTIONS = ["1x", "2x", "5x", "10x", "max"] as const;
+const TIMEFRAMES = ["1m", "5m", "15m", "1h"] as const;
+
+function formatCurrency(v: number) {
+  return v.toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+function formatPct(v: number) {
+  return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
+}
+
+export default function BacktestPage() {
+  const bt = useBacktest();
+  const [availableSymbols, setAvailableSymbols] = useState<string[]>([]);
+  const [availableStrategies, setAvailableStrategies] = useState<{ id: string; name: string; state: string }[]>([]);
+
+  useEffect(() => {
+    fetch("/api/backtest/symbols")
+      .then((r) => r.json())
+      .then((data) => { if (Array.isArray(data)) setAvailableSymbols(data); })
+      .catch(() => {});
+    fetch("/api/backtest/strategies")
+      .then((r) => r.json())
+      .then((data) => { if (Array.isArray(data)) setAvailableStrategies(data); })
+      .catch(() => {});
+  }, []);
+
+  const defaults: BacktestConfig = useMemo(() => ({
+    symbols: ["SPY", "AAPL"],
+    from: new Date(Date.now() - 7 * 86400000).toISOString().split("T")[0],
+    to: new Date().toISOString().split("T")[0],
+    timeframe: "1m",
+    initialEquity: 100000,
+    slippageBps: 5,
+    speed: "5x",
+    noAi: true,
+    strategies: [],
+  }), []);
+
+  const [config, setConfig] = useState<BacktestConfig>(defaults);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("backtest-config");
+      if (saved) setConfig((prev) => ({ ...prev, ...JSON.parse(saved) }));
+    } catch {}
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (hydrated) {
+      try { localStorage.setItem("backtest-config", JSON.stringify(config)); } catch {}
+    }
+  }, [config, hydrated]);
+
+  const symbolsInData = useMemo(() => Array.from(bt.bars.keys()).sort(), [bt.bars]);
+
+  const handleRun = async () => {
+    await bt.run(config);
+  };
+
+  const updateConfig = <K extends keyof BacktestConfig>(key: K, value: BacktestConfig[K]) => {
+    setConfig((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const isRunning = bt.status === "running" || bt.status === "paused";
+
+  const [bottomTab, setBottomTab] = useState<"trades" | "results" | "equity">("trades");
+
+  return (
+    <div className="flex flex-col h-[calc(100vh-3rem)]">
+      <TopBar
+        config={config}
+        updateConfig={updateConfig}
+        onRun={handleRun}
+        isRunning={isRunning}
+        status={bt.status}
+        progress={bt.progress}
+        availableSymbols={availableSymbols}
+        availableStrategies={availableStrategies}
+        onPause={bt.pause}
+        onResume={bt.resume}
+        onSetSpeed={async (s) => { updateConfig("speed", s); await bt.setSpeed(s); }}
+        onCancel={bt.cancel}
+      />
+
+      <div className="flex-1 min-h-0 mt-2">
+        <ChartGrid symbols={symbolsInData} bars={bt.bars} trades={bt.trades} />
+      </div>
+
+      <div className="h-[35%] min-h-[180px] max-h-[300px] mt-1 rounded-t-lg border border-border bg-card flex flex-col">
+        <div className="flex items-center gap-0 border-b border-border shrink-0">
+          {(["trades", "results", "equity"] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setBottomTab(tab)}
+              className={`px-4 py-2 text-xs font-mono transition-colors relative ${
+                bottomTab === tab
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {tab === "trades" ? `Trade Log (${bt.trades.length})` : tab === "results" ? "Results" : "Equity Curve"}
+              {bottomTab === tab && (
+                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />
+              )}
+            </button>
+          ))}
+          <div className="ml-auto pr-3 flex items-center gap-3">
+            {bt.metrics && (
+              <div className="flex items-center gap-4 text-[10px] font-mono">
+                <span className="text-muted-foreground">P&L <span className={`${(bt.result?.total_pnl ?? bt.metrics?.total_pnl ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>{formatCurrency(bt.result?.total_pnl ?? bt.metrics?.total_pnl ?? 0)}</span></span>
+                <span className="text-muted-foreground">Trades <span className="text-foreground">{bt.result?.trade_count ?? bt.metrics?.trades ?? 0}</span></span>
+                <span className="text-muted-foreground">Win <span className="text-foreground">{(bt.result?.win_rate_pct ?? bt.metrics?.win_rate ?? 0).toFixed(1)}%</span></span>
+                <span className="text-muted-foreground">Sharpe <span className="text-foreground">{(bt.result?.sharpe_ratio ?? bt.metrics?.sharpe ?? 0).toFixed(3)}</span></span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex-1 min-h-0 overflow-hidden">
+          {bottomTab === "trades" && <TradeLogInline trades={bt.trades} />}
+          {bottomTab === "results" && <MetricsPanelInline metrics={bt.metrics} result={bt.result} initialEquity={config.initialEquity} />}
+          {bottomTab === "equity" && <EquityCurveInline data={bt.equityCurve} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const colors: Record<string, string> = {
+    running: "bg-emerald-500/20 text-emerald-400",
+    paused: "bg-amber-500/20 text-amber-400",
+    completed: "bg-blue-500/20 text-blue-400",
+    error: "bg-red-500/20 text-red-400",
+    cancelled: "bg-slate-500/20 text-slate-400",
+  };
+  return (
+    <span className={`px-2.5 py-0.5 text-xs font-mono rounded-full ${colors[status] ?? "bg-slate-500/20 text-slate-400"}`}>
+      {status}
+    </span>
+  );
+}
+
+function TopBar({
+  config, updateConfig, onRun, isRunning, status, progress, availableSymbols, availableStrategies, onPause, onResume, onSetSpeed, onCancel,
+}: {
+  config: BacktestConfig;
+  updateConfig: <K extends keyof BacktestConfig>(key: K, val: BacktestConfig[K]) => void;
+  onRun: () => void;
+  isRunning: boolean;
+  status: string;
+  progress: BacktestProgress | null;
+  availableSymbols: string[];
+  availableStrategies: { id: string; name: string; state: string }[];
+  onPause: () => void;
+  onResume: () => void;
+  onSetSpeed: (s: string) => void;
+  onCancel: () => void;
+}) {
+  const [symbolsOpen, setSymbolsOpen] = useState(false);
+  const [strategiesOpen, setStrategiesOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const stratDropdownRef = useRef<HTMLDivElement>(null);
+  const pct = progress?.pct ?? 0;
+  const inputCls = "bg-background border border-border rounded px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-slate-500";
+  const pillCls = (active: boolean) => `px-2 py-1 text-[10px] font-mono rounded transition-colors ${active ? "bg-white/10 text-foreground" : "text-muted-foreground hover:bg-white/5"}`;
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) setSymbolsOpen(false);
+      if (stratDropdownRef.current && !stratDropdownRef.current.contains(e.target as Node)) setStrategiesOpen(false);
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const toggleSymbol = (sym: string) => {
+    const current = config.symbols;
+    const next = current.includes(sym) ? current.filter((s) => s !== sym) : [...current, sym].sort();
+    updateConfig("symbols", next);
+  };
+
+  const toggleStrategy = (id: string) => {
+    const current = config.strategies;
+    const next = current.includes(id) ? current.filter((s) => s !== id) : [...current, id].sort();
+    updateConfig("strategies", next);
+  };
+
+  return (
+    <div className="rounded-lg border border-border bg-card px-4 py-2.5 flex items-center gap-4 flex-wrap">
+      <h1 className="text-sm font-semibold text-foreground shrink-0">Backtest</h1>
+
+      <div className="flex items-center gap-1.5 relative" ref={dropdownRef}>
+        <span className="text-[10px] text-muted-foreground uppercase">Symbols</span>
+        <button
+          onClick={() => setSymbolsOpen(!symbolsOpen)}
+          className={`${inputCls} w-48 text-left flex items-center justify-between`}
+        >
+          <span className="truncate">
+            {config.symbols.length === 0 ? "Select..." : [...config.symbols].sort().join(", ")}
+          </span>
+          <span className="text-muted-foreground ml-1">{symbolsOpen ? "\u25B2" : "\u25BC"}</span>
+        </button>
+        {symbolsOpen && (
+          <div className="absolute top-full left-0 mt-1 z-50 w-56 max-h-64 overflow-y-auto rounded-lg border border-border bg-card shadow-xl">
+            {availableSymbols.map((sym) => {
+              const selected = config.symbols.includes(sym);
+              return (
+                <button
+                  key={sym}
+                  onClick={() => toggleSymbol(sym)}
+                  className={`w-full px-3 py-1.5 text-xs font-mono text-left flex items-center gap-2 hover:bg-white/5 transition-colors ${selected ? "text-emerald-400" : "text-muted-foreground"}`}
+                >
+                  <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center text-[9px] ${selected ? "border-emerald-500 bg-emerald-500/20" : "border-border"}`}>
+                    {selected && "\u2713"}
+                  </span>
+                  {sym}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-1.5 relative" ref={stratDropdownRef}>
+        <span className="text-[10px] text-muted-foreground uppercase">Strategy</span>
+        <button
+          onClick={() => setStrategiesOpen(!strategiesOpen)}
+          className={`${inputCls} w-40 text-left flex items-center justify-between`}
+        >
+          <span className="truncate">
+            {config.strategies.length === 0 ? "All" : config.strategies.join(", ")}
+          </span>
+          <span className="text-muted-foreground ml-1">{strategiesOpen ? "\u25B2" : "\u25BC"}</span>
+        </button>
+        {strategiesOpen && (
+          <div className="absolute top-full left-0 mt-1 z-50 w-64 max-h-64 overflow-y-auto rounded-lg border border-border bg-card shadow-xl">
+            {availableStrategies.map((strat) => {
+              const selected = config.strategies.includes(strat.id);
+              return (
+                <button
+                  key={strat.id}
+                  onClick={() => toggleStrategy(strat.id)}
+                  className={`w-full px-3 py-1.5 text-xs text-left flex items-center gap-2 hover:bg-white/5 transition-colors ${selected ? "text-emerald-400" : "text-muted-foreground"}`}
+                >
+                  <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center text-[9px] shrink-0 ${selected ? "border-emerald-500 bg-emerald-500/20" : "border-border"}`}>
+                    {selected && "\u2713"}
+                  </span>
+                  <span className="font-mono">{strat.id}</span>
+                  <span className="text-[10px] text-muted-foreground/50 truncate">{strat.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-1.5">
+        <span className="text-[10px] text-muted-foreground uppercase">From</span>
+        <input type="date" value={config.from} onChange={(e) => updateConfig("from", e.target.value)} className={`${inputCls} w-28`} />
+        <span className="text-[10px] text-muted-foreground uppercase">To</span>
+        <input type="date" value={config.to} onChange={(e) => updateConfig("to", e.target.value)} className={`${inputCls} w-28`} />
+      </div>
+
+      <div className="flex items-center gap-0.5">
+        {TIMEFRAMES.map((tf) => (
+          <button key={tf} onClick={() => updateConfig("timeframe", tf)} className={pillCls(config.timeframe === tf)}>{tf}</button>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-0.5">
+        {SPEED_OPTIONS.map((s) => (
+          <button key={s} onClick={() => { updateConfig("speed", s); if (isRunning) onSetSpeed(s); }} className={pillCls(config.speed === s)}>{s}</button>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-1.5">
+        <span className="text-[10px] text-muted-foreground uppercase">Eq</span>
+        <input type="number" value={config.initialEquity} onChange={(e) => updateConfig("initialEquity", Number(e.target.value))} className={`${inputCls} w-20`} />
+        <span className="text-[10px] text-muted-foreground uppercase">Slip</span>
+        <input type="number" value={config.slippageBps} onChange={(e) => updateConfig("slippageBps", Number(e.target.value))} className={`${inputCls} w-12`} />
+      </div>
+
+      <label className="flex items-center gap-1 text-[10px] text-muted-foreground cursor-pointer shrink-0">
+        <input type="checkbox" checked={config.noAi} onChange={(e) => updateConfig("noAi", e.target.checked)} className="rounded border-border h-3 w-3" />
+        No AI
+      </label>
+
+      <div className="flex items-center gap-2 ml-auto shrink-0">
+        {isRunning && (
+          <>
+            <button onClick={status === "paused" ? onResume : onPause}
+              className="px-2 py-1 text-xs font-mono rounded bg-white/10 text-foreground hover:bg-white/15 transition-colors">
+              {status === "paused" ? "▶" : "⏸"}
+            </button>
+            <div className="w-20">
+              <div className="h-1 rounded-full bg-white/5 overflow-hidden">
+                <div className="h-full rounded-full bg-emerald-500 transition-all duration-300" style={{ width: `${pct}%` }} />
+              </div>
+            </div>
+            <span className="text-[10px] font-mono text-muted-foreground w-8 text-right">{pct.toFixed(0)}%</span>
+            <button onClick={onCancel} className="px-1.5 py-0.5 text-[10px] font-mono rounded text-red-400 hover:bg-red-500/10 transition-colors">✕</button>
+          </>
+        )}
+
+        {!isRunning && (
+          <Button onClick={onRun} disabled={config.symbols.length === 0} size="sm" className="h-7 text-xs px-4">
+            {status === "completed" ? "Run Again" : "Run"}
+          </Button>
+        )}
+
+        {status !== "idle" && <StatusBadge status={status} />}
+      </div>
+    </div>
+  );
+}
+
+function ChartGrid({
+  symbols,
+  bars,
+  trades,
+}: {
+  symbols: string[];
+  bars: Map<string, BacktestBar[]>;
+  trades: BacktestTrade[];
+}) {
+  if (symbols.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-full rounded-lg border border-border bg-card text-muted-foreground text-sm">
+        Run a backtest to see charts
+      </div>
+    );
+  }
+
+  const cols = symbols.length <= 2 ? symbols.length : symbols.length <= 4 ? 2 : symbols.length <= 6 ? 3 : 4;
+
+  return (
+    <div
+      className="h-full grid gap-2"
+      style={{
+        gridTemplateColumns: `repeat(${cols}, 1fr)`,
+        gridAutoRows: "1fr",
+      }}
+    >
+      {symbols.map((sym) => (
+        <MiniChart
+          key={sym}
+          symbol={sym}
+          bars={bars.get(sym) ?? []}
+          trades={trades.filter((t) => t.symbol === sym)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function MiniChart({
+  symbol,
+  bars,
+  trades,
+}: {
+  symbol: string;
+  bars: BacktestBar[];
+  trades: BacktestTrade[];
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const candleRef = useRef<ISeriesApi<"Candlestick", Time> | null>(null);
+  const volumeRef = useRef<ISeriesApi<"Histogram", Time> | null>(null);
+  const ema9Ref = useRef<ISeriesApi<"Line", Time> | null>(null);
+  const ema21Ref = useRef<ISeriesApi<"Line", Time> | null>(null);
+  const ema50Ref = useRef<ISeriesApi<"Line", Time> | null>(null);
+  const ema200Ref = useRef<ISeriesApi<"Line", Time> | null>(null);
+  const overlayRef = useRef<SignalMarkerOverlay | null>(null);
+  const lastBarCountRef = useRef(0);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const chart = createChart(containerRef.current, {
+      layout: {
+        background: { type: ColorType.Solid, color: "transparent" },
+        textColor: "rgba(148, 163, 184, 0.8)",
+        fontFamily: "var(--font-geist-mono, monospace)",
+        fontSize: 9,
+      },
+      grid: {
+        vertLines: { color: "rgba(148, 163, 184, 0.05)" },
+        horzLines: { color: "rgba(148, 163, 184, 0.05)" },
+      },
+      crosshair: {
+        mode: CrosshairMode.Normal,
+        vertLine: { color: "rgba(148, 163, 184, 0.2)", width: 1 as const, style: 3 as const, labelBackgroundColor: "#1f2937" },
+        horzLine: { color: "rgba(148, 163, 184, 0.2)", width: 1 as const, style: 3 as const, labelBackgroundColor: "#1f2937" },
+      },
+      rightPriceScale: { borderColor: "rgba(148, 163, 184, 0.1)", scaleMargins: { top: 0.05, bottom: 0.15 } },
+      timeScale: { borderColor: "rgba(148, 163, 184, 0.1)", timeVisible: true, rightOffset: 5 },
+    });
+    chartRef.current = chart;
+
+    const volume = chart.addSeries(HistogramSeries, {
+      priceScaleId: "", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false,
+    });
+    chart.priceScale("").applyOptions({ scaleMargins: { top: 0.85, bottom: 0 }, visible: false });
+    volumeRef.current = volume;
+
+    const candle = chart.addSeries(CandlestickSeries, {
+      upColor: "#10b981", downColor: "#ef4444", borderVisible: false,
+      wickUpColor: "#10b981", wickDownColor: "#ef4444",
+    });
+    candleRef.current = candle;
+
+    const ema9 = chart.addSeries(LineSeries, {
+      color: "rgba(251, 191, 36, 0.7)", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+    });
+    ema9Ref.current = ema9;
+
+    const ema21 = chart.addSeries(LineSeries, {
+      color: "rgba(139, 92, 246, 0.7)", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+    });
+    ema21Ref.current = ema21;
+
+    const ema50 = chart.addSeries(LineSeries, {
+      color: "rgba(236, 72, 153, 0.6)", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+    });
+    ema50Ref.current = ema50;
+
+    const ema200 = chart.addSeries(LineSeries, {
+      color: "rgba(249, 115, 22, 0.5)", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+    });
+    ema200Ref.current = ema200;
+
+    const overlay = new SignalMarkerOverlay();
+    candle.attachPrimitive(overlay);
+    overlayRef.current = overlay;
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        chart.applyOptions({ width: entry.contentRect.width, height: entry.contentRect.height });
+      }
+    });
+    observer.observe(containerRef.current);
+
+    return () => {
+      observer.disconnect();
+      chart.remove();
+      chartRef.current = null;
+      candleRef.current = null;
+      volumeRef.current = null;
+      ema9Ref.current = null;
+      ema21Ref.current = null;
+      ema50Ref.current = null;
+      ema200Ref.current = null;
+      overlayRef.current = null;
+      lastBarCountRef.current = 0;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!candleRef.current || !volumeRef.current || bars.length === 0) return;
+
+    if (bars.length === lastBarCountRef.current) return;
+    const prevCount = lastBarCountRef.current;
+
+    const deduped = new Map<number, BacktestBar>();
+    for (const b of bars) deduped.set(b.time, b);
+    const sorted = Array.from(deduped.values()).sort((a, b) => a.time - b.time);
+
+    candleRef.current.setData(sorted.map((b) => ({ time: b.time as Time, open: b.open, high: b.high, low: b.low, close: b.close })));
+    volumeRef.current.setData(sorted.map((b) => ({ time: b.time as Time, value: b.volume, color: b.close >= b.open ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)" })));
+
+    const ema9Data = sorted.filter((b) => b.ema9 && b.ema9 > 0).map((b) => ({ time: b.time as Time, value: b.ema9! }));
+    const ema21Data = sorted.filter((b) => b.ema21 && b.ema21 > 0).map((b) => ({ time: b.time as Time, value: b.ema21! }));
+    const ema50Data = sorted.filter((b) => b.ema50 && b.ema50 > 0).map((b) => ({ time: b.time as Time, value: b.ema50! }));
+    const ema200Data = sorted.filter((b) => b.ema200 && b.ema200 > 0).map((b) => ({ time: b.time as Time, value: b.ema200! }));
+    if (ema9Ref.current) ema9Ref.current.setData(ema9Data);
+    if (ema21Ref.current) ema21Ref.current.setData(ema21Data);
+    if (ema50Ref.current) ema50Ref.current.setData(ema50Data);
+    if (ema200Ref.current) ema200Ref.current.setData(ema200Data);
+
+    lastBarCountRef.current = bars.length;
+
+    const ts = chartRef.current?.timeScale();
+    if (!ts) return;
+
+    const visibleCandles = 120;
+    const dataLen = sorted.length;
+    const from = Math.max(0, dataLen - visibleCandles);
+    const to = dataLen - 1 + 5;
+    ts.setVisibleLogicalRange({ from, to });
+  }, [bars]);
+
+  useEffect(() => {
+    if (!overlayRef.current) return;
+    if (trades.length === 0) {
+      overlayRef.current.setSignals([]);
+      return;
+    }
+
+    const barTimesArr = bars.map((b) => b.time).sort((a, b) => a - b);
+    const barTimesSet = new Set(barTimesArr);
+    const barMap = new Map(bars.map((b) => [b.time, b]));
+
+    const findClosestBarTime = (unixSec: number): number => {
+      if (barTimesSet.has(unixSec)) return unixSec;
+      let closest = barTimesArr[0] ?? unixSec;
+      for (const bt of barTimesArr) {
+        if (Math.abs(bt - unixSec) < Math.abs(closest - unixSec)) closest = bt;
+        if (bt > unixSec) break;
+      }
+      return closest;
+    };
+
+    const markerData: SignalMarkerData[] = trades
+      .map((t) => {
+        const filledAt = t.filled_at ? new Date(t.filled_at) : null;
+        if (!filledAt) return null;
+        const filledUnix = Math.floor(filledAt.getTime() / 1000);
+        const matchedTime = findClosestBarTime(filledUnix);
+        const bar = barMap.get(matchedTime);
+        const isBuy = t.side?.toLowerCase() === "buy";
+        return {
+          time: matchedTime as Time,
+          price: bar ? (isBuy ? bar.low * 0.999 : bar.high * 1.001) : t.price,
+          side: isBuy ? "buy" : "sell",
+          kind: isBuy ? "entry" : "exit",
+          executed: true,
+          label: `${isBuy ? "BUY" : "SELL"} ${t.quantity?.toFixed?.(0) ?? ""} @ $${t.price?.toFixed?.(2) ?? ""}`,
+        } as SignalMarkerData;
+      })
+      .filter((m): m is SignalMarkerData => m !== null);
+
+    overlayRef.current.setSignals(markerData);
+  }, [trades, bars]);
+
+  const tradeCount = trades.length;
+  const hasActivity = tradeCount > 0;
+
+  const emaLegend = [
+    { label: "EMA 9", color: "rgba(251, 191, 36, 0.7)" },
+    { label: "EMA 21", color: "rgba(139, 92, 246, 0.7)" },
+    { label: "EMA 50", color: "rgba(236, 72, 153, 0.6)" },
+    { label: "EMA 200", color: "rgba(249, 115, 22, 0.5)" },
+  ];
+
+  return (
+    <div className={`rounded-lg border bg-card overflow-hidden flex flex-col ${hasActivity ? "border-emerald-500/30" : "border-border"}`}>
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50">
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-mono font-semibold text-foreground">{symbol}</span>
+          <div className="flex items-center gap-2">
+            {emaLegend.map((e) => (
+              <div key={e.label} className="flex items-center gap-1">
+                <span className="w-2.5 h-[2px] rounded-full" style={{ backgroundColor: e.color }} />
+                <span className="text-[9px] font-mono text-muted-foreground">{e.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        {tradeCount > 0 && (
+          <span className="text-[10px] font-mono text-emerald-400">{tradeCount} fill{tradeCount !== 1 ? "s" : ""}</span>
+        )}
+      </div>
+      <div ref={containerRef} className="flex-1 min-h-0" />
+    </div>
+  );
+}
+
+function TradeLogInline({ trades }: { trades: BacktestTrade[] }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { scrollRef.current && (scrollRef.current.scrollTop = scrollRef.current.scrollHeight); }, [trades.length]);
+
+  if (trades.length === 0) {
+    return <div className="flex items-center justify-center h-full text-xs text-muted-foreground">No trades yet</div>;
+  }
+
+  return (
+    <div ref={scrollRef} className="h-full overflow-y-auto">
+      <table className="w-full text-xs font-mono">
+        <thead className="sticky top-0 bg-card">
+          <tr className="text-[10px] text-muted-foreground uppercase">
+            <th className="text-left px-4 py-1.5">Time</th>
+            <th className="text-left px-2 py-1.5">Symbol</th>
+            <th className="text-left px-2 py-1.5">Side</th>
+            <th className="text-right px-2 py-1.5">Qty</th>
+            <th className="text-right px-2 py-1.5">Price</th>
+            <th className="text-left px-2 py-1.5">Strategy</th>
+          </tr>
+        </thead>
+        <tbody>
+          {trades.map((t, i) => {
+            const isBuy = t.side?.toLowerCase() === "buy";
+            const time = t.filled_at ? new Date(t.filled_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "—";
+            return (
+              <tr key={i} className={`border-t border-border/30 ${isBuy ? "bg-emerald-500/[0.03]" : "bg-red-500/[0.03]"}`}>
+                <td className="px-4 py-1 text-muted-foreground">{time}</td>
+                <td className="px-2 py-1 text-foreground">{t.symbol}</td>
+                <td className={`px-2 py-1 ${isBuy ? "text-emerald-400" : "text-red-400"}`}>{t.side?.toUpperCase()}</td>
+                <td className="px-2 py-1 text-right text-foreground">{t.quantity?.toFixed?.(0) ?? "—"}</td>
+                <td className="px-2 py-1 text-right text-foreground">${t.price?.toFixed?.(2) ?? "—"}</td>
+                <td className="px-2 py-1 text-muted-foreground">{t.strategy ?? "—"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function MetricsPanelInline({
+  metrics, result, initialEquity,
+}: {
+  metrics: BacktestMetrics | null; result: any | null; initialEquity: number;
+}) {
+  const m = result ?? metrics;
+  if (!m) {
+    return <div className="flex items-center justify-center h-full text-xs text-muted-foreground">Run a backtest to see results</div>;
+  }
+
+  const equity = result?.final_equity ?? m.equity ?? initialEquity;
+  const pnl = result?.total_pnl ?? m.total_pnl ?? 0;
+  const returnPct = result?.total_return_pct ?? m.total_return ?? 0;
+  const tradeCount = result?.trade_count ?? m.trades ?? 0;
+  const winRate = result?.win_rate_pct ?? m.win_rate ?? 0;
+  const drawdown = result?.max_drawdown_pct ?? m.max_drawdown ?? 0;
+  const sharpe = result?.sharpe_ratio ?? m.sharpe ?? 0;
+  const profitFactor = result?.profit_factor ?? m.profit_factor ?? 0;
+  const avgWin = result?.avg_win ?? 0;
+  const avgLoss = result?.avg_loss ?? 0;
+
+  const stats = [
+    { label: "Equity", value: formatCurrency(equity), color: "" },
+    { label: "P&L", value: formatCurrency(pnl), color: pnl >= 0 ? "text-emerald-400" : "text-red-400" },
+    { label: "Return", value: formatPct(returnPct), color: returnPct >= 0 ? "text-emerald-400" : "text-red-400" },
+    { label: "Trades", value: String(tradeCount), color: "" },
+    { label: "Win Rate", value: `${winRate.toFixed(1)}%`, color: winRate >= 50 ? "text-emerald-400" : "text-red-400" },
+    { label: "Max Drawdown", value: `${drawdown.toFixed(2)}%`, color: "text-red-400" },
+    { label: "Sharpe Ratio", value: sharpe.toFixed(3), color: sharpe > 0 ? "text-emerald-400" : "text-red-400" },
+    { label: "Profit Factor", value: profitFactor.toFixed(2), color: profitFactor >= 1 ? "text-emerald-400" : "text-red-400" },
+    { label: "Avg Win", value: formatCurrency(avgWin), color: "text-emerald-400" },
+    { label: "Avg Loss", value: formatCurrency(avgLoss), color: "text-red-400" },
+  ];
+
+  return (
+    <div className="p-4 h-full overflow-y-auto">
+      <div className="grid grid-cols-5 gap-x-6 gap-y-3">
+        {stats.map((s) => (
+          <div key={s.label}>
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wider">{s.label}</div>
+            <div className={`text-sm font-mono font-medium ${s.color || "text-foreground"}`}>{s.value}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EquityCurveInline({ data }: { data: { time: number; value: number }[] }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const seriesRef = useRef<ISeriesApi<"Line", Time> | null>(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const chart = createChart(containerRef.current, {
+      width: containerRef.current.clientWidth, height: containerRef.current.clientHeight || 100,
+      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: "rgba(148, 163, 184, 0.6)", fontFamily: "var(--font-geist-mono, monospace)", fontSize: 10 },
+      grid: { vertLines: { visible: false }, horzLines: { color: "rgba(148, 163, 184, 0.05)" } },
+      rightPriceScale: { borderVisible: false },
+      timeScale: { borderVisible: false, timeVisible: true },
+      crosshair: { mode: CrosshairMode.Normal },
+    });
+    chartRef.current = chart;
+    const series = chart.addSeries(LineSeries, { color: "#10b981", lineWidth: 2, priceLineVisible: false, lastValueVisible: true });
+    seriesRef.current = series;
+    const observer = new ResizeObserver((entries) => { for (const entry of entries) chart.applyOptions({ width: entry.contentRect.width, height: entry.contentRect.height }); });
+    observer.observe(containerRef.current);
+    return () => { observer.disconnect(); chart.remove(); chartRef.current = null; seriesRef.current = null; };
+  }, []);
+
+  useEffect(() => {
+    if (!seriesRef.current || data.length === 0) return;
+    const sorted = [...data].sort((a, b) => a.time - b.time);
+    seriesRef.current.setData(sorted.map((d) => ({ time: d.time as Time, value: d.value })));
+    chartRef.current?.timeScale().fitContent();
+  }, [data]);
+
+  if (data.length === 0) {
+    return <div className="flex items-center justify-center h-full text-xs text-muted-foreground">No equity data yet</div>;
+  }
+
+  return <div ref={containerRef} className="w-full h-full" />;
+}
