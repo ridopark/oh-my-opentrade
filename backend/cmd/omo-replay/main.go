@@ -105,9 +105,10 @@ func main() {
 	if _, err := domain.NewTimeframe(timeframe.String()); err != nil {
 		log.Fatal().Err(err).Str("timeframe", timeframe.String()).Msg("invalid timeframe")
 	}
+	const replayTimeframe = domain.Timeframe("1m")
 
 	strategyIDs := resolveStrategies(strategiesFlag)
-	barDur, err := timeframeDuration(timeframe)
+	barDur, err := timeframeDuration(replayTimeframe)
 	if err != nil {
 		log.Fatal().Err(err).Str("timeframe", timeframe.String()).Msg("unsupported timeframe")
 	}
@@ -213,6 +214,7 @@ func main() {
 		posMonSvc         *positionmonitor.Service
 		posMonPriceCache  *positionmonitor.PriceCache
 		pipeline          *bootstrap.StrategyPipeline
+		alpacaAdapt       *alpacaadapter.Adapter
 		optionBarsCache   map[domain.Symbol][]domain.MarketBar
 		optionBarsMu      sync.Mutex
 	)
@@ -279,7 +281,6 @@ func main() {
 		posMonPriceCache = posMonBundle.PriceCache
 		optionBarsCache = make(map[domain.Symbol][]domain.MarketBar)
 
-		var alpacaAdapt *alpacaadapter.Adapter
 		if cfg.Alpaca.APIKeyID != "" {
 			a, alpacaErr := alpacaadapter.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca_replay").Logger())
 			if alpacaErr != nil {
@@ -486,79 +487,145 @@ func main() {
 		}
 	}
 
+	loc, _ := time.LoadLocation("America/New_York")
 	warmupLog := log.With().Str("component", "warmup").Logger()
-	prevStart, prevEnd := domain.PreviousRTHSession(fromTime)
-	warmupFrom := prevEnd.Add(-120 * barDur)
-	warmupTo := prevEnd
-	warmupLog.Info().
-		Time("prev_session_start", prevStart).
-		Time("prev_session_end", prevEnd).
-		Time("warmup_from", warmupFrom).
-		Time("warmup_to", warmupTo).
-		Msg("warming indicators from previous RTH session")
 
+	const gapThreshold = 4 * time.Hour
+	if backtestFlag && alpacaAdapt != nil {
+		var gapWg sync.WaitGroup
+		for _, sym := range symbols {
+			gapWg.Add(1)
+			go func(sym domain.Symbol) {
+				defer gapWg.Done()
+				gaps, gapErr := repo.FindDataGaps(ctx, sym, replayTimeframe, fromTime, toTime, gapThreshold)
+				if gapErr != nil {
+					warmupLog.Warn().Err(gapErr).Str("symbol", sym.String()).Msg("gap detection failed")
+					return
+				}
+				for _, g := range gaps {
+					gStart := g.Start.In(loc)
+					if gStart.Weekday() == time.Saturday || gStart.Weekday() == time.Sunday {
+						continue
+					}
+					rthOpen := time.Date(gStart.Year(), gStart.Month(), gStart.Day(), 9, 30, 0, 0, loc)
+					rthClose := time.Date(gStart.Year(), gStart.Month(), gStart.Day(), 16, 0, 0, 0, loc)
+					if !gStart.After(rthOpen) || !g.End.In(loc).Before(rthClose) {
+						continue
+					}
+					warmupLog.Info().Str("symbol", sym.String()).Time("start", g.Start).Time("end", g.End).Dur("duration", g.Duration).Msg("detected RTH data gap — fetching from API")
+					apiBars, apiErr := alpacaAdapt.GetHistoricalBars(ctx, sym, replayTimeframe, g.Start.Add(time.Minute), g.End)
+					if apiErr != nil {
+						warmupLog.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("failed to fetch gap bars")
+						continue
+					}
+					if len(apiBars) > 0 {
+						saved, saveErr := repo.SaveMarketBars(ctx, apiBars)
+						if saveErr != nil {
+							warmupLog.Warn().Err(saveErr).Msg("failed to persist gap bars")
+						} else {
+							warmupLog.Info().Str("symbol", sym.String()).Int("fetched", len(apiBars)).Int("saved", saved).Msg("filled RTH data gap")
+						}
+					}
+				}
+			}(sym)
+		}
+		gapWg.Wait()
+	}
+
+	streams := make([]*barStream, 0, len(symbols))
+	firstBarTime := make(map[string]time.Time)
+	for _, sym := range symbols {
+		bars, err := repo.GetMarketBars(ctx, sym, replayTimeframe, fromTime, toTime)
+		if err != nil {
+			log.Fatal().Err(err).Str("symbol", sym.String()).Msg("failed to load market bars")
+		}
+		streams = append(streams, &barStream{symbol: sym, bars: bars})
+		if len(bars) > 0 {
+			firstBarTime[sym.String()] = bars[0].Time
+		}
+		log.Info().Str("symbol", sym.String()).Int("bars", len(bars)).Msg("loaded bars")
+	}
+	sort.Slice(streams, func(i, j int) bool { return streams[i].symbol.String() < streams[j].symbol.String() })
+
+	const minWarmupBars = 250
 	warmupBarsCache := make(map[string][]domain.MarketBar, len(symbols))
 	for _, sym := range symbols {
-		bars, err := repo.GetMarketBars(ctx, sym, timeframe, warmupFrom, warmupTo)
-		if err != nil {
-			warmupLog.Warn().Err(err).Str("symbol", sym.String()).Msg("warmup fetch failed, starting cold")
-			continue
+		warmupEnd := fromTime
+		if t, ok := firstBarTime[sym.String()]; ok {
+			warmupEnd = t
+		}
+		warmupStart := warmupEnd.Add(-7 * 24 * time.Hour)
+
+		bars, fetchErr := repo.GetMarketBars(ctx, sym, replayTimeframe, warmupStart, warmupEnd)
+		if fetchErr != nil {
+			warmupLog.Warn().Err(fetchErr).Str("symbol", sym.String()).Msg("warmup fetch failed")
+		}
+		if len(bars) < minWarmupBars && backtestFlag && alpacaAdapt != nil {
+			apiFrom := warmupEnd.Add(-30 * 24 * time.Hour)
+			apiBars, apiErr := alpacaAdapt.GetHistoricalBars(ctx, sym, replayTimeframe, apiFrom, warmupEnd)
+			if apiErr == nil && len(apiBars) > len(bars) {
+				warmupLog.Info().Str("symbol", sym.String()).Int("db_bars", len(bars)).Int("api_bars", len(apiBars)).Msg("fetched warmup bars from market data API")
+				for _, b := range apiBars {
+					_ = repo.SaveMarketBar(ctx, b)
+				}
+				bars = apiBars
+			} else if apiErr != nil {
+				warmupLog.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("API warmup fetch failed")
+			}
+		}
+		if len(bars) > minWarmupBars {
+			bars = bars[len(bars)-minWarmupBars:]
 		}
 		warmupBarsCache[sym.String()] = bars
 		n := monitorSvc.WarmUp(bars)
 		monitorSvc.ResetSessionIndicators(sym.String())
 		monitorSvc.MarkReady(sym.String())
-		warmupLog.Info().Str("symbol", sym.String()).Int("bars", n).Msg("indicator warmup complete")
+		warmupLog.Info().Str("symbol", sym.String()).Int("warmup_bars", n).Msg("indicator warmup done")
+	}
+
+	for _, s := range streams {
+		replayBars := s.bars
+		if len(replayBars) > 0 {
+			bridgeCount := 50
+			if bridgeCount > len(replayBars) {
+				bridgeCount = len(replayBars)
+			}
+			monitorSvc.WarmUp(replayBars[:bridgeCount])
+		}
 	}
 
 	for _, sym := range symbols {
 		if bars, ok := warmupBarsCache[sym.String()]; ok && len(bars) > 0 {
-			n := ingBundle.Filter.Seed(sym, bars)
-			warmupLog.Info().Str("symbol", sym.String()).Int("bars", n).Msg("adaptive spike filter seeded")
+			ingBundle.Filter.Seed(sym, bars)
 		}
 	}
 
-	// Initialize MTFA aggregators so 1m bars produce 5m/15m candles + anchor regime.
-	loc, _ := time.LoadLocation("America/New_York")
 	fromET := fromTime.In(loc)
 	replaySessionOpen := time.Date(fromET.Year(), fromET.Month(), fromET.Day(), 9, 30, 0, 0, loc)
 	monitorSvc.InitAggregators(symbols, replaySessionOpen)
 
 	if pipeline != nil && pipeline.Runner != nil {
-		runnerCalc := monitor.NewIndicatorCalculator()
-		snapshotFn := func(bar domain.MarketBar) start.IndicatorData {
-			snap := runnerCalc.Update(bar)
-			return start.IndicatorData{
-				RSI:           snap.RSI,
-				StochK:        snap.StochK,
-				StochD:        snap.StochD,
-				EMA9:          snap.EMA9,
-				EMA21:         snap.EMA21,
-				EMAFast:       snap.EMAFast,
-				EMASlow:       snap.EMASlow,
-				EMAFastPeriod: snap.EMAFastPeriod,
-				EMASlowPeriod: snap.EMASlowPeriod,
-				VWAP:          snap.VWAP,
-				Volume:        snap.Volume,
-				VolumeSMA:     snap.VolumeSMA,
-			}
-		}
+		snapshotFn := makeSnapshotFn()
 		for _, sym := range symbols {
 			bars := warmupBarsCache[sym.String()]
 			if len(bars) == 0 {
 				continue
 			}
-			n := pipeline.Runner.WarmUp(sym.String(), bars, snapshotFn)
-			warmupLog.Info().Str("symbol", sym.String()).Int("bars", n).Msg("strategy runner warmup complete")
+			pipeline.Runner.WarmUp(sym.String(), bars, snapshotFn)
 		}
-		// Initialize HTF aggregators AFTER warmup so the runner can aggregate
-		// 1m replay bars into 5m/15m candles for HTF strategy instances.
-		// This must be called after all instances are registered (via WarmUp) but
-		// before the replay loop starts emitting MarketBarSanitized events.
 		pipeline.Runner.InitAggregators(replaySessionOpen)
 		warmupLog.Info().Time("session_open", replaySessionOpen).Msg("strategy runner HTF aggregators initialized")
 		pipeline.Runner.ClearAllPendingStates()
 		warmupLog.Info().Msg("strategy runner pending states cleared after warmup")
+
+		sessionResolver := backtest.NewSessionResolver(loc)
+		for _, sym := range symbols {
+			if loadErr := sessionResolver.Load(ctx, sqlDB, sym, fromTime, toTime); loadErr != nil {
+				warmupLog.Warn().Err(loadErr).Str("symbol", sym.String()).Msg("failed to load session data for anchor resolution")
+			}
+		}
+		pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
+		warmupLog.Info().Msg("session anchor resolver configured")
 	}
 	log.Info().Time("session_open", replaySessionOpen).Msg("MTFA aggregators initialized for replay")
 
@@ -570,18 +637,6 @@ func main() {
 		Str("speed", speedFlag).
 		Dur("per_bar_delay", perBarDelay).
 		Msg("starting replay")
-
-	streams := make([]*barStream, 0, len(symbols))
-	for _, sym := range symbols {
-		bars, err := repo.GetMarketBars(ctx, sym, timeframe, fromTime, toTime)
-		if err != nil {
-			log.Fatal().Err(err).Str("symbol", sym.String()).Msg("failed to load market bars")
-		}
-		streams = append(streams, &barStream{symbol: sym, bars: bars})
-		log.Info().Str("symbol", sym.String()).Int("bars", len(bars)).Msg("loaded bars")
-	}
-
-	sort.Slice(streams, func(i, j int) bool { return streams[i].symbol.String() < streams[j].symbol.String() })
 
 	const tenantID = "default"
 	envMode := domain.EnvModePaper
@@ -933,6 +988,27 @@ func signalPassthrough(bus *memory.Bus, log zerolog.Logger) func(context.Context
 			return nil
 		}
 		return bus.Publish(ctx, *enrichedEvt)
+	}
+}
+
+func makeSnapshotFn() func(domain.MarketBar) start.IndicatorData {
+	calc := monitor.NewIndicatorCalculator()
+	return func(bar domain.MarketBar) start.IndicatorData {
+		snap := calc.Update(bar)
+		return start.IndicatorData{
+			RSI:           snap.RSI,
+			StochK:        snap.StochK,
+			StochD:        snap.StochD,
+			EMA9:          snap.EMA9,
+			EMA21:         snap.EMA21,
+			EMAFast:       snap.EMAFast,
+			EMASlow:       snap.EMASlow,
+			EMAFastPeriod: snap.EMAFastPeriod,
+			EMASlowPeriod: snap.EMASlowPeriod,
+			VWAP:          snap.VWAP,
+			Volume:        snap.Volume,
+			VolumeSMA:     snap.VolumeSMA,
+		}
 	}
 }
 
