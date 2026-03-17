@@ -3,6 +3,7 @@ package ibkr
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -29,9 +30,17 @@ func (a *Adapter) SubmitOrder(_ context.Context, intent domain.OrderIntent) (str
 
 	contract := newContract(intent.Symbol)
 
+	qty := intent.Quantity
+	if !intent.Symbol.IsCryptoSymbol() {
+		qty = math.Floor(qty)
+		if qty <= 0 {
+			return "", fmt.Errorf("ibkr: equity order quantity rounds to zero (original: %f)", intent.Quantity)
+		}
+	}
+
 	order := &ibsync.Order{}
 	order.Action = directionToAction(intent.Direction)
-	order.TotalQuantity = ibsync.StringToDecimal(strconv.FormatFloat(intent.Quantity, 'f', -1, 64))
+	order.TotalQuantity = ibsync.StringToDecimal(strconv.FormatFloat(qty, 'f', -1, 64))
 	order.OrderType = intentOrderType(intent.OrderType)
 	order.TIF = intentTIF(intent.TimeInForce)
 
