@@ -743,14 +743,14 @@ function MetricsPanelInline({
     return <div className="flex items-center justify-center h-full text-xs text-muted-foreground">Run a backtest to see results</div>;
   }
 
-  const equity = result?.final_equity ?? m.equity ?? initialEquity;
-  const pnl = result?.total_pnl ?? m.total_pnl ?? 0;
-  const returnPct = result?.total_return_pct ?? m.total_return ?? 0;
-  const tradeCount = result?.trade_count ?? m.trades ?? 0;
-  const winRate = result?.win_rate_pct ?? m.win_rate ?? 0;
-  const drawdown = result?.max_drawdown_pct ?? m.max_drawdown ?? 0;
-  const sharpe = result?.sharpe_ratio ?? m.sharpe ?? 0;
-  const profitFactor = result?.profit_factor ?? m.profit_factor ?? 0;
+  const equity = result?.final_equity ?? metrics?.equity ?? initialEquity;
+  const pnl = result?.total_pnl ?? metrics?.total_pnl ?? 0;
+  const returnPct = result?.total_return_pct ?? metrics?.total_return ?? 0;
+  const tradeCount = result?.trade_count ?? metrics?.trades ?? 0;
+  const winRate = result?.win_rate_pct ?? metrics?.win_rate ?? 0;
+  const drawdown = result?.max_drawdown_pct ?? metrics?.max_drawdown ?? 0;
+  const sharpe = result?.sharpe_ratio ?? metrics?.sharpe ?? 0;
+  const profitFactor = result?.profit_factor ?? metrics?.profit_factor ?? 0;
   const avgWin = result?.avg_win ?? 0;
   const avgLoss = result?.avg_loss ?? 0;
 
