@@ -363,38 +363,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		idx    int
 	}
 
-	r.emitter.EmitSetup("Checking for data gaps…")
-	if r.marketData != nil {
-		var gapWg sync.WaitGroup
-		for _, sym := range r.cfg.Symbols {
-			gapWg.Add(1)
-			go func(sym domain.Symbol) {
-				defer gapWg.Done()
-				gaps, gapErr := repo.FindDataGaps(ctx, sym, replayTimeframe, r.cfg.From, r.cfg.To, gapThreshold)
-				if gapErr != nil {
-					r.log.Warn().Err(gapErr).Str("symbol", sym.String()).Msg("gap detection failed")
-					return
-				}
-				for _, g := range gaps {
-					r.log.Info().Str("symbol", sym.String()).Time("start", g.Start).Time("end", g.End).Dur("duration", g.Duration).Msg("detected data gap — fetching from API")
-					apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, g.Start.Add(time.Minute), g.End)
-					if apiErr != nil {
-						r.log.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("failed to fetch gap bars")
-						continue
-					}
-					if len(apiBars) > 0 {
-						saved, saveErr := repo.SaveMarketBars(ctx, apiBars)
-						if saveErr != nil {
-							r.log.Warn().Err(saveErr).Msg("failed to persist gap bars")
-						} else {
-							r.log.Info().Str("symbol", sym.String()).Int("fetched", len(apiBars)).Int("saved", saved).Msg("filled data gap")
-						}
-					}
-				}
-			}(sym)
-		}
-		gapWg.Wait()
-	}
+	// Gap detection skipped for backtests — overnight/weekend gaps are unfillable
+	// (market closed) and the API calls waste ~90s returning 1 bar each time.
+	// Trading-hours data is already complete from live ingestion.
 
 	r.emitter.EmitSetup("Loading market data…")
 	streams := make([]*barStream, 0, len(r.cfg.Symbols))
