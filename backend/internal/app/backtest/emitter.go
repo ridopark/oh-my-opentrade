@@ -203,6 +203,11 @@ func (e *Emitter) Emit(evt SSEEvent) {
 	}
 }
 
+// EmitSetup sends a setup stage message to all connected clients.
+func (e *Emitter) EmitSetup(stage string) {
+	e.Emit(SSEEvent{Type: "backtest:setup", Data: map[string]string{"stage": stage}})
+}
+
 // EmitProgress sends a progress update to all connected clients.
 func (e *Emitter) EmitProgress(p *ProgressInfo) {
 	e.Emit(SSEEvent{Type: "backtest:progress", Data: p})

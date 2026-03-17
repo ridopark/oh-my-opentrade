@@ -103,6 +103,7 @@ export default function BacktestPage() {
         isRunning={isRunning}
         status={bt.status}
         progress={bt.progress}
+        setupStage={bt.setupStage}
         availableSymbols={availableSymbols}
         availableStrategies={availableStrategies}
         onPause={bt.pause}
@@ -171,7 +172,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function TopBar({
-  config, updateConfig, onRun, isRunning, status, progress, availableSymbols, availableStrategies, onPause, onResume, onSetSpeed, onCancel,
+  config, updateConfig, onRun, isRunning, status, progress, setupStage, availableSymbols, availableStrategies, onPause, onResume, onSetSpeed, onCancel,
 }: {
   config: BacktestConfig;
   updateConfig: <K extends keyof BacktestConfig>(key: K, val: BacktestConfig[K]) => void;
@@ -179,6 +180,7 @@ function TopBar({
   isRunning: boolean;
   status: string;
   progress: BacktestProgress | null;
+  setupStage: string | null;
   availableSymbols: string[];
   availableStrategies: { id: string; name: string; state: string }[];
   onPause: () => void;
@@ -319,7 +321,7 @@ function TopBar({
         {isRunning && !progress && (
           <>
             <div className="h-4 w-4 animate-spin rounded-full border-b-2 border-emerald-500" />
-            <span className="text-[10px] font-mono text-muted-foreground">Starting…</span>
+            <span className="text-[10px] font-mono text-muted-foreground">{setupStage ?? "Starting…"}</span>
             <button onClick={onCancel} className="px-1.5 py-0.5 text-[10px] font-mono rounded text-red-400 hover:bg-red-500/10 transition-colors">✕</button>
           </>
         )}
