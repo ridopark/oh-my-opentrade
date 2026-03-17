@@ -72,7 +72,7 @@ func main() {
 		fmt.Printf("Order %s: status=%s err=%v\n", id, status, serr)
 	}
 
-	fmt.Println("\n=== Cancelling test orders ===")
+	fmt.Println("\n=== Canceling test orders ===")
 	for _, id := range []string{id1, id2} {
 		if id == "" {
 			continue
