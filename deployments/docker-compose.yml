@@ -1,6 +1,6 @@
 services:
   ib-gateway:
-    image: gnzsnz/ib-gateway:stable
+    image: gnzsnz/ib-gateway:10.44
     container_name: omo-ib-gateway
     restart: unless-stopped
     env_file:
