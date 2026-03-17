@@ -124,17 +124,19 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 	var fillPrice float64
 	side := "sell"
 	if isOption {
-		if intent.Direction.IsExit() {
+		switch {
+		case intent.Direction.IsExit():
 			pos := b.positions[string(intent.Symbol)]
-			if pos != nil && pos.avgCost > 0 {
+			switch {
+			case pos != nil && pos.avgCost > 0:
 				fillPrice = pos.avgCost
-			} else if intent.LimitPrice > 0 {
+			case intent.LimitPrice > 0:
 				fillPrice = intent.LimitPrice
-			} else {
+			default:
 				fillPrice = 0.01
 			}
 			side = "sell"
-		} else {
+		default:
 			if intent.LimitPrice <= 0 {
 				return "", fmt.Errorf("simbroker: options entry has no limit price for %s", intent.Symbol)
 			}

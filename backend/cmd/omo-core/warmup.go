@@ -532,14 +532,15 @@ func warmupHTF(ctx context.Context, infra *infraDeps, svc *appServices, syms sym
 				bars1h = brokerBars
 			}
 		}
-		if err != nil {
+		switch {
+		case err != nil:
 			log.Warn().Err(err).Str("symbol", string(sym)).Msg("1H warmup fetch failed")
 			infra.startup.EMA50Failed = append(infra.startup.EMA50Failed, string(sym))
-		} else if len(bars1h) >= hourlyBarsNeeded {
+		case len(bars1h) >= hourlyBarsNeeded:
 			n := svc.monitor.WarmUpHTF(bars1h)
 			log.Info().Str("symbol", string(sym)).Int("bars", n).Msg("1H EMA50 warmup complete")
 			infra.startup.EMA50Succeeded++
-		} else {
+		default:
 			if len(bars1h) > 0 {
 				n := svc.monitor.WarmUpHTF(bars1h)
 				log.Warn().Str("symbol", string(sym)).Int("bars", len(bars1h)).Int("needed", hourlyBarsNeeded).Int("processed", n).Msg("insufficient 1H bars for EMA50")

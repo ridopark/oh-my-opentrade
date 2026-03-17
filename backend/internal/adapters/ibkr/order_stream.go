@@ -113,7 +113,7 @@ func mapStatusToEvent(s ibsync.Status) string {
 		return "accepted"
 	case ibsync.PendingSubmit, ibsync.ApiPending:
 		return "new"
-	case ibsync.Cancelled, ibsync.ApiCancelled:
+	case ibsync.Cancelled, ibsync.ApiCancelled: //nolint:misspell // external ibsync constant
 		return "canceled"
 	case ibsync.Inactive:
 		return "expired"

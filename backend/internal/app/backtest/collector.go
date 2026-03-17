@@ -327,16 +327,16 @@ func (r *Result) PrintReport() {
 		copy(sorted, r.Trades)
 		sort.Slice(sorted, func(i, j int) bool { return sorted[i].FilledAt.Before(sorted[j].FilledAt) })
 		for _, t := range sorted {
-			strat := t.Strategy
-			if strat == "" {
-				strat = "unknown"
+			stratName := t.Strategy
+			if stratName == "" {
+				stratName = "unknown"
 			}
 			if t.Side == "sell" {
 				fmt.Printf("  %s [%s] %s %s %.0f @ $%.2f  P&L: $%.2f\n",
-					t.FilledAt.Format("2006-01-02 15:04"), strat, t.Side, t.Symbol, t.Quantity, t.Price, t.PnL)
+					t.FilledAt.Format("2006-01-02 15:04"), stratName, t.Side, t.Symbol, t.Quantity, t.Price, t.PnL)
 			} else {
 				fmt.Printf("  %s [%s] %s %s %.0f @ $%.2f\n",
-					t.FilledAt.Format("2006-01-02 15:04"), strat, t.Side, t.Symbol, t.Quantity, t.Price)
+					t.FilledAt.Format("2006-01-02 15:04"), stratName, t.Side, t.Symbol, t.Quantity, t.Price)
 			}
 		}
 	}
