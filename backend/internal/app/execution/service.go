@@ -199,6 +199,8 @@ func (s *Service) retryFillListener(ctx context.Context) {
 		go s.runFillListener(ctx, ch)
 		go s.runReconciliationLoop(ctx)
 		s.log.Info().Msg("fill listener connected after deferred retry")
+		s.reconcileOnBoot(ctx)
+		s.log.Info().Msg("deferred boot reconciliation completed")
 		return
 	}
 }
