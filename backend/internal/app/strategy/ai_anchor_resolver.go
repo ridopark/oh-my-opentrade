@@ -30,6 +30,11 @@ type symbolDetectors struct {
 
 type SessionAnchorFn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
 
+type AnchorResolveOption struct {
+	SkipAI bool
+	SyncAI bool
+}
+
 // AnchorApplyFn is called from the background goroutine when the LLM
 // returns an anchor selection. It applies the new anchors to the running
 // strategy immediately, without waiting for the next resolution cycle.
@@ -148,7 +153,7 @@ func (r *AIAnchorResolver) ResolveAnchors(
 	regime domain.MarketRegime,
 	indicators domain.IndicatorSnapshot,
 	anchorNames []string,
-	skipAI ...bool,
+	opts ...AnchorResolveOption,
 ) (map[string]time.Time, error) {
 	r.mu.RLock()
 	inMemory := make([]start.CandidateAnchor, len(r.candidates[symbol]))
@@ -194,13 +199,38 @@ func (r *AIAnchorResolver) ResolveAnchors(
 		}
 	}
 
-	selection := r.fallbackRank(scored, defaultSelectCount)
+	var opt AnchorResolveOption
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 
-	useAI := len(skipAI) == 0 || !skipAI[0]
-	if useAI && r.advisor != nil {
-		scoredCopy := make([]start.CandidateAnchor, len(scored))
-		copy(scoredCopy, scored)
-		go r.asyncSelectAnchors(symbol, scoredCopy, currentPrice, regime, indicators)
+	var selection *start.AnchorSelection
+
+	if !opt.SkipAI && r.advisor != nil {
+		if opt.SyncAI {
+			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			sel, err := r.advisor.SelectAnchors(ctx, ports.AnchorSelectionRequest{
+				Symbol:       domain.Symbol(symbol),
+				Candidates:   scored,
+				CurrentPrice: currentPrice,
+				Regime:       regime,
+				Indicators:   indicators,
+			})
+			if err != nil {
+				r.logger.Warn("sync AI anchor selection failed, using fallback", "symbol", symbol, "error", err)
+			} else {
+				selection = sel
+			}
+		} else {
+			scoredCopy := make([]start.CandidateAnchor, len(scored))
+			copy(scoredCopy, scored)
+			go r.asyncSelectAnchors(symbol, scoredCopy, currentPrice, regime, indicators)
+		}
+	}
+
+	if selection == nil {
+		selection = r.fallbackRank(scored, defaultSelectCount)
 	}
 
 	if selection == nil {
