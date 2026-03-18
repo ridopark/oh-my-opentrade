@@ -22,6 +22,8 @@ type EvalContext struct {
 	// e.g. {1.0: 151.20, 2.0: 152.40, 2.5: 153.00} for a VWAP of 150.00.
 	// Nil or empty during warmup.
 	SDBands map[float64]float64
+
+	BarDuration time.Duration
 }
 
 // Evaluate dispatches to the appropriate exit rule evaluator.
@@ -222,8 +224,15 @@ func evaluateVolatilityStop(rule domain.ExitRule, pos *domain.MonitoredPosition,
 //
 //	"sd_level" — SD multiplier for the target band (e.g. 2.0 = VWAP + 2.0*SD)
 func evaluateSDTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext, now time.Time) (bool, string) {
-	minHoldBars := rule.Param("min_hold_bars", 2)
-	if now.Sub(pos.EntryTime) < time.Duration(minHoldBars)*time.Minute {
+	barDur := ctx.BarDuration
+	if barDur <= 0 {
+		barDur = time.Minute
+	}
+	minHoldBars := rule.Param("min_hold_bars", 0)
+	if minHoldBars <= 0 {
+		minHoldBars = 2
+	}
+	if now.Sub(pos.EntryTime) < time.Duration(minHoldBars)*barDur {
 		return false, ""
 	}
 	sdLevel := rule.Param("sd_level", 0)

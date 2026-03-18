@@ -8,8 +8,43 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	domstrategy "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
+
+func parseBarDuration(tf string) time.Duration {
+	switch tf {
+	case "1m":
+		return time.Minute
+	case "5m":
+		return 5 * time.Minute
+	case "15m":
+		return 15 * time.Minute
+	case "1h":
+		return time.Hour
+	case "4h":
+		return 4 * time.Hour
+	case "1d":
+		return 24 * time.Hour
+	default:
+		return time.Minute
+	}
+}
+
+func (s *Service) barDurationFor(strategyName string) time.Duration {
+	if s.specStore == nil || strategyName == "" {
+		return time.Minute
+	}
+	sid, err := domstrategy.NewStrategyID(strategyName)
+	if err != nil {
+		return time.Minute
+	}
+	spec, err := s.specStore.GetLatest(context.Background(), sid)
+	if err != nil || len(spec.Routing.Timeframes) == 0 {
+		return time.Minute
+	}
+	return parseBarDuration(string(spec.Routing.Timeframes[0]))
+}
 
 // tick evaluates all exit rules against all monitored positions.
 // Time-only rules (MAX_HOLDING_TIME, EOD_FLATTEN) are evaluated even when
@@ -66,7 +101,7 @@ func (s *Service) tick() {
 		price := snap.Price
 		pos.UpdateWaterMarks(price)
 
-		evalCtx := EvalContext{}
+		evalCtx := EvalContext{BarDuration: s.barDurationFor(pos.Strategy)}
 		if s.snapshotFn != nil {
 			if indSnap, ok := s.snapshotFn(string(pos.Symbol)); ok {
 				evalCtx.ATR = indSnap.ATR
