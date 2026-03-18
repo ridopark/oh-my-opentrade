@@ -75,7 +75,7 @@ interval_minutes = 30
 type = "VOLATILITY_STOP"
 [exit_rules.params]
 atr_multiplier = 3.0
-min_hold_bars = 10
+min_hold_bars = 2
 bar_minutes = 5
 
 [[exit_rules]]
@@ -88,7 +88,7 @@ bar_minutes = 5
 [[exit_rules]]
 type = "STEP_STOP"
 [exit_rules.params]
-min_hold_bars = 10
+min_hold_bars = 3
 bar_minutes = 5
 
 [[exit_rules]]
