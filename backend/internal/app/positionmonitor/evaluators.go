@@ -231,11 +231,12 @@ func evaluateVolatilityStop(rule domain.ExitRule, pos *domain.MonitoredPosition,
 func resolveGracePeriod(rule domain.ExitRule, ctxBarDur time.Duration) time.Duration {
 	barMinutes := rule.Param("bar_minutes", 0)
 	var barDur time.Duration
-	if barMinutes > 0 {
+	switch {
+	case barMinutes > 0:
 		barDur = time.Duration(barMinutes) * time.Minute
-	} else if ctxBarDur > 0 {
+	case ctxBarDur > 0:
 		barDur = ctxBarDur
-	} else {
+	default:
 		barDur = time.Minute
 	}
 	minHoldBars := rule.Param("min_hold_bars", 0)
