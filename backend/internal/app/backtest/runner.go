@@ -301,10 +301,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("build position monitor: %w", err)
 	}
 
+	var aiAdvisor ports.AIAdvisorPort = llm.NewNoOpAdvisor()
+	if !r.cfg.NoAI && r.appCfg.AI.Enabled {
+		aiAdvisor = llm.NewAdvisor(r.appCfg.AI.BaseURL, r.appCfg.AI.Model, r.appCfg.AI.APIKey, nil)
+	}
+
 	pipeline, err := bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
 		EventBus:        r.eventBus,
 		SpecStore:       specStore,
-		AIAdvisor:       llm.NewNoOpAdvisor(),
+		AIAdvisor:       aiAdvisor,
 		PositionLookup:  posMonBundle.Service.LookupPosition,
 		MarketDataFn:    monitorSvc.GetLastSnapshot,
 		Repo:            nil,
@@ -543,7 +548,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 
-		aiResolver := strategy.NewAIAnchorResolver(llm.NewNoOpAdvisor(), nil, nil)
+		aiResolver := strategy.NewAIAnchorResolver(aiAdvisor, nil, nil)
 		aiResolver.SetSessionResolver(sessionResolver.ResolveAnchors)
 		for _, sym := range r.cfg.Symbols {
 			isCrypto := strings.Contains(sym.String(), "/") || strings.HasSuffix(sym.String(), "USD")
