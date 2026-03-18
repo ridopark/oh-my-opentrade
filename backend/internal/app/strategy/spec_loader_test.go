@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
+	"github.com/oh-my-opentrade/backend/internal/domain"
 	domstrategy "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -200,4 +201,58 @@ version = 1
 
 	_, err := strategy.LoadSpecFile(path)
 	require.Error(t, err)
+}
+
+func TestLoadSpecFile_V2_AppliesSymbolOverridesToParamsAndExitRules(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.toml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+schema_version = 2
+
+[strategy]
+id = "avwap_v2"
+version = "2.0.0"
+
+[lifecycle]
+state = "PaperActive"
+
+[routing]
+symbols = ["AAPL", "NVDA"]
+timeframes = ["5m"]
+
+[params]
+stop_bps = 50
+
+[[exit_rules]]
+type = "VOLATILITY_STOP"
+[exit_rules.params]
+atr_multiplier = 3.0
+
+[[exit_rules]]
+type = "MAX_LOSS"
+[exit_rules.params]
+pct = 0.03
+
+[symbol_overrides.NVDA]
+atr_multiplier = 5.0
+stop_bps = 30
+`), 0o644))
+
+	spec, err := strategy.LoadSpecFile(path)
+	require.NoError(t, err)
+
+	nvdaParams := spec.ParamsForSymbol("NVDA")
+	aaplParams := spec.ParamsForSymbol("AAPL")
+	assert.Equal(t, int64(30), nvdaParams["stop_bps"])
+	assert.Equal(t, int64(50), aaplParams["stop_bps"])
+
+	nvdaRules := spec.ExitRulesForSymbol("NVDA")
+	require.Len(t, nvdaRules, 2)
+	assert.Equal(t, domain.ExitRuleVolatilityStop, nvdaRules[0].Type)
+	assert.Equal(t, 5.0, nvdaRules[0].Param("atr_multiplier", 0))
+	assert.Equal(t, 0.03, nvdaRules[1].Param("pct", 0))
+
+	defaults := spec.ExitRulesForSymbol("AAPL")
+	assert.Equal(t, 3.0, defaults[0].Param("atr_multiplier", 0))
+	assert.Equal(t, 3.0, spec.ExitRules[0].Param("atr_multiplier", 0))
 }

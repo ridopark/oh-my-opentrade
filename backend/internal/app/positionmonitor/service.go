@@ -460,7 +460,7 @@ func (s *Service) processFill(fill fillMsg) {
 
 	exitRules := fill.ExitRules
 	if exitRules == nil {
-		exitRules = s.resolveExitRules(context.Background(), fill.Strategy, fill.AssetClass)
+		exitRules = s.resolveExitRules(context.Background(), fill.Strategy, fill.Symbol, fill.AssetClass)
 	}
 
 	pos, err := domain.NewMonitoredPosition(

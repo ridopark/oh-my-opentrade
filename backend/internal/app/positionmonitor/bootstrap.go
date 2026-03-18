@@ -152,7 +152,7 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 		entryTime := omo.entryAt
 
 		// Look up exit rules from strategy spec.
-		exitRules := s.resolveExitRules(ctx, strategy, assetClass)
+		exitRules := s.resolveExitRules(ctx, strategy, sym, assetClass)
 
 		pos, err := domain.NewMonitoredPosition(
 			sym, entryPrice, entryTime,
@@ -216,7 +216,7 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 // When multiple specs share the same strategy ID (e.g. equity vs crypto variants),
 // it prefers the spec whose asset_classes include the given assetClass.
 // Falls back to conservative defaults if the spec store is unavailable or the strategy has no rules.
-func (s *Service) resolveExitRules(ctx context.Context, strategy string, assetClass domain.AssetClass) []domain.ExitRule {
+func (s *Service) resolveExitRules(ctx context.Context, strategy string, symbol domain.Symbol, assetClass domain.AssetClass) []domain.ExitRule {
 	if s.specStore != nil && strategy != "" {
 		// List all specs and find the best match: same ID + matching asset class.
 		all, err := s.specStore.List(ctx, nil)
@@ -246,10 +246,11 @@ func (s *Service) resolveExitRules(ctx context.Context, strategy string, assetCl
 			if chosen != nil && len(chosen.ExitRules) > 0 {
 				s.log.Info().
 					Str("strategy", strategy).
+					Str("symbol", string(symbol)).
 					Str("asset_class", string(assetClass)).
 					Int("rules", len(chosen.ExitRules)).
 					Msg("bootstrap: exit rules from spec")
-				return chosen.ExitRules
+				return chosen.ExitRulesForSymbol(symbol.String())
 			}
 			if chosen != nil {
 				s.log.Warn().Str("strategy", strategy).Str("asset_class", string(assetClass)).Msg("bootstrap: spec found but has no exit rules")

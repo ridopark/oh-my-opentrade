@@ -110,7 +110,7 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 
 		for _, sym := range spec.Routing.Symbols {
 			instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", spec.ID, spec.Version, sym))
-			inst := strategy.NewInstance(instanceID, impl, spec.Params, strategy.InstanceAssignment{
+			inst := strategy.NewInstance(instanceID, impl, spec.ParamsForSymbol(sym), strategy.InstanceAssignment{
 				Symbols:           []string{sym},
 				Timeframes:        spec.Routing.Timeframes,
 				Priority:          spec.Routing.Priority,
@@ -227,7 +227,7 @@ func (pa *PipelineActivator) ActivateSymbol(symbol string, bars1m, barsHTF []dom
 		}
 
 		instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s:dynamic", spec.ID, spec.Version, symbol))
-		inst := strategy.NewInstance(instanceID, impl, spec.Params, strategy.InstanceAssignment{
+		inst := strategy.NewInstance(instanceID, impl, spec.ParamsForSymbol(symbol), strategy.InstanceAssignment{
 			Symbols:           []string{symbol},
 			Timeframes:        spec.Routing.Timeframes,
 			Priority:          spec.Routing.Priority,
