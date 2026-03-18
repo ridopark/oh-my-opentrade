@@ -44,11 +44,11 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 	case domain.ExitRuleMaxLoss:
 		return evaluateMaxLoss(rule, pos, currentPrice)
 	case domain.ExitRuleVolatilityStop:
-		return evaluateVolatilityStop(rule, pos, currentPrice, ctx)
+		return evaluateVolatilityStop(rule, pos, currentPrice, ctx, now)
 	case domain.ExitRuleSDTarget:
 		return evaluateSDTarget(rule, pos, currentPrice, ctx, now)
 	case domain.ExitRuleStepStop:
-		return evaluateStepStop(rule, pos, currentPrice, ctx)
+		return evaluateStepStop(rule, pos, currentPrice, ctx, now)
 	case domain.ExitRuleStagnationExit:
 		return evaluateStagnationExit(rule, pos, currentPrice, now, ctx)
 	case domain.ExitRuleBreakevenStop:
@@ -200,7 +200,12 @@ func evaluateMaxLoss(rule domain.ExitRule, pos *domain.MonitoredPosition, curren
 // Params:
 //
 //	"atr_multiplier" — multiplier for ATR distance (e.g. 1.5 = stop at hwm - 1.5*ATR)
-func evaluateVolatilityStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext) (bool, string) {
+func evaluateVolatilityStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext, now time.Time) (bool, string) {
+	graceDur := resolveGracePeriod(rule, ctx.BarDuration)
+	if now.Sub(pos.EntryTime) < graceDur {
+		return false, ""
+	}
+
 	mult := rule.Param("atr_multiplier", 0)
 	if mult <= 0 {
 		return false, ""
@@ -223,13 +228,13 @@ func evaluateVolatilityStop(rule domain.ExitRule, pos *domain.MonitoredPosition,
 // Params:
 //
 //	"sd_level" — SD multiplier for the target band (e.g. 2.0 = VWAP + 2.0*SD)
-func evaluateSDTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext, now time.Time) (bool, string) {
+func resolveGracePeriod(rule domain.ExitRule, ctxBarDur time.Duration) time.Duration {
 	barMinutes := rule.Param("bar_minutes", 0)
 	var barDur time.Duration
 	if barMinutes > 0 {
 		barDur = time.Duration(barMinutes) * time.Minute
-	} else if ctx.BarDuration > 0 {
-		barDur = ctx.BarDuration
+	} else if ctxBarDur > 0 {
+		barDur = ctxBarDur
 	} else {
 		barDur = time.Minute
 	}
@@ -237,7 +242,11 @@ func evaluateSDTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, curre
 	if minHoldBars <= 0 {
 		minHoldBars = 2
 	}
-	if now.Sub(pos.EntryTime) < time.Duration(minHoldBars)*barDur {
+	return time.Duration(minHoldBars) * barDur
+}
+
+func evaluateSDTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext, now time.Time) (bool, string) {
+	if now.Sub(pos.EntryTime) < resolveGracePeriod(rule, ctx.BarDuration) {
 		return false, ""
 	}
 	sdLevel := rule.Param("sd_level", 0)
@@ -265,7 +274,12 @@ func evaluateSDTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, curre
 // This evaluator only READS pos.CustomState["step_stop_level"] — it never mutates state.
 //
 // Params: none (stop level comes from CustomState, set by tick loop)
-func evaluateStepStop(_ domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext) (bool, string) {
+func evaluateStepStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext, now time.Time) (bool, string) {
+	graceDur := resolveGracePeriod(rule, ctx.BarDuration)
+	if now.Sub(pos.EntryTime) < graceDur {
+		return false, ""
+	}
+
 	if pos.CustomState == nil {
 		return false, ""
 	}
