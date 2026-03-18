@@ -72,7 +72,7 @@ func (s *MultiTimeframeScorer) Score(candidates []CandidateAnchor) []CandidateAn
 	copy(scored, candidates)
 
 	for i := range scored {
-		scored[i].Strength = scored[i].Strength * tfWeight(scored[i].Timeframe)
+		scored[i].Strength *= tfWeight(scored[i].Timeframe)
 	}
 
 	for i := 0; i < len(scored); i++ {

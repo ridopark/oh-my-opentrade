@@ -3,7 +3,6 @@ package strategy
 import (
 	"math"
 	"sort"
-	"time"
 )
 
 // VolumeProfiler detects volume rotation zones — tight price ranges with
@@ -225,13 +224,4 @@ func (p *VolumeProfiler) Reset() {
 	p.barCount = 0
 	p.bucketSize = 0
 	p.rotationDetected = false
-}
-
-// lastBarTime returns the time of the most recently pushed bar, for testing.
-func (p *VolumeProfiler) lastBarTime() time.Time {
-	if p.count == 0 {
-		return time.Time{}
-	}
-	idx := (p.head + p.count - 1) % p.windowBars
-	return p.bars[idx].Time
 }

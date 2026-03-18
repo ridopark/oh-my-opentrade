@@ -203,7 +203,7 @@ func (o *Orchestrator) runSingle(ctx context.Context, cfg domsweep.SweepConfig, 
 		o.log.Error().Err(tmpErr).Msg("failed to create temp dir")
 		return domsweep.SweepRunResult{Index: index, Params: params, Duration: time.Since(start)}
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	tomlBytes, encErr := store_fs.EncodeFullV2(*spec)
 	if encErr != nil {
@@ -289,7 +289,7 @@ func (o *Orchestrator) Cancel(sweepID string) error {
 	}
 	sess.cancelFn()
 	sess.mu.Lock()
-	sess.status = "cancelled"
+	sess.status = "canceled"
 	sess.mu.Unlock()
 	return nil
 }
