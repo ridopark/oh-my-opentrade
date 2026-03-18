@@ -91,7 +91,20 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 		}
 	}
 
-	resolved, err := r.aiAnchorResolver.ResolveAnchors(ctx, symbol, bar.Close, regime, indicators)
+	var anchorNames []string
+	instances := r.router.InstancesForSymbol(symbol)
+	for _, inst := range instances {
+		st, ok := inst.GetState(symbol)
+		if !ok {
+			continue
+		}
+		if ar, ok := st.(anchorResettable); ok {
+			anchorNames = ar.AnchorNames()
+			break
+		}
+	}
+
+	resolved, err := r.aiAnchorResolver.ResolveAnchors(ctx, symbol, bar.Time, bar.Close, regime, indicators, anchorNames)
 	if err != nil {
 		r.logger.Error("AI anchor resolution failed", "symbol", symbol, "error", err)
 		return
@@ -102,7 +115,6 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 
 	r.lastResolvedRegime[symbol] = regime.Type
 
-	instances := r.router.InstancesForSymbol(symbol)
 	for _, inst := range instances {
 		st, ok := inst.GetState(symbol)
 		if !ok {
