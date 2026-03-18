@@ -501,6 +501,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 			}
 			r.metrics.Strategy.SignalsTotal.WithLabelValues(strategyLabel, string(sig.Type), string(sig.Side)).Inc()
 		}
+		r.logger.Info("EMIT SIGNAL", "symbol", sig.Symbol, "type", sig.Type, "side", sig.Side, "instance", sig.StrategyInstanceID.String())
 		if err := r.emitSignal(ctx, event.TenantID, event.EnvMode, sig); err != nil {
 			r.logger.Error("failed to emit SignalCreated",
 				"instance_id", sig.StrategyInstanceID.String(),

@@ -363,9 +363,15 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 
 	// 1. Cooldown / max trades gate.
 	if now.Before(avwapSt.CooldownUntil) {
+		if ctx != nil && ctx.Logger() != nil {
+			ctx.Logger().Info("AVWAP gate: cooldown active", "symbol", symbol, "until", avwapSt.CooldownUntil, "now", now)
+		}
 		return avwapSt, nil, nil
 	}
 	if avwapSt.TradesToday >= cfg.MaxTradesPerDay {
+		if ctx != nil && ctx.Logger() != nil {
+			ctx.Logger().Info("AVWAP gate: max trades reached", "symbol", symbol, "trades", avwapSt.TradesToday, "max", cfg.MaxTradesPerDay)
+		}
 		return avwapSt, nil, nil
 	}
 
@@ -454,13 +460,19 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 
 	// 6. Only entries if flat and regime allowed.
 	if avwapSt.PositionSide != "" || avwapSt.PendingEntry != "" {
+		if ctx != nil && ctx.Logger() != nil {
+			ctx.Logger().Info("AVWAP gate: position/pending active", "symbol", symbol, "position", avwapSt.PositionSide, "pending", avwapSt.PendingEntry)
+		}
 		return avwapSt, nil, nil
 	}
 	if !regimeAllowed {
+		if ctx != nil && ctx.Logger() != nil {
+			ctx.Logger().Info("AVWAP gate: regime blocked", "symbol", symbol, "regime", regimeTag)
+		}
 		return avwapSt, nil, nil
 	}
 
-	// 7. Breakout detection.
+	// 7. Breakout detection — scan ALL anchors for LONG first, then SHORT.
 	if cfg.BreakoutEnabled {
 		for anchorName, avwapValue := range avwapValues {
 			volRatio := 0.0
@@ -469,7 +481,6 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 			}
 			volumeOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*avwapSt.Indicators.VolumeSMA
 
-			// Long breakout.
 			if avwapSt.AboveCount[anchorName] >= cfg.HoldBars && volumeOK {
 				if regimeTag == "REVERSAL" {
 					continue
@@ -496,48 +507,52 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 				avwapSt.CooldownUntil = now.Add(cooldown)
 				return avwapSt, []start.Signal{sig}, nil
 			}
+		}
 
-			// Direction guard: skip short entries in long-only mode (e.g. crypto).
-			if strings.EqualFold(cfg.Direction, "LONG") {
-				continue
-			}
+		if !strings.EqualFold(cfg.Direction, "LONG") {
+			for anchorName, avwapValue := range avwapValues {
+				volRatio := 0.0
+				if avwapSt.Indicators.VolumeSMA > 0 {
+					volRatio = bar.Volume / avwapSt.Indicators.VolumeSMA
+				}
+				volumeOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*avwapSt.Indicators.VolumeSMA
 
-			// Short breakout.
-			if avwapSt.BelowCount[anchorName] >= cfg.HoldBars && volumeOK {
-				if regimeTag == "REVERSAL" {
-					continue
-				}
-				if cfg.RequireHigherLows && !hasLowerHighs(avwapSt.RecentHighs) {
-					continue
-				}
-				if cfg.MiddayTrapShield && strings.EqualFold(cfg.AssetClass, "EQUITY") {
-					barET := bar.Time.In(etLocation)
-					hour := barET.Hour()
-					if hour >= 11 && hour < 13 {
-						middayVolOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.MiddayVolumeMult*avwapSt.Indicators.VolumeSMA
-						if !middayVolOK {
-							continue
+				if avwapSt.BelowCount[anchorName] >= cfg.HoldBars && volumeOK {
+					if regimeTag == "REVERSAL" {
+						continue
+					}
+					if cfg.RequireHigherLows && !hasLowerHighs(avwapSt.RecentHighs) {
+						continue
+					}
+					if cfg.MiddayTrapShield && strings.EqualFold(cfg.AssetClass, "EQUITY") {
+						barET := bar.Time.In(etLocation)
+						hour := barET.Hour()
+						if hour >= 11 && hour < 13 {
+							middayVolOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.MiddayVolumeMult*avwapSt.Indicators.VolumeSMA
+							if !middayVolOK {
+								continue
+							}
 						}
 					}
+					sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.7, map[string]string{
+						"ref_price": fmt.Sprintf("%.10f", bar.Close),
+						"setup":     "avwap_breakout",
+						"anchor":    anchorName,
+						"avwap":     fmt.Sprintf("%.4f", avwapValue),
+						"vol_ratio": fmt.Sprintf("%.2f", volRatio),
+						"hold_bars": fmt.Sprintf("%d", avwapSt.BelowCount[anchorName]),
+						"mode":      "breakout",
+						"regime_5m": regimeTag,
+					})
+					if err != nil {
+						return avwapSt, nil, err
+					}
+					avwapSt.PendingEntry = start.SideSell
+					avwapSt.PendingEntryAt = now
+					avwapSt.TradesToday++
+					avwapSt.CooldownUntil = now.Add(cooldown)
+					return avwapSt, []start.Signal{sig}, nil
 				}
-				sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.7, map[string]string{
-					"ref_price": fmt.Sprintf("%.10f", bar.Close),
-					"setup":     "avwap_breakout",
-					"anchor":    anchorName,
-					"avwap":     fmt.Sprintf("%.4f", avwapValue),
-					"vol_ratio": fmt.Sprintf("%.2f", volRatio),
-					"hold_bars": fmt.Sprintf("%d", avwapSt.BelowCount[anchorName]),
-					"mode":      "breakout",
-					"regime_5m": regimeTag,
-				})
-				if err != nil {
-					return avwapSt, nil, err
-				}
-				avwapSt.PendingEntry = start.SideSell
-				avwapSt.PendingEntryAt = now
-				avwapSt.TradesToday++
-				avwapSt.CooldownUntil = now.Add(cooldown)
-				return avwapSt, []start.Signal{sig}, nil
 			}
 		}
 	}
