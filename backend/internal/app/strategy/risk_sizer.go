@@ -412,36 +412,43 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		}
 	}
 
+	params := map[string]any(nil)
+	exitRules := []domain.ExitRule(nil)
+	if spec != nil {
+		params = spec.ParamsForSymbol(sigRef.Symbol)
+		exitRules = spec.ExitRulesForSymbol(sigRef.Symbol)
+	}
+
 	limitOffsetBPS := 5
 	stopBPS := 25
 	riskPerTradeBPS := 10
 	maxSlippageBPS := 10
-	if spec != nil {
-		if v, ok := extractInt(spec.Params, "limit_offset_bps"); ok {
+	if params != nil {
+		if v, ok := extractInt(params, "limit_offset_bps"); ok {
 			limitOffsetBPS = v
 		}
-		if v, ok := extractInt(spec.Params, "stop_bps"); ok {
+		if v, ok := extractInt(params, "stop_bps"); ok {
 			stopBPS = v
 		}
-		if v, ok := extractInt(spec.Params, "risk_per_trade_bps"); ok {
+		if v, ok := extractInt(params, "risk_per_trade_bps"); ok {
 			riskPerTradeBPS = v
-		} else if v, ok := extractInt(spec.Params, "max_risk_bps"); ok {
+		} else if v, ok := extractInt(params, "max_risk_bps"); ok {
 			riskPerTradeBPS = v
 		}
-		if v, ok := extractInt(spec.Params, "max_slippage_bps"); ok {
+		if v, ok := extractInt(params, "max_slippage_bps"); ok {
 			maxSlippageBPS = v
 		}
 		if !isCryptoRTH(rs.nowFn()) {
-			if v, ok := extractInt(spec.Params, "limit_offset_bps_offhours"); ok {
+			if v, ok := extractInt(params, "limit_offset_bps_offhours"); ok {
 				limitOffsetBPS = v
 			}
-			if v, ok := extractInt(spec.Params, "max_slippage_bps_offhours"); ok {
+			if v, ok := extractInt(params, "max_slippage_bps_offhours"); ok {
 				maxSlippageBPS = v
 			}
 		}
 	}
 
-	dynCfg := extractDynamicRiskConfig(spec)
+	dynCfg := extractDynamicRiskConfig(params)
 
 	if sigRef.SignalType == start.SignalEntry.String() {
 		profile := domain.ComputeRiskProfile(
@@ -541,8 +548,8 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 	}
 
 	maxPositionBPS := 1000
-	if spec != nil {
-		if v, ok := extractInt(spec.Params, "max_position_bps"); ok && v > 0 {
+	if params != nil {
+		if v, ok := extractInt(params, "max_position_bps"); ok && v > 0 {
 			maxPositionBPS = v
 		}
 	}
@@ -582,7 +589,7 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 	if sigRef.SignalType == start.SignalEntry.String() &&
 		spec != nil && spec.Options != nil && spec.Options.Enabled &&
 		rs.optionsMarket != nil {
-		return rs.handleOptionsSignal(ctx, event, enrichment, sigRef, spec, direction, strategyName, refPrice, limitPrice, equity)
+		return rs.handleOptionsSignal(ctx, event, enrichment, sigRef, spec, params, exitRules, direction, strategyName, refPrice, limitPrice, equity)
 	}
 
 	intentID := uuid.New()
@@ -624,17 +631,17 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		"dynamic_stop_bps":  strconv.Itoa(stopBPS),
 	}
 
-	if spec != nil {
-		propagateGuardParams(spec.Params, intent.Meta)
+	if params != nil {
+		propagateGuardParams(params, intent.Meta)
 	}
 
-	if spec != nil && len(spec.ExitRules) > 0 {
+	if len(exitRules) > 0 {
 		type ruleWire struct {
 			Type   string             `json:"type"`
 			Params map[string]float64 `json:"params"`
 		}
-		wire := make([]ruleWire, len(spec.ExitRules))
-		for i, r := range spec.ExitRules {
+		wire := make([]ruleWire, len(exitRules))
+		for i, r := range exitRules {
 			wire[i] = ruleWire{Type: string(r.Type), Params: r.Params}
 		}
 		if raw, err := json.Marshal(wire); err == nil {
@@ -645,7 +652,7 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		vwap, _ := strconv.ParseFloat(sigRef.Tags["ind_vwap"], 64)
 		vwapSD, _ := strconv.ParseFloat(sigRef.Tags["ind_vwap_sd"], 64)
 
-		for _, r := range spec.ExitRules {
+		for _, r := range exitRules {
 			switch r.Type {
 			case domain.ExitRuleVolatilityStop:
 				if mult := r.Param("atr_multiplier", 0); mult > 0 && atr > 0 {
@@ -683,6 +690,8 @@ func (rs *RiskSizer) handleOptionsSignal(
 	enrichment domain.SignalEnrichment,
 	sigRef domain.SignalRef,
 	spec *stratports.Spec,
+	params map[string]any,
+	exitRules []domain.ExitRule,
 	direction domain.Direction,
 	strategyName string,
 	refPrice float64,
@@ -752,9 +761,9 @@ func (rs *RiskSizer) handleOptionsSignal(
 	}
 
 	riskPerTradeBPS := 10
-	if v, ok := extractInt(spec.Params, "risk_per_trade_bps"); ok {
+	if v, ok := extractInt(params, "risk_per_trade_bps"); ok {
 		riskPerTradeBPS = v
-	} else if v, ok := extractInt(spec.Params, "max_risk_bps"); ok {
+	} else if v, ok := extractInt(params, "max_risk_bps"); ok {
 		riskPerTradeBPS = v
 	}
 
@@ -824,13 +833,13 @@ func (rs *RiskSizer) handleOptionsSignal(
 		"judge":             enrichment.JudgeReasoning,
 	}
 
-	if len(spec.ExitRules) > 0 {
+	if len(exitRules) > 0 {
 		type ruleWire struct {
 			Type   string             `json:"type"`
 			Params map[string]float64 `json:"params"`
 		}
-		wire := make([]ruleWire, len(spec.ExitRules))
-		for i, r := range spec.ExitRules {
+		wire := make([]ruleWire, len(exitRules))
+		for i, r := range exitRules {
 			wire[i] = ruleWire{Type: string(r.Type), Params: r.Params}
 		}
 		if raw, err := json.Marshal(wire); err == nil {
@@ -884,34 +893,34 @@ func parseStrategyIDFromInstance(instanceID start.InstanceID) (start.StrategyID,
 	return sid, true
 }
 
-func extractDynamicRiskConfig(spec *stratports.Spec) domain.DynamicRiskConfig {
+func extractDynamicRiskConfig(params map[string]any) domain.DynamicRiskConfig {
 	cfg := domain.DefaultDynamicRiskConfig()
-	if spec == nil {
+	if params == nil {
 		return cfg
 	}
 
-	if v, ok := extractBool(spec.Params, "dynamic_risk.enabled"); ok {
+	if v, ok := extractBool(params, "dynamic_risk.enabled"); ok {
 		cfg.Enabled = v
 	}
-	if v, ok := extractFloat(spec.Params, "dynamic_risk.min_confidence"); ok {
+	if v, ok := extractFloat(params, "dynamic_risk.min_confidence"); ok {
 		cfg.MinConfidence = v
 	}
-	if v, ok := extractFloat(spec.Params, "dynamic_risk.risk_scale_min"); ok {
+	if v, ok := extractFloat(params, "dynamic_risk.risk_scale_min"); ok {
 		cfg.RiskScaleMin = v
 	}
-	if v, ok := extractFloat(spec.Params, "dynamic_risk.risk_scale_max"); ok {
+	if v, ok := extractFloat(params, "dynamic_risk.risk_scale_max"); ok {
 		cfg.RiskScaleMax = v
 	}
-	if v, ok := extractFloat(spec.Params, "dynamic_risk.stop_tight_mult"); ok {
+	if v, ok := extractFloat(params, "dynamic_risk.stop_tight_mult"); ok {
 		cfg.StopTightMult = v
 	}
-	if v, ok := extractFloat(spec.Params, "dynamic_risk.stop_wide_mult"); ok {
+	if v, ok := extractFloat(params, "dynamic_risk.stop_wide_mult"); ok {
 		cfg.StopWideMult = v
 	}
-	if v, ok := extractFloat(spec.Params, "dynamic_risk.size_tight_mult"); ok {
+	if v, ok := extractFloat(params, "dynamic_risk.size_tight_mult"); ok {
 		cfg.SizeTightMult = v
 	}
-	if v, ok := extractFloat(spec.Params, "dynamic_risk.size_wide_mult"); ok {
+	if v, ok := extractFloat(params, "dynamic_risk.size_wide_mult"); ok {
 		cfg.SizeWideMult = v
 	}
 

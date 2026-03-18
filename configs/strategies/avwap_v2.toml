@@ -102,3 +102,6 @@ minutes_before_close = 15
 type = "MAX_LOSS"
 [exit_rules.params]
 pct = 0.03
+
+[symbol_overrides.NVDA]
+atr_multiplier = 5.0
