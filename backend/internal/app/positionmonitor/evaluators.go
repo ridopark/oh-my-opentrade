@@ -44,7 +44,7 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 	case domain.ExitRuleVolatilityStop:
 		return evaluateVolatilityStop(rule, pos, currentPrice, ctx)
 	case domain.ExitRuleSDTarget:
-		return evaluateSDTarget(rule, pos, currentPrice, ctx)
+		return evaluateSDTarget(rule, pos, currentPrice, ctx, now)
 	case domain.ExitRuleStepStop:
 		return evaluateStepStop(rule, pos, currentPrice, ctx)
 	case domain.ExitRuleStagnationExit:
@@ -221,7 +221,10 @@ func evaluateVolatilityStop(rule domain.ExitRule, pos *domain.MonitoredPosition,
 // Params:
 //
 //	"sd_level" — SD multiplier for the target band (e.g. 2.0 = VWAP + 2.0*SD)
-func evaluateSDTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext) (bool, string) {
+func evaluateSDTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext, now time.Time) (bool, string) {
+	if now.Sub(pos.EntryTime) < 2*time.Minute {
+		return false, ""
+	}
 	sdLevel := rule.Param("sd_level", 0)
 	if sdLevel <= 0 {
 		return false, ""
