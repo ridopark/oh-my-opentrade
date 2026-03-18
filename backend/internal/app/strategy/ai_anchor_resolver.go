@@ -30,6 +30,11 @@ type symbolDetectors struct {
 
 type SessionAnchorFn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
 
+// AnchorApplyFn is called from the background goroutine when the LLM
+// returns an anchor selection. It applies the new anchors to the running
+// strategy immediately, without waiting for the next resolution cycle.
+type AnchorApplyFn func(symbol string, anchors map[string]time.Time)
+
 // AIAnchorResolver orchestrates candidate anchor detection (algo) and AI
 // selection to provide AVWAP anchor points. It feeds bars through
 // deterministic detectors, accumulates candidates, and on ResolveAnchors
@@ -37,18 +42,18 @@ type SessionAnchorFn func(symbol string, barTime time.Time, anchors []string) ma
 //
 // LLM calls are non-blocking: ResolveAnchors returns fallback-ranked
 // anchors immediately, then fires the LLM in a background goroutine.
-// The next call to ResolveAnchors picks up the cached AI selection.
+// When the LLM responds, AnchorApplyFn is called to hot-swap anchors.
 type AIAnchorResolver struct {
 	advisor   ports.AIAdvisorPort
 	store     ports.AnchorStorePort
 	scorer    *start.MultiTimeframeScorer
 	logger    *slog.Logger
 	sessionFn SessionAnchorFn
+	applyFn   AnchorApplyFn
 
-	mu           sync.RWMutex
-	detectors    map[string]*symbolDetectors
-	candidates   map[string][]start.CandidateAnchor
-	aiSelections map[string]*start.AnchorSelection
+	mu         sync.RWMutex
+	detectors  map[string]*symbolDetectors
+	candidates map[string][]start.CandidateAnchor
 }
 
 func NewAIAnchorResolver(advisor ports.AIAdvisorPort, store ports.AnchorStorePort, logger *slog.Logger) *AIAnchorResolver {
@@ -56,18 +61,21 @@ func NewAIAnchorResolver(advisor ports.AIAdvisorPort, store ports.AnchorStorePor
 		logger = slog.Default()
 	}
 	return &AIAnchorResolver{
-		advisor:      advisor,
-		store:        store,
-		scorer:       start.NewMultiTimeframeScorer(),
-		logger:       logger.With("component", "ai_anchor_resolver"),
-		detectors:    make(map[string]*symbolDetectors),
-		candidates:   make(map[string][]start.CandidateAnchor),
-		aiSelections: make(map[string]*start.AnchorSelection),
+		advisor:    advisor,
+		store:      store,
+		scorer:     start.NewMultiTimeframeScorer(),
+		logger:     logger.With("component", "ai_anchor_resolver"),
+		detectors:  make(map[string]*symbolDetectors),
+		candidates: make(map[string][]start.CandidateAnchor),
 	}
 }
 
 func (r *AIAnchorResolver) SetSessionResolver(fn SessionAnchorFn) {
 	r.sessionFn = fn
+}
+
+func (r *AIAnchorResolver) SetApplyFn(fn AnchorApplyFn) {
+	r.applyFn = fn
 }
 
 func (r *AIAnchorResolver) RegisterSymbol(symbol string, isCrypto bool) {
@@ -186,16 +194,7 @@ func (r *AIAnchorResolver) ResolveAnchors(
 		}
 	}
 
-	r.mu.RLock()
-	cachedAI := r.aiSelections[symbol]
-	r.mu.RUnlock()
-
-	var selection *start.AnchorSelection
-	if cachedAI != nil {
-		selection = cachedAI
-	} else {
-		selection = r.fallbackRank(scored, defaultSelectCount)
-	}
+	selection := r.fallbackRank(scored, defaultSelectCount)
 
 	useAI := len(skipAI) == 0 || !skipAI[0]
 	if useAI && r.advisor != nil {
@@ -236,10 +235,15 @@ func (r *AIAnchorResolver) asyncSelectAnchors(symbol string, scored []start.Cand
 		return
 	}
 
-	r.mu.Lock()
-	r.aiSelections[symbol] = sel
-	r.mu.Unlock()
-	r.logger.Info("async AI anchor selection cached", "symbol", symbol, "anchors", len(sel.SelectedAnchors))
+	anchorTimes := r.selectionToAnchorTimes(sel, scored)
+	if len(anchorTimes) == 0 {
+		return
+	}
+
+	r.logger.Info("async AI anchor selection ready", "symbol", symbol, "anchors", len(anchorTimes))
+	if r.applyFn != nil {
+		r.applyFn(symbol, anchorTimes)
+	}
 }
 
 func (r *AIAnchorResolver) mergeCandidates(persisted, inMemory []start.CandidateAnchor) []start.CandidateAnchor {

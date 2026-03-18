@@ -52,6 +52,19 @@ func (r *Runner) SetAIAnchorResolver(resolver *AIAnchorResolver) {
 	r.aiAnchorResolver = resolver
 	r.lastSessionDate = make(map[string]string)
 	r.lastResolvedRegime = make(map[string]domain.RegimeType)
+
+	resolver.SetApplyFn(func(symbol string, anchors map[string]time.Time) {
+		for _, inst := range r.router.InstancesForSymbol(symbol) {
+			st, ok := inst.GetState(symbol)
+			if !ok {
+				continue
+			}
+			if ar, ok := st.(anchorResettable); ok {
+				ar.ResetAnchors(anchors)
+				r.logger.Info("AI anchors hot-swapped", "symbol", symbol, "anchors", len(anchors))
+			}
+		}
+	})
 }
 
 type anchorResettable interface {
