@@ -448,8 +448,8 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		r.swapManager.OnBarProcessed(swapCtx, symbol, sBar, indicators)
 	}
 
-	allSignals = ReconcileSignals(allSignals, r.posLookup, r.logger)
 	allSignals = r.filterByAllowedDirections(allSignals)
+	allSignals = ReconcileSignals(allSignals, r.posLookup, r.logger)
 
 	// Unlock BEFORE signal emission. The emitSignal cascade can trigger sync
 	// handlers (e.g. handleRejection) that also acquire r.mu — holding the lock
