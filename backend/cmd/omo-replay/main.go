@@ -618,17 +618,13 @@ func main() {
 		pipeline.Runner.ClearAllPendingStates()
 		warmupLog.Info().Msg("strategy runner pending states cleared after warmup")
 
-		sessionResolver := backtest.NewSessionResolver(loc)
+		aiResolver := strategy.NewAIAnchorResolver(llm.NewNoOpAdvisor(), nil, nil)
 		for _, sym := range symbols {
-			if loadErr := sessionResolver.Load(ctx, sqlDB, sym, fromTime, toTime); loadErr != nil {
-				warmupLog.Warn().Err(loadErr).Str("symbol", sym.String()).Msg("failed to load session data for anchor resolution")
-			}
-			if swingErr := sessionResolver.LoadSwings(ctx, sqlDB, sym, fromTime, toTime); swingErr != nil {
-				warmupLog.Warn().Err(swingErr).Str("symbol", sym.String()).Msg("failed to load swing data for anchor resolution")
-			}
+			isCrypto := strings.Contains(sym.String(), "/") || strings.HasSuffix(sym.String(), "USD")
+			aiResolver.RegisterSymbol(sym.String(), isCrypto)
 		}
-		pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
-		warmupLog.Info().Msg("session anchor resolver configured (with swings)")
+		pipeline.Runner.SetAIAnchorResolver(aiResolver)
+		warmupLog.Info().Msg("AI anchor resolver configured for replay (deterministic fallback)")
 	}
 	log.Info().Time("session_open", replaySessionOpen).Msg("MTFA aggregators initialized for replay")
 
