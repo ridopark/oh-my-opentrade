@@ -50,7 +50,7 @@ allowed_hours_end = "15:45"
 allowed_hours_tz = "America/New_York"
 
 [regime_filter]
-enabled = true
+enabled = false
 allowed_regimes = ["TREND", "BALANCE"]
 min_atr_pct = 0.8
 
