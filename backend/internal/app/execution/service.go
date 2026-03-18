@@ -417,6 +417,9 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			if s.metrics != nil {
 				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "exposure").Inc()
 			}
+			if s.positionGate != nil && isEntry(intent) {
+				s.positionGate.ClearInflight(event.TenantID, event.EnvMode, intent.Symbol)
+			}
 			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
 			return nil
 		}
@@ -432,6 +435,9 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		l.Warn().Str("asset_class", intent.AssetClass.String()).Msg(reason)
 		if s.metrics != nil {
 			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "short_disabled").Inc()
+		}
+		if s.positionGate != nil && isEntry(intent) {
+			s.positionGate.ClearInflight(event.TenantID, event.EnvMode, intent.Symbol)
 		}
 		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, reason))
 		return nil
