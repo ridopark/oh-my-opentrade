@@ -77,8 +77,8 @@ func TestAIAnchorResolver_ResolveWithAISuccess(t *testing.T) {
 	resolver := appstrat.NewAIAnchorResolver(advisor, store, nil)
 	resolver.RegisterSymbol("AAPL", false)
 
-	result, err := resolver.ResolveAnchors(context.Background(), "AAPL", 184.0,
-		domain.MarketRegime{Type: domain.RegimeTrend}, domain.IndicatorSnapshot{})
+	result, err := resolver.ResolveAnchors(context.Background(), "AAPL", time.Now(), 184.0,
+		domain.MarketRegime{Type: domain.RegimeTrend}, domain.IndicatorSnapshot{}, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -100,8 +100,8 @@ func TestAIAnchorResolver_FallbackOnAIError(t *testing.T) {
 	resolver := appstrat.NewAIAnchorResolver(advisor, store, nil)
 	resolver.RegisterSymbol("AAPL", false)
 
-	result, err := resolver.ResolveAnchors(context.Background(), "AAPL", 184.0,
-		domain.MarketRegime{Type: domain.RegimeTrend}, domain.IndicatorSnapshot{})
+	result, err := resolver.ResolveAnchors(context.Background(), "AAPL", time.Now(), 184.0,
+		domain.MarketRegime{Type: domain.RegimeTrend}, domain.IndicatorSnapshot{}, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -158,8 +158,8 @@ func TestAIAnchorResolver_NilStore(t *testing.T) {
 
 	// Manually add a candidate via OnBar simulation — need a full swing sequence
 	// Instead, test with no candidates — should return nil
-	result, err := resolver.ResolveAnchors(context.Background(), "AAPL", 184.0,
-		domain.MarketRegime{}, domain.IndicatorSnapshot{})
+	result, err := resolver.ResolveAnchors(context.Background(), "AAPL", time.Now(), 184.0,
+		domain.MarketRegime{}, domain.IndicatorSnapshot{}, nil)
 
 	require.NoError(t, err)
 	assert.Nil(t, result, "no candidates → nil result")
@@ -180,8 +180,8 @@ func TestAIAnchorResolver_FallbackRankDeterministic(t *testing.T) {
 	resolver := appstrat.NewAIAnchorResolver(advisor, store, nil)
 	resolver.RegisterSymbol("AAPL", false)
 
-	result, err := resolver.ResolveAnchors(context.Background(), "AAPL", 104.0,
-		domain.MarketRegime{}, domain.IndicatorSnapshot{})
+	result, err := resolver.ResolveAnchors(context.Background(), "AAPL", time.Now(), 104.0,
+		domain.MarketRegime{}, domain.IndicatorSnapshot{}, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, result)
