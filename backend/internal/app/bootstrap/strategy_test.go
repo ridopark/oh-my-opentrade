@@ -10,6 +10,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/strategy/store_fs"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
@@ -17,6 +18,10 @@ import (
 type stubAIAdvisor struct{}
 
 func (stubAIAdvisor) RequestDebate(_ context.Context, _ domain.Symbol, _ domain.MarketRegime, _ domain.IndicatorSnapshot, _ ...ports.DebateOption) (*domain.AdvisoryDecision, error) {
+	return nil, nil
+}
+
+func (stubAIAdvisor) SelectAnchors(_ context.Context, _ ports.AnchorSelectionRequest) (*strat.AnchorSelection, error) {
 	return nil, nil
 }
 

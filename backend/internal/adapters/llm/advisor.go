@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
@@ -547,6 +548,158 @@ Technical Indicators:
 		}
 		sb.WriteString("\nYou MUST select exactly one contract from the candidates above. You MUST NOT propose a short option position.")
 	}
+
+	return sb.String()
+}
+
+type anchorSelectionResult struct {
+	SelectedAnchors []struct {
+		CandidateID string  `json:"candidate_id"`
+		Rank        int     `json:"rank"`
+		Confidence  float64 `json:"confidence"`
+		Reason      string  `json:"reason"`
+	} `json:"selected_anchors"`
+	Rationale string `json:"rationale"`
+}
+
+// SelectAnchors sends candidate anchor points to the LLM for ranking and
+// selection. Returns the top-ranked anchors with confidence and rationale.
+//
+// PRIVACY BOUNDARY — same rules as buildPrompt:
+// Only public market data (price, volume, time, regime) and candidate metadata
+// are sent. No strategy DNA, parameters, or proprietary logic.
+func (a *Advisor) SelectAnchors(ctx context.Context, req ports.AnchorSelectionRequest) (*strategy.AnchorSelection, error) {
+	if a.minInterval > 0 {
+		a.mu.Lock()
+		elapsed := time.Since(a.lastCall)
+		if !a.lastCall.IsZero() && elapsed < a.minInterval {
+			a.mu.Unlock()
+			return nil, fmt.Errorf("llm: rate limit — next call allowed in %s", a.minInterval-elapsed)
+		}
+		a.lastCall = time.Now()
+		a.mu.Unlock()
+	}
+
+	systemPrompt := `You are an institutional VWAP trader selecting anchor points for Anchored VWAP computation.
+Given a list of candidate anchor points (swing highs/lows, volume rotations, weekly opens), select the 5-7 most significant ones.
+Rank by: (1) structural importance visible to all market participants, (2) how many times price has respected the level, (3) timeframe significance (daily > hourly > 5min).
+Respond ONLY with valid JSON — no markdown fences, no extra text.`
+
+	userPrompt := buildAnchorSelectionPrompt(req)
+
+	reqBody, err := json.Marshal(chatRequest{
+		Model: a.model,
+		Messages: []chatMessage{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userPrompt},
+		},
+		Provider: a.provider,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("llm: failed to marshal anchor selection request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/v1/chat/completions", bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("llm: failed to create HTTP request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if a.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+a.apiKey)
+	}
+	httpReq.Header.Set("HTTP-Referer", "https://github.com/oh-my-opentrade")
+	httpReq.Header.Set("X-Title", "oh-my-opentrade")
+
+	resp, err := a.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("llm: anchor selection HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("llm: anchor selection endpoint returned non-2xx status: %d", resp.StatusCode)
+	}
+
+	var completion chatCompletionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&completion); err != nil {
+		return nil, fmt.Errorf("llm: failed to parse anchor selection response: %w", err)
+	}
+	if len(completion.Choices) == 0 {
+		return nil, fmt.Errorf("llm: anchor selection response contained no choices")
+	}
+
+	var result anchorSelectionResult
+	if err := json.Unmarshal([]byte(completion.Choices[0].Message.Content), &result); err != nil {
+		return nil, fmt.Errorf("llm: failed to parse anchor selection JSON: %w", err)
+	}
+
+	if len(result.SelectedAnchors) == 0 {
+		return nil, nil
+	}
+
+	selected := make([]strategy.SelectedAnchor, len(result.SelectedAnchors))
+	for i, sa := range result.SelectedAnchors {
+		selected[i] = strategy.SelectedAnchor{
+			CandidateID: sa.CandidateID,
+			AnchorName:  sa.CandidateID,
+			Rank:        sa.Rank,
+			Confidence:  sa.Confidence,
+			Reason:      sa.Reason,
+		}
+	}
+
+	sel, err := strategy.NewAnchorSelection(selected, result.Rationale)
+	if err != nil {
+		return nil, fmt.Errorf("llm: invalid anchor selection response: %w", err)
+	}
+
+	return &sel, nil
+}
+
+func buildAnchorSelectionPrompt(req ports.AnchorSelectionRequest) string {
+	responseTemplate := `{
+  "selected_anchors": [
+    {"candidate_id": "swing_high_1h_1710000000", "rank": 1, "confidence": 0.92, "reason": "clear structural resistance tested 3x"},
+    {"candidate_id": "volume_rotation_5m_1710050000", "rank": 2, "confidence": 0.85, "reason": "heavy accumulation zone"}
+  ],
+  "rationale": "Selected 2 key levels with strongest institutional significance"
+}`
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, `Select the most significant anchor points for Anchored VWAP computation. Respond ONLY with valid JSON matching this schema:
+%s
+
+Symbol: %s
+Current Price: $%.2f
+Market Regime: %s (strength: %.2f)
+
+Candidate Anchor Points (%d total):
+`,
+		responseTemplate,
+		req.Symbol.String(),
+		req.CurrentPrice,
+		req.Regime.Type.String(),
+		req.Regime.Strength,
+		len(req.Candidates))
+
+	for i, c := range req.Candidates {
+		distPct := 0.0
+		if req.CurrentPrice > 0 {
+			distPct = ((c.Price - req.CurrentPrice) / req.CurrentPrice) * 100
+		}
+		fmt.Fprintf(&sb, "  %d. ID: %s\n     Type: %s | TF: %s | Price: $%.2f (%+.2f%% from current) | Strength: %.1f",
+			i+1, c.ID, c.Type, c.Timeframe, c.Price, distPct, c.Strength)
+		if c.TouchCount > 0 {
+			fmt.Fprintf(&sb, " | Touches: %d", c.TouchCount)
+		}
+		if c.VolumeContext != nil {
+			fmt.Fprintf(&sb, " | Rotation: %d bars, breakout vol: %.0f",
+				c.VolumeContext.RotationBars, c.VolumeContext.BreakoutVolume)
+		}
+		fmt.Fprintf(&sb, " | Time: %s\n", c.Time.Format("2006-01-02 15:04"))
+	}
+
+	sb.WriteString("\nSelect 5-7 anchors. Rank 1 = most important. Use the candidate_id values exactly as shown.")
 
 	return sb.String()
 }

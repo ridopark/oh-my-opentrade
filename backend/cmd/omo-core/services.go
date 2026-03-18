@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
@@ -326,10 +327,25 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	svc.lifecycleSvc = pipeline.LifecycleSvc
 	svc.pipelineActivator = pipeline.Activator
 
+	aiAnchorResolver := strategy.NewAIAnchorResolver(svc.aiAdvisor, nil, slog.Default())
+	svc.strategyRunner.SetAIAnchorResolver(aiAnchorResolver)
+
 	allSpecs, err := svc.specStore.List(context.Background(), nil)
 	if err != nil {
 		log.Fatal().Err(err).Msg("strategy v2: failed to list specs for symbol router")
 	}
+
+	anchorSymbols := make(map[string]bool)
+	for _, spec := range allSpecs {
+		for _, sym := range spec.Routing.Symbols {
+			if !anchorSymbols[sym] {
+				anchorSymbols[sym] = true
+				isCrypto := strings.Contains(sym, "/") || strings.HasSuffix(sym, "USD") || strings.HasSuffix(sym, "USDT")
+				aiAnchorResolver.RegisterSymbol(sym, isCrypto)
+			}
+		}
+	}
+
 	for _, spec := range allSpecs {
 		hookRef, hasHook := spec.Hooks["signals"]
 		if !hasHook {

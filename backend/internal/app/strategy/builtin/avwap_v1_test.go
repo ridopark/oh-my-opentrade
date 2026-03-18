@@ -822,3 +822,91 @@ func TestAVWAPState_MarshalUnmarshal_RecentLows(t *testing.T) {
 	assert.Equal(t, []float64{92, 98, 104}, restored.RecentLows)
 	assert.Equal(t, []float64{112, 115, 120}, restored.RecentHighs)
 }
+
+func TestAVWAPState_PartialResetAnchors_PreservesState(t *testing.T) {
+	st := &builtin.AVWAPState{
+		Calc:       strat.NewAnchoredVWAPCalc(),
+		AboveCount: make(map[string]int),
+		BelowCount: make(map[string]int),
+	}
+
+	t0 := time.Date(2026, 3, 17, 9, 30, 0, 0, time.UTC)
+	anchorA := time.Date(2026, 3, 16, 14, 0, 0, 0, time.UTC)
+	anchorB := time.Date(2026, 3, 16, 10, 30, 0, 0, time.UTC)
+
+	st.Calc.AddAnchor(strat.AnchorPoint{Name: "a", AnchorTime: anchorA})
+	st.Calc.AddAnchor(strat.AnchorPoint{Name: "b", AnchorTime: anchorB})
+
+	for i := 0; i < 10; i++ {
+		barTime := t0.Add(time.Duration(i) * time.Minute)
+		st.Calc.Update(barTime, 101+float64(i)*0.1, 99+float64(i)*0.1, 100+float64(i)*0.1, 1000)
+	}
+	st.AboveCount["a"] = 5
+	st.AboveCount["b"] = 3
+	st.BelowCount["a"] = 2
+
+	vwapA, okA := st.Calc.Value("a")
+	require.True(t, okA)
+	require.NotZero(t, vwapA)
+
+	// Partial reset: keep anchor "a" (same time), change "b" to new time, add "c"
+	anchorC := time.Date(2026, 3, 17, 9, 0, 0, 0, time.UTC)
+	newBTime := time.Date(2026, 3, 17, 8, 0, 0, 0, time.UTC)
+	st.ResetAnchors(map[string]time.Time{
+		"a": anchorA,  // unchanged
+		"b": newBTime, // changed time
+		"c": anchorC,  // new anchor
+	})
+
+	// "a" should preserve its VWAP state
+	vwapAAfter, okAAfter := st.Calc.Value("a")
+	assert.True(t, okAAfter, "anchor 'a' should still be active")
+	assert.InDelta(t, vwapA, vwapAAfter, 0.001, "anchor 'a' VWAP state should be preserved")
+	assert.Equal(t, 5, st.AboveCount["a"], "above count for 'a' should be preserved")
+	assert.Equal(t, 2, st.BelowCount["a"], "below count for 'a' should be preserved")
+
+	// "b" should be fresh (new time)
+	_, okB := st.Calc.Value("b")
+	assert.False(t, okB, "anchor 'b' with new time should be fresh (not yet active)")
+	assert.Equal(t, 0, st.AboveCount["b"], "above count for 'b' should be reset")
+
+	// "c" should be fresh
+	_, okC := st.Calc.Value("c")
+	assert.False(t, okC, "anchor 'c' is new and should not be active yet")
+}
+
+func TestAVWAPState_PartialResetAnchors_RemovesDropped(t *testing.T) {
+	st := &builtin.AVWAPState{
+		Calc:       strat.NewAnchoredVWAPCalc(),
+		AboveCount: make(map[string]int),
+		BelowCount: make(map[string]int),
+	}
+
+	anchorA := time.Date(2026, 3, 16, 14, 0, 0, 0, time.UTC)
+	anchorB := time.Date(2026, 3, 16, 10, 0, 0, 0, time.UTC)
+	st.Calc.AddAnchor(strat.AnchorPoint{Name: "a", AnchorTime: anchorA})
+	st.Calc.AddAnchor(strat.AnchorPoint{Name: "b", AnchorTime: anchorB})
+	st.AboveCount["a"] = 5
+	st.AboveCount["b"] = 3
+
+	// Reset with only "a" — "b" should be dropped
+	st.ResetAnchors(map[string]time.Time{"a": anchorA})
+
+	points := st.Calc.AnchorPoints()
+	_, hasA := points["a"]
+	_, hasB := points["b"]
+	assert.True(t, hasA, "anchor 'a' should exist")
+	assert.False(t, hasB, "anchor 'b' should be removed")
+	assert.Equal(t, 0, st.AboveCount["b"], "dropped anchor count should be gone")
+}
+
+func TestAVWAPState_ResetAnchors_NilCalc(t *testing.T) {
+	st := &builtin.AVWAPState{}
+	anchorA := time.Date(2026, 3, 16, 14, 0, 0, 0, time.UTC)
+
+	st.ResetAnchors(map[string]time.Time{"a": anchorA})
+
+	points := st.Calc.AnchorPoints()
+	_, hasA := points["a"]
+	assert.True(t, hasA, "should create calc from scratch when nil")
+}

@@ -5,12 +5,23 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
 
 type DebateOption func(any)
 
+// AnchorSelectionRequest carries the inputs for AI anchor ranking.
+type AnchorSelectionRequest struct {
+	Symbol       domain.Symbol
+	Candidates   []strategy.CandidateAnchor
+	CurrentPrice float64
+	Regime       domain.MarketRegime
+	Indicators   domain.IndicatorSnapshot
+}
+
 type AIAdvisorPort interface {
 	RequestDebate(ctx context.Context, symbol domain.Symbol, regime domain.MarketRegime, indicators domain.IndicatorSnapshot, opts ...DebateOption) (*domain.AdvisoryDecision, error)
+	SelectAnchors(ctx context.Context, req AnchorSelectionRequest) (*strategy.AnchorSelection, error)
 }
 
 // StrategyPerfSetter is implemented by adapter-internal debate request carriers

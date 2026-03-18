@@ -1,20 +1,21 @@
 package debate_test
 
 import (
-"context"
-"errors"
-"testing"
-"time"
+	"context"
+	"errors"
+	"testing"
+	"time"
 
-"github.com/google/uuid"
-"github.com/rs/zerolog"
-"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
-"github.com/oh-my-opentrade/backend/internal/app/debate"
-"github.com/oh-my-opentrade/backend/internal/app/monitor"
-"github.com/oh-my-opentrade/backend/internal/domain"
-"github.com/oh-my-opentrade/backend/internal/ports"
-"github.com/stretchr/testify/assert"
-"github.com/stretchr/testify/require"
+	"github.com/google/uuid"
+	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
+	"github.com/oh-my-opentrade/backend/internal/app/debate"
+	"github.com/oh-my-opentrade/backend/internal/app/monitor"
+	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	"github.com/oh-my-opentrade/backend/internal/ports"
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mockAIAdvisor is a test double for ports.AIAdvisorPort.
@@ -36,6 +37,10 @@ func (m *mockAIAdvisor) RequestDebate(ctx context.Context, symbol domain.Symbol,
 		BearArgument:   "Bear case: resistance ahead",
 		JudgeReasoning: "Judge: bull wins on volume",
 	}, nil
+}
+
+func (m *mockAIAdvisor) SelectAnchors(_ context.Context, _ ports.AnchorSelectionRequest) (*strategy.AnchorSelection, error) {
+	return nil, nil
 }
 
 // getMockAdvisoryDecision returns a default high-confidence decision.
