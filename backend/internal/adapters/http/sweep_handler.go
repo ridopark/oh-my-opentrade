@@ -204,7 +204,7 @@ func (h *SweepHandler) handleCancel(w http.ResponseWriter, sweepID string) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "canceled"})
 }
 
 func (h *SweepHandler) handleApply(w http.ResponseWriter, r *http.Request, sweepID string, runIndexStr string) {
