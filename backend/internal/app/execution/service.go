@@ -426,13 +426,8 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		}
 	}
 
-	if intent.Direction == domain.DirectionShort {
-		var reason string
-		if intent.AssetClass == domain.AssetClassCrypto {
-			reason = "SHORT direction not supported — crypto is long-only on Alpaca"
-		} else {
-			reason = "SHORT direction not supported — paper account cannot short sell"
-		}
+	if intent.Direction == domain.DirectionShort && intent.AssetClass == domain.AssetClassCrypto {
+		reason := "SHORT direction not supported — crypto is long-only on Alpaca"
 		l.Warn().Str("asset_class", intent.AssetClass.String()).Msg(reason)
 		if s.metrics != nil {
 			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "short_disabled").Inc()
