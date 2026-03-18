@@ -20,7 +20,7 @@ conflict_policy = "priority_wins"
 exclusive_per_symbol = true
 watchlist_mode = "replace"
 asset_classes = ["EQUITY"]
-allowed_directions = ["LONG"]
+allowed_directions = ["LONG", "SHORT"]
 
 [screening]
 description = "Enhanced anchored VWAP strategy with higher-lows confirmation and midday chop protection. Enters on VWAP breakouts or bounces only when price structure shows consecutive higher lows. Ideal candidates have strong morning volume, clean VWAP level respect, and moderate volatility. Avoids midday low-volume traps. Best suited for large-cap equities with institutional flow that creates reliable anchored VWAP levels."
