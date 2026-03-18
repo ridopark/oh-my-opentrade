@@ -75,26 +75,26 @@ interval_minutes = 30
 type = "VOLATILITY_STOP"
 [exit_rules.params]
 atr_multiplier = 3.0
-min_hold_bars = 5
+min_hold_bars = 10
 bar_minutes = 5
 
 [[exit_rules]]
 type = "SD_TARGET"
 [exit_rules.params]
-sd_level = 2.0
-min_hold_bars = 5
+sd_level = 2.5
+min_hold_bars = 10
 bar_minutes = 5
 
 [[exit_rules]]
 type = "STEP_STOP"
 [exit_rules.params]
-min_hold_bars = 5
+min_hold_bars = 10
 bar_minutes = 5
 
 [[exit_rules]]
 type = "STAGNATION_EXIT"
 [exit_rules.params]
-minutes = 30
+minutes = 45
 sd_threshold = 1.0
 profit_gate_pct = 0.005
 
