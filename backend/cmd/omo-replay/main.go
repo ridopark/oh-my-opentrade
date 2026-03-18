@@ -623,9 +623,12 @@ func main() {
 			if loadErr := sessionResolver.Load(ctx, sqlDB, sym, fromTime, toTime); loadErr != nil {
 				warmupLog.Warn().Err(loadErr).Str("symbol", sym.String()).Msg("failed to load session data for anchor resolution")
 			}
+			if swingErr := sessionResolver.LoadSwings(ctx, sqlDB, sym, fromTime, toTime); swingErr != nil {
+				warmupLog.Warn().Err(swingErr).Str("symbol", sym.String()).Msg("failed to load swing data for anchor resolution")
+			}
 		}
 		pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
-		warmupLog.Info().Msg("session anchor resolver configured")
+		warmupLog.Info().Msg("session anchor resolver configured (with swings)")
 	}
 	log.Info().Time("session_open", replaySessionOpen).Msg("MTFA aggregators initialized for replay")
 

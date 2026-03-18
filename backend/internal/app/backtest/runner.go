@@ -541,9 +541,12 @@ func (r *Runner) Run(ctx context.Context) error {
 			if loadErr := sessionResolver.Load(ctx, r.db, sym, r.cfg.From, r.cfg.To); loadErr != nil {
 				r.log.Warn().Err(loadErr).Str("symbol", sym.String()).Msg("failed to load session data for anchor resolution")
 			}
+			if swingErr := sessionResolver.LoadSwings(ctx, r.db, sym, r.cfg.From, r.cfg.To); swingErr != nil {
+				r.log.Warn().Err(swingErr).Str("symbol", sym.String()).Msg("failed to load swing data for anchor resolution")
+			}
 		}
 		pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
-		r.log.Info().Msg("session anchor resolver configured for strategy runner")
+		r.log.Info().Msg("session anchor resolver configured for strategy runner (with swings)")
 	}
 
 	peekBar := func(s *barStream) (domain.MarketBar, bool) {
