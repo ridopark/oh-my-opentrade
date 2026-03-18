@@ -2,7 +2,7 @@ schema_version = 2
 
 [strategy]
 id = "avwap_v2"
-version = "2.0.0"
+version = "2.1.0"
 name = "AVWAP Breakout/Bounce v2"
 description = "Anchored VWAP strategy with volatility-adaptive exits (ATR stops, SD targets, step-stops)"
 author = "system"
@@ -13,7 +13,7 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META", "NVDA"]
+symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "SPY", "META", "NVDA"]
 timeframes = ["5m"]
 priority = 80
 conflict_policy = "priority_wins"
@@ -26,32 +26,32 @@ allowed_directions = ["LONG"]
 description = "Enhanced anchored VWAP strategy with higher-lows confirmation and midday chop protection. Enters on VWAP breakouts or bounces only when price structure shows consecutive higher lows. Ideal candidates have strong morning volume, clean VWAP level respect, and moderate volatility. Avoids midday low-volume traps. Best suited for large-cap equities with institutional flow that creates reliable anchored VWAP levels."
 
 [params]
-anchors = ["pd_high", "pd_low", "on_high", "on_low", "or_high", "or_low", "session_open"]
+anchors = ["pd_high", "on_high", "or_high", "session_open"]
 breakout_enabled = true
-hold_bars = 8
-volume_mult = 0.0
+hold_bars = 5
+volume_mult = 1.5
 bounce_enabled = true
 rsi_bounce_max = 45.0
 exit_hold_bars = 2
-cooldown_seconds = 60
-max_trades_per_day = 10
-allow_regimes = ["TREND", "BALANCE", "REVERSAL"]
+cooldown_seconds = 300
+max_trades_per_day = 2
+allow_regimes = ["TREND", "BALANCE"]
 asset_class = "EQUITY"
-require_higher_lows = false
-higher_lows_bars = 2
-midday_trap_shield = false
+require_higher_lows = true
+higher_lows_bars = 3
+midday_trap_shield = true
 midday_volume_mult = 2.0
 stop_bps = 50
 limit_offset_bps = 5
 risk_per_trade_bps = 100
 max_position_bps = 1000
-allowed_hours_start = "09:30"
+allowed_hours_start = "09:45"
 allowed_hours_end = "15:45"
 allowed_hours_tz = "America/New_York"
 
 [regime_filter]
-enabled = false
-allowed_regimes = ["TREND"]
+enabled = true
+allowed_regimes = ["TREND", "BALANCE"]
 min_atr_pct = 0.8
 
 [hooks]
