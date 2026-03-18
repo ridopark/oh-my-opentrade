@@ -943,10 +943,42 @@ func TestService_resolveExitRules_UsesSpecStoreWhenAvailable(t *testing.T) {
 
 	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(), WithSpecStore(ss))
 
-	rules := svc.resolveExitRules(context.Background(), "orb_break_retest", domain.AssetClassEquity)
+	rules := svc.resolveExitRules(context.Background(), "orb_break_retest", domain.Symbol("AAPL"), domain.AssetClassEquity)
 	require.Len(t, rules, 2)
 	assert.Equal(t, trailing, rules[0])
 	assert.Equal(t, eod, rules[1])
+}
+
+func TestService_resolveExitRules_AppliesSymbolOverrides(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	volStop := mustExitRule(t, domain.ExitRuleVolatilityStop, map[string]float64{"atr_multiplier": 3.0})
+	ss := &mockSpecStore{specs: map[string]*portstrategy.Spec{
+		"avwap_v2": {
+			ID:      domstrategy.StrategyID("avwap_v2"),
+			Version: domstrategy.Version("2.0.0"),
+			ExitRules: []domain.ExitRule{
+				volStop,
+			},
+			SymbolOverrides: map[string]portstrategy.SymbolOverride{
+				"NVDA": {
+					Params: map[string]any{"atr_multiplier": 5.0},
+				},
+			},
+		},
+	}}
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(), WithSpecStore(ss))
+
+	nvda := svc.resolveExitRules(context.Background(), "avwap_v2", domain.Symbol("NVDA"), domain.AssetClassEquity)
+	require.Len(t, nvda, 1)
+	assert.Equal(t, 5.0, nvda[0].Param("atr_multiplier", 0))
+
+	aapl := svc.resolveExitRules(context.Background(), "avwap_v2", domain.Symbol("AAPL"), domain.AssetClassEquity)
+	require.Len(t, aapl, 1)
+	assert.Equal(t, 3.0, aapl[0].Param("atr_multiplier", 0))
 }
 
 func TestService_processExitRejected_RemovesPositionOnNoPositionToExit(t *testing.T) {
@@ -1266,7 +1298,7 @@ func TestService_resolveExitRules_FallsBackToDefaultsWhenSpecStoreIsNil(t *testi
 
 	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop())
 
-	rules := svc.resolveExitRules(context.Background(), "any_strategy", domain.AssetClassEquity)
+	rules := svc.resolveExitRules(context.Background(), "any_strategy", domain.Symbol("AAPL"), domain.AssetClassEquity)
 	require.Len(t, rules, 2)
 	assert.Equal(t, domain.ExitRuleMaxLoss, rules[0].Type)
 	assert.Equal(t, domain.ExitRuleEODFlatten, rules[1].Type)
