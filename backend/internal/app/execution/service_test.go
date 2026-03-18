@@ -103,7 +103,7 @@ func TestService_ExitOrderPassesPipeline(t *testing.T) {
 	assert.Contains(t, emittedEvents, domain.EventOrderSubmitted)
 }
 
-func TestService_NewShortEntryStillRejected(t *testing.T) {
+func TestService_NewShortCryptoEntryRejected(t *testing.T) {
 	svc, bus, broker, _ := setupTestService(t)
 	err := svc.Start(context.Background(), "test", domain.EnvModePaper)
 	require.NoError(t, err)
@@ -113,14 +113,15 @@ func TestService_NewShortEntryStillRejected(t *testing.T) {
 		domain.EventOrderIntentRejected,
 	}, &emittedEvents)
 
-	// Publish a new short entry (DirectionShort).
-	// This should still be rejected by the SHORT direction guard.
 	intentEvt := createOrderIntentEvent(t, domain.DirectionShort)
+	intent := intentEvt.Payload.(domain.OrderIntent)
+	intent.AssetClass = domain.AssetClassCrypto
+	intentEvt.Payload = intent
 	err = bus.Publish(context.Background(), intentEvt)
 	assert.NoError(t, err)
 	bus.Flush()
 
-	assert.Equal(t, 0, broker.SubmitOrderCalls, "new short entry should be rejected")
+	assert.Equal(t, 0, broker.SubmitOrderCalls, "crypto short entry should be rejected")
 	assert.Contains(t, emittedEvents, domain.EventOrderIntentRejected)
 }
 
