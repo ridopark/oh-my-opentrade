@@ -26,26 +26,26 @@ allowed_directions = ["LONG", "SHORT"]
 description = "Enhanced anchored VWAP strategy with higher-lows confirmation and midday chop protection. Enters on VWAP breakouts or bounces only when price structure shows consecutive higher lows. Ideal candidates have strong morning volume, clean VWAP level respect, and moderate volatility. Avoids midday low-volume traps. Best suited for large-cap equities with institutional flow that creates reliable anchored VWAP levels."
 
 [params]
-anchors = ["pd_high", "on_high", "or_high", "session_open"]
+anchors = ["pd_high", "pd_low", "on_high", "on_low", "or_high", "or_low", "session_open"]
 breakout_enabled = true
-hold_bars = 5
-volume_mult = 1.5
+hold_bars = 8
+volume_mult = 1.2
 bounce_enabled = true
 rsi_bounce_max = 45.0
 exit_hold_bars = 2
 cooldown_seconds = 300
-max_trades_per_day = 2
+max_trades_per_day = 3
 allow_regimes = ["TREND", "BALANCE"]
 asset_class = "EQUITY"
 require_higher_lows = true
-higher_lows_bars = 3
-midday_trap_shield = true
+higher_lows_bars = 2
+midday_trap_shield = false
 midday_volume_mult = 2.0
 stop_bps = 50
 limit_offset_bps = 5
 risk_per_trade_bps = 100
 max_position_bps = 1000
-allowed_hours_start = "09:45"
+allowed_hours_start = "09:30"
 allowed_hours_end = "15:45"
 allowed_hours_tz = "America/New_York"
 
