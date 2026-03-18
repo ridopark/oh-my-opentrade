@@ -3,6 +3,7 @@ package strategy_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 type mockAdvisorForAnchors struct {
 	selection *strat.AnchorSelection
 	err       error
+	mu        sync.Mutex
 	calls     int
 }
 
@@ -25,11 +27,19 @@ func (m *mockAdvisorForAnchors) RequestDebate(_ context.Context, _ domain.Symbol
 }
 
 func (m *mockAdvisorForAnchors) SelectAnchors(_ context.Context, _ ports.AnchorSelectionRequest) (*strat.AnchorSelection, error) {
+	m.mu.Lock()
 	m.calls++
+	m.mu.Unlock()
 	if m.err != nil {
 		return nil, m.err
 	}
 	return m.selection, nil
+}
+
+func (m *mockAdvisorForAnchors) CallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
 }
 
 type mockAnchorStore struct {
@@ -83,7 +93,17 @@ func TestAIAnchorResolver_ResolveWithAISuccess(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, t0, result["swing_high_5m_100"])
-	assert.Equal(t, 1, advisor.calls)
+
+	// AI fires async — wait briefly then verify it ran
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, 1, advisor.CallCount())
+
+	// Second call picks up cached AI selection
+	result2, err := resolver.ResolveAnchors(context.Background(), "AAPL", time.Now(), 184.0,
+		domain.MarketRegime{Type: domain.RegimeTrend}, domain.IndicatorSnapshot{}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, result2)
+	assert.Equal(t, t0, result2["swing_high_5m_100"])
 }
 
 func TestAIAnchorResolver_FallbackOnAIError(t *testing.T) {

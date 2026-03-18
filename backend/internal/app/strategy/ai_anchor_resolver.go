@@ -28,16 +28,16 @@ type symbolDetectors struct {
 	weekly *start.WeeklyAnchorDetector
 }
 
-// SessionAnchorFn is the legacy anchor resolver signature used by
-// SessionResolver.ResolveAnchors. When set, its results are included
-// as baseline session-derived candidates so AVWAP has anchors from bar 1
-// before the algo detectors have warmed up.
 type SessionAnchorFn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
 
 // AIAnchorResolver orchestrates candidate anchor detection (algo) and AI
 // selection to provide AVWAP anchor points. It feeds bars through
 // deterministic detectors, accumulates candidates, and on ResolveAnchors
 // queries the LLM (or falls back to deterministic ranking).
+//
+// LLM calls are non-blocking: ResolveAnchors returns fallback-ranked
+// anchors immediately, then fires the LLM in a background goroutine.
+// The next call to ResolveAnchors picks up the cached AI selection.
 type AIAnchorResolver struct {
 	advisor   ports.AIAdvisorPort
 	store     ports.AnchorStorePort
@@ -45,9 +45,10 @@ type AIAnchorResolver struct {
 	logger    *slog.Logger
 	sessionFn SessionAnchorFn
 
-	mu         sync.RWMutex
-	detectors  map[string]*symbolDetectors
-	candidates map[string][]start.CandidateAnchor
+	mu           sync.RWMutex
+	detectors    map[string]*symbolDetectors
+	candidates   map[string][]start.CandidateAnchor
+	aiSelections map[string]*start.AnchorSelection
 }
 
 func NewAIAnchorResolver(advisor ports.AIAdvisorPort, store ports.AnchorStorePort, logger *slog.Logger) *AIAnchorResolver {
@@ -55,12 +56,13 @@ func NewAIAnchorResolver(advisor ports.AIAdvisorPort, store ports.AnchorStorePor
 		logger = slog.Default()
 	}
 	return &AIAnchorResolver{
-		advisor:    advisor,
-		store:      store,
-		scorer:     start.NewMultiTimeframeScorer(),
-		logger:     logger.With("component", "ai_anchor_resolver"),
-		detectors:  make(map[string]*symbolDetectors),
-		candidates: make(map[string][]start.CandidateAnchor),
+		advisor:      advisor,
+		store:        store,
+		scorer:       start.NewMultiTimeframeScorer(),
+		logger:       logger.With("component", "ai_anchor_resolver"),
+		detectors:    make(map[string]*symbolDetectors),
+		candidates:   make(map[string][]start.CandidateAnchor),
+		aiSelections: make(map[string]*start.AnchorSelection),
 	}
 }
 
@@ -184,26 +186,22 @@ func (r *AIAnchorResolver) ResolveAnchors(
 		}
 	}
 
+	r.mu.RLock()
+	cachedAI := r.aiSelections[symbol]
+	r.mu.RUnlock()
+
 	var selection *start.AnchorSelection
+	if cachedAI != nil {
+		selection = cachedAI
+	} else {
+		selection = r.fallbackRank(scored, defaultSelectCount)
+	}
 
 	useAI := len(skipAI) == 0 || !skipAI[0]
 	if useAI && r.advisor != nil {
-		sel, err := r.advisor.SelectAnchors(ctx, ports.AnchorSelectionRequest{
-			Symbol:       domain.Symbol(symbol),
-			Candidates:   scored,
-			CurrentPrice: currentPrice,
-			Regime:       regime,
-			Indicators:   indicators,
-		})
-		if err != nil {
-			r.logger.Warn("AI anchor selection failed, using fallback", "symbol", symbol, "error", err)
-		} else {
-			selection = sel
-		}
-	}
-
-	if selection == nil {
-		selection = r.fallbackRank(scored, defaultSelectCount)
+		scoredCopy := make([]start.CandidateAnchor, len(scored))
+		copy(scoredCopy, scored)
+		go r.asyncSelectAnchors(symbol, scoredCopy, currentPrice, regime, indicators)
 	}
 
 	if selection == nil {
@@ -217,6 +215,31 @@ func (r *AIAnchorResolver) ResolveAnchors(
 	}
 
 	return r.selectionToAnchorTimes(selection, scored), nil
+}
+
+func (r *AIAnchorResolver) asyncSelectAnchors(symbol string, scored []start.CandidateAnchor, currentPrice float64, regime domain.MarketRegime, indicators domain.IndicatorSnapshot) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sel, err := r.advisor.SelectAnchors(ctx, ports.AnchorSelectionRequest{
+		Symbol:       domain.Symbol(symbol),
+		Candidates:   scored,
+		CurrentPrice: currentPrice,
+		Regime:       regime,
+		Indicators:   indicators,
+	})
+	if err != nil {
+		r.logger.Warn("async AI anchor selection failed", "symbol", symbol, "error", err)
+		return
+	}
+	if sel == nil {
+		return
+	}
+
+	r.mu.Lock()
+	r.aiSelections[symbol] = sel
+	r.mu.Unlock()
+	r.logger.Info("async AI anchor selection cached", "symbol", symbol, "anchors", len(sel.SelectedAnchors))
 }
 
 func (r *AIAnchorResolver) mergeCandidates(persisted, inMemory []start.CandidateAnchor) []start.CandidateAnchor {
