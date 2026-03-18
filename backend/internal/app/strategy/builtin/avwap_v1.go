@@ -637,10 +637,7 @@ func (s *AVWAPStrategy) OnEvent(ctx start.Context, symbol string, evt any, st st
 			}
 			avwapSt.PendingEntry = ""
 			avwapSt.PendingEntryAt = time.Time{}
-			// Refund the daily trade count — the signal was emitted but rejected
-			// downstream (risk sizer, execution guard, etc.). Without this,
-			// max_trades_per_day budget burns on rejections and the strategy
-			// goes silent for the rest of the session.
+			avwapSt.CooldownUntil = time.Time{}
 			if avwapSt.TradesToday > 0 {
 				avwapSt.TradesToday--
 			}
