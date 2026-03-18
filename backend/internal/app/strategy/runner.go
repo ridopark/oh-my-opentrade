@@ -671,12 +671,25 @@ func (r *Runner) filterByAllowedDirections(signals []start.Signal) []start.Signa
 		if ok {
 			filtered = append(filtered, sig)
 		} else {
-			r.logger.Debug("filtered entry signal by allowed_directions",
+			r.logger.Info("filtered entry signal by allowed_directions, sending rejection",
 				"symbol", sig.Symbol,
 				"side", sig.Side,
 				"direction", direction,
 				"instance_id", sig.StrategyInstanceID.String(),
 			)
+			rejection := start.EntryRejection{
+				Symbol: sig.Symbol,
+				Side:   sig.Side,
+				Reason: "direction " + direction + " not in allowed_directions",
+			}
+			instCtx := &instanceContext{
+				now:    time.Time{},
+				logger: r.logger.With("instance_id", sig.StrategyInstanceID.String(), "symbol", sig.Symbol),
+				emit:   func(_ any) error { return nil },
+			}
+			if _, err := inst.OnEvent(instCtx, sig.Symbol, rejection); err != nil {
+				r.logger.Warn("failed to send direction rejection", "symbol", sig.Symbol, "error", err)
+			}
 		}
 	}
 	return filtered
