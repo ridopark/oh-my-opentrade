@@ -322,16 +322,6 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 
 		r.mu.Lock()
 		newSession := r.lastSessionDate[symbol] != barDate
-		regimeChanged := false
-		if !newSession {
-			if snap, ok := r.indicators[symbol]; ok {
-				if currentRegime, rOk := snap.AnchorRegimes["5m"]; rOk {
-					if string(r.lastResolvedRegime[symbol]) != currentRegime.Type {
-						regimeChanged = true
-					}
-				}
-			}
-		}
 		if newSession {
 			r.lastSessionDate[symbol] = barDate
 		}
@@ -339,8 +329,6 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 
 		if newSession {
 			r.resolveAIAnchors(ctx, symbol, bar, AnchorResolveOption{SyncAI: true})
-		} else if regimeChanged {
-			r.resolveAIAnchors(ctx, symbol, bar, AnchorResolveOption{SkipAI: true})
 		}
 	} else if r.anchorResolver != nil {
 		loc, _ := time.LoadLocation("America/New_York")
