@@ -28,15 +28,22 @@ type symbolDetectors struct {
 	weekly *start.WeeklyAnchorDetector
 }
 
+// SessionAnchorFn is the legacy anchor resolver signature used by
+// SessionResolver.ResolveAnchors. When set, its results are included
+// as baseline session-derived candidates so AVWAP has anchors from bar 1
+// before the algo detectors have warmed up.
+type SessionAnchorFn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
+
 // AIAnchorResolver orchestrates candidate anchor detection (algo) and AI
 // selection to provide AVWAP anchor points. It feeds bars through
 // deterministic detectors, accumulates candidates, and on ResolveAnchors
 // queries the LLM (or falls back to deterministic ranking).
 type AIAnchorResolver struct {
-	advisor ports.AIAdvisorPort
-	store   ports.AnchorStorePort
-	scorer  *start.MultiTimeframeScorer
-	logger  *slog.Logger
+	advisor   ports.AIAdvisorPort
+	store     ports.AnchorStorePort
+	scorer    *start.MultiTimeframeScorer
+	logger    *slog.Logger
+	sessionFn SessionAnchorFn
 
 	mu         sync.RWMutex
 	detectors  map[string]*symbolDetectors
@@ -55,6 +62,10 @@ func NewAIAnchorResolver(advisor ports.AIAdvisorPort, store ports.AnchorStorePor
 		detectors:  make(map[string]*symbolDetectors),
 		candidates: make(map[string][]start.CandidateAnchor),
 	}
+}
+
+func (r *AIAnchorResolver) SetSessionResolver(fn SessionAnchorFn) {
+	r.sessionFn = fn
 }
 
 func (r *AIAnchorResolver) RegisterSymbol(symbol string, isCrypto bool) {
@@ -122,9 +133,11 @@ func (r *AIAnchorResolver) addCandidate(symbol string, ca start.CandidateAnchor)
 func (r *AIAnchorResolver) ResolveAnchors(
 	ctx context.Context,
 	symbol string,
+	barTime time.Time,
 	currentPrice float64,
 	regime domain.MarketRegime,
 	indicators domain.IndicatorSnapshot,
+	anchorNames []string,
 ) (map[string]time.Time, error) {
 	r.mu.RLock()
 	inMemory := make([]start.CandidateAnchor, len(r.candidates[symbol]))
@@ -140,7 +153,24 @@ func (r *AIAnchorResolver) ResolveAnchors(
 		}
 	}
 
+	var sessionCandidates []start.CandidateAnchor
+	if r.sessionFn != nil {
+		sessionTimes := r.sessionFn(symbol, barTime, anchorNames)
+		for name, t := range sessionTimes {
+			if t.IsZero() {
+				continue
+			}
+			ca, err := start.NewCandidateAnchor(t, currentPrice, start.AnchorSessionDerived, "1m", 1.0)
+			if err == nil {
+				ca.ID = name
+				ca.Source = "session"
+				sessionCandidates = append(sessionCandidates, ca)
+			}
+		}
+	}
+
 	merged := r.mergeCandidates(persisted, inMemory)
+	merged = r.mergeCandidates(merged, sessionCandidates)
 	scored := r.scorer.Score(merged)
 
 	if len(scored) == 0 {
