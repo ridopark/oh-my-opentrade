@@ -138,6 +138,7 @@ func (r *AIAnchorResolver) ResolveAnchors(
 	regime domain.MarketRegime,
 	indicators domain.IndicatorSnapshot,
 	anchorNames []string,
+	skipAI ...bool,
 ) (map[string]time.Time, error) {
 	r.mu.RLock()
 	inMemory := make([]start.CandidateAnchor, len(r.candidates[symbol]))
@@ -185,7 +186,8 @@ func (r *AIAnchorResolver) ResolveAnchors(
 
 	var selection *start.AnchorSelection
 
-	if r.advisor != nil {
+	useAI := len(skipAI) == 0 || !skipAI[0]
+	if useAI && r.advisor != nil {
 		sel, err := r.advisor.SelectAnchors(ctx, ports.AnchorSelectionRequest{
 			Symbol:       domain.Symbol(symbol),
 			Candidates:   scored,

@@ -77,7 +77,7 @@ func (r *Runner) resolveSessionAnchors(symbol string, barTime time.Time) {
 	}
 }
 
-func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain.MarketBar) {
+func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain.MarketBar, skipAI bool) {
 	var regime domain.MarketRegime
 	var indicators domain.IndicatorSnapshot
 
@@ -104,7 +104,7 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 		}
 	}
 
-	resolved, err := r.aiAnchorResolver.ResolveAnchors(ctx, symbol, bar.Time, bar.Close, regime, indicators, anchorNames)
+	resolved, err := r.aiAnchorResolver.ResolveAnchors(ctx, symbol, bar.Time, bar.Close, regime, indicators, anchorNames, skipAI)
 	if err != nil {
 		r.logger.Error("AI anchor resolution failed", "symbol", symbol, "error", err)
 		return
@@ -308,23 +308,26 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		barDate := bar.Time.In(loc).Format("2006-01-02")
 
 		r.mu.Lock()
-		needsResolve := r.lastSessionDate[symbol] != barDate
-		if !needsResolve {
+		newSession := r.lastSessionDate[symbol] != barDate
+		regimeChanged := false
+		if !newSession {
 			if snap, ok := r.indicators[symbol]; ok {
 				if currentRegime, rOk := snap.AnchorRegimes["5m"]; rOk {
 					if string(r.lastResolvedRegime[symbol]) != currentRegime.Type {
-						needsResolve = true
+						regimeChanged = true
 					}
 				}
 			}
 		}
-		if needsResolve {
+		if newSession {
 			r.lastSessionDate[symbol] = barDate
 		}
 		r.mu.Unlock()
 
-		if needsResolve {
-			r.resolveAIAnchors(ctx, symbol, bar)
+		if newSession {
+			r.resolveAIAnchors(ctx, symbol, bar, false)
+		} else if regimeChanged {
+			r.resolveAIAnchors(ctx, symbol, bar, true)
 		}
 	} else if r.anchorResolver != nil {
 		loc, _ := time.LoadLocation("America/New_York")
