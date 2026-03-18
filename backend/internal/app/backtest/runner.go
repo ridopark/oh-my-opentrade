@@ -536,13 +536,21 @@ func (r *Runner) Run(ctx context.Context) error {
 		pipeline.Runner.InitAggregators(replaySessionOpen)
 		pipeline.Runner.ClearAllPendingStates()
 
+		sessionResolver := NewSessionResolver(loc)
+		for _, sym := range r.cfg.Symbols {
+			if loadErr := sessionResolver.Load(ctx, r.db, sym, r.cfg.From, r.cfg.To); loadErr != nil {
+				r.log.Warn().Err(loadErr).Str("symbol", sym.String()).Msg("failed to load session data")
+			}
+		}
+
 		aiResolver := strategy.NewAIAnchorResolver(llm.NewNoOpAdvisor(), nil, nil)
+		aiResolver.SetSessionResolver(sessionResolver.ResolveAnchors)
 		for _, sym := range r.cfg.Symbols {
 			isCrypto := strings.Contains(sym.String(), "/") || strings.HasSuffix(sym.String(), "USD")
 			aiResolver.RegisterSymbol(sym.String(), isCrypto)
 		}
 		pipeline.Runner.SetAIAnchorResolver(aiResolver)
-		r.log.Info().Msg("AI anchor resolver configured for backtest (deterministic fallback)")
+		r.log.Info().Msg("AI anchor resolver configured for backtest (with session baseline)")
 	}
 
 	peekBar := func(s *barStream) (domain.MarketBar, bool) {
