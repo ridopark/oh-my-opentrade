@@ -149,6 +149,7 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 	s.Calc = newCalc
 	s.AboveCount = newAbove
 	s.BelowCount = newBelow
+	s.TradesToday = 0
 }
 
 func (s *AVWAPState) ClearPendingEntry() {

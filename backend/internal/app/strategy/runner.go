@@ -123,7 +123,12 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 		return
 	}
 	if len(resolved) == 0 {
+		r.logger.Warn("AI anchor resolution returned empty", "symbol", symbol, "bar_time", bar.Time)
 		return
+	}
+
+	for name, t := range resolved {
+		r.logger.Debug("resolved anchor", "symbol", symbol, "name", name, "anchor_time", t, "bar_time", bar.Time)
 	}
 
 	r.mu.Lock()
