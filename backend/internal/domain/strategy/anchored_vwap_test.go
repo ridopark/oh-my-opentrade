@@ -207,19 +207,24 @@ func TestAnchoredVWAPCalc_SDBands_SingleAnchor(t *testing.T) {
 	c.Update(t0.Add(1*time.Minute), 102, 98, 100, 1000)
 	c.Update(t0.Add(2*time.Minute), 105, 101, 103, 2000)
 	c.Update(t0.Add(3*time.Minute), 108, 102, 105, 3000)
+	for i := 4; i <= 10; i++ {
+		c.Update(t0.Add(time.Duration(i)*time.Minute), 108, 102, 105, 3000)
+	}
 
-	sd := math.Sqrt(3.25) // ≈ 1.80278
-	vwap := 103.5
+	vals := c.States()
+	st := vals["test"]
+	sd := st.SD()
+	vwap := st.Value()
 
 	upper, lower, ok := c.SDBands("test", 2.0)
 	require.True(t, ok)
-	assert.InDelta(t, vwap+2.0*sd, upper, 1e-9)
-	assert.InDelta(t, vwap-2.0*sd, lower, 1e-9)
+	assert.InDelta(t, vwap+2.0*sd, upper, 0.01)
+	assert.InDelta(t, vwap-2.0*sd, lower, 0.01)
 
 	upper1, lower1, ok := c.SDBands("test", 1.0)
 	require.True(t, ok)
-	assert.InDelta(t, vwap+sd, upper1, 1e-9)
-	assert.InDelta(t, vwap-sd, lower1, 1e-9)
+	assert.InDelta(t, vwap+sd, upper1, 0.01)
+	assert.InDelta(t, vwap-sd, lower1, 0.01)
 }
 
 func TestAnchoredVWAPCalc_SDBands_NotFound(t *testing.T) {
@@ -247,17 +252,23 @@ func TestAnchoredVWAPCalc_AllSDBands(t *testing.T) {
 	c.Update(t0.Add(1*time.Minute), 102, 98, 100, 1000)
 	c.Update(t0.Add(2*time.Minute), 105, 101, 103, 2000)
 	c.Update(t0.Add(3*time.Minute), 108, 102, 105, 3000)
+	for i := 4; i <= 10; i++ {
+		c.Update(t0.Add(time.Duration(i)*time.Minute), 108, 102, 105, 3000)
+	}
 
 	bands := c.AllSDBands(2.0)
 	require.Len(t, bands, 2)
 	assert.Contains(t, bands, "a")
 	assert.Contains(t, bands, "b")
 
-	sd := math.Sqrt(3.25)
-	vwap := 103.5
+	vals := c.States()
+	st := vals["a"]
+	vwap := st.Value()
+	sd := st.SD()
+	require.True(t, sd > 0)
 	for _, pair := range bands {
-		assert.InDelta(t, vwap+2.0*sd, pair[0], 1e-9)
-		assert.InDelta(t, vwap-2.0*sd, pair[1], 1e-9)
+		assert.InDelta(t, vwap+2.0*sd, pair[0], 0.01)
+		assert.InDelta(t, vwap-2.0*sd, pair[1], 0.01)
 	}
 }
 

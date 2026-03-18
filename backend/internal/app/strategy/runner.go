@@ -113,7 +113,9 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 		return
 	}
 
+	r.mu.Lock()
 	r.lastResolvedRegime[symbol] = regime.Type
+	r.mu.Unlock()
 
 	for _, inst := range instances {
 		st, ok := inst.GetState(symbol)
@@ -304,8 +306,9 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 
 		loc, _ := time.LoadLocation("America/New_York")
 		barDate := bar.Time.In(loc).Format("2006-01-02")
-		needsResolve := r.lastSessionDate[symbol] != barDate
 
+		r.mu.Lock()
+		needsResolve := r.lastSessionDate[symbol] != barDate
 		if !needsResolve {
 			if snap, ok := r.indicators[symbol]; ok {
 				if currentRegime, rOk := snap.AnchorRegimes["5m"]; rOk {
@@ -315,9 +318,12 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 				}
 			}
 		}
+		if needsResolve {
+			r.lastSessionDate[symbol] = barDate
+		}
+		r.mu.Unlock()
 
 		if needsResolve {
-			r.lastSessionDate[symbol] = bar.Time.In(loc).Format("2006-01-02")
 			r.resolveAIAnchors(ctx, symbol, bar)
 		}
 	} else if r.anchorResolver != nil {
