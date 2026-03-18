@@ -408,6 +408,141 @@ func encodeV2(spec portstrategy.Spec) ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
+// EncodeFullV2 encodes a Spec to TOML bytes including all sections
+// (exit_rules, symbol_overrides, dynamic_risk, screening) that encodeV2 omits.
+func EncodeFullV2(spec portstrategy.Spec) ([]byte, error) {
+	regime := make(map[string]any)
+	dynRisk := make(map[string]any)
+	params := make(map[string]any)
+	for k, v := range spec.Params {
+		switch {
+		case strings.HasPrefix(k, "regime_filter."):
+			regime[strings.TrimPrefix(k, "regime_filter.")] = v
+		case strings.HasPrefix(k, "dynamic_risk."):
+			dynRisk[strings.TrimPrefix(k, "dynamic_risk.")] = v
+		default:
+			params[k] = v
+		}
+	}
+
+	hooks := make(map[string]map[string]string)
+	for name, href := range spec.Hooks {
+		m := map[string]string{"engine": href.Engine.String()}
+		if href.Name != "" {
+			m["name"] = href.Name
+		}
+		if href.Entrypoint != "" {
+			m["entrypoint"] = href.Entrypoint
+		}
+		if href.Source != "" {
+			m["source"] = href.Source
+		}
+		hooks[name] = m
+	}
+
+	type exitRuleRaw struct {
+		Type   string             `toml:"type"`
+		Params map[string]float64 `toml:"params"`
+	}
+	exitRules := make([]exitRuleRaw, len(spec.ExitRules))
+	for i, er := range spec.ExitRules {
+		exitRules[i] = exitRuleRaw{Type: er.Type.String(), Params: er.Params}
+	}
+
+	symOverrides := make(map[string]map[string]any)
+	for sym, ov := range spec.SymbolOverrides {
+		merged := make(map[string]any)
+		for k, v := range ov.Params {
+			merged[k] = v
+		}
+		for k, v := range ov.ExitRuleParams {
+			merged[k] = v
+		}
+		if len(merged) > 0 {
+			symOverrides[sym] = merged
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("schema_version = 2\n\n")
+
+	enc := toml.NewEncoder(&b)
+
+	stratSec := struct {
+		ID          string `toml:"id"`
+		Version     string `toml:"version"`
+		Name        string `toml:"name"`
+		Description string `toml:"description,omitempty"`
+		Author      string `toml:"author,omitempty"`
+	}{spec.ID.String(), spec.Version.String(), spec.Name, spec.Description, spec.Author}
+	b.WriteString("[strategy]\n")
+	_ = enc.Encode(stratSec)
+
+	lcSec := struct {
+		State     string `toml:"state"`
+		PaperOnly bool   `toml:"paper_only"`
+	}{spec.Lifecycle.State.String(), spec.Lifecycle.PaperOnly}
+	b.WriteString("[lifecycle]\n")
+	_ = enc.Encode(lcSec)
+
+	routSec := struct {
+		Symbols            []string `toml:"symbols,omitempty"`
+		Timeframes         []string `toml:"timeframes"`
+		AssetClasses       []string `toml:"asset_classes,omitempty"`
+		AllowedDirections  []string `toml:"allowed_directions,omitempty"`
+		Priority           int      `toml:"priority"`
+		ConflictPolicy     string   `toml:"conflict_policy"`
+		ExclusivePerSymbol bool     `toml:"exclusive_per_symbol"`
+		WatchlistMode      string   `toml:"watchlist_mode,omitempty"`
+	}{
+		spec.Routing.Symbols, spec.Routing.Timeframes,
+		spec.Routing.AssetClasses, spec.Routing.AllowedDirections,
+		spec.Routing.Priority, spec.Routing.ConflictPolicy.String(),
+		spec.Routing.ExclusivePerSymbol, spec.Routing.WatchlistMode,
+	}
+	b.WriteString("[routing]\n")
+	_ = enc.Encode(routSec)
+
+	if spec.Screening.Description != "" {
+		b.WriteString("[screening]\n")
+		_ = enc.Encode(struct {
+			Description string `toml:"description"`
+		}{spec.Screening.Description})
+	}
+
+	if len(params) > 0 {
+		b.WriteString("[params]\n")
+		_ = enc.Encode(params)
+	}
+
+	if len(regime) > 0 {
+		b.WriteString("[regime_filter]\n")
+		_ = enc.Encode(regime)
+	}
+
+	if len(dynRisk) > 0 {
+		b.WriteString("[dynamic_risk]\n")
+		_ = enc.Encode(dynRisk)
+	}
+
+	for _, er := range exitRules {
+		b.WriteString("[[exit_rules]]\n")
+		_ = enc.Encode(er)
+	}
+
+	if len(hooks) > 0 {
+		b.WriteString("[hooks]\n")
+		_ = enc.Encode(hooks)
+	}
+
+	for sym, ov := range symOverrides {
+		fmt.Fprintf(&b, "[symbol_overrides.%s]\n", sym)
+		_ = enc.Encode(ov)
+	}
+
+	return []byte(b.String()), nil
+}
+
 func compareVersions(a, b domstrategy.Version) int {
 	amaj, amin, apat, apre, aok := parseSemver(a.String())
 	bmaj, bmin, bpat, bpre, bok := parseSemver(b.String())

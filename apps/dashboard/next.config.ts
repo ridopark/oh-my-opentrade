@@ -15,6 +15,14 @@ const nextConfig: NextConfig = {
         destination: `${backendUrl}/backtest/:path*`,
       },
       {
+        source: "/api/strategies/config/:path*",
+        destination: `${backendUrl}/strategies/config/:path*`,
+      },
+      {
+        source: "/api/strategies/sweep/:path*",
+        destination: `${backendUrl}/strategies/sweep/:path*`,
+      },
+      {
         source: "/api/:path*",
         destination: `${backendUrl}/api/:path*`,
       },

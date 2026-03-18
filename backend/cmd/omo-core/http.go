@@ -12,6 +12,7 @@ import (
 	omhttp "github.com/oh-my-opentrade/backend/internal/adapters/http"
 	"github.com/oh-my-opentrade/backend/internal/adapters/middleware"
 	"github.com/oh-my-opentrade/backend/internal/adapters/sse"
+	appsweep "github.com/oh-my-opentrade/backend/internal/app/sweep"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
@@ -180,6 +181,11 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	imux.Handle("/healthz/services", healthHandler)
 
 	const strategyBasePath = "configs/strategies"
+	configHandler := omhttp.NewConfigHandler(svc.specStore, strategyBasePath, httpLog)
+	imux.Handle("/strategies/config/", configHandler)
+	sweepOrchestrator := appsweep.NewOrchestrator(infra.sqlDB, cfg, backtestMarketData, svc.specStore, strategyBasePath, httpLog)
+	sweepHandler := omhttp.NewSweepHandler(sweepOrchestrator, httpLog)
+	imux.Handle("/strategies/sweep/", sweepHandler)
 	strategyHandler := omhttp.NewStrategyHandler(svc.dnaManager, strategyBasePath, httpLog)
 	imux.Handle("/strategies/", strategyHandler)
 	dnaApprovalHandler := omhttp.NewDNAApprovalHandler(svc.dnaApproval, httpLog)

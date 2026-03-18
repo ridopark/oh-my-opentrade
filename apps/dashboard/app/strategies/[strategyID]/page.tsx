@@ -189,6 +189,16 @@ export default function StrategyDetailPage({
             <Badge variant="outline" className="ml-2">
               Active
             </Badge>
+            <Link href={`/strategies/${strategyID}/config`}>
+              <Button variant="outline" size="sm" className="ml-2 text-xs">
+                Edit Config
+              </Button>
+            </Link>
+            <Link href={`/strategies/${strategyID}/sweep`}>
+              <Button variant="outline" size="sm" className="ml-1 text-xs">
+                Sweep
+              </Button>
+            </Link>
           </div>
           <p className="text-muted-foreground">
             Strategy performance and live state monitoring.

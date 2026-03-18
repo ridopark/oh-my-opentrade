@@ -34,7 +34,9 @@ type Runner struct {
 	aggregators          map[string]*domain.BarAggregator
 	signalsRTHSuppressed atomic.Int64
 	anchorResolver       func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
+	aiAnchorResolver     *AIAnchorResolver
 	lastSessionDate      map[string]string
+	lastResolvedRegime   map[string]domain.RegimeType
 }
 
 func (r *Runner) SignalsRTHSuppressed() int64 {
@@ -44,6 +46,12 @@ func (r *Runner) SignalsRTHSuppressed() int64 {
 func (r *Runner) SetAnchorResolver(fn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time) {
 	r.anchorResolver = fn
 	r.lastSessionDate = make(map[string]string)
+}
+
+func (r *Runner) SetAIAnchorResolver(resolver *AIAnchorResolver) {
+	r.aiAnchorResolver = resolver
+	r.lastSessionDate = make(map[string]string)
+	r.lastResolvedRegime = make(map[string]domain.RegimeType)
 }
 
 type anchorResettable interface {
@@ -65,6 +73,44 @@ func (r *Runner) resolveSessionAnchors(symbol string, barTime time.Time) {
 				ar.ResetAnchors(resolved)
 				r.logger.Info("reset AVWAP anchors for new session", "symbol", symbol, "anchors", len(resolved))
 			}
+		}
+	}
+}
+
+func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain.MarketBar) {
+	var regime domain.MarketRegime
+	var indicators domain.IndicatorSnapshot
+
+	if snap, ok := r.indicators[symbol]; ok {
+		if ar, arOK := snap.AnchorRegimes["5m"]; arOK {
+			regime = domain.MarketRegime{
+				Symbol:   domain.Symbol(symbol),
+				Type:     domain.RegimeType(ar.Type),
+				Strength: ar.Strength,
+			}
+		}
+	}
+
+	resolved, err := r.aiAnchorResolver.ResolveAnchors(ctx, symbol, bar.Close, regime, indicators)
+	if err != nil {
+		r.logger.Error("AI anchor resolution failed", "symbol", symbol, "error", err)
+		return
+	}
+	if len(resolved) == 0 {
+		return
+	}
+
+	r.lastResolvedRegime[symbol] = regime.Type
+
+	instances := r.router.InstancesForSymbol(symbol)
+	for _, inst := range instances {
+		st, ok := inst.GetState(symbol)
+		if !ok {
+			continue
+		}
+		if ar, ok := st.(anchorResettable); ok {
+			ar.ResetAnchors(resolved)
+			r.logger.Info("AI anchor resolution complete", "symbol", symbol, "anchors", len(resolved))
 		}
 	}
 }
@@ -238,7 +284,31 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	loopStart := time.Now()
 	symbol := bar.Symbol.String()
 
-	if r.anchorResolver != nil {
+	if r.aiAnchorResolver != nil {
+		r.aiAnchorResolver.OnBar(symbol, start.Bar{
+			Time: bar.Time, Open: bar.Open, High: bar.High,
+			Low: bar.Low, Close: bar.Close, Volume: bar.Volume,
+		}, string(bar.Timeframe))
+
+		loc, _ := time.LoadLocation("America/New_York")
+		barDate := bar.Time.In(loc).Format("2006-01-02")
+		needsResolve := r.lastSessionDate[symbol] != barDate
+
+		if !needsResolve {
+			if snap, ok := r.indicators[symbol]; ok {
+				if currentRegime, rOk := snap.AnchorRegimes["5m"]; rOk {
+					if string(r.lastResolvedRegime[symbol]) != currentRegime.Type {
+						needsResolve = true
+					}
+				}
+			}
+		}
+
+		if needsResolve {
+			r.lastSessionDate[symbol] = bar.Time.In(loc).Format("2006-01-02")
+			r.resolveAIAnchors(ctx, symbol, bar)
+		}
+	} else if r.anchorResolver != nil {
 		loc, _ := time.LoadLocation("America/New_York")
 		barDate := bar.Time.In(loc).Format("2006-01-02")
 		if r.lastSessionDate[symbol] != barDate {

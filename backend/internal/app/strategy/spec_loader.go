@@ -190,18 +190,19 @@ func loadV1(content, path string) (portstrategy.Spec, error) {
 
 func loadV2(content, path string) (portstrategy.Spec, error) {
 	var raw struct {
-		SchemaVersion int                `toml:"schema_version"`
-		Strategy      rawStrategySection `toml:"strategy"`
-		Lifecycle     rawLifecycleSection
-		Routing       rawRoutingSection
-		Screening     rawScreeningSection
-		Params        map[string]any        `toml:"params"`
-		Parameters    map[string]any        `toml:"parameters"` // allow old key
-		RegimeFilter  map[string]any        `toml:"regime_filter"`
-		DynamicRisk   map[string]any        `toml:"dynamic_risk"`
-		Hooks         map[string]rawHookRef `toml:"hooks"`
-		ExitRules     []rawExitRule         `toml:"exit_rules"`
-		Options       *rawOptionsSection    `toml:"options"`
+		SchemaVersion   int                `toml:"schema_version"`
+		Strategy        rawStrategySection `toml:"strategy"`
+		Lifecycle       rawLifecycleSection
+		Routing         rawRoutingSection
+		Screening       rawScreeningSection
+		Params          map[string]any            `toml:"params"`
+		Parameters      map[string]any            `toml:"parameters"` // allow old key
+		RegimeFilter    map[string]any            `toml:"regime_filter"`
+		DynamicRisk     map[string]any            `toml:"dynamic_risk"`
+		SymbolOverrides map[string]map[string]any `toml:"symbol_overrides"`
+		Hooks           map[string]rawHookRef     `toml:"hooks"`
+		ExitRules       []rawExitRule             `toml:"exit_rules"`
+		Options         *rawOptionsSection        `toml:"options"`
 	}
 
 	if _, err := toml.Decode(content, &raw); err != nil {
@@ -273,6 +274,24 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 		params["dynamic_risk."+k] = v
 	}
 
+	symbolOverrides := make(map[string]portstrategy.SymbolOverride, len(raw.SymbolOverrides))
+	for symbol, overrides := range raw.SymbolOverrides {
+		so := portstrategy.SymbolOverride{
+			Params:         make(map[string]any, len(overrides)),
+			ExitRuleParams: make(map[string]float64),
+		}
+		for k, v := range overrides {
+			so.Params[k] = v
+			if !isKnownExitRuleParamKey(k) {
+				continue
+			}
+			if f, ok := toFloat64(v); ok {
+				so.ExitRuleParams[k] = f
+			}
+		}
+		symbolOverrides[symbol] = so
+	}
+
 	hooks := make(map[string]portstrategy.HookRef)
 	for name, href := range raw.Hooks {
 		ref, err := href.toHookRef()
@@ -337,10 +356,11 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 		Screening: portstrategy.ScreeningConfig{
 			Description: raw.Screening.Description,
 		},
-		Params:    params,
-		Hooks:     hooks,
-		ExitRules: exitRules,
-		Options:   optsCfg,
+		Params:          params,
+		SymbolOverrides: symbolOverrides,
+		Hooks:           hooks,
+		ExitRules:       exitRules,
+		Options:         optsCfg,
 	}, nil
 }
 
@@ -362,6 +382,54 @@ func mergeInto(dst, src map[string]any) {
 	}
 	for k, v := range src {
 		dst[k] = v
+	}
+}
+
+func isKnownExitRuleParamKey(key string) bool {
+	if strings.Contains(key, ".") {
+		parts := strings.SplitN(key, ".", 2)
+		if len(parts) != 2 {
+			return false
+		}
+		key = parts[1]
+	}
+
+	switch key {
+	case "atr_multiplier", "sd_level", "min_hold_bars", "minutes", "sd_threshold", "profit_gate_pct", "minutes_before_close", "pct":
+		return true
+	default:
+		return false
+	}
+}
+
+func toFloat64(v any) (float64, bool) {
+	switch t := v.(type) {
+	case float64:
+		return t, true
+	case float32:
+		return float64(t), true
+	case int:
+		return float64(t), true
+	case int8:
+		return float64(t), true
+	case int16:
+		return float64(t), true
+	case int32:
+		return float64(t), true
+	case int64:
+		return float64(t), true
+	case uint:
+		return float64(t), true
+	case uint8:
+		return float64(t), true
+	case uint16:
+		return float64(t), true
+	case uint32:
+		return float64(t), true
+	case uint64:
+		return float64(t), true
+	default:
+		return 0, false
 	}
 }
 
