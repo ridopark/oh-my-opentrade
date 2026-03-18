@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
@@ -31,5 +32,9 @@ func (n *NoOpAdvisor) RequestDebate(
 	_ domain.IndicatorSnapshot,
 	_ ...ports.DebateOption,
 ) (*domain.AdvisoryDecision, error) {
+	return nil, ErrAIDisabled
+}
+
+func (n *NoOpAdvisor) SelectAnchors(_ context.Context, _ ports.AnchorSelectionRequest) (*strategy.AnchorSelection, error) {
 	return nil, ErrAIDisabled
 }

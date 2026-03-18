@@ -101,18 +101,54 @@ func (s *AVWAPState) SetIndicators(ind start.IndicatorData) {
 
 func (s *AVWAPState) AnchorNames() []string { return s.Config.Anchors }
 
+// ResetAnchors performs a partial update: anchors with unchanged times
+// preserve their running VWAP state (CumPV/CumV/M2). New or changed
+// anchors start fresh. Removed anchors are dropped.
 func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
-	calc := start.NewAnchoredVWAPCalc()
+	if s.Calc == nil {
+		s.Calc = start.NewAnchoredVWAPCalc()
+		for name, t := range anchorTimes {
+			if t.IsZero() {
+				continue
+			}
+			s.Calc.AddAnchor(start.AnchorPoint{Name: name, AnchorTime: t})
+		}
+		s.AboveCount = make(map[string]int)
+		s.BelowCount = make(map[string]int)
+		s.TradesToday = 0
+		return
+	}
+
+	existingStates := s.Calc.States()
+	existingPoints := s.Calc.AnchorPoints()
+
+	newCalc := start.NewAnchoredVWAPCalc()
+	newAbove := make(map[string]int)
+	newBelow := make(map[string]int)
+
 	for name, t := range anchorTimes {
 		if t.IsZero() {
 			continue
 		}
-		calc.AddAnchor(start.AnchorPoint{Name: name, AnchorTime: t})
+
+		ap := start.AnchorPoint{Name: name, AnchorTime: t}
+
+		if oldAP, exists := existingPoints[name]; exists && oldAP.AnchorTime.Equal(t) {
+			if oldState, hasState := existingStates[name]; hasState {
+				newCalc.AddAnchor(ap)
+				newCalc.Restore([]start.AnchorPoint{ap}, map[string]start.AnchoredVWAPState{name: oldState})
+				newAbove[name] = s.AboveCount[name]
+				newBelow[name] = s.BelowCount[name]
+				continue
+			}
+		}
+
+		newCalc.AddAnchor(ap)
 	}
-	s.Calc = calc
-	s.AboveCount = make(map[string]int)
-	s.BelowCount = make(map[string]int)
-	s.TradesToday = 0
+
+	s.Calc = newCalc
+	s.AboveCount = newAbove
+	s.BelowCount = newBelow
 }
 
 func (s *AVWAPState) ClearPendingEntry() {

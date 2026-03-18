@@ -10,6 +10,7 @@ import (
 
 	"github.com/oh-my-opentrade/backend/internal/adapters/llm"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -244,7 +245,176 @@ func TestAdvisor_RequestDebate_NoAnchorRegimes_OmitsSection(t *testing.T) {
 	userMsg := messages[len(messages)-1].(map[string]interface{})
 	content := userMsg["content"].(string)
 
-	assert.NotContains(t, content, "Multi-Timeframe Regimes:")
+	assert.NotContains(t, content, "Strategy Track Record")
+}
+
+func anchorCompletionResponse(w http.ResponseWriter, anchors []map[string]interface{}, rationale string) {
+	inner := map[string]interface{}{
+		"selected_anchors": anchors,
+		"rationale":        rationale,
+	}
+	innerJSON, _ := json.Marshal(inner)
+
+	resp := map[string]interface{}{
+		"choices": []map[string]interface{}{
+			{
+				"message": map[string]interface{}{
+					"role":    "assistant",
+					"content": string(innerJSON),
+				},
+			},
+		},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func getMockAnchorSelectionRequest() ports.AnchorSelectionRequest {
+	t0 := time.Date(2026, 3, 17, 10, 0, 0, 0, time.UTC)
+	return ports.AnchorSelectionRequest{
+		Symbol: "AAPL",
+		Candidates: []strategy.CandidateAnchor{
+			{ID: "swing_high_1h_100", Time: t0, Price: 185.0, Type: strategy.AnchorSwingHigh, Timeframe: "1h", Strength: 5.0},
+			{ID: "swing_low_5m_200", Time: t0.Add(-time.Hour), Price: 182.0, Type: strategy.AnchorSwingLow, Timeframe: "5m", Strength: 3.0},
+			{ID: "weekly_open_5m_300", Time: t0.Add(-24 * time.Hour), Price: 180.0, Type: strategy.AnchorWeeklyOpen, Timeframe: "5m", Strength: 1.0},
+		},
+		CurrentPrice: 184.50,
+		Regime:       getMockMarketRegime(),
+		Indicators:   getMockIndicatorSnapshot(),
+	}
+}
+
+func TestAdvisor_SelectAnchors_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/chat/completions", r.URL.Path)
+		anchorCompletionResponse(w, []map[string]interface{}{
+			{"candidate_id": "swing_high_1h_100", "rank": 1, "confidence": 0.92, "reason": "key resistance"},
+			{"candidate_id": "swing_low_5m_200", "rank": 2, "confidence": 0.78, "reason": "recent support"},
+		}, "two key levels selected")
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+	sel, err := advisor.SelectAnchors(context.Background(), getMockAnchorSelectionRequest())
+
+	require.NoError(t, err)
+	require.NotNil(t, sel)
+	assert.Len(t, sel.SelectedAnchors, 2)
+	assert.Equal(t, "swing_high_1h_100", sel.SelectedAnchors[0].CandidateID)
+	assert.Equal(t, 1, sel.SelectedAnchors[0].Rank)
+	assert.InDelta(t, 0.92, sel.SelectedAnchors[0].Confidence, 0.001)
+	assert.Equal(t, "two key levels selected", sel.Rationale)
+}
+
+func TestAdvisor_SelectAnchors_EmptySelection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		anchorCompletionResponse(w, []map[string]interface{}{}, "")
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+	sel, err := advisor.SelectAnchors(context.Background(), getMockAnchorSelectionRequest())
+
+	require.NoError(t, err)
+	assert.Nil(t, sel, "empty selection returns nil")
+}
+
+func TestAdvisor_SelectAnchors_MalformedJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": map[string]interface{}{"role": "assistant", "content": "not valid json"}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+	_, err := advisor.SelectAnchors(context.Background(), getMockAnchorSelectionRequest())
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "parse anchor selection JSON")
+}
+
+func TestAdvisor_SelectAnchors_Non2xxStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+	_, err := advisor.SelectAnchors(context.Background(), getMockAnchorSelectionRequest())
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "non-2xx")
+}
+
+func TestAdvisor_SelectAnchors_DuplicateRanks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		anchorCompletionResponse(w, []map[string]interface{}{
+			{"candidate_id": "a", "rank": 1, "confidence": 0.9, "reason": "x"},
+			{"candidate_id": "b", "rank": 1, "confidence": 0.8, "reason": "y"},
+		}, "")
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+	_, err := advisor.SelectAnchors(context.Background(), getMockAnchorSelectionRequest())
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate rank")
+}
+
+func TestAdvisor_SelectAnchors_PromptContainsCandidates(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+		anchorCompletionResponse(w, []map[string]interface{}{
+			{"candidate_id": "swing_high_1h_100", "rank": 1, "confidence": 0.9, "reason": "test"},
+		}, "ok")
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient)
+	_, err := advisor.SelectAnchors(context.Background(), getMockAnchorSelectionRequest())
+	require.NoError(t, err)
+
+	messages, ok := capturedBody["messages"].([]interface{})
+	require.True(t, ok)
+	userMsg := messages[len(messages)-1].(map[string]interface{})
+	content := userMsg["content"].(string)
+
+	assert.Contains(t, content, "swing_high_1h_100")
+	assert.Contains(t, content, "swing_low_5m_200")
+	assert.Contains(t, content, "AAPL")
+	assert.Contains(t, content, "184.50")
+
+	assert.NotContains(t, content, "hold_bars")
+	assert.NotContains(t, content, "volume_mult")
+	assert.NotContains(t, content, "breakout_enabled")
+	assert.NotContains(t, content, "rsi_bounce_max")
+}
+
+func TestAdvisor_SelectAnchors_RateLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		anchorCompletionResponse(w, []map[string]interface{}{
+			{"candidate_id": "a", "rank": 1, "confidence": 0.9, "reason": "x"},
+		}, "ok")
+	}))
+	defer server.Close()
+
+	advisor := llm.NewAdvisor(server.URL, "test-model", "", http.DefaultClient, llm.WithMinInterval(time.Hour))
+
+	_, err := advisor.SelectAnchors(context.Background(), getMockAnchorSelectionRequest())
+	require.NoError(t, err)
+
+	_, err = advisor.SelectAnchors(context.Background(), getMockAnchorSelectionRequest())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "rate limit")
 }
 
 func TestAdvisor_RequestDebate_BearishDivergenceAndBelowVWAP(t *testing.T) {

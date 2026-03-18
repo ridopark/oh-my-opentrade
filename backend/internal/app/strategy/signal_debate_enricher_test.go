@@ -115,6 +115,10 @@ func (f *fakeAIAdvisor) RequestDebate(ctx context.Context, symbol domain.Symbol,
 	return f.decision, nil
 }
 
+func (f *fakeAIAdvisor) SelectAnchors(_ context.Context, _ ports.AnchorSelectionRequest) (*strat.AnchorSelection, error) {
+	return nil, errors.New("ai advisor: disabled")
+}
+
 func subscribeSignalEnriched(t *testing.T, bus *memory.Bus) <-chan domain.Event {
 	t.Helper()
 	ch := make(chan domain.Event, 10)

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
@@ -74,6 +75,10 @@ func (m *mockAIAdvisor) RequestDebate(ctx context.Context, symbol domain.Symbol,
 		Direction:  domain.Direction("LONG"),
 		Confidence: 0.85,
 	}, nil
+}
+
+func (m *mockAIAdvisor) SelectAnchors(_ context.Context, _ ports.AnchorSelectionRequest) (*strategy.AnchorSelection, error) {
+	return nil, nil
 }
 
 // 4. EventBusPort

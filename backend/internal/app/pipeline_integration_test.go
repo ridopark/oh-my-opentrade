@@ -13,6 +13,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -35,6 +36,10 @@ func (m *mockAIAdvisor) RequestDebate(ctx context.Context, symbol domain.Symbol,
 		return &domain.AdvisoryDecision{Direction: domain.DirectionLong, Confidence: 1.0, Rationale: "default"}, nil
 	}
 	return m.Decision, nil
+}
+
+func (m *mockAIAdvisor) SelectAnchors(_ context.Context, _ ports.AnchorSelectionRequest) (*strategy.AnchorSelection, error) {
+	return nil, nil
 }
 
 type mockBroker struct {

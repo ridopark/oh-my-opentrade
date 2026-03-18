@@ -64,6 +64,29 @@ func (c *AnchoredVWAPCalc) AddAnchor(ap AnchorPoint) {
 	c.anchors[ap.Name] = &anchoredVWAPEntry{AnchorPoint: ap}
 }
 
+func (c *AnchoredVWAPCalc) AnchorPoints() map[string]AnchorPoint {
+	out := make(map[string]AnchorPoint)
+	if c == nil {
+		return out
+	}
+	for name, e := range c.anchors {
+		if e == nil {
+			continue
+		}
+		out[name] = e.AnchorPoint
+	}
+	return out
+}
+
+func (c *AnchoredVWAPCalc) RemoveAnchor(name string) bool {
+	if c == nil || c.anchors == nil {
+		return false
+	}
+	_, existed := c.anchors[name]
+	delete(c.anchors, name)
+	return existed
+}
+
 func (c *AnchoredVWAPCalc) Update(barTime time.Time, high, low, close_, volume float64) {
 	if c == nil || len(c.anchors) == 0 {
 		return
