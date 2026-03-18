@@ -536,17 +536,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		pipeline.Runner.InitAggregators(replaySessionOpen)
 		pipeline.Runner.ClearAllPendingStates()
 
-		sessionResolver := NewSessionResolver(loc)
+		aiResolver := strategy.NewAIAnchorResolver(llm.NewNoOpAdvisor(), nil, nil)
 		for _, sym := range r.cfg.Symbols {
-			if loadErr := sessionResolver.Load(ctx, r.db, sym, r.cfg.From, r.cfg.To); loadErr != nil {
-				r.log.Warn().Err(loadErr).Str("symbol", sym.String()).Msg("failed to load session data for anchor resolution")
-			}
-			if swingErr := sessionResolver.LoadSwings(ctx, r.db, sym, r.cfg.From, r.cfg.To); swingErr != nil {
-				r.log.Warn().Err(swingErr).Str("symbol", sym.String()).Msg("failed to load swing data for anchor resolution")
-			}
+			isCrypto := strings.Contains(sym.String(), "/") || strings.HasSuffix(sym.String(), "USD")
+			aiResolver.RegisterSymbol(sym.String(), isCrypto)
 		}
-		pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
-		r.log.Info().Msg("session anchor resolver configured for strategy runner (with swings)")
+		pipeline.Runner.SetAIAnchorResolver(aiResolver)
+		r.log.Info().Msg("AI anchor resolver configured for backtest (deterministic fallback)")
 	}
 
 	peekBar := func(s *barStream) (domain.MarketBar, bool) {
