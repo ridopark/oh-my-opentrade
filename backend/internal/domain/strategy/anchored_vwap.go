@@ -47,10 +47,13 @@ type AnchoredVWAPCalc struct {
 	anchors map[string]*anchoredVWAPEntry
 }
 
+const minBarsForSD = 10
+
 type anchoredVWAPEntry struct {
 	AnchorPoint
-	state  AnchoredVWAPState
-	active bool
+	state    AnchoredVWAPState
+	active   bool
+	barCount int
 }
 
 func NewAnchoredVWAPCalc() *AnchoredVWAPCalc {
@@ -110,15 +113,12 @@ func (c *AnchoredVWAPCalc) Update(barTime time.Time, high, low, close_, volume f
 			}
 			e.active = true
 		}
-		// Welford's online variance: capture old VWAP before update
 		oldVWAP := e.state.Value()
-
 		e.state.CumPV += pv
 		e.state.CumV += volume
-
-		// Welford's: M2 += volume * (tp - oldVWAP) * (tp - newVWAP)
 		newVWAP := e.state.Value()
 		e.state.M2 += volume * (tp - oldVWAP) * (tp - newVWAP)
+		e.barCount++
 	}
 }
 
@@ -130,7 +130,7 @@ func (c *AnchoredVWAPCalc) SDBands(name string, level float64) (upper, lower flo
 		return 0, 0, false
 	}
 	e, exists := c.anchors[name]
-	if !exists || e == nil || !e.active {
+	if !exists || e == nil || !e.active || e.barCount < minBarsForSD {
 		return 0, 0, false
 	}
 	sd := e.state.SD()
@@ -150,7 +150,7 @@ func (c *AnchoredVWAPCalc) AllSDBands(level float64) map[string][2]float64 {
 		return out
 	}
 	for name, e := range c.anchors {
-		if !e.active {
+		if !e.active || e.barCount < minBarsForSD {
 			continue
 		}
 		sd := e.state.SD()
