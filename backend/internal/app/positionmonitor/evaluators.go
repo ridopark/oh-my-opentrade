@@ -222,7 +222,8 @@ func evaluateVolatilityStop(rule domain.ExitRule, pos *domain.MonitoredPosition,
 //
 //	"sd_level" — SD multiplier for the target band (e.g. 2.0 = VWAP + 2.0*SD)
 func evaluateSDTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext, now time.Time) (bool, string) {
-	if now.Sub(pos.EntryTime) < 2*time.Minute {
+	minHoldBars := rule.Param("min_hold_bars", 2)
+	if now.Sub(pos.EntryTime) < time.Duration(minHoldBars)*time.Minute {
 		return false, ""
 	}
 	sdLevel := rule.Param("sd_level", 0)

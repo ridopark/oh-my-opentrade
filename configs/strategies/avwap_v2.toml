@@ -80,6 +80,7 @@ atr_multiplier = 3.0
 type = "SD_TARGET"
 [exit_rules.params]
 sd_level = 2.0
+min_hold_bars = 5
 
 [[exit_rules]]
 type = "STEP_STOP"
