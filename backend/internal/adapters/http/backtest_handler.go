@@ -299,7 +299,7 @@ func (h *BacktestHandler) handleCancel(w http.ResponseWriter, _ *http.Request, i
 }
 
 func (h *BacktestHandler) handleStrategies(w http.ResponseWriter, r *http.Request) {
-	stratDir := "/home/ridopark/src/oh-my-opentrade/configs/strategies"
+	stratDir := "configs/strategies"
 	entries, err := os.ReadDir(stratDir)
 	if err != nil {
 		jsonError(w, "failed to read strategies: "+err.Error(), http.StatusInternalServerError)

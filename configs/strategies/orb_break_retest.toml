@@ -9,18 +9,18 @@ author = "system"
 created_at = "2026-03-04T00:00:00Z"
 
 [lifecycle]
-state = "Deactivated"
+state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META"]
-timeframes = ["1m"]
+symbols = ["BTC/USD", "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META"]
+timeframes = ["5m"]
 priority = 100
 conflict_policy = "priority_wins"
 exclusive_per_symbol = true
 watchlist_mode = "replace"
-asset_classes = ["EQUITY"]
-allowed_directions = ["LONG"]
+asset_classes = ["CRYPTO", "EQUITY"]
+allowed_directions = []
 
 [screening]
 description = "Opening Range Breakout strategy that waits for price to break the first-hour range, then retests the breakout level before entry. CRITICAL: Only pick highly liquid stocks that trade continuously every minute during the first hour — minimum 500K average daily volume, preferably 1M+. Mid and large caps only. Avoid illiquid small-caps, thin pre-market names, or anything that gaps and goes silent. Ideal candidates have a well-defined opening range with strong volume, relative volume above average, and directional conviction from the open. Favors stocks with news catalysts or sector momentum that create decisive opening moves. Avoid symbols with extremely wide opening ranges (high ATR) that make stop placement impractical."
@@ -42,9 +42,7 @@ stop_bps = 50
 limit_offset_bps = 5
 risk_per_trade_bps = 100
 max_position_bps = 700
-allowed_hours_start = "10:30"
-allowed_hours_end = "15:30"
-allowed_hours_tz = "America/New_York"
+
 
 [regime_filter]
 enabled = true
