@@ -374,8 +374,9 @@ func (b *Broker) GetAccountBuyingPower(_ context.Context) (ports.BuyingPower, er
 	cash := b.cash
 	b.mu.RUnlock()
 	return ports.BuyingPower{
-		DayTradingBuyingPower: cash,
-		EffectiveBuyingPower:  cash,
+		DayTradingBuyingPower:    cash,
+		EffectiveBuyingPower:     cash,
+		NonMarginableBuyingPower: cash,
 	}, nil
 }
 

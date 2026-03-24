@@ -8,8 +8,10 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/domain"
 )
 
-// handleFillEvent is the EventBusPort handler. It enqueues fills without processing
-// them inline, ensuring we never block the synchronous event bus.
+// handleFillEvent is the EventBusPort handler.
+// It enqueues fills to the actor channel for async processing.
+// NEVER blocks the caller — fills are queued via a buffered channel.
+// Fills may be dropped if the actor falls behind (channel buffer exhausted).
 func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 	payload, ok := event.Payload.(map[string]any)
 	if !ok {

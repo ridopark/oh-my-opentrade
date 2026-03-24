@@ -247,6 +247,9 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	specDir := r.cfg.StrategyDir
 	if specDir == "" {
+		specDir = "/configs/strategies"
+	}
+	if specDir == "" {
 		specDir = "/home/ridopark/src/oh-my-opentrade/configs/strategies"
 	}
 	var specStore portstrategy.SpecStore = store_fs.NewStore(specDir, strategy.LoadSpecFile)
@@ -453,6 +456,18 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	sort.Slice(streams, func(i, j int) bool { return streams[i].symbol.String() < streams[j].symbol.String() })
 
+	// --- Initialize aggregators for strategy timeframe ---
+	userTF := string(r.cfg.Timeframe)
+	if userTF == "" {
+		userTF = "1m"
+	}
+	useAggregation := userTF != "1m"
+
+	aggregators := make(map[string]*BarAggregator, len(r.cfg.Symbols))
+	for _, sym := range r.cfg.Symbols {
+		aggregators[sym.String()] = NewBarAggregator(userTF)
+	}
+
 	// --- Warmup (uses actual first bar time as endpoint) ---
 
 	r.emitter.EmitSetup("Warming up indicators…")
@@ -502,6 +517,40 @@ func (r *Runner) Run(ctx context.Context) error {
 		for _, res := range warmupResults {
 			warmupBarsCache[res.sym] = res.bars
 			n := monitorSvc.WarmUp(res.bars)
+			sym, _ := domain.NewSymbol(res.sym)
+			// Fetch 1D bars for HTF EMA200 warmup (needed by ORB htf_bias).
+			// The strategy fails-closed if HTF["1d"] is missing, blocking all signals.
+			dailyBarsNeeded := 200
+			dailyTo := r.cfg.From
+			if t, ok := firstBarTime[res.sym]; ok && t.Before(dailyTo) {
+				dailyTo = t
+			}
+			dailyFrom := dailyTo.Add(-time.Duration(float64(dailyBarsNeeded)*1.5) * 24 * time.Hour)
+			bars1d, err := r.marketData.GetHistoricalBars(ctx, sym, "1d", dailyFrom, dailyTo)
+			if err != nil || len(bars1d) < dailyBarsNeeded {
+				r.log.Warn().Err(err).Str("symbol", res.sym).Int("got", len(bars1d)).Int("needed", dailyBarsNeeded).Msg("insufficient 1D bars for HTF EMA200 — ORB signals will be blocked for this symbol")
+			}
+			if len(bars1d) > 0 {
+				closes := make([]float64, len(bars1d))
+				for i, b := range bars1d {
+					closes[i] = b.Close
+				}
+				ema200 := monitor.ComputeStaticEMA(closes, dailyBarsNeeded)
+				if ema200 > 0 {
+					bias := "NEUTRAL"
+					lastClose := bars1d[len(bars1d)-1].Close
+					if lastClose > ema200*1.005 {
+						bias = "BULLISH"
+					} else if lastClose < ema200*0.995 {
+						bias = "BEARISH"
+					}
+					monitorSvc.SetStaticHTFData(res.sym, "1d", domain.HTFData{
+						EMA200: ema200,
+						Bias:   bias,
+					})
+					r.log.Info().Str("symbol", res.sym).Float64("ema200", ema200).Str("bias", bias).Int("daily_bars", len(bars1d)).Msg("1D HTF EMA200 warmup complete")
+				}
+			}
 			monitorSvc.ResetSessionIndicators(res.sym)
 			monitorSvc.MarkReady(res.sym)
 			r.log.Info().Str("symbol", res.sym).Int("warmup_bars", n).Msg("indicator warmup done")
@@ -682,6 +731,26 @@ func (r *Runner) Run(ctx context.Context) error {
 
 			sim.UpdatePrice(bar.Symbol, bar.Close, bar.Time)
 
+			// Determine if exits should be evaluated this bar
+			evalExitsThisBar := false
+			if useAggregation {
+				if agg, ok := aggregators[bar.Symbol.String()]; ok {
+					if agg.Add(bar) {
+						// Aggregated bar closed - evaluate exits
+						evalExitsThisBar = true
+					}
+				}
+			} else {
+				// No aggregation - evaluate exits on every 1m bar
+				evalExitsThisBar = true
+			}
+
+			if evalExitsThisBar && posMonBundle.Service != nil {
+				posMonBundle.Service.EvalExitRules(minTime)
+				r.eventBus.WaitPending()
+			}
+
+			// Publish market bar event
 			evt, evtErr := domain.NewEvent(domain.EventMarketBarReceived, tenantID, envMode, bar.Time.String()+string(bar.Symbol), bar)
 			if evtErr != nil {
 				continue
@@ -695,10 +764,17 @@ func (r *Runner) Run(ctx context.Context) error {
 			barsProcessed++
 		}
 
-		r.eventBus.WaitPending()
-		if posMonBundle.Service != nil {
-			posMonBundle.Service.EvalExitRules(minTime)
-			r.eventBus.WaitPending()
+		// Flush pending aggregators at end of each time group
+		if useAggregation {
+			for _, agg := range aggregators {
+				if agg.HasPending() {
+					closedTime := agg.LastClosedTime()
+					if closedTime > 0 && posMonBundle.Service != nil {
+						posMonBundle.Service.EvalExitRules(time.Unix(closedTime, 0).UTC())
+						r.eventBus.WaitPending()
+					}
+				}
+			}
 		}
 
 		// Emit progress every 10 bar groups.
@@ -751,6 +827,19 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// --- Completion ---
+
+	// Flush any remaining pending aggregators at end of backtest
+	if useAggregation {
+		for _, agg := range aggregators {
+			if agg.HasPending() {
+				closedTime := agg.LastClosedTime()
+				if closedTime > 0 && posMonBundle.Service != nil {
+					posMonBundle.Service.EvalExitRules(time.Unix(closedTime, 0).UTC())
+					r.eventBus.WaitPending()
+				}
+			}
+		}
+	}
 
 	finalResult := r.collector.Result()
 	r.result.Store(&finalResult)

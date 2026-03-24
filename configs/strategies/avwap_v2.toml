@@ -13,13 +13,13 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META", "NVDA"]
+symbols = ["BTC/USD", "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META", "NVDA"]
 timeframes = ["5m"]
 priority = 80
 conflict_policy = "priority_wins"
 exclusive_per_symbol = true
 watchlist_mode = "replace"
-asset_classes = ["EQUITY"]
+asset_classes = ["CRYPTO", "EQUITY"]
 allowed_directions = ["LONG", "SHORT"]
 
 [screening]
@@ -110,3 +110,11 @@ pct = 0.03
 
 [symbol_overrides.NVDA]
 atr_multiplier = 5.0
+[symbol_overrides."BTC/USD"]
+allowed_hours_start = ""
+allowed_hours_end = ""
+allowed_hours_tz = ""
+stop_bps = 45
+limit_offset_bps = 15
+max_spread_bps = 25
+cooldown_seconds = 120

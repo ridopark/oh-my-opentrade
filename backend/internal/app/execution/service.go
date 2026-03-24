@@ -407,7 +407,8 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		// processed from the async queue (which may arrive before the fill clears
 		// the lock) are rejected rather than submitting duplicate orders.
 		if isEntry(intent) {
-			s.positionGate.MarkInflight(event.TenantID, event.EnvMode, intent.Symbol)
+				s.positionGate.MarkInflight(event.TenantID, event.EnvMode, intent.Symbol)
+				defer s.positionGate.ClearInflight(event.TenantID, event.EnvMode, intent.Symbol)
 		}
 	}
 
@@ -705,6 +706,9 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			filledAt = submitStart
 		}
 		s.handleFillWithPrice(po, brokerOrderID, fillPrice, fillQty, filledAt, "", l)
+		if s.positionGate != nil && isEntry(intent) {
+			s.positionGate.ClearInflight(event.TenantID, event.EnvMode, intent.Symbol)
+		}
 	} else if s.orderStream == nil {
 		go s.pollForFill(event.TenantID, event.EnvMode, intent, brokerOrderID, submitStart, l)
 	}
