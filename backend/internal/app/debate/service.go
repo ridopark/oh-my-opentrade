@@ -127,6 +127,15 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 	}
 
 	// 5. Build an enriched OrderIntent using the AI direction and rationale.
+	// Use the setup's bar close as reference price; stop defaults to 2% away.
+	limitPrice := setup.BarClose
+	if limitPrice <= 0 {
+		limitPrice = defaultLimitPrice
+	}
+	stopLoss := limitPrice * 0.98 // 2% default stop
+	if decision.Direction == domain.DirectionShort {
+		stopLoss = limitPrice * 1.02
+	}
 	intentID := uuid.New()
 	intent, err := domain.NewOrderIntent(
 		intentID,
@@ -134,8 +143,8 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 		event.EnvMode,
 		setup.Symbol,
 		decision.Direction,
-		defaultLimitPrice,
-		defaultStopLoss,
+		limitPrice,
+		stopLoss,
 		defaultMaxSlippageBPS,
 		defaultQuantity,
 		"debate",
