@@ -254,13 +254,14 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 	for sym, opens := range c.openSells {
 		lastPrice := c.lastPrices[sym]
 		for _, tr := range opens {
-			// Use entry price as fallback if no bar received yet.
 			price := lastPrice
 			if price <= 0 {
 				price = tr.Price
 			}
-			// Short P&L: entry - current price, applied to notional.
-			equity += tr.Quantity * (tr.Price - price)
+			// Short obligation: subtract current cost to cover.
+			// Cash already includes sale proceeds (qty * entryPrice),
+			// so we subtract the current buyback cost (qty * currentPrice).
+			equity -= tr.Quantity * price
 		}
 	}
 	c.equityCurve = append(c.equityCurve, equity)
@@ -302,7 +303,8 @@ func (c *Collector) Result() Result {
 			if price <= 0 {
 				price = tr.Price
 			}
-			finalEquity += tr.Quantity * (tr.Price - price)
+			// Short obligation: subtract current cost to cover.
+			finalEquity -= tr.Quantity * price
 		}
 	}
 
