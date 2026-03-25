@@ -9,7 +9,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	domstrategy "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
+	portstrategy "github.com/oh-my-opentrade/backend/internal/ports/strategy"
 	"github.com/rs/zerolog"
 )
 
@@ -17,8 +19,6 @@ import (
 const (
 	defaultLimitPrice     = 50000.0
 	defaultMaxSlippageBPS = 10
-	defaultRiskPerTrade   = 0.01 // 1% of equity per trade
-	defaultStopPct        = 0.02 // 2% stop distance
 )
 
 // defaultAdvisorTimeout is the maximum time the service will wait for the LLM
@@ -33,6 +33,7 @@ type Service struct {
 	eventBus       ports.EventBusPort
 	aiAdvisor      ports.AIAdvisorPort
 	repo           ports.RepositoryPort
+	specStore      portstrategy.SpecStore
 	minConfidence  float64
 	equity         float64
 	advisorTimeout time.Duration
@@ -51,6 +52,11 @@ func WithAdvisorTimeout(d time.Duration) Option {
 // SetEquity sets the account equity used for position sizing.
 func (s *Service) SetEquity(equity float64) {
 	s.equity = equity
+}
+
+// SetSpecStore sets the strategy spec store for reading sizing params from config.
+func (s *Service) SetSpecStore(store portstrategy.SpecStore) {
+	s.specStore = store
 }
 
 // NewService creates a new debate Service.
@@ -139,18 +145,41 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 	if limitPrice <= 0 {
 		limitPrice = defaultLimitPrice
 	}
-	stopLoss := limitPrice * (1 - defaultStopPct) // 2% below for longs
-	if decision.Direction == domain.DirectionShort {
-		stopLoss = limitPrice * (1 + defaultStopPct) // 2% above for shorts
+	var stopLoss float64
+
+	// Position sizing from strategy config (or defaults).
+	riskBPS := int64(100)    // 1% risk per trade
+	stopBPS := int64(200)    // 2% stop distance
+	maxPosBPS := int64(700)  // 7% max notional
+	if s.specStore != nil && setup.Trigger != "" {
+		sid, sidErr := domstrategy.NewStrategyID(setup.Trigger)
+		if sidErr == nil {
+			if spec, specErr := s.specStore.GetLatest(context.Background(), sid); specErr == nil {
+				if v, ok := spec.Params["risk_per_trade_bps"].(int64); ok && v > 0 {
+					riskBPS = v
+				}
+				if v, ok := spec.Params["stop_bps"].(int64); ok && v > 0 {
+					stopBPS = v
+				}
+				if v, ok := spec.Params["max_position_bps"].(int64); ok && v > 0 {
+					maxPosBPS = v
+				}
+			}
+		}
 	}
 
-	// Position sizing: risk 1% of equity per trade, capped at 7% notional.
+	stopPct := float64(stopBPS) / 10000.0
+	stopLoss = limitPrice * (1 - stopPct)
+	if decision.Direction == domain.DirectionShort {
+		stopLoss = limitPrice * (1 + stopPct)
+	}
+
 	riskPerShare := math.Abs(limitPrice - stopLoss)
 	qty := 1.0
 	if riskPerShare > 0 && s.equity > 0 {
-		qty = math.Floor((s.equity * defaultRiskPerTrade) / riskPerShare)
-		// Cap notional at 7% of equity to stay within exposure guard limits.
-		maxNotional := s.equity * 0.07
+		riskAmount := s.equity * float64(riskBPS) / 10000.0
+		qty = math.Floor(riskAmount / riskPerShare)
+		maxNotional := s.equity * float64(maxPosBPS) / 10000.0
 		if limitPrice > 0 && qty*limitPrice > maxNotional {
 			qty = math.Floor(maxNotional / limitPrice)
 		}
