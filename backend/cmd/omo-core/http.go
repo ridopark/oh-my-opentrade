@@ -104,6 +104,9 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	backtestHandler := omhttp.NewBacktestHandler(infra.sqlDB, cfg, backtestMarketData, httpLog)
 	imux.Handle("/backtest/", backtestHandler)
 
+	portfolioHandler := omhttp.NewPortfolioHandler(infra.broker, infra.broker, infra.broker.GetAccountEquity, "default", domain.EnvModePaper, httpLog)
+	imux.Handle("/api/portfolio/", portfolioHandler)
+
 	imux.Mux.HandleFunc("/debug/ai-screener/run", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
