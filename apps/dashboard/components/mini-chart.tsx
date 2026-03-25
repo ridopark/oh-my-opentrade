@@ -3,6 +3,8 @@
 import React, { useEffect, useRef, memo } from "react";
 import {
   createChart,
+  CandlestickSeries,
+  HistogramSeries,
   type IChartApi,
   type ISeriesApi,
   type CandlestickData,
@@ -21,8 +23,10 @@ interface MiniChartProps {
 function MiniChartInner({ data, width, height, formingTime }: MiniChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
-  const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const candleRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const volumeRef = useRef<any>(null);
   const dataRef = useRef(data);
   dataRef.current = data;
 
@@ -57,7 +61,7 @@ function MiniChartInner({ data, width, height, formingTime }: MiniChartProps) {
       handleScale: false,
     });
 
-    const candle = chart.addCandlestickSeries({
+    const candle = chart.addSeries(CandlestickSeries, {
       upColor: "#10b981",
       downColor: "#ef4444",
       borderUpColor: "#10b981",
@@ -66,9 +70,9 @@ function MiniChartInner({ data, width, height, formingTime }: MiniChartProps) {
       wickDownColor: "#ef4444",
     });
 
-    const volume = chart.addHistogramSeries({
+    const volume = chart.addSeries(HistogramSeries, {
       priceFormat: { type: "volume" },
-      priceScaleId: "",
+      priceScaleId: "volume",
     });
     volume.priceScale().applyOptions({
       scaleMargins: { top: 0.85, bottom: 0 },
