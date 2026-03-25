@@ -157,8 +157,8 @@ func TestOnFill_PartialSellMatchingAndMarkToMarketOpenPositions(t *testing.T) {
 	assert.Equal(t, 1, r.WinCount)
 	assert.Equal(t, 0, r.LossCount)
 
-	assert.InDelta(t, 150.0, r.TotalPnL, 1e-9)
-	assert.InDelta(t, 1.5, r.TotalReturn, 1e-12)
+	assert.InDelta(t, 100.0, r.TotalPnL, 1e-9)  // realized P&L only (not mark-to-market)
+	assert.InDelta(t, 1.0, r.TotalReturn, 1e-12)
 }
 
 func TestOnFill_IgnoresInvalidPayloads(t *testing.T) {
@@ -188,7 +188,7 @@ func TestOnBar_UpdatesMaxDrawdownWhenEquityDropsBelowPeak(t *testing.T) {
 
 	r := c.Result()
 	assert.InDelta(t, 10.0, r.MaxDrawdown, 1e-9)
-	assert.InDelta(t, 50.0, r.TotalPnL, 1e-9)
+	assert.InDelta(t, 0.0, r.TotalPnL, 1e-9) // no closed trades = no realized P&L
 	assert.Equal(t, 0, r.TradeCount)
 }
 

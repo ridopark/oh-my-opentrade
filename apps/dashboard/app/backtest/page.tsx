@@ -56,7 +56,7 @@ export default function BacktestPage() {
       .then((r) => r.json())
       .then((data) => { if (Array.isArray(data)) setAvailableStrategies(data); })
       .catch(() => {});
-    fetch("/api/strategies/config/orb_break_retest")
+    fetch("/api/strategies/config/orb_break_retest/config")
       .then((r) => r.ok ? r.json() : null)
       .then((data) => { if (data?.params?.orb_window_minutes) setOrbWindowMinutes(data.params.orb_window_minutes); })
       .catch(() => {});
