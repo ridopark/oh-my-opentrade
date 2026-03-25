@@ -645,7 +645,7 @@ function MiniChart({
   ];
 
   return (
-    <div className={`rounded-lg border bg-card overflow-hidden flex flex-col ${hasActivity ? "border-emerald-500/30" : "border-border"}`}>
+    <div className={`rounded-lg border bg-card overflow-hidden flex flex-col h-full ${hasActivity ? "border-emerald-500/30" : "border-border"}`}>
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50">
         <div className="flex items-center gap-3">
           <span className="text-xs font-mono font-semibold text-foreground">{symbol}</span>
