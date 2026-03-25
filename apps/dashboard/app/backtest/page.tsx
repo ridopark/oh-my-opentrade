@@ -10,10 +10,10 @@ import {
   CrosshairMode,
   type IChartApi,
   type ISeriesApi,
-  type IPriceLine,
   type Time,
 } from "lightweight-charts";
 import { SignalMarkerOverlay, type SignalMarkerData } from "@/lib/signal-markers";
+import { ORBBoxOverlay, computeORBRanges } from "@/lib/orb-box-overlay";
 import {
   useBacktest,
   type BacktestConfig,
@@ -423,6 +423,7 @@ function MiniChart({
   const ema50Ref = useRef<ISeriesApi<"Line", Time> | null>(null);
   const ema200Ref = useRef<ISeriesApi<"Line", Time> | null>(null);
   const overlayRef = useRef<SignalMarkerOverlay | null>(null);
+  const orbOverlayRef = useRef<ORBBoxOverlay | null>(null);
   const lastBarCountRef = useRef(0);
 
   useEffect(() => {
@@ -484,6 +485,10 @@ function MiniChart({
     candle.attachPrimitive(overlay);
     overlayRef.current = overlay;
 
+    const orbOverlay = new ORBBoxOverlay();
+    candle.attachPrimitive(orbOverlay);
+    orbOverlayRef.current = orbOverlay;
+
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         chart.applyOptions({ width: entry.contentRect.width, height: entry.contentRect.height });
@@ -502,6 +507,7 @@ function MiniChart({
       ema50Ref.current = null;
       ema200Ref.current = null;
       overlayRef.current = null;
+      orbOverlayRef.current = null;
       lastBarCountRef.current = 0;
     };
   }, []);
@@ -529,51 +535,10 @@ function MiniChart({
 
     lastBarCountRef.current = bars.length;
 
-    // ORB range lines — draw opening range high/low for each trading day
-    const candle = candleRef.current;
-    if (candle) {
-      // Remove old ORB lines by recreating (lightweight-charts has no list API)
-      // We store them on the ref and remove before redrawing
-      const prevLines = (candle as unknown as { _orbLines?: unknown[] })._orbLines;
-      if (prevLines) {
-        for (const line of prevLines) {
-          try { candle.removePriceLine(line as IPriceLine); } catch { /* ok */ }
-        }
-      }
-
-      const orbWindowMinutes = 30;
-      const dayRanges = new Map<string, { high: number; low: number }>();
-      for (const bar of sorted) {
-        const d = new Date(bar.time * 1000);
-        const etHour = (d.getUTCHours() - 5 + 24) % 24;
-        const etMin = d.getUTCMinutes();
-        const minsFromOpen = (etHour - 9) * 60 + (etMin - 30);
-        if (minsFromOpen >= 0 && minsFromOpen < orbWindowMinutes) {
-          const dayKey = d.toISOString().slice(0, 10);
-          const existing = dayRanges.get(dayKey);
-          if (existing) {
-            existing.high = Math.max(existing.high, bar.high);
-            existing.low = Math.min(existing.low, bar.low);
-          } else {
-            dayRanges.set(dayKey, { high: bar.high, low: bar.low });
-          }
-        }
-      }
-
-      const orbLines: IPriceLine[] = [];
-      for (const [dayKey, range] of dayRanges) {
-        if (range.high === range.low) continue;
-        const label = dayKey.slice(5);
-        orbLines.push(candle.createPriceLine({
-          price: range.high, color: "rgba(59, 130, 246, 0.5)", lineWidth: 1, lineStyle: 1,
-          axisLabelVisible: false, title: `${label} ORB H`,
-        }));
-        orbLines.push(candle.createPriceLine({
-          price: range.low, color: "rgba(59, 130, 246, 0.5)", lineWidth: 1, lineStyle: 1,
-          axisLabelVisible: false, title: `${label} ORB L`,
-        }));
-      }
-      (candle as unknown as { _orbLines: IPriceLine[] })._orbLines = orbLines;
+    // ORB range boxes — shaded rectangles for each day's opening range
+    if (orbOverlayRef.current) {
+      const ranges = computeORBRanges(sorted);
+      orbOverlayRef.current.setRanges(ranges);
     }
 
     const ts = chartRef.current?.timeScale();
