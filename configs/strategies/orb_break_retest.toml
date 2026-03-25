@@ -45,7 +45,7 @@ max_position_bps = 700
 
 [regime_filter]
 enabled = true
-allowed_regimes = ["TREND", "BALANCE", "REVERSAL"]
+allowed_regimes = ["TREND", "REVERSAL", "BALANCE"]
 min_atr_pct = 0.8
 
 [hooks]
