@@ -38,7 +38,7 @@ else
   (cd "$ROOT_DIR/backend" && go build -o bin/omo-core ./cmd/omo-core)
   info "Starting omo-core in tmux session..."
   tmux new-session -d -s "$OMO_SESSION" -c "$ROOT_DIR" \
-    "$ROOT_DIR/backend/bin/omo-core 2>&1 | tee -a $ROOT_DIR/logs/omo-core.log"
+    "set -a; source $ROOT_DIR/.env; set +a; $ROOT_DIR/backend/bin/omo-core 2>&1 | tee -a $ROOT_DIR/logs/omo-core.log"
   info "omo-core started  →  tmux attach -t $OMO_SESSION"
 fi
 
