@@ -170,14 +170,15 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 		}),
 	}
 	if cfg.Broker == "ibkr" {
+		type ibkrChecker interface{ IsConnected() bool }
 		healthChecks = append(healthChecks, omhttp.FeedChecker("ibkr_gateway", func() (bool, string) {
-			if infra.concreteIBKR == nil {
-				return false, "IBKR connecting in background"
+			if ic, ok := infra.broker.(ibkrChecker); ok {
+				if ic.IsConnected() {
+					return true, ""
+				}
+				return false, "IB Gateway not connected"
 			}
-			if infra.concreteIBKR.IsConnected() {
-				return true, ""
-			}
-			return false, "IB Gateway not connected"
+			return false, "IBKR connecting in background"
 		}))
 	}
 	healthHandler := omhttp.NewHealthHandler(httpLog, healthChecks...)
