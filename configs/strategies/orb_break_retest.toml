@@ -1,4 +1,36 @@
 schema_version = 2
+[[exit_rules]]
+type = "VOLATILITY_STOP"
+
+[exit_rules.params]
+atr_multiplier = 3.0
+[[exit_rules]]
+type = "SD_TARGET"
+
+[exit_rules.params]
+sd_level = 2.0
+[[exit_rules]]
+type = "STEP_STOP"
+
+[exit_rules.params]
+min_hold_bars = 3
+[[exit_rules]]
+type = "STAGNATION_EXIT"
+
+[exit_rules.params]
+minutes = 30
+sd_threshold = 1.0
+profit_gate_pct = 0.005
+[[exit_rules]]
+type = "EOD_FLATTEN"
+
+[exit_rules.params]
+minutes_before_close = 5
+[[exit_rules]]
+type = "MAX_LOSS"
+
+[exit_rules.params]
+pct = 0.025
 
 [strategy]
 id = "orb_break_retest"
@@ -13,28 +45,28 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["BTC/USD", "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META"]
-timeframes = ["5m"]
+symbols = [ "BTC/USD", "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META",]
+timeframes = [ "5m",]
 priority = 100
 conflict_policy = "priority_wins"
 exclusive_per_symbol = true
 watchlist_mode = "replace"
-asset_classes = ["CRYPTO", "EQUITY"]
+asset_classes = [ "CRYPTO", "EQUITY",]
 allowed_directions = []
 
 [screening]
 description = "Opening Range Breakout strategy that waits for price to break the first-hour range, then retests the breakout level before entry. CRITICAL: Only pick highly liquid stocks that trade continuously every minute during the first hour — minimum 500K average daily volume, preferably 1M+. Mid and large caps only. Avoid illiquid small-caps, thin pre-market names, or anything that gaps and goes silent. Ideal candidates have a well-defined opening range with strong volume, relative volume above average, and directional conviction from the open. Favors stocks with news catalysts or sector momentum that create decisive opening moves. Avoid symbols with extremely wide opening ranges (high ATR) that make stop placement impractical."
 
 [params]
-orb_window_minutes = 30
+orb_window_minutes = 60
 min_rvol = 1.0
-min_confidence = 0.60
+min_confidence = 0.6
 breakout_confirm_bps = 10
 touch_tolerance_bps = 2
 hold_confirm_bps = 0
-max_retest_bars = 20
+max_retest_bars = 30
 allow_missing_range_bars = 20
-max_signals_per_session = 3
+max_signals_per_session = 5
 htf_bias_enabled = true
 atr_multiplier = 3.0
 sweep_cooldown_bars = 3
@@ -43,71 +75,39 @@ limit_offset_bps = 5
 risk_per_trade_bps = 100
 max_position_bps = 700
 
-
 [regime_filter]
 enabled = true
-allowed_regimes = ["TREND", "BALANCE", "REVERSAL"]
+allowed_regimes = [ "TREND", "BALANCE", "REVERSAL",]
 min_atr_pct = 0.8
-
-[hooks]
-signals = { engine = "builtin", name = "orb_break_retest" }
 
 [options]
 enabled = false
 
+[dynamic_risk]
+enabled = true
+min_confidence = 0.6
+risk_scale_min = 0.5
+risk_scale_max = 1.0
+stop_tight_mult = 0.6
+stop_wide_mult = 1.5
+size_tight_mult = 0.7
+size_wide_mult = 1.5
+
 [options.defaults]
 min_dte = 35
 max_dte = 45
-target_delta_low = 0.40
+target_delta_low = 0.4
 target_delta_high = 0.55
 min_open_interest = 100
-max_spread_pct = 0.10
+max_spread_pct = 0.1
 max_iv = 1.0
 
+[hooks.signals]
+engine = "builtin"
+name = "orb_break_retest"
+
 [options.regime_overrides.BALANCE]
-target_delta_low = 0.30
+target_delta_low = 0.3
 target_delta_high = 0.45
 min_dte = 30
 max_dte = 50
-
-[dynamic_risk]
-enabled = true
-min_confidence = 0.60
-risk_scale_min = 0.50
-risk_scale_max = 1.00
-stop_tight_mult = 0.60
-stop_wide_mult = 1.50
-size_tight_mult = 0.70
-size_wide_mult = 1.50
-
-[[exit_rules]]
-type = "VOLATILITY_STOP"
-[exit_rules.params]
-atr_multiplier = 3.0
-
-[[exit_rules]]
-type = "SD_TARGET"
-[exit_rules.params]
-sd_level = 2.0
-
-[[exit_rules]]
-type = "STEP_STOP"
-[exit_rules.params]
-min_hold_bars = 3
-
-[[exit_rules]]
-type = "STAGNATION_EXIT"
-[exit_rules.params]
-minutes = 30
-sd_threshold = 1.0
-profit_gate_pct = 0.005
-
-[[exit_rules]]
-type = "EOD_FLATTEN"
-[exit_rules.params]
-minutes_before_close = 5
-
-[[exit_rules]]
-type = "MAX_LOSS"
-[exit_rules.params]
-pct = 0.025
