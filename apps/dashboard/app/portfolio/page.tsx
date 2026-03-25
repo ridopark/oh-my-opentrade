@@ -70,6 +70,7 @@ export default function PortfolioPage() {
   const [account, setAccount] = useState<Account | null>(null);
   const [loading, setLoading] = useState(true);
   const [closing, setClosing] = useState<string | null>(null);
+  const [confirmClose, setConfirmClose] = useState<string | null>(null);
   const [closingAll, setClosingAll] = useState(false);
   const [confirmCloseAll, setConfirmCloseAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -314,20 +315,39 @@ export default function PortfolioPage() {
                       <PnlText value={pos.unrealized_pnl} pct={pos.unrealized_pnl_pct} />
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => closePosition(pos.symbol)}
-                        disabled={closing === pos.symbol || closingAll}
-                        className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
-                      >
-                        {closing === pos.symbol ? (
-                          <RefreshCw className="h-3 w-3 animate-spin" />
-                        ) : (
+                      {confirmClose === pos.symbol ? (
+                        <div className="flex gap-1 justify-end">
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => { setConfirmClose(null); closePosition(pos.symbol); }}
+                            disabled={closing === pos.symbol}
+                          >
+                            {closing === pos.symbol ? (
+                              <RefreshCw className="h-3 w-3 animate-spin mr-1" />
+                            ) : null}
+                            Confirm
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setConfirmClose(null)}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setConfirmClose(pos.symbol)}
+                          disabled={closingAll}
+                          className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                        >
                           <X className="h-3 w-3" />
-                        )}
-                        <span className="ml-1">Close</span>
-                      </Button>
+                          <span className="ml-1">Close</span>
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}
