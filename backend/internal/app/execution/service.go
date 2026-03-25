@@ -394,6 +394,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	}
 
 	// 1a. Position gate — reject duplicate/conflicting entries.
+	var inflightHandedOff bool
 	if s.positionGate != nil {
 		if err := s.positionGate.Check(ctx, intent); err != nil {
 			l.Warn().Err(err).Msg("order intent rejected by position gate")
@@ -406,10 +407,26 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		// Mark inflight immediately after gate passes so that subsequent intents
 		// processed from the async queue (which may arrive before the fill clears
 		// the lock) are rejected rather than submitting duplicate orders.
+		// Ownership transfers to pollForFill/syncFill on the happy path;
+		// rejection paths clear it via this deferred fallback.
 		if isEntry(intent) {
 				s.positionGate.MarkInflight(event.TenantID, event.EnvMode, intent.Symbol)
-				defer s.positionGate.ClearInflight(event.TenantID, event.EnvMode, intent.Symbol)
+				defer func() {
+					if !inflightHandedOff {
+						s.positionGate.ClearInflight(event.TenantID, event.EnvMode, intent.Symbol)
+					}
+				}()
 		}
+	}
+
+	if intent.Direction == domain.DirectionShort && !intent.AssetClass.SupportsShort() {
+		reason := "SHORT direction not supported — crypto is long-only on Alpaca"
+		l.Warn().Str("asset_class", intent.AssetClass.String()).Msg(reason)
+		if s.metrics != nil {
+			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "short_disabled").Inc()
+		}
+		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, reason))
+		return nil
 	}
 
 	if s.exposureGuard != nil {
@@ -418,25 +435,9 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			if s.metrics != nil {
 				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "exposure").Inc()
 			}
-			if s.positionGate != nil && isEntry(intent) {
-				s.positionGate.ClearInflight(event.TenantID, event.EnvMode, intent.Symbol)
-			}
 			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
 			return nil
 		}
-	}
-
-	if intent.Direction == domain.DirectionShort && intent.AssetClass == domain.AssetClassCrypto {
-		reason := "SHORT direction not supported — crypto is long-only on Alpaca"
-		l.Warn().Str("asset_class", intent.AssetClass.String()).Msg(reason)
-		if s.metrics != nil {
-			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "short_disabled").Inc()
-		}
-		if s.positionGate != nil && isEntry(intent) {
-			s.positionGate.ClearInflight(event.TenantID, event.EnvMode, intent.Symbol)
-		}
-		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, reason))
-		return nil
 	}
 
 	// 2. Validate risk (skip for exit orders — closing reduces exposure).
@@ -596,23 +597,19 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "api").Inc()
 			s.metrics.Orders.SubmitLat.WithLabelValues("alpaca", intent.Strategy, "limit").Observe(time.Since(submitStart).Seconds())
 		}
-		if s.positionGate != nil {
-			if intent.Direction.IsExit() {
-				s.positionGate.ClearInflightExit(event.TenantID, event.EnvMode, intent.Symbol)
-				if tripped := s.positionGate.RecordExitFailure(event.TenantID, event.EnvMode, intent.Symbol); tripped {
-					s.emit(ctx, domain.EventExitCircuitBroken, event.TenantID, event.EnvMode, intent.ID.String(), domain.ExitCircuitBrokenPayload{
-						Symbol:       intent.Symbol,
-						Failures:     maxExitFailures,
-						CooldownSecs: exitCooldownDuration.Seconds(),
-					})
-				}
-				s.emit(ctx, domain.EventExitOrderTerminal, event.TenantID, event.EnvMode, intent.ID.String(), map[string]any{
-					"symbol":          string(intent.Symbol),
-					"broker_order_id": "",
+		if s.positionGate != nil && intent.Direction.IsExit() {
+			s.positionGate.ClearInflightExit(event.TenantID, event.EnvMode, intent.Symbol)
+			if tripped := s.positionGate.RecordExitFailure(event.TenantID, event.EnvMode, intent.Symbol); tripped {
+				s.emit(ctx, domain.EventExitCircuitBroken, event.TenantID, event.EnvMode, intent.ID.String(), domain.ExitCircuitBrokenPayload{
+					Symbol:       intent.Symbol,
+					Failures:     maxExitFailures,
+					CooldownSecs: exitCooldownDuration.Seconds(),
 				})
-			} else if isEntry(intent) {
-				s.positionGate.ClearInflight(event.TenantID, event.EnvMode, intent.Symbol)
 			}
+			s.emit(ctx, domain.EventExitOrderTerminal, event.TenantID, event.EnvMode, intent.ID.String(), map[string]any{
+				"symbol":          string(intent.Symbol),
+				"broker_order_id": "",
+			})
 		}
 		s.emit(ctx, domain.EventOrderRejected, event.TenantID, event.EnvMode, intent.ID.String(), err.Error())
 		return nil
@@ -679,6 +676,10 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		submitStart: submitStart,
 	}
 	s.pendingOrders.Store(brokerOrderID, po)
+
+	// Ownership of the inflight lock transfers to fill detection (syncFill,
+	// pollForFill, or orderStream). The deferred fallback must NOT clear it.
+	inflightHandedOff = true
 
 	if s.syncFill {
 		s.pendingOrders.Delete(brokerOrderID)
