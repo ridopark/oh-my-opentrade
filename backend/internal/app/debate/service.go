@@ -3,6 +3,7 @@ package debate
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,12 +14,11 @@ import (
 )
 
 // Default order parameters used when generating an OrderIntent from an AI decision.
-// These will be replaced by strategy DNA configuration in a future phase.
 const (
 	defaultLimitPrice     = 50000.0
-	defaultStopLoss       = 49000.0
 	defaultMaxSlippageBPS = 10
-	defaultQuantity       = 1.0
+	defaultRiskPerTrade   = 0.01 // 1% of equity per trade
+	defaultStopPct        = 0.02 // 2% stop distance
 )
 
 // defaultAdvisorTimeout is the maximum time the service will wait for the LLM
@@ -34,6 +34,7 @@ type Service struct {
 	aiAdvisor      ports.AIAdvisorPort
 	repo           ports.RepositoryPort
 	minConfidence  float64
+	equity         float64
 	advisorTimeout time.Duration
 	log            zerolog.Logger
 }
@@ -47,6 +48,11 @@ func WithAdvisorTimeout(d time.Duration) Option {
 	return func(s *Service) { s.advisorTimeout = d }
 }
 
+// SetEquity sets the account equity used for position sizing.
+func (s *Service) SetEquity(equity float64) {
+	s.equity = equity
+}
+
 // NewService creates a new debate Service.
 // minConfidence is the minimum AI confidence [0,1] required to emit an OrderIntentCreated event.
 // opts are functional options (e.g. WithAdvisorTimeout).
@@ -56,6 +62,7 @@ func NewService(eventBus ports.EventBusPort, aiAdvisor ports.AIAdvisorPort, repo
 		aiAdvisor:      aiAdvisor,
 		repo:           repo,
 		minConfidence:  minConfidence,
+		equity:         100000, // default, overridden by SetEquity
 		advisorTimeout: defaultAdvisorTimeout,
 		log:            log,
 	}
@@ -132,10 +139,21 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 	if limitPrice <= 0 {
 		limitPrice = defaultLimitPrice
 	}
-	stopLoss := limitPrice * 0.98 // 2% default stop
+	stopLoss := limitPrice * (1 - defaultStopPct) // 2% below for longs
 	if decision.Direction == domain.DirectionShort {
-		stopLoss = limitPrice * 1.02
+		stopLoss = limitPrice * (1 + defaultStopPct) // 2% above for shorts
 	}
+
+	// Position sizing: risk 1% of equity per trade.
+	riskPerShare := math.Abs(limitPrice - stopLoss)
+	qty := 1.0
+	if riskPerShare > 0 && s.equity > 0 {
+		qty = math.Floor((s.equity * defaultRiskPerTrade) / riskPerShare)
+		if qty < 1 {
+			qty = 1
+		}
+	}
+
 	intentID := uuid.New()
 	intent, err := domain.NewOrderIntent(
 		intentID,
@@ -146,7 +164,7 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 		limitPrice,
 		stopLoss,
 		defaultMaxSlippageBPS,
-		defaultQuantity,
+		qty,
 		setup.Trigger,
 		decision.Rationale,
 		decision.Confidence,
