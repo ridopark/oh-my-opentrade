@@ -339,6 +339,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Only start if ORB strategy is selected (it's the only consumer of SetupDetected).
 	if orbSelected {
 		debateSvc := debate.NewService(r.eventBus, aiAdvisor, &noop.NoopRepo{}, 0.50, r.log.With().Str("component", "debate").Logger())
+		debateSvc.SetEquity(r.cfg.InitialEquity)
 		if startErr := debateSvc.Start(ctx); startErr != nil {
 			r.status.Store("error")
 			return fmt.Errorf("start debate: %w", startErr)
