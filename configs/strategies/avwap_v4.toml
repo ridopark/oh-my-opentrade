@@ -1,0 +1,114 @@
+schema_version = 2
+
+[strategy]
+id = "avwap_v4"
+version = "4.0.0"
+name = "AVWAP v4 - Filtered Breakout"
+description = "Single anchor, volume-confirmed breakouts, morning-only, STEP_STOP exits"
+author = "system"
+created_at = "2026-03-25T00:00:00Z"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+symbols = ["BTC/USD", "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "SOXL", "U", "PLTR", "SPY", "META", "NVDA"]
+timeframes = ["5m"]
+priority = 80
+conflict_policy = "priority_wins"
+exclusive_per_symbol = true
+watchlist_mode = "replace"
+asset_classes = ["EQUITY", "CRYPTO"]
+allowed_directions = ["LONG"]
+
+[screening]
+description = "Volume-confirmed AVWAP breakouts with structural filters. Single session_open anchor, morning-only window, TREND regime gate, higher-lows confirmation. STEP_STOP replaces VOLATILITY_STOP for asymmetric exits."
+
+[params]
+# Single anchor — session_open is the most meaningful intraday level
+anchors = ["session_open"]
+breakout_enabled = true
+# 10 bars = 50min sustained breakout on 5m — filters noise
+hold_bars = 10
+# Require 1.5x average volume for institutional conviction
+volume_mult = 1.5
+# Disable bounce — contradicts breakout logic in same regime
+bounce_enabled = false
+rsi_bounce_max = 30.0
+# 4 bars below AVWAP before strategy exit
+exit_hold_bars = 4
+# 15min cooldown prevents revenge trading
+cooldown_seconds = 900
+max_trades_per_day = 2
+# TREND only — breakouts fail in BALANCE/ranging markets
+allow_regimes = ["TREND"]
+asset_class = "EQUITY"
+# Require ascending lows before entry
+require_higher_lows = true
+higher_lows_bars = 3
+# Block midday chop
+midday_trap_shield = true
+midday_volume_mult = 2.5
+stop_bps = 50
+limit_offset_bps = 5
+risk_per_trade_bps = 100
+max_position_bps = 1000
+# Morning session only — best breakout follow-through
+allowed_hours_start = "09:45"
+allowed_hours_end = "11:30"
+allowed_hours_tz = "America/New_York"
+
+[regime_filter]
+enabled = true
+allowed_regimes = ["TREND"]
+min_atr_pct = 0.8
+
+[hooks]
+signals = { engine = "builtin", name = "avwap_v1" }
+
+[dynamic_risk]
+enabled = false
+
+# STEP_STOP replaces VOLATILITY_STOP — ratcheting stop that lets winners run
+[[exit_rules]]
+type = "STEP_STOP"
+[exit_rules.params]
+min_hold_bars = 10
+bar_minutes = 5
+
+# Wider SD target for better R:R
+[[exit_rules]]
+type = "SD_TARGET"
+[exit_rules.params]
+sd_level = 2.5
+min_hold_bars = 10
+bar_minutes = 5
+
+# Kill zombie trades that go nowhere
+[[exit_rules]]
+type = "STAGNATION_EXIT"
+[exit_rules.params]
+minutes = 45
+sd_threshold = 1.0
+profit_gate_pct = 0.005
+
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 15
+
+# Tighter hard stop
+[[exit_rules]]
+type = "MAX_LOSS"
+[exit_rules.params]
+pct = 0.015
+
+[symbol_overrides."BTC/USD"]
+allowed_hours_start = ""
+allowed_hours_end = ""
+allowed_hours_tz = ""
+stop_bps = 45
+limit_offset_bps = 15
+max_spread_bps = 25
+cooldown_seconds = 120
