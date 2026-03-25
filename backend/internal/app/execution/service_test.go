@@ -103,6 +103,30 @@ func TestService_ExitOrderPassesPipeline(t *testing.T) {
 	assert.Contains(t, emittedEvents, domain.EventOrderSubmitted)
 }
 
+func TestService_NewShortEquityEntryAllowed(t *testing.T) {
+	svc, bus, broker, _ := setupTestService(t)
+	err := svc.Start(context.Background(), "test", domain.EnvModePaper)
+	require.NoError(t, err)
+
+	var emittedEvents []string
+	subscribeAll(t, bus, []string{
+		domain.EventOrderIntentValidated,
+		domain.EventOrderSubmitted,
+	}, &emittedEvents)
+
+	intentEvt := createOrderIntentEvent(t, domain.DirectionShort)
+	intent := intentEvt.Payload.(domain.OrderIntent)
+	intent.AssetClass = domain.AssetClassEquity
+	intentEvt.Payload = intent
+	err = bus.Publish(context.Background(), intentEvt)
+	assert.NoError(t, err)
+	bus.Flush()
+
+	assert.Equal(t, 1, broker.SubmitOrderCalls, "equity short entry should reach broker")
+	assert.Contains(t, emittedEvents, domain.EventOrderIntentValidated)
+	assert.Contains(t, emittedEvents, domain.EventOrderSubmitted)
+}
+
 func TestService_NewShortCryptoEntryRejected(t *testing.T) {
 	svc, bus, broker, _ := setupTestService(t)
 	err := svc.Start(context.Background(), "test", domain.EnvModePaper)
