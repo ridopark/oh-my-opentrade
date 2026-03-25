@@ -105,6 +105,7 @@ func (c *connection) connect() error {
 		mdType = 3
 	}
 	ib.ReqMarketDataType(mdType)
+	ib.ReqPositions()
 
 	c.mu.Lock()
 	c.ib = ib

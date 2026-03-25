@@ -200,10 +200,17 @@ func (a *Adapter) GetPositions(_ context.Context, tenantID string, envMode domai
 	}
 
 	positions := ib.Positions()
+	a.log.Info().Int("raw_count", len(positions)).Str("account_filter", a.cfg.AccountID).Msg("ibkr: GetPositions called")
 	trades := make([]domain.Trade, 0, len(positions))
 	for _, p := range positions {
+		a.log.Debug().
+			Str("symbol", p.Contract.Symbol).
+			Str("account", p.Account).
+			Float64("qty", p.Position.Float()).
+			Float64("avg_cost", p.AvgCost).
+			Msg("ibkr: raw position")
 		if a.cfg.AccountID != "" && p.Account != a.cfg.AccountID {
-			a.log.Debug().
+			a.log.Warn().
 				Str("account", p.Account).
 				Str("wanted", a.cfg.AccountID).
 				Msg("ibkr: skipping position from different account")
