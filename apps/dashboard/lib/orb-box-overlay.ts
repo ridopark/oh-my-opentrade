@@ -193,27 +193,30 @@ export function computeORBRanges(bars: { time: number; high: number; low: number
     const minsFromOpen = (etHour - 9) * 60 + (etMin - 30);
     const dayKey = etParts[0]; // MM/DD/YYYY in ET
 
-    // Track ORB window bars
+    // Track ORB window bars (collect high/low during the window)
     if (minsFromOpen >= 0 && minsFromOpen < windowMinutes) {
       const existing = dayData.get(dayKey);
       if (existing) {
         existing.high = Math.max(existing.high, bar.high);
         existing.low = Math.min(existing.low, bar.low);
       } else {
-        dayData.set(dayKey, { high: bar.high, low: bar.low, startTime: bar.time, endTime: bar.time });
+        dayData.set(dayKey, { high: bar.high, low: bar.low, startTime: 0, endTime: bar.time });
       }
     }
 
-    // Track last bar of each day for endTime
+    // Track first bar after ORB window (box starts here) and last bar of day
     const existing = dayData.get(dayKey);
     if (existing) {
+      if (minsFromOpen >= windowMinutes && existing.startTime === 0) {
+        existing.startTime = bar.time; // first bar after ORB window closes
+      }
       existing.endTime = Math.max(existing.endTime, bar.time);
     }
   }
 
   const ranges: ORBRange[] = [];
   for (const [dayKey, data] of dayData) {
-    if (data.high === data.low) continue;
+    if (data.high === data.low || data.startTime === 0) continue;
     ranges.push({
       startTime: data.startTime,
       endTime: data.endTime,
