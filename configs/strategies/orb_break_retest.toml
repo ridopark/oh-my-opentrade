@@ -52,16 +52,16 @@ conflict_policy = "priority_wins"
 exclusive_per_symbol = true
 watchlist_mode = "replace"
 asset_classes = [ "CRYPTO", "EQUITY",]
-allowed_directions = []
+allowed_directions = [ "LONG",]
 
 [screening]
 description = "Opening Range Breakout strategy that waits for price to break the first-hour range, then retests the breakout level before entry. CRITICAL: Only pick highly liquid stocks that trade continuously every minute during the first hour — minimum 500K average daily volume, preferably 1M+. Mid and large caps only. Avoid illiquid small-caps, thin pre-market names, or anything that gaps and goes silent. Ideal candidates have a well-defined opening range with strong volume, relative volume above average, and directional conviction from the open. Favors stocks with news catalysts or sector momentum that create decisive opening moves. Avoid symbols with extremely wide opening ranges (high ATR) that make stop placement impractical."
 
 [params]
-orb_window_minutes = 60
+orb_window_minutes = 30
 min_rvol = 1.0
 min_confidence = 0.6
-breakout_confirm_bps = 10
+breakout_confirm_bps = 5
 touch_tolerance_bps = 2
 hold_confirm_bps = 0
 max_retest_bars = 30
