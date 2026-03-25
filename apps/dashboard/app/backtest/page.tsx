@@ -629,37 +629,34 @@ interface Position {
   exitTime: string | null;
 }
 
+function getTradeDirection(t: BacktestTrade): string {
+  return (t as BacktestTrade & { direction?: string }).direction ?? "";
+}
+
 function groupPositions(trades: BacktestTrade[]): Position[] {
   const openPositions = new Map<string, BacktestTrade>();
   const positions: Position[] = [];
 
   for (const t of trades) {
-    const dir = (t as BacktestTrade & { direction?: string }).direction ?? "";
-    const isEntry = dir === "LONG" || dir === "SHORT";
-    const isExit = dir === "CLOSE";
-    // Legacy fallback: if no direction field, use side-based matching
-    const isBuyEntry = !dir && t.side?.toLowerCase() === "buy";
-    const isSellExit = !dir && t.side?.toLowerCase() === "sell";
-
+    const isBuy = t.side?.toLowerCase() === "buy";
     const key = `${t.symbol}:${t.strategy ?? ""}`;
 
-    if (isEntry || isBuyEntry) {
+    if (isBuy) {
       openPositions.set(key, t);
-    } else if (isExit || isSellExit) {
+    } else {
       const entry = openPositions.get(key);
       if (entry) {
         openPositions.delete(key);
-        const entryDir = (entry as BacktestTrade & { direction?: string }).direction ?? "LONG";
         const qty = entry.quantity ?? 0;
         const entryPx = entry.price ?? 0;
         const exitPx = t.price ?? 0;
-        const isShort = entryDir === "SHORT";
-        const pnl = isShort ? (entryPx - exitPx) * qty : (exitPx - entryPx) * qty;
-        const pnlPct = entryPx > 0 ? (isShort ? ((entryPx - exitPx) / entryPx) * 100 : ((exitPx - entryPx) / entryPx) * 100) : 0;
+        const pnl = (exitPx - entryPx) * qty;
+        const pnlPct = entryPx > 0 ? ((exitPx - entryPx) / entryPx) * 100 : 0;
+        const entryDir = getTradeDirection(entry);
         positions.push({
           symbol: t.symbol,
           strategy: t.strategy ?? "",
-          direction: isShort ? "SHORT" : "LONG",
+          direction: entryDir === "SHORT" ? "SHORT" : "LONG",
           entry,
           exit: t,
           qty,
@@ -675,7 +672,7 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
   }
 
   for (const [, entry] of openPositions) {
-    const entryDir = (entry as BacktestTrade & { direction?: string }).direction ?? "LONG";
+    const entryDir = getTradeDirection(entry);
     positions.push({
       symbol: entry.symbol,
       strategy: entry.strategy ?? "",
