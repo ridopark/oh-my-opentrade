@@ -96,8 +96,13 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 	defer advCancel()
 	decision, err := s.aiAdvisor.RequestDebate(advCtx, setup.Symbol, setup.Regime, setup.Snapshot)
 	if err != nil {
-		l.Error().Err(err).Msg("AI advisor error — skipping debate")
-		return nil
+		// AI disabled or errored — pass through the setup's own direction and confidence.
+		l.Info().Err(err).Msg("AI advisor unavailable — using setup direction as passthrough")
+		decision = &domain.AdvisoryDecision{
+			Direction:  setup.Direction,
+			Confidence: setup.Confidence,
+			Rationale:  fmt.Sprintf("passthrough (no-ai): %s %s confidence=%.2f", setup.Trigger, setup.Direction, setup.Confidence),
+		}
 	}
 	if decision == nil {
 		l.Info().Msg("AI advisor returned NEUTRAL — no trade")
