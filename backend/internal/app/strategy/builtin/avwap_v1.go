@@ -434,9 +434,14 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 				if err != nil {
 					return avwapSt, nil, err
 				}
-				avwapSt.PositionSide = ""
-				avwapSt.CooldownUntil = now.Add(cooldown)
-				return avwapSt, []start.Signal{sig}, nil
+			avwapSt.PositionSide = ""
+			avwapSt.CooldownUntil = now.Add(cooldown)
+			// Reset AboveCount/BelowCount to prevent immediate re-exit on next position
+			for anchorName := range avwapSt.AboveCount {
+				avwapSt.AboveCount[anchorName] = 0
+				avwapSt.BelowCount[anchorName] = 0
+			}
+			return avwapSt, []start.Signal{sig}, nil
 			}
 		}
 	}
@@ -451,9 +456,14 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 				if err != nil {
 					return avwapSt, nil, err
 				}
-				avwapSt.PositionSide = ""
-				avwapSt.CooldownUntil = now.Add(cooldown)
-				return avwapSt, []start.Signal{sig}, nil
+			avwapSt.PositionSide = ""
+			avwapSt.CooldownUntil = now.Add(cooldown)
+			// Reset AboveCount/BelowCount to prevent immediate re-exit on next position
+			for anchorName := range avwapSt.AboveCount {
+				avwapSt.AboveCount[anchorName] = 0
+				avwapSt.BelowCount[anchorName] = 0
+			}
+			return avwapSt, []start.Signal{sig}, nil
 			}
 		}
 	}
