@@ -652,6 +652,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.status.Store("error")
 		return fmt.Errorf("start monitor: %w", startErr)
 	}
+	execBundle.LedgerWriter.SetNowFunc(clockFn)
 	if startErr := execBundle.LedgerWriter.Start(ctx, "backtest", domain.EnvModePaper); startErr != nil {
 		r.status.Store("error")
 		return fmt.Errorf("start ledger writer: %w", startErr)
