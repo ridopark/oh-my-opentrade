@@ -6,9 +6,11 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ArrowUp, ArrowDown, Activity, Zap } from "lucide-react";
+import { ArrowUp, ArrowDown, Activity, Zap, ArrowLeft, Plus, Grid3X3 } from "lucide-react";
 import { useChartData, type OHLCBar } from "@/lib/use-chart-data";
 import { useStrategyList } from "@/hooks/queries";
+import { useWatchlist } from "@/hooks/use-watchlist";
+import { MiniChartCard } from "@/components/mini-chart-card";
 import type { ChartSignal } from "@/components/trading-signal-chart";
 import type { StrategySignalEvent, RegimeType } from "@/lib/types";
 
@@ -66,27 +68,48 @@ function TradingSignalContent() {
     return Array.from(set).sort();
   }, [strategies]);
 
+  const { symbols: watchlistSymbols, expandedSymbol, setExpandedSymbol, addSymbol, removeSymbol, maxSymbols, hydrated } = useWatchlist(availableSymbols);
+
+  // URL param support: ?symbol=SPY opens expanded mode
   const searchParams = useSearchParams();
   const router = useRouter();
   const paramSymbol = searchParams.get("symbol") ?? "";
-  const [symbol, setSymbolState] = useState<string>(paramSymbol);
+
+  useEffect(() => {
+    if (paramSymbol && availableSymbols.includes(paramSymbol) && !expandedSymbol) {
+      setExpandedSymbol(paramSymbol);
+    }
+  }, [paramSymbol, availableSymbols, expandedSymbol, setExpandedSymbol]);
 
   const setSymbol = useCallback((s: string) => {
-    setSymbolState(s);
+    setExpandedSymbol(s);
     const params = new URLSearchParams(searchParams.toString());
     params.set("symbol", s);
     router.replace(`?${params.toString()}`, { scroll: false });
-  }, [searchParams, router]);
+  }, [searchParams, router, setExpandedSymbol]);
 
-  useEffect(() => {
-    if (!symbol && availableSymbols.length > 0) {
-      setSymbol(availableSymbols[0]);
-    } else if (symbol && availableSymbols.length > 0 && !availableSymbols.includes(symbol)) {
-      setSymbol(availableSymbols[0]);
-    }
-  }, [symbol, availableSymbols, setSymbol]);
+  const goBackToGrid = useCallback(() => {
+    setExpandedSymbol(null);
+    router.replace("/", { scroll: false });
+  }, [router, setExpandedSymbol]);
 
-  // Fetch state and recent signals in parallel for the current symbol
+  // Load chart data for all watchlist symbols (or expanded symbol)
+  const chartSymbols = useMemo(() => {
+    if (expandedSymbol) return [expandedSymbol];
+    return watchlistSymbols;
+  }, [expandedSymbol, watchlistSymbols]);
+
+  const { barsBySymbol, loading, loadMore, formingSymbols } = useChartData(
+    timeframe,
+    "/api/events",
+    chartSymbols.length > 0 ? chartSymbols : undefined,
+  );
+
+  const symbol = expandedSymbol ?? "";
+  const bars: OHLCBar[] = barsBySymbol[symbol] ?? [];
+  const formingTime = formingSymbols[symbol] ?? null;
+
+  // Fetch signals/regime for expanded symbol
   useEffect(() => {
     if (!symbol) return;
 
@@ -98,7 +121,6 @@ function TradingSignalContent() {
     ])
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .then(([snap, data]: [any, { items: StrategySignalEvent[] } | null]) => {
-        // Process state snapshot
         if (snap) {
           const currentRegime = snap.anchorRegimes?.[snap.Timeframe];
           if (currentRegime) {
@@ -109,7 +131,6 @@ function TradingSignalContent() {
           }
         }
 
-        // Process recent signals
         if (data?.items?.length) {
           setRecentSignalEvents((prev) => {
             const existingIds = new Set(prev.map((e) => `${e.SignalID}:${e.Status}`));
@@ -145,11 +166,7 @@ function TradingSignalContent() {
       .catch(() => {});
   }, [symbol]);
 
-  const chartSymbols = useMemo(() => symbol ? [symbol] : [], [symbol]);
-  const { barsBySymbol, loading, loadMore, formingSymbols } = useChartData(timeframe, "/api/events", chartSymbols.length > 0 ? chartSymbols : undefined);
-  const bars: OHLCBar[] = barsBySymbol[symbol] ?? [];
-  const formingTime = formingSymbols[symbol] ?? null;
-
+  // SSE for live signals + regime updates
   useEffect(() => {
     const es = new EventSource("/api/events");
 
@@ -209,6 +226,7 @@ function TradingSignalContent() {
     return () => es.close();
   }, []);
 
+  // Resize observer for expanded chart
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -229,6 +247,131 @@ function TradingSignalContent() {
     setIndicators((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
+  const symbolSignals = signals.filter((s) => {
+    const earliest = bars.length > 0 ? bars[0].time : 0;
+    return s.time >= earliest;
+  });
+
+  // ─── GRID MODE ──────────────────────────────────────────
+  if (!expandedSymbol) {
+    const symbolsNotInWatchlist = availableSymbols.filter((s) => !watchlistSymbols.includes(s));
+
+    return (
+      <div className="flex flex-col gap-4 pt-12 md:pt-0">
+        {/* Watchlist Header */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
+              <Grid3X3 className="h-6 w-6" />
+              Watchlist
+            </h1>
+            <Badge variant="outline" className="text-xs">
+              {watchlistSymbols.length}/{maxSymbols}
+            </Badge>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {symbolsNotInWatchlist.length > 0 && watchlistSymbols.length < maxSymbols && (
+              <select
+                onChange={(e) => { if (e.target.value) addSymbol(e.target.value); e.target.value = ""; }}
+                className="text-sm bg-card border border-border rounded-md px-2 py-1.5 cursor-pointer text-muted-foreground hover:border-emerald-500/50 focus:outline-none"
+                defaultValue=""
+              >
+                <option value="" disabled>+ Add Symbol</option>
+                {symbolsNotInWatchlist.map((sym) => (
+                  <option key={sym} value={sym}>{sym}</option>
+                ))}
+              </select>
+            )}
+
+            <div className="flex items-center gap-1 bg-muted/30 p-1 rounded-md">
+              {TIMEFRAMES.map((tf) => (
+                <button
+                  key={tf}
+                  onClick={() => setTimeframe(tf)}
+                  className={`px-2 py-1 text-xs font-medium rounded-sm transition-all ${
+                    timeframe === tf
+                      ? "bg-emerald-600 text-white shadow-sm"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  }`}
+                >
+                  {tf}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Chart Grid */}
+        {hydrated && watchlistSymbols.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
+            <Grid3X3 className="h-12 w-12 mb-4 opacity-30" />
+            <p className="text-lg">No symbols in watchlist</p>
+            <p className="text-sm">Add symbols using the dropdown above</p>
+          </div>
+        ) : (
+          <div className={`grid gap-4 ${
+            watchlistSymbols.length <= 2 ? "grid-cols-1 md:grid-cols-2" :
+            watchlistSymbols.length <= 4 ? "grid-cols-1 md:grid-cols-2" :
+            watchlistSymbols.length <= 6 ? "grid-cols-1 md:grid-cols-2 lg:grid-cols-3" :
+            "grid-cols-1 md:grid-cols-2 lg:grid-cols-4"
+          }`}>
+            {watchlistSymbols.map((sym) => (
+              <MiniChartCard
+                key={sym}
+                symbol={sym}
+                bars={barsBySymbol[sym] ?? []}
+                regime={regimeBySymbol[sym]}
+                formingTime={formingSymbols[sym] ?? null}
+                onExpand={() => setSymbol(sym)}
+                onRemove={() => removeSymbol(sym)}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Recent Signals (shared across all symbols) */}
+        {recentSignalEvents.length > 0 && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+                <Zap className="w-4 h-4" />
+                Recent Signals
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {recentSignalEvents.slice(0, 9).map((sig, idx) => {
+                  const isBuy = sig.Side?.toLowerCase() === "buy";
+                  const isEntry = sig.Kind?.toLowerCase() !== "exit";
+                  let badgeText = "";
+                  let badgeClass = "";
+                  if (isBuy && isEntry) { badgeText = "LONG"; badgeClass = "bg-emerald-500 text-white"; }
+                  else if (!isBuy && !isEntry) { badgeText = "EXIT"; badgeClass = "bg-orange-500 text-white"; }
+                  else if (!isBuy && isEntry) { badgeText = "SHORT"; badgeClass = "bg-rose-600 text-white"; }
+                  else { badgeText = "COVER"; badgeClass = "bg-sky-500 text-white"; }
+
+                  return (
+                    <div
+                      key={`${sig.SignalID}-${idx}`}
+                      className="flex items-center gap-2 p-2 rounded-md bg-muted/30 cursor-pointer hover:bg-muted/50"
+                      onClick={() => setSymbol(sig.Symbol)}
+                    >
+                      <Badge className={badgeClass}>{badgeText}</Badge>
+                      <span className="font-bold text-sm">{sig.Symbol}</span>
+                      <span className="text-xs text-muted-foreground ml-auto">{new Date(sig.TS).toLocaleTimeString()}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    );
+  }
+
+  // ─── EXPANDED MODE ──────────────────────────────────────
   const lastBar = bars.length > 0 ? bars[bars.length - 1] : null;
   const prevBar = bars.length > 1 ? bars[bars.length - 2] : null;
   const lastPrice = lastBar?.close ?? 0;
@@ -237,16 +380,15 @@ function TradingSignalContent() {
   const priceChangePercent = prevPrice !== 0 ? (priceChange / prevPrice) * 100 : 0;
   const isPositive = priceChange >= 0;
 
-  const symbolSignals = signals.filter((s) => {
-    const earliest = bars.length > 0 ? bars[0].time : 0;
-    return s.time >= earliest;
-  });
-
   return (
     <div className="flex flex-col min-h-[calc(100vh-1.5rem)] md:h-[calc(100vh-2rem)] overflow-y-auto md:overflow-hidden gap-4 pt-12 md:pt-0">
       <header className="flex flex-wrap items-center justify-between p-4 bg-card border rounded-lg shadow-sm gap-3 md:gap-6">
         <div className="flex items-center gap-6 w-full md:w-auto justify-between md:justify-start">
           <div className="flex items-center gap-3">
+            <Button variant="ghost" size="sm" onClick={goBackToGrid} className="text-muted-foreground hover:text-foreground">
+              <ArrowLeft className="h-4 w-4 mr-1" />
+              Watchlist
+            </Button>
             <select
               value={symbol}
               onChange={(e) => setSymbol(e.target.value)}
@@ -489,7 +631,7 @@ function TradingSignalContent() {
                 const isEntry = sig.Kind?.toLowerCase() !== "exit";
                 let badgeText = "";
                 let badgeClass = "";
-                
+
                 if (isBuy && isEntry) {
                   badgeText = "LONG";
                   badgeClass = "bg-emerald-500 hover:bg-emerald-600 text-white";
