@@ -745,23 +745,11 @@ func (r *Runner) Run(ctx context.Context) error {
 
 			sim.UpdatePrice(bar.Symbol, bar.Close, bar.Time)
 
-			// Determine if exits should be evaluated this bar
-			evalExitsThisBar := false
+			// Track aggregation for exit timing
 			if useAggregation {
 				if agg, ok := aggregators[bar.Symbol.String()]; ok {
-					if agg.Add(bar) {
-						// Aggregated bar closed - evaluate exits
-						evalExitsThisBar = true
-					}
+					agg.Add(bar)
 				}
-			} else {
-				// No aggregation - evaluate exits on every 1m bar
-				evalExitsThisBar = true
-			}
-
-			if evalExitsThisBar && posMonBundle.Service != nil {
-				posMonBundle.Service.EvalExitRules(minTime)
-				r.eventBus.WaitPending()
 			}
 
 			// Publish market bar event
@@ -778,16 +766,23 @@ func (r *Runner) Run(ctx context.Context) error {
 			barsProcessed++
 		}
 
-		// Flush pending aggregators at end of each time group
-		if useAggregation {
-			for _, agg := range aggregators {
-				if agg.HasPending() {
-					closedTime := agg.LastClosedTime()
-					if closedTime > 0 && posMonBundle.Service != nil {
-						posMonBundle.Service.EvalExitRules(time.Unix(closedTime, 0).UTC())
-						r.eventBus.WaitPending()
+		// Evaluate exit rules after all bars in this time-group are processed.
+		// This avoids WaitGroup reuse panics from concurrent handler chains.
+		r.eventBus.WaitPending()
+		if posMonBundle.Service != nil {
+			if useAggregation {
+				for _, agg := range aggregators {
+					if agg.HasPending() {
+						closedTime := agg.LastClosedTime()
+						if closedTime > 0 {
+							posMonBundle.Service.EvalExitRules(time.Unix(closedTime, 0).UTC())
+							r.eventBus.WaitPending()
+						}
 					}
 				}
+			} else {
+				posMonBundle.Service.EvalExitRules(minTime)
+				r.eventBus.WaitPending()
 			}
 		}
 
