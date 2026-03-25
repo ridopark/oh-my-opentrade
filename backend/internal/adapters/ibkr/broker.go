@@ -280,9 +280,9 @@ func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string
 	}
 
 	contract := newContract(symbol)
-	order := &ibsync.Order{}
+	order := ibsync.NewOrder()
 	order.Action = action
-	order.TotalQuantity = ibsync.StringToDecimal(strconv.FormatFloat(qty, 'f', -1, 64))
+	order.TotalQuantity = ibsync.StringToDecimal(strconv.FormatFloat(qty, 'f', 0, 64))
 	order.OrderType = "MKT"
 	order.TIF = "DAY"
 
