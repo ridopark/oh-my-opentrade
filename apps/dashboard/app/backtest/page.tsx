@@ -10,6 +10,7 @@ import {
   CrosshairMode,
   type IChartApi,
   type ISeriesApi,
+  type IPriceLine,
   type Time,
 } from "lightweight-charts";
 import { SignalMarkerOverlay, type SignalMarkerData } from "@/lib/signal-markers";
@@ -527,6 +528,53 @@ function MiniChart({
     if (ema200Ref.current) ema200Ref.current.setData(ema200Data);
 
     lastBarCountRef.current = bars.length;
+
+    // ORB range lines — draw opening range high/low for each trading day
+    const candle = candleRef.current;
+    if (candle) {
+      // Remove old ORB lines by recreating (lightweight-charts has no list API)
+      // We store them on the ref and remove before redrawing
+      const prevLines = (candle as unknown as { _orbLines?: unknown[] })._orbLines;
+      if (prevLines) {
+        for (const line of prevLines) {
+          try { candle.removePriceLine(line as IPriceLine); } catch { /* ok */ }
+        }
+      }
+
+      const orbWindowMinutes = 30;
+      const dayRanges = new Map<string, { high: number; low: number }>();
+      for (const bar of sorted) {
+        const d = new Date(bar.time * 1000);
+        const etHour = (d.getUTCHours() - 5 + 24) % 24;
+        const etMin = d.getUTCMinutes();
+        const minsFromOpen = (etHour - 9) * 60 + (etMin - 30);
+        if (minsFromOpen >= 0 && minsFromOpen < orbWindowMinutes) {
+          const dayKey = d.toISOString().slice(0, 10);
+          const existing = dayRanges.get(dayKey);
+          if (existing) {
+            existing.high = Math.max(existing.high, bar.high);
+            existing.low = Math.min(existing.low, bar.low);
+          } else {
+            dayRanges.set(dayKey, { high: bar.high, low: bar.low });
+          }
+        }
+      }
+
+      const orbLines: IPriceLine[] = [];
+      for (const [dayKey, range] of dayRanges) {
+        if (range.high === range.low) continue;
+        const label = dayKey.slice(5);
+        orbLines.push(candle.createPriceLine({
+          price: range.high, color: "rgba(59, 130, 246, 0.5)", lineWidth: 1, lineStyle: 1,
+          axisLabelVisible: false, title: `${label} ORB H`,
+        }));
+        orbLines.push(candle.createPriceLine({
+          price: range.low, color: "rgba(59, 130, 246, 0.5)", lineWidth: 1, lineStyle: 1,
+          axisLabelVisible: false, title: `${label} ORB L`,
+        }));
+      }
+      (candle as unknown as { _orbLines: IPriceLine[] })._orbLines = orbLines;
+    }
 
     const ts = chartRef.current?.timeScale();
     if (!ts) return;
