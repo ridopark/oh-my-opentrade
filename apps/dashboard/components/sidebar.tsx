@@ -11,6 +11,7 @@ import {
   TrendingUp,
   ShieldCheck,
   HeartPulse,
+  Wallet,
   Menu,
   X,
   Settings,
@@ -21,6 +22,7 @@ import { cn } from "@/lib/utils";
 
 const navItems = [
   { href: "/", label: "Trading Signals", icon: TrendingUp },
+  { href: "/portfolio", label: "Portfolio", icon: Wallet },
   { href: "/services", label: "Services", icon: HeartPulse },
   { href: "/debates", label: "Debates", icon: Swords },
   { href: "/execution", label: "Execution", icon: ListOrdered },
