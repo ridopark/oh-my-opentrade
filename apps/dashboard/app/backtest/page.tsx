@@ -45,6 +45,7 @@ export default function BacktestPage() {
   const bt = useBacktest();
   const [availableSymbols, setAvailableSymbols] = useState<string[]>([]);
   const [availableStrategies, setAvailableStrategies] = useState<{ id: string; name: string; state: string }[]>([]);
+  const [orbWindowMinutes, setOrbWindowMinutes] = useState(30);
 
   useEffect(() => {
     fetch("/api/backtest/symbols")
@@ -54,6 +55,10 @@ export default function BacktestPage() {
     fetch("/api/backtest/strategies")
       .then((r) => r.json())
       .then((data) => { if (Array.isArray(data)) setAvailableStrategies(data); })
+      .catch(() => {});
+    fetch("/api/strategies/config/orb_break_retest")
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => { if (data?.params?.orb_window_minutes) setOrbWindowMinutes(data.params.orb_window_minutes); })
       .catch(() => {});
   }, []);
 
@@ -130,7 +135,7 @@ export default function BacktestPage() {
       />
 
       <div className="flex-1 min-h-0 mt-2">
-        <ChartGrid symbols={symbolsInData} bars={bt.bars} trades={bt.trades} />
+        <ChartGrid symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} />
       </div>
 
       <div className="h-[35%] min-h-[180px] max-h-[300px] mt-1 rounded-t-lg border border-border bg-card flex flex-col">
@@ -375,10 +380,12 @@ function ChartGrid({
   symbols,
   bars,
   trades,
+  orbWindowMinutes = 30,
 }: {
   symbols: string[];
   bars: Map<string, BacktestBar[]>;
   trades: BacktestTrade[];
+  orbWindowMinutes?: number;
 }) {
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
 
@@ -408,6 +415,7 @@ function ChartGrid({
             symbol={expandedSymbol}
             bars={bars.get(expandedSymbol) ?? []}
             trades={trades.filter((t) => t.symbol === expandedSymbol)}
+            orbWindowMinutes={orbWindowMinutes}
           />
         </div>
       </div>
@@ -432,6 +440,7 @@ function ChartGrid({
               symbol={sym}
               bars={bars.get(sym) ?? []}
               trades={trades.filter((t) => t.symbol === sym)}
+              orbWindowMinutes={orbWindowMinutes}
             />
           </div>
           <button
@@ -454,10 +463,12 @@ function MiniChart({
   symbol,
   bars,
   trades,
+  orbWindowMinutes = 30,
 }: {
   symbol: string;
   bars: BacktestBar[];
   trades: BacktestTrade[];
+  orbWindowMinutes?: number;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -490,13 +501,15 @@ function MiniChart({
         horzLine: { color: "rgba(148, 163, 184, 0.2)", width: 1 as const, style: 3 as const, labelBackgroundColor: "#1f2937" },
       },
       rightPriceScale: { borderColor: "rgba(148, 163, 184, 0.1)", scaleMargins: { top: 0.05, bottom: 0.15 } },
+      localization: {
+        timeFormatter: (time: number) => {
+          return formatET(time, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+        },
+      },
       timeScale: {
         borderColor: "rgba(148, 163, 184, 0.1)", timeVisible: true, rightOffset: 5, fixLeftEdge: true, fixRightEdge: true,
         tickMarkFormatter: (time: number) => {
           return formatET(time, { hour: "2-digit", minute: "2-digit" });
-        },
-        crosshairLabelFormatter: (time: number) => {
-          return formatET(time, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
         },
       },
     });
@@ -590,7 +603,7 @@ function MiniChart({
 
     // ORB range boxes — shaded rectangles for each day's opening range
     if (orbOverlayRef.current) {
-      const ranges = computeORBRanges(sorted);
+      const ranges = computeORBRanges(sorted, orbWindowMinutes);
       orbOverlayRef.current.setRanges(ranges);
     }
 
