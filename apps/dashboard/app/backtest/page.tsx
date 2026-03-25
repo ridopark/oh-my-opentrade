@@ -484,9 +484,18 @@ function MiniChart({
         vertLine: { color: "rgba(148, 163, 184, 0.2)", width: 1 as const, style: 3 as const, labelBackgroundColor: "#1f2937" },
         horzLine: { color: "rgba(148, 163, 184, 0.2)", width: 1 as const, style: 3 as const, labelBackgroundColor: "#1f2937" },
       },
-      localization: { timeZone: "America/New_York" },
       rightPriceScale: { borderColor: "rgba(148, 163, 184, 0.1)", scaleMargins: { top: 0.05, bottom: 0.15 } },
-      timeScale: { borderColor: "rgba(148, 163, 184, 0.1)", timeVisible: true, rightOffset: 5, fixLeftEdge: true, fixRightEdge: true },
+      timeScale: {
+        borderColor: "rgba(148, 163, 184, 0.1)", timeVisible: true, rightOffset: 5, fixLeftEdge: true, fixRightEdge: true,
+        tickMarkFormatter: (time: number) => {
+          const d = new Date(time * 1000);
+          const parts = new Intl.DateTimeFormat("en-US", {
+            timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false,
+          }).formatToParts(d);
+          const get = (type: string) => parts.find(p => p.type === type)?.value ?? "";
+          return `${get("hour")}:${get("minute")}`;
+        },
+      },
     });
     chartRef.current = chart;
 
