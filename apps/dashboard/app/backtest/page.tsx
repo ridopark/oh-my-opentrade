@@ -375,6 +375,8 @@ function ChartGrid({
   bars: Map<string, BacktestBar[]>;
   trades: BacktestTrade[];
 }) {
+  const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
+
   if (symbols.length === 0) {
     return (
       <div className="flex items-center justify-center h-full rounded-lg border border-border bg-card text-muted-foreground text-sm">
@@ -383,6 +385,31 @@ function ChartGrid({
     );
   }
 
+  // Expanded: single chart fills the entire grid
+  if (expandedSymbol && symbols.includes(expandedSymbol)) {
+    return (
+      <div className="h-full flex flex-col gap-1">
+        <div className="flex items-center gap-2 px-1">
+          <button
+            onClick={() => setExpandedSymbol(null)}
+            className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
+          >
+            ← Grid
+          </button>
+          <span className="text-xs font-bold text-foreground">{expandedSymbol}</span>
+        </div>
+        <div className="flex-1 min-h-0">
+          <MiniChart
+            symbol={expandedSymbol}
+            bars={bars.get(expandedSymbol) ?? []}
+            trades={trades.filter((t) => t.symbol === expandedSymbol)}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // Grid view
   const cols = symbols.length <= 2 ? symbols.length : symbols.length <= 4 ? 2 : symbols.length <= 6 ? 3 : 4;
 
   return (
@@ -394,12 +421,23 @@ function ChartGrid({
       }}
     >
       {symbols.map((sym) => (
-        <MiniChart
-          key={sym}
-          symbol={sym}
-          bars={bars.get(sym) ?? []}
-          trades={trades.filter((t) => t.symbol === sym)}
-        />
+        <div key={sym} className="relative group min-h-0">
+          <MiniChart
+            symbol={sym}
+            bars={bars.get(sym) ?? []}
+            trades={trades.filter((t) => t.symbol === sym)}
+          />
+          <button
+            onClick={() => setExpandedSymbol(sym)}
+            className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded bg-background/80 backdrop-blur-sm text-muted-foreground hover:text-foreground"
+            title="Expand"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" />
+              <line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" />
+            </svg>
+          </button>
+        </div>
       ))}
     </div>
   );
