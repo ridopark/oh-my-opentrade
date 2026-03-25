@@ -153,7 +153,14 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			side = "sell"
 			fillPrice = lastPrice - slippage
 		default:
-			fillPrice = lastPrice
+			// Exit: determine side from existing position.
+			if pos, ok := b.positions[string(intent.Symbol)]; ok && pos.side == "sell" {
+				side = "buy"
+				fillPrice = lastPrice + slippage
+			} else {
+				side = "sell"
+				fillPrice = lastPrice - slippage
+			}
 		}
 	}
 
