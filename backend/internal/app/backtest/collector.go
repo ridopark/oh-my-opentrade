@@ -231,14 +231,23 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 	for sym, opens := range c.openBuys {
 		lastPrice := c.lastPrices[sym]
 		for _, tr := range opens {
-			equity += tr.Quantity * lastPrice
+			price := lastPrice
+			if price <= 0 {
+				price = tr.Price // fallback to entry price
+			}
+			equity += tr.Quantity * price
 		}
 	}
 	for sym, opens := range c.openSells {
 		lastPrice := c.lastPrices[sym]
 		for _, tr := range opens {
+			// Use entry price as fallback if no bar received yet.
+			price := lastPrice
+			if price <= 0 {
+				price = tr.Price
+			}
 			// Short P&L: entry - current price, applied to notional.
-			equity += tr.Quantity * (tr.Price - lastPrice)
+			equity += tr.Quantity * (tr.Price - price)
 		}
 	}
 	c.equityCurve = append(c.equityCurve, equity)
@@ -266,13 +275,21 @@ func (c *Collector) Result() Result {
 	for sym, opens := range c.openBuys {
 		lastPrice := c.lastPrices[sym]
 		for _, tr := range opens {
-			finalEquity += tr.Quantity * lastPrice
+			price := lastPrice
+			if price <= 0 {
+				price = tr.Price
+			}
+			finalEquity += tr.Quantity * price
 		}
 	}
 	for sym, opens := range c.openSells {
 		lastPrice := c.lastPrices[sym]
 		for _, tr := range opens {
-			finalEquity += tr.Quantity * (tr.Price - lastPrice)
+			price := lastPrice
+			if price <= 0 {
+				price = tr.Price
+			}
+			finalEquity += tr.Quantity * (tr.Price - price)
 		}
 	}
 
