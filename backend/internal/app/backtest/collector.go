@@ -27,13 +27,14 @@ type Config struct {
 
 // TradeRecord captures a single completed trade.
 type TradeRecord struct {
-	Symbol   string    `json:"symbol"`
-	Side     string    `json:"side"`
-	Quantity float64   `json:"quantity"`
-	Price    float64   `json:"price"`
-	FilledAt time.Time `json:"filled_at"`
-	Strategy string    `json:"strategy,omitempty"`
-	PnL      float64   `json:"pnl,omitempty"`
+	Symbol    string    `json:"symbol"`
+	Side      string    `json:"side"`
+	Direction string    `json:"direction,omitempty"` // "LONG" or "SHORT" — the position direction
+	Quantity  float64   `json:"quantity"`
+	Price     float64   `json:"price"`
+	FilledAt  time.Time `json:"filled_at"`
+	Strategy  string    `json:"strategy,omitempty"`
+	PnL       float64   `json:"pnl,omitempty"`
 }
 
 // Result holds the computed backtest metrics.
@@ -119,13 +120,25 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Map direction to position direction label.
+	posDir := ""
+	switch domain.Direction(direction) {
+	case domain.DirectionLong:
+		posDir = "LONG"
+	case domain.DirectionShort:
+		posDir = "SHORT"
+	case domain.DirectionCloseLong:
+		posDir = "CLOSE"
+	}
+
 	tr := TradeRecord{
-		Symbol:   symbol,
-		Side:     strings.ToLower(side),
-		Quantity: quantity,
-		Price:    price,
-		FilledAt: filledAt,
-		Strategy: strategy,
+		Symbol:    symbol,
+		Side:      strings.ToLower(side),
+		Direction: posDir,
+		Quantity:  quantity,
+		Price:     price,
+		FilledAt:  filledAt,
+		Strategy:  strategy,
 	}
 
 	// Use direction to classify entries vs exits.
