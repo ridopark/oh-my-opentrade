@@ -144,11 +144,16 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 		stopLoss = limitPrice * (1 + defaultStopPct) // 2% above for shorts
 	}
 
-	// Position sizing: risk 1% of equity per trade.
+	// Position sizing: risk 1% of equity per trade, capped at 7% notional.
 	riskPerShare := math.Abs(limitPrice - stopLoss)
 	qty := 1.0
 	if riskPerShare > 0 && s.equity > 0 {
 		qty = math.Floor((s.equity * defaultRiskPerTrade) / riskPerShare)
+		// Cap notional at 7% of equity to stay within exposure guard limits.
+		maxNotional := s.equity * 0.07
+		if limitPrice > 0 && qty*limitPrice > maxNotional {
+			qty = math.Floor(maxNotional / limitPrice)
+		}
 		if qty < 1 {
 			qty = 1
 		}
