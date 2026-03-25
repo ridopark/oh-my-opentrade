@@ -571,12 +571,12 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 	}
 
 	direction := domain.DirectionLong
-	if sigRef.Side == start.SideSell.String() {
-		if sigRef.SignalType == start.SignalExit.String() {
-			direction = domain.DirectionCloseLong
-		} else {
-			direction = domain.DirectionShort
-		}
+	if sigRef.SignalType == start.SignalExit.String() {
+		// All exits use CloseLong — the execution service resolves the actual
+		// position side and quantity from the broker.
+		direction = domain.DirectionCloseLong
+	} else if sigRef.Side == start.SideSell.String() {
+		direction = domain.DirectionShort
 	}
 
 	strategyName := "unknown"
