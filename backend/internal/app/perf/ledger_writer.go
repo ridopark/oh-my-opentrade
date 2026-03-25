@@ -43,9 +43,24 @@ type LedgerWriter struct {
 	peakEquity    float64
 	accountEquity float64
 
+	nowFunc func() time.Time // injectable clock for backtests
+
 	// Per-strategy tracking (dual-write).
 	stratDailyPnL  map[string]*stratDayAccum // key: tenantID:envMode:strategy:date
 	stratPositions map[string]*positionEntry // key: tenantID:envMode:strategy:symbol
+}
+
+// SetNowFunc overrides the clock used for daily P&L bucketing.
+// In backtests, this should be set to the simulated bar time.
+func (lw *LedgerWriter) SetNowFunc(fn func() time.Time) {
+	lw.nowFunc = fn
+}
+
+func (lw *LedgerWriter) now() time.Time {
+	if lw.nowFunc != nil {
+		return lw.nowFunc()
+	}
+	return time.Now().UTC()
 }
 
 // dailyAccum accumulates realized P&L and trade count for a single day.
@@ -168,7 +183,7 @@ func (lw *LedgerWriter) handleFill(ctx context.Context, event domain.Event) erro
 		return nil
 	}
 
-	lw.processFill(ctx, event.TenantID, event.EnvMode, symbol, side, quantity, price, strategy, time.Now().UTC(), true)
+	lw.processFill(ctx, event.TenantID, event.EnvMode, symbol, side, quantity, price, strategy, lw.now(), true)
 	return nil
 }
 
@@ -415,7 +430,7 @@ func (lw *LedgerWriter) GetDailyRealizedPnL(tenantID string, envMode domain.EnvM
 	lw.mu.Lock()
 	defer lw.mu.Unlock()
 
-	now := time.Now().UTC()
+	now := lw.now()
 	dateKey := fmt.Sprintf("%s:%s:%s", tenantID, string(envMode), now.Format("2006-01-02"))
 	accum, exists := lw.dailyPnL[dateKey]
 	if !exists {
