@@ -122,7 +122,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 	barTime := b.barTimes[priceSymbol]
 
 	var fillPrice float64
-	side := "sell"
+	var side string
 	if isOption {
 		switch {
 		case intent.Direction.IsExit():
