@@ -272,9 +272,20 @@ func (r *Runner) Run(ctx context.Context) error {
 		specStore = &symbolOverrideSpecStore{inner: specStore, symbols: syms}
 	}
 
-	orbID, _ := start.NewStrategyID("orb_break_retest")
-	if orbSpec, loadErr := specStore.GetLatest(context.Background(), orbID); loadErr == nil {
-		monitorSvc.SetORBConfig(orbSpec.Params)
+	// Only load ORB config if orb_break_retest is among the selected strategies
+	// (or no strategy filter is set, meaning all are active).
+	orbSelected := len(r.cfg.Strategies) == 0
+	for _, s := range r.cfg.Strategies {
+		if s == "orb_break_retest" {
+			orbSelected = true
+			break
+		}
+	}
+	if orbSelected {
+		orbID, _ := start.NewStrategyID("orb_break_retest")
+		if orbSpec, loadErr := specStore.GetLatest(context.Background(), orbID); loadErr == nil {
+			monitorSvc.SetORBConfig(orbSpec.Params)
+		}
 	}
 
 	sim := simbroker.New(simbroker.Config{
@@ -325,11 +336,13 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Debate service: processes SetupDetected events (ORB) and emits OrderIntentCreated.
-	// When AI is disabled, it passes through the setup's own direction/confidence.
-	debateSvc := debate.NewService(r.eventBus, aiAdvisor, &noop.NoopRepo{}, 0.50, r.log.With().Str("component", "debate").Logger())
-	if startErr := debateSvc.Start(ctx); startErr != nil {
-		r.status.Store("error")
-		return fmt.Errorf("start debate: %w", startErr)
+	// Only start if ORB strategy is selected (it's the only consumer of SetupDetected).
+	if orbSelected {
+		debateSvc := debate.NewService(r.eventBus, aiAdvisor, &noop.NoopRepo{}, 0.50, r.log.With().Str("component", "debate").Logger())
+		if startErr := debateSvc.Start(ctx); startErr != nil {
+			r.status.Store("error")
+			return fmt.Errorf("start debate: %w", startErr)
+		}
 	}
 
 	pipeline, err := bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
