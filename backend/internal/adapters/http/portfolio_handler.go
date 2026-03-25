@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -126,6 +127,8 @@ func (h *PortfolioHandler) handleGetPositions(w http.ResponseWriter, r *http.Req
 			UnrealizedPnlPct: pnlPct,
 		})
 	}
+
+	sort.Slice(out, func(i, j int) bool { return out[i].Symbol < out[j].Symbol })
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"positions": out})
