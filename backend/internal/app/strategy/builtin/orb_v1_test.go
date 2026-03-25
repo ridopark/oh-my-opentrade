@@ -252,7 +252,7 @@ func TestORBStrategy_FullFlow_LongEntrySignal(t *testing.T) {
 	assert.Equal(t, "AAPL", sig.Symbol)
 	assert.GreaterOrEqual(t, sig.Strength, 0.50)
 	assert.LessOrEqual(t, sig.Strength, 1.0)
-	assert.Equal(t, "ORB Break & Retest", sig.Tags["trigger"])
+	assert.Equal(t, "orb_break_retest", sig.Tags["trigger"])
 	assert.Contains(t, sig.Tags, "orb_high")
 	assert.Contains(t, sig.Tags, "orb_low")
 	assert.Contains(t, sig.Tags, "rvol")
