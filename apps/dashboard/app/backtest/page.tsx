@@ -617,6 +617,7 @@ function MiniChart({
 interface Position {
   symbol: string;
   strategy: string;
+  direction: string; // "LONG" or "SHORT"
   entry: BacktestTrade;
   exit: BacktestTrade | null;
   qty: number;
@@ -633,23 +634,32 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
   const positions: Position[] = [];
 
   for (const t of trades) {
-    const isBuy = t.side?.toLowerCase() === "buy";
+    const dir = (t as BacktestTrade & { direction?: string }).direction ?? "";
+    const isEntry = dir === "LONG" || dir === "SHORT";
+    const isExit = dir === "CLOSE";
+    // Legacy fallback: if no direction field, use side-based matching
+    const isBuyEntry = !dir && t.side?.toLowerCase() === "buy";
+    const isSellExit = !dir && t.side?.toLowerCase() === "sell";
+
     const key = `${t.symbol}:${t.strategy ?? ""}`;
 
-    if (isBuy) {
+    if (isEntry || isBuyEntry) {
       openPositions.set(key, t);
-    } else {
+    } else if (isExit || isSellExit) {
       const entry = openPositions.get(key);
       if (entry) {
         openPositions.delete(key);
+        const entryDir = (entry as BacktestTrade & { direction?: string }).direction ?? "LONG";
         const qty = entry.quantity ?? 0;
         const entryPx = entry.price ?? 0;
         const exitPx = t.price ?? 0;
-        const pnl = (exitPx - entryPx) * qty;
-        const pnlPct = entryPx > 0 ? ((exitPx - entryPx) / entryPx) * 100 : 0;
+        const isShort = entryDir === "SHORT";
+        const pnl = isShort ? (entryPx - exitPx) * qty : (exitPx - entryPx) * qty;
+        const pnlPct = entryPx > 0 ? (isShort ? ((entryPx - exitPx) / entryPx) * 100 : ((exitPx - entryPx) / entryPx) * 100) : 0;
         positions.push({
           symbol: t.symbol,
           strategy: t.strategy ?? "",
+          direction: isShort ? "SHORT" : "LONG",
           entry,
           exit: t,
           qty,
@@ -665,9 +675,11 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
   }
 
   for (const [, entry] of openPositions) {
+    const entryDir = (entry as BacktestTrade & { direction?: string }).direction ?? "LONG";
     positions.push({
       symbol: entry.symbol,
       strategy: entry.strategy ?? "",
+      direction: entryDir === "SHORT" ? "SHORT" : "LONG",
       entry,
       exit: null,
       qty: entry.quantity ?? 0,
@@ -705,6 +717,7 @@ function TradeLogInline({ trades }: { trades: BacktestTrade[] }) {
           <tr className="text-[10px] text-muted-foreground uppercase">
             <th className="text-left px-4 py-1.5">#</th>
             <th className="text-left px-2 py-1.5">Symbol</th>
+            <th className="text-left px-2 py-1.5">Side</th>
             <th className="text-left px-2 py-1.5">Strategy</th>
             <th className="text-right px-2 py-1.5">Qty</th>
             <th className="text-right px-2 py-1.5">Entry</th>
@@ -722,6 +735,13 @@ function TradeLogInline({ trades }: { trades: BacktestTrade[] }) {
               <tr key={i} className={`border-t border-border/30 ${isWin ? "bg-emerald-500/[0.03]" : isLoss ? "bg-red-500/[0.03]" : ""}`}>
                 <td className="px-4 py-1 text-muted-foreground">{i + 1}</td>
                 <td className="px-2 py-1 text-foreground">{p.symbol}</td>
+                <td className="px-2 py-1">
+                  <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                    p.direction === "SHORT" ? "bg-red-500/20 text-red-400" : "bg-emerald-500/20 text-emerald-400"
+                  }`}>
+                    {p.direction}
+                  </span>
+                </td>
                 <td className="px-2 py-1 text-muted-foreground">{p.strategy}</td>
                 <td className="px-2 py-1 text-right text-foreground">{p.qty.toFixed(0)}</td>
                 <td className="px-2 py-1 text-right text-emerald-400">${p.entryPrice.toFixed(2)}</td>
