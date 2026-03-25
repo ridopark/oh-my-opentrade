@@ -67,6 +67,7 @@ type Service struct {
 type fillMsg struct {
 	Symbol       domain.Symbol
 	Side         string
+	Direction    string // original intent direction (e.g. "LONG", "SHORT", "CLOSE_LONG")
 	Price        float64
 	Quantity     float64
 	FilledAt     time.Time
@@ -414,7 +415,12 @@ func (s *Service) processFill(fill fillMsg) {
 	defer s.mu.Unlock()
 	key := fmt.Sprintf("%s:%s:%s", s.tenantID, s.envMode, fill.Symbol)
 
-	if fill.Side == "SELL" {
+	isExit := fill.Side == "SELL"
+	// SHORT entries also have side="SELL" but should be treated as new positions.
+	if fill.Direction != "" {
+		isExit = fill.Direction == string(domain.DirectionCloseLong)
+	}
+	if isExit {
 		pos, exists := s.positions[key]
 		if !exists {
 			return
