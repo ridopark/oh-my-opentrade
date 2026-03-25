@@ -768,7 +768,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Evaluate exit rules after all bars in this time-group are processed.
 		// This avoids WaitGroup reuse panics from concurrent handler chains.
-		r.eventBus.WaitPending()
+		r.eventBus.Flush()
 		if posMonBundle.Service != nil {
 			if useAggregation {
 				for _, agg := range aggregators {
@@ -776,13 +776,13 @@ func (r *Runner) Run(ctx context.Context) error {
 						closedTime := agg.LastClosedTime()
 						if closedTime > 0 {
 							posMonBundle.Service.EvalExitRules(time.Unix(closedTime, 0).UTC())
-							r.eventBus.WaitPending()
+							r.eventBus.Flush()
 						}
 					}
 				}
 			} else {
 				posMonBundle.Service.EvalExitRules(minTime)
-				r.eventBus.WaitPending()
+				r.eventBus.Flush()
 			}
 		}
 
@@ -844,7 +844,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				closedTime := agg.LastClosedTime()
 				if closedTime > 0 && posMonBundle.Service != nil {
 					posMonBundle.Service.EvalExitRules(time.Unix(closedTime, 0).UTC())
-					r.eventBus.WaitPending()
+					r.eventBus.Flush()
 				}
 			}
 		}
