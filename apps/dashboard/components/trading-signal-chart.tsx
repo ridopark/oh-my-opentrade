@@ -182,6 +182,7 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
   const entryLineRef = useRef<IPriceLine | null>(null);
   const stopLineRef = useRef<IPriceLine | null>(null);
   const targetLineRef = useRef<IPriceLine | null>(null);
+  const orbLinesRef = useRef<IPriceLine[]>([]);
 
   const onLoadMoreRef = useRef(onLoadMore);
   onLoadMoreRef.current = onLoadMore;
@@ -724,6 +725,67 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
       });
     }
   }, [signals]);
+
+  // 6b. ORB range lines — draw opening range high/low for each day
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series || !data || data.length === 0) return;
+
+    // Remove old lines
+    for (const line of orbLinesRef.current) {
+      try { series.removePriceLine(line); } catch { /* already removed */ }
+    }
+    orbLinesRef.current = [];
+
+    // Compute ORB per day: first 30 min of RTH (9:30-10:00 ET)
+    const orbWindowMinutes = 30;
+    const dayRanges = new Map<string, { high: number; low: number }>();
+
+    for (const bar of data) {
+      const d = new Date(bar.time * 1000);
+      // Convert to ET (UTC-5 for EST, approximate)
+      const etHour = (d.getUTCHours() - 5 + 24) % 24;
+      const etMin = d.getUTCMinutes();
+      const minsFromOpen = (etHour - 9) * 60 + (etMin - 30);
+
+      if (minsFromOpen >= 0 && minsFromOpen < orbWindowMinutes) {
+        const dayKey = d.toISOString().slice(0, 10);
+        const existing = dayRanges.get(dayKey);
+        if (existing) {
+          existing.high = Math.max(existing.high, bar.high);
+          existing.low = Math.min(existing.low, bar.low);
+        } else {
+          dayRanges.set(dayKey, { high: bar.high, low: bar.low });
+        }
+      }
+    }
+
+    // Only draw ORB for the most recent day (avoid clutter)
+    const days = Array.from(dayRanges.keys()).sort();
+    const latestDay = days[days.length - 1];
+    if (!latestDay) return;
+
+    const range = dayRanges.get(latestDay)!;
+    if (range.high === range.low) return;
+
+    const highLine = series.createPriceLine({
+      price: range.high,
+      color: "rgba(59, 130, 246, 0.6)", // blue
+      lineWidth: 1,
+      lineStyle: 1, // dashed
+      axisLabelVisible: false,
+      title: `ORB High $${range.high.toFixed(2)}`,
+    });
+    const lowLine = series.createPriceLine({
+      price: range.low,
+      color: "rgba(59, 130, 246, 0.6)",
+      lineWidth: 1,
+      lineStyle: 1,
+      axisLabelVisible: false,
+      title: `ORB Low $${range.low.toFixed(2)}`,
+    });
+    orbLinesRef.current = [highLine, lowLine];
+  }, [data]);
 
   // 7. Forming candle pulsation — always pulses the latest candle
   useEffect(() => {
