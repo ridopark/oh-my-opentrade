@@ -760,31 +760,29 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
       }
     }
 
-    // Only draw ORB for the most recent day (avoid clutter)
-    const days = Array.from(dayRanges.keys()).sort();
-    const latestDay = days[days.length - 1];
-    if (!latestDay) return;
-
-    const range = dayRanges.get(latestDay)!;
-    if (range.high === range.low) return;
-
-    const highLine = series.createPriceLine({
-      price: range.high,
-      color: "rgba(59, 130, 246, 0.6)", // blue
-      lineWidth: 1,
-      lineStyle: 1, // dashed
-      axisLabelVisible: false,
-      title: `ORB High $${range.high.toFixed(2)}`,
-    });
-    const lowLine = series.createPriceLine({
-      price: range.low,
-      color: "rgba(59, 130, 246, 0.6)",
-      lineWidth: 1,
-      lineStyle: 1,
-      axisLabelVisible: false,
-      title: `ORB Low $${range.low.toFixed(2)}`,
-    });
-    orbLinesRef.current = [highLine, lowLine];
+    // Draw ORB lines for every trading day
+    const lines: IPriceLine[] = [];
+    for (const [dayKey, range] of dayRanges) {
+      if (range.high === range.low) continue;
+      const label = dayKey.slice(5); // "MM-DD"
+      lines.push(series.createPriceLine({
+        price: range.high,
+        color: "rgba(59, 130, 246, 0.5)",
+        lineWidth: 1,
+        lineStyle: 1,
+        axisLabelVisible: false,
+        title: `${label} ORB H`,
+      }));
+      lines.push(series.createPriceLine({
+        price: range.low,
+        color: "rgba(59, 130, 246, 0.5)",
+        lineWidth: 1,
+        lineStyle: 1,
+        axisLabelVisible: false,
+        title: `${label} ORB L`,
+      }));
+    }
+    orbLinesRef.current = lines;
   }, [data]);
 
   // 7. Forming candle pulsation — always pulses the latest candle
