@@ -147,7 +147,7 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 		stopLoss,
 		defaultMaxSlippageBPS,
 		defaultQuantity,
-		"debate",
+		setup.Trigger,
 		decision.Rationale,
 		decision.Confidence,
 		intentID.String(),
