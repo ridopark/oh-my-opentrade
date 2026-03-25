@@ -25,6 +25,11 @@ import {
 } from "@/lib/use-backtest";
 import { Button } from "@/components/ui/button";
 
+/** Format a UTC unix timestamp as ET string using Intl. */
+function formatET(utcSeconds: number, opts: Intl.DateTimeFormatOptions): string {
+  return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour12: false, ...opts }).format(new Date(utcSeconds * 1000));
+}
+
 const SPEED_OPTIONS = ["1x", "2x", "5x", "10x", "max"] as const;
 const TIMEFRAMES = ["1m", "5m", "15m", "1h"] as const;
 
@@ -488,12 +493,10 @@ function MiniChart({
       timeScale: {
         borderColor: "rgba(148, 163, 184, 0.1)", timeVisible: true, rightOffset: 5, fixLeftEdge: true, fixRightEdge: true,
         tickMarkFormatter: (time: number) => {
-          const d = new Date(time * 1000);
-          const parts = new Intl.DateTimeFormat("en-US", {
-            timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false,
-          }).formatToParts(d);
-          const get = (type: string) => parts.find(p => p.type === type)?.value ?? "";
-          return `${get("hour")}:${get("minute")}`;
+          return formatET(time, { hour: "2-digit", minute: "2-digit" });
+        },
+        crosshairLabelFormatter: (time: number) => {
+          return formatET(time, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
         },
       },
     });
