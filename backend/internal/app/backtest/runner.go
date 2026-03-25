@@ -262,6 +262,15 @@ func (r *Runner) Run(ctx context.Context) error {
 	if len(r.cfg.Strategies) > 0 {
 		specStore = &filteredSpecStore{inner: specStore, allowed: r.cfg.Strategies}
 	}
+	// Override each strategy's routing.symbols with the UI-requested symbols
+	// so the strategy runs on exactly the symbols the user selected.
+	if len(r.cfg.Symbols) > 0 {
+		syms := make([]string, len(r.cfg.Symbols))
+		for i, s := range r.cfg.Symbols {
+			syms[i] = s.String()
+		}
+		specStore = &symbolOverrideSpecStore{inner: specStore, symbols: syms}
+	}
 
 	orbID, _ := start.NewStrategyID("orb_break_retest")
 	if orbSpec, loadErr := specStore.GetLatest(context.Background(), orbID); loadErr == nil {
@@ -1021,4 +1030,49 @@ func (f *filteredSpecStore) Save(ctx context.Context, spec portstrategy.Spec) er
 
 func (f *filteredSpecStore) Watch(ctx context.Context) (<-chan start.StrategyID, error) {
 	return f.inner.Watch(ctx)
+}
+
+// symbolOverrideSpecStore replaces each spec's routing symbols with the
+// backtest-requested symbols so strategies run on UI-selected symbols
+// regardless of what the TOML config lists.
+type symbolOverrideSpecStore struct {
+	inner   portstrategy.SpecStore
+	symbols []string
+}
+
+func (s *symbolOverrideSpecStore) List(ctx context.Context, filter *portstrategy.SpecFilter) ([]portstrategy.Spec, error) {
+	specs, err := s.inner.List(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	for i := range specs {
+		specs[i].Routing.Symbols = s.symbols
+	}
+	return specs, nil
+}
+
+func (s *symbolOverrideSpecStore) Get(ctx context.Context, id start.StrategyID, version start.Version) (*portstrategy.Spec, error) {
+	spec, err := s.inner.Get(ctx, id, version)
+	if err != nil {
+		return nil, err
+	}
+	spec.Routing.Symbols = s.symbols
+	return spec, nil
+}
+
+func (s *symbolOverrideSpecStore) GetLatest(ctx context.Context, id start.StrategyID) (*portstrategy.Spec, error) {
+	spec, err := s.inner.GetLatest(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	spec.Routing.Symbols = s.symbols
+	return spec, nil
+}
+
+func (s *symbolOverrideSpecStore) Save(ctx context.Context, spec portstrategy.Spec) error {
+	return s.inner.Save(ctx, spec)
+}
+
+func (s *symbolOverrideSpecStore) Watch(ctx context.Context) (<-chan start.StrategyID, error) {
+	return s.inner.Watch(ctx)
 }
