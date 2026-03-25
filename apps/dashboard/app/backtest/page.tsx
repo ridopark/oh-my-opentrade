@@ -421,15 +421,17 @@ function ChartGrid({
       }}
     >
       {symbols.map((sym) => (
-        <div key={sym} className="relative group min-h-0">
-          <MiniChart
-            symbol={sym}
-            bars={bars.get(sym) ?? []}
-            trades={trades.filter((t) => t.symbol === sym)}
-          />
+        <div key={sym} className="relative group h-full">
+          <div className="h-full">
+            <MiniChart
+              symbol={sym}
+              bars={bars.get(sym) ?? []}
+              trades={trades.filter((t) => t.symbol === sym)}
+            />
+          </div>
           <button
             onClick={() => setExpandedSymbol(sym)}
-            className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded bg-background/80 backdrop-blur-sm text-muted-foreground hover:text-foreground"
+            className="absolute top-1 right-1 z-10 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded bg-background/80 backdrop-blur-sm text-muted-foreground hover:text-foreground"
             title="Expand"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
