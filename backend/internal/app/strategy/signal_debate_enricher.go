@@ -125,10 +125,8 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 	}
 
 	if sig.Type == start.SignalExit {
-		direction := domain.DirectionLong
-		if sig.Side == start.SideSell {
-			direction = domain.DirectionCloseLong
-		}
+		// All exits use CloseLong — execution resolves position side from broker.
+		direction := domain.DirectionCloseLong
 		enrichment := domain.SignalEnrichment{
 			Signal:     ref,
 			Status:     domain.EnrichmentSkipped,

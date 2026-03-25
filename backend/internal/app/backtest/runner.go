@@ -873,11 +873,11 @@ func signalPassthrough(bus *memory.Bus, log zerolog.Logger) func(context.Context
 			return nil
 		}
 		direction := domain.DirectionLong
-		if sig.Side == start.SideSell {
-			direction = domain.DirectionShort
-		}
 		if sig.Type == start.SignalExit {
+			// All exits use CloseLong — execution resolves position side from broker.
 			direction = domain.DirectionCloseLong
+		} else if sig.Side == start.SideSell {
+			direction = domain.DirectionShort
 		}
 		enrichment := domain.SignalEnrichment{
 			Signal: domain.SignalRef{
