@@ -84,7 +84,7 @@ func TestPipelineCoexistence_BothPipelinesIndependent(t *testing.T) {
 	for i := range intents {
 		intent, ok := intents[i].Payload.(domain.OrderIntent)
 		require.True(t, ok)
-		if intent.Strategy == "debate" {
+		if intent.Strategy == "RSI_Oversold" {
 			ii := intent
 			gotDebate = &ii
 		}
@@ -149,7 +149,7 @@ func TestPipelineCoexistence_SetupDetectedDoesNotTriggerEnricher(t *testing.T) {
 
 	evs := waitForEvents(t, orderIntents, 1)
 	intent := evs[0].Payload.(domain.OrderIntent)
-	assert.Equal(t, "debate", intent.Strategy)
+	assert.Equal(t, "RSI_Oversold", intent.Strategy)
 	assert.Equal(t, 1, debateAdvisor.calls)
 	assert.Equal(t, 0, enricherAdvisor.calls)
 
