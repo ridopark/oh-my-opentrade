@@ -512,8 +512,8 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		}
 	}
 
-	// 5. Check daily loss circuit breaker.
-	if s.dailyLossBreaker != nil {
+	// 5. Check daily loss circuit breaker (skip for exits — closing reduces exposure).
+	if s.dailyLossBreaker != nil && !intent.Direction.IsExit() {
 		if err := s.dailyLossBreaker.Check(event.TenantID, event.EnvMode, s.accountEquity); err != nil {
 			l.Warn().Err(err).Msg("daily loss circuit breaker tripped — aborting broker submission")
 			s.emit(ctx, domain.EventCircuitBreakerTripped, event.TenantID, event.EnvMode, event.IdempotencyKey, err.Error())
