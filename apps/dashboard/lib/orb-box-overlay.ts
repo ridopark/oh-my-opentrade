@@ -184,10 +184,14 @@ export function computeORBRanges(bars: { time: number; high: number; low: number
 
   for (const bar of bars) {
     const d = new Date(bar.time * 1000);
-    const etHour = (d.getUTCHours() - 5 + 24) % 24;
-    const etMin = d.getUTCMinutes();
+    // Convert to ET using Intl (handles EDT/EST automatically)
+    const etStr = d.toLocaleString("en-US", { timeZone: "America/New_York", hour12: false });
+    const etParts = etStr.split(", ");
+    const timeParts = (etParts[1] ?? "0:0").split(":");
+    const etHour = parseInt(timeParts[0]);
+    const etMin = parseInt(timeParts[1]);
     const minsFromOpen = (etHour - 9) * 60 + (etMin - 30);
-    const dayKey = d.toISOString().slice(0, 10);
+    const dayKey = etParts[0]; // MM/DD/YYYY in ET
 
     // Track ORB window bars
     if (minsFromOpen >= 0 && minsFromOpen < windowMinutes) {
@@ -215,7 +219,7 @@ export function computeORBRanges(bars: { time: number; high: number; low: number
       endTime: data.endTime,
       high: data.high,
       low: data.low,
-      label: dayKey.slice(5), // "MM-DD"
+      label: dayKey.replace(/\/\d{4}$/, ""), // "M/DD" from "M/DD/YYYY"
     });
   }
 
