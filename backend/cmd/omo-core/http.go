@@ -169,8 +169,11 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 			return false, detail
 		}),
 	}
-	if infra.concreteIBKR != nil {
+	if cfg.Broker == "ibkr" {
 		healthChecks = append(healthChecks, omhttp.FeedChecker("ibkr_gateway", func() (bool, string) {
+			if infra.concreteIBKR == nil {
+				return false, "IBKR connecting in background"
+			}
 			if infra.concreteIBKR.IsConnected() {
 				return true, ""
 			}
