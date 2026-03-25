@@ -57,10 +57,11 @@ func (a *Adapter) SubmitOrder(_ context.Context, intent domain.OrderIntent) (str
 	}
 
 	if order.OrderType == "LMT" || order.OrderType == "STP LMT" {
-		order.LmtPrice = intent.LimitPrice
+		// IBKR requires prices conform to minimum tick size (penny for equities).
+		order.LmtPrice = roundToTick(intent.LimitPrice, isCrypto)
 	}
 	if order.OrderType == "STP LMT" {
-		order.AuxPrice = intent.StopLoss
+		order.AuxPrice = roundToTick(intent.StopLoss, isCrypto)
 	}
 
 	trade := ib.PlaceOrder(contract, order)
@@ -335,4 +336,13 @@ func mapStatus(s ibsync.Status) string {
 	default:
 		return strings.ToLower(string(s))
 	}
+}
+
+// roundToTick rounds a price to the minimum tick size.
+// Equities: $0.01 (penny). Crypto: $0.00001 (sub-penny).
+func roundToTick(price float64, isCrypto bool) float64 {
+	if isCrypto {
+		return math.Round(price*100000) / 100000
+	}
+	return math.Round(price*100) / 100
 }
