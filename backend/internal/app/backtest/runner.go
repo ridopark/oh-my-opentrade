@@ -21,6 +21,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/strategy/store_fs"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
+	"github.com/oh-my-opentrade/backend/internal/app/debate"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
@@ -312,6 +313,14 @@ func (r *Runner) Run(ctx context.Context) error {
 	var aiAdvisor ports.AIAdvisorPort = llm.NewNoOpAdvisor()
 	if !r.cfg.NoAI && r.appCfg.AI.Enabled {
 		aiAdvisor = llm.NewAdvisor(r.appCfg.AI.BaseURL, r.appCfg.AI.Model, r.appCfg.AI.APIKey, nil)
+	}
+
+	// Debate service: processes SetupDetected events (ORB) and emits OrderIntentCreated.
+	// When AI is disabled, it passes through the setup's own direction/confidence.
+	debateSvc := debate.NewService(r.eventBus, aiAdvisor, &noop.NoopRepo{}, 0.50, r.log.With().Str("component", "debate").Logger())
+	if startErr := debateSvc.Start(ctx); startErr != nil {
+		r.status.Store("error")
+		return fmt.Errorf("start debate: %w", startErr)
 	}
 
 	pipeline, err := bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
