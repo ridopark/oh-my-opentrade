@@ -76,10 +76,10 @@ function TradingSignalContent() {
   const paramSymbol = searchParams.get("symbol") ?? "";
 
   useEffect(() => {
-    if (paramSymbol && availableSymbols.includes(paramSymbol) && !expandedSymbol) {
+    if (paramSymbol && !expandedSymbol) {
       setExpandedSymbol(paramSymbol);
     }
-  }, [paramSymbol, availableSymbols, expandedSymbol, setExpandedSymbol]);
+  }, [paramSymbol, expandedSymbol, setExpandedSymbol]);
 
   const setSymbol = useCallback((s: string) => {
     setExpandedSymbol(s);
