@@ -69,6 +69,7 @@ type Collector struct {
 	equityCurve []float64 // equity sampled at each bar
 	lastPrices  map[string]float64
 	openBuys    map[string][]TradeRecord // symbol → open long fills (FIFO)
+	openSells   map[string][]TradeRecord // symbol → open short fills (FIFO)
 }
 
 // NewCollector creates a Collector and subscribes to events on the bus.
@@ -83,6 +84,7 @@ func NewCollector(bus ports.EventBusPort, cfg Config, log zerolog.Logger) (*Coll
 		peakEquity: cfg.InitialEquity,
 		lastPrices: make(map[string]float64),
 		openBuys:   make(map[string][]TradeRecord),
+		openSells:  make(map[string][]TradeRecord),
 	}
 
 	ctx := context.Background()
@@ -104,6 +106,7 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 
 	symbol, _ := payload["symbol"].(string)
 	side, _ := payload["side"].(string)
+	direction, _ := payload["direction"].(string)
 	quantity, _ := payload["quantity"].(float64)
 	price, _ := payload["price"].(float64)
 	filledAt, _ := payload["filled_at"].(time.Time)
@@ -125,35 +128,86 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 		Strategy: strategy,
 	}
 
-	switch strings.ToLower(side) {
-	case "buy":
+	// Use direction to classify entries vs exits.
+	switch domain.Direction(direction) {
+	case domain.DirectionLong:
+		// Long entry: buy to open.
 		c.openBuys[symbol] = append(c.openBuys[symbol], tr)
 		c.cash -= quantity * price
-	case "sell":
-		// Closing a long (FIFO): match against open buys.
-		opens := c.openBuys[symbol]
-		remainQty := quantity
-		var realizedPnL float64
-		for len(opens) > 0 && remainQty > 0 {
-			entry := opens[0]
-			matchQty := math.Min(entry.Quantity, remainQty)
-			pnl := matchQty * (price - entry.Price)
-			realizedPnL += pnl
 
-			entry.Quantity -= matchQty
-			remainQty -= matchQty
-			if entry.Quantity <= 0 {
-				opens = opens[1:]
-			} else {
-				opens[0] = entry
+	case domain.DirectionShort:
+		// Short entry: sell to open.
+		c.openSells[symbol] = append(c.openSells[symbol], tr)
+		c.cash += quantity * price
+
+	case domain.DirectionCloseLong:
+		// Exit: close whichever position is open (long or short).
+		if opens := c.openBuys[symbol]; len(opens) > 0 {
+			// Closing a long: PnL = exit - entry.
+			remainQty := quantity
+			var realizedPnL float64
+			for len(opens) > 0 && remainQty > 0 {
+				entry := opens[0]
+				matchQty := math.Min(entry.Quantity, remainQty)
+				realizedPnL += matchQty * (price - entry.Price)
+				entry.Quantity -= matchQty
+				remainQty -= matchQty
+				if entry.Quantity <= 0 {
+					opens = opens[1:]
+				} else {
+					opens[0] = entry
+				}
 			}
+			c.openBuys[symbol] = opens
+			c.cash += (quantity - remainQty) * price
+			tr.PnL = realizedPnL
+		} else if opens := c.openSells[symbol]; len(opens) > 0 {
+			// Closing a short: PnL = entry - exit.
+			remainQty := quantity
+			var realizedPnL float64
+			for len(opens) > 0 && remainQty > 0 {
+				entry := opens[0]
+				matchQty := math.Min(entry.Quantity, remainQty)
+				realizedPnL += matchQty * (entry.Price - price)
+				entry.Quantity -= matchQty
+				remainQty -= matchQty
+				if entry.Quantity <= 0 {
+					opens = opens[1:]
+				} else {
+					opens[0] = entry
+				}
+			}
+			c.openSells[symbol] = opens
+			c.cash -= (quantity - remainQty) * price
+			tr.PnL = realizedPnL
 		}
-		c.openBuys[symbol] = opens
-		// Only credit cash for the matched quantity, not the full sell quantity.
-		// Any excess (sell > open buys) is unmatched and should not affect cash.
-		matchedQty := quantity - remainQty
-		c.cash += matchedQty * price
-		tr.PnL = realizedPnL
+
+	default:
+		// Legacy (no direction): fall back to side-based matching.
+		switch strings.ToLower(side) {
+		case "buy":
+			c.openBuys[symbol] = append(c.openBuys[symbol], tr)
+			c.cash -= quantity * price
+		case "sell":
+			opens := c.openBuys[symbol]
+			remainQty := quantity
+			var realizedPnL float64
+			for len(opens) > 0 && remainQty > 0 {
+				entry := opens[0]
+				matchQty := math.Min(entry.Quantity, remainQty)
+				realizedPnL += matchQty * (price - entry.Price)
+				entry.Quantity -= matchQty
+				remainQty -= matchQty
+				if entry.Quantity <= 0 {
+					opens = opens[1:]
+				} else {
+					opens[0] = entry
+				}
+			}
+			c.openBuys[symbol] = opens
+			c.cash += (quantity - remainQty) * price
+			tr.PnL = realizedPnL
+		}
 	}
 
 	c.trades = append(c.trades, tr)
@@ -178,6 +232,13 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 		lastPrice := c.lastPrices[sym]
 		for _, tr := range opens {
 			equity += tr.Quantity * lastPrice
+		}
+	}
+	for sym, opens := range c.openSells {
+		lastPrice := c.lastPrices[sym]
+		for _, tr := range opens {
+			// Short P&L: entry - current price, applied to notional.
+			equity += tr.Quantity * (tr.Price - lastPrice)
 		}
 	}
 	c.equityCurve = append(c.equityCurve, equity)
@@ -208,6 +269,12 @@ func (c *Collector) Result() Result {
 			finalEquity += tr.Quantity * lastPrice
 		}
 	}
+	for sym, opens := range c.openSells {
+		lastPrice := c.lastPrices[sym]
+		for _, tr := range opens {
+			finalEquity += tr.Quantity * (tr.Price - lastPrice)
+		}
+	}
 
 	r := Result{
 		InitialEquity: c.cfg.InitialEquity,
@@ -221,10 +288,10 @@ func (c *Collector) Result() Result {
 		r.TotalReturn = (finalEquity - c.cfg.InitialEquity) / c.cfg.InitialEquity * 100
 	}
 
-	// Compute win/loss stats from sell trades (realized P&L).
+	// Compute win/loss stats from trades with realized P&L (exits).
 	var grossProfit, grossLoss float64
 	for _, tr := range c.trades {
-		if tr.Side != "sell" {
+		if tr.PnL == 0 {
 			continue
 		}
 		r.TradeCount++
