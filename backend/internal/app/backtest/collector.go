@@ -306,38 +306,47 @@ func (c *Collector) Result() Result {
 		}
 	}
 
-	r := Result{
-		InitialEquity: c.cfg.InitialEquity,
-		FinalEquity:   finalEquity,
-		TotalPnL:      finalEquity - c.cfg.InitialEquity,
-		MaxDrawdown:   c.maxDrawdown * 100, // as percentage
-		Trades:        c.trades,
-	}
-
-	if c.cfg.InitialEquity > 0 {
-		r.TotalReturn = (finalEquity - c.cfg.InitialEquity) / c.cfg.InitialEquity * 100
-	}
-
 	// Compute win/loss stats from trades with realized P&L (exits).
 	var grossProfit, grossLoss float64
+	var tradeCount, winCount, lossCount int
+	var largestWin, largestLoss float64
 	for _, tr := range c.trades {
 		if tr.PnL == 0 {
 			continue
 		}
-		r.TradeCount++
+		tradeCount++
 		if tr.PnL > 0 {
-			r.WinCount++
+			winCount++
 			grossProfit += tr.PnL
-			if tr.PnL > r.LargestWin {
-				r.LargestWin = tr.PnL
+			if tr.PnL > largestWin {
+				largestWin = tr.PnL
 			}
 		} else if tr.PnL < 0 {
-			r.LossCount++
+			lossCount++
 			grossLoss += math.Abs(tr.PnL)
-			if math.Abs(tr.PnL) > math.Abs(r.LargestLoss) {
-				r.LargestLoss = tr.PnL
+			if math.Abs(tr.PnL) > math.Abs(largestLoss) {
+				largestLoss = tr.PnL
 			}
 		}
+	}
+
+	realizedPnL := grossProfit - grossLoss
+
+	r := Result{
+		InitialEquity: c.cfg.InitialEquity,
+		FinalEquity:   finalEquity,
+		TotalPnL:      realizedPnL,
+		MaxDrawdown:   c.maxDrawdown * 100,
+		Trades:        c.trades,
+		TradeCount:    tradeCount,
+		WinCount:      winCount,
+		LossCount:     lossCount,
+		LargestWin:    largestWin,
+		LargestLoss:   largestLoss,
+	}
+
+	if c.cfg.InitialEquity > 0 {
+		r.TotalReturn = realizedPnL / c.cfg.InitialEquity * 100
 	}
 
 	if r.TradeCount > 0 {
