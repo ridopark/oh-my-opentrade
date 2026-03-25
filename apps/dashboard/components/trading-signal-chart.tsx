@@ -745,16 +745,21 @@ const TradingSignalChart = (props: TradingSignalChartProps) => {
         const oldBar = bars.find(b => b.time === prevPulseTime);
         if (oldBar) {
           const wasUp = oldBar.close >= oldBar.open;
-          candleSeries.update({
-            time: oldBar.time as Time,
-            open: oldBar.open,
-            high: oldBar.high,
-            low: oldBar.low,
-            close: oldBar.close,
-            color: wasUp ? '#10b981' : '#ef4444',
-            borderColor: wasUp ? '#10b981' : '#ef4444',
-            wickColor: wasUp ? '#10b981' : '#ef4444',
-          });
+          try {
+            candleSeries.update({
+              time: oldBar.time as Time,
+              open: oldBar.open,
+              high: oldBar.high,
+              low: oldBar.low,
+              close: oldBar.close,
+              color: wasUp ? '#10b981' : '#ef4444',
+              borderColor: wasUp ? '#10b981' : '#ef4444',
+              wickColor: wasUp ? '#10b981' : '#ef4444',
+            });
+          } catch {
+            // Ignore "Cannot update oldest data" — happens when chart
+            // has advanced past this timestamp during the pulse cycle.
+          }
         }
       }
       prevPulseTime = lastBar.time as number;
