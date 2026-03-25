@@ -74,6 +74,17 @@ export default function BacktestPage() {
     setHydrated(true);
   }, []);
 
+  // Filter out stale strategies/symbols that no longer exist on the server.
+  useEffect(() => {
+    if (!hydrated || availableStrategies.length === 0) return;
+    const validIds = new Set(availableStrategies.map((s) => s.id));
+    setConfig((prev) => {
+      const filtered = (prev.strategies || []).filter((s) => validIds.has(s));
+      if (filtered.length === prev.strategies?.length) return prev;
+      return { ...prev, strategies: filtered };
+    });
+  }, [hydrated, availableStrategies]);
+
   useEffect(() => {
     if (hydrated) {
       try { localStorage.setItem("backtest-config", JSON.stringify(config)); } catch {}
