@@ -287,6 +287,16 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 	if err == nil {
 		intent.OrderType = orderType
 		intent.TimeInForce = tif
+
+		// Attach Instrument metadata for option positions so the broker adapter
+		// dispatches to the options order path (e.g. Alpaca SubmitOptionOrder).
+		if pos.InstrumentType == domain.InstrumentTypeOption {
+			underlying := domain.UnderlyingFromOCC(pos.Symbol)
+			inst, instErr := domain.NewInstrument(domain.InstrumentTypeOption, string(pos.Symbol), string(underlying))
+			if instErr == nil {
+				intent.Instrument = &inst
+			}
+		}
 	}
 	if err != nil {
 		s.log.Error().Err(err).Str("symbol", string(pos.Symbol)).Msg("failed to create exit order intent")

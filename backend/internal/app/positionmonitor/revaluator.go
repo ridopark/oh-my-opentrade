@@ -341,6 +341,14 @@ func (r *Revaluator) triggerExit(ctx context.Context, pos domain.MonitoredPositi
 	intent.OrderType = "limit"
 	intent.TimeInForce = "ioc"
 
+	if pos.InstrumentType == domain.InstrumentTypeOption {
+		underlying := domain.UnderlyingFromOCC(pos.Symbol)
+		inst, instErr := domain.NewInstrument(domain.InstrumentTypeOption, string(pos.Symbol), string(underlying))
+		if instErr == nil {
+			intent.Instrument = &inst
+		}
+	}
+
 	r.emit(ctx, domain.EventOrderIntentCreated, pos.TenantID, pos.EnvMode, idempotencyKey, intent)
 
 	r.log.Warn().
@@ -381,6 +389,14 @@ func (r *Revaluator) triggerScaleOut(ctx context.Context, pos domain.MonitoredPo
 	if err != nil {
 		r.log.Error().Err(err).Str("symbol", string(pos.Symbol)).Msg("failed to create scale-out intent")
 		return
+	}
+
+	if pos.InstrumentType == domain.InstrumentTypeOption {
+		underlying := domain.UnderlyingFromOCC(pos.Symbol)
+		inst, instErr := domain.NewInstrument(domain.InstrumentTypeOption, string(pos.Symbol), string(underlying))
+		if instErr == nil {
+			intent.Instrument = &inst
+		}
 	}
 
 	r.emit(ctx, domain.EventOrderIntentCreated, pos.TenantID, pos.EnvMode, idempotencyKey, intent)

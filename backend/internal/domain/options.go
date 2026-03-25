@@ -20,6 +20,17 @@ const (
 	InstrumentTypeCrypto InstrumentType = "CRYPTO"
 )
 
+// UnderlyingFromOCC extracts the underlying ticker from an OCC option symbol.
+// OCC format: {UNDERLYING}{YYMMDD}{C|P}{8-digit strike}
+// Returns empty Symbol if the input is not a valid OCC symbol.
+func UnderlyingFromOCC(s Symbol) Symbol {
+	str := string(s)
+	if len(str) <= 15 {
+		return ""
+	}
+	return Symbol(str[:len(str)-15])
+}
+
 // IsOCCSymbol reports whether s looks like an OCC option symbol.
 // OCC format: 1–6 uppercase letters, followed by YYMMDD, C or P, and 8 strike digits.
 // Minimum length is 15 chars (1-char underlying + 6 date + 1 right + 8 strike = 16; realistically ≥15).
