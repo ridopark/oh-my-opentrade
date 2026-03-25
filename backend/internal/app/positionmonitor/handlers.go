@@ -20,6 +20,7 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 
 	symbol, _ := payload["symbol"].(string)
 	side, _ := payload["side"].(string)
+	direction, _ := payload["direction"].(string)
 	price, _ := payload["price"].(float64)
 	quantity, _ := payload["quantity"].(float64)
 	strategy, _ := payload["strategy"].(string)
@@ -43,6 +44,7 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 	case s.fills <- fillMsg{
 		Symbol:         domain.Symbol(symbol),
 		Side:           side,
+		Direction:      direction,
 		Price:          price,
 		Quantity:       quantity,
 		FilledAt:       filledAt,
