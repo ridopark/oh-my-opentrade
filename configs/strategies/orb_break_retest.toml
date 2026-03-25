@@ -3,24 +3,14 @@ schema_version = 2
 type = "VOLATILITY_STOP"
 
 [exit_rules.params]
-atr_multiplier = 3.0
+atr_multiplier = 5.0
+min_hold_bars = 8
 [[exit_rules]]
 type = "SD_TARGET"
 
 [exit_rules.params]
-sd_level = 2.0
-[[exit_rules]]
-type = "STEP_STOP"
-
-[exit_rules.params]
-min_hold_bars = 3
-[[exit_rules]]
-type = "STAGNATION_EXIT"
-
-[exit_rules.params]
-minutes = 30
-sd_threshold = 1.0
-profit_gate_pct = 0.005
+sd_level = 3.0
+min_hold_bars = 10
 [[exit_rules]]
 type = "EOD_FLATTEN"
 
