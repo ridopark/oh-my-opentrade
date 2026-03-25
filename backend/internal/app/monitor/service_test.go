@@ -292,7 +292,7 @@ func TestService_EmitsSetupDetected(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, sym, setup.Symbol)
 	assert.NotEmpty(t, setup.Trigger)
-	assert.Equal(t, "ORB Break & Retest", setup.Trigger)
+	assert.Equal(t, "orb_break_retest", setup.Trigger)
 }
 
 func TestService_WarmUp_SeedsIndicators(t *testing.T) {

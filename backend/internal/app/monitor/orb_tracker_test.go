@@ -164,7 +164,7 @@ func TestORBTracker_RetestConfirm_EmitsSetup(t *testing.T) {
 	require.NotNil(t, setup)
 	require.Equal(t, sym, setup.Symbol)
 	require.Equal(t, domain.DirectionLong, setup.Direction)
-	require.Equal(t, "ORB Break & Retest", setup.Trigger)
+	require.Equal(t, "orb_break_retest", setup.Trigger)
 	require.Equal(t, tr.GetSession(sym.String()).OrbHigh, setup.ORBHigh)
 	require.Equal(t, tr.GetSession(sym.String()).OrbLow, setup.ORBLow)
 	require.GreaterOrEqual(t, setup.Confidence, 0.50)
