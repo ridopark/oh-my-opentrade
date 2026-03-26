@@ -152,7 +152,7 @@ export default function BacktestPage() {
         onCancel={bt.cancel}
       />
 
-      <div className={`mt-2 ${symbolsInData.length === 0 ? "flex-1" : ""}`} style={symbolsInData.length > 0 ? { minHeight: symbolsInData.length <= 2 ? 300 : `${Math.ceil(symbolsInData.length / (symbolsInData.length <= 4 ? 2 : symbolsInData.length <= 6 ? 3 : 4)) * 280}px` } : undefined}>
+      <div className={`mt-2 ${symbolsInData.length === 0 ? "flex-1 flex flex-col" : ""}`} style={symbolsInData.length > 0 ? { minHeight: symbolsInData.length <= 2 ? 300 : `${Math.ceil(symbolsInData.length / (symbolsInData.length <= 4 ? 2 : symbolsInData.length <= 6 ? 3 : 4)) * 280}px` } : undefined}>
         <ChartGrid ref={chartGridRef} symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} onTradeClick={(trade) => {
           setBottomTab("trades");
           setTimeout(() => tradeLogRef.current?.scrollToTrade(trade), 50);
@@ -468,7 +468,7 @@ const ChartGrid = forwardRef<ChartGridHandle, {
 
   if (symbols.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full rounded-lg border border-border bg-card text-muted-foreground text-sm">
+      <div className="flex items-center justify-center flex-1 h-full rounded-lg border border-border bg-card text-muted-foreground text-sm">
         Run a backtest to see charts
       </div>
     );
