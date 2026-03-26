@@ -40,10 +40,12 @@ export interface BacktestSignal {
 export interface BacktestTrade {
   symbol: string;
   side: string;
+  direction?: string; // "LONG", "SHORT", or "CLOSE"
   quantity: number;
   price: number;
   filled_at: string;
   strategy?: string;
+  rationale?: string;
   pnl?: number;
 }
 
