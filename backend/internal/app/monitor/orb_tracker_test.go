@@ -157,7 +157,8 @@ func TestORBTracker_RetestConfirm_EmitsSetup(t *testing.T) {
 	require.Equal(t, monitor.ORBStateAwaitingRetest, tr.GetSession(sym.String()).State)
 
 	retestT := breakT.Add(time.Minute)
-	retestBar := createBarAt(t, sym, retestT, 104, 104, 101, 103, 20)
+	// Retest bar: touches ORH (low=101), closes bullish above ORH (open=101, close=103)
+	retestBar := createBarAt(t, sym, retestT, 101, 104, 101, 103, 20)
 	retestSnap := createSnap(sym, retestT, 20, 10)
 	setup, detected := tr.OnBar(retestBar, retestSnap, cfg, false)
 	require.True(t, detected)
@@ -231,7 +232,7 @@ func TestORBTracker_ReplayMode_NoSetupReturned(t *testing.T) {
 	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
 	tr.OnBar(createBarAt(t, sym, breakT, 100, 104, 100, 104, 50), createSnap(sym, breakT, 50, 10), cfg, true)
 	retestT := breakT.Add(time.Minute)
-	setup, detected := tr.OnBar(createBarAt(t, sym, retestT, 104, 104, 101, 103, 20), createSnap(sym, retestT, 20, 10), cfg, true)
+	setup, detected := tr.OnBar(createBarAt(t, sym, retestT, 101, 104, 101, 103, 20), createSnap(sym, retestT, 20, 10), cfg, true)
 	require.False(t, detected)
 	require.Nil(t, setup)
 	require.Equal(t, monitor.ORBStateRangeSet, tr.GetSession(sym.String()).State, "replay-suppressed signal should cycle to RANGE_SET")
@@ -297,7 +298,8 @@ func TestORBTracker_ShortBreakoutFlow(t *testing.T) {
 	require.Equal(t, monitor.ORBStateAwaitingRetest, tr.GetSession(sym.String()).State)
 
 	retestT := breakT.Add(time.Minute)
-	setup, detected := tr.OnBar(createBarAt(t, sym, retestT, 95, 99, 95, 98, 20), createSnap(sym, retestT, 20, 10), cfg, false)
+	// Short retest bar: touches ORL (high=99), closes bearish below ORL (open=99, close=97)
+	setup, detected := tr.OnBar(createBarAt(t, sym, retestT, 99, 99, 95, 97, 20), createSnap(sym, retestT, 20, 10), cfg, false)
 	require.True(t, detected)
 	require.NotNil(t, setup)
 	require.Equal(t, domain.DirectionShort, setup.Direction)

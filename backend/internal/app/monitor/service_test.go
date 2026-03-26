@@ -282,7 +282,7 @@ func TestService_EmitsSetupDetected(t *testing.T) {
 	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
 	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, breakT, 100, 104, 100, 104, 50)))
 	retestT := breakT.Add(time.Minute)
-	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, retestT, 104, 104, 101, 103, 20)))
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, retestT, 101, 104, 101, 103, 20)))
 
 	// Wait to allow async events if any, but since memory bus is sync it should be immediate
 	assert.Greater(t, setupCount, 0, "should have emitted SetupDetected event")
@@ -477,7 +477,7 @@ func TestService_SettlingGuard_SuppressesSetupDetectionForFirstBars(t *testing.T
 	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
 	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, breakT, 100, 104, 100, 104, 50)))
 	retestT := breakT.Add(time.Minute)
-	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, retestT, 104, 104, 101, 103, 20)))
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, retestT, 101, 104, 101, 103, 20)))
 
 	assert.Greater(t, setupCount, 0, "should emit SetupDetected once settling complete")
 }
@@ -513,7 +513,7 @@ func TestService_DNAGate_BlocksUnapprovedSetup(t *testing.T) {
 	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
 	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, breakT, 100, 104, 100, 104, 50)))
 	retestT := breakT.Add(time.Minute)
-	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, retestT, 104, 104, 101, 103, 20)))
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, retestT, 101, 104, 101, 103, 20)))
 
 	assert.Equal(t, 0, setupCount, "DNA gate must block SetupDetected when DNA not approved")
 	assert.Greater(t, gate.calls, 0, "gate should have been called")
@@ -549,7 +549,7 @@ func TestService_DNAGate_AllowsApprovedSetup(t *testing.T) {
 	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
 	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, breakT, 100, 104, 100, 104, 50)))
 	retestT := breakT.Add(time.Minute)
-	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, retestT, 104, 104, 101, 103, 20)))
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, retestT, 101, 104, 101, 103, 20)))
 
 	assert.Greater(t, setupCount, 0, "DNA gate must allow SetupDetected when DNA is approved")
 }
@@ -584,7 +584,7 @@ func TestService_DNAGate_ErrorIsPermissive(t *testing.T) {
 	breakT := time.Date(2025, 3, 4, 15, 1, 0, 0, time.UTC)
 	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, breakT, 100, 104, 100, 104, 50)))
 	retestT := breakT.Add(time.Minute)
-	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, retestT, 104, 104, 101, 103, 20)))
+	_ = bus.Publish(context.Background(), createTestEvent(t, createBarAtTime(t, sym, retestT, 101, 104, 101, 103, 20)))
 
 	// Error in gate check should be permissive — setup still goes through
 	assert.Greater(t, setupCount, 0, "gate error must be permissive (allow setup through)")

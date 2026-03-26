@@ -319,12 +319,14 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 			level := sess.OrbHigh * (1.0 + touchTol)
 			touchThisBar = bar.Low <= level
 			touchPrice = bar.Low
-			holdThisBar = bar.Close > sess.OrbHigh*(1.0+holdBps)
+			// Confirm bar must close above ORH AND be bullish (green candle = buyers winning)
+			holdThisBar = bar.Close > sess.OrbHigh*(1.0+holdBps) && bar.Close > bar.Open
 		} else {
 			level := sess.OrbLow * (1.0 - touchTol)
 			touchThisBar = bar.High >= level
 			touchPrice = bar.High
-			holdThisBar = bar.Close < sess.OrbLow*(1.0-holdBps)
+			// Confirm bar must close below ORL AND be bearish (red candle = sellers winning)
+			holdThisBar = bar.Close < sess.OrbLow*(1.0-holdBps) && bar.Close < bar.Open
 		}
 
 		// Record touch when price dips to the level
