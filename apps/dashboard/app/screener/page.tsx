@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 
 interface ScreenerResult {
   symbol: string;
@@ -24,8 +24,19 @@ const PRESETS: Record<string, string[]> = {
 type SortKey = keyof ScreenerResult;
 
 export default function ScreenerPage() {
+  const [strategies, setStrategies] = useState<{ id: string; name: string }[]>([]);
+  const [selectedStrategy, setSelectedStrategy] = useState("all");
   const [preset, setPreset] = useState("ORB Candidates");
   const [customSymbols, setCustomSymbols] = useState("");
+
+  useEffect(() => {
+    fetch("/api/backtest/strategies")
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data)) setStrategies(data);
+      })
+      .catch(() => {});
+  }, []);
   const [screenDate, setScreenDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [resultDate, setResultDate] = useState("");
   const [scanMode, setScanMode] = useState<"custom" | "universe">("universe");
@@ -50,6 +61,7 @@ export default function ScreenerPage() {
         // SSE streaming for universe mode with progress updates
         let url = "/api/screener?mode=universe&stream=1";
         if (screenDate) url += `&date=${screenDate}`;
+        if (selectedStrategy !== "all") url += `&strategy=${selectedStrategy}`;
         const res = await fetch(url);
         if (!res.ok || !res.body) return;
         const reader = res.body.getReader();
@@ -87,6 +99,7 @@ export default function ScreenerPage() {
         // Direct JSON for custom mode
         let url = `/api/screener?symbols=${encodeURIComponent(symbols.join(","))}`;
         if (screenDate) url += `&date=${screenDate}`;
+        if (selectedStrategy !== "all") url += `&strategy=${selectedStrategy}`;
         const res = await fetch(url);
         if (res.ok) {
           const data = await res.json();
@@ -130,11 +143,23 @@ export default function ScreenerPage() {
     <div className="flex flex-col gap-4 p-4 max-w-[1400px]">
       <div className="flex items-center gap-3">
         <h1 className="text-lg font-bold text-foreground">Screener</h1>
-        <span className="text-xs text-muted-foreground">ORB symbol fitness analysis</span>
+        <span className="text-xs text-muted-foreground">Find the best symbols for today</span>
       </div>
 
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card p-3">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">Strategy</span>
+          <select
+            value={selectedStrategy}
+            onChange={(e) => setSelectedStrategy(e.target.value)}
+            className="bg-background border border-border rounded px-2 py-1 text-xs font-mono text-foreground"
+          >
+            <option value="all">All Strategies</option>
+            {strategies.map((s) => <option key={s.id} value={s.id}>{s.name || s.id}</option>)}
+          </select>
+        </div>
+
         <div className="flex items-center gap-1 rounded border border-border overflow-hidden">
           <button
             onClick={() => setScanMode("custom")}
@@ -221,19 +246,19 @@ export default function ScreenerPage() {
             <p>How much the stock moves per day as a percentage of price. Higher ATR% = bigger breakout potential, but wider stops needed.</p>
             <div className="flex items-center gap-2 mt-1">
               <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/30 text-emerald-300">5%+</span>
-              <span className="text-[10px]">High volatility — strong ORB candidate</span>
+              <span className="text-[10px]">High volatility — strong candidate</span>
             </div>
             <div className="flex items-center gap-2 mt-0.5">
               <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400">2-5%</span>
-              <span className="text-[10px]">Good volatility — solid ORB candidate</span>
+              <span className="text-[10px]">Good volatility — good candidate</span>
             </div>
             <div className="flex items-center gap-2 mt-0.5">
               <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400">0.8-2%</span>
-              <span className="text-[10px]">Moderate — may work for ORB</span>
+              <span className="text-[10px]">Moderate — moderate candidate</span>
             </div>
             <div className="flex items-center gap-2 mt-0.5">
               <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-500/20 text-red-400">&lt;0.8%</span>
-              <span className="text-[10px]">Low volatility — poor ORB candidate</span>
+              <span className="text-[10px]">Low volatility — weak candidate</span>
             </div>
           </div>
 
@@ -280,7 +305,7 @@ export default function ScreenerPage() {
 
           <div>
             <div className="font-medium text-foreground mb-1">Composite Score</div>
-            <p>ORB fitness score combining multiple signals:</p>
+            <p>Composite fitness score combining multiple signals:</p>
             <div className="mt-1 text-[10px] font-mono">
               <div>Score = ATR% x 10</div>
               <div>{"      + NR7 bonus (+20 if YES)"}</div>
@@ -288,7 +313,7 @@ export default function ScreenerPage() {
             </div>
             <div className="flex items-center gap-2 mt-1">
               <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/30 text-emerald-300">80+</span>
-              <span className="text-[10px]">Strong ORB candidate</span>
+              <span className="text-[10px]">Strong candidate</span>
             </div>
             <div className="flex items-center gap-2 mt-0.5">
               <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400">40-80</span>
@@ -302,14 +327,14 @@ export default function ScreenerPage() {
 
           <div>
             <div className="font-medium text-foreground mb-1">How to Use</div>
-            <p>Run the screener pre-market to pick the best ORB symbols for the day:</p>
+            <p>Run the screener pre-market to pick the best symbols for the day:</p>
             <ol className="mt-1 text-[10px] list-decimal list-inside space-y-0.5">
               <li>Sort by Score (default) to find top candidates</li>
               <li>Look for NR7 = YES symbols (compression breakout)</li>
               <li>Check Bias aligns with your trade direction</li>
               <li>Filter ATR% &gt; 2% for the strongest movers</li>
               <li>Click a symbol to view its chart</li>
-              <li>Use historical dates to validate screener picks against past ORB results</li>
+              <li>Use historical dates to validate screener picks against past trade results</li>
             </ol>
           </div>
         </div>
@@ -352,12 +377,12 @@ export default function ScreenerPage() {
                   <SortHeader label="Symbol" field="symbol" title="Ticker symbol — click to open Trading Signals chart" align="left" />
                   <SortHeader label="Price" field="price" title="Latest daily closing price" />
                   <SortHeader label="ATR" field="atr" title="14-day Average True Range in dollars — how much the stock moves per day on average" />
-                  <SortHeader label="ATR%" field="atr_pct" title="Daily ATR as % of price — higher = more volatile, better for ORB. Determines stop distance and position size. >2% = strong mover, <1% = slow" />
+                  <SortHeader label="ATR%" field="atr_pct" title="Daily ATR as % of price — higher = more volatile, better for breakout strategies. Determines stop distance and position size. >2% = strong mover, <1% = slow" />
                   <SortHeader label="NR7" field="nr7" title="Narrow Range 7 — YES means prior day had the narrowest range in 7 sessions. Volatility compression precedes expansion, making breakouts more likely" align="left" />
                   <SortHeader label="Bias" field="bias" title="Daily EMA200 trend: BULLISH = price above 200-day EMA (favor longs), BEARISH = below (favor shorts), NEUTRAL = near the line" align="left" />
                   <SortHeader label="EMA200" field="ema200" title="200-day Exponential Moving Average — the long-term trend anchor. Price above = uptrend, below = downtrend" />
                   <SortHeader label="RVol" field="realized_vol" title="20-day annualized realized volatility — like a per-stock VIX. >30% = high vol environment, <15% = calm" />
-                  <SortHeader label="Score" field="score" title="Composite ORB fitness: ATR%*10 + NR7 bonus(+20) + trending bonus(+5). Higher = better ORB candidate. >80 = strong, 40-80 = moderate, <40 = weak" />
+                  <SortHeader label="Score" field="score" title="Composite fitness: ATR%*10 + NR7 bonus(+20) + trending bonus(+5). Higher = better candidate. >80 = strong, 40-80 = moderate, <40 = weak" />
                 </tr>
               </thead>
               <tbody>
