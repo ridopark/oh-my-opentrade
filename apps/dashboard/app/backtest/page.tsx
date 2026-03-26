@@ -656,14 +656,17 @@ function MiniChart({
         const filledUnix = Math.floor(filledAt.getTime() / 1000);
         const matchedTime = findClosestBarTime(filledUnix);
         const bar = barMap.get(matchedTime);
-        const isBuy = t.side?.toLowerCase() === "buy";
+        const dir = t.direction ?? "";
+        const isEntry = dir === "LONG" || dir === "SHORT";
+        const isLongSide = dir === "LONG" || (!dir && t.side?.toLowerCase() === "buy");
+        const label = dir === "LONG" ? "BUY" : dir === "SHORT" ? "SHORT" : dir === "CLOSE_LONG" ? "SELL" : (t.side?.toLowerCase() === "buy" ? "BUY" : "SELL");
         return {
           time: matchedTime as Time,
-          price: bar ? (isBuy ? bar.low * 0.999 : bar.high * 1.001) : t.price,
-          side: isBuy ? "buy" : "sell",
-          kind: isBuy ? "entry" : "exit",
+          price: bar ? (isEntry ? bar.low * 0.999 : bar.high * 1.001) : t.price,
+          side: isLongSide ? "buy" : "sell",
+          kind: isEntry ? "entry" : "exit",
           executed: true,
-          label: `${isBuy ? "BUY" : "SELL"} ${t.quantity?.toFixed?.(0) ?? ""} @ $${t.price?.toFixed?.(2) ?? ""}`,
+          label: `${label} ${t.quantity?.toFixed?.(0) ?? ""} @ $${t.price?.toFixed?.(2) ?? ""}`,
         } as SignalMarkerData;
       })
       .filter((m): m is SignalMarkerData => m !== null);
