@@ -264,6 +264,14 @@ type IndicatorSnapshot struct {
 	HTF           map[Timeframe]HTFData      `json:"htf,omitempty"`
 }
 
+// HTFDailyATR returns the daily ATR from HTF data, or 0 if not available.
+func (s IndicatorSnapshot) HTFDailyATR() float64 {
+	if htf, ok := s.HTF[Timeframe("1d")]; ok {
+		return htf.DailyATR
+	}
+	return 0
+}
+
 // NewIndicatorSnapshot creates a validated IndicatorSnapshot. RSI must be in [0,100].
 func NewIndicatorSnapshot(
 	t time.Time, sym Symbol, tf Timeframe,

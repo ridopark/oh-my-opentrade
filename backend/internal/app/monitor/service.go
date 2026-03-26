@@ -613,8 +613,13 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 				setup.VIXBucket = "HIGH_VOL"
 			}
 
-			// Composite market context: VIX bucket + NR7 + VWAP alignment
+			// Composite market context: VIX bucket + per-symbol ATR + NR7 + VWAP alignment
 			ctx := setup.VIXBucket
+			if dailyATR := snap.HTFDailyATR(); dailyATR > 0 && bar.Close > 0 {
+				// Show per-symbol daily ATR as % of price for comparability
+				atrPct := dailyATR / bar.Close * 100
+				ctx += fmt.Sprintf(" | ATR%.1f%%", atrPct)
+			}
 			if htf, ok := snap.HTF[domain.Timeframe("1d")]; ok && htf.NR7 {
 				ctx += " | NR7"
 			}
