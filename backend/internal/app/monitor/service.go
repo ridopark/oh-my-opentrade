@@ -646,8 +646,10 @@ func (s *Service) buildHTFMap(sym string, currentClose float64) map[domain.Timef
 			bias = "BEARISH"
 		}
 		htf[domain.Timeframe("1d")] = domain.HTFData{
-			EMA200: dStatic.EMA200,
-			Bias:   bias,
+			EMA200:   dStatic.EMA200,
+			Bias:     bias,
+			NR7:      dStatic.NR7,
+			DailyATR: dStatic.DailyATR,
 		}
 	}
 
