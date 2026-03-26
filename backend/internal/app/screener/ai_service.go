@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	screenerdomain "github.com/oh-my-opentrade/backend/internal/domain/screener"
@@ -364,6 +365,36 @@ func (s *AIService) RunAIScreen(ctx context.Context, asOfET time.Time) error {
 		}
 	}
 
+	// Enrich Pass0 survivors with HTF signals (ATR%, NR7, EMA200 bias)
+	s.enrichHTFSignals(ctx, passedSnaps, asOfET)
+
+	// Second-pass ATR% gate (after enrichment)
+	if s.cfg.Pass0MinATRPct > 0 {
+		var atrPassed []string
+		for _, sym := range passed {
+			snap, ok := passedSnaps[sym]
+			if !ok {
+				continue
+			}
+			if snap.DailyATRPct != nil && *snap.DailyATRPct >= s.cfg.Pass0MinATRPct {
+				atrPassed = append(atrPassed, sym)
+			} else if snap.DailyATRPct == nil {
+				atrPassed = append(atrPassed, sym) // keep if no data (fail-open)
+			}
+		}
+		s.log.Info().
+			Int("before_atr", len(passed)).
+			Int("after_atr", len(atrPassed)).
+			Float64("min_atr_pct", s.cfg.Pass0MinATRPct).
+			Msg("ai screener: ATR% gate applied")
+		passed = atrPassed
+	}
+
+	if len(passed) == 0 {
+		s.log.Warn().Msg("ai screener: no symbols survived ATR% gate")
+		return nil
+	}
+
 	runID := uuid.NewString()
 	runStart := time.Now()
 
@@ -503,6 +534,15 @@ func (s *AIService) runForStrategy(
 			}
 			if cd.AvgVol > 0 && cd.PMVol > 0 {
 				cd.RVOL = float64(cd.PMVol) / float64(cd.AvgVol)
+			}
+			if snap.DailyATRPct != nil {
+				cd.ATRPct = *snap.DailyATRPct
+			}
+			if snap.NR7 != nil {
+				cd.NR7 = *snap.NR7
+			}
+			if snap.EMA200Bias != nil {
+				cd.EMA200Bias = *snap.EMA200Bias
 			}
 		}
 		candidates = append(candidates, cd)
@@ -746,4 +786,59 @@ func (s *AIService) callModel(ctx context.Context, model, prompt string) (string
 	}
 
 	return completion.Choices[0].Message.Content, nil
+}
+
+// enrichHTFSignals computes daily ATR%, NR7, and EMA200 bias for post-Pass0 symbols
+// by fetching daily bars from the market data provider.
+func (s *AIService) enrichHTFSignals(ctx context.Context, snaps map[string]ports.Snapshot, asOf time.Time) {
+	from := asOf.Add(-400 * 24 * time.Hour) // enough for EMA200
+
+	for sym, snap := range snaps {
+		domSym, err := domain.NewSymbol(sym)
+		if err != nil {
+			continue
+		}
+		bars, fetchErr := s.market.GetHistoricalBars(ctx, domSym, "1d", from, asOf)
+		if fetchErr != nil || len(bars) < 15 {
+			continue
+		}
+
+		lastClose := bars[len(bars)-1].Close
+		if lastClose <= 0 {
+			continue
+		}
+
+		// ATR%
+		atr := monitor.ComputeDailyATR(bars, 14)
+		if atr > 0 {
+			pct := atr / lastClose * 100
+			snap.DailyATRPct = &pct
+		}
+
+		// NR7
+		nr7 := monitor.ComputeNR7(bars)
+		snap.NR7 = &nr7
+
+		// EMA200 bias
+		if len(bars) >= 200 {
+			closes := make([]float64, len(bars))
+			for i, b := range bars {
+				closes[i] = b.Close
+			}
+			ema200 := monitor.ComputeStaticEMA(closes, 200)
+			if ema200 > 0 {
+				bias := "NEUTRAL"
+				if lastClose > ema200*1.005 {
+					bias = "BULLISH"
+				} else if lastClose < ema200*0.995 {
+					bias = "BEARISH"
+				}
+				snap.EMA200Bias = &bias
+			}
+		}
+
+		snaps[sym] = snap
+	}
+
+	s.log.Info().Int("enriched", len(snaps)).Msg("ai screener: HTF signals enriched")
 }

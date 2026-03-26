@@ -15,6 +15,10 @@ type Snapshot struct {
 	LastTradePrice  *float64
 	DailyVolume     *int64
 	PrevDailyVolume *int64
+	// Quantitative signals (enriched after Pass0)
+	DailyATRPct *float64 // ATR(14) / close * 100
+	NR7         *bool    // narrowest range in 7 sessions
+	EMA200Bias  *string  // "BULLISH", "BEARISH", "NEUTRAL"
 }
 
 type SnapshotPort interface {

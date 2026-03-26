@@ -289,11 +289,15 @@ func (s *Service) activateOne(ctx context.Context, symbol string) error {
 		} else if lastClose < ema200*0.995 {
 			bias = "BEARISH"
 		}
+		nr7 := monitor.ComputeNR7(bars1d)
+		dailyATR := monitor.ComputeDailyATR(bars1d, 14)
 		s.monitor.SetStaticHTFData(symbol, "1d", domain.HTFData{
-			EMA200: ema200,
-			Bias:   bias,
+			EMA200:   ema200,
+			Bias:     bias,
+			NR7:      nr7,
+			DailyATR: dailyATR,
 		})
-		l.Info().Float64("ema200", ema200).Str("bias", bias).Msg("1D EMA200 warmup complete")
+		l.Info().Float64("ema200", ema200).Str("bias", bias).Bool("nr7", nr7).Float64("daily_atr", dailyATR).Msg("1D HTF warmup complete")
 	}
 
 	warmupFrom := warmupTo.Add(-120 * time.Minute)
