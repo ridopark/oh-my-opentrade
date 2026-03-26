@@ -28,7 +28,9 @@ export default function ScreenerPage() {
   const [customSymbols, setCustomSymbols] = useState("");
   const [screenDate, setScreenDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [resultDate, setResultDate] = useState("");
+  const [scanMode, setScanMode] = useState<"custom" | "universe">("custom");
   const [results, setResults] = useState<ScreenerResult[]>([]);
+  const [totalScanned, setTotalScanned] = useState(0);
   const [loading, setLoading] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("score");
   const [sortAsc, setSortAsc] = useState(false);
@@ -40,13 +42,19 @@ export default function ScreenerPage() {
       const symbols = customSymbols.trim()
         ? customSymbols.split(",").map((s) => s.trim()).filter(Boolean)
         : PRESETS[preset] ?? PRESETS["ORB Candidates"];
-      let url = `/api/screener?symbols=${encodeURIComponent(symbols.join(","))}`;
+      let url = "/api/screener?";
+      if (scanMode === "universe") {
+        url += "mode=universe";
+      } else {
+        url += `symbols=${encodeURIComponent(symbols.join(","))}`;
+      }
       if (screenDate) url += `&date=${screenDate}`;
       const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         setResults(data?.results ?? []);
         setResultDate(data?.date ?? "");
+        setTotalScanned(data?.total ?? 0);
       }
     } finally {
       setLoading(false);
@@ -87,28 +95,48 @@ export default function ScreenerPage() {
 
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card p-3">
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">Preset</span>
-          <select
-            value={preset}
-            onChange={(e) => { setPreset(e.target.value); setCustomSymbols(""); }}
-            className="bg-background border border-border rounded px-2 py-1 text-xs font-mono text-foreground"
+        <div className="flex items-center gap-1 rounded border border-border overflow-hidden">
+          <button
+            onClick={() => setScanMode("custom")}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors ${scanMode === "custom" ? "bg-emerald-600 text-white" : "text-muted-foreground hover:text-foreground"}`}
           >
-            {Object.keys(PRESETS).map((p) => <option key={p} value={p}>{p}</option>)}
-            <option value="custom">Custom</option>
-          </select>
+            Custom
+          </button>
+          <button
+            onClick={() => setScanMode("universe")}
+            className={`px-3 py-1.5 text-xs font-medium transition-colors ${scanMode === "universe" ? "bg-emerald-600 text-white" : "text-muted-foreground hover:text-foreground"}`}
+            title="Scan all ~3,000 tradeable equities from Alpaca, filter by price/volume, rank top 50"
+          >
+            Universe
+          </button>
         </div>
 
-        <div className="flex items-center gap-2 flex-1 min-w-[200px]">
-          <span className="text-xs text-muted-foreground">Symbols</span>
-          <input
-            type="text"
-            value={customSymbols || (preset !== "custom" ? (PRESETS[preset] ?? []).join(", ") : "")}
-            onChange={(e) => { setCustomSymbols(e.target.value); setPreset("custom"); }}
-            className="flex-1 bg-background border border-border rounded px-2 py-1 text-xs font-mono text-foreground"
-            placeholder="AAPL, TSLA, HIMS..."
-          />
-        </div>
+        {scanMode === "custom" && <>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Preset</span>
+            <select
+              value={preset}
+              onChange={(e) => { setPreset(e.target.value); setCustomSymbols(""); }}
+              className="bg-background border border-border rounded px-2 py-1 text-xs font-mono text-foreground"
+            >
+              {Object.keys(PRESETS).map((p) => <option key={p} value={p}>{p}</option>)}
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+            <span className="text-xs text-muted-foreground">Symbols</span>
+            <input
+              type="text"
+              value={customSymbols || (preset !== "custom" ? (PRESETS[preset] ?? []).join(", ") : "")}
+              onChange={(e) => { setCustomSymbols(e.target.value); setPreset("custom"); }}
+              className="flex-1 bg-background border border-border rounded px-2 py-1 text-xs font-mono text-foreground"
+              placeholder="AAPL, TSLA, HIMS..."
+            />
+          </div>
+        </>}
+        {scanMode === "universe" && (
+          <span className="text-xs text-muted-foreground">Scans ~3,000 tradeable equities, filters by price/volume, shows top 50</span>
+        )}
 
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground">Date</span>
@@ -256,7 +284,9 @@ export default function ScreenerPage() {
 
       {loading && (
         <div className="flex items-center justify-center h-40 rounded-lg border border-border bg-card text-muted-foreground text-sm">
-          Fetching daily bars and computing indicators...
+          {scanMode === "universe"
+            ? "Scanning universe (~3,000 equities)... this may take 30-60 seconds"
+            : "Fetching daily bars and computing indicators..."}
         </div>
       )}
 
@@ -338,7 +368,8 @@ export default function ScreenerPage() {
           {/* Summary */}
           <div className="flex items-center gap-4 px-3 py-2 border-t border-border text-[10px] text-muted-foreground">
             {resultDate && <span className="font-medium text-foreground">{resultDate}</span>}
-            <span>{sorted.length} symbols</span>
+            {totalScanned > 0 && <span>Scanned: {totalScanned}</span>}
+            <span>Showing: {sorted.length}</span>
             <span>{"ATR% pass (>=0.8%): "}{sorted.filter((r) => r.atr_pct >= 0.8).length}</span>
             <span>NR7 compression: {sorted.filter((r) => r.nr7).length}</span>
             <span>Bullish: {sorted.filter((r) => r.bias === "BULLISH").length}</span>
