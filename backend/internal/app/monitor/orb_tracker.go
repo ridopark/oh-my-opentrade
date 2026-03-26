@@ -291,13 +291,18 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 			sess.State = ORBStateRangeSet
 			t.logger.Info("orb: range set", "symbol", sym, "high", sess.OrbHigh, "low", sess.OrbLow, "bars", sess.RangeBarCount)
 
-			// OR range vs ATR check: skip if range is too wide or too narrow
-			if !orbRangeValid(sess.OrbHigh, sess.OrbLow, snap.ATR, cfg.MaxRangeATRMult, cfg.MinRangePctBps) {
+			// OR range vs daily ATR check: skip if range is too wide or too narrow.
+			// Uses daily ATR from HTF data (not the 1m ATR in snap.ATR which is wrong scale).
+			dailyATR := 0.0
+			if htf, ok := snap.HTF[domain.Timeframe("1d")]; ok {
+				dailyATR = htf.DailyATR
+			}
+			if !orbRangeValid(sess.OrbHigh, sess.OrbLow, dailyATR, cfg.MaxRangeATRMult, cfg.MinRangePctBps) {
 				orRange := sess.OrbHigh - sess.OrbLow
 				sess.State = ORBStateInvalid
 				sess.RangeInvalid = true
 				t.logger.Warn("orb: range invalid (size check)", "symbol", sym,
-					"or_range", orRange, "atr", snap.ATR,
+					"or_range", orRange, "daily_atr", dailyATR,
 					"max_atr_mult", cfg.MaxRangeATRMult, "min_bps", cfg.MinRangePctBps)
 				return nil, false
 			}
@@ -387,7 +392,7 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 			sess.Retest.HoldClose = bar.Close
 			sess.Retest.Confirmed = true
 			sess.State = ORBStateRetestConfirmed
-			t.logger.Info("orb: retest confirmed", "symbol", sym, "direction", sess.Breakout.Direction, "hold_close", bar.Close, "confidence", orbConfidence(sess, bar, cfg))
+			t.logger.Info("orb: retest confirmed", "symbol", sym, "direction", sess.Breakout.Direction, "hold_close", bar.Close, "confidence", orbConfidence(sess, bar, snap, cfg))
 			setup := &SetupCondition{
 				Symbol:     bar.Symbol,
 				Timeframe:  bar.Timeframe,
@@ -399,7 +404,7 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 				ORBHigh:    sess.OrbHigh,
 				ORBLow:     sess.OrbLow,
 				RVOL:       sess.Breakout.RVOL,
-				Confidence: orbConfidence(sess, bar, cfg),
+				Confidence: orbConfidence(sess, bar, snap, cfg),
 			}
 			if setup.Confidence < cfg.MinConfidence {
 				t.logger.Info("orb: low confidence, cycling to RANGE_SET", "symbol", sym, "confidence", setup.Confidence, "min", cfg.MinConfidence)
@@ -542,7 +547,7 @@ func barDurationMinutes(tf domain.Timeframe) int {
 	}
 }
 
-func orbConfidence(sess *ORBSession, bar domain.MarketBar, cfg ORBConfig) float64 {
+func orbConfidence(sess *ORBSession, bar domain.MarketBar, snap domain.IndicatorSnapshot, cfg ORBConfig) float64 {
 	conf := 0.50
 	if sess.Breakout.RVOL >= cfg.MinRVOL {
 		conf += 0.25
@@ -562,6 +567,12 @@ func orbConfidence(sess *ORBSession, bar domain.MarketBar, cfg ORBConfig) float6
 	} else if sess.BarsSinceBreakout <= cfg.MaxRetestBars {
 		conf += 0.05
 	}
+
+	// NR7 bonus: prior day compression → higher breakout probability
+	if htf, ok := snap.HTF[domain.Timeframe("1d")]; ok && htf.NR7 {
+		conf += 0.05
+	}
+
 	if conf > 0.95 {
 		conf = 0.95
 	}

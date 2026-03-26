@@ -585,11 +585,15 @@ func (r *Runner) Run(ctx context.Context) error {
 					} else if lastClose < ema200*0.995 {
 						bias = "BEARISH"
 					}
+					nr7 := monitor.ComputeNR7(bars1d)
+					dailyATR := monitor.ComputeDailyATR(bars1d, 14)
 					monitorSvc.SetStaticHTFData(res.sym, "1d", domain.HTFData{
-						EMA200: ema200,
-						Bias:   bias,
+						EMA200:   ema200,
+						Bias:     bias,
+						NR7:      nr7,
+						DailyATR: dailyATR,
 					})
-					r.log.Info().Str("symbol", res.sym).Float64("ema200", ema200).Str("bias", bias).Int("daily_bars", len(bars1d)).Msg("1D HTF EMA200 warmup complete")
+					r.log.Info().Str("symbol", res.sym).Float64("ema200", ema200).Str("bias", bias).Bool("nr7", nr7).Float64("daily_atr", dailyATR).Int("daily_bars", len(bars1d)).Msg("1D HTF warmup complete")
 				}
 			}
 			monitorSvc.ResetSessionIndicators(res.sym)
