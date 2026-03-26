@@ -384,13 +384,14 @@ func updateStepStopLong(pos *domain.MonitoredPosition, currentPrice float64, ctx
 
 	var newStop float64
 	if newHighest <= 1.0 {
-		newStop = pos.EntryPrice
+		// Breakeven with buffer — 0.15% below entry to avoid slippage stop-outs
+		newStop = pos.EntryPrice * 0.9985
 	} else {
 		lockLevel := newHighest - 1.0
 		if lockPrice, exists := ctx.SDBands[lockLevel]; exists {
 			newStop = lockPrice
 		} else {
-			newStop = pos.EntryPrice
+			newStop = pos.EntryPrice * 0.9985
 		}
 	}
 
@@ -430,17 +431,18 @@ func updateStepStopShort(pos *domain.MonitoredPosition, currentPrice float64, ct
 	pos.CustomState["lowest_sd_crossed"] = newLowest
 
 	// For shorts, stop is set ABOVE entry (protecting against adverse moves up).
-	// -1.0 SD crossed → stop = entry price (breakeven)
+	// -1.0 SD crossed → stop = entry + 0.15% buffer (breakeven with room)
 	// -2.0 SD crossed → stop = -1.0 SD band (lock in profit at -1 SD)
 	var newStop float64
 	if newLowest <= 1.0 {
-		newStop = pos.EntryPrice
+		// Breakeven with buffer — 0.15% above entry to avoid slippage stop-outs
+		newStop = pos.EntryPrice * 1.0015
 	} else {
 		lockLevel := newLowest - 1.0
 		if lockPrice, exists := lowerBands[lockLevel]; exists {
 			newStop = lockPrice
 		} else {
-			newStop = pos.EntryPrice
+			newStop = pos.EntryPrice * 1.0015
 		}
 	}
 

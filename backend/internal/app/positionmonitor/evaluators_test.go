@@ -579,11 +579,11 @@ func TestUpdateStepStopState(t *testing.T) {
 	}
 	ctx := EvalContext{VWAPValue: 100.0, SDBands: sdBands}
 
-	t.Run("crosses +1.0 SD sets stop to entry (breakeven)", func(t *testing.T) {
+	t.Run("crosses +1.0 SD sets stop to entry with buffer (breakeven)", func(t *testing.T) {
 		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
 		UpdateStepStopState(pos, 102.5, ctx, now, 0.0)
 		assert.Equal(t, 1.0, pos.CustomState["highest_sd_crossed"])
-		assert.Equal(t, 100.0, pos.CustomState["step_stop_level"])
+		assert.InEpsilon(t, 99.85, pos.CustomState["step_stop_level"], 0.001) // entry * 0.9985
 	})
 
 	t.Run("crosses +2.0 SD sets stop to +1.0 SD band", func(t *testing.T) {
@@ -621,10 +621,10 @@ func TestUpdateStepStopState(t *testing.T) {
 	t.Run("progressive ratcheting across ticks", func(t *testing.T) {
 		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
 
-		// Tick 1: price at 102.5 → crosses +1.0 SD → stop = entry (100)
+		// Tick 1: price at 102.5 → crosses +1.0 SD → stop = entry with buffer (99.85)
 		UpdateStepStopState(pos, 102.5, ctx, now, 0.0)
 		assert.Equal(t, 1.0, pos.CustomState["highest_sd_crossed"])
-		assert.Equal(t, 100.0, pos.CustomState["step_stop_level"])
+		assert.InEpsilon(t, 99.85, pos.CustomState["step_stop_level"], 0.001)
 
 		// Tick 2: price at 104.5 → crosses +2.0 SD → stop = +1.0 SD (102)
 		UpdateStepStopState(pos, 104.5, ctx, now, 0.0)
@@ -650,7 +650,7 @@ func TestUpdateStepStopState(t *testing.T) {
 		pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
 		UpdateStepStopState(pos, 102.5, ctx, now, 3.0)
 		assert.Equal(t, 1.0, pos.CustomState["highest_sd_crossed"], "should ratchet after hold period")
-		assert.Equal(t, 100.0, pos.CustomState["step_stop_level"])
+		assert.InEpsilon(t, 99.85, pos.CustomState["step_stop_level"], 0.001)
 	})
 }
 
