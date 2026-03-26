@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"sort"
@@ -110,12 +111,17 @@ func (h *ScreenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Compute indicators for all symbols
-	results := h.computeAll(ctx, symbols, asOf)
+	// SSE mode for progress streaming (universe scan)
+	if mode == "universe" && r.URL.Query().Get("stream") == "1" {
+		h.serveSSE(ctx, w, symbols, asOf)
+		return
+	}
+
+	// Non-streaming: compute all and return JSON
+	results := h.computeAll(ctx, symbols, asOf, nil)
 
 	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
 
-	// In universe mode, limit to top 50 results
 	if mode == "universe" && len(results) > 50 {
 		results = results[:50]
 	}
@@ -205,8 +211,64 @@ func (h *ScreenerHandler) getSnapshotsBatched(ctx context.Context, symbols []str
 	return result, nil
 }
 
+// serveSSE streams progress events during a universe scan.
+func (h *ScreenerHandler) serveSSE(ctx context.Context, w http.ResponseWriter, symbols []string, asOf time.Time) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	total := len(symbols)
+	var processed int64
+	var mu sync.Mutex
+
+	sendProgress := func(done int, stage string) {
+		pct := 0
+		if total > 0 {
+			pct = done * 100 / total
+		}
+		data, _ := json.Marshal(map[string]any{"type": "progress", "done": done, "total": total, "pct": pct, "stage": stage})
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+	}
+
+	sendProgress(0, "Fetching daily bars...")
+
+	onProgress := func() {
+		mu.Lock()
+		processed++
+		p := int(processed)
+		mu.Unlock()
+		sendProgress(p, "Computing indicators...")
+	}
+
+	results := h.computeAll(ctx, symbols, asOf, onProgress)
+
+	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
+	if len(results) > 50 {
+		results = results[:50]
+	}
+
+	final, _ := json.Marshal(map[string]any{
+		"type":    "done",
+		"date":    asOf.Format("2006-01-02"),
+		"mode":    "universe",
+		"total":   total,
+		"results": results,
+	})
+	fmt.Fprintf(w, "data: %s\n\n", final)
+	flusher.Flush()
+}
+
 // computeAll fetches daily bars and computes indicators for all symbols concurrently.
-func (h *ScreenerHandler) computeAll(ctx context.Context, symbols []string, asOf time.Time) []ScreenerResult {
+// onProgress is called after each symbol is processed (nil = no progress reporting).
+func (h *ScreenerHandler) computeAll(ctx context.Context, symbols []string, asOf time.Time, onProgress func()) []ScreenerResult {
 	var (
 		mu      sync.Mutex
 		wg      sync.WaitGroup
@@ -222,6 +284,11 @@ func (h *ScreenerHandler) computeAll(ctx context.Context, symbols []string, asOf
 		go func(sym string) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			defer func() {
+				if onProgress != nil {
+					onProgress()
+				}
+			}()
 
 			s, _ := domain.NewSymbol(sym)
 			bars, err := h.fetcher.GetHistoricalBars(ctx, s, "1d", from, asOf)
