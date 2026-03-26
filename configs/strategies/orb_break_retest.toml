@@ -72,6 +72,11 @@ min_hold_bars = 6
 bar_minutes = 5
 
 [[exit_rules]]
+type = "TRAILING_STOP"
+[exit_rules.params]
+pct = 0.003
+
+[[exit_rules]]
 type = "SD_TARGET"
 [exit_rules.params]
 sd_level = 2.0
