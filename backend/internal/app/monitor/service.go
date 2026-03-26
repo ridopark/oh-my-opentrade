@@ -47,9 +47,10 @@ type Service struct {
 	log              zerolog.Logger
 	dnaGate          DNAGateChecker
 	strategyKey      string
-	vixLevel         float64 // latest VIX close; 0 = unknown (allow all)
-	vixSkipAbove     float64 // skip ORB when VIX > this (0 = disabled)
-	vixWidenAbove    float64 // widen stops when VIX > this (0 = disabled)
+	vixLevel           float64  // latest VIX close; 0 = unknown (allow all)
+	vixSkipAbove       float64  // skip ORB when VIX > this (0 = disabled)
+	vixWidenAbove      float64  // widen stops when VIX > this (0 = disabled)
+	orbAllowedRegimes  []string // regime gate for ORB (empty = allow all)
 }
 
 // GetLastSnapshot returns the most recently cached IndicatorSnapshot for the given symbol.
@@ -138,6 +139,7 @@ func (s *Service) SetORBConfig(params map[string]any) {
 	s.orbCfg = NewORBConfigFromDNA(params)
 	s.vixSkipAbove = s.orbCfg.VIXSkipAbove
 	s.vixWidenAbove = s.orbCfg.VIXWidenAbove
+	s.orbAllowedRegimes = s.orbCfg.AllowedRegimes
 	s.log.Info().
 		Float64("min_rvol", s.orbCfg.MinRVOL).
 		Float64("min_confidence", s.orbCfg.MinConfidence).
@@ -567,6 +569,25 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 				Str("direction", string(setup.Direction)).
 				Msg("setup blocked: VIX too high")
 			detected = false
+		}
+		// Regime gate: block ORB in disallowed regimes.
+		if detected && len(s.orbAllowedRegimes) > 0 {
+			regimeStr := string(regime.Type)
+			allowed := false
+			for _, r := range s.orbAllowedRegimes {
+				if r == regimeStr {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				l.Warn().
+					Str("regime", regimeStr).
+					Strs("allowed", s.orbAllowedRegimes).
+					Str("direction", string(setup.Direction)).
+					Msg("setup blocked: regime not allowed")
+				detected = false
+			}
 		}
 		if detected {
 			setup.Regime = regime
