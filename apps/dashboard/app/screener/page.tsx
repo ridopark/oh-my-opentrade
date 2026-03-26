@@ -326,21 +326,21 @@ export default function ScreenerPage() {
         <div className="relative rounded-lg border border-border bg-card overflow-hidden">
           {/* Progress overlay */}
           {loading && (
-            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-background/70 backdrop-blur-[2px]">
-              <div className="w-6 h-6 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+            <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-3 px-4 py-2 bg-background/40">
+              <div className="w-4 h-4 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin shrink-0" />
               {progress ? (
                 <>
-                  <div className="text-foreground font-medium text-xs">{progress.stage}</div>
-                  <div className="w-48 h-1.5 bg-muted rounded-full overflow-hidden">
+                  <span className="text-foreground font-medium text-xs">{progress.stage}</span>
+                  <div className="w-32 h-1.5 bg-muted rounded-full overflow-hidden shrink-0">
                     <div
                       className="h-full bg-emerald-500 transition-all duration-300"
                       style={{ width: `${progress.pct}%` }}
                     />
                   </div>
-                  <div className="text-[10px] text-muted-foreground">{progress.done} / {progress.total} ({progress.pct}%)</div>
+                  <span className="text-[10px] text-muted-foreground">{progress.pct}%</span>
                 </>
               ) : (
-                <div className="text-xs text-muted-foreground">{scanMode === "universe" ? "Preparing universe scan..." : "Fetching daily bars..."}</div>
+                <span className="text-xs text-muted-foreground">{scanMode === "universe" ? "Preparing universe scan..." : "Fetching daily bars..."}</span>
               )}
             </div>
           )}
