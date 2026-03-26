@@ -272,6 +272,34 @@ export class SignalMarkerOverlay implements ISeriesPrimitive<Time> {
     this._requestUpdate?.();
   }
 
+  /** Hit-test a click at (x, y) in media coordinates against rendered markers.
+   *  Returns the index into the signals array, or -1 if nothing hit. */
+  hitTest(x: number, y: number): number {
+    if (!this._chart || !this._series) return -1;
+    const ts = this._chart.timeScale();
+    for (let i = 0; i < this._signals.length; i++) {
+      const s = this._signals[i];
+      const mx = ts.timeToCoordinate(s.time);
+      if (mx === null) continue;
+      const my = this._series.priceToCoordinate(s.price);
+      if (my === null) continue;
+
+      // Box dimensions matching the renderer
+      const boxW = 120; // generous hit area
+      const boxH = 22;
+      const gap = 6;
+      const arrowH = 5;
+      const isBuy = s.side === "buy";
+      const boxY = isBuy ? my + gap + arrowH : my - gap - arrowH - boxH;
+      const boxX = mx - boxW / 2;
+
+      if (x >= boxX && x <= boxX + boxW && y >= boxY && y <= boxY + boxH) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
   updateAllViews(): void {
     this._paneView.update();
   }
