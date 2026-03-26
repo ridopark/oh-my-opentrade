@@ -175,21 +175,54 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		speed = "5x"
 	}
 
-	// When daily screener is on, expand candidate pool to all ingested symbols
+	// When daily screener is on, expand candidate pool to a broad universe
+	// of liquid US equities for effective screening.
 	backtestSymbols := symbols
 	if req.UseDailyScreener {
-		allCfgSyms := h.appCfg.Symbols.AllSymbols()
 		seen := make(map[string]bool)
 		for _, s := range backtestSymbols {
 			seen[string(s)] = true
 		}
-		for _, s := range allCfgSyms {
-			if !seen[s] && !strings.Contains(s, "/") { // skip crypto (no ORB on 24/7 markets)
+		// Top ~80 most liquid US equities by ADV — covers mega/large/mid cap,
+		// growth/value, sectors, and popular day trading names.
+		screenPool := []string{
+			// Mega cap tech
+			"AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "NFLX",
+			// Semiconductors
+			"AMD", "INTC", "AVGO", "QCOM", "MU", "MRVL", "ON", "SMCI",
+			// Software / Cloud
+			"CRM", "ORCL", "SNOW", "PLTR", "U", "NET", "DDOG", "ZS",
+			// Fintech / Finance
+			"SOFI", "COIN", "HOOD", "SQ", "PYPL", "V", "MA", "BAC", "JPM", "GS",
+			// Consumer / Retail
+			"HIMS", "RIVN", "LCID", "NIO", "F", "GM", "WMT", "COST", "TGT",
+			// Biotech / Healthcare
+			"MRNA", "PFE", "ABBV", "LLY", "UNH", "JNJ",
+			// Energy
+			"XOM", "CVX", "OXY", "SLB",
+			// ETFs (non-leveraged)
+			"SPY", "QQQ", "IWM", "DIA", "XLF", "XLE", "XLK",
+			// Leveraged ETFs (high ATR, good for ORB)
+			"SOXL", "TQQQ", "SQQQ",
+			// High-volatility day trading favorites
+			"MARA", "RIOT", "FUBO", "AFRM", "UPST", "RBLX",
+			// Industrials / Misc
+			"BA", "CAT", "DE", "UPS",
+		}
+		for _, s := range screenPool {
+			if !seen[s] {
 				backtestSymbols = append(backtestSymbols, domain.Symbol(s))
 				seen[s] = true
 			}
 		}
-		h.log.Info().Int("user_symbols", len(symbols)).Int("expanded_pool", len(backtestSymbols)).Msg("daily screener: expanded candidate pool from config")
+		// Also include any config symbols not already in the pool
+		for _, s := range h.appCfg.Symbols.AllSymbols() {
+			if !seen[s] && !strings.Contains(s, "/") {
+				backtestSymbols = append(backtestSymbols, domain.Symbol(s))
+				seen[s] = true
+			}
+		}
+		h.log.Info().Int("user_symbols", len(symbols)).Int("expanded_pool", len(backtestSymbols)).Msg("daily screener: expanded candidate pool")
 	}
 
 	runner := backtest.NewRunner(backtest.RunConfig{
