@@ -40,14 +40,61 @@ type ScoredSymbol struct {
 
 // DailyScreener pre-computes the top-N symbols for each trading day.
 type DailyScreener struct {
-	repo   ports.RepositoryPort
-	market ports.MarketDataPort
-	log    zerolog.Logger
+	repo     ports.RepositoryPort
+	market   ports.MarketDataPort
+	log      zerolog.Logger
+	barCache map[string][]domain.MarketBar // symbol → daily bars (fetched once)
+	cacheMu  sync.Mutex
 }
 
 // NewDailyScreener creates a DailyScreener. repo is optional (nil = API only).
 func NewDailyScreener(repo ports.RepositoryPort, market ports.MarketDataPort, log zerolog.Logger) *DailyScreener {
-	return &DailyScreener{repo: repo, market: market, log: log}
+	return &DailyScreener{repo: repo, market: market, log: log, barCache: make(map[string][]domain.MarketBar)}
+}
+
+// fetchDailyBars gets daily bars for a symbol, using cache → DB → API fallback.
+// Bars are cached in memory for reuse across trading days.
+func (ds *DailyScreener) fetchDailyBars(ctx context.Context, sym domain.Symbol, from, to time.Time) []domain.MarketBar {
+	key := string(sym)
+
+	ds.cacheMu.Lock()
+	if cached, ok := ds.barCache[key]; ok {
+		ds.cacheMu.Unlock()
+		// Filter cached bars to the requested range
+		var filtered []domain.MarketBar
+		for _, b := range cached {
+			if !b.Time.Before(from) && !b.Time.After(to) {
+				filtered = append(filtered, b)
+			}
+		}
+		return filtered
+	}
+	ds.cacheMu.Unlock()
+
+	// Fetch the full range (400 days back from the latest date we'll need)
+	var bars []domain.MarketBar
+	if ds.repo != nil {
+		bars, _ = ds.repo.GetMarketBars(ctx, sym, "1d", from, to)
+	}
+	if len(bars) < 21 && ds.market != nil {
+		apiBars, apiErr := ds.market.GetHistoricalBars(ctx, sym, "1d", from, to)
+		if apiErr == nil && len(apiBars) > len(bars) {
+			bars = apiBars
+			// Cache in DB for future backtests
+			if ds.repo != nil {
+				for _, b := range apiBars {
+						_ = ds.repo.SaveMarketBar(ctx, b)
+					}
+			}
+		}
+	}
+
+	// Cache in memory
+	ds.cacheMu.Lock()
+	ds.barCache[key] = bars
+	ds.cacheMu.Unlock()
+
+	return bars
 }
 
 // ComputeForDate scores all candidate symbols as of the given date and returns
@@ -69,12 +116,7 @@ func (ds *DailyScreener) ComputeForDate(ctx context.Context, asOf time.Time, can
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			// Use DB only for speed — daily bars are cached from warmup.
-			// No API calls to avoid rate limiting during backtest screening.
-			var bars []domain.MarketBar
-			if ds.repo != nil {
-				bars, _ = ds.repo.GetMarketBars(ctx, sym, "1d", from, asOf)
-			}
+			bars := ds.fetchDailyBars(ctx, sym, from, asOf)
 			if len(bars) < 21 {
 				return
 			}
