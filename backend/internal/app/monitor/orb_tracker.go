@@ -39,6 +39,8 @@ type ORBConfig struct {
 	VWAPFilterEnabled    bool    // require VWAP alignment at breakout and retest
 	MaxRangeATRMult      float64 // skip if OR range > this × ATR (0 = disabled)
 	MinRangePctBps       int     // skip if OR range < this bps of midpoint (0 = disabled)
+	VIXSkipAbove         float64 // skip ORB entirely when VIX > this (0 = disabled)
+	VIXWidenAbove        float64 // widen stops when VIX > this (0 = disabled)
 }
 
 func DefaultORBConfig() ORBConfig {
@@ -136,6 +138,8 @@ func NewORBConfigFromDNA(params map[string]any) ORBConfig {
 		VWAPFilterEnabled:    orbExtractBool(params, "vwap_filter_enabled", false),
 		MaxRangeATRMult:      orbExtractFloat(params, "max_range_atr_mult", 0),
 		MinRangePctBps:       orbExtractInt(params, "min_range_pct_bps", 0),
+		VIXSkipAbove:         orbExtractFloat(params, "vix_skip_above", 0),
+		VIXWidenAbove:        orbExtractFloat(params, "vix_widen_above", 0),
 	}
 }
 

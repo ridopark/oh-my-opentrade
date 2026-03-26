@@ -374,6 +374,21 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		}
 	}
 
+	// Fetch VIX level for ORB regime gating (best-effort).
+	if infra.broker != nil {
+		vixSym, _ := domain.NewSymbol("VIXY")
+		vixFrom := time.Now().Add(-7 * 24 * time.Hour)
+		vixBars, vixErr := infra.broker.GetHistoricalBars(context.Background(), vixSym, "1d", vixFrom, time.Now())
+		if vixErr == nil && len(vixBars) > 0 {
+			lastVIXY := vixBars[len(vixBars)-1].Close
+			approxVIX := lastVIXY * 0.75
+			svc.monitor.SetVIXLevel(approxVIX)
+			log.Info().Float64("vixy_close", lastVIXY).Float64("approx_vix", approxVIX).Msg("VIX level set from VIXY proxy")
+		} else {
+			log.Warn().Err(vixErr).Msg("could not fetch VIXY for VIX gate — disabled")
+		}
+	}
+
 	log.Info().
 		Int("specs", len(allSpecs)).
 		Int("symbols", len(pipeline.BaseSymbols)).
