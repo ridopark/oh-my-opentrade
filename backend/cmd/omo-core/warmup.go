@@ -580,16 +580,22 @@ func warmupHTF(ctx context.Context, infra *infraDeps, svc *appServices, syms sym
 				bias = "BEARISH"
 			}
 
+			nr7 := monitor.ComputeNR7(bars1d)
+			dailyATR := monitor.ComputeDailyATR(bars1d, 14)
 			svc.monitor.SetStaticHTFData(string(sym), "1d", domain.HTFData{
-				EMA200: ema200,
-				Bias:   bias,
+				EMA200:   ema200,
+				Bias:     bias,
+				NR7:      nr7,
+				DailyATR: dailyATR,
 			})
 			log.Info().Str("symbol", string(sym)).
 				Float64("ema200", ema200).
 				Float64("last_close", lastClose).
 				Str("bias", bias).
+				Bool("nr7", nr7).
+				Float64("daily_atr", dailyATR).
 				Int("bars", len(bars1d)).
-				Msg("1D EMA200 warmup complete")
+				Msg("1D HTF warmup complete")
 			infra.startup.EMA200Succeeded++
 		} else {
 			infra.startup.EMA200Failed = append(infra.startup.EMA200Failed, string(sym))

@@ -366,3 +366,36 @@ func computeInitialATR(highs, lows, closes []float64, period int) float64 {
 	}
 	return sum / float64(period)
 }
+
+// ComputeNR7 returns true if the last bar in the slice has the narrowest
+// range (high - low) of the final 7 bars. Requires at least 7 bars.
+func ComputeNR7(bars []domain.MarketBar) bool {
+	n := len(bars)
+	if n < 7 {
+		return false
+	}
+	last7 := bars[n-7:]
+	lastRange := last7[6].High - last7[6].Low
+	for i := 0; i < 6; i++ {
+		r := last7[i].High - last7[i].Low
+		if r <= lastRange {
+			return false // an earlier bar had equal or narrower range
+		}
+	}
+	return true
+}
+
+// ComputeDailyATR computes ATR(period) from daily bars.
+// Returns 0 if insufficient data.
+func ComputeDailyATR(bars []domain.MarketBar, period int) float64 {
+	n := len(bars)
+	if n < period+1 || period <= 0 {
+		return 0
+	}
+	// Simple ATR: average of true ranges over the last `period` bars
+	sum := 0.0
+	for i := n - period; i < n; i++ {
+		sum += trueRange(bars[i].High, bars[i].Low, bars[i-1].Close)
+	}
+	return sum / float64(period)
+}

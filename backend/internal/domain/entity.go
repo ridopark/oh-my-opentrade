@@ -232,9 +232,11 @@ func NewOptionOrderIntent(
 
 // HTFData holds higher-timeframe indicator values attached to a lower-timeframe snapshot.
 type HTFData struct {
-	EMA50  float64 `json:"ema50,omitempty"`
-	EMA200 float64 `json:"ema200,omitempty"`
-	Bias   string  `json:"bias,omitempty"`
+	EMA50    float64 `json:"ema50,omitempty"`
+	EMA200   float64 `json:"ema200,omitempty"`
+	Bias     string  `json:"bias,omitempty"`
+	NR7      bool    `json:"nr7,omitempty"`      // prior day had narrowest range in 7 sessions
+	DailyATR float64 `json:"dailyATR,omitempty"` // ATR(14) computed from daily bars
 }
 
 // IndicatorSnapshot holds a point-in-time snapshot of technical indicators.
