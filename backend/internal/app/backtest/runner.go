@@ -435,10 +435,53 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	loc, _ := time.LoadLocation("America/New_York")
 
+	// --- Daily screener: pre-compute BEFORE loading bars ---
+	// This determines which symbols to load data for.
+	var dailyScreenerMap map[string]map[string]bool
+	effectiveSymbols := r.cfg.Symbols // default: user-selected symbols
+
+	if r.cfg.UseDailyScreener {
+		r.emitter.EmitSetup("Pre-computing daily screener…")
+		topN := r.cfg.ScreenerTopN
+		if topN <= 0 {
+			topN = 5
+		}
+
+		// Compute trading days from the date range (approximate — every weekday)
+		tradingDays := estimateTradingDays(r.cfg.From, r.cfg.To, loc)
+		r.log.Info().Int("trading_days", len(tradingDays)).Int("top_n", topN).Int("candidates", len(r.cfg.Symbols)).Msg("pre-computing daily screener")
+
+		screener := NewDailyScreener(repo, r.marketData, r.log)
+		dailyScreenerMap = screener.PrecomputeAll(ctx, tradingDays, r.cfg.Symbols, topN, func(day, total int, date string) {
+			r.emitter.EmitSetup(fmt.Sprintf("Screening day %d/%d (%s)…", day+1, total, date))
+		})
+
+		// Collect union of all screened symbols
+		unionSet := make(map[string]bool)
+		for _, syms := range dailyScreenerMap {
+			for sym := range syms {
+				unionSet[sym] = true
+			}
+		}
+
+		// Build effective symbol list from union
+		effectiveSymbols = make([]domain.Symbol, 0, len(unionSet))
+		for sym := range unionSet {
+			effectiveSymbols = append(effectiveSymbols, domain.Symbol(sym))
+		}
+		sort.Slice(effectiveSymbols, func(i, j int) bool { return effectiveSymbols[i] < effectiveSymbols[j] })
+
+		r.log.Info().
+			Int("days_screened", len(dailyScreenerMap)).
+			Int("unique_symbols", len(effectiveSymbols)).
+			Strs("symbols", symbolStrings(effectiveSymbols)).
+			Msg("daily screener complete — using screened symbols for warmup/replay")
+	}
+
 	r.emitter.EmitSetup("Checking for data gaps…")
 	if r.marketData != nil {
 		var gapWg sync.WaitGroup
-		for _, sym := range r.cfg.Symbols {
+		for _, sym := range effectiveSymbols {
 			gapWg.Add(1)
 			go func(sym domain.Symbol) {
 				defer gapWg.Done()
@@ -472,7 +515,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	r.emitter.EmitSetup("Loading market data…")
-	streams := make([]*barStream, 0, len(r.cfg.Symbols))
+	streams := make([]*barStream, 0, len(effectiveSymbols))
 	totalBars := 0
 	firstBarTime := make(map[string]time.Time)
 	{
@@ -480,10 +523,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			stream       *barStream
 			firstBarTime time.Time
 		}
-		results := make([]loadResult, len(r.cfg.Symbols))
+		results := make([]loadResult, len(effectiveSymbols))
 		var loadErr atomic.Value
 		var loadWg sync.WaitGroup
-		for i, sym := range r.cfg.Symbols {
+		for i, sym := range effectiveSymbols {
 			loadWg.Add(1)
 			go func(i int, sym domain.Symbol) {
 				defer loadWg.Done()
@@ -527,8 +570,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	useAggregation := userTF != "1m"
 
-	aggregators := make(map[string]*BarAggregator, len(r.cfg.Symbols))
-	for _, sym := range r.cfg.Symbols {
+	aggregators := make(map[string]*BarAggregator, len(effectiveSymbols))
+	for _, sym := range effectiveSymbols {
 		aggregators[sym.String()] = NewBarAggregator(userTF)
 	}
 
@@ -536,16 +579,16 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	r.emitter.EmitSetup("Warming up indicators…")
 	const minWarmupBars = 250
-	warmupBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
+	warmupBarsCache := make(map[string][]domain.MarketBar, len(effectiveSymbols))
 	{
 		type warmupResult struct {
 			sym    string
 			bars   []domain.MarketBar
 			bars1d []domain.MarketBar
 		}
-		warmupResults := make([]warmupResult, len(r.cfg.Symbols))
+		warmupResults := make([]warmupResult, len(effectiveSymbols))
 		var warmupWg sync.WaitGroup
-		for i, sym := range r.cfg.Symbols {
+		for i, sym := range effectiveSymbols {
 			warmupWg.Add(1)
 			go func(i int, sym domain.Symbol) {
 				defer warmupWg.Done()
@@ -642,7 +685,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
-	for _, sym := range r.cfg.Symbols {
+	for _, sym := range effectiveSymbols {
 		if bars, ok := warmupBarsCache[sym.String()]; ok && len(bars) > 0 {
 			ingBundle.Filter.Seed(sym, bars)
 		}
@@ -650,11 +693,11 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	fromET := r.cfg.From.In(loc)
 	replaySessionOpen := time.Date(fromET.Year(), fromET.Month(), fromET.Day(), 9, 30, 0, 0, loc)
-	monitorSvc.InitAggregators(r.cfg.Symbols, replaySessionOpen)
+	monitorSvc.InitAggregators(effectiveSymbols, replaySessionOpen)
 
 	if pipeline.Runner != nil {
 		snapshotFn := makeSnapshotFn()
-		for _, sym := range r.cfg.Symbols {
+		for _, sym := range effectiveSymbols {
 			bars := warmupBarsCache[sym.String()]
 			if len(bars) == 0 {
 				continue
@@ -665,7 +708,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		pipeline.Runner.ClearAllPendingStates()
 
 		sessionResolver := NewSessionResolver(loc)
-		for _, sym := range r.cfg.Symbols {
+		for _, sym := range effectiveSymbols {
 			if loadErr := sessionResolver.Load(ctx, r.db, sym, r.cfg.From, r.cfg.To); loadErr != nil {
 				r.log.Warn().Err(loadErr).Str("symbol", sym.String()).Msg("failed to load session data")
 			}
@@ -673,7 +716,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		aiResolver := strategy.NewAIAnchorResolver(aiAdvisor, nil, nil)
 		aiResolver.SetSessionResolver(sessionResolver.ResolveAnchors)
-		for _, sym := range r.cfg.Symbols {
+		for _, sym := range effectiveSymbols {
 			isCrypto := strings.Contains(sym.String(), "/") || strings.HasSuffix(sym.String(), "USD")
 			aiResolver.RegisterSymbol(sym.String(), isCrypto)
 		}
@@ -741,65 +784,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("start risk sizer: %w", startErr)
 	}
 
-	// Pre-compute daily screener if enabled
-	var dailyScreenerMap map[string]map[string]bool
-	if r.cfg.UseDailyScreener && r.marketData != nil {
-		r.emitter.EmitSetup("Computing daily screener…")
-		topN := r.cfg.ScreenerTopN
-		if topN <= 0 {
-			topN = 5
-		}
-
-		// Collect all unique trading days from the bar streams
-		tradingDays := func() []time.Time {
-			seen := make(map[string]bool)
-			var days []time.Time
-			for _, s := range streams {
-				for _, bar := range s.bars {
-					et := bar.Time.In(loc)
-					dayOpen := time.Date(et.Year(), et.Month(), et.Day(), 9, 30, 0, 0, loc)
-					key := dayOpen.Format("2006-01-02")
-					if !seen[key] {
-						seen[key] = true
-						days = append(days, dayOpen)
-					}
-				}
-			}
-			sort.Slice(days, func(i, j int) bool { return days[i].Before(days[j]) })
-			return days
-		}()
-		// Build a larger candidate pool from the strategy's routing config.
-		// The user's symbol list is the candidate pool; topN picks the best each day.
-		// If candidate pool <= topN, warn that screener won't filter anything.
-		candidates := r.cfg.Symbols
-		if len(candidates) <= topN {
-			r.log.Warn().
-				Int("candidates", len(candidates)).
-				Int("top_n", topN).
-				Msg("daily screener: candidate pool <= top_n, screener will not filter. Add more symbols to the candidate pool.")
-		}
-		r.log.Info().Int("trading_days", len(tradingDays)).Int("top_n", topN).Int("candidates", len(candidates)).Msg("pre-computing daily screener")
-
-		screener := NewDailyScreener(repo, r.marketData, r.log)
-		dailyScreenerMap = screener.PrecomputeAll(ctx, tradingDays, candidates, topN, func(day, total int, date string) {
-			r.emitter.EmitSetup(fmt.Sprintf("Screening day %d/%d (%s)…", day+1, total, date))
-		})
-
-		// Log sample of screener results
-		totalSymsAcrossDays := 0
-		for date, syms := range dailyScreenerMap {
-			totalSymsAcrossDays += len(syms)
-			if len(syms) > 0 {
-				symList := make([]string, 0, len(syms))
-				for s := range syms {
-					symList = append(symList, s)
-				}
-				r.log.Debug().Str("date", date).Strs("symbols", symList).Msg("daily screener picks")
-			}
-		}
-		r.log.Info().Int("days_screened", len(dailyScreenerMap)).Int("total_symbol_days", totalSymsAcrossDays).Msg("daily screener pre-computation complete")
-	}
-
 	r.emitter.EmitSetup("Replaying bars…")
 
 	const tenantID = "default"
@@ -847,7 +831,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		dayOpen := time.Date(minET.Year(), minET.Month(), minET.Day(), 9, 30, 0, 0, loc)
 		if dayOpen.After(currentSessionDate) {
 			monitorSvc.ResetAggregators(dayOpen)
-			for _, sym := range r.cfg.Symbols {
+			for _, sym := range effectiveSymbols {
 				monitorSvc.ResetSessionIndicators(sym.String())
 			}
 			currentSessionDate = dayOpen
