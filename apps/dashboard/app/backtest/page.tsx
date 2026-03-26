@@ -152,7 +152,7 @@ export default function BacktestPage() {
         onCancel={bt.cancel}
       />
 
-      <div className="flex-1 min-h-0 mt-2">
+      <div className="flex-1 min-h-0 mt-2 overflow-hidden">
         <ChartGrid ref={chartGridRef} symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} onTradeClick={(trade) => {
           setBottomTab("trades");
           setTimeout(() => tradeLogRef.current?.scrollToTrade(trade), 50);
@@ -495,7 +495,7 @@ const ChartGrid = forwardRef<ChartGridHandle, {
 
   return (
     <div
-      className="h-full grid gap-2"
+      className="h-full grid gap-2 overflow-hidden"
       style={{
         gridTemplateColumns: `repeat(${cols}, 1fr)`,
         gridAutoRows: "1fr",
