@@ -135,8 +135,8 @@ func (s *ORBStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st 
 		"htf_bias":      htfBiasTag,
 	}
 
-	if orbState.Config.ATRMultiplier > 0 && orbState.Indicators.ATR > 0 {
-		atrStop := orbState.Indicators.ATR * orbState.Config.ATRMultiplier
+	if orbState.Config.SignalATRStopMult > 0 && orbState.Indicators.ATR > 0 {
+		atrStop := orbState.Indicators.ATR * orbState.Config.SignalATRStopMult
 		var stopPrice float64
 		if setup.Direction == domain.DirectionLong {
 			stopPrice = setup.BarClose - atrStop
