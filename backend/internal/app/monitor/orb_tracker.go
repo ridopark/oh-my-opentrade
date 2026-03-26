@@ -167,7 +167,12 @@ func NewORBConfigFromDNA(params map[string]any) ORBConfig {
 		MinRangePctBps:       orbExtractInt(params, "min_range_pct_bps", 0),
 		VIXSkipAbove:         orbExtractFloat(params, "vix_skip_above", 0),
 		VIXWidenAbove:        orbExtractFloat(params, "vix_widen_above", 0),
-		AllowedRegimes:       orbExtractStringSlice(params, "regime_filter.allowed_regimes"),
+		AllowedRegimes: func() []string {
+			if !orbExtractBool(params, "regime_filter.enabled", false) {
+				return nil
+			}
+			return orbExtractStringSlice(params, "regime_filter.allowed_regimes")
+		}(),
 		FVGEnabled:           orbExtractBool(params, "fvg_enabled", false),
 		FVGMinRVOL:           orbExtractFloat(params, "fvg_min_rvol", 1.5),
 	}
