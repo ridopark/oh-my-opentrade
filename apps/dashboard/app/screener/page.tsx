@@ -55,6 +55,7 @@ export default function ScreenerPage() {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
+        const streaming: ScreenerResult[] = [];
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -67,6 +68,12 @@ export default function ScreenerPage() {
               const data = JSON.parse(line.slice(6));
               if (data.type === "progress") {
                 setProgress({ pct: data.pct, done: data.done, total: data.total, stage: data.stage });
+              } else if (data.type === "result") {
+                streaming.push(data.result);
+                // Sort by score and show top results as they arrive
+                const sorted = [...streaming].sort((a, b) => b.score - a.score).slice(0, 50);
+                setResults(sorted);
+                setProgress({ pct: data.pct, done: data.done, total: data.total, stage: `Screening... ${data.done}/${data.total}` });
               } else if (data.type === "done") {
                 setResults(data.results ?? []);
                 setResultDate(data.date ?? "");
