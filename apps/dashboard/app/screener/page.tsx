@@ -26,6 +26,8 @@ type SortKey = keyof ScreenerResult;
 export default function ScreenerPage() {
   const [preset, setPreset] = useState("ORB Candidates");
   const [customSymbols, setCustomSymbols] = useState("");
+  const [screenDate, setScreenDate] = useState("");
+  const [resultDate, setResultDate] = useState("");
   const [results, setResults] = useState<ScreenerResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("score");
@@ -38,10 +40,13 @@ export default function ScreenerPage() {
       const symbols = customSymbols.trim()
         ? customSymbols.split(",").map((s) => s.trim()).filter(Boolean)
         : PRESETS[preset] ?? PRESETS["ORB Candidates"];
-      const res = await fetch(`/api/screener?symbols=${encodeURIComponent(symbols.join(","))}`);
+      let url = `/api/screener?symbols=${encodeURIComponent(symbols.join(","))}`;
+      if (screenDate) url += `&date=${screenDate}`;
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
-        setResults(data ?? []);
+        setResults(data?.results ?? []);
+        setResultDate(data?.date ?? "");
       }
     } finally {
       setLoading(false);
@@ -102,6 +107,17 @@ export default function ScreenerPage() {
             onChange={(e) => { setCustomSymbols(e.target.value); setPreset("custom"); }}
             className="flex-1 bg-background border border-border rounded px-2 py-1 text-xs font-mono text-foreground"
             placeholder="AAPL, TSLA, HIMS..."
+          />
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">Date</span>
+          <input
+            type="date"
+            value={screenDate}
+            onChange={(e) => setScreenDate(e.target.value)}
+            className="bg-background border border-border rounded px-2 py-1 text-xs font-mono text-foreground"
+            placeholder="Today"
           />
         </div>
 
@@ -216,6 +232,7 @@ export default function ScreenerPage() {
 
           {/* Summary */}
           <div className="flex items-center gap-4 px-3 py-2 border-t border-border text-[10px] text-muted-foreground">
+            {resultDate && <span className="font-medium text-foreground">{resultDate}</span>}
             <span>{sorted.length} symbols</span>
             <span>{"ATR% pass (>=0.8%): "}{sorted.filter((r) => r.atr_pct >= 0.8).length}</span>
             <span>NR7 compression: {sorted.filter((r) => r.nr7).length}</span>
