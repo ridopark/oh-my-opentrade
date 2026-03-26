@@ -35,6 +35,7 @@ type ORBConfig struct {
 	HTFBiasEnabled       bool
 	ATRMultiplier        float64
 	SweepCooldownBars    int
+	RetestConfirmBars    int // 1 = touch+hold same bar (default), 2 = touch then hold next bar
 }
 
 func DefaultORBConfig() ORBConfig {
@@ -128,6 +129,7 @@ func NewORBConfigFromDNA(params map[string]any) ORBConfig {
 		HTFBiasEnabled:       orbExtractBool(params, "htf_bias_enabled", false),
 		ATRMultiplier:        orbExtractFloat(params, "atr_multiplier", 0),
 		SweepCooldownBars:    orbExtractInt(params, "sweep_cooldown_bars", 0),
+		RetestConfirmBars:    orbExtractInt(params, "retest_confirm_bars", 1),
 	}
 }
 
@@ -142,6 +144,7 @@ type BreakoutInfo struct {
 type RetestInfo struct {
 	TouchBar       time.Time
 	TouchPrice     float64
+	Touched        bool // true once the retest touch has occurred (waiting for next bar hold)
 	HoldBar        time.Time
 	HoldClose      float64
 	BarsSinceBreak int
@@ -309,64 +312,74 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 		touchTol := float64(cfg.TouchToleranceBps) / 10000.0
 		holdBps := float64(cfg.HoldConfirmBps) / 10000.0
 
-		var touched bool
-		var hold bool
+		var touchThisBar bool
 		var touchPrice float64
+		var holdThisBar bool
 		if sess.Breakout.Direction == domain.DirectionLong {
 			level := sess.OrbHigh * (1.0 + touchTol)
-			touched = bar.Low <= level
+			touchThisBar = bar.Low <= level
 			touchPrice = bar.Low
-			hold = bar.Close > sess.OrbHigh*(1.0+holdBps)
+			holdThisBar = bar.Close > sess.OrbHigh*(1.0+holdBps)
 		} else {
 			level := sess.OrbLow * (1.0 - touchTol)
-			touched = bar.High >= level
+			touchThisBar = bar.High >= level
 			touchPrice = bar.High
-			hold = bar.Close < sess.OrbLow*(1.0-holdBps)
+			holdThisBar = bar.Close < sess.OrbLow*(1.0-holdBps)
 		}
 
-		if touched {
+		// Record touch when price dips to the level
+		if touchThisBar && !sess.Retest.Touched {
 			sess.Retest.TouchBar = bar.Time
 			sess.Retest.TouchPrice = touchPrice
+			sess.Retest.Touched = true
 			sess.Retest.BarsSinceBreak = sess.BarsSinceBreakout
-			if hold {
-				sess.Retest.HoldBar = bar.Time
-				sess.Retest.HoldClose = bar.Close
-				sess.Retest.Confirmed = true
-				sess.State = ORBStateRetestConfirmed
-				t.logger.Info("orb: retest confirmed", "symbol", sym, "direction", sess.Breakout.Direction, "hold_close", bar.Close, "confidence", orbConfidence(sess, bar, cfg))
-				setup := &SetupCondition{
-					Symbol:     bar.Symbol,
-					Timeframe:  bar.Timeframe,
-					Direction:  sess.Breakout.Direction,
-					Trigger:    "orb_break_retest",
-					Snapshot:   snap,
-					Regime:     domain.MarketRegime{},
-					BarClose:   bar.Close,
-					ORBHigh:    sess.OrbHigh,
-					ORBLow:     sess.OrbLow,
-					RVOL:       sess.Breakout.RVOL,
-					Confidence: orbConfidence(sess, bar, cfg),
-				}
-				if setup.Confidence < cfg.MinConfidence {
-					t.logger.Info("orb: low confidence, cycling to RANGE_SET", "symbol", sym, "confidence", setup.Confidence, "min", cfg.MinConfidence)
-					t.cycleToRangeSet(sess)
-					return nil, false
-				}
-				if replay {
-					t.logger.Info("orb: replay signal suppressed, cycling to RANGE_SET", "symbol", sym, "direction", sess.Breakout.Direction)
-					t.cycleToRangeSet(sess)
-					return nil, false
-				}
-				sess.SignalsFired++
-				if sess.SignalsFired >= cfg.MaxSignalsPerSession {
-					sess.State = ORBStateDoneForSession
-					t.logger.Info("orb: max signals reached", "symbol", sym, "fired", sess.SignalsFired, "max", cfg.MaxSignalsPerSession)
-				} else {
-					t.cycleToRangeSet(sess)
-					t.logger.Info("orb: signal fired, cycling to RANGE_SET", "symbol", sym, "fired", sess.SignalsFired, "max", cfg.MaxSignalsPerSession)
-				}
-				return setup, true
+			if cfg.RetestConfirmBars >= 2 {
+				// Strict mode: wait for NEXT bar to confirm hold
+				t.logger.Info("orb: retest touch (waiting for confirm bar)", "symbol", sym, "direction", sess.Breakout.Direction, "touch_price", touchPrice)
+				return nil, false
 			}
+		}
+
+		// Confirm: touch happened (same bar if RetestConfirmBars=1, previous bar if =2)
+		// and current bar closes on the breakout side.
+		if sess.Retest.Touched && holdThisBar {
+			sess.Retest.HoldBar = bar.Time
+			sess.Retest.HoldClose = bar.Close
+			sess.Retest.Confirmed = true
+			sess.State = ORBStateRetestConfirmed
+			t.logger.Info("orb: retest confirmed", "symbol", sym, "direction", sess.Breakout.Direction, "hold_close", bar.Close, "confidence", orbConfidence(sess, bar, cfg))
+			setup := &SetupCondition{
+				Symbol:     bar.Symbol,
+				Timeframe:  bar.Timeframe,
+				Direction:  sess.Breakout.Direction,
+				Trigger:    "orb_break_retest",
+				Snapshot:   snap,
+				Regime:     domain.MarketRegime{},
+				BarClose:   bar.Close,
+				ORBHigh:    sess.OrbHigh,
+				ORBLow:     sess.OrbLow,
+				RVOL:       sess.Breakout.RVOL,
+				Confidence: orbConfidence(sess, bar, cfg),
+			}
+			if setup.Confidence < cfg.MinConfidence {
+				t.logger.Info("orb: low confidence, cycling to RANGE_SET", "symbol", sym, "confidence", setup.Confidence, "min", cfg.MinConfidence)
+				t.cycleToRangeSet(sess)
+				return nil, false
+			}
+			if replay {
+				t.logger.Info("orb: replay signal suppressed, cycling to RANGE_SET", "symbol", sym, "direction", sess.Breakout.Direction)
+				t.cycleToRangeSet(sess)
+				return nil, false
+			}
+			sess.SignalsFired++
+			if sess.SignalsFired >= cfg.MaxSignalsPerSession {
+				sess.State = ORBStateDoneForSession
+				t.logger.Info("orb: max signals reached", "symbol", sym, "fired", sess.SignalsFired, "max", cfg.MaxSignalsPerSession)
+			} else {
+				t.cycleToRangeSet(sess)
+				t.logger.Info("orb: signal fired, cycling to RANGE_SET", "symbol", sym, "fired", sess.SignalsFired, "max", cfg.MaxSignalsPerSession)
+			}
+			return setup, true
 		}
 
 		return nil, false
