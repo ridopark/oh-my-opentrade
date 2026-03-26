@@ -53,16 +53,11 @@ func (ds *DailyScreener) ComputeForDate(ctx context.Context, asOf time.Time, can
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			// Try DB first, fall back to API
+			// Use DB only for speed — daily bars are cached from warmup.
+			// No API calls to avoid rate limiting during backtest screening.
 			var bars []domain.MarketBar
 			if ds.repo != nil {
 				bars, _ = ds.repo.GetMarketBars(ctx, sym, "1d", from, asOf)
-			}
-			if len(bars) < 21 && ds.market != nil {
-				apiBars, apiErr := ds.market.GetHistoricalBars(ctx, sym, "1d", from, asOf)
-				if apiErr == nil && len(apiBars) > len(bars) {
-					bars = apiBars
-				}
 			}
 			if len(bars) < 21 {
 				return
