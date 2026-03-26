@@ -362,14 +362,17 @@ function TopBar({
         No AI
       </label>
 
-      <label className="flex items-center gap-1 text-[10px] text-muted-foreground cursor-pointer shrink-0" title="Dynamically pick symbols each trading day using the screener instead of a fixed list">
+      <label className="flex items-center gap-1 text-[10px] text-muted-foreground cursor-pointer shrink-0" title="Dynamically pick the best Top N symbols each trading day from the candidate pool (Symbols list). Add more symbols than Top N for effective filtering.">
         <input type="checkbox" checked={config.useDailyScreener} onChange={(e) => updateConfig("useDailyScreener", e.target.checked)} className="rounded border-border h-3 w-3" />
         Daily Screener
       </label>
       {config.useDailyScreener && (
-        <div className="flex items-center gap-1 text-[10px] text-muted-foreground shrink-0">
-          Top
+        <div className="flex items-center gap-1 text-[10px] shrink-0">
+          <span className="text-muted-foreground">Top</span>
           <input type="number" value={config.screenerTopN} onChange={(e) => updateConfig("screenerTopN", Number(e.target.value) || 5)} className="w-10 bg-background border border-border rounded px-1 py-0.5 text-[10px] font-mono text-foreground text-center" min={1} max={20} />
+          {config.symbols.length <= (config.screenerTopN || 5) && (
+            <span className="text-amber-400" title="Add more symbols to the candidate pool for effective screening">needs more symbols</span>
+          )}
         </div>
       )}
 
