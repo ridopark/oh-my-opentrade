@@ -12,6 +12,8 @@ export interface BacktestConfig {
   speed: string;
   noAi: boolean;
   strategies: string[];
+  useDailyScreener: boolean;
+  screenerTopN: number;
 }
 
 export interface BacktestBar {
@@ -296,6 +298,8 @@ export function useBacktest(): UseBacktestReturn {
           speed: config.speed,
           no_ai: config.noAi,
           strategies: config.strategies.length > 0 ? config.strategies : undefined,
+          use_daily_screener: config.useDailyScreener,
+          screener_top_n: config.screenerTopN || 5,
         }),
       });
       const data = await res.json();

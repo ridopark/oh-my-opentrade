@@ -35,16 +35,18 @@ import (
 
 // RunConfig holds the parameters for a backtest run.
 type RunConfig struct {
-	Symbols       []domain.Symbol
-	From          time.Time
-	To            time.Time
-	Timeframe     domain.Timeframe
-	InitialEquity float64
-	SlippageBPS   int64
-	Speed         string
-	NoAI          bool
-	StrategyDir   string
-	Strategies    []string
+	Symbols          []domain.Symbol
+	From             time.Time
+	To               time.Time
+	Timeframe        domain.Timeframe
+	InitialEquity    float64
+	SlippageBPS      int64
+	Speed            string
+	NoAI             bool
+	StrategyDir      string
+	Strategies       []string
+	UseDailyScreener bool   // dynamically pick symbols each day using screener
+	ScreenerTopN     int    // how many top symbols to pick per day (default 5)
 }
 
 // ProgressInfo tracks replay progress.
@@ -739,6 +741,43 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("start risk sizer: %w", startErr)
 	}
 
+	// Pre-compute daily screener if enabled
+	var dailyScreenerMap map[string]map[string]bool
+	if r.cfg.UseDailyScreener && r.marketData != nil {
+		r.emitter.EmitSetup("Computing daily screener…")
+		topN := r.cfg.ScreenerTopN
+		if topN <= 0 {
+			topN = 5
+		}
+
+		// Collect all unique trading days from the bar streams
+		tradingDays := func() []time.Time {
+			seen := make(map[string]bool)
+			var days []time.Time
+			for _, s := range streams {
+				for _, bar := range s.bars {
+					et := bar.Time.In(loc)
+					dayOpen := time.Date(et.Year(), et.Month(), et.Day(), 9, 30, 0, 0, loc)
+					key := dayOpen.Format("2006-01-02")
+					if !seen[key] {
+						seen[key] = true
+						days = append(days, dayOpen)
+					}
+				}
+			}
+			sort.Slice(days, func(i, j int) bool { return days[i].Before(days[j]) })
+			return days
+		}()
+		r.log.Info().Int("trading_days", len(tradingDays)).Int("top_n", topN).Msg("pre-computing daily screener")
+
+		screener := NewDailyScreener(r.marketData, r.log)
+		dailyScreenerMap = screener.PrecomputeAll(ctx, tradingDays, r.cfg.Symbols, topN, func(day, total int, date string) {
+			r.emitter.EmitSetup(fmt.Sprintf("Screening day %d/%d (%s)…", day+1, total, date))
+		})
+
+		r.log.Info().Int("days_screened", len(dailyScreenerMap)).Msg("daily screener pre-computation complete")
+	}
+
 	r.emitter.EmitSetup("Replaying bars…")
 
 	const tenantID = "default"
@@ -815,6 +854,16 @@ func (r *Runner) Run(ctx context.Context) error {
 				continue
 			}
 			popBar(s)
+
+			// Daily screener filter: skip bars for symbols not in today's screened set
+			if dailyScreenerMap != nil {
+				dateKey := currentSessionDate.Format("2006-01-02")
+				if activeSyms, ok := dailyScreenerMap[dateKey]; ok {
+					if !activeSyms[bar.Symbol.String()] {
+						continue
+					}
+				}
+			}
 
 			sim.UpdatePrice(bar.Symbol, bar.Close, bar.Time)
 
