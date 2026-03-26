@@ -90,6 +90,8 @@ export default function BacktestPage() {
     speed: "5x",
     noAi: true,
     strategies: [],
+    useDailyScreener: false,
+    screenerTopN: 5,
   }), []);
 
   const [config, setConfig] = useState<BacktestConfig>(defaults);
@@ -359,6 +361,17 @@ function TopBar({
         <input type="checkbox" checked={config.noAi} onChange={(e) => updateConfig("noAi", e.target.checked)} className="rounded border-border h-3 w-3" />
         No AI
       </label>
+
+      <label className="flex items-center gap-1 text-[10px] text-muted-foreground cursor-pointer shrink-0" title="Dynamically pick symbols each trading day using the screener instead of a fixed list">
+        <input type="checkbox" checked={config.useDailyScreener} onChange={(e) => updateConfig("useDailyScreener", e.target.checked)} className="rounded border-border h-3 w-3" />
+        Daily Screener
+      </label>
+      {config.useDailyScreener && (
+        <div className="flex items-center gap-1 text-[10px] text-muted-foreground shrink-0">
+          Top
+          <input type="number" value={config.screenerTopN} onChange={(e) => updateConfig("screenerTopN", Number(e.target.value) || 5)} className="w-10 bg-background border border-border rounded px-1 py-0.5 text-[10px] font-mono text-foreground text-center" min={1} max={20} />
+        </div>
+      )}
 
       <div className="flex items-center gap-2 ml-auto shrink-0">
         {isRunning && !progress && (

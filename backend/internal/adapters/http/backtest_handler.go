@@ -27,8 +27,10 @@ type backtestRunRequest struct {
 	InitialEquity float64  `json:"initial_equity"`
 	SlippageBPS   int64    `json:"slippage_bps"`
 	Speed         string   `json:"speed"`
-	NoAI          bool     `json:"no_ai"`
-	Strategies    []string `json:"strategies"`
+	NoAI             bool     `json:"no_ai"`
+	Strategies       []string `json:"strategies"`
+	UseDailyScreener bool     `json:"use_daily_screener"`
+	ScreenerTopN     int      `json:"screener_top_n"`
 }
 
 type backtestControlRequest struct {
@@ -181,8 +183,10 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		InitialEquity: equity,
 		SlippageBPS:   slippage,
 		Speed:         speed,
-		NoAI:          req.NoAI,
-		Strategies:    req.Strategies,
+		NoAI:             req.NoAI,
+		Strategies:       req.Strategies,
+		UseDailyScreener: req.UseDailyScreener,
+		ScreenerTopN:     req.ScreenerTopN,
 	}, h.db, h.appCfg, h.marketData, h.log)
 
 	h.active = runner
