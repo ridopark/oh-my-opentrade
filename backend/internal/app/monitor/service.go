@@ -570,9 +570,13 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 				Msg("setup blocked: VIX too high")
 			detected = false
 		}
-		// Regime gate: block ORB in disallowed regimes.
+		// Regime gate: block ORB in disallowed regimes (uses 5m anchor if available).
 		if detected && len(s.orbAllowedRegimes) > 0 {
-			regimeStr := string(regime.Type)
+			gateRegime := regime // fallback to 1m
+			if ar, ok := s.anchorRegimes[symStr+":5m"]; ok && ar.Type != "" {
+				gateRegime = ar
+			}
+			regimeStr := string(gateRegime.Type)
 			allowed := false
 			for _, r := range s.orbAllowedRegimes {
 				if r == regimeStr {
@@ -590,14 +594,20 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 			}
 		}
 		if detected {
-			setup.Regime = regime
+			// Use 5m anchor regime (more stable than 1m) if available, fall back to 1m.
+			anchorKey := symStr + ":5m"
+			anchorRegime := regime // fallback to 1m
+			if ar, ok := s.anchorRegimes[anchorKey]; ok && ar.Type != "" {
+				anchorRegime = ar
+			}
+			setup.Regime = anchorRegime
 			// Tag VIX adjustment for downstream (debate service)
 			if s.vixWidenAbove > 0 && s.vixLevel > s.vixWidenAbove {
 				setup.VIXAdjust = "widen_stops"
 			}
 
 			// Populate regime labels for display
-			setup.EMARegime = string(regime.Type)
+			setup.EMARegime = string(anchorRegime.Type)
 
 			// VIX bucket
 			switch {
