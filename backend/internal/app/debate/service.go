@@ -174,10 +174,16 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 		l.Info().Int64("widened_stop_bps", stopBPS).Msg("VIX elevated — widening stops")
 	}
 
-	stopPct := float64(stopBPS) / 10000.0
-	stopLoss = limitPrice * (1 - stopPct)
-	if decision.Direction == domain.DirectionShort {
-		stopLoss = limitPrice * (1 + stopPct)
+	// Use FVG-based stop if available (more precise than fixed BPS)
+	if setup.FVGStop > 0 {
+		stopLoss = setup.FVGStop
+		l.Info().Float64("fvg_stop", stopLoss).Float64("limit_price", limitPrice).Msg("using FVG-based stop-loss")
+	} else {
+		stopPct := float64(stopBPS) / 10000.0
+		stopLoss = limitPrice * (1 - stopPct)
+		if decision.Direction == domain.DirectionShort {
+			stopLoss = limitPrice * (1 + stopPct)
+		}
 	}
 
 	riskPerShare := math.Abs(limitPrice - stopLoss)

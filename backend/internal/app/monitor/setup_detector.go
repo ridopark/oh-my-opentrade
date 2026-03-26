@@ -21,6 +21,9 @@ type SetupCondition struct {
 	Confidence float64
 	VIXAdjust  string // "widen_stops" when VIX is elevated but not skip-level
 
+	// FVG-based stop-loss (0 = not set, use default stop_bps)
+	FVGStop float64 // stop level from FVG far edge / manipulation wick
+
 	// Regime labels for downstream display
 	EMARegime    string // EMA-based regime: TREND / BALANCE / REVERSAL
 	VIXBucket    string // VIX bucket: LOW_VOL / NORMAL / HIGH_VOL

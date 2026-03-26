@@ -42,6 +42,8 @@ type ORBConfig struct {
 	VIXSkipAbove         float64  // skip ORB entirely when VIX > this (0 = disabled)
 	VIXWidenAbove        float64  // widen stops when VIX > this (0 = disabled)
 	AllowedRegimes       []string // only allow entries in these regimes (empty = allow all)
+	FVGEnabled           bool     // require FVG overlap + engulfing confirmation for retest
+	FVGMinRVOL           float64  // min RVOL for FVG displacement bar (default 1.5)
 }
 
 func DefaultORBConfig() ORBConfig {
@@ -166,6 +168,8 @@ func NewORBConfigFromDNA(params map[string]any) ORBConfig {
 		VIXSkipAbove:         orbExtractFloat(params, "vix_skip_above", 0),
 		VIXWidenAbove:        orbExtractFloat(params, "vix_widen_above", 0),
 		AllowedRegimes:       orbExtractStringSlice(params, "regime_filter.allowed_regimes"),
+		FVGEnabled:           orbExtractBool(params, "fvg_enabled", false),
+		FVGMinRVOL:           orbExtractFloat(params, "fvg_min_rvol", 1.5),
 	}
 }
 
@@ -175,6 +179,22 @@ type BreakoutInfo struct {
 	BreakClose float64
 	RVOL       float64
 	Confirmed  bool
+}
+
+// FairValueGap represents an imbalance zone created by an impulsive 3-candle move.
+// Bullish FVG: bar[0].High < bar[2].Low (gap up — zone between them)
+// Bearish FVG: bar[0].Low > bar[2].High (gap down — zone between them)
+type FairValueGap struct {
+	Direction domain.Direction // LONG (bullish FVG) or SHORT (bearish FVG)
+	High      float64         // upper bound of FVG zone
+	Low       float64         // lower bound of FVG zone
+	RVOL      float64         // relative volume of the displacement (middle) bar
+	Time      time.Time       // time of the displacement bar
+}
+
+// OverlapsLevel returns true if the FVG zone contains the given price level.
+func (fvg FairValueGap) OverlapsLevel(level float64) bool {
+	return level >= fvg.Low && level <= fvg.High
 }
 
 type RetestInfo struct {
@@ -203,6 +223,13 @@ type ORBSession struct {
 	SweepCooldown     int
 	PrevVWAP          float64 // previous bar's VWAP for slope calculation
 	RangeInvalid      bool    // true if OR range failed ATR/size check
+
+	// FVG tracking
+	RecentBars [3]domain.MarketBar // rolling window of last 3 bars for FVG detection
+	BarCount   int                 // total bars seen (for rolling window)
+	ActiveFVG  *FairValueGap       // FVG overlapping ORH/ORL found after breakout
+	PrevBar    *domain.MarketBar   // previous bar for engulfing detection
+	FVGStop    float64             // stop-loss level from FVG far edge
 }
 
 type ORBTracker struct {
@@ -249,6 +276,9 @@ func (t *ORBTracker) cycleToRangeSet(sess *ORBSession) {
 	sess.Breakout = BreakoutInfo{}
 	sess.Retest = RetestInfo{}
 	sess.BarsSinceBreakout = 0
+	sess.ActiveFVG = nil
+	sess.PrevBar = nil
+	sess.FVGStop = 0
 }
 
 func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, cfg ORBConfig, replay bool) (*SetupCondition, bool) {
@@ -278,7 +308,14 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 	}
 
 	// Track VWAP for slope calculation (update every bar, regardless of state)
-	defer func() { sess.PrevVWAP = snap.VWAP }()
+	defer func() {
+		sess.PrevVWAP = snap.VWAP
+		// Shift rolling bar window for FVG detection
+		sess.RecentBars[0] = sess.RecentBars[1]
+		sess.RecentBars[1] = sess.RecentBars[2]
+		sess.RecentBars[2] = bar
+		sess.BarCount++
+	}()
 
 	if sess.State == ORBStateSignalFired || sess.State == ORBStateDoneForSession || sess.State == ORBStateInvalid {
 		t.logger.Debug("orb: terminal state", "symbol", sym, "state", sess.State)
@@ -373,6 +410,12 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 			}
 		}
 
+		// --- FVG-enhanced retest logic ---
+		if cfg.FVGEnabled {
+			return t.onAwaitingRetestFVG(sess, bar, snap, cfg, sym, replay)
+		}
+
+		// --- Legacy retest logic (non-FVG) ---
 		touchTol := float64(cfg.TouchToleranceBps) / 10000.0
 		holdBps := float64(cfg.HoldConfirmBps) / 10000.0
 
@@ -383,32 +426,25 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 			level := sess.OrbHigh * (1.0 + touchTol)
 			touchThisBar = bar.Low <= level
 			touchPrice = bar.Low
-			// Confirm bar must close above ORH AND be bullish (green candle = buyers winning)
 			holdThisBar = bar.Close > sess.OrbHigh*(1.0+holdBps) && bar.Close > bar.Open
 		} else {
 			level := sess.OrbLow * (1.0 - touchTol)
 			touchThisBar = bar.High >= level
 			touchPrice = bar.High
-			// Confirm bar must close below ORL AND be bearish (red candle = sellers winning)
 			holdThisBar = bar.Close < sess.OrbLow*(1.0-holdBps) && bar.Close < bar.Open
 		}
 
-		// Record touch when price dips to the level
 		if touchThisBar && !sess.Retest.Touched {
 			sess.Retest.TouchBar = bar.Time
 			sess.Retest.TouchPrice = touchPrice
 			sess.Retest.Touched = true
 			sess.Retest.BarsSinceBreak = sess.BarsSinceBreakout
 			if cfg.RetestConfirmBars >= 2 {
-				// Strict mode: wait for NEXT bar to confirm hold
 				t.logger.Info("orb: retest touch (waiting for confirm bar)", "symbol", sym, "direction", sess.Breakout.Direction, "touch_price", touchPrice)
 				return nil, false
 			}
 		}
 
-		// Confirm: touch happened (same bar if RetestConfirmBars=1, previous bar if =2)
-		// and current bar closes on the breakout side.
-		// Re-check VWAP at confirmation: price position + slope not against us.
 		if sess.Retest.Touched && holdThisBar && cfg.VWAPFilterEnabled {
 			dir := sess.Breakout.Direction
 			if !vwapPositionOK(dir, bar.Close, snap.VWAP) || !vwapSlopeOK(dir, snap.VWAP, sess.PrevVWAP) {
@@ -518,6 +554,197 @@ func (t *ORBTracker) onRangeSetBar(sess *ORBSession, bar domain.MarketBar, snap 
 		return nil, false
 	}
 	return nil, false
+}
+
+// onAwaitingRetestFVG handles the FVG-enhanced retest logic.
+// Flow:
+//  1. Scan for FVGs after each bar — look for an FVG overlapping ORH (long) or ORL (short)
+//  2. Once found, wait for price to enter the FVG zone (retest)
+//  3. Confirm with engulfing candle (current bar engulfs previous bar in trade direction)
+//  4. Set stop-loss at the far edge of the FVG
+func (t *ORBTracker) onAwaitingRetestFVG(sess *ORBSession, bar domain.MarketBar, snap domain.IndicatorSnapshot, cfg ORBConfig, sym string, replay bool) (*SetupCondition, bool) {
+	dir := sess.Breakout.Direction
+
+	// Step 1: If no active FVG yet, scan for one
+	if sess.ActiveFVG == nil {
+		fvg := detectFVG(sess.RecentBars, sess.BarCount, snap.VolumeSMA, cfg.FVGMinRVOL)
+		if fvg != nil && fvg.Direction == dir {
+			// Check FVG overlaps the ORB level
+			level := sess.OrbHigh
+			if dir == domain.DirectionShort {
+				level = sess.OrbLow
+			}
+			if fvg.OverlapsLevel(level) {
+				sess.ActiveFVG = fvg
+				t.logger.Info("orb: FVG detected overlapping ORB level", "symbol", sym,
+					"direction", dir, "fvg_high", fvg.High, "fvg_low", fvg.Low,
+					"level", level, "fvg_rvol", fvg.RVOL)
+			}
+		}
+		sess.PrevBar = &bar
+		return nil, false
+	}
+
+	// Step 2: FVG is active — check if price retests into the FVG zone
+	fvg := sess.ActiveFVG
+	var priceInFVG bool
+	if dir == domain.DirectionLong {
+		// For longs, retest = price dips DOWN into the FVG zone
+		priceInFVG = bar.Low <= fvg.High
+	} else {
+		// For shorts, retest = price pokes UP into the FVG zone
+		priceInFVG = bar.High >= fvg.Low
+	}
+
+	if !priceInFVG {
+		sess.PrevBar = &bar
+		return nil, false
+	}
+
+	// Price is in FVG zone — record touch if not already touched
+	if !sess.Retest.Touched {
+		sess.Retest.Touched = true
+		sess.Retest.TouchBar = bar.Time
+		if dir == domain.DirectionLong {
+			sess.Retest.TouchPrice = bar.Low
+		} else {
+			sess.Retest.TouchPrice = bar.High
+		}
+		sess.Retest.BarsSinceBreak = sess.BarsSinceBreakout
+		t.logger.Info("orb: FVG retest touch", "symbol", sym, "direction", dir,
+			"touch_price", sess.Retest.TouchPrice, "fvg_high", fvg.High, "fvg_low", fvg.Low)
+		sess.PrevBar = &bar
+		return nil, false
+	}
+
+	// Step 3: Already touched — check for engulfing confirmation
+	if sess.PrevBar == nil {
+		sess.PrevBar = &bar
+		return nil, false
+	}
+
+	if !isEngulfing(dir, bar, *sess.PrevBar) {
+		sess.PrevBar = &bar
+		return nil, false
+	}
+
+	// Step 4: Engulfing confirmed! Set stop at FVG far edge.
+	if dir == domain.DirectionLong {
+		// Long stop = below the FVG low (the manipulation wick)
+		sess.FVGStop = fvg.Low
+	} else {
+		// Short stop = above the FVG high (the manipulation wick)
+		sess.FVGStop = fvg.High
+	}
+
+	// VWAP check if enabled
+	if cfg.VWAPFilterEnabled {
+		if !vwapPositionOK(dir, bar.Close, snap.VWAP) || !vwapSlopeOK(dir, snap.VWAP, sess.PrevVWAP) {
+			t.logger.Info("orb: FVG engulfing rejected (VWAP misaligned)", "symbol", sym,
+				"direction", dir, "close", bar.Close, "vwap", snap.VWAP)
+			sess.PrevBar = &bar
+			return nil, false
+		}
+	}
+
+	// Signal confirmed
+	sess.Retest.HoldBar = bar.Time
+	sess.Retest.HoldClose = bar.Close
+	sess.Retest.Confirmed = true
+	sess.State = ORBStateRetestConfirmed
+
+	t.logger.Info("orb: FVG retest confirmed (engulfing)", "symbol", sym,
+		"direction", dir, "close", bar.Close,
+		"fvg_high", fvg.High, "fvg_low", fvg.Low, "fvg_stop", sess.FVGStop,
+		"confidence", orbConfidence(sess, bar, snap, cfg))
+
+	setup := &SetupCondition{
+		Symbol:     bar.Symbol,
+		Timeframe:  bar.Timeframe,
+		Direction:  dir,
+		Trigger:    "orb_break_retest",
+		Snapshot:   snap,
+		Regime:     domain.MarketRegime{},
+		BarClose:   bar.Close,
+		ORBHigh:    sess.OrbHigh,
+		ORBLow:     sess.OrbLow,
+		RVOL:       sess.Breakout.RVOL,
+		Confidence: orbConfidence(sess, bar, snap, cfg),
+		FVGStop:    sess.FVGStop,
+	}
+
+	if setup.Confidence < cfg.MinConfidence {
+		t.logger.Info("orb: FVG low confidence, cycling to RANGE_SET", "symbol", sym, "confidence", setup.Confidence, "min", cfg.MinConfidence)
+		t.cycleToRangeSet(sess)
+		return nil, false
+	}
+	if replay {
+		t.cycleToRangeSet(sess)
+		return nil, false
+	}
+
+	sess.SignalsFired++
+	if sess.SignalsFired >= cfg.MaxSignalsPerSession {
+		sess.State = ORBStateDoneForSession
+	} else {
+		t.cycleToRangeSet(sess)
+	}
+	return setup, true
+}
+
+// detectFVG checks the last 3 bars for a Fair Value Gap pattern.
+// Bullish FVG: bar[0].High < bar[2].Low — impulsive gap up
+// Bearish FVG: bar[0].Low > bar[2].High — impulsive gap down
+// Returns nil if no FVG detected or if displacement bar volume is insufficient.
+func detectFVG(bars [3]domain.MarketBar, barCount int, volSMA float64, minRVOL float64) *FairValueGap {
+	if barCount < 3 {
+		return nil
+	}
+	bar0, bar1, bar2 := bars[0], bars[1], bars[2] // bar0=oldest, bar2=newest
+
+	var rvol float64
+	if volSMA > 0 {
+		rvol = bar1.Volume / volSMA // displacement is the middle bar
+	}
+
+	// Require displacement volume
+	if minRVOL > 0 && rvol < minRVOL {
+		return nil
+	}
+
+	// Bullish FVG: gap between bar0's high and bar2's low
+	if bar0.High < bar2.Low {
+		return &FairValueGap{
+			Direction: domain.DirectionLong,
+			High:      bar2.Low,
+			Low:       bar0.High,
+			RVOL:      rvol,
+			Time:      bar1.Time,
+		}
+	}
+
+	// Bearish FVG: gap between bar2's high and bar0's low
+	if bar0.Low > bar2.High {
+		return &FairValueGap{
+			Direction: domain.DirectionShort,
+			High:      bar0.Low,
+			Low:       bar2.High,
+			RVOL:      rvol,
+			Time:      bar1.Time,
+		}
+	}
+
+	return nil
+}
+
+// isEngulfing checks if the current bar engulfs the previous bar.
+// For longs: current close > previous high (bullish engulfing).
+// For shorts: current close < previous low (bearish engulfing).
+func isEngulfing(dir domain.Direction, current, previous domain.MarketBar) bool {
+	if dir == domain.DirectionLong {
+		return current.Close > previous.High
+	}
+	return current.Close < previous.Low
 }
 
 // vwapPositionOK checks that price is on the correct side of VWAP for the direction.
