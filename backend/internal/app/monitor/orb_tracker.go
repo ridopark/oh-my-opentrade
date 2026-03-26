@@ -373,12 +373,12 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 
 		// Confirm: touch happened (same bar if RetestConfirmBars=1, previous bar if =2)
 		// and current bar closes on the breakout side.
-		// Also re-check VWAP alignment at confirmation time.
+		// Re-check VWAP at confirmation: price position + slope not against us.
 		if sess.Retest.Touched && holdThisBar && cfg.VWAPFilterEnabled {
-			if !vwapAligned(sess.Breakout.Direction, bar.Close, snap.VWAP, sess.PrevVWAP) {
+			dir := sess.Breakout.Direction
+			if !vwapPositionOK(dir, bar.Close, snap.VWAP) || !vwapSlopeOK(dir, snap.VWAP, sess.PrevVWAP) {
 				t.logger.Info("orb: retest hold rejected (VWAP misaligned)", "symbol", sym,
-					"direction", sess.Breakout.Direction, "close", bar.Close, "vwap", snap.VWAP)
-				// Don't cycle — keep waiting for a bar that aligns
+					"direction", dir, "close", bar.Close, "vwap", snap.VWAP, "prev_vwap", sess.PrevVWAP)
 				return nil, false
 			}
 		}
@@ -452,15 +452,16 @@ func (t *ORBTracker) onRangeSetBar(sess *ORBSession, bar domain.MarketBar, snap 
 	longBreak := bar.Close > sess.OrbHigh*(1.0+confirmBps) && rvol >= cfg.MinRVOL
 	shortBreak := bar.Close < sess.OrbLow*(1.0-confirmBps) && rvol >= cfg.MinRVOL
 
-	// VWAP alignment filter at breakout
+	// VWAP position filter at breakout: price must be on the correct side of VWAP.
+	// No slope requirement here — VWAP slope is too noisy early in the session.
 	if cfg.VWAPFilterEnabled && (longBreak || shortBreak) {
 		dir := domain.DirectionLong
 		if shortBreak {
 			dir = domain.DirectionShort
 		}
-		if !vwapAligned(dir, bar.Close, snap.VWAP, sess.PrevVWAP) {
-			t.logger.Info("orb: breakout rejected (VWAP misaligned)", "symbol", sess.Symbol,
-				"direction", dir, "close", bar.Close, "vwap", snap.VWAP, "prev_vwap", sess.PrevVWAP)
+		if !vwapPositionOK(dir, bar.Close, snap.VWAP) {
+			t.logger.Info("orb: breakout rejected (price wrong side of VWAP)", "symbol", sess.Symbol,
+				"direction", dir, "close", bar.Close, "vwap", snap.VWAP)
 			return nil, false
 		}
 	}
@@ -484,17 +485,30 @@ func (t *ORBTracker) onRangeSetBar(sess *ORBSession, bar domain.MarketBar, snap 
 	return nil, false
 }
 
-// vwapAligned checks that price and VWAP slope agree with the breakout direction.
-// Long: price > VWAP and VWAP rising. Short: price < VWAP and VWAP falling.
-func vwapAligned(dir domain.Direction, price, vwap, prevVWAP float64) bool {
-	if vwap <= 0 || prevVWAP <= 0 {
+// vwapPositionOK checks that price is on the correct side of VWAP for the direction.
+// Long: price > VWAP. Short: price < VWAP. No slope requirement.
+func vwapPositionOK(dir domain.Direction, price, vwap float64) bool {
+	if vwap <= 0 {
 		return true // no VWAP data — don't block
+	}
+	if dir == domain.DirectionLong {
+		return price > vwap
+	}
+	return price < vwap
+}
+
+// vwapSlopeOK checks that VWAP slope is not against the trade direction.
+// Long: slope >= 0 (flat or rising). Short: slope <= 0 (flat or falling).
+// Returns true if no previous VWAP is available (insufficient data).
+func vwapSlopeOK(dir domain.Direction, vwap, prevVWAP float64) bool {
+	if vwap <= 0 || prevVWAP <= 0 {
+		return true
 	}
 	slope := vwap - prevVWAP
 	if dir == domain.DirectionLong {
-		return price > vwap && slope > 0
+		return slope >= 0
 	}
-	return price < vwap && slope < 0
+	return slope <= 0
 }
 
 // orbRangeValid checks that the opening range is neither too wide nor too narrow.
