@@ -340,23 +340,27 @@ func TestMTFA_RegimeHysteresis(t *testing.T) {
 	rd := monitor.NewRegimeDetector()
 	sym, _ := domain.NewSymbol("AAPL")
 
-	// Initial detection: TREND (EMA9=105 >> EMA21=100 → >1% divergence).
-	trend, _ := domain.NewIndicatorSnapshot(time.Now(), sym, "5m", 60, 80, 75, 105, 100, 0, 1, 1)
+	// Initial detection: TREND (EMA21=102 >> EMA50=100 → 2% divergence > 0.3%).
+	trend, _ := domain.NewIndicatorSnapshot(time.Now(), sym, "5m", 60, 80, 75, 102, 102, 0, 1, 1)
+	trend.EMA50 = 100
 	_, changed := rd.Detect(trend)
 	require.True(t, changed, "first detection always emits changed=true")
 
 	// Try to shift to BALANCE — first bar should NOT change confirmed regime.
-	balance1, _ := domain.NewIndicatorSnapshot(time.Now(), sym, "5m", 50, 50, 50, 101, 100.8, 0, 1, 1)
+	balance1, _ := domain.NewIndicatorSnapshot(time.Now(), sym, "5m", 50, 50, 50, 100.1, 100.1, 0, 1, 1)
+	balance1.EMA50 = 100.0
 	_, changed = rd.Detect(balance1)
 	require.False(t, changed, "1st BALANCE bar should not shift anchor regime (need 3)")
 
 	// Second BALANCE bar — still not enough.
-	balance2, _ := domain.NewIndicatorSnapshot(time.Now(), sym, "5m", 50, 50, 50, 101, 100.8, 0, 1, 1)
+	balance2, _ := domain.NewIndicatorSnapshot(time.Now(), sym, "5m", 50, 50, 50, 100.1, 100.1, 0, 1, 1)
+	balance2.EMA50 = 100.0
 	_, changed = rd.Detect(balance2)
 	require.False(t, changed, "2nd BALANCE bar should not shift anchor regime")
 
 	// Third BALANCE bar — NOW the regime should confirm.
-	balance3, _ := domain.NewIndicatorSnapshot(time.Now(), sym, "5m", 50, 50, 50, 101, 100.8, 0, 1, 1)
+	balance3, _ := domain.NewIndicatorSnapshot(time.Now(), sym, "5m", 50, 50, 50, 100.1, 100.1, 0, 1, 1)
+	balance3.EMA50 = 100.0
 	reg, changed := rd.Detect(balance3)
 	require.True(t, changed, "3rd consecutive BALANCE bar should confirm anchor regime shift")
 	assert.Equal(t, domain.RegimeBalance, reg.Type)
@@ -368,13 +372,16 @@ func TestMTFA_1mRegimeImmediate(t *testing.T) {
 	rd := monitor.NewRegimeDetector()
 	sym, _ := domain.NewSymbol("AAPL")
 
-	// Initial: BALANCE on 1m.
-	bal, _ := domain.NewIndicatorSnapshot(time.Now(), sym, "1m", 50, 50, 50, 100.1, 100.0, 0, 1, 1)
+	// Initial: BALANCE on 1m (EMA21 ≈ EMA50).
+	bal, _ := domain.NewIndicatorSnapshot(time.Now(), sym, "1m", 50, 50, 50, 100.1, 100.1, 0, 1, 1)
+	bal.EMA50 = 100.0
 	_, changed := rd.Detect(bal)
 	require.True(t, changed, "first detection")
 
 	// Immediate shift to TREND on 1m — no hysteresis required.
-	trend, _ := domain.NewIndicatorSnapshot(time.Now(), sym, "1m", 60, 80, 75, 105, 100, 0, 1, 1)
+	// EMA21=102 vs EMA50=100 → 2% divergence > 0.3%
+	trend, _ := domain.NewIndicatorSnapshot(time.Now(), sym, "1m", 60, 80, 75, 102, 102, 0, 1, 1)
+	trend.EMA50 = 100
 	reg, changed := rd.Detect(trend)
 	assert.True(t, changed, "1m regime should shift immediately")
 	assert.Equal(t, domain.RegimeTrend, reg.Type)

@@ -236,9 +236,10 @@ func TestService_EmitsRegimeShifted(t *testing.T) {
 
 	sym, _ := domain.NewSymbol("BTC/USD")
 
-	// Publish enough bars to trigger an initial regime detection
-	for i := 0; i < 25; i++ {
-		bar := createBar(t, sym, 100.0+float64(i), 10.0)
+	// Publish enough bars to trigger regime detection.
+	// Need 50+ bars for EMA50 warmup, then ascending prices for EMA21 > EMA50 divergence.
+	for i := 0; i < 80; i++ {
+		bar := createBar(t, sym, 100.0+float64(i)*0.5, 10.0)
 		err = bus.Publish(context.Background(), createTestEvent(t, bar))
 		require.NoError(t, err)
 	}
@@ -249,7 +250,7 @@ func TestService_EmitsRegimeShifted(t *testing.T) {
 	regime, ok := emitted.Payload.(domain.MarketRegime)
 	require.True(t, ok)
 	assert.Equal(t, sym, regime.Symbol)
-	// It should probably be TREND since we gave it an ascending price
+	// With ascending prices EMA21 > EMA50 → TREND
 	assert.Equal(t, domain.RegimeTrend, regime.Type)
 }
 

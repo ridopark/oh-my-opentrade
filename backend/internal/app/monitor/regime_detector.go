@@ -8,10 +8,10 @@ import (
 )
 
 const (
-	defaultEmaDivergenceThreshold = 0.01
+	defaultEmaDivergenceThreshold = 0.003 // 0.3% — lowered from 1% to detect intraday trends on 5m bars
 	rsiOverbought                 = 70.0
 	rsiOversold                   = 30.0
-	strengthScale                 = 20.0
+	strengthScale                 = 60.0 // scaled up to match lower threshold (0.3% × 60 ≈ 0.18 vs old 1% × 20 = 0.20)
 )
 
 func clamp(v, min, max float64) float64 {
@@ -54,7 +54,9 @@ func (rd *RegimeDetector) RegisterDivergenceThreshold(symbol, timeframe string, 
 func (rd *RegimeDetector) Detect(snapshot domain.IndicatorSnapshot) (domain.MarketRegime, bool) {
 	key := snapshot.Symbol.String() + ":" + snapshot.Timeframe.String()
 
-	fast, slow := snapshot.EMA9, snapshot.EMA21
+	// Use EMA21/EMA50 for regime detection (wider lookback = less noise on 5m bars).
+	// Falls back to configurable EMAFast/EMASlow if set (e.g. for per-strategy tuning).
+	fast, slow := snapshot.EMA21, snapshot.EMA50
 	if snapshot.EMAFast != 0 && snapshot.EMASlow != 0 {
 		fast, slow = snapshot.EMAFast, snapshot.EMASlow
 	}
