@@ -36,6 +36,9 @@ type ORBConfig struct {
 	ATRMultiplier        float64
 	SweepCooldownBars    int
 	RetestConfirmBars    int // 1 = touch+hold same bar (default), 2 = touch then hold next bar
+	VWAPFilterEnabled    bool    // require VWAP alignment at breakout and retest
+	MaxRangeATRMult      float64 // skip if OR range > this × ATR (0 = disabled)
+	MinRangePctBps       int     // skip if OR range < this bps of midpoint (0 = disabled)
 }
 
 func DefaultORBConfig() ORBConfig {
@@ -130,6 +133,9 @@ func NewORBConfigFromDNA(params map[string]any) ORBConfig {
 		ATRMultiplier:        orbExtractFloat(params, "atr_multiplier", 0),
 		SweepCooldownBars:    orbExtractInt(params, "sweep_cooldown_bars", 0),
 		RetestConfirmBars:    orbExtractInt(params, "retest_confirm_bars", 1),
+		VWAPFilterEnabled:    orbExtractBool(params, "vwap_filter_enabled", false),
+		MaxRangeATRMult:      orbExtractFloat(params, "max_range_atr_mult", 0),
+		MinRangePctBps:       orbExtractInt(params, "min_range_pct_bps", 0),
 	}
 }
 
@@ -165,6 +171,8 @@ type ORBSession struct {
 	SignalsFired      int
 	BarsSinceBreakout int
 	SweepCooldown     int
+	PrevVWAP          float64 // previous bar's VWAP for slope calculation
+	RangeInvalid      bool    // true if OR range failed ATR/size check
 }
 
 type ORBTracker struct {
@@ -239,6 +247,9 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 		t.logger.Info("orb: new session", "symbol", sym, "key", key, "state", sess.State)
 	}
 
+	// Track VWAP for slope calculation (update every bar, regardless of state)
+	defer func() { sess.PrevVWAP = snap.VWAP }()
+
 	if sess.State == ORBStateSignalFired || sess.State == ORBStateDoneForSession || sess.State == ORBStateInvalid {
 		t.logger.Debug("orb: terminal state", "symbol", sym, "state", sess.State)
 		return nil, false
@@ -279,6 +290,17 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 		if sess.RangeBarCount >= required {
 			sess.State = ORBStateRangeSet
 			t.logger.Info("orb: range set", "symbol", sym, "high", sess.OrbHigh, "low", sess.OrbLow, "bars", sess.RangeBarCount)
+
+			// OR range vs ATR check: skip if range is too wide or too narrow
+			if !orbRangeValid(sess.OrbHigh, sess.OrbLow, snap.ATR, cfg.MaxRangeATRMult, cfg.MinRangePctBps) {
+				orRange := sess.OrbHigh - sess.OrbLow
+				sess.State = ORBStateInvalid
+				sess.RangeInvalid = true
+				t.logger.Warn("orb: range invalid (size check)", "symbol", sym,
+					"or_range", orRange, "atr", snap.ATR,
+					"max_atr_mult", cfg.MaxRangeATRMult, "min_bps", cfg.MinRangePctBps)
+				return nil, false
+			}
 			return t.onRangeSetBar(sess, bar, snap, cfg)
 		}
 		sess.State = ORBStateInvalid
@@ -351,6 +373,15 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 
 		// Confirm: touch happened (same bar if RetestConfirmBars=1, previous bar if =2)
 		// and current bar closes on the breakout side.
+		// Also re-check VWAP alignment at confirmation time.
+		if sess.Retest.Touched && holdThisBar && cfg.VWAPFilterEnabled {
+			if !vwapAligned(sess.Breakout.Direction, bar.Close, snap.VWAP, sess.PrevVWAP) {
+				t.logger.Info("orb: retest hold rejected (VWAP misaligned)", "symbol", sym,
+					"direction", sess.Breakout.Direction, "close", bar.Close, "vwap", snap.VWAP)
+				// Don't cycle — keep waiting for a bar that aligns
+				return nil, false
+			}
+		}
 		if sess.Retest.Touched && holdThisBar {
 			sess.Retest.HoldBar = bar.Time
 			sess.Retest.HoldClose = bar.Close
@@ -420,6 +451,20 @@ func (t *ORBTracker) onRangeSetBar(sess *ORBSession, bar domain.MarketBar, snap 
 	confirmBps := float64(cfg.BreakoutConfirmBps) / 10000.0
 	longBreak := bar.Close > sess.OrbHigh*(1.0+confirmBps) && rvol >= cfg.MinRVOL
 	shortBreak := bar.Close < sess.OrbLow*(1.0-confirmBps) && rvol >= cfg.MinRVOL
+
+	// VWAP alignment filter at breakout
+	if cfg.VWAPFilterEnabled && (longBreak || shortBreak) {
+		dir := domain.DirectionLong
+		if shortBreak {
+			dir = domain.DirectionShort
+		}
+		if !vwapAligned(dir, bar.Close, snap.VWAP, sess.PrevVWAP) {
+			t.logger.Info("orb: breakout rejected (VWAP misaligned)", "symbol", sess.Symbol,
+				"direction", dir, "close", bar.Close, "vwap", snap.VWAP, "prev_vwap", sess.PrevVWAP)
+			return nil, false
+		}
+	}
+
 	if longBreak {
 		sess.Breakout = BreakoutInfo{Direction: domain.DirectionLong, BreakBar: bar.Time, BreakClose: bar.Close, RVOL: rvol, Confirmed: true}
 		sess.State = ORBStateBreakoutSeen
@@ -437,6 +482,35 @@ func (t *ORBTracker) onRangeSetBar(sess *ORBSession, bar domain.MarketBar, snap 
 		return nil, false
 	}
 	return nil, false
+}
+
+// vwapAligned checks that price and VWAP slope agree with the breakout direction.
+// Long: price > VWAP and VWAP rising. Short: price < VWAP and VWAP falling.
+func vwapAligned(dir domain.Direction, price, vwap, prevVWAP float64) bool {
+	if vwap <= 0 || prevVWAP <= 0 {
+		return true // no VWAP data — don't block
+	}
+	slope := vwap - prevVWAP
+	if dir == domain.DirectionLong {
+		return price > vwap && slope > 0
+	}
+	return price < vwap && slope < 0
+}
+
+// orbRangeValid checks that the opening range is neither too wide nor too narrow.
+func orbRangeValid(orbHigh, orbLow, atr float64, maxATRMult float64, minBps int) bool {
+	orRange := orbHigh - orbLow
+	midpoint := (orbHigh + orbLow) / 2.0
+	if maxATRMult > 0 && atr > 0 && orRange > maxATRMult*atr {
+		return false // range too wide
+	}
+	if minBps > 0 && midpoint > 0 {
+		minRange := midpoint * float64(minBps) / 10000.0
+		if orRange < minRange {
+			return false // range too narrow (noise)
+		}
+	}
+	return true
 }
 
 func barDurationMinutes(tf domain.Timeframe) int {
