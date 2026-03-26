@@ -189,10 +189,15 @@ func (h *ScreenerHandler) resolveUniverse(ctx context.Context, asOf time.Time) [
 		} else if snap.LastTradePrice != nil {
 			price = *snap.LastTradePrice
 		}
-		if price < 5.0 {
+		if price < 10.0 {
 			continue
 		}
-		if snap.PrevDailyVolume != nil && *snap.PrevDailyVolume < 500000 {
+		// Require meaningful daily volume (1M+ shares = institutional participation)
+		if snap.PrevDailyVolume == nil || *snap.PrevDailyVolume < 1000000 {
+			continue
+		}
+		// Skip leveraged/inverse ETFs (they distort ATR signals)
+		if isLeveragedETF(sym) {
 			continue
 		}
 
@@ -326,6 +331,28 @@ func (h *ScreenerHandler) serveSSE(ctx context.Context, w http.ResponseWriter, s
 		"total":   total,
 		"results": allResults,
 	})
+}
+
+// isLeveragedETF returns true for common leveraged/inverse ETF tickers.
+// These have artificially high ATR% and don't work well for ORB.
+func isLeveragedETF(sym string) bool {
+	// Common leveraged/inverse prefixes and known tickers
+	leveraged := map[string]bool{
+		"SOXL": true, "SOXS": true, "TQQQ": true, "SQQQ": true,
+		"SPXL": true, "SPXS": true, "UPRO": true, "SDOW": true,
+		"UDOW": true, "TNA": true, "TZA": true, "LABU": true,
+		"LABD": true, "FNGU": true, "FNGD": true, "BULZ": true,
+		"BERZ": true, "TSLL": true, "TSDD": true, "UCO": true,
+		"SCO": true, "BOIL": true, "KOLD": true, "NUGT": true,
+		"DUST": true, "JNUG": true, "JDST": true, "AGQ": true,
+		"ZSL": true, "GDXU": true, "GDXD": true, "UVXY": true,
+		"SVXY": true, "VIXY": true, "TECL": true, "TECS": true,
+		"FAS": true, "FAZ": true, "ERX": true, "ERY": true,
+		"CURE": true, "DRIP": true, "GUSH": true, "RETL": true,
+		"MIDU": true, "SMDD": true, "URTY": true, "SRTY": true,
+		"WEBL": true, "WEBS": true, "YINN": true, "YANG": true,
+	}
+	return leveraged[sym]
 }
 
 // computeAllStreaming fetches daily bars and sends each result to the channel as it's computed.
