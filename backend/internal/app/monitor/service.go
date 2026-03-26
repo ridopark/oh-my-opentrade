@@ -385,6 +385,17 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		return nil
 	}
 
+	// Intercept VIXY bars for real-time VIX level updates.
+	if string(bar.Symbol) == "VIXY" {
+		if bar.Close > 0 && s.vixSkipAbove > 0 {
+			approxVIX := bar.Close * 0.75
+			s.mu.Lock()
+			s.vixLevel = approxVIX
+			s.mu.Unlock()
+		}
+		return nil
+	}
+
 	l := s.log.With().
 		Str("symbol", string(bar.Symbol)).
 		Str("timeframe", string(bar.Timeframe)).
