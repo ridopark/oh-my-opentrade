@@ -720,31 +720,24 @@ interface Position {
   exitReason: string | null;
 }
 
-function getTradeDirection(t: BacktestTrade): string {
-  return (t as BacktestTrade & { direction?: string }).direction ?? "";
-}
-
 function groupPositions(trades: BacktestTrade[]): Position[] {
-  const openPositions = new Map<string, BacktestTrade>();
+  // Pair entries (LONG/SHORT) with their CLOSE exits sequentially per symbol.
+  const openBySymbol = new Map<string, BacktestTrade>();
   const positions: Position[] = [];
 
   for (const t of trades) {
-    const dir = getTradeDirection(t);
-    const isEntry = dir === "LONG" || dir === "SHORT";
-    const isExit = dir === "CLOSE";
-    // Legacy fallback
-    const isBuyEntry = !dir && t.side?.toLowerCase() === "buy";
-    const isSellExit = !dir && t.side?.toLowerCase() === "sell";
+    const dir = t.direction ?? "";
+    const isEntry = dir === "LONG" || dir === "SHORT" || (!dir && t.side === "buy");
+    const isExit = dir === "CLOSE" || (!dir && t.side === "sell");
     const key = `${t.symbol}:${t.strategy ?? ""}`;
 
-    if (isEntry || isBuyEntry) {
-      openPositions.set(key, t);
-    } else if (isExit || isSellExit) {
-      const entry = openPositions.get(key);
+    if (isEntry) {
+      openBySymbol.set(key, t);
+    } else if (isExit) {
+      const entry = openBySymbol.get(key);
       if (entry) {
-        openPositions.delete(key);
-        const entryDir = getTradeDirection(entry);
-        const isShort = entryDir === "SHORT";
+        openBySymbol.delete(key);
+        const isShort = (entry.direction ?? "") === "SHORT";
         const qty = entry.quantity ?? 0;
         const entryPx = entry.price ?? 0;
         const exitPx = t.price ?? 0;
@@ -753,7 +746,7 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
         positions.push({
           symbol: t.symbol,
           strategy: t.strategy ?? "",
-          direction: entryDir === "SHORT" ? "SHORT" : "LONG",
+          direction: isShort ? "SHORT" : "LONG",
           entry,
           exit: t,
           qty,
@@ -763,18 +756,17 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
           pnlPct,
           entryTime: entry.filled_at ?? "",
           exitTime: t.filled_at ?? "",
-          exitReason: parseExitReason((t as BacktestTrade & { rationale?: string }).rationale),
+          exitReason: parseExitReason(t.rationale),
         });
       }
     }
   }
 
-  for (const [, entry] of openPositions) {
-    const entryDir = getTradeDirection(entry);
+  for (const [, entry] of openBySymbol) {
     positions.push({
       symbol: entry.symbol,
       strategy: entry.strategy ?? "",
-      direction: entryDir === "SHORT" ? "SHORT" : "LONG",
+      direction: (entry.direction ?? "") === "SHORT" ? "SHORT" : "LONG",
       entry,
       exit: null,
       qty: entry.quantity ?? 0,
