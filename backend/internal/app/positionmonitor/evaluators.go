@@ -215,10 +215,18 @@ func evaluateVolatilityStop(rule domain.ExitRule, pos *domain.MonitoredPosition,
 		return false, ""
 	}
 
-	stopPrice := pos.HighWaterMark - (ctx.ATR * mult)
-	if currentPrice <= stopPrice {
-		return true, fmt.Sprintf("volatility_stop: price %.4f <= stop %.4f (hwm=%.4f, ATR=%.6f, mult=%.1f)",
-			currentPrice, stopPrice, pos.HighWaterMark, ctx.ATR, mult)
+	if pos.IsShort() {
+		stopPrice := pos.LowWaterMark + (ctx.ATR * mult)
+		if currentPrice >= stopPrice {
+			return true, fmt.Sprintf("volatility_stop: price %.4f >= stop %.4f (lwm=%.4f, ATR=%.6f, mult=%.1f)",
+				currentPrice, stopPrice, pos.LowWaterMark, ctx.ATR, mult)
+		}
+	} else {
+		stopPrice := pos.HighWaterMark - (ctx.ATR * mult)
+		if currentPrice <= stopPrice {
+			return true, fmt.Sprintf("volatility_stop: price %.4f <= stop %.4f (hwm=%.4f, ATR=%.6f, mult=%.1f)",
+				currentPrice, stopPrice, pos.HighWaterMark, ctx.ATR, mult)
+		}
 	}
 	return false, ""
 }
@@ -301,10 +309,18 @@ func evaluateStepStop(rule domain.ExitRule, pos *domain.MonitoredPosition, curre
 		return false, ""
 	}
 
-	if currentPrice <= stopLevel {
-		highestSD := pos.CustomState["highest_sd_crossed"]
-		return true, fmt.Sprintf("step_stop: price %.4f <= stop %.4f (highest_sd=+%.1f, vwap=%.4f)",
-			currentPrice, stopLevel, highestSD, ctx.VWAPValue)
+	if pos.IsShort() {
+		if currentPrice >= stopLevel {
+			lowestSD := pos.CustomState["lowest_sd_crossed"]
+			return true, fmt.Sprintf("step_stop: price %.4f >= stop %.4f (lowest_sd=-%.1f, vwap=%.4f)",
+				currentPrice, stopLevel, lowestSD, ctx.VWAPValue)
+		}
+	} else {
+		if currentPrice <= stopLevel {
+			highestSD := pos.CustomState["highest_sd_crossed"]
+			return true, fmt.Sprintf("step_stop: price %.4f <= stop %.4f (highest_sd=+%.1f, vwap=%.4f)",
+				currentPrice, stopLevel, highestSD, ctx.VWAPValue)
+		}
 	}
 	return false, ""
 }
@@ -336,10 +352,18 @@ func UpdateStepStopState(pos *domain.MonitoredPosition, currentPrice float64, ct
 		return
 	}
 
+	if pos.IsShort() {
+		updateStepStopShort(pos, currentPrice, ctx)
+	} else {
+		updateStepStopLong(pos, currentPrice, ctx)
+	}
+}
+
+// updateStepStopLong ratchets the step-stop level UP as price crosses higher SD bands.
+func updateStepStopLong(pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext) {
 	levels := []float64{3.0, 2.5, 2.0, 1.5, 1.0}
 	prevHighest := pos.CustomState["highest_sd_crossed"]
 
-	// Find the highest SD level crossed this tick (descending scan, first match wins)
 	newHighest := prevHighest
 	for _, level := range levels {
 		bandPrice, ok := ctx.SDBands[level]
@@ -375,6 +399,58 @@ func UpdateStepStopState(pos *domain.MonitoredPosition, currentPrice float64, ct
 	}
 }
 
+// updateStepStopShort ratchets the step-stop level DOWN as price crosses lower SD bands.
+// Lower SD bands are mirrored from upper bands: lowerBand = 2*VWAP - upperBand.
+func updateStepStopShort(pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext) {
+	levels := []float64{3.0, 2.5, 2.0, 1.5, 1.0}
+	prevLowest := pos.CustomState["lowest_sd_crossed"]
+
+	// Compute lower bands by mirroring upper bands around VWAP
+	lowerBands := make(map[float64]float64, len(ctx.SDBands))
+	for level, upperPrice := range ctx.SDBands {
+		lowerBands[level] = 2*ctx.VWAPValue - upperPrice
+	}
+
+	newLowest := prevLowest
+	for _, level := range levels {
+		bandPrice, ok := lowerBands[level]
+		if !ok {
+			continue
+		}
+		if currentPrice <= bandPrice && level > newLowest {
+			newLowest = level
+			break
+		}
+	}
+
+	if newLowest <= prevLowest {
+		return
+	}
+
+	pos.CustomState["lowest_sd_crossed"] = newLowest
+
+	// For shorts, stop is set ABOVE entry (protecting against adverse moves up).
+	// -1.0 SD crossed → stop = entry price (breakeven)
+	// -2.0 SD crossed → stop = -1.0 SD band (lock in profit at -1 SD)
+	var newStop float64
+	if newLowest <= 1.0 {
+		newStop = pos.EntryPrice
+	} else {
+		lockLevel := newLowest - 1.0
+		if lockPrice, exists := lowerBands[lockLevel]; exists {
+			newStop = lockPrice
+		} else {
+			newStop = pos.EntryPrice
+		}
+	}
+
+	// For shorts, stop ratchets DOWN (tighter = lower price that locks more profit)
+	currentStop := pos.CustomState["step_stop_level"]
+	if currentStop <= 0 || newStop < currentStop {
+		pos.CustomState["step_stop_level"] = newStop
+	}
+}
+
 // evaluateStagnationExit triggers when a position fails to reach the target SD band
 // within a time limit. Disabled once step-stop has activated (highest_sd_crossed > 0).
 //
@@ -399,8 +475,18 @@ func evaluateStagnationExit(rule domain.ExitRule, pos *domain.MonitoredPosition,
 
 	sdThreshold := rule.Param("sd_threshold", 1.0)
 	if len(ctx.SDBands) > 0 {
-		if bandPrice, ok := ctx.SDBands[sdThreshold]; ok && currentPrice >= bandPrice {
-			return false, ""
+		if bandPrice, ok := ctx.SDBands[sdThreshold]; ok {
+			if pos.IsShort() {
+				// For shorts, check if price reached the lower band
+				lowerBand := 2*ctx.VWAPValue - bandPrice
+				if currentPrice <= lowerBand {
+					return false, ""
+				}
+			} else {
+				if currentPrice >= bandPrice {
+					return false, ""
+				}
+			}
 		}
 	}
 
@@ -408,7 +494,7 @@ func evaluateStagnationExit(rule domain.ExitRule, pos *domain.MonitoredPosition,
 	// skip the stagnation exit and let the trailing stop protect gains.
 	profitGatePct := rule.Param("profit_gate_pct", 0)
 	if profitGatePct > 0 && pos.EntryPrice > 0 {
-		pnlPct := (currentPrice - pos.EntryPrice) / pos.EntryPrice
+		pnlPct := pos.UnrealizedPnLPct(currentPrice)
 		if pnlPct > profitGatePct {
 			return false, ""
 		}
@@ -437,7 +523,13 @@ func UpdateBreakevenStopState(pos *domain.MonitoredPosition, currentPrice float6
 	pnlPct := pos.UnrealizedPnLPct(currentPrice)
 	if pnlPct >= activationPct {
 		pos.CustomState["breakeven_activated"] = 1
-		pos.CustomState["breakeven_stop_level"] = pos.EntryPrice * (1 + bufferPct)
+		if pos.IsShort() {
+			// For shorts, breakeven stop is slightly BELOW entry (adverse = price going up).
+			// bufferPct gives us a small profit cushion: stop = entry * (1 - buffer).
+			pos.CustomState["breakeven_stop_level"] = pos.EntryPrice * (1 - bufferPct)
+		} else {
+			pos.CustomState["breakeven_stop_level"] = pos.EntryPrice * (1 + bufferPct)
+		}
 	}
 }
 
@@ -456,9 +548,16 @@ func evaluateBreakevenStop(_ domain.ExitRule, pos *domain.MonitoredPosition, cur
 	if stopLevel <= 0 {
 		return false, ""
 	}
-	if currentPrice <= stopLevel {
-		return true, fmt.Sprintf("breakeven_stop: price %.4f <= stop %.4f (entry=%.4f, buffer=%.4f)",
-			currentPrice, stopLevel, pos.EntryPrice, stopLevel-pos.EntryPrice)
+	if pos.IsShort() {
+		if currentPrice >= stopLevel {
+			return true, fmt.Sprintf("breakeven_stop: price %.4f >= stop %.4f (entry=%.4f, short)",
+				currentPrice, stopLevel, pos.EntryPrice)
+		}
+	} else {
+		if currentPrice <= stopLevel {
+			return true, fmt.Sprintf("breakeven_stop: price %.4f <= stop %.4f (entry=%.4f, buffer=%.4f)",
+				currentPrice, stopLevel, pos.EntryPrice, stopLevel-pos.EntryPrice)
+		}
 	}
 	return false, ""
 }

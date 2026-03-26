@@ -418,7 +418,7 @@ func (s *Service) processFill(fill fillMsg) {
 	isExit := fill.Side == "SELL"
 	// SHORT entries also have side="SELL" but should be treated as new positions.
 	if fill.Direction != "" {
-		isExit = fill.Direction == string(domain.DirectionCloseLong)
+		isExit = domain.Direction(fill.Direction).IsExit()
 	}
 	if isExit {
 		pos, exists := s.positions[key]

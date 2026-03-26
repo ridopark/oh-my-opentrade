@@ -1069,7 +1069,7 @@ func (s *Service) cleanupPendingOrder(brokerOrderID string) {
 		if isEntry(po.intent) {
 			s.positionGate.ClearInflight(po.tenantID, po.envMode, po.intent.Symbol)
 		} else if po.intent.Direction.IsExit() {
-			isFullExit := po.intent.Direction == domain.DirectionCloseLong &&
+			isFullExit := po.intent.Direction.IsExit() &&
 				!strings.Contains(po.intent.Rationale, "SCALE_OUT")
 
 			if isFullExit {

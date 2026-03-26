@@ -130,7 +130,9 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 	case domain.DirectionShort:
 		posDir = "SHORT"
 	case domain.DirectionCloseLong:
-		posDir = "CLOSE"
+		posDir = "CLOSE_LONG"
+	case domain.DirectionCloseShort:
+		posDir = "CLOSE_SHORT"
 	}
 
 	tr := TradeRecord{
@@ -156,7 +158,7 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 		c.openSells[symbol] = append(c.openSells[symbol], tr)
 		c.cash += quantity * price
 
-	case domain.DirectionCloseLong:
+	case domain.DirectionCloseLong, domain.DirectionCloseShort:
 		// Exit: close whichever position is open (long or short).
 		if opens := c.openBuys[symbol]; len(opens) > 0 {
 			// Closing a long: PnL = exit - entry.

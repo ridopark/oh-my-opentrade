@@ -659,7 +659,7 @@ function MiniChart({
         const dir = t.direction ?? "";
         const isEntry = dir === "LONG" || dir === "SHORT";
         const isLongSide = dir === "LONG" || (!dir && t.side?.toLowerCase() === "buy");
-        const label = dir === "LONG" ? "BUY" : dir === "SHORT" ? "SHORT" : dir === "CLOSE_LONG" ? "SELL" : (t.side?.toLowerCase() === "buy" ? "BUY" : "SELL");
+        const label = dir === "LONG" ? "BUY" : dir === "SHORT" ? "SHORT" : dir === "CLOSE_LONG" ? "SELL" : dir === "CLOSE_SHORT" ? "COVER" : (t.side?.toLowerCase() === "buy" ? "BUY" : "SELL");
         return {
           time: matchedTime as Time,
           price: bar ? (isEntry ? bar.low * 0.999 : bar.high * 1.001) : t.price,
@@ -731,7 +731,7 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
   for (const t of trades) {
     const dir = t.direction ?? "";
     const isEntry = dir === "LONG" || dir === "SHORT" || (!dir && t.side === "buy");
-    const isExit = dir === "CLOSE" || dir === "CLOSE_LONG" || (!dir && !isEntry && t.side === "sell");
+    const isExit = dir === "CLOSE" || dir === "CLOSE_LONG" || dir === "CLOSE_SHORT" || (!dir && !isEntry && t.side === "sell");
     const key = `${t.symbol}:${t.strategy ?? ""}`;
 
     if (isEntry) {

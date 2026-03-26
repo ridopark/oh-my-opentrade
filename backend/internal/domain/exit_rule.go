@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -177,16 +178,33 @@ func (mp *MonitoredPosition) UpdateWaterMarks(price float64) {
 	}
 }
 
+// IsShort returns true if this is a short position (sell side).
+func (mp *MonitoredPosition) IsShort() bool {
+	return strings.EqualFold(mp.Side, "SELL")
+}
+
 // UnrealizedPnLPct returns the unrealized P&L as a percentage of entry price.
+// For longs: (current - entry) / entry. For shorts: (entry - current) / entry.
 func (mp *MonitoredPosition) UnrealizedPnLPct(currentPrice float64) float64 {
 	if mp.EntryPrice == 0 {
 		return 0
 	}
+	if mp.IsShort() {
+		return (mp.EntryPrice - currentPrice) / mp.EntryPrice
+	}
 	return (currentPrice - mp.EntryPrice) / mp.EntryPrice
 }
 
-// DrawdownFromHighPct returns the drawdown from high-water mark as a percentage.
+// DrawdownFromHighPct returns the adverse move from the best price as a percentage.
+// For longs: (high - current) / high (price dropping from peak).
+// For shorts: (current - low) / low (price rising from trough).
 func (mp *MonitoredPosition) DrawdownFromHighPct(currentPrice float64) float64 {
+	if mp.IsShort() {
+		if mp.LowWaterMark == 0 {
+			return 0
+		}
+		return (currentPrice - mp.LowWaterMark) / mp.LowWaterMark
+	}
 	if mp.HighWaterMark == 0 {
 		return 0
 	}

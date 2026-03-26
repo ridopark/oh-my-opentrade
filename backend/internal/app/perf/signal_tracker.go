@@ -284,6 +284,8 @@ func deriveKindSideFromDirection(direction string) (string, string) {
 	switch strings.ToUpper(direction) {
 	case string(domain.DirectionCloseLong):
 		return "exit", "SELL"
+	case string(domain.DirectionCloseShort):
+		return "exit", "BUY"
 	case string(domain.DirectionShort):
 		return "entry", "SELL"
 	case string(domain.DirectionLong):

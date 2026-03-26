@@ -267,14 +267,19 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 	idempotencyKey := fmt.Sprintf("EXIT:%s:%s:%s:%d:%s:%d",
 		pos.TenantID, pos.EnvMode, pos.Symbol, pos.EntryTime.Unix(), rule.Type, pos.ExitRetryCount)
 
-	exitPrice, orderType, tif := exitOrderParams(rule.Type, currentPrice, pos.ExitRetryCount)
+	exitPrice, orderType, tif := exitOrderParams(rule.Type, currentPrice, pos.ExitRetryCount, pos.IsShort())
+
+	exitDirection := domain.DirectionCloseLong
+	if pos.IsShort() {
+		exitDirection = domain.DirectionCloseShort
+	}
 
 	intent, err := domain.NewOrderIntent(
 		uuid.New(),
 		pos.TenantID,
 		pos.EnvMode,
 		pos.Symbol,
-		domain.DirectionCloseLong,
+		exitDirection,
 		exitPrice,
 		0,
 		0,
@@ -368,7 +373,7 @@ func isForcedExit(ruleType domain.ExitRuleType) bool {
 
 // exitOrderParams determines order type, price, and TIF based on exit rule
 // and retry count. Forced exits escalate: 2% → 3% → 5% → market.
-func exitOrderParams(ruleType domain.ExitRuleType, currentPrice float64, retryCount int) (price float64, orderType, tif string) {
+func exitOrderParams(ruleType domain.ExitRuleType, currentPrice float64, retryCount int, short bool) (price float64, orderType, tif string) {
 	if !isForcedExit(ruleType) {
 		return currentPrice, "limit", ""
 	}
@@ -379,5 +384,9 @@ func exitOrderParams(ruleType domain.ExitRuleType, currentPrice float64, retryCo
 
 	buffers := []float64{0.02, 0.03, 0.05}
 	buf := buffers[retryCount]
+	if short {
+		// For shorts, buying back — need to offer a higher price to fill
+		return currentPrice * (1 + buf), "limit", "ioc"
+	}
 	return currentPrice * (1 - buf), "limit", "ioc"
 }
