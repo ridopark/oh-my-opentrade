@@ -135,7 +135,7 @@ export default function BacktestPage() {
   const [bottomTab, setBottomTab] = useState<"trades" | "results" | "equity">("trades");
 
   return (
-    <div className="flex flex-col h-[calc(100vh-3rem)]">
+    <div className="flex flex-col min-h-[calc(100vh-3rem)]">
       <TopBar
         config={config}
         updateConfig={updateConfig}
@@ -152,14 +152,14 @@ export default function BacktestPage() {
         onCancel={bt.cancel}
       />
 
-      <div className="flex-1 min-h-0 mt-2 overflow-hidden">
+      <div className="mt-2" style={{ minHeight: symbolsInData.length <= 2 ? 300 : `${Math.ceil(symbolsInData.length / (symbolsInData.length <= 4 ? 2 : symbolsInData.length <= 6 ? 3 : 4)) * 280}px` }}>
         <ChartGrid ref={chartGridRef} symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} onTradeClick={(trade) => {
           setBottomTab("trades");
           setTimeout(() => tradeLogRef.current?.scrollToTrade(trade), 50);
         }} />
       </div>
 
-      <div className="h-[35%] min-h-[180px] max-h-[300px] mt-1 rounded-t-lg border border-border bg-card flex flex-col">
+      <div className="min-h-[250px] mt-1 rounded-t-lg border border-border bg-card flex flex-col">
         <div className="flex items-center gap-0 border-b border-border shrink-0">
           {(["trades", "results", "equity"] as const).map((tab) => (
             <button
@@ -495,15 +495,15 @@ const ChartGrid = forwardRef<ChartGridHandle, {
 
   return (
     <div
-      className="h-full grid gap-2 overflow-hidden"
+      className="grid gap-2"
       style={{
         gridTemplateColumns: `repeat(${cols}, 1fr)`,
-        gridAutoRows: "1fr",
+        gridAutoRows: "260px",
       }}
     >
       {symbols.map((sym) => (
-        <div key={sym} className="relative group h-full">
-          <div className="h-full">
+        <div key={sym} className="relative group">
+          <div className="h-full min-h-0">
             <MiniChart
               symbol={sym}
               bars={bars.get(sym) ?? []}
