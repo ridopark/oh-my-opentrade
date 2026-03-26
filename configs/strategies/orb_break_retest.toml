@@ -19,7 +19,7 @@ priority = 100
 conflict_policy = "priority_wins"
 exclusive_per_symbol = true
 watchlist_mode = "replace"
-asset_classes = ["CRYPTO", "EQUITY"]
+asset_classes = ["EQUITY"]
 allowed_directions = ["LONG", "SHORT"]
 
 [screening]
@@ -27,18 +27,21 @@ description = "Opening Range Breakout strategy that waits for price to break the
 
 [params]
 orb_window_minutes = 15
-min_rvol = 1.0
+min_rvol = 1.5
 min_confidence = 0.70
 breakout_confirm_bps = 5
 touch_tolerance_bps = 2
 hold_confirm_bps = 0
-max_retest_bars = 30
-allow_missing_range_bars = 20
+max_retest_bars = 12
+allow_missing_range_bars = 1
 max_signals_per_session = 5
 htf_bias_enabled = true
 atr_multiplier = 3.0
 sweep_cooldown_bars = 3
 retest_confirm_bars = 2
+vwap_filter_enabled = true
+max_range_atr_mult = 2.0
+min_range_pct_bps = 20
 stop_bps = 50
 limit_offset_bps = 5
 risk_per_trade_bps = 100
@@ -49,7 +52,7 @@ allowed_hours_tz = "America/New_York"
 
 [regime_filter]
 enabled = true
-allowed_regimes = ["TREND", "REVERSAL", "BALANCE"]
+allowed_regimes = ["TREND", "BALANCE"]
 min_atr_pct = 0.8
 
 [hooks]
@@ -74,7 +77,7 @@ bar_minutes = 5
 [[exit_rules]]
 type = "TRAILING_STOP"
 [exit_rules.params]
-pct = 0.003
+pct = 0.005
 
 [[exit_rules]]
 type = "SD_TARGET"
