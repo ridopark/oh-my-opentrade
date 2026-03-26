@@ -822,7 +822,9 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 		"price":           fillPrice,
 		"filled_at":       now,
 		"strategy":        intent.Strategy,
+		"rationale":       intent.Rationale,
 		"risk_modifier":   intent.Meta["risk_modifier"],
+		"regime":          intent.Meta["regime"],
 	}
 	if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
 		fillPayload["instrument_type"] = string(domain.InstrumentTypeOption)

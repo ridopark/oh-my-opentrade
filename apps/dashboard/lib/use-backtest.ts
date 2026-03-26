@@ -46,6 +46,7 @@ export interface BacktestTrade {
   filled_at: string;
   strategy?: string;
   rationale?: string;
+  regime?: string;
   pnl?: number;
 }
 
