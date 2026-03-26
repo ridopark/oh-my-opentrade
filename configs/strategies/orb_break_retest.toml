@@ -23,12 +23,12 @@ asset_classes = ["CRYPTO", "EQUITY"]
 allowed_directions = ["LONG", "SHORT"]
 
 [screening]
-description = "Opening Range Breakout strategy that waits for price to break the first-hour range, then retests the breakout level before entry. CRITICAL: Only pick highly liquid stocks that trade continuously every minute during the first hour — minimum 500K average daily volume, preferably 1M+. Mid and large caps only."
+description = "Opening Range Breakout strategy that waits for price to break the ORB window(15min) range, then retests the breakout level before entry. CRITICAL: Only pick highly liquid stocks that trade continuously every minute during the first hour — minimum 500K average daily volume, preferably 1M+. Mid and large caps only."
 
 [params]
-orb_window_minutes = 30
+orb_window_minutes = 15
 min_rvol = 1.0
-min_confidence = 0.60
+min_confidence = 0.70
 breakout_confirm_bps = 5
 touch_tolerance_bps = 2
 hold_confirm_bps = 0
@@ -38,6 +38,7 @@ max_signals_per_session = 5
 htf_bias_enabled = true
 atr_multiplier = 3.0
 sweep_cooldown_bars = 3
+retest_confirm_bars = 2
 stop_bps = 50
 limit_offset_bps = 5
 risk_per_trade_bps = 100
@@ -84,7 +85,7 @@ type = "MAX_LOSS"
 pct = 0.025
 
 [options]
-enabled = false
+enabled = true
 
 [options.defaults]
 min_dte = 35
