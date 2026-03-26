@@ -214,6 +214,19 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 		"bear":  decision.BearArgument,
 		"judge": decision.JudgeReasoning,
 	}
+	// Copy trading hours from strategy config so the TradingWindowGuard can enforce them.
+	if s.specStore != nil && setup.Trigger != "" {
+		sid, sidErr := domstrategy.NewStrategyID(setup.Trigger)
+		if sidErr == nil {
+			if spec, specErr := s.specStore.GetLatest(context.Background(), sid); specErr == nil {
+				for _, key := range []string{"allowed_hours_start", "allowed_hours_end", "allowed_hours_tz", "skip_weekends"} {
+					if v, ok := spec.Params[key].(string); ok && v != "" {
+						intent.Meta[key] = v
+					}
+				}
+			}
+		}
+	}
 
 	l.Info().Str("intent_id", intentID.String()).Msg("order intent created from AI debate")
 	s.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)
