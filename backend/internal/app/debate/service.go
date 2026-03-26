@@ -221,6 +221,11 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 		"judge": decision.JudgeReasoning,
 	}
 	// Copy trading hours from strategy config so the TradingWindowGuard can enforce them.
+	// Attach regime type to intent meta for downstream (collector, trade log).
+	if setup.Regime.Type != "" {
+		intent.Meta["regime"] = string(setup.Regime.Type)
+	}
+
 	if s.specStore != nil && setup.Trigger != "" {
 		sid, sidErr := domstrategy.NewStrategyID(setup.Trigger)
 		if sidErr == nil {

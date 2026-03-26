@@ -814,6 +814,7 @@ interface Position {
   entryTime: string;
   exitTime: string | null;
   exitReason: string | null;
+  regime: string | null;
 }
 
 function groupPositions(trades: BacktestTrade[]): Position[] {
@@ -853,6 +854,7 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
           entryTime: entry.filled_at ?? "",
           exitTime: t.filled_at ?? "",
           exitReason: parseExitReason(t.rationale),
+          regime: entry.regime ?? null,
         });
       }
     }
@@ -873,6 +875,7 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
       entryTime: entry.filled_at ?? "",
       exitTime: null,
       exitReason: null,
+      regime: entry.regime ?? null,
     });
   }
 
@@ -928,6 +931,7 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
             <th className="text-left px-2 py-1.5">Exit Time</th>
             <th className="text-right px-4 py-1.5">P&L</th>
             <th className="text-left px-2 py-1.5">Exit Reason</th>
+            <th className="text-left px-2 py-1.5">Regime</th>
           </tr>
         </thead>
         <tbody>
@@ -978,6 +982,18 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
                 </td>
                 <td className="px-2 py-1 text-[10px] text-muted-foreground">
                   {p.exitReason ?? ""}
+                </td>
+                <td className="px-2 py-1 text-[10px] text-muted-foreground">
+                  {p.regime ? (
+                    <span className={`inline-block px-1 py-0.5 rounded text-[9px] font-medium ${
+                      p.regime === "TREND" ? "bg-blue-500/20 text-blue-400" :
+                      p.regime === "BALANCE" ? "bg-amber-500/20 text-amber-400" :
+                      p.regime === "REVERSAL" ? "bg-purple-500/20 text-purple-400" :
+                      "bg-gray-500/20 text-gray-400"
+                    }`}>
+                      {p.regime}
+                    </span>
+                  ) : ""}
                 </td>
               </tr>
             );
