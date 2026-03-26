@@ -961,8 +961,7 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
             <th className="text-right px-4 py-1.5">P&L</th>
             <th className="text-left px-2 py-1.5">Exit Reason</th>
             <th className="text-left px-2 py-1.5 cursor-help" title="EMA-based regime from EMA21/EMA50 divergence (0.3% threshold) + RSI/Stochastic on the strategy timeframe. TREND = EMAs diverging >0.3%, BALANCE = EMAs converging, REVERSAL = RSI overbought/oversold with stochastic crossover.">EMA Regime</th>
-            <th className="text-left px-2 py-1.5 cursor-help" title="VIX volatility bucket derived from VIXY ETF price. LOW_VOL (VIX<15) = calm, standard params. NORMAL (15-25) = elevated, stops widened 1.5x. HIGH_VOL (VIX>25) = stress, ORB entries blocked.">VIX</th>
-            <th className="text-left px-2 py-1.5 cursor-help" title="Composite market context at entry. Shows VIX bucket + NR7 (prior day narrowest range in 7 = compression day) + VWAP alignment (VWAP+ = price on correct side of VWAP, VWAP- = against VWAP).">Context</th>
+            <th className="text-left px-2 py-1.5 cursor-help" title="Market context at entry: SPY realized vol bucket (LOW_VOL <15 / NORMAL 15-25 / HIGH_VOL >25) + per-symbol daily ATR% + NR7 compression day + VWAP alignment (VWAP+ = correct side, VWAP- = against).">Context</th>
           </tr>
         </thead>
         <tbody>
@@ -1022,16 +1021,6 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
                       p.regime === "REVERSAL" ? "bg-purple-500/20 text-purple-400" :
                       "bg-gray-500/20 text-gray-400"
                     }`}>{p.regime}</span>
-                  ) : ""}
-                </td>
-                <td className="px-2 py-1 text-[10px]">
-                  {p.vixBucket ? (
-                    <span className={`inline-block px-1 py-0.5 rounded text-[9px] font-medium ${
-                      p.vixBucket === "LOW_VOL" ? "bg-emerald-500/20 text-emerald-400" :
-                      p.vixBucket === "NORMAL" ? "bg-amber-500/20 text-amber-400" :
-                      p.vixBucket === "HIGH_VOL" ? "bg-red-500/20 text-red-400" :
-                      "bg-gray-500/20 text-gray-400"
-                    }`}>{p.vixBucket}</span>
                   ) : ""}
                 </td>
                 <td className="px-2 py-1 text-[10px] text-muted-foreground whitespace-nowrap">
