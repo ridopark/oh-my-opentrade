@@ -551,34 +551,34 @@ func TestExitOrderParams_Escalation(t *testing.T) {
 	price := 67000.0
 
 	t.Run("retry 0: 2% buffer IOC", func(t *testing.T) {
-		p, ot, tif := exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 0)
+		p, ot, tif := exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 0, false)
 		assert.InEpsilon(t, price*0.98, p, 0.01)
 		assert.Equal(t, "limit", ot)
 		assert.Equal(t, "ioc", tif)
 	})
 
 	t.Run("retry 1: 3% buffer IOC", func(t *testing.T) {
-		p, ot, tif := exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 1)
+		p, ot, tif := exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 1, false)
 		assert.InEpsilon(t, price*0.97, p, 0.01)
 		assert.Equal(t, "limit", ot)
 		assert.Equal(t, "ioc", tif)
 	})
 
 	t.Run("retry 2: 5% buffer IOC", func(t *testing.T) {
-		p, ot, tif := exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 2)
+		p, ot, tif := exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 2, false)
 		assert.InEpsilon(t, price*0.95, p, 0.01)
 		assert.Equal(t, "limit", ot)
 		assert.Equal(t, "ioc", tif)
 	})
 
 	t.Run("retry 3+: market order", func(t *testing.T) {
-		_, ot, tif := exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 3)
+		_, ot, tif := exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 3, false)
 		assert.Equal(t, "market", ot)
 		assert.Equal(t, "ioc", tif)
 	})
 
 	t.Run("non-forced exit: regular limit", func(t *testing.T) {
-		p, ot, tif := exitOrderParams(domain.ExitRuleTrailingStop, price, 0)
+		p, ot, tif := exitOrderParams(domain.ExitRuleTrailingStop, price, 0, false)
 		assert.Equal(t, price, p)
 		assert.Equal(t, "limit", ot)
 		assert.Equal(t, "", tif)

@@ -318,13 +318,18 @@ func (r *Revaluator) triggerExit(ctx context.Context, pos domain.MonitoredPositi
 	idempotencyKey := fmt.Sprintf("REVAL_EXIT:%s:%s:%s:%d",
 		pos.TenantID, pos.EnvMode, pos.Symbol, pos.EntryTime.Unix())
 
+	exitDir := domain.DirectionCloseLong
 	exitPrice := currentPrice * 0.98 // IOC aggressive: 2% buffer for sells
+	if pos.IsShort() {
+		exitDir = domain.DirectionCloseShort
+		exitPrice = currentPrice * 1.02 // IOC aggressive: 2% buffer for buys (covering short)
+	}
 	intent, err := domain.NewOrderIntent(
 		uuid.New(),
 		pos.TenantID,
 		pos.EnvMode,
 		pos.Symbol,
-		domain.DirectionCloseLong,
+		exitDir,
 		exitPrice,
 		0,
 		0,
@@ -371,12 +376,16 @@ func (r *Revaluator) triggerScaleOut(ctx context.Context, pos domain.MonitoredPo
 	idempotencyKey := fmt.Sprintf("REVAL_SCALE:%s:%s:%s:%d",
 		pos.TenantID, pos.EnvMode, pos.Symbol, time.Now().Unix())
 
+	scaleDir := domain.DirectionCloseLong
+	if pos.IsShort() {
+		scaleDir = domain.DirectionCloseShort
+	}
 	intent, err := domain.NewOrderIntent(
 		uuid.New(),
 		pos.TenantID,
 		pos.EnvMode,
 		pos.Symbol,
-		domain.DirectionCloseLong,
+		scaleDir,
 		currentPrice,
 		0,
 		0,

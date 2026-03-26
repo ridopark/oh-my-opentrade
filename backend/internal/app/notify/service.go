@@ -221,7 +221,7 @@ func (s *Service) addToBatch(symbol, msg string, withChart bool, ev domain.Event
 
 	switch p := ev.Payload.(type) {
 	case domain.OrderIntentEventPayload:
-		if !entry.chartSet && p.Direction != string(domain.DirectionCloseLong) && p.LimitPrice > 0 {
+		if !entry.chartSet && !domain.Direction(p.Direction).IsExit() && p.LimitPrice > 0 {
 			entryTime := ev.OccurredAt
 			opts := ports.ChartOptions{}
 			opts.Levels = append(opts.Levels, domain.PriceLevel{
@@ -496,7 +496,7 @@ func (s *Service) fmtOrderSubmitted(ev domain.Event) string {
 
 	emoji := "📤"
 	action := "Order Submitted"
-	isExit := p.Direction == string(domain.DirectionCloseLong)
+	isExit := domain.Direction(p.Direction).IsExit()
 	if isExit {
 		emoji = "📕"
 		action = "Exit Submitted"
