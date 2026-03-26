@@ -728,7 +728,7 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
   for (const t of trades) {
     const dir = t.direction ?? "";
     const isEntry = dir === "LONG" || dir === "SHORT" || (!dir && t.side === "buy");
-    const isExit = dir === "CLOSE" || (!dir && t.side === "sell");
+    const isExit = dir === "CLOSE" || dir === "CLOSE_LONG" || (!dir && !isEntry && t.side === "sell");
     const key = `${t.symbol}:${t.strategy ?? ""}`;
 
     if (isEntry) {
