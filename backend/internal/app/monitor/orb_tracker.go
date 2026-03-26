@@ -192,9 +192,13 @@ type FairValueGap struct {
 	Time      time.Time       // time of the displacement bar
 }
 
-// OverlapsLevel returns true if the FVG zone contains the given price level.
+// OverlapsLevel returns true if the FVG zone is near the given price level.
+// Uses a tolerance of 50% of the FVG zone size to catch FVGs that are
+// adjacent to (not just containing) the ORB level.
 func (fvg FairValueGap) OverlapsLevel(level float64) bool {
-	return level >= fvg.Low && level <= fvg.High
+	zoneSize := fvg.High - fvg.Low
+	tolerance := zoneSize * 0.5
+	return level >= (fvg.Low-tolerance) && level <= (fvg.High+tolerance)
 }
 
 type RetestInfo struct {
@@ -692,10 +696,19 @@ func (t *ORBTracker) onAwaitingRetestFVG(sess *ORBSession, bar domain.MarketBar,
 	return setup, true
 }
 
-// detectFVG checks the last 3 bars for a Fair Value Gap pattern.
-// Bullish FVG: bar[0].High < bar[2].Low — impulsive gap up
-// Bearish FVG: bar[0].Low > bar[2].High — impulsive gap down
-// Returns nil if no FVG detected or if displacement bar volume is insufficient.
+// detectFVG checks the last 3 bars for a Fair Value Gap (imbalance zone).
+//
+// Classic FVG requires zero overlap (bar[0].high < bar[2].low for bullish).
+// On 5m bars this is too rare, so we use a relaxed "imbalance zone" approach:
+//   - The displacement (middle) bar must have high volume (RVOL >= threshold)
+//   - The displacement bar must be impulsive (body > 60% of range)
+//   - The zone is defined by the area where price moved so fast that
+//     the wicks of bars 0 and 2 barely overlap or don't overlap at all
+//
+// For bullish: zone = max(bar0.High, bar2.Low-tolerance) to bar1.High area
+// For bearish: zone = bar1.Low area to min(bar0.Low, bar2.High+tolerance)
+//
+// Returns nil if no qualifying imbalance detected.
 func detectFVG(bars [3]domain.MarketBar, barCount int, volSMA float64, minRVOL float64) *FairValueGap {
 	if barCount < 3 {
 		return nil
@@ -704,33 +717,71 @@ func detectFVG(bars [3]domain.MarketBar, barCount int, volSMA float64, minRVOL f
 
 	var rvol float64
 	if volSMA > 0 {
-		rvol = bar1.Volume / volSMA // displacement is the middle bar
+		rvol = bar1.Volume / volSMA
 	}
 
-	// Require displacement volume
+	// Require displacement volume on the middle bar
 	if minRVOL > 0 && rvol < minRVOL {
 		return nil
 	}
 
-	// Bullish FVG: gap between bar0's high and bar2's low
-	if bar0.High < bar2.Low {
-		return &FairValueGap{
-			Direction: domain.DirectionLong,
-			High:      bar2.Low,
-			Low:       bar0.High,
-			RVOL:      rvol,
-			Time:      bar1.Time,
+	// Require the displacement bar to be impulsive (body > 60% of range)
+	bar1Range := bar1.High - bar1.Low
+	if bar1Range <= 0 {
+		return nil
+	}
+	bar1Body := bar1.Close - bar1.Open
+	if bar1Body < 0 {
+		bar1Body = -bar1Body
+	}
+	if bar1Body/bar1Range < 0.60 {
+		return nil
+	}
+
+	// Bullish imbalance: displacement bar moves UP strongly
+	// Zone between bar0's high and bar2's low (may overlap slightly)
+	if bar1.Close > bar1.Open { // green displacement
+		gapSize := bar2.Low - bar0.High
+		// Allow small negative gap (up to 30% of displacement bar range overlap)
+		if gapSize > -0.30*bar1Range {
+			zoneHigh := bar2.Low
+			zoneLow := bar0.High
+			if zoneLow > zoneHigh {
+				// Slight overlap — use midpoint ± half the displacement
+				mid := (zoneLow + zoneHigh) / 2
+				halfSpread := bar1Range * 0.15
+				zoneHigh = mid + halfSpread
+				zoneLow = mid - halfSpread
+			}
+			return &FairValueGap{
+				Direction: domain.DirectionLong,
+				High:      zoneHigh,
+				Low:       zoneLow,
+				RVOL:      rvol,
+				Time:      bar1.Time,
+			}
 		}
 	}
 
-	// Bearish FVG: gap between bar2's high and bar0's low
-	if bar0.Low > bar2.High {
-		return &FairValueGap{
-			Direction: domain.DirectionShort,
-			High:      bar0.Low,
-			Low:       bar2.High,
-			RVOL:      rvol,
-			Time:      bar1.Time,
+	// Bearish imbalance: displacement bar moves DOWN strongly
+	if bar1.Close < bar1.Open { // red displacement
+		gapSize := bar0.Low - bar2.High
+		if gapSize > -0.30*bar1Range {
+			zoneHigh := bar0.Low
+			zoneLow := bar2.High
+			if zoneLow > zoneHigh {
+				mid := (zoneLow + zoneHigh) / 2
+				halfSpread := bar1Range * 0.15
+				zoneHigh = mid + halfSpread
+				zoneLow = mid - halfSpread
+			}
+			return &FairValueGap{
+				Direction: domain.DirectionShort,
+				High:      zoneHigh,
+				Low:       zoneLow,
+				RVOL:      rvol,
+				Time:      bar1.Time,
+			}
 		}
 	}
 
