@@ -184,7 +184,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 			seen[string(s)] = true
 		}
 		for _, s := range allCfgSyms {
-			if !seen[s] {
+			if !seen[s] && !strings.Contains(s, "/") { // skip crypto (no ORB on 24/7 markets)
 				backtestSymbols = append(backtestSymbols, domain.Symbol(s))
 				seen[s] = true
 			}
