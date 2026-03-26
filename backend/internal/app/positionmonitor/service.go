@@ -479,6 +479,7 @@ func (s *Service) processFill(fill fillMsg) {
 		return
 	}
 	pos.ExitRules = applyRiskModifierToExitRules(pos.InitialExitRules, fill.RiskModifier)
+	pos.Side = fill.Side // "BUY" for long, "SELL" for short
 
 	if fill.InstrumentType == domain.InstrumentTypeOption {
 		pos.InstrumentType = fill.InstrumentType

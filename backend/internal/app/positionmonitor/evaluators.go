@@ -2,6 +2,7 @@ package positionmonitor
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -258,14 +259,25 @@ func evaluateSDTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, curre
 		return false, ""
 	}
 
-	targetPrice, ok := ctx.SDBands[sdLevel]
+	upperBand, ok := ctx.SDBands[sdLevel]
 	if !ok {
 		return false, ""
 	}
 
-	if currentPrice >= targetPrice {
-		return true, fmt.Sprintf("sd_target: price %.4f >= +%.1f SD band %.4f (vwap=%.4f)",
-			currentPrice, sdLevel, targetPrice, ctx.VWAPValue)
+	// For shorts, the target is the lower band (VWAP - SD*level).
+	isShort := strings.EqualFold(pos.Side, "SELL")
+	if isShort {
+		// Mirror the upper band around VWAP to get the lower band
+		lowerBand := 2*ctx.VWAPValue - upperBand
+		if currentPrice <= lowerBand {
+			return true, fmt.Sprintf("sd_target: price %.4f <= -%.1f SD band %.4f (vwap=%.4f)",
+				currentPrice, sdLevel, lowerBand, ctx.VWAPValue)
+		}
+	} else {
+		if currentPrice >= upperBand {
+			return true, fmt.Sprintf("sd_target: price %.4f >= +%.1f SD band %.4f (vwap=%.4f)",
+				currentPrice, sdLevel, upperBand, ctx.VWAPValue)
+		}
 	}
 	return false, ""
 }

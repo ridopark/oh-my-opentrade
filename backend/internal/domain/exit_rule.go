@@ -106,7 +106,8 @@ type MonitoredPosition struct {
 	TenantID         string
 	EnvMode          EnvMode
 	Quantity         float64
-	ExitPending      bool // true when an exit intent has been emitted and is awaiting terminal outcome
+	Side             string // "BUY" (long) or "SELL" (short) — set from fill side
+	ExitPending      bool   // true when an exit intent has been emitted and is awaiting terminal outcome
 	ExitPendingAt    time.Time
 	ExitOrderID      string       // broker order ID of the active exit order (for cancel-and-chase)
 	ExitRetryCount   int          // number of exit attempts; used to escalate price aggressiveness
