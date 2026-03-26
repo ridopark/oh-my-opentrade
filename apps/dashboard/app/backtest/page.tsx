@@ -961,7 +961,7 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
             <th className="text-right px-4 py-1.5">P&L</th>
             <th className="text-left px-2 py-1.5">Exit Reason</th>
             <th className="text-left px-2 py-1.5 cursor-help" title="EMA-based regime from EMA21/EMA50 divergence (0.3% threshold) + RSI/Stochastic on the strategy timeframe. TREND = EMAs diverging >0.3%, BALANCE = EMAs converging, REVERSAL = RSI overbought/oversold with stochastic crossover.">EMA Regime</th>
-            <th className="text-left px-2 py-1.5 cursor-help" title="Market context at entry: SPY realized vol bucket (LOW_VOL <15 / NORMAL 15-25 / HIGH_VOL >25) + per-symbol daily ATR% + NR7 compression day + VWAP alignment (VWAP+ = correct side, VWAP- = against).">Context</th>
+            <th className="text-left px-2 py-1.5 cursor-help" title="Market context at entry. LOW_VOL/NORMAL/HIGH_VOL = SPY 20-day realized vol bucket (<15/15-25/>25). ATR% = this symbol's 14-day daily ATR as % of price — determines stop distance and position size (higher ATR = wider stop, smaller position). NR7 = prior day had narrowest range in 7 sessions (compression → expansion). VWAP+ = price on correct side of VWAP at entry, VWAP- = against institutional flow.">Context</th>
           </tr>
         </thead>
         <tbody>
