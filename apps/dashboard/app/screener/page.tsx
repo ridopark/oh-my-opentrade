@@ -28,36 +28,69 @@ export default function ScreenerPage() {
   const [customSymbols, setCustomSymbols] = useState("");
   const [screenDate, setScreenDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [resultDate, setResultDate] = useState("");
-  const [scanMode, setScanMode] = useState<"custom" | "universe">("custom");
+  const [scanMode, setScanMode] = useState<"custom" | "universe">("universe");
   const [results, setResults] = useState<ScreenerResult[]>([]);
   const [totalScanned, setTotalScanned] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState<{ pct: number; done: number; total: number; stage: string } | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("score");
   const [sortAsc, setSortAsc] = useState(false);
   const [minATR, setMinATR] = useState(0);
 
   const handleScreen = async () => {
     setLoading(true);
+    setProgress(null);
+    setResults([]);
     try {
       const symbols = customSymbols.trim()
         ? customSymbols.split(",").map((s) => s.trim()).filter(Boolean)
         : PRESETS[preset] ?? PRESETS["ORB Candidates"];
-      let url = "/api/screener?";
+
       if (scanMode === "universe") {
-        url += "mode=universe";
+        // SSE streaming for universe mode with progress updates
+        let url = "/api/screener?mode=universe&stream=1";
+        if (screenDate) url += `&date=${screenDate}`;
+        const res = await fetch(url);
+        if (!res.ok || !res.body) return;
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.type === "progress") {
+                setProgress({ pct: data.pct, done: data.done, total: data.total, stage: data.stage });
+              } else if (data.type === "done") {
+                setResults(data.results ?? []);
+                setResultDate(data.date ?? "");
+                setTotalScanned(data.total ?? 0);
+                setProgress(null);
+              }
+            } catch {}
+          }
+        }
       } else {
-        url += `symbols=${encodeURIComponent(symbols.join(","))}`;
-      }
-      if (screenDate) url += `&date=${screenDate}`;
-      const res = await fetch(url);
-      if (res.ok) {
-        const data = await res.json();
-        setResults(data?.results ?? []);
-        setResultDate(data?.date ?? "");
-        setTotalScanned(data?.total ?? 0);
+        // Direct JSON for custom mode
+        let url = `/api/screener?symbols=${encodeURIComponent(symbols.join(","))}`;
+        if (screenDate) url += `&date=${screenDate}`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const data = await res.json();
+          setResults(data?.results ?? []);
+          setResultDate(data?.date ?? "");
+          setTotalScanned(data?.total ?? 0);
+        }
       }
     } finally {
       setLoading(false);
+      setProgress(null);
     }
   };
 
@@ -283,10 +316,23 @@ export default function ScreenerPage() {
       )}
 
       {loading && (
-        <div className="flex items-center justify-center h-40 rounded-lg border border-border bg-card text-muted-foreground text-sm">
-          {scanMode === "universe"
-            ? "Scanning universe (~3,000 equities)... this may take 30-60 seconds"
-            : "Fetching daily bars and computing indicators..."}
+        <div className="flex flex-col items-center justify-center gap-3 h-40 rounded-lg border border-border bg-card text-muted-foreground text-sm">
+          {/* Spinner */}
+          <div className="w-6 h-6 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+          {progress ? (
+            <>
+              <div className="text-foreground font-medium">{progress.stage}</div>
+              <div className="w-64 h-2 bg-muted rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-emerald-500 transition-all duration-300"
+                  style={{ width: `${progress.pct}%` }}
+                />
+              </div>
+              <div className="text-[10px]">{progress.done} / {progress.total} symbols ({progress.pct}%)</div>
+            </>
+          ) : (
+            <div>{scanMode === "universe" ? "Preparing universe scan..." : "Fetching daily bars..."}</div>
+          )}
         </div>
       )}
 
