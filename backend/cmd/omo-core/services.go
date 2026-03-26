@@ -369,6 +369,9 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	orbID, _ := start.NewStrategyID("orb_break_retest")
 	if orbSpec, err := svc.specStore.GetLatest(context.Background(), orbID); err == nil {
 		svc.monitor.SetORBConfig(orbSpec.Params)
+		if len(orbSpec.Routing.Timeframes) > 0 {
+			svc.monitor.SetORBTimeframe(orbSpec.Routing.Timeframes[0])
+		}
 	}
 
 	log.Info().

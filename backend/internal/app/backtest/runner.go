@@ -285,6 +285,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		orbID, _ := start.NewStrategyID("orb_break_retest")
 		if orbSpec, loadErr := specStore.GetLatest(context.Background(), orbID); loadErr == nil {
 			monitorSvc.SetORBConfig(orbSpec.Params)
+			if len(orbSpec.Routing.Timeframes) > 0 {
+				monitorSvc.SetORBTimeframe(string(orbSpec.Routing.Timeframes[0]))
+			}
 		}
 	}
 
