@@ -513,6 +513,17 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 	}
+	// Add VIXY stream for intraday VIX level updates during replay.
+	if orbSelected && r.marketData != nil {
+		vixySym, _ := domain.NewSymbol("VIXY")
+		vixyBars, vixyErr := r.marketData.GetHistoricalBars(ctx, vixySym, replayTimeframe, r.cfg.From, r.cfg.To)
+		if vixyErr == nil && len(vixyBars) > 0 {
+			streams = append(streams, &barStream{symbol: vixySym, bars: vixyBars})
+			totalBars += len(vixyBars)
+			r.log.Info().Int("bars", len(vixyBars)).Msg("loaded VIXY bars for intraday VIX updates")
+		}
+	}
+
 	sort.Slice(streams, func(i, j int) bool { return streams[i].symbol.String() < streams[j].symbol.String() })
 
 	// --- Initialize aggregators for strategy timeframe ---

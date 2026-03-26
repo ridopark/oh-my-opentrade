@@ -126,6 +126,19 @@ func buildSymbolLists(cfg *config.Config) symbolLists {
 		symbols[i] = domain.Symbol(s)
 	}
 
+	// Add VIXY to the stream for real-time VIX level updates.
+	// It's not a trading symbol — just used by the monitor for regime gating.
+	hasVIXY := false
+	for _, s := range symbols {
+		if string(s) == "VIXY" {
+			hasVIXY = true
+			break
+		}
+	}
+	if !hasVIXY {
+		symbols = append(symbols, domain.Symbol("VIXY"))
+	}
+
 	return symbolLists{
 		equity:    equitySymbols,
 		crypto:    cryptoSymbols,
