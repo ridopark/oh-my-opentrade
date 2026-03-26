@@ -35,8 +35,10 @@ type TradeRecord struct {
 	FilledAt  time.Time `json:"filled_at"`
 	Strategy  string    `json:"strategy,omitempty"`
 	Rationale string    `json:"rationale,omitempty"` // exit reason (e.g. "exit_monitor:VOLATILITY_STOP:...")
-	Regime    string    `json:"regime,omitempty"`     // market regime at entry (e.g. "TREND", "BALANCE")
-	PnL       float64   `json:"pnl,omitempty"`
+	Regime        string `json:"regime,omitempty"`         // EMA regime: TREND / BALANCE / REVERSAL
+	VIXBucket     string `json:"vix_bucket,omitempty"`     // LOW_VOL / NORMAL / HIGH_VOL
+	MarketContext string `json:"market_context,omitempty"` // composite: e.g. "NORMAL | NR7 | VWAP+"
+	PnL           float64 `json:"pnl,omitempty"`
 }
 
 // Result holds the computed backtest metrics.
@@ -116,6 +118,8 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 	strategy, _ := payload["strategy"].(string)
 	rationale, _ := payload["rationale"].(string)
 	regime, _ := payload["regime"].(string)
+	vixBucket, _ := payload["vix_bucket"].(string)
+	marketContext, _ := payload["market_context"].(string)
 
 	if symbol == "" || quantity == 0 {
 		return nil
@@ -145,8 +149,10 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 		Price:     price,
 		FilledAt:  filledAt,
 		Strategy:  strategy,
-		Rationale: rationale,
-		Regime:    regime,
+		Rationale:     rationale,
+		Regime:        regime,
+		VIXBucket:     vixBucket,
+		MarketContext: marketContext,
 	}
 
 	// Use direction to classify entries vs exits.

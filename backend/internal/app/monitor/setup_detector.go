@@ -20,4 +20,9 @@ type SetupCondition struct {
 	RVOL       float64
 	Confidence float64
 	VIXAdjust  string // "widen_stops" when VIX is elevated but not skip-level
+
+	// Regime labels for downstream display
+	EMARegime    string // EMA-based regime: TREND / BALANCE / REVERSAL
+	VIXBucket    string // VIX bucket: LOW_VOL / NORMAL / HIGH_VOL
+	MarketContext string // composite: e.g. "NORMAL | NR7 | VWAP+"
 }
