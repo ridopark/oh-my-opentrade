@@ -570,11 +570,13 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 				Msg("setup blocked: VIX too high")
 			detected = false
 		}
-		// Regime gate: block ORB in disallowed regimes (uses 5m anchor if available).
+		// Regime gate: block ORB in disallowed regimes (uses strategy timeframe anchor if available).
 		if detected && len(s.orbAllowedRegimes) > 0 {
 			gateRegime := regime // fallback to 1m
-			if ar, ok := s.anchorRegimes[symStr+":5m"]; ok && ar.Type != "" {
-				gateRegime = ar
+			if s.orbTimeframe != "" && s.orbTimeframe != "1m" {
+				if ar, ok := s.anchorRegimes[symStr+":"+string(s.orbTimeframe)]; ok && ar.Type != "" {
+					gateRegime = ar
+				}
 			}
 			regimeStr := string(gateRegime.Type)
 			allowed := false
@@ -594,11 +596,12 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 			}
 		}
 		if detected {
-			// Use 5m anchor regime (more stable than 1m) if available, fall back to 1m.
-			anchorKey := symStr + ":5m"
+			// Use strategy-timeframe anchor regime (more stable than 1m) if available.
 			anchorRegime := regime // fallback to 1m
-			if ar, ok := s.anchorRegimes[anchorKey]; ok && ar.Type != "" {
-				anchorRegime = ar
+			if s.orbTimeframe != "" && s.orbTimeframe != "1m" {
+				if ar, ok := s.anchorRegimes[symStr+":"+string(s.orbTimeframe)]; ok && ar.Type != "" {
+					anchorRegime = ar
+				}
 			}
 			setup.Regime = anchorRegime
 			// Tag VIX adjustment for downstream (debate service)
