@@ -25,6 +25,17 @@ import {
 } from "@/lib/use-backtest";
 import { Button } from "@/components/ui/button";
 
+/** Extract a human-readable exit reason from the rationale string.
+ *  e.g. "exit_monitor:VOLATILITY_STOP:..." → "VOL_STOP" */
+function parseExitReason(rationale?: string): string | null {
+  if (!rationale) return null;
+  const m = rationale.match(/exit_monitor:([^:]+)/);
+  if (m) return m[1].replace(/_/g, " ");
+  if (rationale.includes("avwap_exit")) return "AVWAP EXIT";
+  if (rationale.includes("passthrough")) return "SIGNAL";
+  return null;
+}
+
 /** Format a UTC unix timestamp as ET string using Intl. */
 function formatET(utcSeconds: number, opts: Intl.DateTimeFormatOptions): string {
   return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour12: false, ...opts }).format(new Date(utcSeconds * 1000));
@@ -706,6 +717,7 @@ interface Position {
   pnlPct: number | null;
   entryTime: string;
   exitTime: string | null;
+  exitReason: string | null;
 }
 
 function getTradeDirection(t: BacktestTrade): string {
@@ -745,6 +757,7 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
           pnlPct,
           entryTime: entry.filled_at ?? "",
           exitTime: t.filled_at ?? "",
+          exitReason: parseExitReason((t as BacktestTrade & { rationale?: string }).rationale),
         });
       }
     }
@@ -765,6 +778,7 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
       pnlPct: null,
       entryTime: entry.filled_at ?? "",
       exitTime: null,
+      exitReason: null,
     });
   }
 
@@ -801,6 +815,7 @@ function TradeLogInline({ trades }: { trades: BacktestTrade[] }) {
             <th className="text-right px-2 py-1.5">Exit</th>
             <th className="text-left px-2 py-1.5">Exit Time</th>
             <th className="text-right px-4 py-1.5">P&L</th>
+            <th className="text-left px-2 py-1.5">Exit Reason</th>
           </tr>
         </thead>
         <tbody>
@@ -830,6 +845,9 @@ function TradeLogInline({ trades }: { trades: BacktestTrade[] }) {
                   ) : (
                     <span className="text-amber-400">open</span>
                   )}
+                </td>
+                <td className="px-2 py-1 text-[10px] text-muted-foreground">
+                  {p.exitReason ?? ""}
                 </td>
               </tr>
             );
