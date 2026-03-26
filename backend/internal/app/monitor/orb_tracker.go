@@ -265,7 +265,14 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 			return nil, false
 		}
 
-		required := cfg.WindowMinutes - cfg.AllowMissingBars
+		// Compute expected bar count from window minutes and bar duration.
+		// e.g. 15-min window with 5m bars → 3 expected bars.
+		barMinutes := barDurationMinutes(bar.Timeframe)
+		expectedBars := cfg.WindowMinutes / barMinutes
+		if expectedBars < 1 {
+			expectedBars = 1
+		}
+		required := expectedBars - cfg.AllowMissingBars
 		if required < 1 {
 			required = 1
 		}
@@ -430,6 +437,21 @@ func (t *ORBTracker) onRangeSetBar(sess *ORBSession, bar domain.MarketBar, snap 
 		return nil, false
 	}
 	return nil, false
+}
+
+func barDurationMinutes(tf domain.Timeframe) int {
+	switch string(tf) {
+	case "1m":
+		return 1
+	case "5m":
+		return 5
+	case "15m":
+		return 15
+	case "1h":
+		return 60
+	default:
+		return 1
+	}
 }
 
 func orbConfidence(sess *ORBSession, bar domain.MarketBar, cfg ORBConfig) float64 {
