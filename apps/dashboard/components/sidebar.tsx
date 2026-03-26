@@ -28,6 +28,7 @@ const navItems = [
   { href: "/execution", label: "Execution", icon: ListOrdered },
   { href: "/performance", label: "Performance", icon: TrendingUp },
   { href: "/backtest", label: "Backtest", icon: Activity },
+  { href: "/screener", label: "Screener", icon: Activity },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   { href: "/strategies", label: "Strategies", icon: Layers },
   { href: "/settings", label: "Settings", icon: Settings },
