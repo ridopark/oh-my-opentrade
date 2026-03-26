@@ -290,24 +290,22 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 
-		// Fetch VIX level for regime gating. Try DB first, fall back to API.
+		// Compute realized volatility from SPY daily bars as VIX proxy.
+		// Uses 20-day realized vol (annualized) — no external VIX data needed.
 		{
-			vixSym, _ := domain.NewSymbol("VIXY")
-			vixFrom := r.cfg.From.Add(-7 * 24 * time.Hour)
-			vixBars, _ := repo.GetMarketBars(ctx, vixSym, "1d", vixFrom, r.cfg.From)
-			if len(vixBars) == 0 && r.marketData != nil {
-				apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, vixSym, "1d", vixFrom, r.cfg.From)
-				if apiErr == nil {
-					vixBars = apiBars
-				} else {
-					r.log.Warn().Err(apiErr).Msg("could not fetch VIXY bars for VIX gate — VIX gate disabled")
+			spySym, _ := domain.NewSymbol("SPY")
+			rvFrom := r.cfg.From.Add(-60 * 24 * time.Hour) // 60 days to have enough for 20-day window
+			spyDaily, _ := repo.GetMarketBars(ctx, spySym, "1d", rvFrom, r.cfg.From)
+			if len(spyDaily) == 0 && r.marketData != nil {
+				apiBars, _ := r.marketData.GetHistoricalBars(ctx, spySym, "1d", rvFrom, r.cfg.From)
+				if len(apiBars) > 0 {
+					spyDaily = apiBars
 				}
 			}
-			if len(vixBars) > 0 {
-				lastVIXY := vixBars[len(vixBars)-1].Close
-				approxVIX := lastVIXY * 0.75
-				monitorSvc.SetVIXLevel(approxVIX)
-				r.log.Info().Float64("vixy_close", lastVIXY).Float64("approx_vix", approxVIX).Msg("VIX level set from VIXY proxy")
+			if len(spyDaily) > 21 {
+				rv := monitor.ComputeRealizedVol(spyDaily, 20)
+				monitorSvc.SetVIXLevel(rv)
+				r.log.Info().Float64("realized_vol", rv).Int("daily_bars", len(spyDaily)).Msg("VIX level set from SPY realized volatility")
 			}
 		}
 	}
@@ -516,26 +514,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 	}
-	// Add VIXY stream for intraday VIX level updates during replay.
-	// Try DB first, fall back to API, persist for next time.
-	if orbSelected {
-		vixySym, _ := domain.NewSymbol("VIXY")
-		vixyBars, _ := repo.GetMarketBars(ctx, vixySym, replayTimeframe, r.cfg.From, r.cfg.To)
-		if len(vixyBars) == 0 && r.marketData != nil {
-			apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, vixySym, replayTimeframe, r.cfg.From, r.cfg.To)
-			if apiErr == nil && len(apiBars) > 0 {
-				vixyBars = apiBars
-				if saved, saveErr := repo.SaveMarketBars(ctx, apiBars); saveErr == nil {
-					r.log.Info().Int("saved", saved).Msg("persisted VIXY bars to DB")
-				}
-			}
-		}
-		if len(vixyBars) > 0 {
-			streams = append(streams, &barStream{symbol: vixySym, bars: vixyBars})
-			totalBars += len(vixyBars)
-			r.log.Info().Int("bars", len(vixyBars)).Msg("loaded VIXY bars for intraday VIX updates")
-		}
-	}
+
 
 	sort.Slice(streams, func(i, j int) bool { return streams[i].symbol.String() < streams[j].symbol.String() })
 

@@ -374,18 +374,17 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		}
 	}
 
-	// Fetch VIX level for ORB regime gating (best-effort).
+	// Compute realized volatility from SPY daily bars as VIX proxy.
 	if infra.broker != nil {
-		vixSym, _ := domain.NewSymbol("VIXY")
-		vixFrom := time.Now().Add(-7 * 24 * time.Hour)
-		vixBars, vixErr := infra.broker.GetHistoricalBars(context.Background(), vixSym, "1d", vixFrom, time.Now())
-		if vixErr == nil && len(vixBars) > 0 {
-			lastVIXY := vixBars[len(vixBars)-1].Close
-			approxVIX := lastVIXY * 0.75
-			svc.monitor.SetVIXLevel(approxVIX)
-			log.Info().Float64("vixy_close", lastVIXY).Float64("approx_vix", approxVIX).Msg("VIX level set from VIXY proxy")
+		spySym, _ := domain.NewSymbol("SPY")
+		rvFrom := time.Now().Add(-60 * 24 * time.Hour)
+		spyDaily, spyErr := infra.broker.GetHistoricalBars(context.Background(), spySym, "1d", rvFrom, time.Now())
+		if spyErr == nil && len(spyDaily) > 21 {
+			rv := monitor.ComputeRealizedVol(spyDaily, 20)
+			svc.monitor.SetVIXLevel(rv)
+			log.Info().Float64("realized_vol", rv).Int("daily_bars", len(spyDaily)).Msg("VIX level set from SPY realized volatility")
 		} else {
-			log.Warn().Err(vixErr).Msg("could not fetch VIXY for VIX gate — disabled")
+			log.Warn().Err(spyErr).Msg("could not compute realized vol for VIX gate — disabled")
 		}
 	}
 

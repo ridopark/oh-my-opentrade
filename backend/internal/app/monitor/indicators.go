@@ -399,3 +399,42 @@ func ComputeDailyATR(bars []domain.MarketBar, period int) float64 {
 	}
 	return sum / float64(period)
 }
+
+// ComputeRealizedVol computes annualized realized volatility from daily bars
+// using close-to-close log returns. Returns a VIX-like number (e.g. 15 = low, 25 = high).
+// Uses the last `period` bars (typically 20 trading days = 1 month).
+func ComputeRealizedVol(bars []domain.MarketBar, period int) float64 {
+	n := len(bars)
+	if n < period+1 || period <= 0 {
+		return 0
+	}
+
+	// Compute log returns
+	returns := make([]float64, period)
+	for i := 0; i < period; i++ {
+		idx := n - period + i
+		prev := bars[idx-1].Close
+		if prev <= 0 {
+			continue
+		}
+		returns[i] = math.Log(bars[idx].Close / prev)
+	}
+
+	// Mean
+	sum := 0.0
+	for _, r := range returns {
+		sum += r
+	}
+	mean := sum / float64(period)
+
+	// Variance
+	varSum := 0.0
+	for _, r := range returns {
+		diff := r - mean
+		varSum += diff * diff
+	}
+	variance := varSum / float64(period-1)
+
+	// Annualize: sqrt(252) * daily std dev * 100 (to get VIX-like percentage)
+	return math.Sqrt(variance) * math.Sqrt(252) * 100
+}
