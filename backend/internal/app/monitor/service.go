@@ -38,6 +38,8 @@ type Service struct {
 	lastSnaps        map[string]domain.IndicatorSnapshot
 	liveBars         map[string]int
 	aggregators      map[string]*domain.BarAggregator
+	orbAggregators   map[string]*domain.BarAggregator // per-symbol 5m aggregators for ORB tracker
+	orbTimeframe     domain.Timeframe                 // timeframe for ORB bar delivery (default "5m")
 	anchorRegimes    map[string]domain.MarketRegime
 	lastHTFSnaps     map[string]domain.IndicatorSnapshot
 	htfStatic        map[string]domain.HTFData
@@ -116,6 +118,8 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 		lastSnaps:      make(map[string]domain.IndicatorSnapshot),
 		liveBars:       make(map[string]int),
 		aggregators:    make(map[string]*domain.BarAggregator),
+		orbAggregators: make(map[string]*domain.BarAggregator),
+		orbTimeframe:   "5m",
 		anchorRegimes:  make(map[string]domain.MarketRegime),
 		log:            log,
 	}
@@ -134,6 +138,19 @@ func (s *Service) SetORBConfig(params map[string]any) {
 		Float64("min_confidence", s.orbCfg.MinConfidence).
 		Int("orb_window_minutes", s.orbCfg.WindowMinutes).
 		Msg("ORB config set from DNA parameters")
+}
+
+// SetORBTimeframe configures the bar timeframe for the ORB tracker.
+// When set to "5m" (the default), the ORB tracker receives aggregated 5m bars
+// so entries align to 5-minute boundaries. Call before Start().
+func (s *Service) SetORBTimeframe(tf string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if tf == "" {
+		tf = "5m"
+	}
+	s.orbTimeframe = domain.Timeframe(tf)
+	s.log.Info().Str("orb_timeframe", tf).Msg("ORB timeframe set")
 }
 
 // SetDNAGate installs a gate checker that blocks SetupDetected events when the
@@ -275,6 +292,13 @@ func (s *Service) InitAggregators(symbols []domain.Symbol, sessionOpen time.Time
 			}
 			s.aggregators[key] = agg
 		}
+		// ORB aggregator for the configured timeframe
+		if s.orbTimeframe != "" && s.orbTimeframe != "1m" {
+			orbAgg, err := domain.NewBarAggregator(sym, s.orbTimeframe, sessionOpen)
+			if err == nil {
+				s.orbAggregators[symStr] = orbAgg
+			}
+		}
 	}
 }
 
@@ -282,6 +306,9 @@ func (s *Service) ResetAggregators(sessionOpen time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, agg := range s.aggregators {
+		agg.Reset(sessionOpen)
+	}
+	for _, agg := range s.orbAggregators {
 		agg.Reset(sessionOpen)
 	}
 }
@@ -461,7 +488,7 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	}
 
 	if s.liveBars[symStr] < settlingBars {
-		s.orbTracker.OnBar(bar, snap, s.orbCfg, true)
+		s.feedORBBar(bar, snap, true)
 		l.Debug().Msg(fmt.Sprintf("settling: %d/%d bars, suppressing setup detection", s.liveBars[symStr], settlingBars))
 		s.lastSnaps[symStr] = snap
 		s.mu.Unlock()
@@ -480,7 +507,7 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	_ = hasLast
 	_ = lastSnap
 
-	setup, detected := s.orbTracker.OnBar(bar, snap, s.orbCfg, false)
+	setup, detected := s.feedORBBar(bar, snap, false)
 	if detected && setup != nil {
 		// DNA approval gate: suppress setup if DNA is not approved.
 		if s.dnaGate != nil {
@@ -536,6 +563,33 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	return nil
 }
 
+// feedORBBar routes a 1m bar through the ORB aggregator (if configured) so the
+// ORB tracker receives completed bars at the strategy timeframe (e.g. 5m).
+// When orbTimeframe is "1m" or empty, bars pass through directly.
+// Must be called with s.mu held.
+func (s *Service) feedORBBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, replay bool) (*SetupCondition, bool) {
+	symStr := bar.Symbol.String()
+
+	// No aggregation needed for 1m timeframe
+	if s.orbTimeframe == "" || s.orbTimeframe == "1m" {
+		return s.orbTracker.OnBar(bar, snap, s.orbCfg, replay)
+	}
+
+	agg, ok := s.orbAggregators[symStr]
+	if !ok {
+		// No aggregator yet (InitAggregators not called) — pass through directly
+		return s.orbTracker.OnBar(bar, snap, s.orbCfg, replay)
+	}
+
+	closed, emitted := agg.Push(bar)
+	if !emitted {
+		return nil, false
+	}
+
+	// Use the completed aggregated bar with the latest 1m indicator snapshot
+	return s.orbTracker.OnBar(closed, snap, s.orbCfg, replay)
+}
+
 func (s *Service) buildHTFMap(sym string, currentClose float64) map[domain.Timeframe]domain.HTFData {
 	htf := make(map[domain.Timeframe]domain.HTFData)
 
@@ -569,7 +623,7 @@ func (s *Service) WarmUpORB(bars []domain.MarketBar) {
 	defer s.mu.Unlock()
 	for _, bar := range bars {
 		snap := s.calculator.Update(bar)
-		s.orbTracker.OnBar(bar, snap, s.orbCfg, true)
+		s.feedORBBar(bar, snap, true)
 	}
 }
 

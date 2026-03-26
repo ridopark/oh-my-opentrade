@@ -201,6 +201,9 @@ func main() {
 	orbID, _ := start.NewStrategyID("orb_break_retest")
 	if orbSpec, err := specStore.GetLatest(context.Background(), orbID); err == nil {
 		monitorSvc.SetORBConfig(orbSpec.Params)
+		if len(orbSpec.Routing.Timeframes) > 0 {
+			monitorSvc.SetORBTimeframe(string(orbSpec.Routing.Timeframes[0]))
+		}
 	}
 
 	var (
