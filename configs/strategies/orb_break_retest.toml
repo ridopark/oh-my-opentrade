@@ -66,16 +66,24 @@ size_tight_mult = 0.70
 size_wide_mult = 1.50
 
 [[exit_rules]]
-type = "VOLATILITY_STOP"
+type = "STEP_STOP"
 [exit_rules.params]
-atr_multiplier = 5.0
-min_hold_bars = 8
+min_hold_bars = 6
+bar_minutes = 5
 
 [[exit_rules]]
 type = "SD_TARGET"
 [exit_rules.params]
-sd_level = 3.0
-min_hold_bars = 10
+sd_level = 2.0
+min_hold_bars = 6
+bar_minutes = 5
+
+[[exit_rules]]
+type = "STAGNATION_EXIT"
+[exit_rules.params]
+minutes = 45
+sd_threshold = 1.0
+profit_gate_pct = 0.003
 
 [[exit_rules]]
 type = "EOD_FLATTEN"
@@ -85,7 +93,7 @@ minutes_before_close = 5
 [[exit_rules]]
 type = "MAX_LOSS"
 [exit_rules.params]
-pct = 0.025
+pct = 0.015
 
 [options]
 enabled = true
