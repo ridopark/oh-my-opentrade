@@ -135,8 +135,21 @@ func (h *ScreenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// resolveUniverse fetches tradeable equities from the universe provider,
-// gets snapshots, and applies basic Pass0-like filters (price > $5, ADV > 500K).
+// snapshotScore computes a rough score from snapshot data only (no bar fetch needed).
+// Uses RVOL and gap% as proxies for ORB fitness.
+type snapshotScore struct {
+	Symbol string
+	Score  float64
+	RVOL   float64
+	GapPct float64
+	Price  float64
+}
+
+// resolveUniverse uses a two-phase approach:
+//
+//	Phase 1 (fast): fetch snapshots for all tradeable equities, apply Pass0 filter,
+//	              score survivors using RVOL + gap% from snapshot data, take top 100.
+//	Phase 2 (slow): only fetch daily bars for those top 100 to compute ATR/NR7/EMA200.
 func (h *ScreenerHandler) resolveUniverse(ctx context.Context, asOf time.Time) []string {
 	if h.universe == nil || h.snapshots == nil {
 		h.log.Warn().Msg("screener: universe or snapshot provider not available, using defaults")
@@ -163,8 +176,8 @@ func (h *ScreenerHandler) resolveUniverse(ctx context.Context, asOf time.Time) [
 		return h.defaultSymbols
 	}
 
-	// Pass0-like filter: price > $5, pre-market volume > 50K or ADV > 500K
-	var passed []string
+	// Phase 1: Pass0 filter + snapshot-based scoring
+	var scored []snapshotScore
 	for _, sym := range allSymbols {
 		snap, ok := snaps[sym]
 		if !ok {
@@ -179,15 +192,46 @@ func (h *ScreenerHandler) resolveUniverse(ctx context.Context, asOf time.Time) [
 		if price < 5.0 {
 			continue
 		}
-		// Require some volume activity
 		if snap.PrevDailyVolume != nil && *snap.PrevDailyVolume < 500000 {
 			continue
 		}
-		passed = append(passed, sym)
+
+		// Compute rough score from snapshot data
+		var rvol, gapPct float64
+		if snap.PreMarketVolume != nil && snap.PrevDailyVolume != nil && *snap.PrevDailyVolume > 0 {
+			rvol = float64(*snap.PreMarketVolume) / float64(*snap.PrevDailyVolume)
+		}
+		if snap.PrevClose != nil && *snap.PrevClose > 0 && price > 0 {
+			gapPct = math.Abs((price - *snap.PrevClose) / *snap.PrevClose * 100)
+		}
+
+		// Rough score: RVOL is the strongest signal for intraday activity
+		score := rvol*10 + gapPct*5
+		scored = append(scored, snapshotScore{Symbol: sym, Score: score, RVOL: rvol, GapPct: gapPct, Price: price})
 	}
 
-	h.log.Info().Int("pass0_survivors", len(passed)).Msg("screener: pass0 filter applied")
-	return passed
+	h.log.Info().Int("pass0_survivors", len(scored)).Msg("screener: pass0 + snapshot scoring done")
+
+	// Sort by score descending and take top 100 for Phase 2
+	sort.Slice(scored, func(i, j int) bool { return scored[i].Score > scored[j].Score })
+
+	topN := 100
+	if len(scored) < topN {
+		topN = len(scored)
+	}
+	top := scored[:topN]
+
+	symbols := make([]string, topN)
+	for i, s := range top {
+		symbols[i] = s.Symbol
+	}
+
+	h.log.Info().
+		Int("phase1_candidates", len(scored)).
+		Int("phase2_top_n", topN).
+		Msg("screener: phase 1 complete, proceeding to phase 2 (daily bar enrichment)")
+
+	return symbols
 }
 
 func (h *ScreenerHandler) getSnapshotsBatched(ctx context.Context, symbols []string, asOf time.Time) (map[string]ports.Snapshot, error) {
@@ -287,7 +331,7 @@ func (h *ScreenerHandler) serveSSE(ctx context.Context, w http.ResponseWriter, s
 // computeAllStreaming fetches daily bars and sends each result to the channel as it's computed.
 func (h *ScreenerHandler) computeAllStreaming(ctx context.Context, symbols []string, asOf time.Time, out chan<- ScreenerResult) {
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8)
+	sem := make(chan struct{}, 20) // higher concurrency — Phase 2 has only ~100 symbols
 	from := asOf.Add(-400 * 24 * time.Hour)
 
 	for _, sym := range symbols {
@@ -364,7 +408,7 @@ func (h *ScreenerHandler) computeAll(ctx context.Context, symbols []string, asOf
 		mu      sync.Mutex
 		wg      sync.WaitGroup
 		results []ScreenerResult
-		sem     = make(chan struct{}, 8) // bounded concurrency
+		sem     = make(chan struct{}, 20) // bounded concurrency
 	)
 
 	from := asOf.Add(-400 * 24 * time.Hour)
