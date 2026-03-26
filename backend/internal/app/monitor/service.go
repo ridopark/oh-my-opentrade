@@ -595,6 +595,38 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 			if s.vixWidenAbove > 0 && s.vixLevel > s.vixWidenAbove {
 				setup.VIXAdjust = "widen_stops"
 			}
+
+			// Populate regime labels for display
+			setup.EMARegime = string(regime.Type)
+
+			// VIX bucket
+			switch {
+			case s.vixLevel <= 0:
+				setup.VIXBucket = "N/A"
+			case s.vixLevel < 15:
+				setup.VIXBucket = "LOW_VOL"
+			case s.vixLevel <= 25:
+				setup.VIXBucket = "NORMAL"
+			default:
+				setup.VIXBucket = "HIGH_VOL"
+			}
+
+			// Composite market context: VIX bucket + NR7 + VWAP alignment
+			ctx := setup.VIXBucket
+			if htf, ok := snap.HTF[domain.Timeframe("1d")]; ok && htf.NR7 {
+				ctx += " | NR7"
+			}
+			if snap.VWAP > 0 {
+				if setup.Direction == domain.DirectionLong && bar.Close > snap.VWAP {
+					ctx += " | VWAP+"
+				} else if setup.Direction == domain.DirectionShort && bar.Close < snap.VWAP {
+					ctx += " | VWAP+"
+				} else {
+					ctx += " | VWAP-"
+				}
+			}
+			setup.MarketContext = ctx
+
 			l.Info().
 				Str("direction", string(setup.Direction)).
 				Str("trigger", setup.Trigger).
@@ -603,6 +635,9 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 				Float64("rvol", setup.RVOL).
 				Float64("confidence", setup.Confidence).
 				Float64("vix", s.vixLevel).
+				Str("ema_regime", setup.EMARegime).
+				Str("vix_bucket", setup.VIXBucket).
+				Str("market_context", setup.MarketContext).
 				Msg("ORB setup detected")
 			setupEv, err := domain.NewEvent(
 				domain.EventSetupDetected,

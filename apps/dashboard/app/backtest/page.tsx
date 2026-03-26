@@ -815,6 +815,8 @@ interface Position {
   exitTime: string | null;
   exitReason: string | null;
   regime: string | null;
+  vixBucket: string | null;
+  marketContext: string | null;
 }
 
 function groupPositions(trades: BacktestTrade[]): Position[] {
@@ -855,6 +857,8 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
           exitTime: t.filled_at ?? "",
           exitReason: parseExitReason(t.rationale),
           regime: entry.regime ?? null,
+          vixBucket: entry.vix_bucket ?? null,
+          marketContext: entry.market_context ?? null,
         });
       }
     }
@@ -876,6 +880,8 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
       exitTime: null,
       exitReason: null,
       regime: entry.regime ?? null,
+      vixBucket: entry.vix_bucket ?? null,
+      marketContext: entry.market_context ?? null,
     });
   }
 
@@ -931,7 +937,9 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
             <th className="text-left px-2 py-1.5">Exit Time</th>
             <th className="text-right px-4 py-1.5">P&L</th>
             <th className="text-left px-2 py-1.5">Exit Reason</th>
-            <th className="text-left px-2 py-1.5">Regime</th>
+            <th className="text-left px-2 py-1.5">EMA Regime</th>
+            <th className="text-left px-2 py-1.5">VIX</th>
+            <th className="text-left px-2 py-1.5">Context</th>
           </tr>
         </thead>
         <tbody>
@@ -983,17 +991,28 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
                 <td className="px-2 py-1 text-[10px] text-muted-foreground">
                   {p.exitReason ?? ""}
                 </td>
-                <td className="px-2 py-1 text-[10px] text-muted-foreground">
+                <td className="px-2 py-1 text-[10px]">
                   {p.regime ? (
                     <span className={`inline-block px-1 py-0.5 rounded text-[9px] font-medium ${
                       p.regime === "TREND" ? "bg-blue-500/20 text-blue-400" :
                       p.regime === "BALANCE" ? "bg-amber-500/20 text-amber-400" :
                       p.regime === "REVERSAL" ? "bg-purple-500/20 text-purple-400" :
                       "bg-gray-500/20 text-gray-400"
-                    }`}>
-                      {p.regime}
-                    </span>
+                    }`}>{p.regime}</span>
                   ) : ""}
+                </td>
+                <td className="px-2 py-1 text-[10px]">
+                  {p.vixBucket ? (
+                    <span className={`inline-block px-1 py-0.5 rounded text-[9px] font-medium ${
+                      p.vixBucket === "LOW_VOL" ? "bg-emerald-500/20 text-emerald-400" :
+                      p.vixBucket === "NORMAL" ? "bg-amber-500/20 text-amber-400" :
+                      p.vixBucket === "HIGH_VOL" ? "bg-red-500/20 text-red-400" :
+                      "bg-gray-500/20 text-gray-400"
+                    }`}>{p.vixBucket}</span>
+                  ) : ""}
+                </td>
+                <td className="px-2 py-1 text-[10px] text-muted-foreground whitespace-nowrap">
+                  {p.marketContext ?? ""}
                 </td>
               </tr>
             );

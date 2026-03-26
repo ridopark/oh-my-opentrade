@@ -825,6 +825,8 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 		"rationale":       intent.Rationale,
 		"risk_modifier":   intent.Meta["risk_modifier"],
 		"regime":          intent.Meta["regime"],
+		"vix_bucket":      intent.Meta["vix_bucket"],
+		"market_context":  intent.Meta["market_context"],
 	}
 	if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
 		fillPayload["instrument_type"] = string(domain.InstrumentTypeOption)
@@ -1030,6 +1032,8 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 		"asset_class":     string(po.intent.AssetClass),
 		"rationale":       po.intent.Rationale,
 		"regime":          po.intent.Meta["regime"],
+		"vix_bucket":      po.intent.Meta["vix_bucket"],
+		"market_context":  po.intent.Meta["market_context"],
 	}
 	if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {
 		fillPayload["instrument_type"] = string(domain.InstrumentTypeOption)

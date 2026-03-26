@@ -47,6 +47,8 @@ export interface BacktestTrade {
   strategy?: string;
   rationale?: string;
   regime?: string;
+  vix_bucket?: string;
+  market_context?: string;
   pnl?: number;
 }
 

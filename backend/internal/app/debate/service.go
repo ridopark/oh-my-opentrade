@@ -221,9 +221,15 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 		"judge": decision.JudgeReasoning,
 	}
 	// Copy trading hours from strategy config so the TradingWindowGuard can enforce them.
-	// Attach regime type to intent meta for downstream (collector, trade log).
-	if setup.Regime.Type != "" {
-		intent.Meta["regime"] = string(setup.Regime.Type)
+	// Attach regime labels to intent meta for downstream (collector, trade log).
+	if setup.EMARegime != "" {
+		intent.Meta["regime"] = setup.EMARegime
+	}
+	if setup.VIXBucket != "" {
+		intent.Meta["vix_bucket"] = setup.VIXBucket
+	}
+	if setup.MarketContext != "" {
+		intent.Meta["market_context"] = setup.MarketContext
 	}
 
 	if s.specStore != nil && setup.Trigger != "" {
