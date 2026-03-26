@@ -1029,6 +1029,7 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 		"strategy":        po.intent.Strategy,
 		"asset_class":     string(po.intent.AssetClass),
 		"rationale":       po.intent.Rationale,
+		"regime":          po.intent.Meta["regime"],
 	}
 	if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {
 		fillPayload["instrument_type"] = string(domain.InstrumentTypeOption)
