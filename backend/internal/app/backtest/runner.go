@@ -770,12 +770,24 @@ func (r *Runner) Run(ctx context.Context) error {
 		}()
 		r.log.Info().Int("trading_days", len(tradingDays)).Int("top_n", topN).Msg("pre-computing daily screener")
 
-		screener := NewDailyScreener(r.marketData, r.log)
+		screener := NewDailyScreener(repo, r.marketData, r.log)
 		dailyScreenerMap = screener.PrecomputeAll(ctx, tradingDays, r.cfg.Symbols, topN, func(day, total int, date string) {
 			r.emitter.EmitSetup(fmt.Sprintf("Screening day %d/%d (%s)…", day+1, total, date))
 		})
 
-		r.log.Info().Int("days_screened", len(dailyScreenerMap)).Msg("daily screener pre-computation complete")
+		// Log sample of screener results
+		totalSymsAcrossDays := 0
+		for date, syms := range dailyScreenerMap {
+			totalSymsAcrossDays += len(syms)
+			if len(syms) > 0 {
+				symList := make([]string, 0, len(syms))
+				for s := range syms {
+					symList = append(symList, s)
+				}
+				r.log.Debug().Str("date", date).Strs("symbols", symList).Msg("daily screener picks")
+			}
+		}
+		r.log.Info().Int("days_screened", len(dailyScreenerMap)).Int("total_symbol_days", totalSymsAcrossDays).Msg("daily screener pre-computation complete")
 	}
 
 	r.emitter.EmitSetup("Replaying bars…")
@@ -855,10 +867,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			popBar(s)
 
-			// Daily screener filter: skip bars for symbols not in today's screened set
+			// Daily screener filter: skip bars for symbols not in today's screened set.
+			// If no screener data for this day, allow all symbols through (fail-open).
 			if dailyScreenerMap != nil {
 				dateKey := currentSessionDate.Format("2006-01-02")
-				if activeSyms, ok := dailyScreenerMap[dateKey]; ok {
+				if activeSyms, ok := dailyScreenerMap[dateKey]; ok && len(activeSyms) > 0 {
 					if !activeSyms[bar.Symbol.String()] {
 						continue
 					}

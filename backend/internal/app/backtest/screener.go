@@ -24,13 +24,14 @@ type ScoredSymbol struct {
 
 // DailyScreener pre-computes the top-N symbols for each trading day.
 type DailyScreener struct {
+	repo   ports.RepositoryPort
 	market ports.MarketDataPort
 	log    zerolog.Logger
 }
 
-// NewDailyScreener creates a DailyScreener.
-func NewDailyScreener(market ports.MarketDataPort, log zerolog.Logger) *DailyScreener {
-	return &DailyScreener{market: market, log: log}
+// NewDailyScreener creates a DailyScreener. repo is optional (nil = API only).
+func NewDailyScreener(repo ports.RepositoryPort, market ports.MarketDataPort, log zerolog.Logger) *DailyScreener {
+	return &DailyScreener{repo: repo, market: market, log: log}
 }
 
 // ComputeForDate scores all candidate symbols as of the given date and returns
@@ -52,8 +53,18 @@ func (ds *DailyScreener) ComputeForDate(ctx context.Context, asOf time.Time, can
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			bars, err := ds.market.GetHistoricalBars(ctx, sym, "1d", from, asOf)
-			if err != nil || len(bars) < 21 {
+			// Try DB first, fall back to API
+			var bars []domain.MarketBar
+			if ds.repo != nil {
+				bars, _ = ds.repo.GetMarketBars(ctx, sym, "1d", from, asOf)
+			}
+			if len(bars) < 21 && ds.market != nil {
+				apiBars, apiErr := ds.market.GetHistoricalBars(ctx, sym, "1d", from, asOf)
+				if apiErr == nil && len(apiBars) > len(bars) {
+					bars = apiBars
+				}
+			}
+			if len(bars) < 21 {
 				return
 			}
 
