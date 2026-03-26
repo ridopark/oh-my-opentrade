@@ -152,7 +152,7 @@ export default function BacktestPage() {
         onCancel={bt.cancel}
       />
 
-      <div className={`mt-2 ${symbolsInData.length === 0 ? "flex-1 flex flex-col" : ""}`} style={symbolsInData.length > 0 ? { minHeight: symbolsInData.length <= 2 ? 300 : `${Math.ceil(symbolsInData.length / (symbolsInData.length <= 4 ? 2 : symbolsInData.length <= 6 ? 3 : 4)) * 280}px` } : undefined}>
+      <div className={`mt-2 ${symbolsInData.length === 0 ? "flex-1 flex flex-col" : ""}`}>
         <ChartGrid ref={chartGridRef} symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} onTradeClick={(trade) => {
           setBottomTab("trades");
           setTimeout(() => tradeLogRef.current?.scrollToTrade(trade), 50);
@@ -509,9 +509,9 @@ const ChartGrid = forwardRef<ChartGridHandle, {
 
   return (
     <div
-      className="grid gap-2"
+      className="grid gap-2 w-full"
       style={{
-        gridTemplateColumns: `repeat(${cols}, 1fr)`,
+        gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
         gridAutoRows: "260px",
       }}
     >
