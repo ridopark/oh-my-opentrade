@@ -53,6 +53,16 @@ func (h *ScreenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
+	// Resolve date — defaults to now, accepts ?date=2026-03-10
+	asOf := time.Now()
+	if dateStr := r.URL.Query().Get("date"); dateStr != "" {
+		loc, _ := time.LoadLocation("America/New_York")
+		if parsed, err := time.ParseInLocation("2006-01-02", dateStr, loc); err == nil {
+			// Set to market close (4 PM ET) so daily bars up to that date are included
+			asOf = time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 16, 0, 0, 0, loc)
+		}
+	}
+
 	// Resolve symbols
 	symbols := h.defaultSymbols
 	if q := r.URL.Query().Get("symbols"); q != "" {
@@ -80,8 +90,7 @@ func (h *ScreenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sem     = make(chan struct{}, 5)
 	)
 
-	now := time.Now()
-	from := now.Add(-400 * 24 * time.Hour)
+	from := asOf.Add(-400 * 24 * time.Hour)
 
 	for _, sym := range symbols {
 		wg.Add(1)
@@ -91,7 +100,7 @@ func (h *ScreenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			defer func() { <-sem }() // release
 
 			s, _ := domain.NewSymbol(sym)
-			bars, err := h.fetcher.GetHistoricalBars(ctx, s, "1d", from, now)
+			bars, err := h.fetcher.GetHistoricalBars(ctx, s, "1d", from, asOf)
 			if err != nil || len(bars) < 21 {
 				h.log.Debug().Str("symbol", sym).Err(err).Msg("screener: skipping symbol")
 				return
@@ -160,5 +169,8 @@ func (h *ScreenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(results)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"date":    asOf.Format("2006-01-02"),
+		"results": results,
+	})
 }
