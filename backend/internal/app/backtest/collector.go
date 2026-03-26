@@ -29,11 +29,12 @@ type Config struct {
 type TradeRecord struct {
 	Symbol    string    `json:"symbol"`
 	Side      string    `json:"side"`
-	Direction string    `json:"direction,omitempty"` // "LONG" or "SHORT" — the position direction
+	Direction string    `json:"direction,omitempty"` // "LONG", "SHORT", or "CLOSE"
 	Quantity  float64   `json:"quantity"`
 	Price     float64   `json:"price"`
 	FilledAt  time.Time `json:"filled_at"`
 	Strategy  string    `json:"strategy,omitempty"`
+	Rationale string    `json:"rationale,omitempty"` // exit reason (e.g. "exit_monitor:VOLATILITY_STOP:...")
 	PnL       float64   `json:"pnl,omitempty"`
 }
 
@@ -112,6 +113,7 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 	price, _ := payload["price"].(float64)
 	filledAt, _ := payload["filled_at"].(time.Time)
 	strategy, _ := payload["strategy"].(string)
+	rationale, _ := payload["rationale"].(string)
 
 	if symbol == "" || quantity == 0 {
 		return nil
@@ -139,6 +141,7 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 		Price:     price,
 		FilledAt:  filledAt,
 		Strategy:  strategy,
+		Rationale: rationale,
 	}
 
 	// Use direction to classify entries vs exits.
