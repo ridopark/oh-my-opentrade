@@ -142,6 +142,111 @@ export default function ScreenerPage() {
         </button>
       </div>
 
+      {/* Legend */}
+      <details className="rounded-lg border border-border bg-card text-xs">
+        <summary className="px-3 py-2 cursor-pointer text-muted-foreground hover:text-foreground select-none font-medium">
+          Legend & Scoring Guide
+        </summary>
+        <div className="px-3 pb-3 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-muted-foreground">
+          <div>
+            <div className="font-medium text-foreground mb-1">ATR% (Average True Range)</div>
+            <p>How much the stock moves per day as a percentage of price. Higher ATR% = bigger breakout potential, but wider stops needed.</p>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/30 text-emerald-300">5%+</span>
+              <span className="text-[10px]">High volatility — strong ORB candidate</span>
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400">2-5%</span>
+              <span className="text-[10px]">Good volatility — solid ORB candidate</span>
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400">0.8-2%</span>
+              <span className="text-[10px]">Moderate — may work for ORB</span>
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-500/20 text-red-400">&lt;0.8%</span>
+              <span className="text-[10px]">Low volatility — poor ORB candidate</span>
+            </div>
+          </div>
+
+          <div>
+            <div className="font-medium text-foreground mb-1">NR7 (Narrow Range 7)</div>
+            <p>{"YES means yesterday's range was the narrowest in 7 sessions. Volatility compression typically precedes expansion — a breakout is more likely the next day."}</p>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/30 text-emerald-300">YES</span>
+              <span className="text-[10px]">Compression day — high breakout probability</span>
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-muted-foreground/50 text-[10px]">-</span>
+              <span className="text-[10px] ml-1">Normal range — no compression signal</span>
+            </div>
+          </div>
+
+          <div>
+            <div className="font-medium text-foreground mb-1">EMA200 Bias</div>
+            <p>Price position relative to the 200-day EMA. Indicates the long-term trend direction.</p>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/20 text-emerald-400">BULLISH</span>
+              <span className="text-[10px]">Price above EMA200 — favor long breakouts</span>
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-500/20 text-red-400">BEARISH</span>
+              <span className="text-[10px]">Price below EMA200 — favor short breakouts</span>
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-500/20 text-gray-400">NEUTRAL</span>
+              <span className="text-[10px]">Price near EMA200 — no directional edge</span>
+            </div>
+          </div>
+
+          <div>
+            <div className="font-medium text-foreground mb-1">Realized Vol (RVol)</div>
+            <p>20-day annualized volatility from daily returns. Like a per-stock VIX — measures the current volatility environment.</p>
+            <div className="mt-1 text-[10px]">
+              <div>&gt;50% — Extremely volatile (crisis-level)</div>
+              <div>30-50% — High volatility</div>
+              <div>15-30% — Normal</div>
+              <div>&lt;15% — Low volatility (calm market)</div>
+            </div>
+          </div>
+
+          <div>
+            <div className="font-medium text-foreground mb-1">Composite Score</div>
+            <p>ORB fitness score combining multiple signals:</p>
+            <div className="mt-1 text-[10px] font-mono">
+              <div>Score = ATR% x 10</div>
+              <div>{"      + NR7 bonus (+20 if YES)"}</div>
+              <div>{"      + Trend bonus (+5 if BULLISH or BEARISH)"}</div>
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/30 text-emerald-300">80+</span>
+              <span className="text-[10px]">Strong ORB candidate</span>
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400">40-80</span>
+              <span className="text-[10px]">Moderate candidate</span>
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold bg-gray-500/20 text-gray-400">&lt;40</span>
+              <span className="text-[10px]">Weak — low breakout potential</span>
+            </div>
+          </div>
+
+          <div>
+            <div className="font-medium text-foreground mb-1">How to Use</div>
+            <p>Run the screener pre-market to pick the best ORB symbols for the day:</p>
+            <ol className="mt-1 text-[10px] list-decimal list-inside space-y-0.5">
+              <li>Sort by Score (default) to find top candidates</li>
+              <li>Look for NR7 = YES symbols (compression breakout)</li>
+              <li>Check Bias aligns with your trade direction</li>
+              <li>Filter ATR% &gt; 2% for the strongest movers</li>
+              <li>Click a symbol to view its chart</li>
+              <li>Use historical dates to validate screener picks against past ORB results</li>
+            </ol>
+          </div>
+        </div>
+      </details>
+
       {/* Results */}
       {results.length === 0 && !loading && (
         <div className="flex items-center justify-center h-40 rounded-lg border border-border bg-card text-muted-foreground text-sm">
