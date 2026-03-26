@@ -26,7 +26,7 @@ type SortKey = keyof ScreenerResult;
 export default function ScreenerPage() {
   const [preset, setPreset] = useState("ORB Candidates");
   const [customSymbols, setCustomSymbols] = useState("");
-  const [screenDate, setScreenDate] = useState("");
+  const [screenDate, setScreenDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [resultDate, setResultDate] = useState("");
   const [results, setResults] = useState<ScreenerResult[]>([]);
   const [loading, setLoading] = useState(false);
