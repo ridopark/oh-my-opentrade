@@ -211,7 +211,7 @@ func (h *ScreenerHandler) getSnapshotsBatched(ctx context.Context, symbols []str
 	return result, nil
 }
 
-// serveSSE streams progress events during a universe scan.
+// serveSSE streams each symbol result as it's computed during a universe scan.
 func (h *ScreenerHandler) serveSSE(ctx context.Context, w http.ResponseWriter, symbols []string, asOf time.Time) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -228,42 +228,133 @@ func (h *ScreenerHandler) serveSSE(ctx context.Context, w http.ResponseWriter, s
 	var processed int64
 	var mu sync.Mutex
 
-	sendProgress := func(done int, stage string) {
-		pct := 0
-		if total > 0 {
-			pct = done * 100 / total
-		}
-		data, _ := json.Marshal(map[string]any{"type": "progress", "done": done, "total": total, "pct": pct, "stage": stage})
+	send := func(v any) {
+		data, _ := json.Marshal(v)
 		fmt.Fprintf(w, "data: %s\n\n", data)
 		flusher.Flush()
 	}
 
-	sendProgress(0, "Fetching daily bars...")
+	send(map[string]any{"type": "progress", "done": 0, "total": total, "pct": 0, "stage": "Starting scan..."})
 
-	onProgress := func() {
-		mu.Lock()
-		processed++
-		p := int(processed)
-		mu.Unlock()
-		sendProgress(p, "Computing indicators...")
+	// Channel to collect results streamed from goroutines
+	resultCh := make(chan ScreenerResult, 8)
+
+	// Emit each result as it arrives
+	var allResults []ScreenerResult
+	done := make(chan struct{})
+	go func() {
+		for r := range resultCh {
+			allResults = append(allResults, r)
+			mu.Lock()
+			processed++
+			p := int(processed)
+			mu.Unlock()
+			pct := 0
+			if total > 0 {
+				pct = p * 100 / total
+			}
+			send(map[string]any{
+				"type":   "result",
+				"done":   p,
+				"total":  total,
+				"pct":    pct,
+				"result": r,
+			})
+		}
+		close(done)
+	}()
+
+	// Compute all symbols concurrently, sending results to channel
+	h.computeAllStreaming(ctx, symbols, asOf, resultCh)
+
+	<-done // wait for all results to be emitted
+
+	// Send final sorted top 50
+	sort.Slice(allResults, func(i, j int) bool { return allResults[i].Score > allResults[j].Score })
+	if len(allResults) > 50 {
+		allResults = allResults[:50]
 	}
 
-	results := h.computeAll(ctx, symbols, asOf, onProgress)
-
-	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
-	if len(results) > 50 {
-		results = results[:50]
-	}
-
-	final, _ := json.Marshal(map[string]any{
+	send(map[string]any{
 		"type":    "done",
 		"date":    asOf.Format("2006-01-02"),
 		"mode":    "universe",
 		"total":   total,
-		"results": results,
+		"results": allResults,
 	})
-	fmt.Fprintf(w, "data: %s\n\n", final)
-	flusher.Flush()
+}
+
+// computeAllStreaming fetches daily bars and sends each result to the channel as it's computed.
+func (h *ScreenerHandler) computeAllStreaming(ctx context.Context, symbols []string, asOf time.Time, out chan<- ScreenerResult) {
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
+	from := asOf.Add(-400 * 24 * time.Hour)
+
+	for _, sym := range symbols {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(sym string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			s, _ := domain.NewSymbol(sym)
+			bars, err := h.fetcher.GetHistoricalBars(ctx, s, "1d", from, asOf)
+			if err != nil || len(bars) < 21 {
+				return
+			}
+
+			lastClose := bars[len(bars)-1].Close
+			if lastClose <= 0 {
+				return
+			}
+
+			atr := monitor.ComputeDailyATR(bars, 14)
+			atrPct := 0.0
+			if lastClose > 0 {
+				atrPct = atr / lastClose * 100
+			}
+			nr7 := monitor.ComputeNR7(bars)
+
+			closes := make([]float64, len(bars))
+			for i, b := range bars {
+				closes[i] = b.Close
+			}
+			ema200 := monitor.ComputeStaticEMA(closes, 200)
+			bias := "NEUTRAL"
+			if ema200 > 0 {
+				if lastClose > ema200*1.005 {
+					bias = "BULLISH"
+				} else if lastClose < ema200*0.995 {
+					bias = "BEARISH"
+				}
+			}
+			realVol := monitor.ComputeRealizedVol(bars, 20)
+
+			score := atrPct * 10
+			if nr7 {
+				score += 20
+			}
+			if bias == "BULLISH" || bias == "BEARISH" {
+				score += 5
+			}
+
+			out <- ScreenerResult{
+				Symbol:      sym,
+				Price:       math.Round(lastClose*100) / 100,
+				ATR:         math.Round(atr*100) / 100,
+				ATRPct:      math.Round(atrPct*10) / 10,
+				NR7:         nr7,
+				Bias:        bias,
+				EMA200:      math.Round(ema200*100) / 100,
+				RealizedVol: math.Round(realVol*10) / 10,
+				Score:       math.Round(score*10) / 10,
+				PassATR:     atrPct >= 0.8,
+			}
+		}(sym)
+	}
+
+	wg.Wait()
+	close(out)
 }
 
 // computeAll fetches daily bars and computes indicators for all symbols concurrently.
