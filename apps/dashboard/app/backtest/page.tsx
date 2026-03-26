@@ -426,31 +426,45 @@ const ChartGrid = forwardRef<ChartGridHandle, {
 }, ref) {
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
   const chartRefs = useRef<Map<string, IChartApi>>(new Map());
+  const pendingScroll = useRef<{ symbol: string; utcSeconds: number } | null>(null);
+
+  const applyScroll = useCallback((chart: IChartApi, utcSeconds: number) => {
+    const ts = chart.timeScale();
+    const halfWindow = 30 * 60;
+    ts.setVisibleRange({
+      from: (utcSeconds - halfWindow) as Time,
+      to: (utcSeconds + halfWindow) as Time,
+    });
+  }, []);
 
   const registerChart = useCallback((symbol: string, chart: IChartApi | null) => {
-    if (chart) chartRefs.current.set(symbol, chart);
-    else chartRefs.current.delete(symbol);
-  }, []);
+    if (chart) {
+      chartRefs.current.set(symbol, chart);
+      // Apply pending scroll if this is the chart we were waiting for
+      if (pendingScroll.current && pendingScroll.current.symbol === symbol) {
+        const { utcSeconds } = pendingScroll.current;
+        pendingScroll.current = null;
+        // Small delay to let chart render data first
+        setTimeout(() => applyScroll(chart, utcSeconds), 100);
+      }
+    } else {
+      chartRefs.current.delete(symbol);
+    }
+  }, [applyScroll]);
 
   useImperativeHandle(ref, () => ({
     scrollToTime(symbol: string, utcSeconds: number) {
+      // If already expanded with this chart, scroll directly
       const chart = chartRefs.current.get(symbol);
-      if (!chart) return;
-      // Also expand to this symbol if in grid mode
+      if (chart && expandedSymbol === symbol) {
+        applyScroll(chart, utcSeconds);
+        return;
+      }
+      // Store pending scroll and expand — the new chart will pick it up via registerChart
+      pendingScroll.current = { symbol, utcSeconds };
       setExpandedSymbol(symbol);
-      // Use setTimeout so the expanded chart renders first
-      setTimeout(() => {
-        const c = chartRefs.current.get(symbol);
-        if (!c) return;
-        const ts = c.timeScale();
-        const halfWindow = 30 * 60; // 30 minutes each side
-        ts.setVisibleRange({
-          from: (utcSeconds - halfWindow) as Time,
-          to: (utcSeconds + halfWindow) as Time,
-        });
-      }, 50);
     },
-  }), []);
+  }), [expandedSymbol, applyScroll]);
 
   if (symbols.length === 0) {
     return (
