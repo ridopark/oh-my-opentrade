@@ -19,7 +19,7 @@ priority = 100
 conflict_policy = "priority_wins"
 exclusive_per_symbol = true
 watchlist_mode = "replace"
-asset_classes = ["EQUITY"]
+asset_classes = ["EQUITY", "OPTIONS"]
 allowed_directions = ["LONG", "SHORT"]
 
 [screening]
@@ -57,7 +57,7 @@ allowed_hours_tz = "America/New_York"
 [regime_filter]
 enabled = true
 allowed_regimes = ["TREND"]
-min_atr_pct = 0.8
+min_atr_pct = 0.6
 
 [hooks]
 signals = { engine = "builtin", name = "orb_break_retest" }
@@ -79,11 +79,6 @@ min_hold_bars = 6
 bar_minutes = 5
 
 [[exit_rules]]
-type = "TRAILING_STOP"
-[exit_rules.params]
-pct = 0.015
-
-[[exit_rules]]
 type = "SD_TARGET"
 [exit_rules.params]
 sd_level = 2.0
@@ -93,9 +88,9 @@ bar_minutes = 5
 [[exit_rules]]
 type = "STAGNATION_EXIT"
 [exit_rules.params]
-minutes = 45
-sd_threshold = 1.0
-profit_gate_pct = 0.003
+minutes = 75
+sd_threshold = 0.5
+profit_gate_pct = 0.005
 
 [[exit_rules]]
 type = "EOD_FLATTEN"
