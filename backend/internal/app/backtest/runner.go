@@ -768,10 +768,20 @@ func (r *Runner) Run(ctx context.Context) error {
 			sort.Slice(days, func(i, j int) bool { return days[i].Before(days[j]) })
 			return days
 		}()
-		r.log.Info().Int("trading_days", len(tradingDays)).Int("top_n", topN).Msg("pre-computing daily screener")
+		// Build a larger candidate pool from the strategy's routing config.
+		// The user's symbol list is the candidate pool; topN picks the best each day.
+		// If candidate pool <= topN, warn that screener won't filter anything.
+		candidates := r.cfg.Symbols
+		if len(candidates) <= topN {
+			r.log.Warn().
+				Int("candidates", len(candidates)).
+				Int("top_n", topN).
+				Msg("daily screener: candidate pool <= top_n, screener will not filter. Add more symbols to the candidate pool.")
+		}
+		r.log.Info().Int("trading_days", len(tradingDays)).Int("top_n", topN).Int("candidates", len(candidates)).Msg("pre-computing daily screener")
 
 		screener := NewDailyScreener(repo, r.marketData, r.log)
-		dailyScreenerMap = screener.PrecomputeAll(ctx, tradingDays, r.cfg.Symbols, topN, func(day, total int, date string) {
+		dailyScreenerMap = screener.PrecomputeAll(ctx, tradingDays, candidates, topN, func(day, total int, date string) {
 			r.emitter.EmitSetup(fmt.Sprintf("Screening day %d/%d (%s)…", day+1, total, date))
 		})
 
