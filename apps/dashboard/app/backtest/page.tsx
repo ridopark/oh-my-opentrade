@@ -711,6 +711,15 @@ function MiniChart({
       orbOverlayRef.current.setRanges(ranges);
     }
 
+    // Force chart to match container size — fixes squeeze on initial load
+    // when grid layout changes during streaming.
+    if (containerRef.current && chartRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        chartRef.current.applyOptions({ width: rect.width, height: rect.height });
+      }
+    }
+
     const ts = chartRef.current?.timeScale();
     if (!ts) return;
 
