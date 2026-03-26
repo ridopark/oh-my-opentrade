@@ -70,7 +70,7 @@ export default function ScreenerPage() {
 
   const SortHeader = ({ label, field, title }: { label: string; field: SortKey; title?: string }) => (
     <th
-      className="px-3 py-2 text-left cursor-pointer hover:text-foreground transition-colors select-none"
+      className={`px-3 py-2 text-left cursor-pointer hover:text-foreground transition-colors select-none ${title ? "cursor-help" : ""}`}
       onClick={() => handleSort(field)}
       title={title}
     >
@@ -162,15 +162,15 @@ export default function ScreenerPage() {
               <thead className="bg-card border-b border-border">
                 <tr className="text-[10px] text-muted-foreground uppercase">
                   <th className="px-3 py-2 text-left">#</th>
-                  <SortHeader label="Symbol" field="symbol" />
-                  <SortHeader label="Price" field="price" />
-                  <SortHeader label="ATR" field="atr" title="14-day Average True Range in dollars" />
-                  <SortHeader label="ATR%" field="atr_pct" title="Daily ATR as % of price — higher = more volatile, better for ORB breakouts" />
-                  <SortHeader label="NR7" field="nr7" title="Narrow Range 7: prior day had narrowest range in 7 sessions — compression precedes expansion" />
-                  <SortHeader label="Bias" field="bias" title="Daily EMA200 trend direction: BULLISH (price > EMA200), BEARISH (price < EMA200)" />
-                  <SortHeader label="EMA200" field="ema200" />
-                  <SortHeader label="RVol" field="realized_vol" title="20-day annualized realized volatility — VIX-like measure for this stock" />
-                  <SortHeader label="Score" field="score" title="Composite ORB fitness score: ATR%*10 + NR7 bonus(+20) + trending bonus(+5)" />
+                  <SortHeader label="Symbol" field="symbol" title="Ticker symbol — click to open Trading Signals chart" />
+                  <SortHeader label="Price" field="price" title="Latest daily closing price" />
+                  <SortHeader label="ATR" field="atr" title="14-day Average True Range in dollars — how much the stock moves per day on average" />
+                  <SortHeader label="ATR%" field="atr_pct" title="Daily ATR as % of price — higher = more volatile, better for ORB. Determines stop distance and position size. >2% = strong mover, <1% = slow" />
+                  <SortHeader label="NR7" field="nr7" title="Narrow Range 7 — YES means prior day had the narrowest range in 7 sessions. Volatility compression precedes expansion, making breakouts more likely" />
+                  <SortHeader label="Bias" field="bias" title="Daily EMA200 trend: BULLISH = price above 200-day EMA (favor longs), BEARISH = below (favor shorts), NEUTRAL = near the line" />
+                  <SortHeader label="EMA200" field="ema200" title="200-day Exponential Moving Average — the long-term trend anchor. Price above = uptrend, below = downtrend" />
+                  <SortHeader label="RVol" field="realized_vol" title="20-day annualized realized volatility — like a per-stock VIX. >30% = high vol environment, <15% = calm" />
+                  <SortHeader label="Score" field="score" title="Composite ORB fitness: ATR%*10 + NR7 bonus(+20) + trending bonus(+5). Higher = better ORB candidate. >80 = strong, 40-80 = moderate, <40 = weak" />
                 </tr>
               </thead>
               <tbody>
