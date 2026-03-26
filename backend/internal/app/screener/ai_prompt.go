@@ -7,13 +7,16 @@ import (
 )
 
 type CandidateData struct {
-	AnonID    string
-	Price     float64
-	PrevClose float64
-	GapPct    float64
-	PMVol     int64
-	AvgVol    int64
-	RVOL      float64
+	AnonID     string
+	Price      float64
+	PrevClose  float64
+	GapPct     float64
+	PMVol      int64
+	AvgVol     int64
+	RVOL       float64
+	ATRPct     float64 // daily ATR as % of price
+	NR7        bool    // narrowest range in 7 sessions
+	EMA200Bias string  // "BULLISH", "BEARISH", "NEUTRAL", ""
 }
 
 func BuildAIScreenerPrompt(strategyDesc string, candidates []CandidateData, asOf time.Time) string {
@@ -27,12 +30,21 @@ func BuildAIScreenerPrompt(strategyDesc string, candidates []CandidateData, asOf
 	fmt.Fprintf(&sb, "Strategy Description:\n%s\n\n", strategyDesc)
 
 	sb.WriteString("Candidates:\n")
-	sb.WriteString("ID            | Price      | PrevClose  | Gap%%      | PM_Vol     | AvgVol     | RVOL\n")
-	sb.WriteString("------------- | ---------- | ---------- | --------- | ---------- | ---------- | ------\n")
+	sb.WriteString("ID            | Price      | PrevClose  | Gap%%      | PM_Vol     | AvgVol     | RVOL   | ATR%%   | NR7 | Bias\n")
+	sb.WriteString("------------- | ---------- | ---------- | --------- | ---------- | ---------- | ------ | ------ | --- | --------\n")
 	for _, c := range candidates {
-		fmt.Fprintf(&sb, "%-13s | %10.2f | %10.2f | %+8.2f%% | %10s | %10s | %5.1fx\n",
+		nr7Str := "-"
+		if c.NR7 {
+			nr7Str = "Y"
+		}
+		bias := c.EMA200Bias
+		if bias == "" {
+			bias = "-"
+		}
+		fmt.Fprintf(&sb, "%-13s | %10.2f | %10.2f | %+8.2f%% | %10s | %10s | %5.1fx | %5.1f%% | %3s | %s\n",
 			c.AnonID, c.Price, c.PrevClose, c.GapPct,
-			fmtVol(c.PMVol), fmtVol(c.AvgVol), c.RVOL)
+			fmtVol(c.PMVol), fmtVol(c.AvgVol), c.RVOL,
+			c.ATRPct, nr7Str, bias)
 	}
 
 	sb.WriteString("\nRespond ONLY with a JSON array. Each element: {\"id\": \"ASSET_X\", \"score\": 0-5, \"rationale\": \"brief reason\"}.\n")

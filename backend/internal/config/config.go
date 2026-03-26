@@ -70,6 +70,7 @@ type AIScreenerConfig struct {
 	Pass0MinVolume       int64    `yaml:"pass0_min_volume"`
 	Pass0MinADV          int64    `yaml:"pass0_min_adv"`
 	Pass0MinGapPct       float64  `yaml:"pass0_min_gap_pct"`
+	Pass0MinATRPct       float64  `yaml:"pass0_min_atr_pct"` // skip symbols with daily ATR% below this (0 = disabled)
 	MaxCandidatesPerCall int      `yaml:"max_candidates_per_call"`
 	TopNPerStrategy      int      `yaml:"top_n_per_strategy"`
 }
