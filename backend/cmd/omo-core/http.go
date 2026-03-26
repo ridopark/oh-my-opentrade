@@ -95,7 +95,7 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	imux.Mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 
 	imux.Handle("/bars", omhttp.NewBarsHandler(infra.repo, infra.broker, httpLog))
-	imux.Handle("/screener", omhttp.NewScreenerHandler(infra.broker, cfg.Symbols.AllSymbols(), httpLog))
+	imux.Handle("/screener", omhttp.NewScreenerHandler(infra.broker, infra.broker, infra.broker, cfg.Symbols.AllSymbols(), httpLog))
 	imux.Handle("/events", sseHandler)
 
 	var backtestMarketData ports.MarketDataPort
