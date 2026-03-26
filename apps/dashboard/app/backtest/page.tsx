@@ -783,7 +783,7 @@ function TradeLogInline({ trades }: { trades: BacktestTrade[] }) {
 
   const fmtTime = (s: string | null) => {
     if (!s) return "—";
-    return new Date(s).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+    return new Date(s).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
   };
 
   return (
