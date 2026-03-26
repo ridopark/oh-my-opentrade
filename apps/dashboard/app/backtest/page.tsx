@@ -152,7 +152,7 @@ export default function BacktestPage() {
         onCancel={bt.cancel}
       />
 
-      <div className="mt-2" style={{ minHeight: symbolsInData.length <= 2 ? 300 : `${Math.ceil(symbolsInData.length / (symbolsInData.length <= 4 ? 2 : symbolsInData.length <= 6 ? 3 : 4)) * 280}px` }}>
+      <div className={`mt-2 ${symbolsInData.length === 0 ? "flex-1" : ""}`} style={symbolsInData.length > 0 ? { minHeight: symbolsInData.length <= 2 ? 300 : `${Math.ceil(symbolsInData.length / (symbolsInData.length <= 4 ? 2 : symbolsInData.length <= 6 ? 3 : 4)) * 280}px` } : undefined}>
         <ChartGrid ref={chartGridRef} symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} onTradeClick={(trade) => {
           setBottomTab("trades");
           setTimeout(() => tradeLogRef.current?.scrollToTrade(trade), 50);
