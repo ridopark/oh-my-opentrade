@@ -322,29 +322,28 @@ export default function ScreenerPage() {
         </div>
       )}
 
-      {loading && (
-        <div className="flex flex-col items-center justify-center gap-3 h-40 rounded-lg border border-border bg-card text-muted-foreground text-sm">
-          {/* Spinner */}
-          <div className="w-6 h-6 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
-          {progress ? (
-            <>
-              <div className="text-foreground font-medium">{progress.stage}</div>
-              <div className="w-64 h-2 bg-muted rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-emerald-500 transition-all duration-300"
-                  style={{ width: `${progress.pct}%` }}
-                />
-              </div>
-              <div className="text-[10px]">{progress.done} / {progress.total} symbols ({progress.pct}%)</div>
-            </>
-          ) : (
-            <div>{scanMode === "universe" ? "Preparing universe scan..." : "Fetching daily bars..."}</div>
+      {(sorted.length > 0 || loading) && (
+        <div className="relative rounded-lg border border-border bg-card overflow-hidden">
+          {/* Progress overlay */}
+          {loading && (
+            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-background/70 backdrop-blur-[2px]">
+              <div className="w-6 h-6 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+              {progress ? (
+                <>
+                  <div className="text-foreground font-medium text-xs">{progress.stage}</div>
+                  <div className="w-48 h-1.5 bg-muted rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-emerald-500 transition-all duration-300"
+                      style={{ width: `${progress.pct}%` }}
+                    />
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">{progress.done} / {progress.total} ({progress.pct}%)</div>
+                </>
+              ) : (
+                <div className="text-xs text-muted-foreground">{scanMode === "universe" ? "Preparing universe scan..." : "Fetching daily bars..."}</div>
+              )}
+            </div>
           )}
-        </div>
-      )}
-
-      {sorted.length > 0 && (
-        <div className="rounded-lg border border-border bg-card overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-xs font-mono">
               <thead className="bg-card border-b border-border">
