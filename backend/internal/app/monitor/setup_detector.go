@@ -19,4 +19,5 @@ type SetupCondition struct {
 	ORBLow     float64
 	RVOL       float64
 	Confidence float64
+	VIXAdjust  string // "widen_stops" when VIX is elevated but not skip-level
 }

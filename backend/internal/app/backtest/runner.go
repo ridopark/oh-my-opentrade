@@ -289,6 +289,24 @@ func (r *Runner) Run(ctx context.Context) error {
 				monitorSvc.SetORBTimeframe(string(orbSpec.Routing.Timeframes[0]))
 			}
 		}
+
+		// Fetch VIX level for regime gating. Try VIXY ETF as proxy.
+		if r.marketData != nil {
+			vixSym, _ := domain.NewSymbol("VIXY")
+			vixFrom := r.cfg.From.Add(-7 * 24 * time.Hour)
+			vixBars, vixErr := r.marketData.GetHistoricalBars(ctx, vixSym, "1d", vixFrom, r.cfg.From)
+			if vixErr == nil && len(vixBars) > 0 {
+				lastVIXY := vixBars[len(vixBars)-1].Close
+				// VIXY tracks VIX futures, not VIX directly. Approximate VIX level
+				// from VIXY price using rough mapping: VIXY ~$20 ≈ VIX ~15, VIXY ~$30 ≈ VIX ~25.
+				// This is a rough heuristic; for production use the actual VIX index.
+				approxVIX := lastVIXY * 0.75 // rough scaling factor
+				monitorSvc.SetVIXLevel(approxVIX)
+				r.log.Info().Float64("vixy_close", lastVIXY).Float64("approx_vix", approxVIX).Msg("VIX level set from VIXY proxy")
+			} else {
+				r.log.Warn().Err(vixErr).Msg("could not fetch VIXY bars for VIX gate — VIX gate disabled")
+			}
+		}
 	}
 
 	sim := simbroker.New(simbroker.Config{

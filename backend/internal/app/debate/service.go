@@ -168,6 +168,12 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 		}
 	}
 
+	// Widen stops when VIX is elevated (per research: 1.5x in VIX 15-25 zone)
+	if setup.VIXAdjust == "widen_stops" {
+		stopBPS = int64(float64(stopBPS) * 1.5)
+		l.Info().Int64("widened_stop_bps", stopBPS).Msg("VIX elevated — widening stops")
+	}
+
 	stopPct := float64(stopBPS) / 10000.0
 	stopLoss = limitPrice * (1 - stopPct)
 	if decision.Direction == domain.DirectionShort {

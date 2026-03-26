@@ -47,6 +47,9 @@ type Service struct {
 	log              zerolog.Logger
 	dnaGate          DNAGateChecker
 	strategyKey      string
+	vixLevel         float64 // latest VIX close; 0 = unknown (allow all)
+	vixSkipAbove     float64 // skip ORB when VIX > this (0 = disabled)
+	vixWidenAbove    float64 // widen stops when VIX > this (0 = disabled)
 }
 
 // GetLastSnapshot returns the most recently cached IndicatorSnapshot for the given symbol.
@@ -133,10 +136,14 @@ func (s *Service) SetORBConfig(params map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.orbCfg = NewORBConfigFromDNA(params)
+	s.vixSkipAbove = s.orbCfg.VIXSkipAbove
+	s.vixWidenAbove = s.orbCfg.VIXWidenAbove
 	s.log.Info().
 		Float64("min_rvol", s.orbCfg.MinRVOL).
 		Float64("min_confidence", s.orbCfg.MinConfidence).
 		Int("orb_window_minutes", s.orbCfg.WindowMinutes).
+		Float64("vix_skip_above", s.vixSkipAbove).
+		Float64("vix_widen_above", s.vixWidenAbove).
 		Msg("ORB config set from DNA parameters")
 }
 
@@ -151,6 +158,24 @@ func (s *Service) SetORBTimeframe(tf string) {
 	}
 	s.orbTimeframe = domain.Timeframe(tf)
 	s.log.Info().Str("orb_timeframe", tf).Msg("ORB timeframe set")
+}
+
+// SetVIXLevel sets the current VIX level for ORB regime gating.
+func (s *Service) SetVIXLevel(level float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.vixLevel = level
+	s.log.Info().Float64("vix", level).Msg("VIX level set")
+}
+
+// SetVIXThresholds configures VIX-based gating. skipAbove: skip ORB entirely.
+// widenAbove: signal debate service to widen stops.
+func (s *Service) SetVIXThresholds(skipAbove, widenAbove float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.vixSkipAbove = skipAbove
+	s.vixWidenAbove = widenAbove
+	s.log.Info().Float64("skip_above", skipAbove).Float64("widen_above", widenAbove).Msg("VIX thresholds set")
 }
 
 // SetDNAGate installs a gate checker that blocks SetupDetected events when the
@@ -523,8 +548,21 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 				detected = false
 			}
 		}
+		// VIX gate: skip ORB when VIX is too high.
+		if detected && s.vixSkipAbove > 0 && s.vixLevel > s.vixSkipAbove {
+			l.Warn().
+				Float64("vix", s.vixLevel).
+				Float64("threshold", s.vixSkipAbove).
+				Str("direction", string(setup.Direction)).
+				Msg("setup blocked: VIX too high")
+			detected = false
+		}
 		if detected {
 			setup.Regime = regime
+			// Tag VIX adjustment for downstream (debate service)
+			if s.vixWidenAbove > 0 && s.vixLevel > s.vixWidenAbove {
+				setup.VIXAdjust = "widen_stops"
+			}
 			l.Info().
 				Str("direction", string(setup.Direction)).
 				Str("trigger", setup.Trigger).
@@ -532,6 +570,7 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 				Float64("orb_low", setup.ORBLow).
 				Float64("rvol", setup.RVOL).
 				Float64("confidence", setup.Confidence).
+				Float64("vix", s.vixLevel).
 				Msg("ORB setup detected")
 			setupEv, err := domain.NewEvent(
 				domain.EventSetupDetected,
