@@ -39,8 +39,9 @@ type ORBConfig struct {
 	VWAPFilterEnabled    bool    // require VWAP alignment at breakout and retest
 	MaxRangeATRMult      float64 // skip if OR range > this × ATR (0 = disabled)
 	MinRangePctBps       int     // skip if OR range < this bps of midpoint (0 = disabled)
-	VIXSkipAbove         float64 // skip ORB entirely when VIX > this (0 = disabled)
-	VIXWidenAbove        float64 // widen stops when VIX > this (0 = disabled)
+	VIXSkipAbove         float64  // skip ORB entirely when VIX > this (0 = disabled)
+	VIXWidenAbove        float64  // widen stops when VIX > this (0 = disabled)
+	AllowedRegimes       []string // only allow entries in these regimes (empty = allow all)
 }
 
 func DefaultORBConfig() ORBConfig {
@@ -105,6 +106,30 @@ func orbExtractFloat(params map[string]any, key string, fallback float64) float6
 	}
 }
 
+func orbExtractStringSlice(params map[string]any, key string) []string {
+	if params == nil {
+		return nil
+	}
+	v, ok := params[key]
+	if !ok || v == nil {
+		return nil
+	}
+	switch x := v.(type) {
+	case []string:
+		return x
+	case []any:
+		out := make([]string, 0, len(x))
+		for _, item := range x {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 func orbExtractBool(params map[string]any, key string, fallback bool) bool {
 	if params == nil {
 		return fallback
@@ -140,6 +165,7 @@ func NewORBConfigFromDNA(params map[string]any) ORBConfig {
 		MinRangePctBps:       orbExtractInt(params, "min_range_pct_bps", 0),
 		VIXSkipAbove:         orbExtractFloat(params, "vix_skip_above", 0),
 		VIXWidenAbove:        orbExtractFloat(params, "vix_widen_above", 0),
+		AllowedRegimes:       orbExtractStringSlice(params, "regime_filter.allowed_regimes"),
 	}
 }
 
