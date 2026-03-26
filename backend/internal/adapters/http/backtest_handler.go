@@ -175,8 +175,25 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		speed = "5x"
 	}
 
+	// When daily screener is on, expand candidate pool to all ingested symbols
+	backtestSymbols := symbols
+	if req.UseDailyScreener {
+		allCfgSyms := h.appCfg.Symbols.AllSymbols()
+		seen := make(map[string]bool)
+		for _, s := range backtestSymbols {
+			seen[string(s)] = true
+		}
+		for _, s := range allCfgSyms {
+			if !seen[s] {
+				backtestSymbols = append(backtestSymbols, domain.Symbol(s))
+				seen[s] = true
+			}
+		}
+		h.log.Info().Int("user_symbols", len(symbols)).Int("expanded_pool", len(backtestSymbols)).Msg("daily screener: expanded candidate pool from config")
+	}
+
 	runner := backtest.NewRunner(backtest.RunConfig{
-		Symbols:       symbols,
+		Symbols:       backtestSymbols,
 		From:          fromTime,
 		To:            toTime,
 		Timeframe:     tf,

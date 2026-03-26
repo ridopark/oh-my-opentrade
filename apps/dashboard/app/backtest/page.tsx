@@ -370,9 +370,7 @@ function TopBar({
         <div className="flex items-center gap-1 text-[10px] shrink-0">
           <span className="text-muted-foreground">Top</span>
           <input type="number" value={config.screenerTopN} onChange={(e) => updateConfig("screenerTopN", Number(e.target.value) || 5)} className="w-10 bg-background border border-border rounded px-1 py-0.5 text-[10px] font-mono text-foreground text-center" min={1} max={20} />
-          {config.symbols.length <= (config.screenerTopN || 5) && (
-            <span className="text-amber-400" title="Add more symbols to the candidate pool for effective screening">needs more symbols</span>
-          )}
+          <span className="text-muted-foreground" title="Screener auto-expands to all ingested symbols as candidates">from all symbols</span>
         </div>
       )}
 
