@@ -51,6 +51,8 @@ type Service struct {
 	vixSkipAbove       float64  // skip ORB when VIX > this (0 = disabled)
 	vixWidenAbove      float64  // widen stops when VIX > this (0 = disabled)
 	orbAllowedRegimes  []string // regime gate for ORB (empty = allow all)
+	orbHTFBiasEnabled  bool     // block entries against daily EMA200 bias
+	orbMinATRPct       float64  // skip symbols with daily ATR% below this
 }
 
 // GetLastSnapshot returns the most recently cached IndicatorSnapshot for the given symbol.
@@ -140,6 +142,8 @@ func (s *Service) SetORBConfig(params map[string]any) {
 	s.vixSkipAbove = s.orbCfg.VIXSkipAbove
 	s.vixWidenAbove = s.orbCfg.VIXWidenAbove
 	s.orbAllowedRegimes = s.orbCfg.AllowedRegimes
+	s.orbHTFBiasEnabled = s.orbCfg.HTFBiasEnabled
+	s.orbMinATRPct = s.orbCfg.MinATRPct
 	s.log.Info().
 		Float64("min_rvol", s.orbCfg.MinRVOL).
 		Float64("min_confidence", s.orbCfg.MinConfidence).
@@ -582,6 +586,38 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 					Str("direction", string(setup.Direction)).
 					Msg("setup blocked: regime not allowed")
 				detected = false
+			}
+		}
+		// HTF bias gate: block entries against daily EMA200 trend direction.
+		if detected && s.orbHTFBiasEnabled {
+			if htf, ok := snap.HTF[domain.Timeframe("1d")]; ok && htf.Bias != "" && htf.Bias != "NEUTRAL" {
+				blocked := false
+				if setup.Direction == domain.DirectionLong && htf.Bias == "BEARISH" {
+					blocked = true
+				} else if setup.Direction == domain.DirectionShort && htf.Bias == "BULLISH" {
+					blocked = true
+				}
+				if blocked {
+					l.Warn().
+						Str("direction", string(setup.Direction)).
+						Str("daily_bias", htf.Bias).
+						Msg("setup blocked: HTF bias against trade direction")
+					detected = false
+				}
+			}
+		}
+		// Min ATR% gate: skip low-volatility symbols that don't move enough for ORB.
+		if detected && s.orbMinATRPct > 0 {
+			if dailyATR := snap.HTFDailyATR(); dailyATR > 0 && bar.Close > 0 {
+				atrPct := dailyATR / bar.Close * 100
+				if atrPct < s.orbMinATRPct {
+					l.Warn().
+						Float64("atr_pct", atrPct).
+						Float64("min_atr_pct", s.orbMinATRPct).
+						Str("symbol", symStr).
+						Msg("setup blocked: symbol ATR% too low")
+					detected = false
+				}
 			}
 		}
 		if detected {

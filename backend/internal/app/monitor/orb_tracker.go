@@ -32,8 +32,9 @@ type ORBConfig struct {
 	MaxRetestBars        int
 	AllowMissingBars     int
 	MaxSignalsPerSession int
-	HTFBiasEnabled       bool
-	ATRMultiplier        float64
+	HTFBiasEnabled       bool    // block longs when daily bias is BEARISH, shorts when BULLISH
+	MinATRPct            float64 // skip symbols where daily ATR% < this (0 = disabled)
+	SignalATRStopMult    float64 // ATR multiplier for signal stop price (used by strategy runner)
 	SweepCooldownBars    int
 	RetestConfirmBars    int // 1 = touch+hold same bar (default), 2 = touch then hold next bar
 	VWAPFilterEnabled    bool    // require VWAP alignment at breakout and retest
@@ -159,7 +160,8 @@ func NewORBConfigFromDNA(params map[string]any) ORBConfig {
 		AllowMissingBars:     orbExtractInt(params, "allow_missing_range_bars", def.AllowMissingBars),
 		MaxSignalsPerSession: orbExtractInt(params, "max_signals_per_session", def.MaxSignalsPerSession),
 		HTFBiasEnabled:       orbExtractBool(params, "htf_bias_enabled", false),
-		ATRMultiplier:        orbExtractFloat(params, "atr_multiplier", 0),
+		MinATRPct:            orbExtractFloat(params, "regime_filter.min_atr_pct", 0),
+		SignalATRStopMult:    orbExtractFloat(params, "atr_multiplier", 0),
 		SweepCooldownBars:    orbExtractInt(params, "sweep_cooldown_bars", 0),
 		RetestConfirmBars:    orbExtractInt(params, "retest_confirm_bars", 1),
 		VWAPFilterEnabled:    orbExtractBool(params, "vwap_filter_enabled", false),
