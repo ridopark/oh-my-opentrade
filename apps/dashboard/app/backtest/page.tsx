@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useMemo } from "react";
+import React, { useState, useRef, useEffect, useMemo, useCallback, useImperativeHandle, forwardRef } from "react";
 import {
   createChart,
   ColorType,
@@ -32,7 +32,7 @@ function parseExitReason(rationale?: string): string | null {
   const m = rationale.match(/exit_monitor:([^:]+)/);
   if (m) return m[1].replace(/_/g, " ");
   if (rationale.includes("avwap_exit")) return "AVWAP EXIT";
-  if (rationale.includes("passthrough")) return "SIGNAL";
+  if (rationale.includes("passthrough") && rationale.includes("exit")) return "TREND REVERSAL";
   return null;
 }
 
@@ -54,9 +54,15 @@ function formatPct(v: number) {
 
 export default function BacktestPage() {
   const bt = useBacktest();
+  const chartGridRef = useRef<ChartGridHandle>(null);
   const [availableSymbols, setAvailableSymbols] = useState<string[]>([]);
   const [availableStrategies, setAvailableStrategies] = useState<{ id: string; name: string; state: string }[]>([]);
   const [orbWindowMinutes, setOrbWindowMinutes] = useState(30);
+
+  const handleScrollToTime = useCallback((symbol: string, isoTime: string) => {
+    const utcSeconds = Math.floor(new Date(isoTime).getTime() / 1000);
+    chartGridRef.current?.scrollToTime(symbol, utcSeconds);
+  }, []);
 
   useEffect(() => {
     fetch("/api/backtest/symbols")
@@ -146,7 +152,7 @@ export default function BacktestPage() {
       />
 
       <div className="flex-1 min-h-0 mt-2">
-        <ChartGrid symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} />
+        <ChartGrid ref={chartGridRef} symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} />
       </div>
 
       <div className="h-[35%] min-h-[180px] max-h-[300px] mt-1 rounded-t-lg border border-border bg-card flex flex-col">
@@ -180,7 +186,7 @@ export default function BacktestPage() {
         </div>
 
         <div className="flex-1 min-h-0 overflow-hidden">
-          {bottomTab === "trades" && <TradeLogInline trades={bt.trades} />}
+          {bottomTab === "trades" && <TradeLogInline trades={bt.trades} onScrollToTime={handleScrollToTime} />}
           {bottomTab === "results" && <MetricsPanelInline metrics={bt.metrics} result={bt.result} initialEquity={config.initialEquity} />}
           {bottomTab === "equity" && <EquityCurveInline data={bt.equityCurve} />}
         </div>
@@ -387,18 +393,48 @@ function TopBar({
   );
 }
 
-function ChartGrid({
-  symbols,
-  bars,
-  trades,
-  orbWindowMinutes = 30,
-}: {
+export interface ChartGridHandle {
+  scrollToTime: (symbol: string, utcSeconds: number) => void;
+}
+
+const ChartGrid = forwardRef<ChartGridHandle, {
   symbols: string[];
   bars: Map<string, BacktestBar[]>;
   trades: BacktestTrade[];
   orbWindowMinutes?: number;
-}) {
+}>(function ChartGrid({
+  symbols,
+  bars,
+  trades,
+  orbWindowMinutes = 30,
+}, ref) {
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
+  const chartRefs = useRef<Map<string, IChartApi>>(new Map());
+
+  const registerChart = useCallback((symbol: string, chart: IChartApi | null) => {
+    if (chart) chartRefs.current.set(symbol, chart);
+    else chartRefs.current.delete(symbol);
+  }, []);
+
+  useImperativeHandle(ref, () => ({
+    scrollToTime(symbol: string, utcSeconds: number) {
+      const chart = chartRefs.current.get(symbol);
+      if (!chart) return;
+      // Also expand to this symbol if in grid mode
+      setExpandedSymbol(symbol);
+      // Use setTimeout so the expanded chart renders first
+      setTimeout(() => {
+        const c = chartRefs.current.get(symbol);
+        if (!c) return;
+        const ts = c.timeScale();
+        const halfWindow = 30 * 60; // 30 minutes each side
+        ts.setVisibleRange({
+          from: (utcSeconds - halfWindow) as Time,
+          to: (utcSeconds + halfWindow) as Time,
+        });
+      }, 50);
+    },
+  }), []);
 
   if (symbols.length === 0) {
     return (
@@ -427,6 +463,7 @@ function ChartGrid({
             bars={bars.get(expandedSymbol) ?? []}
             trades={trades.filter((t) => t.symbol === expandedSymbol)}
             orbWindowMinutes={orbWindowMinutes}
+            onChartReady={(chart) => registerChart(expandedSymbol, chart)}
           />
         </div>
       </div>
@@ -452,6 +489,7 @@ function ChartGrid({
               bars={bars.get(sym) ?? []}
               trades={trades.filter((t) => t.symbol === sym)}
               orbWindowMinutes={orbWindowMinutes}
+              onChartReady={(chart) => registerChart(sym, chart)}
             />
           </div>
           <button
@@ -468,18 +506,20 @@ function ChartGrid({
       ))}
     </div>
   );
-}
+});
 
 function MiniChart({
   symbol,
   bars,
   trades,
   orbWindowMinutes = 30,
+  onChartReady,
 }: {
   symbol: string;
   bars: BacktestBar[];
   trades: BacktestTrade[];
   orbWindowMinutes?: number;
+  onChartReady?: (chart: IChartApi | null) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -525,6 +565,7 @@ function MiniChart({
       },
     });
     chartRef.current = chart;
+    onChartReady?.(chart);
 
     const volume = chart.addSeries(HistogramSeries, {
       priceScaleId: "", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false,
@@ -575,6 +616,7 @@ function MiniChart({
 
     return () => {
       observer.disconnect();
+      onChartReady?.(null);
       chart.remove();
       chartRef.current = null;
       candleRef.current = null;
@@ -786,7 +828,7 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
   return positions;
 }
 
-function TradeLogInline({ trades }: { trades: BacktestTrade[] }) {
+function TradeLogInline({ trades, onScrollToTime }: { trades: BacktestTrade[]; onScrollToTime?: (symbol: string, isoTime: string) => void }) {
    const scrollRef = useRef<HTMLDivElement>(null);
    useEffect(() => { if (scrollRef.current) { scrollRef.current.scrollTop = scrollRef.current.scrollHeight; } }, [trades.length]);
 
@@ -837,9 +879,27 @@ function TradeLogInline({ trades }: { trades: BacktestTrade[] }) {
                 <td className="px-2 py-1 text-muted-foreground">{p.strategy}</td>
                 <td className="px-2 py-1 text-right text-foreground">{p.qty.toFixed(0)}</td>
                 <td className="px-2 py-1 text-right text-emerald-400">${p.entryPrice.toFixed(2)}</td>
-                <td className="px-2 py-1 text-muted-foreground">{fmtTime(p.entryTime)}</td>
+                <td className="px-2 py-1">
+                  {p.entryTime ? (
+                    <button
+                      className="text-muted-foreground hover:text-blue-400 hover:underline cursor-pointer transition-colors"
+                      onClick={() => onScrollToTime?.(p.symbol, p.entryTime)}
+                    >
+                      {fmtTime(p.entryTime)}
+                    </button>
+                  ) : "—"}
+                </td>
                 <td className="px-2 py-1 text-right text-red-400">{p.exitPrice !== null ? `$${p.exitPrice.toFixed(2)}` : "—"}</td>
-                <td className="px-2 py-1 text-muted-foreground">{fmtTime(p.exitTime)}</td>
+                <td className="px-2 py-1">
+                  {p.exitTime ? (
+                    <button
+                      className="text-muted-foreground hover:text-blue-400 hover:underline cursor-pointer transition-colors"
+                      onClick={() => onScrollToTime?.(p.symbol, p.exitTime!)}
+                    >
+                      {fmtTime(p.exitTime)}
+                    </button>
+                  ) : "—"}
+                </td>
                 <td className={`px-4 py-1 text-right font-medium ${isWin ? "text-emerald-400" : isLoss ? "text-red-400" : "text-muted-foreground"}`}>
                   {p.pnl !== null ? (
                     <span>{p.pnl >= 0 ? "+" : ""}{formatCurrency(p.pnl)} <span className="text-[10px]">({p.pnlPct! >= 0 ? "+" : ""}{p.pnlPct!.toFixed(2)}%)</span></span>
