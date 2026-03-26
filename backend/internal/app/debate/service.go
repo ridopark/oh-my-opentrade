@@ -169,16 +169,36 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 	}
 
 	// Widen stops when VIX is elevated (per research: 1.5x in VIX 15-25 zone)
+	vixMult := 1.0
 	if setup.VIXAdjust == "widen_stops" {
-		stopBPS = int64(float64(stopBPS) * 1.5)
-		l.Info().Int64("widened_stop_bps", stopBPS).Msg("VIX elevated — widening stops")
+		vixMult = 1.5
+		l.Info().Msg("VIX elevated — will widen stops 1.5x")
 	}
 
-	// Use FVG-based stop if available (more precise than fixed BPS)
+	// Stop-loss priority: FVG structure > per-symbol daily ATR > fixed BPS fallback
 	if setup.FVGStop > 0 {
+		// FVG-based stop: most precise, derived from market structure
 		stopLoss = setup.FVGStop
 		l.Info().Float64("fvg_stop", stopLoss).Float64("limit_price", limitPrice).Msg("using FVG-based stop-loss")
+	} else if dailyATR := setup.Snapshot.HTFDailyATR(); dailyATR > 0 && limitPrice > 0 {
+		// Per-symbol ATR-based stop: 1.5x daily ATR (adjusts to each stock's volatility)
+		atrMult := 1.5 * vixMult
+		stopDist := dailyATR * atrMult
+		if decision.Direction == domain.DirectionLong {
+			stopLoss = limitPrice - stopDist
+		} else {
+			stopLoss = limitPrice + stopDist
+		}
+		l.Info().
+			Float64("daily_atr", dailyATR).
+			Float64("atr_mult", atrMult).
+			Float64("stop_dist", stopDist).
+			Float64("stop_loss", stopLoss).
+			Str("symbol", string(setup.Symbol)).
+			Msg("using per-symbol ATR-based stop-loss")
 	} else {
+		// Fixed BPS fallback
+		stopBPS = int64(float64(stopBPS) * vixMult)
 		stopPct := float64(stopBPS) / 10000.0
 		stopLoss = limitPrice * (1 - stopPct)
 		if decision.Direction == domain.DirectionShort {
