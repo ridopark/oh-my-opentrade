@@ -55,6 +55,7 @@ function formatPct(v: number) {
 export default function BacktestPage() {
   const bt = useBacktest();
   const chartGridRef = useRef<ChartGridHandle>(null);
+  const tradeLogRef = useRef<TradeLogHandle>(null);
   const [availableSymbols, setAvailableSymbols] = useState<string[]>([]);
   const [availableStrategies, setAvailableStrategies] = useState<{ id: string; name: string; state: string }[]>([]);
   const [orbWindowMinutes, setOrbWindowMinutes] = useState(30);
@@ -152,7 +153,10 @@ export default function BacktestPage() {
       />
 
       <div className="flex-1 min-h-0 mt-2">
-        <ChartGrid ref={chartGridRef} symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} />
+        <ChartGrid ref={chartGridRef} symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} onTradeClick={(trade) => {
+          setBottomTab("trades");
+          setTimeout(() => tradeLogRef.current?.scrollToTrade(trade), 50);
+        }} />
       </div>
 
       <div className="h-[35%] min-h-[180px] max-h-[300px] mt-1 rounded-t-lg border border-border bg-card flex flex-col">
@@ -186,7 +190,7 @@ export default function BacktestPage() {
         </div>
 
         <div className="flex-1 min-h-0 overflow-hidden">
-          {bottomTab === "trades" && <TradeLogInline trades={bt.trades} onScrollToTime={handleScrollToTime} />}
+          {bottomTab === "trades" && <TradeLogInline ref={tradeLogRef} trades={bt.trades} onScrollToTime={handleScrollToTime} />}
           {bottomTab === "results" && <MetricsPanelInline metrics={bt.metrics} result={bt.result} initialEquity={config.initialEquity} />}
           {bottomTab === "equity" && <EquityCurveInline data={bt.equityCurve} />}
         </div>
@@ -397,16 +401,28 @@ export interface ChartGridHandle {
   scrollToTime: (symbol: string, utcSeconds: number) => void;
 }
 
+/** Find which position index a given trade belongs to */
+function findPositionForTrade(positions: Position[], trade: BacktestTrade): number {
+  const tradeTime = trade.filled_at ?? "";
+  for (let i = 0; i < positions.length; i++) {
+    const p = positions[i];
+    if (p.entryTime === tradeTime || p.exitTime === tradeTime) return i;
+  }
+  return -1;
+}
+
 const ChartGrid = forwardRef<ChartGridHandle, {
   symbols: string[];
   bars: Map<string, BacktestBar[]>;
   trades: BacktestTrade[];
   orbWindowMinutes?: number;
+  onTradeClick?: (trade: BacktestTrade) => void;
 }>(function ChartGrid({
   symbols,
   bars,
   trades,
   orbWindowMinutes = 30,
+  onTradeClick,
 }, ref) {
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
   const chartRefs = useRef<Map<string, IChartApi>>(new Map());
@@ -464,6 +480,10 @@ const ChartGrid = forwardRef<ChartGridHandle, {
             trades={trades.filter((t) => t.symbol === expandedSymbol)}
             orbWindowMinutes={orbWindowMinutes}
             onChartReady={(chart) => registerChart(expandedSymbol, chart)}
+            onMarkerClick={(idx) => {
+              const symTrades = trades.filter((t) => t.symbol === expandedSymbol);
+              if (symTrades[idx]) onTradeClick?.(symTrades[idx]);
+            }}
           />
         </div>
       </div>
@@ -490,6 +510,10 @@ const ChartGrid = forwardRef<ChartGridHandle, {
               trades={trades.filter((t) => t.symbol === sym)}
               orbWindowMinutes={orbWindowMinutes}
               onChartReady={(chart) => registerChart(sym, chart)}
+              onMarkerClick={(idx) => {
+                const symTrades = trades.filter((t) => t.symbol === sym);
+                if (symTrades[idx]) onTradeClick?.(symTrades[idx]);
+              }}
             />
           </div>
           <button
@@ -514,12 +538,14 @@ function MiniChart({
   trades,
   orbWindowMinutes = 30,
   onChartReady,
+  onMarkerClick,
 }: {
   symbol: string;
   bars: BacktestBar[];
   trades: BacktestTrade[];
   orbWindowMinutes?: number;
   onChartReady?: (chart: IChartApi | null) => void;
+  onMarkerClick?: (tradeIndex: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -607,14 +633,39 @@ function MiniChart({
     candle.attachPrimitive(orbOverlay);
     orbOverlayRef.current = orbOverlay;
 
+    // Click and hover handlers for signal markers
+    const containerEl = containerRef.current;
+    const handleChartClick = (e: MouseEvent) => {
+      if (!overlayRef.current || !onMarkerClick) return;
+      const rect = containerEl?.getBoundingClientRect();
+      if (!rect) return;
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const idx = overlayRef.current.hitTest(x, y);
+      if (idx >= 0) onMarkerClick(idx);
+    };
+    const handleChartMouseMove = (e: MouseEvent) => {
+      if (!overlayRef.current) return;
+      const rect = containerEl?.getBoundingClientRect();
+      if (!rect) return;
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const hit = overlayRef.current.hitTest(x, y) >= 0;
+      containerEl!.style.cursor = hit ? "pointer" : "";
+    };
+    containerEl.addEventListener("click", handleChartClick);
+    containerEl.addEventListener("mousemove", handleChartMouseMove);
+
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         chart.applyOptions({ width: entry.contentRect.width, height: entry.contentRect.height });
       }
     });
-    observer.observe(containerRef.current);
+    observer.observe(containerEl);
 
     return () => {
+      containerEl.removeEventListener("click", handleChartClick);
+      containerEl.removeEventListener("mousemove", handleChartMouseMove);
       observer.disconnect();
       onChartReady?.(null);
       chart.remove();
@@ -828,11 +879,29 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
   return positions;
 }
 
-function TradeLogInline({ trades, onScrollToTime }: { trades: BacktestTrade[]; onScrollToTime?: (symbol: string, isoTime: string) => void }) {
+export interface TradeLogHandle {
+  scrollToTrade: (trade: BacktestTrade) => void;
+}
+
+const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onScrollToTime?: (symbol: string, isoTime: string) => void }>(function TradeLogInline({ trades, onScrollToTime }, ref) {
    const scrollRef = useRef<HTMLDivElement>(null);
+   const rowRefs = useRef<Map<number, HTMLTableRowElement>>(new Map());
+   const [highlightIdx, setHighlightIdx] = useState<number | null>(null);
    useEffect(() => { if (scrollRef.current) { scrollRef.current.scrollTop = scrollRef.current.scrollHeight; } }, [trades.length]);
 
   const positions = useMemo(() => groupPositions(trades), [trades]);
+
+  useImperativeHandle(ref, () => ({
+    scrollToTrade(trade: BacktestTrade) {
+      const idx = findPositionForTrade(positions, trade);
+      if (idx < 0) return;
+      setHighlightIdx(idx);
+      const row = rowRefs.current.get(idx);
+      if (row) row.scrollIntoView({ behavior: "smooth", block: "center" });
+      // Clear highlight after animation
+      setTimeout(() => setHighlightIdx(null), 2000);
+    },
+  }), [positions]);
 
   if (positions.length === 0 && trades.length === 0) {
     return <div className="flex items-center justify-center h-full text-xs text-muted-foreground">No trades yet</div>;
@@ -866,7 +935,7 @@ function TradeLogInline({ trades, onScrollToTime }: { trades: BacktestTrade[]; o
             const isWin = p.pnl !== null && p.pnl > 0;
             const isLoss = p.pnl !== null && p.pnl < 0;
             return (
-              <tr key={i} className={`border-t border-border/30 ${isWin ? "bg-emerald-500/[0.03]" : isLoss ? "bg-red-500/[0.03]" : ""}`}>
+              <tr key={i} ref={(el) => { if (el) rowRefs.current.set(i, el); else rowRefs.current.delete(i); }} className={`border-t border-border/30 transition-colors duration-500 ${highlightIdx === i ? "!bg-blue-500/20" : isWin ? "bg-emerald-500/[0.03]" : isLoss ? "bg-red-500/[0.03]" : ""}`}>
                 <td className="px-4 py-1 text-muted-foreground">{i + 1}</td>
                 <td className="px-2 py-1 text-foreground">{p.symbol}</td>
                 <td className="px-2 py-1">
@@ -917,7 +986,7 @@ function TradeLogInline({ trades, onScrollToTime }: { trades: BacktestTrade[]; o
       </table>
     </div>
   );
-}
+});
 
 function MetricsPanelInline({
   metrics, result, initialEquity,
