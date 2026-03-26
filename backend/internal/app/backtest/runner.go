@@ -784,6 +784,20 @@ func (r *Runner) Run(ctx context.Context) error {
 				monitorSvc.ResetSessionIndicators(sym.String())
 			}
 			currentSessionDate = dayOpen
+
+			// Recompute realized vol for this trading day (20-day lookback from current date).
+			if orbSelected {
+				spySym, _ := domain.NewSymbol("SPY")
+				rvFrom := dayOpen.Add(-60 * 24 * time.Hour)
+				spyDaily, _ := repo.GetMarketBars(ctx, spySym, "1d", rvFrom, dayOpen)
+				if len(spyDaily) == 0 && r.marketData != nil {
+					spyDaily, _ = r.marketData.GetHistoricalBars(ctx, spySym, "1d", rvFrom, dayOpen)
+				}
+				if len(spyDaily) > 21 {
+					rv := monitor.ComputeRealizedVol(spyDaily, 20)
+					monitorSvc.SetVIXLevel(rv)
+				}
+			}
 		}
 
 		for _, s := range streams {
