@@ -86,6 +86,17 @@ type AVWAPConfig struct {
 	PullbackToleranceBPS int
 	PullbackRSIMin       float64
 	PullbackRSIMax       float64
+
+	AVWAPStopEnabled   bool
+	AVWAPStopBars      int // consecutive bars on wrong side of AVWAP to trigger exit
+	AVWAPStopBufferBPS int // buffer in bps before triggering (avoid noise)
+
+	PinchEnabled bool
+	PinchMinBPS  int // minimum gap between two AVWAPs (bps)
+	PinchMaxBPS  int // maximum gap — if too wide, not a squeeze
+
+	GapReclaimEnabled bool
+	GapReclaimBars    int // max bars since crossing below AVWAP to still consider a reclaim
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -107,6 +118,10 @@ type AVWAPState struct {
 
 	PeakAboveCount map[string]int // tracks the max AboveCount before a pullback started
 	PeakBelowCount map[string]int // tracks the max BelowCount before a pullback started
+
+	StopBelowCount  map[string]int // for LONG positions: consecutive bars below AVWAP
+	StopAboveCount  map[string]int // for SHORT positions: consecutive bars above AVWAP
+	CrossedBelowBar map[string]int // tracks how many bars ago price crossed below each AVWAP (gap reclaim)
 }
 
 // SetIndicators implements the indicatorSetter interface.
@@ -132,6 +147,9 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 		s.BelowCount = make(map[string]int)
 		s.PeakAboveCount = make(map[string]int)
 		s.PeakBelowCount = make(map[string]int)
+		s.StopBelowCount = make(map[string]int)
+		s.StopAboveCount = make(map[string]int)
+		s.CrossedBelowBar = make(map[string]int)
 		s.TradesToday = 0
 		s.CalcBarCount = 0
 		return
@@ -169,6 +187,9 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 	s.BelowCount = newBelow
 	s.PeakAboveCount = make(map[string]int)
 	s.PeakBelowCount = make(map[string]int)
+	s.StopBelowCount = make(map[string]int)
+	s.StopAboveCount = make(map[string]int)
+	s.CrossedBelowBar = make(map[string]int)
 	s.TradesToday = 0
 	s.CalcBarCount = 0 // reset stabilization counter
 }
@@ -329,6 +350,17 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		PullbackToleranceBPS: getInt(params, "pullback_tolerance_bps", 20),
 		PullbackRSIMin:       getFloat64(params, "pullback_rsi_min", 40.0),
 		PullbackRSIMax:       getFloat64(params, "pullback_rsi_max", 60.0),
+
+		AVWAPStopEnabled:   getBool(params, "avwap_stop_enabled", true),
+		AVWAPStopBars:      getInt(params, "avwap_stop_bars", 3),
+		AVWAPStopBufferBPS: getInt(params, "avwap_stop_buffer_bps", 10),
+
+		PinchEnabled: getBool(params, "pinch_enabled", false),
+		PinchMinBPS:  getInt(params, "pinch_min_bps", 5),
+		PinchMaxBPS:  getInt(params, "pinch_max_bps", 50),
+
+		GapReclaimEnabled: getBool(params, "gap_reclaim_enabled", false),
+		GapReclaimBars:    getInt(params, "gap_reclaim_bars", 5),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
 	return cfg
@@ -364,13 +396,16 @@ func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string
 	}
 
 	st := &AVWAPState{
-		Symbol:         symbol,
-		Calc:           calc,
-		AboveCount:     make(map[string]int),
-		BelowCount:     make(map[string]int),
-		PeakAboveCount: make(map[string]int),
-		PeakBelowCount: make(map[string]int),
-		Config:         cfg,
+		Symbol:          symbol,
+		Calc:            calc,
+		AboveCount:      make(map[string]int),
+		BelowCount:      make(map[string]int),
+		PeakAboveCount:  make(map[string]int),
+		PeakBelowCount:  make(map[string]int),
+		StopBelowCount:  make(map[string]int),
+		StopAboveCount:  make(map[string]int),
+		CrossedBelowBar: make(map[string]int),
+		Config:          cfg,
 	}
 
 	if prior != nil {
@@ -380,6 +415,9 @@ func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string
 			st.BelowCount = avwapPrior.BelowCount
 			st.PeakAboveCount = avwapPrior.PeakAboveCount
 			st.PeakBelowCount = avwapPrior.PeakBelowCount
+			st.StopBelowCount = avwapPrior.StopBelowCount
+			st.StopAboveCount = avwapPrior.StopAboveCount
+			st.CrossedBelowBar = avwapPrior.CrossedBelowBar
 			st.TradesToday = avwapPrior.TradesToday
 			st.CooldownUntil = avwapPrior.CooldownUntil
 			st.PositionSide = avwapPrior.PositionSide
@@ -522,6 +560,75 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 				avwapSt.BelowCount[anchorName] = 0
 			}
 			return avwapSt, []start.Signal{sig}, nil
+			}
+		}
+	}
+
+	// 5b. AVWAP-based stop: exit when price breaks significantly past AVWAP against position.
+	if cfg.AVWAPStopEnabled && avwapSt.PositionSide != "" && avwapSt.PendingEntry == "" {
+		if avwapSt.StopBelowCount == nil {
+			avwapSt.StopBelowCount = make(map[string]int)
+		}
+		if avwapSt.StopAboveCount == nil {
+			avwapSt.StopAboveCount = make(map[string]int)
+		}
+		// Update stop counters for each anchor.
+		for anchorName, avwapValue := range avwapValues {
+			bufferAbs := avwapValue * float64(cfg.AVWAPStopBufferBPS) / 10000.0
+			if avwapSt.PositionSide == start.SideBuy {
+				if bar.Close < avwapValue-bufferAbs {
+					avwapSt.StopBelowCount[anchorName]++
+				} else {
+					avwapSt.StopBelowCount[anchorName] = 0
+				}
+			} else if avwapSt.PositionSide == start.SideSell {
+				if bar.Close > avwapValue+bufferAbs {
+					avwapSt.StopAboveCount[anchorName]++
+				} else {
+					avwapSt.StopAboveCount[anchorName] = 0
+				}
+			}
+		}
+		// Check if any anchor triggered the stop.
+		if avwapSt.PositionSide == start.SideBuy {
+			for anchorName := range avwapValues {
+				if avwapSt.StopBelowCount[anchorName] >= cfg.AVWAPStopBars {
+					sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideSell, 0.9, map[string]string{
+						"ref_price": fmt.Sprintf("%.10f", bar.Close),
+						"setup":     "avwap_stop",
+						"anchor":    anchorName,
+						"regime_5m": regimeTag,
+					})
+					if err != nil {
+						return avwapSt, nil, err
+					}
+					avwapSt.PositionSide = ""
+					avwapSt.CooldownUntil = now.Add(cooldown)
+					for an := range avwapSt.StopBelowCount {
+						avwapSt.StopBelowCount[an] = 0
+					}
+					return avwapSt, []start.Signal{sig}, nil
+				}
+			}
+		} else if avwapSt.PositionSide == start.SideSell {
+			for anchorName := range avwapValues {
+				if avwapSt.StopAboveCount[anchorName] >= cfg.AVWAPStopBars {
+					sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideBuy, 0.9, map[string]string{
+						"ref_price": fmt.Sprintf("%.10f", bar.Close),
+						"setup":     "avwap_stop",
+						"anchor":    anchorName,
+						"regime_5m": regimeTag,
+					})
+					if err != nil {
+						return avwapSt, nil, err
+					}
+					avwapSt.PositionSide = ""
+					avwapSt.CooldownUntil = now.Add(cooldown)
+					for an := range avwapSt.StopAboveCount {
+						avwapSt.StopAboveCount[an] = 0
+					}
+					return avwapSt, []start.Signal{sig}, nil
+				}
 			}
 		}
 	}
@@ -791,6 +898,106 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 	}
 
 
+	// 7c. Dual-AVWAP "pinch" setup — requires 2+ anchors.
+	if cfg.PinchEnabled && len(avwapValues) >= 2 {
+		// Find min and max AVWAP values.
+		var minAVWAP, maxAVWAP float64
+		first := true
+		for _, v := range avwapValues {
+			if first || v < minAVWAP {
+				minAVWAP = v
+			}
+			if first || v > maxAVWAP {
+				maxAVWAP = v
+			}
+			first = false
+		}
+
+		volumeOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*avwapSt.Indicators.VolumeSMA
+		gapBPS := (maxAVWAP - minAVWAP) / minAVWAP * 10000.0
+		if gapBPS >= float64(cfg.PinchMinBPS) && gapBPS <= float64(cfg.PinchMaxBPS) {
+			// Long pinch breakout: price breaks above maxAVWAP.
+			if bar.Close > maxAVWAP && volumeOK {
+				if !(cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "LONG") {
+					sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, 0.9, map[string]string{
+						"ref_price": fmt.Sprintf("%.10f", bar.Close),
+						"setup":     "avwap_pinch",
+						"regime_5m": regimeTag,
+					})
+					if err != nil {
+						return avwapSt, nil, err
+					}
+					avwapSt.PendingEntry = start.SideBuy
+					avwapSt.PendingEntryAt = now
+					avwapSt.TradesToday++
+					avwapSt.CooldownUntil = now.Add(cooldown)
+					return avwapSt, []start.Signal{sig}, nil
+				}
+			}
+
+			// Short pinch breakout: price breaks below minAVWAP.
+			if bar.Close < minAVWAP && volumeOK && !strings.EqualFold(cfg.Direction, "LONG") {
+				if !(cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "SHORT") {
+					sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.9, map[string]string{
+						"ref_price": fmt.Sprintf("%.10f", bar.Close),
+						"setup":     "avwap_pinch",
+						"regime_5m": regimeTag,
+					})
+					if err != nil {
+						return avwapSt, nil, err
+					}
+					avwapSt.PendingEntry = start.SideSell
+					avwapSt.PendingEntryAt = now
+					avwapSt.TradesToday++
+					avwapSt.CooldownUntil = now.Add(cooldown)
+					return avwapSt, []start.Signal{sig}, nil
+				}
+			}
+		}
+	}
+
+	// 7d. Gap reclaim entry — price dips below AVWAP then reclaims it.
+	if cfg.GapReclaimEnabled {
+		if avwapSt.CrossedBelowBar == nil {
+			avwapSt.CrossedBelowBar = make(map[string]int)
+		}
+		volumeOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*avwapSt.Indicators.VolumeSMA
+		for anchorName, avwapValue := range avwapValues {
+			prev := avwapSt.CrossedBelowBar[anchorName]
+			if bar.Close < avwapValue {
+				if prev == 0 {
+					avwapSt.CrossedBelowBar[anchorName] = 1 // just crossed below
+				} else {
+					avwapSt.CrossedBelowBar[anchorName]++
+				}
+			} else if prev > 0 && prev <= cfg.GapReclaimBars && bar.Close > avwapValue {
+				// Reclaim! Price was below for 1-N bars, now closed above.
+				avwapSt.CrossedBelowBar[anchorName] = 0
+				if volumeOK {
+					if cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "LONG" {
+						continue
+					}
+					sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, 0.85, map[string]string{
+						"ref_price": fmt.Sprintf("%.10f", bar.Close),
+						"setup":     "avwap_gap_reclaim",
+						"regime_5m": regimeTag,
+						"anchor":    anchorName,
+					})
+					if err != nil {
+						return avwapSt, nil, err
+					}
+					avwapSt.PendingEntry = start.SideBuy
+					avwapSt.PendingEntryAt = now
+					avwapSt.TradesToday++
+					avwapSt.CooldownUntil = now.Add(cooldown)
+					return avwapSt, []start.Signal{sig}, nil
+				}
+			} else {
+				avwapSt.CrossedBelowBar[anchorName] = 0
+			}
+		}
+	}
+
 	// 8. Bounce detection.
 	if cfg.BounceEnabled {
 		for anchorName, avwapValue := range avwapValues {
@@ -922,9 +1129,12 @@ type avwapStateJSON struct {
 	Anchors        []start.AnchorPoint                `json:"anchors"`
 	AboveCount     map[string]int                     `json:"above_count"`
 	BelowCount     map[string]int                     `json:"below_count"`
-	PeakAboveCount map[string]int                     `json:"peak_above_count,omitempty"`
-	PeakBelowCount map[string]int                     `json:"peak_below_count,omitempty"`
-	TradesToday    int                                `json:"trades_today"`
+	PeakAboveCount  map[string]int                     `json:"peak_above_count,omitempty"`
+	PeakBelowCount  map[string]int                     `json:"peak_below_count,omitempty"`
+	StopBelowCount  map[string]int                     `json:"stop_below_count,omitempty"`
+	StopAboveCount  map[string]int                     `json:"stop_above_count,omitempty"`
+	CrossedBelowBar map[string]int                     `json:"crossed_below_bar,omitempty"`
+	TradesToday     int                                `json:"trades_today"`
 	CooldownUntil  time.Time                          `json:"cooldown_until"`
 	PositionSide   start.Side                         `json:"position_side"`
 	PendingEntry   start.Side                         `json:"pending_entry"`
@@ -949,9 +1159,12 @@ func (s *AVWAPState) Marshal() ([]byte, error) {
 		Anchors:        anchors,
 		AboveCount:     s.AboveCount,
 		BelowCount:     s.BelowCount,
-		PeakAboveCount: s.PeakAboveCount,
-		PeakBelowCount: s.PeakBelowCount,
-		TradesToday:    s.TradesToday,
+		PeakAboveCount:  s.PeakAboveCount,
+		PeakBelowCount:  s.PeakBelowCount,
+		StopBelowCount:  s.StopBelowCount,
+		StopAboveCount:  s.StopAboveCount,
+		CrossedBelowBar: s.CrossedBelowBar,
+		TradesToday:     s.TradesToday,
 		CooldownUntil:  s.CooldownUntil,
 		PositionSide:   s.PositionSide,
 		PendingEntry:   s.PendingEntry,
@@ -974,6 +1187,9 @@ func (s *AVWAPState) Unmarshal(data []byte) error {
 	s.BelowCount = j.BelowCount
 	s.PeakAboveCount = j.PeakAboveCount
 	s.PeakBelowCount = j.PeakBelowCount
+	s.StopBelowCount = j.StopBelowCount
+	s.StopAboveCount = j.StopAboveCount
+	s.CrossedBelowBar = j.CrossedBelowBar
 	s.TradesToday = j.TradesToday
 	s.CooldownUntil = j.CooldownUntil
 	s.PositionSide = j.PositionSide
@@ -997,6 +1213,15 @@ func (s *AVWAPState) Unmarshal(data []byte) error {
 	}
 	if s.PeakBelowCount == nil {
 		s.PeakBelowCount = make(map[string]int)
+	}
+	if s.StopBelowCount == nil {
+		s.StopBelowCount = make(map[string]int)
+	}
+	if s.StopAboveCount == nil {
+		s.StopAboveCount = make(map[string]int)
+	}
+	if s.CrossedBelowBar == nil {
+		s.CrossedBelowBar = make(map[string]int)
 	}
 	return nil
 }
