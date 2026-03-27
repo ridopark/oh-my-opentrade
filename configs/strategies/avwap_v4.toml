@@ -71,6 +71,17 @@ min_slope_bps = 0.0
 slope_lookback = 10
 # Allow all short entry types (breakout + pullback + bounce)
 require_capitulation_for_shorts = false
+# AVWAP-based stop: exit when price breaks below AVWAP
+avwap_stop_enabled = true
+avwap_stop_bars = 3
+avwap_stop_buffer_bps = 10
+# Dual-AVWAP pinch (requires 2+ anchors from AI resolver)
+pinch_enabled = false
+pinch_min_bps = 5
+pinch_max_bps = 50
+# Gap reclaim entry
+gap_reclaim_enabled = false
+gap_reclaim_bars = 5
 
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
