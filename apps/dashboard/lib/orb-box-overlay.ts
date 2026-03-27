@@ -14,7 +14,6 @@ import type {
   PrimitivePaneViewZOrder,
   Time,
   IChartApi,
-  SeriesType,
 } from "lightweight-charts";
 
 export interface ORBRange {
