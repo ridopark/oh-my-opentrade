@@ -649,6 +649,9 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		"enrichment_status": string(enrichment.Status),
 		"risk_modifier":     string(enrichment.RiskModifier),
 		"dynamic_stop_bps":  strconv.Itoa(stopBPS),
+		"regime":            sigRef.Tags["regime_5m"],
+		"vix_bucket":        sigRef.Tags["vix_bucket"],
+		"market_context":    sigRef.Tags["market_context"],
 	}
 
 	if params != nil {
@@ -852,6 +855,9 @@ func (rs *RiskSizer) handleOptionsSignal(
 		"bull":              enrichment.BullArgument,
 		"bear":              enrichment.BearArgument,
 		"judge":             enrichment.JudgeReasoning,
+		"regime":            sigRef.Tags["regime_5m"],
+		"vix_bucket":        sigRef.Tags["vix_bucket"],
+		"market_context":    sigRef.Tags["market_context"],
 	}
 
 	if len(exitRules) > 0 {
