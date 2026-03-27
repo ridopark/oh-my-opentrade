@@ -162,7 +162,7 @@ jobs:
             # LLM
             LLM_ENABLED=true
             LLM_BASE_URL=https://openrouter.ai/api
-            LLM_MODEL=anthropic/claude-sonnet-4
+            LLM_MODEL=anthropic/claude-3.5-haiku
             LLM_MIN_CONFIDENCE=0.6
             LLM_API_KEY=${LLM_API_KEY}
 
@@ -173,7 +173,15 @@ jobs:
             TWS_USERID=${TWS_USERID}
             TWS_PASSWORD=${TWS_PASSWORD}
             IBKR_ACCOUNT_ID=${IBKR_ACCOUNT_ID}
+            IBKR_CLIENT_ID=1
+            IBKR_MARKET_DATA_TYPE=1
             VNC_PASS=${VNC_PASS}
+
+            # Feature flags
+            STRATEGY_V2=true
+            DTBP_FALLBACK=true
+            APCA_DATA_FEED=sip
+            AI_SCREENER_ENABLED=true
             EOF
             chmod 600 .env
 
