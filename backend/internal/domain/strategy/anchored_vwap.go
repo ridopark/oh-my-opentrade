@@ -52,9 +52,12 @@ const minBarsForSD = 10
 
 type anchoredVWAPEntry struct {
 	AnchorPoint
-	state    AnchoredVWAPState
-	active   bool
-	barCount int
+	state       AnchoredVWAPState
+	active      bool
+	barCount    int
+	recentVWAPs [20]float64
+	vwapIdx     int
+	vwapCount   int
 }
 
 func NewAnchoredVWAPCalc() *AnchoredVWAPCalc {
@@ -126,6 +129,13 @@ func (c *AnchoredVWAPCalc) Update(barTime time.Time, high, low, close_, volume f
 		newVWAP := e.state.Value()
 		e.state.M2 += volume * (tp - oldVWAP) * (tp - newVWAP)
 		e.barCount++
+
+		// Push new VWAP into ring buffer for slope calculation
+		e.recentVWAPs[e.vwapIdx] = newVWAP
+		e.vwapIdx = (e.vwapIdx + 1) % 20
+		if e.vwapCount < 20 {
+			e.vwapCount++
+		}
 	}
 }
 
@@ -147,6 +157,48 @@ func (c *AnchoredVWAPCalc) SDBands(name string, level float64) (upper, lower flo
 	vwap := e.state.Value()
 	offset := level * sd
 	return vwap + offset, vwap - offset, true
+}
+
+// Slope returns the AVWAP slope for the named anchor as bps per bar.
+// Positive = uptrend, negative = downtrend. Returns (0, false) if
+// insufficient data (< lookback bars).
+func (c *AnchoredVWAPCalc) Slope(name string, lookback int) (float64, bool) {
+	if c == nil {
+		return 0, false
+	}
+	e, ok := c.anchors[name]
+	if !ok || !e.active || e.vwapCount < lookback || lookback < 2 {
+		return 0, false
+	}
+
+	// Simple linear regression slope over the last N values
+	// Access ring buffer in chronological order
+	start := (e.vwapIdx - lookback + 20) % 20
+
+	var sumX, sumY, sumXY, sumX2 float64
+	for i := 0; i < lookback; i++ {
+		idx := (start + i) % 20
+		x := float64(i)
+		y := e.recentVWAPs[idx]
+		sumX += x
+		sumY += y
+		sumXY += x * y
+		sumX2 += x * x
+	}
+	n := float64(lookback)
+	denom := n*sumX2 - sumX*sumX
+	if denom == 0 {
+		return 0, false
+	}
+	slope := (n*sumXY - sumX*sumY) / denom
+
+	// Normalize to bps per bar
+	avgPrice := sumY / n
+	if avgPrice <= 0 {
+		return 0, false
+	}
+	slopeBPS := (slope / avgPrice) * 10000.0
+	return slopeBPS, true
 }
 
 // AllSDBands returns SD bands at the given level for all active anchors.
