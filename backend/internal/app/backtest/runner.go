@@ -405,12 +405,16 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	// Adapt historical options data for the RiskSizer's OptionsMarketDataPort.
+	optionsAdapter := NewHistoricalOptionsAdapter(histOptRepo, clockFn)
+
 	pipeline, err := bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
 		EventBus:        r.eventBus,
 		SpecStore:       specStore,
 		AIAdvisor:       aiAdvisor,
 		PositionLookup:  posMonBundle.Service.LookupPosition,
 		MarketDataFn:    monitorSvc.GetLastSnapshot,
+		OptionsMarket:   optionsAdapter,
 		Repo:            nil,
 		TenantID:        "default",
 		EnvMode:         domain.EnvModePaper,
