@@ -511,7 +511,7 @@ func (s *Service) tryBSMOptionsRoute(
 		return domain.OrderIntent{}, false
 	}
 
-	// Strike: ATM (closest to underlying price, rounded to nearest $1)
+	// Strike: start at ATM, then adjust for target delta
 	strike := math.Round(underlyingPrice)
 
 	// IV: use realized vol from the snapshot (already computed as per-stock VIX-like number)
@@ -531,14 +531,52 @@ func (s *Service) tryBSMOptionsRoute(
 
 	riskFreeRate := 0.05 // approximate current rates
 
-	// Compute BSM price
-	premium, delta, _, _ := options.BSMPrice(underlyingPrice, strike, dteYears, riskFreeRate, iv, isCall)
-	if premium <= 0 {
+	// Use default target delta range from config
+	targetDeltaLow := spec.Options.Defaults.TargetDeltaLow
+	targetDeltaHigh := spec.Options.Defaults.TargetDeltaHigh
+	targetDeltaMid := (targetDeltaLow + targetDeltaHigh) / 2
+
+	// Search for the strike that gives the closest delta to target.
+	// Scan strikes in $1 increments around ATM.
+	bestStrike := strike
+	bestDelta := 0.0
+	bestPremium := 0.0
+	bestDeltaDiff := 999.0
+
+	for offset := -20.0; offset <= 20.0; offset += 1.0 {
+		tryStrike := math.Round(underlyingPrice + offset)
+		if tryStrike <= 0 {
+			continue
+		}
+		p, d, _, _ := options.BSMPrice(underlyingPrice, tryStrike, dteYears, riskFreeRate, iv, isCall)
+		if p <= 0 {
+			continue
+		}
+		absDelta := math.Abs(d)
+		diff := math.Abs(absDelta - targetDeltaMid)
+		if diff < bestDeltaDiff {
+			bestDeltaDiff = diff
+			bestStrike = tryStrike
+			bestDelta = d
+			bestPremium = p
+		}
+	}
+
+	strike = bestStrike
+	delta := bestDelta
+	premium := bestPremium
+
+	// Final check: delta must be within the acceptable range
+	absDelta := math.Abs(delta)
+	if absDelta < targetDeltaLow*0.8 || absDelta > targetDeltaHigh*1.2 {
+		l.Warn().Float64("delta", delta).Float64("target_low", targetDeltaLow).Float64("target_high", targetDeltaHigh).
+			Msg("BSM: no strike within target delta range — skipping")
 		return domain.OrderIntent{}, false
 	}
 
-	// TODO: adjust strike if delta is outside target range.
-	// For now, accept ATM — delta ~0.50 is within most configs.
+	if premium <= 0 {
+		return domain.OrderIntent{}, false
+	}
 
 	// Position sizing: premium at risk
 	riskBPS := int64(100)
