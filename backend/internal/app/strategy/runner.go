@@ -185,6 +185,25 @@ func (r *Runner) SetMetrics(m *metrics.Metrics) { r.metrics = m }
 
 func (r *Runner) SetPositionLookup(fn PositionLookupFunc) { r.posLookup = fn }
 
+// UpdateAVWAPCalc feeds a 1m bar into the AVWAP calculator for smooth chart
+// rendering without triggering the strategy's signal logic (which runs on 5m).
+func (r *Runner) UpdateAVWAPCalc(symbol string, bar start.Bar) {
+	type avwapUpdater interface {
+		UpdateCalc(bar start.Bar)
+	}
+	instances := r.router.InstancesForSymbol(symbol)
+	for _, inst := range instances {
+		st, ok := inst.GetState(symbol)
+		if !ok {
+			continue
+		}
+		if u, ok := st.(avwapUpdater); ok {
+			u.UpdateCalc(bar)
+			return
+		}
+	}
+}
+
 // GetAVWAPValues returns the current anchored VWAP values for a symbol
 // by inspecting the strategy instance state. Returns nil if no AVWAP
 // strategy is active for this symbol.
@@ -384,6 +403,10 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		}
 	}
 	r.mu.Unlock()
+
+	// Feed every 1m bar to the AVWAP calculator for smooth chart rendering.
+	// This doesn't trigger signal logic — only updates the running VWAP value.
+	r.UpdateAVWAPCalc(symbol, domainBarToStratBar(bar))
 
 	r.mu.Lock()
 
