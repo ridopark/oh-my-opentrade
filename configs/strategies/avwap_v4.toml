@@ -66,6 +66,11 @@ pullback_trend_bars = 10
 pullback_tolerance_bps = 20
 pullback_rsi_min = 40.0
 pullback_rsi_max = 60.0
+# AVWAP slope confirmation
+min_slope_bps = 0.3
+slope_lookback = 10
+# Restrict shorts to pullback entries only (requires confirmed downtrend)
+require_capitulation_for_shorts = true
 
 [hooks]
 signals = { engine = "builtin", name = "avwap" }

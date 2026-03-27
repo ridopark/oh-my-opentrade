@@ -76,6 +76,10 @@ type AVWAPConfig struct {
 	AssetClass        string
 	Anchors           []string
 
+	MinSlopeBPS                  float64 // minimum AVWAP slope for entries (bps/bar)
+	SlopeLookback                int     // number of bars for slope calculation
+	RequireCapitulationForShorts bool
+
 	EnforceAVWAPBias     bool
 	PullbackEnabled      bool
 	PullbackTrendBars    int
@@ -315,6 +319,10 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		AssetClass:        getString(params, "asset_class", ""),
 		Anchors:           getStringSlice(params, "anchors", []string{"session_open"}),
 
+		MinSlopeBPS:                  getFloat64(params, "min_slope_bps", 0.0),
+		SlopeLookback:                getInt(params, "slope_lookback", 10),
+		RequireCapitulationForShorts: getBool(params, "require_capitulation_for_shorts", false),
+
 		EnforceAVWAPBias:     getBool(params, "enforce_avwap_bias", true),
 		PullbackEnabled:      getBool(params, "pullback_enabled", true),
 		PullbackTrendBars:    getInt(params, "pullback_trend_bars", 10),
@@ -545,6 +553,13 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		}
 	}
 
+	// 6b2. AVWAP slope gate — check slope of first anchor for trend confirmation.
+	var avwapSlope float64
+	slopeOK := false
+	if cfg.MinSlopeBPS > 0 && len(cfg.Anchors) > 0 {
+		avwapSlope, slopeOK = avwapSt.Calc.Slope(cfg.Anchors[0], cfg.SlopeLookback)
+	}
+
 	// 6c. Update PeakAboveCount/PeakBelowCount for pullback detection.
 	if avwapSt.PeakAboveCount == nil {
 		avwapSt.PeakAboveCount = make(map[string]int)
@@ -588,6 +603,12 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 					continue
 				}
 				if cfg.RequireHigherLows && !hasHigherLows(avwapSt.RecentLows) {
+					continue
+				}
+				if cfg.MinSlopeBPS > 0 && slopeOK && avwapSlope < cfg.MinSlopeBPS {
+					if ctx != nil && ctx.Logger() != nil {
+						ctx.Logger().Info("AVWAP slope: blocking long breakout", "symbol", symbol, "slope_bps", avwapSlope, "min", cfg.MinSlopeBPS)
+					}
 					continue
 				}
 				sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, 0.7, map[string]string{
@@ -642,6 +663,15 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 							}
 						}
 					}
+					if cfg.MinSlopeBPS > 0 && slopeOK && avwapSlope > -cfg.MinSlopeBPS {
+						if ctx != nil && ctx.Logger() != nil {
+							ctx.Logger().Info("AVWAP slope: blocking short breakout", "symbol", symbol, "slope_bps", avwapSlope, "min", -cfg.MinSlopeBPS)
+						}
+						continue
+					}
+					if cfg.RequireCapitulationForShorts {
+						continue // block short breakouts; only pullback shorts allowed
+					}
 					sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.7, map[string]string{
 						"ref_price": fmt.Sprintf("%.10f", bar.Close),
 						"setup":     "avwap_breakout",
@@ -692,6 +722,12 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 					}
 					continue
 				}
+				if cfg.MinSlopeBPS > 0 && slopeOK && avwapSlope < cfg.MinSlopeBPS {
+					if ctx != nil && ctx.Logger() != nil {
+						ctx.Logger().Info("AVWAP slope: blocking long pullback", "symbol", symbol, "slope_bps", avwapSlope, "min", cfg.MinSlopeBPS)
+					}
+					continue
+				}
 				sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, 0.85, map[string]string{
 					"ref_price":   fmt.Sprintf("%.10f", bar.Close),
 					"setup":       "avwap_pullback",
@@ -722,6 +758,12 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 				if cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "SHORT" {
 					if ctx != nil && ctx.Logger() != nil {
 						ctx.Logger().Info("AVWAP bias: blocking short pullback", "symbol", symbol, "bias", avwapBias, "anchor", anchorName)
+					}
+					continue
+				}
+				if cfg.MinSlopeBPS > 0 && slopeOK && avwapSlope > -cfg.MinSlopeBPS {
+					if ctx != nil && ctx.Logger() != nil {
+						ctx.Logger().Info("AVWAP slope: blocking short pullback", "symbol", symbol, "slope_bps", avwapSlope, "min", -cfg.MinSlopeBPS)
 					}
 					continue
 				}
@@ -805,6 +847,9 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 				}
 				if bar.Close >= bar.Open {
 					continue
+				}
+				if cfg.RequireCapitulationForShorts {
+					continue // block short bounces; only pullback shorts allowed
 				}
 				sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.6, map[string]string{
 					"ref_price": fmt.Sprintf("%.10f", bar.Close),
