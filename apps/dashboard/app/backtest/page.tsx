@@ -14,6 +14,7 @@ import {
 } from "lightweight-charts";
 import { SignalMarkerOverlay, type SignalMarkerData } from "@/lib/signal-markers";
 import { ORBBoxOverlay, computeORBRanges } from "@/lib/orb-box-overlay";
+import { RTHShadingOverlay, computeNonRTHRegions } from "@/lib/rth-shading-overlay";
 import {
   useBacktest,
   type BacktestConfig,
@@ -586,6 +587,7 @@ function MiniChart({
   const avwapRef = useRef<ISeriesApi<"Line", Time> | null>(null);
   const overlayRef = useRef<SignalMarkerOverlay | null>(null);
   const orbOverlayRef = useRef<ORBBoxOverlay | null>(null);
+  const rthOverlayRef = useRef<RTHShadingOverlay | null>(null);
   const lastBarCountRef = useRef(0);
 
   useEffect(() => {
@@ -667,6 +669,10 @@ function MiniChart({
     candle.attachPrimitive(orbOverlay);
     orbOverlayRef.current = orbOverlay;
 
+    const rthOverlay = new RTHShadingOverlay();
+    candle.attachPrimitive(rthOverlay);
+    rthOverlayRef.current = rthOverlay;
+
     // Click and hover handlers for signal markers
     const containerEl = containerRef.current;
     const handleChartClick = (e: MouseEvent) => {
@@ -713,6 +719,7 @@ function MiniChart({
       avwapRef.current = null;
       overlayRef.current = null;
       orbOverlayRef.current = null;
+      rthOverlayRef.current = null;
       lastBarCountRef.current = 0;
     };
   }, []);
@@ -747,6 +754,12 @@ function MiniChart({
     if (orbOverlayRef.current) {
       const ranges = computeORBRanges(sorted, orbWindowMinutes);
       orbOverlayRef.current.setRanges(ranges);
+    }
+
+    // Non-RTH shading — subtle background on pre-market and after-hours bars
+    if (rthOverlayRef.current) {
+      const regions = computeNonRTHRegions(sorted);
+      rthOverlayRef.current.setRegions(regions);
     }
 
     // Force chart to match container size — fixes squeeze on initial load
