@@ -491,7 +491,7 @@ const ChartGrid = forwardRef<ChartGridHandle, {
   // Expanded: single chart fills the entire grid
   if (expandedSymbol && symbols.includes(expandedSymbol)) {
     return (
-      <div className="h-full flex flex-col gap-1">
+      <div className="flex flex-col gap-1" style={{ height: "calc(100vh - 180px)" }}>
         <div className="flex items-center gap-2 px-1">
           <button
             onClick={() => setExpandedSymbol(null)}
