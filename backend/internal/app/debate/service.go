@@ -32,15 +32,21 @@ const defaultAdvisorTimeout = 5 * time.Second
 // It subscribes to SetupDetected events, runs each setup through the AI adversarial debate,
 // and emits DebateRequested, DebateCompleted, and (conditionally) OrderIntentCreated events.
 type Service struct {
-	eventBus       ports.EventBusPort
-	aiAdvisor      ports.AIAdvisorPort
-	repo           ports.RepositoryPort
-	specStore      portstrategy.SpecStore
-	optionsMarket  ports.OptionsMarketDataPort
-	minConfidence  float64
-	equity         float64
-	advisorTimeout time.Duration
-	log            zerolog.Logger
+	eventBus          ports.EventBusPort
+	aiAdvisor         ports.AIAdvisorPort
+	repo              ports.RepositoryPort
+	specStore         portstrategy.SpecStore
+	optionsMarket     ports.OptionsMarketDataPort
+	historicalOptions ports.HistoricalOptionsPort
+	minConfidence     float64
+	equity            float64
+	advisorTimeout    time.Duration
+	log               zerolog.Logger
+}
+
+// SetHistoricalOptions injects a historical options data source for backtesting.
+func (s *Service) SetHistoricalOptions(h ports.HistoricalOptionsPort) {
+	s.historicalOptions = h
 }
 
 // Option is a functional option for Service.
@@ -292,6 +298,7 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 
 	if optionsEnabled {
 		if s.optionsMarket != nil {
+			// Live market (production).
 			optIntent, routed := s.tryOptionsRoute(ctx, event, setup, decision, intent, l)
 			if routed {
 				intent = optIntent
@@ -299,9 +306,23 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 				l.Info().Msg("options enabled but no contract found — skipping trade (no equity fallback)")
 				return nil
 			}
+		} else if s.historicalOptions != nil {
+			// Historical data (backtesting with DoltHub).
+			optIntent, routed := s.tryHistoricalOptionsRoute(ctx, event, setup, decision, intent, l)
+			if routed {
+				intent = optIntent
+			} else {
+				// Fallback to BSM for symbols not in DoltHub (e.g., SOXL).
+				optIntent, routed = s.tryBSMOptionsRoute(ctx, event, setup, decision, intent, l)
+				if routed {
+					intent = optIntent
+				} else {
+					l.Info().Msg("options enabled (historical+BSM) but no contract — skipping trade")
+					return nil
+				}
+			}
 		} else {
-			// Options enabled but no market data provider (e.g., backtesting with simbroker).
-			// Use BSM synthetic pricing for the options order.
+			// Pure BSM synthetic (original fallback).
 			optIntent, routed := s.tryBSMOptionsRoute(ctx, event, setup, decision, intent, l)
 			if routed {
 				intent = optIntent
@@ -502,6 +523,167 @@ func optionHalfSpreadPct(premium float64, dte int, absDelta float64) float64 {
 		base *= 1.3
 	}
 	return base
+}
+
+// tryHistoricalOptionsRoute creates an options order using real historical chain data from DoltHub.
+// Used in backtesting when historical options data is available.
+func (s *Service) tryHistoricalOptionsRoute(
+	ctx context.Context,
+	event domain.Event,
+	setup monitor.SetupCondition,
+	decision *domain.AdvisoryDecision,
+	equityIntent domain.OrderIntent,
+	l zerolog.Logger,
+) (domain.OrderIntent, bool) {
+	sid, err := domstrategy.NewStrategyID(setup.Trigger)
+	if err != nil {
+		return domain.OrderIntent{}, false
+	}
+	spec, err := s.specStore.GetLatest(ctx, sid)
+	if err != nil || spec.Options == nil || !spec.Options.Enabled {
+		return domain.OrderIntent{}, false
+	}
+
+	isCall := decision.Direction != domain.DirectionShort
+	optRight := domain.OptionRightCall
+	if !isCall {
+		optRight = domain.OptionRightPut
+	}
+
+	targetDeltaLow := spec.Options.Defaults.TargetDeltaLow
+	targetDeltaHigh := spec.Options.Defaults.TargetDeltaHigh
+	targetDeltaMid := (targetDeltaLow + targetDeltaHigh) / 2
+
+	underlyingPrice := setup.BarClose
+	if underlyingPrice <= 0 {
+		return domain.OrderIntent{}, false
+	}
+
+	// Extract trade date from the bar timestamp.
+	tradeDate := setup.Snapshot.Time
+	if tradeDate.IsZero() {
+		tradeDate = event.OccurredAt
+	}
+
+	// Query historical chain from local DB.
+	chain, err := s.historicalOptions.GetHistoricalChain(ctx, domain.Symbol(setup.Symbol),
+		tradeDate, optRight, spec.Options.Defaults.MinDTE, spec.Options.Defaults.MaxDTE)
+	if err != nil || len(chain) == 0 {
+		l.Debug().Err(err).Str("symbol", string(setup.Symbol)).Str("date", tradeDate.Format("2006-01-02")).
+			Msg("no historical options data — falling back to BSM")
+		return domain.OrderIntent{}, false
+	}
+
+	// Find the contract with delta closest to the target.
+	bestIdx := -1
+	bestDeltaDiff := math.MaxFloat64
+	for i, row := range chain {
+		absDelta := math.Abs(row.Delta)
+		diff := math.Abs(absDelta - targetDeltaMid)
+		if diff < bestDeltaDiff && row.Ask > 0 {
+			bestDeltaDiff = diff
+			bestIdx = i
+		}
+	}
+	if bestIdx < 0 {
+		return domain.OrderIntent{}, false
+	}
+
+	best := chain[bestIdx]
+	absDelta := math.Abs(best.Delta)
+	if absDelta < targetDeltaLow*0.8 || absDelta > targetDeltaHigh*1.2 {
+		l.Warn().Float64("delta", best.Delta).Msg("historical: no strike within target delta range")
+		return domain.OrderIntent{}, false
+	}
+
+	// Use the ask price for entry (buyer pays the ask).
+	premium := best.Ask
+	if premium <= 0 {
+		premium = best.Mid()
+	}
+	if premium <= 0 {
+		return domain.OrderIntent{}, false
+	}
+
+	iv := best.IV
+	strike := best.Strike
+	expiry := best.Expiration
+	delta := best.Delta
+
+	// Position sizing.
+	riskBPS := int64(100)
+	if v, ok := spec.Params["risk_per_trade_bps"].(int64); ok && v > 0 {
+		riskBPS = v
+	}
+	maxRiskUSD := (float64(riskBPS) / 10000.0) * s.equity
+	multiplier := 100.0
+	premiumPerContract := premium * multiplier
+	qty := math.Floor(maxRiskUSD / premiumPerContract)
+	if qty <= 0 {
+		l.Warn().Float64("premium", premium).Float64("risk_budget", maxRiskUSD).
+			Msg("historical option premium exceeds risk budget")
+		return domain.OrderIntent{}, false
+	}
+	maxLossUSD := premiumPerContract * qty
+
+	// Build OCC symbol from historical data.
+	occSymbol := fmt.Sprintf("%s%s%s%08d",
+		setup.Symbol,
+		expiry.Format("060102"),
+		string(optRight)[:1],
+		int(strike*1000))
+
+	inst, instErr := domain.NewInstrument(domain.InstrumentTypeOption, occSymbol, string(setup.Symbol))
+	if instErr != nil {
+		return domain.OrderIntent{}, false
+	}
+
+	intentID := uuid.New()
+	rationale := fmt.Sprintf("option(HIST): %s %s strike=%.0f delta=%.2f DTE=%d IV=%.0f%% bid=%.2f ask=%.2f | %s",
+		optRight, setup.Symbol, strike, delta, int(expiry.Sub(tradeDate).Hours()/24), iv*100, best.Bid, best.Ask,
+		decision.Rationale)
+
+	optIntent, intentErr := domain.NewOptionOrderIntent(
+		intentID, event.TenantID, event.EnvMode, inst,
+		domain.DirectionLong, premium, qty,
+		setup.Trigger, rationale, decision.Confidence,
+		intentID.String(), maxLossUSD,
+	)
+	if intentErr != nil {
+		return domain.OrderIntent{}, false
+	}
+
+	optIntent.AssetClass = domain.AssetClassEquity
+	optIntent.Meta = make(map[string]string)
+	for k, v := range equityIntent.Meta {
+		optIntent.Meta[k] = v
+	}
+	optIntent.Meta["instrument_type"] = "OPTION"
+	optIntent.Meta["option_right"] = string(optRight)
+	optIntent.Meta["underlying"] = string(setup.Symbol)
+	optIntent.Meta["strike"] = fmt.Sprintf("%.2f", strike)
+	optIntent.Meta["expiry"] = expiry.Format("2006-01-02")
+	optIntent.Meta["delta_at_entry"] = fmt.Sprintf("%.4f", delta)
+	optIntent.Meta["iv_at_entry"] = fmt.Sprintf("%.4f", iv)
+	optIntent.Meta["premium"] = fmt.Sprintf("%.2f", premium)
+	optIntent.Meta["underlying_entry_price"] = fmt.Sprintf("%.4f", underlyingPrice)
+	optIntent.Meta["bsm_synthetic"] = "false"
+	optIntent.Meta["historical_bid"] = fmt.Sprintf("%.2f", best.Bid)
+	optIntent.Meta["historical_ask"] = fmt.Sprintf("%.2f", best.Ask)
+
+	l.Info().
+		Str("contract", occSymbol).
+		Float64("strike", strike).
+		Float64("delta", delta).
+		Float64("premium", premium).
+		Float64("iv", iv).
+		Float64("bid", best.Bid).
+		Float64("ask", best.Ask).
+		Float64("qty", qty).
+		Str("right", string(optRight)).
+		Msg("historical options route: order intent created")
+
+	return optIntent, true
 }
 
 // tryBSMOptionsRoute creates a synthetic options order using Black-Scholes pricing.
