@@ -92,6 +92,7 @@ type AVWAPState struct {
 	Config         AVWAPConfig
 	RecentLows     []float64
 	RecentHighs    []float64
+	CalcBarCount   int // bars fed to Calc since last reset — used for stabilization
 }
 
 // SetIndicators implements the indicatorSetter interface.
@@ -116,6 +117,7 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 		s.AboveCount = make(map[string]int)
 		s.BelowCount = make(map[string]int)
 		s.TradesToday = 0
+		s.CalcBarCount = 0
 		return
 	}
 
@@ -150,6 +152,7 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 	s.AboveCount = newAbove
 	s.BelowCount = newBelow
 	s.TradesToday = 0
+	s.CalcBarCount = 0 // reset stabilization counter
 }
 
 func (s *AVWAPState) ClearPendingEntry() {
@@ -162,12 +165,15 @@ func (s *AVWAPState) ClearPendingEntry() {
 func (s *AVWAPState) UpdateCalc(bar start.Bar) {
 	if s.Calc != nil {
 		s.Calc.Update(bar.Time, bar.High, bar.Low, bar.Close, bar.Volume)
+		s.CalcBarCount++
 	}
 }
 
 // AVWAPValues returns the current anchored VWAP values for chart rendering.
+// Suppresses output for the first 10 bars after a reset to avoid noisy
+// values from an under-accumulated calculator.
 func (s *AVWAPState) AVWAPValues() map[string]float64 {
-	if s.Calc == nil {
+	if s.Calc == nil || s.CalcBarCount < 10 {
 		return nil
 	}
 	return s.Calc.Values()
@@ -391,10 +397,11 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		return avwapSt, nil, nil
 	}
 
-	// 2. Read current AVWAP values.
-	// The calculator is updated on every 1m bar via UpdateCalc() in the runner,
-	// so we just read the values here — no need to re-update on 5m bars
-	// (which would double-count volume and cause jagged chart lines).
+	// 2. Update AVWAP calculator with this bar.
+	// In backtests, 1m bars already feed the calculator via UpdateCalc() in the
+	// runner. This 5m bar update is needed for tests and live trading where
+	// UpdateCalc may not be called separately.
+	avwapSt.Calc.Update(bar.Time, bar.High, bar.Low, bar.Close, bar.Volume)
 	avwapValues := avwapSt.Calc.Values()
 
 	// 2b. Update recent lows/highs sliding window for higher-lows filter.

@@ -456,13 +456,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("create collector: %w", err)
 	}
 
-	// Subscribe SSE emitter to our isolated bus.
+	// Emitter subscription is deferred to AFTER all pipeline services start,
+	// so the strategy runner's AVWAP update processes each bar before the
+	// emitter reads the value. See below after pipeline.Runner.Start().
 	r.emitter.SetSnapshotFn(monitorSvc.GetLastSnapshot)
 	r.emitter.SetAVWAPFn(pipeline.Runner.GetAVWAPValues)
-	if subErr := r.emitter.Subscribe(ctx, r.eventBus); subErr != nil {
-		r.status.Store("error")
-		return fmt.Errorf("subscribe emitter: %w", subErr)
-	}
 
 	// --- Load replay bars first (needed to determine warmup endpoint) ---
 
@@ -850,6 +848,14 @@ func (r *Runner) Run(ctx context.Context) error {
 	if startErr := pipeline.RiskSizer.Start(ctx); startErr != nil {
 		r.status.Store("error")
 		return fmt.Errorf("start risk sizer: %w", startErr)
+	}
+
+	// Subscribe emitter LAST so all pipeline handlers (strategy runner's
+	// AVWAP update, monitor, execution) process each bar before the emitter
+	// reads values for SSE emission.
+	if subErr := r.emitter.Subscribe(ctx, r.eventBus); subErr != nil {
+		r.status.Store("error")
+		return fmt.Errorf("subscribe emitter: %w", subErr)
 	}
 
 	// Pre-compute daily screener if enabled

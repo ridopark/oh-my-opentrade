@@ -404,9 +404,12 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	}
 	r.mu.Unlock()
 
-	// Feed every 1m bar to the AVWAP calculator for smooth chart rendering.
-	// This doesn't trigger signal logic — only updates the running VWAP value.
-	r.UpdateAVWAPCalc(symbol, domainBarToStratBar(bar))
+	// Feed only 1m bars to the AVWAP calculator for smooth chart rendering.
+	// The monitor re-publishes aggregated HTF bars (5m, 15m, etc.) as
+	// EventMarketBarSanitized — processing those would double-count PV/V.
+	if bar.Timeframe == "1m" {
+		r.UpdateAVWAPCalc(symbol, domainBarToStratBar(bar))
+	}
 
 	r.mu.Lock()
 
