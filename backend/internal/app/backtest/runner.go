@@ -366,14 +366,27 @@ func (r *Runner) Run(ctx context.Context) error {
 	dbAdapter := timescaledb.NewSqlDB(r.db)
 	histOptRepo := timescaledb.NewHistoricalOptionsRepository(dbAdapter, r.log.With().Str("component", "hist_options").Logger())
 
-	// Pre-flight: import missing historical options data from DoltHub.
+	// Pre-flight: import missing historical options data from DoltHub (parallel).
+	r.emitter.EmitSetup("Importing historical options data…")
 	dolthubClient := dolthub.NewClient(nil, r.log)
 	importer := optionsimport.NewService(dolthubClient, histOptRepo, r.log)
-	for _, sym := range r.cfg.Symbols {
-		if importErr := importer.EnsureData(ctx, sym.String(), r.cfg.From, r.cfg.To); importErr != nil {
-			r.log.Warn().Err(importErr).Str("symbol", sym.String()).
-				Msg("DoltHub import failed — will use BSM fallback for this symbol")
+	{
+		const maxConcurrentImports = 4
+		sem := make(chan struct{}, maxConcurrentImports)
+		var importWg sync.WaitGroup
+		for _, sym := range r.cfg.Symbols {
+			importWg.Add(1)
+			go func(sym domain.Symbol) {
+				defer importWg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				if importErr := importer.EnsureData(ctx, sym.String(), r.cfg.From, r.cfg.To); importErr != nil {
+					r.log.Warn().Err(importErr).Str("symbol", sym.String()).
+						Msg("DoltHub import failed — will use BSM fallback for this symbol")
+				}
+			}(sym)
 		}
+		importWg.Wait()
 	}
 
 	// Wire historical options to simbroker for realistic exit pricing.
