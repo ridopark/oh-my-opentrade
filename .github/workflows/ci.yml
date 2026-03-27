@@ -123,11 +123,16 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           TIMESCALEDB_PASSWORD: ${{ secrets.TIMESCALEDB_PASSWORD }}
+          BROKER: ${{ secrets.BROKER }}
+          TWS_USERID: ${{ secrets.TWS_USERID }}
+          TWS_PASSWORD: ${{ secrets.TWS_PASSWORD }}
+          IBKR_ACCOUNT_ID: ${{ secrets.IBKR_ACCOUNT_ID }}
+          VNC_PASS: ${{ secrets.VNC_PASS }}
         with:
           host: ${{ secrets.OCI_HOST }}
           username: ${{ secrets.OCI_USER }}
           key: ${{ secrets.OCI_SSH_KEY }}
-          envs: APCA_API_KEY_ID,APCA_API_SECRET_KEY,APCA_API_BASE_URL,APCA_DATA_API_KEY_ID,APCA_DATA_API_SECRET_KEY,DISCORD_WEBHOOK_URL,LLM_API_KEY,TIMESCALEDB_PASSWORD
+          envs: APCA_API_KEY_ID,APCA_API_SECRET_KEY,APCA_API_BASE_URL,APCA_DATA_API_KEY_ID,APCA_DATA_API_SECRET_KEY,DISCORD_WEBHOOK_URL,LLM_API_KEY,TIMESCALEDB_PASSWORD,BROKER,TWS_USERID,TWS_PASSWORD,IBKR_ACCOUNT_ID,VNC_PASS
           script: |
             set -e
             cd ~/oh-my-opentrade
@@ -160,6 +165,15 @@ jobs:
             LLM_MODEL=anthropic/claude-sonnet-4
             LLM_MIN_CONFIDENCE=0.6
             LLM_API_KEY=${LLM_API_KEY}
+
+            # Broker
+            BROKER=${BROKER}
+
+            # IBKR
+            TWS_USERID=${TWS_USERID}
+            TWS_PASSWORD=${TWS_PASSWORD}
+            IBKR_ACCOUNT_ID=${IBKR_ACCOUNT_ID}
+            VNC_PASS=${VNC_PASS}
             EOF
             chmod 600 .env
 
