@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/app/options"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
@@ -126,13 +127,9 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 	if isOption {
 		switch {
 		case intent.Direction.IsExit():
-			pos := b.positions[string(intent.Symbol)]
-			switch {
-			case pos != nil && pos.avgCost > 0:
-				fillPrice = pos.avgCost
-			case intent.LimitPrice > 0:
-				fillPrice = intent.LimitPrice
-			default:
+			// Compute BSM exit price using current underlying price
+			fillPrice = b.computeOptionExitPrice(intent, lastPrice, barTime)
+			if fillPrice <= 0 {
 				fillPrice = 0.01
 			}
 			side = "sell"
@@ -412,4 +409,51 @@ func (b *Broker) GetAccountEquity(_ context.Context) (float64, error) {
 
 func (b *Broker) SubscribeOrderUpdates(_ context.Context) (<-chan ports.OrderUpdate, error) {
 	return b.fillCh, nil
+}
+
+// computeOptionExitPrice computes the BSM price for an options exit using the
+// current underlying price and the entry metadata (strike, DTE, IV, right).
+func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPrice float64, barTime time.Time) float64 {
+	if intent.Meta == nil {
+		return 0
+	}
+
+	// Extract option parameters from intent meta
+	strikeStr := intent.Meta["strike"]
+	expiryStr := intent.Meta["expiry"]
+	ivStr := intent.Meta["iv_at_entry"]
+	rightStr := intent.Meta["option_right"]
+
+	if strikeStr == "" || expiryStr == "" {
+		// Fallback: try position's avg cost
+		if pos, ok := b.positions[string(intent.Symbol)]; ok && pos.avgCost > 0 {
+			return pos.avgCost
+		}
+		return 0
+	}
+
+	var strike, iv float64
+	fmt.Sscanf(strikeStr, "%f", &strike)
+	fmt.Sscanf(ivStr, "%f", &iv)
+	if iv <= 0 {
+		iv = 0.20
+	}
+
+	expiry, err := time.Parse("2006-01-02", expiryStr)
+	if err != nil {
+		return 0
+	}
+
+	dteYears := expiry.Sub(barTime).Hours() / (24 * 365)
+	if dteYears <= 0 {
+		// Expired — return intrinsic value only
+		if rightStr == "CALL" {
+			return max(underlyingPrice-strike, 0)
+		}
+		return max(strike-underlyingPrice, 0)
+	}
+
+	isCall := rightStr == "CALL"
+	price, _, _, _ := options.BSMPrice(underlyingPrice, strike, dteYears, 0.05, iv, isCall)
+	return price
 }
