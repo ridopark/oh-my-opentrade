@@ -669,7 +669,7 @@ function MiniChart({
       if (!rect) return;
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      const idx = overlayRef.current.hitTest(x, y);
+      const idx = overlayRef.current.hitTestSignal(x, y);
       if (idx >= 0) onMarkerClick(idx);
     };
     const handleChartMouseMove = (e: MouseEvent) => {
@@ -678,7 +678,7 @@ function MiniChart({
       if (!rect) return;
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      const hit = overlayRef.current.hitTest(x, y) >= 0;
+      const hit = overlayRef.current.hitTestSignal(x, y) >= 0;
       containerEl!.style.cursor = hit ? "pointer" : "";
     };
     containerEl.addEventListener("click", handleChartClick);
