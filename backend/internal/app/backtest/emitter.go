@@ -112,8 +112,9 @@ func (e *Emitter) onCandle(_ context.Context, ev domain.Event) error {
 				data["ema200"] = snap.EMA200
 			}
 			// Session VWAP = anchored VWAP from session open.
-			// Computed on every 1m bar by the monitor, resets each session.
-			if snap.VWAP > 0 {
+			// Only emit during RTH (9:30-16:00 ET) so the chart line
+			// breaks between sessions instead of connecting overnight.
+			if snap.VWAP > 0 && isRTH(bar.Time) {
 				data["avwap"] = snap.VWAP
 			}
 		}
@@ -345,4 +346,17 @@ func (e *Emitter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+var etLoc *time.Location
+
+func init() {
+	etLoc, _ = time.LoadLocation("America/New_York")
+}
+
+// isRTH returns true if the timestamp falls within regular trading hours (9:30–16:00 ET).
+func isRTH(t time.Time) bool {
+	et := t.In(etLoc)
+	hm := et.Hour()*100 + et.Minute()
+	return hm >= 930 && hm < 1600
 }
