@@ -157,6 +157,14 @@ func (s *AVWAPState) ClearPendingEntry() {
 	s.PendingEntryAt = time.Time{}
 }
 
+// AVWAPValues returns the current anchored VWAP values for chart rendering.
+func (s *AVWAPState) AVWAPValues() map[string]float64 {
+	if s.Calc == nil {
+		return nil
+	}
+	return s.Calc.Values()
+}
+
 // --- param helpers (shared by strategies in this package) ---
 
 func getFloat64(m map[string]any, key string, def float64) float64 {

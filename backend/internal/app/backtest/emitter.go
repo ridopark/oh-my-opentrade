@@ -32,12 +32,16 @@ type emitterClient struct {
 // Emitter fans out backtest domain events to connected HTTP SSE clients.
 type SnapshotFn func(symbol string) (domain.IndicatorSnapshot, bool)
 
+// AVWAPFn returns the current anchored VWAP values for a symbol (anchor name → value).
+type AVWAPFn func(symbol string) map[string]float64
+
 type Emitter struct {
 	mu            sync.RWMutex
 	clients       map[*emitterClient]struct{}
 	log           zerolog.Logger
 	baseTimeframe domain.Timeframe
 	snapshotFn    SnapshotFn
+	avwapFn       AVWAPFn
 
 	historyMu sync.Mutex
 	history   []SSEEvent
@@ -54,6 +58,10 @@ func NewEmitter(log zerolog.Logger, baseTimeframe domain.Timeframe) *Emitter {
 
 func (e *Emitter) SetSnapshotFn(fn SnapshotFn) {
 	e.snapshotFn = fn
+}
+
+func (e *Emitter) SetAVWAPFn(fn AVWAPFn) {
+	e.avwapFn = fn
 }
 
 // Subscribe wires up domain event listeners on the given (isolated) event bus
@@ -109,6 +117,17 @@ func (e *Emitter) onCandle(_ context.Context, ev domain.Event) error {
 			}
 			if snap.EMA200 > 0 {
 				data["ema200"] = snap.EMA200
+			}
+		}
+	}
+	if e.avwapFn != nil {
+		if vals := e.avwapFn(string(bar.Symbol)); len(vals) > 0 {
+			// Use the first anchor's value (typically "session_open")
+			for _, v := range vals {
+				if v > 0 {
+					data["avwap"] = v
+					break
+				}
 			}
 		}
 	}

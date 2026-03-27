@@ -583,6 +583,7 @@ function MiniChart({
   const ema21Ref = useRef<ISeriesApi<"Line", Time> | null>(null);
   const ema50Ref = useRef<ISeriesApi<"Line", Time> | null>(null);
   const ema200Ref = useRef<ISeriesApi<"Line", Time> | null>(null);
+  const avwapRef = useRef<ISeriesApi<"Line", Time> | null>(null);
   const overlayRef = useRef<SignalMarkerOverlay | null>(null);
   const orbOverlayRef = useRef<ORBBoxOverlay | null>(null);
   const lastBarCountRef = useRef(0);
@@ -653,6 +654,11 @@ function MiniChart({
     });
     ema200Ref.current = ema200;
 
+    const avwapLine = chart.addSeries(LineSeries, {
+      color: "rgba(56, 189, 248, 0.9)", lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+    });
+    avwapRef.current = avwapLine;
+
     const overlay = new SignalMarkerOverlay();
     candle.attachPrimitive(overlay);
     overlayRef.current = overlay;
@@ -704,6 +710,7 @@ function MiniChart({
       ema21Ref.current = null;
       ema50Ref.current = null;
       ema200Ref.current = null;
+      avwapRef.current = null;
       overlayRef.current = null;
       orbOverlayRef.current = null;
       lastBarCountRef.current = 0;
@@ -726,10 +733,13 @@ function MiniChart({
     const ema50Data = sorted.filter((b) => b.ema50 && b.ema50 > 0).map((b) => ({ time: b.time as Time, value: b.ema50! }));
     const ema200Data = sorted.filter((b) => b.ema200 && b.ema200 > 0).map((b) => ({ time: b.time as Time, value: b.ema200! }));
 
+    const avwapData = sorted.filter((b) => b.avwap && b.avwap > 0).map((b) => ({ time: b.time as Time, value: b.avwap! }));
+
     if (ema9Ref.current) ema9Ref.current.setData(ema9Data);
     if (ema21Ref.current) ema21Ref.current.setData(ema21Data);
     if (ema50Ref.current) ema50Ref.current.setData(ema50Data);
     if (ema200Ref.current) ema200Ref.current.setData(ema200Data);
+    if (avwapRef.current) avwapRef.current.setData(avwapData);
 
     lastBarCountRef.current = bars.length;
 
@@ -812,6 +822,7 @@ function MiniChart({
     { label: "EMA 21", color: "rgba(139, 92, 246, 0.7)" },
     { label: "EMA 50", color: "rgba(236, 72, 153, 0.6)" },
     { label: "EMA 200", color: "rgba(249, 115, 22, 0.5)" },
+    { label: "AVWAP", color: "rgba(56, 189, 248, 0.9)" },
   ];
 
   return (
