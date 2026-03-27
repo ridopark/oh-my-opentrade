@@ -477,6 +477,33 @@ func (s *Service) tryOptionsRoute(
 	return optIntent, true
 }
 
+// optionHalfSpreadPct estimates the half bid-ask spread as a fraction of premium.
+// Used to simulate realistic entry fills (buying at the ask, above mid-price).
+func optionHalfSpreadPct(premium float64, dte int, absDelta float64) float64 {
+	var base float64
+	switch {
+	case premium >= 10.0:
+		base = 0.008
+	case premium >= 5.0:
+		base = 0.012
+	case premium >= 2.0:
+		base = 0.020
+	case premium >= 1.0:
+		base = 0.030
+	default:
+		base = 0.050
+	}
+	if absDelta < 0.30 {
+		base *= 1.5
+	} else if absDelta > 0.60 {
+		base *= 1.2
+	}
+	if dte < 14 {
+		base *= 1.3
+	}
+	return base
+}
+
 // tryBSMOptionsRoute creates a synthetic options order using Black-Scholes pricing.
 // Used in backtesting when no OptionsMarketDataPort is available.
 func (s *Service) tryBSMOptionsRoute(
@@ -578,6 +605,11 @@ func (s *Service) tryBSMOptionsRoute(
 	if premium <= 0 {
 		return domain.OrderIntent{}, false
 	}
+
+	// Apply bid-ask half-spread: buying at the ask (above mid-price).
+	// Spread widens for cheap options, OTM strikes, and short DTE.
+	halfSpreadPct := optionHalfSpreadPct(premium, targetDTE, absDelta)
+	premium *= (1.0 + halfSpreadPct)
 
 	// Position sizing: premium at risk
 	riskBPS := int64(100)
