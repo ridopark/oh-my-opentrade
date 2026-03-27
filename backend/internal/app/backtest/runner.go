@@ -577,10 +577,10 @@ func (r *Runner) Run(ctx context.Context) error {
 					bars = bars[len(bars)-minWarmupBars:]
 				}
 
-				// Fetch 1D bars for HTF EMA200 in parallel with other symbols.
+				// Fetch 1D bars for HTF EMA50 bias in parallel with other symbols.
 				var bars1d []domain.MarketBar
 				if r.marketData != nil {
-					dailyBarsNeeded := 200
+					dailyBarsNeeded := 50
 					dailyTo := r.cfg.From
 					if t, ok := firstBarTime[sym.String()]; ok && t.Before(dailyTo) {
 						dailyTo = t
@@ -588,7 +588,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					dailyFrom := dailyTo.Add(-time.Duration(float64(dailyBarsNeeded)*1.5) * 24 * time.Hour)
 					fetched, err := r.marketData.GetHistoricalBars(ctx, sym, "1d", dailyFrom, dailyTo)
 					if err != nil || len(fetched) < dailyBarsNeeded {
-						r.log.Warn().Err(err).Str("symbol", sym.String()).Int("got", len(fetched)).Int("needed", dailyBarsNeeded).Msg("insufficient 1D bars for HTF EMA200 — ORB signals will be blocked for this symbol")
+						r.log.Warn().Err(err).Str("symbol", sym.String()).Int("got", len(fetched)).Int("needed", dailyBarsNeeded).Msg("insufficient 1D bars for HTF EMA50 — ORB signals will be blocked for this symbol")
 					}
 					bars1d = fetched
 				}
@@ -605,25 +605,25 @@ func (r *Runner) Run(ctx context.Context) error {
 				for i, b := range res.bars1d {
 					closes[i] = b.Close
 				}
-				dailyBarsNeeded := 200
-				ema200 := monitor.ComputeStaticEMA(closes, dailyBarsNeeded)
-				if ema200 > 0 {
+				dailyBarsNeeded := 50
+				ema50 := monitor.ComputeStaticEMA(closes, dailyBarsNeeded)
+				if ema50 > 0 {
 					bias := "NEUTRAL"
 					lastClose := res.bars1d[len(res.bars1d)-1].Close
-					if lastClose > ema200*1.005 {
+					if lastClose > ema50*1.005 {
 						bias = "BULLISH"
-					} else if lastClose < ema200*0.995 {
+					} else if lastClose < ema50*0.995 {
 						bias = "BEARISH"
 					}
 					nr7 := monitor.ComputeNR7(res.bars1d)
 					dailyATR := monitor.ComputeDailyATR(res.bars1d, 14)
 					monitorSvc.SetStaticHTFData(res.sym, "1d", domain.HTFData{
-						EMA200:   ema200,
+						EMA50:    ema50,
 						Bias:     bias,
 						NR7:      nr7,
 						DailyATR: dailyATR,
 					})
-					r.log.Info().Str("symbol", res.sym).Float64("ema200", ema200).Str("bias", bias).Bool("nr7", nr7).Float64("daily_atr", dailyATR).Int("daily_bars", len(res.bars1d)).Msg("1D HTF warmup complete")
+					r.log.Info().Str("symbol", res.sym).Float64("ema50", ema50).Str("bias", bias).Bool("nr7", nr7).Float64("daily_atr", dailyATR).Int("daily_bars", len(res.bars1d)).Msg("1D HTF warmup complete")
 				}
 			}
 			monitorSvc.ResetSessionIndicators(res.sym)

@@ -45,7 +45,7 @@ type Service struct {
 	vixSkipAbove       float64  // skip ORB when VIX > this (0 = disabled)
 	vixWidenAbove      float64  // widen stops when VIX > this (0 = disabled)
 	orbAllowedRegimes  []string // regime gate for ORB (empty = allow all)
-	orbHTFBiasEnabled  bool     // block entries against daily EMA200 bias
+	orbHTFBiasEnabled  bool     // block entries against daily EMA50 bias
 	orbMinATRPct       float64  // skip symbols with daily ATR% below this
 }
 // GetLastSnapshot returns the most recently cached IndicatorSnapshot for the given symbol.
@@ -538,7 +538,7 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 				detected = false
 			}
 		}
-		// HTF bias gate: block entries against daily EMA200 trend direction.
+		// HTF bias gate: block entries against daily EMA50 trend direction.
 		if detected && s.orbHTFBiasEnabled {
 			if htf, ok := snap.HTF[domain.Timeframe("1d")]; ok && htf.Bias != "" && htf.Bias != "NEUTRAL" {
 				blocked := false
