@@ -167,18 +167,16 @@ func (r *HistoricalOptionsRepository) SaveBatch(
 
 func scanRow(rows interface{ Scan(dest ...any) error }) (domain.HistoricalOptionChainRow, error) {
 	var (
-		dateStr, symbol, expiryStr, callPut string
-		strike                              float64
-		bid, ask, iv, delta, gamma          *float64
-		theta, vega, rho                    *float64
+		date, expiry               time.Time
+		symbol, callPut            string
+		strike                     float64
+		bid, ask, iv, delta, gamma *float64
+		theta, vega, rho           *float64
 	)
-	if err := rows.Scan(&dateStr, &symbol, &expiryStr, &strike, &callPut,
+	if err := rows.Scan(&date, &symbol, &expiry, &strike, &callPut,
 		&bid, &ask, &iv, &delta, &gamma, &theta, &vega, &rho); err != nil {
 		return domain.HistoricalOptionChainRow{}, fmt.Errorf("scan row: %w", err)
 	}
-
-	date, _ := time.Parse("2006-01-02", dateStr)
-	expiry, _ := time.Parse("2006-01-02", expiryStr)
 
 	right := domain.OptionRightCall
 	if callPut == "Put" {
