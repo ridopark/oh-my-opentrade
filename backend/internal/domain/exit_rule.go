@@ -178,9 +178,10 @@ func (mp *MonitoredPosition) UpdateWaterMarks(price float64) {
 	}
 }
 
-// IsShort returns true if this is a short position (sell side).
+// IsShort returns true if the position profits from a price decline.
+// This covers equity shorts (side=SELL) and option puts (long put = bearish).
 func (mp *MonitoredPosition) IsShort() bool {
-	return strings.EqualFold(mp.Side, "SELL")
+	return strings.EqualFold(mp.Side, "SELL") || strings.EqualFold(mp.OptionRight, "PUT")
 }
 
 // UnrealizedPnLPct returns the unrealized P&L as a percentage of entry price.

@@ -2,7 +2,6 @@ package positionmonitor
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -278,9 +277,8 @@ func evaluateSDTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, curre
 		return false, ""
 	}
 
-	// For shorts, the target is the lower band (VWAP - SD*level).
-	isShort := strings.EqualFold(pos.Side, "SELL")
-	if isShort {
+	// For shorts (equity short or long put), target the lower band.
+	if pos.IsShort() {
 		// Mirror the upper band around VWAP to get the lower band
 		lowerBand := 2*ctx.VWAPValue - upperBand
 		if currentPrice <= lowerBand {
