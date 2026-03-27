@@ -1,7 +1,7 @@
 schema_version = 2
 
 [strategy]
-id = "avwap_v1"
+id = "avwap"
 version = "1.0.0"
 name = "AVWAP Breakout/Bounce"
 description = "Anchored VWAP breakout and bounce strategy with regime gating"
@@ -50,7 +50,7 @@ allowed_regimes = ["BALANCE", "REVERSAL"]
 min_atr_pct = 0.8
 
 [hooks]
-signals = { engine = "builtin", name = "avwap_v1" }
+signals = { engine = "builtin", name = "avwap" }
 
 [dynamic_risk]
 enabled = true

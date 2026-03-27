@@ -19,7 +19,7 @@ priority = 80
 conflict_policy = "priority_wins"
 exclusive_per_symbol = true
 watchlist_mode = "replace"
-asset_classes = ["EQUITY", "OPTION"]
+asset_classes = ["OPTION"]
 allowed_directions = ["LONG", "SHORT"]
 
 [screening]
@@ -60,7 +60,7 @@ allowed_hours_end = "11:30"
 allowed_hours_tz = "America/New_York"
 
 [hooks]
-signals = { engine = "builtin", name = "avwap_v1" }
+signals = { engine = "builtin", name = "avwap" }
 
 [dynamic_risk]
 enabled = false

@@ -37,7 +37,7 @@ func feedAVWAPBar(t *testing.T, s *builtin.AVWAPStrategy, ctx *testContext, symb
 func TestAVWAPStrategy_Meta(t *testing.T) {
 	s := builtin.NewAVWAPStrategy()
 	meta := s.Meta()
-	assert.Equal(t, "avwap_v1", meta.ID.String())
+	assert.Equal(t, "avwap", meta.ID.String())
 	assert.Equal(t, "1.0.0", meta.Version.String())
 	assert.Equal(t, "AVWAP Breakout/Bounce", meta.Name)
 	assert.Equal(t, "system", meta.Author)
@@ -133,7 +133,7 @@ func TestAVWAPStrategy_Breakout_Long(t *testing.T) {
 	assert.Equal(t, strat.SignalEntry, sig.Type)
 	assert.Equal(t, strat.SideBuy, sig.Side)
 	assert.Equal(t, "AAPL", sig.Symbol)
-	assert.Equal(t, "avwap_v1:1.0.0:AAPL", sig.StrategyInstanceID.String())
+	assert.Equal(t, "avwap:1.0.0:AAPL", sig.StrategyInstanceID.String())
 	assert.Equal(t, "breakout", sig.Tags["mode"])
 	assert.Equal(t, "avwap_breakout", sig.Tags["setup"])
 	assert.Equal(t, "BALANCE", sig.Tags["regime_5m"])

@@ -186,7 +186,7 @@ Connects the strategy config to its signal-generation engine.
 | Variable | Type | Description |
 |---|---|---|
 | `signals.engine` | string | Signal engine type: `"builtin"` or `"yaegi"` (user-defined Go plugins). |
-| `signals.name` | string | Name of the signal generator to invoke (e.g. `"orb_v1"`, `"avwap_v1"`, `"ai_scalping_v1"`). |
+| `signals.name` | string | Name of the signal generator to invoke (e.g. `"orb_v1"`, `"avwap"`, `"ai_scalping_v1"`). |
 
 ---
 

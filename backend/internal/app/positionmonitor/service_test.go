@@ -494,7 +494,7 @@ func TestService_tick_ExitTimeoutCancelsStaleOrder(t *testing.T) {
 		Price:      67000,
 		Quantity:   0.15,
 		FilledAt:   now.Add(-5 * time.Minute),
-		Strategy:   "avwap_v1",
+		Strategy:   "avwap",
 		AssetClass: domain.AssetClassCrypto,
 		ExitRules:  []domain.ExitRule{},
 	})
@@ -525,7 +525,7 @@ func TestService_partialFill_KeepsExitPending(t *testing.T) {
 		Price:      67000,
 		Quantity:   0.15,
 		FilledAt:   time.Now(),
-		Strategy:   "avwap_v1",
+		Strategy:   "avwap",
 		AssetClass: domain.AssetClassCrypto,
 		ExitRules:  []domain.ExitRule{},
 	})
@@ -601,7 +601,7 @@ func TestService_processExitSubmitted_TracksOrderIDAndSetsExitPending(t *testing
 		Price:      67000,
 		Quantity:   0.15,
 		FilledAt:   now,
-		Strategy:   "avwap_v1",
+		Strategy:   "avwap",
 		AssetClass: domain.AssetClassCrypto,
 		ExitRules:  []domain.ExitRule{},
 	})
@@ -636,7 +636,7 @@ func TestService_processExitSubmitted_DoesNotResetExitPendingAt(t *testing.T) {
 		Price:      67000,
 		Quantity:   0.15,
 		FilledAt:   now,
-		Strategy:   "avwap_v1",
+		Strategy:   "avwap",
 		AssetClass: domain.AssetClassCrypto,
 		ExitRules:  []domain.ExitRule{},
 	})
@@ -668,7 +668,7 @@ func TestService_processExitTerminal_ClearsExitPending(t *testing.T) {
 		Price:      67000,
 		Quantity:   0.15,
 		FilledAt:   time.Now(),
-		Strategy:   "avwap_v1",
+		Strategy:   "avwap",
 		AssetClass: domain.AssetClassCrypto,
 		ExitRules:  []domain.ExitRule{},
 	})
@@ -701,7 +701,7 @@ func TestService_processExitTerminal_IgnoresMismatchedOrderID(t *testing.T) {
 		Price:      67000,
 		Quantity:   0.15,
 		FilledAt:   time.Now(),
-		Strategy:   "avwap_v1",
+		Strategy:   "avwap",
 		AssetClass: domain.AssetClassCrypto,
 		ExitRules:  []domain.ExitRule{},
 	})

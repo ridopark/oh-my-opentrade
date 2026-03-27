@@ -19,7 +19,7 @@ watchlist_mode = "replace"
 asset_classes = ["EQUITY", "CRYPTO"]
 allowed_directions = ["LONG"]
 [hooks]
-signals = { engine = "builtin", name = "avwap_v1" }
+signals = { engine = "builtin", name = "avwap" }
 [params]
 anchors = ["pd_high", "pd_low", "session_open"]
 breakout_enabled = true
