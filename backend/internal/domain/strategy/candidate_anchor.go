@@ -14,6 +14,8 @@ const (
 	AnchorVolumeRotation CandidateAnchorType = "volume_rotation"
 	AnchorWeeklyOpen     CandidateAnchorType = "weekly_open"
 	AnchorSessionDerived CandidateAnchorType = "session_derived"
+	AnchorCatalystGap    CandidateAnchorType = "catalyst_gap"
+	AnchorCapitulation   CandidateAnchorType = "capitulation"
 )
 
 // ValidAnchorTypes is the set of valid CandidateAnchorType values.
@@ -23,6 +25,27 @@ var ValidAnchorTypes = map[CandidateAnchorType]bool{
 	AnchorVolumeRotation: true,
 	AnchorWeeklyOpen:     true,
 	AnchorSessionDerived: true,
+	AnchorCatalystGap:    true,
+	AnchorCapitulation:   true,
+}
+
+// anchorTypePriority assigns a base priority score to each anchor type.
+var anchorTypePriority = map[CandidateAnchorType]float64{
+	AnchorCatalystGap:    30,
+	AnchorCapitulation:   25,
+	AnchorVolumeRotation: 15,
+	AnchorSwingHigh:      10,
+	AnchorSwingLow:       10,
+	AnchorWeeklyOpen:     5,
+	AnchorSessionDerived: 0,
+}
+
+// AnchorTypePriority returns the base priority score for the given anchor type.
+func AnchorTypePriority(t CandidateAnchorType) float64 {
+	if p, ok := anchorTypePriority[t]; ok {
+		return p
+	}
+	return 0
 }
 
 // VolumeRotationContext holds metadata about a detected volume rotation zone.

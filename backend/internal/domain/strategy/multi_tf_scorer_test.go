@@ -27,8 +27,8 @@ func TestMultiTimeframeScorer_SingleTimeframe(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 5.0*1.0, s5m.Strength, "5m weight = 1.0")
-	assert.Equal(t, 5.0*2.0, s1h.Strength, "1h weight = 2.0")
+	assert.Equal(t, 5.0*1.0+10.0, s5m.Strength, "5m weight = 1.0 + type priority 10")
+	assert.Equal(t, 5.0*2.0+10.0, s1h.Strength, "1h weight = 2.0 + type priority 10")
 }
 
 func TestMultiTimeframeScorer_Confluence(t *testing.T) {
@@ -50,8 +50,8 @@ func TestMultiTimeframeScorer_Confluence(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 5.0*1.0+2.0, s5m.Strength, "5m gets +2 confluence bonus")
-	assert.Equal(t, 5.0*2.0+2.0, s1h.Strength, "1h gets +2 confluence bonus")
+	assert.Equal(t, 5.0*1.0+2.0+10.0, s5m.Strength, "5m gets +2 confluence bonus + type priority 10")
+	assert.Equal(t, 5.0*2.0+2.0+10.0, s1h.Strength, "1h gets +2 confluence bonus + type priority 10")
 }
 
 func TestMultiTimeframeScorer_NoConfluenceFarApart(t *testing.T) {
@@ -70,7 +70,7 @@ func TestMultiTimeframeScorer_NoConfluenceFarApart(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 5.0*1.0, s5m.Strength, "no confluence when far apart in time")
+	assert.Equal(t, 5.0*1.0+10.0, s5m.Strength, "no confluence when far apart in time + type priority 10")
 }
 
 func TestMultiTimeframeScorer_NoConfluenceDifferentTypes(t *testing.T) {
@@ -89,7 +89,7 @@ func TestMultiTimeframeScorer_NoConfluenceDifferentTypes(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 5.0*1.0, sHigh.Strength, "no confluence for different types")
+	assert.Equal(t, 5.0*1.0+10.0, sHigh.Strength, "no confluence for different types + type priority 10")
 }
 
 func TestMultiTimeframeScorer_NoConfluenceDifferentPriceLevels(t *testing.T) {
@@ -108,7 +108,7 @@ func TestMultiTimeframeScorer_NoConfluenceDifferentPriceLevels(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 5.0*1.0, s5m.Strength, "no confluence when prices >2% apart")
+	assert.Equal(t, 5.0*1.0+10.0, s5m.Strength, "no confluence when prices >2% apart + type priority 10")
 }
 
 func TestMultiTimeframeScorer_DailyWeightsHighest(t *testing.T) {
@@ -121,10 +121,10 @@ func TestMultiTimeframeScorer_DailyWeightsHighest(t *testing.T) {
 	scored := scorer.Score([]CandidateAnchor{ca5m, ca1d})
 	require.Len(t, scored, 2)
 
-	// 1d: 5*3.0=15, 5m: 3*1.0=3 — daily ranks first due to weight
+	// 1d: 5*3.0+10=25, 5m: 3*1.0+10=13 — daily ranks first due to weight
 	assert.Equal(t, "1d", scored[0].Timeframe)
-	assert.Equal(t, 15.0, scored[0].Strength)
-	assert.Equal(t, 3.0, scored[1].Strength)
+	assert.Equal(t, 25.0, scored[0].Strength)
+	assert.Equal(t, 13.0, scored[1].Strength)
 }
 
 func TestMultiTimeframeScorer_SortedByStrength(t *testing.T) {
@@ -184,10 +184,10 @@ func TestMultiTimeframeScorer_TripleConfluence(t *testing.T) {
 		}
 	}
 
-	// 5m: base 5*1.0 + confluence with 1h (+2) + confluence with 1d (+2) = 9
-	assert.Equal(t, 5.0*1.0+2.0+2.0, s5m.Strength)
-	// 1h: base 5*2.0 + confluence with 5m (+2) + confluence with 1d (+2) = 14
-	assert.Equal(t, 5.0*2.0+2.0+2.0, s1h.Strength)
-	// 1d: base 5*3.0 + confluence with 5m (+2) + confluence with 1h (+2) = 19
-	assert.Equal(t, 5.0*3.0+2.0+2.0, s1d.Strength)
+	// 5m: base 5*1.0 + confluence with 1h (+2) + confluence with 1d (+2) + type priority 10 = 19
+	assert.Equal(t, 5.0*1.0+2.0+2.0+10.0, s5m.Strength)
+	// 1h: base 5*2.0 + confluence with 5m (+2) + confluence with 1d (+2) + type priority 10 = 24
+	assert.Equal(t, 5.0*2.0+2.0+2.0+10.0, s1h.Strength)
+	// 1d: base 5*3.0 + confluence with 5m (+2) + confluence with 1h (+2) + type priority 10 = 29
+	assert.Equal(t, 5.0*3.0+2.0+2.0+10.0, s1d.Strength)
 }
