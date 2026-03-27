@@ -537,12 +537,8 @@ func (s *Service) tryBSMOptionsRoute(
 		return domain.OrderIntent{}, false
 	}
 
-	// Check delta is within target range
-	absDelta := math.Abs(delta)
-	if absDelta < spec.Options.Defaults.TargetDeltaLow || absDelta > spec.Options.Defaults.TargetDeltaHigh {
-		// Adjust strike to get closer to target delta
-		// For now, accept ATM — delta ~0.50 is within most configs
-	}
+	// TODO: adjust strike if delta is outside target range.
+	// For now, accept ATM — delta ~0.50 is within most configs.
 
 	// Position sizing: premium at risk
 	riskBPS := int64(100)
