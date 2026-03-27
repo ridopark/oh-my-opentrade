@@ -52,6 +52,7 @@ export interface BacktestTrade {
   vix_bucket?: string;
   market_context?: string;
   pnl?: number;
+  instrument_type?: string; // "OPTION" for options contracts
 }
 
 export interface BacktestMetrics {
@@ -90,6 +91,7 @@ export interface BacktestResult {
   avg_loss: number;
   largest_win: number;
   largest_loss: number;
+  trades?: BacktestTrade[]; // trades with collector-computed PnL (includes 100x for options)
 }
 
 type BacktestStatus = "idle" | "running" | "paused" | "completed" | "error" | "cancelled";
@@ -262,6 +264,12 @@ export function useBacktest(): UseBacktestReturn {
       if (res.ok) {
         const data = await res.json();
         setResult(data);
+        // Replace SSE trades with collector trades that have computed PnL
+        // (includes 100x multiplier for options).
+        if (data.trades && Array.isArray(data.trades) && data.trades.length > 0) {
+          tradesRef.current = data.trades;
+          setTrades(data.trades);
+        }
       }
     } catch {
     }
