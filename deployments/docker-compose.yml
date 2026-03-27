@@ -90,7 +90,7 @@ services:
     - IBKR_GATEWAY_HOST=ib-gateway
     - IBKR_GATEWAY_PORT=4004
     - IBKR_CLIENT_ID=${IBKR_CLIENT_ID:-1}
-    - IBKR_ACCOUNT_ID=""
+    - IBKR_ACCOUNT_ID=${IBKR_ACCOUNT_ID:-}
     ports:
     - 8080:8080
     networks:
