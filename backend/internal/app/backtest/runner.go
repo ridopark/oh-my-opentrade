@@ -551,6 +551,59 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	// Backfill symbols that have zero bars in the requested range from the market data API.
+	if r.marketData != nil {
+		var backfillSyms []domain.Symbol
+		for _, s := range streams {
+			if len(s.bars) == 0 {
+				backfillSyms = append(backfillSyms, s.symbol)
+			}
+		}
+		if len(backfillSyms) > 0 {
+			r.emitter.EmitSetup(fmt.Sprintf("Fetching missing candles for %d symbol(s)…", len(backfillSyms)))
+			r.log.Info().Strs("symbols", symbolStrings(backfillSyms)).Msg("backfilling symbols with no local bars from market data API")
+
+			// Build index for fast stream lookup.
+			streamIdx := make(map[domain.Symbol]*barStream, len(streams))
+			for _, s := range streams {
+				streamIdx[s.symbol] = s
+			}
+
+			var bfMu sync.Mutex
+			var bfWg sync.WaitGroup
+			for _, sym := range backfillSyms {
+				bfWg.Add(1)
+				go func(sym domain.Symbol) {
+					defer bfWg.Done()
+					apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, r.cfg.From, r.cfg.To)
+					if apiErr != nil {
+						r.log.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("API backfill fetch failed")
+						return
+					}
+					if len(apiBars) == 0 {
+						r.log.Warn().Str("symbol", sym.String()).Msg("API returned no bars for backfill range")
+						return
+					}
+					saved, saveErr := repo.SaveMarketBars(ctx, apiBars)
+					if saveErr != nil {
+						r.log.Warn().Err(saveErr).Str("symbol", sym.String()).Msg("failed to persist backfill bars")
+					}
+					r.log.Info().Str("symbol", sym.String()).Int("fetched", len(apiBars)).Int("saved", saved).Msg("backfilled bars from API")
+
+					bfMu.Lock()
+					if s := streamIdx[sym]; s != nil {
+						s.bars = apiBars
+					}
+					totalBars += len(apiBars)
+					if len(apiBars) > 0 {
+						firstBarTime[sym.String()] = apiBars[0].Time
+					}
+					bfMu.Unlock()
+				}(sym)
+			}
+			bfWg.Wait()
+		}
+	}
 
 	sort.Slice(streams, func(i, j int) bool { return streams[i].symbol.String() < streams[j].symbol.String() })
 
