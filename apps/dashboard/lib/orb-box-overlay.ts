@@ -203,9 +203,11 @@ export function computeORBRanges(bars: { time: number; high: number; low: number
       }
     }
 
-    // Track first bar after ORB window (box starts here) and last bar of day
+    // Track first bar after ORB window (box starts here) and last RTH bar
+    const minsFromMidnight = etHour * 60 + etMin;
+    const isRTH = minsFromMidnight >= 570 && minsFromMidnight < 960; // 9:30-16:00
     const existing = dayData.get(dayKey);
-    if (existing) {
+    if (existing && isRTH) {
       if (minsFromOpen >= windowMinutes && existing.startTime === 0) {
         existing.startTime = bar.time; // first bar after ORB window closes
       }
