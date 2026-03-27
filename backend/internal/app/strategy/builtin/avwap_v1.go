@@ -75,6 +75,13 @@ type AVWAPConfig struct {
 	MiddayVolumeMult  float64
 	AssetClass        string
 	Anchors           []string
+
+	EnforceAVWAPBias     bool
+	PullbackEnabled      bool
+	PullbackTrendBars    int
+	PullbackToleranceBPS int
+	PullbackRSIMin       float64
+	PullbackRSIMax       float64
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -93,6 +100,9 @@ type AVWAPState struct {
 	RecentLows     []float64
 	RecentHighs    []float64
 	CalcBarCount   int // bars fed to Calc since last reset — used for stabilization
+
+	PeakAboveCount map[string]int // tracks the max AboveCount before a pullback started
+	PeakBelowCount map[string]int // tracks the max BelowCount before a pullback started
 }
 
 // SetIndicators implements the indicatorSetter interface.
@@ -116,6 +126,8 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 		}
 		s.AboveCount = make(map[string]int)
 		s.BelowCount = make(map[string]int)
+		s.PeakAboveCount = make(map[string]int)
+		s.PeakBelowCount = make(map[string]int)
 		s.TradesToday = 0
 		s.CalcBarCount = 0
 		return
@@ -151,6 +163,8 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 	s.Calc = newCalc
 	s.AboveCount = newAbove
 	s.BelowCount = newBelow
+	s.PeakAboveCount = make(map[string]int)
+	s.PeakBelowCount = make(map[string]int)
 	s.TradesToday = 0
 	s.CalcBarCount = 0 // reset stabilization counter
 }
@@ -300,6 +314,13 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		MiddayVolumeMult:  getFloat64(params, "midday_volume_mult", 2.0),
 		AssetClass:        getString(params, "asset_class", ""),
 		Anchors:           getStringSlice(params, "anchors", []string{"session_open"}),
+
+		EnforceAVWAPBias:     getBool(params, "enforce_avwap_bias", true),
+		PullbackEnabled:      getBool(params, "pullback_enabled", true),
+		PullbackTrendBars:    getInt(params, "pullback_trend_bars", 10),
+		PullbackToleranceBPS: getInt(params, "pullback_tolerance_bps", 20),
+		PullbackRSIMin:       getFloat64(params, "pullback_rsi_min", 40.0),
+		PullbackRSIMax:       getFloat64(params, "pullback_rsi_max", 60.0),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
 	return cfg
@@ -335,11 +356,13 @@ func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string
 	}
 
 	st := &AVWAPState{
-		Symbol:     symbol,
-		Calc:       calc,
-		AboveCount: make(map[string]int),
-		BelowCount: make(map[string]int),
-		Config:     cfg,
+		Symbol:         symbol,
+		Calc:           calc,
+		AboveCount:     make(map[string]int),
+		BelowCount:     make(map[string]int),
+		PeakAboveCount: make(map[string]int),
+		PeakBelowCount: make(map[string]int),
+		Config:         cfg,
 	}
 
 	if prior != nil {
@@ -347,6 +370,8 @@ func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string
 			st.Calc = avwapPrior.Calc
 			st.AboveCount = avwapPrior.AboveCount
 			st.BelowCount = avwapPrior.BelowCount
+			st.PeakAboveCount = avwapPrior.PeakAboveCount
+			st.PeakBelowCount = avwapPrior.PeakBelowCount
 			st.TradesToday = avwapPrior.TradesToday
 			st.CooldownUntil = avwapPrior.CooldownUntil
 			st.PositionSide = avwapPrior.PositionSide
@@ -507,6 +532,48 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		return avwapSt, nil, nil
 	}
 
+	// 6b. Directional bias gate — determine bias from first anchor's AVWAP value.
+	avwapBias := "" // "LONG", "SHORT", or "" (no bias / no data)
+	if cfg.EnforceAVWAPBias && len(cfg.Anchors) > 0 {
+		firstAnchor := cfg.Anchors[0]
+		if firstAVWAP, ok2 := avwapValues[firstAnchor]; ok2 {
+			if bar.Close > firstAVWAP {
+				avwapBias = "LONG"
+			} else if bar.Close < firstAVWAP {
+				avwapBias = "SHORT"
+			}
+		}
+	}
+
+	// 6c. Update PeakAboveCount/PeakBelowCount for pullback detection.
+	if avwapSt.PeakAboveCount == nil {
+		avwapSt.PeakAboveCount = make(map[string]int)
+	}
+	if avwapSt.PeakBelowCount == nil {
+		avwapSt.PeakBelowCount = make(map[string]int)
+	}
+	for anchorName := range avwapValues {
+		if avwapSt.AboveCount[anchorName] > avwapSt.PeakAboveCount[anchorName] {
+			avwapSt.PeakAboveCount[anchorName] = avwapSt.AboveCount[anchorName]
+		}
+		if avwapSt.AboveCount[anchorName] == 0 && avwapSt.PeakAboveCount[anchorName] > 0 {
+			// price crossed below — peak is frozen for pullback check
+		}
+		if avwapSt.BelowCount[anchorName] > avwapSt.PeakBelowCount[anchorName] {
+			avwapSt.PeakBelowCount[anchorName] = avwapSt.BelowCount[anchorName]
+		}
+		if avwapSt.BelowCount[anchorName] == 0 && avwapSt.PeakBelowCount[anchorName] > 0 {
+			// price crossed above — peak is frozen for pullback check
+		}
+		// Reset peaks when price re-establishes a trend (AboveCount or BelowCount exceeds prior peak)
+		if avwapSt.AboveCount[anchorName] >= cfg.PullbackTrendBars {
+			avwapSt.PeakAboveCount[anchorName] = avwapSt.AboveCount[anchorName]
+		}
+		if avwapSt.BelowCount[anchorName] >= cfg.PullbackTrendBars {
+			avwapSt.PeakBelowCount[anchorName] = avwapSt.BelowCount[anchorName]
+		}
+	}
+
 	// 7. Breakout detection — scan ALL anchors for LONG first, then SHORT.
 	if cfg.BreakoutEnabled {
 		for anchorName, avwapValue := range avwapValues {
@@ -556,6 +623,12 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 					if regimeTag == "REVERSAL" {
 						continue
 					}
+					if cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "SHORT" {
+						if ctx != nil && ctx.Logger() != nil {
+							ctx.Logger().Info("AVWAP bias: blocking short breakout", "symbol", symbol, "bias", avwapBias, "anchor", anchorName)
+						}
+						continue
+					}
 					if cfg.RequireHigherLows && !hasLowerHighs(avwapSt.RecentHighs) {
 						continue
 					}
@@ -592,6 +665,90 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		}
 	}
 
+	// 7b. Pullback-to-AVWAP detection — between breakout and bounce.
+	if cfg.PullbackEnabled {
+		for anchorName, avwapValue := range avwapValues {
+			if avwapValue == 0 {
+				continue
+			}
+			toleranceFrac := float64(cfg.PullbackToleranceBPS) / 10000.0
+			toleranceAbs := avwapValue * toleranceFrac
+
+			volRatio := 0.0
+			if avwapSt.Indicators.VolumeSMA > 0 {
+				volRatio = bar.Volume / avwapSt.Indicators.VolumeSMA
+			}
+			volumeOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*avwapSt.Indicators.VolumeSMA
+			rsiOK := avwapSt.Indicators.RSI >= cfg.PullbackRSIMin && avwapSt.Indicators.RSI <= cfg.PullbackRSIMax
+
+			// Long pullback: was above AVWAP for trend bars, low touches AVWAP, closes above, RSI mid-range.
+			if avwapSt.PeakAboveCount[anchorName] >= cfg.PullbackTrendBars &&
+				bar.Low <= avwapValue+toleranceAbs &&
+				bar.Close > avwapValue &&
+				rsiOK && volumeOK {
+				if cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "LONG" {
+					if ctx != nil && ctx.Logger() != nil {
+						ctx.Logger().Info("AVWAP bias: blocking long pullback", "symbol", symbol, "bias", avwapBias, "anchor", anchorName)
+					}
+					continue
+				}
+				sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, 0.85, map[string]string{
+					"ref_price":   fmt.Sprintf("%.10f", bar.Close),
+					"setup":       "avwap_pullback",
+					"regime_5m":   regimeTag,
+					"anchor":      anchorName,
+					"avwap":       fmt.Sprintf("%.4f", avwapValue),
+					"vol_ratio":   fmt.Sprintf("%.2f", volRatio),
+					"peak_above":  fmt.Sprintf("%d", avwapSt.PeakAboveCount[anchorName]),
+					"mode":        "pullback",
+				})
+				if err != nil {
+					return avwapSt, nil, err
+				}
+				avwapSt.PendingEntry = start.SideBuy
+				avwapSt.PendingEntryAt = now
+				avwapSt.TradesToday++
+				avwapSt.CooldownUntil = now.Add(cooldown)
+				avwapSt.PeakAboveCount[anchorName] = 0
+				return avwapSt, []start.Signal{sig}, nil
+			}
+
+			// Short pullback: was below AVWAP for trend bars, high reaches AVWAP, closes below, RSI mid-range.
+			if !strings.EqualFold(cfg.Direction, "LONG") &&
+				avwapSt.PeakBelowCount[anchorName] >= cfg.PullbackTrendBars &&
+				bar.High >= avwapValue-toleranceAbs &&
+				bar.Close < avwapValue &&
+				rsiOK && volumeOK {
+				if cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "SHORT" {
+					if ctx != nil && ctx.Logger() != nil {
+						ctx.Logger().Info("AVWAP bias: blocking short pullback", "symbol", symbol, "bias", avwapBias, "anchor", anchorName)
+					}
+					continue
+				}
+				sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.85, map[string]string{
+					"ref_price":   fmt.Sprintf("%.10f", bar.Close),
+					"setup":       "avwap_pullback",
+					"regime_5m":   regimeTag,
+					"anchor":      anchorName,
+					"avwap":       fmt.Sprintf("%.4f", avwapValue),
+					"vol_ratio":   fmt.Sprintf("%.2f", volRatio),
+					"peak_below":  fmt.Sprintf("%d", avwapSt.PeakBelowCount[anchorName]),
+					"mode":        "pullback",
+				})
+				if err != nil {
+					return avwapSt, nil, err
+				}
+				avwapSt.PendingEntry = start.SideSell
+				avwapSt.PendingEntryAt = now
+				avwapSt.TradesToday++
+				avwapSt.CooldownUntil = now.Add(cooldown)
+				avwapSt.PeakBelowCount[anchorName] = 0
+				return avwapSt, []start.Signal{sig}, nil
+			}
+		}
+	}
+
+
 	// 8. Bounce detection.
 	if cfg.BounceEnabled {
 		for anchorName, avwapValue := range avwapValues {
@@ -599,6 +756,12 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 
 			// Long bounce: touches AVWAP + RSI < max + bullish candle.
 			if touchesAVWAP && avwapSt.Indicators.RSI > 0 && avwapSt.Indicators.RSI < cfg.RSIBounceMax {
+				if cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "LONG" {
+					if ctx != nil && ctx.Logger() != nil {
+						ctx.Logger().Info("AVWAP bias: blocking long bounce", "symbol", symbol, "bias", avwapBias, "anchor", anchorName)
+					}
+					continue
+				}
 				if regimeTag == "TREND" {
 					continue
 				}
@@ -631,6 +794,12 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 
 			// Short bounce: touches AVWAP + RSI > min + bearish candle.
 			if touchesAVWAP && avwapSt.Indicators.RSI > cfg.RSIBounceMin {
+				if cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "SHORT" {
+					if ctx != nil && ctx.Logger() != nil {
+						ctx.Logger().Info("AVWAP bias: blocking short bounce", "symbol", symbol, "bias", avwapBias, "anchor", anchorName)
+					}
+					continue
+				}
 				if regimeTag == "TREND" {
 					continue
 				}
@@ -708,6 +877,8 @@ type avwapStateJSON struct {
 	Anchors        []start.AnchorPoint                `json:"anchors"`
 	AboveCount     map[string]int                     `json:"above_count"`
 	BelowCount     map[string]int                     `json:"below_count"`
+	PeakAboveCount map[string]int                     `json:"peak_above_count,omitempty"`
+	PeakBelowCount map[string]int                     `json:"peak_below_count,omitempty"`
 	TradesToday    int                                `json:"trades_today"`
 	CooldownUntil  time.Time                          `json:"cooldown_until"`
 	PositionSide   start.Side                         `json:"position_side"`
@@ -733,6 +904,8 @@ func (s *AVWAPState) Marshal() ([]byte, error) {
 		Anchors:        anchors,
 		AboveCount:     s.AboveCount,
 		BelowCount:     s.BelowCount,
+		PeakAboveCount: s.PeakAboveCount,
+		PeakBelowCount: s.PeakBelowCount,
 		TradesToday:    s.TradesToday,
 		CooldownUntil:  s.CooldownUntil,
 		PositionSide:   s.PositionSide,
@@ -754,6 +927,8 @@ func (s *AVWAPState) Unmarshal(data []byte) error {
 	s.Config = j.Config
 	s.AboveCount = j.AboveCount
 	s.BelowCount = j.BelowCount
+	s.PeakAboveCount = j.PeakAboveCount
+	s.PeakBelowCount = j.PeakBelowCount
 	s.TradesToday = j.TradesToday
 	s.CooldownUntil = j.CooldownUntil
 	s.PositionSide = j.PositionSide
@@ -771,6 +946,12 @@ func (s *AVWAPState) Unmarshal(data []byte) error {
 	}
 	if s.BelowCount == nil {
 		s.BelowCount = make(map[string]int)
+	}
+	if s.PeakAboveCount == nil {
+		s.PeakAboveCount = make(map[string]int)
+	}
+	if s.PeakBelowCount == nil {
+		s.PeakBelowCount = make(map[string]int)
 	}
 	return nil
 }
