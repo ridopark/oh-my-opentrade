@@ -21,8 +21,10 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/strategy/store_fs"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
+	"github.com/oh-my-opentrade/backend/internal/adapters/dolthub"
 	"github.com/oh-my-opentrade/backend/internal/app/debate"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
+	"github.com/oh-my-opentrade/backend/internal/app/optionsimport"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/config"
@@ -360,12 +362,30 @@ func (r *Runner) Run(ctx context.Context) error {
 		aiAdvisor = llm.NewAdvisor(r.appCfg.AI.BaseURL, r.appCfg.AI.Model, r.appCfg.AI.APIKey, nil)
 	}
 
+	// Historical options data: import from DoltHub for realistic pricing.
+	dbAdapter := timescaledb.NewSqlDB(r.db)
+	histOptRepo := timescaledb.NewHistoricalOptionsRepository(dbAdapter, r.log.With().Str("component", "hist_options").Logger())
+
+	// Pre-flight: import missing historical options data from DoltHub.
+	dolthubClient := dolthub.NewClient(nil, r.log)
+	importer := optionsimport.NewService(dolthubClient, histOptRepo, r.log)
+	for _, sym := range r.cfg.Symbols {
+		if importErr := importer.EnsureData(ctx, sym.String(), r.cfg.From, r.cfg.To); importErr != nil {
+			r.log.Warn().Err(importErr).Str("symbol", sym.String()).
+				Msg("DoltHub import failed — will use BSM fallback for this symbol")
+		}
+	}
+
+	// Wire historical options to simbroker for realistic exit pricing.
+	sim.SetHistoricalOptions(histOptRepo)
+
 	// Debate service: processes SetupDetected events (ORB) and emits OrderIntentCreated.
 	// Only start if ORB strategy is selected (it's the only consumer of SetupDetected).
 	if orbSelected {
 		debateSvc := debate.NewService(r.eventBus, aiAdvisor, &noop.NoopRepo{}, 0.50, r.log.With().Str("component", "debate").Logger())
 		debateSvc.SetEquity(r.cfg.InitialEquity)
 		debateSvc.SetSpecStore(specStore)
+		debateSvc.SetHistoricalOptions(histOptRepo)
 		if startErr := debateSvc.Start(ctx); startErr != nil {
 			r.status.Store("error")
 			return fmt.Errorf("start debate: %w", startErr)

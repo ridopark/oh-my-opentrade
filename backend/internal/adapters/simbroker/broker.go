@@ -46,10 +46,11 @@ type position struct {
 // and ports.OrderStreamPort. It fills orders instantly at the last known bar
 // close price with configurable slippage.
 type Broker struct {
-	slippageBPS     int64
-	initialEquity   float64
-	disableFillChan bool
-	log             zerolog.Logger
+	slippageBPS       int64
+	initialEquity     float64
+	disableFillChan   bool
+	historicalOptions ports.HistoricalOptionsPort
+	log               zerolog.Logger
 
 	mu        sync.RWMutex
 	prices    map[domain.Symbol]float64
@@ -60,6 +61,11 @@ type Broker struct {
 	orderSeq  atomic.Int64
 
 	fillCh chan ports.OrderUpdate
+}
+
+// SetHistoricalOptions injects historical options data for realistic exit pricing.
+func (b *Broker) SetHistoricalOptions(h ports.HistoricalOptionsPort) {
+	b.historicalOptions = h
 }
 
 // New creates a new SimBroker with the given configuration.
@@ -427,7 +433,6 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 	rightStr := intent.Meta["option_right"]
 
 	if strikeStr == "" || expiryStr == "" {
-		// Fallback: try position's avg cost
 		if pos, ok := b.positions[string(intent.Symbol)]; ok && pos.avgCost > 0 {
 			return pos.avgCost
 		}
@@ -444,6 +449,24 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 	expiry, err := time.Parse("2006-01-02", expiryStr)
 	if err != nil {
 		return 0
+	}
+
+	// Try historical data first: use real bid price for exit (seller gets bid).
+	if b.historicalOptions != nil {
+		underlying := intent.Meta["underlying"]
+		if underlying == "" {
+			underlying = string(domain.UnderlyingFromOCC(intent.Symbol))
+		}
+		right := domain.OptionRightCall
+		if rightStr == "PUT" {
+			right = domain.OptionRightPut
+		}
+		row, err := b.historicalOptions.GetHistoricalContract(
+			context.Background(), domain.Symbol(underlying), barTime,
+			strike, expiry, right)
+		if err == nil && row != nil && row.Bid > 0 {
+			return row.Bid // realistic exit at the bid
+		}
 	}
 
 	dteYears := expiry.Sub(barTime).Hours() / (24 * 365)
