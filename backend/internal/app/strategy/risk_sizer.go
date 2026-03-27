@@ -602,6 +602,22 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 			return nil // options trade placed successfully
 		}
 		if errors.Is(err, errOptionsChainEmpty) || errors.Is(err, errOptionsChainFailed) {
+			// Only fall back to equity if the strategy allows it.
+			hasEquity := false
+			if spec != nil {
+				for _, ac := range spec.Routing.AssetClasses {
+					if strings.EqualFold(ac, "EQUITY") {
+						hasEquity = true
+						break
+					}
+				}
+			}
+			if !hasEquity {
+				rs.logger.Info("options chain empty, no equity fallback (asset_classes has no EQUITY)",
+					"symbol", sigRef.Symbol,
+				)
+				return nil // skip trade entirely
+			}
 			rs.logger.Info("options fallback to equity",
 				"symbol", sigRef.Symbol,
 				"reason", err.Error(),
