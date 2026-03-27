@@ -486,9 +486,22 @@ func (s *Service) processFill(fill fillMsg) {
 		pos.InstrumentType = fill.InstrumentType
 		pos.OptionExpiry = fill.OptionExpiry
 		pos.OptionRight = fill.OptionRight
-		// Store IV at entry for BSM exit pricing in backtests
-		if fill.IVAtEntry > 0 && pos.CustomState != nil {
-			pos.CustomState["iv_at_entry"] = fill.IVAtEntry
+		// Store premium and IV for BSM exit pricing
+		if pos.CustomState != nil {
+			pos.CustomState["option_premium"] = fill.Price
+			if fill.IVAtEntry > 0 {
+				pos.CustomState["iv_at_entry"] = fill.IVAtEntry
+			}
+		}
+		// For options: set entry price to the UNDERLYING price so exit rules
+		// (SD target, step stop, etc.) evaluate on the underlying's price action.
+		// The option is just the trade vehicle — ORB logic is about the underlying.
+		if underlying := domain.UnderlyingFromOCC(fill.Symbol); underlying != "" {
+			if snap, ok := s.priceCache.LatestPrice(underlying); ok {
+				pos.EntryPrice = snap.Price
+				pos.HighWaterMark = snap.Price
+				pos.LowWaterMark = snap.Price
+			}
 		}
 	}
 
