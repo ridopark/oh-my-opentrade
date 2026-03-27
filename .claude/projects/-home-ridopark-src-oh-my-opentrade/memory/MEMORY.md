@@ -1,0 +1,2 @@
+- [Backtest Analysis Script](reference_backtest_analysis.md) — Python script for detailed post-backtest performance analysis
+- [IB Gateway Staging](reference_ib_gateway_staging.md) — Staging IB Gateway connection, env vars, and troubleshooting
