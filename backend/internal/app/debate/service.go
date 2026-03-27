@@ -514,16 +514,17 @@ func (s *Service) tryBSMOptionsRoute(
 	// Strike: start at ATM, then adjust for target delta
 	strike := math.Round(underlyingPrice)
 
-	// IV: use realized vol from the snapshot (already computed as per-stock VIX-like number)
-	// Convert from percentage to decimal: e.g., 25% → 0.25
-	iv := 0.20 // default 20% if no data
-	if snap := setup.Snapshot; snap.ATR > 0 && underlyingPrice > 0 {
-		// Approximate IV from ATR: daily ATR ≈ price × σ × sqrt(1/252)
-		// So σ ≈ ATR / (price × sqrt(1/252)) = ATR / price × sqrt(252)
-		iv = (snap.ATR / underlyingPrice) * math.Sqrt(252)
+	// IV: derive from daily ATR (not 1m ATR which is too small).
+	// Daily ATR ≈ price × σ × sqrt(1/252), so σ ≈ dailyATR / price × sqrt(252)
+	iv := 0.25 // default 25% if no data
+	dailyATR := setup.Snapshot.HTFDailyATR()
+	if dailyATR > 0 && underlyingPrice > 0 {
+		iv = (dailyATR / underlyingPrice) * math.Sqrt(252)
 	}
-	if iv < 0.05 {
-		iv = 0.05
+	// Add variance risk premium (~3 vol points) — IV typically exceeds realized vol
+	iv += 0.03
+	if iv < 0.10 {
+		iv = 0.10 // minimum 10% IV (no stock trades below this)
 	}
 	if iv > 2.0 {
 		iv = 2.0
