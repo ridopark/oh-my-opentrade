@@ -90,25 +90,7 @@ func (e *Emitter) onCandle(_ context.Context, ev domain.Event) error {
 	if !ok {
 		return nil
 	}
-	isBaseTimeframe := e.baseTimeframe == "" || bar.Timeframe == e.baseTimeframe
-	if !isBaseTimeframe {
-		// Not the chart timeframe — emit a lightweight AVWAP-only update
-		// on 1m bars for a smooth line. Uses a separate "avwap" field on a
-		// minimal candle event (the frontend merges AVWAP data by timestamp).
-		if bar.Timeframe == "1m" && isSessionHours(bar.Time) && e.avwapFn != nil {
-			if vals := e.avwapFn(string(bar.Symbol)); len(vals) > 0 {
-				for _, v := range vals {
-					if v > 0 {
-						e.Emit(SSEEvent{Type: "backtest:avwap", Data: map[string]any{
-							"time":   bar.Time.Unix(),
-							"symbol": string(bar.Symbol),
-							"avwap":  v,
-						}})
-						break
-					}
-				}
-			}
-		}
+	if e.baseTimeframe != "" && bar.Timeframe != e.baseTimeframe {
 		return nil
 	}
 	data := map[string]any{
@@ -318,7 +300,7 @@ func (e *Emitter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	c := &emitterClient{ch: make(chan SSEEvent, 32768)}
+	c := &emitterClient{ch: make(chan SSEEvent, 8192)}
 	e.mu.Lock()
 	e.clients[c] = struct{}{}
 	clientCount := len(e.clients)
