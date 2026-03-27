@@ -873,23 +873,29 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
       const entry = openBySymbol.get(key);
       if (entry) {
         openBySymbol.delete(key);
-        const isShort = (entry.direction ?? "") === "SHORT";
+        // For options: determine underlying direction from OCC symbol (C=Call=LONG, P=Put=SHORT)
+        const isPut = /P\d{8}$/.test(entry.symbol);
+        const isOption = (t.instrument_type === "OPTION" || entry.instrument_type === "OPTION");
+        // Equity short vs options: bought puts represent bearish direction
+        const isEquityShort = (entry.direction ?? "") === "SHORT" && !isOption;
+        const isBearish = isEquityShort || isPut;
         const qty = entry.quantity ?? 0;
         const entryPx = entry.price ?? 0;
         const exitPx = t.price ?? 0;
         // Use collector-computed P&L if available (handles options 100x multiplier).
         // Fall back to manual calculation with multiplier for options.
-        const isOption = (t.instrument_type === "OPTION" || entry.instrument_type === "OPTION");
         const multiplier = isOption ? 100 : 1;
+        // For options (both calls and puts): P&L = (exit - entry) * qty * multiplier
+        // For equity shorts: P&L = (entry - exit) * qty
         const pnl = t.pnl !== undefined && t.pnl !== 0
           ? t.pnl
-          : (isShort ? (entryPx - exitPx) * qty * multiplier : (exitPx - entryPx) * qty * multiplier);
+          : (isEquityShort ? (entryPx - exitPx) * qty * multiplier : (exitPx - entryPx) * qty * multiplier);
         // P&L% based on premium/price change — works for both equity and options
-        const pnlPct = entryPx > 0 ? ((exitPx - entryPx) / entryPx * (isShort ? -1 : 1)) * 100 : 0;
+        const pnlPct = entryPx > 0 ? ((exitPx - entryPx) / entryPx * (isEquityShort ? -1 : 1)) * 100 : 0;
         positions.push({
           symbol: t.symbol,
           strategy: t.strategy ?? "",
-          direction: isShort ? "SHORT" : "LONG",
+          direction: isBearish ? "SHORT" : "LONG",
           entry,
           exit: t,
           qty,
@@ -912,7 +918,7 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
     positions.push({
       symbol: entry.symbol,
       strategy: entry.strategy ?? "",
-      direction: (entry.direction ?? "") === "SHORT" ? "SHORT" : "LONG",
+      direction: ((entry.direction ?? "") === "SHORT" || /P\d{8}$/.test(entry.symbol)) ? "SHORT" : "LONG",
       entry,
       exit: null,
       qty: entry.quantity ?? 0,
