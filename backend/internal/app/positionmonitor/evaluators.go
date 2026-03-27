@@ -181,6 +181,12 @@ func evaluateMaxHoldingTime(rule domain.ExitRule, pos *domain.MonitoredPosition,
 //
 //	"pct" — maximum loss percentage as a decimal (e.g. 0.02 = 2%)
 func evaluateMaxLoss(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64) (bool, string) {
+	// Skip MAX_LOSS for options — max loss is already defined (= premium paid).
+	// The underlying price movement doesn't directly map to option loss percentage.
+	if pos.InstrumentType == domain.InstrumentTypeOption {
+		return false, ""
+	}
+
 	pct := rule.Param("pct", 0)
 	if pct <= 0 {
 		return false, ""
