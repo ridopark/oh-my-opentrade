@@ -6,7 +6,6 @@ import {
   CandlestickSeries,
   HistogramSeries,
   type IChartApi,
-  type ISeriesApi,
   type CandlestickData,
   type Time,
   ColorType,

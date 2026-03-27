@@ -90,7 +90,7 @@ export default function PortfolioPage() {
         setAccount(data);
       }
       setError(null);
-    } catch (err) {
+    } catch {
       setError("Failed to fetch portfolio data");
     } finally {
       setLoading(false);

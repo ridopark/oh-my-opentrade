@@ -6,7 +6,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ArrowUp, ArrowDown, Activity, Zap, ArrowLeft, Plus, Grid3X3 } from "lucide-react";
+import { ArrowUp, ArrowDown, Activity, Zap, ArrowLeft, Grid3X3 } from "lucide-react";
 import { useChartData, type OHLCBar } from "@/lib/use-chart-data";
 import { useStrategyList } from "@/hooks/queries";
 import { useWatchlist } from "@/hooks/use-watchlist";
