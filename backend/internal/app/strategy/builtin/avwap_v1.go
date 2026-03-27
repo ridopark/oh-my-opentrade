@@ -391,8 +391,10 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		return avwapSt, nil, nil
 	}
 
-	// 2. Update AVWAP calculator.
-	avwapSt.Calc.Update(bar.Time, bar.High, bar.Low, bar.Close, bar.Volume)
+	// 2. Read current AVWAP values.
+	// The calculator is updated on every 1m bar via UpdateCalc() in the runner,
+	// so we just read the values here — no need to re-update on 5m bars
+	// (which would double-count volume and cause jagged chart lines).
 	avwapValues := avwapSt.Calc.Values()
 
 	// 2b. Update recent lows/highs sliding window for higher-lows filter.
