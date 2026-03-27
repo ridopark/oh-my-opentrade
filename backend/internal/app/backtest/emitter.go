@@ -318,7 +318,7 @@ func (e *Emitter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	c := &emitterClient{ch: make(chan SSEEvent, 4096)}
+	c := &emitterClient{ch: make(chan SSEEvent, 32768)}
 	e.mu.Lock()
 	e.clients[c] = struct{}{}
 	clientCount := len(e.clients)
