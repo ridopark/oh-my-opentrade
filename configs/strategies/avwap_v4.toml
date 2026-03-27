@@ -20,7 +20,7 @@ conflict_policy = "priority_wins"
 exclusive_per_symbol = true
 watchlist_mode = "replace"
 asset_classes = ["EQUITY", "OPTION"]
-allowed_directions = ["LONG"]
+allowed_directions = ["LONG", "SHORT"]
 
 [screening]
 description = "Volume-confirmed AVWAP breakouts with structural filters. Single session_open anchor, morning-only window, TREND regime gate, higher-lows confirmation. STEP_STOP replaces VOLATILITY_STOP for asymmetric exits."

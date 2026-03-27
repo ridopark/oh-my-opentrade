@@ -23,9 +23,11 @@ var tfWeights = map[string]float64{
 }
 
 type symbolDetectors struct {
-	swings map[string]*start.SwingDetector
-	volume map[string]*start.VolumeProfiler
-	weekly *start.WeeklyAnchorDetector
+	swings       map[string]*start.SwingDetector
+	volume       map[string]*start.VolumeProfiler
+	weekly       *start.WeeklyAnchorDetector
+	catalystGap  *start.CatalystGapDetector
+	capitulation *start.CapitulationDetector
 }
 
 type SessionAnchorFn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
@@ -96,7 +98,9 @@ func (r *AIAnchorResolver) RegisterSymbol(symbol string, isCrypto bool) {
 		volume: map[string]*start.VolumeProfiler{
 			"5m": start.NewVolumeProfiler(0.25, 20, "5m"),
 		},
-		weekly: start.NewWeeklyAnchorDetector(isCrypto, "5m"),
+		weekly:       start.NewWeeklyAnchorDetector(isCrypto, "5m"),
+		catalystGap:  start.NewCatalystGapDetector("1d"),
+		capitulation: start.NewCapitulationDetector("1d"),
 	}
 	r.candidates[symbol] = nil
 }
@@ -125,6 +129,19 @@ func (r *AIAnchorResolver) OnBar(symbol string, bar start.Bar, timeframe string)
 	if timeframe == "5m" && det.weekly != nil {
 		if ca := det.weekly.Push(bar); ca != nil {
 			r.addCandidate(symbol, *ca)
+		}
+	}
+
+	if timeframe == "1d" || timeframe == "daily" {
+		if det.catalystGap != nil {
+			if c := det.catalystGap.Push(bar); c != nil {
+				r.addCandidate(symbol, *c)
+			}
+		}
+		if det.capitulation != nil {
+			if c := det.capitulation.Push(bar); c != nil {
+				r.addCandidate(symbol, *c)
+			}
 		}
 	}
 }
@@ -311,7 +328,7 @@ func (r *AIAnchorResolver) fallbackRank(candidates []start.CandidateAnchor, maxA
 		if w == 0 {
 			w = 1.0
 		}
-		items[i] = scored{ca: c, score: w*10 + c.Strength}
+		items[i] = scored{ca: c, score: start.AnchorTypePriority(c.Type) + w*10 + c.Strength}
 	}
 
 	sort.Slice(items, func(i, j int) bool {

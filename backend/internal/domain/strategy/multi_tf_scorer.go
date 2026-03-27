@@ -52,10 +52,17 @@ const confluenceWindowBars = 5
 // cross-timeframe confluence. If two candidates from different timeframes
 // are close enough in time to represent the same structural level, both
 // receive a strength bonus.
-type MultiTimeframeScorer struct{}
+type MultiTimeframeScorer struct {
+	now time.Time
+}
 
 func NewMultiTimeframeScorer() *MultiTimeframeScorer {
 	return &MultiTimeframeScorer{}
+}
+
+// SetNow sets the reference time used for recency decay scoring.
+func (s *MultiTimeframeScorer) SetNow(t time.Time) {
+	s.now = t
 }
 
 // Score returns a copy of candidates with Strength adjusted for:
@@ -101,6 +108,18 @@ func (s *MultiTimeframeScorer) Score(candidates []CandidateAnchor) []CandidateAn
 					scored[i].Strength += 2.0
 					scored[j].Strength += 2.0
 				}
+			}
+		}
+	}
+
+	// Type priority bonus and recency decay
+	for i := range scored {
+		scored[i].Strength += AnchorTypePriority(scored[i].Type)
+
+		if !s.now.IsZero() {
+			daysSince := s.now.Sub(scored[i].Time).Hours() / 24.0
+			if daysSince > 0 {
+				scored[i].Strength *= 1.0 / (1.0 + 0.03*daysSince)
 			}
 		}
 	}

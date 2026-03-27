@@ -88,11 +88,27 @@ func (d *SwingDetector) isSwingLow(centerLow float64) bool {
 	return true
 }
 
-// swingStrength returns base N plus the count of additional confirming bars.
-// In the basic implementation, strength equals N since we only have the
-// exact window. Extended history scanning can be added later.
+// swingStrength returns base N scaled by the volume ratio of the center bar
+// relative to the average volume across the pivot window.
 func (d *SwingDetector) swingStrength(isHigh bool) float64 {
-	return float64(d.n)
+	center := d.buf[d.n]
+	// Sum volume across the pivot window
+	var totalVol float64
+	for _, b := range d.buf[:d.size] {
+		totalVol += b.Volume
+	}
+	avgVol := totalVol / float64(d.size)
+
+	// Volume ratio of center bar vs window average
+	volRatio := 1.0
+	if avgVol > 0 {
+		volRatio = center.Volume / avgVol
+		if volRatio < 1.0 {
+			volRatio = 1.0
+		}
+	}
+
+	return float64(d.n) * volRatio
 }
 
 // N returns the lookback parameter.
