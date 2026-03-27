@@ -19,7 +19,7 @@ priority = 100
 conflict_policy = "priority_wins"
 exclusive_per_symbol = true
 watchlist_mode = "replace"
-asset_classes = ["EQUITY", "OPTIONS"]
+asset_classes = ["EQUITY", "OPTION"]
 allowed_directions = ["LONG", "SHORT"]
 
 [screening]

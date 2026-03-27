@@ -263,7 +263,7 @@ function TopBar({
   };
 
   return (
-    <div className="rounded-lg border border-border bg-card px-4 py-2.5 flex items-center gap-4 flex-wrap">
+    <div className="relative z-40 rounded-lg border border-border bg-card px-4 py-2.5 flex items-center gap-4 flex-wrap">
       <h1 className="text-sm font-semibold text-foreground shrink-0">Backtest</h1>
 
       <div className="flex items-center gap-1.5 relative" ref={dropdownRef}>
