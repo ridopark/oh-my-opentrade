@@ -676,6 +676,7 @@ func (s *Service) tryBSMOptionsRoute(
 	optIntent.Meta["delta_at_entry"] = fmt.Sprintf("%.4f", delta)
 	optIntent.Meta["iv_at_entry"] = fmt.Sprintf("%.4f", iv)
 	optIntent.Meta["premium"] = fmt.Sprintf("%.2f", premium)
+	optIntent.Meta["underlying_entry_price"] = fmt.Sprintf("%.4f", underlyingPrice)
 	optIntent.Meta["bsm_synthetic"] = "true"
 
 	l.Info().

@@ -455,9 +455,12 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 		return max(strike-underlyingPrice, 0)
 	}
 
-	// Apply intraday IV decay: IV declines ~1.5% (relative) over the session
-	// as overnight uncertainty resolves. Front-loaded via exponential.
+	// Apply intraday IV decay and move-based IV crush.
+	// 1. Time-based decay: IV declines ~1.5% (relative) over the session
 	exitIV := intradayIVDecay(iv, barTime)
+	// 2. Move-based crush: large underlying moves resolve uncertainty,
+	//    causing IV to drop. Strike ≈ ATM entry price for our delta range.
+	exitIV = moveBasedIVCrush(exitIV, underlyingPrice, strike)
 
 	isCall := rightStr == "CALL"
 	price, delta, _, _ := options.BSMPrice(underlyingPrice, strike, dteYears, 0.05, exitIV, isCall)
@@ -470,6 +473,41 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 	}
 
 	return price
+}
+
+// moveBasedIVCrush models the empirical relationship between underlying price
+// moves and IV contraction. When the underlying moves significantly, the
+// uncertainty that was priced into IV has partially resolved, causing IV to drop.
+//
+// Empirical calibration (equity single-names):
+//   - 0-1% underlying move:  no additional IV crush
+//   - 1-3% underlying move:  3-8% relative IV decline
+//   - 3-5% underlying move:  8-15% relative IV decline
+//   - 5%+ underlying move:   15-25% relative IV decline
+//
+// Uses strike as proxy for entry underlying price (valid for 0.40-0.55 delta).
+func moveBasedIVCrush(iv, currentPrice, strike float64) float64 {
+	if strike <= 0 {
+		return iv
+	}
+	absMove := math.Abs(currentPrice-strike) / strike
+
+	var crushPct float64
+	switch {
+	case absMove >= 0.05:
+		crushPct = 0.15 + (absMove-0.05)*1.0 // 15% + 1x excess
+		if crushPct > 0.30 {
+			crushPct = 0.30 // cap at 30%
+		}
+	case absMove >= 0.03:
+		crushPct = 0.08 + (absMove-0.03)*3.5 // 8% → 15%
+	case absMove >= 0.01:
+		crushPct = 0.03 + (absMove-0.01)*2.5 // 3% → 8%
+	default:
+		return iv
+	}
+
+	return iv * (1.0 - crushPct)
 }
 
 // intradayIVDecay adjusts entry IV for intraday mean reversion.
