@@ -281,11 +281,9 @@ func evaluateSDTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, curre
 			return true, fmt.Sprintf("sd_target: price %.4f <= -%.1f SD band %.4f (vwap=%.4f)",
 				currentPrice, sdLevel, lowerBand, ctx.VWAPValue)
 		}
-	} else {
-		if currentPrice >= upperBand {
-			return true, fmt.Sprintf("sd_target: price %.4f >= +%.1f SD band %.4f (vwap=%.4f)",
-				currentPrice, sdLevel, upperBand, ctx.VWAPValue)
-		}
+	} else if currentPrice >= upperBand {
+		return true, fmt.Sprintf("sd_target: price %.4f >= +%.1f SD band %.4f (vwap=%.4f)",
+			currentPrice, sdLevel, upperBand, ctx.VWAPValue)
 	}
 	return false, ""
 }
@@ -484,10 +482,8 @@ func evaluateStagnationExit(rule domain.ExitRule, pos *domain.MonitoredPosition,
 				if currentPrice <= lowerBand {
 					return false, ""
 				}
-			} else {
-				if currentPrice >= bandPrice {
-					return false, ""
-				}
+			} else if currentPrice >= bandPrice {
+				return false, ""
 			}
 		}
 	}

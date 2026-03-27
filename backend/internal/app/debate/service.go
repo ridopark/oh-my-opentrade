@@ -403,7 +403,7 @@ func (s *Service) tryOptionsRoute(
 	intentID := uuid.New()
 	rationale := fmt.Sprintf("option: %s %s delta=%.2f DTE=%d | %s",
 		optRight, best.ContractSymbol, best.Delta,
-		int(best.Expiry.Sub(time.Now()).Hours()/24),
+		int(time.Until(best.Expiry).Hours()/24),
 		decision.Rationale)
 
 	optIntent, intentErr := domain.NewOptionOrderIntent(

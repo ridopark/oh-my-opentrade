@@ -1,27 +1,21 @@
 package monitor
-
 import (
 	"context"
 	"fmt"
 	"sync"
 	"time"
-
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/domain/screener"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
-
 // DNAGateChecker decides whether a strategy's DNA is approved for trading.
 // If no checker is set on the service, all setups pass through (backward compat).
 type DNAGateChecker interface {
 	IsDNAApproved(ctx context.Context, strategyKey string) (bool, error)
 }
-
 const settlingBars = 5
-
 var anchorTimeframes = []domain.Timeframe{"5m", "15m", "1h"}
-
 // Service is the monitor application service.
 // It subscribes to MarketBarSanitized events, computes technical indicators,
 // detects market regime shifts, and identifies trade setups.
@@ -54,7 +48,6 @@ type Service struct {
 	orbHTFBiasEnabled  bool     // block entries against daily EMA200 bias
 	orbMinATRPct       float64  // skip symbols with daily ATR% below this
 }
-
 // GetLastSnapshot returns the most recently cached IndicatorSnapshot for the given symbol.
 // Returns false if no snapshot has been cached yet.
 func (s *Service) GetLastSnapshot(symbol string) (domain.IndicatorSnapshot, bool) {
@@ -63,13 +56,11 @@ func (s *Service) GetLastSnapshot(symbol string) (domain.IndicatorSnapshot, bool
 	snap, ok := s.lastSnaps[symbol]
 	return snap, ok
 }
-
 // BarSnapshot pairs a market bar with its computed indicator snapshot.
 type BarSnapshot struct {
 	Bar      domain.MarketBar
 	Snapshot domain.IndicatorSnapshot
 }
-
 // WarmUpAndCollect processes historical bars through the indicator calculator
 // and returns per-bar indicator snapshots. It does NOT emit events or persist data.
 // Returns a slice of (MarketBar, IndicatorSnapshot) pairs for use by downstream warmup consumers.
@@ -83,7 +74,6 @@ func (s *Service) WarmUpAndCollect(bars []domain.MarketBar) []BarSnapshot {
 	}
 	return result
 }
-
 func (s *Service) SetStaticHTFData(sym string, tf domain.Timeframe, data domain.HTFData) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -92,7 +82,6 @@ func (s *Service) SetStaticHTFData(sym string, tf domain.Timeframe, data domain.
 	}
 	s.htfStatic[sym+":"+tf.String()] = data
 }
-
 func (s *Service) WarmUpHTF(bars []domain.MarketBar) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -111,7 +100,6 @@ func (s *Service) WarmUpHTF(bars []domain.MarketBar) int {
 	}
 	return len(bars)
 }
-
 // NewService creates a new monitor Service.
 func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zerolog.Logger) *Service {
 	return &Service{
@@ -130,7 +118,6 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 		log:            log,
 	}
 }
-
 // SetORBConfig overrides the default ORB configuration with values from
 // strategy DNA parameters. This must be called before Start() to ensure
 // the ORB tracker uses DNA-configured thresholds (min_rvol, min_confidence, etc.)
@@ -152,7 +139,6 @@ func (s *Service) SetORBConfig(params map[string]any) {
 		Float64("vix_widen_above", s.vixWidenAbove).
 		Msg("ORB config set from DNA parameters")
 }
-
 // SetORBTimeframe configures the bar timeframe for the ORB tracker.
 // When set to "5m" (the default), the ORB tracker receives aggregated 5m bars
 // so entries align to 5-minute boundaries. Call before Start().
@@ -165,7 +151,6 @@ func (s *Service) SetORBTimeframe(tf string) {
 	s.orbTimeframe = domain.Timeframe(tf)
 	s.log.Info().Str("orb_timeframe", tf).Msg("ORB timeframe set")
 }
-
 // SetVIXLevel sets the current VIX level for ORB regime gating.
 func (s *Service) SetVIXLevel(level float64) {
 	s.mu.Lock()
@@ -173,7 +158,6 @@ func (s *Service) SetVIXLevel(level float64) {
 	s.vixLevel = level
 	s.log.Info().Float64("vix", level).Msg("VIX level set")
 }
-
 // SetVIXThresholds configures VIX-based gating. skipAbove: skip ORB entirely.
 // widenAbove: signal debate service to widen stops.
 func (s *Service) SetVIXThresholds(skipAbove, widenAbove float64) {
@@ -183,14 +167,12 @@ func (s *Service) SetVIXThresholds(skipAbove, widenAbove float64) {
 	s.vixWidenAbove = widenAbove
 	s.log.Info().Float64("skip_above", skipAbove).Float64("widen_above", widenAbove).Msg("VIX thresholds set")
 }
-
 // SetDNAGate installs a gate checker that blocks SetupDetected events when the
 // active DNA version for strategyKey is not approved. If checker is nil the gate
 // is disabled and all setups pass through.
 func (s *Service) RegisterEMAConfig(symbols []string, timeframes []string, params map[string]any) {
 	fast, slow := extractIntParam(params, "ema_fast", 0), extractIntParam(params, "ema_slow", 0)
 	threshold := extractFloat64Param(params, "ema_divergence_threshold_pct", 0) / 100.0
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, sym := range symbols {
@@ -204,7 +186,6 @@ func (s *Service) RegisterEMAConfig(symbols []string, timeframes []string, param
 		}
 	}
 }
-
 func extractIntParam(params map[string]any, key string, def int) int {
 	if v, ok := params[key]; ok {
 		switch n := v.(type) {
@@ -218,7 +199,6 @@ func extractIntParam(params map[string]any, key string, def int) int {
 	}
 	return def
 }
-
 func extractFloat64Param(params map[string]any, key string, def float64) float64 {
 	if v, ok := params[key]; ok {
 		if n, ok := v.(float64); ok {
@@ -227,7 +207,6 @@ func extractFloat64Param(params map[string]any, key string, def float64) float64
 	}
 	return def
 }
-
 func (s *Service) SetDNAGate(checker DNAGateChecker, strategyKey string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -238,7 +217,6 @@ func (s *Service) SetDNAGate(checker DNAGateChecker, strategyKey string) {
 		Bool("gate_enabled", checker != nil).
 		Msg("DNA gate configured")
 }
-
 func (s *Service) SetBaseSymbols(symbols []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -252,7 +230,6 @@ func (s *Service) SetBaseSymbols(symbols []string) {
 	}
 	s.log.Info().Strs("symbols", symbols).Msg("base symbols configured")
 }
-
 func (s *Service) isAllowedSymbolLocked(sym string) bool {
 	if s.baseSymbols == nil {
 		return true
@@ -278,7 +255,6 @@ func (s *Service) isAllowedSymbolLocked(sym string) bool {
 	}
 	return true
 }
-
 func (s *Service) MarkReady(symbols ...string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -290,7 +266,6 @@ func (s *Service) MarkReady(symbols ...string) {
 	}
 	s.log.Info().Strs("symbols", symbols).Int("total_ready", len(s.readySymbols)).Msg("symbols marked ready")
 }
-
 func (s *Service) IsReady(sym string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -300,7 +275,6 @@ func (s *Service) IsReady(sym string) bool {
 	_, ok := s.readySymbols[sym]
 	return ok
 }
-
 func (s *Service) ResetSessionIndicators(symbol string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -309,7 +283,6 @@ func (s *Service) ResetSessionIndicators(symbol string) {
 		s.calculator.ResetSession(symbol, tf.String())
 	}
 }
-
 func (s *Service) InitAggregators(symbols []domain.Symbol, sessionOpen time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -332,7 +305,6 @@ func (s *Service) InitAggregators(symbols []domain.Symbol, sessionOpen time.Time
 		}
 	}
 }
-
 func (s *Service) ResetAggregators(sessionOpen time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -343,7 +315,6 @@ func (s *Service) ResetAggregators(sessionOpen time.Time) {
 		agg.Reset(sessionOpen)
 	}
 }
-
 // Start subscribes the service to incoming sanitized market data events.
 func (s *Service) Start(ctx context.Context) error {
 	err := s.eventBus.Subscribe(ctx, domain.EventMarketBarSanitized, s.HandleMarketBar)
@@ -356,7 +327,6 @@ func (s *Service) Start(ctx context.Context) error {
 	s.log.Info().Msg("subscribed to MarketBarSanitized and EffectiveSymbolsUpdated events")
 	return nil
 }
-
 func (s *Service) handleEffectiveSymbolsUpdated(ctx context.Context, evt domain.Event) error {
 	payload, ok := evt.Payload.(screener.EffectiveSymbolsUpdatedPayload)
 	if !ok {
@@ -377,7 +347,6 @@ func (s *Service) handleEffectiveSymbolsUpdated(ctx context.Context, evt domain.
 		Msg("effective symbols updated")
 	return nil
 }
-
 // HandleMarketBar processes a single market bar event.
 // It computes an indicator snapshot, detects regime changes,
 // and checks for trade setup conditions. Emits StateUpdated,
@@ -390,25 +359,19 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	if bar.Timeframe != "1m" {
 		return nil
 	}
-
 	l := s.log.With().
 		Str("symbol", string(bar.Symbol)).
 		Str("timeframe", string(bar.Timeframe)).
 		Logger()
-
 	var publishStrict []domain.Event
 	var publishBestEffort []domain.Event
-
 	s.mu.Lock()
-
 	if !s.isAllowedSymbolLocked(string(bar.Symbol)) {
 		s.mu.Unlock()
 		return nil
 	}
-
 	snap := s.calculator.Update(bar)
 	symStr := bar.Symbol.String()
-
 	for _, tf := range anchorTimeframes {
 		aggKey := symStr + ":" + tf.String()
 		agg, exists := s.aggregators[aggKey]
@@ -419,7 +382,6 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		if !ok {
 			continue
 		}
-
 		barEv, err := domain.NewEvent(
 			domain.EventMarketBarSanitized,
 			event.TenantID,
@@ -430,7 +392,6 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		if err == nil {
 			publishBestEffort = append(publishBestEffort, *barEv)
 		}
-
 		htfSnap := s.calculator.Update(closed)
 		reg, changedAnchor := s.regimeDetector.Detect(htfSnap)
 		s.anchorRegimes[aggKey] = reg
@@ -446,7 +407,6 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 				publishBestEffort = append(publishBestEffort, *regimeShiftedEv)
 			}
 		}
-
 		if tf == "1h" {
 			if s.lastHTFSnaps == nil {
 				s.lastHTFSnaps = make(map[string]domain.IndicatorSnapshot)
@@ -454,7 +414,6 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 			s.lastHTFSnaps[aggKey] = htfSnap
 		}
 	}
-
 	snap.AnchorRegimes = make(map[domain.Timeframe]domain.MarketRegime)
 	for _, tf := range anchorTimeframes {
 		aggKey := symStr + ":" + tf.String()
@@ -462,14 +421,10 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 			snap.AnchorRegimes[tf] = reg
 		}
 	}
-
 	snap.HTF = s.buildHTFMap(symStr, bar.Close)
-
 	s.liveBars[symStr]++
-
 	regime, changed := s.regimeDetector.Detect(snap)
 	snap.AnchorRegimes[bar.Timeframe] = regime
-
 	l.Debug().
 		Float64("close", bar.Close).
 		Float64("volume", bar.Volume).
@@ -483,7 +438,6 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		Str("regime", string(regime.Type)).
 		Float64("regime_strength", regime.Strength).
 		Msg("indicator snapshot")
-
 	stateUpdatedEv, err := domain.NewEvent(
 		domain.EventStateUpdated,
 		event.TenantID,
@@ -496,7 +450,6 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		return fmt.Errorf("monitor: failed to create state updated event: %w", err)
 	}
 	publishStrict = append(publishStrict, *stateUpdatedEv)
-
 	l.Debug().
 		Str("regime", string(regime.Type)).
 		Float64("strength", regime.Strength).
@@ -517,7 +470,6 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		}
 		publishStrict = append(publishStrict, *regimeShiftedEv)
 	}
-
 	if s.liveBars[symStr] < settlingBars {
 		s.feedORBBar(bar, snap, true)
 		l.Debug().Msg(fmt.Sprintf("settling: %d/%d bars, suppressing setup detection", s.liveBars[symStr], settlingBars))
@@ -533,11 +485,9 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		}
 		return nil
 	}
-
 	lastSnap, hasLast := s.lastSnaps[symStr]
 	_ = hasLast
 	_ = lastSnap
-
 	setup, detected := s.feedORBBar(bar, snap, false)
 	if detected && setup != nil {
 		// DNA approval gate: suppress setup if DNA is not approved.
@@ -633,10 +583,8 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 			if s.vixWidenAbove > 0 && s.vixLevel > s.vixWidenAbove {
 				setup.VIXAdjust = "widen_stops"
 			}
-
 			// Populate regime labels for display
 			setup.EMARegime = string(anchorRegime.Type)
-
 			// VIX bucket
 			switch {
 			case s.vixLevel <= 0:
@@ -648,7 +596,6 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 			default:
 				setup.VIXBucket = "HIGH_VOL"
 			}
-
 			// Composite market context: VIX bucket + per-symbol ATR + NR7 + VWAP alignment
 			ctx := setup.VIXBucket
 			if dailyATR := snap.HTFDailyATR(); dailyATR > 0 && bar.Close > 0 {
@@ -660,16 +607,16 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 				ctx += " | NR7"
 			}
 			if snap.VWAP > 0 {
-				if setup.Direction == domain.DirectionLong && bar.Close > snap.VWAP {
+				switch {
+				case setup.Direction == domain.DirectionLong && bar.Close > snap.VWAP:
 					ctx += " | VWAP+"
-				} else if setup.Direction == domain.DirectionShort && bar.Close < snap.VWAP {
+				case setup.Direction == domain.DirectionShort && bar.Close < snap.VWAP:
 					ctx += " | VWAP+"
-				} else {
+				default:
 					ctx += " | VWAP-"
 				}
 			}
 			setup.MarketContext = ctx
-
 			l.Info().
 				Str("direction", string(setup.Direction)).
 				Str("trigger", setup.Trigger).
@@ -696,10 +643,8 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 			publishStrict = append(publishStrict, *setupEv)
 		}
 	}
-
 	s.lastSnaps[symStr] = snap
 	s.mu.Unlock()
-
 	for _, ev := range publishStrict {
 		if err := s.eventBus.Publish(ctx, ev); err != nil {
 			return fmt.Errorf("monitor: failed to publish event %s: %w", ev.Type, err)
@@ -708,45 +653,36 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	for _, ev := range publishBestEffort {
 		_ = s.eventBus.Publish(ctx, ev)
 	}
-
 	return nil
 }
-
 // feedORBBar routes a 1m bar through the ORB aggregator (if configured) so the
 // ORB tracker receives completed bars at the strategy timeframe (e.g. 5m).
 // When orbTimeframe is "1m" or empty, bars pass through directly.
 // Must be called with s.mu held.
 func (s *Service) feedORBBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, replay bool) (*SetupCondition, bool) {
 	symStr := bar.Symbol.String()
-
 	// No aggregation needed for 1m timeframe
 	if s.orbTimeframe == "" || s.orbTimeframe == "1m" {
 		return s.orbTracker.OnBar(bar, snap, s.orbCfg, replay)
 	}
-
 	agg, ok := s.orbAggregators[symStr]
 	if !ok {
 		// No aggregator yet (InitAggregators not called) — pass through directly
 		return s.orbTracker.OnBar(bar, snap, s.orbCfg, replay)
 	}
-
 	closed, emitted := agg.Push(bar)
 	if !emitted {
 		return nil, false
 	}
-
 	// Use the completed aggregated bar with the latest 1m indicator snapshot
 	return s.orbTracker.OnBar(closed, snap, s.orbCfg, replay)
 }
-
 func (s *Service) buildHTFMap(sym string, currentClose float64) map[domain.Timeframe]domain.HTFData {
 	htf := make(map[domain.Timeframe]domain.HTFData)
-
 	hourlyKey := sym + ":1h"
 	if hSnap, ok := s.lastHTFSnaps[hourlyKey]; ok && hSnap.EMA50 > 0 {
 		htf[domain.Timeframe("1h")] = domain.HTFData{EMA50: hSnap.EMA50}
 	}
-
 	dailyKey := sym + ":1d"
 	if dStatic, ok := s.htfStatic[dailyKey]; ok && dStatic.EMA200 > 0 {
 		bias := "NEUTRAL"
@@ -762,13 +698,11 @@ func (s *Service) buildHTFMap(sym string, currentClose float64) map[domain.Timef
 			DailyATR: dStatic.DailyATR,
 		}
 	}
-
 	if len(htf) == 0 {
 		return nil
 	}
 	return htf
 }
-
 func (s *Service) WarmUpORB(bars []domain.MarketBar) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -777,13 +711,11 @@ func (s *Service) WarmUpORB(bars []domain.MarketBar) {
 		s.feedORBBar(bar, snap, true)
 	}
 }
-
 func (s *Service) GetORBSession(symbol string) *ORBSession {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.orbTracker.GetSession(symbol)
 }
-
 func (s *Service) WarmUp(bars []domain.MarketBar) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -792,7 +724,6 @@ func (s *Service) WarmUp(bars []domain.MarketBar) int {
 	for _, bar := range bars {
 		lastSnap = s.calculator.Update(bar)
 		lastBar = bar
-
 		symStr := bar.Symbol.String()
 		for _, tf := range anchorTimeframes {
 			aggKey := symStr + ":" + tf.String()
@@ -817,9 +748,7 @@ func (s *Service) WarmUp(bars []domain.MarketBar) int {
 	}
 	if len(bars) > 0 {
 		symStr := lastBar.Symbol.String()
-
 		regime, _ := s.regimeDetector.Detect(lastSnap)
-
 		lastSnap.AnchorRegimes = map[domain.Timeframe]domain.MarketRegime{
 			lastBar.Timeframe: regime,
 		}
@@ -829,9 +758,7 @@ func (s *Service) WarmUp(bars []domain.MarketBar) int {
 				lastSnap.AnchorRegimes[tf] = reg
 			}
 		}
-
 		lastSnap.HTF = s.buildHTFMap(symStr, lastBar.Close)
-
 		s.lastSnaps[symStr] = lastSnap
 	}
 	return len(bars)
