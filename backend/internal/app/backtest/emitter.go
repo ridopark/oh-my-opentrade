@@ -32,12 +32,16 @@ type emitterClient struct {
 // Emitter fans out backtest domain events to connected HTTP SSE clients.
 type SnapshotFn func(symbol string) (domain.IndicatorSnapshot, bool)
 
+// AVWAPFn returns the current anchored VWAP values for a symbol.
+type AVWAPFn func(symbol string) map[string]float64
+
 type Emitter struct {
 	mu            sync.RWMutex
 	clients       map[*emitterClient]struct{}
 	log           zerolog.Logger
 	baseTimeframe domain.Timeframe
 	snapshotFn    SnapshotFn
+	avwapFn       AVWAPFn
 
 	historyMu sync.Mutex
 	history   []SSEEvent
@@ -52,9 +56,8 @@ func NewEmitter(log zerolog.Logger, baseTimeframe domain.Timeframe) *Emitter {
 	}
 }
 
-func (e *Emitter) SetSnapshotFn(fn SnapshotFn) {
-	e.snapshotFn = fn
-}
+func (e *Emitter) SetSnapshotFn(fn SnapshotFn) { e.snapshotFn = fn }
+func (e *Emitter) SetAVWAPFn(fn AVWAPFn)       { e.avwapFn = fn }
 
 
 // Subscribe wires up domain event listeners on the given (isolated) event bus
@@ -111,11 +114,30 @@ func (e *Emitter) onCandle(_ context.Context, ev domain.Event) error {
 			if snap.EMA200 > 0 {
 				data["ema200"] = snap.EMA200
 			}
-			// Session VWAP = anchored VWAP from session open.
-			// Only emit during RTH (9:30-16:00 ET) so the chart line
-			// breaks between sessions instead of connecting overnight.
-			if snap.VWAP > 0 && isSessionHours(bar.Time) {
-				data["avwap"] = snap.VWAP
+		}
+	}
+	// Prefer strategy's actual AVWAP (which may use AI-resolved anchors like
+	// catalyst gaps or capitulation days) over the monitor's session VWAP.
+	// Falls back to session VWAP when the strategy hasn't computed a value yet.
+	if isSessionHours(bar.Time) {
+		avwapSet := false
+		if e.avwapFn != nil {
+			if vals := e.avwapFn(string(bar.Symbol)); len(vals) > 0 {
+				for _, v := range vals {
+					if v > 0 {
+						data["avwap"] = v
+						avwapSet = true
+						break
+					}
+				}
+			}
+		}
+		if !avwapSet {
+			fn := e.snapshotFn
+			if fn != nil {
+				if snap, ok := fn(string(bar.Symbol)); ok && snap.VWAP > 0 {
+					data["avwap"] = snap.VWAP
+				}
 			}
 		}
 	}

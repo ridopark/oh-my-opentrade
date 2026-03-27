@@ -458,6 +458,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Subscribe SSE emitter to our isolated bus.
 	r.emitter.SetSnapshotFn(monitorSvc.GetLastSnapshot)
+	r.emitter.SetAVWAPFn(pipeline.Runner.GetAVWAPValues)
 	if subErr := r.emitter.Subscribe(ctx, r.eventBus); subErr != nil {
 		r.status.Store("error")
 		return fmt.Errorf("subscribe emitter: %w", subErr)
@@ -628,6 +629,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	r.emitter.EmitSetup("Warming up indicators…")
 	const minWarmupBars = 250
 	warmupBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
+	dailyBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
 	{
 		type warmupResult struct {
 			sym    string
@@ -667,15 +669,12 @@ func (r *Runner) Run(ctx context.Context) error {
 					bars = bars[len(bars)-minWarmupBars:]
 				}
 
-				// Fetch 1D bars for HTF EMA50 bias in parallel with other symbols.
+				// Fetch 1D bars: lookback for HTF EMA50 + full backtest range for anchor detectors.
 				var bars1d []domain.MarketBar
 				if r.marketData != nil {
 					dailyBarsNeeded := 50
-					dailyTo := r.cfg.From
-					if t, ok := firstBarTime[sym.String()]; ok && t.Before(dailyTo) {
-						dailyTo = t
-					}
-					dailyFrom := dailyTo.Add(-time.Duration(float64(dailyBarsNeeded)*1.5) * 24 * time.Hour)
+					dailyTo := r.cfg.To // extend through backtest end for catalyst/capitulation detection
+					dailyFrom := r.cfg.From.Add(-time.Duration(float64(dailyBarsNeeded)*1.5) * 24 * time.Hour)
 					fetched, err := r.marketData.GetHistoricalBars(ctx, sym, "1d", dailyFrom, dailyTo)
 					if err != nil || len(fetched) < dailyBarsNeeded {
 						r.log.Warn().Err(err).Str("symbol", sym.String()).Int("got", len(fetched)).Int("needed", dailyBarsNeeded).Msg("insufficient 1D bars for HTF EMA50 — ORB signals will be blocked for this symbol")
@@ -689,31 +688,39 @@ func (r *Runner) Run(ctx context.Context) error {
 		warmupWg.Wait()
 		for _, res := range warmupResults {
 			warmupBarsCache[res.sym] = res.bars
+			dailyBarsCache[res.sym] = res.bars1d
 			n := monitorSvc.WarmUp(res.bars)
 			if len(res.bars1d) > 0 {
-				closes := make([]float64, len(res.bars1d))
-				for i, b := range res.bars1d {
+				// Use only bars before backtest start for HTF EMA50 (no look-ahead bias).
+				var preBars []domain.MarketBar
+				for _, b := range res.bars1d {
+					if b.Time.Before(r.cfg.From) {
+						preBars = append(preBars, b)
+					}
+				}
+				closes := make([]float64, len(preBars))
+				for i, b := range preBars {
 					closes[i] = b.Close
 				}
 				dailyBarsNeeded := 50
 				ema50 := monitor.ComputeStaticEMA(closes, dailyBarsNeeded)
 				if ema50 > 0 {
 					bias := "NEUTRAL"
-					lastClose := res.bars1d[len(res.bars1d)-1].Close
+					lastClose := preBars[len(preBars)-1].Close
 					if lastClose > ema50*1.005 {
 						bias = "BULLISH"
 					} else if lastClose < ema50*0.995 {
 						bias = "BEARISH"
 					}
-					nr7 := monitor.ComputeNR7(res.bars1d)
-					dailyATR := monitor.ComputeDailyATR(res.bars1d, 14)
+					nr7 := monitor.ComputeNR7(preBars)
+					dailyATR := monitor.ComputeDailyATR(preBars, 14)
 					monitorSvc.SetStaticHTFData(res.sym, "1d", domain.HTFData{
 						EMA50:    ema50,
 						Bias:     bias,
 						NR7:      nr7,
 						DailyATR: dailyATR,
 					})
-					r.log.Info().Str("symbol", res.sym).Float64("ema50", ema50).Str("bias", bias).Bool("nr7", nr7).Float64("daily_atr", dailyATR).Int("daily_bars", len(res.bars1d)).Msg("1D HTF warmup complete")
+					r.log.Info().Str("symbol", res.sym).Float64("ema50", ema50).Str("bias", bias).Bool("nr7", nr7).Float64("daily_atr", dailyATR).Int("daily_bars", len(preBars)).Msg("1D HTF warmup complete")
 				}
 			}
 			monitorSvc.ResetSessionIndicators(res.sym)
@@ -769,6 +776,19 @@ func (r *Runner) Run(ctx context.Context) error {
 			aiResolver.RegisterSymbol(sym.String(), isCrypto)
 		}
 		pipeline.Runner.SetAIAnchorResolver(aiResolver)
+
+		// Seed daily bars into AI anchor detectors (catalyst_gap, capitulation, swing 1d)
+		// so they have historical context before replay starts.
+		for _, sym := range r.cfg.Symbols {
+			if bars1d := dailyBarsCache[sym.String()]; len(bars1d) > 0 {
+				for _, b := range bars1d {
+					sBar := start.Bar{Time: b.Time, Open: b.Open, High: b.High, Low: b.Low, Close: b.Close, Volume: b.Volume}
+					aiResolver.OnBar(sym.String(), sBar, "1d")
+				}
+				r.log.Info().Str("symbol", sym.String()).Int("daily_bars", len(bars1d)).Msg("seeded daily bars into anchor detectors")
+			}
+		}
+
 		r.log.Info().Msg("AI anchor resolver configured for backtest (with session baseline)")
 	}
 
