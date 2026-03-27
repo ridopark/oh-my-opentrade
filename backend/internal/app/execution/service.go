@@ -1039,6 +1039,7 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 		fillPayload["instrument_type"] = string(domain.InstrumentTypeOption)
 		fillPayload["option_right"] = po.intent.Meta["option_right"]
 		fillPayload["option_expiry"] = po.intent.Meta["expiry"]
+		fillPayload["iv_at_entry"] = po.intent.Meta["iv_at_entry"]
 	}
 	s.emit(ctx, domain.EventFillReceived, po.tenantID, po.envMode, brokerOrderID, fillPayload)
 

@@ -80,6 +80,7 @@ type fillMsg struct {
 	InstrumentType domain.InstrumentType
 	OptionExpiry   time.Time
 	OptionRight    string
+	IVAtEntry      float64
 }
 
 // outboxMsg is an exit intent ready for publication on the event bus.
@@ -485,6 +486,10 @@ func (s *Service) processFill(fill fillMsg) {
 		pos.InstrumentType = fill.InstrumentType
 		pos.OptionExpiry = fill.OptionExpiry
 		pos.OptionRight = fill.OptionRight
+		// Store IV at entry for BSM exit pricing in backtests
+		if fill.IVAtEntry > 0 && pos.CustomState != nil {
+			pos.CustomState["iv_at_entry"] = fill.IVAtEntry
+		}
 	}
 
 	s.positions[key] = &pos
