@@ -90,7 +90,25 @@ func (e *Emitter) onCandle(_ context.Context, ev domain.Event) error {
 	if !ok {
 		return nil
 	}
-	if e.baseTimeframe != "" && bar.Timeframe != e.baseTimeframe {
+	isBaseTimeframe := e.baseTimeframe == "" || bar.Timeframe == e.baseTimeframe
+	if !isBaseTimeframe {
+		// Not the chart timeframe — emit a lightweight AVWAP-only update
+		// on 1m bars for a smooth line. Uses a separate "avwap" field on a
+		// minimal candle event (the frontend merges AVWAP data by timestamp).
+		if bar.Timeframe == "1m" && isSessionHours(bar.Time) && e.avwapFn != nil {
+			if vals := e.avwapFn(string(bar.Symbol)); len(vals) > 0 {
+				for _, v := range vals {
+					if v > 0 {
+						e.Emit(SSEEvent{Type: "backtest:avwap", Data: map[string]any{
+							"time":   bar.Time.Unix(),
+							"symbol": string(bar.Symbol),
+							"avwap":  v,
+						}})
+						break
+					}
+				}
+			}
+		}
 		return nil
 	}
 	data := map[string]any{

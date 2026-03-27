@@ -184,6 +184,7 @@ export function useBacktest(): UseBacktestReturn {
     const eventTypes = [
       "backtest:setup",
       "backtest:candle",
+      "backtest:avwap",
       "backtest:signal",
       "backtest:signal_enriched",
       "backtest:trade",
@@ -211,6 +212,17 @@ export function useBacktest(): UseBacktestReturn {
               const sym = bar.symbol;
               const existing = barsRef.current.get(sym) ?? [];
               existing.push(bar);
+              barsRef.current.set(sym, existing);
+              scheduleFlush();
+              break;
+            }
+            case "backtest:avwap": {
+              // Lightweight 1m AVWAP updates for smooth chart line.
+              // Stored as partial bars — only time/symbol/avwap fields are set.
+              const d = data as { time: number; symbol: string; avwap: number };
+              const sym = d.symbol;
+              const existing = barsRef.current.get(sym) ?? [];
+              existing.push({ time: d.time, symbol: sym, open: 0, high: 0, low: 0, close: 0, volume: 0, avwap: d.avwap });
               barsRef.current.set(sym, existing);
               scheduleFlush();
               break;
