@@ -6,6 +6,7 @@ package simbroker
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -413,6 +414,7 @@ func (b *Broker) SubscribeOrderUpdates(_ context.Context) (<-chan ports.OrderUpd
 
 // computeOptionExitPrice computes the BSM price for an options exit using the
 // current underlying price and the entry metadata (strike, DTE, IV, right).
+// Applies intraday IV decay and bid-ask spread for realistic pricing.
 func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPrice float64, barTime time.Time) float64 {
 	if intent.Meta == nil {
 		return 0
@@ -453,7 +455,81 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 		return max(strike-underlyingPrice, 0)
 	}
 
+	// Apply intraday IV decay: IV declines ~1.5% (relative) over the session
+	// as overnight uncertainty resolves. Front-loaded via exponential.
+	exitIV := intradayIVDecay(iv, barTime)
+
 	isCall := rightStr == "CALL"
-	price, _, _, _ := options.BSMPrice(underlyingPrice, strike, dteYears, 0.05, iv, isCall)
+	price, delta, _, _ := options.BSMPrice(underlyingPrice, strike, dteYears, 0.05, exitIV, isCall)
+
+	// Apply half-spread penalty (selling at bid, below mid-price)
+	spread := optionHalfSpread(price, int(dteYears*365), math.Abs(delta))
+	price -= spread
+	if price < 0 {
+		price = 0.01
+	}
+
 	return price
+}
+
+// intradayIVDecay adjusts entry IV for intraday mean reversion.
+// Normal trading days see ~1.5% relative IV decline from open to close.
+// This models the resolution of overnight uncertainty as the session progresses.
+func intradayIVDecay(entryIV float64, exitTime time.Time) float64 {
+	et, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return entryIV
+	}
+	t := exitTime.In(et)
+
+	marketOpen := time.Date(t.Year(), t.Month(), t.Day(), 9, 30, 0, 0, et)
+	marketClose := time.Date(t.Year(), t.Month(), t.Day(), 16, 0, 0, 0, et)
+
+	if t.Before(marketOpen) || t.After(marketClose) {
+		return entryIV
+	}
+
+	elapsed := t.Sub(marketOpen).Minutes()
+	sessionLen := marketClose.Sub(marketOpen).Minutes()
+	fraction := elapsed / sessionLen
+
+	// 1.5% relative decline over full session, front-loaded via exponential
+	decayRate := 0.015
+	effectiveFraction := 1.0 - math.Exp(-2.0*fraction)
+
+	return entryIV * (1.0 - decayRate*effectiveFraction)
+}
+
+// optionHalfSpread estimates the half bid-ask spread for an option based on
+// premium level, DTE, and delta. Returns dollar amount per share to subtract
+// from the mid-price when selling (or add when buying).
+func optionHalfSpread(premium float64, dte int, absDelta float64) float64 {
+	// Base spread: inversely related to premium size
+	var basePct float64
+	switch {
+	case premium >= 10.0:
+		basePct = 0.008 // 0.8% half-spread for expensive options
+	case premium >= 5.0:
+		basePct = 0.012 // 1.2%
+	case premium >= 2.0:
+		basePct = 0.020 // 2.0%
+	case premium >= 1.0:
+		basePct = 0.030 // 3.0%
+	default:
+		basePct = 0.050 // 5.0% for cheap options
+	}
+
+	// Delta adjustment: OTM options have wider spreads
+	if absDelta < 0.30 {
+		basePct *= 1.5
+	} else if absDelta > 0.60 {
+		basePct *= 1.2 // deep ITM also slightly wider
+	}
+
+	// DTE adjustment: shorter DTE = wider spreads
+	if dte < 14 {
+		basePct *= 1.3
+	}
+
+	return premium * basePct
 }
