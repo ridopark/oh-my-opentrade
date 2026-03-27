@@ -329,6 +329,8 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 					intent.Meta["iv_at_entry"] = fmt.Sprintf("%.4f", ivVal)
 				}
 			}
+			// Propagate entry_date so SimBroker can distinguish same-day vs multi-day exits
+			intent.Meta["entry_date"] = pos.EntryTime.Format("2006-01-02")
 		}
 	}
 	if err != nil {
