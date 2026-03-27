@@ -114,7 +114,7 @@ func (e *Emitter) onCandle(_ context.Context, ev domain.Event) error {
 			// Session VWAP = anchored VWAP from session open.
 			// Only emit during RTH (9:30-16:00 ET) so the chart line
 			// breaks between sessions instead of connecting overnight.
-			if snap.VWAP > 0 && isRTH(bar.Time) {
+			if snap.VWAP > 0 && isSessionHours(bar.Time) {
 				data["avwap"] = snap.VWAP
 			}
 		}
@@ -354,9 +354,11 @@ func init() {
 	etLoc, _ = time.LoadLocation("America/New_York")
 }
 
-// isRTH returns true if the timestamp falls within regular trading hours (9:30–16:00 ET).
-func isRTH(t time.Time) bool {
+// isSessionHours returns true if the timestamp is during active market hours
+// including extended hours (4:00 AM – 8:00 PM ET). Returns false during the
+// overnight gap so the AVWAP line breaks between sessions on the chart.
+func isSessionHours(t time.Time) bool {
 	et := t.In(etLoc)
-	hm := et.Hour()*100 + et.Minute()
-	return hm >= 930 && hm < 1600
+	h := et.Hour()
+	return h >= 4 && h < 20
 }
