@@ -44,7 +44,8 @@ func (s AnchoredVWAPState) SD() float64 {
 }
 
 type AnchoredVWAPCalc struct {
-	anchors map[string]*anchoredVWAPEntry
+	anchors     map[string]*anchoredVWAPEntry
+	lastBarTime time.Time // prevents double-counting when both 1m and 5m bars call Update
 }
 
 const minBarsForSD = 10
@@ -94,6 +95,12 @@ func (c *AnchoredVWAPCalc) Update(barTime time.Time, high, low, close_, volume f
 	if c == nil || len(c.anchors) == 0 {
 		return
 	}
+	// Skip bars at or before the last processed time to prevent double-counting
+	// when both 1m UpdateCalc and 5m OnEvent call Update for overlapping data.
+	if !c.lastBarTime.IsZero() && !barTime.After(c.lastBarTime) {
+		return
+	}
+	c.lastBarTime = barTime
 	if volume <= 0 {
 		for _, e := range c.anchors {
 			if !e.active && !barTime.Before(e.AnchorTime) {
