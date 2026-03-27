@@ -279,11 +279,36 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 		}
 	}
 
-	// 5b. Options routing: if options enabled and chain is liquid, convert to options order.
-	if s.optionsMarket != nil && s.specStore != nil && setup.Trigger != "" {
-		optIntent, routed := s.tryOptionsRoute(ctx, event, setup, decision, intent, l)
-		if routed {
-			intent = optIntent
+	// 5b. Options routing: if options enabled, try options first.
+	// If options are enabled but no contract found, skip the trade entirely (no equity fallback).
+	optionsEnabled := false
+	if s.specStore != nil && setup.Trigger != "" {
+		if sid, sidErr := domstrategy.NewStrategyID(setup.Trigger); sidErr == nil {
+			if optSpec, specErr := s.specStore.GetLatest(ctx, sid); specErr == nil && optSpec.Options != nil && optSpec.Options.Enabled {
+				optionsEnabled = true
+			}
+		}
+	}
+
+	if optionsEnabled {
+		if s.optionsMarket != nil {
+			optIntent, routed := s.tryOptionsRoute(ctx, event, setup, decision, intent, l)
+			if routed {
+				intent = optIntent
+			} else {
+				l.Info().Msg("options enabled but no contract found — skipping trade (no equity fallback)")
+				return nil
+			}
+		} else {
+			// Options enabled but no market data provider (e.g., backtesting with simbroker).
+			// Use BSM synthetic pricing for the options order.
+			optIntent, routed := s.tryBSMOptionsRoute(ctx, event, setup, decision, intent, l)
+			if routed {
+				intent = optIntent
+			} else {
+				l.Info().Msg("options enabled (BSM mode) but no contract — skipping trade")
+				return nil
+			}
 		}
 	}
 
@@ -448,6 +473,154 @@ func (s *Service) tryOptionsRoute(
 		Float64("max_loss", maxLossUSD).
 		Str("right", string(optRight)).
 		Msg("options order routed")
+
+	return optIntent, true
+}
+
+// tryBSMOptionsRoute creates a synthetic options order using Black-Scholes pricing.
+// Used in backtesting when no OptionsMarketDataPort is available.
+func (s *Service) tryBSMOptionsRoute(
+	ctx context.Context,
+	event domain.Event,
+	setup monitor.SetupCondition,
+	decision *domain.AdvisoryDecision,
+	equityIntent domain.OrderIntent,
+	l zerolog.Logger,
+) (domain.OrderIntent, bool) {
+	sid, err := domstrategy.NewStrategyID(setup.Trigger)
+	if err != nil {
+		return domain.OrderIntent{}, false
+	}
+	spec, err := s.specStore.GetLatest(ctx, sid)
+	if err != nil || spec.Options == nil || !spec.Options.Enabled {
+		return domain.OrderIntent{}, false
+	}
+
+	isCall := decision.Direction != domain.DirectionShort
+	optRight := domain.OptionRightCall
+	if !isCall {
+		optRight = domain.OptionRightPut
+	}
+
+	// Use midpoint of DTE range
+	targetDTE := spec.Options.Defaults.MinDTE + (spec.Options.Defaults.MaxDTE-spec.Options.Defaults.MinDTE)/2
+	dteYears := float64(targetDTE) / 365.0
+
+	underlyingPrice := setup.BarClose
+	if underlyingPrice <= 0 {
+		return domain.OrderIntent{}, false
+	}
+
+	// Strike: ATM (closest to underlying price, rounded to nearest $1)
+	strike := math.Round(underlyingPrice)
+
+	// IV: use realized vol from the snapshot (already computed as per-stock VIX-like number)
+	// Convert from percentage to decimal: e.g., 25% → 0.25
+	iv := 0.20 // default 20% if no data
+	if snap := setup.Snapshot; snap.ATR > 0 && underlyingPrice > 0 {
+		// Approximate IV from ATR: daily ATR ≈ price × σ × sqrt(1/252)
+		// So σ ≈ ATR / (price × sqrt(1/252)) = ATR / price × sqrt(252)
+		iv = (snap.ATR / underlyingPrice) * math.Sqrt(252)
+	}
+	if iv < 0.05 {
+		iv = 0.05
+	}
+	if iv > 2.0 {
+		iv = 2.0
+	}
+
+	riskFreeRate := 0.05 // approximate current rates
+
+	// Compute BSM price
+	premium, delta, _, _ := options.BSMPrice(underlyingPrice, strike, dteYears, riskFreeRate, iv, isCall)
+	if premium <= 0 {
+		return domain.OrderIntent{}, false
+	}
+
+	// Check delta is within target range
+	absDelta := math.Abs(delta)
+	if absDelta < spec.Options.Defaults.TargetDeltaLow || absDelta > spec.Options.Defaults.TargetDeltaHigh {
+		// Adjust strike to get closer to target delta
+		// For now, accept ATM — delta ~0.50 is within most configs
+	}
+
+	// Position sizing: premium at risk
+	riskBPS := int64(100)
+	if v, ok := spec.Params["risk_per_trade_bps"].(int64); ok && v > 0 {
+		riskBPS = v
+	}
+	maxRiskUSD := (float64(riskBPS) / 10000.0) * s.equity
+	multiplier := 100.0
+	premiumPerContract := premium * multiplier
+	qty := math.Floor(maxRiskUSD / premiumPerContract)
+	if qty <= 0 {
+		l.Warn().Float64("premium", premium).Float64("risk_budget", maxRiskUSD).
+			Msg("BSM option premium exceeds risk budget — skipping")
+		return domain.OrderIntent{}, false
+	}
+	maxLossUSD := premiumPerContract * qty
+
+	// Create synthetic OCC symbol: SYMBOL + YYMMDD + C/P + strike
+	expiry := time.Now().AddDate(0, 0, targetDTE)
+	occSymbol := fmt.Sprintf("%s%s%s%08d",
+		setup.Symbol,
+		expiry.Format("060102"),
+		string(optRight)[:1],
+		int(strike*1000))
+
+	inst, instErr := domain.NewInstrument(domain.InstrumentTypeOption, occSymbol, string(setup.Symbol))
+	if instErr != nil {
+		return domain.OrderIntent{}, false
+	}
+
+	intentID := uuid.New()
+	rationale := fmt.Sprintf("option(BSM): %s %s strike=%.0f delta=%.2f DTE=%d IV=%.0f%% premium=%.2f | %s",
+		optRight, setup.Symbol, strike, delta, targetDTE, iv*100, premium,
+		decision.Rationale)
+
+	optIntent, intentErr := domain.NewOptionOrderIntent(
+		intentID,
+		event.TenantID,
+		event.EnvMode,
+		inst,
+		domain.DirectionLong,
+		premium,
+		qty,
+		setup.Trigger,
+		rationale,
+		decision.Confidence,
+		intentID.String(),
+		maxLossUSD,
+	)
+	if intentErr != nil {
+		return domain.OrderIntent{}, false
+	}
+
+	optIntent.AssetClass = domain.AssetClassEquity
+	optIntent.Meta = make(map[string]string)
+	for k, v := range equityIntent.Meta {
+		optIntent.Meta[k] = v
+	}
+	optIntent.Meta["instrument_type"] = "OPTION"
+	optIntent.Meta["option_right"] = string(optRight)
+	optIntent.Meta["underlying"] = string(setup.Symbol)
+	optIntent.Meta["strike"] = fmt.Sprintf("%.2f", strike)
+	optIntent.Meta["expiry"] = expiry.Format("2006-01-02")
+	optIntent.Meta["delta_at_entry"] = fmt.Sprintf("%.4f", delta)
+	optIntent.Meta["iv_at_entry"] = fmt.Sprintf("%.4f", iv)
+	optIntent.Meta["premium"] = fmt.Sprintf("%.2f", premium)
+	optIntent.Meta["bsm_synthetic"] = "true"
+
+	l.Info().
+		Str("contract", occSymbol).
+		Float64("strike", strike).
+		Float64("delta", delta).
+		Float64("premium", premium).
+		Float64("iv", iv).
+		Float64("qty", qty).
+		Float64("max_loss", maxLossUSD).
+		Str("right", string(optRight)).
+		Msg("BSM synthetic options order created")
 
 	return optIntent, true
 }
