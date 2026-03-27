@@ -261,6 +261,12 @@ func resolveGracePeriod(rule domain.ExitRule, ctxBarDur time.Duration) time.Dura
 }
 
 func evaluateSDTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext, now time.Time) (bool, string) {
+	// Skip SD_TARGET for options — underlying hitting a VWAP SD band does not
+	// guarantee option profit (OTM options have low delta, IV crush and theta
+	// can overwhelm the move). Use STEP_STOP for options instead.
+	if pos.InstrumentType == domain.InstrumentTypeOption {
+		return false, ""
+	}
 	if now.Sub(pos.EntryTime) < resolveGracePeriod(rule, ctx.BarDuration) {
 		return false, ""
 	}
