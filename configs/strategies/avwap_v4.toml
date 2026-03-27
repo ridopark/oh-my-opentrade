@@ -54,23 +54,23 @@ stop_bps = 75
 limit_offset_bps = 5
 risk_per_trade_bps = 500
 max_position_bps = 2000
-# Morning session only — afternoon shorts are toxic
-allowed_hours_start = "09:50"
-allowed_hours_end = "11:30"
+# Extended morning session
+allowed_hours_start = "09:35"
+allowed_hours_end = "12:30"
 allowed_hours_tz = "America/New_York"
 # Directional bias: only long above AVWAP, only short below
 enforce_avwap_bias = true
 # Pullback-to-AVWAP mean reversion entry
 pullback_enabled = true
-pullback_trend_bars = 10
-pullback_tolerance_bps = 20
-pullback_rsi_min = 40.0
-pullback_rsi_max = 60.0
-# AVWAP slope confirmation
-min_slope_bps = 0.3
+pullback_trend_bars = 5
+pullback_tolerance_bps = 30
+pullback_rsi_min = 30.0
+pullback_rsi_max = 65.0
+# AVWAP slope — disabled for now (0 = no slope gate)
+min_slope_bps = 0.0
 slope_lookback = 10
-# Restrict shorts to pullback entries only (requires confirmed downtrend)
-require_capitulation_for_shorts = true
+# Allow all short entry types (breakout + pullback + bounce)
+require_capitulation_for_shorts = false
 
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
