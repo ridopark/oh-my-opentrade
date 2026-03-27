@@ -511,6 +511,7 @@ func initDebateService(cfg *config.Config, infra *infraDeps, svc *appServices, l
 	svc.debateSvc = debate.NewService(infra.eventBus, svc.aiAdvisor, infra.repo, cfg.AI.MinConfidence, debateLog)
 	svc.debateSvc.SetEquity(svc.accountEquity)
 	svc.debateSvc.SetSpecStore(svc.specStore)
+	svc.debateSvc.SetOptionsMarket(infra.broker)
 	log.Info().
 		Float64("min_confidence", cfg.AI.MinConfidence).
 		Msg("AI debate service enabled (v1 path)")
