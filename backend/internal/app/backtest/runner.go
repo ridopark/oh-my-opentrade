@@ -458,7 +458,6 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Subscribe SSE emitter to our isolated bus.
 	r.emitter.SetSnapshotFn(monitorSvc.GetLastSnapshot)
-	r.emitter.SetAVWAPFn(pipeline.Runner.GetAVWAPValues)
 	if subErr := r.emitter.Subscribe(ctx, r.eventBus); subErr != nil {
 		r.status.Store("error")
 		return fmt.Errorf("subscribe emitter: %w", subErr)
