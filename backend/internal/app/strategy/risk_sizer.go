@@ -845,6 +845,7 @@ func (rs *RiskSizer) handleOptionsSignal(
 		"delta_at_entry":    fmt.Sprintf("%.4f", best.Delta),
 		"iv_at_entry":       fmt.Sprintf("%.4f", best.IV),
 		"premium":           fmt.Sprintf("%.2f", midPrice),
+		"entry_date":        rs.nowFn().Format("2006-01-02"),
 		"open_interest":     strconv.Itoa(best.OpenInterest),
 		"enrichment_status": string(enrichment.Status),
 		"risk_modifier":     string(enrichment.RiskModifier),

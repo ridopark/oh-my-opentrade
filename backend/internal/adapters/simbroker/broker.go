@@ -451,21 +451,30 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 		return 0
 	}
 
-	// Try historical data first: use real bid price for exit (seller gets bid).
+	// Try historical data for exit pricing — but only for multi-day holds.
+	// Same-day exits use BSM repricing below since daily data can't capture
+	// intraday underlying moves (would always return the same bid).
 	if b.historicalOptions != nil {
 		underlying := intent.Meta["underlying"]
 		if underlying == "" {
 			underlying = string(domain.UnderlyingFromOCC(intent.Symbol))
 		}
-		right := domain.OptionRightCall
-		if rightStr == "PUT" {
-			right = domain.OptionRightPut
-		}
-		row, err := b.historicalOptions.GetHistoricalContract(
-			context.Background(), domain.Symbol(underlying), barTime,
-			strike, expiry, right)
-		if err == nil && row != nil && row.Bid > 0 {
-			return row.Bid // realistic exit at the bid
+
+		entryDateStr := intent.Meta["entry_date"]
+		exitDate := barTime.Format("2006-01-02")
+		isMultiDay := entryDateStr != "" && entryDateStr != exitDate
+
+		if isMultiDay {
+			right := domain.OptionRightCall
+			if rightStr == "PUT" {
+				right = domain.OptionRightPut
+			}
+			row, err := b.historicalOptions.GetHistoricalContract(
+				context.Background(), domain.Symbol(underlying), barTime,
+				strike, expiry, right)
+			if err == nil && row != nil && row.Bid > 0 {
+				return row.Bid // realistic exit at the bid
+			}
 		}
 	}
 
