@@ -433,8 +433,8 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 	}
 
 	var strike, iv float64
-	fmt.Sscanf(strikeStr, "%f", &strike)
-	fmt.Sscanf(ivStr, "%f", &iv)
+	_, _ = fmt.Sscanf(strikeStr, "%f", &strike)
+	_, _ = fmt.Sscanf(ivStr, "%f", &iv)
 	if iv <= 0 {
 		iv = 0.20
 	}
