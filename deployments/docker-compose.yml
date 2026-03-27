@@ -17,6 +17,8 @@ services:
     - EXISTING_SESSION_DETECTED_ACTION=primary
     - AUTO_RESTART_TIME=11:55 PM
     - RELOGIN_AFTER_2FA_TIMEOUT=60
+    - TWOFA_TIMEOUT_ACTION=restart
+    - ACCOUNT=${IBKR_ACCOUNT_ID:-}
     - VNC_SERVER_PASSWORD=${VNC_PASS:-password}
     volumes:
     - ibgateway_jts:/home/ibgateway/Jts
