@@ -37,8 +37,9 @@ type TradeRecord struct {
 	Rationale string    `json:"rationale,omitempty"` // exit reason (e.g. "exit_monitor:VOLATILITY_STOP:...")
 	Regime        string `json:"regime,omitempty"`         // EMA regime: TREND / BALANCE / REVERSAL
 	VIXBucket     string `json:"vix_bucket,omitempty"`     // LOW_VOL / NORMAL / HIGH_VOL
-	MarketContext string `json:"market_context,omitempty"` // composite: e.g. "NORMAL | NR7 | VWAP+"
+	MarketContext string  `json:"market_context,omitempty"` // composite: e.g. "NORMAL | NR7 | VWAP+"
 	PnL           float64 `json:"pnl,omitempty"`
+	Multiplier    float64 `json:"-"` // 100 for options, 1 for equity (internal use)
 }
 
 // Result holds the computed backtest metrics.
@@ -120,6 +121,13 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 	regime, _ := payload["regime"].(string)
 	vixBucket, _ := payload["vix_bucket"].(string)
 	marketContext, _ := payload["market_context"].(string)
+	instrumentType, _ := payload["instrument_type"].(string)
+
+	// Options contracts have a 100x multiplier
+	multiplier := 1.0
+	if instrumentType == "OPTION" {
+		multiplier = 100.0
+	}
 
 	if symbol == "" || quantity == 0 {
 		return nil
@@ -159,24 +167,30 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 	switch domain.Direction(direction) {
 	case domain.DirectionLong:
 		// Long entry: buy to open.
+		tr.Multiplier = multiplier
 		c.openBuys[symbol] = append(c.openBuys[symbol], tr)
-		c.cash -= quantity * price
+		c.cash -= quantity * price * multiplier
 
 	case domain.DirectionShort:
 		// Short entry: sell to open.
+		tr.Multiplier = multiplier
 		c.openSells[symbol] = append(c.openSells[symbol], tr)
-		c.cash += quantity * price
+		c.cash += quantity * price * multiplier
 
 	case domain.DirectionCloseLong, domain.DirectionCloseShort:
 		// Exit: close whichever position is open (long or short).
 		if opens := c.openBuys[symbol]; len(opens) > 0 {
-			// Closing a long: PnL = exit - entry.
+			// Closing a long: PnL = (exit - entry) × qty × multiplier.
 			remainQty := quantity
 			var realizedPnL float64
+			entryMult := 1.0
 			for len(opens) > 0 && remainQty > 0 {
 				entry := opens[0]
+				if entry.Multiplier > 0 {
+					entryMult = entry.Multiplier
+				}
 				matchQty := math.Min(entry.Quantity, remainQty)
-				realizedPnL += matchQty * (price - entry.Price)
+				realizedPnL += matchQty * (price - entry.Price) * entryMult
 				entry.Quantity -= matchQty
 				remainQty -= matchQty
 				if entry.Quantity <= 0 {
@@ -186,16 +200,20 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 				}
 			}
 			c.openBuys[symbol] = opens
-			c.cash += (quantity - remainQty) * price
+			c.cash += (quantity - remainQty) * price * entryMult
 			tr.PnL = realizedPnL
 		} else if opens := c.openSells[symbol]; len(opens) > 0 {
-			// Closing a short: PnL = entry - exit.
+			// Closing a short: PnL = (entry - exit) × qty × multiplier.
 			remainQty := quantity
 			var realizedPnL float64
+			entryMult := 1.0
 			for len(opens) > 0 && remainQty > 0 {
 				entry := opens[0]
+				if entry.Multiplier > 0 {
+					entryMult = entry.Multiplier
+				}
 				matchQty := math.Min(entry.Quantity, remainQty)
-				realizedPnL += matchQty * (entry.Price - price)
+				realizedPnL += matchQty * (entry.Price - price) * entryMult
 				entry.Quantity -= matchQty
 				remainQty -= matchQty
 				if entry.Quantity <= 0 {
@@ -205,7 +223,7 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 				}
 			}
 			c.openSells[symbol] = opens
-			c.cash -= (quantity - remainQty) * price
+			c.cash -= (quantity - remainQty) * price * entryMult
 			tr.PnL = realizedPnL
 		}
 
