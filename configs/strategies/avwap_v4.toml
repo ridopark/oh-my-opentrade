@@ -58,6 +58,14 @@ max_position_bps = 2000
 allowed_hours_start = "09:50"
 allowed_hours_end = "11:30"
 allowed_hours_tz = "America/New_York"
+# Directional bias: only long above AVWAP, only short below
+enforce_avwap_bias = true
+# Pullback-to-AVWAP mean reversion entry
+pullback_enabled = true
+pullback_trend_bars = 10
+pullback_tolerance_bps = 20
+pullback_rsi_min = 40.0
+pullback_rsi_max = 60.0
 
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
