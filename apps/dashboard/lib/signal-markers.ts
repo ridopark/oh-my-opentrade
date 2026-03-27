@@ -274,7 +274,7 @@ export class SignalMarkerOverlay implements ISeriesPrimitive<Time> {
 
   /** Hit-test a click at (x, y) in media coordinates against rendered markers.
    *  Returns the index into the signals array, or -1 if nothing hit. */
-  hitTest(x: number, y: number): number {
+  hitTestSignal(x: number, y: number): number {
     if (!this._chart || !this._series) return -1;
     const ts = this._chart.timeScale();
     for (let i = 0; i < this._signals.length; i++) {
