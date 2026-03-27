@@ -28,6 +28,7 @@ export interface BacktestBar {
   ema21?: number;
   ema50?: number;
   ema200?: number;
+  avwap?: number;
 }
 
 export interface BacktestSignal {

@@ -185,6 +185,26 @@ func (r *Runner) SetMetrics(m *metrics.Metrics) { r.metrics = m }
 
 func (r *Runner) SetPositionLookup(fn PositionLookupFunc) { r.posLookup = fn }
 
+// GetAVWAPValues returns the current anchored VWAP values for a symbol
+// by inspecting the strategy instance state. Returns nil if no AVWAP
+// strategy is active for this symbol.
+func (r *Runner) GetAVWAPValues(symbol string) map[string]float64 {
+	instances := r.router.InstancesForSymbol(symbol)
+	for _, inst := range instances {
+		st, ok := inst.GetState(symbol)
+		if !ok {
+			continue
+		}
+		type avwapValuer interface {
+			AVWAPValues() map[string]float64
+		}
+		if av, ok := st.(avwapValuer); ok {
+			return av.AVWAPValues()
+		}
+	}
+	return nil
+}
+
 // InitAggregators creates BarAggregators for all non-1m timeframes needed by registered instances.
 // Must be called after all instances are registered and before Start().
 func (r *Runner) InitAggregators(sessionOpen time.Time) {
