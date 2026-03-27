@@ -132,11 +132,9 @@ func main() {
 		if s.NR7 {
 			nr7Str = " Y"
 		}
-		passATR := " "
+		passATR := "✗"
 		if s.ATRPct >= 0.8 {
 			passATR = "✓"
-		} else {
-			passATR = "✗"
 		}
 
 		fmt.Printf("%-6s %10.2f %8.2f %6.1f%% %s%s %-8s %8.2f %6.1f%% %7.1f\n",
@@ -160,9 +158,10 @@ func main() {
 		if s.NR7 {
 			tags = append(tags, "NR7")
 		}
-		if s.Bias == "BULLISH" {
+		switch s.Bias {
+		case "BULLISH":
 			tags = append(tags, "BULL")
-		} else if s.Bias == "BEARISH" {
+		case "BEARISH":
 			tags = append(tags, "BEAR")
 		}
 		tagStr := ""

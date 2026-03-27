@@ -13,22 +13,6 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// estimateTradingDays returns approximate trading day opens (weekdays only) in a date range.
-func estimateTradingDays(from, to time.Time, loc *time.Location) []time.Time {
-	var days []time.Time
-	current := time.Date(from.Year(), from.Month(), from.Day(), 9, 30, 0, 0, loc)
-	end := to
-
-	for current.Before(end) {
-		wd := current.Weekday()
-		if wd != time.Saturday && wd != time.Sunday {
-			days = append(days, current)
-		}
-		current = current.Add(24 * time.Hour)
-	}
-	return days
-}
-
 // ScoredSymbol is a symbol with its screener scores for a given date.
 type ScoredSymbol struct {
 	Symbol string
