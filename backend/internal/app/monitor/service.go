@@ -489,6 +489,41 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	_ = hasLast
 	_ = lastSnap
 	setup, detected := s.feedORBBar(bar, snap, false)
+
+	// Emit ORBRangeSet notification once per session when opening range locks.
+	if sess := s.orbTracker.GetSession(symStr); sess != nil &&
+		sess.State == ORBStateRangeSet && !sess.RangeNotified && !sess.RangeInvalid {
+		sess.RangeNotified = true
+		htfBias := ""
+		atrPct := 0.0
+		nr7 := false
+		if htf, ok := snap.HTF[domain.Timeframe("1d")]; ok {
+			htfBias = htf.Bias
+			if htf.DailyATR > 0 && bar.Close > 0 {
+				atrPct = htf.DailyATR / bar.Close * 100
+			}
+			nr7 = htf.NR7
+		}
+		orbRangeEv, err := domain.NewEvent(
+			domain.EventORBRangeSet,
+			event.TenantID,
+			event.EnvMode,
+			event.IdempotencyKey+"-orb-range-set",
+			domain.ORBRangeSetPayload{
+				Symbol:  bar.Symbol,
+				High:    sess.OrbHigh,
+				Low:     sess.OrbLow,
+				Bars:    sess.RangeBarCount,
+				HTFBias: htfBias,
+				ATRPct:  atrPct,
+				NR7:     nr7,
+			},
+		)
+		if err == nil {
+			publishBestEffort = append(publishBestEffort, *orbRangeEv)
+		}
+	}
+
 	if detected && setup != nil {
 		// DNA approval gate: suppress setup if DNA is not approved.
 		if s.dnaGate != nil {

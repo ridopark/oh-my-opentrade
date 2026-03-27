@@ -133,6 +133,7 @@ func (s *Service) Start(ctx context.Context) error {
 		{domain.EventStaleOrderCancelled, s.fmtStaleOrderCancelled, false},
 		{domain.EventExitCircuitBroken, s.fmtExitCircuitBroken, false},
 		{domain.EventSystemStarted, s.fmtSystemStarted, false},
+		{domain.EventORBRangeSet, s.fmtORBRangeSet, false},
 	}
 
 	for _, e := range events {
@@ -196,6 +197,8 @@ func (s *Service) symbolFromEvent(ev domain.Event) string {
 	case domain.FillPollTimeoutPayload:
 		return string(p.Symbol)
 	case domain.StaleOrderCancelledPayload:
+		return string(p.Symbol)
+	case domain.ORBRangeSetPayload:
 		return string(p.Symbol)
 	case map[string]any:
 		if sym, ok := p["symbol"].(string); ok {
@@ -951,6 +954,30 @@ func (s *Service) fmtRiskRevaluated(ev domain.Event) string {
 	}
 
 	return msg
+}
+
+func (s *Service) fmtORBRangeSet(ev domain.Event) string {
+	p, ok := ev.Payload.(domain.ORBRangeSetPayload)
+	if !ok {
+		return "📐 ORB Range Set"
+	}
+	rangePct := 0.0
+	mid := (p.High + p.Low) / 2
+	if mid > 0 {
+		rangePct = (p.High - p.Low) / mid * 100
+	}
+	nr7Tag := "No"
+	if p.NR7 {
+		nr7Tag = "Yes"
+	}
+	bias := p.HTFBias
+	if bias == "" {
+		bias = "N/A"
+	}
+	return fmt.Sprintf("📐 **ORB Range Set: %s**\n📊 High: **$%s** | Low: **$%s** (%.2f%%) | Bars: %d\n📈 HTF Bias: **%s** | ATR%%: **%.1f%%** | NR7: **%s**",
+		string(p.Symbol),
+		domain.FmtPrice(p.High), domain.FmtPrice(p.Low), rangePct, p.Bars,
+		bias, p.ATRPct, nr7Tag)
 }
 
 func exitTriggerPrice(rule string, pct, entryPrice, highWaterMark float64) float64 {
