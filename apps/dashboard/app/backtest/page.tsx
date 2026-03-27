@@ -878,11 +878,14 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
         const entryPx = entry.price ?? 0;
         const exitPx = t.price ?? 0;
         // Use collector-computed P&L if available (handles options 100x multiplier).
-        // Fall back to simple calculation for equity.
+        // Fall back to manual calculation with multiplier for options.
+        const isOption = (t.instrument_type === "OPTION" || entry.instrument_type === "OPTION");
+        const multiplier = isOption ? 100 : 1;
         const pnl = t.pnl !== undefined && t.pnl !== 0
           ? t.pnl
-          : (isShort ? (entryPx - exitPx) * qty : (exitPx - entryPx) * qty);
-        const pnlPct = entryPx > 0 && qty > 0 ? (pnl / (entryPx * qty)) * 100 : 0;
+          : (isShort ? (entryPx - exitPx) * qty * multiplier : (exitPx - entryPx) * qty * multiplier);
+        // P&L% based on premium/price change — works for both equity and options
+        const pnlPct = entryPx > 0 ? ((exitPx - entryPx) / entryPx * (isShort ? -1 : 1)) * 100 : 0;
         positions.push({
           symbol: t.symbol,
           strategy: t.strategy ?? "",

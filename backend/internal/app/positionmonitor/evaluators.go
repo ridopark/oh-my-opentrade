@@ -465,6 +465,13 @@ func updateStepStopShort(pos *domain.MonitoredPosition, currentPrice float64, ct
 //	"minutes"      — max minutes from entry before stagnation exit (e.g. 30)
 //	"sd_threshold" — SD level that must be reached to avoid exit (default: 1.0)
 func evaluateStagnationExit(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time, ctx EvalContext) (bool, string) {
+	// Skip STAGNATION_EXIT for options — theta decay is the natural stagnation
+	// penalty. The profit gate uses underlying P&L% which understates option
+	// returns (0.3% underlying ≈ 30%+ option premium), causing false triggers.
+	if pos.InstrumentType == domain.InstrumentTypeOption {
+		return false, ""
+	}
+
 	minutes := rule.Param("minutes", 0)
 	if minutes <= 0 {
 		return false, ""
