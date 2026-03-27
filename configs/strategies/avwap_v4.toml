@@ -39,8 +39,8 @@ rsi_bounce_max = 35.0
 # 4 bars below AVWAP before strategy exit
 exit_hold_bars = 4
 # 15min cooldown prevents revenge trading
-cooldown_seconds = 600
-max_trades_per_day = 4
+cooldown_seconds = 300
+max_trades_per_day = 6
 # TREND only — breakouts fail in BALANCE/ranging markets
 allow_regimes = ["TREND", "BALANCE"]
 asset_class = "EQUITY"
@@ -66,9 +66,9 @@ pullback_trend_bars = 5
 pullback_tolerance_bps = 30
 pullback_rsi_min = 30.0
 pullback_rsi_max = 65.0
-# AVWAP slope — disabled for now (0 = no slope gate)
-min_slope_bps = 0.0
-slope_lookback = 10
+# AVWAP slope — gentle filter to avoid flat AVWAP entries
+min_slope_bps = 0.1
+slope_lookback = 15
 # Allow all short entry types (breakout + pullback + bounce)
 require_capitulation_for_shorts = false
 
@@ -85,21 +85,21 @@ type = "STEP_STOP"
 min_hold_bars = 6
 bar_minutes = 5
 
-# Wider SD target for better R:R
+# SD target — take profit at 1.5 SD for pullback entries (more realistic)
 [[exit_rules]]
 type = "SD_TARGET"
 [exit_rules.params]
-sd_level = 2.0
-min_hold_bars = 10
+sd_level = 1.5
+min_hold_bars = 6
 bar_minutes = 5
 
 # Kill zombie trades that go nowhere
 [[exit_rules]]
 type = "STAGNATION_EXIT"
 [exit_rules.params]
-minutes = 60
-sd_threshold = 1.0
-profit_gate_pct = 0.003
+minutes = 45
+sd_threshold = 0.8
+profit_gate_pct = 0.002
 
 [[exit_rules]]
 type = "EOD_FLATTEN"
