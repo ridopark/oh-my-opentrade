@@ -110,7 +110,7 @@ func (s *Service) tick() {
 
 		evalCtx := EvalContext{BarDuration: s.barDurationFor(pos.Strategy)}
 		if s.snapshotFn != nil {
-			if indSnap, ok := s.snapshotFn(string(pos.Symbol)); ok {
+			if indSnap, ok := s.snapshotFn(string(priceSymbol)); ok {
 				evalCtx.ATR = indSnap.ATR
 				evalCtx.VWAPValue = indSnap.VWAP
 				if indSnap.VWAPSD > 0 {

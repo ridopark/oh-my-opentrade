@@ -199,7 +199,13 @@ func (r *Revaluator) evaluateAll(ctx context.Context) {
 }
 
 func (r *Revaluator) evaluatePosition(ctx context.Context, pos domain.MonitoredPosition) {
-	indicators, ok := r.snapshotFn(string(pos.Symbol))
+	lookupSymbol := pos.Symbol
+	if pos.InstrumentType == domain.InstrumentTypeOption {
+		if underlying := domain.UnderlyingFromOCC(pos.Symbol); underlying != "" {
+			lookupSymbol = underlying
+		}
+	}
+	indicators, ok := r.snapshotFn(string(lookupSymbol))
 	if !ok {
 		r.log.Debug().Str("symbol", string(pos.Symbol)).Msg("skipping — no indicator snapshot available")
 		return
