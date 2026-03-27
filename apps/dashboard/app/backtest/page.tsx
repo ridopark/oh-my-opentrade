@@ -655,7 +655,7 @@ function MiniChart({
     ema200Ref.current = ema200;
 
     const avwapLine = chart.addSeries(LineSeries, {
-      color: "rgba(56, 189, 248, 0.9)", lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+      color: "rgba(56, 189, 248, 0.45)", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
     });
     avwapRef.current = avwapLine;
 
@@ -822,7 +822,7 @@ function MiniChart({
     { label: "EMA 21", color: "rgba(139, 92, 246, 0.7)" },
     { label: "EMA 50", color: "rgba(236, 72, 153, 0.6)" },
     { label: "EMA 200", color: "rgba(249, 115, 22, 0.5)" },
-    { label: "AVWAP", color: "rgba(56, 189, 248, 0.9)", thick: true },
+    { label: "AVWAP", color: "rgba(56, 189, 248, 0.45)", thick: true },
   ];
 
   return (
