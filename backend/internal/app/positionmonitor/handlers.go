@@ -2,6 +2,7 @@ package positionmonitor
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 	instrumentType, _ := payload["instrument_type"].(string)
 	optionRight, _ := payload["option_right"].(string)
 	optionExpiryStr, _ := payload["option_expiry"].(string)
+	ivAtEntryStr, _ := payload["iv_at_entry"].(string)
 
 	if symbol == "" || price <= 0 || quantity <= 0 {
 		return nil
@@ -38,6 +40,10 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 	var optionExpiry time.Time
 	if optionExpiryStr != "" {
 		optionExpiry, _ = time.Parse("2006-01-02", optionExpiryStr)
+	}
+	var ivAtEntry float64
+	if ivAtEntryStr != "" {
+		fmt.Sscanf(ivAtEntryStr, "%f", &ivAtEntry)
 	}
 
 	select {
@@ -54,6 +60,7 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 		InstrumentType: domain.InstrumentType(instrumentType),
 		OptionExpiry:   optionExpiry,
 		OptionRight:    optionRight,
+		IVAtEntry:      ivAtEntry,
 	}:
 	default:
 		s.log.Warn().Str("symbol", symbol).Msg("position monitor: fill channel full, dropping fill")

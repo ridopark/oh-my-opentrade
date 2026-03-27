@@ -62,7 +62,14 @@ func (s *Service) tick() {
 			continue
 		}
 
-		snap, ok := s.priceCache.LatestPrice(pos.Symbol)
+		// For options, look up price by underlying symbol (bar data comes in under the underlying)
+		priceSymbol := pos.Symbol
+		if pos.InstrumentType == domain.InstrumentTypeOption {
+			if underlying := domain.UnderlyingFromOCC(pos.Symbol); underlying != "" {
+				priceSymbol = underlying
+			}
+		}
+		snap, ok := s.priceCache.LatestPrice(priceSymbol)
 		priceAvailable := ok && now.Sub(snap.ObservedAt) <= s.maxPriceStaleness
 
 		// Phase 1: time-only rules — always evaluated, no price dependency.
@@ -300,6 +307,27 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 			inst, instErr := domain.NewInstrument(domain.InstrumentTypeOption, string(pos.Symbol), string(underlying))
 			if instErr == nil {
 				intent.Instrument = &inst
+			}
+			// Copy option meta for simbroker BSM exit pricing
+			if intent.Meta == nil {
+				intent.Meta = make(map[string]string)
+			}
+			intent.Meta["option_right"] = string(pos.OptionRight)
+			intent.Meta["expiry"] = pos.OptionExpiry.Format("2006-01-02")
+			intent.Meta["underlying"] = string(underlying)
+			// Extract strike from OCC symbol (last 8 digits / 1000)
+			occStr := string(pos.Symbol)
+			if len(occStr) >= 8 {
+				strikeStr := occStr[len(occStr)-8:]
+				var strikeInt int
+				fmt.Sscanf(strikeStr, "%d", &strikeInt)
+				intent.Meta["strike"] = fmt.Sprintf("%.2f", float64(strikeInt)/1000.0)
+			}
+			// Use entry IV stored in custom state (set during fill)
+			if pos.CustomState != nil {
+				if ivVal := pos.CustomState["iv_at_entry"]; ivVal > 0 {
+					intent.Meta["iv_at_entry"] = fmt.Sprintf("%.4f", ivVal)
+				}
 			}
 		}
 	}
