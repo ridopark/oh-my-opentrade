@@ -297,7 +297,8 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 	}
 
 	if optionsEnabled {
-		if s.optionsMarket != nil {
+		switch {
+		case s.optionsMarket != nil:
 			// Live market (production).
 			optIntent, routed := s.tryOptionsRoute(ctx, event, setup, decision, intent, l)
 			if routed {
@@ -306,7 +307,7 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 				l.Info().Msg("options enabled but no contract found — skipping trade (no equity fallback)")
 				return nil
 			}
-		} else if s.historicalOptions != nil {
+		case s.historicalOptions != nil:
 			// Historical data (backtesting with DoltHub).
 			optIntent, routed := s.tryHistoricalOptionsRoute(ctx, event, setup, decision, intent, l)
 			if routed {
@@ -321,7 +322,7 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 					return nil
 				}
 			}
-		} else {
+		default:
 			// Pure BSM synthetic (original fallback).
 			optIntent, routed := s.tryBSMOptionsRoute(ctx, event, setup, decision, intent, l)
 			if routed {

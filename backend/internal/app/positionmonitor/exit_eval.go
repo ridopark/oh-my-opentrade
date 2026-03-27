@@ -320,7 +320,7 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 			if len(occStr) >= 8 {
 				strikeStr := occStr[len(occStr)-8:]
 				var strikeInt int
-				fmt.Sscanf(strikeStr, "%d", &strikeInt)
+				_, _ = fmt.Sscanf(strikeStr, "%d", &strikeInt)
 				intent.Meta["strike"] = fmt.Sprintf("%.2f", float64(strikeInt)/1000.0)
 			}
 			// Use entry IV stored in custom state (set during fill)
