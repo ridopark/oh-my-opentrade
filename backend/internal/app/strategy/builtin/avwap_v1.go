@@ -157,6 +157,14 @@ func (s *AVWAPState) ClearPendingEntry() {
 	s.PendingEntryAt = time.Time{}
 }
 
+// UpdateCalc feeds a 1m bar into the AVWAP calculator for smooth chart
+// rendering. Does not trigger any signal logic.
+func (s *AVWAPState) UpdateCalc(bar start.Bar) {
+	if s.Calc != nil {
+		s.Calc.Update(bar.Time, bar.High, bar.Low, bar.Close, bar.Volume)
+	}
+}
+
 // AVWAPValues returns the current anchored VWAP values for chart rendering.
 func (s *AVWAPState) AVWAPValues() map[string]float64 {
 	if s.Calc == nil {

@@ -116,16 +116,16 @@ func (e *Emitter) onCandle(_ context.Context, ev domain.Event) error {
 			}
 		}
 	}
-	// Use the monitor's session VWAP for the chart line — it updates every
-	// 1m bar and produces a smooth line. The strategy's AVWAP from
-	// GetAVWAPValues() only updates on 5m bars, creating a jagged staircase.
-	// When the anchor is session_open (the common case), both values are
-	// identical — the monitor's is just smoother because it updates more often.
-	if isSessionHours(bar.Time) {
-		fn := e.snapshotFn
-		if fn != nil {
-			if snap, ok := fn(string(bar.Symbol)); ok && snap.VWAP > 0 {
-				data["avwap"] = snap.VWAP
+	// Use the strategy's actual AVWAP — anchors are resolved once per session
+	// (from catalyst gaps, capitulation, swings etc.) and the calculator is
+	// updated on every 1m bar for a smooth line.
+	if isSessionHours(bar.Time) && e.avwapFn != nil {
+		if vals := e.avwapFn(string(bar.Symbol)); len(vals) > 0 {
+			for _, v := range vals {
+				if v > 0 {
+					data["avwap"] = v
+					break
+				}
 			}
 		}
 	}
