@@ -3,6 +3,7 @@ package strategy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -37,7 +38,12 @@ const circuitBreakerCooldown = 60 * time.Minute
 
 const aiDirectionMinConfidence = 0.5
 
-var etLocation *time.Location
+var (
+	etLocation             *time.Location
+	errOptionsChainEmpty   = errors.New("options chain empty")
+	errOptionsNoContract   = errors.New("no suitable option contract")
+	errOptionsChainFailed  = errors.New("options chain fetch failed")
+)
 
 func init() {
 	var err error
@@ -586,10 +592,24 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 
 	// Options branch: when the strategy has options enabled, route through
 	// the options pipeline instead of creating an equity OrderIntent.
+	// Falls back to equity if the options chain is empty or fetch fails
+	// (e.g. no historical data for this date range in backtests).
 	if sigRef.SignalType == start.SignalEntry.String() &&
 		spec != nil && spec.Options != nil && spec.Options.Enabled &&
 		rs.optionsMarket != nil {
-		return rs.handleOptionsSignal(ctx, event, enrichment, sigRef, spec, params, exitRules, direction, strategyName, refPrice, limitPrice, equity)
+		err := rs.handleOptionsSignal(ctx, event, enrichment, sigRef, spec, params, exitRules, direction, strategyName, refPrice, limitPrice, equity)
+		if err == nil {
+			return nil // options trade placed successfully
+		}
+		if errors.Is(err, errOptionsChainEmpty) || errors.Is(err, errOptionsChainFailed) {
+			rs.logger.Info("options fallback to equity",
+				"symbol", sigRef.Symbol,
+				"reason", err.Error(),
+			)
+			// Fall through to equity path below.
+		} else {
+			return err // real error
+		}
 	}
 
 	intentID := uuid.New()
@@ -726,15 +746,15 @@ func (rs *RiskSizer) handleOptionsSignal(
 			"option_right", string(optRight),
 			"error", err,
 		)
-		return nil
+		return errOptionsChainFailed
 	}
 	if len(chain) == 0 {
-		rs.logger.Warn("empty options chain — skipping options path",
+		rs.logger.Warn("empty options chain — falling back to equity",
 			"symbol", sigRef.Symbol,
 			"option_right", string(optRight),
 			"target_expiry", targetExpiry,
 		)
-		return nil
+		return errOptionsChainEmpty
 	}
 
 	selector := rs.buildContractSelector(spec.Options)
