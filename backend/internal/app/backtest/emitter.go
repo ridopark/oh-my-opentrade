@@ -219,8 +219,10 @@ func (e *Emitter) EmitMetrics(m map[string]any) {
 }
 
 // EmitComplete sends the final backtest result to all connected clients.
+// Unlike regular Emit, this drains the client channel first and then uses a
+// blocking send so the completion event is never silently dropped.
 func (e *Emitter) EmitComplete(result *Result) {
-	e.Emit(SSEEvent{Type: "backtest:complete", Data: map[string]any{
+	evt := SSEEvent{Type: "backtest:complete", Data: map[string]any{
 		"total_trades":     result.TradeCount,
 		"final_equity":     result.FinalEquity,
 		"total_return_pct": result.TotalReturn,
@@ -229,7 +231,27 @@ func (e *Emitter) EmitComplete(result *Result) {
 		"max_drawdown_pct": result.MaxDrawdown,
 		"win_rate_pct":     result.WinRate,
 		"profit_factor":    result.ProfitFactor,
-	}})
+	}}
+
+	e.historyMu.Lock()
+	e.history = append(e.history, evt)
+	e.historyMu.Unlock()
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for c := range e.clients {
+		// Drain any queued events so the channel has room.
+		for {
+			select {
+			case <-c.ch:
+			default:
+				goto drained
+			}
+		}
+	drained:
+		// Blocking send — completion must not be dropped.
+		c.ch <- evt
+	}
 }
 
 // ClientCount returns the number of connected SSE clients.
