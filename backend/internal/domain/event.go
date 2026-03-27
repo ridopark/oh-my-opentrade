@@ -56,6 +56,7 @@ const (
 	EventFormingBar              EventType = "FormingBar"
 	EventFeedDegraded            EventType = "FeedDegraded"
 	EventExitCircuitBroken       EventType = "ExitCircuitBroken"
+	EventORBRangeSet             EventType = "ORBRangeSet"
 
 	// Connectivity & system events.
 	EventBrokerAPIError          EventType = "BrokerAPIError"
@@ -125,6 +126,16 @@ type SystemStartedPayload struct {
 	EMA200Failed    []string
 	Strategies      []string
 	StrategySymbols map[string][]string
+}
+
+type ORBRangeSetPayload struct {
+	Symbol  Symbol
+	High    float64
+	Low     float64
+	Bars    int
+	HTFBias string
+	ATRPct  float64
+	NR7     bool
 }
 
 // Event represents a domain event in the trading pipeline.

@@ -234,6 +234,7 @@ type ORBSession struct {
 	SweepCooldown     int
 	PrevVWAP          float64 // previous bar's VWAP for slope calculation
 	RangeInvalid      bool    // true if OR range failed ATR/size check
+	RangeNotified     bool    // true once ORBRangeSet event has been emitted
 
 	// FVG tracking
 	RecentBars [3]domain.MarketBar // rolling window of last 3 bars for FVG detection
