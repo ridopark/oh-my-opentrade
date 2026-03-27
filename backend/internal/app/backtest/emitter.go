@@ -121,11 +121,22 @@ func (e *Emitter) onCandle(_ context.Context, ev domain.Event) error {
 	// updated on every 1m bar for a smooth line.
 	if isSessionHours(bar.Time) && e.avwapFn != nil {
 		if vals := e.avwapFn(string(bar.Symbol)); len(vals) > 0 {
-			// Use session_open anchor (the primary AVWAP level the strategy trades).
-			// Don't iterate the map randomly — Go map iteration is non-deterministic
-			// and would cause the chart line to oscillate between different anchors.
+			// Pick the AVWAP value deterministically: prefer "session_open",
+			// then fall back to the first key alphabetically to avoid Go map
+			// random iteration causing chart oscillation.
 			if v, ok := vals["session_open"]; ok && v > 0 {
 				data["avwap"] = v
+			} else {
+				// Find min key for deterministic order
+				var bestKey string
+				for k := range vals {
+					if bestKey == "" || k < bestKey {
+						bestKey = k
+					}
+				}
+				if bestKey != "" && vals[bestKey] > 0 {
+					data["avwap"] = vals[bestKey]
+				}
 			}
 		}
 	}
