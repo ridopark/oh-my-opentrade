@@ -17,7 +17,7 @@ type AVWAPStrategy struct {
 
 // NewAVWAPStrategy creates a new AVWAP Breakout/Bounce strategy.
 func NewAVWAPStrategy() *AVWAPStrategy {
-	id, _ := start.NewStrategyID("avwap_v1")
+	id, _ := start.NewStrategyID("avwap")
 	ver, _ := start.NewVersion("1.0.0")
 	return &AVWAPStrategy{
 		meta: start.Meta{

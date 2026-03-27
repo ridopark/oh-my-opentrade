@@ -710,7 +710,7 @@ func TestRiskSizer_AIDirectionGate_RejectsConflictingSignal(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "BTC/USD", payload.Symbol)
 	assert.Equal(t, string(domain.DirectionLong), payload.Direction)
-	assert.Equal(t, "avwap_v1", payload.Strategy)
+	assert.Equal(t, "avwap", payload.Strategy)
 	assert.Contains(t, payload.Reason, "ai_direction_conflict")
 	assert.Equal(t, domain.OrderIntentStatusRejected, payload.Status)
 

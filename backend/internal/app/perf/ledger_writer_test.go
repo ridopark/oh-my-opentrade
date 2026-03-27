@@ -546,7 +546,7 @@ func TestLedgerWriter_StrategyDualWrite_MultipleStrategiesSameSymbol(t *testing.
 	require.NoError(t, err)
 
 	// AVWAP buys 5 AAPL @ $105
-	err = bus.Publish(ctx, makeStrategyFillEvent(t, "AAPL", "buy", 5, 105.0, "avwap_v1"))
+	err = bus.Publish(ctx, makeStrategyFillEvent(t, "AAPL", "buy", 5, 105.0, "avwap"))
 	require.NoError(t, err)
 
 	// ORB sells 10 AAPL @ $110 (realized = (110-100)*10 = $100)
@@ -554,7 +554,7 @@ func TestLedgerWriter_StrategyDualWrite_MultipleStrategiesSameSymbol(t *testing.
 	require.NoError(t, err)
 
 	// AVWAP sells 5 AAPL @ $108 (realized = (108-105)*5 = $15)
-	err = bus.Publish(ctx, makeStrategyFillEvent(t, "AAPL", "sell", 5, 108.0, "avwap_v1"))
+	err = bus.Publish(ctx, makeStrategyFillEvent(t, "AAPL", "sell", 5, 108.0, "avwap"))
 	require.NoError(t, err)
 
 	repo.mu.Lock()
@@ -578,7 +578,7 @@ func TestLedgerWriter_StrategyDualWrite_MultipleStrategiesSameSymbol(t *testing.
 		switch u.Strategy {
 		case "orb_break_retest":
 			lastORB = u
-		case "avwap_v1":
+		case "avwap":
 			lastAVWAP = u
 		}
 	}
@@ -660,7 +660,7 @@ func TestReplayTodaysTrades_ReconstructsStrategyPositions(t *testing.T) {
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	tradeReader := &mockTradeReader{
 		trades: []domain.Trade{
-			{Time: todayStart.Add(1 * time.Hour), Symbol: "AAPL", Side: "BUY", Quantity: 10, Price: 100.0, Status: "FILLED", Strategy: "avwap_v1"},
+			{Time: todayStart.Add(1 * time.Hour), Symbol: "AAPL", Side: "BUY", Quantity: 10, Price: 100.0, Status: "FILLED", Strategy: "avwap"},
 		},
 	}
 
@@ -669,7 +669,7 @@ func TestReplayTodaysTrades_ReconstructsStrategyPositions(t *testing.T) {
 	require.NoError(t, err)
 
 	// Now send a live SELL — the entry price should be $100 from replay
-	err = bus.Publish(context.Background(), makeStrategyFillEvent(t, "AAPL", "sell", 10, 120.0, "avwap_v1"))
+	err = bus.Publish(context.Background(), makeStrategyFillEvent(t, "AAPL", "sell", 10, 120.0, "avwap"))
 	require.NoError(t, err)
 
 	repo.mu.Lock()
@@ -678,7 +678,7 @@ func TestReplayTodaysTrades_ReconstructsStrategyPositions(t *testing.T) {
 	// Live sell should produce strategy P&L: (120-100)*10 = $200
 	require.True(t, len(repo.stratUpserts) >= 1)
 	lastStrat := repo.stratUpserts[len(repo.stratUpserts)-1]
-	assert.Equal(t, "avwap_v1", lastStrat.Strategy)
+	assert.Equal(t, "avwap", lastStrat.Strategy)
 	assert.InDelta(t, 200.0, lastStrat.RealizedPnL, 0.01)
 }
 

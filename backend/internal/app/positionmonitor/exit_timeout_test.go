@@ -19,7 +19,7 @@ func seedPartiallyExitedPosition(t *testing.T, svc *Service, symbol string, buyQ
 		Price:      12.14,
 		Quantity:   buyQty,
 		FilledAt:   time.Now(),
-		Strategy:   "avwap_v1",
+		Strategy:   "avwap",
 		AssetClass: domain.AssetClassEquity,
 		ExitRules:  []domain.ExitRule{},
 	})
@@ -29,7 +29,7 @@ func seedPartiallyExitedPosition(t *testing.T, svc *Service, symbol string, buyQ
 		Price:    12.13,
 		Quantity: partialSellQty,
 		FilledAt: time.Now(),
-		Strategy: "avwap_v1",
+		Strategy: "avwap",
 	})
 }
 
@@ -68,7 +68,7 @@ func TestHandleExitTimeout_OrderAlreadyFilled_ReconcilesMissingFill(t *testing.T
 	assert.InDelta(t, 567.58, trade.Quantity, 0.001)
 	assert.Equal(t, 12.13, trade.Price)
 	assert.Equal(t, "FILLED", trade.Status)
-	assert.Equal(t, "avwap_v1", trade.Strategy)
+	assert.Equal(t, "avwap", trade.Strategy)
 	assert.Contains(t, trade.Rationale, "fill reconciliation")
 	assert.Contains(t, trade.Rationale, "order-abc")
 }

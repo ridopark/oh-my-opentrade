@@ -52,7 +52,7 @@ allowed_regimes = ["BALANCE", "REVERSAL"]
 min_atr_pct = 0.8
 
 [hooks]
-signals = { engine = "builtin", name = "avwap_v1" }
+signals = { engine = "builtin", name = "avwap" }
 
 [options]
 enabled = true

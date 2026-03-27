@@ -249,7 +249,7 @@ func TestSignalDebateEnricher_ExitSignal_WithPnL(t *testing.T) {
 
 	posLookup := func(symbol string) (domain.MonitoredPosition, bool) {
 		if symbol == "AAPL" {
-			pos, _ := domain.NewMonitoredPosition("AAPL", 95.0, time.Now(), "avwap_v1", domain.AssetClassEquity, nil, "t1", domain.EnvModePaper, 10)
+			pos, _ := domain.NewMonitoredPosition("AAPL", 95.0, time.Now(), "avwap", domain.AssetClassEquity, nil, "t1", domain.EnvModePaper, 10)
 			return pos, true
 		}
 		return domain.MonitoredPosition{}, false
@@ -578,7 +578,7 @@ func TestSignalDebateEnricher_PerfVeto_NegativeExpectancy(t *testing.T) {
 		Rationale:  "should not be called",
 	}}
 	perf := &fakeStrategyPerf{summary: &domain.StrategyPerformanceSummary{
-		Strategy: "avwap_v1",
+		Strategy: "avwap",
 		Symbol:   "BTC/USD",
 		Overall: domain.StrategyRegimeStats{
 			TradeCount: 25,
@@ -620,7 +620,7 @@ func TestSignalDebateEnricher_PerfVeto_PositiveExpectancy(t *testing.T) {
 		Rationale:  "momentum confirmed",
 	}}
 	perf := &fakeStrategyPerf{summary: &domain.StrategyPerformanceSummary{
-		Strategy: "avwap_v1",
+		Strategy: "avwap",
 		Symbol:   "AAPL",
 		Overall: domain.StrategyRegimeStats{
 			TradeCount: 15,
@@ -655,7 +655,7 @@ func TestSignalDebateEnricher_PerfVeto_InsufficientTrades(t *testing.T) {
 		Rationale:  "too few trades to veto",
 	}}
 	perf := &fakeStrategyPerf{summary: &domain.StrategyPerformanceSummary{
-		Strategy: "avwap_v1",
+		Strategy: "avwap",
 		Symbol:   "AAPL",
 		Overall: domain.StrategyRegimeStats{
 			TradeCount: 3,
