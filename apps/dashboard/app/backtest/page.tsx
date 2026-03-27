@@ -732,13 +732,15 @@ function MiniChart({
     for (const b of bars) deduped.set(b.time, b);
     const sorted = Array.from(deduped.values()).sort((a, b) => a.time - b.time);
 
-    candleRef.current.setData(sorted.map((b) => ({ time: b.time as Time, open: b.open, high: b.high, low: b.low, close: b.close })));
-    volumeRef.current.setData(sorted.map((b) => ({ time: b.time as Time, value: b.volume, color: b.close >= b.open ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)" })));
+    // Filter out AVWAP-only entries (open=0) from candlestick and volume series
+    const ohlcBars = sorted.filter((b) => b.open > 0);
+    candleRef.current.setData(ohlcBars.map((b) => ({ time: b.time as Time, open: b.open, high: b.high, low: b.low, close: b.close })));
+    volumeRef.current.setData(ohlcBars.map((b) => ({ time: b.time as Time, value: b.volume, color: b.close >= b.open ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)" })));
 
-    const ema9Data = sorted.filter((b) => b.ema9 && b.ema9 > 0).map((b) => ({ time: b.time as Time, value: b.ema9! }));
-    const ema21Data = sorted.filter((b) => b.ema21 && b.ema21 > 0).map((b) => ({ time: b.time as Time, value: b.ema21! }));
-    const ema50Data = sorted.filter((b) => b.ema50 && b.ema50 > 0).map((b) => ({ time: b.time as Time, value: b.ema50! }));
-    const ema200Data = sorted.filter((b) => b.ema200 && b.ema200 > 0).map((b) => ({ time: b.time as Time, value: b.ema200! }));
+    const ema9Data = ohlcBars.filter((b) => b.ema9 && b.ema9 > 0).map((b) => ({ time: b.time as Time, value: b.ema9! }));
+    const ema21Data = ohlcBars.filter((b) => b.ema21 && b.ema21 > 0).map((b) => ({ time: b.time as Time, value: b.ema21! }));
+    const ema50Data = ohlcBars.filter((b) => b.ema50 && b.ema50 > 0).map((b) => ({ time: b.time as Time, value: b.ema50! }));
+    const ema200Data = ohlcBars.filter((b) => b.ema200 && b.ema200 > 0).map((b) => ({ time: b.time as Time, value: b.ema200! }));
 
     const avwapData = sorted.filter((b) => b.avwap && b.avwap > 0).map((b) => ({ time: b.time as Time, value: b.avwap! }));
 
