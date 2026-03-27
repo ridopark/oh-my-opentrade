@@ -43,7 +43,7 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 	}
 	var ivAtEntry float64
 	if ivAtEntryStr != "" {
-		fmt.Sscanf(ivAtEntryStr, "%f", &ivAtEntry)
+		_, _ = fmt.Sscanf(ivAtEntryStr, "%f", &ivAtEntry)
 	}
 
 	select {
