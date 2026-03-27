@@ -237,6 +237,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		Strategies:       req.Strategies,
 		UseDailyScreener: req.UseDailyScreener,
 		ScreenerTopN:     req.ScreenerTopN,
+		FixedSymbols:     symbols, // user's original picks — always active
 	}, h.db, h.appCfg, h.marketData, h.log)
 
 	h.active = runner

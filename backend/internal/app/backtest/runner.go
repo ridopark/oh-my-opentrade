@@ -45,8 +45,9 @@ type RunConfig struct {
 	NoAI             bool
 	StrategyDir      string
 	Strategies       []string
-	UseDailyScreener bool   // dynamically pick symbols each day using screener
-	ScreenerTopN     int    // how many top symbols to pick per day (default 5)
+	UseDailyScreener bool            // dynamically pick symbols each day using screener
+	ScreenerTopN     int             // how many top symbols to pick per day (default 5)
+	FixedSymbols     []domain.Symbol // user's original symbols (always active, union with screener)
 }
 
 // ProgressInfo tracks replay progress.
@@ -877,13 +878,24 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			popBar(s)
 
-			// Daily screener filter: skip bars for symbols not in today's screened set.
-			// If no screener data for this day, allow all symbols through (fail-open).
+			// Daily screener filter: allow bars if symbol is in today's screened set
+			// OR in the user's fixed symbol list (union of both, like live trading).
 			if dailyScreenerMap != nil {
-				dateKey := currentSessionDate.Format("2006-01-02")
-				if activeSyms, ok := dailyScreenerMap[dateKey]; ok && len(activeSyms) > 0 {
-					if !activeSyms[bar.Symbol.String()] {
-						continue
+				symStr := bar.Symbol.String()
+				// Always allow fixed (user-selected) symbols
+				isFixed := false
+				for _, fs := range r.cfg.FixedSymbols {
+					if string(fs) == symStr {
+						isFixed = true
+						break
+					}
+				}
+				if !isFixed {
+					dateKey := currentSessionDate.Format("2006-01-02")
+					if activeSyms, ok := dailyScreenerMap[dateKey]; ok && len(activeSyms) > 0 {
+						if !activeSyms[symStr] {
+							continue
+						}
 					}
 				}
 			}
