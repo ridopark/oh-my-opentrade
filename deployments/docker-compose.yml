@@ -88,7 +88,7 @@ services:
     - STRATEGY_V2=true
     - BROKER=${BROKER:-alpaca}
     - IBKR_GATEWAY_HOST=ib-gateway
-    - IBKR_GATEWAY_PORT=4002
+    - IBKR_GATEWAY_PORT=4004
     - IBKR_CLIENT_ID=${IBKR_CLIENT_ID:-1}
     - IBKR_ACCOUNT_ID=""
     ports:
