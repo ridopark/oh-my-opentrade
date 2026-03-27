@@ -817,12 +817,12 @@ function MiniChart({
   const tradeCount = trades.length;
   const hasActivity = tradeCount > 0;
 
-  const emaLegend = [
+  const lineLegend = [
     { label: "EMA 9", color: "rgba(251, 191, 36, 0.7)" },
     { label: "EMA 21", color: "rgba(139, 92, 246, 0.7)" },
     { label: "EMA 50", color: "rgba(236, 72, 153, 0.6)" },
     { label: "EMA 200", color: "rgba(249, 115, 22, 0.5)" },
-    { label: "AVWAP", color: "rgba(56, 189, 248, 0.9)" },
+    { label: "AVWAP", color: "rgba(56, 189, 248, 0.9)", thick: true },
   ];
 
   return (
@@ -831,12 +831,16 @@ function MiniChart({
         <div className="flex items-center gap-3">
           <span className="text-xs font-mono font-semibold text-foreground">{symbol}</span>
           <div className="flex items-center gap-2">
-            {emaLegend.map((e) => (
+            {lineLegend.map((e) => (
               <div key={e.label} className="flex items-center gap-1">
-                <span className="w-2.5 h-[2px] rounded-full" style={{ backgroundColor: e.color }} />
+                <span className={`w-2.5 rounded-full ${e.thick ? "h-[3px]" : "h-[2px]"}`} style={{ backgroundColor: e.color }} />
                 <span className="text-[9px] font-mono text-muted-foreground">{e.label}</span>
               </div>
             ))}
+            <div className="flex items-center gap-1">
+              <span className="w-2.5 h-2 rounded-[1px] border border-dashed" style={{ borderColor: "rgba(59, 130, 246, 0.5)", backgroundColor: "rgba(59, 130, 246, 0.1)" }} />
+              <span className="text-[9px] font-mono text-muted-foreground">ORB</span>
+            </div>
           </div>
         </div>
         {tradeCount > 0 && (
