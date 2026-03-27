@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
+	"github.com/oh-my-opentrade/backend/internal/app/options"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	domstrategy "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
@@ -34,6 +36,7 @@ type Service struct {
 	aiAdvisor      ports.AIAdvisorPort
 	repo           ports.RepositoryPort
 	specStore      portstrategy.SpecStore
+	optionsMarket  ports.OptionsMarketDataPort
 	minConfidence  float64
 	equity         float64
 	advisorTimeout time.Duration
@@ -57,6 +60,11 @@ func (s *Service) SetEquity(equity float64) {
 // SetSpecStore sets the strategy spec store for reading sizing params from config.
 func (s *Service) SetSpecStore(store portstrategy.SpecStore) {
 	s.specStore = store
+}
+
+// SetOptionsMarket sets the options market data provider for options routing.
+func (s *Service) SetOptionsMarket(m ports.OptionsMarketDataPort) {
+	s.optionsMarket = m
 }
 
 // NewService creates a new debate Service.
@@ -271,8 +279,16 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 		}
 	}
 
-	l.Info().Str("intent_id", intentID.String()).Msg("order intent created from AI debate")
-	s.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)
+	// 5b. Options routing: if options enabled and chain is liquid, convert to options order.
+	if s.optionsMarket != nil && s.specStore != nil && setup.Trigger != "" {
+		optIntent, routed := s.tryOptionsRoute(ctx, event, setup, decision, intent, l)
+		if routed {
+			intent = optIntent
+		}
+	}
+
+	l.Info().Str("intent_id", intent.ID.String()).Msg("order intent created from AI debate")
+	s.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intent.ID.String(), intent)
 
 	// 6. Persist thought log for historical audit.
 	if s.repo != nil {
@@ -300,6 +316,142 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 
 // emit publishes a domain event on the event bus, discarding creation/publish errors
 // (events are best-effort; the pipeline should not fail due to event emission).
+// tryOptionsRoute attempts to convert an equity order intent to an options order.
+// Returns (optionsIntent, true) if successful, or (nil, false) to fall through to equity.
+func (s *Service) tryOptionsRoute(
+	ctx context.Context,
+	event domain.Event,
+	setup monitor.SetupCondition,
+	decision *domain.AdvisoryDecision,
+	equityIntent domain.OrderIntent,
+	l zerolog.Logger,
+) (domain.OrderIntent, bool) {
+	sid, err := domstrategy.NewStrategyID(setup.Trigger)
+	if err != nil {
+		return domain.OrderIntent{}, false
+	}
+	spec, err := s.specStore.GetLatest(ctx, sid)
+	if err != nil || spec.Options == nil || !spec.Options.Enabled {
+		return domain.OrderIntent{}, false
+	}
+
+	optRight := domain.OptionRightCall
+	if decision.Direction == domain.DirectionShort {
+		optRight = domain.OptionRightPut
+	}
+
+	// Compute target expiry from DTE range midpoint
+	targetDTE := spec.Options.Defaults.MinDTE +
+		(spec.Options.Defaults.MaxDTE-spec.Options.Defaults.MinDTE)/2
+	targetExpiry := time.Now().AddDate(0, 0, targetDTE)
+
+	chain, chainErr := s.optionsMarket.GetOptionChain(ctx, setup.Symbol, targetExpiry, optRight)
+	if chainErr != nil || len(chain) == 0 {
+		l.Warn().Err(chainErr).Str("symbol", string(setup.Symbol)).
+			Str("right", string(optRight)).
+			Msg("options chain unavailable — falling through to equity")
+		return domain.OrderIntent{}, false
+	}
+
+	// Build contract selector with regime awareness
+	regime := domain.RegimeTrend
+	if setup.EMARegime != "" {
+		if parsed, parseErr := domain.NewRegimeType(setup.EMARegime); parseErr == nil {
+			regime = parsed
+		}
+	}
+
+	regimes := spec.Options.ToRegimeConstraintsMap()
+	selector := options.NewContractSelectionServiceWithRegimes(spec.Options.Defaults, regimes, time.Now)
+
+	best, selectErr := selector.SelectBestContract(decision.Direction, regime, chain)
+	if selectErr != nil {
+		l.Warn().Err(selectErr).Str("symbol", string(setup.Symbol)).
+			Str("regime", string(regime)).
+			Msg("no suitable option contract — falling through to equity")
+		return domain.OrderIntent{}, false
+	}
+
+	midPrice := (best.Bid + best.Ask) / 2
+	if midPrice <= 0 {
+		midPrice = best.Last
+	}
+	if midPrice <= 0 {
+		return domain.OrderIntent{}, false
+	}
+
+	// Size by premium risk: contracts = risk_budget / premium_per_contract
+	riskBPS := int64(100)
+	if v, ok := spec.Params["risk_per_trade_bps"].(int64); ok && v > 0 {
+		riskBPS = v
+	}
+	maxRiskUSD := (float64(riskBPS) / 10000.0) * s.equity
+	premiumPerContract := midPrice * float64(best.Multiplier)
+	qty := math.Floor(maxRiskUSD / premiumPerContract)
+	if qty <= 0 {
+		l.Warn().Float64("premium", premiumPerContract).Float64("risk_budget", maxRiskUSD).
+			Msg("option premium exceeds risk budget — falling through to equity")
+		return domain.OrderIntent{}, false
+	}
+	maxLossUSD := premiumPerContract * qty
+
+	inst, instErr := domain.NewInstrument(domain.InstrumentTypeOption, string(best.ContractSymbol), string(setup.Symbol))
+	if instErr != nil {
+		return domain.OrderIntent{}, false
+	}
+
+	intentID := uuid.New()
+	rationale := fmt.Sprintf("option: %s %s delta=%.2f DTE=%d | %s",
+		optRight, best.ContractSymbol, best.Delta,
+		int(best.Expiry.Sub(time.Now()).Hours()/24),
+		decision.Rationale)
+
+	optIntent, intentErr := domain.NewOptionOrderIntent(
+		intentID,
+		event.TenantID,
+		event.EnvMode,
+		inst,
+		domain.DirectionLong, // buying calls/puts
+		midPrice,
+		qty,
+		setup.Trigger,
+		rationale,
+		decision.Confidence,
+		intentID.String(),
+		maxLossUSD,
+	)
+	if intentErr != nil {
+		return domain.OrderIntent{}, false
+	}
+
+	// Copy meta from equity intent and add options-specific fields
+	optIntent.AssetClass = domain.AssetClassEquity
+	optIntent.Meta = make(map[string]string)
+	for k, v := range equityIntent.Meta {
+		optIntent.Meta[k] = v
+	}
+	optIntent.Meta["instrument_type"] = "OPTION"
+	optIntent.Meta["option_right"] = string(optRight)
+	optIntent.Meta["underlying"] = string(setup.Symbol)
+	optIntent.Meta["strike"] = fmt.Sprintf("%.2f", best.Strike)
+	optIntent.Meta["expiry"] = best.Expiry.Format("2006-01-02")
+	optIntent.Meta["delta_at_entry"] = fmt.Sprintf("%.4f", best.Delta)
+	optIntent.Meta["iv_at_entry"] = fmt.Sprintf("%.4f", best.IV)
+	optIntent.Meta["premium"] = fmt.Sprintf("%.2f", midPrice)
+	optIntent.Meta["open_interest"] = strconv.Itoa(best.OpenInterest)
+
+	l.Info().
+		Str("contract", string(best.ContractSymbol)).
+		Float64("delta", best.Delta).
+		Float64("premium", midPrice).
+		Float64("qty", qty).
+		Float64("max_loss", maxLossUSD).
+		Str("right", string(optRight)).
+		Msg("options order routed")
+
+	return optIntent, true
+}
+
 func (s *Service) emit(ctx context.Context, eventType string, tenantID string, envMode domain.EnvMode, idempotencyKey string, payload any) {
 	ev, err := domain.NewEvent(eventType, tenantID, envMode, idempotencyKey, payload)
 	if err != nil {
