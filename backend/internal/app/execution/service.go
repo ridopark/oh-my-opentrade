@@ -832,6 +832,8 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 		fillPayload["instrument_type"] = string(domain.InstrumentTypeOption)
 		fillPayload["option_right"] = intent.Meta["option_right"]
 		fillPayload["option_expiry"] = intent.Meta["expiry"]
+		fillPayload["iv_at_entry"] = intent.Meta["iv_at_entry"]
+		fillPayload["delta_at_entry"] = intent.Meta["delta_at_entry"]
 	}
 	s.emit(ctx, domain.EventFillReceived, tenantID, envMode, brokerOrderID, fillPayload)
 
@@ -1040,6 +1042,7 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 		fillPayload["option_right"] = po.intent.Meta["option_right"]
 		fillPayload["option_expiry"] = po.intent.Meta["expiry"]
 		fillPayload["iv_at_entry"] = po.intent.Meta["iv_at_entry"]
+		fillPayload["delta_at_entry"] = po.intent.Meta["delta_at_entry"]
 	}
 	s.emit(ctx, domain.EventFillReceived, po.tenantID, po.envMode, brokerOrderID, fillPayload)
 

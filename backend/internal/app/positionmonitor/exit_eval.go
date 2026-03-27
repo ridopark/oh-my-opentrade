@@ -329,8 +329,17 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 					intent.Meta["iv_at_entry"] = fmt.Sprintf("%.4f", ivVal)
 				}
 			}
-			// Propagate entry_date so SimBroker can distinguish same-day vs multi-day exits
+			// Propagate entry context for SimBroker delta-approximation exit pricing
 			intent.Meta["entry_date"] = pos.EntryTime.Format("2006-01-02")
+			intent.Meta["entry_underlying"] = fmt.Sprintf("%.4f", pos.EntryPrice)
+			if pos.CustomState != nil {
+				if prem := pos.CustomState["option_premium"]; prem > 0 {
+					intent.Meta["premium"] = fmt.Sprintf("%.2f", prem)
+				}
+				if delta := pos.CustomState["delta_at_entry"]; delta != 0 {
+					intent.Meta["delta_at_entry"] = fmt.Sprintf("%.4f", delta)
+				}
+			}
 		}
 	}
 	if err != nil {
