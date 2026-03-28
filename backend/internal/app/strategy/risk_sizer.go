@@ -749,8 +749,19 @@ func (rs *RiskSizer) handleOptionsSignal(
 		}
 	}
 
-	targetDTE := spec.Options.Defaults.MinDTE +
-		(spec.Options.Defaults.MaxDTE-spec.Options.Defaults.MinDTE)/2
+	// Use the widest DTE range across defaults and all regime overrides
+	// so the chain fetch covers all possible contract selection windows.
+	minDTE := spec.Options.Defaults.MinDTE
+	maxDTE := spec.Options.Defaults.MaxDTE
+	for _, override := range spec.Options.RegimeOverrides {
+		if override.MinDTE > 0 && override.MinDTE < minDTE {
+			minDTE = override.MinDTE
+		}
+		if override.MaxDTE > maxDTE {
+			maxDTE = override.MaxDTE
+		}
+	}
+	targetDTE := minDTE + (maxDTE-minDTE)/2
 	targetExpiry := rs.nowFn().AddDate(0, 0, targetDTE)
 
 	chain, err := rs.optionsMarket.GetOptionChain(
@@ -783,9 +794,10 @@ func (rs *RiskSizer) handleOptionsSignal(
 			"symbol", sigRef.Symbol,
 			"option_right", string(optRight),
 			"regime", string(regime),
+			"chain_size", len(chain),
 			"error", err,
 		)
-		return nil
+		return errOptionsChainEmpty // trigger equity fallback
 	}
 
 	midPrice := (best.Bid + best.Ask) / 2
