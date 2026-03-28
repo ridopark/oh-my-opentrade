@@ -116,27 +116,17 @@ func (e *Emitter) onCandle(_ context.Context, ev domain.Event) error {
 			}
 		}
 	}
-	// Use the strategy's actual AVWAP — anchors are resolved once per session
-	// (from catalyst gaps, capitulation, swings etc.) and the calculator is
-	// updated on every 1m bar for a smooth line.
+	// Send all AVWAP anchor values so the chart can draw one line per anchor.
 	if isSessionHours(bar.Time) && e.avwapFn != nil {
 		if vals := e.avwapFn(string(bar.Symbol)); len(vals) > 0 {
-			// Pick the AVWAP value deterministically: prefer "session_open",
-			// then fall back to the first key alphabetically to avoid Go map
-			// random iteration causing chart oscillation.
-			if v, ok := vals["session_open"]; ok && v > 0 {
-				data["avwap"] = v
-			} else {
-				// Find min key for deterministic order
-				var bestKey string
-				for k := range vals {
-					if bestKey == "" || k < bestKey {
-						bestKey = k
-					}
+			avwaps := make(map[string]float64)
+			for k, v := range vals {
+				if v > 0 {
+					avwaps[k] = v
 				}
-				if bestKey != "" && vals[bestKey] > 0 {
-					data["avwap"] = vals[bestKey]
-				}
+			}
+			if len(avwaps) > 0 {
+				data["avwaps"] = avwaps
 			}
 		}
 	}
