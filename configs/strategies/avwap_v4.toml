@@ -96,11 +96,13 @@ enabled = false
 
 # Swing stop: trail at recent swing low (longs) / swing high (shorts)
 # Per Brian Shannon: stop at the low of the dip, trail using higher lows
+# Buffer scales with ATR — wider for volatile symbols, tighter for stable ones
 [[exit_rules]]
 type = "SWING_STOP"
 [exit_rules.params]
-lookback = 12
+lookback = 10
 buffer_bps = 25
+atr_buffer_mult = 0.5
 min_bars = 6
 
 # Kill zombie trades — extended for options (theta needs time)
