@@ -23,7 +23,6 @@ const (
 	ExitRuleBreakevenStop  ExitRuleType = "BREAKEVEN_STOP"
 	ExitRuleDTEFloor       ExitRuleType = "DTE_FLOOR"
 	ExitRuleExpiryWatch    ExitRuleType = "EXPIRY_WATCH"
-	ExitRuleSwingTrail     ExitRuleType = "SWING_TRAIL"
 )
 
 func (e ExitRuleType) String() string { return string(e) }
@@ -47,8 +46,7 @@ func NewExitRuleType(s string) (ExitRuleType, error) {
 		ExitRuleEODFlatten, ExitRuleMaxHoldingTime, ExitRuleMaxLoss,
 		ExitRuleVolatilityStop, ExitRuleSDTarget, ExitRuleStepStop,
 		ExitRuleStagnationExit, ExitRuleBreakevenStop,
-		ExitRuleDTEFloor, ExitRuleExpiryWatch,
-		ExitRuleSwingTrail:
+		ExitRuleDTEFloor, ExitRuleExpiryWatch:
 		return ExitRuleType(s), nil
 	default:
 		return "", fmt.Errorf("invalid exit rule type: %q", s)
