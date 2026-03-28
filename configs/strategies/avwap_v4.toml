@@ -92,12 +92,9 @@ gap_reclaim_bars = 5
 handoff_enabled = true
 handoff_bars = 5
 handoff_min_mom_bps = 40
-# Swing trail — price-action trailing stop using recent swing lows/highs
-# Per Brian Shannon: stop at the low of the dip, trail using higher lows
-swing_trail_enabled = true
-swing_trail_lookback = 5
-swing_trail_buffer_bps = 10
-swing_trail_min_bars = 1
+# Strategy-level swing trail DISABLED — the position monitor SWING_STOP
+# handles all swing-based exits. Having two swing stops created a race condition.
+swing_trail_enabled = false
 
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
