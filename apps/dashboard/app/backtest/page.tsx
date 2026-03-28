@@ -469,6 +469,7 @@ const ChartGrid = forwardRef<ChartGridHandle, {
   onTradeClick,
 }, ref) {
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
+  const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set());
   const chartRefs = useRef<Map<string, IChartApi>>(new Map());
   const pendingScroll = useRef<{ symbol: string; utcSeconds: number } | null>(null);
 
@@ -528,12 +529,13 @@ const ChartGrid = forwardRef<ChartGridHandle, {
     return Array.from(names).sort();
   }, [bars]);
 
-  const globalLegend: { key?: string; label: string; color: string; thick?: boolean }[] = [
+  const globalLegend: { key?: string; label: string; color: string; thick?: boolean; isORB?: boolean }[] = [
     { label: "EMA 9", color: "rgba(251, 191, 36, 0.7)" },
     { label: "EMA 21", color: "rgba(139, 92, 246, 0.7)" },
     { label: "EMA 50", color: "rgba(236, 72, 153, 0.6)" },
     { label: "EMA 200", color: "rgba(249, 115, 22, 0.5)" },
     ...allAvwapAnchors.map((name) => ({ key: name, label: avwapAnchorLabel(name), color: avwapAnchorColor(name), thick: true })),
+    { label: "ORB", color: "rgba(59, 130, 246, 0.5)", isORB: true },
   ];
 
   if (symbols.length === 0) {
@@ -564,6 +566,7 @@ const ChartGrid = forwardRef<ChartGridHandle, {
             trades={trades.filter((t) => t.symbol === expandedSymbol || t.symbol.startsWith(expandedSymbol))}
             orbWindowMinutes={orbWindowMinutes}
             showLabels={showLabels}
+            hiddenSeries={hiddenSeries}
             onChartReady={(chart) => registerChart(expandedSymbol, chart)}
             onMarkerClick={(idx) => {
               const symTrades = trades.filter((t) => t.symbol === expandedSymbol || t.symbol.startsWith(expandedSymbol));
@@ -582,12 +585,29 @@ const ChartGrid = forwardRef<ChartGridHandle, {
     <div className="flex flex-col gap-1">
       {/* Global legend */}
       <div className="flex items-center gap-2 px-2 py-1">
-        {globalLegend.map((e) => (
-          <div key={e.key ?? e.label} className="flex items-center gap-1">
-            <span className={`w-2.5 rounded-full ${e.thick ? "h-[3px]" : "h-[2px]"}`} style={{ backgroundColor: e.color }} />
-            <span className="text-[9px] font-mono text-muted-foreground">{e.label}</span>
-          </div>
-        ))}
+        {globalLegend.map((e) => {
+          const seriesKey = e.key ?? e.label;
+          const isHidden = hiddenSeries.has(seriesKey);
+          return (
+            <button
+              key={seriesKey}
+              className={`flex items-center gap-1 cursor-pointer transition-opacity ${isHidden ? "opacity-30" : "opacity-100"}`}
+              onClick={() => setHiddenSeries((prev) => {
+                const next = new Set(prev);
+                if (next.has(seriesKey)) next.delete(seriesKey); else next.add(seriesKey);
+                return next;
+              })}
+              title={`Click to ${isHidden ? "show" : "hide"} ${e.label}`}
+            >
+              {e.isORB ? (
+                <span className="w-2.5 h-2 rounded-[1px] border border-dashed" style={{ borderColor: e.color, backgroundColor: "rgba(59, 130, 246, 0.1)" }} />
+              ) : (
+                <span className={`w-2.5 rounded-full ${e.thick ? "h-[3px]" : "h-[2px]"}`} style={{ backgroundColor: e.color }} />
+              )}
+              <span className="text-[9px] font-mono text-muted-foreground">{e.label}</span>
+            </button>
+          );
+        })}
       </div>
     <div
       className="grid gap-2 w-full"
@@ -605,6 +625,7 @@ const ChartGrid = forwardRef<ChartGridHandle, {
               trades={trades.filter((t) => t.symbol === sym || t.symbol.startsWith(sym))}
               orbWindowMinutes={orbWindowMinutes}
               showLabels={showLabels}
+              hiddenSeries={hiddenSeries}
               onChartReady={(chart) => registerChart(sym, chart)}
               onMarkerClick={(idx) => {
                 const symTrades = trades.filter((t) => t.symbol === sym || t.symbol.startsWith(sym));
@@ -659,6 +680,7 @@ function MiniChart({
   trades,
   orbWindowMinutes = 30,
   showLabels = true,
+  hiddenSeries,
   onChartReady,
   onMarkerClick,
 }: {
@@ -667,6 +689,7 @@ function MiniChart({
   trades: BacktestTrade[];
   orbWindowMinutes?: number;
   showLabels?: boolean;
+  hiddenSeries?: Set<string>;
   onChartReady?: (chart: IChartApi | null) => void;
   onMarkerClick?: (tradeIndex: number) => void;
 }) {
@@ -965,6 +988,30 @@ function MiniChart({
     overlayRef.current?.setVisible(showLabels);
   }, [showLabels]);
 
+  // Toggle series visibility from global legend clicks
+  useEffect(() => {
+    const hidden = hiddenSeries ?? new Set<string>();
+    const seriesMap: Record<string, ISeriesApi<"Line", Time> | null> = {
+      "EMA 9": ema9Ref.current,
+      "EMA 21": ema21Ref.current,
+      "EMA 50": ema50Ref.current,
+      "EMA 200": ema200Ref.current,
+    };
+    for (const [key, series] of Object.entries(seriesMap)) {
+      if (series) {
+        series.applyOptions({ visible: !hidden.has(key) });
+      }
+    }
+    // AVWAP lines
+    for (const [name, series] of avwapRefsMap.current) {
+      series.applyOptions({ visible: !hidden.has(name) });
+    }
+    // ORB overlay
+    if (orbOverlayRef.current) {
+      orbOverlayRef.current.setVisible(!hidden.has("ORB"));
+    }
+  }, [hiddenSeries]);
+
   const tradeCount = trades.length;
   const hasActivity = tradeCount > 0;
 
@@ -974,12 +1021,7 @@ function MiniChart({
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50">
         <div className="flex items-center gap-3">
           <span className="text-xs font-mono font-semibold text-foreground">{symbol}</span>
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1">
-              <span className="w-2.5 h-2 rounded-[1px] border border-dashed" style={{ borderColor: "rgba(59, 130, 246, 0.5)", backgroundColor: "rgba(59, 130, 246, 0.1)" }} />
-              <span className="text-[9px] font-mono text-muted-foreground">ORB</span>
-            </div>
-          </div>
+          <div className="flex items-center gap-2"></div>
         </div>
         {tradeCount > 0 && (
           <span className="text-[10px] font-mono text-emerald-400">{tradeCount} fill{tradeCount !== 1 ? "s" : ""}</span>
