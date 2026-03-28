@@ -577,6 +577,8 @@ function MiniChart({
   onMarkerClick?: (tradeIndex: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const onMarkerClickRef = useRef(onMarkerClick);
+  onMarkerClickRef.current = onMarkerClick;
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick", Time> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram", Time> | null>(null);
@@ -677,9 +679,9 @@ function MiniChart({
     // (matching timeToCoordinate/priceToCoordinate used by hitTestSignal)
     const containerEl = containerRef.current;
     const handleChartClick = (param: { point?: { x: number; y: number } }) => {
-      if (!overlayRef.current || !onMarkerClick || !param.point) return;
+      if (!overlayRef.current || !param.point) return;
       const idx = overlayRef.current.hitTestSignal(param.point.x, param.point.y);
-      if (idx >= 0) onMarkerClick(idx);
+      if (idx >= 0 && onMarkerClickRef.current) onMarkerClickRef.current(idx);
     };
     chart.subscribeClick(handleChartClick);
     // Hover handler still uses DOM events for cursor change
