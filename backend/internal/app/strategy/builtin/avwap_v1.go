@@ -475,6 +475,11 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 	avwapSt.Calc.Update(bar.Time, bar.High, bar.Low, bar.Close, bar.Volume)
 	avwapValues := avwapSt.Calc.Values()
 
+	// Get sorted anchor names for deterministic iteration order.
+	// Go map iteration is random — without this, backtest results
+	// vary between runs as different anchors trigger first.
+	sortedAnchors := avwapSt.Calc.SortedNames()
+
 	// 2b. Update recent lows/highs sliding window for higher-lows filter.
 	avwapSt.RecentLows = append(avwapSt.RecentLows, bar.Low)
 	if len(avwapSt.RecentLows) > cfg.HigherLowsBars {
@@ -501,7 +506,8 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 	}
 
 	// 4. Update AboveCount/BelowCount for each active anchor.
-	for anchorName, avwapValue := range avwapValues {
+	for _, anchorName := range sortedAnchors {
+		avwapValue := avwapValues[anchorName]
 		switch {
 		case bar.Close > avwapValue:
 			avwapSt.AboveCount[anchorName]++
@@ -573,7 +579,8 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 			avwapSt.StopAboveCount = make(map[string]int)
 		}
 		// Update stop counters for each anchor.
-		for anchorName, avwapValue := range avwapValues {
+		for _, anchorName := range sortedAnchors {
+		avwapValue := avwapValues[anchorName]
 			bufferAbs := avwapValue * float64(cfg.AVWAPStopBufferBPS) / 10000.0
 			if avwapSt.PositionSide == start.SideBuy {
 				if bar.Close < avwapValue-bufferAbs {
@@ -591,7 +598,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		}
 		// Check if any anchor triggered the stop.
 		if avwapSt.PositionSide == start.SideBuy {
-			for anchorName := range avwapValues {
+			for _, anchorName := range sortedAnchors {
 				if avwapSt.StopBelowCount[anchorName] >= cfg.AVWAPStopBars {
 					sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideSell, 0.9, map[string]string{
 						"ref_price": fmt.Sprintf("%.10f", bar.Close),
@@ -611,7 +618,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 				}
 			}
 		} else if avwapSt.PositionSide == start.SideSell {
-			for anchorName := range avwapValues {
+			for _, anchorName := range sortedAnchors {
 				if avwapSt.StopAboveCount[anchorName] >= cfg.AVWAPStopBars {
 					sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideBuy, 0.9, map[string]string{
 						"ref_price": fmt.Sprintf("%.10f", bar.Close),
@@ -674,7 +681,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 	if avwapSt.PeakBelowCount == nil {
 		avwapSt.PeakBelowCount = make(map[string]int)
 	}
-	for anchorName := range avwapValues {
+	for _, anchorName := range sortedAnchors {
 		if avwapSt.AboveCount[anchorName] > avwapSt.PeakAboveCount[anchorName] {
 			avwapSt.PeakAboveCount[anchorName] = avwapSt.AboveCount[anchorName]
 		}
@@ -698,7 +705,8 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 
 	// 7. Breakout detection — scan ALL anchors for LONG first, then SHORT.
 	if cfg.BreakoutEnabled {
-		for anchorName, avwapValue := range avwapValues {
+		for _, anchorName := range sortedAnchors {
+		avwapValue := avwapValues[anchorName]
 			volRatio := 0.0
 			if avwapSt.Indicators.VolumeSMA > 0 {
 				volRatio = bar.Volume / avwapSt.Indicators.VolumeSMA
@@ -740,7 +748,8 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		}
 
 		if !strings.EqualFold(cfg.Direction, "LONG") {
-			for anchorName, avwapValue := range avwapValues {
+			for _, anchorName := range sortedAnchors {
+		avwapValue := avwapValues[anchorName]
 				volRatio := 0.0
 				if avwapSt.Indicators.VolumeSMA > 0 {
 					volRatio = bar.Volume / avwapSt.Indicators.VolumeSMA
@@ -804,7 +813,8 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 
 	// 7b. Pullback-to-AVWAP detection — between breakout and bounce.
 	if cfg.PullbackEnabled {
-		for anchorName, avwapValue := range avwapValues {
+		for _, anchorName := range sortedAnchors {
+		avwapValue := avwapValues[anchorName]
 			if avwapValue == 0 {
 				continue
 			}
@@ -903,7 +913,8 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		// Find min and max AVWAP values.
 		var minAVWAP, maxAVWAP float64
 		first := true
-		for _, v := range avwapValues {
+		for _, anchorName := range sortedAnchors {
+		v := avwapValues[anchorName]
 			if first || v < minAVWAP {
 				minAVWAP = v
 			}
@@ -962,7 +973,8 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 			avwapSt.CrossedBelowBar = make(map[string]int)
 		}
 		volumeOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*avwapSt.Indicators.VolumeSMA
-		for anchorName, avwapValue := range avwapValues {
+		for _, anchorName := range sortedAnchors {
+		avwapValue := avwapValues[anchorName]
 			prev := avwapSt.CrossedBelowBar[anchorName]
 			if bar.Close < avwapValue {
 				if prev == 0 {
@@ -1000,7 +1012,8 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 
 	// 8. Bounce detection.
 	if cfg.BounceEnabled {
-		for anchorName, avwapValue := range avwapValues {
+		for _, anchorName := range sortedAnchors {
+		avwapValue := avwapValues[anchorName]
 			touchesAVWAP := bar.Low <= avwapValue && avwapValue <= bar.High
 
 			// Long bounce: touches AVWAP + RSI < max + bullish candle.
@@ -1147,8 +1160,9 @@ type avwapStateJSON struct {
 func (s *AVWAPState) Marshal() ([]byte, error) {
 	// Extract anchor points for serialization.
 	avwapValues := s.Calc.Values()
+	marshalSorted := s.Calc.SortedNames()
 	anchors := make([]start.AnchorPoint, 0, len(avwapValues))
-	for name := range avwapValues {
+	for _, name := range marshalSorted {
 		anchors = append(anchors, start.AnchorPoint{Name: name})
 	}
 
