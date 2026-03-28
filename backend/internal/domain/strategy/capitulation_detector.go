@@ -4,6 +4,7 @@ package strategy
 // Conditions:
 //   - Daily range > 2.0 * ATR14
 //   - Day volume > 2.5 * 20-day volume SMA
+//   - Day volume is highest in 60+ trading days ("some of the largest volume ever")
 //   - Capitulation low: close recovered into upper 70% of range AND made new 20-day low
 //   - Blow-off top: close dropped into lower 70% of range AND made new 20-day high
 //
@@ -11,13 +12,13 @@ package strategy
 type CapitulationDetector struct {
 	timeframe string
 	bars      []Bar
-	maxBars   int // 25 bars for ATR14 + vol SMA20 + 20-day high/low
+	maxBars   int // 65 bars for ATR14 + vol SMA20 + 20-day extremes + 60-day volume rank
 }
 
 func NewCapitulationDetector(timeframe string) *CapitulationDetector {
 	return &CapitulationDetector{
 		timeframe: timeframe,
-		maxBars:   25,
+		maxBars:   65,
 	}
 }
 
@@ -49,6 +50,13 @@ func (d *CapitulationDetector) Push(bar Bar) *CandidateAnchor {
 	}
 	volRatio := curr.Volume / volSMA
 	if volRatio < 2.5 {
+		return nil
+	}
+
+	// Volume must be the highest in at least 60 trading days (~3 months).
+	// Research: "some of the largest volume EVER" — not just 2.5× recent average.
+	// With fewer bars available, require highest in whatever history we have (min 20).
+	if !d.isHighestVolume(curr.Volume, 60) {
 		return nil
 	}
 
@@ -150,6 +158,28 @@ func (d *CapitulationDetector) computeExtremes(period int) (low, high float64) {
 		}
 	}
 	return low, high
+}
+
+// isHighestVolume returns true if vol is the highest volume in the last `period`
+// bars (excluding current). If fewer bars are available, checks all history (min 20).
+func (d *CapitulationDetector) isHighestVolume(vol float64, period int) bool {
+	n := len(d.bars)
+	if n < 21 { // not enough data
+		return false
+	}
+	lookback := period
+	if n-1 < lookback {
+		lookback = n - 1 // use all available history
+	}
+	for i := n - lookback - 1; i < n-1; i++ { // exclude current bar
+		if i < 0 {
+			continue
+		}
+		if d.bars[i].Volume >= vol {
+			return false // found a day with equal or higher volume
+		}
+	}
+	return true
 }
 
 func (d *CapitulationDetector) WarmupBars() int {
