@@ -655,8 +655,13 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 	}
 
 	// 6b. Directional bias gate — determine bias from first anchor's AVWAP value.
+	// Require at least minBarsForBias bars before trusting the AVWAP for directional
+	// decisions. At session open, the AVWAP has too few data points to be reliable
+	// (e.g. 09:44 = only ~9 one-minute bars). This matches the chart stabilization
+	// gate (CalcBarCount >= 10) so bias and chart stay aligned.
+	const minBarsForBias = 10
 	avwapBias := "" // "LONG", "SHORT", or "" (no bias / no data)
-	if cfg.EnforceAVWAPBias && len(cfg.Anchors) > 0 {
+	if cfg.EnforceAVWAPBias && len(cfg.Anchors) > 0 && avwapSt.CalcBarCount >= minBarsForBias {
 		firstAnchor := cfg.Anchors[0]
 		if firstAVWAP, ok2 := avwapValues[firstAnchor]; ok2 {
 			if bar.Close > firstAVWAP {
@@ -884,6 +889,12 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 					}
 					continue
 				}
+				if cfg.RequireCapitulationForShorts {
+					if ctx != nil && ctx.Logger() != nil {
+						ctx.Logger().Info("AVWAP gate: capitulation required for short pullback", "symbol", symbol, "anchor", anchorName)
+					}
+					continue
+				}
 				sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.85, map[string]string{
 					"ref_price":   fmt.Sprintf("%.10f", bar.Close),
 					"setup":       "avwap_pullback",
@@ -948,7 +959,9 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 
 			// Short pinch breakout: price breaks below minAVWAP.
 			if bar.Close < minAVWAP && volumeOK && !strings.EqualFold(cfg.Direction, "LONG") {
-				if !(cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "SHORT") {
+				if cfg.RequireCapitulationForShorts {
+					// Skip — no capitulation anchor for short pinch
+				} else if !(cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "SHORT") {
 					sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.9, map[string]string{
 						"ref_price": fmt.Sprintf("%.10f", bar.Close),
 						"setup":     "avwap_pinch",
