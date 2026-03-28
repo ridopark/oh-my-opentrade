@@ -36,14 +36,14 @@ func (a *HistoricalOptionsAdapter) GetOptionChain(
 ) ([]domain.OptionContractSnapshot, error) {
 	now := a.clockFn()
 
-	// Compute DTE range: target expiry ± 10 days to give the contract
-	// selector enough candidates to pick from.
+	// Compute DTE range: target expiry ± 15 days to give the contract
+	// selector enough candidates across default and regime-override windows.
 	targetDTE := int(math.Round(expiry.Sub(now).Hours() / 24))
-	minDTE := targetDTE - 10
+	minDTE := targetDTE - 15
 	if minDTE < 7 {
 		minDTE = 7
 	}
-	maxDTE := targetDTE + 10
+	maxDTE := targetDTE + 15
 
 	rows, err := a.repo.GetHistoricalChain(ctx, underlying, now, right, minDTE, maxDTE)
 	if err != nil {
