@@ -78,6 +78,9 @@ pinch_max_bps = 50
 # Gap reclaim disabled — small edge, often fades
 gap_reclaim_enabled = false
 gap_reclaim_bars = 5
+# Handoff — momentum acceleration away from AVWAP after bounce
+handoff_enabled = true
+handoff_bars = 3
 # Swing trail — price-action trailing stop using recent swing lows/highs
 # Per Brian Shannon: stop at the low of the dip, trail using higher lows
 swing_trail_enabled = true

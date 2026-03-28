@@ -98,10 +98,13 @@ type AVWAPConfig struct {
 	GapReclaimEnabled bool
 	GapReclaimBars    int // max bars since crossing below AVWAP to still consider a reclaim
 
-	SwingTrailEnabled  bool
-	SwingTrailLookback int     // bars to look back for swing low/high (default 5)
-	SwingTrailBufferBPS int    // buffer below swing low / above swing high in bps (default 10)
-	SwingTrailMinBars  int     // min bars to hold before trail activates (default 3)
+	SwingTrailEnabled   bool
+	SwingTrailLookback  int // bars to look back for swing low/high (default 5)
+	SwingTrailBufferBPS int // buffer below swing low / above swing high in bps (default 10)
+	SwingTrailMinBars   int // min bars to hold before trail activates (default 3)
+
+	HandoffEnabled bool
+	HandoffBars    int // consecutive bars of accelerating distance from AVWAP (default 3)
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -126,7 +129,8 @@ type AVWAPState struct {
 
 	StopBelowCount  map[string]int // for LONG positions: consecutive bars below AVWAP
 	StopAboveCount  map[string]int // for SHORT positions: consecutive bars above AVWAP
-	CrossedBelowBar map[string]int // tracks how many bars ago price crossed below each AVWAP (gap reclaim)
+	CrossedBelowBar  map[string]int       // tracks how many bars ago price crossed below each AVWAP (gap reclaim)
+	AVWAPDistHistory map[string][]float64 // recent close-to-AVWAP distances per anchor (for handoff detection)
 
 	SwingTrailStop  float64 // current trailing stop price (swing low for longs, swing high for shorts)
 	SwingTrailBars  int     // bars since position opened (for min hold gate)
@@ -552,6 +556,9 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		SwingTrailLookback:  getInt(params, "swing_trail_lookback", 5),
 		SwingTrailBufferBPS: getInt(params, "swing_trail_buffer_bps", 10),
 		SwingTrailMinBars:   getInt(params, "swing_trail_min_bars", 3),
+
+		HandoffEnabled: getBool(params, "handoff_enabled", false),
+		HandoffBars:    getInt(params, "handoff_bars", 3),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
 	return cfg
@@ -696,7 +703,10 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		regimeAllowed = true
 	}
 
-	// 4. Update AboveCount/BelowCount for each active anchor.
+	// 4. Update AboveCount/BelowCount and distance history for each active anchor.
+	if avwapSt.AVWAPDistHistory == nil {
+		avwapSt.AVWAPDistHistory = make(map[string][]float64)
+	}
 	for _, anchorName := range sortedAnchors {
 		avwapValue := avwapValues[anchorName]
 		switch {
@@ -710,6 +720,15 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 			avwapSt.AboveCount[anchorName] = 0
 			avwapSt.BelowCount[anchorName] = 0
 		}
+		// Track distance from AVWAP for handoff detection (signed: positive = above)
+		dist := (bar.Close - avwapValue) / avwapValue * 10000.0 // in bps
+		hist := avwapSt.AVWAPDistHistory[anchorName]
+		hist = append(hist, dist)
+		maxHist := 10
+		if len(hist) > maxHist {
+			hist = hist[len(hist)-maxHist:]
+		}
+		avwapSt.AVWAPDistHistory[anchorName] = hist
 	}
 
 	instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
@@ -1333,6 +1352,102 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 				}
 			} else {
 				avwapSt.CrossedBelowBar[anchorName] = 0
+			}
+		}
+	}
+
+	// 7e. Handoff entry — momentum acceleration away from AVWAP.
+	// Per Brian Shannon: a "handoff point" occurs when price accelerates away from
+	// the AVWAP after nearly touching it. Each bar closes further from the line,
+	// creating a new momentum layer. This is a high-conviction trend continuation signal.
+	if cfg.HandoffEnabled {
+		handoffBars := cfg.HandoffBars
+		if handoffBars < 2 {
+			handoffBars = 3
+		}
+		for _, anchorName := range sortedAnchors {
+			hist := avwapSt.AVWAPDistHistory[anchorName]
+			if len(hist) < handoffBars+1 {
+				continue
+			}
+			recent := hist[len(hist)-handoffBars:]
+
+			// Long handoff: consecutive bars with increasing positive distance from AVWAP.
+			// The first bar in the window must be near the AVWAP (within 30 bps) —
+			// this ensures we're capturing the "bounce and accelerate" pattern.
+			nearAVWAP := hist[len(hist)-handoffBars-1]
+			if nearAVWAP >= 0 && nearAVWAP <= 30 { // was near/at AVWAP from above
+				allIncreasing := true
+				for i := 1; i < len(recent); i++ {
+					if recent[i] <= recent[i-1] || recent[i] <= 0 {
+						allIncreasing = false
+						break
+					}
+				}
+				if allIncreasing && recent[len(recent)-1] > 0 {
+					volumeOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*avwapSt.Indicators.VolumeSMA
+					if volumeOK {
+						if cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "LONG" {
+							continue
+						}
+						sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, 0.85, map[string]string{
+							"ref_price":    fmt.Sprintf("%.10f", bar.Close),
+							"setup":        "avwap_handoff",
+							"anchor":       anchorName,
+							"avwap":        fmt.Sprintf("%.4f", avwapValues[anchorName]),
+							"momentum_bps": fmt.Sprintf("%.1f", recent[len(recent)-1]),
+							"regime_5m":    regimeTag,
+							"mode":         "handoff",
+						})
+						if err != nil {
+							return avwapSt, nil, err
+						}
+						avwapSt.PendingEntry = start.SideBuy
+						avwapSt.PendingEntryAt = now
+						avwapSt.TradesToday++
+						avwapSt.CooldownUntil = now.Add(cooldown)
+						return avwapSt, []start.Signal{sig}, nil
+					}
+				}
+			}
+
+			// Short handoff: consecutive bars with increasing negative distance from AVWAP.
+			if !strings.EqualFold(cfg.Direction, "LONG") && nearAVWAP <= 0 && nearAVWAP >= -30 {
+				allDecreasing := true
+				for i := 1; i < len(recent); i++ {
+					if recent[i] >= recent[i-1] || recent[i] >= 0 {
+						allDecreasing = false
+						break
+					}
+				}
+				if allDecreasing && recent[len(recent)-1] < 0 {
+					volumeOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*avwapSt.Indicators.VolumeSMA
+					if volumeOK {
+						if cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "SHORT" {
+							continue
+						}
+						if cfg.RequireCapitulationForShorts {
+							continue
+						}
+						sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.85, map[string]string{
+							"ref_price":    fmt.Sprintf("%.10f", bar.Close),
+							"setup":        "avwap_handoff",
+							"anchor":       anchorName,
+							"avwap":        fmt.Sprintf("%.4f", avwapValues[anchorName]),
+							"momentum_bps": fmt.Sprintf("%.1f", recent[len(recent)-1]),
+							"regime_5m":    regimeTag,
+							"mode":         "handoff",
+						})
+						if err != nil {
+							return avwapSt, nil, err
+						}
+						avwapSt.PendingEntry = start.SideSell
+						avwapSt.PendingEntryAt = now
+						avwapSt.TradesToday++
+						avwapSt.CooldownUntil = now.Add(cooldown)
+						return avwapSt, []start.Signal{sig}, nil
+					}
+				}
 			}
 		}
 	}
