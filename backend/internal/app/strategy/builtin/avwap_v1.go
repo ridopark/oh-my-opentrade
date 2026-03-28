@@ -135,7 +135,7 @@ type AVWAPState struct {
 
 	SwingTrailStop  float64 // current trailing stop price (swing low for longs, swing high for shorts)
 	SwingTrailBars  int     // bars since position opened (for min hold gate)
-	LockedOutToday  bool    // set when stopped out; prevents re-entry for rest of session
+	LockedOutSide   start.Side // side that was stopped out; prevents same-direction re-entry
 }
 
 // SetIndicators implements the indicatorSetter interface.
@@ -166,7 +166,7 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 		s.CrossedBelowBar = make(map[string]int)
 		s.TradesToday = 0
 		s.CalcBarCount = 0
-		s.LockedOutToday = false
+		s.LockedOutSide = ""
 		return
 	}
 
@@ -207,7 +207,7 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 	s.CrossedBelowBar = make(map[string]int)
 	s.TradesToday = 0
 	s.CalcBarCount = 0 // reset stabilization counter
-	s.LockedOutToday = false
+	s.LockedOutSide = ""
 }
 
 func (s *AVWAPState) ClearPendingEntry() {
@@ -390,8 +390,8 @@ func (s *AVWAPState) CheckExitsOn1m(symbol string, bar start.Bar) []start.Signal
 				if err != nil {
 					return nil
 				}
+				s.LockedOutSide = s.PositionSide
 				s.PositionSide = ""
-				s.LockedOutToday = true
 				s.SwingTrailStop = 0
 				s.SwingTrailBars = 0
 				s.CooldownUntil = now.Add(cooldown)
@@ -826,7 +826,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 						return avwapSt, nil, err
 					}
 					avwapSt.PositionSide = ""
-					avwapSt.LockedOutToday = true
+					avwapSt.LockedOutSide = start.SideBuy
 					avwapSt.CooldownUntil = now.Add(cooldown)
 					for an := range avwapSt.StopBelowCount {
 						avwapSt.StopBelowCount[an] = 0
@@ -847,7 +847,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 						return avwapSt, nil, err
 					}
 					avwapSt.PositionSide = ""
-					avwapSt.LockedOutToday = true
+					avwapSt.LockedOutSide = start.SideSell
 					avwapSt.CooldownUntil = now.Add(cooldown)
 					for an := range avwapSt.StopAboveCount {
 						avwapSt.StopAboveCount[an] = 0
@@ -933,8 +933,8 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 				if err != nil {
 					return avwapSt, nil, err
 				}
+				avwapSt.LockedOutSide = avwapSt.PositionSide
 				avwapSt.PositionSide = ""
-				avwapSt.LockedOutToday = true
 				avwapSt.SwingTrailStop = 0
 				avwapSt.SwingTrailBars = 0
 				avwapSt.CooldownUntil = now.Add(cooldown)
@@ -956,11 +956,10 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		}
 		return avwapSt, nil, nil
 	}
-	// 6a2. Session lockout — once stopped out, no re-entry until next session.
-	// Prevents re-entering broken setups that cooldown alone cannot fix.
-	if avwapSt.LockedOutToday {
-		return avwapSt, nil, nil
-	}
+	// 6a2. Session lockout — once stopped out on a side, no re-entry in the
+	// same direction until next session. A long stop-out doesn't block shorts.
+	lockedLong := avwapSt.LockedOutSide == start.SideBuy
+	lockedShort := avwapSt.LockedOutSide == start.SideSell
 
 	// 6b. Directional bias gate — determine bias from first anchor's AVWAP value.
 	// Require at least minBarsForBias bars before trusting the AVWAP for directional
@@ -1030,6 +1029,9 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		}
 		volumeOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*avwapSt.Indicators.VolumeSMA
 		// Reclaim: price was below capitulation AVWAP, now closes above with volume + bullish candle.
+		if lockedLong {
+			continue
+		}
 		if avwapSt.AboveCount[anchorName] >= 1 && avwapSt.AboveCount[anchorName] <= cfg.HoldBars &&
 			bar.Close > avwapValue && bar.Close > bar.Open && volumeOK {
 			volRatio := 0.0
@@ -1066,7 +1068,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 			}
 			volumeOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*avwapSt.Indicators.VolumeSMA
 
-			if avwapSt.AboveCount[anchorName] >= cfg.HoldBars && volumeOK {
+			if avwapSt.AboveCount[anchorName] >= cfg.HoldBars && volumeOK && !lockedLong {
 				// Long breakouts are allowed in REVERSAL — reclaiming AVWAP after
 				// a downtrend is the primary reversal signal (Brian Shannon).
 				if cfg.RequireHigherLows && !hasHigherLows(avwapSt.RecentLows) {
@@ -1108,7 +1110,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 				}
 				volumeOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*avwapSt.Indicators.VolumeSMA
 
-				if avwapSt.BelowCount[anchorName] >= cfg.HoldBars && volumeOK {
+				if avwapSt.BelowCount[anchorName] >= cfg.HoldBars && volumeOK && !lockedShort {
 					if regimeTag == "REVERSAL" {
 						continue
 					}
@@ -1188,7 +1190,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 			if regimeTag == "BALANCE" {
 				requiredTrendBars += 3
 			}
-			if avwapSt.PeakAboveCount[anchorName] >= requiredTrendBars &&
+			if !lockedLong && avwapSt.PeakAboveCount[anchorName] >= requiredTrendBars &&
 				bar.Low <= avwapValue+toleranceAbs &&
 				bar.Close > avwapValue &&
 				rsiOK && volumeOK {
@@ -1230,7 +1232,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 			if regimeTag == "BALANCE" {
 				requiredTrendBarsShort += 3
 			}
-			if !strings.EqualFold(cfg.Direction, "LONG") &&
+			if !lockedShort && !strings.EqualFold(cfg.Direction, "LONG") &&
 				avwapSt.PeakBelowCount[anchorName] >= requiredTrendBarsShort &&
 				bar.High >= avwapValue-toleranceAbs &&
 				bar.Close < avwapValue &&
@@ -1297,7 +1299,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		gapBPS := (maxAVWAP - minAVWAP) / minAVWAP * 10000.0
 		if gapBPS >= float64(cfg.PinchMinBPS) && gapBPS <= float64(cfg.PinchMaxBPS) {
 			// Long pinch breakout: price breaks above maxAVWAP.
-			if bar.Close > maxAVWAP && volumeOK {
+			if bar.Close > maxAVWAP && volumeOK && !lockedLong {
 				if !(cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "LONG") {
 					sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, 0.9, map[string]string{
 						"ref_price": fmt.Sprintf("%.10f", bar.Close),
@@ -1316,7 +1318,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 			}
 
 			// Short pinch breakout: price breaks below minAVWAP.
-			if bar.Close < minAVWAP && volumeOK && !strings.EqualFold(cfg.Direction, "LONG") {
+			if bar.Close < minAVWAP && volumeOK && !lockedShort && !strings.EqualFold(cfg.Direction, "LONG") {
 				if cfg.RequireCapitulationForShorts && avwapBias != "SHORT" {
 					// Skip — above AVWAP, capitulation required for short pinch
 				} else if !(cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "SHORT") {
@@ -1356,7 +1358,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 			} else if prev > 0 && prev <= cfg.GapReclaimBars && bar.Close > avwapValue {
 				// Reclaim! Price was below for 1-N bars, now closed above.
 				avwapSt.CrossedBelowBar[anchorName] = 0
-				if volumeOK {
+				if volumeOK && !lockedLong {
 					if cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "LONG" {
 						continue
 					}
@@ -1402,7 +1404,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 			// The first bar in the window must be near the AVWAP (within 30 bps) —
 			// this ensures we're capturing the "bounce and accelerate" pattern.
 			nearAVWAP := hist[len(hist)-handoffBars-1]
-			if nearAVWAP >= 0 && nearAVWAP <= 30 { // was near/at AVWAP from above
+			if !lockedLong && nearAVWAP >= 0 && nearAVWAP <= 30 { // was near/at AVWAP from above
 				allIncreasing := true
 				for i := 1; i < len(recent); i++ {
 					if recent[i] <= recent[i-1] || recent[i] <= 0 {
@@ -1444,7 +1446,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 			}
 
 			// Short handoff: consecutive bars with increasing negative distance from AVWAP.
-			if !strings.EqualFold(cfg.Direction, "LONG") && nearAVWAP <= 0 && nearAVWAP >= -30 {
+			if !lockedShort && !strings.EqualFold(cfg.Direction, "LONG") && nearAVWAP <= 0 && nearAVWAP >= -30 {
 				allDecreasing := true
 				for i := 1; i < len(recent); i++ {
 					if recent[i] >= recent[i-1] || recent[i] >= 0 {
@@ -1497,7 +1499,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 			touchesAVWAP := bar.Low <= avwapValue && avwapValue <= bar.High
 
 			// Long bounce: touches AVWAP + RSI < max + bullish candle.
-			if touchesAVWAP && avwapSt.Indicators.RSI > 0 && avwapSt.Indicators.RSI < cfg.RSIBounceMax {
+			if !lockedLong && touchesAVWAP && avwapSt.Indicators.RSI > 0 && avwapSt.Indicators.RSI < cfg.RSIBounceMax {
 				if cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "LONG" {
 					if ctx != nil && ctx.Logger() != nil {
 						ctx.Logger().Info("AVWAP bias: blocking long bounce", "symbol", symbol, "bias", avwapBias, "anchor", anchorName)
@@ -1535,7 +1537,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 			}
 
 			// Short bounce: touches AVWAP + RSI > min + bearish candle.
-			if touchesAVWAP && avwapSt.Indicators.RSI > cfg.RSIBounceMin {
+			if !lockedShort && touchesAVWAP && avwapSt.Indicators.RSI > cfg.RSIBounceMin {
 				if cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "SHORT" {
 					if ctx != nil && ctx.Logger() != nil {
 						ctx.Logger().Info("AVWAP bias: blocking short bounce", "symbol", symbol, "bias", avwapBias, "anchor", anchorName)
