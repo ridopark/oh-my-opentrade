@@ -27,7 +27,7 @@ description = "Event-based AVWAP: anchors at perception changes (earnings, gaps,
 
 [params]
 # Event-based anchors
-anchors = ["session_open", "pd_high", "pd_low"]
+anchors = ["session_open"]
 # Breakout — tightened for higher conviction
 breakout_enabled = true
 hold_bars = 8
