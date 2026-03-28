@@ -5,7 +5,6 @@ package backtest
 
 import (
 	"context"
-	"math"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -36,14 +35,13 @@ func (a *HistoricalOptionsAdapter) GetOptionChain(
 ) ([]domain.OptionContractSnapshot, error) {
 	now := a.clockFn()
 
-	// Compute DTE range: target expiry ± 15 days to give the contract
-	// selector enough candidates across default and regime-override windows.
-	targetDTE := int(math.Round(expiry.Sub(now).Hours() / 24))
-	minDTE := targetDTE - 15
-	if minDTE < 7 {
-		minDTE = 7
-	}
-	maxDTE := targetDTE + 15
+	// Fetch ALL available expirations and let the contract selector filter.
+	// DoltHub data has sparse expirations (monthly only, ~3 per day), so
+	// narrow DTE ranges miss most contracts. The selector's DTE/delta/spread
+	// filters handle the actual selection.
+	_ = expiry // target expiry is informational; we fetch everything
+	minDTE := 1
+	maxDTE := 365
 
 	rows, err := a.repo.GetHistoricalChain(ctx, underlying, now, right, minDTE, maxDTE)
 	if err != nil {
