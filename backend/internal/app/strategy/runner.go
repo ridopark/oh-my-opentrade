@@ -142,16 +142,17 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 		}
 		if ar, ok := st.(anchorResettable); ok {
 			// Merge AI-resolved anchors with existing session anchors.
-			// The session anchors (session_open, pd_high, pd_low) are resolved
-			// by resolveSessionAnchors and must be preserved — the AI resolver
-			// only adds dynamic anchors (swing, capitulation, catalyst).
-			names := ar.AnchorNames()
-			existing := r.anchorResolver(symbol, bar.Time, names)
-			for k, v := range resolved {
-				existing[k] = v
+			merged := resolved
+			if r.anchorResolver != nil {
+				names := ar.AnchorNames()
+				existing := r.anchorResolver(symbol, bar.Time, names)
+				for k, v := range resolved {
+					existing[k] = v
+				}
+				merged = existing
 			}
-			ar.ResetAnchors(existing)
-			r.logger.Info("AI anchor resolution complete", "symbol", symbol, "anchors", len(existing))
+			ar.ResetAnchors(merged)
+			r.logger.Info("AI anchor resolution complete", "symbol", symbol, "anchors", len(merged))
 		}
 	}
 }
