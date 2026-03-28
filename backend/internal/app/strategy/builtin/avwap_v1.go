@@ -216,6 +216,184 @@ func (s *AVWAPState) UpdateCalc(bar start.Bar) {
 	}
 }
 
+// CheckExitsOn1m evaluates exit-only logic on 1m bars for faster reaction.
+// Per Brian Shannon: use short-term chart (1m) to fine-tune exits while
+// entries remain on the strategy timeframe (5m). Returns nil if no exit.
+func (s *AVWAPState) CheckExitsOn1m(symbol string, bar start.Bar) []start.Signal {
+	if s.PositionSide == "" || s.PendingEntry != "" {
+		return nil
+	}
+	cfg := s.Config
+	avwapValues := s.Calc.Values()
+	if len(avwapValues) == 0 {
+		return nil
+	}
+	sortedAnchors := s.Calc.SortedNames()
+	instanceID, _ := start.NewInstanceID(fmt.Sprintf("avwap:1.0.0:%s", symbol))
+	cooldown := time.Duration(cfg.CooldownSeconds) * time.Second
+	now := bar.Time
+
+	// Update recent lows/highs with 1m data for swing trail precision
+	s.RecentLows = append(s.RecentLows, bar.Low)
+	cap := cfg.HigherLowsBars
+	if cap < 2 {
+		cap = 3
+	}
+	if len(s.RecentLows) > cap {
+		s.RecentLows = s.RecentLows[len(s.RecentLows)-cap:]
+	}
+	s.RecentHighs = append(s.RecentHighs, bar.High)
+	if len(s.RecentHighs) > cap {
+		s.RecentHighs = s.RecentHighs[len(s.RecentHighs)-cap:]
+	}
+
+	// --- AVWAP stop on 1m ---
+	if cfg.AVWAPStopEnabled {
+		if s.StopBelowCount == nil {
+			s.StopBelowCount = make(map[string]int)
+		}
+		if s.StopAboveCount == nil {
+			s.StopAboveCount = make(map[string]int)
+		}
+		for _, anchorName := range sortedAnchors {
+			avwapValue := avwapValues[anchorName]
+			bufferAbs := avwapValue * float64(cfg.AVWAPStopBufferBPS) / 10000.0
+			if s.PositionSide == start.SideBuy {
+				if bar.Close < avwapValue-bufferAbs {
+					s.StopBelowCount[anchorName]++
+				} else {
+					s.StopBelowCount[anchorName] = 0
+				}
+			} else if s.PositionSide == start.SideSell {
+				if bar.Close > avwapValue+bufferAbs {
+					s.StopAboveCount[anchorName]++
+				} else {
+					s.StopAboveCount[anchorName] = 0
+				}
+			}
+		}
+		if s.PositionSide == start.SideBuy {
+			for _, anchorName := range sortedAnchors {
+				if s.StopBelowCount[anchorName] >= cfg.AVWAPStopBars {
+					sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideSell, 0.9, map[string]string{
+						"ref_price": fmt.Sprintf("%.10f", bar.Close),
+						"setup":     "avwap_stop",
+						"anchor":    anchorName,
+						"source":    "1m",
+					})
+					if err != nil {
+						return nil
+					}
+					s.PositionSide = ""
+					s.CooldownUntil = now.Add(cooldown)
+					for an := range s.StopBelowCount {
+						s.StopBelowCount[an] = 0
+					}
+					return []start.Signal{sig}
+				}
+			}
+		} else if s.PositionSide == start.SideSell {
+			for _, anchorName := range sortedAnchors {
+				if s.StopAboveCount[anchorName] >= cfg.AVWAPStopBars {
+					sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideBuy, 0.9, map[string]string{
+						"ref_price": fmt.Sprintf("%.10f", bar.Close),
+						"setup":     "avwap_stop",
+						"anchor":    anchorName,
+						"source":    "1m",
+					})
+					if err != nil {
+						return nil
+					}
+					s.PositionSide = ""
+					s.CooldownUntil = now.Add(cooldown)
+					for an := range s.StopAboveCount {
+						s.StopAboveCount[an] = 0
+					}
+					return []start.Signal{sig}
+				}
+			}
+		}
+	}
+
+	// --- Swing trail stop on 1m ---
+	if cfg.SwingTrailEnabled {
+		s.SwingTrailBars++
+		lookback := cfg.SwingTrailLookback
+		if lookback < 2 {
+			lookback = 5
+		}
+		bufferMult := 1.0 - float64(cfg.SwingTrailBufferBPS)/10000.0
+		bufferMultShort := 1.0 + float64(cfg.SwingTrailBufferBPS)/10000.0
+
+		if s.PositionSide == start.SideBuy {
+			lows := s.RecentLows
+			if len(lows) > lookback {
+				lows = lows[len(lows)-lookback:]
+			}
+			if len(lows) > 0 {
+				swingLow := lows[0]
+				for _, l := range lows[1:] {
+					if l < swingLow {
+						swingLow = l
+					}
+				}
+				newStop := swingLow * bufferMult
+				if newStop > s.SwingTrailStop {
+					s.SwingTrailStop = newStop
+				}
+			}
+		} else if s.PositionSide == start.SideSell {
+			highs := s.RecentHighs
+			if len(highs) > lookback {
+				highs = highs[len(highs)-lookback:]
+			}
+			if len(highs) > 0 {
+				swingHigh := highs[0]
+				for _, h := range highs[1:] {
+					if h > swingHigh {
+						swingHigh = h
+					}
+				}
+				newStop := swingHigh * bufferMultShort
+				if s.SwingTrailStop == 0 || newStop < s.SwingTrailStop {
+					s.SwingTrailStop = newStop
+				}
+			}
+		}
+
+		if s.SwingTrailBars >= cfg.SwingTrailMinBars && s.SwingTrailStop > 0 {
+			triggered := false
+			if s.PositionSide == start.SideBuy && bar.Close <= s.SwingTrailStop {
+				triggered = true
+			} else if s.PositionSide == start.SideSell && bar.Close >= s.SwingTrailStop {
+				triggered = true
+			}
+			if triggered {
+				exitSide := start.SideSell
+				if s.PositionSide == start.SideSell {
+					exitSide = start.SideBuy
+				}
+				sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, exitSide, 0.85, map[string]string{
+					"ref_price":  fmt.Sprintf("%.10f", bar.Close),
+					"setup":      "swing_trail_stop",
+					"stop_level": fmt.Sprintf("%.4f", s.SwingTrailStop),
+					"source":     "1m",
+				})
+				if err != nil {
+					return nil
+				}
+				s.PositionSide = ""
+				s.SwingTrailStop = 0
+				s.SwingTrailBars = 0
+				s.CooldownUntil = now.Add(cooldown)
+				return []start.Signal{sig}
+			}
+		}
+	}
+
+	return nil
+}
+
 // AVWAPValues returns the current anchored VWAP values for chart rendering.
 // Suppresses output for the first 10 bars after a reset to avoid noisy
 // values from an under-accumulated calculator.

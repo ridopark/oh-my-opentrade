@@ -186,10 +186,14 @@ func (r *Runner) SetMetrics(m *metrics.Metrics) { r.metrics = m }
 func (r *Runner) SetPositionLookup(fn PositionLookupFunc) { r.posLookup = fn }
 
 // UpdateAVWAPCalc feeds a 1m bar into the AVWAP calculator for smooth chart
-// rendering without triggering the strategy's signal logic (which runs on 5m).
-func (r *Runner) UpdateAVWAPCalc(symbol string, bar start.Bar) {
+// rendering. Also evaluates exit-only logic on 1m bars for faster exit
+// reaction (per Brian Shannon: fine-tune exits on short-term chart).
+func (r *Runner) UpdateAVWAPCalc(symbol string, bar start.Bar) []start.Signal {
 	type avwapUpdater interface {
 		UpdateCalc(bar start.Bar)
+	}
+	type avwap1mExitChecker interface {
+		CheckExitsOn1m(symbol string, bar start.Bar) []start.Signal
 	}
 	instances := r.router.InstancesForSymbol(symbol)
 	for _, inst := range instances {
@@ -199,9 +203,16 @@ func (r *Runner) UpdateAVWAPCalc(symbol string, bar start.Bar) {
 		}
 		if u, ok := st.(avwapUpdater); ok {
 			u.UpdateCalc(bar)
-			return
+			// Also check exits on 1m for faster reaction
+			if checker, ok2 := st.(avwap1mExitChecker); ok2 {
+				if sigs := checker.CheckExitsOn1m(symbol, bar); len(sigs) > 0 {
+					return sigs
+				}
+			}
+			return nil
 		}
 	}
+	return nil
 }
 
 // GetAVWAPValues returns the current anchored VWAP values for a symbol
@@ -405,10 +416,12 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	r.mu.Unlock()
 
 	// Feed only 1m bars to the AVWAP calculator for smooth chart rendering.
+	// Also evaluates exit-only logic on 1m for faster exit reaction.
 	// The monitor re-publishes aggregated HTF bars (5m, 15m, etc.) as
 	// EventMarketBarSanitized — processing those would double-count PV/V.
+	var exitSignals1m []start.Signal
 	if bar.Timeframe == "1m" {
-		r.UpdateAVWAPCalc(symbol, domainBarToStratBar(bar))
+		exitSignals1m = r.UpdateAVWAPCalc(symbol, domainBarToStratBar(bar))
 	}
 
 	r.mu.Lock()
@@ -431,6 +444,8 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 
 	sBar := domainBarToStratBar(bar)
 	var allSignals []start.Signal
+	// Add any exit signals from 1m AVWAP exit evaluation
+	allSignals = append(allSignals, exitSignals1m...)
 
 	for _, inst := range oneMinInstances {
 		instCtx := &instanceContext{
