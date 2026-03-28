@@ -812,7 +812,7 @@ function MiniChart({
         const dir = t.direction ?? "";
         const isEntry = dir === "LONG" || dir === "SHORT";
         const isLongSide = dir === "LONG" || (!dir && t.side?.toLowerCase() === "buy");
-        const label = dir === "LONG" ? "BUY" : dir === "SHORT" ? "SHORT" : dir === "CLOSE_LONG" ? "SELL" : dir === "CLOSE_SHORT" ? "COVER" : (t.side?.toLowerCase() === "buy" ? "BUY" : "SELL");
+        const label = dir === "LONG" ? "LONG" : dir === "SHORT" ? "SHORT" : dir === "CLOSE_LONG" ? "SELL" : dir === "CLOSE_SHORT" ? "COVER" : (t.side?.toLowerCase() === "buy" ? "LONG" : "SELL");
         return {
           time: matchedTime as Time,
           price: bar ? (isEntry ? bar.low * 0.999 : bar.high * 1.001) : t.price,
