@@ -284,9 +284,9 @@ export class SignalMarkerOverlay implements ISeriesPrimitive<Time> {
       const my = this._series.priceToCoordinate(s.price);
       if (my === null) continue;
 
-      // Box dimensions matching the renderer
-      const boxW = 120; // generous hit area
-      const boxH = 22;
+      // Box dimensions — must be wide enough for labels like "LONG 5 @ $9.68"
+      const boxW = 180;
+      const boxH = 28;
       const gap = 6;
       const arrowH = 5;
       const isBuy = s.side === "buy";
