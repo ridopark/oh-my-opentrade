@@ -94,10 +94,14 @@ signals = { engine = "builtin", name = "avwap" }
 [dynamic_risk]
 enabled = false
 
-# Price-action exits: swing_trail_stop + avwap_stop handle trailing via
-# swing lows/highs and AVWAP defense levels (per Brian Shannon research).
-# SD-based exits (STEP_STOP, SD_TARGET) removed — they don't respect
-# market structure or institutional defense levels.
+# Price-action trailing stop: trail at recent swing low (longs) / swing high (shorts)
+# Per Brian Shannon: stop at the low of the dip, trail using higher lows
+[[exit_rules]]
+type = "SWING_TRAIL"
+[exit_rules.params]
+lookback = 5
+buffer_bps = 10
+min_bars = 1
 
 # Kill zombie trades — extended for options (theta needs time)
 [[exit_rules]]

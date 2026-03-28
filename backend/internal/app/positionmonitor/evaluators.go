@@ -57,6 +57,8 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 		return evaluateDTEFloor(rule, pos, now)
 	case domain.ExitRuleExpiryWatch:
 		return evaluateExpiryWatch(rule, pos, now)
+	case domain.ExitRuleSwingTrail:
+		return evaluateSwingTrail(rule, pos, currentPrice, now, ctx)
 	default:
 		return false, ""
 	}
@@ -609,4 +611,98 @@ func etLocation() *time.Location {
 		return time.UTC
 	}
 	return loc
+}
+
+// evaluateSwingTrail implements a price-action trailing stop using recent swing lows/highs.
+// Per Brian Shannon: place stop at the low of the dip, trail using higher lows.
+//
+// Uses CustomState to track:
+//   - "swing_trail_stop"    — current trailing stop price
+//   - "swing_trail_bars"    — bars since position opened
+//   - "swing_low_0".."swing_low_N" — ring buffer of recent bar lows (for longs)
+//   - "swing_high_0".."swing_high_N" — ring buffer of recent bar highs (for shorts)
+//   - "swing_ring_idx"      — current index in ring buffer
+//
+// Params:
+//
+//	"lookback"   — bars to look back for swing low/high (default 5)
+//	"buffer_bps" — buffer below swing low / above swing high in bps (default 10)
+//	"min_bars"   — min bars before trail activates (default 1)
+func evaluateSwingTrail(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time, ctx EvalContext) (bool, string) {
+	if pos.CustomState == nil {
+		pos.CustomState = make(map[string]float64)
+	}
+
+	lookback := int(rule.Param("lookback", 5))
+	if lookback < 2 {
+		lookback = 5
+	}
+	bufferBPS := rule.Param("buffer_bps", 10)
+	minBars := int(rule.Param("min_bars", 1))
+
+	// Increment bar counter
+	pos.CustomState["swing_trail_bars"]++
+	barCount := int(pos.CustomState["swing_trail_bars"])
+
+	// Update ring buffer with current price (low for longs, high for shorts)
+	ringIdx := int(pos.CustomState["swing_ring_idx"])
+	if pos.IsShort() {
+		pos.CustomState[fmt.Sprintf("swing_high_%d", ringIdx)] = currentPrice
+	} else {
+		pos.CustomState[fmt.Sprintf("swing_low_%d", ringIdx)] = currentPrice
+	}
+	pos.CustomState["swing_ring_idx"] = float64((ringIdx + 1) % lookback)
+
+	// Compute trailing stop from ring buffer
+	if barCount < minBars {
+		return false, ""
+	}
+
+	stopLevel := pos.CustomState["swing_trail_stop"]
+
+	if pos.IsShort() {
+		// Find highest high in ring buffer
+		swingHigh := 0.0
+		for i := 0; i < lookback; i++ {
+			h := pos.CustomState[fmt.Sprintf("swing_high_%d", i)]
+			if h > swingHigh {
+				swingHigh = h
+			}
+		}
+		if swingHigh > 0 {
+			newStop := swingHigh * (1.0 + bufferBPS/10000.0)
+			// Trail DOWN only — never raise the stop for shorts
+			if stopLevel == 0 || newStop < stopLevel {
+				stopLevel = newStop
+				pos.CustomState["swing_trail_stop"] = stopLevel
+			}
+		}
+		if stopLevel > 0 && currentPrice >= stopLevel {
+			return true, fmt.Sprintf("swing_trail: price %.4f >= stop %.4f (swing_high=%.4f)",
+				currentPrice, stopLevel, swingHigh)
+		}
+	} else {
+		// Find lowest low in ring buffer
+		swingLow := 0.0
+		for i := 0; i < lookback; i++ {
+			l := pos.CustomState[fmt.Sprintf("swing_low_%d", i)]
+			if l > 0 && (swingLow == 0 || l < swingLow) {
+				swingLow = l
+			}
+		}
+		if swingLow > 0 {
+			newStop := swingLow * (1.0 - bufferBPS/10000.0)
+			// Trail UP only — never lower the stop
+			if newStop > stopLevel {
+				stopLevel = newStop
+				pos.CustomState["swing_trail_stop"] = stopLevel
+			}
+		}
+		if stopLevel > 0 && currentPrice <= stopLevel {
+			return true, fmt.Sprintf("swing_trail: price %.4f <= stop %.4f (swing_low=%.4f)",
+				currentPrice, stopLevel, swingLow)
+		}
+	}
+
+	return false, ""
 }
