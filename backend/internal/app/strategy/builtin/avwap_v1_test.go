@@ -631,7 +631,10 @@ func TestAVWAPStrategy_HigherLows_DisabledByDefault(t *testing.T) {
 	assert.Equal(t, strat.SideBuy, signals[0].Side)
 }
 
-func TestAVWAPStrategy_LowerHighs_BlocksShortBreakout(t *testing.T) {
+func TestAVWAPStrategy_ShortBreakout_NoLowerHighsGate(t *testing.T) {
+	// require_higher_lows does NOT apply to short entries — bias + slope gates
+	// provide structural confirmation for shorts. Lower-highs was blocking 9000+
+	// valid short attempts in backtests.
 	s := builtin.NewAVWAPStrategy()
 	start := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
 	ctx := newTestContext(start)
@@ -642,7 +645,7 @@ func TestAVWAPStrategy_LowerHighs_BlocksShortBreakout(t *testing.T) {
 
 	bars := []strat.Bar{
 		{Time: start, Open: 130, High: 135, Low: 110, Close: 110, Volume: 10},
-		{Time: start.Add(time.Minute), Open: 110, High: 140, Low: 95, Close: 95, Volume: 10}, // high 140 > 135: NOT lower
+		{Time: start.Add(time.Minute), Open: 110, High: 140, Low: 95, Close: 95, Volume: 10},
 		{Time: start.Add(2 * time.Minute), Open: 95, High: 100, Low: 80, Close: 80, Volume: 20},
 	}
 
@@ -650,7 +653,7 @@ func TestAVWAPStrategy_LowerHighs_BlocksShortBreakout(t *testing.T) {
 	for _, b := range bars {
 		st, signals = feedAVWAPBar(t, s, ctx, "AAPL", st, b, ind)
 	}
-	assert.Empty(t, signals, "non-decreasing highs should block short breakout")
+	assert.NotEmpty(t, signals, "short breakout should fire — lower-highs gate removed for shorts")
 }
 
 // --- Midday Trap Shield tests ---

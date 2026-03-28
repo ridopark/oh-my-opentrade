@@ -1053,10 +1053,9 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 					}
 					continue
 				}
-				if cfg.RequireHigherLows && !hasLowerHighs(s.RecentHighs) {
-					logShortGate(ctx, ec.symbol, "require_lower_highs", anchorName)
-					continue
-				}
+				// Note: require_higher_lows is NOT applied to shorts — the bias gate
+				// + slope gate already confirm downtrend structure. Requiring strict
+				// lower highs blocked 9000+ short attempts in backtests.
 				if cfg.MiddayTrapShield && strings.EqualFold(cfg.AssetClass, "EQUITY") {
 					barET := bar.Time.In(ec.etLocation)
 					hour := barET.Hour()
@@ -1460,10 +1459,7 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 						logShortGate(ctx, ec.symbol, "require_capitulation", anchorName, "bias", ec.avwapBias)
 						continue
 					}
-					if cfg.RequireHigherLows && !hasLowerHighs(s.RecentHighs) {
-						logShortGate(ctx, ec.symbol, "require_lower_highs", anchorName)
-						continue
-					}
+					// lower-highs gate removed for shorts — bias + slope are sufficient
 					if cfg.MinSlopeBPS > 0 && ec.slopeOK && ec.avwapSlope > -cfg.MinSlopeBPS {
 						logShortGate(ctx, ec.symbol, "min_slope_bps", anchorName, "slope_bps", fmt.Sprintf("%.2f", ec.avwapSlope))
 						continue
