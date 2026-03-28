@@ -201,9 +201,11 @@ func TestNewOptionContract_ZeroStrike(t *testing.T) {
 }
 
 func TestNewOptionContract_PastExpiry(t *testing.T) {
+	// Past expiry is now allowed — backtests use historical contracts
+	// with expiries that are in the past relative to wall clock time.
 	expiry := time.Date(2020, 1, 19, 0, 0, 0, 0, time.UTC)
 	_, err := domain.NewOptionContract("AAPL", expiry, 190.0, domain.OptionRightCall, domain.OptionStyleAmerican)
-	require.Error(t, err)
+	require.NoError(t, err)
 }
 
 // ─────────────────────────────────────────────
