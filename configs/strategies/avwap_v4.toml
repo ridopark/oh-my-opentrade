@@ -89,14 +89,14 @@ enabled = false
 [[exit_rules]]
 type = "STEP_STOP"
 [exit_rules.params]
-min_hold_bars = 4
+min_hold_bars = 6
 bar_minutes = 5
 
 # SD target for profit taking
 [[exit_rules]]
 type = "SD_TARGET"
 [exit_rules.params]
-sd_level = 2.0
+sd_level = 1.5
 min_hold_bars = 6
 bar_minutes = 5
 
