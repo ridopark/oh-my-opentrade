@@ -1137,8 +1137,10 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 						}
 						continue
 					}
-					if cfg.RequireCapitulationForShorts {
-						continue // block short breakouts; only pullback shorts allowed
+					// Capitulation required only when price is ABOVE AVWAP ("innocent").
+					// Below AVWAP ("guilty"), shorts are allowed on structural confirmation.
+					if cfg.RequireCapitulationForShorts && avwapBias != "SHORT" {
+						continue
 					}
 					sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.7, map[string]string{
 						"ref_price": fmt.Sprintf("%.10f", bar.Close),
@@ -1245,9 +1247,9 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 					}
 					continue
 				}
-				if cfg.RequireCapitulationForShorts {
+				if cfg.RequireCapitulationForShorts && avwapBias != "SHORT" {
 					if ctx != nil && ctx.Logger() != nil {
-						ctx.Logger().Info("AVWAP gate: capitulation required for short pullback", "symbol", symbol, "anchor", anchorName)
+						ctx.Logger().Info("AVWAP gate: capitulation required for short pullback (above AVWAP)", "symbol", symbol, "anchor", anchorName)
 					}
 					continue
 				}
@@ -1315,8 +1317,8 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 
 			// Short pinch breakout: price breaks below minAVWAP.
 			if bar.Close < minAVWAP && volumeOK && !strings.EqualFold(cfg.Direction, "LONG") {
-				if cfg.RequireCapitulationForShorts {
-					// Skip — no capitulation anchor for short pinch
+				if cfg.RequireCapitulationForShorts && avwapBias != "SHORT" {
+					// Skip — above AVWAP, capitulation required for short pinch
 				} else if !(cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "SHORT") {
 					sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.9, map[string]string{
 						"ref_price": fmt.Sprintf("%.10f", bar.Close),
@@ -1456,7 +1458,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 						if cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "SHORT" {
 							continue
 						}
-						if cfg.RequireCapitulationForShorts {
+						if cfg.RequireCapitulationForShorts && avwapBias != "SHORT" {
 							continue
 						}
 						if cfg.RequireHigherLows && !hasLowerHighs(avwapSt.RecentHighs) {
@@ -1546,8 +1548,8 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 				if bar.Close >= bar.Open {
 					continue
 				}
-				if cfg.RequireCapitulationForShorts {
-					continue // block short bounces; only pullback shorts allowed
+				if cfg.RequireCapitulationForShorts && avwapBias != "SHORT" {
+					continue // block short bounces above AVWAP without capitulation
 				}
 				sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.6, map[string]string{
 					"ref_price": fmt.Sprintf("%.10f", bar.Close),
