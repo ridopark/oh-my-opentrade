@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"math"
+	"sort"
 	"time"
 )
 
@@ -69,6 +70,23 @@ func (c *AnchoredVWAPCalc) AddAnchor(ap AnchorPoint) {
 		c.anchors = make(map[string]*anchoredVWAPEntry)
 	}
 	c.anchors[ap.Name] = &anchoredVWAPEntry{AnchorPoint: ap}
+}
+
+// SortedNames returns the names of all active anchors in sorted order
+// for deterministic iteration. Go map iteration is random — without
+// this, backtest results vary between runs.
+func (c *AnchoredVWAPCalc) SortedNames() []string {
+	if c == nil {
+		return nil
+	}
+	names := make([]string, 0, len(c.anchors))
+	for name, e := range c.anchors {
+		if e != nil && e.active {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (c *AnchoredVWAPCalc) AnchorPoints() map[string]AnchorPoint {
