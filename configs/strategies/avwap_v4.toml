@@ -94,27 +94,17 @@ signals = { engine = "builtin", name = "avwap" }
 [dynamic_risk]
 enabled = false
 
-# STEP_STOP replaces VOLATILITY_STOP — ratcheting stop that lets winners run
-[[exit_rules]]
-type = "STEP_STOP"
-[exit_rules.params]
-min_hold_bars = 6
-bar_minutes = 5
-
-# SD target for profit taking
-[[exit_rules]]
-type = "SD_TARGET"
-[exit_rules.params]
-sd_level = 1.5
-min_hold_bars = 6
-bar_minutes = 5
+# Price-action exits: swing_trail_stop + avwap_stop handle trailing via
+# swing lows/highs and AVWAP defense levels (per Brian Shannon research).
+# SD-based exits (STEP_STOP, SD_TARGET) removed — they don't respect
+# market structure or institutional defense levels.
 
 # Kill zombie trades — extended for options (theta needs time)
 [[exit_rules]]
 type = "STAGNATION_EXIT"
 [exit_rules.params]
 minutes = 90
-sd_threshold = 1.0
+sd_threshold = 0
 profit_gate_pct = 0.005
 
 [[exit_rules]]
