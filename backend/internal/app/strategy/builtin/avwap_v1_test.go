@@ -226,7 +226,8 @@ func TestAVWAPStrategy_Bounce_Short(t *testing.T) {
 	assert.Contains(t, sig.Tags, "rsi")
 }
 
-func TestAVWAPStrategy_RegimeGating_ReversalBlocksBreakout(t *testing.T) {
+func TestAVWAPStrategy_RegimeGating_ReversalAllowsLongBreakout(t *testing.T) {
+	// Per Brian Shannon: reclaiming AVWAP after downtrend is THE reversal signal.
 	s := builtin.NewAVWAPStrategy()
 	start := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
 	ctx := newTestContext(start)
@@ -240,11 +241,13 @@ func TestAVWAPStrategy_RegimeGating_ReversalBlocksBreakout(t *testing.T) {
 		{Time: start.Add(2 * time.Minute), Open: 120, High: 128, Low: 108, Close: 128, Volume: 20},
 	}
 
+	var allSignals []strat.Signal
 	for _, b := range bars {
 		st, signals := feedAVWAPBar(t, s, ctx, "AAPL", st, b, ind)
-		assert.Empty(t, signals)
+		allSignals = append(allSignals, signals...)
 		_ = st
 	}
+	assert.NotEmpty(t, allSignals, "long breakout should be allowed in REVERSAL regime")
 }
 
 func TestAVWAPStrategy_RegimeGating_TrendBlocksBounce(t *testing.T) {
