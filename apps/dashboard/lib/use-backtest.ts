@@ -29,6 +29,7 @@ export interface BacktestBar {
   ema50?: number;
   ema200?: number;
   avwap?: number;
+  avwaps?: Record<string, number>;
 }
 
 export interface BacktestSignal {

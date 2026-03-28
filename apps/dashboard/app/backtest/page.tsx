@@ -596,6 +596,30 @@ const ChartGrid = forwardRef<ChartGridHandle, {
   );
 });
 
+/** Color for each AVWAP anchor type on the chart */
+function avwapAnchorColor(name: string): string {
+  if (name === "session_open") return "rgba(56, 189, 248, 0.5)";
+  if (name === "pd_high") return "rgba(251, 146, 60, 0.5)";
+  if (name === "pd_low") return "rgba(167, 139, 250, 0.5)";
+  if (name.startsWith("capitulation")) return "rgba(248, 113, 113, 0.5)";
+  if (name.startsWith("swing_high")) return "rgba(251, 191, 36, 0.4)";
+  if (name.startsWith("swing_low")) return "rgba(52, 211, 153, 0.4)";
+  if (name.startsWith("catalyst")) return "rgba(244, 114, 182, 0.5)";
+  return "rgba(148, 163, 184, 0.4)";
+}
+
+/** Human-readable label for an anchor name */
+function avwapAnchorLabel(name: string): string {
+  if (name === "session_open") return "AVWAP Open";
+  if (name === "pd_high") return "AVWAP PD High";
+  if (name === "pd_low") return "AVWAP PD Low";
+  if (name.startsWith("capitulation")) return "AVWAP Capit.";
+  if (name.startsWith("swing_high")) return "AVWAP Swing H";
+  if (name.startsWith("swing_low")) return "AVWAP Swing L";
+  if (name.startsWith("catalyst")) return "AVWAP Catalyst";
+  return `AVWAP ${name}`;
+}
+
 function MiniChart({
   symbol,
   bars,
@@ -623,7 +647,7 @@ function MiniChart({
   const ema21Ref = useRef<ISeriesApi<"Line", Time> | null>(null);
   const ema50Ref = useRef<ISeriesApi<"Line", Time> | null>(null);
   const ema200Ref = useRef<ISeriesApi<"Line", Time> | null>(null);
-  const avwapRef = useRef<ISeriesApi<"Line", Time> | null>(null);
+  const avwapRefsMap = useRef<Map<string, ISeriesApi<"Line", Time>>>(new Map());
   const overlayRef = useRef<SignalMarkerOverlay | null>(null);
   const orbOverlayRef = useRef<ORBBoxOverlay | null>(null);
   const rthOverlayRef = useRef<RTHShadingOverlay | null>(null);
@@ -695,10 +719,7 @@ function MiniChart({
     });
     ema200Ref.current = ema200;
 
-    const avwapLine = chart.addSeries(LineSeries, {
-      color: "rgba(56, 189, 248, 0.45)", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-    });
-    avwapRef.current = avwapLine;
+    // AVWAP lines are created dynamically in the data useEffect (one per anchor)
 
     const overlay = new SignalMarkerOverlay();
     candle.attachPrimitive(overlay);
@@ -756,7 +777,7 @@ function MiniChart({
       ema21Ref.current = null;
       ema50Ref.current = null;
       ema200Ref.current = null;
-      avwapRef.current = null;
+      avwapRefsMap.current.clear();
       overlayRef.current = null;
       orbOverlayRef.current = null;
       rthOverlayRef.current = null;
@@ -780,13 +801,44 @@ function MiniChart({
     const ema50Data = sorted.filter((b) => b.ema50 && b.ema50 > 0).map((b) => ({ time: b.time as Time, value: b.ema50! }));
     const ema200Data = sorted.filter((b) => b.ema200 && b.ema200 > 0).map((b) => ({ time: b.time as Time, value: b.ema200! }));
 
-    const avwapData = sorted.filter((b) => b.avwap && b.avwap > 0).map((b) => ({ time: b.time as Time, value: b.avwap! }));
-
     if (ema9Ref.current) ema9Ref.current.setData(ema9Data);
     if (ema21Ref.current) ema21Ref.current.setData(ema21Data);
     if (ema50Ref.current) ema50Ref.current.setData(ema50Data);
     if (ema200Ref.current) ema200Ref.current.setData(ema200Data);
-    if (avwapRef.current) avwapRef.current.setData(avwapData);
+
+    // Multiple AVWAP lines — one per anchor
+    if (chartRef.current) {
+      const anchorNames = new Set<string>();
+      for (const b of sorted) {
+        if (b.avwaps) {
+          for (const k of Object.keys(b.avwaps)) anchorNames.add(k);
+        }
+      }
+      // Create line series for new anchors
+      for (const name of anchorNames) {
+        if (!avwapRefsMap.current.has(name)) {
+          const line = chartRef.current.addSeries(LineSeries, {
+            color: avwapAnchorColor(name), lineWidth: 1, lineStyle: 2,
+            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+          });
+          avwapRefsMap.current.set(name, line);
+        }
+      }
+      // Remove series for anchors no longer present
+      for (const [name, series] of avwapRefsMap.current) {
+        if (!anchorNames.has(name)) {
+          chartRef.current.removeSeries(series);
+          avwapRefsMap.current.delete(name);
+        }
+      }
+      // Set data for each anchor
+      for (const [name, series] of avwapRefsMap.current) {
+        const data = sorted
+          .filter((b) => b.avwaps && b.avwaps[name] && b.avwaps[name] > 0)
+          .map((b) => ({ time: b.time as Time, value: b.avwaps![name] }));
+        series.setData(data);
+      }
+    }
 
     lastBarCountRef.current = bars.length;
 
@@ -879,12 +931,21 @@ function MiniChart({
   const tradeCount = trades.length;
   const hasActivity = tradeCount > 0;
 
-  const lineLegend = [
+  // Collect active AVWAP anchor names for dynamic legend
+  const avwapAnchors = useMemo(() => {
+    const names = new Set<string>();
+    for (const b of bars) {
+      if (b.avwaps) for (const k of Object.keys(b.avwaps)) names.add(k);
+    }
+    return Array.from(names).sort();
+  }, [bars]);
+
+  const lineLegend: { label: string; color: string; thick?: boolean }[] = [
     { label: "EMA 9", color: "rgba(251, 191, 36, 0.7)" },
     { label: "EMA 21", color: "rgba(139, 92, 246, 0.7)" },
     { label: "EMA 50", color: "rgba(236, 72, 153, 0.6)" },
     { label: "EMA 200", color: "rgba(249, 115, 22, 0.5)" },
-    { label: "AVWAP", color: "rgba(56, 189, 248, 0.45)", thick: true },
+    ...avwapAnchors.map((name) => ({ label: avwapAnchorLabel(name), color: avwapAnchorColor(name), thick: true })),
   ];
 
   return (
