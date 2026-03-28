@@ -162,7 +162,7 @@ export default function BacktestPage() {
         }} />
       </div>
 
-      <div className="min-h-[250px] mt-1 rounded-t-lg border border-border bg-card flex flex-col">
+      <div className="h-[350px] mt-1 rounded-t-lg border border-border bg-card flex flex-col">
         <div className="flex items-center gap-0 border-b border-border shrink-0">
           {(["trades", "results", "equity"] as const).map((tab) => (
             <button
