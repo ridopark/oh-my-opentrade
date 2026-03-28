@@ -810,9 +810,13 @@ function MiniChart({
         const matchedTime = findClosestBarTime(filledUnix);
         const bar = barMap.get(matchedTime);
         const dir = t.direction ?? "";
-        const isEntry = dir === "LONG" || dir === "SHORT";
-        const isLongSide = dir === "LONG" || (!dir && t.side?.toLowerCase() === "buy");
-        const label = dir === "LONG" ? "LONG" : dir === "SHORT" ? "SHORT" : dir === "CLOSE_LONG" ? "SELL" : dir === "CLOSE_SHORT" ? "COVER" : (t.side?.toLowerCase() === "buy" ? "LONG" : "SELL");
+        // For options: direction is always LONG (buying the contract), but
+        // PUT options are bearish. Detect via OCC symbol format: ...P00...
+        const isPut = /P\d{8}$/.test(t.symbol);
+        const effectiveDir = (dir === "LONG" && isPut) ? "SHORT" : (dir === "CLOSE_LONG" && isPut) ? "CLOSE_SHORT" : dir;
+        const isEntry = effectiveDir === "LONG" || effectiveDir === "SHORT";
+        const isLongSide = effectiveDir === "LONG" || (!effectiveDir && t.side?.toLowerCase() === "buy");
+        const label = effectiveDir === "LONG" ? "LONG" : effectiveDir === "SHORT" ? "SHORT" : effectiveDir === "CLOSE_LONG" ? "SELL" : effectiveDir === "CLOSE_SHORT" ? "COVER" : (t.side?.toLowerCase() === "buy" ? "LONG" : "SELL");
         return {
           time: matchedTime as Time,
           price: bar ? (isEntry ? bar.low * 0.999 : bar.high * 1.001) : t.price,
