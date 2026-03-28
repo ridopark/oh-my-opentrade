@@ -125,19 +125,19 @@ pct = 0.020
 enabled = true
 
 [options.defaults]
-min_dte = 21
-max_dte = 30
-target_delta_low = 0.55
-target_delta_high = 0.70
-min_open_interest = 100
-max_spread_pct = 0.10
-max_iv = 1.0
+min_dte = 7
+max_dte = 70
+target_delta_low = 0.40
+target_delta_high = 0.75
+min_open_interest = 50
+max_spread_pct = 0.15
+max_iv = 1.5
 
 [options.regime_overrides.BALANCE]
 target_delta_low = 0.35
-target_delta_high = 0.50
-min_dte = 30
-max_dte = 50
+target_delta_high = 0.70
+min_dte = 7
+max_dte = 70
 
 [symbol_overrides.TSLA]
 stop_bps = 120
