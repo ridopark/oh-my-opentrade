@@ -34,7 +34,7 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 	case domain.ExitRuleTrailingStop:
 		return evaluateTrailingStop(rule, pos, currentPrice)
 	case domain.ExitRuleSwingStop:
-		return evaluateSwingStop(rule, pos, currentPrice)
+		return evaluateSwingStop(rule, pos, currentPrice, ctx)
 	case domain.ExitRuleProfitTarget:
 		return evaluateProfitTarget(rule, pos, currentPrice)
 	case domain.ExitRuleTimeExit:
@@ -86,12 +86,16 @@ func evaluateTrailingStop(rule domain.ExitRule, pos *domain.MonitoredPosition, c
 // Per Brian Shannon: place stop at the low of the dip, trail using higher lows.
 // Uses CustomState ring buffer to track recent prices.
 //
+// Buffer is ATR-based when atr_buffer_mult > 0 and ATR is available (from EvalContext).
+// Falls back to fixed buffer_bps during warmup (ATR=0) or when atr_buffer_mult is not set.
+//
 // Params:
 //
-//	"lookback"   — bars to look back for swing low/high (default 5)
-//	"buffer_bps" — buffer below swing low / above swing high in bps (default 10)
-//	"min_bars"   — min bars before stop activates (default 1)
-func evaluateSwingStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64) (bool, string) {
+//	"lookback"        — bars to look back for swing low/high (default 5)
+//	"buffer_bps"      — fallback buffer in bps when ATR unavailable (default 10)
+//	"atr_buffer_mult" — ATR multiplier for dynamic buffer (default 0 = disabled)
+//	"min_bars"        — min bars before stop activates (default 1)
+func evaluateSwingStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext) (bool, string) {
 	if pos.CustomState == nil {
 		pos.CustomState = make(map[string]float64)
 	}
@@ -100,8 +104,17 @@ func evaluateSwingStop(rule domain.ExitRule, pos *domain.MonitoredPosition, curr
 	if lookback < 2 {
 		lookback = 5
 	}
-	bufferBPS := rule.Param("buffer_bps", 10)
 	minBars := int(rule.Param("min_bars", 1))
+
+	// Dynamic buffer: prefer ATR-based, fall back to fixed bps during warmup
+	atrMult := rule.Param("atr_buffer_mult", 0)
+	bufferBPS := rule.Param("buffer_bps", 10)
+	var bufferAbs float64
+	if atrMult > 0 && ctx.ATR > 0 {
+		bufferAbs = ctx.ATR * atrMult
+	} else {
+		bufferAbs = currentPrice * bufferBPS / 10000.0
+	}
 
 	pos.CustomState["swing_trail_bars"]++
 	barCount := int(pos.CustomState["swing_trail_bars"])
@@ -129,15 +142,15 @@ func evaluateSwingStop(rule domain.ExitRule, pos *domain.MonitoredPosition, curr
 			}
 		}
 		if swingHigh > 0 {
-			newStop := swingHigh * (1.0 + bufferBPS/10000.0)
+			newStop := swingHigh + bufferAbs
 			if stopLevel == 0 || newStop < stopLevel {
 				stopLevel = newStop
 				pos.CustomState["swing_trail_stop"] = stopLevel
 			}
 		}
 		if stopLevel > 0 && currentPrice >= stopLevel {
-			return true, fmt.Sprintf("swing_stop: price %.4f >= stop %.4f (swing_high=%.4f)",
-				currentPrice, stopLevel, swingHigh)
+			return true, fmt.Sprintf("swing_stop: price %.4f >= stop %.4f (swing_high=%.4f, buffer=%.2f, atr=%.2f)",
+				currentPrice, stopLevel, swingHigh, bufferAbs, ctx.ATR)
 		}
 	} else {
 		swingLow := 0.0
@@ -148,15 +161,15 @@ func evaluateSwingStop(rule domain.ExitRule, pos *domain.MonitoredPosition, curr
 			}
 		}
 		if swingLow > 0 {
-			newStop := swingLow * (1.0 - bufferBPS/10000.0)
+			newStop := swingLow - bufferAbs
 			if newStop > stopLevel {
 				stopLevel = newStop
 				pos.CustomState["swing_trail_stop"] = stopLevel
 			}
 		}
 		if stopLevel > 0 && currentPrice <= stopLevel {
-			return true, fmt.Sprintf("swing_stop: price %.4f <= stop %.4f (swing_low=%.4f)",
-				currentPrice, stopLevel, swingLow)
+			return true, fmt.Sprintf("swing_stop: price %.4f <= stop %.4f (swing_low=%.4f, buffer=%.2f, atr=%.2f)",
+				currentPrice, stopLevel, swingLow, bufferAbs, ctx.ATR)
 		}
 	}
 
