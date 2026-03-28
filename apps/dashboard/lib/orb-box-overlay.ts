@@ -146,9 +146,15 @@ export class ORBBoxOverlay implements ISeriesPrimitive<Time> {
   private _chart: IChartApi | null = null;
   private _series: PriceMapper | null = null;
   private _requestUpdate?: () => void;
+  private _visible = true;
 
   constructor() {
     this._paneView = new ORBBoxPaneView([]);
+  }
+
+  setVisible(v: boolean): void {
+    this._visible = v;
+    this._requestUpdate?.();
   }
 
   attached(param: SeriesAttachedParameter<Time>): void {
@@ -164,7 +170,7 @@ export class ORBBoxOverlay implements ISeriesPrimitive<Time> {
   }
 
   paneViews(): IPrimitivePaneView[] {
-    return [this._paneView];
+    return this._visible ? [this._paneView] : [];
   }
 
   setRanges(ranges: ORBRange[]): void {
