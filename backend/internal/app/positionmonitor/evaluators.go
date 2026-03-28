@@ -32,7 +32,9 @@ type EvalContext struct {
 func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time, ctx EvalContext) (bool, string) {
 	switch rule.Type {
 	case domain.ExitRuleTrailingStop:
-		return evaluateTrailingStop(rule, pos, currentPrice, now, ctx)
+		return evaluateTrailingStop(rule, pos, currentPrice)
+	case domain.ExitRuleSwingStop:
+		return evaluateSwingStop(rule, pos, currentPrice)
 	case domain.ExitRuleProfitTarget:
 		return evaluateProfitTarget(rule, pos, currentPrice)
 	case domain.ExitRuleTimeExit:
@@ -62,33 +64,34 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 	}
 }
 
-// evaluateTrailingStop implements a price-action trailing stop using recent swing lows/highs.
+// evaluateTrailingStop triggers when drawdown from high-water mark exceeds the threshold.
+//
+// Params:
+//
+//	"pct" — trailing stop percentage as a decimal (e.g. 0.02 = 2%)
+func evaluateTrailingStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64) (bool, string) {
+	pct := rule.Param("pct", 0)
+	if pct <= 0 {
+		return false, ""
+	}
+	drawdown := pos.DrawdownFromHighPct(currentPrice)
+	if drawdown >= pct {
+		return true, fmt.Sprintf("trailing_stop: drawdown %.2f%% >= threshold %.2f%% (high=%.4f, current=%.4f)",
+			drawdown*100, pct*100, pos.HighWaterMark, currentPrice)
+	}
+	return false, ""
+}
+
+// evaluateSwingStop implements a price-action trailing stop using recent swing lows/highs.
 // Per Brian Shannon: place stop at the low of the dip, trail using higher lows.
+// Uses CustomState ring buffer to track recent prices.
 //
-// If "pct" param is set (legacy), falls back to percentage-based drawdown trailing.
-// If "lookback" param is set, uses price-action swing trailing.
-//
-// Params (price-action mode):
+// Params:
 //
 //	"lookback"   — bars to look back for swing low/high (default 5)
 //	"buffer_bps" — buffer below swing low / above swing high in bps (default 10)
-//	"min_bars"   — min bars before trail activates (default 1)
-//
-// Params (legacy percentage mode):
-//
-//	"pct" — trailing stop percentage as a decimal (e.g. 0.02 = 2%)
-func evaluateTrailingStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time, ctx EvalContext) (bool, string) {
-	// Legacy percentage mode
-	if pct := rule.Param("pct", 0); pct > 0 && rule.Param("lookback", 0) == 0 {
-		drawdown := pos.DrawdownFromHighPct(currentPrice)
-		if drawdown >= pct {
-			return true, fmt.Sprintf("trailing_stop: drawdown %.2f%% >= threshold %.2f%% (high=%.4f, current=%.4f)",
-				drawdown*100, pct*100, pos.HighWaterMark, currentPrice)
-		}
-		return false, ""
-	}
-
-	// Price-action swing trail mode
+//	"min_bars"   — min bars before stop activates (default 1)
+func evaluateSwingStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64) (bool, string) {
 	if pos.CustomState == nil {
 		pos.CustomState = make(map[string]float64)
 	}
@@ -133,7 +136,7 @@ func evaluateTrailingStop(rule domain.ExitRule, pos *domain.MonitoredPosition, c
 			}
 		}
 		if stopLevel > 0 && currentPrice >= stopLevel {
-			return true, fmt.Sprintf("trailing_stop: price %.4f >= stop %.4f (swing_high=%.4f)",
+			return true, fmt.Sprintf("swing_stop: price %.4f >= stop %.4f (swing_high=%.4f)",
 				currentPrice, stopLevel, swingHigh)
 		}
 	} else {
@@ -152,7 +155,7 @@ func evaluateTrailingStop(rule domain.ExitRule, pos *domain.MonitoredPosition, c
 			}
 		}
 		if stopLevel > 0 && currentPrice <= stopLevel {
-			return true, fmt.Sprintf("trailing_stop: price %.4f <= stop %.4f (swing_low=%.4f)",
+			return true, fmt.Sprintf("swing_stop: price %.4f <= stop %.4f (swing_low=%.4f)",
 				currentPrice, stopLevel, swingLow)
 		}
 	}
