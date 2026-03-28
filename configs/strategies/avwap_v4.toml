@@ -38,7 +38,7 @@ rsi_bounce_max = 35.0
 exit_hold_bars = 4
 cooldown_seconds = 900
 max_trades_per_day = 2
-allow_regimes = ["TREND", "BALANCE"]
+allow_regimes = ["TREND", "BALANCE", "REVERSAL"]
 asset_class = "EQUITY"
 # Stronger structural confirmation
 require_higher_lows = true
@@ -78,6 +78,12 @@ pinch_max_bps = 50
 # Gap reclaim disabled — small edge, often fades
 gap_reclaim_enabled = false
 gap_reclaim_bars = 5
+# Swing trail — price-action trailing stop using recent swing lows/highs
+# Per Brian Shannon: stop at the low of the dip, trail using higher lows
+swing_trail_enabled = true
+swing_trail_lookback = 5
+swing_trail_buffer_bps = 10
+swing_trail_min_bars = 3
 
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
