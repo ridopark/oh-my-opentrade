@@ -329,6 +329,34 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 
 	aiAnchorResolver := strategy.NewAIAnchorResolver(svc.aiAdvisor, nil, slog.Default())
 	svc.strategyRunner.SetAIAnchorResolver(aiAnchorResolver)
+	// Wire prev-day bar replay for AVWAP anchors (pd_high, pd_low).
+	// Without this, all AVWAP lines overlap because they activate on
+	// today's first bar instead of accumulating from their anchor time.
+	svc.strategyRunner.SetPrevDayBarsFn(func(symbol string, since time.Time) []start.Bar {
+		if since.IsZero() {
+			return nil
+		}
+		loc, _ := time.LoadLocation("America/New_York")
+		et := since.In(loc)
+		eod := time.Date(et.Year(), et.Month(), et.Day(), 16, 0, 0, 0, loc)
+		rows, qErr := infra.sqlDB.QueryContext(context.Background(),
+			`SELECT time, open, high, low, close, volume FROM market_bars
+			 WHERE symbol = $1 AND timeframe = '1m' AND time >= $2 AND time < $3
+			 ORDER BY time`, symbol, since, eod)
+		if qErr != nil {
+			return nil
+		}
+		defer rows.Close()
+		var bars []start.Bar
+		for rows.Next() {
+			var b start.Bar
+			if scanErr := rows.Scan(&b.Time, &b.Open, &b.High, &b.Low, &b.Close, &b.Volume); scanErr != nil {
+				continue
+			}
+			bars = append(bars, b)
+		}
+		return bars
+	})
 
 	allSpecs, err := svc.specStore.List(context.Background(), nil)
 	if err != nil {
