@@ -719,9 +719,8 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 			volumeOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*avwapSt.Indicators.VolumeSMA
 
 			if avwapSt.AboveCount[anchorName] >= cfg.HoldBars && volumeOK {
-				if regimeTag == "REVERSAL" {
-					continue
-				}
+				// Long breakouts are allowed in REVERSAL — reclaiming AVWAP after
+				// a downtrend is the primary reversal signal (Brian Shannon).
 				if cfg.RequireHigherLows && !hasHigherLows(avwapSt.RecentLows) {
 					continue
 				}
