@@ -553,10 +553,41 @@ const ChartGrid = forwardRef<ChartGridHandle, {
     );
   }
 
+  // Collect AVWAP anchor names across all symbols for global legend
+  const allAvwapAnchors = useMemo(() => {
+    const names = new Set<string>();
+    for (const [, symBars] of bars) {
+      for (const b of symBars) {
+        if (b.avwaps) for (const k of Object.keys(b.avwaps)) {
+          if (!/_\d{8,}$/.test(k)) names.add(k);
+        }
+      }
+    }
+    return Array.from(names).sort();
+  }, [bars]);
+
+  const globalLegend: { key?: string; label: string; color: string; thick?: boolean }[] = [
+    { label: "EMA 9", color: "rgba(251, 191, 36, 0.7)" },
+    { label: "EMA 21", color: "rgba(139, 92, 246, 0.7)" },
+    { label: "EMA 50", color: "rgba(236, 72, 153, 0.6)" },
+    { label: "EMA 200", color: "rgba(249, 115, 22, 0.5)" },
+    ...allAvwapAnchors.map((name) => ({ key: name, label: avwapAnchorLabel(name), color: avwapAnchorColor(name), thick: true })),
+  ];
+
   // Grid view
   const cols = symbols.length <= 2 ? symbols.length : symbols.length <= 4 ? 2 : symbols.length <= 6 ? 3 : 4;
 
   return (
+    <div className="flex flex-col gap-1">
+      {/* Global legend */}
+      <div className="flex items-center gap-2 px-2 py-1">
+        {globalLegend.map((e) => (
+          <div key={e.key ?? e.label} className="flex items-center gap-1">
+            <span className={`w-2.5 rounded-full ${e.thick ? "h-[3px]" : "h-[2px]"}`} style={{ backgroundColor: e.color }} />
+            <span className="text-[9px] font-mono text-muted-foreground">{e.label}</span>
+          </div>
+        ))}
+      </div>
     <div
       className="grid gap-2 w-full"
       style={{
@@ -592,6 +623,7 @@ const ChartGrid = forwardRef<ChartGridHandle, {
           </button>
         </div>
       ))}
+    </div>
     </div>
   );
 });
@@ -806,12 +838,16 @@ function MiniChart({
     if (ema50Ref.current) ema50Ref.current.setData(ema50Data);
     if (ema200Ref.current) ema200Ref.current.setData(ema200Data);
 
-    // Multiple AVWAP lines — one per anchor
+    // Multiple AVWAP lines — one per configured anchor (skip dynamic ones with timestamps)
     if (chartRef.current) {
       const anchorNames = new Set<string>();
       for (const b of sorted) {
         if (b.avwaps) {
-          for (const k of Object.keys(b.avwaps)) anchorNames.add(k);
+          for (const k of Object.keys(b.avwaps)) {
+            // Skip dynamic anchors with timestamp suffixes (e.g., swing_high_1d_1762405200)
+            if (/_\d{8,}$/.test(k)) continue;
+            anchorNames.add(k);
+          }
         }
       }
       // Create line series for new anchors
@@ -931,22 +967,6 @@ function MiniChart({
   const tradeCount = trades.length;
   const hasActivity = tradeCount > 0;
 
-  // Collect active AVWAP anchor names for dynamic legend
-  const avwapAnchors = useMemo(() => {
-    const names = new Set<string>();
-    for (const b of bars) {
-      if (b.avwaps) for (const k of Object.keys(b.avwaps)) names.add(k);
-    }
-    return Array.from(names).sort();
-  }, [bars]);
-
-  const lineLegend: { label: string; color: string; thick?: boolean }[] = [
-    { label: "EMA 9", color: "rgba(251, 191, 36, 0.7)" },
-    { label: "EMA 21", color: "rgba(139, 92, 246, 0.7)" },
-    { label: "EMA 50", color: "rgba(236, 72, 153, 0.6)" },
-    { label: "EMA 200", color: "rgba(249, 115, 22, 0.5)" },
-    ...avwapAnchors.map((name) => ({ label: avwapAnchorLabel(name), color: avwapAnchorColor(name), thick: true })),
-  ];
 
   return (
     <div className={`rounded-lg border bg-card overflow-hidden flex flex-col h-full ${hasActivity ? "border-emerald-500/30" : "border-border"}`}>
@@ -954,12 +974,6 @@ function MiniChart({
         <div className="flex items-center gap-3">
           <span className="text-xs font-mono font-semibold text-foreground">{symbol}</span>
           <div className="flex items-center gap-2">
-            {lineLegend.map((e) => (
-              <div key={e.label} className="flex items-center gap-1">
-                <span className={`w-2.5 rounded-full ${e.thick ? "h-[3px]" : "h-[2px]"}`} style={{ backgroundColor: e.color }} />
-                <span className="text-[9px] font-mono text-muted-foreground">{e.label}</span>
-              </div>
-            ))}
             <div className="flex items-center gap-1">
               <span className="w-2.5 h-2 rounded-[1px] border border-dashed" style={{ borderColor: "rgba(59, 130, 246, 0.5)", backgroundColor: "rgba(59, 130, 246, 0.1)" }} />
               <span className="text-[9px] font-mono text-muted-foreground">ORB</span>
