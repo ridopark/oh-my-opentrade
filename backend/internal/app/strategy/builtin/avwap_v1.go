@@ -97,6 +97,11 @@ type AVWAPConfig struct {
 
 	GapReclaimEnabled bool
 	GapReclaimBars    int // max bars since crossing below AVWAP to still consider a reclaim
+
+	SwingTrailEnabled  bool
+	SwingTrailLookback int     // bars to look back for swing low/high (default 5)
+	SwingTrailBufferBPS int    // buffer below swing low / above swing high in bps (default 10)
+	SwingTrailMinBars  int     // min bars to hold before trail activates (default 3)
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -122,6 +127,9 @@ type AVWAPState struct {
 	StopBelowCount  map[string]int // for LONG positions: consecutive bars below AVWAP
 	StopAboveCount  map[string]int // for SHORT positions: consecutive bars above AVWAP
 	CrossedBelowBar map[string]int // tracks how many bars ago price crossed below each AVWAP (gap reclaim)
+
+	SwingTrailStop  float64 // current trailing stop price (swing low for longs, swing high for shorts)
+	SwingTrailBars  int     // bars since position opened (for min hold gate)
 }
 
 // SetIndicators implements the indicatorSetter interface.
@@ -361,6 +369,11 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 
 		GapReclaimEnabled: getBool(params, "gap_reclaim_enabled", false),
 		GapReclaimBars:    getInt(params, "gap_reclaim_bars", 5),
+
+		SwingTrailEnabled:   getBool(params, "swing_trail_enabled", false),
+		SwingTrailLookback:  getInt(params, "swing_trail_lookback", 5),
+		SwingTrailBufferBPS: getInt(params, "swing_trail_buffer_bps", 10),
+		SwingTrailMinBars:   getInt(params, "swing_trail_min_bars", 3),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
 	return cfg
@@ -636,6 +649,90 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 					}
 					return avwapSt, []start.Signal{sig}, nil
 				}
+			}
+		}
+	}
+
+	// 5c. Swing trail stop: trail the stop at the recent swing low (longs) or swing high (shorts).
+	// Per Brian Shannon: place stop at the low of the dip, trail using higher lows.
+	// This respects price structure rather than statistical bands.
+	if cfg.SwingTrailEnabled && avwapSt.PositionSide != "" && avwapSt.PendingEntry == "" {
+		avwapSt.SwingTrailBars++
+
+		lookback := cfg.SwingTrailLookback
+		if lookback < 2 {
+			lookback = 5
+		}
+		bufferMult := 1.0 - float64(cfg.SwingTrailBufferBPS)/10000.0 // for longs: stop slightly below swing low
+		bufferMultShort := 1.0 + float64(cfg.SwingTrailBufferBPS)/10000.0 // for shorts: stop slightly above swing high
+
+		if avwapSt.PositionSide == start.SideBuy {
+			// Find lowest low in recent lookback window
+			lows := avwapSt.RecentLows
+			if len(lows) > lookback {
+				lows = lows[len(lows)-lookback:]
+			}
+			if len(lows) > 0 {
+				swingLow := lows[0]
+				for _, l := range lows[1:] {
+					if l < swingLow {
+						swingLow = l
+					}
+				}
+				newStop := swingLow * bufferMult
+				// Trail UP only — never lower the stop
+				if newStop > avwapSt.SwingTrailStop {
+					avwapSt.SwingTrailStop = newStop
+				}
+			}
+		} else if avwapSt.PositionSide == start.SideSell {
+			// Find highest high in recent lookback window
+			highs := avwapSt.RecentHighs
+			if len(highs) > lookback {
+				highs = highs[len(highs)-lookback:]
+			}
+			if len(highs) > 0 {
+				swingHigh := highs[0]
+				for _, h := range highs[1:] {
+					if h > swingHigh {
+						swingHigh = h
+					}
+				}
+				newStop := swingHigh * bufferMultShort
+				// Trail DOWN only — never raise the stop for shorts
+				if avwapSt.SwingTrailStop == 0 || newStop < avwapSt.SwingTrailStop {
+					avwapSt.SwingTrailStop = newStop
+				}
+			}
+		}
+
+		// Check trigger after min hold period
+		if avwapSt.SwingTrailBars >= cfg.SwingTrailMinBars && avwapSt.SwingTrailStop > 0 {
+			triggered := false
+			if avwapSt.PositionSide == start.SideBuy && bar.Close <= avwapSt.SwingTrailStop {
+				triggered = true
+			} else if avwapSt.PositionSide == start.SideSell && bar.Close >= avwapSt.SwingTrailStop {
+				triggered = true
+			}
+			if triggered {
+				exitSide := start.SideSell
+				if avwapSt.PositionSide == start.SideSell {
+					exitSide = start.SideBuy
+				}
+				sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, exitSide, 0.85, map[string]string{
+					"ref_price":  fmt.Sprintf("%.10f", bar.Close),
+					"setup":      "swing_trail_stop",
+					"stop_level": fmt.Sprintf("%.4f", avwapSt.SwingTrailStop),
+					"regime_5m":  regimeTag,
+				})
+				if err != nil {
+					return avwapSt, nil, err
+				}
+				avwapSt.PositionSide = ""
+				avwapSt.SwingTrailStop = 0
+				avwapSt.SwingTrailBars = 0
+				avwapSt.CooldownUntil = now.Add(cooldown)
+				return avwapSt, []start.Signal{sig}, nil
 			}
 		}
 	}
@@ -1160,6 +1257,8 @@ func (s *AVWAPStrategy) OnEvent(ctx start.Context, symbol string, evt any, st st
 			avwapSt.PositionSide = avwapSt.PendingEntry
 			avwapSt.PendingEntry = ""
 			avwapSt.PendingEntryAt = time.Time{}
+			avwapSt.SwingTrailStop = 0
+			avwapSt.SwingTrailBars = 0
 			if ctx != nil && ctx.Logger() != nil {
 				ctx.Logger().Info("AVWAPStrategy: fill confirmed, position active", "symbol", symbol, "side", avwapSt.PositionSide, "price", e.Price)
 			}
