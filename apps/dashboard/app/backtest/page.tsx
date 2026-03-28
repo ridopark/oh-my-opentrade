@@ -148,6 +148,7 @@ export default function BacktestPage() {
   const isRunning = bt.status === "running" || bt.status === "paused";
 
   const [bottomTab, setBottomTab] = useState<"trades" | "results" | "equity">("trades");
+  const [showLabels, setShowLabels] = useState(true);
 
   return (
     <div className="flex flex-col min-h-[calc(100vh-3rem)]">
@@ -168,7 +169,21 @@ export default function BacktestPage() {
       />
 
       <div className={`mt-2 ${symbolsInData.length === 0 ? "flex-1 flex flex-col" : ""}`}>
-        <ChartGrid ref={chartGridRef} symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} onTradeClick={(trade) => {
+        {symbolsInData.length > 0 && (
+          <div className="flex items-center gap-2 px-2 mb-1">
+            <button
+              onClick={() => setShowLabels((v) => !v)}
+              className={`px-2 py-0.5 text-[10px] font-mono rounded border transition-colors ${
+                showLabels
+                  ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                  : "bg-muted/50 text-muted-foreground border-border"
+              }`}
+            >
+              {showLabels ? "Labels ON" : "Labels OFF"}
+            </button>
+          </div>
+        )}
+        <ChartGrid ref={chartGridRef} symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} showLabels={showLabels} onTradeClick={(trade) => {
           setBottomTab("trades");
           setTimeout(() => tradeLogRef.current?.scrollToTrade(trade), 50);
         }} />
@@ -443,12 +458,14 @@ const ChartGrid = forwardRef<ChartGridHandle, {
   bars: Map<string, BacktestBar[]>;
   trades: BacktestTrade[];
   orbWindowMinutes?: number;
+  showLabels?: boolean;
   onTradeClick?: (trade: BacktestTrade) => void;
 }>(function ChartGrid({
   symbols,
   bars,
   trades,
   orbWindowMinutes = 30,
+  showLabels = true,
   onTradeClick,
 }, ref) {
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
@@ -481,15 +498,19 @@ const ChartGrid = forwardRef<ChartGridHandle, {
 
   useImperativeHandle(ref, () => ({
     scrollToTime(symbol: string, utcSeconds: number) {
+      // Resolve OCC option symbols (e.g. NVDA260501C00180000) to underlying (NVDA)
+      const underlying = symbol.replace(/\d{6}[CP]\d{8}$/, "");
+      const chartKey = chartRefs.current.has(underlying) ? underlying : symbol;
+
       // If already expanded with this chart, scroll directly
-      const chart = chartRefs.current.get(symbol);
-      if (chart && expandedSymbol === symbol) {
+      const chart = chartRefs.current.get(chartKey);
+      if (chart && expandedSymbol === chartKey) {
         applyScroll(chart, utcSeconds);
         return;
       }
       // Store pending scroll and expand — the new chart will pick it up via registerChart
-      pendingScroll.current = { symbol, utcSeconds };
-      setExpandedSymbol(symbol);
+      pendingScroll.current = { symbol: chartKey, utcSeconds };
+      setExpandedSymbol(chartKey);
     },
   }), [expandedSymbol, applyScroll]);
 
@@ -520,6 +541,7 @@ const ChartGrid = forwardRef<ChartGridHandle, {
             bars={bars.get(expandedSymbol) ?? []}
             trades={trades.filter((t) => t.symbol === expandedSymbol || t.symbol.startsWith(expandedSymbol))}
             orbWindowMinutes={orbWindowMinutes}
+            showLabels={showLabels}
             onChartReady={(chart) => registerChart(expandedSymbol, chart)}
             onMarkerClick={(idx) => {
               const symTrades = trades.filter((t) => t.symbol === expandedSymbol || t.symbol.startsWith(expandedSymbol));
@@ -550,6 +572,7 @@ const ChartGrid = forwardRef<ChartGridHandle, {
               bars={bars.get(sym) ?? []}
               trades={trades.filter((t) => t.symbol === sym || t.symbol.startsWith(sym))}
               orbWindowMinutes={orbWindowMinutes}
+              showLabels={showLabels}
               onChartReady={(chart) => registerChart(sym, chart)}
               onMarkerClick={(idx) => {
                 const symTrades = trades.filter((t) => t.symbol === sym || t.symbol.startsWith(sym));
@@ -578,6 +601,7 @@ function MiniChart({
   bars,
   trades,
   orbWindowMinutes = 30,
+  showLabels = true,
   onChartReady,
   onMarkerClick,
 }: {
@@ -585,6 +609,7 @@ function MiniChart({
   bars: BacktestBar[];
   trades: BacktestTrade[];
   orbWindowMinutes?: number;
+  showLabels?: boolean;
   onChartReady?: (chart: IChartApi | null) => void;
   onMarkerClick?: (tradeIndex: number) => void;
 }) {
@@ -845,6 +870,11 @@ function MiniChart({
 
     overlayRef.current.setSignals(markerData);
   }, [trades, bars]);
+
+  // Toggle label visibility when the global toggle changes.
+  useEffect(() => {
+    overlayRef.current?.setVisible(showLabels);
+  }, [showLabels]);
 
   const tradeCount = trades.length;
   const hasActivity = tradeCount > 0;

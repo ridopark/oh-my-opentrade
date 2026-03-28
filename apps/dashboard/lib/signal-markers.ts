@@ -240,6 +240,7 @@ export class SignalMarkerOverlay implements ISeriesPrimitive<Time> {
   private _requestUpdate: (() => void) | null = null;
   private _paneView: SignalMarkerPaneView;
   private _signals: SignalMarkerData[] = [];
+  private _visible = true;
 
   constructor() {
     this._paneView = new SignalMarkerPaneView(this);
@@ -252,7 +253,16 @@ export class SignalMarkerOverlay implements ISeriesPrimitive<Time> {
     return this._series;
   }
   get signals(): SignalMarkerData[] {
-    return this._signals;
+    return this._visible ? this._signals : [];
+  }
+
+  get visible(): boolean {
+    return this._visible;
+  }
+
+  setVisible(v: boolean): void {
+    this._visible = v;
+    this._requestUpdate?.();
   }
 
   attached(param: SeriesAttachedParameter<Time, SeriesType>): void {

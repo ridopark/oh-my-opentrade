@@ -103,8 +103,9 @@ type AVWAPConfig struct {
 	SwingTrailBufferBPS int // buffer below swing low / above swing high in bps (default 10)
 	SwingTrailMinBars   int // min bars to hold before trail activates (default 3)
 
-	HandoffEnabled bool
-	HandoffBars    int // consecutive bars of accelerating distance from AVWAP (default 3)
+	HandoffEnabled    bool
+	HandoffBars       int // consecutive bars of accelerating distance from AVWAP (default 3)
+	HandoffMinMomBPS  int // minimum final distance from AVWAP in bps to confirm handoff (default 40)
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -557,8 +558,9 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		SwingTrailBufferBPS: getInt(params, "swing_trail_buffer_bps", 10),
 		SwingTrailMinBars:   getInt(params, "swing_trail_min_bars", 3),
 
-		HandoffEnabled: getBool(params, "handoff_enabled", false),
-		HandoffBars:    getInt(params, "handoff_bars", 3),
+		HandoffEnabled:   getBool(params, "handoff_enabled", false),
+		HandoffBars:      getInt(params, "handoff_bars", 3),
+		HandoffMinMomBPS: getInt(params, "handoff_min_mom_bps", 40),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
 	return cfg
@@ -1371,6 +1373,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 				continue
 			}
 			recent := hist[len(hist)-handoffBars:]
+			minMom := float64(cfg.HandoffMinMomBPS)
 
 			// Long handoff: consecutive bars with increasing positive distance from AVWAP.
 			// The first bar in the window must be near the AVWAP (within 30 bps) —
@@ -1384,7 +1387,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 						break
 					}
 				}
-				if allIncreasing && recent[len(recent)-1] > 0 {
+				if allIncreasing && recent[len(recent)-1] >= minMom {
 					volumeOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*avwapSt.Indicators.VolumeSMA
 					if volumeOK {
 						if cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "LONG" {
@@ -1420,7 +1423,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 						break
 					}
 				}
-				if allDecreasing && recent[len(recent)-1] < 0 {
+				if allDecreasing && recent[len(recent)-1] <= -minMom {
 					volumeOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*avwapSt.Indicators.VolumeSMA
 					if volumeOK {
 						if cfg.EnforceAVWAPBias && avwapBias != "" && avwapBias != "SHORT" {

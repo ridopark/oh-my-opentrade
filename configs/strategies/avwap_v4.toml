@@ -2,11 +2,11 @@ schema_version = 2
 
 [strategy]
 id = "avwap_v4"
-version = "4.0.0"
-name = "AVWAP v4 - Filtered Breakout"
-description = "Single anchor, volume-confirmed breakouts, morning-only, STEP_STOP exits"
+version = "4.1.0"
+name = "AVWAP v4.1 - Filtered Breakout (tighter entries)"
+description = "Single anchor, volume-confirmed breakouts, morning-only, STEP_STOP exits. v4.1: delayed open, disabled PINCH, stricter HANDOFF, longer cooldown, AAPL cap."
 author = "system"
-created_at = "2026-03-25T00:00:00Z"
+created_at = "2026-03-28T00:00:00Z"
 
 [lifecycle]
 state = "PaperActive"
@@ -23,7 +23,7 @@ asset_classes = ["OPTION"]
 allowed_directions = ["LONG", "SHORT"]
 
 [screening]
-description = "Event-based AVWAP: anchors at perception changes (earnings, gaps, swings), pullback + breakout + pinch + gap reclaim entries with directional bias and slope confirmation."
+description = "Event-based AVWAP: anchors at perception changes (earnings, gaps, swings), pullback + breakout + handoff entries with directional bias and slope confirmation."
 
 [params]
 # Event-based anchors
@@ -31,27 +31,33 @@ anchors = ["session_open", "pd_high", "pd_low"]
 # Breakout — tightened for higher conviction
 breakout_enabled = true
 hold_bars = 6
-volume_mult = 1.5
+# Volume: raised from 1.5 to 2.0 to filter marginal setups (BALANCE regime PF was 0.72)
+volume_mult = 2.0
 # Bounce disabled — lowest conviction, catches falling knives with options
 bounce_enabled = false
 rsi_bounce_max = 35.0
 exit_hold_bars = 4
-cooldown_seconds = 900
+# Cooldown: raised from 900s to 1800s (30 min) to prevent re-entry into broken setups.
+# Backtest showed 14 instances of consecutive same-symbol losses within a session.
+cooldown_seconds = 1800
 max_trades_per_day = 2
 allow_regimes = ["TREND", "BALANCE", "REVERSAL"]
 asset_class = "EQUITY"
 # Stronger structural confirmation
 require_higher_lows = true
 higher_lows_bars = 5
-# Block midday chop
+# Block midday chop — raised from 2.5 to 3.0 for stricter BALANCE regime filtering
 midday_trap_shield = true
-midday_volume_mult = 2.5
+midday_volume_mult = 3.0
 stop_bps = 75
 limit_offset_bps = 5
 risk_per_trade_bps = 500
 max_position_bps = 2000
-# Morning momentum window
-allowed_hours_start = "09:35"
+# Morning momentum window — delayed from 09:35 to 09:50.
+# Rationale: 09:30-09:39 entries had PF 0.83, total -22.51%.
+# AVWAP barely stabilized, swing trail has no reference lows, opening vol whipsaws options.
+# Loses some early winners but eliminates concentrated large losses (-8%, -10%, -11%).
+allowed_hours_start = "09:50"
 allowed_hours_end = "13:30"
 allowed_hours_tz = "America/New_York"
 # Directional bias: long only above AVWAP, short only below
@@ -71,16 +77,21 @@ require_capitulation_for_shorts = true
 avwap_stop_enabled = true
 avwap_stop_bars = 2
 avwap_stop_buffer_bps = 10
-# Pinch — high conviction breakout from squeeze
-pinch_enabled = true
+# Pinch DISABLED — 6 trades at 16.7% win rate, PF 0.20, total -22.69%.
+# Largest losses: -11.53%, -9.96%, -5.10%. No higher-lows or slope filter in code.
+pinch_enabled = false
 pinch_min_bps = 5
 pinch_max_bps = 50
 # Gap reclaim disabled — small edge, often fades
 gap_reclaim_enabled = false
 gap_reclaim_bars = 5
-# Handoff — momentum acceleration away from AVWAP after bounce
+# Handoff — tightened: bars raised from 3 to 5, min momentum 40 bps.
+# Backtest: early HANDOFF trades had avg -2.07%, overall PF barely 1.03.
+# 3 bars (15 min) is too thin for trend continuation; 5 bars (25 min) is real confirmation.
+# Min momentum ensures price has actually moved meaningfully from AVWAP, not just drifted 1 bps/bar.
 handoff_enabled = true
-handoff_bars = 3
+handoff_bars = 5
+handoff_min_mom_bps = 40
 # Swing trail — price-action trailing stop using recent swing lows/highs
 # Per Brian Shannon: stop at the low of the dip, trail using higher lows
 swing_trail_enabled = true
@@ -120,7 +131,7 @@ minutes_before_close = 15
 
 # Tighter hard stop
 [[exit_rules]]
-# Max loss tightened — with delta 0.60, 0.8% underlying ≈ 5% premium loss
+# Max loss tightened — with delta 0.60, 0.8% underlying = 5% premium loss
 # This matches the SD_TARGET profit magnitude for ~1:1 R:R
 type = "MAX_LOSS"
 [exit_rules.params]
@@ -146,3 +157,9 @@ max_dte = 45
 
 [symbol_overrides.TSLA]
 stop_bps = 120
+
+# AAPL cap: 1 trade/day + tighter stop. AAPL had PF 0.71, -52.50% total.
+# Lower vol means smaller option gains on winners, but same-sized stop losses.
+[symbol_overrides.AAPL]
+max_trades_per_day = 1
+stop_bps = 60
