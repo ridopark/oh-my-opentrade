@@ -188,6 +188,28 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 				merged[k] = v
 			}
 			ar.ResetAnchors(merged)
+			// Replay previous day's bars for non-session_open anchors
+			if r.prevDayBarsFn != nil {
+				type calcUpdater interface {
+					UpdateCalc(bar start.Bar)
+				}
+				if cu, ok2 := st.(calcUpdater); ok2 {
+					for name, anchorTime := range merged {
+						if name == "session_open" {
+							continue
+						}
+						prevBars := r.prevDayBarsFn(symbol, anchorTime)
+						if len(prevBars) > 0 {
+							r.logger.Info("replaying prev-day bars for anchor",
+								"symbol", symbol, "anchor", name, "bars", len(prevBars),
+								"from", prevBars[0].Time, "to", prevBars[len(prevBars)-1].Time)
+							for _, b := range prevBars {
+								cu.UpdateCalc(b)
+							}
+						}
+					}
+				}
+			}
 			r.logger.Info("AI anchor resolution complete", "symbol", symbol, "anchors", len(merged))
 		}
 	}
