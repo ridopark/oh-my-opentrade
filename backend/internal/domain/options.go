@@ -195,9 +195,9 @@ func NewOptionContract(underlying string, expiry time.Time, strike float64, righ
 	if strike <= 0 {
 		return OptionContract{}, errors.New("strike must be greater than zero")
 	}
-	if expiry.Before(time.Now()) {
-		return OptionContract{}, errors.New("expiry must be in the future")
-	}
+	// Note: expiry validation removed — in backtests, contracts from historical
+	// data have expiries in the past relative to wall clock time. The backtest
+	// clock determines whether a contract is valid, not time.Now().
 	occ := FormatOCCSymbol(underlying, expiry, right, strike)
 	return OptionContract{
 		ContractSymbol: Symbol(occ),
