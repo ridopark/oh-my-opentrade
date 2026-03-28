@@ -50,8 +50,8 @@ midday_trap_shield = true
 midday_volume_mult = 2.5
 stop_bps = 75
 limit_offset_bps = 5
-risk_per_trade_bps = 100
-max_position_bps = 1000
+risk_per_trade_bps = 500
+max_position_bps = 2000
 # Extended morning + early afternoon
 allowed_hours_start = "09:35"
 allowed_hours_end = "13:00"

@@ -97,7 +97,42 @@ func (s *ContractSelectionService) SelectBestContract(
 	}
 
 	if best == nil {
-		return domain.OptionContractSnapshot{}, errors.New("no option contracts passed the selection filters")
+		// Debug: log why all contracts were filtered out
+		var dteReject, deltaReject, oiReject, spreadReject, ivReject int
+		for i := range chain {
+			snap := chain[i]
+			dte := int(snap.OptionContract.Expiry.Sub(now).Hours() / 24)
+			absDelta := math.Abs(snap.Delta)
+			if dte < active.MinDTE || dte > active.MaxDTE {
+				dteReject++
+				continue
+			}
+			if absDelta < active.TargetDeltaLow || absDelta > active.TargetDeltaHigh {
+				deltaReject++
+				continue
+			}
+			if snap.OpenInterest < active.MinOpenInterest {
+				oiReject++
+				continue
+			}
+			if snap.Ask > 0 {
+				spreadPct := (snap.Ask - snap.Bid) / snap.Ask
+				if spreadPct > active.MaxSpreadPct {
+					spreadReject++
+					continue
+				}
+			}
+			if snap.IV > active.MaxIV {
+				ivReject++
+				continue
+			}
+		}
+		return domain.OptionContractSnapshot{}, fmt.Errorf(
+			"no contracts passed filters (chain=%d dte_reject=%d delta_reject=%d oi_reject=%d spread_reject=%d iv_reject=%d constraints={dte:%d-%d delta:%.2f-%.2f oi:%d spread:%.2f iv:%.2f})",
+			len(chain), dteReject, deltaReject, oiReject, spreadReject, ivReject,
+			active.MinDTE, active.MaxDTE, active.TargetDeltaLow, active.TargetDeltaHigh,
+			active.MinOpenInterest, active.MaxSpreadPct, active.MaxIV,
+		)
 	}
 	return *best, nil
 }
