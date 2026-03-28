@@ -27,16 +27,16 @@ description = "Event-based AVWAP: anchors at perception changes (earnings, gaps,
 
 [params]
 # Event-based anchors
-anchors = ["session_open"]
+anchors = ["session_open", "pd_high", "pd_low"]
 # Breakout — tightened for higher conviction
 breakout_enabled = true
-hold_bars = 8
-volume_mult = 2.0
+hold_bars = 6
+volume_mult = 1.5
 # Bounce disabled — lowest conviction, catches falling knives with options
 bounce_enabled = false
 rsi_bounce_max = 35.0
 exit_hold_bars = 4
-cooldown_seconds = 1800
+cooldown_seconds = 900
 max_trades_per_day = 2
 allow_regimes = ["TREND", "BALANCE"]
 asset_class = "EQUITY"
@@ -52,7 +52,7 @@ risk_per_trade_bps = 500
 max_position_bps = 2000
 # Morning momentum window
 allowed_hours_start = "09:35"
-allowed_hours_end = "11:30"
+allowed_hours_end = "13:30"
 allowed_hours_tz = "America/New_York"
 # Directional bias: long only above AVWAP, short only below
 enforce_avwap_bias = true
@@ -119,7 +119,7 @@ minutes_before_close = 15
 # This matches the SD_TARGET profit magnitude for ~1:1 R:R
 type = "MAX_LOSS"
 [exit_rules.params]
-pct = 0.008
+pct = 0.015
 
 [options]
 enabled = true
