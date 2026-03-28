@@ -69,8 +69,8 @@ slope_lookback = 15
 require_capitulation_for_shorts = true
 # AVWAP-based stop
 avwap_stop_enabled = true
-avwap_stop_bars = 3
-avwap_stop_buffer_bps = 15
+avwap_stop_bars = 2
+avwap_stop_buffer_bps = 10
 # Pinch — high conviction breakout from squeeze
 pinch_enabled = true
 pinch_min_bps = 5
@@ -115,9 +115,11 @@ minutes_before_close = 15
 
 # Tighter hard stop
 [[exit_rules]]
+# Max loss tightened — with delta 0.60, 0.8% underlying ≈ 5% premium loss
+# This matches the SD_TARGET profit magnitude for ~1:1 R:R
 type = "MAX_LOSS"
 [exit_rules.params]
-pct = 0.020
+pct = 0.008
 
 [options]
 enabled = true
