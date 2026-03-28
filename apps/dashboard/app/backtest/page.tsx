@@ -506,11 +506,11 @@ const ChartGrid = forwardRef<ChartGridHandle, {
           <MiniChart
             symbol={expandedSymbol}
             bars={bars.get(expandedSymbol) ?? []}
-            trades={trades.filter((t) => t.symbol === expandedSymbol)}
+            trades={trades.filter((t) => t.symbol === expandedSymbol || t.symbol.startsWith(expandedSymbol))}
             orbWindowMinutes={orbWindowMinutes}
             onChartReady={(chart) => registerChart(expandedSymbol, chart)}
             onMarkerClick={(idx) => {
-              const symTrades = trades.filter((t) => t.symbol === expandedSymbol);
+              const symTrades = trades.filter((t) => t.symbol === expandedSymbol || t.symbol.startsWith(expandedSymbol));
               if (symTrades[idx]) onTradeClick?.(symTrades[idx]);
             }}
           />
@@ -536,11 +536,11 @@ const ChartGrid = forwardRef<ChartGridHandle, {
             <MiniChart
               symbol={sym}
               bars={bars.get(sym) ?? []}
-              trades={trades.filter((t) => t.symbol === sym)}
+              trades={trades.filter((t) => t.symbol === sym || t.symbol.startsWith(sym))}
               orbWindowMinutes={orbWindowMinutes}
               onChartReady={(chart) => registerChart(sym, chart)}
               onMarkerClick={(idx) => {
-                const symTrades = trades.filter((t) => t.symbol === sym);
+                const symTrades = trades.filter((t) => t.symbol === sym || t.symbol.startsWith(sym));
                 if (symTrades[idx]) onTradeClick?.(symTrades[idx]);
               }}
             />
