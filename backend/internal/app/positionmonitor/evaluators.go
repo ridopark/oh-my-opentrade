@@ -180,17 +180,14 @@ func evaluateMaxHoldingTime(rule domain.ExitRule, pos *domain.MonitoredPosition,
 //
 //	"pct" — maximum loss percentage as a decimal (e.g. 0.02 = 2%)
 func evaluateMaxLoss(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64) (bool, string) {
-	// Skip MAX_LOSS for options — max loss is already defined (= premium paid).
-	// The underlying price movement doesn't directly map to option loss percentage.
-	if pos.InstrumentType == domain.InstrumentTypeOption {
-		return false, ""
-	}
-
 	pct := rule.Param("pct", 0)
 	if pct <= 0 {
 		return false, ""
 	}
 
+	// For options: EntryPrice is set to the UNDERLYING price by the position
+	// monitor. So UnrealizedPnLPct computes based on the underlying move,
+	// which is correct for triggering a stop on adverse underlying movement.
 	pnl := pos.UnrealizedPnLPct(currentPrice)
 	// pnl is negative when losing money.
 	if pnl <= -pct {
@@ -463,12 +460,9 @@ func updateStepStopShort(pos *domain.MonitoredPosition, currentPrice float64, ct
 //	"minutes"      — max minutes from entry before stagnation exit (e.g. 30)
 //	"sd_threshold" — SD level that must be reached to avoid exit (default: 1.0)
 func evaluateStagnationExit(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time, ctx EvalContext) (bool, string) {
-	// Skip STAGNATION_EXIT for options — theta decay is the natural stagnation
-	// penalty. The profit gate uses underlying P&L% which understates option
-	// returns (0.3% underlying ≈ 30%+ option premium), causing false triggers.
-	if pos.InstrumentType == domain.InstrumentTypeOption {
-		return false, ""
-	}
+	// Re-enabled for options — without this, losing options trades have no
+	// time-based exit and bleed until EOD. The profit gate uses underlying P&L%
+	// which is appropriate since pos.EntryPrice is the underlying price.
 
 	minutes := rule.Param("minutes", 0)
 	if minutes <= 0 {
