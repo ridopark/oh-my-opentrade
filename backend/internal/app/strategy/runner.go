@@ -142,14 +142,32 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 		}
 		if ar, ok := st.(anchorResettable); ok {
 			// Merge AI-resolved anchors with existing session anchors.
-			merged := resolved
+			// Preserve configured anchors (session_open, pd_high, pd_low) that
+			// were set during Init or resolveSessionAnchors. The AI resolver
+			// only adds dynamic anchors on top.
+			merged := make(map[string]time.Time)
 			if r.anchorResolver != nil {
 				names := ar.AnchorNames()
-				existing := r.anchorResolver(symbol, bar.Time, names)
-				for k, v := range resolved {
-					existing[k] = v
+				for k, v := range r.anchorResolver(symbol, bar.Time, names) {
+					merged[k] = v
 				}
-				merged = existing
+			} else {
+				// In backtest: anchorResolver is nil. Preserve any existing
+				// anchors from the current state that match configured names.
+				for _, name := range ar.AnchorNames() {
+					// Resolve standard anchor names to bar time (session_open resets daily)
+					if name == "session_open" {
+						loc, _ := time.LoadLocation("America/New_York")
+						et := bar.Time.In(loc)
+						merged[name] = time.Date(et.Year(), et.Month(), et.Day(), 9, 30, 0, 0, loc)
+					} else {
+						// pd_high, pd_low etc. — use bar time as anchor (will accumulate from there)
+						merged[name] = bar.Time
+					}
+				}
+			}
+			for k, v := range resolved {
+				merged[k] = v
 			}
 			ar.ResetAnchors(merged)
 			r.logger.Info("AI anchor resolution complete", "symbol", symbol, "anchors", len(merged))
