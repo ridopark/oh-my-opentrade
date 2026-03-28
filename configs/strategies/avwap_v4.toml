@@ -86,7 +86,7 @@ handoff_bars = 3
 swing_trail_enabled = true
 swing_trail_lookback = 5
 swing_trail_buffer_bps = 10
-swing_trail_min_bars = 3
+swing_trail_min_bars = 1
 
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
