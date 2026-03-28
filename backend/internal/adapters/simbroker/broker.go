@@ -495,8 +495,19 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 	premiumChange := delta * underlyingMove
 	exitPremium := entryPremium + premiumChange
 
-	// Apply half-spread cost (selling at bid)
-	spread := entryPremium * 0.015 // ~1.5% half-spread for liquid options
+	// Apply half-spread cost (selling at bid) — tiered by premium level
+	var spreadPct float64
+	switch {
+	case entryPremium >= 10.0:
+		spreadPct = 0.003 // 0.3% for expensive options (deep ITM, liquid)
+	case entryPremium >= 5.0:
+		spreadPct = 0.005 // 0.5% for mid-range options
+	case entryPremium >= 2.0:
+		spreadPct = 0.008 // 0.8% for cheaper options
+	default:
+		spreadPct = 0.015 // 1.5% for very cheap / illiquid options
+	}
+	spread := entryPremium * spreadPct
 	exitPremium -= spread
 
 	if exitPremium < 0.01 {

@@ -26,25 +26,23 @@ allowed_directions = ["LONG", "SHORT"]
 description = "Event-based AVWAP: anchors at perception changes (earnings, gaps, swings), pullback + breakout + pinch + gap reclaim entries with directional bias and slope confirmation."
 
 [params]
-# Event-based anchors — meaningful perception change points
-# AI resolver picks from catalyst_gap, capitulation, swing_high/low,
-# volume_rotation, and session_open as fallback
+# Event-based anchors
 anchors = ["session_open", "pd_high", "pd_low"]
+# Breakout — tightened for higher conviction
 breakout_enabled = true
-hold_bars = 5
-# Institutional conviction — 1.5x volume threshold per research
-volume_mult = 1.5
-# Bounce for mean-reversion at AVWAP support
-bounce_enabled = true
+hold_bars = 8
+volume_mult = 2.0
+# Bounce disabled — lowest conviction, catches falling knives with options
+bounce_enabled = false
 rsi_bounce_max = 35.0
 exit_hold_bars = 4
-cooldown_seconds = 600
-max_trades_per_day = 4
+cooldown_seconds = 1800
+max_trades_per_day = 2
 allow_regimes = ["TREND", "BALANCE"]
 asset_class = "EQUITY"
-# Require ascending lows before breakout (structural confirmation)
+# Stronger structural confirmation
 require_higher_lows = true
-higher_lows_bars = 3
+higher_lows_bars = 5
 # Block midday chop
 midday_trap_shield = true
 midday_volume_mult = 2.5
@@ -52,33 +50,33 @@ stop_bps = 75
 limit_offset_bps = 5
 risk_per_trade_bps = 500
 max_position_bps = 2000
-# Extended morning + early afternoon
+# Morning momentum window
 allowed_hours_start = "09:35"
-allowed_hours_end = "13:00"
+allowed_hours_end = "11:30"
 allowed_hours_tz = "America/New_York"
 # Directional bias: long only above AVWAP, short only below
 enforce_avwap_bias = true
-# Pullback-to-AVWAP — primary entry (wait for strength after dip)
+# Pullback — primary entry (highest conviction)
 pullback_enabled = true
 pullback_trend_bars = 5
 pullback_tolerance_bps = 25
 pullback_rsi_min = 30.0
 pullback_rsi_max = 65.0
-# Slope confirmation — upward slope confirms buyers in control
-min_slope_bps = 0.1
+# Slope confirmation
+min_slope_bps = 0.3
 slope_lookback = 15
-# Capitulation required for shorts — don't short innocent uptrends
+# Capitulation required for shorts
 require_capitulation_for_shorts = true
-# AVWAP-based stop: exit when price breaks below AVWAP
+# AVWAP-based stop
 avwap_stop_enabled = true
 avwap_stop_bars = 3
 avwap_stop_buffer_bps = 15
-# Pinch — breakout from squeeze between 2 AVWAPs (VCP pattern)
+# Pinch — high conviction breakout from squeeze
 pinch_enabled = true
 pinch_min_bps = 5
 pinch_max_bps = 50
-# Gap reclaim — enter long when price dips below AVWAP and reclaims
-gap_reclaim_enabled = true
+# Gap reclaim disabled — small edge, often fades
+gap_reclaim_enabled = false
 gap_reclaim_bars = 5
 
 [hooks]
@@ -98,8 +96,8 @@ bar_minutes = 5
 [[exit_rules]]
 type = "SD_TARGET"
 [exit_rules.params]
-sd_level = 1.8
-min_hold_bars = 10
+sd_level = 1.5
+min_hold_bars = 6
 bar_minutes = 5
 
 # Kill zombie trades — extended for options (theta needs time)
@@ -125,19 +123,19 @@ pct = 0.020
 enabled = true
 
 [options.defaults]
-min_dte = 7
-max_dte = 70
-target_delta_low = 0.40
+min_dte = 14
+max_dte = 45
+target_delta_low = 0.55
 target_delta_high = 0.75
 min_open_interest = 50
-max_spread_pct = 0.15
+max_spread_pct = 0.08
 max_iv = 1.5
 
 [options.regime_overrides.BALANCE]
-target_delta_low = 0.35
+target_delta_low = 0.50
 target_delta_high = 0.70
-min_dte = 7
-max_dte = 70
+min_dte = 14
+max_dte = 45
 
 [symbol_overrides.TSLA]
 stop_bps = 120
