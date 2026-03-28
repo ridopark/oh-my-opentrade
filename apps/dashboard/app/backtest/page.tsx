@@ -514,6 +514,28 @@ const ChartGrid = forwardRef<ChartGridHandle, {
     },
   }), [expandedSymbol, applyScroll]);
 
+  // Collect AVWAP anchor names across all symbols for global legend
+  // (must be before early returns — React hooks can't be conditional)
+  const allAvwapAnchors = useMemo(() => {
+    const names = new Set<string>();
+    for (const [, symBars] of bars) {
+      for (const b of symBars) {
+        if (b.avwaps) for (const k of Object.keys(b.avwaps)) {
+          if (!/_\d{8,}$/.test(k)) names.add(k);
+        }
+      }
+    }
+    return Array.from(names).sort();
+  }, [bars]);
+
+  const globalLegend: { key?: string; label: string; color: string; thick?: boolean }[] = [
+    { label: "EMA 9", color: "rgba(251, 191, 36, 0.7)" },
+    { label: "EMA 21", color: "rgba(139, 92, 246, 0.7)" },
+    { label: "EMA 50", color: "rgba(236, 72, 153, 0.6)" },
+    { label: "EMA 200", color: "rgba(249, 115, 22, 0.5)" },
+    ...allAvwapAnchors.map((name) => ({ key: name, label: avwapAnchorLabel(name), color: avwapAnchorColor(name), thick: true })),
+  ];
+
   if (symbols.length === 0) {
     return (
       <div className="flex items-center justify-center flex-1 h-full rounded-lg border border-border bg-card text-muted-foreground text-sm">
@@ -552,27 +574,6 @@ const ChartGrid = forwardRef<ChartGridHandle, {
       </div>
     );
   }
-
-  // Collect AVWAP anchor names across all symbols for global legend
-  const allAvwapAnchors = useMemo(() => {
-    const names = new Set<string>();
-    for (const [, symBars] of bars) {
-      for (const b of symBars) {
-        if (b.avwaps) for (const k of Object.keys(b.avwaps)) {
-          if (!/_\d{8,}$/.test(k)) names.add(k);
-        }
-      }
-    }
-    return Array.from(names).sort();
-  }, [bars]);
-
-  const globalLegend: { key?: string; label: string; color: string; thick?: boolean }[] = [
-    { label: "EMA 9", color: "rgba(251, 191, 36, 0.7)" },
-    { label: "EMA 21", color: "rgba(139, 92, 246, 0.7)" },
-    { label: "EMA 50", color: "rgba(236, 72, 153, 0.6)" },
-    { label: "EMA 200", color: "rgba(249, 115, 22, 0.5)" },
-    ...allAvwapAnchors.map((name) => ({ key: name, label: avwapAnchorLabel(name), color: avwapAnchorColor(name), thick: true })),
-  ];
 
   // Grid view
   const cols = symbols.length <= 2 ? symbols.length : symbols.length <= 4 ? 2 : symbols.length <= 6 ? 3 : 4;
