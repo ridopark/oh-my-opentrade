@@ -99,9 +99,9 @@ enabled = false
 [[exit_rules]]
 type = "SWING_STOP"
 [exit_rules.params]
-lookback = 5
-buffer_bps = 10
-min_bars = 1
+lookback = 12
+buffer_bps = 25
+min_bars = 6
 
 # Kill zombie trades — extended for options (theta needs time)
 [[exit_rules]]
