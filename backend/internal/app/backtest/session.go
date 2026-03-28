@@ -180,6 +180,38 @@ func (r *SessionResolver) ResolveAnchors(symbol string, barTime time.Time, ancho
 	return result
 }
 
+// GetBarsSince returns 1m bars for a symbol from `since` to end of that day's RTH session.
+// Used to replay previous-day bars into AVWAP anchors (pd_high, pd_low).
+func (r *SessionResolver) GetBarsSince(ctx context.Context, db *sql.DB, symbol string, since time.Time) []start.Bar {
+	if since.IsZero() {
+		return nil
+	}
+	// End of RTH for the anchor's day
+	et := since.In(r.loc)
+	eod := time.Date(et.Year(), et.Month(), et.Day(), 16, 0, 0, 0, r.loc)
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT time, open, high, low, close, volume
+		FROM market_bars
+		WHERE symbol = $1 AND timeframe = '1m'
+		  AND time >= $2 AND time < $3
+		ORDER BY time`, symbol, since, eod)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var bars []start.Bar
+	for rows.Next() {
+		var b start.Bar
+		if scanErr := rows.Scan(&b.Time, &b.Open, &b.High, &b.Low, &b.Close, &b.Volume); scanErr != nil {
+			continue
+		}
+		bars = append(bars, b)
+	}
+	return bars
+}
+
 // LoadSwings runs a SwingDetector over pre-loaded 1m bars to populate
 // SwingHighs/SwingLows on each SessionData. Call after Load().
 func (r *SessionResolver) LoadSwings(ctx context.Context, db *sql.DB, sym domain.Symbol, from, to time.Time) error {
