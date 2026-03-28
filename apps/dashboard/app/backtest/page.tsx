@@ -673,27 +673,28 @@ function MiniChart({
     candle.attachPrimitive(rthOverlay);
     rthOverlayRef.current = rthOverlay;
 
-    // Click and hover handlers for signal markers
+    // Click handler via chart.subscribeClick — provides coordinates in pane space
+    // (matching timeToCoordinate/priceToCoordinate used by hitTestSignal)
     const containerEl = containerRef.current;
-    const handleChartClick = (e: MouseEvent) => {
-      if (!overlayRef.current || !onMarkerClick) return;
-      const rect = containerEl?.getBoundingClientRect();
-      if (!rect) return;
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      const idx = overlayRef.current.hitTestSignal(x, y);
+    const handleChartClick = (param: { point?: { x: number; y: number } }) => {
+      if (!overlayRef.current || !onMarkerClick || !param.point) return;
+      const idx = overlayRef.current.hitTestSignal(param.point.x, param.point.y);
       if (idx >= 0) onMarkerClick(idx);
     };
+    chart.subscribeClick(handleChartClick);
+    // Hover handler still uses DOM events for cursor change
     const handleChartMouseMove = (e: MouseEvent) => {
       if (!overlayRef.current) return;
       const rect = containerEl?.getBoundingClientRect();
       if (!rect) return;
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+      // Approximate pane offset: subtract left price scale width if any
+      const chartPane = containerEl.querySelector('.tv-lightweight-charts canvas, canvas') as HTMLElement | null;
+      const paneRect = chartPane?.getBoundingClientRect() ?? rect;
+      const x = e.clientX - paneRect.left;
+      const y = e.clientY - paneRect.top;
       const hit = overlayRef.current.hitTestSignal(x, y) >= 0;
       containerEl!.style.cursor = hit ? "pointer" : "";
     };
-    containerEl.addEventListener("click", handleChartClick);
     containerEl.addEventListener("mousemove", handleChartMouseMove);
 
     const observer = new ResizeObserver((entries) => {
@@ -704,7 +705,7 @@ function MiniChart({
     observer.observe(containerEl);
 
     return () => {
-      containerEl.removeEventListener("click", handleChartClick);
+      chart.unsubscribeClick(handleChartClick);
       containerEl.removeEventListener("mousemove", handleChartMouseMove);
       observer.disconnect();
       onChartReady?.(null);
