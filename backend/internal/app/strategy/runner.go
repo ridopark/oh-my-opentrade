@@ -34,6 +34,7 @@ type Runner struct {
 	aggregators          map[string]*domain.BarAggregator
 	signalsRTHSuppressed atomic.Int64
 	anchorResolver       func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
+	prevDayBarsFn        func(symbol string, since time.Time) []start.Bar
 	aiAnchorResolver     *AIAnchorResolver
 	lastSessionDate      map[string]string
 	lastResolvedRegime   map[string]domain.RegimeType
@@ -46,6 +47,10 @@ func (r *Runner) SignalsRTHSuppressed() int64 {
 func (r *Runner) SetAnchorResolver(fn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time) {
 	r.anchorResolver = fn
 	r.lastSessionDate = make(map[string]string)
+}
+
+func (r *Runner) SetPrevDayBarsFn(fn func(symbol string, since time.Time) []start.Bar) {
+	r.prevDayBarsFn = fn
 }
 
 func (r *Runner) SetAIAnchorResolver(resolver *AIAnchorResolver) {
@@ -83,7 +88,34 @@ func (r *Runner) resolveSessionAnchors(symbol string, barTime time.Time) {
 			names := ar.AnchorNames()
 			resolved := r.anchorResolver(symbol, barTime, names)
 			if len(resolved) > 0 {
+				for name, t := range resolved {
+					r.logger.Info("AVWAP anchor resolved", "symbol", symbol, "anchor", name, "anchor_time", t, "bar_time", barTime)
+				}
 				ar.ResetAnchors(resolved)
+				// Replay previous day's bars from each anchor time to end of session.
+				// Without this, pd_high/pd_low anchors activate on today's first bar
+				// and produce identical AVWAP values as session_open.
+				if r.prevDayBarsFn != nil {
+					type calcUpdater interface {
+						UpdateCalc(bar start.Bar)
+					}
+					if cu, ok := st.(calcUpdater); ok {
+						for name, anchorTime := range resolved {
+							if name == "session_open" {
+								continue // session_open starts today, no replay needed
+							}
+							prevBars := r.prevDayBarsFn(symbol, anchorTime)
+							if len(prevBars) > 0 {
+								r.logger.Info("replaying prev-day bars for anchor",
+									"symbol", symbol, "anchor", name, "bars", len(prevBars),
+									"from", prevBars[0].Time, "to", prevBars[len(prevBars)-1].Time)
+								for _, b := range prevBars {
+									cu.UpdateCalc(b)
+								}
+							}
+						}
+					}
+				}
 				r.logger.Info("reset AVWAP anchors for new session", "symbol", symbol, "anchors", len(resolved))
 			}
 		}

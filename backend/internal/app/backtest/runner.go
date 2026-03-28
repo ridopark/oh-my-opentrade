@@ -775,6 +775,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 		pipeline.Runner.SetAIAnchorResolver(aiResolver)
 		pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
+		pipeline.Runner.SetPrevDayBarsFn(func(symbol string, since time.Time) []start.Bar {
+			return sessionResolver.GetBarsSince(ctx, r.db, symbol, since)
+		})
 
 		// Seed daily bars into AI anchor detectors (catalyst_gap, capitulation, swing 1d)
 		// so they have historical context before replay starts.
