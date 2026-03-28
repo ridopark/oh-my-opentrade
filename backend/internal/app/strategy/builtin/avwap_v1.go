@@ -708,6 +708,46 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		}
 	}
 
+	// 6e. Capitulation long — price reclaims a capitulation-anchored AVWAP.
+	// Per Lance Brightstein: after a panic sell-off, anchor AVWAP to the low.
+	// Enter long once price retraces and holds above it — "strong hands" defending.
+	// Higher conviction than a normal breakout, works in all regimes including REVERSAL.
+	for _, anchorName := range sortedAnchors {
+		if !strings.HasPrefix(anchorName, "capitulation") {
+			continue
+		}
+		avwapValue, ok2 := avwapValues[anchorName]
+		if !ok2 || avwapValue == 0 {
+			continue
+		}
+		volumeOK := avwapSt.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*avwapSt.Indicators.VolumeSMA
+		// Reclaim: price was below capitulation AVWAP, now closes above with volume + bullish candle.
+		if avwapSt.AboveCount[anchorName] >= 1 && avwapSt.AboveCount[anchorName] <= cfg.HoldBars &&
+			bar.Close > avwapValue && bar.Close > bar.Open && volumeOK {
+			volRatio := 0.0
+			if avwapSt.Indicators.VolumeSMA > 0 {
+				volRatio = bar.Volume / avwapSt.Indicators.VolumeSMA
+			}
+			sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, 0.9, map[string]string{
+				"ref_price": fmt.Sprintf("%.10f", bar.Close),
+				"setup":     "avwap_capitulation_reclaim",
+				"anchor":    anchorName,
+				"avwap":     fmt.Sprintf("%.4f", avwapValue),
+				"vol_ratio": fmt.Sprintf("%.2f", volRatio),
+				"regime_5m": regimeTag,
+				"mode":      "capitulation_reclaim",
+			})
+			if err != nil {
+				return avwapSt, nil, err
+			}
+			avwapSt.PendingEntry = start.SideBuy
+			avwapSt.PendingEntryAt = now
+			avwapSt.TradesToday++
+			avwapSt.CooldownUntil = now.Add(cooldown)
+			return avwapSt, []start.Signal{sig}, nil
+		}
+	}
+
 	// 7. Breakout detection — scan ALL anchors for LONG first, then SHORT.
 	if cfg.BreakoutEnabled {
 		for _, anchorName := range sortedAnchors {
