@@ -774,6 +774,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			aiResolver.RegisterSymbol(sym.String(), isCrypto)
 		}
 		pipeline.Runner.SetAIAnchorResolver(aiResolver)
+		pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
 
 		// Seed daily bars into AI anchor detectors (catalyst_gap, capitulation, swing 1d)
 		// so they have historical context before replay starts.
