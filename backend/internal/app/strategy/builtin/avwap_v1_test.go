@@ -20,7 +20,7 @@ func avwapParams() map[string]any {
 		"exit_hold_bars":     2,
 		"cooldown_seconds":   120,
 		"max_trades_per_day": 3,
-		"allow_regimes":      []any{"BALANCE", "REVERSAL"},
+		"allow_regimes":      []any{"BALANCE", "REVERSAL", "TREND"},
 	}
 }
 
@@ -70,7 +70,8 @@ func TestAVWAPStrategy_Init_MultiAnchorsAndWarmup(t *testing.T) {
 
 	avwapSt := st.(*builtin.AVWAPState)
 
-	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+	// Use REVERSAL regime so breakout entry fires (breakout is a reversal signal)
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "REVERSAL", Strength: 0.9}}}
 	for i := 0; i < 5; i++ {
 		b := strat.Bar{Time: start.Add(time.Duration(i) * time.Minute), Open: 100, High: 110, Low: 90, Close: 105, Volume: 10}
 		st, err = s.ReplayOnBar(ctx, "AAPL", b, st, ind)
@@ -111,7 +112,8 @@ func TestAVWAPStrategy_Breakout_Long(t *testing.T) {
 	st, err := s.Init(ctx, "AAPL", avwapParams(), nil)
 	require.NoError(t, err)
 
-	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+	// Breakout fires in REVERSAL regime (trend exhaustion signal)
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "REVERSAL", Strength: 0.9}}}
 
 	// 3 bars closing above AVWAP; only the last one has volume confirmation.
 	bars := []strat.Bar{
@@ -136,7 +138,7 @@ func TestAVWAPStrategy_Breakout_Long(t *testing.T) {
 	assert.Equal(t, "avwap:1.0.0:AAPL", sig.StrategyInstanceID.String())
 	assert.Equal(t, "breakout", sig.Tags["mode"])
 	assert.Equal(t, "avwap_breakout", sig.Tags["setup"])
-	assert.Equal(t, "BALANCE", sig.Tags["regime_5m"])
+	assert.Equal(t, "REVERSAL", sig.Tags["regime_5m"])
 	assert.Contains(t, sig.Tags, "ref_price")
 	assert.Contains(t, sig.Tags, "anchor")
 	assert.Contains(t, sig.Tags, "avwap")
@@ -151,7 +153,8 @@ func TestAVWAPStrategy_Breakout_Short(t *testing.T) {
 	st, err := s.Init(ctx, "AAPL", avwapParams(), nil)
 	require.NoError(t, err)
 
-	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+	// Breakout fires in REVERSAL regime
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "REVERSAL", Strength: 0.9}}}
 
 	bars := []strat.Bar{
 		{Time: start, Open: 130, High: 135, Low: 110, Close: 110, Volume: 10},
@@ -187,7 +190,8 @@ func TestAVWAPStrategy_Bounce_Long(t *testing.T) {
 	st, signals := feedAVWAPBar(t, s, ctx, "AAPL", st, strat.Bar{Time: start, Open: 100, High: 100, Low: 100, Close: 100, Volume: 10}, strat.IndicatorData{VolumeSMA: 10})
 	assert.Empty(t, signals)
 
-	ind := strat.IndicatorData{RSI: 20, VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.4}}}
+	// Bounce fires in TREND regime (continuation entry)
+	ind := strat.IndicatorData{RSI: 20, VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "TREND_UP", Strength: 0.8}}}
 	bounce := strat.Bar{Time: start.Add(time.Minute), Open: 99, High: 101, Low: 99, Close: 100.5, Volume: 10}
 	st, signals = feedAVWAPBar(t, s, ctx, "AAPL", st, bounce, ind)
 
@@ -212,7 +216,8 @@ func TestAVWAPStrategy_Bounce_Short(t *testing.T) {
 	st, signals := feedAVWAPBar(t, s, ctx, "AAPL", st, strat.Bar{Time: start, Open: 100, High: 100, Low: 100, Close: 100, Volume: 10}, strat.IndicatorData{VolumeSMA: 10})
 	assert.Empty(t, signals)
 
-	ind := strat.IndicatorData{RSI: 80, VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.4}}}
+	// Bounce fires in TREND regime (continuation entry)
+	ind := strat.IndicatorData{RSI: 80, VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "TREND_DOWN", Strength: 0.8}}}
 	bounce := strat.Bar{Time: start.Add(time.Minute), Open: 101, High: 101, Low: 99, Close: 99.5, Volume: 10}
 	st, signals = feedAVWAPBar(t, s, ctx, "AAPL", st, bounce, ind)
 
@@ -250,7 +255,8 @@ func TestAVWAPStrategy_RegimeGating_ReversalAllowsLongBreakout(t *testing.T) {
 	assert.NotEmpty(t, allSignals, "long breakout should be allowed in REVERSAL regime")
 }
 
-func TestAVWAPStrategy_RegimeGating_TrendBlocksBounce(t *testing.T) {
+func TestAVWAPStrategy_RegimeGating_TrendAllowsBounce(t *testing.T) {
+	// Bounce is a continuation entry — it should fire in TREND regime.
 	s := builtin.NewAVWAPStrategy()
 	start := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
 	ctx := newTestContext(start)
@@ -266,7 +272,7 @@ func TestAVWAPStrategy_RegimeGating_TrendBlocksBounce(t *testing.T) {
 	ind := strat.IndicatorData{RSI: 20, VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "TREND_UP", Strength: 0.8}}}
 	bounce := strat.Bar{Time: start.Add(time.Minute), Open: 99, High: 101, Low: 99, Close: 100.5, Volume: 10}
 	_, signals = feedAVWAPBar(t, s, ctx, "AAPL", st, bounce, ind)
-	assert.Empty(t, signals)
+	assert.NotEmpty(t, signals, "bounce should fire in TREND regime (continuation entry)")
 }
 
 func TestAVWAPStrategy_Exit_LongPosition(t *testing.T) {
@@ -278,8 +284,8 @@ func TestAVWAPStrategy_Exit_LongPosition(t *testing.T) {
 	st, err := s.Init(ctx, "AAPL", params, nil)
 	require.NoError(t, err)
 
-	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
-	// Enter long via breakout.
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "REVERSAL", Strength: 0.9}}}
+	// Enter long via breakout (breakout fires in REVERSAL regime).
 	entryBars := []strat.Bar{
 		{Time: start, Open: 100, High: 112, Low: 92, Close: 112, Volume: 10},
 		{Time: start.Add(time.Minute), Open: 112, High: 120, Low: 100, Close: 120, Volume: 10},
@@ -455,9 +461,9 @@ func TestAVWAPStrategy_PendingEntryBlocksExit(t *testing.T) {
 	st, err := s.Init(ctx, "AAPL", params, nil)
 	require.NoError(t, err)
 
-	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "REVERSAL", Strength: 0.9}}}
 
-	// Enter long via breakout.
+	// Enter long via breakout (breakout fires in REVERSAL regime).
 	entryBars := []strat.Bar{
 		{Time: start, Open: 100, High: 112, Low: 92, Close: 112, Volume: 10},
 		{Time: start.Add(time.Minute), Open: 112, High: 120, Low: 100, Close: 120, Volume: 10},
@@ -570,7 +576,7 @@ func TestAVWAPStrategy_HigherLows_BlocksBreakoutWithoutPattern(t *testing.T) {
 	st, err := s.Init(ctx, "AAPL", higherLowsParams(), nil)
 	require.NoError(t, err)
 
-	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "REVERSAL", Strength: 0.9}}}
 
 	bars := []strat.Bar{
 		{Time: start, Open: 100, High: 112, Low: 95, Close: 112, Volume: 10},
@@ -592,7 +598,7 @@ func TestAVWAPStrategy_HigherLows_AllowsBreakoutWithPattern(t *testing.T) {
 	st, err := s.Init(ctx, "AAPL", higherLowsParams(), nil)
 	require.NoError(t, err)
 
-	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "REVERSAL", Strength: 0.9}}}
 
 	bars := []strat.Bar{
 		{Time: start, Open: 100, High: 112, Low: 92, Close: 112, Volume: 10},
@@ -615,7 +621,7 @@ func TestAVWAPStrategy_HigherLows_DisabledByDefault(t *testing.T) {
 	st, err := s.Init(ctx, "AAPL", avwapParams(), nil)
 	require.NoError(t, err)
 
-	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "REVERSAL", Strength: 0.9}}}
 
 	bars := []strat.Bar{
 		{Time: start, Open: 100, High: 112, Low: 95, Close: 112, Volume: 10},
@@ -641,7 +647,7 @@ func TestAVWAPStrategy_ShortBreakout_NoLowerHighsGate(t *testing.T) {
 	st, err := s.Init(ctx, "AAPL", higherLowsParams(), nil)
 	require.NoError(t, err)
 
-	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "REVERSAL", Strength: 0.9}}}
 
 	bars := []strat.Bar{
 		{Time: start, Open: 130, High: 135, Low: 110, Close: 110, Volume: 10},
@@ -674,7 +680,7 @@ func TestAVWAPStrategy_MiddayTrapShield_BlocksLowVolumeShort(t *testing.T) {
 	st, err := s.Init(ctx, "AAPL", middayTrapParams(), nil)
 	require.NoError(t, err)
 
-	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "REVERSAL", Strength: 0.9}}}
 
 	bars := []strat.Bar{
 		{Time: start, Open: 130, High: 135, Low: 110, Close: 110, Volume: 10},
@@ -697,7 +703,7 @@ func TestAVWAPStrategy_MiddayTrapShield_AllowsHighVolumeShort(t *testing.T) {
 	st, err := s.Init(ctx, "AAPL", middayTrapParams(), nil)
 	require.NoError(t, err)
 
-	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "REVERSAL", Strength: 0.9}}}
 
 	bars := []strat.Bar{
 		{Time: start, Open: 130, High: 135, Low: 110, Close: 110, Volume: 10},
@@ -725,7 +731,7 @@ func TestAVWAPStrategy_MiddayTrapShield_IgnoresCrypto(t *testing.T) {
 	st, err := s.Init(ctx, "BTCUSD", params, nil)
 	require.NoError(t, err)
 
-	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "REVERSAL", Strength: 0.9}}}
 
 	bars := []strat.Bar{
 		{Time: start, Open: 130, High: 135, Low: 110, Close: 110, Volume: 10},
@@ -749,7 +755,7 @@ func TestAVWAPStrategy_MiddayTrapShield_IgnoresLongEntries(t *testing.T) {
 	st, err := s.Init(ctx, "AAPL", middayTrapParams(), nil)
 	require.NoError(t, err)
 
-	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+	ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "REVERSAL", Strength: 0.9}}}
 
 	bars := []strat.Bar{
 		{Time: start, Open: 100, High: 112, Low: 92, Close: 112, Volume: 10},
@@ -776,7 +782,7 @@ func TestAVWAPStrategy_MiddayTrapShield_IgnoresOutsideWindow(t *testing.T) {
 			st, err := s.Init(ctx, "AAPL", middayTrapParams(), nil)
 			require.NoError(t, err)
 
-			ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "BALANCE", Strength: 0.5}}}
+			ind := strat.IndicatorData{VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "REVERSAL", Strength: 0.9}}}
 
 			bars := []strat.Bar{
 				{Time: start, Open: 130, High: 135, Low: 110, Close: 110, Volume: 10},
