@@ -289,7 +289,7 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 		tradeID := deterministicTradeID(order.BrokerOrderID, details.FilledQty)
 		fillTime := details.FilledAt
 		if fillTime.IsZero() {
-			fillTime = time.Now().UTC()
+			fillTime = s.nowFn().UTC()
 		}
 
 		trade, tErr := domain.NewTrade(
@@ -644,7 +644,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		side = "BUY"
 	}
 	order := domain.BrokerOrder{
-		Time:          time.Now().UTC(),
+		Time:          s.nowFn().UTC(),
 		TenantID:      event.TenantID,
 		EnvMode:       event.EnvMode,
 		IntentID:      intent.ID,
@@ -775,7 +775,7 @@ func (s *Service) pollForFill(tenantID string, envMode domain.EnvMode, intent do
 
 // handleFill records the fill in the DB and emits FillReceived.
 func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent domain.OrderIntent, brokerOrderID string, submitStart time.Time, l zerolog.Logger) {
-	now := time.Now().UTC()
+	now := s.nowFn().UTC()
 	ctx := context.Background()
 
 	// Use limit price as fill price proxy (paper trading; actual fill price = limit price).
@@ -1210,7 +1210,7 @@ func (s *Service) sweepDustPosition(tenantID string, envMode domain.EnvMode, sym
 
 				fillTime := details.FilledAt
 				if fillTime.IsZero() {
-					fillTime = time.Now().UTC()
+					fillTime = s.nowFn().UTC()
 				}
 				trade, tErr := domain.NewTrade(fillTime, tenantID, envMode, uuid.New(), symbol, "SELL", details.FilledQty, details.FilledAvgPrice, 0, "FILLED", "dust_sweep", fmt.Sprintf("sweep remainder after exit %s", brokerOrderID))
 				if tErr != nil {
@@ -1347,7 +1347,7 @@ func (s *Service) recordFillFromDetails(po *pendingOrder, brokerOrderID string, 
 	}
 	filledAt := details.FilledAt
 	if filledAt.IsZero() {
-		filledAt = time.Now().UTC()
+		filledAt = s.nowFn().UTC()
 	}
 	s.handleFillWithPrice(po, brokerOrderID, fillPrice, fillQty, filledAt, "", l)
 }
