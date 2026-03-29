@@ -79,11 +79,11 @@ avwap_stop_bars = 2
 avwap_stop_buffer_bps = 10
 # Pinch DISABLED — 6 trades at 16.7% win rate, PF 0.20, total -22.69%.
 # Largest losses: -11.53%, -9.96%, -5.10%. No higher-lows or slope filter in code.
-pinch_enabled = false
+pinch_enabled = true
 pinch_min_bps = 5
 pinch_max_bps = 50
 # Gap reclaim disabled — small edge, often fades
-gap_reclaim_enabled = false
+gap_reclaim_enabled = true
 gap_reclaim_bars = 5
 # Handoff — tightened: bars raised from 3 to 5, min momentum 40 bps.
 # Backtest: early HANDOFF trades had avg -2.07%, overall PF barely 1.03.
@@ -92,10 +92,6 @@ gap_reclaim_bars = 5
 handoff_enabled = true
 handoff_bars = 5
 handoff_min_mom_bps = 40
-# Strategy-level swing trail DISABLED — the position monitor SWING_STOP
-# handles all swing-based exits. Having two swing stops created a race condition.
-swing_trail_enabled = false
-
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
 
