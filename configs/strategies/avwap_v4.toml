@@ -13,7 +13,7 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["GOOGL", "HIMS", "HOOD", "META", "MSFT", "NFLX", "PLTR", "SOFI", "XOM"]
+symbols = ["META", "MSFT", "PLTR"]
 timeframes = ["5m"]
 priority = 80
 conflict_policy = "priority_wins"
@@ -77,7 +77,7 @@ higher_lows_bars = 5
 
 # Block entries during 11:00-13:00 ET unless volume exceeds this multiple
 midday_trap_shield = true
-midday_volume_mult = 3.0
+midday_volume_mult = 2.5
 
 # Directional bias: only long when price is above AVWAP, only short when below
 enforce_avwap_bias = true
@@ -97,10 +97,10 @@ stop_bps = 75
 limit_offset_bps = 5
 
 # Maximum risk per trade as basis points of equity
-risk_per_trade_bps = 1000
+risk_per_trade_bps = 3500
 
 # Maximum position size as basis points of equity
-max_position_bps = 2000
+max_position_bps = 5000
 
 # --- Timing ---
 # Trading window (ET). Entries only allowed within this range.
@@ -183,7 +183,7 @@ pct = 0.015
 enabled = true
 
 # Cap contract count to limit spread drag on cheap options
-max_contracts = 5
+max_contracts = 10
 
 [options.defaults]
 min_dte = 14
