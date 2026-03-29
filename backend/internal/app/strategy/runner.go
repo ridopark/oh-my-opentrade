@@ -684,7 +684,8 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 			}
 			r.metrics.Strategy.SignalsTotal.WithLabelValues(strategyLabel, string(sig.Type), string(sig.Side)).Inc()
 		}
-		r.logger.Info("EMIT SIGNAL", "symbol", sig.Symbol, "type", sig.Type, "side", sig.Side, "instance", sig.StrategyInstanceID.String())
+		r.logger.Info("EMIT SIGNAL", "symbol", sig.Symbol, "type", sig.Type, "side", sig.Side, "instance", sig.StrategyInstanceID.String(),
+			"setup", sig.Tags["setup"], "confluence", sig.Tags["confluence"], "confluence_detail", sig.Tags["confluence_detail"])
 		if err := r.emitSignal(ctx, event.TenantID, event.EnvMode, sig); err != nil {
 			r.logger.Error("failed to emit SignalCreated",
 				"instance_id", sig.StrategyInstanceID.String(),
