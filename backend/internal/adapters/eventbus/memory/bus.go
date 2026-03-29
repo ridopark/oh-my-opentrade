@@ -37,8 +37,9 @@ type Bus struct {
 	handlers  map[domain.EventType][]ports.EventHandler
 	asyncSubs map[domain.EventType][]*asyncSub
 
-	closeMu sync.Mutex
-	closed  bool
+	closeMu  sync.Mutex
+	closed   bool
+	syncMode bool // when true, SubscribeAsync behaves like Subscribe (for deterministic backtests)
 
 	pending sync.WaitGroup
 }
@@ -48,6 +49,16 @@ func NewBus() *Bus {
 	return &Bus{
 		handlers:  make(map[domain.EventType][]ports.EventHandler),
 		asyncSubs: make(map[domain.EventType][]*asyncSub),
+	}
+}
+
+// NewSyncBus creates an event bus where SubscribeAsync behaves like Subscribe.
+// Use this for backtests to ensure deterministic event ordering.
+func NewSyncBus() *Bus {
+	return &Bus{
+		handlers:  make(map[domain.EventType][]ports.EventHandler),
+		asyncSubs: make(map[domain.EventType][]*asyncSub),
+		syncMode:  true,
 	}
 }
 
@@ -133,6 +144,9 @@ func (b *Bus) Subscribe(ctx context.Context, eventType domain.EventType, handler
 // sequentially, preserving ordering within this handler. The publisher
 // never blocks — if the channel is full the event is dropped with a warning.
 func (b *Bus) SubscribeAsync(ctx context.Context, eventType domain.EventType, handler ports.EventHandler) error {
+	if b.syncMode {
+		return b.Subscribe(ctx, eventType, handler)
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}

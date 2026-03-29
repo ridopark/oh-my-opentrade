@@ -104,7 +104,7 @@ func NewRunner(cfg RunConfig, db *sql.DB, appCfg *config.Config, marketData port
 		appCfg:     appCfg,
 		marketData: marketData,
 		log:        rlog,
-		eventBus:   memory.NewBus(),
+		eventBus:   memory.NewSyncBus(),
 		emitter:    NewEmitter(rlog, cfg.Timeframe),
 		pauseCh:    make(chan struct{}),
 	}
