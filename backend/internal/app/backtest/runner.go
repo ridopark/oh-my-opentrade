@@ -1173,7 +1173,7 @@ func signalPassthrough(bus *memory.Bus, log zerolog.Logger) func(context.Context
 			Status:     domain.EnrichmentSkipped,
 			Confidence: sig.Strength,
 			Direction:  direction,
-			Rationale:  fmt.Sprintf("passthrough (no-ai): %s %s strength=%.2f setup:%s", sig.Type, sig.Side, sig.Strength, sig.Tags["setup"]),
+			Rationale:  fmt.Sprintf("passthrough (no-ai): %s %s strength=%.2f setup:%s confluence:%s(%s)", sig.Type, sig.Side, sig.Strength, sig.Tags["setup"], sig.Tags["confluence"], sig.Tags["confluence_detail"]),
 		}
 		enrichedEvt, evtErr := domain.NewEvent(domain.EventSignalEnriched, ev.TenantID, ev.EnvMode, ev.IdempotencyKey+"-enriched", enrichment)
 		if evtErr != nil {

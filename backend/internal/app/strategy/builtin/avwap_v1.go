@@ -1699,8 +1699,12 @@ func computeConfluence(
 	if cfg.CandleConfluenceEnabled && prevBarCount >= 1 {
 		matched := false
 
-		// Inside Bar: current bar range inside previous bar range
-		if bar.High <= prevBars[0].High && bar.Low >= prevBars[0].Low {
+		// Inside Bar: current bar range significantly smaller than previous bar
+		// (must be contained AND range < 70% of previous range — filters noise)
+		prevRange := prevBars[0].High - prevBars[0].Low
+		curRange := bar.High - bar.Low
+		if bar.High <= prevBars[0].High && bar.Low >= prevBars[0].Low &&
+			prevRange > 0 && curRange < 0.7*prevRange {
 			res.Score += 2
 			res.Factors = append(res.Factors, "inside_bar")
 			matched = true
