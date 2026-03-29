@@ -49,6 +49,15 @@ function parseEntryReason(rationale?: string): string | null {
   return stripped.toUpperCase().replace(/_/g, " ");
 }
 
+/** Extract confluence score and detail from the rationale string.
+ *  e.g. "confluence:5(fib_38.2+strength_candle)" → { score: 5, detail: "fib_38.2+strength_candle" } */
+function parseConfluence(rationale?: string): { score: number; detail: string } | null {
+  if (!rationale) return null;
+  const m = rationale.match(/confluence:(\d+)\(([^)]*)\)/);
+  if (!m) return null;
+  return { score: parseInt(m[1], 10), detail: m[2] };
+}
+
 /** Format a UTC unix timestamp as ET string using Intl. */
 function formatET(utcSeconds: number, opts: Intl.DateTimeFormatOptions): string {
   return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour12: false, ...opts }).format(new Date(utcSeconds * 1000));
@@ -1042,6 +1051,7 @@ interface Position {
   entryTime: string;
   exitTime: string | null;
   entryReason: string | null;
+  confluence: { score: number; detail: string } | null;
   exitReason: string | null;
   regime: string | null;
   vixBucket: string | null;
@@ -1098,6 +1108,7 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
           entryTime: entry.filled_at ?? "",
           exitTime: t.filled_at ?? "",
           entryReason: parseEntryReason(entry.rationale),
+          confluence: parseConfluence(entry.rationale),
           exitReason: parseExitReason(t.rationale),
           regime: entry.regime ?? null,
           vixBucket: entry.vix_bucket ?? null,
@@ -1122,6 +1133,7 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
       entryTime: entry.filled_at ?? "",
       exitTime: null,
       entryReason: parseEntryReason(entry.rationale),
+      confluence: parseConfluence(entry.rationale),
       exitReason: null,
       regime: entry.regime ?? null,
       vixBucket: entry.vix_bucket ?? null,
@@ -1181,6 +1193,7 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
             <th className="text-left px-2 py-1.5">Exit Time</th>
             <th className="text-right px-4 py-1.5">P&L</th>
             <th className="text-left px-2 py-1.5">Entry Reason</th>
+            <th className="text-center px-2 py-1.5 cursor-help" title="Confluence score (0-10): Fib +3, Key Level +3, Candle Pattern +2, Band Zone +2">Conf</th>
             <th className="text-left px-2 py-1.5">Exit Reason</th>
             <th className="text-left px-2 py-1.5 cursor-help" title="EMA-based regime from EMA21/EMA50 divergence (0.3% threshold) + RSI/Stochastic on the strategy timeframe. TREND = EMAs diverging >0.3%, BALANCE = EMAs converging, REVERSAL = RSI overbought/oversold with stochastic crossover.">EMA Regime</th>
             <th className="text-left px-2 py-1.5 cursor-help" title="Market context at entry. LOW_VOL/NORMAL/HIGH_VOL = SPY 20-day realized vol bucket (<15/15-25/>25). ATR% = this symbol's 14-day daily ATR as % of price — determines stop distance and position size (higher ATR = wider stop, smaller position). NR7 = prior day had narrowest range in 7 sessions (compression → expansion). VWAP+ = price on correct side of VWAP at entry, VWAP- = against institutional flow.">Context</th>
@@ -1234,6 +1247,15 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
                 </td>
                 <td className="px-2 py-1 text-[10px] text-muted-foreground">
                   {p.entryReason ?? ""}
+                </td>
+                <td className="px-2 py-1 text-center" title={p.confluence?.detail ?? ""}>
+                  {p.confluence ? (
+                    <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-mono font-bold ${
+                      p.confluence.score >= 5 ? "bg-emerald-500/20 text-emerald-400" :
+                      p.confluence.score >= 3 ? "bg-blue-500/20 text-blue-400" :
+                      "bg-gray-500/20 text-gray-400"
+                    }`}>{p.confluence.score}</span>
+                  ) : ""}
                 </td>
                 <td className="px-2 py-1 text-[10px] text-muted-foreground">
                   {p.exitReason ?? ""}
