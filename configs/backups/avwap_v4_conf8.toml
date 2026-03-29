@@ -62,7 +62,7 @@ handoff_min_mom_bps = 40
 
 # --- Volume & Regime ---
 # Minimum volume multiple vs 20-bar SMA to confirm entries
-volume_mult = 2.5
+volume_mult = 2.0
 
 # Allowed EMA regimes (TREND matches both TREND_UP and TREND_DOWN)
 allow_regimes = ["TREND", "BALANCE", "REVERSAL"]
@@ -125,7 +125,7 @@ avwap_stop_buffer_bps = 10
 
 # --- Confluence Weighting ---
 # Entries scored 0-10 based on confirmation factors. Below threshold = filtered out.
-min_confluence_score = 7
+min_confluence_score = 8
 
 # Fibonacci convergence (+3): AVWAP aligns with 38.2%/50%/61.8% retracement
 fib_confluence_enabled = true
@@ -155,13 +155,13 @@ type = "SWING_STOP"
 lookback = 20
 buffer_bps = 25
 atr_buffer_mult = 1.5
-min_bars = 20
+min_bars = 60
 
 # Stagnation exit: close trades that go nowhere after N minutes
 [[exit_rules]]
 type = "STAGNATION_EXIT"
 [exit_rules.params]
-minutes = 60
+minutes = 90
 sd_threshold = 0
 profit_gate_pct = 0.005
 
@@ -175,7 +175,7 @@ minutes_before_close = 15
 [[exit_rules]]
 type = "MAX_LOSS"
 [exit_rules.params]
-pct = 0.01
+pct = 0.015
 
 # --- Options ---
 
