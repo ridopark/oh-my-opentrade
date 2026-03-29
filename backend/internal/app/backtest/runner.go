@@ -226,7 +226,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	const replayTimeframe = domain.Timeframe("1m")
 
 	var currentBarTime atomic.Value
-	currentBarTime.Store(time.Now())
+	currentBarTime.Store(r.cfg.From) // use backtest start time, not wall clock
 	clockFn := func() time.Time { return currentBarTime.Load().(time.Time) }
 
 	// --- Build pipeline (isolated event bus) ---
