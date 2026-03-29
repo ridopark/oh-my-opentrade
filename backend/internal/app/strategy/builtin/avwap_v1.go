@@ -1343,7 +1343,7 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 				}
 				continue
 			}
-			if regimeTag == "TREND" {
+			if regimeTag == "TREND" || regimeTag == "TREND_UP" || regimeTag == "TREND_DOWN" {
 				continue
 			}
 			if bar.Close <= bar.Open {
@@ -1382,7 +1382,7 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 				}
 				continue
 			}
-			if regimeTag == "TREND" {
+			if regimeTag == "TREND" || regimeTag == "TREND_UP" || regimeTag == "TREND_DOWN" {
 				logShortGate(ctx, ec.symbol, "trend_regime", anchorName)
 				continue
 			}
@@ -1506,7 +1506,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 	if ar, ok2 := avwapSt.Indicators.AnchorRegimes["5m"]; ok2 {
 		regimeTag = ar.Type
 		for _, allowed := range cfg.AllowRegimes {
-			if ar.Type == allowed {
+			if ar.Type == allowed || (allowed == "TREND" && (ar.Type == "TREND_UP" || ar.Type == "TREND_DOWN")) {
 				regimeAllowed = true
 				break
 			}

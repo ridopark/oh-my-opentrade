@@ -378,13 +378,13 @@ func TestMTFA_1mRegimeImmediate(t *testing.T) {
 	_, changed := rd.Detect(bal)
 	require.True(t, changed, "first detection")
 
-	// Immediate shift to TREND on 1m — no hysteresis required.
-	// EMA21=102 vs EMA50=100 → 2% divergence > 0.3%
+	// Immediate shift to TREND_UP on 1m — no hysteresis required.
+	// EMA21=102 vs EMA50=100 → +2% divergence > 0.3%
 	trend, _ := domain.NewIndicatorSnapshot(time.Now(), sym, "1m", 60, 80, 75, 102, 102, 0, 1, 1)
 	trend.EMA50 = 100
 	reg, changed := rd.Detect(trend)
 	assert.True(t, changed, "1m regime should shift immediately")
-	assert.Equal(t, domain.RegimeTrend, reg.Type)
+	assert.Equal(t, domain.RegimeTrendUp, reg.Type)
 }
 
 // ─── Test 10: Aggregator reset clears state for new session ─────────────────

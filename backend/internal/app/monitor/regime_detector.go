@@ -88,7 +88,11 @@ func (rd *RegimeDetector) Detect(snapshot domain.IndicatorSnapshot) (domain.Mark
 		strength = math.Abs(snapshot.RSI-50.0) / 50.0
 		strength = clamp(strength, 0, 1)
 	case absEmaDiff > threshold:
-		regimeType = domain.RegimeTrend
+		if emaDiff > 0 {
+			regimeType = domain.RegimeTrendUp
+		} else {
+			regimeType = domain.RegimeTrendDown
+		}
 		strength = clamp(absEmaDiff*strengthScale, 0, 1)
 	default:
 		regimeType = domain.RegimeBalance

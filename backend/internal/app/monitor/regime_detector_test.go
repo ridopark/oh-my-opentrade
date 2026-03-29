@@ -22,16 +22,30 @@ func createSnapshot(sym domain.Symbol, rsi, stochK, stochD, ema21, ema50, vwap f
 	return snap
 }
 
-func TestRegimeDetector_Trend(t *testing.T) {
+func TestRegimeDetector_TrendUp(t *testing.T) {
 	rd := monitor.NewRegimeDetector()
 	sym, _ := domain.NewSymbol("BTC/USD")
 
-	// EMA21=102 vs EMA50=100 → 2% divergence > 0.3% threshold → TREND
+	// EMA21=102 vs EMA50=100 → +2% divergence > 0.3% threshold → TREND_UP
 	snap := createSnapshot(sym, 60.0, 80.0, 75.0, 102.0, 100.0, 101.0)
 	regime, changed := rd.Detect(snap)
 
 	assert.True(t, changed, "should detect initial regime change")
-	assert.Equal(t, domain.RegimeTrend, regime.Type)
+	assert.Equal(t, domain.RegimeTrendUp, regime.Type)
+	assert.Greater(t, regime.Strength, 0.5, "trend strength should be > 0.5")
+	assert.LessOrEqual(t, regime.Strength, 1.0)
+}
+
+func TestRegimeDetector_TrendDown(t *testing.T) {
+	rd := monitor.NewRegimeDetector()
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	// EMA21=98 vs EMA50=100 → -2% divergence, abs > 0.3% threshold → TREND_DOWN
+	snap := createSnapshot(sym, 60.0, 80.0, 75.0, 98.0, 100.0, 99.0)
+	regime, changed := rd.Detect(snap)
+
+	assert.True(t, changed, "should detect initial regime change")
+	assert.Equal(t, domain.RegimeTrendDown, regime.Type)
 	assert.Greater(t, regime.Strength, 0.5, "trend strength should be > 0.5")
 	assert.LessOrEqual(t, regime.Strength, 1.0)
 }
@@ -68,21 +82,21 @@ func TestRegimeDetector_Transition(t *testing.T) {
 	rd := monitor.NewRegimeDetector()
 	sym, _ := domain.NewSymbol("BTC/USD")
 
-	// 1. Start with TREND (EMA21=102 vs EMA50=100 → 2% > 0.3%)
+	// 1. Start with TREND_UP (EMA21=102 vs EMA50=100 → +2% > 0.3%)
 	snap1 := createSnapshot(sym, 60.0, 80.0, 75.0, 102.0, 100.0, 101.0)
 	regime1, changed1 := rd.Detect(snap1)
 	require.True(t, changed1)
-	require.Equal(t, domain.RegimeTrend, regime1.Type)
+	require.Equal(t, domain.RegimeTrendUp, regime1.Type)
 
-	// 2. Stay in TREND (EMA21=103 vs EMA50=100.5 → 2.5% > 0.3%)
+	// 2. Stay in TREND_UP (EMA21=103 vs EMA50=100.5 → +2.5% > 0.3%)
 	snap2 := createSnapshot(sym, 62.0, 82.0, 78.0, 103.0, 100.5, 102.0)
 	regime2, changed2 := rd.Detect(snap2)
-	assert.False(t, changed2, "should not emit change if regime remains TREND")
-	assert.Equal(t, domain.RegimeTrend, regime2.Type)
+	assert.False(t, changed2, "should not emit change if regime remains TREND_UP")
+	assert.Equal(t, domain.RegimeTrendUp, regime2.Type)
 
 	// 3. Transition to BALANCE (EMA21=100.1 vs EMA50=100.0 → 0.1% < 0.3%)
 	snap3 := createSnapshot(sym, 50.0, 50.0, 50.0, 100.1, 100.0, 100.05)
 	regime3, changed3 := rd.Detect(snap3)
-	assert.True(t, changed3, "should emit change when transitioning from TREND to BALANCE")
+	assert.True(t, changed3, "should emit change when transitioning from TREND_UP to BALANCE")
 	assert.Equal(t, domain.RegimeBalance, regime3.Type)
 }

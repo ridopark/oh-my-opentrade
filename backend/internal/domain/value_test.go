@@ -123,6 +123,14 @@ func TestRegimeType(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, domain.RegimeTrend, regime)
 
+		regime, err = domain.NewRegimeType("TREND_UP")
+		require.NoError(t, err)
+		assert.Equal(t, domain.RegimeTrendUp, regime)
+
+		regime, err = domain.NewRegimeType("TREND_DOWN")
+		require.NoError(t, err)
+		assert.Equal(t, domain.RegimeTrendDown, regime)
+
 		regime, err = domain.NewRegimeType("BALANCE")
 		require.NoError(t, err)
 		assert.Equal(t, domain.RegimeBalance, regime)
@@ -138,6 +146,14 @@ func TestRegimeType(t *testing.T) {
 
 		_, err = domain.NewRegimeType("")
 		assert.Error(t, err)
+	})
+
+	t.Run("IsTrend helper", func(t *testing.T) {
+		assert.True(t, domain.RegimeTrend.IsTrend())
+		assert.True(t, domain.RegimeTrendUp.IsTrend())
+		assert.True(t, domain.RegimeTrendDown.IsTrend())
+		assert.False(t, domain.RegimeBalance.IsTrend())
+		assert.False(t, domain.RegimeReversal.IsTrend())
 	})
 }
 

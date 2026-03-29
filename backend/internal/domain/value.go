@@ -126,16 +126,23 @@ func NewTimeframe(t string) (Timeframe, error) {
 type RegimeType string
 
 const (
-	RegimeTrend    RegimeType = "TREND"
-	RegimeBalance  RegimeType = "BALANCE"
-	RegimeReversal RegimeType = "REVERSAL"
+	RegimeTrend     RegimeType = "TREND"
+	RegimeTrendUp   RegimeType = "TREND_UP"
+	RegimeTrendDown RegimeType = "TREND_DOWN"
+	RegimeBalance   RegimeType = "BALANCE"
+	RegimeReversal  RegimeType = "REVERSAL"
 )
 
 func (r RegimeType) String() string { return string(r) }
 
+// IsTrend returns true if the regime is any trend variant (TREND, TREND_UP, TREND_DOWN).
+func (r RegimeType) IsTrend() bool {
+	return r == RegimeTrend || r == RegimeTrendUp || r == RegimeTrendDown
+}
+
 func NewRegimeType(r string) (RegimeType, error) {
 	switch RegimeType(r) {
-	case RegimeTrend, RegimeBalance, RegimeReversal:
+	case RegimeTrend, RegimeTrendUp, RegimeTrendDown, RegimeBalance, RegimeReversal:
 		return RegimeType(r), nil
 	default:
 		return "", fmt.Errorf("invalid regime type: %q", r)

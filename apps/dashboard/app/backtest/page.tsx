@@ -169,21 +169,7 @@ export default function BacktestPage() {
       />
 
       <div className={`mt-2 ${symbolsInData.length === 0 ? "flex-1 flex flex-col" : ""}`}>
-        {symbolsInData.length > 0 && (
-          <div className="flex items-center gap-2 px-2 mb-1">
-            <button
-              onClick={() => setShowLabels((v) => !v)}
-              className={`px-2 py-0.5 text-[10px] font-mono rounded border transition-colors ${
-                showLabels
-                  ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
-                  : "bg-muted/50 text-muted-foreground border-border"
-              }`}
-            >
-              {showLabels ? "Labels ON" : "Labels OFF"}
-            </button>
-          </div>
-        )}
-        <ChartGrid ref={chartGridRef} symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} showLabels={showLabels} onTradeClick={(trade) => {
+        <ChartGrid ref={chartGridRef} symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} showLabels={showLabels} onToggleLabels={() => setShowLabels((v) => !v)} onTradeClick={(trade) => {
           setBottomTab("trades");
           setTimeout(() => tradeLogRef.current?.scrollToTrade(trade), 50);
         }} />
@@ -459,6 +445,7 @@ const ChartGrid = forwardRef<ChartGridHandle, {
   trades: BacktestTrade[];
   orbWindowMinutes?: number;
   showLabels?: boolean;
+  onToggleLabels?: () => void;
   onTradeClick?: (trade: BacktestTrade) => void;
 }>(function ChartGrid({
   symbols,
@@ -466,6 +453,7 @@ const ChartGrid = forwardRef<ChartGridHandle, {
   trades,
   orbWindowMinutes = 30,
   showLabels = true,
+  onToggleLabels,
   onTradeClick,
 }, ref) {
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
@@ -608,6 +596,14 @@ const ChartGrid = forwardRef<ChartGridHandle, {
             </button>
           );
         })}
+        <button
+          className={`flex items-center gap-1 cursor-pointer transition-opacity ${showLabels ? "opacity-100" : "opacity-30"}`}
+          onClick={() => onToggleLabels?.()}
+          title={`Click to ${showLabels ? "hide" : "show"} entry/exit labels`}
+        >
+          <span className="w-2.5 h-2.5 text-[8px] leading-none text-center font-bold" style={{ color: "rgba(52, 211, 153, 0.8)" }}>▲</span>
+          <span className="text-[9px] font-mono text-muted-foreground">Labels</span>
+        </button>
       </div>
     <div
       className="grid gap-2 w-full"
@@ -1245,7 +1241,8 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
                 <td className="px-2 py-1 text-[10px]">
                   {p.regime ? (
                     <span className={`inline-block px-1 py-0.5 rounded text-[9px] font-medium ${
-                      p.regime === "TREND" ? "bg-blue-500/20 text-blue-400" :
+                      p.regime === "TREND" || p.regime === "TREND_UP" ? "bg-emerald-500/20 text-emerald-400" :
+                      p.regime === "TREND_DOWN" ? "bg-rose-500/20 text-rose-400" :
                       p.regime === "BALANCE" ? "bg-amber-500/20 text-amber-400" :
                       p.regime === "REVERSAL" ? "bg-purple-500/20 text-purple-400" :
                       "bg-gray-500/20 text-gray-400"

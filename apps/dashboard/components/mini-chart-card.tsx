@@ -18,6 +18,8 @@ interface MiniChartCardProps {
 
 const REGIME_COLORS: Record<string, string> = {
   TREND: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
+  TREND_UP: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
+  TREND_DOWN: "bg-rose-500/20 text-rose-400 border-rose-500/30",
   BALANCE: "bg-amber-500/20 text-amber-400 border-amber-500/30",
   REVERSAL: "bg-red-500/20 text-red-400 border-red-500/30",
 };
