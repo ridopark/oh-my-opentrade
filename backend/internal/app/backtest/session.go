@@ -265,6 +265,42 @@ func (r *SessionResolver) LoadSwings(ctx context.Context, db *sql.DB, sym domain
 	return nil
 }
 
+// KeyLevelPrices returns key price levels (pd_high, pd_low, or_high, or_low)
+// for confluence scoring in the AVWAP strategy.
+func (r *SessionResolver) KeyLevelPrices(symbol string, barTime time.Time) map[string]float64 {
+	symSessions := r.sessions[symbol]
+	if symSessions == nil {
+		return nil
+	}
+	et := barTime.In(r.loc)
+	today := et.Format("2006-01-02")
+	yesterday := et.AddDate(0, 0, -1).Format("2006-01-02")
+	if et.Weekday() == time.Monday {
+		yesterday = et.AddDate(0, 0, -3).Format("2006-01-02")
+	}
+
+	prevDay := symSessions[yesterday]
+	todayData := symSessions[today]
+
+	levels := make(map[string]float64)
+	if prevDay.High > 0 {
+		levels["pd_high"] = prevDay.High
+	}
+	if prevDay.Low > 0 {
+		levels["pd_low"] = prevDay.Low
+	}
+	if todayData.ORHigh > 0 {
+		levels["or_high"] = todayData.ORHigh
+	}
+	if todayData.ORLow > 0 {
+		levels["or_low"] = todayData.ORLow
+	}
+	if len(levels) == 0 {
+		return nil
+	}
+	return levels
+}
+
 func (r *SessionResolver) PreviousDay(symbol string, barTime time.Time) *SessionData {
 	symSessions := r.sessions[symbol]
 	if symSessions == nil {
