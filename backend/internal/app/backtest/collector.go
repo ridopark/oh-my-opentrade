@@ -278,9 +278,13 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 		for _, tr := range opens {
 			price := lastPrice
 			if price <= 0 {
-				price = tr.Price // fallback to entry price
+				price = tr.Price
 			}
-			equity += tr.Quantity * price
+			mult := tr.Multiplier
+			if mult <= 0 {
+				mult = 1
+			}
+			equity += tr.Quantity * price * mult
 		}
 	}
 	for sym, opens := range c.openSells {
@@ -289,6 +293,10 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 			price := lastPrice
 			if price <= 0 {
 				price = tr.Price
+			}
+			mult := tr.Multiplier
+			if mult <= 0 {
+				mult = 1
 			}
 			// Short obligation: subtract current cost to cover.
 			// Cash already includes sale proceeds (qty * entryPrice),
@@ -323,9 +331,13 @@ func (c *Collector) Result() Result {
 		for _, tr := range opens {
 			price := lastPrice
 			if price <= 0 {
-				price = tr.Price
+				price = tr.Price // fallback to entry price if no market data
 			}
-			finalEquity += tr.Quantity * price
+			mult := tr.Multiplier
+			if mult <= 0 {
+				mult = 1
+			}
+			finalEquity += tr.Quantity * price * mult
 		}
 	}
 	for sym, opens := range c.openSells {
@@ -335,8 +347,11 @@ func (c *Collector) Result() Result {
 			if price <= 0 {
 				price = tr.Price
 			}
-			// Short obligation: subtract current cost to cover.
-			finalEquity -= tr.Quantity * price
+			mult := tr.Multiplier
+			if mult <= 0 {
+				mult = 1
+			}
+			finalEquity -= tr.Quantity * price * mult
 		}
 	}
 
