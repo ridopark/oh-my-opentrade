@@ -1552,72 +1552,37 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 	return nil, nil
 }
 
-// evaluateEntries runs regime-appropriate entry checks in priority order.
-// Instead of running all 7 entries on every bar, we group by market state:
-//
-//   Compression (BALANCE):  Pinch — wait for the "Victor" to emerge
-//   Reversal (REVERSAL):    Capitulation Reclaim, Breakout — trend exhaustion
-//   Continuation (TREND):   Pullback, Handoff, Bounce — ride the "innocent" trend
-//   Catalyst (any regime):  Gap Reclaim — fresh perception change (always checked)
-//
-// Pinch is also checked in all regimes since compression can occur in any state.
+// evaluateEntries runs all entry checks in conviction-priority order.
+// Confluence scoring handles quality filtering — no regime gating needed.
+// Priority (per Brian Shannon research):
+//   1. Pinch — massive pent-up energy from AVWAP convergence
+//   2. Capitulation Reclaim — institutional turnover / exhaustion reversal
+//   3. Gap Reclaim — immediate response to a fresh catalyst
+//   4. Pullback — confluence entry (AVWAP + trend structure)
+//   5. Handoff — riding an accelerating "fast trend"
+//   6. Breakout — sustained above/below AVWAP with volume
+//   7. Bounce — lowest conviction, mean-reversion at AVWAP
 func (s *AVWAPState) evaluateEntries(ec entryContext) (*start.Signal, error) {
-	regime := ec.regimeTag
-	isTrend := regime == "TREND_UP" || regime == "TREND_DOWN" || regime == "TREND"
-	isReversal := regime == "REVERSAL"
-	isBalance := regime == "BALANCE"
-
-	// --- Always: Compression (Pinch can resolve in any regime) ---
 	if sig, err := s.evaluatePinch(ec); err != nil || sig != nil {
 		return sig, err
 	}
-
-	// --- Always: Catalyst (Gap Reclaim is event-driven, not regime-dependent) ---
+	if sig, err := s.evaluateCapitulationReclaim(ec); err != nil || sig != nil {
+		return sig, err
+	}
 	if sig, err := s.evaluateGapReclaim(ec); err != nil || sig != nil {
 		return sig, err
 	}
-
-	// --- Reversal regime: trend exhaustion entries ---
-	if isReversal {
-		if sig, err := s.evaluateCapitulationReclaim(ec); err != nil || sig != nil {
-			return sig, err
-		}
-		if sig, err := s.evaluateBreakout(ec); err != nil || sig != nil {
-			return sig, err
-		}
+	if sig, err := s.evaluatePullback(ec); err != nil || sig != nil {
+		return sig, err
 	}
-
-	// --- Trend regime: continuation entries ---
-	if isTrend {
-		if sig, err := s.evaluatePullback(ec); err != nil || sig != nil {
-			return sig, err
-		}
-		if sig, err := s.evaluateHandoff(ec); err != nil || sig != nil {
-			return sig, err
-		}
-		if sig, err := s.evaluateBounce(ec); err != nil || sig != nil {
-			return sig, err
-		}
+	if sig, err := s.evaluateHandoff(ec); err != nil || sig != nil {
+		return sig, err
 	}
-
-	// --- Balance regime: only pinch + gap reclaim (already checked above) ---
-	// In BALANCE, pullback/breakout/bounce are noise — the "trend" is just chop.
-	// Exception: allow pullback in BALANCE if it passes the extra +3 bar gate
-	// (already implemented in evaluatePullback's BALANCE regime check).
-	if isBalance {
-		if sig, err := s.evaluatePullback(ec); err != nil || sig != nil {
-			return sig, err
-		}
+	if sig, err := s.evaluateBreakout(ec); err != nil || sig != nil {
+		return sig, err
 	}
-
-	// No regime data yet (warmup) — allow continuation entries as fallback
-	if regime == "none" || regime == "" {
-		if sig, err := s.evaluatePullback(ec); err != nil || sig != nil {
-			return sig, err
-		}
-		if sig, err := s.evaluateBreakout(ec); err != nil || sig != nil {
-			return sig, err
-		}
+	if sig, err := s.evaluateBounce(ec); err != nil || sig != nil {
+		return sig, err
 	}
 	return nil, nil
 }
