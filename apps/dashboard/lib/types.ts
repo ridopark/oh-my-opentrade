@@ -2,7 +2,7 @@
 
 export type Direction = "LONG" | "SHORT";
 export type EnvMode = "Paper" | "Live";
-export type RegimeType = "TREND" | "BALANCE" | "REVERSAL";
+export type RegimeType = "TREND" | "TREND_UP" | "TREND_DOWN" | "BALANCE" | "REVERSAL";
 export type Timeframe = "1m" | "5m" | "15m" | "1h" | "1d";
 
 export type EventType =

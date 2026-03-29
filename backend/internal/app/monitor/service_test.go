@@ -250,8 +250,8 @@ func TestService_EmitsRegimeShifted(t *testing.T) {
 	regime, ok := emitted.Payload.(domain.MarketRegime)
 	require.True(t, ok)
 	assert.Equal(t, sym, regime.Symbol)
-	// With ascending prices EMA21 > EMA50 → TREND
-	assert.Equal(t, domain.RegimeTrend, regime.Type)
+	// With ascending prices EMA21 > EMA50 → TREND_UP
+	assert.Equal(t, domain.RegimeTrendUp, regime.Type)
 }
 
 func TestService_EmitsSetupDetected(t *testing.T) {

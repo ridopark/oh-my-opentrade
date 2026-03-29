@@ -119,7 +119,7 @@ func TestAIScalperStrategy_NoEntryInTrend(t *testing.T) {
 	st, err := s.Init(ctx, "AAPL", aiScalperParams(), nil)
 	require.NoError(t, err)
 
-	regimes := map[string]strat.AnchorRegime{"5m": {Type: "TREND", Strength: 0.8}}
+	regimes := map[string]strat.AnchorRegime{"5m": {Type: "TREND_UP", Strength: 0.8}}
 
 	scalperSt := st.(*builtin.AIScalperState)
 	scalperSt.SetIndicators(strat.IndicatorData{RSI: 25, StochK: 15, StochD: 18, AnchorRegimes: regimes})
@@ -158,7 +158,7 @@ func TestAIScalperStrategy_ExitLong_RegimeFlipTrend(t *testing.T) {
 	st, err := s.Init(ctx, "AAPL", aiScalperParams(), nil)
 	require.NoError(t, err)
 
-	regimes := map[string]strat.AnchorRegime{"5m": {Type: "TREND", Strength: 0.9}}
+	regimes := map[string]strat.AnchorRegime{"5m": {Type: "TREND_UP", Strength: 0.9}}
 
 	scalperSt := st.(*builtin.AIScalperState)
 	scalperSt.PositionSide = strat.SideBuy
@@ -168,7 +168,7 @@ func TestAIScalperStrategy_ExitLong_RegimeFlipTrend(t *testing.T) {
 	require.Len(t, signals, 1)
 	assert.Equal(t, strat.SignalExit, signals[0].Type)
 	assert.Equal(t, strat.SideSell, signals[0].Side)
-	assert.Equal(t, "TREND", signals[0].Tags["regime_5m"])
+	assert.Equal(t, "TREND_UP", signals[0].Tags["regime_5m"])
 }
 
 func TestAIScalperStrategy_ExitShort_RSIMid(t *testing.T) {

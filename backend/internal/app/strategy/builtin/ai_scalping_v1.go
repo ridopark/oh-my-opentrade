@@ -189,12 +189,12 @@ func (s *AIScalperStrategy) OnBar(ctx start.Context, symbol string, bar start.Ba
 	regimeAllowed := true
 	if ar, ok2 := aiSt.Indicators.AnchorRegimes["5m"]; ok2 {
 		regimeTag = ar.Type
-		if ar.Type == "TREND" {
+		if ar.Type == "TREND" || ar.Type == "TREND_UP" || ar.Type == "TREND_DOWN" {
 			regimeIsTrend = true
 		}
 		regimeAllowed = false
 		for _, allowed := range cfg.AllowRegimes {
-			if ar.Type == allowed {
+			if ar.Type == allowed || (allowed == "TREND" && (ar.Type == "TREND_UP" || ar.Type == "TREND_DOWN")) {
 				regimeAllowed = true
 				break
 			}

@@ -263,7 +263,7 @@ func TestAVWAPStrategy_RegimeGating_TrendBlocksBounce(t *testing.T) {
 	st, signals := feedAVWAPBar(t, s, ctx, "AAPL", st, strat.Bar{Time: start, Open: 100, High: 100, Low: 100, Close: 100, Volume: 10}, strat.IndicatorData{VolumeSMA: 10})
 	assert.Empty(t, signals)
 
-	ind := strat.IndicatorData{RSI: 20, VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "TREND", Strength: 0.8}}}
+	ind := strat.IndicatorData{RSI: 20, VolumeSMA: 10, AnchorRegimes: map[string]strat.AnchorRegime{"5m": {Type: "TREND_UP", Strength: 0.8}}}
 	bounce := strat.Bar{Time: start.Add(time.Minute), Open: 99, High: 101, Low: 99, Close: 100.5, Volume: 10}
 	_, signals = feedAVWAPBar(t, s, ctx, "AAPL", st, bounce, ind)
 	assert.Empty(t, signals)

@@ -36,7 +36,7 @@ type RegimeConstraintsMap map[RegimeConstraintKey]ContractSelectionConstraints
 func (c OptionsConfig) ToRegimeConstraintsMap() RegimeConstraintsMap {
 	res := make(RegimeConstraintsMap)
 	for _, dir := range []Direction{DirectionLong, DirectionShort} {
-		for _, reg := range []RegimeType{RegimeTrend, RegimeBalance, RegimeReversal} {
+		for _, reg := range []RegimeType{RegimeTrend, RegimeTrendUp, RegimeTrendDown, RegimeBalance, RegimeReversal} {
 			res[RegimeConstraintKey{Direction: dir, Regime: reg}] = c.Defaults
 		}
 	}
@@ -66,6 +66,18 @@ func (c OptionsConfig) ToRegimeConstraintsMap() RegimeConstraintsMap {
 func DefaultRegimeConstraints() RegimeConstraintsMap {
 	byRegime := map[RegimeType]ContractSelectionConstraints{
 		RegimeTrend: {
+			MinDTE:          35,
+			MaxDTE:          45,
+			TargetDeltaLow:  0.40,
+			TargetDeltaHigh: 0.55,
+		},
+		RegimeTrendUp: {
+			MinDTE:          35,
+			MaxDTE:          45,
+			TargetDeltaLow:  0.40,
+			TargetDeltaHigh: 0.55,
+		},
+		RegimeTrendDown: {
 			MinDTE:          35,
 			MaxDTE:          45,
 			TargetDeltaLow:  0.40,
