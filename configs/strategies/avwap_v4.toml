@@ -33,17 +33,17 @@ anchors = ["session_open", "pd_high", "pd_low"]
 # --- Entry Types ---
 # Breakout: price sustains above/below AVWAP for hold_bars with volume confirmation
 breakout_enabled = true
-hold_bars = 6
+hold_bars = 8
 
 # Pullback: price pulls back to AVWAP in an established trend, closes on right side
 pullback_enabled = true
-pullback_trend_bars = 5
+pullback_trend_bars = 7
 pullback_tolerance_bps = 25
 pullback_rsi_min = 30.0
 pullback_rsi_max = 65.0
 
-# Bounce: mean-reversion touch of AVWAP with RSI confirmation
-bounce_enabled = true
+# Bounce: mean-reversion touch of AVWAP with RSI confirmation (disabled — lowest conviction)
+bounce_enabled = false
 rsi_bounce_max = 35.0
 
 # Pinch: dual-AVWAP compression breakout (gap between anchors narrows)
@@ -62,7 +62,7 @@ handoff_min_mom_bps = 40
 
 # --- Volume & Regime ---
 # Minimum volume multiple vs 20-bar SMA to confirm entries
-volume_mult = 2.0
+volume_mult = 2.5
 
 # Allowed EMA regimes (TREND matches both TREND_UP and TREND_DOWN)
 allow_regimes = ["TREND", "BALANCE", "REVERSAL"]
@@ -109,10 +109,10 @@ allowed_hours_end = "13:30"
 allowed_hours_tz = "America/New_York"
 
 # Cooldown between trades on the same symbol (seconds)
-cooldown_seconds = 3000
+cooldown_seconds = 3600
 
 # Maximum entries per symbol per session
-max_trades_per_day = 4
+max_trades_per_day = 2
 
 # Bars to hold before basic AVWAP exit check fires
 exit_hold_bars = 4
@@ -125,7 +125,7 @@ avwap_stop_buffer_bps = 10
 
 # --- Confluence Weighting ---
 # Entries scored 0-10 based on confirmation factors. Below threshold = filtered out.
-min_confluence_score = 3
+min_confluence_score = 7
 
 # Fibonacci convergence (+3): AVWAP aligns with 38.2%/50%/61.8% retracement
 fib_confluence_enabled = true
@@ -183,7 +183,7 @@ pct = 0.015
 enabled = true
 
 # Cap contract count to limit spread drag on cheap options
-max_contracts = 15
+max_contracts = 5
 
 [options.defaults]
 min_dte = 14
