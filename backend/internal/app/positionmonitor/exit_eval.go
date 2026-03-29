@@ -3,6 +3,7 @@ package positionmonitor
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -54,7 +55,17 @@ func (s *Service) tick() {
 	defer s.mu.Unlock()
 	now := s.nowFunc()
 
-	for _, pos := range s.positions {
+	// Sort position keys for deterministic evaluation order across runs.
+	// Go map iteration is random — without sorting, exit evaluations happen
+	// in unpredictable order, causing non-deterministic backtest results.
+	posKeys := make([]string, 0, len(s.positions))
+	for k := range s.positions {
+		posKeys = append(posKeys, k)
+	}
+	sort.Strings(posKeys)
+
+	for _, key := range posKeys {
+		pos := s.positions[key]
 		if pos.ExitPending {
 			if now.Sub(pos.ExitPendingAt) > exitPendingTimeout {
 				s.handleExitTimeout(pos)

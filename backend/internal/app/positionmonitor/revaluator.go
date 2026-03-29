@@ -286,7 +286,7 @@ func (r *Revaluator) evaluatePosition(ctx context.Context, pos domain.MonitoredP
 		RuleChanges:     ruleChanges,
 	}
 
-	idempotencyKey := fmt.Sprintf("REVAL:%s:%s:%s:%d", pos.TenantID, pos.EnvMode, pos.Symbol, time.Now().Unix())
+	idempotencyKey := fmt.Sprintf("REVAL:%s:%s:%s:%d", pos.TenantID, pos.EnvMode, pos.Symbol, pos.EntryTime.Unix())
 	r.emit(ctx, domain.EventRiskRevaluated, pos.TenantID, pos.EnvMode, idempotencyKey, revalEvent)
 
 	r.log.Info().
@@ -297,7 +297,7 @@ func (r *Revaluator) evaluatePosition(ctx context.Context, pos domain.MonitoredP
 		Msg("risk re-evaluation complete")
 
 	if result.ThesisStatus == domain.ThesisDegrading || result.ThesisStatus == domain.ThesisInvalidated {
-		downgradeKey := fmt.Sprintf("DOWNGRADE:%s:%s:%s:%d", pos.TenantID, pos.EnvMode, pos.Symbol, time.Now().Unix())
+		downgradeKey := fmt.Sprintf("DOWNGRADE:%s:%s:%s:%d", pos.TenantID, pos.EnvMode, pos.Symbol, pos.EntryTime.Unix())
 		r.emit(ctx, domain.EventRiskDowngraded, pos.TenantID, pos.EnvMode, downgradeKey, map[string]any{
 			"symbol":        string(pos.Symbol),
 			"thesis_status": string(result.ThesisStatus),
@@ -380,7 +380,7 @@ func (r *Revaluator) triggerScaleOut(ctx context.Context, pos domain.MonitoredPo
 	}
 
 	idempotencyKey := fmt.Sprintf("REVAL_SCALE:%s:%s:%s:%d",
-		pos.TenantID, pos.EnvMode, pos.Symbol, time.Now().Unix())
+		pos.TenantID, pos.EnvMode, pos.Symbol, pos.EntryTime.Unix())
 
 	scaleDir := domain.DirectionCloseLong
 	if pos.IsShort() {
