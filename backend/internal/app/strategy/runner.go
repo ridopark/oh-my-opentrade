@@ -674,9 +674,8 @@ func (r *Runner) ProcessBar(ctx context.Context, symbol string, bar start.Bar, i
 	var allSignals []start.Signal
 
 	for _, inst := range instances {
-		now := time.Now()
 		instCtx := &instanceContext{
-			now:    now,
+			now:    bar.Time, // use bar time, not wall clock — deterministic in backtests
 			logger: r.logger.With("instance_id", inst.ID().String(), "symbol", symbol),
 			emit: func(evt any) error {
 				return r.emitDomainEvent(ctx, r.tenantID, r.envMode, evt)
@@ -692,7 +691,7 @@ func (r *Runner) ProcessBar(ctx context.Context, symbol string, bar start.Bar, i
 
 	if r.swapManager != nil {
 		swapCtx := &instanceContext{
-			now:    time.Now(),
+			now:    bar.Time,
 			logger: r.logger.With("symbol", symbol),
 			emit:   func(_ any) error { return nil },
 		}
@@ -882,6 +881,10 @@ func (r *Runner) handleFill(_ context.Context, event domain.Event) error {
 	side, _ := payload["side"].(string)
 	qty, _ := payload["quantity"].(float64)
 	price, _ := payload["price"].(float64)
+	filledAt, _ := payload["filled_at"].(time.Time)
+	if filledAt.IsZero() {
+		filledAt = time.Now()
+	}
 
 	if symbol == "" || strategyName == "" {
 		return nil
@@ -906,7 +909,7 @@ func (r *Runner) handleFill(_ context.Context, event domain.Event) error {
 	}
 
 	instCtx := &instanceContext{
-		now:    time.Now(),
+		now:    filledAt,
 		logger: r.logger.With("instance_id", inst.ID().String(), "symbol", symbol),
 		emit:   func(_ any) error { return nil },
 	}
@@ -969,7 +972,7 @@ func (r *Runner) handleRejection(_ context.Context, event domain.Event) error {
 	}
 
 	instCtx := &instanceContext{
-		now:    time.Now(),
+		now:    time.Now(), // rejection timing is not critical for determinism
 		logger: r.logger.With("instance_id", inst.ID().String(), "symbol", payload.Symbol),
 		emit:   func(_ any) error { return nil },
 	}
