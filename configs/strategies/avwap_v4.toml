@@ -97,7 +97,7 @@ stop_bps = 75
 limit_offset_bps = 5
 
 # Maximum risk per trade as basis points of equity
-risk_per_trade_bps = 1500
+risk_per_trade_bps = 2500
 
 # Maximum position size as basis points of equity
 max_position_bps = 3000
@@ -109,10 +109,10 @@ allowed_hours_end = "13:30"
 allowed_hours_tz = "America/New_York"
 
 # Cooldown between trades on the same symbol (seconds)
-cooldown_seconds = 1800
+cooldown_seconds = 3000
 
 # Maximum entries per symbol per session
-max_trades_per_day = 2
+max_trades_per_day = 4
 
 # Bars to hold before basic AVWAP exit check fires
 exit_hold_bars = 4
@@ -199,9 +199,31 @@ max_dte = 45
 
 # --- Symbol Overrides ---
 
+# TSLA: high volatility, gets whipsawed. Wider stop, fewer trades, higher confluence.
 [symbol_overrides.TSLA]
 stop_bps = 120
+max_trades_per_day = 2
+cooldown_seconds = 3600
+min_confluence_score = 5
+volume_mult = 2.5
 
+# AAPL: low volatility, small option premium moves. Tighter stop, limit trades.
 [symbol_overrides.AAPL]
-max_trades_per_day = 1
 stop_bps = 60
+max_trades_per_day = 1
+min_confluence_score = 5
+
+# GOOGL: worst WR (28%). Restrict to high-confluence entries only.
+[symbol_overrides.GOOGL]
+max_trades_per_day = 2
+cooldown_seconds = 3600
+min_confluence_score = 5
+volume_mult = 2.5
+
+# NVDA: over-trades (166). Reduce frequency, require stronger signals.
+[symbol_overrides.NVDA]
+max_trades_per_day = 2
+cooldown_seconds = 3600
+min_confluence_score = 5
+
+# META: works well with defaults. No overrides needed.
