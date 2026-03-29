@@ -92,12 +92,14 @@ gap_reclaim_bars = 5
 handoff_enabled = true
 handoff_bars = 5
 handoff_min_mom_bps = 40
-# Confluence weighting — start at 0 to collect data, then tune threshold
-min_confluence_score = 0
+# Confluence weighting — score 0 trades are the worst (-$36/trade avg).
+# Score 3+ trades have 40% WR and positive avg PnL.
+min_confluence_score = 2
 fib_confluence_enabled = true
 key_level_confluence_enabled = true
 candle_confluence_enabled = true
-band_confluence_enabled = true
+# Band zone disabled — negative edge (-2.4% WR vs without)
+band_confluence_enabled = false
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
 
