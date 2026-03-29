@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -100,10 +101,16 @@ func (r *Runner) resolveSessionAnchors(symbol string, barTime time.Time) {
 						UpdateCalcAnchor(name string, bar start.Bar)
 					}
 					if au, ok := st.(anchorUpdater); ok {
-						for name, anchorTime := range resolved {
-							if name == "session_open" {
-								continue // session_open starts today, no replay needed
+						// Sort for deterministic replay order
+						sortedNames := make([]string, 0, len(resolved))
+						for name := range resolved {
+							if name != "session_open" {
+								sortedNames = append(sortedNames, name)
 							}
+						}
+						sort.Strings(sortedNames)
+						for _, name := range sortedNames {
+							anchorTime := resolved[name]
 							prevBars := r.prevDayBarsFn(symbol, anchorTime)
 							if len(prevBars) > 0 {
 								r.logger.Info("replaying prev-day bars for anchor",
@@ -190,21 +197,27 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 			ar.ResetAnchors(merged)
 			// Replay previous day's bars for non-session_open anchors
 			if r.prevDayBarsFn != nil {
-				type calcUpdater interface {
-					UpdateCalc(bar start.Bar)
+				type anchorUpdater interface {
+					UpdateCalcAnchor(name string, bar start.Bar)
 				}
-				if cu, ok2 := st.(calcUpdater); ok2 {
-					for name, anchorTime := range merged {
-						if name == "session_open" {
-							continue
+				if au, ok2 := st.(anchorUpdater); ok2 {
+					// Sort anchor names for deterministic replay order
+					sortedNames := make([]string, 0, len(merged))
+					for name := range merged {
+						if name != "session_open" {
+							sortedNames = append(sortedNames, name)
 						}
+					}
+					sort.Strings(sortedNames)
+					for _, name := range sortedNames {
+						anchorTime := merged[name]
 						prevBars := r.prevDayBarsFn(symbol, anchorTime)
 						if len(prevBars) > 0 {
 							r.logger.Info("replaying prev-day bars for anchor",
 								"symbol", symbol, "anchor", name, "bars", len(prevBars),
 								"from", prevBars[0].Time, "to", prevBars[len(prevBars)-1].Time)
 							for _, b := range prevBars {
-								cu.UpdateCalc(b)
+								au.UpdateCalcAnchor(name, b)
 							}
 						}
 					}
