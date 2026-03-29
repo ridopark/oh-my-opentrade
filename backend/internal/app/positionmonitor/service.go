@@ -248,10 +248,11 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 
 	// Outbox publisher goroutine — reads exit intents and publishes them.
-	go s.runOutbox(ctx)
-
-	// Actor tick loop — the single goroutine that owns all mutable state.
+	// In backtest mode (disableTickLoop), drainOutbox handles this synchronously
+	// to avoid race conditions with the sync event bus.
 	if !s.disableTickLoop {
+		go s.runOutbox(ctx)
+		// Actor tick loop — the single goroutine that owns all mutable state.
 		go s.runTickLoop(ctx)
 	}
 
