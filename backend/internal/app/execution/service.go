@@ -55,10 +55,16 @@ type Service struct {
 	envMode            domain.EnvMode
 	syncFill           bool
 	brokerName         string
+	nowFn              func() time.Time
 }
 
 // Option is a functional option for Service.
 type Option func(*Service)
+
+// WithNowFunc sets a custom time function (for deterministic backtests).
+func WithNowFunc(fn func() time.Time) Option {
+	return func(s *Service) { s.nowFn = fn }
+}
 
 // WithPositionGate attaches a PositionGate to the execution pipeline.
 func WithBrokerName(name string) Option {
@@ -123,6 +129,9 @@ func NewService(
 	}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if s.nowFn == nil {
+		s.nowFn = time.Now
 	}
 	return s
 }
@@ -582,7 +591,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	}
 
 	// 6. Submit to broker.
-	submitStart := time.Now()
+	submitStart := s.nowFn()
 	brokerOrderID, err := s.broker.SubmitOrder(ctx, intent)
 	if err != nil {
 		span.RecordError(err)

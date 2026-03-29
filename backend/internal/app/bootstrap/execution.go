@@ -87,6 +87,9 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 	}
 	if deps.IsBacktest {
 		execOpts = append(execOpts, execution.WithSyncFill())
+		if deps.Clock != nil {
+			execOpts = append(execOpts, execution.WithNowFunc(deps.Clock))
+		}
 	}
 	if deps.AccountPort != nil {
 		bpGuard := execution.NewBuyingPowerGuard(deps.AccountPort, execLog)
