@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect, useMemo, useCallback, useImperative
 import {
   createChart,
   ColorType,
+  AreaSeries,
   CandlestickSeries,
   HistogramSeries,
   LineSeries,
@@ -1334,7 +1335,7 @@ function MetricsPanelInline({
 function EquityCurveInline({ data }: { data: { time: number; value: number }[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<"Line", Time> | null>(null);
+  const seriesRef = useRef<ISeriesApi<"Area", Time> | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -1347,7 +1348,12 @@ function EquityCurveInline({ data }: { data: { time: number; value: number }[] }
       crosshair: { mode: CrosshairMode.Normal },
     });
     chartRef.current = chart;
-    const series = chart.addSeries(LineSeries, { color: "#10b981", lineWidth: 2, priceLineVisible: false, lastValueVisible: true });
+    const series = chart.addSeries(AreaSeries, {
+      lineColor: "#10b981", lineWidth: 2,
+      topColor: "rgba(16, 185, 129, 0.3)",
+      bottomColor: "rgba(16, 185, 129, 0.02)",
+      priceLineVisible: false, lastValueVisible: true,
+    });
     seriesRef.current = series;
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) chart.applyOptions({ width: entry.contentRect.width, height: entry.contentRect.height });
