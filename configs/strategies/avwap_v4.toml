@@ -13,7 +13,7 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "U", "PLTR", "SPY", "META", "NVDA"]
+symbols = ["GOOGL", "HIMS", "HOOD", "META", "MSFT", "NFLX", "PLTR", "SOFI", "XOM"]
 timeframes = ["5m"]
 priority = 80
 conflict_policy = "priority_wins"
@@ -97,10 +97,10 @@ stop_bps = 75
 limit_offset_bps = 5
 
 # Maximum risk per trade as basis points of equity
-risk_per_trade_bps = 2500
+risk_per_trade_bps = 1000
 
 # Maximum position size as basis points of equity
-max_position_bps = 3000
+max_position_bps = 2000
 
 # --- Timing ---
 # Trading window (ET). Entries only allowed within this range.
@@ -154,7 +154,7 @@ type = "SWING_STOP"
 [exit_rules.params]
 lookback = 10
 buffer_bps = 25
-atr_buffer_mult = 0.5
+atr_buffer_mult = 0.75
 min_bars = 6
 
 # Stagnation exit: close trades that go nowhere after N minutes
@@ -182,6 +182,9 @@ pct = 0.015
 [options]
 enabled = true
 
+# Cap contract count to limit spread drag on cheap options
+max_contracts = 15
+
 [options.defaults]
 min_dte = 14
 max_dte = 45
@@ -197,33 +200,4 @@ target_delta_high = 0.70
 min_dte = 14
 max_dte = 45
 
-# --- Symbol Overrides ---
-
-# TSLA: high volatility, gets whipsawed. Wider stop, fewer trades, higher confluence.
-[symbol_overrides.TSLA]
-stop_bps = 120
-max_trades_per_day = 2
-cooldown_seconds = 3600
-min_confluence_score = 5
-volume_mult = 2.5
-
-# AAPL: low volatility, small option premium moves. Tighter stop, limit trades.
-[symbol_overrides.AAPL]
-stop_bps = 60
-max_trades_per_day = 1
-min_confluence_score = 5
-
-# GOOGL: worst WR (28%). Restrict to high-confluence entries only.
-[symbol_overrides.GOOGL]
-max_trades_per_day = 2
-cooldown_seconds = 3600
-min_confluence_score = 5
-volume_mult = 2.5
-
-# NVDA: over-trades (166). Reduce frequency, require stronger signals.
-[symbol_overrides.NVDA]
-max_trades_per_day = 2
-cooldown_seconds = 3600
-min_confluence_score = 5
-
-# META: works well with defaults. No overrides needed.
+# No symbol overrides — same params for all symbols to avoid overfitting

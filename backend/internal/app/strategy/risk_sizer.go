@@ -830,6 +830,16 @@ func (rs *RiskSizer) handleOptionsSignal(
 		)
 		return nil
 	}
+	// Cap contract count to limit spread drag on cheap options
+	maxContracts := spec.Options.MaxContracts
+	if maxContracts <= 0 {
+		maxContracts = 15 // default cap
+	}
+	if qty > float64(maxContracts) {
+		rs.logger.Info("capping option contracts",
+			"symbol", sigRef.Symbol, "computed", qty, "cap", maxContracts)
+		qty = float64(maxContracts)
+	}
 	maxLossUSD := premiumPerContract * qty
 
 	inst, err := domain.NewInstrument(
