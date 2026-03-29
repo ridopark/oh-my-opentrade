@@ -1416,24 +1416,32 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 	return nil, nil
 }
 
-// evaluateEntries runs all entry checks in order and returns the first triggered signal.
+// evaluateEntries runs all entry checks in priority order and returns the first triggered signal.
+// Priority (per Brian Shannon research):
+//   1. Pinch — massive pent-up energy from AVWAP convergence
+//   2. Capitulation Reclaim — institutional turnover / exhaustion reversal
+//   3. Gap Reclaim — immediate response to a fresh catalyst
+//   4. Pullback — confluence entry (AVWAP + trend structure)
+//   5. Handoff — riding an accelerating "fast trend"
+//   6. Breakout — sustained above/below AVWAP with volume
+//   7. Bounce — lowest conviction, mean-reversion at AVWAP
 func (s *AVWAPState) evaluateEntries(ec entryContext) (*start.Signal, error) {
-	if sig, err := s.evaluateCapitulationReclaim(ec); err != nil || sig != nil {
-		return sig, err
-	}
-	if sig, err := s.evaluateBreakout(ec); err != nil || sig != nil {
-		return sig, err
-	}
-	if sig, err := s.evaluatePullback(ec); err != nil || sig != nil {
-		return sig, err
-	}
 	if sig, err := s.evaluatePinch(ec); err != nil || sig != nil {
+		return sig, err
+	}
+	if sig, err := s.evaluateCapitulationReclaim(ec); err != nil || sig != nil {
 		return sig, err
 	}
 	if sig, err := s.evaluateGapReclaim(ec); err != nil || sig != nil {
 		return sig, err
 	}
+	if sig, err := s.evaluatePullback(ec); err != nil || sig != nil {
+		return sig, err
+	}
 	if sig, err := s.evaluateHandoff(ec); err != nil || sig != nil {
+		return sig, err
+	}
+	if sig, err := s.evaluateBreakout(ec); err != nil || sig != nil {
 		return sig, err
 	}
 	if sig, err := s.evaluateBounce(ec); err != nil || sig != nil {
