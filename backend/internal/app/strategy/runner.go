@@ -96,10 +96,10 @@ func (r *Runner) resolveSessionAnchors(symbol string, barTime time.Time) {
 				// Without this, pd_high/pd_low anchors activate on today's first bar
 				// and produce identical AVWAP values as session_open.
 				if r.prevDayBarsFn != nil {
-					type calcUpdater interface {
-						UpdateCalc(bar start.Bar)
+					type anchorUpdater interface {
+						UpdateCalcAnchor(name string, bar start.Bar)
 					}
-					if cu, ok := st.(calcUpdater); ok {
+					if au, ok := st.(anchorUpdater); ok {
 						for name, anchorTime := range resolved {
 							if name == "session_open" {
 								continue // session_open starts today, no replay needed
@@ -110,7 +110,7 @@ func (r *Runner) resolveSessionAnchors(symbol string, barTime time.Time) {
 									"symbol", symbol, "anchor", name, "bars", len(prevBars),
 									"from", prevBars[0].Time, "to", prevBars[len(prevBars)-1].Time)
 								for _, b := range prevBars {
-									cu.UpdateCalc(b)
+									au.UpdateCalcAnchor(name, b)
 								}
 							}
 						}
