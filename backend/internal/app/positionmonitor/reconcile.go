@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -37,7 +38,12 @@ func (s *Service) reconcileWithBroker(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for key, pos := range s.positions {
+	// Sort for deterministic reconciliation order
+	reconKeys := make([]string, 0, len(s.positions))
+	for k := range s.positions { reconKeys = append(reconKeys, k) }
+	sort.Strings(reconKeys)
+	for _, key := range reconKeys {
+		pos := s.positions[key]
 		bp, onBroker := brokerBySymbol[pos.Symbol]
 		if onBroker {
 			delete(s.ghostMissCounts, key)
