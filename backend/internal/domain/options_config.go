@@ -6,6 +6,7 @@ type OptionsConfig struct {
 	Enabled         bool                                    `toml:"enabled"`
 	Defaults        ContractSelectionConstraints            `toml:"defaults"`
 	RegimeOverrides map[string]ContractSelectionConstraints `toml:"regime_overrides"`
+	MaxContracts    int                                     `toml:"max_contracts"` // cap contract count to limit spread drag (0 = use default 15)
 }
 
 // ContractSelectionConstraints holds all parameters for filtering and selecting
