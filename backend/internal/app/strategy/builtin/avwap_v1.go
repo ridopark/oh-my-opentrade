@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 
@@ -51,6 +52,23 @@ func (s *AVWAPStrategy) ReplayOnBar(_ start.Context, _ string, bar start.Bar, st
 	avwapSt.RecentHighs = append(avwapSt.RecentHighs, bar.High)
 	if len(avwapSt.RecentHighs) > cap {
 		avwapSt.RecentHighs = avwapSt.RecentHighs[len(avwapSt.RecentHighs)-cap:]
+	}
+
+	// Shift prev bars ring buffer
+	avwapSt.PrevBars[1] = avwapSt.PrevBars[0]
+	avwapSt.PrevBars[0] = bar
+	if avwapSt.PrevBarCount < 2 {
+		avwapSt.PrevBarCount++
+	}
+
+	// Rolling 50-bar high/low window for Fibonacci
+	avwapSt.BarHighs50 = append(avwapSt.BarHighs50, bar.High)
+	if len(avwapSt.BarHighs50) > 50 {
+		avwapSt.BarHighs50 = avwapSt.BarHighs50[1:]
+	}
+	avwapSt.BarLows50 = append(avwapSt.BarLows50, bar.Low)
+	if len(avwapSt.BarLows50) > 50 {
+		avwapSt.BarLows50 = avwapSt.BarLows50[1:]
 	}
 
 	return avwapSt, nil
@@ -101,6 +119,12 @@ type AVWAPConfig struct {
 	HandoffEnabled    bool
 	HandoffBars       int // consecutive bars of accelerating distance from AVWAP (default 3)
 	HandoffMinMomBPS  int // minimum final distance from AVWAP in bps to confirm handoff (default 40)
+
+	MinConfluenceScore        int  // minimum confluence score for entry (0 = no gate)
+	FibConfluenceEnabled      bool // enable Fibonacci confluence factor
+	KeyLevelConfluenceEnabled bool // enable key level confluence factor
+	CandleConfluenceEnabled   bool // enable candlestick pattern confluence factor
+	BandConfluenceEnabled     bool // enable AVWAP band zone confluence factor
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -129,6 +153,12 @@ type AVWAPState struct {
 	AVWAPDistHistory map[string][]float64 // recent close-to-AVWAP distances per anchor (for handoff detection)
 
 	LockedOutSide   start.Side // side that was stopped out; prevents same-direction re-entry
+
+	PrevBars     [2]start.Bar       // 2-bar lookback for candlestick patterns
+	PrevBarCount int                // how many prev bars have been stored (0, 1, or 2)
+	BarHighs50   []float64          // rolling 50-bar high window for Fibonacci
+	BarLows50    []float64          // rolling 50-bar low window for Fibonacci
+	KeyLevels    map[string]float64 // key price levels (pd_high, pd_low, or_high, or_low)
 }
 
 // entryContext bundles all per-bar read-only data needed by entry/exit helpers,
@@ -150,6 +180,7 @@ type entryContext struct {
 	lockedLong   bool
 	lockedShort  bool
 	etLocation   *time.Location
+	keyLevels    map[string]float64
 }
 
 // logShortGate emits a structured debug log when a short entry is blocked at a gate.
@@ -170,6 +201,11 @@ func (s *AVWAPState) SetIndicators(ind start.IndicatorData) {
 }
 
 func (s *AVWAPState) AnchorNames() []string { return s.Config.Anchors }
+
+// SetKeyLevels stores key price levels (pd_high, pd_low, or_high, or_low) for confluence scoring.
+func (s *AVWAPState) SetKeyLevels(levels map[string]float64) {
+	s.KeyLevels = levels
+}
 
 // ResetAnchors performs a partial update: anchors with unchanged times
 // preserve their running VWAP state (CumPV/CumV/M2). New or changed
@@ -522,6 +558,12 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		HandoffEnabled:   getBool(params, "handoff_enabled", false),
 		HandoffBars:      getInt(params, "handoff_bars", 3),
 		HandoffMinMomBPS: getInt(params, "handoff_min_mom_bps", 40),
+
+		MinConfluenceScore:        getInt(params, "min_confluence_score", 0),
+		FibConfluenceEnabled:      getBool(params, "fib_confluence_enabled", true),
+		KeyLevelConfluenceEnabled: getBool(params, "key_level_confluence_enabled", true),
+		CandleConfluenceEnabled:   getBool(params, "candle_confluence_enabled", true),
+		BandConfluenceEnabled:     getBool(params, "band_confluence_enabled", true),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
 	return cfg
@@ -778,18 +820,26 @@ func (s *AVWAPState) evaluateCapitulationReclaim(ec entryContext) (*start.Signal
 		}
 		if s.AboveCount[anchorName] >= 1 && s.AboveCount[anchorName] <= cfg.HoldBars &&
 			bar.Close > avwapValue && bar.Close > bar.Open && volumeOK {
+			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
+				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+				continue
+			}
+			adjustedStrength := math.Min(1.0, 0.9+float64(conf.Score)*0.03)
 			volRatio := 0.0
 			if s.Indicators.VolumeSMA > 0 {
 				volRatio = bar.Volume / s.Indicators.VolumeSMA
 			}
-			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, 0.9, map[string]string{
-				"ref_price": fmt.Sprintf("%.10f", bar.Close),
-				"setup":     "avwap_capitulation_reclaim",
-				"anchor":    anchorName,
-				"avwap":     fmt.Sprintf("%.4f", avwapValue),
-				"vol_ratio": fmt.Sprintf("%.2f", volRatio),
-				"regime_5m": regimeTag,
-				"mode":      "capitulation_reclaim",
+			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
+				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+				"setup":             "avwap_capitulation_reclaim",
+				"anchor":            anchorName,
+				"avwap":             fmt.Sprintf("%.4f", avwapValue),
+				"vol_ratio":         fmt.Sprintf("%.2f", volRatio),
+				"regime_5m":         regimeTag,
+				"mode":              "capitulation_reclaim",
+				"confluence":        fmt.Sprintf("%d", conf.Score),
+				"confluence_detail": strings.Join(conf.Factors, "+"),
 			})
 			if err != nil {
 				return nil, err
@@ -838,15 +888,23 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 				}
 				continue
 			}
-			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, 0.7, map[string]string{
-				"ref_price": fmt.Sprintf("%.10f", bar.Close),
-				"setup":     "avwap_breakout",
-				"anchor":    anchorName,
-				"avwap":     fmt.Sprintf("%.4f", avwapValue),
-				"vol_ratio": fmt.Sprintf("%.2f", volRatio),
-				"hold_bars": fmt.Sprintf("%d", s.AboveCount[anchorName]),
-				"mode":      "breakout",
-				"regime_5m": regimeTag,
+			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
+				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+				continue
+			}
+			adjustedStrength := math.Min(1.0, 0.7+float64(conf.Score)*0.03)
+			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
+				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+				"setup":             "avwap_breakout",
+				"anchor":            anchorName,
+				"avwap":             fmt.Sprintf("%.4f", avwapValue),
+				"vol_ratio":         fmt.Sprintf("%.2f", volRatio),
+				"hold_bars":         fmt.Sprintf("%d", s.AboveCount[anchorName]),
+				"mode":              "breakout",
+				"regime_5m":         regimeTag,
+				"confluence":        fmt.Sprintf("%d", conf.Score),
+				"confluence_detail": strings.Join(conf.Factors, "+"),
 			})
 			if err != nil {
 				return nil, err
@@ -903,15 +961,23 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 					logShortGate(ctx, ec.symbol, "require_capitulation", anchorName, "bias", ec.avwapBias)
 					continue
 				}
-				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, 0.7, map[string]string{
-					"ref_price": fmt.Sprintf("%.10f", bar.Close),
-					"setup":     "avwap_breakout",
-					"anchor":    anchorName,
-					"avwap":     fmt.Sprintf("%.4f", avwapValue),
-					"vol_ratio": fmt.Sprintf("%.2f", volRatio),
-					"hold_bars": fmt.Sprintf("%d", s.BelowCount[anchorName]),
-					"mode":      "breakout",
-					"regime_5m": regimeTag,
+				conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
+					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+				if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+					continue
+				}
+				adjustedStrength := math.Min(1.0, 0.7+float64(conf.Score)*0.03)
+				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, adjustedStrength, map[string]string{
+					"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+					"setup":             "avwap_breakout",
+					"anchor":            anchorName,
+					"avwap":             fmt.Sprintf("%.4f", avwapValue),
+					"vol_ratio":         fmt.Sprintf("%.2f", volRatio),
+					"hold_bars":         fmt.Sprintf("%d", s.BelowCount[anchorName]),
+					"mode":              "breakout",
+					"regime_5m":         regimeTag,
+					"confluence":        fmt.Sprintf("%d", conf.Score),
+					"confluence_detail": strings.Join(conf.Factors, "+"),
 				})
 				if err != nil {
 					return nil, err
@@ -978,15 +1044,23 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 				}
 				continue
 			}
-			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, 0.85, map[string]string{
-				"ref_price":  fmt.Sprintf("%.10f", bar.Close),
-				"setup":      "avwap_pullback",
-				"regime_5m":  regimeTag,
-				"anchor":     anchorName,
-				"avwap":      fmt.Sprintf("%.4f", avwapValue),
-				"vol_ratio":  fmt.Sprintf("%.2f", volRatio),
-				"peak_above": fmt.Sprintf("%d", s.PeakAboveCount[anchorName]),
-				"mode":       "pullback",
+			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
+				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+				continue
+			}
+			adjustedStrength := math.Min(1.0, 0.85+float64(conf.Score)*0.03)
+			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
+				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+				"setup":             "avwap_pullback",
+				"regime_5m":         regimeTag,
+				"anchor":            anchorName,
+				"avwap":             fmt.Sprintf("%.4f", avwapValue),
+				"vol_ratio":         fmt.Sprintf("%.2f", volRatio),
+				"peak_above":        fmt.Sprintf("%d", s.PeakAboveCount[anchorName]),
+				"mode":              "pullback",
+				"confluence":        fmt.Sprintf("%d", conf.Score),
+				"confluence_detail": strings.Join(conf.Factors, "+"),
 			})
 			if err != nil {
 				return nil, err
@@ -1030,15 +1104,23 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 				}
 				continue
 			}
-			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, 0.85, map[string]string{
-				"ref_price":  fmt.Sprintf("%.10f", bar.Close),
-				"setup":      "avwap_pullback",
-				"regime_5m":  regimeTag,
-				"anchor":     anchorName,
-				"avwap":      fmt.Sprintf("%.4f", avwapValue),
-				"vol_ratio":  fmt.Sprintf("%.2f", volRatio),
-				"peak_below": fmt.Sprintf("%d", s.PeakBelowCount[anchorName]),
-				"mode":       "pullback",
+			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
+				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+				continue
+			}
+			adjustedStrength := math.Min(1.0, 0.85+float64(conf.Score)*0.03)
+			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, adjustedStrength, map[string]string{
+				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+				"setup":             "avwap_pullback",
+				"regime_5m":         regimeTag,
+				"anchor":            anchorName,
+				"avwap":             fmt.Sprintf("%.4f", avwapValue),
+				"vol_ratio":         fmt.Sprintf("%.2f", volRatio),
+				"peak_below":        fmt.Sprintf("%d", s.PeakBelowCount[anchorName]),
+				"mode":              "pullback",
+				"confluence":        fmt.Sprintf("%d", conf.Score),
+				"confluence_detail": strings.Join(conf.Factors, "+"),
 			})
 			if err != nil {
 				return nil, err
@@ -1083,24 +1165,35 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 	}
 
 	volumeOK := s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA
+	// Use first anchor's AVWAP value for confluence scoring in pinch
+	pinchAVWAPValue := avwapValues[sortedAnchors[0]]
 	gapBPS := (maxAVWAP - minAVWAP) / minAVWAP * 10000.0
 	if gapBPS >= float64(cfg.PinchMinBPS) && gapBPS <= float64(cfg.PinchMaxBPS) {
 		// Long pinch breakout: price breaks above maxAVWAP.
 		if bar.Close > maxAVWAP && volumeOK && !ec.lockedLong {
 			if !(cfg.EnforceAVWAPBias && ec.avwapBias != "" && ec.avwapBias != "LONG") {
-				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, 0.9, map[string]string{
-					"ref_price": fmt.Sprintf("%.10f", bar.Close),
-					"setup":     "avwap_pinch",
-					"regime_5m": regimeTag,
-				})
-				if err != nil {
-					return nil, err
+				conf := computeConfluence(cfg, bar, pinchAVWAPValue, ec.avwapValues, s.Indicators,
+					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+				if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+					// skip — confluence too low
+				} else {
+					adjustedStrength := math.Min(1.0, 0.9+float64(conf.Score)*0.03)
+					sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
+						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+						"setup":             "avwap_pinch",
+						"regime_5m":         regimeTag,
+						"confluence":        fmt.Sprintf("%d", conf.Score),
+						"confluence_detail": strings.Join(conf.Factors, "+"),
+					})
+					if err != nil {
+						return nil, err
+					}
+					s.PendingEntry = start.SideBuy
+					s.PendingEntryAt = now
+					s.TradesToday++
+					s.CooldownUntil = now.Add(cooldown)
+					return &sig, nil
 				}
-				s.PendingEntry = start.SideBuy
-				s.PendingEntryAt = now
-				s.TradesToday++
-				s.CooldownUntil = now.Add(cooldown)
-				return &sig, nil
 			}
 		}
 
@@ -1110,19 +1203,28 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 				logShortGate(ctx, ec.symbol, "require_capitulation", "pinch", "bias", ec.avwapBias)
 				// Skip — above AVWAP, capitulation required for short pinch
 			} else if !(cfg.EnforceAVWAPBias && ec.avwapBias != "" && ec.avwapBias != "SHORT") {
-				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, 0.9, map[string]string{
-					"ref_price": fmt.Sprintf("%.10f", bar.Close),
-					"setup":     "avwap_pinch",
-					"regime_5m": regimeTag,
-				})
-				if err != nil {
-					return nil, err
+				conf := computeConfluence(cfg, bar, pinchAVWAPValue, ec.avwapValues, s.Indicators,
+					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+				if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+					// skip — confluence too low
+				} else {
+					adjustedStrength := math.Min(1.0, 0.9+float64(conf.Score)*0.03)
+					sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, adjustedStrength, map[string]string{
+						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+						"setup":             "avwap_pinch",
+						"regime_5m":         regimeTag,
+						"confluence":        fmt.Sprintf("%d", conf.Score),
+						"confluence_detail": strings.Join(conf.Factors, "+"),
+					})
+					if err != nil {
+						return nil, err
+					}
+					s.PendingEntry = start.SideSell
+					s.PendingEntryAt = now
+					s.TradesToday++
+					s.CooldownUntil = now.Add(cooldown)
+					return &sig, nil
 				}
-				s.PendingEntry = start.SideSell
-				s.PendingEntryAt = now
-				s.TradesToday++
-				s.CooldownUntil = now.Add(cooldown)
-				return &sig, nil
 			} else {
 				logShortGate(ctx, ec.symbol, "enforce_avwap_bias", "pinch", "bias", ec.avwapBias)
 			}
@@ -1169,11 +1271,19 @@ func (s *AVWAPState) evaluateGapReclaim(ec entryContext) (*start.Signal, error) 
 					}
 					continue
 				}
-				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, 0.85, map[string]string{
-					"ref_price": fmt.Sprintf("%.10f", bar.Close),
-					"setup":     "avwap_gap_reclaim",
-					"regime_5m": regimeTag,
-					"anchor":    anchorName,
+				conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
+					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+				if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+					continue
+				}
+				adjustedStrength := math.Min(1.0, 0.85+float64(conf.Score)*0.03)
+				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
+					"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+					"setup":             "avwap_gap_reclaim",
+					"regime_5m":         regimeTag,
+					"anchor":            anchorName,
+					"confluence":        fmt.Sprintf("%d", conf.Score),
+					"confluence_detail": strings.Join(conf.Factors, "+"),
 				})
 				if err != nil {
 					return nil, err
@@ -1243,14 +1353,23 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 					if cfg.MinSlopeBPS > 0 && ec.slopeOK && ec.avwapSlope < cfg.MinSlopeBPS {
 						continue
 					}
-					sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, 0.85, map[string]string{
-						"ref_price":    fmt.Sprintf("%.10f", bar.Close),
-						"setup":        "avwap_handoff",
-						"anchor":       anchorName,
-						"avwap":        fmt.Sprintf("%.4f", avwapValues[anchorName]),
-						"momentum_bps": fmt.Sprintf("%.1f", recent[len(recent)-1]),
-						"regime_5m":    regimeTag,
-						"mode":         "handoff",
+					handoffAVWAP := avwapValues[anchorName]
+					conf := computeConfluence(cfg, bar, handoffAVWAP, ec.avwapValues, s.Indicators,
+						s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+					if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+						continue
+					}
+					adjustedStrength := math.Min(1.0, 0.85+float64(conf.Score)*0.03)
+					sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
+						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+						"setup":             "avwap_handoff",
+						"anchor":            anchorName,
+						"avwap":             fmt.Sprintf("%.4f", handoffAVWAP),
+						"momentum_bps":      fmt.Sprintf("%.1f", recent[len(recent)-1]),
+						"regime_5m":         regimeTag,
+						"mode":              "handoff",
+						"confluence":        fmt.Sprintf("%d", conf.Score),
+						"confluence_detail": strings.Join(conf.Factors, "+"),
 					})
 					if err != nil {
 						return nil, err
@@ -1289,14 +1408,23 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 						logShortGate(ctx, ec.symbol, "min_slope_bps", anchorName, "slope_bps", fmt.Sprintf("%.2f", ec.avwapSlope))
 						continue
 					}
-					sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, 0.85, map[string]string{
-						"ref_price":    fmt.Sprintf("%.10f", bar.Close),
-						"setup":        "avwap_handoff",
-						"anchor":       anchorName,
-						"avwap":        fmt.Sprintf("%.4f", avwapValues[anchorName]),
-						"momentum_bps": fmt.Sprintf("%.1f", recent[len(recent)-1]),
-						"regime_5m":    regimeTag,
-						"mode":         "handoff",
+					shortHandoffAVWAP := avwapValues[anchorName]
+					conf := computeConfluence(cfg, bar, shortHandoffAVWAP, ec.avwapValues, s.Indicators,
+						s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+					if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+						continue
+					}
+					adjustedStrength := math.Min(1.0, 0.85+float64(conf.Score)*0.03)
+					sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, adjustedStrength, map[string]string{
+						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+						"setup":             "avwap_handoff",
+						"anchor":            anchorName,
+						"avwap":             fmt.Sprintf("%.4f", shortHandoffAVWAP),
+						"momentum_bps":      fmt.Sprintf("%.1f", recent[len(recent)-1]),
+						"regime_5m":         regimeTag,
+						"mode":              "handoff",
+						"confluence":        fmt.Sprintf("%d", conf.Score),
+						"confluence_detail": strings.Join(conf.Factors, "+"),
 					})
 					if err != nil {
 						return nil, err
@@ -1344,14 +1472,22 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 			if bar.Close <= bar.Open {
 				continue
 			}
-			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, 0.6, map[string]string{
-				"ref_price": fmt.Sprintf("%.10f", bar.Close),
-				"setup":     "avwap_bounce",
-				"anchor":    anchorName,
-				"avwap":     fmt.Sprintf("%.4f", avwapValue),
-				"rsi":       fmt.Sprintf("%.2f", s.Indicators.RSI),
-				"mode":      "bounce",
-				"regime_5m": regimeTag,
+			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
+				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+				continue
+			}
+			adjustedStrength := math.Min(1.0, 0.6+float64(conf.Score)*0.03)
+			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
+				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+				"setup":             "avwap_bounce",
+				"anchor":            anchorName,
+				"avwap":             fmt.Sprintf("%.4f", avwapValue),
+				"rsi":               fmt.Sprintf("%.2f", s.Indicators.RSI),
+				"mode":              "bounce",
+				"regime_5m":         regimeTag,
+				"confluence":        fmt.Sprintf("%d", conf.Score),
+				"confluence_detail": strings.Join(conf.Factors, "+"),
 			})
 			if err != nil {
 				return nil, err
@@ -1386,14 +1522,22 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 				logShortGate(ctx, ec.symbol, "require_capitulation", anchorName, "bias", ec.avwapBias)
 				continue // block short bounces above AVWAP without capitulation
 			}
-			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, 0.6, map[string]string{
-				"ref_price": fmt.Sprintf("%.10f", bar.Close),
-				"setup":     "avwap_bounce",
-				"anchor":    anchorName,
-				"avwap":     fmt.Sprintf("%.4f", avwapValue),
-				"rsi":       fmt.Sprintf("%.2f", s.Indicators.RSI),
-				"mode":      "bounce",
-				"regime_5m": regimeTag,
+			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
+				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+				continue
+			}
+			adjustedStrength := math.Min(1.0, 0.6+float64(conf.Score)*0.03)
+			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, adjustedStrength, map[string]string{
+				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+				"setup":             "avwap_bounce",
+				"anchor":            anchorName,
+				"avwap":             fmt.Sprintf("%.4f", avwapValue),
+				"rsi":               fmt.Sprintf("%.2f", s.Indicators.RSI),
+				"mode":              "bounce",
+				"regime_5m":         regimeTag,
+				"confluence":        fmt.Sprintf("%d", conf.Score),
+				"confluence_detail": strings.Join(conf.Factors, "+"),
 			})
 			if err != nil {
 				return nil, err
@@ -1478,6 +1622,145 @@ func (s *AVWAPState) evaluateEntries(ec entryContext) (*start.Signal, error) {
 	return nil, nil
 }
 
+// --- Confluence scoring ---
+
+type confluenceResult struct {
+	Score   int
+	Factors []string
+}
+
+func computeConfluence(
+	cfg AVWAPConfig,
+	bar start.Bar,
+	avwapValue float64,
+	avwapValues map[string]float64,
+	indicators start.IndicatorData,
+	prevBars [2]start.Bar,
+	prevBarCount int,
+	keyLevels map[string]float64,
+	barHighs50, barLows50 []float64,
+) confluenceResult {
+	var res confluenceResult
+
+	// Tolerance: ATR/2, fallback to avwapValue*0.002
+	tolerance := avwapValue * 0.002
+	if indicators.ATR > 0 {
+		tolerance = indicators.ATR / 2
+	}
+
+	// Factor 1: Fibonacci (+3)
+	if cfg.FibConfluenceEnabled && len(barHighs50) >= 20 && len(barLows50) >= 20 {
+		maxH := barHighs50[0]
+		for _, h := range barHighs50[1:] {
+			if h > maxH {
+				maxH = h
+			}
+		}
+		minL := barLows50[0]
+		for _, l := range barLows50[1:] {
+			if l < minL {
+				minL = l
+			}
+		}
+		rng := maxH - minL
+		if rng > 0 {
+			fib382 := maxH - rng*0.382
+			fib500 := maxH - rng*0.500
+			fib618 := maxH - rng*0.618
+			for _, fib := range []struct {
+				level float64
+				name  string
+			}{
+				{fib382, "fib_38.2"},
+				{fib500, "fib_50"},
+				{fib618, "fib_61.8"},
+			} {
+				if math.Abs(avwapValue-fib.level) <= tolerance {
+					res.Score += 3
+					res.Factors = append(res.Factors, fib.name)
+					break // only count once
+				}
+			}
+		}
+	}
+
+	// Factor 2: Key Level (+3)
+	if cfg.KeyLevelConfluenceEnabled && len(keyLevels) > 0 {
+		for name, level := range keyLevels {
+			if math.Abs(avwapValue-level) <= tolerance {
+				res.Score += 3
+				res.Factors = append(res.Factors, "key_"+name)
+				break // only count once
+			}
+		}
+	}
+
+	// Factor 3: Candlestick (+2)
+	if cfg.CandleConfluenceEnabled && prevBarCount >= 1 {
+		matched := false
+
+		// Inside Bar: current bar range inside previous bar range
+		if bar.High <= prevBars[0].High && bar.Low >= prevBars[0].Low {
+			res.Score += 2
+			res.Factors = append(res.Factors, "inside_bar")
+			matched = true
+		}
+
+		// Strength candle: body > 60% of range
+		if !matched && bar.High != bar.Low {
+			body := bar.Close - bar.Open
+			if body < 0 {
+				body = -body
+			}
+			rng := bar.High - bar.Low
+			if body > 0.6*rng {
+				res.Score += 2
+				res.Factors = append(res.Factors, "strength_candle")
+				matched = true
+			}
+		}
+
+		// Morning Star: 3-bar pattern (prevBars[1] bearish, prevBars[0] small body, bar bullish)
+		if !matched && prevBarCount >= 2 {
+			prev2 := prevBars[1]
+			prev1 := prevBars[0]
+			prev2Bearish := prev2.Close < prev2.Open
+			prev1Range := prev1.High - prev1.Low
+			prev1Body := prev1.Close - prev1.Open
+			if prev1Body < 0 {
+				prev1Body = -prev1Body
+			}
+			prev1Small := prev1Range > 0 && prev1Body < 0.3*prev1Range
+			curBullish := bar.Close > bar.Open
+			if prev2Bearish && prev1Small && curBullish {
+				res.Score += 2
+				res.Factors = append(res.Factors, "morning_star")
+			}
+		}
+	}
+
+	// Factor 4: Band Zone (+2)
+	if cfg.BandConfluenceEnabled && len(avwapValues) >= 2 {
+		var minAVWAP, maxAVWAP float64
+		first := true
+		for _, v := range avwapValues {
+			if first || v < minAVWAP {
+				minAVWAP = v
+			}
+			if first || v > maxAVWAP {
+				maxAVWAP = v
+			}
+			first = false
+		}
+		if bar.Close >= minAVWAP && bar.Close <= maxAVWAP {
+			res.Score += 2
+			res.Factors = append(res.Factors, "band_zone")
+		}
+	}
+
+	return res
+}
+
 // OnBar processes a bar and emits breakout/bounce/exit signals.
 func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st start.State) (start.State, []start.Signal, error) {
 	avwapSt, ok := st.(*AVWAPState)
@@ -1534,6 +1817,23 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 	avwapSt.RecentHighs = append(avwapSt.RecentHighs, bar.High)
 	if len(avwapSt.RecentHighs) > cfg.HigherLowsBars {
 		avwapSt.RecentHighs = avwapSt.RecentHighs[len(avwapSt.RecentHighs)-cfg.HigherLowsBars:]
+	}
+
+	// 2c. Shift prev bars ring buffer for candlestick patterns.
+	avwapSt.PrevBars[1] = avwapSt.PrevBars[0]
+	avwapSt.PrevBars[0] = bar
+	if avwapSt.PrevBarCount < 2 {
+		avwapSt.PrevBarCount++
+	}
+
+	// 2d. Rolling 50-bar high/low window for Fibonacci.
+	avwapSt.BarHighs50 = append(avwapSt.BarHighs50, bar.High)
+	if len(avwapSt.BarHighs50) > 50 {
+		avwapSt.BarHighs50 = avwapSt.BarHighs50[1:]
+	}
+	avwapSt.BarLows50 = append(avwapSt.BarLows50, bar.Low)
+	if len(avwapSt.BarLows50) > 50 {
+		avwapSt.BarLows50 = avwapSt.BarLows50[1:]
 	}
 
 	// 3. Regime gating.
@@ -1594,6 +1894,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		sortedAnchors: sortedAnchors,
 		regimeTag:     regimeTag,
 		etLocation:    etLocation,
+		keyLevels:     avwapSt.KeyLevels,
 	}
 
 	// 5. Exit signals (check even if cooldown would block new entries).
@@ -1743,6 +2044,10 @@ type avwapStateJSON struct {
 	Indicators     start.IndicatorData                `json:"indicators"`
 	RecentLows     []float64                          `json:"recent_lows,omitempty"`
 	RecentHighs    []float64                          `json:"recent_highs,omitempty"`
+	PrevBarCount   int                                `json:"prev_bar_count,omitempty"`
+	BarHighs50     []float64                          `json:"bar_highs_50,omitempty"`
+	BarLows50      []float64                          `json:"bar_lows_50,omitempty"`
+	KeyLevels      map[string]float64                 `json:"key_levels,omitempty"`
 }
 
 func (s *AVWAPState) Marshal() ([]byte, error) {
@@ -1774,6 +2079,10 @@ func (s *AVWAPState) Marshal() ([]byte, error) {
 		Indicators:     s.Indicators,
 		RecentLows:     s.RecentLows,
 		RecentHighs:    s.RecentHighs,
+		PrevBarCount:   s.PrevBarCount,
+		BarHighs50:     s.BarHighs50,
+		BarLows50:      s.BarLows50,
+		KeyLevels:      s.KeyLevels,
 	}
 	return json.Marshal(j)
 }
@@ -1800,6 +2109,10 @@ func (s *AVWAPState) Unmarshal(data []byte) error {
 	s.Indicators = j.Indicators
 	s.RecentLows = j.RecentLows
 	s.RecentHighs = j.RecentHighs
+	s.PrevBarCount = j.PrevBarCount
+	s.BarHighs50 = j.BarHighs50
+	s.BarLows50 = j.BarLows50
+	s.KeyLevels = j.KeyLevels
 
 	s.Calc = start.NewAnchoredVWAPCalc()
 	s.Calc.Restore(j.Anchors, j.CalcStates)

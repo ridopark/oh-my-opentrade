@@ -36,6 +36,8 @@ type Runner struct {
 	signalsRTHSuppressed atomic.Int64
 	anchorResolver       func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
 	prevDayBarsFn        func(symbol string, since time.Time) []start.Bar
+	keyLevelPricesFn     func(symbol string, barTime time.Time) map[string]float64
+	keyLevelsBySymbol    map[string]map[string]float64
 	aiAnchorResolver     *AIAnchorResolver
 	lastSessionDate      map[string]string
 	lastResolvedRegime   map[string]domain.RegimeType
@@ -52,6 +54,11 @@ func (r *Runner) SetAnchorResolver(fn func(symbol string, barTime time.Time, anc
 
 func (r *Runner) SetPrevDayBarsFn(fn func(symbol string, since time.Time) []start.Bar) {
 	r.prevDayBarsFn = fn
+}
+
+func (r *Runner) SetKeyLevelPricesFn(fn func(symbol string, barTime time.Time) map[string]float64) {
+	r.keyLevelPricesFn = fn
+	r.keyLevelsBySymbol = make(map[string]map[string]float64)
 }
 
 func (r *Runner) SetAIAnchorResolver(resolver *AIAnchorResolver) {
@@ -124,6 +131,23 @@ func (r *Runner) resolveSessionAnchors(symbol string, barTime time.Time) {
 					}
 				}
 				r.logger.Info("reset AVWAP anchors for new session", "symbol", symbol, "anchors", len(resolved))
+			}
+
+			// Set key levels for confluence scoring
+			if r.keyLevelPricesFn != nil {
+				type keyLevelSetter interface {
+					SetKeyLevels(map[string]float64)
+				}
+				if kls, ok2 := st.(keyLevelSetter); ok2 {
+					levels := r.keyLevelPricesFn(symbol, barTime)
+					if levels != nil {
+						kls.SetKeyLevels(levels)
+						if r.keyLevelsBySymbol == nil {
+							r.keyLevelsBySymbol = make(map[string]map[string]float64)
+						}
+						r.keyLevelsBySymbol[symbol] = levels
+					}
+				}
 			}
 		}
 	}
@@ -224,6 +248,23 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 				}
 			}
 			r.logger.Info("AI anchor resolution complete", "symbol", symbol, "anchors", len(merged))
+		}
+
+		// Set key levels for confluence scoring
+		if r.keyLevelPricesFn != nil {
+			type keyLevelSetter interface {
+				SetKeyLevels(map[string]float64)
+			}
+			if kls, ok2 := st.(keyLevelSetter); ok2 {
+				levels := r.keyLevelPricesFn(symbol, bar.Time)
+				if levels != nil {
+					kls.SetKeyLevels(levels)
+					if r.keyLevelsBySymbol == nil {
+						r.keyLevelsBySymbol = make(map[string]map[string]float64)
+					}
+					r.keyLevelsBySymbol[symbol] = levels
+				}
+			}
 		}
 	}
 }

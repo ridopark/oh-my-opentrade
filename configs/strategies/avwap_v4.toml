@@ -34,7 +34,7 @@ hold_bars = 6
 # Volume: raised from 1.5 to 2.0 to filter marginal setups (BALANCE regime PF was 0.72)
 volume_mult = 2.0
 # Bounce disabled — lowest conviction, catches falling knives with options
-bounce_enabled = false
+bounce_enabled = true
 rsi_bounce_max = 35.0
 exit_hold_bars = 4
 # Cooldown: raised from 900s to 1800s (30 min) to prevent re-entry into broken setups.
@@ -92,11 +92,17 @@ gap_reclaim_bars = 5
 handoff_enabled = true
 handoff_bars = 5
 handoff_min_mom_bps = 40
+# Confluence weighting — start at 0 to collect data, then tune threshold
+min_confluence_score = 0
+fib_confluence_enabled = true
+key_level_confluence_enabled = true
+candle_confluence_enabled = true
+band_confluence_enabled = true
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
 
 [dynamic_risk]
-enabled = false
+enabled = true
 
 # Swing stop: trail at recent swing low (longs) / swing high (shorts)
 # Per Brian Shannon: stop at the low of the dip, trail using higher lows
