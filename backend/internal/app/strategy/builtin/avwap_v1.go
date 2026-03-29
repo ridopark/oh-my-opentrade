@@ -241,6 +241,15 @@ func (s *AVWAPState) ClearPendingEntry() {
 	s.PendingEntryAt = time.Time{}
 }
 
+// UpdateCalcAnchor feeds a bar into a single named anchor in the AVWAP calculator.
+// Used to replay previous-day bars into individual anchors (pd_high, pd_low)
+// without affecting other anchors or the lastBarTime dedup guard.
+func (s *AVWAPState) UpdateCalcAnchor(name string, bar start.Bar) {
+	if s.Calc != nil {
+		s.Calc.UpdateSingleAnchor(name, bar.Time, bar.High, bar.Low, bar.Close, bar.Volume)
+	}
+}
+
 // UpdateCalc feeds a 1m bar into the AVWAP calculator for smooth chart
 // rendering. Does not trigger any signal logic.
 func (s *AVWAPState) UpdateCalc(bar start.Bar) {

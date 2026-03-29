@@ -157,6 +157,41 @@ func (c *AnchoredVWAPCalc) Update(barTime time.Time, high, low, close_, volume f
 	}
 }
 
+// UpdateSingleAnchor feeds a bar into ONE specific anchor, bypassing the
+// lastBarTime dedup guard. Used to replay previous-day bars into individual
+// anchors (pd_high, pd_low) without affecting other anchors.
+func (c *AnchoredVWAPCalc) UpdateSingleAnchor(name string, barTime time.Time, high, low, close_, volume float64) {
+	if c == nil {
+		return
+	}
+	e, ok := c.anchors[name]
+	if !ok || e == nil {
+		return
+	}
+	if !e.active {
+		if barTime.Before(e.AnchorTime) {
+			return
+		}
+		e.active = true
+	}
+	if volume <= 0 {
+		return
+	}
+	tp := (high + low + close_) / 3.0
+	pv := tp * volume
+	oldVWAP := e.state.Value()
+	e.state.CumPV += pv
+	e.state.CumV += volume
+	newVWAP := e.state.Value()
+	e.state.M2 += volume * (tp - oldVWAP) * (tp - newVWAP)
+	e.barCount++
+	e.recentVWAPs[e.vwapIdx] = newVWAP
+	e.vwapIdx = (e.vwapIdx + 1) % 20
+	if e.vwapCount < 20 {
+		e.vwapCount++
+	}
+}
+
 // SDBands returns VWAP ± (level × SD) for the named anchor.
 // Returns (upper, lower, true) if the anchor exists and has valid SD data.
 // Returns (0, 0, false) if anchor not found, not active, or M2 not populated.
