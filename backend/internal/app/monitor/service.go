@@ -47,7 +47,16 @@ type Service struct {
 	orbAllowedRegimes  []string // regime gate for ORB (empty = allow all)
 	orbHTFBiasEnabled  bool     // block entries against daily EMA50 bias
 	orbMinATRPct       float64  // skip symbols with daily ATR% below this
+	avwapFn            func(symbol string) map[string]float64
 }
+// SetAVWAPFn installs a function that returns current anchored VWAP values
+// for a symbol. The enriched bar event will include these values when set.
+func (s *Service) SetAVWAPFn(fn func(symbol string) map[string]float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.avwapFn = fn
+}
+
 // GetLastSnapshot returns the most recently cached IndicatorSnapshot for the given symbol.
 // Returns false if no snapshot has been cached yet.
 func (s *Service) GetLastSnapshot(symbol string) (domain.IndicatorSnapshot, bool) {
@@ -327,6 +336,87 @@ func (s *Service) Start(ctx context.Context) error {
 	s.log.Info().Msg("subscribed to MarketBarSanitized and EffectiveSymbolsUpdated events")
 	return nil
 }
+
+// StartEnrichedBarPublisher subscribes a SECOND handler to MarketBarSanitized
+// that publishes EnrichedBar events. This MUST be called AFTER the strategy
+// runner has started, so that the runner's handleBar (which updates the AVWAP
+// calculator) runs before this handler reads AVWAP values. The event bus
+// dispatches synchronous handlers in subscription order.
+func (s *Service) StartEnrichedBarPublisher(ctx context.Context) error {
+	err := s.eventBus.Subscribe(ctx, domain.EventMarketBarSanitized, s.publishEnrichedBar)
+	if err != nil {
+		return fmt.Errorf("monitor: failed to subscribe enriched bar publisher: %w", err)
+	}
+	s.log.Info().Msg("enriched bar publisher subscribed (runs after strategy runner)")
+	return nil
+}
+
+// publishEnrichedBar is a MarketBarSanitized handler that builds and publishes
+// an EnrichedBar event combining bar OHLCV, cached indicator snapshot, and
+// current AVWAP values. Because it is subscribed after the strategy runner,
+// GetAVWAPValues returns values that include the current bar.
+func (s *Service) publishEnrichedBar(ctx context.Context, event domain.Event) error {
+	bar, ok := event.Payload.(domain.MarketBar)
+	if !ok {
+		return nil
+	}
+	symStr := bar.Symbol.String()
+
+	s.mu.Lock()
+	snap, hasSnap := s.lastSnaps[symStr]
+	avwapFn := s.avwapFn
+	s.mu.Unlock()
+
+	if !hasSnap {
+		return nil
+	}
+
+	enriched := domain.EnrichedBarPayload{
+		Time:      bar.Time.Unix(),
+		Symbol:    symStr,
+		Timeframe: string(bar.Timeframe),
+		Open:      bar.Open,
+		High:      bar.High,
+		Low:       bar.Low,
+		Close:     bar.Close,
+		Volume:    bar.Volume,
+		EMA9:      snap.EMA9,
+		EMA21:     snap.EMA21,
+	}
+	if snap.EMA50 > 0 {
+		enriched.EMA50 = snap.EMA50
+	}
+	if snap.EMA200 > 0 {
+		enriched.EMA200 = snap.EMA200
+	}
+	if avwapFn != nil {
+		if vals := avwapFn(symStr); len(vals) > 0 {
+			avwaps := make(map[string]float64, len(vals))
+			for k, v := range vals {
+				if v > 0 {
+					avwaps[k] = v
+				}
+			}
+			if len(avwaps) > 0 {
+				enriched.AVWAPs = avwaps
+			}
+		}
+	}
+
+	ev, err := domain.NewEvent(
+		domain.EventEnrichedBar,
+		event.TenantID,
+		event.EnvMode,
+		event.IdempotencyKey+"-enriched",
+		enriched,
+	)
+	if err != nil {
+		return nil
+	}
+	_ = s.eventBus.Publish(ctx, *ev)
+	return nil
+}
+
 func (s *Service) handleEffectiveSymbolsUpdated(ctx context.Context, evt domain.Event) error {
 	payload, ok := evt.Payload.(screener.EffectiveSymbolsUpdatedPayload)
 	if !ok {
@@ -474,7 +564,9 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		s.feedORBBar(bar, snap, true)
 		l.Debug().Msg(fmt.Sprintf("settling: %d/%d bars, suppressing setup detection", s.liveBars[symStr], settlingBars))
 		s.lastSnaps[symStr] = snap
+
 		s.mu.Unlock()
+
 		for _, ev := range publishStrict {
 			if err := s.eventBus.Publish(ctx, ev); err != nil {
 				return fmt.Errorf("monitor: failed to publish event %s: %w", ev.Type, err)
@@ -680,6 +772,7 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	}
 	s.lastSnaps[symStr] = snap
 	s.mu.Unlock()
+
 	for _, ev := range publishStrict {
 		if err := s.eventBus.Publish(ctx, ev); err != nil {
 			return fmt.Errorf("monitor: failed to publish event %s: %w", ev.Type, err)

@@ -30,6 +30,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
 	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	screenerapp "github.com/oh-my-opentrade/backend/internal/app/screener"
+	"github.com/oh-my-opentrade/backend/internal/app/backtest"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/symbolrouter"
 	"github.com/oh-my-opentrade/backend/internal/config"
@@ -328,6 +329,14 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	svc.pipelineActivator = pipeline.Activator
 
 	aiAnchorResolver := strategy.NewAIAnchorResolver(svc.aiAdvisor, nil, slog.Default())
+	// Wire session-based anchor resolver so pd_high, pd_low, session_open are
+	// resolved from actual previous-day price data. Without this, the AI anchor
+	// resolver has no session context and these anchors are never set.
+	loc, _ := time.LoadLocation("America/New_York")
+	sessionResolver := backtest.NewSessionResolver(loc)
+	aiAnchorResolver.SetSessionResolver(sessionResolver.ResolveAnchors)
+	svc.strategyRunner.SetAnchorResolver(sessionResolver.ResolveAnchors)
+	svc.strategyRunner.SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
 	svc.strategyRunner.SetAIAnchorResolver(aiAnchorResolver)
 	// Wire prev-day bar replay for AVWAP anchors (pd_high, pd_low).
 	// Without this, all AVWAP lines overlap because they activate on
@@ -371,6 +380,17 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 				isCrypto := strings.Contains(sym, "/") || strings.HasSuffix(sym, "USD") || strings.HasSuffix(sym, "USDT")
 				aiAnchorResolver.RegisterSymbol(sym, isCrypto)
 			}
+		}
+	}
+
+	// Pre-load session data (previous day high/low times) for AVWAP anchor resolution.
+	// Cover the last 5 days to handle weekends/holidays.
+	now := time.Now().In(loc)
+	sessionFrom := now.AddDate(0, 0, -5)
+	sessionTo := now.AddDate(0, 0, 1)
+	for sym := range anchorSymbols {
+		if loadErr := sessionResolver.Load(context.Background(), infra.sqlDB, domain.Symbol(sym), sessionFrom, sessionTo); loadErr != nil {
+			log.Warn().Err(loadErr).Str("symbol", sym).Msg("failed to load session data for AVWAP anchors")
 		}
 	}
 
@@ -429,6 +449,9 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		domain.EnvModePaper,
 		log.With().Str("component", "symbolrouter").Logger(),
 	)
+
+	// Wire AVWAP function so monitor can include anchored VWAP values in enriched bar events.
+	svc.monitor.SetAVWAPFn(svc.strategyRunner.GetAVWAPValues)
 
 	svc.monitor.SetBaseSymbols(pipeline.BaseSymbols)
 }
@@ -591,6 +614,11 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 			log.Fatal().Err(err).Msg("failed to start risk sizer v2")
 		}
 		log.Info().Msg("v2 pipeline started: runner → enricher → riskSizer")
+		// Subscribe enriched bar publisher AFTER the strategy runner so AVWAP values
+		// are current when the handler reads them (event bus dispatches in order).
+		if err := svc.monitor.StartEnrichedBarPublisher(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start enriched bar publisher")
+		}
 	}
 	if svc.symRouter != nil {
 		if err := svc.symRouter.Start(ctx); err != nil {

@@ -10,6 +10,12 @@ export interface OHLCBar {
   low: number;
   close: number;
   volume: number;
+  // Indicators from EnrichedBar events (optional, absent for historical bars)
+  ema9?: number;
+  ema21?: number;
+  ema50?: number;
+  ema200?: number;
+  avwaps?: Record<string, number>;
 }
 
 export type BarsBySymbol = Record<string, OHLCBar[]>;
@@ -301,6 +307,76 @@ export function useChartData(
 
     es.addEventListener('MarketBarSanitized', handleBarEvent);
     es.addEventListener('FormingBar', handleBarEvent);
+
+    const handleEnrichedBar = (e: MessageEvent) => {
+      try {
+        const envelope = JSON.parse(e.data) as {
+          payload: {
+            time: number;
+            symbol: string;
+            timeframe: string;
+            open: number;
+            high: number;
+            low: number;
+            close: number;
+            volume: number;
+            ema9?: number;
+            ema21?: number;
+            ema50?: number;
+            ema200?: number;
+            avwaps?: Record<string, number>;
+          };
+        };
+        const bar = envelope.payload;
+        if (!bar?.symbol || !bar?.time) return;
+
+        const tf = timeframeRef.current;
+        const current = barsRef.current;
+        const prev = current[bar.symbol] ?? [];
+
+        // Build enriched OHLCBar
+        const bucket = bucketStart(bar.time, tf);
+        const enriched: OHLCBar = {
+          time: bucket,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          volume: bar.volume,
+          ema9: bar.ema9,
+          ema21: bar.ema21,
+          ema50: bar.ema50,
+          ema200: bar.ema200,
+          avwaps: bar.avwaps,
+        };
+
+        // Merge: if bar at this bucket exists, preserve OHLCV from existing
+        // (it may have merged multiple 1m bars) but overlay indicator fields
+        const existingIdx = prev.findIndex(b => b.time === bucket);
+        let updated: OHLCBar[];
+        if (existingIdx >= 0) {
+          updated = prev.slice();
+          updated[existingIdx] = {
+            ...updated[existingIdx],
+            ema9: bar.ema9,
+            ema21: bar.ema21,
+            ema50: bar.ema50,
+            ema200: bar.ema200,
+            avwaps: bar.avwaps,
+          };
+        } else {
+          updated = upsertBar(prev, enriched);
+        }
+
+        const next: BarsBySymbol = { ...current, [bar.symbol]: updated };
+        barsRef.current = next;
+        setBarsBySymbol(next);
+      } catch {
+        // noop
+      }
+    };
+
+    es.addEventListener('EnrichedBar', handleEnrichedBar);
 
     es.onerror = () => {};
 
