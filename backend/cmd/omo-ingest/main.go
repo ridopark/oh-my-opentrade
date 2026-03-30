@@ -183,10 +183,12 @@ func main() {
 	log.Info().Int("symbols", len(allSymbols)).Msg("starting bar stream")
 	if err := ibkrAdapter.StreamBars(ctx, allSymbols, "1m", pipeline.HandleBar); err != nil {
 		if ctx.Err() == nil {
-			log.Error().Err(err).Msg("stream error")
+			log.Fatal().Err(err).Msg("stream setup failed")
 		}
 	}
 
+	// Block until shutdown signal.
+	<-ctx.Done()
 	log.Info().Msg("omo-ingest stopped")
 }
 
