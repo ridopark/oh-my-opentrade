@@ -841,8 +841,12 @@ func (s *Service) fmtSystemStarted(ev domain.Event) string {
 		brokerStatus += " (connecting...)"
 	}
 
+	streamSource := p.StreamingSource
+	if streamSource == "" {
+		streamSource = p.Broker
+	}
 	dataSource := "Alpaca WebSocket + Alpaca REST historical"
-	if p.Broker == "ibkr" {
+	if streamSource == "ibkr" {
 		dataSource = "IBKR real-time bars + Alpaca REST historical"
 	}
 
