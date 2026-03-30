@@ -133,6 +133,7 @@ func (s *Service) Start(ctx context.Context) error {
 		{domain.EventStaleOrderCancelled, s.fmtStaleOrderCancelled, false},
 		{domain.EventExitCircuitBroken, s.fmtExitCircuitBroken, false},
 		{domain.EventSystemStarted, s.fmtSystemStarted, false},
+		{domain.EventIBKRConnected, s.fmtIBKRConnected, false},
 		{domain.EventORBRangeSet, s.fmtORBRangeSet, false},
 	}
 
@@ -837,11 +838,7 @@ func (s *Service) fmtSystemStarted(ev domain.Event) string {
 		} else {
 			brokerStatus += " 🔴 disconnected"
 		}
-		if p.IBKRPaperMode {
-			brokerStatus += " (delayed data)"
-		} else {
-			brokerStatus += " (live data)"
-		}
+		brokerStatus += " (connecting...)"
 	}
 
 	dataSource := "Alpaca WebSocket + Alpaca REST historical"
@@ -888,6 +885,29 @@ func (s *Service) fmtSystemStarted(ev domain.Event) string {
 		fmt.Sprintf("🎯 **Strategies (%d):**", len(p.Strategies)),
 		stratSection,
 	}, "\n")
+}
+
+func (s *Service) fmtIBKRConnected(ev domain.Event) string {
+	p, ok := ev.Payload.(domain.IBKRConnectedPayload)
+	if !ok {
+		return "🟢 IBKR connected"
+	}
+
+	mode := "live"
+	if p.PaperMode {
+		mode = "paper"
+	}
+
+	dataType := "real-time"
+	if p.MarketDataType == 3 {
+		dataType = "delayed (15-min)"
+	}
+
+	return fmt.Sprintf("🟢 **IBKR Connected**\n"+
+		"**Host:** %s:%d | **ClientID:** %d\n"+
+		"**Account:** %s | **Mode:** %s\n"+
+		"**Market Data:** %s",
+		p.Host, p.Port, p.ClientID, p.AccountID, mode, dataType)
 }
 
 func (s *Service) fmtRiskRevaluated(ev domain.Event) string {

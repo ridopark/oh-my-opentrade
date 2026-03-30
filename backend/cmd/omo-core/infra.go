@@ -130,6 +130,23 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 						Str("host", cfg.IBKR.Host).
 						Int("port", cfg.IBKR.Port).
 						Msg("IBKR connected — broker upgraded to composite mode")
+
+					// Notify via event bus so Discord gets the connection status.
+					evt, evtErr := domain.NewEvent(
+						domain.EventIBKRConnected, "system", domain.EnvModePaper,
+						"ibkr-connected",
+						domain.IBKRConnectedPayload{
+							Host:           cfg.IBKR.Host,
+							Port:           cfg.IBKR.Port,
+							ClientID:       cfg.IBKR.ClientID,
+							PaperMode:      cfg.IBKR.PaperMode,
+							MarketDataType: cfg.IBKR.MarketDataType,
+							AccountID:      cfg.IBKR.AccountID,
+						},
+					)
+					if evtErr == nil {
+						_ = eventBus.Publish(context.Background(), *evt)
+					}
 					return
 				}
 				ibkrLog.Warn().Err(err).Dur("retry_in", delay).Msg("IBKR not available, retrying")
