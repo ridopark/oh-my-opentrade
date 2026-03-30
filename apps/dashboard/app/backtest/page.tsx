@@ -290,69 +290,73 @@ function TopBar({
     <div className="relative z-40 rounded-lg border border-border bg-card px-4 py-2.5 flex items-center gap-4 flex-wrap">
       <h1 className="text-sm font-semibold text-foreground shrink-0">Backtest</h1>
 
-      <div className="flex items-center gap-1.5 relative" ref={dropdownRef}>
+      <div className="flex items-center gap-1.5" ref={dropdownRef}>
         <span className="text-[10px] text-muted-foreground uppercase">Symbols</span>
-        <button
-          onClick={() => setSymbolsOpen(!symbolsOpen)}
-          className={`${inputCls} w-48 text-left flex items-center justify-between`}
-        >
-          <span className="truncate">
-            {config.symbols.length === 0 ? "Select..." : [...config.symbols].sort().join(", ")}
-          </span>
-          <span className="text-muted-foreground ml-1">{symbolsOpen ? "\u25B2" : "\u25BC"}</span>
-        </button>
-        {symbolsOpen && (
-          <div className="absolute top-full left-0 mt-1 z-50 w-56 max-h-64 overflow-y-auto rounded-lg border border-border bg-card shadow-xl">
-            {availableSymbols.map((sym) => {
-              const selected = config.symbols.includes(sym);
-              return (
-                <button
-                  key={sym}
-                  onClick={() => toggleSymbol(sym)}
-                  className={`w-full px-3 py-1.5 text-xs font-mono text-left flex items-center gap-2 hover:bg-white/5 transition-colors ${selected ? "text-emerald-400" : "text-muted-foreground"}`}
-                >
-                  <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center text-[9px] ${selected ? "border-emerald-500 bg-emerald-500/20" : "border-border"}`}>
-                    {selected && "\u2713"}
-                  </span>
-                  {sym}
-                </button>
-              );
-            })}
-          </div>
-        )}
+        <div className="relative">
+          <button
+            onClick={() => setSymbolsOpen(!symbolsOpen)}
+            className={`${inputCls} w-48 text-left flex items-center justify-between`}
+          >
+            <span className="truncate">
+              {config.symbols.length === 0 ? "Select..." : [...config.symbols].sort().join(", ")}
+            </span>
+            <span className="text-muted-foreground ml-1">{symbolsOpen ? "\u25B2" : "\u25BC"}</span>
+          </button>
+          {symbolsOpen && (
+            <div className="absolute top-full left-0 mt-1 z-50 w-56 max-h-64 overflow-y-auto rounded-lg border border-border bg-card shadow-xl">
+              {availableSymbols.map((sym) => {
+                const selected = config.symbols.includes(sym);
+                return (
+                  <button
+                    key={sym}
+                    onClick={() => toggleSymbol(sym)}
+                    className={`w-full px-3 py-1.5 text-xs font-mono text-left flex items-center gap-2 hover:bg-white/5 transition-colors ${selected ? "text-emerald-400" : "text-muted-foreground"}`}
+                  >
+                    <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center text-[9px] ${selected ? "border-emerald-500 bg-emerald-500/20" : "border-border"}`}>
+                      {selected && "\u2713"}
+                    </span>
+                    {sym}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
-      <div className="flex items-center gap-1.5 relative" ref={stratDropdownRef}>
+      <div className="flex items-center gap-1.5" ref={stratDropdownRef}>
         <span className="text-[10px] text-muted-foreground uppercase">Strategy</span>
-        <button
-          onClick={() => setStrategiesOpen(!strategiesOpen)}
-          className={`${inputCls} w-40 text-left flex items-center justify-between`}
-        >
-          <span className="truncate">
-            {config.strategies.length === 0 ? "All" : config.strategies.join(", ")}
-          </span>
-          <span className="text-muted-foreground ml-1">{strategiesOpen ? "\u25B2" : "\u25BC"}</span>
-        </button>
-        {strategiesOpen && (
-          <div className="absolute top-full left-0 mt-1 z-50 w-64 max-h-64 overflow-y-auto rounded-lg border border-border bg-card shadow-xl">
-            {availableStrategies.map((strat) => {
-              const selected = config.strategies.includes(strat.id);
-              return (
-                <button
-                  key={strat.id}
-                  onClick={() => toggleStrategy(strat.id)}
-                  className={`w-full px-3 py-1.5 text-xs text-left flex items-center gap-2 hover:bg-white/5 transition-colors ${selected ? "text-emerald-400" : "text-muted-foreground"}`}
-                >
-                  <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center text-[9px] shrink-0 ${selected ? "border-emerald-500 bg-emerald-500/20" : "border-border"}`}>
-                    {selected && "\u2713"}
-                  </span>
-                  <span className="font-mono">{strat.id}</span>
-                  <span className="text-[10px] text-muted-foreground/50 truncate">{strat.name}</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
+        <div className="relative">
+          <button
+            onClick={() => setStrategiesOpen(!strategiesOpen)}
+            className={`${inputCls} w-40 text-left flex items-center justify-between`}
+          >
+            <span className="truncate">
+              {config.strategies.length === 0 ? "All" : config.strategies.join(", ")}
+            </span>
+            <span className="text-muted-foreground ml-1">{strategiesOpen ? "\u25B2" : "\u25BC"}</span>
+          </button>
+          {strategiesOpen && (
+            <div className="absolute top-full left-0 mt-1 z-50 w-64 max-h-64 overflow-y-auto rounded-lg border border-border bg-card shadow-xl">
+              {availableStrategies.map((strat) => {
+                const selected = config.strategies.includes(strat.id);
+                return (
+                  <button
+                    key={strat.id}
+                    onClick={() => toggleStrategy(strat.id)}
+                    className={`w-full px-3 py-1.5 text-xs text-left flex items-center gap-2 hover:bg-white/5 transition-colors ${selected ? "text-emerald-400" : "text-muted-foreground"}`}
+                  >
+                    <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center text-[9px] shrink-0 ${selected ? "border-emerald-500 bg-emerald-500/20" : "border-border"}`}>
+                      {selected && "\u2713"}
+                    </span>
+                    <span className="font-mono">{strat.id}</span>
+                    <span className="text-[10px] text-muted-foreground/50 truncate">{strat.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="flex items-center gap-1.5">
