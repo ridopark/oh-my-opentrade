@@ -95,6 +95,31 @@ services:
     - 8080:8080
     networks:
     - default
+  omo-ingest:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.ingest
+    container_name: omo-ingest
+    restart: unless-stopped
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+    - ../.env
+    volumes:
+    - ../configs:/configs:ro
+    environment:
+    - TIMESCALEDB_HOST=timescaledb
+    - TIMESCALEDB_PORT=5432
+    - BROKER=ibkr
+    - IBKR_GATEWAY_HOST=ib-gateway
+    - IBKR_GATEWAY_PORT=4004
+    - IBKR_CLIENT_ID=3
+    - IBKR_ACCOUNT_ID=${IBKR_ACCOUNT_ID:-}
+    networks:
+    - default
   dashboard:
     build:
       context: ..
