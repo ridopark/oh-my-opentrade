@@ -12,6 +12,7 @@ import (
 
 	"github.com/oh-my-opentrade/backend/internal/adapters/strategy/store_fs"
 	"github.com/oh-my-opentrade/backend/internal/app/backtest"
+	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	domstrategy "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -220,7 +221,12 @@ func (o *Orchestrator) runSingle(ctx context.Context, cfg domsweep.SweepConfig, 
 	runCfg.StrategyDir = tmpDir
 	runCfg.Speed = "max"
 
-	runner := backtest.NewRunner(runCfg, o.db, o.appCfg, o.marketData, o.log.With().Int("sweep_run", index).Logger())
+	infra := bootstrap.BuildBacktestInfra(bootstrap.BacktestDeps{
+		DB:     o.db,
+		AppCfg: o.appCfg,
+		Logger: o.log,
+	}, runCfg.SlippageBPS, runCfg.InitialEquity, runCfg.NoAI)
+	runner := backtest.NewRunner(runCfg, infra, o.appCfg, o.marketData, o.log.With().Int("sweep_run", index).Logger())
 	if runErr := runner.Run(ctx); runErr != nil {
 		o.log.Warn().Err(runErr).Int("index", index).Msg("sweep run failed")
 	}

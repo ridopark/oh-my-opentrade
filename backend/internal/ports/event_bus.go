@@ -17,3 +17,9 @@ type EventBusPort interface {
 	Unsubscribe(ctx context.Context, eventType domain.EventType, handler EventHandler) error
 	Close()
 }
+
+// BacktestBus extends EventBusPort with synchronous flush for deterministic replay.
+type BacktestBus interface {
+	EventBusPort
+	Flush()
+}
