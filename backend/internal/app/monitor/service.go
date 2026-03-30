@@ -1,11 +1,15 @@
 package monitor
+
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
+
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/domain/screener"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
@@ -48,6 +52,14 @@ type Service struct {
 	orbHTFBiasEnabled  bool     // block entries against daily EMA50 bias
 	orbMinATRPct       float64  // skip symbols with daily ATR% below this
 	avwapFn            func(symbol string) map[string]float64
+
+	// Standalone AVWAP computation for all streaming symbols (independent of strategy assignment)
+	avwapCalcs       map[string]*start.AnchoredVWAPCalc
+	avwapAnchors     []string // e.g. ["session_open", "pd_high", "pd_low"]
+	avwapLastSession map[string]string // symbol → last resolved session date (ET)
+	anchorResolverFn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
+	prevDayBarsFn    func(symbol string, since time.Time) []start.Bar
+	nyLoc            *time.Location // cached America/New_York location
 }
 // SetAVWAPFn installs a function that returns current anchored VWAP values
 // for a symbol. The enriched bar event will include these values when set.
@@ -55,6 +67,29 @@ func (s *Service) SetAVWAPFn(fn func(symbol string) map[string]float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.avwapFn = fn
+}
+
+// SetAnchorResolverFn installs a function that resolves anchor times (pd_high, pd_low,
+// session_open) from session data. Used for standalone AVWAP computation.
+func (s *Service) SetAnchorResolverFn(fn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.anchorResolverFn = fn
+}
+
+// SetPrevDayBarsFn installs a function that returns previous-day 1m bars from a given
+// time for replaying into AVWAP anchors (pd_high, pd_low).
+func (s *Service) SetPrevDayBarsFn(fn func(symbol string, since time.Time) []start.Bar) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prevDayBarsFn = fn
+}
+
+// SetAVWAPAnchors configures which anchors the standalone AVWAP calculator uses.
+func (s *Service) SetAVWAPAnchors(anchors []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.avwapAnchors = anchors
 }
 
 // GetLastSnapshot returns the most recently cached IndicatorSnapshot for the given symbol.
@@ -111,20 +146,24 @@ func (s *Service) WarmUpHTF(bars []domain.MarketBar) int {
 }
 // NewService creates a new monitor Service.
 func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zerolog.Logger) *Service {
+	nyLoc, _ := time.LoadLocation("America/New_York")
 	return &Service{
-		eventBus:       eventBus,
-		repo:           repo,
-		calculator:     NewIndicatorCalculator(),
-		regimeDetector: NewRegimeDetector(),
-		orbTracker:     NewORBTrackerWithSource("monitor"),
-		orbCfg:         DefaultORBConfig(),
-		lastSnaps:      make(map[string]domain.IndicatorSnapshot),
-		liveBars:       make(map[string]int),
-		aggregators:    make(map[string]*domain.BarAggregator),
-		orbAggregators: make(map[string]*domain.BarAggregator),
-		orbTimeframe:   "5m",
-		anchorRegimes:  make(map[string]domain.MarketRegime),
-		log:            log,
+		eventBus:         eventBus,
+		repo:             repo,
+		calculator:       NewIndicatorCalculator(),
+		regimeDetector:   NewRegimeDetector(),
+		orbTracker:       NewORBTrackerWithSource("monitor"),
+		orbCfg:           DefaultORBConfig(),
+		lastSnaps:        make(map[string]domain.IndicatorSnapshot),
+		liveBars:         make(map[string]int),
+		aggregators:      make(map[string]*domain.BarAggregator),
+		orbAggregators:   make(map[string]*domain.BarAggregator),
+		orbTimeframe:     "5m",
+		anchorRegimes:    make(map[string]domain.MarketRegime),
+		avwapCalcs:       make(map[string]*start.AnchoredVWAPCalc),
+		avwapLastSession: make(map[string]string),
+		nyLoc:            nyLoc,
+		log:              log,
 	}
 }
 // SetORBConfig overrides the default ORB configuration with values from
@@ -365,6 +404,7 @@ func (s *Service) publishEnrichedBar(ctx context.Context, event domain.Event) er
 	s.mu.Lock()
 	snap, hasSnap := s.lastSnaps[symStr]
 	avwapFn := s.avwapFn
+	calc, hasCalc := s.avwapCalcs[symStr]
 	s.mu.Unlock()
 
 	if !hasSnap {
@@ -389,7 +429,23 @@ func (s *Service) publishEnrichedBar(ctx context.Context, event domain.Event) er
 	if snap.EMA200 > 0 {
 		enriched.EMA200 = snap.EMA200
 	}
-	if avwapFn != nil {
+
+	// Standalone AVWAP values from monitor's own calculator (covers all streaming symbols).
+	if hasCalc {
+		if vals := calc.Values(); len(vals) > 0 {
+			avwaps := make(map[string]float64, len(vals))
+			for k, v := range vals {
+				if v > 0 {
+					avwaps[k] = v
+				}
+			}
+			if len(avwaps) > 0 {
+				enriched.AVWAPs = avwaps
+			}
+		}
+	}
+	// Fall back to strategy runner's AVWAP for symbols with dynamic anchors (swing_high, etc.)
+	if enriched.AVWAPs == nil && avwapFn != nil {
 		if vals := avwapFn(symStr); len(vals) > 0 {
 			avwaps := make(map[string]float64, len(vals))
 			for k, v := range vals {
@@ -462,6 +518,49 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	}
 	snap := s.calculator.Update(bar)
 	symStr := bar.Symbol.String()
+
+	// Standalone AVWAP: resolve anchors on new session day, then update calculator.
+	if s.anchorResolverFn != nil && len(s.avwapAnchors) > 0 {
+		barDate := bar.Time.In(s.nyLoc).Format("2006-01-02")
+		if s.avwapLastSession[symStr] != barDate {
+			s.avwapLastSession[symStr] = barDate
+			resolved := s.anchorResolverFn(symStr, bar.Time, s.avwapAnchors)
+			if len(resolved) > 0 {
+				calc := start.NewAnchoredVWAPCalc()
+				for name, t := range resolved {
+					calc.AddAnchor(start.AnchorPoint{Name: name, AnchorTime: t})
+				}
+				s.avwapCalcs[symStr] = calc
+
+				// Replay prev-day bars for non-session_open anchors so they
+				// accumulate volume from their actual anchor time.
+				if s.prevDayBarsFn != nil {
+					sortedNames := make([]string, 0, len(resolved))
+					for name := range resolved {
+						if name != "session_open" {
+							sortedNames = append(sortedNames, name)
+						}
+					}
+					sort.Strings(sortedNames)
+					for _, name := range sortedNames {
+						anchorTime := resolved[name]
+						prevBars := s.prevDayBarsFn(symStr, anchorTime)
+						for _, b := range prevBars {
+							calc.UpdateSingleAnchor(name, b.Time, b.High, b.Low, b.Close, b.Volume)
+						}
+					}
+				}
+				s.log.Debug().
+					Str("symbol", symStr).
+					Int("anchors", len(resolved)).
+					Msg("standalone AVWAP anchors resolved for new session")
+			}
+		}
+		if calc, ok := s.avwapCalcs[symStr]; ok {
+			calc.Update(bar.Time, bar.High, bar.Low, bar.Close, bar.Volume)
+		}
+	}
+
 	for _, tf := range anchorTimeframes {
 		aggKey := symStr + ":" + tf.String()
 		agg, exists := s.aggregators[aggKey]
