@@ -3,12 +3,14 @@
 package bootstrap
 
 import (
+	"context"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
 	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	"github.com/oh-my-opentrade/backend/internal/config"
+	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
@@ -97,6 +99,18 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 	}
 	if deps.BrokerName != "" {
 		execOpts = append(execOpts, execution.WithBrokerName(deps.BrokerName))
+	}
+
+	if cfg.Trading.MaxSimultaneousPos > 0 || cfg.Trading.MaxPositionsPerGroup > 0 {
+		pfGuard := execution.NewPortfolioGuard(
+			func(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
+				return deps.Broker.GetPositions(ctx, tenantID, envMode)
+			},
+			cfg.Trading.MaxSimultaneousPos,
+			cfg.Trading.MaxPositionsPerGroup,
+			execLog,
+		)
+		execOpts = append(execOpts, execution.WithPortfolioGuard(pfGuard))
 	}
 
 	if deps.EnableOptions {

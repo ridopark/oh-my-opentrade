@@ -133,7 +133,7 @@ symbols:
 	assert.Equal(t, 15*time.Minute, cfg.Trading.KillSwitchHaltDuration)
 	assert.Equal(t, 5432, cfg.Database.Port)
 	assert.Equal(t, "disable", cfg.Database.SSLMode)
-	assert.Equal(t, 10, cfg.Database.MaxPoolSize)
+	assert.Equal(t, 50, cfg.Database.MaxPoolSize)
 	assert.Equal(t, 8080, cfg.Server.Port)
 	assert.Equal(t, "info", cfg.Server.LogLevel)
 	assert.Equal(t, true, cfg.Alpaca.PaperMode)

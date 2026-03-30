@@ -104,6 +104,8 @@ type TradingConfig struct {
 	KillSwitchHaltDuration time.Duration     `yaml:"-"`
 	MaxDailyLossPct        float64           `yaml:"max_daily_loss_pct"`
 	MaxDailyLossUSD        float64           `yaml:"max_daily_loss_usd"`
+	MaxSimultaneousPos     int               `yaml:"max_simultaneous_positions"`
+	MaxPositionsPerGroup   int               `yaml:"max_positions_per_group"`
 	OptionsRisk            OptionsRiskConfig `yaml:"options_risk"`
 }
 
@@ -188,6 +190,8 @@ type rawTradingConfig struct {
 	KillSwitchHaltDuration string            `yaml:"kill_switch_halt_duration"`
 	MaxDailyLossPct        float64           `yaml:"max_daily_loss_pct"`
 	MaxDailyLossUSD        float64           `yaml:"max_daily_loss_usd"`
+	MaxSimultaneousPos     int               `yaml:"max_simultaneous_positions"`
+	MaxPositionsPerGroup   int               `yaml:"max_positions_per_group"`
 	OptionsRisk            OptionsRiskConfig `yaml:"options_risk"`
 }
 
@@ -206,7 +210,7 @@ type rawConfig struct {
 const (
 	defaultDBPort          = 5432
 	defaultDBSSLMode       = "disable"
-	defaultDBMaxPoolSize   = 10
+	defaultDBMaxPoolSize   = 50
 	defaultServerPort      = 8080
 	defaultLogLevel        = "info"
 	defaultDataURL         = "https://data.alpaca.markets"
@@ -326,6 +330,8 @@ func Load(envPath, yamlPath string) (*Config, error) {
 			KillSwitchHaltDuration: killSwitchHalt,
 			MaxDailyLossPct:        raw.Trading.MaxDailyLossPct,
 			MaxDailyLossUSD:        raw.Trading.MaxDailyLossUSD,
+			MaxSimultaneousPos:     raw.Trading.MaxSimultaneousPos,
+			MaxPositionsPerGroup:   raw.Trading.MaxPositionsPerGroup,
 			OptionsRisk:            raw.Trading.OptionsRisk,
 		},
 		Symbols:      raw.Symbols,
