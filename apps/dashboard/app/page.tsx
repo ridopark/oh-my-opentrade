@@ -961,19 +961,20 @@ function TradingSignalContent() {
         <h1 className="text-sm font-semibold text-foreground shrink-0">Trading Signals</h1>
 
         {/* Symbol multi-select dropdown */}
-        <div className="flex items-center gap-1.5 relative" ref={dropdownRef}>
+        <div className="flex items-center gap-1.5" ref={dropdownRef}>
           <span className="text-[10px] text-muted-foreground uppercase">Symbols</span>
-          <button
-            onClick={() => setSymbolsOpen(!symbolsOpen)}
-            className={`${inputCls} w-48 text-left flex items-center justify-between`}
-          >
-            <span className="truncate">
-              {watchlistSymbols.length === 0 ? "Select..." : [...watchlistSymbols].sort().join(", ")}
-            </span>
-            <span className="text-muted-foreground ml-1">{symbolsOpen ? "\u25B2" : "\u25BC"}</span>
-          </button>
-          {symbolsOpen && (
-            <div className="absolute top-full left-0 mt-1 z-50 w-56 max-h-64 overflow-y-auto rounded-lg border border-border bg-card shadow-xl">
+          <div className="relative">
+            <button
+              onClick={() => setSymbolsOpen(!symbolsOpen)}
+              className={`${inputCls} w-48 text-left flex items-center justify-between`}
+            >
+              <span className="truncate">
+                {watchlistSymbols.length === 0 ? "Select..." : [...watchlistSymbols].sort().join(", ")}
+              </span>
+              <span className="text-muted-foreground ml-1">{symbolsOpen ? "\u25B2" : "\u25BC"}</span>
+            </button>
+            {symbolsOpen && (
+              <div className="absolute top-full left-0 mt-1 z-50 w-56 max-h-64 overflow-y-auto rounded-lg border border-border bg-card shadow-xl">
               {availableSymbols.map((sym) => {
                 const selected = watchlistSymbols.includes(sym);
                 return (
@@ -989,8 +990,9 @@ function TradingSignalContent() {
                   </button>
                 );
               })}
-            </div>
-          )}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Timeframe pills */}
