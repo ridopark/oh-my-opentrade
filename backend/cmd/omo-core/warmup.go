@@ -134,6 +134,100 @@ func buildSymbolLists(cfg *config.Config) symbolLists {
 	}
 }
 
+// fillBarGaps detects and fills gaps in 1m market_bars data that may have
+// accumulated during omo-core downtime. For each symbol, it queries the latest
+// bar time from TimescaleDB, and if a gap of more than 2 minutes exists (but
+// less than 7 days), it fetches the missing bars from Alpaca and saves them.
+// Symbols with no bars at all are skipped (use omo-backfill for cold-start).
+func fillBarGaps(ctx context.Context, cfg *config.Config, infra *infraDeps, log zerolog.Logger) {
+	gapLog := log.With().Str("component", "gap-fill").Logger()
+
+	if infra.concreteAlpaca == nil {
+		gapLog.Info().Msg("skipped (no Alpaca fetcher available)")
+		return
+	}
+
+	symbols := cfg.Symbols.AllSymbols()
+	if len(symbols) == 0 {
+		return
+	}
+
+	now := time.Now()
+	tf := domain.Timeframe("1m")
+
+	var totalBars int
+	var filledSymbols int
+
+	for i, sym := range symbols {
+		symDomain := domain.Symbol(sym)
+
+		latestPtr, err := infra.repo.GetLatestMarketBarTime(ctx, symDomain, tf)
+		if err != nil {
+			gapLog.Warn().Err(err).Str("symbol", sym).Msg("failed to query latest bar time")
+			continue
+		}
+
+		// No bars at all — skip, use omo-backfill for cold-start
+		if latestPtr == nil {
+			gapLog.Debug().Str("symbol", sym).Msg("no existing bars, skipping")
+			continue
+		}
+
+		latestBar := *latestPtr
+		gap := now.Sub(latestBar)
+
+		if gap < 2*time.Minute {
+			continue // no significant gap
+		}
+
+		// Don't try to fill gaps older than 7 days — use omo-backfill for that
+		if gap > 7*24*time.Hour {
+			gapLog.Debug().Str("symbol", sym).Dur("gap", gap).Msg("gap too large, skipping")
+			continue
+		}
+
+		// Start fetching from just after the last known bar
+		fetchFrom := latestBar.Add(time.Minute)
+
+		bars, err := infra.concreteAlpaca.GetHistoricalBars(ctx, symDomain, tf, fetchFrom, now)
+		if err != nil {
+			gapLog.Warn().Err(err).Str("symbol", sym).Msg("Alpaca fetch failed")
+			continue
+		}
+
+		if len(bars) == 0 {
+			continue
+		}
+
+		saved, err := infra.repo.SaveMarketBars(ctx, bars)
+		if err != nil {
+			gapLog.Warn().Err(err).Str("symbol", sym).Int("bars", len(bars)).Msg("DB save failed")
+			continue
+		}
+
+		totalBars += saved
+		filledSymbols++
+
+		gapLog.Info().
+			Str("symbol", sym).
+			Int("bars", saved).
+			Time("from", fetchFrom).
+			Time("to", bars[len(bars)-1].Time).
+			Msg("bars backfilled")
+
+		// Rate limit: brief pause every 10 symbols to avoid hammering Alpaca
+		if (i+1)%10 == 0 {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+
+	gapLog.Info().
+		Int("symbols_checked", len(symbols)).
+		Int("symbols_filled", filledSymbols).
+		Int("total_bars", totalBars).
+		Msg("gap-fill complete")
+}
+
 func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps, svc *appServices, syms symbolLists, log zerolog.Logger) {
 	equityStrs := cfg.Symbols.SymbolsByAssetClass("EQUITY")
 	cryptoStrs := cfg.Symbols.SymbolsByAssetClass("CRYPTO")

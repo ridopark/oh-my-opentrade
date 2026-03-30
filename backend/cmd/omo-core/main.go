@@ -26,6 +26,7 @@ func main() {
 	startServices(ctx, cfg, infra, svc, log)
 	server := initHTTPServer(ctx, cfg, infra, svc, log)
 	syms := buildSymbolLists(cfg)
+	fillBarGaps(ctx, cfg, infra, log)
 	warmupIndicators(ctx, cfg, infra, svc, syms, log)
 	startStreaming(ctx, infra, svc, syms, log)
 	waitForShutdown(cancel, server, infra, svc, log)
