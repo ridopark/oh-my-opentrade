@@ -31,25 +31,52 @@ symbols:
   groups:
     - asset_class: "EQUITY"
       symbols:
+        # Mega Cap Tech (7)
         - "AAPL"
         - "MSFT"
         - "GOOGL"
         - "AMZN"
-        - "TSLA"
-        - "SOXL"
-        - "U"
-        - "PLTR"
-        - "SPY"
         - "META"
-      timeframe: "1m"
-    - asset_class: "CRYPTO"
-      symbols:
-        - "BTC/USD"
-        - "ETH/USD"
-        - "SOL/USD"
-        - "AVAX/USD"
-        - "DOGE/USD"
-        - "PEPE/USD"
+        - "TSLA"
+        - "NFLX"
+        # Semiconductors (6)
+        - "NVDA"
+        - "AMD"
+        - "AVGO"
+        - "MU"
+        - "MRVL"
+        - "SMCI"
+        # Software/Cloud (4)
+        - "PLTR"
+        - "CRM"
+        - "SNOW"
+        - "NET"
+        # Fintech (5)
+        - "SOFI"
+        - "HOOD"
+        - "COIN"
+        - "SQ"
+        - "AFRM"
+        # Traditional Finance (1)
+        - "JPM"
+        # Energy (2)
+        - "XOM"
+        - "OXY"
+        # Healthcare/Biotech (2)
+        - "LLY"
+        - "MRNA"
+        # Consumer/EV (3)
+        - "HIMS"
+        - "RIVN"
+        - "RBLX"
+        # Industrials (1)
+        - "BA"
+        # Broad ETFs (3)
+        - "SPY"
+        - "QQQ"
+        - "IWM"
+        # Leveraged ETFs (1 — ORB only)
+        - "SOXL"
       timeframe: "1m"
 
 server:
