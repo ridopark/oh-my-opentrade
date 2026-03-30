@@ -57,6 +57,7 @@ const (
 	EventFeedDegraded            EventType = "FeedDegraded"
 	EventExitCircuitBroken       EventType = "ExitCircuitBroken"
 	EventORBRangeSet             EventType = "ORBRangeSet"
+	EventEnrichedBar             EventType = "EnrichedBar"
 
 	// Connectivity & system events.
 	EventBrokerAPIError          EventType = "BrokerAPIError"
@@ -147,6 +148,24 @@ type ORBRangeSetPayload struct {
 	HTFBias string
 	ATRPct  float64
 	NR7     bool
+}
+
+// EnrichedBarPayload bundles bar OHLCV with computed indicator values so
+// SSE consumers receive a single event with price + indicators.
+type EnrichedBarPayload struct {
+	Time      int64              `json:"time"`
+	Symbol    string             `json:"symbol"`
+	Timeframe string             `json:"timeframe"`
+	Open      float64            `json:"open"`
+	High      float64            `json:"high"`
+	Low       float64            `json:"low"`
+	Close     float64            `json:"close"`
+	Volume    float64            `json:"volume"`
+	EMA9      float64            `json:"ema9,omitempty"`
+	EMA21     float64            `json:"ema21,omitempty"`
+	EMA50     float64            `json:"ema50,omitempty"`
+	EMA200    float64            `json:"ema200,omitempty"`
+	AVWAPs    map[string]float64 `json:"avwaps,omitempty"`
 }
 
 // Event represents a domain event in the trading pipeline.
