@@ -88,7 +88,7 @@ func TestPipelineCoexistence_BothPipelinesIndependent(t *testing.T) {
 			ii := intent
 			gotDebate = &ii
 		}
-		if intent.Strategy == "avwap" {
+		if intent.Strategy == "avwap_v1" {
 			ii := intent
 			gotAVWAP = &ii
 		}
@@ -191,7 +191,7 @@ func TestPipelineCoexistence_SignalCreatedDoesNotTriggerDebateService(t *testing
 
 	evs := waitForEvents(t, orderIntents, 1)
 	intent := evs[0].Payload.(domain.OrderIntent)
-	assert.Equal(t, "avwap", intent.Strategy)
+	assert.Equal(t, "avwap_v1", intent.Strategy)
 	assert.Equal(t, "ai rationale", intent.Rationale)
 	assert.InDelta(t, 0.93, intent.Confidence, 0.0000001)
 	assert.Equal(t, domain.DirectionLong, intent.Direction)
@@ -235,7 +235,7 @@ func TestE2E_AVWAPSignal_AISuccess_ProducesEnrichedOrderIntent(t *testing.T) {
 	intent, ok := evs[0].Payload.(domain.OrderIntent)
 	require.True(t, ok)
 
-	assert.Equal(t, "avwap", intent.Strategy)
+	assert.Equal(t, "avwap_v1", intent.Strategy)
 	assert.Equal(t, domain.Symbol("AAPL"), intent.Symbol)
 	assert.Equal(t, domain.DirectionLong, intent.Direction)
 	assert.Equal(t, "AI enriched rationale", intent.Rationale)
@@ -270,7 +270,7 @@ func TestE2E_AVWAPSignal_AITimeout_ProducesFallbackOrderIntent(t *testing.T) {
 
 	evs := waitForEvents(t, orderIntents, 1)
 	intent := evs[0].Payload.(domain.OrderIntent)
-	assert.Equal(t, "avwap", intent.Strategy)
+	assert.Equal(t, "avwap_v1", intent.Strategy)
 	assert.Equal(t, domain.Symbol("AAPL"), intent.Symbol)
 	assert.Equal(t, domain.DirectionLong, intent.Direction)
 	assert.InDelta(t, 0.65, intent.Confidence, 0.0000001)
