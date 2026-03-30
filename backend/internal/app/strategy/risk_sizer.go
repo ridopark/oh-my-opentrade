@@ -40,9 +40,8 @@ const aiDirectionMinConfidence = 0.5
 
 var (
 	etLocation             *time.Location
-	errOptionsChainEmpty   = errors.New("options chain empty")
-	errOptionsNoContract   = errors.New("no suitable option contract")
-	errOptionsChainFailed  = errors.New("options chain fetch failed")
+	errOptionsChainEmpty  = errors.New("options chain empty")
+	errOptionsChainFailed = errors.New("options chain fetch failed")
 )
 
 func init() {
@@ -604,12 +603,10 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		if errors.Is(err, errOptionsChainEmpty) || errors.Is(err, errOptionsChainFailed) {
 			// Only fall back to equity if the strategy allows it.
 			hasEquity := false
-			if spec != nil {
-				for _, ac := range spec.Routing.AssetClasses {
-					if strings.EqualFold(ac, "EQUITY") {
-						hasEquity = true
-						break
-					}
+			for _, ac := range spec.Routing.AssetClasses {
+				if strings.EqualFold(ac, "EQUITY") {
+					hasEquity = true
+					break
 				}
 			}
 			if !hasEquity {

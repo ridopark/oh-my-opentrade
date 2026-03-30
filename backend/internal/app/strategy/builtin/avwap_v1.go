@@ -337,13 +337,14 @@ func (s *AVWAPState) CheckExitsOn1m(symbol string, bar start.Bar) []start.Signal
 		for _, anchorName := range sortedAnchors {
 			avwapValue := avwapValues[anchorName]
 			bufferAbs := avwapValue * float64(cfg.AVWAPStopBufferBPS) / 10000.0
-			if s.PositionSide == start.SideBuy {
+			switch s.PositionSide {
+			case start.SideBuy:
 				if bar.Close < avwapValue-bufferAbs {
 					s.StopBelowCount[anchorName]++
 				} else {
 					s.StopBelowCount[anchorName] = 0
 				}
-			} else if s.PositionSide == start.SideSell {
+			case start.SideSell:
 				if bar.Close > avwapValue+bufferAbs {
 					s.StopAboveCount[anchorName]++
 				} else {
@@ -351,7 +352,8 @@ func (s *AVWAPState) CheckExitsOn1m(symbol string, bar start.Bar) []start.Signal
 				}
 			}
 		}
-		if s.PositionSide == start.SideBuy {
+		switch s.PositionSide {
+		case start.SideBuy:
 			for _, anchorName := range sortedAnchors {
 				if s.StopBelowCount[anchorName] >= cfg.AVWAPStopBars {
 					sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideSell, 0.9, map[string]string{
@@ -371,7 +373,7 @@ func (s *AVWAPState) CheckExitsOn1m(symbol string, bar start.Bar) []start.Signal
 					return []start.Signal{sig}
 				}
 			}
-		} else if s.PositionSide == start.SideSell {
+		case start.SideSell:
 			for _, anchorName := range sortedAnchors {
 				if s.StopAboveCount[anchorName] >= cfg.AVWAPStopBars {
 					sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideBuy, 0.9, map[string]string{
@@ -494,20 +496,6 @@ func hasHigherLows(lows []float64) bool {
 	// a valid "higher lows" pattern in real markets.
 	for i := 1; i < len(lows); i++ {
 		if lows[i] < lows[i-1] {
-			return false
-		}
-	}
-	return true
-}
-
-func hasLowerHighs(highs []float64) bool {
-	if len(highs) < 2 {
-		return false
-	}
-	// Allow ties (>=) but not higher highs (>). In real markets, equal highs
-	// are common and still represent a valid "lower highs" pattern.
-	for i := 1; i < len(highs); i++ {
-		if highs[i] > highs[i-1] {
 			return false
 		}
 	}
@@ -720,13 +708,14 @@ func (s *AVWAPState) evaluateAVWAPStop(ec entryContext) (*start.Signal, error) {
 	for _, anchorName := range sortedAnchors {
 		avwapValue := avwapValues[anchorName]
 		bufferAbs := avwapValue * float64(cfg.AVWAPStopBufferBPS) / 10000.0
-		if s.PositionSide == start.SideBuy {
+		switch s.PositionSide {
+		case start.SideBuy:
 			if bar.Close < avwapValue-bufferAbs {
 				s.StopBelowCount[anchorName]++
 			} else {
 				s.StopBelowCount[anchorName] = 0
 			}
-		} else if s.PositionSide == start.SideSell {
+		case start.SideSell:
 			if bar.Close > avwapValue+bufferAbs {
 				s.StopAboveCount[anchorName]++
 			} else {
@@ -736,7 +725,8 @@ func (s *AVWAPState) evaluateAVWAPStop(ec entryContext) (*start.Signal, error) {
 	}
 
 	// Check if any anchor triggered the stop.
-	if s.PositionSide == start.SideBuy {
+	switch s.PositionSide {
+	case start.SideBuy:
 		for _, anchorName := range sortedAnchors {
 			if s.StopBelowCount[anchorName] >= cfg.AVWAPStopBars {
 				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalExit, start.SideSell, 0.9, map[string]string{
@@ -757,7 +747,7 @@ func (s *AVWAPState) evaluateAVWAPStop(ec entryContext) (*start.Signal, error) {
 				return &sig, nil
 			}
 		}
-	} else if s.PositionSide == start.SideSell {
+	case start.SideSell:
 		for _, anchorName := range sortedAnchors {
 			if s.StopAboveCount[anchorName] >= cfg.AVWAPStopBars {
 				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalExit, start.SideBuy, 0.9, map[string]string{
@@ -1171,7 +1161,7 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 	if gapBPS >= float64(cfg.PinchMinBPS) && gapBPS <= float64(cfg.PinchMaxBPS) {
 		// Long pinch breakout: price breaks above maxAVWAP.
 		if bar.Close > maxAVWAP && volumeOK && !ec.lockedLong {
-			if !(cfg.EnforceAVWAPBias && ec.avwapBias != "" && ec.avwapBias != "LONG") {
+			if !cfg.EnforceAVWAPBias || ec.avwapBias == "" || ec.avwapBias == "LONG" {
 				conf := computeConfluence(cfg, bar, pinchAVWAPValue, ec.avwapValues, s.Indicators,
 					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
 				if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
@@ -1199,10 +1189,11 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 
 		// Short pinch breakout: price breaks below minAVWAP.
 		if bar.Close < minAVWAP && volumeOK && !ec.lockedShort && !strings.EqualFold(cfg.Direction, "LONG") {
-			if cfg.RequireCapitulationForShorts && ec.avwapBias == "LONG" {
+			switch {
+			case cfg.RequireCapitulationForShorts && ec.avwapBias == "LONG":
 				logShortGate(ctx, ec.symbol, "require_capitulation", "pinch", "bias", ec.avwapBias)
 				// Skip — above AVWAP, capitulation required for short pinch
-			} else if !(cfg.EnforceAVWAPBias && ec.avwapBias != "" && ec.avwapBias != "SHORT") {
+			case !cfg.EnforceAVWAPBias || ec.avwapBias == "" || ec.avwapBias == "SHORT":
 				conf := computeConfluence(cfg, bar, pinchAVWAPValue, ec.avwapValues, s.Indicators,
 					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
 				if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
@@ -1225,7 +1216,7 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 					s.CooldownUntil = now.Add(cooldown)
 					return &sig, nil
 				}
-			} else {
+			default:
 				logShortGate(ctx, ec.symbol, "enforce_avwap_bias", "pinch", "bias", ec.avwapBias)
 			}
 		}
@@ -1255,13 +1246,14 @@ func (s *AVWAPState) evaluateGapReclaim(ec entryContext) (*start.Signal, error) 
 	for _, anchorName := range sortedAnchors {
 		avwapValue := avwapValues[anchorName]
 		prev := s.CrossedBelowBar[anchorName]
-		if bar.Close < avwapValue {
+		switch {
+		case bar.Close < avwapValue:
 			if prev == 0 {
 				s.CrossedBelowBar[anchorName] = 1 // just crossed below
 			} else {
 				s.CrossedBelowBar[anchorName]++
 			}
-		} else if prev > 0 && prev <= cfg.GapReclaimBars && bar.Close > avwapValue {
+		case prev > 0 && prev <= cfg.GapReclaimBars && bar.Close > avwapValue:
 			// Reclaim! Price was below for 1-N bars, now closed above.
 			s.CrossedBelowBar[anchorName] = 0
 			if volumeOK && !ec.lockedLong {
@@ -1294,7 +1286,7 @@ func (s *AVWAPState) evaluateGapReclaim(ec entryContext) (*start.Signal, error) 
 				s.CooldownUntil = now.Add(cooldown)
 				return &sig, nil
 			}
-		} else {
+		default:
 			s.CrossedBelowBar[anchorName] = 0
 		}
 	}
@@ -1925,15 +1917,11 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		if avwapSt.AboveCount[anchorName] > avwapSt.PeakAboveCount[anchorName] {
 			avwapSt.PeakAboveCount[anchorName] = avwapSt.AboveCount[anchorName]
 		}
-		if avwapSt.AboveCount[anchorName] == 0 && avwapSt.PeakAboveCount[anchorName] > 0 {
-			// price crossed below — peak is frozen for pullback check
-		}
+		// NOTE: when AboveCount==0 && PeakAboveCount>0, peak is frozen for pullback check (no-op).
 		if avwapSt.BelowCount[anchorName] > avwapSt.PeakBelowCount[anchorName] {
 			avwapSt.PeakBelowCount[anchorName] = avwapSt.BelowCount[anchorName]
 		}
-		if avwapSt.BelowCount[anchorName] == 0 && avwapSt.PeakBelowCount[anchorName] > 0 {
-			// price crossed above — peak is frozen for pullback check
-		}
+		// NOTE: when BelowCount==0 && PeakBelowCount>0, peak is frozen for pullback check (no-op).
 		// Reset peaks when price re-establishes a trend (AboveCount or BelowCount exceeds prior peak)
 		if avwapSt.AboveCount[anchorName] >= cfg.PullbackTrendBars {
 			avwapSt.PeakAboveCount[anchorName] = avwapSt.AboveCount[anchorName]
