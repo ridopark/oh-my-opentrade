@@ -11,8 +11,6 @@ import (
 	"github.com/scmhub/ibsync"
 )
 
-const allAccountTags = "NetLiquidation,BuyingPower,DayTradingBuyingPower,PatternDayTrader"
-
 func (a *Adapter) cachedAccountSummary(ib ibClient) (ibsync.AccountSummary, error) {
 	a.acctCache.mu.Lock()
 	defer a.acctCache.mu.Unlock()
@@ -21,13 +19,16 @@ func (a *Adapter) cachedAccountSummary(ib ibClient) (ibsync.AccountSummary, erro
 		return a.acctCache.summary, nil
 	}
 
-	summary, err := ib.ReqAccountSummary("All", allAccountTags)
-	if err != nil {
+	// Use AccountSummary() instead of ReqAccountSummary() to avoid leaking
+	// server-side subscriptions. AccountSummary() returns ibsync's internal
+	// cache and only calls ReqAccountSummary once (on first invocation).
+	summary := ib.AccountSummary()
+	if len(summary) == 0 {
 		if len(a.acctCache.summary) > 0 {
-			a.log.Warn().Err(err).Msg("ibkr: ReqAccountSummary failed, using stale cache")
+			a.log.Warn().Msg("ibkr: AccountSummary returned empty, using stale cache")
 			return a.acctCache.summary, nil
 		}
-		return nil, fmt.Errorf("ibkr: ReqAccountSummary: %w", err)
+		return nil, fmt.Errorf("ibkr: AccountSummary returned empty")
 	}
 	a.acctCache.summary = summary
 	a.acctCache.fetchedAt = time.Now()

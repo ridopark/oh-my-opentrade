@@ -61,6 +61,11 @@ func (m *mockIB) ReqAccountSummary(_ string, _ string) (ibsync.AccountSummary, e
 	defer m.mu.Unlock()
 	return m.accountSummary, m.accountErr
 }
+func (m *mockIB) AccountSummary(_ ...string) ibsync.AccountSummary {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.accountSummary
+}
 func (m *mockIB) Snapshot(_ *ibsync.Contract, _ ...bool) (*ibsync.Ticker, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

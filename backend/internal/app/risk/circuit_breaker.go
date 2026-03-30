@@ -47,7 +47,11 @@ func NewDailyLossBreaker(maxLossPct, maxLossUSD float64, pnlSource DailyPnLSourc
 }
 
 // SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
-func (d *DailyLossBreaker) SetMetrics(m *metrics.Metrics) { d.metrics = m }
+func (d *DailyLossBreaker) SetMetrics(m *metrics.Metrics) {
+	d.metrics = m
+	// Initialize the gauge so Prometheus always exposes it (even when not tripped).
+	m.Risk.CBActive.WithLabelValues("daily_loss").Set(0)
+}
 
 func (d *DailyLossBreaker) SetGlobalHalt(isHalted func() bool) { d.globalHalt = isHalted }
 
@@ -133,6 +137,7 @@ func (d *DailyLossBreaker) Check(tenantID string, envMode domain.EnvMode, accoun
 	}
 
 	if d.metrics != nil {
+		d.metrics.Risk.CBActive.WithLabelValues("daily_loss").Set(0)
 		d.metrics.Risk.ChecksTotal.WithLabelValues("daily_loss", "pass").Inc()
 	}
 	return nil
