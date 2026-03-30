@@ -368,7 +368,7 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	if val := os.Getenv("BROKER"); val != "" {
 		cfg.Broker = val
 	} else {
-		cfg.Broker = "alpaca"
+		cfg.Broker = "ibkr"
 	}
 	if val := os.Getenv("STREAMING_SOURCE"); val != "" {
 		cfg.StreamingSource = val
