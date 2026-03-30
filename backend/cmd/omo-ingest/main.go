@@ -22,6 +22,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/logger"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
 
@@ -168,20 +169,33 @@ func main() {
 	// Session reset goroutine: resets equity aggregators at each NYSE open
 	go sessionResetLoop(ctx, pipeline, equitySymbols, log)
 
-	// IBKR streaming
-	log.Info().
-		Int("client_id", cfg.IBKR.ClientID).
-		Str("host", cfg.IBKR.Host).
-		Int("port", cfg.IBKR.Port).
-		Msg("connecting to IBKR for streaming...")
-
-	ibkrAdapter, err := ibkr.NewAdapter(cfg.IBKR, log.With().Str("component", "ibkr").Logger())
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to connect to IBKR")
+	// Streaming source
+	streamingSource := os.Getenv("STREAMING_SOURCE")
+	if streamingSource == "" {
+		streamingSource = "ibkr"
 	}
 
-	log.Info().Int("symbols", len(allSymbols)).Msg("starting bar stream")
-	if err := ibkrAdapter.StreamBars(ctx, allSymbols, "1m", pipeline.HandleBar); err != nil {
+	var streamBroker ports.MarketDataPort
+	switch streamingSource {
+	case "alpaca":
+		streamBroker = alpacaAdapter
+		log.Info().Msg("streaming source: alpaca")
+	default:
+		log.Info().
+			Int("client_id", cfg.IBKR.ClientID).
+			Str("host", cfg.IBKR.Host).
+			Int("port", cfg.IBKR.Port).
+			Msg("connecting to IBKR for streaming...")
+		ibkrAdapter, ibkrErr := ibkr.NewAdapter(cfg.IBKR, log.With().Str("component", "ibkr").Logger())
+		if ibkrErr != nil {
+			log.Fatal().Err(ibkrErr).Msg("failed to connect to IBKR")
+		}
+		streamBroker = ibkrAdapter
+		log.Info().Msg("streaming source: ibkr")
+	}
+
+	log.Info().Int("symbols", len(allSymbols)).Str("source", streamingSource).Msg("starting bar stream")
+	if err := streamBroker.StreamBars(ctx, allSymbols, "1m", pipeline.HandleBar); err != nil {
 		if ctx.Err() == nil {
 			log.Fatal().Err(err).Msg("stream setup failed")
 		}
