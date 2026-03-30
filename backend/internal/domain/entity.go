@@ -28,6 +28,14 @@ type MarketBar struct {
 	Repaired     bool    // true if High/Low were clamped by the adaptive spike filter
 	OriginalHigh float64 // pre-repair High (0 if not repaired)
 	OriginalLow  float64 // pre-repair Low (0 if not repaired)
+
+	// Enriched indicator data — populated asynchronously from EnrichedBar events.
+	// Zero values mean "not available". AVWAPs nil means "not available".
+	EMA9   float64            `json:"ema9,omitempty"`
+	EMA21  float64            `json:"ema21,omitempty"`
+	EMA50  float64            `json:"ema50,omitempty"`
+	EMA200 float64            `json:"ema200,omitempty"`
+	AVWAPs map[string]float64 `json:"avwaps,omitempty"`
 }
 
 // NewMarketBar creates a validated MarketBar. High must be >= Low and Volume must be non-negative.

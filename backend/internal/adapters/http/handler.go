@@ -220,6 +220,12 @@ type barResponse struct {
 	Close     float64 `json:"close"`
 	Volume    float64 `json:"volume"`
 	Suspect   bool    `json:"suspect"`
+	// Enriched indicator data — nil/omitted when not yet computed.
+	EMA9   *float64           `json:"ema9,omitempty"`
+	EMA21  *float64           `json:"ema21,omitempty"`
+	EMA50  *float64           `json:"ema50,omitempty"`
+	EMA200 *float64           `json:"ema200,omitempty"`
+	AVWAPs map[string]float64 `json:"avwaps,omitempty"`
 }
 
 // ServeHTTP handles GET /bars?symbols=AAPL,MSFT&timeframe=1m&from=<RFC3339>&to=<RFC3339>
@@ -286,7 +292,7 @@ func (h *BarsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, b := range bars {
-			result = append(result, barResponse{
+			resp := barResponse{
 				Time:      b.Time.UTC().Format(time.RFC3339),
 				Symbol:    string(b.Symbol),
 				Timeframe: string(b.Timeframe),
@@ -296,7 +302,21 @@ func (h *BarsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Close:     b.Close,
 				Volume:    b.Volume,
 				Suspect:   b.Suspect,
-			})
+				AVWAPs:    b.AVWAPs, // nil maps omitted by json omitempty
+			}
+			if b.EMA9 > 0 {
+				resp.EMA9 = &b.EMA9
+			}
+			if b.EMA21 > 0 {
+				resp.EMA21 = &b.EMA21
+			}
+			if b.EMA50 > 0 {
+				resp.EMA50 = &b.EMA50
+			}
+			if b.EMA200 > 0 {
+				resp.EMA200 = &b.EMA200
+			}
+			result = append(result, resp)
 		}
 	}
 

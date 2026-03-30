@@ -65,6 +65,10 @@ type RepositoryPort interface {
 	// over the last 30 days. Returns 0 if no BUY trades exist.
 	// Used by global reconciliation to write zero-free reconciliation SELL trades.
 	GetAvgEntryPrice(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol) (float64, error)
+
+	// UpdateBarIndicators persists enriched indicator data (EMA, AVWAP) onto an
+	// existing market_bars row identified by (symbol, timeframe, time).
+	UpdateBarIndicators(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, t time.Time, ema9, ema21, ema50, ema200 float64, avwaps map[string]float64) error
 }
 
 // TradeQuery defines the filter and pagination parameters for listing trades.

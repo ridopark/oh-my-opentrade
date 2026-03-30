@@ -619,6 +619,23 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 		if err := svc.monitor.StartEnrichedBarPublisher(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start enriched bar publisher")
 		}
+
+		// Persist enriched bar indicator data (EMA, AVWAP) to market_bars asynchronously
+		// so /api/bars serves historical bars with full indicator data.
+		infra.eventBus.SubscribeAsync(ctx, domain.EventEnrichedBar, func(_ context.Context, evt domain.Event) error {
+			payload, ok := evt.Payload.(domain.EnrichedBarPayload)
+			if !ok {
+				return nil
+			}
+			return infra.repo.UpdateBarIndicators(ctx,
+				domain.Symbol(payload.Symbol),
+				domain.Timeframe(payload.Timeframe),
+				time.Unix(payload.Time, 0),
+				payload.EMA9, payload.EMA21, payload.EMA50, payload.EMA200,
+				payload.AVWAPs,
+			)
+		})
+		log.Info().Msg("enriched bar persistence subscriber registered")
 	}
 	if svc.symRouter != nil {
 		if err := svc.symRouter.Start(ctx); err != nil {

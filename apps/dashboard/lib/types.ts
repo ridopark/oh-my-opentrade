@@ -100,6 +100,12 @@ export interface MarketBarEvent {
   close: number;
   volume: number;
   suspect: boolean;
+  // Indicator fields from enriched REST /api/bars response
+  ema9?: number;
+  ema21?: number;
+  ema50?: number;
+  ema200?: number;
+  avwaps?: Record<string, number>;
 }
 
 // StrategyDNA (maps to domain.StrategyDNA)

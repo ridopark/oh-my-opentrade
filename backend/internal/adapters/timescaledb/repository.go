@@ -17,7 +17,8 @@ import (
 
 const (
 	queryInsertMarketBar      = `INSERT INTO market_bars (time, account_id, env_mode, symbol, timeframe, open, high, low, close, volume, suspect) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (symbol, timeframe, time) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume, suspect=EXCLUDED.suspect`
-	querySelectMarketBars     = `SELECT time, symbol, timeframe, open, high, low, close, volume, suspect FROM market_bars WHERE symbol = $1 AND timeframe = $2 AND time >= $3 AND time < $4 ORDER BY time`
+	querySelectMarketBars     = `SELECT time, symbol, timeframe, open, high, low, close, volume, suspect, ema9, ema21, ema50, ema200, avwaps FROM market_bars WHERE symbol = $1 AND timeframe = $2 AND time >= $3 AND time < $4 ORDER BY time`
+	queryUpdateBarIndicators  = `UPDATE market_bars SET ema9=$4, ema21=$5, ema50=$6, ema200=$7, avwaps=$8 WHERE symbol=$1 AND timeframe=$2 AND time=$3`
 	queryInsertTrade          = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status, strategy, rationale, thesis, execution_id, instrument_type, option_symbol, underlying, strike, expiry, option_right, premium, delta_at_entry, iv_at_entry) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) ON CONFLICT (trade_id, time) DO NOTHING`
 	querySelectTrades         = `SELECT time, trade_id, COALESCE(execution_id, ''), symbol, side, quantity, price, commission, status, COALESCE(strategy, ''), COALESCE(rationale, ''), thesis FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4 ORDER BY time`
 	queryInsertStrategyDNA    = `INSERT INTO strategy_dna_history (time, account_id, env_mode, strategy_id, version, parameters, performance) VALUES ($1, $2, $3, $4, $5, $6, $7)`
@@ -156,11 +157,31 @@ func (r *Repository) GetMarketBars(ctx context.Context, symbol domain.Symbol, ti
 	for rows.Next() {
 		var bar domain.MarketBar
 		var sym, tf string
-		if err := rows.Scan(&bar.Time, &sym, &tf, &bar.Open, &bar.High, &bar.Low, &bar.Close, &bar.Volume, &bar.Suspect); err != nil {
+		var ema9, ema21, ema50, ema200 sql.NullFloat64
+		var avwapsRaw sql.NullString
+		if err := rows.Scan(&bar.Time, &sym, &tf, &bar.Open, &bar.High, &bar.Low, &bar.Close, &bar.Volume, &bar.Suspect, &ema9, &ema21, &ema50, &ema200, &avwapsRaw); err != nil {
 			return nil, fmt.Errorf("timescaledb: scan market bar: %w", err)
 		}
 		bar.Symbol = domain.Symbol(sym)
 		bar.Timeframe = domain.Timeframe(tf)
+		if ema9.Valid {
+			bar.EMA9 = ema9.Float64
+		}
+		if ema21.Valid {
+			bar.EMA21 = ema21.Float64
+		}
+		if ema50.Valid {
+			bar.EMA50 = ema50.Float64
+		}
+		if ema200.Valid {
+			bar.EMA200 = ema200.Float64
+		}
+		if avwapsRaw.Valid && avwapsRaw.String != "" {
+			var avwaps map[string]float64
+			if jsonErr := json.Unmarshal([]byte(avwapsRaw.String), &avwaps); jsonErr == nil {
+				bar.AVWAPs = avwaps
+			}
+		}
 		bars = append(bars, bar)
 	}
 	if err := rows.Err(); err != nil {
@@ -196,6 +217,40 @@ func (r *Repository) GetMaxBarHighSince(ctx context.Context, symbol domain.Symbo
 		return 0, fmt.Errorf("timescaledb: get max bar high since: %w", err)
 	}
 	return maxHigh, nil
+}
+
+// UpdateBarIndicators persists enriched indicator data onto an existing market_bars row.
+// avwaps is marshalled to JSONB; nil maps are stored as SQL NULL.
+//
+// Required migration (run manually):
+//   ALTER TABLE market_bars
+//     ADD COLUMN IF NOT EXISTS ema9 DOUBLE PRECISION,
+//     ADD COLUMN IF NOT EXISTS ema21 DOUBLE PRECISION,
+//     ADD COLUMN IF NOT EXISTS ema50 DOUBLE PRECISION,
+//     ADD COLUMN IF NOT EXISTS ema200 DOUBLE PRECISION,
+//     ADD COLUMN IF NOT EXISTS avwaps JSONB;
+func (r *Repository) UpdateBarIndicators(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, t time.Time, ema9, ema21, ema50, ema200 float64, avwaps map[string]float64) error {
+	var avwapsArg any
+	if len(avwaps) > 0 {
+		data, err := json.Marshal(avwaps)
+		if err != nil {
+			return fmt.Errorf("timescaledb: marshal avwaps: %w", err)
+		}
+		avwapsArg = data
+	}
+	_, err := r.db.ExecContext(ctx, queryUpdateBarIndicators,
+		string(symbol), string(timeframe), t,
+		ema9, ema21, ema50, ema200, avwapsArg,
+	)
+	if err != nil {
+		r.log.Error().Err(err).
+			Str("symbol", string(symbol)).
+			Str("timeframe", string(timeframe)).
+			Time("bar_time", t).
+			Msg("failed to update bar indicators")
+		return fmt.Errorf("timescaledb: update bar indicators: %w", err)
+	}
+	return nil
 }
 
 // SaveTrade saves a completed or in-progress trade execution.
