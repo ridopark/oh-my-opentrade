@@ -18,8 +18,11 @@ type ScoredSymbol struct {
 	Symbol string
 	Score  float64
 	ATRPct float64
+	GapPct float64
+	RVOL   float64
 	NR7    bool
 	Bias   string
+	Sector domain.SectorGroup
 }
 
 // DailyScreener pre-computes the top-N symbols for each trading day.
@@ -129,16 +132,70 @@ func (ds *DailyScreener) ComputeForDate(ctx context.Context, asOf time.Time, can
 				}
 			}
 
-			score := atrPct * 10
-			if nr7 {
-				score += 20
-			}
-			if bias == "BULLISH" || bias == "BEARISH" {
-				score += 5
+			// Gap%: today's open vs yesterday's close
+			var gapPct float64
+			if len(bars) >= 2 {
+				todayOpen := bars[len(bars)-1].Open
+				prevClose := bars[len(bars)-2].Close
+				if prevClose > 0 && todayOpen > 0 {
+					gapPct = (todayOpen - prevClose) / prevClose * 100
+				}
 			}
 
-			// Only include symbols with meaningful ATR
-			if atrPct < 0.5 {
+			// RVOL: today's volume vs 20-day average volume
+			var rvol float64
+			if len(bars) >= 21 {
+				var volSum float64
+				for _, b := range bars[len(bars)-21 : len(bars)-1] {
+					volSum += float64(b.Volume)
+				}
+				avgVol := volSum / 20
+				todayVol := float64(bars[len(bars)-1].Volume)
+				if avgVol > 0 {
+					rvol = todayVol / avgVol
+				}
+			}
+
+			sector := domain.ClassifySector(sym)
+
+			// Composite score approximating AI screener priorities for AVWAP
+			var score float64
+
+			// ATR% — primary: need movement for AVWAP entries
+			if atrPct >= 2.0 {
+				score += 30
+			} else if atrPct >= 1.0 {
+				score += 15
+			}
+
+			// Gap% — good anchor point for AVWAP
+			absGap := math.Abs(gapPct)
+			if absGap >= 1.0 && absGap <= 8.0 {
+				score += 25
+			}
+
+			// RVOL — volume confirmation
+			if rvol >= 1.5 {
+				score += 20
+			}
+
+			// NR7 — compression before expansion
+			if nr7 {
+				score += 10
+			}
+
+			// Trend alignment: bias matches gap direction
+			if (bias == "BULLISH" && gapPct > 0) || (bias == "BEARISH" && gapPct < 0) {
+				score += 10
+			}
+
+			// Penalize leveraged ETFs (poor VWAP respect)
+			if sector == domain.SectorLevETF {
+				score -= 20
+			}
+
+			// Minimum quality threshold
+			if score < 25 {
 				return
 			}
 
@@ -147,8 +204,11 @@ func (ds *DailyScreener) ComputeForDate(ctx context.Context, asOf time.Time, can
 				Symbol: string(sym),
 				Score:  math.Round(score*10) / 10,
 				ATRPct: math.Round(atrPct*10) / 10,
+				GapPct: math.Round(gapPct*100) / 100,
+				RVOL:   math.Round(rvol*10) / 10,
 				NR7:    nr7,
 				Bias:   bias,
+				Sector: sector,
 			})
 			mu.Unlock()
 		}(sym)
