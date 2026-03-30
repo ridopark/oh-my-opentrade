@@ -61,6 +61,11 @@ function toOHLC(bar: MarketBarEvent): OHLCBar {
     low: bar.low,
     close: bar.close,
     volume: bar.volume,
+    ema9: bar.ema9,
+    ema21: bar.ema21,
+    ema50: bar.ema50,
+    ema200: bar.ema200,
+    avwaps: bar.avwaps,
   };
 }
 
