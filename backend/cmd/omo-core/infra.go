@@ -161,6 +161,8 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 		log.Fatal().Err(err).Msg("failed to parse DB config")
 	}
 	sqlDB := stdlib.OpenDB(*pgxCfg)
+	sqlDB.SetMaxOpenConns(cfg.Database.MaxPoolSize)
+	sqlDB.SetMaxIdleConns(cfg.Database.MaxPoolSize)
 	if err := retryWithBackoff(log, "timescaledb_ping", 5, 1*time.Second, 15*time.Second, func() error {
 		return sqlDB.PingContext(context.Background())
 	}); err != nil {

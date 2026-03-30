@@ -50,7 +50,7 @@ clean:
 
 ## Run go vet
 lint:
-	cd $(BACKEND_DIR) && go vet ./...
+	cd $(BACKEND_DIR) && golangci-lint run ./...
 
 ## Run database migrations
 migrate:
@@ -71,7 +71,7 @@ debug-chrome-headless:
 ## Install git hooks (run once after cloning)
 install-hooks:
 	git config core.hooksPath .githooks
-	@echo "Git hooks installed (.githooks/pre-push)"
+	@echo "Git hooks installed (.githooks/pre-commit, .githooks/pre-push)"
 
 # ---------------------------------------------------------------------------
 # Production Logs (OCI VM)
