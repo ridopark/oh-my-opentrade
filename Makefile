@@ -3,7 +3,7 @@ BINARY_NAME := omo-core
 BACKEND_DIR := backend
 BIN_DIR := $(BACKEND_DIR)/bin
 
-.PHONY: all build backfill test test-v test-race test-cover test-integration clean lint migrate fmt debug-chrome debug-chrome-headless install-hooks \
+.PHONY: all build backfill ingest test test-v test-race test-cover test-integration clean lint migrate fmt debug-chrome debug-chrome-headless install-hooks \
 	prod-logs prod-logs-signals prod-logs-orders prod-logs-exits prod-logs-errors prod-logs-tail
 
 all: test build
@@ -17,6 +17,11 @@ build:
 backfill:
 	@mkdir -p $(BIN_DIR)
 	cd $(BACKEND_DIR) && go build -o bin/omo-backfill ./cmd/omo-backfill
+
+## Build the omo-ingest binary
+ingest:
+	@mkdir -p $(BIN_DIR)
+	cd $(BACKEND_DIR) && go build -o bin/omo-ingest ./cmd/omo-ingest
 
 ## Run all tests
 test:
