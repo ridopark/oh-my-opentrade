@@ -116,6 +116,7 @@ type SystemStartedPayload struct {
 	Version         string
 	EnvMode         string
 	Broker          string
+	StreamingSource string
 	Symbols         []string
 	EquityCount     int
 	CryptoCount     int

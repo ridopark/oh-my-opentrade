@@ -431,7 +431,10 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 	log.Info().Msg("ready — WebSocket streaming active")
 
 	{
-		broker := infra.streamingSource
+		broker := "ibkr"
+		if infra.concreteIBKR == nil && infra.concreteAlpaca != nil {
+			broker = "alpaca"
+		}
 		ibkrConnected := false
 		if infra.concreteIBKR != nil {
 			ibkrConnected = infra.concreteIBKR.IsConnected()
@@ -466,6 +469,7 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 				Version:         "dev",
 				EnvMode:         string(domain.EnvModePaper),
 				Broker:          broker,
+				StreamingSource: infra.streamingSource,
 				Symbols:         allSyms,
 				EquityCount:     equityCount,
 				CryptoCount:     cryptoCount,
