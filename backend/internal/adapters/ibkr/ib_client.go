@@ -14,6 +14,7 @@ type ibClient interface {
 	Trades() []*ibsync.Trade
 	Positions(account ...string) []ibsync.Position
 	ReqAccountSummary(groupName string, tags string) (ibsync.AccountSummary, error)
+	AccountSummary(account ...string) ibsync.AccountSummary
 	Snapshot(contract *ibsync.Contract, regulatorySnapshot ...bool) (*ibsync.Ticker, error)
 	ReqRealTimeBars(contract *ibsync.Contract, barSize int, whatToShow string, useRTH bool, realTimeBarsOptions ...ibsync.TagValue) (chan ibsync.RealTimeBar, ibsync.CancelFunc)
 	ReqHistoricalData(contract *ibsync.Contract, endDateTime string, duration string, barSize string, whatToShow string, useRTH bool, formatDate int, chartOptions ...ibsync.TagValue) (chan ibsync.Bar, ibsync.CancelFunc)
