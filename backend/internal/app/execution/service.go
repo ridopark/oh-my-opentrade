@@ -45,6 +45,7 @@ type Service struct {
 	dailyLossBreaker   *risk.DailyLossBreaker
 	positionGate       *PositionGate
 	exposureGuard      *ExposureGuard
+	portfolioGuard     *PortfolioGuard
 	buyingPowerGuard   *BuyingPowerGuard
 	optionsRiskEngine  *OptionsRiskEngine
 	accountEquity      float64
@@ -77,6 +78,10 @@ func WithPositionGate(pg *PositionGate) Option {
 
 func WithExposureGuard(eg *ExposureGuard) Option {
 	return func(s *Service) { s.exposureGuard = eg }
+}
+
+func WithPortfolioGuard(pg *PortfolioGuard) Option {
+	return func(s *Service) { s.portfolioGuard = pg }
 }
 
 func WithBuyingPowerGuard(bpg *BuyingPowerGuard) Option {
@@ -443,6 +448,17 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			l.Warn().Err(err).Msg("order intent rejected by exposure guard")
 			if s.metrics != nil {
 				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "exposure").Inc()
+			}
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
+			return nil
+		}
+	}
+
+	if s.portfolioGuard != nil {
+		if err := s.portfolioGuard.Check(ctx, intent); err != nil {
+			l.Warn().Err(err).Msg("order intent rejected by portfolio guard")
+			if s.metrics != nil {
+				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "portfolio").Inc()
 			}
 			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
 			return nil
