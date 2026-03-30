@@ -341,7 +341,8 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	// Wire prev-day bar replay for AVWAP anchors (pd_high, pd_low).
 	// Without this, all AVWAP lines overlap because they activate on
 	// today's first bar instead of accumulating from their anchor time.
-	svc.strategyRunner.SetPrevDayBarsFn(func(symbol string, since time.Time) []start.Bar {
+	// Shared by both the strategy runner and the monitor's standalone AVWAP.
+	prevDayBarsFn := func(symbol string, since time.Time) []start.Bar {
 		if since.IsZero() {
 			return nil
 		}
@@ -365,7 +366,8 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 			bars = append(bars, b)
 		}
 		return bars
-	})
+	}
+	svc.strategyRunner.SetPrevDayBarsFn(prevDayBarsFn)
 
 	allSpecs, err := svc.specStore.List(context.Background(), nil)
 	if err != nil {
@@ -452,6 +454,23 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 
 	// Wire AVWAP function so monitor can include anchored VWAP values in enriched bar events.
 	svc.monitor.SetAVWAPFn(svc.strategyRunner.GetAVWAPValues)
+
+	// Wire standalone AVWAP computation in monitor for ALL streaming symbols.
+	// This ensures newly rotated symbols have AVWAP values even before strategy assignment.
+	svc.monitor.SetAnchorResolverFn(sessionResolver.ResolveAnchors)
+	svc.monitor.SetPrevDayBarsFn(prevDayBarsFn)
+	svc.monitor.SetAVWAPAnchors([]string{"session_open", "pd_high", "pd_low"})
+
+	// Load session data for all base symbols (not just strategy-assigned ones)
+	// so the monitor's standalone AVWAP can resolve anchors for any streaming symbol.
+	for _, sym := range pipeline.BaseSymbols {
+		if anchorSymbols[sym] {
+			continue // already loaded above
+		}
+		if loadErr := sessionResolver.Load(context.Background(), infra.sqlDB, domain.Symbol(sym), sessionFrom, sessionTo); loadErr != nil {
+			log.Warn().Err(loadErr).Str("symbol", sym).Msg("failed to load session data for monitor AVWAP")
+		}
+	}
 
 	svc.monitor.SetBaseSymbols(pipeline.BaseSymbols)
 }
@@ -622,7 +641,7 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 
 		// Persist enriched bar indicator data (EMA, AVWAP) to market_bars asynchronously
 		// so /api/bars serves historical bars with full indicator data.
-		infra.eventBus.SubscribeAsync(ctx, domain.EventEnrichedBar, func(_ context.Context, evt domain.Event) error {
+		_ = infra.eventBus.SubscribeAsync(ctx, domain.EventEnrichedBar, func(_ context.Context, evt domain.Event) error {
 			payload, ok := evt.Payload.(domain.EnrichedBarPayload)
 			if !ok {
 				return nil
