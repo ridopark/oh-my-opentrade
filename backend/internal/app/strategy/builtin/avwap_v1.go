@@ -283,6 +283,7 @@ func (s *AVWAPState) ClearPendingEntry() {
 func (s *AVWAPState) UpdateCalcAnchor(name string, bar start.Bar) {
 	if s.Calc != nil {
 		s.Calc.UpdateSingleAnchor(name, bar.Time, bar.High, bar.Low, bar.Close, bar.Volume)
+		s.CalcBarCount++ // count replayed bars toward stabilization threshold
 	}
 }
 
