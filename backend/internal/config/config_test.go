@@ -186,7 +186,8 @@ symbols:
   timeframe: 1m`
 	yamlPath := writeFile(t, tempDir, "config.yaml", yamlContent)
 
-	// Ensure env vars are empty
+	// Force Alpaca broker to trigger credential validation
+	t.Setenv("BROKER", "alpaca")
 	os.Unsetenv("APCA_API_KEY_ID")
 	os.Unsetenv("APCA_API_SECRET_KEY")
 
