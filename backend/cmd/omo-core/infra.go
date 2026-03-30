@@ -57,6 +57,8 @@ type infraDeps struct {
 	tracerProvider  *sdktrace.TracerProvider
 	startup         startupReport
 	ibkrPaperMode   bool
+	streamingBroker ports.MarketDataPort
+	streamingSource string
 }
 
 func initLogger() zerolog.Logger {
@@ -153,6 +155,27 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 		log.Info().Msg("Alpaca adapter initialized")
 	}
 
+	// Streaming source — separate from execution broker.
+	var streamingBroker ports.MarketDataPort
+	switch cfg.StreamingSource {
+	case "alpaca":
+		if cfg.Broker == "ibkr" {
+			// Alpaca was created in REST-only mode for the composite adapter.
+			// Create a second Alpaca adapter with streaming enabled.
+			streamAlpaca, streamErr := alpaca.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca_stream").Logger())
+			if streamErr != nil {
+				log.Fatal().Err(streamErr).Msg("failed to create Alpaca streaming adapter")
+			}
+			streamingBroker = streamAlpaca
+		} else {
+			streamingBroker = concreteAlpaca
+		}
+		log.Info().Msg("streaming source: alpaca")
+	default:
+		streamingBroker = broker
+		log.Info().Str("source", cfg.StreamingSource).Msg("streaming source: " + cfg.StreamingSource)
+	}
+
 	// TimescaleDB repository
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
 		cfg.Database.Host, cfg.Database.Port, cfg.Database.User, cfg.Database.Password, cfg.Database.DBName)
@@ -189,6 +212,8 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 		tokenStore:      tokenStore,
 		tracerProvider:  tp,
 		ibkrPaperMode:   cfg.IBKR.PaperMode,
+		streamingBroker: streamingBroker,
+		streamingSource: cfg.StreamingSource,
 	}
 }
 

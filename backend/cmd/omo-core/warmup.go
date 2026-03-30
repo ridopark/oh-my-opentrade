@@ -424,17 +424,16 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 			}
 			return nil
 		}
-		if err := infra.broker.StreamBars(ctx, syms.all, syms.timeframe, barHandler); err != nil {
+		if err := infra.streamingBroker.StreamBars(ctx, syms.all, syms.timeframe, barHandler); err != nil {
 			log.Error().Err(err).Msg("WebSocket stream error")
 		}
 	}()
 	log.Info().Msg("ready — WebSocket streaming active")
 
 	{
-		broker := "alpaca"
+		broker := infra.streamingSource
 		ibkrConnected := false
 		if infra.concreteIBKR != nil {
-			broker = "ibkr"
 			ibkrConnected = infra.concreteIBKR.IsConnected()
 		}
 		var equityCount, cryptoCount int

@@ -15,7 +15,8 @@ import (
 type Config struct {
 	Alpaca       AlpacaConfig       `yaml:"alpaca"`
 	IBKR         IBKRConfig         `yaml:"ibkr"`
-	Broker       string             `yaml:"-"`
+	Broker          string          `yaml:"-"`
+	StreamingSource string          `yaml:"-"` // "alpaca" or "ibkr"; defaults to Broker
 	Database     DatabaseConfig     `yaml:"database"`
 	Trading      TradingConfig      `yaml:"trading"`
 	Symbols      SymbolsConfig      `yaml:"symbols"`
@@ -368,6 +369,11 @@ func Load(envPath, yamlPath string) (*Config, error) {
 		cfg.Broker = val
 	} else {
 		cfg.Broker = "alpaca"
+	}
+	if val := os.Getenv("STREAMING_SOURCE"); val != "" {
+		cfg.StreamingSource = val
+	} else {
+		cfg.StreamingSource = cfg.Broker
 	}
 	if val := os.Getenv("IBKR_GATEWAY_HOST"); val != "" {
 		cfg.IBKR.Host = val
