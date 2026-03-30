@@ -23,7 +23,24 @@ asset_classes = ["OPTION"]
 allowed_directions = ["LONG", "SHORT"]
 
 [screening]
-description = "Event-based AVWAP: anchors at perception changes (earnings, gaps, swings), confluence-weighted entries with directional bias and slope confirmation."
+description = """\
+Anchored VWAP momentum/mean-reversion strategy trading options on US equities.
+
+IDEAL CANDIDATES (score 4-5):
+- Daily ATR% >= 2.0% (need intraday movement for AVWAP entries)
+- Gap% between 1-8% absolute (provides clear anchor point for AVWAP)
+- RVOL >= 1.5x (volume confirmation for breakout/pullback)
+- EMA200 bias matches gap direction (trend alignment)
+- NR7 = Y is a bonus (compression before expansion)
+
+POOR CANDIDATES (score 0-1):
+- ATR% < 1.0% (too slow, AVWAP entries won't trigger)
+- Gap% < 0.5% (no clear anchor event)
+- RVOL < 0.5x (no institutional participation)
+- Leveraged ETFs (SOXL, TQQQ, SQQQ) — synthetic price action, poor VWAP respect
+
+Score = probability this symbol generates a valid AVWAP entry signal today.\
+"""
 
 [params]
 # --- Anchors ---
@@ -62,7 +79,7 @@ handoff_min_mom_bps = 40
 
 # --- Volume & Regime ---
 # Minimum volume multiple vs 20-bar SMA to confirm entries
-volume_mult = 2.5
+volume_mult = 2.0
 
 # Allowed EMA regimes (TREND matches both TREND_UP and TREND_DOWN)
 allow_regimes = ["TREND", "BALANCE", "REVERSAL"]
@@ -161,7 +178,7 @@ min_bars = 20
 [[exit_rules]]
 type = "STAGNATION_EXIT"
 [exit_rules.params]
-minutes = 60
+minutes = 90
 sd_threshold = 0
 profit_gate_pct = 0.005
 
@@ -175,7 +192,7 @@ minutes_before_close = 15
 [[exit_rules]]
 type = "MAX_LOSS"
 [exit_rules.params]
-pct = 0.01
+pct = 0.02
 
 # --- Options ---
 
