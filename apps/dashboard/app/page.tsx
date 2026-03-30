@@ -919,8 +919,8 @@ function TradingSignalContent() {
 
         {/* Expanded chart */}
         <div
-          className="flex-1 mt-2 min-h-[400px]"
-          style={{ height: "calc(100vh - 450px)" }}
+          className="mt-2 overflow-hidden"
+          style={{ height: "calc(100vh - 520px)", minHeight: "300px" }}
         >
           {bars.length > 0 ? (
             <LiveMiniChart
