@@ -13,6 +13,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/oh-my-opentrade/backend/internal/app/backtest"
+	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
@@ -31,6 +32,9 @@ type backtestRunRequest struct {
 	Strategies       []string `json:"strategies"`
 	UseDailyScreener bool     `json:"use_daily_screener"`
 	ScreenerTopN     int      `json:"screener_top_n"`
+	StrategyDir      string   `json:"strategy_dir"`
+	MaxPositions     int      `json:"max_positions"`
+	MaxPerGroup      int      `json:"max_per_group"`
 }
 
 type backtestControlRequest struct {
@@ -45,8 +49,8 @@ type BacktestHandler struct {
 	marketData ports.MarketDataPort
 	log        zerolog.Logger
 
-	mu     sync.RWMutex
-	active *backtest.Runner
+	mu      sync.RWMutex
+	runners map[string]*backtest.Runner
 }
 
 // NewBacktestHandler creates a handler for backtest HTTP endpoints.
@@ -56,6 +60,7 @@ func NewBacktestHandler(db *sql.DB, appCfg *config.Config, marketData ports.Mark
 		appCfg:     appCfg,
 		marketData: marketData,
 		log:        log.With().Str("component", "backtest_http").Logger(),
+		runners:    make(map[string]*backtest.Runner),
 	}
 }
 
@@ -147,9 +152,17 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.mu.Lock()
-	if h.active != nil && (h.active.Status() == "running" || h.active.Status() == "paused") {
+	// Prune finished runners to avoid unbounded growth.
+	for id, r := range h.runners {
+		st := r.Status()
+		if st != "running" && st != "paused" {
+			delete(h.runners, id)
+		}
+	}
+	const maxConcurrent = 2
+	if len(h.runners) >= maxConcurrent {
 		h.mu.Unlock()
-		jsonError(w, "a backtest is already running — cancel it first", http.StatusConflict)
+		jsonError(w, "max concurrent backtests reached — cancel one first", http.StatusConflict)
 		return
 	}
 
@@ -183,32 +196,8 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		for _, s := range backtestSymbols {
 			seen[string(s)] = true
 		}
-		// Top ~80 most liquid US equities by ADV — covers mega/large/mid cap,
-		// growth/value, sectors, and popular day trading names.
-		screenPool := []string{
-			// Mega cap tech
-			"AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "NFLX",
-			// Semiconductors
-			"AMD", "INTC", "AVGO", "QCOM", "MU", "MRVL", "ON", "SMCI",
-			// Software / Cloud
-			"CRM", "ORCL", "SNOW", "PLTR", "U", "NET", "DDOG", "ZS",
-			// Fintech / Finance
-			"SOFI", "COIN", "HOOD", "SQ", "PYPL", "V", "MA", "BAC", "JPM", "GS",
-			// Consumer / Retail
-			"HIMS", "RIVN", "LCID", "NIO", "F", "GM", "WMT", "COST", "TGT",
-			// Biotech / Healthcare
-			"MRNA", "PFE", "ABBV", "LLY", "UNH", "JNJ",
-			// Energy
-			"XOM", "CVX", "OXY", "SLB",
-			// ETFs (non-leveraged)
-			"SPY", "QQQ", "IWM", "DIA", "XLF", "XLE", "XLK",
-			// Leveraged ETFs (high ATR, good for ORB)
-			"SOXL", "TQQQ", "SQQQ",
-			// High-volatility day trading favorites
-			"MARA", "RIOT", "FUBO", "AFRM", "UPST", "RBLX",
-			// Industrials / Misc
-			"BA", "CAT", "DE", "UPS",
-		}
+		// Canonical universe of liquid US equities from domain.KnownSymbols().
+		screenPool := domain.KnownSymbols()
 		for _, s := range screenPool {
 			if !seen[s] {
 				backtestSymbols = append(backtestSymbols, domain.Symbol(s))
@@ -235,12 +224,19 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		Speed:         speed,
 		NoAI:             req.NoAI,
 		Strategies:       req.Strategies,
+		StrategyDir:      req.StrategyDir,
 		UseDailyScreener: req.UseDailyScreener,
 		ScreenerTopN:     req.ScreenerTopN,
 		FixedSymbols:     symbols, // user's original picks — always active
-	}, h.db, h.appCfg, h.marketData, h.log)
+		MaxPositions:     req.MaxPositions,
+		MaxPerGroup:      req.MaxPerGroup,
+	}, bootstrap.BuildBacktestInfra(bootstrap.BacktestDeps{
+		DB:     h.db,
+		AppCfg: h.appCfg,
+		Logger: h.log,
+	}, slippage, equity, req.NoAI), h.appCfg, h.marketData, h.log)
 
-	h.active = runner
+	h.runners[runner.ID()] = runner
 	h.mu.Unlock()
 
 	go func() {
@@ -424,10 +420,7 @@ func (h *BacktestHandler) handleSymbols(w http.ResponseWriter, r *http.Request) 
 func (h *BacktestHandler) getRunner(id string) *backtest.Runner {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	if h.active != nil && h.active.ID() == id {
-		return h.active
-	}
-	return nil
+	return h.runners[id]
 }
 
 func parseTimeParam(v string) (time.Time, error) {

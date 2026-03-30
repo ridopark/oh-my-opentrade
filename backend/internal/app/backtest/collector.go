@@ -294,10 +294,6 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 			if price <= 0 {
 				price = tr.Price
 			}
-			mult := tr.Multiplier
-			if mult <= 0 {
-				mult = 1
-			}
 			// Short obligation: subtract current cost to cover.
 			// Cash already includes sale proceeds (qty * entryPrice),
 			// so we subtract the current buyback cost (qty * currentPrice).

@@ -3,7 +3,6 @@ package backtest
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"math"
@@ -14,17 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
-	"github.com/oh-my-opentrade/backend/internal/adapters/llm"
-	"github.com/oh-my-opentrade/backend/internal/adapters/noop"
-	"github.com/oh-my-opentrade/backend/internal/adapters/simbroker"
-	"github.com/oh-my-opentrade/backend/internal/adapters/strategy/store_fs"
-	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
-	"github.com/oh-my-opentrade/backend/internal/adapters/dolthub"
 	"github.com/oh-my-opentrade/backend/internal/app/debate"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
-	"github.com/oh-my-opentrade/backend/internal/app/optionsimport"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/config"
@@ -50,6 +41,8 @@ type RunConfig struct {
 	UseDailyScreener bool            // dynamically pick symbols each day using screener
 	ScreenerTopN     int             // how many top symbols to pick per day (default 5)
 	FixedSymbols     []domain.Symbol // user's original symbols (always active, union with screener)
+	MaxPositions     int             // portfolio-level max simultaneous positions (0=use config default)
+	MaxPerGroup      int             // max positions per sector group (0=use config default)
 }
 
 // ProgressInfo tracks replay progress.
@@ -65,12 +58,11 @@ type ProgressInfo struct {
 type Runner struct {
 	id         string
 	cfg        RunConfig
-	db         *sql.DB
 	appCfg     *config.Config
 	marketData ports.MarketDataPort
+	infra      bootstrap.BacktestInfra
 	log        zerolog.Logger
 
-	eventBus  *memory.Bus
 	collector *Collector
 	emitter   *Emitter
 
@@ -93,18 +85,17 @@ func generateID() string {
 }
 
 // NewRunner creates a backtest Runner with an isolated event bus.
-func NewRunner(cfg RunConfig, db *sql.DB, appCfg *config.Config, marketData ports.MarketDataPort, log zerolog.Logger) *Runner {
+func NewRunner(cfg RunConfig, infra bootstrap.BacktestInfra, appCfg *config.Config, marketData ports.MarketDataPort, log zerolog.Logger) *Runner {
 	id := generateID()
 	rlog := log.With().Str("backtest_id", id).Str("component", "backtest_runner").Logger()
 
 	r := &Runner{
 		id:         id,
 		cfg:        cfg,
-		db:         db,
 		appCfg:     appCfg,
 		marketData: marketData,
+		infra:      infra,
 		log:        rlog,
-		eventBus:   memory.NewSyncBus(),
 		emitter:    NewEmitter(rlog, cfg.Timeframe),
 		pauseCh:    make(chan struct{}),
 	}
@@ -218,10 +209,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Float64("equity", r.cfg.InitialEquity).
 		Msg("backtest starting")
 
-	repo := timescaledb.NewRepositoryWithLogger(
-		timescaledb.NewSqlDB(r.db),
-		r.log.With().Str("component", "timescaledb").Logger(),
-	)
+	repo := r.infra.Repo
 
 	const replayTimeframe = domain.Timeframe("1m")
 
@@ -232,8 +220,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	// --- Build pipeline (isolated event bus) ---
 
 	ingBundle, err := bootstrap.BuildIngestion(bootstrap.IngestionDeps{
-		EventBus:   r.eventBus,
-		Repo:       &noop.NoopRepo{},
+		EventBus:   r.infra.EventBus,
+		Repo:       r.infra.NoopRepo,
 		IsBacktest: true,
 		Logger:     r.log,
 	})
@@ -243,7 +231,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	monitorSvc, err := bootstrap.BuildMonitor(bootstrap.MonitorDeps{
-		EventBus: r.eventBus,
+		EventBus: r.infra.EventBus,
 		Repo:     repo,
 		Logger:   r.log,
 	})
@@ -263,7 +251,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	if specDir == "" {
 		specDir = "/home/ridopark/src/oh-my-opentrade/configs/strategies"
 	}
-	var specStore portstrategy.SpecStore = store_fs.NewStore(specDir, strategy.LoadSpecFile)
+	var specStore = bootstrap.NewBacktestSpecStore(specDir)
 	if len(r.cfg.Strategies) > 0 {
 		specStore = &filteredSpecStore{inner: specStore, allowed: r.cfg.Strategies}
 	}
@@ -315,22 +303,29 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
-	sim := simbroker.New(simbroker.Config{
-		SlippageBPS:     r.cfg.SlippageBPS,
-		InitialEquity:   r.cfg.InitialEquity,
-		DisableFillChan: true,
-	}, r.log.With().Str("component", "simbroker").Logger())
+	sim := r.infra.SimBroker
+
+	// Apply backtest-specific overrides to a copy of the app config
+	// to avoid mutating the shared config across concurrent backtests.
+	cfgCopy := *r.appCfg
+	execCfg := &cfgCopy
+	if r.cfg.MaxPositions > 0 {
+		execCfg.Trading.MaxSimultaneousPos = r.cfg.MaxPositions
+	}
+	if r.cfg.MaxPerGroup > 0 {
+		execCfg.Trading.MaxPositionsPerGroup = r.cfg.MaxPerGroup
+	}
 
 	execBundle, err := bootstrap.BuildExecutionService(bootstrap.ExecutionDeps{
-		EventBus:      r.eventBus,
+		EventBus:      r.infra.EventBus,
 		Broker:        sim,
-		Repo:          &noop.NoopRepo{},
+		Repo:          r.infra.NoopRepo,
 		QuoteProvider: sim,
 		AccountPort:   sim,
-		PnLRepo:       &noop.NoopPnLRepo{},
+		PnLRepo:       r.infra.NoopPnLRepo,
 		TradeReader:   nil,
 		Clock:         clockFn,
-		Config:        r.appCfg,
+		Config:        execCfg,
 		InitialEquity: r.cfg.InitialEquity,
 		IsBacktest:    true,
 		Logger:        r.log,
@@ -341,7 +336,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	posMonBundle, err := bootstrap.BuildPositionMonitor(bootstrap.PosMonitorDeps{
-		EventBus:     r.eventBus,
+		EventBus:     r.infra.EventBus,
 		PositionGate: execBundle.PositionGate,
 		Broker:       sim,
 		SpecStore:    specStore,
@@ -357,19 +352,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("build position monitor: %w", err)
 	}
 
-	var aiAdvisor ports.AIAdvisorPort = llm.NewNoOpAdvisor()
-	if !r.cfg.NoAI && r.appCfg.AI.Enabled {
-		aiAdvisor = llm.NewAdvisor(r.appCfg.AI.BaseURL, r.appCfg.AI.Model, r.appCfg.AI.APIKey, nil)
-	}
-
-	// Historical options data: import from DoltHub for realistic pricing.
-	dbAdapter := timescaledb.NewSqlDB(r.db)
-	histOptRepo := timescaledb.NewHistoricalOptionsRepository(dbAdapter, r.log.With().Str("component", "hist_options").Logger())
+	aiAdvisor := r.infra.AIAdvisor
+	histOptRepo := r.infra.HistOptRepo
+	importer := r.infra.Importer
 
 	// Pre-flight: import missing historical options data from DoltHub (parallel).
 	r.emitter.EmitSetup("Importing historical options data…")
-	dolthubClient := dolthub.NewClient(nil, r.log)
-	importer := optionsimport.NewService(dolthubClient, histOptRepo, r.log)
 	{
 		const maxConcurrentImports = 4
 		sem := make(chan struct{}, maxConcurrentImports)
@@ -395,7 +383,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Debate service: processes SetupDetected events (ORB) and emits OrderIntentCreated.
 	// Only start if ORB strategy is selected (it's the only consumer of SetupDetected).
 	if orbSelected {
-		debateSvc := debate.NewService(r.eventBus, aiAdvisor, &noop.NoopRepo{}, 0.50, r.log.With().Str("component", "debate").Logger())
+		debateSvc := debate.NewService(r.infra.EventBus, aiAdvisor, r.infra.NoopRepo, 0.50, r.log.With().Str("component", "debate").Logger())
 		debateSvc.SetEquity(r.cfg.InitialEquity)
 		debateSvc.SetSpecStore(specStore)
 		debateSvc.SetHistoricalOptions(histOptRepo)
@@ -409,7 +397,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	optionsAdapter := NewHistoricalOptionsAdapter(histOptRepo, clockFn)
 
 	pipeline, err := bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
-		EventBus:        r.eventBus,
+		EventBus:        r.infra.EventBus,
 		SpecStore:       specStore,
 		AIAdvisor:       aiAdvisor,
 		PositionLookup:  posMonBundle.Service.LookupPosition,
@@ -429,13 +417,13 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	if pipeline.Enricher == nil {
-		if subErr := r.eventBus.Subscribe(ctx, domain.EventSignalCreated, signalPassthrough(r.eventBus, r.log)); subErr != nil {
+		if subErr := r.infra.EventBus.Subscribe(ctx, domain.EventSignalCreated, signalPassthrough(r.infra.EventBus, r.log)); subErr != nil {
 			r.status.Store("error")
 			return fmt.Errorf("subscribe signal passthrough: %w", subErr)
 		}
 	}
 
-	signalTracker := perf.NewSignalTracker(r.eventBus, &noop.NoopPnLRepo{}, r.log.With().Str("component", "signal_tracker").Logger())
+	signalTracker := perf.NewSignalTracker(r.infra.EventBus, r.infra.NoopPnLRepo, r.log.With().Str("component", "signal_tracker").Logger())
 
 	symSet := make(map[string]struct{})
 	for _, s := range pipeline.BaseSymbols {
@@ -450,7 +438,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	monitorSvc.SetBaseSymbols(allSymbols)
 
-	r.collector, err = NewCollector(r.eventBus, Config{InitialEquity: r.cfg.InitialEquity}, r.log.With().Str("component", "backtest_collector").Logger())
+	r.collector, err = NewCollector(r.infra.EventBus, Config{InitialEquity: r.cfg.InitialEquity}, r.log.With().Str("component", "backtest_collector").Logger())
 	if err != nil {
 		r.status.Store("error")
 		return fmt.Errorf("create collector: %w", err)
@@ -762,7 +750,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		sessionResolver := NewSessionResolver(loc)
 		for _, sym := range r.cfg.Symbols {
-			if loadErr := sessionResolver.Load(ctx, r.db, sym, r.cfg.From, r.cfg.To); loadErr != nil {
+			if loadErr := sessionResolver.Load(ctx, r.infra.DB, sym, r.cfg.From, r.cfg.To); loadErr != nil {
 				r.log.Warn().Err(loadErr).Str("symbol", sym.String()).Msg("failed to load session data")
 			}
 		}
@@ -776,7 +764,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		pipeline.Runner.SetAIAnchorResolver(aiResolver)
 		pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
 		pipeline.Runner.SetPrevDayBarsFn(func(symbol string, since time.Time) []start.Bar {
-			return sessionResolver.GetBarsSince(ctx, r.db, symbol, since)
+			return sessionResolver.GetBarsSince(ctx, r.infra.DB, symbol, since)
 		})
 		pipeline.Runner.SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
 
@@ -830,7 +818,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.status.Store("error")
 		return fmt.Errorf("start execution: %w", startErr)
 	}
-	if startErr := posMonBundle.PriceCache.Start(ctx, r.eventBus); startErr != nil {
+	if startErr := posMonBundle.PriceCache.Start(ctx, r.infra.EventBus); startErr != nil {
 		r.status.Store("error")
 		return fmt.Errorf("start price cache: %w", startErr)
 	}
@@ -858,7 +846,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Subscribe emitter LAST so all pipeline handlers (strategy runner's
 	// AVWAP update, monitor, execution) process each bar before the emitter
 	// reads values for SSE emission.
-	if subErr := r.emitter.Subscribe(ctx, r.eventBus); subErr != nil {
+	if subErr := r.emitter.Subscribe(ctx, r.infra.EventBus); subErr != nil {
 		r.status.Store("error")
 		return fmt.Errorf("subscribe emitter: %w", subErr)
 	}
@@ -1035,7 +1023,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			if evtErr != nil {
 				continue
 			}
-			if pubErr := r.eventBus.Publish(ctx, *evt); pubErr != nil {
+			if pubErr := r.infra.EventBus.Publish(ctx, *evt); pubErr != nil {
 				if ctx.Err() != nil {
 					break
 				}
@@ -1046,7 +1034,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Evaluate exit rules after all bars in this time-group are processed.
 		// This avoids WaitGroup reuse panics from concurrent handler chains.
-		r.eventBus.Flush()
+		r.infra.EventBus.Flush()
 		if posMonBundle.Service != nil {
 			if useAggregation {
 				for _, agg := range aggregators {
@@ -1054,13 +1042,13 @@ func (r *Runner) Run(ctx context.Context) error {
 						closedTime := agg.LastClosedTime()
 						if closedTime > 0 {
 							posMonBundle.Service.EvalExitRules(time.Unix(closedTime, 0).UTC())
-							r.eventBus.Flush()
+							r.infra.EventBus.Flush()
 						}
 					}
 				}
 			} else {
 				posMonBundle.Service.EvalExitRules(minTime)
-				r.eventBus.Flush()
+				r.infra.EventBus.Flush()
 			}
 		}
 
@@ -1122,7 +1110,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				closedTime := agg.LastClosedTime()
 				if closedTime > 0 && posMonBundle.Service != nil {
 					posMonBundle.Service.EvalExitRules(time.Unix(closedTime, 0).UTC())
-					r.eventBus.Flush()
+					r.infra.EventBus.Flush()
 				}
 			}
 		}
@@ -1148,7 +1136,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 // --- Helpers ---
 
-func signalPassthrough(bus *memory.Bus, log zerolog.Logger) func(context.Context, domain.Event) error {
+func signalPassthrough(bus ports.EventBusPort, log zerolog.Logger) func(context.Context, domain.Event) error {
 	return func(ctx context.Context, ev domain.Event) error {
 		sig, ok := ev.Payload.(start.Signal)
 		if !ok {
