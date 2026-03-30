@@ -87,6 +87,7 @@ services:
     - TIMESCALEDB_PORT=5432
     - STRATEGY_V2=true
     - BROKER=${BROKER:-alpaca}
+    - STREAMING_SOURCE=${STREAMING_SOURCE:-${BROKER:-alpaca}}
     - IBKR_GATEWAY_HOST=ib-gateway
     - IBKR_GATEWAY_PORT=4004
     - IBKR_CLIENT_ID=${IBKR_CLIENT_ID}
@@ -114,6 +115,7 @@ services:
     - TIMESCALEDB_HOST=timescaledb
     - TIMESCALEDB_PORT=5432
     - BROKER=ibkr
+    - STREAMING_SOURCE=${STREAMING_SOURCE:-ibkr}
     - IBKR_GATEWAY_HOST=ib-gateway
     - IBKR_GATEWAY_PORT=4004
     - IBKR_CLIENT_ID=3
