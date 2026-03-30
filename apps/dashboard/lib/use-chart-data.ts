@@ -101,6 +101,12 @@ function mergeLiveBar(bars: OHLCBar[], liveBar: OHLCBar, tf: string): OHLCBar[] 
         low: Math.min(existing.low, liveBar.low),
         close: liveBar.close,
         volume: existing.volume + liveBar.volume,
+        // Use latest bar's indicator values (point-in-time)
+        ema9: liveBar.ema9 ?? existing.ema9,
+        ema21: liveBar.ema21 ?? existing.ema21,
+        ema50: liveBar.ema50 ?? existing.ema50,
+        ema200: liveBar.ema200 ?? existing.ema200,
+        avwaps: liveBar.avwaps ?? existing.avwaps,
       }
     : { ...liveBar, time: bucket };
   return upsertBar(bars, merged);
@@ -161,9 +167,11 @@ export function useChartData(
        if (showLoading) setLoading(true);
 
        try {
+         // Always fetch 1m bars so indicator data (EMA, AVWAP) is preserved.
+         // Aggregate to the target timeframe client-side.
          const params = new URLSearchParams({
            symbols: symbolsRef.current.join(','),
-           timeframe: timeframeRef.current,
+           timeframe: '1m',
            from: from.toISOString(),
            to: to.toISOString(),
          });
@@ -179,14 +187,17 @@ export function useChartData(
            return 0;
          }
 
-         // Merge new bars into current state (prepend older bars)
+         // Merge new bars into current state, aggregating to target timeframe
+         const tf = timeframeRef.current;
          const current = barsRef.current;
          const next: BarsBySymbol = { ...current };
          for (const row of rows) {
            if (!row?.symbol) continue;
            const ohlc = toOHLC(row);
            const prev = next[row.symbol] ?? [];
-           next[row.symbol] = upsertBar(prev, ohlc);
+           next[row.symbol] = tf === '1m'
+             ? upsertBar(prev, ohlc)
+             : mergeLiveBar(prev, ohlc, tf);
          }
          barsRef.current = next;
          setBarsBySymbol(next);
