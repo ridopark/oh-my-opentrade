@@ -5,7 +5,6 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Activity, Zap } from "lucide-react";
 import { useChartData, type OHLCBar } from "@/lib/use-chart-data";
-import { useStrategyList } from "@/hooks/queries";
 import { useWatchlist } from "@/hooks/use-watchlist";
 import {
   createChart,
@@ -571,17 +570,15 @@ function TradingSignalContent() {
     { label: "ORB", color: "rgba(59, 130, 246, 0.5)", isORB: true },
   ];
 
-  const { data: strategies } = useStrategyList();
-  const availableSymbols = useMemo(() => {
-    if (!strategies || strategies.length === 0) return [];
-    const set = new Set<string>();
-    for (const s of strategies) {
-      for (const sym of s.symbols) set.add(sym);
-    }
-    return Array.from(set).sort();
-  }, [strategies]);
+  const [availableSymbols, setAvailableSymbols] = useState<string[]>([]);
+  useEffect(() => {
+    fetch("/api/symbols")
+      .then((r) => r.json())
+      .then((data) => { if (Array.isArray(data)) setAvailableSymbols(data.sort()); })
+      .catch(() => {});
+  }, []);
 
-  const { symbols: watchlistSymbols, expandedSymbol, setExpandedSymbol, addSymbol, removeSymbol, maxSymbols, hydrated } = useWatchlist(availableSymbols);
+  const { symbols: watchlistSymbols, expandedSymbol, setExpandedSymbol, addSymbol, removeSymbol, hydrated } = useWatchlist(availableSymbols);
 
   // URL param support: ?symbol=SPY opens expanded mode
   const searchParams = useSearchParams();
@@ -1012,7 +1009,7 @@ function TradingSignalContent() {
             </span>
           )}
           <Badge variant="outline" className="text-[10px] font-mono">
-            {watchlistSymbols.length}/{maxSymbols}
+            {watchlistSymbols.length} symbols
           </Badge>
         </div>
       </div>

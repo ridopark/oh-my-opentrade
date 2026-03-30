@@ -89,9 +89,9 @@ export default function BacktestPage() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/backtest/symbols")
+    fetch("/api/symbols")
       .then((r) => r.json())
-      .then((data) => { if (Array.isArray(data)) setAvailableSymbols(data); })
+      .then((data) => { if (Array.isArray(data)) setAvailableSymbols(data.sort()); })
       .catch(() => {});
     fetch("/api/backtest/strategies")
       .then((r) => r.json())

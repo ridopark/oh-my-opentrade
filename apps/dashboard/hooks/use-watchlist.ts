@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 
 const STORAGE_KEY = "watchlist-symbols";
 const DEFAULT_SYMBOLS = ["SPY", "TSLA", "NVDA", "META"];
-const MAX_SYMBOLS = 8;
+const MAX_SYMBOLS = 100;
 
 export function useWatchlist(availableSymbols: string[]) {
   const [symbols, setSymbols] = useState<string[]>([]);
