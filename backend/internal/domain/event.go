@@ -64,6 +64,7 @@ const (
 	EventFillPollTimeout         EventType = "FillPollTimeout"
 	EventStaleOrderCancelled     EventType = "StaleOrderCancelled"
 	EventSystemStarted           EventType = "SystemStarted"
+	EventIBKRConnected           EventType = "IBKRConnected"
 	EventSymbolsActivated        EventType = "SymbolsActivated"
 )
 
@@ -126,6 +127,15 @@ type SystemStartedPayload struct {
 	EMA200Failed    []string
 	Strategies      []string
 	StrategySymbols map[string][]string
+}
+
+type IBKRConnectedPayload struct {
+	Host           string
+	Port           int
+	ClientID       int
+	PaperMode      bool
+	MarketDataType int // 1=live, 3=delayed
+	AccountID      string
 }
 
 type ORBRangeSetPayload struct {
