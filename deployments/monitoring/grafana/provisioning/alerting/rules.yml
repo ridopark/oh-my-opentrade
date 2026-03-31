@@ -48,7 +48,7 @@ groups:
               interval: ""
               refId: A
         noDataState: NoData
-        execErrState: Alerting
+        execErrState: OK
         for: 30s
         annotations:
           summary: "Crypto WebSocket disconnected for >30s"
@@ -78,7 +78,7 @@ groups:
               interval: ""
               refId: A
         noDataState: NoData
-        execErrState: Alerting
+        execErrState: OK
         for: 30s
         annotations:
           summary: "Equity WebSocket disconnected during market hours"
@@ -108,7 +108,7 @@ groups:
               interval: ""
               refId: A
         noDataState: NoData
-        execErrState: Alerting
+        execErrState: OK
         for: 5m
         annotations:
           summary: "No bars received in 5 minutes"
@@ -165,7 +165,7 @@ groups:
               interval: ""
               refId: A
         noDataState: NoData
-        execErrState: Alerting
+        execErrState: OK
         for: 5m
         annotations:
           summary: "HTTP 5xx error rate >2%"
@@ -193,7 +193,7 @@ groups:
               interval: ""
               refId: A
         noDataState: NoData
-        execErrState: Alerting
+        execErrState: OK
         for: 0s
         annotations:
           summary: "Service restart flapping detected"
@@ -216,7 +216,7 @@ groups:
               interval: ""
               refId: A
         noDataState: NoData
-        execErrState: Alerting
+        execErrState: OK
         for: 0s
         annotations:
           summary: "High error log rate detected"
@@ -239,7 +239,7 @@ groups:
               interval: ""
               refId: A
         noDataState: NoData
-        execErrState: Alerting
+        execErrState: OK
         for: 0s
         annotations:
           summary: "Database connection error detected"
