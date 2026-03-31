@@ -836,9 +836,8 @@ func (s *Service) fmtSystemStarted(ev domain.Event) string {
 		if p.IBKRConnected {
 			brokerStatus += " 🟢 connected"
 		} else {
-			brokerStatus += " 🔴 disconnected"
+			brokerStatus += " 🔴 connecting…"
 		}
-		brokerStatus += " (connecting...)"
 	}
 
 	streamSource := p.StreamingSource
