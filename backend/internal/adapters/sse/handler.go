@@ -43,6 +43,8 @@ var eventTypes = []domain.EventType{
 	domain.EventStrategyStateSnapshot,
 	domain.EventFormingBar,
 	domain.EventEnrichedBar,
+	domain.EventEntryGated,
+	domain.EventORBPhaseUpdate,
 }
 
 // wireEvent is the JSON shape sent over SSE — mirrors the dashboard's DomainEvent type.

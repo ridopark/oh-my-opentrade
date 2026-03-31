@@ -470,7 +470,7 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 			sess.Retest.HoldClose = bar.Close
 			sess.Retest.Confirmed = true
 			sess.State = ORBStateRetestConfirmed
-			t.logger.Info("orb: retest confirmed", "symbol", sym, "direction", sess.Breakout.Direction, "hold_close", bar.Close, "confidence", orbConfidence(sess, bar, snap, cfg))
+			t.logger.Info("orb: retest confirmed", "symbol", sym, "direction", sess.Breakout.Direction, "hold_close", bar.Close, "confidence", ORBConfidence(sess, bar, snap, cfg))
 			setup := &SetupCondition{
 				Symbol:     bar.Symbol,
 				Timeframe:  bar.Timeframe,
@@ -482,7 +482,7 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 				ORBHigh:    sess.OrbHigh,
 				ORBLow:     sess.OrbLow,
 				RVOL:       sess.Breakout.RVOL,
-				Confidence: orbConfidence(sess, bar, snap, cfg),
+				Confidence: ORBConfidence(sess, bar, snap, cfg),
 			}
 			if setup.Confidence < cfg.MinConfidence {
 				t.logger.Info("orb: low confidence, cycling to RANGE_SET", "symbol", sym, "confidence", setup.Confidence, "min", cfg.MinConfidence)
@@ -668,7 +668,7 @@ func (t *ORBTracker) onAwaitingRetestFVG(sess *ORBSession, bar domain.MarketBar,
 	t.logger.Info("orb: FVG retest confirmed (engulfing)", "symbol", sym,
 		"direction", dir, "close", bar.Close,
 		"fvg_high", fvg.High, "fvg_low", fvg.Low, "fvg_stop", sess.FVGStop,
-		"confidence", orbConfidence(sess, bar, snap, cfg))
+		"confidence", ORBConfidence(sess, bar, snap, cfg))
 
 	setup := &SetupCondition{
 		Symbol:     bar.Symbol,
@@ -681,7 +681,7 @@ func (t *ORBTracker) onAwaitingRetestFVG(sess *ORBSession, bar domain.MarketBar,
 		ORBHigh:    sess.OrbHigh,
 		ORBLow:     sess.OrbLow,
 		RVOL:       sess.Breakout.RVOL,
-		Confidence: orbConfidence(sess, bar, snap, cfg),
+		Confidence: ORBConfidence(sess, bar, snap, cfg),
 		FVGStop:    sess.FVGStop,
 	}
 
@@ -863,7 +863,7 @@ func barDurationMinutes(tf domain.Timeframe) int {
 	}
 }
 
-func orbConfidence(sess *ORBSession, bar domain.MarketBar, snap domain.IndicatorSnapshot, cfg ORBConfig) float64 {
+func ORBConfidence(sess *ORBSession, bar domain.MarketBar, snap domain.IndicatorSnapshot, cfg ORBConfig) float64 {
 	conf := 0.50
 	if sess.Breakout.RVOL >= cfg.MinRVOL {
 		conf += 0.25

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
 
@@ -157,6 +158,8 @@ type AVWAPState struct {
 	AVWAPDistHistory map[string][]float64 // recent close-to-AVWAP distances per anchor (for handoff detection)
 
 	LockedOutSide   start.Side // side that was stopped out; prevents same-direction re-entry
+
+	LastGatedBarTime time.Time // rate-limit EntryGated events to one per bar
 
 	PrevBars     [2]start.Bar       // 2-bar lookback for candlestick patterns
 	PrevBarCount int                // how many prev bars have been stored (0, 1, or 2)
@@ -1588,6 +1591,135 @@ func (s *AVWAPState) evaluateEntries(ec entryContext) (*start.Signal, error) {
 	return nil, nil
 }
 
+// emitEntryGated publishes an EntryGated domain event showing how close this
+// symbol is to triggering an AVWAP entry signal. Called once per bar when all
+// entry types failed.
+func (s *AVWAPState) emitEntryGated(ec entryContext) {
+	if ec.ctx == nil {
+		return
+	}
+
+	// Determine blocking gate and count passed gates.
+	gatesTotal := 5 // regime, position_flat, bias, slope, confluence
+	gatesPassed := 2 // regime and position_flat always passed here (we're past those gates in OnBar)
+
+	biasOK := ec.avwapBias != ""
+	if biasOK {
+		gatesPassed++
+	}
+
+	slopeOK := !ec.slopeOK || ec.cfg.MinSlopeBPS == 0 || math.Abs(ec.avwapSlope) >= ec.cfg.MinSlopeBPS
+	if slopeOK {
+		gatesPassed++
+	}
+
+	// Compute confluence for first anchor to show the score.
+	var conf confluenceResult
+	if len(ec.cfg.Anchors) > 0 {
+		firstAnchor := ec.cfg.Anchors[0]
+		if avwapVal, ok := ec.avwapValues[firstAnchor]; ok {
+			conf = computeConfluence(
+				ec.cfg, ec.bar, avwapVal, ec.avwapValues,
+				s.Indicators, s.PrevBars, s.PrevBarCount,
+				s.KeyLevels, s.BarHighs50, s.BarLows50,
+			)
+		}
+	}
+
+	confluenceOK := conf.Score >= ec.cfg.MinConfluenceScore
+	if confluenceOK {
+		gatesPassed++
+	}
+
+	// Determine the most relevant blocking gate (last failing gate in priority order).
+	var blockingGate, blockingDetail string
+	switch {
+	case confluenceOK:
+		blockingGate = "entry_specific"
+		blockingDetail = "confluence met but no entry type conditions satisfied"
+	case !biasOK:
+		blockingGate = "bias"
+		blockingDetail = "no directional bias established"
+	case !slopeOK:
+		blockingGate = "slope"
+		blockingDetail = fmt.Sprintf("%.2f bps < %.2f min", ec.avwapSlope, ec.cfg.MinSlopeBPS)
+	default:
+		blockingGate = "confluence"
+		blockingDetail = fmt.Sprintf("score %d < %d min", conf.Score, ec.cfg.MinConfluenceScore)
+	}
+
+	// Build factor breakdown for confluence.
+	factorSet := make(map[string]bool)
+	for _, f := range conf.Factors {
+		factorSet[f] = true
+	}
+
+	volRatio := 0.0
+	if s.Indicators.VolumeSMA > 0 {
+		volRatio = ec.bar.Volume / s.Indicators.VolumeSMA
+	}
+
+	payload := domain.EntryGatedPayload{
+		Symbol:        ec.symbol,
+		Strategy:      "avwap",
+		SetupType:     "multi", // evaluated all entry types
+		GatesPassed:   gatesPassed,
+		GatesTotal:    gatesTotal,
+		BlockingGate:  blockingGate,
+		BlockingDetail: blockingDetail,
+		Confluence: domain.EntryGatedConfluence{
+			Score:    conf.Score,
+			MaxScore: 10,
+			Fib:      factorSet["fib_38.2"] || factorSet["fib_50"] || factorSet["fib_61.8"],
+			FibDetail: extractFactor(conf.Factors, "fib_"),
+			KeyLevel: extractFactor(conf.Factors, "key_") != "",
+			KeyLevelDetail: extractFactor(conf.Factors, "key_"),
+			Candle:   factorSet["inside_bar"] || factorSet["strength_candle"] || factorSet["morning_star"],
+			CandleDetail: extractCandleFactor(conf.Factors),
+			Band:     factorSet["band_zone"],
+		},
+		Indicators: domain.EntryGatedIndicators{
+			RSI:         s.Indicators.RSI,
+			VolumeRatio: volRatio,
+			AVWAPBias:   ec.avwapBias,
+			SlopeBPS:    ec.avwapSlope,
+			AboveCount:  copyIntMap(s.AboveCount),
+			BelowCount:  copyIntMap(s.BelowCount),
+		},
+	}
+
+	_ = ec.ctx.EmitDomainEvent(payload)
+}
+
+func extractFactor(factors []string, prefix string) string {
+	for _, f := range factors {
+		if strings.HasPrefix(f, prefix) {
+			return f
+		}
+	}
+	return ""
+}
+
+func extractCandleFactor(factors []string) string {
+	for _, f := range factors {
+		if f == "inside_bar" || f == "strength_candle" || f == "morning_star" {
+			return f
+		}
+	}
+	return ""
+}
+
+func copyIntMap(m map[string]int) map[string]int {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]int, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
 // --- Confluence scoring ---
 
 type confluenceResult struct {
@@ -1960,6 +2092,13 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		return avwapSt, nil, err
 	} else if sig != nil {
 		return avwapSt, []start.Signal{*sig}, nil
+	}
+
+	// 9. Emit EntryGated event — we reached entry evaluation but no signal fired.
+	// Rate-limit to one event per symbol per bar.
+	if ctx != nil && !bar.Time.Equal(avwapSt.LastGatedBarTime) {
+		avwapSt.LastGatedBarTime = bar.Time
+		avwapSt.emitEntryGated(ec)
 	}
 
 	return avwapSt, nil, nil

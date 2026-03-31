@@ -952,9 +952,18 @@ func (r *Runner) emitSignal(ctx context.Context, tenantID string, envMode domain
 }
 
 // emitDomainEvent publishes an arbitrary domain event (used by strategy Context).
+// Known payload types (EntryGatedPayload, ORBPhaseUpdatePayload) are routed to
+// their specific event types; all others use the generic StrategyDomainEvent type.
 func (r *Runner) emitDomainEvent(ctx context.Context, tenantID string, envMode domain.EnvMode, payload any) error {
+	eventType := domain.EventType("StrategyDomainEvent")
+	switch payload.(type) {
+	case domain.EntryGatedPayload:
+		eventType = domain.EventEntryGated
+	case domain.ORBPhaseUpdatePayload:
+		eventType = domain.EventORBPhaseUpdate
+	}
 	ev, err := domain.NewEvent(
-		"StrategyDomainEvent",
+		eventType,
 		tenantID,
 		envMode,
 		uuid.NewString(),
