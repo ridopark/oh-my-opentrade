@@ -693,6 +693,10 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 			svc.pipelineActivator,
 			domain.Timeframe(cfg.Symbols.Timeframe),
 		)
+		// Pre-mark all configured symbols as warmed so the activation service
+		// skips redundant warmup (which blocks the event bus and deadlocks startup).
+		// warmupIndicators() already warmed these symbols before startServices().
+		svc.activationSvc.MarkWarmed(cfg.Symbols.AllSymbols()...)
 		if err := svc.activationSvc.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start activation service")
 		}
