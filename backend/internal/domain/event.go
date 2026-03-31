@@ -170,6 +170,15 @@ type EnrichedBarPayload struct {
 	AVWAPs    map[string]float64 `json:"avwaps,omitempty"`
 }
 
+// BarSnapshot is a compact OHLCV snapshot embedded in signal progress events.
+type BarSnapshot struct {
+	Open   float64 `json:"open"`
+	High   float64 `json:"high"`
+	Low    float64 `json:"low"`
+	Close  float64 `json:"close"`
+	Volume float64 `json:"volume"`
+}
+
 // EntryGatedPayload is emitted when a strategy evaluates an entry but a gate blocks it.
 // It provides visibility into how close a signal is to triggering.
 type EntryGatedPayload struct {
@@ -182,6 +191,7 @@ type EntryGatedPayload struct {
 	BlockingDetail string               `json:"blockingDetail"`
 	Confluence    EntryGatedConfluence  `json:"confluence"`
 	Indicators    EntryGatedIndicators  `json:"indicators"`
+	Bar           BarSnapshot           `json:"bar"`
 }
 
 type EntryGatedConfluence struct {
@@ -214,6 +224,7 @@ type ORBPhaseUpdatePayload struct {
 	Retest     ORBPhaseRetest    `json:"retest"`
 	Confidence float64           `json:"confidence"`
 	FVG        ORBPhaseFVG       `json:"fvg"`
+	Bar        BarSnapshot       `json:"bar"`
 }
 
 type ORBPhaseRange struct {

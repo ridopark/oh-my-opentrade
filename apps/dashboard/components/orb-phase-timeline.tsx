@@ -105,6 +105,7 @@ export function ORBPhaseTimeline({ data }: ORBPhaseTimelineProps) {
         <TableHeader>
           <TableRow className="border-zinc-800 hover:bg-transparent">
             <TableHead className="text-zinc-400 text-xs">Symbol</TableHead>
+            <TableHead className="text-zinc-400 text-xs text-right">Price</TableHead>
             <TableHead className="text-zinc-400 text-xs">Phase</TableHead>
             <TableHead className="text-zinc-400 text-xs">Range</TableHead>
             <TableHead className="text-zinc-400 text-xs">Breakout</TableHead>
@@ -121,6 +122,22 @@ export function ORBPhaseTimeline({ data }: ORBPhaseTimelineProps) {
                 {/* Symbol */}
                 <TableCell className="py-2 font-bold font-mono text-zinc-100">
                   {row.symbol}
+                </TableCell>
+
+                {/* Price */}
+                <TableCell className="py-2 text-right">
+                  {row.bar?.close ? (
+                    <>
+                      <span className={`font-mono text-xs ${row.bar.close >= row.bar.open ? "text-emerald-400" : "text-red-400"}`}>
+                        {row.bar.close.toFixed(2)}
+                      </span>
+                      <span className="text-zinc-600 text-[10px] ml-1">
+                        H{row.bar.high.toFixed(2)} L{row.bar.low.toFixed(2)}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="text-zinc-600 text-xs">{"\u2014"}</span>
+                  )}
                 </TableCell>
 
                 {/* Phase */}

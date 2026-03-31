@@ -1686,6 +1686,13 @@ func (s *AVWAPState) emitEntryGated(ec entryContext) {
 			AboveCount:  copyIntMap(s.AboveCount),
 			BelowCount:  copyIntMap(s.BelowCount),
 		},
+		Bar: domain.BarSnapshot{
+			Open:   ec.bar.Open,
+			High:   ec.bar.High,
+			Low:    ec.bar.Low,
+			Close:  ec.bar.Close,
+			Volume: ec.bar.Volume,
+		},
 	}
 
 	_ = ec.ctx.EmitDomainEvent(payload)

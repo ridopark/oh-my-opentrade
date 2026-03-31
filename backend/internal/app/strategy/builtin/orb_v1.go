@@ -89,11 +89,16 @@ func (s *ORBStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st 
 	// Delegate to the underlying ORBTracker.
 	setup, detected := orbState.Tracker.OnBar(domBar, snap, orbState.Config, false)
 
-	// Emit ORBPhaseUpdate on state transitions.
+	// Emit ORBPhaseUpdate on state transitions and during active phases
+	// (FORMING_RANGE to show range building, AWAITING_RETEST to show countdown).
 	if ctx != nil {
-		if sess := orbState.Tracker.GetSession(symbol); sess != nil && sess.State != orbState.PrevPhase {
-			orbState.PrevPhase = sess.State
-			orbState.emitPhaseUpdate(ctx, sess, domBar, snap)
+		if sess := orbState.Tracker.GetSession(symbol); sess != nil {
+			phaseChanged := sess.State != orbState.PrevPhase
+			activePhase := sess.State == "FORMING_RANGE" || sess.State == "AWAITING_RETEST"
+			if phaseChanged || activePhase {
+				orbState.PrevPhase = sess.State
+				orbState.emitPhaseUpdate(ctx, sess, domBar, snap)
+			}
 		}
 	}
 
@@ -248,6 +253,13 @@ func (s *ORBState) emitPhaseUpdate(ctx start.Context, sess *monitor.ORBSession, 
 		Confidence: conf,
 		FVG: domain.ORBPhaseFVG{
 			Active: sess.ActiveFVG != nil,
+		},
+		Bar: domain.BarSnapshot{
+			Open:   bar.Open,
+			High:   bar.High,
+			Low:    bar.Low,
+			Close:  bar.Close,
+			Volume: bar.Volume,
 		},
 	}
 	if sess.ActiveFVG != nil {
