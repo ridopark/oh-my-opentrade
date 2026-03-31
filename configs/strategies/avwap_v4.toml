@@ -13,12 +13,12 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL", "AMD", "AMZN", "COIN", "GOOGL", "HIMS", "HOOD", "META", "MSFT", "NFLX", "NVDA", "PLTR", "SOFI", "TSLA", "XOM"]
+symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NFLX", "NVDA", "AMD", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "COIN", "AFRM", "JPM", "XOM", "OXY", "LLY", "MRNA", "HIMS", "RIVN", "RBLX", "BA", "SPY", "QQQ", "IWM", "SOXL"]
 timeframes = ["5m"]
 priority = 80
 conflict_policy = "priority_wins"
 exclusive_per_symbol = true
-watchlist_mode = "intersection"
+watchlist_mode = "static"
 asset_classes = ["OPTION"]
 allowed_directions = ["LONG", "SHORT"]
 

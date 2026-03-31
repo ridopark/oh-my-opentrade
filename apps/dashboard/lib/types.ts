@@ -372,6 +372,14 @@ export interface StrategySignalsResponse {
 
 // Signal Formation Progress types (maps to domain.EntryGatedPayload / ORBPhaseUpdatePayload)
 
+export interface BarSnapshot {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
 export interface EntryGatedConfluence {
   score: number;
   maxScore: number;
@@ -403,6 +411,7 @@ export interface EntryGatedPayload {
   blockingDetail: string;
   confluence: EntryGatedConfluence;
   indicators: EntryGatedIndicators;
+  bar: BarSnapshot;
 }
 
 export interface ORBPhaseRange {
@@ -442,4 +451,5 @@ export interface ORBPhaseUpdatePayload {
   retest: ORBPhaseRetest;
   confidence: number;
   fvg: ORBPhaseFVG;
+  bar: BarSnapshot;
 }
