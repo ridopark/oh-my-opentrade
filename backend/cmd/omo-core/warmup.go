@@ -142,7 +142,7 @@ func buildSymbolLists(cfg *config.Config) symbolLists {
 func fillBarGaps(ctx context.Context, cfg *config.Config, infra *infraDeps, log zerolog.Logger) {
 	gapLog := log.With().Str("component", "gap-fill").Logger()
 
-	if infra.concreteAlpaca == nil {
+	if infra.alpacaData == nil {
 		gapLog.Info().Msg("skipped (no Alpaca fetcher available)")
 		return
 	}
@@ -189,7 +189,7 @@ func fillBarGaps(ctx context.Context, cfg *config.Config, infra *infraDeps, log 
 		// Start fetching from just after the last known bar
 		fetchFrom := latestBar.Add(time.Minute)
 
-		bars, err := infra.concreteAlpaca.GetHistoricalBars(ctx, symDomain, tf, fetchFrom, now)
+		bars, err := infra.alpacaData.GetHistoricalBars(ctx, symDomain, tf, fetchFrom, now)
 		if err != nil {
 			gapLog.Warn().Err(err).Str("symbol", sym).Msg("Alpaca fetch failed")
 			continue
@@ -269,7 +269,7 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 			Time("warmup_to", warmupTo).
 			Msg("warming equity indicators from previous RTH session")
 		for _, sym := range syms.equity {
-			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.broker, sym, syms.timeframe, warmupFrom, warmupTo, warmupLog)
+			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaData, sym, syms.timeframe, warmupFrom, warmupTo, warmupLog)
 			if err != nil {
 				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("equity warmup fetch failed, starting cold")
 				continue
@@ -293,7 +293,7 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 			Time("warmup_to", cryptoWarmupTo).
 			Msg("warming crypto indicators from last 2 hours")
 		for _, sym := range syms.crypto {
-			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.broker, sym, syms.timeframe, cryptoWarmupFrom, cryptoWarmupTo, warmupLog)
+			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaData, sym, syms.timeframe, cryptoWarmupFrom, cryptoWarmupTo, warmupLog)
 			if err != nil {
 				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("crypto warmup fetch failed, starting cold")
 				continue
@@ -370,7 +370,7 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 				to = prevEnd
 				from = to.Add(-req.lookback)
 			}
-			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.broker, req.symbol, req.timeframe, from, to, warmupLog)
+			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaData, req.symbol, req.timeframe, from, to, warmupLog)
 			if err != nil {
 				warmupLog.Warn().Err(err).
 					Str("symbol", string(req.symbol)).
@@ -392,7 +392,7 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 	if isOpen && nowET.After(todayOpen) {
 		warmupLog.Info().Msg("replaying current-session bars for ORB state recovery")
 		for _, sym := range syms.equity {
-			orbBars, err := fetchIntraSessionBarsWithGapFill(ctx, infra.repo, infra.broker, sym, syms.timeframe, todayOpen.UTC(), time.Now(), warmupLog)
+			orbBars, err := fetchIntraSessionBarsWithGapFill(ctx, infra.repo, infra.alpacaData, sym, syms.timeframe, todayOpen.UTC(), time.Now(), warmupLog)
 			if err != nil {
 				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("ORB warmup fetch failed")
 				continue
@@ -453,16 +453,14 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 		log.Fatal().Err(err).Msg("failed to start forming bar service")
 	}
 
-	if infra.concreteIBKR != nil {
-		log.Info().
-			Bool("ibkr_connected", infra.concreteIBKR.IsConnected()).
-			Str("market_data", "ibkr_realtime_bars").
-			Str("historical", "alpaca_rest").
-			Msg("ibkr: live market data mode")
-	}
+	log.Info().
+		Bool("ibkr_connected", infra.ibkrBroker.IsConnected()).
+		Str("market_data", "ibkr_realtime_bars").
+		Str("historical", "alpaca_rest").
+		Msg("ibkr: live market data mode")
 
-	if infra.concreteAlpaca != nil {
-		infra.concreteAlpaca.SetTradeHandler(func(tCtx context.Context, trade domain.MarketTrade) error {
+	{
+		infra.alpacaData.SetTradeHandler(func(tCtx context.Context, trade domain.MarketTrade) error {
 			evt, err := domain.NewEvent(domain.EventTradeReceived, "system", domain.EnvModePaper,
 				fmt.Sprintf("trade-%s-%d", trade.Symbol, trade.Time.UnixNano()), trade)
 			if err != nil {
@@ -471,8 +469,8 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 			return infra.eventBus.Publish(tCtx, *evt)
 		})
 
-		if infra.concreteAlpaca.WSClient() != nil {
-			infra.concreteAlpaca.CryptoWSClient().SetDegradedCallback(func(reason string) {
+		if infra.alpacaData.WSClient() != nil {
+			infra.alpacaData.CryptoWSClient().SetDegradedCallback(func(reason string) {
 				evt, err := domain.NewEvent(domain.EventFeedDegraded, "system", domain.EnvModePaper,
 					fmt.Sprintf("feed-degraded-%d", time.Now().UnixNano()),
 					domain.FeedDegradedPayload{Feed: "crypto", Reason: reason})
@@ -482,10 +480,10 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 				_ = infra.eventBus.Publish(ctx, *evt)
 			})
 
-			infra.concreteAlpaca.WSClient().SetPipelineHealth(svc.ingestion)
-			infra.concreteAlpaca.CryptoWSClient().SetPipelineHealth(svc.ingestion)
+			infra.alpacaData.WSClient().SetPipelineHealth(svc.ingestion)
+			infra.alpacaData.CryptoWSClient().SetPipelineHealth(svc.ingestion)
 
-			infra.concreteAlpaca.CryptoWSClient().SetCircuitBreakerCallback(func(consecutiveFails int, blockedFor time.Duration) {
+			infra.alpacaData.CryptoWSClient().SetCircuitBreakerCallback(func(consecutiveFails int, blockedFor time.Duration) {
 				evt, err := domain.NewEvent(domain.EventWSCircuitBreakerTripped, "system", domain.EnvModePaper,
 					fmt.Sprintf("ws-cb-tripped-%d", time.Now().UnixNano()),
 					domain.WSCircuitBreakerTrippedPayload{
@@ -529,13 +527,7 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 
 	{
 		broker := "ibkr"
-		if infra.concreteIBKR == nil && infra.concreteAlpaca != nil {
-			broker = "alpaca"
-		}
-		ibkrConnected := false
-		if infra.concreteIBKR != nil {
-			ibkrConnected = infra.concreteIBKR.IsConnected()
-		}
+		ibkrConnected := infra.ibkrBroker.IsConnected()
 		var equityCount, cryptoCount int
 		for _, s := range syms.all {
 			if s.IsCryptoSymbol() {
@@ -625,9 +617,9 @@ func warmupHTF(ctx context.Context, infra *infraDeps, svc *appServices, syms sym
 			hourlyLookback = 15 * 24 * time.Hour
 		}
 		hourlyFrom := hourlyTo.Add(-hourlyLookback)
-		bars1h, err := fetchBarsForWarmup(ctx, infra.repo, infra.broker, sym, "1h", hourlyFrom, hourlyTo, log)
+		bars1h, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaData, sym, "1h", hourlyFrom, hourlyTo, log)
 		if err == nil && len(bars1h) < hourlyBarsNeeded {
-			if brokerBars, berr := infra.broker.GetHistoricalBars(ctx, sym, "1h", hourlyFrom, hourlyTo); berr == nil && len(brokerBars) > len(bars1h) {
+			if brokerBars, berr := infra.alpacaData.GetHistoricalBars(ctx, sym, "1h", hourlyFrom, hourlyTo); berr == nil && len(brokerBars) > len(bars1h) {
 				log.Debug().Str("symbol", string(sym)).Int("db_bars", len(bars1h)).Int("broker_bars", len(brokerBars)).Msg("1H bars supplemented from broker")
 				bars1h = brokerBars
 			}
@@ -649,13 +641,13 @@ func warmupHTF(ctx context.Context, infra *infraDeps, svc *appServices, syms sym
 		}
 
 		dailyFrom := dailyTo.Add(-time.Duration(float64(dailyBarsNeeded)*2.0) * 24 * time.Hour)
-		bars1d, err := fetchBarsForWarmup(ctx, infra.repo, infra.broker, sym, "1d", dailyFrom, dailyTo, log)
+		bars1d, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaData, sym, "1d", dailyFrom, dailyTo, log)
 		if err != nil {
 			log.Warn().Err(err).Str("symbol", string(sym)).Msg("1D warmup fetch failed")
 			continue
 		}
 		if len(bars1d) < dailyBarsNeeded {
-			if brokerBars, berr := infra.broker.GetHistoricalBars(ctx, sym, "1d", dailyFrom, dailyTo); berr == nil && len(brokerBars) > len(bars1d) {
+			if brokerBars, berr := infra.alpacaData.GetHistoricalBars(ctx, sym, "1d", dailyFrom, dailyTo); berr == nil && len(brokerBars) > len(bars1d) {
 				log.Debug().Str("symbol", string(sym)).Int("db_bars", len(bars1d)).Int("broker_bars", len(brokerBars)).Msg("daily bars supplemented from broker")
 				bars1d = brokerBars
 			}

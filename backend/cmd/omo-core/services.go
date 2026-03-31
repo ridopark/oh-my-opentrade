@@ -118,7 +118,7 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 
 	// Account equity (must be fetched before building execution)
 	svc.accountEquity = 100000.0 // fallback
-	if equity, err := infra.broker.GetAccountEquity(context.Background()); err == nil {
+	if equity, err := infra.ibkrBroker.GetAccountEquity(context.Background()); err == nil {
 		svc.accountEquity = equity
 		log.Info().Float64("equity", equity).Msg("account equity fetched from broker")
 	} else {
@@ -128,14 +128,14 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	// Execution guard chain (via shared bootstrap builder)
 	var acctPort ports.AccountPort
 	if os.Getenv("DTBP_FALLBACK") == "true" {
-		acctPort = infra.broker
+		acctPort = infra.ibkrBroker
 		log.Info().Msg("DTBP fallback enabled — buying power guard active")
 	}
 	execBundle, err := bootstrap.BuildExecutionService(bootstrap.ExecutionDeps{
 		EventBus:      infra.eventBus,
-		Broker:        infra.broker,
+		Broker:        infra.ibkrBroker,
 		Repo:          infra.repo,
-		QuoteProvider: infra.broker,
+		QuoteProvider: infra.ibkrBroker,
 		AccountPort:   acctPort,
 		PnLRepo:       infra.pnlRepo,
 		TradeReader:   infra.repo,
@@ -143,13 +143,13 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 		Config:        cfg,
 		InitialEquity: svc.accountEquity,
 		EnableOptions: true,
-		BrokerName:    cfg.Broker,
+		BrokerName:    "ibkr",
 		Logger:        log,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to build execution service")
 	}
-	execution.WithOrderStream(infra.broker)(execBundle.Service)
+	execution.WithOrderStream(infra.ibkrBroker)(execBundle.Service)
 	svc.execution = execBundle.Service
 	svc.ledgerWriter = execBundle.LedgerWriter
 	svc.dailyLossBreaker = execBundle.DailyLossBreaker
@@ -159,10 +159,10 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	posMonBundle, err := bootstrap.BuildPositionMonitor(bootstrap.PosMonitorDeps{
 		EventBus:     infra.eventBus,
 		PositionGate: execBundle.PositionGate,
-		Broker:       infra.broker,
+		Broker:       infra.ibkrBroker,
 		Repo:         infra.repo,
 		SnapshotFn:   svc.monitor.GetLastSnapshot,
-		OptionsPrice: infra.broker,
+		OptionsPrice: infra.alpacaData,
 		TenantID:     "default",
 		EnvMode:      domain.EnvModePaper,
 		Clock:        time.Now,
@@ -271,9 +271,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 			advisorOpts = append(advisorOpts, llm.WithProviderRouting(cfg.AI.ProviderSort, nil))
 		}
 		svc.aiAdvisor = llm.NewAdvisor(cfg.AI.BaseURL, cfg.AI.Model, cfg.AI.APIKey, nil, advisorOpts...)
-		if cfg.Broker != "ibkr" {
-			svc.newsClient = alpaca.NewNewsClient(cfg.Alpaca.DataURL, cfg.Alpaca.APIKeyID, cfg.Alpaca.APISecretKey, nil)
-		}
+		svc.newsClient = alpaca.NewNewsClient(cfg.Alpaca.DataURL, cfg.Alpaca.APIKeyID, cfg.Alpaca.APISecretKey, nil)
 		log.Info().
 			Str("base_url", cfg.AI.BaseURL).
 			Str("model", cfg.AI.Model).
@@ -310,7 +308,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		NewsProvider:    newsProvider,
 		Repo:            infra.repo,
 		StratPerf:       infra.stratPerfRepo,
-		OptionsMarket:   infra.broker,
+		OptionsMarket:   infra.alpacaData,
 		TenantID:        "default",
 		EnvMode:         domain.EnvModePaper,
 		Equity:          svc.accountEquity,
@@ -425,10 +423,10 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	}
 
 	// Compute realized volatility from SPY daily bars as VIX proxy.
-	if infra.broker != nil {
+	{
 		spySym, _ := domain.NewSymbol("SPY")
 		rvFrom := time.Now().Add(-60 * 24 * time.Hour)
-		spyDaily, spyErr := infra.broker.GetHistoricalBars(context.Background(), spySym, "1d", rvFrom, time.Now())
+		spyDaily, spyErr := infra.alpacaData.GetHistoricalBars(context.Background(), spySym, "1d", rvFrom, time.Now())
 		if spyErr == nil && len(spyDaily) > 21 {
 			rv := monitor.ComputeRealizedVol(spyDaily, 20)
 			svc.monitor.SetVIXLevel(rv)
@@ -488,12 +486,16 @@ func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, lo
 		EventBus:   infra.eventBus,
 		Repo:       infra.repo,
 		PnLRepo:    infra.pnlRepo,
-		MarketData: infra.broker,
+		MarketData: infra.alpacaData,
 		SpecStore:  nil, // not used directly by orchestrator
 		Metrics:    nil, // wired later after metrics.New()
 		Log:        log.With().Str("component", "orchestrator").Logger(),
 	}
 	svc.orchestrator = orchestrator.New(shared)
+
+	// Multi-account currently requires Alpaca execution brokers per account.
+	// This is incompatible with the IBKR-only broker model.
+	log.Fatal().Msg("multi-account is not supported with IBKR-only broker — each account would need its own IBKR gateway")
 
 	for _, acct := range accounts {
 		acctLog := log.With().Str("tenant", acct.TenantID).Logger()
@@ -581,7 +583,7 @@ func initDebateService(cfg *config.Config, infra *infraDeps, svc *appServices, l
 	svc.debateSvc = debate.NewService(infra.eventBus, svc.aiAdvisor, infra.repo, cfg.AI.MinConfidence, debateLog)
 	svc.debateSvc.SetEquity(svc.accountEquity)
 	svc.debateSvc.SetSpecStore(svc.specStore)
-	svc.debateSvc.SetOptionsMarket(infra.broker)
+	svc.debateSvc.SetOptionsMarket(infra.alpacaData)
 	log.Info().
 		Float64("min_confidence", cfg.AI.MinConfidence).
 		Msg("AI debate service enabled (v1 path)")
@@ -668,8 +670,8 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 			actLog,
 			infra.eventBus,
 			svc.monitor,
-			infra.broker,
-			infra.broker,
+			infra.alpacaData,
+			infra.ibkrBroker,
 			svc.spikeFilter,
 			svc.pipelineActivator,
 			domain.Timeframe(cfg.Symbols.Timeframe),
@@ -722,8 +724,8 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 			cfg.Symbols.Symbols,
 			domain.AssetClassEquity,
 			infra.eventBus,
-			infra.broker,
-			infra.broker,
+			infra.alpacaData,
+			infra.alpacaData,
 			screenerRepo,
 			nil,
 		)
@@ -744,9 +746,9 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 			"default",
 			string(domain.EnvModePaper),
 			infra.eventBus,
-			infra.broker,
-			infra.broker,
-			infra.broker,
+			infra.alpacaData,
+			infra.alpacaData,
+			infra.alpacaData,
 			aiScreenerRepo,
 			svc.specStore,
 			svc.notifier,
@@ -789,7 +791,7 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					if eq, err := infra.broker.GetAccountEquity(ctx); err == nil {
+					if eq, err := infra.ibkrBroker.GetAccountEquity(ctx); err == nil {
 						svc.execution.SetAccountEquity(eq)
 						svc.ledgerWriter.SetAccountEquity(eq)
 						svc.strategySvc.SetAccountEquity(eq)
@@ -815,8 +817,8 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 				RunAtHourET:   16,
 				RunAtMinuteET: 15,
 			},
-			infra.broker,
-			infra.broker,
+			infra.alpacaData,
+			infra.alpacaData,
 			ivRepo,
 			log.With().Str("component", "iv_collector").Logger(),
 		)

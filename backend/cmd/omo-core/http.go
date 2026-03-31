@@ -45,15 +45,8 @@ func initHTTPServer(ctx context.Context, cfg *config.Config, infra *infraDeps, s
 	svc.ingestion.SetMetrics(met)
 	svc.dailyLossBreaker.SetMetrics(met)
 	svc.ledgerWriter.SetMetrics(met)
-	if infra.concreteAlpaca != nil && infra.concreteAlpaca.WSClient() != nil {
-		infra.concreteAlpaca.WSClient().SetMetrics(met)
-		infra.concreteAlpaca.TradeStream().SetOnConnect(func(connected bool) {
-			if connected {
-				met.Orders.TradeWSConnected.Set(1)
-			} else {
-				met.Orders.TradeWSConnected.Set(0)
-			}
-		})
+	if infra.alpacaData != nil && infra.alpacaData.WSClient() != nil {
+		infra.alpacaData.WSClient().SetMetrics(met)
 	}
 	if svc.useStrategyV2 {
 		svc.strategyRunner.SetMetrics(met)
@@ -97,24 +90,24 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	imux.Mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	imux.Mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 
-	imux.Handle("/bars", omhttp.NewBarsHandler(infra.repo, infra.broker, httpLog))
+	imux.Handle("/bars", omhttp.NewBarsHandler(infra.repo, infra.alpacaData, httpLog))
 	// Serve the configured symbol universe for the dashboard dropdown.
 	universeSymbols := cfg.Symbols.AllSymbols()
 	imux.HandleFunc("/symbols", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(universeSymbols)
 	})
-	imux.Handle("/screener", omhttp.NewScreenerHandler(infra.broker, infra.broker, infra.broker, cfg.Symbols.AllSymbols(), httpLog))
+	imux.Handle("/screener", omhttp.NewScreenerHandler(infra.alpacaData, infra.alpacaData, infra.alpacaData, cfg.Symbols.AllSymbols(), httpLog))
 	imux.Handle("/events", sseHandler)
 
 	var backtestMarketData ports.MarketDataPort
-	if infra.concreteAlpaca != nil {
-		backtestMarketData = infra.concreteAlpaca
+	if infra.alpacaData != nil {
+		backtestMarketData = infra.alpacaData
 	}
 	backtestHandler := omhttp.NewBacktestHandler(infra.sqlDB, cfg, backtestMarketData, httpLog)
 	imux.Handle("/backtest/", backtestHandler)
 
-	portfolioHandler := omhttp.NewPortfolioHandler(infra.broker, infra.broker, infra.broker.GetAccountEquity, "default", domain.EnvModePaper, httpLog)
+	portfolioHandler := omhttp.NewPortfolioHandler(infra.ibkrBroker, infra.ibkrBroker, infra.ibkrBroker.GetAccountEquity, "default", domain.EnvModePaper, httpLog)
 	imux.Handle("/api/portfolio/", portfolioHandler)
 
 	imux.Mux.HandleFunc("/debug/ai-screener/run", func(w http.ResponseWriter, r *http.Request) {
@@ -171,28 +164,22 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 		omhttp.StaticChecker("execution"),
 		omhttp.StaticChecker("strategy"),
 		omhttp.FeedChecker("ws_feed", func() (bool, string) {
-			if infra.concreteAlpaca == nil || infra.concreteAlpaca.WSClient() == nil {
+			if infra.alpacaData == nil || infra.alpacaData.WSClient() == nil {
 				return true, ""
 			}
-			fh := infra.concreteAlpaca.WSClient().FeedHealth()
+			fh := infra.alpacaData.WSClient().FeedHealth()
 			if fh.IsHealthy() {
 				return true, ""
 			}
 			detail := fmt.Sprintf("state=%s connected=%v last_bar_age=%s", fh.State, fh.Connected, fh.LastBarAge.Round(time.Second))
 			return false, detail
 		}),
-	}
-	if cfg.Broker == "ibkr" {
-		type ibkrChecker interface{ IsIBKRConnected() bool }
-		healthChecks = append(healthChecks, omhttp.FeedChecker("ibkr_gateway", func() (bool, string) {
-			if ic, ok := infra.broker.(ibkrChecker); ok {
-				if ic.IsIBKRConnected() {
-					return true, ""
-				}
-				return false, "IB Gateway not connected"
+		omhttp.FeedChecker("ibkr_gateway", func() (bool, string) {
+			if infra.ibkrBroker.IsConnected() {
+				return true, ""
 			}
-			return false, "IBKR connecting in background"
-		}))
+			return false, "IB Gateway not connected"
+		}),
 	}
 	healthHandler := omhttp.NewHealthHandler(httpLog, healthChecks...)
 	imux.Handle("/healthz/services", healthHandler)

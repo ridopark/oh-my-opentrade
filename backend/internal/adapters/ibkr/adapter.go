@@ -13,13 +13,9 @@ import (
 )
 
 var (
-	_ ports.BrokerPort            = (*Adapter)(nil)
-	_ ports.OrderStreamPort       = (*Adapter)(nil)
-	_ ports.MarketDataPort        = (*Adapter)(nil)
-	_ ports.AccountPort           = (*Adapter)(nil)
-	_ ports.OptionsMarketDataPort = (*Adapter)(nil)
-	_ ports.UniverseProviderPort  = (*Adapter)(nil)
-	_ ports.SnapshotPort          = (*Adapter)(nil)
+	_ ports.BrokerPort      = (*Adapter)(nil)
+	_ ports.OrderStreamPort = (*Adapter)(nil)
+	_ ports.AccountPort     = (*Adapter)(nil)
 )
 
 const accountSummaryCacheTTL = 5 * time.Minute

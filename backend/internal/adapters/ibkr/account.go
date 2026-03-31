@@ -92,6 +92,3 @@ func (a *Adapter) GetQuote(_ context.Context, symbol domain.Symbol) (bid float64
 	return ticker.Bid(), ticker.Ask(), nil
 }
 
-func (a *Adapter) GetOptionPrices(_ context.Context, _ []domain.Symbol) (map[domain.Symbol]domain.OptionQuote, error) {
-	return nil, errDeferred
-}

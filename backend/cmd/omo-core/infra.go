@@ -22,20 +22,6 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-type brokerAdapter interface {
-	ports.BrokerPort
-	ports.OrderStreamPort
-	ports.MarketDataPort
-	ports.AccountPort
-	ports.SnapshotPort
-	ports.OptionsMarketDataPort
-	ports.OptionsPricePort
-	ports.UniverseProviderPort
-	GetQuote(ctx context.Context, symbol domain.Symbol) (float64, float64, error)
-	GetAccountEquity(ctx context.Context) (float64, error)
-	SubscribeSymbols(ctx context.Context, symbols []domain.Symbol) error
-}
-
 type startupReport struct {
 	EMA50Succeeded  int
 	EMA50Failed     []string
@@ -45,9 +31,8 @@ type startupReport struct {
 
 type infraDeps struct {
 	eventBus        *memory.Bus
-	broker          brokerAdapter
-	concreteAlpaca  *alpaca.Adapter
-	concreteIBKR    *ibkr.Adapter
+	ibkrBroker      *ibkr.Adapter
+	alpacaData      *alpaca.Adapter
 	sqlDB           *sql.DB
 	repo            *timescaledb.Repository
 	pnlRepo         *timescaledb.PnLRepository
@@ -96,100 +81,68 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 	eventBus := memory.NewBus()
 	log.Info().Msg("event bus initialized")
 
-	var broker brokerAdapter
-	var concreteAlpaca *alpaca.Adapter
-	var concreteIBKR *ibkr.Adapter
-
-	switch cfg.Broker {
-	case "ibkr":
-		if err := retryWithBackoff(log, "alpaca_adapter_rest", 5, 2*time.Second, 30*time.Second, func() error {
-			a, err := alpaca.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca").Logger(), alpaca.WithNoStream())
-			if err != nil {
-				return err
-			}
-			concreteAlpaca = a
-			return nil
-		}); err != nil {
-			log.Fatal().Err(err).Msg("failed to create Alpaca adapter (REST mode) after retries")
+	// Alpaca adapter in REST-only mode (market data source).
+	var alpacaData *alpaca.Adapter
+	if err := retryWithBackoff(log, "alpaca_adapter_rest", 5, 2*time.Second, 30*time.Second, func() error {
+		a, err := alpaca.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca").Logger(), alpaca.WithNoStream())
+		if err != nil {
+			return err
 		}
-
-		composite := ibkr.NewCompositeAdapter(nil, concreteAlpaca, log)
-		broker = composite
-		log.Info().Msg("broker initialized: Alpaca-only (IBKR connecting in background)")
-
-		go func() {
-			ibkrLog := log.With().Str("component", "ibkr_deferred").Logger()
-			delay := 5 * time.Second
-			maxDelay := 60 * time.Second
-			for {
-				a, err := ibkr.NewAdapter(cfg.IBKR, log.With().Str("component", "ibkr").Logger())
-				if err == nil {
-					concreteIBKR = a
-					composite.SetIBKR(a)
-					ibkrLog.Info().
-						Str("host", cfg.IBKR.Host).
-						Int("port", cfg.IBKR.Port).
-						Msg("IBKR connected — broker upgraded to composite mode")
-
-					// Notify via event bus so Discord gets the connection status.
-					evt, evtErr := domain.NewEvent(
-						domain.EventIBKRConnected, "system", domain.EnvModePaper,
-						"ibkr-connected",
-						domain.IBKRConnectedPayload{
-							Host:           cfg.IBKR.Host,
-							Port:           cfg.IBKR.Port,
-							ClientID:       cfg.IBKR.ClientID,
-							PaperMode:      cfg.IBKR.PaperMode,
-							MarketDataType: cfg.IBKR.MarketDataType,
-							AccountID:      cfg.IBKR.AccountID,
-						},
-					)
-					if evtErr == nil {
-						_ = eventBus.Publish(context.Background(), *evt)
-					}
-					return
-				}
-				ibkrLog.Warn().Err(err).Dur("retry_in", delay).Msg("IBKR not available, retrying")
-				time.Sleep(delay)
-				delay *= 2
-				if delay > maxDelay {
-					delay = maxDelay
-				}
-			}
-		}()
-	default:
-		if err := retryWithBackoff(log, "alpaca_adapter", 5, 2*time.Second, 30*time.Second, func() error {
-			a, err := alpaca.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca").Logger())
-			if err != nil {
-				return err
-			}
-			concreteAlpaca = a
-			return nil
-		}); err != nil {
-			log.Fatal().Err(err).Msg("failed to create Alpaca adapter after retries")
-		}
-		broker = concreteAlpaca
-		log.Info().Msg("Alpaca adapter initialized")
+		alpacaData = a
+		return nil
+	}); err != nil {
+		log.Fatal().Err(err).Msg("failed to create Alpaca adapter (REST mode) after retries")
 	}
 
-	// Streaming source — separate from execution broker.
+	// IBKR broker -- synchronous connection with retry. Fatal on failure.
+	var ibkrBroker *ibkr.Adapter
+	if err := retryWithBackoff(log, "ibkr_connect", 5, 2*time.Second, 30*time.Second, func() error {
+		a, connectErr := ibkr.NewAdapter(cfg.IBKR, log.With().Str("component", "ibkr").Logger())
+		if connectErr != nil {
+			return connectErr
+		}
+		ibkrBroker = a
+		return nil
+	}); err != nil {
+		log.Fatal().Err(err).
+			Str("host", cfg.IBKR.Host).
+			Int("port", cfg.IBKR.Port).
+			Msg("IBKR Gateway not reachable — cannot start without IBKR")
+	}
+	log.Info().
+		Str("host", cfg.IBKR.Host).
+		Int("port", cfg.IBKR.Port).
+		Msg("IBKR connected")
+
+	// Publish IBKR connected event immediately.
+	evt, evtErr := domain.NewEvent(
+		domain.EventIBKRConnected, "system", domain.EnvModePaper,
+		"ibkr-connected",
+		domain.IBKRConnectedPayload{
+			Host:           cfg.IBKR.Host,
+			Port:           cfg.IBKR.Port,
+			ClientID:       cfg.IBKR.ClientID,
+			PaperMode:      cfg.IBKR.PaperMode,
+			MarketDataType: cfg.IBKR.MarketDataType,
+			AccountID:      cfg.IBKR.AccountID,
+		},
+	)
+	if evtErr == nil {
+		_ = eventBus.Publish(context.Background(), *evt)
+	}
+
+	// Streaming source — always create a second Alpaca adapter with streaming for bar data.
 	var streamingBroker ports.MarketDataPort
 	switch cfg.StreamingSource {
 	case "alpaca":
-		if cfg.Broker == "ibkr" {
-			// Alpaca was created in REST-only mode for the composite adapter.
-			// Create a second Alpaca adapter with streaming enabled.
-			streamAlpaca, streamErr := alpaca.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca_stream").Logger())
-			if streamErr != nil {
-				log.Fatal().Err(streamErr).Msg("failed to create Alpaca streaming adapter")
-			}
-			streamingBroker = streamAlpaca
-		} else {
-			streamingBroker = concreteAlpaca
+		streamAlpaca, streamErr := alpaca.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca_stream").Logger())
+		if streamErr != nil {
+			log.Fatal().Err(streamErr).Msg("failed to create Alpaca streaming adapter")
 		}
+		streamingBroker = streamAlpaca
 		log.Info().Msg("streaming source: alpaca")
 	default:
-		streamingBroker = broker
+		streamingBroker = ibkrBroker
 		log.Info().Str("source", cfg.StreamingSource).Msg("streaming source: " + cfg.StreamingSource)
 	}
 
@@ -218,9 +171,8 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 
 	return &infraDeps{
 		eventBus:        eventBus,
-		broker:          broker,
-		concreteAlpaca:  concreteAlpaca,
-		concreteIBKR:    concreteIBKR,
+		ibkrBroker:      ibkrBroker,
+		alpacaData:      alpacaData,
 		sqlDB:           sqlDB,
 		repo:            repo,
 		pnlRepo:         pnlRepo,
