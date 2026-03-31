@@ -688,8 +688,12 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	setup, detected := s.feedORBBar(bar, snap, false)
 
 	// Emit ORBRangeSet notification once per session when opening range locks.
+	// Only notify if we're within a few minutes of the ORB window — skip stale
+	// ranges from warmup replay, settling bars, or tracker cycling mid-session.
+	orbNotifyCutoff := RTHOpenUTC(bar.Time).Add(time.Duration(s.orbCfg.WindowMinutes+10) * time.Minute)
 	if sess := s.orbTracker.GetSession(symStr); sess != nil &&
-		sess.State == ORBStateRangeSet && !sess.RangeNotified && !sess.RangeInvalid {
+		sess.State == ORBStateRangeSet && !sess.RangeNotified && !sess.RangeInvalid &&
+		bar.Time.Before(orbNotifyCutoff) {
 		sess.RangeNotified = true
 		htfBias := ""
 		atrPct := 0.0
