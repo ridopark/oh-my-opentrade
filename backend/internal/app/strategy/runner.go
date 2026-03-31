@@ -1003,6 +1003,28 @@ func (r *Runner) SignalProgressSnapshots() []domain.Event {
 	return events
 }
 
+// FlushSignalProgress iterates all strategy instances after warmup and emits
+// signal progress events (EntryGated, ORBPhaseUpdate) to seed the SSE cache.
+// This ensures the dashboard has data immediately without waiting for the first live bar.
+func (r *Runner) FlushSignalProgress() {
+	ctx := context.Background()
+	for _, inst := range r.router.AllInstances() {
+		for _, sym := range inst.Assignment().Symbols {
+			st, ok := inst.GetState(sym)
+			if !ok {
+				continue
+			}
+			emitter, ok := st.(start.SignalProgressEmitter)
+			if !ok {
+				continue
+			}
+			for _, payload := range emitter.EmitSignalProgress() {
+				_ = r.emitDomainEvent(ctx, r.tenantID, r.envMode, payload)
+			}
+		}
+	}
+}
+
 // handleFill routes a FillReceived event to the matching strategy instance.
 // The strategy uses this to confirm its entry and transition from PendingEntry
 // to an actual PositionSide.
