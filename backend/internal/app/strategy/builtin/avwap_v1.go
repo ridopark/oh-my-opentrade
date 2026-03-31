@@ -41,6 +41,7 @@ func (s *AVWAPStrategy) ReplayOnBar(_ start.Context, _ string, bar start.Bar, st
 	}
 	avwapSt.Indicators = indicators
 	avwapSt.Calc.Update(bar.Time, bar.High, bar.Low, bar.Close, bar.Volume)
+	avwapSt.CalcBarCount++
 
 	cap := avwapSt.Config.HigherLowsBars
 	if cap < 2 {
