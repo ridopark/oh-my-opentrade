@@ -970,6 +970,9 @@ function MiniChart({
         if (!filledAt) return null;
         const filledUnix = Math.floor(filledAt.getTime() / 1000);
         const matchedTime = findClosestBarTime(filledUnix);
+        // Skip markers whose fill timestamp is too far from the closest bar
+        // (e.g., fills from a prior day should not render on a later day's chart).
+        if (Math.abs(matchedTime - filledUnix) > 5 * 60) return null;
         const bar = barMap.get(matchedTime);
         const dir = t.direction ?? "";
         // For options: direction is always LONG (buying the contract), but
