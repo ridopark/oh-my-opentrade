@@ -812,6 +812,63 @@ func (r *Runner) WarmUpTF(symbol string, tf string, bars []domain.MarketBar, sna
 	return len(bars)
 }
 
+// WarmUpHTF aggregates 1m warmup bars into each HTF timeframe required by
+// registered instances and feeds the resulting candles through WarmUpTF.
+// Must be called AFTER InitAggregators.
+func (r *Runner) WarmUpHTF(symbol string, bars1m []domain.MarketBar, snapshotFn IndicatorSnapshotFunc, loc *time.Location) {
+	if len(bars1m) == 0 {
+		return
+	}
+
+	// Collect unique HTF timeframes needed for this symbol.
+	htfSet := make(map[string]struct{})
+	for _, inst := range r.router.InstancesForSymbol(symbol) {
+		for _, tf := range inst.Assignment().Timeframes {
+			if tf != "1m" {
+				htfSet[tf] = struct{}{}
+			}
+		}
+	}
+	if len(htfSet) == 0 {
+		return
+	}
+
+	domSym := domain.Symbol(symbol)
+	isCrypto := domSym.IsCryptoSymbol()
+
+	// Derive the session open from the first warmup bar's trading day so that
+	// bars from prior sessions can be aggregated correctly.
+	firstET := bars1m[0].Time.In(loc)
+	warmupSessionOpen := time.Date(firstET.Year(), firstET.Month(), firstET.Day(), 9, 30, 0, 0, loc)
+
+	for tf := range htfSet {
+		var agg *domain.BarAggregator
+		var err error
+		if isCrypto {
+			agg, err = domain.NewClockAlignedAggregator(domSym, domain.Timeframe(tf))
+		} else {
+			agg, err = domain.NewBarAggregator(domSym, domain.Timeframe(tf), warmupSessionOpen)
+		}
+		if err != nil {
+			r.logger.Error("WarmUpHTF: failed to create aggregator", "symbol", symbol, "tf", tf, "error", err)
+			continue
+		}
+
+		var htfBars []domain.MarketBar
+		for _, bar := range bars1m {
+			closed, emitted := agg.Push(bar)
+			if emitted {
+				htfBars = append(htfBars, closed)
+			}
+		}
+
+		if len(htfBars) > 0 {
+			r.logger.Info("WarmUpHTF: aggregated warmup bars", "symbol", symbol, "tf", tf, "bars_1m", len(bars1m), "bars_htf", len(htfBars))
+			r.WarmUpTF(symbol, tf, htfBars, snapshotFn)
+		}
+	}
+}
+
 func (r *Runner) ClearAllPendingStates() {
 	for _, inst := range r.router.AllInstances() {
 		for _, sym := range inst.Assignment().Symbols {
