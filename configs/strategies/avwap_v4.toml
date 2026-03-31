@@ -172,7 +172,7 @@ type = "SWING_STOP"
 lookback = 20
 buffer_bps = 25
 atr_buffer_mult = 3.0
-min_bars = 20
+min_bars = 15
 
 # Stagnation exit: close trades that go nowhere after N minutes
 [[exit_rules]]

@@ -79,6 +79,11 @@ type BreakRetestConfig struct {
 	// Trade management
 	CooldownSeconds int
 	MaxTradesPerDay int
+
+	// Trading window
+	AllowedHoursStart string // "HH:MM" entry window start
+	AllowedHoursEnd   string // "HH:MM" entry window end
+	AllowedHoursTZ    string // IANA timezone (default America/New_York)
 }
 
 func parseBreakRetestConfig(params map[string]any) BreakRetestConfig {
@@ -106,6 +111,10 @@ func parseBreakRetestConfig(params map[string]any) BreakRetestConfig {
 		SizeMultMax:       getFloat64(params, "size_mult_max", 1.5),
 		CooldownSeconds:   getInt(params, "cooldown_seconds", 300),
 		MaxTradesPerDay:   getInt(params, "max_trades_per_day", 5),
+
+		AllowedHoursStart: getString(params, "allowed_hours_start", ""),
+		AllowedHoursEnd:   getString(params, "allowed_hours_end", ""),
+		AllowedHoursTZ:    getString(params, "allowed_hours_tz", "America/New_York"),
 	}
 }
 
@@ -276,6 +285,26 @@ func (s *BreakRetestStrategy) OnBar(ctx start.Context, symbol string, bar start.
 		brSt.PrevBar = bar
 		brSt.HasPrevBar = true
 		return brSt, nil, nil
+	}
+
+	// Trading window gate — block entries outside allowed hours.
+	if cfg.AllowedHoursStart != "" && cfg.AllowedHoursEnd != "" {
+		loc := etLocation
+		if cfg.AllowedHoursTZ != "" {
+			if parsed, err := time.LoadLocation(cfg.AllowedHoursTZ); err == nil {
+				loc = parsed
+			}
+		}
+		localNow := now.In(loc)
+		hhmm := localNow.Format("15:04")
+		if hhmm < cfg.AllowedHoursStart || hhmm >= cfg.AllowedHoursEnd {
+			updateBarBuffer(brSt, bar)
+			detectPivots(brSt)
+			classifyTrend(brSt)
+			brSt.PrevBar = bar
+			brSt.HasPrevBar = true
+			return brSt, nil, nil
+		}
 	}
 
 	// Always update structure (pivots, trend) even if gated.

@@ -125,6 +125,10 @@ type AVWAPConfig struct {
 	KeyLevelConfluenceEnabled bool // enable key level confluence factor
 	CandleConfluenceEnabled   bool // enable candlestick pattern confluence factor
 	BandConfluenceEnabled     bool // enable AVWAP band zone confluence factor
+
+	AllowedHoursStart string // "HH:MM" entry window start (ET)
+	AllowedHoursEnd   string // "HH:MM" entry window end (ET)
+	AllowedHoursTZ    string // IANA timezone (default America/New_York)
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -553,6 +557,10 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		KeyLevelConfluenceEnabled: getBool(params, "key_level_confluence_enabled", true),
 		CandleConfluenceEnabled:   getBool(params, "candle_confluence_enabled", true),
 		BandConfluenceEnabled:     getBool(params, "band_confluence_enabled", true),
+
+		AllowedHoursStart: getString(params, "allowed_hours_start", ""),
+		AllowedHoursEnd:   getString(params, "allowed_hours_end", ""),
+		AllowedHoursTZ:    getString(params, "allowed_hours_tz", "America/New_York"),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
 	return cfg
@@ -1757,6 +1765,21 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 			ctx.Logger().Info("AVWAP gate: max trades reached", "symbol", symbol, "trades", avwapSt.TradesToday, "max", cfg.MaxTradesPerDay)
 		}
 		return avwapSt, nil, nil
+	}
+
+	// 1b. Trading window gate — block entries outside allowed hours.
+	if cfg.AllowedHoursStart != "" && cfg.AllowedHoursEnd != "" {
+		loc := etLocation
+		if cfg.AllowedHoursTZ != "" {
+			if parsed, err := time.LoadLocation(cfg.AllowedHoursTZ); err == nil {
+				loc = parsed
+			}
+		}
+		localNow := now.In(loc)
+		hhmm := localNow.Format("15:04")
+		if hhmm < cfg.AllowedHoursStart || hhmm >= cfg.AllowedHoursEnd {
+			return avwapSt, nil, nil
+		}
 	}
 
 	// 2. Update AVWAP calculator with this bar.
