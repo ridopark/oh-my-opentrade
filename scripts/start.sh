@@ -27,10 +27,29 @@ kill_port() {
   fi
 }
 
+kill_zombie_omo() {
+  # Find any omo-core processes NOT in the current tmux session.
+  # These zombies hold Alpaca WebSocket connections, blocking new instances.
+  local pids
+  pids=$(pgrep -f 'bin/omo-core' 2>/dev/null || true)
+  if [[ -n "$pids" ]]; then
+    warn "Killing zombie omo-core process(es): $pids"
+    echo "$pids" | xargs kill 2>/dev/null || true
+    sleep 2
+    # Force-kill any survivors
+    pids=$(pgrep -f 'bin/omo-core' 2>/dev/null || true)
+    if [[ -n "$pids" ]]; then
+      echo "$pids" | xargs kill -9 2>/dev/null || true
+      sleep 1
+    fi
+  fi
+}
+
 # ── Start omo-core ───────────────────────────────────────────
 if tmux has-session -t "$OMO_SESSION" 2>/dev/null; then
   warn "$OMO_SESSION tmux session already exists — skipping"
 else
+  kill_zombie_omo
   kill_port "$OMO_PORT"
   mkdir -p "$ROOT_DIR/logs"
   : > "$ROOT_DIR/logs/omo-core.log"

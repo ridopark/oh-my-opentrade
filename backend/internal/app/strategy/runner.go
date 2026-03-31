@@ -41,6 +41,10 @@ type Runner struct {
 	aiAnchorResolver     *AIAnchorResolver
 	lastSessionDate      map[string]string
 	lastResolvedRegime   map[string]domain.RegimeType
+
+	// Signal progress cache: last emitted event per symbol for initial SSE snapshots.
+	signalProgressMu    sync.RWMutex
+	signalProgressCache map[string]domain.Event // key: eventType+":"+symbol
 }
 
 func (r *Runner) SignalsRTHSuppressed() int64 {
@@ -956,11 +960,14 @@ func (r *Runner) emitSignal(ctx context.Context, tenantID string, envMode domain
 // their specific event types; all others use the generic StrategyDomainEvent type.
 func (r *Runner) emitDomainEvent(ctx context.Context, tenantID string, envMode domain.EnvMode, payload any) error {
 	eventType := domain.EventType("StrategyDomainEvent")
-	switch payload.(type) {
+	var cacheKey string
+	switch p := payload.(type) {
 	case domain.EntryGatedPayload:
 		eventType = domain.EventEntryGated
+		cacheKey = "EntryGated:" + p.Symbol
 	case domain.ORBPhaseUpdatePayload:
 		eventType = domain.EventORBPhaseUpdate
+		cacheKey = "ORBPhaseUpdate:" + p.Symbol
 	}
 	ev, err := domain.NewEvent(
 		eventType,
@@ -972,7 +979,28 @@ func (r *Runner) emitDomainEvent(ctx context.Context, tenantID string, envMode d
 	if err != nil {
 		return err
 	}
+	// Cache for initial SSE snapshots.
+	if cacheKey != "" {
+		r.signalProgressMu.Lock()
+		if r.signalProgressCache == nil {
+			r.signalProgressCache = make(map[string]domain.Event)
+		}
+		r.signalProgressCache[cacheKey] = *ev
+		r.signalProgressMu.Unlock()
+	}
 	return r.eventBus.Publish(ctx, *ev)
+}
+
+// SignalProgressSnapshots returns cached EntryGated and ORBPhaseUpdate events
+// for all symbols. Used by the SSE handler to send initial state on client connect.
+func (r *Runner) SignalProgressSnapshots() []domain.Event {
+	r.signalProgressMu.RLock()
+	defer r.signalProgressMu.RUnlock()
+	events := make([]domain.Event, 0, len(r.signalProgressCache))
+	for _, ev := range r.signalProgressCache {
+		events = append(events, ev)
+	}
+	return events
 }
 
 // handleFill routes a FillReceived event to the matching strategy instance.

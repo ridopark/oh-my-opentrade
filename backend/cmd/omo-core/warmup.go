@@ -423,6 +423,9 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 					}
 				}
 				_ = svc.strategyRunner.WarmUp(string(sym), orbBars, runnerWarmupSnapshotFn)
+				// Also aggregate 1m bars into HTF (5m) for strategies like ORB
+				// that are registered on the 5m timeframe.
+				svc.strategyRunner.WarmUpHTF(string(sym), orbBars, runnerWarmupSnapshotFn, loc)
 			}
 			warmupLog.Info().
 				Str("symbol", string(sym)).

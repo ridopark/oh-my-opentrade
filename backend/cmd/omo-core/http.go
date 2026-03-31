@@ -26,6 +26,9 @@ func initHTTPServer(ctx context.Context, cfg *config.Config, infra *infraDeps, s
 	// 6a. Start SSE handler — subscribes to the event bus and fans out to HTTP clients.
 	sseLog := log.With().Str("component", "sse").Logger()
 	sseHandler := sse.NewHandler(infra.eventBus, sseLog)
+	if svc.strategyRunner != nil {
+		sseHandler.SetSignalProgressProvider(svc.strategyRunner)
+	}
 	go func() {
 		if err := sseHandler.Start(ctx); err != nil && ctx.Err() == nil {
 			log.Error().Err(err).Msg("SSE handler error")
