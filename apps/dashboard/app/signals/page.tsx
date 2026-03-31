@@ -1,8 +1,7 @@
 "use client";
 
 import { useSignalProgress } from "@/lib/event-stream";
-import { AVWAPConfluenceMatrix } from "@/components/avwap-confluence-matrix";
-import { ORBPhaseTimeline } from "@/components/orb-phase-timeline";
+import { SignalProgressTable } from "@/components/signal-progress-table";
 
 export default function SignalsPage() {
   const { avwapProgress, orbProgress, connected } = useSignalProgress();
@@ -18,16 +17,7 @@ export default function SignalsPage() {
           </span>
         </div>
       </div>
-
-      <section>
-        <h2 className="text-lg font-semibold mb-3 text-zinc-300">AVWAP Confluence</h2>
-        <AVWAPConfluenceMatrix data={avwapProgress} />
-      </section>
-
-      <section>
-        <h2 className="text-lg font-semibold mb-3 text-zinc-300">ORB Phase Timeline</h2>
-        <ORBPhaseTimeline data={orbProgress} />
-      </section>
+      <SignalProgressTable avwapProgress={avwapProgress} orbProgress={orbProgress} />
     </div>
   );
 }
