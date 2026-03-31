@@ -861,6 +861,33 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 
+		// Seed warmup 5m bars into AI anchor detectors (swing, volume profile)
+		// so they have the same candidates as a run that replayed those days live.
+		for _, sym := range r.cfg.Symbols {
+			bars := warmupBarsCache[sym.String()]
+			if len(bars) == 0 {
+				continue
+			}
+			firstET := bars[0].Time.In(loc)
+			sessOpen := time.Date(firstET.Year(), firstET.Month(), firstET.Day(), 9, 30, 0, 0, loc)
+			agg5m, err := domain.NewBarAggregator(sym, "5m", sessOpen)
+			if err != nil {
+				continue
+			}
+			var count int
+			for _, b := range bars {
+				closed, ok := agg5m.Push(b)
+				if ok {
+					sBar := start.Bar{Time: closed.Time, Open: closed.Open, High: closed.High, Low: closed.Low, Close: closed.Close, Volume: closed.Volume}
+					aiResolver.OnBar(sym.String(), sBar, "5m")
+					count++
+				}
+			}
+			if count > 0 {
+				r.log.Info().Str("symbol", sym.String()).Int("bars_5m", count).Msg("seeded 5m warmup bars into anchor detectors")
+			}
+		}
+
 		r.log.Info().Msg("AI anchor resolver configured for backtest (with session baseline)")
 	}
 
