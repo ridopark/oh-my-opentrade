@@ -116,13 +116,30 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	}
 	svc.monitor = monitorSvc
 
-	// Account equity (must be fetched before building execution)
+	// Account equity (must be fetched before building execution).
+	// Use a goroutine + channel since IBKR's AccountSummary() can block indefinitely.
 	svc.accountEquity = 100000.0 // fallback
-	if equity, err := infra.ibkrBroker.GetAccountEquity(context.Background()); err == nil {
-		svc.accountEquity = equity
-		log.Info().Float64("equity", equity).Msg("account equity fetched from broker")
-	} else {
-		log.Warn().Err(err).Float64("fallback_equity", svc.accountEquity).Msg("failed to fetch account equity, using fallback")
+	{
+		type eqResult struct {
+			equity float64
+			err    error
+		}
+		ch := make(chan eqResult, 1)
+		go func() {
+			eq, err := infra.ibkrBroker.GetAccountEquity(context.Background())
+			ch <- eqResult{eq, err}
+		}()
+		select {
+		case res := <-ch:
+			if res.err == nil {
+				svc.accountEquity = res.equity
+				log.Info().Float64("equity", res.equity).Msg("account equity fetched from broker")
+			} else {
+				log.Warn().Err(res.err).Float64("fallback_equity", svc.accountEquity).Msg("failed to fetch account equity, using fallback")
+			}
+		case <-time.After(10 * time.Second):
+			log.Warn().Float64("fallback_equity", svc.accountEquity).Msg("IBKR account equity timed out, using fallback")
+		}
 	}
 
 	// Execution guard chain (via shared bootstrap builder)
