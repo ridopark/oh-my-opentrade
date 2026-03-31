@@ -1,0 +1,90 @@
+---
+name: backtest-analysis
+description: "Backtest result interpretation, performance metric analysis, and strategy improvement direction. Use this skill when analyzing backtest results or interpreting trading performance metrics like PF/WR/drawdown/expectancy. Triggers on 'backtest result', 'profit factor', 'win rate', 'drawdown', 'expectancy', 'Sharpe', 'trade log', 'performance' keywords. Does NOT trigger for running a backtest itself."
+---
+
+# Backtest Analysis
+
+Interpret oh-my-opentrade backtest results and derive strategy improvement directions.
+
+## Running a Backtest
+
+```bash
+# Via HTTP API
+curl -X POST http://localhost:8080/backtest/run -d '{
+  "symbols": ["GOOGL","META","NFLX"],
+  "from": "2025-01-01",
+  "to": "2026-03-01",
+  "timeframe": "5m",
+  "initial_equity": 100000,
+  "slippage_bps": 10,
+  "strategies": ["{strategy_id}"],
+  "no_ai": true
+}'
+
+# Retrieve results
+curl http://localhost:8080/backtest/results/{id}
+```
+
+## Core Metric Interpretation Framework
+
+### Tier 1: Profitability (always check)
+| Metric | Meaning | Judgment Criteria |
+|--------|---------|------------------|
+| **Profit Factor** | Gross profit / gross loss | < 1.0 = losing, 1.2~2.0 = healthy, > 3.0 = overfitting suspect |
+| **Net P&L** | Net profit (incl. slippage/commissions) | % of capital matters more than absolute value |
+| **Win Rate** | Percentage of winning trades | 30~50% + high Win/Loss ratio is ideal |
+| **Avg Win / Avg Loss** | Average profit / average loss | > 1.5 required, 2.0+ target |
+
+### Tier 2: Risk (stop-loss effectiveness)
+| Metric | Meaning | Judgment Criteria |
+|--------|---------|------------------|
+| **Max Drawdown** | Maximum peak-to-trough decline | < 10% ideal, > 20% dangerous |
+| **Sharpe Ratio** | Risk-adjusted return | > 0.5 minimum, > 1.0 good |
+| **Expectancy** | Expected profit per trade | Must be positive, account for slippage |
+
+### Tier 3: Statistical Significance
+| Metric | Meaning | Judgment Criteria |
+|--------|---------|------------------|
+| **Trade Count** | Total number of trades | < 30 = statistically meaningless |
+| **Backtest Period** | Test duration | < 6 months = market regime bias |
+| **Symbol Coverage** | Number of symbols | 1 symbol only = overfitting risk |
+
+## Analysis Workflow
+
+### Step 1: Grasp the Overall Summary
+- Check Net P&L, PF, WR, trade count
+- Basic sanity checks (trade count >= 30, PF < 3.0)
+
+### Step 2: Analyze Trade Distribution
+- P&L by symbol — not concentrated in a single symbol
+- P&L by time of day — not only profitable in one time slot
+- Max consecutive losses — within psychological tolerance
+
+### Step 3: Analyze Exit Rule Effectiveness
+- Which exit rule fired most frequently
+- Ratio of SWING_STOP vs STAGNATION_EXIT vs EOD_FLATTEN vs MAX_LOSS
+- Among stopped-out trades, what % would have turned profitable (premature exit detection)
+
+### Step 4: Derive Improvement Directions
+- PF < 1.2 — tighten entry filters (strategy-specific: confluence score, volume threshold, confidence, etc.)
+- WR < 25% — entry conditions too loose or stops too tight
+- Max DD > 15% — reduce risk_per_trade_bps, max_position_bps
+- Trade count < 20 — filters too strict, loosen parameters
+- Losses concentrated in specific hours — tighten time window or enable time-based filters
+- Strategy-specific: read `[params]` section of the target strategy's TOML to identify which parameters map to entry/exit/timing
+
+## Comparison Analysis Pattern
+
+When comparing before/after DNA changes:
+```
+| Metric        | Before | After | Delta |
+|--------------|--------|-------|-------|
+| Profit Factor |        |       |       |
+| Win Rate      |        |       |       |
+| Net P&L       |        |       |       |
+| Trade Count   |        |       |       |
+| Max Drawdown  |        |       |       |
+```
+
+**Key rule**: If trade count dropped significantly but PF only went up, that's just filtering, not improvement. Real improvement is PF increase with trade count maintained (or slightly reduced).
