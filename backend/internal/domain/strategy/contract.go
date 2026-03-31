@@ -110,6 +110,15 @@ type State interface {
 	Unmarshal(data []byte) error
 }
 
+// SignalProgressEmitter is an optional interface that State implementations
+// can satisfy to provide signal progress snapshots after warmup.
+type SignalProgressEmitter interface {
+	// EmitSignalProgress returns domain events (EntryGated, ORBPhaseUpdate)
+	// representing the current signal formation state. Called once after warmup
+	// to seed the SSE cache so the dashboard has immediate data.
+	EmitSignalProgress() []any // returns payload values (not domain.Event)
+}
+
 // Context provides strategies with controlled access to the environment.
 // Strategies must not import adapters or infrastructure directly.
 type Context interface {

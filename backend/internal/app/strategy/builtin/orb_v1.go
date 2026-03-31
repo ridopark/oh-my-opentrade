@@ -220,16 +220,62 @@ func (s *ORBStrategy) ReplayOnBar(ctx start.Context, symbol string, bar start.Ba
 	// Delegate to tracker with replay=true — state advances but no signal fires.
 	orbState.Tracker.OnBar(domBar, snap, orbState.Config, true)
 
-	// Emit ORBPhaseUpdate during replay so the SSE cache has data immediately
-	// after warmup. Only emit on state changes to limit volume.
-	if ctx != nil {
-		if sess := orbState.Tracker.GetSession(symbol); sess != nil && sess.State != orbState.PrevPhase {
-			orbState.PrevPhase = sess.State
-			orbState.emitPhaseUpdate(ctx, sess, domBar, snap)
-		}
+	// Track phase changes during replay so the first live OnBar emits the snapshot.
+	if sess := orbState.Tracker.GetSession(symbol); sess != nil {
+		orbState.PrevPhase = "" // Force emit on first live bar by keeping PrevPhase stale
 	}
 
 	return orbState, nil
+}
+
+// EmitSignalProgress returns the current ORB phase as a domain event payload.
+// Implements start.SignalProgressEmitter for post-warmup SSE cache seeding.
+func (s *ORBState) EmitSignalProgress() []any {
+	sess := s.Tracker.GetSession(s.Symbol)
+	if sess == nil || sess.State == "PRE_OPEN" {
+		return nil
+	}
+	breakoutDir := ""
+	if sess.Breakout.Confirmed {
+		breakoutDir = string(sess.Breakout.Direction)
+	}
+	breakoutTime := ""
+	if !sess.Breakout.BreakBar.IsZero() {
+		breakoutTime = sess.Breakout.BreakBar.Format(time.RFC3339)
+	}
+
+	payload := domain.ORBPhaseUpdatePayload{
+		Symbol: s.Symbol,
+		Phase:  string(sess.State),
+		Range: domain.ORBPhaseRange{
+			High:         sess.OrbHigh,
+			Low:          sess.OrbLow,
+			Valid:        !sess.RangeInvalid,
+			BarCount:     sess.RangeBarCount,
+			ExpectedBars: s.Config.WindowMinutes / max(barDurFromTF(s.Timeframe), 1),
+		},
+		Breakout: domain.ORBPhaseBreakout{
+			Direction:  breakoutDir,
+			RVOL:       sess.Breakout.RVOL,
+			BreakClose: sess.Breakout.BreakClose,
+			BreakTime:  breakoutTime,
+		},
+		Retest: domain.ORBPhaseRetest{
+			Touched:        sess.Retest.Touched,
+			TouchPrice:     sess.Retest.TouchPrice,
+			BarsSinceBreak: sess.BarsSinceBreakout,
+			MaxRetestBars:  s.Config.MaxRetestBars,
+			HoldConfirmed:  sess.Retest.Confirmed,
+		},
+		FVG: domain.ORBPhaseFVG{
+			Active: sess.ActiveFVG != nil,
+		},
+	}
+	if sess.ActiveFVG != nil {
+		payload.FVG.High = sess.ActiveFVG.High
+		payload.FVG.Low = sess.ActiveFVG.Low
+	}
+	return []any{payload}
 }
 
 // OnEvent is a no-op for the ORB strategy — it only reacts to bars.

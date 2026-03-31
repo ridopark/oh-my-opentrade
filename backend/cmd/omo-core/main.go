@@ -26,6 +26,9 @@ func main() {
 	syms := buildSymbolLists(cfg)
 	go fillBarGaps(ctx, cfg, infra, log) // background — not critical for live trading
 	warmupIndicators(ctx, cfg, infra, svc, syms, log)
+	if svc.strategyRunner != nil {
+		svc.strategyRunner.FlushSignalProgress()
+	}
 	startServices(ctx, cfg, infra, svc, log)
 	server := initHTTPServer(ctx, cfg, infra, svc, log)
 	startStreaming(ctx, infra, svc, syms, log)
