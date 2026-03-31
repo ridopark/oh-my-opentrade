@@ -63,12 +63,19 @@ type client struct {
 	ch chan wireEvent
 }
 
+// SignalProgressProvider supplies initial signal progress snapshots for new SSE
+// clients so the dashboard doesn't wait for the next bar to show data.
+type SignalProgressProvider interface {
+	SignalProgressSnapshots() []domain.Event
+}
+
 // Handler is an http.Handler that streams domain events as SSE.
 type Handler struct {
-	bus     ports.EventBusPort
-	mu      sync.RWMutex
-	clients map[*client]struct{}
-	log     zerolog.Logger
+	bus      ports.EventBusPort
+	mu       sync.RWMutex
+	clients  map[*client]struct{}
+	log      zerolog.Logger
+	progress SignalProgressProvider // optional, may be nil
 }
 
 // NewHandler creates an SSE Handler and subscribes to every domain event type
@@ -80,6 +87,11 @@ func NewHandler(bus ports.EventBusPort, log zerolog.Logger) *Handler {
 		clients: make(map[*client]struct{}),
 		log:     log,
 	}
+}
+
+// SetSignalProgressProvider injects the provider for initial SSE snapshots.
+func (h *Handler) SetSignalProgressProvider(p SignalProgressProvider) {
+	h.progress = p
 }
 
 // Start subscribes to all domain event types and begins forwarding events to
@@ -159,6 +171,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// first event or the 30-second keepalive timer.
 	fmt.Fprintf(w, ": keepalive\n\n")
 	flusher.Flush()
+
+	// Send initial signal progress snapshots so new clients see data immediately.
+	if h.progress != nil {
+		for _, evt := range h.progress.SignalProgressSnapshots() {
+			wire := wireEvent{
+				ID:             evt.ID,
+				Type:           evt.Type,
+				TenantID:       evt.TenantID,
+				EnvMode:        string(evt.EnvMode),
+				OccurredAt:     evt.OccurredAt.UTC().Format(time.RFC3339Nano),
+				IdempotencyKey: evt.IdempotencyKey,
+				Payload:        evt.Payload,
+			}
+			if data, err := json.Marshal(wire); err == nil {
+				fmt.Fprintf(w, "event: %s\ndata: %s\n\n", wire.Type, data)
+			}
+		}
+		flusher.Flush()
+	}
 
 	defer func() {
 		h.mu.Lock()
