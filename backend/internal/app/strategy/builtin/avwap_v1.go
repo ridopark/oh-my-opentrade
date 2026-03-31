@@ -1629,6 +1629,11 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 		}
 	}
 
+	var slopeBPS float64
+	if cfg.MinSlopeBPS > 0 && len(cfg.Anchors) > 0 {
+		slopeBPS, _ = s.Calc.Slope(cfg.Anchors[0], cfg.SlopeLookback)
+	}
+
 	volRatio := 0.0
 	if s.Indicators.VolumeSMA > 0 {
 		volRatio = s.PrevBars[0].Volume / s.Indicators.VolumeSMA
@@ -1662,6 +1667,7 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 			RSI:         s.Indicators.RSI,
 			VolumeRatio: volRatio,
 			AVWAPBias:   avwapBias,
+			SlopeBPS:    slopeBPS,
 			AboveCount:  copyIntMap(s.AboveCount),
 			BelowCount:  copyIntMap(s.BelowCount),
 		},
