@@ -141,11 +141,16 @@ func buildSymbolLists(cfg *config.Config) symbolLists {
 // Symbols with no bars at all are skipped (use omo-backfill for cold-start).
 func fillBarGaps(ctx context.Context, cfg *config.Config, infra *infraDeps, log zerolog.Logger) {
 	gapLog := log.With().Str("component", "gap-fill").Logger()
+	gapLog.Info().Msg("starting bar gap fill")
 
 	if infra.alpacaData == nil {
 		gapLog.Info().Msg("skipped (no Alpaca fetcher available)")
 		return
 	}
+
+	// Timeout the entire gap fill to prevent blocking startup.
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
 
 	symbols := cfg.Symbols.AllSymbols()
 	if len(symbols) == 0 {
@@ -355,6 +360,15 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 		}
 
 		svc.strategyRunner.InitAggregators(todayOpen)
+
+		// Resolve AVWAP anchors for today's session so HTF warmup bars
+		// feed into properly initialized AVWAP calculators with real
+		// anchor times (session_open, pd_high, pd_low) and key levels.
+		allSymStrs := make([]string, len(syms.all))
+		for i, s := range syms.all {
+			allSymStrs[i] = string(s)
+		}
+		svc.strategyRunner.ResolveAnchorsForWarmup(allSymStrs, time.Now())
 
 		htfReqs := collectHTFWarmupReqs(svc.strategyRunner)
 		if len(htfReqs) > 0 {

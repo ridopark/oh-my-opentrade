@@ -89,6 +89,27 @@ type anchorResettable interface {
 	ResetAnchors(map[string]time.Time)
 }
 
+// ResolveAnchorsForWarmup triggers anchor resolution for all given symbols.
+// Called during startup to ensure AVWAP anchors are set before warmup bars are fed,
+// so that mid-day restarts produce valid confluence scores immediately.
+func (r *Runner) ResolveAnchorsForWarmup(symbols []string, barTime time.Time) {
+	if r.anchorResolver == nil {
+		return
+	}
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		loc = time.FixedZone("ET", -5*3600)
+	}
+	dateStr := barTime.In(loc).Format("2006-01-02")
+	for _, sym := range symbols {
+		if r.lastSessionDate == nil {
+			r.lastSessionDate = make(map[string]string)
+		}
+		r.lastSessionDate[sym] = dateStr
+		r.resolveSessionAnchors(sym, barTime)
+	}
+}
+
 func (r *Runner) resolveSessionAnchors(symbol string, barTime time.Time) {
 	instances := r.router.InstancesForSymbol(symbol)
 	for _, inst := range instances {
