@@ -23,11 +23,11 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	startServices(ctx, cfg, infra, svc, log)
-	server := initHTTPServer(ctx, cfg, infra, svc, log)
 	syms := buildSymbolLists(cfg)
 	go fillBarGaps(ctx, cfg, infra, log) // background — not critical for live trading
 	warmupIndicators(ctx, cfg, infra, svc, syms, log)
+	startServices(ctx, cfg, infra, svc, log)
+	server := initHTTPServer(ctx, cfg, infra, svc, log)
 	startStreaming(ctx, infra, svc, syms, log)
 	waitForShutdown(cancel, server, infra, svc, log)
 }
