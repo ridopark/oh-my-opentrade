@@ -542,6 +542,74 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	// Fill leading/trailing edge gaps for symbols that have partial data.
+	if r.marketData != nil {
+		var edgeWg sync.WaitGroup
+		for _, s := range streams {
+			if len(s.bars) == 0 {
+				continue // handled by zero-bars backfill below
+			}
+			s := s
+			// Trailing gap: last bar is well before requested end.
+			lastBarTime := s.bars[len(s.bars)-1].Time
+			if r.cfg.To.Sub(lastBarTime) > gapThreshold {
+				edgeWg.Add(1)
+				go func() {
+					defer edgeWg.Done()
+					fetchFrom := lastBarTime.Add(time.Minute)
+					if !isRTHGap(lastBarTime, r.cfg.To, loc) {
+						return
+					}
+					r.log.Info().Str("symbol", s.symbol.String()).Time("from", fetchFrom).Time("to", r.cfg.To).Msg("detected trailing data gap — fetching from API")
+					apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, s.symbol, replayTimeframe, fetchFrom, r.cfg.To)
+					if apiErr != nil {
+						r.log.Warn().Err(apiErr).Str("symbol", s.symbol.String()).Msg("failed to fetch trailing gap bars")
+						return
+					}
+					if len(apiBars) > 0 {
+						saved, saveErr := repo.SaveMarketBars(ctx, apiBars)
+						if saveErr != nil {
+							r.log.Warn().Err(saveErr).Str("symbol", s.symbol.String()).Msg("failed to persist trailing gap bars")
+						} else {
+							r.log.Info().Str("symbol", s.symbol.String()).Int("fetched", len(apiBars)).Int("saved", saved).Msg("filled trailing data gap")
+						}
+						s.bars = append(s.bars, apiBars...)
+						totalBars += len(apiBars)
+					}
+				}()
+			}
+			// Leading gap: first bar is well after requested start.
+			firstBar := s.bars[0].Time
+			if firstBar.Sub(r.cfg.From) > gapThreshold {
+				edgeWg.Add(1)
+				go func() {
+					defer edgeWg.Done()
+					if !isRTHGap(r.cfg.From, firstBar, loc) {
+						return
+					}
+					r.log.Info().Str("symbol", s.symbol.String()).Time("from", r.cfg.From).Time("to", firstBar).Msg("detected leading data gap — fetching from API")
+					apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, s.symbol, replayTimeframe, r.cfg.From, firstBar)
+					if apiErr != nil {
+						r.log.Warn().Err(apiErr).Str("symbol", s.symbol.String()).Msg("failed to fetch leading gap bars")
+						return
+					}
+					if len(apiBars) > 0 {
+						saved, saveErr := repo.SaveMarketBars(ctx, apiBars)
+						if saveErr != nil {
+							r.log.Warn().Err(saveErr).Str("symbol", s.symbol.String()).Msg("failed to persist leading gap bars")
+						} else {
+							r.log.Info().Str("symbol", s.symbol.String()).Int("fetched", len(apiBars)).Int("saved", saved).Msg("filled leading data gap")
+						}
+						s.bars = append(apiBars, s.bars...)
+						totalBars += len(apiBars)
+						firstBarTime[s.symbol.String()] = apiBars[0].Time
+					}
+				}()
+			}
+		}
+		edgeWg.Wait()
+	}
+
 	// Backfill symbols that have zero bars in the requested range from the market data API.
 	if r.marketData != nil {
 		var backfillSyms []domain.Symbol
