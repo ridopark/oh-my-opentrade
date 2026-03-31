@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -15,14 +14,12 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
-	"github.com/oh-my-opentrade/backend/internal/adapters/ibkr"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/app/ingest"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/logger"
-	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
 
@@ -55,16 +52,6 @@ func main() {
 	cfg, err := config.Load(envPath, configPath)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to load config")
-	}
-
-	// Override IBKR ClientID from env (default 3 for ingest)
-	if cidStr := os.Getenv("IBKR_CLIENT_ID"); cidStr != "" {
-		if cid, err := strconv.Atoi(cidStr); err == nil {
-			cfg.IBKR.ClientID = cid
-		}
-	}
-	if cfg.IBKR.ClientID == 0 {
-		cfg.IBKR.ClientID = 3
 	}
 
 	// Resolve symbols
@@ -104,21 +91,11 @@ func main() {
 		log.With().Str("component", "timescaledb").Logger(),
 	)
 
-	// Streaming source
-	streamingSource := os.Getenv("STREAMING_SOURCE")
-	if streamingSource == "" {
-		streamingSource = "ibkr"
-	}
-
-	// Alpaca adapter — skip WS init unless alpaca is the streaming source
-	var alpacaOpts []alpaca.Option
-	if streamingSource != "alpaca" {
-		alpacaOpts = append(alpacaOpts, alpaca.WithNoStream())
-	}
+	// Alpaca adapter (REST only — no WebSocket to avoid SIP connection conflicts with omo-core)
 	alpacaAdapter, err := alpaca.NewAdapter(
 		cfg.Alpaca,
 		log.With().Str("component", "alpaca").Logger(),
-		alpacaOpts...,
+		alpaca.WithNoStream(),
 	)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to create Alpaca adapter")
@@ -179,35 +156,56 @@ func main() {
 	// Session reset goroutine: resets equity aggregators at each NYSE open
 	go sessionResetLoop(ctx, pipeline, equitySymbols, log)
 
-	var streamBroker ports.MarketDataPort
-	switch streamingSource {
-	case "alpaca":
-		streamBroker = alpacaAdapter
-		log.Info().Msg("streaming source: alpaca")
-	default:
-		log.Info().
-			Int("client_id", cfg.IBKR.ClientID).
-			Str("host", cfg.IBKR.Host).
-			Int("port", cfg.IBKR.Port).
-			Msg("connecting to IBKR for streaming...")
-		ibkrAdapter, ibkrErr := ibkr.NewAdapter(cfg.IBKR, log.With().Str("component", "ibkr").Logger())
-		if ibkrErr != nil {
-			log.Fatal().Err(ibkrErr).Msg("failed to connect to IBKR")
+	// REST polling loop — fetches recent 1m bars every 30s to avoid SIP WS conflicts.
+	pollInterval := 30 * time.Second
+	log.Info().
+		Int("symbols", len(allSymbols)).
+		Dur("interval", pollInterval).
+		Msg("starting REST polling")
+
+	lastSeen := make(map[domain.Symbol]time.Time, len(allSymbols))
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	pollOnce := func() {
+		now := time.Now()
+		for _, sym := range allSymbols {
+			if ctx.Err() != nil {
+				return
+			}
+			from := lastSeen[sym]
+			if from.IsZero() {
+				from = now.Add(-2 * time.Minute)
+			}
+			bars, err := alpacaAdapter.GetHistoricalBars(ctx, sym, "1m", from, now)
+			if err != nil {
+				log.Warn().Err(err).Str("symbol", string(sym)).Msg("poll fetch failed")
+				continue
+			}
+			for _, bar := range bars {
+				if !bar.Time.After(lastSeen[sym]) {
+					continue
+				}
+				if err := pipeline.HandleBar(ctx, bar); err != nil {
+					log.Error().Err(err).Str("symbol", string(sym)).Msg("poll handler error")
+				}
+				lastSeen[sym] = bar.Time
+			}
 		}
-		streamBroker = ibkrAdapter
-		log.Info().Msg("streaming source: ibkr")
 	}
 
-	log.Info().Int("symbols", len(allSymbols)).Str("source", streamingSource).Msg("starting bar stream")
-	if err := streamBroker.StreamBars(ctx, allSymbols, "1m", pipeline.HandleBar); err != nil {
-		if ctx.Err() == nil {
-			log.Fatal().Err(err).Msg("stream setup failed")
+	// Initial poll immediately.
+	pollOnce()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info().Msg("omo-ingest stopped")
+			return
+		case <-ticker.C:
+			pollOnce()
 		}
 	}
-
-	// Block until shutdown signal.
-	<-ctx.Done()
-	log.Info().Msg("omo-ingest stopped")
 }
 
 func initDB(cfg *config.Config, log zerolog.Logger) *sql.DB {
