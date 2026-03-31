@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+export PATH="$HOME/go/bin:$PATH"
+
+# Collect staged .go files (relative to backend/)
+STAGED_GO=$(git diff --cached --name-only --diff-filter=ACM -- '*.go' | grep '^backend/' || true)
+
+if [ -z "$STAGED_GO" ]; then
+    exit 0
+fi
+
+# Deduplicate to package directories
+PACKAGES=$(echo "$STAGED_GO" | sed 's|backend/||' | xargs -I{} dirname {} | sort -u | sed 's|^|./|')
+
+printf "${YELLOW}[pre-commit] golangci-lint on changed packages...${NC}\n"
+
+if (cd "$REPO_ROOT/backend" && golangci-lint run $PACKAGES); then
+    printf "${GREEN}  ✓ lint passed${NC}\n"
+else
+    printf "${RED}  ✗ lint failed — fix issues before committing${NC}\n"
+    printf "To bypass: git commit --no-verify\n"
+    exit 1
+fi
