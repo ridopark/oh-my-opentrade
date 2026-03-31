@@ -661,6 +661,12 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	}
 	if s.liveBars[symStr] < settlingBars {
 		s.feedORBBar(bar, snap, true)
+		// Mark ORB range as already notified during settling so we don't
+		// re-emit the notification when the first live bar arrives.
+		if sess := s.orbTracker.GetSession(symStr); sess != nil &&
+			sess.State == ORBStateRangeSet && !sess.RangeNotified {
+			sess.RangeNotified = true
+		}
 		l.Debug().Msg(fmt.Sprintf("settling: %d/%d bars, suppressing setup detection", s.liveBars[symStr], settlingBars))
 		s.lastSnaps[symStr] = snap
 
@@ -933,9 +939,19 @@ func (s *Service) buildHTFMap(sym string, currentClose float64) map[domain.Timef
 func (s *Service) WarmUpORB(bars []domain.MarketBar) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	seen := make(map[string]struct{})
 	for _, bar := range bars {
 		snap := s.calculator.Update(bar)
 		s.feedORBBar(bar, snap, true)
+		seen[string(bar.Symbol)] = struct{}{}
+	}
+	// Mark all recovered ORB ranges as already notified so live bars
+	// don't re-emit stale ORBRangeSet notifications.
+	for sym := range seen {
+		if sess := s.orbTracker.GetSession(sym); sess != nil &&
+			sess.State == ORBStateRangeSet && !sess.RangeNotified {
+			sess.RangeNotified = true
+		}
 	}
 }
 func (s *Service) GetORBSession(symbol string) *ORBSession {
