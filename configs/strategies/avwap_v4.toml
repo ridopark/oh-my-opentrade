@@ -121,8 +121,8 @@ max_position_bps = 3000
 
 # --- Timing ---
 # Trading window (ET). Entries only allowed within this range.
-allowed_hours_start = "09:50"
-allowed_hours_end = "13:30"
+allowed_hours_start = "04:00"
+allowed_hours_end = "15:45"
 allowed_hours_tz = "America/New_York"
 
 # Cooldown between trades on the same symbol (seconds)
@@ -172,7 +172,7 @@ type = "SWING_STOP"
 lookback = 20
 buffer_bps = 25
 atr_buffer_mult = 3.0
-min_bars = 15
+min_bars = 20
 
 # Stagnation exit: close trades that go nowhere after N minutes
 [[exit_rules]]
