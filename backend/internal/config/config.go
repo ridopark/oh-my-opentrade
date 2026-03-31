@@ -15,8 +15,7 @@ import (
 type Config struct {
 	Alpaca       AlpacaConfig       `yaml:"alpaca"`
 	IBKR         IBKRConfig         `yaml:"ibkr"`
-	Broker          string          `yaml:"-"`
-	StreamingSource string          `yaml:"-"` // "alpaca" or "ibkr"; defaults to Broker
+	StreamingSource string          `yaml:"-"` // "alpaca" or "ibkr"; defaults to "alpaca"
 	Database     DatabaseConfig     `yaml:"database"`
 	Trading      TradingConfig      `yaml:"trading"`
 	Symbols      SymbolsConfig      `yaml:"symbols"`
@@ -259,6 +258,7 @@ func Load(envPath, yamlPath string) (*Config, error) {
 		},
 		IBKR: IBKRConfig{
 			Host:      "localhost",
+			Port:      4002,
 			ClientID:  1,
 			PaperMode: true,
 		},
@@ -365,15 +365,10 @@ func Load(envPath, yamlPath string) (*Config, error) {
 		cfg.Alpaca.CryptoFeed = val
 	}
 
-	if val := os.Getenv("BROKER"); val != "" {
-		cfg.Broker = val
-	} else {
-		cfg.Broker = "ibkr"
-	}
 	if val := os.Getenv("STREAMING_SOURCE"); val != "" {
 		cfg.StreamingSource = val
 	} else {
-		cfg.StreamingSource = cfg.Broker
+		cfg.StreamingSource = "alpaca"
 	}
 	if val := os.Getenv("IBKR_GATEWAY_HOST"); val != "" {
 		cfg.IBKR.Host = val
@@ -551,16 +546,22 @@ func validate(cfg *Config) error {
 	if cfg.Database.Host == "" {
 		return fmt.Errorf("config validation: database host cannot be empty")
 	}
-	if cfg.Broker != "ibkr" {
-		if cfg.Alpaca.APIKeyID == "" {
-			return fmt.Errorf("config validation: alpaca API key ID cannot be empty")
-		}
-		if cfg.Alpaca.APISecretKey == "" {
-			return fmt.Errorf("config validation: alpaca API secret key cannot be empty")
-		}
-		if cfg.Alpaca.BaseURL == "" {
-			return fmt.Errorf("config validation: alpaca base URL cannot be empty")
-		}
+	// Alpaca credentials are always required (market data source).
+	if cfg.Alpaca.APIKeyID == "" {
+		return fmt.Errorf("config validation: alpaca API key ID cannot be empty (required for market data)")
+	}
+	if cfg.Alpaca.APISecretKey == "" {
+		return fmt.Errorf("config validation: alpaca API secret key cannot be empty (required for market data)")
+	}
+	if cfg.Alpaca.BaseURL == "" {
+		return fmt.Errorf("config validation: alpaca base URL cannot be empty")
+	}
+	// IBKR is the only execution broker -- host and port are required.
+	if cfg.IBKR.Host == "" {
+		return fmt.Errorf("config validation: IBKR host cannot be empty")
+	}
+	if cfg.IBKR.Port == 0 {
+		return fmt.Errorf("config validation: IBKR port cannot be zero")
 	}
 	return nil
 }

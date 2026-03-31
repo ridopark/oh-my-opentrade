@@ -46,9 +46,12 @@ func waitForShutdown(cancel context.CancelFunc, server *http.Server, infra *infr
 		svc.orchestrator.Stop()
 	}
 
-	// 3. Close WebSocket connections — waits up to 3s for RFC6455 close frames.
-	if err := infra.broker.Close(); err != nil {
-		log.Error().Err(err).Msg("error closing Alpaca adapter")
+	// 3. Close broker and data connections.
+	if err := infra.ibkrBroker.Close(); err != nil {
+		log.Error().Err(err).Msg("error closing IBKR adapter")
+	}
+	if err := infra.alpacaData.Close(); err != nil {
+		log.Error().Err(err).Msg("error closing Alpaca data adapter")
 	}
 
 	// 4. Cancel app context so stream goroutines and services exit.
