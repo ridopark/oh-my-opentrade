@@ -104,11 +104,21 @@ func main() {
 		log.With().Str("component", "timescaledb").Logger(),
 	)
 
-	// Alpaca adapter (REST only, for gap-fill historical data)
+	// Streaming source
+	streamingSource := os.Getenv("STREAMING_SOURCE")
+	if streamingSource == "" {
+		streamingSource = "ibkr"
+	}
+
+	// Alpaca adapter — skip WS init unless alpaca is the streaming source
+	var alpacaOpts []alpaca.Option
+	if streamingSource != "alpaca" {
+		alpacaOpts = append(alpacaOpts, alpaca.WithNoStream())
+	}
 	alpacaAdapter, err := alpaca.NewAdapter(
 		cfg.Alpaca,
 		log.With().Str("component", "alpaca").Logger(),
-		alpaca.WithNoStream(),
+		alpacaOpts...,
 	)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to create Alpaca adapter")
@@ -168,12 +178,6 @@ func main() {
 
 	// Session reset goroutine: resets equity aggregators at each NYSE open
 	go sessionResetLoop(ctx, pipeline, equitySymbols, log)
-
-	// Streaming source
-	streamingSource := os.Getenv("STREAMING_SOURCE")
-	if streamingSource == "" {
-		streamingSource = "ibkr"
-	}
 
 	var streamBroker ports.MarketDataPort
 	switch streamingSource {

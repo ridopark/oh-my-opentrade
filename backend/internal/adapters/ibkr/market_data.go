@@ -33,7 +33,11 @@ func (a *Adapter) StreamBars(ctx context.Context, symbols []domain.Symbol, tf do
 	var cancelMu sync.Mutex
 	cancelFuncs := make([]ibsync.CancelFunc, 0, len(symbols))
 
-	for _, sym := range symbols {
+	for i, sym := range symbols {
+		if i > 0 {
+			time.Sleep(100 * time.Millisecond)
+		}
+
 		a.streamMu.Lock()
 		a.streaming[sym] = struct{}{}
 		a.streamMu.Unlock()

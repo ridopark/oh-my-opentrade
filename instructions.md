@@ -89,6 +89,30 @@ tmux list-sessions                     # check sessions
 
 Press `Ctrl+B` then `D`
 
+## Running omo-ingest Locally
+
+Run omo-ingest directly on the host (not in a container) to avoid Docker cross-network IP issues with the IB gateway.
+
+### Build
+
+```bash
+cd backend && go build -o bin/omo-ingest ./cmd/omo-ingest && cd ..
+```
+
+### Run
+
+```bash
+source .env
+IBKR_GATEWAY_HOST=localhost IBKR_GATEWAY_PORT=4002 IBKR_CLIENT_ID=3 backend/bin/omo-ingest
+```
+
+### Notes
+
+- **Client IDs must be unique per gateway.** Local omo-core uses clientID=2, omo-ingest uses clientID=3.
+- The local IB gateway exposes port 4002 on the host (mapped from container port 4004).
+- Do NOT run omo-ingest as a Docker container locally — it causes IBKR error 420 ("connected from a different IP address") due to Docker network IP mismatch.
+- Staging uses a separate IB gateway account (`staging100`), so local and staging client IDs don't conflict.
+
 ## Debugging & Troubleshooting
 
 ### IB Gateway VNC (visual debugging)
