@@ -1,6 +1,6 @@
 "use client";
 
-import { useSignalProgress } from "@/lib/use-signal-progress";
+import { useSignalProgress } from "@/lib/event-stream";
 import { AVWAPConfluenceMatrix } from "@/components/avwap-confluence-matrix";
 import { ORBPhaseTimeline } from "@/components/orb-phase-timeline";
 

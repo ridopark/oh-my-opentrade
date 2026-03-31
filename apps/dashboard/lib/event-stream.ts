@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback, useState, useMemo } from "react";
-import type { DomainEvent, EventType, DebateEvent } from "@/lib/types";
+import type { DomainEvent, EventType, DebateEvent, EntryGatedPayload, ORBPhaseUpdatePayload } from "@/lib/types";
 
 interface UseEventStreamOptions {
   url?: string;
@@ -168,4 +168,27 @@ export function useStateEvents(maxEvents = 20) {
     ...rest,
     states: events.filter((e) => e.type === "StateUpdated"),
   };
+}
+
+export function useSignalProgress(maxEvents = 200) {
+  const { events, ...rest } = useEventStream({
+    eventTypes: ["EntryGated", "ORBPhaseUpdate"],
+    maxEvents,
+  });
+
+  const avwapProgress = new Map<string, EntryGatedPayload>();
+  const orbProgress = new Map<string, ORBPhaseUpdatePayload>();
+
+  // Events are newest-first; only keep the latest per symbol.
+  for (const evt of events) {
+    if (evt.type === "EntryGated") {
+      const p = evt.payload as EntryGatedPayload;
+      if (!avwapProgress.has(p.symbol)) avwapProgress.set(p.symbol, p);
+    } else if (evt.type === "ORBPhaseUpdate") {
+      const p = evt.payload as ORBPhaseUpdatePayload;
+      if (!orbProgress.has(p.symbol)) orbProgress.set(p.symbol, p);
+    }
+  }
+
+  return { ...rest, avwapProgress, orbProgress };
 }
