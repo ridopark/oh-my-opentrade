@@ -43,10 +43,19 @@ func (s *ORBStrategy) Init(ctx start.Context, symbol string, params map[string]a
 	cfg := monitor.NewORBConfigFromDNA(params)
 	tracker := monitor.NewORBTrackerWithSource("strategy")
 
+	// Read bar_timeframe from DNA params, default to "5m".
+	barTF := "5m"
+	if v, ok := params["bar_timeframe"]; ok {
+		if s, ok := v.(string); ok && s != "" {
+			barTF = s
+		}
+	}
+
 	st := &ORBState{
-		Tracker: tracker,
-		Config:  cfg,
-		Symbol:  symbol,
+		Tracker:   tracker,
+		Config:    cfg,
+		Symbol:    symbol,
+		Timeframe: barTF,
 	}
 
 	// Attempt to restore from prior state if available.
@@ -77,7 +86,11 @@ func (s *ORBStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st 
 	if err != nil {
 		return st, nil, fmt.Errorf("ORBStrategy.OnBar: invalid symbol: %w", err)
 	}
-	domBar, err := domain.NewMarketBar(bar.Time, sym, "1m", bar.Open, bar.High, bar.Low, bar.Close, bar.Volume)
+	tf := orbState.Timeframe
+	if tf == "" {
+		tf = "1m"
+	}
+	domBar, err := domain.NewMarketBar(bar.Time, sym, domain.Timeframe(tf), bar.Open, bar.High, bar.Low, bar.Close, bar.Volume)
 	if err != nil {
 		return st, nil, fmt.Errorf("ORBStrategy.OnBar: invalid bar: %w", err)
 	}
@@ -193,7 +206,11 @@ func (s *ORBStrategy) ReplayOnBar(ctx start.Context, symbol string, bar start.Ba
 	if err != nil {
 		return st, fmt.Errorf("ORBStrategy.ReplayOnBar: invalid symbol: %w", err)
 	}
-	domBar, err := domain.NewMarketBar(bar.Time, sym, "1m", bar.Open, bar.High, bar.Low, bar.Close, bar.Volume)
+	tf := orbState.Timeframe
+	if tf == "" {
+		tf = "1m"
+	}
+	domBar, err := domain.NewMarketBar(bar.Time, sym, domain.Timeframe(tf), bar.Open, bar.High, bar.Low, bar.Close, bar.Volume)
 	if err != nil {
 		return st, fmt.Errorf("ORBStrategy.ReplayOnBar: invalid bar: %w", err)
 	}
@@ -202,6 +219,15 @@ func (s *ORBStrategy) ReplayOnBar(ctx start.Context, symbol string, bar start.Ba
 
 	// Delegate to tracker with replay=true — state advances but no signal fires.
 	orbState.Tracker.OnBar(domBar, snap, orbState.Config, true)
+
+	// Emit ORBPhaseUpdate during replay so the SSE cache has data immediately
+	// after warmup. Only emit on state changes to limit volume.
+	if ctx != nil {
+		if sess := orbState.Tracker.GetSession(symbol); sess != nil && sess.State != orbState.PrevPhase {
+			orbState.PrevPhase = sess.State
+			orbState.emitPhaseUpdate(ctx, sess, domBar, snap)
+		}
+	}
 
 	return orbState, nil
 }
@@ -235,7 +261,7 @@ func (s *ORBState) emitPhaseUpdate(ctx start.Context, sess *monitor.ORBSession, 
 			Low:          sess.OrbLow,
 			Valid:        !sess.RangeInvalid,
 			BarCount:     sess.RangeBarCount,
-			ExpectedBars: s.Config.WindowMinutes / 1, // 1m bars
+			ExpectedBars: s.Config.WindowMinutes / max(barDurFromTF(s.Timeframe), 1),
 		},
 		Breakout: domain.ORBPhaseBreakout{
 			Direction:  breakoutDir,
@@ -270,6 +296,20 @@ func (s *ORBState) emitPhaseUpdate(ctx start.Context, sess *monitor.ORBSession, 
 	_ = ctx.EmitDomainEvent(payload)
 }
 
+// barDurFromTF returns bar duration in minutes for common timeframes.
+func barDurFromTF(tf string) int {
+	switch tf {
+	case "1m":
+		return 1
+	case "5m":
+		return 5
+	case "15m":
+		return 15
+	default:
+		return 1
+	}
+}
+
 // clampStrength ensures confidence is in [0,1].
 func clampStrength(c float64) float64 {
 	if c < 0 {
@@ -286,6 +326,7 @@ type ORBState struct {
 	Tracker    *monitor.ORBTracker
 	Config     monitor.ORBConfig
 	Symbol     string
+	Timeframe  string              // "1m" or "5m" — set by runner based on instance assignment
 	Indicators start.IndicatorData // cached from last bar
 	PrevPhase  monitor.ORBState    // previous phase for change detection (EntryGated events)
 }
