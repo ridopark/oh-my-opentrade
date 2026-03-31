@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -42,6 +43,11 @@ type Bus struct {
 	syncMode bool // when true, SubscribeAsync behaves like Subscribe (for deterministic backtests)
 
 	pending sync.WaitGroup
+
+	// droppedTotal tracks the cumulative number of async events dropped due to full channels.
+	droppedTotal atomic.Int64
+	// droppedByType tracks per-event-type drop counts for granular observability.
+	droppedByType sync.Map // domain.EventType -> *atomic.Int64
 }
 
 // NewBus creates a new in-memory event bus.
@@ -116,9 +122,12 @@ func (b *Bus) Publish(ctx context.Context, event domain.Event) error {
 		case sub.ch <- asyncTask{ctx: asyncCtx, event: event}:
 		default:
 			b.pending.Done() // undo: event was dropped, not dispatched
+			b.droppedTotal.Add(1)
+			b.incrDroppedByType(event.Type)
 			slog.Warn("async event bus: channel full, dropping event",
 				"event_type", event.Type,
 				"event_id", event.ID,
+				"total_dropped", b.droppedTotal.Load(),
 			)
 		}
 	}
@@ -298,4 +307,27 @@ func (b *Bus) Close() {
 	case <-time.After(10 * time.Second):
 		slog.Warn("event bus: timed out waiting for async workers to drain")
 	}
+}
+
+// DroppedEvents returns the total number of async events dropped due to full channels.
+func (b *Bus) DroppedEvents() int64 {
+	return b.droppedTotal.Load()
+}
+
+// DroppedEventsByType returns the number of dropped events for a specific event type.
+// Returns 0 if no events of that type have been dropped.
+func (b *Bus) DroppedEventsByType(eventType domain.EventType) int64 {
+	if v, ok := b.droppedByType.Load(eventType); ok {
+		return v.(*atomic.Int64).Load()
+	}
+	return 0
+}
+
+// incrDroppedByType atomically increments the per-event-type drop counter.
+func (b *Bus) incrDroppedByType(eventType domain.EventType) {
+	v, ok := b.droppedByType.Load(eventType)
+	if !ok {
+		v, _ = b.droppedByType.LoadOrStore(eventType, &atomic.Int64{})
+	}
+	v.(*atomic.Int64).Add(1)
 }
