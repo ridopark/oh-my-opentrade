@@ -127,15 +127,26 @@ groups:
               to: 0
             datasourceUid: prometheus
             model:
-              expr: rate(omo_order_rejects_total[10m]) / (rate(omo_orders_total[10m]) + 1e-10) > 0.05
+              expr: |
+                (
+                  rate(omo_order_rejects_total[10m]) / (rate(omo_orders_total[10m]) + 1e-10) > 0.05
+                  and
+                  rate(omo_orders_total[10m]) > 0
+                )
+                and on()
+                (
+                  (hour() * 60 + minute() >= 810 and hour() * 60 + minute() < 1260)
+                  and
+                  (day_of_week() >= 1 and day_of_week() <= 5)
+                )
               interval: ""
               refId: A
         noDataState: NoData
-        execErrState: Alerting
+        execErrState: OK
         for: 5m
         annotations:
           summary: "Order reject rate >5%"
-          description: "More than 5% of orders have been rejected over the last 10 minutes."
+          description: "More than 5% of orders have been rejected over the last 10 minutes during market hours."
         labels:
           severity: warning
 
