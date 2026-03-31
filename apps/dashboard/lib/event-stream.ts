@@ -170,9 +170,11 @@ export function useStateEvents(maxEvents = 20) {
   };
 }
 
+const SIGNAL_PROGRESS_EVENTS: EventType[] = ["EntryGated", "ORBPhaseUpdate"];
+
 export function useSignalProgress(maxEvents = 200) {
   const { events, ...rest } = useEventStream({
-    eventTypes: ["EntryGated", "ORBPhaseUpdate"],
+    eventTypes: SIGNAL_PROGRESS_EVENTS,
     maxEvents,
   });
 
