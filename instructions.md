@@ -93,17 +93,11 @@ Press `Ctrl+B` then `D`
 
 omo-ingest uses **REST polling only** (no WebSocket) to avoid SIP connection conflicts with omo-core, which owns the Alpaca WS stream.
 
-### Build
-
-```bash
-cd backend && go build -o bin/omo-ingest ./cmd/omo-ingest && cd ..
-```
-
 ### Run
 
 ```bash
 source .env
-backend/bin/omo-ingest
+cd backend && go run ./cmd/omo-ingest
 ```
 
 ### Notes
