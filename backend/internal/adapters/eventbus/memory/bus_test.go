@@ -430,6 +430,81 @@ func TestBus_SubscribeAsync_DropOnFull(t *testing.T) {
 	close(block)
 }
 
+// 17b. TestBus_DroppedEvents_Counter — DroppedEvents and DroppedEventsByType track drops
+func TestBus_DroppedEvents_Counter(t *testing.T) {
+	bus := memory.NewBus()
+	defer bus.Close()
+	ctx := context.Background()
+
+	assert.Equal(t, int64(0), bus.DroppedEvents(), "no drops initially")
+	assert.Equal(t, int64(0), bus.DroppedEventsByType(domain.EventMarketBarReceived), "no per-type drops initially")
+
+	// Block the handler so all channel slots fill up.
+	block := make(chan struct{})
+	handler := func(_ context.Context, _ domain.Event) error {
+		<-block
+		return nil
+	}
+
+	require.NoError(t, bus.SubscribeAsync(ctx, domain.EventMarketBarReceived, handler))
+
+	const totalPublished = 200
+	event, err := domain.NewEvent(domain.EventMarketBarReceived, "tenant-1", domain.EnvModePaper, "idem-1", nil)
+	require.NoError(t, err)
+
+	for i := 0; i < totalPublished; i++ {
+		require.NoError(t, bus.Publish(ctx, *event))
+	}
+
+	dropped := bus.DroppedEvents()
+	assert.True(t, dropped > 0, "expected some events to be dropped, got %d", dropped)
+	assert.Equal(t, dropped, bus.DroppedEventsByType(domain.EventMarketBarReceived),
+		"per-type count must match total for single-type scenario")
+
+	// A type that was never dropped should return 0.
+	assert.Equal(t, int64(0), bus.DroppedEventsByType(domain.EventOrderSubmitted))
+
+	close(block)
+}
+
+// 17c. TestBus_DroppedEventsByType_MultipleTypes — per-type counters are independent
+func TestBus_DroppedEventsByType_MultipleTypes(t *testing.T) {
+	bus := memory.NewBus()
+	defer bus.Close()
+	ctx := context.Background()
+
+	block := make(chan struct{})
+	handler := func(_ context.Context, _ domain.Event) error {
+		<-block
+		return nil
+	}
+
+	require.NoError(t, bus.SubscribeAsync(ctx, domain.EventMarketBarReceived, handler))
+	require.NoError(t, bus.SubscribeAsync(ctx, domain.EventOrderSubmitted, handler))
+
+	barEvent, err := domain.NewEvent(domain.EventMarketBarReceived, "tenant-1", domain.EnvModePaper, "idem-1", nil)
+	require.NoError(t, err)
+	orderEvent, err := domain.NewEvent(domain.EventOrderSubmitted, "tenant-1", domain.EnvModePaper, "idem-2", nil)
+	require.NoError(t, err)
+
+	for i := 0; i < 200; i++ {
+		_ = bus.Publish(ctx, *barEvent)
+	}
+	for i := 0; i < 200; i++ {
+		_ = bus.Publish(ctx, *orderEvent)
+	}
+
+	totalDropped := bus.DroppedEvents()
+	barDropped := bus.DroppedEventsByType(domain.EventMarketBarReceived)
+	orderDropped := bus.DroppedEventsByType(domain.EventOrderSubmitted)
+
+	assert.True(t, barDropped > 0, "expected bar drops")
+	assert.True(t, orderDropped > 0, "expected order drops")
+	assert.Equal(t, totalDropped, barDropped+orderDropped, "per-type drops must sum to total")
+
+	close(block)
+}
+
 // 18. TestBus_SubscribeAsync_ConcurrentPublish — race detector safety check
 func TestBus_SubscribeAsync_ConcurrentPublish(t *testing.T) {
 	bus := memory.NewBus()

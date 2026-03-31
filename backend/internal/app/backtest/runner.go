@@ -689,6 +689,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			sym    string
 			bars   []domain.MarketBar
 			bars1d []domain.MarketBar
+			bars1h []domain.MarketBar
 		}
 		warmupResults := make([]warmupResult, len(r.cfg.Symbols))
 		var warmupWg sync.WaitGroup
@@ -723,20 +724,35 @@ func (r *Runner) Run(ctx context.Context) error {
 					bars = bars[len(bars)-minWarmupBars:]
 				}
 
-				// Fetch 1D bars: lookback for HTF EMA50 + full backtest range for anchor detectors.
+				// Fetch 1D bars: lookback for HTF EMA200 + full backtest range for anchor detectors.
 				var bars1d []domain.MarketBar
 				if r.marketData != nil {
-					dailyBarsNeeded := 50
+					dailyBarsNeeded := 200
 					dailyTo := r.cfg.To // extend through backtest end for catalyst/capitulation detection
-					dailyFrom := r.cfg.From.Add(-time.Duration(float64(dailyBarsNeeded)*1.5) * 24 * time.Hour)
+					dailyFrom := r.cfg.From.Add(-time.Duration(float64(dailyBarsNeeded)*2.0) * 24 * time.Hour)
 					fetched, err := r.marketData.GetHistoricalBars(ctx, sym, "1d", dailyFrom, dailyTo)
 					if err != nil || len(fetched) < dailyBarsNeeded {
-						r.log.Warn().Err(err).Str("symbol", sym.String()).Int("got", len(fetched)).Int("needed", dailyBarsNeeded).Msg("insufficient 1D bars for HTF EMA50 — ORB signals will be blocked for this symbol")
+						r.log.Warn().Err(err).Str("symbol", sym.String()).Int("got", len(fetched)).Int("needed", dailyBarsNeeded).Msg("insufficient 1D bars for HTF EMA200 — ORB signals will be blocked for this symbol")
 					}
 					bars1d = fetched
 				}
 
-				warmupResults[i] = warmupResult{sym: sym.String(), bars: bars, bars1d: bars1d}
+				// Fetch 1H bars: lookback for HTF EMA50.
+				var bars1h []domain.MarketBar
+				if r.marketData != nil {
+					hourlyBarsNeeded := 50
+					hourlyTo := r.cfg.From
+					hourlyFrom := hourlyTo.Add(-time.Duration(float64(hourlyBarsNeeded)*2.0) * time.Hour)
+					fetched, err := r.marketData.GetHistoricalBars(ctx, sym, "1h", hourlyFrom, hourlyTo)
+					if err != nil {
+						r.log.Warn().Err(err).Str("symbol", sym.String()).Msg("1H warmup fetch failed")
+					} else if len(fetched) < hourlyBarsNeeded {
+						r.log.Warn().Str("symbol", sym.String()).Int("got", len(fetched)).Int("needed", hourlyBarsNeeded).Msg("insufficient 1H bars for HTF EMA50")
+					}
+					bars1h = fetched
+				}
+
+				warmupResults[i] = warmupResult{sym: sym.String(), bars: bars, bars1d: bars1d, bars1h: bars1h}
 			}(i, sym)
 		}
 		warmupWg.Wait()
@@ -745,7 +761,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			dailyBarsCache[res.sym] = res.bars1d
 			n := monitorSvc.WarmUp(res.bars)
 			if len(res.bars1d) > 0 {
-				// Use only bars before backtest start for HTF EMA50 (no look-ahead bias).
+				// Use only bars before backtest start for HTF EMA200 (no look-ahead bias).
 				var preBars []domain.MarketBar
 				for _, b := range res.bars1d {
 					if b.Time.Before(r.cfg.From) {
@@ -756,25 +772,38 @@ func (r *Runner) Run(ctx context.Context) error {
 				for i, b := range preBars {
 					closes[i] = b.Close
 				}
-				dailyBarsNeeded := 50
-				ema50 := monitor.ComputeStaticEMA(closes, dailyBarsNeeded)
-				if ema50 > 0 {
+				dailyBarsNeeded := 200
+				ema200 := monitor.ComputeStaticEMA(closes, dailyBarsNeeded)
+				if ema200 > 0 {
 					bias := "NEUTRAL"
 					lastClose := preBars[len(preBars)-1].Close
-					if lastClose > ema50*1.005 {
+					if lastClose > ema200*1.005 {
 						bias = "BULLISH"
-					} else if lastClose < ema50*0.995 {
+					} else if lastClose < ema200*0.995 {
 						bias = "BEARISH"
 					}
 					nr7 := monitor.ComputeNR7(preBars)
 					dailyATR := monitor.ComputeDailyATR(preBars, 14)
 					monitorSvc.SetStaticHTFData(res.sym, "1d", domain.HTFData{
-						EMA50:    ema50,
+						EMA200:   ema200,
 						Bias:     bias,
 						NR7:      nr7,
 						DailyATR: dailyATR,
 					})
-					r.log.Info().Str("symbol", res.sym).Float64("ema50", ema50).Str("bias", bias).Bool("nr7", nr7).Float64("daily_atr", dailyATR).Int("daily_bars", len(preBars)).Msg("1D HTF warmup complete")
+					r.log.Info().Str("symbol", res.sym).Float64("ema200", ema200).Str("bias", bias).Bool("nr7", nr7).Float64("daily_atr", dailyATR).Int("daily_bars", len(preBars)).Msg("1D HTF warmup complete")
+				}
+			}
+			if len(res.bars1h) > 0 {
+				// Use only bars before backtest start for 1H EMA50 (no look-ahead bias).
+				var preHourly []domain.MarketBar
+				for _, b := range res.bars1h {
+					if b.Time.Before(r.cfg.From) {
+						preHourly = append(preHourly, b)
+					}
+				}
+				if len(preHourly) > 0 {
+					nh := monitorSvc.WarmUpHTF(preHourly)
+					r.log.Info().Str("symbol", res.sym).Int("bars", nh).Msg("1H EMA50 warmup complete")
 				}
 			}
 			monitorSvc.ResetSessionIndicators(res.sym)

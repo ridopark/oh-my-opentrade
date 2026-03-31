@@ -143,7 +143,7 @@ func main() {
 		}
 	}
 
-	eventBus := memory.NewBus()
+	eventBus := memory.NewSyncBus()
 
 	tracer := newEventTracer(log.With().Str("component", "event_tracer").Logger())
 	for _, evtType := range allEventTypes() {
