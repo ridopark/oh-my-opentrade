@@ -814,6 +814,16 @@ func (r *Runner) Run(ctx context.Context) error {
 			pipeline.Runner.WarmUp(sym.String(), bars, snapshotFn)
 		}
 		pipeline.Runner.InitAggregators(replaySessionOpen)
+		// Aggregate warmup 1m bars into HTF candles (5m, 15m, etc.) and feed
+		// them through strategy instances that are configured for those timeframes.
+		// Without this, HTF instances start with empty state on the first replay day.
+		for _, sym := range r.cfg.Symbols {
+			bars := warmupBarsCache[sym.String()]
+			if len(bars) == 0 {
+				continue
+			}
+			pipeline.Runner.WarmUpHTF(sym.String(), bars, snapshotFn, loc)
+		}
 		pipeline.Runner.ClearAllPendingStates()
 
 		sessionResolver := NewSessionResolver(loc)
