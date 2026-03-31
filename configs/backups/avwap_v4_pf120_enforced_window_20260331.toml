@@ -66,7 +66,7 @@ rsi_bounce_max = 35.0
 # Pinch: dual-AVWAP compression breakout (gap between anchors narrows)
 pinch_enabled = true
 pinch_min_bps = 5
-pinch_max_bps = 30
+pinch_max_bps = 50
 
 # Gap Reclaim: price dips below AVWAP then reclaims it within N bars
 gap_reclaim_enabled = true
@@ -209,7 +209,7 @@ target_delta_low = 0.60
 target_delta_high = 0.80
 min_open_interest = 50
 max_spread_pct = 0.08
-max_iv = 0.8
+max_iv = 1.5
 
 [options.regime_overrides.BALANCE]
 target_delta_low = 0.55
