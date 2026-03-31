@@ -817,8 +817,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		pipeline.Runner.ClearAllPendingStates()
 
 		sessionResolver := NewSessionResolver(loc)
+		// Extend lookback by 5 calendar days so previous-day anchors (pd_high, pd_low, etc.)
+		// are available on the first replay day even on Mondays (need Friday = -3 calendar days).
+		sessionFrom := r.cfg.From.Add(-5 * 24 * time.Hour)
 		for _, sym := range r.cfg.Symbols {
-			if loadErr := sessionResolver.Load(ctx, r.infra.DB, sym, r.cfg.From, r.cfg.To); loadErr != nil {
+			if loadErr := sessionResolver.Load(ctx, r.infra.DB, sym, sessionFrom, r.cfg.To); loadErr != nil {
 				r.log.Warn().Err(loadErr).Str("symbol", sym.String()).Msg("failed to load session data")
 			}
 		}
