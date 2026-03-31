@@ -24,7 +24,9 @@ export type EventType =
   | "PositionUpdated"
   | "KillSwitchEngaged"
   | "CircuitBreakerTripped"
-  | "FormingBar";
+  | "FormingBar"
+  | "EntryGated"
+  | "ORBPhaseUpdate";
 
 // Base domain event envelope
 export interface DomainEvent<T = unknown> {
@@ -366,4 +368,78 @@ export interface StrategySignalEvent {
 export interface StrategySignalsResponse {
   items: StrategySignalEvent[];
   next_cursor?: string;
+}
+
+// Signal Formation Progress types (maps to domain.EntryGatedPayload / ORBPhaseUpdatePayload)
+
+export interface EntryGatedConfluence {
+  score: number;
+  maxScore: number;
+  fib: boolean;
+  fibDetail: string;
+  keyLevel: boolean;
+  keyLevelDetail: string;
+  candle: boolean;
+  candleDetail: string;
+  band: boolean;
+}
+
+export interface EntryGatedIndicators {
+  rsi: number;
+  volumeRatio: number;
+  avwapBias: string;
+  slopeBPS: number;
+  aboveCount: Record<string, number>;
+  belowCount: Record<string, number>;
+}
+
+export interface EntryGatedPayload {
+  symbol: string;
+  strategy: string;
+  setupType: string;
+  gatesPassed: number;
+  gatesTotal: number;
+  blockingGate: string;
+  blockingDetail: string;
+  confluence: EntryGatedConfluence;
+  indicators: EntryGatedIndicators;
+}
+
+export interface ORBPhaseRange {
+  high: number;
+  low: number;
+  valid: boolean;
+  barCount: number;
+  expectedBars: number;
+}
+
+export interface ORBPhaseBreakout {
+  direction: string;
+  rvol: number;
+  breakClose: number;
+  breakTime: string;
+}
+
+export interface ORBPhaseRetest {
+  touched: boolean;
+  touchPrice: number;
+  barsSinceBreak: number;
+  maxRetestBars: number;
+  holdConfirmed: boolean;
+}
+
+export interface ORBPhaseFVG {
+  active: boolean;
+  high: number;
+  low: number;
+}
+
+export interface ORBPhaseUpdatePayload {
+  symbol: string;
+  phase: string;
+  range: ORBPhaseRange;
+  breakout: ORBPhaseBreakout;
+  retest: ORBPhaseRetest;
+  confidence: number;
+  fvg: ORBPhaseFVG;
 }

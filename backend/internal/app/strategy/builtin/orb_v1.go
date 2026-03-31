@@ -88,6 +88,15 @@ func (s *ORBStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st 
 
 	// Delegate to the underlying ORBTracker.
 	setup, detected := orbState.Tracker.OnBar(domBar, snap, orbState.Config, false)
+
+	// Emit ORBPhaseUpdate on state transitions.
+	if ctx != nil {
+		if sess := orbState.Tracker.GetSession(symbol); sess != nil && sess.State != orbState.PrevPhase {
+			orbState.PrevPhase = sess.State
+			orbState.emitPhaseUpdate(ctx, sess, domBar, snap)
+		}
+	}
+
 	if !detected || setup == nil {
 		return orbState, nil, nil
 	}
@@ -197,6 +206,58 @@ func (s *ORBStrategy) OnEvent(ctx start.Context, symbol string, evt any, st star
 	return st, nil, nil
 }
 
+// emitPhaseUpdate publishes an ORBPhaseUpdate domain event with the current session snapshot.
+func (s *ORBState) emitPhaseUpdate(ctx start.Context, sess *monitor.ORBSession, bar domain.MarketBar, snap domain.IndicatorSnapshot) {
+	breakoutDir := ""
+	if sess.Breakout.Confirmed {
+		breakoutDir = string(sess.Breakout.Direction)
+	}
+	breakoutTime := ""
+	if !sess.Breakout.BreakBar.IsZero() {
+		breakoutTime = sess.Breakout.BreakBar.Format(time.RFC3339)
+	}
+
+	conf := 0.0
+	if sess.Breakout.Confirmed {
+		conf = monitor.ORBConfidence(sess, bar, snap, s.Config)
+	}
+
+	payload := domain.ORBPhaseUpdatePayload{
+		Symbol: s.Symbol,
+		Phase:  string(sess.State),
+		Range: domain.ORBPhaseRange{
+			High:         sess.OrbHigh,
+			Low:          sess.OrbLow,
+			Valid:        !sess.RangeInvalid,
+			BarCount:     sess.RangeBarCount,
+			ExpectedBars: s.Config.WindowMinutes / 1, // 1m bars
+		},
+		Breakout: domain.ORBPhaseBreakout{
+			Direction:  breakoutDir,
+			RVOL:       sess.Breakout.RVOL,
+			BreakClose: sess.Breakout.BreakClose,
+			BreakTime:  breakoutTime,
+		},
+		Retest: domain.ORBPhaseRetest{
+			Touched:        sess.Retest.Touched,
+			TouchPrice:     sess.Retest.TouchPrice,
+			BarsSinceBreak: sess.BarsSinceBreakout,
+			MaxRetestBars:  s.Config.MaxRetestBars,
+			HoldConfirmed:  sess.Retest.Confirmed,
+		},
+		Confidence: conf,
+		FVG: domain.ORBPhaseFVG{
+			Active: sess.ActiveFVG != nil,
+		},
+	}
+	if sess.ActiveFVG != nil {
+		payload.FVG.High = sess.ActiveFVG.High
+		payload.FVG.Low = sess.ActiveFVG.Low
+	}
+
+	_ = ctx.EmitDomainEvent(payload)
+}
+
 // clampStrength ensures confidence is in [0,1].
 func clampStrength(c float64) float64 {
 	if c < 0 {
@@ -214,6 +275,7 @@ type ORBState struct {
 	Config     monitor.ORBConfig
 	Symbol     string
 	Indicators start.IndicatorData // cached from last bar
+	PrevPhase  monitor.ORBState    // previous phase for change detection (EntryGated events)
 }
 
 // SetIndicators updates the cached indicator data. Called by the runner

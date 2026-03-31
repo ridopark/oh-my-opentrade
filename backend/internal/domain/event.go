@@ -58,6 +58,8 @@ const (
 	EventExitCircuitBroken       EventType = "ExitCircuitBroken"
 	EventORBRangeSet             EventType = "ORBRangeSet"
 	EventEnrichedBar             EventType = "EnrichedBar"
+	EventEntryGated              EventType = "EntryGated"
+	EventORBPhaseUpdate          EventType = "ORBPhaseUpdate"
 
 	// Connectivity & system events.
 	EventBrokerAPIError          EventType = "BrokerAPIError"
@@ -166,6 +168,81 @@ type EnrichedBarPayload struct {
 	EMA50     float64            `json:"ema50,omitempty"`
 	EMA200    float64            `json:"ema200,omitempty"`
 	AVWAPs    map[string]float64 `json:"avwaps,omitempty"`
+}
+
+// EntryGatedPayload is emitted when a strategy evaluates an entry but a gate blocks it.
+// It provides visibility into how close a signal is to triggering.
+type EntryGatedPayload struct {
+	Symbol        string                `json:"symbol"`
+	Strategy      string                `json:"strategy"`
+	SetupType     string                `json:"setupType"`
+	GatesPassed   int                   `json:"gatesPassed"`
+	GatesTotal    int                   `json:"gatesTotal"`
+	BlockingGate  string                `json:"blockingGate"`
+	BlockingDetail string               `json:"blockingDetail"`
+	Confluence    EntryGatedConfluence  `json:"confluence"`
+	Indicators    EntryGatedIndicators  `json:"indicators"`
+}
+
+type EntryGatedConfluence struct {
+	Score          int    `json:"score"`
+	MaxScore       int    `json:"maxScore"`
+	Fib            bool   `json:"fib"`
+	FibDetail      string `json:"fibDetail,omitempty"`
+	KeyLevel       bool   `json:"keyLevel"`
+	KeyLevelDetail string `json:"keyLevelDetail,omitempty"`
+	Candle         bool   `json:"candle"`
+	CandleDetail   string `json:"candleDetail,omitempty"`
+	Band           bool   `json:"band"`
+}
+
+type EntryGatedIndicators struct {
+	RSI         float64            `json:"rsi"`
+	VolumeRatio float64            `json:"volumeRatio"`
+	AVWAPBias   string             `json:"avwapBias"`
+	SlopeBPS    float64            `json:"slopeBPS"`
+	AboveCount  map[string]int     `json:"aboveCount,omitempty"`
+	BelowCount  map[string]int     `json:"belowCount,omitempty"`
+}
+
+// ORBPhaseUpdatePayload is emitted on ORB state machine transitions.
+type ORBPhaseUpdatePayload struct {
+	Symbol     string            `json:"symbol"`
+	Phase      string            `json:"phase"`
+	Range      ORBPhaseRange     `json:"range"`
+	Breakout   ORBPhaseBreakout  `json:"breakout"`
+	Retest     ORBPhaseRetest    `json:"retest"`
+	Confidence float64           `json:"confidence"`
+	FVG        ORBPhaseFVG       `json:"fvg"`
+}
+
+type ORBPhaseRange struct {
+	High         float64 `json:"high"`
+	Low          float64 `json:"low"`
+	Valid        bool    `json:"valid"`
+	BarCount     int     `json:"barCount"`
+	ExpectedBars int     `json:"expectedBars"`
+}
+
+type ORBPhaseBreakout struct {
+	Direction  string  `json:"direction"`
+	RVOL       float64 `json:"rvol"`
+	BreakClose float64 `json:"breakClose"`
+	BreakTime  string  `json:"breakTime,omitempty"`
+}
+
+type ORBPhaseRetest struct {
+	Touched        bool    `json:"touched"`
+	TouchPrice     float64 `json:"touchPrice"`
+	BarsSinceBreak int     `json:"barsSinceBreak"`
+	MaxRetestBars  int     `json:"maxRetestBars"`
+	HoldConfirmed  bool    `json:"holdConfirmed"`
+}
+
+type ORBPhaseFVG struct {
+	Active bool    `json:"active"`
+	High   float64 `json:"high,omitempty"`
+	Low    float64 `json:"low,omitempty"`
 }
 
 // Event represents a domain event in the trading pipeline.
