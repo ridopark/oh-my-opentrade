@@ -220,7 +220,7 @@ func (r *Repository) GetMaxBarHighSince(ctx context.Context, symbol domain.Symbo
 }
 
 // UpdateBarIndicators persists enriched indicator data onto an existing market_bars row.
-// avwaps is marshalled to JSONB; nil maps are stored as SQL NULL.
+// avwaps is marshaled to JSONB; nil maps are stored as SQL NULL.
 //
 // Required migration (run manually):
 //   ALTER TABLE market_bars
