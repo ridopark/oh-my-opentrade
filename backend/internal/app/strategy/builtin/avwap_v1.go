@@ -1591,6 +1591,90 @@ func (s *AVWAPState) evaluateEntries(ec entryContext) (*start.Signal, error) {
 	return nil, nil
 }
 
+// EmitSignalProgress returns the current AVWAP confluence state as a domain event payload.
+// Implements start.SignalProgressEmitter for post-warmup SSE cache seeding.
+func (s *AVWAPState) EmitSignalProgress() []any {
+	if s.Calc == nil || s.CalcBarCount < 2 {
+		return nil
+	}
+	cfg := s.Config
+	avwapValues := s.Calc.Values()
+	if len(avwapValues) == 0 {
+		return nil
+	}
+
+	// Compute confluence for first anchor.
+	var conf confluenceResult
+	if len(cfg.Anchors) > 0 {
+		if avwapVal, ok := avwapValues[cfg.Anchors[0]]; ok {
+			conf = computeConfluence(
+				cfg, s.PrevBars[0], avwapVal, avwapValues,
+				s.Indicators, s.PrevBars, s.PrevBarCount,
+				s.KeyLevels, s.BarHighs50, s.BarLows50,
+			)
+		}
+	}
+
+	// Determine bias from first anchor.
+	avwapBias := ""
+	if len(cfg.Anchors) > 0 && s.CalcBarCount >= 10 {
+		if firstAVWAP, ok := avwapValues[cfg.Anchors[0]]; ok {
+			bar := s.PrevBars[0]
+			if bar.Close > firstAVWAP {
+				avwapBias = "LONG"
+			} else if bar.Close < firstAVWAP {
+				avwapBias = "SHORT"
+			}
+		}
+	}
+
+	volRatio := 0.0
+	if s.Indicators.VolumeSMA > 0 {
+		volRatio = s.PrevBars[0].Volume / s.Indicators.VolumeSMA
+	}
+
+	factorSet := make(map[string]bool)
+	for _, f := range conf.Factors {
+		factorSet[f] = true
+	}
+
+	payload := domain.EntryGatedPayload{
+		Symbol:       s.Symbol,
+		Strategy:     "avwap",
+		SetupType:    "multi",
+		GatesPassed:  3, // regime + position_flat + bias (approximate)
+		GatesTotal:   5,
+		BlockingGate: "confluence",
+		BlockingDetail: fmt.Sprintf("score %d / %d", conf.Score, cfg.MinConfluenceScore),
+		Confluence: domain.EntryGatedConfluence{
+			Score:          conf.Score,
+			MaxScore:       10,
+			Fib:            factorSet["fib_38.2"] || factorSet["fib_50"] || factorSet["fib_61.8"],
+			FibDetail:      extractFactor(conf.Factors, "fib_"),
+			KeyLevel:       extractFactor(conf.Factors, "key_") != "",
+			KeyLevelDetail: extractFactor(conf.Factors, "key_"),
+			Candle:         factorSet["inside_bar"] || factorSet["strength_candle"] || factorSet["morning_star"],
+			CandleDetail:   extractCandleFactor(conf.Factors),
+			Band:           factorSet["band_zone"],
+		},
+		Indicators: domain.EntryGatedIndicators{
+			RSI:         s.Indicators.RSI,
+			VolumeRatio: volRatio,
+			AVWAPBias:   avwapBias,
+			AboveCount:  copyIntMap(s.AboveCount),
+			BelowCount:  copyIntMap(s.BelowCount),
+		},
+		Bar: domain.BarSnapshot{
+			Open:   s.PrevBars[0].Open,
+			High:   s.PrevBars[0].High,
+			Low:    s.PrevBars[0].Low,
+			Close:  s.PrevBars[0].Close,
+			Volume: s.PrevBars[0].Volume,
+		},
+	}
+	return []any{payload}
+}
+
 // emitEntryGated publishes an EntryGated domain event showing how close this
 // symbol is to triggering an AVWAP entry signal. Called once per bar when all
 // entry types failed.
