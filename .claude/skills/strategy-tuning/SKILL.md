@@ -52,29 +52,65 @@ Read the `[params]` section and rank by expected impact:
 3. **Timing** (market structure) — entry windows, cooldowns
 4. **Options** (position sizing) — delta range, DTE, spread limits
 
-### Step 3: Autonomous Tuning Loop
+### Step 3: Multi-Pass Coordinate Descent
+Run up to **3 passes** over all parameters. Multiple passes catch interaction effects (changing param A may open headroom for param B).
+
 ```
-for each parameter in priority order:
-  1. Record current value
-  2. Try TIGHTER value → run backtest → compare to baseline
-  3. Try LOOSER value → run backtest → compare to baseline
-  4. Keep whichever improved; revert if both degraded
-  5. If meaningful improvement → STOP, report to user, ask continue/stop
-  6. If no improvement → move to next parameter
+for pass = 1 to 3:
+  improved_this_pass = false
+  for each parameter in priority order:
+    1. Record current value
+    2. Try TIGHTER (current - step) → backtest → compare
+    3. Try LOOSER (current + step) → backtest → compare
+    4. Keep whichever clears the pass threshold; revert if both fail
+    5. If accepted → run split-half validation (see below)
+    6. If split-half fails → revert and move to next parameter
+    7. If accepted and validated → improved_this_pass = true
+  
+  # Correlated pair mini-grids (after each pass)
+  for each (param_a, param_b) in CORRELATED_PAIRS:
+    Run 3x3 grid (current-step, current, current+step for each)
+    Accept best combo if it clears pass threshold + split-half
+  
+  if NOT improved_this_pass → converged, stop
+  else → report pass summary, ask user continue/stop
 ```
 
-**Meaningful improvement** = any of:
-- PF improved ≥ 0.1 without trade count dropping > 20%
-- Max DD decreased ≥ 2% without PF dropping
-- Net P&L improved ≥ 10% with PF ≥ 1.2
-- Sharpe improved ≥ 0.2
+#### Pass-Specific Thresholds (~1.5x tighter per pass to combat overfitting)
+| Pass | PF delta | DD delta | Net P&L delta | Sharpe delta |
+|------|----------|----------|---------------|--------------|
+| 1    | ≥ 0.10   | ≥ 2.0pp  | ≥ 10%         | ≥ 0.20       |
+| 2    | ≥ 0.15   | ≥ 3.0pp  | ≥ 15%         | ≥ 0.30       |
+| 3    | ≥ 0.20   | ≥ 4.0pp  | ≥ 20%         | ≥ 0.40       |
+
+#### Hard Constraints (reject if ANY violated)
+- Max drawdown worsened by > 1.5 percentage points
+- Trade count below 40 (absolute floor)
+- Trade count dropped > 20% relative to baseline
+
+#### Step Sizes
+Use **absolute, parameter-specific steps** from the parameter guides below. Do NOT use percentage-based steps. Do NOT halve steps on convergence — with 30-200 trades, finer resolution is noise.
+
+#### Split-Half Validation
+For each accepted parameter change:
+1. Backtest on **first half** of date range
+2. Backtest on **second half** of date range
+3. Reject if improvement is negative in either half
+Costs 2 extra API calls per accepted change but prevents regime-specific overfitting.
+
+#### Correlated Pair Mini-Grids
+After coordinate descent in each pass, run 3×3 grids for known interacting pairs:
+- `stop_bps` × `atr_multiplier` (both control exit width)
+- Entry score threshold × confidence threshold (both filter entries)
+Only 9 backtests per pair. Define pairs per strategy in the parameter guides below.
 
 ### Step 4: Report & Checkpoint
-Always include the backtest context (symbols and date range) at the top, then present the comparison table:
+Always include the backtest context at the top, then present the comparison table:
 ```
 **Backtest Universe:** {N} symbols — {list or "full 73-symbol universe"}
 **Data Range:** {from} → {to} ({N months})
 **Timeframe:** {tf} | **Initial Equity:** ${equity} | **Slippage:** {slippage} bps
+**Pass:** {pass_number}/3 | **Backtests Run:** {count}
 
 | Metric        | Baseline | Current | Delta   |
 |---------------|----------|---------|---------|
@@ -83,12 +119,22 @@ Always include the backtest context (symbols and date range) at the top, then pr
 | Net P&L       |          |         |         |
 | Trade Count   |          |         |         |
 | Max Drawdown  |          |         |         |
+| Sharpe        |          |         |         |
 ```
-List parameter changes made, then ask:
-> "Meaningful improvement found. Continue tuning or accept these results?"
+
+#### Parameter Changes
+| Parameter | Before | After | Step | Rationale |
+|-----------|--------|-------|------|-----------|
+| ...       | ...    | ...   | ...  | ...       |
+
+#### Code Fixes Applied (if any)
+- `file:line` — description of fix
+
+Then ask the user:
+> "Pass {n} complete. {k} parameters improved. Continue to pass {n+1} or accept these results?"
 
 ### Step 5: On User Decision
-- **Continue** → resume loop from next parameter
+- **Continue** → start next pass from top priority
 - **Stop** → keep the improved DNA, suggest a commit message
 
 ## Backtest API
@@ -127,7 +173,11 @@ curl -s -X POST http://localhost:8080/backtest/run \
 ### Poll (every 15s, timeout 10min)
 ```bash
 curl -s http://localhost:8080/backtest/{id}/status
+# Returns: {"status": "running|completed|failed", "progress": {"pct": 50}}
 ```
+**Report progress to the user on each poll:**
+> "Backtest {id}: {pct}% complete ({elapsed}s elapsed)"
+Suppress if pct hasn't changed since last poll.
 
 ### Results
 ```bash
@@ -139,20 +189,20 @@ curl -s http://localhost:8080/backtest/{id}/results
 ### AVWAP (`avwap_v4`)
 
 #### Entry Filters
-| Parameter | Range | Effect |
-|-----------|-------|--------|
-| `volume_mult` | 1.5–3.0 | Higher = fewer trades, higher quality |
-| `min_confluence_score` | 5–8 | Higher = very selective entries |
-| `hold_bars` | 3–8 | Stronger breakout confirmation |
-| `min_slope_bps` | 0.1–1.0 | Strong trends only |
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `volume_mult` | 1.5–3.0 | 0.25 | Higher = fewer trades, higher quality |
+| `min_confluence_score` | 5–8 | 1 | Higher = very selective entries |
+| `hold_bars` | 3–8 | 1 | Stronger breakout confirmation |
+| `min_slope_bps` | 0.1–1.0 | 0.1 | Strong trends only |
 
 #### Exit Rules
-| Parameter | Range | Effect |
-|-----------|-------|--------|
-| `stop_bps` | 50–150 | Tighter = less loss per trade |
-| `avwap_stop_bars` | 1–3 | Faster AVWAP-based stop |
-| `stagnation minutes` | 60–180 | Faster exit on stale trades |
-| `max_loss pct` | 0.01–0.05 | Hard stop per trade |
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `stop_bps` | 50–150 | 10 | Tighter = less loss per trade |
+| `avwap_stop_bars` | 1–3 | 1 | Faster AVWAP-based stop |
+| `stagnation minutes` | 60–180 | 15 | Faster exit on stale trades |
+| `max_loss pct` | 0.01–0.05 | 0.005 | Hard stop per trade |
 
 #### Timing
 | Parameter | Effect |
@@ -161,31 +211,35 @@ curl -s http://localhost:8080/backtest/{id}/results
 | `midday_trap_shield` | 11:00–13:00 low-liquidity filter |
 | `cooldown_seconds` | Re-entry cooldown per symbol |
 
+**Correlated pairs for mini-grid:** `stop_bps` × `min_slope_bps`
+
 ### ORB Break & Retest (`orb_break_retest`)
 
 #### Entry Filters
-| Parameter | Range | Effect |
-|-----------|-------|--------|
-| `orb_window_minutes` | 5–30 | Shorter = tighter range, more breakouts |
-| `min_rvol` | 1.0–3.0 | Higher = only high-volume sessions |
-| `min_confidence` | 0.5–0.9 | Higher = more selective |
-| `breakout_confirm_bps` | 3–15 | Bigger move needed to confirm |
-| `touch_tolerance_bps` | 1–5 | How close to level counts as "touch" |
-| `max_retest_bars` | 6–20 | Faster retest required |
-| `retest_confirm_bars` | 1–4 | Bars to confirm retest hold |
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `orb_window_minutes` | 5–30 | 5 | Shorter = tighter range, more breakouts |
+| `min_rvol` | 1.0–3.0 | 0.25 | Higher = only high-volume sessions |
+| `min_confidence` | 0.5–0.9 | 0.05 | Higher = more selective |
+| `breakout_confirm_bps` | 3–15 | 2 | Bigger move needed to confirm |
+| `touch_tolerance_bps` | 1–5 | 1 | How close to level counts as "touch" |
+| `max_retest_bars` | 6–20 | 2 | Faster retest required |
+| `retest_confirm_bars` | 1–4 | 1 | Bars to confirm retest hold |
 
 #### Exit Rules
-| Parameter | Range | Effect |
-|-----------|-------|--------|
-| `stop_bps` | 30–100 | Tighter risk per trade |
-| `atr_multiplier` | 1.5–4.0 | Profit target as ATR multiple |
-| `stagnation minutes` | 45–120 | Faster exit on stale trades |
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `stop_bps` | 30–100 | 5 | Tighter risk per trade |
+| `atr_multiplier` | 1.5–4.0 | 0.25 | Profit target as ATR multiple |
+| `stagnation minutes` | 45–120 | 15 | Faster exit on stale trades |
 
 #### Timing
 | Parameter | Effect |
 |-----------|--------|
 | `allowed_hours_start/end` | Entry window (ET) |
 | `max_signals_per_session` | Cap entries per day |
+
+**Correlated pairs for mini-grid:** `stop_bps` × `atr_multiplier`, `min_confidence` × `min_rvol`
 
 ### Generic (unknown strategy)
 For any new strategy, infer tuning ranges from:
@@ -214,15 +268,23 @@ even if backtested P&L looks better — backtests assume fills at mid price,
 but live ITM orders often sit unfilled. ATM gamma actually helps day trades
 by accelerating gains on winning directional moves.
 
+## Code Fix Policy
+During tuning, you may encounter bugs or issues in strategy code, backtest runner, or signal engine:
+
+- **Small fix** (< ~20 lines, one file, obvious bug): Fix autonomously. Report under "Code Fixes Applied" in checkpoint.
+- **Big change** (new feature, multi-file refactor, behavior change): STOP and describe to user. Wait for approval.
+- **Ambiguous**: Ask the user.
+
 ## Overfitting Detection
 
 Flag results as suspect if:
-- Trade count < 30
+- Trade count < 40 (absolute floor — below this, all metrics are noise)
 - PF > 3.0
 - WR > 60% AND PF > 2.0
 - 3+ per-symbol overrides
 - Backtest period < 6 months
-- Sharp in-sample vs out-of-sample divergence
+- Sharp in-sample vs out-of-sample divergence (split-half check fails)
+- Improvement only appears in one half of the data range
 
 ## Healthy Metric Ranges
 
@@ -231,7 +293,7 @@ Flag results as suspect if:
 | Profit Factor | 1.2 | 1.3–2.0 | > 3.0 (overfitting) |
 | Win Rate | 30% | 35–50% | > 60% (suspicious) |
 | Max Drawdown | — | < 10% | > 20% |
-| Trade Count | 30+ | 50+ | < 20 |
+| Trade Count | 40+ | 60+ | < 30 |
 | Sharpe Ratio | 0.5 | 1.0–2.0 | > 3.0 |
 | Avg Win/Avg Loss | 1.5 | 2.0–3.0 | < 1.0 |
 
