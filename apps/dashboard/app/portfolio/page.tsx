@@ -115,6 +115,7 @@ export default function PortfolioPage() {
   const [loading, setLoading] = useState(true);
   const [closing, setClosing] = useState<string | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
+  const [pendingClose, setPendingClose] = useState<Set<string>>(new Set());
   const [closingAll, setClosingAll] = useState(false);
   const [confirmCloseAll, setConfirmCloseAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -158,6 +159,8 @@ export default function PortfolioPage() {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setError(data.error || `Failed to close ${symbol}`);
+      } else {
+        setPendingClose((prev) => new Set(prev).add(symbol));
       }
       await fetchData();
     } catch {
@@ -166,6 +169,19 @@ export default function PortfolioPage() {
       setClosing(null);
     }
   };
+
+  // Clear pending close when position disappears from broker
+  useEffect(() => {
+    if (pendingClose.size === 0) return;
+    const currentSymbols = new Set(positions.map((p) => p.symbol));
+    setPendingClose((prev) => {
+      const next = new Set(prev);
+      for (const sym of prev) {
+        if (!currentSymbols.has(sym)) next.delete(sym);
+      }
+      return next.size === prev.size ? prev : next;
+    });
+  }, [positions, pendingClose]);
 
   const closeAllPositions = async () => {
     setClosingAll(true);
@@ -432,7 +448,12 @@ export default function PortfolioPage() {
                             <PnlText value={pos.unrealized_pnl} pct={pos.unrealized_pnl_pct} />
                           </TableCell>
                           <TableCell className="text-right">
-                            {confirmClose === pos.symbol ? (
+                            {pendingClose.has(pos.symbol) ? (
+                              <span className="flex items-center gap-1 text-xs text-amber-400">
+                                <RefreshCw className="h-3 w-3 animate-spin" />
+                                Closing...
+                              </span>
+                            ) : confirmClose === pos.symbol ? (
                               <div className="flex gap-1 justify-end">
                                 <Button
                                   variant="destructive"
