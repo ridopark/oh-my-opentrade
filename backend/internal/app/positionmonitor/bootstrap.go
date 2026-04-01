@@ -188,14 +188,32 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 			// Exit rules (MAX_LOSS, SWING_STOP, etc.) compare against the underlying
 			// stock price from bar data, not the option premium.
 			if underlying := domain.UnderlyingFromOCC(sym); underlying != "" {
+				var underlyingPrice float64
+				// Try price cache first (fast, in-memory)
 				if snap, ok := s.priceCache.LatestPrice(underlying); ok {
-					pos.EntryPrice = snap.Price
-					pos.HighWaterMark = snap.Price
-					pos.LowWaterMark = snap.Price
+					underlyingPrice = snap.Price
+				} else if s.repo != nil {
+					// Fallback: query last bar from DB (cache is empty at startup)
+					now := s.nowFunc()
+					bars, err := s.repo.GetMarketBars(ctx, underlying, "1m", now.Add(-30*time.Minute), now)
+					if err == nil && len(bars) > 0 {
+						underlyingPrice = bars[len(bars)-1].Close
+					}
+				}
+				if underlyingPrice > 0 {
+					pos.EntryPrice = underlyingPrice
+					pos.HighWaterMark = underlyingPrice
+					pos.LowWaterMark = underlyingPrice
 					if pos.CustomState == nil {
 						pos.CustomState = make(map[string]float64)
 					}
-					pos.CustomState["option_premium"] = entryPrice // preserve original premium
+					pos.CustomState["option_premium"] = entryPrice
+					s.log.Info().
+						Str("symbol", string(sym)).
+						Str("underlying", string(underlying)).
+						Float64("underlying_price", underlyingPrice).
+						Float64("option_premium", entryPrice).
+						Msg("bootstrap: overrode options entry price to underlying")
 				}
 			}
 		}
