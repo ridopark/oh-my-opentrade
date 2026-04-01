@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { Fragment, useEffect, useState, useCallback, useMemo } from "react";
 import {
   Card,
   CardContent,
@@ -367,7 +367,7 @@ export default function PortfolioPage() {
                   const isCollapsed = collapsed.has(group.underlying);
                   const multiLeg = group.positions.length > 1;
                   return (
-                    <>{/* eslint-disable-next-line react/jsx-key */}
+                    <Fragment key={group.underlying}>
                       {/* Group header row */}
                       <TableRow
                         className="bg-muted/30 hover:bg-muted/50 cursor-pointer border-t"
@@ -462,7 +462,7 @@ export default function PortfolioPage() {
                           </TableCell>
                         </TableRow>
                       ))}
-                    </>
+                    </Fragment>
                   );
                 })}
               </TableBody>
