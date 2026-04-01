@@ -34,6 +34,7 @@ type PortfolioHandler struct {
 	account  ports.AccountPort
 	optQuoter   OptionQuoteProvider
 	lastPriceFn LastPriceFn
+	dailyPnLFn  func(ctx context.Context) (realized, unrealized float64, err error)
 	equityFn func(ctx context.Context) (float64, error)
 	tenantID string
 	envMode  domain.EnvMode
@@ -64,6 +65,11 @@ func (h *PortfolioHandler) SetOptionQuoteProvider(q OptionQuoteProvider) { h.opt
 
 // SetLastPriceFn provides in-memory price lookup as a fast fallback for equity quotes.
 func (h *PortfolioHandler) SetLastPriceFn(fn LastPriceFn) { h.lastPriceFn = fn }
+
+// SetDailyPnLFn provides a function to fetch daily realized + unrealized P&L.
+func (h *PortfolioHandler) SetDailyPnLFn(fn func(ctx context.Context) (realized, unrealized float64, err error)) {
+	h.dailyPnLFn = fn
+}
 
 func (h *PortfolioHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -190,12 +196,23 @@ func (h *PortfolioHandler) handleGetAccount(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	var dailyPnl, dailyPnlPct float64
+	if h.dailyPnLFn != nil {
+		realized, unrealized, pnlErr := h.dailyPnLFn(r.Context())
+		if pnlErr == nil {
+			dailyPnl = realized + unrealized
+			if equity > 0 {
+				dailyPnlPct = (dailyPnl / equity) * 100
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"equity":       equity,
 		"buying_power": bp.EffectiveBuyingPower,
-		"daily_pnl":    0.0,
-		"daily_pnl_pct": 0.0,
+		"daily_pnl":    dailyPnl,
+		"daily_pnl_pct": dailyPnlPct,
 	})
 }
 
