@@ -801,11 +801,12 @@ func (rs *RiskSizer) handleOptionsSignal(
 	if midPrice <= 0 {
 		midPrice = best.Last
 	}
-	// Use a price closer to the ask for buys to improve fill probability.
-	// Mid price is often stale by the time the order reaches the broker.
+	// Use the ask price for buys to ensure fills. Alpaca snapshots are
+	// slightly stale, so bidding at mid or 75th percentile still lands
+	// below the live ask. The ask is the realistic cost of entry.
 	fillPrice := midPrice
-	if best.Ask > 0 && best.Bid > 0 {
-		fillPrice = best.Bid + (best.Ask-best.Bid)*0.75 // 75th percentile of spread
+	if best.Ask > 0 {
+		fillPrice = best.Ask
 	}
 	if midPrice <= 0 {
 		rs.logger.Warn("option contract has no valid price — skipping",

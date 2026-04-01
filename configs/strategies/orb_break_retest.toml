@@ -107,16 +107,16 @@ pct = 0.02
 enabled = true
 
 [options.defaults]
-min_dte = 35
+min_dte = 14
 max_dte = 45
-target_delta_low = 0.40
-target_delta_high = 0.55
-min_open_interest = 100
-max_spread_pct = 0.10
+target_delta_low = 0.30
+target_delta_high = 0.60
+min_open_interest = 20
+max_spread_pct = 0.15
 max_iv = 1.0
 
 [options.regime_overrides.BALANCE]
-target_delta_low = 0.35
-target_delta_high = 0.50
+target_delta_low = 0.30
+target_delta_high = 0.55
 min_dte = 30
 max_dte = 50
