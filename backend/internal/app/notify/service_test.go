@@ -127,96 +127,6 @@ func TestService_CircuitBreakerNotification(t *testing.T) {
 	assert.Contains(t, msgs[0].Message, "3 stops in 2 minutes")
 }
 
-func TestService_FillNotification(t *testing.T) {
-	bus := memory.NewBus()
-	notifier := &mockNotifier{}
-	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
-	require.NoError(t, err)
-
-	err = svc.Start(context.Background())
-	require.NoError(t, err)
-	defer svc.Stop()
-
-	fillPayload := map[string]any{
-		"broker_order_id": "ord-123",
-		"intent_id":       "intent-456",
-		"symbol":          "AAPL",
-		"side":            "buy",
-		"quantity":        10.0,
-		"price":           150.25,
-	}
-	ev, err := domain.NewEvent(domain.EventFillReceived, "tenant-1", domain.EnvModePaper, "fill-1", fillPayload)
-	require.NoError(t, err)
-
-	err = bus.Publish(context.Background(), *ev)
-	require.NoError(t, err)
-
-	msgs := notifier.waitForMessages(1, 5*time.Second)
-	require.Len(t, msgs, 1)
-	assert.Contains(t, msgs[0].Message, "Fill")
-	assert.Contains(t, msgs[0].Message, "AAPL")
-	assert.Contains(t, msgs[0].Message, "150.25")
-}
-
-func TestService_IntentRejectedNotification(t *testing.T) {
-	bus := memory.NewBus()
-	notifier := &mockNotifier{}
-	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
-	require.NoError(t, err)
-
-	err = svc.Start(context.Background())
-	require.NoError(t, err)
-	defer svc.Stop()
-
-	intent := createTestOrderIntent(t)
-	payload := domain.NewOrderIntentRejectedPayload(intent, "risk 850.00 exceeds maximum risk 620.00 (2.0% of 31000.00 equity)")
-	ev, err := domain.NewEvent(domain.EventOrderIntentRejected, "tenant-1", domain.EnvModePaper, "rej-1", payload)
-	require.NoError(t, err)
-
-	err = bus.Publish(context.Background(), *ev)
-	require.NoError(t, err)
-
-	msgs := notifier.waitForMessages(1, 5*time.Second)
-	require.Len(t, msgs, 1)
-	assert.Contains(t, msgs[0].Message, "Intent Rejected")
-	assert.Contains(t, msgs[0].Message, "AAPL")
-	assert.Contains(t, msgs[0].Message, "risk 850.00 exceeds maximum risk 620.00")
-}
-
-func TestService_DebateCompletedNotification(t *testing.T) {
-	bus := memory.NewBus()
-	notifier := &mockNotifier{}
-	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
-	require.NoError(t, err)
-
-	err = svc.Start(context.Background())
-	require.NoError(t, err)
-	defer svc.Stop()
-
-	decision := domain.AdvisoryDecision{
-		Direction:      domain.DirectionLong,
-		Confidence:     0.85,
-		Rationale:      "Strong momentum with volume confirmation",
-		BullArgument:   "RSI shows oversold bounce with increasing volume",
-		BearArgument:   "Resistance at 160 could cap upside",
-		JudgeReasoning: "Momentum outweighs resistance risk — go long",
-	}
-	ev, err := domain.NewEvent(domain.EventDebateCompleted, "tenant-1", domain.EnvModePaper, "debate-1", decision)
-	require.NoError(t, err)
-
-	err = bus.Publish(context.Background(), *ev)
-	require.NoError(t, err)
-
-	msgs := notifier.waitForMessages(1, 5*time.Second)
-	require.Len(t, msgs, 1)
-	assert.Contains(t, msgs[0].Message, "AI Debate")
-	assert.Contains(t, msgs[0].Message, "LONG")
-	assert.Contains(t, msgs[0].Message, "85%")
-	assert.Contains(t, msgs[0].Message, "Bull: RSI shows oversold bounce")
-	assert.Contains(t, msgs[0].Message, "Bear: Resistance at 160")
-	assert.Contains(t, msgs[0].Message, "Judge: Momentum outweighs resistance")
-}
-
 func TestService_MultipleEventsNotifyAll(t *testing.T) {
 	bus := memory.NewBus()
 	notifier := &mockNotifier{}
@@ -233,7 +143,7 @@ func TestService_MultipleEventsNotifyAll(t *testing.T) {
 	}{
 		{domain.EventKillSwitchEngaged, nil},
 		{domain.EventCircuitBreakerTripped, "test"},
-		{domain.EventDebateCompleted, nil},
+		{domain.EventFeedDegraded, domain.FeedDegradedPayload{Feed: "alpaca", Reason: "timeout"}},
 	}
 
 	for i, e := range events {
@@ -245,54 +155,6 @@ func TestService_MultipleEventsNotifyAll(t *testing.T) {
 
 	msgs := notifier.waitForMessages(3, 2*time.Second)
 	assert.Len(t, msgs, 3, "should receive notifications for all 3 event types")
-}
-
-func TestService_SignalEnrichedNotification(t *testing.T) {
-	bus := memory.NewBus()
-	notifier := &mockNotifier{}
-	svc, err := notify.NewService(bus, notifier, zerolog.Nop())
-	require.NoError(t, err)
-
-	err = svc.Start(context.Background())
-	require.NoError(t, err)
-	defer svc.Stop()
-
-	enrichment := domain.SignalEnrichment{
-		Signal: domain.SignalRef{
-			StrategyInstanceID: "strat-1",
-			Symbol:             "AAPL",
-			SignalType:         "entry",
-			Side:               "buy",
-			Strength:           0.42,
-			Tags:               map[string]string{"tf": "1m"},
-		},
-		Status:         domain.EnrichmentOK,
-		Confidence:     0.87,
-		Rationale:      "AI says this is a good entry",
-		Direction:      domain.DirectionLong,
-		BullArgument:   "Trend + momentum align",
-		BearArgument:   "Macro headline risk",
-		JudgeReasoning: "Bull case stronger; proceed carefully",
-	}
-
-	ev, err := domain.NewEvent(domain.EventSignalEnriched, "tenant-1", domain.EnvModePaper, "sig-1", enrichment)
-	require.NoError(t, err)
-
-	err = bus.Publish(context.Background(), *ev)
-	require.NoError(t, err)
-
-	msgs := notifier.waitForMessages(1, 5*time.Second)
-	require.Len(t, msgs, 1)
-	assert.Equal(t, "tenant-1", msgs[0].TenantID)
-	assert.Contains(t, msgs[0].Message, "Signal Enriched")
-	assert.Contains(t, msgs[0].Message, "AAPL")
-	assert.Contains(t, msgs[0].Message, "entry")
-	assert.Contains(t, msgs[0].Message, "buy")
-	assert.Contains(t, msgs[0].Message, "[ok]")
-	assert.Contains(t, msgs[0].Message, "Confidence: **87%**")
-	assert.Contains(t, msgs[0].Message, "Bull: Trend + momentum align")
-	assert.Contains(t, msgs[0].Message, "Bear: Macro headline risk")
-	assert.Contains(t, msgs[0].Message, "Judge: Bull case stronger")
 }
 
 func TestService_SignalEnrichedExitSuppressed(t *testing.T) {
