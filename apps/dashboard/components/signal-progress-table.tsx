@@ -269,7 +269,7 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
           )}
         </div>
       </div>
-      {avwap.blockingGate === "entry_specific" && avwap.entryChecks && avwap.entryChecks.length > 0 && (
+      {avwap.entryChecks && avwap.entryChecks.length > 0 && (
         <EntryChecksPanel checks={avwap.entryChecks} />
       )}
     </div>
