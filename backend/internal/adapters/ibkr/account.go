@@ -77,6 +77,27 @@ func (a *Adapter) GetAccountBuyingPower(_ context.Context) (ports.BuyingPower, e
 	return bp, nil
 }
 
+// GetDailyPnL returns realized + unrealized P&L for the day from IBKR account summary.
+func (a *Adapter) GetDailyPnL(_ context.Context) (realized float64, unrealized float64, err error) {
+	ib := a.conn.IB()
+	if ib == nil {
+		return 0, 0, fmt.Errorf("ibkr: not connected")
+	}
+	summary, sErr := a.cachedAccountSummary(ib)
+	if sErr != nil {
+		return 0, 0, sErr
+	}
+	for _, v := range summary {
+		switch v.Tag {
+		case "RealizedPnL":
+			realized, _ = strconv.ParseFloat(v.Value, 64)
+		case "UnrealizedPnL":
+			unrealized, _ = strconv.ParseFloat(v.Value, 64)
+		}
+	}
+	return realized, unrealized, nil
+}
+
 func (a *Adapter) GetAccountEquity(_ context.Context) (float64, error) {
 	ib := a.conn.IB()
 	if ib == nil {
