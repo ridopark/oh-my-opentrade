@@ -449,7 +449,7 @@ export const LiveChart = memo(function LiveChart({
   return (
     <div
       className={`rounded-lg border bg-card overflow-hidden flex flex-col ${hasActivity ? "border-emerald-500/30" : "border-border"}`}
-      style={height != null ? { height } : { height: "100%" }}
+      style={height !== undefined ? { height } : { height: "100%" }}
     >
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50">
         <div className="flex items-center gap-3">
