@@ -119,6 +119,7 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 		return snap.EMA9, true
 	})
 	portfolioHandler.SetDailyPnLFn(infra.ibkrBroker.GetDailyPnL)
+	portfolioHandler.SetRepo(infra.repo)
 	imux.Handle("/api/portfolio/", portfolioHandler)
 
 	imux.Mux.HandleFunc("/debug/ai-screener/run", func(w http.ResponseWriter, r *http.Request) {

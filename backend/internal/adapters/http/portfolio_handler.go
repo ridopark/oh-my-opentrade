@@ -36,6 +36,7 @@ type PortfolioHandler struct {
 	optQuoter    OptionQuoteProvider
 	lastPriceFn  LastPriceFn
 	dailyPnLFn   func(ctx context.Context) (realized, unrealized float64, err error)
+	repo         ports.RepositoryPort // for trade history lookups
 	pendingClose map[string]time.Time // symbol → when close was requested
 	equityFn func(ctx context.Context) (float64, error)
 	tenantID string
@@ -72,6 +73,9 @@ func (h *PortfolioHandler) SetLastPriceFn(fn LastPriceFn) { h.lastPriceFn = fn }
 func (h *PortfolioHandler) SetDailyPnLFn(fn func(ctx context.Context) (realized, unrealized float64, err error)) {
 	h.dailyPnLFn = fn
 }
+
+// SetRepo provides a repository for trade history lookups (opened_at times).
+func (h *PortfolioHandler) SetRepo(r ports.RepositoryPort) { h.repo = r }
 
 func (h *PortfolioHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -121,6 +125,8 @@ func (h *PortfolioHandler) handleGetPositions(w http.ResponseWriter, r *http.Req
 		MarketValue     float64 `json:"market_value"`
 		UnrealizedPnl   float64 `json:"unrealized_pnl"`
 		UnrealizedPnlPct float64 `json:"unrealized_pnl_pct"`
+		// Timing
+		OpenedAt string `json:"opened_at,omitempty"` // RFC3339 when position was opened
 		// Options fields (empty for equity positions)
 		InstrumentType string  `json:"instrument_type,omitempty"` // "OPTION" or ""
 		Underlying     string  `json:"underlying,omitempty"`
@@ -129,6 +135,23 @@ func (h *PortfolioHandler) handleGetPositions(w http.ResponseWriter, r *http.Req
 		Expiry         string  `json:"expiry,omitempty"`       // "2026-04-24"
 		DTE            int     `json:"dte,omitempty"`
 		Closing        bool    `json:"closing,omitempty"` // true when a close order is pending
+	}
+
+	// Look up entry times from trade history
+	entryTimes := make(map[string]time.Time)
+	if h.repo != nil {
+		now := time.Now().UTC()
+		trades, tErr := h.repo.GetTrades(r.Context(), h.tenantID, h.envMode, now.Add(-30*24*time.Hour), now)
+		if tErr == nil {
+			for _, t := range trades {
+				sym := string(t.Symbol)
+				if strings.EqualFold(t.Side, "BUY") {
+					if existing, ok := entryTimes[sym]; !ok || t.Time.Before(existing) {
+						entryTimes[sym] = t.Time
+					}
+				}
+			}
+		}
 	}
 
 	// Batch-fetch live option prices for all option positions
@@ -202,6 +225,10 @@ func (h *PortfolioHandler) handleGetPositions(w http.ResponseWriter, r *http.Req
 					pj.DTE = 0
 				}
 			}
+		}
+		// Set entry time from trade history
+		if t, ok := entryTimes[string(p.Symbol)]; ok {
+			pj.OpenedAt = t.UTC().Format(time.RFC3339)
 		}
 		// Mark positions with pending close orders (expire after 5 minutes)
 		if h.pendingClose != nil {
