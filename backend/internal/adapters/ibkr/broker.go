@@ -225,7 +225,7 @@ func (a *Adapter) GetPositions(_ context.Context, tenantID string, envMode domai
 			side = "SELL"
 			qty = -qty
 		}
-		trades = append(trades, domain.Trade{
+		t := domain.Trade{
 			Time:     time.Now(),
 			TenantID: tenantID,
 			EnvMode:  envMode,
@@ -235,7 +235,29 @@ func (a *Adapter) GetPositions(_ context.Context, tenantID string, envMode domai
 			Price:    p.AvgCost,
 			Status:   "FILLED",
 			Strategy: "unknown",
-		})
+		}
+
+		// Enrich options positions with contract details
+		if p.Contract.SecType == "OPT" {
+			t.InstrumentType = domain.InstrumentTypeOption
+			t.Underlying = p.Contract.Symbol
+			t.Strike = p.Contract.Strike
+			t.OptionRight = strings.ToUpper(p.Contract.Right)
+			if expiry, err := time.Parse("20060102", p.Contract.LastTradeDateOrContractMonth); err == nil {
+				t.Expiry = expiry
+				right := domain.OptionRightCall
+				if strings.EqualFold(p.Contract.Right, "P") {
+					right = domain.OptionRightPut
+				}
+				occ := domain.FormatOCCSymbol(p.Contract.Symbol, expiry, right, p.Contract.Strike)
+				t.Symbol = domain.Symbol(occ)
+				t.OptionSymbol = occ
+			}
+			// AvgCost for options is per-share, not per-contract
+			t.Price = p.AvgCost
+		}
+
+		trades = append(trades, t)
 	}
 	return trades, nil
 }
