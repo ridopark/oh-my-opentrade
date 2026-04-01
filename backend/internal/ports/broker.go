@@ -2,10 +2,15 @@ package ports
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 )
+
+// ErrOrderNotFound is returned by GetOrderDetails when the broker has no record
+// of the order (e.g. it was canceled when the previous session disconnected).
+var ErrOrderNotFound = errors.New("order not found at broker")
 
 // BrokerPort defines the interface for interacting with a broker.
 type BrokerPort interface {

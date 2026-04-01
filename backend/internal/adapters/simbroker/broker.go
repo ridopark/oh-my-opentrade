@@ -329,7 +329,7 @@ func (b *Broker) GetOrderDetails(_ context.Context, orderID string) (ports.Order
 	defer b.mu.RUnlock()
 	ord, ok := b.orders[orderID]
 	if !ok {
-		return ports.OrderDetails{}, fmt.Errorf("simbroker: order %s not found", orderID)
+		return ports.OrderDetails{}, fmt.Errorf("simbroker: order %s: %w", orderID, ports.ErrOrderNotFound)
 	}
 	return ports.OrderDetails{
 		Status:         "filled",
