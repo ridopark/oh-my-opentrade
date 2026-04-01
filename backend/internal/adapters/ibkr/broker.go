@@ -342,7 +342,15 @@ func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string
 	if trade == nil {
 		return "", fmt.Errorf("ibkr: ClosePosition PlaceOrder returned nil")
 	}
-	return strconv.FormatInt(trade.Order.OrderID, 10), nil
+	orderID := strconv.FormatInt(trade.Order.OrderID, 10)
+	a.log.Info().
+		Str("order_id", orderID).
+		Str("symbol", string(symbol)).
+		Str("action", action).
+		Float64("qty", qty).
+		Str("order_type", order.OrderType).
+		Msg("ibkr: close order placed")
+	return orderID, nil
 }
 
 func directionToAction(d domain.Direction) string {
