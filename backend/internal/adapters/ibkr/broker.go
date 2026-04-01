@@ -268,9 +268,23 @@ func (a *Adapter) GetPosition(_ context.Context, symbol domain.Symbol) (float64,
 		return 0, fmt.Errorf("ibkr: not connected")
 	}
 
+	if domain.IsOCCSymbol(symbol) {
+		target := newOptionContract(symbol)
+		for _, p := range ib.Positions() {
+			if p.Contract.SecType == "OPT" &&
+				strings.EqualFold(p.Contract.Symbol, target.Symbol) &&
+				p.Contract.Strike == target.Strike &&
+				p.Contract.Right == target.Right &&
+				p.Contract.LastTradeDateOrContractMonth == target.LastTradeDateOrContractMonth {
+				return p.Position.Float(), nil
+			}
+		}
+		return 0, nil
+	}
+
 	sym := strings.ToUpper(string(symbol))
 	for _, p := range ib.Positions() {
-		if strings.EqualFold(p.Contract.Symbol, sym) {
+		if strings.EqualFold(p.Contract.Symbol, sym) && p.Contract.SecType == "STK" {
 			return p.Position.Float(), nil
 		}
 	}
@@ -283,12 +297,27 @@ func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string
 		return "", fmt.Errorf("ibkr: not connected")
 	}
 
-	sym := strings.ToUpper(string(symbol))
 	var qty float64
-	for _, p := range ib.Positions() {
-		if strings.EqualFold(p.Contract.Symbol, sym) {
-			qty = p.Position.Float()
-			break
+	if domain.IsOCCSymbol(symbol) {
+		// For options: match by building the target contract and comparing fields
+		target := newOptionContract(symbol)
+		for _, p := range ib.Positions() {
+			if p.Contract.SecType == "OPT" &&
+				strings.EqualFold(p.Contract.Symbol, target.Symbol) &&
+				p.Contract.Strike == target.Strike &&
+				p.Contract.Right == target.Right &&
+				p.Contract.LastTradeDateOrContractMonth == target.LastTradeDateOrContractMonth {
+				qty = p.Position.Float()
+				break
+			}
+		}
+	} else {
+		sym := strings.ToUpper(string(symbol))
+		for _, p := range ib.Positions() {
+			if strings.EqualFold(p.Contract.Symbol, sym) && p.Contract.SecType == "STK" {
+				qty = p.Position.Float()
+				break
+			}
 		}
 	}
 	if qty == 0 {
