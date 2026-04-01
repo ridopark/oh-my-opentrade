@@ -280,7 +280,15 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 					}, domain.OrderIntentStatus(details.Status)))
 			}
 			if details.FilledQty <= 0 {
-				continue
+				if details.Status == "filled" {
+					// IBKR paper sometimes reports filled status but no fill qty.
+					// Use the original order qty as the fill qty.
+					details.FilledQty = details.Qty
+					details.FilledAvgPrice = order.LimitPrice
+					ol.Info().Float64("inferred_qty", details.FilledQty).Float64("inferred_price", details.FilledAvgPrice).Msg("reconcile: filled order has no fill data — inferring from order qty")
+				} else {
+					continue
+				}
 			}
 			ol.Info().Float64("filled_qty", details.FilledQty).Msg("reconcile: terminal order has fills — checking for missed trades")
 		}
