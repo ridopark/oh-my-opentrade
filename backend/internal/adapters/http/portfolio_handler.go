@@ -312,12 +312,18 @@ func (h *PortfolioHandler) handleCloseAll(w http.ResponseWriter, r *http.Request
 
 	results := make([]closeResult, 0, len(positions))
 	for _, p := range positions {
+		// Cancel existing sell orders first
+		_, _ = h.broker.CancelOpenOrders(r.Context(), p.Symbol, "sell")
 		orderID, closeErr := h.broker.ClosePosition(r.Context(), p.Symbol)
 		if closeErr != nil {
 			h.log.Error().Err(closeErr).Str("symbol", string(p.Symbol)).Msg("failed to close position")
 			results = append(results, closeResult{Symbol: string(p.Symbol), Error: closeErr.Error()})
 		} else {
 			results = append(results, closeResult{Symbol: string(p.Symbol), OrderID: orderID})
+			if h.pendingClose == nil {
+				h.pendingClose = make(map[string]time.Time)
+			}
+			h.pendingClose[string(p.Symbol)] = time.Now()
 		}
 	}
 
