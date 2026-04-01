@@ -362,7 +362,25 @@ func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string
 		Float64("qty", qty).
 		Str("order_type", order.OrderType).
 		Msg("ibkr: close order placed")
+
+	// Schedule a position refresh after a short delay to update the cached list
+	go func() {
+		time.Sleep(3 * time.Second)
+		a.RefreshPositions()
+	}()
+
 	return orderID, nil
+}
+
+// RefreshPositions forces ibsync to re-request the full position list from IBKR.
+// This is needed because the cached Positions() list doesn't auto-update when
+// close orders fill on IBKR paper accounts.
+func (a *Adapter) RefreshPositions() {
+	ib := a.conn.IB()
+	if ib == nil {
+		return
+	}
+	ib.ReqPositions()
 }
 
 func directionToAction(d domain.Direction) string {
