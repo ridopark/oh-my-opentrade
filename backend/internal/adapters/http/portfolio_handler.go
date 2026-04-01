@@ -19,16 +19,20 @@ type PortfolioBroker interface {
 	GetPosition(ctx context.Context, symbol domain.Symbol) (float64, error)
 }
 
-// QuoteProvider returns bid/ask for a symbol. Optional — nil disables the quote endpoint.
-type QuoteProvider interface {
-	GetQuote(ctx context.Context, symbol domain.Symbol) (bid float64, ask float64, err error)
+// OptionQuoteProvider fetches bid/ask/last for option contract symbols.
+type OptionQuoteProvider interface {
+	GetOptionPrices(ctx context.Context, symbols []domain.Symbol) (map[domain.Symbol]domain.OptionQuote, error)
 }
+
+// LastPriceFn returns the last known close price for an equity symbol from in-memory bar data.
+type LastPriceFn func(symbol string) (close float64, ok bool)
 
 // PortfolioHandler serves portfolio endpoints: positions, account summary, and close actions.
 type PortfolioHandler struct {
 	broker   PortfolioBroker
 	account  ports.AccountPort
-	equoter  QuoteProvider
+	optQuoter   OptionQuoteProvider
+	lastPriceFn LastPriceFn
 	equityFn func(ctx context.Context) (float64, error)
 	tenantID string
 	envMode  domain.EnvMode
@@ -54,8 +58,11 @@ func NewPortfolioHandler(
 	}
 }
 
-// SetQuoteProvider enables the GET /api/portfolio/quote/{symbol} endpoint.
-func (h *PortfolioHandler) SetQuoteProvider(q QuoteProvider) { h.equoter = q }
+// SetOptionQuoteProvider enables option contract quotes via Alpaca.
+func (h *PortfolioHandler) SetOptionQuoteProvider(q OptionQuoteProvider) { h.optQuoter = q }
+
+// SetLastPriceFn provides in-memory price lookup as a fast fallback for equity quotes.
+func (h *PortfolioHandler) SetLastPriceFn(fn LastPriceFn) { h.lastPriceFn = fn }
 
 func (h *PortfolioHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -218,23 +225,55 @@ func (h *PortfolioHandler) handleCloseAll(w http.ResponseWriter, r *http.Request
 }
 
 func (h *PortfolioHandler) handleGetQuote(w http.ResponseWriter, r *http.Request, symbol string) {
-	if h.equoter == nil {
-		jsonErr(w, "quote provider not configured", http.StatusServiceUnavailable)
+	sym := domain.Symbol(symbol)
+
+	// For equities: use fast in-memory last bar price (no IBKR round-trip)
+	if !domain.IsOCCSymbol(sym) {
+		if h.lastPriceFn == nil {
+			jsonErr(w, "price source not configured", http.StatusServiceUnavailable)
+			return
+		}
+		close, ok := h.lastPriceFn(symbol)
+		if !ok {
+			jsonErr(w, "no price data for "+symbol, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"symbol": symbol,
+			"bid":    close,
+			"ask":    close,
+			"mid":    close,
+			"source": "bar",
+		})
 		return
 	}
-	bid, ask, err := h.equoter.GetQuote(r.Context(), domain.Symbol(symbol))
+
+	// For options contracts: use Alpaca options quote
+	if h.optQuoter == nil {
+		jsonErr(w, "options quote provider not configured", http.StatusServiceUnavailable)
+		return
+	}
+	quotes, err := h.optQuoter.GetOptionPrices(r.Context(), []domain.Symbol{sym})
 	if err != nil {
-		h.log.Warn().Err(err).Str("symbol", symbol).Msg("quote failed")
+		h.log.Warn().Err(err).Str("symbol", symbol).Msg("options quote failed")
 		jsonErr(w, "quote failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	mid := (bid + ask) / 2
+	q, ok := quotes[sym]
+	if !ok {
+		jsonErr(w, "no quote for "+symbol, http.StatusNotFound)
+		return
+	}
+	mid := (q.Bid + q.Ask) / 2
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"symbol": symbol,
-		"bid":    bid,
-		"ask":    ask,
+		"bid":    q.Bid,
+		"ask":    q.Ask,
 		"mid":    mid,
+		"last":   q.Last,
+		"source": "alpaca",
 	})
 }
 
