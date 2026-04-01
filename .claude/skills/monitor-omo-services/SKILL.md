@@ -16,9 +16,7 @@ Verify all services are reachable before starting:
 ```bash
 curl -s http://localhost:3100/ready && echo "Loki: OK" || echo "Loki: DOWN"
 docker exec omo-timescaledb pg_isready -U opentrade -d opentrade 2>/dev/null && echo "DB: OK" || echo "DB: DOWN"
-source /home/ridopark/src/oh-my-opentrade/.env && curl -s -o /dev/null -w "%{http_code}" https://paper-api.alpaca.markets/v2/account \
-  -H "APCA-API-KEY-ID: $APCA_API_KEY_ID" \
-  -H "APCA-API-SECRET-KEY: $APCA_API_SECRET_KEY" | xargs -I{} echo "Alpaca: {}"
+ssh ubuntu@instance-20260227-2334 "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/portfolio/account" 2>/dev/null | xargs -I{} echo "omo-core API: {}"
 ```
 
 If any service is down, warn the user. Proceed with whichever is available.
@@ -159,30 +157,32 @@ for stream in results:
         m = re.search(r'symbol=(\S+)', log_line)
         if m:
             symbols_seen.add(m.group(1))
-expected_crypto = {'BTC/USD','ETH/USD','SOL/USD','AVAX/USD','DOGE/USD','PEPE/USD'}
-expected_equity = {'AAPL','MSFT','GOOGL','AMZN','TSLA','SOXL','U','PLTR','SPY','META'}
-# Check if we're during RTH (9:30-16:00 ET, Mon-Fri)
+expected_equity = {'AAPL','MSFT','GOOGL','AMZN','META','TSLA','NFLX','NVDA','AMD','AVGO',
+    'MU','MRVL','SMCI','PLTR','CRM','SNOW','NET','SOFI','HOOD','COIN',
+    'AFRM','JPM','XOM','OXY','LLY','MRNA','HIMS','RIVN','RBLX','BA',
+    'SPY','QQQ','IWM','SOXL'}
+# Check if we're during extended hours (IBKR streams 4:00-20:00 ET)
 et = datetime.now(timezone(timedelta(hours=-5)))  # ET = UTC-5 (EST) or UTC-4 (EDT)
-is_rth = et.weekday() < 5 and 930 <= et.hour * 100 + et.minute <= 1600
-if is_rth:
-    all_expected = expected_crypto | expected_equity
-    label = 'all 16 symbols (RTH active)'
+is_market_hours = et.weekday() < 5 and 400 <= et.hour * 100 + et.minute <= 2000
+if is_market_hours:
+    all_expected = expected_equity
+    label = f'all {len(expected_equity)} equity symbols (market hours)'
 else:
-    all_expected = expected_crypto
-    label = '6 crypto symbols (outside RTH)'
+    all_expected = set()  # No symbols expected outside extended hours
+    label = 'no symbols expected (market closed)'
 missing = all_expected - symbols_seen
-if missing:
+if all_expected and missing:
     print(f'WARNING: No bars in last 3 min for: {sorted(missing)}')
-else:
+elif all_expected:
     print(f'All {len(all_expected)} {label} active (last 3 min)')
-if not is_rth:
-    equity_seen = expected_equity & symbols_seen
-    if equity_seen:
-        print(f'Note: equity symbols also active outside RTH: {sorted(equity_seen)}')
+else:
+    print(f'{label}')
+    if symbols_seen:
+        print(f'Note: symbols still active outside hours: {sorted(symbols_seen)}')
 "
 ```
 
-During equity market hours (9:30-16:00 ET, Mon-Fri), all 16 symbols should be active. Outside RTH, only the 6 crypto symbols are expected — missing equity symbols outside RTH is normal and should NOT be reported as a warning.
+During market hours (extended: 4:00-20:00 ET via IBKR, Mon-Fri), all 34 equity symbols should be active. Outside these hours, no symbols are expected — missing symbols outside market hours is normal and should NOT be reported as a warning. Currently equity-only (no crypto symbols configured).
 
 ### Log Classification Rules
 
@@ -207,7 +207,8 @@ During equity market hours (9:30-16:00 ET, Mon-Fri), all 16 symbols should be ac
 
 - `orb_break_retest` "no builtin implementation for hook" — legacy config, harmless
 - `PaperOnly` lifecycle state errors — old config format, harmless after restart
-- Slippage/spread rejections on altcoins (DOGE, PEPE, AVAX) during off-hours — expected
+- IBKR error codes 2104/2106/2158 logged as WARN — these are "connection OK" messages, not actual errors
+- `bar rejected by adaptive filter` on low-volume after-hours bars — expected for thinly traded symbols
 
 ---
 
@@ -232,19 +233,22 @@ ORDER BY symbol;
 "
 ```
 
-Cross-reference against broker:
+Cross-reference against broker (IBKR via omo-core API on staging):
 
 ```bash
-source /home/ridopark/src/oh-my-opentrade/.env && curl -s https://paper-api.alpaca.markets/v2/positions \
-  -H "APCA-API-KEY-ID: $APCA_API_KEY_ID" \
-  -H "APCA-API-SECRET-KEY: $APCA_API_SECRET_KEY" | python3 -c "
+ssh ubuntu@instance-20260227-2334 "curl -s http://localhost:8080/api/portfolio/positions" 2>/dev/null | python3 -c "
 import json, sys
-positions = json.load(sys.stdin)
-if not positions or isinstance(positions, dict):
+data = json.load(sys.stdin)
+positions = data.get('positions', [])
+if not positions:
     print('No broker positions')
     sys.exit(0)
 for p in positions:
-    print(f\"{p['symbol']:<12} {p['side']:<6} qty={float(p['qty']):>12.6f}  pnl={float(p.get('unrealized_pl',0)):>+10.2f}\")
+    symbol = p.get('symbol', 'UNKNOWN')
+    side = 'long' if float(p.get('quantity', 0)) > 0 else 'short'
+    qty = abs(float(p.get('quantity', 0)))
+    pnl = float(p.get('unrealized_pnl', 0))
+    print(f'{symbol:<12} {side:<6} qty={qty:>12.6f}  pnl={pnl:>+10.2f}')
 "
 ```
 
@@ -282,7 +286,7 @@ LIMIT 10;
 "
 ```
 
-**If found**: HIGH — stale open orders may need manual cancellation via Alpaca API.
+**If found**: HIGH — stale open orders may need manual cancellation via IBKR.
 
 ### Check 4: Market Bar Gaps
 
@@ -345,21 +349,18 @@ ORDER BY trades DESC;
 
 ### Check 6: Portfolio Summary & Drawdown
 
+Query omo-core API on staging (backed by IBKR NetLiquidation + BuyingPower):
+
 ```bash
-source /home/ridopark/src/oh-my-opentrade/.env && curl -s https://paper-api.alpaca.markets/v2/account \
-  -H "APCA-API-KEY-ID: $APCA_API_KEY_ID" \
-  -H "APCA-API-SECRET-KEY: $APCA_API_SECRET_KEY" | python3 -c "
+ssh ubuntu@instance-20260227-2334 "curl -s http://localhost:8080/api/portfolio/account" 2>/dev/null | python3 -c "
 import json, sys
 a = json.load(sys.stdin)
 equity = float(a['equity'])
-last_equity = float(a['last_equity'])
 buying_power = float(a['buying_power'])
-daily_change = equity - last_equity
-daily_pct = (daily_change / last_equity * 100) if last_equity else 0
-positions = int(a.get('position_market_value', '0') != '0')
-print(f'Equity: \${equity:,.2f}  (daily: \${daily_change:+,.2f} / {daily_pct:+.2f}%)')
+daily_pnl = float(a.get('daily_pnl', 0))
+daily_pct = float(a.get('daily_pnl_pct', 0))
+print(f'Equity: \${equity:,.2f}  (daily: \${daily_pnl:+,.2f} / {daily_pct:+.2f}%)')
 print(f'Buying power: \${buying_power:,.2f}')
-print(f'Last equity: \${last_equity:,.2f}')
 if daily_pct < -2:
     print(f'WARNING: Daily drawdown {daily_pct:.2f}% exceeds -2% threshold')
 if daily_pct < -5:
@@ -447,7 +448,7 @@ After all checks, produce a single concise report:
 **Monitoring Report — [time] CT (since restart at [start_time], uptime: [N]m)**
 
 **System Health:**
-- Services: [Loki OK, DB OK, Alpaca OK]
+- Services: [Loki OK, DB OK, omo-core API OK]
 - Symbols active: [N/16] (last 3 min)
 - [any frozen/disconnected symbols]
 
@@ -515,12 +516,13 @@ After all checks, produce a single concise report:
 
 ---
 
-## Alpaca-Specific Monitoring Notes
+## IBKR-Specific Monitoring Notes
 
-- **WebSocket Disconnects**: Alpaca `stream.alpaca.markets` can drop connections without TCP close frame. Monitor for `websocket error` and verify `reconnect` succeeds within 5s.
-- **Paper API Latency**: Alpaca Paper is significantly slower than Live. Use 500ms as the baseline, not sub-100ms.
-- **Crypto Minimums**: Alpaca has strict minimum notionals ($1-$10). Watch for `notional too small` in risk_sizer logs.
-- **Rate Limits**: 200 requests/min for data API, separate limits for trading. Monitor for `429` status codes.
+- **Connection Drops**: IBKR gateway can drop connections silently. Monitor for `ibkr_connection` errors and verify reconnection within 5s.
+- **Paper Account**: Account `DUP560010` on ib-gateway port 4004. Equity from `NetLiquidation` tag, buying power from `BuyingPower`/`DayTradingBuyingPower` tags.
+- **Market Data Codes**: IBKR error codes 2104/2106/2158 are informational ("farm connection is OK") — suppress these.
+- **Rate Limits**: IBKR has 50 messages/sec limit. Monitor for pacing violations in logs.
+- **Account Equity Refresh**: omo-core refreshes equity from IBKR every 5 minutes (`services.go:804-829`). Cached value used between refreshes.
 
 ---
 
@@ -563,23 +565,19 @@ LIMIT 20;
 "
 ```
 
-**Check broker open orders:**
+**Check broker open positions (via omo-core API on staging):**
 ```bash
-source /home/ridopark/src/oh-my-opentrade/.env && curl -s "https://paper-api.alpaca.markets/v2/orders?status=open" \
-  -H "APCA-API-KEY-ID: $APCA_API_KEY_ID" \
-  -H "APCA-API-SECRET-KEY: $APCA_API_SECRET_KEY" | python3 -m json.tool
+ssh ubuntu@instance-20260227-2334 "curl -s http://localhost:8080/api/portfolio/positions" 2>/dev/null | python3 -m json.tool
 ```
 
-**Check broker account buying power:**
+**Check broker account equity & buying power (via omo-core API on staging):**
 ```bash
-source /home/ridopark/src/oh-my-opentrade/.env && curl -s https://paper-api.alpaca.markets/v2/account \
-  -H "APCA-API-KEY-ID: $APCA_API_KEY_ID" \
-  -H "APCA-API-SECRET-KEY: $APCA_API_SECRET_KEY" | python3 -c "
+ssh ubuntu@instance-20260227-2334 "curl -s http://localhost:8080/api/portfolio/account" 2>/dev/null | python3 -c "
 import json, sys
 a = json.load(sys.stdin)
 print(f\"Equity: \${float(a['equity']):,.2f}\")
 print(f\"Buying Power: \${float(a['buying_power']):,.2f}\")
-print(f\"Day P&L: \${float(a['equity'])-float(a['last_equity']):+,.2f}\")
+print(f\"Day P&L: \${float(a.get('daily_pnl', 0)):+,.2f}\")
 "
 ```
 
@@ -604,7 +602,7 @@ Some log lines are structured JSON (`{"level":"info",...}`), others are plain Go
 | `execution` | Validates and submits orders to broker |
 | `position_monitor` | Tracks open positions, triggers exit rules |
 | `risk_sizer` | Calculates position sizes, applies dynamic risk |
-| `alpaca` | Broker API communication (REST + WebSocket) |
+| `ibkr` | Broker API communication (IBKR gateway + ibsync) |
 | `ingestion` | Bar sanitization and repair |
 | `warmup` | Startup historical bar loading |
 | `monitor` | Indicator calculation and regime detection |
@@ -627,9 +625,9 @@ Some log lines are structured JSON (`{"level":"info",...}`), others are plain Go
 
 - Loki endpoint: `http://localhost:3100`
 - TimescaleDB: `docker exec -i omo-timescaledb psql -U opentrade -d opentrade`
-- Alpaca credentials: sourced from `/home/ridopark/src/oh-my-opentrade/.env`
+- omo-core API on staging: `ssh ubuntu@instance-20260227-2334 "curl -s http://localhost:8080/api/..."` (IBKR-backed)
+- IBKR paper account: `DUP560010` on ib-gateway port 4004
 - All commands run from project root: `/home/ridopark/src/oh-my-opentrade`
-- Crypto trades 24/7; equity only during RTH (9:30-16:00 ET)
-- After-hours crypto rejections (trading_window, spread_guard) are expected — suppress
-- Alpaca Paper API is slower than Live — use 500ms as latency baseline, not sub-100ms
+- Currently equity-only (34 symbols), no crypto — equity only during RTH (9:30-16:00 ET)
+- After-hours bars are still ingested via IBKR but no strategy instances fire outside RTH
 - The system uses paper trading — losses are not real money but should still be reported

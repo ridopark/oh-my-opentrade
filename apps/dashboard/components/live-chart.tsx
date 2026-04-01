@@ -364,15 +364,17 @@ export const LiveChart = memo(function LiveChart({
     candleRef.current.setData(sorted.map((b) => ({ time: b.time as Time, open: b.open, high: b.high, low: b.low, close: b.close })));
     volumeRef.current.setData(sorted.map((b) => ({ time: b.time as Time, value: b.volume, color: b.close >= b.open ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)" })));
 
-    // EMAs: client-side only — server values are sparse and computed on 1m bars,
-    // mixing them with client values (computed on the displayed timeframe) causes jagged lines.
+    // EMAs: computed on RTH bars only (9:30-16:00 ET). Pre-market bars are excluded
+    // because their thin volume produces unreliable EMA values that distort the
+    // critical 9:30-10:00 window. The EMA carries over from previous session close.
     const toLine = (data: { time: number; value: number }[]): { time: Time; value: number }[] =>
       data.map(d => ({ time: d.time as Time, value: d.value }));
 
-    if (ema9Ref.current) ema9Ref.current.setData(toLine(computeEMA(sorted, 9)));
-    if (ema21Ref.current) ema21Ref.current.setData(toLine(computeEMA(sorted, 21)));
-    if (ema50Ref.current) ema50Ref.current.setData(toLine(computeEMA(sorted, 50)));
-    if (ema200Ref.current) ema200Ref.current.setData(toLine(computeEMA(sorted, 200)));
+    const rthBars = sorted.filter(b => isRTH(b.time));
+    if (ema9Ref.current) ema9Ref.current.setData(toLine(computeEMA(rthBars, 9)));
+    if (ema21Ref.current) ema21Ref.current.setData(toLine(computeEMA(rthBars, 21)));
+    if (ema50Ref.current) ema50Ref.current.setData(toLine(computeEMA(rthBars, 50)));
+    if (ema200Ref.current) ema200Ref.current.setData(toLine(computeEMA(rthBars, 200)));
 
     // AVWAPs: client-side only, RTH-filtered
     const clientAVWAPs = computeAllAVWAPs(sorted);
