@@ -47,12 +47,17 @@ func BuildIngestion(deps IngestionDeps) (*IngestionBundle, error) {
 }
 
 type MonitorDeps struct {
-	EventBus ports.EventBusPort
-	Repo     ports.RepositoryPort
-	Logger   zerolog.Logger
+	EventBus   ports.EventBusPort
+	Repo       ports.RepositoryPort
+	Logger     zerolog.Logger
+	BacktestID string // non-empty → tag ORB tracker logs with this ID
 }
 
 func BuildMonitor(deps MonitorDeps) (*monitor.Service, error) {
 	monLog := deps.Logger.With().Str("component", "monitor").Logger()
-	return monitor.NewService(deps.EventBus, deps.Repo, monLog), nil
+	svc := monitor.NewService(deps.EventBus, deps.Repo, monLog)
+	if deps.BacktestID != "" {
+		svc.TagBacktest(deps.BacktestID)
+	}
+	return svc, nil
 }

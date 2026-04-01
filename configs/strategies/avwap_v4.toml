@@ -142,7 +142,7 @@ avwap_stop_buffer_bps = 10
 
 # --- Confluence Weighting ---
 # Entries scored 0-10 based on confirmation factors. Below threshold = filtered out.
-min_confluence_score = 8
+min_confluence_score = 9
 
 # Fibonacci convergence (+3): AVWAP aligns with 38.2%/50%/61.8% retracement
 fib_confluence_enabled = true
@@ -205,15 +205,15 @@ max_contracts = 5
 [options.defaults]
 min_dte = 14
 max_dte = 45
-target_delta_low = 0.60
-target_delta_high = 0.80
+target_delta_low = 0.40
+target_delta_high = 0.55
 min_open_interest = 50
 max_spread_pct = 0.08
 max_iv = 0.8
 
 [options.regime_overrides.BALANCE]
-target_delta_low = 0.55
-target_delta_high = 0.75
+target_delta_low = 0.35
+target_delta_high = 0.50
 min_dte = 14
 max_dte = 45
 

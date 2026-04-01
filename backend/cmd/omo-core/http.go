@@ -108,6 +108,7 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	imux.Handle("/backtest/", backtestHandler)
 
 	portfolioHandler := omhttp.NewPortfolioHandler(infra.ibkrBroker, infra.ibkrBroker, infra.ibkrBroker.GetAccountEquity, "default", domain.EnvModePaper, httpLog)
+	portfolioHandler.SetQuoteProvider(infra.ibkrBroker)
 	imux.Handle("/api/portfolio/", portfolioHandler)
 
 	imux.Mux.HandleFunc("/debug/ai-screener/run", func(w http.ResponseWriter, r *http.Request) {

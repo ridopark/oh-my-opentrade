@@ -33,6 +33,7 @@ type StrategyDeps struct {
 	Clock           func() time.Time
 	DisableEnricher bool
 	Logger          zerolog.Logger
+	BacktestID      string // non-empty → tag slog output with backtest_id
 }
 
 // StrategyPipeline is the return value of BuildStrategyPipeline, exposing the
@@ -54,6 +55,9 @@ type StrategyPipeline struct {
 // This produces the IDENTICAL pipeline as omo-core's initStrategyPipeline().
 func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 	stratLog := slog.Default()
+	if deps.BacktestID != "" {
+		stratLog = stratLog.With("backtest_id", deps.BacktestID)
+	}
 
 	registry := strategy.NewMemRegistry()
 	for _, s := range []start.Strategy{

@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -166,6 +167,13 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 		log:              log,
 	}
 }
+// TagBacktest annotates the ORB tracker's slog logger with backtest_id so
+// that backtest ORB log lines are distinguishable from live ones.
+func (s *Service) TagBacktest(backtestID string) {
+	l := slog.Default().With("source", "monitor", "backtest_id", backtestID)
+	s.orbTracker.SetLogger(l)
+}
+
 // SetORBConfig overrides the default ORB configuration with values from
 // strategy DNA parameters. This must be called before Start() to ensure
 // the ORB tracker uses DNA-configured thresholds (min_rvol, min_confidence, etc.)

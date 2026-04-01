@@ -19,10 +19,16 @@ type PortfolioBroker interface {
 	GetPosition(ctx context.Context, symbol domain.Symbol) (float64, error)
 }
 
+// QuoteProvider returns bid/ask for a symbol. Optional — nil disables the quote endpoint.
+type QuoteProvider interface {
+	GetQuote(ctx context.Context, symbol domain.Symbol) (bid float64, ask float64, err error)
+}
+
 // PortfolioHandler serves portfolio endpoints: positions, account summary, and close actions.
 type PortfolioHandler struct {
 	broker   PortfolioBroker
 	account  ports.AccountPort
+	equoter  QuoteProvider
 	equityFn func(ctx context.Context) (float64, error)
 	tenantID string
 	envMode  domain.EnvMode
@@ -48,6 +54,9 @@ func NewPortfolioHandler(
 	}
 }
 
+// SetQuoteProvider enables the GET /api/portfolio/quote/{symbol} endpoint.
+func (h *PortfolioHandler) SetQuoteProvider(q QuoteProvider) { h.equoter = q }
+
 func (h *PortfolioHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, DELETE, OPTIONS")
@@ -71,6 +80,9 @@ func (h *PortfolioHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleClosePosition(w, r, symbol)
 	case path == "account" && r.Method == http.MethodGet:
 		h.handleGetAccount(w, r)
+	case strings.HasPrefix(path, "quote/") && r.Method == http.MethodGet:
+		symbol := strings.TrimPrefix(path, "quote/")
+		h.handleGetQuote(w, r, symbol)
 	default:
 		jsonErr(w, "not found", http.StatusNotFound)
 	}
@@ -203,6 +215,27 @@ func (h *PortfolioHandler) handleCloseAll(w http.ResponseWriter, r *http.Request
 	h.log.Info().Int("total", len(positions)).Msg("close all positions requested")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"results": results})
+}
+
+func (h *PortfolioHandler) handleGetQuote(w http.ResponseWriter, r *http.Request, symbol string) {
+	if h.equoter == nil {
+		jsonErr(w, "quote provider not configured", http.StatusServiceUnavailable)
+		return
+	}
+	bid, ask, err := h.equoter.GetQuote(r.Context(), domain.Symbol(symbol))
+	if err != nil {
+		h.log.Warn().Err(err).Str("symbol", symbol).Msg("quote failed")
+		jsonErr(w, "quote failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	mid := (bid + ask) / 2
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"symbol": symbol,
+		"bid":    bid,
+		"ask":    ask,
+		"mid":    mid,
+	})
 }
 
 func jsonErr(w http.ResponseWriter, msg string, code int) {
