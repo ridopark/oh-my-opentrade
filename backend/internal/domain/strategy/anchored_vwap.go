@@ -10,6 +10,7 @@ type AnchorPoint struct {
 	Name       string
 	AnchorTime time.Time
 	Price      float64
+	RTHOnly    bool // when true, Update skips bars outside 9:30-16:00 ET
 }
 
 type AnchoredVWAPState struct {
@@ -42,6 +43,25 @@ func (s AnchoredVWAPState) SD() float64 {
 		return 0
 	}
 	return math.Sqrt(v)
+}
+
+// etLoc is America/New_York, used for RTH filtering (9:30-16:00 ET).
+var etLoc *time.Location
+
+func init() {
+	var err error
+	etLoc, err = time.LoadLocation("America/New_York")
+	if err != nil {
+		// Fallback: UTC-5 (EST). This should never happen in practice.
+		etLoc = time.FixedZone("EST", -5*3600)
+	}
+}
+
+// isRTH returns true if barTime falls within Regular Trading Hours (09:30-16:00 ET).
+func isRTH(barTime time.Time) bool {
+	et := barTime.In(etLoc)
+	hhmm := et.Hour()*60 + et.Minute()
+	return hhmm >= 9*60+30 && hhmm < 16*60
 }
 
 type AnchoredVWAPCalc struct {
@@ -134,12 +154,18 @@ func (c *AnchoredVWAPCalc) Update(barTime time.Time, high, low, close_, volume f
 	tp := (high + low + close_) / 3.0
 	pv := tp * volume
 
+	rthOK := isRTH(barTime) // precompute once per bar
+
 	for _, e := range c.anchors {
 		if !e.active {
 			if barTime.Before(e.AnchorTime) {
 				continue
 			}
 			e.active = true
+		}
+		// Skip pre-market/after-hours bars for RTH-only anchors (pd_high, pd_low).
+		if e.RTHOnly && !rthOK {
+			continue
 		}
 		oldVWAP := e.state.Value()
 		e.state.CumPV += pv

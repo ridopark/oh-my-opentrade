@@ -21,7 +21,7 @@ import { cn } from "@/lib/utils";
 
 
 const navItems = [
-  { href: "/", label: "Signal Dashboard", icon: Activity },
+  { href: "/", label: "Signals", icon: Activity },
   { href: "/portfolio", label: "Portfolio", icon: Wallet },
   { href: "/services", label: "Services", icon: HeartPulse },
   { href: "/debates", label: "Debates", icon: Swords },
