@@ -13,7 +13,6 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
-  CardDescription,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -37,22 +36,22 @@ import {
   TrendingUp,
   TrendingDown,
   Scale,
-  Database,
-  Radio,
+  ChevronDown,
+  ArrowRight,
 } from "lucide-react";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 
-// Market quote from /api/portfolio/quote/{symbol}
+// ─── Types ───────────────────────────────────────────────
+
 interface MarketQuote {
   bid: number;
   ask: number;
   mid: number;
-  fetchedAt: number; // epoch ms
+  fetchedAt: number;
 }
 
-// Unified order type for display (works for both live SSE + historical)
 interface DisplayOrder {
-  id: string; // unique key for React
+  id: string;
   intentId: string;
   symbol: string;
   direction: string;
@@ -67,11 +66,9 @@ interface DisplayOrder {
   reason?: string;
   occurredAt: string;
   source: "live" | "historical";
-  // Fill data (historical only)
   filledAt?: string;
   filledPrice?: number;
   filledQty?: number;
-  // Debate data
   debate?: {
     bullArgument: string;
     bearArgument: string;
@@ -79,254 +76,188 @@ interface DisplayOrder {
   };
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const styles: Record<string, string> = {
-    created: "bg-blue-500/20 text-blue-400",
-    validated: "bg-emerald-500/20 text-emerald-400",
-    rejected: "bg-red-500/20 text-red-400",
-    submitted: "bg-amber-500/20 text-amber-400 animate-pulse",
-    canceled: "bg-muted text-muted-foreground",
-    filled: "bg-emerald-500/20 text-emerald-400",
-  };
+type TabFilter = "active" | "filled" | "rejected";
 
+// ─── Helpers ─────────────────────────────────────────────
+
+function StatusDot({ status }: { status: string }) {
+  const colors: Record<string, string> = {
+    created: "bg-blue-400",
+    validated: "bg-blue-400",
+    submitted: "bg-amber-400 animate-pulse",
+    filled: "bg-emerald-400",
+    rejected: "bg-red-400",
+    canceled: "bg-muted-foreground",
+  };
+  return (
+    <span
+      className={`inline-block h-2.5 w-2.5 rounded-full ${colors[status] ?? "bg-muted-foreground"}`}
+      title={status}
+    />
+  );
+}
+
+function statusLabel(status: string): string {
   const labels: Record<string, string> = {
     submitted: "pending fill",
+    canceled: "canceled",
   };
-
-  return (
-    <Badge className={styles[status] ?? "bg-muted text-muted-foreground"}>
-      {labels[status] ?? status}
-    </Badge>
-  );
+  return labels[status] ?? status;
 }
 
-function StrategyBadge({ strategy }: { strategy: string }) {
-  const styles: Record<string, string> = {
-    debate: "bg-violet-500/20 text-violet-400",
-    orb_break_retest: "bg-blue-500/20 text-blue-400",
-    avwap: "bg-cyan-500/20 text-cyan-400",
-    ai_scalping: "bg-amber-500/20 text-amber-400",
-  };
-  const defaultStyle = "bg-muted text-muted-foreground";
-
-  const formattedName = (strategy || "unknown")
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (l) => l.toUpperCase());
-
-  return (
-    <Badge className={styles[strategy] || defaultStyle}>
-      {strategy === "debate" && <Swords className="mr-1 h-3 w-3" />}
-      {formattedName}
-    </Badge>
-  );
+function isActive(status: string): boolean {
+  return status === "created" || status === "validated" || status === "submitted";
 }
 
-function ConfidenceCell({
-  value,
-  className,
-}: {
-  value: number;
-  className?: string;
-}) {
+function isFilled(status: string): boolean {
+  return status === "filled";
+}
+
+function isRejected(status: string): boolean {
+  return status === "rejected" || status === "canceled";
+}
+
+function ConfidenceBar({ value }: { value: number }) {
   const pct = Math.round(value * 100);
   return (
-    <div className={`flex items-center gap-2 ${className}`}>
-      <div className="flex-1 rounded-full bg-muted">
+    <div className="flex items-center gap-1.5">
+      <div className="w-12 h-1.5 rounded-full bg-muted overflow-hidden">
         <div
-          className={`h-1.5 rounded-full transition-all ${
-            pct >= 80
-              ? "bg-emerald-500"
-              : pct >= 60
-                ? "bg-yellow-500"
-                : "bg-red-500"
-          }`}
+          className={`h-full rounded-full ${pct >= 80 ? "bg-emerald-500" : pct >= 60 ? "bg-yellow-500" : "bg-red-500"}`}
           style={{ width: `${pct}%` }}
         />
       </div>
-      <span className="text-xs font-mono tabular-nums">{pct}%</span>
+      <span className="text-[11px] font-mono tabular-nums text-muted-foreground">{pct}%</span>
     </div>
   );
 }
 
-function SourceBadge({ source }: { source: "live" | "historical" }) {
-  if (source === "live") {
+function PriceCell({ order, quote, onFetch }: { order: DisplayOrder; quote?: MarketQuote; onFetch: () => void }) {
+  if (order.status === "filled" && order.filledPrice) {
     return (
-      <Badge className="bg-emerald-500/10 text-emerald-400 text-[10px] px-1.5 py-0">
-        <Radio className="mr-0.5 h-2.5 w-2.5" />
-        Live
-      </Badge>
+      <div className="flex items-center gap-1 font-mono tabular-nums">
+        <span className="text-muted-foreground line-through text-xs">{formatPrice(order.limitPrice)}</span>
+        <ArrowRight className="h-3 w-3 text-muted-foreground" />
+        <span className="text-emerald-400">{formatPrice(order.filledPrice)}</span>
+      </div>
     );
   }
+  if (!isActive(order.status)) {
+    return <span className="font-mono tabular-nums">{formatPrice(order.limitPrice)}</span>;
+  }
+  if (!quote) {
+    return (
+      <div className="flex items-center gap-2">
+        <span className="font-mono tabular-nums">{formatPrice(order.limitPrice)}</span>
+        <button onClick={(e) => { e.stopPropagation(); onFetch(); }} className="text-[10px] text-blue-400 hover:underline">mkt</button>
+      </div>
+    );
+  }
+  const likely = quote.ask <= order.limitPrice;
+  const gap = order.limitPrice > 0 ? ((quote.ask - order.limitPrice) / order.limitPrice) * 100 : 0;
   return (
-    <Badge className="bg-muted text-muted-foreground text-[10px] px-1.5 py-0">
-      <Database className="mr-0.5 h-2.5 w-2.5" />
-      DB
-    </Badge>
+    <div className="flex items-center gap-2 font-mono tabular-nums">
+      <span>{formatPrice(order.limitPrice)}</span>
+      <span className={`text-[10px] ${likely ? "text-emerald-400" : "text-red-400"}`}>
+        ({formatPrice(quote.mid)}{!likely && ` +${gap.toFixed(1)}%`})
+      </span>
+    </div>
   );
 }
 
-interface OrderDetailSheetProps {
-  order: DisplayOrder | null;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}
+// ─── Detail Sheet ────────────────────────────────────────
 
-function OrderDetailSheet({
-  order,
-  open,
-  onOpenChange,
-}: OrderDetailSheetProps) {
+function OrderDetailSheet({ order, open, onOpenChange }: { order: DisplayOrder | null; open: boolean; onOpenChange: (o: boolean) => void }) {
   if (!order) return null;
-
   const isLong = order.direction === "LONG";
-  const hasDebate = order.debate;
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="overflow-y-auto sm:max-w-lg">
-        <SheetHeader className="mb-6 space-y-4">
+        <SheetHeader className="mb-6 space-y-3">
           <div className="flex items-center justify-between">
-            <SheetTitle className="font-mono text-3xl font-bold">
-              {order.symbol}
-            </SheetTitle>
+            <SheetTitle className="font-mono text-2xl font-bold">{order.symbol}</SheetTitle>
             <div className="flex items-center gap-2">
-              <Badge
-                className={
-                  isLong
-                    ? "bg-emerald-500/20 text-emerald-400"
-                    : "bg-red-500/20 text-red-400"
-                }
-              >
-                {isLong ? (
-                  <TrendingUp className="mr-1 h-3 w-3" />
-                ) : (
-                  <TrendingDown className="mr-1 h-3 w-3" />
-                )}
+              <Badge className={isLong ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"}>
+                {isLong ? <TrendingUp className="mr-1 h-3 w-3" /> : <TrendingDown className="mr-1 h-3 w-3" />}
                 {order.direction}
               </Badge>
-              <StatusBadge status={order.status || "unknown"} />
+              <StatusDot status={order.status} />
+              <span className="text-xs text-muted-foreground">{statusLabel(order.status)}</span>
             </div>
           </div>
-          <SheetDescription className="flex items-center justify-between text-xs">
-            <span className="flex items-center gap-1.5">
-              Intent: {order.intentId.slice(0, 8)}
-              <SourceBadge source={order.source} />
-            </span>
-            <span>{relativeTime(order.occurredAt)}</span>
+          <SheetDescription className="text-xs">
+            {order.strategy.replace(/_/g, " ")} &middot; {relativeTime(order.occurredAt)} &middot; ID: {order.intentId.slice(0, 8)}
           </SheetDescription>
         </SheetHeader>
 
-        <div className="space-y-6">
-          {/* Strategy & Rationale */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <StrategyBadge strategy={order.strategy} />
-              <div className="w-32">
-                <ConfidenceCell value={order.confidence} />
-              </div>
-            </div>
-            <div className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">
-              {order.rationale || "No rationale provided."}
-            </div>
-            {order.status === "rejected" && order.reason && (
-              <div className="rounded-md border border-red-500/30 bg-red-500/5 p-3 text-sm text-red-400">
-                <span className="font-semibold">Rejection Reason:</span>{" "}
-                {order.reason}
-              </div>
-            )}
-          </div>
-
-          {/* Order Details Grid */}
-          <div className="grid grid-cols-2 gap-4 rounded-lg border bg-card p-4">
+        <div className="space-y-5">
+          {/* Order grid */}
+          <div className="grid grid-cols-2 gap-3 rounded-lg border bg-card p-4">
             <div>
-              <p className="text-xs text-muted-foreground">Limit Price</p>
-              <p className="font-mono text-lg font-medium">
-                {formatPrice(order.limitPrice)}
-              </p>
+              <p className="text-[11px] text-muted-foreground">Limit Price</p>
+              <p className="font-mono text-lg font-medium">{formatPrice(order.limitPrice)}</p>
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">Stop Loss</p>
-              <p className="font-mono text-lg font-medium">
-                {formatPrice(order.stopLoss)}
-              </p>
+              <p className="text-[11px] text-muted-foreground">Stop Loss</p>
+              <p className="font-mono text-lg font-medium">{formatPrice(order.stopLoss)}</p>
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">Quantity</p>
+              <p className="text-[11px] text-muted-foreground">Quantity</p>
               <p className="font-mono text-lg font-medium">{order.quantity}</p>
             </div>
             <div>
-              <p className="text-xs text-muted-foreground">Max Slippage</p>
-              <p className="font-mono text-lg font-medium">
-                {order.maxSlippageBPS} bps
-              </p>
+              <p className="text-[11px] text-muted-foreground">Confidence</p>
+              <ConfidenceBar value={order.confidence} />
             </div>
           </div>
 
-          {/* Fill Data (historical orders that were filled) */}
+          {/* Fill info */}
           {order.filledAt && (
-            <div className="grid grid-cols-2 gap-4 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4">
+            <div className="grid grid-cols-2 gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4">
               <div>
-                <p className="text-xs text-emerald-400">Filled Price</p>
-                <p className="font-mono text-lg font-medium text-emerald-400">
-                  {formatPrice(order.filledPrice ?? 0)}
-                </p>
+                <p className="text-[11px] text-emerald-400">Fill Price</p>
+                <p className="font-mono text-lg font-medium text-emerald-400">{formatPrice(order.filledPrice ?? 0)}</p>
               </div>
               <div>
-                <p className="text-xs text-emerald-400">Filled Qty</p>
-                <p className="font-mono text-lg font-medium text-emerald-400">
-                  {order.filledQty}
-                </p>
-              </div>
-              <div className="col-span-2">
-                <p className="text-xs text-muted-foreground">Filled At</p>
-                <p className="font-mono text-sm">
-                  {relativeTime(order.filledAt)}
-                </p>
+                <p className="text-[11px] text-emerald-400">Fill Qty</p>
+                <p className="font-mono text-lg font-medium text-emerald-400">{order.filledQty}</p>
               </div>
             </div>
           )}
 
-          {/* Debate Analysis (if applicable) */}
-          {hasDebate && (
-            <div className="space-y-4 pt-4">
-              <div className="flex items-center gap-2 border-t pt-4">
+          {/* Rejection reason */}
+          {order.status === "rejected" && order.reason && (
+            <div className="rounded-md border border-red-500/30 bg-red-500/5 p-3 text-sm text-red-400">
+              <span className="font-semibold">Rejected:</span> {order.reason}
+            </div>
+          )}
+
+          {/* Rationale */}
+          {order.rationale && (
+            <div className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">
+              {order.rationale}
+            </div>
+          )}
+
+          {/* Debate */}
+          {order.debate && (
+            <div className="space-y-3 pt-3 border-t">
+              <div className="flex items-center gap-2">
                 <Swords className="h-4 w-4 text-violet-400" />
-                <h3 className="font-semibold text-foreground">
-                  Debate Analysis
-                </h3>
+                <h3 className="font-semibold text-sm">Debate Analysis</h3>
               </div>
-
-              {/* Bull Case */}
               <div className="rounded-md border-l-2 border-l-emerald-500 bg-emerald-500/5 p-3">
-                <div className="mb-1 flex items-center gap-2 text-xs font-semibold text-emerald-400">
-                  <TrendingUp className="h-3 w-3" />
-                  Bull Case
-                </div>
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                  {order.debate!.bullArgument}
-                </p>
+                <div className="mb-1 text-[11px] font-semibold text-emerald-400 flex items-center gap-1"><TrendingUp className="h-3 w-3" />Bull</div>
+                <p className="text-xs text-muted-foreground">{order.debate.bullArgument}</p>
               </div>
-
-              {/* Bear Case */}
               <div className="rounded-md border-l-2 border-l-red-500 bg-red-500/5 p-3">
-                <div className="mb-1 flex items-center gap-2 text-xs font-semibold text-red-400">
-                  <TrendingDown className="h-3 w-3" />
-                  Bear Case
-                </div>
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                  {order.debate!.bearArgument}
-                </p>
+                <div className="mb-1 text-[11px] font-semibold text-red-400 flex items-center gap-1"><TrendingDown className="h-3 w-3" />Bear</div>
+                <p className="text-xs text-muted-foreground">{order.debate.bearArgument}</p>
               </div>
-
-              {/* Judge Reasoning */}
               <div className="rounded-md border bg-muted/30 p-3">
-                <div className="mb-1 flex items-center gap-2 text-xs font-semibold text-foreground">
-                  <Scale className="h-3 w-3" />
-                  Judge Verdict
-                </div>
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                  {order.debate!.judgeReasoning}
-                </p>
+                <div className="mb-1 text-[11px] font-semibold flex items-center gap-1"><Scale className="h-3 w-3" />Verdict</div>
+                <p className="text-xs text-muted-foreground">{order.debate.judgeReasoning}</p>
               </div>
             </div>
           )}
@@ -336,54 +267,15 @@ function OrderDetailSheet({
   );
 }
 
-function MarketPriceCell({ order, quote, onFetch }: { order: DisplayOrder; quote?: MarketQuote; onFetch: () => void }) {
-  // Only show for submitted/unfilled orders
-  if (order.status === "filled" && order.filledPrice) {
-    return <span className="text-emerald-400">{formatPrice(order.filledPrice)}</span>;
-  }
-  if (order.status !== "submitted") {
-    return <span className="text-muted-foreground">—</span>;
-  }
-  if (!quote) {
-    return (
-      <button onClick={(e) => { e.stopPropagation(); onFetch(); }} className="text-xs text-blue-400 hover:underline">
-        fetch
-      </button>
-    );
-  }
-  const mid = quote.mid;
-  const limit = order.limitPrice;
-  // For a BUY limit order: fillable if ask <= limit
-  const askVsLimit = limit > 0 ? ((quote.ask - limit) / limit) * 100 : 0;
-  const likely = quote.ask <= limit;
-  const staleMs = Date.now() - quote.fetchedAt;
-  const stale = staleMs > 60_000;
-
-  return (
-    <div className="flex flex-col items-end gap-0.5">
-      <span className={likely ? "text-emerald-400" : "text-red-400"}>
-        {formatPrice(mid)}
-      </span>
-      <span className={`text-[10px] ${stale ? "text-muted-foreground" : likely ? "text-emerald-400/70" : "text-red-400/70"}`}>
-        {quote.bid.toFixed(2)}/{quote.ask.toFixed(2)}
-        {!likely && ` (${askVsLimit > 0 ? "+" : ""}${askVsLimit.toFixed(1)}%)`}
-      </span>
-    </div>
-  );
-}
+// ─── Data Conversion ─────────────────────────────────────
 
 function historicalToDisplay(h: HistoricalOrder): DisplayOrder {
-  const directionMap: Record<string, string> = {
-    BUY: "LONG",
-    SELL: "SHORT",
-    buy: "LONG",
-    sell: "SHORT",
-  };
+  const dirMap: Record<string, string> = { BUY: "LONG", SELL: "SHORT", buy: "LONG", sell: "SHORT" };
   return {
     id: `hist-${h.intent_id}`,
     intentId: h.intent_id,
     symbol: h.symbol,
-    direction: directionMap[h.side] ?? h.side,
+    direction: dirMap[h.side] ?? h.side,
     limitPrice: h.limit_price,
     stopLoss: h.stop_loss,
     maxSlippageBPS: 0,
@@ -397,15 +289,15 @@ function historicalToDisplay(h: HistoricalOrder): DisplayOrder {
     filledAt: h.filled_at,
     filledPrice: h.filled_price,
     filledQty: h.filled_qty,
-    debate: h.thought_log
-      ? {
-          bullArgument: h.thought_log.bull_argument,
-          bearArgument: h.thought_log.bear_argument,
-          judgeReasoning: h.thought_log.judge_reasoning,
-        }
-      : undefined,
+    debate: h.thought_log ? {
+      bullArgument: h.thought_log.bull_argument,
+      bearArgument: h.thought_log.bear_argument,
+      judgeReasoning: h.thought_log.judge_reasoning,
+    } : undefined,
   };
 }
+
+// ─── Main Page ───────────────────────────────────────────
 
 export default function ExecutionPage() {
   const { orders, debates, connected } = useExecutionEvents(100);
@@ -413,57 +305,41 @@ export default function ExecutionPage() {
   const [histLoading, setHistLoading] = useState(true);
   const [selectedOrder, setSelectedOrder] = useState<DisplayOrder | null>(null);
   const [quotes, setQuotes] = useState<Record<string, MarketQuote>>({});
+  const [activeTab, setActiveTab] = useState<TabFilter>("active");
 
-  // Fetch historical orders on mount
   const fetchHistorical = useCallback(async () => {
     try {
       const res = await fetch("/api/orders?range=30d&limit=200");
       if (!res.ok) return;
       const data: HistoricalOrdersResponse = await res.json();
       setHistoricalOrders(data.items.map(historicalToDisplay));
-    } catch {
-      // silently fail — historical data is supplemental
-    } finally {
+    } catch { /* supplemental */ } finally {
       setHistLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    fetchHistorical();
-  }, [fetchHistorical]);
+  useEffect(() => { fetchHistorical(); }, [fetchHistorical]);
 
-  // Fetch a single market quote
   const fetchQuote = useCallback(async (symbol: string) => {
     try {
       const res = await fetch(`/api/portfolio/quote/${encodeURIComponent(symbol)}`);
       if (!res.ok) return;
       const data = await res.json();
-      setQuotes((prev) => ({
-        ...prev,
-        [symbol]: { bid: data.bid, ask: data.ask, mid: data.mid, fetchedAt: Date.now() },
-      }));
-    } catch {
-      // silently fail — quote is supplemental
-    }
+      setQuotes((prev) => ({ ...prev, [symbol]: { bid: data.bid, ask: data.ask, mid: data.mid, fetchedAt: Date.now() } }));
+    } catch { /* supplemental */ }
   }, []);
 
   const statusFromType = (type: string): OrderIntentStatus | undefined => {
     switch (type) {
-      case "OrderIntentCreated":
-        return "created";
-      case "OrderIntentValidated":
-        return "validated";
-      case "OrderIntentRejected":
-        return "rejected";
-      case "OrderSubmitted":
-        return "submitted";
-      default:
-        return undefined;
+      case "OrderIntentCreated": return "created";
+      case "OrderIntentValidated": return "validated";
+      case "OrderIntentRejected": return "rejected";
+      case "OrderSubmitted": return "submitted";
+      default: return undefined;
     }
   };
 
-  // Convert live SSE orders to DisplayOrder, deduplicating by intentId
-  // (keep only the latest status per intent — e.g. submitted supersedes created/validated)
+  // Deduplicate live SSE events by intentId, keeping highest-priority status
   const statusPriority: Record<string, number> = {
     created: 0, validated: 1, submitted: 2, filled: 3, rejected: 3, canceled: 3,
   };
@@ -487,15 +363,12 @@ export default function ExecutionPage() {
       status: status ?? "unknown",
       reason: p.reason,
       occurredAt: e.occurredAt,
-      source: "live" as const,
-      debate:
-        p.strategy === "debate" && debate
-          ? {
-              bullArgument: debate.decision.bullArgument,
-              bearArgument: debate.decision.bearArgument,
-              judgeReasoning: debate.decision.judgeReasoning,
-            }
-          : undefined,
+      source: "live",
+      debate: p.strategy === "debate" && debate ? {
+        bullArgument: debate.decision.bullArgument,
+        bearArgument: debate.decision.bearArgument,
+        judgeReasoning: debate.decision.judgeReasoning,
+      } : undefined,
     };
     const existing = liveByIntent.get(p.id);
     if (!existing || (statusPriority[status] ?? 0) >= (statusPriority[existing.status] ?? 0)) {
@@ -504,50 +377,44 @@ export default function ExecutionPage() {
   }
   const liveOrders = Array.from(liveByIntent.values());
 
-  // Merge: live SSE first, then historical (deduplicated by intentId)
+  // Merge live + historical (deduplicated)
   const liveIntentIds = new Set(liveOrders.map((o) => o.intentId));
-  const deduplicatedHistorical = historicalOrders.filter(
-    (o) => !liveIntentIds.has(o.intentId)
-  );
-  const allOrders = [...liveOrders, ...deduplicatedHistorical];
+  const allOrders = [...liveOrders, ...historicalOrders.filter((o) => !liveIntentIds.has(o.intentId))];
 
-  // Auto-fetch quotes for submitted (unfilled) orders every 30s
-  const submittedSymbols = [...new Set(
-    allOrders
-      .filter((o) => o.status === "submitted" && !o.filledAt)
-      .map((o) => o.symbol)
-  )];
+  // Auto-fetch quotes for active orders
+  const activeSymbols = useMemo(() => [...new Set(
+    allOrders.filter((o) => isActive(o.status)).map((o) => o.symbol)
+  )], [allOrders]);
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (submittedSymbols.length === 0) return;
-    submittedSymbols.forEach((s) => fetchQuote(s));
-    const interval = setInterval(() => submittedSymbols.forEach((s) => fetchQuote(s)), 30_000);
-    return () => clearInterval(interval);
-  }, [submittedSymbols.join(","), fetchQuote]);
+    if (activeSymbols.length === 0) return;
+    activeSymbols.forEach((s) => fetchQuote(s));
+    const iv = setInterval(() => activeSymbols.forEach((s) => fetchQuote(s)), 30_000);
+    return () => clearInterval(iv);
+  }, [activeSymbols.join(","), fetchQuote]);
 
-  // Stats (over merged set)
-  const validated = allOrders.filter((o) => o.status === "validated").length;
-  const rejected = allOrders.filter((o) => o.status === "rejected").length;
-  const submitted = allOrders.filter((o) => o.status === "submitted").length;
-  const filled = allOrders.filter((o) => o.status === "filled").length;
+  // Filter by tab
+  const filtered = allOrders.filter((o) => {
+    if (activeTab === "active") return isActive(o.status);
+    if (activeTab === "filled") return isFilled(o.status);
+    return isRejected(o.status);
+  });
 
-  // Strategy Stats
-  const strategies = allOrders.reduce(
-    (acc, curr) => {
-      const s = curr.strategy || "unknown";
-      acc[s] = (acc[s] || 0) + 1;
-      return acc;
-    },
-    {} as Record<string, number>
-  );
+  // Counts
+  const activeCount = allOrders.filter((o) => isActive(o.status)).length;
+  const filledCount = allOrders.filter((o) => isFilled(o.status)).length;
+  const rejectedCount = allOrders.filter((o) => isRejected(o.status)).length;
+
+  const tabs: { key: TabFilter; label: string; count: number }[] = [
+    { key: "active", label: "Active", count: activeCount },
+    { key: "filled", label: "Filled", count: filledCount },
+    { key: "rejected", label: "Rejected", count: rejectedCount },
+  ];
 
   return (
     <div className="space-y-6">
-      <OrderDetailSheet
-        order={selectedOrder}
-        open={!!selectedOrder}
-        onOpenChange={(open) => !open && setSelectedOrder(null)}
-      />
+      <OrderDetailSheet order={selectedOrder} open={!!selectedOrder} onOpenChange={(o) => !o && setSelectedOrder(null)} />
 
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -557,191 +424,122 @@ export default function ExecutionPage() {
             Execution Monitor
           </h1>
           <p className="text-sm text-muted-foreground">
-            Order intents — live stream + historical from database
+            {allOrders.length} orders today
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="flex gap-2">
-            {Object.entries(strategies).map(([strat, count]) => (
-              <Badge key={strat} variant="outline" className="text-xs">
-                {strat}: {count}
-              </Badge>
-            ))}
-          </div>
-          <Badge
-            variant={connected ? "default" : "destructive"}
-            className="gap-1"
-          >
-            <div
-              className={`h-2 w-2 rounded-full ${
-                connected ? "bg-emerald-400 animate-pulse" : "bg-red-400"
-              }`}
-            />
-            {connected ? "Live" : "Offline"}
-          </Badge>
-        </div>
+        <Badge variant={connected ? "default" : "destructive"} className="gap-1">
+          <div className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-400 animate-pulse" : "bg-red-400"}`} />
+          {connected ? "Live" : "Offline"}
+        </Badge>
       </div>
 
-      {/* Summary Stats */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+      {/* Summary cards */}
+      <div className="grid grid-cols-3 gap-4">
         <Card>
           <CardContent className="pt-6">
-            <p className="text-xs text-muted-foreground">Total</p>
-            <p className="text-2xl font-bold tabular-nums">
-              {allOrders.length}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-xs text-emerald-400">Validated</p>
-            <p className="text-2xl font-bold tabular-nums text-emerald-400">
-              {validated}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-xs text-red-400">Rejected</p>
-            <p className="text-2xl font-bold tabular-nums text-red-400">
-              {rejected}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-xs text-yellow-400">Submitted</p>
-            <p className="text-2xl font-bold tabular-nums text-yellow-400">
-              {submitted}
-            </p>
+            <p className="text-xs text-amber-400">Active</p>
+            <p className="text-2xl font-bold tabular-nums text-amber-400">{activeCount}</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-6">
             <p className="text-xs text-emerald-400">Filled</p>
-            <p className="text-2xl font-bold tabular-nums text-emerald-400">
-              {filled}
-            </p>
+            <p className="text-2xl font-bold tabular-nums text-emerald-400">{filledCount}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-xs text-red-400">Rejected</p>
+            <p className="text-2xl font-bold tabular-nums text-red-400">{rejectedCount}</p>
           </CardContent>
         </Card>
       </div>
 
-      {/* Order Table */}
+      {/* Tab filters */}
+      <div className="flex gap-1 border-b">
+        {tabs.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === tab.key
+                ? "border-foreground text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {tab.label}
+            {tab.count > 0 && (
+              <span className="ml-1.5 text-xs bg-muted px-1.5 py-0.5 rounded-full tabular-nums">{tab.count}</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Orders table */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Recent Order Intents</CardTitle>
-          <CardDescription>
-            {liveOrders.length > 0 && (
-              <span className="mr-2">
-                <Radio className="mr-1 inline h-3 w-3 text-emerald-400" />
-                {liveOrders.length} live
-              </span>
-            )}
-            {deduplicatedHistorical.length > 0 && (
-              <span>
-                <Database className="mr-1 inline h-3 w-3 text-muted-foreground" />
-                {deduplicatedHistorical.length} from database
-              </span>
-            )}
-            {histLoading && (
-              <span className="text-muted-foreground">
-                Loading historical orders...
-              </span>
-            )}
-          </CardDescription>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">{tabs.find((t) => t.key === activeTab)?.label} Orders</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-8"></TableHead>
+                  <TableHead className="w-6"></TableHead>
                   <TableHead>Symbol</TableHead>
-                  <TableHead>Direction</TableHead>
-                  <TableHead>Strategy</TableHead>
-                  <TableHead className="text-right">Limit Price</TableHead>
-                  <TableHead className="text-right">Market</TableHead>
-                  <TableHead className="text-right">Stop Loss</TableHead>
-                  <TableHead>Confidence</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead>Side</TableHead>
                   <TableHead className="text-right">Qty</TableHead>
-                  <TableHead>Time</TableHead>
+                  <TableHead className="text-right">Price</TableHead>
+                  <TableHead>Strategy</TableHead>
+                  <TableHead>Confidence</TableHead>
+                  <TableHead className="text-right">Time</TableHead>
+                  <TableHead className="w-6"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {allOrders.map((order) => (
+                {filtered.map((order) => (
                   <TableRow
                     key={order.id}
-                    className="cursor-pointer hover:bg-muted/50"
+                    className={`cursor-pointer hover:bg-muted/50 ${isRejected(order.status) ? "opacity-50" : ""}`}
                     onClick={() => setSelectedOrder(order)}
                   >
-                    <TableCell className="px-1">
-                      <SourceBadge source={order.source} />
+                    <TableCell className="px-2">
+                      <StatusDot status={order.status} />
                     </TableCell>
-                    <TableCell className="font-mono font-medium">
+                    <TableCell className="font-mono font-medium text-sm">
                       {order.symbol}
                     </TableCell>
                     <TableCell>
-                      <Badge
-                        className={
-                          order.direction === "LONG"
-                            ? "bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30"
-                            : "bg-red-500/20 text-red-400 hover:bg-red-500/30"
-                        }
-                      >
-                        {order.direction}
-                      </Badge>
+                      <span className={`text-xs font-medium ${order.direction === "LONG" ? "text-emerald-400" : "text-red-400"}`}>
+                        {order.direction === "LONG" ? "BUY" : "SELL"} {order.quantity}
+                      </span>
                     </TableCell>
-                    <TableCell>
-                      <StrategyBadge strategy={order.strategy} />
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums">
-                      {formatPrice(order.limitPrice)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums">
-                      <MarketPriceCell order={order} quote={quotes[order.symbol]} onFetch={() => fetchQuote(order.symbol)} />
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums">
-                      {formatPrice(order.stopLoss)}
-                    </TableCell>
-                    <TableCell>
-                      <ConfidenceCell value={order.confidence} />
-                    </TableCell>
-                    <TableCell>
-                      <div>
-                        <StatusBadge status={order.status ?? "unknown"} />
-                        {order.status === "rejected" && order.reason && (
-                          <p className="mt-1 text-[11px] leading-tight text-red-400/80 max-w-[200px] truncate" title={order.reason}>
-                            {order.reason}
-                          </p>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums">
+                    <TableCell className="text-right font-mono tabular-nums text-xs">
                       {order.quantity}
                     </TableCell>
-                    <TableCell className="text-muted-foreground">
+                    <TableCell className="text-right">
+                      <PriceCell order={order} quote={quotes[order.symbol]} onFetch={() => fetchQuote(order.symbol)} />
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-xs text-muted-foreground">
+                        {(order.strategy || "unknown").replace(/_/g, " ")}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <ConfidenceBar value={order.confidence} />
+                    </TableCell>
+                    <TableCell className="text-right text-xs text-muted-foreground whitespace-nowrap">
                       {relativeTime(order.occurredAt)}
+                    </TableCell>
+                    <TableCell className="px-2">
+                      <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
                     </TableCell>
                   </TableRow>
                 ))}
-                {allOrders.length === 0 && !histLoading && (
+                {filtered.length === 0 && (
                   <TableRow>
-                    <TableCell
-                      colSpan={11}
-                      className="py-8 text-center text-muted-foreground"
-                    >
-                      No order intents found. Waiting for live events...
-                    </TableCell>
-                  </TableRow>
-                )}
-                {allOrders.length === 0 && histLoading && (
-                  <TableRow>
-                    <TableCell
-                      colSpan={11}
-                      className="py-8 text-center text-muted-foreground"
-                    >
-                      Loading historical orders...
+                    <TableCell colSpan={9} className="py-8 text-center text-muted-foreground">
+                      {histLoading ? "Loading..." : `No ${activeTab} orders`}
                     </TableCell>
                   </TableRow>
                 )}
