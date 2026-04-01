@@ -22,7 +22,24 @@ func (a *Adapter) cachedAccountSummary(ib ibClient) (ibsync.AccountSummary, erro
 	// Use AccountSummary() instead of ReqAccountSummary() to avoid leaking
 	// server-side subscriptions. AccountSummary() returns ibsync's internal
 	// cache and only calls ReqAccountSummary once (on first invocation).
-	summary := ib.AccountSummary()
+	// Wrap in timeout — ibsync can block when the connection is busy with streaming data.
+	type summaryResult struct {
+		data ibsync.AccountSummary
+	}
+	ch := make(chan summaryResult, 1)
+	go func() { ch <- summaryResult{data: ib.AccountSummary()} }()
+
+	var summary ibsync.AccountSummary
+	select {
+	case r := <-ch:
+		summary = r.data
+	case <-time.After(3 * time.Second):
+		if len(a.acctCache.summary) > 0 {
+			a.log.Warn().Msg("ibkr: AccountSummary timed out, using stale cache")
+			return a.acctCache.summary, nil
+		}
+		return nil, fmt.Errorf("ibkr: AccountSummary timed out and no cache available")
+	}
 	if len(summary) == 0 {
 		if len(a.acctCache.summary) > 0 {
 			a.log.Warn().Msg("ibkr: AccountSummary returned empty, using stale cache")
