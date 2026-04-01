@@ -462,12 +462,17 @@ export default function ExecutionPage() {
     }
   };
 
-  // Convert live SSE orders to DisplayOrder
-  const liveOrders: DisplayOrder[] = orders.map((e) => {
+  // Convert live SSE orders to DisplayOrder, deduplicating by intentId
+  // (keep only the latest status per intent — e.g. submitted supersedes created/validated)
+  const statusPriority: Record<string, number> = {
+    created: 0, validated: 1, submitted: 2, filled: 3, rejected: 3, canceled: 3,
+  };
+  const liveByIntent = new Map<string, DisplayOrder>();
+  for (const e of orders) {
     const p = e.payload as OrderIntentEvent;
     const status = (p.status ?? statusFromType(e.type)) as string;
     const debate = debates.get(p.symbol);
-    return {
+    const order: DisplayOrder = {
       id: `live-${e.id}`,
       intentId: p.id,
       symbol: p.symbol,
@@ -492,7 +497,12 @@ export default function ExecutionPage() {
             }
           : undefined,
     };
-  });
+    const existing = liveByIntent.get(p.id);
+    if (!existing || (statusPriority[status] ?? 0) >= (statusPriority[existing.status] ?? 0)) {
+      liveByIntent.set(p.id, order);
+    }
+  }
+  const liveOrders = Array.from(liveByIntent.values());
 
   // Merge: live SSE first, then historical (deduplicated by intentId)
   const liveIntentIds = new Set(liveOrders.map((o) => o.intentId));
