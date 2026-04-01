@@ -248,7 +248,17 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 
 		details, err := s.broker.GetOrderDetails(ctx, order.BrokerOrderID)
 		if err != nil {
-			ol.Warn().Err(err).Msg("reconcile: failed to get order details — skipping")
+			if errors.Is(err, ports.ErrOrderNotFound) {
+				// Order no longer exists at broker (canceled on disconnect, expired, etc.)
+				if updErr := s.repo.UpdateOrderStatus(ctx, order.BrokerOrderID, "canceled"); updErr != nil {
+					ol.Error().Err(updErr).Msg("reconcile: failed to mark vanished order canceled")
+				} else {
+					ol.Info().Msg("reconcile: order not found at broker — marked canceled")
+					updated++
+				}
+			} else {
+				ol.Warn().Err(err).Msg("reconcile: failed to get order details — skipping")
+			}
 			continue
 		}
 
@@ -1292,7 +1302,15 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 
 		details, err := s.broker.GetOrderDetails(ctx, brokerOrderID)
 		if err != nil {
-			s.log.Warn().Err(err).Str("broker_order_id", brokerOrderID).Msg("reconcile: order details check failed")
+			if errors.Is(err, ports.ErrOrderNotFound) {
+				s.log.Info().Str("broker_order_id", brokerOrderID).Msg("reconcile: order not found at broker — cleaning up")
+				if updErr := s.repo.UpdateOrderStatus(ctx, brokerOrderID, "canceled"); updErr != nil {
+					s.log.Error().Err(updErr).Str("broker_order_id", brokerOrderID).Msg("reconcile: failed to mark vanished order canceled")
+				}
+				s.cleanupPendingOrder(brokerOrderID)
+			} else {
+				s.log.Warn().Err(err).Str("broker_order_id", brokerOrderID).Msg("reconcile: order details check failed")
+			}
 			return true
 		}
 

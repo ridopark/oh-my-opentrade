@@ -190,7 +190,7 @@ func (a *Adapter) GetOrderDetails(_ context.Context, orderID string) (ports.Orde
 		}
 		return details, nil
 	}
-	return ports.OrderDetails{}, fmt.Errorf("ibkr: order %s not found", orderID)
+	return ports.OrderDetails{}, fmt.Errorf("ibkr: order %s: %w", orderID, ports.ErrOrderNotFound)
 }
 
 func (a *Adapter) GetPositions(_ context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
