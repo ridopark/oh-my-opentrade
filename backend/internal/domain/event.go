@@ -189,6 +189,7 @@ type EntryGatedPayload struct {
 	GatesTotal    int                   `json:"gatesTotal"`
 	BlockingGate  string                `json:"blockingGate"`
 	BlockingDetail string               `json:"blockingDetail"`
+	EntryChecks   []EntryCheckResult    `json:"entryChecks,omitempty"`
 	Confluence    EntryGatedConfluence  `json:"confluence"`
 	Indicators    EntryGatedIndicators  `json:"indicators"`
 	Bar           BarSnapshot           `json:"bar"`
@@ -204,6 +205,14 @@ type EntryGatedConfluence struct {
 	Candle         bool   `json:"candle"`
 	CandleDetail   string `json:"candleDetail,omitempty"`
 	Band           bool   `json:"band"`
+}
+
+// EntryCheckResult describes the outcome of a single entry type evaluation.
+// When Passed is false, Reason explains why the entry type did not fire.
+type EntryCheckResult struct {
+	Name   string `json:"name"`   // "pinch", "cap_reclaim", "gap_reclaim", "pullback", "handoff", "breakout", "bounce"
+	Passed bool   `json:"passed"`
+	Reason string `json:"reason"` // short human-readable reason
 }
 
 type EntryGatedIndicators struct {

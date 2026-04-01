@@ -370,6 +370,13 @@ export interface StrategySignalsResponse {
   next_cursor?: string;
 }
 
+// Entry check breakdown for AVWAP entry_specific gate
+export interface EntryCheckResult {
+  name: string;
+  passed: boolean;
+  reason: string;
+}
+
 // Signal Formation Progress types (maps to domain.EntryGatedPayload / ORBPhaseUpdatePayload)
 
 export interface BarSnapshot {
@@ -412,6 +419,7 @@ export interface EntryGatedPayload {
   confluence: EntryGatedConfluence;
   indicators: EntryGatedIndicators;
   bar: BarSnapshot;
+  entryChecks?: EntryCheckResult[];
 }
 
 export interface ORBPhaseRange {
