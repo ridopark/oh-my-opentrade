@@ -231,9 +231,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	monitorSvc, err := bootstrap.BuildMonitor(bootstrap.MonitorDeps{
-		EventBus: r.infra.EventBus,
-		Repo:     repo,
-		Logger:   r.log,
+		EventBus:   r.infra.EventBus,
+		Repo:       repo,
+		Logger:     r.log,
+		BacktestID: r.id,
 	})
 	if err != nil {
 		r.status.Store("error")
@@ -410,6 +411,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Clock:           clockFn,
 		DisableEnricher: r.cfg.NoAI,
 		Logger:          r.log,
+		BacktestID:      r.id,
 	})
 	if err != nil {
 		r.status.Store("error")

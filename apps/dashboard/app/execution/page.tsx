@@ -42,6 +42,14 @@ import {
 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 
+// Market quote from /api/portfolio/quote/{symbol}
+interface MarketQuote {
+  bid: number;
+  ask: number;
+  mid: number;
+  fetchedAt: number; // epoch ms
+}
+
 // Unified order type for display (works for both live SSE + historical)
 interface DisplayOrder {
   id: string; // unique key for React
@@ -323,6 +331,42 @@ function OrderDetailSheet({
   );
 }
 
+function MarketPriceCell({ order, quote, onFetch }: { order: DisplayOrder; quote?: MarketQuote; onFetch: () => void }) {
+  // Only show for submitted/unfilled orders
+  if (order.status === "filled" && order.filledPrice) {
+    return <span className="text-emerald-400">{formatPrice(order.filledPrice)}</span>;
+  }
+  if (order.status !== "submitted") {
+    return <span className="text-muted-foreground">—</span>;
+  }
+  if (!quote) {
+    return (
+      <button onClick={(e) => { e.stopPropagation(); onFetch(); }} className="text-xs text-blue-400 hover:underline">
+        fetch
+      </button>
+    );
+  }
+  const mid = quote.mid;
+  const limit = order.limitPrice;
+  // For a BUY limit order: fillable if ask <= limit
+  const askVsLimit = limit > 0 ? ((quote.ask - limit) / limit) * 100 : 0;
+  const likely = quote.ask <= limit;
+  const staleMs = Date.now() - quote.fetchedAt;
+  const stale = staleMs > 60_000;
+
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      <span className={likely ? "text-emerald-400" : "text-red-400"}>
+        {formatPrice(mid)}
+      </span>
+      <span className={`text-[10px] ${stale ? "text-muted-foreground" : likely ? "text-emerald-400/70" : "text-red-400/70"}`}>
+        {quote.bid.toFixed(2)}/{quote.ask.toFixed(2)}
+        {!likely && ` (${askVsLimit > 0 ? "+" : ""}${askVsLimit.toFixed(1)}%)`}
+      </span>
+    </div>
+  );
+}
+
 function historicalToDisplay(h: HistoricalOrder): DisplayOrder {
   const directionMap: Record<string, string> = {
     BUY: "LONG",
@@ -363,6 +407,7 @@ export default function ExecutionPage() {
   const [historicalOrders, setHistoricalOrders] = useState<DisplayOrder[]>([]);
   const [histLoading, setHistLoading] = useState(true);
   const [selectedOrder, setSelectedOrder] = useState<DisplayOrder | null>(null);
+  const [quotes, setQuotes] = useState<Record<string, MarketQuote>>({});
 
   // Fetch historical orders on mount
   const fetchHistorical = useCallback(async () => {
@@ -381,6 +426,21 @@ export default function ExecutionPage() {
   useEffect(() => {
     fetchHistorical();
   }, [fetchHistorical]);
+
+  // Fetch a single market quote
+  const fetchQuote = useCallback(async (symbol: string) => {
+    try {
+      const res = await fetch(`/api/portfolio/quote/${encodeURIComponent(symbol)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setQuotes((prev) => ({
+        ...prev,
+        [symbol]: { bid: data.bid, ask: data.ask, mid: data.mid, fetchedAt: Date.now() },
+      }));
+    } catch {
+      // silently fail — quote is supplemental
+    }
+  }, []);
 
   const statusFromType = (type: string): OrderIntentStatus | undefined => {
     switch (type) {
@@ -435,6 +495,20 @@ export default function ExecutionPage() {
     (o) => !liveIntentIds.has(o.intentId)
   );
   const allOrders = [...liveOrders, ...deduplicatedHistorical];
+
+  // Auto-fetch quotes for submitted (unfilled) orders every 30s
+  const submittedSymbols = [...new Set(
+    allOrders
+      .filter((o) => o.status === "submitted" && !o.filledAt)
+      .map((o) => o.symbol)
+  )];
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (submittedSymbols.length === 0) return;
+    submittedSymbols.forEach((s) => fetchQuote(s));
+    const interval = setInterval(() => submittedSymbols.forEach((s) => fetchQuote(s)), 30_000);
+    return () => clearInterval(interval);
+  }, [submittedSymbols.join(","), fetchQuote]);
 
   // Stats (over merged set)
   const validated = allOrders.filter((o) => o.status === "validated").length;
@@ -571,6 +645,7 @@ export default function ExecutionPage() {
                   <TableHead>Direction</TableHead>
                   <TableHead>Strategy</TableHead>
                   <TableHead className="text-right">Limit Price</TableHead>
+                  <TableHead className="text-right">Market</TableHead>
                   <TableHead className="text-right">Stop Loss</TableHead>
                   <TableHead>Confidence</TableHead>
                   <TableHead>Status</TableHead>
@@ -609,6 +684,9 @@ export default function ExecutionPage() {
                       {formatPrice(order.limitPrice)}
                     </TableCell>
                     <TableCell className="text-right font-mono tabular-nums">
+                      <MarketPriceCell order={order} quote={quotes[order.symbol]} onFetch={() => fetchQuote(order.symbol)} />
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">
                       {formatPrice(order.stopLoss)}
                     </TableCell>
                     <TableCell>
@@ -635,7 +713,7 @@ export default function ExecutionPage() {
                 {allOrders.length === 0 && !histLoading && (
                   <TableRow>
                     <TableCell
-                      colSpan={10}
+                      colSpan={11}
                       className="py-8 text-center text-muted-foreground"
                     >
                       No order intents found. Waiting for live events...
@@ -645,7 +723,7 @@ export default function ExecutionPage() {
                 {allOrders.length === 0 && histLoading && (
                   <TableRow>
                     <TableCell
-                      colSpan={10}
+                      colSpan={11}
                       className="py-8 text-center text-muted-foreground"
                     >
                       Loading historical orders...
