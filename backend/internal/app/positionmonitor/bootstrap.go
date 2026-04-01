@@ -184,6 +184,20 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 
 		if domain.IsOCCSymbol(sym) {
 			pos.InstrumentType = domain.InstrumentTypeOption
+			// Override entry price to underlying for consistent exit rule evaluation.
+			// Exit rules (MAX_LOSS, SWING_STOP, etc.) compare against the underlying
+			// stock price from bar data, not the option premium.
+			if underlying := domain.UnderlyingFromOCC(sym); underlying != "" {
+				if snap, ok := s.priceCache.LatestPrice(underlying); ok {
+					pos.EntryPrice = snap.Price
+					pos.HighWaterMark = snap.Price
+					pos.LowWaterMark = snap.Price
+					if pos.CustomState == nil {
+						pos.CustomState = make(map[string]float64)
+					}
+					pos.CustomState["option_premium"] = entryPrice // preserve original premium
+				}
+			}
 		}
 
 		if maxHigh, err := s.repo.GetMaxBarHighSince(ctx, sym, "1m", entryTime); err == nil && maxHigh > pos.HighWaterMark {
