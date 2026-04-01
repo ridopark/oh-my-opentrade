@@ -19,6 +19,7 @@ type PortfolioBroker interface {
 	ClosePosition(ctx context.Context, symbol domain.Symbol) (string, error)
 	GetPosition(ctx context.Context, symbol domain.Symbol) (float64, error)
 	CancelOpenOrders(ctx context.Context, symbol domain.Symbol, side string) (int, error)
+	RefreshPositions()
 }
 
 // OptionQuoteProvider fetches bid/ask/last for option contract symbols.
@@ -109,6 +110,8 @@ func (h *PortfolioHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *PortfolioHandler) handleGetPositions(w http.ResponseWriter, r *http.Request) {
+	// Force IBKR to refresh its cached position list before reading
+	h.broker.RefreshPositions()
 	positions, err := h.broker.GetPositions(r.Context(), h.tenantID, h.envMode)
 	if err != nil {
 		h.log.Error().Err(err).Msg("failed to get positions")

@@ -56,6 +56,8 @@ func (m *mockIB) Positions(_ ...string) []ibsync.Position {
 	defer m.mu.Unlock()
 	return m.positions
 }
+
+func (m *mockIB) ReqPositions() {}
 func (m *mockIB) ReqAccountSummary(_ string, _ string) (ibsync.AccountSummary, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
