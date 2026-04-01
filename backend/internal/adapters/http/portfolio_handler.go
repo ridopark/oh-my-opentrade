@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
@@ -112,6 +113,13 @@ func (h *PortfolioHandler) handleGetPositions(w http.ResponseWriter, r *http.Req
 		MarketValue     float64 `json:"market_value"`
 		UnrealizedPnl   float64 `json:"unrealized_pnl"`
 		UnrealizedPnlPct float64 `json:"unrealized_pnl_pct"`
+		// Options fields (empty for equity positions)
+		InstrumentType string  `json:"instrument_type,omitempty"` // "OPTION" or ""
+		Underlying     string  `json:"underlying,omitempty"`
+		Strike         float64 `json:"strike,omitempty"`
+		OptionRight    string  `json:"option_right,omitempty"` // "CALL" or "PUT"
+		Expiry         string  `json:"expiry,omitempty"`       // "2026-04-24"
+		DTE            int     `json:"dte,omitempty"`
 	}
 
 	out := make([]positionJSON, 0, len(positions))
@@ -135,7 +143,7 @@ func (h *PortfolioHandler) handleGetPositions(w http.ResponseWriter, r *http.Req
 				pnlPct = (pnl / entryValue) * 100
 			}
 		}
-		out = append(out, positionJSON{
+		pj := positionJSON{
 			Symbol:          string(p.Symbol),
 			Side:            side,
 			Quantity:        p.Quantity,
@@ -144,7 +152,21 @@ func (h *PortfolioHandler) handleGetPositions(w http.ResponseWriter, r *http.Req
 			MarketValue:     marketValue,
 			UnrealizedPnl:   pnl,
 			UnrealizedPnlPct: pnlPct,
-		})
+		}
+		if p.InstrumentType == domain.InstrumentTypeOption {
+			pj.InstrumentType = "OPTION"
+			pj.Underlying = p.Underlying
+			pj.Strike = p.Strike
+			pj.OptionRight = p.OptionRight
+			if !p.Expiry.IsZero() {
+				pj.Expiry = p.Expiry.Format("2006-01-02")
+				pj.DTE = int(time.Until(p.Expiry).Hours() / 24)
+				if pj.DTE < 0 {
+					pj.DTE = 0
+				}
+			}
+		}
+		out = append(out, pj)
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Symbol < out[j].Symbol })
