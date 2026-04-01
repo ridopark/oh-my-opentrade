@@ -249,17 +249,37 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 		details, err := s.broker.GetOrderDetails(ctx, order.BrokerOrderID)
 		if err != nil {
 			if errors.Is(err, ports.ErrOrderNotFound) {
-				// Order no longer exists at broker (canceled on disconnect, expired, etc.)
-				if updErr := s.repo.UpdateOrderStatus(ctx, order.BrokerOrderID, "canceled"); updErr != nil {
-					ol.Error().Err(updErr).Msg("reconcile: failed to mark vanished order canceled")
+				// Order not in broker's trade list. Check if broker holds a position
+				// for this symbol — if so, the order was filled and then dropped.
+				posQty, posErr := s.broker.GetPosition(ctx, order.Symbol)
+				if posErr == nil && posQty > 0 && strings.EqualFold(order.Side, "BUY") {
+					// Position exists → treat as filled, not canceled.
+					ol.Info().Float64("broker_qty", posQty).Msg("reconcile: order not found but position exists — inferring fill")
+					details = ports.OrderDetails{
+						Status:         "filled",
+						FilledQty:      order.Quantity,
+						FilledAvgPrice: order.LimitPrice,
+						Qty:            order.Quantity,
+					}
+					// Fall through to normal fill processing below
 				} else {
-					ol.Info().Msg("reconcile: order not found at broker — marked canceled")
-					updated++
+					if updErr := s.repo.UpdateOrderStatus(ctx, order.BrokerOrderID, "canceled"); updErr != nil {
+						ol.Error().Err(updErr).Msg("reconcile: failed to mark vanished order canceled")
+					} else {
+						ol.Info().Msg("reconcile: order not found at broker — marked canceled")
+						updated++
+						s.emit(ctx, domain.EventOrderSubmitted, s.tenantID, s.envMode, order.IntentID.String(),
+							domain.NewOrderIntentEventPayload(domain.OrderIntent{
+								ID: order.IntentID, Symbol: order.Symbol, Direction: domain.Direction(order.Side),
+								Quantity: order.Quantity, Strategy: order.Strategy,
+							}, domain.OrderIntentStatus("canceled")))
+					}
+					continue
 				}
 			} else {
 				ol.Warn().Err(err).Msg("reconcile: failed to get order details — skipping")
+				continue
 			}
-			continue
 		}
 
 		isTerminal := details.Status == "canceled" || details.Status == "expired" || details.Status == "rejected" || details.Status == "filled"
