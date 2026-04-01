@@ -44,6 +44,7 @@ interface Position {
   option_right?: string;
   expiry?: string;
   dte?: number;
+  closing?: boolean;
 }
 
 interface Account {
@@ -448,7 +449,7 @@ export default function PortfolioPage() {
                             <PnlText value={pos.unrealized_pnl} pct={pos.unrealized_pnl_pct} />
                           </TableCell>
                           <TableCell className="text-right">
-                            {pendingClose.has(pos.symbol) ? (
+                            {(pos.closing || pendingClose.has(pos.symbol)) ? (
                               <span className="flex items-center gap-1 text-xs text-amber-400">
                                 <RefreshCw className="h-3 w-3 animate-spin" />
                                 Closing...

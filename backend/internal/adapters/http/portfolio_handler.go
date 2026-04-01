@@ -32,9 +32,10 @@ type LastPriceFn func(symbol string) (close float64, ok bool)
 type PortfolioHandler struct {
 	broker   PortfolioBroker
 	account  ports.AccountPort
-	optQuoter   OptionQuoteProvider
-	lastPriceFn LastPriceFn
-	dailyPnLFn  func(ctx context.Context) (realized, unrealized float64, err error)
+	optQuoter    OptionQuoteProvider
+	lastPriceFn  LastPriceFn
+	dailyPnLFn   func(ctx context.Context) (realized, unrealized float64, err error)
+	pendingClose map[string]time.Time // symbol → when close was requested
 	equityFn func(ctx context.Context) (float64, error)
 	tenantID string
 	envMode  domain.EnvMode
@@ -126,6 +127,7 @@ func (h *PortfolioHandler) handleGetPositions(w http.ResponseWriter, r *http.Req
 		OptionRight    string  `json:"option_right,omitempty"` // "CALL" or "PUT"
 		Expiry         string  `json:"expiry,omitempty"`       // "2026-04-24"
 		DTE            int     `json:"dte,omitempty"`
+		Closing        bool    `json:"closing,omitempty"` // true when a close order is pending
 	}
 
 	// Batch-fetch live option prices for all option positions
@@ -200,7 +202,30 @@ func (h *PortfolioHandler) handleGetPositions(w http.ResponseWriter, r *http.Req
 				}
 			}
 		}
+		// Mark positions with pending close orders (expire after 5 minutes)
+		if h.pendingClose != nil {
+			if t, ok := h.pendingClose[string(p.Symbol)]; ok {
+				if time.Since(t) < 5*time.Minute {
+					pj.Closing = true
+				} else {
+					delete(h.pendingClose, string(p.Symbol))
+				}
+			}
+		}
 		out = append(out, pj)
+	}
+
+	// Clean up pending close entries for positions that no longer exist
+	if h.pendingClose != nil {
+		posSymbols := make(map[string]bool, len(positions))
+		for _, p := range positions {
+			posSymbols[string(p.Symbol)] = true
+		}
+		for sym := range h.pendingClose {
+			if !posSymbols[sym] {
+				delete(h.pendingClose, sym)
+			}
+		}
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Symbol < out[j].Symbol })
@@ -252,6 +277,11 @@ func (h *PortfolioHandler) handleClosePosition(w http.ResponseWriter, r *http.Re
 		jsonErr(w, "failed to close "+symbol+": "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	if h.pendingClose == nil {
+		h.pendingClose = make(map[string]time.Time)
+	}
+	h.pendingClose[symbol] = time.Now()
 
 	h.log.Info().Str("symbol", symbol).Str("order_id", orderID).Msg("position close requested")
 	w.Header().Set("Content-Type", "application/json")
