@@ -18,6 +18,7 @@ type PortfolioBroker interface {
 	GetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error)
 	ClosePosition(ctx context.Context, symbol domain.Symbol) (string, error)
 	GetPosition(ctx context.Context, symbol domain.Symbol) (float64, error)
+	CancelOpenOrders(ctx context.Context, symbol domain.Symbol, side string) (int, error)
 }
 
 // OptionQuoteProvider fetches bid/ask/last for option contract symbols.
@@ -271,6 +272,10 @@ func (h *PortfolioHandler) handleGetAccount(w http.ResponseWriter, r *http.Reque
 
 func (h *PortfolioHandler) handleClosePosition(w http.ResponseWriter, r *http.Request, symbol string) {
 	sym := domain.Symbol(symbol)
+	// Cancel any existing open sell orders to avoid stacking duplicates
+	if canceled, cancelErr := h.broker.CancelOpenOrders(r.Context(), sym, "sell"); cancelErr == nil && canceled > 0 {
+		h.log.Info().Str("symbol", symbol).Int("canceled", canceled).Msg("canceled existing sell orders before close")
+	}
 	orderID, err := h.broker.ClosePosition(r.Context(), sym)
 	if err != nil {
 		h.log.Error().Err(err).Str("symbol", symbol).Msg("failed to close position")
