@@ -1,6 +1,7 @@
 "use client";
 
-import type { EntryGatedPayload } from "@/lib/types";
+import React, { useState } from "react";
+import type { EntryCheckResult, EntryGatedPayload } from "@/lib/types";
 import {
   Table,
   TableBody,
@@ -57,6 +58,49 @@ function blockingGateColor(gate: string): string {
   }
 }
 
+const COLUMN_COUNT = 11;
+
+function EntryCheckIcon({ passed }: { passed: boolean }) {
+  if (passed) {
+    return (
+      <svg
+        className="h-3 w-3 shrink-0 text-emerald-400"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+      >
+        <path d="M3 8.5l3.5 3.5 6.5-7" />
+      </svg>
+    );
+  }
+  return (
+    <svg
+      className="h-3 w-3 shrink-0 text-zinc-500"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+    >
+      <path d="M4 4l8 8M12 4l-8 8" />
+    </svg>
+  );
+}
+
+function EntryChecksGrid({ checks }: { checks: EntryCheckResult[] }) {
+  return (
+    <div className="grid grid-cols-1 gap-x-8 gap-y-1 px-4 py-3 sm:grid-cols-2">
+      {checks.map((check) => (
+        <div key={check.name} className="flex items-center gap-2">
+          <EntryCheckIcon passed={check.passed} />
+          <span className="font-mono text-xs text-zinc-300">{check.name}:</span>
+          <span className="text-xs text-zinc-500">{check.reason}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function FactorCell({ active, detail }: { active: boolean; detail: string }) {
   if (!active) {
     return (
@@ -71,6 +115,8 @@ function FactorCell({ active, detail }: { active: boolean; detail: string }) {
 }
 
 export function AVWAPConfluenceMatrix({ data }: AVWAPConfluenceMatrixProps) {
+  const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
+
   if (data.size === 0) {
     return (
       <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
@@ -108,7 +154,8 @@ export function AVWAPConfluenceMatrix({ data }: AVWAPConfluenceMatrixProps) {
             const pct = c.maxScore > 0 ? (c.score / c.maxScore) * 100 : 0;
 
             return (
-              <TableRow key={row.symbol} className="border-zinc-800">
+              <React.Fragment key={row.symbol}>
+              <TableRow className="border-zinc-800">
                 <TableCell className="py-2 font-bold font-mono text-zinc-100">
                   {row.symbol}
                 </TableCell>
@@ -154,16 +201,47 @@ export function AVWAPConfluenceMatrix({ data }: AVWAPConfluenceMatrixProps) {
                 </TableCell>
                 <TableCell className="py-2">
                   {row.blockingGate ? (
-                    <span
-                      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${blockingGateColor(row.blockingGate)}`}
-                    >
-                      {row.blockingGate}
-                    </span>
+                    row.blockingGate === "entry_specific" && row.entryChecks ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedSymbol(
+                            expandedSymbol === row.symbol ? null : row.symbol,
+                          )
+                        }
+                        className={`inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${blockingGateColor(row.blockingGate)}`}
+                      >
+                        {row.blockingGate}
+                        <svg
+                          className={`h-3 w-3 transition-transform ${expandedSymbol === row.symbol ? "rotate-180" : ""}`}
+                          viewBox="0 0 16 16"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                        >
+                          <path d="M4 6l4 4 4-4" />
+                        </svg>
+                      </button>
+                    ) : (
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${blockingGateColor(row.blockingGate)}`}
+                      >
+                        {row.blockingGate}
+                      </span>
+                    )
                   ) : (
                     <span className="text-emerald-400 text-xs">All passed</span>
                   )}
                 </TableCell>
               </TableRow>
+              {expandedSymbol === row.symbol && row.entryChecks && (
+                <TableRow className="border-zinc-800 bg-zinc-900/50">
+                  <TableCell colSpan={COLUMN_COUNT} className="p-0">
+                    <EntryChecksGrid checks={row.entryChecks} />
+                  </TableCell>
+                </TableRow>
+              )}
+              </React.Fragment>
             );
           })}
         </TableBody>

@@ -160,6 +160,8 @@ type AVWAPState struct {
 
 	LockedOutSide   start.Side // side that was stopped out; prevents same-direction re-entry
 
+	entryChecks      []domain.EntryCheckResult // transient: reset each bar, not serialized
+
 	LastGatedBarTime time.Time // rate-limit EntryGated events to one per bar
 
 	PrevBars     [2]start.Bar       // 2-bar lookback for candlestick patterns
@@ -167,6 +169,24 @@ type AVWAPState struct {
 	BarHighs50   []float64          // rolling 50-bar high window for Fibonacci
 	BarLows50    []float64          // rolling 50-bar low window for Fibonacci
 	KeyLevels    map[string]float64 // key price levels (pd_high, pd_low, or_high, or_low)
+}
+
+// recordCheck appends a failed entry check result.
+func (s *AVWAPState) recordCheck(name, reason string) {
+	s.entryChecks = append(s.entryChecks, domain.EntryCheckResult{
+		Name:   name,
+		Passed: false,
+		Reason: reason,
+	})
+}
+
+// recordCheckPassed appends a passed entry check result.
+func (s *AVWAPState) recordCheckPassed(name string) {
+	s.entryChecks = append(s.entryChecks, domain.EntryCheckResult{
+		Name:   name,
+		Passed: true,
+		Reason: "fired",
+	})
 }
 
 // entryContext bundles all per-bar read-only data needed by entry/exit helpers,
@@ -812,16 +832,19 @@ func (s *AVWAPState) evaluateCapitulationReclaim(ec entryContext) (*start.Signal
 	avwapValues := ec.avwapValues
 	sortedAnchors := ec.sortedAnchors
 
+	reason := "no capitulation anchor"
 	for _, anchorName := range sortedAnchors {
 		if !strings.HasPrefix(anchorName, "capitulation") {
 			continue
 		}
 		avwapValue, ok := avwapValues[anchorName]
 		if !ok || avwapValue == 0 {
+			reason = "AVWAP value missing"
 			continue
 		}
 		volumeOK := s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA
 		if ec.lockedLong {
+			reason = "locked LONG"
 			continue
 		}
 		if s.AboveCount[anchorName] >= 1 && s.AboveCount[anchorName] <= cfg.HoldBars &&
@@ -829,6 +852,7 @@ func (s *AVWAPState) evaluateCapitulationReclaim(ec entryContext) (*start.Signal
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
 				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
 			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
 			adjustedStrength := math.Min(1.0, 0.9+float64(conf.Score)*0.03)
@@ -856,7 +880,12 @@ func (s *AVWAPState) evaluateCapitulationReclaim(ec entryContext) (*start.Signal
 			s.CooldownUntil = now.Add(cooldown)
 			return &sig, nil
 		}
+		// Got a capitulation anchor but conditions not met — track closest miss
+		if reason == "no capitulation anchor" || reason == "AVWAP value missing" {
+			reason = "reclaim conditions not met"
+		}
 	}
+	s.recordCheck("cap_reclaim", reason)
 	return nil, nil
 }
 
@@ -864,6 +893,7 @@ func (s *AVWAPState) evaluateCapitulationReclaim(ec entryContext) (*start.Signal
 func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 	cfg := ec.cfg
 	if !cfg.BreakoutEnabled {
+		s.recordCheck("breakout", "disabled")
 		return nil, nil
 	}
 	bar := ec.bar
@@ -874,6 +904,8 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 	avwapValues := ec.avwapValues
 	sortedAnchors := ec.sortedAnchors
 	ctx := ec.ctx
+
+	reason := fmt.Sprintf("hold bars %d < %d", maxAboveCount(s.AboveCount, sortedAnchors), cfg.HoldBars)
 
 	// Long breakouts
 	for _, anchorName := range sortedAnchors {
@@ -886,17 +918,20 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 
 		if s.AboveCount[anchorName] >= cfg.HoldBars && volumeOK && !ec.lockedLong {
 			if cfg.RequireHigherLows && !hasHigherLows(s.RecentLows) {
+				reason = "higher lows not met"
 				continue
 			}
 			if cfg.MinSlopeBPS > 0 && ec.slopeOK && ec.avwapSlope < cfg.MinSlopeBPS {
 				if ctx != nil && ctx.Logger() != nil {
 					ctx.Logger().Info("AVWAP slope: blocking long breakout", "symbol", ec.symbol, "slope_bps", ec.avwapSlope, "min", cfg.MinSlopeBPS)
 				}
+				reason = fmt.Sprintf("slope %.1f bps < %.1f min", ec.avwapSlope, cfg.MinSlopeBPS)
 				continue
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
 				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
 			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
 			adjustedStrength := math.Min(1.0, 0.7+float64(conf.Score)*0.03)
@@ -940,6 +975,7 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 					if ctx != nil && ctx.Logger() != nil {
 						ctx.Logger().Info("AVWAP bias: blocking short breakout", "symbol", ec.symbol, "bias", ec.avwapBias, "anchor", anchorName)
 					}
+					reason = "bias blocks SHORT"
 					continue
 				}
 				// Note: require_higher_lows is NOT applied to shorts — the bias gate
@@ -952,6 +988,7 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 						middayVolOK := s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.MiddayVolumeMult*s.Indicators.VolumeSMA
 						if !middayVolOK {
 							logShortGate(ctx, ec.symbol, "midday_trap_shield", anchorName)
+							reason = "midday trap shield (11-13 ET)"
 							continue
 						}
 					}
@@ -961,15 +998,18 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 					if ctx != nil && ctx.Logger() != nil {
 						ctx.Logger().Info("AVWAP slope: blocking short breakout", "symbol", ec.symbol, "slope_bps", ec.avwapSlope, "min", -cfg.MinSlopeBPS)
 					}
+					reason = fmt.Sprintf("slope %.1f bps < %.1f min", ec.avwapSlope, cfg.MinSlopeBPS)
 					continue
 				}
 				if cfg.RequireCapitulationForShorts && ec.avwapBias == "LONG" {
 					logShortGate(ctx, ec.symbol, "require_capitulation", anchorName, "bias", ec.avwapBias)
+					reason = "capitulation required for short"
 					continue
 				}
 				conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
 					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
 				if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+					reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 					continue
 				}
 				adjustedStrength := math.Min(1.0, 0.7+float64(conf.Score)*0.03)
@@ -996,6 +1036,7 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 			}
 		}
 	}
+	s.recordCheck("breakout", reason)
 	return nil, nil
 }
 
@@ -1003,6 +1044,7 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 	cfg := ec.cfg
 	if !cfg.PullbackEnabled {
+		s.recordCheck("pullback", "disabled")
 		return nil, nil
 	}
 	bar := ec.bar
@@ -1013,6 +1055,21 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 	avwapValues := ec.avwapValues
 	sortedAnchors := ec.sortedAnchors
 	ctx := ec.ctx
+
+	requiredTrendBars := cfg.PullbackTrendBars
+	if regimeTag == "BALANCE" {
+		requiredTrendBars += 3
+	}
+	bestPeak := 0
+	for _, a := range sortedAnchors {
+		if s.PeakAboveCount[a] > bestPeak {
+			bestPeak = s.PeakAboveCount[a]
+		}
+		if s.PeakBelowCount[a] > bestPeak {
+			bestPeak = s.PeakBelowCount[a]
+		}
+	}
+	reason := fmt.Sprintf("trend bars %d < %d", bestPeak, requiredTrendBars)
 
 	for _, anchorName := range sortedAnchors {
 		avwapValue := avwapValues[anchorName]
@@ -1030,11 +1087,11 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 		rsiOK := s.Indicators.RSI >= cfg.PullbackRSIMin && s.Indicators.RSI <= cfg.PullbackRSIMax
 
 		// Long pullback: was above AVWAP for trend bars, low touches AVWAP, closes above, RSI mid-range.
-		requiredTrendBars := cfg.PullbackTrendBars
+		reqLong := cfg.PullbackTrendBars
 		if regimeTag == "BALANCE" {
-			requiredTrendBars += 3
+			reqLong += 3
 		}
-		if !ec.lockedLong && s.PeakAboveCount[anchorName] >= requiredTrendBars &&
+		if !ec.lockedLong && s.PeakAboveCount[anchorName] >= reqLong &&
 			bar.Low <= avwapValue+toleranceAbs &&
 			bar.Close > avwapValue &&
 			rsiOK && volumeOK {
@@ -1042,17 +1099,20 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 				if ctx != nil && ctx.Logger() != nil {
 					ctx.Logger().Info("AVWAP bias: blocking long pullback", "symbol", ec.symbol, "bias", ec.avwapBias, "anchor", anchorName)
 				}
+				reason = "bias blocks LONG"
 				continue
 			}
 			if cfg.MinSlopeBPS > 0 && ec.slopeOK && ec.avwapSlope < cfg.MinSlopeBPS {
 				if ctx != nil && ctx.Logger() != nil {
 					ctx.Logger().Info("AVWAP slope: blocking long pullback", "symbol", ec.symbol, "slope_bps", ec.avwapSlope, "min", cfg.MinSlopeBPS)
 				}
+				reason = fmt.Sprintf("slope %.1f bps < %.1f min", ec.avwapSlope, cfg.MinSlopeBPS)
 				continue
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
 				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
 			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
 			adjustedStrength := math.Min(1.0, 0.85+float64(conf.Score)*0.03)
@@ -1080,12 +1140,12 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 		}
 
 		// Short pullback: was below AVWAP for trend bars, high reaches AVWAP, closes below, RSI mid-range.
-		requiredTrendBarsShort := cfg.PullbackTrendBars
+		reqShort := cfg.PullbackTrendBars
 		if regimeTag == "BALANCE" {
-			requiredTrendBarsShort += 3
+			reqShort += 3
 		}
 		if !ec.lockedShort && !strings.EqualFold(cfg.Direction, "LONG") &&
-			s.PeakBelowCount[anchorName] >= requiredTrendBarsShort &&
+			s.PeakBelowCount[anchorName] >= reqShort &&
 			bar.High >= avwapValue-toleranceAbs &&
 			bar.Close < avwapValue &&
 			rsiOK && volumeOK {
@@ -1094,6 +1154,7 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 				if ctx != nil && ctx.Logger() != nil {
 					ctx.Logger().Info("AVWAP bias: blocking short pullback", "symbol", ec.symbol, "bias", ec.avwapBias, "anchor", anchorName)
 				}
+				reason = "bias blocks SHORT"
 				continue
 			}
 			if cfg.MinSlopeBPS > 0 && ec.slopeOK && ec.avwapSlope > -cfg.MinSlopeBPS {
@@ -1101,6 +1162,7 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 				if ctx != nil && ctx.Logger() != nil {
 					ctx.Logger().Info("AVWAP slope: blocking short pullback", "symbol", ec.symbol, "slope_bps", ec.avwapSlope, "min", -cfg.MinSlopeBPS)
 				}
+				reason = fmt.Sprintf("slope %.1f bps < %.1f min", ec.avwapSlope, cfg.MinSlopeBPS)
 				continue
 			}
 			if cfg.RequireCapitulationForShorts && ec.avwapBias == "LONG" {
@@ -1108,11 +1170,13 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 				if ctx != nil && ctx.Logger() != nil {
 					ctx.Logger().Info("AVWAP gate: capitulation required for short pullback (above AVWAP)", "symbol", ec.symbol, "anchor", anchorName)
 				}
+				reason = "capitulation required for short"
 				continue
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
 				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
 			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
 			adjustedStrength := math.Min(1.0, 0.85+float64(conf.Score)*0.03)
@@ -1139,6 +1203,7 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 			return &sig, nil
 		}
 	}
+	s.recordCheck("pullback", reason)
 	return nil, nil
 }
 
@@ -1147,7 +1212,12 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 	cfg := ec.cfg
 	avwapValues := ec.avwapValues
 	sortedAnchors := ec.sortedAnchors
-	if !cfg.PinchEnabled || len(avwapValues) < 2 {
+	if !cfg.PinchEnabled {
+		s.recordCheck("pinch", "disabled")
+		return nil, nil
+	}
+	if len(avwapValues) < 2 {
+		s.recordCheck("pinch", "need 2+ AVWAPs")
 		return nil, nil
 	}
 	bar := ec.bar
@@ -1170,18 +1240,24 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 		first = false
 	}
 
+	volRatio := 0.0
+	if s.Indicators.VolumeSMA > 0 {
+		volRatio = bar.Volume / s.Indicators.VolumeSMA
+	}
 	volumeOK := s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA
 	// Use first anchor's AVWAP value for confluence scoring in pinch
 	pinchAVWAPValue := avwapValues[sortedAnchors[0]]
 	gapBPS := (maxAVWAP - minAVWAP) / minAVWAP * 10000.0
+	reason := fmt.Sprintf("gap %.0f bps outside [%d, %d]", gapBPS, cfg.PinchMinBPS, cfg.PinchMaxBPS)
 	if gapBPS >= float64(cfg.PinchMinBPS) && gapBPS <= float64(cfg.PinchMaxBPS) {
+		reason = "price not breaking pinch band"
 		// Long pinch breakout: price breaks above maxAVWAP.
 		if bar.Close > maxAVWAP && volumeOK && !ec.lockedLong {
 			if !cfg.EnforceAVWAPBias || ec.avwapBias == "" || ec.avwapBias == "LONG" {
 				conf := computeConfluence(cfg, bar, pinchAVWAPValue, ec.avwapValues, s.Indicators,
 					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
 				if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
-					// skip — confluence too low
+					reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				} else {
 					adjustedStrength := math.Min(1.0, 0.9+float64(conf.Score)*0.03)
 					sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
@@ -1202,18 +1278,21 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 				}
 			}
 		}
+		if !volumeOK && (bar.Close > maxAVWAP || bar.Close < minAVWAP) {
+			reason = fmt.Sprintf("vol %.1fx < %.1fx min", volRatio, cfg.VolumeMult)
+		}
 
 		// Short pinch breakout: price breaks below minAVWAP.
 		if bar.Close < minAVWAP && volumeOK && !ec.lockedShort && !strings.EqualFold(cfg.Direction, "LONG") {
 			switch {
 			case cfg.RequireCapitulationForShorts && ec.avwapBias == "LONG":
 				logShortGate(ctx, ec.symbol, "require_capitulation", "pinch", "bias", ec.avwapBias)
-				// Skip — above AVWAP, capitulation required for short pinch
+				reason = "capitulation required for short"
 			case !cfg.EnforceAVWAPBias || ec.avwapBias == "" || ec.avwapBias == "SHORT":
 				conf := computeConfluence(cfg, bar, pinchAVWAPValue, ec.avwapValues, s.Indicators,
 					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
 				if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
-					// skip — confluence too low
+					reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				} else {
 					adjustedStrength := math.Min(1.0, 0.9+float64(conf.Score)*0.03)
 					sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, adjustedStrength, map[string]string{
@@ -1234,9 +1313,11 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 				}
 			default:
 				logShortGate(ctx, ec.symbol, "enforce_avwap_bias", "pinch", "bias", ec.avwapBias)
+				reason = "bias blocks SHORT"
 			}
 		}
 	}
+	s.recordCheck("pinch", reason)
 	return nil, nil
 }
 
@@ -1244,6 +1325,7 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 func (s *AVWAPState) evaluateGapReclaim(ec entryContext) (*start.Signal, error) {
 	cfg := ec.cfg
 	if !cfg.GapReclaimEnabled {
+		s.recordCheck("gap_reclaim", "disabled")
 		return nil, nil
 	}
 	if s.CrossedBelowBar == nil {
@@ -1258,6 +1340,11 @@ func (s *AVWAPState) evaluateGapReclaim(ec entryContext) (*start.Signal, error) 
 	sortedAnchors := ec.sortedAnchors
 	ctx := ec.ctx
 
+	reason := "no recent cross-below"
+	volRatio := 0.0
+	if s.Indicators.VolumeSMA > 0 {
+		volRatio = bar.Volume / s.Indicators.VolumeSMA
+	}
 	volumeOK := s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA
 	for _, anchorName := range sortedAnchors {
 		avwapValue := avwapValues[anchorName]
@@ -1272,40 +1359,49 @@ func (s *AVWAPState) evaluateGapReclaim(ec entryContext) (*start.Signal, error) 
 		case prev > 0 && prev <= cfg.GapReclaimBars && bar.Close > avwapValue:
 			// Reclaim! Price was below for 1-N bars, now closed above.
 			s.CrossedBelowBar[anchorName] = 0
-			if volumeOK && !ec.lockedLong {
-				if cfg.EnforceAVWAPBias && ec.avwapBias != "" && ec.avwapBias != "LONG" {
-					if ctx != nil && ctx.Logger() != nil {
-						ctx.Logger().Info("AVWAP bias: blocking long gap reclaim", "symbol", ec.symbol, "bias", ec.avwapBias, "anchor", anchorName)
-					}
-					continue
-				}
-				conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
-					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
-				if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
-					continue
-				}
-				adjustedStrength := math.Min(1.0, 0.85+float64(conf.Score)*0.03)
-				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
-					"ref_price":         fmt.Sprintf("%.10f", bar.Close),
-					"setup":             "avwap_gap_reclaim",
-					"regime_5m":         regimeTag,
-					"anchor":            anchorName,
-					"confluence":        fmt.Sprintf("%d", conf.Score),
-					"confluence_detail": strings.Join(conf.Factors, "+"),
-				})
-				if err != nil {
-					return nil, err
-				}
-				s.PendingEntry = start.SideBuy
-				s.PendingEntryAt = now
-				s.TradesToday++
-				s.CooldownUntil = now.Add(cooldown)
-				return &sig, nil
+			if !volumeOK {
+				reason = fmt.Sprintf("vol %.1fx < %.1fx min", volRatio, cfg.VolumeMult)
+				continue
 			}
+			if ec.lockedLong {
+				reason = "locked LONG"
+				continue
+			}
+			if cfg.EnforceAVWAPBias && ec.avwapBias != "" && ec.avwapBias != "LONG" {
+				if ctx != nil && ctx.Logger() != nil {
+					ctx.Logger().Info("AVWAP bias: blocking long gap reclaim", "symbol", ec.symbol, "bias", ec.avwapBias, "anchor", anchorName)
+				}
+				reason = "bias blocks LONG"
+				continue
+			}
+			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
+				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
+				continue
+			}
+			adjustedStrength := math.Min(1.0, 0.85+float64(conf.Score)*0.03)
+			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
+				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+				"setup":             "avwap_gap_reclaim",
+				"regime_5m":         regimeTag,
+				"anchor":            anchorName,
+				"confluence":        fmt.Sprintf("%d", conf.Score),
+				"confluence_detail": strings.Join(conf.Factors, "+"),
+			})
+			if err != nil {
+				return nil, err
+			}
+			s.PendingEntry = start.SideBuy
+			s.PendingEntryAt = now
+			s.TradesToday++
+			s.CooldownUntil = now.Add(cooldown)
+			return &sig, nil
 		default:
 			s.CrossedBelowBar[anchorName] = 0
 		}
 	}
+	s.recordCheck("gap_reclaim", reason)
 	return nil, nil
 }
 
@@ -1315,6 +1411,7 @@ func (s *AVWAPState) evaluateGapReclaim(ec entryContext) (*start.Signal, error) 
 func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 	cfg := ec.cfg
 	if !cfg.HandoffEnabled {
+		s.recordCheck("handoff", "disabled")
 		return nil, nil
 	}
 	bar := ec.bar
@@ -1330,6 +1427,8 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 	if handoffBars < 2 {
 		handoffBars = 3
 	}
+
+	reason := fmt.Sprintf("history %d < %d bars", maxHistLen(s.AVWAPDistHistory, sortedAnchors), handoffBars+1)
 
 	for _, anchorName := range sortedAnchors {
 		hist := s.AVWAPDistHistory[anchorName]
@@ -1349,22 +1448,34 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 					break
 				}
 			}
-			if allIncreasing && recent[len(recent)-1] >= minMom {
+			if !allIncreasing || recent[len(recent)-1] < minMom {
+				reason = "no sustained momentum"
+			} else {
+				volRatio := 0.0
+				if s.Indicators.VolumeSMA > 0 {
+					volRatio = bar.Volume / s.Indicators.VolumeSMA
+				}
 				volumeOK := s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA
-				if volumeOK {
+				if !volumeOK {
+					reason = fmt.Sprintf("vol %.1fx < %.1fx min", volRatio, cfg.VolumeMult)
+				} else {
 					if cfg.EnforceAVWAPBias && ec.avwapBias != "" && ec.avwapBias != "LONG" {
+						reason = "bias blocks LONG"
 						continue
 					}
 					if cfg.RequireHigherLows && !hasHigherLows(s.RecentLows) {
+						reason = "higher lows not met"
 						continue
 					}
 					if cfg.MinSlopeBPS > 0 && ec.slopeOK && ec.avwapSlope < cfg.MinSlopeBPS {
+						reason = fmt.Sprintf("slope %.1f bps < %.1f min", ec.avwapSlope, cfg.MinSlopeBPS)
 						continue
 					}
 					handoffAVWAP := avwapValues[anchorName]
 					conf := computeConfluence(cfg, bar, handoffAVWAP, ec.avwapValues, s.Indicators,
 						s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
 					if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+						reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 						continue
 					}
 					adjustedStrength := math.Min(1.0, 0.85+float64(conf.Score)*0.03)
@@ -1389,6 +1500,9 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 					return &sig, nil
 				}
 			}
+		} else if nearAVWAP >= 0 {
+			distBPS := nearAVWAP
+			reason = fmt.Sprintf("dist %.0f bps outside range", distBPS)
 		}
 
 		// Short handoff: consecutive bars with increasing negative distance from AVWAP.
@@ -1400,26 +1514,38 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 					break
 				}
 			}
-			if allDecreasing && recent[len(recent)-1] <= -minMom {
+			if !allDecreasing || recent[len(recent)-1] > -minMom {
+				reason = "no sustained momentum"
+			} else {
+				volRatio := 0.0
+				if s.Indicators.VolumeSMA > 0 {
+					volRatio = bar.Volume / s.Indicators.VolumeSMA
+				}
 				volumeOK := s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA
-				if volumeOK {
+				if !volumeOK {
+					reason = fmt.Sprintf("vol %.1fx < %.1fx min", volRatio, cfg.VolumeMult)
+				} else {
 					if cfg.EnforceAVWAPBias && ec.avwapBias != "" && ec.avwapBias != "SHORT" {
 						logShortGate(ctx, ec.symbol, "enforce_avwap_bias", anchorName, "bias", ec.avwapBias)
+						reason = "bias blocks SHORT"
 						continue
 					}
 					if cfg.RequireCapitulationForShorts && ec.avwapBias == "LONG" {
 						logShortGate(ctx, ec.symbol, "require_capitulation", anchorName, "bias", ec.avwapBias)
+						reason = "capitulation required for short"
 						continue
 					}
 					// lower-highs gate removed for shorts — bias + slope are sufficient
 					if cfg.MinSlopeBPS > 0 && ec.slopeOK && ec.avwapSlope > -cfg.MinSlopeBPS {
 						logShortGate(ctx, ec.symbol, "min_slope_bps", anchorName, "slope_bps", fmt.Sprintf("%.2f", ec.avwapSlope))
+						reason = fmt.Sprintf("slope %.1f bps < %.1f min", ec.avwapSlope, cfg.MinSlopeBPS)
 						continue
 					}
 					shortHandoffAVWAP := avwapValues[anchorName]
 					conf := computeConfluence(cfg, bar, shortHandoffAVWAP, ec.avwapValues, s.Indicators,
 						s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
 					if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+						reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 						continue
 					}
 					adjustedStrength := math.Min(1.0, 0.85+float64(conf.Score)*0.03)
@@ -1446,6 +1572,7 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 			}
 		}
 	}
+	s.recordCheck("handoff", reason)
 	return nil, nil
 }
 
@@ -1453,6 +1580,7 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 	cfg := ec.cfg
 	if !cfg.BounceEnabled {
+		s.recordCheck("bounce", "disabled")
 		return nil, nil
 	}
 	bar := ec.bar
@@ -1464,6 +1592,8 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 	sortedAnchors := ec.sortedAnchors
 	ctx := ec.ctx
 
+	reason := "price not touching AVWAP"
+
 	for _, anchorName := range sortedAnchors {
 		avwapValue := avwapValues[anchorName]
 		touchesAVWAP := bar.Low <= avwapValue && avwapValue <= bar.High
@@ -1474,15 +1604,18 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 				if ctx != nil && ctx.Logger() != nil {
 					ctx.Logger().Info("AVWAP bias: blocking long bounce", "symbol", ec.symbol, "bias", ec.avwapBias, "anchor", anchorName)
 				}
+				reason = "bias blocks LONG bounce"
 				continue
 			}
 			// Regime gating is handled by evaluateEntries (bounce only called in TREND)
 			if bar.Close <= bar.Open {
+				reason = "candle bearish (need bullish)"
 				continue
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
 				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
 			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
 			adjustedStrength := math.Min(1.0, 0.6+float64(conf.Score)*0.03)
@@ -1519,20 +1652,24 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 				if ctx != nil && ctx.Logger() != nil {
 					ctx.Logger().Info("AVWAP bias: blocking short bounce", "symbol", ec.symbol, "bias", ec.avwapBias, "anchor", anchorName)
 				}
+				reason = "bias blocks SHORT bounce"
 				continue
 			}
 			// Regime gating is handled by evaluateEntries (bounce only called in TREND)
 			if bar.Close >= bar.Open {
 				logShortGate(ctx, ec.symbol, "bearish_candle", anchorName)
+				reason = "candle bullish (need bearish)"
 				continue
 			}
 			if cfg.RequireCapitulationForShorts && ec.avwapBias == "LONG" {
 				logShortGate(ctx, ec.symbol, "require_capitulation", anchorName, "bias", ec.avwapBias)
+				reason = "capitulation required for short"
 				continue // block short bounces above AVWAP without capitulation
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
 				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
 			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
 			adjustedStrength := math.Min(1.0, 0.6+float64(conf.Score)*0.03)
@@ -1557,6 +1694,7 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 			return &sig, nil
 		}
 	}
+	s.recordCheck("bounce", reason)
 	return nil, nil
 }
 
@@ -1571,25 +1709,48 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 //   6. Breakout — sustained above/below AVWAP with volume
 //   7. Bounce — lowest conviction, mean-reversion at AVWAP
 func (s *AVWAPState) evaluateEntries(ec entryContext) (*start.Signal, error) {
+	s.entryChecks = s.entryChecks[:0]
+
 	if sig, err := s.evaluatePinch(ec); err != nil || sig != nil {
+		if sig != nil {
+			s.recordCheckPassed("pinch")
+		}
 		return sig, err
 	}
 	if sig, err := s.evaluateCapitulationReclaim(ec); err != nil || sig != nil {
+		if sig != nil {
+			s.recordCheckPassed("cap_reclaim")
+		}
 		return sig, err
 	}
 	if sig, err := s.evaluateGapReclaim(ec); err != nil || sig != nil {
+		if sig != nil {
+			s.recordCheckPassed("gap_reclaim")
+		}
 		return sig, err
 	}
 	if sig, err := s.evaluatePullback(ec); err != nil || sig != nil {
+		if sig != nil {
+			s.recordCheckPassed("pullback")
+		}
 		return sig, err
 	}
 	if sig, err := s.evaluateHandoff(ec); err != nil || sig != nil {
+		if sig != nil {
+			s.recordCheckPassed("handoff")
+		}
 		return sig, err
 	}
 	if sig, err := s.evaluateBreakout(ec); err != nil || sig != nil {
+		if sig != nil {
+			s.recordCheckPassed("breakout")
+		}
 		return sig, err
 	}
 	if sig, err := s.evaluateBounce(ec); err != nil || sig != nil {
+		if sig != nil {
+			s.recordCheckPassed("bounce")
+		}
 		return sig, err
 	}
 	return nil, nil
@@ -1655,6 +1816,7 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 		GatesTotal:   5,
 		BlockingGate: "confluence",
 		BlockingDetail: fmt.Sprintf("score %d / %d", conf.Score, cfg.MinConfluenceScore),
+		EntryChecks:  s.entryChecks,
 		Confluence: domain.EntryGatedConfluence{
 			Score:          conf.Score,
 			MaxScore:       10,
@@ -1761,6 +1923,7 @@ func (s *AVWAPState) emitEntryGated(ec entryContext) {
 		GatesTotal:    gatesTotal,
 		BlockingGate:  blockingGate,
 		BlockingDetail: blockingDetail,
+		EntryChecks:   s.entryChecks,
 		Confluence: domain.EntryGatedConfluence{
 			Score:    conf.Score,
 			MaxScore: 10,
@@ -1808,6 +1971,28 @@ func extractCandleFactor(factors []string) string {
 		}
 	}
 	return ""
+}
+
+// maxAboveCount returns the maximum AboveCount across anchors for entry check reasons.
+func maxAboveCount(counts map[string]int, anchors []string) int {
+	best := 0
+	for _, a := range anchors {
+		if counts[a] > best {
+			best = counts[a]
+		}
+	}
+	return best
+}
+
+// maxHistLen returns the maximum history length across anchors for entry check reasons.
+func maxHistLen(hist map[string][]float64, anchors []string) int {
+	best := 0
+	for _, a := range anchors {
+		if len(hist[a]) > best {
+			best = len(hist[a])
+		}
+	}
+	return best
 }
 
 func copyIntMap(m map[string]int) map[string]int {

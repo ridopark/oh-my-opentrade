@@ -3,7 +3,7 @@
 import { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Info, X, GripHorizontal } from "lucide-react";
-import type { EntryGatedPayload, ORBPhaseUpdatePayload, BarSnapshot } from "@/lib/types";
+import type { EntryGatedPayload, EntryCheckResult, ORBPhaseUpdatePayload, BarSnapshot } from "@/lib/types";
 import { LiveChart, avwapAnchorColor, avwapAnchorLabel } from "@/components/live-chart";
 import { useChartData } from "@/lib/use-chart-data";
 
@@ -200,6 +200,29 @@ function FactorValue({ label, active, detail }: { label: string; active: boolean
 }
 
 // ---------------------------------------------------------------------------
+// EntryChecksPanel — per-entry-type failure reasons
+// ---------------------------------------------------------------------------
+
+function EntryChecksPanel({ checks }: { checks: EntryCheckResult[] }) {
+  return (
+    <div className="mt-2 rounded border border-zinc-800 bg-zinc-900/50 px-3 py-2">
+      <span className="text-[10px] text-zinc-500 uppercase mb-1 block">Entry Checks</span>
+      <div className="grid grid-cols-1 gap-x-6 gap-y-0.5 sm:grid-cols-2">
+        {checks.map((c) => (
+          <div key={c.name} className="flex items-center gap-1.5">
+            <span className={c.passed ? "text-emerald-400" : "text-zinc-600"}>
+              {c.passed ? "\u2713" : "\u2717"}
+            </span>
+            <span className="font-mono text-[11px] text-zinc-300 min-w-[80px]">{c.name}</span>
+            <span className="text-[11px] text-zinc-500 truncate">{c.reason}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // AVWAPDetail (popover content)
 // ---------------------------------------------------------------------------
 
@@ -246,6 +269,9 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
           )}
         </div>
       </div>
+      {avwap.blockingGate === "entry_specific" && avwap.entryChecks && avwap.entryChecks.length > 0 && (
+        <EntryChecksPanel checks={avwap.entryChecks} />
+      )}
     </div>
   );
 }
