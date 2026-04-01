@@ -140,7 +140,41 @@ var (
 	}{}
 )
 
+// maxChunkDays defines the maximum calendar days per IBKR historical data
+// request for bar sizes that have duration limits.
+var maxChunkDays = map[string]int{
+	"1 min":  7,
+	"5 mins": 14,
+}
+
 func (a *Adapter) GetHistoricalBars(ctx context.Context, symbol domain.Symbol, tf domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
+	barSize := barSizeStr(tf)
+	chunkDays, needsChunking := maxChunkDays[barSize]
+	if !needsChunking || to.Sub(from) <= time.Duration(chunkDays)*24*time.Hour {
+		return a.getHistoricalBarsChunk(ctx, symbol, tf, from, to)
+	}
+
+	var allBars []domain.MarketBar
+	chunkStart := from
+	for chunkStart.Before(to) {
+		if err := ctx.Err(); err != nil {
+			return allBars, err
+		}
+		chunkEnd := chunkStart.AddDate(0, 0, chunkDays)
+		if chunkEnd.After(to) {
+			chunkEnd = to
+		}
+		bars, err := a.getHistoricalBarsChunk(ctx, symbol, tf, chunkStart, chunkEnd)
+		if err != nil {
+			return allBars, err
+		}
+		allBars = append(allBars, bars...)
+		chunkStart = chunkEnd
+	}
+	return allBars, nil
+}
+
+func (a *Adapter) getHistoricalBarsChunk(ctx context.Context, symbol domain.Symbol, tf domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
 	select {
 	case historicalSem <- struct{}{}:
 		defer func() { <-historicalSem }()

@@ -562,8 +562,12 @@ func (r *Runner) Run(ctx context.Context) error {
 					if !isRTHGap(lastBarTime, r.cfg.To, loc) {
 						return
 					}
-					r.log.Info().Str("symbol", s.symbol.String()).Time("from", fetchFrom).Time("to", r.cfg.To).Msg("detected trailing data gap — fetching from API")
-					apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, s.symbol, replayTimeframe, fetchFrom, r.cfg.To)
+					fetchTo := r.cfg.To
+					if fetchTo.After(time.Now()) {
+						fetchTo = time.Now()
+					}
+					r.log.Info().Str("symbol", s.symbol.String()).Time("from", fetchFrom).Time("to", fetchTo).Msg("detected trailing data gap — fetching from API")
+					apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, s.symbol, replayTimeframe, fetchFrom, fetchTo)
 					if apiErr != nil {
 						r.log.Warn().Err(apiErr).Str("symbol", s.symbol.String()).Msg("failed to fetch trailing gap bars")
 						return
@@ -636,7 +640,11 @@ func (r *Runner) Run(ctx context.Context) error {
 				bfWg.Add(1)
 				go func(sym domain.Symbol) {
 					defer bfWg.Done()
-					apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, r.cfg.From, r.cfg.To)
+					backfillTo := r.cfg.To
+					if backfillTo.After(time.Now()) {
+						backfillTo = time.Now()
+					}
+					apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, r.cfg.From, backfillTo)
 					if apiErr != nil {
 						r.log.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("API backfill fetch failed")
 						return
@@ -1379,14 +1387,37 @@ func symbolStrings(syms []domain.Symbol) []string {
 const gapThreshold = 4 * time.Hour
 
 func isRTHGap(gapStart, gapEnd time.Time, loc *time.Location) bool {
-	startET := gapStart.In(loc)
-	endET := gapEnd.In(loc)
-	if startET.Weekday() == time.Saturday || startET.Weekday() == time.Sunday {
+	// Clamp end to now — we cannot fetch future data.
+	now := time.Now()
+	if gapEnd.After(now) {
+		gapEnd = now
+	}
+	if !gapEnd.After(gapStart) {
 		return false
 	}
-	rthOpen := time.Date(startET.Year(), startET.Month(), startET.Day(), 9, 30, 0, 0, loc)
-	rthClose := time.Date(startET.Year(), startET.Month(), startET.Day(), 16, 0, 0, 0, loc)
-	return startET.After(rthOpen) && endET.Before(rthClose)
+
+	startET := gapStart.In(loc)
+	endET := gapEnd.In(loc)
+
+	// Single-day gap: both timestamps on the same calendar day.
+	if startET.Year() == endET.Year() && startET.YearDay() == endET.YearDay() {
+		if startET.Weekday() == time.Saturday || startET.Weekday() == time.Sunday {
+			return false
+		}
+		rthOpen := time.Date(startET.Year(), startET.Month(), startET.Day(), 9, 30, 0, 0, loc)
+		rthClose := time.Date(startET.Year(), startET.Month(), startET.Day(), 16, 0, 0, 0, loc)
+		return startET.After(rthOpen) && endET.Before(rthClose)
+	}
+
+	// Multi-day gap: return true if at least one weekday exists in the range.
+	// Loop is bounded to 7 iterations — any 7-day span must contain a weekday.
+	for d := startET; !d.After(endET); d = d.AddDate(0, 0, 1) {
+		wd := d.Weekday()
+		if wd != time.Saturday && wd != time.Sunday {
+			return true
+		}
+	}
+	return false
 }
 
 type filteredSpecStore struct {
