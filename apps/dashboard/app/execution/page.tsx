@@ -84,13 +84,18 @@ function StatusBadge({ status }: { status: string }) {
     created: "bg-blue-500/20 text-blue-400",
     validated: "bg-emerald-500/20 text-emerald-400",
     rejected: "bg-red-500/20 text-red-400",
-    submitted: "bg-yellow-500/20 text-yellow-400",
+    submitted: "bg-amber-500/20 text-amber-400 animate-pulse",
+    canceled: "bg-muted text-muted-foreground",
     filled: "bg-emerald-500/20 text-emerald-400",
+  };
+
+  const labels: Record<string, string> = {
+    submitted: "pending fill",
   };
 
   return (
     <Badge className={styles[status] ?? "bg-muted text-muted-foreground"}>
-      {status}
+      {labels[status] ?? status}
     </Badge>
   );
 }
