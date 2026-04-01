@@ -262,7 +262,7 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 			continue
 		}
 
-		isTerminal := details.Status == "canceled" || details.Status == "expired" || details.Status == "rejected"
+		isTerminal := details.Status == "canceled" || details.Status == "expired" || details.Status == "rejected" || details.Status == "filled"
 		if isTerminal {
 			if err := s.repo.UpdateOrderStatus(ctx, order.BrokerOrderID, details.Status); err != nil {
 				ol.Error().Err(err).Msg("reconcile: failed to update terminal status")
@@ -277,7 +277,7 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 		}
 
 		if details.FilledQty <= 0 {
-			ol.Debug().Str("status", details.Status).Msg("reconcile: order has no fills yet — skipping")
+			ol.Info().Str("broker_status", details.Status).Msg("reconcile: order still open at broker — no fills yet")
 			continue
 		}
 
