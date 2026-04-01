@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useState, useCallback, useMemo } from "react";
+import { relativeTime } from "@/lib/format";
 import {
   Card,
   CardContent,
@@ -45,6 +46,7 @@ interface Position {
   expiry?: string;
   dte?: number;
   closing?: boolean;
+  opened_at?: string;
 }
 
 interface Account {
@@ -376,6 +378,7 @@ export default function PortfolioPage() {
                   <TableHead className="text-right">Current</TableHead>
                   <TableHead className="text-center">DTE</TableHead>
                   <TableHead className="text-right">P&L Open</TableHead>
+                  <TableHead className="text-right">Opened</TableHead>
                   <TableHead className="text-right">Action</TableHead>
                 </TableRow>
               </TableHeader>
@@ -413,6 +416,7 @@ export default function PortfolioPage() {
                           <PnlText value={group.totalPnl} />
                         </TableCell>
                         <TableCell />
+                        <TableCell />
                       </TableRow>
 
                       {/* Individual position rows */}
@@ -447,6 +451,9 @@ export default function PortfolioPage() {
                           </TableCell>
                           <TableCell className="text-right font-mono tabular-nums">
                             <PnlText value={pos.unrealized_pnl} pct={pos.unrealized_pnl_pct} />
+                          </TableCell>
+                          <TableCell className="text-right text-xs text-muted-foreground whitespace-nowrap">
+                            {pos.opened_at ? relativeTime(pos.opened_at) : "—"}
                           </TableCell>
                           <TableCell className="text-right">
                             {(pos.closing || pendingClose.has(pos.symbol)) ? (
