@@ -801,6 +801,12 @@ func (rs *RiskSizer) handleOptionsSignal(
 	if midPrice <= 0 {
 		midPrice = best.Last
 	}
+	// Use a price closer to the ask for buys to improve fill probability.
+	// Mid price is often stale by the time the order reaches the broker.
+	fillPrice := midPrice
+	if best.Ask > 0 && best.Bid > 0 {
+		fillPrice = best.Bid + (best.Ask-best.Bid)*0.75 // 75th percentile of spread
+	}
 	if midPrice <= 0 {
 		rs.logger.Warn("option contract has no valid price — skipping",
 			"contract", string(best.ContractSymbol),
@@ -816,7 +822,7 @@ func (rs *RiskSizer) handleOptionsSignal(
 	}
 
 	maxRiskUSD := (float64(riskPerTradeBPS) / 10000.0) * equity
-	premiumPerContract := midPrice * float64(best.Multiplier)
+	premiumPerContract := fillPrice * float64(best.Multiplier)
 	qty := math.Floor(maxRiskUSD / premiumPerContract)
 	if qty <= 0 {
 		rs.logger.Warn("option contract premium exceeds risk budget — skipping trade",
@@ -861,7 +867,7 @@ func (rs *RiskSizer) handleOptionsSignal(
 		event.EnvMode,
 		inst,
 		domain.DirectionLong,
-		midPrice,
+		fillPrice,
 		qty,
 		strategyName,
 		rationale,
