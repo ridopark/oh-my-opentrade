@@ -225,7 +225,8 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 			if t.IsZero() {
 				continue
 			}
-			s.Calc.AddAnchor(start.AnchorPoint{Name: name, AnchorTime: t})
+			rthOnly := name == "pd_high" || name == "pd_low"
+			s.Calc.AddAnchor(start.AnchorPoint{Name: name, AnchorTime: t, RTHOnly: rthOnly})
 		}
 		s.AboveCount = make(map[string]int)
 		s.BelowCount = make(map[string]int)
@@ -252,7 +253,8 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 			continue
 		}
 
-		ap := start.AnchorPoint{Name: name, AnchorTime: t}
+		rthOnly := name == "pd_high" || name == "pd_low"
+		ap := start.AnchorPoint{Name: name, AnchorTime: t, RTHOnly: rthOnly}
 
 		if oldAP, exists := existingPoints[name]; exists && oldAP.AnchorTime.Equal(t) {
 			if oldState, hasState := existingStates[name]; hasState {
@@ -588,7 +590,8 @@ func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string
 				anchorTime = ctx.Now()
 			}
 		}
-		calc.AddAnchor(start.AnchorPoint{Name: name, AnchorTime: anchorTime})
+		rthOnly := name == "pd_high" || name == "pd_low"
+		calc.AddAnchor(start.AnchorPoint{Name: name, AnchorTime: anchorTime, RTHOnly: rthOnly})
 		added++
 	}
 	if added == 0 {

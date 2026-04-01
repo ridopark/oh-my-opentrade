@@ -78,7 +78,7 @@ export default function SignalMonitorPage() {
   return (
     <div className="flex flex-col gap-4 h-full">
       <div className="flex items-center justify-between shrink-0">
-        <h1 className="text-2xl font-bold tracking-tight">Signal Dashboard</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Signals</h1>
         <div className="flex items-center gap-2">
           <span className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-500" : "bg-red-500"}`} />
           <span className="text-xs text-zinc-500">

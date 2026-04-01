@@ -21,7 +21,7 @@ import type { OHLCBar } from "@/lib/use-chart-data";
 
 /** Format a UTC unix timestamp (seconds) as ET string using Intl. */
 function formatET(utcSeconds: number, opts: Intl.DateTimeFormatOptions): string {
-  return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour12: false, ...opts }).format(new Date(utcSeconds * 1000));
+  return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hourCycle: "h23", ...opts }).format(new Date(utcSeconds * 1000));
 }
 
 /** Compute EMA from close prices. Returns data points starting after `period` bars. */
@@ -40,12 +40,26 @@ function computeEMA(bars: OHLCBar[], period: number): { time: number; value: num
   return result;
 }
 
-/** Compute anchored VWAP starting from a given bar index. */
-function computeAVWAPFromIndex(bars: OHLCBar[], startIdx: number): { time: number; value: number }[] {
+/** Check if a UTC timestamp (seconds) falls within RTH (9:30-16:00 ET). */
+const _rthFmt = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+});
+function isRTH(utcSeconds: number): boolean {
+  const parts = _rthFmt.formatToParts(new Date(utcSeconds * 1000));
+  const h = parseInt(parts.find(p => p.type === "hour")?.value ?? "0");
+  const m = parseInt(parts.find(p => p.type === "minute")?.value ?? "0");
+  const mins = h * 60 + m;
+  return mins >= 570 && mins < 960; // 9:30 (570) to 16:00 (960)
+}
+
+/** Compute anchored VWAP starting from a given bar index. When rthOnly is true, only RTH bars contribute to the accumulator and appear in output. */
+function computeAVWAPFromIndex(bars: OHLCBar[], startIdx: number, rthOnly = false): { time: number; value: number }[] {
   const result: { time: number; value: number }[] = [];
   let cumTPV = 0;
   let cumVol = 0;
   for (let i = startIdx; i < bars.length; i++) {
+    if (rthOnly && !isRTH(bars[i].time)) continue;
     const tp = (bars[i].high + bars[i].low + bars[i].close) / 3;
     cumTPV += tp * bars[i].volume;
     cumVol += bars[i].volume;
@@ -69,7 +83,7 @@ function findAVWAPAnchors(bars: OHLCBar[]): AVWAPAnchors {
   const etFormatter = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", hour12: false,
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
   });
 
   type BarInfo = { idx: number; hour: number; minute: number; bar: OHLCBar };
@@ -133,31 +147,40 @@ function computeAllAVWAPs(bars: OHLCBar[]): {
 } {
   const anchors = findAVWAPAnchors(bars);
 
-  // For session_open: each day gets its own AVWAP line from 9:30 open to end of data
-  // But we only show the current day's segment (each new anchor restarts the line)
+  // For session_open: each day gets its own AVWAP line from 9:30 open, RTH-only
   const sessionOpenData: { time: number; value: number }[] = [];
   for (let i = 0; i < anchors.sessionOpen.length; i++) {
     const startIdx = anchors.sessionOpen[i];
     const endIdx = i + 1 < anchors.sessionOpen.length ? anchors.sessionOpen[i + 1] : bars.length;
-    const segment = computeAVWAPFromIndex(bars.slice(0, endIdx), startIdx);
+    const segment = computeAVWAPFromIndex(bars.slice(0, endIdx), startIdx, true);
     sessionOpenData.push(...segment);
   }
 
+  // For PD high/low: accumulate from anchor bar (in previous day's RTH) but
+  // only EMIT data points starting from the current session open.
+  // This avoids jagged lines bridging across overnight/pre-market gaps.
   const pdHighData: { time: number; value: number }[] = [];
   for (let i = 0; i < anchors.pdHigh.length; i++) {
     const startIdx = anchors.pdHigh[i];
-    // PD high AVWAP runs from anchor to next PD high anchor (or end)
     const endIdx = i + 1 < anchors.pdHigh.length ? anchors.pdHigh[i + 1] : bars.length;
-    const segment = computeAVWAPFromIndex(bars.slice(0, endIdx), startIdx);
-    pdHighData.push(...segment);
+    // Find the current session open that follows this PD anchor
+    const sessionOpenIdx = anchors.sessionOpen.find(s => s > startIdx) ?? startIdx;
+    const segment = computeAVWAPFromIndex(bars.slice(0, endIdx), startIdx, true);
+    // Filter: only emit points at or after the current session open bar time
+    const sessionOpenTime = bars[sessionOpenIdx]?.time ?? 0;
+    const filtered = segment.filter(p => p.time >= sessionOpenTime);
+    pdHighData.push(...filtered);
   }
 
   const pdLowData: { time: number; value: number }[] = [];
   for (let i = 0; i < anchors.pdLow.length; i++) {
     const startIdx = anchors.pdLow[i];
     const endIdx = i + 1 < anchors.pdLow.length ? anchors.pdLow[i + 1] : bars.length;
-    const segment = computeAVWAPFromIndex(bars.slice(0, endIdx), startIdx);
-    pdLowData.push(...segment);
+    const sessionOpenIdx = anchors.sessionOpen.find(s => s > startIdx) ?? startIdx;
+    const segment = computeAVWAPFromIndex(bars.slice(0, endIdx), startIdx, true);
+    const sessionOpenTime = bars[sessionOpenIdx]?.time ?? 0;
+    const filtered = segment.filter(p => p.time >= sessionOpenTime);
+    pdLowData.push(...filtered);
   }
 
   return { sessionOpen: sessionOpenData, pdHigh: pdHighData, pdLow: pdLowData };
@@ -341,47 +364,21 @@ export const LiveChart = memo(function LiveChart({
     candleRef.current.setData(sorted.map((b) => ({ time: b.time as Time, open: b.open, high: b.high, low: b.low, close: b.close })));
     volumeRef.current.setData(sorted.map((b) => ({ time: b.time as Time, value: b.volume, color: b.close >= b.open ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)" })));
 
-    // EMAs: compute client-side as baseline, then overlay server values
-    // Server only provides EMAs for live bars; historical bars need client-side.
-    const mergeEMA = (clientData: { time: number; value: number }[], field: "ema9" | "ema21" | "ema50" | "ema200"): { time: Time; value: number }[] => {
-      const byTime = new Map(clientData.map(d => [d.time, d.value]));
-      for (const b of sorted) {
-        const v = b[field];
-        if (v && v > 0) byTime.set(b.time, v);
-      }
-      return Array.from(byTime.entries())
-        .sort((a, b) => a[0] - b[0])
-        .map(([t, v]) => ({ time: t as Time, value: v }));
-    };
+    // EMAs: client-side only — server values are sparse and computed on 1m bars,
+    // mixing them with client values (computed on the displayed timeframe) causes jagged lines.
+    const toLine = (data: { time: number; value: number }[]): { time: Time; value: number }[] =>
+      data.map(d => ({ time: d.time as Time, value: d.value }));
 
-    if (ema9Ref.current) ema9Ref.current.setData(mergeEMA(computeEMA(sorted, 9), "ema9"));
-    if (ema21Ref.current) ema21Ref.current.setData(mergeEMA(computeEMA(sorted, 21), "ema21"));
-    if (ema50Ref.current) ema50Ref.current.setData(mergeEMA(computeEMA(sorted, 50), "ema50"));
-    if (ema200Ref.current) ema200Ref.current.setData(mergeEMA(computeEMA(sorted, 200), "ema200"));
+    if (ema9Ref.current) ema9Ref.current.setData(toLine(computeEMA(sorted, 9)));
+    if (ema21Ref.current) ema21Ref.current.setData(toLine(computeEMA(sorted, 21)));
+    if (ema50Ref.current) ema50Ref.current.setData(toLine(computeEMA(sorted, 50)));
+    if (ema200Ref.current) ema200Ref.current.setData(toLine(computeEMA(sorted, 200)));
 
-    // AVWAPs: compute client-side as baseline, then overlay server values
-    // Server only provides AVWAP for live bars; historical bars need client-side.
+    // AVWAPs: client-side only, RTH-filtered
     const clientAVWAPs = computeAllAVWAPs(sorted);
-
-    // Build time->index maps from client-side data for merging
-    const mergeAVWAP = (
-      clientData: { time: number; value: number }[],
-      anchorKey: string,
-    ): { time: Time; value: number }[] => {
-      const byTime = new Map(clientData.map(d => [d.time, d.value]));
-      // Overlay server values (more accurate, matches trading decisions)
-      for (const b of sorted) {
-        const v = b.avwaps?.[anchorKey];
-        if (v && v > 0) byTime.set(b.time, v);
-      }
-      return Array.from(byTime.entries())
-        .sort((a, b) => a[0] - b[0])
-        .map(([t, v]) => ({ time: t as Time, value: v }));
-    };
-
-    if (avwapOpenRef.current) avwapOpenRef.current.setData(mergeAVWAP(clientAVWAPs.sessionOpen, "session_open"));
-    if (avwapPDHighRef.current) avwapPDHighRef.current.setData(mergeAVWAP(clientAVWAPs.pdHigh, "pd_high"));
-    if (avwapPDLowRef.current) avwapPDLowRef.current.setData(mergeAVWAP(clientAVWAPs.pdLow, "pd_low"));
+    if (avwapOpenRef.current) avwapOpenRef.current.setData(toLine(clientAVWAPs.sessionOpen));
+    if (avwapPDHighRef.current) avwapPDHighRef.current.setData(toLine(clientAVWAPs.pdHigh));
+    if (avwapPDLowRef.current) avwapPDLowRef.current.setData(toLine(clientAVWAPs.pdLow));
 
     // ORB range boxes
     if (orbOverlayRef.current) {

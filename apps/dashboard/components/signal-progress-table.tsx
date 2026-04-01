@@ -4,7 +4,7 @@ import { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Info, X, GripHorizontal } from "lucide-react";
 import type { EntryGatedPayload, ORBPhaseUpdatePayload, BarSnapshot } from "@/lib/types";
-import { LiveChart } from "@/components/live-chart";
+import { LiveChart, avwapAnchorColor, avwapAnchorLabel } from "@/components/live-chart";
 import { useChartData } from "@/lib/use-chart-data";
 
 // ---------------------------------------------------------------------------
@@ -393,6 +393,26 @@ function DetailPanel({
   const { barsBySymbol } = useChartData(timeframe, "/api/events", chartSymbols);
   const chartBars = barsBySymbol[symbol] ?? [];
 
+  // Legend toggle state
+  const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set());
+  const toggleSeries = useCallback((key: string) => {
+    setHiddenSeries((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
+  const LEGEND_ITEMS: { key: string; label: string; color: string }[] = useMemo(() => [
+    { key: "EMA 9", label: "EMA 9", color: "rgba(251, 191, 36, 0.7)" },
+    { key: "EMA 21", label: "EMA 21", color: "rgba(139, 92, 246, 0.7)" },
+    { key: "EMA 50", label: "EMA 50", color: "rgba(236, 72, 153, 0.6)" },
+    { key: "EMA 200", label: "EMA 200", color: "rgba(249, 115, 22, 0.5)" },
+    { key: "session_open", label: avwapAnchorLabel("session_open"), color: avwapAnchorColor("session_open") },
+    { key: "pd_high", label: avwapAnchorLabel("pd_high"), color: avwapAnchorColor("pd_high") },
+    { key: "pd_low", label: avwapAnchorLabel("pd_low"), color: avwapAnchorColor("pd_low") },
+    { key: "ORB", label: "ORB", color: "rgba(59, 130, 246, 0.5)" },
+  ], []);
+
   // Position panel to the left of the anchor button on mount
   useEffect(() => {
     if (!panelRef.current) return;
@@ -470,6 +490,21 @@ function DetailPanel({
             </button>
           ))}
         </div>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mb-1">
+          {LEGEND_ITEMS.map((item) => {
+            const hidden = hiddenSeries.has(item.key);
+            return (
+              <button
+                key={item.key}
+                onClick={() => toggleSeries(item.key)}
+                className={`flex items-center gap-1 text-[10px] font-mono transition-opacity ${hidden ? "opacity-30" : "opacity-100"}`}
+              >
+                <span className="inline-block h-2 w-3 rounded-sm" style={{ backgroundColor: item.color }} />
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
         <div style={{ height: 200 }}>
           {chartBars.length > 0 ? (
             <LiveChart
@@ -477,6 +512,7 @@ function DetailPanel({
               symbol={symbol}
               bars={chartBars}
               showLabels={false}
+              hiddenSeries={hiddenSeries}
             />
           ) : (
             <div className="flex items-center justify-center h-full text-xs text-zinc-600">
