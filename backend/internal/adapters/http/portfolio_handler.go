@@ -128,18 +128,46 @@ func (h *PortfolioHandler) handleGetPositions(w http.ResponseWriter, r *http.Req
 		DTE            int     `json:"dte,omitempty"`
 	}
 
+	// Batch-fetch live option prices for all option positions
+	var optionSymbols []domain.Symbol
+	for _, p := range positions {
+		if p.InstrumentType == domain.InstrumentTypeOption {
+			optionSymbols = append(optionSymbols, p.Symbol)
+		}
+	}
+	optionPrices := make(map[domain.Symbol]float64)
+	if h.optQuoter != nil && len(optionSymbols) > 0 {
+		if quotes, err := h.optQuoter.GetOptionPrices(r.Context(), optionSymbols); err == nil {
+			for sym, q := range quotes {
+				mid := (q.Bid + q.Ask) / 2
+				if mid <= 0 {
+					mid = q.Last
+				}
+				optionPrices[sym] = mid
+			}
+		}
+	}
+
 	out := make([]positionJSON, 0, len(positions))
 	for _, p := range positions {
 		side := "long"
 		if strings.EqualFold(p.Side, "short") || strings.EqualFold(p.Side, "sell") {
 			side = "short"
 		}
-		currentPrice := p.Price // best available
+		currentPrice := p.Price // entry price as fallback
+		// Use live price if available
+		if livePrice, ok := optionPrices[p.Symbol]; ok && livePrice > 0 {
+			currentPrice = livePrice * 100 // options: price per share → per contract
+		} else if h.lastPriceFn != nil {
+			if eqPrice, ok := h.lastPriceFn(string(p.Symbol)); ok {
+				currentPrice = eqPrice
+			}
+		}
 		marketValue := p.Quantity * currentPrice
+		entryValue := p.Quantity * p.Price
 		pnl := 0.0
 		pnlPct := 0.0
 		if p.Price > 0 && p.Quantity > 0 {
-			entryValue := p.Quantity * p.Price
 			if side == "long" {
 				pnl = marketValue - entryValue
 			} else {
