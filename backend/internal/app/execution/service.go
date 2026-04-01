@@ -269,6 +269,15 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 			} else {
 				ol.Info().Str("status", details.Status).Msg("reconcile: marked order terminal")
 				updated++
+				// Notify dashboard via SSE so it updates without a page refresh.
+				s.emit(ctx, domain.EventOrderSubmitted, s.tenantID, s.envMode, order.IntentID.String(),
+					domain.NewOrderIntentEventPayload(domain.OrderIntent{
+						ID:        order.IntentID,
+						Symbol:    order.Symbol,
+						Direction: domain.Direction(order.Side),
+						Quantity:  order.Quantity,
+						Strategy:  order.Strategy,
+					}, domain.OrderIntentStatus(details.Status)))
 			}
 			if details.FilledQty <= 0 {
 				continue
