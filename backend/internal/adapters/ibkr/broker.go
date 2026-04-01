@@ -297,7 +297,7 @@ func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string
 		return "", fmt.Errorf("ibkr: not connected")
 	}
 
-	var qty, avgCost float64
+	var qty float64
 	if domain.IsOCCSymbol(symbol) {
 		target := newOptionContract(symbol)
 		for _, p := range ib.Positions() {
@@ -307,7 +307,7 @@ func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string
 				p.Contract.Right == target.Right &&
 				p.Contract.LastTradeDateOrContractMonth == target.LastTradeDateOrContractMonth {
 				qty = p.Position.Float()
-				avgCost = p.AvgCost
+
 				break
 			}
 		}
@@ -316,7 +316,7 @@ func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string
 		for _, p := range ib.Positions() {
 			if strings.EqualFold(p.Contract.Symbol, sym) && p.Contract.SecType == "STK" {
 				qty = p.Position.Float()
-				avgCost = p.AvgCost
+
 				break
 			}
 		}
@@ -335,20 +335,8 @@ func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string
 	order := ibsync.NewOrder()
 	order.Action = action
 	order.TotalQuantity = ibsync.StringToDecimal(strconv.FormatFloat(qty, 'f', 0, 64))
-	// Use aggressive LMT instead of MKT — IBKR paper fills LMT faster than MKT
-	// for options because MKT waits for a tick while LMT fills immediately.
-	order.OrderType = "LMT"
-	order.TIF = "IOC" // Immediate-or-cancel to avoid stale limit orders
-	// Set aggressive limit: for sells use bid - 5%, for buys use ask + 5%
-	if avgCost > 0 {
-		if action == "SELL" {
-			order.LmtPrice = roundToTick(avgCost*0.90, false) // 10% below avg cost
-		} else {
-			order.LmtPrice = roundToTick(avgCost*1.10, false) // 10% above avg cost
-		}
-	} else {
-		order.OrderType = "MKT" // fallback if no price available
-	}
+	order.OrderType = "MKT"
+	order.TIF = "DAY"
 
 	trade := ib.PlaceOrder(contract, order)
 	if trade == nil {
