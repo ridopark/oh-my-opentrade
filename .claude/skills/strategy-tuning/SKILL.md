@@ -196,10 +196,23 @@ For any new strategy, infer tuning ranges from:
 ## Options Parameters (all strategies)
 | Parameter | Range | Effect |
 |-----------|-------|--------|
-| `target_delta_low/high` | 0.30–0.75 | Closer to ATM = more expensive, tracks better |
+| `target_delta_low/high` | 0.30–0.55 | ATM (0.40–0.55) preferred for fill rate + liquidity |
 | `min_dte/max_dte` | 7–60 | Shorter = higher gamma, faster decay |
 | `max_spread_pct` | 0.05–0.15 | Liquidity filter |
 | `max_contracts` | 1–10 | Position size cap |
+
+### Fill-Friendliness Constraint
+When tuning options parameters, **fill probability is a first-class metric**.
+A signal that never fills is worth zero. Prioritize contracts that are:
+- **ATM (delta 0.40–0.55)**: tightest bid-ask spreads, highest open interest
+- **Adequate open interest (≥50-100)**: ensures market maker participation
+- **Spread ≤ 8-10% of premium**: reject illiquid strikes
+- **Avoid deep ITM (delta > 0.60)**: wide spreads, low volume, stale quotes
+
+When evaluating tuning results, discount strategies that select ITM contracts
+even if backtested P&L looks better — backtests assume fills at mid price,
+but live ITM orders often sit unfilled. ATM gamma actually helps day trades
+by accelerating gains on winning directional moves.
 
 ## Overfitting Detection
 

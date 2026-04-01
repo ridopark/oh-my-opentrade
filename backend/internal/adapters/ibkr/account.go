@@ -78,17 +78,35 @@ func (a *Adapter) GetAccountEquity(_ context.Context) (float64, error) {
 	return 0, fmt.Errorf("ibkr: NetLiquidation tag not found in account summary")
 }
 
-func (a *Adapter) GetQuote(_ context.Context, symbol domain.Symbol) (bid float64, ask float64, err error) {
+func (a *Adapter) GetQuote(ctx context.Context, symbol domain.Symbol) (bid float64, ask float64, err error) {
 	ib := a.conn.IB()
 	if ib == nil {
 		return 0, 0, fmt.Errorf("ibkr: not connected")
 	}
 
 	contract := newContract(symbol)
-	ticker, snapErr := ib.Snapshot(contract)
-	if snapErr != nil {
-		return 0, 0, fmt.Errorf("ibkr: snapshot for %s: %w", symbol, snapErr)
+
+	type result struct {
+		bid, ask float64
+		err      error
 	}
-	return ticker.Bid(), ticker.Ask(), nil
+	ch := make(chan result, 1)
+	go func() {
+		ticker, snapErr := ib.Snapshot(contract)
+		if snapErr != nil {
+			ch <- result{err: fmt.Errorf("ibkr: snapshot for %s: %w", symbol, snapErr)}
+			return
+		}
+		ch <- result{bid: ticker.Bid(), ask: ticker.Ask()}
+	}()
+
+	select {
+	case r := <-ch:
+		return r.bid, r.ask, r.err
+	case <-ctx.Done():
+		return 0, 0, fmt.Errorf("ibkr: snapshot for %s: %w", symbol, ctx.Err())
+	case <-time.After(5 * time.Second):
+		return 0, 0, fmt.Errorf("ibkr: snapshot for %s: timeout after 5s", symbol)
+	}
 }
 
