@@ -437,13 +437,13 @@ export default function PortfolioPage() {
                                 <Button
                                   variant="destructive"
                                   size="sm"
-                                  onClick={() => closePosition(pos.symbol)}
+                                  onClick={(e) => { e.stopPropagation(); closePosition(pos.symbol); }}
                                   disabled={closing === pos.symbol}
                                 >
                                   {closing === pos.symbol && <RefreshCw className="h-3 w-3 animate-spin mr-1" />}
                                   Confirm
                                 </Button>
-                                <Button variant="outline" size="sm" onClick={() => setConfirmClose(null)}>
+                                <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); setConfirmClose(null); }}>
                                   Cancel
                                 </Button>
                               </div>
@@ -451,7 +451,7 @@ export default function PortfolioPage() {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => setConfirmClose(pos.symbol)}
+                                onClick={(e) => { e.stopPropagation(); setConfirmClose(pos.symbol); }}
                                 disabled={closingAll}
                                 className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
                               >
