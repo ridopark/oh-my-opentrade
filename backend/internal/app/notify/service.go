@@ -110,31 +110,26 @@ func (s *Service) Start(ctx context.Context) error {
 		go s.worker(ctx, i)
 	}
 
+	// Only notify on meaningful state changes — fills, exits, and system errors.
+	// Everything else is noise for an automated trading system.
 	events := []struct {
 		eventType string
 		formatter func(domain.Event) string
 		chart     bool
 	}{
+		// Fills: position opened or closed (the only trade events that matter)
 		{domain.EventOrderSubmitted, s.fmtOrderSubmitted, true},
-		{domain.EventOrderAccepted, s.fmtOrderAccepted, false},
-		{domain.EventOrderRejected, s.fmtOrderRejected, false},
-		{domain.EventOrderIntentRejected, s.fmtOrderIntentRejected, false},
-		{domain.EventFillReceived, s.fmtFillReceived, false},
 		{domain.EventTradeRealized, s.fmtTradeRealized, true},
+
+		// System errors: require attention
 		{domain.EventKillSwitchEngaged, s.fmtKillSwitch, false},
 		{domain.EventCircuitBreakerTripped, s.fmtCircuitBreaker, false},
-		{domain.EventDebateCompleted, s.fmtDebateCompleted, false},
-		{domain.EventSignalEnriched, s.fmtSignalEnriched, false},
-		{domain.EventSignalGated, s.fmtSignalGated, false},
-		{domain.EventRiskRevaluated, s.fmtRiskRevaluated, false},
 		{domain.EventFeedDegraded, s.fmtFeedDegraded, false},
 		{domain.EventWSCircuitBreakerTripped, s.fmtWSCircuitBreaker, false},
-		{domain.EventFillPollTimeout, s.fmtFillPollTimeout, false},
-		{domain.EventStaleOrderCancelled, s.fmtStaleOrderCancelled, false},
 		{domain.EventExitCircuitBroken, s.fmtExitCircuitBroken, false},
+
+		// Lifecycle
 		{domain.EventSystemStarted, s.fmtSystemStarted, false},
-		{domain.EventIBKRConnected, s.fmtIBKRConnected, false},
-		{domain.EventORBRangeSet, s.fmtORBRangeSet, false},
 	}
 
 	for _, e := range events {

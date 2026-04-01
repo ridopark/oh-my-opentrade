@@ -301,13 +301,20 @@ func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string
 	if domain.IsOCCSymbol(symbol) {
 		target := newOptionContract(symbol)
 		for _, p := range ib.Positions() {
+			if p.Contract.SecType == "OPT" {
+				a.log.Info().
+					Str("broker_sym", p.Contract.Symbol).Str("target_sym", target.Symbol).
+					Float64("broker_strike", p.Contract.Strike).Float64("target_strike", target.Strike).
+					Str("broker_right", p.Contract.Right).Str("target_right", target.Right).
+					Str("broker_expiry", p.Contract.LastTradeDateOrContractMonth).Str("target_expiry", target.LastTradeDateOrContractMonth).
+					Msg("ibkr: ClosePosition comparing option contract")
+			}
 			if p.Contract.SecType == "OPT" &&
 				strings.EqualFold(p.Contract.Symbol, target.Symbol) &&
 				p.Contract.Strike == target.Strike &&
-				p.Contract.Right == target.Right &&
+				strings.EqualFold(p.Contract.Right, target.Right) &&
 				p.Contract.LastTradeDateOrContractMonth == target.LastTradeDateOrContractMonth {
 				qty = p.Position.Float()
-
 				break
 			}
 		}
@@ -321,6 +328,11 @@ func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string
 			}
 		}
 	}
+	a.log.Info().
+		Str("symbol", string(symbol)).
+		Float64("raw_qty", qty).
+		Msg("ibkr: ClosePosition position lookup result")
+
 	if qty == 0 {
 		return "", nil
 	}
