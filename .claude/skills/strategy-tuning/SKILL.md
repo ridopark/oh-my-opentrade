@@ -140,20 +140,20 @@ Then ask the user:
 ## Backtest API
 
 ### Symbol Universe
-ALWAYS use the FULL universe of 73 liquid US equities from `domain.KnownSymbols()`. Using a small subset (e.g. 12 symbols) risks overfitting to those specific tickers. The full list:
+Use the **active trading universe of 34 symbols** — these are the symbols configured in live strategies. Backtesting on symbols you don't trade dilutes signal and wastes time.
 
 ```
-AAPL,ABBV,AFRM,AMD,AMZN,AVGO,BA,BAC,CAT,COIN,COST,CRM,CVX,DDOG,DE,DIA,F,FUBO,GM,GOOGL,GS,HIMS,HOOD,INTC,IWM,JNJ,JPM,LCID,LLY,MA,MARA,META,MRNA,MRVL,MSFT,MU,NET,NFLX,NIO,NVDA,ON,ORCL,OXY,PFE,PLTR,PYPL,QCOM,QQQ,RBLX,RIOT,RIVN,SLB,SMCI,SNOW,SOFI,SOXL,SPY,SQ,SQQQ,TGT,TQQQ,TSLA,U,UNH,UPS,UPST,V,WMT,XLE,XLF,XLK,XOM,ZS
+AAPL,AFRM,AMD,AMZN,AVGO,BA,COIN,CRM,GOOGL,HIMS,HOOD,IWM,JPM,LLY,META,MRNA,MRVL,MSFT,MU,NET,NFLX,NVDA,OXY,PLTR,QQQ,RBLX,RIVN,SMCI,SNOW,SOFI,SOXL,SPY,TSLA,XOM
 ```
 
-If the list needs updating, check `backend/internal/domain/sector.go` → `KnownSymbols()`.
+If the list needs updating, check `configs/strategies/*.toml` → `[routing] symbols`.
 
 ### Run
 ```bash
 curl -s -X POST http://localhost:8080/backtest/run \
   -H "Content-Type: application/json" \
   -d '{
-    "symbols": ["AAPL","ABBV","AFRM","AMD","AMZN","AVGO","BA","BAC","CAT","COIN","COST","CRM","CVX","DDOG","DE","DIA","F","FUBO","GM","GOOGL","GS","HIMS","HOOD","INTC","IWM","JNJ","JPM","LCID","LLY","MA","MARA","META","MRNA","MRVL","MSFT","MU","NET","NFLX","NIO","NVDA","ON","ORCL","OXY","PFE","PLTR","PYPL","QCOM","QQQ","RBLX","RIOT","RIVN","SLB","SMCI","SNOW","SOFI","SOXL","SPY","SQ","SQQQ","TGT","TQQQ","TSLA","U","UNH","UPS","UPST","V","WMT","XLE","XLF","XLK","XOM","ZS"],
+    "symbols": ["AAPL","AFRM","AMD","AMZN","AVGO","BA","COIN","CRM","GOOGL","HIMS","HOOD","IWM","JPM","LLY","META","MRNA","MRVL","MSFT","MU","NET","NFLX","NVDA","OXY","PLTR","QQQ","RBLX","RIVN","SMCI","SNOW","SOFI","SOXL","SPY","TSLA","XOM"],
     "from": "2025-06-01",
     "to": "2026-03-27",
     "timeframe": "5m",
