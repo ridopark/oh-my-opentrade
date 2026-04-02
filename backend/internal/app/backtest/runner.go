@@ -358,25 +358,12 @@ func (r *Runner) Run(ctx context.Context) error {
 	histOptRepo := r.infra.HistOptRepo
 	importer := r.infra.Importer
 
-	// Pre-flight: import missing historical options data from DoltHub (parallel).
-	r.emitter.EmitSetup("Importing historical options data…")
-	{
-		const maxConcurrentImports = 4
-		sem := make(chan struct{}, maxConcurrentImports)
-		var importWg sync.WaitGroup
-		for _, sym := range r.cfg.Symbols {
-			importWg.Add(1)
-			go func(sym domain.Symbol) {
-				defer importWg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				if importErr := importer.EnsureData(ctx, sym.String(), r.cfg.From, r.cfg.To); importErr != nil {
-					r.log.Warn().Err(importErr).Str("symbol", sym.String()).
-						Msg("DoltHub import failed — will use BSM fallback for this symbol")
-				}
-			}(sym)
-		}
-		importWg.Wait()
+	// Historical options import is disabled by default — data should be
+	// pre-imported via `omo-backfill` or a prior backtest run. Re-importing
+	// on every backtest wastes time checking DoltHub for already-cached data.
+	// To force a fresh import, run importer.EnsureData() manually.
+	if importer != nil {
+		r.log.Debug().Msg("skipping DoltHub options import (data assumed pre-cached)")
 	}
 
 	// Wire historical options to simbroker for realistic exit pricing.
