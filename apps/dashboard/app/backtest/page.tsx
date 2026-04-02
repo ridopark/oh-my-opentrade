@@ -15,7 +15,7 @@ import {
 } from "lightweight-charts";
 import { SignalMarkerOverlay, type SignalMarkerData } from "@/lib/signal-markers";
 import { ORBBoxOverlay, computeORBRanges } from "@/lib/orb-box-overlay";
-import { RTHShadingOverlay, computeNonRTHRegions } from "@/lib/rth-shading-overlay";
+import { RTHShadingOverlay, computeNonRTHRegions, generateNonRTHWhitespace } from "@/lib/rth-shading-overlay";
 import {
   useBacktest,
   type BacktestConfig,
@@ -873,8 +873,25 @@ function MiniChart({
     for (const b of bars) deduped.set(b.time, b);
     const sorted = Array.from(deduped.values()).sort((a, b) => a.time - b.time);
 
-    candleRef.current.setData(sorted.map((b) => ({ time: b.time as Time, open: b.open, high: b.high, low: b.low, close: b.close })));
-    volumeRef.current.setData(sorted.map((b) => ({ time: b.time as Time, value: b.volume, color: b.close >= b.open ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)" })));
+    // Generate hourly whitespace points for non-trading gaps (overnight, weekends, holidays)
+    // so they occupy consistent visual width on the chart.
+    const whitespaceTimes = generateNonRTHWhitespace(sorted);
+    const barTimes = new Set(sorted.map((b) => b.time));
+    const allTimes = [...barTimes, ...whitespaceTimes].sort((a, b) => a - b);
+
+    const candleData = allTimes.map((t) => {
+      const bar = deduped.get(t);
+      if (bar) return { time: t as Time, open: bar.open, high: bar.high, low: bar.low, close: bar.close };
+      return { time: t as Time }; // whitespace
+    });
+    candleRef.current.setData(candleData as Parameters<typeof candleRef.current.setData>[0]);
+
+    const volumeData = allTimes.map((t) => {
+      const bar = deduped.get(t);
+      if (bar) return { time: t as Time, value: bar.volume, color: bar.close >= bar.open ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)" };
+      return { time: t as Time }; // whitespace
+    });
+    volumeRef.current.setData(volumeData as Parameters<typeof volumeRef.current.setData>[0]);
 
     const ema9Data = sorted.filter((b) => b.ema9 && b.ema9 > 0).map((b) => ({ time: b.time as Time, value: b.ema9! }));
     const ema21Data = sorted.filter((b) => b.ema21 && b.ema21 > 0).map((b) => ({ time: b.time as Time, value: b.ema21! }));
@@ -932,9 +949,10 @@ function MiniChart({
       orbOverlayRef.current.setRanges(ranges);
     }
 
-    // Non-RTH shading — subtle background on pre-market and after-hours bars
+    // Non-RTH shading — subtle background on pre-market, after-hours, weekends, holidays
     if (rthOverlayRef.current) {
-      const regions = computeNonRTHRegions(sorted);
+      const allPoints = allTimes.map((t) => ({ time: t }));
+      const regions = computeNonRTHRegions(allPoints);
       rthOverlayRef.current.setRegions(regions);
     }
 
