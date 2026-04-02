@@ -48,6 +48,9 @@ type Bus struct {
 	droppedTotal atomic.Int64
 	// droppedByType tracks per-event-type drop counts for granular observability.
 	droppedByType sync.Map // domain.EventType -> *atomic.Int64
+
+	// frozen is a lock-free snapshot of handlers, populated by FreezeHandlers.
+	frozen map[domain.EventType][]ports.EventHandler
 }
 
 // NewBus creates a new in-memory event bus.
@@ -236,6 +239,48 @@ func (b *Bus) Flush() {
 
 func (b *Bus) WaitPending() {
 	b.pending.Wait()
+}
+
+// FreezeHandlers takes a snapshot of the current handler map so that
+// PublishDirect can dispatch events without acquiring any locks.
+// Must be called after all Subscribe/SubscribeAsync calls are complete.
+func (b *Bus) FreezeHandlers() {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	frozen := make(map[domain.EventType][]ports.EventHandler, len(b.handlers))
+	for et, hs := range b.handlers {
+		cp := make([]ports.EventHandler, len(hs))
+		copy(cp, hs)
+		frozen[et] = cp
+	}
+	b.frozen = frozen
+}
+
+// PublishDirect dispatches an event using the frozen handler snapshot,
+// bypassing lock acquisition and slice allocation. Only valid after
+// FreezeHandlers has been called; falls back to Publish otherwise.
+func (b *Bus) PublishDirect(ctx context.Context, event domain.Event) error {
+	if b.frozen == nil {
+		return b.Publish(ctx, event)
+	}
+
+	handlers := b.frozen[event.Type]
+	if len(handlers) == 0 {
+		return nil
+	}
+
+	var errs []error
+	for _, handler := range handlers {
+		if ctx.Err() != nil {
+			errs = append(errs, ctx.Err())
+			break
+		}
+		if err := handler(ctx, event); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Unsubscribe removes a handler for the specified event type.

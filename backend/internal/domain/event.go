@@ -2,10 +2,16 @@ package domain
 
 import (
 	"errors"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// backtestSeq is a monotonic counter used by NewBacktestEvent to generate
+// cheap, unique event IDs without UUID allocation overhead.
+var backtestSeq atomic.Uint64
 
 // EventType identifies the kind of domain event.
 type EventType = string
@@ -295,4 +301,21 @@ func NewEvent(eventType EventType, tenantID string, envMode EnvMode, idempotency
 		IdempotencyKey: idempotencyKey,
 		Payload:        payload,
 	}, nil
+}
+
+// NewBacktestEvent creates an Event optimized for high-throughput backtest
+// replay. It replaces uuid.NewString() with a monotonic counter and accepts
+// an explicit occurredAt time (the bar timestamp) instead of calling
+// time.Now(). The produced Event is identical in structure and fully
+// compatible with every handler that consumes domain.Event.
+func NewBacktestEvent(eventType EventType, tenantID string, envMode EnvMode, idempotencyKey string, payload any, occurredAt time.Time) Event {
+	return Event{
+		ID:             "bt-" + strconv.FormatUint(backtestSeq.Add(1), 36),
+		Type:           eventType,
+		TenantID:       tenantID,
+		EnvMode:        envMode,
+		OccurredAt:     occurredAt,
+		IdempotencyKey: idempotencyKey,
+		Payload:        payload,
+	}
 }
