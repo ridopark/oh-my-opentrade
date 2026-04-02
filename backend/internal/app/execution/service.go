@@ -1386,6 +1386,16 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 			if details.Status == "filled" || details.Status == "canceled" || details.Status == "expired" || details.Status == "rejected" {
 				return true
 			}
+
+			// Skip stale-cancel for exit orders — the position monitor owns
+			// exit retry/escalation logic. Canceling here would race with
+			// the monitor's handleExitTimeout which already cancels and
+			// resubmits with escalated pricing (limit -> market).
+			if po.intent.Direction.IsExit() {
+				l.Debug().Msg("reconcile: skipping stale cancel for exit order — position monitor owns retry")
+				return true
+			}
+
 			if err := s.broker.CancelOrder(ctx, brokerOrderID); err != nil {
 				l.Warn().Err(err).Msg("reconcile: failed to cancel stale order — may already be terminal")
 			} else {
@@ -1433,22 +1443,29 @@ func (s *Service) recordFillFromDetails(po *pendingOrder, brokerOrderID string, 
 }
 
 // exitLimitBuffer returns the IOC limit price buffer (as a fraction) for exit orders.
+// Options need much wider buffers (5-20% bid/ask spreads on IBKR paper).
 // Wide-spread crypto assets get a larger buffer to avoid instant cancellation.
 func exitLimitBuffer(sym domain.Symbol, ac domain.AssetClass) float64 {
-	if ac != domain.AssetClassCrypto {
-		return 0.001 // 10bps for equities
+	// Options: use 5% buffer. OCC symbols are 21 chars (e.g. "AAPL  260620C00150000").
+	// The position monitor already uses market on retry, but this covers the
+	// first-attempt limit path in the execution service.
+	if domain.IsOCCSymbol(sym) {
+		return 0.05 // 500bps for options — their spreads are 5-20%
 	}
-	// Illiquid altcoins need wider buffers; their spreads often exceed 50bps.
-	s := sym.String()
-	switch {
-	case strings.Contains(s, "DOGE"),
-		strings.Contains(s, "PEPE"),
-		strings.Contains(s, "AVAX"),
-		strings.Contains(s, "SHIB"):
-		return 0.01 // 100bps for illiquid altcoins
-	default:
-		return 0.005 // 50bps for liquid crypto (BTC, ETH, SOL)
+	if ac == domain.AssetClassCrypto {
+		// Illiquid altcoins need wider buffers; their spreads often exceed 50bps.
+		s := sym.String()
+		switch {
+		case strings.Contains(s, "DOGE"),
+			strings.Contains(s, "PEPE"),
+			strings.Contains(s, "AVAX"),
+			strings.Contains(s, "SHIB"):
+			return 0.01 // 100bps for illiquid altcoins
+		default:
+			return 0.005 // 50bps for liquid crypto (BTC, ETH, SOL)
+		}
 	}
+	return 0.001 // 10bps for equities
 }
 
 func (s *Service) emit(ctx context.Context, eventType string, tenantID string, envMode domain.EnvMode, idempotencyKey string, payload any) {
