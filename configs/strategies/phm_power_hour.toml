@@ -83,7 +83,7 @@ pct = 0.006
 [options]
 enabled = true
 limit_spread_pct = 1.00
-limit_buffer_bps = 300
+limit_buffer_bps = 1000
 stale_cancel_secs = 30
 
 [options.defaults]

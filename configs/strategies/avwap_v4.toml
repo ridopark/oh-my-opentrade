@@ -205,7 +205,7 @@ max_contracts = 5
 # Limit price = mid + 50% of spread (moderate for AVWAP swing entries)
 limit_spread_pct = 1.00
 # Fallback when spread is zero: ask + 2%
-limit_buffer_bps = 200
+limit_buffer_bps = 1000
 # Cancel unfilled option orders after 90 seconds
 stale_cancel_secs = 90
 
