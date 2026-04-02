@@ -70,6 +70,11 @@ func (a *Adapter) SubmitOrder(_ context.Context, intent domain.OrderIntent) (str
 		return "", fmt.Errorf("ibkr: PlaceOrder returned nil trade")
 	}
 
+	// Launch Done() watcher if order stream is active.
+	if wCtx, wOut := a.getOrderOut(); wOut != nil {
+		go a.watchTradeDone(wCtx, trade, wOut)
+	}
+
 	orderID := strconv.FormatInt(trade.Order.OrderID, 10)
 	a.log.Info().
 		Str("order_id", orderID).
@@ -355,6 +360,12 @@ func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string
 	if trade == nil {
 		return "", fmt.Errorf("ibkr: ClosePosition PlaceOrder returned nil")
 	}
+
+	// Launch Done() watcher if order stream is active.
+	if wCtx, wOut := a.getOrderOut(); wOut != nil {
+		go a.watchTradeDone(wCtx, trade, wOut)
+	}
+
 	orderID := strconv.FormatInt(trade.Order.OrderID, 10)
 	a.log.Info().
 		Str("order_id", orderID).

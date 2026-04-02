@@ -43,6 +43,12 @@ type Adapter struct {
 	posMu    sync.RWMutex
 	livePos  map[int64]ibsync.Position // keyed by ConID
 	posReady chan struct{}             // closed after first full snapshot
+
+	// Live order tracking — per-trade Done() watchers.
+	orderOutMu  sync.RWMutex
+	orderOut    chan<- ports.OrderUpdate // set by SubscribeOrderUpdates, nil otherwise
+	orderCtx    context.Context         // scopes trade watcher goroutines
+	emittedDone sync.Map                // map[int64]struct{} — dedup terminal emissions
 }
 
 func NewAdapter(cfg config.IBKRConfig, log zerolog.Logger) (*Adapter, error) {
@@ -102,4 +108,19 @@ func NewAdapterWithClientAndCfg(client ibClient, cfg config.IBKRConfig, log zero
 		livePos:   make(map[int64]ibsync.Position),
 		posReady:  ready,
 	}
+}
+
+// setOrderOut stores the order update channel and its context for Done() watchers.
+func (a *Adapter) setOrderOut(ctx context.Context, ch chan<- ports.OrderUpdate) {
+	a.orderOutMu.Lock()
+	a.orderOut = ch
+	a.orderCtx = ctx
+	a.orderOutMu.Unlock()
+}
+
+// getOrderOut returns the current order update context and channel (may be nil).
+func (a *Adapter) getOrderOut() (context.Context, chan<- ports.OrderUpdate) {
+	a.orderOutMu.RLock()
+	defer a.orderOutMu.RUnlock()
+	return a.orderCtx, a.orderOut
 }

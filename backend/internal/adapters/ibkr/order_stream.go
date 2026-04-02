@@ -11,7 +11,7 @@ import (
 	"github.com/scmhub/ibsync"
 )
 
-const orderPollInterval = 200 * time.Millisecond
+const orderPollInterval = 2 * time.Second
 const execReconcileInterval = 10 * time.Second
 
 func (a *Adapter) SubscribeOrderUpdates(ctx context.Context) (<-chan ports.OrderUpdate, error) {
@@ -21,14 +21,52 @@ func (a *Adapter) SubscribeOrderUpdates(ctx context.Context) (<-chan ports.Order
 	}
 
 	out := make(chan ports.OrderUpdate, 64)
+	a.setOrderOut(ctx, out)
+
+	// Watch existing active trades from previous session.
+	for _, t := range ib.Trades() {
+		if t.Order != nil && !t.IsDone() {
+			go a.watchTradeDone(ctx, t, out)
+		}
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); a.pollOrderUpdates(ctx, out) }()
 	go func() { defer wg.Done(); a.execReconciler(ctx, out) }()
-	go func() { wg.Wait(); close(out) }()
+	go func() { wg.Wait(); a.setOrderOut(context.Background(), nil); close(out) }()
 
 	return out, nil
+}
+
+// watchTradeDone waits for a single trade's Done() channel to close, then
+// emits one terminal OrderUpdate. The emittedDone sync.Map prevents duplicates
+// when the poller also detects the same terminal event.
+func (a *Adapter) watchTradeDone(ctx context.Context, trade *ibsync.Trade, out chan<- ports.OrderUpdate) {
+	if trade == nil || trade.Order == nil {
+		return
+	}
+	select {
+	case <-ctx.Done():
+		return
+	case <-trade.Done():
+		orderID := trade.Order.OrderID
+		// Dedup: only emit once per order.
+		if _, loaded := a.emittedDone.LoadOrStore(orderID, struct{}{}); loaded {
+			return
+		}
+		update := tradeToOrderUpdate(trade)
+		a.log.Info().
+			Str("order_id", update.BrokerOrderID).
+			Str("event", update.Event).
+			Float64("filled_qty", update.FilledQty).
+			Float64("price", update.Price).
+			Msg("trade watcher: terminal state via Done()")
+		select {
+		case out <- update:
+		case <-ctx.Done():
+		}
+	}
 }
 
 func (a *Adapter) pollOrderUpdates(ctx context.Context, out chan<- ports.OrderUpdate) {
@@ -70,6 +108,12 @@ func (a *Adapter) pollOrderUpdates(ctx context.Context, out chan<- ports.OrderUp
 
 				if shouldEmit {
 					update := tradeToOrderUpdate(t)
+					// Skip if Done() watcher already emitted this terminal event.
+					if update.Event == "fill" || update.Event == "canceled" || update.Event == "expired" {
+						if _, already := a.emittedDone.LoadOrStore(id, struct{}{}); already {
+							continue
+						}
+					}
 					select {
 					case out <- update:
 					case <-ctx.Done():
@@ -130,6 +174,17 @@ func (a *Adapter) execReconciler(ctx context.Context, out chan<- ports.OrderUpda
 				seenExecIDs[execID] = struct{}{}
 
 				update := fillToOrderUpdate(f)
+
+				// Skip if Done() watcher already emitted this terminal event.
+				orderID := f.Execution.OrderID
+				if _, already := a.emittedDone.LoadOrStore(orderID, struct{}{}); already {
+					a.log.Debug().
+						Str("exec_id", execID).
+						Int64("order_id", orderID).
+						Msg("exec reconciler: skipping fill already emitted by Done() watcher")
+					continue
+				}
+
 				a.log.Info().
 					Str("exec_id", execID).
 					Str("broker_order_id", update.BrokerOrderID).
