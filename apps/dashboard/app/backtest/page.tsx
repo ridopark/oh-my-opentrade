@@ -179,7 +179,7 @@ export default function BacktestPage() {
       />
 
       <div className={`mt-2 ${symbolsInData.length === 0 ? "flex-1 flex flex-col" : ""}`}>
-        <ChartGrid ref={chartGridRef} symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} showLabels={showLabels} onToggleLabels={() => setShowLabels((v) => !v)} onTradeClick={(trade) => {
+        <ChartGrid ref={chartGridRef} symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} showLabels={showLabels} timeframe={config.timeframe} onToggleLabels={() => setShowLabels((v) => !v)} onTradeClick={(trade) => {
           setBottomTab("trades");
           setTimeout(() => tradeLogRef.current?.scrollToTrade(trade), 50);
         }} />
@@ -473,6 +473,7 @@ const ChartGrid = forwardRef<ChartGridHandle, {
   trades: BacktestTrade[];
   orbWindowMinutes?: number;
   showLabels?: boolean;
+  timeframe?: string;
   onToggleLabels?: () => void;
   onTradeClick?: (trade: BacktestTrade) => void;
 }>(function ChartGrid({
@@ -481,6 +482,7 @@ const ChartGrid = forwardRef<ChartGridHandle, {
   trades,
   orbWindowMinutes = 30,
   showLabels = true,
+  timeframe = "5m",
   onToggleLabels,
   onTradeClick,
 }, ref) {
@@ -583,6 +585,7 @@ const ChartGrid = forwardRef<ChartGridHandle, {
             orbWindowMinutes={orbWindowMinutes}
             showLabels={showLabels}
             hiddenSeries={hiddenSeries}
+            timeframe={timeframe}
             onChartReady={(chart) => registerChart(expandedSymbol, chart)}
             onMarkerClick={(idx) => {
               const symTrades = trades.filter((t) => t.symbol === expandedSymbol || t.symbol.startsWith(expandedSymbol));
@@ -650,6 +653,7 @@ const ChartGrid = forwardRef<ChartGridHandle, {
               orbWindowMinutes={orbWindowMinutes}
               showLabels={showLabels}
               hiddenSeries={hiddenSeries}
+              timeframe={timeframe}
               onChartReady={(chart) => registerChart(sym, chart)}
               onMarkerClick={(idx) => {
                 const symTrades = trades.filter((t) => t.symbol === sym || t.symbol.startsWith(sym));
@@ -705,6 +709,7 @@ function MiniChart({
   orbWindowMinutes = 30,
   showLabels = true,
   hiddenSeries,
+  timeframe = "5m",
   onChartReady,
   onMarkerClick,
 }: {
@@ -714,6 +719,7 @@ function MiniChart({
   orbWindowMinutes?: number;
   showLabels?: boolean;
   hiddenSeries?: Set<string>;
+  timeframe?: string;
   onChartReady?: (chart: IChartApi | null) => void;
   onMarkerClick?: (tradeIndex: number) => void;
 }) {
@@ -875,7 +881,7 @@ function MiniChart({
 
     // Generate hourly whitespace points for non-trading gaps (overnight, weekends, holidays)
     // so they occupy consistent visual width on the chart.
-    const whitespaceTimes = generateNonRTHWhitespace(sorted);
+    const whitespaceTimes = generateNonRTHWhitespace(sorted, timeframe);
     const barTimes = new Set(sorted.map((b) => b.time));
     const allTimes = [...barTimes, ...whitespaceTimes].sort((a, b) => a - b);
 

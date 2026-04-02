@@ -175,33 +175,47 @@ function parseET(unix: number): { dayOfWeek: number; minsFromMidnight: number; i
   };
 }
 
+/** Parse a timeframe string like "1m", "5m", "1h" into seconds. */
+function parseTimeframeSec(tf: string): number {
+  const match = tf.match(/^(\d+)(s|m|h|d)$/);
+  if (!match) return 300; // default 5m
+  const n = parseInt(match[1]);
+  switch (match[2]) {
+    case "s": return n;
+    case "m": return n * 60;
+    case "h": return n * 3600;
+    case "d": return n * 86400;
+    default: return 300;
+  }
+}
+
 /**
- * Generate hourly whitespace timestamps for non-trading gaps.
- * Inserts one timestamp per hour during overnight, weekend, and holiday gaps
- * so lightweight-charts gives them consistent visual width.
+ * Generate whitespace timestamps for non-trading gaps at the given timeframe interval.
+ * Inserts one timestamp per interval during overnight, weekend, and holiday gaps
+ * so lightweight-charts gives them consistent visual width matching the bar spacing.
  *
- * Returns a sorted Set of Unix timestamps (seconds) that should be added
- * as whitespace data points to the chart.
+ * @param bars Sorted bar data
+ * @param timeframe Timeframe string (e.g. "1m", "5m", "1h"). Defaults to "5m".
+ * @returns Set of Unix timestamps (seconds) to add as whitespace data points.
  */
-export function generateNonRTHWhitespace(bars: { time: number }[]): Set<number> {
+export function generateNonRTHWhitespace(bars: { time: number }[], timeframe = "5m"): Set<number> {
   if (bars.length < 2) return new Set();
 
+  const interval = parseTimeframeSec(timeframe);
   const barTimes = new Set(bars.map((b) => b.time));
   const whitespace = new Set<number>();
-  const HOUR = 3600;
 
   for (let i = 0; i < bars.length - 1; i++) {
     const gapStart = bars[i].time;
     const gapEnd = bars[i + 1].time;
     const gap = gapEnd - gapStart;
 
-    // Only fill gaps larger than 1 hour (overnight, weekends, holidays)
-    if (gap <= HOUR) continue;
+    // Only fill gaps larger than twice the interval
+    if (gap <= interval * 2) continue;
 
-    // Insert hourly markers through the gap
-    // Align to the next whole hour after gapStart
-    const firstHour = Math.ceil(gapStart / HOUR) * HOUR;
-    for (let t = firstHour; t < gapEnd; t += HOUR) {
+    // Align to the next whole interval after gapStart
+    const first = Math.ceil(gapStart / interval) * interval;
+    for (let t = first; t < gapEnd; t += interval) {
       if (!barTimes.has(t)) {
         whitespace.add(t);
       }
