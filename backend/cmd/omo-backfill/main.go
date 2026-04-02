@@ -29,6 +29,7 @@ func main() {
 		fromFlag        string
 		toFlag          string
 		resume          bool
+		gapFill         bool
 		concurrency     int
 		batchSize       int
 		dryRun          bool
@@ -42,6 +43,7 @@ func main() {
 	flag.StringVar(&fromFlag, "from", "", "Start date in YYYY-MM-DD format (required unless --resume)")
 	flag.StringVar(&toFlag, "to", "", "End date in YYYY-MM-DD format (default: now)")
 	flag.BoolVar(&resume, "resume", false, "Resume from last stored bar per symbol")
+	flag.BoolVar(&gapFill, "gap-fill", false, "Detect and fill only RTH data gaps (same logic as backtest runner)")
 	flag.IntVar(&concurrency, "concurrency", 2, "Number of parallel symbol workers")
 	flag.IntVar(&batchSize, "batch-size", 500, "Database batch insert size")
 	flag.BoolVar(&dryRun, "dry-run", false, "Fetch but do not write to database")
@@ -145,9 +147,6 @@ func main() {
 		MaxRetries:      5,
 	}
 
-	// Create and run service
-	svc := backfill.NewService(alpacaAdapter, repo, backfillCfg, log.With().Str("component", "backfill").Logger())
-
 	// Handle graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -156,13 +155,39 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
-		log.Warn().Str("signal", sig.String()).Msg("received signal, canceling backfill...")
+		log.Warn().Str("signal", sig.String()).Msg("received signal, canceling...")
 		cancel()
 	}()
 
-	if err := svc.Run(ctx); err != nil {
-		log.Error().Err(err).Msg("backfill failed")
-		os.Exit(1)
+	if gapFill {
+		// Gap-fill mode: detect and fill only RTH data gaps.
+		gfCfg := backfill.GapFillConfig{
+			Symbols:     symbols,
+			Timeframe:   tf,
+			From:        fromTime,
+			To:          toTime,
+			Concurrency: concurrency,
+			BatchSize:   batchSize,
+			MaxRetries:  5,
+		}
+		gfSvc := backfill.NewGapFillService(
+			alpacaAdapter, repo, &backfill.RepoGapDetector{Repo: repo},
+			gfCfg,
+			log.With().Str("component", "gap-fill").Logger(),
+		)
+		fetched, saved, gfErr := gfSvc.Run(ctx)
+		if gfErr != nil {
+			log.Error().Err(gfErr).Msg("gap-fill failed")
+			os.Exit(1)
+		}
+		log.Info().Int("fetched", fetched).Int("saved", saved).Msg("gap-fill finished successfully")
+	} else {
+		// Standard full-range backfill mode.
+		svc := backfill.NewService(alpacaAdapter, repo, backfillCfg, log.With().Str("component", "backfill").Logger())
+		if err := svc.Run(ctx); err != nil {
+			log.Error().Err(err).Msg("backfill failed")
+			os.Exit(1)
+		}
+		log.Info().Msg("backfill finished successfully")
 	}
-	log.Info().Msg("backfill finished successfully")
 }

@@ -207,6 +207,24 @@ func (r *Repository) GetLatestMarketBarTime(ctx context.Context, symbol domain.S
 	return t, nil
 }
 
+// GetMarketBarRange returns the first and last bar times and total count for a symbol
+// within a given date range. Returns (nil, nil, 0, nil) if no bars exist.
+func (r *Repository) GetMarketBarRange(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) (first, last *time.Time, count int, err error) {
+	row := r.db.QueryRowContext(ctx,
+		"SELECT MIN(time), MAX(time), COUNT(*) FROM market_bars WHERE symbol = $1 AND timeframe = $2 AND time >= $3 AND time < $4",
+		string(symbol), string(timeframe), from, to)
+
+	var f, l *time.Time
+	var c int
+	if scanErr := row.Scan(&f, &l, &c); scanErr != nil {
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			return nil, nil, 0, nil
+		}
+		return nil, nil, 0, fmt.Errorf("timescaledb: get market bar range: %w", scanErr)
+	}
+	return f, l, c, nil
+}
+
 func (r *Repository) GetMaxBarHighSince(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, since time.Time) (float64, error) {
 	row := r.db.QueryRowContext(ctx,
 		"SELECT COALESCE(MAX(high), 0) FROM market_bars WHERE symbol = $1 AND timeframe = $2 AND time >= $3",

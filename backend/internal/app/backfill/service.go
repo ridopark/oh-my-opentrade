@@ -22,6 +22,19 @@ type BarSaver interface {
 	GetLatestMarketBarTime(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe) (*time.Time, error)
 }
 
+// GapInfo represents a detected gap in market bar data.
+type GapInfo struct {
+	Start    time.Time
+	End      time.Time
+	Duration time.Duration
+}
+
+// GapDetector is the interface for finding gaps in stored bar data.
+type GapDetector interface {
+	FindDataGaps(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time, minGap time.Duration) ([]GapInfo, error)
+	GetMarketBarRange(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) (first, last *time.Time, count int, err error)
+}
+
 // Config holds all backfill parameters.
 type Config struct {
 	Symbols         []domain.Symbol
