@@ -124,20 +124,15 @@ export class RTHShadingOverlay implements ISeriesPrimitive<Time> {
 /**
  * Parse a Unix timestamp into ET components.
  */
-function parseET(unix: number): { dayOfWeek: number; minsFromMidnight: number; dateStr: string } {
+function parseET(unix: number): { dayOfWeek: number; minsFromMidnight: number } {
   const d = new Date(unix * 1000);
   const etStr = d.toLocaleString("en-US", { timeZone: "America/New_York", hour12: false });
-  const etParts = etStr.split(", ");
-  const timeParts = (etParts[1] ?? "0:0").split(":");
-  const etHour = parseInt(timeParts[0]);
-  const etMin = parseInt(timeParts[1]);
-  // Get day of week in ET
+  const timeParts = (etStr.split(", ")[1] ?? "0:0").split(":");
   const dayStr = d.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short" });
   const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
   return {
     dayOfWeek: dayMap[dayStr] ?? 0,
-    minsFromMidnight: etHour * 60 + etMin,
-    dateStr: etParts[0],
+    minsFromMidnight: parseInt(timeParts[0]) * 60 + parseInt(timeParts[1]),
   };
 }
 
@@ -168,22 +163,13 @@ export function computeNonRTHRegions(bars: { time: number }[]): NonRTHRegion[] {
     const isWeekend = et.dayOfWeek === 0 || et.dayOfWeek === 6;
     const isRTH = !isWeekend && et.minsFromMidnight >= 570 && et.minsFromMidnight < 960;
 
-    // Detect weekend gaps between consecutive bars (no bars exist on weekends).
-    // If previous bar was Friday (or earlier) and this bar is Monday (or later),
-    // insert a shaded region spanning the weekend gap.
+    // Detect multi-day gaps (weekends, holidays) where no bars exist.
+    // Any gap >24h gets shaded as non-trading time.
     if (i > 0) {
       const gap = bar.time - bars[i - 1].time;
-      // Gap > 24h suggests an overnight + weekend gap
       if (gap > 86400) {
-        const prevET = parseET(bars[i - 1].time);
-        // Friday (5) -> Monday (1) or longer gap crossing a weekend
-        if (prevET.dayOfWeek >= 1 && prevET.dayOfWeek <= 5 && et.dayOfWeek >= 1 && et.dayOfWeek <= 5 && prevET.dayOfWeek >= et.dayOfWeek) {
-          // Weekend crossed — flush any in-progress region, then add weekend band
-          flushRegion();
-          // Weekend region: from previous bar's time to current bar's time
-          // (the entire gap is non-trading, shade it all)
-          regions.push({ startTime: bars[i - 1].time, endTime: bar.time });
-        }
+        flushRegion();
+        regions.push({ startTime: bars[i - 1].time, endTime: bar.time });
       }
     }
 
