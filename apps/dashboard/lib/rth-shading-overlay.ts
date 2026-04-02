@@ -137,9 +137,45 @@ function parseET(unix: number): { dayOfWeek: number; minsFromMidnight: number } 
 }
 
 /**
- * Compute non-RTH regions from bar data.
+ * Generate hourly whitespace timestamps for non-trading gaps.
+ * Inserts one timestamp per hour during overnight, weekend, and holiday gaps
+ * so lightweight-charts gives them consistent visual width.
+ *
+ * Returns a sorted Set of Unix timestamps (seconds) that should be added
+ * as whitespace data points to the chart.
+ */
+export function generateNonRTHWhitespace(bars: { time: number }[]): Set<number> {
+  if (bars.length < 2) return new Set();
+
+  const barTimes = new Set(bars.map((b) => b.time));
+  const whitespace = new Set<number>();
+  const HOUR = 3600;
+
+  for (let i = 0; i < bars.length - 1; i++) {
+    const gapStart = bars[i].time;
+    const gapEnd = bars[i + 1].time;
+    const gap = gapEnd - gapStart;
+
+    // Only fill gaps larger than 1 hour (overnight, weekends, holidays)
+    if (gap <= HOUR) continue;
+
+    // Insert hourly markers through the gap
+    // Align to the next whole hour after gapStart
+    const firstHour = Math.ceil(gapStart / HOUR) * HOUR;
+    for (let t = firstHour; t < gapEnd; t += HOUR) {
+      if (!barTimes.has(t)) {
+        whitespace.add(t);
+      }
+    }
+  }
+
+  return whitespace;
+}
+
+/**
+ * Compute non-RTH regions from bar data (including whitespace points).
  * Groups consecutive non-RTH bars into contiguous shaded regions.
- * Also inserts shading for weekend gaps (Saturday + Sunday) between bars.
+ * Also inserts shading for multi-day gaps (weekends, holidays).
  * RTH = 9:30 AM - 4:00 PM ET (weekdays).
  */
 export function computeNonRTHRegions(bars: { time: number }[]): NonRTHRegion[] {
@@ -162,16 +198,6 @@ export function computeNonRTHRegions(bars: { time: number }[]): NonRTHRegion[] {
     const et = parseET(bar.time);
     const isWeekend = et.dayOfWeek === 0 || et.dayOfWeek === 6;
     const isRTH = !isWeekend && et.minsFromMidnight >= 570 && et.minsFromMidnight < 960;
-
-    // Detect multi-day gaps (weekends, holidays) where no bars exist.
-    // Any gap >24h gets shaded as non-trading time.
-    if (i > 0) {
-      const gap = bar.time - bars[i - 1].time;
-      if (gap > 86400) {
-        flushRegion();
-        regions.push({ startTime: bars[i - 1].time, endTime: bar.time });
-      }
-    }
 
     if (!isRTH) {
       if (regionStart === null) {
