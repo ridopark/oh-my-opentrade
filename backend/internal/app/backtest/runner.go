@@ -893,9 +893,9 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	r.emitter.EmitSetup("Replaying bars…")
 
-	// Reduce GC frequency during the replay hot loop without bloating the heap.
-	// GOGC=150 is conservative enough for a 16GB machine running other services.
-	prevGOGC := debug.SetGCPercent(150)
+	// Reduce GC frequency during the replay hot loop. GOGC=400 lets the heap
+	// grow 4x before collecting, trading memory for fewer GC pauses.
+	prevGOGC := debug.SetGCPercent(400)
 	defer debug.SetGCPercent(prevGOGC)
 
 	// Freeze the handler map so PublishDirect can bypass locking.
