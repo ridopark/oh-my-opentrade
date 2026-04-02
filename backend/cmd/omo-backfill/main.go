@@ -25,49 +25,38 @@ import (
 )
 
 func main() {
-	// CLI flags
 	var (
-		symbolsFlag     string
-		timeframeFlag   string
-		fromFlag        string
-		toFlag          string
-		resume          bool
-		gapFill         bool
-		concurrency     int
-		batchSize       int
-		dryRun          bool
-		continueOnError bool
-		configPath      string
-		envPath         string
+		symbolsFlag string
+		fromFlag    string
+		toFlag      string
+		resume      bool
+		concurrency int
+		batchSize   int
+		configPath  string
+		envPath     string
 	)
 
-	flag.StringVar(&symbolsFlag, "symbols", "", "Comma-separated symbols to backfill (default: use config file symbols)")
-	flag.StringVar(&timeframeFlag, "timeframe", "", "Timeframe: 1m, 5m, 15m, 1h, 1d (default: use config file)")
-	flag.StringVar(&fromFlag, "from", "", "Start date in YYYY-MM-DD format (required unless --resume)")
-	flag.StringVar(&toFlag, "to", "", "End date in YYYY-MM-DD format (default: now)")
+	flag.StringVar(&symbolsFlag, "symbols", "", "Comma-separated symbols (default: active trading universe)")
+	flag.StringVar(&fromFlag, "from", "", "Start date YYYY-MM-DD (required unless --resume)")
+	flag.StringVar(&toFlag, "to", "", "End date YYYY-MM-DD (default: now)")
 	flag.BoolVar(&resume, "resume", false, "Resume from last stored bar per symbol")
-	flag.BoolVar(&gapFill, "gap-fill", false, "Detect and fill only RTH data gaps (same logic as backtest runner)")
-	flag.IntVar(&concurrency, "concurrency", 2, "Number of parallel symbol workers")
+	flag.IntVar(&concurrency, "concurrency", 4, "Number of parallel symbol workers")
 	flag.IntVar(&batchSize, "batch-size", 500, "Database batch insert size")
-	flag.BoolVar(&dryRun, "dry-run", false, "Fetch but do not write to database")
-	flag.BoolVar(&continueOnError, "continue-on-error", false, "Continue backfilling other symbols on failure")
 	flag.StringVar(&configPath, "config", "configs/config.yaml", "Path to YAML config file")
 	flag.StringVar(&envPath, "env-file", ".env", "Path to .env file")
 	flag.Parse()
 
-	// Logger
 	log := logger.New(logger.Config{
 		Level:  zerolog.InfoLevel,
 		Pretty: os.Getenv("LOG_PRETTY") == "true",
 	}).With().Str("service", "omo-backfill").Logger()
 
-	// Load app config (for DB + Alpaca credentials)
 	cfg, err := config.Load(envPath, configPath)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to load config")
 	}
 
-	// Resolve symbols
+	// Resolve symbols — default to config, override with --symbols.
 	var symbols []domain.Symbol
 	if symbolsFlag != "" {
 		for _, s := range strings.Split(symbolsFlag, ",") {
@@ -85,22 +74,12 @@ func main() {
 		log.Fatal().Msg("no symbols specified — use --symbols or configure in config.yaml")
 	}
 
-	// Resolve timeframe
-	tf := domain.Timeframe(cfg.Symbols.Timeframe)
-	if timeframeFlag != "" {
-		tf = domain.Timeframe(timeframeFlag)
-	}
-	// Validate timeframe
-	if _, err := domain.NewTimeframe(string(tf)); err != nil {
-		log.Fatal().Err(err).Str("timeframe", string(tf)).Msg("invalid timeframe")
-	}
-
-	// Resolve time range
+	// Resolve time range.
 	var fromTime, toTime time.Time
 	if fromFlag != "" {
 		fromTime, err = time.Parse("2006-01-02", fromFlag)
 		if err != nil {
-			log.Fatal().Err(err).Str("from", fromFlag).Msg("invalid --from date, expected YYYY-MM-DD")
+			log.Fatal().Err(err).Str("from", fromFlag).Msg("invalid --from date")
 		}
 	} else if !resume {
 		log.Fatal().Msg("--from is required unless --resume is set")
@@ -108,19 +87,18 @@ func main() {
 	if toFlag != "" {
 		toTime, err = time.Parse("2006-01-02", toFlag)
 		if err != nil {
-			log.Fatal().Err(err).Str("to", toFlag).Msg("invalid --to date, expected YYYY-MM-DD")
+			log.Fatal().Err(err).Str("to", toFlag).Msg("invalid --to date")
 		}
 	} else {
 		toTime = time.Now().UTC()
 	}
 
-	// Initialize Alpaca adapter
+	// Initialize adapters.
 	alpacaAdapter, err := alpaca.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca").Logger())
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to create Alpaca adapter")
 	}
 
-	// Initialize TimescaleDB
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
 		cfg.Database.Host, cfg.Database.Port, cfg.Database.User, cfg.Database.Password, cfg.Database.DBName)
 	pgxCfg, err := pgx.ParseConfig(dsn)
@@ -134,26 +112,12 @@ func main() {
 	defer sqlDB.Close()
 	log.Info().Msg("TimescaleDB connected")
 
-	repo := timescaledb.NewRepositoryWithLogger(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "timescaledb").Logger())
+	dbAdapter := timescaledb.NewSqlDB(sqlDB)
+	repo := timescaledb.NewRepositoryWithLogger(dbAdapter, log.With().Str("component", "timescaledb").Logger())
 
-	// Build backfill config
-	backfillCfg := backfill.Config{
-		Symbols:         symbols,
-		Timeframe:       tf,
-		From:            fromTime,
-		To:              toTime,
-		Resume:          resume,
-		Concurrency:     concurrency,
-		BatchSize:       batchSize,
-		DryRun:          dryRun,
-		ContinueOnError: continueOnError,
-		MaxRetries:      5,
-	}
-
-	// Handle graceful shutdown
+	// Graceful shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -162,59 +126,55 @@ func main() {
 		cancel()
 	}()
 
-	if gapFill {
-		// Gap-fill mode: detect and fill only RTH data gaps.
-		gfCfg := backfill.GapFillConfig{
-			Symbols:     symbols,
-			Timeframe:   tf,
-			From:        fromTime,
-			To:          toTime,
-			Concurrency: concurrency,
-			BatchSize:   batchSize,
-			MaxRetries:  5,
-		}
-		gfSvc := backfill.NewGapFillService(
-			alpacaAdapter, repo, &backfill.RepoGapDetector{Repo: repo},
-			gfCfg,
-			log.With().Str("component", "gap-fill").Logger(),
-		)
-		fetched, saved, gfErr := gfSvc.Run(ctx)
-		if gfErr != nil {
-			log.Error().Err(gfErr).Msg("gap-fill failed")
-			os.Exit(1)
-		}
-		log.Info().Int("fetched", fetched).Int("saved", saved).Msg("bar gap-fill finished")
+	log.Info().
+		Int("symbols", len(symbols)).
+		Time("from", fromTime).
+		Time("to", toTime).
+		Bool("resume", resume).
+		Msg("starting backfill")
 
-		// Import missing historical options data from DoltHub.
-		log.Info().Msg("checking for missing historical options data...")
-		dbAdapter := timescaledb.NewSqlDB(sqlDB)
-		histOptRepo := timescaledb.NewHistoricalOptionsRepository(dbAdapter, log.With().Str("component", "hist_options").Logger())
-		dolthubClient := dolthub.NewClient(nil, log)
-		importer := optionsimport.NewService(dolthubClient, histOptRepo, log)
+	// --- Step 1: Backfill 1m candles (all hours, RTH + pre/post market) ---
+	log.Info().Msg("[1/2] backfilling 1m candles...")
+	svc := backfill.NewService(alpacaAdapter, repo, backfill.Config{
+		Symbols:         symbols,
+		Timeframe:       "1m",
+		From:            fromTime,
+		To:              toTime,
+		Resume:          resume,
+		Concurrency:     concurrency,
+		BatchSize:       batchSize,
+		ContinueOnError: true,
+		MaxRetries:      5,
+	}, log.With().Str("component", "backfill").Logger())
 
-		const maxConcurrentImports = 4
-		importSem := make(chan struct{}, maxConcurrentImports)
-		var importWg sync.WaitGroup
-		for _, sym := range symbols {
-			importWg.Add(1)
-			go func(sym domain.Symbol) {
-				defer importWg.Done()
-				importSem <- struct{}{}
-				defer func() { <-importSem }()
-				if importErr := importer.EnsureData(ctx, string(sym), fromTime, toTime); importErr != nil {
-					log.Warn().Err(importErr).Str("symbol", string(sym)).Msg("DoltHub options import failed")
-				}
-			}(sym)
-		}
-		importWg.Wait()
-		log.Info().Msg("gap-fill finished successfully")
-	} else {
-		// Standard full-range backfill mode.
-		svc := backfill.NewService(alpacaAdapter, repo, backfillCfg, log.With().Str("component", "backfill").Logger())
-		if err := svc.Run(ctx); err != nil {
-			log.Error().Err(err).Msg("backfill failed")
-			os.Exit(1)
-		}
-		log.Info().Msg("backfill finished successfully")
+	if err := svc.Run(ctx); err != nil {
+		log.Error().Err(err).Msg("candle backfill failed")
+		os.Exit(1)
 	}
+	log.Info().Msg("[1/2] candle backfill complete")
+
+	// --- Step 2: Import historical options data from DoltHub ---
+	log.Info().Msg("[2/2] importing historical options data...")
+	histOptRepo := timescaledb.NewHistoricalOptionsRepository(dbAdapter, log.With().Str("component", "hist_options").Logger())
+	dolthubClient := dolthub.NewClient(nil, log)
+	importer := optionsimport.NewService(dolthubClient, histOptRepo, log)
+
+	const maxConcurrentImports = 4
+	importSem := make(chan struct{}, maxConcurrentImports)
+	var importWg sync.WaitGroup
+	for _, sym := range symbols {
+		importWg.Add(1)
+		go func(sym domain.Symbol) {
+			defer importWg.Done()
+			importSem <- struct{}{}
+			defer func() { <-importSem }()
+			if importErr := importer.EnsureData(ctx, string(sym), fromTime, toTime); importErr != nil {
+				log.Warn().Err(importErr).Str("symbol", string(sym)).Msg("DoltHub options import failed")
+			}
+		}(sym)
+	}
+	importWg.Wait()
+	log.Info().Msg("[2/2] options import complete")
+
+	log.Info().Msg("backfill finished successfully")
 }
