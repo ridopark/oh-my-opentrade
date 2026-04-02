@@ -422,20 +422,20 @@ func isForcedExit(ruleType domain.ExitRuleType) bool {
 }
 
 // exitOrderParams determines order type, price, and TIF based on exit rule
-// and retry count. Forced exits escalate: 2% → 3% → 5% → market.
+// and retry count. All exits escalate: first attempt uses an aggressive limit
+// with 5% buffer, subsequent retries and forced exits use market IOC.
+// Options have 5-20% bid/ask spreads and IBKR paper rarely fills tight limits,
+// so reliability of fill matters more than price improvement.
 func exitOrderParams(ruleType domain.ExitRuleType, currentPrice float64, retryCount int, short bool) (price float64, orderType, tif string) {
-	if !isForcedExit(ruleType) {
-		return currentPrice, "limit", ""
-	}
-
-	if retryCount >= maxExitRetries {
+	// Forced exits (EOD flatten, max loss, max holding time) go straight to market.
+	// Any retry (retryCount >= 1) also escalates to market.
+	if isForcedExit(ruleType) || retryCount >= 1 {
 		return currentPrice, "market", "ioc"
 	}
-
-	buffers := []float64{0.02, 0.03, 0.05}
-	buf := buffers[retryCount]
+	// First attempt: aggressive limit with 5% buffer to catch wide spreads.
+	buf := 0.05
 	if short {
-		// For shorts, buying back — need to offer a higher price to fill
+		// For shorts, buying back — offer a higher price to fill.
 		return currentPrice * (1 + buf), "limit", "ioc"
 	}
 	return currentPrice * (1 - buf), "limit", "ioc"

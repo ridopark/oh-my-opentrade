@@ -110,8 +110,7 @@ type exitRejectedMsg struct {
 }
 
 const (
-	exitPendingTimeout             = 10 * time.Second
-	maxExitRetries                 = 3
+	exitPendingTimeout = 10 * time.Second
 	defaultReconcileInterval       = 5 * time.Minute
 	defaultGlobalReconcileInterval = 5 * time.Minute
 	ghostMissThreshold             = 3
