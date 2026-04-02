@@ -448,6 +448,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		Float64("limit_price", intent.LimitPrice).
 		Float64("stop_loss", intent.StopLoss).
 		Float64("quantity", intent.Quantity).
+		Str("order_type", intent.OrderType).
 		Msg("order intent received, starting execution pipeline")
 
 	// 1. Check kill switch before any work (skip for exits — closing reduces exposure).
