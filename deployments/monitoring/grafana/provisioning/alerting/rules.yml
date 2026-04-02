@@ -25,7 +25,7 @@ groups:
               interval: ""
               refId: A
         noDataState: NoData
-        execErrState: Alerting
+        execErrState: OK
         for: 0s
         annotations:
           summary: "Circuit breaker is active — trading halted"
