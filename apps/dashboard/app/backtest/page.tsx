@@ -304,6 +304,20 @@ function TopBar({
           </button>
           {symbolsOpen && (
             <div className="absolute top-full left-0 mt-1 z-50 w-56 max-h-64 overflow-y-auto rounded-lg border border-border bg-card shadow-xl">
+              <div className="flex border-b border-border">
+                <button
+                  onClick={() => updateConfig("symbols", [...availableSymbols].sort())}
+                  className="flex-1 px-3 py-1.5 text-[10px] font-medium text-emerald-400 hover:bg-white/5 transition-colors"
+                >
+                  Select All
+                </button>
+                <button
+                  onClick={() => updateConfig("symbols", [])}
+                  className="flex-1 px-3 py-1.5 text-[10px] font-medium text-red-400 hover:bg-white/5 transition-colors"
+                >
+                  Clear All
+                </button>
+              </div>
               {availableSymbols.map((sym) => {
                 const selected = config.symbols.includes(sym);
                 return (
