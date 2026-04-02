@@ -15,7 +15,8 @@ import {
 } from "lightweight-charts";
 import { SignalMarkerOverlay, type SignalMarkerData } from "@/lib/signal-markers";
 import { ORBBoxOverlay, computeORBRanges } from "@/lib/orb-box-overlay";
-import { RTHShadingOverlay, computeNonRTHRegions, generateNonRTHWhitespace } from "@/lib/rth-shading-overlay";
+import { RTHShadingOverlay, computeNonRTHRegions, parseTimeframeSec } from "@/lib/rth-shading-overlay";
+import { SessionBreakOverlay, detectSessionBreaks } from "@/lib/session-break-overlay";
 import {
   useBacktest,
   type BacktestConfig,
@@ -737,6 +738,7 @@ function MiniChart({
   const overlayRef = useRef<SignalMarkerOverlay | null>(null);
   const orbOverlayRef = useRef<ORBBoxOverlay | null>(null);
   const rthOverlayRef = useRef<RTHShadingOverlay | null>(null);
+  const sessionBreakRef = useRef<SessionBreakOverlay | null>(null);
   const lastBarCountRef = useRef(0);
 
   useEffect(() => {
@@ -819,6 +821,10 @@ function MiniChart({
     candle.attachPrimitive(rthOverlay);
     rthOverlayRef.current = rthOverlay;
 
+    const sessionBreak = new SessionBreakOverlay();
+    candle.attachPrimitive(sessionBreak);
+    sessionBreakRef.current = sessionBreak;
+
     // Click handler via chart.subscribeClick — provides coordinates in pane space
     // (matching timeToCoordinate/priceToCoordinate used by hitTestSignal)
     const containerEl = containerRef.current;
@@ -867,6 +873,7 @@ function MiniChart({
       overlayRef.current = null;
       orbOverlayRef.current = null;
       rthOverlayRef.current = null;
+      sessionBreakRef.current = null;
       lastBarCountRef.current = 0;
     };
   }, []);
@@ -879,25 +886,8 @@ function MiniChart({
     for (const b of bars) deduped.set(b.time, b);
     const sorted = Array.from(deduped.values()).sort((a, b) => a.time - b.time);
 
-    // Generate hourly whitespace points for non-trading gaps (overnight, weekends, holidays)
-    // so they occupy consistent visual width on the chart.
-    const whitespaceTimes = generateNonRTHWhitespace(sorted, timeframe);
-    const barTimes = new Set(sorted.map((b) => b.time));
-    const allTimes = [...barTimes, ...whitespaceTimes].sort((a, b) => a - b);
-
-    const candleData = allTimes.map((t) => {
-      const bar = deduped.get(t);
-      if (bar) return { time: t as Time, open: bar.open, high: bar.high, low: bar.low, close: bar.close };
-      return { time: t as Time }; // whitespace
-    });
-    candleRef.current.setData(candleData as Parameters<typeof candleRef.current.setData>[0]);
-
-    const volumeData = allTimes.map((t) => {
-      const bar = deduped.get(t);
-      if (bar) return { time: t as Time, value: bar.volume, color: bar.close >= bar.open ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)" };
-      return { time: t as Time }; // whitespace
-    });
-    volumeRef.current.setData(volumeData as Parameters<typeof volumeRef.current.setData>[0]);
+    candleRef.current.setData(sorted.map((b) => ({ time: b.time as Time, open: b.open, high: b.high, low: b.low, close: b.close })));
+    volumeRef.current.setData(sorted.map((b) => ({ time: b.time as Time, value: b.volume, color: b.close >= b.open ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)" })));
 
     const ema9Data = sorted.filter((b) => b.ema9 && b.ema9 > 0).map((b) => ({ time: b.time as Time, value: b.ema9! }));
     const ema21Data = sorted.filter((b) => b.ema21 && b.ema21 > 0).map((b) => ({ time: b.time as Time, value: b.ema21! }));
@@ -955,11 +945,17 @@ function MiniChart({
       orbOverlayRef.current.setRanges(ranges);
     }
 
-    // Non-RTH shading — subtle background on pre-market, after-hours, weekends, holidays
+    // Non-RTH shading — subtle background on pre-market, after-hours, holiday bars
     if (rthOverlayRef.current) {
-      const allPoints = allTimes.map((t) => ({ time: t }));
-      const regions = computeNonRTHRegions(allPoints, whitespaceTimes);
+      const regions = computeNonRTHRegions(sorted);
       rthOverlayRef.current.setRegions(regions);
+    }
+
+    // Session break lines — thin vertical separators at overnight/weekend/holiday gaps
+    if (sessionBreakRef.current) {
+      const tfSec = parseTimeframeSec(timeframe);
+      const breaks = detectSessionBreaks(sorted, tfSec);
+      sessionBreakRef.current.setBreaks(breaks);
     }
 
     // Force chart to match container size — fixes squeeze on initial load

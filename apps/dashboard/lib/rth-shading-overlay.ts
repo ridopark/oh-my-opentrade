@@ -125,7 +125,7 @@ export class RTHShadingOverlay implements ISeriesPrimitive<Time> {
 // NYSE holiday & early-close calendar (mirrors backend exchange_calendar.go)
 // ---------------------------------------------------------------------------
 
-const NYSE_HOLIDAYS = new Set([
+export const NYSE_HOLIDAYS = new Set([
   // 2025
   "2025-01-01", "2025-01-20", "2025-02-17", "2025-04-18",
   "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01",
@@ -152,7 +152,7 @@ const NYSE_EARLY_CLOSES = new Set([
 ]);
 
 /** Format a unix timestamp to "YYYY-MM-DD" in ET */
-function toETDateStr(unix: number): string {
+export function toETDateStr(unix: number): string {
   const d = new Date(unix * 1000);
   return d.toLocaleDateString("en-CA", { timeZone: "America/New_York" }); // "YYYY-MM-DD"
 }
@@ -176,7 +176,7 @@ function parseET(unix: number): { dayOfWeek: number; minsFromMidnight: number; i
 }
 
 /** Parse a timeframe string like "1m", "5m", "1h" into seconds. */
-function parseTimeframeSec(tf: string): number {
+export function parseTimeframeSec(tf: string): number {
   const match = tf.match(/^(\d+)(s|m|h|d)$/);
   if (!match) return 300; // default 5m
   const n = parseInt(match[1]);
@@ -190,51 +190,12 @@ function parseTimeframeSec(tf: string): number {
 }
 
 /**
- * Generate whitespace timestamps for non-trading gaps at the given timeframe interval.
- * Inserts one timestamp per interval during overnight, weekend, and holiday gaps
- * so lightweight-charts gives them consistent visual width matching the bar spacing.
- *
- * @param bars Sorted bar data
- * @param timeframe Timeframe string (e.g. "1m", "5m", "1h"). Defaults to "5m".
- * @returns Set of Unix timestamps (seconds) to add as whitespace data points.
- */
-export function generateNonRTHWhitespace(bars: { time: number }[], timeframe = "5m"): Set<number> {
-  if (bars.length < 2) return new Set();
-
-  const interval = parseTimeframeSec(timeframe);
-  const barTimes = new Set(bars.map((b) => b.time));
-  const whitespace = new Set<number>();
-
-  for (let i = 0; i < bars.length - 1; i++) {
-    const gapStart = bars[i].time;
-    const gapEnd = bars[i + 1].time;
-    const gap = gapEnd - gapStart;
-
-    // Only fill gaps larger than twice the interval
-    if (gap <= interval * 2) continue;
-
-    // Align to the next whole interval after gapStart
-    const first = Math.ceil(gapStart / interval) * interval;
-    for (let t = first; t < gapEnd; t += interval) {
-      if (!barTimes.has(t)) {
-        whitespace.add(t);
-      }
-    }
-  }
-
-  return whitespace;
-}
-
-/**
- * Compute non-RTH regions from bar data (including whitespace points).
+ * Compute non-RTH regions from actual bar data.
  * Groups consecutive non-RTH bars into contiguous shaded regions.
- * Also inserts shading for multi-day gaps (weekends, holidays).
- * RTH = 9:30 AM - 4:00 PM ET (weekdays).
+ * RTH = 9:30 AM - 4:00 PM ET (weekdays, non-holiday).
+ * Early-close days: RTH ends at 1:00 PM ET.
  */
-export function computeNonRTHRegions(
-  bars: { time: number }[],
-  whitespaceTimes?: Set<number>,
-): NonRTHRegion[] {
+export function computeNonRTHRegions(bars: { time: number }[]): NonRTHRegion[] {
   if (bars.length === 0) return [];
 
   const regions: NonRTHRegion[] = [];
@@ -249,17 +210,9 @@ export function computeNonRTHRegions(
     }
   };
 
-  for (let i = 0; i < bars.length; i++) {
-    const bar = bars[i];
-    // Whitespace points are always non-RTH (holidays, gaps — no real trading)
-    if (whitespaceTimes?.has(bar.time)) {
-      if (regionStart === null) regionStart = bar.time;
-      regionEnd = bar.time;
-      continue;
-    }
+  for (const bar of bars) {
     const et = parseET(bar.time);
     const isWeekend = et.dayOfWeek === 0 || et.dayOfWeek === 6;
-    // Early-close days: RTH ends at 13:00 (780 min) instead of 16:00 (960 min)
     const rthEnd = et.earlyClose ? 780 : 960;
     const isRTH = !isWeekend && !et.isHoliday && et.minsFromMidnight >= 570 && et.minsFromMidnight < rthEnd;
 
@@ -273,8 +226,6 @@ export function computeNonRTHRegions(
     }
   }
 
-  // Close final region
   flushRegion();
-
   return regions;
 }
