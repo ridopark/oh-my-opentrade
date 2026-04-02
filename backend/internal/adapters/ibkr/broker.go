@@ -199,6 +199,9 @@ func (a *Adapter) GetPositions(_ context.Context, tenantID string, envMode domai
 		return nil, fmt.Errorf("ibkr: not connected")
 	}
 
+	// Force-refresh from IBKR before reading. The cached Positions() list
+	// doesn't auto-update on paper accounts when orders fill.
+	ib.ReqPositions()
 	positions := ib.Positions()
 	a.log.Info().Int("raw_count", len(positions)).Str("account_filter", a.cfg.AccountID).Msg("ibkr: GetPositions called")
 	trades := make([]domain.Trade, 0, len(positions))
