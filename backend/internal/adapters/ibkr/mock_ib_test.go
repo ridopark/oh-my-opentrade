@@ -57,6 +57,17 @@ func (m *mockIB) Positions(_ ...string) []ibsync.Position {
 	return m.positions
 }
 
+func (m *mockIB) PositionChan(_ ...string) chan ibsync.Position {
+	m.mu.Lock()
+	positions := m.positions
+	m.mu.Unlock()
+	ch := make(chan ibsync.Position, len(positions)+1)
+	for _, p := range positions {
+		ch <- p
+	}
+	// Don't close — freshPositions reads until timeout
+	return ch
+}
 func (m *mockIB) ReqPositions()    {}
 func (m *mockIB) CancelPositions() {}
 func (m *mockIB) ReqAccountSummary(_ string, _ string) (ibsync.AccountSummary, error) {
