@@ -1397,6 +1397,14 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 				return true
 			}
 
+			// Skip stale-cancel for market orders — they should fill or get
+			// rejected by the exchange. Canceling a MKT order races with
+			// IBKR's fill and creates orphaned positions.
+			if po.intent.OrderType == "market" {
+				l.Info().Msg("reconcile: skipping stale cancel for market order — waiting for exchange fill/reject")
+				return true
+			}
+
 			if err := s.broker.CancelOrder(ctx, brokerOrderID); err != nil {
 				l.Warn().Err(err).Msg("reconcile: failed to cancel stale order — may already be terminal")
 			} else {
