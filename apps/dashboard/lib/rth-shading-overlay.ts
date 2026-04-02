@@ -178,7 +178,10 @@ export function generateNonRTHWhitespace(bars: { time: number }[]): Set<number> 
  * Also inserts shading for multi-day gaps (weekends, holidays).
  * RTH = 9:30 AM - 4:00 PM ET (weekdays).
  */
-export function computeNonRTHRegions(bars: { time: number }[]): NonRTHRegion[] {
+export function computeNonRTHRegions(
+  bars: { time: number }[],
+  whitespaceTimes?: Set<number>,
+): NonRTHRegion[] {
   if (bars.length === 0) return [];
 
   const regions: NonRTHRegion[] = [];
@@ -195,6 +198,12 @@ export function computeNonRTHRegions(bars: { time: number }[]): NonRTHRegion[] {
 
   for (let i = 0; i < bars.length; i++) {
     const bar = bars[i];
+    // Whitespace points are always non-RTH (holidays, gaps — no real trading)
+    if (whitespaceTimes?.has(bar.time)) {
+      if (regionStart === null) regionStart = bar.time;
+      regionEnd = bar.time;
+      continue;
+    }
     const et = parseET(bar.time);
     const isWeekend = et.dayOfWeek === 0 || et.dayOfWeek === 6;
     const isRTH = !isWeekend && et.minsFromMidnight >= 570 && et.minsFromMidnight < 960;
