@@ -107,7 +107,7 @@ pct = 0.02
 enabled = true
 
 # Limit price = mid + 60% of spread (aggressive for ORB breakout day trading)
-limit_spread_pct = 0.60
+limit_spread_pct = 1.00
 # Fallback when spread is zero: ask + 3%
 limit_buffer_bps = 300
 # Cancel unfilled option orders after 45 seconds (speed > price for ORB)
