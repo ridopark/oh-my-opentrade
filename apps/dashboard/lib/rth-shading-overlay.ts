@@ -121,18 +121,57 @@ export class RTHShadingOverlay implements ISeriesPrimitive<Time> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// NYSE holiday & early-close calendar (mirrors backend exchange_calendar.go)
+// ---------------------------------------------------------------------------
+
+const NYSE_HOLIDAYS = new Set([
+  // 2025
+  "2025-01-01", "2025-01-20", "2025-02-17", "2025-04-18",
+  "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01",
+  "2025-11-27", "2025-12-25",
+  // 2026
+  "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03",
+  "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07",
+  "2026-11-26", "2026-12-25",
+  // 2027
+  "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26",
+  "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06",
+  "2027-11-25", "2027-12-24",
+  // 2028
+  "2028-01-17", "2028-02-21", "2028-04-14", "2028-05-29",
+  "2028-06-19", "2028-07-04", "2028-09-04", "2028-11-23",
+  "2028-12-25",
+]);
+
+const NYSE_EARLY_CLOSES = new Set([
+  "2025-07-03", "2025-11-28", "2025-12-24",
+  "2026-11-27", "2026-12-24",
+  "2027-11-26",
+  "2028-07-03", "2028-11-24",
+]);
+
+/** Format a unix timestamp to "YYYY-MM-DD" in ET */
+function toETDateStr(unix: number): string {
+  const d = new Date(unix * 1000);
+  return d.toLocaleDateString("en-CA", { timeZone: "America/New_York" }); // "YYYY-MM-DD"
+}
+
 /**
  * Parse a Unix timestamp into ET components.
  */
-function parseET(unix: number): { dayOfWeek: number; minsFromMidnight: number } {
+function parseET(unix: number): { dayOfWeek: number; minsFromMidnight: number; isHoliday: boolean; earlyClose: boolean } {
   const d = new Date(unix * 1000);
   const etStr = d.toLocaleString("en-US", { timeZone: "America/New_York", hour12: false });
   const timeParts = (etStr.split(", ")[1] ?? "0:0").split(":");
   const dayStr = d.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short" });
   const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const dateStr = toETDateStr(unix);
   return {
     dayOfWeek: dayMap[dayStr] ?? 0,
     minsFromMidnight: parseInt(timeParts[0]) * 60 + parseInt(timeParts[1]),
+    isHoliday: NYSE_HOLIDAYS.has(dateStr),
+    earlyClose: NYSE_EARLY_CLOSES.has(dateStr),
   };
 }
 
@@ -206,7 +245,9 @@ export function computeNonRTHRegions(
     }
     const et = parseET(bar.time);
     const isWeekend = et.dayOfWeek === 0 || et.dayOfWeek === 6;
-    const isRTH = !isWeekend && et.minsFromMidnight >= 570 && et.minsFromMidnight < 960;
+    // Early-close days: RTH ends at 13:00 (780 min) instead of 16:00 (960 min)
+    const rthEnd = et.earlyClose ? 780 : 960;
+    const isRTH = !isWeekend && !et.isHoliday && et.minsFromMidnight >= 570 && et.minsFromMidnight < rthEnd;
 
     if (!isRTH) {
       if (regionStart === null) {
