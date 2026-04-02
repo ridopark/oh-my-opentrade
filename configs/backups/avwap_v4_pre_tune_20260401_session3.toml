@@ -50,7 +50,7 @@ anchors = ["session_open", "pd_high", "pd_low"]
 # --- Entry Types ---
 # Breakout: price sustains above/below AVWAP for hold_bars with volume confirmation
 breakout_enabled = true
-hold_bars = 6
+hold_bars = 7
 
 # Pullback: price pulls back to AVWAP in an established trend, closes on right side
 pullback_enabled = false
