@@ -243,11 +243,12 @@ type ORBPhaseUpdatePayload struct {
 }
 
 type ORBPhaseRange struct {
-	High         float64 `json:"high"`
-	Low          float64 `json:"low"`
-	Valid        bool    `json:"valid"`
-	BarCount     int     `json:"barCount"`
-	ExpectedBars int     `json:"expectedBars"`
+	High          float64 `json:"high"`
+	Low           float64 `json:"low"`
+	Valid         bool    `json:"valid"`
+	BarCount      int     `json:"barCount"`
+	ExpectedBars  int     `json:"expectedBars"`
+	WindowMinutes int     `json:"windowMinutes"`
 }
 
 type ORBPhaseBreakout struct {

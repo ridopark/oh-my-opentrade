@@ -539,6 +539,7 @@ function DetailPanel({
               bars={chartBars}
               showLabels={false}
               hiddenSeries={hiddenSeries}
+              orbWindowMinutes={orb?.range.windowMinutes}
             />
           ) : (
             <div className="flex items-center justify-center h-full text-xs text-zinc-600">
