@@ -463,32 +463,11 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	loc, _ := time.LoadLocation("America/New_York")
 
-	// Detect and fill RTH data gaps using the backfill service (chunking, retry, concurrency).
-	if r.marketData != nil {
-		r.emitter.EmitSetup("Checking for data gaps…")
-		gfCfg := backfill.GapFillConfig{
-			Symbols:     r.cfg.Symbols,
-			Timeframe:   replayTimeframe,
-			From:        r.cfg.From,
-			To:          r.cfg.To,
-			Concurrency: 4,
-			BatchSize:   500,
-			MaxRetries:  5,
-			RTHOnly:     true,
-		}
-		gfSvc := backfill.NewGapFillService(
-			r.marketData, repo, &backfill.RepoGapDetector{Repo: repo},
-			gfCfg,
-			r.log.With().Str("phase", "gap-fill").Logger(),
-		)
-		fetched, saved, gfErr := gfSvc.Run(ctx)
-		if gfErr != nil {
-			r.log.Warn().Err(gfErr).Msg("gap-fill encountered errors (continuing with available data)")
-		}
-		if fetched > 0 {
-			r.log.Info().Int("fetched", fetched).Int("saved", saved).Msg("gap-fill complete")
-		}
-	}
+	// Gap-fill is disabled by default — run `omo-backfill --gap-fill` before
+	// backtesting to ensure data is complete. This avoids slow gap detection
+	// queries on every backtest run.
+	//
+	// To re-enable inline gap-fill, set GapFill: true in RunConfig.
 
 	r.emitter.EmitSetup("Loading market data…")
 	streams := make([]*barStream, 0, len(r.cfg.Symbols))
@@ -1246,38 +1225,10 @@ func symbolStrings(syms []domain.Symbol) []string {
 	return out
 }
 
+// isRTHGap delegates to the shared backfill.IsRTHGap implementation.
+// Kept as a package-private wrapper so existing internal tests continue to work.
 func isRTHGap(gapStart, gapEnd time.Time, loc *time.Location) bool {
-	// Clamp end to now — we cannot fetch future data.
-	now := time.Now()
-	if gapEnd.After(now) {
-		gapEnd = now
-	}
-	if !gapEnd.After(gapStart) {
-		return false
-	}
-
-	startET := gapStart.In(loc)
-	endET := gapEnd.In(loc)
-
-	// Single-day gap: both timestamps on the same calendar day.
-	if startET.Year() == endET.Year() && startET.YearDay() == endET.YearDay() {
-		if startET.Weekday() == time.Saturday || startET.Weekday() == time.Sunday {
-			return false
-		}
-		rthOpen := time.Date(startET.Year(), startET.Month(), startET.Day(), 9, 30, 0, 0, loc)
-		rthClose := time.Date(startET.Year(), startET.Month(), startET.Day(), 16, 0, 0, 0, loc)
-		return startET.After(rthOpen) && endET.Before(rthClose)
-	}
-
-	// Multi-day gap: return true if at least one weekday exists in the range.
-	// Loop is bounded to 7 iterations — any 7-day span must contain a weekday.
-	for d := startET; !d.After(endET); d = d.AddDate(0, 0, 1) {
-		wd := d.Weekday()
-		if wd != time.Saturday && wd != time.Sunday {
-			return true
-		}
-	}
-	return false
+	return backfill.IsRTHGap(gapStart, gapEnd, loc)
 }
 
 type filteredSpecStore struct {

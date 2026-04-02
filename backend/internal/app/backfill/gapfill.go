@@ -132,42 +132,39 @@ func (s *GapFillService) gapFillSymbol(ctx context.Context, sym domain.Symbol, l
 			if s.cfg.RTHOnly && !IsRTHGap(g.Start, g.End, loc) {
 				continue
 			}
-			s.log.Info().
-				Str("symbol", string(sym)).
-				Time("start", g.Start).
-				Time("end", g.End).
-				Dur("duration", g.Duration).
-				Msg("detected data gap")
-
 			f, sv, err := s.fetchAndSaveRange(ctx, sym, g.Start.Add(time.Minute), g.End)
 			totalFetched += f
 			totalSaved += sv
 			if err != nil {
 				s.log.Warn().Err(err).Str("symbol", string(sym)).Msg("failed to fill internal gap")
+			} else if sv > 0 {
+				s.log.Info().Str("symbol", string(sym)).Int("saved", sv).Time("start", g.Start).Time("end", g.End).Msg("filled data gap")
 			}
 		}
 	}
 
 	// 2. Leading edge gap: first bar is well after requested start.
 	if first.Sub(s.cfg.From) > GapThreshold && (!s.cfg.RTHOnly || IsRTHGap(s.cfg.From, *first, loc)) {
-		s.log.Info().Str("symbol", string(sym)).Time("from", s.cfg.From).Time("first_bar", *first).Msg("detected leading data gap")
 		f, sv, err := s.fetchAndSaveRange(ctx, sym, s.cfg.From, *first)
 		totalFetched += f
 		totalSaved += sv
 		if err != nil {
 			s.log.Warn().Err(err).Str("symbol", string(sym)).Msg("failed to fill leading gap")
+		} else if sv > 0 {
+			s.log.Info().Str("symbol", string(sym)).Int("saved", sv).Msg("filled leading data gap")
 		}
 	}
 
 	// 3. Trailing edge gap: last bar is well before requested end.
 	if s.cfg.To.Sub(*last) > GapThreshold && (!s.cfg.RTHOnly || IsRTHGap(*last, s.cfg.To, loc)) {
 		fetchTo := clampToNow(s.cfg.To)
-		s.log.Info().Str("symbol", string(sym)).Time("last_bar", *last).Time("to", fetchTo).Msg("detected trailing data gap")
 		f, sv, err := s.fetchAndSaveRange(ctx, sym, last.Add(time.Minute), fetchTo)
 		totalFetched += f
 		totalSaved += sv
 		if err != nil {
 			s.log.Warn().Err(err).Str("symbol", string(sym)).Msg("failed to fill trailing gap")
+		} else if sv > 0 {
+			s.log.Info().Str("symbol", string(sym)).Int("saved", sv).Msg("filled trailing data gap")
 		}
 	}
 
