@@ -106,6 +106,61 @@ cd backend && go run ./cmd/omo-ingest
 - Gap-fills on startup using Alpaca REST (same as before).
 - On staging, omo-ingest still uses IBKR streaming (separate gateway account `staging100`).
 
+## Data Backfill (omo-backfill)
+
+Backfills all 1m candles (RTH + pre/post market) and historical options data from DoltHub for the trading universe. Run this before backtesting to ensure data is complete.
+
+### Compile
+
+```bash
+cd backend && go build -o bin/omo-backfill ./cmd/omo-backfill
+```
+
+### Usage
+
+```bash
+# Full backfill from a start date (fetches everything up to now)
+./bin/omo-backfill --from 2025-06-01
+
+# Backfill up to a specific end date
+./bin/omo-backfill --from 2025-06-01 --to 2026-03-27
+
+# Resume from last stored bar per symbol (skips already-fetched data)
+./bin/omo-backfill --from 2025-06-01 --resume
+
+# Specific symbols only
+./bin/omo-backfill --from 2025-06-01 --symbols AAPL,MSFT,TSLA
+
+# Higher concurrency (default: 4)
+./bin/omo-backfill --from 2025-06-01 --concurrency 8
+```
+
+### What it does
+
+1. **1m candle backfill** — Fetches all 1-minute bars from Alpaca for every symbol in the date range. Upserts into TimescaleDB (deduplicates on conflict). Includes pre-market, RTH, and after-hours data.
+2. **Historical options import** — Fetches option chain data (bid/ask/IV/Greeks) from DoltHub for every symbol and trading day. Skips dates that already have data in the DB.
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--from` | *(required)* | Start date (YYYY-MM-DD) |
+| `--to` | now | End date (YYYY-MM-DD) |
+| `--resume` | false | Skip symbols that are already up to date |
+| `--symbols` | config.yaml | Comma-separated symbol override |
+| `--concurrency` | 4 | Parallel symbol workers |
+| `--batch-size` | 500 | DB insert batch size |
+| `--config` | configs/config.yaml | Config file path |
+| `--env-file` | .env | Env file path |
+
+### Notes
+
+- The active trading universe is 34 symbols (see `configs/strategies/*.toml` → `[routing] symbols`).
+- Default symbols come from `config.yaml`. Use `--symbols` to override.
+- Uses `--resume` for incremental updates — only fetches bars newer than the last stored bar.
+- Higher timeframes (5m, 15m, etc.) are aggregated from 1m at runtime by the backtest engine.
+- The backtest runner does NOT do inline gap-filling — always run `omo-backfill` first.
+
 ## Debugging & Troubleshooting
 
 ### IB Gateway VNC (visual debugging)
