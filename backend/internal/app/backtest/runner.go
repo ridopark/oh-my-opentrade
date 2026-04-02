@@ -1,6 +1,7 @@
 package backtest
 
 import (
+	"container/heap"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -449,12 +450,6 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// --- Load replay bars first (needed to determine warmup endpoint) ---
 
-	type barStream struct {
-		symbol domain.Symbol
-		bars   []domain.MarketBar
-		idx    int
-	}
-
 	loc, _ := time.LoadLocation("America/New_York")
 
 	// Gap-fill is disabled by default — run `omo-backfill --gap-fill` before
@@ -780,18 +775,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.log.Info().Msg("AI anchor resolver configured for backtest (with session baseline)")
 	}
 
-	peekBar := func(s *barStream) (domain.MarketBar, bool) {
-		if s == nil || s.idx >= len(s.bars) {
-			return domain.MarketBar{}, false
-		}
-		return s.bars[s.idx], true
-	}
-	popBar := func(s *barStream) {
-		if s != nil && s.idx < len(s.bars) {
-			s.idx++
-		}
-	}
-
 	r.emitter.EmitSetup("Starting services…")
 
 	if startErr := ingBundle.Service.Start(ctx); startErr != nil {
@@ -914,23 +897,24 @@ func (r *Runner) Run(ctx context.Context) error {
 	barsProcessed := 0
 	currentSessionDate := replaySessionOpen
 
-	for ctx.Err() == nil {
-		// Find next minimum timestamp across all streams.
-		var minTime time.Time
-		found := false
-		for _, s := range streams {
-			b, ok := peekBar(s)
-			if !ok {
-				continue
-			}
-			if !found || b.Time.Before(minTime) {
-				minTime = b.Time
-				found = true
-			}
+	// Pre-build fixed symbol set for O(1) lookup in the hot loop.
+	fixedSymbolSet := make(map[string]bool, len(r.cfg.FixedSymbols))
+	for _, fs := range r.cfg.FixedSymbols {
+		fixedSymbolSet[fs.String()] = true
+	}
+
+	// Build a min-heap for efficient stream merging (O(log N) vs O(N) per iteration).
+	sh := make(streamHeap, 0, len(streams))
+	for _, s := range streams {
+		if s.idx < len(s.bars) {
+			sh = append(sh, s)
 		}
-		if !found {
-			break
-		}
+	}
+	heap.Init(&sh)
+
+	for ctx.Err() == nil && sh.Len() > 0 {
+		// Peek at the minimum timestamp from the heap root.
+		minTime := sh[0].bars[sh[0].idx].Time
 
 		// Pause gate.
 		if r.paused.Load() {
@@ -975,29 +959,23 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 
-		for _, s := range streams {
+		for sh.Len() > 0 && sh[0].bars[sh[0].idx].Time.Equal(minTime) {
 			if ctx.Err() != nil {
 				break
 			}
-			bar, has := peekBar(s)
-			if !has || !bar.Time.Equal(minTime) {
-				continue
+			s := heap.Pop(&sh).(*barStream)
+			bar := s.bars[s.idx]
+			s.idx++
+			// Re-push stream if it has more bars.
+			if s.idx < len(s.bars) {
+				heap.Push(&sh, s)
 			}
-			popBar(s)
 
 			// Daily screener filter: allow bars if symbol is in today's screened set
 			// OR in the user's fixed symbol list (union of both, like live trading).
 			if dailyScreenerMap != nil {
 				symStr := bar.Symbol.String()
-				// Always allow fixed (user-selected) symbols
-				isFixed := false
-				for _, fs := range r.cfg.FixedSymbols {
-					if string(fs) == symStr {
-						isFixed = true
-						break
-					}
-				}
-				if !isFixed {
+				if !fixedSymbolSet[symStr] {
 					dateKey := currentSessionDate.Format("2006-01-02")
 					if activeSyms, ok := dailyScreenerMap[dateKey]; ok && len(activeSyms) > 0 {
 						if !activeSyms[symStr] {
@@ -1051,7 +1029,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Emit progress every 10 bar groups.
-		if barsProcessed%10 == 0 || !found {
+		if barsProcessed%10 == 0 || sh.Len() == 0 {
 			pct := 0.0
 			if totalBars > 0 {
 				pct = math.Round(float64(barsProcessed)/float64(totalBars)*1000) / 10
@@ -1234,6 +1212,29 @@ func symbolStrings(syms []domain.Symbol) []string {
 	}
 	return out
 }
+
+type barStream struct {
+	symbol domain.Symbol
+	bars   []domain.MarketBar
+	idx    int
+}
+
+// streamHeap implements heap.Interface for merging barStreams by timestamp.
+// Secondary sort by symbol preserves deterministic ordering within a time-group.
+type streamHeap []*barStream
+
+func (h streamHeap) Len() int { return len(h) }
+func (h streamHeap) Less(i, j int) bool {
+	ti := h[i].bars[h[i].idx].Time
+	tj := h[j].bars[h[j].idx].Time
+	if ti.Equal(tj) {
+		return h[i].symbol < h[j].symbol
+	}
+	return ti.Before(tj)
+}
+func (h streamHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *streamHeap) Push(x any)         { *h = append(*h, x.(*barStream)) }
+func (h *streamHeap) Pop() any           { old := *h; n := len(old); x := old[n-1]; old[n-1] = nil; *h = old[:n-1]; return x }
 
 // isRTHGap delegates to the shared backfill.IsRTHGap implementation.
 // Kept as a package-private wrapper so existing internal tests continue to work.
