@@ -952,7 +952,7 @@ function MiniChart({
     // Non-RTH shading — subtle background on pre-market, after-hours, weekends, holidays
     if (rthOverlayRef.current) {
       const allPoints = allTimes.map((t) => ({ time: t }));
-      const regions = computeNonRTHRegions(allPoints);
+      const regions = computeNonRTHRegions(allPoints, whitespaceTimes);
       rthOverlayRef.current.setRegions(regions);
     }
 
