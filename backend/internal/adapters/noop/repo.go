@@ -18,6 +18,10 @@ var _ ports.RepositoryPort = (*NoopRepo)(nil)
 
 func (n *NoopRepo) SaveMarketBar(_ context.Context, _ domain.MarketBar) error { return nil }
 
+func (n *NoopRepo) SaveMarketBars(_ context.Context, _ []domain.MarketBar) (int, error) {
+	return 0, nil
+}
+
 func (n *NoopRepo) GetMarketBars(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _, _ time.Time) ([]domain.MarketBar, error) {
 	return nil, nil
 }

@@ -48,6 +48,7 @@ func (stubBroker) GetAccountEquity(context.Context) (float64, error) { return 10
 type stubRepo struct{}
 
 func (stubRepo) SaveMarketBar(context.Context, domain.MarketBar) error { return nil }
+func (stubRepo) SaveMarketBars(context.Context, []domain.MarketBar) (int, error) { return 0, nil }
 func (stubRepo) GetMarketBars(context.Context, domain.Symbol, domain.Timeframe, time.Time, time.Time) ([]domain.MarketBar, error) {
 	return nil, nil
 }
