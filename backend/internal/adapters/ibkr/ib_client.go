@@ -14,6 +14,7 @@ type ibClient interface {
 	Trades() []*ibsync.Trade
 	Positions(account ...string) []ibsync.Position
 	ReqPositions()
+	CancelPositions()
 	ReqAccountSummary(groupName string, tags string) (ibsync.AccountSummary, error)
 	AccountSummary(account ...string) ibsync.AccountSummary
 	Snapshot(contract *ibsync.Contract, regulatorySnapshot ...bool) (*ibsync.Ticker, error)

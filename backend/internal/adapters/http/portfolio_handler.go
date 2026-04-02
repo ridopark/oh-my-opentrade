@@ -110,8 +110,6 @@ func (h *PortfolioHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *PortfolioHandler) handleGetPositions(w http.ResponseWriter, r *http.Request) {
-	// Force IBKR to refresh its cached position list before reading
-	h.broker.RefreshPositions()
 	positions, err := h.broker.GetPositions(r.Context(), h.tenantID, h.envMode)
 	if err != nil {
 		h.log.Error().Err(err).Msg("failed to get positions")
