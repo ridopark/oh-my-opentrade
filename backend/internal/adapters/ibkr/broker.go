@@ -201,10 +201,11 @@ func (a *Adapter) GetPositions(_ context.Context, tenantID string, envMode domai
 
 	// Force-refresh from IBKR before reading. The cached Positions() list
 	// doesn't auto-update on paper accounts when orders fill.
-	// ReqPositions is async — the response arrives via callbacks.
-	// Sleep briefly to let the callbacks update the internal state.
+	// Cancel + re-subscribe forces IBKR to send the full position list.
+	// Sleep 2s to let the async callbacks update the internal state.
+	ib.CancelPositions()
 	ib.ReqPositions()
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(2 * time.Second)
 	positions := ib.Positions()
 	a.log.Info().Int("raw_count", len(positions)).Str("account_filter", a.cfg.AccountID).Msg("ibkr: GetPositions called")
 	trades := make([]domain.Trade, 0, len(positions))
