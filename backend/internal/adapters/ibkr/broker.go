@@ -6,6 +6,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -383,49 +384,53 @@ func (a *Adapter) RefreshPositions() {
 	ib.ReqPositions()
 }
 
-// GetFreshPositions returns a live position snapshot from IBKR, bypassing
-// ibsync's stale Positions() cache. Uses PositionChan to collect only
-// positions IBKR actually reports in real-time. Slower (2s) but accurate.
-func (a *Adapter) GetFreshPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
+// startPositionTracker subscribes to PositionChan and maintains a live
+// position map that's always current. No sleep or polling needed.
+func (a *Adapter) startPositionTracker() {
 	ib := a.conn.IB()
 	if ib == nil {
-		return nil, fmt.Errorf("ibkr: not connected")
+		close(a.posReady)
+		return
 	}
 
 	ch := ib.PositionChan()
 	ib.ReqPositions()
 
-	// Collect all positions IBKR sends in the next 2 seconds.
-	fresh := make(map[int64]ibsync.Position) // keyed by ConID to dedup
-	timeout := time.After(2 * time.Second)
-loop:
-	for {
-		select {
-		case p, ok := <-ch:
-			if !ok {
-				break loop
-			}
-			if a.cfg.AccountID != "" && p.Account != a.cfg.AccountID {
-				continue
-			}
+	go func() {
+		var ready sync.Once
+		// Wait briefly for the initial batch, then mark ready.
+		go func() {
+			time.Sleep(3 * time.Second)
+			ready.Do(func() { close(a.posReady) })
+		}()
+
+		for p := range ch {
+			a.posMu.Lock()
 			if p.Position.Float() == 0 {
-				delete(fresh, p.Contract.ConID)
+				delete(a.livePos, p.Contract.ConID)
 			} else {
-				fresh[p.Contract.ConID] = p
+				a.livePos[p.Contract.ConID] = p
 			}
-		case <-timeout:
-			break loop
+			a.posMu.Unlock()
 		}
-	}
+	}()
+}
 
-	a.log.Info().Int("fresh_count", len(fresh)).Msg("ibkr: GetFreshPositions completed")
+// GetFreshPositions returns live positions from the always-updated position
+// tracker. Instant read — no IBKR round-trip needed.
+func (a *Adapter) GetFreshPositions(_ context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
+	// Wait for initial snapshot on first call (blocks max 3s at startup only).
+	<-a.posReady
 
-	trades := make([]domain.Trade, 0, len(fresh))
-	for _, p := range fresh {
-		qty := p.Position.Float()
-		if qty == 0 {
+	a.posMu.RLock()
+	defer a.posMu.RUnlock()
+
+	trades := make([]domain.Trade, 0, len(a.livePos))
+	for _, p := range a.livePos {
+		if a.cfg.AccountID != "" && p.Account != a.cfg.AccountID {
 			continue
 		}
+		qty := p.Position.Float()
 		side := "BUY"
 		if qty < 0 {
 			side = "SELL"
