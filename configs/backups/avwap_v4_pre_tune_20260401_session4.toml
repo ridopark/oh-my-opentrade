@@ -79,7 +79,7 @@ handoff_min_mom_bps = 40
 
 # --- Volume & Regime ---
 # Minimum volume multiple vs 20-bar SMA to confirm entries
-volume_mult = 2.0
+volume_mult = 2.25
 
 # Allowed EMA regimes (TREND matches both TREND_UP and TREND_DOWN)
 allow_regimes = ["TREND", "BALANCE", "REVERSAL"]

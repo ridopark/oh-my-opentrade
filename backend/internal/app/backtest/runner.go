@@ -893,10 +893,9 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	r.emitter.EmitSetup("Replaying bars…")
 
-	// Reduce GC pressure during the replay hot loop. The backtest allocates
-	// millions of transient objects; raising GOGC defers collection cycles
-	// and can cut wall-clock time by 10-25%. Restore the original value when done.
-	prevGOGC := debug.SetGCPercent(400)
+	// Reduce GC frequency during the replay hot loop without bloating the heap.
+	// GOGC=150 is conservative enough for a 16GB machine running other services.
+	prevGOGC := debug.SetGCPercent(150)
 	defer debug.SetGCPercent(prevGOGC)
 
 	// Freeze the handler map so PublishDirect can bypass locking.
