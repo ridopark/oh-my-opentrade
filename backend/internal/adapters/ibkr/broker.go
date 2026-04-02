@@ -199,11 +199,7 @@ func (a *Adapter) GetPositions(_ context.Context, tenantID string, envMode domai
 		return nil, fmt.Errorf("ibkr: not connected")
 	}
 
-	// Collect a fresh position snapshot by subscribing to the position
-	// channel, requesting positions, and reading until PositionEnd.
-	// This avoids stale cache entries from ibsync's Positions() map
-	// which doesn't remove closed positions reliably.
-	positions := a.freshPositions(ib)
+	positions := ib.Positions()
 	a.log.Info().Int("raw_count", len(positions)).Str("account_filter", a.cfg.AccountID).Msg("ibkr: GetPositions called")
 	trades := make([]domain.Trade, 0, len(positions))
 	for _, p := range positions {
@@ -387,29 +383,85 @@ func (a *Adapter) RefreshPositions() {
 	ib.ReqPositions()
 }
 
-// freshPositions collects a live position snapshot by subscribing to the
-// position channel, requesting a refresh, and reading for up to 2 seconds.
-// This bypasses ibsync's stale Positions() cache which retains closed
-// positions that never received a zero-qty callback.
-func (a *Adapter) freshPositions(ib ibClient) []ibsync.Position {
+// GetFreshPositions returns a live position snapshot from IBKR, bypassing
+// ibsync's stale Positions() cache. Uses PositionChan to collect only
+// positions IBKR actually reports in real-time. Slower (2s) but accurate.
+func (a *Adapter) GetFreshPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
+	ib := a.conn.IB()
+	if ib == nil {
+		return nil, fmt.Errorf("ibkr: not connected")
+	}
+
 	ch := ib.PositionChan()
 	ib.ReqPositions()
 
-	var positions []ibsync.Position
+	// Collect all positions IBKR sends in the next 2 seconds.
+	fresh := make(map[int64]ibsync.Position) // keyed by ConID to dedup
 	timeout := time.After(2 * time.Second)
+loop:
 	for {
 		select {
 		case p, ok := <-ch:
 			if !ok {
-				return positions
+				break loop
 			}
-			if p.Position.Float() != 0 {
-				positions = append(positions, p)
+			if a.cfg.AccountID != "" && p.Account != a.cfg.AccountID {
+				continue
+			}
+			if p.Position.Float() == 0 {
+				delete(fresh, p.Contract.ConID)
+			} else {
+				fresh[p.Contract.ConID] = p
 			}
 		case <-timeout:
-			return positions
+			break loop
 		}
 	}
+
+	a.log.Info().Int("fresh_count", len(fresh)).Msg("ibkr: GetFreshPositions completed")
+
+	trades := make([]domain.Trade, 0, len(fresh))
+	for _, p := range fresh {
+		qty := p.Position.Float()
+		if qty == 0 {
+			continue
+		}
+		side := "BUY"
+		if qty < 0 {
+			side = "SELL"
+			qty = -qty
+		}
+		t := domain.Trade{
+			Time:     time.Now(),
+			TenantID: tenantID,
+			EnvMode:  envMode,
+			Symbol:   domain.Symbol(p.Contract.Symbol),
+			Side:     side,
+			Quantity: qty,
+			Price:    p.AvgCost,
+			Status:   "FILLED",
+			Strategy: "unknown",
+		}
+		if p.Contract.SecType == "OPT" {
+			t.InstrumentType = domain.InstrumentTypeOption
+			t.Underlying = p.Contract.Symbol
+			t.Strike = p.Contract.Strike
+			t.OptionRight = strings.ToUpper(p.Contract.Right)
+			if expiry, err := time.Parse("20060102", p.Contract.LastTradeDateOrContractMonth); err == nil {
+				t.Expiry = expiry
+				right := domain.OptionRightCall
+				if strings.EqualFold(p.Contract.Right, "P") {
+					right = domain.OptionRightPut
+				}
+				occ := domain.FormatOCCSymbol(p.Contract.Symbol, expiry, right, p.Contract.Strike)
+				t.Symbol = domain.Symbol(occ)
+				t.OptionSymbol = occ
+			}
+			t.Price = p.AvgCost
+		}
+		trades = append(trades, t)
+	}
+	return trades, nil
 }
 
 func directionToAction(d domain.Direction) string {

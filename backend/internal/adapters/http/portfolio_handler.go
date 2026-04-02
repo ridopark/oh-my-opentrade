@@ -16,6 +16,7 @@ import (
 // PortfolioBroker is the subset of broker capabilities needed by the portfolio handler.
 type PortfolioBroker interface {
 	GetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error)
+	GetFreshPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error)
 	ClosePosition(ctx context.Context, symbol domain.Symbol) (string, error)
 	GetPosition(ctx context.Context, symbol domain.Symbol) (float64, error)
 	CancelOpenOrders(ctx context.Context, symbol domain.Symbol, side string) (int, error)
@@ -110,7 +111,7 @@ func (h *PortfolioHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *PortfolioHandler) handleGetPositions(w http.ResponseWriter, r *http.Request) {
-	positions, err := h.broker.GetPositions(r.Context(), h.tenantID, h.envMode)
+	positions, err := h.broker.GetFreshPositions(r.Context(), h.tenantID, h.envMode)
 	if err != nil {
 		h.log.Error().Err(err).Msg("failed to get positions")
 		jsonErr(w, "failed to get positions: "+err.Error(), http.StatusInternalServerError)
