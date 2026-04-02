@@ -1368,11 +1368,16 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 			s.cleanupPendingOrder(brokerOrderID)
 		}
 
-		// Options limit orders sit on the book all day — Alpaca auto-cancels them at 3:55 PM.
-		// Use a much longer stale timeout so we don't prematurely cancel them.
+		// Stale order timeout. Equity: 2 min. Options: configurable via meta
+		// (default 60s for day trading — don't let unfilled orders sit).
 		staleTimeout := 2 * time.Minute
 		if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {
-			staleTimeout = 4 * time.Hour
+			staleTimeout = 60 * time.Second
+			if v, ok := po.intent.Meta["stale_cancel_secs"]; ok {
+				if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+					staleTimeout = time.Duration(secs) * time.Second
+				}
+			}
 		}
 		if time.Since(po.submitStart) > staleTimeout {
 			if details.Status == "filled" || details.Status == "canceled" || details.Status == "expired" || details.Status == "rejected" {

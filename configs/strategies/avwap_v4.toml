@@ -172,7 +172,7 @@ type = "SWING_STOP"
 lookback = 20
 buffer_bps = 25
 atr_buffer_mult = 3.0
-min_bars = 20
+min_bars = 15
 
 # Stagnation exit: close trades that go nowhere after N minutes
 [[exit_rules]]
@@ -201,6 +201,13 @@ enabled = true
 
 # Cap contract count to limit spread drag on cheap options
 max_contracts = 5
+
+# Limit price = mid + 50% of spread (moderate for AVWAP swing entries)
+limit_spread_pct = 0.50
+# Fallback when spread is zero: ask + 2%
+limit_buffer_bps = 200
+# Cancel unfilled option orders after 90 seconds
+stale_cancel_secs = 90
 
 [options.defaults]
 min_dte = 7

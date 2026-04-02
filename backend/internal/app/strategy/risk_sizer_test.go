@@ -475,7 +475,7 @@ func TestRiskSizer_HandleSignal_SpecNotFound(t *testing.T) {
 
 	evs := waitForEvents(t, received, 1)
 	intent := evs[0].Payload.(domain.OrderIntent)
-	assert.InDelta(t, 100*(1+0.0005), intent.LimitPrice, 0.0000001)
+	assert.InDelta(t, 100*(1+0.001), intent.LimitPrice, 0.0000001) // default limitOffsetBPS=10
 	assert.InDelta(t, 100*(1-0.0025), intent.StopLoss, 0.0000001)
 }
 
