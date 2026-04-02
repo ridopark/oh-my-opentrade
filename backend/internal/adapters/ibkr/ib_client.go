@@ -13,6 +13,7 @@ type ibClient interface {
 	OpenTrades() []*ibsync.Trade
 	Trades() []*ibsync.Trade
 	Positions(account ...string) []ibsync.Position
+	PositionChan(account ...string) chan ibsync.Position
 	ReqPositions()
 	CancelPositions()
 	ReqAccountSummary(groupName string, tags string) (ibsync.AccountSummary, error)

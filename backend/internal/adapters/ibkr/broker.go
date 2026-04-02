@@ -199,14 +199,11 @@ func (a *Adapter) GetPositions(_ context.Context, tenantID string, envMode domai
 		return nil, fmt.Errorf("ibkr: not connected")
 	}
 
-	// Force-refresh from IBKR before reading. The cached Positions() list
-	// doesn't auto-update on paper accounts when orders fill.
-	// Cancel + re-subscribe forces IBKR to send the full position list.
-	// Sleep 2s to let the async callbacks update the internal state.
-	ib.CancelPositions()
-	ib.ReqPositions()
-	time.Sleep(2 * time.Second)
-	positions := ib.Positions()
+	// Collect a fresh position snapshot by subscribing to the position
+	// channel, requesting positions, and reading until PositionEnd.
+	// This avoids stale cache entries from ibsync's Positions() map
+	// which doesn't remove closed positions reliably.
+	positions := a.freshPositions(ib)
 	a.log.Info().Int("raw_count", len(positions)).Str("account_filter", a.cfg.AccountID).Msg("ibkr: GetPositions called")
 	trades := make([]domain.Trade, 0, len(positions))
 	for _, p := range positions {
@@ -388,6 +385,31 @@ func (a *Adapter) RefreshPositions() {
 		return
 	}
 	ib.ReqPositions()
+}
+
+// freshPositions collects a live position snapshot by subscribing to the
+// position channel, requesting a refresh, and reading for up to 2 seconds.
+// This bypasses ibsync's stale Positions() cache which retains closed
+// positions that never received a zero-qty callback.
+func (a *Adapter) freshPositions(ib ibClient) []ibsync.Position {
+	ch := ib.PositionChan()
+	ib.ReqPositions()
+
+	var positions []ibsync.Position
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case p, ok := <-ch:
+			if !ok {
+				return positions
+			}
+			if p.Position.Float() != 0 {
+				positions = append(positions, p)
+			}
+		case <-timeout:
+			return positions
+		}
+	}
 }
 
 func directionToAction(d domain.Direction) string {
