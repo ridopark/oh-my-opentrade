@@ -83,21 +83,31 @@ func (a *Adapter) pollOrderUpdates(ctx context.Context, out chan<- ports.OrderUp
 // execReconciler periodically calls ReqFills to catch fills that the
 // Trades() polling loop missed (known IBKR paper trading issue).
 func (a *Adapter) execReconciler(ctx context.Context, out chan<- ports.OrderUpdate) {
-	ib := a.conn.IB()
-	if ib == nil {
-		return
-	}
-
 	seenExecIDs := make(map[string]struct{})
 
 	// Seed with existing fills so we don't re-emit old ones.
-	if fills, err := ib.ReqFills(); err == nil {
-		for _, f := range fills {
-			if f.Execution != nil {
-				seenExecIDs[f.Execution.ExecID] = struct{}{}
+	// Use a short delay to let the connection stabilize after startup.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(5 * time.Second):
+	}
+
+	ib := a.conn.IB()
+	if ib != nil {
+		fills, err := ib.ReqFills()
+		if err != nil {
+			a.log.Warn().Err(err).Msg("exec reconciler: seed ReqFills failed, starting with empty set")
+		} else {
+			for _, f := range fills {
+				if f.Execution != nil {
+					seenExecIDs[f.Execution.ExecID] = struct{}{}
+				}
 			}
+			a.log.Info().Int("seeded", len(seenExecIDs)).Msg("exec reconciler: seeded existing fills")
 		}
-		a.log.Info().Int("seeded", len(seenExecIDs)).Msg("exec reconciler: seeded existing fills")
+	} else {
+		a.log.Warn().Msg("exec reconciler: IB not connected at seed time")
 	}
 
 	ticker := time.NewTicker(execReconcileInterval)
