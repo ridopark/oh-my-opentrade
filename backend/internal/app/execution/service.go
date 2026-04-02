@@ -1369,10 +1369,10 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 		}
 
 		// Stale order timeout. Equity: 2 min. Options: configurable via meta
-		// (default 60s for day trading — don't let unfilled orders sit).
+		// (default 120s — IBKR paper trading is slow on option limit fills).
 		staleTimeout := 2 * time.Minute
 		if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {
-			staleTimeout = 60 * time.Second
+			staleTimeout = 120 * time.Second
 			if v, ok := po.intent.Meta["stale_cancel_secs"]; ok {
 				if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
 					staleTimeout = time.Duration(secs) * time.Second

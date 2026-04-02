@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/ports"
@@ -11,6 +12,7 @@ import (
 )
 
 const orderPollInterval = 200 * time.Millisecond
+const execReconcileInterval = 10 * time.Second
 
 func (a *Adapter) SubscribeOrderUpdates(ctx context.Context) (<-chan ports.OrderUpdate, error) {
 	ib := a.conn.IB()
@@ -19,13 +21,17 @@ func (a *Adapter) SubscribeOrderUpdates(ctx context.Context) (<-chan ports.Order
 	}
 
 	out := make(chan ports.OrderUpdate, 64)
-	go a.pollOrderUpdates(ctx, out)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); a.pollOrderUpdates(ctx, out) }()
+	go func() { defer wg.Done(); a.execReconciler(ctx, out) }()
+	go func() { wg.Wait(); close(out) }()
+
 	return out, nil
 }
 
 func (a *Adapter) pollOrderUpdates(ctx context.Context, out chan<- ports.OrderUpdate) {
-	defer close(out)
-
 	type tradeState struct {
 		status ibsync.Status
 		filled float64
@@ -71,6 +77,86 @@ func (a *Adapter) pollOrderUpdates(ctx context.Context, out chan<- ports.OrderUp
 				}
 			}
 		}
+	}
+}
+
+// execReconciler periodically calls ReqFills to catch fills that the
+// Trades() polling loop missed (known IBKR paper trading issue).
+func (a *Adapter) execReconciler(ctx context.Context, out chan<- ports.OrderUpdate) {
+	ib := a.conn.IB()
+	if ib == nil {
+		return
+	}
+
+	seenExecIDs := make(map[string]struct{})
+
+	// Seed with existing fills so we don't re-emit old ones.
+	if fills, err := ib.ReqFills(); err == nil {
+		for _, f := range fills {
+			if f.Execution != nil {
+				seenExecIDs[f.Execution.ExecID] = struct{}{}
+			}
+		}
+		a.log.Info().Int("seeded", len(seenExecIDs)).Msg("exec reconciler: seeded existing fills")
+	}
+
+	ticker := time.NewTicker(execReconcileInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			ib := a.conn.IB()
+			if ib == nil {
+				continue
+			}
+			fills, err := ib.ReqFills()
+			if err != nil {
+				a.log.Warn().Err(err).Msg("exec reconciler: ReqFills failed")
+				continue
+			}
+			for _, f := range fills {
+				if f.Execution == nil {
+					continue
+				}
+				execID := f.Execution.ExecID
+				if _, seen := seenExecIDs[execID]; seen {
+					continue
+				}
+				seenExecIDs[execID] = struct{}{}
+
+				update := fillToOrderUpdate(f)
+				a.log.Info().
+					Str("exec_id", execID).
+					Str("broker_order_id", update.BrokerOrderID).
+					Str("event", update.Event).
+					Float64("qty", update.Qty).
+					Float64("price", update.Price).
+					Msg("exec reconciler: detected missed fill")
+
+				select {
+				case out <- update:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}
+}
+
+func fillToOrderUpdate(f ibsync.Fill) ports.OrderUpdate {
+	exec := f.Execution
+	return ports.OrderUpdate{
+		BrokerOrderID:  strconv.FormatInt(exec.OrderID, 10),
+		ExecutionID:    exec.ExecID,
+		Event:          "fill",
+		Qty:            exec.Shares.Float(),
+		Price:          exec.Price,
+		FilledQty:      exec.CumQty.Float(),
+		FilledAvgPrice: exec.AvgPrice,
+		FilledAt:       f.Time,
 	}
 }
 

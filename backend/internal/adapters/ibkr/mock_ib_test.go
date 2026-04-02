@@ -88,6 +88,11 @@ func (m *mockIB) ReqHistoricalData(_ *ibsync.Contract, _, _, _, _ string, _ bool
 	close(ch)
 	return ch, func() {}
 }
+func (m *mockIB) ReqFills(_ ...*ibsync.ExecutionFilter) ([]ibsync.Fill, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return nil, nil
+}
 
 // makeTrade creates a *ibsync.Trade with given orderID and status for tests.
 func makeTrade(orderID int64, status ibsync.Status, filled float64) *ibsync.Trade {
