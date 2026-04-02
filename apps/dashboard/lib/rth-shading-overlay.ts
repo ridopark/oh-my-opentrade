@@ -122,8 +122,29 @@ export class RTHShadingOverlay implements ISeriesPrimitive<Time> {
 }
 
 /**
+ * Parse a Unix timestamp into ET components.
+ */
+function parseET(unix: number): { dayOfWeek: number; minsFromMidnight: number; dateStr: string } {
+  const d = new Date(unix * 1000);
+  const etStr = d.toLocaleString("en-US", { timeZone: "America/New_York", hour12: false });
+  const etParts = etStr.split(", ");
+  const timeParts = (etParts[1] ?? "0:0").split(":");
+  const etHour = parseInt(timeParts[0]);
+  const etMin = parseInt(timeParts[1]);
+  // Get day of week in ET
+  const dayStr = d.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short" });
+  const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return {
+    dayOfWeek: dayMap[dayStr] ?? 0,
+    minsFromMidnight: etHour * 60 + etMin,
+    dateStr: etParts[0],
+  };
+}
+
+/**
  * Compute non-RTH regions from bar data.
  * Groups consecutive non-RTH bars into contiguous shaded regions.
+ * Also inserts shading for weekend gaps (Saturday + Sunday) between bars.
  * RTH = 9:30 AM - 4:00 PM ET (weekdays).
  */
 export function computeNonRTHRegions(bars: { time: number }[]): NonRTHRegion[] {
@@ -133,17 +154,38 @@ export function computeNonRTHRegions(bars: { time: number }[]): NonRTHRegion[] {
   let regionStart: number | null = null;
   let regionEnd: number | null = null;
 
-  for (const bar of bars) {
-    const d = new Date(bar.time * 1000);
-    const etStr = d.toLocaleString("en-US", { timeZone: "America/New_York", hour12: false });
-    const etParts = etStr.split(", ");
-    const timeParts = (etParts[1] ?? "0:0").split(":");
-    const etHour = parseInt(timeParts[0]);
-    const etMin = parseInt(timeParts[1]);
-    const minsFromMidnight = etHour * 60 + etMin;
+  const flushRegion = () => {
+    if (regionStart !== null && regionEnd !== null) {
+      regions.push({ startTime: regionStart, endTime: regionEnd });
+      regionStart = null;
+      regionEnd = null;
+    }
+  };
 
-    // RTH: 9:30 (570 min) to 16:00 (960 min)
-    const isRTH = minsFromMidnight >= 570 && minsFromMidnight < 960;
+  for (let i = 0; i < bars.length; i++) {
+    const bar = bars[i];
+    const et = parseET(bar.time);
+    const isWeekend = et.dayOfWeek === 0 || et.dayOfWeek === 6;
+    const isRTH = !isWeekend && et.minsFromMidnight >= 570 && et.minsFromMidnight < 960;
+
+    // Detect weekend gaps between consecutive bars (no bars exist on weekends).
+    // If previous bar was Friday (or earlier) and this bar is Monday (or later),
+    // insert a shaded region spanning the weekend gap.
+    if (i > 0) {
+      const gap = bar.time - bars[i - 1].time;
+      // Gap > 24h suggests an overnight + weekend gap
+      if (gap > 86400) {
+        const prevET = parseET(bars[i - 1].time);
+        // Friday (5) -> Monday (1) or longer gap crossing a weekend
+        if (prevET.dayOfWeek >= 1 && prevET.dayOfWeek <= 5 && et.dayOfWeek >= 1 && et.dayOfWeek <= 5 && prevET.dayOfWeek >= et.dayOfWeek) {
+          // Weekend crossed — flush any in-progress region, then add weekend band
+          flushRegion();
+          // Weekend region: from previous bar's time to current bar's time
+          // (the entire gap is non-trading, shade it all)
+          regions.push({ startTime: bars[i - 1].time, endTime: bar.time });
+        }
+      }
+    }
 
     if (!isRTH) {
       if (regionStart === null) {
@@ -151,18 +193,12 @@ export function computeNonRTHRegions(bars: { time: number }[]): NonRTHRegion[] {
       }
       regionEnd = bar.time;
     } else {
-      if (regionStart !== null && regionEnd !== null) {
-        regions.push({ startTime: regionStart, endTime: regionEnd });
-        regionStart = null;
-        regionEnd = null;
-      }
+      flushRegion();
     }
   }
 
   // Close final region
-  if (regionStart !== null && regionEnd !== null) {
-    regions.push({ startTime: regionStart, endTime: regionEnd });
-  }
+  flushRegion();
 
   return regions;
 }
