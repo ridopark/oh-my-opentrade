@@ -899,6 +899,11 @@ func (rs *RiskSizer) handleOptionsSignal(
 	}
 
 	intent.AssetClass = domain.AssetClassEquity
+	// IBKR paper trading rarely fills option limit orders. Use market orders
+	// on paper to ensure fill reliability for testing.
+	if event.EnvMode == domain.EnvModePaper {
+		intent.OrderType = "market"
+	}
 	intent.Meta = map[string]string{
 		"instrument_type":    "OPTION",
 		"option_right":       string(optRight),
