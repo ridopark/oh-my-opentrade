@@ -38,6 +38,11 @@ type Adapter struct {
 	streaming map[domain.Symbol]struct{}
 
 	acctCache accountSummaryCache
+
+	// Live position tracking — updated by PositionChan callbacks.
+	posMu    sync.RWMutex
+	livePos  map[int64]ibsync.Position // keyed by ConID
+	posReady chan struct{}             // closed after first full snapshot
 }
 
 func NewAdapter(cfg config.IBKRConfig, log zerolog.Logger) (*Adapter, error) {
@@ -50,12 +55,15 @@ func NewAdapter(cfg config.IBKRConfig, log zerolog.Logger) (*Adapter, error) {
 		cfg:       cfg,
 		log:       log,
 		streaming: make(map[domain.Symbol]struct{}),
+		livePos:   make(map[int64]ibsync.Position),
+		posReady:  make(chan struct{}),
 	}
 	conn.OnReconnect(func() {
 		a.acctCache.mu.Lock()
 		a.acctCache.fetchedAt = time.Time{}
 		a.acctCache.mu.Unlock()
 	})
+	a.startPositionTracker()
 	return a, nil
 }
 
@@ -68,10 +76,14 @@ func (a *Adapter) IsConnected() bool {
 func NewAdapterWithClient(client ibClient, log zerolog.Logger) *Adapter {
 	_, cancel := context.WithCancel(context.Background())
 	conn := &connection{ib: client, log: log, cancel: cancel}
+	ready := make(chan struct{})
+	close(ready)
 	return &Adapter{
 		conn:      conn,
 		log:       log,
 		streaming: make(map[domain.Symbol]struct{}),
+		livePos:   make(map[int64]ibsync.Position),
+		posReady:  ready,
 	}
 }
 
@@ -80,10 +92,14 @@ func NewAdapterWithClient(client ibClient, log zerolog.Logger) *Adapter {
 func NewAdapterWithClientAndCfg(client ibClient, cfg config.IBKRConfig, log zerolog.Logger) *Adapter {
 	_, cancel := context.WithCancel(context.Background())
 	conn := &connection{ib: client, log: log, cancel: cancel}
+	ready := make(chan struct{})
+	close(ready)
 	return &Adapter{
 		conn:      conn,
 		cfg:       cfg,
 		log:       log,
 		streaming: make(map[domain.Symbol]struct{}),
+		livePos:   make(map[int64]ibsync.Position),
+		posReady:  ready,
 	}
 }
