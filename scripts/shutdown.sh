@@ -12,6 +12,19 @@ NC='\033[0m'
 info()  { echo -e "${GREEN}[shutdown]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[shutdown]${NC} $*"; }
 
+# ── Stop Docker omo-core (should not run locally) ───────────
+if docker ps -q -f name=omo-core 2>/dev/null | grep -q .; then
+  docker stop omo-core >/dev/null 2>&1 || true
+  info "stopped Docker omo-core container"
+fi
+
+# ── Kill anything on port 8080 ──────────────────────────────
+if pid=$(fuser 8080/tcp 2>/dev/null); then
+  kill "$pid" 2>/dev/null && sleep 1
+  kill -9 "$pid" 2>/dev/null || true
+  info "killed stale process on port 8080 (pid $pid)"
+fi
+
 # ── Stop omo-core ────────────────────────────────────────────
 if tmux has-session -t "$OMO_SESSION" 2>/dev/null; then
   tmux send-keys -t "$OMO_SESSION" C-c
