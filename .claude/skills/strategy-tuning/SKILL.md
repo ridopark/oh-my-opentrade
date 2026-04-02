@@ -170,7 +170,7 @@ curl -s -X POST http://localhost:8080/backtest/run \
 - `max_positions`: caps simultaneous open positions (default 6, prevents over-exposure)
 - `max_per_group`: caps positions per sector group (default 2, prevents sector concentration)
 
-### Poll (every 15s, timeout 10min)
+### Poll (every 60s, timeout 10min)
 ```bash
 curl -s http://localhost:8080/backtest/{id}/status
 # Returns: {"status": "running|completed|failed", "progress": {"pct": 50}}

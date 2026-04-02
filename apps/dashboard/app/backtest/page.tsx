@@ -1,26 +1,18 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useMemo, useCallback, useImperativeHandle, forwardRef } from "react";
+import React, { useState, useRef, useEffect, useMemo, useImperativeHandle, forwardRef } from "react";
 import {
   createChart,
   ColorType,
   AreaSeries,
-  CandlestickSeries,
-  HistogramSeries,
-  LineSeries,
   CrosshairMode,
   type IChartApi,
   type ISeriesApi,
   type Time,
 } from "lightweight-charts";
-import { SignalMarkerOverlay, type SignalMarkerData } from "@/lib/signal-markers";
-import { ORBBoxOverlay, computeORBRanges } from "@/lib/orb-box-overlay";
-import { RTHShadingOverlay, computeNonRTHRegions, parseTimeframeSec } from "@/lib/rth-shading-overlay";
-import { SessionBreakOverlay, detectSessionBreaks } from "@/lib/session-break-overlay";
 import {
   useBacktest,
   type BacktestConfig,
-  type BacktestBar,
   type BacktestTrade,
   type BacktestMetrics,
   type BacktestProgress,
@@ -60,11 +52,6 @@ function parseConfluence(rationale?: string): { score: number; detail: string } 
   return { score: parseInt(m[1], 10), detail: m[2] };
 }
 
-/** Format a UTC unix timestamp as ET string using Intl. */
-function formatET(utcSeconds: number, opts: Intl.DateTimeFormatOptions): string {
-  return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour12: false, ...opts }).format(new Date(utcSeconds * 1000));
-}
-
 const SPEED_OPTIONS = ["1x", "2x", "5x", "10x", "max"] as const;
 const TIMEFRAMES = ["1m", "5m", "15m", "1h"] as const;
 
@@ -78,16 +65,8 @@ function formatPct(v: number) {
 
 export default function BacktestPage() {
   const bt = useBacktest();
-  const chartGridRef = useRef<ChartGridHandle>(null);
-  const tradeLogRef = useRef<TradeLogHandle>(null);
   const [availableSymbols, setAvailableSymbols] = useState<string[]>([]);
   const [availableStrategies, setAvailableStrategies] = useState<{ id: string; name: string; state: string }[]>([]);
-  const [orbWindowMinutes, setOrbWindowMinutes] = useState(30);
-
-  const handleScrollToTime = useCallback((symbol: string, isoTime: string) => {
-    const utcSeconds = Math.floor(new Date(isoTime).getTime() / 1000);
-    chartGridRef.current?.scrollToTime(symbol, utcSeconds);
-  }, []);
 
   useEffect(() => {
     fetch("/api/symbols")
@@ -97,10 +76,6 @@ export default function BacktestPage() {
     fetch("/api/backtest/strategies")
       .then((r) => r.json())
       .then((data) => { if (Array.isArray(data)) setAvailableStrategies(data); })
-      .catch(() => {});
-    fetch("/api/strategies/config/orb_break_retest/config")
-      .then((r) => r.ok ? r.json() : null)
-      .then((data) => { if (data?.params?.orb_window_minutes) setOrbWindowMinutes(data.params.orb_window_minutes); })
       .catch(() => {});
   }, []);
 
@@ -146,8 +121,6 @@ export default function BacktestPage() {
     }
   }, [config, hydrated]);
 
-  const symbolsInData = useMemo(() => Array.from(bt.bars.keys()).sort(), [bt.bars]);
-
   const handleRun = async () => {
     await bt.run(config);
   };
@@ -158,8 +131,7 @@ export default function BacktestPage() {
 
   const isRunning = bt.status === "running" || bt.status === "paused";
 
-  const [bottomTab, setBottomTab] = useState<"trades" | "results" | "equity">("trades");
-  const [showLabels, setShowLabels] = useState(true);
+  const [bottomTab, setBottomTab] = useState<"trades" | "results">("trades");
 
   return (
     <div className="flex flex-col min-h-[calc(100vh-3rem)]">
@@ -179,16 +151,13 @@ export default function BacktestPage() {
         onCancel={bt.cancel}
       />
 
-      <div className={`mt-2 ${symbolsInData.length === 0 ? "flex-1 flex flex-col" : ""}`}>
-        <ChartGrid ref={chartGridRef} symbols={symbolsInData} bars={bt.bars} trades={bt.trades} orbWindowMinutes={orbWindowMinutes} showLabels={showLabels} timeframe={config.timeframe} onToggleLabels={() => setShowLabels((v) => !v)} onTradeClick={(trade) => {
-          setBottomTab("trades");
-          setTimeout(() => tradeLogRef.current?.scrollToTrade(trade), 50);
-        }} />
+      <div className="mt-2 flex-1 min-h-0 flex flex-col rounded-lg border border-border bg-card overflow-hidden">
+        <EquityCurveMain data={bt.equityCurve} />
       </div>
 
       <div className="h-[350px] mt-1 rounded-t-lg border border-border bg-card flex flex-col">
         <div className="flex items-center gap-0 border-b border-border shrink-0">
-          {(["trades", "results", "equity"] as const).map((tab) => (
+          {(["trades", "results"] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setBottomTab(tab)}
@@ -198,7 +167,7 @@ export default function BacktestPage() {
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              {tab === "trades" ? `Positions (${Math.floor(bt.trades.length / 2)})` : tab === "results" ? "Results" : "Equity Curve"}
+              {tab === "trades" ? `Positions (${Math.floor(bt.trades.length / 2)})` : "Results"}
               {bottomTab === tab && (
                 <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />
               )}
@@ -217,9 +186,8 @@ export default function BacktestPage() {
         </div>
 
         <div className="flex-1 min-h-0 overflow-hidden">
-          {bottomTab === "trades" && <TradeLogInline ref={tradeLogRef} trades={bt.trades} onScrollToTime={handleScrollToTime} />}
+          {bottomTab === "trades" && <TradeLogInline trades={bt.trades} />}
           {bottomTab === "results" && <MetricsPanelInline metrics={bt.metrics} result={bt.result} initialEquity={config.initialEquity} />}
-          {bottomTab === "equity" && <EquityCurveInline data={bt.equityCurve} />}
         </div>
       </div>
     </div>
@@ -421,8 +389,8 @@ function TopBar({
         {isRunning && !progress && (
           <>
             <div className="h-4 w-4 animate-spin rounded-full border-b-2 border-emerald-500" />
-            <span className="text-[10px] font-mono text-muted-foreground">{setupStage ?? "Starting…"}</span>
-            <button onClick={onCancel} className="px-1.5 py-0.5 text-[10px] font-mono rounded text-red-400 hover:bg-red-500/10 transition-colors">✕</button>
+            <span className="text-[10px] font-mono text-muted-foreground">{setupStage ?? "Starting\u2026"}</span>
+            <button onClick={onCancel} className="px-1.5 py-0.5 text-[10px] font-mono rounded text-red-400 hover:bg-red-500/10 transition-colors">\u2715</button>
           </>
         )}
 
@@ -430,7 +398,7 @@ function TopBar({
           <>
             <button onClick={status === "paused" ? onResume : onPause}
               className="px-2 py-1 text-xs font-mono rounded bg-white/10 text-foreground hover:bg-white/15 transition-colors">
-              {status === "paused" ? "▶" : "⏸"}
+              {status === "paused" ? "\u25B6" : "\u23F8"}
             </button>
             <div className="w-20">
               <div className="h-1 rounded-full bg-white/5 overflow-hidden">
@@ -438,7 +406,7 @@ function TopBar({
               </div>
             </div>
             <span className="text-[10px] font-mono text-muted-foreground w-8 text-right">{pct.toFixed(0)}%</span>
-            <button onClick={onCancel} className="px-1.5 py-0.5 text-[10px] font-mono rounded text-red-400 hover:bg-red-500/10 transition-colors">✕</button>
+            <button onClick={onCancel} className="px-1.5 py-0.5 text-[10px] font-mono rounded text-red-400 hover:bg-red-500/10 transition-colors">\u2715</button>
           </>
         )}
 
@@ -454,629 +422,81 @@ function TopBar({
   );
 }
 
-export interface ChartGridHandle {
-  scrollToTime: (symbol: string, utcSeconds: number) => void;
-}
-
-/** Find which position index a given trade belongs to */
-function findPositionForTrade(positions: Position[], trade: BacktestTrade): number {
-  const tradeTime = trade.filled_at ?? "";
-  for (let i = 0; i < positions.length; i++) {
-    const p = positions[i];
-    if (p.entryTime === tradeTime || p.exitTime === tradeTime) return i;
-  }
-  return -1;
-}
-
-const ChartGrid = forwardRef<ChartGridHandle, {
-  symbols: string[];
-  bars: Map<string, BacktestBar[]>;
-  trades: BacktestTrade[];
-  orbWindowMinutes?: number;
-  showLabels?: boolean;
-  timeframe?: string;
-  onToggleLabels?: () => void;
-  onTradeClick?: (trade: BacktestTrade) => void;
-}>(function ChartGrid({
-  symbols,
-  bars,
-  trades,
-  orbWindowMinutes = 30,
-  showLabels = true,
-  timeframe = "5m",
-  onToggleLabels,
-  onTradeClick,
-}, ref) {
-  const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
-  const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set());
-  const chartRefs = useRef<Map<string, IChartApi>>(new Map());
-  const pendingScroll = useRef<{ symbol: string; utcSeconds: number } | null>(null);
-
-  const applyScroll = useCallback((chart: IChartApi, utcSeconds: number) => {
-    const ts = chart.timeScale();
-    const halfWindow = 30 * 60;
-    ts.setVisibleRange({
-      from: (utcSeconds - halfWindow) as Time,
-      to: (utcSeconds + halfWindow) as Time,
-    });
-  }, []);
-
-  const registerChart = useCallback((symbol: string, chart: IChartApi | null) => {
-    if (chart) {
-      chartRefs.current.set(symbol, chart);
-      // Apply pending scroll if this is the chart we were waiting for
-      if (pendingScroll.current && pendingScroll.current.symbol === symbol) {
-        const { utcSeconds } = pendingScroll.current;
-        pendingScroll.current = null;
-        // Small delay to let chart render data first
-        setTimeout(() => applyScroll(chart, utcSeconds), 100);
-      }
-    } else {
-      chartRefs.current.delete(symbol);
-    }
-  }, [applyScroll]);
-
-  useImperativeHandle(ref, () => ({
-    scrollToTime(symbol: string, utcSeconds: number) {
-      // Resolve OCC option symbols (e.g. NVDA260501C00180000) to underlying (NVDA)
-      const underlying = symbol.replace(/\d{6}[CP]\d{8}$/, "");
-      const chartKey = chartRefs.current.has(underlying) ? underlying : symbol;
-
-      // If already expanded with this chart, scroll directly
-      const chart = chartRefs.current.get(chartKey);
-      if (chart && expandedSymbol === chartKey) {
-        applyScroll(chart, utcSeconds);
-        return;
-      }
-      // Store pending scroll and expand — the new chart will pick it up via registerChart
-      pendingScroll.current = { symbol: chartKey, utcSeconds };
-      setExpandedSymbol(chartKey);
-    },
-  }), [expandedSymbol, applyScroll]);
-
-  // Collect AVWAP anchor names across all symbols for global legend
-  // (must be before early returns — React hooks can't be conditional)
-  const allAvwapAnchors = useMemo(() => {
-    const names = new Set<string>();
-    for (const [, symBars] of bars) {
-      for (const b of symBars) {
-        if (b.avwaps) for (const k of Object.keys(b.avwaps)) {
-          if (!/_\d{8,}$/.test(k)) names.add(k);
-        }
-      }
-    }
-    return Array.from(names).sort();
-  }, [bars]);
-
-  const globalLegend: { key?: string; label: string; color: string; thick?: boolean; isORB?: boolean }[] = [
-    { label: "EMA 9", color: "rgba(251, 191, 36, 0.7)" },
-    { label: "EMA 21", color: "rgba(139, 92, 246, 0.7)" },
-    { label: "EMA 50", color: "rgba(236, 72, 153, 0.6)" },
-    { label: "EMA 200", color: "rgba(249, 115, 22, 0.5)" },
-    ...allAvwapAnchors.map((name) => ({ key: name, label: avwapAnchorLabel(name), color: avwapAnchorColor(name), thick: true })),
-    { label: "ORB", color: "rgba(59, 130, 246, 0.5)", isORB: true },
-  ];
-
-  if (symbols.length === 0) {
-    return (
-      <div className="flex items-center justify-center flex-1 h-full rounded-lg border border-border bg-card text-muted-foreground text-sm">
-        Run a backtest to see charts
-      </div>
-    );
-  }
-
-  // Expanded: single chart fills the entire grid
-  if (expandedSymbol && symbols.includes(expandedSymbol)) {
-    return (
-      <div className="flex flex-col gap-1" style={{ height: "calc(100vh - 180px)" }}>
-        <div className="flex items-center gap-2 px-1">
-          <button
-            onClick={() => setExpandedSymbol(null)}
-            className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
-          >
-            ← Grid
-          </button>
-          <span className="text-xs font-bold text-foreground">{expandedSymbol}</span>
-        </div>
-        <div className="flex-1 min-h-0">
-          <MiniChart
-            symbol={expandedSymbol}
-            bars={bars.get(expandedSymbol) ?? []}
-            trades={trades.filter((t) => t.symbol === expandedSymbol || t.symbol.startsWith(expandedSymbol))}
-            orbWindowMinutes={orbWindowMinutes}
-            showLabels={showLabels}
-            hiddenSeries={hiddenSeries}
-            timeframe={timeframe}
-            onChartReady={(chart) => registerChart(expandedSymbol, chart)}
-            onMarkerClick={(idx) => {
-              const symTrades = trades.filter((t) => t.symbol === expandedSymbol || t.symbol.startsWith(expandedSymbol));
-              if (symTrades[idx]) onTradeClick?.(symTrades[idx]);
-            }}
-          />
-        </div>
-      </div>
-    );
-  }
-
-  // Grid view
-  const cols = symbols.length <= 2 ? symbols.length : symbols.length <= 4 ? 2 : symbols.length <= 6 ? 3 : 4;
-
-  return (
-    <div className="flex flex-col gap-1">
-      {/* Global legend */}
-      <div className="flex items-center gap-2 px-2 py-1">
-        {globalLegend.map((e) => {
-          const seriesKey = e.key ?? e.label;
-          const isHidden = hiddenSeries.has(seriesKey);
-          return (
-            <button
-              key={seriesKey}
-              className={`flex items-center gap-1 cursor-pointer transition-opacity ${isHidden ? "opacity-30" : "opacity-100"}`}
-              onClick={() => setHiddenSeries((prev) => {
-                const next = new Set(prev);
-                if (next.has(seriesKey)) next.delete(seriesKey); else next.add(seriesKey);
-                return next;
-              })}
-              title={`Click to ${isHidden ? "show" : "hide"} ${e.label}`}
-            >
-              {e.isORB ? (
-                <span className="w-2.5 h-2 rounded-[1px] border border-dashed" style={{ borderColor: e.color, backgroundColor: "rgba(59, 130, 246, 0.1)" }} />
-              ) : (
-                <span className={`w-2.5 rounded-full ${e.thick ? "h-[3px]" : "h-[2px]"}`} style={{ backgroundColor: e.color }} />
-              )}
-              <span className="text-[9px] font-mono text-muted-foreground">{e.label}</span>
-            </button>
-          );
-        })}
-        <button
-          className={`flex items-center gap-1 cursor-pointer transition-opacity ${showLabels ? "opacity-100" : "opacity-30"}`}
-          onClick={() => onToggleLabels?.()}
-          title={`Click to ${showLabels ? "hide" : "show"} entry/exit labels`}
-        >
-          <span className="w-2.5 h-2.5 text-[8px] leading-none text-center font-bold" style={{ color: "rgba(52, 211, 153, 0.8)" }}>▲</span>
-          <span className="text-[9px] font-mono text-muted-foreground">Labels</span>
-        </button>
-      </div>
-    <div
-      className="grid gap-2 w-full"
-      style={{
-        gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
-        gridAutoRows: "260px",
-      }}
-    >
-      {symbols.map((sym) => (
-        <div key={sym} className="relative group">
-          <div className="h-full min-h-0">
-            <MiniChart
-              symbol={sym}
-              bars={bars.get(sym) ?? []}
-              trades={trades.filter((t) => t.symbol === sym || t.symbol.startsWith(sym))}
-              orbWindowMinutes={orbWindowMinutes}
-              showLabels={showLabels}
-              hiddenSeries={hiddenSeries}
-              timeframe={timeframe}
-              onChartReady={(chart) => registerChart(sym, chart)}
-              onMarkerClick={(idx) => {
-                const symTrades = trades.filter((t) => t.symbol === sym || t.symbol.startsWith(sym));
-                if (symTrades[idx]) onTradeClick?.(symTrades[idx]);
-              }}
-            />
-          </div>
-          <button
-            onClick={() => setExpandedSymbol(sym)}
-            className="absolute top-1 right-1 z-10 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded bg-background/80 backdrop-blur-sm text-muted-foreground hover:text-foreground"
-            title="Expand"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" />
-              <line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" />
-            </svg>
-          </button>
-        </div>
-      ))}
-    </div>
-    </div>
-  );
-});
-
-/** Color for each AVWAP anchor type on the chart */
-function avwapAnchorColor(name: string): string {
-  if (name === "session_open") return "rgba(56, 189, 248, 0.5)";
-  if (name === "pd_high") return "rgba(251, 146, 60, 0.5)";
-  if (name === "pd_low") return "rgba(167, 139, 250, 0.5)";
-  if (name.startsWith("capitulation")) return "rgba(248, 113, 113, 0.5)";
-  if (name.startsWith("swing_high")) return "rgba(251, 191, 36, 0.4)";
-  if (name.startsWith("swing_low")) return "rgba(52, 211, 153, 0.4)";
-  if (name.startsWith("catalyst")) return "rgba(244, 114, 182, 0.5)";
-  return "rgba(148, 163, 184, 0.4)";
-}
-
-/** Human-readable label for an anchor name */
-function avwapAnchorLabel(name: string): string {
-  if (name === "session_open") return "AVWAP Open";
-  if (name === "pd_high") return "AVWAP PD High";
-  if (name === "pd_low") return "AVWAP PD Low";
-  if (name.startsWith("capitulation")) return "AVWAP Capit.";
-  if (name.startsWith("swing_high")) return "AVWAP Swing H";
-  if (name.startsWith("swing_low")) return "AVWAP Swing L";
-  if (name.startsWith("catalyst")) return "AVWAP Catalyst";
-  return `AVWAP ${name}`;
-}
-
-function MiniChart({
-  symbol,
-  bars,
-  trades,
-  orbWindowMinutes = 30,
-  showLabels = true,
-  hiddenSeries,
-  timeframe = "5m",
-  onChartReady,
-  onMarkerClick,
-}: {
-  symbol: string;
-  bars: BacktestBar[];
-  trades: BacktestTrade[];
-  orbWindowMinutes?: number;
-  showLabels?: boolean;
-  hiddenSeries?: Set<string>;
-  timeframe?: string;
-  onChartReady?: (chart: IChartApi | null) => void;
-  onMarkerClick?: (tradeIndex: number) => void;
-}) {
+function EquityCurveMain({ data }: { data: { time: number; value: number }[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const onMarkerClickRef = useRef(onMarkerClick);
-  onMarkerClickRef.current = onMarkerClick;
   const chartRef = useRef<IChartApi | null>(null);
-  const candleRef = useRef<ISeriesApi<"Candlestick", Time> | null>(null);
-  const volumeRef = useRef<ISeriesApi<"Histogram", Time> | null>(null);
-  const ema9Ref = useRef<ISeriesApi<"Line", Time> | null>(null);
-  const ema21Ref = useRef<ISeriesApi<"Line", Time> | null>(null);
-  const ema50Ref = useRef<ISeriesApi<"Line", Time> | null>(null);
-  const ema200Ref = useRef<ISeriesApi<"Line", Time> | null>(null);
-  const avwapRefsMap = useRef<Map<string, ISeriesApi<"Line", Time>>>(new Map());
-  const overlayRef = useRef<SignalMarkerOverlay | null>(null);
-  const orbOverlayRef = useRef<ORBBoxOverlay | null>(null);
-  const rthOverlayRef = useRef<RTHShadingOverlay | null>(null);
-  const sessionBreakRef = useRef<SessionBreakOverlay | null>(null);
-  const lastBarCountRef = useRef(0);
+  const seriesRef = useRef<ISeriesApi<"Area", Time> | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
     const chart = createChart(containerRef.current, {
+      width: containerRef.current.clientWidth,
+      height: containerRef.current.clientHeight || 300,
       layout: {
         background: { type: ColorType.Solid, color: "transparent" },
-        textColor: "rgba(148, 163, 184, 0.8)",
+        textColor: "rgba(148, 163, 184, 0.6)",
         fontFamily: "var(--font-geist-mono, monospace)",
-        fontSize: 9,
+        fontSize: 11,
       },
       grid: {
-        vertLines: { color: "rgba(148, 163, 184, 0.05)" },
-        horzLines: { color: "rgba(148, 163, 184, 0.05)" },
+        vertLines: { visible: false },
+        horzLines: { color: "rgba(148, 163, 184, 0.06)" },
       },
-      crosshair: {
-        mode: CrosshairMode.Normal,
-        vertLine: { color: "rgba(148, 163, 184, 0.2)", width: 1 as const, style: 3 as const, labelBackgroundColor: "#1f2937" },
-        horzLine: { color: "rgba(148, 163, 184, 0.2)", width: 1 as const, style: 3 as const, labelBackgroundColor: "#1f2937" },
-      },
-      rightPriceScale: { borderColor: "rgba(148, 163, 184, 0.1)", scaleMargins: { top: 0.05, bottom: 0.15 } },
-      localization: {
-        timeFormatter: (time: number) => {
-          return formatET(time, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-        },
-      },
+      rightPriceScale: { borderVisible: false },
       timeScale: {
-        borderColor: "rgba(148, 163, 184, 0.1)", timeVisible: true, rightOffset: 5, fixLeftEdge: true, fixRightEdge: true,
-        tickMarkFormatter: (time: number) => {
-          return formatET(time, { hour: "2-digit", minute: "2-digit" });
-        },
+        borderVisible: false,
+        timeVisible: true,
+        fixLeftEdge: true,
+        fixRightEdge: true,
       },
+      crosshair: { mode: CrosshairMode.Normal },
     });
     chartRef.current = chart;
-    onChartReady?.(chart);
-
-    const volume = chart.addSeries(HistogramSeries, {
-      priceScaleId: "", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false,
+    const series = chart.addSeries(AreaSeries, {
+      lineColor: "#10b981",
+      lineWidth: 2,
+      topColor: "rgba(16, 185, 129, 0.28)",
+      bottomColor: "rgba(16, 185, 129, 0.02)",
+      priceLineVisible: false,
+      lastValueVisible: true,
     });
-    chart.priceScale("").applyOptions({ scaleMargins: { top: 0.85, bottom: 0 }, visible: false });
-    volumeRef.current = volume;
-
-    const candle = chart.addSeries(CandlestickSeries, {
-      upColor: "#10b981", downColor: "#ef4444", borderVisible: false,
-      wickUpColor: "#10b981", wickDownColor: "#ef4444",
-    });
-    candleRef.current = candle;
-
-    const ema9 = chart.addSeries(LineSeries, {
-      color: "rgba(251, 191, 36, 0.7)", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-    });
-    ema9Ref.current = ema9;
-
-    const ema21 = chart.addSeries(LineSeries, {
-      color: "rgba(139, 92, 246, 0.7)", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-    });
-    ema21Ref.current = ema21;
-
-    const ema50 = chart.addSeries(LineSeries, {
-      color: "rgba(236, 72, 153, 0.6)", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-    });
-    ema50Ref.current = ema50;
-
-    const ema200 = chart.addSeries(LineSeries, {
-      color: "rgba(249, 115, 22, 0.5)", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-    });
-    ema200Ref.current = ema200;
-
-    // AVWAP lines are created dynamically in the data useEffect (one per anchor)
-
-    const overlay = new SignalMarkerOverlay();
-    candle.attachPrimitive(overlay);
-    overlayRef.current = overlay;
-
-    const orbOverlay = new ORBBoxOverlay();
-    candle.attachPrimitive(orbOverlay);
-    orbOverlayRef.current = orbOverlay;
-
-    const rthOverlay = new RTHShadingOverlay();
-    candle.attachPrimitive(rthOverlay);
-    rthOverlayRef.current = rthOverlay;
-
-    const sessionBreak = new SessionBreakOverlay();
-    candle.attachPrimitive(sessionBreak);
-    sessionBreakRef.current = sessionBreak;
-
-    // Click handler via chart.subscribeClick — provides coordinates in pane space
-    // (matching timeToCoordinate/priceToCoordinate used by hitTestSignal)
-    const containerEl = containerRef.current;
-    const handleChartClick = (param: { point?: { x: number; y: number } }) => {
-      if (!overlayRef.current || !param.point) return;
-      const idx = overlayRef.current.hitTestSignal(param.point.x, param.point.y);
-      if (idx >= 0 && onMarkerClickRef.current) onMarkerClickRef.current(idx);
-    };
-    chart.subscribeClick(handleChartClick);
-    // Hover handler still uses DOM events for cursor change
-    const handleChartMouseMove = (e: MouseEvent) => {
-      if (!overlayRef.current) return;
-      const rect = containerEl?.getBoundingClientRect();
-      if (!rect) return;
-      // Approximate pane offset: subtract left price scale width if any
-      const chartPane = containerEl.querySelector('.tv-lightweight-charts canvas, canvas') as HTMLElement | null;
-      const paneRect = chartPane?.getBoundingClientRect() ?? rect;
-      const x = e.clientX - paneRect.left;
-      const y = e.clientY - paneRect.top;
-      const hit = overlayRef.current.hitTestSignal(x, y) >= 0;
-      containerEl!.style.cursor = hit ? "pointer" : "";
-    };
-    containerEl.addEventListener("mousemove", handleChartMouseMove);
-
+    seriesRef.current = series;
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        chart.applyOptions({ width: entry.contentRect.width, height: entry.contentRect.height });
+        chart.applyOptions({
+          width: entry.contentRect.width,
+          height: entry.contentRect.height,
+        });
       }
+      chart.timeScale().fitContent();
     });
-    observer.observe(containerEl);
-
+    observer.observe(containerRef.current);
     return () => {
-      chart.unsubscribeClick(handleChartClick);
-      containerEl.removeEventListener("mousemove", handleChartMouseMove);
       observer.disconnect();
-      onChartReady?.(null);
       chart.remove();
       chartRef.current = null;
-      candleRef.current = null;
-      volumeRef.current = null;
-      ema9Ref.current = null;
-      ema21Ref.current = null;
-      ema50Ref.current = null;
-      ema200Ref.current = null;
-      avwapRefsMap.current.clear();
-      overlayRef.current = null;
-      orbOverlayRef.current = null;
-      rthOverlayRef.current = null;
-      sessionBreakRef.current = null;
-      lastBarCountRef.current = 0;
+      seriesRef.current = null;
     };
   }, []);
 
   useEffect(() => {
-    if (!candleRef.current || !volumeRef.current || bars.length === 0) return;
+    if (!seriesRef.current || data.length === 0) return;
+    const sorted = [...data].sort((a, b) => a.time - b.time);
+    seriesRef.current.setData(
+      sorted.map((d) => ({ time: d.time as Time, value: d.value }))
+    );
+    chartRef.current?.timeScale().fitContent();
+  }, [data]);
 
-    if (bars.length === lastBarCountRef.current) return;
-    const deduped = new Map<number, BacktestBar>();
-    for (const b of bars) deduped.set(b.time, b);
-    const sorted = Array.from(deduped.values()).sort((a, b) => a.time - b.time);
-
-    candleRef.current.setData(sorted.map((b) => ({ time: b.time as Time, open: b.open, high: b.high, low: b.low, close: b.close })));
-    volumeRef.current.setData(sorted.map((b) => ({ time: b.time as Time, value: b.volume, color: b.close >= b.open ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)" })));
-
-    const ema9Data = sorted.filter((b) => b.ema9 && b.ema9 > 0).map((b) => ({ time: b.time as Time, value: b.ema9! }));
-    const ema21Data = sorted.filter((b) => b.ema21 && b.ema21 > 0).map((b) => ({ time: b.time as Time, value: b.ema21! }));
-    const ema50Data = sorted.filter((b) => b.ema50 && b.ema50 > 0).map((b) => ({ time: b.time as Time, value: b.ema50! }));
-    const ema200Data = sorted.filter((b) => b.ema200 && b.ema200 > 0).map((b) => ({ time: b.time as Time, value: b.ema200! }));
-
-    if (ema9Ref.current) ema9Ref.current.setData(ema9Data);
-    if (ema21Ref.current) ema21Ref.current.setData(ema21Data);
-    if (ema50Ref.current) ema50Ref.current.setData(ema50Data);
-    if (ema200Ref.current) ema200Ref.current.setData(ema200Data);
-
-    // Multiple AVWAP lines — one per configured anchor (skip dynamic ones with timestamps)
-    if (chartRef.current) {
-      const anchorNames = new Set<string>();
-      for (const b of sorted) {
-        if (b.avwaps) {
-          for (const k of Object.keys(b.avwaps)) {
-            // Skip dynamic anchors with timestamp suffixes (e.g., swing_high_1d_1762405200)
-            if (/_\d{8,}$/.test(k)) continue;
-            anchorNames.add(k);
-          }
-        }
-      }
-      // Create line series for new anchors
-      for (const name of anchorNames) {
-        if (!avwapRefsMap.current.has(name)) {
-          const line = chartRef.current.addSeries(LineSeries, {
-            color: avwapAnchorColor(name), lineWidth: 1, lineStyle: 2,
-            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-          });
-          avwapRefsMap.current.set(name, line);
-        }
-      }
-      // Remove series for anchors no longer present
-      for (const [name, series] of avwapRefsMap.current) {
-        if (!anchorNames.has(name)) {
-          chartRef.current.removeSeries(series);
-          avwapRefsMap.current.delete(name);
-        }
-      }
-      // Set data for each anchor
-      for (const [name, series] of avwapRefsMap.current) {
-        const data = sorted
-          .filter((b) => b.avwaps && b.avwaps[name] && b.avwaps[name] > 0)
-          .map((b) => ({ time: b.time as Time, value: b.avwaps![name] }));
-        series.setData(data);
-      }
-    }
-
-    lastBarCountRef.current = bars.length;
-
-    // ORB range boxes — shaded rectangles for each day's opening range
-    if (orbOverlayRef.current) {
-      const ranges = computeORBRanges(sorted, orbWindowMinutes);
-      orbOverlayRef.current.setRanges(ranges);
-    }
-
-    // Non-RTH shading — subtle background on pre-market, after-hours, holiday bars
-    if (rthOverlayRef.current) {
-      const regions = computeNonRTHRegions(sorted);
-      rthOverlayRef.current.setRegions(regions);
-    }
-
-    // Session break lines — thin vertical separators at overnight/weekend/holiday gaps
-    if (sessionBreakRef.current) {
-      const tfSec = parseTimeframeSec(timeframe);
-      const breaks = detectSessionBreaks(sorted, tfSec);
-      sessionBreakRef.current.setBreaks(breaks);
-    }
-
-    // Force chart to match container size — fixes squeeze on initial load
-    // when grid layout changes during streaming.
-    if (containerRef.current && chartRef.current) {
-      const rect = containerRef.current.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0) {
-        chartRef.current.applyOptions({ width: rect.width, height: rect.height });
-      }
-    }
-
-    const ts = chartRef.current?.timeScale();
-    if (!ts) return;
-
-    const visibleCandles = 120;
-    const dataLen = sorted.length;
-    const from = Math.max(0, dataLen - visibleCandles);
-    const to = dataLen - 1 + 5;
-    ts.setVisibleLogicalRange({ from, to });
-  }, [bars]);
-
-  useEffect(() => {
-    if (!overlayRef.current) return;
-    if (trades.length === 0) {
-      overlayRef.current.setSignals([]);
-      return;
-    }
-
-    const barTimesArr = bars.map((b) => b.time).sort((a, b) => a - b);
-    const barTimesSet = new Set(barTimesArr);
-    const barMap = new Map(bars.map((b) => [b.time, b]));
-
-    const findClosestBarTime = (unixSec: number): number => {
-      if (barTimesSet.has(unixSec)) return unixSec;
-      let closest = barTimesArr[0] ?? unixSec;
-      for (const bt of barTimesArr) {
-        if (Math.abs(bt - unixSec) < Math.abs(closest - unixSec)) closest = bt;
-        if (bt > unixSec) break;
-      }
-      return closest;
-    };
-
-    const markerData: SignalMarkerData[] = trades
-      .map((t) => {
-        const filledAt = t.filled_at ? new Date(t.filled_at) : null;
-        if (!filledAt) return null;
-        const filledUnix = Math.floor(filledAt.getTime() / 1000);
-        const matchedTime = findClosestBarTime(filledUnix);
-        // Skip markers whose fill timestamp is too far from the closest bar
-        // (e.g., fills from a prior day should not render on a later day's chart).
-        if (Math.abs(matchedTime - filledUnix) > 5 * 60) return null;
-        const bar = barMap.get(matchedTime);
-        const dir = t.direction ?? "";
-        // For options: direction is always LONG (buying the contract), but
-        // PUT options are bearish. Detect via OCC symbol format: ...P00...
-        const isPut = /P\d{8}$/.test(t.symbol);
-        const effectiveDir = (dir === "LONG" && isPut) ? "SHORT" : (dir === "CLOSE_LONG" && isPut) ? "CLOSE_SHORT" : dir;
-        const isEntry = effectiveDir === "LONG" || effectiveDir === "SHORT";
-        const isLongSide = effectiveDir === "LONG" || (!effectiveDir && t.side?.toLowerCase() === "buy");
-        const label = effectiveDir === "LONG" ? "LONG" : effectiveDir === "SHORT" ? "SHORT" : effectiveDir === "CLOSE_LONG" ? "SELL" : effectiveDir === "CLOSE_SHORT" ? "COVER" : (t.side?.toLowerCase() === "buy" ? "LONG" : "SELL");
-        return {
-          time: matchedTime as Time,
-          price: bar ? (isEntry ? bar.low * 0.999 : bar.high * 1.001) : t.price,
-          side: isLongSide ? "buy" : "sell",
-          kind: isEntry ? "entry" : "exit",
-          executed: true,
-          label: `${label} ${t.quantity?.toFixed?.(0) ?? ""} @ $${t.price?.toFixed?.(2) ?? ""}`,
-        } as SignalMarkerData;
-      })
-      .filter((m): m is SignalMarkerData => m !== null);
-
-    overlayRef.current.setSignals(markerData);
-  }, [trades, bars]);
-
-  // Toggle label visibility when the global toggle changes.
-  useEffect(() => {
-    overlayRef.current?.setVisible(showLabels);
-  }, [showLabels]);
-
-  // Toggle series visibility from global legend clicks
-  useEffect(() => {
-    const hidden = hiddenSeries ?? new Set<string>();
-    const seriesMap: Record<string, ISeriesApi<"Line", Time> | null> = {
-      "EMA 9": ema9Ref.current,
-      "EMA 21": ema21Ref.current,
-      "EMA 50": ema50Ref.current,
-      "EMA 200": ema200Ref.current,
-    };
-    for (const [key, series] of Object.entries(seriesMap)) {
-      if (series) {
-        series.applyOptions({ visible: !hidden.has(key) });
-      }
-    }
-    // AVWAP lines
-    for (const [name, series] of avwapRefsMap.current) {
-      series.applyOptions({ visible: !hidden.has(name) });
-    }
-    // ORB overlay
-    if (orbOverlayRef.current) {
-      orbOverlayRef.current.setVisible(!hidden.has("ORB"));
-    }
-  }, [hiddenSeries]);
-
-  const tradeCount = trades.length;
-  const hasActivity = tradeCount > 0;
-
-
-  return (
-    <div className={`rounded-lg border bg-card overflow-hidden flex flex-col h-full ${hasActivity ? "border-emerald-500/30" : "border-border"}`}>
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50">
-        <div className="flex items-center gap-3">
-          <span className="text-xs font-mono font-semibold text-foreground">{symbol}</span>
-          <div className="flex items-center gap-2"></div>
-        </div>
-        {tradeCount > 0 && (
-          <span className="text-[10px] font-mono text-emerald-400">{tradeCount} fill{tradeCount !== 1 ? "s" : ""}</span>
-        )}
+  if (data.length === 0) {
+    return (
+      <div className="flex items-center justify-center flex-1 h-full text-sm text-muted-foreground">
+        Run a backtest to see the equity curve
       </div>
-      <div ref={containerRef} className="flex-1 min-h-0" />
-    </div>
-  );
+    );
+  }
+
+  return <div ref={containerRef} className="w-full h-full" />;
 }
 
 interface Position {
@@ -1200,7 +620,12 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
 
   useImperativeHandle(ref, () => ({
     scrollToTrade(trade: BacktestTrade) {
-      const idx = findPositionForTrade(positions, trade);
+      const tradeTime = trade.filled_at ?? "";
+      let idx = -1;
+      for (let i = 0; i < positions.length; i++) {
+        const p = positions[i];
+        if (p.entryTime === tradeTime || p.exitTime === tradeTime) { idx = i; break; }
+      }
       if (idx < 0) return;
       setHighlightIdx(idx);
       const row = rowRefs.current.get(idx);
@@ -1215,7 +640,7 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
   }
 
   const fmtTime = (s: string | null) => {
-    if (!s) return "—";
+    if (!s) return "\u2014";
     return new Date(s).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
   };
 
@@ -1267,9 +692,9 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
                     >
                       {fmtTime(p.entryTime)}
                     </button>
-                  ) : "—"}
+                  ) : "\u2014"}
                 </td>
-                <td className="px-2 py-1 text-right text-red-400">{p.exitPrice !== null ? `$${p.exitPrice.toFixed(2)}` : "—"}</td>
+                <td className="px-2 py-1 text-right text-red-400">{p.exitPrice !== null ? `$${p.exitPrice.toFixed(2)}` : "\u2014"}</td>
                 <td className="px-2 py-1">
                   {p.exitTime ? (
                     <button
@@ -1278,7 +703,7 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
                     >
                       {fmtTime(p.exitTime)}
                     </button>
-                  ) : "—"}
+                  ) : "\u2014"}
                 </td>
                 <td className={`px-4 py-1 text-right font-medium ${isWin ? "text-emerald-400" : isLoss ? "text-red-400" : "text-muted-foreground"}`}>
                   {p.pnl !== null ? (
@@ -1371,49 +796,4 @@ function MetricsPanelInline({
       </div>
     </div>
   );
-}
-
-function EquityCurveInline({ data }: { data: { time: number; value: number }[] }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<"Area", Time> | null>(null);
-
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const chart = createChart(containerRef.current, {
-      width: containerRef.current.clientWidth, height: containerRef.current.clientHeight || 100,
-      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: "rgba(148, 163, 184, 0.6)", fontFamily: "var(--font-geist-mono, monospace)", fontSize: 10 },
-      grid: { vertLines: { visible: false }, horzLines: { color: "rgba(148, 163, 184, 0.05)" } },
-      rightPriceScale: { borderVisible: false },
-      timeScale: { borderVisible: false, timeVisible: true, fixLeftEdge: true, fixRightEdge: true },
-      crosshair: { mode: CrosshairMode.Normal },
-    });
-    chartRef.current = chart;
-    const series = chart.addSeries(AreaSeries, {
-      lineColor: "#10b981", lineWidth: 2,
-      topColor: "rgba(16, 185, 129, 0.3)",
-      bottomColor: "rgba(16, 185, 129, 0.02)",
-      priceLineVisible: false, lastValueVisible: true,
-    });
-    seriesRef.current = series;
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) chart.applyOptions({ width: entry.contentRect.width, height: entry.contentRect.height });
-      chart.timeScale().fitContent();
-    });
-    observer.observe(containerRef.current);
-    return () => { observer.disconnect(); chart.remove(); chartRef.current = null; seriesRef.current = null; };
-  }, []);
-
-  useEffect(() => {
-    if (!seriesRef.current || data.length === 0) return;
-    const sorted = [...data].sort((a, b) => a.time - b.time);
-    seriesRef.current.setData(sorted.map((d) => ({ time: d.time as Time, value: d.value })));
-    chartRef.current?.timeScale().fitContent();
-  }, [data]);
-
-  if (data.length === 0) {
-    return <div className="flex items-center justify-center h-full text-xs text-muted-foreground">No equity data yet</div>;
-  }
-
-  return <div ref={containerRef} className="w-full h-full" />;
 }
