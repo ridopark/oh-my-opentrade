@@ -7,14 +7,17 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
+	"github.com/oh-my-opentrade/backend/internal/adapters/dolthub"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/app/backfill"
+	"github.com/oh-my-opentrade/backend/internal/app/optionsimport"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/logger"
@@ -180,7 +183,31 @@ func main() {
 			log.Error().Err(gfErr).Msg("gap-fill failed")
 			os.Exit(1)
 		}
-		log.Info().Int("fetched", fetched).Int("saved", saved).Msg("gap-fill finished successfully")
+		log.Info().Int("fetched", fetched).Int("saved", saved).Msg("bar gap-fill finished")
+
+		// Import missing historical options data from DoltHub.
+		log.Info().Msg("checking for missing historical options data...")
+		dbAdapter := timescaledb.NewSqlDB(sqlDB)
+		histOptRepo := timescaledb.NewHistoricalOptionsRepository(dbAdapter, log.With().Str("component", "hist_options").Logger())
+		dolthubClient := dolthub.NewClient(nil, log)
+		importer := optionsimport.NewService(dolthubClient, histOptRepo, log)
+
+		const maxConcurrentImports = 4
+		importSem := make(chan struct{}, maxConcurrentImports)
+		var importWg sync.WaitGroup
+		for _, sym := range symbols {
+			importWg.Add(1)
+			go func(sym domain.Symbol) {
+				defer importWg.Done()
+				importSem <- struct{}{}
+				defer func() { <-importSem }()
+				if importErr := importer.EnsureData(ctx, string(sym), fromTime, toTime); importErr != nil {
+					log.Warn().Err(importErr).Str("symbol", string(sym)).Msg("DoltHub options import failed")
+				}
+			}(sym)
+		}
+		importWg.Wait()
+		log.Info().Msg("gap-fill finished successfully")
 	} else {
 		// Standard full-range backfill mode.
 		svc := backfill.NewService(alpacaAdapter, repo, backfillCfg, log.With().Str("component", "backfill").Logger())
