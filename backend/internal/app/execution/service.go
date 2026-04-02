@@ -1393,9 +1393,10 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 			}
 
 			postCancel, err := s.broker.GetOrderDetails(ctx, brokerOrderID)
-			if err == nil && postCancel.FilledQty > 0 {
-				l.Info().Float64("filled_qty", postCancel.FilledQty).Msg("reconcile: stale order had fills before cancel — recording")
+			if err == nil && (postCancel.FilledQty > 0 || postCancel.Status == "filled") {
+				l.Info().Float64("filled_qty", postCancel.FilledQty).Str("status", postCancel.Status).Msg("reconcile: stale order was actually filled — recording")
 				s.recordFillFromDetails(po, brokerOrderID, postCancel, l)
+				return true
 			}
 
 			l.Warn().Msg("reconcile: pending order expired")
