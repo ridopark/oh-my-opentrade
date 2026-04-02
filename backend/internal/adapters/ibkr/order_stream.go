@@ -80,35 +80,29 @@ func (a *Adapter) pollOrderUpdates(ctx context.Context, out chan<- ports.OrderUp
 	}
 }
 
-// execReconciler periodically calls ReqFills to catch fills that the
-// Trades() polling loop missed (known IBKR paper trading issue).
+// execReconcileRefreshInterval is how often we call ReqFills (blocking API call)
+// to refresh ibsync's internal fill cache. This catches fills that the real-time
+// callbacks missed entirely.
+const execReconcileRefreshInterval = 60 * time.Second
+
+// execReconciler detects fills missed by the Trades() polling loop.
+// It checks ibsync's local fill cache (Fills(), non-blocking) every 10s,
+// and periodically refreshes that cache via ReqFills() (blocking API call).
 func (a *Adapter) execReconciler(ctx context.Context, out chan<- ports.OrderUpdate) {
 	seenExecIDs := make(map[string]struct{})
 
-	// Seed with existing fills so we don't re-emit old ones.
-	// Use a short delay to let the connection stabilize after startup.
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(5 * time.Second):
+	// Seed from local cache immediately (non-blocking).
+	if ib := a.conn.IB(); ib != nil {
+		for _, f := range ib.Fills() {
+			if f.Execution != nil {
+				seenExecIDs[f.Execution.ExecID] = struct{}{}
+			}
+		}
+		a.log.Info().Int("seeded", len(seenExecIDs)).Msg("exec reconciler: seeded from local fill cache")
 	}
 
-	ib := a.conn.IB()
-	if ib != nil {
-		fills, err := ib.ReqFills()
-		if err != nil {
-			a.log.Warn().Err(err).Msg("exec reconciler: seed ReqFills failed, starting with empty set")
-		} else {
-			for _, f := range fills {
-				if f.Execution != nil {
-					seenExecIDs[f.Execution.ExecID] = struct{}{}
-				}
-			}
-			a.log.Info().Int("seeded", len(seenExecIDs)).Msg("exec reconciler: seeded existing fills")
-		}
-	} else {
-		a.log.Warn().Msg("exec reconciler: IB not connected at seed time")
-	}
+	// Periodically refresh ibsync's fill cache in the background.
+	go a.execCacheRefresher(ctx)
 
 	ticker := time.NewTicker(execReconcileInterval)
 	defer ticker.Stop()
@@ -122,11 +116,8 @@ func (a *Adapter) execReconciler(ctx context.Context, out chan<- ports.OrderUpda
 			if ib == nil {
 				continue
 			}
-			fills, err := ib.ReqFills()
-			if err != nil {
-				a.log.Warn().Err(err).Msg("exec reconciler: ReqFills failed")
-				continue
-			}
+			// Fills() is non-blocking — reads from ibsync's local state.
+			fills := ib.Fills()
 			for _, f := range fills {
 				if f.Execution == nil {
 					continue
@@ -152,6 +143,34 @@ func (a *Adapter) execReconciler(ctx context.Context, out chan<- ports.OrderUpda
 					return
 				}
 			}
+		}
+	}
+}
+
+// execCacheRefresher periodically calls ReqFills() to refresh ibsync's
+// internal fill cache. This is a blocking API call that may take up to 30s.
+func (a *Adapter) execCacheRefresher(ctx context.Context) {
+	// Initial delay to let connection stabilize.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(15 * time.Second):
+	}
+
+	for {
+		if ib := a.conn.IB(); ib != nil {
+			_, err := ib.ReqFills()
+			if err != nil {
+				a.log.Warn().Err(err).Msg("exec reconciler: ReqFills cache refresh failed")
+			} else {
+				a.log.Debug().Msg("exec reconciler: fill cache refreshed via ReqFills")
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(execReconcileRefreshInterval):
 		}
 	}
 }
