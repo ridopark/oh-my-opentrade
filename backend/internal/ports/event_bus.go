@@ -22,4 +22,10 @@ type EventBusPort interface {
 type BacktestBus interface {
 	EventBusPort
 	Flush()
+	// FreezeHandlers snapshots the current handler map so that PublishDirect
+	// can bypass locking. Call once after all Subscribe calls are done.
+	FreezeHandlers()
+	// PublishDirect dispatches an event using the frozen handler snapshot,
+	// skipping lock acquisition and slice copies. Only valid after FreezeHandlers.
+	PublishDirect(ctx context.Context, event domain.Event) error
 }

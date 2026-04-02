@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -892,6 +893,16 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	r.emitter.EmitSetup("Replaying bars…")
 
+	// Reduce GC pressure during the replay hot loop. The backtest allocates
+	// millions of transient objects; raising GOGC defers collection cycles
+	// and can cut wall-clock time by 10-25%. Restore the original value when done.
+	prevGOGC := debug.SetGCPercent(400)
+	defer debug.SetGCPercent(prevGOGC)
+
+	// Freeze the handler map so PublishDirect can bypass locking.
+	// All Subscribe calls have completed by this point.
+	r.infra.EventBus.FreezeHandlers()
+
 	const tenantID = "default"
 	envMode := domain.EnvModePaper
 	barsProcessed := 0
@@ -994,12 +1005,9 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 			}
 
-			// Publish market bar event
-			evt, evtErr := domain.NewEvent(domain.EventMarketBarReceived, tenantID, envMode, bar.Time.String()+string(bar.Symbol), bar)
-			if evtErr != nil {
-				continue
-			}
-			if pubErr := r.infra.EventBus.Publish(ctx, *evt); pubErr != nil {
+			// Publish market bar event (backtest fast path: counter ID, no UUID, no time.Now, no lock).
+			evt := domain.NewBacktestEvent(domain.EventMarketBarReceived, tenantID, envMode, bar.Time.String()+string(bar.Symbol), bar, bar.Time)
+			if pubErr := r.infra.EventBus.PublishDirect(ctx, evt); pubErr != nil {
 				if ctx.Err() != nil {
 					break
 				}
