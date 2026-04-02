@@ -48,10 +48,10 @@ func TestIsRTHGap(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "Friday close to Monday open",
+			name:     "Friday close to Monday open (normal weekend, no full RTH missing)",
 			start:    time.Date(2026, 2, 13, 16, 0, 0, 0, loc), // Friday
 			end:      time.Date(2026, 2, 16, 9, 30, 0, 0, loc),  // Monday
-			expected: true,
+			expected: false,
 		},
 		{
 			name:     "end before start returns false",
