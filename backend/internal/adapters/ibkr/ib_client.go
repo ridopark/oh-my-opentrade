@@ -19,6 +19,7 @@ type ibClient interface {
 	Snapshot(contract *ibsync.Contract, regulatorySnapshot ...bool) (*ibsync.Ticker, error)
 	ReqRealTimeBars(contract *ibsync.Contract, barSize int, whatToShow string, useRTH bool, realTimeBarsOptions ...ibsync.TagValue) (chan ibsync.RealTimeBar, ibsync.CancelFunc)
 	ReqHistoricalData(contract *ibsync.Contract, endDateTime string, duration string, barSize string, whatToShow string, useRTH bool, formatDate int, chartOptions ...ibsync.TagValue) (chan ibsync.Bar, ibsync.CancelFunc)
+	Fills(execFilter ...*ibsync.ExecutionFilter) []ibsync.Fill
 	ReqFills(execFilter ...*ibsync.ExecutionFilter) ([]ibsync.Fill, error)
 }
 

@@ -88,6 +88,11 @@ func (m *mockIB) ReqHistoricalData(_ *ibsync.Contract, _, _, _, _ string, _ bool
 	close(ch)
 	return ch, func() {}
 }
+func (m *mockIB) Fills(_ ...*ibsync.ExecutionFilter) []ibsync.Fill {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return nil
+}
 func (m *mockIB) ReqFills(_ ...*ibsync.ExecutionFilter) ([]ibsync.Fill, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
