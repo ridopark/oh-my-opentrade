@@ -428,6 +428,7 @@ export interface ORBPhaseRange {
   valid: boolean;
   barCount: number;
   expectedBars: number;
+  windowMinutes: number;
 }
 
 export interface ORBPhaseBreakout {
