@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMultiStrategy_AllRegisterWithoutConflict verifies all 3 builtin strategies
+// TestMultiStrategy_AllRegisterWithoutConflict verifies all 4 builtin strategies
 // can coexist in a single MemRegistry without ID collisions.
 func TestMultiStrategy_AllRegisterWithoutConflict(t *testing.T) {
 	reg := strategy.NewMemRegistry()
@@ -21,6 +21,7 @@ func TestMultiStrategy_AllRegisterWithoutConflict(t *testing.T) {
 		builtin.NewORBStrategy(),
 		builtin.NewAVWAPStrategy(),
 		builtin.NewAIScalperStrategy(),
+		builtin.NewPHMStrategy(),
 	}
 
 	for _, s := range strategies {
@@ -29,7 +30,7 @@ func TestMultiStrategy_AllRegisterWithoutConflict(t *testing.T) {
 	}
 
 	ids := reg.List()
-	assert.Len(t, ids, 3, "all 3 strategies should be registered")
+	assert.Len(t, ids, 4, "all 4 strategies should be registered")
 }
 
 // TestMultiStrategy_MetaUniqueIDs verifies each strategy has a unique ID.
@@ -38,6 +39,7 @@ func TestMultiStrategy_MetaUniqueIDs(t *testing.T) {
 		builtin.NewORBStrategy(),
 		builtin.NewAVWAPStrategy(),
 		builtin.NewAIScalperStrategy(),
+		builtin.NewPHMStrategy(),
 	}
 
 	seen := make(map[string]bool)
@@ -46,7 +48,7 @@ func TestMultiStrategy_MetaUniqueIDs(t *testing.T) {
 		assert.False(t, seen[id], "duplicate strategy ID: %s", id)
 		seen[id] = true
 	}
-	assert.Len(t, seen, 3)
+	assert.Len(t, seen, 4)
 }
 
 // TestMultiStrategy_PriorityOrdering verifies that when all 3 strategies are
@@ -64,6 +66,7 @@ func TestMultiStrategy_PriorityOrdering(t *testing.T) {
 		{builtin.NewORBStrategy(), 100},
 		{builtin.NewAVWAPStrategy(), 80},
 		{builtin.NewAIScalperStrategy(), 60},
+		{builtin.NewPHMStrategy(), 40},
 	}
 
 	symbol := "AAPL"
@@ -84,21 +87,23 @@ func TestMultiStrategy_PriorityOrdering(t *testing.T) {
 	}
 
 	instances := router.InstancesForSymbol(symbol)
-	require.Len(t, instances, 3, "all 3 instances should be registered for symbol")
+	require.Len(t, instances, 4, "all 4 instances should be registered for symbol")
 
-	// Verify descending priority: ORB (100) > AVWAP (80) > AIScalper (60).
+	// Verify descending priority: ORB (100) > AVWAP (80) > AIScalper (60) > PHM (40).
 	assert.Equal(t, 100, instances[0].Assignment().Priority, "ORB should be first (priority 100)")
 	assert.Equal(t, 80, instances[1].Assignment().Priority, "AVWAP should be second (priority 80)")
 	assert.Equal(t, 60, instances[2].Assignment().Priority, "AIScalper should be third (priority 60)")
+	assert.Equal(t, 40, instances[3].Assignment().Priority, "PHM should be fourth (priority 40)")
 }
 
-// TestMultiStrategy_AllInitSuccessfully verifies that all 3 strategies can
+// TestMultiStrategy_AllInitSuccessfully verifies that all 4 strategies can
 // Init on the same symbol without errors, even with nil params.
 func TestMultiStrategy_AllInitSuccessfully(t *testing.T) {
 	strategies := []strat.Strategy{
 		builtin.NewORBStrategy(),
 		builtin.NewAVWAPStrategy(),
 		builtin.NewAIScalperStrategy(),
+		builtin.NewPHMStrategy(),
 	}
 
 	symbol := "MSFT"
@@ -119,13 +124,14 @@ func TestMultiStrategy_AllInitSuccessfully(t *testing.T) {
 	}
 }
 
-// TestMultiStrategy_AllProcessBarWithoutPanic verifies all 3 strategies can
+// TestMultiStrategy_AllProcessBarWithoutPanic verifies all 4 strategies can
 // process the same bar without errors or panics. Each gets its own instance.
 func TestMultiStrategy_AllProcessBarWithoutPanic(t *testing.T) {
 	strategies := []strat.Strategy{
 		builtin.NewORBStrategy(),
 		builtin.NewAVWAPStrategy(),
 		builtin.NewAIScalperStrategy(),
+		builtin.NewPHMStrategy(),
 	}
 
 	symbol := "GOOGL"
@@ -184,6 +190,7 @@ func TestMultiStrategy_WarmupBarsSpec(t *testing.T) {
 		{builtin.NewORBStrategy(), 0},
 		{builtin.NewAVWAPStrategy(), 30},
 		{builtin.NewAIScalperStrategy(), 30},
+		{builtin.NewPHMStrategy(), 12},
 	}
 	for _, tc := range tests {
 		t.Run(tc.strategy.Meta().ID.String(), func(t *testing.T) {
