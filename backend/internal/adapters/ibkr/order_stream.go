@@ -41,8 +41,6 @@ func (a *Adapter) pollOrderUpdates(ctx context.Context, out chan<- ports.OrderUp
 	ticker := time.NewTicker(orderPollInterval)
 	defer ticker.Stop()
 
-	var pollCount int
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -53,22 +51,6 @@ func (a *Adapter) pollOrderUpdates(ctx context.Context, out chan<- ports.OrderUp
 				continue
 			}
 			trades := ib.Trades()
-			pollCount++
-
-			// Log trade count every 30s (~150 polls) to diagnose visibility.
-			if pollCount%150 == 1 {
-				a.log.Info().Int("trade_count", len(trades)).Int("seen_count", len(seen)).Msg("poll: trade snapshot")
-				for _, t := range trades {
-					if t.Order == nil {
-						continue
-					}
-					a.log.Debug().
-						Int64("order_id", t.Order.OrderID).
-						Str("status", string(t.OrderStatus.Status)).
-						Float64("filled", t.OrderStatus.Filled.Float()).
-						Msg("poll: trade detail")
-				}
-			}
 
 			for _, t := range trades {
 				if t.Order == nil {

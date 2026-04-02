@@ -259,7 +259,6 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 						Status:         "filled",
 						FilledQty:      order.Quantity,
 						FilledAvgPrice: order.LimitPrice,
-						Qty:            order.Quantity,
 					}
 					// Fall through to normal fill processing below
 				} else {
@@ -301,10 +300,14 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 			}
 			if details.FilledQty <= 0 {
 				if details.Status == "filled" {
-					// IBKR paper sometimes reports filled status but no fill qty.
-					// Use the original order qty as the fill qty.
-					details.FilledQty = details.Qty
-					details.FilledAvgPrice = order.LimitPrice
+					// ibsync doesn't populate Filled/AvgFillPrice on reconnect,
+					// so both details.FilledQty and details.Qty can be 0.
+					// Fall back to the DB order quantity (for a fully filled order
+					// these are identical) and the limit price as best estimate.
+					details.FilledQty = order.Quantity
+					if details.FilledAvgPrice <= 0 {
+						details.FilledAvgPrice = order.LimitPrice
+					}
 					ol.Info().Float64("inferred_qty", details.FilledQty).Float64("inferred_price", details.FilledAvgPrice).Msg("reconcile: filled order has no fill data — inferring from order qty")
 				} else {
 					continue
