@@ -6,7 +6,10 @@ type OptionsConfig struct {
 	Enabled         bool                                    `toml:"enabled"`
 	Defaults        ContractSelectionConstraints            `toml:"defaults"`
 	RegimeOverrides map[string]ContractSelectionConstraints `toml:"regime_overrides"`
-	MaxContracts    int                                     `toml:"max_contracts"` // cap contract count to limit spread drag (0 = use default 15)
+	MaxContracts    int                                     `toml:"max_contracts"`    // cap contract count to limit spread drag (0 = use default 15)
+	LimitSpreadPct  *float64                                `toml:"limit_spread_pct"`  // limit = mid + X * spread (default 0.6 = 60%)
+	LimitBufferBPS  *int                                    `toml:"limit_buffer_bps"`  // fallback when spread=0: ask * (1 + bps/10000) (default 300 = 3%)
+	StaleCancelSecs *int                                    `toml:"stale_cancel_secs"` // cancel unfilled option orders after N seconds (default 60)
 }
 
 // ContractSelectionConstraints holds all parameters for filtering and selecting

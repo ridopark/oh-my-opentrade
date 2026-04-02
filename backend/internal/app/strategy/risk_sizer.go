@@ -424,7 +424,7 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		exitRules = spec.ExitRulesForSymbol(sigRef.Symbol)
 	}
 
-	limitOffsetBPS := 5
+	limitOffsetBPS := 10
 	stopBPS := 25
 	riskPerTradeBPS := 10
 	maxSlippageBPS := 10
@@ -801,12 +801,25 @@ func (rs *RiskSizer) handleOptionsSignal(
 	if midPrice <= 0 {
 		midPrice = best.Last
 	}
-	// Use the ask price for buys to ensure fills. Alpaca snapshots are
-	// slightly stale, so bidding at mid or 75th percentile still lands
-	// below the live ask. The ask is the realistic cost of entry.
-	fillPrice := midPrice
-	if best.Ask > 0 {
-		fillPrice = best.Ask
+	// Spread-aware limit price for options entry orders.
+	// Default: mid + 60% of spread. Fallback: ask + 3% when spread is zero.
+	spreadPct := 0.60
+	if spec.Options.LimitSpreadPct != nil {
+		spreadPct = *spec.Options.LimitSpreadPct
+	}
+	fallbackBPS := 300
+	if spec.Options.LimitBufferBPS != nil {
+		fallbackBPS = *spec.Options.LimitBufferBPS
+	}
+	var fillPrice float64
+	spread := best.Ask - best.Bid
+	switch {
+	case best.Ask > 0 && best.Bid > 0 && spread > 0:
+		fillPrice = midPrice + spreadPct*spread
+	case best.Ask > 0:
+		fillPrice = best.Ask * (1.0 + float64(fallbackBPS)/10000.0)
+	default:
+		fillPrice = midPrice
 	}
 	if midPrice <= 0 {
 		rs.logger.Warn("option contract has no valid price — skipping",
@@ -880,21 +893,27 @@ func (rs *RiskSizer) handleOptionsSignal(
 		return fmt.Errorf("risk sizer: failed to create option order intent: %w", err)
 	}
 
+	staleSecs := 60 // default: cancel unfilled option orders after 60s
+	if spec.Options.StaleCancelSecs != nil {
+		staleSecs = *spec.Options.StaleCancelSecs
+	}
+
 	intent.AssetClass = domain.AssetClassEquity
 	intent.Meta = map[string]string{
-		"instrument_type":   "OPTION",
-		"option_right":      string(optRight),
-		"underlying":        sigRef.Symbol,
-		"strike":            fmt.Sprintf("%.2f", best.Strike),
-		"expiry":            best.Expiry.Format("2006-01-02"),
-		"delta_at_entry":    fmt.Sprintf("%.4f", best.Delta),
-		"iv_at_entry":       fmt.Sprintf("%.4f", best.IV),
-		"premium":           fmt.Sprintf("%.2f", midPrice),
-		"entry_date":        rs.nowFn().Format("2006-01-02"),
-		"entry_underlying":  fmt.Sprintf("%.4f", refPrice),
-		"open_interest":     strconv.Itoa(best.OpenInterest),
-		"enrichment_status": string(enrichment.Status),
-		"risk_modifier":     string(enrichment.RiskModifier),
+		"instrument_type":    "OPTION",
+		"option_right":       string(optRight),
+		"underlying":         sigRef.Symbol,
+		"strike":             fmt.Sprintf("%.2f", best.Strike),
+		"expiry":             best.Expiry.Format("2006-01-02"),
+		"delta_at_entry":     fmt.Sprintf("%.4f", best.Delta),
+		"iv_at_entry":        fmt.Sprintf("%.4f", best.IV),
+		"premium":            fmt.Sprintf("%.2f", midPrice),
+		"entry_date":         rs.nowFn().Format("2006-01-02"),
+		"entry_underlying":   fmt.Sprintf("%.4f", refPrice),
+		"open_interest":      strconv.Itoa(best.OpenInterest),
+		"stale_cancel_secs":  strconv.Itoa(staleSecs),
+		"enrichment_status":  string(enrichment.Status),
+		"risk_modifier":      string(enrichment.RiskModifier),
 		"bull":              enrichment.BullArgument,
 		"bear":              enrichment.BearArgument,
 		"judge":             enrichment.JudgeReasoning,
