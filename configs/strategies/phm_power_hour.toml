@@ -62,7 +62,7 @@ risk_scale_max = 1.00
 type = "ATR_TRAIL"
 [exit_rules.params]
 atr_mult = 1.5
-ratchet = true
+ratchet = 1.0
 
 [[exit_rules]]
 type = "STAGNATION_EXIT"
