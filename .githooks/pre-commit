@@ -21,7 +21,21 @@ PACKAGES=$(echo "$STAGED_GO" | sed 's|backend/||' | xargs -I{} dirname {} | sort
 
 printf "${YELLOW}[pre-commit] golangci-lint on changed packages...${NC}\n"
 
-if (cd "$REPO_ROOT/backend" && golangci-lint run $PACKAGES); then
+# Filter out test-only packages that golangci-lint can't typecheck
+FILTERED_PACKAGES=$(echo "$PACKAGES" | while read -r pkg; do
+    # Skip packages with only _test.go files
+    dir="$REPO_ROOT/backend/${pkg#./}"
+    if ls "$dir"/*.go 2>/dev/null | grep -qv '_test\.go$'; then
+        echo "$pkg"
+    fi
+done)
+
+if [ -z "$FILTERED_PACKAGES" ]; then
+    printf "${GREEN}  ✓ no lintable packages${NC}\n"
+    exit 0
+fi
+
+if (cd "$REPO_ROOT/backend" && golangci-lint run $FILTERED_PACKAGES); then
     printf "${GREEN}  ✓ lint passed${NC}\n"
 else
     printf "${RED}  ✗ lint failed — fix issues before committing${NC}\n"

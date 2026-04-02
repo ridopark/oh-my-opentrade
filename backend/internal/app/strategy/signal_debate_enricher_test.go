@@ -34,6 +34,10 @@ type mockRepository struct {
 
 func (m *mockRepository) SaveMarketBar(context.Context, domain.MarketBar) error { return nil }
 
+func (m *mockRepository) SaveMarketBars(context.Context, []domain.MarketBar) (int, error) {
+	return 0, nil
+}
+
 func (m *mockRepository) GetMarketBars(context.Context, domain.Symbol, domain.Timeframe, time.Time, time.Time) ([]domain.MarketBar, error) {
 	return nil, nil
 }

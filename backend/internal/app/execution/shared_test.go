@@ -94,6 +94,10 @@ func (m *mockRepository) SaveMarketBar(ctx context.Context, bar domain.MarketBar
 	return nil
 }
 
+func (m *mockRepository) SaveMarketBars(_ context.Context, _ []domain.MarketBar) (int, error) {
+	return 0, nil
+}
+
 func (m *mockRepository) GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
 	if m.GetMarketBarsFunc != nil {
 		return m.GetMarketBarsFunc(ctx, symbol, timeframe, from, to)

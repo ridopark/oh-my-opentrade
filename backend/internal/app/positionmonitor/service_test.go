@@ -124,6 +124,9 @@ type mockRepo struct {
 }
 
 func (m *mockRepo) SaveMarketBar(ctx context.Context, bar domain.MarketBar) error { return nil }
+func (m *mockRepo) SaveMarketBars(_ context.Context, _ []domain.MarketBar) (int, error) {
+	return 0, nil
+}
 func (m *mockRepo) GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
 	return nil, nil
 }

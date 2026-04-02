@@ -3,6 +3,7 @@ package backtest
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"database/sql"
@@ -31,13 +32,16 @@ type SessionData struct {
 }
 
 type SessionResolver struct {
+	mu       sync.Mutex // guards sessions and barCache during concurrent Load
 	sessions map[string]map[string]SessionData
+	barCache map[string][]start.Bar // "SYMBOL:2025-03-15" → 1m bars for that day
 	loc      *time.Location
 }
 
 func NewSessionResolver(loc *time.Location) *SessionResolver {
 	return &SessionResolver{
 		sessions: make(map[string]map[string]SessionData),
+		barCache: make(map[string][]start.Bar),
 		loc:      loc,
 	}
 }
@@ -125,7 +129,9 @@ func (r *SessionResolver) Load(ctx context.Context, db *sql.DB, sym domain.Symbo
 		symSessions[s.Date] = s
 	}
 
+	r.mu.Lock()
 	r.sessions[sym.String()] = symSessions
+	r.mu.Unlock()
 	return nil
 }
 
@@ -180,16 +186,62 @@ func (r *SessionResolver) ResolveAnchors(symbol string, barTime time.Time, ancho
 	return result
 }
 
+// LoadBars pre-fetches all 1m bars for a symbol across the full date range and
+// indexes them by trading day in the barCache. Call once per symbol during init
+// so that GetBarsSince can serve from memory instead of hitting the DB.
+func (r *SessionResolver) LoadBars(ctx context.Context, db *sql.DB, sym domain.Symbol, from, to time.Time) error {
+	rows, err := db.QueryContext(ctx, `
+		SELECT time, open, high, low, close, volume
+		FROM market_bars
+		WHERE symbol = $1 AND timeframe = '1m'
+		  AND time >= $2 AND time < $3
+		ORDER BY time`, string(sym), from, to)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	dayBars := make(map[string][]start.Bar)
+	for rows.Next() {
+		var b start.Bar
+		if scanErr := rows.Scan(&b.Time, &b.Open, &b.High, &b.Low, &b.Close, &b.Volume); scanErr != nil {
+			continue
+		}
+		day := b.Time.In(r.loc).Format("2006-01-02")
+		dayBars[day] = append(dayBars[day], b)
+	}
+
+	r.mu.Lock()
+	for day, bars := range dayBars {
+		r.barCache[sym.String()+":"+day] = bars
+	}
+	r.mu.Unlock()
+	return nil
+}
+
 // GetBarsSince returns 1m bars for a symbol from `since` to end of that day's RTH session.
-// Used to replay previous-day bars into AVWAP anchors (pd_high, pd_low).
+// Uses the in-memory barCache populated by LoadBars; falls back to a DB query on cache miss.
 func (r *SessionResolver) GetBarsSince(ctx context.Context, db *sql.DB, symbol string, since time.Time) []start.Bar {
 	if since.IsZero() {
 		return nil
 	}
-	// End of RTH for the anchor's day
 	et := since.In(r.loc)
+	day := et.Format("2006-01-02")
 	eod := time.Date(et.Year(), et.Month(), et.Day(), 16, 0, 0, 0, r.loc)
 
+	key := symbol + ":" + day
+	if cached, ok := r.barCache[key]; ok {
+		// Filter to bars >= since && < eod
+		var result []start.Bar
+		for _, b := range cached {
+			if !b.Time.Before(since) && b.Time.Before(eod) {
+				result = append(result, b)
+			}
+		}
+		return result
+	}
+
+	// Fallback: DB query (should rarely happen if LoadBars was called)
 	rows, err := db.QueryContext(ctx, `
 		SELECT time, open, high, low, close, volume
 		FROM market_bars
@@ -228,7 +280,9 @@ func (r *SessionResolver) LoadSwings(ctx context.Context, db *sql.DB, sym domain
 	defer rows.Close()
 
 	det := start.NewSwingDetector(5, "1m")
+	r.mu.Lock()
 	symSessions := r.sessions[sym.String()]
+	r.mu.Unlock()
 	if symSessions == nil {
 		return nil
 	}
@@ -262,6 +316,9 @@ func (r *SessionResolver) LoadSwings(ctx context.Context, db *sql.DB, sym domain
 		}
 		symSessions[day] = sess
 	}
+	r.mu.Lock()
+	r.sessions[sym.String()] = symSessions
+	r.mu.Unlock()
 	return nil
 }
 

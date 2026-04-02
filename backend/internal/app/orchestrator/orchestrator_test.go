@@ -65,6 +65,9 @@ func (m *mockBroker) GetOrderDetails(_ context.Context, _ string) (ports.OrderDe
 type mockRepo struct{}
 
 func (m *mockRepo) SaveMarketBar(_ context.Context, _ domain.MarketBar) error { return nil }
+func (m *mockRepo) SaveMarketBars(_ context.Context, _ []domain.MarketBar) (int, error) {
+	return 0, nil
+}
 func (m *mockRepo) GetMarketBars(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _, _ time.Time) ([]domain.MarketBar, error) {
 	return nil, nil
 }

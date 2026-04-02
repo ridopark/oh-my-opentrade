@@ -276,6 +276,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			break
 		}
 	}
+	var spyDailyBars []domain.MarketBar
 	if orbSelected {
 		orbID, _ := start.NewStrategyID("orb_break_retest")
 		if orbSpec, loadErr := specStore.GetLatest(context.Background(), orbID); loadErr == nil {
@@ -285,23 +286,29 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 
-		// Compute realized volatility from SPY daily bars as VIX proxy.
-		// Uses 20-day realized vol (annualized) — no external VIX data needed.
-		{
-			spySym, _ := domain.NewSymbol("SPY")
-			rvFrom := r.cfg.From.Add(-60 * 24 * time.Hour) // 60 days to have enough for 20-day window
-			spyDaily, _ := repo.GetMarketBars(ctx, spySym, "1d", rvFrom, r.cfg.From)
-			if len(spyDaily) == 0 && r.marketData != nil {
-				apiBars, _ := r.marketData.GetHistoricalBars(ctx, spySym, "1d", rvFrom, r.cfg.From)
-				if len(apiBars) > 0 {
-					spyDaily = apiBars
-				}
+		// Fetch SPY daily bars ONCE for the entire backtest range (with 60-day
+		// lookback before From) so we can recompute realized vol per day without
+		// repeated DB queries.
+		spySym, _ := domain.NewSymbol("SPY")
+		rvFrom := r.cfg.From.Add(-60 * 24 * time.Hour) // 60 days to have enough for 20-day window
+		spyDailyBars, _ = repo.GetMarketBars(ctx, spySym, "1d", rvFrom, r.cfg.To)
+		if len(spyDailyBars) == 0 && r.marketData != nil {
+			apiBars, _ := r.marketData.GetHistoricalBars(ctx, spySym, "1d", rvFrom, r.cfg.To)
+			if len(apiBars) > 0 {
+				spyDailyBars = apiBars
 			}
-			if len(spyDaily) > 21 {
-				rv := monitor.ComputeRealizedVol(spyDaily, 20)
-				monitorSvc.SetVIXLevel(rv)
-				r.log.Info().Float64("realized_vol", rv).Int("daily_bars", len(spyDaily)).Msg("VIX level set from SPY realized volatility")
+		}
+		// Set initial VIX level using bars up to the backtest start.
+		var initBars []domain.MarketBar
+		for _, b := range spyDailyBars {
+			if b.Time.Before(r.cfg.From) {
+				initBars = append(initBars, b)
 			}
+		}
+		if len(initBars) > 21 {
+			rv := monitor.ComputeRealizedVol(initBars, 20)
+			monitorSvc.SetVIXLevel(rv)
+			r.log.Info().Float64("realized_vol", rv).Int("daily_bars", len(spyDailyBars)).Msg("VIX level set from SPY realized volatility")
 		}
 	}
 
@@ -697,10 +704,25 @@ func (r *Runner) Run(ctx context.Context) error {
 		// Extend lookback by 5 calendar days so previous-day anchors (pd_high, pd_low, etc.)
 		// are available on the first replay day even on Mondays (need Friday = -3 calendar days).
 		sessionFrom := r.cfg.From.Add(-5 * 24 * time.Hour)
-		for _, sym := range r.cfg.Symbols {
-			if loadErr := sessionResolver.Load(ctx, r.infra.DB, sym, sessionFrom, r.cfg.To); loadErr != nil {
-				r.log.Warn().Err(loadErr).Str("symbol", sym.String()).Msg("failed to load session data")
+		{
+			var wg sync.WaitGroup
+			sem := make(chan struct{}, 10) // limit concurrent DB connections
+			for _, sym := range r.cfg.Symbols {
+				wg.Add(1)
+				go func(s domain.Symbol) {
+					defer wg.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
+					if loadErr := sessionResolver.Load(ctx, r.infra.DB, s, sessionFrom, r.cfg.To); loadErr != nil {
+						r.log.Warn().Err(loadErr).Str("symbol", s.String()).Msg("failed to load session data")
+					}
+					// Pre-load 1m bars into cache so GetBarsSince avoids per-anchor DB queries.
+					if loadErr := sessionResolver.LoadBars(ctx, r.infra.DB, s, sessionFrom, r.cfg.To); loadErr != nil {
+						r.log.Warn().Err(loadErr).Str("symbol", s.String()).Msg("failed to pre-load 1m bars")
+					}
+				}(sym)
 			}
+			wg.Wait()
 		}
 
 		aiResolver := strategy.NewAIAnchorResolver(aiAdvisor, nil, nil)
@@ -937,16 +959,17 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			currentSessionDate = dayOpen
 
-			// Recompute realized vol for this trading day (20-day lookback from current date).
+			// Recompute realized vol for this trading day from cached SPY daily bars.
 			if orbSelected {
-				spySym, _ := domain.NewSymbol("SPY")
-				rvFrom := dayOpen.Add(-60 * 24 * time.Hour)
-				spyDaily, _ := repo.GetMarketBars(ctx, spySym, "1d", rvFrom, dayOpen)
-				if len(spyDaily) == 0 && r.marketData != nil {
-					spyDaily, _ = r.marketData.GetHistoricalBars(ctx, spySym, "1d", rvFrom, dayOpen)
+				rvCutoff := dayOpen.Add(-60 * 24 * time.Hour)
+				var windowBars []domain.MarketBar
+				for _, b := range spyDailyBars {
+					if !b.Time.Before(rvCutoff) && b.Time.Before(dayOpen) {
+						windowBars = append(windowBars, b)
+					}
 				}
-				if len(spyDaily) > 21 {
-					rv := monitor.ComputeRealizedVol(spyDaily, 20)
+				if len(windowBars) > 21 {
+					rv := monitor.ComputeRealizedVol(windowBars, 20)
 					monitorSvc.SetVIXLevel(rv)
 				}
 			}

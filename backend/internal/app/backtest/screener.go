@@ -69,9 +69,7 @@ func (ds *DailyScreener) fetchDailyBars(ctx context.Context, sym domain.Symbol, 
 			bars = apiBars
 			// Cache in DB for future backtests
 			if ds.repo != nil {
-				for _, b := range apiBars {
-						_ = ds.repo.SaveMarketBar(ctx, b)
-					}
+				_, _ = ds.repo.SaveMarketBars(ctx, apiBars)
 			}
 		}
 	}
@@ -235,28 +233,48 @@ func (ds *DailyScreener) PrecomputeAll(
 	onProgress func(day int, total int, date string),
 ) map[string]map[string]bool {
 	result := make(map[string]map[string]bool, len(tradingDays))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4) // process up to 4 days concurrently
+	var done int64
 
-	for i, day := range tradingDays {
+	for _, day := range tradingDays {
 		if ctx.Err() != nil {
 			break
 		}
-		if onProgress != nil {
-			onProgress(i, len(tradingDays), day.Format("2006-01-02"))
-		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(day time.Time) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if ctx.Err() != nil {
+				return
+			}
 
-		scored := ds.ComputeForDate(ctx, day, candidates, topN)
+			scored := ds.ComputeForDate(ctx, day, candidates, topN)
 
-		symSet := make(map[string]bool, len(scored))
-		for _, s := range scored {
-			symSet[s.Symbol] = true
-		}
-		result[day.Format("2006-01-02")] = symSet
+			symSet := make(map[string]bool, len(scored))
+			for _, s := range scored {
+				symSet[s.Symbol] = true
+			}
 
-		ds.log.Debug().
-			Str("date", day.Format("2006-01-02")).
-			Int("top_n", len(scored)).
-			Msg("daily screener computed")
+			mu.Lock()
+			result[day.Format("2006-01-02")] = symSet
+			done++
+			cur := done
+			mu.Unlock()
+
+			if onProgress != nil {
+				onProgress(int(cur), len(tradingDays), day.Format("2006-01-02"))
+			}
+
+			ds.log.Debug().
+				Str("date", day.Format("2006-01-02")).
+				Int("top_n", len(scored)).
+				Msg("daily screener computed")
+		}(day)
 	}
+	wg.Wait()
 
 	return result
 }
