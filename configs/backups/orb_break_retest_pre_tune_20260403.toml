@@ -28,14 +28,14 @@ description = "Opening Range Breakout strategy that waits for price to break the
 [params]
 bar_timeframe = "5m"
 orb_window_minutes = 15
-min_rvol = 1.0                   # accept average volume
-min_confidence = 0.40            # looser — recover WR
+min_rvol = 0.8                   # lowered from 1.5 — accept average volume
+min_confidence = 0.35            # lowered from 0.55 — more signals pass
 breakout_confirm_bps = 2         # tighter confirmation (was 5)
 touch_tolerance_bps = 5          # wider retest zone (was 3) — easier to trigger
 hold_confirm_bps = 1             # almost no hold confirmation needed (was 2)
 max_retest_bars = 25             # longer retest window (was 15) — more patient
 allow_missing_range_bars = 2     # tolerate 2 missing bars (was 1)
-max_signals_per_session = 3      # moderate overtrading limit
+max_signals_per_session = 6      # up from 3 — more entries per day
 htf_bias_enabled = false         # disabled — don't block on daily bias
 atr_multiplier = 3.5
 sweep_cooldown_bars = 1          # shorter cooldown after sweep (was 3)
@@ -47,7 +47,7 @@ max_range_atr_mult = 4.0         # accept wider ranges (was 2.5)
 min_range_pct_bps = 10           # accept smaller ranges (was 20)
 fvg_enabled = true
 fvg_min_rvol = 0.8               # lowered from 1.5
-stop_bps = 75                    # moderate stop
+stop_bps = 100                   # wider stop (was 50) — fewer premature exits
 limit_offset_bps = 15            # slightly more aggressive fill
 risk_per_trade_bps = 300         # smaller size per trade (more attempts)
 max_position_bps = 1500
@@ -76,22 +76,22 @@ size_wide_mult = 1.50
 [[exit_rules]]
 type = "STEP_STOP"
 [exit_rules.params]
-min_hold_bars = 3
+min_hold_bars = 2
 bar_minutes = 5
 
 [[exit_rules]]
 type = "SD_TARGET"
 [exit_rules.params]
-sd_level = 2.0
-min_hold_bars = 3
+sd_level = 1.5
+min_hold_bars = 2
 bar_minutes = 5
 
 [[exit_rules]]
 type = "STAGNATION_EXIT"
 [exit_rules.params]
-minutes = 90
-sd_threshold = 0.5
-profit_gate_pct = 0.005
+minutes = 60
+sd_threshold = 0.6
+profit_gate_pct = 0.01
 
 [[exit_rules]]
 type = "EOD_FLATTEN"
@@ -101,7 +101,7 @@ minutes_before_close = 10
 [[exit_rules]]
 type = "MAX_LOSS"
 [exit_rules.params]
-pct = 0.015
+pct = 0.02
 
 [options]
 enabled = true
@@ -114,13 +114,13 @@ limit_buffer_bps = 1000
 stale_cancel_secs = 45
 
 [options.defaults]
-min_dte = 7                      # enough time value
-max_dte = 21                     # avoid overpaying for time
-target_delta_low = 0.40          # ATM for best fills
-target_delta_high = 0.55         # tightest spreads
-min_open_interest = 100          # ensure liquidity
-max_spread_pct = 0.10            # reject illiquid strikes
-max_iv = 1.2                     # avoid IV crush
+min_dte = 7                      # shorter DTE (was 35) — more contracts
+max_dte = 45
+target_delta_low = 0.30          # wider delta range (was 0.40)
+target_delta_high = 0.70         # wider delta range (was 0.55)
+min_open_interest = 30           # lower OI floor (was 100)
+max_spread_pct = 0.15            # accept wider spreads (was 0.10)
+max_iv = 2.0                     # higher IV tolerance (was 1.0)
 
 [options.regime_overrides.BALANCE]
 target_delta_low = 0.35
