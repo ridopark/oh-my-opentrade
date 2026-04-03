@@ -27,22 +27,25 @@ description = "Power Hour Momentum strategy captures late-day institutional MOC 
 
 [params]
 bar_timeframe = "5m"
-lookback_bars = 6                # 30min window (was 60min) — easier to break
-volume_mult = 1.0                # any above-average volume (was 1.5x)
-close_range_pct = 0.45           # close in top/bottom 45% (was 30%) — more permissive
-atr_trail_mult = 2.0             # wider trail — stay in trades longer
-stop_bps = 100                   # wider stop — less premature exit
-max_signals_per_session = 5      # up from 2 — more entries per day
-stagnation_bars = 6              # double patience before stagnation exit
-stagnation_sd_thresh = 0.15      # half threshold — harder to trigger stagnation
-limit_offset_bps = 10            # slightly more aggressive fill
-risk_per_trade_bps = 300         # smaller size per trade (more attempts)
+lookback_bars = 12               # 60min rolling window for state tracking
+volume_mult = 1.5                # require above-average volume
+close_range_pct = 0.30           # close in top/bottom 30% of bar
+atr_trail_mult = 1.5             # ATR trailing stop multiplier
+stop_bps = 60                    # max adverse move in bps
+max_signals_per_session = 2      # max entries per day
+stagnation_bars = 3              # bars without progress before exit
+stagnation_sd_thresh = 0.30      # stagnation SD threshold
+limit_offset_bps = 5
+risk_per_trade_bps = 300
 max_position_bps = 1500
-allowed_hours_start = "13:00"    # start earlier (was 14:30) — wider window
+allowed_hours_start = "13:00"    # wider window for VWAP cross opportunity
 allowed_hours_end = "15:50"
 allowed_hours_tz = "America/New_York"
 eod_flatten_time = "15:55"
 htf_bias_enabled = false
+imbalance_ratio = 1.2            # buy/sell volume ratio threshold for entry
+require_vwap_cross = false       # disabled — VWAP cross too rare in power hour
+accel_bars = 2                   # consecutive accelerating bars needed
 
 [regime_filter]
 enabled = false
