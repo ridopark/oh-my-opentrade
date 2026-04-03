@@ -1,5 +1,6 @@
 // Package builtin — Power Hour Momentum (PHM) strategy.
-// Captures institutional MOC flows in the 14:30-15:50 ET window.
+// Gao et al. (2018) intraday momentum: first 30-min return predicts last 30-min return.
+// One directional decision per symbol per day, entered at 15:15-15:30 ET, held to 15:55 EOD flatten.
 package builtin
 
 import (
@@ -18,47 +19,45 @@ import (
 
 // PHMConfig holds tunable parameters for the Power Hour Momentum strategy.
 type PHMConfig struct {
-	LookbackBars       int     // default 12 (60min of 5m bars)
-	VolumeMult         float64 // default 1.5
-	CloseRangePct      float64 // default 0.30
-	ATRTrailMult       float64 // default 1.5
-	StopBPS            int     // default 60
-	MaxSignalsPerSess  int     // default 2
-	StagnationBars     int     // default 3
-	StagnationSDThresh float64 // default 0.3
-	LimitOffsetBPS     int     // default 5
-	AllowedHoursStart  string  // default "14:30"
-	AllowedHoursEnd    string  // default "15:50"
-	AllowedHoursTZ     string  // default "America/New_York"
-	EODFlattenTime     string  // default "15:55"
-	HTFBiasEnabled     bool    // default false
+	LookbackBars      int     // default 12 (60min of 5m bars)
+	VolumeMult        float64 // default 1.5
+	CloseRangePct     float64 // default 0.30
+	StopBPS           int     // default 150 (wider — hold to close, safety net only)
+	MaxSignalsPerSess int     // default 1 (ONE entry per session)
+	LimitOffsetBPS    int     // default 5
+	AllowedHoursStart string  // default "15:15"
+	AllowedHoursEnd   string  // default "15:45"
+	AllowedHoursTZ    string  // default "America/New_York"
+	EODFlattenTime    string  // default "15:55"
+	HTFBiasEnabled    bool    // default false
 
-	// v2 entry conditions — volume imbalance, VWAP reclaim, momentum acceleration
-	ImbalanceRatio   float64 // default 1.5, range 1.2-2.5
-	RequireVWAPCross bool    // default true
-	AccelBars        int     // default 3, range 2-5
+	// Gao et al. intraday momentum params
+	AMReturnMinPct   float64 // default 0.10 (min absolute AM return for signal, 0.1%)
+	EvalTime         string  // default "15:15" (when to evaluate direction, ET)
+	MaxEntryBars     int     // default 3 (bars after eval time to attempt entry)
+	VolAccelMinRatio float64 // default 1.3 (power hour vol / afternoon vol threshold)
+	RequireHTFAlign  bool    // default false
 }
 
 // NewPHMConfigFromDNA reads PHMConfig from DNA params with sensible defaults.
 func NewPHMConfigFromDNA(params map[string]any) PHMConfig {
 	return PHMConfig{
-		LookbackBars:       phmIntParam(params, "lookback_bars", 12),
-		VolumeMult:         phmFloatParam(params, "volume_mult", 1.5),
-		CloseRangePct:      phmFloatParam(params, "close_range_pct", 0.30),
-		ATRTrailMult:       phmFloatParam(params, "atr_trail_mult", 1.5),
-		StopBPS:            phmIntParam(params, "stop_bps", 60),
-		MaxSignalsPerSess:  phmIntParam(params, "max_signals_per_session", 2),
-		StagnationBars:     phmIntParam(params, "stagnation_bars", 3),
-		StagnationSDThresh: phmFloatParam(params, "stagnation_sd_thresh", 0.3),
-		LimitOffsetBPS:     phmIntParam(params, "limit_offset_bps", 5),
-		AllowedHoursStart:  phmStringParam(params, "allowed_hours_start", "14:30"),
-		AllowedHoursEnd:    phmStringParam(params, "allowed_hours_end", "15:50"),
-		AllowedHoursTZ:     phmStringParam(params, "allowed_hours_tz", "America/New_York"),
-		EODFlattenTime:     phmStringParam(params, "eod_flatten_time", "15:55"),
-		HTFBiasEnabled:     phmBoolParam(params, "htf_bias_enabled", false),
-		ImbalanceRatio:     phmFloatParam(params, "imbalance_ratio", 1.5),
-		RequireVWAPCross:   phmBoolParam(params, "require_vwap_cross", true),
-		AccelBars:          phmIntParam(params, "accel_bars", 3),
+		LookbackBars:      phmIntParam(params, "lookback_bars", 12),
+		VolumeMult:        phmFloatParam(params, "volume_mult", 1.5),
+		CloseRangePct:     phmFloatParam(params, "close_range_pct", 0.30),
+		StopBPS:           phmIntParam(params, "stop_bps", 150),
+		MaxSignalsPerSess: phmIntParam(params, "max_signals_per_session", 1),
+		LimitOffsetBPS:    phmIntParam(params, "limit_offset_bps", 5),
+		AllowedHoursStart: phmStringParam(params, "allowed_hours_start", "15:15"),
+		AllowedHoursEnd:   phmStringParam(params, "allowed_hours_end", "15:45"),
+		AllowedHoursTZ:    phmStringParam(params, "allowed_hours_tz", "America/New_York"),
+		EODFlattenTime:    phmStringParam(params, "eod_flatten_time", "15:55"),
+		HTFBiasEnabled:    phmBoolParam(params, "htf_bias_enabled", false),
+		AMReturnMinPct:    phmFloatParam(params, "am_return_min_pct", 0.10),
+		EvalTime:          phmStringParam(params, "eval_time", "15:15"),
+		MaxEntryBars:      phmIntParam(params, "max_entry_bars", 3),
+		VolAccelMinRatio:  phmFloatParam(params, "vol_accel_min_ratio", 1.3),
+		RequireHTFAlign:   phmBoolParam(params, "require_htf_align", false),
 	}
 }
 
@@ -162,27 +161,28 @@ type PHMState struct {
 	SessionVolSum   float64
 	SessionBarCount int
 
-	// Volume imbalance tracking (rolling 3-bar windows)
-	BuyVolWindow  []float64
-	SellVolWindow []float64
+	// Session tracking for Gao et al. model
+	SessionOpenPrice float64 // First bar's close at/after 9:30 ET
+	AMReturnPct      float64 // Return from session open to 10:00 ET (set once per day)
+	AMReturnSet      bool    // Whether AM return has been computed today
+	AMDirection      string  // "long" or "short" based on AM return sign
 
-	// VWAP crossover tracking
-	VWAPCrossed    bool   // whether a cross happened in the entry window
-	CrossDirection string // "long" or "short"
-	PrevCloseVsVWAP string // "above" or "below" — tracks prior bar's relation to VWAP
+	// Volume acceleration for synthetic MOC proxy
+	AfternoonVolSum  float64 // Volume sum 14:00-15:00 ET (baseline)
+	AfternoonVolBars int     // Bar count for afternoon baseline
+	PowerHourVolSum  float64 // Volume sum 15:00-15:30 ET (acceleration window)
+	PowerHourVolBars int     // Bar count for power hour window
 
-	// Momentum acceleration tracking
-	AccelCount       int     // consecutive bars in same direction
-	LastBarDirection string  // "up" or "down"
-	LastBarRange     float64 // previous bar's high-low range
+	// Entry management
+	EvalDone       bool   // Whether we've evaluated today (one shot)
+	EntryDirection string // Decided direction for today ("long", "short", "")
+	EvalBarIndex   int    // BarCount at time of eval, for MaxEntryBars tracking
 
 	// Position/exit management
-	PositionSide    start.Side
-	PendingEntry    start.Side
-	EntryPrice      float64
-	TrailStop       float64
-	StagnationCount int
-	LastClose       float64
+	PositionSide start.Side
+	PendingEntry start.Side
+	EntryPrice   float64
+	LastClose    float64
 
 	// Cached timezone location (not serialized)
 	etLoc     *time.Location
@@ -209,33 +209,34 @@ func (s *PHMState) loadET() *time.Location {
 
 // phmStateJSON is the JSON wire format for PHMState persistence.
 type phmStateJSON struct {
-	Symbol          string              `json:"symbol"`
-	Config          PHMConfig           `json:"config"`
-	Indicators      start.IndicatorData `json:"indicators"`
-	Timeframe       string              `json:"timeframe"`
-	RecentHighs     []float64           `json:"recent_highs"`
-	RecentLows      []float64           `json:"recent_lows"`
-	RecentCloses    []float64           `json:"recent_closes"`
-	RecentVolumes   []float64           `json:"recent_volumes"`
-	BarCount        int                 `json:"bar_count"`
-	BuyVolWindow    []float64           `json:"buy_vol_window"`
-	SellVolWindow   []float64           `json:"sell_vol_window"`
-	VWAPCrossed     bool                `json:"vwap_crossed"`
-	CrossDirection  string              `json:"cross_direction"`
-	PrevCloseVsVWAP string              `json:"prev_close_vs_vwap"`
-	AccelCount      int                 `json:"accel_count"`
-	LastBarDirection string             `json:"last_bar_direction"`
-	LastBarRange    float64             `json:"last_bar_range"`
-	SessionDate     string              `json:"session_date"`
-	SignalsToday    int                 `json:"signals_today"`
-	SessionVolSum   float64             `json:"session_vol_sum"`
-	SessionBarCount int                 `json:"session_bar_count"`
-	PositionSide    start.Side          `json:"position_side"`
-	PendingEntry    start.Side          `json:"pending_entry"`
-	EntryPrice      float64             `json:"entry_price"`
-	TrailStop       float64             `json:"trail_stop"`
-	StagnationCount int                 `json:"stagnation_count"`
-	LastClose       float64             `json:"last_close"`
+	Symbol           string              `json:"symbol"`
+	Config           PHMConfig           `json:"config"`
+	Indicators       start.IndicatorData `json:"indicators"`
+	Timeframe        string              `json:"timeframe"`
+	RecentHighs      []float64           `json:"recent_highs"`
+	RecentLows       []float64           `json:"recent_lows"`
+	RecentCloses     []float64           `json:"recent_closes"`
+	RecentVolumes    []float64           `json:"recent_volumes"`
+	BarCount         int                 `json:"bar_count"`
+	SessionDate      string              `json:"session_date"`
+	SignalsToday     int                 `json:"signals_today"`
+	SessionVolSum    float64             `json:"session_vol_sum"`
+	SessionBarCount  int                 `json:"session_bar_count"`
+	SessionOpenPrice float64             `json:"session_open_price"`
+	AMReturnPct      float64             `json:"am_return_pct"`
+	AMReturnSet      bool                `json:"am_return_set"`
+	AMDirection      string              `json:"am_direction"`
+	AfternoonVolSum  float64             `json:"afternoon_vol_sum"`
+	AfternoonVolBars int                 `json:"afternoon_vol_bars"`
+	PowerHourVolSum  float64             `json:"power_hour_vol_sum"`
+	PowerHourVolBars int                 `json:"power_hour_vol_bars"`
+	EvalDone         bool                `json:"eval_done"`
+	EntryDirection   string              `json:"entry_direction"`
+	EvalBarIndex     int                 `json:"eval_bar_index"`
+	PositionSide     start.Side          `json:"position_side"`
+	PendingEntry     start.Side          `json:"pending_entry"`
+	EntryPrice       float64             `json:"entry_price"`
+	LastClose        float64             `json:"last_close"`
 }
 
 // Marshal serializes PHMState for persistence/recovery.
@@ -250,23 +251,24 @@ func (s *PHMState) Marshal() ([]byte, error) {
 		RecentCloses:     s.RecentCloses,
 		RecentVolumes:    s.RecentVolumes,
 		BarCount:         s.BarCount,
-		BuyVolWindow:     s.BuyVolWindow,
-		SellVolWindow:    s.SellVolWindow,
-		VWAPCrossed:      s.VWAPCrossed,
-		CrossDirection:   s.CrossDirection,
-		PrevCloseVsVWAP:  s.PrevCloseVsVWAP,
-		AccelCount:       s.AccelCount,
-		LastBarDirection:  s.LastBarDirection,
-		LastBarRange:     s.LastBarRange,
 		SessionDate:      s.SessionDate,
 		SignalsToday:     s.SignalsToday,
 		SessionVolSum:    s.SessionVolSum,
 		SessionBarCount:  s.SessionBarCount,
+		SessionOpenPrice: s.SessionOpenPrice,
+		AMReturnPct:      s.AMReturnPct,
+		AMReturnSet:      s.AMReturnSet,
+		AMDirection:      s.AMDirection,
+		AfternoonVolSum:  s.AfternoonVolSum,
+		AfternoonVolBars: s.AfternoonVolBars,
+		PowerHourVolSum:  s.PowerHourVolSum,
+		PowerHourVolBars: s.PowerHourVolBars,
+		EvalDone:         s.EvalDone,
+		EntryDirection:   s.EntryDirection,
+		EvalBarIndex:     s.EvalBarIndex,
 		PositionSide:     s.PositionSide,
 		PendingEntry:     s.PendingEntry,
 		EntryPrice:       s.EntryPrice,
-		TrailStop:        s.TrailStop,
-		StagnationCount:  s.StagnationCount,
 		LastClose:        s.LastClose,
 	}
 	return json.Marshal(j)
@@ -287,23 +289,24 @@ func (s *PHMState) Unmarshal(data []byte) error {
 	s.RecentCloses = j.RecentCloses
 	s.RecentVolumes = j.RecentVolumes
 	s.BarCount = j.BarCount
-	s.BuyVolWindow = j.BuyVolWindow
-	s.SellVolWindow = j.SellVolWindow
-	s.VWAPCrossed = j.VWAPCrossed
-	s.CrossDirection = j.CrossDirection
-	s.PrevCloseVsVWAP = j.PrevCloseVsVWAP
-	s.AccelCount = j.AccelCount
-	s.LastBarDirection = j.LastBarDirection
-	s.LastBarRange = j.LastBarRange
 	s.SessionDate = j.SessionDate
 	s.SignalsToday = j.SignalsToday
 	s.SessionVolSum = j.SessionVolSum
 	s.SessionBarCount = j.SessionBarCount
+	s.SessionOpenPrice = j.SessionOpenPrice
+	s.AMReturnPct = j.AMReturnPct
+	s.AMReturnSet = j.AMReturnSet
+	s.AMDirection = j.AMDirection
+	s.AfternoonVolSum = j.AfternoonVolSum
+	s.AfternoonVolBars = j.AfternoonVolBars
+	s.PowerHourVolSum = j.PowerHourVolSum
+	s.PowerHourVolBars = j.PowerHourVolBars
+	s.EvalDone = j.EvalDone
+	s.EntryDirection = j.EntryDirection
+	s.EvalBarIndex = j.EvalBarIndex
 	s.PositionSide = j.PositionSide
 	s.PendingEntry = j.PendingEntry
 	s.EntryPrice = j.EntryPrice
-	s.TrailStop = j.TrailStop
-	s.StagnationCount = j.StagnationCount
 	s.LastClose = j.LastClose
 	return nil
 }
@@ -326,7 +329,7 @@ func NewPHMStrategy() *PHMStrategy {
 			ID:          id,
 			Version:     ver,
 			Name:        "Power Hour Momentum",
-			Description: "Captures institutional MOC flows in the 14:30-15:50 ET window",
+			Description: "Gao et al. intraday momentum — AM return predicts power hour direction",
 			Author:      "system",
 		},
 	}
@@ -367,11 +370,20 @@ func (s *PHMStrategy) Init(_ start.Context, symbol string, params map[string]any
 			st.SignalsToday = phmPrior.SignalsToday
 			st.SessionVolSum = phmPrior.SessionVolSum
 			st.SessionBarCount = phmPrior.SessionBarCount
+			st.SessionOpenPrice = phmPrior.SessionOpenPrice
+			st.AMReturnPct = phmPrior.AMReturnPct
+			st.AMReturnSet = phmPrior.AMReturnSet
+			st.AMDirection = phmPrior.AMDirection
+			st.AfternoonVolSum = phmPrior.AfternoonVolSum
+			st.AfternoonVolBars = phmPrior.AfternoonVolBars
+			st.PowerHourVolSum = phmPrior.PowerHourVolSum
+			st.PowerHourVolBars = phmPrior.PowerHourVolBars
+			st.EvalDone = phmPrior.EvalDone
+			st.EntryDirection = phmPrior.EntryDirection
+			st.EvalBarIndex = phmPrior.EvalBarIndex
 			st.PositionSide = phmPrior.PositionSide
 			st.PendingEntry = phmPrior.PendingEntry
 			st.EntryPrice = phmPrior.EntryPrice
-			st.TrailStop = phmPrior.TrailStop
-			st.StagnationCount = phmPrior.StagnationCount
 			st.LastClose = phmPrior.LastClose
 			// Refresh config from params (may have been updated).
 			st.Config = cfg
@@ -396,63 +408,22 @@ func (s *PHMStrategy) OnBar(_ start.Context, symbol string, bar start.Bar, st st
 	barET := bar.Time.In(loc)
 	barDate := barET.Format("2006-01-02")
 
-	// (b) Session reset
+	// (a) Session reset
 	if barDate != phmSt.SessionDate {
-		phmSt.SessionDate = barDate
-		phmSt.SignalsToday = 0
-		phmSt.SessionVolSum = 0
-		phmSt.SessionBarCount = 0
-		phmSt.RecentHighs = phmSt.RecentHighs[:0]
-		phmSt.RecentLows = phmSt.RecentLows[:0]
-		phmSt.RecentCloses = phmSt.RecentCloses[:0]
-		phmSt.RecentVolumes = phmSt.RecentVolumes[:0]
-		phmSt.BuyVolWindow = phmSt.BuyVolWindow[:0]
-		phmSt.SellVolWindow = phmSt.SellVolWindow[:0]
-		phmSt.VWAPCrossed = false
-		phmSt.CrossDirection = ""
-		phmSt.PrevCloseVsVWAP = ""
-		phmSt.AccelCount = 0
-		phmSt.LastBarDirection = ""
-		phmSt.LastBarRange = 0
-		phmSt.PositionSide = ""
-		phmSt.PendingEntry = ""
-		phmSt.TrailStop = 0
-		phmSt.StagnationCount = 0
-		phmSt.LastClose = 0
-		phmSt.EntryPrice = 0
+		phmSessionReset(phmSt, barDate)
 	}
 
-	// (c) Update session stats
+	// (b) Update session stats
 	phmSt.SessionBarCount++
 	phmSt.SessionVolSum += bar.Volume
 
-	// (d) Update rolling windows
-	lb := phmSt.Config.LookbackBars
-	if lb < 1 {
-		lb = 12
-	}
-	phmSt.RecentHighs = append(phmSt.RecentHighs, bar.High)
-	if len(phmSt.RecentHighs) > lb {
-		phmSt.RecentHighs = phmSt.RecentHighs[len(phmSt.RecentHighs)-lb:]
-	}
-	phmSt.RecentLows = append(phmSt.RecentLows, bar.Low)
-	if len(phmSt.RecentLows) > lb {
-		phmSt.RecentLows = phmSt.RecentLows[len(phmSt.RecentLows)-lb:]
-	}
-	phmSt.RecentCloses = append(phmSt.RecentCloses, bar.Close)
-	if len(phmSt.RecentCloses) > lb {
-		phmSt.RecentCloses = phmSt.RecentCloses[len(phmSt.RecentCloses)-lb:]
-	}
-	phmSt.RecentVolumes = append(phmSt.RecentVolumes, bar.Volume)
-	if len(phmSt.RecentVolumes) > lb {
-		phmSt.RecentVolumes = phmSt.RecentVolumes[len(phmSt.RecentVolumes)-lb:]
-	}
-	phmSt.BarCount++
+	// (c) Update rolling windows
+	phmUpdateRollingWindows(phmSt, bar)
 
-	// (e) Update v2 state: volume imbalance, VWAP cross, momentum acceleration
-	phmUpdateV2State(phmSt, bar)
+	// (d) Update Gao et al. state: session open, AM return, volume zones
+	phmUpdateV2State(phmSt, bar, barET)
 
-	// (f) EOD flatten
+	// (e) EOD flatten
 	eodH, eodM := phmParseHHMM(phmSt.Config.EODFlattenTime)
 	eodTime := time.Date(barET.Year(), barET.Month(), barET.Day(), eodH, eodM, 0, 0, loc)
 	if !barET.Before(eodTime) && phmSt.PositionSide != "" {
@@ -464,20 +435,16 @@ func (s *PHMStrategy) OnBar(_ start.Context, symbol string, bar start.Bar, st st
 			return phmSt, nil, fmt.Errorf("PHMStrategy.OnBar: eod flatten signal: %w", err)
 		}
 		phmSt.PositionSide = ""
-		phmSt.TrailStop = 0
-		phmSt.StagnationCount = 0
 		phmSt.LastClose = 0
 		phmSt.EntryPrice = 0
 		return phmSt, []start.Signal{sig}, nil
 	}
 
-	// (g) Exit logic
+	// (f) Exit logic — max loss only
 	if phmSt.PositionSide != "" && phmSt.PendingEntry == "" {
 		exitSig, exited := s.checkExits(phmSt, symbol, bar)
 		if exited {
 			phmSt.PositionSide = ""
-			phmSt.TrailStop = 0
-			phmSt.StagnationCount = 0
 			phmSt.LastClose = 0
 			phmSt.EntryPrice = 0
 			return phmSt, []start.Signal{exitSig}, nil
@@ -485,7 +452,7 @@ func (s *PHMStrategy) OnBar(_ start.Context, symbol string, bar start.Bar, st st
 		phmSt.LastClose = bar.Close
 	}
 
-	// (h) Entry logic
+	// (g) Entry logic
 	if phmSt.PositionSide == "" && phmSt.PendingEntry == "" && phmSt.SignalsToday < phmSt.Config.MaxSignalsPerSess {
 		entrySig, entered := s.checkEntry(phmSt, symbol, bar, barET, loc)
 		if entered {
@@ -496,7 +463,7 @@ func (s *PHMStrategy) OnBar(_ start.Context, symbol string, bar start.Bar, st st
 	return phmSt, nil, nil
 }
 
-// checkExits evaluates all exit conditions. Returns (signal, true) if exit triggered.
+// checkExits evaluates exit conditions. Only max loss (stop_bps) as safety net.
 func (s *PHMStrategy) checkExits(phmSt *PHMState, symbol string, bar start.Bar) (start.Signal, bool) {
 	instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
 
@@ -514,62 +481,15 @@ func (s *PHMStrategy) checkExits(phmSt *PHMState, symbol string, bar start.Bar) 
 		return sig, true
 	}
 
-	// Trailing stop
-	if phmSt.PositionSide == start.SideBuy {
-		if bar.Close < phmSt.TrailStop {
-			sig, _ := start.NewSignal(instanceID, symbol, start.SignalExit, phmSt.PositionSide, 1.0, map[string]string{
-				"reason": "trail_stop",
-			})
-			return sig, true
-		}
-		// Ratchet up
-		newTrail := bar.Close - phmSt.Config.ATRTrailMult*phmSt.Indicators.ATR
-		if newTrail > phmSt.TrailStop {
-			phmSt.TrailStop = newTrail
-		}
-	} else {
-		if bar.Close > phmSt.TrailStop {
-			sig, _ := start.NewSignal(instanceID, symbol, start.SignalExit, phmSt.PositionSide, 1.0, map[string]string{
-				"reason": "trail_stop",
-			})
-			return sig, true
-		}
-		// Ratchet down
-		newTrail := bar.Close + phmSt.Config.ATRTrailMult*phmSt.Indicators.ATR
-		if newTrail < phmSt.TrailStop {
-			phmSt.TrailStop = newTrail
-		}
-	}
-
-	// Stagnation
-	if phmSt.LastClose != 0 && phmSt.Indicators.VWAPSD > 0 {
-		if math.Abs(bar.Close-phmSt.LastClose) < phmSt.Config.StagnationSDThresh*phmSt.Indicators.VWAPSD {
-			phmSt.StagnationCount++
-			if phmSt.StagnationCount >= phmSt.Config.StagnationBars {
-				sig, _ := start.NewSignal(instanceID, symbol, start.SignalExit, phmSt.PositionSide, 1.0, map[string]string{
-					"reason": "stagnation",
-				})
-				return sig, true
-			}
-		} else {
-			phmSt.StagnationCount = 0
-		}
-	}
-
 	return start.Signal{}, false
 }
 
-// checkEntry evaluates entry conditions. Returns (signal, true) if entry triggered.
+// checkEntry evaluates Gao et al. intraday momentum entry conditions.
 //
-// v2 entry conditions:
-//  1. Time window (unchanged)
-//  2. VWAP bias (unchanged)
-//  3. Volume above session average (unchanged)
-//  4. Close range filter (unchanged)
-//  5. Volume imbalance — buy/sell ratio exceeds threshold (replaces breakout)
-//  6. VWAP reclaim — price crossed VWAP in entry window (replaces breakout)
-//  7. Momentum acceleration — consecutive expanding bars (replaces breakout)
-//  8. HTF bias filter (unchanged)
+// Entry logic:
+//  1. Time window: eval_time to eval_time + max_entry_bars*5m
+//  2. One-shot evaluation at eval_time: AM direction, VWAP confirmation, volume acceleration
+//  3. After evaluation, enter on first qualifying bar with volume + close range filters
 func (s *PHMStrategy) checkEntry(phmSt *PHMState, symbol string, bar start.Bar, barET time.Time, loc *time.Location) (start.Signal, bool) {
 	// Time window check
 	startH, startM := phmParseHHMM(phmSt.Config.AllowedHoursStart)
@@ -586,22 +506,75 @@ func (s *PHMStrategy) checkEntry(phmSt *PHMState, symbol string, bar start.Bar, 
 		return start.Signal{}, false
 	}
 
-	// VWAP bias — determines direction
-	longOnly := false
-	shortOnly := false
-	switch {
-	case bar.Close > phmSt.Indicators.VWAP:
-		longOnly = true
-	case bar.Close < phmSt.Indicators.VWAP:
-		shortOnly = true
-	default:
-		return start.Signal{}, false // At VWAP — no signal.
+	// --- One-shot evaluation at eval_time ---
+	evalH, evalM := phmParseHHMM(phmSt.Config.EvalTime)
+	evalTime := time.Date(barET.Year(), barET.Month(), barET.Day(), evalH, evalM, 0, 0, loc)
+
+	if !phmSt.EvalDone && !barET.Before(evalTime) {
+		phmSt.EvalDone = true
+		phmSt.EvalBarIndex = phmSt.BarCount
+
+		// (a) AM Direction (Gao et al.)
+		if !phmSt.AMReturnSet || math.Abs(phmSt.AMReturnPct) < phmSt.Config.AMReturnMinPct {
+			return start.Signal{}, false // No signal today
+		}
+
+		var direction string
+		if phmSt.AMReturnPct > 0 {
+			direction = "long"
+		} else {
+			direction = "short"
+		}
+
+		// (b) VWAP confirmation
+		vwap := phmSt.Indicators.VWAP
+		if vwap > 0 {
+			if direction == "long" && bar.Close < vwap {
+				return start.Signal{}, false // Conflicting
+			}
+			if direction == "short" && bar.Close > vwap {
+				return start.Signal{}, false // Conflicting
+			}
+		}
+
+		// (c) Volume acceleration (synthetic MOC proxy)
+		if phmSt.AfternoonVolBars > 0 && phmSt.PowerHourVolBars > 0 {
+			afternoonAvg := phmSt.AfternoonVolSum / float64(phmSt.AfternoonVolBars)
+			powerHourAvg := phmSt.PowerHourVolSum / float64(phmSt.PowerHourVolBars)
+			if afternoonAvg > 0 && powerHourAvg/afternoonAvg < phmSt.Config.VolAccelMinRatio {
+				return start.Signal{}, false // No institutional acceleration
+			}
+		}
+
+		// (d) HTF alignment (optional)
+		if phmSt.Config.RequireHTFAlign {
+			daily, ok := phmSt.Indicators.HTF["1d"]
+			if !ok || daily.Bias == "" {
+				return start.Signal{}, false
+			}
+			if direction == "long" && daily.Bias == "BEARISH" {
+				return start.Signal{}, false
+			}
+			if direction == "short" && daily.Bias == "BULLISH" {
+				return start.Signal{}, false
+			}
+		}
+
+		phmSt.EntryDirection = direction
 	}
 
-	// Session average volume
-	sessionAvgVol := phmSt.SessionVolSum / float64(phmSt.SessionBarCount)
+	// After evaluation, enter on first qualifying bar within MaxEntryBars
+	if phmSt.EntryDirection == "" {
+		return start.Signal{}, false
+	}
 
-	// Volume filter (bar volume > volume_mult * session avg)
+	barsSinceEval := phmSt.BarCount - phmSt.EvalBarIndex
+	if barsSinceEval > phmSt.Config.MaxEntryBars {
+		return start.Signal{}, false // Entry window expired
+	}
+
+	// Volume confirmation on entry bar
+	sessionAvgVol := phmSt.SessionVolSum / float64(phmSt.SessionBarCount)
 	if bar.Volume <= phmSt.Config.VolumeMult*sessionAvgVol {
 		return start.Signal{}, false
 	}
@@ -612,115 +585,45 @@ func (s *PHMStrategy) checkEntry(phmSt *PHMState, symbol string, bar start.Bar, 
 		return start.Signal{}, false
 	}
 
-	// Determine side and apply close range filter
 	var side start.Side
-	trigger := ""
-
-	switch {
-	case longOnly:
+	if phmSt.EntryDirection == "long" {
 		closeRatio := (bar.Close - bar.Low) / barRange
 		if closeRatio < (1.0 - phmSt.Config.CloseRangePct) {
 			return start.Signal{}, false
 		}
 		side = start.SideBuy
-		trigger = "vol_imbalance_accel"
-	case shortOnly:
+	} else {
 		closeRatio := (bar.High - bar.Close) / barRange
 		if closeRatio < (1.0 - phmSt.Config.CloseRangePct) {
 			return start.Signal{}, false
 		}
 		side = start.SideSell
-		trigger = "vol_imbalance_accel"
-	default:
-		return start.Signal{}, false
 	}
 
-	// --- Condition 1: Volume imbalance ---
-	imbalanceThresh := phmSt.Config.ImbalanceRatio
-	if imbalanceThresh < 1.2 {
-		imbalanceThresh = 1.2
-	}
-	if len(phmSt.BuyVolWindow) < 3 || len(phmSt.SellVolWindow) < 3 {
-		return start.Signal{}, false
-	}
-	buySum := phmSt.BuyVolWindow[len(phmSt.BuyVolWindow)-3] +
-		phmSt.BuyVolWindow[len(phmSt.BuyVolWindow)-2] +
-		phmSt.BuyVolWindow[len(phmSt.BuyVolWindow)-1]
-	sellSum := phmSt.SellVolWindow[len(phmSt.SellVolWindow)-3] +
-		phmSt.SellVolWindow[len(phmSt.SellVolWindow)-2] +
-		phmSt.SellVolWindow[len(phmSt.SellVolWindow)-1]
+	// Compute strength — blend |AM return| and volume acceleration
+	amMagnitude := math.Abs(phmSt.AMReturnPct)
+	amComponent := math.Min(amMagnitude/1.0, 1.0) * 0.5 // 1% AM return = max
 
-	if side == start.SideBuy {
-		if sellSum == 0 || buySum/sellSum < imbalanceThresh {
-			return start.Signal{}, false
-		}
-	} else {
-		if buySum == 0 || sellSum/buySum < imbalanceThresh {
-			return start.Signal{}, false
-		}
-	}
-
-	// --- Condition 2: VWAP reclaim confirmation ---
-	if phmSt.Config.RequireVWAPCross {
-		if !phmSt.VWAPCrossed {
-			return start.Signal{}, false
-		}
-		if side == start.SideBuy && phmSt.CrossDirection != "long" {
-			return start.Signal{}, false
-		}
-		if side == start.SideSell && phmSt.CrossDirection != "short" {
-			return start.Signal{}, false
+	var volComponent float64
+	if phmSt.AfternoonVolBars > 0 && phmSt.PowerHourVolBars > 0 {
+		afternoonAvg := phmSt.AfternoonVolSum / float64(phmSt.AfternoonVolBars)
+		if afternoonAvg > 0 {
+			volAccelRatio := (phmSt.PowerHourVolSum / float64(phmSt.PowerHourVolBars)) / afternoonAvg
+			volComponent = math.Min(volAccelRatio/2.0, 1.0) * 0.5 // 2x accel = max
 		}
 	}
-
-	// --- Condition 3: Momentum acceleration ---
-	accelBars := phmSt.Config.AccelBars
-	if accelBars < 2 {
-		accelBars = 2
-	}
-	expectedDir := "up"
-	if side == start.SideSell {
-		expectedDir = "down"
-	}
-	if phmSt.LastBarDirection != expectedDir || phmSt.AccelCount < accelBars {
-		return start.Signal{}, false
-	}
-
-	// HTF bias filter (optional)
-	if phmSt.Config.HTFBiasEnabled {
-		daily, ok := phmSt.Indicators.HTF["1d"]
-		if !ok || daily.Bias == "" {
-			return start.Signal{}, false
-		}
-		if side == start.SideBuy && daily.Bias == "BEARISH" {
-			return start.Signal{}, false
-		}
-		if side == start.SideSell && daily.Bias == "BULLISH" {
-			return start.Signal{}, false
-		}
-	}
-
-	// Compute strength — blend volume ratio and imbalance ratio
-	volumeRatio := bar.Volume / sessionAvgVol
-	var imbalanceScore float64
-	if side == start.SideBuy && sellSum > 0 {
-		imbalanceScore = buySum / sellSum
-	} else if side == start.SideSell && buySum > 0 {
-		imbalanceScore = sellSum / buySum
-	}
-	rawStrength := (volumeRatio/3.0*0.5 + imbalanceScore/3.0*0.5)
-	strength := clampStrength(math.Min(rawStrength, 1.0))
+	strength := clampStrength(amComponent + volComponent)
 
 	instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
 	tags := map[string]string{
-		"ref_price":       fmt.Sprintf("%.10f", bar.Close),
-		"trigger":         trigger,
-		"session_avg_vol": fmt.Sprintf("%.0f", sessionAvgVol),
-		"vwap":            fmt.Sprintf("%.4f", phmSt.Indicators.VWAP),
-		"volume_ratio":    fmt.Sprintf("%.2f", volumeRatio),
-		"buy_sell_ratio":  fmt.Sprintf("%.2f", imbalanceScore),
-		"accel_count":     fmt.Sprintf("%d", phmSt.AccelCount),
-		"vwap_crossed":    fmt.Sprintf("%t", phmSt.VWAPCrossed),
+		"ref_price":        fmt.Sprintf("%.10f", bar.Close),
+		"trigger":          "gao_intraday_momentum",
+		"session_avg_vol":  fmt.Sprintf("%.0f", sessionAvgVol),
+		"vwap":             fmt.Sprintf("%.4f", phmSt.Indicators.VWAP),
+		"am_return_pct":    fmt.Sprintf("%.4f", phmSt.AMReturnPct),
+		"am_direction":     phmSt.AMDirection,
+		"entry_direction":  phmSt.EntryDirection,
+		"volume_ratio":     fmt.Sprintf("%.2f", bar.Volume/sessionAvgVol),
 	}
 
 	sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, side, strength, tags)
@@ -748,14 +651,7 @@ func (s *PHMStrategy) OnEvent(_ start.Context, symbol string, evt any, st start.
 	case start.FillConfirmation:
 		phmSt.PositionSide = e.Side
 		phmSt.EntryPrice = e.Price
-		atr := phmSt.Indicators.ATR
-		if e.Side == start.SideBuy {
-			phmSt.TrailStop = e.Price - phmSt.Config.ATRTrailMult*atr
-		} else {
-			phmSt.TrailStop = e.Price + phmSt.Config.ATRTrailMult*atr
-		}
 		phmSt.PendingEntry = ""
-		phmSt.StagnationCount = 0
 		phmSt.LastClose = 0
 		return phmSt, nil, nil
 
@@ -788,28 +684,7 @@ func (s *PHMStrategy) ReplayOnBar(_ start.Context, _ string, bar start.Bar, st s
 
 	// Session reset
 	if barDate != phmSt.SessionDate {
-		phmSt.SessionDate = barDate
-		phmSt.SignalsToday = 0
-		phmSt.SessionVolSum = 0
-		phmSt.SessionBarCount = 0
-		phmSt.RecentHighs = phmSt.RecentHighs[:0]
-		phmSt.RecentLows = phmSt.RecentLows[:0]
-		phmSt.RecentCloses = phmSt.RecentCloses[:0]
-		phmSt.RecentVolumes = phmSt.RecentVolumes[:0]
-		phmSt.BuyVolWindow = phmSt.BuyVolWindow[:0]
-		phmSt.SellVolWindow = phmSt.SellVolWindow[:0]
-		phmSt.VWAPCrossed = false
-		phmSt.CrossDirection = ""
-		phmSt.PrevCloseVsVWAP = ""
-		phmSt.AccelCount = 0
-		phmSt.LastBarDirection = ""
-		phmSt.LastBarRange = 0
-		phmSt.PositionSide = ""
-		phmSt.PendingEntry = ""
-		phmSt.TrailStop = 0
-		phmSt.StagnationCount = 0
-		phmSt.LastClose = 0
-		phmSt.EntryPrice = 0
+		phmSessionReset(phmSt, barDate)
 	}
 
 	// Update session stats
@@ -817,6 +692,53 @@ func (s *PHMStrategy) ReplayOnBar(_ start.Context, _ string, bar start.Bar, st s
 	phmSt.SessionVolSum += bar.Volume
 
 	// Update rolling windows
+	phmUpdateRollingWindows(phmSt, bar)
+
+	// Update Gao et al. state (session open, AM return, volume zones)
+	phmUpdateV2State(phmSt, bar, barET)
+
+	return phmSt, nil
+}
+
+// ---------------------------------------------------------------------------
+// Session Reset Helper
+// ---------------------------------------------------------------------------
+
+// phmSessionReset clears all per-session state fields on date change.
+func phmSessionReset(phmSt *PHMState, barDate string) {
+	phmSt.SessionDate = barDate
+	phmSt.SignalsToday = 0
+	phmSt.SessionVolSum = 0
+	phmSt.SessionBarCount = 0
+	phmSt.RecentHighs = phmSt.RecentHighs[:0]
+	phmSt.RecentLows = phmSt.RecentLows[:0]
+	phmSt.RecentCloses = phmSt.RecentCloses[:0]
+	phmSt.RecentVolumes = phmSt.RecentVolumes[:0]
+	phmSt.PositionSide = ""
+	phmSt.PendingEntry = ""
+	phmSt.LastClose = 0
+	phmSt.EntryPrice = 0
+
+	// Gao et al. state
+	phmSt.SessionOpenPrice = 0
+	phmSt.AMReturnPct = 0
+	phmSt.AMReturnSet = false
+	phmSt.AMDirection = ""
+	phmSt.AfternoonVolSum = 0
+	phmSt.AfternoonVolBars = 0
+	phmSt.PowerHourVolSum = 0
+	phmSt.PowerHourVolBars = 0
+	phmSt.EvalDone = false
+	phmSt.EntryDirection = ""
+	phmSt.EvalBarIndex = 0
+}
+
+// ---------------------------------------------------------------------------
+// Rolling Window Update Helper
+// ---------------------------------------------------------------------------
+
+// phmUpdateRollingWindows maintains the lookback rolling windows.
+func phmUpdateRollingWindows(phmSt *PHMState, bar start.Bar) {
 	lb := phmSt.Config.LookbackBars
 	if lb < 1 {
 		lb = 12
@@ -838,90 +760,46 @@ func (s *PHMStrategy) ReplayOnBar(_ start.Context, _ string, bar start.Bar, st s
 		phmSt.RecentVolumes = phmSt.RecentVolumes[len(phmSt.RecentVolumes)-lb:]
 	}
 	phmSt.BarCount++
-
-	// Update v2 state (volume imbalance, VWAP cross, acceleration)
-	phmUpdateV2State(phmSt, bar)
-
-	return phmSt, nil
 }
 
 // ---------------------------------------------------------------------------
-// v2 State Update Helper
+// v2 State Update Helper — Gao et al. Intraday Momentum
 // ---------------------------------------------------------------------------
 
-// phmUpdateV2State updates volume imbalance, VWAP crossover, and momentum
-// acceleration state from the current bar. Called from both OnBar and ReplayOnBar.
-func phmUpdateV2State(phmSt *PHMState, bar start.Bar) {
-	// --- Volume imbalance: classify bar as buy or sell volume ---
-	var buyVol, sellVol float64
-	switch {
-	case bar.Close > bar.Open:
-		buyVol = bar.Volume
-	case bar.Close < bar.Open:
-		sellVol = bar.Volume
-	default:
-		// Doji — split evenly
-		buyVol = bar.Volume / 2
-		sellVol = bar.Volume / 2
+// phmUpdateV2State tracks session open, AM return, and volume zone accumulation.
+// Called from both OnBar and ReplayOnBar.
+func phmUpdateV2State(phmSt *PHMState, bar start.Bar, barET time.Time) {
+	h := barET.Hour()
+	m := barET.Minute()
+
+	// Track session open (first bar at/after 9:30 ET)
+	if phmSt.SessionOpenPrice == 0 && (h > 9 || (h == 9 && m >= 30)) {
+		phmSt.SessionOpenPrice = bar.Close
 	}
 
-	const volWindowSize = 3
-	phmSt.BuyVolWindow = append(phmSt.BuyVolWindow, buyVol)
-	if len(phmSt.BuyVolWindow) > volWindowSize {
-		phmSt.BuyVolWindow = phmSt.BuyVolWindow[len(phmSt.BuyVolWindow)-volWindowSize:]
-	}
-	phmSt.SellVolWindow = append(phmSt.SellVolWindow, sellVol)
-	if len(phmSt.SellVolWindow) > volWindowSize {
-		phmSt.SellVolWindow = phmSt.SellVolWindow[len(phmSt.SellVolWindow)-volWindowSize:]
-	}
-
-	// --- VWAP crossover detection ---
-	vwap := phmSt.Indicators.VWAP
-	if vwap > 0 {
-		var currentSide string
-		if bar.Close > vwap {
-			currentSide = "above"
-		} else if bar.Close < vwap {
-			currentSide = "below"
-		}
-
-		if phmSt.PrevCloseVsVWAP != "" && currentSide != "" && currentSide != phmSt.PrevCloseVsVWAP {
-			phmSt.VWAPCrossed = true
-			if phmSt.PrevCloseVsVWAP == "below" && currentSide == "above" {
-				phmSt.CrossDirection = "long"
-			} else if phmSt.PrevCloseVsVWAP == "above" && currentSide == "below" {
-				phmSt.CrossDirection = "short"
+	// Compute AM return at 10:00 ET (once per day)
+	if !phmSt.AMReturnSet && h >= 10 {
+		if phmSt.SessionOpenPrice > 0 {
+			phmSt.AMReturnPct = (bar.Close - phmSt.SessionOpenPrice) / phmSt.SessionOpenPrice * 100
+			phmSt.AMReturnSet = true
+			if phmSt.AMReturnPct > 0 {
+				phmSt.AMDirection = "long"
+			} else {
+				phmSt.AMDirection = "short"
 			}
 		}
-
-		if currentSide != "" {
-			phmSt.PrevCloseVsVWAP = currentSide
-		}
 	}
 
-	// --- Momentum acceleration: consecutive expanding bars ---
-	barRange := bar.High - bar.Low
-	var dir string
-	if bar.Close > bar.Open {
-		dir = "up"
-	} else if bar.Close < bar.Open {
-		dir = "down"
+	// Accumulate afternoon volume baseline (14:00-15:00 ET)
+	if h == 14 {
+		phmSt.AfternoonVolSum += bar.Volume
+		phmSt.AfternoonVolBars++
 	}
 
-	switch {
-	case dir == "":
-		// Doji resets acceleration
-		phmSt.AccelCount = 0
-		phmSt.LastBarDirection = ""
-		phmSt.LastBarRange = 0
-	case dir == phmSt.LastBarDirection && barRange >= phmSt.LastBarRange:
-		phmSt.AccelCount++
-		phmSt.LastBarRange = barRange
-	default:
-		// Direction changed or range contracted — reset
-		phmSt.AccelCount = 1
-		phmSt.LastBarDirection = dir
-		phmSt.LastBarRange = barRange
+	// Accumulate power hour volume (15:00-15:30 ET)
+	if h == 15 && m < 30 {
+		phmSt.PowerHourVolSum += bar.Volume
+		phmSt.PowerHourVolBars++
 	}
 }
 
@@ -938,4 +816,3 @@ func phmParseHHMM(s string) (int, int) {
 	}
 	return h, m
 }
-

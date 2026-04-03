@@ -4,7 +4,7 @@ schema_version = 2
 id = "phm_power_hour"
 version = "1.0.0"
 name = "Power Hour Momentum"
-description = "Captures institutional MOC flows in the 14:30-15:50 ET window with 0DTE options"
+description = "Gao et al. intraday momentum — AM return predicts power hour direction, synthetic MOC proxy"
 author = "system"
 created_at = "2026-04-02T00:00:00Z"
 
@@ -23,29 +23,32 @@ asset_classes = ["OPTION"]
 allowed_directions = ["LONG", "SHORT"]
 
 [screening]
-description = "Power Hour Momentum strategy captures late-day institutional MOC rebalancing flows between 14:30-15:50 ET. Best on high-volume, high-beta names with consistent Power Hour acceleration patterns."
+description = "Gao et al. intraday momentum strategy. AM session return predicts power hour direction. One high-conviction entry per symbol per day at 15:15 ET, held to 15:55 EOD flatten."
 
 [params]
 bar_timeframe = "5m"
-lookback_bars = 12               # 60min rolling window for state tracking
-volume_mult = 1.5                # require above-average volume
-close_range_pct = 0.30           # close in top/bottom 30% of bar
-atr_trail_mult = 1.5             # ATR trailing stop multiplier
-stop_bps = 60                    # max adverse move in bps
-max_signals_per_session = 2      # max entries per day
-stagnation_bars = 3              # bars without progress before exit
-stagnation_sd_thresh = 0.30      # stagnation SD threshold
+lookback_bars = 12
+volume_mult = 1.5
+close_range_pct = 0.30
+stop_bps = 150                    # wider stop — hold to close, safety net only
+max_signals_per_session = 1       # ONE entry per session
 limit_offset_bps = 5
-risk_per_trade_bps = 300
-max_position_bps = 1500
-allowed_hours_start = "13:00"    # wider window for VWAP cross opportunity
-allowed_hours_end = "15:50"
+risk_per_trade_bps = 500          # larger size (high-conviction, 1 per day)
+max_position_bps = 2000
+allowed_hours_start = "15:15"     # entry window start
+allowed_hours_end = "15:45"       # entry window end (3 bars on 5m)
 allowed_hours_tz = "America/New_York"
 eod_flatten_time = "15:55"
 htf_bias_enabled = false
-imbalance_ratio = 1.2            # buy/sell volume ratio threshold for entry
-require_vwap_cross = false       # disabled — VWAP cross too rare in power hour
-accel_bars = 2                   # consecutive accelerating bars needed
+
+# Gao et al. intraday momentum params
+am_return_min_pct = 0.50          # min absolute AM return for signal (0.50%)
+eval_time = "15:15"               # when to evaluate direction (ET)
+max_entry_bars = 3                # bars after eval_time to attempt entry
+require_htf_align = false
+
+# Synthetic MOC proxy
+vol_accel_min_ratio = 1.3         # power hour vol / afternoon vol threshold
 
 [regime_filter]
 enabled = false
@@ -62,18 +65,6 @@ risk_scale_min = 0.50
 risk_scale_max = 1.00
 
 [[exit_rules]]
-type = "TRAILING_STOP"
-[exit_rules.params]
-atr_mult = 1.5
-
-[[exit_rules]]
-type = "STAGNATION_EXIT"
-[exit_rules.params]
-minutes = 15
-sd_threshold = 0.3
-profit_gate_pct = 0.0
-
-[[exit_rules]]
 type = "EOD_FLATTEN"
 [exit_rules.params]
 minutes_before_close = 5
@@ -81,7 +72,7 @@ minutes_before_close = 5
 [[exit_rules]]
 type = "MAX_LOSS"
 [exit_rules.params]
-pct = 0.006
+pct = 0.015
 
 [options]
 enabled = true
