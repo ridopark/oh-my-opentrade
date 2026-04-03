@@ -51,7 +51,7 @@ require_htf_align = false
 vol_accel_min_ratio = 1.3         # sweet spot
 
 # MOC imbalance second entry window (live only)
-second_window_enabled = false     # disabled until IBKR auction data is wired
+second_window_enabled = false     # needs real IBKR buy/sell data — synthetic proxy hurts PF
 second_window_start = "15:45"
 second_window_end = "15:55"
 imbalance_min_shares = 500000     # min absolute imbalance for signal
