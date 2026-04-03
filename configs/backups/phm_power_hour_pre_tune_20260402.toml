@@ -54,7 +54,7 @@ signals = { engine = "builtin", name = "phm_power_hour" }
 
 [dynamic_risk]
 enabled = true
-min_confidence = 0.10
+min_confidence = 0.30
 risk_scale_min = 0.50
 risk_scale_max = 1.00
 
@@ -87,10 +87,10 @@ limit_buffer_bps = 1000
 stale_cancel_secs = 30
 
 [options.defaults]
-min_dte = 7                # 7-14 DTE for better liquidity (not 0DTE)
-max_dte = 14               # avoid overpaying for time
-target_delta_low = 0.40    # ATM range for best fills
-target_delta_high = 0.55   # ATM — tightest spreads
-min_open_interest = 100    # ensure strong liquidity
-max_spread_pct = 0.10      # reject illiquid strikes
-max_iv = 1.5               # moderate IV tolerance
+min_dte = 0
+max_dte = 7               # wider DTE range — more contracts qualify
+target_delta_low = 0.30    # accept lower delta (was 0.45)
+target_delta_high = 0.70   # accept higher delta (was 0.60)
+min_open_interest = 50     # lower OI floor (was 200)
+max_spread_pct = 0.15      # accept wider spreads (was 0.08)
+max_iv = 2.0               # higher IV tolerance (was 1.5)
