@@ -1172,6 +1172,8 @@ func makeSnapshotFn() strategy.IndicatorSnapshotFunc {
 			VWAP:          snap.VWAP,
 			Volume:        snap.Volume,
 			VolumeSMA:     snap.VolumeSMA,
+			ATR:           snap.ATR,
+			VWAPSD:        snap.VWAPSD,
 		}
 	}
 }
