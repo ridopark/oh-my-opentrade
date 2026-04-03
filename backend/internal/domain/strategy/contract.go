@@ -184,3 +184,11 @@ type EntryRejection struct {
 	Side   Side // the side that was rejected
 	Reason string
 }
+
+// AuctionImbalanceUpdate is forwarded to strategies when NYSE auction imbalance data arrives.
+type AuctionImbalanceUpdate struct {
+	Symbol    string
+	Volume    float64
+	Price     float64
+	Imbalance float64 // positive = buy imbalance, negative = sell imbalance
+}

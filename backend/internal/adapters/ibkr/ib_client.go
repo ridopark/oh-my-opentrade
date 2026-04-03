@@ -23,6 +23,8 @@ type ibClient interface {
 	ReqHistoricalData(contract *ibsync.Contract, endDateTime string, duration string, barSize string, whatToShow string, useRTH bool, formatDate int, chartOptions ...ibsync.TagValue) (chan ibsync.Bar, ibsync.CancelFunc)
 	Fills(execFilter ...*ibsync.ExecutionFilter) []ibsync.Fill
 	ReqFills(execFilter ...*ibsync.ExecutionFilter) ([]ibsync.Fill, error)
+	ReqMktData(contract *ibsync.Contract, genericTickList string, mktDataOptions ...ibsync.TagValue) *ibsync.Ticker
+	CancelMktData(contract *ibsync.Contract)
 }
 
 // Compile-time assertion: *ibsync.IB satisfies ibClient.

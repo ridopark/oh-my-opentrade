@@ -66,6 +66,7 @@ const (
 	EventEnrichedBar             EventType = "EnrichedBar"
 	EventEntryGated              EventType = "EntryGated"
 	EventORBPhaseUpdate          EventType = "ORBPhaseUpdate"
+	EventAuctionImbalance        EventType = "AuctionImbalance"
 
 	// Connectivity & system events.
 	EventBrokerAPIError          EventType = "BrokerAPIError"
