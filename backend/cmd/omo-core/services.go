@@ -847,6 +847,25 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 			log.Fatal().Err(err).Msg("failed to start IV collector")
 		}
 	}
+
+	// Persist auction imbalance snapshots (EventAuctionImbalance → auction_imbalances table).
+	auctionRepo := timescaledb.NewAuctionImbalanceRepo(
+		timescaledb.NewSqlDB(infra.sqlDB),
+		log.With().Str("component", "auction_repo").Logger(),
+	)
+	_ = infra.eventBus.SubscribeAsync(ctx, domain.EventAuctionImbalance, func(_ context.Context, evt domain.Event) error {
+		snap, ok := evt.Payload.(domain.AuctionImbalanceSnapshot)
+		if !ok {
+			return nil
+		}
+		if err := auctionRepo.SaveAuctionImbalance(ctx, snap); err != nil {
+			log.Error().Err(err).
+				Str("symbol", string(snap.Symbol)).
+				Msg("failed to persist auction imbalance")
+		}
+		return nil
+	})
+	log.Info().Msg("auction imbalance persistence subscriber registered")
 }
 
 func publishDNAVersionDetected(ctx context.Context, bus ports.EventBusPort, log zerolog.Logger, filePath, strategyKey string, multiAccount bool) {
