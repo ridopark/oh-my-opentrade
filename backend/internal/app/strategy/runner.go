@@ -437,6 +437,10 @@ func (r *Runner) Start(ctx context.Context) error {
 	if err := r.eventBus.Subscribe(ctx, domain.EventOrderIntentRejected, r.handleRejection); err != nil {
 		return fmt.Errorf("strategy runner: failed to subscribe to OrderIntentRejected: %w", err)
 	}
+	if err := r.eventBus.Subscribe(ctx, domain.EventAuctionImbalance, r.handleAuctionImbalance); err != nil {
+		r.logger.Warn("failed to subscribe to AuctionImbalance (non-fatal)", "error", err)
+		// Non-fatal: backtests won't have this event
+	}
 	r.logger.Info("strategy runner subscribed to MarketBarSanitized events")
 	return nil
 }
@@ -1182,6 +1186,43 @@ func (r *Runner) handleRejection(_ context.Context, event domain.Event) error {
 		"side", rejSide,
 		"reason", payload.Reason,
 	)
+	return nil
+}
+
+// handleAuctionImbalance routes NYSE closing auction imbalance data to all
+// strategy instances subscribed to the given symbol.
+func (r *Runner) handleAuctionImbalance(_ context.Context, event domain.Event) error {
+	snap, ok := event.Payload.(domain.AuctionImbalanceSnapshot)
+	if !ok {
+		return nil
+	}
+	symbol := snap.Symbol.String()
+	instances := r.router.InstancesForSymbol(symbol)
+
+	update := start.AuctionImbalanceUpdate{
+		Symbol:    symbol,
+		Volume:    snap.Volume,
+		Price:     snap.Price,
+		Imbalance: snap.Imbalance,
+	}
+
+	instCtx := &instanceContext{
+		now:    snap.Time,
+		logger: r.logger.With("symbol", symbol),
+		emit:   func(_ any) error { return nil },
+	}
+
+	r.mu.Lock()
+	for _, inst := range instances {
+		if _, err := inst.OnEvent(instCtx, symbol, update); err != nil {
+			r.logger.Error("handleAuctionImbalance: OnEvent failed",
+				"instance_id", inst.ID().String(),
+				"symbol", symbol,
+				"error", err,
+			)
+		}
+	}
+	r.mu.Unlock()
 	return nil
 }
 

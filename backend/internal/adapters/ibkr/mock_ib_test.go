@@ -110,6 +110,10 @@ func (m *mockIB) ReqFills(_ ...*ibsync.ExecutionFilter) ([]ibsync.Fill, error) {
 	defer m.mu.Unlock()
 	return nil, nil
 }
+func (m *mockIB) ReqMktData(_ *ibsync.Contract, _ string, _ ...ibsync.TagValue) *ibsync.Ticker {
+	return ibsync.NewTicker(nil)
+}
+func (m *mockIB) CancelMktData(_ *ibsync.Contract) {}
 
 // makeTrade creates a *ibsync.Trade with given orderID and status for tests.
 func makeTrade(orderID int64, status ibsync.Status, filled float64) *ibsync.Trade {

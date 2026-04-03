@@ -37,6 +37,12 @@ type PHMConfig struct {
 	MaxEntryBars     int     // default 3 (bars after eval time to attempt entry)
 	VolAccelMinRatio float64 // default 1.3 (power hour vol / afternoon vol threshold)
 	RequireHTFAlign  bool    // default false
+
+	// MOC imbalance second entry window (live only)
+	SecondWindowEnabled bool    // default false
+	SecondWindowStart   string  // default "15:45"
+	SecondWindowEnd     string  // default "15:55"
+	ImbalanceMinShares  float64 // default 500000
 }
 
 // NewPHMConfigFromDNA reads PHMConfig from DNA params with sensible defaults.
@@ -58,6 +64,11 @@ func NewPHMConfigFromDNA(params map[string]any) PHMConfig {
 		MaxEntryBars:      phmIntParam(params, "max_entry_bars", 3),
 		VolAccelMinRatio:  phmFloatParam(params, "vol_accel_min_ratio", 1.3),
 		RequireHTFAlign:   phmBoolParam(params, "require_htf_align", false),
+
+		SecondWindowEnabled: phmBoolParam(params, "second_window_enabled", false),
+		SecondWindowStart:   phmStringParam(params, "second_window_start", "15:45"),
+		SecondWindowEnd:     phmStringParam(params, "second_window_end", "15:55"),
+		ImbalanceMinShares:  phmFloatParam(params, "imbalance_min_shares", 500000),
 	}
 }
 
@@ -178,6 +189,12 @@ type PHMState struct {
 	EntryDirection string // Decided direction for today ("long", "short", "")
 	EvalBarIndex   int    // BarCount at time of eval, for MaxEntryBars tracking
 
+	// MOC imbalance second window state
+	LastImbalance      float64
+	LastImbalancePrice float64
+	ImbalanceReceived  bool
+	SecondWindowUsed   bool
+
 	// Position/exit management
 	PositionSide start.Side
 	PendingEntry start.Side
@@ -230,13 +247,17 @@ type phmStateJSON struct {
 	AfternoonVolBars int                 `json:"afternoon_vol_bars"`
 	PowerHourVolSum  float64             `json:"power_hour_vol_sum"`
 	PowerHourVolBars int                 `json:"power_hour_vol_bars"`
-	EvalDone         bool                `json:"eval_done"`
-	EntryDirection   string              `json:"entry_direction"`
-	EvalBarIndex     int                 `json:"eval_bar_index"`
-	PositionSide     start.Side          `json:"position_side"`
-	PendingEntry     start.Side          `json:"pending_entry"`
-	EntryPrice       float64             `json:"entry_price"`
-	LastClose        float64             `json:"last_close"`
+	EvalDone           bool                `json:"eval_done"`
+	EntryDirection     string              `json:"entry_direction"`
+	EvalBarIndex       int                 `json:"eval_bar_index"`
+	LastImbalance      float64             `json:"last_imbalance"`
+	LastImbalancePrice float64             `json:"last_imbalance_price"`
+	ImbalanceReceived  bool                `json:"imbalance_received"`
+	SecondWindowUsed   bool                `json:"second_window_used"`
+	PositionSide       start.Side          `json:"position_side"`
+	PendingEntry       start.Side          `json:"pending_entry"`
+	EntryPrice         float64             `json:"entry_price"`
+	LastClose          float64             `json:"last_close"`
 }
 
 // Marshal serializes PHMState for persistence/recovery.
@@ -263,13 +284,17 @@ func (s *PHMState) Marshal() ([]byte, error) {
 		AfternoonVolBars: s.AfternoonVolBars,
 		PowerHourVolSum:  s.PowerHourVolSum,
 		PowerHourVolBars: s.PowerHourVolBars,
-		EvalDone:         s.EvalDone,
-		EntryDirection:   s.EntryDirection,
-		EvalBarIndex:     s.EvalBarIndex,
-		PositionSide:     s.PositionSide,
-		PendingEntry:     s.PendingEntry,
-		EntryPrice:       s.EntryPrice,
-		LastClose:        s.LastClose,
+		EvalDone:           s.EvalDone,
+		EntryDirection:     s.EntryDirection,
+		EvalBarIndex:       s.EvalBarIndex,
+		LastImbalance:      s.LastImbalance,
+		LastImbalancePrice: s.LastImbalancePrice,
+		ImbalanceReceived:  s.ImbalanceReceived,
+		SecondWindowUsed:   s.SecondWindowUsed,
+		PositionSide:       s.PositionSide,
+		PendingEntry:       s.PendingEntry,
+		EntryPrice:         s.EntryPrice,
+		LastClose:          s.LastClose,
 	}
 	return json.Marshal(j)
 }
@@ -304,6 +329,10 @@ func (s *PHMState) Unmarshal(data []byte) error {
 	s.EvalDone = j.EvalDone
 	s.EntryDirection = j.EntryDirection
 	s.EvalBarIndex = j.EvalBarIndex
+	s.LastImbalance = j.LastImbalance
+	s.LastImbalancePrice = j.LastImbalancePrice
+	s.ImbalanceReceived = j.ImbalanceReceived
+	s.SecondWindowUsed = j.SecondWindowUsed
 	s.PositionSide = j.PositionSide
 	s.PendingEntry = j.PendingEntry
 	s.EntryPrice = j.EntryPrice
@@ -457,6 +486,65 @@ func (s *PHMStrategy) OnBar(_ start.Context, symbol string, bar start.Bar, st st
 		entrySig, entered := s.checkEntry(phmSt, symbol, bar, barET, loc)
 		if entered {
 			return phmSt, []start.Signal{entrySig}, nil
+		}
+	}
+
+	// (h) Second entry window: MOC imbalance-driven (15:45-15:55 ET, live only)
+	if phmSt.Config.SecondWindowEnabled && phmSt.ImbalanceReceived && !phmSt.SecondWindowUsed &&
+		phmSt.PositionSide == "" && phmSt.PendingEntry == "" {
+
+		sw2StartH, sw2StartM := phmParseHHMM(phmSt.Config.SecondWindowStart)
+		sw2EndH, sw2EndM := phmParseHHMM(phmSt.Config.SecondWindowEnd)
+		sw2Start := time.Date(barET.Year(), barET.Month(), barET.Day(), sw2StartH, sw2StartM, 0, 0, loc)
+		sw2End := time.Date(barET.Year(), barET.Month(), barET.Day(), sw2EndH, sw2EndM, 0, 0, loc)
+
+		if !barET.Before(sw2Start) && barET.Before(sw2End) {
+			absImbalance := math.Abs(phmSt.LastImbalance)
+			if absImbalance >= phmSt.Config.ImbalanceMinShares {
+				// Direction from imbalance sign
+				var imbDirection string
+				var side start.Side
+				if phmSt.LastImbalance > 0 {
+					imbDirection = "long"
+					side = start.SideBuy
+				} else {
+					imbDirection = "short"
+					side = start.SideSell
+				}
+
+				// AM direction alignment: if AM return was computed, require same direction
+				if phmSt.AMReturnSet && phmSt.AMDirection != imbDirection {
+					// Conflicting — skip
+				} else {
+					phmSt.SecondWindowUsed = true
+
+					// Strength: blend imbalance magnitude and AM return
+					imbComponent := math.Min(absImbalance/2_000_000, 1.0) * 0.6
+					var amComponent float64
+					if phmSt.AMReturnSet {
+						amComponent = math.Min(math.Abs(phmSt.AMReturnPct)/1.0, 1.0) * 0.4
+					}
+					strength := clampStrength(imbComponent + amComponent)
+
+					instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
+					tags := map[string]string{
+						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+						"trigger":           "moc_imbalance",
+						"imbalance":         fmt.Sprintf("%.0f", phmSt.LastImbalance),
+						"imbalance_price":   fmt.Sprintf("%.4f", phmSt.LastImbalancePrice),
+						"imbalance_dir":     imbDirection,
+						"am_direction":      phmSt.AMDirection,
+					}
+
+					sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, side, strength, tags)
+					if err != nil {
+						return phmSt, nil, fmt.Errorf("PHMStrategy.OnBar: moc imbalance signal: %w", err)
+					}
+					phmSt.PendingEntry = side
+					phmSt.SignalsToday++
+					return phmSt, []start.Signal{sig}, nil
+				}
+			}
 		}
 	}
 
@@ -660,6 +748,12 @@ func (s *PHMStrategy) OnEvent(_ start.Context, symbol string, evt any, st start.
 		phmSt.PendingEntry = ""
 		return phmSt, nil, nil
 
+	case start.AuctionImbalanceUpdate:
+		phmSt.LastImbalance = e.Imbalance
+		phmSt.LastImbalancePrice = e.Price
+		phmSt.ImbalanceReceived = true
+		return phmSt, nil, nil
+
 	default:
 		return phmSt, nil, nil
 	}
@@ -731,6 +825,12 @@ func phmSessionReset(phmSt *PHMState, barDate string) {
 	phmSt.EvalDone = false
 	phmSt.EntryDirection = ""
 	phmSt.EvalBarIndex = 0
+
+	// MOC imbalance second window
+	phmSt.LastImbalance = 0
+	phmSt.LastImbalancePrice = 0
+	phmSt.ImbalanceReceived = false
+	phmSt.SecondWindowUsed = false
 }
 
 // ---------------------------------------------------------------------------

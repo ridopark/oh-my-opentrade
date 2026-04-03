@@ -507,6 +507,15 @@ type MarketTrade struct {
 	Size   float64   `json:"size"`
 }
 
+// AuctionImbalanceSnapshot represents NYSE closing auction imbalance data from IBKR tick type 225.
+type AuctionImbalanceSnapshot struct {
+	Time      time.Time
+	Symbol    Symbol
+	Volume    float64 // Auction volume (tick 29)
+	Price     float64 // Auction indicative price (tick 30)
+	Imbalance float64 // Signed imbalance: positive=buy, negative=sell (tick 31)
+}
+
 // FormingBar represents a partial (in-progress) OHLCV candle for the current bucket.
 // Sent to the frontend via SSE so the chart can show a forming candle in real-time.
 type FormingBar struct {
