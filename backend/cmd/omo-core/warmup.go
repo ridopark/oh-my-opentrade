@@ -539,6 +539,16 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 	}()
 	log.Info().Msg("ready — WebSocket streaming active")
 
+	// Start IBKR auction data streaming for power-hour strategies (equity only).
+	if infra.streamingSource == "ibkr" && len(syms.equity) > 0 {
+		go func() {
+			if err := infra.ibkrBroker.StreamAuctionData(ctx, syms.equity, infra.eventBus, "default", domain.EnvModePaper); err != nil {
+				log.Error().Err(err).Msg("auction data streaming stopped")
+			}
+		}()
+		log.Info().Int("symbols", len(syms.equity)).Msg("started IBKR auction data streaming")
+	}
+
 	{
 		broker := "ibkr"
 		ibkrConnected := infra.ibkrBroker.IsConnected()
