@@ -32,6 +32,11 @@ type PHMConfig struct {
 	AllowedHoursTZ     string  // default "America/New_York"
 	EODFlattenTime     string  // default "15:55"
 	HTFBiasEnabled     bool    // default false
+
+	// v2 entry conditions — volume imbalance, VWAP reclaim, momentum acceleration
+	ImbalanceRatio   float64 // default 1.5, range 1.2-2.5
+	RequireVWAPCross bool    // default true
+	AccelBars        int     // default 3, range 2-5
 }
 
 // NewPHMConfigFromDNA reads PHMConfig from DNA params with sensible defaults.
@@ -51,6 +56,9 @@ func NewPHMConfigFromDNA(params map[string]any) PHMConfig {
 		AllowedHoursTZ:     phmStringParam(params, "allowed_hours_tz", "America/New_York"),
 		EODFlattenTime:     phmStringParam(params, "eod_flatten_time", "15:55"),
 		HTFBiasEnabled:     phmBoolParam(params, "htf_bias_enabled", false),
+		ImbalanceRatio:     phmFloatParam(params, "imbalance_ratio", 1.5),
+		RequireVWAPCross:   phmBoolParam(params, "require_vwap_cross", true),
+		AccelBars:          phmIntParam(params, "accel_bars", 3),
 	}
 }
 
@@ -154,6 +162,20 @@ type PHMState struct {
 	SessionVolSum   float64
 	SessionBarCount int
 
+	// Volume imbalance tracking (rolling 3-bar windows)
+	BuyVolWindow  []float64
+	SellVolWindow []float64
+
+	// VWAP crossover tracking
+	VWAPCrossed    bool   // whether a cross happened in the entry window
+	CrossDirection string // "long" or "short"
+	PrevCloseVsVWAP string // "above" or "below" — tracks prior bar's relation to VWAP
+
+	// Momentum acceleration tracking
+	AccelCount       int     // consecutive bars in same direction
+	LastBarDirection string  // "up" or "down"
+	LastBarRange     float64 // previous bar's high-low range
+
 	// Position/exit management
 	PositionSide    start.Side
 	PendingEntry    start.Side
@@ -196,6 +218,14 @@ type phmStateJSON struct {
 	RecentCloses    []float64           `json:"recent_closes"`
 	RecentVolumes   []float64           `json:"recent_volumes"`
 	BarCount        int                 `json:"bar_count"`
+	BuyVolWindow    []float64           `json:"buy_vol_window"`
+	SellVolWindow   []float64           `json:"sell_vol_window"`
+	VWAPCrossed     bool                `json:"vwap_crossed"`
+	CrossDirection  string              `json:"cross_direction"`
+	PrevCloseVsVWAP string              `json:"prev_close_vs_vwap"`
+	AccelCount      int                 `json:"accel_count"`
+	LastBarDirection string             `json:"last_bar_direction"`
+	LastBarRange    float64             `json:"last_bar_range"`
 	SessionDate     string              `json:"session_date"`
 	SignalsToday    int                 `json:"signals_today"`
 	SessionVolSum   float64             `json:"session_vol_sum"`
@@ -211,25 +241,33 @@ type phmStateJSON struct {
 // Marshal serializes PHMState for persistence/recovery.
 func (s *PHMState) Marshal() ([]byte, error) {
 	j := phmStateJSON{
-		Symbol:          s.Symbol,
-		Config:          s.Config,
-		Indicators:      s.Indicators,
-		Timeframe:       s.Timeframe,
-		RecentHighs:     s.RecentHighs,
-		RecentLows:      s.RecentLows,
-		RecentCloses:    s.RecentCloses,
-		RecentVolumes:   s.RecentVolumes,
-		BarCount:        s.BarCount,
-		SessionDate:     s.SessionDate,
-		SignalsToday:    s.SignalsToday,
-		SessionVolSum:   s.SessionVolSum,
-		SessionBarCount: s.SessionBarCount,
-		PositionSide:    s.PositionSide,
-		PendingEntry:    s.PendingEntry,
-		EntryPrice:      s.EntryPrice,
-		TrailStop:       s.TrailStop,
-		StagnationCount: s.StagnationCount,
-		LastClose:       s.LastClose,
+		Symbol:           s.Symbol,
+		Config:           s.Config,
+		Indicators:       s.Indicators,
+		Timeframe:        s.Timeframe,
+		RecentHighs:      s.RecentHighs,
+		RecentLows:       s.RecentLows,
+		RecentCloses:     s.RecentCloses,
+		RecentVolumes:    s.RecentVolumes,
+		BarCount:         s.BarCount,
+		BuyVolWindow:     s.BuyVolWindow,
+		SellVolWindow:    s.SellVolWindow,
+		VWAPCrossed:      s.VWAPCrossed,
+		CrossDirection:   s.CrossDirection,
+		PrevCloseVsVWAP:  s.PrevCloseVsVWAP,
+		AccelCount:       s.AccelCount,
+		LastBarDirection:  s.LastBarDirection,
+		LastBarRange:     s.LastBarRange,
+		SessionDate:      s.SessionDate,
+		SignalsToday:     s.SignalsToday,
+		SessionVolSum:    s.SessionVolSum,
+		SessionBarCount:  s.SessionBarCount,
+		PositionSide:     s.PositionSide,
+		PendingEntry:     s.PendingEntry,
+		EntryPrice:       s.EntryPrice,
+		TrailStop:        s.TrailStop,
+		StagnationCount:  s.StagnationCount,
+		LastClose:        s.LastClose,
 	}
 	return json.Marshal(j)
 }
@@ -249,6 +287,14 @@ func (s *PHMState) Unmarshal(data []byte) error {
 	s.RecentCloses = j.RecentCloses
 	s.RecentVolumes = j.RecentVolumes
 	s.BarCount = j.BarCount
+	s.BuyVolWindow = j.BuyVolWindow
+	s.SellVolWindow = j.SellVolWindow
+	s.VWAPCrossed = j.VWAPCrossed
+	s.CrossDirection = j.CrossDirection
+	s.PrevCloseVsVWAP = j.PrevCloseVsVWAP
+	s.AccelCount = j.AccelCount
+	s.LastBarDirection = j.LastBarDirection
+	s.LastBarRange = j.LastBarRange
 	s.SessionDate = j.SessionDate
 	s.SignalsToday = j.SignalsToday
 	s.SessionVolSum = j.SessionVolSum
@@ -360,6 +406,14 @@ func (s *PHMStrategy) OnBar(_ start.Context, symbol string, bar start.Bar, st st
 		phmSt.RecentLows = phmSt.RecentLows[:0]
 		phmSt.RecentCloses = phmSt.RecentCloses[:0]
 		phmSt.RecentVolumes = phmSt.RecentVolumes[:0]
+		phmSt.BuyVolWindow = phmSt.BuyVolWindow[:0]
+		phmSt.SellVolWindow = phmSt.SellVolWindow[:0]
+		phmSt.VWAPCrossed = false
+		phmSt.CrossDirection = ""
+		phmSt.PrevCloseVsVWAP = ""
+		phmSt.AccelCount = 0
+		phmSt.LastBarDirection = ""
+		phmSt.LastBarRange = 0
 		phmSt.PositionSide = ""
 		phmSt.PendingEntry = ""
 		phmSt.TrailStop = 0
@@ -394,6 +448,9 @@ func (s *PHMStrategy) OnBar(_ start.Context, symbol string, bar start.Bar, st st
 		phmSt.RecentVolumes = phmSt.RecentVolumes[len(phmSt.RecentVolumes)-lb:]
 	}
 	phmSt.BarCount++
+
+	// (e) Update v2 state: volume imbalance, VWAP cross, momentum acceleration
+	phmUpdateV2State(phmSt, bar)
 
 	// (f) EOD flatten
 	eodH, eodM := phmParseHHMM(phmSt.Config.EODFlattenTime)
@@ -503,6 +560,16 @@ func (s *PHMStrategy) checkExits(phmSt *PHMState, symbol string, bar start.Bar) 
 }
 
 // checkEntry evaluates entry conditions. Returns (signal, true) if entry triggered.
+//
+// v2 entry conditions:
+//  1. Time window (unchanged)
+//  2. VWAP bias (unchanged)
+//  3. Volume above session average (unchanged)
+//  4. Close range filter (unchanged)
+//  5. Volume imbalance — buy/sell ratio exceeds threshold (replaces breakout)
+//  6. VWAP reclaim — price crossed VWAP in entry window (replaces breakout)
+//  7. Momentum acceleration — consecutive expanding bars (replaces breakout)
+//  8. HTF bias filter (unchanged)
 func (s *PHMStrategy) checkEntry(phmSt *PHMState, symbol string, bar start.Bar, barET time.Time, loc *time.Location) (start.Signal, bool) {
 	// Time window check
 	startH, startM := phmParseHHMM(phmSt.Config.AllowedHoursStart)
@@ -514,22 +581,12 @@ func (s *PHMStrategy) checkEntry(phmSt *PHMState, symbol string, bar start.Bar, 
 		return start.Signal{}, false
 	}
 
-	lb := phmSt.Config.LookbackBars
-	if lb < 1 {
-		lb = 12
-	}
-
-	// Need enough bars
-	if len(phmSt.RecentHighs) < lb {
-		return start.Signal{}, false
-	}
-
 	// Need session volume data
 	if phmSt.SessionBarCount < 1 {
 		return start.Signal{}, false
 	}
 
-	// VWAP bias
+	// VWAP bias — determines direction
 	longOnly := false
 	shortOnly := false
 	switch {
@@ -544,21 +601,10 @@ func (s *PHMStrategy) checkEntry(phmSt *PHMState, symbol string, bar start.Bar, 
 	// Session average volume
 	sessionAvgVol := phmSt.SessionVolSum / float64(phmSt.SessionBarCount)
 
-	// Volume filter
+	// Volume filter (bar volume > volume_mult * session avg)
 	if bar.Volume <= phmSt.Config.VolumeMult*sessionAvgVol {
 		return start.Signal{}, false
 	}
-
-	// 60-min high/low breakout check (excluding current bar)
-	n := len(phmSt.RecentHighs)
-	priorHighs := phmSt.RecentHighs[:n-1]
-	priorLows := phmSt.RecentLows[:n-1]
-
-	rollingHigh := phmSliceMax(priorHighs)
-	rollingLow := phmSliceMin(priorLows)
-
-	isNewHigh := bar.High > rollingHigh
-	isNewLow := bar.Low < rollingLow
 
 	// Close range filter
 	barRange := bar.High - bar.Low
@@ -566,27 +612,77 @@ func (s *PHMStrategy) checkEntry(phmSt *PHMState, symbol string, bar start.Bar, 
 		return start.Signal{}, false
 	}
 
+	// Determine side and apply close range filter
 	var side start.Side
 	trigger := ""
 
 	switch {
-	case longOnly && isNewHigh:
-		// Close in top portion
+	case longOnly:
 		closeRatio := (bar.Close - bar.Low) / barRange
 		if closeRatio < (1.0 - phmSt.Config.CloseRangePct) {
 			return start.Signal{}, false
 		}
 		side = start.SideBuy
-		trigger = "60m_high"
-	case shortOnly && isNewLow:
-		// Close in bottom portion
+		trigger = "vol_imbalance_accel"
+	case shortOnly:
 		closeRatio := (bar.High - bar.Close) / barRange
 		if closeRatio < (1.0 - phmSt.Config.CloseRangePct) {
 			return start.Signal{}, false
 		}
 		side = start.SideSell
-		trigger = "60m_low"
+		trigger = "vol_imbalance_accel"
 	default:
+		return start.Signal{}, false
+	}
+
+	// --- Condition 1: Volume imbalance ---
+	imbalanceThresh := phmSt.Config.ImbalanceRatio
+	if imbalanceThresh < 1.2 {
+		imbalanceThresh = 1.2
+	}
+	if len(phmSt.BuyVolWindow) < 3 || len(phmSt.SellVolWindow) < 3 {
+		return start.Signal{}, false
+	}
+	buySum := phmSt.BuyVolWindow[len(phmSt.BuyVolWindow)-3] +
+		phmSt.BuyVolWindow[len(phmSt.BuyVolWindow)-2] +
+		phmSt.BuyVolWindow[len(phmSt.BuyVolWindow)-1]
+	sellSum := phmSt.SellVolWindow[len(phmSt.SellVolWindow)-3] +
+		phmSt.SellVolWindow[len(phmSt.SellVolWindow)-2] +
+		phmSt.SellVolWindow[len(phmSt.SellVolWindow)-1]
+
+	if side == start.SideBuy {
+		if sellSum == 0 || buySum/sellSum < imbalanceThresh {
+			return start.Signal{}, false
+		}
+	} else {
+		if buySum == 0 || sellSum/buySum < imbalanceThresh {
+			return start.Signal{}, false
+		}
+	}
+
+	// --- Condition 2: VWAP reclaim confirmation ---
+	if phmSt.Config.RequireVWAPCross {
+		if !phmSt.VWAPCrossed {
+			return start.Signal{}, false
+		}
+		if side == start.SideBuy && phmSt.CrossDirection != "long" {
+			return start.Signal{}, false
+		}
+		if side == start.SideSell && phmSt.CrossDirection != "short" {
+			return start.Signal{}, false
+		}
+	}
+
+	// --- Condition 3: Momentum acceleration ---
+	accelBars := phmSt.Config.AccelBars
+	if accelBars < 2 {
+		accelBars = 2
+	}
+	expectedDir := "up"
+	if side == start.SideSell {
+		expectedDir = "down"
+	}
+	if phmSt.LastBarDirection != expectedDir || phmSt.AccelCount < accelBars {
 		return start.Signal{}, false
 	}
 
@@ -604,9 +700,16 @@ func (s *PHMStrategy) checkEntry(phmSt *PHMState, symbol string, bar start.Bar, 
 		}
 	}
 
-	// Compute strength
+	// Compute strength — blend volume ratio and imbalance ratio
 	volumeRatio := bar.Volume / sessionAvgVol
-	strength := clampStrength(math.Min(volumeRatio/3.0, 1.0))
+	var imbalanceScore float64
+	if side == start.SideBuy && sellSum > 0 {
+		imbalanceScore = buySum / sellSum
+	} else if side == start.SideSell && buySum > 0 {
+		imbalanceScore = sellSum / buySum
+	}
+	rawStrength := (volumeRatio/3.0*0.5 + imbalanceScore/3.0*0.5)
+	strength := clampStrength(math.Min(rawStrength, 1.0))
 
 	instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
 	tags := map[string]string{
@@ -615,6 +718,9 @@ func (s *PHMStrategy) checkEntry(phmSt *PHMState, symbol string, bar start.Bar, 
 		"session_avg_vol": fmt.Sprintf("%.0f", sessionAvgVol),
 		"vwap":            fmt.Sprintf("%.4f", phmSt.Indicators.VWAP),
 		"volume_ratio":    fmt.Sprintf("%.2f", volumeRatio),
+		"buy_sell_ratio":  fmt.Sprintf("%.2f", imbalanceScore),
+		"accel_count":     fmt.Sprintf("%d", phmSt.AccelCount),
+		"vwap_crossed":    fmt.Sprintf("%t", phmSt.VWAPCrossed),
 	}
 
 	sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, side, strength, tags)
@@ -690,6 +796,14 @@ func (s *PHMStrategy) ReplayOnBar(_ start.Context, _ string, bar start.Bar, st s
 		phmSt.RecentLows = phmSt.RecentLows[:0]
 		phmSt.RecentCloses = phmSt.RecentCloses[:0]
 		phmSt.RecentVolumes = phmSt.RecentVolumes[:0]
+		phmSt.BuyVolWindow = phmSt.BuyVolWindow[:0]
+		phmSt.SellVolWindow = phmSt.SellVolWindow[:0]
+		phmSt.VWAPCrossed = false
+		phmSt.CrossDirection = ""
+		phmSt.PrevCloseVsVWAP = ""
+		phmSt.AccelCount = 0
+		phmSt.LastBarDirection = ""
+		phmSt.LastBarRange = 0
 		phmSt.PositionSide = ""
 		phmSt.PendingEntry = ""
 		phmSt.TrailStop = 0
@@ -725,7 +839,90 @@ func (s *PHMStrategy) ReplayOnBar(_ start.Context, _ string, bar start.Bar, st s
 	}
 	phmSt.BarCount++
 
+	// Update v2 state (volume imbalance, VWAP cross, acceleration)
+	phmUpdateV2State(phmSt, bar)
+
 	return phmSt, nil
+}
+
+// ---------------------------------------------------------------------------
+// v2 State Update Helper
+// ---------------------------------------------------------------------------
+
+// phmUpdateV2State updates volume imbalance, VWAP crossover, and momentum
+// acceleration state from the current bar. Called from both OnBar and ReplayOnBar.
+func phmUpdateV2State(phmSt *PHMState, bar start.Bar) {
+	// --- Volume imbalance: classify bar as buy or sell volume ---
+	var buyVol, sellVol float64
+	switch {
+	case bar.Close > bar.Open:
+		buyVol = bar.Volume
+	case bar.Close < bar.Open:
+		sellVol = bar.Volume
+	default:
+		// Doji — split evenly
+		buyVol = bar.Volume / 2
+		sellVol = bar.Volume / 2
+	}
+
+	const volWindowSize = 3
+	phmSt.BuyVolWindow = append(phmSt.BuyVolWindow, buyVol)
+	if len(phmSt.BuyVolWindow) > volWindowSize {
+		phmSt.BuyVolWindow = phmSt.BuyVolWindow[len(phmSt.BuyVolWindow)-volWindowSize:]
+	}
+	phmSt.SellVolWindow = append(phmSt.SellVolWindow, sellVol)
+	if len(phmSt.SellVolWindow) > volWindowSize {
+		phmSt.SellVolWindow = phmSt.SellVolWindow[len(phmSt.SellVolWindow)-volWindowSize:]
+	}
+
+	// --- VWAP crossover detection ---
+	vwap := phmSt.Indicators.VWAP
+	if vwap > 0 {
+		var currentSide string
+		if bar.Close > vwap {
+			currentSide = "above"
+		} else if bar.Close < vwap {
+			currentSide = "below"
+		}
+
+		if phmSt.PrevCloseVsVWAP != "" && currentSide != "" && currentSide != phmSt.PrevCloseVsVWAP {
+			phmSt.VWAPCrossed = true
+			if phmSt.PrevCloseVsVWAP == "below" && currentSide == "above" {
+				phmSt.CrossDirection = "long"
+			} else if phmSt.PrevCloseVsVWAP == "above" && currentSide == "below" {
+				phmSt.CrossDirection = "short"
+			}
+		}
+
+		if currentSide != "" {
+			phmSt.PrevCloseVsVWAP = currentSide
+		}
+	}
+
+	// --- Momentum acceleration: consecutive expanding bars ---
+	barRange := bar.High - bar.Low
+	var dir string
+	if bar.Close > bar.Open {
+		dir = "up"
+	} else if bar.Close < bar.Open {
+		dir = "down"
+	}
+
+	switch {
+	case dir == "":
+		// Doji resets acceleration
+		phmSt.AccelCount = 0
+		phmSt.LastBarDirection = ""
+		phmSt.LastBarRange = 0
+	case dir == phmSt.LastBarDirection && barRange >= phmSt.LastBarRange:
+		phmSt.AccelCount++
+		phmSt.LastBarRange = barRange
+	default:
+		// Direction changed or range contracted — reset
+		phmSt.AccelCount = 1
+		phmSt.LastBarDirection = dir
+		phmSt.LastBarRange = barRange
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -742,30 +939,3 @@ func phmParseHHMM(s string) (int, int) {
 	return h, m
 }
 
-// phmSliceMax returns the maximum value in a float64 slice.
-func phmSliceMax(s []float64) float64 {
-	if len(s) == 0 {
-		return math.Inf(-1)
-	}
-	m := s[0]
-	for _, v := range s[1:] {
-		if v > m {
-			m = v
-		}
-	}
-	return m
-}
-
-// phmSliceMin returns the minimum value in a float64 slice.
-func phmSliceMin(s []float64) float64 {
-	if len(s) == 0 {
-		return math.Inf(1)
-	}
-	m := s[0]
-	for _, v := range s[1:] {
-		if v < m {
-			m = v
-		}
-	}
-	return m
-}
