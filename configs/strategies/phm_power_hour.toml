@@ -30,25 +30,25 @@ bar_timeframe = "5m"
 lookback_bars = 12
 volume_mult = 1.5
 close_range_pct = 0.30
-stop_bps = 150                    # wider stop — hold to close, safety net only
+stop_bps = 150                    # safety net only (EOD flatten exits first)
 max_signals_per_session = 1       # ONE entry per session
 limit_offset_bps = 5
 risk_per_trade_bps = 500          # larger size (high-conviction, 1 per day)
 max_position_bps = 2000
-allowed_hours_start = "15:15"     # entry window start
-allowed_hours_end = "15:45"       # entry window end (3 bars on 5m)
+allowed_hours_start = "15:00"     # entry window start
+allowed_hours_end = "15:50"       # wider entry window
 allowed_hours_tz = "America/New_York"
 eod_flatten_time = "15:55"
 htf_bias_enabled = false
 
 # Gao et al. intraday momentum params
-am_return_min_pct = 0.50          # min absolute AM return for signal (0.50%)
-eval_time = "15:15"               # when to evaluate direction (ET)
-max_entry_bars = 3                # bars after eval_time to attempt entry
+am_return_min_pct = 0.55          # sweet spot for AM return
+eval_time = "15:00"               # eval at power hour start
+max_entry_bars = 12               # 60 min entry window on 5m
 require_htf_align = false
 
 # Synthetic MOC proxy
-vol_accel_min_ratio = 1.3         # power hour vol / afternoon vol threshold
+vol_accel_min_ratio = 1.3         # sweet spot
 
 # MOC imbalance second entry window (live only)
 second_window_enabled = false     # disabled until IBKR auction data is wired
