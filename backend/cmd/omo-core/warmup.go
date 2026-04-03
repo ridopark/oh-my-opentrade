@@ -262,10 +262,10 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 
 	svc.monitor.InitAggregators(syms.all, todayOpen)
 
-	// Equity warmup: use previous NYSE RTH session.
+	// Equity warmup: use full previous NYSE RTH session for proper VWAP/confluence.
 	if len(syms.equity) > 0 {
 		prevStart, prevEnd := domain.PreviousRTHSession(time.Now())
-		warmupFrom := prevEnd.Add(-120 * time.Minute)
+		warmupFrom := prevStart // full session from 9:30 ET (was last 2 hours)
 		warmupTo := prevEnd
 		warmupLog.Info().
 			Time("prev_session_start", prevStart).
@@ -361,6 +361,20 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 
 		svc.strategyRunner.InitAggregators(todayOpen)
 
+		// Feed cached 1m bars through HTF aggregators so 5m strategies
+		// (AVWAP, PHM) receive proper warmup bars via WarmUpHTF.
+		for _, sym := range syms.all {
+			bars := warmupBarsCache[string(sym)]
+			if len(bars) == 0 {
+				continue
+			}
+			svc.strategyRunner.WarmUpHTF(string(sym), bars, runnerWarmupSnapshotFn, loc)
+			warmupLog.Info().
+				Str("symbol", string(sym)).
+				Int("bars_1m", len(bars)).
+				Msg("strategy runner HTF warmup from 1m bars")
+		}
+
 		// Resolve AVWAP anchors for today's session so HTF warmup bars
 		// feed into properly initialized AVWAP calculators with real
 		// anchor times (session_open, pd_high, pd_low) and key levels.
@@ -380,9 +394,16 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 				to = time.Now().UTC()
 				from = to.Add(-req.lookback)
 			} else {
-				_, prevEnd := domain.PreviousRTHSession(time.Now())
+				prevStart, prevEnd := domain.PreviousRTHSession(time.Now())
 				to = prevEnd
-				from = to.Add(-req.lookback)
+				// Use full session for 5m strategies (need VWAP from open)
+				// but respect the requested lookback if it's longer.
+				sessionDur := prevEnd.Sub(prevStart)
+				if req.lookback < sessionDur {
+					from = prevStart
+				} else {
+					from = to.Add(-req.lookback)
+				}
 			}
 			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaData, req.symbol, req.timeframe, from, to, warmupLog)
 			if err != nil {
