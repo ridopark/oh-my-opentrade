@@ -45,6 +45,36 @@ func (r *AuctionImbalanceRepo) SaveAuctionImbalance(ctx context.Context, snap do
 	return nil
 }
 
+// SaveAuctionImbalanceBatch inserts multiple auction imbalance snapshots using
+// a single multi-row INSERT with ON CONFLICT DO NOTHING to skip duplicates.
+func (r *AuctionImbalanceRepo) SaveAuctionImbalanceBatch(ctx context.Context, snaps []domain.AuctionImbalanceSnapshot) (int64, error) {
+	if len(snaps) == 0 {
+		return 0, nil
+	}
+
+	// Build multi-row VALUES clause.
+	const cols = 5 // time, symbol, volume, price, imbalance
+	query := "INSERT INTO auction_imbalances (time, symbol, volume, price, imbalance) VALUES "
+	args := make([]any, 0, len(snaps)*cols)
+	for i, s := range snaps {
+		if i > 0 {
+			query += ","
+		}
+		base := i * cols
+		query += fmt.Sprintf("($%d,$%d,$%d,$%d,$%d)", base+1, base+2, base+3, base+4, base+5)
+		args = append(args, s.Time, string(s.Symbol), s.Volume, s.Price, s.Imbalance)
+	}
+	query += " ON CONFLICT DO NOTHING"
+
+	res, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		r.log.Error().Err(err).Int("batch_size", len(snaps)).Msg("failed to batch save auction imbalances")
+		return 0, fmt.Errorf("auction_repo: batch save: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // GetAuctionImbalances returns auction imbalance snapshots for a symbol in [from, to).
 func (r *AuctionImbalanceRepo) GetAuctionImbalances(ctx context.Context, symbol domain.Symbol, from, to time.Time) ([]domain.AuctionImbalanceSnapshot, error) {
 	rows, err := r.db.QueryContext(ctx, querySelectAuctionImbalances, string(symbol), from, to)

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/app/backfill"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
 	"github.com/oh-my-opentrade/backend/internal/app/debate"
@@ -893,6 +894,30 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	r.emitter.EmitSetup("Replaying bars…")
 
+	// --- Load historical auction data for synthetic imbalance events ---
+	// Keyed by "YYYY-MM-DD:SYMBOL" for O(1) lookup in the replay loop.
+	auctionByDateSym := make(map[string]domain.AuctionImbalanceSnapshot)
+	{
+		auctionDB := timescaledb.NewSqlDB(r.infra.DB)
+		auctionRepo := timescaledb.NewAuctionImbalanceRepo(auctionDB, r.log.With().Str("component", "auction_repo").Logger())
+		for _, sym := range r.cfg.Symbols {
+			snaps, err := auctionRepo.GetAuctionImbalances(ctx, sym, r.cfg.From, r.cfg.To)
+			if err != nil {
+				r.log.Warn().Err(err).Str("symbol", sym.String()).Msg("failed to load auction data")
+				continue
+			}
+			for _, s := range snaps {
+				et := s.Time.In(loc)
+				key := et.Format("2006-01-02") + ":" + s.Symbol.String()
+				auctionByDateSym[key] = s
+			}
+		}
+		if len(auctionByDateSym) > 0 {
+			r.log.Info().Int("auction_snapshots", len(auctionByDateSym)).Msg("loaded historical auction data for backtest")
+		}
+	}
+	publishedAuctions := make(map[string]bool, len(auctionByDateSym))
+
 	// Reduce GC frequency during the replay hot loop. GOGC=400 lets the heap
 	// grow 4x before collecting, trading memory for fewer GC pauses.
 	prevGOGC := debug.SetGCPercent(400)
@@ -1001,6 +1026,43 @@ func (r *Runner) Run(ctx context.Context) error {
 			if useAggregation {
 				if agg, ok := aggregators[bar.Symbol.String()]; ok {
 					agg.Add(bar)
+				}
+			}
+
+			// Emit synthetic auction imbalance event at 15:45 ET so the PHM
+			// strategy's second entry window receives auction flow data.
+			// The event is published BEFORE the bar so the strategy has the
+			// auction snapshot when processing the 15:45+ bar.
+			if len(auctionByDateSym) > 0 {
+				barET := bar.Time.In(loc)
+				if barET.Hour() == 15 && barET.Minute() >= 45 {
+					symStr := bar.Symbol.String()
+					dateKey := barET.Format("2006-01-02") + ":" + symStr
+					if !publishedAuctions[dateKey] {
+						if aSnap, ok := auctionByDateSym[dateKey]; ok {
+							// Derive synthetic imbalance direction from bar close vs VWAP (option B).
+							imbalance := aSnap.Volume // default positive
+							if snap, snapOK := monitorSvc.GetLastSnapshot(symStr); snapOK && snap.VWAP > 0 {
+								if bar.Close < snap.VWAP {
+									imbalance = -aSnap.Volume
+								}
+							}
+							synthSnap := domain.AuctionImbalanceSnapshot{
+								Time:      bar.Time,
+								Symbol:    bar.Symbol,
+								Volume:    aSnap.Volume,
+								Price:     aSnap.Price,
+								Imbalance: imbalance,
+							}
+							aEvt := domain.NewBacktestEvent(
+								domain.EventAuctionImbalance, tenantID, envMode,
+								bar.Time.String()+"-auction-"+symStr, synthSnap, bar.Time,
+							)
+							_ = r.infra.EventBus.PublishDirect(ctx, aEvt)
+							r.infra.EventBus.Flush()
+							publishedAuctions[dateKey] = true
+						}
+					}
 				}
 			}
 
