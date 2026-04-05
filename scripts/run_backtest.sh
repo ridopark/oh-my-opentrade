@@ -3,8 +3,28 @@
 # Runs a backtest and waits for completion, then prints summary stats.
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+DASH_SESSION="omo-dashboard"
 LABEL="${1:-unlabeled}"
 API="http://localhost:8080"
+
+# ── Free resources: stop dashboard to reclaim RAM + disk IO ──
+DASH_WAS_RUNNING=false
+if tmux has-session -t "$DASH_SESSION" 2>/dev/null; then
+  DASH_WAS_RUNNING=true
+  tmux send-keys -t "$DASH_SESSION" C-c
+  sleep 1
+  tmux kill-session -t "$DASH_SESSION" 2>/dev/null || true
+  echo "[$LABEL] Stopped dashboard to free resources for backtest"
+fi
+
+restart_dashboard() {
+  if $DASH_WAS_RUNNING; then
+    tmux new-session -d -s "$DASH_SESSION" -c "$ROOT_DIR/apps/dashboard" "npm run dev"
+    echo "[$LABEL] Dashboard restarted"
+  fi
+}
+trap restart_dashboard EXIT
 SYMBOLS='["GOOGL","HOOD","MSFT","NFLX","PLTR","XOM","AAPL","AMZN","META","NVDA","TSLA","AMD","INTC","AVGO","QCOM","MU","MRVL","ON","SMCI","CRM","ORCL","SNOW","U","NET","DDOG","ZS","SOFI","COIN","SQ","PYPL","V","MA","BAC","JPM","GS","HIMS","RIVN","LCID","NIO","F","GM","WMT","COST","TGT","MRNA","PFE","ABBV","LLY","UNH","JNJ","CVX","OXY","SLB","SPY","QQQ","IWM","DIA","XLF","XLE","XLK","SOXL","TQQQ","SQQQ","MARA","RIOT","FUBO","AFRM","UPST","RBLX","BA","CAT","DE","UPS"]'
 
 # Start backtest

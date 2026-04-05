@@ -4,7 +4,27 @@
 # Usage: ./scripts/iterate_backtest.sh [variations_file]
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+DASH_SESSION="omo-dashboard"
 API="http://localhost:8080"
+
+# ── Free resources: stop dashboard to reclaim RAM + disk IO ──
+DASH_WAS_RUNNING=false
+if tmux has-session -t "$DASH_SESSION" 2>/dev/null; then
+  DASH_WAS_RUNNING=true
+  tmux send-keys -t "$DASH_SESSION" C-c
+  sleep 1
+  tmux kill-session -t "$DASH_SESSION" 2>/dev/null || true
+  echo "[harness] Stopped dashboard to free resources for backtest"
+fi
+
+restart_dashboard() {
+  if $DASH_WAS_RUNNING; then
+    tmux new-session -d -s "$DASH_SESSION" -c "$ROOT_DIR/apps/dashboard" "npm run dev"
+    echo "[harness] Dashboard restarted"
+  fi
+}
+trap restart_dashboard EXIT
 CONFIG="configs/strategies/avwap_v4.toml"
 RESULTS_DIR="/tmp/bt_iterations_$(date +%Y%m%d_%H%M%S)"
 BATCH_SIZE=1
