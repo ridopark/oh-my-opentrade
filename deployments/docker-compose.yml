@@ -20,6 +20,8 @@ services:
     - TWOFA_TIMEOUT_ACTION=restart
     - ACCOUNT=${IBKR_ACCOUNT_ID:-}
     - VNC_SERVER_PASSWORD=${VNC_PASS:-password}
+    - API_PORT=4002
+    - SOCAT_PORT=4004
     volumes:
     - ibgateway_jts:/home/ibgateway/Jts
     healthcheck:

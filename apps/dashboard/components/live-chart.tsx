@@ -238,6 +238,7 @@ export const LiveChart = memo(function LiveChart({
   const orbOverlayRef = useRef<ORBBoxOverlay | null>(null);
   const rthOverlayRef = useRef<RTHShadingOverlay | null>(null);
   const lastBarCountRef = useRef(0);
+  const initialRangeSetRef = useRef(false);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -349,6 +350,7 @@ export const LiveChart = memo(function LiveChart({
       orbOverlayRef.current = null;
       rthOverlayRef.current = null;
       lastBarCountRef.current = 0;
+      initialRangeSetRef.current = false;
     };
   }, []);
 
@@ -404,13 +406,17 @@ export const LiveChart = memo(function LiveChart({
       }
     }
 
-    const ts = chartRef.current?.timeScale();
-    if (!ts) return;
-    const visibleCandles = 120;
-    const dataLen = sorted.length;
-    const from = Math.max(0, dataLen - visibleCandles);
-    const to = dataLen - 1 + 5;
-    ts.setVisibleLogicalRange({ from, to });
+    if (!initialRangeSetRef.current) {
+      const ts = chartRef.current?.timeScale();
+      if (ts) {
+        const visibleCandles = 120;
+        const dataLen = sorted.length;
+        const from = Math.max(0, dataLen - visibleCandles);
+        const to = dataLen - 1 + 5;
+        ts.setVisibleLogicalRange({ from, to });
+        initialRangeSetRef.current = true;
+      }
+    }
   }, [bars, orbWindowMinutes]);
 
   // Update signal markers
