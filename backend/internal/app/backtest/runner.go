@@ -458,7 +458,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// --- Load replay bars first (needed to determine warmup endpoint) ---
 
-	loc, _ := time.LoadLocation("America/New_York")
+	loc := domain.NYLocation()
 
 	// Gap-fill is disabled by default — run `omo-backfill --gap-fill` before
 	// backtesting to ensure data is complete. This avoids slow gap detection

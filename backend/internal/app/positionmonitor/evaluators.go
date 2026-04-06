@@ -813,10 +813,6 @@ func evaluateTimePartial(rule domain.ExitRule, pos *domain.MonitoredPosition, cu
 }
 
 func etLocation() *time.Location {
-	loc, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		return time.UTC
-	}
-	return loc
+	return domain.NYLocation()
 }
 

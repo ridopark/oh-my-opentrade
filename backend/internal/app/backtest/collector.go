@@ -76,6 +76,12 @@ type Collector struct {
 	lastPrices  map[string]float64
 	openBuys    map[string][]TradeRecord // symbol → open long fills (FIFO)
 	openSells   map[string][]TradeRecord // symbol → open short fills (FIFO)
+
+	// Incremental Sharpe: running stats over bar-to-bar returns.
+	prevEquity   float64
+	returnSum    float64
+	returnSumSq  float64
+	returnCount  int
 }
 
 // NewCollector creates a Collector and subscribes to events on the bus.
@@ -88,6 +94,7 @@ func NewCollector(bus ports.EventBusPort, cfg Config, log zerolog.Logger) (*Coll
 		log:        log.With().Str("component", "backtest_collector").Logger(),
 		cash:       cfg.InitialEquity,
 		peakEquity: cfg.InitialEquity,
+		prevEquity: 0, // set after first equity curve entry
 		lastPrices: make(map[string]float64),
 		openBuys:   make(map[string][]TradeRecord),
 		openSells:  make(map[string][]TradeRecord),
@@ -302,6 +309,15 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 	}
 	c.equityCurve = append(c.equityCurve, equity)
 
+	// Update incremental Sharpe stats.
+	if c.prevEquity > 0 {
+		r := (equity - c.prevEquity) / c.prevEquity
+		c.returnSum += r
+		c.returnSumSq += r * r
+		c.returnCount++
+	}
+	c.prevEquity = equity
+
 	if equity > c.peakEquity {
 		c.peakEquity = equity
 	}
@@ -413,46 +429,22 @@ func (c *Collector) Result() Result {
 	return r
 }
 
-// computeSharpe calculates an annualized Sharpe ratio from the equity curve.
+// computeSharpe calculates an annualized Sharpe ratio using incrementally
+// accumulated return statistics (O(1), zero allocation).
 func (c *Collector) computeSharpe() float64 {
-	if len(c.equityCurve) < 2 {
+	n := float64(c.returnCount)
+	if n < 2 {
 		return 0
 	}
 
-	returns := make([]float64, 0, len(c.equityCurve)-1)
-	for i := 1; i < len(c.equityCurve); i++ {
-		if c.equityCurve[i-1] == 0 {
-			continue
-		}
-		r := (c.equityCurve[i] - c.equityCurve[i-1]) / c.equityCurve[i-1]
-		returns = append(returns, r)
-	}
-
-	if len(returns) < 2 {
+	mean := c.returnSum / n
+	// Var = E[X²] - E[X]², with Bessel's correction.
+	variance := (c.returnSumSq - c.returnSum*c.returnSum/n) / (n - 1)
+	if variance <= 0 {
 		return 0
 	}
 
-	// Mean return.
-	var sum float64
-	for _, r := range returns {
-		sum += r
-	}
-	mean := sum / float64(len(returns))
-
-	// Standard deviation.
-	var sumSq float64
-	for _, r := range returns {
-		d := r - mean
-		sumSq += d * d
-	}
-	stdDev := math.Sqrt(sumSq / float64(len(returns)-1))
-
-	if stdDev == 0 {
-		return 0
-	}
-
-	// Annualize.
-	return (mean / stdDev) * math.Sqrt(c.cfg.PeriodsPerYear)
+	return (mean / math.Sqrt(variance)) * math.Sqrt(c.cfg.PeriodsPerYear)
 }
 
 // PrintReport writes a human-readable report to stdout.

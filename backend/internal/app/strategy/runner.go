@@ -96,10 +96,7 @@ func (r *Runner) ResolveAnchorsForWarmup(symbols []string, barTime time.Time) {
 	if r.anchorResolver == nil {
 		return
 	}
-	loc, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		loc = time.FixedZone("ET", -5*3600)
-	}
+	loc := domain.NYLocation()
 	dateStr := barTime.In(loc).Format("2006-01-02")
 	for _, sym := range symbols {
 		if r.lastSessionDate == nil {
@@ -523,7 +520,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 			Low: bar.Low, Close: bar.Close, Volume: bar.Volume,
 		}, string(bar.Timeframe))
 
-		loc, _ := time.LoadLocation("America/New_York")
+		loc := domain.NYLocation()
 		barDate := bar.Time.In(loc).Format("2006-01-02")
 
 		r.mu.Lock()
@@ -537,7 +534,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 			r.resolveAIAnchors(ctx, symbol, bar, AnchorResolveOption{SyncAI: true})
 		}
 	} else if r.anchorResolver != nil {
-		loc, _ := time.LoadLocation("America/New_York")
+		loc := domain.NYLocation()
 		barDate := bar.Time.In(loc).Format("2006-01-02")
 		if r.lastSessionDate[symbol] != barDate {
 			r.lastSessionDate[symbol] = barDate
