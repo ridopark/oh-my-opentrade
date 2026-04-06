@@ -66,7 +66,7 @@ function formatPct(v: number) {
 export default function BacktestPage() {
   const bt = useBacktest();
   const [availableSymbols, setAvailableSymbols] = useState<string[]>([]);
-  const [availableStrategies, setAvailableStrategies] = useState<{ id: string; name: string; state: string }[]>([]);
+  const [availableStrategies, setAvailableStrategies] = useState<{ id: string; name: string; state: string; symbols?: string[] }[]>([]);
 
   useEffect(() => {
     fetch("/api/symbols")
@@ -220,7 +220,7 @@ function TopBar({
   progress: BacktestProgress | null;
   setupStage: string | null;
   availableSymbols: string[];
-  availableStrategies: { id: string; name: string; state: string }[];
+  availableStrategies: { id: string; name: string; state: string; symbols?: string[] }[];
   onPause: () => void;
   onResume: () => void;
   onSetSpeed: (s: string) => void;
@@ -287,6 +287,20 @@ function TopBar({
                   Clear All
                 </button>
               </div>
+              {availableStrategies.filter((s) => s.symbols && s.symbols.length > 0).length > 0 && (
+                <div className="flex flex-wrap gap-1 px-2 py-1.5 border-b border-border">
+                  {availableStrategies.filter((s) => s.symbols && s.symbols.length > 0).map((strat) => (
+                    <button
+                      key={strat.id}
+                      onClick={() => updateConfig("symbols", [...strat.symbols!].sort())}
+                      className="px-2 py-0.5 text-[10px] font-mono rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors"
+                      title={`Load ${strat.symbols!.length} symbols from ${strat.id} TOML config`}
+                    >
+                      {strat.id} ({strat.symbols!.length})
+                    </button>
+                  ))}
+                </div>
+              )}
               {availableSymbols.map((sym) => {
                 const selected = config.symbols.includes(sym);
                 return (

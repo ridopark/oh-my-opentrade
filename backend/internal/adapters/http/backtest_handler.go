@@ -376,10 +376,11 @@ func (h *BacktestHandler) handleStrategies(w http.ResponseWriter, r *http.Reques
 	}
 
 	type stratInfo struct {
-		ID          string `json:"id"`
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		State       string `json:"state"`
+		ID          string   `json:"id"`
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		State       string   `json:"state"`
+		Symbols     []string `json:"symbols"`
 	}
 
 	var strategies []stratInfo
@@ -400,6 +401,9 @@ func (h *BacktestHandler) handleStrategies(w http.ResponseWriter, r *http.Reques
 			Lifecycle struct {
 				State string `toml:"state"`
 			} `toml:"lifecycle"`
+			Routing struct {
+				Symbols []string `toml:"symbols"`
+			} `toml:"routing"`
 		}
 		if tomlErr := toml.Unmarshal(data, &raw); tomlErr != nil {
 			continue
@@ -409,6 +413,7 @@ func (h *BacktestHandler) handleStrategies(w http.ResponseWriter, r *http.Reques
 			Name:        raw.Strategy.Name,
 			Description: raw.Strategy.Description,
 			State:       raw.Lifecycle.State,
+			Symbols:     raw.Routing.Symbols,
 		})
 	}
 
