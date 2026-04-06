@@ -9,20 +9,22 @@ Autonomous tune→backtest→evaluate loop for oh-my-opentrade strategy DNA (sch
 
 ## Critical Rules
 
-1. **Never read the full results JSON.** Always pipe through `jq` to exclude the trades array — it can be 500KB+ and will blow up your context:
+1. **Save results to files, extract metrics with python.** Save full results to `_workspace/` for quant analysis. Extract summary metrics with python (not jq):
    ```bash
-   curl -s http://localhost:8080/backtest/{id}/results | jq '{
-     initial_equity, final_equity, total_return_pct, total_pnl,
-     trade_count, win_count, loss_count, win_rate_pct,
-     max_drawdown_pct, sharpe_ratio, profit_factor,
-     avg_win, avg_loss, largest_win, largest_loss
-   }'
+   curl -s http://localhost:8080/backtest/$BT_ID/results > _workspace/{strategy}_{variant}.json
+   python3 -c "
+   import json
+   d = json.load(open('_workspace/{strategy}_{variant}.json'))
+   print(f'PF: {d[\"profit_factor\"]:.3f} | WR: {d[\"win_rate_pct\"]:.1f}% | P&L: \${d[\"total_pnl\"]:.0f} | Trades: {d[\"trade_count\"]} | DD: {d[\"max_drawdown_pct\"]:.2f}%')
+   "
    ```
-2. **Use caller's backtest params.** If the user specifies symbols, date range, timeframe, equity, slippage, max_positions, or max_per_group — use those exact values for every backtest. Only fall back to defaults below when the caller doesn't specify.
-3. **Skip baseline if provided.** If the caller gives baseline metrics (PF, WR, DD, etc.), record them and go straight to tuning. Don't waste a backtest re-running what's already known.
-4. **Run variants in parallel.** When testing TIGHTER vs LOOSER for a parameter, run both backtests simultaneously (edit config → run → revert → edit other direction → run). Compare both when done.
-5. **Report on every poll.** When polling a running backtest, always print the progress to the user so they can see activity.
+2. **Consult quant-analyst after EVERY backtest.** Launch the `quant-analyst` agent to analyze results. Especially critical for the baseline — get structural analysis BEFORE parameter sweeping. Provide the saved results file path so the quant can analyze trade-level data.
+3. **Use caller's backtest params.** If the user specifies symbols, date range, timeframe, equity, slippage, max_positions, or max_per_group — use those exact values for every backtest. Only fall back to defaults below when the caller doesn't specify.
+4. **Skip baseline if provided.** If the caller gives baseline metrics (PF, WR, DD, etc.), record them and go straight to tuning. Don't waste a backtest re-running what's already known.
+5. **Poll every 10 seconds.** At max speed, backtests finish in 60-90 seconds for 7-month / 34-symbol runs. Use 10s poll intervals, not 30s.
 6. **Send Discord notifications.** Every significant event must be posted to Discord. See the Discord Notifications section below.
+7. **TOML inline tables only.** Never use `[params.subtable]` syntax — it terminates the `[params]` section. Use inline syntax: `param = { key = "value" }`.
+8. **Structural before parametric.** Always try timing window and regime filters before entry quality params. The order matters due to slot backfill effects.
 
 ## Discord Notifications
 
@@ -150,12 +152,12 @@ curl -s -X POST http://localhost:8080/backtest/run \
 # Returns: {"backtest_id": "bt-xxx", "status": "pending"}
 ```
 
-### Poll Status (every 30s, timeout 10min)
+### Poll Status (every 10s, timeout 10min)
 ```bash
 curl -s http://localhost:8080/backtest/{id}/status
 # Returns: {"status": "running|completed|failed", "progress": {"pct": 50, "bars_processed": N, "total_bars": M}}
 ```
-Always report to user: `"Backtest {id}: {pct}% complete"`. Suppress if pct unchanged.
+At max speed, 7-month / 34-symbol backtests finish in ~60-90 seconds. Use 10s poll intervals.
 
 ### Get Results (ALWAYS use jq filter)
 ```bash
@@ -349,14 +351,26 @@ If any engine changes were accepted, re-enter the parameter tuning loop (Step 3 
 3. If baseline metrics provided by caller → record and skip to Step 2
 4. Otherwise → run baseline backtest, poll, record metrics
 
-### Step 2: Prioritize Parameters
-Read `[params]` and `[[exit_rules]]` sections. Rank by expected impact on the **specific problem** the caller identified (e.g., "avg loss too high" → focus exits first):
+### Step 1b: Quant Baseline Analysis (MANDATORY)
+After baseline, **launch quant-analyst agent** with the saved results file. Ask for:
+- Breakdown by regime, direction, time of day, symbol
+- Biggest P&L bleeders
+- Recommendations classified as PARAM_CHANGE or ENGINE_CHANGE
+- Priority ordering
 
-1. **Exit rules** (cut losers) — stop_bps, max_loss pct, stagnation minutes, trail_pct
-2. **Entry filters** (fewer bad trades) — min_rvol, min_confidence, breakout_confirm_bps, max_retest_bars
-3. **Profit targets** (let winners run) — first_tier_rr, atr_multiplier, time_partial minutes
-4. **Timing** — allowed_hours, max_signals_per_session
-5. **Options** — delta range, DTE, spread limits (tune last, risky to overfit)
+**Never skip this.** Blind parameter sweeping misses structural issues.
+
+### Step 2: Prioritize Parameters
+Read `[params]` and `[[exit_rules]]` sections. **Revised priority order** (learned from AVWAP v4 tuning — structural filters have more impact than entry quality):
+
+1. **Engine fixes** (highest impact) — bugs in evaluators, signal flow, bar counting
+2. **Structural filters** — allowed_hours_end, allow_regimes, regime_blocked_directions
+3. **Entry quality** — min_confluence_score, min_rvol, min_confidence, volume_mult
+4. **Exit rules** — stop_bps, max_loss pct, stagnation minutes, trail_pct
+5. **Profit targets** — first_tier_rr, atr_multiplier, time_partial minutes
+6. **Options** — delta range, DTE, spread limits (tune last, risky to overfit)
+
+**Key insight:** Timing window and regime gating consistently outperform entry quality tuning. Always try structural filters first. Entry quality params like confluence score interact with time window due to **slot backfill** — narrow the window FIRST.
 
 ### Step 3: Multi-Pass Coordinate Descent
 
@@ -396,8 +410,8 @@ A parameter change is **accepted** if it improves ANY threshold metric without v
 
 #### Hard Constraints (reject if ANY violated)
 - Max drawdown worsened by > 1.5 percentage points vs baseline
-- Trade count below 40 (absolute floor)
-- Trade count dropped > 20% vs baseline
+- Trade count below 200 (absolute floor for statistical significance)
+- Trade count dropped > 30% vs baseline
 
 #### Step Sizes
 Use **absolute, parameter-specific steps** from the Parameter Guides below. Do NOT use percentage-based steps. Do NOT halve steps — with 30-200 trades, finer resolution is noise.
@@ -484,23 +498,37 @@ Then ask: `"Pass {n} complete. {k} params improved. Continue to pass {n+1}?"`
 
 ### AVWAP (`avwap_v4`)
 
-#### Entry Filters
+#### Structural Filters (tune FIRST — highest impact)
 | Parameter | Range | Step | Effect |
 |-----------|-------|------|--------|
+| `allowed_hours_end` | "10:00"–"15:45" | 30min | **Highest impact.** Morning-only (11:00) dramatically improves quality |
+| `allow_regimes` | subset of TREND_UP/TREND_DOWN/BALANCE | — | Drop losing regimes (TREND_UP longs get faded) |
+| `regime_blocked_directions` | inline table | — | Block direction per regime. `{ BALANCE = "LONG" }` was biggest single improvement |
+
+#### Entry Quality (tune AFTER structural filters)
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `min_confluence_score` | 5–8 | 1 | Higher = selective. **Interacts with time window** (slot backfill) |
 | `volume_mult` | 1.5–3.0 | 0.25 | Higher = fewer, higher-quality trades |
-| `min_confluence_score` | 5–8 | 1 | Higher = very selective |
 | `hold_bars` | 3–8 | 1 | Stronger breakout confirmation |
 | `min_slope_bps` | 0.1–1.0 | 0.1 | Strong trends only |
 
 #### Exit Rules
 | Parameter | Range | Step | Effect |
 |-----------|-------|------|--------|
-| `stop_bps` | 50–150 | 10 | Tighter = less loss per trade |
+| `stop_bps` | 50–150 | 10 | Minor impact if swing stop dominates exits |
+| `stagnation minutes` | 30–90 | 15 | Sweet spot ~45 min. Lower or higher both worse |
 | `avwap_stop_bars` | 1–3 | 1 | Faster AVWAP-based stop |
-| `stagnation minutes` | 60–180 | 15 | Faster exit on stale trades |
 | `max_loss pct` | 0.01–0.05 | 0.005 | Hard stop per trade |
+| swing stop `min_bars` | 3–15 | 2 | Real bars (time-based). 6 bars = 30 min on 5m = profitability inflection |
 
-**Correlated pairs:** `stop_bps` x `min_slope_bps`
+**AVWAP-specific notes:**
+- SHORT side (TREND_DOWN) is the profit driver. LONG side is structurally weaker.
+- Swing stop min_bars is in real bars (time-based), not eval calls. Fixed 2026-04-06.
+- Confluence filtering interacts with time window due to slot backfill. Narrow window FIRST.
+- `regime_blocked_directions = { BALANCE = "LONG" }` blocks breakout longs in ranging markets.
+
+**Correlated pairs:** `allowed_hours_end` × `min_confluence_score`, `stop_bps` × `min_slope_bps`
 
 ### Generic (unknown strategy)
 Infer ranges from current values: try +/- 20%. Parameter naming conventions:
@@ -516,14 +544,45 @@ Infer ranges from current values: try +/- 20%. Parameter naming conventions:
 ### Fill-Friendliness Constraint
 Fill probability is a first-class metric. Prioritize ATM (delta 0.40–0.55) with adequate OI (>=100) and spread <= 10% of premium. Discount backtested results that select deep ITM (delta > 0.60) — live fills are much worse than backtest assumes.
 
+## Known Bug Classes
+
+Before tuning, scan for these known issues:
+
+### Counter-Based Bar Counting (CRITICAL)
+**Symptom:** `CustomState["key"]++` in an evaluator to count bars.
+**Bug:** In backtest mode, EvalExitRules is called N times per bar (once per symbol with pending aggregator). Counter increments N× per real bar, causing min_bars to fire too early.
+**Fix:** Use `int(now.Sub(pos.EntryTime) / barDur)` instead. Deduplicate ring buffer writes with `last_bar_idx`.
+**Status:** Fixed for `evaluateSwingStop` (2026-04-06). Other evaluators already time-based.
+
+### TOML Subtable Scope Termination (CRITICAL)
+**Bug:** `[params.subtable]` terminates `[params]` — all subsequent params become children of the subtable.
+**Fix:** Use inline table: `param = { key = "value" }` within the `[params]` section.
+
+## Slot Backfill Effect
+
+Removing trades via entry filters can backfill freed position slots with worse replacement trades, causing net PF decrease.
+**Mitigation:** Apply structural filters (time window, regime) FIRST to constrain the replacement pool, THEN tighten entry quality within the narrower pool.
+
+## Rebuild & Restart After Engine Changes
+
+```bash
+cd /home/ridopark/src/oh-my-opentrade/backend
+go build -o /home/ridopark/src/oh-my-opentrade/backend/bin/omo-core ./cmd/omo-core
+kill $(pgrep -f "bin/omo-core$" | head -1) 2>/dev/null
+sleep 2
+tmux send-keys -t omo-core "set -a; source /home/ridopark/src/oh-my-opentrade/.env; set +a; /home/ridopark/src/oh-my-opentrade/backend/bin/omo-core 2>&1 | tee -a /home/ridopark/src/oh-my-opentrade/logs/omo-core.log" Enter
+sleep 10
+```
+
 ## Overfitting Detection
 
 Flag as suspect if:
-- Trade count < 40
+- Trade count < 200 (absolute floor for statistical significance)
 - PF > 3.0
 - WR > 60% AND PF > 2.0
 - Backtest period < 6 months
 - Split-half divergence (improvement in one half, regression in other)
+- PF jumps > 0.3 from a single parameter tweak (suspect unless engine fix)
 
 ## Healthy Metric Ranges
 
