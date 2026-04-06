@@ -502,15 +502,16 @@ function EquityCurveMain({ data }: { data: { time: number; value: number }[] }) 
     chartRef.current?.timeScale().fitContent();
   }, [data]);
 
-  if (data.length === 0) {
-    return (
-      <div className="flex items-center justify-center flex-1 h-full text-sm text-muted-foreground">
-        Run a backtest to see the equity curve
-      </div>
-    );
-  }
-
-  return <div ref={containerRef} className="w-full h-full" />;
+  return (
+    <div className="relative w-full h-full">
+      <div ref={containerRef} className="w-full h-full" />
+      {data.length === 0 && (
+        <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
+          Run a backtest to see the equity curve
+        </div>
+      )}
+    </div>
+  );
 }
 
 interface Position {

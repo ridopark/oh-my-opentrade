@@ -184,7 +184,6 @@ export function useBacktest(): UseBacktestReturn {
 
     const eventTypes = [
       "backtest:setup",
-      "backtest:candle",
       "backtest:signal",
       "backtest:signal_enriched",
       "backtest:trade",
@@ -208,12 +207,7 @@ export function useBacktest(): UseBacktestReturn {
               break;
             }
             case "backtest:candle": {
-              const bar = data as BacktestBar;
-              const sym = bar.symbol;
-              const existing = barsRef.current.get(sym) ?? [];
-              existing.push(bar);
-              barsRef.current.set(sym, existing);
-              scheduleFlush();
+              // Candle events suppressed server-side; no-op for defense-in-depth.
               break;
             }
             case "backtest:signal": {
