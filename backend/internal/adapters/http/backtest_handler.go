@@ -43,6 +43,7 @@ type backtestControlRequest struct {
 }
 
 // BacktestHandler manages backtest lifecycle via HTTP endpoints.
+// Backtests are queued and executed one at a time to avoid resource contention.
 type BacktestHandler struct {
 	db         *sql.DB
 	appCfg     *config.Config
@@ -51,16 +52,37 @@ type BacktestHandler struct {
 
 	mu      sync.RWMutex
 	runners map[string]*backtest.Runner
+
+	// queue serializes backtest execution — at most one runs at a time.
+	queue chan *backtestJob
+}
+
+type backtestJob struct {
+	runner *backtest.Runner
+	log    zerolog.Logger
 }
 
 // NewBacktestHandler creates a handler for backtest HTTP endpoints.
 func NewBacktestHandler(db *sql.DB, appCfg *config.Config, marketData ports.MarketDataPort, log zerolog.Logger) *BacktestHandler {
-	return &BacktestHandler{
+	h := &BacktestHandler{
 		db:         db,
 		appCfg:     appCfg,
 		marketData: marketData,
 		log:        log.With().Str("component", "backtest_http").Logger(),
 		runners:    make(map[string]*backtest.Runner),
+		queue:      make(chan *backtestJob, 4), // buffer up to 4 pending backtests
+	}
+	// Single worker drains the queue — only one backtest runs at a time.
+	go h.backtestWorker()
+	return h
+}
+
+// backtestWorker processes backtest jobs sequentially.
+func (h *BacktestHandler) backtestWorker() {
+	for job := range h.queue {
+		if runErr := job.runner.Run(context.Background()); runErr != nil {
+			job.log.Error().Err(runErr).Str("backtest_id", job.runner.ID()).Msg("backtest run failed")
+		}
 	}
 }
 
@@ -159,10 +181,10 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 			delete(h.runners, id)
 		}
 	}
-	const maxConcurrent = 2
-	if len(h.runners) >= maxConcurrent {
+	const maxQueued = 4
+	if len(h.runners) >= maxQueued {
 		h.mu.Unlock()
-		jsonError(w, "max concurrent backtests reached — cancel one first", http.StatusConflict)
+		jsonError(w, "max queued backtests reached — cancel one first", http.StatusConflict)
 		return
 	}
 
@@ -239,11 +261,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	h.runners[runner.ID()] = runner
 	h.mu.Unlock()
 
-	go func() {
-		if runErr := runner.Run(context.Background()); runErr != nil {
-			h.log.Error().Err(runErr).Str("backtest_id", runner.ID()).Msg("backtest run failed")
-		}
-	}()
+	h.queue <- &backtestJob{runner: runner, log: h.log}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)

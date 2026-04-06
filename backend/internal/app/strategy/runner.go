@@ -668,7 +668,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	// here would cause a self-deadlock. All state reads/writes are complete.
 	r.mu.Unlock()
 
-	r.logger.Info("bar processed",
+	r.logger.Debug("bar processed",
 		"symbol", symbol,
 		"instances_1m", len(oneMinInstances),
 		"htf_timeframes", len(htfNeeded),

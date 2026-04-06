@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -376,8 +377,16 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.log.Debug().Msg("skipping DoltHub options import (data assumed pre-cached)")
 	}
 
+	// Adapt historical options data for the RiskSizer's OptionsMarketDataPort.
+	// The adapter also serves as a cached HistoricalOptionsPort for SimBroker
+	// exit pricing once PreLoad populates its in-memory cache.
+	optionsAdapter := NewHistoricalOptionsAdapter(histOptRepo, clockFn)
+	optionsAdapter.SetLogger(r.log)
+
 	// Wire historical options to simbroker for realistic exit pricing.
-	sim.SetHistoricalOptions(histOptRepo)
+	// Uses the cached adapter instead of the raw repo so that after PreLoad,
+	// SimBroker exit lookups are served from memory.
+	sim.SetHistoricalOptions(optionsAdapter)
 
 	// Debate service: processes SetupDetected events (ORB) and emits OrderIntentCreated.
 	// Only start if ORB strategy is selected (it's the only consumer of SetupDetected).
@@ -391,9 +400,6 @@ func (r *Runner) Run(ctx context.Context) error {
 			return fmt.Errorf("start debate: %w", startErr)
 		}
 	}
-
-	// Adapt historical options data for the RiskSizer's OptionsMarketDataPort.
-	optionsAdapter := NewHistoricalOptionsAdapter(histOptRepo, clockFn)
 
 	pipeline, err := bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
 		EventBus:        r.infra.EventBus,
@@ -472,10 +478,25 @@ func (r *Runner) Run(ctx context.Context) error {
 		results := make([]loadResult, len(r.cfg.Symbols))
 		var loadErr atomic.Value
 		var loadWg sync.WaitGroup
+
+		// Pre-load historical options chain in parallel with bar loading.
+		// On failure, the adapter falls back to per-query DB lookups gracefully.
+		loadWg.Add(1)
+		go func() {
+			defer loadWg.Done()
+			if preloadErr := optionsAdapter.PreLoad(ctx, r.cfg.Symbols, r.cfg.From, r.cfg.To); preloadErr != nil {
+				r.log.Warn().Err(preloadErr).Msg("options chain pre-load failed, falling back to per-query")
+			}
+		}()
+
+		// Limit concurrent DB fetches to avoid overwhelming the connection pool.
+		loadSem := make(chan struct{}, 8)
 		for i, sym := range r.cfg.Symbols {
 			loadWg.Add(1)
 			go func(i int, sym domain.Symbol) {
 				defer loadWg.Done()
+				loadSem <- struct{}{}
+				defer func() { <-loadSem }()
 				bars, fetchErr := repo.GetMarketBars(ctx, sym, replayTimeframe, r.cfg.From, r.cfg.To)
 				if fetchErr != nil {
 					loadErr.Store(fmt.Errorf("load bars for %s: %w", sym, fetchErr))
@@ -535,10 +556,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 		warmupResults := make([]warmupResult, len(r.cfg.Symbols))
 		var warmupWg sync.WaitGroup
+		warmupSem := make(chan struct{}, 8)
 		for i, sym := range r.cfg.Symbols {
 			warmupWg.Add(1)
 			go func(i int, sym domain.Symbol) {
 				defer warmupWg.Done()
+				warmupSem <- struct{}{}
+				defer func() { <-warmupSem }()
 				warmupEnd := r.cfg.From
 				if t, ok := firstBarTime[sym.String()]; ok {
 					warmupEnd = t
@@ -918,9 +942,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	publishedAuctions := make(map[string]bool, len(auctionByDateSym))
 
-	// Reduce GC frequency during the replay hot loop. GOGC=400 lets the heap
-	// grow 4x before collecting, trading memory for fewer GC pauses.
-	prevGOGC := debug.SetGCPercent(400)
+	// Reduce GC frequency during the replay hot loop. GOGC=200 lets the heap
+	// grow 2x before collecting, balancing memory usage and GC pauses.
+	prevGOGC := debug.SetGCPercent(200)
 	defer debug.SetGCPercent(prevGOGC)
 
 	// Freeze the handler map so PublishDirect can bypass locking.
@@ -1143,6 +1167,10 @@ func (r *Runner) Run(ctx context.Context) error {
 				t.Stop()
 			case <-t.C:
 			}
+		} else {
+			// "max" speed: yield to the scheduler periodically to prevent
+			// starving other goroutines (dashboard, HTTP handlers, etc.).
+			runtime.Gosched()
 		}
 	}
 

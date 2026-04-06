@@ -14,6 +14,11 @@ type HistoricalOptionsPort interface {
 	GetHistoricalChain(ctx context.Context, symbol domain.Symbol, date time.Time,
 		right domain.OptionRight, minDTE, maxDTE int) ([]domain.HistoricalOptionChainRow, error)
 
+	// GetHistoricalChainBulk returns ALL option contracts for the given symbols
+	// across the full date range. Used for pre-loading backtest caches.
+	GetHistoricalChainBulk(ctx context.Context, symbols []domain.Symbol,
+		from, to time.Time) ([]domain.HistoricalOptionChainRow, error)
+
 	// GetHistoricalContract returns the contract closest to the given strike/expiry/right
 	// on a given date. Returns nil if no match found.
 	GetHistoricalContract(ctx context.Context, symbol domain.Symbol, date time.Time,
