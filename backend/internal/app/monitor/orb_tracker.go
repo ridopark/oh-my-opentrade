@@ -47,6 +47,8 @@ type ORBConfig struct {
 	FVGMinRVOL              float64  // min RVOL for FVG displacement bar (default 1.5)
 	DisplacementMinBodyPct  float64  // min body/range ratio for breakout candle (0=disabled)
 	DisplacementMinRangePct float64  // min range/price ratio for breakout candle (0=disabled)
+	RetestQualityMinBodyHold float64 // retest candle close must hold this fraction of breakout body (0=disabled)
+	ADRExhaustionPct         float64 // skip entry if session range / ATR > this (0 = disabled)
 }
 
 func DefaultORBConfig() ORBConfig {
@@ -181,6 +183,8 @@ func NewORBConfigFromDNA(params map[string]any) ORBConfig {
 		FVGMinRVOL:              orbExtractFloat(params, "fvg_min_rvol", 1.5),
 		DisplacementMinBodyPct:  orbExtractFloat(params, "displacement_min_body_pct", 0),
 		DisplacementMinRangePct: orbExtractFloat(params, "displacement_min_range_pct", 0),
+		RetestQualityMinBodyHold: orbExtractFloat(params, "retest_quality_min_body_hold", 0),
+		ADRExhaustionPct:         orbExtractFloat(params, "adr_exhaustion_pct", 0),
 	}
 }
 
@@ -234,11 +238,15 @@ type ORBSession struct {
 	Breakout          BreakoutInfo
 	Retest            RetestInfo
 	SignalsFired      int
+	SessionHigh       float64 // highest price seen in the session (for ADR exhaustion filter)
+	SessionLow        float64 // lowest price seen in the session (for ADR exhaustion filter)
 	BarsSinceBreakout int
 	SweepCooldown     int
 	PrevVWAP          float64 // previous bar's VWAP for slope calculation
 	RangeInvalid      bool    // true if OR range failed ATR/size check
 	RangeNotified     bool    // true once ORBRangeSet event has been emitted
+
+	BreakoutBar domain.MarketBar // the candle that triggered the breakout (for retest quality filter)
 
 	// Retest-phase bar tracking for swing stop computation
 	RetestBars []domain.MarketBar
@@ -293,6 +301,7 @@ func (t *ORBTracker) ResetSession(symbol string) {
 func (t *ORBTracker) cycleToRangeSet(sess *ORBSession) {
 	sess.State = ORBStateRangeSet
 	sess.Breakout = BreakoutInfo{}
+	sess.BreakoutBar = domain.MarketBar{}
 	sess.Retest = RetestInfo{}
 	sess.BarsSinceBreakout = 0
 	sess.RetestBars = nil
@@ -325,6 +334,14 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 		}
 		t.sessions[sym] = sess
 		t.logger.Info("orb: new session", "symbol", sym, "key", key, "state", sess.State)
+	}
+
+	// Track session high/low for ADR exhaustion filter (update every bar, regardless of state)
+	if bar.High > sess.SessionHigh {
+		sess.SessionHigh = bar.High
+	}
+	if bar.Low < sess.SessionLow || sess.SessionLow == 0 {
+		sess.SessionLow = bar.Low
 	}
 
 	// Track VWAP for slope calculation (update every bar, regardless of state)
@@ -474,7 +491,41 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 				return nil, false
 			}
 		}
+		if sess.Retest.Touched && holdThisBar && cfg.RetestQualityMinBodyHold > 0 {
+			breakoutBody := math.Abs(sess.BreakoutBar.Close - sess.BreakoutBar.Open)
+			if breakoutBody > 0 {
+				if sess.Breakout.Direction == domain.DirectionLong {
+					holdLevel := sess.OrbHigh - breakoutBody*(1-cfg.RetestQualityMinBodyHold)
+					if bar.Close < holdLevel {
+						t.logger.Info("orb: retest quality filter rejected", "symbol", sym,
+							"direction", "LONG", "close", bar.Close, "hold_level", holdLevel)
+						return nil, false
+					}
+				} else {
+					holdLevel := sess.OrbLow + breakoutBody*(1-cfg.RetestQualityMinBodyHold)
+					if bar.Close > holdLevel {
+						t.logger.Info("orb: retest quality filter rejected", "symbol", sym,
+							"direction", "SHORT", "close", bar.Close, "hold_level", holdLevel)
+						return nil, false
+					}
+				}
+			}
+		}
+
 		if sess.Retest.Touched && holdThisBar {
+			// ADR exhaustion filter: skip if session range already consumed too much of daily ATR
+			dailyATR := snap.HTFDailyATR()
+			if cfg.ADRExhaustionPct > 0 && dailyATR > 0 {
+				sessionRange := sess.SessionHigh - sess.SessionLow
+				exhaustion := sessionRange / dailyATR
+				if exhaustion > cfg.ADRExhaustionPct {
+					t.logger.Info("orb: ADR exhaustion filter rejected", "symbol", sym,
+						"exhaustion", exhaustion, "threshold", cfg.ADRExhaustionPct,
+						"session_range", sessionRange, "daily_atr", dailyATR)
+					return nil, false
+				}
+			}
+
 			sess.Retest.HoldBar = bar.Time
 			sess.Retest.HoldClose = bar.Close
 			sess.Retest.Confirmed = true
@@ -582,6 +633,7 @@ func (t *ORBTracker) onRangeSetBar(sess *ORBSession, bar domain.MarketBar, snap 
 
 	if longBreak {
 		sess.Breakout = BreakoutInfo{Direction: domain.DirectionLong, BreakBar: bar.Time, BreakClose: bar.Close, RVOL: rvol, Confirmed: true}
+		sess.BreakoutBar = bar
 		sess.State = ORBStateBreakoutSeen
 		sess.State = ORBStateAwaitingRetest
 		sess.BarsSinceBreakout = 0
@@ -590,6 +642,7 @@ func (t *ORBTracker) onRangeSetBar(sess *ORBSession, bar domain.MarketBar, snap 
 	}
 	if shortBreak {
 		sess.Breakout = BreakoutInfo{Direction: domain.DirectionShort, BreakBar: bar.Time, BreakClose: bar.Close, RVOL: rvol, Confirmed: true}
+		sess.BreakoutBar = bar
 		sess.State = ORBStateBreakoutSeen
 		sess.State = ORBStateAwaitingRetest
 		sess.BarsSinceBreakout = 0
@@ -685,6 +738,20 @@ func (t *ORBTracker) onAwaitingRetestFVG(sess *ORBSession, bar domain.MarketBar,
 		if !vwapPositionOK(dir, bar.Close, snap.VWAP) || !vwapSlopeOK(dir, snap.VWAP, sess.PrevVWAP) {
 			t.logger.Info("orb: FVG engulfing rejected (VWAP misaligned)", "symbol", sym,
 				"direction", dir, "close", bar.Close, "vwap", snap.VWAP)
+			sess.PrevBar = &bar
+			return nil, false
+		}
+	}
+
+	// ADR exhaustion filter: skip if session range already consumed too much of daily ATR
+	dailyATR := snap.HTFDailyATR()
+	if cfg.ADRExhaustionPct > 0 && dailyATR > 0 {
+		sessionRange := sess.SessionHigh - sess.SessionLow
+		exhaustion := sessionRange / dailyATR
+		if exhaustion > cfg.ADRExhaustionPct {
+			t.logger.Info("orb: ADR exhaustion filter rejected", "symbol", sym,
+				"exhaustion", exhaustion, "threshold", cfg.ADRExhaustionPct,
+				"session_range", sessionRange, "daily_atr", dailyATR)
 			sess.PrevBar = &bar
 			return nil, false
 		}

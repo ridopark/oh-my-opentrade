@@ -48,6 +48,8 @@ min_range_pct_bps = 10             # accept smaller ranges (was 20)
 fvg_enabled = false                # JS has no FVG
 fvg_min_rvol = 0.8
 displacement_min_body_pct = 0.50   # 0.50 is optimal — 0.40 worse, 0.60 worse
+retest_quality_min_body_hold = 0    # disabled — filter redundant with existing touch+hold logic
+adr_exhaustion_pct = 0              # disabled — ADR filter hurts PF at all thresholds
 displacement_min_range_pct = 0.002 # JS: range >= 0.2% of price
 stop_bps = 40                      # swing stop overrides — fixed bps is fallback only
 stop_buffer_bps = 10               # JS: 0.1% buffer on swing stop
@@ -81,7 +83,7 @@ size_wide_mult = 1.50
 type = "TIERED_TP"
 [exit_rules.params]
 first_tier_pct = 0.5       # exit 50% at first tier
-first_tier_rr = 2.0        # 2.0 optimal — 1.5 worse PF
+first_tier_rr = 2.0        # 2.0 optimal
 trail_pct = 0.015          # trail inert at MAX_LOSS=0.005 — keep for future loosening
 initial_risk_pct = 0.005   # fallback R if swing stop unavailable
 
