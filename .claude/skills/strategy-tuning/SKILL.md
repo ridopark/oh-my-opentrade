@@ -22,6 +22,79 @@ Autonomous tune→backtest→evaluate loop for oh-my-opentrade strategy DNA (sch
 3. **Skip baseline if provided.** If the caller gives baseline metrics (PF, WR, DD, etc.), record them and go straight to tuning. Don't waste a backtest re-running what's already known.
 4. **Run variants in parallel.** When testing TIGHTER vs LOOSER for a parameter, run both backtests simultaneously (edit config → run → revert → edit other direction → run). Compare both when done.
 5. **Report on every poll.** When polling a running backtest, always print the progress to the user so they can see activity.
+6. **Send Discord notifications.** Every significant event must be posted to Discord. See the Discord Notifications section below.
+
+## Discord Notifications
+
+Post updates to the Discord webhook for every significant event. This keeps the team informed without needing to watch the terminal.
+
+**Webhook URL:** Read from `references/discord_webhook.txt` (one line, no trailing newline).
+
+**When to send:**
+1. **Tuning started** — strategy name, date range, baseline metrics
+2. **Each backtest result** — param changed, direction, PF/WR/DD/trades, accept/reject verdict
+3. **Engine change started** — what the quant recommended, what go-architect is implementing
+4. **Engine change result** — build/test status, backtest result, accept/revert
+5. **Pass checkpoint** — full comparison table (baseline vs current best)
+6. **Tuning complete** — final metrics, all accepted changes, commit hash
+
+**How to send — use a bash curl with Discord embed:**
+
+```bash
+curl -s -X POST "$DISCORD_WEBHOOK" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "embeds": [{
+      "title": "TITLE_HERE",
+      "description": "BODY_HERE",
+      "color": COLOR_INT,
+      "fields": [
+        {"name": "Field1", "value": "val1", "inline": true},
+        {"name": "Field2", "value": "val2", "inline": true}
+      ],
+      "footer": {"text": "oh-my-opentrade strategy tuner"}
+    }]
+  }'
+```
+
+**Color codes:** `3066993` (green = improvement/accept), `15158332` (red = regression/reject), `3447003` (blue = info/started), `16776960` (yellow = engine change in progress).
+
+**Message templates by event type:**
+
+### 1. Tuning Started
+- Title: `🔧 Tuning Started: {strategy_id}`
+- Color: blue
+- Fields: Symbols (count), Date Range, Timeframe, Baseline PF, Baseline DD, Baseline Trades
+
+### 2. Backtest Result
+- Title: `📊 {param}={value} → PF {pf}` or `📊 Baseline: PF {pf}`
+- Color: green if accepted, red if rejected
+- Description: `{param} changed {old}→{new} | Verdict: ✅ ACCEPTED` or `❌ REJECTED`
+- Fields: PF, Win Rate, Max DD, Trades, Avg Win, Avg Loss (all inline)
+
+### 3. Engine Change
+- Title: `⚙️ Engine Change: {name}` (started) or `⚙️ Engine Change Result: {name}`
+- Color: yellow (started), green/red (result)
+- Description: implementation details, build/test status, backtest comparison
+
+### 4. Pass Checkpoint
+- Title: `📋 Pass {n} Complete — PF {baseline}→{current}`
+- Color: green if improved, red if no improvement
+- Description: Markdown table of all metrics (baseline vs current vs delta)
+- Fields: Params Changed (list), Backtests Run, Engine Changes (if any)
+
+### 5. Tuning Complete
+- Title: `✅ Tuning Complete: {strategy_id}` or `⛔ Tuning Converged (no more improvement)`
+- Color: green
+- Description: Final summary with all accepted changes
+- Fields: Final PF, Final DD, Total Backtests Run, Commit hash (if committed)
+
+**Important:** Read the webhook URL from the file at the start of each tuning session:
+```bash
+DISCORD_WEBHOOK=$(cat .claude/skills/strategy-tuning/references/discord_webhook.txt)
+```
+
+Keep message bodies under 2000 characters (Discord limit). Use `\n` for newlines in the JSON description field. Escape special JSON characters in metric values.
 
 ## Strategy Discovery
 
