@@ -130,6 +130,7 @@ curl -s -X POST http://localhost:8080/backtest/run \
     "timeframe": "5m",
     "initial_equity": 100000,
     "slippage_bps": 10,
+    "speed": "max",
     "strategies": ["{strategy_id}"],
     "no_ai": true
   }'
