@@ -64,6 +64,52 @@ func (r *HistoricalOptionsRepository) GetHistoricalChain(
 	return results, rows.Err()
 }
 
+// GetHistoricalChainBulk returns all option contracts for the given symbols
+// across the full date range in a single query. Used for backtest pre-loading.
+func (r *HistoricalOptionsRepository) GetHistoricalChainBulk(
+	ctx context.Context,
+	symbols []domain.Symbol,
+	from, to time.Time,
+) ([]domain.HistoricalOptionChainRow, error) {
+	if len(symbols) == 0 {
+		return nil, nil
+	}
+
+	// Build WHERE symbol IN ($1, $2, ...) with dynamic placeholders.
+	args := make([]any, 0, len(symbols)+2)
+	placeholders := make([]string, len(symbols))
+	for i, s := range symbols {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args = append(args, string(s))
+	}
+	fromIdx := len(symbols) + 1
+	toIdx := len(symbols) + 2
+	args = append(args, from.Format("2006-01-02"), to.Format("2006-01-02"))
+
+	q := fmt.Sprintf(`SELECT date, symbol, expiration, strike, call_put, bid, ask, iv, delta, gamma, theta, vega, rho
+		FROM historical_option_chain
+		WHERE symbol IN (%s) AND date >= $%d AND date <= $%d
+		ORDER BY symbol, date, call_put, expiration, strike`,
+		strings.Join(placeholders, ","), fromIdx, toIdx)
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("GetHistoricalChainBulk: %w", err)
+	}
+	defer rows.Close()
+
+	var results []domain.HistoricalOptionChainRow
+	for rows.Next() {
+		row, scanErr := scanRow(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		results = append(results, row)
+	}
+	r.log.Info().Int("rows", len(results)).Int("symbols", len(symbols)).Msg("bulk loaded historical options")
+	return results, rows.Err()
+}
+
 // GetHistoricalContract returns the contract closest to the given strike/expiry/right.
 func (r *HistoricalOptionsRepository) GetHistoricalContract(
 	ctx context.Context,

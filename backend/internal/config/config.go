@@ -210,7 +210,7 @@ type rawConfig struct {
 const (
 	defaultDBPort          = 5432
 	defaultDBSSLMode       = "disable"
-	defaultDBMaxPoolSize   = 50
+	defaultDBMaxPoolSize   = 100
 	defaultServerPort      = 8080
 	defaultLogLevel        = "info"
 	defaultDataURL         = "https://data.alpaca.markets"
