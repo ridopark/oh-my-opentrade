@@ -14,13 +14,14 @@ import (
 )
 
 type Service struct {
-	eventBus   ports.EventBusPort
-	repository ports.RepositoryPort
-	filter     *AdaptiveFilter
-	barWriter  *AsyncBarWriter // optional: when set, DB writes are async
-	mu         sync.Mutex
-	log        zerolog.Logger
-	metrics    *metrics.Metrics
+	eventBus    ports.EventBusPort
+	repository  ports.RepositoryPort
+	filter      *AdaptiveFilter
+	barWriter   *AsyncBarWriter // optional: when set, DB writes are async
+	isBacktest  bool            // skip DB writes and UUID generation in hot loop
+	mu          sync.Mutex
+	log         zerolog.Logger
+	metrics     *metrics.Metrics
 
 	// Pipeline liveness tracking — lock-free atomics on the hot path.
 	// Stores time.Now().UnixNano() after each bar completes processing.
@@ -72,6 +73,7 @@ func (s *Service) recordPipelineLiveness(sym domain.Symbol) {
 func (s *Service) SetMetrics(m *metrics.Metrics) { s.metrics = m }
 
 func (s *Service) SetBarWriter(w *AsyncBarWriter) { s.barWriter = w }
+func (s *Service) SetBacktest(v bool)             { s.isBacktest = v }
 
 // Start subscribes the service to incoming market data events.
 func (s *Service) Start(ctx context.Context) error {
@@ -133,18 +135,19 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 			s.metrics.Bars.DroppedTotal.WithLabelValues("ws", string(result.Gate)).Inc()
 		}
 
-		emittedEvent, err := domain.NewEvent(
-			domain.EventMarketBarRejected,
-			event.TenantID,
-			event.EnvMode,
-			event.IdempotencyKey+"-rejected",
-			result.Bar,
-		)
-		if err != nil {
-			return fmt.Errorf("ingestion: failed to create rejected event: %w", err)
-		}
-		if err := s.eventBus.Publish(ctx, *emittedEvent); err != nil {
-			return fmt.Errorf("ingestion: failed to publish rejected event: %w", err)
+		if s.isBacktest {
+			evt := domain.NewBacktestEvent(domain.EventMarketBarRejected, event.TenantID, event.EnvMode, event.IdempotencyKey+"-rejected", result.Bar, event.OccurredAt)
+			if err := s.eventBus.Publish(ctx, evt); err != nil {
+				return fmt.Errorf("ingestion: failed to publish rejected event: %w", err)
+			}
+		} else {
+			emittedEvent, err := domain.NewEvent(domain.EventMarketBarRejected, event.TenantID, event.EnvMode, event.IdempotencyKey+"-rejected", result.Bar)
+			if err != nil {
+				return fmt.Errorf("ingestion: failed to create rejected event: %w", err)
+			}
+			if err := s.eventBus.Publish(ctx, *emittedEvent); err != nil {
+				return fmt.Errorf("ingestion: failed to publish rejected event: %w", err)
+			}
 		}
 		s.recordPipelineLiveness(bar.Symbol)
 		return nil
@@ -165,29 +168,45 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		}
 	}
 
-	if s.barWriter != nil {
-		s.barWriter.Enqueue(result.Bar)
-		l.Debug().Float64("close", result.Bar.Close).Bool("repaired", result.Bar.Repaired).Msg("market bar enqueued for async save")
-	} else {
-		if err := s.repository.SaveMarketBar(ctx, result.Bar); err != nil {
-			l.Error().Err(err).Msg("failed to save market bar to repository")
-			return fmt.Errorf("ingestion: failed to save market bar: %w", err)
+	if !s.isBacktest {
+		if s.barWriter != nil {
+			s.barWriter.Enqueue(result.Bar)
+			l.Debug().Float64("close", result.Bar.Close).Bool("repaired", result.Bar.Repaired).Msg("market bar enqueued for async save")
+		} else {
+			if err := s.repository.SaveMarketBar(ctx, result.Bar); err != nil {
+				l.Error().Err(err).Msg("failed to save market bar to repository")
+				return fmt.Errorf("ingestion: failed to save market bar: %w", err)
+			}
+			l.Debug().Float64("close", result.Bar.Close).Bool("repaired", result.Bar.Repaired).Msg("market bar saved")
 		}
-		l.Debug().Float64("close", result.Bar.Close).Bool("repaired", result.Bar.Repaired).Msg("market bar saved")
 	}
 
-	emittedEvent, err := domain.NewEvent(
-		domain.EventMarketBarSanitized,
-		event.TenantID,
-		event.EnvMode,
-		event.IdempotencyKey+"-sanitized",
-		result.Bar,
-	)
-	if err != nil {
-		return fmt.Errorf("ingestion: failed to create sanitized event: %w", err)
-	}
-	if err := s.eventBus.Publish(ctx, *emittedEvent); err != nil {
-		return fmt.Errorf("ingestion: failed to publish sanitized event: %w", err)
+	if s.isBacktest {
+		evt := domain.NewBacktestEvent(
+			domain.EventMarketBarSanitized,
+			event.TenantID,
+			event.EnvMode,
+			event.IdempotencyKey+"-sanitized",
+			result.Bar,
+			event.OccurredAt,
+		)
+		if err := s.eventBus.Publish(ctx, evt); err != nil {
+			return fmt.Errorf("ingestion: failed to publish sanitized event: %w", err)
+		}
+	} else {
+		emittedEvent, err := domain.NewEvent(
+			domain.EventMarketBarSanitized,
+			event.TenantID,
+			event.EnvMode,
+			event.IdempotencyKey+"-sanitized",
+			result.Bar,
+		)
+		if err != nil {
+			return fmt.Errorf("ingestion: failed to create sanitized event: %w", err)
+		}
+		if err := s.eventBus.Publish(ctx, *emittedEvent); err != nil {
+			return fmt.Errorf("ingestion: failed to publish sanitized event: %w", err)
+		}
 	}
 	s.recordPipelineLiveness(bar.Symbol)
 

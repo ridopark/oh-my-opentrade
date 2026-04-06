@@ -37,6 +37,9 @@ func (s *Service) barDurationFor(strategyName string) time.Duration {
 	if s.specStore == nil || strategyName == "" {
 		return time.Minute
 	}
+	if d, ok := s.barDurCache[strategyName]; ok {
+		return d
+	}
 	sid, err := domstrategy.NewStrategyID(strategyName)
 	if err != nil {
 		return time.Minute
@@ -45,7 +48,9 @@ func (s *Service) barDurationFor(strategyName string) time.Duration {
 	if err != nil || len(spec.Routing.Timeframes) == 0 {
 		return time.Minute
 	}
-	return parseBarDuration(string(spec.Routing.Timeframes[0]))
+	d := parseBarDuration(string(spec.Routing.Timeframes[0]))
+	s.barDurCache[strategyName] = d
+	return d
 }
 
 // tick evaluates all exit rules against all monitored positions.

@@ -27,6 +27,14 @@ type Store struct {
 	byPath   map[string]cached
 	byKey    map[string]string
 	allPaths []string
+
+	latestMu    sync.RWMutex
+	latestCache map[domstrategy.StrategyID]latestCached
+}
+
+type latestCached struct {
+	spec      portstrategy.Spec
+	fetchedAt time.Time
 }
 
 type cached struct {
@@ -48,6 +56,7 @@ func NewStoreWithPollInterval(dir string, loadFn LoadFunc, pollInterval time.Dur
 		pollInterval: pollInterval,
 		byPath:       make(map[string]cached),
 		byKey:        make(map[string]string),
+		latestCache:  make(map[domstrategy.StrategyID]latestCached),
 	}
 }
 
@@ -125,6 +134,16 @@ func (s *Store) GetLatest(ctx context.Context, id domstrategy.StrategyID) (*port
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+
+	// Return cached result if fresh (within poll interval).
+	s.latestMu.RLock()
+	if lc, ok := s.latestCache[id]; ok && time.Since(lc.fetchedAt) < s.pollInterval {
+		s.latestMu.RUnlock()
+		cp := lc.spec
+		return &cp, nil
+	}
+	s.latestMu.RUnlock()
+
 	paths, err := s.scan()
 	if err != nil {
 		return nil, err
@@ -148,6 +167,11 @@ func (s *Store) GetLatest(ctx context.Context, id domstrategy.StrategyID) (*port
 	if best == nil {
 		return nil, fmt.Errorf("%w: %s", domstrategy.ErrStrategyNotFound, id)
 	}
+
+	s.latestMu.Lock()
+	s.latestCache[id] = latestCached{spec: *best, fetchedAt: time.Now()}
+	s.latestMu.Unlock()
+
 	return best, nil
 }
 
