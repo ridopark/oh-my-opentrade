@@ -72,10 +72,14 @@ type Collector struct {
 	peakEquity  float64
 	maxDrawdown float64
 	trades      []TradeRecord
-	equityCurve []float64 // equity sampled at each bar
 	lastPrices  map[string]float64
 	openBuys    map[string][]TradeRecord // symbol → open long fills (FIFO)
 	openSells   map[string][]TradeRecord // symbol → open short fills (FIFO)
+
+	// Incremental mark-to-market: track position value per symbol so onBar
+	// only recomputes the single symbol that changed, not all positions.
+	posValue      map[string]float64 // symbol → current mark-to-market position value
+	totalPosValue float64            // running sum of all posValue entries
 
 	// Incremental Sharpe: running stats over bar-to-bar returns.
 	prevEquity   float64
@@ -98,6 +102,7 @@ func NewCollector(bus ports.EventBusPort, cfg Config, log zerolog.Logger) (*Coll
 		lastPrices: make(map[string]float64),
 		openBuys:   make(map[string][]TradeRecord),
 		openSells:  make(map[string][]TradeRecord),
+		posValue:   make(map[string]float64),
 	}
 
 	ctx := context.Background()
@@ -263,10 +268,44 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 	}
 
 	c.trades = append(c.trades, tr)
+
+	// Recompute posValue for this symbol after position change.
+	c.recomputePosValue(symbol)
+
 	return nil
 }
 
-// onBar processes a MarketBarReceived event to track last prices and equity curve.
+// recomputePosValue recalculates the mark-to-market position value for a symbol.
+// Called after fills (rare) to keep incremental equity tracking correct.
+func (c *Collector) recomputePosValue(symbol string) {
+	lastPrice := c.lastPrices[symbol]
+	oldPV := c.posValue[symbol]
+	var pv float64
+	for _, tr := range c.openBuys[symbol] {
+		price := lastPrice
+		if price <= 0 {
+			price = tr.Price
+		}
+		mult := tr.Multiplier
+		if mult <= 0 {
+			mult = 1
+		}
+		pv += tr.Quantity * price * mult
+	}
+	for _, tr := range c.openSells[symbol] {
+		price := lastPrice
+		if price <= 0 {
+			price = tr.Price
+		}
+		pv -= tr.Quantity * price
+	}
+	c.posValue[symbol] = pv
+	c.totalPosValue += pv - oldPV
+}
+
+// onBar processes a MarketBarReceived event to track last prices and equity.
+// Uses incremental mark-to-market: only recomputes position value for the
+// bar's symbol rather than iterating all open positions on every bar.
 func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 	bar, ok := event.Payload.(domain.MarketBar)
 	if !ok {
@@ -276,38 +315,32 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.lastPrices[string(bar.Symbol)] = bar.Close
+	sym := string(bar.Symbol)
+	c.lastPrices[sym] = bar.Close
 
-	// Mark-to-market equity.
-	equity := c.cash
-	for sym, opens := range c.openBuys {
-		lastPrice := c.lastPrices[sym]
+	// Recompute position value only for this symbol.
+	oldPV := c.posValue[sym]
+	var newPV float64
+	if opens := c.openBuys[sym]; len(opens) > 0 {
 		for _, tr := range opens {
-			price := lastPrice
-			if price <= 0 {
-				price = tr.Price
-			}
 			mult := tr.Multiplier
 			if mult <= 0 {
 				mult = 1
 			}
-			equity += tr.Quantity * price * mult
+			newPV += tr.Quantity * bar.Close * mult
 		}
 	}
-	for sym, opens := range c.openSells {
-		lastPrice := c.lastPrices[sym]
+	if opens := c.openSells[sym]; len(opens) > 0 {
 		for _, tr := range opens {
-			price := lastPrice
-			if price <= 0 {
-				price = tr.Price
-			}
-			// Short obligation: subtract current cost to cover.
-			// Cash already includes sale proceeds (qty * entryPrice),
-			// so we subtract the current buyback cost (qty * currentPrice).
-			equity -= tr.Quantity * price
+			newPV -= tr.Quantity * bar.Close
 		}
 	}
-	c.equityCurve = append(c.equityCurve, equity)
+	c.posValue[sym] = newPV
+
+	// Compute equity: cash + sum(posValue). Use totalPosValue to avoid
+	// iterating all symbols — we track the running total and apply deltas.
+	c.totalPosValue += newPV - oldPV
+	equity := c.cash + c.totalPosValue
 
 	// Update incremental Sharpe stats.
 	if c.prevEquity > 0 {
@@ -336,36 +369,8 @@ func (c *Collector) Result() Result {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Final mark-to-market equity.
-	finalEquity := c.cash
-	for sym, opens := range c.openBuys {
-		lastPrice := c.lastPrices[sym]
-		for _, tr := range opens {
-			price := lastPrice
-			if price <= 0 {
-				price = tr.Price // fallback to entry price if no market data
-			}
-			mult := tr.Multiplier
-			if mult <= 0 {
-				mult = 1
-			}
-			finalEquity += tr.Quantity * price * mult
-		}
-	}
-	for sym, opens := range c.openSells {
-		lastPrice := c.lastPrices[sym]
-		for _, tr := range opens {
-			price := lastPrice
-			if price <= 0 {
-				price = tr.Price
-			}
-			mult := tr.Multiplier
-			if mult <= 0 {
-				mult = 1
-			}
-			finalEquity -= tr.Quantity * price * mult
-		}
-	}
+	// Final mark-to-market equity (already tracked incrementally).
+	finalEquity := c.cash + c.totalPosValue
 
 	// Compute win/loss stats from trades with realized P&L (exits).
 	var grossProfit, grossLoss float64
