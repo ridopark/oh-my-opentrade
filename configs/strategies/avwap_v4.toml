@@ -79,10 +79,10 @@ handoff_min_mom_bps = 25
 
 # --- Volume & Regime ---
 # Minimum volume multiple vs 20-bar SMA to confirm entries
-volume_mult = 2.0                # require strong volume confirmation
+volume_mult = 2.5                # require strong volume confirmation
 
-# Allowed EMA regimes (TREND matches both TREND_UP and TREND_DOWN)
-allow_regimes = ["TREND", "BALANCE"]
+# Allowed EMA regimes (drop TREND_UP — longs in uptrends get faded)
+allow_regimes = ["TREND_DOWN", "BALANCE"]
 
 # Underlying asset class (used for midday trap shield and session hours)
 asset_class = "EQUITY"
@@ -108,7 +108,7 @@ require_capitulation_for_shorts = true   # shorts need capitulation signal
 
 # --- Risk ---
 # Underlying stop distance in basis points
-stop_bps = 90                    # tighter stop for options
+stop_bps = 50                    # tighter stop for options
 
 # Limit order offset from current price in basis points
 limit_offset_bps = 10            # more aggressive fill (was 5)
@@ -122,7 +122,7 @@ max_position_bps = 1500          # reduced from 3000
 # --- Timing ---
 # Trading window (ET). Entries only allowed within this range.
 allowed_hours_start = "09:35"
-allowed_hours_end = "15:45"      # 5 min after open
+allowed_hours_end = "11:00"      # cut afternoon entries
 allowed_hours_tz = "America/New_York"
 
 # Cooldown between trades on the same symbol (seconds)
@@ -172,7 +172,7 @@ type = "SWING_STOP"
 lookback = 20
 buffer_bps = 25
 atr_buffer_mult = 3.0
-min_bars = 15
+min_bars = 6
 
 # Stagnation exit: close trades that go nowhere after N minutes
 [[exit_rules]]

@@ -34,7 +34,7 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 	case domain.ExitRuleTrailingStop:
 		return evaluateTrailingStop(rule, pos, currentPrice)
 	case domain.ExitRuleSwingStop:
-		return evaluateSwingStop(rule, pos, currentPrice, ctx)
+		return evaluateSwingStop(rule, pos, currentPrice, now, ctx)
 	case domain.ExitRuleProfitTarget:
 		return evaluateProfitTarget(rule, pos, currentPrice)
 	case domain.ExitRuleTimeExit:
@@ -99,7 +99,7 @@ func evaluateTrailingStop(rule domain.ExitRule, pos *domain.MonitoredPosition, c
 //	"buffer_bps"      — fallback buffer in bps when ATR unavailable (default 10)
 //	"atr_buffer_mult" — ATR multiplier for dynamic buffer (default 0 = disabled)
 //	"min_bars"        — min bars before stop activates (default 1)
-func evaluateSwingStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, ctx EvalContext) (bool, string) {
+func evaluateSwingStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time, ctx EvalContext) (bool, string) {
 	if pos.CustomState == nil {
 		pos.CustomState = make(map[string]float64)
 	}
@@ -120,16 +120,31 @@ func evaluateSwingStop(rule domain.ExitRule, pos *domain.MonitoredPosition, curr
 		bufferAbs = currentPrice * bufferBPS / 10000.0
 	}
 
-	pos.CustomState["swing_trail_bars"]++
-	barCount := int(pos.CustomState["swing_trail_bars"])
-
-	ringIdx := int(pos.CustomState["swing_ring_idx"])
-	if pos.IsShort() {
-		pos.CustomState[fmt.Sprintf("swing_high_%d", ringIdx)] = currentPrice
-	} else {
-		pos.CustomState[fmt.Sprintf("swing_low_%d", ringIdx)] = currentPrice
+	// Count bars held using wall-clock time, not evaluation calls.
+	// The old counter (swing_trail_bars++) incremented on every EvalExitRules
+	// call — in backtest mode with N symbols, that's N increments per real bar,
+	// causing min_bars=15 to activate after ~1 real bar instead of 15.
+	barDur := ctx.BarDuration
+	if barDur <= 0 {
+		barDur = 5 * time.Minute // safe default for 5m strategies
 	}
-	pos.CustomState["swing_ring_idx"] = float64((ringIdx + 1) % lookback)
+	barCount := int(now.Sub(pos.EntryTime) / barDur)
+
+	// Only advance ring buffer on new bar boundaries (deduplicate by bar index).
+	// In backtest mode, EvalExitRules is called once per symbol per time group,
+	// so the same position may be evaluated N times per bar. We use barCount
+	// as a stable bar index to detect when we've moved to a new bar.
+	lastBarIdx := int(pos.CustomState["swing_last_bar_idx"])
+	ringIdx := int(pos.CustomState["swing_ring_idx"])
+	if barCount != lastBarIdx || lastBarIdx == 0 {
+		pos.CustomState["swing_last_bar_idx"] = float64(barCount)
+		if pos.IsShort() {
+			pos.CustomState[fmt.Sprintf("swing_high_%d", ringIdx)] = currentPrice
+		} else {
+			pos.CustomState[fmt.Sprintf("swing_low_%d", ringIdx)] = currentPrice
+		}
+		pos.CustomState["swing_ring_idx"] = float64((ringIdx + 1) % lookback)
+	}
 
 	if barCount < minBars {
 		return false, ""
@@ -741,6 +756,9 @@ func evaluateTieredTP(rule domain.ExitRule, pos *domain.MonitoredPosition, curre
 			pos.CustomState["tiered_tp_tier1_taken"] = 1.0
 			// Initialize HWM for tier-2 trailing.
 			pos.CustomState["tiered_tp_hwm"] = currentPrice
+			// Activate breakeven stop — move stop to entry price for remainder.
+			pos.CustomState["breakeven_activated"] = 1.0
+			pos.CustomState["breakeven_stop_level"] = pos.EntryPrice
 			return true, fmt.Sprintf("tiered_tp_tier1: pnl %.2f%% >= %.1fR target %.2f%% — exiting %.0f%%",
 				pnl*100, firstTierRR, target*100, firstTierPct*100)
 		}
