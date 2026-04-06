@@ -109,13 +109,164 @@ Use the Agent tool with `subagent_type: "quant-analyst"`. Provide:
 2. The backtest metrics (PF, WR, DD, trade count, avg win, avg loss)
 3. What parameter was changed and in which direction
 4. The baseline metrics for comparison
-5. Ask for: accept/reject recommendation, next parameter suggestion, structural concerns
+5. Ask the quant to classify each recommendation as either:
+   - **PARAM_CHANGE** — a TOML parameter tweak (handle in the normal tuning loop)
+   - **ENGINE_CHANGE** — requires Go code modification (triggers the Engine Change Pipeline below)
+6. Ask for: accept/reject recommendation, next parameter suggestion, structural concerns
 
 ### What to do with the analysis
 - If the quant recommends **reject** and you were about to accept → reconsider
 - If the quant identifies a **structural concern** → flag to user before continuing
 - If the quant suggests a **parameter not in your queue** → add it to the queue
+- If the quant recommends an **ENGINE_CHANGE** → execute the Engine Change Pipeline (below)
 - The quant's recommendations are advisory — the pass thresholds are the final arbiter
+
+## Engine Change Pipeline
+
+When parameter tuning converges (no pass improves) but the quant identifies **ENGINE_CHANGE** recommendations (new filters, new exit rules, signal engine modifications), this pipeline automatically implements, verifies, and validates them.
+
+### When to trigger
+- A tuning pass converges with no improvement AND the quant has pending ENGINE_CHANGE recommendations
+- The quant explicitly recommends a code-level change (e.g., "add retest quality filter", "implement ADR exhaustion filter")
+- Multiple consecutive parameter tweaks show no PF improvement, suggesting the parameter ceiling is reached
+
+### Pipeline Steps
+
+```
+for each ENGINE_CHANGE recommendation (ranked by quant's expected impact):
+  1. SPEC     — Write a spec file to _workspace/
+  2. IMPLEMENT — Launch go-architect agent to implement
+  3. BUILD    — go build ./... (must pass)
+  4. TEST     — go test ./internal/... (must pass)
+  5. WIRE     — Add new TOML params if needed (with disabled-by-default defaults)
+  6. BACKTEST — Run full backtest with the new feature ENABLED
+  7. COMPARE  — Compare to current best metrics
+  8. DECIDE   — Accept (keep code + enable param) or Revert (git checkout the changed files)
+```
+
+### Step 1: SPEC — Write the change specification
+
+Create `_workspace/engine_change_{name}.md` with:
+```markdown
+## Change: {name}
+**Type:** new_filter | new_exit_rule | signal_modification | other
+**Quant Rationale:** {why this change is expected to improve PF}
+**Expected Impact:** {e.g., "win rate +2-3pp by filtering weak retests"}
+
+### Implementation Requirements
+- Files to modify: {list}
+- New TOML params: {param_name} = {default_value} (disabled by default)
+- Architecture layer: {domain | app | adapter}
+- New structs/functions needed: {list}
+
+### Acceptance Criteria
+- Build passes: go build ./...
+- Tests pass: go test ./internal/...
+- Backtest PF improves by >= 0.02 (or DD improves by >= 1pp)
+- Trade count does not drop > 20%
+```
+
+### Step 2: IMPLEMENT — Launch go-architect
+
+Use the Agent tool with `subagent_type: "go-architect"` and `model: "opus"`. Provide:
+- The spec from Step 1
+- The current strategy TOML for context
+- Explicit instruction to follow hexagonal architecture (go-hexagonal skill patterns)
+- Instruction to add new TOML params with defaults that DISABLE the feature (so existing behavior is preserved)
+
+Example prompt structure:
+```
+Implement {change_name} in the ORB strategy engine.
+
+## Spec
+{paste spec content}
+
+## Architecture Rules
+- Follow hexagonal architecture: domain types in domain/, logic in app/, no domain→app imports
+- New config params go in ORBConfig struct in orb_tracker.go
+- Wire params in NewORBConfigFromDNA with default 0 or false (disabled)
+- Add the filter/logic at the appropriate point in the signal generation flow
+
+## Files Context
+- ORB signal engine: backend/internal/app/monitor/orb_tracker.go
+- Exit rules: backend/internal/domain/exit_rule.go + backend/internal/app/positionmonitor/evaluators.go
+- Strategy service: backend/internal/app/strategy/service.go
+- Setup detector: backend/internal/app/monitor/setup_detector.go
+
+## Verification
+After implementation, run:
+- go build ./...
+- go test ./internal/...
+Both must pass.
+```
+
+### Step 3: BUILD — Verify compilation
+
+```bash
+cd backend && go build ./... 2>&1
+```
+If build fails → send error back to go-architect agent via SendMessage for fix (max 2 retries). If still failing after retries → revert all changes and skip this engine change.
+
+### Step 4: TEST — Run test suite
+
+```bash
+cd backend && go test ./internal/... 2>&1
+```
+If tests fail → send failures to go-architect for fix (max 1 retry). If still failing → revert and skip.
+
+### Step 5: WIRE — Enable the new feature in TOML
+
+Edit `configs/strategies/{strategy_id}.toml` to set the new param to its **enabled** value. Example:
+```toml
+# Was: retest_quality_min_body_hold = 0 (disabled)
+retest_quality_min_body_hold = 0.50  # Enable: require 50% body hold on retest
+```
+
+### Step 6: BACKTEST — Validate with full backtest
+
+Run the standard backtest (same params as the tuning loop — symbols, dates, equity, slippage). Poll and report progress as usual.
+
+### Step 7: COMPARE — Check against current best
+
+Compare the new backtest results to the current best metrics. The engine change is accepted if:
+- PF improved by >= 0.02, OR
+- Max DD improved by >= 1.0 percentage point, OR
+- Net P&L improved by >= 5%
+AND none of the hard constraints are violated (DD worsened > 1.5pp, trade count < 40, trade count dropped > 20%).
+
+### Step 8: DECIDE — Accept or Revert
+
+**Accept:** Keep the code changes and the enabled TOML param. Update the "current best" metrics. Log the change in the pass checkpoint report under "Engine Changes Applied".
+
+**Revert:** Revert TOML param to disabled (default). Revert Go code changes:
+```bash
+git checkout -- backend/internal/app/monitor/orb_tracker.go  # etc.
+```
+Log in the report: "Engine change {name} reverted — PF {before} → {after} (no improvement)".
+
+### After all engine changes are processed
+
+If any engine changes were accepted, re-enter the parameter tuning loop (Step 3 of the main workflow) because the new code may have opened new parameter optimization headroom. Start from Pass 1 with the updated baseline.
+
+### Engine Change Examples
+
+**Retest Quality Filter:**
+- Type: new_filter
+- TOML param: `retest_quality_min_body_hold = 0.50`
+- Implementation: In onAwaitingRetestBar, after detecting touch, check that the retest candle holds above 50% of the breakout candle's body
+- Files: orb_tracker.go (ORBConfig + filter logic)
+
+**ADR Exhaustion Filter:**
+- Type: new_filter  
+- TOML param: `adr_exhaustion_pct = 0.60`
+- Implementation: Before emitting signal, compute how much of the 20-day ADR has been consumed. Skip if > 60%.
+- Files: orb_tracker.go (ORBConfig + filter in onRangeSetBar), may need daily ATR data in IndicatorSnapshot
+
+**New Exit Rule (e.g., R-Multiple Stop):**
+- Type: new_exit_rule
+- TOML param: `[[exit_rules]] type = "R_MULTIPLE_STOP"` with params
+- Implementation: New evaluator function in evaluators.go, new type in exit_rule.go, dispatch case in Evaluate()
+- Files: exit_rule.go, evaluators.go, spec_loader.go (isKnownExitRuleParamKey)
 
 ## Tuning Workflow
 

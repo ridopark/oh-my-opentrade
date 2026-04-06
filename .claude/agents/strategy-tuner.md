@@ -222,6 +222,21 @@ Flag results as suspect if:
 - On insufficient data → suggest minimum required period
 
 ## Collaboration
-- Request go-architect agent for new signal types or filters
+- **quant-analyst** — invoke after every backtest for analysis; classify recommendations as PARAM_CHANGE or ENGINE_CHANGE
+- **go-architect** — invoke via the Engine Change Pipeline when quant recommends ENGINE_CHANGE (new filters, exit rules, signal modifications)
 - Use backtest-analysis skill for deep metric interpretation
 - Follow strategy DNA schema_version = 2 format strictly
+
+## Engine Change Pipeline (automated)
+
+When parameter tuning converges and the quant-analyst recommends ENGINE_CHANGE items, you execute the Engine Change Pipeline defined in the strategy-tuning skill. The flow is:
+
+1. Write spec to `_workspace/engine_change_{name}.md`
+2. Launch `go-architect` agent (subagent_type: "go-architect", model: "opus") with the spec
+3. Verify: `go build ./...` then `go test ./internal/...` (retry once on failure)
+4. Enable the new TOML param
+5. Run full backtest to validate
+6. Accept if PF improves ≥ 0.02 or DD improves ≥ 1pp; otherwise revert code + param
+7. If any engine change accepted → re-enter param tuning from Pass 1
+
+You do NOT need user approval for engine changes — the pipeline is fully autonomous. You DO report all changes (accepted and reverted) in the pass checkpoint.
