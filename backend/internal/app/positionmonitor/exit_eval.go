@@ -3,6 +3,7 @@ package positionmonitor
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -292,6 +293,21 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 		exitDirection = domain.DirectionCloseShort
 	}
 
+	// Partial close: check if the evaluator set a qty fraction in CustomState.
+	exitQty := pos.Quantity
+	for _, fracKey := range []string{"tiered_tp_exit_qty_frac", "time_partial_exit_qty_frac"} {
+		if frac := pos.CustomState[fracKey]; frac > 0 && frac < 1.0 {
+			partial := math.Ceil(pos.Quantity * frac)
+			if partial > 0 && partial < pos.Quantity {
+				exitQty = partial
+			}
+			delete(pos.CustomState, fracKey)
+			break
+		} else if frac >= 1.0 {
+			delete(pos.CustomState, fracKey)
+		}
+	}
+
 	intent, err := domain.NewOrderIntent(
 		uuid.New(),
 		pos.TenantID,
@@ -301,7 +317,7 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 		exitPrice,
 		0,
 		0,
-		pos.Quantity,
+		exitQty,
 		pos.Strategy,
 		fmt.Sprintf("exit_monitor:%s:%s", rule.Type, reason),
 		1.0,

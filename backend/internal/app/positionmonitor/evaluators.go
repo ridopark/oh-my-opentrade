@@ -59,6 +59,10 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 		return evaluateDTEFloor(rule, pos, now)
 	case domain.ExitRuleExpiryWatch:
 		return evaluateExpiryWatch(rule, pos, now)
+	case domain.ExitRuleTieredTP:
+		return evaluateTieredTP(rule, pos, currentPrice)
+	case domain.ExitRuleTimePartial:
+		return evaluateTimePartial(rule, pos, currentPrice, now)
 	default:
 		return false, ""
 	}
@@ -696,6 +700,116 @@ func evaluateExpiryWatch(rule domain.ExitRule, pos *domain.MonitoredPosition, no
 			ratio*100, dte, pctElapsed*100)
 	}
 	return false, ""
+}
+
+// evaluateTieredTP implements a two-tier take-profit with trailing stop on the remainder.
+//
+// Tier 1: Exit first_tier_pct (default 0.5) of position when PnL reaches first_tier_rr × R.
+// Tier 2: After tier 1, trail the remainder at trail_pct from high-water mark.
+//
+// R (risk distance) is derived from initial_risk_pct param or CustomState["initial_stop_distance"].
+//
+// CustomState keys used:
+//
+//	"tiered_tp_tier1_taken"   — 1.0 after tier 1 fires
+//	"tiered_tp_exit_qty_frac" — fraction of pos.Quantity to exit (read by triggerExit)
+//	"tiered_tp_hwm"           — high-water mark for tier-2 trailing
+func evaluateTieredTP(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64) (bool, string) {
+	firstTierPct := rule.Param("first_tier_pct", 0.5)
+	firstTierRR := rule.Param("first_tier_rr", 1.5)
+	trailPct := rule.Param("trail_pct", 0.02)
+	initialRiskPct := rule.Param("initial_risk_pct", 0.005)
+
+	if pos.EntryPrice == 0 || currentPrice == 0 {
+		return false, ""
+	}
+
+	// Compute R (risk distance as fraction of entry price).
+	riskPct := initialRiskPct
+	if d := pos.CustomState["initial_stop_distance"]; d > 0 {
+		riskPct = d
+	}
+
+	pnl := pos.UnrealizedPnLPct(currentPrice)
+	tier1Taken := pos.CustomState["tiered_tp_tier1_taken"] != 0
+
+	if !tier1Taken {
+		// Tier 1: check if PnL reached first_tier_rr × R.
+		target := firstTierRR * riskPct
+		if pnl >= target {
+			pos.CustomState["tiered_tp_exit_qty_frac"] = firstTierPct
+			pos.CustomState["tiered_tp_tier1_taken"] = 1.0
+			// Initialize HWM for tier-2 trailing.
+			pos.CustomState["tiered_tp_hwm"] = currentPrice
+			return true, fmt.Sprintf("tiered_tp_tier1: pnl %.2f%% >= %.1fR target %.2f%% — exiting %.0f%%",
+				pnl*100, firstTierRR, target*100, firstTierPct*100)
+		}
+		return false, ""
+	}
+
+	// Tier 2: trailing stop on remainder.
+	hwm := pos.CustomState["tiered_tp_hwm"]
+	if pos.IsShort() {
+		if currentPrice < hwm || hwm == 0 {
+			hwm = currentPrice
+			pos.CustomState["tiered_tp_hwm"] = hwm
+		}
+		trailLevel := hwm * (1.0 + trailPct)
+		if currentPrice >= trailLevel {
+			pos.CustomState["tiered_tp_exit_qty_frac"] = 1.0
+			return true, fmt.Sprintf("tiered_tp_tier2_trail: price %.4f >= trail %.4f (lwm=%.4f, trail=%.1f%%)",
+				currentPrice, trailLevel, hwm, trailPct*100)
+		}
+	} else {
+		if currentPrice > hwm {
+			hwm = currentPrice
+			pos.CustomState["tiered_tp_hwm"] = hwm
+		}
+		trailLevel := hwm * (1.0 - trailPct)
+		if currentPrice <= trailLevel {
+			pos.CustomState["tiered_tp_exit_qty_frac"] = 1.0
+			return true, fmt.Sprintf("tiered_tp_tier2_trail: price %.4f <= trail %.4f (hwm=%.4f, trail=%.1f%%)",
+				currentPrice, trailLevel, hwm, trailPct*100)
+		}
+	}
+	return false, ""
+}
+
+// evaluateTimePartial exits a fraction of the position after holding for N minutes while in profit.
+//
+// Params:
+//
+//	"minutes"        — minimum hold time before triggering (default 60)
+//	"partial_pct"    — fraction of position to exit (default 0.5)
+//	"min_profit_pct" — minimum unrealized PnL to trigger (default 0.001 = 0.1%)
+//
+// CustomState keys used:
+//
+//	"time_partial_taken"      — 1.0 after this rule fires (prevents re-triggering)
+//	"time_partial_exit_qty_frac" — fraction to exit (read by triggerExit)
+func evaluateTimePartial(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time) (bool, string) {
+	if pos.CustomState["time_partial_taken"] != 0 {
+		return false, ""
+	}
+
+	minutes := rule.Param("minutes", 60)
+	partialPct := rule.Param("partial_pct", 0.5)
+	minProfitPct := rule.Param("min_profit_pct", 0.001)
+
+	held := now.Sub(pos.EntryTime).Minutes()
+	if held < minutes {
+		return false, ""
+	}
+
+	pnl := pos.UnrealizedPnLPct(currentPrice)
+	if pnl < minProfitPct {
+		return false, ""
+	}
+
+	pos.CustomState["time_partial_exit_qty_frac"] = partialPct
+	pos.CustomState["time_partial_taken"] = 1.0
+	return true, fmt.Sprintf("time_partial: held %.0f min >= %.0f min, pnl %.2f%% >= %.2f%% — exiting %.0f%%",
+		held, minutes, pnl*100, minProfitPct*100, partialPct*100)
 }
 
 func etLocation() *time.Location {

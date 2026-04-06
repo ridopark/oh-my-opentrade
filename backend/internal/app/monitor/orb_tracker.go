@@ -43,8 +43,10 @@ type ORBConfig struct {
 	VIXSkipAbove         float64  // skip ORB entirely when VIX > this (0 = disabled)
 	VIXWidenAbove        float64  // widen stops when VIX > this (0 = disabled)
 	AllowedRegimes       []string // only allow entries in these regimes (empty = allow all)
-	FVGEnabled           bool     // require FVG overlap + engulfing confirmation for retest
-	FVGMinRVOL           float64  // min RVOL for FVG displacement bar (default 1.5)
+	FVGEnabled              bool     // require FVG overlap + engulfing confirmation for retest
+	FVGMinRVOL              float64  // min RVOL for FVG displacement bar (default 1.5)
+	DisplacementMinBodyPct  float64  // min body/range ratio for breakout candle (0=disabled)
+	DisplacementMinRangePct float64  // min range/price ratio for breakout candle (0=disabled)
 }
 
 func DefaultORBConfig() ORBConfig {
@@ -175,8 +177,10 @@ func NewORBConfigFromDNA(params map[string]any) ORBConfig {
 			}
 			return orbExtractStringSlice(params, "regime_filter.allowed_regimes")
 		}(),
-		FVGEnabled:           orbExtractBool(params, "fvg_enabled", false),
-		FVGMinRVOL:           orbExtractFloat(params, "fvg_min_rvol", 1.5),
+		FVGEnabled:              orbExtractBool(params, "fvg_enabled", false),
+		FVGMinRVOL:              orbExtractFloat(params, "fvg_min_rvol", 1.5),
+		DisplacementMinBodyPct:  orbExtractFloat(params, "displacement_min_body_pct", 0),
+		DisplacementMinRangePct: orbExtractFloat(params, "displacement_min_range_pct", 0),
 	}
 }
 
@@ -236,6 +240,9 @@ type ORBSession struct {
 	RangeInvalid      bool    // true if OR range failed ATR/size check
 	RangeNotified     bool    // true once ORBRangeSet event has been emitted
 
+	// Retest-phase bar tracking for swing stop computation
+	RetestBars []domain.MarketBar
+
 	// FVG tracking
 	RecentBars [3]domain.MarketBar // rolling window of last 3 bars for FVG detection
 	BarCount   int                 // total bars seen (for rolling window)
@@ -288,6 +295,7 @@ func (t *ORBTracker) cycleToRangeSet(sess *ORBSession) {
 	sess.Breakout = BreakoutInfo{}
 	sess.Retest = RetestInfo{}
 	sess.BarsSinceBreakout = 0
+	sess.RetestBars = nil
 	sess.ActiveFVG = nil
 	sess.PrevBar = nil
 	sess.FVGStop = 0
@@ -400,6 +408,7 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 			return nil, false
 		}
 		sess.BarsSinceBreakout++
+		sess.RetestBars = append(sess.RetestBars, bar)
 		if sess.BarsSinceBreakout > cfg.MaxRetestBars {
 			t.logger.Info("orb: retest timeout, cycling to RANGE_SET", "symbol", sym, "bars_since_breakout", sess.BarsSinceBreakout, "max", cfg.MaxRetestBars)
 			t.cycleToRangeSet(sess)
@@ -472,17 +481,19 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 			sess.State = ORBStateRetestConfirmed
 			t.logger.Info("orb: retest confirmed", "symbol", sym, "direction", sess.Breakout.Direction, "hold_close", bar.Close, "confidence", ORBConfidence(sess, bar, snap, cfg))
 			setup := &SetupCondition{
-				Symbol:     bar.Symbol,
-				Timeframe:  bar.Timeframe,
-				Direction:  sess.Breakout.Direction,
-				Trigger:    "orb_break_retest",
-				Snapshot:   snap,
-				Regime:     domain.MarketRegime{},
-				BarClose:   bar.Close,
-				ORBHigh:    sess.OrbHigh,
-				ORBLow:     sess.OrbLow,
-				RVOL:       sess.Breakout.RVOL,
-				Confidence: ORBConfidence(sess, bar, snap, cfg),
+				Symbol:          bar.Symbol,
+				Timeframe:       bar.Timeframe,
+				Direction:       sess.Breakout.Direction,
+				Trigger:         "orb_break_retest",
+				Snapshot:        snap,
+				Regime:          domain.MarketRegime{},
+				BarClose:        bar.Close,
+				ORBHigh:         sess.OrbHigh,
+				ORBLow:          sess.OrbLow,
+				RVOL:            sess.Breakout.RVOL,
+				Confidence:      ORBConfidence(sess, bar, snap, cfg),
+				RetestSwingLow:  retestSwingLow(sess.RetestBars),
+				RetestSwingHigh: retestSwingHigh(sess.RetestBars),
 			}
 			if setup.Confidence < cfg.MinConfidence {
 				t.logger.Info("orb: low confidence, cycling to RANGE_SET", "symbol", sym, "confidence", setup.Confidence, "min", cfg.MinConfidence)
@@ -546,6 +557,26 @@ func (t *ORBTracker) onRangeSetBar(sess *ORBSession, bar domain.MarketBar, snap 
 			t.logger.Info("orb: breakout rejected (price wrong side of VWAP)", "symbol", sess.Symbol,
 				"direction", dir, "close", bar.Close, "vwap", snap.VWAP)
 			return nil, false
+		}
+	}
+
+	// Displacement candle filter — require impulsive breakout bar
+	if longBreak || shortBreak {
+		barRange := bar.High - bar.Low
+		if barRange > 0 {
+			barBody := math.Abs(bar.Close - bar.Open)
+			if cfg.DisplacementMinBodyPct > 0 && barBody/barRange < cfg.DisplacementMinBodyPct {
+				t.logger.Info("orb: breakout rejected (displacement body too weak)",
+					"symbol", sess.Symbol, "bodyPct", barBody/barRange, "minBodyPct", cfg.DisplacementMinBodyPct)
+				longBreak = false
+				shortBreak = false
+			}
+			if cfg.DisplacementMinRangePct > 0 && barRange/bar.Close < cfg.DisplacementMinRangePct {
+				t.logger.Info("orb: breakout rejected (displacement range too small)",
+					"symbol", sess.Symbol, "rangePct", barRange/bar.Close, "minRangePct", cfg.DisplacementMinRangePct)
+				longBreak = false
+				shortBreak = false
+			}
 		}
 	}
 
@@ -671,18 +702,20 @@ func (t *ORBTracker) onAwaitingRetestFVG(sess *ORBSession, bar domain.MarketBar,
 		"confidence", ORBConfidence(sess, bar, snap, cfg))
 
 	setup := &SetupCondition{
-		Symbol:     bar.Symbol,
-		Timeframe:  bar.Timeframe,
-		Direction:  dir,
-		Trigger:    "orb_break_retest",
-		Snapshot:   snap,
-		Regime:     domain.MarketRegime{},
-		BarClose:   bar.Close,
-		ORBHigh:    sess.OrbHigh,
-		ORBLow:     sess.OrbLow,
-		RVOL:       sess.Breakout.RVOL,
-		Confidence: ORBConfidence(sess, bar, snap, cfg),
-		FVGStop:    sess.FVGStop,
+		Symbol:          bar.Symbol,
+		Timeframe:       bar.Timeframe,
+		Direction:       dir,
+		Trigger:         "orb_break_retest",
+		Snapshot:        snap,
+		Regime:          domain.MarketRegime{},
+		BarClose:        bar.Close,
+		ORBHigh:         sess.OrbHigh,
+		ORBLow:          sess.OrbLow,
+		RVOL:            sess.Breakout.RVOL,
+		Confidence:      ORBConfidence(sess, bar, snap, cfg),
+		FVGStop:         sess.FVGStop,
+		RetestSwingLow:  retestSwingLow(sess.RetestBars),
+		RetestSwingHigh: retestSwingHigh(sess.RetestBars),
 	}
 
 	if setup.Confidence < cfg.MinConfidence {
@@ -804,6 +837,34 @@ func isEngulfing(dir domain.Direction, current, previous domain.MarketBar) bool 
 		return current.Close > previous.High
 	}
 	return current.Close < previous.Low
+}
+
+// retestSwingLow returns the lowest low across the given bars. Returns 0 if bars is empty.
+func retestSwingLow(bars []domain.MarketBar) float64 {
+	if len(bars) == 0 {
+		return 0
+	}
+	low := bars[0].Low
+	for _, b := range bars[1:] {
+		if b.Low < low {
+			low = b.Low
+		}
+	}
+	return low
+}
+
+// retestSwingHigh returns the highest high across the given bars. Returns 0 if bars is empty.
+func retestSwingHigh(bars []domain.MarketBar) float64 {
+	if len(bars) == 0 {
+		return 0
+	}
+	high := bars[0].High
+	for _, b := range bars[1:] {
+		if b.High > high {
+			high = b.High
+		}
+	}
+	return high
 }
 
 // vwapPositionOK checks that price is on the correct side of VWAP for the direction.
