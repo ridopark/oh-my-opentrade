@@ -13,7 +13,7 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["SPY", "QQQ", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "AMD", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "COIN", "AFRM", "JPM", "XOM", "OXY", "LLY", "MRNA", "HIMS", "RIVN", "RBLX", "BA", "NFLX", "IWM", "SOXL"]
+symbols = ["SPY", "QQQ", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "AMD", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "SNOW", "NET", "SOFI", "COIN", "AFRM", "JPM", "OXY", "LLY", "MRNA", "HIMS", "RIVN", "RBLX", "BA", "NFLX", "IWM", "SOXL"]
 timeframes = ["5m"]
 priority = 60
 conflict_policy = "priority_wins"
@@ -46,6 +46,7 @@ am_return_min_pct = 0.55          # sweet spot for AM return
 eval_time = "15:00"               # eval at power hour start
 max_entry_bars = 12               # 60 min entry window on 5m
 require_htf_align = false
+blocked_days_of_week = ["Monday"]  # weekend gaps corrupt AM signal
 
 # Synthetic MOC proxy
 vol_accel_min_ratio = 1.3         # sweet spot

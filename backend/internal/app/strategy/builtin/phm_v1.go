@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +39,9 @@ type PHMConfig struct {
 	VolAccelMinRatio float64 // default 1.3 (power hour vol / afternoon vol threshold)
 	RequireHTFAlign  bool    // default false
 
+	// Day-of-week filter (e.g., block Monday where weekend gaps corrupt AM signal)
+	BlockedDaysOfWeek []string // default [] (empty = no blocking)
+
 	// MOC imbalance second entry window (live only)
 	SecondWindowEnabled bool    // default false
 	SecondWindowStart   string  // default "15:45"
@@ -65,6 +69,7 @@ func NewPHMConfigFromDNA(params map[string]any) PHMConfig {
 		VolAccelMinRatio:  phmFloatParam(params, "vol_accel_min_ratio", 1.3),
 		RequireHTFAlign:   phmBoolParam(params, "require_htf_align", false),
 
+		BlockedDaysOfWeek:   phmStringSliceParam(params, "blocked_days_of_week", nil),
 		SecondWindowEnabled: phmBoolParam(params, "second_window_enabled", false),
 		SecondWindowStart:   phmStringParam(params, "second_window_start", "15:45"),
 		SecondWindowEnd:     phmStringParam(params, "second_window_end", "15:55"),
@@ -144,6 +149,31 @@ func phmBoolParam(params map[string]any, key string, def bool) bool {
 	}
 	if b, ok := v.(bool); ok {
 		return b
+	}
+	return def
+}
+
+func phmStringSliceParam(params map[string]any, key string, def []string) []string {
+	if params == nil {
+		return def
+	}
+	v, ok := params[key]
+	if !ok {
+		return def
+	}
+	switch sl := v.(type) {
+	case []string:
+		return sl
+	case []any:
+		result := make([]string, 0, len(sl))
+		for _, item := range sl {
+			if s, ok2 := item.(string); ok2 {
+				result = append(result, s)
+			}
+		}
+		if len(result) > 0 {
+			return result
+		}
 	}
 	return def
 }
@@ -592,6 +622,16 @@ func (s *PHMStrategy) checkEntry(phmSt *PHMState, symbol string, bar start.Bar, 
 	// Need session volume data
 	if phmSt.SessionBarCount < 1 {
 		return start.Signal{}, false
+	}
+
+	// --- Day-of-week filter ---
+	if len(phmSt.Config.BlockedDaysOfWeek) > 0 {
+		dayName := barET.Weekday().String()
+		for _, blocked := range phmSt.Config.BlockedDaysOfWeek {
+			if strings.EqualFold(blocked, dayName) {
+				return start.Signal{}, false
+			}
+		}
 	}
 
 	// --- One-shot evaluation at eval_time ---
