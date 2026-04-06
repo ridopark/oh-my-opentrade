@@ -46,6 +46,7 @@ type Service struct {
 	pendingGlobalDrifts  map[domain.Symbol]int                // key: symbol → consecutive broker>DB drift observations
 	mu                   sync.RWMutex                         // protects positions for concurrent reads (e.g. PositionCount)
 
+	barDurCache         map[string]time.Duration // cached barDurationFor results
 	snapshotFn          IndicatorSnapshotFunc
 	optionsPricePort    ports.OptionsPricePort
 	optionsPollInterval time.Duration
@@ -208,6 +209,7 @@ func NewService(
 		exitRejected:            make(chan exitRejectedMsg, 64),
 		outbox:                  make(chan outboxMsg, 64),
 		stopCh:                  make(chan struct{}),
+		barDurCache:             make(map[string]time.Duration),
 		positions:               make(map[string]*domain.MonitoredPosition),
 		ghostMissCounts:         make(map[string]int),
 		pendingGlobalOrphans:    make(map[domain.Symbol]int),

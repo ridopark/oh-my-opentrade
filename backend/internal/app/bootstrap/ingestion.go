@@ -32,6 +32,9 @@ func BuildIngestion(deps IngestionDeps) (*IngestionBundle, error) {
 		filter.SetPassthrough(true)
 	}
 	svc := ingestion.NewService(deps.EventBus, deps.Repo, filter, ingLog)
+	if deps.IsBacktest {
+		svc.SetBacktest(true)
+	}
 
 	var barWriter *ingestion.AsyncBarWriter
 	if !deps.IsBacktest {
