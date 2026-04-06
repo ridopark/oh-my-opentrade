@@ -1,6 +1,26 @@
 package domain
 
-import "time"
+import (
+	"sync"
+	"time"
+)
+
+var (
+	nyOnce sync.Once
+	nyLoc  *time.Location
+)
+
+// NYLocation returns a cached *time.Location for America/New_York.
+func NYLocation() *time.Location {
+	nyOnce.Do(func() {
+		var err error
+		nyLoc, err = time.LoadLocation("America/New_York")
+		if err != nil {
+			nyLoc = time.FixedZone("EST", -5*3600)
+		}
+	})
+	return nyLoc
+}
 
 // NYSE market holidays and early close days.
 // Source: NYSE Group official announcements
@@ -111,10 +131,7 @@ func isNYSETradingDay(t time.Time) bool {
 }
 
 func PreviousRTHSession(now time.Time) (start, end time.Time) {
-	loc, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		loc = time.Local
-	}
+	loc := NYLocation()
 
 	nowET := now.In(loc)
 	day := time.Date(nowET.Year(), nowET.Month(), nowET.Day(), 0, 0, 0, 0, loc)
@@ -151,7 +168,7 @@ type TradingCalendar interface {
 type NYSECalendar struct{}
 
 func (c NYSECalendar) IsOpen(t time.Time) bool {
-	loc, _ := time.LoadLocation("America/New_York")
+	loc := NYLocation()
 	et := t.In(loc)
 	if !isNYSETradingDay(et) {
 		return false
@@ -163,13 +180,13 @@ func (c NYSECalendar) IsOpen(t time.Time) bool {
 }
 
 func (c NYSECalendar) SessionOpen(t time.Time) time.Time {
-	loc, _ := time.LoadLocation("America/New_York")
+	loc := NYLocation()
 	et := t.In(loc)
 	return time.Date(et.Year(), et.Month(), et.Day(), 9, 30, 0, 0, loc)
 }
 
 func (c NYSECalendar) SessionClose(t time.Time) time.Time {
-	loc, _ := time.LoadLocation("America/New_York")
+	loc := NYLocation()
 	et := t.In(loc)
 	h, m := NYSECloseTime(et)
 	if h == 0 && m == 0 {

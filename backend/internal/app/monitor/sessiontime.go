@@ -8,11 +8,7 @@ import (
 )
 
 func nyLocation() *time.Location {
-	loc, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		return time.FixedZone("EST", -5*3600)
-	}
-	return loc
+	return domain.NYLocation()
 }
 
 func SessionKeyET(t time.Time) string {
