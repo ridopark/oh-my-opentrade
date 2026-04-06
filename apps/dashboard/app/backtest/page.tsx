@@ -390,7 +390,7 @@ function TopBar({
           <>
             <div className="h-4 w-4 animate-spin rounded-full border-b-2 border-emerald-500" />
             <span className="text-[10px] font-mono text-muted-foreground">{setupStage ?? "Starting\u2026"}</span>
-            <button onClick={onCancel} className="px-1.5 py-0.5 text-[10px] font-mono rounded text-red-400 hover:bg-red-500/10 transition-colors">\u2715</button>
+            <button onClick={onCancel} className="px-1.5 py-0.5 text-[10px] font-mono rounded text-red-400 hover:bg-red-500/10 transition-colors">Cancel</button>
           </>
         )}
 
@@ -406,7 +406,7 @@ function TopBar({
               </div>
             </div>
             <span className="text-[10px] font-mono text-muted-foreground w-8 text-right">{pct.toFixed(0)}%</span>
-            <button onClick={onCancel} className="px-1.5 py-0.5 text-[10px] font-mono rounded text-red-400 hover:bg-red-500/10 transition-colors">\u2715</button>
+            <button onClick={onCancel} className="px-1.5 py-0.5 text-[10px] font-mono rounded text-red-400 hover:bg-red-500/10 transition-colors">Cancel</button>
           </>
         )}
 
