@@ -35,7 +35,7 @@ type backtestRunRequest struct {
 	StrategyDir      string   `json:"strategy_dir"`
 	MaxPositions     int      `json:"max_positions"`
 	MaxPerGroup      int      `json:"max_per_group"`
-	CompoundEquity   bool     `json:"compound_equity"`
+	CompoundEquity   *bool    `json:"compound_equity"`
 }
 
 type backtestControlRequest struct {
@@ -253,7 +253,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		FixedSymbols:     symbols, // user's original picks — always active
 		MaxPositions:     req.MaxPositions,
 		MaxPerGroup:      req.MaxPerGroup,
-		CompoundEquity:   req.CompoundEquity,
+		CompoundEquity:   req.CompoundEquity == nil || *req.CompoundEquity,
 	}, bootstrap.BuildBacktestInfra(bootstrap.BacktestDeps{
 		DB:     h.db,
 		AppCfg: h.appCfg,
