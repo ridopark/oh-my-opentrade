@@ -26,6 +26,7 @@ type StrategyDNA struct {
 type RegimeFilter struct {
 	AllowedRegimes    []string
 	MinRegimeStrength float64
+	BlockCounterTrend bool
 }
 
 // tomlFile mirrors the raw TOML structure for deserialization.
@@ -41,6 +42,7 @@ type tomlFile struct {
 	RegimeFilter struct {
 		AllowedRegimes    []string `toml:"allowed_regimes"`
 		MinRegimeStrength float64  `toml:"min_regime_strength"`
+		BlockCounterTrend bool     `toml:"block_counter_trend"`
 	} `toml:"regime_filter"`
 }
 
@@ -106,6 +108,7 @@ func (m *DNAManager) Load(path string) (*StrategyDNA, error) {
 		RegimeFilter: RegimeFilter{
 			AllowedRegimes:    raw.RegimeFilter.AllowedRegimes,
 			MinRegimeStrength: raw.RegimeFilter.MinRegimeStrength,
+			BlockCounterTrend: raw.RegimeFilter.BlockCounterTrend,
 		},
 	}
 	if dna.Parameters == nil {

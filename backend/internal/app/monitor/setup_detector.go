@@ -21,6 +21,10 @@ type SetupCondition struct {
 	Confidence float64
 	VIXAdjust  string // "widen_stops" when VIX is elevated but not skip-level
 
+	// Swing-based stop from retest bars (0 = not set, use default stop_bps)
+	RetestSwingLow  float64 // lowest low during retest bars (for LONG stop)
+	RetestSwingHigh float64 // highest high during retest bars (for SHORT stop)
+
 	// FVG-based stop-loss (0 = not set, use default stop_bps)
 	FVGStop float64 // stop level from FVG far edge / manipulation wick
 

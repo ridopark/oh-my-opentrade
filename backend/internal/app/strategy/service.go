@@ -74,7 +74,7 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 
 	// 2. Apply regime filter if DNA has one.
 	if dna != nil && len(dna.RegimeFilter.AllowedRegimes) > 0 {
-		if !s.regimeAllowed(setup.Regime, dna.RegimeFilter) {
+		if !s.regimeAllowed(setup.Regime, dna.RegimeFilter, setup.Direction) {
 			return nil
 		}
 	}
@@ -164,7 +164,7 @@ func (s *Service) lookupDNA() *StrategyDNA {
 }
 
 // regimeAllowed checks whether the setup's regime passes the DNA filter.
-func (s *Service) regimeAllowed(regime domain.MarketRegime, filter RegimeFilter) bool {
+func (s *Service) regimeAllowed(regime domain.MarketRegime, filter RegimeFilter, direction domain.Direction) bool {
 	regimeStr := regime.Type.String()
 	allowed := false
 	for _, r := range filter.AllowedRegimes {
@@ -178,6 +178,14 @@ func (s *Service) regimeAllowed(regime domain.MarketRegime, filter RegimeFilter)
 	}
 	if regime.Strength < filter.MinRegimeStrength {
 		return false
+	}
+	if filter.BlockCounterTrend {
+		if regime.Type == domain.RegimeTrendDown && direction == domain.DirectionLong {
+			return false
+		}
+		if regime.Type == domain.RegimeTrendUp && direction == domain.DirectionShort {
+			return false
+		}
 	}
 	return true
 }
@@ -228,6 +236,22 @@ func (s *Service) computePrices(setup monitor.SetupCondition, dna *StrategyDNA) 
 	}
 	limitPrice = close * (1.0 + float64(limitOffsetBPS)/10000.0)
 	stopLoss = low * (1.0 - float64(stopBPS)/10000.0)
+
+	// Swing-based stop override (from retest bars)
+	stopBufferBPS := 10
+	if dna != nil {
+		if v, ok := extractInt(dna.Parameters, "stop_buffer_bps"); ok {
+			stopBufferBPS = v
+		}
+	}
+	bufferMult := float64(stopBufferBPS) / 10000.0
+
+	if setup.Direction == domain.DirectionLong && setup.RetestSwingLow > 0 {
+		stopLoss = setup.RetestSwingLow * (1.0 - bufferMult)
+	} else if setup.Direction == domain.DirectionShort && setup.RetestSwingHigh > 0 {
+		stopLoss = setup.RetestSwingHigh * (1.0 + bufferMult)
+	}
+
 	return limitPrice, stopLoss
 }
 
