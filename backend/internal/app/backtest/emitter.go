@@ -40,12 +40,12 @@ type Emitter struct {
 	clients       map[*emitterClient]struct{}
 	log           zerolog.Logger
 	baseTimeframe domain.Timeframe
-	snapshotFn    SnapshotFn
-	avwapFn       AVWAPFn
 
 	historyMu sync.Mutex
 	history   []SSEEvent
 }
+
+const maxHistory = 10_000
 
 // NewEmitter creates a new Emitter.
 func NewEmitter(log zerolog.Logger, baseTimeframe domain.Timeframe) *Emitter {
@@ -56,8 +56,8 @@ func NewEmitter(log zerolog.Logger, baseTimeframe domain.Timeframe) *Emitter {
 	}
 }
 
-func (e *Emitter) SetSnapshotFn(fn SnapshotFn) { e.snapshotFn = fn }
-func (e *Emitter) SetAVWAPFn(fn AVWAPFn)       { e.avwapFn = fn }
+func (e *Emitter) SetSnapshotFn(_ SnapshotFn) {}
+func (e *Emitter) SetAVWAPFn(_ AVWAPFn)       {}
 
 
 // Subscribe wires up domain event listeners on the given (isolated) event bus
@@ -69,7 +69,6 @@ func (e *Emitter) Subscribe(ctx context.Context, bus ports.EventBusPort) error {
 	}
 
 	subs := []sub{
-		{domain.EventMarketBarSanitized, e.onCandle},
 		{domain.EventSignalCreated, e.onSignal},
 		{domain.EventSignalEnriched, e.onSignalEnriched},
 		{domain.EventFillReceived, e.onTrade},
@@ -82,55 +81,6 @@ func (e *Emitter) Subscribe(ctx context.Context, bus ports.EventBusPort) error {
 			return fmt.Errorf("backtest emitter: subscribe %s: %w", s.eventType, err)
 		}
 	}
-	return nil
-}
-
-func (e *Emitter) onCandle(_ context.Context, ev domain.Event) error {
-	bar, ok := ev.Payload.(domain.MarketBar)
-	if !ok {
-		return nil
-	}
-	if e.baseTimeframe != "" && bar.Timeframe != e.baseTimeframe {
-		return nil
-	}
-	data := map[string]any{
-		"time":      bar.Time.Unix(),
-		"symbol":    string(bar.Symbol),
-		"timeframe": string(bar.Timeframe),
-		"open":      bar.Open,
-		"high":      bar.High,
-		"low":       bar.Low,
-		"close":     bar.Close,
-		"volume":    bar.Volume,
-	}
-	fn := e.snapshotFn
-	if fn != nil {
-		if snap, ok := fn(string(bar.Symbol)); ok {
-			data["ema9"] = snap.EMA9
-			data["ema21"] = snap.EMA21
-			if snap.EMA50 > 0 {
-				data["ema50"] = snap.EMA50
-			}
-			if snap.EMA200 > 0 {
-				data["ema200"] = snap.EMA200
-			}
-		}
-	}
-	// Send all AVWAP anchor values so the chart can draw one line per anchor.
-	if isSessionHours(bar.Time) && e.avwapFn != nil {
-		if vals := e.avwapFn(string(bar.Symbol)); len(vals) > 0 {
-			avwaps := make(map[string]float64)
-			for k, v := range vals {
-				if v > 0 {
-					avwaps[k] = v
-				}
-			}
-			if len(avwaps) > 0 {
-				data["avwaps"] = avwaps
-			}
-		}
-	}
-	e.Emit(SSEEvent{Type: "backtest:candle", Data: data})
 	return nil
 }
 
@@ -207,9 +157,14 @@ func (e *Emitter) onIntentRejected(_ context.Context, ev domain.Event) error {
 
 // Emit broadcasts an SSE event to all connected clients (non-blocking).
 func (e *Emitter) Emit(evt SSEEvent) {
-	e.historyMu.Lock()
-	e.history = append(e.history, evt)
-	e.historyMu.Unlock()
+	// Only persist non-candle events in history for replay; cap total.
+	if evt.Type != "backtest:candle" {
+		e.historyMu.Lock()
+		if len(e.history) < maxHistory {
+			e.history = append(e.history, evt)
+		}
+		e.historyMu.Unlock()
+	}
 
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -339,6 +294,9 @@ func (e *Emitter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	keepAlive := time.NewTicker(15 * time.Second)
 	defer keepAlive.Stop()
+	flushTick := time.NewTicker(50 * time.Millisecond)
+	defer flushTick.Stop()
+	pending := false
 
 	for {
 		select {
@@ -347,6 +305,12 @@ func (e *Emitter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case <-keepAlive.C:
 			fmt.Fprintf(w, ": keepalive\n\n")
 			flusher.Flush()
+			pending = false
+		case <-flushTick.C:
+			if pending {
+				flusher.Flush()
+				pending = false
+			}
 		case evt := <-c.ch:
 			data, err := json.Marshal(evt)
 			if err != nil {
@@ -354,22 +318,22 @@ func (e *Emitter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evt.Type, data)
-			flusher.Flush()
+			pending = true
+			// Drain any additional queued events before waiting for tick.
+		drain:
+			for {
+				select {
+				case evt2 := <-c.ch:
+					data2, err2 := json.Marshal(evt2)
+					if err2 != nil {
+						continue
+					}
+					fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evt2.Type, data2)
+				default:
+					break drain
+				}
+			}
 		}
 	}
 }
 
-var etLoc *time.Location
-
-func init() {
-	etLoc, _ = time.LoadLocation("America/New_York")
-}
-
-// isSessionHours returns true if the timestamp is during active market hours
-// including extended hours (4:00 AM – 8:00 PM ET). Returns false during the
-// overnight gap so the AVWAP line breaks between sessions on the chart.
-func isSessionHours(t time.Time) bool {
-	et := t.In(etLoc)
-	h := et.Hour()
-	return h >= 4 && h < 20
-}

@@ -71,10 +71,11 @@ type Runner struct {
 	collector *Collector
 	emitter   *Emitter
 
-	speedDelay atomic.Value // time.Duration
-	paused     atomic.Bool
-	pauseMu    sync.Mutex
-	pauseCh    chan struct{}
+	speedDelay    atomic.Value // time.Duration
+	paused        atomic.Bool
+	pauseMu       sync.Mutex
+	pauseCh       chan struct{}
+	lastEmitTime  time.Time // throttle progress/metrics emission
 
 	status   atomic.Value // string
 	progress atomic.Value // *ProgressInfo
@@ -1121,8 +1122,9 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 
-		// Emit progress every 10 bar groups.
-		if barsProcessed%10 == 0 || sh.Len() == 0 {
+		// Emit progress at most ~5 times/sec (200ms gate).
+		if time.Since(r.lastEmitTime) > 200*time.Millisecond || sh.Len() == 0 {
+			r.lastEmitTime = time.Now()
 			pct := 0.0
 			if totalBars > 0 {
 				pct = math.Round(float64(barsProcessed)/float64(totalBars)*1000) / 10
