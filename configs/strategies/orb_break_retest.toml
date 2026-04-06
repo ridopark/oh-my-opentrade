@@ -27,15 +27,15 @@ description = "Opening Range Breakout strategy that waits for price to break the
 
 [params]
 bar_timeframe = "5m"
-orb_window_minutes = 5             # JS: 5-min opening range (classic scalp ORB)
-min_rvol = 0.0                     # JS has no RVOL filter
+orb_window_minutes = 30            # TUNE: 30-min range like original omo config
+min_rvol = 0.0                     # RVOL inert for ORB breakouts
 min_confidence = 0.0               # JS has no confidence filter
-breakout_confirm_bps = 2           # tighter confirmation (was 5)
+breakout_confirm_bps = 6           # optimal — 2 worse, 10 worse
 touch_tolerance_bps = 30           # JS: 0.3% retest tolerance
 hold_confirm_bps = 1               # almost no hold confirmation needed (was 2)
-max_retest_bars = 25               # longer retest window (was 15) — more patient
+max_retest_bars = 25               # revert — 12 slightly worse
 allow_missing_range_bars = 2       # tolerate 2 missing bars (was 1)
-max_signals_per_session = 1        # JS: one trade per symbol per day
+max_signals_per_session = 3        # TUNE: try 3 signals
 htf_bias_enabled = false           # JS has no HTF bias
 atr_multiplier = 3.5
 sweep_cooldown_bars = 1            # shorter cooldown after sweep (was 3)
@@ -47,15 +47,15 @@ max_range_atr_mult = 4.0           # accept wider ranges (was 2.5)
 min_range_pct_bps = 10             # accept smaller ranges (was 20)
 fvg_enabled = false                # JS has no FVG
 fvg_min_rvol = 0.8
-displacement_min_body_pct = 0.50   # JS: body >= 50% of candle range
+displacement_min_body_pct = 0.50   # 0.50 is optimal — 0.40 worse, 0.60 worse
 displacement_min_range_pct = 0.002 # JS: range >= 0.2% of price
-stop_bps = 50                      # tighter — swing-based stop preferred
+stop_bps = 40                      # swing stop overrides — fixed bps is fallback only
 stop_buffer_bps = 10               # JS: 0.1% buffer on swing stop
 limit_offset_bps = 15              # slightly more aggressive fill
 risk_per_trade_bps = 300           # smaller size per trade (more attempts)
 max_position_bps = 1500
 allowed_hours_start = "09:30"
-allowed_hours_end = "14:00"        # JS: maxEntryHour=14
+allowed_hours_end = "14:00"        # revert — timing doesn't help PF
 allowed_hours_tz = "America/New_York"
 
 [regime_filter]
@@ -81,8 +81,8 @@ size_wide_mult = 1.50
 type = "TIERED_TP"
 [exit_rules.params]
 first_tier_pct = 0.5       # exit 50% at first tier
-first_tier_rr = 1.5        # first tier at 1.5R
-trail_pct = 0.02           # trail remainder at 2.0%
+first_tier_rr = 2.0        # 2.0 optimal — 1.5 worse PF
+trail_pct = 0.015          # trail inert at MAX_LOSS=0.005 — keep for future loosening
 initial_risk_pct = 0.005   # fallback R if swing stop unavailable
 
 [[exit_rules]]
@@ -107,7 +107,7 @@ minutes_before_close = 10
 [[exit_rules]]
 type = "MAX_LOSS"
 [exit_rules.params]
-pct = 0.025                # JS: 2.5% max underlying move
+pct = 0.005                # 0.5% optimal — 0.7% and 1.0% both worse
 
 [[exit_rules]]
 type = "DTE_FLOOR"
@@ -125,7 +125,7 @@ limit_buffer_bps = 1000
 stale_cancel_secs = 45
 
 [options.defaults]
-min_dte = 5                # JS: targetDTE=7, weekly options
+min_dte = 5                # short DTE = high gamma, needed for ORB
 max_dte = 10
 target_delta_low = 0.45    # JS: ATM (strikeOffset=0)
 target_delta_high = 0.55

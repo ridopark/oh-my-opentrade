@@ -5,18 +5,32 @@ description: "Multi-strategy DNA parameter tuning with automated backtest loop. 
 
 # Strategy Tuning Workflow
 
-Systematic, automated workflow for tuning any oh-my-opentrade strategy DNA. This skill drives an autonomous tune→backtest→evaluate loop and checkpoints with the user when meaningful improvement is found.
+Autonomous tune→backtest→evaluate loop for oh-my-opentrade strategy DNA (schema_version = 2).
+
+## Critical Rules
+
+1. **Never read the full results JSON.** Always pipe through `jq` to exclude the trades array — it can be 500KB+ and will blow up your context:
+   ```bash
+   curl -s http://localhost:8080/backtest/{id}/results | jq '{
+     initial_equity, final_equity, total_return_pct, total_pnl,
+     trade_count, win_count, loss_count, win_rate_pct,
+     max_drawdown_pct, sharpe_ratio, profit_factor,
+     avg_win, avg_loss, largest_win, largest_loss
+   }'
+   ```
+2. **Use caller's backtest params.** If the user specifies symbols, date range, timeframe, equity, slippage, max_positions, or max_per_group — use those exact values for every backtest. Only fall back to defaults below when the caller doesn't specify.
+3. **Skip baseline if provided.** If the caller gives baseline metrics (PF, WR, DD, etc.), record them and go straight to tuning. Don't waste a backtest re-running what's already known.
+4. **Run variants in parallel.** When testing TIGHTER vs LOOSER for a parameter, run both backtests simultaneously (edit config → run → revert → edit other direction → run). Compare both when done.
+5. **Report on every poll.** When polling a running backtest, always print the progress to the user so they can see activity.
 
 ## Strategy Discovery
 
-All strategy DNA files live at `configs/strategies/{id}.toml` (schema_version = 2).
+DNA files: `configs/strategies/{id}.toml`
 
-To find available strategies:
 ```bash
 ls configs/strategies/*.toml
 ```
 
-Known strategies and their signal engines:
 | Strategy ID | Engine | Description |
 |-------------|--------|-------------|
 | `avwap_v4` | `avwap` | Anchored VWAP confluence-weighted entries |
@@ -28,89 +42,161 @@ Known strategies and their signal engines:
 ```toml
 schema_version = 2
 [strategy]     # id, version, name, description
-[lifecycle]    # state (PaperActive|LiveActive|Disabled), paper_only
-[routing]      # symbols, timeframes, priority, conflict_policy, asset_classes
+[lifecycle]    # state, paper_only
+[routing]      # symbols, timeframes, priority, asset_classes
 [params]       # algorithm parameters — THIS IS WHAT YOU TUNE
 [hooks]        # signal engine binding
 [dynamic_risk] # dynamic risk adjustment
-[[exit_rules]] # array: SWING_STOP, STAGNATION_EXIT, EOD_FLATTEN, MAX_LOSS, etc.
+[[exit_rules]] # array: TIERED_TP, TIME_PARTIAL, STAGNATION_EXIT, EOD_FLATTEN, MAX_LOSS, DTE_FLOOR
 [options]      # options trading config
 ```
 
-## Automated Tuning Workflow
+## Backtest API
 
-### Step 1: Establish Baseline
-1. Read the target DNA file: `configs/strategies/{strategy_id}.toml`
-2. Back up: `cp configs/strategies/{id}.toml configs/backups/{id}_pre_tune_$(date +%Y%m%d).toml`
-3. Run baseline backtest (see Backtest API below)
-4. Record baseline metrics: PF, WR, Net P&L, Trade Count, Max DD
+### Default Params (use only when caller doesn't specify)
+```json
+{
+  "symbols": ["AAPL","AFRM","AMD","AMZN","AVGO","BA","COIN","CRM","GOOGL","HIMS","HOOD","IWM","JPM","LLY","META","MRNA","MRVL","MSFT","MU","NET","NFLX","NVDA","OXY","PLTR","QQQ","RBLX","RIVN","SMCI","SNOW","SOFI","SOXL","SPY","TSLA","XOM"],
+  "from": "$(date -d '1 year ago' +%Y-%m-%d)",
+  "to": "$(date +%Y-%m-%d)",
+  "timeframe": "5m",
+  "initial_equity": 100000,
+  "slippage_bps": 10,
+  "no_ai": true,
+  "speed": "max",
+  "max_positions": 6,
+  "max_per_group": 2
+}
+```
+
+### Run Backtest
+```bash
+curl -s -X POST http://localhost:8080/backtest/run \
+  -H "Content-Type: application/json" \
+  -d '{ ...params..., "strategies": ["{strategy_id}"] }'
+# Returns: {"backtest_id": "bt-xxx", "status": "pending"}
+```
+
+### Poll Status (every 30s, timeout 10min)
+```bash
+curl -s http://localhost:8080/backtest/{id}/status
+# Returns: {"status": "running|completed|failed", "progress": {"pct": 50, "bars_processed": N, "total_bars": M}}
+```
+Always report to user: `"Backtest {id}: {pct}% complete"`. Suppress if pct unchanged.
+
+### Get Results (ALWAYS use jq filter)
+```bash
+curl -s http://localhost:8080/backtest/{id}/results | jq '{
+  initial_equity, final_equity, total_return_pct, total_pnl,
+  trade_count, win_count, loss_count, win_rate_pct,
+  max_drawdown_pct, sharpe_ratio, profit_factor,
+  avg_win, avg_loss, largest_win, largest_loss
+}'
+```
+
+## Quant Analysis After Each Backtest
+
+After every backtest result is collected, **launch the `quant-analyst` agent** to analyze it. This is mandatory — never skip.
+
+### When to invoke
+- After the baseline backtest completes
+- After each parameter variant backtest completes (before deciding accept/reject)
+- At each pass checkpoint (summarize the full pass)
+
+### How to invoke
+Use the Agent tool with `subagent_type: "quant-analyst"`. Provide:
+1. The strategy name and current config summary (key params only)
+2. The backtest metrics (PF, WR, DD, trade count, avg win, avg loss)
+3. What parameter was changed and in which direction
+4. The baseline metrics for comparison
+5. Ask for: accept/reject recommendation, next parameter suggestion, structural concerns
+
+### What to do with the analysis
+- If the quant recommends **reject** and you were about to accept → reconsider
+- If the quant identifies a **structural concern** → flag to user before continuing
+- If the quant suggests a **parameter not in your queue** → add it to the queue
+- The quant's recommendations are advisory — the pass thresholds are the final arbiter
+
+## Tuning Workflow
+
+### Step 1: Setup
+1. Read target DNA: `configs/strategies/{strategy_id}.toml`
+2. Back up: `cp configs/strategies/{id}.toml configs/backups/{id}_pre_tune_$(date +%Y%m%d_%H%M).toml`
+3. If baseline metrics provided by caller → record and skip to Step 2
+4. Otherwise → run baseline backtest, poll, record metrics
 
 ### Step 2: Prioritize Parameters
-Read the `[params]` section and rank by expected impact:
-1. **Entry filters** (highest impact) — volume thresholds, confidence scores, confirmation bars
-2. **Exit rules** (risk management) — stop distances, stagnation timeouts, max loss
-3. **Timing** (market structure) — entry windows, cooldowns
-4. **Options** (position sizing) — delta range, DTE, spread limits
+Read `[params]` and `[[exit_rules]]` sections. Rank by expected impact on the **specific problem** the caller identified (e.g., "avg loss too high" → focus exits first):
+
+1. **Exit rules** (cut losers) — stop_bps, max_loss pct, stagnation minutes, trail_pct
+2. **Entry filters** (fewer bad trades) — min_rvol, min_confidence, breakout_confirm_bps, max_retest_bars
+3. **Profit targets** (let winners run) — first_tier_rr, atr_multiplier, time_partial minutes
+4. **Timing** — allowed_hours, max_signals_per_session
+5. **Options** — delta range, DTE, spread limits (tune last, risky to overfit)
 
 ### Step 3: Multi-Pass Coordinate Descent
-Run up to **3 passes** over all parameters. Multiple passes catch interaction effects (changing param A may open headroom for param B).
+
+Run up to **3 passes**. Each pass sweeps all priority parameters.
 
 ```
 for pass = 1 to 3:
   improved_this_pass = false
   for each parameter in priority order:
-    1. Record current value
-    2. Try TIGHTER (current - step) → backtest → compare
-    3. Try LOOSER (current + step) → backtest → compare
-    4. Keep whichever clears the pass threshold; revert if both fail
-    5. If accepted → run split-half validation (see below)
-    6. If split-half fails → revert and move to next parameter
-    7. If accepted and validated → improved_this_pass = true
-  
-  # Correlated pair mini-grids (after each pass)
+    1. Save current config state
+    2. Edit TOML → try TIGHTER value → run backtest A
+    3. While A runs: revert TOML → edit → try LOOSER value → run backtest B
+    4. Poll both A and B (alternate, 30s each)
+    5. When both complete: compare A, B, and current-best
+    6. Accept whichever clears the pass threshold; revert if both fail
+    7. If accepted → run split-half validation
+    8. If split-half fails → revert, move to next parameter
+    9. If validated → improved_this_pass = true, update current-best
+
+  # Correlated pair mini-grids (after sweep)
   for each (param_a, param_b) in CORRELATED_PAIRS:
-    Run 3x3 grid (current-step, current, current+step for each)
-    Accept best combo if it clears pass threshold + split-half
-  
+    Run 3x3 grid: 9 backtests (can run sequentially — they're fast at max speed)
+    Accept best combo if it clears threshold + split-half
+
   if NOT improved_this_pass → converged, stop
-  else → report pass summary, ask user continue/stop
+  else → report pass summary to user, ask continue/stop
 ```
 
-#### Pass-Specific Thresholds (~1.5x tighter per pass to combat overfitting)
+#### Pass Thresholds (tighter each pass to prevent overfitting)
 | Pass | PF delta | DD delta | Net P&L delta | Sharpe delta |
 |------|----------|----------|---------------|--------------|
-| 1    | ≥ 0.10   | ≥ 2.0pp  | ≥ 10%         | ≥ 0.20       |
-| 2    | ≥ 0.15   | ≥ 3.0pp  | ≥ 15%         | ≥ 0.30       |
-| 3    | ≥ 0.20   | ≥ 4.0pp  | ≥ 20%         | ≥ 0.40       |
+| 1    | >= 0.10  | >= 2.0pp | >= 10%        | >= 0.20      |
+| 2    | >= 0.15  | >= 3.0pp | >= 15%        | >= 0.30      |
+| 3    | >= 0.20  | >= 4.0pp | >= 20%        | >= 0.40      |
+
+A parameter change is **accepted** if it improves ANY threshold metric without violating hard constraints.
 
 #### Hard Constraints (reject if ANY violated)
-- Max drawdown worsened by > 1.5 percentage points
+- Max drawdown worsened by > 1.5 percentage points vs baseline
 - Trade count below 40 (absolute floor)
-- Trade count dropped > 20% relative to baseline
+- Trade count dropped > 20% vs baseline
 
 #### Step Sizes
-Use **absolute, parameter-specific steps** from the parameter guides below. Do NOT use percentage-based steps. Do NOT halve steps on convergence — with 30-200 trades, finer resolution is noise.
+Use **absolute, parameter-specific steps** from the Parameter Guides below. Do NOT use percentage-based steps. Do NOT halve steps — with 30-200 trades, finer resolution is noise.
 
 #### Split-Half Validation
-For each accepted parameter change:
-1. Backtest on **first half** of date range
-2. Backtest on **second half** of date range
-3. Reject if improvement is negative in either half
-Costs 2 extra API calls per accepted change but prevents regime-specific overfitting.
+For each accepted change:
+1. Backtest first half of date range
+2. Backtest second half of date range
+3. **Reject if improvement is negative in either half**
+This catches regime-specific overfitting. Costs 2 extra backtests per accepted change.
 
 #### Correlated Pair Mini-Grids
-After coordinate descent in each pass, run 3×3 grids for known interacting pairs:
-- `stop_bps` × `atr_multiplier` (both control exit width)
-- Entry score threshold × confidence threshold (both filter entries)
-Only 9 backtests per pair. Define pairs per strategy in the parameter guides below.
+Run 3x3 grids for known interacting pairs (defined per strategy below).
+Only 9 backtests per pair. Accept best combo if it clears threshold + split-half.
 
 ### Step 4: Report & Checkpoint
-Always include the backtest context at the top, then present the comparison table:
+
+Present this format after each pass:
+
 ```
-**Backtest Universe:** {N} symbols — {list or "full 73-symbol universe"}
-**Data Range:** {from} → {to} ({N months})
-**Timeframe:** {tf} | **Initial Equity:** ${equity} | **Slippage:** {slippage} bps
-**Pass:** {pass_number}/3 | **Backtests Run:** {count}
+**Backtest Context:** {N} symbols | {from} → {to} | {tf} timeframe
+**Equity:** ${equity} | **Slippage:** {slippage} bps | **Pass:** {n}/3
+**Backtests Run This Pass:** {count} | **Total:** {cumulative}
 
 | Metric        | Baseline | Current | Delta   |
 |---------------|----------|---------|---------|
@@ -120,79 +206,65 @@ Always include the backtest context at the top, then present the comparison tabl
 | Trade Count   |          |         |         |
 | Max Drawdown  |          |         |         |
 | Sharpe        |          |         |         |
+| Avg Win       |          |         |         |
+| Avg Loss      |          |         |         |
+
+### Parameter Changes
+| Parameter | Before | After | Rationale |
+|-----------|--------|-------|-----------|
+
+### Code Fixes (if any)
+- `file:line` — description
 ```
 
-#### Parameter Changes
-| Parameter | Before | After | Step | Rationale |
-|-----------|--------|-------|------|-----------|
-| ...       | ...    | ...   | ...  | ...       |
-
-#### Code Fixes Applied (if any)
-- `file:line` — description of fix
-
-Then ask the user:
-> "Pass {n} complete. {k} parameters improved. Continue to pass {n+1} or accept these results?"
+Then ask: `"Pass {n} complete. {k} params improved. Continue to pass {n+1}?"`
 
 ### Step 5: On User Decision
-- **Continue** → start next pass from top priority
-- **Stop** → keep the improved DNA, suggest a commit message
+- **Continue** → next pass
+- **Stop** → keep improved DNA, suggest commit message
 
-## Backtest API
+## Parameter Guides
 
-### Symbol Universe
-Use the **active trading universe of 34 symbols** — these are the symbols configured in live strategies. Backtesting on symbols you don't trade dilutes signal and wastes time.
+### ORB Break & Retest (`orb_break_retest`)
 
-```
-AAPL,AFRM,AMD,AMZN,AVGO,BA,COIN,CRM,GOOGL,HIMS,HOOD,IWM,JPM,LLY,META,MRNA,MRVL,MSFT,MU,NET,NFLX,NVDA,OXY,PLTR,QQQ,RBLX,RIVN,SMCI,SNOW,SOFI,SOXL,SPY,TSLA,XOM
-```
+#### Exit Rules (tune first when R:R is bad)
+| Parameter | Location | Range | Step | Effect |
+|-----------|----------|-------|------|--------|
+| `stop_bps` | `[params]` | 30–100 | 5 | Tighter stop = smaller avg loss |
+| `max_loss pct` | `[[exit_rules]] type="MAX_LOSS"` | 0.005–0.025 | 0.005 | Hard loss cap per trade |
+| `trail_pct` | `[[exit_rules]] type="TIERED_TP"` | 0.005–0.025 | 0.005 | Tighter trail = lock profits faster |
+| `first_tier_rr` | `[[exit_rules]] type="TIERED_TP"` | 1.0–3.0 | 0.5 | Higher = let first tier run further |
+| `stagnation minutes` | `[[exit_rules]] type="STAGNATION_EXIT"` | 45–120 | 15 | Faster exit on flat trades |
+| `stop_buffer_bps` | `[params]` | 5–20 | 5 | Buffer on swing stop |
 
-If the list needs updating, check `configs/strategies/*.toml` → `[routing] symbols`.
+#### Entry Filters
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `orb_window_minutes` | 5–30 | 5 | Shorter = tighter range, more signals |
+| `min_rvol` | 0.0–3.0 | 0.5 | Higher = only high-volume sessions |
+| `min_confidence` | 0.0–0.9 | 0.1 | Higher = more selective |
+| `breakout_confirm_bps` | 2–15 | 2 | Bigger move to confirm |
+| `touch_tolerance_bps` | 10–50 | 10 | How close to ORB level = "touch" |
+| `max_retest_bars` | 6–25 | 3 | Faster retest required |
+| `retest_confirm_bars` | 1–4 | 1 | Bars confirming retest hold |
+| `displacement_min_body_pct` | 0.3–0.7 | 0.1 | Displacement candle quality |
+| `displacement_min_range_pct` | 0.001–0.005 | 0.001 | Displacement candle size |
 
-### Run
-```bash
-curl -s -X POST http://localhost:8080/backtest/run \
-  -H "Content-Type: application/json" \
-  -d '{
-    "symbols": ["AAPL","AFRM","AMD","AMZN","AVGO","BA","COIN","CRM","GOOGL","HIMS","HOOD","IWM","JPM","LLY","META","MRNA","MRVL","MSFT","MU","NET","NFLX","NVDA","OXY","PLTR","QQQ","RBLX","RIVN","SMCI","SNOW","SOFI","SOXL","SPY","TSLA","XOM"],
-    "from": "2025-06-01",
-    "to": "2026-03-27",
-    "timeframe": "5m",
-    "initial_equity": 100000,
-    "slippage_bps": 10,
-    "strategies": ["{strategy_id}"],
-    "no_ai": true,
-    "speed": "max",
-    "max_positions": 6,
-    "max_per_group": 2
-  }'
-```
+#### Timing
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `allowed_hours_end` | "12:00"–"15:00" | 1h | Narrower = avoid afternoon chop |
+| `max_signals_per_session` | 1–3 | 1 | More = more attempts per day |
 
-- `max_positions`: caps simultaneous open positions (default 6, prevents over-exposure)
-- `max_per_group`: caps positions per sector group (default 2, prevents sector concentration)
-
-### Poll (every 60s, timeout 10min)
-```bash
-curl -s http://localhost:8080/backtest/{id}/status
-# Returns: {"status": "running|completed|failed", "progress": {"pct": 50}}
-```
-**Report progress to the user on each poll:**
-> "Backtest {id}: {pct}% complete ({elapsed}s elapsed)"
-Suppress if pct hasn't changed since last poll.
-
-### Results
-```bash
-curl -s http://localhost:8080/backtest/{id}/results
-```
-
-## Parameter Guides by Strategy
+**Correlated pairs:** `stop_bps` x `atr_multiplier`, `min_confidence` x `min_rvol`
 
 ### AVWAP (`avwap_v4`)
 
 #### Entry Filters
 | Parameter | Range | Step | Effect |
 |-----------|-------|------|--------|
-| `volume_mult` | 1.5–3.0 | 0.25 | Higher = fewer trades, higher quality |
-| `min_confluence_score` | 5–8 | 1 | Higher = very selective entries |
+| `volume_mult` | 1.5–3.0 | 0.25 | Higher = fewer, higher-quality trades |
+| `min_confluence_score` | 5–8 | 1 | Higher = very selective |
 | `hold_bars` | 3–8 | 1 | Stronger breakout confirmation |
 | `min_slope_bps` | 0.1–1.0 | 0.1 | Strong trends only |
 
@@ -204,101 +276,42 @@ curl -s http://localhost:8080/backtest/{id}/results
 | `stagnation minutes` | 60–180 | 15 | Faster exit on stale trades |
 | `max_loss pct` | 0.01–0.05 | 0.005 | Hard stop per trade |
 
-#### Timing
-| Parameter | Effect |
-|-----------|--------|
-| `allowed_hours_start/end` | Entry window (ET) |
-| `midday_trap_shield` | 11:00–13:00 low-liquidity filter |
-| `cooldown_seconds` | Re-entry cooldown per symbol |
-
-**Correlated pairs for mini-grid:** `stop_bps` × `min_slope_bps`
-
-### ORB Break & Retest (`orb_break_retest`)
-
-#### Entry Filters
-| Parameter | Range | Step | Effect |
-|-----------|-------|------|--------|
-| `orb_window_minutes` | 5–30 | 5 | Shorter = tighter range, more breakouts |
-| `min_rvol` | 1.0–3.0 | 0.25 | Higher = only high-volume sessions |
-| `min_confidence` | 0.5–0.9 | 0.05 | Higher = more selective |
-| `breakout_confirm_bps` | 3–15 | 2 | Bigger move needed to confirm |
-| `touch_tolerance_bps` | 1–5 | 1 | How close to level counts as "touch" |
-| `max_retest_bars` | 6–20 | 2 | Faster retest required |
-| `retest_confirm_bars` | 1–4 | 1 | Bars to confirm retest hold |
-
-#### Exit Rules
-| Parameter | Range | Step | Effect |
-|-----------|-------|------|--------|
-| `stop_bps` | 30–100 | 5 | Tighter risk per trade |
-| `atr_multiplier` | 1.5–4.0 | 0.25 | Profit target as ATR multiple |
-| `stagnation minutes` | 45–120 | 15 | Faster exit on stale trades |
-
-#### Timing
-| Parameter | Effect |
-|-----------|--------|
-| `allowed_hours_start/end` | Entry window (ET) |
-| `max_signals_per_session` | Cap entries per day |
-
-**Correlated pairs for mini-grid:** `stop_bps` × `atr_multiplier`, `min_confidence` × `min_rvol`
+**Correlated pairs:** `stop_bps` x `min_slope_bps`
 
 ### Generic (unknown strategy)
-For any new strategy, infer tuning ranges from:
-- Current values: try ±20% as starting exploration
-- Parameter names: `_bps` = basis points, `_mult` = multiplier, `_bars` = bar count
-- Common sense: risk params → tighten first; filter params → loosen if trade count is too low
+Infer ranges from current values: try +/- 20%. Parameter naming conventions:
+- `_bps` = basis points, `_mult` = multiplier, `_bars` = bar count, `_pct` = percentage
 
 ## Options Parameters (all strategies)
 | Parameter | Range | Effect |
 |-----------|-------|--------|
-| `target_delta_low/high` | 0.30–0.55 | ATM (0.40–0.55) preferred for fill rate + liquidity |
-| `min_dte/max_dte` | 7–60 | Shorter = higher gamma, faster decay |
+| `target_delta_low/high` | 0.30–0.55 | ATM (0.40–0.55) for fill rate + liquidity |
+| `min_dte/max_dte` | 5–60 | Shorter = higher gamma, faster decay |
 | `max_spread_pct` | 0.05–0.15 | Liquidity filter |
-| `max_contracts` | 1–10 | Position size cap |
 
 ### Fill-Friendliness Constraint
-When tuning options parameters, **fill probability is a first-class metric**.
-A signal that never fills is worth zero. Prioritize contracts that are:
-- **ATM (delta 0.40–0.55)**: tightest bid-ask spreads, highest open interest
-- **Adequate open interest (≥50-100)**: ensures market maker participation
-- **Spread ≤ 8-10% of premium**: reject illiquid strikes
-- **Avoid deep ITM (delta > 0.60)**: wide spreads, low volume, stale quotes
-
-When evaluating tuning results, discount strategies that select ITM contracts
-even if backtested P&L looks better — backtests assume fills at mid price,
-but live ITM orders often sit unfilled. ATM gamma actually helps day trades
-by accelerating gains on winning directional moves.
-
-## Code Fix Policy
-During tuning, you may encounter bugs or issues in strategy code, backtest runner, or signal engine:
-
-- **Small fix** (< ~20 lines, one file, obvious bug): Fix autonomously. Report under "Code Fixes Applied" in checkpoint.
-- **Big change** (new feature, multi-file refactor, behavior change): STOP and describe to user. Wait for approval.
-- **Ambiguous**: Ask the user.
+Fill probability is a first-class metric. Prioritize ATM (delta 0.40–0.55) with adequate OI (>=100) and spread <= 10% of premium. Discount backtested results that select deep ITM (delta > 0.60) — live fills are much worse than backtest assumes.
 
 ## Overfitting Detection
 
-Flag results as suspect if:
-- Trade count < 40 (absolute floor — below this, all metrics are noise)
+Flag as suspect if:
+- Trade count < 40
 - PF > 3.0
 - WR > 60% AND PF > 2.0
-- 3+ per-symbol overrides
 - Backtest period < 6 months
-- Sharp in-sample vs out-of-sample divergence (split-half check fails)
-- Improvement only appears in one half of the data range
+- Split-half divergence (improvement in one half, regression in other)
 
 ## Healthy Metric Ranges
 
 | Metric | Minimum | Target | Red Flag |
 |--------|---------|--------|----------|
-| Profit Factor | 1.2 | 1.3–2.0 | > 3.0 (overfitting) |
-| Win Rate | 30% | 35–50% | > 60% (suspicious) |
+| Profit Factor | 1.2 | 1.3–2.0 | > 3.0 |
+| Win Rate | 30% | 35–50% | > 60% |
 | Max Drawdown | — | < 10% | > 20% |
 | Trade Count | 40+ | 60+ | < 30 |
 | Sharpe Ratio | 0.5 | 1.0–2.0 | > 3.0 |
 | Avg Win/Avg Loss | 1.5 | 2.0–3.0 | < 1.0 |
 
-## References
-
-- Strategy DNA files: `configs/strategies/*.toml`
-- Backtest result interpretation: `backtest-analysis` skill
-- Tuning history: `git log --oneline configs/strategies/`
+## Code Fix Policy
+- **Small fix** (< 20 lines, one file, obvious bug): Fix autonomously, report in checkpoint.
+- **Big change** (new feature, multi-file refactor): STOP, describe to user, wait for approval.
