@@ -48,6 +48,7 @@ type RunConfig struct {
 	FixedSymbols     []domain.Symbol // user's original symbols (always active, union with screener)
 	MaxPositions     int             // portfolio-level max simultaneous positions (0=use config default)
 	MaxPerGroup      int             // max positions per sector group (0=use config default)
+	CompoundEquity   bool            // when true, position sizing compounds with P&L
 }
 
 // ProgressInfo tracks replay progress.
@@ -848,6 +849,20 @@ func (r *Runner) Run(ctx context.Context) error {
 	if startErr := pipeline.RiskSizer.Start(ctx); startErr != nil {
 		r.status.Store("error")
 		return fmt.Errorf("start risk sizer: %w", startErr)
+	}
+
+	// Compound equity: update position sizing after each fill so P&L compounds.
+	if r.cfg.CompoundEquity {
+		_ = r.infra.EventBus.Subscribe(ctx, domain.EventFillReceived, func(_ context.Context, _ domain.Event) error {
+			eq, err := sim.GetAccountEquity(ctx)
+			if err != nil {
+				return nil
+			}
+			pipeline.RiskSizer.SetAccountEquity(eq)
+			execBundle.Service.SetAccountEquity(eq)
+			execBundle.LedgerWriter.SetAccountEquity(eq)
+			return nil
+		})
 	}
 
 	// Subscribe emitter LAST so all pipeline handlers (strategy runner's
