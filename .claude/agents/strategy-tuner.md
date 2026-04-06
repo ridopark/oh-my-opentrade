@@ -152,6 +152,7 @@ curl -s -X POST http://localhost:8080/backtest/run \
     "initial_equity": 100000,
     "slippage_bps": 10,
     "speed": "max",
+    "compound_equity": true,
     "strategies": ["{strategy_id}"],
     "no_ai": true
   }'

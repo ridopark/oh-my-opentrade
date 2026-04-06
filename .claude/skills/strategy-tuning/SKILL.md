@@ -139,6 +139,7 @@ schema_version = 2
   "slippage_bps": 10,
   "no_ai": true,
   "speed": "max",
+  "compound_equity": true,
   "max_positions": 6,
   "max_per_group": 2
 }
