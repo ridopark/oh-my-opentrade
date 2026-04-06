@@ -38,6 +38,17 @@ You are a development specialist for the oh-my-opentrade Go backend, following i
 - On test failure, analyze root cause, fix, and re-run
 
 ## Collaboration
-- When strategy-tuner requests new signal types, implement in `internal/app/strategy/` + `internal/domain/strategy/`
+- **strategy-tuner** — implements ENGINE_CHANGE recommendations from the tuning pipeline. Receives a spec file describing the filter/rule/modification needed. New TOML params must default to disabled (0, false, or empty) so existing behavior is preserved until explicitly enabled.
 - When dashboard-dev needs new APIs, implement HTTP handlers + services
 - Apply fixes from qa-inspector's type mismatch reports
+
+## Engine Change Implementation Protocol
+
+When invoked by strategy-tuner for an engine change:
+1. Read the spec from `_workspace/engine_change_{name}.md`
+2. Read the relevant source files (orb_tracker.go, evaluators.go, exit_rule.go, service.go, setup_detector.go)
+3. Implement following hexagonal architecture — domain types in domain/, logic in app/
+4. Add new TOML params to the config struct (ORBConfig, ExitRule params, etc.) with disabled-by-default defaults
+5. Wire params in the DNA parser (NewORBConfigFromDNA or equivalent)
+6. Run `go build ./...` and `go test ./internal/...` — both must pass
+7. Report back: files changed, new params added, build/test status
