@@ -13,7 +13,7 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NFLX", "NVDA", "AMD", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "COIN", "AFRM", "JPM", "XOM", "OXY", "LLY", "MRNA", "HIMS", "RIVN", "RBLX", "BA", "SPY", "QQQ", "IWM", "SOXL"]
+symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "AMD", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "AFRM", "JPM", "XOM", "OXY", "LLY", "HIMS", "RIVN", "RBLX", "BA", "SPY", "QQQ", "IWM", "SOXL"]
 timeframes = ["5m"]
 priority = 80
 conflict_policy = "priority_wins"
@@ -133,6 +133,10 @@ max_trades_per_day = 2           # limit overtrading per symbol
 
 # Bars to hold before basic AVWAP exit check fires
 exit_hold_bars = 3               # reduced from 5
+
+# --- Regime-Direction Blocking ---
+# Block specific directions in specific regimes (AVWAP longs underperform in BALANCE)
+regime_blocked_directions = { BALANCE = "LONG" }
 
 # --- AVWAP Stop ---
 # Strategy-level exit when price closes on wrong side of AVWAP for N consecutive bars

@@ -131,6 +131,8 @@ type AVWAPConfig struct {
 	AllowedHoursStart string // "HH:MM" entry window start (ET)
 	AllowedHoursEnd   string // "HH:MM" entry window end (ET)
 	AllowedHoursTZ    string // IANA timezone (default America/New_York)
+
+	RegimeBlockedDirections map[string]string // regime -> blocked direction ("LONG" or "SHORT")
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -589,6 +591,19 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		AllowedHoursTZ:    getString(params, "allowed_hours_tz", "America/New_York"),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
+
+	// Parse regime_blocked_directions nested map: regime -> "LONG" or "SHORT"
+	if rbd, ok := params["regime_blocked_directions"]; ok {
+		if m, ok2 := rbd.(map[string]any); ok2 {
+			cfg.RegimeBlockedDirections = make(map[string]string, len(m))
+			for k, v := range m {
+				if s, ok3 := v.(string); ok3 {
+					cfg.RegimeBlockedDirections[k] = s
+				}
+			}
+		}
+	}
+
 	return cfg
 }
 
@@ -2321,10 +2336,25 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		return avwapSt, nil, nil
 	}
 
+	// 6a1. Regime-direction blocking — block a specific direction in a specific regime.
+	// e.g. block LONG in BALANCE because AVWAP breakout longs underperform in ranges.
+	if blocked, ok2 := cfg.RegimeBlockedDirections[regimeTag]; ok2 {
+		if strings.EqualFold(blocked, "LONG") {
+			ec.lockedLong = true
+		}
+		if strings.EqualFold(blocked, "SHORT") {
+			ec.lockedShort = true
+		}
+	}
+
 	// 6a2. Session lockout — once stopped out on a side, no re-entry in the
 	// same direction until next session. A long stop-out doesn't block shorts.
-	ec.lockedLong = avwapSt.LockedOutSide == start.SideBuy
-	ec.lockedShort = avwapSt.LockedOutSide == start.SideSell
+	if avwapSt.LockedOutSide == start.SideBuy {
+		ec.lockedLong = true
+	}
+	if avwapSt.LockedOutSide == start.SideSell {
+		ec.lockedShort = true
+	}
 
 	// 6b. Directional bias gate — determine bias from first anchor's AVWAP value.
 	// Require at least minBarsForBias bars before trusting the AVWAP for directional
