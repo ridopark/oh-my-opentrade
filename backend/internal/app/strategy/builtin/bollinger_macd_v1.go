@@ -38,6 +38,7 @@ func (s *BollingerMACDStrategy) WarmupBars() int  { return 30 }
 
 // BMConfig holds all DNA parameters parsed from TOML [params].
 type BMConfig struct {
+	Mode                string  // "macd_only", "bb_only", or "confluence"
 	BBBreakoutThreshold float64
 	MACDBelow0Required  bool    // require MACD crossover below zero line
 	RiskRewardRatio     float64 // target = entry + ratio * (entry - stop)
@@ -62,8 +63,10 @@ type BMState struct {
 	PendingEntryAt time.Time           `json:"pendingEntryAt,omitzero"`
 	TradesToday    int                 `json:"tradesToday"`
 	CooldownUntil  time.Time           `json:"cooldownUntil,omitzero"`
-	PrevMACDHist   float64             `json:"prevMACDHist"`
-	LastTradeDate  string              `json:"lastTradeDate,omitempty"`
+	PrevMACDHist    float64             `json:"prevMACDHist"`
+	PrevMACDLine    float64             `json:"prevMACDLine"`
+	PrevMACDSignalL float64             `json:"prevMACDSignalL"` // previous MACD signal line value
+	LastTradeDate   string              `json:"lastTradeDate,omitempty"`
 
 	// Position tracking for 1.5x R:R exit
 	EntryPrice  float64 `json:"entryPrice,omitempty"`
@@ -95,6 +98,7 @@ func (st *BMState) Unmarshal(data []byte) error { return json.Unmarshal(data, st
 
 func parseBMConfig(params map[string]any) BMConfig {
 	return BMConfig{
+		Mode:                getString(params, "mode", "confluence"),
 		BBBreakoutThreshold: getFloat64(params, "bb_breakout_threshold", 1.0),
 		MACDBelow0Required:  getBool(params, "macd_below_zero_required", false),
 		RiskRewardRatio:     getFloat64(params, "risk_reward_ratio", 1.5),
@@ -318,72 +322,112 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 
 	var sig *start.Signal
 
-	// ── LONG: close > upper BB, MACD histogram > 0, close > 200 MA, price > 9 EMA ──
-	if priceAboveEMA9 &&
-		ind.BBPercentB > cfg.BBBreakoutThreshold &&
-		ind.MACDHistogram > 0 &&
-		(!cfg.MACDBelow0Required || ind.MACDLine < 0) &&
+	// MACD crossover detection (for macd_only mode):
+	// Trading Rush: MACD line crosses above signal line, crossover below zero line
+	macdCrossUp := bmSt.PrevMACDLine < bmSt.PrevMACDSignalL && ind.MACDLine > ind.MACDSignal
+	macdCrossDown := bmSt.PrevMACDLine > bmSt.PrevMACDSignalL && ind.MACDLine < ind.MACDSignal
+
+	// ── LONG ENTRY ──
+	longOK := priceAboveEMA9 &&
 		(ema200 <= 0 || bar.Close > ema200) &&
 		volumeOK &&
-		htfBias != "BEARISH" {
+		htfBias != "BEARISH"
 
-		// Stop = lowest low of lookback window
-		swingLow := swingMin(bmSt.RecentLows)
-		if swingLow > 0 && swingLow < bar.Close {
-			stopDist := bar.Close - swingLow
-			target := bar.Close + cfg.RiskRewardRatio*stopDist
-			strength := 0.8
-			s, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, strength, map[string]string{
-				"setup":        "bb_macd_long",
-				"bb_percent_b": fmt.Sprintf("%.4f", ind.BBPercentB),
-				"macd_hist":    fmt.Sprintf("%.6f", ind.MACDHistogram),
-				"ref_price":    fmt.Sprintf("%.10f", bar.Close),
-				"stop_price":   fmt.Sprintf("%.4f", swingLow),
-				"target_price": fmt.Sprintf("%.4f", target),
-				"rr_ratio":     fmt.Sprintf("%.1f", cfg.RiskRewardRatio),
-				"stop_bps":     fmt.Sprintf("%.0f", stopDist/bar.Close*10000),
-			})
-			if err == nil {
-				sig = &s
-				bmSt.StopPrice = swingLow
-				bmSt.TargetPrice = target
+	if longOK {
+		var longTrigger bool
+		var setup string
+
+		switch cfg.Mode {
+		case "macd_only":
+			// Trading Rush MACD: crossover above signal, below zero line
+			longTrigger = macdCrossUp && ind.MACDLine < 0
+			setup = "macd_long"
+		case "bb_only":
+			// Trading Rush BB: close above upper band
+			longTrigger = ind.BBPercentB > cfg.BBBreakoutThreshold
+			setup = "bb_long"
+		default: // "confluence"
+			longTrigger = ind.BBPercentB > cfg.BBBreakoutThreshold && ind.MACDHistogram > 0
+			setup = "bb_macd_long"
+		}
+
+		if longTrigger {
+			swingLow := swingMin(bmSt.RecentLows)
+			if swingLow > 0 && swingLow < bar.Close {
+				stopDist := bar.Close - swingLow
+				target := bar.Close + cfg.RiskRewardRatio*stopDist
+				s, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, 0.8, map[string]string{
+					"setup":        setup,
+					"bb_percent_b": fmt.Sprintf("%.4f", ind.BBPercentB),
+					"macd_line":    fmt.Sprintf("%.6f", ind.MACDLine),
+					"macd_signal":  fmt.Sprintf("%.6f", ind.MACDSignal),
+					"macd_hist":    fmt.Sprintf("%.6f", ind.MACDHistogram),
+					"ref_price":    fmt.Sprintf("%.10f", bar.Close),
+					"stop_price":   fmt.Sprintf("%.4f", swingLow),
+					"target_price": fmt.Sprintf("%.4f", target),
+					"rr_ratio":     fmt.Sprintf("%.1f", cfg.RiskRewardRatio),
+					"stop_bps":     fmt.Sprintf("%.0f", stopDist/bar.Close*10000),
+				})
+				if err == nil {
+					sig = &s
+					bmSt.StopPrice = swingLow
+					bmSt.TargetPrice = target
+				}
 			}
 		}
 	}
 
-	// ── SHORT: close < lower BB, MACD histogram < 0, close < 200 MA, price < 9 EMA ──
-	if sig == nil && priceBelowEMA9 &&
-		ind.BBPercentB < (1.0-cfg.BBBreakoutThreshold) && // %B < 0.0 when threshold=1.0
-		ind.MACDHistogram < 0 &&
-		(!cfg.MACDBelow0Required || ind.MACDLine > 0) &&
+	// ── SHORT ENTRY ──
+	shortOK := sig == nil && priceBelowEMA9 &&
 		(ema200 <= 0 || bar.Close < ema200) &&
 		volumeOK &&
-		htfBias != "BULLISH" {
+		htfBias != "BULLISH"
 
-		swingHigh := swingMax(bmSt.RecentHighs)
-		if swingHigh > 0 && swingHigh > bar.Close {
-			stopDist := swingHigh - bar.Close
-			target := bar.Close - cfg.RiskRewardRatio*stopDist
-			strength := 0.8
-			s, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, strength, map[string]string{
-				"setup":        "bb_macd_short",
-				"bb_percent_b": fmt.Sprintf("%.4f", ind.BBPercentB),
-				"macd_hist":    fmt.Sprintf("%.6f", ind.MACDHistogram),
-				"ref_price":    fmt.Sprintf("%.10f", bar.Close),
-				"stop_price":   fmt.Sprintf("%.4f", swingHigh),
-				"target_price": fmt.Sprintf("%.4f", target),
-				"rr_ratio":     fmt.Sprintf("%.1f", cfg.RiskRewardRatio),
-				"stop_bps":     fmt.Sprintf("%.0f", stopDist/bar.Close*10000),
-			})
-			if err == nil {
-				sig = &s
-				bmSt.StopPrice = swingHigh
-				bmSt.TargetPrice = target
+	if shortOK {
+		var shortTrigger bool
+		var setup string
+
+		switch cfg.Mode {
+		case "macd_only":
+			shortTrigger = macdCrossDown && ind.MACDLine > 0
+			setup = "macd_short"
+		case "bb_only":
+			shortTrigger = ind.BBPercentB < (1.0 - cfg.BBBreakoutThreshold)
+			setup = "bb_short"
+		default:
+			shortTrigger = ind.BBPercentB < (1.0-cfg.BBBreakoutThreshold) && ind.MACDHistogram < 0
+			setup = "bb_macd_short"
+		}
+
+		if shortTrigger {
+			swingHigh := swingMax(bmSt.RecentHighs)
+			if swingHigh > 0 && swingHigh > bar.Close {
+				stopDist := swingHigh - bar.Close
+				target := bar.Close - cfg.RiskRewardRatio*stopDist
+				s, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, 0.8, map[string]string{
+					"setup":        setup,
+					"bb_percent_b": fmt.Sprintf("%.4f", ind.BBPercentB),
+					"macd_line":    fmt.Sprintf("%.6f", ind.MACDLine),
+					"macd_signal":  fmt.Sprintf("%.6f", ind.MACDSignal),
+					"macd_hist":    fmt.Sprintf("%.6f", ind.MACDHistogram),
+					"ref_price":    fmt.Sprintf("%.10f", bar.Close),
+					"stop_price":   fmt.Sprintf("%.4f", swingHigh),
+					"target_price": fmt.Sprintf("%.4f", target),
+					"rr_ratio":     fmt.Sprintf("%.1f", cfg.RiskRewardRatio),
+					"stop_bps":     fmt.Sprintf("%.0f", stopDist/bar.Close*10000),
+				})
+				if err == nil {
+					sig = &s
+					bmSt.StopPrice = swingHigh
+					bmSt.TargetPrice = target
+				}
 			}
 		}
 	}
 
 	bmSt.PrevMACDHist = ind.MACDHistogram
+	bmSt.PrevMACDLine = ind.MACDLine
+	bmSt.PrevMACDSignalL = ind.MACDSignal
 
 	if sig != nil {
 		bmSt.GatePassedAll++
@@ -462,6 +506,8 @@ func (s *BollingerMACDStrategy) ReplayOnBar(_ start.Context, _ string, bar start
 	bmSt.Indicators = indicators
 	bmSt.CalcBarCount++
 	bmSt.PrevMACDHist = indicators.MACDHistogram
+	bmSt.PrevMACDLine = indicators.MACDLine
+	bmSt.PrevMACDSignalL = indicators.MACDSignal
 	bmSt.RecentLows = append(bmSt.RecentLows, bar.Low)
 	if len(bmSt.RecentLows) > bmSt.Config.SwingLookback {
 		bmSt.RecentLows = bmSt.RecentLows[len(bmSt.RecentLows)-bmSt.Config.SwingLookback:]
