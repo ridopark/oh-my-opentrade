@@ -1509,3 +1509,174 @@ func TestWithDisableReconcile_SkipsBootstrap(t *testing.T) {
 	assert.False(t, called, "GetPositions must not be called when reconcile is disabled")
 	assert.Equal(t, 0, svc.PositionCount(), "no positions should be bootstrapped")
 }
+
+// ---------------------------------------------------------------------------
+// Integration: entry-to-exit round-trip through tick loop
+//
+// These tests verify the complete wiring from fill → position creation →
+// price update → tick() → exit detection → ExitPending flag.
+// We assert ExitPending (set synchronously in triggerExit) rather than
+// bus events (which require the async outbox goroutine).
+// ---------------------------------------------------------------------------
+
+func TestTickRoundTrip_TrailingStop(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.processFill(fillMsg{
+		Symbol: domain.Symbol("AAPL"), Side: "BUY", Price: 100, Quantity: 10,
+		FilledAt: now.Add(-5 * time.Minute), Strategy: "test", AssetClass: domain.AssetClassEquity,
+		ExitRules: []domain.ExitRule{
+			mustExitRule(t, domain.ExitRuleTrailingStop, map[string]float64{"pct": 0.03}),
+		},
+	})
+	require.Equal(t, 1, svc.PositionCount())
+	pos := svc.positions["tenant-1:Paper:AAPL"]
+	require.NotNil(t, pos)
+
+	// Price rises to 110 → HWM updates, no exit
+	pc.UpdatePrice(domain.Symbol("AAPL"), 110, now)
+	svc.tick()
+	assert.False(t, pos.ExitPending, "should not exit while rising")
+	assert.InDelta(t, 110.0, pos.HighWaterMark, 0.01)
+
+	// Price drops to 108 → drawdown=2/110≈1.8% < 3% → no exit
+	pc.UpdatePrice(domain.Symbol("AAPL"), 108, now)
+	svc.tick()
+	assert.False(t, pos.ExitPending, "1.8% drawdown < 3% threshold")
+
+	// Price drops to 106 → drawdown=4/110≈3.6% > 3% → EXIT
+	pc.UpdatePrice(domain.Symbol("AAPL"), 106, now)
+	svc.tick()
+	assert.True(t, pos.ExitPending, "3.6% drawdown should trigger trailing stop")
+}
+
+func TestTickRoundTrip_MaxLossFiresBeforeTrailingStop(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.processFill(fillMsg{
+		Symbol: domain.Symbol("AAPL"), Side: "BUY", Price: 100, Quantity: 10,
+		FilledAt: now.Add(-5 * time.Minute), Strategy: "test", AssetClass: domain.AssetClassEquity,
+		ExitRules: []domain.ExitRule{
+			mustExitRule(t, domain.ExitRuleMaxLoss, map[string]float64{"pct": 0.02}),
+			mustExitRule(t, domain.ExitRuleTrailingStop, map[string]float64{"pct": 0.05}),
+		},
+	})
+
+	pos := svc.positions["tenant-1:Paper:AAPL"]
+	require.NotNil(t, pos)
+
+	// Price drops to 97 → -3% loss > 2% max loss → MaxLoss fires first
+	pc.UpdatePrice(domain.Symbol("AAPL"), 97, now)
+	svc.tick()
+	assert.True(t, pos.ExitPending, "MaxLoss at -3% should trigger before TrailingStop at 5%")
+}
+
+func TestTickRoundTrip_EODFlatten_TimeOnly(t *testing.T) {
+	etLoc, _ := time.LoadLocation("America/New_York")
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	// 3:57 PM ET — within 5 minutes of 4:00 PM close
+	now := time.Date(2026, 3, 6, 15, 57, 0, 0, etLoc)
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.processFill(fillMsg{
+		Symbol: domain.Symbol("AAPL"), Side: "BUY", Price: 150, Quantity: 10,
+		FilledAt: now.Add(-2 * time.Hour), Strategy: "test", AssetClass: domain.AssetClassEquity,
+		ExitRules: []domain.ExitRule{
+			mustExitRule(t, domain.ExitRuleEODFlatten, map[string]float64{"minutes_before_close": 5}),
+		},
+	})
+
+	pos := svc.positions["tenant-1:Paper:AAPL"]
+	require.NotNil(t, pos)
+
+	// No price update needed — EOD_FLATTEN is time-only
+	svc.tick()
+	assert.True(t, pos.ExitPending, "EOD flatten should fire without price data")
+}
+
+func TestTickRoundTrip_VolatilityStopWithIndicators(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithNowFunc(func() time.Time { return now }),
+		WithSnapshotFunc(func(symbol string) (domain.IndicatorSnapshot, bool) {
+			return domain.IndicatorSnapshot{ATR: 3.0, VWAP: 150.0, VWAPSD: 1.0}, true
+		}),
+	)
+
+	svc.processFill(fillMsg{
+		Symbol: domain.Symbol("AAPL"), Side: "BUY", Price: 150, Quantity: 10,
+		FilledAt: now.Add(-10 * time.Minute), Strategy: "test", AssetClass: domain.AssetClassEquity,
+		ExitRules: []domain.ExitRule{
+			mustExitRule(t, domain.ExitRuleVolatilityStop, map[string]float64{"atr_multiplier": 1.5}),
+		},
+	})
+
+	pos := svc.positions["tenant-1:Paper:AAPL"]
+	require.NotNil(t, pos)
+
+	// HWM=150. Stop = 150 - 1.5*3 = 145.5. Price 146 > 145.5 → no exit
+	pc.UpdatePrice(domain.Symbol("AAPL"), 146, now)
+	svc.tick()
+	assert.False(t, pos.ExitPending, "price above vol stop → no exit")
+
+	// Price 144 < 145.5 → EXIT
+	pc.UpdatePrice(domain.Symbol("AAPL"), 144, now)
+	svc.tick()
+	assert.True(t, pos.ExitPending, "price below vol stop → should trigger")
+}
+
+func TestTickRoundTrip_ShortPosition_MaxLoss(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.processFill(fillMsg{
+		Symbol: domain.Symbol("AAPL"), Side: "SELL", Direction: "SHORT", Price: 100, Quantity: 10,
+		FilledAt: now.Add(-5 * time.Minute), Strategy: "test", AssetClass: domain.AssetClassEquity,
+		ExitRules: []domain.ExitRule{
+			mustExitRule(t, domain.ExitRuleMaxLoss, map[string]float64{"pct": 0.02}),
+		},
+	})
+
+	pos := svc.positions["tenant-1:Paper:AAPL"]
+	require.NotNil(t, pos)
+	assert.Equal(t, "SELL", pos.Side, "short position should have Side=SELL")
+
+	// Price rises to 101 → -1% for short → within limit
+	pc.UpdatePrice(domain.Symbol("AAPL"), 101, now)
+	svc.tick()
+	assert.False(t, pos.ExitPending, "-1% loss within 2% limit")
+
+	// Price rises to 103 → -3% for short → exceeds 2% limit → EXIT
+	pc.UpdatePrice(domain.Symbol("AAPL"), 103, now)
+	svc.tick()
+	assert.True(t, pos.ExitPending, "-3% loss should trigger max loss for short")
+}
