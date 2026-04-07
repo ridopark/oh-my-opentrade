@@ -1123,7 +1123,13 @@ func (r *Runner) handleFill(_ context.Context, event domain.Event) error {
 		return nil
 	}
 
-	inst := r.findInstanceByStrategyAndSymbol(strategyName, symbol)
+	// Resolve OCC option symbol to underlying for strategy routing.
+	routingSymbol := symbol
+	if underlying := domain.UnderlyingFromOCC(domain.Symbol(symbol)); underlying != "" {
+		routingSymbol = string(underlying)
+	}
+
+	inst := r.findInstanceByStrategyAndSymbol(strategyName, routingSymbol)
 	if inst == nil {
 		r.logger.Debug("handleFill: no matching instance", "strategy", strategyName, "symbol", symbol)
 		return nil
@@ -1198,9 +1204,13 @@ func (r *Runner) handleRejection(_ context.Context, event domain.Event) error {
 		return nil // exit rejection — ignore
 	}
 
-	inst := r.findInstanceByStrategyAndSymbol(payload.Strategy, payload.Symbol)
+	rejSymbol := payload.Symbol
+	if underlying := domain.UnderlyingFromOCC(domain.Symbol(rejSymbol)); underlying != "" {
+		rejSymbol = string(underlying)
+	}
+	inst := r.findInstanceByStrategyAndSymbol(payload.Strategy, rejSymbol)
 	if inst == nil {
-		r.logger.Debug("handleRejection: no matching instance", "strategy", payload.Strategy, "symbol", payload.Symbol)
+		r.logger.Debug("handleRejection: no matching instance", "strategy", payload.Strategy, "symbol", rejSymbol)
 		return nil
 	}
 
