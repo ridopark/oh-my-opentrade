@@ -59,6 +59,17 @@ type BMState struct {
 	TradesToday    int                `json:"tradesToday"`
 	CooldownUntil  time.Time          `json:"cooldownUntil,omitzero"`
 	PrevMACDHist   float64            `json:"prevMACDHist"`
+	LastTradeDate  string             `json:"lastTradeDate,omitempty"`
+
+	// Debug gate counters (reset daily)
+	GateStabilization int `json:"-"`
+	GateCooldown      int `json:"-"`
+	GateHours         int `json:"-"`
+	GateRegime        int `json:"-"`
+	GatePosition      int `json:"-"`
+	GateNoSetup       int `json:"-"`
+	GatePassedAll     int `json:"-"`
+	DebugBarCount     int `json:"-"`
 }
 
 // SetIndicators implements the indicatorSetter interface used by the runner.
@@ -116,20 +127,58 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 
 	bmSt.CalcBarCount++
 
+	// Daily reset: clear TradesToday, CooldownUntil, and debug counters.
+	todayStr := now.Format("2006-01-02")
+	if bmSt.LastTradeDate != todayStr {
+		// Log previous day's gate summary before reset.
+		if ctx != nil && bmSt.LastTradeDate != "" && bmSt.DebugBarCount > 0 {
+			ctx.Logger().Info("BB+MACD daily gate summary",
+				"symbol", symbol,
+				"date", bmSt.LastTradeDate,
+				"bars", bmSt.DebugBarCount,
+				"gate_stabilization", bmSt.GateStabilization,
+				"gate_cooldown", bmSt.GateCooldown,
+				"gate_hours", bmSt.GateHours,
+				"gate_regime", bmSt.GateRegime,
+				"gate_position", bmSt.GatePosition,
+				"gate_no_setup", bmSt.GateNoSetup,
+				"gate_passed", bmSt.GatePassedAll,
+			)
+		}
+		bmSt.TradesToday = 0
+		bmSt.CooldownUntil = time.Time{}
+		bmSt.LastTradeDate = todayStr
+		bmSt.GateStabilization = 0
+		bmSt.GateCooldown = 0
+		bmSt.GateHours = 0
+		bmSt.GateRegime = 0
+		bmSt.GatePosition = 0
+		bmSt.GateNoSetup = 0
+		bmSt.GatePassedAll = 0
+		bmSt.DebugBarCount = 0
+	}
+	bmSt.DebugBarCount++
+
 	// Gate 1: Stabilization — need enough bars for indicators to settle.
 	if bmSt.CalcBarCount < cfg.StabilizationBars {
+		bmSt.GateStabilization++
 		bmSt.PrevMACDHist = ind.MACDHistogram
 		return bmSt, nil, nil
 	}
 
 	// Gate 2: Pending entry timeout (5 min).
 	if bmSt.PendingEntry != "" && now.Sub(bmSt.PendingEntryAt) > 5*time.Minute {
+		if ctx != nil {
+			ctx.Logger().Info("BB+MACD clearing PendingEntry timeout",
+				"symbol", symbol, "side", bmSt.PendingEntry, "age", now.Sub(bmSt.PendingEntryAt).String())
+		}
 		bmSt.PendingEntry = ""
 		bmSt.PendingEntryAt = time.Time{}
 	}
 
 	// Gate 3: Cooldown + max trades.
 	if now.Before(bmSt.CooldownUntil) || bmSt.TradesToday >= cfg.MaxTradesPerDay {
+		bmSt.GateCooldown++
 		bmSt.PrevMACDHist = ind.MACDHistogram
 		return bmSt, nil, nil
 	}
@@ -140,6 +189,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 		if err == nil {
 			hhmm := now.In(loc).Format("15:04")
 			if hhmm < cfg.AllowedHoursStart || hhmm >= cfg.AllowedHoursEnd {
+				bmSt.GateHours++
 				bmSt.PrevMACDHist = ind.MACDHistogram
 				return bmSt, nil, nil
 			}
@@ -148,12 +198,18 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 
 	// Gate 5: Regime score — the key filter.
 	if ind.RegimeScore < cfg.RegimeThreshold {
+		bmSt.GateRegime++
 		bmSt.PrevMACDHist = ind.MACDHistogram
 		return bmSt, nil, nil
 	}
 
 	// Gate 6: Only entries if flat and no pending entry.
 	if bmSt.PositionSide != "" || bmSt.PendingEntry != "" {
+		bmSt.GatePosition++
+		if ctx != nil {
+			ctx.Logger().Info("BB+MACD gate6 position block",
+				"symbol", symbol, "position_side", bmSt.PositionSide, "pending_entry", bmSt.PendingEntry)
+		}
 		bmSt.PrevMACDHist = ind.MACDHistogram
 		return bmSt, nil, nil
 	}
@@ -235,6 +291,13 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 	bmSt.PrevMACDHist = ind.MACDHistogram
 
 	if sig != nil {
+		bmSt.GatePassedAll++
+		if ctx != nil {
+			ctx.Logger().Info("BB+MACD SIGNAL EMITTED",
+				"symbol", symbol, "side", sig.Side, "strength", sig.Strength,
+				"bb_pctb", ind.BBPercentB, "macd_hist", ind.MACDHistogram,
+				"regime", ind.RegimeScore, "adx", ind.ADX, "volume_ok", volumeOK)
+		}
 		bmSt.PendingEntry = sig.Side
 		bmSt.PendingEntryAt = now
 		bmSt.TradesToday++
@@ -242,22 +305,46 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 		return bmSt, []start.Signal{*sig}, nil
 	}
 
+	// Passed all gates but no entry condition met — log why.
+	bmSt.GateNoSetup++
 	return bmSt, nil, nil
 }
 
-func (s *BollingerMACDStrategy) OnEvent(_ start.Context, _ string, evt any, st start.State) (start.State, []start.Signal, error) {
+func (s *BollingerMACDStrategy) OnEvent(ctx start.Context, _ string, evt any, st start.State) (start.State, []start.Signal, error) {
 	bmSt, ok := st.(*BMState)
 	if !ok {
 		return st, nil, nil
 	}
 	switch e := evt.(type) {
 	case start.FillConfirmation:
-		bmSt.PositionSide = e.Side
-		bmSt.PendingEntry = ""
-		bmSt.PendingEntryAt = time.Time{}
+		prevSide := bmSt.PositionSide
+		switch {
+		case bmSt.PendingEntry != "" && e.Side == bmSt.PendingEntry:
+			// Entry fill — we're now in a position.
+			bmSt.PositionSide = e.Side
+			bmSt.PendingEntry = ""
+			bmSt.PendingEntryAt = time.Time{}
+		case bmSt.PositionSide != "" && e.Side != bmSt.PositionSide:
+			// Exit fill (opposite side) — we're flat now.
+			bmSt.PositionSide = ""
+		default:
+			// Unexpected fill — reset to flat to avoid permanent lockout.
+			bmSt.PositionSide = ""
+			bmSt.PendingEntry = ""
+			bmSt.PendingEntryAt = time.Time{}
+		}
+		if ctx != nil {
+			ctx.Logger().Info("BB+MACD FillConfirmation",
+				"symbol", e.Symbol, "side", e.Side, "price", e.Price,
+				"prev_position", prevSide, "position_side_now", bmSt.PositionSide)
+		}
 	case start.EntryRejection:
 		bmSt.PendingEntry = ""
 		bmSt.PendingEntryAt = time.Time{}
+		if ctx != nil {
+			ctx.Logger().Info("BB+MACD EntryRejection",
+				"symbol", e.Symbol, "side", e.Side, "reason", e.Reason)
+		}
 	}
 	return bmSt, nil, nil
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
@@ -33,6 +34,7 @@ type Runner struct {
 	indLogOnce           map[string]bool
 	metrics              *metrics.Metrics
 	aggregators          map[string]*domain.BarAggregator
+	htfCalcs             map[string]*monitor.IndicatorCalculator // key: "symbol:tf"
 	signalsRTHSuppressed atomic.Int64
 	anchorResolver       func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
 	prevDayBarsFn        func(symbol string, since time.Time) []start.Bar
@@ -315,6 +317,7 @@ func NewRunner(
 		indicators:  make(map[string]start.IndicatorData),
 		indLogOnce:  make(map[string]bool),
 		aggregators: make(map[string]*domain.BarAggregator),
+		htfCalcs:    make(map[string]*monitor.IndicatorCalculator),
 	}
 }
 
@@ -637,6 +640,45 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 			continue
 		}
 		htfBar := domainBarToStratBar(closed)
+
+		// Compute indicators from the aggregated HTF bar (not 1m indicators).
+		htfCalc, ok := r.htfCalcs[key]
+		if !ok {
+			htfCalc = monitor.NewIndicatorCalculator()
+			r.htfCalcs[key] = htfCalc
+		}
+		htfSnap := htfCalc.Update(closed)
+		htfIndicators := start.IndicatorData{
+			RSI:           htfSnap.RSI,
+			StochK:        htfSnap.StochK,
+			StochD:        htfSnap.StochD,
+			EMA9:          htfSnap.EMA9,
+			EMA21:         htfSnap.EMA21,
+			EMA50:         htfSnap.EMA50,
+			EMAFast:       htfSnap.EMAFast,
+			EMASlow:       htfSnap.EMASlow,
+			EMAFastPeriod: htfSnap.EMAFastPeriod,
+			EMASlowPeriod: htfSnap.EMASlowPeriod,
+			VWAP:          htfSnap.VWAP,
+			Volume:        htfSnap.Volume,
+			VolumeSMA:     htfSnap.VolumeSMA,
+			ATR:           htfSnap.ATR,
+			VWAPSD:        htfSnap.VWAPSD,
+			EMA200:        htfSnap.EMA200,
+			BBUpper:       htfSnap.BBUpper,
+			BBMiddle:      htfSnap.BBMiddle,
+			BBLower:       htfSnap.BBLower,
+			BBPercentB:    htfSnap.BBPercentB,
+			BBBandwidth:   htfSnap.BBBandwidth,
+			MACDLine:      htfSnap.MACDLine,
+			MACDSignal:    htfSnap.MACDSignal,
+			MACDHistogram: htfSnap.MACDHistogram,
+			ADX:           htfSnap.ADX,
+			RegimeScore:   htfSnap.RegimeScore,
+			AnchorRegimes: convertAnchorRegimes(htfSnap.AnchorRegimes),
+			HTF:           indicators.HTF, // preserve daily HTF data from 1m pipeline
+		}
+
 		for _, inst := range htfInsts {
 			instCtx := &instanceContext{
 				now:    closed.Time,
@@ -645,7 +687,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 					return r.emitDomainEvent(ctx, event.TenantID, event.EnvMode, evt)
 				},
 			}
-			signals, err := inst.OnBar(instCtx, symbol, htfBar, indicators)
+			signals, err := inst.OnBar(instCtx, symbol, htfBar, htfIndicators)
 			if err != nil {
 				r.logger.Error("instance OnBar failed (HTF)",
 					"instance_id", inst.ID().String(),
