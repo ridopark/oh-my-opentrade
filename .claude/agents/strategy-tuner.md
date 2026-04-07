@@ -243,6 +243,146 @@ If the strategy is not listed above, read the `[params]` section and infer safe 
 - Parameter names (bps = basis points, mult = multiplier, bars = count)
 - Common patterns (risk params → tighten first, filter params → loosen if trade count too low)
 
+### Gate Chain Parameters (all strategies)
+
+Every strategy with a `[gate_chain]` section has tunable gate params. These are tuned alongside regular `[params]`.
+
+| Parameter | Gate | Range | Step | Effect |
+|-----------|------|-------|------|--------|
+| `skip_above` | vix | 25–40 | 5 | Lower = skip more volatile sessions |
+| `allowed` | regime | subset of TREND/TREND_UP/TREND_DOWN/SQUEEZE/RANGE/NEUTRAL | — | Drop losing regimes (check quant breakdown first) |
+| `min_pct` | min_atr_pct | 0.3–0.8 | 0.1 | Higher = only volatile symbols |
+| `neutral_band_bps` | market_tide | 5–30 | 5 | Lower = stricter index VWAP alignment |
+
+**Gate chain tuning approach:**
+1. Get quant regime/direction/time breakdown FIRST
+2. Drop losing regimes from `regime.allowed` (highest impact)
+3. Activate VIX gate: set `skip_above = 35` (or 30 for conservative)
+4. Tighten `market_tide.neutral_band_bps` (5 = strict, 20 = loose)
+5. Add/remove `htf_bias` — helps breakout strategies, may hurt mean-reversion
+6. Add/remove `market_tide` — helps trend-following, may hurt counter-trend strategies
+7. Gate chain params are in `[gate_chain.monitor]` NOT in `[params]` — edit via inline `params = { ... }` in each gate entry
+
+**Full gate chain reference:** See `.claude/skills/strategy-tuning/references/gate_chain_guide.md`
+
+### Exit Rule Parameters (all strategies)
+
+All exit rules live in `[[exit_rules]]` array. Each has `type` and `[exit_rules.params]`.
+
+#### Price-Based Exits
+| Type | Parameter | Range | Step | Effect |
+|------|-----------|-------|------|--------|
+| `MAX_LOSS` | `pct` | 0.003–0.01 | 0.001 | Hard stop as % of entry price |
+| `SWING_STOP` | `lookback` | 3–10 | 1 | Bars to scan for swing high/low |
+| `SWING_STOP` | `buffer_bps` | 5–20 | 5 | Fixed buffer below swing level |
+| `SWING_STOP` | `atr_buffer_mult` | 0–0.5 | 0.1 | Dynamic buffer via ATR (0=disabled) |
+| `SWING_STOP` | `min_bars` | 1–6 | 1 | Grace period before stop activates |
+| `TRAILING_STOP` | `pct` | 0.01–0.03 | 0.005 | Trail from high-water mark |
+| `VOLATILITY_STOP` | `atr_multiplier` | 1.0–3.0 | 0.25 | Stop at HWM - N×ATR |
+| `VOLATILITY_STOP` | `min_hold_bars` | 1–5 | 1 | Grace period |
+| `BREAKEVEN_STOP` | `activation_pct` | 0.002–0.005 | 0.001 | Profit % to activate |
+| `BREAKEVEN_STOP` | `buffer_pct` | 0.0003–0.001 | 0.0002 | Buffer above entry |
+| `STEP_STOP` | `min_hold_bars` | 0–5 | 1 | Grace before ratcheting |
+
+#### Target-Based Exits
+| Type | Parameter | Range | Step | Effect |
+|------|-----------|-------|------|--------|
+| `TIERED_TP` | `first_tier_pct` | 0.3–0.7 | 0.1 | Fraction to exit at tier 1 |
+| `TIERED_TP` | `first_tier_rr` | 1.5–3.0 | 0.25 | R-multiple for tier 1 target |
+| `TIERED_TP` | `trail_pct` | 0.01–0.03 | 0.005 | Trail for tier 2 remainder |
+| `TIERED_TP` | `initial_risk_pct` | 0.003–0.008 | 0.001 | Fallback R if no swing stop |
+| `PROFIT_TARGET` | `pct` | 0.01–0.05 | 0.005 | Simple take-profit % |
+| `SD_TARGET` | `sd_level` | 1.5–3.0 | 0.5 | VWAP SD band target |
+| `SD_TARGET` | `min_hold_bars` | 1–5 | 1 | Grace period |
+
+#### Time-Based Exits
+| Type | Parameter | Range | Step | Effect |
+|------|-----------|-------|------|--------|
+| `TIME_PARTIAL` | `minutes` | 30–120 | 15 | Hold time before partial exit |
+| `TIME_PARTIAL` | `partial_pct` | 0.3–0.7 | 0.1 | Fraction to exit |
+| `TIME_PARTIAL` | `min_profit_pct` | 0.0005–0.003 | 0.0005 | Min profit to trigger |
+| `STAGNATION_EXIT` | `minutes` | 45–120 | 15 | Max stagnation time |
+| `STAGNATION_EXIT` | `sd_threshold` | 0.3–1.0 | 0.1 | SD band threshold |
+| `STAGNATION_EXIT` | `profit_gate_pct` | 0.003–0.01 | 0.002 | Skip if profit exceeds this |
+| `EOD_FLATTEN` | `minutes_before_close` | 5–15 | 5 | Minutes before market close |
+| `MAX_HOLDING_TIME` | `minutes` | 60–240 | 30 | Hard time limit |
+| `TIME_EXIT` | `hour` / `minute` | — | — | Specific exit time (ET) |
+
+#### Options-Specific Exits
+| Type | Parameter | Range | Step | Effect |
+|------|-----------|-------|------|--------|
+| `DTE_FLOOR` | `dte` | 0–3 | 1 | Force close at N DTE |
+| `EXPIRY_WATCH` | `pct_elapsed` | 0.3–0.7 | 0.1 | Exit when N% of trading days elapsed |
+| `PREMIUM_STOP` | `threshold` | 0.30–0.60 | 0.05 | Exit if premium drops N% |
+| `PREMIUM_TRAIL` | `trail_pct` | 0.20–0.40 | 0.05 | Trail from premium HWM |
+| `PREMIUM_TRAIL` | `min_activation` | 0.10–0.30 | 0.05 | Min gain before trailing starts |
+| `PREMIUM_TARGET` | `target_pct` | 0.50–1.00 | 0.10 | Exit if premium gains N% |
+
+**Correlated exit rule pairs:** `MAX_LOSS.pct` × `TIERED_TP.first_tier_rr`, `SWING_STOP.min_bars` × `TIME_PARTIAL.minutes`
+
+### Dynamic Risk Parameters (all strategies)
+
+In `[dynamic_risk]` section. Controls confidence-based position sizing.
+
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `min_confidence` | 0.0–0.7 | 0.05 | Below this, signal rejected entirely (0 = disabled) |
+| `risk_scale_min` | 0.30–0.70 | 0.05 | Size multiplier at min_confidence |
+| `risk_scale_max` | 0.80–1.00 | 0.05 | Size multiplier at confidence=1.0 |
+| `stop_tight_mult` | 0.50–0.80 | 0.05 | Stop tightening for TIGHT modifier |
+| `stop_wide_mult` | 1.20–1.80 | 0.10 | Stop widening for WIDE modifier |
+| `size_tight_mult` | 0.50–0.80 | 0.05 | Size reduction for TIGHT modifier |
+| `size_wide_mult` | 1.10–1.50 | 0.10 | Size increase for WIDE modifier |
+
+**Interaction:** `min_confidence` interacts with `risk_scale_min` — setting both too tight may reject all signals.
+
+### Options Execution Parameters (all strategies)
+
+In `[options]` section. Controls fill quality and cost.
+
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `max_contracts` | 3–20 | 2 | Max contracts per order (higher = more capital per trade) |
+| `limit_spread_pct` | 0.40–1.00 | 0.10 | Limit = mid + N% × spread (lower = better fills, more unfilled) |
+| `limit_buffer_bps` | 300–1500 | 200 | Fallback limit when spread=0: ask × (1 + bps/10000) |
+| `stale_cancel_secs` | 15–90 | 15 | Cancel unfilled orders after N seconds (lower = fewer fills) |
+
+In `[options.defaults]`:
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `min_dte` | 3–14 | 1 | Minimum days to expiry |
+| `max_dte` | 7–30 | 3 | Maximum days to expiry |
+| `target_delta_low` | 0.30–0.50 | 0.05 | Delta floor |
+| `target_delta_high` | 0.50–0.65 | 0.05 | Delta ceiling |
+| `min_open_interest` | 50–500 | 50 | Minimum OI (lower = more contracts available) |
+| `max_spread_pct` | 0.05–0.25 | 0.05 | Max spread as % of mid |
+| `max_iv` | 0.80–2.00 | 0.20 | Max implied volatility |
+
+**Correlated pairs:** `min_dte` × `max_dte`, `target_delta_low` × `target_delta_high`, `limit_spread_pct` × `stale_cancel_secs`
+
+### `[regime_filter]` vs `[gate_chain]` regime gate
+
+Two ways to configure regime filtering exist. They are NOT redundant:
+
+- **`[regime_filter]`** — parsed into `[params]` and consumed by the ORB tracker at setup detection time. Also controls `block_counter_trend` (LONG in TREND_DOWN, SHORT in TREND_UP). This is the **legacy approach** still active when no gate chain is set.
+- **`[gate_chain]` regime gate** — the new configurable gate. When `[gate_chain]` is present, the regime gate replaces `[regime_filter]`.
+
+**Rule:** If a strategy has `[gate_chain]` with a `regime` gate, the `[regime_filter]` section is ignored (gate chain takes precedence). You do NOT need both. For new strategies, use `[gate_chain]` only.
+
+### Hardcoded Thresholds (NOT TOML-tunable)
+
+These are baked into code. Changing them requires an ENGINE_CHANGE:
+
+| Constant | File | Value | Effect |
+|----------|------|-------|--------|
+| `minTradesForVeto` | signal_debate_enricher.go | 20 | Negative-expectancy veto only applies after 20 trades |
+| `debateTimeout` | signal_debate_enricher.go | 5s | AI debate times out after 5 seconds |
+| `fallbackConfidence` | signal_debate_enricher.go | 0.65 | Default confidence when no news context |
+| `exitCooldownMinutes` | risk_sizer.go | 15 | Block re-entry within 15 min of exit |
+| `circuitBreakerLosses` | risk_sizer.go | 3 | Halt after 3 consecutive losses in 60 min |
+
+If quant recommends changing these, file as ENGINE_CHANGE (code modification required).
+
 ## Known Bug Classes to Check
 
 Before tuning, scan for these known issues in the strategy's signal engine and exit evaluators:

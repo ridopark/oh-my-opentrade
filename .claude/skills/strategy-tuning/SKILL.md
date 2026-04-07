@@ -596,6 +596,38 @@ Flag as suspect if:
 | Sharpe Ratio | 0.5 | 1.0–2.0 | > 3.0 |
 | Avg Win/Avg Loss | 1.5 | 2.0–3.0 | < 1.0 |
 
+## Gate Chain Tuning
+
+Strategies now have a configurable `[gate_chain]` section in TOML that controls which filters run and in what order. Gate chain parameters are tunable alongside regular `[params]`.
+
+**Full reference:** `references/gate_chain_guide.md`
+
+Key tunable gate params (all strategies):
+- `vix.skip_above` (25–40, step 5) — skip volatile sessions
+- `regime.allowed` — drop losing regimes (check quant breakdown first)
+- `min_atr_pct.min_pct` (0.3–0.8, step 0.1) — filter low-vol symbols
+- `market_tide.neutral_band_bps` (5–30, step 5) — index VWAP alignment strictness
+
+Gate params live in `[gate_chain.monitor]` entries, NOT in `[params]`. Edit via inline `params = { ... }` in each gate entry.
+
+**`[regime_filter]` vs `[gate_chain]`:** When `[gate_chain]` has a `regime` gate, `[regime_filter]` is ignored. For new strategies, use `[gate_chain]` only.
+
+## Additional Tunable Sections
+
+Beyond `[params]`, these TOML sections are also tunable. Full ranges in agent definition.
+
+**`[dynamic_risk]`** — confidence-based sizing: `min_confidence` (0–0.7), `risk_scale_min/max`, `stop_tight/wide_mult`, `size_tight/wide_mult`
+
+**`[[exit_rules]]`** — 19 exit rule types, each with own params. Key types:
+- Price: MAX_LOSS, SWING_STOP, TRAILING_STOP, VOLATILITY_STOP, BREAKEVEN_STOP, STEP_STOP
+- Target: TIERED_TP, PROFIT_TARGET, SD_TARGET
+- Time: TIME_PARTIAL, STAGNATION_EXIT, EOD_FLATTEN, MAX_HOLDING_TIME, TIME_EXIT
+- Options: DTE_FLOOR, EXPIRY_WATCH, PREMIUM_STOP, PREMIUM_TRAIL, PREMIUM_TARGET
+
+**`[options]`** — execution quality: `max_contracts` (3–20), `limit_spread_pct` (0.4–1.0), `stale_cancel_secs` (15–90), plus `[options.defaults]` for contract selection (DTE, delta, OI, spread, IV)
+
+**Hardcoded constants** (require ENGINE_CHANGE to tune): `minTradesForVeto=20`, `debateTimeout=5s`, `exitCooldownMinutes=15`, `circuitBreakerLosses=3`
+
 ## Code Fix Policy
 - **Small fix** (< 20 lines, one file, obvious bug): Fix autonomously, report in checkpoint.
 - **Big change** (new feature, multi-file refactor): STOP, describe to user, wait for approval.
