@@ -1,6 +1,7 @@
 package positionmonitor
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -1188,45 +1189,123 @@ func TestEstimatedPremium(t *testing.T) {
 	etLoc := mustETLocation(t)
 	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
 
-	t.Run("normal call option", func(t *testing.T) {
+	t.Run("delta-linear fallback when BSM fields missing", func(t *testing.T) {
 		pos := newOptionPosition(t, 150, now, 5.00, 0.50)
+		// No strike/expiry/iv/is_call in CustomState — falls back to delta-linear
 		// at underlying 152: est = 5.00 + 0.50*(152-150) - 5.00*0.005 = 5 + 1 - 0.025 = 5.975
-		est := pos.EstimatedPremium(152)
+		est := pos.EstimatedPremium(152, now)
 		assert.InDelta(t, 5.975, est, 0.001)
 	})
 
 	t.Run("non-option returns zero", func(t *testing.T) {
 		pos := newTestMonitoredPosition(t, 150, now, domain.AssetClassEquity)
-		est := pos.EstimatedPremium(152)
+		est := pos.EstimatedPremium(152, now)
 		assert.Equal(t, 0.0, est)
 	})
 
 	t.Run("missing CustomState returns zero", func(t *testing.T) {
 		pos := newTestMonitoredPosition(t, 150, now, domain.AssetClassEquity)
 		pos.InstrumentType = domain.InstrumentTypeOption
-		est := pos.EstimatedPremium(152)
+		est := pos.EstimatedPremium(152, now)
 		assert.Equal(t, 0.0, est)
 	})
 
 	t.Run("negative premium clamped to zero", func(t *testing.T) {
 		pos := newOptionPosition(t, 150, now, 2.00, 0.50)
 		// at underlying 140: est = 2.00 + 0.50*(140-150) - 2.00*0.008 = 2 - 5 - 0.016 = -3.016 -> 0
-		est := pos.EstimatedPremium(140)
+		est := pos.EstimatedPremium(140, now)
 		assert.Equal(t, 0.0, est)
 	})
 
-	t.Run("spread tiers", func(t *testing.T) {
+	t.Run("spread tiers delta-linear", func(t *testing.T) {
 		// >= $10 -> 0.3%
 		pos10 := newOptionPosition(t, 150, now, 12.00, 0.50)
-		est10 := pos10.EstimatedPremium(150)
+		est10 := pos10.EstimatedPremium(150, now)
 		// est = 12.00 + 0 - 12*0.003 = 12 - 0.036 = 11.964
 		assert.InDelta(t, 11.964, est10, 0.001)
 
 		// < $2 -> 1.5%
 		pos1 := newOptionPosition(t, 150, now, 1.50, 0.30)
-		est1 := pos1.EstimatedPremium(150)
+		est1 := pos1.EstimatedPremium(150, now)
 		// est = 1.50 + 0 - 1.50*0.015 = 1.50 - 0.0225 = 1.4775
 		assert.InDelta(t, 1.4775, est1, 0.001)
+	})
+
+	t.Run("BSM call — ATM with 7 DTE", func(t *testing.T) {
+		// Set up an ATM call with BSM fields populated
+		expiry := time.Date(2026, 3, 13, 16, 0, 0, 0, etLoc)
+		pos := newOptionPosition(t, 150, now, 4.00, 0.50)
+		pos.CustomState["strike"] = 150.0
+		pos.CustomState["expiry_unix"] = float64(expiry.Unix())
+		pos.CustomState["iv_at_entry"] = 0.30
+		pos.CustomState["is_call"] = 1.0
+
+		// BSM(s=152, k=150, t≈7d/365.25, r=0.045, sigma=0.30, call=true)
+		// With underlying at 152 (2 points ITM), BSM should give ~3.5-4.5
+		est := pos.EstimatedPremium(152, now)
+		assert.Greater(t, est, 2.0, "BSM premium should be positive for ITM call")
+		assert.Less(t, est, 8.0, "BSM premium should be reasonable")
+
+		// Compare with delta-linear: 5.00 + 0.50*2 - spread = 5.975
+		// BSM captures gamma curvature, so result differs from delta-linear
+		deltaLinear := 5.00 + 0.50*(152.0-150.0) - 5.00*0.005
+		assert.True(t, math.Abs(est-deltaLinear) > 0.01, "BSM should differ from delta-linear, got est=%.4f deltaLinear=%.4f", est, deltaLinear)
+	})
+
+	t.Run("BSM put — ATM with 7 DTE", func(t *testing.T) {
+		expiry := time.Date(2026, 3, 13, 16, 0, 0, 0, etLoc)
+		pos := newOptionPosition(t, 150, now, 4.00, -0.50)
+		pos.OptionRight = "PUT"
+		pos.CustomState["strike"] = 150.0
+		pos.CustomState["expiry_unix"] = float64(expiry.Unix())
+		pos.CustomState["iv_at_entry"] = 0.30
+		pos.CustomState["is_call"] = 0.0
+
+		// Underlying drops to 148 — put should gain value
+		est := pos.EstimatedPremium(148, now)
+		assert.Greater(t, est, 2.0, "ITM put should have positive premium")
+
+		// Underlying rises to 155 — put should lose value
+		estOTM := pos.EstimatedPremium(155, now)
+		assert.Less(t, estOTM, est, "OTM put premium should be less than ITM")
+	})
+
+	t.Run("BSM near-expiry graceful handling", func(t *testing.T) {
+		// Expiry is today — DTE near zero
+		expiry := time.Date(2026, 3, 6, 16, 0, 0, 0, etLoc)
+		pos := newOptionPosition(t, 150, now, 4.00, 0.50)
+		pos.CustomState["strike"] = 150.0
+		pos.CustomState["expiry_unix"] = float64(expiry.Unix())
+		pos.CustomState["iv_at_entry"] = 0.30
+		pos.CustomState["is_call"] = 1.0
+
+		// ITM: underlying at 153, should return mostly intrinsic value (3.0) minus spread
+		est := pos.EstimatedPremium(153, now)
+		assert.Greater(t, est, 2.0, "near-expiry ITM should have positive premium")
+		assert.Less(t, est, 5.0, "near-expiry premium bounded by intrinsic + small time value")
+
+		// OTM: underlying at 148, should be near zero
+		estOTM := pos.EstimatedPremium(148, now)
+		assert.Less(t, estOTM, 1.0, "near-expiry OTM call should have minimal premium")
+	})
+
+	t.Run("BSM expired option returns intrinsic", func(t *testing.T) {
+		// Expiry already passed
+		expiry := time.Date(2026, 3, 5, 16, 0, 0, 0, etLoc)
+		pos := newOptionPosition(t, 150, now, 4.00, 0.50)
+		pos.CustomState["strike"] = 150.0
+		pos.CustomState["expiry_unix"] = float64(expiry.Unix())
+		pos.CustomState["iv_at_entry"] = 0.30
+		pos.CustomState["is_call"] = 1.0
+
+		// ITM call: intrinsic = 155 - 150 = 5.0, minus spread
+		est := pos.EstimatedPremium(155, now)
+		spreadCost := 4.00 * 0.008 // entry premium 4.00 is in [2, 5) tier
+		assert.InDelta(t, 5.0-spreadCost, est, 0.01)
+
+		// OTM: underlying at 148, intrinsic = 0
+		estOTM := pos.EstimatedPremium(148, now)
+		assert.Equal(t, 0.0, estOTM)
 	})
 }
 

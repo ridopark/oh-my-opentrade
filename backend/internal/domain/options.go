@@ -223,6 +223,64 @@ func FormatOCCSymbol(underlying string, expiry time.Time, right OptionRight, str
 	return fmt.Sprintf("%s%s%s%08d", underlying, dateStr, rightChar, strikeInt)
 }
 
+// ParseOCC extracts the underlying, expiry, right (C/P), and strike from an
+// OCC-format option symbol. Returns ok=false if the symbol is not valid OCC.
+// OCC format: {UNDERLYING}{YYMMDD}{C|P}{strike * 1000 zero-padded to 8 digits}
+func ParseOCC(s Symbol) (underlying string, expiry time.Time, right string, strike float64, ok bool) {
+	str := string(s)
+	if len(str) < 16 {
+		return "", time.Time{}, "", 0, false
+	}
+	suffix := str[len(str)-15:]
+	underlying = str[:len(str)-15]
+	if len(underlying) == 0 {
+		return "", time.Time{}, "", 0, false
+	}
+
+	// Parse date: YYMMDD
+	dateStr := suffix[:6]
+	for _, c := range dateStr {
+		if c < '0' || c > '9' {
+			return "", time.Time{}, "", 0, false
+		}
+	}
+	expiry, err := time.Parse("060102", dateStr)
+	if err != nil {
+		return "", time.Time{}, "", 0, false
+	}
+	// Set expiry to market close (16:00 ET) for accurate DTE
+	etLoc, _ := time.LoadLocation("America/New_York")
+	if etLoc != nil {
+		expiry = time.Date(expiry.Year(), expiry.Month(), expiry.Day(), 16, 0, 0, 0, etLoc)
+	}
+
+	// Parse right
+	rightChar := suffix[6]
+	switch rightChar {
+	case 'C':
+		right = "CALL"
+	case 'P':
+		right = "PUT"
+	default:
+		return "", time.Time{}, "", 0, false
+	}
+
+	// Parse strike: 8 digits, divide by 1000
+	strikeStr := suffix[7:]
+	if len(strikeStr) != 8 {
+		return "", time.Time{}, "", 0, false
+	}
+	var strikeInt int64
+	for _, c := range strikeStr {
+		if c < '0' || c > '9' {
+			return "", time.Time{}, "", 0, false
+		}
+		strikeInt = strikeInt*10 + int64(c-'0')
+	}
+	strike = float64(strikeInt) / 1000.0
+	return underlying, expiry, right, strike, true
+}
+
 // ─────────────────────────────────────────────
 // OptionContractSnapshot
 // ─────────────────────────────────────────────

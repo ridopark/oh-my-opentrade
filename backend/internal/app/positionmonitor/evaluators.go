@@ -70,11 +70,11 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 	case domain.ExitRuleTimePartial:
 		return evaluateTimePartial(rule, pos, currentPrice, now)
 	case domain.ExitRulePremiumStop:
-		return evaluatePremiumStop(rule, pos, currentPrice)
+		return evaluatePremiumStop(rule, pos, currentPrice, now)
 	case domain.ExitRulePremiumTrail:
-		return evaluatePremiumTrail(rule, pos, currentPrice)
+		return evaluatePremiumTrail(rule, pos, currentPrice, now)
 	case domain.ExitRulePremiumTarget:
-		return evaluatePremiumTarget(rule, pos, currentPrice)
+		return evaluatePremiumTarget(rule, pos, currentPrice, now)
 	default:
 		return false, ""
 	}
@@ -865,7 +865,7 @@ func etLocation() *time.Location {
 // Params:
 //
 //	"threshold" — maximum premium loss fraction (e.g. 0.40 = exit if premium drops 40%)
-func evaluatePremiumStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64) (bool, string) {
+func evaluatePremiumStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time) (bool, string) {
 	threshold := rule.Param("threshold", 0)
 	if threshold <= 0 {
 		return false, ""
@@ -874,7 +874,7 @@ func evaluatePremiumStop(rule domain.ExitRule, pos *domain.MonitoredPosition, cu
 	if !ok || entryPremium <= 0 {
 		return false, ""
 	}
-	estPremium := pos.EstimatedPremium(currentPrice)
+	estPremium := pos.EstimatedPremium(currentPrice, now)
 	if estPremium <= 0 {
 		// Premium went to zero — definitely triggered
 		return true, fmt.Sprintf("premium_stop: premium exhausted (entry=%.2f, est=0.00, threshold=%.0f%%)",
@@ -897,7 +897,7 @@ func evaluatePremiumStop(rule domain.ExitRule, pos *domain.MonitoredPosition, cu
 //
 //	"trail_pct"      — trail percentage from premium HWM (e.g. 0.30 = 30%)
 //	"min_activation" — minimum premium gain before trailing activates (e.g. 0.20 = 20%)
-func evaluatePremiumTrail(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64) (bool, string) {
+func evaluatePremiumTrail(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time) (bool, string) {
 	trailPct := rule.Param("trail_pct", 0)
 	if trailPct <= 0 {
 		return false, ""
@@ -906,7 +906,7 @@ func evaluatePremiumTrail(rule domain.ExitRule, pos *domain.MonitoredPosition, c
 	if !ok || entryPremium <= 0 {
 		return false, ""
 	}
-	estPremium := pos.EstimatedPremium(currentPrice)
+	estPremium := pos.EstimatedPremium(currentPrice, now)
 	if estPremium <= 0 {
 		return false, ""
 	}
@@ -940,7 +940,7 @@ func evaluatePremiumTrail(rule domain.ExitRule, pos *domain.MonitoredPosition, c
 // Params:
 //
 //	"target_pct" — premium gain target fraction (e.g. 0.70 = exit if premium rises 70%)
-func evaluatePremiumTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64) (bool, string) {
+func evaluatePremiumTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time) (bool, string) {
 	targetPct := rule.Param("target_pct", 0)
 	if targetPct <= 0 {
 		return false, ""
@@ -949,7 +949,7 @@ func evaluatePremiumTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, 
 	if !ok || entryPremium <= 0 {
 		return false, ""
 	}
-	estPremium := pos.EstimatedPremium(currentPrice)
+	estPremium := pos.EstimatedPremium(currentPrice, now)
 	if estPremium <= 0 {
 		return false, ""
 	}
