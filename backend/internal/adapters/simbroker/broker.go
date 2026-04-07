@@ -156,12 +156,21 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			fillPrice = lastPrice - slippage
 		default:
 			// Exit: determine side from existing position.
+			// Use limit price when set (strategy-managed stops/targets).
 			if pos, ok := b.positions[string(intent.Symbol)]; ok && pos.side == "sell" {
 				side = "buy"
-				fillPrice = lastPrice + slippage
+				if intent.LimitPrice > 0 {
+					fillPrice = intent.LimitPrice + slippage
+				} else {
+					fillPrice = lastPrice + slippage
+				}
 			} else {
 				side = "sell"
-				fillPrice = lastPrice - slippage
+				if intent.LimitPrice > 0 {
+					fillPrice = intent.LimitPrice - slippage
+				} else {
+					fillPrice = lastPrice - slippage
+				}
 			}
 		}
 	}
