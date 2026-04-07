@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/domain/screener"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -53,6 +54,8 @@ type Service struct {
 	orbHTFBiasEnabled  bool     // block entries against daily EMA50 bias
 	orbMinATRPct       float64  // skip symbols with daily ATR% below this
 	avwapFn            func(symbol string) map[string]float64
+	monitorGateChain   *gate.MonitorGateChain
+	tideTracker        *gate.IndexTideTracker
 
 	// Standalone AVWAP computation for all streaming symbols (independent of strategy assignment)
 	avwapCalcs       map[string]*start.AnchoredVWAPCalc
@@ -273,6 +276,27 @@ func (s *Service) SetDNAGate(checker DNAGateChecker, strategyKey string) {
 		Bool("gate_enabled", checker != nil).
 		Msg("DNA gate configured")
 }
+// SetMonitorGateChain installs a gate chain that replaces the hardcoded gate
+// if-blocks. When set, detected setups are evaluated through the chain; when
+// nil, the legacy inline gates are used (backward compat).
+func (s *Service) SetMonitorGateChain(chain *gate.MonitorGateChain) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.monitorGateChain = chain
+	if chain != nil {
+		s.log.Info().Strs("gates", chain.Names()).Msg("monitor gate chain installed")
+	}
+}
+
+// SetTideTracker installs an IndexTideTracker that is fed every 1m bar to
+// maintain running VWAP for SPY/QQQ. The market_tide gate reads from this.
+func (s *Service) SetTideTracker(tracker *gate.IndexTideTracker) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tideTracker = tracker
+	s.log.Info().Bool("enabled", tracker != nil).Msg("tide tracker configured")
+}
+
 func (s *Service) SetBaseSymbols(symbols []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -693,6 +717,11 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	lastSnap, hasLast := s.lastSnaps[symStr]
 	_ = hasLast
 	_ = lastSnap
+	// Update index tide tracker (SPY/QQQ VWAP) before setup gating.
+	if s.tideTracker != nil {
+		s.tideTracker.OnBar(bar)
+	}
+
 	setup, detected := s.feedORBBar(bar, snap, false)
 
 	// Emit ORBRangeSet notification once per session when opening range locks.
@@ -734,83 +763,114 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	}
 
 	if detected && setup != nil {
-		// DNA approval gate: suppress setup if DNA is not approved.
-		if s.dnaGate != nil {
-			approved, gateErr := s.dnaGate.IsDNAApproved(ctx, s.strategyKey)
-			if gateErr != nil {
-				l.Warn().Err(gateErr).Msg("DNA gate check failed, allowing setup")
-			} else if !approved {
+		if s.monitorGateChain != nil {
+			// New gate chain path: evaluate all gates in sequence.
+			gctx := &gate.MonitorGateContext{
+				Setup: gate.SetupInput{
+					Direction:  setup.Direction,
+					Confidence: setup.Confidence,
+					RVOL:       setup.RVOL,
+					Trigger:    setup.Trigger,
+					ORBHigh:    setup.ORBHigh,
+					ORBLow:     setup.ORBLow,
+					Symbol:     bar.Symbol,
+				},
+				Bar:           bar,
+				Snapshot:      snap,
+				Regime:        regime,
+				VIXLevel:      s.vixLevel,
+				AnchorRegimes: s.anchorRegimes,
+				ORBTimeframe:  s.orbTimeframe,
+				StrategyKey:   s.strategyKey,
+			}
+			if result := s.monitorGateChain.Run(ctx, gctx); result != nil {
 				l.Warn().
-					Str("strategy_key", s.strategyKey).
+					Str("gate", result.GateName).
+					Str("reason", result.Reason).
 					Str("direction", string(setup.Direction)).
-					Float64("confidence", setup.Confidence).
-					Msg("setup blocked: DNA version not approved")
+					Msg("setup blocked by gate chain")
 				detected = false
 			}
-		}
-		// VIX gate: skip ORB when VIX is too high.
-		if detected && s.vixSkipAbove > 0 && s.vixLevel > s.vixSkipAbove {
-			l.Warn().
-				Float64("vix", s.vixLevel).
-				Float64("threshold", s.vixSkipAbove).
-				Str("direction", string(setup.Direction)).
-				Msg("setup blocked: VIX too high")
-			detected = false
-		}
-		// Regime gate: block ORB in disallowed regimes (uses strategy timeframe anchor if available).
-		if detected && len(s.orbAllowedRegimes) > 0 {
-			gateRegime := regime // fallback to 1m
-			if s.orbTimeframe != "" && s.orbTimeframe != "1m" {
-				if ar, ok := s.anchorRegimes[symStr+":"+string(s.orbTimeframe)]; ok && ar.Type != "" {
-					gateRegime = ar
-				}
-			}
-			regimeStr := string(gateRegime.Type)
-			allowed := false
-			for _, r := range s.orbAllowedRegimes {
-				if r == regimeStr {
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
-				l.Warn().
-					Str("regime", regimeStr).
-					Strs("allowed", s.orbAllowedRegimes).
-					Str("direction", string(setup.Direction)).
-					Msg("setup blocked: regime not allowed")
-				detected = false
-			}
-		}
-		// HTF bias gate: block entries against daily EMA50 trend direction.
-		if detected && s.orbHTFBiasEnabled {
-			if htf, ok := snap.HTF[domain.Timeframe("1d")]; ok && htf.Bias != "" && htf.Bias != "NEUTRAL" {
-				blocked := false
-				if setup.Direction == domain.DirectionLong && htf.Bias == "BEARISH" {
-					blocked = true
-				} else if setup.Direction == domain.DirectionShort && htf.Bias == "BULLISH" {
-					blocked = true
-				}
-				if blocked {
+		} else {
+			// Legacy inline gates (backward compat when no gate chain is configured).
+			// DNA approval gate: suppress setup if DNA is not approved.
+			if s.dnaGate != nil {
+				approved, gateErr := s.dnaGate.IsDNAApproved(ctx, s.strategyKey)
+				if gateErr != nil {
+					l.Warn().Err(gateErr).Msg("DNA gate check failed, allowing setup")
+				} else if !approved {
 					l.Warn().
+						Str("strategy_key", s.strategyKey).
 						Str("direction", string(setup.Direction)).
-						Str("daily_bias", htf.Bias).
-						Msg("setup blocked: HTF bias against trade direction")
+						Float64("confidence", setup.Confidence).
+						Msg("setup blocked: DNA version not approved")
 					detected = false
 				}
 			}
-		}
-		// Min ATR% gate: skip low-volatility symbols that don't move enough for ORB.
-		if detected && s.orbMinATRPct > 0 {
-			if dailyATR := snap.HTFDailyATR(); dailyATR > 0 && bar.Close > 0 {
-				atrPct := dailyATR / bar.Close * 100
-				if atrPct < s.orbMinATRPct {
+			// VIX gate: skip ORB when VIX is too high.
+			if detected && s.vixSkipAbove > 0 && s.vixLevel > s.vixSkipAbove {
+				l.Warn().
+					Float64("vix", s.vixLevel).
+					Float64("threshold", s.vixSkipAbove).
+					Str("direction", string(setup.Direction)).
+					Msg("setup blocked: VIX too high")
+				detected = false
+			}
+			// Regime gate: block ORB in disallowed regimes (uses strategy timeframe anchor if available).
+			if detected && len(s.orbAllowedRegimes) > 0 {
+				gateRegime := regime // fallback to 1m
+				if s.orbTimeframe != "" && s.orbTimeframe != "1m" {
+					if ar, ok := s.anchorRegimes[symStr+":"+string(s.orbTimeframe)]; ok && ar.Type != "" {
+						gateRegime = ar
+					}
+				}
+				regimeStr := string(gateRegime.Type)
+				allowed := false
+				for _, r := range s.orbAllowedRegimes {
+					if r == regimeStr {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
 					l.Warn().
-						Float64("atr_pct", atrPct).
-						Float64("min_atr_pct", s.orbMinATRPct).
-						Str("symbol", symStr).
-						Msg("setup blocked: symbol ATR% too low")
+						Str("regime", regimeStr).
+						Strs("allowed", s.orbAllowedRegimes).
+						Str("direction", string(setup.Direction)).
+						Msg("setup blocked: regime not allowed")
 					detected = false
+				}
+			}
+			// HTF bias gate: block entries against daily EMA50 trend direction.
+			if detected && s.orbHTFBiasEnabled {
+				if htf, ok := snap.HTF[domain.Timeframe("1d")]; ok && htf.Bias != "" && htf.Bias != "NEUTRAL" {
+					blocked := false
+					if setup.Direction == domain.DirectionLong && htf.Bias == "BEARISH" {
+						blocked = true
+					} else if setup.Direction == domain.DirectionShort && htf.Bias == "BULLISH" {
+						blocked = true
+					}
+					if blocked {
+						l.Warn().
+							Str("direction", string(setup.Direction)).
+							Str("daily_bias", htf.Bias).
+							Msg("setup blocked: HTF bias against trade direction")
+						detected = false
+					}
+				}
+			}
+			// Min ATR% gate: skip low-volatility symbols that don't move enough for ORB.
+			if detected && s.orbMinATRPct > 0 {
+				if dailyATR := snap.HTFDailyATR(); dailyATR > 0 && bar.Close > 0 {
+					atrPct := dailyATR / bar.Close * 100
+					if atrPct < s.orbMinATRPct {
+						l.Warn().
+							Float64("atr_pct", atrPct).
+							Float64("min_atr_pct", s.orbMinATRPct).
+							Str("symbol", symStr).
+							Msg("setup blocked: symbol ATR% too low")
+						detected = false
+					}
 				}
 			}
 		}

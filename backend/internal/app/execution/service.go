@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
@@ -48,6 +49,7 @@ type Service struct {
 	portfolioGuard     *PortfolioGuard
 	buyingPowerGuard   *BuyingPowerGuard
 	optionsRiskEngine  *OptionsRiskEngine
+	executionGateChain *gate.ExecutionGateChain
 	accountEquity      float64
 	log                zerolog.Logger
 	metrics            *metrics.Metrics
@@ -155,6 +157,10 @@ func (s *Service) SetAccountEquity(equity float64) {
 
 // SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
 func (s *Service) SetMetrics(m *metrics.Metrics) { s.metrics = m }
+
+// SetExecutionGateChain installs a configurable execution gate chain.
+// When set, the chain replaces the inline guard if-blocks for entry intents.
+func (s *Service) SetExecutionGateChain(chain *gate.ExecutionGateChain) { s.executionGateChain = chain }
 
 func (s *Service) Start(ctx context.Context, tenantID string, envMode domain.EnvMode) error {
 	s.tenantID = tenantID
@@ -484,41 +490,64 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		}
 	}
 
-	if intent.Direction == domain.DirectionShort && !intent.AssetClass.SupportsShort() {
-		reason := "SHORT direction not supported — crypto is long-only on Alpaca"
-		l.Warn().Str("asset_class", intent.AssetClass.String()).Msg(reason)
-		if s.metrics != nil {
-			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "short_disabled").Inc()
-		}
-		s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, reason))
-		return nil
-	}
-
-	if s.exposureGuard != nil {
-		if err := s.exposureGuard.Check(ctx, intent); err != nil {
-			l.Warn().Err(err).Msg("order intent rejected by exposure guard")
-			if s.metrics != nil {
-				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "exposure").Inc()
-			}
-			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
-			return nil
-		}
-	}
-
-	if s.portfolioGuard != nil {
-		if err := s.portfolioGuard.Check(ctx, intent); err != nil {
-			l.Warn().Err(err).Msg("order intent rejected by portfolio guard")
-			if s.metrics != nil {
-				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "portfolio").Inc()
-			}
-			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
-			return nil
-		}
-	}
-
-	// 2. Validate risk (skip for exit orders — closing reduces exposure).
+	// Pre-compute whether this is an option order (used by gates and broker submission).
 	isOptionOrder := intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption
-	if !intent.Direction.IsExit() {
+
+	// --- Execution gate chain (or legacy inline guards) ---
+	if s.executionGateChain != nil && !intent.Direction.IsExit() {
+		gctx := &gate.ExecutionGateContext{
+			Intent:        intent,
+			AccountEquity: s.accountEquity,
+			TenantID:      event.TenantID,
+			EnvMode:       event.EnvMode,
+		}
+		if result := s.executionGateChain.Run(ctx, gctx); result != nil {
+			l.Warn().
+				Str("gate", result.GateName).
+				Str("reason", result.Reason).
+				Msg("order intent rejected by execution gate chain")
+			if s.metrics != nil {
+				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, result.GateName).Inc()
+			}
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(),
+				domain.NewOrderIntentRejectedPayload(intent, result.Error()))
+			return nil
+		}
+	} else if !intent.Direction.IsExit() {
+		// Legacy inline guards (backward compat when no execution gate chain is configured).
+		if intent.Direction == domain.DirectionShort && !intent.AssetClass.SupportsShort() {
+			reason := "SHORT direction not supported — crypto is long-only on Alpaca"
+			l.Warn().Str("asset_class", intent.AssetClass.String()).Msg(reason)
+			if s.metrics != nil {
+				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "short_disabled").Inc()
+			}
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, reason))
+			return nil
+		}
+
+		if s.exposureGuard != nil {
+			if err := s.exposureGuard.Check(ctx, intent); err != nil {
+				l.Warn().Err(err).Msg("order intent rejected by exposure guard")
+				if s.metrics != nil {
+					s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "exposure").Inc()
+				}
+				s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
+				return nil
+			}
+		}
+
+		if s.portfolioGuard != nil {
+			if err := s.portfolioGuard.Check(ctx, intent); err != nil {
+				l.Warn().Err(err).Msg("order intent rejected by portfolio guard")
+				if s.metrics != nil {
+					s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "portfolio").Inc()
+				}
+				s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
+				return nil
+			}
+		}
+
+		// Validate risk (skip for exit orders — closing reduces exposure).
 		if isOptionOrder && s.optionsRiskEngine != nil {
 			if err := s.optionsRiskEngine.ValidateOptionIntent(intent, s.accountEquity); err != nil {
 				l.Warn().Err(err).Msg("order intent rejected by options risk engine")
@@ -538,10 +567,8 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 				return nil
 			}
 		}
-	}
 
-	// 3. Validate slippage (skip for exit orders — we want to exit regardless).
-	if !intent.Direction.IsExit() {
+		// Validate slippage (skip for exit orders — we want to exit regardless).
 		if err := s.slippageGuard.Check(ctx, intent); err != nil {
 			l.Warn().Err(err).Msg("order intent rejected by slippage guard")
 			if s.metrics != nil {
@@ -550,28 +577,28 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
 			return nil
 		}
-	}
-	// 3a. Trading window gate — reject entries outside allowed hours (opt-in via Meta).
-	if !intent.Direction.IsExit() && s.tradingWindowGuard != nil {
-		if err := s.tradingWindowGuard.Check(intent); err != nil {
-			l.Warn().Err(err).Msg("order intent rejected by trading window guard")
-			if s.metrics != nil {
-				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "trading_window").Inc()
+		// Trading window gate — reject entries outside allowed hours (opt-in via Meta).
+		if s.tradingWindowGuard != nil {
+			if err := s.tradingWindowGuard.Check(intent); err != nil {
+				l.Warn().Err(err).Msg("order intent rejected by trading window guard")
+				if s.metrics != nil {
+					s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "trading_window").Inc()
+				}
+				s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
+				return nil
 			}
-			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
-			return nil
 		}
-	}
 
-	// 3b. Spread gate — reject entries when bid-ask spread is too wide (opt-in via Meta).
-	if !intent.Direction.IsExit() && s.spreadGuard != nil {
-		if err := s.spreadGuard.Check(ctx, intent); err != nil {
-			l.Warn().Err(err).Msg("order intent rejected by spread guard")
-			if s.metrics != nil {
-				s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "spread").Inc()
+		// Spread gate — reject entries when bid-ask spread is too wide (opt-in via Meta).
+		if s.spreadGuard != nil {
+			if err := s.spreadGuard.Check(ctx, intent); err != nil {
+				l.Warn().Err(err).Msg("order intent rejected by spread guard")
+				if s.metrics != nil {
+					s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "spread").Inc()
+				}
+				s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
+				return nil
 			}
-			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
-			return nil
 		}
 	}
 

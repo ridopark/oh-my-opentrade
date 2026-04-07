@@ -126,6 +126,16 @@ type rawOptionsSection struct {
 	RegimeOverrides map[string]rawOptionsDefaults `toml:"regime_overrides"`
 }
 
+type rawGateChainSection struct {
+	Monitor   []rawGateEntry `toml:"monitor"`
+	Execution []rawGateEntry `toml:"execution"`
+}
+
+type rawGateEntry struct {
+	Name   string         `toml:"name"`
+	Params map[string]any `toml:"params"`
+}
+
 func loadV1(content, path string) (portstrategy.Spec, error) {
 	var raw struct {
 		Strategy     rawStrategySection `toml:"strategy"`
@@ -204,6 +214,7 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 		Hooks           map[string]rawHookRef     `toml:"hooks"`
 		ExitRules       []rawExitRule             `toml:"exit_rules"`
 		Options         *rawOptionsSection        `toml:"options"`
+		GateChain       *rawGateChainSection      `toml:"gate_chain"`
 	}
 
 	if _, err := toml.Decode(content, &raw); err != nil {
@@ -334,6 +345,31 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 		}
 	}
 
+	var gateChainCfg *portstrategy.GateChainConfig
+	if raw.GateChain != nil && (len(raw.GateChain.Monitor) > 0 || len(raw.GateChain.Execution) > 0) {
+		gateChainCfg = &portstrategy.GateChainConfig{}
+		if len(raw.GateChain.Monitor) > 0 {
+			entries := make([]portstrategy.GateEntry, len(raw.GateChain.Monitor))
+			for i, e := range raw.GateChain.Monitor {
+				entries[i] = portstrategy.GateEntry{
+					Name:   e.Name,
+					Params: e.Params,
+				}
+			}
+			gateChainCfg.Monitor = entries
+		}
+		if len(raw.GateChain.Execution) > 0 {
+			entries := make([]portstrategy.GateEntry, len(raw.GateChain.Execution))
+			for i, e := range raw.GateChain.Execution {
+				entries[i] = portstrategy.GateEntry{
+					Name:   e.Name,
+					Params: e.Params,
+				}
+			}
+			gateChainCfg.Execution = entries
+		}
+	}
+
 	return portstrategy.Spec{
 		SchemaVersion: 2,
 		ID:            id,
@@ -363,6 +399,7 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 		Hooks:           hooks,
 		ExitRules:       exitRules,
 		Options:         optsCfg,
+		GateChain:       gateChainCfg,
 	}, nil
 }
 

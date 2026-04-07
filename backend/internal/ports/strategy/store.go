@@ -55,6 +55,19 @@ type Spec struct {
 	Hooks           map[string]HookRef
 	ExitRules       []domain.ExitRule
 	Options         *domain.OptionsConfig
+	GateChain       *GateChainConfig
+}
+
+// GateChainConfig holds the gate chain configuration from the TOML [gate_chain] section.
+type GateChainConfig struct {
+	Monitor   []GateEntry `toml:"monitor"`
+	Execution []GateEntry `toml:"execution"`
+}
+
+// GateEntry represents one gate in the chain configuration.
+type GateEntry struct {
+	Name   string         `toml:"name"`
+	Params map[string]any `toml:"params"`
 }
 
 // SymbolOverride holds per-symbol parameter and exit rule overrides.
