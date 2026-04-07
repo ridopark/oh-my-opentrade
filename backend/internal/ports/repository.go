@@ -14,6 +14,7 @@ type RepositoryPort interface {
 	SaveMarketBar(ctx context.Context, bar domain.MarketBar) error
 	SaveMarketBars(ctx context.Context, bars []domain.MarketBar) (int, error)
 	GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error)
+	GetMarketBarsMulti(ctx context.Context, symbols []domain.Symbol, timeframe domain.Timeframe, from, to time.Time) (map[string][]domain.MarketBar, error)
 	SaveTrade(ctx context.Context, trade domain.Trade) error
 	GetTrades(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) ([]domain.Trade, error)
 	UpdateTradeThesis(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol, thesis json.RawMessage) error

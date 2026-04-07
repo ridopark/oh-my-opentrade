@@ -26,6 +26,10 @@ func (n *NoopRepo) GetMarketBars(_ context.Context, _ domain.Symbol, _ domain.Ti
 	return nil, nil
 }
 
+func (n *NoopRepo) GetMarketBarsMulti(_ context.Context, _ []domain.Symbol, _ domain.Timeframe, _, _ time.Time) (map[string][]domain.MarketBar, error) {
+	return map[string][]domain.MarketBar{}, nil
+}
+
 func (n *NoopRepo) SaveTrade(_ context.Context, _ domain.Trade) error { return nil }
 
 func (n *NoopRepo) GetTrades(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) ([]domain.Trade, error) {

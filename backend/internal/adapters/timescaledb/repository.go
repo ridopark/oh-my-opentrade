@@ -190,6 +190,69 @@ func (r *Repository) GetMarketBars(ctx context.Context, symbol domain.Symbol, ti
 	return bars, nil
 }
 
+// GetMarketBarsMulti fetches bars for multiple symbols in a single query,
+// amortizing TimescaleDB's query-planning overhead across all symbols.
+func (r *Repository) GetMarketBarsMulti(ctx context.Context, symbols []domain.Symbol, timeframe domain.Timeframe, from, to time.Time) (map[string][]domain.MarketBar, error) {
+	if len(symbols) == 0 {
+		return map[string][]domain.MarketBar{}, nil
+	}
+
+	// Build query with IN clause: $1=timeframe, $2=from, $3=to, $4..=symbols
+	args := make([]any, 0, len(symbols)+3)
+	args = append(args, string(timeframe), from, to)
+	placeholders := make([]string, len(symbols))
+	for i, s := range symbols {
+		args = append(args, string(s))
+		placeholders[i] = fmt.Sprintf("$%d", i+4)
+	}
+	query := fmt.Sprintf(
+		"SELECT time, symbol, timeframe, open, high, low, close, volume, suspect, ema9, ema21, ema50, ema200, avwaps FROM market_bars WHERE timeframe = $1 AND time >= $2 AND time < $3 AND symbol IN (%s) ORDER BY symbol, time",
+		strings.Join(placeholders, ","),
+	)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("timescaledb: get market bars multi: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string][]domain.MarketBar, len(symbols))
+	for rows.Next() {
+		var bar domain.MarketBar
+		var sym, tf string
+		var ema9, ema21, ema50, ema200 sql.NullFloat64
+		var avwapsRaw sql.NullString
+		if err := rows.Scan(&bar.Time, &sym, &tf, &bar.Open, &bar.High, &bar.Low, &bar.Close, &bar.Volume, &bar.Suspect, &ema9, &ema21, &ema50, &ema200, &avwapsRaw); err != nil {
+			return nil, fmt.Errorf("timescaledb: scan market bar multi: %w", err)
+		}
+		bar.Symbol = domain.Symbol(sym)
+		bar.Timeframe = domain.Timeframe(tf)
+		if ema9.Valid {
+			bar.EMA9 = ema9.Float64
+		}
+		if ema21.Valid {
+			bar.EMA21 = ema21.Float64
+		}
+		if ema50.Valid {
+			bar.EMA50 = ema50.Float64
+		}
+		if ema200.Valid {
+			bar.EMA200 = ema200.Float64
+		}
+		if avwapsRaw.Valid && avwapsRaw.String != "" {
+			var avwaps map[string]float64
+			if jsonErr := json.Unmarshal([]byte(avwapsRaw.String), &avwaps); jsonErr == nil {
+				bar.AVWAPs = avwaps
+			}
+		}
+		result[sym] = append(result[sym], bar)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("timescaledb: iterate market bars multi: %w", err)
+	}
+	return result, nil
+}
+
 // GetLatestMarketBarTime returns the most recent bar time for a given symbol and timeframe.
 // Returns (nil, nil) if no bars exist.
 func (r *Repository) GetLatestMarketBarTime(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe) (*time.Time, error) {

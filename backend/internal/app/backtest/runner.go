@@ -468,6 +468,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	//
 	// To re-enable inline gap-fill, set GapFill: true in RunConfig.
 
+	phaseStart := time.Now()
 	r.emitter.EmitSetup("Loading market data…")
 	streams := make([]*barStream, 0, len(r.cfg.Symbols))
 	totalBars := 0
@@ -543,10 +544,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		aggregators[sym.String()] = NewBarAggregator(userTF)
 	}
 
+	r.log.Info().Dur("elapsed", time.Since(phaseStart)).Int("total_bars", totalBars).Int("symbols", len(streams)).Msg("phase: load replay bars complete")
+
 	// --- Warmup (uses actual first bar time as endpoint) ---
 
+	phaseStart = time.Now()
 	r.emitter.EmitSetup("Warming up indicators…")
 	const minWarmupBars = 250
+	const dailyBarsNeeded = 200
+	const hourlyBarsNeeded = 20
 	warmupBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
 	dailyBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
 	{
@@ -557,110 +563,117 @@ func (r *Runner) Run(ctx context.Context) error {
 			bars1h []domain.MarketBar
 		}
 		warmupResults := make([]warmupResult, len(r.cfg.Symbols))
+
+		// --- Batch fetch: 3 queries instead of 93 (amortize planning cost) ---
+		warmupEnd := r.cfg.From
+		warmupStart := warmupEnd.Add(-7 * 24 * time.Hour)
+		dailyTo := r.cfg.To
+		dailyFrom := r.cfg.From.Add(-time.Duration(float64(dailyBarsNeeded)*2.0) * 24 * time.Hour)
+		hourlyTo := r.cfg.From
+		hourlyFrom := hourlyTo.Add(-time.Duration(float64(hourlyBarsNeeded)*2.0) * time.Hour)
+
+		batchStart := time.Now()
+		var batch1m, batch1d, batch1h map[string][]domain.MarketBar
+		var b1mErr, b1dErr, b1hErr error
+		var batchWg sync.WaitGroup
+		batchWg.Add(3)
+		go func() {
+			defer batchWg.Done()
+			batch1m, b1mErr = repo.GetMarketBarsMulti(ctx, r.cfg.Symbols, replayTimeframe, warmupStart, warmupEnd)
+		}()
+		go func() {
+			defer batchWg.Done()
+			batch1d, b1dErr = repo.GetMarketBarsMulti(ctx, r.cfg.Symbols, "1d", dailyFrom, dailyTo)
+		}()
+		go func() {
+			defer batchWg.Done()
+			batch1h, b1hErr = repo.GetMarketBarsMulti(ctx, r.cfg.Symbols, "1h", hourlyFrom, hourlyTo)
+		}()
+		batchWg.Wait()
+		if b1mErr != nil {
+			r.log.Warn().Err(b1mErr).Msg("batch 1m warmup fetch failed")
+		}
+		if b1dErr != nil {
+			r.log.Warn().Err(b1dErr).Msg("batch 1d warmup fetch failed")
+		}
+		if b1hErr != nil {
+			r.log.Warn().Err(b1hErr).Msg("batch 1h warmup fetch failed")
+		}
+		if batch1m == nil {
+			batch1m = map[string][]domain.MarketBar{}
+		}
+		if batch1d == nil {
+			batch1d = map[string][]domain.MarketBar{}
+		}
+		if batch1h == nil {
+			batch1h = map[string][]domain.MarketBar{}
+		}
+		r.log.Info().Dur("elapsed", time.Since(batchStart)).
+			Int("1m_symbols", len(batch1m)).Int("1d_symbols", len(batch1d)).Int("1h_symbols", len(batch1h)).
+			Msg("warmup: batch DB fetch complete")
+
+		// --- Per-symbol: fill gaps via API for cache misses only ---
 		var warmupWg sync.WaitGroup
 		warmupSem := make(chan struct{}, 8)
 		for i, sym := range r.cfg.Symbols {
 			warmupWg.Add(1)
 			go func(i int, sym domain.Symbol) {
 				defer warmupWg.Done()
-				warmupSem <- struct{}{}
-				defer func() { <-warmupSem }()
-				warmupEnd := r.cfg.From
-				if t, ok := firstBarTime[sym.String()]; ok {
-					warmupEnd = t
-				}
-				warmupStart := warmupEnd.Add(-7 * 24 * time.Hour)
+				symStr := sym.String()
 
-				bars, fetchErr := repo.GetMarketBars(ctx, sym, replayTimeframe, warmupStart, warmupEnd)
-				if fetchErr != nil {
-					r.log.Warn().Err(fetchErr).Str("symbol", sym.String()).Msg("warmup fetch failed")
-				}
+				// 1m warmup bars
+				bars := batch1m[symStr]
 				if len(bars) < minWarmupBars && r.marketData != nil {
+					warmupSem <- struct{}{}
 					apiFrom := warmupEnd.Add(-30 * 24 * time.Hour)
 					apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, apiFrom, warmupEnd)
+					<-warmupSem
 					if apiErr == nil && len(apiBars) > len(bars) {
-						r.log.Info().Str("symbol", sym.String()).Int("db_bars", len(bars)).Int("api_bars", len(apiBars)).Msg("fetched warmup bars from market data API")
+						r.log.Info().Str("symbol", symStr).Int("db_bars", len(bars)).Int("api_bars", len(apiBars)).Msg("fetched warmup bars from market data API")
 						if _, batchErr := repo.SaveMarketBars(ctx, apiBars); batchErr != nil {
-							r.log.Warn().Err(batchErr).Str("symbol", sym.String()).Msg("batch save warmup bars failed")
+							r.log.Warn().Err(batchErr).Str("symbol", symStr).Msg("batch save warmup bars failed")
 						}
 						bars = apiBars
 					} else if apiErr != nil {
-						r.log.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("API warmup fetch failed")
+						r.log.Warn().Err(apiErr).Str("symbol", symStr).Msg("API warmup fetch failed")
 					}
 				}
 				if len(bars) > minWarmupBars {
 					bars = bars[len(bars)-minWarmupBars:]
 				}
 
-				// Fetch 1D bars: lookback for HTF EMA200 + full backtest range for anchor detectors.
-				// Try DB first, fall back to IBKR API on cache miss.
-				var bars1d []domain.MarketBar
-				{
-					dailyBarsNeeded := 200
-					dailyTo := r.cfg.To // extend through backtest end for catalyst/capitulation detection
-					dailyFrom := r.cfg.From.Add(-time.Duration(float64(dailyBarsNeeded)*2.0) * 24 * time.Hour)
-					dbBars, dbErr := repo.GetMarketBars(ctx, sym, "1d", dailyFrom, dailyTo)
-					if dbErr != nil {
-						r.log.Warn().Err(dbErr).Str("symbol", sym.String()).Msg("1D DB fetch failed")
+				// 1D bars: use batch result, API fallback if insufficient
+				bars1d := batch1d[symStr]
+				if len(bars1d) < dailyBarsNeeded && r.marketData != nil {
+					warmupSem <- struct{}{}
+					fetched, err := r.marketData.GetHistoricalBars(ctx, sym, "1d", dailyFrom, dailyTo)
+					<-warmupSem
+					if err != nil || len(fetched) < dailyBarsNeeded {
+						r.log.Warn().Err(err).Str("symbol", symStr).Int("db_bars", len(bars1d)).Int("api_bars", len(fetched)).Int("needed", dailyBarsNeeded).Msg("insufficient 1D bars for HTF EMA200")
 					}
-					switch {
-					case len(dbBars) >= dailyBarsNeeded:
-						bars1d = dbBars
-					case r.marketData != nil:
-						fetched, err := r.marketData.GetHistoricalBars(ctx, sym, "1d", dailyFrom, dailyTo)
-						if err != nil || len(fetched) < dailyBarsNeeded {
-							r.log.Warn().Err(err).Str("symbol", sym.String()).Int("db_bars", len(dbBars)).Int("api_bars", len(fetched)).Int("needed", dailyBarsNeeded).Msg("insufficient 1D bars for HTF EMA200 — ORB signals will be blocked for this symbol")
-						}
-						if len(fetched) > len(dbBars) {
-							bars1d = fetched
-						} else {
-							bars1d = dbBars
-						}
-					default:
-						bars1d = dbBars
+					if len(fetched) > len(bars1d) {
+						bars1d = fetched
 					}
 				}
 
-				// Fetch 1H bars: lookback for HTF EMA50.
-				// Try DB first, fall back to IBKR API on cache miss.
-				var bars1h []domain.MarketBar
-				{
-					hourlyBarsNeeded := 50
-					hourlyTo := r.cfg.From
-					hourlyFrom := hourlyTo.Add(-time.Duration(float64(hourlyBarsNeeded)*2.0) * time.Hour)
-					dbBars, dbErr := repo.GetMarketBars(ctx, sym, "1h", hourlyFrom, hourlyTo)
-					if dbErr != nil {
-						r.log.Warn().Err(dbErr).Str("symbol", sym.String()).Msg("1H DB fetch failed")
-					}
-					switch {
-					case len(dbBars) >= hourlyBarsNeeded:
-						bars1h = dbBars
-					case r.marketData != nil:
-						fetched, err := r.marketData.GetHistoricalBars(ctx, sym, "1h", hourlyFrom, hourlyTo)
-						if err != nil {
-							r.log.Warn().Err(err).Str("symbol", sym.String()).Msg("1H API warmup fetch failed")
-						}
-						if len(fetched) > len(dbBars) {
-							bars1h = fetched
-						} else {
-							bars1h = dbBars
-						}
-						if len(bars1h) < hourlyBarsNeeded {
-							r.log.Warn().Str("symbol", sym.String()).Int("got", len(bars1h)).Int("needed", hourlyBarsNeeded).Msg("insufficient 1H bars for HTF EMA50")
-						}
-					default:
-						bars1h = dbBars
-					}
+				// 1H bars: use batch result; skip API fallback (EMA50 is
+				// directionally useful even with partial data, and the IBKR
+				// API serialization adds ~17s for 31 symbols).
+				bars1h := batch1h[symStr]
+				if len(bars1h) < hourlyBarsNeeded {
+					r.log.Debug().Str("symbol", symStr).Int("got", len(bars1h)).Int("needed", hourlyBarsNeeded).Msg("partial 1H bars for HTF EMA50 (using available)")
 				}
 
-				warmupResults[i] = warmupResult{sym: sym.String(), bars: bars, bars1d: bars1d, bars1h: bars1h}
+				warmupResults[i] = warmupResult{sym: symStr, bars: bars, bars1d: bars1d, bars1h: bars1h}
 			}(i, sym)
 		}
 		warmupWg.Wait()
+		r.log.Info().Dur("elapsed", time.Since(phaseStart)).Msg("phase: warmup data fetch complete")
+		indicatorStart := time.Now()
 		for _, res := range warmupResults {
 			warmupBarsCache[res.sym] = res.bars
 			dailyBarsCache[res.sym] = res.bars1d
-			n := monitorSvc.WarmUp(res.bars)
+			monitorSvc.WarmUp(res.bars)
 			if len(res.bars1d) > 0 {
 				// Use only bars before backtest start for HTF EMA200 (no look-ahead bias).
 				var preBars []domain.MarketBar
@@ -709,10 +722,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			monitorSvc.ResetSessionIndicators(res.sym)
 			monitorSvc.MarkReady(res.sym)
-			r.log.Info().Str("symbol", res.sym).Int("warmup_bars", n).Msg("indicator warmup done")
 		}
+		r.log.Info().Dur("elapsed", time.Since(indicatorStart)).Msg("phase: indicator computation complete")
 	}
 
+	postWarmupStart := time.Now()
 	for _, s := range streams {
 		replayBars := s.bars
 		if len(replayBars) > 0 {
@@ -835,6 +849,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		r.log.Info().Msg("AI anchor resolver configured for backtest (with session baseline)")
 	}
+	r.log.Info().Dur("elapsed", time.Since(postWarmupStart)).Msg("phase: post-warmup seeding complete")
 
 	r.emitter.EmitSetup("Starting services…")
 

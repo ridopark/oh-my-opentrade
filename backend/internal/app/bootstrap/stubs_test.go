@@ -52,6 +52,9 @@ func (stubRepo) SaveMarketBars(context.Context, []domain.MarketBar) (int, error)
 func (stubRepo) GetMarketBars(context.Context, domain.Symbol, domain.Timeframe, time.Time, time.Time) ([]domain.MarketBar, error) {
 	return nil, nil
 }
+func (stubRepo) GetMarketBarsMulti(context.Context, []domain.Symbol, domain.Timeframe, time.Time, time.Time) (map[string][]domain.MarketBar, error) {
+	return map[string][]domain.MarketBar{}, nil
+}
 func (stubRepo) SaveTrade(context.Context, domain.Trade) error { return nil }
 func (stubRepo) GetTrades(context.Context, string, domain.EnvMode, time.Time, time.Time) ([]domain.Trade, error) {
 	return nil, nil
