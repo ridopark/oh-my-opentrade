@@ -23,16 +23,16 @@ allowed_directions = ["LONG", "SHORT"]
 
 [params]
 # Bollinger Bands
-bb_breakout_threshold = 1.0   # %B threshold for breakout (1.0 = upper band)
+bb_breakout_threshold = 0.95  # %B threshold for breakout (tightened for 5m indicators)
 
 # MACD
-require_histogram_rising = true
+require_histogram_rising = false  # histogram > 0 is enough; rising is too fleeting on 5m
 
 # Regime Filter (composite: ADX + EMA slope + BB width)
-regime_threshold = 0.67       # need 2/3 factors confirming trend
+regime_threshold = 0.34       # need 1/3 factors confirming trend (relaxed from 0.67)
 
 # Volume
-volume_mult = 1.5             # breakout candle volume > N * SMA(vol,20)
+volume_mult = 1.2             # breakout candle volume > N * SMA(vol,20) (relaxed from 1.5)
 
 # Risk
 stop_bps = 50
@@ -44,7 +44,7 @@ max_position_bps = 1500
 allowed_hours_start = "09:35"
 allowed_hours_end = "15:45"
 allowed_hours_tz = "America/New_York"
-cooldown_seconds = 1800
+cooldown_seconds = 2700
 max_trades_per_day = 3
 stabilization_bars = 30
 
@@ -60,7 +60,7 @@ buffer_bps = 25
 [[exit_rules]]
 type = "STAGNATION_EXIT"
 [exit_rules.params]
-minutes = 45
+minutes = 30
 
 [[exit_rules]]
 type = "EOD_FLATTEN"
