@@ -324,11 +324,49 @@ func (r *Runner) Run(ctx context.Context) error {
 	// to avoid mutating the shared config across concurrent backtests.
 	cfgCopy := *r.appCfg
 	execCfg := &cfgCopy
-	if r.cfg.MaxPositions > 0 {
-		execCfg.Trading.MaxSimultaneousPos = r.cfg.MaxPositions
+
+	// Resolve max_positions / max_per_group:
+	// 1. API request params (highest priority)
+	// 2. Strategy DNA [params] (fallback)
+	// 3. App config (default)
+	maxPos := r.cfg.MaxPositions
+	maxGrp := r.cfg.MaxPerGroup
+	if maxPos == 0 || maxGrp == 0 {
+		// Read from strategy DNA if not set by API request
+		if specs, specErr := specStore.List(ctx, nil); specErr == nil {
+			for _, spec := range specs {
+				if maxPos == 0 {
+					if v, ok := spec.Params["max_positions"]; ok {
+						switch n := v.(type) {
+						case int64:
+							maxPos = int(n)
+						case float64:
+							maxPos = int(n)
+						case int:
+							maxPos = n
+						}
+					}
+				}
+				if maxGrp == 0 {
+					if v, ok := spec.Params["max_per_group"]; ok {
+						switch n := v.(type) {
+						case int64:
+							maxGrp = int(n)
+						case float64:
+							maxGrp = int(n)
+						case int:
+							maxGrp = n
+						}
+					}
+				}
+			}
+		}
 	}
-	if r.cfg.MaxPerGroup > 0 {
-		execCfg.Trading.MaxPositionsPerGroup = r.cfg.MaxPerGroup
+	if maxPos > 0 {
+		execCfg.Trading.MaxSimultaneousPos = maxPos
+	}
+	if maxGrp > 0 {
+		execCfg.Trading.MaxPositionsPerGroup = maxGrp
 	}
 
 	execBundle, err := bootstrap.BuildExecutionService(bootstrap.ExecutionDeps{
