@@ -165,6 +165,11 @@ type IndicatorData struct {
 	RegimeScore   float64
 	AnchorRegimes map[string]AnchorRegime
 	HTF           map[string]HTFIndicator
+
+	// Dark pool microstructure (populated from darkpool_bars when available)
+	DPRatio         float64 // dark pool volume / total volume (0-1)
+	DPBuyRatio      float64 // DP buy volume / DP total volume
+	DPLargePrintPct float64 // large print volume / DP volume
 }
 
 type HTFIndicator struct {

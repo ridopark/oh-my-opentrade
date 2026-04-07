@@ -555,6 +555,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	const hourlyBarsNeeded = 20
 	warmupBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
 	dailyBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
+	var dpLookup map[strategy.DPLookupKey]domain.DarkPoolBar
 	{
 		type warmupResult struct {
 			sym    string
@@ -574,9 +575,10 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		batchStart := time.Now()
 		var batch1m, batch1d, batch1h map[string][]domain.MarketBar
-		var b1mErr, b1dErr, b1hErr error
+		var batchDP map[string][]domain.DarkPoolBar
+		var b1mErr, b1dErr, b1hErr, bDPErr error
 		var batchWg sync.WaitGroup
-		batchWg.Add(3)
+		batchWg.Add(4)
 		go func() {
 			defer batchWg.Done()
 			batch1m, b1mErr = repo.GetMarketBarsMulti(ctx, r.cfg.Symbols, replayTimeframe, warmupStart, warmupEnd)
@@ -589,6 +591,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			defer batchWg.Done()
 			batch1h, b1hErr = repo.GetMarketBarsMulti(ctx, r.cfg.Symbols, "1h", hourlyFrom, hourlyTo)
 		}()
+		go func() {
+			defer batchWg.Done()
+			dpRepo := timescaledb.NewDarkPoolRepo(timescaledb.NewSqlDB(r.infra.DB), r.log.With().Str("component", "dp_repo").Logger())
+			batchDP, bDPErr = dpRepo.GetDarkPoolBarsMulti(ctx, r.cfg.Symbols, "5m", r.cfg.From, r.cfg.To)
+		}()
 		batchWg.Wait()
 		if b1mErr != nil {
 			r.log.Warn().Err(b1mErr).Msg("batch 1m warmup fetch failed")
@@ -599,6 +606,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		if b1hErr != nil {
 			r.log.Warn().Err(b1hErr).Msg("batch 1h warmup fetch failed")
 		}
+		if bDPErr != nil {
+			r.log.Warn().Err(bDPErr).Msg("batch dark pool bars fetch failed")
+		}
 		if batch1m == nil {
 			batch1m = map[string][]domain.MarketBar{}
 		}
@@ -608,6 +618,21 @@ func (r *Runner) Run(ctx context.Context) error {
 		if batch1h == nil {
 			batch1h = map[string][]domain.MarketBar{}
 		}
+		if batchDP == nil {
+			batchDP = map[string][]domain.DarkPoolBar{}
+		}
+
+		// Build dark pool lookup map for O(1) access during replay.
+		dpLookup = make(map[strategy.DPLookupKey]domain.DarkPoolBar)
+		for sym, bars := range batchDP {
+			for _, b := range bars {
+				dpLookup[strategy.DPLookupKey{Symbol: sym, Time: b.Time}] = b
+			}
+		}
+		if len(dpLookup) > 0 {
+			r.log.Info().Int("dp_bars", len(dpLookup)).Int("dp_symbols", len(batchDP)).Msg("dark pool bars loaded for backtest")
+		}
+
 		r.log.Info().Dur("elapsed", time.Since(batchStart)).
 			Int("1m_symbols", len(batch1m)).Int("1d_symbols", len(batch1d)).Int("1h_symbols", len(batch1h)).
 			Msg("warmup: batch DB fetch complete")
@@ -802,6 +827,9 @@ func (r *Runner) Run(ctx context.Context) error {
 			aiResolver.RegisterSymbol(sym.String(), isCrypto)
 		}
 		pipeline.Runner.SetAIAnchorResolver(aiResolver)
+		if len(dpLookup) > 0 {
+			pipeline.Runner.SetDarkPoolLookup(dpLookup)
+		}
 		pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
 		pipeline.Runner.SetPrevDayBarsFn(func(symbol string, since time.Time) []start.Bar {
 			return sessionResolver.GetBarsSince(ctx, r.infra.DB, symbol, since)

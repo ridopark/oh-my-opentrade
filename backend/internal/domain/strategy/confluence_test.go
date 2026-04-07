@@ -270,3 +270,75 @@ func TestConfluenceResult_FormatDetail(t *testing.T) {
 	r := s.ConfluenceResult{Score: 50, Factors: []string{"ema_stack", "adx_strong", "vwap_aligned"}}
 	assert.Equal(t, "ema_stack+adx_strong+vwap_aligned", r.FormatDetail())
 }
+
+// ─── Dark Pool ──────────────────────────────────────────────────────────────
+
+func TestScoreDarkPool(t *testing.T) {
+	tests := []struct {
+		name    string
+		ind     s.IndicatorData
+		isLong  bool
+		score   int
+		factors []string
+	}{
+		{
+			name:   "no DP data (DPRatio=0)",
+			ind:    s.IndicatorData{DPRatio: 0},
+			isLong: true,
+			score:  0,
+		},
+		{
+			name:    "high DP ratio only",
+			ind:     s.IndicatorData{DPRatio: 0.55, DPBuyRatio: 0.50, DPLargePrintPct: 0.05},
+			isLong:  true,
+			score:   3,
+			factors: []string{"dp_elevated"},
+		},
+		{
+			name:    "long + buy pressure",
+			ind:     s.IndicatorData{DPRatio: 0.30, DPBuyRatio: 0.65, DPLargePrintPct: 0.05},
+			isLong:  true,
+			score:   4,
+			factors: []string{"dp_buy"},
+		},
+		{
+			name:    "short + sell pressure",
+			ind:     s.IndicatorData{DPRatio: 0.30, DPBuyRatio: 0.35, DPLargePrintPct: 0.05},
+			isLong:  false,
+			score:   4,
+			factors: []string{"dp_sell"},
+		},
+		{
+			name:    "large prints only",
+			ind:     s.IndicatorData{DPRatio: 0.30, DPBuyRatio: 0.50, DPLargePrintPct: 0.20},
+			isLong:  true,
+			score:   3,
+			factors: []string{"dp_blocks"},
+		},
+		{
+			name:    "all factors combined long",
+			ind:     s.IndicatorData{DPRatio: 0.55, DPBuyRatio: 0.65, DPLargePrintPct: 0.20},
+			isLong:  true,
+			score:   10,
+			factors: []string{"dp_elevated", "dp_buy", "dp_blocks"},
+		},
+		{
+			name:    "all factors combined short",
+			ind:     s.IndicatorData{DPRatio: 0.55, DPBuyRatio: 0.35, DPLargePrintPct: 0.20},
+			isLong:  false,
+			score:   10,
+			factors: []string{"dp_elevated", "dp_sell", "dp_blocks"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := s.ScoreDarkPool(tt.ind, tt.isLong)
+			assert.Equal(t, tt.score, r.Score)
+			if len(tt.factors) == 0 {
+				assert.Empty(t, r.Factors)
+			} else {
+				assert.Equal(t, tt.factors, r.Factors)
+			}
+		})
+	}
+}

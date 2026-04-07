@@ -619,6 +619,73 @@ func (c *RESTClient) GetHistoricalBars(ctx context.Context, dataURL string, symb
 	return bars, nil
 }
 
+// HistoricalTrade is the JSON shape for a single trade from Alpaca's REST trade endpoints.
+type HistoricalTrade struct {
+	T time.Time `json:"t"` // timestamp
+	X string    `json:"x"` // exchange ("D" = FINRA ADF / dark pool)
+	P float64   `json:"p"` // price
+	S float64   `json:"s"` // size (shares)
+	C []string  `json:"c"` // condition codes
+}
+
+// GetHistoricalTrades fetches historical trades from the Alpaca data API using SIP feed.
+// It streams trades via the handler callback to avoid accumulating millions of trades in memory.
+// Dark pool prints only appear in the SIP feed, so feed=sip is always used.
+func (c *RESTClient) GetHistoricalTrades(
+	ctx context.Context, dataURL string,
+	symbol domain.Symbol, from, to time.Time,
+	handler func(HistoricalTrade),
+) error {
+	nextToken := ""
+
+	for {
+		path := fmt.Sprintf("/v2/stocks/%s/trades?start=%s&end=%s&limit=10000&feed=sip",
+			symbol.String(),
+			from.UTC().Format(time.RFC3339),
+			to.UTC().Format(time.RFC3339),
+		)
+		if nextToken != "" {
+			path += "&page_token=" + nextToken
+		}
+
+		urlStr := strings.TrimSuffix(dataURL, "/") + path
+		resp, err := c.doReqFullWithPath(ctx, http.MethodGet, urlStr, path, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
+		if err != nil {
+			c.log.Error().Err(err).Str("symbol", symbol.String()).Msg("historical trades HTTP request failed")
+			return err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			c.log.Error().Int("status", resp.StatusCode).Str("symbol", symbol.String()).Msg("historical trades request failed")
+			return fmt.Errorf("alpaca: get historical trades failed (status %d): %s", resp.StatusCode, string(body))
+		}
+
+		var page struct {
+			Trades        []HistoricalTrade `json:"trades"`
+			NextPageToken string            `json:"next_page_token"`
+		}
+		if err := json.Unmarshal(body, &page); err != nil {
+			return fmt.Errorf("alpaca: failed to decode historical trades: %w", err)
+		}
+
+		for _, trade := range page.Trades {
+			handler(trade)
+		}
+
+		if page.NextPageToken == "" {
+			break
+		}
+		nextToken = page.NextPageToken
+	}
+
+	c.log.Debug().
+		Str("symbol", symbol.String()).
+		Msg("historical trades retrieved")
+	return nil
+}
+
 // historicalBar is the JSON shape for a single bar from Alpaca's REST bar endpoints.
 type historicalBar struct {
 	T  time.Time `json:"t"`

@@ -127,6 +127,7 @@ type AVWAPConfig struct {
 	KeyLevelConfluenceEnabled bool // enable key level confluence factor
 	CandleConfluenceEnabled   bool // enable candlestick pattern confluence factor
 	BandConfluenceEnabled     bool // enable AVWAP band zone confluence factor
+	DPConfluenceEnabled       bool // enable dark pool confluence factor
 
 	AllowedHoursStart string // "HH:MM" entry window start (ET)
 	AllowedHoursEnd   string // "HH:MM" entry window end (ET)
@@ -585,6 +586,7 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		KeyLevelConfluenceEnabled: getBool(params, "key_level_confluence_enabled", true),
 		CandleConfluenceEnabled:   getBool(params, "candle_confluence_enabled", true),
 		BandConfluenceEnabled:     getBool(params, "band_confluence_enabled", true),
+		DPConfluenceEnabled:       getBool(params, "dp_confluence_enabled", false),
 
 		AllowedHoursStart: getString(params, "allowed_hours_start", ""),
 		AllowedHoursEnd:   getString(params, "allowed_hours_end", ""),
@@ -2159,6 +2161,14 @@ func computeConfluence(
 			res.Score += 2
 			res.Factors = append(res.Factors, "band_zone")
 		}
+	}
+
+	// Factor 5: Dark Pool (+10 max, opt-in via config)
+	if cfg.DPConfluenceEnabled {
+		isLong := bar.Close > avwapValue
+		dp := start.ScoreDarkPool(indicators, isLong)
+		res.Score += dp.Score
+		res.Factors = append(res.Factors, dp.Factors...)
 	}
 
 	return res

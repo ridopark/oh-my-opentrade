@@ -526,6 +526,25 @@ type AuctionImbalanceSnapshot struct {
 	Imbalance float64 // Signed imbalance: positive=buy, negative=sell (tick 31)
 }
 
+// DarkPoolBar holds aggregated dark pool metrics for a 5-minute window.
+// Built from individual trade ticks where exchange == "D" (FINRA ADF).
+type DarkPoolBar struct {
+	Time             time.Time
+	Symbol           Symbol
+	Timeframe        Timeframe
+	DPVolume         float64 // dark pool volume (shares)
+	DPTrades         int     // count of DP prints
+	DPVWAP           float64 // DP-only VWAP
+	LitVolume        float64 // lit exchange volume
+	TotalVolume      float64 // all exchanges
+	DPRatio          float64 // DPVolume / TotalVolume
+	BuyVolume        float64 // inferred buys (price >= running VWAP)
+	SellVolume       float64 // inferred sells (price < running VWAP)
+	LargePrintVolume float64 // prints with notional > $200K
+	LargePrintCount  int     // count of large prints
+	MaxPrintSize     float64 // largest single DP print (shares)
+}
+
 // FormingBar represents a partial (in-progress) OHLCV candle for the current bucket.
 // Sent to the frontend via SSE so the chart can show a forming candle in real-time.
 type FormingBar struct {

@@ -366,6 +366,13 @@ func (a *Adapter) WSClient() *WSClient { return a.ws }
 
 func (a *Adapter) CryptoWSClient() *CryptoWSClient { return a.cryptoWs }
 
+// GetHistoricalTrades fetches historical trade ticks from the Alpaca SIP feed.
+// Dark pool prints (exchange "D") only appear in the SIP feed.
+// The handler is called per-trade to avoid accumulating millions of trades in memory.
+func (a *Adapter) GetHistoricalTrades(ctx context.Context, symbol domain.Symbol, from, to time.Time, handler func(HistoricalTrade)) error {
+	return a.rest.GetHistoricalTrades(ctx, a.dataURL, symbol, from, to, handler)
+}
+
 // GetClosedOrders fetches all closed orders from Alpaca within the given time range.
 func (a *Adapter) GetClosedOrders(ctx context.Context, after, until time.Time) ([]ClosedOrder, error) {
 	return a.rest.GetClosedOrders(ctx, after, until)
