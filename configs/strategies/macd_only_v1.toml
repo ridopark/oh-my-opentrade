@@ -28,8 +28,9 @@ risk_reward_ratio = 3.0
 swing_lookback = 7
 volume_mult = 1.0
 
-# Confluence scoring (0-100 scale, 10 factors)
+# Confluence scoring (0-100+ scale, 10 base + dark pool factors)
 min_confluence_score = 55
+dp_confluence_enabled = true
 
 # Risk
 risk_per_trade_bps = 1000
