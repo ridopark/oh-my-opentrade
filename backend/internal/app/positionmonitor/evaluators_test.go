@@ -1229,3 +1229,466 @@ func TestEstimatedPremium(t *testing.T) {
 		assert.InDelta(t, 1.4775, est1, 0.001)
 	})
 }
+
+// ---------------------------------------------------------------------------
+// SwingStop — uses BarLow/BarHigh from EvalContext (Shannon methodology)
+// ---------------------------------------------------------------------------
+
+func TestEvaluate_SwingStop_LongUsesBarLow(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 3, 6, 10, 0, 0, 0, etLoc)
+
+	// Use buffer_bps=50 so building bars don't trigger the stop.
+	rule := domain.ExitRule{
+		Type:   domain.ExitRuleSwingStop,
+		Params: map[string]float64{"lookback": 3, "buffer_bps": 50, "min_bars": 1},
+	}
+
+	pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+
+	// Feed 3 bars with ascending bar lows (higher lows).
+	// Close prices are high so they never trigger. Bar lows: 94, 95, 96.
+	// Stop ratchets UP as swing lows rise: bar1→94-0.47=93.53, bar2→94, bar3→94
+	// (min of ring is still 94, so stop stays at 93.53).
+	// After all 3: ring has 94,95,96. Min=94. Buffer=94*50/10000=0.47. Stop=93.53.
+	bars := []struct{ close, low float64 }{
+		{99, 94}, {99, 95}, {99, 96},
+	}
+	for i, b := range bars {
+		now := entryTime.Add(time.Duration(i+1) * time.Minute)
+		ctx := EvalContext{BarDuration: time.Minute, BarLow: b.low}
+		Evaluate(rule, pos, b.close, now, ctx)
+	}
+
+	// Verify stop is based on bar lows. If it had used close (99), stop = 99-0.495=98.505.
+	// But with bar lows, stop ≈ 93.53. Price 95 is above 93.53 → no trigger.
+	// (If close-based, 95 < 98.505 would trigger — this proves bar lows are used.)
+	ctx := EvalContext{BarDuration: time.Minute, BarLow: 95}
+	now := entryTime.Add(4 * time.Minute)
+	triggered, _ := Evaluate(rule, pos, 95.0, now, ctx)
+	assert.False(t, triggered, "price 95 > stop ~93.53 (bar-low-based) → no trigger")
+
+	// Price at 93 < stop 93.53 → trigger
+	ctx2 := EvalContext{BarDuration: time.Minute, BarLow: 93}
+	triggered, reason := Evaluate(rule, pos, 93.0, now, ctx2)
+	assert.True(t, triggered)
+	assert.Contains(t, reason, "swing_stop")
+}
+
+func TestEvaluate_SwingStop_ShortUsesBarHigh(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 3, 6, 10, 0, 0, 0, etLoc)
+
+	rule := domain.ExitRule{
+		Type:   domain.ExitRuleSwingStop,
+		Params: map[string]float64{"lookback": 3, "buffer_bps": 0, "min_bars": 1},
+	}
+
+	pos := newTestMonitoredPosition(t, 110, entryTime, domain.AssetClassEquity)
+	pos.Side = "SELL"
+
+	// Feed 3 bars. Close prices are 101,102,103 but bar highs are 102,104,105.
+	// Ring buffer should store bar highs: 102, 104, 105. Swing high = 105.
+	bars := []struct{ close, high float64 }{
+		{101, 102}, {102, 104}, {103, 105},
+	}
+	for i, b := range bars {
+		now := entryTime.Add(time.Duration(i+1) * time.Minute)
+		ctx := EvalContext{BarDuration: time.Minute, BarHigh: b.high}
+		Evaluate(rule, pos, b.close, now, ctx)
+	}
+
+	// Stop should be at swing high=105 (not 103).
+	// Price at 105.5 >= stop=105 → trigger
+	ctx := EvalContext{BarDuration: time.Minute, BarHigh: 106}
+	now := entryTime.Add(4 * time.Minute)
+	triggered, reason := Evaluate(rule, pos, 105.5, now, ctx)
+	assert.True(t, triggered)
+	assert.Contains(t, reason, "swing_stop")
+}
+
+func TestEvaluate_SwingStop_FallsBackToCloseWhenBarLowZero(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 3, 6, 10, 0, 0, 0, etLoc)
+
+	rule := domain.ExitRule{
+		Type:   domain.ExitRuleSwingStop,
+		Params: map[string]float64{"lookback": 3, "buffer_bps": 50, "min_bars": 1},
+	}
+
+	pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+
+	// BarLow=0 → falls back to close price
+	for i := 1; i <= 3; i++ {
+		now := entryTime.Add(time.Duration(i) * time.Minute)
+		ctx := EvalContext{BarDuration: time.Minute, BarLow: 0}
+		Evaluate(rule, pos, 97.0+float64(i), now, ctx)
+	}
+
+	// Should have used close prices (98, 99, 100). Min=98. Buffer=98*50/10000=0.49.
+	// Stop = 98 - 0.49 = 97.51
+	now := entryTime.Add(4 * time.Minute)
+	ctx := EvalContext{BarDuration: time.Minute, BarLow: 0}
+	triggered, _ := Evaluate(rule, pos, 97.6, now, ctx)
+	assert.False(t, triggered, "97.6 > stop~97.51 → no trigger")
+}
+
+func TestEvaluate_SwingStop_MinBarsGuard(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 3, 6, 10, 0, 0, 0, etLoc)
+
+	rule := domain.ExitRule{
+		Type:   domain.ExitRuleSwingStop,
+		Params: map[string]float64{"lookback": 3, "buffer_bps": 0, "min_bars": 10},
+	}
+
+	pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+	ctx := EvalContext{BarDuration: time.Minute, BarLow: 50}
+
+	// Only 2 minutes elapsed < min_bars=10
+	now := entryTime.Add(2 * time.Minute)
+	triggered, _ := Evaluate(rule, pos, 50.0, now, ctx)
+	assert.False(t, triggered, "should not trigger before min_bars elapsed")
+}
+
+func TestEvaluate_SwingStop_ATRBuffer(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 3, 6, 10, 0, 0, 0, etLoc)
+
+	rule := domain.ExitRule{
+		Type:   domain.ExitRuleSwingStop,
+		Params: map[string]float64{"lookback": 3, "atr_buffer_mult": 0.5, "min_bars": 1},
+	}
+
+	// Build ascending bar lows: 96, 97, 98. Min=96. Buffer=ATR*0.5=1. Stop=95.
+	for i := 1; i <= 3; i++ {
+		pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+		_ = pos
+	}
+	pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+	for i := 1; i <= 3; i++ {
+		ctx := EvalContext{BarDuration: time.Minute, ATR: 2.0, BarLow: 95.0 + float64(i)}
+		Evaluate(rule, pos, 98.0+float64(i), entryTime.Add(time.Duration(i)*time.Minute), ctx)
+	}
+
+	// Price at 94.5 < stop=95 → trigger
+	ctx := EvalContext{BarDuration: time.Minute, ATR: 2.0, BarLow: 94}
+	triggered, reason := Evaluate(rule, pos, 94.5, entryTime.Add(4*time.Minute), ctx)
+	assert.True(t, triggered)
+	assert.Contains(t, reason, "swing_stop")
+
+	// Price at 95.5 > stop=95 → no trigger
+	pos2 := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+	for i := 1; i <= 3; i++ {
+		ctx2 := EvalContext{BarDuration: time.Minute, ATR: 2.0, BarLow: 95.0 + float64(i)}
+		Evaluate(rule, pos2, 98.0+float64(i), entryTime.Add(time.Duration(i)*time.Minute), ctx2)
+	}
+	ctx3 := EvalContext{BarDuration: time.Minute, ATR: 2.0, BarLow: 95.5}
+	triggered2, _ := Evaluate(rule, pos2, 95.5, entryTime.Add(4*time.Minute), ctx3)
+	assert.False(t, triggered2)
+}
+
+// ---------------------------------------------------------------------------
+// DTEFloor
+// ---------------------------------------------------------------------------
+
+func TestEvaluate_DTEFloor(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+
+	rule := domain.ExitRule{Type: domain.ExitRuleDTEFloor, Params: map[string]float64{"dte": 7}}
+
+	t.Run("triggers when DTE below floor", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-24*time.Hour), domain.AssetClassEquity)
+		pos.InstrumentType = domain.InstrumentTypeOption
+		pos.OptionExpiry = now.Add(5 * 24 * time.Hour)
+		triggered, reason := Evaluate(rule, pos, 100, now, EvalContext{})
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "dte_floor")
+	})
+
+	t.Run("does not trigger above floor", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-24*time.Hour), domain.AssetClassEquity)
+		pos.InstrumentType = domain.InstrumentTypeOption
+		pos.OptionExpiry = now.Add(10 * 24 * time.Hour)
+		triggered, _ := Evaluate(rule, pos, 100, now, EvalContext{})
+		assert.False(t, triggered)
+	})
+
+	t.Run("ignores equity positions", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-24*time.Hour), domain.AssetClassEquity)
+		triggered, _ := Evaluate(rule, pos, 100, now, EvalContext{})
+		assert.False(t, triggered)
+	})
+
+	t.Run("zero dte param returns false", func(t *testing.T) {
+		zeroRule := domain.ExitRule{Type: domain.ExitRuleDTEFloor, Params: map[string]float64{"dte": 0}}
+		pos := newTestMonitoredPosition(t, 100, now.Add(-24*time.Hour), domain.AssetClassEquity)
+		pos.InstrumentType = domain.InstrumentTypeOption
+		pos.OptionExpiry = now.Add(1 * time.Hour)
+		triggered, _ := Evaluate(zeroRule, pos, 100, now, EvalContext{})
+		assert.False(t, triggered)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// ExpiryWatch — uses trading days (excludes weekends/holidays)
+// ---------------------------------------------------------------------------
+
+func TestEvaluate_ExpiryWatch_TradingDays(t *testing.T) {
+	etLoc := mustETLocation(t)
+
+	rule := domain.ExitRule{
+		Type:   domain.ExitRuleExpiryWatch,
+		Params: map[string]float64{"pct_elapsed": 0.5},
+	}
+
+	t.Run("triggers when enough trading days elapsed", func(t *testing.T) {
+		// Entry Monday March 2, Expiry Friday March 13 = 10 trading days
+		entryTime := time.Date(2026, 3, 2, 10, 0, 0, 0, etLoc)
+		pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+		pos.InstrumentType = domain.InstrumentTypeOption
+		pos.OptionExpiry = time.Date(2026, 3, 13, 16, 0, 0, 0, etLoc)
+
+		// Monday March 9 = 5 trading days elapsed = 50% → triggers at threshold
+		now := time.Date(2026, 3, 9, 12, 0, 0, 0, etLoc)
+		triggered, reason := Evaluate(rule, pos, 100, now, EvalContext{})
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "expiry_watch")
+	})
+
+	t.Run("does not trigger before threshold", func(t *testing.T) {
+		entryTime := time.Date(2026, 3, 2, 10, 0, 0, 0, etLoc)
+		pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+		pos.InstrumentType = domain.InstrumentTypeOption
+		pos.OptionExpiry = time.Date(2026, 3, 13, 16, 0, 0, 0, etLoc)
+
+		// Thursday March 5 = 3 trading days elapsed = 30% < 50%
+		now := time.Date(2026, 3, 5, 12, 0, 0, 0, etLoc)
+		triggered, _ := Evaluate(rule, pos, 100, now, EvalContext{})
+		assert.False(t, triggered)
+	})
+
+	t.Run("weekend does not inflate ratio", func(t *testing.T) {
+		// Entry Friday March 6, Expiry Friday March 20 = 10 trading days
+		entryTime := time.Date(2026, 3, 6, 10, 0, 0, 0, etLoc)
+		pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+		pos.InstrumentType = domain.InstrumentTypeOption
+		pos.OptionExpiry = time.Date(2026, 3, 20, 16, 0, 0, 0, etLoc)
+
+		// Monday March 9 = 1 trading day elapsed (Friday doesn't count, weekend skipped)
+		now := time.Date(2026, 3, 9, 12, 0, 0, 0, etLoc)
+		triggered, _ := Evaluate(rule, pos, 100, now, EvalContext{})
+		// 1/10 = 10% < 50% → should NOT trigger
+		// Old clock-based code would say 3 calendar days / 14 total ≈ 21%
+		assert.False(t, triggered, "weekend should not inflate the elapsed ratio")
+	})
+
+	t.Run("ignores equity", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, time.Date(2026, 3, 2, 10, 0, 0, 0, etLoc), domain.AssetClassEquity)
+		now := time.Date(2026, 3, 9, 12, 0, 0, 0, etLoc)
+		triggered, _ := Evaluate(rule, pos, 100, now, EvalContext{})
+		assert.False(t, triggered)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TieredTP
+// ---------------------------------------------------------------------------
+
+func TestEvaluate_TieredTP_Tier1(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+
+	rule := domain.ExitRule{
+		Type: domain.ExitRuleTieredTP,
+		Params: map[string]float64{
+			"first_tier_pct": 0.5, "first_tier_rr": 1.5,
+			"trail_pct": 0.02, "initial_risk_pct": 0.01,
+		},
+	}
+
+	t.Run("triggers at RR target", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		triggered, reason := Evaluate(rule, pos, 102.0, now, EvalContext{})
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "tiered_tp_tier1")
+		assert.Equal(t, 0.5, pos.CustomState["tiered_tp_exit_qty_frac"])
+		assert.Equal(t, 1.0, pos.CustomState["breakeven_activated"])
+	})
+
+	t.Run("does not trigger below target", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+		triggered, _ := Evaluate(rule, pos, 101.0, now, EvalContext{})
+		assert.False(t, triggered)
+	})
+}
+
+func TestEvaluate_TieredTP_Tier2Trail(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+
+	rule := domain.ExitRule{
+		Type: domain.ExitRuleTieredTP,
+		Params: map[string]float64{
+			"first_tier_pct": 0.5, "first_tier_rr": 1.5,
+			"trail_pct": 0.02, "initial_risk_pct": 0.01,
+		},
+	}
+
+	pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+	Evaluate(rule, pos, 102.0, now, EvalContext{}) // tier 1
+	Evaluate(rule, pos, 105.0, now, EvalContext{}) // push HWM
+
+	// Trail = 105*(1-0.02) = 102.9. Price 102 < 102.9 → tier 2
+	triggered, reason := Evaluate(rule, pos, 102.0, now, EvalContext{})
+	assert.True(t, triggered)
+	assert.Contains(t, reason, "tiered_tp_tier2_trail")
+}
+
+// ---------------------------------------------------------------------------
+// TimePartial
+// ---------------------------------------------------------------------------
+
+func TestEvaluate_TimePartial(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 3, 6, 10, 0, 0, 0, etLoc)
+
+	rule := domain.ExitRule{
+		Type: domain.ExitRuleTimePartial,
+		Params: map[string]float64{"minutes": 60, "partial_pct": 0.5, "min_profit_pct": 0.001},
+	}
+
+	t.Run("triggers after hold with profit", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+		now := entryTime.Add(90 * time.Minute)
+		triggered, reason := Evaluate(rule, pos, 100.5, now, EvalContext{})
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "time_partial")
+		assert.Equal(t, 0.5, pos.CustomState["time_partial_exit_qty_frac"])
+	})
+
+	t.Run("does not trigger before minutes", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+		triggered, _ := Evaluate(rule, pos, 105.0, entryTime.Add(30*time.Minute), EvalContext{})
+		assert.False(t, triggered)
+	})
+
+	t.Run("does not trigger without profit", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+		triggered, _ := Evaluate(rule, pos, 99.0, entryTime.Add(90*time.Minute), EvalContext{})
+		assert.False(t, triggered)
+	})
+
+	t.Run("does not fire twice", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+		now := entryTime.Add(90 * time.Minute)
+		Evaluate(rule, pos, 100.5, now, EvalContext{})
+		triggered, _ := Evaluate(rule, pos, 101.0, now.Add(time.Minute), EvalContext{})
+		assert.False(t, triggered)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Short-side coverage for existing evaluators
+// ---------------------------------------------------------------------------
+
+func TestEvaluate_VolatilityStop_Short(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+
+	rule, err := domain.NewExitRule(domain.ExitRuleVolatilityStop, map[string]float64{"atr_multiplier": 1.5})
+	require.NoError(t, err)
+
+	pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+	pos.Side = "SELL"
+	pos.LowWaterMark = 95.0
+
+	triggered, reason := Evaluate(rule, pos, 99.0, now, EvalContext{ATR: 2.0})
+	assert.True(t, triggered)
+	assert.Contains(t, reason, "volatility_stop")
+
+	triggered2, _ := Evaluate(rule, pos, 97.0, now, EvalContext{ATR: 2.0})
+	assert.False(t, triggered2)
+}
+
+func TestEvaluate_SDTarget_Short(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+
+	rule := domain.ExitRule{Type: domain.ExitRuleSDTarget, Params: map[string]float64{"sd_level": 2.0}}
+	pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+	pos.Side = "SELL"
+
+	ctx := EvalContext{VWAPValue: 150.0, SDBands: map[float64]float64{2.0: 154.0}}
+
+	triggered, reason := Evaluate(rule, pos, 145.0, now, ctx)
+	assert.True(t, triggered)
+	assert.Contains(t, reason, "sd_target")
+
+	triggered2, _ := Evaluate(rule, pos, 148.0, now, ctx)
+	assert.False(t, triggered2)
+}
+
+func TestEvaluate_MaxLoss_Short(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+
+	rule, _ := domain.NewExitRule(domain.ExitRuleMaxLoss, map[string]float64{"pct": 0.02})
+	pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+	pos.Side = "SELL"
+
+	triggered, _ := Evaluate(rule, pos, 103.0, now, EvalContext{})
+	assert.True(t, triggered)
+
+	triggered2, _ := Evaluate(rule, pos, 99.0, now, EvalContext{})
+	assert.False(t, triggered2)
+}
+
+func TestEvaluate_ProfitTarget_Short(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+
+	rule, _ := domain.NewExitRule(domain.ExitRuleProfitTarget, map[string]float64{"pct": 0.03})
+	pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+	pos.Side = "SELL"
+
+	triggered, _ := Evaluate(rule, pos, 96.0, now, EvalContext{})
+	assert.True(t, triggered)
+
+	triggered2, _ := Evaluate(rule, pos, 99.0, now, EvalContext{})
+	assert.False(t, triggered2)
+}
+
+// ---------------------------------------------------------------------------
+// TradingDaysBetween (used by ExpiryWatch)
+// ---------------------------------------------------------------------------
+
+func TestTradingDaysBetween(t *testing.T) {
+	etLoc := mustETLocation(t)
+
+	t.Run("weekdays only", func(t *testing.T) {
+		// Mon March 2 to Fri March 6 = 4 trading days
+		from := time.Date(2026, 3, 2, 10, 0, 0, 0, etLoc)
+		to := time.Date(2026, 3, 6, 16, 0, 0, 0, etLoc)
+		assert.Equal(t, 4, domain.TradingDaysBetween(from, to))
+	})
+
+	t.Run("spans weekend", func(t *testing.T) {
+		// Fri March 6 to Mon March 9 = 1 trading day (just Friday)
+		from := time.Date(2026, 3, 6, 10, 0, 0, 0, etLoc)
+		to := time.Date(2026, 3, 9, 10, 0, 0, 0, etLoc)
+		assert.Equal(t, 1, domain.TradingDaysBetween(from, to))
+	})
+
+	t.Run("same day returns zero", func(t *testing.T) {
+		d := time.Date(2026, 3, 6, 10, 0, 0, 0, etLoc)
+		assert.Equal(t, 0, domain.TradingDaysBetween(d, d))
+	})
+
+	t.Run("to before from returns zero", func(t *testing.T) {
+		from := time.Date(2026, 3, 9, 10, 0, 0, 0, etLoc)
+		to := time.Date(2026, 3, 6, 10, 0, 0, 0, etLoc)
+		assert.Equal(t, 0, domain.TradingDaysBetween(from, to))
+	})
+}
