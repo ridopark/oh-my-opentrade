@@ -25,6 +25,9 @@ Autonomous tune→backtest→evaluate loop for oh-my-opentrade strategy DNA (sch
 6. **Send Discord notifications.** Every significant event must be posted to Discord. See the Discord Notifications section below.
 7. **TOML inline tables only.** Never use `[params.subtable]` syntax — it terminates the `[params]` section. Use inline syntax: `param = { key = "value" }`.
 8. **Structural before parametric.** Always try timing window and regime filters before entry quality params. The order matters due to slot backfill effects.
+9. **Single-variable testing.** NEVER change multiple parameters simultaneously. Change ONE param per backtest so you can attribute causation. When the user requests multiple changes, run them sequentially and compare each to the previous best.
+10. **Verify binary after engine changes.** After `go build`, ALWAYS verify the running process is using the new binary: `kill` the old PID, restart, and confirm a new PID is running. Check with `strings binary | grep -c "new_function_name"` if in doubt. Stale binaries silently invalidate backtests.
+11. **Outlier dependency check.** After any profitable result, compute PF with the largest winner removed. If PF drops below 1.0, flag as outlier-dependent and warn the user. The strategy needs multiple large winners to be robust, not just one.
 
 ## Discord Notifications
 
@@ -344,6 +347,71 @@ If any engine changes were accepted, re-enter the parameter tuning loop (Step 3 
 - Implementation: New evaluator function in evaluators.go, new type in exit_rule.go, dispatch case in Evaluate()
 - Files: exit_rule.go, evaluators.go, spec_loader.go (isKnownExitRuleParamKey)
 
+## Options Strategy Tuning (Learned from MACD v1 Session 2026-04-07)
+
+Options strategies require a different tuning approach than equity strategies. The following rules were learned from 15+ backtests on the MACD crossover strategy.
+
+### Step 0: Architectural Decisions (before ANY parameter tuning)
+
+Test these binary choices FIRST — they change the strategy fundamentally:
+
+1. **Intraday vs Multi-day hold:** Test with and without `EOD_FLATTEN`. Multi-day holds changed avg win from $230 to $2,376 (10x) for MACD. This is not a parameter — it's an architecture choice.
+
+2. **Premium stop vs no premium stop:** Test with NO premium stop as a baseline. Premium stops are structurally hostile to weak signals because options premium noise (theta + IV) triggers fixed stops before the directional thesis plays out. For MACD, every stop level (15%, 30%, 40%, 50%, 65%, 80%) reduced PF vs no-stop.
+
+3. **DTE range:** Short DTE (7-21) gives higher gamma (amplifies winners) but faster theta decay. Long DTE (28-50) gives more time but lower sensitivity. For MACD on 15m, short DTE (7-21) with no EOD flatten outperformed long DTE.
+
+### MFE/MAE Analysis (MANDATORY before exit tuning)
+
+After the baseline backtest, run MFE/MAE analysis BEFORE tuning any exit rules:
+
+```python
+python3 -c "
+import json
+d = json.load(open('_workspace/{strategy}_{variant}.json'))
+trades = d.get('trades', [])
+exits = [t for t in trades if t.get('direction') in ('CLOSE_LONG', 'CLOSE_SHORT')]
+winners = [t for t in exits if t.get('pnl', 0) > 0]
+losers = [t for t in exits if t.get('pnl', 0) < 0]
+loser_mfes = [t['premium_mfe_pct']*100 for t in losers if 'premium_mfe_pct' in t]
+print(f'Losers with MFE > 0 (were profitable): {len([m for m in loser_mfes if m > 0])}/{len(loser_mfes)}')
+print(f'Losers with MFE > 10%: {len([m for m in loser_mfes if m > 10])}/{len(loser_mfes)}')
+winner_maes = [t['premium_mae_pct']*100 for t in winners if 'premium_mae_pct' in t]
+print(f'Winner avg MAE: {sum(winner_maes)/max(len(winner_maes),1):.1f}%')
+"
+```
+
+**Key diagnostics:**
+- If >70% of losers have MFE > 0 → **profit capture problem** (trail/target tuning)
+- If <30% of losers have MFE > 0 → **entry signal problem** (engine change needed)
+- Winner MAE tells you the minimum stop width that doesn't clip winners
+- `bars_to_first_profit == -1` for >50% of losers → entries are "dead on arrival"
+
+**Never tune exit rules without MFE/MAE data.** Blind stop/trail tuning wastes backtests.
+
+### Premium Exit Rule Param Names (CRITICAL)
+
+Exit rule evaluators use specific param key names. Using the wrong name silently disables the rule:
+
+| Exit Rule | Param Key | Type | Example |
+|-----------|-----------|------|---------|
+| `PREMIUM_STOP` | `threshold` | fraction | `0.40` = exit at 40% premium loss |
+| `PREMIUM_TARGET` | `target_pct` | fraction | `0.50` = exit at 50% premium gain |
+| `PREMIUM_TRAIL` | `trail_pct` | fraction | `0.30` = trail 30% from HWM |
+| `PREMIUM_TRAIL` | `min_activation` | fraction | `0.15` = activate after 15% gain |
+| `DTE_FLOOR` | `dte` | integer (trading days) | `3` = exit at 3 trading days to expiry |
+
+**Common mistake:** Using `pct` instead of `threshold` for PREMIUM_STOP silently disables it (returns 0 from lookup, guard clause bails).
+
+### Fat-Tail Strategy Warning
+
+Some strategies (e.g., MACD options) depend on rare large winners. Signs:
+- Removing top 1-2 trades drops PF below 1.0
+- Avg win >> avg loss but WR < 45%
+- Largest win > 5x avg win
+
+**For fat-tail strategies, tighter risk management REDUCES PF** because it clips the tails the strategy depends on. Do not blindly add stops or tighten trails. Use MFE/MAE data to set levels empirically.
+
 ## Tuning Workflow
 
 ### Step 1: Setup
@@ -356,6 +424,7 @@ If any engine changes were accepted, re-enter the parameter tuning loop (Step 3 
 After baseline, **launch quant-analyst agent** with the saved results file. Ask for:
 - Breakdown by regime, direction, time of day, symbol
 - Biggest P&L bleeders
+- MFE/MAE analysis (if options strategy)
 - Recommendations classified as PARAM_CHANGE or ENGINE_CHANGE
 - Priority ordering
 
@@ -530,6 +599,47 @@ Then ask: `"Pass {n} complete. {k} params improved. Continue to pass {n+1}?"`
 - `regime_blocked_directions = { BALANCE = "LONG" }` blocks breakout longs in ranging markets.
 
 **Correlated pairs:** `allowed_hours_end` × `min_confluence_score`, `stop_bps` × `min_slope_bps`
+
+### MACD Crossover (`bollinger_macd` / `macd_only_v1`)
+
+#### Entry Confirmation Filters (tune FIRST for options — entry quality is the binding constraint)
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `require_directional_close` | true/false | — | Crossover bar must close in signal direction. +4-6pp WR |
+| `min_adx` | 0–40 | 5 | ADX trend strength gate. 20+ filters choppy markets. +3-5pp WR |
+| `require_vwap_alignment` | true/false | — | Price above VWAP for longs, below for shorts. +2-3pp WR but can over-filter |
+| `min_body_ratio` | 0–0.7 | 0.1 | Min candle body as fraction of range. Filters dojis/indecision bars |
+| `min_signal_score` | 0–1.0 | 0.05 | Composite signal quality (hist accel + RSI + volume). 0.65 is starting point |
+| `hist_accel_bars` | 0–4 | 1 | Bars of histogram convergence before crossover. 2 is sweet spot |
+| `rsi_long_min` | 0–70 | 5 | Min RSI for longs. 50 = only enter with momentum |
+| `rsi_short_max` | 30–100 | 5 | Max RSI for shorts. 50 = only enter with momentum |
+
+#### Timing & Structure
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `macd_zero_band` | 0–1.0 | 0.1 | Max MACD line value at crossover. 0 = strict (below zero only), 1.0 = relaxed |
+| `allowed_hours_start` | "09:30"–"10:30" | 30min | Skip opening noise. 09:45 is a good default |
+| `allowed_hours_end` | "12:00"–"15:30" | 1h | Wider = more signals but lower quality |
+| `risk_reward_ratio` | 1.5–5.0 | 0.5 | R:R for swing stop/target. Higher = fewer but larger wins |
+| `swing_lookback` | 5–15 | 2 | Bars for swing high/low detection |
+
+#### Options-Specific (for OPTION asset class)
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `min_dte` / `max_dte` | 7–50 | 7 | Short DTE = more gamma, more theta. 7-21 best for multi-day holds |
+| `target_delta_low/high` | 0.30–0.75 | 0.05 | ATM (0.40-0.55) for liquidity. ITM (0.60+) for less extrinsic |
+| `risk_per_trade_bps` | 300–1500 | 100 | Max risk per trade in bps of equity. 1000 for options |
+
+**MACD-specific notes (learned 2026-04-07):**
+- **Directional close + ADX >= 20** was the highest-impact combo: PF 0.175 → 1.371
+- Entry quality matters more than exit tuning for options — theta punishes bad entries immediately
+- Multi-day hold (no EOD flatten) is essential — intraday MACD can't overcome theta
+- Premium stops at ANY level reduce PF — the strategy depends on fat-tail winners
+- 82% of losers were once profitable (MFE > 0) — profit capture via trail is more important than stops
+- Call-side (longs) underperformed put-side (shorts) significantly in the test period
+- Signal scoring has narrow dispersion (0.76-0.99) — needs wider spread to be useful as a filter
+
+**Correlated pairs:** `require_directional_close` × `min_adx`, `min_signal_score` × `hist_accel_bars`
 
 ### Generic (unknown strategy)
 Infer ranges from current values: try +/- 20%. Parameter naming conventions:

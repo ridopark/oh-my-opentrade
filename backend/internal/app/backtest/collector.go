@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,8 +39,12 @@ type TradeRecord struct {
 	Regime        string `json:"regime,omitempty"`         // EMA regime: TREND / BALANCE / REVERSAL
 	VIXBucket     string `json:"vix_bucket,omitempty"`     // LOW_VOL / NORMAL / HIGH_VOL
 	MarketContext string  `json:"market_context,omitempty"` // composite: e.g. "NORMAL | NR7 | VWAP+"
-	PnL           float64 `json:"pnl,omitempty"`
-	Multiplier    float64 `json:"-"` // 100 for options, 1 for equity (internal use)
+	PnL               float64 `json:"pnl,omitempty"`
+	PremiumMFE        float64 `json:"premium_mfe_pct,omitempty"`
+	PremiumMAE        float64 `json:"premium_mae_pct,omitempty"`
+	BarsToFirstProfit int     `json:"bars_to_first_profit,omitempty"`
+	BarsHeld          int     `json:"bars_held,omitempty"`
+	Multiplier        float64 `json:"-"` // 100 for options, 1 for equity (internal use)
 }
 
 // Result holds the computed backtest metrics.
@@ -134,6 +139,10 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 	vixBucket, _ := payload["vix_bucket"].(string)
 	marketContext, _ := payload["market_context"].(string)
 	instrumentType, _ := payload["instrument_type"].(string)
+	premiumMFEStr, _ := payload["premium_mfe_pct"].(string)
+	premiumMAEStr, _ := payload["premium_mae_pct"].(string)
+	barsToFirstProfitStr, _ := payload["bars_to_first_profit"].(string)
+	barsHeldStr, _ := payload["bars_held"].(string)
 
 	// Options contracts have a 100x multiplier
 	multiplier := 1.0
@@ -173,6 +182,28 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 		Regime:        regime,
 		VIXBucket:     vixBucket,
 		MarketContext: marketContext,
+	}
+
+	// Parse MFE/MAE trade analytics from fill payload.
+	if premiumMFEStr != "" {
+		if v, err := strconv.ParseFloat(premiumMFEStr, 64); err == nil {
+			tr.PremiumMFE = v
+		}
+	}
+	if premiumMAEStr != "" {
+		if v, err := strconv.ParseFloat(premiumMAEStr, 64); err == nil {
+			tr.PremiumMAE = v
+		}
+	}
+	if barsToFirstProfitStr != "" {
+		if v, err := strconv.ParseFloat(barsToFirstProfitStr, 64); err == nil {
+			tr.BarsToFirstProfit = int(v)
+		}
+	}
+	if barsHeldStr != "" {
+		if v, err := strconv.ParseFloat(barsHeldStr, 64); err == nil {
+			tr.BarsHeld = int(v)
+		}
 	}
 
 	// Use direction to classify entries vs exits.
