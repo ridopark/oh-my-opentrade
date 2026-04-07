@@ -593,31 +593,64 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 
 				// Fetch 1D bars: lookback for HTF EMA200 + full backtest range for anchor detectors.
+				// Try DB first, fall back to IBKR API on cache miss.
 				var bars1d []domain.MarketBar
-				if r.marketData != nil {
+				{
 					dailyBarsNeeded := 200
 					dailyTo := r.cfg.To // extend through backtest end for catalyst/capitulation detection
 					dailyFrom := r.cfg.From.Add(-time.Duration(float64(dailyBarsNeeded)*2.0) * 24 * time.Hour)
-					fetched, err := r.marketData.GetHistoricalBars(ctx, sym, "1d", dailyFrom, dailyTo)
-					if err != nil || len(fetched) < dailyBarsNeeded {
-						r.log.Warn().Err(err).Str("symbol", sym.String()).Int("got", len(fetched)).Int("needed", dailyBarsNeeded).Msg("insufficient 1D bars for HTF EMA200 — ORB signals will be blocked for this symbol")
+					dbBars, dbErr := repo.GetMarketBars(ctx, sym, "1d", dailyFrom, dailyTo)
+					if dbErr != nil {
+						r.log.Warn().Err(dbErr).Str("symbol", sym.String()).Msg("1D DB fetch failed")
 					}
-					bars1d = fetched
+					switch {
+					case len(dbBars) >= dailyBarsNeeded:
+						bars1d = dbBars
+					case r.marketData != nil:
+						fetched, err := r.marketData.GetHistoricalBars(ctx, sym, "1d", dailyFrom, dailyTo)
+						if err != nil || len(fetched) < dailyBarsNeeded {
+							r.log.Warn().Err(err).Str("symbol", sym.String()).Int("db_bars", len(dbBars)).Int("api_bars", len(fetched)).Int("needed", dailyBarsNeeded).Msg("insufficient 1D bars for HTF EMA200 — ORB signals will be blocked for this symbol")
+						}
+						if len(fetched) > len(dbBars) {
+							bars1d = fetched
+						} else {
+							bars1d = dbBars
+						}
+					default:
+						bars1d = dbBars
+					}
 				}
 
 				// Fetch 1H bars: lookback for HTF EMA50.
+				// Try DB first, fall back to IBKR API on cache miss.
 				var bars1h []domain.MarketBar
-				if r.marketData != nil {
+				{
 					hourlyBarsNeeded := 50
 					hourlyTo := r.cfg.From
 					hourlyFrom := hourlyTo.Add(-time.Duration(float64(hourlyBarsNeeded)*2.0) * time.Hour)
-					fetched, err := r.marketData.GetHistoricalBars(ctx, sym, "1h", hourlyFrom, hourlyTo)
-					if err != nil {
-						r.log.Warn().Err(err).Str("symbol", sym.String()).Msg("1H warmup fetch failed")
-					} else if len(fetched) < hourlyBarsNeeded {
-						r.log.Warn().Str("symbol", sym.String()).Int("got", len(fetched)).Int("needed", hourlyBarsNeeded).Msg("insufficient 1H bars for HTF EMA50")
+					dbBars, dbErr := repo.GetMarketBars(ctx, sym, "1h", hourlyFrom, hourlyTo)
+					if dbErr != nil {
+						r.log.Warn().Err(dbErr).Str("symbol", sym.String()).Msg("1H DB fetch failed")
 					}
-					bars1h = fetched
+					switch {
+					case len(dbBars) >= hourlyBarsNeeded:
+						bars1h = dbBars
+					case r.marketData != nil:
+						fetched, err := r.marketData.GetHistoricalBars(ctx, sym, "1h", hourlyFrom, hourlyTo)
+						if err != nil {
+							r.log.Warn().Err(err).Str("symbol", sym.String()).Msg("1H API warmup fetch failed")
+						}
+						if len(fetched) > len(dbBars) {
+							bars1h = fetched
+						} else {
+							bars1h = dbBars
+						}
+						if len(bars1h) < hourlyBarsNeeded {
+							r.log.Warn().Str("symbol", sym.String()).Int("got", len(bars1h)).Int("needed", hourlyBarsNeeded).Msg("insufficient 1H bars for HTF EMA50")
+						}
+					default:
+						bars1h = dbBars
+					}
 				}
 
 				warmupResults[i] = warmupResult{sym: sym.String(), bars: bars, bars1d: bars1d, bars1h: bars1h}
