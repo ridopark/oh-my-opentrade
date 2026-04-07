@@ -294,7 +294,7 @@ function TopBar({
         </div>
         {selectedStrat && (
           <span className="text-[10px] text-muted-foreground font-mono">
-            {selectedStrat.symbols?.length ?? 0} symbols \u00B7 {selectedStrat.timeframes?.[0] ?? "5m"}
+            {selectedStrat.symbols?.length ?? 0} symbols · {selectedStrat.timeframes?.[0] ?? "5m"}
           </span>
         )}
       </div>
