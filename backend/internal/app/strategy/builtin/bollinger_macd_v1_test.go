@@ -186,10 +186,10 @@ func warmupBM(t *testing.T, s *builtin.BollingerMACDStrategy, ctx *testContext, 
 	return st
 }
 
-func TestBollingerMACD_SignalScore_NoFilter(t *testing.T) {
+func TestBollingerMACD_Confluence_NoFilter(t *testing.T) {
 	s := builtin.NewBollingerMACDStrategy()
 	params := bmParams()
-	// No min_signal_score → all signals pass (default 0)
+	// No min_confluence_score → all signals pass (default 0)
 
 	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
 	st, err := s.Init(ctx, "TEST", params, nil)
@@ -208,16 +208,17 @@ func TestBollingerMACD_SignalScore_NoFilter(t *testing.T) {
 		RSI: 55,
 	}
 	st, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
-	require.Len(t, sigs, 1, "should fire signal with no min_signal_score filter")
+	require.Len(t, sigs, 1, "should fire signal with no min_confluence_score filter")
 	assert.Equal(t, strat.SideBuy, sigs[0].Side)
-	assert.Contains(t, sigs[0].Tags, "signal_score")
+	assert.Contains(t, sigs[0].Tags, "confluence")
+	assert.Contains(t, sigs[0].Tags, "confluence_detail")
 	_ = st
 }
 
-func TestBollingerMACD_SignalScore_FilteredOut(t *testing.T) {
+func TestBollingerMACD_Confluence_FilteredOut(t *testing.T) {
 	s := builtin.NewBollingerMACDStrategy()
 	params := bmParams()
-	params["min_signal_score"] = 0.90 // very high threshold
+	params["min_confluence_score"] = 95 // very high threshold — virtually impossible
 
 	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
 	st, err := s.Init(ctx, "TEST", params, nil)
@@ -235,14 +236,14 @@ func TestBollingerMACD_SignalScore_FilteredOut(t *testing.T) {
 		RSI: 35, // bad RSI for long
 	}
 	st, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
-	assert.Empty(t, sigs, "signal should be filtered by high min_signal_score")
+	assert.Empty(t, sigs, "signal should be filtered by high min_confluence_score")
 	_ = st
 }
 
-func TestBollingerMACD_RSI_LongFilter(t *testing.T) {
+func TestBollingerMACD_Confluence_HighThreshold_Blocks(t *testing.T) {
 	s := builtin.NewBollingerMACDStrategy()
 	params := bmParams()
-	params["rsi_long_min"] = 50.0 // require RSI >= 50 for longs
+	params["min_confluence_score"] = 80 // high threshold blocks weak signals
 
 	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
 	st, err := s.Init(ctx, "TEST", params, nil)
@@ -255,21 +256,21 @@ func TestBollingerMACD_RSI_LongFilter(t *testing.T) {
 		Open: 100, High: 102, Low: 99, Close: 101, Volume: 1500,
 	}
 
-	// RSI = 45 → below minimum 50 → filtered
+	// Decent but not perfect indicators — won't hit 80
 	crossInd := strat.IndicatorData{
 		EMA9: 100, EMA200: 95, VolumeSMA: 1000,
 		MACDLine: 0.1, MACDSignal: 0.05, MACDHistogram: 0.05,
 		RSI: 45,
 	}
 	st, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
-	assert.Empty(t, sigs, "long signal should be filtered when RSI < rsi_long_min")
+	assert.Empty(t, sigs, "signal should be blocked when confluence score below high threshold")
 	_ = st
 }
 
-func TestBollingerMACD_RSI_ShortFilter(t *testing.T) {
+func TestBollingerMACD_Confluence_ShortSignal(t *testing.T) {
 	s := builtin.NewBollingerMACDStrategy()
 	params := bmParams()
-	params["rsi_short_max"] = 50.0 // require RSI <= 50 for shorts
+	// No min_confluence_score → short signals pass
 
 	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
 	st, err := s.Init(ctx, "TEST", params, nil)
@@ -285,7 +286,7 @@ func TestBollingerMACD_RSI_ShortFilter(t *testing.T) {
 		ind := strat.IndicatorData{
 			EMA9: 101, EMA200: 105, VolumeSMA: 1000,
 			MACDLine: 0.5, MACDSignal: 0.3, MACDHistogram: 0.2,
-			RSI: 55,
+			RSI: 45,
 		}
 		st, _ = feedBMBar(t, s, ctx, "TEST", st, bar, ind)
 	}
@@ -298,22 +299,21 @@ func TestBollingerMACD_RSI_ShortFilter(t *testing.T) {
 	crossInd := strat.IndicatorData{
 		EMA9: 100, EMA200: 105, VolumeSMA: 1000,
 		MACDLine: -0.1, MACDSignal: -0.05, MACDHistogram: -0.05,
-		RSI: 55, // above max 50 → filtered
+		RSI: 45,
 	}
 	st, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
-	assert.Empty(t, sigs, "short signal should be filtered when RSI > rsi_short_max")
+	require.Len(t, sigs, 1, "short signal should fire with no confluence filter")
+	assert.Equal(t, strat.SideSell, sigs[0].Side)
+	assert.Contains(t, sigs[0].Tags, "confluence")
+	assert.Contains(t, sigs[0].Tags, "confluence_detail")
 	_ = st
 }
 
 func TestBollingerMACD_DefaultsPreserveBehavior(t *testing.T) {
-	// With all defaults, new params should not change behavior
+	// With all defaults, min_confluence_score=0 should not filter any signals
 	s := builtin.NewBollingerMACDStrategy()
 	params := bmParams()
-	// Explicitly set defaults
-	params["min_signal_score"] = 0.0
-	params["hist_accel_bars"] = 0
-	params["rsi_long_min"] = 0.0
-	params["rsi_short_max"] = 100.0
+	params["min_confluence_score"] = 0
 
 	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
 	st, err := s.Init(ctx, "TEST", params, nil)
@@ -331,14 +331,14 @@ func TestBollingerMACD_DefaultsPreserveBehavior(t *testing.T) {
 		RSI: 30, // low RSI
 	}
 	st, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
-	require.Len(t, sigs, 1, "with all defaults (disabled), signal should still fire")
+	require.Len(t, sigs, 1, "with min_confluence_score=0 (disabled), signal should still fire")
 	_ = st
 }
 
-func TestBollingerMACD_ScoreUsedAsStrength(t *testing.T) {
+func TestBollingerMACD_ConfluenceUsedAsStrength(t *testing.T) {
 	s := builtin.NewBollingerMACDStrategy()
 	params := bmParams()
-	// No filter, but score should be used as signal strength
+	// No filter, but confluence score / 100 should be used as signal strength
 
 	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
 	st, err := s.Init(ctx, "TEST", params, nil)
@@ -358,128 +358,62 @@ func TestBollingerMACD_ScoreUsedAsStrength(t *testing.T) {
 	_, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
 	require.Len(t, sigs, 1)
 
-	// Signal strength should NOT be hardcoded 0.8 anymore
-	assert.NotEqual(t, 0.8, sigs[0].Strength, "strength should be computed, not hardcoded 0.8")
-	assert.Greater(t, sigs[0].Strength, 0.0, "strength should be positive")
+	// Signal strength should be confluence score / 100, with 0.1 floor
+	assert.GreaterOrEqual(t, sigs[0].Strength, 0.1, "strength should be at least 0.1 floor")
 	assert.LessOrEqual(t, sigs[0].Strength, 1.0, "strength should be <= 1.0")
 }
 
-// ─── Entry confirmation filters ──────────────────────────────────────────────
+// ─── ComputeConfluenceScore unit tests ──────────────────────────────────────
 
-func TestBollingerMACD_DirectionalClose_Blocks(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
-	params := bmParams()
-	params["require_directional_close"] = true
-
-	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
-	st, err := s.Init(ctx, "TEST", params, nil)
-	require.NoError(t, err)
-	st = warmupBM(t, s, ctx, st, 3)
-
-	// Bearish candle on a long crossover → should be blocked
-	crossBar := strat.Bar{
-		Time: time.Date(2025, 6, 2, 15, 30, 0, 0, time.UTC),
-		Open: 102, High: 103, Low: 99, Close: 100, Volume: 1500, // Close < Open
+func TestComputeConfluenceScore_AllFactors(t *testing.T) {
+	bar := strat.Bar{
+		Open: 99, High: 102, Low: 98, Close: 101, Volume: 1800,
 	}
-	crossInd := strat.IndicatorData{
-		EMA9: 99, EMA200: 95, VolumeSMA: 1000,
-		MACDLine: 0.1, MACDSignal: 0.05, MACDHistogram: 0.05,
-		RSI: 55,
+	ind := strat.IndicatorData{
+		EMA9: 100, EMA21: 99, EMA50: 98,
+		ADX: 30, RSI: 55,
+		MACDLine: 0.05, ATR: 1.0,
+		VolumeSMA: 1000,
+		BBPercentB: 0.6,
+		VWAP:       100,
+		HTF: map[string]strat.HTFIndicator{
+			"1d": {Bias: "BULLISH"},
+		},
 	}
-	_, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
-	assert.Empty(t, sigs, "bearish candle should block long entry when require_directional_close=true")
+	// Converging histogram for hist_accel
+	prevHists := []float64{1.0, 0.5, 0.3, 0.2, 0.15}
+
+	result := builtin.ComputeConfluenceScore(bar, ind, prevHists, true)
+	assert.Greater(t, result.Score, 50, "strong confluence should score well above 50")
+	assert.Contains(t, result.Factors, "ema_stack")
+	assert.Contains(t, result.Factors, "adx_strong")
+	assert.Contains(t, result.Factors, "vwap_aligned")
+	assert.Contains(t, result.Factors, "htf_agree")
 }
 
-func TestBollingerMACD_DirectionalClose_Passes(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
-	params := bmParams()
-	params["require_directional_close"] = true
-
-	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
-	st, err := s.Init(ctx, "TEST", params, nil)
-	require.NoError(t, err)
-	st = warmupBM(t, s, ctx, st, 3)
-
-	// Bullish candle on a long crossover → should pass
-	crossBar := strat.Bar{
-		Time: time.Date(2025, 6, 2, 15, 30, 0, 0, time.UTC),
-		Open: 99, High: 102, Low: 98, Close: 101, Volume: 1500, // Close > Open
-	}
-	crossInd := strat.IndicatorData{
-		EMA9: 100, EMA200: 95, VolumeSMA: 1000,
-		MACDLine: 0.1, MACDSignal: 0.05, MACDHistogram: 0.05,
-		RSI: 55,
-	}
-	_, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
-	require.Len(t, sigs, 1, "bullish candle should pass directional close filter")
+func TestComputeConfluenceScore_EmptyIndicators(t *testing.T) {
+	bar := strat.Bar{Open: 100, High: 100, Low: 100, Close: 100, Volume: 0}
+	ind := strat.IndicatorData{}
+	result := builtin.ComputeConfluenceScore(bar, ind, nil, true)
+	assert.Equal(t, 0, result.Score)
+	assert.Empty(t, result.Factors)
 }
 
-func TestBollingerMACD_ADX_Blocks(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
-	params := bmParams()
-	params["min_adx"] = 25.0
-
-	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
-	st, err := s.Init(ctx, "TEST", params, nil)
-	require.NoError(t, err)
-	st = warmupBM(t, s, ctx, st, 3)
-
-	crossBar := strat.Bar{
-		Time: time.Date(2025, 6, 2, 15, 30, 0, 0, time.UTC),
-		Open: 100, High: 102, Low: 99, Close: 101, Volume: 1500,
+func TestComputeConfluenceScore_ShortSide(t *testing.T) {
+	bar := strat.Bar{
+		Open: 101, High: 102, Low: 98, Close: 99, Volume: 1500,
 	}
-	crossInd := strat.IndicatorData{
-		EMA9: 100, EMA200: 95, VolumeSMA: 1000,
-		MACDLine: 0.1, MACDSignal: 0.05, MACDHistogram: 0.05,
-		RSI: 55, ADX: 15, // below min_adx=25
+	ind := strat.IndicatorData{
+		EMA9: 100, EMA21: 101, EMA50: 102,
+		ADX: 25, RSI: 45,
+		MACDLine: -0.05, ATR: 1.0,
+		VolumeSMA: 1000,
+		BBPercentB: 0.35,
+		VWAP:       100,
 	}
-	_, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
-	assert.Empty(t, sigs, "low ADX should block entry when min_adx=25")
-}
-
-func TestBollingerMACD_VWAP_Blocks(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
-	params := bmParams()
-	params["require_vwap_alignment"] = true
-
-	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
-	st, err := s.Init(ctx, "TEST", params, nil)
-	require.NoError(t, err)
-	st = warmupBM(t, s, ctx, st, 3)
-
-	crossBar := strat.Bar{
-		Time: time.Date(2025, 6, 2, 15, 30, 0, 0, time.UTC),
-		Open: 100, High: 102, Low: 99, Close: 101, Volume: 1500,
-	}
-	crossInd := strat.IndicatorData{
-		EMA9: 100, EMA200: 95, VolumeSMA: 1000,
-		MACDLine: 0.1, MACDSignal: 0.05, MACDHistogram: 0.05,
-		RSI: 55, VWAP: 102, // price below VWAP → blocks long
-	}
-	_, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
-	assert.Empty(t, sigs, "price below VWAP should block long when require_vwap_alignment=true")
-}
-
-func TestBollingerMACD_BodyRatio_Blocks(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
-	params := bmParams()
-	params["min_body_ratio"] = 0.5
-
-	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
-	st, err := s.Init(ctx, "TEST", params, nil)
-	require.NoError(t, err)
-	st = warmupBM(t, s, ctx, st, 3)
-
-	// Doji candle: body is tiny relative to range
-	crossBar := strat.Bar{
-		Time: time.Date(2025, 6, 2, 15, 30, 0, 0, time.UTC),
-		Open: 100.0, High: 103, Low: 98, Close: 100.1, Volume: 1500, // body=0.1, range=5, ratio=0.02
-	}
-	crossInd := strat.IndicatorData{
-		EMA9: 99, EMA200: 95, VolumeSMA: 1000,
-		MACDLine: 0.1, MACDSignal: 0.05, MACDHistogram: 0.05,
-		RSI: 55,
-	}
-	_, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
-	assert.Empty(t, sigs, "doji candle should be blocked by min_body_ratio=0.5")
+	result := builtin.ComputeConfluenceScore(bar, ind, nil, false)
+	assert.Greater(t, result.Score, 0)
+	assert.Contains(t, result.Factors, "ema_stack")
+	assert.Contains(t, result.Factors, "vwap_aligned")
+	assert.Contains(t, result.Factors, "bb_trend")
 }
