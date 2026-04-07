@@ -40,7 +40,7 @@ func (s *BollingerMACDStrategy) WarmupBars() int  { return 30 }
 type BMConfig struct {
 	Mode                string  // "macd_only", "bb_only", or "confluence"
 	BBBreakoutThreshold float64
-	MACDBelow0Required  bool    // require MACD crossover below zero line
+	MACDZeroBand        float64 // crossover must occur with MACD < this value (0=below zero, >0=relaxed band)
 	RiskRewardRatio     float64 // target = entry + ratio * (entry - stop)
 	SwingLookback       int     // bars to look back for swing low/high
 	VolumeMult          float64
@@ -100,7 +100,7 @@ func parseBMConfig(params map[string]any) BMConfig {
 	return BMConfig{
 		Mode:                getString(params, "mode", "confluence"),
 		BBBreakoutThreshold: getFloat64(params, "bb_breakout_threshold", 1.0),
-		MACDBelow0Required:  getBool(params, "macd_below_zero_required", false),
+		MACDZeroBand:        getFloat64(params, "macd_zero_band", 0.0),
 		RiskRewardRatio:     getFloat64(params, "risk_reward_ratio", 1.5),
 		SwingLookback:       getInt(params, "swing_lookback", 10),
 		VolumeMult:          getFloat64(params, "volume_mult", 1.0),
@@ -339,8 +339,8 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 
 		switch cfg.Mode {
 		case "macd_only":
-			// Trading Rush MACD: crossover above signal, below zero line
-			longTrigger = macdCrossUp && ind.MACDLine < 0
+			// Trading Rush MACD: crossover above signal, within zero band
+			longTrigger = macdCrossUp && ind.MACDLine < cfg.MACDZeroBand
 			setup = "macd_long"
 		case "bb_only":
 			// Trading Rush BB: close above upper band
@@ -389,7 +389,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 
 		switch cfg.Mode {
 		case "macd_only":
-			shortTrigger = macdCrossDown && ind.MACDLine > 0
+			shortTrigger = macdCrossDown && ind.MACDLine > -cfg.MACDZeroBand
 			setup = "macd_short"
 		case "bb_only":
 			shortTrigger = ind.BBPercentB < (1.0 - cfg.BBBreakoutThreshold)
