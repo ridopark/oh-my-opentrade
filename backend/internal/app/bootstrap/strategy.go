@@ -66,6 +66,7 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 		builtin.NewAIScalperStrategy(),
 		builtin.NewBreakRetestStrategy(),
 		builtin.NewPHMStrategy(),
+		builtin.NewBollingerMACDStrategy(),
 	} {
 		if err := registry.Register(s); err != nil {
 			return nil, fmt.Errorf("bootstrap: strategy: failed to register builtin %s: %w", s.Meta().ID, err)
@@ -278,6 +279,18 @@ func makeSnapshotFn() strategy.IndicatorSnapshotFunc {
 			VWAP:          snap.VWAP,
 			Volume:        snap.Volume,
 			VolumeSMA:     snap.VolumeSMA,
+			ATR:           snap.ATR,
+			EMA200:        snap.EMA200,
+			BBUpper:       snap.BBUpper,
+			BBMiddle:      snap.BBMiddle,
+			BBLower:       snap.BBLower,
+			BBPercentB:    snap.BBPercentB,
+			BBBandwidth:   snap.BBBandwidth,
+			MACDLine:      snap.MACDLine,
+			MACDSignal:    snap.MACDSignal,
+			MACDHistogram: snap.MACDHistogram,
+			ADX:           snap.ADX,
+			RegimeScore:   snap.RegimeScore,
 		}
 	}
 }

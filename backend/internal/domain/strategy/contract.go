@@ -152,6 +152,17 @@ type IndicatorData struct {
 	VolumeSMA     float64
 	ATR           float64
 	VWAPSD        float64
+	EMA200        float64
+	BBUpper       float64
+	BBMiddle      float64
+	BBLower       float64
+	BBPercentB    float64
+	BBBandwidth   float64
+	MACDLine      float64
+	MACDSignal    float64
+	MACDHistogram float64
+	ADX           float64
+	RegimeScore   float64
 	AnchorRegimes map[string]AnchorRegime
 	HTF           map[string]HTFIndicator
 }
