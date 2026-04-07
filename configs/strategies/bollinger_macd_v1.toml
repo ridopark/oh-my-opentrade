@@ -1,0 +1,68 @@
+schema_version = 2
+
+[strategy]
+id = "bollinger_macd_v1"
+version = "1.0.0"
+name = "BB+MACD Confluence with Regime Filter"
+description = "Bollinger Band breakout confirmed by MACD histogram, gated by composite regime score"
+author = "system"
+created_at = "2026-04-06T00:00:00Z"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "META", "AMZN", "GOOGL"]
+timeframes = ["5m"]
+priority = 70
+conflict_policy = "priority_wins"
+exclusive_per_symbol = true
+watchlist_mode = "static"
+allowed_directions = ["LONG", "SHORT"]
+
+[params]
+# Bollinger Bands
+bb_breakout_threshold = 1.0   # %B threshold for breakout (1.0 = upper band)
+
+# MACD
+require_histogram_rising = true
+
+# Regime Filter (composite: ADX + EMA slope + BB width)
+regime_threshold = 0.67       # need 2/3 factors confirming trend
+
+# Volume
+volume_mult = 1.5             # breakout candle volume > N * SMA(vol,20)
+
+# Risk
+stop_bps = 50
+limit_offset_bps = 10
+risk_per_trade_bps = 300
+max_position_bps = 1500
+
+# Timing
+allowed_hours_start = "09:35"
+allowed_hours_end = "15:45"
+allowed_hours_tz = "America/New_York"
+cooldown_seconds = 1800
+max_trades_per_day = 3
+stabilization_bars = 30
+
+[hooks]
+signals = { engine = "builtin", name = "bollinger_macd" }
+
+[[exit_rules]]
+type = "SWING_STOP"
+[exit_rules.params]
+lookback = 20
+buffer_bps = 25
+
+[[exit_rules]]
+type = "STAGNATION_EXIT"
+[exit_rules.params]
+minutes = 45
+
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 15

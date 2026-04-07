@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"math"
+	"sort"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 )
@@ -17,6 +18,14 @@ const (
 	volumeSMAPeriod = 20
 	atrPeriod       = 14
 	maxWindowSize   = 250
+
+	bbPeriod         = 20
+	bbStdDevMult     = 2.0
+	macdFastPeriod   = 12
+	macdSlowPeriod   = 26
+	macdSignalPeriod = 9
+	adxPeriod        = 14
+	emaSlopeWindow   = 10
 )
 
 // symbolState tracks the internal state required to compute technical indicators
@@ -46,6 +55,30 @@ type symbolState struct {
 	atrInit       bool
 	prevClose     float64
 	prevCloseSet  bool
+
+	// MACD
+	ema12     float64
+	ema26     float64
+	ema12Init bool
+	ema26Init bool
+	macdSig   float64 // 9-EMA of MACD line
+	macdSigInit bool
+	macdCount int // bars since both EMAs initialized (for signal seeding)
+
+	// ADX
+	plusDM14  float64 // Wilder-smoothed +DM
+	minusDM14 float64 // Wilder-smoothed -DM
+	trSmooth  float64 // Wilder-smoothed TR (for DI computation)
+	adx       float64
+	adxInit   bool
+	dxCount   int // DX values accumulated for initial ADX seed
+	dxSum     float64
+
+	// Regime score
+	ema50History  []float64
+	bbBandwidths  []float64
+	prevHigh      float64
+	prevHighSet   bool
 }
 
 type emaConfig struct {
@@ -281,6 +314,183 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 			state.atr = atr
 		}
 	}
+	// Bollinger Bands (20-period SMA, 2 std devs)
+	var bbUpper, bbMiddle, bbLower, bbPercentB, bbBandwidth float64
+	if len(state.closes) >= bbPeriod {
+		bbMiddle = smaWindow(state.closes, bbPeriod)
+		start := len(state.closes) - bbPeriod
+		sumSq := 0.0
+		for i := start; i < len(state.closes); i++ {
+			diff := state.closes[i] - bbMiddle
+			sumSq += diff * diff
+		}
+		stdDev := math.Sqrt(sumSq / float64(bbPeriod))
+		bbUpper = bbMiddle + bbStdDevMult*stdDev
+		bbLower = bbMiddle - bbStdDevMult*stdDev
+		if bbUpper != bbLower {
+			bbPercentB = (bar.Close - bbLower) / (bbUpper - bbLower)
+		}
+		if bbMiddle > 0 {
+			bbBandwidth = (bbUpper - bbLower) / bbMiddle
+		}
+		state.bbBandwidths = append(state.bbBandwidths, bbBandwidth)
+		if len(state.bbBandwidths) > maxWindowSize {
+			state.bbBandwidths = state.bbBandwidths[1:]
+		}
+	}
+
+	// MACD: EMA(12) - EMA(26), Signal = EMA(9) of MACD line
+	var macdLine, macdSignalLine, macdHistogram float64
+	if !state.ema12Init && len(state.closes) >= macdFastPeriod {
+		state.ema12 = smaWindow(state.closes, macdFastPeriod)
+		state.ema12Init = true
+	} else if state.ema12Init {
+		mult := 2.0 / (float64(macdFastPeriod) + 1.0)
+		state.ema12 = (bar.Close-state.ema12)*mult + state.ema12
+	}
+	if !state.ema26Init && len(state.closes) >= macdSlowPeriod {
+		state.ema26 = smaWindow(state.closes, macdSlowPeriod)
+		state.ema26Init = true
+	} else if state.ema26Init {
+		mult := 2.0 / (float64(macdSlowPeriod) + 1.0)
+		state.ema26 = (bar.Close-state.ema26)*mult + state.ema26
+	}
+	if state.ema12Init && state.ema26Init {
+		macdLine = state.ema12 - state.ema26
+		state.macdCount++
+		if !state.macdSigInit && state.macdCount >= macdSignalPeriod {
+			// Seed signal line: we don't have the full MACD history, so seed with current MACD
+			if state.macdCount == macdSignalPeriod {
+				state.macdSig = macdLine
+			}
+			state.macdSigInit = true
+		}
+		if state.macdSigInit {
+			mult := 2.0 / (float64(macdSignalPeriod) + 1.0)
+			state.macdSig = (macdLine-state.macdSig)*mult + state.macdSig
+			macdSignalLine = state.macdSig
+		}
+		macdHistogram = macdLine - macdSignalLine
+	}
+
+	// ADX (14-period, Wilder smoothing — same pattern as ATR)
+	adxVal := state.adx
+	if state.prevCloseSet && state.prevHighSet {
+		upMove := bar.High - state.prevHigh
+		downMove := state.lows[len(state.lows)-2] - bar.Low // prev low - current low
+		if len(state.lows) >= 2 {
+			downMove = state.lows[len(state.lows)-2] - bar.Low
+		}
+		plusDM := 0.0
+		minusDM := 0.0
+		if upMove > downMove && upMove > 0 {
+			plusDM = upMove
+		}
+		if downMove > upMove && downMove > 0 {
+			minusDM = downMove
+		}
+		tr := trueRange(bar.High, bar.Low, state.prevClose)
+
+		if !state.adxInit && len(state.closes) >= adxPeriod+1 {
+			// First smoothing: accumulate first adxPeriod values
+			if state.trSmooth == 0 {
+				// Initialize smoothed values with sum of first period
+				state.plusDM14 = plusDM
+				state.minusDM14 = minusDM
+				state.trSmooth = tr
+			} else {
+				state.plusDM14 += plusDM
+				state.minusDM14 += minusDM
+				state.trSmooth += tr
+			}
+			if state.dxCount < adxPeriod-1 {
+				state.dxCount++
+			} else if state.trSmooth > 0 {
+				// We have adxPeriod values, compute first DI/DX
+				plusDI := (state.plusDM14 / state.trSmooth) * 100
+				minusDI := (state.minusDM14 / state.trSmooth) * 100
+				diSum := plusDI + minusDI
+				if diSum > 0 {
+					dx := math.Abs(plusDI-minusDI) / diSum * 100
+					state.dxSum += dx
+					state.adx = state.dxSum / float64(state.dxCount+1)
+					adxVal = state.adx
+					state.adxInit = true
+				}
+			}
+		} else if state.adxInit {
+			// Wilder smoothing for DM and TR
+			state.plusDM14 = state.plusDM14 - (state.plusDM14 / float64(adxPeriod)) + plusDM
+			state.minusDM14 = state.minusDM14 - (state.minusDM14 / float64(adxPeriod)) + minusDM
+			state.trSmooth = state.trSmooth - (state.trSmooth / float64(adxPeriod)) + tr
+
+			if state.trSmooth > 0 {
+				plusDI := (state.plusDM14 / state.trSmooth) * 100
+				minusDI := (state.minusDM14 / state.trSmooth) * 100
+				diSum := plusDI + minusDI
+				if diSum > 0 {
+					dx := math.Abs(plusDI-minusDI) / diSum * 100
+					// Wilder smoothing for ADX
+					state.adx = (state.adx*float64(adxPeriod-1) + dx) / float64(adxPeriod)
+					adxVal = state.adx
+				}
+			}
+		}
+	}
+	state.prevHigh = bar.High
+	state.prevHighSet = true
+
+	// EMA50 slope history (for regime detection)
+	if state.ema50Init {
+		state.ema50History = append(state.ema50History, state.ema50)
+		if len(state.ema50History) > emaSlopeWindow+1 {
+			state.ema50History = state.ema50History[1:]
+		}
+	}
+
+	// Composite Regime Score: majority vote of 3 uncorrelated factors
+	regimeScore := 0.0
+	{
+		votes := 0.0
+		factors := 0.0
+
+		// Factor 1: ADX > 25 (trend strength)
+		if state.adxInit {
+			factors++
+			if adxVal > 25.0 {
+				votes++
+			}
+		}
+
+		// Factor 2: EMA50 slope (trend direction/momentum)
+		if len(state.ema50History) >= emaSlopeWindow {
+			factors++
+			oldest := state.ema50History[0]
+			if oldest > 0 {
+				slope := math.Abs(state.ema50History[len(state.ema50History)-1]-oldest) / oldest
+				if slope > 0.001 {
+					votes++
+				}
+			}
+		}
+
+		// Factor 3: BB Bandwidth above median (volatility expanding)
+		if len(state.bbBandwidths) >= bbPeriod {
+			factors++
+			sorted := make([]float64, len(state.bbBandwidths))
+			copy(sorted, state.bbBandwidths)
+			sortFloat64s(sorted)
+			median := sorted[len(sorted)/2]
+			if bbBandwidth > median {
+				votes++
+			}
+		}
+
+		if factors > 0 {
+			regimeScore = votes / factors
+		}
+	}
+
 	state.prevClose = bar.Close
 	state.prevCloseSet = true
 
@@ -313,6 +523,24 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 	if vwapSD > 0 {
 		snap.VWAPSD = vwapSD
 	}
+	if len(state.closes) >= bbPeriod {
+		snap.BBUpper = bbUpper
+		snap.BBMiddle = bbMiddle
+		snap.BBLower = bbLower
+		snap.BBPercentB = bbPercentB
+		snap.BBBandwidth = bbBandwidth
+	}
+	if state.ema12Init && state.ema26Init {
+		snap.MACDLine = macdLine
+		if state.macdSigInit {
+			snap.MACDSignal = macdSignalLine
+		}
+		snap.MACDHistogram = macdHistogram
+	}
+	if state.adxInit {
+		snap.ADX = adxVal
+	}
+	snap.RegimeScore = regimeScore
 	return snap
 }
 
@@ -437,4 +665,8 @@ func ComputeRealizedVol(bars []domain.MarketBar, period int) float64 {
 
 	// Annualize: sqrt(252) * daily std dev * 100 (to get VIX-like percentage)
 	return math.Sqrt(variance) * math.Sqrt(252) * 100
+}
+
+func sortFloat64s(s []float64) {
+	sort.Float64s(s)
 }

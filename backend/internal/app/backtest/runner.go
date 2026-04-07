@@ -1329,6 +1329,17 @@ func makeSnapshotFn() strategy.IndicatorSnapshotFunc {
 			VolumeSMA:     snap.VolumeSMA,
 			ATR:           snap.ATR,
 			VWAPSD:        snap.VWAPSD,
+			EMA200:        snap.EMA200,
+			BBUpper:       snap.BBUpper,
+			BBMiddle:      snap.BBMiddle,
+			BBLower:       snap.BBLower,
+			BBPercentB:    snap.BBPercentB,
+			BBBandwidth:   snap.BBBandwidth,
+			MACDLine:      snap.MACDLine,
+			MACDSignal:    snap.MACDSignal,
+			MACDHistogram: snap.MACDHistogram,
+			ADX:           snap.ADX,
+			RegimeScore:   snap.RegimeScore,
 		}
 	}
 }

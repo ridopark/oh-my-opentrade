@@ -268,6 +268,16 @@ type IndicatorSnapshot struct {
 	VolumeSMA     float64
 	ATR           float64
 	VWAPSD        float64                    `json:"vwapSD,omitempty"`
+	BBUpper       float64                    `json:"bbUpper,omitempty"`
+	BBMiddle      float64                    `json:"bbMiddle,omitempty"`
+	BBLower       float64                    `json:"bbLower,omitempty"`
+	BBPercentB    float64                    `json:"bbPercentB,omitempty"`
+	BBBandwidth   float64                    `json:"bbBandwidth,omitempty"`
+	MACDLine      float64                    `json:"macdLine,omitempty"`
+	MACDSignal    float64                    `json:"macdSignal,omitempty"`
+	MACDHistogram float64                    `json:"macdHistogram,omitempty"`
+	ADX           float64                    `json:"adx,omitempty"`
+	RegimeScore   float64                    `json:"regimeScore,omitempty"`
 	AnchorRegimes map[Timeframe]MarketRegime `json:"anchorRegimes,omitempty"`
 	HTF           map[Timeframe]HTFData      `json:"htf,omitempty"`
 }
