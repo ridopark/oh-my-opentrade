@@ -22,14 +22,8 @@ watchlist_mode = "static"
 allowed_directions = ["LONG", "SHORT"]
 
 [params]
-# Mode: "bb_only" — pure BB breakout, no MACD
-mode = "bb_only"
-
 # BB: close must breach upper band (%B > 1.0)
 bb_breakout_threshold = 1.0
-
-# MACD (unused in bb_only mode)
-macd_below_zero_required = false
 
 # Risk:Reward
 risk_reward_ratio = 1.5
@@ -49,7 +43,7 @@ max_trades_per_day = 3
 stabilization_bars = 10
 
 [hooks]
-signals = { engine = "builtin", name = "bollinger_macd" }
+signals = { engine = "builtin", name = "bb_only" }
 
 [[exit_rules]]
 type = "EOD_FLATTEN"

@@ -39,6 +39,9 @@ type PHMConfig struct {
 	VolAccelMinRatio float64 // default 1.3 (power hour vol / afternoon vol threshold)
 	RequireHTFAlign  bool    // default false
 
+	// Confluence scoring
+	MinConfluenceScore int // minimum confluence score for entry. Default 0 (disabled).
+
 	// Day-of-week filter (e.g., block Monday where weekend gaps corrupt AM signal)
 	BlockedDaysOfWeek []string // default [] (empty = no blocking)
 
@@ -68,6 +71,7 @@ func NewPHMConfigFromDNA(params map[string]any) PHMConfig {
 		MaxEntryBars:      phmIntParam(params, "max_entry_bars", 3),
 		VolAccelMinRatio:  phmFloatParam(params, "vol_accel_min_ratio", 1.3),
 		RequireHTFAlign:   phmBoolParam(params, "require_htf_align", false),
+		MinConfluenceScore: phmIntParam(params, "min_confluence_score", 0),
 
 		BlockedDaysOfWeek:   phmStringSliceParam(params, "blocked_days_of_week", nil),
 		SecondWindowEnabled: phmBoolParam(params, "second_window_enabled", false),
@@ -728,7 +732,57 @@ func (s *PHMStrategy) checkEntry(phmSt *PHMState, symbol string, bar start.Bar, 
 		side = start.SideSell
 	}
 
-	// Compute strength — blend |AM return| and volume acceleration
+	// ── Confluence scoring ──
+	isLong := phmSt.EntryDirection == "long"
+	baseConf := start.ComputeBaseConfluence(bar, phmSt.Indicators, isLong)
+
+	// PHM-specific factors
+	var phmExtra start.ConfluenceResult
+
+	// AM Return magnitude: normalize |AMReturn| / AMReturnMinPct → 0-10 points
+	if phmSt.Config.AMReturnMinPct > 0 {
+		amMag := math.Abs(phmSt.AMReturnPct) / phmSt.Config.AMReturnMinPct
+		switch {
+		case amMag >= 3.0:
+			phmExtra.Score += 10
+			phmExtra.Factors = append(phmExtra.Factors, "am_return_strong")
+		case amMag >= 2.0:
+			phmExtra.Score += 7
+			phmExtra.Factors = append(phmExtra.Factors, "am_return_good")
+		case amMag >= 1.0:
+			phmExtra.Score += 4
+			phmExtra.Factors = append(phmExtra.Factors, "am_return_ok")
+		}
+	}
+
+	// Volume acceleration: normalize volAccelRatio / VolAccelMinRatio → 0-10 points
+	if phmSt.AfternoonVolBars > 0 && phmSt.PowerHourVolBars > 0 && phmSt.Config.VolAccelMinRatio > 0 {
+		afternoonAvgConf := phmSt.AfternoonVolSum / float64(phmSt.AfternoonVolBars)
+		if afternoonAvgConf > 0 {
+			volAccelRatioConf := (phmSt.PowerHourVolSum / float64(phmSt.PowerHourVolBars)) / afternoonAvgConf
+			normalized := volAccelRatioConf / phmSt.Config.VolAccelMinRatio
+			switch {
+			case normalized >= 2.0:
+				phmExtra.Score += 10
+				phmExtra.Factors = append(phmExtra.Factors, "vol_accel_strong")
+			case normalized >= 1.5:
+				phmExtra.Score += 7
+				phmExtra.Factors = append(phmExtra.Factors, "vol_accel_good")
+			case normalized >= 1.0:
+				phmExtra.Score += 4
+				phmExtra.Factors = append(phmExtra.Factors, "vol_accel_ok")
+			}
+		}
+	}
+
+	conf := start.MergeConfluence(baseConf, phmExtra)
+
+	// Gate by MinConfluenceScore if enabled.
+	if phmSt.Config.MinConfluenceScore > 0 && conf.Score < phmSt.Config.MinConfluenceScore {
+		return start.Signal{}, false
+	}
+
+	// Compute strength — blend confluence, |AM return|, and volume acceleration
 	amMagnitude := math.Abs(phmSt.AMReturnPct)
 	amComponent := math.Min(amMagnitude/1.0, 1.0) * 0.5 // 1% AM return = max
 
@@ -741,17 +795,27 @@ func (s *PHMStrategy) checkEntry(phmSt *PHMState, symbol string, bar start.Bar, 
 		}
 	}
 	strength := clampStrength(amComponent + volComponent)
+	// Use higher of legacy strength and confluence-based strength.
+	confStrength := float64(conf.Score) / 100.0
+	if confStrength < 0.1 {
+		confStrength = 0.1
+	}
+	if confStrength > strength {
+		strength = confStrength
+	}
 
 	instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
 	tags := map[string]string{
-		"ref_price":        fmt.Sprintf("%.10f", bar.Close),
-		"trigger":          "gao_intraday_momentum",
-		"session_avg_vol":  fmt.Sprintf("%.0f", sessionAvgVol),
-		"vwap":             fmt.Sprintf("%.4f", phmSt.Indicators.VWAP),
-		"am_return_pct":    fmt.Sprintf("%.4f", phmSt.AMReturnPct),
-		"am_direction":     phmSt.AMDirection,
-		"entry_direction":  phmSt.EntryDirection,
-		"volume_ratio":     fmt.Sprintf("%.2f", bar.Volume/sessionAvgVol),
+		"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+		"trigger":           "gao_intraday_momentum",
+		"session_avg_vol":   fmt.Sprintf("%.0f", sessionAvgVol),
+		"vwap":              fmt.Sprintf("%.4f", phmSt.Indicators.VWAP),
+		"am_return_pct":     fmt.Sprintf("%.4f", phmSt.AMReturnPct),
+		"am_direction":      phmSt.AMDirection,
+		"entry_direction":   phmSt.EntryDirection,
+		"volume_ratio":      fmt.Sprintf("%.2f", bar.Volume/sessionAvgVol),
+		"confluence":        fmt.Sprintf("%d", conf.Score),
+		"confluence_detail": conf.FormatDetail(),
 	}
 
 	sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, side, strength, tags)
