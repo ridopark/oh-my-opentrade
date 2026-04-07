@@ -19,7 +19,7 @@ func NewBarAggregator(symbol Symbol, targetTF Timeframe, sessionOpen time.Time) 
 		return nil, errors.New("sessionOpen is required")
 	}
 	switch targetTF {
-	case "5m", "15m", "1h", "1d":
+	case "5m", "15m", "30m", "1h", "1d":
 	default:
 		return nil, fmt.Errorf("invalid target timeframe: %q", targetTF)
 	}
@@ -39,7 +39,7 @@ func NewBarAggregator(symbol Symbol, targetTF Timeframe, sessionOpen time.Time) 
 // aligns all bucket boundaries with clock minutes.
 func NewClockAlignedAggregator(symbol Symbol, targetTF Timeframe) (*BarAggregator, error) {
 	switch targetTF {
-	case "5m", "15m", "1h", "1d":
+	case "5m", "15m", "30m", "1h", "1d":
 	default:
 		return nil, fmt.Errorf("invalid target timeframe: %q", targetTF)
 	}
@@ -106,6 +106,8 @@ func timeframeDuration(tf Timeframe) time.Duration {
 		return 5 * time.Minute
 	case "15m":
 		return 15 * time.Minute
+	case "30m":
+		return 30 * time.Minute
 	case "1h":
 		return 60 * time.Minute
 	case "1d":

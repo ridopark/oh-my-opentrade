@@ -109,7 +109,7 @@ func (s Symbol) IsCryptoSymbol() bool {
 type Timeframe string
 
 var validTimeframes = map[Timeframe]struct{}{
-	"1m": {}, "5m": {}, "15m": {}, "1h": {}, "1d": {},
+	"1m": {}, "5m": {}, "15m": {}, "30m": {}, "1h": {}, "1d": {},
 }
 
 func (t Timeframe) String() string { return string(t) }
