@@ -40,6 +40,10 @@ rolling_wr_window = 20
 risk_per_trade_bps = 1000
 max_position_bps = 3000
 
+# Portfolio limits — critical for strategy edge
+max_positions = 6
+max_per_group = 2
+
 # Timing
 allowed_hours_start = "09:45"
 allowed_hours_end = "15:00"
