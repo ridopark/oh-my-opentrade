@@ -89,7 +89,73 @@ func (s *Service) tick() {
 		snap, ok := s.priceCache.LatestPrice(priceSymbol)
 		priceAvailable := ok && now.Sub(snap.ObservedAt) <= s.maxPriceStaleness
 
-		// Phase 1: time-only rules — always evaluated, no price dependency.
+		// Phase 1: price-dependent rules — stops and targets have highest priority.
+		// A stop hit at 10:30 AM should fire at 10:30, not be overridden by
+		// EOD flatten at 3:55 PM because the time check ran first.
+		if priceAvailable {
+			price := snap.Price
+			pos.UpdateWaterMarks(price)
+
+			evalCtx := EvalContext{BarDuration: s.barDurationFor(pos.Strategy)}
+			if s.snapshotFn != nil {
+				if indSnap, ok := s.snapshotFn(string(priceSymbol)); ok {
+					evalCtx.ATR = indSnap.ATR
+					evalCtx.VWAPValue = indSnap.VWAP
+					if indSnap.VWAPSD > 0 {
+						evalCtx.SDBands = make(map[float64]float64)
+						for _, level := range []float64{0.5, 1.0, 1.5, 2.0, 2.5, 3.0} {
+							evalCtx.SDBands[level] = indSnap.VWAP + level*indSnap.VWAPSD
+						}
+					}
+				}
+			}
+			var stepStopMinHoldBars float64
+			for _, r := range pos.ExitRules {
+				if r.Type == domain.ExitRuleStepStop {
+					stepStopMinHoldBars = r.Param("min_hold_bars", 0)
+					break
+				}
+			}
+			UpdateStepStopState(pos, price, evalCtx, now, stepStopMinHoldBars)
+
+			for _, rule := range pos.ExitRules {
+				if rule.Type == domain.ExitRuleBreakevenStop {
+					UpdateBreakevenStopState(pos, price,
+						rule.Param("activation_pct", 0),
+						rule.Param("buffer_pct", 0))
+					break
+				}
+			}
+
+			for _, rule := range pos.ExitRules {
+				if !rule.Type.RequiresPrice() {
+					continue
+				}
+				adjusted := sessionAdjustRule(rule, pos.AssetClass, now)
+				triggered, reason := Evaluate(adjusted, pos, price, now, evalCtx)
+				if !triggered {
+					continue
+				}
+
+				s.log.Info().
+					Str("symbol", string(pos.Symbol)).
+					Str("rule", string(rule.Type)).
+					Str("reason", reason).
+					Float64("price", price).
+					Float64("entry_price", pos.EntryPrice).
+					Msg("exit rule triggered")
+
+				s.triggerExit(pos, rule, reason, price, now)
+				break
+			}
+		}
+
+		if pos.ExitPending {
+			continue
+		}
+
+		// Phase 2: time-only rules (EOD_FLATTEN, MAX_HOLDING_TIME) — safety net.
+		// These fire only if no price-based rule triggered first.
 		for _, rule := range pos.ExitRules {
 			if rule.Type.RequiresPrice() {
 				continue
@@ -110,71 +176,6 @@ func (s *Service) tick() {
 				Msg("exit rule triggered")
 
 			s.triggerExit(pos, rule, reason, exitPrice, now)
-			break
-		}
-
-		if pos.ExitPending {
-			continue
-		}
-
-		// Phase 2: price-dependent rules — only with fresh price data.
-		if !priceAvailable {
-			continue
-		}
-
-		price := snap.Price
-		pos.UpdateWaterMarks(price)
-
-		evalCtx := EvalContext{BarDuration: s.barDurationFor(pos.Strategy)}
-		if s.snapshotFn != nil {
-			if indSnap, ok := s.snapshotFn(string(priceSymbol)); ok {
-				evalCtx.ATR = indSnap.ATR
-				evalCtx.VWAPValue = indSnap.VWAP
-				if indSnap.VWAPSD > 0 {
-					evalCtx.SDBands = make(map[float64]float64)
-					for _, level := range []float64{0.5, 1.0, 1.5, 2.0, 2.5, 3.0} {
-						evalCtx.SDBands[level] = indSnap.VWAP + level*indSnap.VWAPSD
-					}
-				}
-			}
-		}
-		var stepStopMinHoldBars float64
-		for _, r := range pos.ExitRules {
-			if r.Type == domain.ExitRuleStepStop {
-				stepStopMinHoldBars = r.Param("min_hold_bars", 0)
-				break
-			}
-		}
-		UpdateStepStopState(pos, price, evalCtx, now, stepStopMinHoldBars)
-
-		for _, rule := range pos.ExitRules {
-			if rule.Type == domain.ExitRuleBreakevenStop {
-				UpdateBreakevenStopState(pos, price,
-					rule.Param("activation_pct", 0),
-					rule.Param("buffer_pct", 0))
-				break
-			}
-		}
-
-		for _, rule := range pos.ExitRules {
-			if !rule.Type.RequiresPrice() {
-				continue
-			}
-			adjusted := sessionAdjustRule(rule, pos.AssetClass, now)
-			triggered, reason := Evaluate(adjusted, pos, price, now, evalCtx)
-			if !triggered {
-				continue
-			}
-
-			s.log.Info().
-				Str("symbol", string(pos.Symbol)).
-				Str("rule", string(rule.Type)).
-				Str("reason", reason).
-				Float64("price", price).
-				Float64("entry_price", pos.EntryPrice).
-				Msg("exit rule triggered")
-
-			s.triggerExit(pos, rule, reason, price, now)
 			break
 		}
 	}
