@@ -34,7 +34,7 @@ bb_breakout_threshold = 1.0
 risk_reward_ratio = 3.0
 
 # Swing low/high lookback (~2 trading days on 30m)
-swing_lookback = 5
+swing_lookback = 7
 
 # Volume — no filter
 volume_mult = 1.0
@@ -45,7 +45,7 @@ max_position_bps = 1500
 
 # Timing — shorter cooldown for more trades
 allowed_hours_start = "09:30"
-allowed_hours_end = "15:45"
+allowed_hours_end = "12:00"
 allowed_hours_tz = "America/New_York"
 cooldown_seconds = 300
 max_trades_per_day = 5

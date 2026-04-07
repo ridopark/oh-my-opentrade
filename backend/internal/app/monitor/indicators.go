@@ -324,7 +324,7 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 			diff := state.closes[i] - bbMiddle
 			sumSq += diff * diff
 		}
-		stdDev := math.Sqrt(sumSq / float64(bbPeriod))
+		stdDev := math.Sqrt(sumSq / float64(bbPeriod-1))
 		bbUpper = bbMiddle + bbStdDevMult*stdDev
 		bbLower = bbMiddle - bbStdDevMult*stdDev
 		if bbUpper != bbLower {
