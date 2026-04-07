@@ -36,6 +36,10 @@ func (m *mockRepository) SaveMarketBars(_ context.Context, _ []domain.MarketBar)
 func (m *mockRepository) GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
 	return nil, nil
 }
+
+func (m *mockRepository) GetMarketBarsMulti(_ context.Context, _ []domain.Symbol, _ domain.Timeframe, _, _ time.Time) (map[string][]domain.MarketBar, error) {
+	return map[string][]domain.MarketBar{}, nil
+}
 func (m *mockRepository) SaveTrade(ctx context.Context, trade domain.Trade) error { return nil }
 func (m *mockRepository) GetTrades(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) ([]domain.Trade, error) {
 	return nil, nil

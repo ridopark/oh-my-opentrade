@@ -42,6 +42,10 @@ func (m *mockRepository) GetMarketBars(context.Context, domain.Symbol, domain.Ti
 	return nil, nil
 }
 
+func (m *mockRepository) GetMarketBarsMulti(_ context.Context, _ []domain.Symbol, _ domain.Timeframe, _, _ time.Time) (map[string][]domain.MarketBar, error) {
+	return map[string][]domain.MarketBar{}, nil
+}
+
 func (m *mockRepository) SaveTrade(context.Context, domain.Trade) error { return nil }
 
 func (m *mockRepository) GetTrades(context.Context, string, domain.EnvMode, time.Time, time.Time) ([]domain.Trade, error) {
