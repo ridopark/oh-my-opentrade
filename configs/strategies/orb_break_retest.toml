@@ -134,3 +134,24 @@ target_delta_high = 0.55
 min_open_interest = 100
 max_spread_pct = 0.15      # JS: maxSpreadPct=0.15
 max_iv = 1.5               # JS: maxVolatility=1.50
+
+[gate_chain]
+monitor = [
+    { name = "dna_approval" },
+    { name = "vix", params = { skip_above = 999.0 } },
+    { name = "regime", params = { allowed = ["TREND", "TREND_UP", "TREND_DOWN", "SQUEEZE", "RANGE", "NEUTRAL"] } },
+    { name = "htf_bias" },
+    { name = "min_atr_pct", params = { min_pct = 0.4 } },
+    { name = "market_tide", params = { neutral_band_bps = 10 } },
+]
+
+execution = [
+    { name = "short_direction" },
+    { name = "exposure_guard" },
+    { name = "portfolio_guard" },
+    { name = "risk_engine" },
+    { name = "slippage_guard" },
+    { name = "trading_window" },
+    { name = "spread_guard" },
+    { name = "buying_power_guard" },
+]
