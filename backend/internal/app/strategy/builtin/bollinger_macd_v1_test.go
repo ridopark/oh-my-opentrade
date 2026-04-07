@@ -363,6 +363,91 @@ func TestBollingerMACD_ConfluenceUsedAsStrength(t *testing.T) {
 	assert.LessOrEqual(t, sigs[0].Strength, 1.0, "strength should be <= 1.0")
 }
 
+// ─── Rolling WR Gate ─────────────────────────────────────────────────────────
+
+func TestBollingerMACD_RollingWR_BlocksWhenLow(t *testing.T) {
+	s := builtin.NewBollingerMACDStrategy()
+	params := bmParams()
+	params["rolling_wr_min"] = 0.30  // require 30% WR
+	params["rolling_wr_window"] = 5  // over last 5 trades
+
+	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "TEST", params, nil)
+	require.NoError(t, err)
+	st = warmupBM(t, s, ctx, st, 3)
+
+	// Inject 5 losses into trade outcomes (0% WR)
+	bmSt := st.(*builtin.BMState)
+	bmSt.TradeOutcomes = []int8{-1, -1, -1, -1, -1}
+
+	crossBar := strat.Bar{
+		Time: time.Date(2025, 6, 2, 15, 30, 0, 0, time.UTC),
+		Open: 100, High: 102, Low: 99, Close: 101, Volume: 1500,
+	}
+	crossInd := strat.IndicatorData{
+		EMA9: 100, EMA200: 95, VolumeSMA: 1000,
+		MACDLine: 0.1, MACDSignal: 0.05, MACDHistogram: 0.05,
+		RSI: 55,
+	}
+	_, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
+	assert.Empty(t, sigs, "should block entry when rolling WR below threshold")
+}
+
+func TestBollingerMACD_RollingWR_PassesWhenAbove(t *testing.T) {
+	s := builtin.NewBollingerMACDStrategy()
+	params := bmParams()
+	params["rolling_wr_min"] = 0.30
+	params["rolling_wr_window"] = 5
+
+	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "TEST", params, nil)
+	require.NoError(t, err)
+	st = warmupBM(t, s, ctx, st, 3)
+
+	// Inject 3 wins, 2 losses (60% WR > 30% threshold)
+	bmSt := st.(*builtin.BMState)
+	bmSt.TradeOutcomes = []int8{1, -1, 1, 1, -1}
+
+	crossBar := strat.Bar{
+		Time: time.Date(2025, 6, 2, 15, 30, 0, 0, time.UTC),
+		Open: 100, High: 102, Low: 99, Close: 101, Volume: 1500,
+	}
+	crossInd := strat.IndicatorData{
+		EMA9: 100, EMA200: 95, VolumeSMA: 1000,
+		MACDLine: 0.1, MACDSignal: 0.05, MACDHistogram: 0.05,
+		RSI: 55,
+	}
+	_, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
+	require.Len(t, sigs, 1, "should allow entry when rolling WR above threshold")
+}
+
+func TestBollingerMACD_RollingWR_DisabledByDefault(t *testing.T) {
+	s := builtin.NewBollingerMACDStrategy()
+	params := bmParams()
+	// rolling_wr_min = 0 (default, disabled)
+
+	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "TEST", params, nil)
+	require.NoError(t, err)
+	st = warmupBM(t, s, ctx, st, 3)
+
+	// Even with all losses, should still pass when disabled
+	bmSt := st.(*builtin.BMState)
+	bmSt.TradeOutcomes = []int8{-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}
+
+	crossBar := strat.Bar{
+		Time: time.Date(2025, 6, 2, 15, 30, 0, 0, time.UTC),
+		Open: 100, High: 102, Low: 99, Close: 101, Volume: 1500,
+	}
+	crossInd := strat.IndicatorData{
+		EMA9: 100, EMA200: 95, VolumeSMA: 1000,
+		MACDLine: 0.1, MACDSignal: 0.05, MACDHistogram: 0.05,
+		RSI: 55,
+	}
+	_, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
+	require.Len(t, sigs, 1, "rolling WR gate should be disabled when rolling_wr_min=0")
+}
+
 // ─── ComputeConfluenceScore unit tests ──────────────────────────────────────
 
 func TestComputeConfluenceScore_AllFactors(t *testing.T) {
