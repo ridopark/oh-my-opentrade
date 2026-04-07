@@ -1,0 +1,102 @@
+- generic [ref=e1]:
+  - complementary [ref=e2]:
+    - generic [ref=e3]:
+      - img [ref=e4]
+      - generic [ref=e6]: oh-my-opentrade
+    - navigation [ref=e7]:
+      - link "Signals" [ref=e8] [cursor=pointer]:
+        - /url: /
+        - img [ref=e9]
+        - text: Signals
+      - link "Portfolio" [ref=e11] [cursor=pointer]:
+        - /url: /portfolio
+        - img [ref=e12]
+        - text: Portfolio
+      - link "Services" [ref=e15] [cursor=pointer]:
+        - /url: /services
+        - img [ref=e16]
+        - text: Services
+      - link "Debates" [ref=e19] [cursor=pointer]:
+        - /url: /debates
+        - img [ref=e20]
+        - text: Debates
+      - link "Execution" [ref=e29] [cursor=pointer]:
+        - /url: /execution
+        - img [ref=e30]
+        - text: Execution
+      - link "Performance" [ref=e33] [cursor=pointer]:
+        - /url: /performance
+        - img [ref=e34]
+        - text: Performance
+      - link "Backtest" [ref=e37] [cursor=pointer]:
+        - /url: /backtest
+        - img [ref=e38]
+        - text: Backtest
+      - link "Screener" [ref=e40] [cursor=pointer]:
+        - /url: /screener
+        - img [ref=e41]
+        - text: Screener
+      - link "Approvals" [ref=e43] [cursor=pointer]:
+        - /url: /approvals
+        - img [ref=e44]
+        - text: Approvals
+      - link "Strategies" [ref=e47] [cursor=pointer]:
+        - /url: /strategies
+        - img [ref=e48]
+        - text: Strategies
+      - link "Settings" [ref=e52] [cursor=pointer]:
+        - /url: /settings
+        - img [ref=e53]
+        - text: Settings
+    - generic [ref=e59]: Paper Trading
+  - main [ref=e60]:
+    - generic [ref=e61]:
+      - generic [ref=e62]:
+        - heading "Backtest" [level=1] [ref=e63]
+        - generic [ref=e64]:
+          - generic [ref=e65]: Symbols
+          - button "AAPL, AFRM, AMD, AMZN, AVGO, BA, COIN, CRM, GOOGL, HIMS, HOOD, IWM, JPM, LLY, META, MRNA, MRVL, MSFT, MU, NET, NFLX, NVDA, OXY, PLTR, QQQ, RBLX, RIVN, SMCI, SNOW, SOFI, SOXL, SPY, TSLA, XOM ▼" [ref=e112]:
+            - generic [ref=e68]: AAPL, AFRM, AMD, AMZN, AVGO, BA, COIN, CRM, GOOGL, HIMS, HOOD, IWM, JPM, LLY, META, MRNA, MRVL, MSFT, MU, NET, NFLX, NVDA, OXY, PLTR, QQQ, RBLX, RIVN, SMCI, SNOW, SOFI, SOXL, SPY, TSLA, XOM
+            - generic [ref=e69]: ▼
+        - generic [ref=e70]:
+          - generic [ref=e71]: Strategy
+          - button "avwap_v4 ▼" [ref=e113]:
+            - generic [ref=e74]: avwap_v4
+            - generic [ref=e75]: ▼
+        - generic [ref=e76]:
+          - generic [ref=e77]: From
+          - textbox [ref=e78]: 2026-03-01
+          - generic [ref=e79]: To
+          - textbox [ref=e80]: 2026-03-15
+        - generic [ref=e81]:
+          - button "1m" [ref=e82]
+          - button "5m" [ref=e83]
+          - button "15m" [ref=e84]
+          - button "1h" [ref=e85]
+        - generic [ref=e86]:
+          - button "1x" [ref=e87]
+          - button "2x" [ref=e88]
+          - button "5x" [ref=e89]
+          - button "10x" [ref=e90]
+          - button "max" [active] [ref=e91]
+        - generic [ref=e92]:
+          - generic [ref=e93]: Eq
+          - spinbutton [ref=e94]: "100000"
+          - generic [ref=e95]: Slip
+          - spinbutton [ref=e96]: "5"
+        - generic [ref=e97] [cursor=pointer]:
+          - checkbox "No AI" [checked] [ref=e98]
+          - text: No AI
+        - generic "Dynamically pick the best Top N symbols each trading day from the candidate pool (Symbols list). Add more symbols than Top N for effective filtering." [ref=e99] [cursor=pointer]:
+          - checkbox "Daily Screener" [ref=e100]
+          - text: Daily Screener
+        - button "Run" [ref=e102]
+      - generic [ref=e104]: Run a backtest to see the equity curve
+      - generic [ref=e105]:
+        - generic [ref=e106]:
+          - button "Positions (0)" [ref=e107]: Positions (0)
+          - button "Results" [ref=e109]
+        - generic [ref=e111]: No trades yet
+  - button "Open Next.js Dev Tools" [ref=e119] [cursor=pointer]:
+    - img [ref=e120]
+  - alert [ref=e123]
