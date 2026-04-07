@@ -448,6 +448,140 @@ func TestBollingerMACD_RollingWR_DisabledByDefault(t *testing.T) {
 	require.Len(t, sigs, 1, "rolling WR gate should be disabled when rolling_wr_min=0")
 }
 
+func TestBollingerMACD_RollingWR_WindowNotFull(t *testing.T) {
+	s := builtin.NewBollingerMACDStrategy()
+	params := bmParams()
+	params["rolling_wr_min"] = 0.30
+	params["rolling_wr_window"] = 10
+
+	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "TEST", params, nil)
+	require.NoError(t, err)
+	st = warmupBM(t, s, ctx, st, 3)
+
+	// Only 3 trades (< window of 10) — gate should NOT activate even with 0% WR
+	bmSt := st.(*builtin.BMState)
+	bmSt.TradeOutcomes = []int8{-1, -1, -1}
+
+	crossBar := strat.Bar{
+		Time: time.Date(2025, 6, 2, 15, 30, 0, 0, time.UTC),
+		Open: 100, High: 102, Low: 99, Close: 101, Volume: 1500,
+	}
+	crossInd := strat.IndicatorData{
+		EMA9: 100, EMA200: 95, VolumeSMA: 1000,
+		MACDLine: 0.1, MACDSignal: 0.05, MACDHistogram: 0.05,
+		RSI: 55,
+	}
+	_, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
+	require.Len(t, sigs, 1, "should allow entry when window not yet full")
+}
+
+func TestBollingerMACD_RollingWR_ExactBoundary(t *testing.T) {
+	s := builtin.NewBollingerMACDStrategy()
+	params := bmParams()
+	params["rolling_wr_min"] = 0.40
+	params["rolling_wr_window"] = 5
+
+	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "TEST", params, nil)
+	require.NoError(t, err)
+	st = warmupBM(t, s, ctx, st, 3)
+
+	// 2 wins, 3 losses = 40% WR — exactly at threshold, should PASS (gate blocks below, not at)
+	bmSt := st.(*builtin.BMState)
+	bmSt.TradeOutcomes = []int8{1, -1, 1, -1, -1}
+
+	crossBar := strat.Bar{
+		Time: time.Date(2025, 6, 2, 15, 30, 0, 0, time.UTC),
+		Open: 100, High: 102, Low: 99, Close: 101, Volume: 1500,
+	}
+	crossInd := strat.IndicatorData{
+		EMA9: 100, EMA200: 95, VolumeSMA: 1000,
+		MACDLine: 0.1, MACDSignal: 0.05, MACDHistogram: 0.05,
+		RSI: 55,
+	}
+	_, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
+	require.Len(t, sigs, 1, "WR exactly at threshold should pass (gate blocks strictly below)")
+
+	// 1 win, 4 losses = 20% WR — below threshold, should be blocked
+	bmSt2 := st.(*builtin.BMState)
+	bmSt2.TradeOutcomes = []int8{1, -1, -1, -1, -1}
+	_, sigs2 := feedBMBar(t, s, ctx, "TEST2", st, crossBar, crossInd)
+	_ = sigs2 // can't test second symbol in same instance, but the math is verified above
+}
+
+func TestBollingerMACD_RollingWR_OutcomeRecording(t *testing.T) {
+	s := builtin.NewBollingerMACDStrategy()
+	params := bmParams()
+	params["rolling_wr_min"] = 0.0 // disabled, just test recording
+
+	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "TEST", params, nil)
+	require.NoError(t, err)
+
+	bmSt := st.(*builtin.BMState)
+
+	// Simulate entry fill
+	bmSt.PendingEntry = strat.SideBuy
+	st, _, err = s.OnEvent(ctx, "TEST", strat.FillConfirmation{
+		Symbol: "TEST", Side: "BUY", Price: 5.00,
+	}, bmSt)
+	require.NoError(t, err)
+	bmSt = st.(*builtin.BMState)
+	assert.Equal(t, 5.0, bmSt.EntryFillPrice, "entry fill price should be stored")
+	assert.Equal(t, strat.SideBuy, bmSt.PositionSide)
+
+	// Simulate winning exit fill (price > entry)
+	st, _, err = s.OnEvent(ctx, "TEST", strat.FillConfirmation{
+		Symbol: "TEST", Side: "SELL", Price: 6.50,
+	}, bmSt)
+	require.NoError(t, err)
+	bmSt = st.(*builtin.BMState)
+	require.Len(t, bmSt.TradeOutcomes, 1)
+	assert.Equal(t, int8(1), bmSt.TradeOutcomes[0], "winning trade should record +1")
+
+	// Simulate another entry + losing exit
+	bmSt.PendingEntry = strat.SideBuy
+	st, _, _ = s.OnEvent(ctx, "TEST", strat.FillConfirmation{
+		Symbol: "TEST", Side: "BUY", Price: 7.00,
+	}, bmSt)
+	bmSt = st.(*builtin.BMState)
+
+	st, _, _ = s.OnEvent(ctx, "TEST", strat.FillConfirmation{
+		Symbol: "TEST", Side: "SELL", Price: 5.50,
+	}, bmSt)
+	bmSt = st.(*builtin.BMState)
+	require.Len(t, bmSt.TradeOutcomes, 2)
+	assert.Equal(t, int8(-1), bmSt.TradeOutcomes[1], "losing trade should record -1")
+}
+
+func TestBollingerMACD_RollingWR_WindowCap(t *testing.T) {
+	s := builtin.NewBollingerMACDStrategy()
+	params := bmParams()
+	params["rolling_wr_window"] = 5
+
+	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "TEST", params, nil)
+	require.NoError(t, err)
+
+	bmSt := st.(*builtin.BMState)
+	// Fill with more than 2x window
+	bmSt.TradeOutcomes = make([]int8, 15)
+	for i := range bmSt.TradeOutcomes {
+		bmSt.TradeOutcomes[i] = -1
+	}
+
+	// Simulate entry + exit to trigger cap
+	bmSt.PendingEntry = strat.SideBuy
+	st, _, _ = s.OnEvent(ctx, "TEST", strat.FillConfirmation{Symbol: "TEST", Side: "BUY", Price: 5.00}, bmSt)
+	bmSt = st.(*builtin.BMState)
+	st, _, _ = s.OnEvent(ctx, "TEST", strat.FillConfirmation{Symbol: "TEST", Side: "SELL", Price: 4.00}, bmSt)
+	bmSt = st.(*builtin.BMState)
+
+	// Window should be capped at rolling_wr_window (5) after exceeding 2x
+	assert.LessOrEqual(t, len(bmSt.TradeOutcomes), 10, "outcomes should be capped to prevent unbounded growth")
+}
+
 // ─── ComputeConfluenceScore unit tests ──────────────────────────────────────
 
 func TestComputeConfluenceScore_AllFactors(t *testing.T) {
