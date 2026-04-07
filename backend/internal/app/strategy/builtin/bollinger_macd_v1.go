@@ -55,8 +55,10 @@ type BMConfig struct {
 	CooldownSeconds     int
 	MaxTradesPerDay     int
 	StabilizationBars   int
-	MinConfluenceScore  int  // minimum confluence score (0-100) for entry. Default 0 (disabled).
-	DPConfluenceEnabled bool // when true, include dark pool scoring in confluence. Default false.
+	MinConfluenceScore  int     // minimum confluence score (0-100) for entry. Default 0 (disabled).
+	DPConfluenceEnabled bool    // when true, include dark pool scoring in confluence. Default false.
+	RollingWRMin        float64 // minimum rolling win rate (0-1) to allow entries. Default 0 (disabled).
+	RollingWRWindow     int     // number of recent trades for rolling WR calculation. Default 20.
 }
 
 // BMState holds per-symbol state.
@@ -84,6 +86,10 @@ type BMState struct {
 	// Rolling bar window for swing detection
 	RecentLows  []float64 `json:"recentLows,omitempty"`
 	RecentHighs []float64 `json:"recentHighs,omitempty"`
+
+	// Rolling performance gate — tracks recent trade outcomes per symbol
+	EntryFillPrice float64 `json:"entryFillPrice,omitempty"` // premium price at entry fill
+	TradeOutcomes  []int8  `json:"tradeOutcomes,omitempty"`  // rolling window: 1=win, -1=loss
 
 	// Debug gate counters (reset daily)
 	GateStabilization int `json:"-"`
@@ -118,6 +124,8 @@ func parseBMConfig(params map[string]any) BMConfig {
 		StabilizationBars:   getInt(params, "stabilization_bars", 30),
 		MinConfluenceScore:  getInt(params, "min_confluence_score", 0),
 		DPConfluenceEnabled: getBool(params, "dp_confluence_enabled", false),
+		RollingWRMin:        getFloat64(params, "rolling_wr_min", 0),
+		RollingWRWindow:     getInt(params, "rolling_wr_window", 20),
 	}
 }
 
@@ -308,6 +316,25 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 		return bmSt, nil, nil
 	}
 
+	// Gate 6: Rolling performance gate — skip entries if recent WR too low.
+	if cfg.RollingWRMin > 0 && len(bmSt.TradeOutcomes) >= cfg.RollingWRWindow {
+		wins := 0
+		window := bmSt.TradeOutcomes
+		if len(window) > cfg.RollingWRWindow {
+			window = window[len(window)-cfg.RollingWRWindow:]
+		}
+		for _, outcome := range window {
+			if outcome > 0 {
+				wins++
+			}
+		}
+		wr := float64(wins) / float64(len(window))
+		if wr < cfg.RollingWRMin {
+			bmSt.PrevMACDHist = ind.MACDHistogram
+			return bmSt, nil, nil
+		}
+	}
+
 	// ─── ENTRY EVALUATION ─────────────────────────────────────────────
 
 	// Volume confirmation
@@ -476,10 +503,27 @@ func (s *BollingerMACDStrategy) OnEvent(ctx start.Context, _ string, evt any, st
 			bmSt.PositionSide = bmSt.PendingEntry
 			bmSt.PendingEntry = ""
 			bmSt.PendingEntryAt = time.Time{}
+			bmSt.EntryFillPrice = e.Price // track for rolling WR
 		case bmSt.PositionSide != "":
-			// Exit fill — flat now.
+			// Exit fill — record win/loss for rolling performance gate.
+			if bmSt.EntryFillPrice > 0 {
+				if e.Price > bmSt.EntryFillPrice {
+					bmSt.TradeOutcomes = append(bmSt.TradeOutcomes, 1) // win
+				} else {
+					bmSt.TradeOutcomes = append(bmSt.TradeOutcomes, -1) // loss
+				}
+				// Cap rolling window
+				maxWindow := bmSt.Config.RollingWRWindow
+				if maxWindow <= 0 {
+					maxWindow = 20
+				}
+				if len(bmSt.TradeOutcomes) > maxWindow*2 {
+					bmSt.TradeOutcomes = bmSt.TradeOutcomes[len(bmSt.TradeOutcomes)-maxWindow:]
+				}
+			}
 			bmSt.PositionSide = ""
 			bmSt.EntryPrice = 0
+			bmSt.EntryFillPrice = 0
 			bmSt.StopPrice = 0
 			bmSt.TargetPrice = 0
 		default:

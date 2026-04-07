@@ -13,7 +13,7 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL","AFRM","AMD","AMZN","AVGO","BA","COIN","CRM","GOOGL","HOOD","IWM","JPM","LLY","MRNA","MRVL","MSFT","MU","NET","NFLX","OXY","PLTR","QQQ","RBLX","RIVN","SMCI","SNOW","SOFI","SOXL","SPY","TSLA","XOM"]
+symbols = ["AAPL","AFRM","AMD","AMZN","AVGO","BA","COIN","CRM","GOOGL","HIMS","HOOD","IWM","JPM","LLY","META","MRNA","MRVL","MSFT","MU","NET","NFLX","NVDA","OXY","PLTR","QQQ","RBLX","RIVN","SMCI","SNOW","SOFI","SOXL","SPY","TSLA","XOM"]
 timeframes = ["15m"]
 priority = 70
 conflict_policy = "priority_wins"
@@ -31,6 +31,10 @@ volume_mult = 1.0
 # Confluence scoring (0-100+ scale, 10 base + dark pool factors)
 min_confluence_score = 55
 dp_confluence_enabled = true
+
+# Rolling performance gate — pause entries when per-symbol WR drops too low
+rolling_wr_min = 0.25
+rolling_wr_window = 20
 
 # Risk
 risk_per_trade_bps = 1000
