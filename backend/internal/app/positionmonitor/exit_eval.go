@@ -100,7 +100,7 @@ func (s *Service) tick() {
 			// Premium-based exit rules (PREMIUM_TRAIL) use this to trail
 			// from the best estimated premium since entry.
 			if pos.InstrumentType == domain.InstrumentTypeOption {
-				estPremium := pos.EstimatedPremium(price)
+				estPremium := pos.EstimatedPremium(price, now)
 				if estPremium > 0 {
 					if pos.CustomState == nil {
 						pos.CustomState = make(map[string]float64)

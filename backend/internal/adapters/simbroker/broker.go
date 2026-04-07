@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/app/options"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
@@ -475,9 +476,65 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 		}
 	}
 
-	// Same-day exits: delta approximation using historical data.
-	// exit_premium ≈ entry_premium + delta × (underlying_now - underlying_at_entry) - half_spread
-	// This is simpler and more accurate than BSM for intraday holds.
+	// Same-day exits: BSM recalculation using entry IV for accurate pricing.
+	// This replaces the previous delta-linear approximation which had 5-25% error
+	// for ATM options on 1-3% underlying moves.
+	var iv float64
+	_, _ = fmt.Sscanf(intent.Meta["iv_at_entry"], "%f", &iv)
+	isCall := rightStr != "PUT"
+
+	const riskFreeRate = 0.045
+
+	// Compute remaining DTE in years
+	dteYears := expiry.Sub(barTime).Hours() / (365.25 * 24)
+	if dteYears <= 0 {
+		// Expired — intrinsic value only
+		var intrinsic float64
+		if isCall {
+			intrinsic = underlyingPrice - strike
+		} else {
+			intrinsic = strike - underlyingPrice
+		}
+		if intrinsic < 0.01 {
+			intrinsic = 0.01
+		}
+		return intrinsic
+	}
+
+	if iv > 0 && strike > 0 {
+		exitPremium := options.BSMPriceAtTime(underlyingPrice, strike, dteYears, riskFreeRate, iv, isCall)
+
+		// Apply half-spread cost (selling at bid) — tiered by premium level
+		var entryPremium float64
+		_, _ = fmt.Sscanf(intent.Meta["premium"], "%f", &entryPremium)
+		if entryPremium <= 0 {
+			if pos, ok := b.positions[string(intent.Symbol)]; ok && pos.avgCost > 0 {
+				entryPremium = pos.avgCost
+			}
+		}
+		if entryPremium <= 0 {
+			entryPremium = exitPremium // use BSM price for spread tier
+		}
+		var spreadPct float64
+		switch {
+		case entryPremium >= 10.0:
+			spreadPct = 0.003
+		case entryPremium >= 5.0:
+			spreadPct = 0.005
+		case entryPremium >= 2.0:
+			spreadPct = 0.008
+		default:
+			spreadPct = 0.015
+		}
+		exitPremium -= entryPremium * spreadPct
+
+		if exitPremium < 0.01 {
+			exitPremium = 0.01
+		}
+		return exitPremium
+	}
+
+	// Fallback: delta-linear if IV not available
 	var entryPremium, delta float64
 	_, _ = fmt.Sscanf(intent.Meta["premium"], "%f", &entryPremium)
 	_, _ = fmt.Sscanf(intent.Meta["delta_at_entry"], "%f", &delta)
@@ -488,36 +545,30 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 		}
 	}
 	if entryPremium <= 0 || delta == 0 {
-		return entryPremium // can't compute, return entry (breakeven)
+		return entryPremium
 	}
 
-	// For puts, delta is negative — the formula naturally works:
-	// underlying drops → (underlyingPrice - entryUnderlying) < 0 → negative * negative delta = positive P&L
 	var entryUnderlying float64
 	_, _ = fmt.Sscanf(intent.Meta["entry_underlying"], "%f", &entryUnderlying)
 	if entryUnderlying <= 0 {
-		// Fallback: use strike as proxy (valid for ~0.50 delta)
 		entryUnderlying = strike
 	}
 
 	underlyingMove := underlyingPrice - entryUnderlying
-	premiumChange := delta * underlyingMove
-	exitPremium := entryPremium + premiumChange
+	exitPremium := entryPremium + delta*underlyingMove
 
-	// Apply half-spread cost (selling at bid) — tiered by premium level
 	var spreadPct float64
 	switch {
 	case entryPremium >= 10.0:
-		spreadPct = 0.003 // 0.3% for expensive options (deep ITM, liquid)
+		spreadPct = 0.003
 	case entryPremium >= 5.0:
-		spreadPct = 0.005 // 0.5% for mid-range options
+		spreadPct = 0.005
 	case entryPremium >= 2.0:
-		spreadPct = 0.008 // 0.8% for cheaper options
+		spreadPct = 0.008
 	default:
-		spreadPct = 0.015 // 1.5% for very cheap / illiquid options
+		spreadPct = 0.015
 	}
-	spread := entryPremium * spreadPct
-	exitPremium -= spread
+	exitPremium -= entryPremium * spreadPct
 
 	if exitPremium < 0.01 {
 		exitPremium = 0.01

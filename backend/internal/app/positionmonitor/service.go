@@ -489,12 +489,24 @@ func (s *Service) processFill(fill fillMsg) {
 		pos.InstrumentType = fill.InstrumentType
 		pos.OptionExpiry = fill.OptionExpiry
 		pos.OptionRight = fill.OptionRight
-		// Store premium, delta, and IV for exit pricing
+		// Store premium, delta, IV, strike, expiry, and option right for BSM exit pricing
 		if pos.CustomState != nil {
 			pos.CustomState["option_premium"] = fill.Price
 			pos.CustomState["delta_at_entry"] = fill.DeltaAtEntry
 			if fill.IVAtEntry > 0 {
 				pos.CustomState["iv_at_entry"] = fill.IVAtEntry
+			}
+			// BSM recalculation fields: extract strike from OCC symbol
+			if _, _, _, strike, ok := domain.ParseOCC(fill.Symbol); ok && strike > 0 {
+				pos.CustomState["strike"] = strike
+			}
+			if !fill.OptionExpiry.IsZero() {
+				pos.CustomState["expiry_unix"] = float64(fill.OptionExpiry.Unix())
+			}
+			if fill.OptionRight == "CALL" {
+				pos.CustomState["is_call"] = 1.0
+			} else {
+				pos.CustomState["is_call"] = 0.0
 			}
 		}
 		// For options: set entry price to the UNDERLYING price so exit rules
