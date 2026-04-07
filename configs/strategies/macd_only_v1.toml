@@ -28,17 +28,8 @@ risk_reward_ratio = 3.0
 swing_lookback = 7
 volume_mult = 1.0
 
-# Signal quality scoring
-min_signal_score = 0.65
-hist_accel_bars = 2
-rsi_long_min = 50.0
-rsi_short_max = 50.0
-
-# Entry confirmation filters
-require_directional_close = true
-min_body_ratio = 0.0
-min_adx = 20.0
-require_vwap_alignment = false
+# Confluence scoring (0-100 scale, 10 factors)
+min_confluence_score = 55
 
 # Risk
 risk_per_trade_bps = 1000

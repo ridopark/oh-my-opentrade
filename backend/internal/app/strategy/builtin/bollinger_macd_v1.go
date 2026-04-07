@@ -4,10 +4,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
+
+// ConfluenceResult holds the computed confluence score and contributing factors.
+type ConfluenceResult struct {
+	Score   int
+	Factors []string
+}
 
 // BollingerMACDStrategy implements the Trading Rush MACD crossover
 // strategy with configurable entry confirmation filters.
@@ -49,14 +56,7 @@ type BMConfig struct {
 	CooldownSeconds     int
 	MaxTradesPerDay     int
 	StabilizationBars   int
-	MinSignalScore      float64 // composite score threshold (0-1), skip if score below this. Default 0 (disabled).
-	HistAccelBars       int     // require histogram delta shrinking for N bars before crossover. Default 0 (disabled).
-	RSILongMin          float64 // minimum RSI for long entries. Default 0 (disabled).
-	RSIShortMax         float64 // maximum RSI for short entries. Default 100 (disabled).
-	RequireDirectionalClose bool    // crossover bar must close in signal direction. Default false (disabled).
-	MinBodyRatio           float64 // min abs(Close-Open)/(High-Low) on crossover bar. Default 0 (disabled).
-	MinADX                 float64 // minimum ADX for trend strength. Default 0 (disabled).
-	RequireVWAPAlignment   bool    // longs must be above VWAP, shorts below. Default false (disabled).
+	MinConfluenceScore int // minimum confluence score (0-100) for entry. Default 0 (disabled).
 }
 
 // BMState holds per-symbol state.
@@ -116,14 +116,7 @@ func parseBMConfig(params map[string]any) BMConfig {
 		CooldownSeconds:     getInt(params, "cooldown_seconds", 1800),
 		MaxTradesPerDay:     getInt(params, "max_trades_per_day", 2),
 		StabilizationBars:   getInt(params, "stabilization_bars", 30),
-		MinSignalScore:      getFloat64(params, "min_signal_score", 0),
-		HistAccelBars:       getInt(params, "hist_accel_bars", 0),
-		RSILongMin:          getFloat64(params, "rsi_long_min", 0),
-		RSIShortMax:         getFloat64(params, "rsi_short_max", 100),
-		RequireDirectionalClose: getBool(params, "require_directional_close", false),
-		MinBodyRatio:           getFloat64(params, "min_body_ratio", 0),
-		MinADX:                 getFloat64(params, "min_adx", 0),
-		RequireVWAPAlignment:   getBool(params, "require_vwap_alignment", false),
+		MinConfluenceScore: getInt(params, "min_confluence_score", 0),
 	}
 }
 
@@ -353,53 +346,9 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 		setup := "macd_long"
 
 		if longTrigger {
-			// RSI filter
-			if cfg.RSILongMin > 0 && ind.RSI > 0 && ind.RSI < cfg.RSILongMin {
-				longTrigger = false
-			}
-		}
-
-		// Directional close filter
-		if longTrigger && cfg.RequireDirectionalClose {
-			if bar.Close <= bar.Open { // not a bullish candle
-				longTrigger = false
-			}
-		}
-
-		// Body ratio filter
-		if longTrigger && cfg.MinBodyRatio > 0 {
-			barRange := bar.High - bar.Low
-			if barRange > 0 {
-				bodyRatio := math.Abs(bar.Close-bar.Open) / barRange
-				if bodyRatio < cfg.MinBodyRatio {
-					longTrigger = false
-				}
-			}
-		}
-
-		// ADX trend strength filter
-		if longTrigger && cfg.MinADX > 0 && ind.ADX > 0 {
-			if ind.ADX < cfg.MinADX {
-				longTrigger = false
-			}
-		}
-
-		// VWAP alignment filter
-		if longTrigger && cfg.RequireVWAPAlignment && ind.VWAP > 0 {
-			if bar.Close <= ind.VWAP { // for longs, price must be above VWAP
-				longTrigger = false
-			}
-		}
-
-		if longTrigger {
-			// Signal quality scoring
-			histOK := CheckHistAccel(bmSt.PrevMACDHists, cfg.HistAccelBars)
-			volRatio := 0.0
-			if ind.VolumeSMA > 0 {
-				volRatio = bar.Volume / ind.VolumeSMA
-			}
-			score := ComputeSignalScore(histOK, ind.RSI, true, volRatio)
-			if cfg.MinSignalScore > 0 && score < cfg.MinSignalScore {
+			// Confluence scoring — replaces individual boolean filters
+			conf := ComputeConfluenceScore(bar, ind, bmSt.PrevMACDHists, true)
+			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
 				longTrigger = false
 			}
 
@@ -408,18 +357,23 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 				if swingLow > 0 && swingLow < bar.Close {
 					stopDist := bar.Close - swingLow
 					target := bar.Close + cfg.RiskRewardRatio*stopDist
-					s, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, score, map[string]string{
-						"setup":        setup,
-						"bb_percent_b": fmt.Sprintf("%.4f", ind.BBPercentB),
-						"macd_line":    fmt.Sprintf("%.6f", ind.MACDLine),
-						"macd_signal":  fmt.Sprintf("%.6f", ind.MACDSignal),
-						"macd_hist":    fmt.Sprintf("%.6f", ind.MACDHistogram),
-						"ref_price":    fmt.Sprintf("%.10f", bar.Close),
-						"stop_price":   fmt.Sprintf("%.4f", swingLow),
-						"target_price": fmt.Sprintf("%.4f", target),
-						"rr_ratio":     fmt.Sprintf("%.1f", cfg.RiskRewardRatio),
-						"stop_bps":     fmt.Sprintf("%.0f", stopDist/bar.Close*10000),
-						"signal_score": fmt.Sprintf("%.3f", score),
+					strength := float64(conf.Score) / 100.0
+					if strength < 0.1 {
+						strength = 0.1 // minimum strength floor
+					}
+					s, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, strength, map[string]string{
+						"setup":             setup,
+						"bb_percent_b":      fmt.Sprintf("%.4f", ind.BBPercentB),
+						"macd_line":         fmt.Sprintf("%.6f", ind.MACDLine),
+						"macd_signal":       fmt.Sprintf("%.6f", ind.MACDSignal),
+						"macd_hist":         fmt.Sprintf("%.6f", ind.MACDHistogram),
+						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+						"stop_price":        fmt.Sprintf("%.4f", swingLow),
+						"target_price":      fmt.Sprintf("%.4f", target),
+						"rr_ratio":          fmt.Sprintf("%.1f", cfg.RiskRewardRatio),
+						"stop_bps":          fmt.Sprintf("%.0f", stopDist/bar.Close*10000),
+						"confluence":        fmt.Sprintf("%d", conf.Score),
+						"confluence_detail": strings.Join(conf.Factors, "+"),
 					})
 					if err == nil {
 						sig = &s
@@ -443,52 +397,8 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 		setup := "macd_short"
 
 		if shortTrigger {
-			// RSI filter
-			if cfg.RSIShortMax < 100 && ind.RSI > 0 && ind.RSI > cfg.RSIShortMax {
-				shortTrigger = false
-			}
-		}
-
-		// Directional close filter
-		if shortTrigger && cfg.RequireDirectionalClose {
-			if bar.Close >= bar.Open { // not a bearish candle
-				shortTrigger = false
-			}
-		}
-
-		// Body ratio filter
-		if shortTrigger && cfg.MinBodyRatio > 0 {
-			barRange := bar.High - bar.Low
-			if barRange > 0 {
-				bodyRatio := math.Abs(bar.Close-bar.Open) / barRange
-				if bodyRatio < cfg.MinBodyRatio {
-					shortTrigger = false
-				}
-			}
-		}
-
-		// ADX trend strength filter
-		if shortTrigger && cfg.MinADX > 0 && ind.ADX > 0 {
-			if ind.ADX < cfg.MinADX {
-				shortTrigger = false
-			}
-		}
-
-		// VWAP alignment filter
-		if shortTrigger && cfg.RequireVWAPAlignment && ind.VWAP > 0 {
-			if bar.Close >= ind.VWAP { // for shorts, price must be below VWAP
-				shortTrigger = false
-			}
-		}
-
-		if shortTrigger {
-			histOK := CheckHistAccel(bmSt.PrevMACDHists, cfg.HistAccelBars)
-			volRatio := 0.0
-			if ind.VolumeSMA > 0 {
-				volRatio = bar.Volume / ind.VolumeSMA
-			}
-			score := ComputeSignalScore(histOK, ind.RSI, false, volRatio)
-			if cfg.MinSignalScore > 0 && score < cfg.MinSignalScore {
+			conf := ComputeConfluenceScore(bar, ind, bmSt.PrevMACDHists, false)
+			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
 				shortTrigger = false
 			}
 
@@ -497,18 +407,23 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 				if swingHigh > 0 && swingHigh > bar.Close {
 					stopDist := swingHigh - bar.Close
 					target := bar.Close - cfg.RiskRewardRatio*stopDist
-					s, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, score, map[string]string{
-						"setup":        setup,
-						"bb_percent_b": fmt.Sprintf("%.4f", ind.BBPercentB),
-						"macd_line":    fmt.Sprintf("%.6f", ind.MACDLine),
-						"macd_signal":  fmt.Sprintf("%.6f", ind.MACDSignal),
-						"macd_hist":    fmt.Sprintf("%.6f", ind.MACDHistogram),
-						"ref_price":    fmt.Sprintf("%.10f", bar.Close),
-						"stop_price":   fmt.Sprintf("%.4f", swingHigh),
-						"target_price": fmt.Sprintf("%.4f", target),
-						"rr_ratio":     fmt.Sprintf("%.1f", cfg.RiskRewardRatio),
-						"stop_bps":     fmt.Sprintf("%.0f", stopDist/bar.Close*10000),
-						"signal_score": fmt.Sprintf("%.3f", score),
+					strength := float64(conf.Score) / 100.0
+					if strength < 0.1 {
+						strength = 0.1
+					}
+					s, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, strength, map[string]string{
+						"setup":             setup,
+						"bb_percent_b":      fmt.Sprintf("%.4f", ind.BBPercentB),
+						"macd_line":         fmt.Sprintf("%.6f", ind.MACDLine),
+						"macd_signal":       fmt.Sprintf("%.6f", ind.MACDSignal),
+						"macd_hist":         fmt.Sprintf("%.6f", ind.MACDHistogram),
+						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+						"stop_price":        fmt.Sprintf("%.4f", swingHigh),
+						"target_price":      fmt.Sprintf("%.4f", target),
+						"rr_ratio":          fmt.Sprintf("%.1f", cfg.RiskRewardRatio),
+						"stop_bps":          fmt.Sprintf("%.0f", stopDist/bar.Close*10000),
+						"confluence":        fmt.Sprintf("%d", conf.Score),
+						"confluence_detail": strings.Join(conf.Factors, "+"),
 					})
 					if err == nil {
 						sig = &s
@@ -615,6 +530,219 @@ func (s *BollingerMACDStrategy) ReplayOnBar(_ start.Context, _ string, bar start
 	return bmSt, nil
 }
 
+// ComputeConfluenceScore evaluates 10 independent factors for entry quality.
+// Returns a score 0-100 and a list of contributing factor names.
+// isLong: true for long signals, false for short.
+func ComputeConfluenceScore(bar start.Bar, ind start.IndicatorData, prevHists []float64, isLong bool) ConfluenceResult {
+	var score int
+	var factors []string
+
+	// Factor 1: EMA Stack Alignment (0-15)
+	// Long: Close > EMA9 > EMA21 > EMA50. Short: Close < EMA9 < EMA21 < EMA50.
+	if ind.EMA9 > 0 && ind.EMA21 > 0 && ind.EMA50 > 0 {
+		emaCount := 0
+		if isLong {
+			if bar.Close > ind.EMA9 {
+				emaCount++
+			}
+			if ind.EMA9 > ind.EMA21 {
+				emaCount++
+			}
+			if ind.EMA21 > ind.EMA50 {
+				emaCount++
+			}
+		} else {
+			if bar.Close < ind.EMA9 {
+				emaCount++
+			}
+			if ind.EMA9 < ind.EMA21 {
+				emaCount++
+			}
+			if ind.EMA21 < ind.EMA50 {
+				emaCount++
+			}
+		}
+		switch emaCount {
+		case 3:
+			score += 15
+			factors = append(factors, "ema_stack")
+		case 2:
+			score += 10
+			factors = append(factors, "ema_partial")
+		case 1:
+			score += 5
+		}
+	}
+
+	// Factor 2: ADX Trend Strength (0-15)
+	if ind.ADX > 0 {
+		switch {
+		case ind.ADX >= 30:
+			score += 15
+			factors = append(factors, "adx_strong")
+		case ind.ADX >= 25:
+			score += 12
+			factors = append(factors, "adx_trend")
+		case ind.ADX >= 20:
+			score += 8
+			factors = append(factors, "adx_ok")
+		case ind.ADX >= 15:
+			score += 4
+		}
+	}
+
+	// Factor 3: MACD Histogram Acceleration (0-12)
+	// Use CheckHistAccel with different bar counts for graduated scoring
+	if len(prevHists) >= 4 {
+		switch {
+		case CheckHistAccel(prevHists, 3):
+			score += 12
+			factors = append(factors, "hist_accel_3")
+		case CheckHistAccel(prevHists, 2):
+			score += 8
+			factors = append(factors, "hist_accel_2")
+		case CheckHistAccel(prevHists, 1):
+			score += 4
+		}
+	}
+
+	// Factor 4: RSI Position (0-10)
+	// Long: 45-65 ideal. Short: 35-55 ideal.
+	if ind.RSI > 0 {
+		var rsiScore int
+		if isLong {
+			switch {
+			case ind.RSI >= 45 && ind.RSI <= 65:
+				rsiScore = 10
+			case ind.RSI >= 35 && ind.RSI < 45:
+				rsiScore = 5
+			case ind.RSI > 65 && ind.RSI <= 75:
+				rsiScore = 5
+			}
+		} else {
+			switch {
+			case ind.RSI >= 35 && ind.RSI <= 55:
+				rsiScore = 10
+			case ind.RSI > 55 && ind.RSI <= 65:
+				rsiScore = 5
+			case ind.RSI >= 25 && ind.RSI < 35:
+				rsiScore = 5
+			}
+		}
+		if rsiScore > 0 {
+			score += rsiScore
+			if rsiScore == 10 {
+				factors = append(factors, "rsi_ideal")
+			} else {
+				factors = append(factors, "rsi_ok")
+			}
+		}
+	}
+
+	// Factor 5: MACD Distance from Zero (0-10)
+	// Crossovers near zero catch trend births; far from zero are late entries.
+	// Normalize by ATR for cross-symbol comparison.
+	if ind.ATR > 0 && ind.MACDLine != 0 {
+		dist := math.Abs(ind.MACDLine) / ind.ATR
+		switch {
+		case dist <= 0.5:
+			score += 10
+			factors = append(factors, "macd_near_zero")
+		case dist <= 1.0:
+			score += 6
+			factors = append(factors, "macd_mid")
+		case dist <= 2.0:
+			score += 2
+		}
+	}
+
+	// Factor 6: Volume Ratio (0-8)
+	if ind.VolumeSMA > 0 {
+		volRatio := bar.Volume / ind.VolumeSMA
+		switch {
+		case volRatio >= 1.5:
+			score += 8
+			factors = append(factors, "vol_surge")
+		case volRatio >= 1.2:
+			score += 6
+			factors = append(factors, "vol_above_avg")
+		case volRatio >= 1.0:
+			score += 4
+		case volRatio >= 0.8:
+			score += 2
+		}
+	}
+
+	// Factor 7: Candle Quality (0-8)
+	// Directional close + body ratio combined.
+	barRange := bar.High - bar.Low
+	if barRange > 0 {
+		bodyRatio := math.Abs(bar.Close-bar.Open) / barRange
+		directional := (isLong && bar.Close > bar.Open) || (!isLong && bar.Close < bar.Open)
+		switch {
+		case bodyRatio > 0.7 && directional:
+			score += 8
+			factors = append(factors, "candle_strong")
+		case bodyRatio > 0.5 && directional:
+			score += 6
+			factors = append(factors, "candle_ok")
+		case directional:
+			score += 4
+			factors = append(factors, "candle_dir")
+		}
+	}
+
+	// Factor 8: Bollinger Band Position (0-7)
+	// Long: %B 0.5-0.8 (trending, not overextended). Short: %B 0.2-0.5.
+	if ind.BBPercentB > 0 || ind.BBPercentB < 0 { // BBPercentB is computed
+		if isLong {
+			switch {
+			case ind.BBPercentB >= 0.5 && ind.BBPercentB <= 0.8:
+				score += 7
+				factors = append(factors, "bb_trend")
+			case ind.BBPercentB >= 0.3 && ind.BBPercentB < 0.5:
+				score += 4
+			}
+		} else {
+			switch {
+			case ind.BBPercentB >= 0.2 && ind.BBPercentB <= 0.5:
+				score += 7
+				factors = append(factors, "bb_trend")
+			case ind.BBPercentB > 0.5 && ind.BBPercentB <= 0.7:
+				score += 4
+			}
+		}
+	}
+
+	// Factor 9: HTF Bias Agreement (0-8)
+	htfBias := ""
+	if htf, ok := ind.HTF["1d"]; ok {
+		htfBias = htf.Bias
+	}
+	if htfBias != "" {
+		if (isLong && htfBias == "BULLISH") || (!isLong && htfBias == "BEARISH") {
+			score += 8
+			factors = append(factors, "htf_agree")
+		} else if htfBias == "NEUTRAL" || htfBias == "" {
+			score += 4
+			factors = append(factors, "htf_neutral")
+		}
+		// Opposing bias: +0 (no penalty, just no points)
+	}
+
+	// Factor 10: VWAP Alignment (0-7)
+	if ind.VWAP > 0 {
+		if (isLong && bar.Close > ind.VWAP) || (!isLong && bar.Close < ind.VWAP) {
+			score += 7
+			factors = append(factors, "vwap_aligned")
+		}
+	}
+
+	return ConfluenceResult{Score: score, Factors: factors}
+}
+
+// Deprecated: Use ComputeConfluenceScore instead. Kept for backward compatibility.
+//
 // CheckHistAccel returns true if the absolute histogram delta has been
 // decreasing (converging) for at least requiredBars consecutive bars.
 // This indicates momentum is gradually exhausting before the crossover,
@@ -642,6 +770,8 @@ func CheckHistAccel(hists []float64, requiredBars int) bool {
 	return true
 }
 
+// Deprecated: Use ComputeConfluenceScore instead. Kept for backward compatibility.
+//
 // ComputeSignalScore computes a 0-1 composite signal quality score.
 // Weights: histogram acceleration 40%, RSI position 30%, volume 30%.
 //
