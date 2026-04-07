@@ -219,6 +219,27 @@ func (c Crypto24x7Calendar) PreviousSession(now time.Time) (start, end time.Time
 	return start, end
 }
 
+// TradingDaysBetween counts the number of trading days (weekdays excluding NYSE holidays)
+// between two times. Both from and to are date-truncated before counting.
+// For crypto (24/7), falls back to calendar days.
+func TradingDaysBetween(from, to time.Time) int {
+	loc := NYLocation()
+	fromDate := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, loc)
+	toDate := time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, loc)
+
+	if !toDate.After(fromDate) {
+		return 0
+	}
+
+	count := 0
+	for d := fromDate; d.Before(toDate); d = d.AddDate(0, 0, 1) {
+		if isNYSETradingDay(d) {
+			count++
+		}
+	}
+	return count
+}
+
 // CalendarFor returns the appropriate TradingCalendar for the given asset class.
 func CalendarFor(ac AssetClass) TradingCalendar {
 	switch ac {

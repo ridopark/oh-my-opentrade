@@ -24,6 +24,12 @@ type EvalContext struct {
 	SDBands map[float64]float64
 
 	BarDuration time.Duration
+
+	// BarHigh and BarLow are the current bar's true high and low prices.
+	// Used by SwingStop for price-action trailing (Shannon methodology).
+	// Zero when unavailable (e.g., polling-based price feeds without bar data).
+	BarHigh float64
+	BarLow  float64
 }
 
 // Evaluate dispatches to the appropriate exit rule evaluator.
@@ -63,6 +69,12 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 		return evaluateTieredTP(rule, pos, currentPrice)
 	case domain.ExitRuleTimePartial:
 		return evaluateTimePartial(rule, pos, currentPrice, now)
+	case domain.ExitRulePremiumStop:
+		return evaluatePremiumStop(rule, pos, currentPrice)
+	case domain.ExitRulePremiumTrail:
+		return evaluatePremiumTrail(rule, pos, currentPrice)
+	case domain.ExitRulePremiumTarget:
+		return evaluatePremiumTarget(rule, pos, currentPrice)
 	default:
 		return false, ""
 	}
@@ -139,9 +151,19 @@ func evaluateSwingStop(rule domain.ExitRule, pos *domain.MonitoredPosition, curr
 	if barCount != lastBarIdx || lastBarIdx == 0 {
 		pos.CustomState["swing_last_bar_idx"] = float64(barCount)
 		if pos.IsShort() {
-			pos.CustomState[fmt.Sprintf("swing_high_%d", ringIdx)] = currentPrice
+			// Use bar high (wick) per Shannon methodology; fall back to close if unavailable.
+			barHigh := ctx.BarHigh
+			if barHigh <= 0 {
+				barHigh = currentPrice
+			}
+			pos.CustomState[fmt.Sprintf("swing_high_%d", ringIdx)] = barHigh
 		} else {
-			pos.CustomState[fmt.Sprintf("swing_low_%d", ringIdx)] = currentPrice
+			// Use bar low (wick) per Shannon methodology; fall back to close if unavailable.
+			barLow := ctx.BarLow
+			if barLow <= 0 {
+				barLow = currentPrice
+			}
+			pos.CustomState[fmt.Sprintf("swing_low_%d", ringIdx)] = barLow
 		}
 		pos.CustomState["swing_ring_idx"] = float64((ringIdx + 1) % lookback)
 	}
@@ -703,16 +725,18 @@ func evaluateExpiryWatch(rule domain.ExitRule, pos *domain.MonitoredPosition, no
 	if pctElapsed <= 0 || pctElapsed > 1 {
 		return false, ""
 	}
-	totalDuration := pos.OptionExpiry.Sub(pos.EntryTime)
-	if totalDuration <= 0 {
+	// Use trading days (excludes weekends/holidays) to avoid inflated ratios
+	// for positions entered before weekends.
+	totalTradingDays := domain.TradingDaysBetween(pos.EntryTime, pos.OptionExpiry)
+	if totalTradingDays <= 0 {
 		return false, ""
 	}
-	elapsed := now.Sub(pos.EntryTime)
-	ratio := elapsed.Seconds() / totalDuration.Seconds()
+	elapsedTradingDays := domain.TradingDaysBetween(pos.EntryTime, now)
+	ratio := float64(elapsedTradingDays) / float64(totalTradingDays)
 	if ratio >= pctElapsed {
 		dte := int(pos.OptionExpiry.Sub(now).Hours() / 24)
-		return true, fmt.Sprintf("expiry_watch: %.0f%% of contract duration elapsed (%d DTE remaining, threshold %.0f%%)",
-			ratio*100, dte, pctElapsed*100)
+		return true, fmt.Sprintf("expiry_watch: %.0f%% of trading days elapsed (%d/%d trading days, %d DTE remaining, threshold %.0f%%)",
+			ratio*100, elapsedTradingDays, totalTradingDays, dte, pctElapsed*100)
 	}
 	return false, ""
 }
@@ -832,5 +856,108 @@ func evaluateTimePartial(rule domain.ExitRule, pos *domain.MonitoredPosition, cu
 
 func etLocation() *time.Location {
 	return domain.NYLocation()
+}
+
+// evaluatePremiumStop triggers when the estimated option premium has dropped by
+// a given percentage from the entry premium. This protects against adverse
+// delta/theta moves that may not be visible in the underlying price alone.
+//
+// Params:
+//
+//	"threshold" — maximum premium loss fraction (e.g. 0.40 = exit if premium drops 40%)
+func evaluatePremiumStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64) (bool, string) {
+	threshold := rule.Param("threshold", 0)
+	if threshold <= 0 {
+		return false, ""
+	}
+	entryPremium, ok := pos.CustomState["option_premium"]
+	if !ok || entryPremium <= 0 {
+		return false, ""
+	}
+	estPremium := pos.EstimatedPremium(currentPrice)
+	if estPremium <= 0 {
+		// Premium went to zero — definitely triggered
+		return true, fmt.Sprintf("premium_stop: premium exhausted (entry=%.2f, est=0.00, threshold=%.0f%%)",
+			entryPremium, threshold*100)
+	}
+	loss := (entryPremium - estPremium) / entryPremium
+	if loss >= threshold {
+		return true, fmt.Sprintf("premium_stop: loss %.2f%% >= threshold %.2f%% (entry=%.2f, est=%.2f)",
+			loss*100, threshold*100, entryPremium, estPremium)
+	}
+	return false, ""
+}
+
+// evaluatePremiumTrail triggers when the estimated premium drops a given
+// percentage from its high-water mark, but only after the premium has first
+// risen by at least min_activation from entry. This lets winners run while
+// protecting accumulated premium gains.
+//
+// Params:
+//
+//	"trail_pct"      — trail percentage from premium HWM (e.g. 0.30 = 30%)
+//	"min_activation" — minimum premium gain before trailing activates (e.g. 0.20 = 20%)
+func evaluatePremiumTrail(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64) (bool, string) {
+	trailPct := rule.Param("trail_pct", 0)
+	if trailPct <= 0 {
+		return false, ""
+	}
+	entryPremium, ok := pos.CustomState["option_premium"]
+	if !ok || entryPremium <= 0 {
+		return false, ""
+	}
+	estPremium := pos.EstimatedPremium(currentPrice)
+	if estPremium <= 0 {
+		return false, ""
+	}
+	hwm := pos.CustomState["premium_hwm"]
+	if hwm <= 0 {
+		return false, ""
+	}
+
+	// Check activation: premium must have risen min_activation% from entry
+	minActivation := rule.Param("min_activation", 0)
+	if minActivation > 0 {
+		gain := (hwm - entryPremium) / entryPremium
+		if gain < minActivation {
+			return false, ""
+		}
+	}
+
+	// Check trail: premium must have dropped trail_pct% from HWM
+	drawdown := (hwm - estPremium) / hwm
+	if drawdown >= trailPct {
+		return true, fmt.Sprintf("premium_trail: drawdown %.2f%% >= trail %.2f%% (hwm=%.2f, est=%.2f, entry=%.2f)",
+			drawdown*100, trailPct*100, hwm, estPremium, entryPremium)
+	}
+	return false, ""
+}
+
+// evaluatePremiumTarget triggers when the estimated option premium has risen by
+// a given percentage from the entry premium. This is a take-profit rule based
+// on actual premium appreciation rather than underlying price movement.
+//
+// Params:
+//
+//	"target_pct" — premium gain target fraction (e.g. 0.70 = exit if premium rises 70%)
+func evaluatePremiumTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64) (bool, string) {
+	targetPct := rule.Param("target_pct", 0)
+	if targetPct <= 0 {
+		return false, ""
+	}
+	entryPremium, ok := pos.CustomState["option_premium"]
+	if !ok || entryPremium <= 0 {
+		return false, ""
+	}
+	estPremium := pos.EstimatedPremium(currentPrice)
+	if estPremium <= 0 {
+		return false, ""
+	}
+	gain := (estPremium - entryPremium) / entryPremium
+	if gain >= targetPct {
+		return true, fmt.Sprintf("premium_target: gain %.2f%% >= target %.2f%% (entry=%.2f, est=%.2f)",
+			gain*100, targetPct*100, entryPremium, estPremium)
+	}
+	return false, ""
 }
 
