@@ -2,9 +2,9 @@ schema_version = 2
 
 [strategy]
 id = "bollinger_macd_v1"
-version = "1.0.0"
-name = "BB+MACD Confluence with Regime Filter"
-description = "Bollinger Band breakout confirmed by MACD histogram, gated by composite regime score"
+version = "2.0.0"
+name = "BB+MACD Confluence (Trading Rush)"
+description = "30m BB breakout + MACD histogram, 1.5x R:R dynamic target, EMA9 regime filter"
 author = "system"
 created_at = "2026-04-06T00:00:00Z"
 
@@ -13,60 +13,44 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL", "TSLA", "META", "GOOGL"]
-timeframes = ["5m"]
+symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "META", "AMZN", "GOOGL"]
+timeframes = ["30m"]
 priority = 70
 conflict_policy = "priority_wins"
 exclusive_per_symbol = true
 watchlist_mode = "static"
-allowed_directions = ["LONG"]
+allowed_directions = ["LONG", "SHORT"]
 
 [params]
-# Bollinger Bands
-bb_breakout_threshold = 1.0   # %B must breach upper band
+# Bollinger Bands — close must breach upper band (%B > 1.0)
+bb_breakout_threshold = 1.0
 
-# MACD
-require_histogram_rising = false  # histogram > 0 is enough; rising is too fleeting on 5m
+# MACD — histogram > 0 for long, < 0 for short
+# Set true to also require MACD line below zero (catching early momentum)
+macd_below_zero_required = false
 
-# Regime Filter (composite: ADX + EMA slope + BB width)
-regime_threshold = 0.34       # need 1/3 factors confirming trend
+# Risk:Reward — target = entry + ratio * (entry - swing_low)
+risk_reward_ratio = 1.5
 
-# Volume
-volume_mult = 1.2             # breakout candle volume > N * SMA(vol,20)
+# Swing low/high lookback for stop placement
+swing_lookback = 10
 
-# Risk
-stop_bps = 50
-limit_offset_bps = 10
-risk_per_trade_bps = 300
-max_position_bps = 1500
+# Volume — set > 1.0 to require volume spike on breakout candle
+volume_mult = 1.0
 
 # Timing
 allowed_hours_start = "09:35"
 allowed_hours_end = "15:45"
 allowed_hours_tz = "America/New_York"
-cooldown_seconds = 2700
-max_trades_per_day = 3
+cooldown_seconds = 1800
+max_trades_per_day = 2
 stabilization_bars = 30
 
 [hooks]
 signals = { engine = "builtin", name = "bollinger_macd" }
 
-[[exit_rules]]
-type = "SWING_STOP"
-[exit_rules.params]
-lookback = 10
-buffer_bps = 25
-
-[[exit_rules]]
-type = "PROFIT_TARGET"
-[exit_rules.params]
-pct = 0.005
-
-[[exit_rules]]
-type = "STAGNATION_EXIT"
-[exit_rules.params]
-minutes = 45
-
+# Strategy handles its own stops and targets internally (1.5x R:R).
+# Only keep EOD flatten as a safety net.
 [[exit_rules]]
 type = "EOD_FLATTEN"
 [exit_rules.params]
