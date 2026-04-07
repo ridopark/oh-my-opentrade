@@ -96,7 +96,26 @@ func (s *Service) tick() {
 			price := snap.Price
 			pos.UpdateWaterMarks(price)
 
-			evalCtx := EvalContext{BarDuration: s.barDurationFor(pos.Strategy)}
+			// Track premium high-water mark for option positions.
+			// Premium-based exit rules (PREMIUM_TRAIL) use this to trail
+			// from the best estimated premium since entry.
+			if pos.InstrumentType == domain.InstrumentTypeOption {
+				estPremium := pos.EstimatedPremium(price)
+				if estPremium > 0 {
+					if pos.CustomState == nil {
+						pos.CustomState = make(map[string]float64)
+					}
+					if hwm, ok := pos.CustomState["premium_hwm"]; !ok || estPremium > hwm {
+						pos.CustomState["premium_hwm"] = estPremium
+					}
+				}
+			}
+
+			evalCtx := EvalContext{
+				BarDuration: s.barDurationFor(pos.Strategy),
+				BarHigh:     snap.High,
+				BarLow:      snap.Low,
+			}
 			if s.snapshotFn != nil {
 				if indSnap, ok := s.snapshotFn(string(priceSymbol)); ok {
 					evalCtx.ATR = indSnap.ATR

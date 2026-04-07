@@ -9,6 +9,8 @@ import (
 // PriceSnapshot holds a cached price with its observation time.
 type PriceSnapshot struct {
 	Price      float64
+	High       float64   // Bar high (for swing stop — 0 if unavailable)
+	Low        float64   // Bar low (for swing stop — 0 if unavailable)
 	ObservedAt time.Time
 }
 

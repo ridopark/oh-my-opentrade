@@ -933,3 +933,299 @@ func TestEvaluate_UnknownRuleType(t *testing.T) {
 	assert.False(t, triggered)
 	assert.Empty(t, reason)
 }
+
+// --- helpers for premium-based exit tests ---
+
+func newOptionPosition(t *testing.T, entryUnderlying float64, entryTime time.Time, premium, delta float64) *domain.MonitoredPosition {
+	t.Helper()
+	pos := newTestMonitoredPosition(t, entryUnderlying, entryTime, domain.AssetClassEquity)
+	pos.InstrumentType = domain.InstrumentTypeOption
+	pos.OptionRight = "CALL"
+	pos.CustomState["option_premium"] = premium
+	pos.CustomState["delta_at_entry"] = delta
+	return pos
+}
+
+func TestEvaluate_PremiumStop(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+
+	tests := []struct {
+		name       string
+		rule       domain.ExitRule
+		pos        *domain.MonitoredPosition
+		price      float64
+		wantFired  bool
+		wantSubstr string
+	}{
+		{
+			name: "triggers when premium drops 50% (threshold 40%)",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumStop, Params: map[string]float64{"threshold": 0.40}},
+			pos: func() *domain.MonitoredPosition {
+				// entry premium = 5.00, delta = 0.50, entry underlying = 150
+				// at underlying 140: est = 5.00 + 0.50*(140-150) - 5.00*0.005 = 5 - 5 - 0.025 = -0.025 -> 0
+				return newOptionPosition(t, 150, now.Add(-30*time.Minute), 5.00, 0.50)
+			}(),
+			price:      140,
+			wantFired:  true,
+			wantSubstr: "premium_stop",
+		},
+		{
+			name: "does not trigger when premium drop is below threshold",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumStop, Params: map[string]float64{"threshold": 0.40}},
+			pos: func() *domain.MonitoredPosition {
+				// entry premium = 5.00, delta = 0.50, entry underlying = 150
+				// at 149: est = 5.00 + 0.50*(149-150) - 0.025 = 5 - 0.5 - 0.025 = 4.475
+				// loss = (5.00 - 4.475) / 5.00 = 0.105 = 10.5% < 40%
+				return newOptionPosition(t, 150, now.Add(-30*time.Minute), 5.00, 0.50)
+			}(),
+			price:     149,
+			wantFired: false,
+		},
+		{
+			name: "does not trigger for non-option position",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumStop, Params: map[string]float64{"threshold": 0.40}},
+			pos: func() *domain.MonitoredPosition {
+				return newTestMonitoredPosition(t, 150, now.Add(-30*time.Minute), domain.AssetClassEquity)
+			}(),
+			price:     140,
+			wantFired: false,
+		},
+		{
+			name: "does not trigger with missing CustomState",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumStop, Params: map[string]float64{"threshold": 0.40}},
+			pos: func() *domain.MonitoredPosition {
+				p := newTestMonitoredPosition(t, 150, now.Add(-30*time.Minute), domain.AssetClassEquity)
+				p.InstrumentType = domain.InstrumentTypeOption
+				// no option_premium or delta_at_entry in CustomState
+				return p
+			}(),
+			price:     140,
+			wantFired: false,
+		},
+		{
+			name:      "does not trigger with zero threshold",
+			rule:      domain.ExitRule{Type: domain.ExitRulePremiumStop, Params: map[string]float64{"threshold": 0}},
+			pos:       newOptionPosition(t, 150, now.Add(-30*time.Minute), 5.00, 0.50),
+			price:     140,
+			wantFired: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			triggered, reason := Evaluate(tc.rule, tc.pos, tc.price, now, EvalContext{})
+			assert.Equal(t, tc.wantFired, triggered, "triggered mismatch")
+			if tc.wantSubstr != "" {
+				assert.Contains(t, reason, tc.wantSubstr)
+			}
+		})
+	}
+}
+
+func TestEvaluate_PremiumTrail(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+
+	tests := []struct {
+		name       string
+		rule       domain.ExitRule
+		pos        *domain.MonitoredPosition
+		price      float64
+		wantFired  bool
+		wantSubstr string
+	}{
+		{
+			name: "triggers when premium drops 35% from HWM after activation",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumTrail, Params: map[string]float64{
+				"trail_pct": 0.30, "min_activation": 0.20,
+			}},
+			pos: func() *domain.MonitoredPosition {
+				// entry premium = 5.00, delta = 0.50, entry underlying = 150
+				// HWM was at 7.00 (premium rose 40% from entry — above 20% activation)
+				// current underlying = 148 -> est = 5.00 + 0.50*(148-150) - 0.025 = 3.975
+				// drawdown from HWM = (7.00 - 3.975) / 7.00 = 0.432 = 43.2% >= 30%
+				p := newOptionPosition(t, 150, now.Add(-30*time.Minute), 5.00, 0.50)
+				p.CustomState["premium_hwm"] = 7.00
+				return p
+			}(),
+			price:      148,
+			wantFired:  true,
+			wantSubstr: "premium_trail",
+		},
+		{
+			name: "does not trigger before activation threshold",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumTrail, Params: map[string]float64{
+				"trail_pct": 0.30, "min_activation": 0.20,
+			}},
+			pos: func() *domain.MonitoredPosition {
+				// HWM = 5.50 -> gain = (5.50-5.00)/5.00 = 10% < 20% activation
+				p := newOptionPosition(t, 150, now.Add(-30*time.Minute), 5.00, 0.50)
+				p.CustomState["premium_hwm"] = 5.50
+				return p
+			}(),
+			price:     148,
+			wantFired: false,
+		},
+		{
+			name: "does not trigger when drawdown is below trail_pct",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumTrail, Params: map[string]float64{
+				"trail_pct": 0.30, "min_activation": 0.20,
+			}},
+			pos: func() *domain.MonitoredPosition {
+				// HWM = 7.00, underlying at 152 -> est = 5.00 + 0.50*(152-150) - 0.025 = 5.975
+				// drawdown = (7.00-5.975)/7.00 = 14.6% < 30%
+				p := newOptionPosition(t, 150, now.Add(-30*time.Minute), 5.00, 0.50)
+				p.CustomState["premium_hwm"] = 7.00
+				return p
+			}(),
+			price:     152,
+			wantFired: false,
+		},
+		{
+			name: "does not trigger for non-option position",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumTrail, Params: map[string]float64{
+				"trail_pct": 0.30, "min_activation": 0.20,
+			}},
+			pos: func() *domain.MonitoredPosition {
+				return newTestMonitoredPosition(t, 150, now.Add(-30*time.Minute), domain.AssetClassEquity)
+			}(),
+			price:     140,
+			wantFired: false,
+		},
+		{
+			name: "does not trigger with no premium_hwm",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumTrail, Params: map[string]float64{
+				"trail_pct": 0.30, "min_activation": 0.20,
+			}},
+			pos:       newOptionPosition(t, 150, now.Add(-30*time.Minute), 5.00, 0.50),
+			price:     148,
+			wantFired: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			triggered, reason := Evaluate(tc.rule, tc.pos, tc.price, now, EvalContext{})
+			assert.Equal(t, tc.wantFired, triggered, "triggered mismatch")
+			if tc.wantSubstr != "" {
+				assert.Contains(t, reason, tc.wantSubstr)
+			}
+		})
+	}
+}
+
+func TestEvaluate_PremiumTarget(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+
+	tests := []struct {
+		name       string
+		rule       domain.ExitRule
+		pos        *domain.MonitoredPosition
+		price      float64
+		wantFired  bool
+		wantSubstr string
+	}{
+		{
+			name: "triggers when premium rises 75% from entry (target 70%)",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumTarget, Params: map[string]float64{"target_pct": 0.70}},
+			pos: func() *domain.MonitoredPosition {
+				// entry premium = 5.00, delta = 0.50, entry underlying = 150
+				// at 168: est = 5.00 + 0.50*(168-150) - 0.025 = 5 + 9 - 0.025 = 13.975
+				// gain = (13.975 - 5.00) / 5.00 = 1.795 = 179.5% >= 70%
+				return newOptionPosition(t, 150, now.Add(-30*time.Minute), 5.00, 0.50)
+			}(),
+			price:      168,
+			wantFired:  true,
+			wantSubstr: "premium_target",
+		},
+		{
+			name: "does not trigger when premium gain is below target",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumTarget, Params: map[string]float64{"target_pct": 0.70}},
+			pos: func() *domain.MonitoredPosition {
+				// at 152: est = 5.00 + 0.50*(152-150) - 0.025 = 5 + 1 - 0.025 = 5.975
+				// gain = (5.975-5.00)/5.00 = 19.5% < 70%
+				return newOptionPosition(t, 150, now.Add(-30*time.Minute), 5.00, 0.50)
+			}(),
+			price:     152,
+			wantFired: false,
+		},
+		{
+			name: "does not trigger for non-option position",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumTarget, Params: map[string]float64{"target_pct": 0.70}},
+			pos: func() *domain.MonitoredPosition {
+				return newTestMonitoredPosition(t, 150, now.Add(-30*time.Minute), domain.AssetClassEquity)
+			}(),
+			price:     200,
+			wantFired: false,
+		},
+		{
+			name: "does not trigger with missing CustomState",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumTarget, Params: map[string]float64{"target_pct": 0.70}},
+			pos: func() *domain.MonitoredPosition {
+				p := newTestMonitoredPosition(t, 150, now.Add(-30*time.Minute), domain.AssetClassEquity)
+				p.InstrumentType = domain.InstrumentTypeOption
+				return p
+			}(),
+			price:     200,
+			wantFired: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			triggered, reason := Evaluate(tc.rule, tc.pos, tc.price, now, EvalContext{})
+			assert.Equal(t, tc.wantFired, triggered, "triggered mismatch")
+			if tc.wantSubstr != "" {
+				assert.Contains(t, reason, tc.wantSubstr)
+			}
+		})
+	}
+}
+
+func TestEstimatedPremium(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+
+	t.Run("normal call option", func(t *testing.T) {
+		pos := newOptionPosition(t, 150, now, 5.00, 0.50)
+		// at underlying 152: est = 5.00 + 0.50*(152-150) - 5.00*0.005 = 5 + 1 - 0.025 = 5.975
+		est := pos.EstimatedPremium(152)
+		assert.InDelta(t, 5.975, est, 0.001)
+	})
+
+	t.Run("non-option returns zero", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 150, now, domain.AssetClassEquity)
+		est := pos.EstimatedPremium(152)
+		assert.Equal(t, 0.0, est)
+	})
+
+	t.Run("missing CustomState returns zero", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 150, now, domain.AssetClassEquity)
+		pos.InstrumentType = domain.InstrumentTypeOption
+		est := pos.EstimatedPremium(152)
+		assert.Equal(t, 0.0, est)
+	})
+
+	t.Run("negative premium clamped to zero", func(t *testing.T) {
+		pos := newOptionPosition(t, 150, now, 2.00, 0.50)
+		// at underlying 140: est = 2.00 + 0.50*(140-150) - 2.00*0.008 = 2 - 5 - 0.016 = -3.016 -> 0
+		est := pos.EstimatedPremium(140)
+		assert.Equal(t, 0.0, est)
+	})
+
+	t.Run("spread tiers", func(t *testing.T) {
+		// >= $10 -> 0.3%
+		pos10 := newOptionPosition(t, 150, now, 12.00, 0.50)
+		est10 := pos10.EstimatedPremium(150)
+		// est = 12.00 + 0 - 12*0.003 = 12 - 0.036 = 11.964
+		assert.InDelta(t, 11.964, est10, 0.001)
+
+		// < $2 -> 1.5%
+		pos1 := newOptionPosition(t, 150, now, 1.50, 0.30)
+		est1 := pos1.EstimatedPremium(150)
+		// est = 1.50 + 0 - 1.50*0.015 = 1.50 - 0.0225 = 1.4775
+		assert.InDelta(t, 1.4775, est1, 0.001)
+	})
+}

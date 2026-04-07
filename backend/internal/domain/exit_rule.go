@@ -26,6 +26,9 @@ const (
 	ExitRuleSwingStop      ExitRuleType = "SWING_STOP"
 	ExitRuleTieredTP       ExitRuleType = "TIERED_TP"
 	ExitRuleTimePartial    ExitRuleType = "TIME_PARTIAL"
+	ExitRulePremiumStop    ExitRuleType = "PREMIUM_STOP"   // exit if premium drops X% from entry
+	ExitRulePremiumTrail   ExitRuleType = "PREMIUM_TRAIL"  // trail X% from premium high-water mark
+	ExitRulePremiumTarget  ExitRuleType = "PREMIUM_TARGET" // exit if premium rises X% from entry
 )
 
 func (e ExitRuleType) String() string { return string(e) }
@@ -51,7 +54,8 @@ func NewExitRuleType(s string) (ExitRuleType, error) {
 		ExitRuleStagnationExit, ExitRuleBreakevenStop,
 		ExitRuleDTEFloor, ExitRuleExpiryWatch,
 		ExitRuleSwingStop,
-		ExitRuleTieredTP, ExitRuleTimePartial:
+		ExitRuleTieredTP, ExitRuleTimePartial,
+		ExitRulePremiumStop, ExitRulePremiumTrail, ExitRulePremiumTarget:
 		return ExitRuleType(s), nil
 	default:
 		return "", fmt.Errorf("invalid exit rule type: %q", s)
@@ -215,6 +219,51 @@ func (mp *MonitoredPosition) DrawdownFromHighPct(currentPrice float64) float64 {
 		return 0
 	}
 	return (mp.HighWaterMark - currentPrice) / mp.HighWaterMark
+}
+
+// EstimatedPremium approximates the current option premium using delta and
+// spread cost. Returns 0 if the position is not an option or required
+// CustomState fields are missing.
+//
+// Formula:
+//
+//	currentPremium = entryPremium + delta × (currentUnderlying - entryUnderlying) - spreadCost
+//
+// Where spreadCost = entryPremium × tierSpreadPct, using the same tiers as
+// SimBroker: >=10 -> 0.3%, >=5 -> 0.5%, >=2 -> 0.8%, <2 -> 1.5%.
+func (mp *MonitoredPosition) EstimatedPremium(currentUnderlyingPrice float64) float64 {
+	if mp.InstrumentType != InstrumentTypeOption {
+		return 0
+	}
+	if mp.CustomState == nil {
+		return 0
+	}
+	entryPremium, ok1 := mp.CustomState["option_premium"]
+	delta, ok2 := mp.CustomState["delta_at_entry"]
+	if !ok1 || !ok2 || entryPremium <= 0 {
+		return 0
+	}
+
+	// Spread cost tiers (matching simbroker)
+	var spreadPct float64
+	switch {
+	case entryPremium >= 10:
+		spreadPct = 0.003
+	case entryPremium >= 5:
+		spreadPct = 0.005
+	case entryPremium >= 2:
+		spreadPct = 0.008
+	default:
+		spreadPct = 0.015
+	}
+	spreadCost := entryPremium * spreadPct
+
+	underlyingMove := currentUnderlyingPrice - mp.EntryPrice
+	est := entryPremium + delta*underlyingMove - spreadCost
+	if est < 0 {
+		est = 0
+	}
+	return est
 }
 
 // PositionKey returns a unique key for this position within a tenant/env scope.
