@@ -709,9 +709,9 @@ func evaluateDTEFloor(rule domain.ExitRule, pos *domain.MonitoredPosition, now t
 	if floor <= 0 {
 		return false, ""
 	}
-	dte := int(pos.OptionExpiry.Sub(now).Hours() / 24)
+	dte := domain.TradingDaysBetween(now, pos.OptionExpiry)
 	if dte <= floor {
-		return true, fmt.Sprintf("dte_floor: %d days to expiry <= floor %d (expiry=%s)",
+		return true, fmt.Sprintf("dte_floor: %d trading days to expiry <= floor %d (expiry=%s)",
 			dte, floor, pos.OptionExpiry.Format("2006-01-02"))
 	}
 	return false, ""

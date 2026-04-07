@@ -434,7 +434,8 @@ func isKnownExitRuleParamKey(key string) bool {
 	}
 
 	switch key {
-	case "atr_multiplier", "sd_level", "min_hold_bars", "minutes", "sd_threshold", "profit_gate_pct", "minutes_before_close", "pct":
+	case "atr_multiplier", "sd_level", "min_hold_bars", "minutes", "sd_threshold", "profit_gate_pct", "minutes_before_close", "pct",
+		"threshold", "trail_pct", "min_activation", "target_pct":
 		return true
 	default:
 		return false

@@ -927,9 +927,13 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 		"strategy":        intent.Strategy,
 		"rationale":       intent.Rationale,
 		"risk_modifier":   intent.Meta["risk_modifier"],
-		"regime":          intent.Meta["regime"],
-		"vix_bucket":      intent.Meta["vix_bucket"],
-		"market_context":  intent.Meta["market_context"],
+		"regime":                intent.Meta["regime"],
+		"vix_bucket":            intent.Meta["vix_bucket"],
+		"market_context":        intent.Meta["market_context"],
+		"premium_mfe_pct":       intent.Meta["premium_mfe_pct"],
+		"premium_mae_pct":       intent.Meta["premium_mae_pct"],
+		"bars_to_first_profit":  intent.Meta["bars_to_first_profit"],
+		"bars_held":             intent.Meta["bars_held"],
 	}
 	if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
 		fillPayload["instrument_type"] = string(domain.InstrumentTypeOption)
@@ -1136,9 +1140,13 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 		"strategy":        po.intent.Strategy,
 		"asset_class":     string(po.intent.AssetClass),
 		"rationale":       po.intent.Rationale,
-		"regime":          po.intent.Meta["regime"],
-		"vix_bucket":      po.intent.Meta["vix_bucket"],
-		"market_context":  po.intent.Meta["market_context"],
+		"regime":                po.intent.Meta["regime"],
+		"vix_bucket":            po.intent.Meta["vix_bucket"],
+		"market_context":        po.intent.Meta["market_context"],
+		"premium_mfe_pct":       po.intent.Meta["premium_mfe_pct"],
+		"premium_mae_pct":       po.intent.Meta["premium_mae_pct"],
+		"bars_to_first_profit":  po.intent.Meta["bars_to_first_profit"],
+		"bars_held":             po.intent.Meta["bars_held"],
 	}
 	if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {
 		fillPayload["instrument_type"] = string(domain.InstrumentTypeOption)

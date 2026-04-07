@@ -58,6 +58,8 @@ func parseTFDuration(tf string) time.Duration {
 		return 5 * time.Minute
 	case "15m":
 		return 15 * time.Minute
+	case "30m":
+		return 30 * time.Minute
 	case "1h":
 		return time.Hour
 	case "1d":

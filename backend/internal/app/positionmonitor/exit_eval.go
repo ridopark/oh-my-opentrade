@@ -105,8 +105,32 @@ func (s *Service) tick() {
 					if pos.CustomState == nil {
 						pos.CustomState = make(map[string]float64)
 					}
+					// Existing: premium high-water mark
 					if hwm, ok := pos.CustomState["premium_hwm"]; !ok || estPremium > hwm {
 						pos.CustomState["premium_hwm"] = estPremium
+					}
+					// NEW: premium low-water mark
+					if lwm, ok := pos.CustomState["premium_lwm"]; !ok || estPremium < lwm {
+						pos.CustomState["premium_lwm"] = estPremium
+					}
+					// NEW: MFE/MAE as percentage of entry premium
+					entryPremium := pos.CustomState["option_premium"]
+					if entryPremium > 0 {
+						pctChange := (estPremium - entryPremium) / entryPremium
+						if mfe, ok := pos.CustomState["premium_mfe_pct"]; !ok || pctChange > mfe {
+							pos.CustomState["premium_mfe_pct"] = pctChange
+						}
+						if mae, ok := pos.CustomState["premium_mae_pct"]; !ok || pctChange < mae {
+							pos.CustomState["premium_mae_pct"] = pctChange
+						}
+						// NEW: bars since entry
+						pos.CustomState["bars_since_entry"]++
+						// NEW: bars to first profit (set once, -1 if never)
+						if _, set := pos.CustomState["bars_to_first_profit"]; !set {
+							if pctChange > 0 {
+								pos.CustomState["bars_to_first_profit"] = pos.CustomState["bars_since_entry"]
+							}
+						}
 					}
 				}
 			}
@@ -351,6 +375,27 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 	if err == nil {
 		intent.OrderType = orderType
 		intent.TimeInForce = tif
+
+		// Attach MFE/MAE trade analytics to intent metadata for backtest collector.
+		if pos.CustomState != nil {
+			if intent.Meta == nil {
+				intent.Meta = make(map[string]string)
+			}
+			if v, ok := pos.CustomState["premium_mfe_pct"]; ok {
+				intent.Meta["premium_mfe_pct"] = fmt.Sprintf("%.6f", v)
+			}
+			if v, ok := pos.CustomState["premium_mae_pct"]; ok {
+				intent.Meta["premium_mae_pct"] = fmt.Sprintf("%.6f", v)
+			}
+			if v, ok := pos.CustomState["bars_to_first_profit"]; ok {
+				intent.Meta["bars_to_first_profit"] = fmt.Sprintf("%.0f", v)
+			} else {
+				intent.Meta["bars_to_first_profit"] = "-1"
+			}
+			if v, ok := pos.CustomState["bars_since_entry"]; ok {
+				intent.Meta["bars_held"] = fmt.Sprintf("%.0f", v)
+			}
+		}
 
 		// Attach Instrument metadata for option positions so the broker adapter
 		// dispatches to the options order path (e.g. Alpaca SubmitOptionOrder).
