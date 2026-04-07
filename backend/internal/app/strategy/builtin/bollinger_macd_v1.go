@@ -455,27 +455,20 @@ func (s *BollingerMACDStrategy) OnEvent(ctx start.Context, _ string, evt any, st
 	switch e := evt.(type) {
 	case start.FillConfirmation:
 		switch {
-		case bmSt.PendingEntry != "" && e.Side == bmSt.PendingEntry:
-			// Entry fill — record entry price for R:R tracking.
-			bmSt.PositionSide = e.Side
-			bmSt.EntryPrice = e.Price
+		case bmSt.PendingEntry != "":
+			// Entry fill — use the pending direction, not the fill side
+			// (options fills are always BUY for opening, regardless of direction).
+			bmSt.PositionSide = bmSt.PendingEntry
 			bmSt.PendingEntry = ""
 			bmSt.PendingEntryAt = time.Time{}
-			// Recalculate target based on actual fill price
-			if bmSt.PositionSide == start.SideBuy && bmSt.StopPrice > 0 {
-				stopDist := e.Price - bmSt.StopPrice
-				bmSt.TargetPrice = e.Price + bmSt.Config.RiskRewardRatio*stopDist
-			} else if bmSt.PositionSide == start.SideSell && bmSt.StopPrice > 0 {
-				stopDist := bmSt.StopPrice - e.Price
-				bmSt.TargetPrice = e.Price - bmSt.Config.RiskRewardRatio*stopDist
-			}
-		case bmSt.PositionSide != "" && e.Side != bmSt.PositionSide:
+		case bmSt.PositionSide != "":
 			// Exit fill — flat now.
 			bmSt.PositionSide = ""
 			bmSt.EntryPrice = 0
 			bmSt.StopPrice = 0
 			bmSt.TargetPrice = 0
 		default:
+			// Unexpected fill — reset to flat.
 			bmSt.PositionSide = ""
 			bmSt.PendingEntry = ""
 			bmSt.PendingEntryAt = time.Time{}
