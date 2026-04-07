@@ -1,15 +1,15 @@
 schema_version = 2
 
 [strategy]
-id = "bollinger_macd_v1"
-version = "2.0.0"
-name = "BB+MACD Confluence (Trading Rush)"
-description = "30m BB breakout + MACD histogram, 1.5x R:R dynamic target, EMA9 regime filter"
+id = "bb_only_v1"
+version = "1.0.0"
+name = "BB Breakout (Trading Rush)"
+description = "30m Bollinger Band breakout + 200 MA + EMA9 filter, 1.5x R:R"
 author = "system"
 created_at = "2026-04-06T00:00:00Z"
 
 [lifecycle]
-state = "Deactivated"
+state = "PaperActive"
 paper_only = true
 
 [routing]
@@ -22,20 +22,22 @@ watchlist_mode = "static"
 allowed_directions = ["LONG", "SHORT"]
 
 [params]
-# Bollinger Bands — close must breach upper band (%B > 1.0)
-bb_breakout_threshold = 0.9
+# Mode: "bb_only" — pure BB breakout, no MACD
+mode = "bb_only"
 
-# MACD — histogram > 0 for long, < 0 for short
-# Set true to also require MACD line below zero (catching early momentum)
+# BB: close must breach upper band (%B > 1.0)
+bb_breakout_threshold = 1.0
+
+# MACD (unused in bb_only mode)
 macd_below_zero_required = false
 
-# Risk:Reward — target = entry + ratio * (entry - swing_low)
+# Risk:Reward
 risk_reward_ratio = 1.5
 
 # Swing low/high lookback for stop placement
 swing_lookback = 26
 
-# Volume — set > 1.0 to require volume spike on breakout candle
+# Volume
 volume_mult = 1.0
 
 # Timing
@@ -49,8 +51,6 @@ stabilization_bars = 10
 [hooks]
 signals = { engine = "builtin", name = "bollinger_macd" }
 
-# Strategy handles its own stops and targets internally (1.5x R:R).
-# Only keep EOD flatten as a safety net.
 [[exit_rules]]
 type = "EOD_FLATTEN"
 [exit_rules.params]
