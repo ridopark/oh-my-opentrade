@@ -9,6 +9,12 @@
 # Read hook input JSON from stdin
 INPUT=$(cat || true)
 
+# Only run for git commit commands (double-check — "if" filter should handle this)
+CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
+if ! echo "$CMD" | grep -q '^git commit' 2>/dev/null; then
+  exit 0
+fi
+
 # Check if the commit actually succeeded
 STDOUT=$(echo "$INPUT" | jq -r '.tool_response.stdout // empty' 2>/dev/null || true)
 if echo "$STDOUT" | grep -qiE '(error|fatal|nothing to commit|no changes)' 2>/dev/null; then
