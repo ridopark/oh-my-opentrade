@@ -25,8 +25,10 @@ allowed_directions = ["LONG", "SHORT"]
 # Mode: "macd_only" — pure MACD crossover, no BB
 mode = "macd_only"
 
-# MACD crossover must occur below zero line (Trading Rush rule)
-macd_below_zero_required = true
+# MACD zero band: crossover must occur with MACD < this value
+# 0.0 = strict below zero (original Trading Rush)
+# 0.5 = relaxed band, catches pullbacks within uptrends
+macd_zero_band = 99.0
 
 # BB threshold (unused in macd_only mode but needed for config parsing)
 bb_breakout_threshold = 1.0
