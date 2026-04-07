@@ -1,0 +1,129 @@
+schema_version = 2
+
+[strategy]
+id = "orb_break_retest"
+version = "1.0.0"
+name = "ORB Break & Retest"
+description = "Opening Range Breakout — Break & Retest with volume confirmation"
+author = "system"
+created_at = "2026-03-04T00:00:00Z"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NFLX", "NVDA", "AMD", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "COIN", "AFRM", "JPM", "XOM", "OXY", "LLY", "MRNA", "HIMS", "RIVN", "RBLX", "BA", "SPY", "QQQ", "IWM", "SOXL"]
+timeframes = ["5m"]
+priority = 100
+conflict_policy = "priority_wins"
+exclusive_per_symbol = true
+watchlist_mode = "static"
+asset_classes = ["OPTION"]
+allowed_directions = ["LONG", "SHORT"]
+
+[screening]
+description = "Opening Range Breakout strategy that waits for price to break the ORB window(15min) range, then retests the breakout level before entry. CRITICAL: Only pick highly liquid stocks that trade continuously every minute during the first hour — minimum 500K average daily volume, preferably 1M+. Mid and large caps only."
+
+[params]
+bar_timeframe = "5m"
+orb_window_minutes = 15
+min_rvol = 0.8                   # lowered from 1.5 — accept average volume
+min_confidence = 0.35            # lowered from 0.55 — more signals pass
+breakout_confirm_bps = 2         # tighter confirmation (was 5)
+touch_tolerance_bps = 5          # wider retest zone (was 3) — easier to trigger
+hold_confirm_bps = 1             # almost no hold confirmation needed (was 2)
+max_retest_bars = 25             # longer retest window (was 15) — more patient
+allow_missing_range_bars = 2     # tolerate 2 missing bars (was 1)
+max_signals_per_session = 6      # up from 3 — more entries per day
+htf_bias_enabled = false         # disabled — don't block on daily bias
+atr_multiplier = 3.5
+sweep_cooldown_bars = 1          # shorter cooldown after sweep (was 3)
+retest_confirm_bars = 1          # 1 bar to confirm retest (was 2)
+vwap_filter_enabled = false      # disabled — don't require VWAP alignment
+vix_skip_above = 40              # raised from 25 — trade in higher vol
+vix_widen_above = 20             # raised from 15
+max_range_atr_mult = 4.0         # accept wider ranges (was 2.5)
+min_range_pct_bps = 10           # accept smaller ranges (was 20)
+fvg_enabled = true
+fvg_min_rvol = 0.8               # lowered from 1.5
+stop_bps = 100                   # wider stop (was 50) — fewer premature exits
+limit_offset_bps = 15            # slightly more aggressive fill
+risk_per_trade_bps = 300         # smaller size per trade (more attempts)
+max_position_bps = 1500
+allowed_hours_start = "09:30"
+allowed_hours_end = "15:30"      # extended from 15:00
+allowed_hours_tz = "America/New_York"
+
+[regime_filter]
+enabled = false
+allowed_regimes = ["TREND", "BALANCE"]
+min_atr_pct = 0.4
+
+[hooks]
+signals = { engine = "builtin", name = "orb_break_retest" }
+
+[dynamic_risk]
+enabled = true
+min_confidence = 0.30            # lowered from 0.55
+risk_scale_min = 0.50
+risk_scale_max = 1.00
+stop_tight_mult = 0.60
+stop_wide_mult = 1.50
+size_tight_mult = 0.70
+size_wide_mult = 1.50
+
+[[exit_rules]]
+type = "STEP_STOP"
+[exit_rules.params]
+min_hold_bars = 2
+bar_minutes = 5
+
+[[exit_rules]]
+type = "SD_TARGET"
+[exit_rules.params]
+sd_level = 1.5
+min_hold_bars = 2
+bar_minutes = 5
+
+[[exit_rules]]
+type = "STAGNATION_EXIT"
+[exit_rules.params]
+minutes = 60
+sd_threshold = 0.6
+profit_gate_pct = 0.01
+
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 10
+
+[[exit_rules]]
+type = "MAX_LOSS"
+[exit_rules.params]
+pct = 0.02
+
+[options]
+enabled = true
+
+# Limit price = mid + 60% of spread (aggressive for ORB breakout day trading)
+limit_spread_pct = 1.00
+# Fallback when spread is zero: ask + 3%
+limit_buffer_bps = 1000
+# Cancel unfilled option orders after 45 seconds (speed > price for ORB)
+stale_cancel_secs = 45
+
+[options.defaults]
+min_dte = 7                      # shorter DTE (was 35) — more contracts
+max_dte = 45
+target_delta_low = 0.30          # wider delta range (was 0.40)
+target_delta_high = 0.70         # wider delta range (was 0.55)
+min_open_interest = 30           # lower OI floor (was 100)
+max_spread_pct = 0.15            # accept wider spreads (was 0.10)
+max_iv = 2.0                     # higher IV tolerance (was 1.0)
+
+[options.regime_overrides.BALANCE]
+target_delta_low = 0.35
+target_delta_high = 0.50
+min_dte = 30
+max_dte = 50

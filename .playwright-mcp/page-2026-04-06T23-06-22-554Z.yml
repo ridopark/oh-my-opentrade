@@ -1,0 +1,1304 @@
+- generic [active] [ref=e1]:
+  - complementary [ref=e2]:
+    - generic [ref=e3]:
+      - img [ref=e4]
+      - generic [ref=e6]: oh-my-opentrade
+    - navigation [ref=e7]:
+      - link "Signals" [ref=e8] [cursor=pointer]:
+        - /url: /
+        - img [ref=e9]
+        - text: Signals
+      - link "Portfolio" [ref=e11] [cursor=pointer]:
+        - /url: /portfolio
+        - img [ref=e12]
+        - text: Portfolio
+      - link "Services" [ref=e15] [cursor=pointer]:
+        - /url: /services
+        - img [ref=e16]
+        - text: Services
+      - link "Debates" [ref=e19] [cursor=pointer]:
+        - /url: /debates
+        - img [ref=e20]
+        - text: Debates
+      - link "Execution" [ref=e29] [cursor=pointer]:
+        - /url: /execution
+        - img [ref=e30]
+        - text: Execution
+      - link "Performance" [ref=e33] [cursor=pointer]:
+        - /url: /performance
+        - img [ref=e34]
+        - text: Performance
+      - link "Backtest" [ref=e37] [cursor=pointer]:
+        - /url: /backtest
+        - img [ref=e38]
+        - text: Backtest
+      - link "Screener" [ref=e40] [cursor=pointer]:
+        - /url: /screener
+        - img [ref=e41]
+        - text: Screener
+      - link "Approvals" [ref=e43] [cursor=pointer]:
+        - /url: /approvals
+        - img [ref=e44]
+        - text: Approvals
+      - link "Strategies" [ref=e47] [cursor=pointer]:
+        - /url: /strategies
+        - img [ref=e48]
+        - text: Strategies
+      - link "Settings" [ref=e52] [cursor=pointer]:
+        - /url: /settings
+        - img [ref=e53]
+        - text: Settings
+    - generic [ref=e59]: Paper Trading
+  - main [ref=e60]:
+    - generic [ref=e61]:
+      - generic [ref=e62]:
+        - heading "Backtest" [level=1] [ref=e63]
+        - generic [ref=e64]:
+          - generic [ref=e65]: Symbols
+          - button "AAPL, AFRM, AMD, AMZN, AVGO, BA, COIN, CRM, GOOGL, HIMS, HOOD, IWM, JPM, LLY, META, MRNA, MRVL, MSFT, MU, NET, NFLX, NVDA, OXY, PLTR, QQQ, RBLX, RIVN, SMCI, SNOW, SOFI, SOXL, SPY, TSLA, XOM ▼" [ref=e112]:
+            - generic [ref=e68]: AAPL, AFRM, AMD, AMZN, AVGO, BA, COIN, CRM, GOOGL, HIMS, HOOD, IWM, JPM, LLY, META, MRNA, MRVL, MSFT, MU, NET, NFLX, NVDA, OXY, PLTR, QQQ, RBLX, RIVN, SMCI, SNOW, SOFI, SOXL, SPY, TSLA, XOM
+            - generic [ref=e69]: ▼
+        - generic [ref=e70]:
+          - generic [ref=e71]: Strategy
+          - button "avwap_v4 ▼" [ref=e113]:
+            - generic [ref=e74]: avwap_v4
+            - generic [ref=e75]: ▼
+        - generic [ref=e76]:
+          - generic [ref=e77]: From
+          - textbox [ref=e78]: 2026-03-01
+          - generic [ref=e79]: To
+          - textbox [ref=e80]: 2026-03-15
+        - generic [ref=e81]:
+          - button "1m" [ref=e82]
+          - button "5m" [ref=e83]
+          - button "15m" [ref=e84]
+          - button "1h" [ref=e85]
+        - generic [ref=e86]:
+          - button "1x" [ref=e87]
+          - button "2x" [ref=e88]
+          - button "5x" [ref=e89]
+          - button "10x" [ref=e90]
+          - button "max" [ref=e91]
+        - generic [ref=e92]:
+          - generic [ref=e93]: Eq
+          - spinbutton [ref=e94]: "100000"
+          - generic [ref=e95]: Slip
+          - spinbutton [ref=e96]: "5"
+        - generic [ref=e97] [cursor=pointer]:
+          - checkbox "No AI" [checked] [ref=e98]
+          - text: No AI
+        - generic "Dynamically pick the best Top N symbols each trading day from the candidate pool (Symbols list). Add more symbols than Top N for effective filtering." [ref=e99] [cursor=pointer]:
+          - checkbox "Daily Screener" [ref=e100]
+          - text: Daily Screener
+        - generic [ref=e101]:
+          - button "Run Again" [ref=e128]
+          - generic [ref=e127]: completed
+      - generic [ref=e105]:
+        - generic [ref=e106]:
+          - button "Positions (49)" [ref=e129]: Positions (49)
+          - button "Results" [ref=e109]
+          - generic [ref=e131]:
+            - generic [ref=e132]: P&L -$1,417.90
+            - generic [ref=e133]: Trades 49
+            - generic [ref=e134]:
+              - text: Win
+              - generic [ref=e135]: 46.9%
+            - generic [ref=e136]: Sharpe -0.029
+        - table [ref=e137]:
+          - rowgroup [ref=e138]:
+            - row "# Symbol Side Strategy Qty Entry Entry Time Exit Exit Time P&L Entry Reason Conf Exit Reason EMA Regime Context" [ref=e139]:
+              - columnheader "#" [ref=e140]
+              - columnheader "Symbol" [ref=e141]
+              - columnheader "Side" [ref=e142]
+              - columnheader "Strategy" [ref=e143]
+              - columnheader "Qty" [ref=e144]
+              - columnheader "Entry" [ref=e145]
+              - columnheader "Entry Time" [ref=e146]
+              - columnheader "Exit" [ref=e147]
+              - columnheader "Exit Time" [ref=e148]
+              - columnheader "P&L" [ref=e149]
+              - columnheader "Entry Reason" [ref=e150]
+              - columnheader "Conf" [ref=e151]
+              - columnheader "Exit Reason" [ref=e152]
+              - columnheader "EMA Regime" [ref=e153]
+              - columnheader "Context" [ref=e154]
+          - rowgroup [ref=e155]:
+            - row "1 NFLX260313P00096000 SHORT avwap_v4 5 $2.60 Mar 2, 09:54 $2.55 Mar 2, 10:40 -$24.41 (-1.88%) BREAKOUT 10 STAGNATION EXIT BALANCE" [ref=e156]:
+              - cell "1" [ref=e157]
+              - cell "NFLX260313P00096000" [ref=e158]
+              - cell "SHORT" [ref=e159]:
+                - generic [ref=e160]: SHORT
+              - cell "avwap_v4" [ref=e161]
+              - cell "5" [ref=e162]
+              - cell "$2.60" [ref=e163]
+              - cell "Mar 2, 09:54" [ref=e164]:
+                - button "Mar 2, 09:54" [ref=e165] [cursor=pointer]
+              - cell "$2.55" [ref=e166]
+              - cell "Mar 2, 10:40" [ref=e167]:
+                - button "Mar 2, 10:40" [ref=e168] [cursor=pointer]
+              - cell "-$24.41 (-1.88%)" [ref=e169]:
+                - generic [ref=e170]:
+                  - text: "-$24.41"
+                  - generic [ref=e171]: (-1.88%)
+              - cell "BREAKOUT" [ref=e172]
+              - cell "10" [ref=e173]:
+                - generic [ref=e174]: "10"
+              - cell "STAGNATION EXIT" [ref=e175]
+              - cell "BALANCE" [ref=e176]:
+                - generic [ref=e177]: BALANCE
+              - cell [ref=e178]
+            - row "2 OXY260313P00054000 SHORT avwap_v4 5 $1.93 Mar 2, 09:54 $1.76 Mar 2, 10:40 -$84.38 (-8.75%) BREAKOUT 7 STAGNATION EXIT BALANCE" [ref=e179]:
+              - cell "2" [ref=e180]
+              - cell "OXY260313P00054000" [ref=e181]
+              - cell "SHORT" [ref=e182]:
+                - generic [ref=e183]: SHORT
+              - cell "avwap_v4" [ref=e184]
+              - cell "5" [ref=e185]
+              - cell "$1.93" [ref=e186]
+              - cell "Mar 2, 09:54" [ref=e187]:
+                - button "Mar 2, 09:54" [ref=e188] [cursor=pointer]
+              - cell "$1.76" [ref=e189]
+              - cell "Mar 2, 10:40" [ref=e190]:
+                - button "Mar 2, 10:40" [ref=e191] [cursor=pointer]
+              - cell "-$84.38 (-8.75%)" [ref=e192]:
+                - generic [ref=e193]:
+                  - text: "-$84.38"
+                  - generic [ref=e194]: (-8.75%)
+              - cell "BREAKOUT" [ref=e195]
+              - cell "7" [ref=e196]:
+                - generic [ref=e197]: "7"
+              - cell "STAGNATION EXIT" [ref=e198]
+              - cell "BALANCE" [ref=e199]:
+                - generic [ref=e200]: BALANCE
+              - cell [ref=e201]
+            - row "3 MU260313P00395000 SHORT avwap_v4 1 $18.62 Mar 2, 10:19 $15.91 Mar 2, 11:04 -$270.52 (-14.53%) BREAKOUT 7 MAX LOSS BALANCE" [ref=e202]:
+              - cell "3" [ref=e203]
+              - cell "MU260313P00395000" [ref=e204]
+              - cell "SHORT" [ref=e205]:
+                - generic [ref=e206]: SHORT
+              - cell "avwap_v4" [ref=e207]
+              - cell "1" [ref=e208]
+              - cell "$18.62" [ref=e209]
+              - cell "Mar 2, 10:19" [ref=e210]:
+                - button "Mar 2, 10:19" [ref=e211] [cursor=pointer]
+              - cell "$15.91" [ref=e212]
+              - cell "Mar 2, 11:04" [ref=e213]:
+                - button "Mar 2, 11:04" [ref=e214] [cursor=pointer]
+              - cell "-$270.52 (-14.53%)" [ref=e215]:
+                - generic [ref=e216]:
+                  - text: "-$270.52"
+                  - generic [ref=e217]: (-14.53%)
+              - cell "BREAKOUT" [ref=e218]
+              - cell "7" [ref=e219]:
+                - generic [ref=e220]: "7"
+              - cell "MAX LOSS" [ref=e221]
+              - cell "BALANCE" [ref=e222]:
+                - generic [ref=e223]: BALANCE
+              - cell [ref=e224]
+            - row "4 OXY260320P00053000 SHORT avwap_v4 5 $1.87 Mar 3, 09:44 $1.47 Mar 3, 10:10 -$202.49 (-21.62%) BREAKOUT 7 MAX LOSS BALANCE" [ref=e225]:
+              - cell "4" [ref=e226]
+              - cell "OXY260320P00053000" [ref=e227]
+              - cell "SHORT" [ref=e228]:
+                - generic [ref=e229]: SHORT
+              - cell "avwap_v4" [ref=e230]
+              - cell "5" [ref=e231]
+              - cell "$1.87" [ref=e232]
+              - cell "Mar 3, 09:44" [ref=e233]:
+                - button "Mar 3, 09:44" [ref=e234] [cursor=pointer]
+              - cell "$1.47" [ref=e235]
+              - cell "Mar 3, 10:10" [ref=e236]:
+                - button "Mar 3, 10:10" [ref=e237] [cursor=pointer]
+              - cell "-$202.49 (-21.62%)" [ref=e238]:
+                - generic [ref=e239]:
+                  - text: "-$202.49"
+                  - generic [ref=e240]: (-21.62%)
+              - cell "BREAKOUT" [ref=e241]
+              - cell "7" [ref=e242]:
+                - generic [ref=e243]: "7"
+              - cell "MAX LOSS" [ref=e244]
+              - cell "BALANCE" [ref=e245]:
+                - generic [ref=e246]: BALANCE
+              - cell [ref=e247]
+            - row "5 CRM260320P00195000 SHORT avwap_v4 4 $7.14 Mar 3, 09:44 $7.52 Mar 3, 10:31 +$151.78 (+5.31%) BREAKOUT 8 STAGNATION EXIT BALANCE" [ref=e248]:
+              - cell "5" [ref=e249]
+              - cell "CRM260320P00195000" [ref=e250]
+              - cell "SHORT" [ref=e251]:
+                - generic [ref=e252]: SHORT
+              - cell "avwap_v4" [ref=e253]
+              - cell "4" [ref=e254]
+              - cell "$7.14" [ref=e255]
+              - cell "Mar 3, 09:44" [ref=e256]:
+                - button "Mar 3, 09:44" [ref=e257] [cursor=pointer]
+              - cell "$7.52" [ref=e258]
+              - cell "Mar 3, 10:31" [ref=e259]:
+                - button "Mar 3, 10:31" [ref=e260] [cursor=pointer]
+              - cell "+$151.78 (+5.31%)" [ref=e261]:
+                - generic [ref=e262]:
+                  - text: +$151.78
+                  - generic [ref=e263]: (+5.31%)
+              - cell "BREAKOUT" [ref=e264]
+              - cell "8" [ref=e265]:
+                - generic [ref=e266]: "8"
+              - cell "STAGNATION EXIT" [ref=e267]
+              - cell "BALANCE" [ref=e268]:
+                - generic [ref=e269]: BALANCE
+              - cell [ref=e270]
+            - row "6 COIN260320P00182500 SHORT avwap_v4 2 $11.92 Mar 3, 09:59 $11.54 Mar 3, 10:39 -$77.27 (-3.24%) BREAKOUT 7 SWING STOP TREND_DOWN" [ref=e271]:
+              - cell "6" [ref=e272]
+              - cell "COIN260320P00182500" [ref=e273]
+              - cell "SHORT" [ref=e274]:
+                - generic [ref=e275]: SHORT
+              - cell "avwap_v4" [ref=e276]
+              - cell "2" [ref=e277]
+              - cell "$11.92" [ref=e278]
+              - cell "Mar 3, 09:59" [ref=e279]:
+                - button "Mar 3, 09:59" [ref=e280] [cursor=pointer]
+              - cell "$11.54" [ref=e281]
+              - cell "Mar 3, 10:39" [ref=e282]:
+                - button "Mar 3, 10:39" [ref=e283] [cursor=pointer]
+              - cell "-$77.27 (-3.24%)" [ref=e284]:
+                - generic [ref=e285]:
+                  - text: "-$77.27"
+                  - generic [ref=e286]: (-3.24%)
+              - cell "BREAKOUT" [ref=e287]
+              - cell "7" [ref=e288]:
+                - generic [ref=e289]: "7"
+              - cell "SWING STOP" [ref=e290]
+              - cell "TREND_DOWN" [ref=e291]:
+                - generic [ref=e292]: TREND_DOWN
+              - cell [ref=e293]
+            - row "7 AMD260320P00192500 SHORT avwap_v4 2 $10.17 Mar 3, 09:59 $10.48 Mar 3, 10:45 +$61.74 (+3.04%) BREAKOUT 8 STAGNATION EXIT TREND_DOWN" [ref=e294]:
+              - cell "7" [ref=e295]
+              - cell "AMD260320P00192500" [ref=e296]
+              - cell "SHORT" [ref=e297]:
+                - generic [ref=e298]: SHORT
+              - cell "avwap_v4" [ref=e299]
+              - cell "2" [ref=e300]
+              - cell "$10.17" [ref=e301]
+              - cell "Mar 3, 09:59" [ref=e302]:
+                - button "Mar 3, 09:59" [ref=e303] [cursor=pointer]
+              - cell "$10.48" [ref=e304]
+              - cell "Mar 3, 10:45" [ref=e305]:
+                - button "Mar 3, 10:45" [ref=e306] [cursor=pointer]
+              - cell "+$61.74 (+3.04%)" [ref=e307]:
+                - generic [ref=e308]:
+                  - text: +$61.74
+                  - generic [ref=e309]: (+3.04%)
+              - cell "BREAKOUT" [ref=e310]
+              - cell "8" [ref=e311]:
+                - generic [ref=e312]: "8"
+              - cell "STAGNATION EXIT" [ref=e313]
+              - cell "TREND_DOWN" [ref=e314]:
+                - generic [ref=e315]: TREND_DOWN
+              - cell [ref=e316]
+            - row "8 XOM260320P00150000 SHORT avwap_v4 5 $3.83 Mar 3, 09:59 $3.67 Mar 3, 10:45 -$78.38 (-4.09%) BREAKOUT 8 STAGNATION EXIT BALANCE" [ref=e317]:
+              - cell "8" [ref=e318]
+              - cell "XOM260320P00150000" [ref=e319]
+              - cell "SHORT" [ref=e320]:
+                - generic [ref=e321]: SHORT
+              - cell "avwap_v4" [ref=e322]
+              - cell "5" [ref=e323]
+              - cell "$3.83" [ref=e324]
+              - cell "Mar 3, 09:59" [ref=e325]:
+                - button "Mar 3, 09:59" [ref=e326] [cursor=pointer]
+              - cell "$3.67" [ref=e327]
+              - cell "Mar 3, 10:45" [ref=e328]:
+                - button "Mar 3, 10:45" [ref=e329] [cursor=pointer]
+              - cell "-$78.38 (-4.09%)" [ref=e330]:
+                - generic [ref=e331]:
+                  - text: "-$78.38"
+                  - generic [ref=e332]: (-4.09%)
+              - cell "BREAKOUT" [ref=e333]
+              - cell "8" [ref=e334]:
+                - generic [ref=e335]: "8"
+              - cell "STAGNATION EXIT" [ref=e336]
+              - cell "BALANCE" [ref=e337]:
+                - generic [ref=e338]: BALANCE
+              - cell [ref=e339]
+            - row "9 HOOD260320P00075000 SHORT avwap_v4 5 $4.29 Mar 3, 10:14 $4.04 Mar 3, 11:00 -$121.34 (-5.66%) BREAKOUT 8 STAGNATION EXIT TREND_DOWN" [ref=e340]:
+              - cell "9" [ref=e341]
+              - cell "HOOD260320P00075000" [ref=e342]
+              - cell "SHORT" [ref=e343]:
+                - generic [ref=e344]: SHORT
+              - cell "avwap_v4" [ref=e345]
+              - cell "5" [ref=e346]
+              - cell "$4.29" [ref=e347]
+              - cell "Mar 3, 10:14" [ref=e348]:
+                - button "Mar 3, 10:14" [ref=e349] [cursor=pointer]
+              - cell "$4.04" [ref=e350]
+              - cell "Mar 3, 11:00" [ref=e351]:
+                - button "Mar 3, 11:00" [ref=e352] [cursor=pointer]
+              - cell "-$121.34 (-5.66%)" [ref=e353]:
+                - generic [ref=e354]:
+                  - text: "-$121.34"
+                  - generic [ref=e355]: (-5.66%)
+              - cell "BREAKOUT" [ref=e356]
+              - cell "8" [ref=e357]:
+                - generic [ref=e358]: "8"
+              - cell "STAGNATION EXIT" [ref=e359]
+              - cell "TREND_DOWN" [ref=e360]:
+                - generic [ref=e361]: TREND_DOWN
+              - cell [ref=e362]
+            - row "10 META260316P00655000 SHORT avwap_v4 1 $16.34 Mar 3, 10:19 $14.66 Mar 3, 11:04 -$168.50 (-10.31%) BREAKOUT 7 SWING STOP TREND_DOWN" [ref=e363]:
+              - cell "10" [ref=e364]
+              - cell "META260316P00655000" [ref=e365]
+              - cell "SHORT" [ref=e366]:
+                - generic [ref=e367]: SHORT
+              - cell "avwap_v4" [ref=e368]
+              - cell "1" [ref=e369]
+              - cell "$16.34" [ref=e370]
+              - cell "Mar 3, 10:19" [ref=e371]:
+                - button "Mar 3, 10:19" [ref=e372] [cursor=pointer]
+              - cell "$14.66" [ref=e373]
+              - cell "Mar 3, 11:04" [ref=e374]:
+                - button "Mar 3, 11:04" [ref=e375] [cursor=pointer]
+              - cell "-$168.50 (-10.31%)" [ref=e376]:
+                - generic [ref=e377]:
+                  - text: "-$168.50"
+                  - generic [ref=e378]: (-10.31%)
+              - cell "BREAKOUT" [ref=e379]
+              - cell "7" [ref=e380]:
+                - generic [ref=e381]: "7"
+              - cell "SWING STOP" [ref=e382]
+              - cell "TREND_DOWN" [ref=e383]:
+                - generic [ref=e384]: TREND_DOWN
+              - cell [ref=e385]
+            - row "11 MRNA260320P00050000 SHORT avwap_v4 5 $3.63 Mar 3, 09:59 $3.70 Mar 3, 11:04 +$33.61 (+1.85%) BREAKOUT 7 STAGNATION EXIT TREND_DOWN" [ref=e386]:
+              - cell "11" [ref=e387]
+              - cell "MRNA260320P00050000" [ref=e388]
+              - cell "SHORT" [ref=e389]:
+                - generic [ref=e390]: SHORT
+              - cell "avwap_v4" [ref=e391]
+              - cell "5" [ref=e392]
+              - cell "$3.63" [ref=e393]
+              - cell "Mar 3, 09:59" [ref=e394]:
+                - button "Mar 3, 09:59" [ref=e395] [cursor=pointer]
+              - cell "$3.70" [ref=e396]
+              - cell "Mar 3, 11:04" [ref=e397]:
+                - button "Mar 3, 11:04" [ref=e398] [cursor=pointer]
+              - cell "+$33.61 (+1.85%)" [ref=e399]:
+                - generic [ref=e400]:
+                  - text: +$33.61
+                  - generic [ref=e401]: (+1.85%)
+              - cell "BREAKOUT" [ref=e402]
+              - cell "7" [ref=e403]:
+                - generic [ref=e404]: "7"
+              - cell "STAGNATION EXIT" [ref=e405]
+              - cell "TREND_DOWN" [ref=e406]:
+                - generic [ref=e407]: TREND_DOWN
+              - cell [ref=e408]
+            - row "12 NVDA260316P00180000 SHORT avwap_v4 4 $6.12 Mar 3, 10:29 $5.54 Mar 3, 11:04 -$229.61 (-9.39%) BREAKOUT 7 SWING STOP TREND_DOWN" [ref=e409]:
+              - cell "12" [ref=e410]
+              - cell "NVDA260316P00180000" [ref=e411]
+              - cell "SHORT" [ref=e412]:
+                - generic [ref=e413]: SHORT
+              - cell "avwap_v4" [ref=e414]
+              - cell "4" [ref=e415]
+              - cell "$6.12" [ref=e416]
+              - cell "Mar 3, 10:29" [ref=e417]:
+                - button "Mar 3, 10:29" [ref=e418] [cursor=pointer]
+              - cell "$5.54" [ref=e419]
+              - cell "Mar 3, 11:04" [ref=e420]:
+                - button "Mar 3, 11:04" [ref=e421] [cursor=pointer]
+              - cell "-$229.61 (-9.39%)" [ref=e422]:
+                - generic [ref=e423]:
+                  - text: "-$229.61"
+                  - generic [ref=e424]: (-9.39%)
+              - cell "BREAKOUT" [ref=e425]
+              - cell "7" [ref=e426]:
+                - generic [ref=e427]: "7"
+              - cell "SWING STOP" [ref=e428]
+              - cell "TREND_DOWN" [ref=e429]:
+                - generic [ref=e430]: TREND_DOWN
+              - cell [ref=e431]
+            - row "13 SPY260316P00680000 SHORT avwap_v4 3 $9.76 Mar 3, 10:19 $8.53 Mar 3, 11:04 -$368.32 (-12.59%) BREAKOUT 7 SWING STOP TREND_DOWN" [ref=e432]:
+              - cell "13" [ref=e433]
+              - cell "SPY260316P00680000" [ref=e434]
+              - cell "SHORT" [ref=e435]:
+                - generic [ref=e436]: SHORT
+              - cell "avwap_v4" [ref=e437]
+              - cell "3" [ref=e438]
+              - cell "$9.76" [ref=e439]
+              - cell "Mar 3, 10:19" [ref=e440]:
+                - button "Mar 3, 10:19" [ref=e441] [cursor=pointer]
+              - cell "$8.53" [ref=e442]
+              - cell "Mar 3, 11:04" [ref=e443]:
+                - button "Mar 3, 11:04" [ref=e444] [cursor=pointer]
+              - cell "-$368.32 (-12.59%)" [ref=e445]:
+                - generic [ref=e446]:
+                  - text: "-$368.32"
+                  - generic [ref=e447]: (-12.59%)
+              - cell "BREAKOUT" [ref=e448]
+              - cell "7" [ref=e449]:
+                - generic [ref=e450]: "7"
+              - cell "SWING STOP" [ref=e451]
+              - cell "TREND_DOWN" [ref=e452]:
+                - generic [ref=e453]: TREND_DOWN
+              - cell [ref=e454]
+            - row "14 TSLA260318P00390000 SHORT avwap_v4 2 $12.65 Mar 3, 10:19 $13.02 Mar 3, 11:04 +$73.95 (+2.92%) BREAKOUT 8 SWING STOP TREND_DOWN" [ref=e455]:
+              - cell "14" [ref=e456]
+              - cell "TSLA260318P00390000" [ref=e457]
+              - cell "SHORT" [ref=e458]:
+                - generic [ref=e459]: SHORT
+              - cell "avwap_v4" [ref=e460]
+              - cell "2" [ref=e461]
+              - cell "$12.65" [ref=e462]
+              - cell "Mar 3, 10:19" [ref=e463]:
+                - button "Mar 3, 10:19" [ref=e464] [cursor=pointer]
+              - cell "$13.02" [ref=e465]
+              - cell "Mar 3, 11:04" [ref=e466]:
+                - button "Mar 3, 11:04" [ref=e467] [cursor=pointer]
+              - cell "+$73.95 (+2.92%)" [ref=e468]:
+                - generic [ref=e469]:
+                  - text: +$73.95
+                  - generic [ref=e470]: (+2.92%)
+              - cell "BREAKOUT" [ref=e471]
+              - cell "8" [ref=e472]:
+                - generic [ref=e473]: "8"
+              - cell "SWING STOP" [ref=e474]
+              - cell "TREND_DOWN" [ref=e475]:
+                - generic [ref=e476]: TREND_DOWN
+              - cell [ref=e477]
+            - row "15 BA260320P00222500 SHORT avwap_v4 4 $6.56 Mar 3, 10:19 $5.98 Mar 3, 11:05 -$230.29 (-8.78%) BREAKOUT 7 SWING STOP TREND_DOWN" [ref=e478]:
+              - cell "15" [ref=e479]
+              - cell "BA260320P00222500" [ref=e480]
+              - cell "SHORT" [ref=e481]:
+                - generic [ref=e482]: SHORT
+              - cell "avwap_v4" [ref=e483]
+              - cell "4" [ref=e484]
+              - cell "$6.56" [ref=e485]
+              - cell "Mar 3, 10:19" [ref=e486]:
+                - button "Mar 3, 10:19" [ref=e487] [cursor=pointer]
+              - cell "$5.98" [ref=e488]
+              - cell "Mar 3, 11:05" [ref=e489]:
+                - button "Mar 3, 11:05" [ref=e490] [cursor=pointer]
+              - cell "-$230.29 (-8.78%)" [ref=e491]:
+                - generic [ref=e492]:
+                  - text: "-$230.29"
+                  - generic [ref=e493]: (-8.78%)
+              - cell "BREAKOUT" [ref=e494]
+              - cell "7" [ref=e495]:
+                - generic [ref=e496]: "7"
+              - cell "SWING STOP" [ref=e497]
+              - cell "TREND_DOWN" [ref=e498]:
+                - generic [ref=e499]: TREND_DOWN
+              - cell [ref=e500]
+            - row "16 NFLX260320P00097000 SHORT avwap_v4 5 $2.91 Mar 3, 10:19 $2.52 Mar 3, 11:05 -$195.30 (-13.43%) BREAKOUT 7 STAGNATION EXIT BALANCE" [ref=e501]:
+              - cell "16" [ref=e502]
+              - cell "NFLX260320P00097000" [ref=e503]
+              - cell "SHORT" [ref=e504]:
+                - generic [ref=e505]: SHORT
+              - cell "avwap_v4" [ref=e506]
+              - cell "5" [ref=e507]
+              - cell "$2.91" [ref=e508]
+              - cell "Mar 3, 10:19" [ref=e509]:
+                - button "Mar 3, 10:19" [ref=e510] [cursor=pointer]
+              - cell "$2.52" [ref=e511]
+              - cell "Mar 3, 11:05" [ref=e512]:
+                - button "Mar 3, 11:05" [ref=e513] [cursor=pointer]
+              - cell "-$195.30 (-13.43%)" [ref=e514]:
+                - generic [ref=e515]:
+                  - text: "-$195.30"
+                  - generic [ref=e516]: (-13.43%)
+              - cell "BREAKOUT" [ref=e517]
+              - cell "7" [ref=e518]:
+                - generic [ref=e519]: "7"
+              - cell "STAGNATION EXIT" [ref=e520]
+              - cell "BALANCE" [ref=e521]:
+                - generic [ref=e522]: BALANCE
+              - cell [ref=e523]
+            - row "17 AAPL260318P00260000 SHORT avwap_v4 5 $4.52 Mar 4, 09:39 $4.08 Mar 4, 10:20 -$220.64 (-9.76%) BREAKOUT 7 SWING STOP BALANCE" [ref=e524]:
+              - cell "17" [ref=e525]
+              - cell "AAPL260318P00260000" [ref=e526]
+              - cell "SHORT" [ref=e527]:
+                - generic [ref=e528]: SHORT
+              - cell "avwap_v4" [ref=e529]
+              - cell "5" [ref=e530]
+              - cell "$4.52" [ref=e531]
+              - cell "Mar 4, 09:39" [ref=e532]:
+                - button "Mar 4, 09:39" [ref=e533] [cursor=pointer]
+              - cell "$4.08" [ref=e534]
+              - cell "Mar 4, 10:20" [ref=e535]:
+                - button "Mar 4, 10:20" [ref=e536] [cursor=pointer]
+              - cell "-$220.64 (-9.76%)" [ref=e537]:
+                - generic [ref=e538]:
+                  - text: "-$220.64"
+                  - generic [ref=e539]: (-9.76%)
+              - cell "BREAKOUT" [ref=e540]
+              - cell "7" [ref=e541]:
+                - generic [ref=e542]: "7"
+              - cell "SWING STOP" [ref=e543]
+              - cell "BALANCE" [ref=e544]:
+                - generic [ref=e545]: BALANCE
+              - cell [ref=e546]
+            - row "18 XOM260320P00150000 SHORT avwap_v4 5 $3.92 Mar 5, 09:54 $4.07 Mar 5, 10:40 +$70.25 (+3.58%) BREAKOUT 8 STAGNATION EXIT BALANCE" [ref=e547]:
+              - cell "18" [ref=e548]
+              - cell "XOM260320P00150000" [ref=e549]
+              - cell "SHORT" [ref=e550]:
+                - generic [ref=e551]: SHORT
+              - cell "avwap_v4" [ref=e552]
+              - cell "5" [ref=e553]
+              - cell "$3.92" [ref=e554]
+              - cell "Mar 5, 09:54" [ref=e555]:
+                - button "Mar 5, 09:54" [ref=e556] [cursor=pointer]
+              - cell "$4.07" [ref=e557]
+              - cell "Mar 5, 10:40" [ref=e558]:
+                - button "Mar 5, 10:40" [ref=e559] [cursor=pointer]
+              - cell "+$70.25 (+3.58%)" [ref=e560]:
+                - generic [ref=e561]:
+                  - text: +$70.25
+                  - generic [ref=e562]: (+3.58%)
+              - cell "BREAKOUT" [ref=e563]
+              - cell "8" [ref=e564]:
+                - generic [ref=e565]: "8"
+              - cell "STAGNATION EXIT" [ref=e566]
+              - cell "BALANCE" [ref=e567]:
+                - generic [ref=e568]: BALANCE
+              - cell [ref=e569]
+            - row "19 MU260320P00395000 SHORT avwap_v4 1 $26.51 Mar 5, 10:39 $26.96 Mar 5, 11:25 +$45.71 (+1.72%) BREAKOUT 7 STAGNATION EXIT BALANCE" [ref=e570]:
+              - cell "19" [ref=e571]
+              - cell "MU260320P00395000" [ref=e572]
+              - cell "SHORT" [ref=e573]:
+                - generic [ref=e574]: SHORT
+              - cell "avwap_v4" [ref=e575]
+              - cell "1" [ref=e576]
+              - cell "$26.51" [ref=e577]
+              - cell "Mar 5, 10:39" [ref=e578]:
+                - button "Mar 5, 10:39" [ref=e579] [cursor=pointer]
+              - cell "$26.96" [ref=e580]
+              - cell "Mar 5, 11:25" [ref=e581]:
+                - button "Mar 5, 11:25" [ref=e582] [cursor=pointer]
+              - cell "+$45.71 (+1.72%)" [ref=e583]:
+                - generic [ref=e584]:
+                  - text: +$45.71
+                  - generic [ref=e585]: (+1.72%)
+              - cell "BREAKOUT" [ref=e586]
+              - cell "7" [ref=e587]:
+                - generic [ref=e588]: "7"
+              - cell "STAGNATION EXIT" [ref=e589]
+              - cell "BALANCE" [ref=e590]:
+                - generic [ref=e591]: BALANCE
+              - cell [ref=e592]
+            - row "20 OXY260320P00053000 SHORT avwap_v4 5 $1.66 Mar 6, 09:59 $1.58 Mar 6, 10:45 -$40.61 (-4.89%) BREAKOUT 7 STAGNATION EXIT BALANCE" [ref=e593]:
+              - cell "20" [ref=e594]
+              - cell "OXY260320P00053000" [ref=e595]
+              - cell "SHORT" [ref=e596]:
+                - generic [ref=e597]: SHORT
+              - cell "avwap_v4" [ref=e598]
+              - cell "5" [ref=e599]
+              - cell "$1.66" [ref=e600]
+              - cell "Mar 6, 09:59" [ref=e601]:
+                - button "Mar 6, 09:59" [ref=e602] [cursor=pointer]
+              - cell "$1.58" [ref=e603]
+              - cell "Mar 6, 10:45" [ref=e604]:
+                - button "Mar 6, 10:45" [ref=e605] [cursor=pointer]
+              - cell "-$40.61 (-4.89%)" [ref=e606]:
+                - generic [ref=e607]:
+                  - text: "-$40.61"
+                  - generic [ref=e608]: (-4.89%)
+              - cell "BREAKOUT" [ref=e609]
+              - cell "7" [ref=e610]:
+                - generic [ref=e611]: "7"
+              - cell "STAGNATION EXIT" [ref=e612]
+              - cell "BALANCE" [ref=e613]:
+                - generic [ref=e614]: BALANCE
+              - cell [ref=e615]
+            - row "21 SMCI260320C00032500 LONG avwap_v4 5 $1.63 Mar 6, 10:14 $1.46 Mar 6, 10:52 -$85.82 (-10.53%) BREAKOUT 7 SWING STOP TREND_DOWN" [ref=e616]:
+              - cell "21" [ref=e617]
+              - cell "SMCI260320C00032500" [ref=e618]
+              - cell "LONG" [ref=e619]:
+                - generic [ref=e620]: LONG
+              - cell "avwap_v4" [ref=e621]
+              - cell "5" [ref=e622]
+              - cell "$1.63" [ref=e623]
+              - cell "Mar 6, 10:14" [ref=e624]:
+                - button "Mar 6, 10:14" [ref=e625] [cursor=pointer]
+              - cell "$1.46" [ref=e626]
+              - cell "Mar 6, 10:52" [ref=e627]:
+                - button "Mar 6, 10:52" [ref=e628] [cursor=pointer]
+              - cell "-$85.82 (-10.53%)" [ref=e629]:
+                - generic [ref=e630]:
+                  - text: "-$85.82"
+                  - generic [ref=e631]: (-10.53%)
+              - cell "BREAKOUT" [ref=e632]
+              - cell "7" [ref=e633]:
+                - generic [ref=e634]: "7"
+              - cell "SWING STOP" [ref=e635]
+              - cell "TREND_DOWN" [ref=e636]:
+                - generic [ref=e637]: TREND_DOWN
+              - cell [ref=e638]
+            - row "22 TSLA260320C00400000 LONG avwap_v4 2 $12.76 Mar 6, 10:09 $13.02 Mar 6, 10:55 +$51.40 (+2.01%) BREAKOUT 7 STAGNATION EXIT TREND_DOWN" [ref=e639]:
+              - cell "22" [ref=e640]
+              - cell "TSLA260320C00400000" [ref=e641]
+              - cell "LONG" [ref=e642]:
+                - generic [ref=e643]: LONG
+              - cell "avwap_v4" [ref=e644]
+              - cell "2" [ref=e645]
+              - cell "$12.76" [ref=e646]
+              - cell "Mar 6, 10:09" [ref=e647]:
+                - button "Mar 6, 10:09" [ref=e648] [cursor=pointer]
+              - cell "$13.02" [ref=e649]
+              - cell "Mar 6, 10:55" [ref=e650]:
+                - button "Mar 6, 10:55" [ref=e651] [cursor=pointer]
+              - cell "+$51.40 (+2.01%)" [ref=e652]:
+                - generic [ref=e653]:
+                  - text: +$51.40
+                  - generic [ref=e654]: (+2.01%)
+              - cell "BREAKOUT" [ref=e655]
+              - cell "7" [ref=e656]:
+                - generic [ref=e657]: "7"
+              - cell "STAGNATION EXIT" [ref=e658]
+              - cell "TREND_DOWN" [ref=e659]:
+                - generic [ref=e660]: TREND_DOWN
+              - cell [ref=e661]
+            - row "23 COIN260320P00195000 SHORT avwap_v4 2 $10.76 Mar 9, 10:09 $9.39 Mar 9, 10:31 -$274.25 (-12.74%) BREAKOUT 8 MAX LOSS BALANCE" [ref=e662]:
+              - cell "23" [ref=e663]
+              - cell "COIN260320P00195000" [ref=e664]
+              - cell "SHORT" [ref=e665]:
+                - generic [ref=e666]: SHORT
+              - cell "avwap_v4" [ref=e667]
+              - cell "2" [ref=e668]
+              - cell "$10.76" [ref=e669]
+              - cell "Mar 9, 10:09" [ref=e670]:
+                - button "Mar 9, 10:09" [ref=e671] [cursor=pointer]
+              - cell "$9.39" [ref=e672]
+              - cell "Mar 9, 10:31" [ref=e673]:
+                - button "Mar 9, 10:31" [ref=e674] [cursor=pointer]
+              - cell "-$274.25 (-12.74%)" [ref=e675]:
+                - generic [ref=e676]:
+                  - text: "-$274.25"
+                  - generic [ref=e677]: (-12.74%)
+              - cell "BREAKOUT" [ref=e678]
+              - cell "8" [ref=e679]:
+                - generic [ref=e680]: "8"
+              - cell "MAX LOSS" [ref=e681]
+              - cell "BALANCE" [ref=e682]:
+                - generic [ref=e683]: BALANCE
+              - cell [ref=e684]
+            - row "24 CRM260320P00200000 SHORT avwap_v4 3 $7.73 Mar 9, 10:04 $7.38 Mar 9, 10:44 -$103.23 (-4.45%) BREAKOUT 7 SWING STOP BALANCE" [ref=e685]:
+              - cell "24" [ref=e686]
+              - cell "CRM260320P00200000" [ref=e687]
+              - cell "SHORT" [ref=e688]:
+                - generic [ref=e689]: SHORT
+              - cell "avwap_v4" [ref=e690]
+              - cell "3" [ref=e691]
+              - cell "$7.73" [ref=e692]
+              - cell "Mar 9, 10:04" [ref=e693]:
+                - button "Mar 9, 10:04" [ref=e694] [cursor=pointer]
+              - cell "$7.38" [ref=e695]
+              - cell "Mar 9, 10:44" [ref=e696]:
+                - button "Mar 9, 10:44" [ref=e697] [cursor=pointer]
+              - cell "-$103.23 (-4.45%)" [ref=e698]:
+                - generic [ref=e699]:
+                  - text: "-$103.23"
+                  - generic [ref=e700]: (-4.45%)
+              - cell "BREAKOUT" [ref=e701]
+              - cell "7" [ref=e702]:
+                - generic [ref=e703]: "7"
+              - cell "SWING STOP" [ref=e704]
+              - cell "BALANCE" [ref=e705]:
+                - generic [ref=e706]: BALANCE
+              - cell [ref=e707]
+            - row "25 BA260320P00222500 SHORT avwap_v4 4 $6.82 Mar 9, 10:09 $5.95 Mar 9, 10:45 -$346.52 (-12.71%) BREAKOUT 7 SWING STOP TREND_DOWN" [ref=e708]:
+              - cell "25" [ref=e709]
+              - cell "BA260320P00222500" [ref=e710]
+              - cell "SHORT" [ref=e711]:
+                - generic [ref=e712]: SHORT
+              - cell "avwap_v4" [ref=e713]
+              - cell "4" [ref=e714]
+              - cell "$6.82" [ref=e715]
+              - cell "Mar 9, 10:09" [ref=e716]:
+                - button "Mar 9, 10:09" [ref=e717] [cursor=pointer]
+              - cell "$5.95" [ref=e718]
+              - cell "Mar 9, 10:45" [ref=e719]:
+                - button "Mar 9, 10:45" [ref=e720] [cursor=pointer]
+              - cell "-$346.52 (-12.71%)" [ref=e721]:
+                - generic [ref=e722]:
+                  - text: "-$346.52"
+                  - generic [ref=e723]: (-12.71%)
+              - cell "BREAKOUT" [ref=e724]
+              - cell "7" [ref=e725]:
+                - generic [ref=e726]: "7"
+              - cell "SWING STOP" [ref=e727]
+              - cell "TREND_DOWN" [ref=e728]:
+                - generic [ref=e729]: TREND_DOWN
+              - cell [ref=e730]
+            - row "26 HOOD260327P00079000 SHORT avwap_v4 5 $5.20 Mar 10, 09:39 $5.45 Mar 10, 10:30 +$125.33 (+4.82%) BREAKOUT 8 SWING STOP BALANCE" [ref=e731]:
+              - cell "26" [ref=e732]
+              - cell "HOOD260327P00079000" [ref=e733]
+              - cell "SHORT" [ref=e734]:
+                - generic [ref=e735]: SHORT
+              - cell "avwap_v4" [ref=e736]
+              - cell "5" [ref=e737]
+              - cell "$5.20" [ref=e738]
+              - cell "Mar 10, 09:39" [ref=e739]:
+                - button "Mar 10, 09:39" [ref=e740] [cursor=pointer]
+              - cell "$5.45" [ref=e741]
+              - cell "Mar 10, 10:30" [ref=e742]:
+                - button "Mar 10, 10:30" [ref=e743] [cursor=pointer]
+              - cell "+$125.33 (+4.82%)" [ref=e744]:
+                - generic [ref=e745]:
+                  - text: +$125.33
+                  - generic [ref=e746]: (+4.82%)
+              - cell "BREAKOUT" [ref=e747]
+              - cell "8" [ref=e748]:
+                - generic [ref=e749]: "8"
+              - cell "SWING STOP" [ref=e750]
+              - cell "BALANCE" [ref=e751]:
+                - generic [ref=e752]: BALANCE
+              - cell [ref=e753]
+            - row "27 JPM260327P00285000 SHORT avwap_v4 5 $5.90 Mar 10, 09:54 $4.91 Mar 10, 10:34 -$495.28 (-16.77%) BREAKOUT 8 SWING STOP BALANCE" [ref=e754]:
+              - cell "27" [ref=e755]
+              - cell "JPM260327P00285000" [ref=e756]
+              - cell "SHORT" [ref=e757]:
+                - generic [ref=e758]: SHORT
+              - cell "avwap_v4" [ref=e759]
+              - cell "5" [ref=e760]
+              - cell "$5.90" [ref=e761]
+              - cell "Mar 10, 09:54" [ref=e762]:
+                - button "Mar 10, 09:54" [ref=e763] [cursor=pointer]
+              - cell "$4.91" [ref=e764]
+              - cell "Mar 10, 10:34" [ref=e765]:
+                - button "Mar 10, 10:34" [ref=e766] [cursor=pointer]
+              - cell "-$495.28 (-16.77%)" [ref=e767]:
+                - generic [ref=e768]:
+                  - text: "-$495.28"
+                  - generic [ref=e769]: (-16.77%)
+              - cell "BREAKOUT" [ref=e770]
+              - cell "8" [ref=e771]:
+                - generic [ref=e772]: "8"
+              - cell "SWING STOP" [ref=e773]
+              - cell "BALANCE" [ref=e774]:
+                - generic [ref=e775]: BALANCE
+              - cell [ref=e776]
+            - row "28 NFLX260327P00096000 SHORT avwap_v4 5 $2.55 Mar 10, 09:44 $2.73 Mar 10, 10:38 +$87.38 (+6.85%) BREAKOUT 8 STAGNATION EXIT BALANCE" [ref=e777]:
+              - cell "28" [ref=e778]
+              - cell "NFLX260327P00096000" [ref=e779]
+              - cell "SHORT" [ref=e780]:
+                - generic [ref=e781]: SHORT
+              - cell "avwap_v4" [ref=e782]
+              - cell "5" [ref=e783]
+              - cell "$2.55" [ref=e784]
+              - cell "Mar 10, 09:44" [ref=e785]:
+                - button "Mar 10, 09:44" [ref=e786] [cursor=pointer]
+              - cell "$2.73" [ref=e787]
+              - cell "Mar 10, 10:38" [ref=e788]:
+                - button "Mar 10, 10:38" [ref=e789] [cursor=pointer]
+              - cell "+$87.38 (+6.85%)" [ref=e790]:
+                - generic [ref=e791]:
+                  - text: +$87.38
+                  - generic [ref=e792]: (+6.85%)
+              - cell "BREAKOUT" [ref=e793]
+              - cell "8" [ref=e794]:
+                - generic [ref=e795]: "8"
+              - cell "STAGNATION EXIT" [ref=e796]
+              - cell "BALANCE" [ref=e797]:
+                - generic [ref=e798]: BALANCE
+              - cell [ref=e799]
+            - row "29 COIN260327P00192500 SHORT avwap_v4 2 $10.95 Mar 10, 09:39 $11.27 Mar 10, 10:42 +$65.41 (+2.99%) BREAKOUT 7 STAGNATION EXIT BALANCE" [ref=e800]:
+              - cell "29" [ref=e801]
+              - cell "COIN260327P00192500" [ref=e802]
+              - cell "SHORT" [ref=e803]:
+                - generic [ref=e804]: SHORT
+              - cell "avwap_v4" [ref=e805]
+              - cell "2" [ref=e806]
+              - cell "$10.95" [ref=e807]
+              - cell "Mar 10, 09:39" [ref=e808]:
+                - button "Mar 10, 09:39" [ref=e809] [cursor=pointer]
+              - cell "$11.27" [ref=e810]
+              - cell "Mar 10, 10:42" [ref=e811]:
+                - button "Mar 10, 10:42" [ref=e812] [cursor=pointer]
+              - cell "+$65.41 (+2.99%)" [ref=e813]:
+                - generic [ref=e814]:
+                  - text: +$65.41
+                  - generic [ref=e815]: (+2.99%)
+              - cell "BREAKOUT" [ref=e816]
+              - cell "7" [ref=e817]:
+                - generic [ref=e818]: "7"
+              - cell "STAGNATION EXIT" [ref=e819]
+              - cell "BALANCE" [ref=e820]:
+                - generic [ref=e821]: BALANCE
+              - cell [ref=e822]
+            - row "30 PLTR260327P00152500 SHORT avwap_v4 3 $7.63 Mar 10, 10:39 $7.39 Mar 10, 11:19 -$71.43 (-3.12%) BREAKOUT 8 SWING STOP TREND_DOWN" [ref=e823]:
+              - cell "30" [ref=e824]
+              - cell "PLTR260327P00152500" [ref=e825]
+              - cell "SHORT" [ref=e826]:
+                - generic [ref=e827]: SHORT
+              - cell "avwap_v4" [ref=e828]
+              - cell "3" [ref=e829]
+              - cell "$7.63" [ref=e830]
+              - cell "Mar 10, 10:39" [ref=e831]:
+                - button "Mar 10, 10:39" [ref=e832] [cursor=pointer]
+              - cell "$7.39" [ref=e833]
+              - cell "Mar 10, 11:19" [ref=e834]:
+                - button "Mar 10, 11:19" [ref=e835] [cursor=pointer]
+              - cell "-$71.43 (-3.12%)" [ref=e836]:
+                - generic [ref=e837]:
+                  - text: "-$71.43"
+                  - generic [ref=e838]: (-3.12%)
+              - cell "BREAKOUT" [ref=e839]
+              - cell "8" [ref=e840]:
+                - generic [ref=e841]: "8"
+              - cell "SWING STOP" [ref=e842]
+              - cell "TREND_DOWN" [ref=e843]:
+                - generic [ref=e844]: TREND_DOWN
+              - cell [ref=e845]
+            - row "31 JPM260327P00285000 SHORT avwap_v4 4 $6.74 Mar 11, 09:54 $6.80 Mar 11, 10:40 +$23.56 (+0.87%) BREAKOUT 7 STAGNATION EXIT BALANCE" [ref=e846]:
+              - cell "31" [ref=e847]
+              - cell "JPM260327P00285000" [ref=e848]
+              - cell "SHORT" [ref=e849]:
+                - generic [ref=e850]: SHORT
+              - cell "avwap_v4" [ref=e851]
+              - cell "4" [ref=e852]
+              - cell "$6.74" [ref=e853]
+              - cell "Mar 11, 09:54" [ref=e854]:
+                - button "Mar 11, 09:54" [ref=e855] [cursor=pointer]
+              - cell "$6.80" [ref=e856]
+              - cell "Mar 11, 10:40" [ref=e857]:
+                - button "Mar 11, 10:40" [ref=e858] [cursor=pointer]
+              - cell "+$23.56 (+0.87%)" [ref=e859]:
+                - generic [ref=e860]:
+                  - text: +$23.56
+                  - generic [ref=e861]: (+0.87%)
+              - cell "BREAKOUT" [ref=e862]
+              - cell "7" [ref=e863]:
+                - generic [ref=e864]: "7"
+              - cell "STAGNATION EXIT" [ref=e865]
+              - cell "BALANCE" [ref=e866]:
+                - generic [ref=e867]: BALANCE
+              - cell [ref=e868]
+            - row "32 SPY260324P00670000 SHORT avwap_v4 3 $8.68 Mar 11, 09:54 $8.71 Mar 11, 10:40 +$9.04 (+0.35%) BREAKOUT 7 STAGNATION EXIT BALANCE" [ref=e869]:
+              - cell "32" [ref=e870]
+              - cell "SPY260324P00670000" [ref=e871]
+              - cell "SHORT" [ref=e872]:
+                - generic [ref=e873]: SHORT
+              - cell "avwap_v4" [ref=e874]
+              - cell "3" [ref=e875]
+              - cell "$8.68" [ref=e876]
+              - cell "Mar 11, 09:54" [ref=e877]:
+                - button "Mar 11, 09:54" [ref=e878] [cursor=pointer]
+              - cell "$8.71" [ref=e879]
+              - cell "Mar 11, 10:40" [ref=e880]:
+                - button "Mar 11, 10:40" [ref=e881] [cursor=pointer]
+              - cell "+$9.04 (+0.35%)" [ref=e882]:
+                - generic [ref=e883]:
+                  - text: +$9.04
+                  - generic [ref=e884]: (+0.35%)
+              - cell "BREAKOUT" [ref=e885]
+              - cell "7" [ref=e886]:
+                - generic [ref=e887]: "7"
+              - cell "STAGNATION EXIT" [ref=e888]
+              - cell "BALANCE" [ref=e889]:
+                - generic [ref=e890]: BALANCE
+              - cell [ref=e891]
+            - row "33 HOOD260327P00076000 SHORT avwap_v4 5 $3.42 Mar 11, 09:59 $3.16 Mar 11, 10:43 -$130.66 (-7.63%) BREAKOUT 7 SWING STOP BALANCE" [ref=e892]:
+              - cell "33" [ref=e893]
+              - cell "HOOD260327P00076000" [ref=e894]
+              - cell "SHORT" [ref=e895]:
+                - generic [ref=e896]: SHORT
+              - cell "avwap_v4" [ref=e897]
+              - cell "5" [ref=e898]
+              - cell "$3.42" [ref=e899]
+              - cell "Mar 11, 09:59" [ref=e900]:
+                - button "Mar 11, 09:59" [ref=e901] [cursor=pointer]
+              - cell "$3.16" [ref=e902]
+              - cell "Mar 11, 10:43" [ref=e903]:
+                - button "Mar 11, 10:43" [ref=e904] [cursor=pointer]
+              - cell "-$130.66 (-7.63%)" [ref=e905]:
+                - generic [ref=e906]:
+                  - text: "-$130.66"
+                  - generic [ref=e907]: (-7.63%)
+              - cell "BREAKOUT" [ref=e908]
+              - cell "7" [ref=e909]:
+                - generic [ref=e910]: "7"
+              - cell "SWING STOP" [ref=e911]
+              - cell "BALANCE" [ref=e912]:
+                - generic [ref=e913]: BALANCE
+              - cell [ref=e914]
+            - row "34 PLTR260327P00150000 SHORT avwap_v4 5 $5.91 Mar 11, 09:59 $5.84 Mar 11, 10:45 -$35.33 (-1.20%) BREAKOUT 8 STAGNATION EXIT BALANCE" [ref=e915]:
+              - cell "34" [ref=e916]
+              - cell "PLTR260327P00150000" [ref=e917]
+              - cell "SHORT" [ref=e918]:
+                - generic [ref=e919]: SHORT
+              - cell "avwap_v4" [ref=e920]
+              - cell "5" [ref=e921]
+              - cell "$5.91" [ref=e922]
+              - cell "Mar 11, 09:59" [ref=e923]:
+                - button "Mar 11, 09:59" [ref=e924] [cursor=pointer]
+              - cell "$5.84" [ref=e925]
+              - cell "Mar 11, 10:45" [ref=e926]:
+                - button "Mar 11, 10:45" [ref=e927] [cursor=pointer]
+              - cell "-$35.33 (-1.20%)" [ref=e928]:
+                - generic [ref=e929]:
+                  - text: "-$35.33"
+                  - generic [ref=e930]: (-1.20%)
+              - cell "BREAKOUT" [ref=e931]
+              - cell "8" [ref=e932]:
+                - generic [ref=e933]: "8"
+              - cell "STAGNATION EXIT" [ref=e934]
+              - cell "BALANCE" [ref=e935]:
+                - generic [ref=e936]: BALANCE
+              - cell [ref=e937]
+            - row "35 AMZN260325P00210000 SHORT avwap_v4 5 $4.43 Mar 11, 10:14 $4.79 Mar 11, 11:00 +$184.86 (+8.36%) BREAKOUT 7 STAGNATION EXIT BALANCE" [ref=e938]:
+              - cell "35" [ref=e939]
+              - cell "AMZN260325P00210000" [ref=e940]
+              - cell "SHORT" [ref=e941]:
+                - generic [ref=e942]: SHORT
+              - cell "avwap_v4" [ref=e943]
+              - cell "5" [ref=e944]
+              - cell "$4.43" [ref=e945]
+              - cell "Mar 11, 10:14" [ref=e946]:
+                - button "Mar 11, 10:14" [ref=e947] [cursor=pointer]
+              - cell "$4.79" [ref=e948]
+              - cell "Mar 11, 11:00" [ref=e949]:
+                - button "Mar 11, 11:00" [ref=e950] [cursor=pointer]
+              - cell "+$184.86 (+8.36%)" [ref=e951]:
+                - generic [ref=e952]:
+                  - text: +$184.86
+                  - generic [ref=e953]: (+8.36%)
+              - cell "BREAKOUT" [ref=e954]
+              - cell "7" [ref=e955]:
+                - generic [ref=e956]: "7"
+              - cell "STAGNATION EXIT" [ref=e957]
+              - cell "BALANCE" [ref=e958]:
+                - generic [ref=e959]: BALANCE
+              - cell [ref=e960]
+            - row "36 SMCI260327P00032000 SHORT avwap_v4 5 $2.10 Mar 11, 10:24 $1.97 Mar 11, 11:10 -$66.36 (-6.32%) BREAKOUT 7 STAGNATION EXIT BALANCE" [ref=e961]:
+              - cell "36" [ref=e962]
+              - cell "SMCI260327P00032000" [ref=e963]
+              - cell "SHORT" [ref=e964]:
+                - generic [ref=e965]: SHORT
+              - cell "avwap_v4" [ref=e966]
+              - cell "5" [ref=e967]
+              - cell "$2.10" [ref=e968]
+              - cell "Mar 11, 10:24" [ref=e969]:
+                - button "Mar 11, 10:24" [ref=e970] [cursor=pointer]
+              - cell "$1.97" [ref=e971]
+              - cell "Mar 11, 11:10" [ref=e972]:
+                - button "Mar 11, 11:10" [ref=e973] [cursor=pointer]
+              - cell "-$66.36 (-6.32%)" [ref=e974]:
+                - generic [ref=e975]:
+                  - text: "-$66.36"
+                  - generic [ref=e976]: (-6.32%)
+              - cell "BREAKOUT" [ref=e977]
+              - cell "7" [ref=e978]:
+                - generic [ref=e979]: "7"
+              - cell "STAGNATION EXIT" [ref=e980]
+              - cell "BALANCE" [ref=e981]:
+                - generic [ref=e982]: BALANCE
+              - cell [ref=e983]
+            - row "37 NFLX260327P00094000 SHORT avwap_v4 5 $2.26 Mar 11, 09:44 $2.93 Mar 11, 12:26 +$336.78 (+29.83%) BREAKOUT 7 SWING STOP BALANCE" [ref=e984]:
+              - cell "37" [ref=e985]
+              - cell "NFLX260327P00094000" [ref=e986]
+              - cell "SHORT" [ref=e987]:
+                - generic [ref=e988]: SHORT
+              - cell "avwap_v4" [ref=e989]
+              - cell "5" [ref=e990]
+              - cell "$2.26" [ref=e991]
+              - cell "Mar 11, 09:44" [ref=e992]:
+                - button "Mar 11, 09:44" [ref=e993] [cursor=pointer]
+              - cell "$2.93" [ref=e994]
+              - cell "Mar 11, 12:26" [ref=e995]:
+                - button "Mar 11, 12:26" [ref=e996] [cursor=pointer]
+              - cell "+$336.78 (+29.83%)" [ref=e997]:
+                - generic [ref=e998]:
+                  - text: +$336.78
+                  - generic [ref=e999]: (+29.83%)
+              - cell "BREAKOUT" [ref=e1000]
+              - cell "7" [ref=e1001]:
+                - generic [ref=e1002]: "7"
+              - cell "SWING STOP" [ref=e1003]
+              - cell "BALANCE" [ref=e1004]:
+                - generic [ref=e1005]: BALANCE
+              - cell [ref=e1006]
+            - row "38 PLTR260327P00152500 SHORT avwap_v4 4 $6.21 Mar 12, 09:59 $4.90 Mar 12, 10:11 -$524.19 (-21.10%) BREAKOUT 8 MAX LOSS BALANCE" [ref=e1007]:
+              - cell "38" [ref=e1008]
+              - cell "PLTR260327P00152500" [ref=e1009]
+              - cell "SHORT" [ref=e1010]:
+                - generic [ref=e1011]: SHORT
+              - cell "avwap_v4" [ref=e1012]
+              - cell "4" [ref=e1013]
+              - cell "$6.21" [ref=e1014]
+              - cell "Mar 12, 09:59" [ref=e1015]:
+                - button "Mar 12, 09:59" [ref=e1016] [cursor=pointer]
+              - cell "$4.90" [ref=e1017]
+              - cell "Mar 12, 10:11" [ref=e1018]:
+                - button "Mar 12, 10:11" [ref=e1019] [cursor=pointer]
+              - cell "-$524.19 (-21.10%)" [ref=e1020]:
+                - generic [ref=e1021]:
+                  - text: "-$524.19"
+                  - generic [ref=e1022]: (-21.10%)
+              - cell "BREAKOUT" [ref=e1023]
+              - cell "8" [ref=e1024]:
+                - generic [ref=e1025]: "8"
+              - cell "MAX LOSS" [ref=e1026]
+              - cell "BALANCE" [ref=e1027]:
+                - generic [ref=e1028]: BALANCE
+              - cell [ref=e1029]
+            - row "39 MSFT260327P00397500 SHORT avwap_v4 4 $7.46 Mar 12, 09:39 $7.60 Mar 12, 10:25 +$52.84 (+1.77%) BREAKOUT 10 STAGNATION EXIT BALANCE" [ref=e1030]:
+              - cell "39" [ref=e1031]
+              - cell "MSFT260327P00397500" [ref=e1032]
+              - cell "SHORT" [ref=e1033]:
+                - generic [ref=e1034]: SHORT
+              - cell "avwap_v4" [ref=e1035]
+              - cell "4" [ref=e1036]
+              - cell "$7.46" [ref=e1037]
+              - cell "Mar 12, 09:39" [ref=e1038]:
+                - button "Mar 12, 09:39" [ref=e1039] [cursor=pointer]
+              - cell "$7.60" [ref=e1040]
+              - cell "Mar 12, 10:25" [ref=e1041]:
+                - button "Mar 12, 10:25" [ref=e1042] [cursor=pointer]
+              - cell "+$52.84 (+1.77%)" [ref=e1043]:
+                - generic [ref=e1044]:
+                  - text: +$52.84
+                  - generic [ref=e1045]: (+1.77%)
+              - cell "BREAKOUT" [ref=e1046]
+              - cell "10" [ref=e1047]:
+                - generic [ref=e1048]: "10"
+              - cell "STAGNATION EXIT" [ref=e1049]
+              - cell "BALANCE" [ref=e1050]:
+                - generic [ref=e1051]: BALANCE
+              - cell [ref=e1052]
+            - row "40 AAPL260327P00255000 SHORT avwap_v4 5 $5.72 Mar 12, 09:54 $6.19 Mar 12, 10:40 +$234.96 (+8.22%) BREAKOUT 8 STAGNATION EXIT TREND_DOWN" [ref=e1053]:
+              - cell "40" [ref=e1054]
+              - cell "AAPL260327P00255000" [ref=e1055]
+              - cell "SHORT" [ref=e1056]:
+                - generic [ref=e1057]: SHORT
+              - cell "avwap_v4" [ref=e1058]
+              - cell "5" [ref=e1059]
+              - cell "$5.72" [ref=e1060]
+              - cell "Mar 12, 09:54" [ref=e1061]:
+                - button "Mar 12, 09:54" [ref=e1062] [cursor=pointer]
+              - cell "$6.19" [ref=e1063]
+              - cell "Mar 12, 10:40" [ref=e1064]:
+                - button "Mar 12, 10:40" [ref=e1065] [cursor=pointer]
+              - cell "+$234.96 (+8.22%)" [ref=e1066]:
+                - generic [ref=e1067]:
+                  - text: +$234.96
+                  - generic [ref=e1068]: (+8.22%)
+              - cell "BREAKOUT" [ref=e1069]
+              - cell "8" [ref=e1070]:
+                - generic [ref=e1071]: "8"
+              - cell "STAGNATION EXIT" [ref=e1072]
+              - cell "TREND_DOWN" [ref=e1073]:
+                - generic [ref=e1074]: TREND_DOWN
+              - cell [ref=e1075]
+            - row "41 AVGO260327P00335000 SHORT avwap_v4 2 $13.88 Mar 12, 09:54 $14.12 Mar 12, 10:40 +$49.85 (+1.80%) BREAKOUT 8 STAGNATION EXIT TREND_DOWN" [ref=e1076]:
+              - cell "41" [ref=e1077]
+              - cell "AVGO260327P00335000" [ref=e1078]
+              - cell "SHORT" [ref=e1079]:
+                - generic [ref=e1080]: SHORT
+              - cell "avwap_v4" [ref=e1081]
+              - cell "2" [ref=e1082]
+              - cell "$13.88" [ref=e1083]
+              - cell "Mar 12, 09:54" [ref=e1084]:
+                - button "Mar 12, 09:54" [ref=e1085] [cursor=pointer]
+              - cell "$14.12" [ref=e1086]
+              - cell "Mar 12, 10:40" [ref=e1087]:
+                - button "Mar 12, 10:40" [ref=e1088] [cursor=pointer]
+              - cell "+$49.85 (+1.80%)" [ref=e1089]:
+                - generic [ref=e1090]:
+                  - text: +$49.85
+                  - generic [ref=e1091]: (+1.80%)
+              - cell "BREAKOUT" [ref=e1092]
+              - cell "8" [ref=e1093]:
+                - generic [ref=e1094]: "8"
+              - cell "STAGNATION EXIT" [ref=e1095]
+              - cell "TREND_DOWN" [ref=e1096]:
+                - generic [ref=e1097]: TREND_DOWN
+              - cell [ref=e1098]
+            - row "42 COIN260327P00190000 SHORT avwap_v4 2 $10.43 Mar 12, 09:54 $10.33 Mar 12, 10:46 -$20.77 (-1.00%) BREAKOUT 8 STAGNATION EXIT BALANCE" [ref=e1099]:
+              - cell "42" [ref=e1100]
+              - cell "COIN260327P00190000" [ref=e1101]
+              - cell "SHORT" [ref=e1102]:
+                - generic [ref=e1103]: SHORT
+              - cell "avwap_v4" [ref=e1104]
+              - cell "2" [ref=e1105]
+              - cell "$10.43" [ref=e1106]
+              - cell "Mar 12, 09:54" [ref=e1107]:
+                - button "Mar 12, 09:54" [ref=e1108] [cursor=pointer]
+              - cell "$10.33" [ref=e1109]
+              - cell "Mar 12, 10:46" [ref=e1110]:
+                - button "Mar 12, 10:46" [ref=e1111] [cursor=pointer]
+              - cell "-$20.77 (-1.00%)" [ref=e1112]:
+                - generic [ref=e1113]:
+                  - text: "-$20.77"
+                  - generic [ref=e1114]: (-1.00%)
+              - cell "BREAKOUT" [ref=e1115]
+              - cell "8" [ref=e1116]:
+                - generic [ref=e1117]: "8"
+              - cell "STAGNATION EXIT" [ref=e1118]
+              - cell "BALANCE" [ref=e1119]:
+                - generic [ref=e1120]: BALANCE
+              - cell [ref=e1121]
+            - row "43 NVDA260327P00182500 SHORT avwap_v4 4 $6.21 Mar 12, 10:09 $6.05 Mar 12, 10:46 -$64.02 (-2.58%) BREAKOUT 7 SWING STOP TREND_DOWN" [ref=e1122]:
+              - cell "43" [ref=e1123]
+              - cell "NVDA260327P00182500" [ref=e1124]
+              - cell "SHORT" [ref=e1125]:
+                - generic [ref=e1126]: SHORT
+              - cell "avwap_v4" [ref=e1127]
+              - cell "4" [ref=e1128]
+              - cell "$6.21" [ref=e1129]
+              - cell "Mar 12, 10:09" [ref=e1130]:
+                - button "Mar 12, 10:09" [ref=e1131] [cursor=pointer]
+              - cell "$6.05" [ref=e1132]
+              - cell "Mar 12, 10:46" [ref=e1133]:
+                - button "Mar 12, 10:46" [ref=e1134] [cursor=pointer]
+              - cell "-$64.02 (-2.58%)" [ref=e1135]:
+                - generic [ref=e1136]:
+                  - text: "-$64.02"
+                  - generic [ref=e1137]: (-2.58%)
+              - cell "BREAKOUT" [ref=e1138]
+              - cell "7" [ref=e1139]:
+                - generic [ref=e1140]: "7"
+              - cell "SWING STOP" [ref=e1141]
+              - cell "TREND_DOWN" [ref=e1142]:
+                - generic [ref=e1143]: TREND_DOWN
+              - cell [ref=e1144]
+            - row "44 HOOD260327P00076000 SHORT avwap_v4 5 $4.36 Mar 12, 10:34 $4.40 Mar 12, 11:20 +$20.24 (+0.93%) BREAKOUT 8 STAGNATION EXIT TREND_DOWN" [ref=e1145]:
+              - cell "44" [ref=e1146]
+              - cell "HOOD260327P00076000" [ref=e1147]
+              - cell "SHORT" [ref=e1148]:
+                - generic [ref=e1149]: SHORT
+              - cell "avwap_v4" [ref=e1150]
+              - cell "5" [ref=e1151]
+              - cell "$4.36" [ref=e1152]
+              - cell "Mar 12, 10:34" [ref=e1153]:
+                - button "Mar 12, 10:34" [ref=e1154] [cursor=pointer]
+              - cell "$4.40" [ref=e1155]
+              - cell "Mar 12, 11:20" [ref=e1156]:
+                - button "Mar 12, 11:20" [ref=e1157] [cursor=pointer]
+              - cell "+$20.24 (+0.93%)" [ref=e1158]:
+                - generic [ref=e1159]:
+                  - text: +$20.24
+                  - generic [ref=e1160]: (+0.93%)
+              - cell "BREAKOUT" [ref=e1161]
+              - cell "8" [ref=e1162]:
+                - generic [ref=e1163]: "8"
+              - cell "STAGNATION EXIT" [ref=e1164]
+              - cell "TREND_DOWN" [ref=e1165]:
+                - generic [ref=e1166]: TREND_DOWN
+              - cell [ref=e1167]
+            - row "45 TSLA260327P00395000 SHORT avwap_v4 2 $14.11 Mar 12, 10:29 $15.00 Mar 12, 11:26 +$176.95 (+6.27%) BREAKOUT 7 SWING STOP TREND_DOWN" [ref=e1168]:
+              - cell "45" [ref=e1169]
+              - cell "TSLA260327P00395000" [ref=e1170]
+              - cell "SHORT" [ref=e1171]:
+                - generic [ref=e1172]: SHORT
+              - cell "avwap_v4" [ref=e1173]
+              - cell "2" [ref=e1174]
+              - cell "$14.11" [ref=e1175]
+              - cell "Mar 12, 10:29" [ref=e1176]:
+                - button "Mar 12, 10:29" [ref=e1177] [cursor=pointer]
+              - cell "$15.00" [ref=e1178]
+              - cell "Mar 12, 11:26" [ref=e1179]:
+                - button "Mar 12, 11:26" [ref=e1180] [cursor=pointer]
+              - cell "+$176.95 (+6.27%)" [ref=e1181]:
+                - generic [ref=e1182]:
+                  - text: +$176.95
+                  - generic [ref=e1183]: (+6.27%)
+              - cell "BREAKOUT" [ref=e1184]
+              - cell "7" [ref=e1185]:
+                - generic [ref=e1186]: "7"
+              - cell "SWING STOP" [ref=e1187]
+              - cell "TREND_DOWN" [ref=e1188]:
+                - generic [ref=e1189]: TREND_DOWN
+              - cell [ref=e1190]
+            - row "46 GOOGL260327P00302500 SHORT avwap_v4 3 $8.06 Mar 12, 10:09 $9.22 Mar 12, 11:27 +$345.87 (+14.30%) BREAKOUT 7 SWING STOP BALANCE" [ref=e1191]:
+              - cell "46" [ref=e1192]
+              - cell "GOOGL260327P00302500" [ref=e1193]
+              - cell "SHORT" [ref=e1194]:
+                - generic [ref=e1195]: SHORT
+              - cell "avwap_v4" [ref=e1196]
+              - cell "3" [ref=e1197]
+              - cell "$8.06" [ref=e1198]
+              - cell "Mar 12, 10:09" [ref=e1199]:
+                - button "Mar 12, 10:09" [ref=e1200] [cursor=pointer]
+              - cell "$9.22" [ref=e1201]
+              - cell "Mar 12, 11:27" [ref=e1202]:
+                - button "Mar 12, 11:27" [ref=e1203] [cursor=pointer]
+              - cell "+$345.87 (+14.30%)" [ref=e1204]:
+                - generic [ref=e1205]:
+                  - text: +$345.87
+                  - generic [ref=e1206]: (+14.30%)
+              - cell "BREAKOUT" [ref=e1207]
+              - cell "7" [ref=e1208]:
+                - generic [ref=e1209]: "7"
+              - cell "SWING STOP" [ref=e1210]
+              - cell "BALANCE" [ref=e1211]:
+                - generic [ref=e1212]: BALANCE
+              - cell [ref=e1213]
+            - row "47 AVGO260327P00332500 SHORT avwap_v4 2 $12.62 Mar 13, 10:14 $14.80 Mar 13, 11:13 +$435.06 (+17.24%) BREAKOUT 8 SWING STOP BALANCE" [ref=e1214]:
+              - cell "47" [ref=e1215]
+              - cell "AVGO260327P00332500" [ref=e1216]
+              - cell "SHORT" [ref=e1217]:
+                - generic [ref=e1218]: SHORT
+              - cell "avwap_v4" [ref=e1219]
+              - cell "2" [ref=e1220]
+              - cell "$12.62" [ref=e1221]
+              - cell "Mar 13, 10:14" [ref=e1222]:
+                - button "Mar 13, 10:14" [ref=e1223] [cursor=pointer]
+              - cell "$14.80" [ref=e1224]
+              - cell "Mar 13, 11:13" [ref=e1225]:
+                - button "Mar 13, 11:13" [ref=e1226] [cursor=pointer]
+              - cell "+$435.06 (+17.24%)" [ref=e1227]:
+                - generic [ref=e1228]:
+                  - text: +$435.06
+                  - generic [ref=e1229]: (+17.24%)
+              - cell "BREAKOUT" [ref=e1230]
+              - cell "8" [ref=e1231]:
+                - generic [ref=e1232]: "8"
+              - cell "SWING STOP" [ref=e1233]
+              - cell "BALANCE" [ref=e1234]:
+                - generic [ref=e1235]: BALANCE
+              - cell [ref=e1236]
+            - row "48 SMCI260327P00030000 SHORT avwap_v4 5 $1.35 Mar 13, 10:59 $1.37 Mar 13, 11:47 +$10.49 (+1.55%) BREAKOUT 8 STAGNATION EXIT BALANCE" [ref=e1237]:
+              - cell "48" [ref=e1238]
+              - cell "SMCI260327P00030000" [ref=e1239]
+              - cell "SHORT" [ref=e1240]:
+                - generic [ref=e1241]: SHORT
+              - cell "avwap_v4" [ref=e1242]
+              - cell "5" [ref=e1243]
+              - cell "$1.35" [ref=e1244]
+              - cell "Mar 13, 10:59" [ref=e1245]:
+                - button "Mar 13, 10:59" [ref=e1246] [cursor=pointer]
+              - cell "$1.37" [ref=e1247]
+              - cell "Mar 13, 11:47" [ref=e1248]:
+                - button "Mar 13, 11:47" [ref=e1249] [cursor=pointer]
+              - cell "+$10.49 (+1.55%)" [ref=e1250]:
+                - generic [ref=e1251]:
+                  - text: +$10.49
+                  - generic [ref=e1252]: (+1.55%)
+              - cell "BREAKOUT" [ref=e1253]
+              - cell "8" [ref=e1254]:
+                - generic [ref=e1255]: "8"
+              - cell "STAGNATION EXIT" [ref=e1256]
+              - cell "BALANCE" [ref=e1257]:
+                - generic [ref=e1258]: BALANCE
+              - cell [ref=e1259]
+            - row "49 NVDA260327P00182500 SHORT avwap_v4 5 $5.46 Mar 13, 10:19 $6.38 Mar 13, 12:54 +$464.93 (+17.05%) BREAKOUT 8 SWING STOP BALANCE" [ref=e1260]:
+              - cell "49" [ref=e1261]
+              - cell "NVDA260327P00182500" [ref=e1262]
+              - cell "SHORT" [ref=e1263]:
+                - generic [ref=e1264]: SHORT
+              - cell "avwap_v4" [ref=e1265]
+              - cell "5" [ref=e1266]
+              - cell "$5.46" [ref=e1267]
+              - cell "Mar 13, 10:19" [ref=e1268]:
+                - button "Mar 13, 10:19" [ref=e1269] [cursor=pointer]
+              - cell "$6.38" [ref=e1270]
+              - cell "Mar 13, 12:54" [ref=e1271]:
+                - button "Mar 13, 12:54" [ref=e1272] [cursor=pointer]
+              - cell "+$464.93 (+17.05%)" [ref=e1273]:
+                - generic [ref=e1274]:
+                  - text: +$464.93
+                  - generic [ref=e1275]: (+17.05%)
+              - cell "BREAKOUT" [ref=e1276]
+              - cell "8" [ref=e1277]:
+                - generic [ref=e1278]: "8"
+              - cell "SWING STOP" [ref=e1279]
+              - cell "BALANCE" [ref=e1280]:
+                - generic [ref=e1281]: BALANCE
+              - cell [ref=e1282]
+  - button "Open Next.js Dev Tools" [ref=e119] [cursor=pointer]:
+    - img [ref=e120]
+  - alert [ref=e123]

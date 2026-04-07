@@ -1,0 +1,23 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/ridopark/src/oh-my-opentrade/.claude/hooks/post-commit-review.sh",
+            "timeout": 10000,
+            "matchInput": "git commit"
+          },
+          {
+            "type": "command",
+            "command": "bash /home/ridopark/src/oh-my-opentrade/.claude/hooks/post-commit-harness-learn.sh",
+            "timeout": 10000,
+            "matchInput": "git commit"
+          }
+        ]
+      }
+    ]
+  }
+}
