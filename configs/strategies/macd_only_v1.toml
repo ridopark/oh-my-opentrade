@@ -2,9 +2,9 @@ schema_version = 2
 
 [strategy]
 id = "macd_only_v1"
-version = "1.0.0"
+version = "1.1.0"
 name = "MACD Crossover (Trading Rush)"
-description = "30m MACD crossover below zero + 200 MA + EMA9 filter, 1.5x R:R"
+description = "30m MACD crossover + 200 MA + EMA9 filter, 1.5x R:R, aggressive sizing"
 author = "system"
 created_at = "2026-04-06T00:00:00Z"
 
@@ -13,8 +13,8 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "META", "AMZN", "GOOGL"]
-timeframes = ["30m"]
+symbols = ["AAPL","AFRM","AMD","AMZN","AVGO","BA","COIN","CRM","GOOGL","HIMS","HOOD","IWM","JPM","LLY","META","MRNA","MRVL","MSFT","MU","NET","NFLX","NVDA","OXY","PLTR","QQQ","RBLX","RIVN","SMCI","SNOW","SOFI","SOXL","SPY","TSLA","XOM"]
+timeframes = ["15m"]
 priority = 70
 conflict_policy = "priority_wins"
 exclusive_per_symbol = true
@@ -22,32 +22,33 @@ watchlist_mode = "static"
 allowed_directions = ["LONG", "SHORT"]
 
 [params]
-# Mode: "macd_only" — pure MACD crossover, no BB
 mode = "macd_only"
 
-# MACD zero band: crossover must occur with MACD < this value
-# 0.0 = strict below zero (original Trading Rush)
-# 0.5 = relaxed band, catches pullbacks within uptrends
-macd_zero_band = 99.0
+# MACD zero band — effectively disabled (any crossover)
+macd_zero_band = 0.0
 
-# BB threshold (unused in macd_only mode but needed for config parsing)
+# BB threshold (unused in macd_only mode)
 bb_breakout_threshold = 1.0
 
-# Risk:Reward
-risk_reward_ratio = 1.5
+# Risk:Reward — 1.5x (Trading Rush original)
+risk_reward_ratio = 3.0
 
-# Swing low/high lookback for stop placement (~2 trading days on 30m)
-swing_lookback = 26
+# Swing low/high lookback (~2 trading days on 30m)
+swing_lookback = 5
 
-# Volume
+# Volume — no filter
 volume_mult = 1.0
 
-# Timing
+# Risk — 0.5% risk per trade, 15% max position
+risk_per_trade_bps = 300
+max_position_bps = 1500
+
+# Timing — shorter cooldown for more trades
 allowed_hours_start = "09:30"
 allowed_hours_end = "15:45"
 allowed_hours_tz = "America/New_York"
-cooldown_seconds = 900
-max_trades_per_day = 3
+cooldown_seconds = 300
+max_trades_per_day = 5
 stabilization_bars = 10
 
 [hooks]
