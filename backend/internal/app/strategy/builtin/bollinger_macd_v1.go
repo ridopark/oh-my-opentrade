@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"strings"
 	"time"
 
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -373,7 +372,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 						"rr_ratio":          fmt.Sprintf("%.1f", cfg.RiskRewardRatio),
 						"stop_bps":          fmt.Sprintf("%.0f", stopDist/bar.Close*10000),
 						"confluence":        fmt.Sprintf("%d", conf.Score),
-						"confluence_detail": strings.Join(conf.Factors, "+"),
+						"confluence_detail": conf.FormatDetail(),
 					})
 					if err == nil {
 						sig = &s
@@ -423,7 +422,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 						"rr_ratio":          fmt.Sprintf("%.1f", cfg.RiskRewardRatio),
 						"stop_bps":          fmt.Sprintf("%.0f", stopDist/bar.Close*10000),
 						"confluence":        fmt.Sprintf("%d", conf.Score),
-						"confluence_detail": strings.Join(conf.Factors, "+"),
+						"confluence_detail": conf.FormatDetail(),
 					})
 					if err == nil {
 						sig = &s
@@ -530,215 +529,44 @@ func (s *BollingerMACDStrategy) ReplayOnBar(_ start.Context, _ string, bar start
 	return bmSt, nil
 }
 
-// ComputeConfluenceScore evaluates 10 independent factors for entry quality.
+// ComputeConfluenceScore evaluates 10 factors for MACD entry quality:
+// 8 universal factors (from domain/strategy/confluence.go) + 2 MACD-specific.
 // Returns a score 0-100 and a list of contributing factor names.
-// isLong: true for long signals, false for short.
-func ComputeConfluenceScore(bar start.Bar, ind start.IndicatorData, prevHists []float64, isLong bool) ConfluenceResult {
-	var score int
-	var factors []string
+func ComputeConfluenceScore(bar start.Bar, ind start.IndicatorData, prevHists []float64, isLong bool) start.ConfluenceResult {
+	// 8 universal factors (max 78 points)
+	base := start.ComputeBaseConfluence(bar, ind, isLong)
 
-	// Factor 1: EMA Stack Alignment (0-15)
-	// Long: Close > EMA9 > EMA21 > EMA50. Short: Close < EMA9 < EMA21 < EMA50.
-	if ind.EMA9 > 0 && ind.EMA21 > 0 && ind.EMA50 > 0 {
-		emaCount := 0
-		if isLong {
-			if bar.Close > ind.EMA9 {
-				emaCount++
-			}
-			if ind.EMA9 > ind.EMA21 {
-				emaCount++
-			}
-			if ind.EMA21 > ind.EMA50 {
-				emaCount++
-			}
-		} else {
-			if bar.Close < ind.EMA9 {
-				emaCount++
-			}
-			if ind.EMA9 < ind.EMA21 {
-				emaCount++
-			}
-			if ind.EMA21 < ind.EMA50 {
-				emaCount++
-			}
-		}
-		switch emaCount {
-		case 3:
-			score += 15
-			factors = append(factors, "ema_stack")
-		case 2:
-			score += 10
-			factors = append(factors, "ema_partial")
-		case 1:
-			score += 5
-		}
-	}
-
-	// Factor 2: ADX Trend Strength (0-15)
-	if ind.ADX > 0 {
-		switch {
-		case ind.ADX >= 30:
-			score += 15
-			factors = append(factors, "adx_strong")
-		case ind.ADX >= 25:
-			score += 12
-			factors = append(factors, "adx_trend")
-		case ind.ADX >= 20:
-			score += 8
-			factors = append(factors, "adx_ok")
-		case ind.ADX >= 15:
-			score += 4
-		}
-	}
-
-	// Factor 3: MACD Histogram Acceleration (0-12)
-	// Use CheckHistAccel with different bar counts for graduated scoring
+	// MACD-specific Factor 1: Histogram Acceleration (0-12)
+	var macdExtra start.ConfluenceResult
 	if len(prevHists) >= 4 {
 		switch {
 		case CheckHistAccel(prevHists, 3):
-			score += 12
-			factors = append(factors, "hist_accel_3")
+			macdExtra.Score += 12
+			macdExtra.Factors = append(macdExtra.Factors, "hist_accel_3")
 		case CheckHistAccel(prevHists, 2):
-			score += 8
-			factors = append(factors, "hist_accel_2")
+			macdExtra.Score += 8
+			macdExtra.Factors = append(macdExtra.Factors, "hist_accel_2")
 		case CheckHistAccel(prevHists, 1):
-			score += 4
+			macdExtra.Score += 4
 		}
 	}
 
-	// Factor 4: RSI Position (0-10)
-	// Long: 45-65 ideal. Short: 35-55 ideal.
-	if ind.RSI > 0 {
-		var rsiScore int
-		if isLong {
-			switch {
-			case ind.RSI >= 45 && ind.RSI <= 65:
-				rsiScore = 10
-			case ind.RSI >= 35 && ind.RSI < 45:
-				rsiScore = 5
-			case ind.RSI > 65 && ind.RSI <= 75:
-				rsiScore = 5
-			}
-		} else {
-			switch {
-			case ind.RSI >= 35 && ind.RSI <= 55:
-				rsiScore = 10
-			case ind.RSI > 55 && ind.RSI <= 65:
-				rsiScore = 5
-			case ind.RSI >= 25 && ind.RSI < 35:
-				rsiScore = 5
-			}
-		}
-		if rsiScore > 0 {
-			score += rsiScore
-			if rsiScore == 10 {
-				factors = append(factors, "rsi_ideal")
-			} else {
-				factors = append(factors, "rsi_ok")
-			}
-		}
-	}
-
-	// Factor 5: MACD Distance from Zero (0-10)
-	// Crossovers near zero catch trend births; far from zero are late entries.
-	// Normalize by ATR for cross-symbol comparison.
+	// MACD-specific Factor 2: Distance from Zero (0-10)
 	if ind.ATR > 0 && ind.MACDLine != 0 {
 		dist := math.Abs(ind.MACDLine) / ind.ATR
 		switch {
 		case dist <= 0.5:
-			score += 10
-			factors = append(factors, "macd_near_zero")
+			macdExtra.Score += 10
+			macdExtra.Factors = append(macdExtra.Factors, "macd_near_zero")
 		case dist <= 1.0:
-			score += 6
-			factors = append(factors, "macd_mid")
+			macdExtra.Score += 6
+			macdExtra.Factors = append(macdExtra.Factors, "macd_mid")
 		case dist <= 2.0:
-			score += 2
+			macdExtra.Score += 2
 		}
 	}
 
-	// Factor 6: Volume Ratio (0-8)
-	if ind.VolumeSMA > 0 {
-		volRatio := bar.Volume / ind.VolumeSMA
-		switch {
-		case volRatio >= 1.5:
-			score += 8
-			factors = append(factors, "vol_surge")
-		case volRatio >= 1.2:
-			score += 6
-			factors = append(factors, "vol_above_avg")
-		case volRatio >= 1.0:
-			score += 4
-		case volRatio >= 0.8:
-			score += 2
-		}
-	}
-
-	// Factor 7: Candle Quality (0-8)
-	// Directional close + body ratio combined.
-	barRange := bar.High - bar.Low
-	if barRange > 0 {
-		bodyRatio := math.Abs(bar.Close-bar.Open) / barRange
-		directional := (isLong && bar.Close > bar.Open) || (!isLong && bar.Close < bar.Open)
-		switch {
-		case bodyRatio > 0.7 && directional:
-			score += 8
-			factors = append(factors, "candle_strong")
-		case bodyRatio > 0.5 && directional:
-			score += 6
-			factors = append(factors, "candle_ok")
-		case directional:
-			score += 4
-			factors = append(factors, "candle_dir")
-		}
-	}
-
-	// Factor 8: Bollinger Band Position (0-7)
-	// Long: %B 0.5-0.8 (trending, not overextended). Short: %B 0.2-0.5.
-	if ind.BBPercentB > 0 || ind.BBPercentB < 0 { // BBPercentB is computed
-		if isLong {
-			switch {
-			case ind.BBPercentB >= 0.5 && ind.BBPercentB <= 0.8:
-				score += 7
-				factors = append(factors, "bb_trend")
-			case ind.BBPercentB >= 0.3 && ind.BBPercentB < 0.5:
-				score += 4
-			}
-		} else {
-			switch {
-			case ind.BBPercentB >= 0.2 && ind.BBPercentB <= 0.5:
-				score += 7
-				factors = append(factors, "bb_trend")
-			case ind.BBPercentB > 0.5 && ind.BBPercentB <= 0.7:
-				score += 4
-			}
-		}
-	}
-
-	// Factor 9: HTF Bias Agreement (0-8)
-	htfBias := ""
-	if htf, ok := ind.HTF["1d"]; ok {
-		htfBias = htf.Bias
-	}
-	if htfBias != "" {
-		if (isLong && htfBias == "BULLISH") || (!isLong && htfBias == "BEARISH") {
-			score += 8
-			factors = append(factors, "htf_agree")
-		} else if htfBias == "NEUTRAL" || htfBias == "" {
-			score += 4
-			factors = append(factors, "htf_neutral")
-		}
-		// Opposing bias: +0 (no penalty, just no points)
-	}
-
-	// Factor 10: VWAP Alignment (0-7)
-	if ind.VWAP > 0 {
-		if (isLong && bar.Close > ind.VWAP) || (!isLong && bar.Close < ind.VWAP) {
-			score += 7
-			factors = append(factors, "vwap_aligned")
-		}
-	}
-
-	return ConfluenceResult{Score: score, Factors: factors}
+	return start.MergeConfluence(base, macdExtra)
 }
 
 // Deprecated: Use ComputeConfluenceScore instead. Kept for backward compatibility.
