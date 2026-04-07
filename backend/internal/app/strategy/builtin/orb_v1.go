@@ -51,11 +51,24 @@ func (s *ORBStrategy) Init(ctx start.Context, symbol string, params map[string]a
 		}
 	}
 
+	minConf := 0
+	if v, ok := params["min_confluence_score"]; ok {
+		switch n := v.(type) {
+		case int:
+			minConf = n
+		case int64:
+			minConf = int(n)
+		case float64:
+			minConf = int(n)
+		}
+	}
+
 	st := &ORBState{
-		Tracker:   tracker,
-		Config:    cfg,
-		Symbol:    symbol,
-		Timeframe: barTF,
+		Tracker:            tracker,
+		Config:             cfg,
+		Symbol:             symbol,
+		Timeframe:          barTF,
+		MinConfluenceScore: minConf,
 	}
 
 	// Attempt to restore from prior state if available.
@@ -147,26 +160,48 @@ func (s *ORBStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st 
 
 	instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
 	side := start.SideBuy
-	if setup.Direction == domain.DirectionShort {
+	isLong := setup.Direction == domain.DirectionLong
+	if !isLong {
 		side = start.SideSell
 	}
 
+	// Confluence scoring and gating.
+	conf := start.ComputeBaseConfluence(
+		start.Bar{Time: bar.Time, Open: bar.Open, High: bar.High, Low: bar.Low, Close: bar.Close, Volume: bar.Volume},
+		orbState.Indicators, isLong,
+	)
+	if orbState.MinConfluenceScore > 0 && conf.Score < orbState.MinConfluenceScore {
+		return orbState, nil, nil
+	}
+
+	// Signal strength: higher of tracker confidence and confluence/100.
+	confStrength := float64(conf.Score) / 100.0
+	if confStrength < 0.1 {
+		confStrength = 0.1
+	}
+	signalStrength := setup.Confidence
+	if confStrength > signalStrength {
+		signalStrength = confStrength
+	}
+
 	tags := map[string]string{
-		"ref_price":     fmt.Sprintf("%.10f", setup.BarClose),
-		"setup":         setup.Trigger,
-		"trigger":       setup.Trigger,
-		"orb_high":      fmt.Sprintf("%.4f", setup.ORBHigh),
-		"orb_low":       fmt.Sprintf("%.4f", setup.ORBLow),
-		"rvol":          fmt.Sprintf("%.2f", setup.RVOL),
-		"bar_close":     fmt.Sprintf("%.4f", setup.BarClose),
-		"regime_anchor": anchorTag,
-		"htf_bias":      htfBiasTag,
+		"ref_price":         fmt.Sprintf("%.10f", setup.BarClose),
+		"setup":             setup.Trigger,
+		"trigger":           setup.Trigger,
+		"orb_high":          fmt.Sprintf("%.4f", setup.ORBHigh),
+		"orb_low":           fmt.Sprintf("%.4f", setup.ORBLow),
+		"rvol":              fmt.Sprintf("%.2f", setup.RVOL),
+		"bar_close":         fmt.Sprintf("%.4f", setup.BarClose),
+		"regime_anchor":     anchorTag,
+		"htf_bias":          htfBiasTag,
+		"confluence":        fmt.Sprintf("%d", conf.Score),
+		"confluence_detail": conf.FormatDetail(),
 	}
 
 	if orbState.Config.SignalATRStopMult > 0 && orbState.Indicators.ATR > 0 {
 		atrStop := orbState.Indicators.ATR * orbState.Config.SignalATRStopMult
 		var stopPrice float64
-		if setup.Direction == domain.DirectionLong {
+		if isLong {
 			stopPrice = setup.BarClose - atrStop
 		} else {
 			stopPrice = setup.BarClose + atrStop
@@ -180,7 +215,7 @@ func (s *ORBStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st 
 		symbol,
 		start.SignalEntry,
 		side,
-		clampStrength(setup.Confidence),
+		clampStrength(signalStrength),
 		tags,
 	)
 	if err != nil {
@@ -372,12 +407,13 @@ func clampStrength(c float64) float64 {
 
 // ORBState wraps the ORBTracker and its config as a serializable State.
 type ORBState struct {
-	Tracker    *monitor.ORBTracker
-	Config     monitor.ORBConfig
-	Symbol     string
-	Timeframe  string              // "1m" or "5m" — set by runner based on instance assignment
-	Indicators start.IndicatorData // cached from last bar
-	PrevPhase  monitor.ORBState    // previous phase for change detection (EntryGated events)
+	Tracker            *monitor.ORBTracker
+	Config             monitor.ORBConfig
+	Symbol             string
+	Timeframe          string              // "1m" or "5m" — set by runner based on instance assignment
+	Indicators         start.IndicatorData // cached from last bar
+	PrevPhase          monitor.ORBState    // previous phase for change detection (EntryGated events)
+	MinConfluenceScore int                 // minimum confluence score for entry. Default 0 (disabled).
 }
 
 // SetIndicators updates the cached indicator data. Called by the runner
