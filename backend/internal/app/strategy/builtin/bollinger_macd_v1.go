@@ -55,7 +55,8 @@ type BMConfig struct {
 	CooldownSeconds     int
 	MaxTradesPerDay     int
 	StabilizationBars   int
-	MinConfluenceScore int // minimum confluence score (0-100) for entry. Default 0 (disabled).
+	MinConfluenceScore  int  // minimum confluence score (0-100) for entry. Default 0 (disabled).
+	DPConfluenceEnabled bool // when true, include dark pool scoring in confluence. Default false.
 }
 
 // BMState holds per-symbol state.
@@ -115,7 +116,8 @@ func parseBMConfig(params map[string]any) BMConfig {
 		CooldownSeconds:     getInt(params, "cooldown_seconds", 1800),
 		MaxTradesPerDay:     getInt(params, "max_trades_per_day", 2),
 		StabilizationBars:   getInt(params, "stabilization_bars", 30),
-		MinConfluenceScore: getInt(params, "min_confluence_score", 0),
+		MinConfluenceScore:  getInt(params, "min_confluence_score", 0),
+		DPConfluenceEnabled: getBool(params, "dp_confluence_enabled", false),
 	}
 }
 
@@ -346,7 +348,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 
 		if longTrigger {
 			// Confluence scoring — replaces individual boolean filters
-			conf := ComputeConfluenceScore(bar, ind, bmSt.PrevMACDHists, true)
+			conf := ComputeConfluenceScore(bar, ind, bmSt.PrevMACDHists, true, cfg.DPConfluenceEnabled)
 			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
 				longTrigger = false
 			}
@@ -396,7 +398,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 		setup := "macd_short"
 
 		if shortTrigger {
-			conf := ComputeConfluenceScore(bar, ind, bmSt.PrevMACDHists, false)
+			conf := ComputeConfluenceScore(bar, ind, bmSt.PrevMACDHists, false, cfg.DPConfluenceEnabled)
 			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
 				shortTrigger = false
 			}
@@ -529,10 +531,11 @@ func (s *BollingerMACDStrategy) ReplayOnBar(_ start.Context, _ string, bar start
 	return bmSt, nil
 }
 
-// ComputeConfluenceScore evaluates 10 factors for MACD entry quality:
-// 8 universal factors (from domain/strategy/confluence.go) + 2 MACD-specific.
-// Returns a score 0-100 and a list of contributing factor names.
-func ComputeConfluenceScore(bar start.Bar, ind start.IndicatorData, prevHists []float64, isLong bool) start.ConfluenceResult {
+// ComputeConfluenceScore evaluates 10+ factors for MACD entry quality:
+// 8 universal factors (from domain/strategy/confluence.go) + 2 MACD-specific,
+// plus optional dark pool scoring when dpEnabled is true.
+// Returns a score 0-100+ and a list of contributing factor names.
+func ComputeConfluenceScore(bar start.Bar, ind start.IndicatorData, prevHists []float64, isLong bool, dpEnabled bool) start.ConfluenceResult {
 	// 8 universal factors (max 78 points)
 	base := start.ComputeBaseConfluence(bar, ind, isLong)
 
@@ -566,7 +569,11 @@ func ComputeConfluenceScore(bar start.Bar, ind start.IndicatorData, prevHists []
 		}
 	}
 
-	return start.MergeConfluence(base, macdExtra)
+	result := start.MergeConfluence(base, macdExtra)
+	if dpEnabled {
+		result = start.MergeConfluence(result, start.ScoreDarkPool(ind, isLong))
+	}
+	return result
 }
 
 // Deprecated: Use ComputeConfluenceScore instead. Kept for backward compatibility.

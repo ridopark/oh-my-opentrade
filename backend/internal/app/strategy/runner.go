@@ -44,9 +44,18 @@ type Runner struct {
 	lastSessionDate      map[string]string
 	lastResolvedRegime   map[string]domain.RegimeType
 
+	// Dark pool lookup for backtests: keyed by "symbol|5m-truncated-time".
+	dpLookup map[DPLookupKey]domain.DarkPoolBar
+
 	// Signal progress cache: last emitted event per symbol for initial SSE snapshots.
 	signalProgressMu    sync.RWMutex
 	signalProgressCache map[string]domain.Event // key: eventType+":"+symbol
+}
+
+// DPLookupKey uniquely identifies a dark pool bar for O(1) access during replay.
+type DPLookupKey struct {
+	Symbol string
+	Time   time.Time
 }
 
 func (r *Runner) SignalsRTHSuppressed() int64 {
@@ -332,6 +341,12 @@ func (r *Runner) SetMetrics(m *metrics.Metrics) { r.metrics = m }
 
 func (r *Runner) SetPositionLookup(fn PositionLookupFunc) { r.posLookup = fn }
 
+// SetDarkPoolLookup injects pre-loaded dark pool bars for backtesting.
+// The strategy runner overlays DP data onto IndicatorData during bar processing.
+func (r *Runner) SetDarkPoolLookup(lookup map[DPLookupKey]domain.DarkPoolBar) {
+	r.dpLookup = lookup
+}
+
 // UpdateAVWAPCalc feeds a 1m bar into the AVWAP calculator for smooth chart
 // rendering. Also evaluates exit-only logic on 1m bars for faster exit
 // reaction (per Brian Shannon: fine-tune exits on short-term chart).
@@ -483,6 +498,24 @@ func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error
 		AnchorRegimes: convertAnchorRegimes(snap.AnchorRegimes),
 		HTF:           convertHTFData(snap.HTF),
 	}
+
+	// Overlay dark pool microstructure data when available (backtest only).
+	if len(r.dpLookup) > 0 {
+		barTime5m := snap.Time.Truncate(5 * time.Minute)
+		key := DPLookupKey{Symbol: snap.Symbol.String(), Time: barTime5m}
+		if dpBar, ok := r.dpLookup[key]; ok {
+			ind := r.indicators[snap.Symbol.String()]
+			ind.DPRatio = dpBar.DPRatio
+			if dpBar.DPVolume > 0 {
+				ind.DPBuyRatio = dpBar.BuyVolume / dpBar.DPVolume
+			}
+			if dpBar.DPVolume > 0 {
+				ind.DPLargePrintPct = dpBar.LargePrintVolume / dpBar.DPVolume
+			}
+			r.indicators[snap.Symbol.String()] = ind
+		}
+	}
+
 	r.mu.Unlock()
 	return nil
 }

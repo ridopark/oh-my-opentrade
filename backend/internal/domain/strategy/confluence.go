@@ -204,6 +204,39 @@ func ScoreVWAP(bar Bar, ind IndicatorData, isLong bool) ConfluenceResult {
 	return ConfluenceResult{}
 }
 
+// ScoreDarkPool evaluates dark pool activity as a confluence signal (0-10).
+// Returns zero gracefully when no dark pool data is available.
+func ScoreDarkPool(ind IndicatorData, isLong bool) ConfluenceResult {
+	if ind.DPRatio <= 0 {
+		return ConfluenceResult{}
+	}
+	score := 0
+	var factors []string
+
+	// Elevated DP ratio (baseline ~35%)
+	if ind.DPRatio >= 0.50 {
+		score += 3
+		factors = append(factors, "dp_elevated")
+	}
+
+	// Directional pressure
+	if isLong && ind.DPBuyRatio >= 0.60 {
+		score += 4
+		factors = append(factors, "dp_buy")
+	} else if !isLong && ind.DPBuyRatio <= 0.40 {
+		score += 4
+		factors = append(factors, "dp_sell")
+	}
+
+	// Large block prints
+	if ind.DPLargePrintPct >= 0.15 {
+		score += 3
+		factors = append(factors, "dp_blocks")
+	}
+
+	return ConfluenceResult{Score: score, Factors: factors}
+}
+
 // ────────────────────────────────────────────────────────────────────
 // ComputeBaseConfluence evaluates all 8 universal factors.
 // Max score: 78 (15+15+10+8+8+7+8+7).

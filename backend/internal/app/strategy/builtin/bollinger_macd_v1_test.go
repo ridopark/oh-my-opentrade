@@ -383,7 +383,7 @@ func TestComputeConfluenceScore_AllFactors(t *testing.T) {
 	// Converging histogram for hist_accel
 	prevHists := []float64{1.0, 0.5, 0.3, 0.2, 0.15}
 
-	result := builtin.ComputeConfluenceScore(bar, ind, prevHists, true)
+	result := builtin.ComputeConfluenceScore(bar, ind, prevHists, true, false)
 	assert.Greater(t, result.Score, 50, "strong confluence should score well above 50")
 	assert.Contains(t, result.Factors, "ema_stack")
 	assert.Contains(t, result.Factors, "adx_strong")
@@ -394,7 +394,7 @@ func TestComputeConfluenceScore_AllFactors(t *testing.T) {
 func TestComputeConfluenceScore_EmptyIndicators(t *testing.T) {
 	bar := strat.Bar{Open: 100, High: 100, Low: 100, Close: 100, Volume: 0}
 	ind := strat.IndicatorData{}
-	result := builtin.ComputeConfluenceScore(bar, ind, nil, true)
+	result := builtin.ComputeConfluenceScore(bar, ind, nil, true, false)
 	assert.Equal(t, 0, result.Score)
 	assert.Empty(t, result.Factors)
 }
@@ -411,7 +411,7 @@ func TestComputeConfluenceScore_ShortSide(t *testing.T) {
 		BBPercentB: 0.35,
 		VWAP:       100,
 	}
-	result := builtin.ComputeConfluenceScore(bar, ind, nil, false)
+	result := builtin.ComputeConfluenceScore(bar, ind, nil, false, false)
 	assert.Greater(t, result.Score, 0)
 	assert.Contains(t, result.Factors, "ema_stack")
 	assert.Contains(t, result.Factors, "vwap_aligned")
