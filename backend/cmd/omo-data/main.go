@@ -14,7 +14,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
+	"github.com/oh-my-opentrade/backend/internal/adapters/ibkr"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/oh-my-opentrade/backend/internal/app/datarefresh"
 	"github.com/oh-my-opentrade/backend/internal/app/ivcollector"
 	"github.com/oh-my-opentrade/backend/internal/config"
@@ -89,6 +91,19 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to create Alpaca adapter")
 	}
 
+	// IBKR adapter (optional — for VIX index data)
+	var ibkrData ports.MarketDataPort
+	if cfg.IBKR.Host != "" {
+		ibkrAdapter, ibkrErr := ibkr.NewAdapter(cfg.IBKR, log.With().Str("component", "ibkr").Logger())
+		if ibkrErr != nil {
+			log.Warn().Err(ibkrErr).Msg("IBKR connection failed — VIX will use SPY realized vol fallback")
+		} else {
+			ibkrData = ibkrAdapter
+			log.Info().Str("host", cfg.IBKR.Host).Int("port", cfg.IBKR.Port).Msg("IBKR connected (for VIX)")
+			defer ibkrAdapter.Close()
+		}
+	}
+
 	// Context
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -101,8 +116,7 @@ func main() {
 		cancel()
 	}()
 
-	// datarefresh service — pass nil for ibkrData (VIX will use SPY fallback)
-	// and a noopVIXSetter since omo-data doesn't run the monitor.
+	// datarefresh service
 	refreshSvc := datarefresh.NewService(datarefresh.Config{
 		VIXSymbol:      "VIX",
 		IndexSymbols:   []string{"SPY", "QQQ", "IWM"},
@@ -110,7 +124,7 @@ func main() {
 		RunAtHourET:    16,
 		RunAtMinuteET:  15,
 		LookbackDays:   90,
-	}, nil, alpacaAdapter, repo, noopVIXSetter{}, log)
+	}, ibkrData, alpacaAdapter, repo, noopVIXSetter{}, log)
 
 	if runOnce {
 		log.Info().Msg("run-once mode: executing all tasks")
