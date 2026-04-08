@@ -915,6 +915,14 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 		}
 	}
 
+	// Collect signal tags (sig_* prefixed keys) from intent Meta.
+	signalTags := make(map[string]string)
+	for k, v := range intent.Meta {
+		if len(k) > 4 && k[:4] == "sig_" {
+			signalTags[k[4:]] = v // strip "sig_" prefix
+		}
+	}
+
 	fillPayload := map[string]any{
 		"broker_order_id": brokerOrderID,
 		"intent_id":       intent.ID.String(),
@@ -934,6 +942,7 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 		"premium_mae_pct":       intent.Meta["premium_mae_pct"],
 		"minutes_to_first_profit": intent.Meta["minutes_to_first_profit"],
 		"minutes_held":            intent.Meta["minutes_held"],
+		"signal_tags":             signalTags,
 	}
 	if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
 		fillPayload["instrument_type"] = string(domain.InstrumentTypeOption)
@@ -1128,6 +1137,13 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 		}
 	}
 
+	// Collect signal tags (sig_* prefixed keys) from intent Meta.
+	sigTags := make(map[string]string)
+	for k, v := range po.intent.Meta {
+		if len(k) > 4 && k[:4] == "sig_" {
+			sigTags[k[4:]] = v // strip "sig_" prefix
+		}
+	}
 	fillPayload := map[string]any{
 		"broker_order_id": brokerOrderID,
 		"intent_id":       po.intent.ID.String(),
@@ -1147,6 +1163,7 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 		"premium_mae_pct":       po.intent.Meta["premium_mae_pct"],
 		"minutes_to_first_profit": po.intent.Meta["minutes_to_first_profit"],
 		"minutes_held":            po.intent.Meta["minutes_held"],
+		"signal_tags":             sigTags,
 	}
 	if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {
 		fillPayload["instrument_type"] = string(domain.InstrumentTypeOption)

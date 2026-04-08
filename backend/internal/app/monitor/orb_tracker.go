@@ -53,6 +53,7 @@ type ORBConfig struct {
 	RangeWidthMinATR         float64 // min (rangeHigh-rangeLow)/dailyATR (0 = disabled)
 	RangeWidthMaxATR         float64 // max (rangeHigh-rangeLow)/dailyATR (999 = disabled)
 	RetestSpeedMaxBars       int     // max bars between breakout and retest confirmation (0 = disabled)
+	BreakoutMinDistanceBps   int     // min bps beyond ORB level for breakout close (0 = disabled)
 }
 
 func DefaultORBConfig() ORBConfig {
@@ -193,6 +194,7 @@ func NewORBConfigFromDNA(params map[string]any) ORBConfig {
 		RangeWidthMinATR:         orbExtractFloat(params, "orb_range_width_min_atr", 0),
 		RangeWidthMaxATR:         orbExtractFloat(params, "orb_range_width_max_atr", 999),
 		RetestSpeedMaxBars:       orbExtractInt(params, "orb_retest_speed_max_bars", 0),
+		BreakoutMinDistanceBps:   orbExtractInt(params, "breakout_min_distance_bps", 0),
 	}
 }
 
@@ -687,6 +689,29 @@ func (t *ORBTracker) onRangeSetBar(sess *ORBSession, bar domain.MarketBar, snap 
 				t.logger.Info("orb: breakout rejected (displacement range too small)",
 					"symbol", sess.Symbol, "rangePct", barRange/bar.Close, "minRangePct", cfg.DisplacementMinRangePct)
 				longBreak = false
+				shortBreak = false
+			}
+		}
+	}
+
+	// Breakout distance gate: require price to close at least N bps beyond ORB level
+	if cfg.BreakoutMinDistanceBps > 0 && (longBreak || shortBreak) {
+		minDist := float64(cfg.BreakoutMinDistanceBps) / 10000.0
+		if longBreak {
+			dist := (bar.Close - sess.OrbHigh) / sess.OrbHigh
+			if dist < minDist {
+				t.logger.Info("orb: breakout rejected (too close to ORB level)",
+					"symbol", sess.Symbol, "direction", "LONG",
+					"distBps", dist*10000, "minBps", cfg.BreakoutMinDistanceBps)
+				longBreak = false
+			}
+		}
+		if shortBreak {
+			dist := (sess.OrbLow - bar.Close) / sess.OrbLow
+			if dist < minDist {
+				t.logger.Info("orb: breakout rejected (too close to ORB level)",
+					"symbol", sess.Symbol, "direction", "SHORT",
+					"distBps", dist*10000, "minBps", cfg.BreakoutMinDistanceBps)
 				shortBreak = false
 			}
 		}

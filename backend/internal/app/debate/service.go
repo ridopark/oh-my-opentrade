@@ -271,6 +271,25 @@ func (s *Service) handleSetup(ctx context.Context, event domain.Event) error {
 	if setup.MarketContext != "" {
 		intent.Meta["market_context"] = setup.MarketContext
 	}
+	// Propagate setup-level data as signal tags for downstream analysis (backtest JSON, etc.).
+	intent.Meta["sig_rvol"] = fmt.Sprintf("%.2f", setup.RVOL)
+	intent.Meta["sig_confidence"] = fmt.Sprintf("%.2f", setup.Confidence)
+	intent.Meta["sig_orb_high"] = fmt.Sprintf("%.4f", setup.ORBHigh)
+	intent.Meta["sig_orb_low"] = fmt.Sprintf("%.4f", setup.ORBLow)
+	intent.Meta["sig_bar_close"] = fmt.Sprintf("%.4f", setup.BarClose)
+	intent.Meta["sig_trigger"] = setup.Trigger
+	intent.Meta["sig_direction"] = string(setup.Direction)
+	// Retest quality inputs
+	intent.Meta["sig_rq_bar_count"] = fmt.Sprintf("%d", setup.RetestQuality.BarCount)
+	intent.Meta["sig_rq_pullback_depth"] = fmt.Sprintf("%.4f", setup.RetestQuality.PullbackDepthPct)
+	intent.Meta["sig_rq_confirm_body_ratio"] = fmt.Sprintf("%.4f", setup.RetestQuality.ConfirmBodyRatio)
+	if setup.RetestQuality.ConfirmDirectional {
+		intent.Meta["sig_rq_confirm_directional"] = "true"
+	}
+	if setup.RetestQuality.BreakoutVolume > 0 {
+		intent.Meta["sig_rq_breakout_volume"] = fmt.Sprintf("%.0f", setup.RetestQuality.BreakoutVolume)
+		intent.Meta["sig_rq_retest_avg_volume"] = fmt.Sprintf("%.0f", setup.RetestQuality.RetestAvgVolume)
+	}
 
 	if s.specStore != nil && setup.Trigger != "" {
 		sid, sidErr := domstrategy.NewStrategyID(setup.Trigger)
