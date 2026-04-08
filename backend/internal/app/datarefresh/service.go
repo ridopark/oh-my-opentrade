@@ -87,24 +87,16 @@ func (s *Service) Start(ctx context.Context) error {
 		}
 	}
 
-	// Refresh equity daily bars in background on startup.
+	// Refresh all bar data in background on startup.
 	go func() {
-		seen := make(map[string]struct{})
-		var allSymbols []string
-		for _, sym := range s.cfg.IndexSymbols {
-			if _, ok := seen[sym]; !ok {
-				seen[sym] = struct{}{}
-				allSymbols = append(allSymbols, sym)
-			}
-		}
-		for _, sym := range s.cfg.TradingSymbols {
-			if _, ok := seen[sym]; !ok {
-				seen[sym] = struct{}{}
-				allSymbols = append(allSymbols, sym)
-			}
-		}
+		allSymbols := s.deduplicatedSymbols()
+
+		// 1. Daily bars from Alpaca.
 		saved, failed := s.refreshDailyBars(ctx, allSymbols)
 		s.log.Info().Int("symbols_refreshed", saved).Int("symbols_failed", failed).Msg("startup daily bar refresh complete")
+
+		// 2. Backfill 1m bars for today + aggregate into 5m/15m/1h.
+		s.backfillIntradayBars(ctx, allSymbols)
 	}()
 
 	go s.loop(ctx)
@@ -150,7 +142,7 @@ func (s *Service) nextRunTime(now time.Time) time.Time {
 	return target
 }
 
-// RefreshAll fetches VIX + all equity daily bars and saves to DB.
+// RefreshAll fetches VIX + all daily + intraday bars and saves to DB.
 func (s *Service) RefreshAll(ctx context.Context) {
 	s.log.Info().Msg("daily refresh starting")
 
@@ -158,21 +150,7 @@ func (s *Service) RefreshAll(ctx context.Context) {
 		s.log.Error().Err(err).Msg("VIX refresh failed")
 	}
 
-	// Deduplicate index + trading symbols.
-	seen := make(map[string]struct{})
-	var allSymbols []string
-	for _, sym := range s.cfg.IndexSymbols {
-		if _, ok := seen[sym]; !ok {
-			seen[sym] = struct{}{}
-			allSymbols = append(allSymbols, sym)
-		}
-	}
-	for _, sym := range s.cfg.TradingSymbols {
-		if _, ok := seen[sym]; !ok {
-			seen[sym] = struct{}{}
-			allSymbols = append(allSymbols, sym)
-		}
-	}
+	allSymbols := s.deduplicatedSymbols()
 
 	saved, failed := s.refreshDailyBars(ctx, allSymbols)
 	s.log.Info().
@@ -271,4 +249,88 @@ func (s *Service) fallbackSPYRealizedVol(ctx context.Context) {
 	rv := monitor.ComputeRealizedVol(bars, 20)
 	s.monitor.SetVIXLevel(rv)
 	s.log.Info().Float64("realized_vol", rv).Int("daily_bars", len(bars)).Msg("VIX level set from SPY realized vol (fallback)")
+}
+
+func (s *Service) deduplicatedSymbols() []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, sym := range s.cfg.IndexSymbols {
+		if _, ok := seen[sym]; !ok {
+			seen[sym] = struct{}{}
+			out = append(out, sym)
+		}
+	}
+	for _, sym := range s.cfg.TradingSymbols {
+		if _, ok := seen[sym]; !ok {
+			seen[sym] = struct{}{}
+			out = append(out, sym)
+		}
+	}
+	return out
+}
+
+// backfillIntradayBars fetches 1m bars for today from Alpaca and aggregates
+// them into 5m, 15m, and 1h bars. This fills gaps caused by omo-core restarts.
+func (s *Service) backfillIntradayBars(ctx context.Context, symbols []string) {
+	et, _ := time.LoadLocation("America/New_York")
+	nowET := time.Now().In(et)
+	// Session open: today 09:30 ET (or yesterday if before market open)
+	sessionOpen := time.Date(nowET.Year(), nowET.Month(), nowET.Day(), 9, 30, 0, 0, et)
+	if nowET.Before(sessionOpen) {
+		sessionOpen = sessionOpen.AddDate(0, 0, -1)
+	}
+	// Fetch from session open (or start of day for pre-market)
+	from := time.Date(nowET.Year(), nowET.Month(), nowET.Day(), 4, 0, 0, 0, et)
+	if nowET.Before(from) {
+		from = from.AddDate(0, 0, -1)
+	}
+
+	htfTimeframes := []domain.Timeframe{"5m", "15m", "1h"}
+	totalBars := 0
+	totalHTF := 0
+
+	for _, symStr := range symbols {
+		sym, err := domain.NewSymbol(symStr)
+		if err != nil {
+			continue
+		}
+		bars, err := s.alpacaData.GetHistoricalBars(ctx, sym, domain.Timeframe("1m"), from, time.Now())
+		if err != nil {
+			s.log.Warn().Str("symbol", symStr).Err(err).Msg("failed to fetch 1m bars for backfill")
+			continue
+		}
+		if len(bars) == 0 {
+			continue
+		}
+
+		// Save 1m bars.
+		if n, err := s.repo.SaveMarketBars(ctx, bars); err == nil {
+			totalBars += n
+		}
+
+		// Aggregate into HTF bars.
+		for _, tf := range htfTimeframes {
+			agg, err := domain.NewBarAggregator(sym, tf, sessionOpen)
+			if err != nil {
+				continue
+			}
+			var htfBars []domain.MarketBar
+			for _, bar := range bars {
+				if closed, ok := agg.Push(bar); ok {
+					htfBars = append(htfBars, closed)
+				}
+			}
+			if len(htfBars) > 0 {
+				if n, err := s.repo.SaveMarketBars(ctx, htfBars); err == nil {
+					totalHTF += n
+				}
+			}
+		}
+	}
+
+	s.log.Info().
+		Int("symbols", len(symbols)).
+		Int("bars_1m", totalBars).
+		Int("bars_htf", totalHTF).
+		Msg("intraday bar backfill complete")
 }
