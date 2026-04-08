@@ -390,7 +390,7 @@ func (s *Service) tryOptionsRoute(
 	// Compute target expiry from DTE range midpoint
 	targetDTE := spec.Options.Defaults.MinDTE +
 		(spec.Options.Defaults.MaxDTE-spec.Options.Defaults.MinDTE)/2
-	targetExpiry := time.Now().AddDate(0, 0, targetDTE)
+	targetExpiry := setup.Snapshot.Time.AddDate(0, 0, targetDTE)
 
 	chain, chainErr := s.optionsMarket.GetOptionChain(ctx, setup.Symbol, targetExpiry, optRight)
 	if chainErr != nil || len(chain) == 0 {
@@ -838,7 +838,7 @@ func (s *Service) tryBSMOptionsRoute(
 	maxLossUSD := premiumPerContract * qty
 
 	// Create synthetic OCC symbol: SYMBOL + YYMMDD + C/P + strike
-	expiry := time.Now().AddDate(0, 0, targetDTE)
+	expiry := setup.Snapshot.Time.AddDate(0, 0, targetDTE)
 	occSymbol := fmt.Sprintf("%s%s%s%08d",
 		setup.Symbol,
 		expiry.Format("060102"),
