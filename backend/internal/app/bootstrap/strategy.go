@@ -65,9 +65,7 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 		builtin.NewAVWAPStrategy(),
 		builtin.NewAIScalperStrategy(),
 		builtin.NewBreakRetestStrategy(),
-		builtin.NewPHMStrategy(),
 		builtin.NewBollingerMACDStrategy(),
-		builtin.NewBBOnlyStrategy(),
 	} {
 		if err := registry.Register(s); err != nil {
 			return nil, fmt.Errorf("bootstrap: strategy: failed to register builtin %s: %w", s.Meta().ID, err)

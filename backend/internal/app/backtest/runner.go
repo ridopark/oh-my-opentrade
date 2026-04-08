@@ -1215,10 +1215,10 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 			}
 
-			// Emit synthetic auction imbalance event at 15:45 ET so the PHM
-			// strategy's second entry window receives auction flow data.
-			// The event is published BEFORE the bar so the strategy has the
-			// auction snapshot when processing the 15:45+ bar.
+			// Emit synthetic auction imbalance event at 15:45 ET for any
+			// strategy that handles OnEvent(AuctionImbalanceUpdate).
+			// Published BEFORE the bar so strategies have the auction
+			// snapshot when processing the 15:45+ bar.
 			if len(auctionByDateSym) > 0 {
 				barET := bar.Time.In(loc)
 				if barET.Hour() == 15 && barET.Minute() >= 45 {
