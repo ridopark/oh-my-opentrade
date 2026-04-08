@@ -49,6 +49,10 @@ type ORBConfig struct {
 	DisplacementMinRangePct float64  // min range/price ratio for breakout candle (0=disabled)
 	RetestQualityMinBodyHold float64 // retest candle close must hold this fraction of breakout body (0=disabled)
 	ADRExhaustionPct         float64 // skip entry if session range / ATR > this (0 = disabled)
+	BreakoutRVOLMin          float64 // min bar.Volume / avgRangeVolume for breakout bar (0 = disabled)
+	RangeWidthMinATR         float64 // min (rangeHigh-rangeLow)/dailyATR (0 = disabled)
+	RangeWidthMaxATR         float64 // max (rangeHigh-rangeLow)/dailyATR (999 = disabled)
+	RetestSpeedMaxBars       int     // max bars between breakout and retest confirmation (0 = disabled)
 }
 
 func DefaultORBConfig() ORBConfig {
@@ -185,6 +189,10 @@ func NewORBConfigFromDNA(params map[string]any) ORBConfig {
 		DisplacementMinRangePct: orbExtractFloat(params, "displacement_min_range_pct", 0),
 		RetestQualityMinBodyHold: orbExtractFloat(params, "retest_quality_min_body_hold", 0),
 		ADRExhaustionPct:         orbExtractFloat(params, "adr_exhaustion_pct", 0),
+		BreakoutRVOLMin:          orbExtractFloat(params, "orb_breakout_rvol_min", 0),
+		RangeWidthMinATR:         orbExtractFloat(params, "orb_range_width_min_atr", 0),
+		RangeWidthMaxATR:         orbExtractFloat(params, "orb_range_width_max_atr", 999),
+		RetestSpeedMaxBars:       orbExtractInt(params, "orb_retest_speed_max_bars", 0),
 	}
 }
 
@@ -233,6 +241,8 @@ type ORBSession struct {
 	RTHEndUTC         time.Time
 	State             ORBState
 	RangeBarCount     int
+	RangeTotalVolume  float64 // sum of bar.Volume during FORMING_RANGE
+	RangeBarVolCount  int     // count of bars contributing to volume
 	OrbHigh           float64
 	OrbLow            float64
 	Breakout          BreakoutInfo
@@ -368,6 +378,8 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 			sess.OrbHigh = bar.High
 			sess.OrbLow = bar.Low
 			sess.RangeBarCount = 1
+			sess.RangeTotalVolume = bar.Volume
+			sess.RangeBarVolCount = 1
 			t.logger.Info("orb: forming range", "symbol", sym, "high", sess.OrbHigh, "low", sess.OrbLow)
 		}
 		return nil, false
@@ -377,6 +389,8 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 			sess.OrbHigh = math.Max(sess.OrbHigh, bar.High)
 			sess.OrbLow = math.Min(sess.OrbLow, bar.Low)
 			sess.RangeBarCount++
+			sess.RangeTotalVolume += bar.Volume
+			sess.RangeBarVolCount++
 			return nil, false
 		}
 
@@ -409,6 +423,22 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 					"or_range", orRange, "daily_atr", dailyATR,
 					"max_atr_mult", cfg.MaxRangeATRMult, "min_bps", cfg.MinRangePctBps)
 				return nil, false
+			}
+			// Range width ATR filter: reject ranges too narrow or too wide relative to daily ATR
+			if cfg.RangeWidthMinATR > 0 || cfg.RangeWidthMaxATR < 999 {
+				if dailyATR > 0 {
+					rangeWidth := (sess.OrbHigh - sess.OrbLow) / dailyATR
+					if rangeWidth < cfg.RangeWidthMinATR || rangeWidth > cfg.RangeWidthMaxATR {
+						sess.State = ORBStateInvalid
+						sess.RangeInvalid = true
+						t.logger.Warn("orb: range width ATR filter rejected",
+							"symbol", sym,
+							"range_width_atr", rangeWidth,
+							"min", cfg.RangeWidthMinATR,
+							"max", cfg.RangeWidthMaxATR)
+						return nil, false
+					}
+				}
 			}
 			return t.onRangeSetBar(sess, bar, snap, cfg)
 		}
@@ -513,6 +543,16 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 		}
 
 		if sess.Retest.Touched && holdThisBar {
+			// Retest speed gate: reject if too many bars elapsed since breakout
+			if cfg.RetestSpeedMaxBars > 0 && sess.BarsSinceBreakout > cfg.RetestSpeedMaxBars {
+				t.logger.Info("orb: retest speed gate rejected",
+					"symbol", sym,
+					"bars_since_breakout", sess.BarsSinceBreakout,
+					"max", cfg.RetestSpeedMaxBars)
+				t.cycleToRangeSet(sess)
+				return nil, false
+			}
+
 			// ADR exhaustion filter: skip if session range already consumed too much of daily ATR
 			dailyATR := snap.HTFDailyATR()
 			if cfg.ADRExhaustionPct > 0 && dailyATR > 0 {
@@ -596,6 +636,25 @@ func (t *ORBTracker) onRangeSetBar(sess *ORBSession, bar domain.MarketBar, snap 
 	confirmBps := float64(cfg.BreakoutConfirmBps) / 10000.0
 	longBreak := bar.Close > sess.OrbHigh*(1.0+confirmBps) && rvol >= cfg.MinRVOL
 	shortBreak := bar.Close < sess.OrbLow*(1.0-confirmBps) && rvol >= cfg.MinRVOL
+
+	// Breakout bar relative volume filter: require breakout bar volume >= N× avg range volume
+	if cfg.BreakoutRVOLMin > 0 && (longBreak || shortBreak) {
+		avgRangeVol := 0.0
+		if sess.RangeBarVolCount > 0 {
+			avgRangeVol = sess.RangeTotalVolume / float64(sess.RangeBarVolCount)
+		}
+		if avgRangeVol > 0 {
+			breakoutRVOL := bar.Volume / avgRangeVol
+			if breakoutRVOL < cfg.BreakoutRVOLMin {
+				t.logger.Info("orb: breakout rejected (low volume vs range avg)",
+					"symbol", sess.Symbol,
+					"breakout_rvol", breakoutRVOL,
+					"min", cfg.BreakoutRVOLMin)
+				longBreak = false
+				shortBreak = false
+			}
+		}
+	}
 
 	// VWAP position filter at breakout: price must be on the correct side of VWAP.
 	// No slope requirement here — VWAP slope is too noisy early in the session.
@@ -755,6 +814,16 @@ func (t *ORBTracker) onAwaitingRetestFVG(sess *ORBSession, bar domain.MarketBar,
 			sess.PrevBar = &bar
 			return nil, false
 		}
+	}
+
+	// Retest speed gate: reject if too many bars elapsed since breakout
+	if cfg.RetestSpeedMaxBars > 0 && sess.BarsSinceBreakout > cfg.RetestSpeedMaxBars {
+		t.logger.Info("orb: retest speed gate rejected (FVG path)",
+			"symbol", sym,
+			"bars_since_breakout", sess.BarsSinceBreakout,
+			"max", cfg.RetestSpeedMaxBars)
+		t.cycleToRangeSet(sess)
+		return nil, false
 	}
 
 	// Signal confirmed
