@@ -666,6 +666,11 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		"vix_bucket":        sigRef.Tags["vix_bucket"],
 		"market_context":    sigRef.Tags["market_context"],
 	}
+	// Propagate all signal tags into Meta for downstream consumers (backtest JSON, etc.).
+	// Use "sig_" prefix to avoid collisions with existing Meta keys.
+	for k, v := range sigRef.Tags {
+		intent.Meta["sig_"+k] = v
+	}
 
 	if params != nil {
 		propagateGuardParams(params, intent.Meta)
@@ -925,6 +930,10 @@ func (rs *RiskSizer) handleOptionsSignal(
 		"regime":            sigRef.Tags["regime_5m"],
 		"vix_bucket":        sigRef.Tags["vix_bucket"],
 		"market_context":    sigRef.Tags["market_context"],
+	}
+	// Propagate all signal tags into Meta for downstream consumers (backtest JSON, etc.).
+	for k, v := range sigRef.Tags {
+		intent.Meta["sig_"+k] = v
 	}
 
 	if len(exitRules) > 0 {

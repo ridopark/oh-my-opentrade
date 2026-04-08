@@ -155,6 +155,7 @@ func TestRiskSizer_HandleSignal_Entry_Buy(t *testing.T) {
 		"market_context":    "",
 		"regime":            "",
 		"vix_bucket":        "",
+		"sig_ref_price":     "100",
 	}, intent.Meta)
 }
 

@@ -39,6 +39,7 @@ type TradeRecord struct {
 	Regime        string `json:"regime,omitempty"`         // EMA regime: TREND / BALANCE / REVERSAL
 	VIXBucket     string `json:"vix_bucket,omitempty"`     // LOW_VOL / NORMAL / HIGH_VOL
 	MarketContext string  `json:"market_context,omitempty"` // composite: e.g. "NORMAL | NR7 | VWAP+"
+	Tags              map[string]string `json:"tags,omitempty"`
 	PnL               float64 `json:"pnl,omitempty"`
 	PremiumMFE        float64 `json:"premium_mfe_pct,omitempty"`
 	PremiumMAE        float64 `json:"premium_mae_pct,omitempty"`
@@ -143,6 +144,7 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 	premiumMAEStr, _ := payload["premium_mae_pct"].(string)
 	minutesToFirstProfitStr, _ := payload["minutes_to_first_profit"].(string)
 	minutesHeldStr, _ := payload["minutes_held"].(string)
+	signalTags, _ := payload["signal_tags"].(map[string]string)
 
 	// Options contracts have a 100x multiplier
 	multiplier := 1.0
@@ -182,6 +184,7 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 		Regime:        regime,
 		VIXBucket:     vixBucket,
 		MarketContext: marketContext,
+		Tags:          signalTags,
 	}
 
 	// Parse MFE/MAE trade analytics from fill payload.
