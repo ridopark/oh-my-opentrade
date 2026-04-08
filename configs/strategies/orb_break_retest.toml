@@ -118,6 +118,7 @@ dte = 1                    # JS: force close at DTE <= 1
 
 [options]
 enabled = true
+max_contracts = 5
 
 # Limit price = mid + 60% of spread (aggressive for ORB breakout day trading)
 limit_spread_pct = 1.00
