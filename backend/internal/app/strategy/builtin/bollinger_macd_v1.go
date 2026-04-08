@@ -357,6 +357,12 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 
 	var sig *start.Signal
 
+	// Compute regime tag for signal enrichment (matches AVWAP pattern)
+	regimeTag := "none"
+	if ar, ok := ind.AnchorRegimes["5m"]; ok && ar.Type != "" {
+		regimeTag = ar.Type
+	}
+
 	// MACD crossover detection (for macd_only mode):
 	// Trading Rush: MACD line crosses above signal line, crossover below zero line
 	macdCrossUp := bmSt.PrevMACDLine < bmSt.PrevMACDSignalL && ind.MACDLine > ind.MACDSignal
@@ -402,6 +408,11 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 						"stop_bps":          fmt.Sprintf("%.0f", stopDist/bar.Close*10000),
 						"confluence":        fmt.Sprintf("%d", conf.Score),
 						"confluence_detail": conf.FormatDetail(),
+						"regime_5m":         regimeTag,
+						"htf_bias":          htfBias,
+						"adx":               fmt.Sprintf("%.1f", ind.ADX),
+						"rsi":               fmt.Sprintf("%.1f", ind.RSI),
+						"vwap_dist_pct":     fmt.Sprintf("%.2f", (bar.Close-ind.VWAP)/ind.VWAP*100),
 					})
 					if err == nil {
 						sig = &s
@@ -452,6 +463,11 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 						"stop_bps":          fmt.Sprintf("%.0f", stopDist/bar.Close*10000),
 						"confluence":        fmt.Sprintf("%d", conf.Score),
 						"confluence_detail": conf.FormatDetail(),
+						"regime_5m":         regimeTag,
+						"htf_bias":          htfBias,
+						"adx":               fmt.Sprintf("%.1f", ind.ADX),
+						"rsi":               fmt.Sprintf("%.1f", ind.RSI),
+						"vwap_dist_pct":     fmt.Sprintf("%.2f", (bar.Close-ind.VWAP)/ind.VWAP*100),
 					})
 					if err == nil {
 						sig = &s
