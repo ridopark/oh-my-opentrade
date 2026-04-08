@@ -6,6 +6,9 @@ import (
 	"context"
 	"time"
 
+	"fmt"
+
+	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
@@ -79,7 +82,8 @@ func (s *Service) Start(ctx context.Context) error {
 	} else {
 		// DB empty or error — fetch from IBKR.
 		if fetchErr := s.refreshVIX(ctx); fetchErr != nil {
-			s.log.Warn().Err(fetchErr).Msg("could not fetch VIX at startup — level remains unknown")
+			s.log.Warn().Err(fetchErr).Msg("VIX fetch from IBKR failed — falling back to SPY realized vol")
+			s.fallbackSPYRealizedVol(ctx)
 		}
 	}
 
@@ -170,7 +174,7 @@ func (s *Service) refreshVIX(ctx context.Context) error {
 	}
 	if len(bars) == 0 {
 		s.log.Warn().Msg("IBKR returned 0 VIX bars")
-		return nil
+		return fmt.Errorf("IBKR returned 0 VIX bars")
 	}
 
 	n, saveErr := s.repo.SaveMarketBars(ctx, bars)
@@ -230,4 +234,21 @@ func (s *Service) loadVIXFromDB(ctx context.Context) (float64, error) {
 		return 0, nil
 	}
 	return bars[len(bars)-1].Close, nil
+}
+
+// fallbackSPYRealizedVol computes VIX from SPY daily bars via Alpaca (the old approach).
+func (s *Service) fallbackSPYRealizedVol(ctx context.Context) {
+	spy, err := domain.NewSymbol("SPY")
+	if err != nil {
+		return
+	}
+	from := time.Now().AddDate(0, 0, -60)
+	bars, err := s.alpacaData.GetHistoricalBars(ctx, spy, domain.Timeframe("1d"), from, time.Now())
+	if err != nil || len(bars) < 22 {
+		s.log.Warn().Err(err).Int("bars", len(bars)).Msg("SPY realized vol fallback failed")
+		return
+	}
+	rv := monitor.ComputeRealizedVol(bars, 20)
+	s.monitor.SetVIXLevel(rv)
+	s.log.Info().Float64("realized_vol", rv).Int("daily_bars", len(bars)).Msg("VIX level set from SPY realized vol (fallback)")
 }
