@@ -23,6 +23,7 @@ type VIXSetter interface {
 type BarStore interface {
 	SaveMarketBars(ctx context.Context, bars []domain.MarketBar) (int, error)
 	GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error)
+	UpdateBarIndicators(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, t time.Time, ema9, ema21, ema50, ema200 float64, avwaps map[string]float64) error
 }
 
 // Config controls the daily data refresh schedule and scope.
@@ -163,6 +164,9 @@ func (s *Service) RefreshAll(ctx context.Context) {
 }
 
 func (s *Service) refreshVIX(ctx context.Context) error {
+	if s.ibkrData == nil {
+		return fmt.Errorf("IBKR adapter not configured — VIX fetch skipped")
+	}
 	sym, err := domain.NewSymbol(s.cfg.VIXSymbol)
 	if err != nil {
 		return err
@@ -215,6 +219,22 @@ func (s *Service) refreshDailyBars(ctx context.Context, symbols []string) (saved
 			failed++
 			continue
 		}
+
+		// Compute EMA200 from full DB history (not just the fetched window).
+		emaFrom := time.Now().AddDate(-2, 0, 0) // 2 years of daily bars
+		allDaily, dbErr := s.repo.GetMarketBars(ctx, sym, domain.Timeframe("1d"), emaFrom, to)
+		if dbErr == nil && len(allDaily) >= 200 {
+			closes := make([]float64, len(allDaily))
+			for i, b := range allDaily {
+				closes[i] = b.Close
+			}
+			ema200 := monitor.ComputeStaticEMA(closes, 200)
+			if ema200 > 0 {
+				latest := allDaily[len(allDaily)-1]
+				_ = s.repo.UpdateBarIndicators(ctx, sym, domain.Timeframe("1d"), latest.Time, 0, 0, 0, ema200, nil)
+			}
+		}
+
 		saved++
 	}
 	return saved, failed
@@ -325,6 +345,18 @@ func (s *Service) backfillIntradayBars(ctx context.Context, symbols []string) {
 			if len(htfBars) > 0 {
 				if n, err := s.repo.SaveMarketBars(ctx, htfBars); err == nil {
 					totalHTF += n
+				}
+
+				// Persist EMA50 for the latest 1h bar (used for HTF warmup).
+				if tf == domain.Timeframe("1h") && len(htfBars) >= 50 {
+					closes := make([]float64, len(htfBars))
+					for i, b := range htfBars {
+						closes[i] = b.Close
+					}
+					ema50 := monitor.ComputeStaticEMA(closes, 50)
+					if ema50 > 0 {
+						_ = s.repo.UpdateBarIndicators(ctx, sym, domain.Timeframe("1h"), htfBars[len(htfBars)-1].Time, 0, 0, ema50, 0, nil)
+					}
 				}
 			}
 		}

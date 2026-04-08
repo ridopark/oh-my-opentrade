@@ -108,6 +108,28 @@ func (ic *IndicatorCalculator) RegisterEMAConfig(symbol, timeframe string, fastP
 	ic.emaConfigs[key] = emaConfig{fastPeriod: fastPeriod, slowPeriod: slowPeriod}
 }
 
+// SeedState pre-populates EMA values for a symbol:timeframe key so that
+// subsequent Update() calls perform incremental EMA computation instead of
+// waiting for enough bars to seed from SMA. This enables fast startup by
+// reading stored EMA values from the DB.
+func (ic *IndicatorCalculator) SeedState(symbol, timeframe string, ema9, ema21, ema50 float64) {
+	key := symbol + ":" + timeframe
+	state := &symbolState{}
+	if ema9 > 0 {
+		state.ema9 = ema9
+		state.ema9Init = true
+	}
+	if ema21 > 0 {
+		state.ema21 = ema21
+		state.ema21Init = true
+	}
+	if ema50 > 0 {
+		state.ema50 = ema50
+		state.ema50Init = true
+	}
+	ic.states[key] = state
+}
+
 func (ic *IndicatorCalculator) ResetSession(symbol, timeframe string) {
 	key := symbol + ":" + timeframe
 	state, ok := ic.states[key]

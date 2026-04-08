@@ -643,70 +643,95 @@ func warmupHTF(ctx context.Context, infra *infraDeps, svc *appServices, syms sym
 	log.Info().Int("symbols", len(syms.all)).Msg("starting HTF warmup (1H EMA50, 1D EMA200)")
 
 	_, prevEnd := domain.PreviousRTHSession(time.Now())
-	cryptoNow := time.Now().UTC()
+	hourlyFrom := prevEnd.Add(-15 * 24 * time.Hour)
+	dailyFrom := prevEnd.Add(-time.Duration(float64(dailyBarsNeeded)*2.0) * 24 * time.Hour)
+
+	// Batch fetch 1h bars for all symbols in a single query (DB only, no broker fallback).
+	allBars1h, err := infra.repo.GetMarketBarsMulti(ctx, syms.all, "1h", hourlyFrom, prevEnd)
+	if err != nil {
+		log.Warn().Err(err).Msg("batch 1H fetch failed")
+		allBars1h = make(map[string][]domain.MarketBar)
+	}
 
 	for _, sym := range syms.all {
-		var hourlyTo, dailyTo time.Time
-		if sym.IsCryptoSymbol() {
-			hourlyTo = cryptoNow
-			dailyTo = cryptoNow
-		} else {
-			hourlyTo = prevEnd
-			dailyTo = prevEnd
-		}
+		bars1h := allBars1h[string(sym)]
 
-		var hourlyLookback time.Duration
-		if sym.IsCryptoSymbol() {
-			hourlyLookback = time.Duration(float64(hourlyBarsNeeded)*1.3) * time.Hour
-		} else {
-			hourlyLookback = 15 * 24 * time.Hour
-		}
-		hourlyFrom := hourlyTo.Add(-hourlyLookback)
-		bars1h, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaData, sym, "1h", hourlyFrom, hourlyTo, log)
-		if err == nil && len(bars1h) < hourlyBarsNeeded {
-			if brokerBars, berr := infra.alpacaData.GetHistoricalBars(ctx, sym, "1h", hourlyFrom, hourlyTo); berr == nil && len(brokerBars) > len(bars1h) {
-				log.Debug().Str("symbol", string(sym)).Int("db_bars", len(bars1h)).Int("broker_bars", len(brokerBars)).Msg("1H bars supplemented from broker")
-				bars1h = brokerBars
-			}
-		}
-		switch {
-		case err != nil:
-			log.Warn().Err(err).Str("symbol", string(sym)).Msg("1H warmup fetch failed")
+		if len(bars1h) == 0 {
 			infra.startup.EMA50Failed = append(infra.startup.EMA50Failed, string(sym))
-		case len(bars1h) >= hourlyBarsNeeded:
-			n := svc.monitor.WarmUpHTF(bars1h)
-			log.Info().Str("symbol", string(sym)).Int("bars", n).Msg("1H EMA50 warmup complete")
-			infra.startup.EMA50Succeeded++
-		default:
-			if len(bars1h) > 0 {
-				n := svc.monitor.WarmUpHTF(bars1h)
-				log.Warn().Str("symbol", string(sym)).Int("bars", len(bars1h)).Int("needed", hourlyBarsNeeded).Int("processed", n).Msg("insufficient 1H bars for EMA50")
-			}
-			infra.startup.EMA50Failed = append(infra.startup.EMA50Failed, string(sym))
-		}
-
-		dailyFrom := dailyTo.Add(-time.Duration(float64(dailyBarsNeeded)*2.0) * 24 * time.Hour)
-		bars1d, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaData, sym, "1d", dailyFrom, dailyTo, log)
-		if err != nil {
-			log.Warn().Err(err).Str("symbol", string(sym)).Msg("1D warmup fetch failed")
 			continue
 		}
-		if len(bars1d) < dailyBarsNeeded {
-			if brokerBars, berr := infra.alpacaData.GetHistoricalBars(ctx, sym, "1d", dailyFrom, dailyTo); berr == nil && len(brokerBars) > len(bars1d) {
-				log.Debug().Str("symbol", string(sym)).Int("db_bars", len(bars1d)).Int("broker_bars", len(brokerBars)).Msg("daily bars supplemented from broker")
-				bars1d = brokerBars
+
+		// Fast path: find the latest bar with stored EMA values and seed from it.
+		var seeded bool
+		for i := len(bars1h) - 1; i >= 0; i-- {
+			if bars1h[i].EMA50 > 0 {
+				b := bars1h[i]
+				snap := domain.IndicatorSnapshot{
+					EMA9:  b.EMA9,
+					EMA21: b.EMA21,
+					EMA50: b.EMA50,
+				}
+				svc.monitor.SeedHTFSnapshot(string(sym), "1h", snap)
+				log.Info().Str("symbol", string(sym)).Float64("ema50", b.EMA50).Msg("1H EMA50 seeded from DB")
+				infra.startup.EMA50Succeeded++
+				seeded = true
+				break
 			}
 		}
-		if len(bars1d) < dailyBarsNeeded {
-			log.Warn().Str("symbol", string(sym)).Int("bars", len(bars1d)).
-				Int("needed", dailyBarsNeeded).Msg("insufficient daily bars for EMA200")
+		if seeded {
+			continue
 		}
 
-		closes := make([]float64, len(bars1d))
-		for i, b := range bars1d {
-			closes[i] = b.Close
+		// Slow path (cold start — omo-data hasn't run yet): replay bars through calculator.
+		if len(bars1h) >= hourlyBarsNeeded {
+			n := svc.monitor.WarmUpHTF(bars1h)
+			log.Info().Str("symbol", string(sym)).Int("bars", n).Msg("1H EMA50 replayed (no stored values — cold start)")
+			infra.startup.EMA50Succeeded++
+		} else {
+			if len(bars1h) > 0 {
+				svc.monitor.WarmUpHTF(bars1h)
+			}
+			log.Warn().Str("symbol", string(sym)).Int("bars", len(bars1h)).Int("needed", hourlyBarsNeeded).Msg("insufficient 1H bars for EMA50")
+			infra.startup.EMA50Failed = append(infra.startup.EMA50Failed, string(sym))
 		}
-		ema200 := monitor.ComputeStaticEMA(closes, dailyBarsNeeded)
+	}
+
+	// Batch fetch 1d bars for all symbols in a single query (DB only, no broker fallback).
+	allBars1d, err := infra.repo.GetMarketBarsMulti(ctx, syms.all, "1d", dailyFrom, prevEnd)
+	if err != nil {
+		log.Warn().Err(err).Msg("batch 1D fetch failed")
+		allBars1d = make(map[string][]domain.MarketBar)
+	}
+
+	for _, sym := range syms.all {
+		bars1d := allBars1d[string(sym)]
+
+		if len(bars1d) == 0 {
+			infra.startup.EMA200Failed = append(infra.startup.EMA200Failed, string(sym))
+			continue
+		}
+
+		// Fast path: find latest bar with stored EMA200 and use it directly.
+		var ema200 float64
+		for i := len(bars1d) - 1; i >= 0; i-- {
+			if bars1d[i].EMA200 > 0 {
+				ema200 = bars1d[i].EMA200
+				break
+			}
+		}
+
+		// Slow path: compute EMA200 from closes if no stored value.
+		if ema200 == 0 {
+			if len(bars1d) < dailyBarsNeeded {
+				log.Warn().Str("symbol", string(sym)).Int("bars", len(bars1d)).
+					Int("needed", dailyBarsNeeded).Msg("insufficient daily bars for EMA200")
+			}
+			closes := make([]float64, len(bars1d))
+			for i, b := range bars1d {
+				closes[i] = b.Close
+			}
+			ema200 = monitor.ComputeStaticEMA(closes, dailyBarsNeeded)
+		}
 
 		if ema200 > 0 {
 			lastClose := bars1d[len(bars1d)-1].Close
@@ -727,10 +752,7 @@ func warmupHTF(ctx context.Context, infra *infraDeps, svc *appServices, syms sym
 			})
 			log.Info().Str("symbol", string(sym)).
 				Float64("ema200", ema200).
-				Float64("last_close", lastClose).
 				Str("bias", bias).
-				Bool("nr7", nr7).
-				Float64("daily_atr", dailyATR).
 				Int("bars", len(bars1d)).
 				Msg("1D HTF warmup complete")
 			infra.startup.EMA200Succeeded++
