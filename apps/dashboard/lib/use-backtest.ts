@@ -133,6 +133,7 @@ export function useBacktest(): UseBacktestReturn {
   const esRef = useRef<EventSource | null>(null);
   const backtestIdRef = useRef<string | null>(null);
   const progressRef = useRef<BacktestProgress | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const barsRef = useRef<Map<string, BacktestBar[]>>(new Map());
   const signalsRef = useRef<BacktestSignal[]>([]);
@@ -172,6 +173,10 @@ export function useBacktest(): UseBacktestReturn {
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
+    }
+    if (pollRef.current !== null) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
     }
   }, []);
 
@@ -251,7 +256,41 @@ export function useBacktest(): UseBacktestReturn {
       });
     }
 
-     es.onerror = () => {};
+     es.onerror = () => {
+       // SSE connection lost (server crash, network error).
+       // If we never received a complete event, mark as error so the UI resets.
+       if (esRef.current === es) {
+         cleanup();
+         setStatus((prev) => (prev === "completed" ? prev : "error"));
+         setError("Connection lost — server may have restarted");
+       }
+     };
+
+     // Polling fallback: SSE through Next.js proxy can drop events.
+     // Poll /status every 3s to keep progress updated and catch completion.
+     if (pollRef.current) clearInterval(pollRef.current);
+     pollRef.current = setInterval(async () => {
+       try {
+         const res = await fetch(`/api/backtest/${id}/status`);
+         if (!res.ok) return;
+         const data = await res.json();
+         if (data.progress) {
+           const p = data.progress as BacktestProgress;
+           progressRef.current = p;
+           setProgress(p);
+           setSetupStage(null);
+         }
+         if (data.status === "completed" || data.status === "complete") {
+           setStatus("completed");
+           fetchResults(id);
+           if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+         } else if (data.status === "failed" || data.status === "error" || data.status === "cancelled" || data.status === "canceled") {
+           cleanup();
+           setStatus("error");
+           setError(data.error ?? `Backtest ${data.status}`);
+         }
+       } catch { /* ignore fetch errors */ }
+     }, 3000);
    }, [cleanup, scheduleFlush]);
 
   const fetchResults = async (id: string) => {

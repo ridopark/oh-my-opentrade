@@ -96,8 +96,14 @@ export default function BacktestPage() {
   }), []);
 
   const [config, setConfig] = useState<BacktestConfig>(defaults);
-  const [selectedStrategy, setSelectedStrategy] = useState<string>("");
+  const [selectedStrategies, setSelectedStrategies] = useState<string[]>([]);
   const [hydrated, setHydrated] = useState(false);
+
+  const toggleStrategy = (id: string) => {
+    setSelectedStrategies((prev) =>
+      prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]
+    );
+  };
 
   useEffect(() => {
     try {
@@ -105,30 +111,29 @@ export default function BacktestPage() {
       if (saved) {
         const parsed = JSON.parse(saved);
         setConfig((prev) => ({ ...prev, ...parsed }));
-        if (parsed.strategies?.[0]) setSelectedStrategy(parsed.strategies[0]);
+        if (parsed.strategies?.length) setSelectedStrategies(parsed.strategies);
       }
     } catch {}
     setHydrated(true);
   }, []);
 
-  // When a strategy is selected, pull symbols + timeframe from its TOML config.
+  // When selected strategies change, update config.strategies (symbols come from each strategy's TOML).
   useEffect(() => {
-    if (!selectedStrategy || availableStrategies.length === 0) return;
-    const strat = availableStrategies.find((s) => s.id === selectedStrategy);
-    if (!strat) return;
+    if (selectedStrategies.length === 0 || availableStrategies.length === 0) return;
+    const first = availableStrategies.find((s) => s.id === selectedStrategies[0]);
     setConfig((prev) => ({
       ...prev,
-      strategies: [selectedStrategy],
-      symbols: strat.symbols ?? prev.symbols,
-      timeframe: strat.timeframes?.[0] ?? prev.timeframe,
+      strategies: selectedStrategies,
+      symbols: first?.symbols ?? prev.symbols,
+      timeframe: first?.timeframes?.[0] ?? prev.timeframe,
     }));
-  }, [selectedStrategy, availableStrategies]);
+  }, [selectedStrategies, availableStrategies]);
 
   // Auto-select first strategy on load if none selected.
   useEffect(() => {
-    if (!hydrated || availableStrategies.length === 0 || selectedStrategy) return;
-    setSelectedStrategy(availableStrategies[0].id);
-  }, [hydrated, availableStrategies, selectedStrategy]);
+    if (!hydrated || availableStrategies.length === 0 || selectedStrategies.length > 0) return;
+    setSelectedStrategies([availableStrategies[0].id]);
+  }, [hydrated, availableStrategies, selectedStrategies]);
 
   useEffect(() => {
     if (hydrated) {
@@ -145,7 +150,7 @@ export default function BacktestPage() {
   };
 
   const isRunning = bt.status === "running" || bt.status === "paused";
-  const selectedStrat = availableStrategies.find((s) => s.id === selectedStrategy);
+  const selectedStrats = availableStrategies.filter((s) => selectedStrategies.includes(s.id));
 
   const [bottomTab, setBottomTab] = useState<"trades" | "results">("trades");
 
@@ -154,9 +159,9 @@ export default function BacktestPage() {
       <TopBar
         config={config}
         updateConfig={updateConfig}
-        selectedStrategy={selectedStrategy}
-        onSelectStrategy={setSelectedStrategy}
-        selectedStrat={selectedStrat}
+        selectedStrategies={selectedStrategies}
+        onToggleStrategy={toggleStrategy}
+        selectedStrats={selectedStrats}
         onRun={handleRun}
         isRunning={isRunning}
         status={bt.status}
@@ -167,6 +172,7 @@ export default function BacktestPage() {
         onResume={bt.resume}
         onSetSpeed={async (s) => { updateConfig("speed", s); await bt.setSpeed(s); }}
         onCancel={bt.cancel}
+        backtestId={bt.backtestId}
       />
 
       <div className="mt-2 flex-1 min-h-0 flex flex-col rounded-lg border border-border bg-card overflow-hidden">
@@ -228,13 +234,13 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function TopBar({
-  config, updateConfig, selectedStrategy, onSelectStrategy, selectedStrat, onRun, isRunning, status, progress, setupStage, availableStrategies, onPause, onResume, onSetSpeed, onCancel,
+  config, updateConfig, selectedStrategies, onToggleStrategy, selectedStrats, onRun, isRunning, status, progress, setupStage, availableStrategies, onPause, onResume, onSetSpeed, onCancel, backtestId,
 }: {
   config: BacktestConfig;
   updateConfig: <K extends keyof BacktestConfig>(key: K, val: BacktestConfig[K]) => void;
-  selectedStrategy: string;
-  onSelectStrategy: (id: string) => void;
-  selectedStrat: StrategyMeta | undefined;
+  selectedStrategies: string[];
+  onToggleStrategy: (id: string) => void;
+  selectedStrats: StrategyMeta[];
   onRun: () => void;
   isRunning: boolean;
   status: string;
@@ -245,6 +251,7 @@ function TopBar({
   onResume: () => void;
   onSetSpeed: (s: string) => void;
   onCancel: () => void;
+  backtestId: string | null;
 }) {
   const [strategiesOpen, setStrategiesOpen] = useState(false);
   const stratDropdownRef = useRef<HTMLDivElement>(null);
@@ -269,21 +276,30 @@ function TopBar({
         <div className="relative">
           <button
             onClick={() => setStrategiesOpen(!strategiesOpen)}
-            className={`${inputCls} w-44 text-left flex items-center justify-between`}
+            className={`${inputCls} w-52 text-left flex items-center justify-between`}
           >
-            <span className="truncate">{selectedStrategy || "Select..."}</span>
+            <span className="truncate">
+              {selectedStrategies.length === 0
+                ? "Select..."
+                : selectedStrategies.length === 1
+                  ? selectedStrategies[0]
+                  : `${selectedStrategies.length} strategies`}
+            </span>
             <span className="text-muted-foreground ml-1">{strategiesOpen ? "\u25B2" : "\u25BC"}</span>
           </button>
           {strategiesOpen && (
             <div className="absolute top-full left-0 mt-1 z-50 w-72 max-h-64 overflow-y-auto rounded-lg border border-border bg-card shadow-xl">
               {availableStrategies.map((strat) => {
-                const selected = selectedStrategy === strat.id;
+                const checked = selectedStrategies.includes(strat.id);
                 return (
                   <button
                     key={strat.id}
-                    onClick={() => { onSelectStrategy(strat.id); setStrategiesOpen(false); }}
-                    className={`w-full px-3 py-2 text-xs text-left flex items-center gap-2 hover:bg-white/5 transition-colors ${selected ? "text-emerald-400 bg-white/5" : "text-muted-foreground"}`}
+                    onClick={() => onToggleStrategy(strat.id)}
+                    className={`w-full px-3 py-2 text-xs text-left flex items-center gap-2 hover:bg-white/5 transition-colors ${checked ? "text-emerald-400 bg-white/5" : "text-muted-foreground"}`}
                   >
+                    <span className={`w-3.5 h-3.5 rounded border flex-shrink-0 flex items-center justify-center text-[9px] ${checked ? "border-emerald-500 bg-emerald-500/20 text-emerald-400" : "border-border"}`}>
+                      {checked ? "\u2713" : ""}
+                    </span>
                     <span className="font-mono">{strat.id}</span>
                     <span className="text-[10px] text-muted-foreground/50 truncate">{strat.symbols?.length ?? 0} symbols</span>
                   </button>
@@ -292,9 +308,11 @@ function TopBar({
             </div>
           )}
         </div>
-        {selectedStrat && (
+        {selectedStrats.length > 0 && (
           <span className="text-[10px] text-muted-foreground font-mono">
-            {selectedStrat.symbols?.length ?? 0} symbols · {selectedStrat.timeframes?.[0] ?? "5m"}
+            {selectedStrats.length === 1
+              ? `${selectedStrats[0].symbols?.length ?? 0} symbols · ${selectedStrats[0].timeframes?.[0] ?? "5m"}`
+              : `${selectedStrats.length} strategies`}
           </span>
         )}
       </div>
@@ -345,12 +363,17 @@ function TopBar({
         )}
 
         {!isRunning && (
-          <Button onClick={onRun} disabled={!selectedStrategy} size="sm" className="h-7 text-xs px-4">
+          <Button onClick={onRun} disabled={selectedStrategies.length === 0} size="sm" className="h-7 text-xs px-4">
             {status === "completed" ? "Run Again" : "Run"}
           </Button>
         )}
 
         {status !== "idle" && <StatusBadge status={status} />}
+        {backtestId && (
+          <span className="text-[10px] font-mono text-muted-foreground/60 truncate max-w-32" title={backtestId}>
+            {backtestId.replace("bt-", "").slice(0, 12)}
+          </span>
+        )}
       </div>
     </div>
   );
