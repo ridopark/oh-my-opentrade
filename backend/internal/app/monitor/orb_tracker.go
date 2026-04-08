@@ -543,16 +543,6 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 		}
 
 		if sess.Retest.Touched && holdThisBar {
-			// Retest speed gate: reject if too many bars elapsed since breakout
-			if cfg.RetestSpeedMaxBars > 0 && sess.BarsSinceBreakout > cfg.RetestSpeedMaxBars {
-				t.logger.Info("orb: retest speed gate rejected",
-					"symbol", sym,
-					"bars_since_breakout", sess.BarsSinceBreakout,
-					"max", cfg.RetestSpeedMaxBars)
-				t.cycleToRangeSet(sess)
-				return nil, false
-			}
-
 			// ADR exhaustion filter: skip if session range already consumed too much of daily ATR
 			dailyATR := snap.HTFDailyATR()
 			if cfg.ADRExhaustionPct > 0 && dailyATR > 0 {
@@ -571,6 +561,7 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 			sess.Retest.Confirmed = true
 			sess.State = ORBStateRetestConfirmed
 			t.logger.Info("orb: retest confirmed", "symbol", sym, "direction", sess.Breakout.Direction, "hold_close", bar.Close, "confidence", ORBConfidence(sess, bar, snap, cfg))
+			rqInputs := computeRetestQualityInputs(sess, bar)
 			setup := &SetupCondition{
 				Symbol:          bar.Symbol,
 				Timeframe:       bar.Timeframe,
@@ -585,6 +576,7 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 				Confidence:      ORBConfidence(sess, bar, snap, cfg),
 				RetestSwingLow:  retestSwingLow(sess.RetestBars),
 				RetestSwingHigh: retestSwingHigh(sess.RetestBars),
+				RetestQuality:   rqInputs,
 			}
 			if setup.Confidence < cfg.MinConfidence {
 				t.logger.Info("orb: low confidence, cycling to RANGE_SET", "symbol", sym, "confidence", setup.Confidence, "min", cfg.MinConfidence)
@@ -816,16 +808,6 @@ func (t *ORBTracker) onAwaitingRetestFVG(sess *ORBSession, bar domain.MarketBar,
 		}
 	}
 
-	// Retest speed gate: reject if too many bars elapsed since breakout
-	if cfg.RetestSpeedMaxBars > 0 && sess.BarsSinceBreakout > cfg.RetestSpeedMaxBars {
-		t.logger.Info("orb: retest speed gate rejected (FVG path)",
-			"symbol", sym,
-			"bars_since_breakout", sess.BarsSinceBreakout,
-			"max", cfg.RetestSpeedMaxBars)
-		t.cycleToRangeSet(sess)
-		return nil, false
-	}
-
 	// Signal confirmed
 	sess.Retest.HoldBar = bar.Time
 	sess.Retest.HoldClose = bar.Close
@@ -837,6 +819,7 @@ func (t *ORBTracker) onAwaitingRetestFVG(sess *ORBSession, bar domain.MarketBar,
 		"fvg_high", fvg.High, "fvg_low", fvg.Low, "fvg_stop", sess.FVGStop,
 		"confidence", ORBConfidence(sess, bar, snap, cfg))
 
+	rqInputs := computeRetestQualityInputs(sess, bar)
 	setup := &SetupCondition{
 		Symbol:          bar.Symbol,
 		Timeframe:       bar.Timeframe,
@@ -852,6 +835,7 @@ func (t *ORBTracker) onAwaitingRetestFVG(sess *ORBSession, bar domain.MarketBar,
 		FVGStop:         sess.FVGStop,
 		RetestSwingLow:  retestSwingLow(sess.RetestBars),
 		RetestSwingHigh: retestSwingHigh(sess.RetestBars),
+		RetestQuality:   rqInputs,
 	}
 
 	if setup.Confidence < cfg.MinConfidence {
@@ -1001,6 +985,70 @@ func retestSwingHigh(bars []domain.MarketBar) float64 {
 		}
 	}
 	return high
+}
+
+// computeRetestQualityInputs extracts retest quality metrics from session data
+// for downstream confluence scoring. The confirmBar is the bar that confirmed
+// the retest (hold bar or engulfing bar).
+func computeRetestQualityInputs(sess *ORBSession, confirmBar domain.MarketBar) RetestQualityInputs {
+	isLong := sess.Breakout.Direction == domain.DirectionLong
+	orbRange := sess.OrbHigh - sess.OrbLow
+
+	// Pullback depth: how deep into ORB range the retest pulled
+	pullbackDepth := 0.0
+	if orbRange > 0 && len(sess.RetestBars) > 0 {
+		if isLong {
+			// For long breakout, find lowest low during retest
+			lowestLow := sess.RetestBars[0].Low
+			for _, b := range sess.RetestBars[1:] {
+				if b.Low < lowestLow {
+					lowestLow = b.Low
+				}
+			}
+			pullbackDepth = (sess.OrbHigh - lowestLow) / orbRange
+		} else {
+			// For short breakout, find highest high during retest
+			highestHigh := sess.RetestBars[0].High
+			for _, b := range sess.RetestBars[1:] {
+				if b.High > highestHigh {
+					highestHigh = b.High
+				}
+			}
+			pullbackDepth = (highestHigh - sess.OrbLow) / orbRange
+		}
+		if pullbackDepth < 0 {
+			pullbackDepth = 0
+		}
+	}
+
+	// Retest average volume (excluding confirm bar)
+	retestAvgVol := 0.0
+	if len(sess.RetestBars) > 1 {
+		totalVol := 0.0
+		for _, b := range sess.RetestBars[:len(sess.RetestBars)-1] {
+			totalVol += b.Volume
+		}
+		retestAvgVol = totalVol / float64(len(sess.RetestBars)-1)
+	} else if len(sess.RetestBars) == 1 {
+		retestAvgVol = sess.RetestBars[0].Volume
+	}
+
+	// Confirm candle quality
+	confirmRange := confirmBar.High - confirmBar.Low
+	confirmBodyRatio := 0.0
+	if confirmRange > 0 {
+		confirmBodyRatio = math.Abs(confirmBar.Close-confirmBar.Open) / confirmRange
+	}
+	confirmDir := (isLong && confirmBar.Close > confirmBar.Open) || (!isLong && confirmBar.Close < confirmBar.Open)
+
+	return RetestQualityInputs{
+		BarCount:           len(sess.RetestBars),
+		PullbackDepthPct:   pullbackDepth,
+		RetestAvgVolume:    retestAvgVol,
+		BreakoutVolume:     sess.BreakoutBar.Volume,
+		ConfirmBodyRatio:   confirmBodyRatio,
+		ConfirmDirectional: confirmDir,
+	}
 }
 
 // vwapPositionOK checks that price is on the correct side of VWAP for the direction.

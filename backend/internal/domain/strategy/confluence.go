@@ -237,6 +237,57 @@ func ScoreDarkPool(ind IndicatorData, isLong bool) ConfluenceResult {
 	return ConfluenceResult{Score: score, Factors: factors}
 }
 
+// ScoreRetestQuality evaluates ORB retest quality on 4 factors (max 16 points).
+// Parameters are pre-computed by the caller from retest bar data:
+//   - retestBarCount: number of bars between breakout and retest confirmation
+//   - pullbackDepthPct: how deep into ORB range the retest pulled back (0.0-1.0)
+//   - retestAvgVolume: average volume of retest bars (excluding confirm bar)
+//   - breakoutVolume: volume of the breakout bar
+//   - confirmBodyRatio: abs(close-open)/(high-low) of the confirmation bar (0.0-1.0)
+//   - confirmDirectional: true if confirm bar closed in the trade direction
+func ScoreRetestQuality(retestBarCount int, pullbackDepthPct float64, retestAvgVolume float64, breakoutVolume float64, confirmBodyRatio float64, confirmDirectional bool) ConfluenceResult {
+	var score int
+	var factors []string
+
+	// Factor 1: Speed (0-5) — fast retests = strong demand
+	switch {
+	case retestBarCount <= 3:
+		score += 5
+		factors = append(factors, "rq_speed")
+	case retestBarCount <= 6:
+		score += 2
+	}
+
+	// Factor 2: Pullback depth (0-5) — shallow = level respected
+	switch {
+	case pullbackDepthPct < 0.382:
+		score += 5
+		factors = append(factors, "rq_shallow")
+	case pullbackDepthPct < 0.50:
+		score += 3
+	}
+
+	// Factor 3: Volume dry-up (0-3) — low retest volume = healthy pullback
+	if breakoutVolume > 0 {
+		volRatio := retestAvgVolume / breakoutVolume
+		switch {
+		case volRatio < 0.60:
+			score += 3
+			factors = append(factors, "rq_dryup")
+		case volRatio < 0.80:
+			score++
+		}
+	}
+
+	// Factor 4: Confirm candle quality (0-3) — strong directional close
+	if confirmBodyRatio > 0.6 && confirmDirectional {
+		score += 3
+		factors = append(factors, "rq_confirm")
+	}
+
+	return ConfluenceResult{Score: score, Factors: factors}
+}
+
 // ────────────────────────────────────────────────────────────────────
 // ComputeBaseConfluence evaluates all 8 universal factors.
 // Max score: 78 (15+15+10+8+8+7+8+7).

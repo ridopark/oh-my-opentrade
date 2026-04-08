@@ -170,6 +170,18 @@ func (s *ORBStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st 
 		start.Bar{Time: bar.Time, Open: bar.Open, High: bar.High, Low: bar.Low, Close: bar.Close, Volume: bar.Volume},
 		orbState.Indicators, isLong,
 	)
+
+	// Merge retest quality into confluence
+	rq := start.ScoreRetestQuality(
+		setup.RetestQuality.BarCount,
+		setup.RetestQuality.PullbackDepthPct,
+		setup.RetestQuality.RetestAvgVolume,
+		setup.RetestQuality.BreakoutVolume,
+		setup.RetestQuality.ConfirmBodyRatio,
+		setup.RetestQuality.ConfirmDirectional,
+	)
+	conf = start.MergeConfluence(conf, rq)
+
 	if orbState.MinConfluenceScore > 0 && conf.Score < orbState.MinConfluenceScore {
 		return orbState, nil, nil
 	}
@@ -194,8 +206,10 @@ func (s *ORBStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st 
 		"bar_close":         fmt.Sprintf("%.4f", setup.BarClose),
 		"regime_anchor":     anchorTag,
 		"htf_bias":          htfBiasTag,
-		"confluence":        fmt.Sprintf("%d", conf.Score),
-		"confluence_detail": conf.FormatDetail(),
+		"confluence":            fmt.Sprintf("%d", conf.Score),
+		"confluence_detail":     conf.FormatDetail(),
+		"retest_quality":        fmt.Sprintf("%d", rq.Score),
+		"retest_quality_detail": rq.FormatDetail(),
 	}
 
 	if orbState.Config.SignalATRStopMult > 0 && orbState.Indicators.ATR > 0 {

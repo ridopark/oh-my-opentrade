@@ -2,6 +2,16 @@ package monitor
 
 import "github.com/oh-my-opentrade/backend/internal/domain"
 
+// RetestQualityInputs holds pre-computed retest metrics for confluence scoring.
+type RetestQualityInputs struct {
+	BarCount           int
+	PullbackDepthPct   float64
+	RetestAvgVolume    float64
+	BreakoutVolume     float64
+	ConfirmBodyRatio   float64
+	ConfirmDirectional bool
+}
+
 // SetupCondition describes a detected trade entry condition
 // including the triggering indicators and current market regime.
 type SetupCondition struct {
@@ -27,6 +37,8 @@ type SetupCondition struct {
 
 	// FVG-based stop-loss (0 = not set, use default stop_bps)
 	FVGStop float64 // stop level from FVG far edge / manipulation wick
+
+	RetestQuality RetestQualityInputs // populated by ORB tracker for retest quality scoring
 
 	// Regime labels for downstream display
 	EMARegime    string // EMA-based regime: TREND / BALANCE / REVERSAL
