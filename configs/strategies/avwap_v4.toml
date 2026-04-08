@@ -13,7 +13,7 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "AMD", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "AFRM", "JPM", "XOM", "OXY", "LLY", "HIMS", "RIVN", "RBLX", "BA", "SPY", "QQQ", "IWM", "SOXL"]
+symbols = ["AAPL", "AMZN", "AVGO", "GOOGL", "HOOD", "META", "MU", "NVDA", "PLTR", "SMCI"]
 timeframes = ["5m"]
 priority = 80
 conflict_policy = "priority_wins"
@@ -50,7 +50,7 @@ anchors = ["session_open", "pd_high", "pd_low"]
 # --- Entry Types ---
 # Breakout: price sustains above/below AVWAP for hold_bars with volume confirmation
 breakout_enabled = true
-hold_bars = 4                    # moderate confirmation
+hold_bars = 2                    # faster entry (was 4 = 20min delay)
 
 # Pullback: price pulls back to AVWAP in an established trend, closes on right side
 pullback_enabled = false         # disable pullback — test impact
@@ -79,10 +79,10 @@ handoff_min_mom_bps = 25
 
 # --- Volume & Regime ---
 # Minimum volume multiple vs 20-bar SMA to confirm entries
-volume_mult = 2.5                # require strong volume confirmation
+volume_mult = 1.5                # relaxed from 2.5 (was filtering 70% of bars)
 
 # Allowed EMA regimes (drop TREND_UP — longs in uptrends get faded)
-allow_regimes = ["TREND_DOWN", "BALANCE"]
+allow_regimes = ["TREND_UP", "TREND_DOWN", "BALANCE"]
 
 # Underlying asset class (used for midday trap shield and session hours)
 asset_class = "EQUITY"
@@ -136,7 +136,7 @@ exit_hold_bars = 3               # reduced from 5
 
 # --- Regime-Direction Blocking ---
 # Block specific directions in specific regimes (AVWAP longs underperform in BALANCE)
-regime_blocked_directions = { BALANCE = "LONG" }
+# regime_blocked_directions removed — allow all directions in all regimes
 
 # --- AVWAP Stop ---
 # Strategy-level exit when price closes on wrong side of AVWAP for N consecutive bars
@@ -146,7 +146,7 @@ avwap_stop_buffer_bps = 20       # wider buffer (was 10) — less noise exits
 
 # --- Confluence Weighting ---
 # Entries scored 0-10 based on confirmation factors. Below threshold = filtered out.
-min_confluence_score = 7         # high-conviction entries only
+min_confluence_score = 8         # high-conviction entries only
 
 # Fibonacci convergence (+3): AVWAP aligns with 38.2%/50%/61.8% retracement
 fib_confluence_enabled = true
@@ -168,35 +168,25 @@ enabled = true
 
 # --- Exit Rules ---
 
-# Swing stop: price-action trailing stop at recent swing low/high
-# Buffer scales dynamically with ATR per symbol
+# Premium target: take quick profit at 15% premium gain
 [[exit_rules]]
-type = "SWING_STOP"
+type = "PREMIUM_TARGET"
 [exit_rules.params]
-lookback = 20
-buffer_bps = 25
-atr_buffer_mult = 3.0
-min_bars = 6
+target_pct = 0.15
 
-# Stagnation exit: close trades that go nowhere after N minutes
+# Safety stagnation: circuit breaker for zombie trades (3 hours)
 [[exit_rules]]
 type = "STAGNATION_EXIT"
 [exit_rules.params]
-minutes = 45
+minutes = 180
 sd_threshold = 0
 profit_gate_pct = 0.005
 
-# EOD flatten: close all positions before market close
+# EOD flatten
 [[exit_rules]]
 type = "EOD_FLATTEN"
 [exit_rules.params]
 minutes_before_close = 15
-
-# Max loss: hard stop on adverse underlying move
-[[exit_rules]]
-type = "MAX_LOSS"
-[exit_rules.params]
-pct = 0.015
 
 # --- Options ---
 
@@ -214,10 +204,10 @@ limit_buffer_bps = 1000
 stale_cancel_secs = 90
 
 [options.defaults]
-min_dte = 7                      # enough time value, less theta burn
-max_dte = 21                     # avoid overpaying for time
-target_delta_low = 0.40          # ATM range for best fills
-target_delta_high = 0.55         # ATM range — tightest spreads
+min_dte = 3                      # short DTE for faster premium response
+max_dte = 7                      # minimal theta cost for intraday
+target_delta_low = 0.60          # ITM for less extrinsic, more delta
+target_delta_high = 0.75         # ITM — premium tracks underlying closely
 min_open_interest = 50           # ensure liquidity
 max_spread_pct = 0.10            # reject illiquid strikes
 max_iv = 1.2                     # avoid IV crush risk
