@@ -35,6 +35,8 @@ type Runner struct {
 	metrics              *metrics.Metrics
 	aggregators          map[string]*domain.BarAggregator
 	htfCalcs             map[string]*monitor.IndicatorCalculator // key: "symbol:tf"
+	regimeDetector       *monitor.RegimeDetector
+	anchorRegimes        map[string]domain.MarketRegime // key: "symbol:tf" → latest regime
 	signalsRTHSuppressed atomic.Int64
 	anchorResolver       func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
 	prevDayBarsFn        func(symbol string, since time.Time) []start.Bar
@@ -323,10 +325,12 @@ func NewRunner(
 		logger:      logger.With("component", "strategy_runner"),
 		tenantID:    tenantID,
 		envMode:     envMode,
-		indicators:  make(map[string]start.IndicatorData),
-		indLogOnce:  make(map[string]bool),
-		aggregators: make(map[string]*domain.BarAggregator),
-		htfCalcs:    make(map[string]*monitor.IndicatorCalculator),
+		indicators:     make(map[string]start.IndicatorData),
+		indLogOnce:     make(map[string]bool),
+		aggregators:    make(map[string]*domain.BarAggregator),
+		htfCalcs:       make(map[string]*monitor.IndicatorCalculator),
+		regimeDetector: monitor.NewRegimeDetector(),
+		anchorRegimes:  make(map[string]domain.MarketRegime),
 	}
 }
 
@@ -549,6 +553,34 @@ func convertHTFData(htf map[domain.Timeframe]domain.HTFData) map[string]start.HT
 	return result
 }
 
+// splitSymbolTF splits a "SYMBOL:TF" key into [symbol, tf].
+func splitSymbolTF(key string) [2]string {
+	for i, c := range key {
+		if c == ':' {
+			return [2]string{key[:i], key[i+1:]}
+		}
+	}
+	return [2]string{key, ""}
+}
+
+// collectAnchorRegimes builds AnchorRegimes map for a symbol from stored regimes.
+func (r *Runner) collectAnchorRegimes(symbol string) map[string]start.AnchorRegime {
+	result := make(map[string]start.AnchorRegime)
+	for key, reg := range r.anchorRegimes {
+		parts := splitSymbolTF(key)
+		if parts[0] == symbol {
+			result[parts[1]] = start.AnchorRegime{
+				Type:     string(reg.Type),
+				Strength: reg.Strength,
+			}
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
 // handleBar processes a MarketBarSanitized event by routing to assigned instances.
 // 1m bars go directly to 1m-configured instances (zero behavioral change).
 // For HTF instances, bars are aggregated via BarAggregator and delivered on completion.
@@ -681,6 +713,11 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 			r.htfCalcs[key] = htfCalc
 		}
 		htfSnap := htfCalc.Update(closed)
+
+		// Compute and store anchor regime for this HTF bar
+		regime, _ := r.regimeDetector.Detect(htfSnap)
+		r.anchorRegimes[key] = regime
+
 		htfIndicators := start.IndicatorData{
 			RSI:           htfSnap.RSI,
 			StochK:        htfSnap.StochK,
@@ -708,7 +745,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 			MACDHistogram: htfSnap.MACDHistogram,
 			ADX:           htfSnap.ADX,
 			RegimeScore:   htfSnap.RegimeScore,
-			AnchorRegimes: convertAnchorRegimes(htfSnap.AnchorRegimes),
+			AnchorRegimes: r.collectAnchorRegimes(symbol),
 			HTF:           indicators.HTF, // preserve daily HTF data from 1m pipeline
 		}
 
