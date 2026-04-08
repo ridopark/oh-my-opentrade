@@ -1800,10 +1800,11 @@ func updatePremiumMFEMAE(pos *domain.MonitoredPosition, estPremium float64) {
 		if mae, ok := pos.CustomState["premium_mae_pct"]; !ok || pctChange < mae {
 			pos.CustomState["premium_mae_pct"] = pctChange
 		}
-		pos.CustomState["bars_since_entry"]++
-		if _, set := pos.CustomState["bars_to_first_profit"]; !set {
+		// Use a simple counter for test purposes (real code uses elapsed time)
+		pos.CustomState["minutes_since_entry"] += 1.0
+		if _, set := pos.CustomState["minutes_to_first_profit"]; !set {
 			if pctChange > 0 {
-				pos.CustomState["bars_to_first_profit"] = pos.CustomState["bars_since_entry"]
+				pos.CustomState["minutes_to_first_profit"] = pos.CustomState["minutes_since_entry"]
 			}
 		}
 	}
@@ -1818,13 +1819,13 @@ func TestPremiumMFEMAE_BasicTracking(t *testing.T) {
 	updatePremiumMFEMAE(pos, 4.50)
 	assert.InDelta(t, -0.10, pos.CustomState["premium_mae_pct"], 0.001)
 	assert.InDelta(t, -0.10, pos.CustomState["premium_mfe_pct"], 0.001)
-	assert.Equal(t, 1.0, pos.CustomState["bars_since_entry"])
+	assert.Equal(t, 1.0, pos.CustomState["minutes_since_entry"])
 
 	// Bar 2: premium recovers to 5.50 (+10%)
 	updatePremiumMFEMAE(pos, 5.50)
 	assert.InDelta(t, 0.10, pos.CustomState["premium_mfe_pct"], 0.001)
 	assert.InDelta(t, -0.10, pos.CustomState["premium_mae_pct"], 0.001) // MAE unchanged
-	assert.Equal(t, 2.0, pos.CustomState["bars_since_entry"])
+	assert.Equal(t, 2.0, pos.CustomState["minutes_since_entry"])
 
 	// Bar 3: premium rises to 6.00 (+20%)
 	updatePremiumMFEMAE(pos, 6.00)
@@ -1850,7 +1851,7 @@ func TestPremiumMFEMAE_LowWaterMark(t *testing.T) {
 	assert.InDelta(t, 6.00, pos.CustomState["premium_hwm"], 0.001)
 }
 
-func TestPremiumMFEMAE_BarsToFirstProfit(t *testing.T) {
+func TestPremiumMFEMAE_MinutesToFirstProfit(t *testing.T) {
 	pos := newTestMonitoredPosition(t, 150, time.Now(), domain.AssetClassEquity)
 	pos.InstrumentType = domain.InstrumentTypeOption
 	pos.CustomState["option_premium"] = 5.00
@@ -1859,16 +1860,16 @@ func TestPremiumMFEMAE_BarsToFirstProfit(t *testing.T) {
 	updatePremiumMFEMAE(pos, 4.80)
 	updatePremiumMFEMAE(pos, 4.50)
 	updatePremiumMFEMAE(pos, 4.90)
-	_, hasProfit := pos.CustomState["bars_to_first_profit"]
+	_, hasProfit := pos.CustomState["minutes_to_first_profit"]
 	assert.False(t, hasProfit, "should not be set while never profitable")
 
 	// Bar 4: first profit
 	updatePremiumMFEMAE(pos, 5.10)
-	assert.Equal(t, 4.0, pos.CustomState["bars_to_first_profit"])
+	assert.Equal(t, 4.0, pos.CustomState["minutes_to_first_profit"])
 
-	// Bar 5: loses again — bars_to_first_profit should NOT change
+	// Bar 5: loses again — minutes_to_first_profit should NOT change
 	updatePremiumMFEMAE(pos, 4.00)
-	assert.Equal(t, 4.0, pos.CustomState["bars_to_first_profit"], "should be set once and never change")
+	assert.Equal(t, 4.0, pos.CustomState["minutes_to_first_profit"], "should be set once and never change")
 }
 
 func TestPremiumMFEMAE_NeverProfitable(t *testing.T) {
@@ -1880,9 +1881,9 @@ func TestPremiumMFEMAE_NeverProfitable(t *testing.T) {
 	updatePremiumMFEMAE(pos, 4.50)
 	updatePremiumMFEMAE(pos, 4.00)
 
-	_, hasProfit := pos.CustomState["bars_to_first_profit"]
+	_, hasProfit := pos.CustomState["minutes_to_first_profit"]
 	assert.False(t, hasProfit, "should not be set if never profitable")
-	assert.Equal(t, 3.0, pos.CustomState["bars_since_entry"])
+	assert.Equal(t, 3.0, pos.CustomState["minutes_since_entry"])
 }
 
 func TestPremiumMFEMAE_ZeroEntryPremium(t *testing.T) {
@@ -1907,6 +1908,6 @@ func TestPremiumMFEMAE_ImmediateProfitable(t *testing.T) {
 
 	// First bar is immediately profitable
 	updatePremiumMFEMAE(pos, 5.50)
-	assert.Equal(t, 1.0, pos.CustomState["bars_to_first_profit"])
+	assert.Equal(t, 1.0, pos.CustomState["minutes_to_first_profit"])
 	assert.InDelta(t, 0.10, pos.CustomState["premium_mfe_pct"], 0.001)
 }

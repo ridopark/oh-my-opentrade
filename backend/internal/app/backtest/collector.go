@@ -42,8 +42,8 @@ type TradeRecord struct {
 	PnL               float64 `json:"pnl,omitempty"`
 	PremiumMFE        float64 `json:"premium_mfe_pct,omitempty"`
 	PremiumMAE        float64 `json:"premium_mae_pct,omitempty"`
-	BarsToFirstProfit int     `json:"bars_to_first_profit,omitempty"`
-	BarsHeld          int     `json:"bars_held,omitempty"`
+	MinutesToFirstProfit float64 `json:"minutes_to_first_profit,omitempty"`
+	MinutesHeld          float64 `json:"minutes_held,omitempty"`
 	Multiplier        float64 `json:"-"` // 100 for options, 1 for equity (internal use)
 }
 
@@ -141,8 +141,8 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 	instrumentType, _ := payload["instrument_type"].(string)
 	premiumMFEStr, _ := payload["premium_mfe_pct"].(string)
 	premiumMAEStr, _ := payload["premium_mae_pct"].(string)
-	barsToFirstProfitStr, _ := payload["bars_to_first_profit"].(string)
-	barsHeldStr, _ := payload["bars_held"].(string)
+	minutesToFirstProfitStr, _ := payload["minutes_to_first_profit"].(string)
+	minutesHeldStr, _ := payload["minutes_held"].(string)
 
 	// Options contracts have a 100x multiplier
 	multiplier := 1.0
@@ -195,14 +195,14 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 			tr.PremiumMAE = v
 		}
 	}
-	if barsToFirstProfitStr != "" {
-		if v, err := strconv.ParseFloat(barsToFirstProfitStr, 64); err == nil {
-			tr.BarsToFirstProfit = int(v)
+	if minutesToFirstProfitStr != "" {
+		if v, err := strconv.ParseFloat(minutesToFirstProfitStr, 64); err == nil {
+			tr.MinutesToFirstProfit = v
 		}
 	}
-	if barsHeldStr != "" {
-		if v, err := strconv.ParseFloat(barsHeldStr, 64); err == nil {
-			tr.BarsHeld = int(v)
+	if minutesHeldStr != "" {
+		if v, err := strconv.ParseFloat(minutesHeldStr, 64); err == nil {
+			tr.MinutesHeld = v
 		}
 	}
 

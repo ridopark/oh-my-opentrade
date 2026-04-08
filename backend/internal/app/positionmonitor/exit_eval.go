@@ -123,12 +123,13 @@ func (s *Service) tick() {
 						if mae, ok := pos.CustomState["premium_mae_pct"]; !ok || pctChange < mae {
 							pos.CustomState["premium_mae_pct"] = pctChange
 						}
-						// NEW: bars since entry
-						pos.CustomState["bars_since_entry"]++
-						// NEW: bars to first profit (set once, -1 if never)
-						if _, set := pos.CustomState["bars_to_first_profit"]; !set {
+						// Minutes since entry (time-based, not tick-based)
+						minutesSinceEntry := now.Sub(pos.EntryTime).Minutes()
+						pos.CustomState["minutes_since_entry"] = minutesSinceEntry
+						// Minutes to first profit (set once when premium first exceeds entry)
+						if _, set := pos.CustomState["minutes_to_first_profit"]; !set {
 							if pctChange > 0 {
-								pos.CustomState["bars_to_first_profit"] = pos.CustomState["bars_since_entry"]
+								pos.CustomState["minutes_to_first_profit"] = minutesSinceEntry
 							}
 						}
 					}
@@ -387,13 +388,13 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 			if v, ok := pos.CustomState["premium_mae_pct"]; ok {
 				intent.Meta["premium_mae_pct"] = fmt.Sprintf("%.6f", v)
 			}
-			if v, ok := pos.CustomState["bars_to_first_profit"]; ok {
-				intent.Meta["bars_to_first_profit"] = fmt.Sprintf("%.0f", v)
+			if v, ok := pos.CustomState["minutes_to_first_profit"]; ok {
+				intent.Meta["minutes_to_first_profit"] = fmt.Sprintf("%.1f", v)
 			} else {
-				intent.Meta["bars_to_first_profit"] = "-1"
+				intent.Meta["minutes_to_first_profit"] = "-1"
 			}
-			if v, ok := pos.CustomState["bars_since_entry"]; ok {
-				intent.Meta["bars_held"] = fmt.Sprintf("%.0f", v)
+			if v, ok := pos.CustomState["minutes_since_entry"]; ok {
+				intent.Meta["minutes_held"] = fmt.Sprintf("%.1f", v)
 			}
 		}
 
