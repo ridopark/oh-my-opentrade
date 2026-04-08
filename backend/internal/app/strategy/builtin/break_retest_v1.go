@@ -379,18 +379,23 @@ func (s *BreakRetestStrategy) OnBar(ctx start.Context, symbol string, bar start.
 				brSt.TP1Price = tp1
 				brSt.TP2Price = tp2
 
+				isLong := brSt.BreakoutSide == start.SideBuy
+				conf := start.ComputeBaseConfluence(bar, brSt.Indicators, isLong)
+
 				tags := map[string]string{
-					"ref_price":      fmt.Sprintf("%.10f", bar.Close),
-					"setup":          "break_retest",
-					"trend":          brSt.TrendDirection,
-					"level":          fmt.Sprintf("%.4f", brSt.BreakoutLevel),
-					"fib_confluence": "true",
-					"breakout_vol":   fmt.Sprintf("%.1fx", brSt.BreakoutVolume/math.Max(brSt.Indicators.VolumeSMA, 1)),
-					"retest_bar":     fmt.Sprintf("%d", brSt.BarsSinceBreakout),
-					"stop_price":     fmt.Sprintf("%.10f", stopPrice),
-					"tp1_price":      fmt.Sprintf("%.10f", tp1),
-					"tp2_price":      fmt.Sprintf("%.10f", tp2),
-					"regime_5m":      regimeTag,
+					"ref_price":         fmt.Sprintf("%.10f", bar.Close),
+					"setup":             "break_retest",
+					"trend":             brSt.TrendDirection,
+					"level":             fmt.Sprintf("%.4f", brSt.BreakoutLevel),
+					"fib_confluence":    "true",
+					"breakout_vol":      fmt.Sprintf("%.1fx", brSt.BreakoutVolume/math.Max(brSt.Indicators.VolumeSMA, 1)),
+					"retest_bar":        fmt.Sprintf("%d", brSt.BarsSinceBreakout),
+					"stop_price":        fmt.Sprintf("%.10f", stopPrice),
+					"tp1_price":         fmt.Sprintf("%.10f", tp1),
+					"tp2_price":         fmt.Sprintf("%.10f", tp2),
+					"regime_5m":         regimeTag,
+					"confluence":        fmt.Sprintf("%d", conf.Score),
+					"confluence_detail": conf.FormatDetail(),
 				}
 
 				if cfg.AIEnabled {
