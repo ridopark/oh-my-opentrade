@@ -11,7 +11,19 @@ import (
 
 const cryptoExchange = "ZEROHASH"
 
+// indexSymbols maps known index tickers to their IBKR exchange.
+// These require IND contract type and "ADJUSTED_LAST" whatToShow.
+var indexSymbols = map[string]string{
+	"VIX": "CBOE",
+	"SPX": "CBOE",
+	"DJX": "CBOE",
+	"NDX": "NASDAQ",
+}
+
 func newContract(symbol domain.Symbol) *ibsync.Contract {
+	if exchange, ok := indexSymbols[string(symbol)]; ok {
+		return ibsync.NewIndex(string(symbol), exchange, "USD")
+	}
 	if symbol.IsCryptoSymbol() {
 		base := strings.SplitN(string(symbol), "/", 2)[0]
 		return ibsync.NewCrypto(base, cryptoExchange, "USD")
