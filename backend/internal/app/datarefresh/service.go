@@ -87,6 +87,26 @@ func (s *Service) Start(ctx context.Context) error {
 		}
 	}
 
+	// Refresh equity daily bars in background on startup.
+	go func() {
+		seen := make(map[string]struct{})
+		var allSymbols []string
+		for _, sym := range s.cfg.IndexSymbols {
+			if _, ok := seen[sym]; !ok {
+				seen[sym] = struct{}{}
+				allSymbols = append(allSymbols, sym)
+			}
+		}
+		for _, sym := range s.cfg.TradingSymbols {
+			if _, ok := seen[sym]; !ok {
+				seen[sym] = struct{}{}
+				allSymbols = append(allSymbols, sym)
+			}
+		}
+		saved, failed := s.refreshDailyBars(ctx, allSymbols)
+		s.log.Info().Int("symbols_refreshed", saved).Int("symbols_failed", failed).Msg("startup daily bar refresh complete")
+	}()
+
 	go s.loop(ctx)
 	s.log.Info().
 		Str("vix_symbol", s.cfg.VIXSymbol).
