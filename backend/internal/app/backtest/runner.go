@@ -570,6 +570,15 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	sort.Slice(streams, func(i, j int) bool { return streams[i].symbol.String() < streams[j].symbol.String() })
 
+	// Log memory estimate for observability.
+	const bytesPerBarAllIn int64 = 1400 // empirical: struct + options + session + GC
+	estimatedMemory := int64(totalBars) * bytesPerBarAllIn
+	r.log.Info().
+		Int("total_bars", totalBars).
+		Int("symbols", len(streams)).
+		Int64("estimated_memory_mb", estimatedMemory/(1024*1024)).
+		Msg("memory estimate")
+
 	// --- Initialize aggregators for strategy timeframe ---
 	userTF := string(r.cfg.Timeframe)
 	if userTF == "" {
@@ -838,6 +847,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		// are available on the first replay day even on Mondays (need Friday = -3 calendar days).
 		sessionFrom := r.cfg.From.Add(-5 * 24 * time.Hour)
 		{
+			// Build symbol → bars lookup from already-loaded barStream data.
+			streamBars := make(map[string][]domain.MarketBar, len(streams))
+			for _, s := range streams {
+				streamBars[s.symbol.String()] = s.bars
+			}
+
 			var wg sync.WaitGroup
 			sem := make(chan struct{}, 10) // limit concurrent DB connections
 			for _, sym := range r.cfg.Symbols {
@@ -849,9 +864,14 @@ func (r *Runner) Run(ctx context.Context) error {
 					if loadErr := sessionResolver.Load(ctx, r.infra.DB, s, sessionFrom, r.cfg.To); loadErr != nil {
 						r.log.Warn().Err(loadErr).Str("symbol", s.String()).Msg("failed to load session data")
 					}
-					// Pre-load 1m bars into cache so GetBarsSince avoids per-anchor DB queries.
-					if loadErr := sessionResolver.LoadBars(ctx, r.infra.DB, s, sessionFrom, r.cfg.To); loadErr != nil {
-						r.log.Warn().Err(loadErr).Str("symbol", s.String()).Msg("failed to pre-load 1m bars")
+					// Populate bar cache from already-loaded bars instead of
+					// re-fetching from DB (saves ~2.4 GB on large backtests).
+					// Include warmup bars to cover the 5-day lookback period.
+					if warmup := warmupBarsCache[s.String()]; len(warmup) > 0 {
+						sessionResolver.PopulateBarCache(s, warmup)
+					}
+					if bars, ok := streamBars[s.String()]; ok {
+						sessionResolver.PopulateBarCache(s, bars)
 					}
 				}(sym)
 			}
@@ -1072,10 +1092,16 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	publishedAuctions := make(map[string]bool, len(auctionByDateSym))
 
-	// Reduce GC frequency during the replay hot loop. GOGC=200 lets the heap
-	// grow 2x before collecting, balancing memory usage and GC pauses.
-	prevGOGC := debug.SetGCPercent(200)
+	// Use default GC frequency (GOGC=100) to keep heap tight and avoid swap
+	// thrashing on memory-constrained machines. The previous GOGC=200 let the
+	// heap grow 2x before collecting, which caused OOM/swap on large backtests.
+	prevGOGC := debug.SetGCPercent(100)
 	defer debug.SetGCPercent(prevGOGC)
+
+	// Set a soft memory limit so Go's GC aggressively reclaims before we hit
+	// swap. This is a safety net on top of the upfront memory guard.
+	prevMemLimit := debug.SetMemoryLimit(4 * 1024 * 1024 * 1024) // 4 GB
+	defer debug.SetMemoryLimit(prevMemLimit)
 
 	// Freeze the handler map so PublishDirect can bypass locking.
 	// All Subscribe calls have completed by this point.
@@ -1100,6 +1126,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 	heap.Init(&sh)
+
+	// Release warmup caches — they're no longer needed after warmup completes.
+	clear(warmupBarsCache)
+	clear(dailyBarsCache)
+	runtime.GC()
 
 	for ctx.Err() == nil && sh.Len() > 0 {
 		// Peek at the minimum timestamp from the heap root.
@@ -1154,6 +1185,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			s := heap.Pop(&sh).(*barStream)
 			bar := s.bars[s.idx]
+			s.bars[s.idx] = domain.MarketBar{} // release for GC
 			s.idx++
 			// Re-push stream if it has more bars.
 			if s.idx < len(s.bars) {
