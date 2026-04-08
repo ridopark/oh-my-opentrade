@@ -22,6 +22,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/dnaapproval"
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
+	"github.com/oh-my-opentrade/backend/internal/app/datarefresh"
 	"github.com/oh-my-opentrade/backend/internal/app/ivcollector"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/notify"
@@ -75,7 +76,8 @@ type appServices struct {
 	activationSvc     *activation.Service
 	pipelineActivator *bootstrap.PipelineActivator
 
-	ivCollector *ivcollector.Service
+	ivCollector  *ivcollector.Service
+	dataRefresh  *datarefresh.Service
 
 	orchestrator *orchestrator.AccountOrchestrator
 	debateSvc    *debate.Service
@@ -439,17 +441,19 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		}
 	}
 
-	// Compute realized volatility from SPY daily bars as VIX proxy.
+	// Daily data refresh: fetches VIX from IBKR + equity daily bars from Alpaca.
+	// Replaces the old one-shot SPY realized vol computation.
 	{
-		spySym, _ := domain.NewSymbol("SPY")
-		rvFrom := time.Now().Add(-60 * 24 * time.Hour)
-		spyDaily, spyErr := infra.alpacaData.GetHistoricalBars(context.Background(), spySym, "1d", rvFrom, time.Now())
-		if spyErr == nil && len(spyDaily) > 21 {
-			rv := monitor.ComputeRealizedVol(spyDaily, 20)
-			svc.monitor.SetVIXLevel(rv)
-			log.Info().Float64("realized_vol", rv).Int("daily_bars", len(spyDaily)).Msg("VIX level set from SPY realized volatility")
-		} else {
-			log.Warn().Err(spyErr).Msg("could not compute realized vol for VIX gate — disabled")
+		svc.dataRefresh = datarefresh.NewService(datarefresh.Config{
+			VIXSymbol:      "VIX",
+			IndexSymbols:   []string{"SPY", "QQQ", "IWM"},
+			TradingSymbols: cfg.Symbols.AllSymbols(),
+			RunAtHourET:    16,
+			RunAtMinuteET:  15,
+			LookbackDays:   90,
+		}, infra.ibkrBroker, infra.alpacaData, infra.repo, svc.monitor, log)
+		if err := svc.dataRefresh.Start(context.Background()); err != nil {
+			log.Warn().Err(err).Msg("data refresh service failed to start")
 		}
 	}
 

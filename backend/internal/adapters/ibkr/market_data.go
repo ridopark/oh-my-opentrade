@@ -212,7 +212,11 @@ func (a *Adapter) getHistoricalBarsChunk(ctx context.Context, symbol domain.Symb
 	}
 	reqCh := make(chan reqResult, 1)
 	go func() {
-		ch, cancel := ib.ReqHistoricalData(contract, endDT, duration, barSize, "TRADES", false, 2)
+		whatToShow := "TRADES"
+		if _, isIndex := indexSymbols[string(symbol)]; isIndex {
+			whatToShow = "ADJUSTED_LAST"
+		}
+		ch, cancel := ib.ReqHistoricalData(contract, endDT, duration, barSize, whatToShow, false, 2)
 		reqCh <- reqResult{ch, cancel}
 	}()
 
