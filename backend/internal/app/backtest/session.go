@@ -189,6 +189,8 @@ func (r *SessionResolver) ResolveAnchors(symbol string, barTime time.Time, ancho
 // LoadBars pre-fetches all 1m bars for a symbol across the full date range and
 // indexes them by trading day in the barCache. Call once per symbol during init
 // so that GetBarsSince can serve from memory instead of hitting the DB.
+//
+// Deprecated: prefer PopulateBarCache to reuse bars already loaded for replay.
 func (r *SessionResolver) LoadBars(ctx context.Context, db *sql.DB, sym domain.Symbol, from, to time.Time) error {
 	rows, err := db.QueryContext(ctx, `
 		SELECT time, open, high, low, close, volume
@@ -217,6 +219,30 @@ func (r *SessionResolver) LoadBars(ctx context.Context, db *sql.DB, sym domain.S
 	}
 	r.mu.Unlock()
 	return nil
+}
+
+// PopulateBarCache indexes already-loaded MarketBars by trading day so that
+// GetBarsSince can serve from memory without a second DB round-trip.
+func (r *SessionResolver) PopulateBarCache(sym domain.Symbol, bars []domain.MarketBar) {
+	dayBars := make(map[string][]start.Bar)
+	for i := range bars {
+		b := &bars[i]
+		day := b.Time.In(r.loc).Format("2006-01-02")
+		dayBars[day] = append(dayBars[day], start.Bar{
+			Time:   b.Time,
+			Open:   b.Open,
+			High:   b.High,
+			Low:    b.Low,
+			Close:  b.Close,
+			Volume: b.Volume,
+		})
+	}
+
+	r.mu.Lock()
+	for day, db := range dayBars {
+		r.barCache[sym.String()+":"+day] = db
+	}
+	r.mu.Unlock()
 }
 
 // GetBarsSince returns 1m bars for a symbol from `since` to end of that day's RTH session.
