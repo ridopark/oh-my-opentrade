@@ -286,7 +286,7 @@ func evaluateEODFlatten(rule domain.ExitRule, pos *domain.MonitoredPosition, now
 
 	if now.After(flattenTime) || now.Equal(flattenTime) {
 		return true, fmt.Sprintf("eod_flatten: %s is within %.0f minutes of session close %s",
-			now.Format("15:04:05"), minutesBefore, sessionClose.Format("15:04:05"))
+			now.In(domain.NYLocation()).Format("15:04:05"), minutesBefore, sessionClose.Format("15:04:05"))
 	}
 	return false, ""
 }
