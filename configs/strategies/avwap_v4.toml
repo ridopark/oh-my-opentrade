@@ -64,7 +64,7 @@ bounce_enabled = false           # disable mean-reversion (low WR intraday)
 rsi_bounce_max = 40.0
 
 # Pinch: dual-AVWAP compression breakout (gap between anchors narrows)
-pinch_enabled = false            # consolidation = algo trap territory (disabled per research)
+pinch_enabled = true             # testing pinch mode
 pinch_min_bps = 3
 pinch_max_bps = 50
 
@@ -114,7 +114,7 @@ stop_bps = 50                    # tighter stop for options
 limit_offset_bps = 10            # more aggressive fill (was 5)
 
 # Maximum risk per trade as basis points of equity
-risk_per_trade_bps = 300         # smaller per trade (was 2000) — more attempts
+risk_per_trade_bps = 500         # smaller per trade (was 2000) — more attempts
 
 # Maximum position size as basis points of equity
 max_position_bps = 1500          # reduced from 3000
@@ -194,7 +194,7 @@ minutes_before_close = 15
 enabled = true
 
 # Cap contract count to limit spread drag on cheap options
-max_contracts = 5
+max_contracts = 50
 
 # Limit price = mid + 50% of spread (moderate for AVWAP swing entries)
 limit_spread_pct = 1.00

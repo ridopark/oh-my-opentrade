@@ -37,11 +37,11 @@ rolling_wr_min = 0.25
 rolling_wr_window = 20
 
 # Risk
-risk_per_trade_bps = 1000
-max_position_bps = 3000
+risk_per_trade_bps = 500
+max_position_bps = 1500
 
 # Portfolio limits — critical for strategy edge
-max_positions = 8
+max_positions = 50
 max_per_group = 3
 
 # Timing
