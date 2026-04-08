@@ -92,7 +92,7 @@ size_wide_mult = 1.50
 [[exit_rules]]
 type = "PREMIUM_TARGET"
 [exit_rules.params]
-target_pct = 0.10
+target_pct = 0.12
 
 # EOD flatten
 [[exit_rules]]
