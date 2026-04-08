@@ -200,6 +200,10 @@ func (a *Adapter) getHistoricalBarsChunk(ctx context.Context, symbol domain.Symb
 
 	contract := newContract(symbol)
 	endDT := ibsync.FormatIBTimeUSEastern(to)
+	// For daily bars on indices, use empty endDT (= "now") to avoid IBKR date format issues.
+	if _, isIndex := indexSymbols[string(symbol)]; isIndex && (tf == "1d" || tf == "1D") {
+		endDT = ""
+	}
 	duration := durationStr(from, to)
 	barSize := barSizeStr(tf)
 
@@ -212,11 +216,7 @@ func (a *Adapter) getHistoricalBarsChunk(ctx context.Context, symbol domain.Symb
 	}
 	reqCh := make(chan reqResult, 1)
 	go func() {
-		whatToShow := "TRADES"
-		if _, isIndex := indexSymbols[string(symbol)]; isIndex {
-			whatToShow = "ADJUSTED_LAST"
-		}
-		ch, cancel := ib.ReqHistoricalData(contract, endDT, duration, barSize, whatToShow, false, 2)
+		ch, cancel := ib.ReqHistoricalData(contract, endDT, duration, barSize, "TRADES", false, 2)
 		reqCh <- reqResult{ch, cancel}
 	}()
 
