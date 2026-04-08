@@ -130,6 +130,26 @@ func (s *Service) SetStaticHTFData(sym string, tf domain.Timeframe, data domain.
 	}
 	s.htfStatic[sym+":"+tf.String()] = data
 }
+// SeedHTFSnapshot seeds the calculator state and stores an HTF snapshot
+// from pre-computed EMA values. This avoids replaying bars through Update().
+func (s *Service) SeedHTFSnapshot(sym string, tf domain.Timeframe, snap domain.IndicatorSnapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calculator.SeedState(sym, tf.String(), snap.EMA9, snap.EMA21, snap.EMA50)
+	if s.lastHTFSnaps == nil {
+		s.lastHTFSnaps = make(map[string]domain.IndicatorSnapshot)
+	}
+	s.lastHTFSnaps[sym+":"+tf.String()] = snap
+}
+
+// GetHTFSnapshot returns the stored HTF snapshot for a symbol:timeframe key.
+func (s *Service) GetHTFSnapshot(sym string, tf domain.Timeframe) (domain.IndicatorSnapshot, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap, ok := s.lastHTFSnaps[sym+":"+tf.String()]
+	return snap, ok
+}
+
 func (s *Service) WarmUpHTF(bars []domain.MarketBar) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

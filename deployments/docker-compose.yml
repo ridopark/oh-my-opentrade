@@ -26,6 +26,27 @@ services:
     - ibgateway_jts:/home/ibgateway/Jts
     healthcheck:
       disable: true
+  omo-data:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.data
+    container_name: omo-data
+    restart: unless-stopped
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+    - ../.env
+    volumes:
+    - ../configs:/configs:ro
+    environment:
+    - TIMESCALEDB_HOST=timescaledb
+    - TIMESCALEDB_PORT=5432
+    - IBKR_GATEWAY_HOST=ib-gateway
+    - IBKR_GATEWAY_PORT=4004
+    - IBKR_CLIENT_ID=4
   timescaledb:
     image: timescale/timescaledb:latest-pg16
     container_name: omo-timescaledb

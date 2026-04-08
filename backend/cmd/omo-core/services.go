@@ -22,8 +22,6 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/dnaapproval"
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
-	"github.com/oh-my-opentrade/backend/internal/app/datarefresh"
-	"github.com/oh-my-opentrade/backend/internal/app/ivcollector"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/notify"
 	"github.com/oh-my-opentrade/backend/internal/app/orchestrator"
@@ -75,9 +73,6 @@ type appServices struct {
 	aiScreenerSvc     *screenerapp.AIService
 	activationSvc     *activation.Service
 	pipelineActivator *bootstrap.PipelineActivator
-
-	ivCollector  *ivcollector.Service
-	dataRefresh  *datarefresh.Service
 
 	orchestrator *orchestrator.AccountOrchestrator
 	debateSvc    *debate.Service
@@ -441,19 +436,17 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		}
 	}
 
-	// Daily data refresh: fetches VIX from IBKR + equity daily bars from Alpaca.
-	// Replaces the old one-shot SPY realized vol computation.
+	// Load VIX level from DB (pre-computed by omo-data service).
 	{
-		svc.dataRefresh = datarefresh.NewService(datarefresh.Config{
-			VIXSymbol:      "VIX",
-			IndexSymbols:   []string{"SPY", "QQQ", "IWM"},
-			TradingSymbols: cfg.Symbols.AllSymbols(),
-			RunAtHourET:    16,
-			RunAtMinuteET:  15,
-			LookbackDays:   90,
-		}, infra.ibkrBroker, infra.alpacaData, infra.repo, svc.monitor, log)
-		if err := svc.dataRefresh.Start(context.Background()); err != nil {
-			log.Warn().Err(err).Msg("data refresh service failed to start")
+		spySym, _ := domain.NewSymbol("SPY")
+		rvFrom := time.Now().Add(-60 * 24 * time.Hour)
+		spyDaily, spyErr := infra.repo.GetMarketBars(context.Background(), spySym, "1d", rvFrom, time.Now())
+		if spyErr == nil && len(spyDaily) > 21 {
+			rv := monitor.ComputeRealizedVol(spyDaily, 20)
+			svc.monitor.SetVIXLevel(rv)
+			log.Info().Float64("realized_vol", rv).Int("daily_bars", len(spyDaily)).Msg("VIX level set from DB")
+		} else {
+			log.Warn().Err(spyErr).Msg("no SPY daily bars in DB for VIX computation — VIX disabled")
 		}
 	}
 
@@ -832,25 +825,7 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 		}()
 	}
 
-	ivSymbols := cfg.Symbols.SymbolsByAssetClass("EQUITY")
-	if len(ivSymbols) > 0 {
-		ivRepo := timescaledb.NewIVRepository(timescaledb.NewSqlDB(infra.sqlDB), log.With().Str("component", "iv_repo").Logger())
-		svc.ivCollector = ivcollector.NewService(
-			ivcollector.Config{
-				Symbols:       ivSymbols,
-				TargetDTE:     30,
-				RunAtHourET:   16,
-				RunAtMinuteET: 15,
-			},
-			infra.alpacaData,
-			infra.alpacaData,
-			ivRepo,
-			log.With().Str("component", "iv_collector").Logger(),
-		)
-		if err := svc.ivCollector.Start(ctx); err != nil {
-			log.Fatal().Err(err).Msg("failed to start IV collector")
-		}
-	}
+	// IV collection is now handled by omo-data service.
 
 	// Persist auction imbalance snapshots (EventAuctionImbalance → auction_imbalances table).
 	auctionRepo := timescaledb.NewAuctionImbalanceRepo(
