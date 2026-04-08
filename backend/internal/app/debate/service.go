@@ -441,6 +441,15 @@ func (s *Service) tryOptionsRoute(
 		return domain.OrderIntent{}, false
 	}
 	maxLossUSD := premiumPerContract * qty
+	// Cap contract count from strategy DNA
+	maxContracts := spec.Options.MaxContracts
+	if maxContracts <= 0 {
+		maxContracts = 15
+	}
+	if qty > float64(maxContracts) {
+		l.Info().Float64("computed", qty).Int("cap", maxContracts).Msg("capping option contracts (debate)")
+		qty = float64(maxContracts)
+	}
 
 	inst, instErr := domain.NewInstrument(domain.InstrumentTypeOption, string(best.ContractSymbol), string(setup.Symbol))
 	if instErr != nil {
@@ -625,6 +634,15 @@ func (s *Service) tryHistoricalOptionsRoute(
 			Msg("historical option premium exceeds risk budget")
 		return domain.OrderIntent{}, false
 	}
+	// Cap contract count from strategy DNA
+	maxContracts := spec.Options.MaxContracts
+	if maxContracts <= 0 {
+		maxContracts = 15
+	}
+	if qty > float64(maxContracts) {
+		l.Info().Float64("computed", qty).Int("cap", maxContracts).Msg("capping option contracts (debate-hist)")
+		qty = float64(maxContracts)
+	}
 	maxLossUSD := premiumPerContract * qty
 
 	// Build OCC symbol from historical data.
@@ -807,6 +825,15 @@ func (s *Service) tryBSMOptionsRoute(
 		l.Warn().Float64("premium", premium).Float64("risk_budget", maxRiskUSD).
 			Msg("BSM option premium exceeds risk budget — skipping")
 		return domain.OrderIntent{}, false
+	}
+	// Cap contract count from strategy DNA
+	maxContracts := spec.Options.MaxContracts
+	if maxContracts <= 0 {
+		maxContracts = 15
+	}
+	if qty > float64(maxContracts) {
+		l.Info().Float64("computed", qty).Int("cap", maxContracts).Msg("capping option contracts (debate-BSM)")
+		qty = float64(maxContracts)
 	}
 	maxLossUSD := premiumPerContract * qty
 
