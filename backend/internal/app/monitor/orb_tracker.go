@@ -543,6 +543,16 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 		}
 
 		if sess.Retest.Touched && holdThisBar {
+			// Retest speed gate: skip if retest took too many bars
+			if cfg.RetestSpeedMaxBars > 0 && sess.BarsSinceBreakout > cfg.RetestSpeedMaxBars {
+				t.logger.Info("orb: retest speed gate rejected",
+					"symbol", sym,
+					"bars_since_breakout", sess.BarsSinceBreakout,
+					"max", cfg.RetestSpeedMaxBars)
+				t.cycleToRangeSet(sess)
+				return nil, false
+			}
+
 			// ADR exhaustion filter: skip if session range already consumed too much of daily ATR
 			dailyATR := snap.HTFDailyATR()
 			if cfg.ADRExhaustionPct > 0 && dailyATR > 0 {
