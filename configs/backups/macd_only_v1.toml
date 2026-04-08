@@ -1,0 +1,115 @@
+schema_version = 2
+
+[strategy]
+id = "macd_only_v1"
+version = "2.2.0"
+name = "MACD Crossover Options (Trading Rush)"
+description = "15m MACD crossover + options, multi-day hold, no EOD flatten"
+author = "system"
+created_at = "2026-04-07T00:00:00Z"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+symbols = ["AAPL","AFRM","AMD","AMZN","AVGO","BA","COIN","CRM","GOOGL","HIMS","HOOD","IWM","JPM","LLY","META","MRNA","MRVL","MSFT","MU","NET","NFLX","NVDA","OXY","PLTR","QQQ","RBLX","RIVN","SMCI","SNOW","SOFI","SOXL","SPY","TSLA","XOM"]
+timeframes = ["15m"]
+priority = 70
+conflict_policy = "priority_wins"
+exclusive_per_symbol = true
+watchlist_mode = "static"
+asset_classes = ["OPTION"]
+allowed_directions = ["LONG", "SHORT"]
+
+[params]
+macd_zero_band = 0.0
+risk_reward_ratio = 3.0
+swing_lookback = 7
+volume_mult = 1.0
+
+# Confluence scoring (0-100+ scale, 10 base + dark pool factors)
+min_confluence_score = 55
+dp_confluence_enabled = true
+
+# Rolling performance gate — pause entries when per-symbol WR drops too low
+rolling_wr_min = 0.25
+rolling_wr_window = 20
+
+# Risk
+risk_per_trade_bps = 1000
+max_position_bps = 3000
+
+# Portfolio limits — critical for strategy edge
+max_positions = 8
+max_per_group = 3
+
+# Timing
+allowed_hours_start = "09:45"
+allowed_hours_end = "15:00"
+allowed_hours_tz = "America/New_York"
+cooldown_seconds = 300
+max_trades_per_day = 5
+stabilization_bars = 10
+
+[hooks]
+signals = { engine = "builtin", name = "bollinger_macd" }
+
+[gate_chain]
+monitor = [
+    { name = "dna_approval" },
+    { name = "vix", params = { skip_above = 35.0 } },
+    { name = "regime", params = { allowed = ["TREND", "TREND_UP", "TREND_DOWN", "SQUEEZE"] } },
+    { name = "htf_bias" },
+    { name = "min_atr_pct", params = { min_pct = 0.5 } },
+    { name = "market_tide", params = { neutral_band_bps = 20 } },
+]
+
+execution = [
+    { name = "short_direction" },
+    { name = "exposure_guard" },
+    { name = "portfolio_guard" },
+    { name = "risk_engine" },
+    { name = "slippage_guard" },
+    { name = "trading_window" },
+    { name = "spread_guard" },
+    { name = "buying_power_guard" },
+]
+
+[options]
+enabled = true
+max_contracts = 5
+limit_spread_pct = 1.00
+limit_buffer_bps = 1000
+stale_cancel_secs = 90
+
+[options.defaults]
+min_dte = 7
+max_dte = 21
+target_delta_low = 0.40
+target_delta_high = 0.55
+min_open_interest = 50
+max_spread_pct = 0.10
+max_iv = 1.2
+
+[[exit_rules]]
+type = "DTE_FLOOR"
+[exit_rules.params]
+dte = 3
+
+[[exit_rules]]
+type = "PREMIUM_TARGET"
+[exit_rules.params]
+target_pct = 0.75
+
+[[exit_rules]]
+type = "PREMIUM_TRAIL"
+[exit_rules.params]
+trail_pct = 0.30
+min_activation = 0.15
+
+[[exit_rules]]
+type = "MAX_HOLDING_TIME"
+[exit_rules.params]
+minutes = 7200
+
