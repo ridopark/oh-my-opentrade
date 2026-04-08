@@ -1,5 +1,19 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "agent",
+            "if": "Bash(git commit:*)",
+            "prompt": "Review the staged changes (run `git diff --staged`) for code quality, reuse opportunities, and efficiency issues. Apply minimal fixes if needed. Do NOT change test files or config files. Only fix issues in application code. Be concise — skip if changes look clean.",
+            "timeout": 120,
+            "statusMessage": "Running /simplify on staged changes..."
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Bash",

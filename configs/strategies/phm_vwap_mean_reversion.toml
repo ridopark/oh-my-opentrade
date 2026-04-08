@@ -1,0 +1,105 @@
+schema_version = 2
+
+[strategy]
+id = "phm_power_hour"
+version = "2.0.0"
+name = "Power Hour VWAP Mean Reversion"
+description = "VWAP snap-back during Power Hour — enter on +/-2sigma deviation with 4-layer confluence, target VWAP"
+author = "system"
+created_at = "2026-04-02T00:00:00Z"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+symbols = ["SPY", "QQQ", "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "AMD", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "SNOW", "NET", "SOFI", "COIN", "AFRM", "JPM", "OXY", "LLY", "MRNA", "HIMS", "RIVN", "RBLX", "BA", "NFLX", "IWM", "SOXL"]
+timeframes = ["1m"]
+priority = 60
+conflict_policy = "priority_wins"
+exclusive_per_symbol = true
+watchlist_mode = "static"
+asset_classes = ["EQUITY"]
+allowed_directions = ["LONG"]
+
+[screening]
+description = "VWAP mean reversion during Power Hour. When price overextends beyond +/-2 SD of daily VWAP, institutional close-at-VWAP algorithms pull price back. Entry requires reversal candle confirmation. Exits at VWAP target or 15:50 EOD flatten."
+
+[params]
+# Time window
+allowed_hours_start = "15:00"
+allowed_hours_end = "15:45"
+allowed_hours_tz = "America/New_York"
+eod_flatten_time = "15:50"          # flatten before MOC chaos
+
+# VWAP deviation thresholds
+sd_entry_threshold = 2.0            # research recommendation
+sd_stop_threshold = 3.0             # stop if price closes beyond +/-3.0sigma
+
+# Confluence filters
+max_adx = 50.0                      # loosened — ADX 25 too restrictive on 1m
+rsi_overbought = 70.0               # RSI threshold for short entry
+rsi_oversold = 30.0                 # RSI threshold for long entry
+volume_spike_mult = 3.0             # exhaustion candle = 3x average volume
+require_reversal = false            # disabled — too restrictive with SD 2.0 on 1m
+
+# Day typing
+day_type_trend_pct = 3.0            # if price up >3% by 14:00 ET, disable (trend day)
+
+# Risk
+stop_bps = 50                       # tight stop for mean reversion
+max_signals_per_session = 1         # one entry per session (anti-revenge trading)
+limit_offset_bps = 5
+risk_per_trade_bps = 500
+max_position_bps = 2000
+
+# Exit targets
+target_vwap = true                  # primary: price returns to VWAP
+target_opposite_sd = 1.0            # secondary: opposite +/-1sigma band
+
+# Filters
+blocked_days_of_week = ["Monday", "Friday"]
+
+# Anti-pattern guards
+min_session_volume = 0              # disabled for now
+min_window_bars = 3                 # observe 3 bars (3 min on 1m) before entering
+vol_adjust_bands = false            # scale SD bands on high-vol days (enable after baseline)
+
+[hooks]
+signals = { engine = "builtin", name = "phm_power_hour" }
+
+[dynamic_risk]
+enabled = true
+min_confidence = 0.10
+risk_scale_min = 0.50
+risk_scale_max = 1.00
+
+# Gate chain — market breadth anchor (disabled for baseline)
+# [[gate_chain.monitor]]
+# name = "market_tide"
+# params = { neutral_band_bps = 15 }
+
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 10
+
+[[exit_rules]]
+type = "MAX_LOSS"
+[exit_rules.params]
+pct = 0.015
+
+[options]
+enabled = true
+limit_spread_pct = 1.00
+limit_buffer_bps = 1000
+stale_cancel_secs = 30
+
+[options.defaults]
+min_dte = 7
+max_dte = 14
+target_delta_low = 0.40
+target_delta_high = 0.55
+min_open_interest = 100
+max_spread_pct = 0.10
+max_iv = 1.5
