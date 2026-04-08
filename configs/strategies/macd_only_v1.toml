@@ -13,7 +13,7 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL","AFRM","AMD","AMZN","AVGO","BA","COIN","CRM","GOOGL","HIMS","HOOD","IWM","JPM","LLY","META","MRNA","MRVL","MSFT","MU","NET","NFLX","NVDA","OXY","PLTR","QQQ","RBLX","RIVN","SMCI","SNOW","SOFI","SOXL","SPY","TSLA","XOM"]
+symbols = ["AMD","COIN","GOOGL","HIMS","JPM","META","MRNA","MSFT","MU","XOM"]
 timeframes = ["15m"]
 priority = 70
 conflict_policy = "priority_wins"
