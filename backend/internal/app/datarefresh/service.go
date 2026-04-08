@@ -74,28 +74,30 @@ func NewService(cfg Config, ibkrData, alpacaData ports.MarketDataPort, repo BarS
 
 // Start loads VIX from DB (or fetches if empty), then launches the daily scheduler.
 func (s *Service) Start(ctx context.Context) error {
-	// Try DB first.
+	// Set VIX level fast: DB first (instant), then SPY fallback (~200ms).
+	// IBKR VIX is attempted in the background — it has a 10s timeout and often fails.
 	vix, err := s.loadVIXFromDB(ctx)
 	if err == nil && vix > 0 {
 		s.monitor.SetVIXLevel(vix)
 		s.log.Info().Float64("vix", vix).Msg("VIX level loaded from DB")
 	} else {
-		// DB empty or error — fetch from IBKR.
-		if fetchErr := s.refreshVIX(ctx); fetchErr != nil {
-			s.log.Warn().Err(fetchErr).Msg("VIX fetch from IBKR failed — falling back to SPY realized vol")
-			s.fallbackSPYRealizedVol(ctx)
-		}
+		s.fallbackSPYRealizedVol(ctx)
 	}
 
-	// Refresh all bar data in background on startup.
+	// Refresh all bar data in background on startup (non-blocking).
 	go func() {
+		// Try IBKR VIX in background — may update the SPY fallback value.
+		if err := s.refreshVIX(ctx); err != nil {
+			s.log.Debug().Err(err).Msg("background IBKR VIX fetch failed (SPY fallback already set)")
+		}
+
 		allSymbols := s.deduplicatedSymbols()
 
-		// 1. Daily bars from Alpaca.
+		// Daily bars from Alpaca.
 		saved, failed := s.refreshDailyBars(ctx, allSymbols)
 		s.log.Info().Int("symbols_refreshed", saved).Int("symbols_failed", failed).Msg("startup daily bar refresh complete")
 
-		// 2. Backfill 1m bars for today + aggregate into 5m/15m/1h.
+		// Backfill 1m bars for today + aggregate into 5m/15m/1h.
 		s.backfillIntradayBars(ctx, allSymbols)
 	}()
 
