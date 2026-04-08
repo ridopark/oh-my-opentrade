@@ -271,6 +271,38 @@ func TestConfluenceResult_FormatDetail(t *testing.T) {
 	assert.Equal(t, "ema_stack+adx_strong+vwap_aligned", r.FormatDetail())
 }
 
+// ─── Retest Quality ─────────────────────────────────────────────────────────
+
+func TestScoreRetestQuality_Perfect(t *testing.T) {
+	r := s.ScoreRetestQuality(2, 0.30, 50, 100, 0.8, true)
+	assert.Equal(t, 16, r.Score) // 5+5+3+3
+	assert.Contains(t, r.Factors, "rq_speed")
+	assert.Contains(t, r.Factors, "rq_shallow")
+	assert.Contains(t, r.Factors, "rq_dryup")
+	assert.Contains(t, r.Factors, "rq_confirm")
+}
+
+func TestScoreRetestQuality_Worst(t *testing.T) {
+	r := s.ScoreRetestQuality(10, 0.70, 120, 100, 0.3, false)
+	assert.Equal(t, 0, r.Score)
+	assert.Empty(t, r.Factors)
+}
+
+func TestScoreRetestQuality_FastButDeep(t *testing.T) {
+	r := s.ScoreRetestQuality(3, 0.55, 50, 100, 0.7, true)
+	assert.Equal(t, 11, r.Score) // 5+0+3+3
+}
+
+func TestScoreRetestQuality_SlowButShallow(t *testing.T) {
+	r := s.ScoreRetestQuality(8, 0.30, 90, 100, 0.5, true)
+	assert.Equal(t, 5, r.Score) // 0+5+0+0
+}
+
+func TestScoreRetestQuality_ZeroBreakoutVolume(t *testing.T) {
+	r := s.ScoreRetestQuality(3, 0.30, 50, 0, 0.8, true)
+	assert.Equal(t, 13, r.Score) // 5+5+0+3 (volume factor skipped)
+}
+
 // ─── Dark Pool ──────────────────────────────────────────────────────────────
 
 func TestScoreDarkPool(t *testing.T) {
