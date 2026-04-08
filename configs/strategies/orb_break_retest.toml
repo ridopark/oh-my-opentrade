@@ -61,7 +61,7 @@ breakout_min_distance_bps = 10       # data: <10 bps breakouts have PF 0.67 — 
 stop_bps = 40                      # swing stop overrides — fixed bps is fallback only
 stop_buffer_bps = 10               # JS: 0.1% buffer on swing stop
 limit_offset_bps = 15              # slightly more aggressive fill
-risk_per_trade_bps = 300           # smaller size per trade (more attempts)
+risk_per_trade_bps = 500           # smaller size per trade (more attempts)
 max_position_bps = 1500
 
 # Shared confluence scoring (0-78 base scale)
