@@ -41,8 +41,8 @@ risk_per_trade_bps = 1000
 max_position_bps = 3000
 
 # Portfolio limits — critical for strategy edge
-max_positions = 6
-max_per_group = 2
+max_positions = 8
+max_per_group = 3
 
 # Timing
 allowed_hours_start = "09:45"
