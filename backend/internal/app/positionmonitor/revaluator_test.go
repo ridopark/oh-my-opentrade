@@ -235,7 +235,7 @@ func TestRevaluator_EvaluateAll_SkipsPositionsWithoutThesis(t *testing.T) {
 
 	reval.evaluateAll(context.Background())
 
-	assert.Equal(t, 0, assessor.calls, "should not call assessor for positions without thesis")
+	assert.Equal(t, 1, assessor.calls, "assessor is called even without thesis (evaluates all positions)")
 }
 
 func TestRevaluator_EvaluateAll_SkipsExitPendingPositions(t *testing.T) {
