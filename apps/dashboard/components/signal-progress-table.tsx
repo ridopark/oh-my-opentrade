@@ -183,42 +183,55 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
     passed ? "text-emerald-400" : step === activeStep ? "text-yellow-400" : "text-zinc-600";
   const stepIcon = (passed: boolean, step: number) =>
     passed ? "\u2713" : step === activeStep ? "\u25B6" : "\u2717";
-  const arrow = <span className="text-zinc-600 text-[10px]">{"\u2192"}</span>;
+  const arrow = <span className="text-zinc-400 text-xs font-bold">{"\u2192"}</span>;
 
   return (
     <div className="space-y-2">
       <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">AVWAP Readiness</h4>
 
-      {/* Pipeline: Bias → Slope → Conf → Entry */}
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <span className={`text-[11px] ${stepColor(0, biasOK)}`}>
-          {stepIcon(biasOK, 0)} Bias {biasOK ? ind.avwapBias : ""}
-        </span>
-        {arrow}
-        <span className={`text-[11px] ${stepColor(1, slopeOK)}`}>
-          {stepIcon(slopeOK, 1)} Slope {ind.slopeBPS.toFixed(1)}
-        </span>
-        {arrow}
-        <span className={`text-[11px] ${stepColor(2, confOK)}`}>
-          {stepIcon(confOK, 2)} Conf {c.score}/{c.maxScore}
-        </span>
-        {arrow}
-        <span className={`text-[11px] ${stepColor(3, false)}`}>
-          {stepIcon(false, 3)} Entry
-        </span>
-      </div>
-
-      {/* Confluence detail bar (when at or past confluence step) */}
-      {activeStep >= 2 && (
-        <div className="flex items-center gap-2 pl-1">
-          <div className="h-2 w-20 rounded-full bg-zinc-800 overflow-hidden">
-            <div className={`h-full rounded-full transition-all duration-300 ${confFillColor}`} style={{ width: `${Math.max(confPct, 2)}%` }} />
-          </div>
-          <span className="text-[10px] text-zinc-500">
-            {factors.filter(f => f.active).map(f => f.detail || f.label).join(", ") || "none"}
+      {/* Pipeline: Bias → Slope → Conf → Entry — full width */}
+      <div className="flex items-start w-full">
+        <div className="flex flex-col items-center flex-1">
+          <span className={`text-[11px] font-medium ${stepColor(0, biasOK)}`}>
+            {stepIcon(biasOK, 0)} Bias
+          </span>
+          <span className={`text-[10px] ${biasOK ? "text-emerald-300" : "text-zinc-600"}`}>
+            {biasOK ? ind.avwapBias : "\u2014"}
           </span>
         </div>
-      )}
+        <div className="flex items-center pt-1.5">{arrow}</div>
+        <div className="flex flex-col items-center flex-1">
+          <span className={`text-[11px] font-medium ${stepColor(1, slopeOK)}`}>
+            {stepIcon(slopeOK, 1)} Slope
+          </span>
+          <span className={`text-[10px] ${slopeOK ? "text-emerald-300" : "text-zinc-600"}`}>
+            {ind.slopeBPS.toFixed(1)} bps
+          </span>
+        </div>
+        <div className="flex items-center pt-1.5">{arrow}</div>
+        <div className="flex flex-col items-center flex-[2]">
+          <span className={`text-[11px] font-medium ${stepColor(2, confOK)}`}>
+            {stepIcon(confOK, 2)} Conf {c.score}/{c.maxScore}
+          </span>
+          <div className="flex items-center gap-1.5 w-full mt-0.5 px-1">
+            <div className="h-2 flex-1 rounded-full bg-zinc-800 overflow-hidden">
+              <div className={`h-full rounded-full transition-all duration-300 ${confFillColor}`} style={{ width: `${Math.max(confPct, 2)}%` }} />
+            </div>
+            <span className="text-[9px] text-zinc-500 whitespace-nowrap">
+              {factors.filter(f => f.active).map(f => f.detail || f.label).join(", ") || "none"}
+            </span>
+          </div>
+        </div>
+        <div className="flex items-center pt-1.5">{arrow}</div>
+        <div className="flex flex-col items-center flex-1">
+          <span className={`text-[11px] font-medium ${stepColor(3, false)}`}>
+            {stepIcon(false, 3)} Entry
+          </span>
+          <span className="text-[10px] text-zinc-600">
+            {activeStep >= 3 ? "0 fired" : "\u2014"}
+          </span>
+        </div>
+      </div>
 
       {/* Entry checks detail (when at step 4) */}
       {activeStep >= 3 && avwap.entryChecks && avwap.entryChecks.length > 0 && (
