@@ -31,6 +31,13 @@ volume_mult = 1.0
 # Confluence scoring (0-100+ scale, 10 base + dark pool factors)
 min_confluence_score = 55
 dp_confluence_enabled = true
+dp_veto_enabled = true
+dp_veto_buy_ratio_min = 0.45
+dp_veto_sell_ratio_max = 0.55
+dp_sizing_enabled = true
+dp_sizing_max_boost = 1.5
+dp_stop_enabled = true
+dp_level_lookback = 20
 
 # Rolling performance gate — pause entries when per-symbol WR drops too low
 rolling_wr_min = 0.25

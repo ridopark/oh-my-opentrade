@@ -160,6 +160,9 @@ candle_confluence_enabled = true
 # Band zone (+2): price within zone between min/max AVWAP lines
 band_confluence_enabled = true
 
+# Dark pool (+10): elevated DP ratio, directional pressure, block prints
+dp_confluence_enabled = true
+
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
 
