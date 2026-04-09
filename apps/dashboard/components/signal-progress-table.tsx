@@ -366,8 +366,17 @@ interface GateBarSegment {
 }
 
 const AVWAP_GATE_ORDER = ["bias", "slope", "confluence", "entry_specific"] as const;
+// Operational gates that block before the 4 conceptual gates are evaluated
+const AVWAP_OPERATIONAL_GATES = ["cooldown", "max_trades", "hours", "position", "regime"];
 
 function avwapSegments(avwap: EntryGatedPayload): GateBarSegment[] {
+  // Operational gates (cooldown, hours, etc.) → all segments pending
+  if (AVWAP_OPERATIONAL_GATES.includes(avwap.blockingGate)) {
+    return AVWAP_GATE_ORDER.map((gate) => ({
+      label: gate,
+      status: "pending" as const,
+    }));
+  }
   const blockIdx = avwap.blockingGate
     ? AVWAP_GATE_ORDER.indexOf(avwap.blockingGate as typeof AVWAP_GATE_ORDER[number])
     : AVWAP_GATE_ORDER.length;

@@ -1216,6 +1216,12 @@ func (r *Runner) WarmUpTF(symbol string, tf string, bars []domain.MarketBar, sna
 
 	for _, inst := range matched {
 		inst.ClearPendingState(symbol)
+		// Reset the gated bar time dedup guard so the first live bar emits.
+		if st, ok := inst.GetState(symbol); ok {
+			if resetter, ok := st.(interface{ ResetGatedBarTime() }); ok {
+				resetter.ResetGatedBarTime()
+			}
+		}
 	}
 
 	return len(bars)
