@@ -47,16 +47,16 @@ max_range_atr_mult = 4.0           # accept wider ranges (was 2.5)
 min_range_pct_bps = 10             # accept smaller ranges (was 20)
 fvg_enabled = false                # JS has no FVG
 fvg_min_rvol = 0.8
-displacement_min_body_pct = 0.50   # 0.50 is optimal — 0.40 worse, 0.60 worse
+displacement_min_body_pct = 0.0    # disabled for broker testing
 retest_quality_min_body_hold = 0    # disabled — filter redundant with existing touch+hold logic
 adr_exhaustion_pct = 0              # disabled — ADR filter hurts PF at all thresholds
-displacement_min_range_pct = 0.002 # JS: range >= 0.2% of price
+displacement_min_range_pct = 0.0005 # loosened for broker testing
 
 # Entry quality filters
-orb_breakout_rvol_min = 0.5          # loosened for broker testing
+orb_breakout_rvol_min = 0.0          # disabled for broker testing
 orb_range_width_min_atr = 0.15       # accept narrower ranges for broker testing
 orb_range_width_max_atr = 1.5        # accept wider ranges for broker testing
-orb_retest_speed_max_bars = 8        # allow slower retests for broker testing
+orb_retest_speed_max_bars = 50       # effectively disabled for broker testing
 breakout_min_distance_bps = 3        # accept smaller breakouts for broker testing
 stop_bps = 40                      # swing stop overrides — fixed bps is fallback only
 stop_buffer_bps = 10               # JS: 0.1% buffer on swing stop

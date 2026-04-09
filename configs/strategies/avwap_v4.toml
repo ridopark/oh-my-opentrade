@@ -53,20 +53,20 @@ breakout_enabled = true
 hold_bars = 2                    # faster entry (was 4 = 20min delay)
 
 # Pullback: price pulls back to AVWAP in an established trend, closes on right side
-pullback_enabled = false         # disable pullback — test impact
+pullback_enabled = true          # enable for broker testing
 pullback_trend_bars = 3          # reduced from 5
 pullback_tolerance_bps = 40      # wider tolerance (was 25) — easier to qualify
 pullback_rsi_min = 25.0          # wider RSI range (was 30)
 pullback_rsi_max = 75.0          # wider RSI range (was 65)
 
 # Bounce: mean-reversion touch of AVWAP with RSI confirmation
-bounce_enabled = false           # disable mean-reversion (low WR intraday)
+bounce_enabled = true            # enable for broker testing
 rsi_bounce_max = 40.0
 
 # Pinch: dual-AVWAP compression breakout (gap between anchors narrows)
 pinch_enabled = true             # testing pinch mode
 pinch_min_bps = 3
-pinch_max_bps = 50
+pinch_max_bps = 800              # widened for tariff volatility
 
 # Gap Reclaim: price dips below AVWAP then reclaims it within N bars
 gap_reclaim_enabled = false      # disable gap reclaim (unreliable)

@@ -73,6 +73,33 @@ func (s *AVWAPStrategy) ReplayOnBar(_ start.Context, _ string, bar start.Bar, st
 		avwapSt.BarLows50 = avwapSt.BarLows50[1:]
 	}
 
+	// Update AboveCount/BelowCount so breakout hold_bars are warm after restart.
+	avwapValues := avwapSt.Calc.Values()
+	if avwapSt.AVWAPDistHistory == nil {
+		avwapSt.AVWAPDistHistory = make(map[string][]float64)
+	}
+	for _, anchorName := range avwapSt.Calc.SortedNames() {
+		avwapValue := avwapValues[anchorName]
+		switch {
+		case bar.Close > avwapValue:
+			avwapSt.AboveCount[anchorName]++
+			avwapSt.BelowCount[anchorName] = 0
+		case bar.Close < avwapValue:
+			avwapSt.BelowCount[anchorName]++
+			avwapSt.AboveCount[anchorName] = 0
+		default:
+			avwapSt.AboveCount[anchorName] = 0
+			avwapSt.BelowCount[anchorName] = 0
+		}
+		dist := (bar.Close - avwapValue) / avwapValue * 10000.0
+		hist := avwapSt.AVWAPDistHistory[anchorName]
+		hist = append(hist, dist)
+		if len(hist) > 10 {
+			hist = hist[len(hist)-10:]
+		}
+		avwapSt.AVWAPDistHistory[anchorName] = hist
+	}
+
 	return avwapSt, nil
 }
 
