@@ -225,6 +225,61 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
 }
 
 // ---------------------------------------------------------------------------
+// MACDDetail (popover content)
+// ---------------------------------------------------------------------------
+
+function MACDDetail({ macd }: { macd: EntryGatedPayload }) {
+  const c = macd.confluence;
+  const warmupOK = macd.blockingGate !== "warmup";
+  const regimeOK = macd.blockingGate !== "regime" && warmupOK;
+  const crossoverOK = macd.blockingGate !== "crossover" && regimeOK && warmupOK;
+  const filtersOK = !macd.blockingGate;
+
+  const pill = (passed: boolean) =>
+    passed
+      ? "bg-emerald-500/20 border border-emerald-500/40 text-emerald-300"
+      : "bg-yellow-500/15 border border-yellow-500/50 text-yellow-200 animate-pulse";
+  const icon = (passed: boolean) => passed ? "\u2713" : "\u25B6";
+
+  const confPct = c.maxScore > 0 ? Math.min(100, (c.score / c.maxScore) * 100) : 0;
+  const confFillColor = confPct >= 100 ? "bg-emerald-500" : confPct >= 50 ? "bg-yellow-500" : confPct > 0 ? "bg-orange-500" : "bg-zinc-700";
+
+  return (
+    <div className="space-y-2">
+      <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">MACD Readiness</h4>
+      <div className="flex items-center gap-1.5 w-full">
+        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(warmupOK)}`}>
+          <span className="text-[11px] font-medium">{icon(warmupOK)} Warmup</span>
+        </div>
+        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(regimeOK)}`}>
+          <span className="text-[11px] font-medium">{icon(regimeOK)} Regime</span>
+          <span className="text-[10px]">EMA9</span>
+        </div>
+        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(crossoverOK)}`}>
+          <span className="text-[11px] font-medium">{icon(crossoverOK)} Cross</span>
+          <span className="text-[10px]">MACD</span>
+        </div>
+        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(filtersOK)}`}>
+          <span className="text-[11px] font-medium">{icon(filtersOK)} Filters</span>
+        </div>
+      </div>
+      {c.maxScore > 0 && (
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-zinc-500">Confluence</span>
+          <div className="h-1.5 flex-1 rounded-full bg-zinc-800/60 overflow-hidden">
+            <div className={`h-full rounded-full transition-all duration-300 ${confFillColor}`} style={{ width: `${Math.max(confPct, 2)}%` }} />
+          </div>
+          <span className={`text-[10px] font-mono ${confPct >= 100 ? "text-emerald-400" : "text-zinc-400"}`}>{c.score}/{c.maxScore}</span>
+        </div>
+      )}
+      {macd.blockingDetail && (
+        <span className="text-[10px] text-zinc-500 block">{macd.blockingDetail}</span>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // ORBDetail (popover content)
 // ---------------------------------------------------------------------------
 
@@ -428,11 +483,12 @@ function PillGateBar({
 // ---------------------------------------------------------------------------
 
 function DetailPanel({
-  symbol, bar, avwap, orb, anchorRect, onClose,
+  symbol, bar, avwap, macd, orb, anchorRect, onClose,
 }: {
   symbol: string;
   bar: BarSnapshot | undefined;
   avwap: EntryGatedPayload | undefined;
+  macd: EntryGatedPayload | undefined;
   orb: ORBPhaseUpdatePayload | undefined;
   anchorRect: DOMRect;
   onClose: () => void;
@@ -584,7 +640,13 @@ function DetailPanel({
       <div className="p-4 space-y-4">
         {avwap ? <AVWAPDetail avwap={avwap} /> : (
           <div className="space-y-2">
-            <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">AVWAP Confluence</h4>
+            <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">AVWAP Readiness</h4>
+            <span className="text-xs text-zinc-600">No data</span>
+          </div>
+        )}
+        {macd ? <MACDDetail macd={macd} /> : (
+          <div className="space-y-2">
+            <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">MACD Readiness</h4>
             <span className="text-xs text-zinc-600">No data</span>
           </div>
         )}
@@ -723,6 +785,7 @@ function SignalRow({ row }: { row: UnifiedRow }) {
             symbol={symbol}
             bar={bar}
             avwap={avwap}
+            macd={macd}
             orb={orb}
             anchorRect={anchorRect}
             onClose={() => setOpen(false)}
