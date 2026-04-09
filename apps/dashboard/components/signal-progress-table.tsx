@@ -367,7 +367,7 @@ function macdSegments(macd: EntryGatedPayload): GateBarSegment[] {
     status: i < blockIdx ? "passed" as const
       : i === blockIdx && blockIdx < MACD_GATE_ORDER.length ? "active" as const
       : blockIdx >= MACD_GATE_ORDER.length ? "passed" as const
-      : "pending" as const,
+      : "active" as const,
   }));
 }
 
