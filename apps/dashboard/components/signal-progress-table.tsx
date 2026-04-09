@@ -376,7 +376,7 @@ function avwapSegments(avwap: EntryGatedPayload): GateBarSegment[] {
   // Operational gates (cooldown, hours, etc.) → show pre-gate as active, rest gray
   if (AVWAP_OPERATIONAL_GATES.includes(avwap.blockingGate)) {
     return [
-      { label: avwap.blockingGate, status: "active" as const },
+      { label: avwap.blockingGate.charAt(0).toUpperCase() + avwap.blockingGate.slice(1).replace(/_/g, " "), status: "active" as const },
       { label: "Bias", status: "pending" as const },
       { label: "Conf", status: "pending" as const },
       { label: "Slope", status: "pending" as const },
