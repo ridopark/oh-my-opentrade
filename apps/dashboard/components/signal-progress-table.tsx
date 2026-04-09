@@ -196,60 +196,75 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
     { label: "Band", pts: 2, active: c.band, detail: c.band ? "yes" : "" },
   ];
 
-  const pct = c.maxScore > 0 ? Math.min(100, (c.score / c.maxScore) * 100) : 0;
-  const fillColor = pct >= 100 ? "bg-emerald-500" : pct >= 50 ? "bg-yellow-500" : pct > 0 ? "bg-orange-500" : "bg-zinc-700";
+  const biasOK = !!ind.avwapBias;
+  const slopeOK = Math.abs(ind.slopeBPS) >= 0.3;
+  const confOK = c.maxScore > 0 && c.score >= c.maxScore;
+  const confPct = c.maxScore > 0 ? Math.min(100, (c.score / c.maxScore) * 100) : 0;
+  const confFillColor = confPct >= 100 ? "bg-emerald-500" : confPct >= 50 ? "bg-yellow-500" : confPct > 0 ? "bg-orange-500" : "bg-zinc-700";
+
+  // Determine which step is the current blocker (first failing gate in sequence)
+  const activeStep = !biasOK ? 0 : !slopeOK ? 1 : !confOK ? 2 : 3;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">AVWAP Readiness</h4>
-      {/* Confluence score bar — fills proportionally to score/threshold */}
-      <div className="flex items-center gap-2">
-        <div className="h-2.5 flex-1 rounded-full bg-zinc-800 overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all duration-300 ${fillColor}`}
-            style={{ width: `${Math.max(pct, 2)}%` }}
-          />
-        </div>
-        <span className={`text-xs font-mono font-medium whitespace-nowrap ${pct >= 100 ? "text-emerald-400" : "text-zinc-300"}`}>
-          {c.score}/{c.maxScore}
+
+      {/* Step 1: Bias */}
+      <div className={`flex items-center gap-2 ${activeStep > 0 ? "" : "opacity-100"}`}>
+        <span className={`text-[11px] w-3 ${biasOK ? "text-emerald-400" : activeStep === 0 ? "text-yellow-400" : "text-zinc-600"}`}>
+          {biasOK ? "\u2713" : activeStep === 0 ? "\u25B6" : "\u2717"}
+        </span>
+        <span className="text-[11px] text-zinc-400 w-16">1. Bias</span>
+        <span className={`text-[11px] font-medium ${biasOK ? biasColor(ind.avwapBias) : "text-zinc-600"}`}>
+          {ind.avwapBias || "no direction"}
         </span>
       </div>
-      {/* All confluence factors in one row */}
-      <div className="flex items-center gap-3 flex-wrap">
-        {factors.map((f, i) => (
-          <span key={i} className={`text-[11px] ${f.active ? "text-emerald-400" : "text-zinc-600"}`}>
-            {f.active ? "\u2713" : "\u2717"} {f.label}(+{f.pts}){f.active && f.detail ? ` ${f.detail}` : ""}
-          </span>
-        ))}
+
+      {/* Step 2: Slope */}
+      <div className={`flex items-center gap-2 ${activeStep < 1 ? "opacity-40" : ""}`}>
+        <span className={`text-[11px] w-3 ${slopeOK ? "text-emerald-400" : activeStep === 1 ? "text-yellow-400" : activeStep > 1 ? "text-zinc-600" : "text-zinc-700"}`}>
+          {slopeOK ? "\u2713" : activeStep === 1 ? "\u25B6" : "\u2717"}
+        </span>
+        <span className="text-[11px] text-zinc-400 w-16">2. Slope</span>
+        <span className={`text-[11px] font-medium ${slopeOK ? "text-emerald-400" : "text-zinc-600"}`}>
+          {ind.slopeBPS.toFixed(1)} bps {slopeOK ? "" : "< 0.3 min"}
+        </span>
       </div>
-      {/* Indicators and gate */}
-      <div className="flex flex-wrap items-start gap-4">
-        <div className="flex flex-col gap-0.5">
-          <span className="text-[10px] text-zinc-500 uppercase">Bias</span>
-          <span className={`text-xs font-medium ${biasColor(ind.avwapBias)}`}>
-            {ind.avwapBias || "\u2014"}
+
+      {/* Step 3: Confluence */}
+      <div className={`flex items-center gap-2 ${activeStep < 2 ? "opacity-40" : ""}`}>
+        <span className={`text-[11px] w-3 ${confOK ? "text-emerald-400" : activeStep === 2 ? "text-yellow-400" : "text-zinc-700"}`}>
+          {confOK ? "\u2713" : activeStep === 2 ? "\u25B6" : "\u2717"}
+        </span>
+        <span className="text-[11px] text-zinc-400 w-16">3. Conf</span>
+        <div className="flex items-center gap-2 flex-1">
+          <div className="h-2 w-20 rounded-full bg-zinc-800 overflow-hidden">
+            <div className={`h-full rounded-full transition-all duration-300 ${confFillColor}`} style={{ width: `${Math.max(confPct, 2)}%` }} />
+          </div>
+          <span className={`text-[11px] font-mono ${confOK ? "text-emerald-400" : "text-zinc-300"}`}>{c.score}/{c.maxScore}</span>
+          <span className="text-[10px] text-zinc-500">
+            {factors.filter(f => f.active).map(f => f.detail || f.label).join(", ") || "none"}
           </span>
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <span className="text-[10px] text-zinc-500 uppercase">Slope</span>
-          <span className={`text-xs ${slopeColor(ind.slopeBPS)}`}>
-            {ind.slopeBPS.toFixed(1)} bps
-          </span>
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <span className="text-[10px] text-zinc-500 uppercase">Blocking Gate</span>
-          {avwap.blockingGate ? (
-            <span
-              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${blockingGateColor(avwap.blockingGate)}`}
-            >
-              {avwap.blockingGate}
-            </span>
-          ) : (
-            <span className="text-emerald-400 text-xs">All passed</span>
-          )}
         </div>
       </div>
-      {avwap.entryChecks && avwap.entryChecks.length > 0 && (
+
+      {/* Step 4: Entry Check */}
+      <div className={`flex items-center gap-2 ${activeStep < 3 ? "opacity-40" : ""}`}>
+        <span className={`text-[11px] w-3 ${activeStep === 3 ? "text-yellow-400" : activeStep > 3 ? "text-emerald-400" : "text-zinc-700"}`}>
+          {activeStep > 3 ? "\u2713" : activeStep === 3 ? "\u25B6" : "\u2717"}
+        </span>
+        <span className="text-[11px] text-zinc-400 w-16">4. Entry</span>
+        <span className="text-[11px] text-zinc-500">
+          {activeStep >= 3
+            ? (avwap.entryChecks && avwap.entryChecks.length > 0
+              ? `0/${avwap.entryChecks.length} patterns fired`
+              : "waiting for entry pattern")
+            : "pending"}
+        </span>
+      </div>
+
+      {/* Entry checks detail (when at step 4) */}
+      {activeStep >= 3 && avwap.entryChecks && avwap.entryChecks.length > 0 && (
         <EntryChecksPanel checks={avwap.entryChecks} />
       )}
     </div>
