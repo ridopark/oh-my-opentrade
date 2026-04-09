@@ -278,6 +278,11 @@ func evaluateEODFlatten(rule domain.ExitRule, pos *domain.MonitoredPosition, now
 
 	cal := domain.CalendarFor(pos.AssetClass)
 	if !cal.IsOpen(now) {
+		// After hours: retry if a prior exit attempt was canceled/timed out.
+		// Without this, a canceled EOD order leaves the position stuck forever.
+		if pos.ExitRetryCount > 0 {
+			return true, fmt.Sprintf("eod_flatten: after-hours retry #%d — prior exit order was canceled", pos.ExitRetryCount)
+		}
 		return false, ""
 	}
 
