@@ -86,6 +86,7 @@ interface BottomPanelProps {
   onSymbolClick: (sym: string) => void;
   barLog: BarLogEntry[];
   avwapProgress: Map<string, EntryGatedPayload>;
+  macdProgress: Map<string, EntryGatedPayload>;
   orbProgress: Map<string, ORBPhaseUpdatePayload>;
 }
 
@@ -97,6 +98,7 @@ export function BottomPanel({
   onSymbolClick,
   barLog,
   avwapProgress,
+  macdProgress,
   orbProgress,
 }: BottomPanelProps) {
   const symbolsWithRegime = useMemo(() => Object.keys(regimeBySymbol).sort(), [regimeBySymbol]);
@@ -104,11 +106,19 @@ export function BottomPanel({
 
   const strategySummary = useMemo(() => {
     const avwapCount = avwapProgress.size;
-    const gateBreakdown: Record<string, number> = {};
+    const avwapGateBreakdown: Record<string, number> = {};
     let avwapReady = 0;
     for (const [, p] of avwapProgress) {
       if (!p.blockingGate) { avwapReady++; continue; }
-      gateBreakdown[p.blockingGate] = (gateBreakdown[p.blockingGate] ?? 0) + 1;
+      avwapGateBreakdown[p.blockingGate] = (avwapGateBreakdown[p.blockingGate] ?? 0) + 1;
+    }
+
+    const macdCount = macdProgress.size;
+    const macdGateBreakdown: Record<string, number> = {};
+    let macdReady = 0;
+    for (const [, p] of macdProgress) {
+      if (!p.blockingGate) { macdReady++; continue; }
+      macdGateBreakdown[p.blockingGate] = (macdGateBreakdown[p.blockingGate] ?? 0) + 1;
     }
 
     const orbCount = orbProgress.size;
@@ -117,8 +127,12 @@ export function BottomPanel({
       phaseBreakdown[p.phase] = (phaseBreakdown[p.phase] ?? 0) + 1;
     }
 
-    return { avwapCount, avwapReady, gateBreakdown, orbCount, phaseBreakdown };
-  }, [avwapProgress, orbProgress]);
+    return {
+      avwapCount, avwapReady, avwapGateBreakdown,
+      macdCount, macdReady, macdGateBreakdown,
+      orbCount, phaseBreakdown,
+    };
+  }, [avwapProgress, macdProgress, orbProgress]);
 
   return (
     <div className={`mt-1 rounded-t-lg border border-border bg-card flex flex-col shrink-0 ${expanded ? "h-[200px]" : ""}`}>
@@ -289,7 +303,7 @@ export function BottomPanel({
         )}
 
         {bottomTab === "strategy" && (
-          <div className="p-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="p-3 grid grid-cols-1 md:grid-cols-3 gap-3">
             <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm font-bold">AVWAP Confluence</span>
@@ -306,9 +320,33 @@ export function BottomPanel({
                 </div>
               )}
               <p className="text-xs text-muted-foreground leading-relaxed">
-                {Object.keys(strategySummary.gateBreakdown).length === 0 && strategySummary.avwapCount === 0
+                {Object.keys(strategySummary.avwapGateBreakdown).length === 0 && strategySummary.avwapCount === 0
                   ? "No symbols being tracked."
-                  : Object.entries(strategySummary.gateBreakdown)
+                  : Object.entries(strategySummary.avwapGateBreakdown)
+                      .sort(([, a], [, b]) => b - a)
+                      .map(([gate, count]) => `${count} blocked by ${gate}`)
+                      .join(", ") || "All symbols passed gates."}
+              </p>
+            </div>
+            <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-bold">MACD (Bollinger + MACD)</span>
+                <Badge variant="outline" className="text-[9px]">15m</Badge>
+              </div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-[10px] text-muted-foreground w-14">Active</span>
+                <span className="text-xs font-mono font-medium">{strategySummary.macdCount} symbols</span>
+              </div>
+              {strategySummary.macdReady > 0 && (
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-[10px] text-muted-foreground w-14">Ready</span>
+                  <span className="text-xs font-mono font-medium text-emerald-400">{strategySummary.macdReady} (all gates passed)</span>
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                {Object.keys(strategySummary.macdGateBreakdown).length === 0 && strategySummary.macdCount === 0
+                  ? "No symbols being tracked."
+                  : Object.entries(strategySummary.macdGateBreakdown)
                       .sort(([, a], [, b]) => b - a)
                       .map(([gate, count]) => `${count} blocked by ${gate}`)
                       .join(", ") || "All symbols passed gates."}
