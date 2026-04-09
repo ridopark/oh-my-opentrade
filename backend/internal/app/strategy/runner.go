@@ -513,7 +513,7 @@ func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error
 
 	// Overlay dark pool microstructure data when available (backtest only).
 	if len(r.dpLookup) > 0 {
-		barTime5m := snap.Time.Truncate(5 * time.Minute)
+		barTime5m := snap.Time.UTC().Truncate(5 * time.Minute)
 		key := DPLookupKey{Symbol: snap.Symbol.String(), Time: barTime5m}
 		if dpBar, ok := r.dpLookup[key]; ok {
 			ind := r.indicators[snap.Symbol.String()]
