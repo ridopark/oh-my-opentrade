@@ -179,57 +179,47 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
 
   const activeStep = !biasOK ? 0 : !slopeOK ? 1 : !confOK ? 2 : 3;
 
-  const stepColor = (step: number, passed: boolean) =>
-    passed ? "text-emerald-400" : step === activeStep ? "text-yellow-400" : "text-zinc-600";
+  const pillClass = (step: number, passed: boolean) =>
+    passed
+      ? "bg-emerald-500/20 border border-emerald-500/40 text-emerald-300"
+      : step === activeStep
+        ? "bg-yellow-500/15 border border-yellow-500/50 text-yellow-200 animate-pulse"
+        : "bg-zinc-500/10 border border-zinc-600/30 text-zinc-500";
   const stepIcon = (passed: boolean, step: number) =>
-    passed ? "\u2713" : step === activeStep ? "\u25B6" : "\u2717";
-  const arrow = <span className="text-zinc-400 text-xs font-bold">{"\u2192"}</span>;
+    passed ? "\u2713" : step === activeStep ? "\u25B6" : "\u2022";
+  const arrow = <span className="text-zinc-400 text-sm font-bold shrink-0">{"\u2192"}</span>;
 
   return (
     <div className="space-y-2">
       <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">AVWAP Readiness</h4>
 
-      {/* Pipeline: Bias → Slope → Conf → Entry — full width */}
-      <div className="flex items-start w-full">
-        <div className="flex flex-col items-center flex-1 min-w-0">
-          <span className={`text-[11px] font-medium ${stepColor(0, biasOK)}`}>
-            {stepIcon(biasOK, 0)} Bias
-          </span>
-          <span className={`text-[10px] ${biasOK ? "text-emerald-300" : "text-zinc-600"}`}>
-            {biasOK ? ind.avwapBias : "\u2014"}
-          </span>
+      {/* Pipeline: Bias → Slope → Conf → Entry — full width pills */}
+      <div className="flex items-center gap-1 w-full">
+        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pillClass(0, biasOK)}`}>
+          <span className="text-[11px] font-medium">{stepIcon(biasOK, 0)} Bias</span>
+          <span className="text-[10px]">{biasOK ? ind.avwapBias : "\u2014"}</span>
         </div>
-        <div className="flex items-center pt-1.5">{arrow}</div>
-        <div className="flex flex-col items-center flex-1 min-w-0">
-          <span className={`text-[11px] font-medium ${stepColor(1, slopeOK)}`}>
-            {stepIcon(slopeOK, 1)} Slope
-          </span>
-          <span className={`text-[10px] ${slopeOK ? "text-emerald-300" : "text-zinc-600"}`}>
-            {ind.slopeBPS.toFixed(1)} bps
-          </span>
+        {arrow}
+        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pillClass(1, slopeOK)}`}>
+          <span className="text-[11px] font-medium">{stepIcon(slopeOK, 1)} Slope</span>
+          <span className="text-[10px]">{ind.slopeBPS.toFixed(1)} bps</span>
         </div>
-        <div className="flex items-center pt-1.5">{arrow}</div>
-        <div className="flex flex-col items-center flex-1 min-w-0">
-          <span className={`text-[11px] font-medium ${stepColor(2, confOK)}`}>
-            {stepIcon(confOK, 2)} Conf {c.score}/{c.maxScore}
-          </span>
-          <div className="w-full mt-0.5 px-1 space-y-0.5">
-            <div className="h-2 w-full rounded-full bg-zinc-800 overflow-hidden">
+        {arrow}
+        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pillClass(2, confOK)}`}>
+          <span className="text-[11px] font-medium">{stepIcon(confOK, 2)} Conf {c.score}/{c.maxScore}</span>
+          <div className="w-full mt-0.5 space-y-0.5">
+            <div className="h-1.5 w-full rounded-full bg-zinc-800/60 overflow-hidden">
               <div className={`h-full rounded-full transition-all duration-300 ${confFillColor}`} style={{ width: `${Math.max(confPct, 2)}%` }} />
             </div>
-            <span className="text-[9px] text-zinc-500 block truncate">
+            <span className="text-[9px] opacity-80 block truncate text-center">
               {factors.filter(f => f.active).map(f => f.detail || f.label).join(", ") || "none"}
             </span>
           </div>
         </div>
-        <div className="flex items-center pt-1.5">{arrow}</div>
-        <div className="flex flex-col items-center flex-1 min-w-0">
-          <span className={`text-[11px] font-medium ${stepColor(3, false)}`}>
-            {stepIcon(false, 3)} Entry
-          </span>
-          <span className="text-[10px] text-zinc-600">
-            {activeStep >= 3 ? "0 fired" : "\u2014"}
-          </span>
+        {arrow}
+        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pillClass(3, false)}`}>
+          <span className="text-[11px] font-medium">{stepIcon(false, 3)} Entry</span>
+          <span className="text-[10px]">{activeStep >= 3 ? "0 fired" : "\u2014"}</span>
         </div>
       </div>
 
