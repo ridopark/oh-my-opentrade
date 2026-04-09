@@ -96,6 +96,8 @@ export default function SignalMonitorPage() {
         regimeBySymbol={regimeBySymbol}
         onSymbolClick={() => {}}
         barLog={barLog}
+        avwapProgress={avwapProgress}
+        orbProgress={orbProgress}
       />
     </div>
   );

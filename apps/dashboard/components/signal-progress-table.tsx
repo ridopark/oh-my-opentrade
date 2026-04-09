@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Info, X, GripHorizontal } from "lucide-react";
+import { X, GripHorizontal } from "lucide-react";
 import type { EntryGatedPayload, EntryCheckResult, ORBPhaseUpdatePayload, BarSnapshot } from "@/lib/types";
 import { LiveChart, avwapAnchorColor, avwapAnchorLabel } from "@/components/live-chart";
 import { useChartData } from "@/lib/use-chart-data";
@@ -87,26 +87,6 @@ function confidenceColor(c: number): string {
   if (c >= 0.75) return "bg-emerald-500";
   if (c >= 0.5) return "bg-yellow-500";
   return "bg-red-500";
-}
-
-function orbChipColor(phase: string): string {
-  switch (phase) {
-    case "RETEST_CONFIRMED":
-    case "SIGNAL_FIRED":
-    case "DONE_FOR_SESSION":
-      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
-    case "AWAITING_RETEST":
-    case "BREAKOUT_SEEN":
-      return "border-blue-500/40 bg-blue-500/10 text-blue-300";
-    case "RANGE_SET":
-    case "FORMING_RANGE":
-      return "border-yellow-500/40 bg-yellow-500/10 text-yellow-300";
-    case "INVALID":
-      return "border-red-500/40 bg-red-500/10 text-red-300";
-    case "PRE_OPEN":
-    default:
-      return "border-zinc-500/40 bg-zinc-500/10 text-zinc-400";
-  }
 }
 
 function abbreviatePhase(phase: string): string {
@@ -374,21 +354,77 @@ function ORBDetail({ orb }: { orb: ORBPhaseUpdatePayload }) {
 // Heatmap cell background by normalized value (0-1)
 // ---------------------------------------------------------------------------
 
-function heatBg(value: number, max: number): string {
-  const ratio = max > 0 ? value / max : 0;
-  if (ratio >= 0.7) return "bg-emerald-500/20";
-  if (ratio >= 0.5) return "bg-yellow-500/15";
-  if (ratio >= 0.3) return "bg-zinc-500/10";
-  return "";
+// ---------------------------------------------------------------------------
+// Segmented Gate Bar — compact readiness indicator
+// ---------------------------------------------------------------------------
+
+interface GateBarSegment {
+  label: string;
+  status: "passed" | "active" | "pending";
 }
 
-// ---------------------------------------------------------------------------
-// Dot indicator for boolean factors
-// ---------------------------------------------------------------------------
+const AVWAP_GATE_ORDER = ["bias", "slope", "confluence", "entry_specific"] as const;
 
-function Dot({ active }: { active: boolean }) {
+function avwapSegments(avwap: EntryGatedPayload): GateBarSegment[] {
+  const blockIdx = avwap.blockingGate
+    ? AVWAP_GATE_ORDER.indexOf(avwap.blockingGate as typeof AVWAP_GATE_ORDER[number])
+    : AVWAP_GATE_ORDER.length;
+  return AVWAP_GATE_ORDER.map((gate, i) => ({
+    label: gate,
+    status: i < blockIdx ? "passed" as const
+      : i === blockIdx && blockIdx < AVWAP_GATE_ORDER.length ? "active" as const
+      : blockIdx >= AVWAP_GATE_ORDER.length ? "passed" as const
+      : "pending" as const,
+  }));
+}
+
+function orbSegments(orb: ORBPhaseUpdatePayload): GateBarSegment[] {
+  const LABELS = ["Range", "Breakout", "Retest", "Signal"] as const;
+  const THRESHOLDS = [2, 3, 4, 5];
+  const step = phaseStep(orb.phase);
+
+  if (orb.phase === "INVALID") {
+    return LABELS.map((label) => ({ label, status: "pending" as const }));
+  }
+
+  return LABELS.map((label, i) => {
+    if (step >= THRESHOLDS[i]) return { label, status: "passed" as const };
+    const prevPassed = i === 0 ? true : step >= THRESHOLDS[i - 1];
+    if (prevPassed && step < THRESHOLDS[i]) return { label, status: "active" as const };
+    return { label, status: "pending" as const };
+  });
+}
+
+function SegmentedGateBar({
+  segments,
+  summary,
+  summaryColor,
+  onClick,
+}: {
+  segments: GateBarSegment[];
+  summary: string;
+  summaryColor: string;
+  onClick: (e: React.MouseEvent) => void;
+}) {
   return (
-    <span className={`inline-block h-2 w-2 rounded-full ${active ? "bg-emerald-400" : "bg-zinc-700"}`} />
+    <div className="flex items-center gap-2 cursor-pointer" onClick={onClick}>
+      <div className="flex h-2 w-24 rounded-full bg-zinc-800 overflow-hidden gap-px">
+        {segments.map((seg, i) => (
+          <div
+            key={i}
+            className={`flex-1 ${
+              seg.status === "passed"
+                ? "bg-emerald-500"
+                : seg.status === "active"
+                  ? "bg-yellow-500 animate-pulse"
+                  : "bg-zinc-700"
+            } ${i === 0 ? "rounded-l-full" : ""} ${i === segments.length - 1 ? "rounded-r-full" : ""}`}
+            title={seg.label}
+          />
+        ))}
+      </div>
+      <span className={`text-[10px] font-mono whitespace-nowrap ${summaryColor}`}>{summary}</span>
+    </div>
   );
 }
 
@@ -577,23 +613,48 @@ function SignalRow({ row }: { row: UnifiedRow }) {
   const { symbol, avwap, orb, bar } = row;
   const priceUp = bar ? bar.close >= bar.open : true;
 
-  const c = avwap?.confluence;
-  const ind = avwap?.indicators;
-  const hasBreakout = orb ? !!orb.breakout.direction : false;
-
   const [open, setOpen] = useState(false);
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
-  const btnRef = useRef<HTMLButtonElement>(null);
+  const avwapBarRef = useRef<HTMLDivElement>(null);
+  const orbBarRef = useRef<HTMLDivElement>(null);
+
+  const handleOpen = useCallback((ref: React.RefObject<HTMLDivElement | null>) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (open) {
+      setOpen(false);
+    } else {
+      setAnchorRect(ref.current?.getBoundingClientRect() ?? null);
+      setOpen(true);
+    }
+  }, [open]);
+
+  // AVWAP bar data
+  const avwapSegs = avwap ? avwapSegments(avwap) : null;
+  const avwapSummary = avwap
+    ? `${avwap.confluence.score}/${avwap.confluence.maxScore} ${avwap.blockingGate || "OK"}`
+    : "";
+  const avwapSummaryColor = avwap
+    ? (avwap.blockingGate ? "text-zinc-400" : "text-emerald-400")
+    : "text-zinc-700";
+
+  // ORB bar data
+  const orbSegs = orb ? orbSegments(orb) : null;
+  const orbSummary = orb ? `${(orb.confidence * 100).toFixed(0)}% ${abbreviatePhase(orb.phase)}` : "";
+  const orbSummaryColor = orb
+    ? (orb.phase === "SIGNAL_FIRED" || orb.phase === "RETEST_CONFIRMED" ? "text-emerald-400"
+      : orb.phase === "INVALID" ? "text-red-400"
+      : "text-zinc-400")
+    : "text-zinc-700";
 
   return (
-    <tr className="border-b border-zinc-800/60 hover:bg-zinc-800/40 cursor-default h-7 text-[11px]">
+    <tr className="border-b border-zinc-800/60 hover:bg-zinc-800/40 cursor-default h-8 text-[11px]">
       {/* Symbol */}
       <td className={`pl-2 pr-1 font-mono font-bold text-zinc-100 border-l-3 ${borderColor(row.compositeScore)}`}>
         {symbol}
       </td>
 
       {/* Price */}
-      <td className="px-1 text-right font-mono">
+      <td className="px-2 text-right font-mono">
         {bar ? (
           <span className={priceUp ? "text-emerald-400" : "text-red-400"}>
             {bar.close.toFixed(2)}
@@ -603,145 +664,36 @@ function SignalRow({ row }: { row: UnifiedRow }) {
         )}
       </td>
 
-      {/* AVWAP Bias */}
-      <td className="px-1 text-center font-mono font-bold">
-        {ind ? (
-          <span className={biasColor(ind.avwapBias)}>
-            {ind.avwapBias === "LONG" ? "L" : ind.avwapBias === "SHORT" ? "S" : "-"}
-          </span>
-        ) : (
-          <span className="text-zinc-700">{"\u2014"}</span>
-        )}
-      </td>
-
-      {/* AVWAP Score — heatmap bg */}
-      <td className={`px-1 text-center font-mono ${c ? heatBg(c.score, c.maxScore) : ""}`}>
-        {c ? (
-          <span className="text-zinc-200">{c.score}/{c.maxScore}</span>
-        ) : (
-          <span className="text-zinc-700">{"\u2014"}</span>
-        )}
-      </td>
-
-      {/* Vol — heatmap bg */}
-      <td className={`px-1 text-center font-mono ${ind ? heatBg(ind.volumeRatio, 3) : ""}`}>
-        {ind ? (
-          <span className={volColor(ind.volumeRatio)}>{ind.volumeRatio.toFixed(1)}</span>
-        ) : (
-          <span className="text-zinc-700">{"\u2014"}</span>
-        )}
-      </td>
-
-      {/* Slope */}
-      <td className="px-1 text-center font-mono">
-        {ind ? (
-          <span className={slopeColor(ind.slopeBPS)}>{ind.slopeBPS.toFixed(1)}</span>
-        ) : (
-          <span className="text-zinc-700">{"\u2014"}</span>
-        )}
-      </td>
-
-      {/* Fib / Key / Candle / Band — dots */}
-      <td className="px-1 text-center"><Dot active={!!c?.fib} /></td>
-      <td className="px-1 text-center"><Dot active={!!c?.keyLevel} /></td>
-      <td className="px-1 text-center"><Dot active={!!c?.candle} /></td>
-      <td className="px-1 text-center"><Dot active={!!c?.band} /></td>
-
-      {/* Gate */}
-      <td className="px-1 text-center">
-        {avwap ? (
-          avwap.blockingGate ? (
-            <span className={`rounded-full border px-1 text-[10px] leading-4 ${blockingGateColor(avwap.blockingGate)}`}>
-              {avwap.blockingGate}
-            </span>
-          ) : (
-            <span className="text-emerald-400/60">OK</span>
-          )
-        ) : (
-          <span className="text-zinc-700">{"\u2014"}</span>
-        )}
-      </td>
-
-      {/* ORB Phase */}
-      <td className="px-1 text-center">
-        {orb ? (
-          <span className={`rounded-full border px-1.5 text-[10px] leading-4 ${orbChipColor(orb.phase)}`}>
-            {abbreviatePhase(orb.phase)}
-          </span>
-        ) : (
-          <span className="text-zinc-700">{"\u2014"}</span>
-        )}
-      </td>
-
-      {/* ORB Dir */}
-      <td className="px-1 text-center font-mono font-medium">
-        {hasBreakout && orb ? (
-          <span className={orb.breakout.direction === "LONG" ? "text-emerald-400" : "text-red-400"}>
-            {orb.breakout.direction === "LONG" ? "L" : "S"}
-          </span>
-        ) : (
-          <span className="text-zinc-700">{"\u2014"}</span>
-        )}
-      </td>
-
-      {/* ORB RVOL — heatmap bg */}
-      <td className={`px-1 text-center font-mono ${hasBreakout && orb ? heatBg(orb.breakout.rvol, 3) : ""}`}>
-        {hasBreakout && orb ? (
-          <span className={volColor(orb.breakout.rvol)}>{orb.breakout.rvol.toFixed(1)}</span>
-        ) : (
-          <span className="text-zinc-700">{"\u2014"}</span>
-        )}
-      </td>
-
-      {/* Retest */}
-      <td className="px-1 text-center font-mono">
-        {orb && hasBreakout ? (
-          orb.retest.holdConfirmed ? (
-            <span className="text-emerald-400 font-medium">Y</span>
-          ) : orb.retest.touched ? (
-            <span className="text-yellow-400">T</span>
-          ) : (
-            <span className="text-zinc-400">{orb.retest.barsSinceBreak}/{orb.retest.maxRetestBars}</span>
-          )
-        ) : (
-          <span className="text-zinc-700">{"\u2014"}</span>
-        )}
-      </td>
-
-      {/* Confidence — inline bar */}
-      <td className="px-1">
-        {orb ? (
-          <div className="flex items-center gap-1">
-            <div className="h-1.5 w-8 rounded-full bg-zinc-800 overflow-hidden">
-              <div
-                className={`h-full rounded-full ${confidenceColor(orb.confidence)}`}
-                style={{ width: `${orb.confidence * 100}%` }}
-              />
-            </div>
-            <span className="text-zinc-500 text-[10px]">{(orb.confidence * 100).toFixed(0)}%</span>
+      {/* AVWAP Readiness */}
+      <td className="px-2">
+        {avwapSegs ? (
+          <div ref={avwapBarRef}>
+            <SegmentedGateBar
+              segments={avwapSegs}
+              summary={avwapSummary}
+              summaryColor={avwapSummaryColor}
+              onClick={handleOpen(avwapBarRef)}
+            />
           </div>
         ) : (
-          <span className="text-zinc-700">{"\u2014"}</span>
+          <span className="text-zinc-700 text-[10px]">{"\u2014"}</span>
         )}
       </td>
 
-      {/* Detail panel button */}
-      <td className="px-1 pr-2 text-center">
-        <button
-          ref={btnRef}
-          className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300 transition-colors"
-          onClick={(e) => {
-            e.stopPropagation();
-            if (open) {
-              setOpen(false);
-            } else {
-              setAnchorRect(btnRef.current?.getBoundingClientRect() ?? null);
-              setOpen(true);
-            }
-          }}
-        >
-          <Info className="h-3.5 w-3.5" />
-        </button>
+      {/* ORB Readiness */}
+      <td className="px-2">
+        {orbSegs ? (
+          <div ref={orbBarRef}>
+            <SegmentedGateBar
+              segments={orbSegs}
+              summary={orbSummary}
+              summaryColor={orbSummaryColor}
+              onClick={handleOpen(orbBarRef)}
+            />
+          </div>
+        ) : (
+          <span className="text-zinc-700 text-[10px]">{"\u2014"}</span>
+        )}
         {open && anchorRect && (
           <DetailPanel
             symbol={symbol}
@@ -762,18 +714,12 @@ function SignalRow({ row }: { row: UnifiedRow }) {
 // ---------------------------------------------------------------------------
 
 const COL_GROUPS = [
-  { label: "", span: 2 },                    // Symbol + Price
-  { label: "AVWAP", span: 9 },               // Bias, Score, Vol, Slope, Fib, Key, Cndl, Band, Gate
-  { label: "ORB", span: 5 },                 // Phase, Dir, RVOL, Retest, Conf
-  { label: "", span: 1 },                    // Detail button
+  { label: "", span: 2 },
+  { label: "AVWAP", span: 1 },
+  { label: "ORB", span: 1 },
 ] as const;
 
-const COLUMNS = [
-  "Sym", "Price",
-  "Bias", "Score", "Vol", "Slope", "Fib", "Key", "Cndl", "Band", "Gate",
-  "Phase", "Dir", "RVOL", "Retest", "Conf",
-  "",
-] as const;
+const COLUMNS = ["Sym", "Price", "Readiness", "Readiness"] as const;
 
 // ---------------------------------------------------------------------------
 // Main component

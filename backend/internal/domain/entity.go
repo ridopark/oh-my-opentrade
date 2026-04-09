@@ -11,23 +11,23 @@ import (
 
 // MarketBar represents a single OHLCV candle for a symbol and timeframe.
 type MarketBar struct {
-	Time      time.Time
-	Symbol    Symbol
-	Timeframe Timeframe
-	Open      float64
-	High      float64
-	Low       float64
-	Close     float64
-	Volume    float64
-	Suspect   bool
+	Time      time.Time `json:"time"`
+	Symbol    Symbol    `json:"symbol"`
+	Timeframe Timeframe `json:"timeframe"`
+	Open      float64   `json:"open"`
+	High      float64   `json:"high"`
+	Low       float64   `json:"low"`
+	Close     float64   `json:"close"`
+	Volume    float64   `json:"volume"`
+	Suspect   bool      `json:"suspect,omitempty"`
 
 	// Microstructure metadata from broker feed.
-	TradeCount uint64 // number of trades in this bar (0 if unavailable)
+	TradeCount uint64 `json:"tradeCount,omitempty"` // number of trades in this bar (0 if unavailable)
 
 	// Spike repair metadata — populated by AdaptiveFilter when High/Low are clamped.
-	Repaired     bool    // true if High/Low were clamped by the adaptive spike filter
-	OriginalHigh float64 // pre-repair High (0 if not repaired)
-	OriginalLow  float64 // pre-repair Low (0 if not repaired)
+	Repaired     bool    `json:"repaired,omitempty"`     // true if High/Low were clamped by the adaptive spike filter
+	OriginalHigh float64 `json:"originalHigh,omitempty"` // pre-repair High (0 if not repaired)
+	OriginalLow  float64 `json:"originalLow,omitempty"`  // pre-repair Low (0 if not repaired)
 
 	// Enriched indicator data — populated asynchronously from EnrichedBar events.
 	// Zero values mean "not available". AVWAPs nil means "not available".
