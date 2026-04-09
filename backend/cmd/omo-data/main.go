@@ -15,10 +15,13 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
 	"github.com/oh-my-opentrade/backend/internal/adapters/ibkr"
+	"github.com/oh-my-opentrade/backend/internal/adapters/openfigi"
+	"github.com/oh-my-opentrade/backend/internal/adapters/sec"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/oh-my-opentrade/backend/internal/app/datarefresh"
 	"github.com/oh-my-opentrade/backend/internal/app/ivcollector"
+	"github.com/oh-my-opentrade/backend/internal/app/whale13f"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/logger"
 	"github.com/rs/zerolog"
@@ -164,6 +167,23 @@ func main() {
 		)
 		if err := ivSvc.Start(ctx); err != nil {
 			log.Warn().Err(err).Msg("IV collector failed to start")
+		}
+	}
+
+	// 13F whale accumulation (periodic refresh — only when SEC_USER_AGENT is set)
+	if ua := os.Getenv("SEC_USER_AGENT"); ua != "" {
+		whaleDB := timescaledb.NewSqlDB(sqlDB)
+		whaleRepo := timescaledb.NewWhaleRepo(whaleDB, log.With().Str("component", "whale_repo").Logger())
+		cusipCache := timescaledb.NewCUSIPCacheRepo(whaleDB, log.With().Str("component", "cusip_cache").Logger())
+		edgarClient := sec.NewEdgarClient(ua, log.With().Str("component", "sec_edgar").Logger())
+		figiClient := openfigi.NewClient(os.Getenv("OPENFIGI_API_KEY"), log.With().Str("component", "openfigi").Logger())
+		whaleSvc := whale13f.NewScheduledService(whale13f.ScheduledConfig{
+			RunAtHourET:   6,
+			RunAtMinuteET: 0,
+			UserAgent:     ua,
+		}, edgarClient, figiClient, cusipCache, whaleRepo, log.With().Str("component", "whale_13f").Logger())
+		if err := whaleSvc.Start(ctx); err != nil {
+			log.Warn().Err(err).Msg("13F whale service failed to start")
 		}
 	}
 
