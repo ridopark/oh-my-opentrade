@@ -869,18 +869,44 @@ func (st *BMState) EmitSignalProgress() []any {
 	if st.CalcBarCount < 2 {
 		return nil
 	}
-	blockingGate := "crossover"
-	if st.CalcBarCount < st.Config.StabilizationBars {
+	// Evaluate gates from cached indicator state.
+	ind := st.Indicators
+	var blockingGate, blockingDetail string
+	gatesPassed := 0
+
+	// Gate 1: Warmup
+	warmupOK := st.CalcBarCount >= st.Config.StabilizationBars
+	if warmupOK {
+		gatesPassed++
+	} else {
 		blockingGate = "warmup"
+		blockingDetail = fmt.Sprintf("bar %d/%d", st.CalcBarCount, st.Config.StabilizationBars)
 	}
+
+	// Gate 2: Regime (EMA9 available = warmup produced indicators)
+	regimeOK := warmupOK && ind.EMA9 > 0
+	if regimeOK {
+		gatesPassed++
+	} else if blockingGate == "" {
+		blockingGate = "regime"
+		blockingDetail = "no EMA9 directional bias"
+	}
+
+	// Gate 3+4: Crossover and filters — can't fully evaluate without live bar
+	if blockingGate == "" {
+		blockingGate = "crossover"
+		blockingDetail = "waiting for MACD crossover"
+	}
+
 	return []any{domain.EntryGatedPayload{
-		Symbol:       st.Symbol,
-		Strategy:     "bollinger_macd",
-		SetupType:    "macd_cross",
-		GatesPassed:  2,
-		GatesTotal:   4,
-		BlockingGate: blockingGate,
-		Confluence:   domain.EntryGatedConfluence{Score: 0, MaxScore: st.Config.MinConfluenceScore},
-		Bar:          domain.BarSnapshot{},
+		Symbol:         st.Symbol,
+		Strategy:       "bollinger_macd",
+		SetupType:      "macd_cross",
+		GatesPassed:    gatesPassed,
+		GatesTotal:     4,
+		BlockingGate:   blockingGate,
+		BlockingDetail: blockingDetail,
+		Confluence:     domain.EntryGatedConfluence{Score: 0, MaxScore: st.Config.MinConfluenceScore},
+		Bar:            domain.BarSnapshot{},
 	}}
 }
