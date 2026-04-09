@@ -119,6 +119,9 @@ func (stubRepo) GetNetPositions(context.Context, string, domain.EnvMode) (map[do
 func (stubRepo) GetAvgEntryPrice(context.Context, string, domain.EnvMode, domain.Symbol) (float64, error) {
 	return 0, nil
 }
+func (stubRepo) HasCanceledExitOrder(context.Context, string, domain.EnvMode, domain.Symbol) (bool, error) {
+	return false, nil
+}
 func (stubRepo) UpdateBarIndicators(context.Context, domain.Symbol, domain.Timeframe, time.Time, float64, float64, float64, float64, map[string]float64) error {
 	return nil
 }

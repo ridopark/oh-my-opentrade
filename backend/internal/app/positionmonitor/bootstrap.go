@@ -218,6 +218,13 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 			}
 		}
 
+		// Restore ExitRetryCount if the last exit order was canceled/expired.
+		// Without this, after-hours EOD flatten retries reset to 0 on every restart.
+		if canceled, err := s.repo.HasCanceledExitOrder(ctx, s.tenantID, s.envMode, sym); err == nil && canceled {
+			pos.ExitRetryCount = 1
+			s.log.Info().Str("symbol", string(sym)).Msg("bootstrap: ExitRetryCount restored — last exit order was canceled")
+		}
+
 		if maxHigh, err := s.repo.GetMaxBarHighSince(ctx, sym, "1m", entryTime); err == nil && maxHigh > pos.HighWaterMark {
 			pos.HighWaterMark = maxHigh
 			s.log.Info().

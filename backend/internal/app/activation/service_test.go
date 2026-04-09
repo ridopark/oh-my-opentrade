@@ -146,6 +146,9 @@ func (m *mockRepo) GetNetPositions(_ context.Context, _ string, _ domain.EnvMode
 func (m *mockRepo) GetAvgEntryPrice(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol) (float64, error) {
 	return 0, nil
 }
+func (m *mockRepo) HasCanceledExitOrder(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol) (bool, error) {
+	return false, nil
+}
 func (m *mockRepo) UpdateBarIndicators(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _ time.Time, _, _, _, _ float64, _ map[string]float64) error {
 	return nil
 }
