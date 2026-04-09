@@ -19,7 +19,7 @@ priority = 80
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
 watchlist_mode = "static"
-asset_classes = ["OPTION"]
+asset_classes = ["OPTION", "EQUITY"]
 allowed_directions = ["LONG", "SHORT"]
 
 [screening]
@@ -79,7 +79,7 @@ handoff_min_mom_bps = 25
 
 # --- Volume & Regime ---
 # Minimum volume multiple vs 20-bar SMA to confirm entries
-volume_mult = 1.5                # relaxed from 2.5 (was filtering 70% of bars)
+volume_mult = 1.0                # loosened for live broker testing
 
 # Allowed EMA regimes (drop TREND_UP — longs in uptrends get faded)
 allow_regimes = ["TREND_UP", "TREND_DOWN", "BALANCE"]
@@ -93,18 +93,18 @@ require_higher_lows = false      # disabled — hurts overall PF
 higher_lows_bars = 3             # reduced from 5
 
 # Block entries during 11:00-13:00 ET unless volume exceeds this multiple
-midday_trap_shield = true        # block low-quality 11-13 ET entries
-midday_volume_mult = 1.5
+midday_trap_shield = false       # allow midday entries for broker testing
+midday_volume_mult = 1.0
 
 # Directional bias: only long when price is above AVWAP, only short when below
 enforce_avwap_bias = true        # only long above AVWAP, short below
 
 # AVWAP slope must exceed this threshold (bps/bar) for trend confirmation
-min_slope_bps = 0.5              # require stronger AVWAP slope
+min_slope_bps = 0.0              # no slope filter for broker testing
 slope_lookback = 10              # shorter lookback (was 15)
 
 # Shorts above AVWAP require a capitulation event
-require_capitulation_for_shorts = true   # shorts need capitulation signal
+require_capitulation_for_shorts = false  # allow shorts freely for broker testing
 
 # --- Risk ---
 # Underlying stop distance in basis points
@@ -126,10 +126,10 @@ allowed_hours_end = "15:45"      # full RTH for live testing
 allowed_hours_tz = "America/New_York"
 
 # Cooldown between trades on the same symbol (seconds)
-cooldown_seconds = 3600          # 1hr cooldown per symbol
+cooldown_seconds = 300           # 5min cooldown for broker testing
 
 # Maximum entries per symbol per session
-max_trades_per_day = 2           # limit overtrading per symbol
+max_trades_per_day = 5           # allow more entries for broker testing
 
 # Bars to hold before basic AVWAP exit check fires
 exit_hold_bars = 3               # reduced from 5
@@ -146,7 +146,7 @@ avwap_stop_buffer_bps = 20       # wider buffer (was 10) — less noise exits
 
 # --- Confluence Weighting ---
 # Entries scored 0-10 based on confirmation factors. Below threshold = filtered out.
-min_confluence_score = 8         # high-conviction entries only
+min_confluence_score = 3         # low bar for broker testing
 
 # Fibonacci convergence (+3): AVWAP aligns with 38.2%/50%/61.8% retracement
 fib_confluence_enabled = true
