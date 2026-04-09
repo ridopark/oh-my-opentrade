@@ -365,21 +365,6 @@ interface GateBarSegment {
   status: "passed" | "active" | "pending";
 }
 
-const AVWAP_GATE_ORDER = ["bias", "slope", "confluence", "entry_specific"] as const;
-
-function avwapSegments(avwap: EntryGatedPayload): GateBarSegment[] {
-  const blockIdx = avwap.blockingGate
-    ? AVWAP_GATE_ORDER.indexOf(avwap.blockingGate as typeof AVWAP_GATE_ORDER[number])
-    : AVWAP_GATE_ORDER.length;
-  return AVWAP_GATE_ORDER.map((gate, i) => ({
-    label: gate,
-    status: i < blockIdx ? "passed" as const
-      : i === blockIdx && blockIdx < AVWAP_GATE_ORDER.length ? "active" as const
-      : blockIdx >= AVWAP_GATE_ORDER.length ? "passed" as const
-      : "pending" as const,
-  }));
-}
-
 function orbSegments(orb: ORBPhaseUpdatePayload): GateBarSegment[] {
   const LABELS = ["Range", "Breakout", "Retest", "Signal"] as const;
   const THRESHOLDS = [2, 3, 4, 5];
@@ -395,21 +380,6 @@ function orbSegments(orb: ORBPhaseUpdatePayload): GateBarSegment[] {
     if (prevPassed && step < THRESHOLDS[i]) return { label, status: "active" as const };
     return { label, status: "pending" as const };
   });
-}
-
-const MACD_GATE_ORDER = ["warmup", "regime", "crossover", "filters"] as const;
-
-function macdSegments(macd: EntryGatedPayload): GateBarSegment[] {
-  const blockIdx = macd.blockingGate
-    ? MACD_GATE_ORDER.indexOf(macd.blockingGate as typeof MACD_GATE_ORDER[number])
-    : MACD_GATE_ORDER.length;
-  return MACD_GATE_ORDER.map((gate, i) => ({
-    label: gate,
-    status: i < blockIdx ? "passed" as const
-      : i === blockIdx && blockIdx < MACD_GATE_ORDER.length ? "active" as const
-      : blockIdx >= MACD_GATE_ORDER.length ? "passed" as const
-      : "pending" as const,
-  }));
 }
 
 function SegmentedGateBar({
@@ -439,6 +409,34 @@ function SegmentedGateBar({
             title={seg.label}
           />
         ))}
+      </div>
+      <span className={`text-[10px] font-mono whitespace-nowrap ${summaryColor}`}>{summary}</span>
+    </div>
+  );
+}
+
+function ContinuousGateBar({
+  score,
+  maxScore,
+  summary,
+  summaryColor,
+  onClick,
+}: {
+  score: number;
+  maxScore: number;
+  summary: string;
+  summaryColor: string;
+  onClick: (e: React.MouseEvent) => void;
+}) {
+  const pct = maxScore > 0 ? Math.min(100, (score / maxScore) * 100) : 0;
+  const fillColor = pct >= 70 ? "bg-emerald-500" : pct >= 40 ? "bg-yellow-500" : pct > 0 ? "bg-orange-500" : "bg-zinc-700";
+  return (
+    <div className="flex items-center gap-2 cursor-pointer" onClick={onClick}>
+      <div className="h-2 w-24 rounded-full bg-zinc-800 overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all duration-300 ${fillColor}`}
+          style={{ width: `${Math.max(pct, 2)}%` }}
+        />
       </div>
       <span className={`text-[10px] font-mono whitespace-nowrap ${summaryColor}`}>{summary}</span>
     </div>
@@ -647,7 +645,6 @@ function SignalRow({ row }: { row: UnifiedRow }) {
   }, [open]);
 
   // AVWAP bar data
-  const avwapSegs = avwap ? avwapSegments(avwap) : null;
   const avwapSummary = avwap
     ? `${avwap.confluence.score}/${avwap.confluence.maxScore} ${avwap.blockingGate || "OK"}`
     : "";
@@ -656,7 +653,6 @@ function SignalRow({ row }: { row: UnifiedRow }) {
     : "text-zinc-700";
 
   // MACD bar data
-  const macdSegs = macd ? macdSegments(macd) : null;
   const macdSummary = macd
     ? `${macd.confluence.score}/${macd.confluence.maxScore} ${macd.blockingGate || "OK"}`
     : "";
@@ -692,11 +688,12 @@ function SignalRow({ row }: { row: UnifiedRow }) {
       </td>
 
       {/* AVWAP Readiness */}
-      <td className="px-2">
-        {avwapSegs ? (
-          <div ref={avwapBarRef}>
-            <SegmentedGateBar
-              segments={avwapSegs}
+      <td className="px-2 text-center">
+        {avwap ? (
+          <div ref={avwapBarRef} className="inline-block">
+            <ContinuousGateBar
+              score={avwap.confluence.score}
+              maxScore={avwap.confluence.maxScore}
               summary={avwapSummary}
               summaryColor={avwapSummaryColor}
               onClick={handleOpen(avwapBarRef)}
@@ -708,11 +705,12 @@ function SignalRow({ row }: { row: UnifiedRow }) {
       </td>
 
       {/* MACD Readiness */}
-      <td className="px-2">
-        {macdSegs ? (
-          <div ref={macdBarRef}>
-            <SegmentedGateBar
-              segments={macdSegs}
+      <td className="px-2 text-center">
+        {macd ? (
+          <div ref={macdBarRef} className="inline-block">
+            <ContinuousGateBar
+              score={macd.confluence.score}
+              maxScore={macd.confluence.maxScore}
               summary={macdSummary}
               summaryColor={macdSummaryColor}
               onClick={handleOpen(macdBarRef)}
@@ -724,9 +722,9 @@ function SignalRow({ row }: { row: UnifiedRow }) {
       </td>
 
       {/* ORB Readiness */}
-      <td className="px-2">
+      <td className="px-2 text-center">
         {orbSegs ? (
-          <div ref={orbBarRef}>
+          <div ref={orbBarRef} className="inline-block">
             <SegmentedGateBar
               segments={orbSegs}
               summary={orbSummary}
