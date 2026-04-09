@@ -31,9 +31,7 @@ func BuildIngestion(deps IngestionDeps) (*IngestionBundle, error) {
 	ingLog := deps.Logger.With().Str("component", "ingestion").Logger()
 
 	filter := ingestion.NewAdaptiveFilter(20, 4.0)
-	if deps.IsBacktest {
-		filter.SetPassthrough(true)
-	}
+	filter.SetPassthrough(true) // trust SIP bars — z-score gate rejects legitimate volatile moves
 	svc := ingestion.NewService(deps.EventBus, deps.Repo, filter, ingLog)
 	if deps.IsBacktest {
 		svc.SetBacktest(true)
