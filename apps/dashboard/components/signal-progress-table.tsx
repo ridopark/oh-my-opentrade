@@ -176,40 +176,36 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
   const confOK = c.maxScore > 0 && c.score >= c.maxScore;
   const confPct = c.maxScore > 0 ? Math.min(100, (c.score / c.maxScore) * 100) : 0;
   const confFillColor = confPct >= 100 ? "bg-emerald-500" : confPct >= 50 ? "bg-yellow-500" : confPct > 0 ? "bg-orange-500" : "bg-zinc-700";
+  const allPreGatesOK = biasOK && slopeOK && confOK;
+  const entryBlocking = allPreGatesOK && avwap.blockingGate === "entry_specific";
 
-  const activeStep = !biasOK ? 0 : !slopeOK ? 1 : !confOK ? 2 : 3;
-
-  const pillClass = (step: number, passed: boolean) =>
+  // Each pill is independently pass/fail — not sequential
+  const pill = (passed: boolean, blocking: boolean) =>
     passed
       ? "bg-emerald-500/20 border border-emerald-500/40 text-emerald-300"
-      : step === activeStep
+      : blocking
         ? "bg-yellow-500/15 border border-yellow-500/50 text-yellow-200 animate-pulse"
         : "bg-zinc-500/10 border border-zinc-600/30 text-zinc-500";
-  const stepIcon = (passed: boolean, step: number) =>
-    passed ? "\u2713" : step === activeStep ? "\u25B6" : "\u2022";
+  const icon = (passed: boolean, blocking: boolean) =>
+    passed ? "\u2713" : blocking ? "\u25B6" : "\u2717";
   const arrow = <span className="text-zinc-400 text-sm font-bold shrink-0">{"\u2192"}</span>;
 
   return (
     <div className="space-y-2">
       <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">AVWAP Readiness</h4>
 
-      {/* Pipeline: Bias → Slope → Conf → Entry — full width pills */}
+      {/* Pipeline: Bias → Conf → Slope → Entry — each independently evaluated */}
       <div className="flex items-center gap-1 w-full">
-        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pillClass(0, biasOK)}`}>
-          <span className="text-[11px] font-medium">{stepIcon(biasOK, 0)} Bias</span>
+        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(biasOK, !biasOK)}`}>
+          <span className="text-[11px] font-medium">{icon(biasOK, !biasOK)} Bias</span>
           <span className="text-[10px]">{biasOK ? ind.avwapBias : "\u2014"}</span>
         </div>
         {arrow}
-        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pillClass(1, slopeOK)}`}>
-          <span className="text-[11px] font-medium">{stepIcon(slopeOK, 1)} Slope</span>
-          <span className="text-[10px]">{ind.slopeBPS.toFixed(1)} bps</span>
-        </div>
-        {arrow}
-        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pillClass(2, confOK)}`}>
-          <span className="text-[11px] font-medium">{stepIcon(confOK, 2)} Conf {c.score}/{c.maxScore}</span>
+        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(confOK, !confOK)}`}>
+          <span className="text-[11px] font-medium">{icon(confOK, !confOK)} Conf {c.score}/{c.maxScore}</span>
           <div className="w-full mt-0.5 space-y-0.5">
-            <div className={`h-1.5 w-full rounded-full ${activeStep >= 2 ? "bg-zinc-800/60" : "bg-zinc-700/40"} overflow-hidden`}>
-              <div className={`h-full rounded-full transition-all duration-300 ${activeStep >= 2 ? confFillColor : "bg-zinc-600"}`} style={{ width: `${Math.max(confPct, 2)}%` }} />
+            <div className="h-1.5 w-full rounded-full bg-zinc-800/60 overflow-hidden">
+              <div className={`h-full rounded-full transition-all duration-300 ${confFillColor}`} style={{ width: `${Math.max(confPct, 2)}%` }} />
             </div>
             <span className="text-[9px] opacity-80 block truncate text-center">
               {factors.filter(f => f.active).map(f => f.detail || f.label).join(", ") || "none"}
@@ -217,14 +213,19 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
           </div>
         </div>
         {arrow}
-        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pillClass(3, false)}`}>
-          <span className="text-[11px] font-medium">{stepIcon(false, 3)} Entry</span>
-          <span className="text-[10px]">{activeStep >= 3 ? "0 fired" : "\u2014"}</span>
+        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(slopeOK, !slopeOK)}`}>
+          <span className="text-[11px] font-medium">{icon(slopeOK, !slopeOK)} Slope</span>
+          <span className="text-[10px]">{ind.slopeBPS.toFixed(1)} bps</span>
+        </div>
+        {arrow}
+        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(entryBlocking ? false : allPreGatesOK, entryBlocking)}`}>
+          <span className="text-[11px] font-medium">{icon(false, entryBlocking)} Entry</span>
+          <span className="text-[10px]">{entryBlocking ? "0 fired" : "\u2014"}</span>
         </div>
       </div>
 
-      {/* Entry checks detail (when at step 4) */}
-      {activeStep >= 3 && avwap.entryChecks && avwap.entryChecks.length > 0 && (
+      {/* Entry checks detail (when all pre-gates pass) */}
+      {entryBlocking && avwap.entryChecks && avwap.entryChecks.length > 0 && (
         <EntryChecksPanel checks={avwap.entryChecks} />
       )}
     </div>
@@ -338,28 +339,29 @@ interface GateBarSegment {
   status: "passed" | "active" | "pending";
 }
 
-const AVWAP_GATE_ORDER = ["bias", "slope", "confluence", "entry_specific"] as const;
 // Operational gates that block before the 4 conceptual gates are evaluated
 const AVWAP_OPERATIONAL_GATES = ["cooldown", "max_trades", "hours", "position", "regime"];
 
 function avwapSegments(avwap: EntryGatedPayload): GateBarSegment[] {
   // Operational gates (cooldown, hours, etc.) → all segments pending
   if (AVWAP_OPERATIONAL_GATES.includes(avwap.blockingGate)) {
-    return AVWAP_GATE_ORDER.map((gate) => ({
-      label: gate,
+    return ["Bias", "Conf", "Slope", "Entry"].map((label) => ({
+      label,
       status: "pending" as const,
     }));
   }
-  const blockIdx = avwap.blockingGate
-    ? AVWAP_GATE_ORDER.indexOf(avwap.blockingGate as typeof AVWAP_GATE_ORDER[number])
-    : AVWAP_GATE_ORDER.length;
-  return AVWAP_GATE_ORDER.map((gate, i) => ({
-    label: gate,
-    status: i < blockIdx ? "passed" as const
-      : i === blockIdx && blockIdx < AVWAP_GATE_ORDER.length ? "active" as const
-      : blockIdx >= AVWAP_GATE_ORDER.length ? "passed" as const
-      : "pending" as const,
-  }));
+  // Each gate is independently evaluated
+  const biasOK = !!avwap.indicators.avwapBias;
+  const slopeOK = Math.abs(avwap.indicators.slopeBPS) >= 0.3;
+  const confOK = avwap.confluence.maxScore > 0 && avwap.confluence.score >= avwap.confluence.maxScore;
+  const allOK = biasOK && slopeOK && confOK;
+  const entryBlocking = allOK && avwap.blockingGate === "entry_specific";
+  return [
+    { label: "Bias", status: biasOK ? "passed" as const : "active" as const },
+    { label: "Conf", status: confOK ? "passed" as const : "active" as const },
+    { label: "Slope", status: slopeOK ? "passed" as const : "active" as const },
+    { label: "Entry", status: entryBlocking ? "active" as const : allOK ? "passed" as const : "pending" as const },
+  ];
 }
 
 const MACD_GATE_ORDER = ["warmup", "regime", "crossover", "filters"] as const;
