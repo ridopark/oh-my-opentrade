@@ -208,8 +208,8 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
         <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pillClass(2, confOK)}`}>
           <span className="text-[11px] font-medium">{stepIcon(confOK, 2)} Conf {c.score}/{c.maxScore}</span>
           <div className="w-full mt-0.5 space-y-0.5">
-            <div className="h-1.5 w-full rounded-full bg-zinc-800/60 overflow-hidden">
-              <div className={`h-full rounded-full transition-all duration-300 ${confFillColor}`} style={{ width: `${Math.max(confPct, 2)}%` }} />
+            <div className={`h-1.5 w-full rounded-full ${activeStep >= 2 ? "bg-zinc-800/60" : "bg-zinc-700/40"} overflow-hidden`}>
+              <div className={`h-full rounded-full transition-all duration-300 ${activeStep >= 2 ? confFillColor : "bg-zinc-600"}`} style={{ width: `${Math.max(confPct, 2)}%` }} />
             </div>
             <span className="text-[9px] opacity-80 block truncate text-center">
               {factors.filter(f => f.active).map(f => f.detail || f.label).join(", ") || "none"}
