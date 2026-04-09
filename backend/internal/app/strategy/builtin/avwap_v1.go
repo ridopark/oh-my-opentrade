@@ -174,11 +174,17 @@ type AVWAPState struct {
 
 	LastGatedBarTime time.Time // rate-limit EntryGated events to one per bar
 
-	PrevBars     [2]start.Bar       // 2-bar lookback for candlestick patterns
+	PrevBars [2]start.Bar // 2-bar lookback for candlestick patterns
 	PrevBarCount int                // how many prev bars have been stored (0, 1, or 2)
 	BarHighs50   []float64          // rolling 50-bar high window for Fibonacci
 	BarLows50    []float64          // rolling 50-bar low window for Fibonacci
 	KeyLevels    map[string]float64 // key price levels (pd_high, pd_low, or_high, or_low)
+}
+
+// ResetGatedBarTime clears the dedup guard so the next live bar emits an EntryGated event.
+// Called by the runner after warmup completes.
+func (s *AVWAPState) ResetGatedBarTime() {
+	s.LastGatedBarTime = time.Time{}
 }
 
 // recordCheck appends a failed entry check result.
@@ -1870,6 +1876,23 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 		blockingDetail = fmt.Sprintf("score %d < %d min", conf.Score, cfg.MinConfluenceScore)
 	}
 
+	// Populate entryChecks when at entry_specific gate (confluence passed).
+	if blockingGate == "entry_specific" && s.PrevBarCount > 0 && s.Calc != nil {
+		ec := entryContext{
+			cfg:           cfg,
+			bar:           s.PrevBars[0],
+			symbol:        s.Symbol,
+			now:           s.PrevBars[0].Time,
+			avwapValues:   avwapValues,
+			sortedAnchors: s.Calc.SortedNames(),
+			avwapBias:     avwapBias,
+			avwapSlope:    slopeBPS,
+			slopeOK:       slopeOK,
+			keyLevels:     s.KeyLevels,
+		}
+		_, _ = s.evaluateEntries(ec)
+	}
+
 	payload := domain.EntryGatedPayload{
 		Symbol:       s.Symbol,
 		Strategy:     "avwap",
@@ -1907,6 +1930,67 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 		},
 	}
 	return []any{payload}
+}
+
+// emitEarlyGated publishes an EntryGated event for early gate returns (cooldown,
+// hours, position, regime) where the full entryContext is not yet available.
+func (s *AVWAPState) emitEarlyGated(ctx start.Context, symbol string, bar start.Bar, blockingGate, blockingDetail string) {
+	if ctx == nil {
+		return
+	}
+	if bar.Time.Equal(s.LastGatedBarTime) {
+		return
+	}
+	s.LastGatedBarTime = bar.Time
+
+	cfg := s.Config
+	var score int
+	if s.Calc != nil && len(cfg.Anchors) > 0 {
+		if avwapVal, ok := s.Calc.Values()[cfg.Anchors[0]]; ok {
+			conf := computeConfluence(cfg, bar, avwapVal, s.Calc.Values(),
+				s.Indicators, s.PrevBars, s.PrevBarCount,
+				s.KeyLevels, s.BarHighs50, s.BarLows50)
+			score = conf.Score
+		}
+	}
+
+	avwapBias := ""
+	if s.Calc != nil && len(cfg.Anchors) > 0 {
+		if firstAVWAP, ok := s.Calc.Values()[cfg.Anchors[0]]; ok {
+			if bar.Close > firstAVWAP {
+				avwapBias = "LONG"
+			} else if bar.Close < firstAVWAP {
+				avwapBias = "SHORT"
+			}
+		}
+	}
+
+	var slopeBPS float64
+	if cfg.MinSlopeBPS > 0 && s.Calc != nil && len(cfg.Anchors) > 0 {
+		slopeBPS, _ = s.Calc.Slope(cfg.Anchors[0], cfg.SlopeLookback)
+	}
+
+	payload := domain.EntryGatedPayload{
+		Symbol:         symbol,
+		Strategy:       "avwap",
+		SetupType:      "multi",
+		GatesPassed:    0,
+		GatesTotal:     5,
+		BlockingGate:   blockingGate,
+		BlockingDetail: blockingDetail,
+		Confluence: domain.EntryGatedConfluence{
+			Score:    score,
+			MaxScore: cfg.MinConfluenceScore,
+		},
+		Indicators: domain.EntryGatedIndicators{
+			AVWAPBias: avwapBias,
+			SlopeBPS:  slopeBPS,
+		},
+		Bar: domain.BarSnapshot{
+			Open: bar.Open, High: bar.High, Low: bar.Low, Close: bar.Close, Volume: bar.Volume,
+		},
+	}
+	_ = ctx.EmitDomainEvent(payload)
 }
 
 // emitEntryGated publishes an EntryGated domain event showing how close this
@@ -2284,15 +2368,11 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 
 	// 1. Cooldown / max trades gate.
 	if now.Before(avwapSt.CooldownUntil) {
-		if ctx != nil && ctx.Logger() != nil {
-			ctx.Logger().Info("AVWAP gate: cooldown active", "symbol", symbol, "until", avwapSt.CooldownUntil, "now", now)
-		}
+		avwapSt.emitEarlyGated(ctx, symbol, bar, "cooldown", "cooldown active")
 		return avwapSt, nil, nil
 	}
 	if avwapSt.TradesToday >= cfg.MaxTradesPerDay {
-		if ctx != nil && ctx.Logger() != nil {
-			ctx.Logger().Info("AVWAP gate: max trades reached", "symbol", symbol, "trades", avwapSt.TradesToday, "max", cfg.MaxTradesPerDay)
-		}
+		avwapSt.emitEarlyGated(ctx, symbol, bar, "max_trades", fmt.Sprintf("%d/%d trades", avwapSt.TradesToday, cfg.MaxTradesPerDay))
 		return avwapSt, nil, nil
 	}
 
@@ -2307,6 +2387,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		localNow := now.In(loc)
 		hhmm := localNow.Format("15:04")
 		if hhmm < cfg.AllowedHoursStart || hhmm >= cfg.AllowedHoursEnd {
+			avwapSt.emitEarlyGated(ctx, symbol, bar, "hours", "outside trading hours")
 			return avwapSt, nil, nil
 		}
 	}
@@ -2420,15 +2501,11 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 
 	// 6. Only entries if flat and regime allowed.
 	if avwapSt.PositionSide != "" || avwapSt.PendingEntry != "" {
-		if ctx != nil && ctx.Logger() != nil {
-			ctx.Logger().Info("AVWAP gate: position/pending active", "symbol", symbol, "position", avwapSt.PositionSide, "pending", avwapSt.PendingEntry)
-		}
+		avwapSt.emitEarlyGated(ctx, symbol, bar, "position", "position/pending active")
 		return avwapSt, nil, nil
 	}
 	if !regimeAllowed {
-		if ctx != nil && ctx.Logger() != nil {
-			ctx.Logger().Info("AVWAP gate: regime blocked", "symbol", symbol, "regime", regimeTag)
-		}
+		avwapSt.emitEarlyGated(ctx, symbol, bar, "regime", regimeTag+" not allowed")
 		return avwapSt, nil, nil
 	}
 

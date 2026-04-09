@@ -118,6 +118,11 @@ func (st *BMState) SetIndicators(ind start.IndicatorData) {
 	st.Indicators = ind
 }
 
+// ResetGatedBarTime clears the dedup guard so the next live bar emits an EntryGated event.
+func (st *BMState) ResetGatedBarTime() {
+	st.LastGatedBarTime = time.Time{}
+}
+
 func (st *BMState) Marshal() ([]byte, error)   { return json.Marshal(st) }
 func (st *BMState) Unmarshal(data []byte) error { return json.Unmarshal(data, st) }
 
