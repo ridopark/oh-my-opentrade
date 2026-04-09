@@ -784,7 +784,8 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	// pollForFill, or orderStream). The deferred fallback must NOT clear it.
 	inflightHandedOff = true
 
-	if s.syncFill {
+	switch {
+	case s.syncFill:
 		s.pendingOrders.Delete(brokerOrderID)
 		details, err := s.broker.GetOrderDetails(ctx, brokerOrderID)
 		fillPrice := details.FilledAvgPrice
@@ -812,8 +813,12 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 				s.positionGate.ClearInflightExit(event.TenantID, event.EnvMode, intent.Symbol)
 			}
 		}
-	} else if s.orderStream == nil {
+	case s.orderStream == nil:
 		go s.pollForFill(event.TenantID, event.EnvMode, intent, brokerOrderID, submitStart, l)
+	case isEntry(intent):
+		// WS stream active but unreliable on IBKR paper — fast-poll
+		// livePos (PositionChan-backed) to detect fills within ~1s.
+		go s.fastPollPosition(ctx, event.TenantID, event.EnvMode, po, brokerOrderID, l)
 	}
 
 	return nil
@@ -863,6 +868,56 @@ func (s *Service) pollForFill(tenantID string, envMode domain.EnvMode, intent do
 				return
 			}
 			// "new", "accepted", "pending_new", "partially_filled" — keep polling
+		}
+	}
+}
+
+// fastPollPosition polls the live position tracker every 200ms for up to 30s
+// after order submission. PositionChan updates within milliseconds of a fill,
+// so this catches fills that the ibsync WS order-status stream misses.
+func (s *Service) fastPollPosition(ctx context.Context, tenantID string, envMode domain.EnvMode, po *pendingOrder, brokerOrderID string, l zerolog.Logger) {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.After(30 * time.Second)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timeout:
+			l.Debug().Str("broker_order_id", brokerOrderID).Msg("fast position poll: timed out — falling back to reconciliation loop")
+			return
+		case <-ticker.C:
+			// Check if the WS stream already handled it.
+			if _, ok := s.pendingOrders.Load(brokerOrderID); !ok {
+				return // already resolved
+			}
+			posQty, err := s.broker.GetPosition(ctx, po.intent.Symbol)
+			if err != nil {
+				continue
+			}
+			if posQty != 0 {
+				// Double-check still pending (WS might have resolved it between check and here).
+				if _, ok := s.pendingOrders.Load(brokerOrderID); !ok {
+					return
+				}
+				l.Info().Float64("position_qty", posQty).Str("broker_order_id", brokerOrderID).
+					Msg("fast position poll: fill detected via livePos")
+				s.recordFillFromDetails(po, brokerOrderID, ports.OrderDetails{
+					BrokerOrderID:  brokerOrderID,
+					Status:         "filled",
+					FilledQty:      po.intent.Quantity,
+					FilledAvgPrice: po.intent.LimitPrice,
+					Symbol:         string(po.intent.Symbol),
+					Side:           string(po.intent.Direction),
+					Qty:            po.intent.Quantity,
+				}, l)
+				s.cleanupPendingOrder(brokerOrderID)
+				if s.positionGate != nil {
+					s.positionGate.ClearInflight(tenantID, envMode, po.intent.Symbol)
+				}
+				return
+			}
 		}
 	}
 }
@@ -1424,6 +1479,27 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 			s.cleanupPendingOrder(brokerOrderID)
 		}
 
+		// Early position-check: ibsync order status can be stale (stays
+		// pending_new after IBKR fills it). Check livePos on every tick —
+		// PositionChan updates within milliseconds of a fill.
+		if details.Status != "filled" && details.Status != "canceled" && isEntry(po.intent) {
+			posQty, posErr := s.broker.GetPosition(ctx, po.intent.Symbol)
+			if posErr == nil && posQty != 0 {
+				l.Info().Float64("position_qty", posQty).Msg("reconcile: order status stale but position exists — inferring fill")
+				s.recordFillFromDetails(po, brokerOrderID, ports.OrderDetails{
+					BrokerOrderID:  brokerOrderID,
+					Status:         "filled",
+					FilledQty:      po.intent.Quantity,
+					FilledAvgPrice: po.intent.LimitPrice,
+					Symbol:         string(po.intent.Symbol),
+					Side:           string(po.intent.Direction),
+					Qty:            po.intent.Quantity,
+				}, l)
+				s.cleanupPendingOrder(brokerOrderID)
+				return true
+			}
+		}
+
 		// Stale order timeout. Equity: 2 min. Options: configurable via meta
 		// (default 120s — IBKR paper trading is slow on option limit fills).
 		staleTimeout := 2 * time.Minute
@@ -1449,25 +1525,10 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 				return true
 			}
 
-			// Market orders: ibsync state can be stale (status stays pending_new
-			// even after IBKR fills it). Fall back to position check — if the
-			// broker holds a position for this symbol, infer the fill.
+			// Market orders should fill or get rejected by the exchange.
+			// Position check already ran above — if we're here, no position
+			// was detected yet. Don't cancel, keep waiting.
 			if po.intent.OrderType == "market" {
-				posQty, posErr := s.broker.GetPosition(ctx, po.intent.Symbol)
-				if posErr == nil && posQty != 0 {
-					l.Info().Float64("position_qty", posQty).Msg("reconcile: market order stuck but position exists — inferring fill")
-					s.recordFillFromDetails(po, brokerOrderID, ports.OrderDetails{
-						BrokerOrderID:  brokerOrderID,
-						Status:         "filled",
-						FilledQty:      po.intent.Quantity,
-						FilledAvgPrice: po.intent.LimitPrice,
-						Symbol:         string(po.intent.Symbol),
-						Side:           string(po.intent.Direction),
-						Qty:            po.intent.Quantity,
-					}, l)
-					s.cleanupPendingOrder(brokerOrderID)
-					return true
-				}
 				l.Info().Msg("reconcile: skipping stale cancel for market order — waiting for exchange fill/reject")
 				return true
 			}
