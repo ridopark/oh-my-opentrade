@@ -13,6 +13,7 @@ import { useChartData } from "@/lib/use-chart-data";
 
 interface SignalProgressTableProps {
   avwapProgress: Map<string, EntryGatedPayload>;
+  macdProgress: Map<string, EntryGatedPayload>;
   orbProgress: Map<string, ORBPhaseUpdatePayload>;
 }
 
@@ -23,6 +24,7 @@ interface SignalProgressTableProps {
 interface UnifiedRow {
   symbol: string;
   avwap: EntryGatedPayload | undefined;
+  macd: EntryGatedPayload | undefined;
   orb: ORBPhaseUpdatePayload | undefined;
   bar: BarSnapshot | undefined;
   compositeScore: number;
@@ -395,6 +397,21 @@ function orbSegments(orb: ORBPhaseUpdatePayload): GateBarSegment[] {
   });
 }
 
+const MACD_GATE_ORDER = ["warmup", "regime", "crossover", "filters"] as const;
+
+function macdSegments(macd: EntryGatedPayload): GateBarSegment[] {
+  const blockIdx = macd.blockingGate
+    ? MACD_GATE_ORDER.indexOf(macd.blockingGate as typeof MACD_GATE_ORDER[number])
+    : MACD_GATE_ORDER.length;
+  return MACD_GATE_ORDER.map((gate, i) => ({
+    label: gate,
+    status: i < blockIdx ? "passed" as const
+      : i === blockIdx && blockIdx < MACD_GATE_ORDER.length ? "active" as const
+      : blockIdx >= MACD_GATE_ORDER.length ? "passed" as const
+      : "pending" as const,
+  }));
+}
+
 function SegmentedGateBar({
   segments,
   summary,
@@ -610,12 +627,13 @@ function DetailPanel({
 // ---------------------------------------------------------------------------
 
 function SignalRow({ row }: { row: UnifiedRow }) {
-  const { symbol, avwap, orb, bar } = row;
+  const { symbol, avwap, macd, orb, bar } = row;
   const priceUp = bar ? bar.close >= bar.open : true;
 
   const [open, setOpen] = useState(false);
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
   const avwapBarRef = useRef<HTMLDivElement>(null);
+  const macdBarRef = useRef<HTMLDivElement>(null);
   const orbBarRef = useRef<HTMLDivElement>(null);
 
   const handleOpen = useCallback((ref: React.RefObject<HTMLDivElement | null>) => (e: React.MouseEvent) => {
@@ -635,6 +653,15 @@ function SignalRow({ row }: { row: UnifiedRow }) {
     : "";
   const avwapSummaryColor = avwap
     ? (avwap.blockingGate ? "text-zinc-400" : "text-emerald-400")
+    : "text-zinc-700";
+
+  // MACD bar data
+  const macdSegs = macd ? macdSegments(macd) : null;
+  const macdSummary = macd
+    ? `${macd.confluence.score}/${macd.confluence.maxScore} ${macd.blockingGate || "OK"}`
+    : "";
+  const macdSummaryColor = macd
+    ? (macd.blockingGate ? "text-zinc-400" : "text-emerald-400")
     : "text-zinc-700";
 
   // ORB bar data
@@ -680,6 +707,22 @@ function SignalRow({ row }: { row: UnifiedRow }) {
         )}
       </td>
 
+      {/* MACD Readiness */}
+      <td className="px-2">
+        {macdSegs ? (
+          <div ref={macdBarRef}>
+            <SegmentedGateBar
+              segments={macdSegs}
+              summary={macdSummary}
+              summaryColor={macdSummaryColor}
+              onClick={handleOpen(macdBarRef)}
+            />
+          </div>
+        ) : (
+          <span className="text-zinc-700 text-[10px]">{"\u2014"}</span>
+        )}
+      </td>
+
       {/* ORB Readiness */}
       <td className="px-2">
         {orbSegs ? (
@@ -716,35 +759,39 @@ function SignalRow({ row }: { row: UnifiedRow }) {
 const COL_GROUPS = [
   { label: "", span: 2 },
   { label: "AVWAP", span: 1 },
+  { label: "MACD", span: 1 },
   { label: "ORB", span: 1 },
 ] as const;
 
-const COLUMNS = ["Sym", "Price", "Readiness", "Readiness"] as const;
+const COLUMNS = ["Sym", "Price", "Readiness", "Readiness", "Readiness"] as const;
 
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
-export function SignalProgressTable({ avwapProgress, orbProgress }: SignalProgressTableProps) {
+export function SignalProgressTable({ avwapProgress, macdProgress, orbProgress }: SignalProgressTableProps) {
   const rows: UnifiedRow[] = useMemo(() => {
     const symbols = new Set<string>();
     for (const key of avwapProgress.keys()) symbols.add(key);
+    for (const key of macdProgress.keys()) symbols.add(key);
     for (const key of orbProgress.keys()) symbols.add(key);
 
     const result: UnifiedRow[] = [];
     for (const symbol of symbols) {
       const avwap = avwapProgress.get(symbol);
+      const macd = macdProgress.get(symbol);
       const orb = orbProgress.get(symbol);
-      const bar = avwap?.bar ?? orb?.bar;
+      const bar = avwap?.bar ?? macd?.bar ?? orb?.bar;
       const avwapScore = avwap ? avwap.confluence.score : 0;
+      const macdScore = macd ? macd.confluence.score : 0;
       const orbScore = orb ? orb.confidence * 10 : 0;
-      const compositeScore = Math.max(avwapScore, orbScore);
-      result.push({ symbol, avwap, orb, bar, compositeScore });
+      const compositeScore = Math.max(avwapScore, macdScore, orbScore);
+      result.push({ symbol, avwap, macd, orb, bar, compositeScore });
     }
 
     result.sort((a, b) => b.compositeScore - a.compositeScore);
     return result;
-  }, [avwapProgress, orbProgress]);
+  }, [avwapProgress, macdProgress, orbProgress]);
 
   if (rows.length === 0) {
     return (

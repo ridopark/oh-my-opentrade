@@ -1369,7 +1369,7 @@ func (r *Runner) emitDomainEvent(ctx context.Context, tenantID string, envMode d
 	switch p := payload.(type) {
 	case domain.EntryGatedPayload:
 		eventType = domain.EventEntryGated
-		cacheKey = "EntryGated:" + p.Symbol
+		cacheKey = "EntryGated:" + p.Strategy + ":" + p.Symbol
 	case domain.ORBPhaseUpdatePayload:
 		eventType = domain.EventORBPhaseUpdate
 		cacheKey = "ORBPhaseUpdate:" + p.Symbol

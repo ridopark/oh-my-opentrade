@@ -6,6 +6,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
 
@@ -97,6 +98,9 @@ type BMState struct {
 	// Rolling performance gate — tracks recent trade outcomes per symbol
 	EntryFillPrice float64 `json:"entryFillPrice,omitempty"` // premium price at entry fill
 	TradeOutcomes  []int8  `json:"tradeOutcomes,omitempty"`  // rolling window: 1=win, -1=loss
+
+	// Signal progress tracking
+	LastGatedBarTime time.Time `json:"-"`
 
 	// Debug gate counters (reset daily)
 	GateStabilization int `json:"-"`
@@ -285,6 +289,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 	if bmSt.CalcBarCount < cfg.StabilizationBars {
 		bmSt.GateStabilization++
 		bmSt.PrevMACDHist = ind.MACDHistogram
+		emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "warmup", fmt.Sprintf("bar %d/%d", bmSt.CalcBarCount, cfg.StabilizationBars))
 		return bmSt, nil, nil
 	}
 
@@ -296,6 +301,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 	if bmSt.PendingEntry != "" {
 		bmSt.GatePosition++
 		bmSt.PrevMACDHist = ind.MACDHistogram
+		emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters", "pending entry awaiting fill")
 		return bmSt, nil, nil
 	}
 
@@ -303,6 +309,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 	if now.Before(bmSt.CooldownUntil) || bmSt.TradesToday >= cfg.MaxTradesPerDay {
 		bmSt.GateCooldown++
 		bmSt.PrevMACDHist = ind.MACDHistogram
+		emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters", "cooldown or max trades reached")
 		return bmSt, nil, nil
 	}
 
@@ -314,6 +321,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 			if hhmm < cfg.AllowedHoursStart || hhmm >= cfg.AllowedHoursEnd {
 				bmSt.GateHours++
 				bmSt.PrevMACDHist = ind.MACDHistogram
+				emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters", "outside trading hours")
 				return bmSt, nil, nil
 			}
 		}
@@ -327,6 +335,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 	if !priceAboveEMA9 && !priceBelowEMA9 {
 		bmSt.GateRegime++
 		bmSt.PrevMACDHist = ind.MACDHistogram
+		emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "regime", "no EMA9 directional bias")
 		return bmSt, nil, nil
 	}
 
@@ -345,6 +354,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 		wr := float64(wins) / float64(len(window))
 		if wr < cfg.RollingWRMin {
 			bmSt.PrevMACDHist = ind.MACDHistogram
+			emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters", fmt.Sprintf("rolling WR %.0f%% < %.0f%% min", wr*100, cfg.RollingWRMin*100))
 			return bmSt, nil, nil
 		}
 	}
@@ -555,6 +565,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 	}
 
 	bmSt.GateNoSetup++
+	emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "crossover", "no MACD crossover detected")
 	return bmSt, nil, nil
 }
 
@@ -780,4 +791,99 @@ func swingMax(values []float64) float64 {
 		m = math.Max(m, v)
 	}
 	return m
+}
+
+// ---------------------------------------------------------------------------
+// Signal progress (EntryGated) emission
+// ---------------------------------------------------------------------------
+
+// macdGateOrder defines the 4 display gates for the dashboard readiness bar.
+var macdGateOrder = []string{"warmup", "regime", "crossover", "filters"}
+
+func macdGateIndex(gate string) int {
+	for i, g := range macdGateOrder {
+		if g == gate {
+			return i
+		}
+	}
+	return len(macdGateOrder)
+}
+
+// emitMACDEntryGated publishes an EntryGated event showing how close
+// this symbol is to triggering a MACD entry signal.
+func emitMACDEntryGated(ctx start.Context, symbol string, bmSt *BMState, bar start.Bar, ind start.IndicatorData, blockingGate, blockingDetail string) {
+	if ctx == nil {
+		return
+	}
+	if bar.Time.Equal(bmSt.LastGatedBarTime) {
+		return
+	}
+	bmSt.LastGatedBarTime = bar.Time
+
+	gatesTotal := len(macdGateOrder)
+	blockIdx := macdGateIndex(blockingGate)
+	gatesPassed := blockIdx
+	if blockingGate == "" {
+		gatesPassed = gatesTotal
+	}
+
+	// MACD proximity score: how close MACD line is to crossing signal line (0-10).
+	score := 0
+	if ind.MACDSignal != 0 {
+		dist := (ind.MACDLine - ind.MACDSignal) / math.Abs(ind.MACDSignal)
+		score = int(math.Min(10, math.Max(0, (dist+1)*5)))
+	}
+
+	volRatio := 0.0
+	if ind.VolumeSMA > 0 {
+		volRatio = bar.Volume / ind.VolumeSMA
+	}
+
+	payload := domain.EntryGatedPayload{
+		Symbol:         symbol,
+		Strategy:       "bollinger_macd",
+		SetupType:      "macd_cross",
+		GatesPassed:    gatesPassed,
+		GatesTotal:     gatesTotal,
+		BlockingGate:   blockingGate,
+		BlockingDetail: blockingDetail,
+		Confluence: domain.EntryGatedConfluence{
+			Score:    score,
+			MaxScore: 10,
+		},
+		Indicators: domain.EntryGatedIndicators{
+			RSI:         ind.RSI,
+			VolumeRatio: volRatio,
+		},
+		Bar: domain.BarSnapshot{
+			Open:   bar.Open,
+			High:   bar.High,
+			Low:    bar.Low,
+			Close:  bar.Close,
+			Volume: bar.Volume,
+		},
+	}
+	_ = ctx.EmitDomainEvent(payload)
+}
+
+// EmitSignalProgress implements start.SignalProgressEmitter for post-warmup
+// SSE cache seeding.
+func (st *BMState) EmitSignalProgress() []any {
+	if st.CalcBarCount < 2 {
+		return nil
+	}
+	blockingGate := "crossover"
+	if st.CalcBarCount < st.Config.StabilizationBars {
+		blockingGate = "warmup"
+	}
+	return []any{domain.EntryGatedPayload{
+		Symbol:       st.Symbol,
+		Strategy:     "bollinger_macd",
+		SetupType:    "macd_cross",
+		GatesPassed:  2,
+		GatesTotal:   4,
+		BlockingGate: blockingGate,
+		Confluence:   domain.EntryGatedConfluence{Score: 0, MaxScore: 10},
+		Bar:          domain.BarSnapshot{},
+	}}
 }
