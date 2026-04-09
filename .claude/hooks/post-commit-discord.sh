@@ -52,7 +52,7 @@ BODY="${BODY}
 
 📁 **${FILES_CHANGED} files** | +${INSERTIONS} -${DELETIONS}"
 
-# Send to Discord (fire-and-forget, don't block commit flow)
-"$NOTIFY" "$TITLE" "$BODY" "green" &>/dev/null &
+# Send to Discord
+"$NOTIFY" "$TITLE" "$BODY" "green" 2>/tmp/discord-hook-error.log
 
 exit 0
