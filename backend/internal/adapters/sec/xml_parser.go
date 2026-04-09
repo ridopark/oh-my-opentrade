@@ -23,7 +23,13 @@ type xmlInfoTable struct {
 	Entries []xmlInfoEntry `xml:"infoTable"`
 }
 
-// xmlInfoEntry maps a single <infoTable> holding entry.
+// xmlInfoTableNS maps with the SEC default namespace.
+type xmlInfoTableNS struct {
+	XMLName xml.Name         `xml:"http://www.sec.gov/edgar/document/thirteenf/informationtable informationTable"`
+	Entries []xmlInfoEntryNS `xml:"http://www.sec.gov/edgar/document/thirteenf/informationtable infoTable"`
+}
+
+// xmlInfoEntry maps a single <infoTable> holding entry (no namespace).
 type xmlInfoEntry struct {
 	NameOfIssuer string        `xml:"nameOfIssuer"`
 	TitleOfClass string        `xml:"titleOfClass"`
@@ -33,36 +39,71 @@ type xmlInfoEntry struct {
 	PutCall      string        `xml:"putCall"`
 }
 
+// xmlInfoEntryNS maps with SEC default namespace.
+type xmlInfoEntryNS struct {
+	NameOfIssuer string          `xml:"http://www.sec.gov/edgar/document/thirteenf/informationtable nameOfIssuer"`
+	TitleOfClass string          `xml:"http://www.sec.gov/edgar/document/thirteenf/informationtable titleOfClass"`
+	CUSIP        string          `xml:"http://www.sec.gov/edgar/document/thirteenf/informationtable cusip"`
+	Value        int64           `xml:"http://www.sec.gov/edgar/document/thirteenf/informationtable value"`
+	SharesOrPrn  xmlSharesInfoNS `xml:"http://www.sec.gov/edgar/document/thirteenf/informationtable shrsOrPrnAmt"`
+	PutCall      string          `xml:"http://www.sec.gov/edgar/document/thirteenf/informationtable putCall"`
+}
+
 // xmlSharesInfo maps the <shrsOrPrnAmt> element.
 type xmlSharesInfo struct {
 	Amount int64  `xml:"sshPrnamt"`
 	Type   string `xml:"sshPrnamtType"`
 }
 
+type xmlSharesInfoNS struct {
+	Amount int64  `xml:"http://www.sec.gov/edgar/document/thirteenf/informationtable sshPrnamt"`
+	Type   string `xml:"http://www.sec.gov/edgar/document/thirteenf/informationtable sshPrnamtType"`
+}
+
 // ParseInformationTable parses SEC 13F informationTable XML into RawHolding slices.
-// It handles both bare and namespace-prefixed (ns1:) XML variants.
+// Handles three XML variants: default SEC namespace, ns1: prefixes, and bare elements.
 func ParseInformationTable(data []byte) ([]RawHolding, error) {
-	holdings, err := parseInfoTableXML(data)
-	if err == nil && len(holdings) > 0 {
+	// Try 1: SEC default namespace (most common modern format).
+	var tableNS xmlInfoTableNS
+	if err := xml.Unmarshal(data, &tableNS); err == nil && len(tableNS.Entries) > 0 {
+		holdings := make([]RawHolding, 0, len(tableNS.Entries))
+		for _, e := range tableNS.Entries {
+			holdings = append(holdings, RawHolding{
+				NameOfIssuer: e.NameOfIssuer,
+				TitleOfClass: e.TitleOfClass,
+				CUSIP:        e.CUSIP,
+				Value:        e.Value,
+				ShareCount:   e.SharesOrPrn.Amount,
+				ShareType:    e.SharesOrPrn.Type,
+				PutCall:      e.PutCall,
+			})
+		}
 		return holdings, nil
 	}
 
-	// Retry after stripping common namespace prefixes.
+	// Try 2: bare elements (no namespace).
+	var table xmlInfoTable
+	if err := xml.Unmarshal(data, &table); err == nil && len(table.Entries) > 0 {
+		holdings := make([]RawHolding, 0, len(table.Entries))
+		for _, e := range table.Entries {
+			holdings = append(holdings, RawHolding{
+				NameOfIssuer: e.NameOfIssuer,
+				TitleOfClass: e.TitleOfClass,
+				CUSIP:        e.CUSIP,
+				Value:        e.Value,
+				ShareCount:   e.SharesOrPrn.Amount,
+				ShareType:    e.SharesOrPrn.Type,
+				PutCall:      e.PutCall,
+			})
+		}
+		return holdings, nil
+	}
+
+	// Try 3: strip namespace prefixes (ns1:, ns2:) and retry bare.
 	stripped := stripNamespacePrefixes(data)
-	holdings, err = parseInfoTableXML(stripped)
-	if err != nil {
+	if err := xml.Unmarshal(stripped, &table); err != nil {
 		return nil, fmt.Errorf("sec: xml unmarshal: %w", err)
 	}
-
-	return holdings, nil
-}
-
-func parseInfoTableXML(data []byte) ([]RawHolding, error) {
-	var table xmlInfoTable
-	if err := xml.Unmarshal(data, &table); err != nil {
-		return nil, err
-	}
-
 	holdings := make([]RawHolding, 0, len(table.Entries))
 	for _, e := range table.Entries {
 		holdings = append(holdings, RawHolding{

@@ -16,7 +16,7 @@ import (
 
 const (
 	defaultBaseURL = "https://api.openfigi.com/v3/mapping"
-	maxBatchSize   = 100
+	maxBatchSize = 10 // free tier limit; 100 with API key
 )
 
 // Client resolves CUSIPs to ticker symbols via the OpenFIGI API.
@@ -156,14 +156,21 @@ func (c *Client) resolveChunk(ctx context.Context, cusips []string) (map[string]
 	for idx, entry := range raw {
 		cusip := cusips[idx]
 
-		// Try parsing as array of results first.
-		var results []figiResult
-		if err := json.Unmarshal(entry, &results); err == nil && len(results) > 0 {
-			r := results[0]
-			if r.Warning != "" {
-				c.log.Debug().Str("cusip", cusip).Str("warning", r.Warning).Msg("CUSIP not found")
-				continue
-			}
+		// Response format: {"data":[{figi, ticker, ...}]} or {"warning":"..."}
+		var wrapper struct {
+			Data    []figiResult `json:"data"`
+			Warning string       `json:"warning"`
+		}
+		if err := json.Unmarshal(entry, &wrapper); err != nil {
+			c.log.Debug().Str("cusip", cusip).Msg("failed to parse response entry")
+			continue
+		}
+		if wrapper.Warning != "" {
+			c.log.Debug().Str("cusip", cusip).Str("warning", wrapper.Warning).Msg("CUSIP not found")
+			continue
+		}
+		if len(wrapper.Data) > 0 {
+			r := wrapper.Data[0]
 			if r.Ticker == "" {
 				c.log.Debug().Str("cusip", cusip).Msg("no ticker in response")
 				continue
@@ -177,16 +184,7 @@ func (c *Client) resolveChunk(ctx context.Context, cusips []string) (map[string]
 			continue
 		}
 
-		// Try parsing as a single object with a warning.
-		var single figiResult
-		if err := json.Unmarshal(entry, &single); err == nil {
-			if single.Warning != "" {
-				c.log.Debug().Str("cusip", cusip).Str("warning", single.Warning).Msg("CUSIP not found")
-			} else {
-				c.log.Debug().Str("cusip", cusip).Msg("unexpected response format")
-			}
-			continue
-		}
+
 
 		c.log.Warn().Str("cusip", cusip).RawJSON("raw", entry).Msg("could not parse response entry")
 	}

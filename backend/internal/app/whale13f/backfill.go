@@ -212,25 +212,38 @@ func (s *BackfillService) processFiler(ctx context.Context, filer sec.FilerConfi
 		return fmt.Errorf("whale13f: resolve cusips: %w", err)
 	}
 
-	// Build domain filings.
-	filings := make([]domain.WhaleFiling, 0, len(holdings))
+	// Build domain filings, deduplicating by (cusip, put_call).
+	// Same CUSIP can appear multiple times (e.g., different managers within the filer).
+	type dedupKey struct{ cusip, putCall string }
+	deduped := make(map[dedupKey]*domain.WhaleFiling, len(holdings))
 	for _, h := range holdings {
 		ticker := ""
 		if m, ok := tickerMap[h.CUSIP]; ok {
 			ticker = m.Ticker
 		}
-		filings = append(filings, domain.WhaleFiling{
-			FilingDate:      quarterEnd,
-			FilerCIK:        filer.CIK,
-			FilerName:       filer.Name,
-			CUSIP:           h.CUSIP,
-			Ticker:          ticker,
-			IssuerName:      h.NameOfIssuer,
-			ShareCount:      h.ShareCount,
-			MarketValue1000: h.Value,
-			PutCall:         h.PutCall,
-			FilerTier:       filer.Tier,
-		})
+		key := dedupKey{h.CUSIP, h.PutCall}
+		if existing, ok := deduped[key]; ok {
+			existing.ShareCount += h.ShareCount
+			existing.MarketValue1000 += h.Value
+		} else {
+			filing := domain.WhaleFiling{
+				FilingDate:      quarterEnd,
+				FilerCIK:        filer.CIK,
+				FilerName:       filer.Name,
+				CUSIP:           h.CUSIP,
+				Ticker:          ticker,
+				IssuerName:      h.NameOfIssuer,
+				ShareCount:      h.ShareCount,
+				MarketValue1000: h.Value,
+				PutCall:         h.PutCall,
+				FilerTier:       filer.Tier,
+			}
+			deduped[key] = &filing
+		}
+	}
+	filings := make([]domain.WhaleFiling, 0, len(deduped))
+	for _, f := range deduped {
+		filings = append(filings, *f)
 	}
 
 	n, err := s.whaleRepo.SaveWhaleFilingsBatch(ctx, filings)

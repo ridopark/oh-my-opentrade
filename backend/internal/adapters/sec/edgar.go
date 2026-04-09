@@ -59,11 +59,11 @@ type eftsHit struct {
 }
 
 type eftsSource struct {
-	FormType       string `json:"form_type"`
-	FileDate       string `json:"file_date"`
-	PeriodOfReport string `json:"period_of_report"`
-	EntityName     string `json:"entity_name"`
-	AccessionNo    string `json:"accession_no"`
+	Form        string `json:"form"`          // "13F-HR" or "13F-HR/A"
+	FileType    string `json:"file_type"`     // same as form
+	FileDate    string `json:"file_date"`     // "2024-05-15"
+	PeriodEnd   string `json:"period_ending"` // "2024-03-31"
+	AccessionNo string `json:"adsh"`          // "0000950123-24-005653"
 }
 
 // FetchFilingIndex retrieves 13F-HR filing entries for a given CIK within a date range.
@@ -72,13 +72,15 @@ func (c *EdgarClient) FetchFilingIndex(ctx context.Context, cik string, from, to
 		return nil, fmt.Errorf("sec: rate limiter: %w", err)
 	}
 
+	// EDGAR EFTS requires 10-digit zero-padded CIK.
+	paddedCIK := fmt.Sprintf("%010s", cik)
 	params := url.Values{
 		"q":         {`"13F-HR"`},
 		"dateRange": {"custom"},
 		"startdt":   {from.Format("2006-01-02")},
 		"enddt":     {to.Format("2006-01-02")},
-		"forms":     {"13F-HR,13F-HR/A"},
-		"ciks":      {cik},
+		"forms":     {"13F-HR"},
+		"ciks":      {paddedCIK},
 	}
 	u := c.baseURL + "/search-index?" + params.Encode()
 
@@ -114,7 +116,7 @@ func (c *EdgarClient) FetchFilingIndex(ctx context.Context, cik string, from, to
 		entries = append(entries, FilingEntry{
 			AccessionNumber: hit.Source.AccessionNo,
 			FilingDate:      filingDate,
-			FormType:        hit.Source.FormType,
+			FormType:        hit.Source.Form,
 		})
 	}
 
@@ -122,16 +124,65 @@ func (c *EdgarClient) FetchFilingIndex(ctx context.Context, cik string, from, to
 	return entries, nil
 }
 
-// FetchInformationTable downloads and parses the 13F informationTable.xml for a filing.
+// FetchInformationTable downloads and parses the 13F information table for a filing.
+// It discovers the XML filename from the filing's index.json since names vary per filer.
 func (c *EdgarClient) FetchInformationTable(ctx context.Context, cik, accessionNumber string) ([]RawHolding, error) {
+	accNoDashes := strings.ReplaceAll(accessionNumber, "-", "")
+	baseURL := fmt.Sprintf("https://www.sec.gov/Archives/edgar/data/%s/%s", cik, accNoDashes)
+
+	// Step 1: Fetch index.json to find the information table XML filename.
 	if err := c.limiter.Wait(ctx); err != nil {
 		return nil, fmt.Errorf("sec: rate limiter: %w", err)
 	}
 
-	// Accession number format: "0001067983-25-000015" -> path uses no dashes: "000106798325000015"
-	accNoDashes := strings.ReplaceAll(accessionNumber, "-", "")
-	u := fmt.Sprintf("https://www.sec.gov/Archives/edgar/data/%s/%s/infotable.xml", cik, accNoDashes)
+	indexURL := baseURL + "/index.json"
+	indexReq, err := http.NewRequestWithContext(ctx, http.MethodGet, indexURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("sec: build index request: %w", err)
+	}
+	indexReq.Header.Set("User-Agent", c.userAgent)
 
+	indexResp, err := c.client.Do(indexReq)
+	if err != nil {
+		return nil, fmt.Errorf("sec: fetch index for %s/%s: %w", cik, accessionNumber, err)
+	}
+	defer indexResp.Body.Close()
+
+	if indexResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(indexResp.Body)
+		return nil, fmt.Errorf("sec: index HTTP %d for %s/%s: %s", indexResp.StatusCode, cik, accessionNumber, string(body))
+	}
+
+	var indexData struct {
+		Directory struct {
+			Item []struct {
+				Name string `json:"name"`
+			} `json:"item"`
+		} `json:"directory"`
+	}
+	if err := json.NewDecoder(indexResp.Body).Decode(&indexData); err != nil {
+		return nil, fmt.Errorf("sec: decode index JSON: %w", err)
+	}
+
+	// Find the information table XML: any .xml that is not primary_doc.xml and not an index file.
+	var infoTableFile string
+	for _, item := range indexData.Directory.Item {
+		name := item.Name
+		if strings.HasSuffix(name, ".xml") && name != "primary_doc.xml" && !strings.Contains(name, "index") {
+			infoTableFile = name
+			break
+		}
+	}
+	if infoTableFile == "" {
+		return nil, fmt.Errorf("sec: no information table XML found in %s/%s", cik, accessionNumber)
+	}
+
+	// Step 2: Fetch and parse the information table.
+	if err := c.limiter.Wait(ctx); err != nil {
+		return nil, fmt.Errorf("sec: rate limiter: %w", err)
+	}
+
+	u := baseURL + "/" + infoTableFile
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("sec: build infotable request: %w", err)
@@ -159,6 +210,6 @@ func (c *EdgarClient) FetchInformationTable(ctx context.Context, cik, accessionN
 		return nil, fmt.Errorf("sec: parse infotable for %s/%s: %w", cik, accessionNumber, err)
 	}
 
-	c.log.Debug().Str("cik", cik).Str("accession", accessionNumber).Int("holdings", len(holdings)).Msg("parsed information table")
+	c.log.Debug().Str("cik", cik).Str("accession", accessionNumber).Str("file", infoTableFile).Int("holdings", len(holdings)).Msg("parsed information table")
 	return holdings, nil
 }
