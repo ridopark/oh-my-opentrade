@@ -776,9 +776,9 @@ export function SignalProgressTable({ avwapProgress, orbProgress }: SignalProgre
           <tr className="border-b border-zinc-700">
             {COLUMNS.map((col, i) => (
               <th
-                key={col}
+                key={i}
                 className={`px-1 py-1 text-[10px] font-medium text-zinc-500 ${
-                  i <= 1 ? "text-left" : "text-center"
+                  i === 0 ? "text-left" : i === 1 ? "text-right" : "text-center"
                 } ${i === 0 ? "pl-2" : ""} ${i === COLUMNS.length - 1 ? "pr-2" : ""}`}
               >
                 {col}
