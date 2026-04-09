@@ -253,7 +253,7 @@ function ORBDetail({ orb }: { orb: ORBPhaseUpdatePayload }) {
         <div className="flex flex-col gap-0.5">
           <span className="text-[10px] text-zinc-500 uppercase">Breakout</span>
           {hasBreakout ? (
-            <div>
+            <div className="flex flex-col gap-0.5">
               <span
                 className={`text-xs font-medium ${
                   orb.breakout.direction === "LONG" ? "text-emerald-400" : "text-red-400"
@@ -261,8 +261,8 @@ function ORBDetail({ orb }: { orb: ORBPhaseUpdatePayload }) {
               >
                 {orb.breakout.direction} @ {orb.breakout.breakClose.toFixed(2)}
               </span>
-              <span className="text-zinc-500 text-xs ml-1">
-                (RVOL {orb.breakout.rvol.toFixed(1)}x)
+              <span className="text-zinc-500 text-xs">
+                RVOL {orb.breakout.rvol.toFixed(1)}x
               </span>
             </div>
           ) : (
