@@ -262,6 +262,12 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 	pos.ExitOrderID = ""
 	pos.ExitRetryCount++
 
+	// Clear the execution service's inflight exit lock so the retry
+	// won't be rejected with "exit already inflight".
+	if s.positionGate != nil {
+		s.positionGate.ClearInflightExit(pos.TenantID, pos.EnvMode, pos.Symbol)
+	}
+
 	s.log.Warn().
 		Str("symbol", string(pos.Symbol)).
 		Int("retry_count", pos.ExitRetryCount).
