@@ -1850,7 +1850,7 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 		EntryChecks:  s.entryChecks,
 		Confluence: domain.EntryGatedConfluence{
 			Score:          conf.Score,
-			MaxScore:       10,
+			MaxScore:       max(cfg.MinConfluenceScore, 10),
 			Fib:            factorSet["fib_38.2"] || factorSet["fib_50"] || factorSet["fib_61.8"],
 			FibDetail:      extractFactor(conf.Factors, "fib_"),
 			KeyLevel:       extractFactor(conf.Factors, "key_") != "",
