@@ -373,12 +373,11 @@ interface GateBarSegment {
 const AVWAP_OPERATIONAL_GATES = ["cooldown", "max_trades", "hours", "position", "regime"];
 
 function avwapSegments(avwap: EntryGatedPayload): GateBarSegment[] {
-  // Operational gates (cooldown, hours, etc.) → all segments pending
+  // Operational gates (cooldown, hours, etc.) → show the blocker as active, rest pending
   if (AVWAP_OPERATIONAL_GATES.includes(avwap.blockingGate)) {
-    return ["Bias", "Conf", "Slope", "Entry"].map((label) => ({
-      label,
-      status: "pending" as const,
-    }));
+    return [
+      { label: avwap.blockingGate, status: "active" as const },
+    ];
   }
   // Each gate is independently evaluated
   const biasOK = !!avwap.indicators.avwapBias;
