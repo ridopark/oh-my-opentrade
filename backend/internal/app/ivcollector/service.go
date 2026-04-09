@@ -77,7 +77,7 @@ func (s *Service) loop(ctx context.Context) {
 			timer.Stop()
 			return
 		case <-timer.C:
-			s.collectAll(ctx)
+			s.CollectAll(ctx)
 		}
 	}
 }
@@ -98,7 +98,7 @@ func (s *Service) nextRunTime(now time.Time) time.Time {
 	return target
 }
 
-func (s *Service) collectAll(ctx context.Context) {
+func (s *Service) CollectAll(ctx context.Context) {
 	s.log.Info().Int("symbols", len(s.cfg.Symbols)).Msg("IV collection run starting")
 
 	spotPrices, err := s.snapshots.GetSnapshots(ctx, s.cfg.Symbols, time.Now())
