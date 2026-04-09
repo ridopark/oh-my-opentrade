@@ -34,31 +34,6 @@ interface UnifiedRow {
 // AVWAP helper functions
 // ---------------------------------------------------------------------------
 
-function biasColor(bias: string): string {
-  if (bias === "LONG") return "text-emerald-400";
-  if (bias === "SHORT") return "text-red-400";
-  return "text-zinc-500";
-}
-
-function slopeColor(bps: number): string {
-  return Math.abs(bps) >= 0.3 ? "text-emerald-400" : "text-red-400";
-}
-
-function blockingGateColor(gate: string): string {
-  switch (gate) {
-    case "confluence":
-      return "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
-    case "entry_specific":
-      return "bg-blue-500/20 text-blue-400 border-blue-500/30";
-    case "slope":
-      return "bg-red-500/20 text-red-400 border-red-500/30";
-    case "bias":
-      return "bg-orange-500/20 text-orange-400 border-orange-500/30";
-    default:
-      return "bg-zinc-500/20 text-zinc-400 border-zinc-500/30";
-  }
-}
-
 // ---------------------------------------------------------------------------
 // ORB helper functions
 // ---------------------------------------------------------------------------
@@ -202,66 +177,48 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
   const confPct = c.maxScore > 0 ? Math.min(100, (c.score / c.maxScore) * 100) : 0;
   const confFillColor = confPct >= 100 ? "bg-emerald-500" : confPct >= 50 ? "bg-yellow-500" : confPct > 0 ? "bg-orange-500" : "bg-zinc-700";
 
-  // Determine which step is the current blocker (first failing gate in sequence)
   const activeStep = !biasOK ? 0 : !slopeOK ? 1 : !confOK ? 2 : 3;
+
+  const stepColor = (step: number, passed: boolean) =>
+    passed ? "text-emerald-400" : step === activeStep ? "text-yellow-400" : "text-zinc-600";
+  const stepIcon = (passed: boolean, step: number) =>
+    passed ? "\u2713" : step === activeStep ? "\u25B6" : "\u2717";
+  const arrow = <span className="text-zinc-600 text-[10px]">{"\u2192"}</span>;
 
   return (
     <div className="space-y-2">
       <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">AVWAP Readiness</h4>
 
-      {/* Step 1: Bias */}
-      <div className={`flex items-center gap-2 ${activeStep > 0 ? "" : "opacity-100"}`}>
-        <span className={`text-[11px] w-3 ${biasOK ? "text-emerald-400" : activeStep === 0 ? "text-yellow-400" : "text-zinc-600"}`}>
-          {biasOK ? "\u2713" : activeStep === 0 ? "\u25B6" : "\u2717"}
+      {/* Pipeline: Bias → Slope → Conf → Entry */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className={`text-[11px] ${stepColor(0, biasOK)}`}>
+          {stepIcon(biasOK, 0)} Bias {biasOK ? ind.avwapBias : ""}
         </span>
-        <span className="text-[11px] text-zinc-400 w-16">1. Bias</span>
-        <span className={`text-[11px] font-medium ${biasOK ? biasColor(ind.avwapBias) : "text-zinc-600"}`}>
-          {ind.avwapBias || "no direction"}
+        {arrow}
+        <span className={`text-[11px] ${stepColor(1, slopeOK)}`}>
+          {stepIcon(slopeOK, 1)} Slope {ind.slopeBPS.toFixed(1)}
         </span>
-      </div>
-
-      {/* Step 2: Slope */}
-      <div className={`flex items-center gap-2 ${activeStep < 1 ? "opacity-40" : ""}`}>
-        <span className={`text-[11px] w-3 ${slopeOK ? "text-emerald-400" : activeStep === 1 ? "text-yellow-400" : activeStep > 1 ? "text-zinc-600" : "text-zinc-700"}`}>
-          {slopeOK ? "\u2713" : activeStep === 1 ? "\u25B6" : "\u2717"}
+        {arrow}
+        <span className={`text-[11px] ${stepColor(2, confOK)}`}>
+          {stepIcon(confOK, 2)} Conf {c.score}/{c.maxScore}
         </span>
-        <span className="text-[11px] text-zinc-400 w-16">2. Slope</span>
-        <span className={`text-[11px] font-medium ${slopeOK ? "text-emerald-400" : "text-zinc-600"}`}>
-          {ind.slopeBPS.toFixed(1)} bps {slopeOK ? "" : "< 0.3 min"}
+        {arrow}
+        <span className={`text-[11px] ${stepColor(3, false)}`}>
+          {stepIcon(false, 3)} Entry
         </span>
       </div>
 
-      {/* Step 3: Confluence */}
-      <div className={`flex items-center gap-2 ${activeStep < 2 ? "opacity-40" : ""}`}>
-        <span className={`text-[11px] w-3 ${confOK ? "text-emerald-400" : activeStep === 2 ? "text-yellow-400" : "text-zinc-700"}`}>
-          {confOK ? "\u2713" : activeStep === 2 ? "\u25B6" : "\u2717"}
-        </span>
-        <span className="text-[11px] text-zinc-400 w-16">3. Conf</span>
-        <div className="flex items-center gap-2 flex-1">
+      {/* Confluence detail bar (when at or past confluence step) */}
+      {activeStep >= 2 && (
+        <div className="flex items-center gap-2 pl-1">
           <div className="h-2 w-20 rounded-full bg-zinc-800 overflow-hidden">
             <div className={`h-full rounded-full transition-all duration-300 ${confFillColor}`} style={{ width: `${Math.max(confPct, 2)}%` }} />
           </div>
-          <span className={`text-[11px] font-mono ${confOK ? "text-emerald-400" : "text-zinc-300"}`}>{c.score}/{c.maxScore}</span>
           <span className="text-[10px] text-zinc-500">
             {factors.filter(f => f.active).map(f => f.detail || f.label).join(", ") || "none"}
           </span>
         </div>
-      </div>
-
-      {/* Step 4: Entry Check */}
-      <div className={`flex items-center gap-2 ${activeStep < 3 ? "opacity-40" : ""}`}>
-        <span className={`text-[11px] w-3 ${activeStep === 3 ? "text-yellow-400" : activeStep > 3 ? "text-emerald-400" : "text-zinc-700"}`}>
-          {activeStep > 3 ? "\u2713" : activeStep === 3 ? "\u25B6" : "\u2717"}
-        </span>
-        <span className="text-[11px] text-zinc-400 w-16">4. Entry</span>
-        <span className="text-[11px] text-zinc-500">
-          {activeStep >= 3
-            ? (avwap.entryChecks && avwap.entryChecks.length > 0
-              ? `0/${avwap.entryChecks.length} patterns fired`
-              : "waiting for entry pattern")
-            : "pending"}
-        </span>
-      </div>
+      )}
 
       {/* Entry checks detail (when at step 4) */}
       {activeStep >= 3 && avwap.entryChecks && avwap.entryChecks.length > 0 && (
