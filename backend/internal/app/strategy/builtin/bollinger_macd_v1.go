@@ -846,7 +846,7 @@ func emitMACDEntryGated(ctx start.Context, symbol string, bmSt *BMState, bar sta
 		BlockingDetail: blockingDetail,
 		Confluence: domain.EntryGatedConfluence{
 			Score:    conf.Score,
-			MaxScore: max(bmSt.Config.MinConfluenceScore, 100),
+			MaxScore: bmSt.Config.MinConfluenceScore,
 		},
 		Indicators: domain.EntryGatedIndicators{
 			RSI:         ind.RSI,
@@ -880,7 +880,7 @@ func (st *BMState) EmitSignalProgress() []any {
 		GatesPassed:  2,
 		GatesTotal:   4,
 		BlockingGate: blockingGate,
-		Confluence:   domain.EntryGatedConfluence{Score: 0, MaxScore: max(st.Config.MinConfluenceScore, 100)},
+		Confluence:   domain.EntryGatedConfluence{Score: 0, MaxScore: st.Config.MinConfluenceScore},
 		Bar:          domain.BarSnapshot{},
 	}}
 }
