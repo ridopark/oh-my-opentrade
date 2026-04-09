@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Activity, Zap, ChevronUp, ChevronDown } from "lucide-react";
-import type { StrategySignalEvent, RegimeType } from "@/lib/types";
+import type { StrategySignalEvent, RegimeType, EntryGatedPayload, ORBPhaseUpdatePayload } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,7 +22,7 @@ export interface BarLogEntry {
   volume: number;
 }
 
-export type BottomTab = "signals" | "market" | "bars";
+export type BottomTab = "signals" | "market" | "bars" | "strategy";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -62,6 +62,18 @@ export function regimeBadge(regime: RegimeType) {
       : "bg-amber-500/15 text-amber-500 border-amber-500/30";
 }
 
+function statusBadgeColor(status: string): string {
+  switch (status) {
+    case "executed":        return "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
+    case "validated":       return "bg-blue-500/15 text-blue-400 border-blue-500/30";
+    case "generated":       return "bg-zinc-500/15 text-zinc-400 border-zinc-500/30";
+    case "rejected":        return "bg-red-500/15 text-red-400 border-red-500/30";
+    case "suppressed":      return "bg-amber-500/15 text-amber-400 border-amber-500/30";
+    case "debate_override": return "bg-purple-500/15 text-purple-400 border-purple-500/30";
+    default:                return "bg-zinc-500/15 text-zinc-400 border-zinc-500/30";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -73,6 +85,8 @@ interface BottomPanelProps {
   regimeBySymbol: Record<string, { regime: RegimeType; strength: number; rsi: number }>;
   onSymbolClick: (sym: string) => void;
   barLog: BarLogEntry[];
+  avwapProgress: Map<string, EntryGatedPayload>;
+  orbProgress: Map<string, ORBPhaseUpdatePayload>;
 }
 
 export function BottomPanel({
@@ -82,15 +96,35 @@ export function BottomPanel({
   regimeBySymbol,
   onSymbolClick,
   barLog,
+  avwapProgress,
+  orbProgress,
 }: BottomPanelProps) {
   const symbolsWithRegime = useMemo(() => Object.keys(regimeBySymbol).sort(), [regimeBySymbol]);
   const [expanded, setExpanded] = useState(false);
+
+  const strategySummary = useMemo(() => {
+    const avwapCount = avwapProgress.size;
+    const gateBreakdown: Record<string, number> = {};
+    let avwapReady = 0;
+    for (const [, p] of avwapProgress) {
+      if (!p.blockingGate) { avwapReady++; continue; }
+      gateBreakdown[p.blockingGate] = (gateBreakdown[p.blockingGate] ?? 0) + 1;
+    }
+
+    const orbCount = orbProgress.size;
+    const phaseBreakdown: Record<string, number> = {};
+    for (const [, p] of orbProgress) {
+      phaseBreakdown[p.phase] = (phaseBreakdown[p.phase] ?? 0) + 1;
+    }
+
+    return { avwapCount, avwapReady, gateBreakdown, orbCount, phaseBreakdown };
+  }, [avwapProgress, orbProgress]);
 
   return (
     <div className={`mt-1 rounded-t-lg border border-border bg-card flex flex-col shrink-0 ${expanded ? "h-[200px]" : ""}`}>
       {/* Tab bar */}
       <div className="flex items-center gap-0 border-b border-border shrink-0">
-        {(["signals", "market", "bars"] as const).map((tab) => (
+        {(["signals", "market", "bars", "strategy"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => { setBottomTab(tab); if (!expanded) setExpanded(true); }}
@@ -107,6 +141,11 @@ export function BottomPanel({
               <span className="flex items-center gap-1.5">
                 <Activity className="w-3 h-3" />
                 Bars ({barLog.length})
+              </span>
+            ) : tab === "strategy" ? (
+              <span className="flex items-center gap-1.5">
+                <Activity className="w-3 h-3" />
+                Strategy
               </span>
             ) : (
               <span className="flex items-center gap-1.5">
@@ -164,7 +203,11 @@ export function BottomPanel({
                           <Badge className={`text-[9px] px-1.5 py-0 ${badge.cls}`}>{badge.text}</Badge>
                         </td>
                         <td className="py-1.5 px-2 text-muted-foreground">{sig.Kind}</td>
-                        <td className="py-1.5 px-2 text-muted-foreground">{sig.Status}</td>
+                        <td className="py-1.5 px-2">
+                          <Badge variant="outline" className={`text-[9px] px-1.5 py-0 ${statusBadgeColor(sig.Status)}`}>
+                            {sig.Status}
+                          </Badge>
+                        </td>
                         <td className="py-1.5 px-2">
                           {sig.Confidence > 0 && (
                             <div className="flex items-center gap-1.5">
@@ -242,6 +285,53 @@ export function BottomPanel({
                 );
               })
             )}
+          </div>
+        )}
+
+        {bottomTab === "strategy" && (
+          <div className="p-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-bold">AVWAP Confluence</span>
+                <Badge variant="outline" className="text-[9px]">5m</Badge>
+              </div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-[10px] text-muted-foreground w-14">Active</span>
+                <span className="text-xs font-mono font-medium">{strategySummary.avwapCount} symbols</span>
+              </div>
+              {strategySummary.avwapReady > 0 && (
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-[10px] text-muted-foreground w-14">Ready</span>
+                  <span className="text-xs font-mono font-medium text-emerald-400">{strategySummary.avwapReady} (all gates passed)</span>
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                {Object.keys(strategySummary.gateBreakdown).length === 0 && strategySummary.avwapCount === 0
+                  ? "No symbols being tracked."
+                  : Object.entries(strategySummary.gateBreakdown)
+                      .sort(([, a], [, b]) => b - a)
+                      .map(([gate, count]) => `${count} blocked by ${gate}`)
+                      .join(", ") || "All symbols passed gates."}
+              </p>
+            </div>
+            <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-bold">ORB (Opening Range Breakout)</span>
+                <Badge variant="outline" className="text-[9px]">5m</Badge>
+              </div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-[10px] text-muted-foreground w-14">Active</span>
+                <span className="text-xs font-mono font-medium">{strategySummary.orbCount} symbols</span>
+              </div>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                {strategySummary.orbCount === 0
+                  ? "No symbols being tracked."
+                  : Object.entries(strategySummary.phaseBreakdown)
+                      .sort(([, a], [, b]) => b - a)
+                      .map(([phase, count]) => `${count} in ${phase.replace(/_/g, " ").toLowerCase()}`)
+                      .join(", ") + "."}
+              </p>
+            </div>
           </div>
         )}
 
