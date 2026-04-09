@@ -29,9 +29,6 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
 	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	screenerapp "github.com/oh-my-opentrade/backend/internal/app/screener"
-	"github.com/oh-my-opentrade/backend/internal/app/whale13f"
-	"github.com/oh-my-opentrade/backend/internal/adapters/openfigi"
-	"github.com/oh-my-opentrade/backend/internal/adapters/sec"
 	"github.com/oh-my-opentrade/backend/internal/app/backtest"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/symbolrouter"
@@ -76,8 +73,6 @@ type appServices struct {
 	aiScreenerSvc     *screenerapp.AIService
 	activationSvc     *activation.Service
 	pipelineActivator *bootstrap.PipelineActivator
-
-	whale13fSvc *whale13f.Service
 
 	orchestrator *orchestrator.AccountOrchestrator
 	debateSvc    *debate.Service
@@ -790,22 +785,7 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 			Msg("AI screener service started")
 	}
 
-	// 13F whale accumulation — periodic refresh (only when SEC_USER_AGENT is set)
-	if ua := os.Getenv("SEC_USER_AGENT"); ua != "" {
-		whaleDB := timescaledb.NewSqlDB(infra.sqlDB)
-		whaleRepo := timescaledb.NewWhaleRepo(whaleDB, log.With().Str("component", "whale_repo").Logger())
-		cusipCache := timescaledb.NewCUSIPCacheRepo(whaleDB, log.With().Str("component", "cusip_cache").Logger())
-		edgarClient := sec.NewEdgarClient(ua, log.With().Str("component", "sec_edgar").Logger())
-		figiClient := openfigi.NewClient(os.Getenv("OPENFIGI_API_KEY"), log.With().Str("component", "openfigi").Logger())
-		svc.whale13fSvc = whale13f.NewScheduledService(whale13f.ScheduledConfig{
-			RunAtHourET:   6,
-			RunAtMinuteET: 0,
-			UserAgent:     ua,
-		}, edgarClient, figiClient, cusipCache, whaleRepo, log.With().Str("component", "whale_13f").Logger())
-		if err := svc.whale13fSvc.Start(ctx); err != nil {
-			log.Warn().Err(err).Msg("13F whale service failed to start")
-		}
-	}
+	// 13F whale accumulation is handled by omo-data service.
 
 	// 5b (continued): hot-reload DNA after all services are started
 	if !svc.useStrategyV2 {
