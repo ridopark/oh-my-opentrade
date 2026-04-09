@@ -179,30 +179,24 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
   const allPreGatesOK = biasOK && slopeOK && confOK;
   const entryBlocking = allPreGatesOK && avwap.blockingGate === "entry_specific";
 
-  // Each pill is independently pass/fail — not sequential
-  const pill = (passed: boolean, blocking: boolean) =>
+  const pill = (passed: boolean) =>
     passed
       ? "bg-emerald-500/20 border border-emerald-500/40 text-emerald-300"
-      : blocking
-        ? "bg-yellow-500/15 border border-yellow-500/50 text-yellow-200 animate-pulse"
-        : "bg-zinc-500/10 border border-zinc-600/30 text-zinc-500";
-  const icon = (passed: boolean, blocking: boolean) =>
-    passed ? "\u2713" : blocking ? "\u25B6" : "\u2717";
-  const arrow = <span className="text-zinc-400 text-sm font-bold shrink-0">{"\u2192"}</span>;
+      : "bg-yellow-500/15 border border-yellow-500/50 text-yellow-200 animate-pulse";
+  const icon = (passed: boolean) => passed ? "\u2713" : "\u25B6";
 
   return (
     <div className="space-y-2">
       <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">AVWAP Readiness</h4>
 
-      {/* Pipeline: Bias → Conf → Slope → Entry — each independently evaluated */}
-      <div className="flex items-center gap-1 w-full">
-        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(biasOK, !biasOK)}`}>
-          <span className="text-[11px] font-medium">{icon(biasOK, !biasOK)} Bias</span>
+      {/* All gates evaluated in parallel — green (done) or yellow pulse (working) */}
+      <div className="flex items-center gap-1.5 w-full">
+        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(biasOK)}`}>
+          <span className="text-[11px] font-medium">{icon(biasOK)} Bias</span>
           <span className="text-[10px]">{biasOK ? ind.avwapBias : "\u2014"}</span>
         </div>
-        {arrow}
-        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(confOK, !confOK)}`}>
-          <span className="text-[11px] font-medium">{icon(confOK, !confOK)} Conf {c.score}/{c.maxScore}</span>
+        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(confOK)}`}>
+          <span className="text-[11px] font-medium">{icon(confOK)} Conf {c.score}/{c.maxScore}</span>
           <div className="w-full mt-0.5 space-y-0.5">
             <div className="h-1.5 w-full rounded-full bg-zinc-800/60 overflow-hidden">
               <div className={`h-full rounded-full transition-all duration-300 ${confFillColor}`} style={{ width: `${Math.max(confPct, 2)}%` }} />
@@ -212,15 +206,13 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
             </span>
           </div>
         </div>
-        {arrow}
-        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(slopeOK, !slopeOK)}`}>
-          <span className="text-[11px] font-medium">{icon(slopeOK, !slopeOK)} Slope</span>
+        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(slopeOK)}`}>
+          <span className="text-[11px] font-medium">{icon(slopeOK)} Slope</span>
           <span className="text-[10px]">{ind.slopeBPS.toFixed(1)} bps</span>
         </div>
-        {arrow}
-        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(entryBlocking ? false : allPreGatesOK, entryBlocking)}`}>
-          <span className="text-[11px] font-medium">{icon(false, entryBlocking)} Entry</span>
-          <span className="text-[10px]">{entryBlocking ? "0 fired" : "\u2014"}</span>
+        <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(entryBlocking ? false : allPreGatesOK)}`}>
+          <span className="text-[11px] font-medium">{icon(entryBlocking ? false : allPreGatesOK)} Entry</span>
+          <span className="text-[10px]">{entryBlocking ? "0 fired" : allPreGatesOK ? "ready" : "\u2014"}</span>
         </div>
       </div>
 
@@ -360,7 +352,7 @@ function avwapSegments(avwap: EntryGatedPayload): GateBarSegment[] {
     { label: "Bias", status: biasOK ? "passed" as const : "active" as const },
     { label: "Conf", status: confOK ? "passed" as const : "active" as const },
     { label: "Slope", status: slopeOK ? "passed" as const : "active" as const },
-    { label: "Entry", status: entryBlocking ? "active" as const : allOK ? "passed" as const : "pending" as const },
+    { label: "Entry", status: entryBlocking ? "active" as const : allOK ? "passed" as const : "active" as const },
   ];
 }
 
@@ -396,7 +388,7 @@ function orbSegments(orb: ORBPhaseUpdatePayload): GateBarSegment[] {
   });
 }
 
-function SegmentedGateBar({
+function PillGateBar({
   segments,
   summary,
   summaryColor,
@@ -408,20 +400,22 @@ function SegmentedGateBar({
   onClick: (e: React.MouseEvent) => void;
 }) {
   return (
-    <div className="flex items-center gap-2 cursor-pointer" onClick={onClick}>
-      <div className="flex h-2 w-24 rounded-full bg-zinc-800 overflow-hidden gap-px">
+    <div className="flex items-center gap-1 cursor-pointer" onClick={onClick}>
+      <div className="flex gap-0.5">
         {segments.map((seg, i) => (
           <div
             key={i}
-            className={`flex-1 ${
+            className={`h-4 px-1.5 rounded text-[8px] font-medium flex items-center ${
               seg.status === "passed"
-                ? "bg-emerald-500"
+                ? "bg-emerald-500/25 text-emerald-400 border border-emerald-500/40"
                 : seg.status === "active"
-                  ? "bg-yellow-500 animate-pulse"
-                  : "bg-zinc-700"
-            } ${i === 0 ? "rounded-l-full" : ""} ${i === segments.length - 1 ? "rounded-r-full" : ""}`}
+                  ? "bg-yellow-500/20 text-yellow-300 border border-yellow-500/40 animate-pulse"
+                  : "bg-zinc-500/10 text-zinc-600 border border-zinc-700/40"
+            }`}
             title={seg.label}
-          />
+          >
+            {seg.label}
+          </div>
         ))}
       </div>
       <span className={`text-[10px] font-mono whitespace-nowrap ${summaryColor}`}>{summary}</span>
@@ -682,7 +676,7 @@ function SignalRow({ row }: { row: UnifiedRow }) {
       <td className="px-2 text-center">
         {avwapSegs ? (
           <div ref={avwapBarRef} className="inline-block">
-            <SegmentedGateBar
+            <PillGateBar
               segments={avwapSegs}
               summary={avwapSummary}
               summaryColor={avwapSummaryColor}
@@ -698,7 +692,7 @@ function SignalRow({ row }: { row: UnifiedRow }) {
       <td className="px-2 text-center">
         {macdSegs ? (
           <div ref={macdBarRef} className="inline-block">
-            <SegmentedGateBar
+            <PillGateBar
               segments={macdSegs}
               summary={macdSummary}
               summaryColor={macdSummaryColor}
@@ -714,7 +708,7 @@ function SignalRow({ row }: { row: UnifiedRow }) {
       <td className="px-2 text-center">
         {orbSegs ? (
           <div ref={orbBarRef} className="inline-block">
-            <SegmentedGateBar
+            <PillGateBar
               segments={orbSegs}
               summary={orbSummary}
               summaryColor={orbSummaryColor}
