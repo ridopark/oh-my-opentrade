@@ -104,6 +104,12 @@ func main() {
 		}
 	}
 
+	// Dark pool repository
+	dpRepo := timescaledb.NewDarkPoolRepo(
+		timescaledb.NewSqlDB(sqlDB),
+		log.With().Str("component", "darkpool_repo").Logger(),
+	)
+
 	// Context
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -125,6 +131,7 @@ func main() {
 		RunAtMinuteET:  15,
 		LookbackDays:   90,
 	}, ibkrData, alpacaAdapter, repo, noopVIXSetter{}, log)
+	refreshSvc.SetDarkPool(alpacaAdapter, dpRepo)
 
 	if runOnce {
 		log.Info().Msg("run-once mode: executing all tasks")
