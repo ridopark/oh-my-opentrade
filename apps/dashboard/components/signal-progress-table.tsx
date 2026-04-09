@@ -191,7 +191,7 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
 
       {/* Pipeline: Bias → Slope → Conf → Entry — full width */}
       <div className="flex items-start w-full">
-        <div className="flex flex-col items-center flex-1">
+        <div className="flex flex-col items-center flex-1 min-w-0">
           <span className={`text-[11px] font-medium ${stepColor(0, biasOK)}`}>
             {stepIcon(biasOK, 0)} Bias
           </span>
@@ -200,7 +200,7 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
           </span>
         </div>
         <div className="flex items-center pt-1.5">{arrow}</div>
-        <div className="flex flex-col items-center flex-1">
+        <div className="flex flex-col items-center flex-1 min-w-0">
           <span className={`text-[11px] font-medium ${stepColor(1, slopeOK)}`}>
             {stepIcon(slopeOK, 1)} Slope
           </span>
@@ -209,7 +209,7 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
           </span>
         </div>
         <div className="flex items-center pt-1.5">{arrow}</div>
-        <div className="flex flex-col items-center flex-[2]">
+        <div className="flex flex-col items-center flex-1 min-w-0">
           <span className={`text-[11px] font-medium ${stepColor(2, confOK)}`}>
             {stepIcon(confOK, 2)} Conf {c.score}/{c.maxScore}
           </span>
@@ -217,13 +217,13 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
             <div className="h-2 w-full rounded-full bg-zinc-800 overflow-hidden">
               <div className={`h-full rounded-full transition-all duration-300 ${confFillColor}`} style={{ width: `${Math.max(confPct, 2)}%` }} />
             </div>
-            <span className="text-[9px] text-zinc-500 block">
+            <span className="text-[9px] text-zinc-500 block truncate">
               {factors.filter(f => f.active).map(f => f.detail || f.label).join(", ") || "none"}
             </span>
           </div>
         </div>
         <div className="flex items-center pt-1.5">{arrow}</div>
-        <div className="flex flex-col items-center flex-1">
+        <div className="flex flex-col items-center flex-1 min-w-0">
           <span className={`text-[11px] font-medium ${stepColor(3, false)}`}>
             {stepIcon(false, 3)} Entry
           </span>
