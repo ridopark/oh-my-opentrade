@@ -49,6 +49,7 @@ type RunConfig struct {
 	MaxPositions     int             // portfolio-level max simultaneous positions (0=use config default)
 	MaxPerGroup      int             // max positions per sector group (0=use config default)
 	CompoundEquity   bool            // when true, position sizing compounds with P&L
+	UseNativeSymbols bool            // when true, skip symbol override — each strategy uses its TOML symbols
 }
 
 // ProgressInfo tracks replay progress.
@@ -265,12 +266,14 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	// Override each strategy's routing.symbols with the UI-requested symbols
 	// so the strategy runs on exactly the symbols the user selected.
-	if len(r.cfg.Symbols) > 0 {
+	// When UseNativeSymbols is set, skip the override — each strategy keeps
+	// its own TOML-configured symbols (Symbols only used for bar loading).
+	if len(r.cfg.Symbols) > 0 && !r.cfg.UseNativeSymbols {
 		syms := make([]string, len(r.cfg.Symbols))
 		for i, s := range r.cfg.Symbols {
 			syms[i] = s.String()
 		}
-		specStore = &symbolOverrideSpecStore{inner: specStore, symbols: syms}
+		specStore = newSymbolOverrideSpecStore(specStore, syms)
 	}
 
 	// Only load ORB config if orb_break_retest is among the selected strategies
@@ -1554,12 +1557,41 @@ func (f *filteredSpecStore) Watch(ctx context.Context) (<-chan start.StrategyID,
 	return f.inner.Watch(ctx)
 }
 
-// symbolOverrideSpecStore replaces each spec's routing symbols with the
-// backtest-requested symbols so strategies run on UI-selected symbols
-// regardless of what the TOML config lists.
+// symbolOverrideSpecStore intersects each spec's routing symbols with the
+// backtest-requested symbols. Strategies only run on symbols that appear in
+// BOTH the UI selection AND the strategy's native TOML config. This prevents
+// strategies from being forced onto untested symbols.
 type symbolOverrideSpecStore struct {
-	inner   portstrategy.SpecStore
-	symbols []string
+	inner      portstrategy.SpecStore
+	symbols    []string
+	allowedSet map[string]bool // precomputed from symbols
+}
+
+func newSymbolOverrideSpecStore(inner portstrategy.SpecStore, symbols []string) *symbolOverrideSpecStore {
+	allowed := make(map[string]bool, len(symbols))
+	for _, sym := range symbols {
+		allowed[sym] = true
+	}
+	return &symbolOverrideSpecStore{inner: inner, symbols: symbols, allowedSet: allowed}
+}
+
+// intersectSymbols returns only symbols present in both the strategy's native
+// list and the backtest request. If the strategy has no native symbols
+// configured, the full request list is used as a fallback.
+func (s *symbolOverrideSpecStore) intersectSymbols(native []string) []string {
+	if len(native) == 0 {
+		return s.symbols
+	}
+	var out []string
+	for _, sym := range native {
+		if s.allowedSet[sym] {
+			out = append(out, sym)
+		}
+	}
+	if len(out) == 0 {
+		return native // no overlap — keep strategy's own symbols
+	}
+	return out
 }
 
 func (s *symbolOverrideSpecStore) List(ctx context.Context, filter *portstrategy.SpecFilter) ([]portstrategy.Spec, error) {
@@ -1568,7 +1600,7 @@ func (s *symbolOverrideSpecStore) List(ctx context.Context, filter *portstrategy
 		return nil, err
 	}
 	for i := range specs {
-		specs[i].Routing.Symbols = s.symbols
+		specs[i].Routing.Symbols = s.intersectSymbols(specs[i].Routing.Symbols)
 	}
 	return specs, nil
 }
@@ -1578,7 +1610,7 @@ func (s *symbolOverrideSpecStore) Get(ctx context.Context, id start.StrategyID, 
 	if err != nil {
 		return nil, err
 	}
-	spec.Routing.Symbols = s.symbols
+	spec.Routing.Symbols = s.intersectSymbols(spec.Routing.Symbols)
 	return spec, nil
 }
 
@@ -1587,7 +1619,7 @@ func (s *symbolOverrideSpecStore) GetLatest(ctx context.Context, id start.Strate
 	if err != nil {
 		return nil, err
 	}
-	spec.Routing.Symbols = s.symbols
+	spec.Routing.Symbols = s.intersectSymbols(spec.Routing.Symbols)
 	return spec, nil
 }
 

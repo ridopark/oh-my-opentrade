@@ -68,3 +68,12 @@ groups:
         annotations:
           summary: "HTTP 5xx error rate >2%"
           description: "More than 2% of HTTP requests are returning 5xx status codes."
+
+      - alert: OmoCoreDown
+        expr: up{job="omo-core"} == 0
+        for: 60s
+        labels:
+          severity: critical
+        annotations:
+          summary: "omo-core is unreachable"
+          description: "Prometheus cannot scrape omo-core metrics. The process may have crashed."
