@@ -136,6 +136,26 @@ func main() {
 	}, ibkrData, alpacaAdapter, repo, noopVIXSetter{}, log)
 	refreshSvc.SetDarkPool(alpacaAdapter, dpRepo)
 
+	// IV collector (uses Alpaca for options data)
+	var ivSvc *ivcollector.Service
+	ivSymbols := cfg.Symbols.SymbolsByAssetClass("EQUITY")
+	if len(ivSymbols) > 0 {
+		ivRepo := timescaledb.NewIVRepository(
+			timescaledb.NewSqlDB(sqlDB),
+			log.With().Str("component", "iv_repo").Logger(),
+		)
+		ivSvc = ivcollector.NewService(
+			ivcollector.Config{
+				Symbols:       ivSymbols,
+				TargetDTE:     30,
+				RunAtHourET:   16,
+				RunAtMinuteET: 15,
+			},
+			alpacaAdapter, alpacaAdapter, ivRepo,
+			log.With().Str("component", "iv_collector").Logger(),
+		)
+	}
+
 	// 13F whale accumulation (periodic refresh — only when SEC_USER_AGENT is set)
 	var whaleSvc *whale13f.Service
 	if ua := os.Getenv("SEC_USER_AGENT"); ua != "" {
@@ -154,6 +174,9 @@ func main() {
 	if runOnce {
 		log.Info().Msg("run-once mode: executing all tasks")
 		refreshSvc.RefreshAll(ctx)
+		if ivSvc != nil {
+			ivSvc.CollectAll(ctx)
+		}
 		if whaleSvc != nil {
 			if err := whaleSvc.Refresh(ctx); err != nil {
 				log.Warn().Err(err).Msg("whale 13F refresh failed")
@@ -168,23 +191,7 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to start data refresh service")
 	}
 
-	// IV collector (uses Alpaca for options data)
-	ivSymbols := cfg.Symbols.SymbolsByAssetClass("EQUITY")
-	if len(ivSymbols) > 0 {
-		ivRepo := timescaledb.NewIVRepository(
-			timescaledb.NewSqlDB(sqlDB),
-			log.With().Str("component", "iv_repo").Logger(),
-		)
-		ivSvc := ivcollector.NewService(
-			ivcollector.Config{
-				Symbols:       ivSymbols,
-				TargetDTE:     30,
-				RunAtHourET:   16,
-				RunAtMinuteET: 15,
-			},
-			alpacaAdapter, alpacaAdapter, ivRepo,
-			log.With().Str("component", "iv_collector").Logger(),
-		)
+	if ivSvc != nil {
 		if err := ivSvc.Start(ctx); err != nil {
 			log.Warn().Err(err).Msg("IV collector failed to start")
 		}
