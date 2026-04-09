@@ -60,21 +60,6 @@ function confidenceColor(c: number): string {
   return "bg-red-500";
 }
 
-function abbreviatePhase(phase: string): string {
-  switch (phase) {
-    case "PRE_OPEN": return "PRE";
-    case "FORMING_RANGE": return "FORMING";
-    case "RANGE_SET": return "RANGE";
-    case "BREAKOUT_SEEN": return "BREAK";
-    case "AWAITING_RETEST": return "RETEST";
-    case "RETEST_CONFIRMED": return "CONFIRMED";
-    case "SIGNAL_FIRED": return "SIGNAL";
-    case "DONE_FOR_SESSION": return "DONE";
-    case "INVALID": return "INVALID";
-    default: return phase;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Left border color by composite score
 // ---------------------------------------------------------------------------
@@ -443,35 +428,28 @@ function orbSegments(orb: ORBPhaseUpdatePayload): GateBarSegment[] {
 
 function PillGateBar({
   segments,
-  summary,
-  summaryColor,
   onClick,
 }: {
   segments: GateBarSegment[];
-  summary: string;
-  summaryColor: string;
   onClick: (e: React.MouseEvent) => void;
 }) {
   return (
-    <div className="flex items-center gap-1 cursor-pointer" onClick={onClick}>
-      <div className="flex gap-0.5">
-        {segments.map((seg, i) => (
-          <div
-            key={i}
-            className={`h-4 px-1.5 rounded text-[8px] font-medium flex items-center ${
-              seg.status === "passed"
-                ? "bg-emerald-500/25 text-emerald-400 border border-emerald-500/40"
-                : seg.status === "active"
-                  ? "bg-yellow-500/20 text-yellow-300 border border-yellow-500/40 animate-pulse"
-                  : "bg-zinc-500/10 text-zinc-600 border border-zinc-700/40"
-            }`}
-            title={seg.label}
-          >
-            {seg.label}
-          </div>
-        ))}
-      </div>
-      <span className={`text-[10px] font-mono whitespace-nowrap ${summaryColor}`}>{summary}</span>
+    <div className="flex gap-0.5 cursor-pointer" onClick={onClick}>
+      {segments.map((seg, i) => (
+        <div
+          key={i}
+          className={`h-4 px-1.5 rounded text-[8px] font-medium flex items-center ${
+            seg.status === "passed"
+              ? "bg-emerald-500/25 text-emerald-400 border border-emerald-500/40"
+              : seg.status === "active"
+                ? "bg-yellow-500/20 text-yellow-300 border border-yellow-500/40 animate-pulse"
+                : "bg-zinc-500/10 text-zinc-600 border border-zinc-700/40"
+          }`}
+          title={seg.label}
+        >
+          {seg.label}
+        </div>
+      ))}
     </div>
   );
 }
@@ -669,35 +647,10 @@ function SignalRow({ row }: { row: UnifiedRow }) {
     }
   }, [open]);
 
-  // AVWAP bar data
+  // Strategy segments
   const avwapSegs = avwap ? avwapSegments(avwap) : null;
-  const avwapPassed = avwapSegs ? avwapSegs.filter(s => s.status === "passed").length : 0;
-  const avwapSummary = avwap
-    ? `${avwapPassed}/4 ${avwap.blockingGate || "ready"}${avwap.blockingGate === "confluence" ? ` (${avwap.confluence.score}/${avwap.confluence.maxScore})` : ""}`
-    : "";
-  const avwapSummaryColor = avwap
-    ? (avwap.blockingGate ? "text-zinc-400" : "text-emerald-400")
-    : "text-zinc-700";
-
-  // MACD bar data
   const macdSegs = macd ? macdSegments(macd) : null;
-  const macdPassed = macdSegs ? macdSegs.filter(s => s.status === "passed").length : 0;
-  const macdSummary = macd
-    ? `${macdPassed}/4 ${macd.blockingGate || "ready"}${macd.blockingGate === "filters" && macd.confluence.maxScore > 0 ? ` (${macd.confluence.score}/${macd.confluence.maxScore})` : ""}`
-    : "";
-  const macdSummaryColor = macd
-    ? (macd.blockingGate ? "text-zinc-400" : "text-emerald-400")
-    : "text-zinc-700";
-
-  // ORB bar data
   const orbSegs = orb ? orbSegments(orb) : null;
-  const orbPassed = orbSegs ? orbSegs.filter(s => s.status === "passed").length : 0;
-  const orbSummary = orb ? `${orbPassed}/4 ${abbreviatePhase(orb.phase)}` : "";
-  const orbSummaryColor = orb
-    ? (orb.phase === "SIGNAL_FIRED" || orb.phase === "RETEST_CONFIRMED" ? "text-emerald-400"
-      : orb.phase === "INVALID" ? "text-red-400"
-      : "text-zinc-400")
-    : "text-zinc-700";
 
   return (
     <tr className="border-b border-zinc-800/60 hover:bg-zinc-800/40 cursor-default h-8 text-[11px]">
@@ -723,8 +676,6 @@ function SignalRow({ row }: { row: UnifiedRow }) {
           <div ref={avwapBarRef} className="inline-block">
             <PillGateBar
               segments={avwapSegs}
-              summary={avwapSummary}
-              summaryColor={avwapSummaryColor}
               onClick={handleOpen(avwapBarRef)}
             />
           </div>
@@ -739,8 +690,6 @@ function SignalRow({ row }: { row: UnifiedRow }) {
           <div ref={macdBarRef} className="inline-block">
             <PillGateBar
               segments={macdSegs}
-              summary={macdSummary}
-              summaryColor={macdSummaryColor}
               onClick={handleOpen(macdBarRef)}
             />
           </div>
@@ -755,8 +704,6 @@ function SignalRow({ row }: { row: UnifiedRow }) {
           <div ref={orbBarRef} className="inline-block">
             <PillGateBar
               segments={orbSegs}
-              summary={orbSummary}
-              summaryColor={orbSummaryColor}
               onClick={handleOpen(orbBarRef)}
             />
           </div>
