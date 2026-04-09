@@ -213,11 +213,11 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
           <span className={`text-[11px] font-medium ${stepColor(2, confOK)}`}>
             {stepIcon(confOK, 2)} Conf {c.score}/{c.maxScore}
           </span>
-          <div className="flex items-center gap-1.5 w-full mt-0.5 px-1">
-            <div className="h-2 flex-1 rounded-full bg-zinc-800 overflow-hidden">
+          <div className="w-full mt-0.5 px-1 space-y-0.5">
+            <div className="h-2 w-full rounded-full bg-zinc-800 overflow-hidden">
               <div className={`h-full rounded-full transition-all duration-300 ${confFillColor}`} style={{ width: `${Math.max(confPct, 2)}%` }} />
             </div>
-            <span className="text-[9px] text-zinc-500 whitespace-nowrap">
+            <span className="text-[9px] text-zinc-500 block">
               {factors.filter(f => f.active).map(f => f.detail || f.label).join(", ") || "none"}
             </span>
           </div>
