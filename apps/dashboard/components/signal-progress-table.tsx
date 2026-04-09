@@ -636,24 +636,9 @@ function DetailPanel({
 
       {/* Detail content */}
       <div className="p-4 space-y-4">
-        {avwap ? <AVWAPDetail avwap={avwap} /> : (
-          <div className="space-y-2">
-            <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">AVWAP Readiness</h4>
-            <span className="text-xs text-zinc-600">No data</span>
-          </div>
-        )}
-        {macd ? <MACDDetail macd={macd} /> : (
-          <div className="space-y-2">
-            <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">MACD Readiness</h4>
-            <span className="text-xs text-zinc-600">No data</span>
-          </div>
-        )}
-        {orb ? <ORBDetail orb={orb} /> : (
-          <div className="space-y-2">
-            <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">ORB Phase</h4>
-            <span className="text-xs text-zinc-600">No data</span>
-          </div>
-        )}
+        {avwap && <AVWAPDetail avwap={avwap} />}
+        {macd && <MACDDetail macd={macd} />}
+        {orb && <ORBDetail orb={orb} />}
       </div>
     </div>,
     document.body,
