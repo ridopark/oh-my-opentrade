@@ -200,13 +200,18 @@ func (a *Adapter) GetOrderDetails(_ context.Context, orderID string) (ports.Orde
 }
 
 func (a *Adapter) GetPositions(_ context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
-	ib := a.conn.IB()
-	if ib == nil {
-		return nil, fmt.Errorf("ibkr: not connected")
-	}
+	// Use the live position tracker (PositionChan-backed) instead of
+	// ib.Positions() which can be stale on IBKR paper accounts.
+	<-a.posReady
 
-	positions := ib.Positions()
-	a.log.Info().Int("raw_count", len(positions)).Str("account_filter", a.cfg.AccountID).Msg("ibkr: GetPositions called")
+	a.posMu.RLock()
+	positions := make([]ibsync.Position, 0, len(a.livePos))
+	for _, p := range a.livePos {
+		positions = append(positions, p)
+	}
+	a.posMu.RUnlock()
+
+	a.log.Info().Int("raw_count", len(positions)).Str("account_filter", a.cfg.AccountID).Msg("ibkr: GetPositions called (livePos)")
 	trades := make([]domain.Trade, 0, len(positions))
 	for _, p := range positions {
 		a.log.Debug().

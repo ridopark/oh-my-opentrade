@@ -818,7 +818,10 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	case isEntry(intent):
 		// WS stream active but unreliable on IBKR paper — fast-poll
 		// livePos (PositionChan-backed) to detect fills within ~1s.
-		go s.fastPollPosition(ctx, event.TenantID, event.EnvMode, po, brokerOrderID, l)
+		go s.fastPollPosition(ctx, event.TenantID, event.EnvMode, po, brokerOrderID, false, l)
+	case intent.Direction.IsExit():
+		// Fast-poll for exit fill: position goes to zero.
+		go s.fastPollPosition(ctx, event.TenantID, event.EnvMode, po, brokerOrderID, true, l)
 	}
 
 	return nil
@@ -875,17 +878,25 @@ func (s *Service) pollForFill(tenantID string, envMode domain.EnvMode, intent do
 // fastPollPosition polls the live position tracker every 200ms for up to 30s
 // after order submission. PositionChan updates within milliseconds of a fill,
 // so this catches fills that the ibsync WS order-status stream misses.
-func (s *Service) fastPollPosition(ctx context.Context, tenantID string, envMode domain.EnvMode, po *pendingOrder, brokerOrderID string, l zerolog.Logger) {
+// For entries (isExit=false): detects position appearing (qty != 0).
+// For exits (isExit=true): detects position disappearing (qty == 0).
+func (s *Service) fastPollPosition(ctx context.Context, tenantID string, envMode domain.EnvMode, po *pendingOrder, brokerOrderID string, isExit bool, l zerolog.Logger) {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	timeout := time.After(30 * time.Second)
+
+	direction := "entry"
+	if isExit {
+		direction = "exit"
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-timeout:
-			l.Debug().Str("broker_order_id", brokerOrderID).Msg("fast position poll: timed out — falling back to reconciliation loop")
+			l.Debug().Str("broker_order_id", brokerOrderID).Str("direction", direction).
+				Msg("fast position poll: timed out — falling back to reconciliation loop")
 			return
 		case <-ticker.C:
 			// Check if the WS stream already handled it.
@@ -896,12 +907,21 @@ func (s *Service) fastPollPosition(ctx context.Context, tenantID string, envMode
 			if err != nil {
 				continue
 			}
-			if posQty != 0 {
+
+			var detected bool
+			if isExit {
+				detected = posQty == 0
+			} else {
+				detected = posQty != 0
+			}
+
+			if detected {
 				// Double-check still pending (WS might have resolved it between check and here).
 				if _, ok := s.pendingOrders.Load(brokerOrderID); !ok {
 					return
 				}
 				l.Info().Float64("position_qty", posQty).Str("broker_order_id", brokerOrderID).
+					Str("direction", direction).
 					Msg("fast position poll: fill detected via livePos")
 				s.recordFillFromDetails(po, brokerOrderID, ports.OrderDetails{
 					BrokerOrderID:  brokerOrderID,
@@ -914,7 +934,11 @@ func (s *Service) fastPollPosition(ctx context.Context, tenantID string, envMode
 				}, l)
 				s.cleanupPendingOrder(brokerOrderID)
 				if s.positionGate != nil {
-					s.positionGate.ClearInflight(tenantID, envMode, po.intent.Symbol)
+					if isExit {
+						s.positionGate.ClearInflightExit(tenantID, envMode, po.intent.Symbol)
+					} else {
+						s.positionGate.ClearInflight(tenantID, envMode, po.intent.Symbol)
+					}
 				}
 				return
 			}
@@ -1482,21 +1506,27 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 		// Early position-check: ibsync order status can be stale (stays
 		// pending_new after IBKR fills it). Check livePos on every tick —
 		// PositionChan updates within milliseconds of a fill.
-		if details.Status != "filled" && details.Status != "canceled" && isEntry(po.intent) {
+		// Entry: position appears (qty != 0). Exit: position disappears (qty == 0).
+		if details.Status != "filled" && details.Status != "canceled" {
 			posQty, posErr := s.broker.GetPosition(ctx, po.intent.Symbol)
-			if posErr == nil && posQty != 0 {
-				l.Info().Float64("position_qty", posQty).Msg("reconcile: order status stale but position exists — inferring fill")
-				s.recordFillFromDetails(po, brokerOrderID, ports.OrderDetails{
-					BrokerOrderID:  brokerOrderID,
-					Status:         "filled",
-					FilledQty:      po.intent.Quantity,
-					FilledAvgPrice: po.intent.LimitPrice,
-					Symbol:         string(po.intent.Symbol),
-					Side:           string(po.intent.Direction),
-					Qty:            po.intent.Quantity,
-				}, l)
-				s.cleanupPendingOrder(brokerOrderID)
-				return true
+			if posErr == nil {
+				entryFilled := isEntry(po.intent) && posQty != 0
+				exitFilled := po.intent.Direction.IsExit() && posQty == 0
+				if entryFilled || exitFilled {
+					l.Info().Float64("position_qty", posQty).Bool("is_exit", exitFilled).
+						Msg("reconcile: order status stale but position check confirms fill")
+					s.recordFillFromDetails(po, brokerOrderID, ports.OrderDetails{
+						BrokerOrderID:  brokerOrderID,
+						Status:         "filled",
+						FilledQty:      po.intent.Quantity,
+						FilledAvgPrice: po.intent.LimitPrice,
+						Symbol:         string(po.intent.Symbol),
+						Side:           string(po.intent.Direction),
+						Qty:            po.intent.Quantity,
+					}, l)
+					s.cleanupPendingOrder(brokerOrderID)
+					return true
+				}
 			}
 		}
 
