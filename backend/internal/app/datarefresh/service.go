@@ -8,6 +8,8 @@ import (
 
 	"fmt"
 
+	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
+	"github.com/oh-my-opentrade/backend/internal/app/backfill"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
@@ -26,6 +28,17 @@ type BarStore interface {
 	UpdateBarIndicators(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, t time.Time, ema9, ema21, ema50, ema200 float64, avwaps map[string]float64) error
 }
 
+// TradeFetcher fetches historical trades (for dark pool aggregation).
+type TradeFetcher interface {
+	GetHistoricalTrades(ctx context.Context, symbol domain.Symbol, from, to time.Time, handler func(alpaca.HistoricalTrade)) error
+}
+
+// DarkPoolStore persists aggregated dark pool bars.
+type DarkPoolStore interface {
+	SaveDarkPoolBars(ctx context.Context, bars []domain.DarkPoolBar) (int, error)
+	GetLatestDarkPoolBarTime(ctx context.Context, sym domain.Symbol, tf domain.Timeframe) (*time.Time, error)
+}
+
 // Config controls the daily data refresh schedule and scope.
 type Config struct {
 	VIXSymbol      string   // "VIX"
@@ -38,13 +51,15 @@ type Config struct {
 
 // Service fetches daily bars on a schedule and updates the monitor's VIX level.
 type Service struct {
-	cfg        Config
-	ibkrData   ports.MarketDataPort
-	alpacaData ports.MarketDataPort
-	repo       BarStore
-	monitor    VIXSetter
-	log        zerolog.Logger
-	etLocation *time.Location
+	cfg          Config
+	ibkrData     ports.MarketDataPort
+	alpacaData   ports.MarketDataPort
+	repo         BarStore
+	monitor      VIXSetter
+	tradeFetcher TradeFetcher
+	dpRepo       DarkPoolStore
+	log          zerolog.Logger
+	etLocation   *time.Location
 }
 
 // NewService creates a data refresh service.
@@ -71,6 +86,13 @@ func NewService(cfg Config, ibkrData, alpacaData ports.MarketDataPort, repo BarS
 		log:        log.With().Str("component", "datarefresh").Logger(),
 		etLocation: et,
 	}
+}
+
+// SetDarkPool enables daily dark pool refresh by injecting the trade fetcher and repository.
+// This is optional — if not called, dark pool refresh is silently skipped.
+func (s *Service) SetDarkPool(fetcher TradeFetcher, dpRepo DarkPoolStore) {
+	s.tradeFetcher = fetcher
+	s.dpRepo = dpRepo
 }
 
 // Start loads VIX from DB (or fetches if empty), then launches the daily scheduler.
@@ -145,7 +167,7 @@ func (s *Service) nextRunTime(now time.Time) time.Time {
 	return target
 }
 
-// RefreshAll fetches VIX + all daily + intraday bars and saves to DB.
+// RefreshAll fetches VIX + all daily + intraday + dark pool bars and saves to DB.
 func (s *Service) RefreshAll(ctx context.Context) {
 	s.log.Info().Msg("daily refresh starting")
 
@@ -161,6 +183,15 @@ func (s *Service) RefreshAll(ctx context.Context) {
 		Int("symbols_failed", failed).
 		Int("symbols_total", len(allSymbols)).
 		Msg("daily refresh complete")
+
+	// Dark pool refresh (optional — skipped if SetDarkPool was not called).
+	if s.tradeFetcher != nil && s.dpRepo != nil {
+		dpSaved, dpFailed := s.refreshDarkPoolBars(ctx, allSymbols)
+		s.log.Info().
+			Int("symbols_refreshed", dpSaved).
+			Int("symbols_failed", dpFailed).
+			Msg("dark pool refresh complete")
+	}
 }
 
 func (s *Service) refreshVIX(ctx context.Context) error {
@@ -289,6 +320,58 @@ func (s *Service) deduplicatedSymbols() []string {
 		}
 	}
 	return out
+}
+
+// refreshDarkPoolBars fetches today's trades for each symbol, aggregates dark pool
+// metrics into 5-minute bars via DPAggregator, and saves to the darkpool_bars table.
+// It resumes from the last stored dark pool bar per symbol to avoid re-fetching.
+func (s *Service) refreshDarkPoolBars(ctx context.Context, symbols []string) (saved, failed int) {
+	et, _ := time.LoadLocation("America/New_York")
+	nowET := time.Now().In(et)
+	// Fetch from start of today (4 AM ET pre-market) to now.
+	from := time.Date(nowET.Year(), nowET.Month(), nowET.Day(), 4, 0, 0, 0, et)
+	if nowET.Before(from) {
+		from = from.AddDate(0, 0, -1)
+	}
+	to := time.Now()
+
+	for _, symStr := range symbols {
+		sym, err := domain.NewSymbol(symStr)
+		if err != nil {
+			failed++
+			continue
+		}
+
+		// Resume from last stored bar if available.
+		if latest, err := s.dpRepo.GetLatestDarkPoolBarTime(ctx, sym, "5m"); err == nil && latest != nil {
+			if latest.After(from) {
+				from = latest.Add(time.Second)
+			}
+		}
+
+		agg := backfill.NewDPAggregator(sym)
+		err = s.tradeFetcher.GetHistoricalTrades(ctx, sym, from, to, func(t alpaca.HistoricalTrade) {
+			agg.AddTrade(t.T, t.X, t.P, t.S)
+		})
+		if err != nil {
+			s.log.Warn().Str("symbol", symStr).Err(err).Msg("dark pool trade fetch failed")
+			failed++
+			continue
+		}
+
+		bars := agg.Flush()
+		if len(bars) == 0 {
+			continue
+		}
+		if n, err := s.dpRepo.SaveDarkPoolBars(ctx, bars); err != nil {
+			s.log.Warn().Str("symbol", symStr).Err(err).Msg("dark pool bars save failed")
+			failed++
+		} else {
+			s.log.Debug().Str("symbol", symStr).Int("bars", n).Msg("dark pool bars saved")
+			saved++
+		}
+	}
+	return saved, failed
 }
 
 // backfillIntradayBars fetches 1m bars for today from Alpaca and aggregates
