@@ -183,7 +183,6 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
     passed
       ? "bg-emerald-500/20 border border-emerald-500/40 text-emerald-300"
       : "bg-yellow-500/15 border border-yellow-500/50 text-yellow-200 animate-pulse";
-  const icon = (passed: boolean) => passed ? "\u2713" : "\u25B6";
 
   return (
     <div className="space-y-2">
@@ -192,11 +191,11 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
       {/* All gates evaluated in parallel — green (done) or yellow pulse (working) */}
       <div className="flex items-center gap-1.5 w-full">
         <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(biasOK)}`}>
-          <span className="text-[11px] font-medium">{icon(biasOK)} Bias</span>
+          <span className="text-[11px] font-medium">Bias</span>
           <span className="text-[10px]">{biasOK ? ind.avwapBias : "\u2014"}</span>
         </div>
         <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(confOK)}`}>
-          <span className="text-[11px] font-medium">{icon(confOK)} Conf {c.score}/{c.maxScore}</span>
+          <span className="text-[11px] font-medium">Conf {c.score}/{c.maxScore}</span>
           <div className="w-full mt-0.5 space-y-0.5">
             <div className="h-1.5 w-full rounded-full bg-zinc-800/60 overflow-hidden">
               <div className={`h-full rounded-full transition-all duration-300 ${confFillColor}`} style={{ width: `${Math.max(confPct, 2)}%` }} />
@@ -207,11 +206,11 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
           </div>
         </div>
         <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(slopeOK)}`}>
-          <span className="text-[11px] font-medium">{icon(slopeOK)} Slope</span>
+          <span className="text-[11px] font-medium">Slope</span>
           <span className="text-[10px]">{ind.slopeBPS.toFixed(1)} bps</span>
         </div>
         <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(entryBlocking ? false : allPreGatesOK)}`}>
-          <span className="text-[11px] font-medium">{icon(entryBlocking ? false : allPreGatesOK)} Entry</span>
+          <span className="text-[11px] font-medium">Entry</span>
           <span className="text-[10px]">{entryBlocking ? "0 fired" : allPreGatesOK ? "ready" : "\u2014"}</span>
         </div>
       </div>
@@ -239,8 +238,6 @@ function MACDDetail({ macd }: { macd: EntryGatedPayload }) {
     passed
       ? "bg-emerald-500/20 border border-emerald-500/40 text-emerald-300"
       : "bg-yellow-500/15 border border-yellow-500/50 text-yellow-200 animate-pulse";
-  const icon = (passed: boolean) => passed ? "\u2713" : "\u25B6";
-
   const confPct = c.maxScore > 0 ? Math.min(100, (c.score / c.maxScore) * 100) : 0;
   const confFillColor = confPct >= 100 ? "bg-emerald-500" : confPct >= 50 ? "bg-yellow-500" : confPct > 0 ? "bg-orange-500" : "bg-zinc-700";
 
@@ -249,18 +246,18 @@ function MACDDetail({ macd }: { macd: EntryGatedPayload }) {
       <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">MACD Readiness</h4>
       <div className="flex items-center gap-1.5 w-full">
         <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(warmupOK)}`}>
-          <span className="text-[11px] font-medium">{icon(warmupOK)} Warmup</span>
+          <span className="text-[11px] font-medium">Warmup</span>
         </div>
         <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(regimeOK)}`}>
-          <span className="text-[11px] font-medium">{icon(regimeOK)} Regime</span>
+          <span className="text-[11px] font-medium">Regime</span>
           <span className="text-[10px]">EMA9</span>
         </div>
         <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(crossoverOK)}`}>
-          <span className="text-[11px] font-medium">{icon(crossoverOK)} Cross</span>
+          <span className="text-[11px] font-medium">Cross</span>
           <span className="text-[10px]">MACD</span>
         </div>
         <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(filtersOK)}`}>
-          <span className="text-[11px] font-medium">{icon(filtersOK)} Filters</span>
+          <span className="text-[11px] font-medium">Filters</span>
           {c.maxScore > 0 && (
             <div className="w-full mt-0.5 space-y-0.5">
               <div className="flex items-center gap-1">
