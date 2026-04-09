@@ -40,12 +40,6 @@ function biasColor(bias: string): string {
   return "text-zinc-500";
 }
 
-function volColor(ratio: number): string {
-  if (ratio >= 2.0) return "text-emerald-400";
-  if (ratio >= 1.0) return "text-yellow-400";
-  return "text-red-400";
-}
-
 function slopeColor(bps: number): string {
   return Math.abs(bps) >= 0.3 ? "text-emerald-400" : "text-red-400";
 }
@@ -165,23 +159,6 @@ function PhaseIndicator({ phase }: { phase: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// FactorValue (expanded AVWAP detail)
-// ---------------------------------------------------------------------------
-
-function FactorValue({ label, active, detail }: { label: string; active: boolean; detail: string }) {
-  return (
-    <div className="flex flex-col gap-0.5">
-      <span className="text-[10px] text-zinc-500 uppercase">{label}</span>
-      {active ? (
-        <span className="text-xs text-emerald-300">{detail || "yes"}</span>
-      ) : (
-        <span className="text-xs text-zinc-600">{"\u2014"}</span>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // EntryChecksPanel — per-entry-type failure reasons
 // ---------------------------------------------------------------------------
 
@@ -212,40 +189,33 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
   const c = avwap.confluence;
   const ind = avwap.indicators;
 
-  const pct = c.maxScore > 0 ? Math.min(100, (c.score / c.maxScore) * 100) : 0;
-  const fillColor = pct >= 100 ? "bg-emerald-500" : pct >= 50 ? "bg-yellow-500" : pct > 0 ? "bg-orange-500" : "bg-zinc-700";
-  const [showFactors, setShowFactors] = useState(false);
+  const factors = [
+    { label: "Fib", pts: 3, active: c.fib, detail: c.fibDetail },
+    { label: "Key", pts: 3, active: c.keyLevel, detail: c.keyLevelDetail },
+    { label: "Cndl", pts: 2, active: c.candle, detail: c.candleDetail },
+    { label: "Band", pts: 2, active: c.band, detail: c.band ? "yes" : "" },
+  ];
 
   return (
     <div className="space-y-3">
       <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">AVWAP Confluence</h4>
-      {/* Confluence score bar with hover-over factor details */}
-      <div
-        className="relative"
-        onMouseEnter={() => setShowFactors(true)}
-        onMouseLeave={() => setShowFactors(false)}
-      >
-        <div className="flex items-center gap-2">
-          <div className="h-3 flex-1 rounded-full bg-zinc-800 overflow-hidden">
+      {/* Factor segments bar — same style as readiness bars */}
+      <div className="flex items-center gap-2">
+        <div className="flex h-2.5 w-32 rounded-full bg-zinc-800 overflow-hidden gap-px">
+          {factors.map((f, i) => (
             <div
-              className={`h-full rounded-full transition-all duration-300 ${fillColor}`}
-              style={{ width: `${Math.max(pct, 2)}%` }}
+              key={i}
+              className={`flex-1 ${f.active ? "bg-emerald-500" : "bg-zinc-700"} ${i === 0 ? "rounded-l-full" : ""} ${i === factors.length - 1 ? "rounded-r-full" : ""}`}
+              title={`${f.label}(+${f.pts}): ${f.active ? f.detail || "yes" : "no"}`}
             />
-          </div>
-          <span className={`text-xs font-mono font-medium ${pct >= 100 ? "text-emerald-400" : "text-zinc-300"}`}>
-            {c.score}/{c.maxScore}
-          </span>
+          ))}
         </div>
-        {showFactors && (
-          <div className="absolute left-0 right-0 top-full mt-1 z-10 rounded border border-zinc-700 bg-zinc-900 p-2 shadow-lg">
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-              <FactorValue label="Fib(+3)" active={c.fib} detail={c.fibDetail} />
-              <FactorValue label="Key Lvl(+3)" active={c.keyLevel} detail={c.keyLevelDetail} />
-              <FactorValue label="Candle(+2)" active={c.candle} detail={c.candleDetail} />
-              <FactorValue label="Band(+2)" active={c.band} detail={c.band ? "yes" : ""} />
-            </div>
-          </div>
-        )}
+        <span className={`text-xs font-mono font-medium ${c.score >= c.maxScore ? "text-emerald-400" : "text-zinc-300"}`}>
+          {c.score}/{c.maxScore}
+        </span>
+        <span className="text-[10px] text-zinc-500">
+          {factors.filter(f => f.active).map(f => f.detail || f.label).join(", ") || "none"}
+        </span>
       </div>
       {/* Indicators and gate */}
       <div className="flex flex-wrap items-start gap-4">
@@ -256,15 +226,9 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
           </span>
         </div>
         <div className="flex flex-col gap-0.5">
-          <span className="text-[10px] text-zinc-500 uppercase">Vol</span>
-          <span className={`text-xs ${volColor(ind.volumeRatio)}`}>
-            {ind.volumeRatio.toFixed(1)}x
-          </span>
-        </div>
-        <div className="flex flex-col gap-0.5">
           <span className="text-[10px] text-zinc-500 uppercase">Slope</span>
           <span className={`text-xs ${slopeColor(ind.slopeBPS)}`}>
-            {ind.slopeBPS.toFixed(1)}
+            {ind.slopeBPS.toFixed(1)} bps
           </span>
         </div>
         <div className="flex flex-col gap-0.5">
