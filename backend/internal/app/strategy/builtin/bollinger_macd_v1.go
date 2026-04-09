@@ -57,6 +57,13 @@ type BMConfig struct {
 	StabilizationBars   int
 	MinConfluenceScore  int     // minimum confluence score (0-100) for entry. Default 0 (disabled).
 	DPConfluenceEnabled bool    // when true, include dark pool scoring in confluence. Default false.
+	DPVetoEnabled       bool    // when true, block entries when DP flow opposes direction. Default false.
+	DPVetoBuyRatioMin   float64 // block longs when DP buying < this ratio. Default 0.45.
+	DPVetoSellRatioMax  float64 // block shorts when DP buying > this ratio. Default 0.55.
+	DPSizingEnabled     bool    // when true, boost signal strength based on DP alignment. Default false.
+	DPSizingMaxBoost    float64 // maximum sizing multiplier when DP strongly confirms. Default 1.5.
+	DPStopEnabled       bool    // when true, tighten stops to DP support level. Default false.
+	DPLevelLookback     int     // number of 5m DP bars to scan for S/R levels. Default 20.
 	RollingWRMin        float64 // minimum rolling win rate (0-1) to allow entries. Default 0 (disabled).
 	RollingWRWindow     int     // number of recent trades for rolling WR calculation. Default 20.
 }
@@ -124,6 +131,13 @@ func parseBMConfig(params map[string]any) BMConfig {
 		StabilizationBars:   getInt(params, "stabilization_bars", 30),
 		MinConfluenceScore:  getInt(params, "min_confluence_score", 0),
 		DPConfluenceEnabled: getBool(params, "dp_confluence_enabled", false),
+		DPVetoEnabled:       getBool(params, "dp_veto_enabled", false),
+		DPVetoBuyRatioMin:   getFloat64(params, "dp_veto_buy_ratio_min", 0.45),
+		DPVetoSellRatioMax:  getFloat64(params, "dp_veto_sell_ratio_max", 0.55),
+		DPSizingEnabled:     getBool(params, "dp_sizing_enabled", false),
+		DPSizingMaxBoost:    getFloat64(params, "dp_sizing_max_boost", 1.5),
+		DPStopEnabled:       getBool(params, "dp_stop_enabled", false),
+		DPLevelLookback:     getInt(params, "dp_level_lookback", 20),
 		RollingWRMin:        getFloat64(params, "rolling_wr_min", 0),
 		RollingWRWindow:     getInt(params, "rolling_wr_window", 20),
 	}
@@ -380,6 +394,16 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 		setup := "macd_long"
 
 		if longTrigger {
+			// DP veto gate — block entries when institutional flow opposes direction.
+			if cfg.DPVetoEnabled {
+				if blocked, reason := start.DPVeto(ind, true, cfg.DPVetoBuyRatioMin, cfg.DPVetoSellRatioMax); blocked {
+					ctx.Logger().Debug("long entry vetoed by dark pool",
+						"symbol", symbol, "reason", reason)
+					longTrigger = false
+				}
+			}
+		}
+		if longTrigger {
 			// Confluence scoring — replaces individual boolean filters
 			conf := ComputeConfluenceScore(bar, ind, bmSt.PrevMACDHists, true, cfg.DPConfluenceEnabled)
 			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
@@ -389,11 +413,23 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 			if longTrigger {
 				swingLow := swingMin(bmSt.RecentLows)
 				if swingLow > 0 && swingLow < bar.Close {
-					stopDist := bar.Close - swingLow
+					// Optionally tighten stop to DP support level
+					stopPrice := swingLow
+					if cfg.DPStopEnabled && ind.DPSupportLevel > swingLow && ind.DPSupportLevel < bar.Close {
+						stopPrice = ind.DPSupportLevel - ind.ATR*0.1
+					}
+					stopDist := bar.Close - stopPrice
 					target := bar.Close + cfg.RiskRewardRatio*stopDist
 					strength := float64(conf.Score) / 100.0
 					if strength < 0.1 {
 						strength = 0.1 // minimum strength floor
+					}
+					// Apply DP sizing multiplier when enabled
+					if cfg.DPSizingEnabled {
+						strength *= start.DPSizingMultiplier(ind, true, cfg.DPSizingMaxBoost)
+						if strength > 1.0 {
+							strength = 1.0
+						}
 					}
 					s, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, strength, map[string]string{
 						"setup":             setup,
@@ -402,7 +438,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 						"macd_signal":       fmt.Sprintf("%.6f", ind.MACDSignal),
 						"macd_hist":         fmt.Sprintf("%.6f", ind.MACDHistogram),
 						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
-						"stop_price":        fmt.Sprintf("%.4f", swingLow),
+						"stop_price":        fmt.Sprintf("%.4f", stopPrice),
 						"target_price":      fmt.Sprintf("%.4f", target),
 						"rr_ratio":          fmt.Sprintf("%.1f", cfg.RiskRewardRatio),
 						"stop_bps":          fmt.Sprintf("%.0f", stopDist/bar.Close*10000),
@@ -416,7 +452,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 					})
 					if err == nil {
 						sig = &s
-						bmSt.StopPrice = swingLow
+						bmSt.StopPrice = stopPrice
 						bmSt.TargetPrice = target
 					}
 				}
@@ -436,6 +472,16 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 		setup := "macd_short"
 
 		if shortTrigger {
+			// DP veto gate — block entries when institutional flow opposes direction.
+			if cfg.DPVetoEnabled {
+				if blocked, reason := start.DPVeto(ind, false, cfg.DPVetoBuyRatioMin, cfg.DPVetoSellRatioMax); blocked {
+					ctx.Logger().Debug("short entry vetoed by dark pool",
+						"symbol", symbol, "reason", reason)
+					shortTrigger = false
+				}
+			}
+		}
+		if shortTrigger {
 			conf := ComputeConfluenceScore(bar, ind, bmSt.PrevMACDHists, false, cfg.DPConfluenceEnabled)
 			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
 				shortTrigger = false
@@ -449,6 +495,13 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 					strength := float64(conf.Score) / 100.0
 					if strength < 0.1 {
 						strength = 0.1
+					}
+					// Apply DP sizing multiplier when enabled
+					if cfg.DPSizingEnabled {
+						strength *= start.DPSizingMultiplier(ind, false, cfg.DPSizingMaxBoost)
+						if strength > 1.0 {
+							strength = 1.0
+						}
 					}
 					s, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideSell, strength, map[string]string{
 						"setup":             setup,

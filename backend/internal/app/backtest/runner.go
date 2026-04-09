@@ -677,7 +677,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		dpLookup = make(map[strategy.DPLookupKey]domain.DarkPoolBar)
 		for sym, bars := range batchDP {
 			for _, b := range bars {
-				dpLookup[strategy.DPLookupKey{Symbol: sym, Time: b.Time}] = b
+				dpLookup[strategy.DPLookupKey{Symbol: sym, Time: b.Time.UTC()}] = b
 			}
 		}
 		if len(dpLookup) > 0 {

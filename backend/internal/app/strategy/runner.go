@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -49,6 +50,9 @@ type Runner struct {
 	// Dark pool lookup for backtests: keyed by "symbol|5m-truncated-time".
 	dpLookup map[DPLookupKey]domain.DarkPoolBar
 
+	// dpRolling maintains per-symbol rolling statistics for DP ratio Z-score computation.
+	dpRolling map[string]*dpRollingStats
+
 	// Whale accumulation lookup: ticker -> latest score.
 	whaleLookup map[string]domain.WhaleAccumulation
 
@@ -61,6 +65,53 @@ type Runner struct {
 type DPLookupKey struct {
 	Symbol string
 	Time   time.Time
+}
+
+// dpRollingStats maintains a circular buffer for rolling mean/std computation
+// of DP ratio values, used for Z-score normalization.
+type dpRollingStats struct {
+	values []float64
+	size   int
+	idx    int
+	full   bool
+}
+
+func newDPRollingStats(size int) *dpRollingStats {
+	return &dpRollingStats{
+		values: make([]float64, size),
+		size:   size,
+	}
+}
+
+func (rs *dpRollingStats) push(v float64) {
+	rs.values[rs.idx] = v
+	rs.idx = (rs.idx + 1) % rs.size
+	if rs.idx == 0 {
+		rs.full = true
+	}
+}
+
+func (rs *dpRollingStats) meanStd() (mean, std float64) {
+	n := rs.size
+	if !rs.full {
+		n = rs.idx
+	}
+	if n == 0 {
+		return 0, 0
+	}
+	var sum float64
+	for i := 0; i < n; i++ {
+		sum += rs.values[i]
+	}
+	mean = sum / float64(n)
+	var variance float64
+	for i := 0; i < n; i++ {
+		d := rs.values[i] - mean
+		variance += d * d
+	}
+	variance /= float64(n)
+	std = math.Sqrt(variance)
+	return mean, std
 }
 
 func (r *Runner) SignalsRTHSuppressed() int64 {
@@ -512,19 +563,92 @@ func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error
 	}
 
 	// Overlay dark pool microstructure data when available (backtest only).
+	// Aggregates all 5m DP bars within the decision bar's time window for correct alignment.
 	if len(r.dpLookup) > 0 {
-		barTime5m := snap.Time.UTC().Truncate(5 * time.Minute)
-		key := DPLookupKey{Symbol: snap.Symbol.String(), Time: barTime5m}
-		if dpBar, ok := r.dpLookup[key]; ok {
-			ind := r.indicators[snap.Symbol.String()]
-			ind.DPRatio = dpBar.DPRatio
-			if dpBar.DPVolume > 0 {
-				ind.DPBuyRatio = dpBar.BuyVolume / dpBar.DPVolume
+		sym := snap.Symbol.String()
+		barStart := snap.Time.UTC()
+		// Determine bar duration from timeframe; fallback to 5m for unknown/1m bars.
+		barDur := tfDuration(snap.Timeframe)
+		if barDur < 5*time.Minute {
+			barDur = 5 * time.Minute
+		}
+		barEnd := barStart.Add(barDur)
+
+		// Aggregate all 5m DP bars within the decision window.
+		var dpVol, dpBuy, dpSell, dpLarge, dpTotal float64
+		for t := barStart.Truncate(5 * time.Minute); t.Before(barEnd); t = t.Add(5 * time.Minute) {
+			key := DPLookupKey{Symbol: sym, Time: t}
+			if dp, ok := r.dpLookup[key]; ok {
+				dpVol += dp.DPVolume
+				dpBuy += dp.BuyVolume
+				dpSell += dp.SellVolume
+				dpLarge += dp.LargePrintVolume
+				dpTotal += dp.TotalVolume
 			}
-			if dpBar.DPVolume > 0 {
-				ind.DPLargePrintPct = dpBar.LargePrintVolume / dpBar.DPVolume
+		}
+		if dpTotal > 0 {
+			ind := r.indicators[sym]
+			ind.DPRatio = dpVol / dpTotal
+			if dpVol > 0 {
+				ind.DPBuyRatio = dpBuy / dpVol
+				ind.DPLargePrintPct = dpLarge / dpVol
 			}
-			r.indicators[snap.Symbol.String()] = ind
+
+			// Z-score normalization of DP ratio using rolling lookback.
+			if r.dpRolling == nil {
+				r.dpRolling = make(map[string]*dpRollingStats)
+			}
+			rs, ok := r.dpRolling[sym]
+			if !ok {
+				rs = newDPRollingStats(20)
+				r.dpRolling[sym] = rs
+			}
+			rs.push(ind.DPRatio)
+			mean, std := rs.meanStd()
+			if std > 0 {
+				ind.DPRatioZScore = (ind.DPRatio - mean) / std
+			}
+
+			// DP S/R levels: scan trailing 20 5m bars, find top-3 by DP volume,
+			// classify their DPVWAP as support (below price) or resistance (above price).
+			// IndicatorSnapshot has no Close price; VWAP is the best intraday proxy.
+			var currentPrice float64
+			if snap.VWAP > 0 {
+				currentPrice = snap.VWAP
+			} else if snap.EMA9 > 0 {
+				currentPrice = snap.EMA9
+			}
+			if currentPrice > 0 {
+				type dpBarEntry struct {
+					vol  float64
+					vwap float64
+				}
+				var dpBars []dpBarEntry
+				levelStart := barEnd.Add(-20 * 5 * time.Minute)
+				for t := levelStart.Truncate(5 * time.Minute); t.Before(barEnd); t = t.Add(5 * time.Minute) {
+					if dp, ok2 := r.dpLookup[DPLookupKey{Symbol: sym, Time: t}]; ok2 && dp.DPVolume > 0 && dp.DPVWAP > 0 {
+						dpBars = append(dpBars, dpBarEntry{vol: dp.DPVolume, vwap: dp.DPVWAP})
+					}
+				}
+				sort.Slice(dpBars, func(i, j int) bool { return dpBars[i].vol > dpBars[j].vol })
+				topN := 3
+				if len(dpBars) < topN {
+					topN = len(dpBars)
+				}
+				for _, db := range dpBars[:topN] {
+					if db.vwap < currentPrice {
+						if db.vwap > ind.DPSupportLevel {
+							ind.DPSupportLevel = db.vwap
+						}
+					} else if db.vwap > currentPrice {
+						if ind.DPResistanceLevel == 0 || db.vwap < ind.DPResistanceLevel {
+							ind.DPResistanceLevel = db.vwap
+						}
+					}
+				}
+			}
+
+			r.indicators[sym] = ind
 		}
 	}
 
@@ -540,6 +664,26 @@ func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error
 
 	r.mu.Unlock()
 	return nil
+}
+
+// tfDuration converts a domain.Timeframe to a time.Duration.
+func tfDuration(tf domain.Timeframe) time.Duration {
+	switch tf {
+	case "1m":
+		return time.Minute
+	case "5m":
+		return 5 * time.Minute
+	case "15m":
+		return 15 * time.Minute
+	case "30m":
+		return 30 * time.Minute
+	case "1h":
+		return 60 * time.Minute
+	case "1d":
+		return 24 * time.Hour
+	default:
+		return 0
+	}
 }
 
 func convertAnchorRegimes(regimes map[domain.Timeframe]domain.MarketRegime) map[string]start.AnchorRegime {
@@ -648,6 +792,71 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	r.mu.Lock()
 	indicators := r.indicators[symbol]
 	indicators.Volume = bar.Volume
+
+	// Overlay dark pool data directly in handleBar to ensure it's fresh
+	// when the strategy processes this bar. The handleStateUpdated overlay
+	// can be overwritten by subsequent 1m snapshots before the 15m handleBar fires.
+	if len(r.dpLookup) > 0 {
+		barStart := bar.Time.UTC()
+		barDur := tfDuration(bar.Timeframe)
+		if barDur < 5*time.Minute {
+			barDur = 5 * time.Minute
+		}
+		barEnd := barStart.Add(barDur)
+		var dpVol, dpBuy, dpLarge, dpTotal float64
+		for t := barStart.Truncate(5 * time.Minute); t.Before(barEnd); t = t.Add(5 * time.Minute) {
+			if dp, ok := r.dpLookup[DPLookupKey{Symbol: symbol, Time: t}]; ok {
+				dpVol += dp.DPVolume
+				dpBuy += dp.BuyVolume
+				dpLarge += dp.LargePrintVolume
+				dpTotal += dp.TotalVolume
+			}
+		}
+		if dpTotal > 0 {
+			indicators.DPRatio = dpVol / dpTotal
+			if dpVol > 0 {
+				indicators.DPBuyRatio = dpBuy / dpVol
+				indicators.DPLargePrintPct = dpLarge / dpVol
+			}
+			// Z-score from rolling buffer (maintained by handleStateUpdated)
+			if r.dpRolling != nil {
+				if rs, ok := r.dpRolling[symbol]; ok {
+					mean, std := rs.meanStd()
+					if std > 0 {
+						indicators.DPRatioZScore = (indicators.DPRatio - mean) / std
+					}
+				}
+			}
+			// S/R levels
+			if bar.Close > 0 {
+				levelStart := barEnd.Add(-20 * 5 * time.Minute)
+				type dpE struct{ vol, vwap float64 }
+				var dpBars []dpE
+				for t := levelStart.Truncate(5 * time.Minute); t.Before(barEnd); t = t.Add(5 * time.Minute) {
+					if dp, ok := r.dpLookup[DPLookupKey{Symbol: symbol, Time: t}]; ok && dp.DPVolume > 0 && dp.DPVWAP > 0 {
+						dpBars = append(dpBars, dpE{dp.DPVolume, dp.DPVWAP})
+					}
+				}
+				sort.Slice(dpBars, func(i, j int) bool { return dpBars[i].vol > dpBars[j].vol })
+				topN := 3
+				if len(dpBars) < topN {
+					topN = len(dpBars)
+				}
+				for _, db := range dpBars[:topN] {
+					if db.vwap < bar.Close {
+						if db.vwap > indicators.DPSupportLevel {
+							indicators.DPSupportLevel = db.vwap
+						}
+					} else {
+						if indicators.DPResistanceLevel == 0 || db.vwap < indicators.DPResistanceLevel {
+							indicators.DPResistanceLevel = db.vwap
+						}
+					}
+				}
+			}
+		}
+	}
+
 	if !r.indLogOnce[symbol] {
 		if indicators.RSI == 0 || indicators.VolumeSMA == 0 {
 			r.logger.Debug("indicators may not be populated yet",
@@ -765,6 +974,39 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 			RegimeScore:   htfSnap.RegimeScore,
 			AnchorRegimes: r.collectAnchorRegimes(symbol),
 			HTF:           indicators.HTF, // preserve daily HTF data from 1m pipeline
+		}
+
+		// Overlay DP data onto HTF indicators using the closed bar's time window.
+		if len(r.dpLookup) > 0 {
+			htfStart := closed.Time.UTC()
+			htfEnd := htfStart.Add(tfDuration(domain.Timeframe(tf)))
+			var hDPVol, hDPBuy, hDPLarge, hDPTotal float64
+			for t := htfStart.Truncate(5 * time.Minute); t.Before(htfEnd); t = t.Add(5 * time.Minute) {
+				if dp, ok := r.dpLookup[DPLookupKey{Symbol: symbol, Time: t}]; ok {
+					hDPVol += dp.DPVolume
+					hDPBuy += dp.BuyVolume
+					hDPLarge += dp.LargePrintVolume
+					hDPTotal += dp.TotalVolume
+				}
+			}
+			if hDPTotal > 0 {
+				htfIndicators.DPRatio = hDPVol / hDPTotal
+				if hDPVol > 0 {
+					htfIndicators.DPBuyRatio = hDPBuy / hDPVol
+					htfIndicators.DPLargePrintPct = hDPLarge / hDPVol
+				}
+				if r.dpRolling != nil {
+					if rs, ok := r.dpRolling[symbol]; ok {
+						mean, std := rs.meanStd()
+						if std > 0 {
+							htfIndicators.DPRatioZScore = (htfIndicators.DPRatio - mean) / std
+						}
+					}
+				}
+				// Copy S/R levels from 1m overlay
+				htfIndicators.DPSupportLevel = indicators.DPSupportLevel
+				htfIndicators.DPResistanceLevel = indicators.DPResistanceLevel
+			}
 		}
 
 		for _, inst := range htfInsts {
