@@ -136,9 +136,29 @@ func main() {
 	}, ibkrData, alpacaAdapter, repo, noopVIXSetter{}, log)
 	refreshSvc.SetDarkPool(alpacaAdapter, dpRepo)
 
+	// 13F whale accumulation (periodic refresh — only when SEC_USER_AGENT is set)
+	var whaleSvc *whale13f.Service
+	if ua := os.Getenv("SEC_USER_AGENT"); ua != "" {
+		whaleDB := timescaledb.NewSqlDB(sqlDB)
+		whaleRepo := timescaledb.NewWhaleRepo(whaleDB, log.With().Str("component", "whale_repo").Logger())
+		cusipCache := timescaledb.NewCUSIPCacheRepo(whaleDB, log.With().Str("component", "cusip_cache").Logger())
+		edgarClient := sec.NewEdgarClient(ua, log.With().Str("component", "sec_edgar").Logger())
+		figiClient := openfigi.NewClient(os.Getenv("OPENFIGI_API_KEY"), log.With().Str("component", "openfigi").Logger())
+		whaleSvc = whale13f.NewScheduledService(whale13f.ScheduledConfig{
+			RunAtHourET:   6,
+			RunAtMinuteET: 0,
+			UserAgent:     ua,
+		}, edgarClient, figiClient, cusipCache, whaleRepo, log.With().Str("component", "whale_13f").Logger())
+	}
+
 	if runOnce {
 		log.Info().Msg("run-once mode: executing all tasks")
 		refreshSvc.RefreshAll(ctx)
+		if whaleSvc != nil {
+			if err := whaleSvc.Refresh(ctx); err != nil {
+				log.Warn().Err(err).Msg("whale 13F refresh failed")
+			}
+		}
 		log.Info().Msg("run-once complete")
 		return
 	}
@@ -170,18 +190,7 @@ func main() {
 		}
 	}
 
-	// 13F whale accumulation (periodic refresh — only when SEC_USER_AGENT is set)
-	if ua := os.Getenv("SEC_USER_AGENT"); ua != "" {
-		whaleDB := timescaledb.NewSqlDB(sqlDB)
-		whaleRepo := timescaledb.NewWhaleRepo(whaleDB, log.With().Str("component", "whale_repo").Logger())
-		cusipCache := timescaledb.NewCUSIPCacheRepo(whaleDB, log.With().Str("component", "cusip_cache").Logger())
-		edgarClient := sec.NewEdgarClient(ua, log.With().Str("component", "sec_edgar").Logger())
-		figiClient := openfigi.NewClient(os.Getenv("OPENFIGI_API_KEY"), log.With().Str("component", "openfigi").Logger())
-		whaleSvc := whale13f.NewScheduledService(whale13f.ScheduledConfig{
-			RunAtHourET:   6,
-			RunAtMinuteET: 0,
-			UserAgent:     ua,
-		}, edgarClient, figiClient, cusipCache, whaleRepo, log.With().Str("component", "whale_13f").Logger())
+	if whaleSvc != nil {
 		if err := whaleSvc.Start(ctx); err != nil {
 			log.Warn().Err(err).Msg("13F whale service failed to start")
 		}
