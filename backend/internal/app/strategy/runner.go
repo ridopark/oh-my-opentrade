@@ -49,6 +49,9 @@ type Runner struct {
 	// Dark pool lookup for backtests: keyed by "symbol|5m-truncated-time".
 	dpLookup map[DPLookupKey]domain.DarkPoolBar
 
+	// Whale accumulation lookup: ticker -> latest score.
+	whaleLookup map[string]domain.WhaleAccumulation
+
 	// Signal progress cache: last emitted event per symbol for initial SSE snapshots.
 	signalProgressMu    sync.RWMutex
 	signalProgressCache map[string]domain.Event // key: eventType+":"+symbol
@@ -351,6 +354,11 @@ func (r *Runner) SetDarkPoolLookup(lookup map[DPLookupKey]domain.DarkPoolBar) {
 	r.dpLookup = lookup
 }
 
+// SetWhaleLookup provides whale accumulation scores for 13F confluence.
+func (r *Runner) SetWhaleLookup(lookup map[string]domain.WhaleAccumulation) {
+	r.whaleLookup = lookup
+}
+
 // UpdateAVWAPCalc feeds a 1m bar into the AVWAP calculator for smooth chart
 // rendering. Also evaluates exit-only logic on 1m bars for faster exit
 // reaction (per Brian Shannon: fine-tune exits on short-term chart).
@@ -517,6 +525,16 @@ func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error
 				ind.DPLargePrintPct = dpBar.LargePrintVolume / dpBar.DPVolume
 			}
 			r.indicators[snap.Symbol.String()] = ind
+		}
+	}
+
+	// Overlay whale accumulation score when available.
+	if len(r.whaleLookup) > 0 {
+		sym := snap.Symbol.String()
+		if wa, ok := r.whaleLookup[sym]; ok {
+			ind := r.indicators[sym]
+			ind.WhaleScore = wa.Score
+			r.indicators[sym] = ind
 		}
 	}
 

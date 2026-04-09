@@ -170,6 +170,9 @@ type IndicatorData struct {
 	DPRatio         float64 // dark pool volume / total volume (0-1)
 	DPBuyRatio      float64 // DP buy volume / DP total volume
 	DPLargePrintPct float64 // large print volume / DP volume
+
+	// Whale accumulation score (populated from whale_accumulation when available)
+	WhaleScore int // aggregate 13F accumulation score (0 = no data)
 }
 
 type HTFIndicator struct {

@@ -2171,6 +2171,15 @@ func computeConfluence(
 		res.Factors = append(res.Factors, dp.Factors...)
 	}
 
+	// Factor 6: Whale Accumulation (+3 max, from 13F filings)
+	if indicators.WhaleScore >= 6 {
+		res.Score += 3
+		res.Factors = append(res.Factors, "whale_strong")
+	} else if indicators.WhaleScore >= 3 {
+		res.Score += 2
+		res.Factors = append(res.Factors, "whale_moderate")
+	}
+
 	return res
 }
 

@@ -606,6 +606,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	warmupBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
 	dailyBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
 	var dpLookup map[strategy.DPLookupKey]domain.DarkPoolBar
+	var whaleLookup map[string]domain.WhaleAccumulation
 	{
 		type warmupResult struct {
 			sym    string
@@ -681,6 +682,20 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 		if len(dpLookup) > 0 {
 			r.log.Info().Int("dp_bars", len(dpLookup)).Int("dp_symbols", len(batchDP)).Msg("dark pool bars loaded for backtest")
+		}
+
+		// Load whale accumulation scores for 13F confluence.
+		whaleRepo := timescaledb.NewWhaleRepo(timescaledb.NewSqlDB(r.infra.DB), r.log.With().Str("component", "whale_repo").Logger())
+		symStrs := make([]string, len(r.cfg.Symbols))
+		for i, s := range r.cfg.Symbols {
+			symStrs[i] = s.String()
+		}
+		var whaleErr error
+		whaleLookup, whaleErr = whaleRepo.GetWhaleAccumulation(ctx, symStrs)
+		if whaleErr != nil {
+			r.log.Warn().Err(whaleErr).Msg("failed to load whale accumulation data")
+		} else if len(whaleLookup) > 0 {
+			r.log.Info().Int("whale_tickers", len(whaleLookup)).Msg("whale accumulation loaded for backtest")
 		}
 
 		r.log.Info().Dur("elapsed", time.Since(batchStart)).
@@ -890,6 +905,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		pipeline.Runner.SetAIAnchorResolver(aiResolver)
 		if len(dpLookup) > 0 {
 			pipeline.Runner.SetDarkPoolLookup(dpLookup)
+		}
+		if len(whaleLookup) > 0 {
+			pipeline.Runner.SetWhaleLookup(whaleLookup)
 		}
 		pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
 		pipeline.Runner.SetPrevDayBarsFn(func(symbol string, since time.Time) []start.Bar {
