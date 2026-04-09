@@ -261,17 +261,18 @@ function MACDDetail({ macd }: { macd: EntryGatedPayload }) {
         </div>
         <div className={`flex flex-col items-center flex-1 min-w-0 rounded-xl px-2 py-1.5 ${pill(filtersOK)}`}>
           <span className="text-[11px] font-medium">{icon(filtersOK)} Filters</span>
+          {c.maxScore > 0 && (
+            <div className="w-full mt-0.5 space-y-0.5">
+              <div className="flex items-center gap-1">
+                <div className="h-1.5 flex-1 rounded-full bg-zinc-800/60 overflow-hidden">
+                  <div className={`h-full rounded-full transition-all duration-300 ${confFillColor}`} style={{ width: `${Math.max(confPct, 2)}%` }} />
+                </div>
+                <span className="text-[9px] font-mono">{c.score}/{c.maxScore}</span>
+              </div>
+            </div>
+          )}
         </div>
       </div>
-      {c.maxScore > 0 && (
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] text-zinc-500">Confluence</span>
-          <div className="h-1.5 flex-1 rounded-full bg-zinc-800/60 overflow-hidden">
-            <div className={`h-full rounded-full transition-all duration-300 ${confFillColor}`} style={{ width: `${Math.max(confPct, 2)}%` }} />
-          </div>
-          <span className={`text-[10px] font-mono ${confPct >= 100 ? "text-emerald-400" : "text-zinc-400"}`}>{c.score}/{c.maxScore}</span>
-        </div>
-      )}
       {macd.blockingDetail && (
         <span className="text-[10px] text-zinc-500 block">{macd.blockingDetail}</span>
       )}
