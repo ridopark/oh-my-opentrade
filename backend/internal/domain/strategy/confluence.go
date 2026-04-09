@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"fmt"
 	"math"
 	"strings"
 )
@@ -206,6 +207,8 @@ func ScoreVWAP(bar Bar, ind IndicatorData, isLong bool) ConfluenceResult {
 
 // ScoreDarkPool evaluates dark pool activity as a confluence signal (0-10).
 // Returns zero gracefully when no dark pool data is available.
+// Uses Z-score normalization for the elevated ratio check when available,
+// falling back to a static 0.50 threshold when Z-score is zero.
 func ScoreDarkPool(ind IndicatorData, isLong bool) ConfluenceResult {
 	if ind.DPRatio <= 0 {
 		return ConfluenceResult{}
@@ -213,8 +216,12 @@ func ScoreDarkPool(ind IndicatorData, isLong bool) ConfluenceResult {
 	score := 0
 	var factors []string
 
-	// Elevated DP ratio (baseline ~35%)
-	if ind.DPRatio >= 0.50 {
+	// Elevated DP ratio — prefer Z-score when available, fallback to static threshold
+	if ind.DPRatioZScore >= 1.5 {
+		score += 3
+		factors = append(factors, "dp_elevated")
+	} else if ind.DPRatioZScore == 0 && ind.DPRatio >= 0.50 {
+		// Fallback for callers that don't compute Z-score
 		score += 3
 		factors = append(factors, "dp_elevated")
 	}
@@ -235,6 +242,40 @@ func ScoreDarkPool(ind IndicatorData, isLong bool) ConfluenceResult {
 	}
 
 	return ConfluenceResult{Score: score, Factors: factors}
+}
+
+// DPVeto returns true (blocked) when dark pool flow opposes the trade direction.
+// When no DP data is available (DPRatio <= 0), the veto does not fire.
+func DPVeto(ind IndicatorData, isLong bool, buyRatioMin, sellRatioMax float64) (blocked bool, reason string) {
+	if ind.DPRatio <= 0 {
+		return false, "" // no data = no veto
+	}
+	if isLong && ind.DPBuyRatio < buyRatioMin {
+		return true, fmt.Sprintf("dp_veto_long: buy_ratio %.2f < %.2f", ind.DPBuyRatio, buyRatioMin)
+	}
+	if !isLong && ind.DPBuyRatio > sellRatioMax {
+		return true, fmt.Sprintf("dp_veto_short: buy_ratio %.2f > %.2f", ind.DPBuyRatio, sellRatioMax)
+	}
+	return false, ""
+}
+
+// DPSizingMultiplier returns a position sizing multiplier (1.0-maxBoost) based on DP alignment.
+// Returns 1.0 when no DP data, Z-score is not positive, or direction is not aligned.
+func DPSizingMultiplier(ind IndicatorData, isLong bool, maxBoost float64) float64 {
+	if ind.DPRatioZScore <= 0 {
+		return 1.0
+	}
+	aligned := (isLong && ind.DPBuyRatio >= 0.60) || (!isLong && ind.DPBuyRatio <= 0.40)
+	if !aligned {
+		return 1.0
+	}
+	if ind.DPRatioZScore >= 2.0 {
+		return maxBoost
+	}
+	if ind.DPRatioZScore >= 1.5 {
+		return 1.0 + (maxBoost-1.0)*0.5
+	}
+	return 1.0
 }
 
 // ScoreRetestQuality evaluates ORB retest quality on 4 factors (max 16 points).

@@ -167,9 +167,12 @@ type IndicatorData struct {
 	HTF           map[string]HTFIndicator
 
 	// Dark pool microstructure (populated from darkpool_bars when available)
-	DPRatio         float64 // dark pool volume / total volume (0-1)
-	DPBuyRatio      float64 // DP buy volume / DP total volume
-	DPLargePrintPct float64 // large print volume / DP volume
+	DPRatio            float64 // dark pool volume / total volume (0-1)
+	DPBuyRatio         float64 // DP buy volume / DP total volume
+	DPLargePrintPct    float64 // large print volume / DP volume
+	DPRatioZScore      float64 // (current DP ratio - mean) / std over rolling lookback
+	DPSupportLevel     float64 // nearest DP volume shelf below price (DPVWAP)
+	DPResistanceLevel  float64 // nearest DP volume shelf above price (DPVWAP)
 
 	// Whale accumulation score (populated from whale_accumulation when available)
 	WhaleScore int // aggregate 13F accumulation score (0 = no data)

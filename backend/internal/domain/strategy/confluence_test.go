@@ -374,3 +374,219 @@ func TestScoreDarkPool(t *testing.T) {
 		})
 	}
 }
+
+func TestScoreDarkPool_ZScore(t *testing.T) {
+	tests := []struct {
+		name    string
+		ind     s.IndicatorData
+		isLong  bool
+		score   int
+		factors []string
+	}{
+		{
+			name:    "z-score elevated triggers dp_elevated",
+			ind:     s.IndicatorData{DPRatio: 0.40, DPRatioZScore: 2.0, DPBuyRatio: 0.50, DPLargePrintPct: 0.05},
+			isLong:  true,
+			score:   3,
+			factors: []string{"dp_elevated"},
+		},
+		{
+			name:   "z-score below threshold and ratio below 0.50 — no elevated",
+			ind:    s.IndicatorData{DPRatio: 0.40, DPRatioZScore: 1.0, DPBuyRatio: 0.50, DPLargePrintPct: 0.05},
+			isLong: true,
+			score:  0,
+		},
+		{
+			name:    "z-score elevated + directional + blocks",
+			ind:     s.IndicatorData{DPRatio: 0.40, DPRatioZScore: 1.5, DPBuyRatio: 0.65, DPLargePrintPct: 0.20},
+			isLong:  true,
+			score:   10,
+			factors: []string{"dp_elevated", "dp_buy", "dp_blocks"},
+		},
+		{
+			name:   "negative z-score, high static ratio — no fallback when z-score is non-zero",
+			ind:    s.IndicatorData{DPRatio: 0.55, DPRatioZScore: -0.5, DPBuyRatio: 0.50, DPLargePrintPct: 0.05},
+			isLong: true,
+			score:  0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := s.ScoreDarkPool(tt.ind, tt.isLong)
+			assert.Equal(t, tt.score, r.Score)
+			if len(tt.factors) == 0 {
+				assert.Empty(t, r.Factors)
+			} else {
+				assert.Equal(t, tt.factors, r.Factors)
+			}
+		})
+	}
+}
+
+// ─── DP Veto ────────────────────────────────────────────────────────────────
+
+func TestDPVeto(t *testing.T) {
+	tests := []struct {
+		name            string
+		ind             s.IndicatorData
+		isLong          bool
+		buyRatioMin     float64
+		sellRatioMax    float64
+		expectBlocked   bool
+		expectReasonPfx string
+	}{
+		{
+			name:          "no DP data — no veto",
+			ind:           s.IndicatorData{DPRatio: 0},
+			isLong:        true,
+			buyRatioMin:   0.45,
+			sellRatioMax:  0.55,
+			expectBlocked: false,
+		},
+		{
+			name:            "long vetoed — low buy ratio",
+			ind:             s.IndicatorData{DPRatio: 0.40, DPBuyRatio: 0.30},
+			isLong:          true,
+			buyRatioMin:     0.45,
+			sellRatioMax:    0.55,
+			expectBlocked:   true,
+			expectReasonPfx: "dp_veto_long",
+		},
+		{
+			name:          "long not vetoed — buy ratio above min",
+			ind:           s.IndicatorData{DPRatio: 0.40, DPBuyRatio: 0.50},
+			isLong:        true,
+			buyRatioMin:   0.45,
+			sellRatioMax:  0.55,
+			expectBlocked: false,
+		},
+		{
+			name:            "short vetoed — high buy ratio",
+			ind:             s.IndicatorData{DPRatio: 0.40, DPBuyRatio: 0.70},
+			isLong:          false,
+			buyRatioMin:     0.45,
+			sellRatioMax:    0.55,
+			expectBlocked:   true,
+			expectReasonPfx: "dp_veto_short",
+		},
+		{
+			name:          "short not vetoed — buy ratio below max",
+			ind:           s.IndicatorData{DPRatio: 0.40, DPBuyRatio: 0.45},
+			isLong:        false,
+			buyRatioMin:   0.45,
+			sellRatioMax:  0.55,
+			expectBlocked: false,
+		},
+		{
+			name:          "boundary — long buy ratio exactly at min",
+			ind:           s.IndicatorData{DPRatio: 0.40, DPBuyRatio: 0.45},
+			isLong:        true,
+			buyRatioMin:   0.45,
+			sellRatioMax:  0.55,
+			expectBlocked: false,
+		},
+		{
+			name:            "boundary — short buy ratio exactly at max + epsilon",
+			ind:             s.IndicatorData{DPRatio: 0.40, DPBuyRatio: 0.56},
+			isLong:          false,
+			buyRatioMin:     0.45,
+			sellRatioMax:    0.55,
+			expectBlocked:   true,
+			expectReasonPfx: "dp_veto_short",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocked, reason := s.DPVeto(tt.ind, tt.isLong, tt.buyRatioMin, tt.sellRatioMax)
+			assert.Equal(t, tt.expectBlocked, blocked)
+			if tt.expectReasonPfx != "" {
+				assert.Contains(t, reason, tt.expectReasonPfx)
+			}
+			if !tt.expectBlocked {
+				assert.Empty(t, reason)
+			}
+		})
+	}
+}
+
+// ─── DP Sizing Multiplier ───────────────────────────────────────────────────
+
+func TestDPSizingMultiplier(t *testing.T) {
+	tests := []struct {
+		name     string
+		ind      s.IndicatorData
+		isLong   bool
+		maxBoost float64
+		expected float64
+	}{
+		{
+			name:     "zero z-score — no boost",
+			ind:      s.IndicatorData{DPRatioZScore: 0, DPBuyRatio: 0.65},
+			isLong:   true,
+			maxBoost: 1.5,
+			expected: 1.0,
+		},
+		{
+			name:     "negative z-score — no boost",
+			ind:      s.IndicatorData{DPRatioZScore: -1.0, DPBuyRatio: 0.65},
+			isLong:   true,
+			maxBoost: 1.5,
+			expected: 1.0,
+		},
+		{
+			name:     "high z-score but not aligned — no boost",
+			ind:      s.IndicatorData{DPRatioZScore: 2.5, DPBuyRatio: 0.50},
+			isLong:   true,
+			maxBoost: 1.5,
+			expected: 1.0,
+		},
+		{
+			name:     "z-score 2.0 + aligned long — max boost",
+			ind:      s.IndicatorData{DPRatioZScore: 2.0, DPBuyRatio: 0.65},
+			isLong:   true,
+			maxBoost: 1.5,
+			expected: 1.5,
+		},
+		{
+			name:     "z-score 2.0 + aligned short — max boost",
+			ind:      s.IndicatorData{DPRatioZScore: 2.5, DPBuyRatio: 0.35},
+			isLong:   false,
+			maxBoost: 1.5,
+			expected: 1.5,
+		},
+		{
+			name:     "z-score 1.5 + aligned — half boost",
+			ind:      s.IndicatorData{DPRatioZScore: 1.5, DPBuyRatio: 0.65},
+			isLong:   true,
+			maxBoost: 1.5,
+			expected: 1.25,
+		},
+		{
+			name:     "z-score 1.0 + aligned — no boost (below 1.5 threshold)",
+			ind:      s.IndicatorData{DPRatioZScore: 1.0, DPBuyRatio: 0.65},
+			isLong:   true,
+			maxBoost: 1.5,
+			expected: 1.0,
+		},
+		{
+			name:     "max boost 2.0 — z-score 2.0 + aligned",
+			ind:      s.IndicatorData{DPRatioZScore: 2.0, DPBuyRatio: 0.65},
+			isLong:   true,
+			maxBoost: 2.0,
+			expected: 2.0,
+		},
+		{
+			name:     "max boost 2.0 — z-score 1.5 + aligned — half boost",
+			ind:      s.IndicatorData{DPRatioZScore: 1.5, DPBuyRatio: 0.65},
+			isLong:   true,
+			maxBoost: 2.0,
+			expected: 1.5,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := s.DPSizingMultiplier(tt.ind, tt.isLong, tt.maxBoost)
+			assert.InDelta(t, tt.expected, got, 0.001)
+		})
+	}
+}

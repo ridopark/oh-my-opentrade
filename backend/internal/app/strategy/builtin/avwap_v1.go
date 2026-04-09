@@ -127,7 +127,14 @@ type AVWAPConfig struct {
 	KeyLevelConfluenceEnabled bool // enable key level confluence factor
 	CandleConfluenceEnabled   bool // enable candlestick pattern confluence factor
 	BandConfluenceEnabled     bool // enable AVWAP band zone confluence factor
-	DPConfluenceEnabled       bool // enable dark pool confluence factor
+	DPConfluenceEnabled bool // enable dark pool confluence factor
+	DPVetoEnabled      bool // when true, block entries when DP flow opposes direction. Default false.
+	DPVetoBuyRatioMin  float64 // block longs when DP buying < this ratio. Default 0.45.
+	DPVetoSellRatioMax float64 // block shorts when DP buying > this ratio. Default 0.55.
+	DPSizingEnabled    bool    // when true, boost signal strength based on DP alignment. Default false.
+	DPSizingMaxBoost   float64 // maximum sizing multiplier when DP strongly confirms. Default 1.5.
+	DPStopEnabled      bool    // when true, tighten stops to DP support level. Default false.
+	DPLevelLookback    int     // number of 5m DP bars to scan for S/R levels. Default 20.
 
 	AllowedHoursStart string // "HH:MM" entry window start (ET)
 	AllowedHoursEnd   string // "HH:MM" entry window end (ET)
@@ -586,7 +593,14 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		KeyLevelConfluenceEnabled: getBool(params, "key_level_confluence_enabled", true),
 		CandleConfluenceEnabled:   getBool(params, "candle_confluence_enabled", true),
 		BandConfluenceEnabled:     getBool(params, "band_confluence_enabled", true),
-		DPConfluenceEnabled:       getBool(params, "dp_confluence_enabled", false),
+		DPConfluenceEnabled: getBool(params, "dp_confluence_enabled", false),
+		DPVetoEnabled:      getBool(params, "dp_veto_enabled", false),
+		DPVetoBuyRatioMin:  getFloat64(params, "dp_veto_buy_ratio_min", 0.45),
+		DPVetoSellRatioMax: getFloat64(params, "dp_veto_sell_ratio_max", 0.55),
+		DPSizingEnabled:    getBool(params, "dp_sizing_enabled", false),
+		DPSizingMaxBoost:   getFloat64(params, "dp_sizing_max_boost", 1.5),
+		DPStopEnabled:      getBool(params, "dp_stop_enabled", false),
+		DPLevelLookback:    getInt(params, "dp_level_lookback", 20),
 
 		AllowedHoursStart: getString(params, "allowed_hours_start", ""),
 		AllowedHoursEnd:   getString(params, "allowed_hours_end", ""),
@@ -868,11 +882,11 @@ func (s *AVWAPState) evaluateCapitulationReclaim(ec entryContext) (*start.Signal
 			bar.Close > avwapValue && bar.Close > bar.Open && volumeOK {
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
 				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
-			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+			if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
-			adjustedStrength := math.Min(1.0, 0.9+float64(conf.Score)*0.03)
+			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.9+float64(conf.Score)*0.03))
 			volRatio := 0.0
 			if s.Indicators.VolumeSMA > 0 {
 				volRatio = bar.Volume / s.Indicators.VolumeSMA
@@ -947,11 +961,11 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
 				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
-			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+			if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
-			adjustedStrength := math.Min(1.0, 0.7+float64(conf.Score)*0.03)
+			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.7+float64(conf.Score)*0.03))
 			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_breakout",
@@ -1025,11 +1039,11 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 				}
 				conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
 					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
-				if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+				if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 					reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 					continue
 				}
-				adjustedStrength := math.Min(1.0, 0.7+float64(conf.Score)*0.03)
+				adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.7+float64(conf.Score)*0.03))
 				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, adjustedStrength, map[string]string{
 					"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 					"setup":             "avwap_breakout",
@@ -1128,11 +1142,11 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
 				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
-			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+			if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
-			adjustedStrength := math.Min(1.0, 0.85+float64(conf.Score)*0.03)
+			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03))
 			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_pullback",
@@ -1192,11 +1206,11 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
 				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
-			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+			if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
-			adjustedStrength := math.Min(1.0, 0.85+float64(conf.Score)*0.03)
+			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03))
 			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_pullback",
@@ -1273,10 +1287,10 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 			if !cfg.EnforceAVWAPBias || ec.avwapBias == "" || ec.avwapBias == "LONG" {
 				conf := computeConfluence(cfg, bar, pinchAVWAPValue, ec.avwapValues, s.Indicators,
 					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
-				if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+				if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 					reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				} else {
-					adjustedStrength := math.Min(1.0, 0.9+float64(conf.Score)*0.03)
+					adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.9+float64(conf.Score)*0.03))
 					sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
 						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 						"setup":             "avwap_pinch",
@@ -1308,10 +1322,10 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 			case !cfg.EnforceAVWAPBias || ec.avwapBias == "" || ec.avwapBias == "SHORT":
 				conf := computeConfluence(cfg, bar, pinchAVWAPValue, ec.avwapValues, s.Indicators,
 					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
-				if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+				if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 					reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				} else {
-					adjustedStrength := math.Min(1.0, 0.9+float64(conf.Score)*0.03)
+					adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.9+float64(conf.Score)*0.03))
 					sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, adjustedStrength, map[string]string{
 						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 						"setup":             "avwap_pinch",
@@ -1393,11 +1407,11 @@ func (s *AVWAPState) evaluateGapReclaim(ec entryContext) (*start.Signal, error) 
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
 				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
-			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+			if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
-			adjustedStrength := math.Min(1.0, 0.85+float64(conf.Score)*0.03)
+			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03))
 			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_gap_reclaim",
@@ -1491,11 +1505,11 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 					handoffAVWAP := avwapValues[anchorName]
 					conf := computeConfluence(cfg, bar, handoffAVWAP, ec.avwapValues, s.Indicators,
 						s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
-					if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+					if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 						reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 						continue
 					}
-					adjustedStrength := math.Min(1.0, 0.85+float64(conf.Score)*0.03)
+					adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03))
 					sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
 						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 						"setup":             "avwap_handoff",
@@ -1561,11 +1575,11 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 					shortHandoffAVWAP := avwapValues[anchorName]
 					conf := computeConfluence(cfg, bar, shortHandoffAVWAP, ec.avwapValues, s.Indicators,
 						s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
-					if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+					if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 						reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 						continue
 					}
-					adjustedStrength := math.Min(1.0, 0.85+float64(conf.Score)*0.03)
+					adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03))
 					sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, adjustedStrength, map[string]string{
 						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 						"setup":             "avwap_handoff",
@@ -1631,11 +1645,11 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
 				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
-			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+			if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
-			adjustedStrength := math.Min(1.0, 0.6+float64(conf.Score)*0.03)
+			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.6+float64(conf.Score)*0.03))
 			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_bounce",
@@ -1685,11 +1699,11 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
 				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
-			if cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore {
+			if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
-			adjustedStrength := math.Min(1.0, 0.6+float64(conf.Score)*0.03)
+			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.6+float64(conf.Score)*0.03))
 			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_bounce",
@@ -1899,7 +1913,7 @@ func (s *AVWAPState) emitEntryGated(ec entryContext) {
 		}
 	}
 
-	confluenceOK := conf.Score >= ec.cfg.MinConfluenceScore
+	confluenceOK := !conf.Vetoed && conf.Score >= ec.cfg.MinConfluenceScore
 	if confluenceOK {
 		gatesPassed++
 	}
@@ -2026,8 +2040,24 @@ func copyIntMap(m map[string]int) map[string]int {
 // --- Confluence scoring ---
 
 type confluenceResult struct {
-	Score   int
-	Factors []string
+	Score    int
+	Factors  []string
+	Vetoed   bool    // true when DP veto blocked this entry
+	dpIsLong bool    // cached direction for DP sizing
+	dpCfg    *AVWAPConfig // reference to config for sizing
+	dpInd    *start.IndicatorData // reference to indicators for sizing
+}
+
+// applyDPSizing adjusts strength with DP sizing multiplier when configured.
+func (cr confluenceResult) applyDPSizing(strength float64) float64 {
+	if cr.dpCfg == nil || !cr.dpCfg.DPSizingEnabled {
+		return strength
+	}
+	strength *= start.DPSizingMultiplier(*cr.dpInd, cr.dpIsLong, cr.dpCfg.DPSizingMaxBoost)
+	if strength > 1.0 {
+		strength = 1.0
+	}
+	return strength
 }
 
 func computeConfluence(
@@ -2042,6 +2072,22 @@ func computeConfluence(
 	barHighs50, barLows50 []float64,
 ) confluenceResult {
 	var res confluenceResult
+
+	// DP veto gate — block entry when institutional flow opposes direction.
+	isLongEntry := bar.Close > avwapValue
+	if cfg.DPVetoEnabled {
+		if blocked, _ := start.DPVeto(indicators, isLongEntry, cfg.DPVetoBuyRatioMin, cfg.DPVetoSellRatioMax); blocked {
+			res.Vetoed = true
+			return res
+		}
+	}
+
+	// Cache DP sizing references for downstream applyDPSizing calls.
+	res.dpIsLong = isLongEntry
+	cfgCopy := cfg
+	res.dpCfg = &cfgCopy
+	indCopy := indicators
+	res.dpInd = &indCopy
 
 	// Tolerance: ATR/2, fallback to avwapValue*0.002
 	tolerance := avwapValue * 0.002
