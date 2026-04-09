@@ -122,7 +122,7 @@ max_position_bps = 1500          # reduced from 3000
 # --- Timing ---
 # Trading window (ET). Entries only allowed within this range.
 allowed_hours_start = "09:35"
-allowed_hours_end = "11:00"      # cut afternoon entries
+allowed_hours_end = "15:45"      # full RTH for live testing
 allowed_hours_tz = "America/New_York"
 
 # Cooldown between trades on the same symbol (seconds)
