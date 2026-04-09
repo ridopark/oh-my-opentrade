@@ -51,14 +51,11 @@ func TestCancelOrder_NotFound_ReturnsError(t *testing.T) {
 }
 
 func TestGetPositions_FiltersAccountID(t *testing.T) {
-	mock := &mockIB{
-		connected: true,
-		positions: []ibsync.Position{
-			{Account: "DU111111", Contract: &ibsync.Contract{Symbol: "AAPL"}, Position: ibsync.StringToDecimal("10")},
-			{Account: "DU999999", Contract: &ibsync.Contract{Symbol: "MSFT"}, Position: ibsync.StringToDecimal("5")},
-		},
-	}
+	mock := &mockIB{connected: true}
 	a := NewAdapterWithClientAndCfg(mock, config.IBKRConfig{AccountID: "DU111111"}, zerolog.Nop())
+	// Seed livePos directly (GetPositions reads from livePos, not ib.Positions()).
+	a.livePos[1] = ibsync.Position{Account: "DU111111", Contract: &ibsync.Contract{ConID: 1, Symbol: "AAPL"}, Position: ibsync.StringToDecimal("10")}
+	a.livePos[2] = ibsync.Position{Account: "DU999999", Contract: &ibsync.Contract{ConID: 2, Symbol: "MSFT"}, Position: ibsync.StringToDecimal("5")}
 	trades, err := a.GetPositions(context.Background(), "tenant", domain.EnvModePaper)
 	require.NoError(t, err)
 	require.Len(t, trades, 1)
@@ -66,14 +63,10 @@ func TestGetPositions_FiltersAccountID(t *testing.T) {
 }
 
 func TestGetPositions_EmptyAccountID_ReturnsAll(t *testing.T) {
-	mock := &mockIB{
-		connected: true,
-		positions: []ibsync.Position{
-			{Account: "DU111111", Contract: &ibsync.Contract{Symbol: "AAPL"}, Position: ibsync.StringToDecimal("10")},
-			{Account: "DU999999", Contract: &ibsync.Contract{Symbol: "MSFT"}, Position: ibsync.StringToDecimal("5")},
-		},
-	}
+	mock := &mockIB{connected: true}
 	a := NewAdapterWithClientAndCfg(mock, config.IBKRConfig{AccountID: ""}, zerolog.Nop())
+	a.livePos[1] = ibsync.Position{Account: "DU111111", Contract: &ibsync.Contract{ConID: 1, Symbol: "AAPL"}, Position: ibsync.StringToDecimal("10")}
+	a.livePos[2] = ibsync.Position{Account: "DU999999", Contract: &ibsync.Contract{ConID: 2, Symbol: "MSFT"}, Position: ibsync.StringToDecimal("5")}
 	trades, err := a.GetPositions(context.Background(), "tenant", domain.EnvModePaper)
 	require.NoError(t, err)
 	assert.Len(t, trades, 2)
