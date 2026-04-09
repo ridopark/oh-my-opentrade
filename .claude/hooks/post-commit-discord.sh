@@ -11,13 +11,18 @@ NOTIFY="$ROOT_DIR/scripts/discord-notify.sh"
 # Read hook input JSON from stdin
 INPUT=$(cat || true)
 
-# Debug: log what we received (remove after confirming)
-echo "$INPUT" > /tmp/discord-hook-debug.json 2>/dev/null || true
+# Check if this Bash call was a git commit command
+CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
+if [ -z "$CMD" ]; then
+  # Fallback: try .input.command
+  CMD=$(echo "$INPUT" | jq -r '.input.command // empty' 2>/dev/null || true)
+fi
 
-# The matcher already filters to git commit commands, so we only need
-# to verify the commit actually succeeded by checking git state.
-LATEST_SHA=$(git log -1 --pretty=format:"%h" 2>/dev/null || echo "")
-if [ -z "$LATEST_SHA" ]; then
+# Debug: log stdin to diagnose (temporary)
+echo "$INPUT" > /tmp/discord-hook-stdin.json 2>/dev/null || true
+echo "CMD=$CMD" >> /tmp/discord-hook-stdin.json 2>/dev/null || true
+
+if ! echo "$CMD" | grep -q 'git commit' 2>/dev/null; then
   exit 0
 fi
 
