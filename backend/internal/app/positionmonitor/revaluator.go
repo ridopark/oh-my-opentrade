@@ -181,8 +181,7 @@ func (r *Revaluator) evaluateAll(ctx context.Context) {
 		}
 
 		if pos.EntryThesis == nil {
-			r.log.Info().Str("symbol", string(pos.Symbol)).Msg("skipping re-evaluation — no entry thesis attached")
-			continue
+			r.log.Info().Str("symbol", string(pos.Symbol)).Msg("re-evaluating position without entry thesis — reconciled position")
 		}
 
 		if pos.ExitPending {
