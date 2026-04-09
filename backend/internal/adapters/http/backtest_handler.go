@@ -147,8 +147,15 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// When no symbols provided, collect union from selected strategy configs
+	// so each strategy runs on its own tuned symbol list.
+	useNativeSymbols := false
+	if len(req.Symbols) == 0 && len(req.Strategies) > 0 {
+		req.Symbols = h.collectStrategySymbols(req.Strategies)
+		useNativeSymbols = true
+	}
 	if len(req.Symbols) == 0 {
-		jsonError(w, "symbols required", http.StatusBadRequest)
+		jsonError(w, "symbols required (provide symbols or strategies with configured symbols)", http.StatusBadRequest)
 		return
 	}
 	if req.From == "" {
@@ -253,6 +260,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		FixedSymbols:     symbols, // user's original picks — always active
 		MaxPositions:     req.MaxPositions,
 		MaxPerGroup:      req.MaxPerGroup,
+		UseNativeSymbols: useNativeSymbols,
 		CompoundEquity:   req.CompoundEquity == nil || *req.CompoundEquity,
 	}, bootstrap.BuildBacktestInfra(bootstrap.BacktestDeps{
 		DB:     h.db,
@@ -369,24 +377,25 @@ func (h *BacktestHandler) handleCancel(w http.ResponseWriter, _ *http.Request, i
 	})
 }
 
-func (h *BacktestHandler) handleStrategies(w http.ResponseWriter, r *http.Request) {
-	stratDir := "configs/strategies"
+// stratHeader is the lightweight summary returned by loadStrategyHeaders.
+type stratHeader struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	State       string   `json:"state"`
+	Symbols     []string `json:"symbols"`
+	Timeframes  []string `json:"timeframes"`
+}
+
+// loadStrategyHeaders scans configs/strategies/*.toml and returns a summary
+// for each strategy found. Shared by handleStrategies and collectStrategySymbols.
+func loadStrategyHeaders(stratDir string) ([]stratHeader, error) {
 	entries, err := os.ReadDir(stratDir)
 	if err != nil {
-		jsonError(w, "failed to read strategies: "+err.Error(), http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 
-	type stratInfo struct {
-		ID          string   `json:"id"`
-		Name        string   `json:"name"`
-		Description string   `json:"description"`
-		State       string   `json:"state"`
-		Symbols     []string `json:"symbols"`
-		Timeframes  []string `json:"timeframes"`
-	}
-
-	var strategies []stratInfo
+	var headers []stratHeader
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".toml") {
 			continue
@@ -412,7 +421,7 @@ func (h *BacktestHandler) handleStrategies(w http.ResponseWriter, r *http.Reques
 		if tomlErr := toml.Unmarshal(data, &raw); tomlErr != nil {
 			continue
 		}
-		strategies = append(strategies, stratInfo{
+		headers = append(headers, stratHeader{
 			ID:          raw.Strategy.ID,
 			Name:        raw.Strategy.Name,
 			Description: raw.Strategy.Description,
@@ -421,9 +430,46 @@ func (h *BacktestHandler) handleStrategies(w http.ResponseWriter, r *http.Reques
 			Timeframes:  raw.Routing.Timeframes,
 		})
 	}
+	return headers, nil
+}
 
+func (h *BacktestHandler) handleStrategies(w http.ResponseWriter, r *http.Request) {
+	headers, err := loadStrategyHeaders("configs/strategies")
+	if err != nil {
+		jsonError(w, "failed to read strategies: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(strategies)
+	_ = json.NewEncoder(w).Encode(headers)
+}
+
+// collectStrategySymbols returns the deduplicated union of routing.symbols
+// for the given strategy IDs.
+func (h *BacktestHandler) collectStrategySymbols(strategyIDs []string) []string {
+	headers, err := loadStrategyHeaders("configs/strategies")
+	if err != nil {
+		return nil
+	}
+
+	wantedIDs := make(map[string]bool, len(strategyIDs))
+	for _, id := range strategyIDs {
+		wantedIDs[id] = true
+	}
+
+	seen := make(map[string]bool)
+	var symbols []string
+	for _, h := range headers {
+		if !wantedIDs[h.ID] {
+			continue
+		}
+		for _, s := range h.Symbols {
+			if !seen[s] {
+				seen[s] = true
+				symbols = append(symbols, s)
+			}
+		}
+	}
+	return symbols
 }
 
 func (h *BacktestHandler) handleSymbols(w http.ResponseWriter, r *http.Request) {
