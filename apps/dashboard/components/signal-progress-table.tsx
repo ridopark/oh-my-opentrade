@@ -212,9 +212,42 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
   const c = avwap.confluence;
   const ind = avwap.indicators;
 
+  const pct = c.maxScore > 0 ? Math.min(100, (c.score / c.maxScore) * 100) : 0;
+  const fillColor = pct >= 100 ? "bg-emerald-500" : pct >= 50 ? "bg-yellow-500" : pct > 0 ? "bg-orange-500" : "bg-zinc-700";
+  const [showFactors, setShowFactors] = useState(false);
+
   return (
     <div className="space-y-3">
       <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">AVWAP Confluence</h4>
+      {/* Confluence score bar with hover-over factor details */}
+      <div
+        className="relative"
+        onMouseEnter={() => setShowFactors(true)}
+        onMouseLeave={() => setShowFactors(false)}
+      >
+        <div className="flex items-center gap-2">
+          <div className="h-3 flex-1 rounded-full bg-zinc-800 overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${fillColor}`}
+              style={{ width: `${Math.max(pct, 2)}%` }}
+            />
+          </div>
+          <span className={`text-xs font-mono font-medium ${pct >= 100 ? "text-emerald-400" : "text-zinc-300"}`}>
+            {c.score}/{c.maxScore}
+          </span>
+        </div>
+        {showFactors && (
+          <div className="absolute left-0 right-0 top-full mt-1 z-10 rounded border border-zinc-700 bg-zinc-900 p-2 shadow-lg">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+              <FactorValue label="Fib(+3)" active={c.fib} detail={c.fibDetail} />
+              <FactorValue label="Key Lvl(+3)" active={c.keyLevel} detail={c.keyLevelDetail} />
+              <FactorValue label="Candle(+2)" active={c.candle} detail={c.candleDetail} />
+              <FactorValue label="Band(+2)" active={c.band} detail={c.band ? "yes" : ""} />
+            </div>
+          </div>
+        )}
+      </div>
+      {/* Indicators and gate */}
       <div className="flex flex-wrap items-start gap-4">
         <div className="flex flex-col gap-0.5">
           <span className="text-[10px] text-zinc-500 uppercase">Bias</span>
@@ -234,10 +267,6 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
             {ind.slopeBPS.toFixed(1)}
           </span>
         </div>
-        <FactorValue label="Fib(+3)" active={c.fib} detail={c.fibDetail} />
-        <FactorValue label="Key Lvl(+3)" active={c.keyLevel} detail={c.keyLevelDetail} />
-        <FactorValue label="Candle(+2)" active={c.candle} detail={c.candleDetail} />
-        <FactorValue label="Band(+2)" active={c.band} detail={c.band ? "yes" : ""} />
         <div className="flex flex-col gap-0.5">
           <span className="text-[10px] text-zinc-500 uppercase">Blocking Gate</span>
           {avwap.blockingGate ? (
