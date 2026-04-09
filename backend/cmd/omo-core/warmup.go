@@ -345,6 +345,10 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 				VWAP:          snap.VWAP,
 				Volume:        snap.Volume,
 				VolumeSMA:     snap.VolumeSMA,
+				MACDLine:      snap.MACDLine,
+				MACDSignal:    snap.MACDSignal,
+				MACDHistogram: snap.MACDHistogram,
+				ATR:           snap.ATR,
 			}
 		}
 		for _, sym := range syms.all {
@@ -454,6 +458,10 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 							VWAP:          snap.VWAP,
 							Volume:        snap.Volume,
 							VolumeSMA:     snap.VolumeSMA,
+							MACDLine:      snap.MACDLine,
+							MACDSignal:    snap.MACDSignal,
+							MACDHistogram: snap.MACDHistogram,
+							ATR:           snap.ATR,
 						}
 					}
 				}
