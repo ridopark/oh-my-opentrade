@@ -827,12 +827,9 @@ func emitMACDEntryGated(ctx start.Context, symbol string, bmSt *BMState, bar sta
 		gatesPassed = gatesTotal
 	}
 
-	// MACD proximity score: how close MACD line is to crossing signal line (0-10).
-	score := 0
-	if ind.MACDSignal != 0 {
-		dist := (ind.MACDLine - ind.MACDSignal) / math.Abs(ind.MACDSignal)
-		score = int(math.Min(10, math.Max(0, (dist+1)*5)))
-	}
+	// Use the real confluence score (0-100 scale: 78 base + 22 MACD-specific).
+	isLong := ind.EMA9 > 0 && bar.Close > ind.EMA9
+	conf := ComputeConfluenceScore(bar, ind, bmSt.PrevMACDHists, isLong, bmSt.Config.DPConfluenceEnabled)
 
 	volRatio := 0.0
 	if ind.VolumeSMA > 0 {
@@ -848,8 +845,8 @@ func emitMACDEntryGated(ctx start.Context, symbol string, bmSt *BMState, bar sta
 		BlockingGate:   blockingGate,
 		BlockingDetail: blockingDetail,
 		Confluence: domain.EntryGatedConfluence{
-			Score:    score,
-			MaxScore: 10,
+			Score:    conf.Score,
+			MaxScore: 100,
 		},
 		Indicators: domain.EntryGatedIndicators{
 			RSI:         ind.RSI,
@@ -883,7 +880,7 @@ func (st *BMState) EmitSignalProgress() []any {
 		GatesPassed:  2,
 		GatesTotal:   4,
 		BlockingGate: blockingGate,
-		Confluence:   domain.EntryGatedConfluence{Score: 0, MaxScore: 10},
+		Confluence:   domain.EntryGatedConfluence{Score: 0, MaxScore: 100},
 		Bar:          domain.BarSnapshot{},
 	}}
 }
