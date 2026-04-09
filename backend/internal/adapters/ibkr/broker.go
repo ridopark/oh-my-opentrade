@@ -269,14 +269,17 @@ func (a *Adapter) GetPositions(_ context.Context, tenantID string, envMode domai
 }
 
 func (a *Adapter) GetPosition(_ context.Context, symbol domain.Symbol) (float64, error) {
-	ib := a.conn.IB()
-	if ib == nil {
-		return 0, fmt.Errorf("ibkr: not connected")
-	}
+	// Use the live position tracker (PositionChan-backed) instead of
+	// ib.Positions() which can be stale — ibsync doesn't always refresh
+	// positions after fills on IBKR paper accounts.
+	<-a.posReady
+
+	a.posMu.RLock()
+	defer a.posMu.RUnlock()
 
 	if domain.IsOCCSymbol(symbol) {
 		target := newOptionContract(symbol)
-		for _, p := range ib.Positions() {
+		for _, p := range a.livePos {
 			if p.Contract.SecType == "OPT" &&
 				strings.EqualFold(p.Contract.Symbol, target.Symbol) &&
 				p.Contract.Strike == target.Strike &&
@@ -289,7 +292,7 @@ func (a *Adapter) GetPosition(_ context.Context, symbol domain.Symbol) (float64,
 	}
 
 	sym := strings.ToUpper(string(symbol))
-	for _, p := range ib.Positions() {
+	for _, p := range a.livePos {
 		if strings.EqualFold(p.Contract.Symbol, sym) && p.Contract.SecType == "STK" {
 			return p.Position.Float(), nil
 		}

@@ -1449,10 +1449,25 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 				return true
 			}
 
-			// Skip stale-cancel for market orders — they should fill or get
-			// rejected by the exchange. Canceling a MKT order races with
-			// IBKR's fill and creates orphaned positions.
+			// Market orders: ibsync state can be stale (status stays pending_new
+			// even after IBKR fills it). Fall back to position check — if the
+			// broker holds a position for this symbol, infer the fill.
 			if po.intent.OrderType == "market" {
+				posQty, posErr := s.broker.GetPosition(ctx, po.intent.Symbol)
+				if posErr == nil && posQty != 0 {
+					l.Info().Float64("position_qty", posQty).Msg("reconcile: market order stuck but position exists — inferring fill")
+					s.recordFillFromDetails(po, brokerOrderID, ports.OrderDetails{
+						BrokerOrderID:  brokerOrderID,
+						Status:         "filled",
+						FilledQty:      po.intent.Quantity,
+						FilledAvgPrice: po.intent.LimitPrice,
+						Symbol:         string(po.intent.Symbol),
+						Side:           string(po.intent.Direction),
+						Qty:            po.intent.Quantity,
+					}, l)
+					s.cleanupPendingOrder(brokerOrderID)
+					return true
+				}
 				l.Info().Msg("reconcile: skipping stale cancel for market order — waiting for exchange fill/reject")
 				return true
 			}
