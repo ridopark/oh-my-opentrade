@@ -214,16 +214,12 @@ function AVWAPDetail({ avwap }: { avwap: EntryGatedPayload }) {
           {c.score}/{c.maxScore}
         </span>
       </div>
-      {/* All confluence factors with status */}
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+      {/* All confluence factors in one row */}
+      <div className="flex items-center gap-3 flex-wrap">
         {factors.map((f, i) => (
-          <div key={i} className="flex items-center gap-1.5">
-            <span className={f.active ? "text-emerald-400" : "text-zinc-600"}>
-              {f.active ? "\u2713" : "\u2717"}
-            </span>
-            <span className="text-[11px] text-zinc-300 min-w-[52px]">{f.label}(+{f.pts})</span>
-            <span className="text-[11px] text-zinc-500 truncate">{f.active ? (f.detail || "yes") : "\u2014"}</span>
-          </div>
+          <span key={i} className={`text-[11px] ${f.active ? "text-emerald-400" : "text-zinc-600"}`}>
+            {f.active ? "\u2713" : "\u2717"} {f.label}(+{f.pts}){f.active && f.detail ? ` ${f.detail}` : ""}
+          </span>
         ))}
       </div>
       {/* Indicators and gate */}
