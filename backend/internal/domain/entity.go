@@ -557,3 +557,38 @@ type FormingBar struct {
 	Close     float64   `json:"close"`
 	Volume    float64   `json:"volume"`
 }
+
+// WhaleFiling represents a single holding row from a 13F-HR filing.
+type WhaleFiling struct {
+	FilingDate      time.Time
+	FilerCIK        string
+	FilerName       string
+	CUSIP           string
+	Ticker          string
+	IssuerName      string
+	ShareCount      int64
+	MarketValue1000 int64  // in thousands (SEC native format)
+	PutCall         string // "PUT", "CALL", or ""
+	FilerTier       int    // 1=high-conviction, 2=standard
+}
+
+// WhaleAccumulation holds the pre-computed accumulation score for a symbol in a quarter.
+type WhaleAccumulation struct {
+	QuarterEnd     time.Time
+	Ticker         string
+	Score          int
+	NewPositions   int
+	Additions50Pct int
+	Additions25Pct int
+	Reductions     int
+	TotalFilers    int
+	TopFilerDetail []byte // JSON: [{cik, name, action, pct_change}]
+}
+
+// CUSIPMapping caches a CUSIP-to-ticker resolution from OpenFIGI.
+type CUSIPMapping struct {
+	CUSIP      string
+	Ticker     string
+	FIGI       string
+	ResolvedAt time.Time
+}
