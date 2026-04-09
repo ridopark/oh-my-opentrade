@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "agent",
-            "if": "Bash(git commit:*)",
+            "if": "Bash(git commit *)",
             "prompt": "Review the staged changes (run `git diff --staged`) for code quality, reuse opportunities, and efficiency issues. Apply minimal fixes if needed. Do NOT change test files or config files. Only fix issues in application code. Be concise — skip if changes look clean.",
             "timeout": 120,
             "statusMessage": "Running /simplify on staged changes..."
@@ -21,14 +21,14 @@
           {
             "type": "command",
             "command": "bash /home/ridopark/src/oh-my-opentrade/.claude/hooks/post-commit-review.sh",
-            "timeout": 10000,
-            "matchInput": "git commit"
+            "if": "Bash(git commit *)",
+            "timeout": 10000
           },
           {
             "type": "command",
             "command": "bash /home/ridopark/src/oh-my-opentrade/.claude/hooks/post-commit-harness-learn.sh",
-            "timeout": 10000,
-            "matchInput": "git commit"
+            "if": "Bash(git commit *)",
+            "timeout": 10000
           }
         ]
       }
