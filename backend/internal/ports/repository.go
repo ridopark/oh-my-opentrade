@@ -68,6 +68,11 @@ type RepositoryPort interface {
 	// Used by global reconciliation to write zero-free reconciliation SELL trades.
 	GetAvgEntryPrice(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol) (float64, error)
 
+	// HasCanceledExitOrder returns true if the most recent SELL order for a symbol
+	// has status canceled or expired. Used during bootstrap to restore ExitRetryCount
+	// so after-hours EOD flatten retries survive restarts.
+	HasCanceledExitOrder(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol) (bool, error)
+
 	// UpdateBarIndicators persists enriched indicator data (EMA, AVWAP) onto an
 	// existing market_bars row identified by (symbol, timeframe, time).
 	UpdateBarIndicators(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, t time.Time, ema9, ema21, ema50, ema200 float64, avwaps map[string]float64) error

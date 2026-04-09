@@ -30,6 +30,7 @@ const (
 	queryUpdateOrderStatus    = `UPDATE orders SET status = $2 WHERE broker_order_id = $1`
 	queryGetNetPositions      = `SELECT symbol, SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END) AS net_qty FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= NOW() - INTERVAL '30 days' GROUP BY symbol HAVING ABS(SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END)) > 1e-10`
 	queryGetAvgEntryPrice     = `SELECT COALESCE(SUM(quantity * price) / NULLIF(SUM(quantity), 0), 0) FROM trades WHERE account_id = $1 AND env_mode = $2 AND symbol = $3 AND side = 'BUY' AND price > 0 AND time >= NOW() - INTERVAL '30 days'`
+	queryHasCanceledExitOrder = `SELECT status FROM orders WHERE account_id = $1 AND env_mode = $2 AND symbol = $3 AND side = 'SELL' ORDER BY time DESC LIMIT 1`
 )
 
 // SaveMarketBar saves a single OHLCV candle.
@@ -851,4 +852,14 @@ func (r *Repository) GetAvgEntryPrice(ctx context.Context, tenantID string, envM
 		return 0, fmt.Errorf("timescaledb: get avg entry price: %w", err)
 	}
 	return avg, nil
+}
+
+func (r *Repository) HasCanceledExitOrder(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol) (bool, error) {
+	var status string
+	err := r.db.QueryRowContext(ctx, queryHasCanceledExitOrder, tenantID, string(envMode), string(symbol)).Scan(&status)
+	if err != nil {
+		// No SELL orders at all — not canceled.
+		return false, nil
+	}
+	return status == "canceled" || status == "expired", nil
 }

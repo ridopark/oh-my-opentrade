@@ -92,6 +92,10 @@ func (n *NoopRepo) GetAvgEntryPrice(_ context.Context, _ string, _ domain.EnvMod
 	return 0, nil
 }
 
+func (n *NoopRepo) HasCanceledExitOrder(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol) (bool, error) {
+	return false, nil
+}
+
 func (n *NoopRepo) UpdateBarIndicators(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _ time.Time, _, _, _, _ float64, _ map[string]float64) error {
 	return nil
 }
