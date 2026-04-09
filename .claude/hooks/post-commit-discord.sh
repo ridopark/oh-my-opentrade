@@ -18,10 +18,6 @@ if [ -z "$CMD" ]; then
   CMD=$(echo "$INPUT" | jq -r '.input.command // empty' 2>/dev/null || true)
 fi
 
-# Debug: log stdin to diagnose (temporary)
-echo "$INPUT" > /tmp/discord-hook-stdin.json 2>/dev/null || true
-echo "CMD=$CMD" >> /tmp/discord-hook-stdin.json 2>/dev/null || true
-
 if ! echo "$CMD" | grep -q 'git commit' 2>/dev/null; then
   exit 0
 fi
@@ -52,7 +48,7 @@ BODY="${BODY}
 
 📁 **${FILES_CHANGED} files** | +${INSERTIONS} -${DELETIONS}"
 
-# Send to Discord
-"$NOTIFY" "$TITLE" "$BODY" "green" 2>/tmp/discord-hook-error.log
+# Send to Discord (foreground — background &>/dev/null & gets killed on hook exit)
+"$NOTIFY" "$TITLE" "$BODY" "green" 2>/dev/null
 
 exit 0
