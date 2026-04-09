@@ -1839,14 +1839,45 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 		factorSet[f] = true
 	}
 
+	// Evaluate gates the same way as emitEntryGated.
+	gatesTotal := 5 // regime, position_flat, bias, slope, confluence
+	gatesPassed := 2 // regime and position_flat always passed
+	biasOK := avwapBias != ""
+	if biasOK {
+		gatesPassed++
+	}
+	slopeOK := cfg.MinSlopeBPS == 0 || math.Abs(slopeBPS) >= cfg.MinSlopeBPS
+	if slopeOK {
+		gatesPassed++
+	}
+	confluenceOK := !conf.Vetoed && conf.Score >= cfg.MinConfluenceScore
+	if confluenceOK {
+		gatesPassed++
+	}
+	var blockingGate, blockingDetail string
+	switch {
+	case confluenceOK:
+		blockingGate = "entry_specific"
+		blockingDetail = "confluence met but no entry type conditions satisfied"
+	case !biasOK:
+		blockingGate = "bias"
+		blockingDetail = "no directional bias established"
+	case !slopeOK:
+		blockingGate = "slope"
+		blockingDetail = fmt.Sprintf("%.2f bps < %.2f min", slopeBPS, cfg.MinSlopeBPS)
+	default:
+		blockingGate = "confluence"
+		blockingDetail = fmt.Sprintf("score %d < %d min", conf.Score, cfg.MinConfluenceScore)
+	}
+
 	payload := domain.EntryGatedPayload{
 		Symbol:       s.Symbol,
 		Strategy:     "avwap",
 		SetupType:    "multi",
-		GatesPassed:  3, // regime + position_flat + bias (approximate)
-		GatesTotal:   5,
-		BlockingGate: "confluence",
-		BlockingDetail: fmt.Sprintf("score %d / %d", conf.Score, cfg.MinConfluenceScore),
+		GatesPassed:  gatesPassed,
+		GatesTotal:   gatesTotal,
+		BlockingGate: blockingGate,
+		BlockingDetail: blockingDetail,
 		EntryChecks:  s.entryChecks,
 		Confluence: domain.EntryGatedConfluence{
 			Score:          conf.Score,
