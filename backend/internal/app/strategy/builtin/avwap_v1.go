@@ -1850,7 +1850,7 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 		EntryChecks:  s.entryChecks,
 		Confluence: domain.EntryGatedConfluence{
 			Score:          conf.Score,
-			MaxScore:       max(cfg.MinConfluenceScore, 10),
+			MaxScore:       cfg.MinConfluenceScore,
 			Fib:            factorSet["fib_38.2"] || factorSet["fib_50"] || factorSet["fib_61.8"],
 			FibDetail:      extractFactor(conf.Factors, "fib_"),
 			KeyLevel:       extractFactor(conf.Factors, "key_") != "",
@@ -1957,7 +1957,7 @@ func (s *AVWAPState) emitEntryGated(ec entryContext) {
 		EntryChecks:   s.entryChecks,
 		Confluence: domain.EntryGatedConfluence{
 			Score:    conf.Score,
-			MaxScore: 10,
+			MaxScore: ec.cfg.MinConfluenceScore,
 			Fib:      factorSet["fib_38.2"] || factorSet["fib_50"] || factorSet["fib_61.8"],
 			FibDetail: extractFactor(conf.Factors, "fib_"),
 			KeyLevel: extractFactor(conf.Factors, "key_") != "",
