@@ -131,6 +131,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 	var fillPrice float64
 	var side string
 	if isOption {
+		slippage := float64(b.slippageBPS) / 10000.0
 		switch {
 		case intent.Direction.IsExit():
 			// Compute BSM exit price using current underlying price
@@ -138,12 +139,13 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			if fillPrice <= 0 {
 				fillPrice = 0.01
 			}
+			fillPrice *= (1 - slippage) // selling: slippage works against us
 			side = "sell"
 		default:
 			if intent.LimitPrice <= 0 {
 				return "", fmt.Errorf("simbroker: options entry has no limit price for %s", intent.Symbol)
 			}
-			fillPrice = intent.LimitPrice
+			fillPrice = intent.LimitPrice * (1 + slippage) // buying: slippage works against us
 			side = "buy"
 		}
 	} else {
