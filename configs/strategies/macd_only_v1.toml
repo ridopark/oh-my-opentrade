@@ -107,7 +107,7 @@ dte = 3
 [[exit_rules]]
 type = "PREMIUM_TARGET"
 [exit_rules.params]
-target_pct = 0.75
+target_pct = 0.40
 
 [[exit_rules]]
 type = "PREMIUM_TRAIL"
