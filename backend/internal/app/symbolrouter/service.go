@@ -51,6 +51,47 @@ func (s *Service) Start(ctx context.Context) error {
 	return nil
 }
 
+// EmitFallbackForMissing emits EffectiveSymbolsUpdated with base symbols for any
+// strategy that was not covered by the AI screener bootstrap. Without this,
+// strategies with no screener DB entry would never get instances created.
+func (s *Service) EmitFallbackForMissing(ctx context.Context, coveredStrategies map[string]bool) {
+	for _, spec := range s.strategies {
+		if coveredStrategies[spec.Key] {
+			continue
+		}
+		if len(spec.BaseSymbols) == 0 {
+			continue
+		}
+		s.log.Info().
+			Str("strategy", spec.Key).
+			Int("count", len(spec.BaseSymbols)).
+			Strs("symbols", spec.BaseSymbols).
+			Msg("symbol router: emitting fallback base symbols (no screener data)")
+
+		outPayload := screener.EffectiveSymbolsUpdatedPayload{
+			StrategyKey: spec.Key,
+			RunID:       "fallback",
+			Mode:        spec.WatchlistMode,
+			Source:      "fallback:no_screener_results",
+			Symbols:     spec.BaseSymbols,
+		}
+		outEvt, err := domain.NewEvent(
+			domain.EventEffectiveSymbolsUpdated,
+			s.tenantID,
+			s.envMode,
+			fmt.Sprintf("fallback-%s", spec.Key),
+			outPayload,
+		)
+		if err != nil {
+			s.log.Error().Err(err).Str("strategy", spec.Key).Msg("symbol router: failed to create fallback event")
+			continue
+		}
+		if err := s.bus.Publish(ctx, *outEvt); err != nil {
+			s.log.Error().Err(err).Str("strategy", spec.Key).Msg("symbol router: failed to publish fallback event")
+		}
+	}
+}
+
 func (s *Service) handleAIScreenerCompleted(ctx context.Context, evt domain.Event) error {
 	payload, ok := evt.Payload.(screener.AIScreenerCompletedPayload)
 	if !ok {

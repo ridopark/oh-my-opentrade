@@ -783,6 +783,11 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 			Int("ai_run_hour_et", cfg.AIScreener.AIRunAtHourET).
 			Int("ai_run_minute_et", cfg.AIScreener.AIRunAtMinuteET).
 			Msg("AI screener service started")
+
+		// Emit fallback base symbols for strategies not covered by the AI screener DB.
+		if svc.symRouter != nil {
+			svc.symRouter.EmitFallbackForMissing(ctx, aiScreenerSvc.CoveredStrategies())
+		}
 	}
 
 	// 13F whale accumulation is handled by omo-data service.

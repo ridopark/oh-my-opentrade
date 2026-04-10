@@ -89,11 +89,38 @@ stop_wide_mult = 1.50
 size_tight_mult = 0.70
 size_wide_mult = 1.50
 
-# Premium target: lower bar for intraday ORB
+# Premium target: low bar for broker testing
 [[exit_rules]]
 type = "PREMIUM_TARGET"
 [exit_rules.params]
-target_pct = 0.12
+target_pct = 0.05               # 5% premium gain — fast exit for testing
+
+# Trailing stop: lock in gains once profitable
+[[exit_rules]]
+type = "PREMIUM_TRAIL"
+[exit_rules.params]
+trail_pct = 0.10                # trail 10% from premium high-water mark
+min_activation = 0.03           # activate after 3% gain
+
+# Stop loss: cut losers fast
+[[exit_rules]]
+type = "PREMIUM_STOP"
+[exit_rules.params]
+stop_pct = 0.15                 # exit if premium drops 15% from entry
+
+# Stagnation: exit zombie trades
+[[exit_rules]]
+type = "STAGNATION_EXIT"
+[exit_rules.params]
+minutes = 20                    # 20 min no movement = exit
+sd_threshold = 0
+profit_gate_pct = 0.005
+
+# Max holding time: hard cap
+[[exit_rules]]
+type = "MAX_HOLDING_TIME"
+[exit_rules.params]
+minutes = 60                    # 1 hour max for ORB day trades
 
 # EOD flatten
 [[exit_rules]]
