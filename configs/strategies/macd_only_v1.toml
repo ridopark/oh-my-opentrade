@@ -29,7 +29,7 @@ swing_lookback = 5               # fewer bars for swing detection on 5m
 volume_mult = 1.0
 
 # Confluence scoring (0-100+ scale, 10 base + dark pool factors)
-min_confluence_score = 60        # cut conf 40-59 noise trades
+min_confluence_score = 65        # split the difference — keep some 60s trades
 dp_confluence_enabled = true
 dp_veto_enabled = true
 dp_veto_buy_ratio_min = 0.45
@@ -80,7 +80,7 @@ execution = [
 
 [options]
 enabled = true
-max_contracts = 5
+max_contracts = 20
 limit_spread_pct = 1.00
 limit_buffer_bps = 1000
 stale_cancel_secs = 90
@@ -100,7 +100,7 @@ type = "PREMIUM_TARGET"
 [exit_rules.params]
 target_pct = 0.15
 
-# Tight trail to lock in intraday gains
+# Trail to limit drawdown (net-negative P&L but provides DD protection)
 [[exit_rules]]
 type = "PREMIUM_TRAIL"
 [exit_rules.params]
