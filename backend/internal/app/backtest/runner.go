@@ -896,6 +896,24 @@ func (r *Runner) Run(ctx context.Context) error {
 			wg.Wait()
 		}
 
+	// Always set session-based anchor resolution and prev-day bar replay
+	// so AVWAP strategies get correct anchor warmup.
+	pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
+	pipeline.Runner.SetPrevDayBarsFn(func(symbol string, since time.Time) []start.Bar {
+		return sessionResolver.GetBarsSince(ctx, r.infra.DB, symbol, since)
+	})
+	pipeline.Runner.SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
+	if len(dpLookup) > 0 {
+		pipeline.Runner.SetDarkPoolLookup(dpLookup)
+	}
+	if len(whaleLookup) > 0 {
+		pipeline.Runner.SetWhaleLookup(whaleLookup)
+	}
+
+	// AI anchor resolver: runs expensive swing/volume/catalyst detectors
+	// on every bar. Skip entirely when no_ai=true — the session-based
+	// resolver above provides the same anchors without per-bar overhead.
+	if !r.cfg.NoAI {
 		aiResolver := strategy.NewAIAnchorResolver(aiAdvisor, nil, nil)
 		aiResolver.SetSessionResolver(sessionResolver.ResolveAnchors)
 		for _, sym := range r.cfg.Symbols {
@@ -903,20 +921,8 @@ func (r *Runner) Run(ctx context.Context) error {
 			aiResolver.RegisterSymbol(sym.String(), isCrypto)
 		}
 		pipeline.Runner.SetAIAnchorResolver(aiResolver)
-		if len(dpLookup) > 0 {
-			pipeline.Runner.SetDarkPoolLookup(dpLookup)
-		}
-		if len(whaleLookup) > 0 {
-			pipeline.Runner.SetWhaleLookup(whaleLookup)
-		}
-		pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
-		pipeline.Runner.SetPrevDayBarsFn(func(symbol string, since time.Time) []start.Bar {
-			return sessionResolver.GetBarsSince(ctx, r.infra.DB, symbol, since)
-		})
-		pipeline.Runner.SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
 
 		// Seed daily bars into AI anchor detectors (catalyst_gap, capitulation, swing 1d)
-		// so they have historical context before replay starts.
 		for _, sym := range r.cfg.Symbols {
 			if bars1d := dailyBarsCache[sym.String()]; len(bars1d) > 0 {
 				for _, b := range bars1d {
@@ -928,7 +934,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Seed warmup 5m bars into AI anchor detectors (swing, volume profile)
-		// so they have the same candidates as a run that replayed those days live.
 		for _, sym := range r.cfg.Symbols {
 			bars := warmupBarsCache[sym.String()]
 			if len(bars) == 0 {
@@ -957,6 +962,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.log.Info().Msg("AI anchor resolver configured for backtest (with session baseline)")
 	}
 	r.log.Info().Dur("elapsed", time.Since(postWarmupStart)).Msg("phase: post-warmup seeding complete")
+	}
 
 	r.emitter.EmitSetup("Starting services…")
 
