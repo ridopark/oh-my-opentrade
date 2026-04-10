@@ -2,6 +2,7 @@ package ivcollector
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sort"
 	"sync"
@@ -25,8 +26,14 @@ type Service struct {
 	snapshots   ports.SnapshotPort
 	ivRepo      ports.IVHistoryPort
 	histOptRepo ports.HistoricalOptionsPort // optional: saves full chain for backtesting
+	notifier    ports.NotifierPort
 	log         zerolog.Logger
 	etLocation  *time.Location
+}
+
+// SetNotifier enables notifications after each collection run.
+func (s *Service) SetNotifier(n ports.NotifierPort) {
+	s.notifier = n
 }
 
 // SetHistoricalOptionsRepo enables full option chain capture alongside ATM IV.
@@ -169,6 +176,14 @@ func (s *Service) CollectAll(ctx context.Context) {
 		Int("collected", collected).
 		Int("total", len(s.cfg.Symbols)).
 		Msg("IV collection run complete")
+
+	if s.notifier != nil {
+		msg := fmt.Sprintf("🔬 **IV & option chain snapshot complete**\n• Collected: %d/%d symbols\n• Chain captured for backtesting",
+			collected, len(s.cfg.Symbols))
+		if err := s.notifier.Notify(ctx, "omo-data", msg); err != nil {
+			s.log.Warn().Err(err).Msg("notification failed")
+		}
+	}
 }
 
 func (s *Service) collectSymbol(
