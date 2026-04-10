@@ -331,7 +331,11 @@ func (c *Collector) recomputePosValue(symbol string) {
 		if price <= 0 {
 			price = tr.Price
 		}
-		pv -= tr.Quantity * price
+		mult := tr.Multiplier
+		if mult <= 0 {
+			mult = 1
+		}
+		pv -= tr.Quantity * price * mult
 	}
 	c.posValue[symbol] = pv
 	c.totalPosValue += pv - oldPV
@@ -366,7 +370,11 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 	}
 	if opens := c.openSells[sym]; len(opens) > 0 {
 		for _, tr := range opens {
-			newPV -= tr.Quantity * bar.Close
+			mult := tr.Multiplier
+			if mult <= 0 {
+				mult = 1
+			}
+			newPV -= tr.Quantity * bar.Close * mult
 		}
 	}
 	c.posValue[sym] = newPV
