@@ -600,7 +600,7 @@ Then ask: `"Pass {n} complete. {k} params improved. Continue to pass {n+1}?"`
 
 **Correlated pairs:** `allowed_hours_end` × `min_confluence_score`, `stop_bps` × `min_slope_bps`
 
-### MACD Crossover (`bollinger_macd` / `macd_only_v1`)
+### MACD Crossover (`macd` / `macd_only_v1`)
 
 #### Entry Confirmation Filters (tune FIRST for options — entry quality is the binding constraint)
 | Parameter | Range | Step | Effect |
