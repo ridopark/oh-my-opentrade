@@ -44,7 +44,7 @@ type Runner struct {
 	keyLevelPricesFn     func(symbol string, barTime time.Time) map[string]float64
 	keyLevelsBySymbol    map[string]map[string]float64
 	aiAnchorResolver     *AIAnchorResolver
-	lastSessionDate      map[string]string
+	lastSessionDate      map[string]int
 	lastResolvedRegime   map[string]domain.RegimeType
 
 	// Dark pool lookup for backtests: keyed by "symbol|5m-truncated-time".
@@ -120,7 +120,7 @@ func (r *Runner) SignalsRTHSuppressed() int64 {
 
 func (r *Runner) SetAnchorResolver(fn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time) {
 	r.anchorResolver = fn
-	r.lastSessionDate = make(map[string]string)
+	r.lastSessionDate = make(map[string]int)
 }
 
 func (r *Runner) SetPrevDayBarsFn(fn func(symbol string, since time.Time) []start.Bar) {
@@ -134,7 +134,7 @@ func (r *Runner) SetKeyLevelPricesFn(fn func(symbol string, barTime time.Time) m
 
 func (r *Runner) SetAIAnchorResolver(resolver *AIAnchorResolver) {
 	r.aiAnchorResolver = resolver
-	r.lastSessionDate = make(map[string]string)
+	r.lastSessionDate = make(map[string]int)
 	r.lastResolvedRegime = make(map[string]domain.RegimeType)
 
 	resolver.SetApplyFn(func(symbol string, anchors map[string]time.Time) {
@@ -164,12 +164,13 @@ func (r *Runner) ResolveAnchorsForWarmup(symbols []string, barTime time.Time) {
 		return
 	}
 	loc := domain.NYLocation()
-	dateStr := barTime.In(loc).Format("2006-01-02")
+	y, m, d := barTime.In(loc).Date()
+	dateInt := y*10000 + int(m)*100 + d
 	for _, sym := range symbols {
 		if r.lastSessionDate == nil {
-			r.lastSessionDate = make(map[string]string)
+			r.lastSessionDate = make(map[string]int)
 		}
-		r.lastSessionDate[sym] = dateStr
+		r.lastSessionDate[sym] = dateInt
 		r.resolveSessionAnchors(sym, barTime)
 	}
 }
@@ -762,7 +763,8 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		}, string(bar.Timeframe))
 
 		loc := domain.NYLocation()
-		barDate := bar.Time.In(loc).Format("2006-01-02")
+		y, m, d := bar.Time.In(loc).Date()
+		barDate := y*10000 + int(m)*100 + d
 
 		r.mu.Lock()
 		newSession := r.lastSessionDate[symbol] != barDate
@@ -776,7 +778,8 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		}
 	} else if r.anchorResolver != nil {
 		loc := domain.NYLocation()
-		barDate := bar.Time.In(loc).Format("2006-01-02")
+		y, m, d := bar.Time.In(loc).Date()
+		barDate := y*10000 + int(m)*100 + d
 		if r.lastSessionDate[symbol] != barDate {
 			r.lastSessionDate[symbol] = barDate
 			r.resolveSessionAnchors(symbol, bar.Time)

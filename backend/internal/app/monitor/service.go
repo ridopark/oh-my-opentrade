@@ -60,7 +60,8 @@ type Service struct {
 	// Standalone AVWAP computation for all streaming symbols (independent of strategy assignment)
 	avwapCalcs       map[string]*start.AnchoredVWAPCalc
 	avwapAnchors     []string // e.g. ["session_open", "pd_high", "pd_low"]
-	avwapLastSession map[string]string // symbol → last resolved session date (ET)
+	avwapLastSession    map[string]string // symbol → last resolved session date (ET) — legacy
+	avwapLastSessionInt map[string]int    // symbol → YYYYMMDD int for cheap date comparison
 	anchorResolverFn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
 	prevDayBarsFn    func(symbol string, since time.Time) []start.Bar
 	nyLoc            *time.Location // cached America/New_York location
@@ -185,7 +186,8 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 		orbTimeframe:     "5m",
 		anchorRegimes:    make(map[string]domain.MarketRegime),
 		avwapCalcs:       make(map[string]*start.AnchoredVWAPCalc),
-		avwapLastSession: make(map[string]string),
+		avwapLastSession:    make(map[string]string),
+		avwapLastSessionInt: make(map[string]int),
 		nyLoc:            nyLoc,
 		log:              log,
 	}
@@ -573,9 +575,10 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 
 	// Standalone AVWAP: resolve anchors on new session day, then update calculator.
 	if s.anchorResolverFn != nil && len(s.avwapAnchors) > 0 {
-		barDate := bar.Time.In(s.nyLoc).Format("2006-01-02")
-		if s.avwapLastSession[symStr] != barDate {
-			s.avwapLastSession[symStr] = barDate
+		y, m, d := bar.Time.In(s.nyLoc).Date()
+		barDateInt := y*10000 + int(m)*100 + d
+		if s.avwapLastSessionInt[symStr] != barDateInt {
+			s.avwapLastSessionInt[symStr] = barDateInt
 			resolved := s.anchorResolverFn(symStr, bar.Time, s.avwapAnchors)
 			if len(resolved) > 0 {
 				calc := start.NewAnchoredVWAPCalc()
