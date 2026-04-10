@@ -13,13 +13,13 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AMD","COIN","GOOGL","HIMS","JPM","META","MRNA","MSFT","MU","XOM"]
+symbols = ["MSFT", "GOOGL", "META", "NVDA", "AMD", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "AFRM", "XOM", "OXY", "LLY", "HIMS", "RIVN", "RBLX", "BA", "SPY", "QQQ", "IWM", "SOXL"]
 timeframes = ["15m"]
 priority = 70
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
 watchlist_mode = "static"
-asset_classes = ["OPTION", "EQUITY"]
+asset_classes = ["OPTION"]
 allowed_directions = ["LONG", "SHORT"]
 
 [params]
@@ -29,18 +29,18 @@ swing_lookback = 7
 volume_mult = 1.0
 
 # Confluence scoring (0-100+ scale, 10 base + dark pool factors)
-min_confluence_score = 10        # low bar for broker testing
+min_confluence_score = 55
 dp_confluence_enabled = true
-dp_veto_enabled = false          # disable DP veto for broker testing
+dp_veto_enabled = true
 dp_veto_buy_ratio_min = 0.45
 dp_veto_sell_ratio_max = 0.55
-dp_sizing_enabled = false        # disable DP sizing for broker testing
+dp_sizing_enabled = true
 dp_sizing_max_boost = 1.5
-dp_stop_enabled = false          # disable DP stop for broker testing
+dp_stop_enabled = true
 dp_level_lookback = 20
 
-# Rolling performance gate — disabled for broker testing
-rolling_wr_min = 0.0
+# Rolling performance gate — pause entries when per-symbol WR drops too low
+rolling_wr_min = 0.25
 rolling_wr_window = 20
 
 # Risk
@@ -52,12 +52,12 @@ max_positions = 50
 max_per_group = 3
 
 # Timing
-allowed_hours_start = "09:35"
-allowed_hours_end = "15:45"
+allowed_hours_start = "09:45"
+allowed_hours_end = "15:00"
 allowed_hours_tz = "America/New_York"
 cooldown_seconds = 300
 max_trades_per_day = 5
-stabilization_bars = 3           # faster start for broker testing
+stabilization_bars = 10
 
 [hooks]
 signals = { engine = "builtin", name = "bollinger_macd" }
@@ -66,9 +66,9 @@ signals = { engine = "builtin", name = "bollinger_macd" }
 monitor = [
     { name = "dna_approval" },
     { name = "vix", params = { skip_above = 35.0 } },
-    { name = "regime", params = { allowed = ["TREND", "TREND_UP", "TREND_DOWN", "SQUEEZE", "RANGE", "NEUTRAL", "BALANCE"] } },
+    { name = "regime", params = { allowed = ["TREND", "TREND_UP", "TREND_DOWN", "SQUEEZE"] } },
     { name = "htf_bias" },
-    { name = "min_atr_pct", params = { min_pct = 0.2 } },
+    { name = "min_atr_pct", params = { min_pct = 0.5 } },
     { name = "market_tide", params = { neutral_band_bps = 20 } },
 ]
 
@@ -118,5 +118,5 @@ min_activation = 0.15
 [[exit_rules]]
 type = "MAX_HOLDING_TIME"
 [exit_rules.params]
-minutes = 7200
+minutes = 4320
 
