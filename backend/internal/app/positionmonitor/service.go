@@ -8,6 +8,7 @@ import (
 
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	domstrategy "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	portstrategy "github.com/oh-my-opentrade/backend/internal/ports/strategy"
 	"github.com/rs/zerolog"
@@ -517,6 +518,25 @@ func (s *Service) processFill(fill fillMsg) {
 				pos.EntryPrice = snap.Price
 				pos.HighWaterMark = snap.Price
 				pos.LowWaterMark = snap.Price
+			}
+		}
+	}
+
+	// Store exit_hold_bars from strategy params so the position monitor
+	// can suppress non-forced exits during the initial hold period.
+	if s.specStore != nil && fill.Strategy != "" {
+		if sid, err := domstrategy.NewStrategyID(fill.Strategy); err == nil {
+			if spec, err := s.specStore.GetLatest(context.Background(), sid); err == nil {
+				if ehb, ok := spec.Params["exit_hold_bars"]; ok {
+					switch v := ehb.(type) {
+					case int:
+						pos.CustomState["exit_hold_bars"] = float64(v)
+					case int64:
+						pos.CustomState["exit_hold_bars"] = float64(v)
+					case float64:
+						pos.CustomState["exit_hold_bars"] = v
+					}
+				}
 			}
 		}
 	}

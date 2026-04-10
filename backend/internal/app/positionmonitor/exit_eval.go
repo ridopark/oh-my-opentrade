@@ -171,8 +171,22 @@ func (s *Service) tick() {
 				}
 			}
 
+			// Compute whether we're still in the initial hold period.
+			// During this window, take-profit rules are suppressed to prevent
+			// same-bar look-ahead exits. Protective stops still fire.
+			inHoldPeriod := false
+			if ehb := pos.CustomState["exit_hold_bars"]; ehb > 0 {
+				holdDuration := time.Duration(ehb) * s.barDurationFor(pos.Strategy)
+				if now.Sub(pos.EntryTime) < holdDuration {
+					inHoldPeriod = true
+				}
+			}
+
 			for _, rule := range pos.ExitRules {
 				if !rule.Type.RequiresPrice() {
+					continue
+				}
+				if inHoldPeriod && isTakeProfitRule(rule.Type) {
 					continue
 				}
 				adjusted := sessionAdjustRule(rule, pos.AssetClass, now)
@@ -503,6 +517,20 @@ func (s *Service) emit(ctx context.Context, eventType string, tenantID string, e
 		return
 	}
 	_ = s.eventBus.Publish(ctx, *ev)
+}
+
+// isTakeProfitRule returns true for exit rules that should be suppressed
+// during the initial hold period (exit_hold_bars) to prevent same-bar
+// look-ahead exits where BSM repricing on the entry bar inflates gains.
+func isTakeProfitRule(ruleType domain.ExitRuleType) bool {
+	switch ruleType {
+	case domain.ExitRuleProfitTarget, domain.ExitRulePremiumTarget,
+		domain.ExitRulePremiumTrail, domain.ExitRuleTieredTP,
+		domain.ExitRuleSDTarget:
+		return true
+	default:
+		return false
+	}
 }
 
 func isForcedExit(ruleType domain.ExitRuleType) bool {
