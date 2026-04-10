@@ -13,13 +13,13 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL", "AMZN", "AVGO", "GOOGL", "HOOD", "META", "MU", "NVDA", "PLTR", "SMCI"]
+symbols = ["AAPL", "AMZN", "AVGO", "GOOGL", "HOOD", "META", "MU", "NVDA", "PLTR", "SMCI", "AMD", "TSLA", "NFLX", "COIN", "AFRM", "SOFI", "BA", "SPY", "QQQ"]
 timeframes = ["5m"]
 priority = 80
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
 watchlist_mode = "static"
-asset_classes = ["OPTION"]
+asset_classes = ["OPTION", "EQUITY"]
 allowed_directions = ["LONG", "SHORT"]
 
 [screening]
@@ -50,18 +50,18 @@ anchors = ["session_open", "pd_high", "pd_low"]
 # --- Entry Types ---
 # Breakout: price sustains above/below AVWAP for hold_bars with volume confirmation
 breakout_enabled = true
-hold_bars = 2                    # faster entry (was 4 = 20min delay)
+hold_bars = 1                    # instant breakout for broker testing
 
 # Pullback: price pulls back to AVWAP in an established trend, closes on right side
 pullback_enabled = true          # enable for broker testing
-pullback_trend_bars = 3          # reduced from 5
-pullback_tolerance_bps = 40      # wider tolerance (was 25) — easier to qualify
+pullback_trend_bars = 1          # instant for broker testing
+pullback_tolerance_bps = 100     # very wide tolerance for broker testing
 pullback_rsi_min = 25.0          # wider RSI range (was 30)
 pullback_rsi_max = 75.0          # wider RSI range (was 65)
 
 # Bounce: mean-reversion touch of AVWAP with RSI confirmation
 bounce_enabled = true            # enable for broker testing
-rsi_bounce_max = 40.0
+rsi_bounce_max = 70.0            # very wide RSI for broker testing
 
 # Pinch: dual-AVWAP compression breakout (gap between anchors narrows)
 pinch_enabled = true             # testing pinch mode
@@ -82,7 +82,7 @@ handoff_min_mom_bps = 25
 volume_mult = 1.0                # loosened for live broker testing
 
 # Allowed EMA regimes (drop TREND_UP — longs in uptrends get faded)
-allow_regimes = ["TREND_UP", "TREND_DOWN", "BALANCE"]
+allow_regimes = ["TREND_UP", "TREND_DOWN", "BALANCE", "SQUEEZE", "REVERSAL", "RANGE", "NEUTRAL"]
 
 # Underlying asset class (used for midday trap shield and session hours)
 asset_class = "OPTION"
@@ -97,7 +97,7 @@ midday_trap_shield = false       # allow midday entries for broker testing
 midday_volume_mult = 1.0
 
 # Directional bias: only long when price is above AVWAP, only short when below
-enforce_avwap_bias = true        # only long above AVWAP, short below
+enforce_avwap_bias = false       # allow any direction for broker testing
 
 # AVWAP slope must exceed this threshold (bps/bar) for trend confirmation
 min_slope_bps = 0.0              # no slope filter for broker testing
@@ -126,10 +126,10 @@ allowed_hours_end = "15:45"      # full RTH for live testing
 allowed_hours_tz = "America/New_York"
 
 # Cooldown between trades on the same symbol (seconds)
-cooldown_seconds = 300           # 5min cooldown for broker testing
+cooldown_seconds = 60            # 1 min cooldown for broker testing
 
 # Maximum entries per symbol per session
-max_trades_per_day = 5           # allow more entries for broker testing
+max_trades_per_day = 20          # allow more entries for broker testing
 
 # Bars to hold before basic AVWAP exit check fires
 exit_hold_bars = 3               # reduced from 5
@@ -146,7 +146,7 @@ avwap_stop_buffer_bps = 20       # wider buffer (was 10) — less noise exits
 
 # --- Confluence Weighting ---
 # Entries scored 0-10 based on confirmation factors. Below threshold = filtered out.
-min_confluence_score = 3         # low bar for broker testing
+min_confluence_score = 0         # no confluence filter for broker testing
 
 # Fibonacci convergence (+3): AVWAP aligns with 38.2%/50%/61.8% retracement
 fib_confluence_enabled = true
@@ -171,19 +171,38 @@ enabled = true
 
 # --- Exit Rules ---
 
-# Premium target: take quick profit at 15% premium gain
+# Premium target: fast exit for broker testing
 [[exit_rules]]
 type = "PREMIUM_TARGET"
 [exit_rules.params]
-target_pct = 0.15
+target_pct = 0.05               # 5% premium gain
 
-# Safety stagnation: circuit breaker for zombie trades (3 hours)
+# Trailing stop: lock in gains
+[[exit_rules]]
+type = "PREMIUM_TRAIL"
+[exit_rules.params]
+trail_pct = 0.10                # trail 10% from premium HWM
+min_activation = 0.03           # activate after 3% gain
+
+# Stop loss: cut losers
+[[exit_rules]]
+type = "PREMIUM_STOP"
+[exit_rules.params]
+stop_pct = 0.15                 # exit if premium drops 15%
+
+# Stagnation: exit zombie trades
 [[exit_rules]]
 type = "STAGNATION_EXIT"
 [exit_rules.params]
-minutes = 180
+minutes = 20                    # 20 min stagnation for broker testing
 sd_threshold = 0
 profit_gate_pct = 0.005
+
+# Max holding time
+[[exit_rules]]
+type = "MAX_HOLDING_TIME"
+[exit_rules.params]
+minutes = 90                    # 1.5 hour cap
 
 # EOD flatten
 [[exit_rules]]

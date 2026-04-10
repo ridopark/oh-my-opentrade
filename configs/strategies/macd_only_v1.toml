@@ -13,23 +13,23 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AMD","COIN","GOOGL","HIMS","JPM","META","MRNA","MSFT","MU","XOM"]
-timeframes = ["15m"]
+symbols = ["AAPL","AMD","AMZN","AVGO","COIN","GOOGL","HIMS","HOOD","JPM","META","MRNA","MSFT","MU","NFLX","NVDA","PLTR","SMCI","SOFI","TSLA","XOM"]
+timeframes = ["5m"]              # faster signals for broker testing (was 15m)
 priority = 70
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
 watchlist_mode = "static"
-asset_classes = ["OPTION"]
+asset_classes = ["OPTION", "EQUITY"]
 allowed_directions = ["LONG", "SHORT"]
 
 [params]
-macd_zero_band = 0.0
-risk_reward_ratio = 3.0
-swing_lookback = 7
+macd_zero_band = 999.0           # accept any crossover regardless of distance from zero
+risk_reward_ratio = 1.0           # 1:1 R:R — easiest to qualify
+swing_lookback = 3                # fewer bars for swing detection
 volume_mult = 1.0
 
 # Confluence scoring (0-100+ scale, 10 base + dark pool factors)
-min_confluence_score = 10        # low bar for broker testing
+min_confluence_score = 0         # no confluence filter for broker testing
 dp_confluence_enabled = true
 dp_veto_enabled = false          # disable DP veto for broker testing
 dp_veto_buy_ratio_min = 0.45
@@ -55,9 +55,9 @@ max_per_group = 3
 allowed_hours_start = "09:35"
 allowed_hours_end = "15:45"
 allowed_hours_tz = "America/New_York"
-cooldown_seconds = 300
-max_trades_per_day = 5
-stabilization_bars = 3           # faster start for broker testing
+cooldown_seconds = 60            # 1 min cooldown for broker testing (was 5 min)
+max_trades_per_day = 20          # more attempts for broker testing
+stabilization_bars = 1           # instant start for broker testing
 
 [hooks]
 signals = { engine = "builtin", name = "bollinger_macd" }
@@ -65,11 +65,6 @@ signals = { engine = "builtin", name = "bollinger_macd" }
 [gate_chain]
 monitor = [
     { name = "dna_approval" },
-    { name = "vix", params = { skip_above = 35.0 } },
-    { name = "regime", params = { allowed = ["TREND", "TREND_UP", "TREND_DOWN", "SQUEEZE", "RANGE", "NEUTRAL", "BALANCE"] } },
-    { name = "htf_bias" },
-    { name = "min_atr_pct", params = { min_pct = 0.2 } },
-    { name = "market_tide", params = { neutral_band_bps = 20 } },
 ]
 
 execution = [
@@ -100,23 +95,35 @@ max_spread_pct = 0.10
 max_iv = 1.2
 
 [[exit_rules]]
-type = "DTE_FLOOR"
-[exit_rules.params]
-dte = 3
-
-[[exit_rules]]
 type = "PREMIUM_TARGET"
 [exit_rules.params]
-target_pct = 0.75
+target_pct = 0.05               # 5% premium gain for broker testing
 
 [[exit_rules]]
 type = "PREMIUM_TRAIL"
 [exit_rules.params]
-trail_pct = 0.30
-min_activation = 0.15
+trail_pct = 0.10                # trail 10% from premium HWM
+min_activation = 0.03           # activate after 3% gain
+
+[[exit_rules]]
+type = "PREMIUM_STOP"
+[exit_rules.params]
+stop_pct = 0.15                 # exit if premium drops 15%
+
+[[exit_rules]]
+type = "STAGNATION_EXIT"
+[exit_rules.params]
+minutes = 20                    # 20 min stagnation for broker testing
+sd_threshold = 0
+profit_gate_pct = 0.005
+
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 15
 
 [[exit_rules]]
 type = "MAX_HOLDING_TIME"
 [exit_rules.params]
-minutes = 7200
+minutes = 60                    # 1 hour hard cap for broker testing
 
