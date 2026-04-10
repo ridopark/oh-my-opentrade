@@ -1137,6 +1137,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	const tenantID = "default"
 	envMode := domain.EnvModePaper
 	barsProcessed := 0
+	var lastBarTime time.Time
 	currentSessionDate := replaySessionOpen
 
 	// Pre-build fixed symbol set for O(1) lookup in the hot loop.
@@ -1288,6 +1289,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				continue
 			}
 			barsProcessed++
+			lastBarTime = bar.Time
 		}
 
 		// Evaluate exit rules after all bars in this time-group are processed.
@@ -1378,6 +1380,9 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 	}
+
+	// Force-close any remaining open positions at last known price.
+	r.collector.CloseOpenPositions(lastBarTime)
 
 	finalResult := r.collector.Result()
 	r.result.Store(&finalResult)

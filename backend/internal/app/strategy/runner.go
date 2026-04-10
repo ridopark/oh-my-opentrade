@@ -59,6 +59,9 @@ type Runner struct {
 	// Signal progress cache: last emitted event per symbol for initial SSE snapshots.
 	signalProgressMu    sync.RWMutex
 	signalProgressCache map[string]domain.Event // key: eventType+":"+symbol
+
+	// Health tracking: last time handleBar was invoked.
+	lastBarTime atomic.Value // time.Time
 }
 
 // DPLookupKey uniquely identifies a dark pool bar for O(1) access during replay.
@@ -521,7 +524,44 @@ func (r *Runner) Start(ctx context.Context) error {
 		// Non-fatal: backtests won't have this event
 	}
 	r.logger.Info("strategy runner subscribed to MarketBarSanitized events")
+	r.lastBarTime.Store(time.Now())
+	go r.barHealthCheck(ctx)
 	return nil
+}
+
+// barHealthCheck logs a warning if no bars have been received for 5 minutes
+// during RTH (09:30-16:00 ET). This catches silent event bus failures.
+func (r *Runner) barHealthCheck(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	et, _ := time.LoadLocation("America/New_York")
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			nowET := time.Now().In(et)
+			hhmm := nowET.Format("15:04")
+			if hhmm < "09:30" || hhmm >= "16:00" {
+				continue // outside RTH
+			}
+			if nowET.Weekday() == time.Saturday || nowET.Weekday() == time.Sunday {
+				continue
+			}
+			last, ok := r.lastBarTime.Load().(time.Time)
+			if !ok {
+				continue
+			}
+			gap := time.Since(last)
+			if gap > 5*time.Minute {
+				r.logger.Error("HEALTH CHECK: strategy runner has not received a bar",
+					"last_bar_ago", gap.Round(time.Second).String(),
+					"last_bar_at", last.Format("15:04:05"),
+				)
+			}
+		}
+	}
 }
 
 // handleStateUpdated caches indicator data from StateUpdated events.
@@ -752,6 +792,8 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	if !ok {
 		return fmt.Errorf("strategy runner: payload is not a MarketBar, got %T", event.Payload)
 	}
+
+	r.lastBarTime.Store(time.Now())
 
 	loopStart := time.Now()
 	symbol := bar.Symbol.String()
