@@ -88,9 +88,9 @@ type Collector struct {
 	totalPosValue float64            // running sum of all posValue entries
 
 	// Daily Sharpe: aggregate one return per trading day, annualize with sqrt(252).
-	prevDayEquity float64 // equity at end of previous trading day
-	currentDay    string  // "2006-01-02" of current trading day
-	latestEquity  float64 // most recent equity snapshot (for end-of-day capture)
+	prevDayEquity float64    // equity at end of previous trading day
+	currentDay    int        // year*10000 + month*100 + day (cheap date comparison)
+	latestEquity  float64    // most recent equity snapshot (for end-of-day capture)
 	returnSum     float64
 	returnSumSq   float64
 	returnCount   int
@@ -386,8 +386,9 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 	equity := c.cash + c.totalPosValue
 
 	// Daily Sharpe: record one return per trading day (close-to-close).
-	barDay := bar.Time.Format("2006-01-02")
-	if c.currentDay == "" {
+	y, m, d := bar.Time.Date()
+	barDay := y*10000 + int(m)*100 + d
+	if c.currentDay == 0 {
 		// First bar ever — just start tracking the day.
 		c.currentDay = barDay
 	} else if barDay != c.currentDay {
