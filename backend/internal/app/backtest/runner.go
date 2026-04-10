@@ -1351,9 +1351,9 @@ func (r *Runner) Run(ctx context.Context) error {
 				t.Stop()
 			case <-t.C:
 			}
-		} else {
-			// "max" speed: yield to the scheduler periodically to prevent
-			// starving other goroutines (dashboard, HTTP handlers, etc.).
+		} else if barsProcessed&0xFF == 0 {
+			// "max" speed: yield every 256 bars to prevent starving
+			// other goroutines (dashboard, HTTP handlers, etc.).
 			runtime.Gosched()
 		}
 	}
