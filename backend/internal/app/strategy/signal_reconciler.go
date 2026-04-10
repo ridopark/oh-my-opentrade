@@ -42,8 +42,11 @@ func reconcileOne(sig start.Signal, lookup PositionLookupFunc, logger *slog.Logg
 		return sig
 	}
 
-	// Detect conflict: entry sell on a long position.
-	if sig.Side == start.SideSell && pos.EntryPrice > 0 {
+	isLong := pos.Side == "BUY" || pos.Side == "long"
+	isShort := pos.Side == "SELL" || pos.Side == "short"
+
+	// Entry sell on a long position → CLOSE_LONG exit.
+	if sig.Side == start.SideSell && isLong {
 		logger.Info("reconciler: converting SHORT entry → CLOSE_LONG exit",
 			"symbol", sig.Symbol,
 			"strategy", sig.StrategyInstanceID.String(),
@@ -56,12 +59,31 @@ func reconcileOne(sig start.Signal, lookup PositionLookupFunc, logger *slog.Logg
 			converted.Tags = make(map[string]string)
 		}
 		converted.Tags["reconciled"] = "entry_short_to_close_long"
+		converted.Tags["exit_direction"] = string(domain.DirectionCloseLong)
 		converted.Tags["original_type"] = string(start.SignalEntry)
 		return converted
 	}
 
-	// Future: entry buy on a short position → CLOSE_SHORT.
-	// Currently the system only supports LONG positions, so this is a placeholder.
+	// Entry buy on a short position → CLOSE_SHORT exit (buy to cover).
+	if sig.Side == start.SideBuy && isShort {
+		logger.Info("reconciler: converting LONG entry → CLOSE_SHORT exit",
+			"symbol", sig.Symbol,
+			"strategy", sig.StrategyInstanceID.String(),
+			"strength", sig.Strength,
+			"entry_price", pos.EntryPrice,
+		)
+		converted := sig
+		converted.Type = start.SignalExit
+		if converted.Tags == nil {
+			converted.Tags = make(map[string]string)
+		}
+		converted.Tags["reconciled"] = "entry_long_to_close_short"
+		converted.Tags["exit_direction"] = string(domain.DirectionCloseShort)
+		converted.Tags["original_type"] = string(start.SignalEntry)
+		return converted
+	}
 
+	// Same-direction entry on existing position: let it pass through.
+	// The position gate will block the duplicate.
 	return sig
 }

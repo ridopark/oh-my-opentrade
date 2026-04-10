@@ -577,9 +577,12 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 
 	direction := domain.DirectionLong
 	if sigRef.SignalType == start.SignalExit.String() {
-		// All exits use CloseLong — the execution service resolves the actual
-		// position side and quantity from the broker.
+		// Use exit_direction from enrichment tags if set by reconciler;
+		// default to CloseLong for backwards compatibility.
 		direction = domain.DirectionCloseLong
+		if ed, ok := sigRef.Tags["exit_direction"]; ok {
+			direction = domain.Direction(ed)
+		}
 	} else if sigRef.Side == start.SideSell.String() {
 		direction = domain.DirectionShort
 	}

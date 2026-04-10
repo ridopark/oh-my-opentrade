@@ -17,6 +17,7 @@ func longPosition(symbol string) domain.MonitoredPosition {
 		EntryPrice: 100.0,
 		EntryTime:  time.Now().Add(-time.Hour),
 		Quantity:   10,
+		Side:       "BUY",
 		Strategy:   "test_strategy",
 	}
 }
