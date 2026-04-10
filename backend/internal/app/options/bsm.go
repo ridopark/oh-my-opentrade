@@ -57,6 +57,67 @@ func BSMPriceAtTime(underlyingPrice, strike, dteYears, riskFreeRate, iv float64,
 	return price
 }
 
+// ImpliedVol solves for the implied volatility that makes BSM match the observed
+// market price. Uses Newton-Raphson with vega as the derivative. Returns the
+// chain IV unchanged if calibration fails (e.g. deep ITM/OTM, zero vega).
+//
+// This is used at position entry to calibrate IV so that subsequent BSM repricing
+// only reflects actual underlying movement, not a model-vs-market mismatch.
+func ImpliedVol(marketPrice, s, k, t, r float64, isCall bool, chainIV float64) float64 {
+	if marketPrice <= 0 || s <= 0 || k <= 0 || t <= 0 {
+		return chainIV
+	}
+
+	// Compute intrinsic floor — if market price is below intrinsic, can't calibrate
+	var intrinsic float64
+	if isCall {
+		intrinsic = math.Max(s-k*math.Exp(-r*t), 0)
+	} else {
+		intrinsic = math.Max(k*math.Exp(-r*t)-s, 0)
+	}
+	if marketPrice < intrinsic*0.95 {
+		return chainIV
+	}
+
+	sigma := chainIV
+	if sigma <= 0 {
+		sigma = 0.30 // reasonable starting guess
+	}
+
+	const maxIter = 50
+	const tol = 1e-6
+
+	for i := 0; i < maxIter; i++ {
+		price, _, _, _ := BSMPrice(s, k, t, r, sigma, isCall)
+		diff := price - marketPrice
+
+		if math.Abs(diff) < tol {
+			return sigma
+		}
+
+		// Vega = S * sqrt(T) * N'(d1)
+		sqrtT := math.Sqrt(t)
+		d1 := (math.Log(s/k) + (r+0.5*sigma*sigma)*t) / (sigma * sqrtT)
+		vega := s * sqrtT * normPDF(d1)
+
+		if vega < 1e-10 {
+			return chainIV // vega too small, can't converge
+		}
+
+		sigma -= diff / vega
+
+		// Clamp to reasonable range
+		if sigma < 0.01 {
+			sigma = 0.01
+		}
+		if sigma > 5.0 {
+			return chainIV // diverged
+		}
+	}
+
+	return sigma // best estimate after max iterations
+}
+
 // normCDF computes the standard normal cumulative distribution function.
 func normCDF(x float64) float64 {
 	return 0.5 * (1 + math.Erf(x/math.Sqrt2))
