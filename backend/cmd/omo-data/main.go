@@ -154,6 +154,13 @@ func main() {
 			alpacaAdapter, alpacaAdapter, ivRepo,
 			log.With().Str("component", "iv_collector").Logger(),
 		)
+
+		// Enable full option chain capture for backtesting.
+		histOptRepo := timescaledb.NewHistoricalOptionsRepository(
+			timescaledb.NewSqlDB(sqlDB),
+			log.With().Str("component", "hist_options").Logger(),
+		)
+		ivSvc.SetHistoricalOptionsRepo(histOptRepo)
 	}
 
 	// 13F whale accumulation (periodic refresh — only when SEC_USER_AGENT is set)
