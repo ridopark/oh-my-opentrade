@@ -19,7 +19,7 @@ priority = 80
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
 watchlist_mode = "static"
-asset_classes = ["OPTION", "EQUITY"]
+asset_classes = ["OPTION"]
 allowed_directions = ["LONG", "SHORT"]
 
 [screening]
@@ -85,7 +85,7 @@ volume_mult = 1.0                # loosened for live broker testing
 allow_regimes = ["TREND_UP", "TREND_DOWN", "BALANCE"]
 
 # Underlying asset class (used for midday trap shield and session hours)
-asset_class = "EQUITY"
+asset_class = "OPTION"
 
 # --- Structural Filters ---
 # Require consecutive higher lows for long breakout entries
