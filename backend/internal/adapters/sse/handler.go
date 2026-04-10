@@ -60,7 +60,9 @@ type wireEvent struct {
 
 // client represents a single connected SSE consumer.
 type client struct {
-	ch chan wireEvent
+	ch           chan wireEvent
+	dropCount    int  // consecutive dropped events
+	disconnected bool // marked for removal
 }
 
 // SignalProgressProvider supplies initial signal progress snapshots for new SSE
@@ -120,17 +122,35 @@ func (h *Handler) Start(ctx context.Context) error {
 	return nil
 }
 
-// broadcast sends an event to every connected client, dropping slow clients.
+// broadcast sends an event to every connected client, disconnecting slow ones.
 func (h *Handler) broadcast(evt wireEvent) {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	var stale []*client
 	for c := range h.clients {
+		if c.disconnected {
+			continue
+		}
 		select {
 		case c.ch <- evt:
+			c.dropCount = 0
 		default:
-			// Client channel full — skip to avoid blocking the event bus.
-			h.log.Warn().Str("event_type", evt.Type).Msg("SSE client channel full, dropping event for slow consumer")
+			c.dropCount++
+			if c.dropCount >= 100 {
+				c.disconnected = true
+				close(c.ch)
+				stale = append(stale, c)
+				h.log.Warn().Int("total_dropped", c.dropCount).Msg("SSE: disconnecting slow consumer")
+			}
 		}
+	}
+	h.mu.RUnlock()
+
+	if len(stale) > 0 {
+		h.mu.Lock()
+		for _, c := range stale {
+			delete(h.clients, c)
+		}
+		h.mu.Unlock()
 	}
 }
 
@@ -210,7 +230,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case <-keepAlive.C:
 			fmt.Fprintf(w, ": keepalive\n\n")
 			flusher.Flush()
-		case evt := <-c.ch:
+		case evt, ok := <-c.ch:
+			if !ok {
+				// Channel closed by broadcast — slow consumer kicked.
+				return
+			}
 			data, err := json.Marshal(evt)
 			if err != nil {
 				h.log.Error().Err(err).Str("event_type", evt.Type).Msg("failed to marshal SSE event")

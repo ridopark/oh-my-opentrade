@@ -435,6 +435,71 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 	return nil
 }
 
+// CloseOpenPositions force-closes all remaining open positions at their last
+// known price. Called at end of backtest so no trades are left "open".
+func (c *Collector) CloseOpenPositions(endTime time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	closeOpen := func(positions map[string][]TradeRecord, direction string) {
+		for sym, entries := range positions {
+			price, ok := c.lastPrices[sym]
+			if !ok || price <= 0 {
+				continue
+			}
+			for _, entry := range entries {
+				mult := entry.Multiplier
+				if mult == 0 {
+					mult = 1
+				}
+				var pnl float64
+				if direction == "LONG" {
+					pnl = (price - entry.Price) * entry.Quantity * mult
+				} else {
+					pnl = (entry.Price - price) * entry.Quantity * mult
+				}
+				exitTrade := TradeRecord{
+					Symbol:    sym,
+					Side:      "sell",
+					Direction: "CLOSE",
+					Quantity:  entry.Quantity,
+					Price:     price,
+					FilledAt:  endTime,
+					Strategy:  entry.Strategy,
+					Rationale: "BACKTEST_END",
+					PnL:       pnl,
+					Tags:      entry.Tags,
+				}
+				if direction == "SHORT" {
+					exitTrade.Side = "buy"
+				}
+				c.trades = append(c.trades, exitTrade)
+				c.cash += pnl
+
+				// Update incremental stats.
+				c.tradeCount++
+				if pnl > 0 {
+					c.winCount++
+					c.grossProfit += pnl
+				} else if pnl < 0 {
+					c.lossCount++
+					c.grossLoss += math.Abs(pnl)
+				}
+			}
+			delete(positions, sym)
+		}
+	}
+
+	closeOpen(c.openBuys, "LONG")
+	closeOpen(c.openSells, "SHORT")
+
+	// Reset position values since everything is flat now.
+	c.totalPosValue = 0
+	for k := range c.posValue {
+		delete(c.posValue, k)
+	}
+}
+
 // Result computes and returns the final backtest metrics.
 func (c *Collector) Result() Result {
 	c.mu.Lock()

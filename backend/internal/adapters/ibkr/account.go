@@ -11,6 +11,9 @@ import (
 	"github.com/scmhub/ibsync"
 )
 
+// accountSummaryTags are the tags we need for equity, buying power, and P&L.
+const accountSummaryTags = "NetLiquidation,BuyingPower,DayTradingBuyingPower,RealizedPnL,UnrealizedPnL,PatternDayTrader"
+
 func (a *Adapter) cachedAccountSummary(ib ibClient) (ibsync.AccountSummary, error) {
 	a.acctCache.mu.Lock()
 	defer a.acctCache.mu.Unlock()
@@ -19,37 +22,46 @@ func (a *Adapter) cachedAccountSummary(ib ibClient) (ibsync.AccountSummary, erro
 		return a.acctCache.summary, nil
 	}
 
-	// Use AccountSummary() instead of ReqAccountSummary() to avoid leaking
-	// server-side subscriptions. AccountSummary() returns ibsync's internal
-	// cache and only calls ReqAccountSummary once (on first invocation).
-	// Wrap in timeout — ibsync can block when the connection is busy with streaming data.
+	// Use ReqAccountSummary (request/response) instead of AccountSummary (cached + PubSub).
+	// AccountSummary() internally creates an ibsync PubSub subscription that blocks the
+	// EReader goroutine when the channel isn't drained, deadlocking the entire IBKR connection.
+	// ReqAccountSummary subscribes, drains until "end", and unsubscribes — safe under load.
 	type summaryResult struct {
 		data ibsync.AccountSummary
+		err  error
 	}
 	ch := make(chan summaryResult, 1)
-	go func() { ch <- summaryResult{data: ib.AccountSummary()} }()
+	go func() {
+		data, err := ib.ReqAccountSummary("All", accountSummaryTags)
+		ch <- summaryResult{data: data, err: err}
+	}()
 
-	var summary ibsync.AccountSummary
 	select {
 	case r := <-ch:
-		summary = r.data
-	case <-time.After(3 * time.Second):
+		if r.err != nil {
+			if len(a.acctCache.summary) > 0 {
+				a.log.Warn().Err(r.err).Msg("ibkr: ReqAccountSummary failed, using stale cache")
+				return a.acctCache.summary, nil
+			}
+			return nil, fmt.Errorf("ibkr: ReqAccountSummary: %w", r.err)
+		}
+		if len(r.data) == 0 {
+			if len(a.acctCache.summary) > 0 {
+				a.log.Warn().Msg("ibkr: ReqAccountSummary returned empty, using stale cache")
+				return a.acctCache.summary, nil
+			}
+			return nil, fmt.Errorf("ibkr: ReqAccountSummary returned empty")
+		}
+		a.acctCache.summary = r.data
+		a.acctCache.fetchedAt = time.Now()
+		return r.data, nil
+	case <-time.After(5 * time.Second):
 		if len(a.acctCache.summary) > 0 {
-			a.log.Warn().Msg("ibkr: AccountSummary timed out, using stale cache")
+			a.log.Warn().Msg("ibkr: ReqAccountSummary timed out, using stale cache")
 			return a.acctCache.summary, nil
 		}
-		return nil, fmt.Errorf("ibkr: AccountSummary timed out and no cache available")
+		return nil, fmt.Errorf("ibkr: ReqAccountSummary timed out and no cache available")
 	}
-	if len(summary) == 0 {
-		if len(a.acctCache.summary) > 0 {
-			a.log.Warn().Msg("ibkr: AccountSummary returned empty, using stale cache")
-			return a.acctCache.summary, nil
-		}
-		return nil, fmt.Errorf("ibkr: AccountSummary returned empty")
-	}
-	a.acctCache.summary = summary
-	a.acctCache.fetchedAt = time.Now()
-	return summary, nil
 }
 
 func (a *Adapter) GetAccountBuyingPower(_ context.Context) (ports.BuyingPower, error) {
