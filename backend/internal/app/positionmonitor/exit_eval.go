@@ -171,22 +171,23 @@ func (s *Service) tick() {
 				}
 			}
 
-			// Compute whether we're still in the initial hold period.
-			// During this window, take-profit rules are suppressed to prevent
-			// same-bar look-ahead exits. Protective stops still fire.
-			inHoldPeriod := false
-			if ehb := pos.CustomState["exit_hold_bars"]; ehb > 0 {
-				holdDuration := time.Duration(ehb) * s.barDurationFor(pos.Strategy)
-				if now.Sub(pos.EntryTime) < holdDuration {
-					inHoldPeriod = true
-				}
+			// Compute hold periods for take-profit suppression.
+			// premium_hold_bars: suppresses premium/profit target exits (default 1)
+			// exit_hold_bars: used by strategy-level AVWAP exit (unchanged)
+			barDur := s.barDurationFor(pos.Strategy)
+			timeSinceEntry := now.Sub(pos.EntryTime)
+
+			premiumHoldBars := pos.CustomState["premium_hold_bars"]
+			if premiumHoldBars <= 0 {
+				premiumHoldBars = 1 // default: suppress same-bar exits
 			}
+			inPremiumHold := timeSinceEntry < time.Duration(premiumHoldBars)*barDur
 
 			for _, rule := range pos.ExitRules {
 				if !rule.Type.RequiresPrice() {
 					continue
 				}
-				if inHoldPeriod && isTakeProfitRule(rule.Type) {
+				if inPremiumHold && isTakeProfitRule(rule.Type) {
 					continue
 				}
 				adjusted := sessionAdjustRule(rule, pos.AssetClass, now)
