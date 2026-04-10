@@ -1321,18 +1321,18 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.progress.Store(pi)
 			r.emitter.EmitProgress(pi)
 
-			// Emit live metrics.
+			// Emit live metrics (O(1) — no trade iteration).
 			if r.collector != nil {
-				partialResult := r.collector.Result()
+				m := r.collector.LiveMetrics()
 				r.emitter.EmitMetrics(map[string]any{
-					"equity":         partialResult.FinalEquity,
-					"total_pnl":      partialResult.TotalPnL,
-					"total_return":   partialResult.TotalReturn,
-					"trades":         partialResult.TradeCount,
-					"win_rate":       partialResult.WinRate,
-					"max_drawdown":   partialResult.MaxDrawdown,
-					"sharpe":         partialResult.SharpeRatio,
-					"profit_factor":  partialResult.ProfitFactor,
+					"equity":         m.FinalEquity,
+					"total_pnl":      m.TotalPnL,
+					"total_return":   m.TotalReturn,
+					"trades":         m.TradeCount,
+					"win_rate":       m.WinRate,
+					"max_drawdown":   m.MaxDrawdown,
+					"sharpe":         m.SharpeRatio,
+					"profit_factor":  m.ProfitFactor,
 					"open_positions": len(r.collector.openBuys),
 				})
 			}

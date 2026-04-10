@@ -87,10 +87,17 @@ type Collector struct {
 	posValue      map[string]float64 // symbol → current mark-to-market position value
 	totalPosValue float64            // running sum of all posValue entries
 
+	// Incremental trade stats for cheap progress metrics (no iteration needed).
+	tradeCount  int
+	winCount    int
+	lossCount   int
+	grossProfit float64
+	grossLoss   float64
+
 	// Daily Sharpe: aggregate one return per trading day, annualize with sqrt(252).
-	prevDayEquity float64    // equity at end of previous trading day
-	currentDay    int        // year*10000 + month*100 + day (cheap date comparison)
-	latestEquity  float64    // most recent equity snapshot (for end-of-day capture)
+	prevDayEquity float64 // equity at end of previous trading day
+	currentDay    int     // year*10000 + month*100 + day (cheap date comparison)
+	latestEquity  float64 // most recent equity snapshot (for end-of-day capture)
 	returnSum     float64
 	returnSumSq   float64
 	returnCount   int
@@ -304,6 +311,17 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 
 	c.trades = append(c.trades, tr)
 
+	// Update incremental trade stats.
+	if tr.PnL > 0 {
+		c.tradeCount++
+		c.winCount++
+		c.grossProfit += tr.PnL
+	} else if tr.PnL < 0 {
+		c.tradeCount++
+		c.lossCount++
+		c.grossLoss += math.Abs(tr.PnL)
+	}
+
 	// Recompute posValue for this symbol after position change.
 	c.recomputePosValue(symbol)
 
@@ -487,25 +505,59 @@ func (c *Collector) Result() Result {
 	return r
 }
 
+// LiveMetrics returns lightweight progress metrics without iterating trades.
+// O(1), no allocation — safe to call every 200ms in the replay loop.
+func (c *Collector) LiveMetrics() Result {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	equity := c.cash + c.totalPosValue
+	realizedPnL := c.grossProfit - c.grossLoss
+
+	r := Result{
+		InitialEquity: c.cfg.InitialEquity,
+		FinalEquity:   equity,
+		TotalPnL:      realizedPnL,
+		MaxDrawdown:   c.maxDrawdown * 100,
+		TradeCount:    c.tradeCount,
+		WinCount:      c.winCount,
+		LossCount:     c.lossCount,
+	}
+	if c.cfg.InitialEquity > 0 {
+		r.TotalReturn = realizedPnL / c.cfg.InitialEquity * 100
+	}
+	if r.TradeCount > 0 {
+		r.WinRate = float64(r.WinCount) / float64(r.TradeCount) * 100
+	}
+	if c.grossLoss > 0 {
+		r.ProfitFactor = c.grossProfit / c.grossLoss
+	}
+	r.SharpeRatio = c.computeSharpe()
+	return r
+}
+
 // computeSharpe calculates an annualized Sharpe ratio from daily returns.
-// Flushes the last trading day before computing.
+// Non-mutating: includes the in-progress day without modifying accumulators.
 func (c *Collector) computeSharpe() float64 {
-	// Flush the final trading day's return (close-to-close).
+	// Include the in-progress day without mutating state.
+	sum := c.returnSum
+	sumSq := c.returnSumSq
+	count := c.returnCount
 	if c.prevDayEquity > 0 && c.latestEquity > 0 {
 		r := (c.latestEquity - c.prevDayEquity) / c.prevDayEquity
-		c.returnSum += r
-		c.returnSumSq += r * r
-		c.returnCount++
+		sum += r
+		sumSq += r * r
+		count++
 	}
 
-	n := float64(c.returnCount)
+	n := float64(count)
 	if n < 2 {
 		return 0
 	}
 
-	mean := c.returnSum / n
+	mean := sum / n
 	// Var = E[X²] - E[X]², with Bessel's correction.
-	variance := (c.returnSumSq - c.returnSum*c.returnSum/n) / (n - 1)
+	variance := (sumSq - sum*sum/n) / (n - 1)
 	if variance <= 0 {
 		return 0
 	}
