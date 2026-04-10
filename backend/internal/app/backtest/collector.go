@@ -87,11 +87,13 @@ type Collector struct {
 	posValue      map[string]float64 // symbol → current mark-to-market position value
 	totalPosValue float64            // running sum of all posValue entries
 
-	// Incremental Sharpe: running stats over bar-to-bar returns.
-	prevEquity   float64
-	returnSum    float64
-	returnSumSq  float64
-	returnCount  int
+	// Daily Sharpe: aggregate one return per trading day, annualize with sqrt(252).
+	prevDayEquity float64 // equity at end of previous trading day
+	currentDay    string  // "2006-01-02" of current trading day
+	latestEquity  float64 // most recent equity snapshot (for end-of-day capture)
+	returnSum     float64
+	returnSumSq   float64
+	returnCount   int
 }
 
 // NewCollector creates a Collector and subscribes to events on the bus.
@@ -104,7 +106,6 @@ func NewCollector(bus ports.EventBusPort, cfg Config, log zerolog.Logger) (*Coll
 		log:        log.With().Str("component", "backtest_collector").Logger(),
 		cash:       cfg.InitialEquity,
 		peakEquity: cfg.InitialEquity,
-		prevEquity: 0, // set after first equity curve entry
 		lastPrices: make(map[string]float64),
 		openBuys:   make(map[string][]TradeRecord),
 		openSells:  make(map[string][]TradeRecord),
@@ -384,14 +385,23 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 	c.totalPosValue += newPV - oldPV
 	equity := c.cash + c.totalPosValue
 
-	// Update incremental Sharpe stats.
-	if c.prevEquity > 0 {
-		r := (equity - c.prevEquity) / c.prevEquity
-		c.returnSum += r
-		c.returnSumSq += r * r
-		c.returnCount++
+	// Daily Sharpe: record one return per trading day (close-to-close).
+	barDay := bar.Time.Format("2006-01-02")
+	if c.currentDay == "" {
+		// First bar ever — just start tracking the day.
+		c.currentDay = barDay
+	} else if barDay != c.currentDay {
+		// Day changed — compute daily return from previous day's close.
+		if c.prevDayEquity > 0 {
+			r := (c.latestEquity - c.prevDayEquity) / c.prevDayEquity
+			c.returnSum += r
+			c.returnSumSq += r * r
+			c.returnCount++
+		}
+		c.prevDayEquity = c.latestEquity
+		c.currentDay = barDay
 	}
-	c.prevEquity = equity
+	c.latestEquity = equity
 
 	if equity > c.peakEquity {
 		c.peakEquity = equity
@@ -476,9 +486,17 @@ func (c *Collector) Result() Result {
 	return r
 }
 
-// computeSharpe calculates an annualized Sharpe ratio using incrementally
-// accumulated return statistics (O(1), zero allocation).
+// computeSharpe calculates an annualized Sharpe ratio from daily returns.
+// Flushes the last trading day before computing.
 func (c *Collector) computeSharpe() float64 {
+	// Flush the final trading day's return (close-to-close).
+	if c.prevDayEquity > 0 && c.latestEquity > 0 {
+		r := (c.latestEquity - c.prevDayEquity) / c.prevDayEquity
+		c.returnSum += r
+		c.returnSumSq += r * r
+		c.returnCount++
+	}
+
 	n := float64(c.returnCount)
 	if n < 2 {
 		return 0
