@@ -552,19 +552,22 @@ func (s *Service) processFill(fill fillMsg) {
 		}
 	}
 
-	// Store exit_hold_bars from strategy params so the position monitor
-	// can suppress non-forced exits during the initial hold period.
+	// Store strategy params for the position monitor's hold-period guards.
+	// premium_hold_bars: suppresses take-profit exits (default 1 bar if absent)
+	// exit_hold_bars: used by AVWAP strategy-level exit (separate concern)
 	if s.specStore != nil && fill.Strategy != "" {
 		if sid, err := domstrategy.NewStrategyID(fill.Strategy); err == nil {
 			if spec, err := s.specStore.GetLatest(context.Background(), sid); err == nil {
-				if ehb, ok := spec.Params["exit_hold_bars"]; ok {
-					switch v := ehb.(type) {
-					case int:
-						pos.CustomState["exit_hold_bars"] = float64(v)
-					case int64:
-						pos.CustomState["exit_hold_bars"] = float64(v)
-					case float64:
-						pos.CustomState["exit_hold_bars"] = v
+				for _, key := range []string{"exit_hold_bars", "premium_hold_bars"} {
+					if v, ok := spec.Params[key]; ok {
+						switch n := v.(type) {
+						case int:
+							pos.CustomState[key] = float64(n)
+						case int64:
+							pos.CustomState[key] = float64(n)
+						case float64:
+							pos.CustomState[key] = n
+						}
 					}
 				}
 			}

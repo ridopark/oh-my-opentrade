@@ -23,6 +23,7 @@ type paramRange struct {
 var knownRanges = map[string]paramRange{
 	"hold_bars":            {Min: 1, Max: 50, Step: 1},
 	"exit_hold_bars":       {Min: 1, Max: 20, Step: 1},
+	"premium_hold_bars":   {Min: 1, Max: 10, Step: 1},
 	"volume_mult":          {Min: 0, Max: 5, Step: 0.1},
 	"rsi_bounce_max":       {Min: 10, Max: 80, Step: 1},
 	"stop_bps":             {Min: 10, Max: 500, Step: 5},
@@ -42,6 +43,7 @@ var knownRanges = map[string]paramRange{
 var knownDescriptions = map[string]string{
 	"hold_bars":            "Bars price must stay above/below AVWAP before entry",
 	"exit_hold_bars":       "Bars below/above AVWAP before strategy-level exit",
+	"premium_hold_bars":   "Bars before premium target/trail exits can fire",
 	"volume_mult":          "Volume multiplier filter (0 = disabled)",
 	"rsi_bounce_max":       "Max RSI for bounce entry qualification",
 	"stop_bps":             "Hard stop loss in basis points",
