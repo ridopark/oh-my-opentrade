@@ -7,6 +7,7 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/alpacahq/alpaca-trade-api-go/v3 v3.9.1
 	github.com/coder/websocket v1.8.12
+	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/pplcc/plotext v0.0.0-20180221170324-68ab3c6e05c3

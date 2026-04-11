@@ -23,6 +23,10 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// systemd watchdog heartbeat. No-op when WatchdogSec is not set (which
+	// covers the current Docker-based deployment). Logged intent only.
+	startWatchdogNotify(ctx, log)
+
 	syms := buildSymbolLists(cfg)
 	go fillBarGaps(ctx, cfg, infra, log) // background — not critical for live trading
 	warmupIndicators(ctx, cfg, infra, svc, syms, log)
