@@ -74,6 +74,14 @@ type Runner struct {
 	// strategy panics. Nil is safe — the runner will still log and increment
 	// the panic metric. Set via SetNotifier.
 	notifier ports.NotifierPort
+
+	// Scratch buffers reused across handleBar invocations to avoid per-bar
+	// allocations. They live inside the runner's mutex (handleBar holds r.mu
+	// while populating/reading them) so no external synchronization is
+	// needed. Only valid inside a single handleBar call.
+	scratchOneMin    []*Instance
+	scratchHTFNeeded map[string][]*Instance
+	scratchInstances []*Instance
 }
 
 // DPLookupKey uniquely identifies a dark pool bar for O(1) access during replay.
@@ -889,7 +897,8 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		}
 	}
 
-	instances := r.router.InstancesForSymbol(symbol)
+	r.scratchInstances = r.router.InstancesForSymbolInto(symbol, r.scratchInstances)
+	instances := r.scratchInstances
 	if len(instances) == 0 {
 		r.logger.Info("no instances for symbol", "symbol", symbol)
 		return nil
@@ -986,8 +995,17 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 
 	r.mu.Lock()
 
-	var oneMinInstances []*Instance
-	htfNeeded := make(map[string][]*Instance)
+	// Reuse scratch buffers to avoid allocating a fresh slice + map for every
+	// bar. Safe because handleBar holds r.mu while they're populated/read.
+	oneMinInstances := r.scratchOneMin[:0]
+	if r.scratchHTFNeeded == nil {
+		r.scratchHTFNeeded = make(map[string][]*Instance)
+	} else {
+		for k := range r.scratchHTFNeeded {
+			r.scratchHTFNeeded[k] = r.scratchHTFNeeded[k][:0]
+		}
+	}
+	htfNeeded := r.scratchHTFNeeded
 	for _, inst := range instances {
 		tfs := inst.Assignment().Timeframes
 		if len(tfs) == 0 {
@@ -1001,6 +1019,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 			}
 		}
 	}
+	r.scratchOneMin = oneMinInstances
 
 	sBar := domainBarToStratBar(bar)
 	var allSignals []start.Signal
