@@ -57,6 +57,20 @@ func waitForShutdown(cancel context.CancelFunc, server *http.Server, infra *infr
 		svc.posMonitor.SignalShutdown()
 	}
 
+	// 2b. Drain in-flight IBKR orders. If we skip this and close() the socket
+	// immediately, any exit order that was submitted-but-not-yet-filled loses
+	// its terminal callback — the position journal then thinks the exit failed
+	// and the reconciler will try again on next startup, causing a duplicate
+	// sell. A 30s deadline bounds the worst-case wait so we don't hang forever
+	// on a stuck order.
+	if infra.ibkrBroker != nil {
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := infra.ibkrBroker.DrainPending(drainCtx); err != nil {
+			log.Warn().Err(err).Msg("ibkr: order drain incomplete, proceeding with shutdown")
+		}
+		drainCancel()
+	}
+
 	// 3. Close broker and data connections.
 	if err := infra.ibkrBroker.Close(); err != nil {
 		log.Error().Err(err).Msg("error closing IBKR adapter")
