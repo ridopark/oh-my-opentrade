@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# cc — launch Claude Code in a git-worktree-backed session
+#
+# Each invocation creates (or reuses) a worktree under ~/src/omo-worktree/<name>,
+# symlinks .env from the primary worktree so environment-dependent scripts work,
+# then execs `claude` from inside the worktree. On exit, the worktree survives —
+# use `cc --remove <name>` to clean up when you are done with a feature branch.
+#
+# The goal is that "I want a fresh Claude Code session to try an idea" becomes
+# one command with zero manual git worktree ceremony.
+#
+# Quick reference:
+#   cc                          anonymous timestamped worktree
+#   cc sprint-5                 named worktree, create or reuse
+#   cc sprint-5 --base main     branch off a specific ref (default: main)
+#   cc --list                   list existing worktrees
+#   cc --remove sprint-5        remove a worktree (branch survives)
+#   cc --shared                 launch claude in current dir, no worktree
+#   cc -- --continue            pass everything after -- straight to claude
+#   cc --help                   this message
+#
+# Add scripts/ to your PATH (or alias) so you can run `cc` instead of
+# `./scripts/cc` from anywhere:
+#
+#   export PATH="/home/ridopark/src/oh-my-opentrade/scripts:$PATH"
+#   # or
+#   alias cc='/home/ridopark/src/oh-my-opentrade/scripts/cc'
+set -euo pipefail
+
+WORKTREE_ROOT="$HOME/src/omo-worktree"
+
+# ── Colors ───────────────────────────────────────────────────
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+info()  { echo -e "${GREEN}[cc]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[cc]${NC} $*"; }
+fail()  { echo -e "${RED}[cc]${NC} $*" >&2; exit 1; }
+
+usage() {
+    cat <<EOF
+cc — launch Claude Code in a git-worktree-backed session
+
+Usage:
+  cc                          anonymous timestamped worktree
+  cc <name>                   named worktree (create or reuse)
+  cc <name> --base <ref>      named worktree branched off <ref> (default: main)
+  cc --list                   list existing worktrees
+  cc --remove <name>          remove a worktree (branch survives)
+  cc --shared                 launch claude in current dir, no worktree
+  cc -- [claude args]         pass everything after -- to claude
+  cc <name> -- [claude args]  create/reuse worktree, pass args to claude
+  cc --help                   this message
+
+Worktrees are created under: $WORKTREE_ROOT/<name>
+Branches are named: <name> (if a branch already exists, it is reused)
+.env is symlinked from the primary worktree automatically.
+
+Examples:
+  cc                              # scratch: claude-20260411-123456
+  cc sprint-5                     # feature branch 'sprint-5' off main
+  cc sprint-5 --base origin/main  # same but from origin/main
+  cc sprint-5 -- --continue       # resume the prior sprint-5 claude session
+  cc --list                       # see what worktrees exist
+  cc --remove sprint-5            # clean up when done
+EOF
+}
+
+# Find the primary worktree path (first line from git worktree list --porcelain).
+# Must run from inside a git repo — exits with error otherwise.
+find_primary() {
+    git worktree list --porcelain 2>/dev/null \
+        | awk '/^worktree / { print $2; exit }'
+}
+
+# Split args into (cc args, -- separator, claude passthrough args).
+# Everything after -- is stored in PASSTHROUGH for `exec claude "${PASSTHROUGH[@]}"`.
+declare -a CC_ARGS PASSTHROUGH
+CC_ARGS=()
+PASSTHROUGH=()
+seen_sep=0
+for arg in "$@"; do
+    if (( seen_sep )); then
+        PASSTHROUGH+=("$arg")
+    elif [[ "$arg" == "--" ]]; then
+        seen_sep=1
+    else
+        CC_ARGS+=("$arg")
+    fi
+done
+
+# ── Dispatch on first cc arg ─────────────────────────────────
+case "${CC_ARGS[0]:-}" in
+    --help|-h)
+        usage
+        exit 0
+        ;;
+    --list)
+        git worktree list
+        exit 0
+        ;;
+    --remove)
+        [[ -z "${CC_ARGS[1]:-}" ]] && fail "cc --remove requires a worktree name"
+        target="$WORKTREE_ROOT/${CC_ARGS[1]}"
+        if [[ ! -d "$target" ]]; then
+            fail "no worktree at $target"
+        fi
+        primary=$(find_primary) || fail "not inside a git repo"
+        git -C "$primary" worktree remove "$target"
+        info "removed worktree $target"
+        info "branch '${CC_ARGS[1]}' still exists — 'git branch -d ${CC_ARGS[1]}' to delete"
+        exit 0
+        ;;
+    --shared)
+        info "launching claude in current dir (shared, no worktree)"
+        exec claude "${PASSTHROUGH[@]}"
+        ;;
+    "")
+        NAME="claude-$(date +%Y%m%d-%H%M%S)"
+        ;;
+    -*)
+        fail "unknown flag: ${CC_ARGS[0]} (run 'cc --help')"
+        ;;
+    *)
+        NAME="${CC_ARGS[0]}"
+        ;;
+esac
+
+# ── Parse optional --base flag ───────────────────────────────
+BASE="main"
+i=1
+while (( i < ${#CC_ARGS[@]} )); do
+    case "${CC_ARGS[$i]}" in
+        --base)
+            BASE="${CC_ARGS[$((i+1))]:-}"
+            [[ -z "$BASE" ]] && fail "--base requires a ref"
+            i=$((i+2))
+            ;;
+        *)
+            fail "unknown arg: ${CC_ARGS[$i]} (run 'cc --help')"
+            ;;
+    esac
+done
+
+# ── Locate primary worktree ──────────────────────────────────
+PRIMARY=$(find_primary) || fail "not inside a git repo"
+[[ -z "$PRIMARY" ]] && fail "could not detect primary worktree"
+
+WORKTREE_PATH="$WORKTREE_ROOT/$NAME"
+
+# ── Create or reuse the worktree ─────────────────────────────
+if [[ -d "$WORKTREE_PATH" ]]; then
+    info "reusing existing worktree: $WORKTREE_PATH"
+else
+    mkdir -p "$WORKTREE_ROOT"
+    # If a branch with this name already exists, add the worktree on that
+    # branch. Otherwise create a new branch off BASE.
+    if git -C "$PRIMARY" show-ref --verify --quiet "refs/heads/$NAME"; then
+        info "creating worktree $WORKTREE_PATH on existing branch '$NAME'"
+        git -C "$PRIMARY" worktree add "$WORKTREE_PATH" "$NAME"
+    else
+        info "creating worktree $WORKTREE_PATH with new branch '$NAME' off '$BASE'"
+        git -C "$PRIMARY" worktree add -b "$NAME" "$WORKTREE_PATH" "$BASE"
+    fi
+fi
+
+# ── Symlink .env from primary (if not already present) ──────
+if [[ ! -e "$WORKTREE_PATH/.env" ]]; then
+    if [[ -f "$PRIMARY/.env" ]]; then
+        ln -s "$PRIMARY/.env" "$WORKTREE_PATH/.env"
+        info "symlinked .env from primary worktree"
+    else
+        warn "primary worktree has no .env — skipping symlink"
+    fi
+fi
+
+# ── Launch claude in the worktree ────────────────────────────
+cd "$WORKTREE_PATH"
+info "launching claude in $WORKTREE_PATH"
+exec claude "${PASSTHROUGH[@]}"

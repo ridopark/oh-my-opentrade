@@ -305,3 +305,317 @@ INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity
 | `risk_sizer` | `risk_sizer` | Position sizing, slippage checks |
 | `activation` | `activation` | New symbol warmup, WS subscriptions |
 | `symbolrouter` | `symbolrouter` | Effective symbol updates |
+
+---
+
+## Developer Workflow (Worktrees + Scripts)
+
+Daily workflow for developing, shipping, and running omo-core locally. Three primary tools handle everything:
+
+| Tool | What it does | When to use |
+|------|--------------|-------------|
+| `scripts/cc` | Create/reuse a git worktree and launch Claude Code in it | Start a new feature or experiment in isolation |
+| `scripts/start.sh` + `scripts/shutdown.sh` | Stop and start `omo-core` + `omo-dashboard` tmux sessions | Bring services up/down manually |
+| `/rebuild-commit-restart` skill | Build, commit, shutdown, restart in one shot | Ship a finished change to the running services |
+
+### Worktree model: primary vs sandbox
+
+**Exactly one primary worktree:**
+```
+/home/ridopark/src/oh-my-opentrade        ← main branch, live omo-core runs here
+```
+
+**All other worktrees are sandboxes:**
+```
+~/src/omo-worktree/<name>                 ← feature branches, edit-only
+```
+
+#### Rules
+
+- **Primary only runs live omo-core.** It's the one with the active IBKR client_id=2 connection, port 8080 HTTP server, `omo-core` tmux session, and TimescaleDB writes.
+- **Sandboxes are edit-only.** You can run `go build`, `go test`, backtests via HTTP, code refactors — but not `./scripts/start.sh`.
+- **`start.sh` and `shutdown.sh` refuse to run from sandboxes by default.** They detect non-primary worktrees and exit with a helpful error. Override with `OMO_ALLOW_SANDBOX_START=1` or `OMO_ALLOW_SANDBOX_SHUTDOWN=1` if you know what you're doing.
+- **`.env` is symlinked from primary to each sandbox on first use** (automatic via `cc` or `start.sh`). Edits to `.env` in primary propagate everywhere instantly.
+
+#### Why the guard matters
+
+If you run `./scripts/start.sh` from a sandbox with the live session running, you collide on:
+- IBKR client_id (single-connection limit per id)
+- HTTP port 8080
+- Shared tmux session name `omo-core`
+- TimescaleDB writes to the same `trades` / `orders` / `order_intents` tables
+
+The safety guard in both scripts prevents this accident by refusing to run from non-primary worktrees.
+
+---
+
+### `scripts/cc` — new Claude Code session in a worktree
+
+#### Setup (one time)
+
+Add `scripts/` to your `PATH` so you can run `cc` from anywhere:
+
+```bash
+# in ~/.zshrc or ~/.bashrc
+export PATH="/home/ridopark/src/oh-my-opentrade/scripts:$PATH"
+```
+
+Or alias it:
+```bash
+alias cc='/home/ridopark/src/oh-my-opentrade/scripts/cc'
+```
+
+#### Usage
+
+```bash
+cc                          # anonymous timestamped worktree
+cc sprint-5                 # named worktree, create or reuse
+cc sprint-5 --base main     # branch off a specific ref (default: main)
+cc --list                   # list existing worktrees
+cc --remove sprint-5        # remove a worktree (branch survives)
+cc --shared                 # launch claude in current dir, no worktree
+cc -- --continue            # pass everything after -- to claude
+cc sprint-5 -- --continue   # create/reuse worktree + pass args to claude
+cc --help                   # full help
+```
+
+#### What `cc <name>` does under the hood
+
+1. Detects the primary worktree via `git worktree list --porcelain`
+2. If `~/src/omo-worktree/<name>` exists → reuses it
+3. Otherwise:
+   - If branch `<name>` exists → `git worktree add` on that branch
+   - Otherwise → `git worktree add -b <name> ... <base>` (default base: `main`)
+4. Symlinks `.env` from primary if not already present
+5. `cd` into the worktree
+6. `exec claude` (replaces the shell process)
+
+#### Typical daily pattern
+
+```bash
+# Start of day: what am I working on?
+cc sprint-5                 # creates/resumes sprint-5 worktree + claude session
+
+# ... work on sprint 5 ...
+
+# End of session: worktree stays; branch stays; claude exits, shell returns
+
+# Next day, same feature
+cc sprint-5                 # resumes — same worktree, same branch
+
+# Quick experiment
+cc                          # timestamped scratch worktree
+
+# When done, clean up
+cc --remove sprint-5        # removes worktree, keeps branch
+git branch -d sprint-5      # delete branch when truly done
+```
+
+---
+
+### `/rebuild-commit-restart` skill — ship a change live
+
+The idempotent orchestrator. Runs **build → commit → shutdown → start → verify**.
+
+#### Trigger phrases
+
+Ask Claude any of these:
+- `/rebuild-commit-restart`
+- `rebuild and restart`
+- `ship it`
+- `deploy local`
+- `RCR`
+
+#### Workflow
+
+1. **Build** — `cd backend && go build -o bin/omo-core ./cmd/omo-core`. Stops on failure.
+2. **Commit** — Claude drafts the message (lead with **why**, not what), stages, commits. Pre-commit hook `/simplify` reviews the staged diff.
+3. **Shutdown** — `./scripts/shutdown.sh`. Sends Ctrl-C, waits **up to 45 seconds** for Sprint 1 drain.
+4. **Restart** — `./scripts/start.sh`. Rebuilds, kills port 8080, launches `omo-core` + `omo-dashboard` tmux sessions.
+5. **Verify** — checks both tmux sessions exist; tails logs if either is missing.
+
+#### When to use
+
+- You've finished and tested a Go change and want it running live
+- You want to capture "this works" as a commit + active service in one motion
+- **Only from the primary worktree.** The safety guard in `start.sh`/`shutdown.sh` blocks it from sandboxes.
+
+#### When NOT to use
+
+- You haven't tested the change — run `go test ./...` or a backtest first
+- Market is open and you have an active position in a volatile state — the 30-40s shutdown window might coincide with a stop-loss trigger
+- The change is in a sandbox — merge to main first, then `/rcr` from primary
+
+#### Timing expectations
+
+| Shutdown state | Total duration |
+|----------------|----------------|
+| No open orders (weekend, pre-market) | ~5–10 seconds |
+| 1–2 orders that cancel quickly | ~10–20 seconds |
+| Orders IBKR won't immediately cancel | ~35–45 seconds |
+| Build fails | ~2 seconds (early abort) |
+
+---
+
+### `scripts/start.sh` — bring services up
+
+Run from the **primary worktree only**:
+
+```bash
+./scripts/start.sh
+```
+
+Does:
+1. Worktree safety check (refuses if not primary, override: `OMO_ALLOW_SANDBOX_START=1`)
+2. `.env` symlink bootstrap (only creates if missing)
+3. Kills zombie `omo-core` processes holding Alpaca WS connections
+4. Kills anything on port 8080 and port 8000
+5. Builds `backend/bin/omo-core`
+6. Starts `omo-core` in tmux session
+7. Starts `omo-dashboard` (`npm run dev`) in tmux session
+
+Skips with a warning if either tmux session already exists — expects a clean slate. To restart from a running state, use `/rebuild-commit-restart` or manually run `shutdown.sh` first.
+
+#### Useful tmux commands after start
+
+```bash
+tmux attach -t omo-core         # view backend logs (Ctrl-b d to detach)
+tmux attach -t omo-dashboard    # view dashboard logs
+```
+
+---
+
+### `scripts/shutdown.sh` — bring services down
+
+Run from the **primary worktree only**:
+
+```bash
+./scripts/shutdown.sh
+```
+
+Does:
+1. Worktree safety check (refuses if not primary, override: `OMO_ALLOW_SANDBOX_SHUTDOWN=1`)
+2. Stops any Docker `omo-core` container
+3. Kills anything on port 8080
+4. Sends Ctrl-C to `omo-core` tmux session
+5. **Waits up to 45 seconds** for graceful shutdown (Sprint 1 drain up to 30s + 5s HTTP + 10s buffer)
+6. Logs progress at 15s and 30s so you know it isn't hung
+7. Kills the tmux session after the process exits (or after 45s hard deadline)
+8. Same sequence for `omo-dashboard`
+9. Leaves monitoring stack (Grafana, Prometheus, Loki, Fluent Bit) running
+
+#### Why 45 seconds matters
+
+Sprint 1 Phase B added an order drain that polls `ib.OpenTrades()` for up to 30 seconds to give IBKR fill callbacks time to land before the socket closes. The pre-Sprint-3 shutdown waited only 15 seconds — `tmux kill-session` would SIGHUP the still-draining process and corrupt in-flight order state. **The 45s wait preserves the drain and prevents silently losing fills across restart.**
+
+---
+
+### `scripts/start-infra.sh` — monitoring stack
+
+Separate from the main services:
+
+```bash
+./scripts/start-infra.sh        # start Grafana, Prometheus, Loki, Fluent Bit
+./scripts/stop-infra.sh         # stop the monitoring stack
+```
+
+Normally left running 24/7 — only start/stop if you need to free resources.
+
+---
+
+### Common tasks — cheatsheet
+
+#### "I want to start a new feature"
+```bash
+cc feat/my-new-feature
+# claude launches in ~/src/omo-worktree/feat/my-new-feature
+# .env is symlinked automatically; new branch created off main
+```
+
+#### "I want to continue a feature from yesterday"
+```bash
+cc feat/my-new-feature          # same command — reuses existing worktree
+```
+
+#### "I want to ship my changes to the running live omo-core"
+From the **primary** worktree:
+```
+/rebuild-commit-restart
+```
+
+#### "I want to stop everything"
+```bash
+./scripts/shutdown.sh           # from primary
+```
+
+#### "I want to see what worktrees exist"
+```bash
+cc --list
+```
+
+#### "I want to clean up an old worktree"
+```bash
+cc --remove old-feature
+git branch -d old-feature       # optional: delete the branch too
+```
+
+#### "I accidentally ran start.sh from a sandbox and it refused — now what?"
+That's the safety guard working correctly. Two options:
+
+1. **Recommended:** merge your changes to main, then `/rebuild-commit-restart` from primary.
+2. **Escape hatch:** stop the primary's omo-core first, then from the sandbox:
+   ```bash
+   OMO_ALLOW_SANDBOX_START=1 ./scripts/start.sh
+   ```
+   You're responsible for ensuring no collisions (distinct client_id, distinct port, distinct tmux name). Rarely needed.
+
+#### "Can I run two `omo-core` binaries at the same time?"
+**Not by default.** They'll collide on IBKR client_id=2, HTTP port 8080, and tmux session name `omo-core`. To do it safely you'd need per-worktree `.env` overrides (distinct `IBKR_CLIENT_ID`, distinct `OMO_HTTP_PORT`) and a renamed tmux session, all managed manually. Not recommended unless you have a specific reason.
+
+---
+
+### Troubleshooting
+
+#### `omo-core panicked on shutdown with alpaca SIGSEGV`
+Already fixed in commit `5a8f6a8` (alpaca nil-guard in `adapter.go:Close`). If you see it, your binary is stale — rebuild via `/rebuild-commit-restart` or `./scripts/start.sh` (which rebuilds automatically).
+
+#### `shutdown.sh hangs for 30+ seconds`
+Working as intended — the Sprint 1 drain is waiting for IBKR fill callbacks on a working order. Progress logs at 15s and 30s confirm it's waiting, not hung. Full timeout is 45s.
+
+#### `cc refuses to create a worktree because I'm not in a git repo`
+Run `cc` from anywhere inside your primary checkout (or any existing worktree). It uses `git worktree list` to find the primary.
+
+#### "The dashboard tmux session won't start"
+Usually port 8000 is already in use. `scripts/start.sh` tries to free it via `kill_port 8000`, but if that fails, do it manually:
+```bash
+lsof -ti :8000 | xargs kill -9
+./scripts/start.sh
+```
+
+#### "I want to see the live omo-core logs"
+```bash
+tail -f logs/omo-core.log       # from primary worktree
+# or
+tmux attach -t omo-core         # live view, Ctrl-b d to detach
+```
+
+#### "How do I check the order journal is writing during live trading?"
+```bash
+docker exec omo-timescaledb psql -U opentrade -d opentrade \
+  -c "SELECT status, COUNT(*) FROM order_intents GROUP BY status ORDER BY 1;"
+```
+Expect `submitted` + `filled` during active sessions. Any `rejected` rows with `submit_error IS NOT NULL` deserve investigation.
+
+---
+
+### References
+
+- [`docs/plans/ROADMAP.md`](plans/ROADMAP.md) — sprint index + what's next
+- [`docs/plans/SPRINT_1_PLAN.md`](plans/SPRINT_1_PLAN.md) — robustness quick wins (shipped)
+- [`docs/plans/SPRINT_2_PLAN.md`](plans/SPRINT_2_PLAN.md) — order journal + reconciliation (shipped)
+- [`docs/plans/SPRINT_3_5_PLAN.md`](plans/SPRINT_3_5_PLAN.md) — flag removal (next)
+- [`docs/plans/SPRINT_4_PLAN.md`](plans/SPRINT_4_PLAN.md) — risk management gates (planned)
+- [`.claude/skills/rebuild-commit-restart/SKILL.md`](../.claude/skills/rebuild-commit-restart/SKILL.md) — the RCR skill
+- [`scripts/cc`](../scripts/cc) — worktree launcher source
+- [`scripts/start.sh`](../scripts/start.sh) — service start
+- [`scripts/shutdown.sh`](../scripts/shutdown.sh) — service stop
