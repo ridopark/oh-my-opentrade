@@ -908,6 +908,15 @@ func (t *eventTracer) Handle(_ context.Context, ev domain.Event) error {
 	t.count[ev.Type]++
 	t.mu.Unlock()
 
+	// Fast path: when the logger is above Info level (e.g. LOG_LEVEL=warn for
+	// backtests) the trace line will be dropped anyway. Skip the per-event
+	// zerolog context construction and payload formatting entirely — this was
+	// ~7% of backtest CPU at warn level because .With() allocates and writes
+	// every field before the level check.
+	if t.log.GetLevel() > zerolog.InfoLevel {
+		return nil
+	}
+
 	l := t.log.With().
 		Uint64("seq", seq).
 		Str("type", ev.Type).
