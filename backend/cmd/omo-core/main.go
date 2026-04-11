@@ -24,8 +24,10 @@ func main() {
 	defer cancel()
 
 	// systemd watchdog heartbeat. No-op when WatchdogSec is not set (which
-	// covers the current Docker-based deployment). Logged intent only.
-	startWatchdogNotify(ctx, log)
+	// covers the current Docker-based deployment). When systemd is active
+	// the heartbeat is gated on equity feed freshness so a wedged bar
+	// pipeline also trips a restart, not just a hard process hang.
+	startWatchdogNotify(ctx, log, svc.ingestion)
 
 	syms := buildSymbolLists(cfg)
 	go fillBarGaps(ctx, cfg, infra, log) // background — not critical for live trading
