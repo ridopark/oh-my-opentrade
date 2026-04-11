@@ -416,6 +416,91 @@ git branch -d sprint-5      # delete branch when truly done
 
 ---
 
+### Merging a sandbox back to main
+
+When the sandbox work is done, merge the branch to main and clean up. For the solo-dev single-threaded case (nothing else touching main while you were in the sandbox), this is a linear fast-forward with no rebase, no merge commit, no conflicts.
+
+#### The usual case — fast-forward merge
+
+```bash
+cd /home/ridopark/src/oh-my-opentrade    # switch to primary
+git checkout main                        # if not already
+git merge --ff-only sprint-5             # fast-forward, linear history
+git push origin main
+cc --remove sprint-5                     # remove the worktree
+git branch -d sprint-5                   # optional: delete the branch too
+```
+
+Five commands, nothing fancy. This is the default flow.
+
+#### When `git merge --ff-only` fails
+
+`"Not possible to fast-forward"` means main has commits that your branch doesn't. Only happens if:
+
+- Another sandbox was merged to main while you were working in this one
+- You committed directly to main from the primary worktree in between
+- Someone pushed to `origin/main` externally (GitHub UI merge, another machine, etc.)
+
+Fix: rebase the sandbox's branch onto main first, then retry the fast-forward:
+
+```bash
+cd ~/src/omo-worktree/sprint-5
+git fetch origin
+git rebase origin/main                   # catch up with what main has
+# resolve any conflicts, then continue rebase
+cd /home/ridopark/src/oh-my-opentrade
+git merge --ff-only sprint-5             # now fast-forwards cleanly
+git push origin main
+```
+
+#### Alternative: squash merge (flatten many small commits)
+
+Useful when the sandbox has 10 WIP commits ("fix", "try this", "oops") that should land as one clean commit on main:
+
+```bash
+cd /home/ridopark/src/oh-my-opentrade
+git checkout main
+git merge --squash sprint-5              # stages all changes, doesn't commit
+git commit -m "feat: sprint-5 feature"
+git push origin main
+```
+
+#### Ask Claude instead
+
+Instead of running the commands yourself, you can just ask:
+
+- **"merge to main"**
+- **"ship sprint-5 to main"**
+- **"merge this branch"** (when inside the sandbox)
+- **"merge and cleanup"**
+- **"merge sprint-5 but keep the branch"** (skips `git branch -d`)
+- **"squash-merge sprint-5 to main"**
+- **"cherry-pick <hash> to main"**
+
+Claude will run the full sequence, including safety checks before anything touches origin:
+
+1. Verify sandbox working tree is clean (aborts if uncommitted changes exist)
+2. Show the commits that will be merged (`git log --oneline main..HEAD`)
+3. Check if fast-forward is possible; warn and ask if not
+4. Check the primary's staging area isn't holding unrelated files (avoids the cross-contamination foot-gun)
+5. Merge, push, remove worktree, delete branch
+
+Confirmation is only asked for the push step (irreversible). Local-only merges proceed without extra prompts.
+
+#### What Claude won't do without asking
+
+- **Force-push** — if a regular push fails, investigate first, don't `--force`
+- **Rebase if main has moved** — rebase rewrites commit SHAs, so Claude asks before touching history
+- **Delete an unmerged branch** — only `git branch -d` (safe), never `git branch -D` (force)
+- **Touch other branches or other sandboxes** — the merge is scoped to exactly one branch → main
+
+#### What Claude won't do even if asked, without a clear override
+
+- **Merge unfinished or untested code** — if there are uncommitted changes in the sandbox, Claude asks whether to commit them or abort
+- **Merge to main while the live omo-core is running and holding positions in a volatile state** — the merge itself is safe, but the followup `/rebuild-commit-restart` would restart the live session. Claude may suggest waiting for a quieter moment.
+
+---
+
 ### `/rebuild-commit-restart` skill — ship a change live
 
 The idempotent orchestrator. Runs **build → commit → shutdown → start → verify**.
@@ -540,8 +625,22 @@ cc feat/my-new-feature
 cc feat/my-new-feature          # same command — reuses existing worktree
 ```
 
+#### "I'm done with my sandbox and want to merge it back to main"
+Just ask Claude: **"merge sprint-5 to main"** or **"merge this branch"**.
+
+Manually:
+```bash
+cd /home/ridopark/src/oh-my-opentrade
+git checkout main
+git merge --ff-only sprint-5
+git push origin main
+cc --remove sprint-5
+git branch -d sprint-5
+```
+See the "Merging a sandbox back to main" section above for the rare diverged-main case.
+
 #### "I want to ship my changes to the running live omo-core"
-From the **primary** worktree:
+First, if the changes are in a sandbox, merge them to main (see above). Then from the **primary** worktree:
 ```
 /rebuild-commit-restart
 ```
