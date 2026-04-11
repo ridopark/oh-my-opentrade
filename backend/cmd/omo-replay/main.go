@@ -742,6 +742,11 @@ func main() {
 				simBrokerInst.UpdatePrice(bar.Symbol, bar.Close, bar.Time)
 			}
 
+			// Advance the fast-clock so every domain.NewEvent created while
+			// processing this bar shares one OccurredAt stamp without
+			// calling time.Now() repeatedly.
+			domain.SetFastClock(bar.Time)
+
 			// Avoid bar.Time.String() — time.Time.Format was ~450k allocs
 			// per backtest. The integer nano stamp is unique-per-bar and
 			// cheaper to format.
