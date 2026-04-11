@@ -35,3 +35,6 @@ tmp/
 
 # Debug screenshots
 /*.png
+
+# Playwright MCP artifacts (local tool output — screenshots, snapshots, console logs)
+.playwright-mcp/
