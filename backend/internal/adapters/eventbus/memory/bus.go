@@ -50,7 +50,9 @@ type Bus struct {
 	droppedByType sync.Map // domain.EventType -> *atomic.Int64
 
 	// frozen is a lock-free snapshot of handlers, populated by FreezeHandlers.
-	frozen map[domain.EventType][]ports.EventHandler
+	// Stored via atomic.Pointer so Publish can read it without acquiring any
+	// lock. Writes are rare (FreezeHandlers is called once after startup).
+	frozen atomic.Pointer[map[domain.EventType][]ports.EventHandler]
 }
 
 // NewBus creates a new in-memory event bus.
@@ -79,6 +81,30 @@ func (b *Bus) Publish(ctx context.Context, event domain.Event) error {
 	// Check if context is already done
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+
+	// Fast path: after FreezeHandlers() has been called (backtest/replay),
+	// dispatch directly from the atomic snapshot with no locks and no slice
+	// copies. Async subs are disallowed in frozen mode — SyncBus routes them
+	// through Subscribe, so the snapshot is sufficient for every caller that
+	// freezes. The slow path below still handles pre-freeze operation and any
+	// caller that holds async subscriptions.
+	if frozen := b.frozen.Load(); frozen != nil {
+		handlers := (*frozen)[event.Type]
+		if len(handlers) == 0 {
+			return nil
+		}
+		var errs []error
+		for _, handler := range handlers {
+			if ctx.Err() != nil {
+				errs = append(errs, ctx.Err())
+				break
+			}
+			if err := handler(ctx, event); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return errors.Join(errs...)
 	}
 
 	b.mu.RLock()
@@ -254,18 +280,19 @@ func (b *Bus) FreezeHandlers() {
 		copy(cp, hs)
 		frozen[et] = cp
 	}
-	b.frozen = frozen
+	b.frozen.Store(&frozen)
 }
 
 // PublishDirect dispatches an event using the frozen handler snapshot,
 // bypassing lock acquisition and slice allocation. Only valid after
 // FreezeHandlers has been called; falls back to Publish otherwise.
 func (b *Bus) PublishDirect(ctx context.Context, event domain.Event) error {
-	if b.frozen == nil {
+	frozen := b.frozen.Load()
+	if frozen == nil {
 		return b.Publish(ctx, event)
 	}
 
-	handlers := b.frozen[event.Type]
+	handlers := (*frozen)[event.Type]
 	if len(handlers) == 0 {
 		return nil
 	}

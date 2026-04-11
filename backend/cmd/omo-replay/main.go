@@ -679,6 +679,11 @@ func main() {
 	}
 	log.Info().Time("session_open", replaySessionOpen).Msg("MTFA aggregators initialized for replay")
 
+	// All subscribers are wired by now. Freeze the event bus handler map so
+	// Publish can take the lock-free fast path — this avoids an RLock + slice
+	// copy per event and was ~67% of backtest CPU samples on large runs.
+	eventBus.FreezeHandlers()
+
 	log.Info().
 		Strs("symbols", symbolStrings(symbols)).
 		Str("timeframe", timeframe.String()).
