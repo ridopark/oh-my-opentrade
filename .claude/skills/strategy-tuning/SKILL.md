@@ -28,6 +28,7 @@ Autonomous tune→backtest→evaluate loop for oh-my-opentrade strategy DNA (sch
 9. **Single-variable testing.** NEVER change multiple parameters simultaneously. Change ONE param per backtest so you can attribute causation. When the user requests multiple changes, run them sequentially and compare each to the previous best.
 10. **Verify binary after engine changes.** After `go build`, ALWAYS verify the running process is using the new binary: `kill` the old PID, restart, and confirm a new PID is running. Check with `strings binary | grep -c "new_function_name"` if in doubt. Stale binaries silently invalidate backtests.
 11. **Outlier dependency check.** After any profitable result, compute PF with the largest winner removed. If PF drops below 1.0, flag as outlier-dependent and warn the user. The strategy needs multiple large winners to be robust, not just one.
+12. **Match the tuning mode to the parameter's scope.** Some parameters are *strategy-internal* (entry rules, exit rules, signal quality) — tune these solo. Others are *portfolio-infrastructure* (max_positions, max_per_group, risk_per_trade_bps, max_position_bps, options sizing) — these MUST be tuned in the same multi-strategy configuration the user actually deploys, because solo and pair optima diverge. **Always pair-validate at the end of every tuning pass**, even for solo-tuned parameters: one extra backtest with all deployed strategies enabled. If the pair regresses, the parameter has cross-strategy interaction and you re-tune it in pair mode. See the "Solo vs. Pair Tuning" section below for the full rule.
 
 ## Discord Notifications
 
@@ -199,6 +200,99 @@ Use the Agent tool with `subagent_type: "quant-analyst"`. Provide:
 - If the quant suggests a **parameter not in your queue** → add it to the queue
 - If the quant recommends an **ENGINE_CHANGE** → execute the Engine Change Pipeline (below)
 - The quant's recommendations are advisory — the pass thresholds are the final arbiter
+
+## Solo vs. Pair Tuning
+
+**Background:** When the deployed system runs multiple strategies together, solo backtests and pair (or N-strategy) backtests can give *different optima for the same parameter*. Tuning a parameter solo and shipping it without pair validation can produce a "Pareto win" that disappears or even reverses in the actual deployment.
+
+This rule was learned the hard way. In the AVWAP+MACD `max_per_group` sweep:
+- MACD solo backtests said `max_per_group=2` was Pareto-dominant (better PF, DD, Sharpe in both 2025 and 2026)
+- But forcing global `max_per_group=2` on the AVWAP+MACD pair cost ~$40k combined PnL — the pair structurally needs `max_per_group=3`
+- The "MACD wants 2" finding was an artifact of the solo measurement frame
+- The actual deployment runs the pair, so the solo improvement was dead text
+
+### Parameter buckets
+
+Classify every parameter you're about to tune into one of these buckets and pick the matching tuning mode.
+
+#### Bucket A — Strategy-internal (tune SOLO)
+These parameters affect signal generation, entry confirmation, exit logic, or scoring within a single strategy. They don't depend on other strategies' behavior and they don't compete for shared portfolio resources. Solo tuning gives clean attribution and faster backtests.
+
+- Entry quality: `min_confluence_score`, `min_rvol`, `min_adx`, `require_directional_close`, `min_signal_score`, `min_body_ratio`, RSI/Stoch gates
+- Exit rules: `stop_bps`, `max_loss_pct`, `trail_pct`, `first_tier_rr`, `stagnation_minutes`, `min_activation`, `target_pct`, all `[[exit_rules]]` parameters
+- Timing: `allowed_hours_start/end`, `cooldown_seconds`, `max_trades_per_day`, `stabilization_bars`
+- Regime: `allow_regimes`, `regime_blocked_directions`, `min_slope_bps`
+- Strategy-specific: `macd_zero_band`, `swing_lookback`, `breakout_confirm_bps`, `touch_tolerance_bps`, `displacement_min_*`
+
+#### Bucket B — Portfolio-infrastructure (tune in PAIR/N-strategy mode)
+These parameters interact with shared portfolio resources or cross-strategy capacity. Solo and pair optima diverge by construction because the parameter is doing different work in each frame.
+
+- Concurrency caps: `max_positions`, `max_per_group`
+- Sizing: `risk_per_trade_bps`, `max_position_bps`, `dynamic_risk.*`
+- Options sizing: `max_contracts`, `risk_per_trade_bps` for OPTION asset class
+- Anything that the runner aggregates across specs (max-of, sum-of, etc.) — the aggregation layer is where the divergence lives
+- Anything that touches the gate chain's PortfolioGuard, ExposureGuard, or BuyingPowerGuard
+
+**Hint:** if the parameter shows up in `cmd/omo-core/services.go` or `app/backtest/runner.go`'s deps wiring, it's almost certainly Bucket B.
+
+#### Bucket C — Ambiguous (tune solo, pair-validate aggressively)
+A few parameters look strategy-internal but secondarily affect cross-strategy behavior because they change how often/when the strategy holds positions. Tune solo for the primary effect, but pair-validate every accepted change and be ready to re-tune in pair mode if the pair regresses.
+
+- `max_trades_per_day` (changes slot occupancy duration)
+- Long stagnation timers (>2h) (same — long holds squat on slots)
+- `cooldown_seconds` (reduces refire density, changes inter-strategy slot competition)
+
+### The mandatory pair-validation step
+
+**Every tuning pass MUST end with one pair-validation backtest** for solo-tuned changes, regardless of bucket. Add this step to the multi-pass coordinate descent loop:
+
+```
+At the end of each pass (after all single-variable sweeps):
+1. Run ONE backtest with the best-of-pass TOML config and ALL deployed strategies enabled
+2. Compare combined pair PnL/PF/DD vs the previous pass's pair-validation result
+3. If pair improved or stayed within ±2% → accept the pass changes, continue
+4. If pair regressed > 2% → at least one accepted change has cross-strategy interaction
+   - Bisect: revert each accepted param one at a time, re-pair-test
+   - Move the offending param into Bucket B and re-tune in pair mode
+```
+
+### Pair-mode tuning rules
+
+When you've identified a Bucket B parameter (or moved one from C/A after a regression), tune it directly in the pair backtest:
+
+1. **Always run all deployed strategies** in every backtest (don't tune one in isolation)
+2. **Single-variable still applies** — change one parameter on one strategy, leave the others alone
+3. **Compare combined metrics**, not per-strategy: combined PnL, combined DD, combined Sharpe. Per-strategy decompositions are useful for diagnosis but the accept/reject decision is on the pair total
+4. **Watch for slot backfill amplification** — changing a parameter that frees slots for one strategy may inflate the OTHER strategy's trade count even if its own params didn't change. Attribute carefully
+5. **Quant consultation**: explicitly tell the quant the parameter is in Bucket B and you're tuning in pair mode. Ask whether the per-strategy decomposition matches their prior on what each strategy "wants"
+6. **Backtests are ~2x slower** because both strategies replay. Budget for this — fewer iterations per pass, smaller grids on correlated-pair sweeps
+
+### Decision flowchart
+
+```
+User asks to tune parameter X:
+│
+├─ X in Bucket A (strategy-internal)?
+│  ├─ Yes → tune solo, single-variable sweep, pair-validate at end of pass
+│  │        → if pair regresses, demote to Bucket C and retest
+│  │
+│  └─ No → continue
+│
+├─ X in Bucket B (portfolio-infrastructure)?
+│  ├─ Yes → tune directly in pair/N-strategy backtest from the start
+│  │        → never quote solo numbers as "the optimum" for these params
+│  │
+│  └─ No → continue
+│
+└─ X in Bucket C (ambiguous)?
+   └─ Tune solo first, but pair-validate every accepted change with a tighter
+      threshold (±1% pair regression = revert), and prefer Bucket B treatment
+      if any prior session has shown cross-strategy interaction for this param.
+```
+
+### Anti-pattern to watch for
+
+If you find yourself writing "X solo wants A, X pair wants B" and reporting both as findings — STOP. The actual deployment is the pair (or N-strategy book), and B is the only number that matters. The solo finding is a measurement artifact unless the user explicitly plans to run X solo. Report the pair number as the answer and only mention the solo number as a methodology footnote.
 
 ## Engine Change Pipeline
 
@@ -442,6 +536,8 @@ Read `[params]` and `[[exit_rules]]` sections. **Revised priority order** (learn
 
 **Key insight:** Timing window and regime gating consistently outperform entry quality tuning. Always try structural filters first. Entry quality params like confluence score interact with time window due to **slot backfill** — narrow the window FIRST.
 
+**Bucket each parameter before tuning.** As you build the priority queue, classify every parameter into Bucket A/B/C per the "Solo vs. Pair Tuning" section. Bucket A → solo. Bucket B → pair-mode from the start, never solo. Bucket C → solo first, tighter pair-validation. The buckets above are mostly Bucket A (entry/exit/timing), but `max_positions`, `max_per_group`, `risk_per_trade_bps`, and any options sizing param are Bucket B and need a different sub-loop.
+
 ### Step 3: Multi-Pass Coordinate Descent
 
 Run up to **3 passes**. Each pass sweeps all priority parameters.
@@ -450,20 +546,43 @@ Run up to **3 passes**. Each pass sweeps all priority parameters.
 for pass = 1 to 3:
   improved_this_pass = false
   for each parameter in priority order:
-    1. Save current config state
-    2. Edit TOML → try TIGHTER value → run backtest A
-    3. While A runs: revert TOML → edit → try LOOSER value → run backtest B
-    4. Poll both A and B (alternate, 30s each)
-    5. When both complete: compare A, B, and current-best
-    6. Accept whichever clears the pass threshold; revert if both fail
-    7. If accepted → run split-half validation
-    8. If split-half fails → revert, move to next parameter
+    bucket = classify(parameter)  # A=solo, B=pair, C=ambiguous
+
+    if bucket == B:
+      # Tune in pair mode from the start (see Solo vs. Pair Tuning section)
+      1. Save current config state
+      2. Edit TOML → try TIGHTER value → run PAIR backtest A (all deployed strategies)
+      3. While A runs: revert TOML → edit → try LOOSER value → run PAIR backtest B
+      4. Poll both A and B (alternate, 10s each)
+      5. Compare combined PnL/PF/DD/Sharpe (NOT per-strategy)
+      6. Accept whichever clears the pass threshold on combined metrics
+      7. Quant consultation: ask whether per-strategy decomposition matches their prior
+    else:
+      # Bucket A or C — tune solo
+      1. Save current config state
+      2. Edit TOML → try TIGHTER value → run SOLO backtest A
+      3. While A runs: revert TOML → edit → try LOOSER value → run SOLO backtest B
+      4. Poll both A and B (alternate, 10s each)
+      5. Compare A, B, and current-best on solo metrics
+      6. Accept whichever clears the pass threshold; revert if both fail
+      7. If accepted → run split-half validation (solo)
+      8. If split-half fails → revert, move to next parameter
+
     9. If validated → improved_this_pass = true, update current-best
 
-  # Correlated pair mini-grids (after sweep)
+  # Correlated pair mini-grids (after sweep) — mode follows the bucket of the params involved
   for each (param_a, param_b) in CORRELATED_PAIRS:
-    Run 3x3 grid: 9 backtests (can run sequentially — they're fast at max speed)
+    Run 3x3 grid: 9 backtests, in pair mode if either param is Bucket B
     Accept best combo if it clears threshold + split-half
+
+  # MANDATORY pair-validation gate (catches Bucket A/C interactions with the pair)
+  10. Run ONE pair backtest with the best-of-pass TOML and ALL deployed strategies enabled
+  11. Compare combined metrics vs the previous pass's pair-validation result
+  12. If pair improved or stayed within ±2% → accept the pass changes
+  13. If pair regressed > 2%:
+      - Bisect: revert each accepted Bucket A/C param one at a time, re-pair-test
+      - When the offending param is found, demote it to Bucket B and re-tune in pair mode
+      - The pair regression always wins — never ship a solo improvement that breaks the pair
 
   if NOT improved_this_pass → converged, stop
   else → report pass summary to user, ask continue/stop
