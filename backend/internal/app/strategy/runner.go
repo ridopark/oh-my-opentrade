@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -44,7 +45,7 @@ type Runner struct {
 	keyLevelPricesFn     func(symbol string, barTime time.Time) map[string]float64
 	keyLevelsBySymbol    map[string]map[string]float64
 	aiAnchorResolver     *AIAnchorResolver
-	lastSessionDate      map[string]string
+	lastSessionDate      map[string]int
 	lastResolvedRegime   map[string]domain.RegimeType
 
 	// Dark pool lookup for backtests: keyed by "symbol|5m-truncated-time".
@@ -59,6 +60,15 @@ type Runner struct {
 	// Signal progress cache: last emitted event per symbol for initial SSE snapshots.
 	signalProgressMu    sync.RWMutex
 	signalProgressCache map[string]domain.Event // key: eventType+":"+symbol
+
+	// Health tracking: last time handleBar was invoked.
+	lastBarTime atomic.Value // time.Time
+
+	// tideTracker, when non-nil, is fed every SPY/QQQ 1m bar to maintain a
+	// running intraday VWAP and expose market-tide deviation to AVWAP
+	// entry-signal telemetry. Phase 1 of AVWAP SPY-tide plumbing — data
+	// collection only, no gating.
+	tideTracker *gate.IndexTideTracker
 }
 
 // DPLookupKey uniquely identifies a dark pool bar for O(1) access during replay.
@@ -120,7 +130,7 @@ func (r *Runner) SignalsRTHSuppressed() int64 {
 
 func (r *Runner) SetAnchorResolver(fn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time) {
 	r.anchorResolver = fn
-	r.lastSessionDate = make(map[string]string)
+	r.lastSessionDate = make(map[string]int)
 }
 
 func (r *Runner) SetPrevDayBarsFn(fn func(symbol string, since time.Time) []start.Bar) {
@@ -134,7 +144,7 @@ func (r *Runner) SetKeyLevelPricesFn(fn func(symbol string, barTime time.Time) m
 
 func (r *Runner) SetAIAnchorResolver(resolver *AIAnchorResolver) {
 	r.aiAnchorResolver = resolver
-	r.lastSessionDate = make(map[string]string)
+	r.lastSessionDate = make(map[string]int)
 	r.lastResolvedRegime = make(map[string]domain.RegimeType)
 
 	resolver.SetApplyFn(func(symbol string, anchors map[string]time.Time) {
@@ -164,12 +174,13 @@ func (r *Runner) ResolveAnchorsForWarmup(symbols []string, barTime time.Time) {
 		return
 	}
 	loc := domain.NYLocation()
-	dateStr := barTime.In(loc).Format("2006-01-02")
+	y, m, d := barTime.In(loc).Date()
+	dateInt := y*10000 + int(m)*100 + d
 	for _, sym := range symbols {
 		if r.lastSessionDate == nil {
-			r.lastSessionDate = make(map[string]string)
+			r.lastSessionDate = make(map[string]int)
 		}
-		r.lastSessionDate[sym] = dateStr
+		r.lastSessionDate[sym] = dateInt
 		r.resolveSessionAnchors(sym, barTime)
 	}
 }
@@ -397,6 +408,48 @@ func (r *Runner) SetSwapManager(sm *SwapManager) { r.swapManager = sm }
 // SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
 func (r *Runner) SetMetrics(m *metrics.Metrics) { r.metrics = m }
 
+// SetTideTracker installs an IndexTideTracker that the runner feeds every
+// SPY/QQQ 1m bar so AVWAP entry signals can be tagged with the current
+// market-tide deviation. Telemetry only — no gating.
+func (r *Runner) SetTideTracker(tracker *gate.IndexTideTracker) {
+	r.tideTracker = tracker
+}
+
+// applyTideData pushes the current SPY/QQQ intraday-VWAP deviation onto any
+// strategy state that implements the tideDataSetter interface (AVWAP). When
+// the tracker is missing, unready, or the symbol has no reference index, the
+// setter is called with ready=false so stale data from a previous symbol is
+// cleared. Telemetry only — does not affect trading behavior.
+func (r *Runner) applyTideData(inst *Instance, symbol string) {
+	if r.tideTracker == nil {
+		return
+	}
+	type tideDataSetter interface {
+		SetTideData(devBps float64, ready bool, indexName string)
+	}
+	state, ok := inst.GetState(symbol)
+	if !ok {
+		return
+	}
+	setter, ok := state.(tideDataSetter)
+	if !ok {
+		return
+	}
+	sym := domain.Symbol(symbol)
+	refIndex := gate.ReferenceIndex(sym)
+	if refIndex == "" {
+		setter.SetTideData(0, false, "")
+		return
+	}
+	vwap, lastClose, ready := r.tideTracker.GetTide(sym)
+	if !ready || vwap <= 0 {
+		setter.SetTideData(0, false, refIndex)
+		return
+	}
+	devBps := (lastClose - vwap) / vwap * 10000
+	setter.SetTideData(devBps, true, refIndex)
+}
+
 func (r *Runner) SetPositionLookup(fn PositionLookupFunc) { r.posLookup = fn }
 
 // SetDarkPoolLookup injects pre-loaded dark pool bars for backtesting.
@@ -520,7 +573,44 @@ func (r *Runner) Start(ctx context.Context) error {
 		// Non-fatal: backtests won't have this event
 	}
 	r.logger.Info("strategy runner subscribed to MarketBarSanitized events")
+	r.lastBarTime.Store(time.Now())
+	go r.barHealthCheck(ctx)
 	return nil
+}
+
+// barHealthCheck logs a warning if no bars have been received for 5 minutes
+// during RTH (09:30-16:00 ET). This catches silent event bus failures.
+func (r *Runner) barHealthCheck(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	et, _ := time.LoadLocation("America/New_York")
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			nowET := time.Now().In(et)
+			hhmm := nowET.Format("15:04")
+			if hhmm < "09:30" || hhmm >= "16:00" {
+				continue // outside RTH
+			}
+			if nowET.Weekday() == time.Saturday || nowET.Weekday() == time.Sunday {
+				continue
+			}
+			last, ok := r.lastBarTime.Load().(time.Time)
+			if !ok {
+				continue
+			}
+			gap := time.Since(last)
+			if gap > 5*time.Minute {
+				r.logger.Error("HEALTH CHECK: strategy runner has not received a bar",
+					"last_bar_ago", gap.Round(time.Second).String(),
+					"last_bar_at", last.Format("15:04:05"),
+				)
+			}
+		}
+	}
 }
 
 // handleStateUpdated caches indicator data from StateUpdated events.
@@ -752,8 +842,17 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		return fmt.Errorf("strategy runner: payload is not a MarketBar, got %T", event.Payload)
 	}
 
+	r.lastBarTime.Store(time.Now())
+
 	loopStart := time.Now()
 	symbol := bar.Symbol.String()
+
+	// Feed SPY/QQQ 1m bars to the tide tracker before dispatching so AVWAP
+	// entries for any symbol (including SPY/QQQ itself downstream) see the
+	// freshest intraday VWAP. Telemetry only.
+	if r.tideTracker != nil && bar.Timeframe == "1m" && (symbol == "SPY" || symbol == "QQQ") {
+		r.tideTracker.OnBar(bar)
+	}
 
 	if r.aiAnchorResolver != nil {
 		r.aiAnchorResolver.OnBar(symbol, start.Bar{
@@ -762,7 +861,8 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		}, string(bar.Timeframe))
 
 		loc := domain.NYLocation()
-		barDate := bar.Time.In(loc).Format("2006-01-02")
+		y, m, d := bar.Time.In(loc).Date()
+		barDate := y*10000 + int(m)*100 + d
 
 		r.mu.Lock()
 		newSession := r.lastSessionDate[symbol] != barDate
@@ -776,7 +876,8 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		}
 	} else if r.anchorResolver != nil {
 		loc := domain.NYLocation()
-		barDate := bar.Time.In(loc).Format("2006-01-02")
+		y, m, d := bar.Time.In(loc).Date()
+		barDate := y*10000 + int(m)*100 + d
 		if r.lastSessionDate[symbol] != barDate {
 			r.lastSessionDate[symbol] = barDate
 			r.resolveSessionAnchors(symbol, bar.Time)
@@ -909,6 +1010,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 				return r.emitDomainEvent(ctx, event.TenantID, event.EnvMode, evt)
 			},
 		}
+		r.applyTideData(inst, symbol)
 		signals, err := inst.OnBar(instCtx, symbol, sBar, indicators)
 		if err != nil {
 			r.logger.Error("instance OnBar failed",
@@ -1017,6 +1119,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 					return r.emitDomainEvent(ctx, event.TenantID, event.EnvMode, evt)
 				},
 			}
+			r.applyTideData(inst, symbol)
 			signals, err := inst.OnBar(instCtx, symbol, htfBar, htfIndicators)
 			if err != nil {
 				r.logger.Error("instance OnBar failed (HTF)",

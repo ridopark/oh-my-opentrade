@@ -1163,9 +1163,14 @@ func (s *Service) handleStreamFill(update ports.OrderUpdate, l zerolog.Logger) {
 		fillPrice = po.intent.LimitPrice
 	}
 
-	fillQty := update.Qty
+	// For terminal fill events, FilledQty is cumulative and authoritative.
+	// Prefer it over Qty (which is the incremental per-leg fill and only
+	// reflects the LAST fill leg in multi-fill orders, causing ghost positions
+	// when e.g. an 11-lot fills in legs of 10+1 — Qty would be 1 while the
+	// broker position is flat).
+	fillQty := update.FilledQty
 	if fillQty <= 0 {
-		fillQty = update.FilledQty
+		fillQty = update.Qty
 	}
 	if fillQty <= 0 {
 		fillQty = po.intent.Quantity

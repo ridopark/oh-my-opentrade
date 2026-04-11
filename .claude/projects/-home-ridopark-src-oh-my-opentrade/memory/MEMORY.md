@@ -1,3 +1,5 @@
 - [Backtest Analysis Script](reference_backtest_analysis.md) — Python script for detailed post-backtest performance analysis
 - [IB Gateway Staging](reference_ib_gateway_staging.md) — Staging IB Gateway connection, env vars, and troubleshooting
 - [Tuning params to optimize](feedback_tuning_params.md) — Only tune 10 of ~110 strategy params to avoid overfitting
+- [13F whale accumulation pipeline](project_whale_13f.md) — SEC EDGAR 13F ingest, CUSIP resolution, whale scoring, strategy confluence
+- [omo-data runs as Docker container](feedback_omo_data_docker.md) — Must be container to reach IB Gateway for VIX on Docker network

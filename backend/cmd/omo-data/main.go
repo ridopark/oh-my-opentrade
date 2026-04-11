@@ -14,13 +14,15 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
-	"github.com/oh-my-opentrade/backend/internal/adapters/ibkr"
+	"github.com/oh-my-opentrade/backend/internal/adapters/dolthub"
+	"github.com/oh-my-opentrade/backend/internal/adapters/notification"
 	"github.com/oh-my-opentrade/backend/internal/adapters/openfigi"
 	"github.com/oh-my-opentrade/backend/internal/adapters/sec"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
-	"github.com/oh-my-opentrade/backend/internal/ports"
+	"github.com/oh-my-opentrade/backend/internal/adapters/yfinance"
 	"github.com/oh-my-opentrade/backend/internal/app/datarefresh"
 	"github.com/oh-my-opentrade/backend/internal/app/ivcollector"
+	"github.com/oh-my-opentrade/backend/internal/app/optionsimport"
 	"github.com/oh-my-opentrade/backend/internal/app/whale13f"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/logger"
@@ -94,17 +96,14 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to create Alpaca adapter")
 	}
 
-	// IBKR adapter (optional — for VIX index data)
-	var ibkrData ports.MarketDataPort
-	if cfg.IBKR.Host != "" {
-		ibkrAdapter, ibkrErr := ibkr.NewAdapter(cfg.IBKR, log.With().Str("component", "ibkr").Logger())
-		if ibkrErr != nil {
-			log.Warn().Err(ibkrErr).Msg("IBKR connection failed — VIX will use SPY realized vol fallback")
-		} else {
-			ibkrData = ibkrAdapter
-			log.Info().Str("host", cfg.IBKR.Host).Int("port", cfg.IBKR.Port).Msg("IBKR connected (for VIX)")
-			defer ibkrAdapter.Close()
-		}
+	// Yahoo Finance client (for VIX)
+	yahooClient := yfinance.NewClient(log.With().Str("component", "yfinance").Logger())
+
+	// Discord notifier (optional — sends status updates after each data refresh)
+	var notifier *notification.DiscordNotifier
+	if webhookURL := os.Getenv("DISCORD_WEBHOOK_URL"); webhookURL != "" {
+		notifier = notification.NewDiscordNotifier(webhookURL, nil, log.With().Str("component", "discord").Logger())
+		log.Info().Msg("Discord notifications enabled")
 	}
 
 	// Dark pool repository
@@ -133,8 +132,12 @@ func main() {
 		RunAtHourET:    16,
 		RunAtMinuteET:  15,
 		LookbackDays:   90,
-	}, ibkrData, alpacaAdapter, repo, noopVIXSetter{}, log)
+	}, alpacaAdapter, repo, noopVIXSetter{}, log)
+	refreshSvc.SetYahooClient(yahooClient)
 	refreshSvc.SetDarkPool(alpacaAdapter, dpRepo)
+	if notifier != nil {
+		refreshSvc.SetNotifier(notifier)
+	}
 
 	// IV collector (uses Alpaca for options data)
 	var ivSvc *ivcollector.Service
@@ -154,6 +157,34 @@ func main() {
 			alpacaAdapter, alpacaAdapter, ivRepo,
 			log.With().Str("component", "iv_collector").Logger(),
 		)
+
+		// Enable full option chain capture for backtesting.
+		histOptRepo := timescaledb.NewHistoricalOptionsRepository(
+			timescaledb.NewSqlDB(sqlDB),
+			log.With().Str("component", "hist_options").Logger(),
+		)
+		ivSvc.SetHistoricalOptionsRepo(histOptRepo)
+		if notifier != nil {
+			ivSvc.SetNotifier(notifier)
+		}
+	}
+
+	// DoltHub options chain daily refresh (fills gaps not covered by Alpaca snapshots)
+	dolthubClient := dolthub.NewClient(nil, log)
+	histOptRepo := timescaledb.NewHistoricalOptionsRepository(
+		timescaledb.NewSqlDB(sqlDB),
+		log.With().Str("component", "hist_options").Logger(),
+	)
+	importSvc := optionsimport.NewService(dolthubClient, histOptRepo, log)
+	dolthubSvc := optionsimport.NewScheduledService(optionsimport.ScheduledConfig{
+		Symbols:       symbols,
+		LookbackDays:  7,
+		RunAtHourET:   7,
+		RunAtMinuteET: 0,
+		Concurrency:   4,
+	}, importSvc, log)
+	if notifier != nil {
+		dolthubSvc.SetNotifier(notifier)
 	}
 
 	// 13F whale accumulation (periodic refresh — only when SEC_USER_AGENT is set)
@@ -182,6 +213,7 @@ func main() {
 				log.Warn().Err(err).Msg("whale 13F refresh failed")
 			}
 		}
+		dolthubSvc.RunOnce(ctx)
 		log.Info().Msg("run-once complete")
 		return
 	}
@@ -201,6 +233,10 @@ func main() {
 		if err := whaleSvc.Start(ctx); err != nil {
 			log.Warn().Err(err).Msg("13F whale service failed to start")
 		}
+	}
+
+	if err := dolthubSvc.Start(ctx); err != nil {
+		log.Warn().Err(err).Msg("DoltHub options service failed to start")
 	}
 
 	log.Info().Int("symbols", len(symbols)).Msg("omo-data running")

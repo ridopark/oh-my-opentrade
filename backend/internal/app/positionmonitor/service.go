@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
+	"github.com/oh-my-opentrade/backend/internal/app/options"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	domstrategy "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	portstrategy "github.com/oh-my-opentrade/backend/internal/ports/strategy"
 	"github.com/rs/zerolog"
@@ -509,14 +511,65 @@ func (s *Service) processFill(fill fillMsg) {
 				pos.CustomState["is_call"] = 0.0
 			}
 		}
-		// For options: set entry price to the UNDERLYING price so exit rules
-		// (SD target, step stop, etc.) evaluate on the underlying's price action.
-		// The option is just the trade vehicle — ORB logic is about the underlying.
+		// Calibrate IV: solve for the IV that makes BSM reproduce the entry
+		// premium at the current underlying price. This ensures that subsequent
+		// BSM repricing only reflects actual underlying movement, not a
+		// model-vs-market mismatch from using daily chain IV with an intraday
+		// underlying price.
 		if underlying := domain.UnderlyingFromOCC(fill.Symbol); underlying != "" {
 			if snap, ok := s.priceCache.LatestPrice(underlying); ok {
+				strike := pos.CustomState["strike"]
+				expiryUnix := pos.CustomState["expiry_unix"]
+				chainIV := pos.CustomState["iv_at_entry"]
+				isCall := pos.CustomState["is_call"] == 1.0
+
+				if strike > 0 && expiryUnix > 0 && fill.Price > 0 {
+					expiryTime := time.Unix(int64(expiryUnix), 0)
+					dteYears := expiryTime.Sub(fill.FilledAt).Hours() / (365.25 * 24)
+					if dteYears > 0 {
+						calibratedIV := options.ImpliedVol(
+							fill.Price, snap.Price, strike, dteYears, 0.045, isCall, chainIV,
+						)
+						if calibratedIV != chainIV {
+							s.log.Debug().
+								Str("symbol", string(fill.Symbol)).
+								Float64("chain_iv", chainIV).
+								Float64("calibrated_iv", calibratedIV).
+								Float64("entry_premium", fill.Price).
+								Float64("underlying", snap.Price).
+								Msg("IV calibrated to match entry premium")
+						}
+						pos.CustomState["iv_at_entry"] = calibratedIV
+					}
+				}
+
+				// Set entry price to the UNDERLYING price so exit rules
+				// (SD target, step stop, etc.) evaluate on the underlying's price action.
 				pos.EntryPrice = snap.Price
 				pos.HighWaterMark = snap.Price
 				pos.LowWaterMark = snap.Price
+			}
+		}
+	}
+
+	// Store strategy params for the position monitor's hold-period guards.
+	// premium_hold_bars: suppresses take-profit exits (default 1 bar if absent)
+	// exit_hold_bars: used by AVWAP strategy-level exit (separate concern)
+	if s.specStore != nil && fill.Strategy != "" {
+		if sid, err := domstrategy.NewStrategyID(fill.Strategy); err == nil {
+			if spec, err := s.specStore.GetLatest(context.Background(), sid); err == nil {
+				for _, key := range []string{"exit_hold_bars", "premium_hold_bars"} {
+					if v, ok := spec.Params[key]; ok {
+						switch n := v.(type) {
+						case int:
+							pos.CustomState[key] = float64(n)
+						case int64:
+							pos.CustomState[key] = float64(n)
+						case float64:
+							pos.CustomState[key] = n
+						}
+					}
+				}
 			}
 		}
 	}

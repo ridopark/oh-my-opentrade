@@ -80,6 +80,12 @@ func (m *mockIB) AccountSummary(_ ...string) ibsync.AccountSummary {
 	defer m.mu.Unlock()
 	return m.accountSummary
 }
+func (m *mockIB) AccountValues(_ ...string) ibsync.AccountValues {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Convert AccountSummary ([]AccountValue) to AccountValues ([]AccountValue) — same type.
+	return ibsync.AccountValues(m.accountSummary)
+}
 func (m *mockIB) Snapshot(_ *ibsync.Contract, _ ...bool) (*ibsync.Ticker, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

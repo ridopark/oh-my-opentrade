@@ -19,7 +19,7 @@ priority = 70
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
 watchlist_mode = "static"
-asset_classes = ["EQUITY", "OPTION"]
+asset_classes = ["OPTION"]
 allowed_directions = ["LONG", "SHORT"]
 
 [params]
@@ -42,6 +42,14 @@ dp_level_lookback = 20
 # Rolling performance gate
 rolling_wr_min = 0.25
 rolling_wr_window = 20
+
+# Low-trend range gate. Blocks entries when 5m regime is BALANCE and ADX
+# is below the threshold — MACD crossovers in that condition are noise.
+# Validated as the only stationary entry filter across 2025 and 2026:
+# the (BALANCE ∧ adx<20) bucket was net-negative in both years. See
+# docs/research/macd_range_gate_validation.md.
+range_gate_enabled = true
+range_gate_adx_max = 20.0
 
 # Risk — smaller per-trade for higher turnover
 risk_per_trade_bps = 500

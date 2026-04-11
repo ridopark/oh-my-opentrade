@@ -171,8 +171,23 @@ func (s *Service) tick() {
 				}
 			}
 
+			// Compute hold periods for take-profit suppression.
+			// premium_hold_bars: suppresses premium/profit target exits (default 1)
+			// exit_hold_bars: used by strategy-level AVWAP exit (unchanged)
+			barDur := s.barDurationFor(pos.Strategy)
+			timeSinceEntry := now.Sub(pos.EntryTime)
+
+			premiumHoldBars := pos.CustomState["premium_hold_bars"]
+			if premiumHoldBars <= 0 {
+				premiumHoldBars = 1 // default: suppress same-bar exits
+			}
+			inPremiumHold := timeSinceEntry < time.Duration(premiumHoldBars)*barDur
+
 			for _, rule := range pos.ExitRules {
 				if !rule.Type.RequiresPrice() {
+					continue
+				}
+				if inPremiumHold && isTakeProfitRule(rule.Type) {
 					continue
 				}
 				adjusted := sessionAdjustRule(rule, pos.AssetClass, now)
@@ -503,6 +518,20 @@ func (s *Service) emit(ctx context.Context, eventType string, tenantID string, e
 		return
 	}
 	_ = s.eventBus.Publish(ctx, *ev)
+}
+
+// isTakeProfitRule returns true for exit rules that should be suppressed
+// during the initial hold period (exit_hold_bars) to prevent same-bar
+// look-ahead exits where BSM repricing on the entry bar inflates gains.
+func isTakeProfitRule(ruleType domain.ExitRuleType) bool {
+	switch ruleType {
+	case domain.ExitRuleProfitTarget, domain.ExitRulePremiumTarget,
+		domain.ExitRulePremiumTrail, domain.ExitRuleTieredTP,
+		domain.ExitRuleSDTarget:
+		return true
+	default:
+		return false
+	}
 }
 
 func isForcedExit(ruleType domain.ExitRuleType) bool {

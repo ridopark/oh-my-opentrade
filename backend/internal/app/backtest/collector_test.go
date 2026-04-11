@@ -75,24 +75,27 @@ func TestNewCollector_DefaultPeriodsPerYearAndSubscribes(t *testing.T) {
 	filledAt := time.Date(2026, 1, 1, 9, 30, 0, 0, time.UTC)
 	publishFill(t, bus, "fill-buy-1", fillPayload("AAPL", "buy", 1.0, 100.0, filledAt))
 
-	base := time.Date(2026, 1, 1, 9, 31, 0, 0, time.UTC)
+	// Sharpe uses daily returns — send bars across multiple days.
 	symbol := domain.Symbol("AAPL")
-	e0 := 100.0
-	e1 := 110.0
-	e2 := 99.0
-	e3 := 108.9
-	publishMarketBar(t, bus, "bar-1", domain.MarketBar{Time: base, Symbol: symbol, Close: e0})
-	publishMarketBar(t, bus, "bar-2", domain.MarketBar{Time: base.Add(time.Minute), Symbol: symbol, Close: e1})
-	publishMarketBar(t, bus, "bar-3", domain.MarketBar{Time: base.Add(2 * time.Minute), Symbol: symbol, Close: e2})
-	publishMarketBar(t, bus, "bar-4", domain.MarketBar{Time: base.Add(3 * time.Minute), Symbol: symbol, Close: e3})
+	day1 := time.Date(2026, 1, 1, 15, 59, 0, 0, time.UTC)
+	day2 := time.Date(2026, 1, 2, 15, 59, 0, 0, time.UTC)
+	day3 := time.Date(2026, 1, 3, 15, 59, 0, 0, time.UTC)
+	day4 := time.Date(2026, 1, 6, 15, 59, 0, 0, time.UTC)
+
+	// End-of-day closing prices → 1 share held, equity = close price
+	closes := []float64{100.0, 110.0, 99.0, 108.9}
+	publishMarketBar(t, bus, "bar-1", domain.MarketBar{Time: day1, Symbol: symbol, Close: closes[0]})
+	publishMarketBar(t, bus, "bar-2", domain.MarketBar{Time: day2, Symbol: symbol, Close: closes[1]})
+	publishMarketBar(t, bus, "bar-3", domain.MarketBar{Time: day3, Symbol: symbol, Close: closes[2]})
+	publishMarketBar(t, bus, "bar-4", domain.MarketBar{Time: day4, Symbol: symbol, Close: closes[3]})
 
 	r := c.Result()
 	require.NotEmpty(t, r.Trades)
 
-	equity := []float64{e0, e1, e2, e3}
-	returns := make([]float64, 0, len(equity)-1)
-	for i := 1; i < len(equity); i++ {
-		returns = append(returns, (equity[i]-equity[i-1])/equity[i-1])
+	// Compute expected daily Sharpe: 3 daily returns from 4 end-of-day equity snapshots.
+	returns := make([]float64, 0, len(closes)-1)
+	for i := 1; i < len(closes); i++ {
+		returns = append(returns, (closes[i]-closes[i-1])/closes[i-1])
 	}
 	mean := (returns[0] + returns[1] + returns[2]) / float64(len(returns))
 	var sumSq float64

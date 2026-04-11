@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy/builtin"
@@ -34,6 +35,10 @@ type StrategyDeps struct {
 	DisableEnricher bool
 	Logger          zerolog.Logger
 	BacktestID      string // non-empty → tag slog output with backtest_id
+	// TideTracker, when non-nil, is wired into the strategy runner so AVWAP
+	// entry signals can be tagged with SPY/QQQ intraday-VWAP deviation for
+	// retrospective telemetry analysis. Optional.
+	TideTracker *gate.IndexTideTracker
 }
 
 // StrategyPipeline is the return value of BuildStrategyPipeline, exposing the
@@ -65,7 +70,7 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 		builtin.NewAVWAPStrategy(),
 		builtin.NewAIScalperStrategy(),
 		builtin.NewBreakRetestStrategy(),
-		builtin.NewBollingerMACDStrategy(),
+		builtin.NewMACDStrategy(),
 	} {
 		if err := registry.Register(s); err != nil {
 			return nil, fmt.Errorf("bootstrap: strategy: failed to register builtin %s: %w", s.Meta().ID, err)
@@ -134,6 +139,9 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 	runner := strategy.NewRunner(deps.EventBus, router, deps.TenantID, deps.EnvMode, stratLog)
 	if deps.PositionLookup != nil {
 		runner.SetPositionLookup(deps.PositionLookup)
+	}
+	if deps.TideTracker != nil {
+		runner.SetTideTracker(deps.TideTracker)
 	}
 
 	var enricher *strategy.SignalDebateEnricher

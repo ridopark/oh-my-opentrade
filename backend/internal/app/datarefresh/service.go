@@ -1,5 +1,5 @@
 // Package datarefresh provides a scheduled service that fetches daily bars
-// (VIX from IBKR, equities from Alpaca) and keeps the monitor's VIX level current.
+// (VIX from Yahoo Finance, equities from Alpaca) and keeps the monitor's VIX level current.
 package datarefresh
 
 import (
@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
+	"github.com/oh-my-opentrade/backend/internal/adapters/yfinance"
 	"github.com/oh-my-opentrade/backend/internal/app/backfill"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -52,18 +53,29 @@ type Config struct {
 // Service fetches daily bars on a schedule and updates the monitor's VIX level.
 type Service struct {
 	cfg          Config
-	ibkrData     ports.MarketDataPort
 	alpacaData   ports.MarketDataPort
+	yahooClient  *yfinance.Client
 	repo         BarStore
 	monitor      VIXSetter
+	notifier     ports.NotifierPort
 	tradeFetcher TradeFetcher
 	dpRepo       DarkPoolStore
 	log          zerolog.Logger
 	etLocation   *time.Location
 }
 
+// SetYahooClient enables VIX fetching from Yahoo Finance.
+func (s *Service) SetYahooClient(c *yfinance.Client) {
+	s.yahooClient = c
+}
+
+// SetNotifier enables Discord/Telegram notifications after each refresh.
+func (s *Service) SetNotifier(n ports.NotifierPort) {
+	s.notifier = n
+}
+
 // NewService creates a data refresh service.
-func NewService(cfg Config, ibkrData, alpacaData ports.MarketDataPort, repo BarStore, monitor VIXSetter, log zerolog.Logger) *Service {
+func NewService(cfg Config, alpacaData ports.MarketDataPort, repo BarStore, monitor VIXSetter, log zerolog.Logger) *Service {
 	if cfg.LookbackDays == 0 {
 		cfg.LookbackDays = 90
 	}
@@ -79,7 +91,6 @@ func NewService(cfg Config, ibkrData, alpacaData ports.MarketDataPort, repo BarS
 	et, _ := time.LoadLocation("America/New_York")
 	return &Service{
 		cfg:        cfg,
-		ibkrData:   ibkrData,
 		alpacaData: alpacaData,
 		repo:       repo,
 		monitor:    monitor,
@@ -98,7 +109,6 @@ func (s *Service) SetDarkPool(fetcher TradeFetcher, dpRepo DarkPoolStore) {
 // Start loads VIX from DB (or fetches if empty), then launches the daily scheduler.
 func (s *Service) Start(ctx context.Context) error {
 	// Set VIX level fast: DB first (instant), then SPY fallback (~200ms).
-	// IBKR VIX is attempted in the background — it has a 10s timeout and often fails.
 	vix, err := s.loadVIXFromDB(ctx)
 	if err == nil && vix > 0 {
 		s.monitor.SetVIXLevel(vix)
@@ -109,9 +119,9 @@ func (s *Service) Start(ctx context.Context) error {
 
 	// Refresh all bar data in background on startup (non-blocking).
 	go func() {
-		// Try IBKR VIX in background — may update the SPY fallback value.
+		// Try Yahoo Finance VIX in background — may update the SPY fallback value.
 		if err := s.refreshVIX(ctx); err != nil {
-			s.log.Debug().Err(err).Msg("background IBKR VIX fetch failed (SPY fallback already set)")
+			s.log.Debug().Err(err).Msg("background VIX fetch failed (SPY fallback already set)")
 		}
 
 		allSymbols := s.deduplicatedSymbols()
@@ -185,31 +195,32 @@ func (s *Service) RefreshAll(ctx context.Context) {
 		Msg("daily refresh complete")
 
 	// Dark pool refresh (optional — skipped if SetDarkPool was not called).
+	dpSaved := 0
 	if s.tradeFetcher != nil && s.dpRepo != nil {
-		dpSaved, dpFailed := s.refreshDarkPoolBars(ctx, allSymbols)
+		var dpFailed int
+		dpSaved, dpFailed = s.refreshDarkPoolBars(ctx, allSymbols)
 		s.log.Info().
 			Int("symbols_refreshed", dpSaved).
 			Int("symbols_failed", dpFailed).
 			Msg("dark pool refresh complete")
 	}
+
+	s.notify(ctx, fmt.Sprintf("📊 **omo-data daily refresh complete**\n• Symbols: %d refreshed, %d failed\n• Dark pool: %d symbols\n• VIX: %.2f",
+		saved, failed, dpSaved, s.latestVIX(ctx)))
 }
 
 func (s *Service) refreshVIX(ctx context.Context) error {
-	if s.ibkrData == nil {
-		return fmt.Errorf("IBKR adapter not configured — VIX fetch skipped")
+	if s.yahooClient == nil {
+		return fmt.Errorf("yahoo finance client not configured")
 	}
-	sym, err := domain.NewSymbol(s.cfg.VIXSymbol)
-	if err != nil {
-		return err
-	}
+
 	from := time.Now().AddDate(0, 0, -s.cfg.LookbackDays)
-	bars, err := s.ibkrData.GetHistoricalBars(ctx, sym, domain.Timeframe("1d"), from, time.Now())
+	bars, err := s.yahooClient.GetVIXBars(ctx, from, time.Now())
 	if err != nil {
-		return err
+		return fmt.Errorf("yahoo finance VIX fetch failed: %w", err)
 	}
 	if len(bars) == 0 {
-		s.log.Warn().Msg("IBKR returned 0 VIX bars")
-		return fmt.Errorf("IBKR returned 0 VIX bars")
+		return fmt.Errorf("yahoo finance returned 0 VIX bars")
 	}
 
 	n, saveErr := s.repo.SaveMarketBars(ctx, bars)
@@ -221,7 +232,7 @@ func (s *Service) refreshVIX(ctx context.Context) error {
 
 	latest := bars[len(bars)-1].Close
 	s.monitor.SetVIXLevel(latest)
-	s.log.Info().Float64("vix", latest).Int("bars", len(bars)).Msg("VIX level updated from IBKR")
+	s.log.Info().Float64("vix", latest).Int("bars", len(bars)).Msg("VIX level updated from Yahoo Finance")
 	return nil
 }
 
@@ -285,6 +296,20 @@ func (s *Service) loadVIXFromDB(ctx context.Context) (float64, error) {
 		return 0, nil
 	}
 	return bars[len(bars)-1].Close, nil
+}
+
+func (s *Service) notify(ctx context.Context, msg string) {
+	if s.notifier == nil {
+		return
+	}
+	if err := s.notifier.Notify(ctx, "omo-data", msg); err != nil {
+		s.log.Warn().Err(err).Msg("notification failed")
+	}
+}
+
+func (s *Service) latestVIX(ctx context.Context) float64 {
+	v, _ := s.loadVIXFromDB(ctx)
+	return v
 }
 
 // fallbackSPYRealizedVol computes VIX from SPY daily bars via Alpaca (the old approach).

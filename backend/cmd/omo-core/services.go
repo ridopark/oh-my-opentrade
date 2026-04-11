@@ -21,6 +21,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/debate"
 	"github.com/oh-my-opentrade/backend/internal/app/dnaapproval"
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
+	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/notify"
@@ -313,6 +314,11 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		}
 	}
 
+	// Tide tracker for AVWAP SPY/QQQ telemetry (Phase 1, data-collection only).
+	// Matches the backtest runner's warmup so live and backtest tag values are
+	// derived from the same tracker configuration.
+	tideTracker := gate.NewIndexTideTracker(30)
+
 	pipeline, err := bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
 		EventBus:        infra.eventBus,
 		SpecStore:       svc.specStore,
@@ -329,6 +335,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		Clock:           time.Now,
 		DisableEnricher: false,
 		Logger:          log,
+		TideTracker:     tideTracker,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("strategy v2: failed to build pipeline")
@@ -783,6 +790,11 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 			Int("ai_run_hour_et", cfg.AIScreener.AIRunAtHourET).
 			Int("ai_run_minute_et", cfg.AIScreener.AIRunAtMinuteET).
 			Msg("AI screener service started")
+
+		// Emit fallback base symbols for strategies not covered by the AI screener DB.
+		if svc.symRouter != nil {
+			svc.symRouter.EmitFallbackForMissing(ctx, aiScreenerSvc.CoveredStrategies())
+		}
 	}
 
 	// 13F whale accumulation is handled by omo-data service.

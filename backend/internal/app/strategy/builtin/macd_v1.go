@@ -16,33 +16,33 @@ type ConfluenceResult struct {
 	Factors []string
 }
 
-// BollingerMACDStrategy implements the Trading Rush MACD crossover
-// strategy with configurable entry confirmation filters.
+// MACDStrategy implements the Trading Rush MACD crossover strategy
+// with configurable entry confirmation filters.
 //
 // Entry (long): MACD line crosses above signal line (within zero band),
 // close > 9 EMA, close > 200 MA, with optional directional close,
 // ADX, VWAP, body ratio, and signal quality scoring filters.
 // Stop: below swing low. Target: R:R × stop distance.
-type BollingerMACDStrategy struct {
+type MACDStrategy struct {
 	meta start.Meta
 }
 
-func NewBollingerMACDStrategy() *BollingerMACDStrategy {
-	id, _ := start.NewStrategyID("bollinger_macd")
+func NewMACDStrategy() *MACDStrategy {
+	id, _ := start.NewStrategyID("macd")
 	ver, _ := start.NewVersion("2.0.0")
-	return &BollingerMACDStrategy{
+	return &MACDStrategy{
 		meta: start.Meta{
 			ID:          id,
 			Version:     ver,
-			Name:        "BB+MACD Confluence (Trading Rush)",
-			Description: "30m Bollinger Band breakout + MACD histogram with 1.5x R:R dynamic target",
+			Name:        "MACD Crossover (Trading Rush)",
+			Description: "MACD line/signal crossover with dynamic R:R targets and optional confluence scoring",
 			Author:      "system",
 		},
 	}
 }
 
-func (s *BollingerMACDStrategy) Meta() start.Meta { return s.meta }
-func (s *BollingerMACDStrategy) WarmupBars() int  { return 30 }
+func (s *MACDStrategy) Meta() start.Meta { return s.meta }
+func (s *MACDStrategy) WarmupBars() int  { return 30 }
 
 // BMConfig holds all DNA parameters parsed from TOML [params].
 type BMConfig struct {
@@ -67,6 +67,13 @@ type BMConfig struct {
 	DPLevelLookback     int     // number of 5m DP bars to scan for S/R levels. Default 20.
 	RollingWRMin        float64 // minimum rolling win rate (0-1) to allow entries. Default 0 (disabled).
 	RollingWRWindow     int     // number of recent trades for rolling WR calculation. Default 20.
+
+	// Low-trend range gate. When enabled, blocks entries when the 5m
+	// regime is BALANCE (ranging) AND ADX is below RangeGateADXMax —
+	// MACD crossovers in that condition are noise by construction.
+	// Empirically stationary across 2025 and 2026 (see docs/research).
+	RangeGateEnabled bool    // Default false.
+	RangeGateADXMax  float64 // Default 20.
 }
 
 // BMState holds per-symbol state.
@@ -149,10 +156,12 @@ func parseBMConfig(params map[string]any) BMConfig {
 		DPLevelLookback:     getInt(params, "dp_level_lookback", 20),
 		RollingWRMin:        getFloat64(params, "rolling_wr_min", 0),
 		RollingWRWindow:     getInt(params, "rolling_wr_window", 20),
+		RangeGateEnabled:    getBool(params, "range_gate_enabled", false),
+		RangeGateADXMax:     getFloat64(params, "range_gate_adx_max", 20.0),
 	}
 }
 
-func (s *BollingerMACDStrategy) Init(_ start.Context, symbol string, params map[string]any, prior start.State) (start.State, error) {
+func (s *MACDStrategy) Init(_ start.Context, symbol string, params map[string]any, prior start.State) (start.State, error) {
 	cfg := parseBMConfig(params)
 	st := &BMState{
 		Symbol: symbol,
@@ -167,10 +176,10 @@ func (s *BollingerMACDStrategy) Init(_ start.Context, symbol string, params map[
 	return st, nil
 }
 
-func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st start.State) (start.State, []start.Signal, error) {
+func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st start.State) (start.State, []start.Signal, error) {
 	bmSt, ok := st.(*BMState)
 	if !ok {
-		return st, nil, fmt.Errorf("BollingerMACDStrategy.OnBar: expected *BMState, got %T", st)
+		return st, nil, fmt.Errorf("MACDStrategy.OnBar: expected *BMState, got %T", st)
 	}
 	cfg := bmSt.Config
 	ind := bmSt.Indicators
@@ -196,7 +205,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 	todayStr := now.Format("2006-01-02")
 	if bmSt.LastTradeDate != todayStr {
 		if ctx != nil && bmSt.LastTradeDate != "" && bmSt.DebugBarCount > 0 {
-			ctx.Logger().Info("BB+MACD daily gate summary",
+			ctx.Logger().Info("MACD daily gate summary",
 				"symbol", symbol, "date", bmSt.LastTradeDate,
 				"bars", bmSt.DebugBarCount,
 				"stab", bmSt.GateStabilization, "cd", bmSt.GateCooldown,
@@ -277,7 +286,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 			cooldown := time.Duration(cfg.CooldownSeconds) * time.Second
 			bmSt.CooldownUntil = now.Add(cooldown)
 			if ctx != nil {
-				ctx.Logger().Info("BB+MACD EXIT", "symbol", symbol, "setup", exitSig.Tags["setup"],
+				ctx.Logger().Info("MACD EXIT", "symbol", symbol, "setup", exitSig.Tags["setup"],
 					"reason", exitSig.Tags["reason"])
 			}
 			bmSt.PrevMACDHist = ind.MACDHistogram
@@ -390,6 +399,20 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 	regimeTag := "none"
 	if ar, ok := ind.AnchorRegimes["5m"]; ok && ar.Type != "" {
 		regimeTag = ar.Type
+	}
+
+	// Low-trend range gate: block entries in BALANCE regime when ADX is
+	// weak. This is the only stationary entry filter we found across
+	// 2025 (calm) and 2026 (volatile): the bucket (BALANCE ∧ adx<20)
+	// was net-negative in both periods and removing it lifted combined
+	// P&L by ~12%. Interpretation: MACD crossovers in a non-trending,
+	// low-directional-strength tape degrade to noise by construction.
+	if cfg.RangeGateEnabled && regimeTag == "BALANCE" && ind.ADX > 0 && ind.ADX < cfg.RangeGateADXMax {
+		bmSt.GateRegime++
+		bmSt.PrevMACDHist = ind.MACDHistogram
+		emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "regime",
+			fmt.Sprintf("range gate: BALANCE regime with adx %.1f < %.1f", ind.ADX, cfg.RangeGateADXMax))
+		return bmSt, nil, nil
 	}
 
 	// MACD crossover detection (for macd_only mode):
@@ -561,7 +584,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 		bmSt.PendingEntryAt = now
 		bmSt.TradesToday++
 		if ctx != nil {
-			ctx.Logger().Info("BB+MACD SIGNAL",
+			ctx.Logger().Info("MACD SIGNAL",
 				"symbol", symbol, "side", sig.Side,
 				"bb_pctb", ind.BBPercentB, "macd_hist", ind.MACDHistogram,
 				"stop", bmSt.StopPrice, "target", bmSt.TargetPrice)
@@ -574,7 +597,7 @@ func (s *BollingerMACDStrategy) OnBar(ctx start.Context, symbol string, bar star
 	return bmSt, nil, nil
 }
 
-func (s *BollingerMACDStrategy) OnEvent(ctx start.Context, _ string, evt any, st start.State) (start.State, []start.Signal, error) {
+func (s *MACDStrategy) OnEvent(ctx start.Context, _ string, evt any, st start.State) (start.State, []start.Signal, error) {
 	bmSt, ok := st.(*BMState)
 	if !ok {
 		return st, nil, nil
@@ -621,7 +644,7 @@ func (s *BollingerMACDStrategy) OnEvent(ctx start.Context, _ string, evt any, st
 			bmSt.TargetPrice = 0
 		}
 		if ctx != nil {
-			ctx.Logger().Info("BB+MACD Fill",
+			ctx.Logger().Info("MACD Fill",
 				"symbol", e.Symbol, "side", e.Side, "price", e.Price,
 				"position", bmSt.PositionSide, "entry", bmSt.EntryPrice,
 				"stop", bmSt.StopPrice, "target", bmSt.TargetPrice)
@@ -635,10 +658,10 @@ func (s *BollingerMACDStrategy) OnEvent(ctx start.Context, _ string, evt any, st
 	return bmSt, nil, nil
 }
 
-func (s *BollingerMACDStrategy) ReplayOnBar(_ start.Context, _ string, bar start.Bar, st start.State, indicators start.IndicatorData) (start.State, error) {
+func (s *MACDStrategy) ReplayOnBar(_ start.Context, _ string, bar start.Bar, st start.State, indicators start.IndicatorData) (start.State, error) {
 	bmSt, ok := st.(*BMState)
 	if !ok {
-		return st, fmt.Errorf("BollingerMACDStrategy.ReplayOnBar: expected *BMState, got %T", st)
+		return st, fmt.Errorf("MACDStrategy.ReplayOnBar: expected *BMState, got %T", st)
 	}
 	bmSt.Indicators = indicators
 	bmSt.CalcBarCount++
@@ -843,7 +866,7 @@ func emitMACDEntryGated(ctx start.Context, symbol string, bmSt *BMState, bar sta
 
 	payload := domain.EntryGatedPayload{
 		Symbol:         symbol,
-		Strategy:       "bollinger_macd",
+		Strategy:       "macd",
 		SetupType:      "macd_cross",
 		GatesPassed:    gatesPassed,
 		GatesTotal:     gatesTotal,
@@ -905,7 +928,7 @@ func (st *BMState) EmitSignalProgress() []any {
 
 	return []any{domain.EntryGatedPayload{
 		Symbol:         st.Symbol,
-		Strategy:       "bollinger_macd",
+		Strategy:       "macd",
 		SetupType:      "macd_cross",
 		GatesPassed:    gatesPassed,
 		GatesTotal:     4,

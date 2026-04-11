@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useSignalProgress } from "@/lib/event-stream";
 import { SignalProgressTable } from "@/components/signal-progress-table";
 import { BottomPanel, type BarLogEntry, type BottomTab } from "@/components/bottom-panel";
-import type { StrategySignalEvent, RegimeType } from "@/lib/types";
+import type { StrategySignalEvent, StrategySignalsResponse, RegimeType } from "@/lib/types";
 
 export default function SignalMonitorPage() {
   const { avwapProgress, macdProgress, orbProgress, connected } = useSignalProgress();
@@ -13,6 +13,21 @@ export default function SignalMonitorPage() {
   const [recentSignalEvents, setRecentSignalEvents] = useState<StrategySignalEvent[]>([]);
   const [regimeBySymbol, setRegimeBySymbol] = useState<Record<string, { regime: RegimeType; strength: number; rsi: number }>>({});
   const [barLog, setBarLog] = useState<BarLogEntry[]>([]);
+
+  // Load today's signals from DB on mount
+  useEffect(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const from = today.toISOString();
+    fetch(`/api/signals/recent?from=${from}&limit=200`)
+      .then((r) => r.json())
+      .then((data: StrategySignalsResponse) => {
+        if (data.items?.length) {
+          setRecentSignalEvents(data.items);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // SSE for live signals, regime, and bar log
   useEffect(() => {
@@ -23,7 +38,10 @@ export default function SignalMonitorPage() {
         const envelope = JSON.parse(e.data) as { payload: StrategySignalEvent };
         const sig = envelope.payload;
         if (!sig?.Symbol || !sig?.TS) return;
-        setRecentSignalEvents((prev) => [sig, ...prev].slice(0, 50));
+        setRecentSignalEvents((prev) => {
+          if (prev.some((s) => s.SignalID === sig.SignalID && s.Status === sig.Status)) return prev;
+          return [sig, ...prev].slice(0, 200);
+        });
       } catch { /* noop */ }
     });
 

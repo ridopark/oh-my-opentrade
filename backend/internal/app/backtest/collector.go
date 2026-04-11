@@ -87,11 +87,20 @@ type Collector struct {
 	posValue      map[string]float64 // symbol → current mark-to-market position value
 	totalPosValue float64            // running sum of all posValue entries
 
-	// Incremental Sharpe: running stats over bar-to-bar returns.
-	prevEquity   float64
-	returnSum    float64
-	returnSumSq  float64
-	returnCount  int
+	// Incremental trade stats for cheap progress metrics (no iteration needed).
+	tradeCount  int
+	winCount    int
+	lossCount   int
+	grossProfit float64
+	grossLoss   float64
+
+	// Daily Sharpe: aggregate one return per trading day, annualize with sqrt(252).
+	prevDayEquity float64 // equity at end of previous trading day
+	currentDay    int     // year*10000 + month*100 + day (cheap date comparison)
+	latestEquity  float64 // most recent equity snapshot (for end-of-day capture)
+	returnSum     float64
+	returnSumSq   float64
+	returnCount   int
 }
 
 // NewCollector creates a Collector and subscribes to events on the bus.
@@ -104,7 +113,6 @@ func NewCollector(bus ports.EventBusPort, cfg Config, log zerolog.Logger) (*Coll
 		log:        log.With().Str("component", "backtest_collector").Logger(),
 		cash:       cfg.InitialEquity,
 		peakEquity: cfg.InitialEquity,
-		prevEquity: 0, // set after first equity curve entry
 		lastPrices: make(map[string]float64),
 		openBuys:   make(map[string][]TradeRecord),
 		openSells:  make(map[string][]TradeRecord),
@@ -303,6 +311,17 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 
 	c.trades = append(c.trades, tr)
 
+	// Update incremental trade stats.
+	if tr.PnL > 0 {
+		c.tradeCount++
+		c.winCount++
+		c.grossProfit += tr.PnL
+	} else if tr.PnL < 0 {
+		c.tradeCount++
+		c.lossCount++
+		c.grossLoss += math.Abs(tr.PnL)
+	}
+
 	// Recompute posValue for this symbol after position change.
 	c.recomputePosValue(symbol)
 
@@ -331,7 +350,11 @@ func (c *Collector) recomputePosValue(symbol string) {
 		if price <= 0 {
 			price = tr.Price
 		}
-		pv -= tr.Quantity * price
+		mult := tr.Multiplier
+		if mult <= 0 {
+			mult = 1
+		}
+		pv -= tr.Quantity * price * mult
 	}
 	c.posValue[symbol] = pv
 	c.totalPosValue += pv - oldPV
@@ -366,7 +389,11 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 	}
 	if opens := c.openSells[sym]; len(opens) > 0 {
 		for _, tr := range opens {
-			newPV -= tr.Quantity * bar.Close
+			mult := tr.Multiplier
+			if mult <= 0 {
+				mult = 1
+			}
+			newPV -= tr.Quantity * bar.Close * mult
 		}
 	}
 	c.posValue[sym] = newPV
@@ -376,14 +403,24 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 	c.totalPosValue += newPV - oldPV
 	equity := c.cash + c.totalPosValue
 
-	// Update incremental Sharpe stats.
-	if c.prevEquity > 0 {
-		r := (equity - c.prevEquity) / c.prevEquity
-		c.returnSum += r
-		c.returnSumSq += r * r
-		c.returnCount++
+	// Daily Sharpe: record one return per trading day (close-to-close).
+	y, m, d := bar.Time.Date()
+	barDay := y*10000 + int(m)*100 + d
+	if c.currentDay == 0 {
+		// First bar ever — just start tracking the day.
+		c.currentDay = barDay
+	} else if barDay != c.currentDay {
+		// Day changed — compute daily return from previous day's close.
+		if c.prevDayEquity > 0 {
+			r := (c.latestEquity - c.prevDayEquity) / c.prevDayEquity
+			c.returnSum += r
+			c.returnSumSq += r * r
+			c.returnCount++
+		}
+		c.prevDayEquity = c.latestEquity
+		c.currentDay = barDay
 	}
-	c.prevEquity = equity
+	c.latestEquity = equity
 
 	if equity > c.peakEquity {
 		c.peakEquity = equity
@@ -396,6 +433,71 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 	}
 
 	return nil
+}
+
+// CloseOpenPositions force-closes all remaining open positions at their last
+// known price. Called at end of backtest so no trades are left "open".
+func (c *Collector) CloseOpenPositions(endTime time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	closeOpen := func(positions map[string][]TradeRecord, direction string) {
+		for sym, entries := range positions {
+			price, ok := c.lastPrices[sym]
+			if !ok || price <= 0 {
+				continue
+			}
+			for _, entry := range entries {
+				mult := entry.Multiplier
+				if mult == 0 {
+					mult = 1
+				}
+				var pnl float64
+				if direction == "LONG" {
+					pnl = (price - entry.Price) * entry.Quantity * mult
+				} else {
+					pnl = (entry.Price - price) * entry.Quantity * mult
+				}
+				exitTrade := TradeRecord{
+					Symbol:    sym,
+					Side:      "sell",
+					Direction: "CLOSE",
+					Quantity:  entry.Quantity,
+					Price:     price,
+					FilledAt:  endTime,
+					Strategy:  entry.Strategy,
+					Rationale: "BACKTEST_END",
+					PnL:       pnl,
+					Tags:      entry.Tags,
+				}
+				if direction == "SHORT" {
+					exitTrade.Side = "buy"
+				}
+				c.trades = append(c.trades, exitTrade)
+				c.cash += pnl
+
+				// Update incremental stats.
+				c.tradeCount++
+				if pnl > 0 {
+					c.winCount++
+					c.grossProfit += pnl
+				} else if pnl < 0 {
+					c.lossCount++
+					c.grossLoss += math.Abs(pnl)
+				}
+			}
+			delete(positions, sym)
+		}
+	}
+
+	closeOpen(c.openBuys, "LONG")
+	closeOpen(c.openSells, "SHORT")
+
+	// Reset position values since everything is flat now.
+	c.totalPosValue = 0
+	for k := range c.posValue {
+		delete(c.posValue, k)
+	}
 }
 
 // Result computes and returns the final backtest metrics.
@@ -468,17 +570,59 @@ func (c *Collector) Result() Result {
 	return r
 }
 
-// computeSharpe calculates an annualized Sharpe ratio using incrementally
-// accumulated return statistics (O(1), zero allocation).
+// LiveMetrics returns lightweight progress metrics without iterating trades.
+// O(1), no allocation — safe to call every 200ms in the replay loop.
+func (c *Collector) LiveMetrics() Result {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	equity := c.cash + c.totalPosValue
+	realizedPnL := c.grossProfit - c.grossLoss
+
+	r := Result{
+		InitialEquity: c.cfg.InitialEquity,
+		FinalEquity:   equity,
+		TotalPnL:      realizedPnL,
+		MaxDrawdown:   c.maxDrawdown * 100,
+		TradeCount:    c.tradeCount,
+		WinCount:      c.winCount,
+		LossCount:     c.lossCount,
+	}
+	if c.cfg.InitialEquity > 0 {
+		r.TotalReturn = realizedPnL / c.cfg.InitialEquity * 100
+	}
+	if r.TradeCount > 0 {
+		r.WinRate = float64(r.WinCount) / float64(r.TradeCount) * 100
+	}
+	if c.grossLoss > 0 {
+		r.ProfitFactor = c.grossProfit / c.grossLoss
+	}
+	r.SharpeRatio = c.computeSharpe()
+	return r
+}
+
+// computeSharpe calculates an annualized Sharpe ratio from daily returns.
+// Non-mutating: includes the in-progress day without modifying accumulators.
 func (c *Collector) computeSharpe() float64 {
-	n := float64(c.returnCount)
+	// Include the in-progress day without mutating state.
+	sum := c.returnSum
+	sumSq := c.returnSumSq
+	count := c.returnCount
+	if c.prevDayEquity > 0 && c.latestEquity > 0 {
+		r := (c.latestEquity - c.prevDayEquity) / c.prevDayEquity
+		sum += r
+		sumSq += r * r
+		count++
+	}
+
+	n := float64(count)
 	if n < 2 {
 		return 0
 	}
 
-	mean := c.returnSum / n
+	mean := sum / n
 	// Var = E[X²] - E[X]², with Bessel's correction.
-	variance := (c.returnSumSq - c.returnSum*c.returnSum/n) / (n - 1)
+	variance := (sumSq - sum*sum/n) / (n - 1)
 	if variance <= 0 {
 		return 0
 	}

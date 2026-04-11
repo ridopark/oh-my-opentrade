@@ -15,27 +15,16 @@ warn()  { echo -e "${YELLOW}[liquidate]${NC} $*"; }
 err()   { echo -e "${RED}[liquidate]${NC} $*"; }
 step()  { echo -e "${CYAN}[liquidate]${NC} $*"; }
 
-if [ -f "$PROJECT_ROOT/.env" ]; then
-  set -a
-  source "$PROJECT_ROOT/.env"
-  set +a
-fi
-
-if [ -z "${APCA_API_KEY_ID:-}" ] || [ -z "${APCA_API_SECRET_KEY:-}" ]; then
-  err "Missing APCA_API_KEY_ID or APCA_API_SECRET_KEY in .env"
-  exit 1
-fi
-
-BASE_URL="${APCA_BASE_URL:-https://paper-api.alpaca.markets}"
+OMO_API="${OMO_API_URL:-http://localhost:8080}"
 DB_CONTAINER="${OMO_DB_CONTAINER:-omo-timescaledb}"
 DB_USER="${OMO_DB_USER:-opentrade}"
 DB_NAME="${OMO_DB_NAME:-opentrade}"
 
-alpaca() {
-  curl -s "$@" \
-    -H "APCA-API-KEY-ID: $APCA_API_KEY_ID" \
-    -H "APCA-API-SECRET-KEY: $APCA_API_SECRET_KEY"
-}
+# Verify omo-core is reachable (positions endpoint doubles as health check).
+if ! curl -sf "$OMO_API/api/portfolio/positions" > /dev/null 2>&1; then
+  err "omo-core not reachable at $OMO_API — is it running?"
+  exit 1
+fi
 
 dbsql() {
   docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc "$1"
@@ -43,68 +32,74 @@ dbsql() {
 
 SYMBOL="${1:-}"
 
-step "1/4  Fetching open positions..."
-POSITIONS_JSON=$(alpaca "$BASE_URL/v2/positions")
+step "1/4  Fetching open positions from IBKR (via omo-core)..."
+POSITIONS_JSON=$(curl -sf "$OMO_API/api/portfolio/positions")
 
 POSITION_COUNT=$(echo "$POSITIONS_JSON" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-if isinstance(data, list):
-    print(len(data))
+positions = data.get('positions', data) if isinstance(data, dict) else data
+if isinstance(positions, list):
+    if '${SYMBOL}':
+        positions = [p for p in positions if p.get('symbol','') == '${SYMBOL}']
+    print(len(positions))
 else:
     print(0)
 " 2>/dev/null || echo "0")
 
 if [ "$POSITION_COUNT" -eq 0 ]; then
-  info "No open positions on broker. Skipping to DB reconciliation."
+  info "No matching positions on broker. Skipping to DB reconciliation."
 else
   echo "$POSITIONS_JSON" | python3 -c "
 import json, sys
-positions = json.load(sys.stdin)
+data = json.load(sys.stdin)
+positions = data.get('positions', data) if isinstance(data, dict) else data
 sym_filter = '${SYMBOL}'
 print()
-print(f'  {\"Symbol\":<10} {\"Side\":<6} {\"Qty\":>14} {\"Entry\":>12} {\"Current\":>12} {\"P&L\":>12}')
-print(f'  {\"-\"*10} {\"-\"*6} {\"-\"*14} {\"-\"*12} {\"-\"*12} {\"-\"*12}')
+print(f'  {\"Symbol\":<25} {\"Side\":<6} {\"Qty\":>10} {\"Entry\":>12} {\"Current\":>12} {\"P&L\":>12}')
+print(f'  {\"-\"*25} {\"-\"*6} {\"-\"*10} {\"-\"*12} {\"-\"*12} {\"-\"*12}')
 for p in positions:
-    if sym_filter and p['symbol'].replace('/','') != sym_filter.replace('/','') and p['symbol'] != sym_filter:
+    if sym_filter and p.get('symbol','') != sym_filter:
         continue
-    print(f'  {p[\"symbol\"]:<10} {p[\"side\"]:<6} {float(p[\"qty\"]):>14.8f} {float(p[\"avg_entry_price\"]):>12.2f} {float(p[\"current_price\"]):>12.2f} {float(p[\"unrealized_pl\"]):>+12.2f}')
+    print(f'  {p[\"symbol\"]:<25} {p.get(\"side\",\"?\"):<6} {p.get(\"quantity\",0):>10.2f} {p.get(\"avg_entry_price\",0):>12.2f} {p.get(\"current_price\",0):>12.2f} {p.get(\"unrealized_pnl\",0):>+12.2f}')
 "
 
-  step "2/4  Liquidating positions on broker..."
+  step "2/4  Liquidating positions via IBKR..."
   if [ -z "$SYMBOL" ]; then
-    RESULT=$(alpaca -X DELETE "$BASE_URL/v2/positions?cancel_orders=true")
+    RESULT=$(curl -sf -X DELETE "$OMO_API/api/portfolio/positions")
     echo "$RESULT" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-if not isinstance(data, list): data = [data]
-for r in data:
+results = data.get('results', [data]) if isinstance(data, dict) else data
+for r in results:
     sym = r.get('symbol', '?')
-    code = r.get('status', r.get('body', {}).get('status', '?'))
-    print(f'  {sym}: {code}')
+    status = r.get('status', r.get('order_id', '?'))
+    print(f'  {sym}: {status}')
 " 2>/dev/null || echo "  $RESULT"
   else
-    alpaca -X DELETE "$BASE_URL/v2/orders?symbols=$SYMBOL" > /dev/null 2>&1 || true
-    RESULT=$(alpaca -X DELETE "$BASE_URL/v2/positions/$SYMBOL")
+    RESULT=$(curl -sf -X DELETE "$OMO_API/api/portfolio/positions/$SYMBOL")
     STATUS=$(echo "$RESULT" | python3 -c "
 import json, sys
 r = json.load(sys.stdin)
-print(r.get('status', r.get('message', 'unknown')))
+oid = r.get('order_id', '')
+status = r.get('status', 'unknown')
+print(f'{status} (order_id={oid})' if oid else status)
 " 2>/dev/null || echo "unknown")
-    info "$SYMBOL → $STATUS"
+    info "$SYMBOL -> $STATUS"
   fi
 
   info "Waiting for fills..."
-  sleep 3
+  sleep 5
 
-  REMAINING=$(alpaca "$BASE_URL/v2/positions" | python3 -c "
+  REMAINING=$(curl -sf "$OMO_API/api/portfolio/positions" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
+positions = data.get('positions', data) if isinstance(data, dict) else data
 sym_filter = '${SYMBOL}'
-if isinstance(data, list):
+if isinstance(positions, list):
     if sym_filter:
-        data = [p for p in data if p['symbol'].replace('/','') == sym_filter.replace('/','') or p['symbol'] == sym_filter]
-    print(len(data))
+        positions = [p for p in positions if p.get('symbol','') == sym_filter]
+    print(len(positions))
 else:
     print(0)
 " 2>/dev/null || echo "?")
@@ -144,15 +139,16 @@ else
       fi
     fi
 
-    PRICE=$(alpaca "$BASE_URL/v2/positions" 2>/dev/null | python3 -c "
+    # Try to get current price from broker positions, fall back to DB.
+    PRICE=$(curl -sf "$OMO_API/api/portfolio/positions" 2>/dev/null | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
+positions = data.get('positions', data) if isinstance(data, dict) else data
 sym = '${SYM}'
-if isinstance(data, list):
-    for p in data:
-        if p['symbol'] == sym:
-            print(p['current_price']); sys.exit(0)
-# Position already closed — use latest bar from DB
+if isinstance(positions, list):
+    for p in positions:
+        if p.get('symbol','') == sym:
+            print(p.get('current_price', p.get('avg_entry_price', 0))); sys.exit(0)
 " 2>/dev/null || echo "")
 
     if [ -z "$PRICE" ]; then
