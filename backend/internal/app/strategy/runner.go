@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -62,6 +63,12 @@ type Runner struct {
 
 	// Health tracking: last time handleBar was invoked.
 	lastBarTime atomic.Value // time.Time
+
+	// tideTracker, when non-nil, is fed every SPY/QQQ 1m bar to maintain a
+	// running intraday VWAP and expose market-tide deviation to AVWAP
+	// entry-signal telemetry. Phase 1 of AVWAP SPY-tide plumbing — data
+	// collection only, no gating.
+	tideTracker *gate.IndexTideTracker
 }
 
 // DPLookupKey uniquely identifies a dark pool bar for O(1) access during replay.
@@ -400,6 +407,48 @@ func (r *Runner) SetSwapManager(sm *SwapManager) { r.swapManager = sm }
 
 // SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
 func (r *Runner) SetMetrics(m *metrics.Metrics) { r.metrics = m }
+
+// SetTideTracker installs an IndexTideTracker that the runner feeds every
+// SPY/QQQ 1m bar so AVWAP entry signals can be tagged with the current
+// market-tide deviation. Telemetry only — no gating.
+func (r *Runner) SetTideTracker(tracker *gate.IndexTideTracker) {
+	r.tideTracker = tracker
+}
+
+// applyTideData pushes the current SPY/QQQ intraday-VWAP deviation onto any
+// strategy state that implements the tideDataSetter interface (AVWAP). When
+// the tracker is missing, unready, or the symbol has no reference index, the
+// setter is called with ready=false so stale data from a previous symbol is
+// cleared. Telemetry only — does not affect trading behavior.
+func (r *Runner) applyTideData(inst *Instance, symbol string) {
+	if r.tideTracker == nil {
+		return
+	}
+	type tideDataSetter interface {
+		SetTideData(devBps float64, ready bool, indexName string)
+	}
+	state, ok := inst.GetState(symbol)
+	if !ok {
+		return
+	}
+	setter, ok := state.(tideDataSetter)
+	if !ok {
+		return
+	}
+	sym := domain.Symbol(symbol)
+	refIndex := gate.ReferenceIndex(sym)
+	if refIndex == "" {
+		setter.SetTideData(0, false, "")
+		return
+	}
+	vwap, lastClose, ready := r.tideTracker.GetTide(sym)
+	if !ready || vwap <= 0 {
+		setter.SetTideData(0, false, refIndex)
+		return
+	}
+	devBps := (lastClose - vwap) / vwap * 10000
+	setter.SetTideData(devBps, true, refIndex)
+}
 
 func (r *Runner) SetPositionLookup(fn PositionLookupFunc) { r.posLookup = fn }
 
@@ -798,6 +847,13 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	loopStart := time.Now()
 	symbol := bar.Symbol.String()
 
+	// Feed SPY/QQQ 1m bars to the tide tracker before dispatching so AVWAP
+	// entries for any symbol (including SPY/QQQ itself downstream) see the
+	// freshest intraday VWAP. Telemetry only.
+	if r.tideTracker != nil && bar.Timeframe == "1m" && (symbol == "SPY" || symbol == "QQQ") {
+		r.tideTracker.OnBar(bar)
+	}
+
 	if r.aiAnchorResolver != nil {
 		r.aiAnchorResolver.OnBar(symbol, start.Bar{
 			Time: bar.Time, Open: bar.Open, High: bar.High,
@@ -954,6 +1010,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 				return r.emitDomainEvent(ctx, event.TenantID, event.EnvMode, evt)
 			},
 		}
+		r.applyTideData(inst, symbol)
 		signals, err := inst.OnBar(instCtx, symbol, sBar, indicators)
 		if err != nil {
 			r.logger.Error("instance OnBar failed",
@@ -1062,6 +1119,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 					return r.emitDomainEvent(ctx, event.TenantID, event.EnvMode, evt)
 				},
 			}
+			r.applyTideData(inst, symbol)
 			signals, err := inst.OnBar(instCtx, symbol, htfBar, htfIndicators)
 			if err != nil {
 				r.logger.Error("instance OnBar failed (HTF)",
