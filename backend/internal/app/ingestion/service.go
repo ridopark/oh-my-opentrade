@@ -94,6 +94,55 @@ func (s *Service) Start(ctx context.Context) error {
 // (rolling averages, z-scores). DB writes and downstream event publishing
 // run WITHOUT the mutex to avoid blocking the entire bar pipeline during
 // potentially slow operations (LLM calls, broker API, DB writes).
+// ProcessBar is the direct-dispatch variant of HandleMarketBar used by the
+// backtest Pipeline. It runs the same filter + repair logic as
+// HandleMarketBar but does NOT publish to the event bus — the caller is
+// responsible for delivering the returned sanitized event to downstream
+// stages directly. ok=false means the bar was dropped by the adaptive
+// filter (no sanitized event produced).
+//
+// Calling ProcessBar bypasses the event bus entirely for the hot path, which
+// saves ~3 publishes per bar (MarketBarReceived → Sanitized → StateUpdated
+// → EnrichedBar) plus their associated handler slice iteration and per-event
+// struct copies. See docs/perf/p1-2-backtest-pipeline-design.md.
+func (s *Service) ProcessBar(ctx context.Context, event domain.Event) (sanitized domain.Event, ok bool, err error) {
+	bar, okBar := event.Payload.(domain.MarketBar)
+	if !okBar {
+		return domain.Event{}, false, fmt.Errorf("ingestion: payload is not a MarketBar, got %T", event.Payload)
+	}
+	// Same adaptive-filter pass as HandleMarketBar.
+	s.mu.Lock()
+	if s.metrics != nil {
+		s.metrics.Bars.ReceivedTotal.WithLabelValues("ws", string(bar.Symbol), string(bar.Timeframe)).Inc()
+	}
+	result := s.filter.Process(bar)
+	s.mu.Unlock()
+
+	switch result.Status {
+	case FilterRejected:
+		if s.metrics != nil {
+			s.metrics.Bars.DroppedTotal.WithLabelValues("ws", string(result.Gate)).Inc()
+		}
+		s.recordPipelineLiveness(bar.Symbol)
+		return domain.Event{}, false, nil
+	case FilterRepaired:
+		if s.metrics != nil {
+			s.metrics.Bars.RepairedTotal.WithLabelValues("ws", string(result.Gate)).Inc()
+		}
+	}
+
+	out := domain.NewBacktestEvent(
+		domain.EventMarketBarSanitized,
+		event.TenantID,
+		event.EnvMode,
+		event.IdempotencyKey+"-sanitized",
+		result.Bar,
+		event.OccurredAt,
+	)
+	s.recordPipelineLiveness(bar.Symbol)
+	return out, true, nil
+}
+
 func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error {
 	bar, ok := event.Payload.(domain.MarketBar)
 	if !ok {
