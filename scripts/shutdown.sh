@@ -91,4 +91,14 @@ else
   warn "dashboard tmux session not found — already stopped?"
 fi
 
+# ── Kill anything on port 8000 ──────────────────────────────
+# Catches bare `npm/pnpm dev` launches that never entered the $DASH_SESSION
+# tmux session — e.g. ad-hoc `nohup pnpm dev` runs from debugging. Without
+# this, start.sh's dashboard launch dies with EADDRINUSE on the next cycle.
+if pid=$(fuser 8000/tcp 2>/dev/null); then
+  kill "$pid" 2>/dev/null && sleep 1
+  kill -9 "$pid" 2>/dev/null || true
+  info "killed stale process on port 8000 (pid $pid)"
+fi
+
 info "All services stopped. Monitoring stack (Grafana, Prometheus, Loki, Fluent Bit) left running."
