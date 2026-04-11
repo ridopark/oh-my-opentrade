@@ -1,0 +1,37 @@
+[Unit]
+Description=oh-my-opentrade core trading service
+Documentation=https://github.com/oh-my-opentrade/backend
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/omo-core
+Restart=on-failure
+RestartSec=10
+StartLimitBurst=5
+StartLimitIntervalSec=600
+
+# Watchdog: systemd will SIGKILL the process if no sd_notify WATCHDOG=1
+# arrives within this window. omo-core's startWatchdogNotify() reads this
+# value via daemon.SdWatchdogEnabled and sends heartbeats at half the
+# interval. If the Go process hangs (deadlocked goroutine, GC pause > 120s,
+# etc.) systemd will bounce it automatically.
+WatchdogSec=120
+NotifyAccess=main
+TimeoutStopSec=60
+
+# Resource limits. 2G is generous for the current working set; raise if
+# the strategy count grows. File descriptors are bumped because every
+# streaming subscription + every HTTP client keeps one or two handles.
+LimitNOFILE=65536
+MemoryMax=2G
+
+# Security hardening.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
