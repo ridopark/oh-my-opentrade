@@ -67,6 +67,13 @@ type BMConfig struct {
 	DPLevelLookback     int     // number of 5m DP bars to scan for S/R levels. Default 20.
 	RollingWRMin        float64 // minimum rolling win rate (0-1) to allow entries. Default 0 (disabled).
 	RollingWRWindow     int     // number of recent trades for rolling WR calculation. Default 20.
+
+	// Low-trend range gate. When enabled, blocks entries when the 5m
+	// regime is BALANCE (ranging) AND ADX is below RangeGateADXMax —
+	// MACD crossovers in that condition are noise by construction.
+	// Empirically stationary across 2025 and 2026 (see docs/research).
+	RangeGateEnabled bool    // Default false.
+	RangeGateADXMax  float64 // Default 20.
 }
 
 // BMState holds per-symbol state.
@@ -149,6 +156,8 @@ func parseBMConfig(params map[string]any) BMConfig {
 		DPLevelLookback:     getInt(params, "dp_level_lookback", 20),
 		RollingWRMin:        getFloat64(params, "rolling_wr_min", 0),
 		RollingWRWindow:     getInt(params, "rolling_wr_window", 20),
+		RangeGateEnabled:    getBool(params, "range_gate_enabled", false),
+		RangeGateADXMax:     getFloat64(params, "range_gate_adx_max", 20.0),
 	}
 }
 
@@ -390,6 +399,20 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 	regimeTag := "none"
 	if ar, ok := ind.AnchorRegimes["5m"]; ok && ar.Type != "" {
 		regimeTag = ar.Type
+	}
+
+	// Low-trend range gate: block entries in BALANCE regime when ADX is
+	// weak. This is the only stationary entry filter we found across
+	// 2025 (calm) and 2026 (volatile): the bucket (BALANCE ∧ adx<20)
+	// was net-negative in both periods and removing it lifted combined
+	// P&L by ~12%. Interpretation: MACD crossovers in a non-trending,
+	// low-directional-strength tape degrade to noise by construction.
+	if cfg.RangeGateEnabled && regimeTag == "BALANCE" && ind.ADX > 0 && ind.ADX < cfg.RangeGateADXMax {
+		bmSt.GateRegime++
+		bmSt.PrevMACDHist = ind.MACDHistogram
+		emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "regime",
+			fmt.Sprintf("range gate: BALANCE regime with adx %.1f < %.1f", ind.ADX, cfg.RangeGateADXMax))
+		return bmSt, nil, nil
 	}
 
 	// MACD crossover detection (for macd_only mode):
