@@ -736,6 +736,27 @@ func main() {
 	// copy per event and was ~67% of backtest CPU samples on large runs.
 	eventBus.FreezeHandlers()
 
+	// Build the direct-dispatch backtest pipeline. This replaces the
+	// 3-4 Publish hops per bar with direct method calls, keeping the bus
+	// only for multi-consumer fan-out (signals, fills). See
+	// docs/perf/p1-2-backtest-pipeline-design.md.
+	var directPipeline *backtest.Pipeline
+	if backtestFlag {
+		var runnerPtr *strategy.Runner
+		if pipeline != nil {
+			runnerPtr = pipeline.Runner
+		}
+		directPipeline = backtest.NewPipeline(backtest.PipelineInfra{
+			Ingestion:  ingBundle.Service,
+			Monitor:    monitorSvc,
+			Runner:     runnerPtr,
+			PriceCache: posMonPriceCache,
+			Collector:  collectorInst,
+			EventBus:   eventBus,
+		})
+		log.Info().Msg("backtest direct-dispatch pipeline enabled")
+	}
+
 	log.Info().
 		Strs("symbols", symbolStrings(symbols)).
 		Str("timeframe", timeframe.String()).
@@ -802,12 +823,22 @@ func main() {
 			// cheaper to format.
 			idemKey := strconv.FormatInt(bar.Time.UnixNano(), 36) + string(bar.Symbol)
 			evt := domain.NewBacktestEvent(domain.EventMarketBarReceived, tenantID, envMode, idemKey, bar, bar.Time)
-			if err := eventBus.Publish(ctx, evt); err != nil {
-				if ctx.Err() != nil {
-					break
+			if directPipeline != nil {
+				if err := directPipeline.ProcessBar(ctx, evt); err != nil {
+					if ctx.Err() != nil {
+						break
+					}
+					log.Error().Err(err).Str("symbol", bar.Symbol.String()).Msg("pipeline process bar failed")
+					continue
 				}
-				log.Error().Err(err).Str("symbol", bar.Symbol.String()).Msg("failed to publish MarketBarReceived")
-				continue
+			} else {
+				if err := eventBus.Publish(ctx, evt); err != nil {
+					if ctx.Err() != nil {
+						break
+					}
+					log.Error().Err(err).Str("symbol", bar.Symbol.String()).Msg("failed to publish MarketBarReceived")
+					continue
+				}
 			}
 			barsProcessed++
 		}

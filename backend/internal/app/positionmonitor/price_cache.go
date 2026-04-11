@@ -45,6 +45,12 @@ func (pc *PriceCache) Start(ctx context.Context, eventBus ports.EventBusPort) er
 	return eventBus.Subscribe(ctx, domain.EventMarketBarSanitized, pc.handleBar)
 }
 
+// HandleBarDirect is the public direct-dispatch entry to handleBar used by
+// the backtest Pipeline.
+func (pc *PriceCache) HandleBarDirect(ctx context.Context, event domain.Event) error {
+	return pc.handleBar(ctx, event)
+}
+
 // handleBar processes a MarketBarSanitized event and updates the cache.
 func (pc *PriceCache) handleBar(_ context.Context, event domain.Event) error {
 	bar, ok := event.Payload.(domain.MarketBar)

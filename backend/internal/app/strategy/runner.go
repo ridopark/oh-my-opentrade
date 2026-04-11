@@ -662,6 +662,19 @@ func (r *Runner) barHealthCheck(ctx context.Context) {
 
 // handleStateUpdated caches indicator data from StateUpdated events.
 // This data is used by handleBar to inject indicators into strategy instances.
+// HandleBarDirect is the public direct-dispatch entry to handleBar used by
+// the backtest Pipeline. Equivalent to the bus-subscribed handler but
+// callable without going through Subscribe/Publish.
+func (r *Runner) HandleBarDirect(ctx context.Context, event domain.Event) error {
+	return r.handleBar(ctx, event)
+}
+
+// HandleStateUpdatedDirect is the public direct-dispatch entry to
+// handleStateUpdated, mirroring HandleBarDirect.
+func (r *Runner) HandleStateUpdatedDirect(ctx context.Context, event domain.Event) error {
+	return r.handleStateUpdated(ctx, event)
+}
+
 func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error {
 	snap, ok := event.Payload.(domain.IndicatorSnapshot)
 	if !ok {

@@ -375,6 +375,12 @@ func (c *Collector) recomputePosValue(symbol string) {
 	c.totalPosValue += pv - oldPV
 }
 
+// OnBarDirect is the public direct-dispatch entry to onBar used by the
+// backtest Pipeline.
+func (c *Collector) OnBarDirect(ctx context.Context, event domain.Event) error {
+	return c.onBar(ctx, event)
+}
+
 // onBar processes a MarketBarReceived event to track last prices and equity.
 // Uses incremental mark-to-market: only recomputes position value for the
 // bar's symbol rather than iterating all open positions on every bar.

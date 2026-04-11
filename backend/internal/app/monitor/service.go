@@ -75,6 +75,15 @@ type Service struct {
 	avwapAnchors     []string // e.g. ["session_open", "pd_high", "pd_low"]
 	avwapLastSession    map[string]string // symbol → last resolved session date (ET) — legacy
 	avwapLastSessionInt map[string]int    // symbol → YYYYMMDD int for cheap date comparison
+
+	// directDispatch flips HandleMarketBar into collect-only mode for the
+	// backtest Pipeline. When set, the hot path fills pendingStrict and
+	// pendingBestEffort instead of calling eventBus.Publish, and the caller
+	// drains them via DrainPending{Strict,BestEffort}. Single-goroutine use
+	// only (Pipeline.ProcessBar is serial).
+	directDispatch     bool
+	pendingStrict      []domain.Event
+	pendingBestEffort  []domain.Event
 	anchorResolverFn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
 	prevDayBarsFn    func(symbol string, since time.Time) []start.Bar
 	nyLoc            *time.Location // cached America/New_York location
@@ -85,6 +94,26 @@ func (s *Service) SetAVWAPFn(fn func(symbol string) map[string]float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.avwapFn = fn
+}
+
+// SetDirectDispatch flips HandleMarketBar into collect-only mode. When
+// enabled, events that would have been published to the bus are appended
+// to internal slices; the caller must retrieve them via DrainPending.
+// Single-goroutine use only — safe because replay's Pipeline serializes
+// monitor access through one goroutine.
+func (s *Service) SetDirectDispatch(v bool) {
+	s.directDispatch = v
+}
+
+// DrainPending returns the pending strict and best-effort events collected
+// during the most recent direct-dispatch HandleMarketBar call, and clears
+// the internal slices. Only meaningful when SetDirectDispatch(true).
+func (s *Service) DrainPending() (strict, bestEffort []domain.Event) {
+	strict = s.pendingStrict
+	bestEffort = s.pendingBestEffort
+	s.pendingStrict = s.pendingStrict[:0]
+	s.pendingBestEffort = s.pendingBestEffort[:0]
+	return strict, bestEffort
 }
 
 // SetAnchorResolverFn installs a function that resolves anchor times (pd_high, pd_low,
@@ -769,6 +798,12 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 
 		s.mu.Unlock()
 
+		if s.directDispatch {
+			s.pendingStrict = append(s.pendingStrict, publishStrict...)
+			s.pendingBestEffort = append(s.pendingBestEffort, publishBestEffort...)
+			return nil
+		}
+
 		for _, ev := range publishStrict {
 			if err := s.eventBus.Publish(ctx, ev); err != nil {
 				return fmt.Errorf("monitor: failed to publish event %s: %w", ev.Type, err)
@@ -1014,6 +1049,14 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	}
 	s.lastSnaps[symStr] = snap
 	s.mu.Unlock()
+
+	if s.directDispatch {
+		// Stash for the caller to drain. Pipeline will dispatch them
+		// directly to the downstream handlers without the bus hop.
+		s.pendingStrict = append(s.pendingStrict, publishStrict...)
+		s.pendingBestEffort = append(s.pendingBestEffort, publishBestEffort...)
+		return nil
+	}
 
 	for _, ev := range publishStrict {
 		if err := s.eventBus.Publish(ctx, ev); err != nil {
