@@ -79,6 +79,12 @@ type Runner struct {
 	// the panic metric. Set via SetNotifier.
 	notifier ports.NotifierPort
 
+	// suppressProgressEvents, when true, causes emitDomainEvent to drop
+	// telemetry-only payloads (EntryGatedPayload, ORBPhaseUpdatePayload)
+	// without allocating an Event or publishing. Intended for offline
+	// backtests where no SSE client is listening — was ~1M alloc per run.
+	suppressProgressEvents bool
+
 	// Scratch buffers reused across handleBar invocations to avoid per-bar
 	// allocations. They live inside the runner's mutex (handleBar holds r.mu
 	// while populating/reading them) so no external synchronization is
@@ -428,6 +434,15 @@ func (r *Runner) Router() *Router { return r.router }
 
 // SetSwapManager attaches a SwapManager to feed shadow instances during bar processing.
 func (r *Runner) SetSwapManager(sm *SwapManager) { r.swapManager = sm }
+
+// SetSuppressProgressEvents toggles whether the runner publishes telemetry-
+// only EntryGated/ORBPhaseUpdate events. Enable in backtest/replay binaries
+// where no SSE client consumes the cache — saves ~1M allocations per run.
+func (r *Runner) SetSuppressProgressEvents(suppress bool) {
+	r.mu.Lock()
+	r.suppressProgressEvents = suppress
+	r.mu.Unlock()
+}
 
 // SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
 func (r *Runner) SetMetrics(m *metrics.Metrics) { r.metrics = m }
@@ -1519,13 +1534,19 @@ func (r *Runner) emitSignal(ctx context.Context, tenantID string, envMode domain
 func (r *Runner) emitDomainEvent(ctx context.Context, tenantID string, envMode domain.EnvMode, payload any) error {
 	eventType := domain.EventType("StrategyDomainEvent")
 	var cacheKey string
+	isProgress := false
 	switch p := payload.(type) {
 	case domain.EntryGatedPayload:
 		eventType = domain.EventEntryGated
 		cacheKey = "EntryGated:" + p.Strategy + ":" + p.Symbol
+		isProgress = true
 	case domain.ORBPhaseUpdatePayload:
 		eventType = domain.EventORBPhaseUpdate
 		cacheKey = "ORBPhaseUpdate:" + p.Symbol
+		isProgress = true
+	}
+	if isProgress && r.suppressProgressEvents {
+		return nil
 	}
 	// Use a monotonic counter for the idempotency key — strategies fire
 	// gated events thousands of times per backtest and uuid.NewString()

@@ -648,6 +648,9 @@ func main() {
 	monitorSvc.InitAggregators(symbols, replaySessionOpen)
 
 	if pipeline != nil && pipeline.Runner != nil {
+		// Drop telemetry-only EntryGated/ORBPhaseUpdate events — replay has
+		// no SSE consumer and they cost ~1M allocations per run.
+		pipeline.Runner.SetSuppressProgressEvents(true)
 		snapshotFn := makeSnapshotFn()
 		for _, sym := range symbols {
 			bars := warmupBarsCache[sym.String()]
