@@ -2084,6 +2084,9 @@ func (s *AVWAPState) emitEarlyGated(ctx start.Context, symbol string, bar start.
 	if ctx == nil {
 		return
 	}
+	if ctx.ProgressEventsSuppressed() {
+		return
+	}
 	if bar.Time.Equal(s.LastGatedBarTime) {
 		return
 	}

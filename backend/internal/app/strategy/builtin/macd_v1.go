@@ -839,6 +839,13 @@ func macdGateIndex(gate string) int {
 // emitMACDEntryGated publishes an EntryGated event showing how close
 // this symbol is to triggering a MACD entry signal.
 func emitMACDEntryGated(ctx start.Context, symbol string, bmSt *BMState, bar start.Bar, ind start.IndicatorData, blockingGate, blockingDetail string) {
+	// Caller-side short-circuit: avoid building the EntryGatedPayload struct
+	// (and the nested Confluence/Indicators/BarSnapshot) on every gated
+	// evaluation when the runner is dropping progress telemetry. Was ~800k
+	// allocs per backtest via the deep payload construction.
+	if ctx.ProgressEventsSuppressed() {
+		return
+	}
 	if ctx == nil {
 		return
 	}
