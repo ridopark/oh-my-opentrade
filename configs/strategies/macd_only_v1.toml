@@ -2,9 +2,9 @@ schema_version = 2
 
 [strategy]
 id = "macd_only_v1"
-version = "2.2.0"
-name = "MACD Crossover Options (Trading Rush)"
-description = "15m MACD crossover + options, multi-day hold, no EOD flatten"
+version = "3.0.0"
+name = "MACD Crossover Options — 5m Intraday"
+description = "5m MACD crossover + options, intraday with EOD flatten"
 author = "system"
 created_at = "2026-04-07T00:00:00Z"
 
@@ -13,51 +13,51 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL","AMD","AMZN","AVGO","COIN","GOOGL","HIMS","HOOD","JPM","META","MRNA","MSFT","MU","NFLX","NVDA","PLTR","SMCI","SOFI","TSLA","XOM"]
-timeframes = ["5m"]              # faster signals for broker testing (was 15m)
+symbols = ["MSFT", "GOOGL", "META", "NVDA", "AMD", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "AFRM", "XOM", "OXY", "LLY", "HIMS", "RIVN", "RBLX", "BA", "SPY", "QQQ", "IWM", "SOXL"]
+timeframes = ["5m"]
 priority = 70
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
 watchlist_mode = "static"
-asset_classes = ["OPTION", "EQUITY"]
+asset_classes = ["OPTION"]
 allowed_directions = ["LONG", "SHORT"]
 
 [params]
-macd_zero_band = 999.0           # accept any crossover regardless of distance from zero
-risk_reward_ratio = 1.0           # 1:1 R:R — easiest to qualify
-swing_lookback = 3                # fewer bars for swing detection
+macd_zero_band = 0.50            # wider band for 5m (0.02 was too tight for >$50 stocks)
+risk_reward_ratio = 2.0          # 2:1 R:R realistic for intraday
+swing_lookback = 5               # fewer bars for swing detection on 5m
 volume_mult = 1.0
 
 # Confluence scoring (0-100+ scale, 10 base + dark pool factors)
-min_confluence_score = 0         # no confluence filter for broker testing
+min_confluence_score = 65        # split the difference — keep some 60s trades
 dp_confluence_enabled = true
-dp_veto_enabled = false          # disable DP veto for broker testing
+dp_veto_enabled = true
 dp_veto_buy_ratio_min = 0.45
 dp_veto_sell_ratio_max = 0.55
-dp_sizing_enabled = false        # disable DP sizing for broker testing
+dp_sizing_enabled = true
 dp_sizing_max_boost = 1.5
-dp_stop_enabled = false          # disable DP stop for broker testing
+dp_stop_enabled = true
 dp_level_lookback = 20
 
-# Rolling performance gate — disabled for broker testing
-rolling_wr_min = 0.0
+# Rolling performance gate
+rolling_wr_min = 0.25
 rolling_wr_window = 20
 
-# Risk
+# Risk — smaller per-trade for higher turnover
 risk_per_trade_bps = 500
-max_position_bps = 1500
+max_position_bps = 2000
 
-# Portfolio limits — critical for strategy edge
-max_positions = 50
+# Portfolio limits — focused for intraday
+max_positions = 10
 max_per_group = 3
 
 # Timing
 allowed_hours_start = "09:35"
-allowed_hours_end = "15:45"
+allowed_hours_end = "15:30"
 allowed_hours_tz = "America/New_York"
-cooldown_seconds = 60            # 1 min cooldown for broker testing (was 5 min)
-max_trades_per_day = 20          # more attempts for broker testing
-stabilization_bars = 1           # instant start for broker testing
+cooldown_seconds = 180           # 3 bars on 5m
+max_trades_per_day = 8           # more signals on faster timeframe
+stabilization_bars = 6           # 30min warmup
 
 [hooks]
 signals = { engine = "builtin", name = "macd" }
@@ -80,50 +80,49 @@ execution = [
 
 [options]
 enabled = true
-max_contracts = 5
+max_contracts = 50
 limit_spread_pct = 1.00
 limit_buffer_bps = 1000
 stale_cancel_secs = 90
 
 [options.defaults]
-min_dte = 7
-max_dte = 21
-target_delta_low = 0.40
-target_delta_high = 0.55
-min_open_interest = 50
+min_dte = 5                      # slightly wider DTE window for historical data availability
+max_dte = 14                     # cap theta while ensuring contracts exist
+target_delta_low = 0.50          # slightly ITM for better delta tracking
+target_delta_high = 0.65         # higher delta = more responsive intraday
+min_open_interest = 100          # tighter liquidity on near-term
 max_spread_pct = 0.10
 max_iv = 1.2
 
+# Premium target: 15% realistic for ATM options on 30min-2hr intraday holds
 [[exit_rules]]
 type = "PREMIUM_TARGET"
 [exit_rules.params]
-target_pct = 0.05               # 5% premium gain for broker testing
+target_pct = 0.15
 
+# Trail to limit drawdown (net-negative P&L but provides DD protection)
 [[exit_rules]]
 type = "PREMIUM_TRAIL"
 [exit_rules.params]
-trail_pct = 0.10                # trail 10% from premium HWM
-min_activation = 0.03           # activate after 3% gain
+trail_pct = 0.12
+min_activation = 0.08
 
-[[exit_rules]]
-type = "PREMIUM_STOP"
-[exit_rules.params]
-stop_pct = 0.15                 # exit if premium drops 15%
-
+# Stagnation: kill zombie trades after 90 min
 [[exit_rules]]
 type = "STAGNATION_EXIT"
 [exit_rules.params]
-minutes = 20                    # 20 min stagnation for broker testing
+minutes = 90
 sd_threshold = 0
 profit_gate_pct = 0.005
 
+# EOD flatten: mandatory close at 15:45 ET
 [[exit_rules]]
 type = "EOD_FLATTEN"
 [exit_rules.params]
 minutes_before_close = 15
 
+# Safety: 3hr hard cap
 [[exit_rules]]
 type = "MAX_HOLDING_TIME"
 [exit_rules.params]
-minutes = 60                    # 1 hour hard cap for broker testing
-
+minutes = 180
