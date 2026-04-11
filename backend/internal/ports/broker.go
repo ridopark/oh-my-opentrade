@@ -31,6 +31,27 @@ type BrokerPort interface {
 	// Used at startup to clear stale orders from a prior session.
 	// Returns the number of orders that were successfully canceled.
 	CancelAllOpenOrders(ctx context.Context) (int, error)
+	// GetOpenOrders returns the broker's view of every currently-working
+	// order on the account. Used by startup reconciliation to cross-reference
+	// broker state against the intent journal (Sprint 2 Phase B).
+	// Implementations MUST filter to working states only (Submitted, Accepted,
+	// PreSubmitted, Working) — terminal orders are not interesting here.
+	GetOpenOrders(ctx context.Context) ([]OpenOrder, error)
+}
+
+// OpenOrder is the broker's view of a working order that existed before
+// this process started. It carries just enough information for startup
+// reconciliation to match it against the intent journal.
+type OpenOrder struct {
+	BrokerOrderID string
+	Symbol        string
+	Side          string // "buy" / "sell"
+	Quantity      float64
+	OrderType     string // "limit" / "market" / "stop" / "stop_limit"
+	LimitPrice    float64
+	StopPrice     float64
+	Status        string // "submitted" / "accepted" / "working"
+	CreatedAt     time.Time
 }
 
 // OrderDetails contains full order information from the broker, including

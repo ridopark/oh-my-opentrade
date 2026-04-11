@@ -91,7 +91,13 @@ services:
       dockerfile: deployments/Dockerfile
     container_name: omo-core
     restart: unless-stopped
-    stop_grace_period: 10s
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD", "/omo-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
     depends_on:
       timescaledb:
         condition: service_healthy

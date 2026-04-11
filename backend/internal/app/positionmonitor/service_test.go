@@ -79,6 +79,10 @@ type mockBroker struct {
 	cancelErr          error
 	orderDetailsResult ports.OrderDetails
 	orderDetailsErr    error
+	openOrders         []ports.OpenOrder
+	openOrdersErr      error
+	cancelAllCalls     int
+	cancelAllErr       error
 }
 
 func (m *mockBroker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (string, error) {
@@ -94,7 +98,13 @@ func (m *mockBroker) GetPositions(ctx context.Context, tenantID string, envMode 
 func (m *mockBroker) CancelOpenOrders(_ context.Context, _ domain.Symbol, _ string) (int, error) {
 	return 0, nil
 }
-func (m *mockBroker) CancelAllOpenOrders(_ context.Context) (int, error) { return 0, nil }
+func (m *mockBroker) CancelAllOpenOrders(_ context.Context) (int, error) {
+	m.cancelAllCalls++
+	return 0, m.cancelAllErr
+}
+func (m *mockBroker) GetOpenOrders(_ context.Context) ([]ports.OpenOrder, error) {
+	return m.openOrders, m.openOrdersErr
+}
 func (m *mockBroker) GetPosition(_ context.Context, _ domain.Symbol) (float64, error) {
 	return 0, nil
 }

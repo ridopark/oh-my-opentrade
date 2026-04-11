@@ -77,6 +77,22 @@ func (a *Adapter) IsConnected() bool {
 	return a.conn.isConnected()
 }
 
+// SetReconnectNotifier wires a notifier (e.g. notify.Service) into the
+// keepAlive escalation path. See connection.SetReconnectNotifier.
+func (a *Adapter) SetReconnectNotifier(n ReconnectNotifier) {
+	if a.conn != nil {
+		a.conn.SetReconnectNotifier(n)
+	}
+}
+
+// SetReconnectFatalHalt wires a fatal-halt callback into the keepAlive
+// escalation path. See connection.SetFatalHalt.
+func (a *Adapter) SetReconnectFatalHalt(fn FatalHaltFunc) {
+	if a.conn != nil {
+		a.conn.SetFatalHalt(fn)
+	}
+}
+
 // NewAdapterWithClient creates an Adapter using an already-connected ibClient.
 // Used in tests to inject a mock ibClient without a real IB Gateway connection.
 func NewAdapterWithClient(client ibClient, log zerolog.Logger) *Adapter {

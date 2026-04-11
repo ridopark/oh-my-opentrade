@@ -20,6 +20,9 @@ import (
 //  3. DB orphan patching — when a ghost position is removed, a reconciliation SELL
 //     trade is written to the trade DB so the DB net position returns to zero.
 func (s *Service) reconcileWithBroker(ctx context.Context) {
+	if s.isShuttingDown.Load() {
+		return
+	}
 	if s.broker == nil {
 		return
 	}
@@ -118,6 +121,9 @@ func (s *Service) reconcileWithBroker(ctx context.Context) {
 }
 
 func (s *Service) reconcileGlobal(ctx context.Context) {
+	if s.isShuttingDown.Load() {
+		return
+	}
 	if s.broker == nil || s.repo == nil {
 		return
 	}

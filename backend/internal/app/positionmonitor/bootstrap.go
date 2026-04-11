@@ -22,13 +22,12 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 		return
 	}
 
-	// 0. Cancel all open orders from any prior session.
-	// At startup our in-memory state is lost, so every open order is stale.
-	if canceled, err := s.broker.CancelAllOpenOrders(ctx); err != nil {
-		s.log.Warn().Err(err).Msg("bootstrap: failed to cancel stale open orders — proceeding anyway")
-	} else if canceled > 0 {
-		s.log.Info().Int("canceled", canceled).Msg("bootstrap: canceled stale open orders from prior session")
-	}
+	// 0. Reconcile pre-existing broker open orders against the intent journal.
+	// With OMO_ORDER_JOURNAL_ENABLED unset this falls back to CancelAllOpenOrders
+	// (the legacy behavior). With the flag set, matched orders are resumed,
+	// unmanaged orders trigger an operator alert, and journal rows the broker
+	// no longer tracks are marked lost. See order_reconcile.go.
+	s.reconcileOpenOrdersOnBoot(ctx)
 
 	// 1. Query broker for all current positions.
 	brokerPositions, err := s.broker.GetPositions(ctx, s.tenantID, s.envMode)
