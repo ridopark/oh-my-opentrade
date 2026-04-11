@@ -75,9 +75,66 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 		return evaluatePremiumTrail(rule, pos, currentPrice, now)
 	case domain.ExitRulePremiumTarget:
 		return evaluatePremiumTarget(rule, pos, currentPrice, now)
+	case domain.ExitRuleFastFail:
+		return evaluateFastFail(rule, pos, now)
 	default:
 		return false, ""
 	}
+}
+
+// evaluateFastFail triggers when a position has failed to show profit progress
+// within a short post-entry window, on the hypothesis that trades which never
+// cross into positive premium MFE by that time are dead entries that will bleed
+// to stagnation/EOD.
+//
+// Empirical basis (AVWAP v4 data from 2025+2026 backtests):
+//   - 22-23% of all losers have MFE <= 0 (never became profitable)
+//   - Those losers all held ~90 min to stagnation, avg loss $1,000-$1,400
+//   - Winners in contrast had p10 MFE of 10% — virtually all winners cross
+//     above entry within 10 min and reach 10% MFE by hold time median 16-21 min
+//   - A 30-min, MFE <= 0 filter cleanly separates the populations
+//
+// Params:
+//
+//	"check_minutes" — minutes after entry to run the check (default 30)
+//	"min_mfe_pct"   — minimum MFE fraction required to keep position (default 0)
+//
+// The rule only fires if premium_mfe_pct is tracked (options positions).
+// For equity positions without premium_mfe_pct state, the rule is a no-op.
+func evaluateFastFail(rule domain.ExitRule, pos *domain.MonitoredPosition, now time.Time) (bool, string) {
+	checkMinutes := rule.Param("check_minutes", 30)
+	if checkMinutes <= 0 {
+		return false, ""
+	}
+	held := now.Sub(pos.EntryTime).Minutes()
+	if held < checkMinutes {
+		return false, ""
+	}
+	// Only fire once — if the check already passed (MFE > threshold at check
+	// time), don't keep re-evaluating on every subsequent tick. We use
+	// CustomState["fast_fail_checked"] as a sticky latch.
+	if pos.CustomState == nil {
+		return false, ""
+	}
+	if pos.CustomState["fast_fail_checked"] > 0 {
+		return false, ""
+	}
+	mfe, hasMFE := pos.CustomState["premium_mfe_pct"]
+	if !hasMFE {
+		// No MFE tracking (e.g. equity position) — mark as checked and skip.
+		pos.CustomState["fast_fail_checked"] = 1
+		return false, ""
+	}
+	minMFE := rule.Param("min_mfe_pct", 0)
+	if mfe > minMFE {
+		// Position has shown progress — mark as checked and let other rules run.
+		pos.CustomState["fast_fail_checked"] = 1
+		return false, ""
+	}
+	// Mark as fired so we don't double-trigger if the exit is deferred.
+	pos.CustomState["fast_fail_checked"] = 1
+	return true, fmt.Sprintf("fast_fail_exit: held %.1f min >= check %.0f min with premium_mfe %.2f%% <= min %.2f%% (never made progress)",
+		held, checkMinutes, mfe*100, minMFE*100)
 }
 
 // evaluateTrailingStop triggers when drawdown from high-water mark exceeds the threshold.
