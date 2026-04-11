@@ -76,6 +76,10 @@ func main() {
 	flag.StringVar(&memProfile, "memprofile", "", "Write heap profile to file (pprof) after run")
 	flag.Parse()
 
+	// Replay and backtest binaries don't need cryptographically-unique event
+	// IDs — uuid.NewString() via crypto/rand was ~10% of backtest CPU.
+	domain.UseFastEventIDs(true)
+
 	if cpuProfile != "" {
 		f, err := os.Create(cpuProfile)
 		if err != nil {
