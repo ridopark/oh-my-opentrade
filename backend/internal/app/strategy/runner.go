@@ -39,7 +39,8 @@ type Runner struct {
 	aggregators          map[string]*domain.BarAggregator
 	htfCalcs             map[string]*monitor.IndicatorCalculator // key: "symbol:tf"
 	regimeDetector       *monitor.RegimeDetector
-	anchorRegimes        map[string]domain.MarketRegime // key: "symbol:tf" → latest regime
+	anchorRegimes          map[string]map[string]domain.MarketRegime   // symbol → tf → latest regime
+	collectedAnchorRegimes map[string]map[string]start.AnchorRegime   // per-symbol reusable result map
 	signalsRTHSuppressed atomic.Int64
 	anchorResolver       func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
 	prevDayBarsFn        func(symbol string, since time.Time) []start.Bar
@@ -430,7 +431,8 @@ func NewRunner(
 		aggregators:    make(map[string]*domain.BarAggregator),
 		htfCalcs:       make(map[string]*monitor.IndicatorCalculator),
 		regimeDetector: monitor.NewRegimeDetector(),
-		anchorRegimes:  make(map[string]domain.MarketRegime),
+		anchorRegimes:          make(map[string]map[string]domain.MarketRegime),
+		collectedAnchorRegimes: make(map[string]map[string]start.AnchorRegime),
 	}
 }
 
@@ -878,32 +880,35 @@ func convertHTFDataInto(dst map[string]start.HTFIndicator, htf map[domain.Timefr
 }
 
 
-// splitSymbolTF splits a "SYMBOL:TF" key into [symbol, tf].
-func splitSymbolTF(key string) [2]string {
-	for i, c := range key {
-		if c == ':' {
-			return [2]string{key[:i], key[i+1:]}
-		}
-	}
-	return [2]string{key, ""}
-}
 
 // collectAnchorRegimes builds AnchorRegimes map for a symbol from stored regimes.
+//
+// Uses the nested anchorRegimes index (sym → tf → regime) so the cost is O(T)
+// per call, not O(N*T) over every registered symbol. The result is written
+// into a per-symbol reusable map (collectedAnchorRegimes) to avoid allocating
+// on every HTF bar — was ~450MB across a 30-symbol backtest.
 func (r *Runner) collectAnchorRegimes(symbol string) map[string]start.AnchorRegime {
-	result := make(map[string]start.AnchorRegime)
-	for key, reg := range r.anchorRegimes {
-		parts := splitSymbolTF(key)
-		if parts[0] == symbol {
-			result[parts[1]] = start.AnchorRegime{
-				Type:     string(reg.Type),
-				Strength: reg.Strength,
-			}
-		}
-	}
-	if len(result) == 0 {
+	tfMap := r.anchorRegimes[symbol]
+	if len(tfMap) == 0 {
 		return nil
 	}
-	return result
+	out, ok := r.collectedAnchorRegimes[symbol]
+	if !ok {
+		out = make(map[string]start.AnchorRegime, len(tfMap))
+		if r.collectedAnchorRegimes == nil {
+			r.collectedAnchorRegimes = make(map[string]map[string]start.AnchorRegime)
+		}
+		r.collectedAnchorRegimes[symbol] = out
+	} else {
+		clear(out)
+	}
+	for tf, reg := range tfMap {
+		out[tf] = start.AnchorRegime{
+			Type:     string(reg.Type),
+			Strength: reg.Strength,
+		}
+	}
+	return out
 }
 
 // handleBar processes a MarketBarSanitized event by routing to assigned instances.
@@ -1141,9 +1146,14 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		}
 		htfSnap := htfCalc.Update(closed)
 
-		// Compute and store anchor regime for this HTF bar
+		// Compute and store anchor regime for this HTF bar (keyed sym→tf)
 		regime, _ := r.regimeDetector.Detect(htfSnap)
-		r.anchorRegimes[key] = regime
+		symMap := r.anchorRegimes[symbol]
+		if symMap == nil {
+			symMap = make(map[string]domain.MarketRegime, 4)
+			r.anchorRegimes[symbol] = symMap
+		}
+		symMap[tf] = regime
 
 		htfIndicators := start.IndicatorData{
 			RSI:           htfSnap.RSI,
