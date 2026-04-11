@@ -666,7 +666,15 @@ func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error
 		return nil
 	}
 	r.mu.Lock()
-	r.indicators[snap.Symbol.String()] = start.IndicatorData{
+	// Reuse the previously-allocated AnchorRegimes / HTF maps for this
+	// symbol to avoid ~1.3M map allocations per backtest. Safe under
+	// replay's SyncBus dispatch — events process serially so no reader
+	// holds a reference across the refill.
+	sym := snap.Symbol.String()
+	prev := r.indicators[sym]
+	newAR := convertAnchorRegimesInto(prev.AnchorRegimes, snap.AnchorRegimes)
+	newHTF := convertHTFDataInto(prev.HTF, snap.HTF)
+	r.indicators[sym] = start.IndicatorData{
 		RSI:           snap.RSI,
 		StochK:        snap.StochK,
 		StochD:        snap.StochD,
@@ -693,8 +701,8 @@ func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error
 		MACDHistogram: snap.MACDHistogram,
 		ADX:           snap.ADX,
 		RegimeScore:   snap.RegimeScore,
-		AnchorRegimes: convertAnchorRegimes(snap.AnchorRegimes),
-		HTF:           convertHTFData(snap.HTF),
+		AnchorRegimes: newAR,
+		HTF:           newHTF,
 	}
 
 	// Overlay dark pool microstructure data when available (backtest only).
@@ -821,34 +829,54 @@ func tfDuration(tf domain.Timeframe) time.Duration {
 	}
 }
 
-func convertAnchorRegimes(regimes map[domain.Timeframe]domain.MarketRegime) map[string]start.AnchorRegime {
+// convertAnchorRegimesInto writes the converted map into dst, allocating a
+// new one only if dst is nil. Callers that hold a stable map per symbol can
+// reuse it across bars to avoid ~650k map allocations per backtest.
+// Replay mode dispatches events serially via SyncBus, so no reader holds a
+// reference across a refill (verified by source walk over bus.Publish).
+func convertAnchorRegimesInto(dst map[string]start.AnchorRegime, regimes map[domain.Timeframe]domain.MarketRegime) map[string]start.AnchorRegime {
 	if len(regimes) == 0 {
-		return nil
+		if dst != nil {
+			clear(dst)
+		}
+		return dst
 	}
-	result := make(map[string]start.AnchorRegime, len(regimes))
+	if dst == nil {
+		dst = make(map[string]start.AnchorRegime, len(regimes))
+	} else {
+		clear(dst)
+	}
 	for tf, r := range regimes {
-		result[tf.String()] = start.AnchorRegime{
+		dst[tf.String()] = start.AnchorRegime{
 			Type:     r.Type.String(),
 			Strength: r.Strength,
 		}
 	}
-	return result
+	return dst
 }
 
-func convertHTFData(htf map[domain.Timeframe]domain.HTFData) map[string]start.HTFIndicator {
+func convertHTFDataInto(dst map[string]start.HTFIndicator, htf map[domain.Timeframe]domain.HTFData) map[string]start.HTFIndicator {
 	if len(htf) == 0 {
-		return nil
+		if dst != nil {
+			clear(dst)
+		}
+		return dst
 	}
-	result := make(map[string]start.HTFIndicator, len(htf))
+	if dst == nil {
+		dst = make(map[string]start.HTFIndicator, len(htf))
+	} else {
+		clear(dst)
+	}
 	for tf, d := range htf {
-		result[tf.String()] = start.HTFIndicator{
+		dst[tf.String()] = start.HTFIndicator{
 			EMA50:  d.EMA50,
 			EMA200: d.EMA200,
 			Bias:   d.Bias,
 		}
 	}
-	return result
+	return dst
 }
+
 
 // splitSymbolTF splits a "SYMBOL:TF" key into [symbol, tf].
 func splitSymbolTF(key string) [2]string {
