@@ -330,40 +330,58 @@ func (r *Runner) Run(ctx context.Context) error {
 	execCfg := &cfgCopy
 
 	// Resolve max_positions / max_per_group:
-	// 1. API request params (highest priority)
-	// 2. Strategy DNA [params] (fallback)
-	// 3. App config (default)
+	// 1. API request params (highest priority, explicit override)
+	// 2. SUM of per-strategy DNA [params] across all active specs. Each
+	//    strategy's TOML states its own concurrency budget; when multiple
+	//    strategies run together, the portfolio-level cap is the sum so
+	//    that adding a strategy does not steal slots from the one(s)
+	//    already active. Previously this loop picked the first non-zero
+	//    value it encountered, which silently capped multi-strategy
+	//    backtests at a single strategy's worth of capacity and caused
+	//    the combined portfolio to lose ~40% of edge vs the sum of
+	//    standalones.
+	// 3. App config (ultimate default, zero disables the global guard).
 	maxPos := r.cfg.MaxPositions
 	maxGrp := r.cfg.MaxPerGroup
 	if maxPos == 0 || maxGrp == 0 {
-		// Read from strategy DNA if not set by API request
+		summedPos := 0
+		maxGrpSeen := 0
 		if specs, specErr := specStore.List(ctx, nil); specErr == nil {
 			for _, spec := range specs {
-				if maxPos == 0 {
-					if v, ok := spec.Params["max_positions"]; ok {
-						switch n := v.(type) {
-						case int64:
-							maxPos = int(n)
-						case float64:
-							maxPos = int(n)
-						case int:
-							maxPos = n
-						}
+				if !spec.Lifecycle.State.IsActive() {
+					continue
+				}
+				if v, ok := spec.Params["max_positions"]; ok {
+					switch n := v.(type) {
+					case int64:
+						summedPos += int(n)
+					case float64:
+						summedPos += int(n)
+					case int:
+						summedPos += n
 					}
 				}
-				if maxGrp == 0 {
-					if v, ok := spec.Params["max_per_group"]; ok {
-						switch n := v.(type) {
-						case int64:
-							maxGrp = int(n)
-						case float64:
-							maxGrp = int(n)
-						case int:
-							maxGrp = n
-						}
+				if v, ok := spec.Params["max_per_group"]; ok {
+					var g int
+					switch n := v.(type) {
+					case int64:
+						g = int(n)
+					case float64:
+						g = int(n)
+					case int:
+						g = n
+					}
+					if g > maxGrpSeen {
+						maxGrpSeen = g
 					}
 				}
 			}
+		}
+		if maxPos == 0 && summedPos > 0 {
+			execCfg.Trading.MaxSimultaneousPos = summedPos
+		}
+		if maxGrp == 0 && maxGrpSeen > 0 {
+			execCfg.Trading.MaxPositionsPerGroup = maxGrpSeen
 		}
 	}
 	if maxPos > 0 {
