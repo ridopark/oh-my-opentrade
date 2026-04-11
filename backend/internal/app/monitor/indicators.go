@@ -85,17 +85,25 @@ type emaConfig struct {
 	slowPeriod int
 }
 
+// stateKey indexes per-symbol, per-timeframe calculator state without
+// allocating a concatenated string key on every Update call (~360k allocs
+// per backtest).
+type stateKey struct {
+	Symbol    domain.Symbol
+	Timeframe domain.Timeframe
+}
+
 // IndicatorCalculator maintains state and computes technical indicators
 // for streams of market bars.
 type IndicatorCalculator struct {
-	states     map[string]*symbolState
-	emaConfigs map[string]emaConfig
+	states     map[stateKey]*symbolState
+	emaConfigs map[stateKey]emaConfig
 }
 
 func NewIndicatorCalculator() *IndicatorCalculator {
 	return &IndicatorCalculator{
-		states:     make(map[string]*symbolState),
-		emaConfigs: make(map[string]emaConfig),
+		states:     make(map[stateKey]*symbolState),
+		emaConfigs: make(map[stateKey]emaConfig),
 	}
 }
 
@@ -103,8 +111,7 @@ func (ic *IndicatorCalculator) RegisterEMAConfig(symbol, timeframe string, fastP
 	if fastPeriod <= 0 || slowPeriod <= 0 || fastPeriod >= slowPeriod {
 		return
 	}
-	key := symbol + ":" + timeframe
-	ic.emaConfigs[key] = emaConfig{fastPeriod: fastPeriod, slowPeriod: slowPeriod}
+	ic.emaConfigs[stateKey{Symbol: domain.Symbol(symbol), Timeframe: domain.Timeframe(timeframe)}] = emaConfig{fastPeriod: fastPeriod, slowPeriod: slowPeriod}
 }
 
 // SeedState pre-populates EMA values for a symbol:timeframe key so that
@@ -112,7 +119,7 @@ func (ic *IndicatorCalculator) RegisterEMAConfig(symbol, timeframe string, fastP
 // waiting for enough bars to seed from SMA. This enables fast startup by
 // reading stored EMA values from the DB.
 func (ic *IndicatorCalculator) SeedState(symbol, timeframe string, ema9, ema21, ema50 float64) {
-	key := symbol + ":" + timeframe
+	key := stateKey{Symbol: domain.Symbol(symbol), Timeframe: domain.Timeframe(timeframe)}
 	state := &symbolState{}
 	if ema9 > 0 {
 		state.ema9 = ema9
@@ -130,7 +137,7 @@ func (ic *IndicatorCalculator) SeedState(symbol, timeframe string, ema9, ema21, 
 }
 
 func (ic *IndicatorCalculator) ResetSession(symbol, timeframe string) {
-	key := symbol + ":" + timeframe
+	key := stateKey{Symbol: domain.Symbol(symbol), Timeframe: domain.Timeframe(timeframe)}
 	state, ok := ic.states[key]
 	if !ok {
 		return
@@ -167,7 +174,7 @@ func smaWindow(values []float64, period int) float64 {
 // Update processes a new market bar, updates internal state, and returns
 // a point-in-time snapshot of the computed technical indicators.
 func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnapshot {
-	key := bar.Symbol.String() + ":" + bar.Timeframe.String()
+	key := stateKey{Symbol: bar.Symbol, Timeframe: bar.Timeframe}
 	state, ok := ic.states[key]
 	if !ok {
 		state = &symbolState{}
