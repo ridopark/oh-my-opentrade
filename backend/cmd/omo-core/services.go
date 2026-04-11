@@ -146,14 +146,15 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 		acctPort = infra.ibkrBroker
 		log.Info().Msg("DTBP fallback enabled — buying power guard active")
 	}
-	// Sprint 2 write-ahead journal — gated by OMO_ORDER_JOURNAL_ENABLED so the
-	// default deploy remains byte-identical to pre-Sprint-2 behavior. When the
-	// flag is unset, intentJournal stays nil and the execution service skips
-	// the write-ahead/terminal update calls entirely.
+	// Sprint 2 write-ahead journal — gated by cfg.OrderJournalEnabled (sourced
+	// from OMO_ORDER_JOURNAL_ENABLED) so the default deploy remains byte-
+	// identical to pre-Sprint-2 behavior. When the flag is unset, intentJournal
+	// stays nil and the execution service skips the write-ahead/terminal
+	// update calls entirely.
 	var intentJournal ports.OrderIntentJournal
-	if os.Getenv("OMO_ORDER_JOURNAL_ENABLED") == "true" {
+	if cfg.OrderJournalEnabled {
 		intentJournal = infra.orderIntentRepo
-		log.Info().Msg("order intent journal enabled (OMO_ORDER_JOURNAL_ENABLED=true) — write-ahead audit active")
+		log.Info().Msg("order intent journal enabled — write-ahead audit active")
 	}
 	execBundle, err := bootstrap.BuildExecutionService(bootstrap.ExecutionDeps{
 		EventBus:      infra.eventBus,
