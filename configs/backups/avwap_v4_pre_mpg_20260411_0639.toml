@@ -135,7 +135,7 @@ max_trades_per_day = 2           # limit overtrading per symbol
 # These were the values used during tuning (commit 33da264: PF 1.32, DD 10%).
 # Without them, backtests default to unlimited positions which worsens DD significantly.
 max_positions = 6                # max simultaneous open positions
-max_per_group = 3                # solo optimum (was 2). Lifted after the OCC sector-classification fix made per-sector caps meaningful. In multi-strategy backtests the runner takes max-of per-spec values, so this also ends up the pair's effective cap — which the pair stress test confirms is the right shape for it.
+max_per_group = 2                # max positions per sector group
 
 # Bars to hold before basic AVWAP exit check fires
 exit_hold_bars = 3               # bars on wrong side of AVWAP before strategy exit

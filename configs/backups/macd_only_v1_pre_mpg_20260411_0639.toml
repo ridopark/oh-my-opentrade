@@ -57,7 +57,7 @@ max_position_bps = 2000
 
 # Portfolio limits — focused for intraday
 max_positions = 10
-max_per_group = 2                # solo optimum (was 3). Tightened after the OCC sector-classification fix. Sweep showed mpg=2 is Pareto-dominant when MACD runs alone. In a pair backtest the runner takes max-of per-spec values, so the pair's effective cap is set by AVWAP (mpg=3); that's intentional — the pair stress test showed forcing global mpg=2 cost ~$40k combined PnL, so this value applies only when MACD runs solo or as the higher-mpg leg.
+max_per_group = 3
 
 # Timing
 allowed_hours_start = "09:35"
