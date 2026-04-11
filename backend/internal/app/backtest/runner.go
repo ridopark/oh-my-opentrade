@@ -343,6 +343,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// 3. App config (ultimate default, zero disables the global guard).
 	maxPos := r.cfg.MaxPositions
 	maxGrp := r.cfg.MaxPerGroup
+	perStratMax := make(map[string]int)
 	if maxPos == 0 || maxGrp == 0 {
 		summedPos := 0
 		maxGrpSeen := 0
@@ -352,13 +353,18 @@ func (r *Runner) Run(ctx context.Context) error {
 					continue
 				}
 				if v, ok := spec.Params["max_positions"]; ok {
-					switch n := v.(type) {
+					var n int
+					switch x := v.(type) {
 					case int64:
-						summedPos += int(n)
+						n = int(x)
 					case float64:
-						summedPos += int(n)
+						n = int(x)
 					case int:
+						n = x
+					}
+					if n > 0 {
 						summedPos += n
+						perStratMax[spec.ID.String()] = n
 					}
 				}
 				if v, ok := spec.Params["max_per_group"]; ok {
@@ -386,24 +392,28 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	if maxPos > 0 {
 		execCfg.Trading.MaxSimultaneousPos = maxPos
+		// API override disables per-strategy enforcement — caller is
+		// explicitly asking for a flat global cap.
+		perStratMax = nil
 	}
 	if maxGrp > 0 {
 		execCfg.Trading.MaxPositionsPerGroup = maxGrp
 	}
 
 	execBundle, err := bootstrap.BuildExecutionService(bootstrap.ExecutionDeps{
-		EventBus:      r.infra.EventBus,
-		Broker:        sim,
-		Repo:          r.infra.NoopRepo,
-		QuoteProvider: sim,
-		AccountPort:   sim,
-		PnLRepo:       r.infra.NoopPnLRepo,
-		TradeReader:   nil,
-		Clock:         clockFn,
-		Config:        execCfg,
-		InitialEquity: r.cfg.InitialEquity,
-		IsBacktest:    true,
-		Logger:        r.log,
+		EventBus:                r.infra.EventBus,
+		Broker:                  sim,
+		Repo:                    r.infra.NoopRepo,
+		QuoteProvider:           sim,
+		AccountPort:             sim,
+		PnLRepo:                 r.infra.NoopPnLRepo,
+		TradeReader:             nil,
+		Clock:                   clockFn,
+		Config:                  execCfg,
+		InitialEquity:           r.cfg.InitialEquity,
+		IsBacktest:              true,
+		Logger:                  r.log,
+		PerStrategyMaxPositions: perStratMax,
 	})
 	if err != nil {
 		r.status.Store("error")
