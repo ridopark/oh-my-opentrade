@@ -49,6 +49,14 @@ func waitForShutdown(cancel context.CancelFunc, server *http.Server, infra *infr
 		svc.orchestrator.Stop()
 	}
 
+	// 2a. Quiesce the position monitor's reconcile loops. Without this guard,
+	// a reconcile ticker firing between orchestrator.Stop() and broker.Close()
+	// could submit a reconciliation trade against a half-torn-down broker or
+	// emit a stale position-close event that confuses downstream consumers.
+	if svc.posMonitor != nil {
+		svc.posMonitor.SignalShutdown()
+	}
+
 	// 3. Close broker and data connections.
 	if err := infra.ibkrBroker.Close(); err != nil {
 		log.Error().Err(err).Msg("error closing IBKR adapter")

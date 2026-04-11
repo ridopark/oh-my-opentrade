@@ -69,6 +69,11 @@ type Runner struct {
 	// entry-signal telemetry. Phase 1 of AVWAP SPY-tide plumbing — data
 	// collection only, no gating.
 	tideTracker *gate.IndexTideTracker
+
+	// notifier, when non-nil, receives Discord/alert messages for recovered
+	// strategy panics. Nil is safe — the runner will still log and increment
+	// the panic metric. Set via SetNotifier.
+	notifier ports.NotifierPort
 }
 
 // DPLookupKey uniquely identifies a dark pool bar for O(1) access during replay.
@@ -1011,7 +1016,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 			},
 		}
 		r.applyTideData(inst, symbol)
-		signals, err := inst.OnBar(instCtx, symbol, sBar, indicators)
+		signals, err := r.safeOnBar(inst, instCtx, symbol, sBar, indicators)
 		if err != nil {
 			r.logger.Error("instance OnBar failed",
 				"instance_id", inst.ID().String(),
@@ -1120,7 +1125,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 				},
 			}
 			r.applyTideData(inst, symbol)
-			signals, err := inst.OnBar(instCtx, symbol, htfBar, htfIndicators)
+			signals, err := r.safeOnBar(inst, instCtx, symbol, htfBar, htfIndicators)
 			if err != nil {
 				r.logger.Error("instance OnBar failed (HTF)",
 					"instance_id", inst.ID().String(),
@@ -1236,7 +1241,7 @@ func (r *Runner) ProcessBar(ctx context.Context, symbol string, bar start.Bar, i
 			},
 		}
 
-		signals, err := inst.OnBar(instCtx, symbol, bar, indicators)
+		signals, err := r.safeOnBar(inst, instCtx, symbol, bar, indicators)
 		if err != nil {
 			return allSignals, fmt.Errorf("instance %s: %w", inst.ID(), err)
 		}
@@ -1305,7 +1310,7 @@ func (r *Runner) WarmUpTF(symbol string, tf string, bars []domain.MarketBar, sna
 				logger: r.logger.With("instance_id", inst.ID().String(), "symbol", symbol),
 				emit:   func(_ any) error { return nil },
 			}
-			if err := inst.WarmupOnBar(instCtx, symbol, sBar, indicators); err != nil {
+			if err := r.safeWarmupOnBar(inst, instCtx, symbol, sBar, indicators); err != nil {
 				r.logger.Error("instance WarmupOnBar failed",
 					"instance_id", inst.ID().String(),
 					"symbol", symbol,
