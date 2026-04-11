@@ -42,7 +42,13 @@ type Service struct {
 	// parallel to anchorTimeframes. Populated by InitAggregators so the hot
 	// HandleMarketBar loop can iterate without re-concatenating strings on
 	// every bar (was ~880k allocs per backtest).
-	aggKeysBySym   map[string][]string
+	aggKeysBySym map[string][]string
+	// anchorRegimeMaps holds a reusable AnchorRegimes map per symbol so
+	// HandleMarketBar doesn't allocate a fresh map on every bar. Was ~320MB
+	// of bucket allocations per backtest. Safe because each symbol owns its
+	// slot — lastSnaps[symX] just aliases the same reference and is
+	// consistent with the "latest snap" semantics.
+	anchorRegimeMaps map[string]map[domain.Timeframe]domain.MarketRegime
 	orbAggregators map[string]*domain.BarAggregator // per-symbol 5m aggregators for ORB tracker
 	orbTimeframe     domain.Timeframe                 // timeframe for ORB bar delivery (default "5m")
 	anchorRegimes    map[string]domain.MarketRegime
@@ -188,6 +194,7 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 		liveBars:         make(map[string]int),
 		aggregators:      make(map[string]*domain.BarAggregator),
 		aggKeysBySym:     make(map[string][]string),
+		anchorRegimeMaps: make(map[string]map[domain.Timeframe]domain.MarketRegime),
 		orbAggregators:   make(map[string]*domain.BarAggregator),
 		orbTimeframe:     "5m",
 		anchorRegimes:    make(map[string]domain.MarketRegime),
@@ -681,7 +688,17 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 			s.lastHTFSnaps[aggKey] = htfSnap
 		}
 	}
-	snap.AnchorRegimes = make(map[domain.Timeframe]domain.MarketRegime, len(anchorTimeframes)+1)
+	// Reuse the per-symbol map across bars. The map is stable for this
+	// symbol (cleared + refilled on every call), so lastSnaps[symStr]
+	// continues to reflect the latest snap correctly.
+	regimeMap, ok := s.anchorRegimeMaps[symStr]
+	if !ok {
+		regimeMap = make(map[domain.Timeframe]domain.MarketRegime, len(anchorTimeframes)+1)
+		s.anchorRegimeMaps[symStr] = regimeMap
+	} else {
+		clear(regimeMap)
+	}
+	snap.AnchorRegimes = regimeMap
 	for i, tf := range anchorTimeframes {
 		var aggKey string
 		if i < len(aggKeys) {
