@@ -28,6 +28,18 @@ func UseFastEventIDs(enabled bool) {
 	fastEventIDs.Store(enabled)
 }
 
+// fastClockNano, when non-zero and fastEventIDs is on, is used as the
+// OccurredAt source for NewEvent instead of time.Now(). Replay binaries
+// call SetFastClock at the top of each bar so multiple per-bar events share
+// one timestamp and we save ~500k time.Now() syscalls per backtest.
+var fastClockNano atomic.Int64
+
+// SetFastClock sets the clock the fast-ID NewEvent path reads. Pass 0 to
+// revert to time.Now().
+func SetFastClock(t time.Time) {
+	fastClockNano.Store(t.UnixNano())
+}
+
 // EventType identifies the kind of domain event.
 type EventType = string
 
@@ -310,20 +322,27 @@ func NewEvent(eventType EventType, tenantID string, envMode EnvMode, idempotency
 		return nil, errors.New("idempotency key is required")
 	}
 	var id string
+	var occurredAt time.Time
 	if fastEventIDs.Load() {
 		// Drop the "bt-" prefix to save the concat alloc — event IDs are
 		// opaque strings consumed only by log lines and handler-internal
 		// dedup (which uses IdempotencyKey instead).
 		id = strconv.FormatUint(backtestSeq.Add(1), 36)
+		if cn := fastClockNano.Load(); cn != 0 {
+			occurredAt = time.Unix(0, cn)
+		} else {
+			occurredAt = time.Now()
+		}
 	} else {
 		id = uuid.NewString()
+		occurredAt = time.Now()
 	}
 	return &Event{
 		ID:             id,
 		Type:           eventType,
 		TenantID:       tenantID,
 		EnvMode:        envMode,
-		OccurredAt:     time.Now(),
+		OccurredAt:     occurredAt,
 		IdempotencyKey: idempotencyKey,
 		Payload:        payload,
 	}, nil
