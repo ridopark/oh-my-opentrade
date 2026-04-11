@@ -651,30 +651,28 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		if !ok {
 			continue
 		}
-		barEv, err := domain.NewEvent(
+		barEv := domain.NewBacktestEvent(
 			domain.EventMarketBarSanitized,
 			event.TenantID,
 			event.EnvMode,
 			event.IdempotencyKey+"-"+tf.String()+"-htf-bar",
 			closed,
+			event.OccurredAt,
 		)
-		if err == nil {
-			publishBestEffort = append(publishBestEffort, *barEv)
-		}
+		publishBestEffort = append(publishBestEffort, barEv)
 		htfSnap := s.calculator.Update(closed)
 		reg, changedAnchor := s.regimeDetector.Detect(htfSnap)
 		s.anchorRegimes[aggKey] = reg
 		if changedAnchor {
-			regimeShiftedEv, err := domain.NewEvent(
+			regimeShiftedEv := domain.NewBacktestEvent(
 				domain.EventRegimeShifted,
 				event.TenantID,
 				event.EnvMode,
 				event.IdempotencyKey+"-"+tf.String()+"-regime-shifted",
 				reg,
+				event.OccurredAt,
 			)
-			if err == nil {
-				publishBestEffort = append(publishBestEffort, *regimeShiftedEv)
-			}
+			publishBestEffort = append(publishBestEffort, regimeShiftedEv)
 		}
 		if tf == "1h" {
 			if s.lastHTFSnaps == nil {
@@ -712,18 +710,15 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		Str("regime", string(regime.Type)).
 		Float64("regime_strength", regime.Strength).
 		Msg("indicator snapshot")
-	stateUpdatedEv, err := domain.NewEvent(
+	stateUpdatedEv := domain.NewBacktestEvent(
 		domain.EventStateUpdated,
 		event.TenantID,
 		event.EnvMode,
 		event.IdempotencyKey+"-state-updated",
 		snap,
+		event.OccurredAt,
 	)
-	if err != nil {
-		s.mu.Unlock()
-		return fmt.Errorf("monitor: failed to create state updated event: %w", err)
-	}
-	publishStrict = append(publishStrict, *stateUpdatedEv)
+	publishStrict = append(publishStrict, stateUpdatedEv)
 	l.Debug().
 		Str("regime", string(regime.Type)).
 		Float64("strength", regime.Strength).
@@ -731,18 +726,15 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		Msg("regime classification")
 	if changed {
 		l.Info().Str("regime", string(regime.Type)).Msg("market regime shifted")
-		regimeShiftedEv, err := domain.NewEvent(
+		regimeShiftedEv := domain.NewBacktestEvent(
 			domain.EventRegimeShifted,
 			event.TenantID,
 			event.EnvMode,
 			event.IdempotencyKey+"-regime-shifted",
 			regime,
+			event.OccurredAt,
 		)
-		if err != nil {
-			s.mu.Unlock()
-			return fmt.Errorf("monitor: failed to create regime shifted event: %w", err)
-		}
-		publishStrict = append(publishStrict, *regimeShiftedEv)
+		publishStrict = append(publishStrict, regimeShiftedEv)
 	}
 	if s.liveBars[symStr] < settlingBars {
 		s.feedORBBar(bar, snap, true)
