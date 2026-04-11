@@ -291,7 +291,7 @@ func (s *BreakRetestStrategy) OnBar(ctx start.Context, symbol string, bar start.
 	if cfg.AllowedHoursStart != "" && cfg.AllowedHoursEnd != "" {
 		loc := etLocation
 		if cfg.AllowedHoursTZ != "" {
-			if parsed, err := time.LoadLocation(cfg.AllowedHoursTZ); err == nil {
+			if parsed := cachedLocation(cfg.AllowedHoursTZ); parsed != nil {
 				loc = parsed
 			}
 		}

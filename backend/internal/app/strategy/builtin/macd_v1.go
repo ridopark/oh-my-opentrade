@@ -329,8 +329,7 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 
 	// Gate 4: Trading hours.
 	if cfg.AllowedHoursStart != "" && cfg.AllowedHoursEnd != "" {
-		loc, err := time.LoadLocation(cfg.AllowedHoursTZ)
-		if err == nil {
+		if loc := cachedLocation(cfg.AllowedHoursTZ); loc != nil {
 			hhmm := now.In(loc).Format("15:04")
 			if hhmm < cfg.AllowedHoursStart || hhmm >= cfg.AllowedHoursEnd {
 				bmSt.GateHours++
