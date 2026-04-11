@@ -16,6 +16,66 @@ NC='\033[0m'
 info()  { echo -e "${GREEN}[start]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[start]${NC} $*"; }
 
+# ── Worktree safety ──────────────────────────────────────────
+# Refuse to run from a non-primary worktree by default. Running omo-core
+# from a sandbox would collide with the live session on IBKR client_id
+# (single-connection limit), HTTP port 8080, the shared tmux session name,
+# and the shared TimescaleDB. The only safe path is to stop the primary's
+# omo-core first, then override with OMO_ALLOW_SANDBOX_START=1.
+check_worktree_safety() {
+    local primary
+    primary=$(git -C "$ROOT_DIR" worktree list --porcelain 2>/dev/null \
+              | awk '/^worktree / { print $2; exit }')
+    if [[ -z "$primary" || "$ROOT_DIR" == "$primary" ]]; then
+        return  # primary worktree or no worktree awareness — safe
+    fi
+    if [[ "${OMO_ALLOW_SANDBOX_START:-}" == "1" ]]; then
+        warn "OMO_ALLOW_SANDBOX_START=1 set — proceeding in sandbox worktree"
+        warn "(you are responsible for avoiding client_id / port / tmux / DB collisions)"
+        return
+    fi
+    warn "refusing to run start.sh from a non-primary worktree"
+    warn "  current:  $ROOT_DIR"
+    warn "  primary:  $primary"
+    warn ""
+    warn "running omo-core from a sandbox would collide with the live session on:"
+    warn "  - IBKR client_id (single-connection limit per id)"
+    warn "  - HTTP port $OMO_PORT"
+    warn "  - tmux session '$OMO_SESSION'"
+    warn "  - shared TimescaleDB writes"
+    warn ""
+    warn "to override, stop the primary's omo-core first, then rerun with"
+    warn "  OMO_ALLOW_SANDBOX_START=1 ./scripts/start.sh"
+    exit 1
+}
+
+# ── .env bootstrap for worktrees ─────────────────────────────
+# When running from a fresh worktree, .env is not copied from the primary
+# because it's gitignored. Create a symlink so this worktree inherits the
+# primary's environment (IBKR creds, Discord webhook, DB password, feature
+# flags). Edits to the primary's .env are visible everywhere automatically.
+ensure_env() {
+    if [[ -e "$ROOT_DIR/.env" ]]; then
+        return  # already present (file or existing symlink)
+    fi
+    local primary
+    primary=$(git -C "$ROOT_DIR" worktree list --porcelain 2>/dev/null \
+              | awk '/^worktree / { print $2; exit }')
+    if [[ -z "$primary" || "$primary" == "$ROOT_DIR" ]]; then
+        warn "no .env found and no primary worktree detected — cannot bootstrap environment"
+        exit 1
+    fi
+    if [[ ! -f "$primary/.env" ]]; then
+        warn "primary worktree at $primary has no .env either — run setup first"
+        exit 1
+    fi
+    info "symlinking .env from primary worktree: $primary/.env"
+    ln -s "$primary/.env" "$ROOT_DIR/.env"
+}
+
+check_worktree_safety
+ensure_env
+
 kill_port() {
   local port=$1
   local pids
