@@ -1175,16 +1175,20 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	// here would cause a self-deadlock. All state reads/writes are complete.
 	r.mu.Unlock()
 
-	r.logger.Debug("bar processed",
-		"symbol", symbol,
-		"instances_1m", len(oneMinInstances),
-		"htf_timeframes", len(htfNeeded),
-		"signals", len(allSignals),
-		"rsi", indicators.RSI,
-		"volumeSMA", indicators.VolumeSMA,
-		"volume", bar.Volume,
-		"close", bar.Close,
-	)
+	// slog allocates every variadic arg at the call site before the level
+	// check; this Debug fires per-bar per-symbol, so gate it explicitly.
+	if r.logger.Enabled(ctx, slog.LevelDebug) {
+		r.logger.Debug("bar processed",
+			"symbol", symbol,
+			"instances_1m", len(oneMinInstances),
+			"htf_timeframes", len(htfNeeded),
+			"signals", len(allSignals),
+			"rsi", indicators.RSI,
+			"volumeSMA", indicators.VolumeSMA,
+			"volume", bar.Volume,
+			"close", bar.Close,
+		)
+	}
 
 	for _, sig := range allSignals {
 		if !domain.Symbol(sig.Symbol).IsCryptoSymbol() {
