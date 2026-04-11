@@ -58,6 +58,10 @@ Worktrees are created under: $WORKTREE_ROOT/<name>
 Branches are named: <name> (if a branch already exists, it is reused)
 .env is symlinked from the primary worktree automatically.
 
+Environment:
+  CC_CLAUDE_ARGS              baseline claude args prepended to every launch
+                              (word-split on whitespace)
+
 Examples:
   cc                              # scratch: claude-20260411-123456
   cc sprint-5                     # feature branch 'sprint-5' off main
@@ -65,6 +69,11 @@ Examples:
   cc sprint-5 -- --continue       # resume the prior sprint-5 claude session
   cc --list                       # see what worktrees exist
   cc --remove sprint-5            # clean up when done
+
+  # set once in ~/.zshrc to skip permission prompts on every session
+  export CC_CLAUDE_ARGS='--dangerously-skip-permissions'
+  cc sprint-5                     # uses CC_CLAUDE_ARGS automatically
+  cc sprint-5 -- --continue       # CC_CLAUDE_ARGS + --continue
 EOF
 }
 
@@ -115,7 +124,13 @@ case "${CC_ARGS[0]:-}" in
         ;;
     --shared)
         info "launching claude in current dir (shared, no worktree)"
-        exec claude "${PASSTHROUGH[@]}"
+        declare -a SHARED_BASELINE
+        SHARED_BASELINE=()
+        if [[ -n "${CC_CLAUDE_ARGS:-}" ]]; then
+            # shellcheck disable=SC2206
+            SHARED_BASELINE=($CC_CLAUDE_ARGS)
+        fi
+        exec claude "${SHARED_BASELINE[@]}" "${PASSTHROUGH[@]}"
         ;;
     "")
         NAME="claude-$(date +%Y%m%d-%H%M%S)"
@@ -177,6 +192,18 @@ if [[ ! -e "$WORKTREE_PATH/.env" ]]; then
 fi
 
 # ── Launch claude in the worktree ────────────────────────────
+# Baseline claude args come from CC_CLAUDE_ARGS env var, split on whitespace
+# (word-split is desired here — that's how the user specifies multiple flags).
+# Per-invocation args after -- append on top, so a global
+# CC_CLAUDE_ARGS='--dangerously-skip-permissions' plus `cc sprint-5 -- --continue`
+# runs claude with both flags.
+declare -a BASELINE_ARGS
+BASELINE_ARGS=()
+if [[ -n "${CC_CLAUDE_ARGS:-}" ]]; then
+    # shellcheck disable=SC2206
+    BASELINE_ARGS=($CC_CLAUDE_ARGS)
+fi
+
 cd "$WORKTREE_PATH"
-info "launching claude in $WORKTREE_PATH"
-exec claude "${PASSTHROUGH[@]}"
+info "launching claude in $WORKTREE_PATH${CC_CLAUDE_ARGS:+ (CC_CLAUDE_ARGS: $CC_CLAUDE_ARGS)}"
+exec claude "${BASELINE_ARGS[@]}" "${PASSTHROUGH[@]}"

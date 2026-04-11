@@ -353,14 +353,17 @@ The safety guard in both scripts prevents this accident by refusing to run from 
 
 #### Setup (one time)
 
-Add `scripts/` to your `PATH` so you can run `cc` from anywhere:
+Add `scripts/` to your `PATH` and set a baseline of claude args so you don't have to type them every launch:
 
 ```bash
 # in ~/.zshrc or ~/.bashrc
 export PATH="/home/ridopark/src/oh-my-opentrade/scripts:$PATH"
+export CC_CLAUDE_ARGS='--dangerously-skip-permissions'
 ```
 
-Or alias it:
+`CC_CLAUDE_ARGS` is word-split and prepended to every `claude` launch, so all cc invocations pick up your default flags automatically. Per-invocation args via `--` append on top (e.g. `cc sprint-5 -- --continue` runs with both `--dangerously-skip-permissions` and `--continue`).
+
+Or alias `cc` instead of modifying `PATH`:
 ```bash
 alias cc='/home/ridopark/src/oh-my-opentrade/scripts/cc'
 ```
