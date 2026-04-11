@@ -575,55 +575,91 @@ func main() {
 		gapWg.Wait()
 	}
 
+	// Load symbol bar streams in parallel. Sequential GetMarketBars calls
+	// were ~1.6s of startup on an 8-symbol run; TimescaleDB handles concurrent
+	// reads fine and the connection pool has headroom.
+	type loadResult struct {
+		sym  domain.Symbol
+		bars []domain.MarketBar
+		err  error
+	}
+	loadResults := make([]loadResult, len(symbols))
+	var loadWg sync.WaitGroup
+	for i, sym := range symbols {
+		loadWg.Add(1)
+		go func(i int, sym domain.Symbol) {
+			defer loadWg.Done()
+			bars, err := repo.GetMarketBars(ctx, sym, replayTimeframe, fromTime, toTime)
+			loadResults[i] = loadResult{sym: sym, bars: bars, err: err}
+		}(i, sym)
+	}
+	loadWg.Wait()
+
 	streams := make([]*barStream, 0, len(symbols))
 	firstBarTime := make(map[string]time.Time)
-	for _, sym := range symbols {
-		bars, err := repo.GetMarketBars(ctx, sym, replayTimeframe, fromTime, toTime)
-		if err != nil {
-			log.Fatal().Err(err).Str("symbol", sym.String()).Msg("failed to load market bars")
+	for _, r := range loadResults {
+		if r.err != nil {
+			log.Fatal().Err(r.err).Str("symbol", r.sym.String()).Msg("failed to load market bars")
 		}
-		streams = append(streams, &barStream{symbol: sym, bars: bars})
-		if len(bars) > 0 {
-			firstBarTime[sym.String()] = bars[0].Time
+		streams = append(streams, &barStream{symbol: r.sym, bars: r.bars})
+		if len(r.bars) > 0 {
+			firstBarTime[r.sym.String()] = r.bars[0].Time
 		}
-		log.Info().Str("symbol", sym.String()).Int("bars", len(bars)).Msg("loaded bars")
+		log.Info().Str("symbol", r.sym.String()).Int("bars", len(r.bars)).Msg("loaded bars")
 	}
 	sort.Slice(streams, func(i, j int) bool { return streams[i].symbol.String() < streams[j].symbol.String() })
 
 	const minWarmupBars = 250
 	warmupBarsCache := make(map[string][]domain.MarketBar, len(symbols))
-	for _, sym := range symbols {
-		warmupEnd := fromTime
-		if t, ok := firstBarTime[sym.String()]; ok {
-			warmupEnd = t
-		}
-		warmupStart := warmupEnd.Add(-7 * 24 * time.Hour)
-
-		bars, fetchErr := repo.GetMarketBars(ctx, sym, replayTimeframe, warmupStart, warmupEnd)
-		if fetchErr != nil {
-			warmupLog.Warn().Err(fetchErr).Str("symbol", sym.String()).Msg("warmup fetch failed")
-		}
-		if len(bars) < minWarmupBars && backtestFlag && alpacaAdapt != nil {
-			apiFrom := warmupEnd.Add(-30 * 24 * time.Hour)
-			apiBars, apiErr := alpacaAdapt.GetHistoricalBars(ctx, sym, replayTimeframe, apiFrom, warmupEnd)
-			if apiErr == nil && len(apiBars) > len(bars) {
-				warmupLog.Info().Str("symbol", sym.String()).Int("db_bars", len(bars)).Int("api_bars", len(apiBars)).Msg("fetched warmup bars from market data API")
-				for _, b := range apiBars {
-					_ = repo.SaveMarketBar(ctx, b)
-				}
-				bars = apiBars
-			} else if apiErr != nil {
-				warmupLog.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("API warmup fetch failed")
+	// Phase 1: parallel fetch of warmup bars (DB-bound, no shared state).
+	type warmResult struct {
+		sym  domain.Symbol
+		bars []domain.MarketBar
+	}
+	warmResults := make([]warmResult, len(symbols))
+	var warmWg sync.WaitGroup
+	for i, sym := range symbols {
+		warmWg.Add(1)
+		go func(i int, sym domain.Symbol) {
+			defer warmWg.Done()
+			warmupEnd := fromTime
+			if t, ok := firstBarTime[sym.String()]; ok {
+				warmupEnd = t
 			}
-		}
-		if len(bars) > minWarmupBars {
-			bars = bars[len(bars)-minWarmupBars:]
-		}
-		warmupBarsCache[sym.String()] = bars
-		n := monitorSvc.WarmUp(bars)
-		monitorSvc.ResetSessionIndicators(sym.String())
-		monitorSvc.MarkReady(sym.String())
-		warmupLog.Info().Str("symbol", sym.String()).Int("warmup_bars", n).Msg("indicator warmup done")
+			warmupStart := warmupEnd.Add(-7 * 24 * time.Hour)
+
+			bars, fetchErr := repo.GetMarketBars(ctx, sym, replayTimeframe, warmupStart, warmupEnd)
+			if fetchErr != nil {
+				warmupLog.Warn().Err(fetchErr).Str("symbol", sym.String()).Msg("warmup fetch failed")
+			}
+			if len(bars) < minWarmupBars && backtestFlag && alpacaAdapt != nil {
+				apiFrom := warmupEnd.Add(-30 * 24 * time.Hour)
+				apiBars, apiErr := alpacaAdapt.GetHistoricalBars(ctx, sym, replayTimeframe, apiFrom, warmupEnd)
+				if apiErr == nil && len(apiBars) > len(bars) {
+					warmupLog.Info().Str("symbol", sym.String()).Int("db_bars", len(bars)).Int("api_bars", len(apiBars)).Msg("fetched warmup bars from market data API")
+					for _, b := range apiBars {
+						_ = repo.SaveMarketBar(ctx, b)
+					}
+					bars = apiBars
+				} else if apiErr != nil {
+					warmupLog.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("API warmup fetch failed")
+				}
+			}
+			if len(bars) > minWarmupBars {
+				bars = bars[len(bars)-minWarmupBars:]
+			}
+			warmResults[i] = warmResult{sym: sym, bars: bars}
+		}(i, sym)
+	}
+	warmWg.Wait()
+
+	// Phase 2: serial WarmUp (mutates monitorSvc shared state).
+	for _, wr := range warmResults {
+		warmupBarsCache[wr.sym.String()] = wr.bars
+		n := monitorSvc.WarmUp(wr.bars)
+		monitorSvc.ResetSessionIndicators(wr.sym.String())
+		monitorSvc.MarkReady(wr.sym.String())
+		warmupLog.Info().Str("symbol", wr.sym.String()).Int("warmup_bars", n).Msg("indicator warmup done")
 	}
 
 	for _, s := range streams {
@@ -665,11 +701,20 @@ func main() {
 		warmupLog.Info().Msg("strategy runner pending states cleared after warmup")
 
 		sessionResolver := backtest.NewSessionResolver(loc)
+		// Parallelize per-symbol session loads — pure DB work, no shared state.
+		// The resolver's Load method is safe to call concurrently on different
+		// symbols because it indexes state by symbol under its own lock.
+		var sessWg sync.WaitGroup
 		for _, sym := range symbols {
-			if loadErr := sessionResolver.Load(ctx, sqlDB, sym, fromTime, toTime); loadErr != nil {
-				warmupLog.Warn().Err(loadErr).Str("symbol", sym.String()).Msg("failed to load session data")
-			}
+			sessWg.Add(1)
+			go func(sym domain.Symbol) {
+				defer sessWg.Done()
+				if loadErr := sessionResolver.Load(ctx, sqlDB, sym, fromTime, toTime); loadErr != nil {
+					warmupLog.Warn().Err(loadErr).Str("symbol", sym.String()).Msg("failed to load session data")
+				}
+			}(sym)
 		}
+		sessWg.Wait()
 
 		aiResolver := strategy.NewAIAnchorResolver(llm.NewNoOpAdvisor(), nil, nil)
 		aiResolver.SetSessionResolver(sessionResolver.ResolveAnchors)
