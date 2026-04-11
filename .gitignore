@@ -1,9 +1,7 @@
-# Binaries
+# Binaries — every backend/omo-* file at the backend root is a
+# compiled Go entrypoint produced by `go build ./cmd/<name>`
 backend/bin/
-backend/omo-core
-backend/omo-replay
-backend/omo-backfill-13f
-backend/omo-data
+backend/omo-*
 
 # Environment
 .env
