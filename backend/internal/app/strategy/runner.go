@@ -887,9 +887,8 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		return fmt.Errorf("strategy runner: payload is not a MarketBar, got %T", event.Payload)
 	}
 
-	r.lastBarTime.Store(time.Now().UnixNano())
-
 	loopStart := time.Now()
+	r.lastBarTime.Store(loopStart.UnixNano())
 	symbol := bar.Symbol.String()
 
 	// Feed SPY/QQQ 1m bars to the tide tracker before dispatching so AVWAP
