@@ -20,6 +20,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/backfill"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
 	"github.com/oh-my-opentrade/backend/internal/app/debate"
+	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
@@ -444,6 +445,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	// Tide tracker for AVWAP SPY/QQQ telemetry (Phase 1, data-collection only).
+	// 30-bar warmup matches the live bootstrap (ingestion.go).
+	tideTracker := gate.NewIndexTideTracker(30)
+
 	pipeline, err := bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
 		EventBus:        r.infra.EventBus,
 		SpecStore:       specStore,
@@ -459,6 +464,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		DisableEnricher: r.cfg.NoAI,
 		Logger:          r.log,
 		BacktestID:      r.id,
+		TideTracker:     tideTracker,
 	})
 	if err != nil {
 		r.status.Store("error")

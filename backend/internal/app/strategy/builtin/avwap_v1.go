@@ -206,6 +206,21 @@ type AVWAPState struct {
 	BarHighs50   []float64          // rolling 50-bar high window for Fibonacci
 	BarLows50    []float64          // rolling 50-bar low window for Fibonacci
 	KeyLevels    map[string]float64 // key price levels (pd_high, pd_low, or_high, or_low)
+
+	// Market-tide telemetry. Populated per-bar by the strategy runner via
+	// SetTideData just before OnBar. Phase 1 of SPY-tide plumbing — DATA
+	// COLLECTION ONLY, never read by any gate or filter.
+	SpyTideDevBps  float64 // (last_close - intraday_vwap) / intraday_vwap * 10000
+	SpyTideReady   bool    // false until the index tracker has enough warmup bars
+	TideIndexName  string  // "SPY" or "QQQ" — which index this stock maps to
+}
+
+// SetTideData is called by the strategy runner before every OnBar with the
+// current SPY/QQQ intraday-VWAP deviation for this symbol. Telemetry only.
+func (s *AVWAPState) SetTideData(devBps float64, ready bool, indexName string) {
+	s.SpyTideDevBps = devBps
+	s.SpyTideReady = ready
+	s.TideIndexName = indexName
 }
 
 // ResetGatedBarTime clears the dedup guard so the next live bar emits an EntryGated event.
@@ -252,6 +267,11 @@ type entryContext struct {
 	lockedShort  bool
 	etLocation   *time.Location
 	keyLevels    map[string]float64
+
+	// Market-tide snapshot (Phase 1 telemetry only).
+	spyTideDevBps float64
+	spyTideReady  bool
+	tideIndexName string
 }
 
 // entryTelemetryTags returns a map of entry-time telemetry fields derived from
@@ -316,6 +336,19 @@ func entryTelemetryTags(ec entryContext, ind start.IndicatorData) map[string]str
 	// AVWAP slope (already computed, surfaced for uniform access)
 	if ec.slopeOK {
 		tags["avwap_slope_bps"] = fmt.Sprintf("%.3f", ec.avwapSlope)
+	}
+
+	// Market-tide deviation (SPY or QQQ intraday-VWAP basis, in bps).
+	// Emitted ONLY when the tracker is warmed up, so an absent tag means
+	// "no reading" rather than "tide is exactly zero" — important for
+	// post-hoc bucketing. Phase 1 of SPY-tide plumbing (telemetry only).
+	if ec.spyTideReady {
+		switch ec.tideIndexName {
+		case "QQQ":
+			tags["qqq_tide_dev_bps"] = fmt.Sprintf("%.1f", ec.spyTideDevBps)
+		case "SPY":
+			tags["spy_tide_dev_bps"] = fmt.Sprintf("%.1f", ec.spyTideDevBps)
+		}
 	}
 
 	return tags
@@ -1999,6 +2032,9 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 			avwapSlope:    slopeBPS,
 			slopeOK:       slopeOK,
 			keyLevels:     s.KeyLevels,
+			spyTideDevBps: s.SpyTideDevBps,
+			spyTideReady:  s.SpyTideReady,
+			tideIndexName: s.TideIndexName,
 		}
 		_, _ = s.evaluateEntries(ec)
 	}
@@ -2600,6 +2636,9 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		regimeTag:     regimeTag,
 		etLocation:    etLocation,
 		keyLevels:     avwapSt.KeyLevels,
+		spyTideDevBps: avwapSt.SpyTideDevBps,
+		spyTideReady:  avwapSt.SpyTideReady,
+		tideIndexName: avwapSt.TideIndexName,
 	}
 
 	// 5. Exit signals (check even if cooldown would block new entries).
