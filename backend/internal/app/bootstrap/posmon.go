@@ -21,6 +21,7 @@ type PosMonitorDeps struct {
 	SnapshotFn   positionmonitor.IndicatorSnapshotFunc // optional — ATR/VWAP/SD for exit rule evaluation
 	OptionsPrice ports.OptionsPricePort                // optional — polls live option prices so MAX_LOSS/PROFIT_TARGET fire intraday
 	IntentJournal ports.OrderIntentJournal             // optional — Sprint 2 journal-aware startup reconciliation
+	Notifier     ports.NotifierPort                    // optional — Discord/Telegram sink for bootstrap reconciliation alerts
 	TenantID     string
 	EnvMode      domain.EnvMode
 	Clock        func() time.Time
@@ -71,6 +72,9 @@ func BuildPositionMonitor(deps PosMonitorDeps) (*PosMonitorBundle, error) {
 		}
 		if deps.IntentJournal != nil {
 			opts = append(opts, positionmonitor.WithIntentJournal(deps.IntentJournal))
+		}
+		if deps.Notifier != nil {
+			opts = append(opts, positionmonitor.WithNotifier(deps.Notifier))
 		}
 	}
 

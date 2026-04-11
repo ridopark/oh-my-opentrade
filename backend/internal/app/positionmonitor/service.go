@@ -31,6 +31,10 @@ type Service struct {
 	broker        ports.BrokerPort
 	repo          ports.RepositoryPort
 	intentJournal ports.OrderIntentJournal // Sprint 2 — nil means legacy cancel-all bootstrap
+	// notifier, when non-nil, is used by the bootstrap reconciler to raise
+	// Discord/Telegram alerts for unmanaged broker orders and lost journal
+	// intents. Nil is safe — alerts fall back to log warnings only.
+	notifier     ports.NotifierPort
 	specStore    portstrategy.SpecStore
 	log          zerolog.Logger
 	nowFunc      func() time.Time
@@ -170,10 +174,28 @@ func WithRepo(r ports.RepositoryPort) Option {
 // WithIntentJournal injects the Sprint 2 order-intent journal. When set,
 // bootstrap uses the journal-aware reconciliation flow; when nil, it
 // falls back to the legacy cancel-all behavior. Gated at the caller by
-// OMO_ORDER_JOURNAL_ENABLED.
+// cfg.OrderJournalEnabled.
 func WithIntentJournal(j ports.OrderIntentJournal) Option {
 	return func(s *Service) { s.intentJournal = j }
 }
+
+// WithNotifier injects a NotifierPort so the startup reconciler can push
+// operator-facing alerts (unmanaged broker orders, lost journal intents,
+// fallback trips) through the same Discord/Telegram fan-out the rest of
+// the system uses. Nil is safe — alerts fall back to log warnings only.
+func WithNotifier(n ports.NotifierPort) Option {
+	return func(s *Service) { s.notifier = n }
+}
+
+// SetNotifier is a post-construction setter for the reconciliation
+// notifier, mirroring the existing Runner.SetNotifier pattern. Needed
+// because cmd/omo-core constructs the position monitor before the
+// notification adapters are wired (revaluator depends on posMonitor,
+// notifiers depend on neither, but the current init order builds pos-
+// Monitor first). Reconciliation alerts only fire during bootstrap
+// which runs when Start(ctx) is invoked — well after init — so wiring
+// the notifier post-construction is safe.
+func (s *Service) SetNotifier(n ports.NotifierPort) { s.notifier = n }
 
 // WithSpecStore injects a SpecStore for resolving exit rules during bootstrap.
 func WithSpecStore(ss portstrategy.SpecStore) Option {

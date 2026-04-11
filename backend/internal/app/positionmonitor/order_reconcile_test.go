@@ -223,3 +223,81 @@ func TestReconcileOpenOrdersOnBoot_HappyPath(t *testing.T) {
 	assert.Equal(t, 0, broker.cancelAllCalls, "matched order must NOT be cancelled on happy path")
 	assert.Len(t, journal.lostIDs, 0)
 }
+
+// recordingNotifier captures every message delivered through NotifierPort
+// so tests can assert bootstrap reconciliation alerts actually reach the
+// sink rather than being silently logged away.
+type recordingNotifier struct {
+	mu   sync.Mutex
+	msgs []string
+	err  error
+}
+
+func (r *recordingNotifier) Notify(_ context.Context, _ string, message string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.msgs = append(r.msgs, message)
+	return r.err
+}
+
+func (r *recordingNotifier) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.msgs)
+}
+
+func TestReconcileOpenOrdersOnBoot_NotifierReceivesUnmanagedAlert(t *testing.T) {
+	// An unmanaged broker order (broker has it, journal does not) must
+	// produce exactly one NotifierPort.Notify call in addition to the log
+	// warning. This is Sprint 3 cleanup: before the SetNotifier wiring the
+	// bootstrap reconciler logged-only and no operator ever saw the alert.
+	broker := &mockBroker{openOrders: []ports.OpenOrder{makeOpenOrder("BRK-UNMANAGED", "AAPL", "sell")}}
+	journal := &mockIntentJournal{} // empty — orphans every broker order
+	s := newReconcileService(t, broker, journal)
+
+	notifier := &recordingNotifier{}
+	s.SetNotifier(notifier)
+
+	s.reconcileOpenOrdersOnBoot(context.Background())
+
+	require.Equal(t, 1, notifier.count(), "unmanaged broker order must trigger exactly one notifier message")
+	assert.Contains(t, notifier.msgs[0], "unmanaged broker orders")
+	assert.Equal(t, 0, broker.cancelAllCalls, "unmanaged orders must not be auto-cancelled")
+}
+
+func TestReconcileOpenOrdersOnBoot_NotifierReceivesLostIntentAlert(t *testing.T) {
+	// Journal has a submitted row the broker no longer reports — reconciler
+	// marks it lost and must surface the alert through the notifier.
+	broker := &mockBroker{openOrders: []ports.OpenOrder{}} // broker has nothing
+	lostRow := makeJournalRow("BRK-LOST", "AAPL", domain.OrderIntentJournalSubmitted)
+	journal := &mockIntentJournal{openIntentsRows: []domain.OrderIntentJournalRow{lostRow}}
+	s := newReconcileService(t, broker, journal)
+
+	notifier := &recordingNotifier{}
+	s.SetNotifier(notifier)
+
+	s.reconcileOpenOrdersOnBoot(context.Background())
+
+	require.Equal(t, 1, notifier.count(), "lost journal intent must trigger exactly one notifier message")
+	assert.Contains(t, notifier.msgs[0], "marked lost")
+	assert.Len(t, journal.lostIDs, 1)
+}
+
+func TestReconcileOpenOrdersOnBoot_NotifierDeliveryFailure_StillLogs(t *testing.T) {
+	// A failing notifier must not propagate an error out of the reconciler
+	// or prevent subsequent work. The log.Warn alert is already unconditional
+	// in notify(); this test guards against a future refactor that makes the
+	// log path conditional on successful delivery.
+	broker := &mockBroker{openOrders: []ports.OpenOrder{makeOpenOrder("BRK-X", "AAPL", "sell")}}
+	journal := &mockIntentJournal{}
+	s := newReconcileService(t, broker, journal)
+
+	notifier := &recordingNotifier{err: errors.New("discord webhook down")}
+	s.SetNotifier(notifier)
+
+	require.NotPanics(t, func() {
+		s.reconcileOpenOrdersOnBoot(context.Background())
+	})
+	// Notifier saw the call even though it returned an error.
+	assert.Equal(t, 1, notifier.count())
+}

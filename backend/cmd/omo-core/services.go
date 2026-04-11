@@ -250,6 +250,13 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	// }
 	multiNotifier := notification.NewMultiNotifier(notifiers...)
 	svc.notifier = multiNotifier
+	// Position monitor was built earlier in this function (before the
+	// notifier adapters existed), so wire the reconciliation notifier now
+	// that the sink is available. Bootstrap reconciliation runs at Start()
+	// time, well after this point, so the late-binding is safe.
+	if svc.posMonitor != nil {
+		svc.posMonitor.SetNotifier(multiNotifier)
+	}
 	notifyLog := log.With().Str("component", "notify").Logger()
 	chartGen := charting.NewGonumChartGenerator()
 	var notifyErr error
