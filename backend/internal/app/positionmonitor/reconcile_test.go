@@ -147,6 +147,56 @@ func TestReconcile_QuantitySyncFromBroker(t *testing.T) {
 	assert.Equal(t, 8.0, svc.positions[key].Quantity)
 }
 
+// countingBroker wraps mockBroker and counts GetPositions calls so we can
+// assert that reconcile short-circuits without touching the broker.
+type countingBroker struct {
+	mockBroker
+	getPositionsCalls int
+}
+
+func (b *countingBroker) GetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
+	b.getPositionsCalls++
+	return b.mockBroker.GetPositions(ctx, tenantID, envMode)
+}
+
+// TestReconcile_ShutdownFlag_ShortCircuits ensures SignalShutdown() makes
+// both reconcile entry points no-op. The guard exists so a reconcile tick
+// that fires between orchestrator.Stop() and broker.Close() during graceful
+// shutdown cannot emit a spurious reconciliation trade or stale position
+// event against a half-torn-down broker.
+func TestReconcile_ShutdownFlag_ShortCircuits(t *testing.T) {
+	broker := &countingBroker{mockBroker: mockBroker{positions: nil}}
+	repo := &capturingRepo{}
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithBroker(broker),
+		WithRepo(repo),
+	)
+	seedPosition(t, svc, "AAPL")
+	require.Equal(t, 1, svc.PositionCount())
+
+	// Before shutdown: both loops hit the broker.
+	svc.reconcileWithBroker(context.Background())
+	svc.reconcileGlobal(context.Background())
+	assert.Equal(t, 2, broker.getPositionsCalls, "both reconcile loops should call broker normally")
+
+	// Signal shutdown; subsequent calls must be no-ops.
+	svc.SignalShutdown()
+	require.True(t, svc.IsShuttingDown())
+
+	svc.reconcileWithBroker(context.Background())
+	svc.reconcileWithBroker(context.Background())
+	svc.reconcileGlobal(context.Background())
+	svc.reconcileGlobal(context.Background())
+
+	assert.Equal(t, 2, broker.getPositionsCalls,
+		"no broker calls must be made after SignalShutdown")
+	assert.Equal(t, 1, svc.PositionCount(), "position state must not be mutated during shutdown")
+	assert.Empty(t, repo.savedTrades, "no reconciliation trades must be written during shutdown")
+}
+
 func TestReconcile_DBOrphanPatching(t *testing.T) {
 	broker := &mockBroker{positions: nil}
 	repo := &capturingRepo{}

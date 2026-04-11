@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
@@ -64,6 +65,12 @@ type Service struct {
 	// Backtest mode flags.
 	disableTickLoop  bool // prevents runTickLoop goroutine from starting
 	disableReconcile bool // prevents bootstrapPositions from running at Start
+
+	// isShuttingDown is set via SignalShutdown() from the main shutdown
+	// sequence. When true, all reconcile entry points early-return so a
+	// reconciliation tick firing between orchestrator.Stop() and
+	// broker.Close() cannot emit stale reconciliation trades or events.
+	isShuttingDown atomic.Bool
 }
 
 // fillMsg is the internal message type enqueued when a FillReceived event arrives.
@@ -642,6 +649,21 @@ func (s *Service) drainFills() {
 // Stop signals the actor goroutines to shut down.
 func (s *Service) Stop() {
 	close(s.stopCh)
+}
+
+// SignalShutdown marks the service as shutting down so that any subsequent
+// reconciliation tick becomes a no-op. Call this from the main shutdown
+// sequence BEFORE closing the broker connection — it prevents a reconcile
+// tick from racing the shutdown and emitting a bogus reconciliation trade
+// or position-close event against a half-torn-down broker.
+func (s *Service) SignalShutdown() {
+	s.isShuttingDown.Store(true)
+}
+
+// IsShuttingDown reports whether SignalShutdown has been called. Exposed for
+// tests that need to assert the guard is wired correctly.
+func (s *Service) IsShuttingDown() bool {
+	return s.isShuttingDown.Load()
 }
 
 // PositionCount returns the number of actively monitored positions (for diagnostics).
