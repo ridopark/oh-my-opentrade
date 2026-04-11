@@ -11,6 +11,7 @@ import {
   TrendingUp,
   TrendingDown,
   Loader2,
+  X,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -34,6 +35,7 @@ import {
   useBacktestHistoryList,
   useBacktestHistoryDetail,
   useSetBacktestPinned,
+  useSetBacktestTags,
   type BacktestRunSummary,
   type EquityPoint,
 } from "@/hooks/use-backtest-history";
@@ -493,20 +495,7 @@ export default function BacktestHistoryPage() {
                 />
               </div>
 
-              <div className="rounded-md border p-3 space-y-2">
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <TagIcon className="h-3.5 w-3.5" /> Tags
-                </div>
-                <div className="flex gap-1 flex-wrap">
-                  {detail.data.summary.tags.length === 0 ? (
-                    <span className="text-xs text-muted-foreground">no tags</span>
-                  ) : (
-                    detail.data.summary.tags.map((t) => (
-                      <Badge key={t} variant="secondary">{t}</Badge>
-                    ))
-                  )}
-                </div>
-              </div>
+              <TagEditor id={detail.data.summary.id} tags={detail.data.summary.tags} />
 
               <div className="rounded-md border p-3">
                 <div className="text-xs text-muted-foreground mb-2">Strategy DNA (snapshot)</div>
@@ -654,6 +643,90 @@ function Metric({
       >
         {value}
       </div>
+    </div>
+  );
+}
+
+function TagEditor({ id, tags }: { id: string; tags: string[] }) {
+  const mutate = useSetBacktestTags();
+  // Local draft so the UI updates instantly; the server roundtrip runs in
+  // the background via onSuccess invalidation. Re-sync when the source tags
+  // change (e.g. selecting a different run) via the `id` key on the parent.
+  const [draft, setDraft] = useState<string[]>(tags);
+  const [input, setInput] = useState("");
+
+  // When switching to a different run, reset local state.
+  // `id` is the dependency; we use useEffect to avoid an effect-free render.
+  useMemo(() => {
+    setDraft(tags);
+    setInput("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  const commit = (next: string[]) => {
+    setDraft(next);
+    mutate.mutate({ id, tags: next });
+  };
+
+  const addFromInput = () => {
+    const parts = input
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0 && !draft.includes(s));
+    if (parts.length === 0) {
+      setInput("");
+      return;
+    }
+    commit([...draft, ...parts]);
+    setInput("");
+  };
+
+  const removeTag = (t: string) => {
+    commit(draft.filter((x) => x !== t));
+  };
+
+  return (
+    <div className="rounded-md border p-3 space-y-2">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <TagIcon className="h-3.5 w-3.5" /> Tags
+        {mutate.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+      </div>
+      <div className="flex gap-1 flex-wrap items-center">
+        {draft.map((t) => (
+          <Badge key={t} variant="secondary" className="gap-1 pr-1">
+            {t}
+            <button
+              type="button"
+              onClick={() => removeTag(t)}
+              className="rounded-sm hover:bg-foreground/10 p-0.5"
+              aria-label={`remove tag ${t}`}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </Badge>
+        ))}
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === ",") {
+              e.preventDefault();
+              addFromInput();
+            } else if (e.key === "Backspace" && input === "" && draft.length > 0) {
+              e.preventDefault();
+              commit(draft.slice(0, -1));
+            }
+          }}
+          onBlur={() => {
+            if (input.trim()) addFromInput();
+          }}
+          placeholder={draft.length === 0 ? "add tags (Enter to commit)" : "+ add"}
+          className="flex-1 min-w-[140px] h-7 px-2 text-xs bg-transparent border-0 outline-none focus:ring-0 placeholder:text-muted-foreground"
+        />
+      </div>
+      {mutate.isError && (
+        <div className="text-[10px] text-red-500">save failed: {String(mutate.error)}</div>
+      )}
     </div>
   );
 }
