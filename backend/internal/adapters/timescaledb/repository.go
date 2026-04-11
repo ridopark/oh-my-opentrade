@@ -141,6 +141,35 @@ func (r *Repository) SaveMarketBars(ctx context.Context, bars []domain.MarketBar
 	return idx, nil
 }
 
+// estimateBarCount returns a rough upper bound on bars in a window, used to
+// pre-size result slices and skip most append grow-reallocations. The guess
+// is based on extended trading hours (4am-8pm ET) so pre-/post-market bars
+// don't overflow.
+func estimateBarCount(tf domain.Timeframe, from, to time.Time) int {
+	days := int(to.Sub(from)/(24*time.Hour)) + 1
+	if days < 1 {
+		days = 1
+	}
+	var perDay int
+	switch tf {
+	case "1m":
+		perDay = 960 // 16h extended * 60
+	case "5m":
+		perDay = 192
+	case "15m":
+		perDay = 64
+	case "30m":
+		perDay = 32
+	case "1h":
+		perDay = 16
+	case "1d":
+		perDay = 1
+	default:
+		perDay = 960
+	}
+	return days * perDay
+}
+
 // GetMarketBars retrieves historical market bars.
 // It returns the bars ordered by time ascending.
 func (r *Repository) GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
@@ -154,7 +183,12 @@ func (r *Repository) GetMarketBars(ctx context.Context, symbol domain.Symbol, ti
 	}
 	defer rows.Close()
 
-	var bars []domain.MarketBar
+	// Pre-size the slice based on the time window. 1m bars pack 390 RTH
+	// bars per trading day; add headroom for pre-/post-market and a little
+	// over-estimate to avoid grow-slice thrash while keeping peak memory
+	// bounded (the largest allocation is the final capacity).
+	est := estimateBarCount(timeframe, from, to)
+	bars := make([]domain.MarketBar, 0, est)
 	var sym, tf string
 	var ema9, ema21, ema50, ema200 sql.NullFloat64
 	var avwapsRaw sql.NullString
