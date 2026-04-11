@@ -739,7 +739,11 @@ func main() {
 				simBrokerInst.UpdatePrice(bar.Symbol, bar.Close, bar.Time)
 			}
 
-			evt, err := domain.NewEvent(domain.EventMarketBarReceived, tenantID, envMode, bar.Time.String()+string(bar.Symbol), bar)
+			// Avoid bar.Time.String() — time.Time.Format was ~450k allocs
+			// per backtest. The integer nano stamp is unique-per-bar and
+			// cheaper to format.
+			idemKey := strconv.FormatInt(bar.Time.UnixNano(), 36) + string(bar.Symbol)
+			evt, err := domain.NewEvent(domain.EventMarketBarReceived, tenantID, envMode, idemKey, bar)
 			if err != nil {
 				log.Error().Err(err).Str("symbol", bar.Symbol.String()).Msg("failed to create MarketBarReceived event")
 				continue

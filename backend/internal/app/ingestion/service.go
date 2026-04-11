@@ -102,11 +102,20 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 
 	start := time.Now()
 
-	l := s.log.With().
-		Str("symbol", string(bar.Symbol)).
-		Str("timeframe", string(bar.Timeframe)).
-		Time("bar_time", bar.Time).
-		Logger()
+	// Skip allocating a per-bar child logger in quiet runs — the downstream
+	// l.Debug/l.Warn lines check the level at emit time, but .With().Str()...
+	// .Logger() still allocates a new context per bar. ~420k allocs per
+	// backtest per pprof.
+	var l zerolog.Logger
+	if s.log.GetLevel() <= zerolog.DebugLevel {
+		l = s.log.With().
+			Str("symbol", string(bar.Symbol)).
+			Str("timeframe", string(bar.Timeframe)).
+			Time("bar_time", bar.Time).
+			Logger()
+	} else {
+		l = s.log
+	}
 
 	// Hold the mutex ONLY for the adaptive filter — it has internal state
 	// (running averages, z-scores) that requires serialized access.
