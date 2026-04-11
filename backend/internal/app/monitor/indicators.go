@@ -35,68 +35,79 @@ const (
 	emaSlopeWindow   = 10
 )
 
-// symbolState tracks the internal state required to compute technical indicators
-// for a single symbol over time.
+// symbolState tracks the internal state required to compute technical
+// indicators for a single symbol over time.
+//
+// Field order is chosen for cache locality: slice headers and the hot
+// per-bar float64 fields come first so they share as few cache lines as
+// possible when the hot loop touches them. All bool flags are packed at
+// the tail to avoid padding between floats. Seed-only accumulators
+// (ema200Sum, dxSum) live near the end since they stop being touched
+// after initialisation.
 type symbolState struct {
-	closes        []float64
-	highs         []float64
-	lows          []float64
-	volumes       []float64
-	stochKs       []float64
-	// volumeSum20 is the running sum of the last volumeSMAPeriod volumes
-	// so volumeSMA is O(1) per bar instead of re-summing 20 floats every call.
-	volumeSum20 float64
-	// closesSum20 is the running sum of the last bbPeriod closes (used by
-	// Bollinger Bands middle / SMA). O(1) per bar vs re-summing every call.
-	closesSum20 float64
-	ema9          float64
-	ema21         float64
-	ema50         float64
-	ema200        float64
-	// ema200Sum / ema200Count are a dedicated seed accumulator so the
-	// closes window can stay at 60 bars without starving EMA200's 200-bar
-	// initial SMA. Both are zeroed once ema200Init flips to true.
-	ema200Sum     float64
-	ema200Count   int
-	ema9Init      bool
-	ema21Init     bool
-	ema50Init     bool
-	ema200Init    bool
-	emaFast       float64
-	emaSlow       float64
-	emaFastInit   bool
-	emaSlowInit   bool
+	// === Hot slices — headers (24 bytes each) touched every bar ===
+	closes       []float64
+	highs        []float64
+	lows         []float64
+	volumes      []float64
+	stochKs      []float64
+	bbBandwidths []float64
+	ema50History []float64
+
+	// === Hot float64 fields (8 bytes each) touched every bar ===
+	// Primary EMAs
+	ema9   float64
+	ema21  float64
+	ema50  float64
+	ema200 float64
+	// VWAP + Welford variance accumulator
 	vwapNumerator float64
 	vwapDenom     float64
-	vwapM2        float64 // Welford's online variance accumulator for VWAP SD
-	atr           float64
-	atrInit       bool
-	prevClose     float64
-	prevCloseSet  bool
-
-	// MACD
-	ema12     float64
-	ema26     float64
-	ema12Init bool
-	ema26Init bool
-	macdSig   float64 // 9-EMA of MACD line
-	macdSigInit bool
-	macdCount int // bars since both EMAs initialized (for signal seeding)
-
-	// ADX
-	plusDM14  float64 // Wilder-smoothed +DM
-	minusDM14 float64 // Wilder-smoothed -DM
-	trSmooth  float64 // Wilder-smoothed TR (for DI computation)
+	vwapM2        float64
+	// Incremental SMA running sums
+	volumeSum20 float64
+	closesSum20 float64
+	// ATR / prev-bar state
+	atr       float64
+	prevClose float64
+	prevHigh  float64
+	// MACD EMAs + signal line
+	ema12   float64
+	ema26   float64
+	macdSig float64
+	// ADX Wilder-smoothed running values
+	plusDM14  float64
+	minusDM14 float64
+	trSmooth  float64
 	adx       float64
-	adxInit   bool
-	dxCount   int // DX values accumulated for initial ADX seed
-	dxSum     float64
 
-	// Regime score
-	ema50History  []float64
-	bbBandwidths  []float64
-	prevHigh      float64
-	prevHighSet   bool
+	// === Less-hot float64 — optional custom EMAs ===
+	emaFast float64
+	emaSlow float64
+
+	// === Seed-only float64 — populated until init then zeroed ===
+	ema200Sum float64 // running sum for EMA200 initial SMA seed
+	dxSum     float64 // running sum for ADX initial seed
+
+	// === Integer counters ===
+	ema200Count int
+	macdCount   int
+	dxCount     int
+
+	// === Boolean flags (packed at tail to minimize padding) ===
+	ema9Init     bool
+	ema21Init    bool
+	ema50Init    bool
+	ema200Init   bool
+	emaFastInit  bool
+	emaSlowInit  bool
+	atrInit      bool
+	prevCloseSet bool
+	prevHighSet  bool
+	ema12Init    bool
+	ema26Init    bool
+	macdSigInit  bool
+	adxInit      bool
 }
 
 type emaConfig struct {
