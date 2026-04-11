@@ -182,17 +182,18 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 
 	// Position monitor (price cache + exit rule evaluation, via shared bootstrap builder)
 	posMonBundle, err := bootstrap.BuildPositionMonitor(bootstrap.PosMonitorDeps{
-		EventBus:     infra.eventBus,
-		PositionGate: execBundle.PositionGate,
-		Broker:       infra.ibkrBroker,
-		Repo:         infra.repo,
-		SnapshotFn:   svc.monitor.GetLastSnapshot,
-		OptionsPrice: infra.alpacaData,
-		TenantID:     "default",
-		EnvMode:      domain.EnvModePaper,
-		Clock:        time.Now,
-		IsBacktest:   false,
-		Logger:       log,
+		EventBus:      infra.eventBus,
+		PositionGate:  execBundle.PositionGate,
+		Broker:        infra.ibkrBroker,
+		Repo:          infra.repo,
+		SnapshotFn:    svc.monitor.GetLastSnapshot,
+		OptionsPrice:  infra.alpacaData,
+		TenantID:      "default",
+		EnvMode:       domain.EnvModePaper,
+		Clock:         time.Now,
+		IsBacktest:    false,
+		Logger:        log,
+		IntentJournal: intentJournal,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to build position monitor")

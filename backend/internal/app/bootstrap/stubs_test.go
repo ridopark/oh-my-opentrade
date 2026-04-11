@@ -32,6 +32,7 @@ func (stubBroker) CancelOpenOrders(context.Context, domain.Symbol, string) (int,
 	return 0, nil
 }
 func (stubBroker) CancelAllOpenOrders(context.Context) (int, error)       { return 0, nil }
+func (stubBroker) GetOpenOrders(context.Context) ([]ports.OpenOrder, error) { return nil, nil }
 func (stubBroker) GetOrderStatus(context.Context, string) (string, error) { return "filled", nil }
 func (stubBroker) GetPositions(context.Context, string, domain.EnvMode) ([]domain.Trade, error) {
 	return nil, nil

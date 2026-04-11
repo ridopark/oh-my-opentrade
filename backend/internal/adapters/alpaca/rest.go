@@ -849,6 +849,79 @@ func (c *RESTClient) CancelOpenOrders(ctx context.Context, symbol domain.Symbol,
 	return canceled, nil
 }
 
+// GetOpenOrders queries Alpaca for all working orders on the account.
+// Used by Sprint 2 startup reconciliation to cross-reference the broker
+// view against the intent journal before deciding to cancel anything.
+func (c *RESTClient) GetOpenOrders(ctx context.Context) ([]ports.OpenOrder, error) {
+	path := pathOrders + "?status=open&limit=500"
+	resp, err := c.doReqWithOpts(ctx, http.MethodGet, path, nil, reqOpts{priority: PriorityTrading, maxRetries: 3})
+	if err != nil {
+		c.log.Error().Err(err).Msg("get open orders HTTP request failed")
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		c.log.Error().Int("status", resp.StatusCode).Msg("get open orders failed")
+		return nil, fmt.Errorf("alpaca: get open orders failed (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var raw []struct {
+		ID          string  `json:"id"`
+		Symbol      string  `json:"symbol"`
+		Side        string  `json:"side"`
+		Qty         string  `json:"qty"`
+		OrderType   string  `json:"order_type"`
+		LimitPrice  *string `json:"limit_price"`
+		StopPrice   *string `json:"stop_price"`
+		Status      string  `json:"status"`
+		CreatedAt   *string `json:"created_at"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("alpaca: decode open orders: %w", err)
+	}
+
+	out := make([]ports.OpenOrder, 0, len(raw))
+	for _, r := range raw {
+		// Alpaca's "open" filter returns orders in new/accepted/partially_filled/
+		// pending_new/accepted_for_bidding/pending_cancel/pending_replace. Keep
+		// only genuinely working states; drop pending_cancel/pending_replace
+		// since they're already mid-terminal.
+		switch r.Status {
+		case "new", "accepted", "partially_filled", "pending_new", "accepted_for_bidding":
+		default:
+			continue
+		}
+		qty, _ := strconv.ParseFloat(r.Qty, 64)
+		var limit, stop float64
+		if r.LimitPrice != nil {
+			limit, _ = strconv.ParseFloat(*r.LimitPrice, 64)
+		}
+		if r.StopPrice != nil {
+			stop, _ = strconv.ParseFloat(*r.StopPrice, 64)
+		}
+		var created time.Time
+		if r.CreatedAt != nil {
+			if t, err := time.Parse(time.RFC3339Nano, *r.CreatedAt); err == nil {
+				created = t
+			}
+		}
+		out = append(out, ports.OpenOrder{
+			BrokerOrderID: r.ID,
+			Symbol:        r.Symbol,
+			Side:          r.Side,
+			Quantity:      qty,
+			OrderType:     r.OrderType,
+			LimitPrice:    limit,
+			StopPrice:     stop,
+			Status:        r.Status,
+			CreatedAt:     created,
+		})
+	}
+	return out, nil
+}
+
 func (c *RESTClient) CancelAllOpenOrders(ctx context.Context) (int, error) {
 	resp, err := c.doReqWithOpts(ctx, http.MethodDelete, pathOrders, nil, reqOpts{
 		priority:   PriorityTrading,
