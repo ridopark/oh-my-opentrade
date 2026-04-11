@@ -49,6 +49,14 @@ type TradeRecord struct {
 }
 
 // Result holds the computed backtest metrics.
+// EquityPoint is a single sample on the daily equity curve. Exposed on
+// Result so the history persistence layer can store the series without
+// requiring a second accessor call.
+type EquityPoint struct {
+	T  int64   `json:"t"`  // unix seconds
+	Eq float64 `json:"eq"`
+}
+
 type Result struct {
 	InitialEquity float64       `json:"initial_equity"`
 	FinalEquity   float64       `json:"final_equity"`
@@ -66,6 +74,7 @@ type Result struct {
 	LargestWin    float64       `json:"largest_win"`
 	LargestLoss   float64       `json:"largest_loss"`
 	Trades        []TradeRecord `json:"trades"`
+	EquityCurve   []EquityPoint `json:"equity_curve,omitempty"`
 }
 
 // Collector aggregates fill and bar events to produce backtest metrics.
@@ -98,9 +107,15 @@ type Collector struct {
 	prevDayEquity float64 // equity at end of previous trading day
 	currentDay    int     // year*10000 + month*100 + day (cheap date comparison)
 	latestEquity  float64 // most recent equity snapshot (for end-of-day capture)
+	lastBarTime   time.Time
 	returnSum     float64
 	returnSumSq   float64
 	returnCount   int
+
+	// Daily equity curve samples: one point per trading day close. Captured
+	// in the day-change branch of onBar and finalized in Result(). Used by
+	// backtest history persistence for the list sparkline + drill-in chart.
+	equityCurve []EquityPoint
 }
 
 // NewCollector creates a Collector and subscribes to events on the bus.
@@ -417,10 +432,19 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 			c.returnSumSq += r * r
 			c.returnCount++
 		}
+		// Sample the previous day's close onto the equity curve before
+		// rolling over. lastBarTime still points at the prior day's last bar.
+		if !c.lastBarTime.IsZero() {
+			c.equityCurve = append(c.equityCurve, EquityPoint{
+				T:  c.lastBarTime.Unix(),
+				Eq: c.latestEquity,
+			})
+		}
 		c.prevDayEquity = c.latestEquity
 		c.currentDay = barDay
 	}
 	c.latestEquity = equity
+	c.lastBarTime = bar.Time
 
 	if equity > c.peakEquity {
 		c.peakEquity = equity
@@ -534,6 +558,21 @@ func (c *Collector) Result() Result {
 
 	realizedPnL := grossProfit - grossLoss
 
+	// Snapshot the equity curve and append the in-progress day's close so the
+	// final day is represented. Non-mutating: the collector's own slice is
+	// copied; the tail point is added to the copy only.
+	curve := make([]EquityPoint, len(c.equityCurve), len(c.equityCurve)+1)
+	copy(curve, c.equityCurve)
+	if !c.lastBarTime.IsZero() {
+		var lastSampledUnix int64 = -1
+		if n := len(curve); n > 0 {
+			lastSampledUnix = curve[n-1].T
+		}
+		if c.lastBarTime.Unix() != lastSampledUnix {
+			curve = append(curve, EquityPoint{T: c.lastBarTime.Unix(), Eq: finalEquity})
+		}
+	}
+
 	r := Result{
 		InitialEquity: c.cfg.InitialEquity,
 		FinalEquity:   finalEquity,
@@ -545,6 +584,7 @@ func (c *Collector) Result() Result {
 		LossCount:     lossCount,
 		LargestWin:    largestWin,
 		LargestLoss:   largestLoss,
+		EquityCurve:   curve,
 	}
 
 	if c.cfg.InitialEquity > 0 {

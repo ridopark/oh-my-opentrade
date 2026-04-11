@@ -84,6 +84,12 @@ type Runner struct {
 	progress atomic.Value // *ProgressInfo
 	result   atomic.Value // *Result
 
+	// finalizer is invoked once with the final Result after EmitComplete,
+	// inside the same goroutine as Run(). Panics/errors from the finalizer
+	// are logged but do not affect the run outcome. Used by the HTTP
+	// handler to persist history rows.
+	finalizer func(*Result)
+
 	cancelFn context.CancelFunc
 }
 
@@ -137,6 +143,14 @@ func (r *Runner) Progress() *ProgressInfo {
 		return nil
 	}
 	return v.(*ProgressInfo)
+}
+
+// SetFinalizer registers a function to be called once with the final Result
+// after EmitComplete fires. Must be set before Run() is invoked. Nil is a
+// safe no-op. The finalizer runs in the same goroutine as Run; keep it
+// fast (log or enqueue) or spawn your own goroutine inside.
+func (r *Runner) SetFinalizer(fn func(*Result)) {
+	r.finalizer = fn
 }
 
 // GetResult returns the final backtest result (nil until completed).
@@ -1424,6 +1438,17 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	if r.Status() != "canceled" {
 		r.status.Store("completed")
+	}
+
+	if r.finalizer != nil {
+		func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					r.log.Error().Interface("panic", rec).Msg("backtest finalizer panicked")
+				}
+			}()
+			r.finalizer(&finalResult)
+		}()
 	}
 
 	r.log.Info().

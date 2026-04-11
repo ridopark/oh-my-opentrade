@@ -12,6 +12,7 @@ import (
 	omhttp "github.com/oh-my-opentrade/backend/internal/adapters/http"
 	"github.com/oh-my-opentrade/backend/internal/adapters/middleware"
 	"github.com/oh-my-opentrade/backend/internal/adapters/sse"
+	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	appsweep "github.com/oh-my-opentrade/backend/internal/app/sweep"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -104,7 +105,8 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	if infra.alpacaData != nil {
 		backtestMarketData = infra.alpacaData
 	}
-	backtestHandler := omhttp.NewBacktestHandler(infra.sqlDB, cfg, backtestMarketData, httpLog)
+	backtestHistoryRepo := timescaledb.NewBacktestHistoryRepo(infra.sqlDB, httpLog.With().Str("component", "backtest_history_repo").Logger())
+	backtestHandler := omhttp.NewBacktestHandler(infra.sqlDB, cfg, backtestMarketData, backtestHistoryRepo, httpLog)
 	imux.Handle("/backtest/", backtestHandler)
 
 	portfolioHandler := omhttp.NewPortfolioHandler(infra.ibkrBroker, infra.ibkrBroker, infra.ibkrBroker.GetAccountEquity, "default", domain.EnvModePaper, httpLog)
