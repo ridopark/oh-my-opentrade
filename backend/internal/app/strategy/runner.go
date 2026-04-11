@@ -85,6 +85,11 @@ type Runner struct {
 	// backtests where no SSE client is listening — was ~1M alloc per run.
 	suppressProgressEvents bool
 
+	// noInstancesLogged records symbols for which we've already logged a
+	// "no instances for symbol" line, so unused symbols don't emit an Info
+	// log on every bar (hot path — ~8% of backtest CPU pre-gating).
+	noInstancesLogged map[string]struct{}
+
 	// Scratch buffers reused across handleBar invocations to avoid per-bar
 	// allocations. They live inside the runner's mutex (handleBar holds r.mu
 	// while populating/reading them) so no external synchronization is
@@ -927,7 +932,20 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	r.scratchInstances = r.router.InstancesForSymbolInto(symbol, r.scratchInstances)
 	instances := r.scratchInstances
 	if len(instances) == 0 {
-		r.logger.Info("no instances for symbol", "symbol", symbol)
+		// Log-once per symbol — this fact is static for the run and otherwise
+		// fires on every bar for skipped symbols (~8% of CPU per pprof).
+		r.mu.Lock()
+		_, already := r.noInstancesLogged[symbol]
+		if !already {
+			if r.noInstancesLogged == nil {
+				r.noInstancesLogged = make(map[string]struct{})
+			}
+			r.noInstancesLogged[symbol] = struct{}{}
+		}
+		r.mu.Unlock()
+		if !already {
+			r.logger.Info("no instances for symbol", "symbol", symbol)
+		}
 		return nil
 	}
 
