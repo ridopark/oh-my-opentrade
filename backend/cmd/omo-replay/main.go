@@ -796,12 +796,8 @@ func main() {
 			// per backtest. The integer nano stamp is unique-per-bar and
 			// cheaper to format.
 			idemKey := strconv.FormatInt(bar.Time.UnixNano(), 36) + string(bar.Symbol)
-			evt, err := domain.NewEvent(domain.EventMarketBarReceived, tenantID, envMode, idemKey, bar)
-			if err != nil {
-				log.Error().Err(err).Str("symbol", bar.Symbol.String()).Msg("failed to create MarketBarReceived event")
-				continue
-			}
-			if err := eventBus.Publish(ctx, *evt); err != nil {
+			evt := domain.NewBacktestEvent(domain.EventMarketBarReceived, tenantID, envMode, idemKey, bar, bar.Time)
+			if err := eventBus.Publish(ctx, evt); err != nil {
 				if ctx.Err() != nil {
 					break
 				}
