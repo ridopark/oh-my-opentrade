@@ -3,7 +3,6 @@ package positionmonitor
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -19,16 +18,18 @@ const openOrderLookbackWindow = 48 * time.Hour
 // against the Sprint 2 intent journal and decides whether to resume, alert
 // on, or mark each one lost. Implements Phase B of SPRINT_2_PLAN.md.
 //
-// When OMO_ORDER_JOURNAL_ENABLED is unset or the intent journal is nil, this
-// falls back to the legacy "cancel everything" behavior so deploys without
-// the flag are byte-identical to pre-Sprint-2.
+// When the intent journal is nil (cfg.OrderJournalEnabled=false at the
+// caller), this falls back to the legacy "cancel everything" behavior so
+// deploys without the flag are byte-identical to pre-Sprint-2.
 //
 // The safety fallback: if EITHER the broker query OR the journal query
 // fails, cancel-all is invoked. Correctness is preserved at the cost of
 // canceling legitimate stops — no worse than today.
 func (s *Service) reconcileOpenOrdersOnBoot(ctx context.Context) {
-	// Feature-flag gate. Default-off keeps existing behavior.
-	if s.intentJournal == nil || os.Getenv("OMO_ORDER_JOURNAL_ENABLED") != "true" {
+	// Feature gate is upstream (services.go reads cfg.OrderJournalEnabled
+	// and only constructs the journal when true). A nil intentJournal here
+	// therefore means "legacy path requested" — never an accidental nil.
+	if s.intentJournal == nil {
 		if canceled, err := s.broker.CancelAllOpenOrders(ctx); err != nil {
 			s.log.Warn().Err(err).Msg("bootstrap: failed to cancel stale open orders — proceeding anyway")
 		} else if canceled > 0 {

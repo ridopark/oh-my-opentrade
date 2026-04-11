@@ -185,9 +185,6 @@ func TestReconcileOpenOrdersOnBoot_BrokerQueryError_FallbackCancelAll(t *testing
 	journal := &mockIntentJournal{}
 	s := newReconcileService(t, broker, journal)
 
-	// Flag must be true to exercise the journal path at all. The test sets
-	// it explicitly so we don't depend on host env state.
-	t.Setenv("OMO_ORDER_JOURNAL_ENABLED", "true")
 	s.reconcileOpenOrdersOnBoot(context.Background())
 
 	assert.Equal(t, 1, broker.cancelAllCalls, "broker query error must trip cancel-all fallback")
@@ -198,7 +195,6 @@ func TestReconcileOpenOrdersOnBoot_JournalQueryError_FallbackCancelAll(t *testin
 	journal := &mockIntentJournal{openIntentsErr: errors.New("db down")}
 	s := newReconcileService(t, broker, journal)
 
-	t.Setenv("OMO_ORDER_JOURNAL_ENABLED", "true")
 	s.reconcileOpenOrdersOnBoot(context.Background())
 
 	assert.Equal(t, 1, broker.cancelAllCalls, "journal query error must trip cancel-all fallback")
@@ -206,17 +202,14 @@ func TestReconcileOpenOrdersOnBoot_JournalQueryError_FallbackCancelAll(t *testin
 
 func TestReconcileOpenOrdersOnBoot_FlagDisabled_PreservesLegacyCancelAll(t *testing.T) {
 	broker := &mockBroker{openOrders: []ports.OpenOrder{makeOpenOrder("BRK-1", "AAPL", "sell")}}
-	journal := &mockIntentJournal{}
-	s := newReconcileService(t, broker, journal)
+	// With the flag disabled upstream, services.go leaves intentJournal nil.
+	// reconcileOpenOrdersOnBoot must fall back to the legacy cancel-all path
+	// whenever it sees a nil journal, regardless of what broker returned.
+	s := newReconcileService(t, broker, nil)
 
-	// Explicitly unset the flag — default-off behavior must be byte-identical
-	// to pre-Sprint-2 (cancel everything, journal untouched).
-	t.Setenv("OMO_ORDER_JOURNAL_ENABLED", "")
-	// Also nil out the journal to simulate a deploy without the flag.
-	s.intentJournal = nil
 	s.reconcileOpenOrdersOnBoot(context.Background())
 
-	assert.Equal(t, 1, broker.cancelAllCalls, "flag disabled must keep legacy cancel-all behavior")
+	assert.Equal(t, 1, broker.cancelAllCalls, "nil journal (flag disabled) must keep legacy cancel-all behavior")
 }
 
 func TestReconcileOpenOrdersOnBoot_HappyPath(t *testing.T) {
@@ -225,7 +218,6 @@ func TestReconcileOpenOrdersOnBoot_HappyPath(t *testing.T) {
 	journal := &mockIntentJournal{openIntentsRows: []domain.OrderIntentJournalRow{row}}
 	s := newReconcileService(t, broker, journal)
 
-	t.Setenv("OMO_ORDER_JOURNAL_ENABLED", "true")
 	s.reconcileOpenOrdersOnBoot(context.Background())
 
 	assert.Equal(t, 0, broker.cancelAllCalls, "matched order must NOT be cancelled on happy path")
