@@ -32,6 +32,11 @@ type ExecutionDeps struct {
 	EnableOptions bool
 	BrokerName    string
 	Logger        zerolog.Logger
+	// PerStrategyMaxPositions, when non-empty, enforces a per-strategy
+	// concurrent-position cap in the PortfolioGuard so multi-strategy
+	// portfolios don't starve slower strategies when faster ones would
+	// otherwise claim all the slots.
+	PerStrategyMaxPositions map[string]int
 }
 
 // ExecutionBundle is returned by BuildExecutionService with all wired components.
@@ -101,7 +106,7 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 		execOpts = append(execOpts, execution.WithBrokerName(deps.BrokerName))
 	}
 
-	if cfg.Trading.MaxSimultaneousPos > 0 || cfg.Trading.MaxPositionsPerGroup > 0 {
+	if cfg.Trading.MaxSimultaneousPos > 0 || cfg.Trading.MaxPositionsPerGroup > 0 || len(deps.PerStrategyMaxPositions) > 0 {
 		pfGuard := execution.NewPortfolioGuard(
 			func(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
 				return deps.Broker.GetPositions(ctx, tenantID, envMode)
@@ -110,6 +115,9 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 			cfg.Trading.MaxPositionsPerGroup,
 			execLog,
 		)
+		if len(deps.PerStrategyMaxPositions) > 0 {
+			pfGuard.SetPerStrategyMax(deps.PerStrategyMaxPositions)
+		}
 		execOpts = append(execOpts, execution.WithPortfolioGuard(pfGuard))
 	}
 
