@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,12 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
+
+// instanceContextPool recycles instanceContext structs to avoid a heap
+// allocation per instance per bar in the runner's hot path.
+var instanceContextPool = sync.Pool{
+	New: func() any { return &instanceContext{} },
+}
 
 // InstanceAssignment defines which symbols a strategy instance is responsible for.
 type InstanceAssignment struct {
@@ -331,15 +338,32 @@ func (inst *Instance) AllSnapshots() []domain.StateSnapshot {
 }
 
 // instanceContext implements start.Context for use within the runner.
+//
+// Emit routing: the runner populates ctx/tenantID/envMode/runner before
+// passing the context to a strategy, so the per-bar hot path avoids
+// allocating a closure. Legacy callers that use NewContext pass an explicit
+// emitFn instead (used in tests and the main wiring path).
 type instanceContext struct {
-	now    time.Time
-	logger *slog.Logger
-	emit   func(evt any) error
+	now      time.Time
+	logger   *slog.Logger
+	emit     func(evt any) error
+	ctx      context.Context
+	tenantID string
+	envMode  domain.EnvMode
+	runner   *Runner
 }
 
-func (c *instanceContext) Now() time.Time                { return c.now }
-func (c *instanceContext) Logger() *slog.Logger          { return c.logger }
-func (c *instanceContext) EmitDomainEvent(evt any) error { return c.emit(evt) }
+func (c *instanceContext) Now() time.Time       { return c.now }
+func (c *instanceContext) Logger() *slog.Logger { return c.logger }
+func (c *instanceContext) EmitDomainEvent(evt any) error {
+	if c.runner != nil {
+		return c.runner.emitDomainEvent(c.ctx, c.tenantID, c.envMode, evt)
+	}
+	if c.emit != nil {
+		return c.emit(evt)
+	}
+	return nil
+}
 
 // NewContext creates a start.Context for use outside the runner (e.g., main.go wiring).
 // The emit function is called when a strategy invokes EmitDomainEvent; pass nil for a no-op.

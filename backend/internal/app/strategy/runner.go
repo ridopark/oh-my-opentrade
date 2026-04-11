@@ -62,7 +62,10 @@ type Runner struct {
 	signalProgressCache map[string]domain.Event // key: eventType+":"+symbol
 
 	// Health tracking: last time handleBar was invoked.
-	lastBarTime atomic.Value // time.Time
+	// Stored as UnixNano int64 to avoid boxing a time.Time struct on every
+	// bar (atomic.Value.Store heap-allocates its interface value; pprof
+	// showed ~520k allocations per backtest).
+	lastBarTime atomic.Int64
 
 	// tideTracker, when non-nil, is fed every SPY/QQQ 1m bar to maintain a
 	// running intraday VWAP and expose market-tide deviation to AVWAP
@@ -586,7 +589,7 @@ func (r *Runner) Start(ctx context.Context) error {
 		// Non-fatal: backtests won't have this event
 	}
 	r.logger.Info("strategy runner subscribed to MarketBarSanitized events")
-	r.lastBarTime.Store(time.Now())
+	r.lastBarTime.Store(time.Now().UnixNano())
 	go r.barHealthCheck(ctx)
 	return nil
 }
@@ -611,10 +614,11 @@ func (r *Runner) barHealthCheck(ctx context.Context) {
 			if nowET.Weekday() == time.Saturday || nowET.Weekday() == time.Sunday {
 				continue
 			}
-			last, ok := r.lastBarTime.Load().(time.Time)
-			if !ok {
+			lastNano := r.lastBarTime.Load()
+			if lastNano == 0 {
 				continue
 			}
+			last := time.Unix(0, lastNano)
 			gap := time.Since(last)
 			if gap > 5*time.Minute {
 				r.logger.Error("HEALTH CHECK: strategy runner has not received a bar",
@@ -855,7 +859,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		return fmt.Errorf("strategy runner: payload is not a MarketBar, got %T", event.Payload)
 	}
 
-	r.lastBarTime.Store(time.Now())
+	r.lastBarTime.Store(time.Now().UnixNano())
 
 	loopStart := time.Now()
 	symbol := bar.Symbol.String()
@@ -1027,15 +1031,17 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	allSignals = append(allSignals, exitSignals1m...)
 
 	for _, inst := range oneMinInstances {
-		instCtx := &instanceContext{
-			now:    bar.Time,
-			logger: inst.Logger(),
-			emit: func(evt any) error {
-				return r.emitDomainEvent(ctx, event.TenantID, event.EnvMode, evt)
-			},
-		}
+		instCtx := instanceContextPool.Get().(*instanceContext)
+		instCtx.now = bar.Time
+		instCtx.logger = inst.Logger()
+		instCtx.emit = nil
+		instCtx.ctx = ctx
+		instCtx.tenantID = event.TenantID
+		instCtx.envMode = event.EnvMode
+		instCtx.runner = r
 		r.applyTideData(inst, symbol)
 		signals, err := r.safeOnBar(inst, instCtx, symbol, sBar, indicators)
+		instanceContextPool.Put(instCtx)
 		if err != nil {
 			r.logger.Error("instance OnBar failed",
 				"instance_id", inst.ID().String(),
@@ -1136,15 +1142,17 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		}
 
 		for _, inst := range htfInsts {
-			instCtx := &instanceContext{
-				now:    closed.Time,
-				logger: inst.Logger(),
-				emit: func(evt any) error {
-					return r.emitDomainEvent(ctx, event.TenantID, event.EnvMode, evt)
-				},
-			}
+			instCtx := instanceContextPool.Get().(*instanceContext)
+			instCtx.now = closed.Time
+			instCtx.logger = inst.Logger()
+			instCtx.emit = nil
+			instCtx.ctx = ctx
+			instCtx.tenantID = event.TenantID
+			instCtx.envMode = event.EnvMode
+			instCtx.runner = r
 			r.applyTideData(inst, symbol)
 			signals, err := r.safeOnBar(inst, instCtx, symbol, htfBar, htfIndicators)
+			instanceContextPool.Put(instCtx)
 			if err != nil {
 				r.logger.Error("instance OnBar failed (HTF)",
 					"instance_id", inst.ID().String(),
