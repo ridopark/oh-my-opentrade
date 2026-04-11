@@ -74,6 +74,10 @@ func (inst *Instance) configStrategyID() string {
 // Strategy returns the underlying strategy implementation.
 func (inst *Instance) Strategy() start.Strategy { return inst.strategy }
 
+// Logger returns the instance-scoped logger (already tagged with instance_id).
+// Used by the runner to avoid allocating a fresh slog child per bar.
+func (inst *Instance) Logger() *slog.Logger { return inst.logger }
+
 // Assignment returns the routing assignment.
 func (inst *Instance) Assignment() InstanceAssignment { return inst.assignment }
 
