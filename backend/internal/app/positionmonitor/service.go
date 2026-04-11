@@ -28,8 +28,9 @@ type Service struct {
 	eventBus     ports.EventBusPort
 	priceCache   ports.PriceCachePort
 	positionGate *execution.PositionGate
-	broker       ports.BrokerPort
-	repo         ports.RepositoryPort
+	broker        ports.BrokerPort
+	repo          ports.RepositoryPort
+	intentJournal ports.OrderIntentJournal // Sprint 2 — nil means legacy cancel-all bootstrap
 	specStore    portstrategy.SpecStore
 	log          zerolog.Logger
 	nowFunc      func() time.Time
@@ -164,6 +165,14 @@ func WithBroker(b ports.BrokerPort) Option {
 // WithRepo injects a RepositoryPort for startup position bootstrap.
 func WithRepo(r ports.RepositoryPort) Option {
 	return func(s *Service) { s.repo = r }
+}
+
+// WithIntentJournal injects the Sprint 2 order-intent journal. When set,
+// bootstrap uses the journal-aware reconciliation flow; when nil, it
+// falls back to the legacy cancel-all behavior. Gated at the caller by
+// OMO_ORDER_JOURNAL_ENABLED.
+func WithIntentJournal(j ports.OrderIntentJournal) Option {
+	return func(s *Service) { s.intentJournal = j }
 }
 
 // WithSpecStore injects a SpecStore for resolving exit rules during bootstrap.

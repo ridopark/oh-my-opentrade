@@ -146,6 +146,63 @@ func (a *Adapter) CancelAllOpenOrders(_ context.Context) (int, error) {
 	return len(open), nil
 }
 
+// GetOpenOrders returns every working IBKR order from ib.OpenTrades().
+// Filters out anything already terminal (ibsync leaves filled/canceled
+// trades in that list briefly after reconnect). Used by Sprint 2 startup
+// reconciliation in positionmonitor/bootstrap.go.
+func (a *Adapter) GetOpenOrders(_ context.Context) ([]ports.OpenOrder, error) {
+	ib := a.conn.IB()
+	if ib == nil {
+		return nil, fmt.Errorf("ibkr: not connected")
+	}
+	trades := ib.OpenTrades()
+	out := make([]ports.OpenOrder, 0, len(trades))
+	for _, t := range trades {
+		if t == nil || t.Contract == nil || t.Order == nil {
+			continue
+		}
+		// Only include actually-working states. mapStatus returns one of
+		// new/accepted/pending_new for these.
+		mapped := mapStatus(t.OrderStatus.Status)
+		switch mapped {
+		case "new", "accepted", "pending_new":
+		default:
+			continue
+		}
+		side := "buy"
+		if strings.EqualFold(t.Order.Action, "SELL") {
+			side = "sell"
+		}
+		orderType := strings.ToLower(t.Order.OrderType)
+		switch orderType {
+		case "lmt":
+			orderType = "limit"
+		case "mkt":
+			orderType = "market"
+		case "stp":
+			orderType = "stop"
+		case "stp lmt":
+			orderType = "stop_limit"
+		}
+		var created time.Time
+		if logEntries := t.Logs(); len(logEntries) > 0 {
+			created = logEntries[0].Time
+		}
+		out = append(out, ports.OpenOrder{
+			BrokerOrderID: strconv.FormatInt(t.Order.OrderID, 10),
+			Symbol:        t.Contract.Symbol,
+			Side:          side,
+			Quantity:      t.Order.TotalQuantity.Float(),
+			OrderType:     orderType,
+			LimitPrice:    t.Order.LmtPrice,
+			StopPrice:     t.Order.AuxPrice,
+			Status:        mapped,
+			CreatedAt:     created,
+		})
+	}
+	return out, nil
+}
+
 func (a *Adapter) GetOrderStatus(_ context.Context, orderID string) (string, error) {
 	ib := a.conn.IB()
 	if ib == nil {

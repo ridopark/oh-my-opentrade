@@ -332,6 +332,13 @@ func (b *Broker) CancelAllOpenOrders(_ context.Context) (int, error) {
 	return 0, nil
 }
 
+// GetOpenOrders always returns an empty slice. SimBroker is an in-process
+// deterministic simulator; there are no cross-session working orders to
+// reconcile at startup.
+func (b *Broker) GetOpenOrders(_ context.Context) ([]ports.OpenOrder, error) {
+	return []ports.OpenOrder{}, nil
+}
+
 func (b *Broker) GetPosition(_ context.Context, symbol domain.Symbol) (float64, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

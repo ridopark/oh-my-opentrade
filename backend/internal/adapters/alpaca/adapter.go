@@ -262,6 +262,12 @@ func (a *Adapter) CancelAllOpenOrders(ctx context.Context) (int, error) {
 	return a.rest.CancelAllOpenOrders(ctx)
 }
 
+// GetOpenOrders returns Alpaca's view of all working orders on the account.
+// Used by Sprint 2 startup reconciliation in positionmonitor/bootstrap.go.
+func (a *Adapter) GetOpenOrders(ctx context.Context) ([]ports.OpenOrder, error) {
+	return a.rest.GetOpenOrders(ctx)
+}
+
 // GetOrderStatus fetches the current status of an Alpaca order.
 func (a *Adapter) GetOrderStatus(ctx context.Context, orderID string) (string, error) {
 	return a.rest.GetOrderStatus(ctx, orderID)
