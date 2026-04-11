@@ -13,6 +13,21 @@ import (
 // cheap, unique event IDs without UUID allocation overhead.
 var backtestSeq atomic.Uint64
 
+// fastEventIDs, when set, makes NewEvent use the same monotonic counter as
+// NewBacktestEvent instead of uuid.NewString(). uuid.NewString() draws from
+// crypto/rand, which showed up as ~10% of backtest CPU (one getrandom syscall
+// per event, 400k+ events per run). Only enable this from batch/offline
+// binaries that don't need cryptographically unique IDs — live omo-core
+// leaves it off so the production pipeline still gets real UUIDs.
+var fastEventIDs atomic.Bool
+
+// UseFastEventIDs toggles the fast ID path for NewEvent. Intended for
+// backtest/replay binaries where event IDs are ephemeral. Safe to call at any
+// time (atomic load per NewEvent call), but typically set once at startup.
+func UseFastEventIDs(enabled bool) {
+	fastEventIDs.Store(enabled)
+}
+
 // EventType identifies the kind of domain event.
 type EventType = string
 
@@ -294,8 +309,14 @@ func NewEvent(eventType EventType, tenantID string, envMode EnvMode, idempotency
 	if idempotencyKey == "" {
 		return nil, errors.New("idempotency key is required")
 	}
+	var id string
+	if fastEventIDs.Load() {
+		id = "bt-" + strconv.FormatUint(backtestSeq.Add(1), 36)
+	} else {
+		id = uuid.NewString()
+	}
 	return &Event{
-		ID:             uuid.NewString(),
+		ID:             id,
 		Type:           eventType,
 		TenantID:       tenantID,
 		EnvMode:        envMode,
