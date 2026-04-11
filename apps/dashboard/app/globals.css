@@ -132,3 +132,108 @@ main {
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
+/* ------------------------------------------------------------------ */
+/* Landing page (SpaceX-inspired) tokens + utilities                   */
+/* Scoped under .landing-root so the dashboard UI is unaffected.       */
+/* ------------------------------------------------------------------ */
+
+.landing-root {
+  --space-black: #000000;
+  --spectral-white: #f0f0fa;
+  --ghost-surface: rgba(240, 240, 250, 0.1);
+  --ghost-surface-hover: rgba(240, 240, 250, 0.18);
+  --ghost-border: rgba(240, 240, 250, 0.35);
+  --ghost-border-strong: rgba(240, 240, 250, 0.55);
+  --hairline: rgba(240, 240, 250, 0.12);
+  --signal-cyan: #5fb8ff;
+  --overlay-dark: rgba(0, 0, 0, 0.55);
+
+  background-color: var(--space-black);
+  color: var(--spectral-white);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  letter-spacing: 0.02em;
+}
+
+.landing-root ::selection {
+  background: var(--signal-cyan);
+  color: var(--space-black);
+}
+
+.landing-display {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  line-height: 0.95;
+}
+
+.landing-label {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+}
+
+.landing-body {
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: rgba(240, 240, 250, 0.78);
+}
+
+.landing-ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px 28px;
+  border-radius: 9999px;
+  background: var(--ghost-surface);
+  border: 1px solid var(--ghost-border);
+  color: var(--spectral-white);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  transition: background-color 200ms ease, border-color 200ms ease, color 200ms ease;
+}
+
+.landing-ghost-btn:hover {
+  background: var(--ghost-surface-hover);
+  border-color: var(--ghost-border-strong);
+}
+
+.landing-ghost-btn[data-variant="cyan"]:hover {
+  color: var(--signal-cyan);
+  border-color: var(--signal-cyan);
+}
+
+.landing-hairline {
+  border-color: var(--hairline);
+}
+
+.landing-cyan {
+  color: var(--signal-cyan);
+}
+
+.landing-section {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 6rem 1.5rem;
+}
+
+@media (min-width: 768px) {
+  .landing-section {
+    padding: 8rem 4rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-root *,
+  .landing-root *::before,
+  .landing-root *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
