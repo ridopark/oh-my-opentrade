@@ -131,7 +131,9 @@ cooldown_seconds = 3600          # 1hr cooldown per symbol
 # Maximum entries per symbol per session
 max_trades_per_day = 2           # limit overtrading per symbol
 
-# Portfolio-level position limits
+# Portfolio-level position caps (read by backtest runner when not set in API request)
+# These were the values used during tuning (commit 33da264: PF 1.32, DD 10%).
+# Without them, backtests default to unlimited positions which worsens DD significantly.
 max_positions = 6                # max simultaneous open positions
 max_per_group = 2                # max positions per sector group
 

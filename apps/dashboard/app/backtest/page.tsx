@@ -111,7 +111,11 @@ export default function BacktestPage() {
       const saved = localStorage.getItem("backtest-config");
       if (saved) {
         const parsed = JSON.parse(saved);
-        setConfig((prev) => ({ ...prev, ...parsed }));
+        // `symbols` is derived from the strategy TOML — never restore it from
+        // localStorage. Otherwise a stale cached list can override the current
+        // strategy's routing and silently change backtest results.
+        const { symbols: _ignored, ...rest } = parsed;
+        setConfig((prev) => ({ ...prev, ...rest }));
         if (parsed.strategies?.length) setSelectedStrategies(parsed.strategies);
       }
     } catch {}
@@ -138,7 +142,12 @@ export default function BacktestPage() {
 
   useEffect(() => {
     if (hydrated) {
-      try { localStorage.setItem("backtest-config", JSON.stringify(config)); } catch {}
+      try {
+        // Don't persist `symbols` — it's derived from the strategy TOML
+        // and must always come fresh from the API to reflect TOML edits.
+        const { symbols: _ignored, ...toSave } = config;
+        localStorage.setItem("backtest-config", JSON.stringify(toSave));
+      } catch {}
     }
   }, [config, hydrated]);
 
