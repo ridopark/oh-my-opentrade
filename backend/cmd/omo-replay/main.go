@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -53,6 +55,8 @@ func main() {
 		slippageBPS    int64
 		outputJSON     string
 		noAIFlag       bool
+		cpuProfile     string
+		memProfile     string
 	)
 
 	flag.StringVar(&symbolsFlag, "symbols", "", "Comma-separated symbols to replay (default: use config file symbols)")
@@ -68,7 +72,39 @@ func main() {
 	flag.Int64Var(&slippageBPS, "slippage-bps", 5, "Slippage in basis points for SimBroker fills (default: 5)")
 	flag.StringVar(&outputJSON, "output-json", "", "Path to write backtest results as JSON (backtest mode only)")
 	flag.BoolVar(&noAIFlag, "no-ai", true, "Disable AI signal debate enricher (default: true for backtest)")
+	flag.StringVar(&cpuProfile, "cpuprofile", "", "Write CPU profile to file (pprof)")
+	flag.StringVar(&memProfile, "memprofile", "", "Write heap profile to file (pprof) after run")
 	flag.Parse()
+
+	if cpuProfile != "" {
+		f, err := os.Create(cpuProfile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cpuprofile: create %s: %v\n", cpuProfile, err)
+			os.Exit(1)
+		}
+		if err := pprof.StartCPUProfile(f); err != nil {
+			fmt.Fprintf(os.Stderr, "cpuprofile: start: %v\n", err)
+			os.Exit(1)
+		}
+		defer func() {
+			pprof.StopCPUProfile()
+			_ = f.Close()
+		}()
+	}
+	if memProfile != "" {
+		defer func() {
+			f, err := os.Create(memProfile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "memprofile: create %s: %v\n", memProfile, err)
+				return
+			}
+			defer f.Close()
+			runtime.GC()
+			if err := pprof.WriteHeapProfile(f); err != nil {
+				fmt.Fprintf(os.Stderr, "memprofile: write: %v\n", err)
+			}
+		}()
+	}
 
 	logLevel := zerolog.InfoLevel
 	if lvl := os.Getenv("LOG_LEVEL"); lvl != "" {

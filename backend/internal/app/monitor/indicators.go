@@ -2,7 +2,6 @@ package monitor
 
 import (
 	"math"
-	"sort"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 )
@@ -496,14 +495,20 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 			}
 		}
 
-		// Factor 3: BB Bandwidth above median (volatility expanding)
-		if len(state.bbBandwidths) >= bbPeriod {
+		// Factor 3: BB Bandwidth above median (volatility expanding).
+		// We only need the boolean comparison against the median, so count how
+		// many window values are strictly less than the current bandwidth and
+		// compare to n/2 — avoids allocating + sorting a 250-element slice on
+		// every bar (was ~36% of backtest CPU per pprof).
+		if n := len(state.bbBandwidths); n >= bbPeriod {
 			factors++
-			sorted := make([]float64, len(state.bbBandwidths))
-			copy(sorted, state.bbBandwidths)
-			sortFloat64s(sorted)
-			median := sorted[len(sorted)/2]
-			if bbBandwidth > median {
+			below := 0
+			for _, v := range state.bbBandwidths {
+				if v < bbBandwidth {
+					below++
+				}
+			}
+			if below > n/2 {
 				votes++
 			}
 		}
@@ -687,8 +692,4 @@ func ComputeRealizedVol(bars []domain.MarketBar, period int) float64 {
 
 	// Annualize: sqrt(252) * daily std dev * 100 (to get VIX-like percentage)
 	return math.Sqrt(variance) * math.Sqrt(252) * 100
-}
-
-func sortFloat64s(s []float64) {
-	sort.Float64s(s)
 }
