@@ -38,6 +38,7 @@ type Service struct {
 	broker             ports.BrokerPort
 	orderStream        ports.OrderStreamPort
 	repo               ports.RepositoryPort
+	intentJournal      ports.OrderIntentJournal // Sprint 2 write-ahead journal; nil when OMO_ORDER_JOURNAL_ENABLED is false
 	riskEngine         *RiskEngine
 	slippageGuard      *SlippageGuard
 	spreadGuard        *SpreadGuard
@@ -108,6 +109,14 @@ func WithOrderStream(os ports.OrderStreamPort) Option {
 
 func WithSyncFill() Option {
 	return func(s *Service) { s.syncFill = true }
+}
+
+// WithIntentJournal enables the Sprint 2 write-ahead journal. When set,
+// handleIntent persists each intent before broker.SubmitOrder and
+// handleOrderUpdate stamps terminal events back onto the row. When nil
+// (the default), execution behavior is byte-identical to pre-Sprint-2.
+func WithIntentJournal(j ports.OrderIntentJournal) Option {
+	return func(s *Service) { s.intentJournal = j }
 }
 
 // NewService creates a new execution Service.
@@ -684,6 +693,38 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		l.Info().Int("canceled", canceled).Str("side", cancelSide).Msg("canceled stale open orders before submission")
 	}
 
+	// 5f. Write-ahead journal (Sprint 2, gap #2). Must succeed before SubmitOrder
+	// so that a crash mid-submit leaves a durable trail. Gated by OMO_ORDER_JOURNAL_ENABLED.
+	if s.intentJournal != nil {
+		if jerr := s.intentJournal.SaveOrderIntent(ctx, intent); jerr != nil {
+			if errors.Is(jerr, ports.ErrDuplicateIntent) {
+				// Another worker already journaled this idempotency key. Treat as
+				// a deduplication signal: we must not double-submit. Clear the
+				// exit inflight lock if relevant and emit a rejection event.
+				l.Warn().Err(jerr).Msg("intent already journaled — skipping duplicate submission")
+				if s.positionGate != nil && intent.Direction.IsExit() {
+					s.positionGate.ClearInflightExit(event.TenantID, event.EnvMode, intent.Symbol)
+				}
+				s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(),
+					domain.NewOrderIntentRejectedPayload(intent, "journal_duplicate"))
+				return nil
+			}
+			// Journal write failed for non-duplicate reason (DB down, etc). The
+			// whole point of the write-ahead is "never submit without durable
+			// audit" — log loudly, alert, and skip. Fall through to a rejection.
+			l.Error().Err(jerr).Msg("order intent journal write failed — skipping broker submission to preserve audit invariant")
+			if s.metrics != nil {
+				s.metrics.Orders.RejectsTotal.WithLabelValues(s.brokerName, intent.Strategy, "journal_write_failed").Inc()
+			}
+			if s.positionGate != nil && intent.Direction.IsExit() {
+				s.positionGate.ClearInflightExit(event.TenantID, event.EnvMode, intent.Symbol)
+			}
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(),
+				domain.NewOrderIntentRejectedPayload(intent, fmt.Sprintf("journal_write_failed: %v", jerr)))
+			return nil
+		}
+	}
+
 	// 6. Submit to broker.
 	submitStart := s.nowFn()
 	brokerOrderID, err := s.broker.SubmitOrder(ctx, intent)
@@ -691,6 +732,11 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "broker rejected order")
 		l.Error().Err(err).Msg("broker rejected order")
+		if s.intentJournal != nil {
+			if jerr := s.intentJournal.MarkIntentSubmitFailed(ctx, intent.ID, err.Error(), s.nowFn()); jerr != nil {
+				l.Error().Err(jerr).Msg("failed to mark intent submit-failed in journal")
+			}
+		}
 		if s.metrics != nil {
 			side := "sell"
 			if intent.Direction == domain.DirectionLong {
@@ -727,6 +773,11 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	}
 	span.SetAttributes(attribute.String("order.broker_order_id", brokerOrderID))
 	l.Info().Str("broker_order_id", brokerOrderID).Msg("order submitted to broker")
+	if s.intentJournal != nil {
+		if jerr := s.intentJournal.MarkIntentSubmitted(ctx, intent.ID, brokerOrderID, s.nowFn()); jerr != nil {
+			l.Error().Err(jerr).Msg("failed to mark intent submitted in journal — continuing, fill path will still update")
+		}
+	}
 	submittedPayload := domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusSubmitted)
 	submittedPayload.BrokerOrderID = brokerOrderID
 	submittedPayload.Broker = s.brokerName
@@ -1116,6 +1167,11 @@ func (s *Service) handleOrderUpdate(update ports.OrderUpdate) {
 		s.handleStreamFill(update, l)
 	case "canceled", "expired", "rejected":
 		l.Info().Msg("order terminal via stream")
+		if s.intentJournal != nil && update.Event != "partial_fill" {
+			if jerr := s.intentJournal.MarkIntentTerminal(context.Background(), update.BrokerOrderID, update.Event, update.FilledQty, update.FilledAvgPrice, s.nowFn()); jerr != nil {
+				l.Error().Err(jerr).Msg("failed to mark intent terminal in journal")
+			}
+		}
 		s.cleanupPendingOrder(update.BrokerOrderID)
 	}
 }
@@ -1184,6 +1240,11 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 
 	if err := s.repo.UpdateOrderFill(ctx, brokerOrderID, filledAt, fillPrice, fillQty); err != nil {
 		l.Error().Err(err).Msg("failed to update order fill")
+	}
+	if s.intentJournal != nil {
+		if jerr := s.intentJournal.MarkIntentTerminal(ctx, brokerOrderID, domain.OrderIntentJournalFilled, fillQty, fillPrice, filledAt); jerr != nil {
+			l.Error().Err(jerr).Msg("failed to mark intent filled in journal")
+		}
 	}
 
 	side := "SELL"

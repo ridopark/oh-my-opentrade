@@ -60,19 +60,45 @@ func (m *mockRows) Scan(dest ...any) error {
 			// Use type switch or reflect to assign
 			switch d := dest[i].(type) {
 			case *string:
-				*d = v.(string)
+				if v != nil {
+					*d = v.(string)
+				}
 			case *float64:
-				*d = v.(float64)
+				if v != nil {
+					*d = v.(float64)
+				}
 			case *int:
-				*d = v.(int)
+				if v != nil {
+					*d = v.(int)
+				}
 			case *bool:
-				*d = v.(bool)
+				if v != nil {
+					*d = v.(bool)
+				}
 			case *time.Time:
-				*d = v.(time.Time)
+				if v != nil {
+					*d = v.(time.Time)
+				}
 			case *uuid.UUID:
-				*d = v.(uuid.UUID)
+				if v != nil {
+					*d = v.(uuid.UUID)
+				}
 			case *json.RawMessage:
-				*d = v.(json.RawMessage)
+				if v != nil {
+					*d = v.(json.RawMessage)
+				}
+			case *sql.NullString:
+				if v == nil {
+					*d = sql.NullString{}
+				} else {
+					*d = sql.NullString{String: v.(string), Valid: true}
+				}
+			case *sql.NullTime:
+				if v == nil {
+					*d = sql.NullTime{}
+				} else {
+					*d = sql.NullTime{Time: v.(time.Time), Valid: true}
+				}
 			}
 		}
 	}

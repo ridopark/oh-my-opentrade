@@ -37,6 +37,10 @@ type ExecutionDeps struct {
 	// portfolios don't starve slower strategies when faster ones would
 	// otherwise claim all the slots.
 	PerStrategyMaxPositions map[string]int
+	// IntentJournal, when non-nil, enables the Sprint 2 write-ahead journal
+	// that persists OrderIntents before broker submission and stamps terminal
+	// events back. Gated by OMO_ORDER_JOURNAL_ENABLED at the caller.
+	IntentJournal ports.OrderIntentJournal
 }
 
 // ExecutionBundle is returned by BuildExecutionService with all wired components.
@@ -104,6 +108,9 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 	}
 	if deps.BrokerName != "" {
 		execOpts = append(execOpts, execution.WithBrokerName(deps.BrokerName))
+	}
+	if deps.IntentJournal != nil {
+		execOpts = append(execOpts, execution.WithIntentJournal(deps.IntentJournal))
 	}
 
 	if cfg.Trading.MaxSimultaneousPos > 0 || cfg.Trading.MaxPositionsPerGroup > 0 || len(deps.PerStrategyMaxPositions) > 0 {
