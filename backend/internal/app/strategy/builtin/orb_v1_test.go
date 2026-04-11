@@ -32,6 +32,7 @@ func (c *testContext) EmitDomainEvent(evt any) error {
 	c.events = append(c.events, evt)
 	return nil
 }
+func (c *testContext) ProgressEventsSuppressed() bool { return false }
 
 // orbParams returns default ORB config as a params map.
 func orbParams() map[string]any {

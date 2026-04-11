@@ -364,6 +364,12 @@ func (c *instanceContext) EmitDomainEvent(evt any) error {
 	}
 	return nil
 }
+func (c *instanceContext) ProgressEventsSuppressed() bool {
+	if c.runner != nil {
+		return c.runner.suppressProgressEvents
+	}
+	return false
+}
 
 // NewContext creates a start.Context for use outside the runner (e.g., main.go wiring).
 // The emit function is called when a strategy invokes EmitDomainEvent; pass nil for a no-op.

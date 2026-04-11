@@ -131,6 +131,13 @@ type Context interface {
 	// EmitDomainEvent publishes a domain event without giving the strategy
 	// direct access to the event bus or any adapter.
 	EmitDomainEvent(evt any) error
+
+	// ProgressEventsSuppressed returns true when the runner drops
+	// EntryGated/ORBPhaseUpdate telemetry events (offline replay/backtest).
+	// Strategies can use it to skip building the payload structs entirely,
+	// saving both allocations and gate-evaluation work in the common case
+	// where no SSE consumer is listening.
+	ProgressEventsSuppressed() bool
 }
 
 // IndicatorData provides pre-computed technical indicators alongside a bar.
