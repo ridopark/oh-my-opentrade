@@ -311,7 +311,10 @@ func NewEvent(eventType EventType, tenantID string, envMode EnvMode, idempotency
 	}
 	var id string
 	if fastEventIDs.Load() {
-		id = "bt-" + strconv.FormatUint(backtestSeq.Add(1), 36)
+		// Drop the "bt-" prefix to save the concat alloc — event IDs are
+		// opaque strings consumed only by log lines and handler-internal
+		// dedup (which uses IdempotencyKey instead).
+		id = strconv.FormatUint(backtestSeq.Add(1), 36)
 	} else {
 		id = uuid.NewString()
 	}

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -86,6 +87,13 @@ type Runner struct {
 	scratchHTFNeeded map[string][]*Instance
 	scratchInstances []*Instance
 }
+
+// strategyEmitSeq is a monotonic counter used to generate cheap
+// idempotency keys for strategy-emitted domain events (EntryGated,
+// ORBPhaseUpdate, etc.). Previously emitDomainEvent called
+// uuid.NewString() per event, which hit crypto/rand syscalls for
+// events that don't actually need cryptographic uniqueness.
+var strategyEmitSeq atomic.Uint64
 
 // DPLookupKey uniquely identifies a dark pool bar for O(1) access during replay.
 type DPLookupKey struct {
@@ -1519,11 +1527,16 @@ func (r *Runner) emitDomainEvent(ctx context.Context, tenantID string, envMode d
 		eventType = domain.EventORBPhaseUpdate
 		cacheKey = "ORBPhaseUpdate:" + p.Symbol
 	}
+	// Use a monotonic counter for the idempotency key — strategies fire
+	// gated events thousands of times per backtest and uuid.NewString()
+	// reaches crypto/rand per call (~660k syscalls). The key only needs
+	// to be unique within a run; live consumers (SSE) don't dedup on it.
+	idemKey := strconv.FormatUint(strategyEmitSeq.Add(1), 36)
 	ev, err := domain.NewEvent(
 		eventType,
 		tenantID,
 		envMode,
-		uuid.NewString(),
+		idemKey,
 		payload,
 	)
 	if err != nil {
