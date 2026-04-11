@@ -193,12 +193,19 @@ func (r *Repository) GetMarketBars(ctx context.Context, symbol domain.Symbol, ti
 	var ema9, ema21, ema50, ema200 sql.NullFloat64
 	var avwapsRaw sql.NullString
 	for rows.Next() {
-		// Grow the slice by one empty slot and scan directly into it.
-		// This avoids the ~176-byte struct copy that
-		//   var bar; Scan(...); bars = append(bars, bar)
-		// incurred for every row (~8% of backtest CPU via runtime.duffcopy).
-		bars = append(bars, domain.MarketBar{})
-		bar := &bars[len(bars)-1]
+		// Extend the slice by one slot without constructing a new literal
+		// domain.MarketBar{} — the backing array was already zeroed at
+		// make-time, so bumping the length is enough. Falls back to append
+		// when we exhaust the pre-sized capacity. The previous
+		// `append(bars, domain.MarketBar{})` form cost ~140 ms / run via
+		// runtime.duffzero attributing to GetMarketBars.
+		n := len(bars)
+		if n >= cap(bars) {
+			bars = append(bars, domain.MarketBar{})
+		} else {
+			bars = bars[:n+1]
+		}
+		bar := &bars[n]
 		if err := rows.Scan(&bar.Time, &sym, &tf, &bar.Open, &bar.High, &bar.Low, &bar.Close, &bar.Volume, &bar.Suspect, &ema9, &ema21, &ema50, &ema200, &avwapsRaw); err != nil {
 			return nil, fmt.Errorf("timescaledb: scan market bar: %w", err)
 		}
