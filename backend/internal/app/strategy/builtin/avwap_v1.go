@@ -254,6 +254,96 @@ type entryContext struct {
 	keyLevels    map[string]float64
 }
 
+// entryTelemetryTags returns a map of entry-time telemetry fields derived from
+// the entry context and current indicator snapshot. These are attached to every
+// entry signal for retrospective analysis — they do NOT affect trading behavior.
+//
+// Fields included:
+//   - ext_session_open, ext_pd_high, ext_pd_low: ATR-normalized extension from
+//     each AVWAP anchor. Positive = price above AVWAP, negative = below.
+//   - atr_pct: ATR as % of close price (volatility normalization).
+//   - rsi, bb_pct_b, bb_bandwidth: oscillator / vol regime snapshot.
+//   - dp_ratio, dp_buy_ratio: dark pool flow snapshot.
+//   - minute_of_day, minute_bucket: session time (ET, 5-min buckets).
+//   - avwap_slope_bps: already computed in entryContext, just surfaced.
+//
+// Keep this function conservative — any added field increases log/storage
+// volume. Add fields only when there's a concrete hypothesis to test.
+func entryTelemetryTags(ec entryContext, ind start.IndicatorData) map[string]string {
+	tags := make(map[string]string, 16)
+	bar := ec.bar
+
+	// ATR-normalized extension from each AVWAP anchor
+	if ind.ATR > 0 && bar.Close > 0 {
+		if v, ok := ec.avwapValues["session_open"]; ok && v > 0 {
+			tags["ext_session_open"] = fmt.Sprintf("%.3f", (bar.Close-v)/ind.ATR)
+		}
+		if v, ok := ec.avwapValues["pd_high"]; ok && v > 0 {
+			tags["ext_pd_high"] = fmt.Sprintf("%.3f", (bar.Close-v)/ind.ATR)
+		}
+		if v, ok := ec.avwapValues["pd_low"]; ok && v > 0 {
+			tags["ext_pd_low"] = fmt.Sprintf("%.3f", (bar.Close-v)/ind.ATR)
+		}
+		tags["atr_pct"] = fmt.Sprintf("%.3f", ind.ATR/bar.Close*100)
+	}
+
+	// Oscillator / vol regime
+	if ind.RSI != 0 {
+		tags["rsi"] = fmt.Sprintf("%.2f", ind.RSI)
+	}
+	if ind.BBPercentB != 0 {
+		tags["bb_pct_b"] = fmt.Sprintf("%.3f", ind.BBPercentB)
+	}
+	if ind.BBBandwidth != 0 {
+		tags["bb_bandwidth"] = fmt.Sprintf("%.5f", ind.BBBandwidth)
+	}
+
+	// Dark pool flow snapshot
+	if ind.DPRatio != 0 {
+		tags["dp_ratio"] = fmt.Sprintf("%.3f", ind.DPRatio)
+	}
+	if ind.DPBuyRatio != 0 {
+		tags["dp_buy_ratio"] = fmt.Sprintf("%.3f", ind.DPBuyRatio)
+	}
+
+	// Session time bucketing (ET)
+	if ec.etLocation != nil {
+		tet := bar.Time.In(ec.etLocation)
+		tags["minute_of_day"] = fmt.Sprintf("%d", tet.Hour()*60+tet.Minute())
+		tags["minute_bucket"] = fmt.Sprintf("%02d:%02d", tet.Hour(), (tet.Minute()/5)*5)
+	}
+
+	// AVWAP slope (already computed, surfaced for uniform access)
+	if ec.slopeOK {
+		tags["avwap_slope_bps"] = fmt.Sprintf("%.3f", ec.avwapSlope)
+	}
+
+	return tags
+}
+
+// mergeTelemetry copies telemetry fields into dst without overwriting existing
+// keys — setup-specific fields (setup, mode, confluence, etc.) always win.
+func mergeTelemetry(dst, src map[string]string) {
+	for k, v := range src {
+		if _, exists := dst[k]; !exists {
+			dst[k] = v
+		}
+	}
+}
+
+// newEntrySignal wraps start.NewSignal for AVWAP entry signals, attaching
+// entry-time telemetry (extension, oscillators, session bucketing, etc.)
+// to the tag map. This is a DATA COLLECTION ONLY function — it does not
+// filter or modify trading behavior, it just enriches the tags written to
+// the trade log for later retrospective analysis.
+//
+// The helper consolidates what used to be 12 inline start.NewSignal call sites
+// across the AVWAP entry evaluators.
+func (s *AVWAPState) newEntrySignal(ec entryContext, side start.Side, strength float64, tags map[string]string) (start.Signal, error) {
+	mergeTelemetry(tags, entryTelemetryTags(ec, s.Indicators))
+	return start.NewSignal(ec.instanceID, ec.symbol, start.SignalEntry, side, strength, tags)
+}
+
 // logShortGate emits a structured debug log when a short entry is blocked at a gate.
 func logShortGate(ctx start.Context, symbol, gate, anchor string, kvs ...string) {
 	if ctx == nil || ctx.Logger() == nil {
@@ -891,7 +981,6 @@ func (s *AVWAPState) evaluateCapitulationReclaim(ec entryContext) (*start.Signal
 	bar := ec.bar
 	now := ec.now
 	cooldown := ec.cooldown
-	instanceID := ec.instanceID
 	regimeTag := ec.regimeTag
 	avwapValues := ec.avwapValues
 	sortedAnchors := ec.sortedAnchors
@@ -924,7 +1013,7 @@ func (s *AVWAPState) evaluateCapitulationReclaim(ec entryContext) (*start.Signal
 			if s.Indicators.VolumeSMA > 0 {
 				volRatio = bar.Volume / s.Indicators.VolumeSMA
 			}
-			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
+			sig, err := s.newEntrySignal(ec, start.SideBuy, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_capitulation_reclaim",
 				"anchor":            anchorName,
@@ -963,7 +1052,6 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 	bar := ec.bar
 	now := ec.now
 	cooldown := ec.cooldown
-	instanceID := ec.instanceID
 	regimeTag := ec.regimeTag
 	avwapValues := ec.avwapValues
 	sortedAnchors := ec.sortedAnchors
@@ -999,7 +1087,7 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 				continue
 			}
 			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.7+float64(conf.Score)*0.03))
-			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
+			sig, err := s.newEntrySignal(ec, start.SideBuy, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_breakout",
 				"anchor":            anchorName,
@@ -1077,7 +1165,7 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 					continue
 				}
 				adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.7+float64(conf.Score)*0.03))
-				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, adjustedStrength, map[string]string{
+				sig, err := s.newEntrySignal(ec, start.SideSell, adjustedStrength, map[string]string{
 					"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 					"setup":             "avwap_breakout",
 					"anchor":            anchorName,
@@ -1114,7 +1202,6 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 	bar := ec.bar
 	now := ec.now
 	cooldown := ec.cooldown
-	instanceID := ec.instanceID
 	regimeTag := ec.regimeTag
 	avwapValues := ec.avwapValues
 	sortedAnchors := ec.sortedAnchors
@@ -1180,7 +1267,7 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 				continue
 			}
 			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03))
-			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
+			sig, err := s.newEntrySignal(ec, start.SideBuy, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_pullback",
 				"regime_5m":         regimeTag,
@@ -1244,7 +1331,7 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 				continue
 			}
 			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03))
-			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, adjustedStrength, map[string]string{
+			sig, err := s.newEntrySignal(ec, start.SideSell, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_pullback",
 				"regime_5m":         regimeTag,
@@ -1287,7 +1374,6 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 	bar := ec.bar
 	now := ec.now
 	cooldown := ec.cooldown
-	instanceID := ec.instanceID
 	regimeTag := ec.regimeTag
 	ctx := ec.ctx
 
@@ -1324,7 +1410,7 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 					reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				} else {
 					adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.9+float64(conf.Score)*0.03))
-					sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
+					sig, err := s.newEntrySignal(ec, start.SideBuy, adjustedStrength, map[string]string{
 						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 						"setup":             "avwap_pinch",
 						"regime_5m":         regimeTag,
@@ -1359,7 +1445,7 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 					reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				} else {
 					adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.9+float64(conf.Score)*0.03))
-					sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, adjustedStrength, map[string]string{
+					sig, err := s.newEntrySignal(ec, start.SideSell, adjustedStrength, map[string]string{
 						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 						"setup":             "avwap_pinch",
 						"regime_5m":         regimeTag,
@@ -1398,7 +1484,6 @@ func (s *AVWAPState) evaluateGapReclaim(ec entryContext) (*start.Signal, error) 
 	bar := ec.bar
 	now := ec.now
 	cooldown := ec.cooldown
-	instanceID := ec.instanceID
 	regimeTag := ec.regimeTag
 	avwapValues := ec.avwapValues
 	sortedAnchors := ec.sortedAnchors
@@ -1445,7 +1530,7 @@ func (s *AVWAPState) evaluateGapReclaim(ec entryContext) (*start.Signal, error) 
 				continue
 			}
 			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03))
-			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
+			sig, err := s.newEntrySignal(ec, start.SideBuy, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_gap_reclaim",
 				"regime_5m":         regimeTag,
@@ -1481,7 +1566,6 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 	bar := ec.bar
 	now := ec.now
 	cooldown := ec.cooldown
-	instanceID := ec.instanceID
 	regimeTag := ec.regimeTag
 	avwapValues := ec.avwapValues
 	sortedAnchors := ec.sortedAnchors
@@ -1543,7 +1627,7 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 						continue
 					}
 					adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03))
-					sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
+					sig, err := s.newEntrySignal(ec, start.SideBuy, adjustedStrength, map[string]string{
 						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 						"setup":             "avwap_handoff",
 						"anchor":            anchorName,
@@ -1613,7 +1697,7 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 						continue
 					}
 					adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03))
-					sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, adjustedStrength, map[string]string{
+					sig, err := s.newEntrySignal(ec, start.SideSell, adjustedStrength, map[string]string{
 						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 						"setup":             "avwap_handoff",
 						"anchor":            anchorName,
@@ -1650,7 +1734,6 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 	bar := ec.bar
 	now := ec.now
 	cooldown := ec.cooldown
-	instanceID := ec.instanceID
 	regimeTag := ec.regimeTag
 	avwapValues := ec.avwapValues
 	sortedAnchors := ec.sortedAnchors
@@ -1683,7 +1766,7 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 				continue
 			}
 			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.6+float64(conf.Score)*0.03))
-			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideBuy, adjustedStrength, map[string]string{
+			sig, err := s.newEntrySignal(ec, start.SideBuy, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_bounce",
 				"anchor":            anchorName,
@@ -1737,7 +1820,7 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 				continue
 			}
 			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.6+float64(conf.Score)*0.03))
-			sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalEntry, start.SideSell, adjustedStrength, map[string]string{
+			sig, err := s.newEntrySignal(ec, start.SideSell, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_bounce",
 				"anchor":            anchorName,
