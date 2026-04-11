@@ -132,22 +132,34 @@ func (r *Router) Replace(oldID start.InstanceID, newInst *Instance) *Instance {
 // InstancesForSymbol returns active instances assigned to the given symbol,
 // sorted by priority (highest first).
 func (r *Router) InstancesForSymbol(symbol string) []*Instance {
+	return r.InstancesForSymbolInto(symbol, nil)
+}
+
+// InstancesForSymbolInto is the scratch-buffer variant of InstancesForSymbol.
+// Callers pass a reusable slice (usually dst[:0] of a previously returned
+// slice) and receive it back populated. Used by the hot-path bar handler to
+// avoid one slice allocation per bar.
+func (r *Router) InstancesForSymbolInto(symbol string, dst []*Instance) []*Instance {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	ids, ok := r.symbolMap[symbol]
 	if !ok {
-		return nil
+		return dst[:0]
 	}
 
-	result := make([]*Instance, 0, len(ids))
+	if cap(dst) < len(ids) {
+		dst = make([]*Instance, 0, len(ids))
+	} else {
+		dst = dst[:0]
+	}
 	for _, id := range ids {
 		inst := r.instances[id]
 		if inst != nil && inst.IsActive() {
-			result = append(result, inst)
+			dst = append(dst, inst)
 		}
 	}
-	return result
+	return dst
 }
 
 // AllInstances returns all registered instances.
