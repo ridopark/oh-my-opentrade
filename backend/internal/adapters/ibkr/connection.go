@@ -28,7 +28,35 @@ func (h *symbolHook) clear()         { h.sym.Store(nil) }
 const (
 	reconnectInitialDelay = 5 * time.Second
 	reconnectMaxDelay     = 60 * time.Second
+
+	// reconnectEscalateAfter is the attempt count at which keepAlive emits a
+	// Discord alert. With the current exponential backoff (5s, 10s, 20s, 40s,
+	// 60s, 60s…) this lands at roughly 3 minutes of continuous downtime — long
+	// enough to ignore the single-flap case, short enough that an operator can
+	// still intervene before positions drift unmanaged.
+	reconnectEscalateAfter int64 = 6
+
+	// reconnectFatalAfter is the attempt count at which keepAlive fires the
+	// installed fatal-halt callback. At the capped 60s delay this is about
+	// 1 hour of continuous failure — well past any reasonable transient outage,
+	// and the point at which we would rather pull the plug on trading than
+	// continue to hope.
+	reconnectFatalAfter int64 = 60
 )
+
+// FatalHaltFunc is invoked by the keepAlive loop once reconnect attempts
+// exceed reconnectFatalAfter. Implementations should trip the global
+// trading-halt circuit (e.g. DailyLossBreaker.SetGlobalHalt) and stop the
+// orchestrator. Wired from main.go to avoid an import cycle between this
+// adapter and the app/execution + app/risk packages.
+type FatalHaltFunc func(reason string)
+
+// ReconnectNotifier is the minimal surface the connection needs from a
+// Discord/notify service. *notify.Service.NotifySync satisfies this without
+// dragging the notify package into the ibkr adapter.
+type ReconnectNotifier interface {
+	NotifySync(message string)
+}
 
 type connection struct {
 	ib      ibClient
@@ -41,6 +69,14 @@ type connection struct {
 
 	reconnectSubs []func()
 	subsMu        sync.Mutex
+
+	// Escalation wiring — installed post-construction via Adapter setters.
+	notifier  ReconnectNotifier
+	fatalHalt FatalHaltFunc
+
+	// reconnectAttempts counts consecutive failed reconnects since the last
+	// successful connect. Reset to 0 on success. Read atomically.
+	reconnectAttempts atomic.Int64
 }
 
 func newConnection(cfg config.IBKRConfig, log zerolog.Logger) (*connection, error) {
@@ -131,22 +167,96 @@ func (c *connection) keepAlive() {
 		case <-c.ctx.Done():
 			return
 		case <-ticker.C:
-			if !c.isConnected() {
-				c.log.Warn().Dur("retry_in", delay).Msg("ibkr: connection lost, reconnecting")
-				if err := c.connect(); err != nil {
-					c.log.Error().Err(err).Msg("ibkr: reconnect failed")
-					delay *= 2
-					if delay > reconnectMaxDelay {
-						delay = reconnectMaxDelay
-					}
-				} else {
-					delay = reconnectInitialDelay
-					c.fireReconnectCallbacks()
-				}
-				ticker.Reset(delay)
+			if c.isConnected() {
+				continue
 			}
+
+			attempts := c.reconnectAttempts.Add(1)
+			c.log.Warn().
+				Dur("retry_in", delay).
+				Int64("attempt", attempts).
+				Msg("ibkr: connection lost, reconnecting")
+
+			if err := c.connect(); err != nil {
+				c.log.Error().Err(err).Int64("attempt", attempts).Msg("ibkr: reconnect failed")
+				c.onReconnectFailure(attempts, err)
+				delay *= 2
+				if delay > reconnectMaxDelay {
+					delay = reconnectMaxDelay
+				}
+			} else {
+				c.onReconnectSuccess()
+				delay = reconnectInitialDelay
+				c.fireReconnectCallbacks()
+			}
+			ticker.Reset(delay)
 		}
 	}
+}
+
+// onReconnectFailure handles a single failed reconnect attempt: emits
+// the one-shot escalation alert at reconnectEscalateAfter and the fatal
+// halt at reconnectFatalAfter. Using == (not >=) guarantees exactly one
+// alert per outage regardless of how many subsequent ticks pass through
+// this branch — critical to avoid a Discord spam loop.
+func (c *connection) onReconnectFailure(attempts int64, err error) {
+	c.mu.RLock()
+	notifier := c.notifier
+	fatalHalt := c.fatalHalt
+	c.mu.RUnlock()
+
+	if attempts == reconnectEscalateAfter && notifier != nil {
+		notifier.NotifySync(fmt.Sprintf(
+			"IBKR disconnected: %d consecutive reconnect failures — latest error: %v",
+			attempts, err,
+		))
+	}
+
+	if attempts == reconnectFatalAfter {
+		if notifier != nil {
+			notifier.NotifySync(fmt.Sprintf(
+				"IBKR down for %d attempts — activating kill switch", attempts,
+			))
+		}
+		if fatalHalt != nil {
+			fatalHalt(fmt.Sprintf("ibkr reconnect exhausted after %d attempts", attempts))
+		}
+	}
+}
+
+// onReconnectSuccess resets the attempt counter and emits a recovery
+// notification when the outage was long enough to have raised an alert.
+func (c *connection) onReconnectSuccess() {
+	total := c.reconnectAttempts.Swap(0)
+	if total > 0 {
+		c.log.Info().Int64("attempts", total).Msg("ibkr: reconnect succeeded — resetting attempt counter")
+		c.mu.RLock()
+		notifier := c.notifier
+		c.mu.RUnlock()
+		if notifier != nil {
+			notifier.NotifySync(fmt.Sprintf(
+				"IBKR reconnected after %d attempts", total,
+			))
+		}
+	}
+}
+
+// SetReconnectNotifier installs a Discord/alert sink that the keepAlive loop
+// uses to escalate extended IBKR outages. Safe to call on an already-running
+// connection.
+func (c *connection) SetReconnectNotifier(n ReconnectNotifier) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.notifier = n
+}
+
+// SetFatalHalt installs the callback invoked once reconnectFatalAfter is
+// reached. Wiring lives in main.go to keep the adapter free of app-layer
+// imports.
+func (c *connection) SetFatalHalt(fn FatalHaltFunc) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fatalHalt = fn
 }
 
 func (c *connection) OnReconnect(fn func()) {
