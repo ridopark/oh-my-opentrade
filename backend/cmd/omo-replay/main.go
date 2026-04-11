@@ -577,7 +577,11 @@ func main() {
 
 	// Load symbol bar streams in parallel. Sequential GetMarketBars calls
 	// were ~1.6s of startup on an 8-symbol run; TimescaleDB handles concurrent
-	// reads fine and the connection pool has headroom.
+	// reads fine and the connection pool has headroom. Note: we tried the
+	// GetMarketBarsMulti single-query path and it was ~10% slower than the
+	// parallel fan-out — one IN-clause query spans all time-partitioned
+	// chunks sequentially, while parallel connections let the DB process
+	// per-symbol chunks concurrently.
 	type loadResult struct {
 		sym  domain.Symbol
 		bars []domain.MarketBar
