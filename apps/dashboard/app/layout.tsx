@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import { Sidebar } from "@/components/sidebar";
-import { QueryProvider } from "@/components/query-provider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -15,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "oh-my-opentrade | Trading Dashboard",
+  title: "oh-my-opentrade | Algorithmic trading, built like infrastructure",
   description:
-    "Real-time trading dashboard for oh-my-opentrade algorithmic trading system",
+    "Hexagonal Go core, dark-pool confluence, persistent order journal. Broker-agnostic. Paper-trading stable.",
 };
 
 export default function RootLayout({
@@ -28,14 +26,9 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased overflow-hidden`}
+        className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased`}
       >
-        <QueryProvider>
-          <Sidebar />
-          <main className="ml-0 md:ml-56 h-screen bg-background p-3 md:p-6 overflow-y-auto">
-            {children}
-          </main>
-        </QueryProvider>
+        {children}
       </body>
     </html>
   );
