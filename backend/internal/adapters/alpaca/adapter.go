@@ -193,10 +193,21 @@ func (a *Adapter) ListTradeable(ctx context.Context, assetClass domain.AssetClas
 }
 
 // Close safely closes the adapter and underlying connections.
+//
+// The ws/cryptoWs fields are nil when the adapter is constructed with
+// WithNoStream() — the REST-only mode used for the primary alpacaData
+// instance in omo-core. Without the nil check on ws this function
+// crashes with SIGSEGV on every graceful shutdown (observed during the
+// Sprint 3 smoke test: the old binary panic'd at alpaca/adapter.go:198
+// when main.waitForShutdown called infra.alpacaData.Close()). The
+// existing nil check on cryptoWs is correct; this change extends the
+// same pattern to ws.
 func (a *Adapter) Close() error {
 	var errs []error
-	if err := a.ws.Close(); err != nil {
-		errs = append(errs, err)
+	if a.ws != nil {
+		if err := a.ws.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if a.cryptoWs != nil {
 		if err := a.cryptoWs.Close(); err != nil {
@@ -260,6 +271,12 @@ func (a *Adapter) CancelOpenOrders(ctx context.Context, symbol domain.Symbol, si
 
 func (a *Adapter) CancelAllOpenOrders(ctx context.Context) (int, error) {
 	return a.rest.CancelAllOpenOrders(ctx)
+}
+
+// GetOpenOrders returns Alpaca's view of all working orders on the account.
+// Used by Sprint 2 startup reconciliation in positionmonitor/bootstrap.go.
+func (a *Adapter) GetOpenOrders(ctx context.Context) ([]ports.OpenOrder, error) {
+	return a.rest.GetOpenOrders(ctx)
 }
 
 // GetOrderStatus fetches the current status of an Alpaca order.

@@ -38,6 +38,7 @@ type infraDeps struct {
 	pnlRepo         *timescaledb.PnLRepository
 	stratPerfRepo   *timescaledb.StrategyPerfRepo
 	dnaApprovalRepo *timescaledb.DNAApprovalRepo
+	orderIntentRepo *timescaledb.OrderIntentRepo
 	tokenStore      *timescaledb.TokenStore
 	tracerProvider  *sdktrace.TracerProvider
 	startup         startupReport
@@ -167,6 +168,7 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 	pnlRepo := timescaledb.NewPnLRepository(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "pnl").Logger())
 	stratPerfRepo := timescaledb.NewStrategyPerfRepo(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "strategy_perf").Logger())
 	dnaApprovalRepo := timescaledb.NewDNAApprovalRepo(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "dna_approval_repo").Logger())
+	orderIntentRepo := timescaledb.NewOrderIntentRepo(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "order_intent_repo").Logger())
 	tokenStore := timescaledb.NewTokenStore(timescaledb.NewSqlDB(sqlDB))
 
 	return &infraDeps{
@@ -178,6 +180,7 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 		pnlRepo:         pnlRepo,
 		stratPerfRepo:   stratPerfRepo,
 		dnaApprovalRepo: dnaApprovalRepo,
+		orderIntentRepo: orderIntentRepo,
 		tokenStore:      tokenStore,
 		tracerProvider:  tp,
 		ibkrPaperMode:   cfg.IBKR.PaperMode,

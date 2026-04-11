@@ -25,6 +25,11 @@ type Config struct {
 	Notification NotificationConfig `yaml:"notification"`
 	OptionsV2    bool               `yaml:"-"`
 	MultiAccount bool               `yaml:"-"`
+	// OrderJournalEnabled toggles the Sprint 2 write-ahead order-intent
+	// journal and journal-aware startup reconciliation. Default off (legacy
+	// behavior — cancel-all on startup, no intent persistence) so production
+	// deploys can ship the code and flip the flag independently.
+	OrderJournalEnabled bool `yaml:"-"`
 }
 
 // IBKRConfig holds connection parameters for the IB Gateway adapter.
@@ -446,6 +451,9 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	}
 	if val := os.Getenv("MULTI_ACCOUNT"); val == "true" {
 		cfg.MultiAccount = true
+	}
+	if val := os.Getenv("OMO_ORDER_JOURNAL_ENABLED"); val == "true" {
+		cfg.OrderJournalEnabled = true
 	}
 
 	// Validate configuration

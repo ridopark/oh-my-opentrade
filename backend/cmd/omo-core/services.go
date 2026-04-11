@@ -146,6 +146,16 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 		acctPort = infra.ibkrBroker
 		log.Info().Msg("DTBP fallback enabled — buying power guard active")
 	}
+	// Sprint 2 write-ahead journal — gated by cfg.OrderJournalEnabled (sourced
+	// from OMO_ORDER_JOURNAL_ENABLED) so the default deploy remains byte-
+	// identical to pre-Sprint-2 behavior. When the flag is unset, intentJournal
+	// stays nil and the execution service skips the write-ahead/terminal
+	// update calls entirely.
+	var intentJournal ports.OrderIntentJournal
+	if cfg.OrderJournalEnabled {
+		intentJournal = infra.orderIntentRepo
+		log.Info().Msg("order intent journal enabled — write-ahead audit active")
+	}
 	execBundle, err := bootstrap.BuildExecutionService(bootstrap.ExecutionDeps{
 		EventBus:      infra.eventBus,
 		Broker:        infra.ibkrBroker,
@@ -160,6 +170,7 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 		EnableOptions: true,
 		BrokerName:    "ibkr",
 		Logger:        log,
+		IntentJournal: intentJournal,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to build execution service")
@@ -172,17 +183,18 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 
 	// Position monitor (price cache + exit rule evaluation, via shared bootstrap builder)
 	posMonBundle, err := bootstrap.BuildPositionMonitor(bootstrap.PosMonitorDeps{
-		EventBus:     infra.eventBus,
-		PositionGate: execBundle.PositionGate,
-		Broker:       infra.ibkrBroker,
-		Repo:         infra.repo,
-		SnapshotFn:   svc.monitor.GetLastSnapshot,
-		OptionsPrice: infra.alpacaData,
-		TenantID:     "default",
-		EnvMode:      domain.EnvModePaper,
-		Clock:        time.Now,
-		IsBacktest:   false,
-		Logger:       log,
+		EventBus:      infra.eventBus,
+		PositionGate:  execBundle.PositionGate,
+		Broker:        infra.ibkrBroker,
+		Repo:          infra.repo,
+		SnapshotFn:    svc.monitor.GetLastSnapshot,
+		OptionsPrice:  infra.alpacaData,
+		TenantID:      "default",
+		EnvMode:       domain.EnvModePaper,
+		Clock:         time.Now,
+		IsBacktest:    false,
+		Logger:        log,
+		IntentJournal: intentJournal,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to build position monitor")
@@ -238,6 +250,13 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	// }
 	multiNotifier := notification.NewMultiNotifier(notifiers...)
 	svc.notifier = multiNotifier
+	// Position monitor was built earlier in this function (before the
+	// notifier adapters existed), so wire the reconciliation notifier now
+	// that the sink is available. Bootstrap reconciliation runs at Start()
+	// time, well after this point, so the late-binding is safe.
+	if svc.posMonitor != nil {
+		svc.posMonitor.SetNotifier(multiNotifier)
+	}
 	notifyLog := log.With().Str("component", "notify").Logger()
 	chartGen := charting.NewGonumChartGenerator()
 	var notifyErr error
@@ -249,6 +268,21 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 		log.Fatal().Err(notifyErr).Msg("failed to initialize notification service")
 	}
 	log.Info().Int("active", len(notifiers)).Msg("notification adapters initialized")
+
+	// Wire IBKR reconnect escalation now that notifySvc exists. The ibkr
+	// adapter uses the notifier to surface extended outages to Discord and
+	// the fatal-halt callback to trip the global trading halt once reconnect
+	// is exhausted. Both pieces live in main's process so that the adapter
+	// itself stays free of execution/risk package imports.
+	if infra.ibkrBroker != nil {
+		infra.ibkrBroker.SetReconnectNotifier(svc.notifySvc)
+		infra.ibkrBroker.SetReconnectFatalHalt(func(reason string) {
+			log.Error().Str("reason", reason).Msg("ibkr: fatal halt — tripping global trading halt")
+			if svc.dailyLossBreaker != nil {
+				svc.dailyLossBreaker.SetGlobalHalt(func() bool { return true })
+			}
+		})
+	}
 
 	svc.dnaApproval = dnaapproval.NewService(infra.dnaApprovalRepo, infra.eventBus, log.With().Str("component", "dnaapproval").Logger())
 	svc.monitor.SetDNAGate(svc.dnaApproval, "orb_break_retest")
@@ -336,6 +370,10 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		DisableEnricher: false,
 		Logger:          log,
 		TideTracker:     tideTracker,
+		// svc.notifier is the raw MultiNotifier (Telegram + Discord fan-out),
+		// not the event-driven svc.notifySvc. Panic alerts must bypass the
+		// batching pipeline and fire immediately, so we wire the raw sink.
+		Notifier: svc.notifier,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("strategy v2: failed to build pipeline")

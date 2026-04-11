@@ -1,7 +1,7 @@
-# Binaries
+# Binaries — every backend/omo-* file at the backend root is a
+# compiled Go entrypoint produced by `go build ./cmd/<name>`
 backend/bin/
-backend/omo-core
-backend/omo-replay
+backend/omo-*
 
 # Environment
 .env
@@ -35,3 +35,19 @@ tmp/
 
 # Debug screenshots
 /*.png
+
+# Playwright MCP artifacts (local tool output — screenshots, snapshots, console logs)
+.playwright-mcp/
+
+# Backtest result dumps (ephemeral, regenerated per run; 14 historical
+# baselines are grandfathered as tracked files and stay unaffected)
+_workspace/*.json
+
+# Agent-pipeline mailbox files — written by one agent, consumed by the
+# next, regenerated per run (see .claude/agents/ops-* and strategy-tuning)
+_workspace/incident_report.md
+_workspace/fix_plan.md
+_workspace/review_verdict.md
+
+# Harness-generated lock files
+.claude/scheduled_tasks.lock

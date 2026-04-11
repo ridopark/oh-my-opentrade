@@ -1,0 +1,143 @@
+schema_version = 2
+
+[strategy]
+id = "orb_break_retest"
+version = "1.0.0"
+name = "ORB Break & Retest"
+description = "Opening Range Breakout — Break & Retest with volume confirmation"
+author = "system"
+created_at = "2026-03-04T00:00:00Z"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+symbols = ["AMD", "IWM", "AMZN", "PLTR", "SOFI", "SNOW", "HIMS", "COIN", "BA", "AFRM"]
+timeframes = ["5m"]
+priority = 100
+conflict_policy = "priority_wins"
+exclusive_per_symbol = false
+watchlist_mode = "static"
+asset_classes = ["OPTION"]
+allowed_directions = ["LONG", "SHORT"]
+
+[screening]
+description = "Opening Range Breakout strategy that waits for price to break the ORB window(15min) range, then retests the breakout level before entry. CRITICAL: Only pick highly liquid stocks that trade continuously every minute during the first hour — minimum 500K average daily volume, preferably 1M+. Mid and large caps only."
+
+[params]
+bar_timeframe = "5m"
+orb_window_minutes = 30            # TUNE: 30-min range like original omo config
+min_rvol = 0.0                     # RVOL inert for ORB breakouts
+min_confidence = 0.0               # JS has no confidence filter
+breakout_confirm_bps = 6           # optimal — 2 worse, 10 worse
+touch_tolerance_bps = 30           # JS: 0.3% retest tolerance
+hold_confirm_bps = 1               # almost no hold confirmation needed (was 2)
+max_retest_bars = 25               # revert — 12 slightly worse
+allow_missing_range_bars = 2       # tolerate 2 missing bars (was 1)
+max_signals_per_session = 3        # keep 3 — 2nd/3rd signals are not worse
+htf_bias_enabled = false           # JS has no HTF bias
+atr_multiplier = 3.5
+sweep_cooldown_bars = 1            # shorter cooldown after sweep (was 3)
+retest_confirm_bars = 1            # 1 bar to confirm retest (was 2)
+vwap_filter_enabled = false        # JS has no VWAP filter
+vix_skip_above = 999               # JS has no VIX filter
+vix_widen_above = 999              # JS has no VIX filter
+max_range_atr_mult = 4.0           # accept wider ranges (was 2.5)
+min_range_pct_bps = 10             # accept smaller ranges (was 20)
+fvg_enabled = false                # JS has no FVG
+fvg_min_rvol = 0.8
+displacement_min_body_pct = 0.50   # 0.50 is optimal — 0.40 worse, 0.60 worse
+retest_quality_min_body_hold = 0    # disabled — filter redundant with existing touch+hold logic
+adr_exhaustion_pct = 0              # disabled — ADR filter hurts PF at all thresholds
+displacement_min_range_pct = 0.002 # JS: range >= 0.2% of price
+
+# Entry quality filters
+orb_breakout_rvol_min = 1.5
+orb_range_width_min_atr = 0.3        # range must be >= 30% of daily ATR
+orb_range_width_max_atr = 0.8        # range must be <= 80% of daily ATR
+orb_retest_speed_max_bars = 4        # data: 5-6 bar retests have PF 0.90 vs 1.4+ for ≤4
+breakout_min_distance_bps = 10       # data: <10 bps breakouts have PF 0.67 — reject grinding breaks
+stop_bps = 40                      # swing stop overrides — fixed bps is fallback only
+stop_buffer_bps = 10               # JS: 0.1% buffer on swing stop
+limit_offset_bps = 15              # slightly more aggressive fill
+risk_per_trade_bps = 500           # smaller size per trade (more attempts)
+max_position_bps = 1500
+
+# Shared confluence scoring (0-78 base scale)
+min_confluence_score = 40
+allowed_hours_start = "09:30"
+allowed_hours_end = "14:00"        # revert — timing doesn't help PF
+allowed_hours_tz = "America/New_York"
+
+[regime_filter]
+enabled = true
+allowed_regimes = ["TREND", "TREND_UP", "TREND_DOWN", "SQUEEZE", "RANGE", "NEUTRAL"]
+block_counter_trend = true         # JS: block LONG in TREND_DOWN, SHORT in TREND_UP
+min_atr_pct = 0.4
+
+[hooks]
+signals = { engine = "builtin", name = "orb_break_retest" }
+
+[dynamic_risk]
+enabled = true
+min_confidence = 0.0             # JS has no confidence filter
+risk_scale_min = 0.50
+risk_scale_max = 1.00
+stop_tight_mult = 0.60
+stop_wide_mult = 1.50
+size_tight_mult = 0.70
+size_wide_mult = 1.50
+
+# Premium target: lower bar for intraday ORB
+[[exit_rules]]
+type = "PREMIUM_TARGET"
+[exit_rules.params]
+target_pct = 0.12
+
+# EOD flatten
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 10
+
+[options]
+enabled = true
+max_contracts = 5
+
+# Limit price = mid + 60% of spread (aggressive for ORB breakout day trading)
+limit_spread_pct = 1.00
+# Fallback when spread is zero: ask + 3%
+limit_buffer_bps = 1000
+# Cancel unfilled option orders after 45 seconds (speed > price for ORB)
+stale_cancel_secs = 45
+
+[options.defaults]
+min_dte = 3                # short DTE for intraday
+max_dte = 7
+target_delta_low = 0.60    # ITM — less extrinsic, more delta
+target_delta_high = 0.75
+min_open_interest = 100
+max_spread_pct = 0.15      # JS: maxSpreadPct=0.15
+max_iv = 1.5               # JS: maxVolatility=1.50
+
+[gate_chain]
+monitor = [
+    { name = "dna_approval" },
+    { name = "vix", params = { skip_above = 999.0 } },
+    { name = "regime", params = { allowed = ["TREND", "TREND_UP", "TREND_DOWN", "SQUEEZE", "RANGE", "NEUTRAL"] } },
+    { name = "htf_bias" },
+    { name = "min_atr_pct", params = { min_pct = 0.4 } },
+    { name = "market_tide", params = { neutral_band_bps = 10 } },
+]
+
+execution = [
+    { name = "short_direction" },
+    { name = "exposure_guard" },
+    { name = "portfolio_guard" },
+    { name = "risk_engine" },
+    { name = "slippage_guard" },
+    { name = "trading_window" },
+    { name = "spread_guard" },
+    { name = "buying_power_guard" },
+]

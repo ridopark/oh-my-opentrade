@@ -8,6 +8,10 @@ type StrategyMetrics struct {
 	TradesTotal  *prometheus.CounterVec
 	LoopDuration *prometheus.HistogramVec
 	State        *prometheus.GaugeVec
+	// Panics counts recovered panics inside strategy OnBar/WarmupOnBar calls.
+	// Labels: instance_id, symbol. Every increment indicates a strategy bug
+	// that was isolated from the runner rather than crashing the process.
+	Panics *prometheus.CounterVec
 }
 
 func newStrategyMetrics(reg *prometheus.Registry) StrategyMetrics {
@@ -32,7 +36,12 @@ func newStrategyMetrics(reg *prometheus.Registry) StrategyMetrics {
 			Name: "omo_strategy_state",
 			Help: "Current strategy state (0=idle, 1=armed, 2=in_position, 3=halted).",
 		}, []string{"strategy"}),
+
+		Panics: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "omo_strategy_panics_total",
+			Help: "Total recovered panics inside strategy OnBar/WarmupOnBar calls.",
+		}, []string{"instance_id", "symbol"}),
 	}
-	reg.MustRegister(m.SignalsTotal, m.TradesTotal, m.LoopDuration, m.State)
+	reg.MustRegister(m.SignalsTotal, m.TradesTotal, m.LoopDuration, m.State, m.Panics)
 	return m
 }

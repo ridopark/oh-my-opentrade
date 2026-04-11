@@ -23,6 +23,12 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// systemd watchdog heartbeat. No-op when WatchdogSec is not set (which
+	// covers the current Docker-based deployment). When systemd is active
+	// the heartbeat is gated on equity feed freshness so a wedged bar
+	// pipeline also trips a restart, not just a hard process hang.
+	startWatchdogNotify(ctx, log, svc.ingestion)
+
 	syms := buildSymbolLists(cfg)
 	go fillBarGaps(ctx, cfg, infra, log) // background — not critical for live trading
 	warmupIndicators(ctx, cfg, infra, svc, syms, log)
@@ -47,6 +53,28 @@ func waitForShutdown(cancel context.CancelFunc, server *http.Server, infra *infr
 	// 2. Stop orchestrator (no new trades).
 	if svc.orchestrator != nil {
 		svc.orchestrator.Stop()
+	}
+
+	// 2a. Quiesce the position monitor's reconcile loops. Without this guard,
+	// a reconcile ticker firing between orchestrator.Stop() and broker.Close()
+	// could submit a reconciliation trade against a half-torn-down broker or
+	// emit a stale position-close event that confuses downstream consumers.
+	if svc.posMonitor != nil {
+		svc.posMonitor.SignalShutdown()
+	}
+
+	// 2b. Drain in-flight IBKR orders. If we skip this and close() the socket
+	// immediately, any exit order that was submitted-but-not-yet-filled loses
+	// its terminal callback — the position journal then thinks the exit failed
+	// and the reconciler will try again on next startup, causing a duplicate
+	// sell. A 30s deadline bounds the worst-case wait so we don't hang forever
+	// on a stuck order.
+	if infra.ibkrBroker != nil {
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := infra.ibkrBroker.DrainPending(drainCtx); err != nil {
+			log.Warn().Err(err).Msg("ibkr: order drain incomplete, proceeding with shutdown")
+		}
+		drainCancel()
 	}
 
 	// 3. Close broker and data connections.

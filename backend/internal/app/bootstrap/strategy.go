@@ -39,6 +39,11 @@ type StrategyDeps struct {
 	// entry signals can be tagged with SPY/QQQ intraday-VWAP deviation for
 	// retrospective telemetry analysis. Optional.
 	TideTracker *gate.IndexTideTracker
+	// Notifier, when non-nil, is wired into the strategy runner so recovered
+	// OnBar/WarmupOnBar panics emit a Discord/Telegram alert in addition to
+	// the log entry and prometheus counter. Optional: without this the runner
+	// still recovers and logs panics — only the operator-facing alert is lost.
+	Notifier ports.NotifierPort
 }
 
 // StrategyPipeline is the return value of BuildStrategyPipeline, exposing the
@@ -142,6 +147,9 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 	}
 	if deps.TideTracker != nil {
 		runner.SetTideTracker(deps.TideTracker)
+	}
+	if deps.Notifier != nil {
+		runner.SetNotifier(deps.Notifier)
 	}
 
 	var enricher *strategy.SignalDebateEnricher
