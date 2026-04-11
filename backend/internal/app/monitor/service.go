@@ -38,7 +38,12 @@ type Service struct {
 	lastSnaps        map[string]domain.IndicatorSnapshot
 	liveBars         map[string]int
 	aggregators      map[string]*domain.BarAggregator
-	orbAggregators   map[string]*domain.BarAggregator // per-symbol 5m aggregators for ORB tracker
+	// aggKeysBySym caches the per-symbol aggregator key strings ("sym:tf"),
+	// parallel to anchorTimeframes. Populated by InitAggregators so the hot
+	// HandleMarketBar loop can iterate without re-concatenating strings on
+	// every bar (was ~880k allocs per backtest).
+	aggKeysBySym   map[string][]string
+	orbAggregators map[string]*domain.BarAggregator // per-symbol 5m aggregators for ORB tracker
 	orbTimeframe     domain.Timeframe                 // timeframe for ORB bar delivery (default "5m")
 	anchorRegimes    map[string]domain.MarketRegime
 	lastHTFSnaps     map[string]domain.IndicatorSnapshot
@@ -182,6 +187,7 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 		lastSnaps:        make(map[string]domain.IndicatorSnapshot),
 		liveBars:         make(map[string]int),
 		aggregators:      make(map[string]*domain.BarAggregator),
+		aggKeysBySym:     make(map[string][]string),
 		orbAggregators:   make(map[string]*domain.BarAggregator),
 		orbTimeframe:     "5m",
 		anchorRegimes:    make(map[string]domain.MarketRegime),
@@ -390,14 +396,17 @@ func (s *Service) InitAggregators(symbols []domain.Symbol, sessionOpen time.Time
 	defer s.mu.Unlock()
 	for _, sym := range symbols {
 		symStr := sym.String()
-		for _, tf := range anchorTimeframes {
+		keys := make([]string, len(anchorTimeframes))
+		for i, tf := range anchorTimeframes {
 			key := symStr + ":" + tf.String()
+			keys[i] = key
 			agg, err := domain.NewBarAggregator(sym, tf, sessionOpen)
 			if err != nil {
 				continue
 			}
 			s.aggregators[key] = agg
 		}
+		s.aggKeysBySym[symStr] = keys
 		// ORB aggregator for the configured timeframe
 		if s.orbTimeframe != "" && s.orbTimeframe != "1m" {
 			orbAgg, err := domain.NewBarAggregator(sym, s.orbTimeframe, sessionOpen)
@@ -559,10 +568,20 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	if bar.Timeframe != "1m" {
 		return nil
 	}
-	l := s.log.With().
-		Str("symbol", string(bar.Symbol)).
-		Str("timeframe", string(bar.Timeframe)).
-		Logger()
+	// Skip building a child logger per bar when debug is disabled — the
+	// downstream l.Debug() calls would already drop their work at the event
+	// level, but .With().Str().Str().Logger() still allocates a new logger
+	// context on every bar (~840k/backtest per pprof). Materialize the child
+	// only when the parent logger is below info.
+	var l zerolog.Logger
+	if s.log.GetLevel() <= zerolog.DebugLevel {
+		l = s.log.With().
+			Str("symbol", string(bar.Symbol)).
+			Str("timeframe", string(bar.Timeframe)).
+			Logger()
+	} else {
+		l = s.log
+	}
 	var publishStrict []domain.Event
 	var publishBestEffort []domain.Event
 	s.mu.Lock()
@@ -616,8 +635,14 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		}
 	}
 
-	for _, tf := range anchorTimeframes {
-		aggKey := symStr + ":" + tf.String()
+	aggKeys := s.aggKeysBySym[symStr]
+	for i, tf := range anchorTimeframes {
+		var aggKey string
+		if i < len(aggKeys) {
+			aggKey = aggKeys[i]
+		} else {
+			aggKey = symStr + ":" + tf.String()
+		}
 		agg, exists := s.aggregators[aggKey]
 		if !exists {
 			continue
@@ -658,9 +683,14 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 			s.lastHTFSnaps[aggKey] = htfSnap
 		}
 	}
-	snap.AnchorRegimes = make(map[domain.Timeframe]domain.MarketRegime)
-	for _, tf := range anchorTimeframes {
-		aggKey := symStr + ":" + tf.String()
+	snap.AnchorRegimes = make(map[domain.Timeframe]domain.MarketRegime, len(anchorTimeframes)+1)
+	for i, tf := range anchorTimeframes {
+		var aggKey string
+		if i < len(aggKeys) {
+			aggKey = aggKeys[i]
+		} else {
+			aggKey = symStr + ":" + tf.String()
+		}
 		if reg, ok := s.anchorRegimes[aggKey]; ok {
 			snap.AnchorRegimes[tf] = reg
 		}
