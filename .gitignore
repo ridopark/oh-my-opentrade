@@ -38,3 +38,7 @@ tmp/
 
 # Playwright MCP artifacts (local tool output — screenshots, snapshots, console logs)
 .playwright-mcp/
+
+# Backtest result dumps (ephemeral, regenerated per run; 14 historical
+# baselines are grandfathered as tracked files and stay unaffected)
+_workspace/*.json
