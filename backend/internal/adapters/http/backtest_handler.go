@@ -46,10 +46,11 @@ type backtestControlRequest struct {
 // BacktestHandler manages backtest lifecycle via HTTP endpoints.
 // Backtests are queued and executed one at a time to avoid resource contention.
 type BacktestHandler struct {
-	db         *sql.DB
-	appCfg     *config.Config
-	marketData ports.MarketDataPort
-	log        zerolog.Logger
+	db          *sql.DB
+	appCfg      *config.Config
+	marketData  ports.MarketDataPort
+	log         zerolog.Logger
+	historyRepo ports.BacktestHistoryPort // optional; nil disables history persistence
 
 	mu      sync.RWMutex
 	runners map[string]*backtest.Runner
@@ -63,15 +64,18 @@ type backtestJob struct {
 	log    zerolog.Logger
 }
 
-// NewBacktestHandler creates a handler for backtest HTTP endpoints.
-func NewBacktestHandler(db *sql.DB, appCfg *config.Config, marketData ports.MarketDataPort, log zerolog.Logger) *BacktestHandler {
+// NewBacktestHandler creates a handler for backtest HTTP endpoints. The
+// historyRepo is optional; pass nil to skip persistent history (e.g. in
+// tests or when the feature is disabled).
+func NewBacktestHandler(db *sql.DB, appCfg *config.Config, marketData ports.MarketDataPort, historyRepo ports.BacktestHistoryPort, log zerolog.Logger) *BacktestHandler {
 	h := &BacktestHandler{
-		db:         db,
-		appCfg:     appCfg,
-		marketData: marketData,
-		log:        log.With().Str("component", "backtest_http").Logger(),
-		runners:    make(map[string]*backtest.Runner),
-		queue:      make(chan *backtestJob, 4), // buffer up to 4 pending backtests
+		db:          db,
+		appCfg:      appCfg,
+		marketData:  marketData,
+		log:         log.With().Str("component", "backtest_http").Logger(),
+		historyRepo: historyRepo,
+		runners:     make(map[string]*backtest.Runner),
+		queue:       make(chan *backtestJob, 4), // buffer up to 4 pending backtests
 	}
 	// Single worker drains the queue — only one backtest runs at a time.
 	go h.backtestWorker()
@@ -116,6 +120,8 @@ func (h *BacktestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleStrategies(w, r)
 	case parts[0] == "run" && r.Method == http.MethodPost:
 		h.handleRun(w, r)
+	case parts[0] == "history":
+		h.handleHistory(w, r, parts[1:])
 	case len(parts) >= 2:
 		id := parts[0]
 		action := parts[1]
@@ -267,6 +273,28 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		AppCfg: h.appCfg,
 		Logger: h.log,
 	}, slippage, equity, req.NoAI), h.appCfg, h.marketData, h.log)
+
+	// Wire history persistence: capture meta & DNA now, so the save is
+	// deterministic even if config files change mid-run. The save itself
+	// runs in a goroutine with its own timeout so it can't slow the run.
+	if h.historyRepo != nil {
+		meta := backtestRunMeta{
+			id:            runner.ID(),
+			strategies:    append([]string(nil), req.Strategies...),
+			symbols:       symbolsAsStrings(backtestSymbols),
+			periodStart:   fromTime,
+			periodEnd:     toTime,
+			initialEquity: equity,
+			slippageBPS:   int(slippage),
+			noAI:          req.NoAI,
+			dnaSnapshot:   captureDNASnapshot(req.Strategies),
+		}
+		repo := h.historyRepo
+		log := h.log
+		runner.SetFinalizer(func(res *backtest.Result) {
+			go saveBacktestHistory(repo, meta, res, log)
+		})
+	}
 
 	h.runners[runner.ID()] = runner
 	h.mu.Unlock()
@@ -441,6 +469,56 @@ func (h *BacktestHandler) handleStrategies(w http.ResponseWriter, r *http.Reques
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(headers)
+}
+
+// captureDNASnapshot reads each requested strategy's TOML file and returns a
+// frozen snapshot of its full config (params, routing, lifecycle, etc.) as
+// a map keyed by strategy ID. Safe to store on the backtest_runs row so
+// later edits to the strategy file don't retroactively change history.
+func captureDNASnapshot(strategyIDs []string) map[string]any {
+	snapshot := make(map[string]any, len(strategyIDs))
+	const stratDir = "configs/strategies"
+	entries, err := os.ReadDir(stratDir)
+	if err != nil {
+		return snapshot
+	}
+	wanted := make(map[string]bool, len(strategyIDs))
+	for _, id := range strategyIDs {
+		wanted[id] = true
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".toml") {
+			continue
+		}
+		data, readErr := os.ReadFile(stratDir + "/" + e.Name())
+		if readErr != nil {
+			continue
+		}
+		var decoded map[string]any
+		if tomlErr := toml.Unmarshal(data, &decoded); tomlErr != nil {
+			continue
+		}
+		id, _ := strategyField(decoded, "strategy", "id").(string)
+		if id == "" || !wanted[id] {
+			continue
+		}
+		snapshot[id] = decoded
+	}
+	return snapshot
+}
+
+// strategyField reads nested map keys safely. Returns nil on any missing key
+// or non-map intermediate.
+func strategyField(m map[string]any, path ...string) any {
+	var cur any = m
+	for _, k := range path {
+		mm, ok := cur.(map[string]any)
+		if !ok {
+			return nil
+		}
+		cur = mm[k]
+	}
+	return cur
 }
 
 // collectStrategySymbols returns the deduplicated union of routing.symbols
