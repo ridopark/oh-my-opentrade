@@ -41,7 +41,7 @@ func (s *Service) reconcileOpenOrdersOnBoot(ctx context.Context) {
 	brokerOpen, err := s.broker.GetOpenOrders(ctx)
 	if err != nil {
 		s.log.Error().Err(err).Msg("bootstrap: failed to query broker open orders — falling back to cancel-all for safety")
-		s.notify(fmt.Sprintf("Startup reconcile: broker query failed (%v) — falling back to cancel-all", err))
+		s.notify(ctx, fmt.Sprintf("🚨 Startup reconcile: broker query failed (%v) — falling back to cancel-all", err))
 		if _, cerr := s.broker.CancelAllOpenOrders(ctx); cerr != nil {
 			s.log.Warn().Err(cerr).Msg("bootstrap: cancel-all fallback also failed")
 		}
@@ -51,7 +51,7 @@ func (s *Service) reconcileOpenOrdersOnBoot(ctx context.Context) {
 	journalRows, err := s.intentJournal.OpenIntents(ctx, s.tenantID, s.envMode, openOrderLookbackWindow)
 	if err != nil {
 		s.log.Error().Err(err).Msg("bootstrap: failed to load intent journal — falling back to cancel-all for safety")
-		s.notify(fmt.Sprintf("Startup reconcile: journal query failed (%v) — falling back to cancel-all", err))
+		s.notify(ctx, fmt.Sprintf("🚨 Startup reconcile: journal query failed (%v) — falling back to cancel-all", err))
 		if _, cerr := s.broker.CancelAllOpenOrders(ctx); cerr != nil {
 			s.log.Warn().Err(cerr).Msg("bootstrap: cancel-all fallback also failed")
 		}
@@ -104,7 +104,7 @@ func (s *Service) reconcileOpenOrders(
 				Str("order_type", o.OrderType).
 				Msg("bootstrap: unmanaged broker order (not in journal)")
 		}
-		s.notify(fmt.Sprintf("Startup found %d unmanaged broker orders (not in journal). Review manually.", unmanaged))
+		s.notify(ctx, fmt.Sprintf("⚠️ Startup found %d unmanaged broker orders (not in journal). Review manually.", unmanaged))
 	}
 
 	for _, row := range journalRows {
@@ -129,7 +129,7 @@ func (s *Service) reconcileOpenOrders(
 			Msg("bootstrap: journaled intent no longer present on broker — marked lost")
 	}
 	if lost > 0 {
-		s.notify(fmt.Sprintf("Startup reconcile: %d journaled intents no longer on broker (marked lost)", lost))
+		s.notify(ctx, fmt.Sprintf("⚠️ Startup reconcile: %d journaled intents no longer on broker (marked lost)", lost))
 	}
 	s.log.Info().
 		Int("matched", matched).
@@ -158,16 +158,21 @@ func (s *Service) resumeTracking(o ports.OpenOrder, row domain.OrderIntentJourna
 		Msg("bootstrap: resuming tracking of matched broker order (journal-backed) — existing reconciler will land fills")
 }
 
-// notify pushes an operator-facing alert. The position monitor does not
-// own a notifier port directly, so we funnel through the event bus using
-// a best-effort notification event. Safe no-op if the bus is nil (tests).
-func (s *Service) notify(msg string) {
-	if s.eventBus == nil {
+// notify pushes an operator-facing alert through the injected NotifierPort
+// (Discord/Telegram fan-out), falling back to a log warning when no notifier
+// is wired. Sprint 2 shipped this as log-only because the position monitor
+// did not own a notifier; Sprint 3 added WithNotifier and this implementation
+// actually delivers the message.
+//
+// The log.Warn is unconditional so that operators watching the log stream
+// always see the alert even when the notifier is configured — failing
+// notifier delivery should never silently swallow a reconciliation signal.
+func (s *Service) notify(ctx context.Context, msg string) {
+	s.log.Warn().Str("alert", msg).Msg("bootstrap notify")
+	if s.notifier == nil {
 		return
 	}
-	// Use OrderIntentRejected as a carrier with a distinct reason tag —
-	// this keeps us from adding a new event type just for bootstrap alerts,
-	// which would cascade into the dashboard/SSE layer. The discord notifier
-	// already picks up any warning/error log, so this is belt-and-suspenders.
-	s.log.Warn().Str("alert", msg).Msg("bootstrap notify")
+	if err := s.notifier.Notify(ctx, s.tenantID, msg); err != nil {
+		s.log.Warn().Err(err).Msg("bootstrap: notifier delivery failed (alert logged only)")
+	}
 }
