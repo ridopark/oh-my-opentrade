@@ -58,19 +58,20 @@ type aiStrategyResult struct {
 }
 
 type AIService struct {
-	log       zerolog.Logger
-	cfg       config.AIScreenerConfig
-	aiCfg     config.AIConfig
-	tenantID  string
-	envMode   string
-	bus       Bus
-	snapshots ports.SnapshotPort
-	market    MarketDataProvider
-	universe  ports.UniverseProviderPort
-	repo      ports.AIScreenerRepoPort
-	specStore strategyports.SpecStore
-	notifier  ports.NotifierPort
-	now       func() time.Time
+	log               zerolog.Logger
+	cfg               config.AIScreenerConfig
+	aiCfg             config.AIConfig
+	tenantID          string
+	envMode           string
+	bus               Bus
+	snapshots         ports.SnapshotPort
+	market            MarketDataProvider
+	universe          ports.UniverseProviderPort
+	repo              ports.AIScreenerRepoPort
+	specStore         strategyports.SpecStore
+	notifier          ports.NotifierPort
+	now               func() time.Time
+	coveredStrategies map[string]bool
 }
 
 func NewAIService(
@@ -131,16 +132,23 @@ func (s *AIService) Start(ctx context.Context) error {
 		s.log.Info().Msg("ai screener disabled")
 		return nil
 	}
-	s.bootstrapFromDB(ctx)
+	s.coveredStrategies = s.bootstrapFromDB(ctx)
 	go s.schedulerLoop(ctx)
 	return nil
 }
 
-func (s *AIService) bootstrapFromDB(ctx context.Context) {
+// CoveredStrategies returns strategy keys that were restored from the screener DB.
+// Strategies NOT in this set had no screener results and need fallback symbol resolution.
+func (s *AIService) CoveredStrategies() map[string]bool {
+	return s.coveredStrategies
+}
+
+func (s *AIService) bootstrapFromDB(ctx context.Context) map[string]bool {
+	covered := make(map[string]bool)
 	specs, err := s.specStore.List(ctx, nil)
 	if err != nil {
 		s.log.Warn().Err(err).Msg("ai screener bootstrap: failed to list specs")
-		return
+		return covered
 	}
 
 	restored := 0
@@ -192,6 +200,7 @@ func (s *AIService) bootstrapFromDB(ctx context.Context) {
 			continue
 		}
 		restored++
+		covered[strategyKey] = true
 		s.log.Info().
 			Str("strategy", strategyKey).
 			Str("run_id", results[0].RunID).
@@ -203,6 +212,7 @@ func (s *AIService) bootstrapFromDB(ctx context.Context) {
 	if restored > 0 {
 		s.log.Info().Int("strategies_restored", restored).Msg("ai screener bootstrap: complete")
 	}
+	return covered
 }
 
 func (s *AIService) schedulerLoop(ctx context.Context) {

@@ -1,0 +1,129 @@
+schema_version = 2
+
+[strategy]
+id = "macd_only_v1"
+version = "2.2.0"
+name = "MACD Crossover Options (Trading Rush)"
+description = "15m MACD crossover + options, multi-day hold, no EOD flatten"
+author = "system"
+created_at = "2026-04-07T00:00:00Z"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+symbols = ["AAPL","AMD","AMZN","AVGO","COIN","GOOGL","HIMS","HOOD","JPM","META","MRNA","MSFT","MU","NFLX","NVDA","PLTR","SMCI","SOFI","TSLA","XOM"]
+timeframes = ["5m"]              # faster signals for broker testing (was 15m)
+priority = 70
+conflict_policy = "priority_wins"
+exclusive_per_symbol = false
+watchlist_mode = "static"
+asset_classes = ["OPTION", "EQUITY"]
+allowed_directions = ["LONG", "SHORT"]
+
+[params]
+macd_zero_band = 999.0           # accept any crossover regardless of distance from zero
+risk_reward_ratio = 1.0           # 1:1 R:R — easiest to qualify
+swing_lookback = 3                # fewer bars for swing detection
+volume_mult = 1.0
+
+# Confluence scoring (0-100+ scale, 10 base + dark pool factors)
+min_confluence_score = 0         # no confluence filter for broker testing
+dp_confluence_enabled = true
+dp_veto_enabled = false          # disable DP veto for broker testing
+dp_veto_buy_ratio_min = 0.45
+dp_veto_sell_ratio_max = 0.55
+dp_sizing_enabled = false        # disable DP sizing for broker testing
+dp_sizing_max_boost = 1.5
+dp_stop_enabled = false          # disable DP stop for broker testing
+dp_level_lookback = 20
+
+# Rolling performance gate — disabled for broker testing
+rolling_wr_min = 0.0
+rolling_wr_window = 20
+
+# Risk
+risk_per_trade_bps = 500
+max_position_bps = 1500
+
+# Portfolio limits — critical for strategy edge
+max_positions = 50
+max_per_group = 3
+
+# Timing
+allowed_hours_start = "09:35"
+allowed_hours_end = "15:45"
+allowed_hours_tz = "America/New_York"
+cooldown_seconds = 60            # 1 min cooldown for broker testing (was 5 min)
+max_trades_per_day = 20          # more attempts for broker testing
+stabilization_bars = 1           # instant start for broker testing
+
+[hooks]
+signals = { engine = "builtin", name = "macd" }
+
+[gate_chain]
+monitor = [
+    { name = "dna_approval" },
+]
+
+execution = [
+    { name = "short_direction" },
+    { name = "exposure_guard" },
+    { name = "portfolio_guard" },
+    { name = "risk_engine" },
+    { name = "slippage_guard" },
+    { name = "trading_window" },
+    { name = "spread_guard" },
+    { name = "buying_power_guard" },
+]
+
+[options]
+enabled = true
+max_contracts = 5
+limit_spread_pct = 1.00
+limit_buffer_bps = 1000
+stale_cancel_secs = 90
+
+[options.defaults]
+min_dte = 7
+max_dte = 21
+target_delta_low = 0.40
+target_delta_high = 0.55
+min_open_interest = 50
+max_spread_pct = 0.10
+max_iv = 1.2
+
+[[exit_rules]]
+type = "PREMIUM_TARGET"
+[exit_rules.params]
+target_pct = 0.05               # 5% premium gain for broker testing
+
+[[exit_rules]]
+type = "PREMIUM_TRAIL"
+[exit_rules.params]
+trail_pct = 0.10                # trail 10% from premium HWM
+min_activation = 0.03           # activate after 3% gain
+
+[[exit_rules]]
+type = "PREMIUM_STOP"
+[exit_rules.params]
+stop_pct = 0.15                 # exit if premium drops 15%
+
+[[exit_rules]]
+type = "STAGNATION_EXIT"
+[exit_rules.params]
+minutes = 20                    # 20 min stagnation for broker testing
+sd_threshold = 0
+profit_gate_pct = 0.005
+
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 15
+
+[[exit_rules]]
+type = "MAX_HOLDING_TIME"
+[exit_rules.params]
+minutes = 60                    # 1 hour hard cap for broker testing
+

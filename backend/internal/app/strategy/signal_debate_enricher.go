@@ -125,8 +125,11 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 	}
 
 	if sig.Type == start.SignalExit {
-		// All exits use CloseLong — execution resolves position side from broker.
+		// Use exit_direction tag from reconciler if present; default to CloseLong.
 		direction := domain.DirectionCloseLong
+		if ed, ok := sig.Tags["exit_direction"]; ok {
+			direction = domain.Direction(ed)
+		}
 		enrichment := domain.SignalEnrichment{
 			Signal:     ref,
 			Status:     domain.EnrichmentSkipped,

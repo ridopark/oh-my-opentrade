@@ -39,6 +39,7 @@ type position struct {
 	side     string // "buy" or "sell"
 	quantity float64
 	avgCost  float64
+	strategy string // attribution for per-strategy portfolio caps
 }
 
 // Broker is a simulated broker for backtesting that implements ports.BrokerPort
@@ -131,6 +132,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 	var fillPrice float64
 	var side string
 	if isOption {
+		slippage := float64(b.slippageBPS) / 10000.0
 		switch {
 		case intent.Direction.IsExit():
 			// Compute BSM exit price using current underlying price
@@ -138,12 +140,13 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			if fillPrice <= 0 {
 				fillPrice = 0.01
 			}
+			fillPrice *= (1 - slippage) // selling: slippage works against us
 			side = "sell"
 		default:
 			if intent.LimitPrice <= 0 {
 				return "", fmt.Errorf("simbroker: options entry has no limit price for %s", intent.Symbol)
 			}
-			fillPrice = intent.LimitPrice
+			fillPrice = intent.LimitPrice * (1 + slippage) // buying: slippage works against us
 			side = "buy"
 		}
 	} else {
@@ -206,6 +209,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			pos.side = "buy"
 			pos.avgCost = fillPrice
 			pos.quantity = intent.Quantity
+			pos.strategy = intent.Strategy
 		case pos.side == "buy":
 			totalCost := pos.avgCost*pos.quantity + fillPrice*intent.Quantity
 			pos.quantity += intent.Quantity
@@ -216,6 +220,9 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 				pos.quantity = -pos.quantity
 				pos.side = "buy"
 				pos.avgCost = fillPrice
+				pos.strategy = intent.Strategy
+			} else if pos.quantity == 0 {
+				pos.strategy = ""
 			}
 		}
 	case "sell":
@@ -225,6 +232,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			pos.side = "sell"
 			pos.avgCost = fillPrice
 			pos.quantity = intent.Quantity
+			pos.strategy = intent.Strategy
 		case pos.side == "sell":
 			totalCost := pos.avgCost*pos.quantity + fillPrice*intent.Quantity
 			pos.quantity += intent.Quantity
@@ -235,6 +243,9 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 				pos.quantity = -pos.quantity
 				pos.side = "sell"
 				pos.avgCost = fillPrice
+				pos.strategy = intent.Strategy
+			} else if pos.quantity == 0 {
+				pos.strategy = ""
 			}
 		}
 	}
@@ -307,6 +318,7 @@ func (b *Broker) GetPositions(_ context.Context, _ string, _ domain.EnvMode) ([]
 			Quantity: pos.quantity,
 			Price:    pos.avgCost,
 			Status:   "open",
+			Strategy: pos.strategy,
 		})
 	}
 	return trades, nil

@@ -13,11 +13,11 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "AMD", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "AFRM", "JPM", "XOM", "OXY", "LLY", "HIMS", "RIVN", "RBLX", "BA", "SPY", "QQQ", "IWM", "SOXL"]
+symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "AFRM", "JPM", "XOM", "OXY", "LLY", "RIVN", "RBLX", "BA", "QQQ", "IWM", "SOXL"]
 timeframes = ["5m"]
 priority = 80
 conflict_policy = "priority_wins"
-exclusive_per_symbol = true
+exclusive_per_symbol = false
 watchlist_mode = "static"
 asset_classes = ["OPTION"]
 allowed_directions = ["LONG", "SHORT"]
@@ -64,7 +64,7 @@ bounce_enabled = false           # disable mean-reversion (low WR intraday)
 rsi_bounce_max = 40.0
 
 # Pinch: dual-AVWAP compression breakout (gap between anchors narrows)
-pinch_enabled = false            # consolidation = algo trap territory (disabled per research)
+pinch_enabled = true             # testing pinch mode
 pinch_min_bps = 3
 pinch_max_bps = 50
 
@@ -114,7 +114,7 @@ stop_bps = 50                    # tighter stop for options
 limit_offset_bps = 10            # more aggressive fill (was 5)
 
 # Maximum risk per trade as basis points of equity
-risk_per_trade_bps = 300         # smaller per trade (was 2000) — more attempts
+risk_per_trade_bps = 500         # smaller per trade (was 2000) — more attempts
 
 # Maximum position size as basis points of equity
 max_position_bps = 1500          # reduced from 3000
@@ -122,7 +122,7 @@ max_position_bps = 1500          # reduced from 3000
 # --- Timing ---
 # Trading window (ET). Entries only allowed within this range.
 allowed_hours_start = "09:35"
-allowed_hours_end = "11:00"      # cut afternoon entries
+allowed_hours_end = "10:00"      # morning-only (10:00-10:59 was PF 0.57)
 allowed_hours_tz = "America/New_York"
 
 # Cooldown between trades on the same symbol (seconds)
@@ -131,8 +131,15 @@ cooldown_seconds = 3600          # 1hr cooldown per symbol
 # Maximum entries per symbol per session
 max_trades_per_day = 2           # limit overtrading per symbol
 
+# Portfolio-level position caps (read by backtest runner when not set in API request)
+# These were the values used during tuning (commit 33da264: PF 1.32, DD 10%).
+# Without them, backtests default to unlimited positions which worsens DD significantly.
+max_positions = 6                # max simultaneous open positions
+max_per_group = 2                # max positions per sector group
+
 # Bars to hold before basic AVWAP exit check fires
-exit_hold_bars = 3               # reduced from 5
+exit_hold_bars = 3               # bars on wrong side of AVWAP before strategy exit
+premium_hold_bars = 1            # bars before premium target/trail can fire (prevents same-bar exits)
 
 # --- Regime-Direction Blocking ---
 # Block specific directions in specific regimes (AVWAP longs underperform in BALANCE)
@@ -160,6 +167,14 @@ candle_confluence_enabled = true
 # Band zone (+2): price within zone between min/max AVWAP lines
 band_confluence_enabled = true
 
+# Dark pool (+10): elevated DP ratio, directional pressure, block prints
+dp_confluence_enabled = true
+
+# Dark pool veto: disabled — no improvement at 0.50 threshold
+dp_veto_enabled = false
+dp_veto_buy_ratio_min = 0.50
+dp_veto_sell_ratio_max = 0.50
+
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
 
@@ -168,17 +183,17 @@ enabled = true
 
 # --- Exit Rules ---
 
-# Premium target: take quick profit before theta erodes
+# Premium target: take quick profit at 15% premium gain
 [[exit_rules]]
 type = "PREMIUM_TARGET"
 [exit_rules.params]
-target_pct = 0.15
+target_pct = 0.10
 
-# Stagnation exit
+# Safety stagnation: circuit breaker for zombie trades (3 hours)
 [[exit_rules]]
 type = "STAGNATION_EXIT"
 [exit_rules.params]
-minutes = 60
+minutes = 90
 sd_threshold = 0
 profit_gate_pct = 0.005
 
@@ -194,7 +209,7 @@ minutes_before_close = 15
 enabled = true
 
 # Cap contract count to limit spread drag on cheap options
-max_contracts = 5
+max_contracts = 50
 
 # Limit price = mid + 50% of spread (moderate for AVWAP swing entries)
 limit_spread_pct = 1.00

@@ -490,9 +490,9 @@ func (a *Adapter) GetFreshPositions(_ context.Context, tenantID string, envMode 
 
 func directionToAction(d domain.Direction) string {
 	switch d {
-	case domain.DirectionLong:
+	case domain.DirectionLong, domain.DirectionCloseShort:
 		return "BUY"
-	default:
+	default: // DirectionShort, DirectionCloseLong
 		return "SELL"
 	}
 }

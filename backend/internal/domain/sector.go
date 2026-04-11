@@ -70,10 +70,19 @@ var symbolSector = map[string]SectorGroup{
 	"MARA": SectorCryptoProxy, "RIOT": SectorCryptoProxy,
 }
 
-// ClassifySector returns the sector group for a symbol.
+// ClassifySector returns the sector group for a symbol. Options positions
+// (OCC-encoded symbols) are classified by their underlying ticker so
+// portfolio sector caps apply to the economic exposure rather than
+// lumping every option trade into SectorOther.
 // Unknown symbols return SectorOther.
 func ClassifySector(sym Symbol) SectorGroup {
-	if g, ok := symbolSector[string(sym)]; ok {
+	lookup := string(sym)
+	if IsOCCSymbol(sym) {
+		if u := UnderlyingFromOCC(sym); u != "" {
+			lookup = string(u)
+		}
+	}
+	if g, ok := symbolSector[lookup]; ok {
 		return g
 	}
 	return SectorOther

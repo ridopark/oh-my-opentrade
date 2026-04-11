@@ -2,6 +2,7 @@ package ivcollector
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sort"
 	"sync"
@@ -24,8 +25,20 @@ type Service struct {
 	optionsData ports.OptionsMarketDataPort
 	snapshots   ports.SnapshotPort
 	ivRepo      ports.IVHistoryPort
+	histOptRepo ports.HistoricalOptionsPort // optional: saves full chain for backtesting
+	notifier    ports.NotifierPort
 	log         zerolog.Logger
 	etLocation  *time.Location
+}
+
+// SetNotifier enables notifications after each collection run.
+func (s *Service) SetNotifier(n ports.NotifierPort) {
+	s.notifier = n
+}
+
+// SetHistoricalOptionsRepo enables full option chain capture alongside ATM IV.
+func (s *Service) SetHistoricalOptionsRepo(repo ports.HistoricalOptionsPort) {
+	s.histOptRepo = repo
 }
 
 func NewService(
@@ -150,6 +163,11 @@ func (s *Service) CollectAll(ctx context.Context) {
 				Float64("atm_strike", ivSnap.ATMStrike).
 				Float64("spot", ivSnap.SpotPrice).
 				Msg("IV snapshot collected")
+
+			// Save full option chain for backtesting if repo is configured.
+			if s.histOptRepo != nil {
+				s.saveFullChain(ctx, sym, now)
+			}
 		}()
 	}
 
@@ -158,6 +176,14 @@ func (s *Service) CollectAll(ctx context.Context) {
 		Int("collected", collected).
 		Int("total", len(s.cfg.Symbols)).
 		Msg("IV collection run complete")
+
+	if s.notifier != nil {
+		msg := fmt.Sprintf("🔬 **IV & option chain snapshot complete**\n• Collected: %d/%d symbols\n• Chain captured for backtesting",
+			collected, len(s.cfg.Symbols))
+		if err := s.notifier.Notify(ctx, "omo-data", msg); err != nil {
+			s.log.Warn().Err(err).Msg("notification failed")
+		}
+	}
 }
 
 func (s *Service) collectSymbol(
@@ -253,6 +279,70 @@ func averageNonZero(a, b float64) float64 {
 		return a
 	}
 	return b
+}
+
+// saveFullChain fetches all calls and puts for a symbol and saves the full
+// chain to historical_option_chain for backtesting. Uses a wide DTE window
+// (1-60 days) to capture all tradeable contracts.
+func (s *Service) saveFullChain(ctx context.Context, symbol string, now time.Time) {
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	// Check if we already have data for today.
+	has, err := s.histOptRepo.HasData(ctx, domain.Symbol(symbol), today)
+	if err != nil {
+		s.log.Warn().Err(err).Str("symbol", symbol).Msg("failed to check historical option data")
+		return
+	}
+	if has {
+		s.log.Debug().Str("symbol", symbol).Msg("historical option chain already captured today")
+		return
+	}
+
+	// Fetch chains for multiple expiry windows to cover DTE 1-60.
+	var allRows []domain.HistoricalOptionChainRow
+	for _, right := range []domain.OptionRight{domain.OptionRightCall, domain.OptionRightPut} {
+		// Use a target expiry ~30 days out with ±30 day window (covers DTE 1-60).
+		targetExpiry := now.AddDate(0, 0, 30)
+		snaps, err := s.optionsData.GetOptionChain(ctx, domain.Symbol(symbol), targetExpiry, right)
+		if err != nil {
+			s.log.Warn().Err(err).Str("symbol", symbol).Str("right", string(right)).Msg("failed to fetch option chain for historical capture")
+			continue
+		}
+
+		for _, snap := range snaps {
+			// Skip contracts with no meaningful data.
+			if snap.Bid <= 0 && snap.Ask <= 0 {
+				continue
+			}
+			allRows = append(allRows, domain.HistoricalOptionChainRow{
+				Date:       today,
+				Symbol:     domain.Symbol(symbol),
+				Expiration: snap.Expiry,
+				Strike:     snap.Strike,
+				Right:      snap.Right,
+				Bid:        snap.Bid,
+				Ask:        snap.Ask,
+				IV:         snap.IV,
+				Delta:      snap.Delta,
+				Gamma:      snap.Gamma,
+				Theta:      snap.Theta,
+				Vega:       snap.Vega,
+				Rho:        snap.Rho,
+			})
+		}
+	}
+
+	if len(allRows) == 0 {
+		s.log.Warn().Str("symbol", symbol).Msg("no option contracts captured for historical chain")
+		return
+	}
+
+	if err := s.histOptRepo.SaveBatch(ctx, allRows); err != nil {
+		s.log.Error().Err(err).Str("symbol", symbol).Int("rows", len(allRows)).Msg("failed to save historical option chain")
+		return
+	}
+
+	s.log.Info().Str("symbol", symbol).Int("contracts", len(allRows)).Msg("historical option chain captured")
 }
 
 var errNoATMContracts = errString("no ATM contracts found with valid IV")

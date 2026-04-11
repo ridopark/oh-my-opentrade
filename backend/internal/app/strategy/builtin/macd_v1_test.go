@@ -156,7 +156,7 @@ func bmParams() map[string]any {
 	}
 }
 
-func feedBMBar(t *testing.T, s *builtin.BollingerMACDStrategy, ctx *testContext, symbol string, st strat.State, bar strat.Bar, ind strat.IndicatorData) (strat.State, []strat.Signal) {
+func feedBMBar(t *testing.T, s *builtin.MACDStrategy, ctx *testContext, symbol string, st strat.State, bar strat.Bar, ind strat.IndicatorData) (strat.State, []strat.Signal) {
 	t.Helper()
 	ctx.now = bar.Time
 	bmSt := st.(*builtin.BMState)
@@ -167,7 +167,7 @@ func feedBMBar(t *testing.T, s *builtin.BollingerMACDStrategy, ctx *testContext,
 }
 
 // warmupBM feeds stabilization bars and primes MACD history for crossover detection
-func warmupBM(t *testing.T, s *builtin.BollingerMACDStrategy, ctx *testContext, st strat.State, n int) strat.State {
+func warmupBM(t *testing.T, s *builtin.MACDStrategy, ctx *testContext, st strat.State, n int) strat.State {
 	t.Helper()
 	base := time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC) // 09:30 ET
 	for i := 0; i < n; i++ {
@@ -186,8 +186,8 @@ func warmupBM(t *testing.T, s *builtin.BollingerMACDStrategy, ctx *testContext, 
 	return st
 }
 
-func TestBollingerMACD_Confluence_NoFilter(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
+func TestMACD_Confluence_NoFilter(t *testing.T) {
+	s := builtin.NewMACDStrategy()
 	params := bmParams()
 	// No min_confluence_score → all signals pass (default 0)
 
@@ -215,8 +215,8 @@ func TestBollingerMACD_Confluence_NoFilter(t *testing.T) {
 	_ = st
 }
 
-func TestBollingerMACD_Confluence_FilteredOut(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
+func TestMACD_Confluence_FilteredOut(t *testing.T) {
+	s := builtin.NewMACDStrategy()
 	params := bmParams()
 	params["min_confluence_score"] = 95 // very high threshold — virtually impossible
 
@@ -240,8 +240,8 @@ func TestBollingerMACD_Confluence_FilteredOut(t *testing.T) {
 	_ = st
 }
 
-func TestBollingerMACD_Confluence_HighThreshold_Blocks(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
+func TestMACD_Confluence_HighThreshold_Blocks(t *testing.T) {
+	s := builtin.NewMACDStrategy()
 	params := bmParams()
 	params["min_confluence_score"] = 80 // high threshold blocks weak signals
 
@@ -267,8 +267,8 @@ func TestBollingerMACD_Confluence_HighThreshold_Blocks(t *testing.T) {
 	_ = st
 }
 
-func TestBollingerMACD_Confluence_ShortSignal(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
+func TestMACD_Confluence_ShortSignal(t *testing.T) {
+	s := builtin.NewMACDStrategy()
 	params := bmParams()
 	// No min_confluence_score → short signals pass
 
@@ -309,9 +309,9 @@ func TestBollingerMACD_Confluence_ShortSignal(t *testing.T) {
 	_ = st
 }
 
-func TestBollingerMACD_DefaultsPreserveBehavior(t *testing.T) {
+func TestMACD_DefaultsPreserveBehavior(t *testing.T) {
 	// With all defaults, min_confluence_score=0 should not filter any signals
-	s := builtin.NewBollingerMACDStrategy()
+	s := builtin.NewMACDStrategy()
 	params := bmParams()
 	params["min_confluence_score"] = 0
 
@@ -335,8 +335,8 @@ func TestBollingerMACD_DefaultsPreserveBehavior(t *testing.T) {
 	_ = st
 }
 
-func TestBollingerMACD_ConfluenceUsedAsStrength(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
+func TestMACD_ConfluenceUsedAsStrength(t *testing.T) {
+	s := builtin.NewMACDStrategy()
 	params := bmParams()
 	// No filter, but confluence score / 100 should be used as signal strength
 
@@ -365,8 +365,8 @@ func TestBollingerMACD_ConfluenceUsedAsStrength(t *testing.T) {
 
 // ─── Rolling WR Gate ─────────────────────────────────────────────────────────
 
-func TestBollingerMACD_RollingWR_BlocksWhenLow(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
+func TestMACD_RollingWR_BlocksWhenLow(t *testing.T) {
+	s := builtin.NewMACDStrategy()
 	params := bmParams()
 	params["rolling_wr_min"] = 0.30  // require 30% WR
 	params["rolling_wr_window"] = 5  // over last 5 trades
@@ -393,8 +393,8 @@ func TestBollingerMACD_RollingWR_BlocksWhenLow(t *testing.T) {
 	assert.Empty(t, sigs, "should block entry when rolling WR below threshold")
 }
 
-func TestBollingerMACD_RollingWR_PassesWhenAbove(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
+func TestMACD_RollingWR_PassesWhenAbove(t *testing.T) {
+	s := builtin.NewMACDStrategy()
 	params := bmParams()
 	params["rolling_wr_min"] = 0.30
 	params["rolling_wr_window"] = 5
@@ -421,8 +421,8 @@ func TestBollingerMACD_RollingWR_PassesWhenAbove(t *testing.T) {
 	require.Len(t, sigs, 1, "should allow entry when rolling WR above threshold")
 }
 
-func TestBollingerMACD_RollingWR_DisabledByDefault(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
+func TestMACD_RollingWR_DisabledByDefault(t *testing.T) {
+	s := builtin.NewMACDStrategy()
 	params := bmParams()
 	// rolling_wr_min = 0 (default, disabled)
 
@@ -448,8 +448,8 @@ func TestBollingerMACD_RollingWR_DisabledByDefault(t *testing.T) {
 	require.Len(t, sigs, 1, "rolling WR gate should be disabled when rolling_wr_min=0")
 }
 
-func TestBollingerMACD_RollingWR_WindowNotFull(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
+func TestMACD_RollingWR_WindowNotFull(t *testing.T) {
+	s := builtin.NewMACDStrategy()
 	params := bmParams()
 	params["rolling_wr_min"] = 0.30
 	params["rolling_wr_window"] = 10
@@ -476,8 +476,8 @@ func TestBollingerMACD_RollingWR_WindowNotFull(t *testing.T) {
 	require.Len(t, sigs, 1, "should allow entry when window not yet full")
 }
 
-func TestBollingerMACD_RollingWR_ExactBoundary(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
+func TestMACD_RollingWR_ExactBoundary(t *testing.T) {
+	s := builtin.NewMACDStrategy()
 	params := bmParams()
 	params["rolling_wr_min"] = 0.40
 	params["rolling_wr_window"] = 5
@@ -510,8 +510,8 @@ func TestBollingerMACD_RollingWR_ExactBoundary(t *testing.T) {
 	_ = sigs2 // can't test second symbol in same instance, but the math is verified above
 }
 
-func TestBollingerMACD_RollingWR_OutcomeRecording(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
+func TestMACD_RollingWR_OutcomeRecording(t *testing.T) {
+	s := builtin.NewMACDStrategy()
 	params := bmParams()
 	params["rolling_wr_min"] = 0.0 // disabled, just test recording
 
@@ -555,8 +555,8 @@ func TestBollingerMACD_RollingWR_OutcomeRecording(t *testing.T) {
 	assert.Equal(t, int8(-1), bmSt.TradeOutcomes[1], "losing trade should record -1")
 }
 
-func TestBollingerMACD_RollingWR_WindowCap(t *testing.T) {
-	s := builtin.NewBollingerMACDStrategy()
+func TestMACD_RollingWR_WindowCap(t *testing.T) {
+	s := builtin.NewMACDStrategy()
 	params := bmParams()
 	params["rolling_wr_window"] = 5
 

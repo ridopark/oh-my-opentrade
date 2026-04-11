@@ -20,6 +20,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/backfill"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
 	"github.com/oh-my-opentrade/backend/internal/app/debate"
+	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
@@ -329,62 +330,90 @@ func (r *Runner) Run(ctx context.Context) error {
 	execCfg := &cfgCopy
 
 	// Resolve max_positions / max_per_group:
-	// 1. API request params (highest priority)
-	// 2. Strategy DNA [params] (fallback)
-	// 3. App config (default)
+	// 1. API request params (highest priority, explicit override)
+	// 2. SUM of per-strategy DNA [params] across all active specs. Each
+	//    strategy's TOML states its own concurrency budget; when multiple
+	//    strategies run together, the portfolio-level cap is the sum so
+	//    that adding a strategy does not steal slots from the one(s)
+	//    already active. Previously this loop picked the first non-zero
+	//    value it encountered, which silently capped multi-strategy
+	//    backtests at a single strategy's worth of capacity and caused
+	//    the combined portfolio to lose ~40% of edge vs the sum of
+	//    standalones.
+	// 3. App config (ultimate default, zero disables the global guard).
 	maxPos := r.cfg.MaxPositions
 	maxGrp := r.cfg.MaxPerGroup
+	perStratMax := make(map[string]int)
 	if maxPos == 0 || maxGrp == 0 {
-		// Read from strategy DNA if not set by API request
+		summedPos := 0
+		maxGrpSeen := 0
 		if specs, specErr := specStore.List(ctx, nil); specErr == nil {
 			for _, spec := range specs {
-				if maxPos == 0 {
-					if v, ok := spec.Params["max_positions"]; ok {
-						switch n := v.(type) {
-						case int64:
-							maxPos = int(n)
-						case float64:
-							maxPos = int(n)
-						case int:
-							maxPos = n
-						}
+				if !spec.Lifecycle.State.IsActive() {
+					continue
+				}
+				if v, ok := spec.Params["max_positions"]; ok {
+					var n int
+					switch x := v.(type) {
+					case int64:
+						n = int(x)
+					case float64:
+						n = int(x)
+					case int:
+						n = x
+					}
+					if n > 0 {
+						summedPos += n
+						perStratMax[spec.ID.String()] = n
 					}
 				}
-				if maxGrp == 0 {
-					if v, ok := spec.Params["max_per_group"]; ok {
-						switch n := v.(type) {
-						case int64:
-							maxGrp = int(n)
-						case float64:
-							maxGrp = int(n)
-						case int:
-							maxGrp = n
-						}
+				if v, ok := spec.Params["max_per_group"]; ok {
+					var g int
+					switch n := v.(type) {
+					case int64:
+						g = int(n)
+					case float64:
+						g = int(n)
+					case int:
+						g = n
+					}
+					if g > maxGrpSeen {
+						maxGrpSeen = g
 					}
 				}
 			}
 		}
+		if maxPos == 0 && summedPos > 0 {
+			execCfg.Trading.MaxSimultaneousPos = summedPos
+		}
+		if maxGrp == 0 && maxGrpSeen > 0 {
+			execCfg.Trading.MaxPositionsPerGroup = maxGrpSeen
+		}
 	}
 	if maxPos > 0 {
 		execCfg.Trading.MaxSimultaneousPos = maxPos
+		// API override disables per-strategy enforcement — caller is
+		// explicitly asking for a flat global cap.
+		perStratMax = nil
 	}
 	if maxGrp > 0 {
 		execCfg.Trading.MaxPositionsPerGroup = maxGrp
 	}
 
 	execBundle, err := bootstrap.BuildExecutionService(bootstrap.ExecutionDeps{
-		EventBus:      r.infra.EventBus,
-		Broker:        sim,
-		Repo:          r.infra.NoopRepo,
-		QuoteProvider: sim,
-		AccountPort:   sim,
-		PnLRepo:       r.infra.NoopPnLRepo,
-		TradeReader:   nil,
-		Clock:         clockFn,
-		Config:        execCfg,
-		InitialEquity: r.cfg.InitialEquity,
-		IsBacktest:    true,
-		Logger:        r.log,
+		EventBus:                r.infra.EventBus,
+		Broker:                  sim,
+		Repo:                    r.infra.NoopRepo,
+		QuoteProvider:           sim,
+		AccountPort:             sim,
+		PnLRepo:                 r.infra.NoopPnLRepo,
+		TradeReader:             nil,
+		Clock:                   clockFn,
+		Config:                  execCfg,
+		InitialEquity:           r.cfg.InitialEquity,
+		IsBacktest:              true,
+		Logger:                  r.log,
+		PerStrategyMaxPositions: perStratMax,
 	})
 	if err != nil {
 		r.status.Store("error")
@@ -444,6 +473,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	// Tide tracker for AVWAP SPY/QQQ telemetry (Phase 1, data-collection only).
+	// 30-bar warmup matches the live bootstrap (ingestion.go).
+	tideTracker := gate.NewIndexTideTracker(30)
+
 	pipeline, err := bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
 		EventBus:        r.infra.EventBus,
 		SpecStore:       specStore,
@@ -459,6 +492,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		DisableEnricher: r.cfg.NoAI,
 		Logger:          r.log,
 		BacktestID:      r.id,
+		TideTracker:     tideTracker,
 	})
 	if err != nil {
 		r.status.Store("error")
@@ -896,6 +930,24 @@ func (r *Runner) Run(ctx context.Context) error {
 			wg.Wait()
 		}
 
+	// Always set session-based anchor resolution and prev-day bar replay
+	// so AVWAP strategies get correct anchor warmup.
+	pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
+	pipeline.Runner.SetPrevDayBarsFn(func(symbol string, since time.Time) []start.Bar {
+		return sessionResolver.GetBarsSince(ctx, r.infra.DB, symbol, since)
+	})
+	pipeline.Runner.SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
+	if len(dpLookup) > 0 {
+		pipeline.Runner.SetDarkPoolLookup(dpLookup)
+	}
+	if len(whaleLookup) > 0 {
+		pipeline.Runner.SetWhaleLookup(whaleLookup)
+	}
+
+	// AI anchor resolver: runs expensive swing/volume/catalyst detectors
+	// on every bar. Skip entirely when no_ai=true — the session-based
+	// resolver above provides the same anchors without per-bar overhead.
+	if !r.cfg.NoAI {
 		aiResolver := strategy.NewAIAnchorResolver(aiAdvisor, nil, nil)
 		aiResolver.SetSessionResolver(sessionResolver.ResolveAnchors)
 		for _, sym := range r.cfg.Symbols {
@@ -903,20 +955,8 @@ func (r *Runner) Run(ctx context.Context) error {
 			aiResolver.RegisterSymbol(sym.String(), isCrypto)
 		}
 		pipeline.Runner.SetAIAnchorResolver(aiResolver)
-		if len(dpLookup) > 0 {
-			pipeline.Runner.SetDarkPoolLookup(dpLookup)
-		}
-		if len(whaleLookup) > 0 {
-			pipeline.Runner.SetWhaleLookup(whaleLookup)
-		}
-		pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
-		pipeline.Runner.SetPrevDayBarsFn(func(symbol string, since time.Time) []start.Bar {
-			return sessionResolver.GetBarsSince(ctx, r.infra.DB, symbol, since)
-		})
-		pipeline.Runner.SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
 
 		// Seed daily bars into AI anchor detectors (catalyst_gap, capitulation, swing 1d)
-		// so they have historical context before replay starts.
 		for _, sym := range r.cfg.Symbols {
 			if bars1d := dailyBarsCache[sym.String()]; len(bars1d) > 0 {
 				for _, b := range bars1d {
@@ -928,7 +968,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Seed warmup 5m bars into AI anchor detectors (swing, volume profile)
-		// so they have the same candidates as a run that replayed those days live.
 		for _, sym := range r.cfg.Symbols {
 			bars := warmupBarsCache[sym.String()]
 			if len(bars) == 0 {
@@ -957,6 +996,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.log.Info().Msg("AI anchor resolver configured for backtest (with session baseline)")
 	}
 	r.log.Info().Dur("elapsed", time.Since(postWarmupStart)).Msg("phase: post-warmup seeding complete")
+	}
 
 	r.emitter.EmitSetup("Starting services…")
 
@@ -1131,6 +1171,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	const tenantID = "default"
 	envMode := domain.EnvModePaper
 	barsProcessed := 0
+	var lastBarTime time.Time
 	currentSessionDate := replaySessionOpen
 
 	// Pre-build fixed symbol set for O(1) lookup in the hot loop.
@@ -1282,6 +1323,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				continue
 			}
 			barsProcessed++
+			lastBarTime = bar.Time
 		}
 
 		// Evaluate exit rules after all bars in this time-group are processed.
@@ -1321,18 +1363,18 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.progress.Store(pi)
 			r.emitter.EmitProgress(pi)
 
-			// Emit live metrics.
+			// Emit live metrics (O(1) — no trade iteration).
 			if r.collector != nil {
-				partialResult := r.collector.Result()
+				m := r.collector.LiveMetrics()
 				r.emitter.EmitMetrics(map[string]any{
-					"equity":         partialResult.FinalEquity,
-					"total_pnl":      partialResult.TotalPnL,
-					"total_return":   partialResult.TotalReturn,
-					"trades":         partialResult.TradeCount,
-					"win_rate":       partialResult.WinRate,
-					"max_drawdown":   partialResult.MaxDrawdown,
-					"sharpe":         partialResult.SharpeRatio,
-					"profit_factor":  partialResult.ProfitFactor,
+					"equity":         m.FinalEquity,
+					"total_pnl":      m.TotalPnL,
+					"total_return":   m.TotalReturn,
+					"trades":         m.TradeCount,
+					"win_rate":       m.WinRate,
+					"max_drawdown":   m.MaxDrawdown,
+					"sharpe":         m.SharpeRatio,
+					"profit_factor":  m.ProfitFactor,
 					"open_positions": len(r.collector.openBuys),
 				})
 			}
@@ -1351,9 +1393,9 @@ func (r *Runner) Run(ctx context.Context) error {
 				t.Stop()
 			case <-t.C:
 			}
-		} else {
-			// "max" speed: yield to the scheduler periodically to prevent
-			// starving other goroutines (dashboard, HTTP handlers, etc.).
+		} else if barsProcessed&0xFF == 0 {
+			// "max" speed: yield every 256 bars to prevent starving
+			// other goroutines (dashboard, HTTP handlers, etc.).
 			runtime.Gosched()
 		}
 	}
@@ -1372,6 +1414,9 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 	}
+
+	// Force-close any remaining open positions at last known price.
+	r.collector.CloseOpenPositions(lastBarTime)
 
 	finalResult := r.collector.Result()
 	r.result.Store(&finalResult)

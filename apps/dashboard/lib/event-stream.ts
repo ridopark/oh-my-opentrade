@@ -186,7 +186,7 @@ export function useSignalProgress(maxEvents = 200) {
   for (const evt of events) {
     if (evt.type === "EntryGated") {
       const p = evt.payload as EntryGatedPayload;
-      if (p.strategy === "bollinger_macd") {
+      if (p.strategy === "macd") {
         if (!macdProgress.has(p.symbol)) macdProgress.set(p.symbol, p);
       } else {
         if (!avwapProgress.has(p.symbol)) avwapProgress.set(p.symbol, p);

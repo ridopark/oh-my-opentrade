@@ -12,6 +12,24 @@ import (
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
 
+// dayKey returns a "YYYY-MM-DD" string using strconv instead of time.Format
+// to reduce allocations in hot paths.
+func dayKey(t time.Time, loc *time.Location) string {
+	y, m, d := t.In(loc).Date()
+	var buf [10]byte
+	buf[0] = byte('0' + y/1000)
+	buf[1] = byte('0' + (y/100)%10)
+	buf[2] = byte('0' + (y/10)%10)
+	buf[3] = byte('0' + y%10)
+	buf[4] = '-'
+	buf[5] = byte('0' + int(m)/10)
+	buf[6] = byte('0' + int(m)%10)
+	buf[7] = '-'
+	buf[8] = byte('0' + d/10)
+	buf[9] = byte('0' + d%10)
+	return string(buf[:])
+}
+
 type SessionData struct {
 	Date     string
 	Open     float64
@@ -209,7 +227,7 @@ func (r *SessionResolver) LoadBars(ctx context.Context, db *sql.DB, sym domain.S
 		if scanErr := rows.Scan(&b.Time, &b.Open, &b.High, &b.Low, &b.Close, &b.Volume); scanErr != nil {
 			continue
 		}
-		day := b.Time.In(r.loc).Format("2006-01-02")
+		day := dayKey(b.Time, r.loc)
 		dayBars[day] = append(dayBars[day], b)
 	}
 
@@ -227,7 +245,7 @@ func (r *SessionResolver) PopulateBarCache(sym domain.Symbol, bars []domain.Mark
 	dayBars := make(map[string][]start.Bar)
 	for i := range bars {
 		b := &bars[i]
-		day := b.Time.In(r.loc).Format("2006-01-02")
+		day := dayKey(b.Time, r.loc)
 		dayBars[day] = append(dayBars[day], start.Bar{
 			Time:   b.Time,
 			Open:   b.Open,
@@ -252,7 +270,7 @@ func (r *SessionResolver) GetBarsSince(ctx context.Context, db *sql.DB, symbol s
 		return nil
 	}
 	et := since.In(r.loc)
-	day := et.Format("2006-01-02")
+	day := dayKey(since, r.loc)
 	eod := time.Date(et.Year(), et.Month(), et.Day(), 16, 0, 0, 0, r.loc)
 
 	key := symbol + ":" + day

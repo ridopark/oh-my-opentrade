@@ -92,14 +92,15 @@ func (g *PositionGate) Check(ctx context.Context, intent domain.OrderIntent) err
 	entry := isEntry(intent)
 
 	if entry {
-		switch side {
-		case "BUY":
-			// Already long, trying to buy more → duplicate.
-			g.log.Warn().Str("symbol", string(intent.Symbol)).Msg("position gate: already in long position")
-			return ErrAlreadyInPosition
-		case "SELL":
-			// Already short, trying to go long → conflict.
-			g.log.Warn().Str("symbol", string(intent.Symbol)).Msg("position gate: conflicting position (short exists, long attempted)")
+		if side != "" {
+			// Any existing position blocks a new entry — whether same direction
+			// (duplicate) or opposite (conflict).
+			if (side == "BUY" && intent.Direction == domain.DirectionLong) ||
+				(side == "SELL" && intent.Direction == domain.DirectionShort) {
+				g.log.Warn().Str("symbol", string(intent.Symbol)).Str("side", side).Msg("position gate: already in position")
+				return ErrAlreadyInPosition
+			}
+			g.log.Warn().Str("symbol", string(intent.Symbol)).Str("side", side).Msg("position gate: conflicting position exists")
 			return ErrConflictPosition
 		}
 		// side == "" → flat, entry allowed.

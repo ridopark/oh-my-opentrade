@@ -1,3 +1,46 @@
+# ============================================================================
+# VERIFIED GOOD BASELINE — AVWAP v4.3.0 (snapshot 2026-04-10)
+# ============================================================================
+# This config is the "known good" state for AVWAP v4.
+# Do NOT modify. Copy to configs/strategies/avwap_v4.toml to restore.
+#
+# Verified backtest results (max_positions=6, max_per_group=2):
+#   2026 Jan-Apr 10 (volatile — Iran war, recession fears, 162 trades):
+#     PF 1.529 | WR 70.4% | P&L +$25,964 | DD 5.19% | Sharpe 3.47
+#   2025 Jan-Dec (calm, 516 trades):
+#     PF 1.248 | WR 62.8% | P&L +$40,098 | DD 10.01% | Sharpe 1.70
+#   2025+2026 combined (15 months, 678 trades):
+#     PF 1.32  | WR 64.5% | P&L +$66,062 | DD 10.01% | Sharpe 2.04
+#
+# Edge mechanism:
+#   - 67% of trades hit PREMIUM_TARGET (10%) with 100% WR — entire profit engine
+#   - Remaining 33% are time-exited via STAGNATION_EXIT (90m) or EOD_FLATTEN
+#   - Any exit rule that fires before the 10% target destroys winners
+#
+# Verified NOT to help (tested 2026-04-10):
+#   - FAST_FAIL_EXIT (minute 30 MFE check): -$5,423 in 2026, 52% FP rate in 2025
+#   - Symbol pruning by 2025 performance: non-stationary, flips sign in 2026
+#   - Confluence-component filtering: dp_sell flipped sign (-$6K → +$7K)
+#   - Extension (ATR-normalized) filters: every tested threshold rejects
+#     more profit than it saves in both years
+#   - Vol_ratio filters: extreme RVOL is actually losing in 2026
+#   - Tighter stagnation (30m): clips 14 winners before PREMIUM_TARGET
+#
+# Key params:
+#   - Symbols: 27 (AAPL, MSFT, GOOGL, AMZN, META, NVDA, AVGO, MU, MRVL, SMCI,
+#     PLTR, CRM, SNOW, NET, SOFI, HOOD, AFRM, JPM, XOM, OXY, LLY, RIVN, RBLX,
+#     BA, QQQ, IWM, SOXL)
+#   - Window: 09:35-10:00 ET (morning-only)
+#   - Timeframe: 5m
+#   - Confluence score min: 8
+#   - Setups enabled: avwap_breakout + avwap_pinch (pullback, bounce, gap,
+#     handoff all disabled — tested and confirmed lower quality)
+#   - Portfolio caps: max_positions=6, max_per_group=2
+#   - Exit rules: PREMIUM_TARGET 10%, STAGNATION 90m, EOD_FLATTEN 15min
+#
+# Git reference: commit 33da264 "tune(avwap): drop SPY/AMD, PF 1.39→1.48 on 27 symbols"
+# ============================================================================
+
 schema_version = 2
 
 [strategy]
@@ -135,7 +178,7 @@ max_trades_per_day = 2           # limit overtrading per symbol
 # These were the values used during tuning (commit 33da264: PF 1.32, DD 10%).
 # Without them, backtests default to unlimited positions which worsens DD significantly.
 max_positions = 6                # max simultaneous open positions
-max_per_group = 3                # solo optimum (was 2). Lifted after the OCC sector-classification fix made per-sector caps meaningful. In multi-strategy backtests the runner takes max-of per-spec values, so this also ends up the pair's effective cap — which the pair stress test confirms is the right shape for it.
+max_per_group = 2                # max positions per sector group
 
 # Bars to hold before basic AVWAP exit check fires
 exit_hold_bars = 3               # bars on wrong side of AVWAP before strategy exit

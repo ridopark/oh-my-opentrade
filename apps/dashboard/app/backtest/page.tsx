@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useMemo, useImperativeHandle, forwardRef } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   createChart,
   ColorType,
@@ -110,7 +111,11 @@ export default function BacktestPage() {
       const saved = localStorage.getItem("backtest-config");
       if (saved) {
         const parsed = JSON.parse(saved);
-        setConfig((prev) => ({ ...prev, ...parsed }));
+        // `symbols` is derived from the strategy TOML — never restore it from
+        // localStorage. Otherwise a stale cached list can override the current
+        // strategy's routing and silently change backtest results.
+        const { symbols: _ignored, ...rest } = parsed;
+        setConfig((prev) => ({ ...prev, ...rest }));
         if (parsed.strategies?.length) setSelectedStrategies(parsed.strategies);
       }
     } catch {}
@@ -137,7 +142,12 @@ export default function BacktestPage() {
 
   useEffect(() => {
     if (hydrated) {
-      try { localStorage.setItem("backtest-config", JSON.stringify(config)); } catch {}
+      try {
+        // Don't persist `symbols` — it's derived from the strategy TOML
+        // and must always come fresh from the API to reflect TOML edits.
+        const { symbols: _ignored, ...toSave } = config;
+        localStorage.setItem("backtest-config", JSON.stringify(toSave));
+      } catch {}
     }
   }, [config, hydrated]);
 
@@ -568,13 +578,27 @@ export interface TradeLogHandle {
   scrollToTrade: (trade: BacktestTrade) => void;
 }
 
+const ROW_HEIGHT = 28;
+
 const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onScrollToTime?: (symbol: string, isoTime: string) => void }>(function TradeLogInline({ trades, onScrollToTime }, ref) {
    const scrollRef = useRef<HTMLDivElement>(null);
-   const rowRefs = useRef<Map<number, HTMLTableRowElement>>(new Map());
    const [highlightIdx, setHighlightIdx] = useState<number | null>(null);
-   useEffect(() => { if (scrollRef.current) { scrollRef.current.scrollTop = scrollRef.current.scrollHeight; } }, [trades.length]);
 
   const positions = useMemo(() => groupPositions(trades), [trades]);
+
+  const virtualizer = useVirtualizer({
+    count: positions.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 20,
+  });
+
+  // Auto-scroll to bottom when new trades arrive
+  useEffect(() => {
+    if (positions.length > 0) {
+      virtualizer.scrollToIndex(positions.length - 1);
+    }
+  }, [positions.length, virtualizer]);
 
   useImperativeHandle(ref, () => ({
     scrollToTrade(trade: BacktestTrade) {
@@ -586,12 +610,10 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
       }
       if (idx < 0) return;
       setHighlightIdx(idx);
-      const row = rowRefs.current.get(idx);
-      if (row) row.scrollIntoView({ behavior: "smooth", block: "center" });
-      // Clear highlight after animation
+      virtualizer.scrollToIndex(idx, { align: "center" });
       setTimeout(() => setHighlightIdx(null), 2000);
     },
-  }), [positions]);
+  }), [positions, virtualizer]);
 
   if (positions.length === 0 && trades.length === 0) {
     return <div className="flex items-center justify-center h-full text-xs text-muted-foreground">No trades yet</div>;
@@ -605,7 +627,7 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
   return (
     <div ref={scrollRef} className="h-full overflow-y-auto">
       <table className="w-full text-xs font-mono">
-        <thead className="sticky top-0 bg-card">
+        <thead className="sticky top-0 bg-card z-10">
           <tr className="text-[10px] text-muted-foreground uppercase">
             <th className="text-left px-4 py-1.5">#</th>
             <th className="text-left px-2 py-1.5">Symbol</th>
@@ -625,11 +647,16 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
           </tr>
         </thead>
         <tbody>
-          {positions.map((p, i) => {
+          {virtualizer.getVirtualItems().length > 0 && (
+            <tr><td colSpan={15} style={{ height: virtualizer.getVirtualItems()[0].start, padding: 0, border: 'none', lineHeight: 0 }} /></tr>
+          )}
+          {virtualizer.getVirtualItems().map((virtualRow) => {
+            const i = virtualRow.index;
+            const p = positions[i];
             const isWin = p.pnl !== null && p.pnl > 0;
             const isLoss = p.pnl !== null && p.pnl < 0;
             return (
-              <tr key={i} ref={(el) => { if (el) rowRefs.current.set(i, el); else rowRefs.current.delete(i); }} className={`border-t border-border/30 transition-colors duration-500 ${highlightIdx === i ? "!bg-blue-500/20" : isWin ? "bg-emerald-500/[0.03]" : isLoss ? "bg-red-500/[0.03]" : ""}`}>
+              <tr key={i} data-index={i} ref={virtualizer.measureElement} style={{ height: ROW_HEIGHT }} className={`border-t border-border/30 transition-colors duration-500 ${highlightIdx === i ? "!bg-blue-500/20" : isWin ? "bg-emerald-500/[0.03]" : isLoss ? "bg-red-500/[0.03]" : ""}`}>
                 <td className="px-4 py-1 text-muted-foreground">{i + 1}</td>
                 <td className="px-2 py-1 text-foreground">{p.symbol}</td>
                 <td className="px-2 py-1">
@@ -702,6 +729,11 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
               </tr>
             );
           })}
+          {virtualizer.getVirtualItems().length > 0 && (() => {
+            const items = virtualizer.getVirtualItems();
+            const bottomPad = virtualizer.getTotalSize() - items[items.length - 1].end;
+            return bottomPad > 0 ? <tr><td colSpan={15} style={{ height: bottomPad, padding: 0, border: 'none', lineHeight: 0 }} /></tr> : null;
+          })()}
         </tbody>
       </table>
     </div>

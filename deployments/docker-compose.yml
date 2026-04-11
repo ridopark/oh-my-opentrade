@@ -44,9 +44,6 @@ services:
     environment:
     - TIMESCALEDB_HOST=timescaledb
     - TIMESCALEDB_PORT=5432
-    - IBKR_GATEWAY_HOST=ib-gateway
-    - IBKR_GATEWAY_PORT=4004
-    - IBKR_CLIENT_ID=4
   timescaledb:
     image: timescale/timescaledb:latest-pg16
     container_name: omo-timescaledb
