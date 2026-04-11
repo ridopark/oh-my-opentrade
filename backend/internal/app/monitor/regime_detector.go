@@ -24,9 +24,16 @@ func clamp(v, min, max float64) float64 {
 	return v
 }
 
+// regimeKey indexes regime state / thresholds by symbol+timeframe without
+// allocating a concatenated string key on every Detect call.
+type regimeKey struct {
+	Symbol    domain.Symbol
+	Timeframe domain.Timeframe
+}
+
 type RegimeDetector struct {
-	states     map[string]*regimeState
-	thresholds map[string]float64
+	states     map[regimeKey]*regimeState
+	thresholds map[regimeKey]float64
 }
 
 type regimeState struct {
@@ -37,14 +44,14 @@ type regimeState struct {
 
 func NewRegimeDetector() *RegimeDetector {
 	return &RegimeDetector{
-		states:     make(map[string]*regimeState),
-		thresholds: make(map[string]float64),
+		states:     make(map[regimeKey]*regimeState),
+		thresholds: make(map[regimeKey]float64),
 	}
 }
 
 func (rd *RegimeDetector) RegisterDivergenceThreshold(symbol, timeframe string, threshold float64) {
 	if threshold > 0 {
-		rd.thresholds[symbol+":"+timeframe] = threshold
+		rd.thresholds[regimeKey{Symbol: domain.Symbol(symbol), Timeframe: domain.Timeframe(timeframe)}] = threshold
 	}
 }
 
@@ -52,7 +59,9 @@ func (rd *RegimeDetector) RegisterDivergenceThreshold(symbol, timeframe string, 
 // market regime, and returns the regime along with a boolean indicating
 // if the regime has changed since the last snapshot.
 func (rd *RegimeDetector) Detect(snapshot domain.IndicatorSnapshot) (domain.MarketRegime, bool) {
-	key := snapshot.Symbol.String() + ":" + snapshot.Timeframe.String()
+	// Use a struct key so the map lookup doesn't allocate a fresh
+	// concatenated string on every call (was ~420k allocs per backtest).
+	key := regimeKey{Symbol: snapshot.Symbol, Timeframe: snapshot.Timeframe}
 
 	// Use EMA21/EMA50 for regime detection (wider lookback = less noise on 5m bars).
 	// Falls back to configurable EMAFast/EMASlow if set (e.g. for per-strategy tuning).
@@ -68,8 +77,10 @@ func (rd *RegimeDetector) Detect(snapshot domain.IndicatorSnapshot) (domain.Mark
 	absEmaDiff := math.Abs(emaDiff)
 
 	threshold := defaultEmaDivergenceThreshold
-	if t, ok := rd.thresholds[key]; ok {
-		threshold = t
+	if len(rd.thresholds) > 0 {
+		if t, ok := rd.thresholds[key]; ok {
+			threshold = t
+		}
 	}
 
 	var regimeType domain.RegimeType
