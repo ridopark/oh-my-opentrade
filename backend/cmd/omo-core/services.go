@@ -351,6 +351,10 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		DisableEnricher: false,
 		Logger:          log,
 		TideTracker:     tideTracker,
+		// svc.notifier is the raw MultiNotifier (Telegram + Discord fan-out),
+		// not the event-driven svc.notifySvc. Panic alerts must bypass the
+		// batching pipeline and fire immediately, so we wire the raw sink.
+		Notifier: svc.notifier,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("strategy v2: failed to build pipeline")
