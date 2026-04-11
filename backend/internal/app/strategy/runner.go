@@ -1010,7 +1010,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	for _, inst := range oneMinInstances {
 		instCtx := &instanceContext{
 			now:    bar.Time,
-			logger: r.logger.With("instance_id", inst.ID().String(), "symbol", symbol),
+			logger: inst.Logger(),
 			emit: func(evt any) error {
 				return r.emitDomainEvent(ctx, event.TenantID, event.EnvMode, evt)
 			},
@@ -1119,7 +1119,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		for _, inst := range htfInsts {
 			instCtx := &instanceContext{
 				now:    closed.Time,
-				logger: r.logger.With("instance_id", inst.ID().String(), "symbol", symbol),
+				logger: inst.Logger(),
 				emit: func(evt any) error {
 					return r.emitDomainEvent(ctx, event.TenantID, event.EnvMode, evt)
 				},
