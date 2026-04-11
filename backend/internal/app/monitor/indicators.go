@@ -35,6 +35,12 @@ type symbolState struct {
 	lows          []float64
 	volumes       []float64
 	stochKs       []float64
+	// volumeSum20 is the running sum of the last volumeSMAPeriod volumes
+	// so volumeSMA is O(1) per bar instead of re-summing 20 floats every call.
+	volumeSum20 float64
+	// closesSum20 is the running sum of the last bbPeriod closes (used by
+	// Bollinger Bands middle / SMA). O(1) per bar vs re-summing every call.
+	closesSum20 float64
 	ema9          float64
 	ema21         float64
 	ema50         float64
@@ -179,6 +185,18 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 	if !ok {
 		state = &symbolState{}
 		ic.states[key] = state
+	}
+
+	// Maintain rolling sums over the last volumeSMAPeriod volumes and
+	// bbPeriod closes so volumeSMA and the BB-middle SMA are O(1) per
+	// bar instead of a 20-iteration reduce every call.
+	state.volumeSum20 += bar.Volume
+	if len(state.volumes) >= volumeSMAPeriod {
+		state.volumeSum20 -= state.volumes[len(state.volumes)-volumeSMAPeriod]
+	}
+	state.closesSum20 += bar.Close
+	if len(state.closes) >= bbPeriod {
+		state.closesSum20 -= state.closes[len(state.closes)-bbPeriod]
 	}
 
 	state.closes = append(state.closes, bar.Close)
@@ -326,7 +344,7 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 
 	volumeSMA := 0.0
 	if len(state.volumes) >= volumeSMAPeriod {
-		volumeSMA = smaWindow(state.volumes, volumeSMAPeriod)
+		volumeSMA = state.volumeSum20 / float64(volumeSMAPeriod)
 	}
 
 	// ATR (Wilder smoothing)
@@ -342,10 +360,13 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 			state.atr = atr
 		}
 	}
-	// Bollinger Bands (20-period SMA, 2 std devs)
+	// Bollinger Bands (20-period SMA, 2 std devs).
+	// Middle uses the running sum (O(1)); the stdDev still needs one
+	// pass over the 20-sample window because sample variance isn't
+	// trivially incremental with a windowed sum. Left as-is for now.
 	var bbUpper, bbMiddle, bbLower, bbPercentB, bbBandwidth float64
 	if len(state.closes) >= bbPeriod {
-		bbMiddle = smaWindow(state.closes, bbPeriod)
+		bbMiddle = state.closesSum20 / float64(bbPeriod)
 		start := len(state.closes) - bbPeriod
 		sumSq := 0.0
 		for i := start; i < len(state.closes); i++ {
