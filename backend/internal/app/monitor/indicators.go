@@ -16,7 +16,15 @@ const (
 	emaPeriod200    = 200
 	volumeSMAPeriod = 20
 	atrPeriod       = 14
-	maxWindowSize   = 250
+	// maxWindowSize caps the retained high/low/close/volume history per
+	// symbol-timeframe. Post-init, every indicator only needs the last
+	// ~20 bars (bbPeriod is the largest); the full 60 gives headroom for
+	// EMA50 to seed via smaWindow at bar 50 before the slice rolls
+	// forward. EMA200 seeding is handled via a dedicated sum accumulator
+	// below so this cap can stay small. Shrinking from 250 → 60 cuts the
+	// per-symbol indicator cache footprint by ~4×, bringing a 30-symbol
+	// state set back under L2.
+	maxWindowSize = 60
 
 	bbPeriod         = 20
 	bbStdDevMult     = 2.0
@@ -45,6 +53,11 @@ type symbolState struct {
 	ema21         float64
 	ema50         float64
 	ema200        float64
+	// ema200Sum / ema200Count are a dedicated seed accumulator so the
+	// closes window can stay at 60 bars without starving EMA200's 200-bar
+	// initial SMA. Both are zeroed once ema200Init flips to true.
+	ema200Sum     float64
+	ema200Count   int
 	ema9Init      bool
 	ema21Init     bool
 	ema50Init     bool
@@ -316,10 +329,20 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 		state.ema50 = (bar.Close-state.ema50)*multiplier + state.ema50
 	}
 
-	if !state.ema200Init && len(state.closes) >= emaPeriod200 {
-		state.ema200 = smaWindow(state.closes, emaPeriod200)
-		state.ema200Init = true
-	} else if state.ema200Init {
+	if !state.ema200Init {
+		// Accumulate the first emaPeriod200 closes independently of the
+		// rolling window (which is capped at maxWindowSize=60). Once we
+		// have 200 samples, seed the EMA from the running sum and free
+		// the accumulator fields.
+		state.ema200Sum += bar.Close
+		state.ema200Count++
+		if state.ema200Count >= emaPeriod200 {
+			state.ema200 = state.ema200Sum / float64(emaPeriod200)
+			state.ema200Init = true
+			state.ema200Sum = 0
+			state.ema200Count = 0
+		}
+	} else {
 		multiplier := 2.0 / (float64(emaPeriod200) + 1.0)
 		state.ema200 = (bar.Close-state.ema200)*multiplier + state.ema200
 	}
