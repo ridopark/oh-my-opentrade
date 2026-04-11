@@ -250,6 +250,21 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	}
 	log.Info().Int("active", len(notifiers)).Msg("notification adapters initialized")
 
+	// Wire IBKR reconnect escalation now that notifySvc exists. The ibkr
+	// adapter uses the notifier to surface extended outages to Discord and
+	// the fatal-halt callback to trip the global trading halt once reconnect
+	// is exhausted. Both pieces live in main's process so that the adapter
+	// itself stays free of execution/risk package imports.
+	if infra.ibkrBroker != nil {
+		infra.ibkrBroker.SetReconnectNotifier(svc.notifySvc)
+		infra.ibkrBroker.SetReconnectFatalHalt(func(reason string) {
+			log.Error().Str("reason", reason).Msg("ibkr: fatal halt — tripping global trading halt")
+			if svc.dailyLossBreaker != nil {
+				svc.dailyLossBreaker.SetGlobalHalt(func() bool { return true })
+			}
+		})
+	}
+
 	svc.dnaApproval = dnaapproval.NewService(infra.dnaApprovalRepo, infra.eventBus, log.With().Str("component", "dnaapproval").Logger())
 	svc.monitor.SetDNAGate(svc.dnaApproval, "orb_break_retest")
 
