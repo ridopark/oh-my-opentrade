@@ -779,10 +779,11 @@ func main() {
 			if ctx.Err() != nil {
 				break
 			}
-			bar, has := s.peek()
-			if !has || !bar.Time.Equal(minTime) {
+			barPtr := s.peek()
+			if barPtr == nil || !barPtr.Time.Equal(minTime) {
 				continue
 			}
+			bar := *barPtr
 			_ = s.pop()
 
 			// In backtest mode, feed SimBroker the bar close price BEFORE publishing
@@ -921,11 +922,15 @@ type barStream struct {
 	idx    int
 }
 
-func (s *barStream) peek() (domain.MarketBar, bool) {
+// peek returns a pointer to the next bar in the stream, or nil if exhausted.
+// Avoids copying the 176-byte MarketBar struct through the return value when
+// the caller only needs to read a few fields (was ~15% of duffcopy samples at
+// 30-symbol scale via nextMinTime).
+func (s *barStream) peek() *domain.MarketBar {
 	if s == nil || s.idx >= len(s.bars) {
-		return domain.MarketBar{}, false
+		return nil
 	}
-	return s.bars[s.idx], true
+	return &s.bars[s.idx]
 }
 
 func (s *barStream) pop() bool {
@@ -940,8 +945,8 @@ func nextMinTime(streams []*barStream) (time.Time, bool) {
 	var min time.Time
 	found := false
 	for _, s := range streams {
-		b, ok := s.peek()
-		if !ok {
+		b := s.peek()
+		if b == nil {
 			continue
 		}
 		if !found || b.Time.Before(min) {
