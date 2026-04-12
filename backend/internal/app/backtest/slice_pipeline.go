@@ -223,7 +223,7 @@ func (sp *ShardedPipeline) RunSliceToCompletion(
 					currentDayOpen = dayOpen
 				}
 
-				_, dropped, err := shard.ProcessBarPhaseA(ctx, bars[flatIdx].toEvent())
+				dropped, err := shard.ProcessBarPhaseATyped(ctx, bars[flatIdx].Bar, bars[flatIdx].TenantID, bars[flatIdx].EnvMode)
 				if err != nil {
 					errs[idx] = err
 					return

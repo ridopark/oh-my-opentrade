@@ -172,6 +172,69 @@ func (p *Pipeline) ProcessBar(ctx context.Context, evt domain.Event) error {
 //
 // dropped=true indicates the adaptive filter rejected the bar — the caller
 // must skip Phase B for that job.
+// ProcessBarPhaseATyped is the allocation-free fast path for
+// slice-to-completion dispatch: it takes the raw bar + envelope
+// metadata directly, avoiding the ~1.87 GB of Event allocations a
+// 30 sym / 1 yr run incurs through toEvent(). Uses the typed
+// ingestion / monitor / runner entry points added in Phase 4-5.
+func (p *Pipeline) ProcessBarPhaseATyped(ctx context.Context, bar domain.MarketBar, tenantID string, envMode domain.EnvMode) (dropped bool, err error) {
+	if cerr := ctx.Err(); cerr != nil {
+		return false, cerr
+	}
+	sanitizedBar, ok, err := p.ingestion.ProcessBarTyped(bar)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return true, nil
+	}
+	if p.monitor != nil {
+		if err := p.monitor.HandleMarketBarTyped(ctx, sanitizedBar, tenantID, envMode, bar.Time); err != nil {
+			return false, err
+		}
+	}
+	if p.runner != nil {
+		if err := p.runner.HandleBarDirectTyped(ctx, sanitizedBar, tenantID, envMode); err != nil {
+			return false, err
+		}
+	}
+	if p.monitor != nil && p.runner != nil {
+		snaps := p.monitor.DrainPendingStateUpdates()
+		for i := range snaps {
+			if err := p.runner.HandleStateUpdatedSnap(ctx, snaps[i]); err != nil {
+				return false, err
+			}
+		}
+	}
+	var deferredStrict, deferredBestEffort []domain.Event
+	if p.monitor != nil {
+		strict, bestEffort := p.monitor.DrainPending()
+		for i := range strict {
+			ev := &strict[i]
+			if ev.Type == domain.EventStateUpdated {
+				if p.runner != nil {
+					if err := p.runner.HandleStateUpdatedDirect(ctx, *ev); err != nil {
+						return false, err
+					}
+				}
+				continue
+			}
+			deferredStrict = append(deferredStrict, *ev)
+		}
+		for i := range bestEffort {
+			ev := &bestEffort[i]
+			if ev.Type == domain.EventMarketBarSanitized {
+				continue
+			}
+			deferredBestEffort = append(deferredBestEffort, *ev)
+		}
+	}
+	if len(deferredStrict) > 0 || len(deferredBestEffort) > 0 {
+		p.stashDeferredForPhaseB(ctx, deferredStrict, deferredBestEffort)
+	}
+	return false, nil
+}
+
 func (p *Pipeline) ProcessBarPhaseA(ctx context.Context, evt domain.Event) (sanitized domain.Event, dropped bool, err error) {
 	if cerr := ctx.Err(); cerr != nil {
 		return domain.Event{}, false, cerr
