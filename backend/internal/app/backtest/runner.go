@@ -890,6 +890,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	replaySessionOpen := time.Date(fromET.Year(), fromET.Month(), fromET.Day(), 9, 30, 0, 0, loc)
 	monitorSvc.InitAggregators(r.cfg.Symbols, replaySessionOpen)
 
+	var sessionResolver *SessionResolver
 	if pipeline.Runner != nil {
 		snapshotFn := makeSnapshotFn()
 		for _, sym := range r.cfg.Symbols {
@@ -912,7 +913,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 		pipeline.Runner.ClearAllPendingStates()
 
-		sessionResolver := NewSessionResolver(loc)
+		sessionResolver = NewSessionResolver(loc)
 		// Extend lookback by 5 calendar days so previous-day anchors (pd_high, pd_low, etc.)
 		// are available on the first replay day even on Mondays (need Friday = -3 calendar days).
 		sessionFrom := r.cfg.From.Add(-5 * 24 * time.Hour)
@@ -1198,10 +1199,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		fixedSymbolSet[fs.String()] = true
 	}
 
-	// Release warmup caches — they're no longer needed after warmup completes.
-	clear(warmupBarsCache)
-	clear(dailyBarsCache)
-	runtime.GC()
+	// Warmup caches are cleared AFTER the slice fast-path's per-shard
+	// warmup pass (which re-reads warmupBarsCache + dailyBarsCache).
+	// The legacy heap-dispatch path below clears them in its own block.
 
 	// Phase 5 fast path: build a ShardedPipeline with per-shard
 	// services and run the slice-to-completion dispatch instead of the
@@ -1338,6 +1338,108 @@ func (r *Runner) Run(ctx context.Context) error {
 			return fmt.Errorf("start sharded services: %w", startErr)
 		}
 
+		// Per-shard warmup: replay the same warmup data through each
+		// shard's monitor + runner so indicator state is warm when
+		// Phase A starts. Without this the per-shard services are cold
+		// (the legacy monitorSvc/pipeline.Runner received warmup but
+		// the shard factory built fresh instances).
+		r.emitter.EmitSetup("Warming up per-shard indicators…")
+		{
+			snapshotFn := makeSnapshotFn()
+			_ = sp.ForEachShard(func(p *Pipeline, slab []domain.Symbol) error {
+				for _, sym := range slab {
+					symStr := sym.String()
+					if bars, ok := warmupBarsCache[symStr]; ok && len(bars) > 0 {
+						p.Monitor().WarmUp(bars)
+						p.Monitor().ResetSessionIndicators(symStr)
+						p.Monitor().MarkReady(symStr)
+						p.Runner().WarmUp(symStr, bars, snapshotFn)
+						p.Runner().WarmUpHTF(symStr, bars, snapshotFn, loc)
+						if ing := p.Ingestion(); ing != nil {
+							if f := ing.Filter(); f != nil {
+								f.Seed(sym, bars)
+							}
+						}
+					}
+					if bars1d, ok := dailyBarsCache[symStr]; ok && len(bars1d) > 0 {
+						var preBars []domain.MarketBar
+						for _, b := range bars1d {
+							if b.Time.Before(r.cfg.From) {
+								preBars = append(preBars, b)
+							}
+						}
+						if len(preBars) > 0 {
+							closes := make([]float64, len(preBars))
+							for k, b := range preBars {
+								closes[k] = b.Close
+							}
+							ema200 := monitor.ComputeStaticEMA(closes, 200)
+							if ema200 > 0 {
+								lastClose := preBars[len(preBars)-1].Close
+								bias := "NEUTRAL"
+								if lastClose > ema200*1.005 {
+									bias = "BULLISH"
+								} else if lastClose < ema200*0.995 {
+									bias = "BEARISH"
+								}
+								nr7 := monitor.ComputeNR7(preBars)
+								dailyATR := monitor.ComputeDailyATR(preBars, 14)
+								p.Monitor().SetStaticHTFData(symStr, "1d", domain.HTFData{
+									EMA200:   ema200,
+									Bias:     bias,
+									NR7:      nr7,
+									DailyATR: dailyATR,
+								})
+							}
+						}
+					}
+				}
+				// Bridge warmup: first 50 replay bars per symbol.
+				for _, s := range streams {
+					if sp.ShardIndexFor(s.symbol.String()) != -1 {
+						found := false
+						for _, sym := range slab {
+							if s.symbol == sym {
+								found = true
+								break
+							}
+						}
+						if !found {
+							continue
+						}
+					}
+					if len(s.bars) > 0 {
+						bridgeCount := 50
+						if bridgeCount > len(s.bars) {
+							bridgeCount = len(s.bars)
+						}
+						p.Monitor().WarmUp(s.bars[:bridgeCount])
+					}
+				}
+				p.Monitor().InitAggregators(slab, replaySessionOpen)
+				p.Runner().InitAggregators(replaySessionOpen)
+				p.Runner().ClearAllPendingStates()
+				// Wire session resolver + lookups.
+				p.Runner().SetAnchorResolver(sessionResolver.ResolveAnchors)
+				p.Runner().SetPrevDayBarsFn(func(symbol string, since time.Time) []start.Bar {
+					return sessionResolver.GetBarsSince(ctx, r.infra.DB, symbol, since)
+				})
+				p.Runner().SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
+				if len(dpLookup) > 0 {
+					p.Runner().SetDarkPoolLookup(dpLookup)
+				}
+				if len(whaleLookup) > 0 {
+					p.Runner().SetWhaleLookup(whaleLookup)
+				}
+				return nil
+			})
+		}
+
+		// Release warmup caches after per-shard warmup is done.
+		clear(warmupBarsCache)
+		clear(dailyBarsCache)
+		runtime.GC()
+
 		r.emitter.EmitSetup("Pre-assembling bar stream for slice dispatch…")
 
 		// Pre-assemble SliceBars with screener + auction injection
@@ -1419,6 +1521,9 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Legacy heap-dispatch loop (speed < max, or paused at start).
 	{
+	clear(warmupBarsCache)
+	clear(dailyBarsCache)
+	runtime.GC()
 	// Build a min-heap for efficient stream merging.
 	sh := make(streamHeap, 0, len(streams))
 	for _, s := range streams {

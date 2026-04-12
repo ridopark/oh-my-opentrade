@@ -160,19 +160,27 @@ Target: 30 sym / 1yr ≤ 6 s. Actual: **18–20 s** (gate missed, but
 
 See [`p4-allocation-reduction.md`](p4-allocation-reduction.md).
 
-### Future work (not started)
+### Additional shipped work
 
-- **Nworkers > 1 for dashboard runner** — currently wraps pre-built
-  services as single shard. Graduating to N=8 with the shard factory
-  would give full multi-core parallelism.
-- **Startup overlap** — stream bar loading into Phase A instead of
-  load-all-then-process. Would hide ~6 s of DB I/O behind Phase A
-  work.
-- **Unified live+backtest scheduler** — same code path for both,
-  different clock source. Original Phase 4 scope.
+| Item | Status | Notes |
+|---|---|---|
+| Nworkers=8 for dashboard runner | ✅ done | `91d5430` — full shard factory |
+| Dashboard default speed → "max" | ✅ done | `a2b746e` — was "5x" bypassing slice dispatch |
+| Parallel per-shard warmup | ✅ done | `0e49330` — warmup runs per-shard concurrently |
+
+### Future work
+
+- **Monitor per-bar map allocations** — regime/anchor/HTF maps
+  pre-allocated + reused per-symbol (~500 MB savings). ~2 h.
+- **`timescaledb.GetMarketBars` pre-sized result slices** — 3.3 GB
+  of startup allocs from row scanning. ~2 h.
+- **Full streaming startup overlap** — per-shard bar-loading
+  channels feeding Phase A workers as bars arrive. Needs
+  FreezeHandlers restructure. ~1 day.
+- **Unified live+backtest scheduler** — same code path, different
+  clock source.
 - **Cross-symbol coordinator** for SPY/QQQ tide state updates.
-- **Struct-of-arrays indicator state** — deepest refactor, would
-  eliminate per-bar `duffcopy` and map-hash overhead.
+- **Struct-of-arrays indicator state** — deepest refactor.
 
 ### Non-goals (explicitly NOT in this plan)
 
