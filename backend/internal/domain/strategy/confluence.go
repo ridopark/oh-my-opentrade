@@ -7,15 +7,13 @@ import (
 	"strings"
 )
 
-// ComponentScore captures a single confluence scorer's output for attribution.
-// No json tags — this is an in-memory value object. Use ThesisConfluence for
-// serialization to JSONB.
+// ComponentScore captures a single confluence scorer's contribution.
 type ComponentScore struct {
-	Name   string  // "ema_stack", "dp_buy", "rq_speed", etc.
-	Group  string  // "technical", "darkpool", "retest", "options"
-	Weight int     // points contributed (0 if not fired)
-	Value  float64 // raw metric value (ADX=28.3, RSI=62, etc.)
-	Fired  bool    // crossed threshold
+	Name   string  // e.g. "ema_stack", "adx_strong"
+	Group  string  // e.g. "trend", "momentum", "volume"
+	Weight int     // max points this scorer can award
+	Value  float64 // optional numeric input (e.g. ADX value, RSI value)
+	Fired  bool    // true if the scorer contributed > 0 points
 }
 
 // ConfluenceResult holds the computed confluence score and contributing factors.
@@ -26,7 +24,7 @@ type ConfluenceResult struct {
 }
 
 // MergeConfluence combines multiple ConfluenceResults into one by summing scores
-// and concatenating factor lists.
+// and concatenating factor lists and component slices.
 func MergeConfluence(results ...ConfluenceResult) ConfluenceResult {
 	var merged ConfluenceResult
 	for _, r := range results {
@@ -43,7 +41,8 @@ func (cr ConfluenceResult) FormatDetail() string {
 	return strings.Join(cr.Factors, "+")
 }
 
-// ComponentsJSON serializes Components as compact JSON for signal tags.
+// ComponentsJSON returns the Components serialized as a compact JSON string
+// for inclusion in signal tags. Returns "" if no components.
 func (cr ConfluenceResult) ComponentsJSON() string {
 	if len(cr.Components) == 0 {
 		return ""
@@ -96,118 +95,98 @@ func ScoreEMAStack(bar Bar, ind IndicatorData, isLong bool) ConfluenceResult {
 			count++
 		}
 	}
-	cs := ComponentScore{Name: "ema_stack", Group: "technical", Value: float64(count)}
+	comp := ComponentScore{Name: "ema_stack", Group: "trend", Weight: 15, Value: float64(count)}
 	switch count {
 	case 3:
-		cs.Weight = 15
-		cs.Fired = true
-		return ConfluenceResult{Score: 15, Factors: []string{"ema_stack"}, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 15, Factors: []string{"ema_stack"}, Components: []ComponentScore{comp}}
 	case 2:
-		cs.Name = "ema_partial"
-		cs.Weight = 10
-		cs.Fired = true
-		return ConfluenceResult{Score: 10, Factors: []string{"ema_partial"}, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 10, Factors: []string{"ema_partial"}, Components: []ComponentScore{comp}}
 	case 1:
-		cs.Weight = 5
-		return ConfluenceResult{Score: 5, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 5, Components: []ComponentScore{comp}}
 	default:
-		return ConfluenceResult{Components: []ComponentScore{cs}}
+		return ConfluenceResult{Components: []ComponentScore{comp}}
 	}
 }
 
 // ScoreADX evaluates trend strength via ADX (0-15).
 func ScoreADX(ind IndicatorData) ConfluenceResult {
-	cs := ComponentScore{Name: "adx", Group: "technical", Value: ind.ADX}
+	comp := ComponentScore{Name: "adx", Group: "trend", Weight: 15, Value: ind.ADX}
 	if ind.ADX <= 0 {
-		return ConfluenceResult{Components: []ComponentScore{cs}}
+		return ConfluenceResult{Components: []ComponentScore{comp}}
 	}
 	switch {
 	case ind.ADX >= 30:
-		cs.Name = "adx_strong"
-		cs.Weight = 15
-		cs.Fired = true
-		return ConfluenceResult{Score: 15, Factors: []string{"adx_strong"}, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 15, Factors: []string{"adx_strong"}, Components: []ComponentScore{comp}}
 	case ind.ADX >= 25:
-		cs.Name = "adx_trend"
-		cs.Weight = 12
-		cs.Fired = true
-		return ConfluenceResult{Score: 12, Factors: []string{"adx_trend"}, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 12, Factors: []string{"adx_trend"}, Components: []ComponentScore{comp}}
 	case ind.ADX >= 20:
-		cs.Name = "adx_ok"
-		cs.Weight = 8
-		cs.Fired = true
-		return ConfluenceResult{Score: 8, Factors: []string{"adx_ok"}, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 8, Factors: []string{"adx_ok"}, Components: []ComponentScore{comp}}
 	case ind.ADX >= 15:
-		cs.Weight = 4
-		return ConfluenceResult{Score: 4, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 4, Components: []ComponentScore{comp}}
 	default:
-		return ConfluenceResult{Components: []ComponentScore{cs}}
+		return ConfluenceResult{Components: []ComponentScore{comp}}
 	}
 }
 
 // ScoreRSI evaluates RSI position for directional quality (0-10).
 // Long: 45-65 ideal. Short: 35-55 ideal.
 func ScoreRSI(ind IndicatorData, isLong bool) ConfluenceResult {
-	cs := ComponentScore{Name: "rsi", Group: "technical", Value: ind.RSI}
+	comp := ComponentScore{Name: "rsi", Group: "momentum", Weight: 10, Value: ind.RSI}
 	if ind.RSI <= 0 {
-		return ConfluenceResult{Components: []ComponentScore{cs}}
+		return ConfluenceResult{Components: []ComponentScore{comp}}
 	}
 	if isLong {
 		switch {
 		case ind.RSI >= 45 && ind.RSI <= 65:
-			cs.Name = "rsi_ideal"
-			cs.Weight = 10
-			cs.Fired = true
-			return ConfluenceResult{Score: 10, Factors: []string{"rsi_ideal"}, Components: []ComponentScore{cs}}
+			comp.Fired = true
+			return ConfluenceResult{Score: 10, Factors: []string{"rsi_ideal"}, Components: []ComponentScore{comp}}
 		case (ind.RSI >= 35 && ind.RSI < 45) || (ind.RSI > 65 && ind.RSI <= 75):
-			cs.Name = "rsi_ok"
-			cs.Weight = 5
-			cs.Fired = true
-			return ConfluenceResult{Score: 5, Factors: []string{"rsi_ok"}, Components: []ComponentScore{cs}}
+			comp.Fired = true
+			return ConfluenceResult{Score: 5, Factors: []string{"rsi_ok"}, Components: []ComponentScore{comp}}
 		}
 	} else {
 		switch {
 		case ind.RSI >= 35 && ind.RSI <= 55:
-			cs.Name = "rsi_ideal"
-			cs.Weight = 10
-			cs.Fired = true
-			return ConfluenceResult{Score: 10, Factors: []string{"rsi_ideal"}, Components: []ComponentScore{cs}}
+			comp.Fired = true
+			return ConfluenceResult{Score: 10, Factors: []string{"rsi_ideal"}, Components: []ComponentScore{comp}}
 		case (ind.RSI > 55 && ind.RSI <= 65) || (ind.RSI >= 25 && ind.RSI < 35):
-			cs.Name = "rsi_ok"
-			cs.Weight = 5
-			cs.Fired = true
-			return ConfluenceResult{Score: 5, Factors: []string{"rsi_ok"}, Components: []ComponentScore{cs}}
+			comp.Fired = true
+			return ConfluenceResult{Score: 5, Factors: []string{"rsi_ok"}, Components: []ComponentScore{comp}}
 		}
 	}
-	return ConfluenceResult{Components: []ComponentScore{cs}}
+	return ConfluenceResult{Components: []ComponentScore{comp}}
 }
 
 // ScoreVolume evaluates volume relative to its SMA (0-8).
 func ScoreVolume(bar Bar, ind IndicatorData) ConfluenceResult {
+	comp := ComponentScore{Name: "volume", Group: "volume", Weight: 8}
 	if ind.VolumeSMA <= 0 {
-		return ConfluenceResult{Components: []ComponentScore{{Name: "volume", Group: "technical", Value: 0}}}
+		return ConfluenceResult{Components: []ComponentScore{comp}}
 	}
 	ratio := bar.Volume / ind.VolumeSMA
-	cs := ComponentScore{Name: "volume", Group: "technical", Value: ratio}
+	comp.Value = ratio
 	switch {
 	case ratio >= 1.5:
-		cs.Name = "vol_surge"
-		cs.Weight = 8
-		cs.Fired = true
-		return ConfluenceResult{Score: 8, Factors: []string{"vol_surge"}, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 8, Factors: []string{"vol_surge"}, Components: []ComponentScore{comp}}
 	case ratio >= 1.2:
-		cs.Name = "vol_above_avg"
-		cs.Weight = 6
-		cs.Fired = true
-		return ConfluenceResult{Score: 6, Factors: []string{"vol_above_avg"}, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 6, Factors: []string{"vol_above_avg"}, Components: []ComponentScore{comp}}
 	case ratio >= 1.0:
-		cs.Weight = 4
-		return ConfluenceResult{Score: 4, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 4, Components: []ComponentScore{comp}}
 	case ratio >= 0.8:
-		cs.Weight = 2
-		return ConfluenceResult{Score: 2, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 2, Components: []ComponentScore{comp}}
 	default:
-		return ConfluenceResult{Components: []ComponentScore{cs}}
+		return ConfluenceResult{Components: []ComponentScore{comp}}
 	}
 }
 
@@ -215,101 +194,84 @@ func ScoreVolume(bar Bar, ind IndicatorData) ConfluenceResult {
 func ScoreCandle(bar Bar, isLong bool) ConfluenceResult {
 	barRange := bar.High - bar.Low
 	if barRange <= 0 {
-		return ConfluenceResult{Components: []ComponentScore{{Name: "candle", Group: "technical", Value: 0}}}
+		return ConfluenceResult{Components: []ComponentScore{{Name: "candle", Group: "price_action", Weight: 8}}}
 	}
 	bodyRatio := math.Abs(bar.Close-bar.Open) / barRange
 	directional := (isLong && bar.Close > bar.Open) || (!isLong && bar.Close < bar.Open)
-	cs := ComponentScore{Name: "candle", Group: "technical", Value: bodyRatio}
+	comp := ComponentScore{Name: "candle", Group: "price_action", Weight: 8, Value: bodyRatio}
 	switch {
 	case bodyRatio > 0.7 && directional:
-		cs.Name = "candle_strong"
-		cs.Weight = 8
-		cs.Fired = true
-		return ConfluenceResult{Score: 8, Factors: []string{"candle_strong"}, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 8, Factors: []string{"candle_strong"}, Components: []ComponentScore{comp}}
 	case bodyRatio > 0.5 && directional:
-		cs.Name = "candle_ok"
-		cs.Weight = 6
-		cs.Fired = true
-		return ConfluenceResult{Score: 6, Factors: []string{"candle_ok"}, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 6, Factors: []string{"candle_ok"}, Components: []ComponentScore{comp}}
 	case directional:
-		cs.Name = "candle_dir"
-		cs.Weight = 4
-		cs.Fired = true
-		return ConfluenceResult{Score: 4, Factors: []string{"candle_dir"}, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 4, Factors: []string{"candle_dir"}, Components: []ComponentScore{comp}}
 	default:
-		return ConfluenceResult{Components: []ComponentScore{cs}}
+		return ConfluenceResult{Components: []ComponentScore{comp}}
 	}
 }
 
 // ScoreBB evaluates Bollinger Band %B position (0-7).
 // Long: 0.5-0.8 ideal (trending, not overextended). Short: 0.2-0.5 ideal.
 func ScoreBB(ind IndicatorData, isLong bool) ConfluenceResult {
-	cs := ComponentScore{Name: "bb", Group: "technical", Value: ind.BBPercentB}
+	comp := ComponentScore{Name: "bb", Group: "volatility", Weight: 7, Value: ind.BBPercentB}
 	if isLong {
 		switch {
 		case ind.BBPercentB >= 0.5 && ind.BBPercentB <= 0.8:
-			cs.Name = "bb_trend"
-			cs.Weight = 7
-			cs.Fired = true
-			return ConfluenceResult{Score: 7, Factors: []string{"bb_trend"}, Components: []ComponentScore{cs}}
+			comp.Fired = true
+			return ConfluenceResult{Score: 7, Factors: []string{"bb_trend"}, Components: []ComponentScore{comp}}
 		case ind.BBPercentB >= 0.3 && ind.BBPercentB < 0.5:
-			cs.Weight = 4
-			return ConfluenceResult{Score: 4, Components: []ComponentScore{cs}}
+			comp.Fired = true
+			return ConfluenceResult{Score: 4, Components: []ComponentScore{comp}}
 		}
 	} else {
 		switch {
 		case ind.BBPercentB >= 0.2 && ind.BBPercentB <= 0.5:
-			cs.Name = "bb_trend"
-			cs.Weight = 7
-			cs.Fired = true
-			return ConfluenceResult{Score: 7, Factors: []string{"bb_trend"}, Components: []ComponentScore{cs}}
+			comp.Fired = true
+			return ConfluenceResult{Score: 7, Factors: []string{"bb_trend"}, Components: []ComponentScore{comp}}
 		case ind.BBPercentB > 0.5 && ind.BBPercentB <= 0.7:
-			cs.Weight = 4
-			return ConfluenceResult{Score: 4, Components: []ComponentScore{cs}}
+			comp.Fired = true
+			return ConfluenceResult{Score: 4, Components: []ComponentScore{comp}}
 		}
 	}
-	return ConfluenceResult{Components: []ComponentScore{cs}}
+	return ConfluenceResult{Components: []ComponentScore{comp}}
 }
 
 // ScoreHTFBias evaluates higher-timeframe bias agreement (0-8).
 func ScoreHTFBias(ind IndicatorData, isLong bool) ConfluenceResult {
+	comp := ComponentScore{Name: "htf_bias", Group: "trend", Weight: 8}
 	htf, ok := ind.HTF["1d"]
 	if !ok || htf.Bias == "" {
-		return ConfluenceResult{Components: []ComponentScore{{Name: "htf_bias", Group: "technical", Value: 0}}}
+		return ConfluenceResult{Components: []ComponentScore{comp}}
 	}
 	cs := ComponentScore{Name: "htf_bias", Group: "technical"}
 	if (isLong && htf.Bias == "BULLISH") || (!isLong && htf.Bias == "BEARISH") {
-		cs.Name = "htf_agree"
-		cs.Weight = 8
-		cs.Fired = true
-		cs.Value = 1
-		return ConfluenceResult{Score: 8, Factors: []string{"htf_agree"}, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 8, Factors: []string{"htf_agree"}, Components: []ComponentScore{comp}}
 	}
 	if htf.Bias == "NEUTRAL" {
-		cs.Name = "htf_neutral"
-		cs.Weight = 4
-		cs.Fired = true
-		cs.Value = 0.5
-		return ConfluenceResult{Score: 4, Factors: []string{"htf_neutral"}, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 4, Factors: []string{"htf_neutral"}, Components: []ComponentScore{comp}}
 	}
-	return ConfluenceResult{Components: []ComponentScore{cs}}
+	return ConfluenceResult{Components: []ComponentScore{comp}} // opposing bias: 0
 }
 
 // ScoreVWAP evaluates VWAP alignment (0-7).
 // Long: price above VWAP. Short: price below VWAP.
 func ScoreVWAP(bar Bar, ind IndicatorData, isLong bool) ConfluenceResult {
-	cs := ComponentScore{Name: "vwap", Group: "technical"}
+	comp := ComponentScore{Name: "vwap", Group: "price_action", Weight: 7, Value: ind.VWAP}
 	if ind.VWAP <= 0 {
-		return ConfluenceResult{Components: []ComponentScore{cs}}
+		return ConfluenceResult{Components: []ComponentScore{comp}}
 	}
 	cs.Value = (bar.Close - ind.VWAP) / ind.VWAP
 	if (isLong && bar.Close > ind.VWAP) || (!isLong && bar.Close < ind.VWAP) {
-		cs.Name = "vwap_aligned"
-		cs.Weight = 7
-		cs.Fired = true
-		return ConfluenceResult{Score: 7, Factors: []string{"vwap_aligned"}, Components: []ComponentScore{cs}}
+		comp.Fired = true
+		return ConfluenceResult{Score: 7, Factors: []string{"vwap_aligned"}, Components: []ComponentScore{comp}}
 	}
-	return ConfluenceResult{Components: []ComponentScore{cs}}
+	return ConfluenceResult{Components: []ComponentScore{comp}}
 }
 
 // ScoreDarkPool evaluates dark pool activity as a confluence signal (0-10).
@@ -317,12 +279,9 @@ func ScoreVWAP(bar Bar, ind IndicatorData, isLong bool) ConfluenceResult {
 // Uses Z-score normalization for the elevated ratio check when available,
 // falling back to a static 0.50 threshold when Z-score is zero.
 func ScoreDarkPool(ind IndicatorData, isLong bool) ConfluenceResult {
+	comp := ComponentScore{Name: "darkpool", Group: "flow", Weight: 10, Value: ind.DPRatio}
 	if ind.DPRatio <= 0 {
-		return ConfluenceResult{Components: []ComponentScore{
-			{Name: "dp_elevated", Group: "darkpool", Value: ind.DPRatio},
-			{Name: "dp_direction", Group: "darkpool", Value: ind.DPBuyRatio},
-			{Name: "dp_blocks", Group: "darkpool", Value: ind.DPLargePrintPct},
-		}}
+		return ConfluenceResult{Components: []ComponentScore{comp}}
 	}
 	score := 0
 	var factors []string
@@ -371,7 +330,8 @@ func ScoreDarkPool(ind IndicatorData, isLong bool) ConfluenceResult {
 	}
 	components = append(components, csBlocks)
 
-	return ConfluenceResult{Score: score, Factors: factors, Components: components}
+	comp.Fired = score > 0
+	return ConfluenceResult{Score: score, Factors: factors, Components: []ComponentScore{comp}}
 }
 
 // DPVeto returns true (blocked) when dark pool flow opposes the trade direction.
@@ -477,7 +437,8 @@ func ScoreRetestQuality(retestBarCount int, pullbackDepthPct float64, retestAvgV
 	}
 	components = append(components, csConfirm)
 
-	return ConfluenceResult{Score: score, Factors: factors, Components: components}
+	comp := ComponentScore{Name: "retest_quality", Group: "setup", Weight: 16, Value: pullbackDepthPct, Fired: score > 0}
+	return ConfluenceResult{Score: score, Factors: factors, Components: []ComponentScore{comp}}
 }
 
 // ────────────────────────────────────────────────────────────────────

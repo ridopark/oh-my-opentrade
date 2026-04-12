@@ -1,30 +1,27 @@
 package http
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
 
-// DecayQuerier abstracts the decay telemetry data access.
-type DecayQuerier interface {
-	GetRollingDecayStats(ctx context.Context, strategy string) ([]domain.RollingDecayPoint, error)
-	GetComponentAttribution(ctx context.Context, strategy string) ([]domain.ComponentAttribution, error)
-}
-
-// DecayHandler serves the /api/decay/ endpoints.
+// DecayHandler serves the decay telemetry API endpoints.
+//
+//	GET /api/decay/rolling?strategy=macd_only_v1     → []RollingDecayPoint
+//	GET /api/decay/attribution?strategy=macd_only_v1 → []ComponentAttribution
 type DecayHandler struct {
-	querier DecayQuerier
-	log     zerolog.Logger
+	repo ports.DecayTelemetryPort
+	log  zerolog.Logger
 }
 
 // NewDecayHandler creates a new DecayHandler.
-func NewDecayHandler(querier DecayQuerier, log zerolog.Logger) *DecayHandler {
-	return &DecayHandler{querier: querier, log: log}
+func NewDecayHandler(repo ports.DecayTelemetryPort, log zerolog.Logger) *DecayHandler {
+	return &DecayHandler{repo: repo, log: log}
 }
 
 func (h *DecayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -40,55 +37,69 @@ func (h *DecayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	path := strings.TrimPrefix(r.URL.Path, "/api/decay/")
-	switch path {
-	case "rolling":
-		h.handleRolling(w, r)
-	case "attribution":
-		h.handleAttribution(w, r)
+	path := r.URL.Path
+	switch {
+	case strings.HasSuffix(path, "/rolling"):
+		h.serveRolling(w, r)
+	case strings.HasSuffix(path, "/attribution"):
+		h.serveAttribution(w, r)
 	default:
 		http.NotFound(w, r)
 	}
 }
 
-func (h *DecayHandler) handleRolling(w http.ResponseWriter, r *http.Request) {
+func (h *DecayHandler) serveRolling(w http.ResponseWriter, r *http.Request) {
 	strategy := r.URL.Query().Get("strategy")
 	if strategy == "" {
-		http.Error(w, `{"error":"strategy parameter required"}`, http.StatusBadRequest)
+		h.jsonError(w, http.StatusBadRequest, "strategy query parameter is required")
 		return
 	}
 
-	points, err := h.querier.GetRollingDecayStats(r.Context(), strategy)
+	points, err := h.repo.GetRollingDecayStats(r.Context(), strategy)
 	if err != nil {
-		h.log.Error().Err(err).Str("strategy", strategy).Msg("decay: rolling query failed")
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		h.log.Error().Err(err).Str("strategy", strategy).Msg("failed to get rolling decay stats")
+		h.jsonError(w, http.StatusInternalServerError, "rolling decay query failed")
 		return
 	}
+
 	if points == nil {
 		points = []domain.RollingDecayPoint{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(points)
+	if err := json.NewEncoder(w).Encode(points); err != nil {
+		h.log.Error().Err(err).Msg("failed to encode rolling decay response")
+	}
 }
 
-func (h *DecayHandler) handleAttribution(w http.ResponseWriter, r *http.Request) {
+func (h *DecayHandler) serveAttribution(w http.ResponseWriter, r *http.Request) {
 	strategy := r.URL.Query().Get("strategy")
 	if strategy == "" {
-		http.Error(w, `{"error":"strategy parameter required"}`, http.StatusBadRequest)
+		h.jsonError(w, http.StatusBadRequest, "strategy query parameter is required")
 		return
 	}
 
-	results, err := h.querier.GetComponentAttribution(r.Context(), strategy)
+	attrs, err := h.repo.GetComponentAttribution(r.Context(), strategy)
 	if err != nil {
-		h.log.Error().Err(err).Str("strategy", strategy).Msg("decay: attribution query failed")
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		h.log.Error().Err(err).Str("strategy", strategy).Msg("failed to get component attribution")
+		h.jsonError(w, http.StatusInternalServerError, "component attribution query failed")
 		return
 	}
-	if results == nil {
-		results = []domain.ComponentAttribution{}
+
+	if attrs == nil {
+		attrs = []domain.ComponentAttribution{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(results)
+	if err := json.NewEncoder(w).Encode(attrs); err != nil {
+		h.log.Error().Err(err).Msg("failed to encode component attribution response")
+	}
+}
+
+func (h *DecayHandler) jsonError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
+		h.log.Error().Err(err).Msg("failed to encode error response")
+	}
 }

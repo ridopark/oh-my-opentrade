@@ -37,6 +37,7 @@ type infraDeps struct {
 	repo            *timescaledb.Repository
 	pnlRepo         *timescaledb.PnLRepository
 	stratPerfRepo   *timescaledb.StrategyPerfRepo
+	decayRepo       *timescaledb.DecayRepository
 	dnaApprovalRepo *timescaledb.DNAApprovalRepo
 	orderIntentRepo *timescaledb.OrderIntentRepo
 	tokenStore      *timescaledb.TokenStore
@@ -167,6 +168,7 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 	repo := timescaledb.NewRepositoryWithLogger(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "timescaledb").Logger())
 	pnlRepo := timescaledb.NewPnLRepository(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "pnl").Logger())
 	stratPerfRepo := timescaledb.NewStrategyPerfRepo(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "strategy_perf").Logger())
+	decayRepo := timescaledb.NewDecayRepository(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "decay").Logger())
 	dnaApprovalRepo := timescaledb.NewDNAApprovalRepo(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "dna_approval_repo").Logger())
 	orderIntentRepo := timescaledb.NewOrderIntentRepo(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "order_intent_repo").Logger())
 	tokenStore := timescaledb.NewTokenStore(timescaledb.NewSqlDB(sqlDB))
@@ -179,6 +181,7 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 		repo:            repo,
 		pnlRepo:         pnlRepo,
 		stratPerfRepo:   stratPerfRepo,
+		decayRepo:       decayRepo,
 		dnaApprovalRepo: dnaApprovalRepo,
 		orderIntentRepo: orderIntentRepo,
 		tokenStore:      tokenStore,

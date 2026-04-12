@@ -1209,9 +1209,9 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 					"hold_bars":         fmt.Sprintf("%d", s.BelowCount[anchorName]),
 					"mode":              "breakout",
 					"regime_5m":         regimeTag,
-					"confluence":        fmt.Sprintf("%d", conf.Score),
+					"confluence":            fmt.Sprintf("%d", conf.Score),
 					"confluence_detail":     strings.Join(conf.Factors, "+"),
-				"confluence_components": conf.ComponentsJSON(),
+					"confluence_components": conf.ComponentsJSON(),
 				})
 				if err != nil {
 					return nil, err
@@ -1454,7 +1454,7 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 						"regime_5m":         regimeTag,
 						"confluence":        fmt.Sprintf("%d", conf.Score),
 						"confluence_detail":     strings.Join(conf.Factors, "+"),
-				"confluence_components": conf.ComponentsJSON(),
+						"confluence_components": conf.ComponentsJSON(),
 					})
 					if err != nil {
 						return nil, err
@@ -1490,7 +1490,7 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 						"regime_5m":         regimeTag,
 						"confluence":        fmt.Sprintf("%d", conf.Score),
 						"confluence_detail":     strings.Join(conf.Factors, "+"),
-				"confluence_components": conf.ComponentsJSON(),
+						"confluence_components": conf.ComponentsJSON(),
 					})
 					if err != nil {
 						return nil, err
@@ -1678,7 +1678,7 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 						"mode":              "handoff",
 						"confluence":        fmt.Sprintf("%d", conf.Score),
 						"confluence_detail":     strings.Join(conf.Factors, "+"),
-				"confluence_components": conf.ComponentsJSON(),
+						"confluence_components": conf.ComponentsJSON(),
 					})
 					if err != nil {
 						return nil, err
@@ -1749,7 +1749,7 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 						"mode":              "handoff",
 						"confluence":        fmt.Sprintf("%d", conf.Score),
 						"confluence_detail":     strings.Join(conf.Factors, "+"),
-				"confluence_components": conf.ComponentsJSON(),
+						"confluence_components": conf.ComponentsJSON(),
 					})
 					if err != nil {
 						return nil, err
@@ -2325,6 +2325,27 @@ type confluenceResult struct {
 	dpInd      *start.IndicatorData // reference to indicators for sizing
 }
 
+// ComponentsJSON returns the Components serialized as a compact JSON string
+// for inclusion in signal tags. Returns "" if no components.
+func (cr confluenceResult) ComponentsJSON() string {
+	if len(cr.Components) == 0 {
+		return ""
+	}
+	type comp struct {
+		Name   string  `json:"n"`
+		Group  string  `json:"g"`
+		Weight int     `json:"w"`
+		Value  float64 `json:"v,omitempty"`
+		Fired  bool    `json:"f"`
+	}
+	out := make([]comp, len(cr.Components))
+	for i, c := range cr.Components {
+		out[i] = comp{Name: c.Name, Group: c.Group, Weight: c.Weight, Value: c.Value, Fired: c.Fired}
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
+}
+
 // applyDPSizing adjusts strength with DP sizing multiplier when configured.
 func (cr confluenceResult) applyDPSizing(strength float64) float64 {
 	if cr.dpCfg == nil || !cr.dpCfg.DPSizingEnabled {
@@ -2393,7 +2414,7 @@ func computeConfluence(
 	}
 
 	// Factor 1: Fibonacci (+3)
-	csFib := start.ComponentScore{Name: "fib", Group: "technical"}
+	fibComp := start.ComponentScore{Name: "fib", Group: "structure", Weight: 3}
 	if cfg.FibConfluenceEnabled && len(barHighs50) >= 20 && len(barLows50) >= 20 {
 		maxH := barHighs50[0]
 		for _, h := range barHighs50[1:] {
@@ -2423,38 +2444,36 @@ func computeConfluence(
 				if math.Abs(avwapValue-fib.level) <= tolerance {
 					res.Score += 3
 					res.Factors = append(res.Factors, fib.name)
-					csFib.Name = fib.name
-					csFib.Weight = 3
-					csFib.Fired = true
-					csFib.Value = fib.level
+					fibComp.Fired = true
+					fibComp.Value = fib.level
 					break // only count once
 				}
 			}
 		}
 	}
+	res.Components = append(res.Components, fibComp)
 
 	res.Components = append(res.Components, csFib)
 
 	// Factor 2: Key Level (+3)
-	csKeyLevel := start.ComponentScore{Name: "key_level", Group: "technical"}
+	keyComp := start.ComponentScore{Name: "key_level", Group: "structure", Weight: 3}
 	if cfg.KeyLevelConfluenceEnabled && len(keyLevels) > 0 {
 		for name, level := range keyLevels {
 			if math.Abs(avwapValue-level) <= tolerance {
 				res.Score += 3
 				res.Factors = append(res.Factors, "key_"+name)
-				csKeyLevel.Name = "key_" + name
-				csKeyLevel.Weight = 3
-				csKeyLevel.Fired = true
-				csKeyLevel.Value = level
+				keyComp.Fired = true
+				keyComp.Value = level
 				break // only count once
 			}
 		}
 	}
+	res.Components = append(res.Components, keyComp)
 
 	res.Components = append(res.Components, csKeyLevel)
 
 	// Factor 3: Candlestick (+2)
-	csCandle := start.ComponentScore{Name: "candle_pattern", Group: "technical"}
+	candleComp := start.ComponentScore{Name: "candle_pattern", Group: "price_action", Weight: 2}
 	if cfg.CandleConfluenceEnabled && prevBarCount >= 1 {
 		matched := false
 
@@ -2466,9 +2485,7 @@ func computeConfluence(
 			prevRange > 0 && curRange < 0.7*prevRange {
 			res.Score += 2
 			res.Factors = append(res.Factors, "inside_bar")
-			csCandle.Name = "inside_bar"
-			csCandle.Weight = 2
-			csCandle.Fired = true
+			candleComp.Fired = true
 			matched = true
 		}
 
@@ -2482,9 +2499,7 @@ func computeConfluence(
 			if body > 0.6*rng {
 				res.Score += 2
 				res.Factors = append(res.Factors, "strength_candle")
-				csCandle.Name = "strength_candle"
-				csCandle.Weight = 2
-				csCandle.Fired = true
+				candleComp.Fired = true
 				matched = true
 			}
 		}
@@ -2504,16 +2519,14 @@ func computeConfluence(
 			if prev2Bearish && prev1Small && curBullish {
 				res.Score += 2
 				res.Factors = append(res.Factors, "morning_star")
-				csCandle.Name = "morning_star"
-				csCandle.Weight = 2
-				csCandle.Fired = true
+				candleComp.Fired = true
 			}
 		}
 	}
-	res.Components = append(res.Components, csCandle)
+	res.Components = append(res.Components, candleComp)
 
 	// Factor 4: Band Zone (+2)
-	csBand := start.ComponentScore{Name: "band_zone", Group: "technical"}
+	bandComp := start.ComponentScore{Name: "band_zone", Group: "structure", Weight: 2}
 	if cfg.BandConfluenceEnabled && len(avwapValues) >= 2 {
 		var minAVWAP, maxAVWAP float64
 		first := true
@@ -2529,11 +2542,10 @@ func computeConfluence(
 		if bar.Close >= minAVWAP && bar.Close <= maxAVWAP {
 			res.Score += 2
 			res.Factors = append(res.Factors, "band_zone")
-			csBand.Weight = 2
-			csBand.Fired = true
+			bandComp.Fired = true
 		}
 	}
-	res.Components = append(res.Components, csBand)
+	res.Components = append(res.Components, bandComp)
 
 	// Factor 5: Dark Pool (+10 max, opt-in via config)
 	if cfg.DPConfluenceEnabled {
@@ -2545,21 +2557,17 @@ func computeConfluence(
 	}
 
 	// Factor 6: Whale Accumulation (+3 max, from 13F filings)
-	csWhale := start.ComponentScore{Name: "whale", Group: "options", Value: float64(indicators.WhaleScore)}
+	whaleComp := start.ComponentScore{Name: "whale", Group: "flow", Weight: 3, Value: float64(indicators.WhaleScore)}
 	if indicators.WhaleScore >= 6 {
 		res.Score += 3
 		res.Factors = append(res.Factors, "whale_strong")
-		csWhale.Name = "whale_strong"
-		csWhale.Weight = 3
-		csWhale.Fired = true
+		whaleComp.Fired = true
 	} else if indicators.WhaleScore >= 3 {
 		res.Score += 2
 		res.Factors = append(res.Factors, "whale_moderate")
-		csWhale.Name = "whale_moderate"
-		csWhale.Weight = 2
-		csWhale.Fired = true
+		whaleComp.Fired = true
 	}
-	res.Components = append(res.Components, csWhale)
+	res.Components = append(res.Components, whaleComp)
 
 	return res
 }

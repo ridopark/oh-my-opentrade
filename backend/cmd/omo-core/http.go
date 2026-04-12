@@ -376,6 +376,10 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	// Performance dashboard API
 	perfHandler := omhttp.NewPerformanceHandler(infra.pnlRepo, infra.repo, httpLog)
 	imux.Handle("/performance/", perfHandler)
+
+	// Decay telemetry API
+	decayHandler := omhttp.NewDecayHandler(infra.decayRepo, httpLog)
+	imux.Handle("/api/decay/", decayHandler)
 	// Historical orders API
 	orderHandler := omhttp.NewOrderHandler(infra.repo, httpLog)
 	imux.Handle("/orders", orderHandler)

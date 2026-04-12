@@ -1,6 +1,7 @@
 package domain
 
-// RollingDecayPoint is a single data point on the rolling PF/WR curve.
+// RollingDecayPoint represents a single trade in the rolling decay series,
+// including rolling profit factor and win rate computed over trailing windows.
 type RollingDecayPoint struct {
 	TradeSeq    int      `json:"tradeSeq"`
 	PnL         float64  `json:"pnl"`
@@ -10,8 +11,8 @@ type RollingDecayPoint struct {
 	RollingWR60  *float64 `json:"rollingWr60"`
 }
 
-// ComponentAttribution captures the marginal PF contribution of a single
-// confluence component, computed via conditional ablation.
+// ComponentAttribution captures PF-with vs PF-without for a single confluence
+// component, enabling ablation analysis of scorer value.
 type ComponentAttribution struct {
 	Component  string   `json:"component"`
 	Group      string   `json:"group"`
