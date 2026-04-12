@@ -109,6 +109,38 @@ func (s *Service) Start(ctx context.Context) error {
 // saves ~3 publishes per bar (MarketBarReceived → Sanitized → StateUpdated
 // → EnrichedBar) plus their associated handler slice iteration and per-event
 // struct copies. See docs/perf/p1-2-backtest-pipeline-design.md.
+// ProcessBarTyped is the allocation-free variant of ProcessBar: it
+// takes the raw MarketBar and returns the sanitized MarketBar plus
+// an ok flag (false = filter rejected the bar) without ever
+// constructing a domain.Event. Used by the backtest slice dispatch
+// to avoid the ~450 MB of Event allocations a 30 sym / 1 yr run
+// would incur wrapping every ProcessBar call twice (Phase A +
+// replay). ok=false means the caller must skip downstream stages
+// for this bar.
+func (s *Service) ProcessBarTyped(bar domain.MarketBar) (sanitized domain.MarketBar, ok bool, err error) {
+	s.mu.Lock()
+	if s.metrics != nil {
+		s.metrics.Bars.ReceivedTotal.WithLabelValues("ws", string(bar.Symbol), string(bar.Timeframe)).Inc()
+	}
+	result := s.filter.Process(bar)
+	s.mu.Unlock()
+
+	switch result.Status {
+	case FilterRejected:
+		if s.metrics != nil {
+			s.metrics.Bars.DroppedTotal.WithLabelValues("ws", string(result.Gate)).Inc()
+		}
+		s.recordPipelineLiveness(bar.Symbol)
+		return domain.MarketBar{}, false, nil
+	case FilterRepaired:
+		if s.metrics != nil {
+			s.metrics.Bars.RepairedTotal.WithLabelValues("ws", string(result.Gate)).Inc()
+		}
+	}
+	s.recordPipelineLiveness(bar.Symbol)
+	return result.Bar, true, nil
+}
+
 func (s *Service) ProcessBar(ctx context.Context, event domain.Event) (sanitized domain.Event, ok bool, err error) {
 	bar, okBar := event.Payload.(domain.MarketBar)
 	if !okBar {

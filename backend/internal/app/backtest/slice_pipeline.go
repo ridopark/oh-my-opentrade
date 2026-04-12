@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"sync"
 	"time"
 
@@ -36,16 +35,19 @@ type SliceBar struct {
 
 // toEvent builds a MarketBarReceived domain.Event from this row.
 // Called once per bar during Phase A and once again during replay —
-// short-lived allocations the young-gen GC reclaims cheaply,
-// compared to the retained-for-the-full-run giant slice the old
-// design kept in main.main.
+// short-lived allocations the young-gen GC reclaims cheaply.
+//
+// The idempotency key is left empty: direct-dispatch doesn't route
+// through any handler that deduplicates on it, so the 40-byte
+// strconv.FormatInt + symbol concat is pure waste in backtest.
+// ~450 MB of allocations per 30 sym / 1 yr run disappear as a
+// result.
 func (sb SliceBar) toEvent() domain.Event {
-	idemKey := strconv.FormatInt(sb.Bar.Time.UnixNano(), 36) + string(sb.Bar.Symbol)
 	return domain.NewBacktestEvent(
 		domain.EventMarketBarReceived,
 		sb.TenantID,
 		sb.EnvMode,
-		idemKey,
+		"",
 		sb.Bar,
 		sb.Bar.Time,
 	)
