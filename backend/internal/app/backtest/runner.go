@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"runtime"
@@ -16,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/adapters/simbroker"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/app/backfill"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
@@ -23,6 +25,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
+	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -1194,7 +1197,121 @@ func (r *Runner) Run(ctx context.Context) error {
 		fixedSymbolSet[fs.String()] = true
 	}
 
-	// Build a min-heap for efficient stream merging (O(log N) vs O(N) per iteration).
+	// Release warmup caches — they're no longer needed after warmup completes.
+	clear(warmupBarsCache)
+	clear(dailyBarsCache)
+	runtime.GC()
+
+	// Phase 5 fast path: build a ShardedPipeline wrapping the pre-built
+	// services and run the slice-to-completion dispatch instead of the
+	// per-bar PublishDirect loop. This gives the same ~18 s wall time
+	// as the omo-replay CLI path. Falls through to the legacy
+	// heap-dispatch loop when speed != max (pause/resume needs per-bar
+	// control that slice dispatch doesn't support).
+	isMaxSpeed := r.speedDelay.Load().(time.Duration) == 0
+	if isMaxSpeed && !r.paused.Load() {
+		shardFactory := func(slab []domain.Symbol) (ShardServices, error) {
+			return ShardServices{
+				Ingestion: ingBundle.Service,
+				Monitor:   monitorSvc,
+				Runner:    pipeline.Runner,
+			}, nil
+		}
+		sp, spErr := NewShardedPipeline(1, r.cfg.Symbols, ShardedInfra{
+			PriceCache: posMonBundle.PriceCache,
+			Collector:  r.collector,
+			EventBus:   r.infra.EventBus,
+			Factory:    shardFactory,
+		})
+		if spErr != nil {
+			r.status.Store("error")
+			return fmt.Errorf("build sharded pipeline: %w", spErr)
+		}
+		pipeline.Runner.SetDeferSignalPublish(true)
+		pipeline.Runner.SetDeferReconcile(true)
+
+		r.emitter.EmitSetup("Pre-assembling bar stream for slice dispatch…")
+
+		// Pre-assemble SliceBars with screener + auction injection
+		// embedded in the coordinator callbacks.
+		sliceBars := make([]SliceBar, 0, totalBars)
+		sh := make(streamHeap, 0, len(streams))
+		for _, s := range streams {
+			if s.idx < len(s.bars) {
+				sh = append(sh, s)
+			}
+		}
+		heap.Init(&sh)
+		for sh.Len() > 0 {
+			minTime := sh[0].bars[sh[0].idx].Time
+			minET := minTime.In(loc)
+			sessionOpen := time.Date(minET.Year(), minET.Month(), minET.Day(), 9, 30, 0, 0, loc)
+			for sh.Len() > 0 && sh[0].bars[sh[0].idx].Time.Equal(minTime) {
+				s := heap.Pop(&sh).(*barStream)
+				bar := s.bars[s.idx]
+				s.bars[s.idx] = domain.MarketBar{}
+				s.idx++
+				if s.idx < len(s.bars) {
+					heap.Push(&sh, s)
+				}
+				// Daily screener filter
+				if dailyScreenerMap != nil {
+					symStr := bar.Symbol.String()
+					if !fixedSymbolSet[symStr] {
+						dateKey := sessionOpen.Format("2006-01-02")
+						if activeSyms, ok := dailyScreenerMap[dateKey]; ok && len(activeSyms) > 0 {
+							if !activeSyms[symStr] {
+								continue
+							}
+						}
+					}
+				}
+				sliceBars = append(sliceBars, SliceBar{
+					TickTime:    minTime,
+					SessionOpen: sessionOpen,
+					Bar:         bar,
+					TenantID:    tenantID,
+					EnvMode:     envMode,
+				})
+				barsProcessed++
+				lastBarTime = bar.Time
+			}
+		}
+
+		r.emitter.EmitSetup(fmt.Sprintf("Running slice dispatch (%d bars, %d shards)…", len(sliceBars), sp.ShardCount()))
+
+		coord := &runnerSliceCoord{
+			r:                r,
+			loc:              loc,
+			currentBarTime:   &currentBarTime,
+			currentDay:       currentSessionDate,
+			eventBus:         r.infra.EventBus,
+			sim:              sim,
+			posMonSvc:        posMonBundle.Service,
+			posMonPriceCache: posMonBundle.PriceCache,
+			orbSelected:      orbSelected,
+			spyDailyBars:     spyDailyBars,
+			monitorSvc:       monitorSvc,
+			symbols:          r.cfg.Symbols,
+			totalBars:        len(sliceBars),
+			barsReplayed:     &barsProcessed,
+			auctionByDateSym: auctionByDateSym,
+			publishedAuctions: make(map[string]bool),
+			sp:               sp,
+		}
+
+		if err := sp.RunSliceToCompletion(ctx, sliceBars, replaySessionOpen, coord); err != nil {
+			if ctx.Err() == nil {
+				r.log.Error().Err(err).Msg("slice-to-completion failed")
+			}
+		}
+
+		goto backtestComplete
+	}
+
+	// Legacy heap-dispatch loop (speed < max, or paused at start).
+	{
+	// Build a min-heap for efficient stream merging.
 	sh := make(streamHeap, 0, len(streams))
 	for _, s := range streams {
 		if s.idx < len(s.bars) {
@@ -1202,11 +1319,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 	heap.Init(&sh)
-
-	// Release warmup caches — they're no longer needed after warmup completes.
-	clear(warmupBarsCache)
-	clear(dailyBarsCache)
-	runtime.GC()
 
 	for ctx.Err() == nil && sh.Len() > 0 {
 		// Peek at the minimum timestamp from the heap root.
@@ -1413,7 +1525,9 @@ func (r *Runner) Run(ctx context.Context) error {
 			runtime.Gosched()
 		}
 	}
+	} // end legacy dispatch block
 
+backtestComplete:
 	// --- Completion ---
 
 	// Flush any remaining pending aggregators at end of backtest
@@ -1718,3 +1832,119 @@ func (s *symbolOverrideSpecStore) Save(ctx context.Context, spec portstrategy.Sp
 func (s *symbolOverrideSpecStore) Watch(ctx context.Context) (<-chan start.StrategyID, error) {
 	return s.inner.Watch(ctx)
 }
+
+// runnerSliceCoord implements SliceCoordinator for the dashboard
+// backtest Runner. Mirrors replaySliceCoord from omo-replay but
+// uses the runner's emitter for progress emission and handles
+// SPY realized-vol recomputation on day boundaries.
+type runnerSliceCoord struct {
+	r                *Runner
+	loc              *time.Location
+	currentBarTime   *atomic.Value
+	currentDay       time.Time
+	eventBus         ports.BacktestBus
+	sim              *simbroker.Broker
+	posMonSvc        *positionmonitor.Service
+	posMonPriceCache *positionmonitor.PriceCache
+	orbSelected      bool
+	spyDailyBars     []domain.MarketBar
+	monitorSvc       *monitor.Service
+	symbols          []domain.Symbol
+	totalBars        int
+	barsReplayed     *int
+	auctionByDateSym map[string]domain.AuctionImbalanceSnapshot
+	publishedAuctions map[string]bool
+	sp               *ShardedPipeline
+	ticksSeen        int
+}
+
+func (c *runnerSliceCoord) OnTickBegin(_ context.Context, tickTime time.Time) error {
+	c.currentBarTime.Store(tickTime)
+	domain.SetFastClock(tickTime)
+	minET := tickTime.In(c.loc)
+	dayOpen := time.Date(minET.Year(), minET.Month(), minET.Day(), 9, 30, 0, 0, c.loc)
+	if dayOpen.After(c.currentDay) {
+		_ = c.sp.ForEachShard(func(p *Pipeline, slab []domain.Symbol) error {
+			p.Monitor().ResetAggregators(dayOpen)
+			for _, sym := range slab {
+				p.Monitor().ResetSessionIndicators(sym.String())
+			}
+			return nil
+		})
+		if c.orbSelected && c.monitorSvc != nil {
+			rvCutoff := dayOpen.Add(-60 * 24 * time.Hour)
+			var windowBars []domain.MarketBar
+			for _, b := range c.spyDailyBars {
+				if !b.Time.Before(rvCutoff) && b.Time.Before(dayOpen) {
+					windowBars = append(windowBars, b)
+				}
+			}
+			if len(windowBars) > 21 {
+				rv := monitor.ComputeRealizedVol(windowBars, 20)
+				c.monitorSvc.SetVIXLevel(rv)
+			}
+		}
+		c.currentDay = dayOpen
+	}
+	return nil
+}
+
+func (c *runnerSliceCoord) OnTickEnd(ctx context.Context, tickTime time.Time) error {
+	c.eventBus.Flush()
+	if c.posMonSvc != nil {
+		c.posMonSvc.EvalExitRules(tickTime)
+		c.eventBus.Flush()
+	}
+	c.ticksSeen++
+	if c.ticksSeen%50 == 0 && c.r != nil {
+		pct := 0.0
+		if c.totalBars > 0 {
+			pct = math.Round(float64(*c.barsReplayed)/float64(c.totalBars)*1000) / 10
+		}
+		pi := &ProgressInfo{
+			BarsProcessed: *c.barsReplayed,
+			TotalBars:     c.totalBars,
+			Pct:           pct,
+			CurrentTime:   tickTime,
+			Speed:         "max",
+		}
+		c.r.progress.Store(pi)
+		c.r.emitter.EmitProgress(pi)
+		if c.r.collector != nil {
+			m := c.r.collector.LiveMetrics()
+			c.r.emitter.EmitMetrics(map[string]any{
+				"equity":         m.FinalEquity,
+				"total_pnl":      m.TotalPnL,
+				"total_return":   m.TotalReturn,
+				"trades":         m.TradeCount,
+				"win_rate":       m.WinRate,
+				"max_drawdown":   m.MaxDrawdown,
+				"sharpe":         m.SharpeRatio,
+				"profit_factor":  m.ProfitFactor,
+				"open_positions": len(c.r.collector.openBuys),
+			})
+		}
+	}
+	return nil
+}
+
+func (c *runnerSliceCoord) OnBar(_ context.Context, raw domain.Event) error {
+	if c.sim == nil {
+		return nil
+	}
+	bar, ok := raw.Payload.(domain.MarketBar)
+	if !ok {
+		return nil
+	}
+	c.sim.UpdatePrice(bar.Symbol, bar.Close, bar.Time)
+	return nil
+}
+
+func (c *runnerSliceCoord) PosLookup(symbol string) (domain.MonitoredPosition, bool) {
+	if c.posMonSvc == nil {
+		return domain.MonitoredPosition{}, false
+	}
+	return c.posMonSvc.LookupPosition(symbol)
+}
+
+func (c *runnerSliceCoord) Logger() *slog.Logger { return nil }
