@@ -252,18 +252,24 @@ func TestComputeBaseConfluence_Empty(t *testing.T) {
 // ─── MergeConfluence ─────────────────────────────────────────────────────────
 
 func TestMergeConfluence(t *testing.T) {
-	a := s.ConfluenceResult{Score: 30, Factors: []string{"ema_stack", "adx_strong"}}
-	b := s.ConfluenceResult{Score: 12, Factors: []string{"macd_specific"}}
+	a := s.ConfluenceResult{Score: 30, Factors: []string{"ema_stack", "adx_strong"},
+		Components: []s.ComponentScore{{Name: "ema_stack", Group: "technical", Weight: 15, Fired: true}}}
+	b := s.ConfluenceResult{Score: 12, Factors: []string{"macd_specific"},
+		Components: []s.ComponentScore{{Name: "macd_specific", Group: "technical", Weight: 12, Fired: true}}}
 	merged := s.MergeConfluence(a, b)
 	assert.Equal(t, 42, merged.Score)
 	assert.Len(t, merged.Factors, 3)
 	assert.Contains(t, merged.Factors, "macd_specific")
+	assert.Len(t, merged.Components, 2)
+	assert.Equal(t, "ema_stack", merged.Components[0].Name)
+	assert.Equal(t, "macd_specific", merged.Components[1].Name)
 }
 
 func TestMergeConfluence_Empty(t *testing.T) {
 	r := s.MergeConfluence()
 	assert.Equal(t, 0, r.Score)
 	assert.Empty(t, r.Factors)
+	assert.Empty(t, r.Components)
 }
 
 func TestConfluenceResult_FormatDetail(t *testing.T) {
@@ -589,4 +595,133 @@ func TestDPSizingMultiplier(t *testing.T) {
 			assert.InDelta(t, tt.expected, got, 0.001)
 		})
 	}
+}
+
+// ─── ComponentScore attribution tests ──────────────────────────────────────
+
+func TestComponentScore_EMAStack_AllFired(t *testing.T) {
+	bar := s.Bar{Close: 105}
+	ind := s.IndicatorData{EMA9: 104, EMA21: 103, EMA50: 102}
+	r := s.ScoreEMAStack(bar, ind, true)
+	assert.Len(t, r.Components, 1)
+	cs := r.Components[0]
+	assert.Equal(t, "ema_stack", cs.Name)
+	assert.Equal(t, "technical", cs.Group)
+	assert.Equal(t, 15, cs.Weight)
+	assert.True(t, cs.Fired)
+	assert.Equal(t, 3.0, cs.Value)
+}
+
+func TestComponentScore_EMAStack_NotFired(t *testing.T) {
+	bar := s.Bar{Close: 100}
+	ind := s.IndicatorData{EMA9: 105, EMA21: 106, EMA50: 107}
+	r := s.ScoreEMAStack(bar, ind, true)
+	assert.Len(t, r.Components, 1)
+	assert.False(t, r.Components[0].Fired)
+	assert.Equal(t, 0, r.Components[0].Weight)
+}
+
+func TestComponentScore_ADX_Strong(t *testing.T) {
+	r := s.ScoreADX(s.IndicatorData{ADX: 35})
+	assert.Len(t, r.Components, 1)
+	cs := r.Components[0]
+	assert.Equal(t, "adx_strong", cs.Name)
+	assert.Equal(t, "technical", cs.Group)
+	assert.Equal(t, 15, cs.Weight)
+	assert.True(t, cs.Fired)
+	assert.Equal(t, 35.0, cs.Value)
+}
+
+func TestComponentScore_RSI_Ideal(t *testing.T) {
+	r := s.ScoreRSI(s.IndicatorData{RSI: 55}, true)
+	assert.Len(t, r.Components, 1)
+	cs := r.Components[0]
+	assert.Equal(t, "rsi_ideal", cs.Name)
+	assert.Equal(t, 10, cs.Weight)
+	assert.True(t, cs.Fired)
+	assert.Equal(t, 55.0, cs.Value)
+}
+
+func TestComponentScore_DarkPool_AllFired(t *testing.T) {
+	ind := s.IndicatorData{DPRatio: 0.55, DPRatioZScore: 2.0, DPBuyRatio: 0.65, DPLargePrintPct: 0.20}
+	r := s.ScoreDarkPool(ind, true)
+	assert.Equal(t, 10, r.Score)
+	assert.Len(t, r.Components, 3)
+
+	elevated := r.Components[0]
+	assert.Equal(t, "dp_elevated", elevated.Name)
+	assert.Equal(t, "darkpool", elevated.Group)
+	assert.Equal(t, 3, elevated.Weight)
+	assert.True(t, elevated.Fired)
+
+	buy := r.Components[1]
+	assert.Equal(t, "dp_buy", buy.Name)
+	assert.Equal(t, 4, buy.Weight)
+	assert.True(t, buy.Fired)
+
+	blocks := r.Components[2]
+	assert.Equal(t, "dp_blocks", blocks.Name)
+	assert.Equal(t, 3, blocks.Weight)
+	assert.True(t, blocks.Fired)
+}
+
+func TestComponentScore_DarkPool_NoData(t *testing.T) {
+	r := s.ScoreDarkPool(s.IndicatorData{DPRatio: 0}, true)
+	assert.Equal(t, 0, r.Score)
+	assert.Len(t, r.Components, 3)
+	for _, cs := range r.Components {
+		assert.False(t, cs.Fired)
+		assert.Equal(t, "darkpool", cs.Group)
+	}
+}
+
+func TestComponentScore_RetestQuality_Perfect(t *testing.T) {
+	r := s.ScoreRetestQuality(2, 0.30, 50, 100, 0.8, true)
+	assert.Equal(t, 16, r.Score)
+	assert.Len(t, r.Components, 4)
+	for _, cs := range r.Components {
+		assert.Equal(t, "retest", cs.Group)
+		assert.True(t, cs.Fired, "component %s should fire", cs.Name)
+	}
+}
+
+func TestComponentScore_BaseConfluence_AllComponents(t *testing.T) {
+	bar := s.Bar{Open: 98.5, High: 102, Low: 98, Close: 101.5, Volume: 1800}
+	ind := s.IndicatorData{
+		EMA9: 101, EMA21: 100, EMA50: 99,
+		ADX: 30, RSI: 55,
+		VolumeSMA:  1000,
+		BBPercentB: 0.65,
+		VWAP:       100,
+		HTF:        map[string]s.HTFIndicator{"1d": {Bias: "BULLISH"}},
+	}
+	r := s.ComputeBaseConfluence(bar, ind, true)
+	assert.Equal(t, 78, r.Score)
+	assert.Len(t, r.Components, 8, "base confluence should produce exactly 8 components")
+	groups := map[string]int{}
+	for _, cs := range r.Components {
+		groups[cs.Group]++
+	}
+	assert.Equal(t, 8, groups["technical"])
+}
+
+func TestComponentScore_BaseConfluence_Empty(t *testing.T) {
+	r := s.ComputeBaseConfluence(s.Bar{}, s.IndicatorData{}, true)
+	assert.Equal(t, 0, r.Score)
+	assert.Len(t, r.Components, 8, "even with no data, all 8 components should be present")
+	for _, cs := range r.Components {
+		assert.False(t, cs.Fired)
+	}
+}
+
+func TestMergeConfluence_Components(t *testing.T) {
+	base := s.ComputeBaseConfluence(
+		s.Bar{Open: 98.5, High: 102, Low: 98, Close: 101.5, Volume: 1800},
+		s.IndicatorData{EMA9: 101, EMA21: 100, EMA50: 99, ADX: 30, RSI: 55, VolumeSMA: 1000, BBPercentB: 0.65, VWAP: 100, HTF: map[string]s.HTFIndicator{"1d": {Bias: "BULLISH"}}},
+		true,
+	)
+	dp := s.ScoreDarkPool(s.IndicatorData{DPRatio: 0.55, DPRatioZScore: 2.0, DPBuyRatio: 0.65, DPLargePrintPct: 0.20}, true)
+	merged := s.MergeConfluence(base, dp)
+	assert.Equal(t, 88, merged.Score)
+	assert.Len(t, merged.Components, 11, "8 base + 3 darkpool")
 }
