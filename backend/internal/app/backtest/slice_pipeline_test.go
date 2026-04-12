@@ -74,7 +74,7 @@ func (r *recordingCoordinator) OnTickEnd(_ context.Context, t time.Time) error {
 	return nil
 }
 
-func (r *recordingCoordinator) OnBar(_ context.Context, _ domain.Event) error { return nil }
+func (r *recordingCoordinator) OnBar(_ context.Context, _ domain.MarketBar) error { return nil }
 
 func (r *recordingCoordinator) PosLookup(_ string) (domain.MonitoredPosition, bool) {
 	return domain.MonitoredPosition{}, false

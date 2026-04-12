@@ -1622,12 +1622,8 @@ func (c *replaySliceCoord) OnTickEnd(ctx context.Context, tickTime time.Time) er
 
 // OnBar pokes simbroker's last-price map so fills triggered by any
 // signal this bar eventually emits use the right close price.
-func (c *replaySliceCoord) OnBar(_ context.Context, raw domain.Event) error {
+func (c *replaySliceCoord) OnBar(_ context.Context, bar domain.MarketBar) error {
 	if c.simBrokerInst == nil {
-		return nil
-	}
-	bar, ok := raw.Payload.(domain.MarketBar)
-	if !ok {
 		return nil
 	}
 	c.simBrokerInst.UpdatePrice(bar.Symbol, bar.Close, bar.Time)
