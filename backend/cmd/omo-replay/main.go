@@ -1014,7 +1014,7 @@ func main() {
 			optionBarsMu:     &optionBarsMu,
 		}
 
-		if err := shardedPipeline.RunSliceToCompletion(ctx, sliceBars, coord); err != nil {
+		if err := shardedPipeline.RunSliceToCompletion(ctx, sliceBars, replaySessionOpen, coord); err != nil {
 			log.Error().Err(err).Msg("slice-to-completion replay failed")
 		}
 	} else {

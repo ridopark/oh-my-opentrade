@@ -35,7 +35,7 @@ func TestRunSliceToCompletion_RejectsNilCoordinator(t *testing.T) {
 		t.Fatalf("NewShardedPipeline: %v", err)
 	}
 	bars := []SliceBar{{TickTime: time.Now(), Event: domain.Event{Payload: domain.MarketBar{Symbol: "AAPL"}}}}
-	if err := sp.RunSliceToCompletion(context.Background(), bars, nil); err == nil {
+	if err := sp.RunSliceToCompletion(context.Background(), bars, time.Time{}, nil); err == nil {
 		t.Fatal("expected error for nil coordinator")
 	}
 }
@@ -46,7 +46,7 @@ func TestRunSliceToCompletion_EmptyBarsIsNoop(t *testing.T) {
 		t.Fatalf("NewShardedPipeline: %v", err)
 	}
 	coord := &recordingCoordinator{}
-	if err := sp.RunSliceToCompletion(context.Background(), nil, coord); err != nil {
+	if err := sp.RunSliceToCompletion(context.Background(), nil, time.Time{}, coord); err != nil {
 		t.Fatalf("RunSliceToCompletion(nil bars): %v", err)
 	}
 	if coord.tickCount != 0 {
