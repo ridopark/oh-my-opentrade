@@ -19,6 +19,7 @@ import (
 
 	"github.com/oh-my-opentrade/backend/internal/adapters/simbroker"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
+	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/backfill"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
 	"github.com/oh-my-opentrade/backend/internal/app/debate"
@@ -1202,22 +1203,112 @@ func (r *Runner) Run(ctx context.Context) error {
 	clear(dailyBarsCache)
 	runtime.GC()
 
-	// Phase 5 fast path: build a ShardedPipeline wrapping the pre-built
+	// Phase 5 fast path: build a ShardedPipeline with per-shard
 	// services and run the slice-to-completion dispatch instead of the
-	// per-bar PublishDirect loop. This gives the same ~18 s wall time
-	// as the omo-replay CLI path. Falls through to the legacy
+	// per-bar PublishDirect loop. Nworkers=8 gives real multi-core
+	// parallelism on the Phase A hot path. Falls through to the legacy
 	// heap-dispatch loop when speed != max (pause/resume needs per-bar
 	// control that slice dispatch doesn't support).
 	isMaxSpeed := r.speedDelay.Load().(time.Duration) == 0
 	if isMaxSpeed && !r.paused.Load() {
+		// Capture ORB config for per-shard monitor application.
+		var orbParamsCaptured map[string]any
+		var orbTimeframeCaptured string
+		if orbSelected {
+			orbID2, _ := start.NewStrategyID("orb_break_retest")
+			if orbSpec2, orbErr2 := specStore.GetLatest(context.Background(), orbID2); orbErr2 == nil {
+				orbParamsCaptured = orbSpec2.Params
+				if len(orbSpec2.Routing.Timeframes) > 0 {
+					orbTimeframeCaptured = string(orbSpec2.Routing.Timeframes[0])
+				}
+			}
+		}
+
+		// Build shared strategy services (enricher, risk sizer, registry).
+		strategyShared, sharedErr := bootstrap.BuildStrategyShared(bootstrap.StrategyDeps{
+			EventBus:        r.infra.EventBus,
+			SpecStore:       specStore,
+			AIAdvisor:       aiAdvisor,
+			PositionLookup:  posMonBundle.Service.LookupPosition,
+			MarketDataFn:    monitorSvc.GetLastSnapshot,
+			OptionsMarket:   optionsAdapter,
+			Repo:            nil,
+			TenantID:        "default",
+			EnvMode:         domain.EnvModePaper,
+			Equity:          r.cfg.InitialEquity,
+			Clock:           clockFn,
+			DisableEnricher: r.cfg.NoAI,
+			Logger:          r.log,
+			BacktestID:      r.id,
+			TideTracker:     tideTracker,
+		})
+		if sharedErr != nil {
+			r.status.Store("error")
+			return fmt.Errorf("build strategy shared: %w", sharedErr)
+		}
+
+		stratDeps := bootstrap.StrategyDeps{
+			EventBus:        r.infra.EventBus,
+			SpecStore:       specStore,
+			AIAdvisor:       aiAdvisor,
+			PositionLookup:  posMonBundle.Service.LookupPosition,
+			MarketDataFn:    monitorSvc.GetLastSnapshot,
+			OptionsMarket:   optionsAdapter,
+			Repo:            nil,
+			TenantID:        "default",
+			EnvMode:         domain.EnvModePaper,
+			Equity:          r.cfg.InitialEquity,
+			Clock:           clockFn,
+			DisableEnricher: r.cfg.NoAI,
+			Logger:          r.log,
+			BacktestID:      r.id,
+			TideTracker:     tideTracker,
+		}
+
 		shardFactory := func(slab []domain.Symbol) (ShardServices, error) {
+			filter := ingestion.NewAdaptiveFilter(20, 4.0)
+			filter.SetPassthrough(true)
+			ingSvc := ingestion.NewService(r.infra.EventBus, r.infra.NoopRepo, filter, r.log.With().Str("component", "ingestion_shard").Logger())
+			ingSvc.SetBacktest(true)
+
+			monSvc, monErr := bootstrap.BuildMonitor(bootstrap.MonitorDeps{
+				EventBus:   r.infra.EventBus,
+				Repo:       repo,
+				Logger:     r.log,
+				BacktestID: r.id,
+			})
+			if monErr != nil {
+				return ShardServices{}, fmt.Errorf("shard monitor: %w", monErr)
+			}
+			if orbParamsCaptured != nil {
+				monSvc.SetORBConfig(orbParamsCaptured)
+			}
+			if orbTimeframeCaptured != "" {
+				monSvc.SetORBTimeframe(orbTimeframeCaptured)
+			}
+
+			shardStrat, stratErr := bootstrap.BuildStrategyShard(strategyShared, slab, stratDeps)
+			if stratErr != nil {
+				return ShardServices{}, fmt.Errorf("shard strategy: %w", stratErr)
+			}
+			shardStrat.Runner.SetDeferSignalPublish(true)
+			shardStrat.Runner.SetDeferReconcile(true)
+
 			return ShardServices{
-				Ingestion: ingBundle.Service,
-				Monitor:   monitorSvc,
-				Runner:    pipeline.Runner,
+				Ingestion: ingSvc,
+				Monitor:   monSvc,
+				Runner:    shardStrat.Runner,
 			}, nil
 		}
-		sp, spErr := NewShardedPipeline(1, r.cfg.Symbols, ShardedInfra{
+
+		nworkers := 8
+		if nworkers > len(r.cfg.Symbols) {
+			nworkers = len(r.cfg.Symbols)
+		}
+		if nworkers < 1 {
+			nworkers = 1
+		}
+		sp, spErr := NewShardedPipeline(nworkers, r.cfg.Symbols, ShardedInfra{
 			PriceCache: posMonBundle.PriceCache,
 			Collector:  r.collector,
 			EventBus:   r.infra.EventBus,
@@ -1227,8 +1318,25 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.status.Store("error")
 			return fmt.Errorf("build sharded pipeline: %w", spErr)
 		}
-		pipeline.Runner.SetDeferSignalPublish(true)
-		pipeline.Runner.SetDeferReconcile(true)
+
+		// Per-shard SetBaseSymbols + Start (monitor + runner).
+		if startErr := sp.ForEachShard(func(p *Pipeline, slab []domain.Symbol) error {
+			syms := make([]string, len(slab))
+			for i, s := range slab {
+				syms[i] = s.String()
+			}
+			p.Monitor().SetBaseSymbols(syms)
+			if err := p.Monitor().Start(ctx); err != nil {
+				return fmt.Errorf("start shard monitor: %w", err)
+			}
+			if err := p.Runner().Start(ctx); err != nil {
+				return fmt.Errorf("start shard runner: %w", err)
+			}
+			return nil
+		}); startErr != nil {
+			r.status.Store("error")
+			return fmt.Errorf("start sharded services: %w", startErr)
+		}
 
 		r.emitter.EmitSetup("Pre-assembling bar stream for slice dispatch…")
 
