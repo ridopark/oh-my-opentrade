@@ -112,6 +112,7 @@ type shardEmission struct {
 func (sp *ShardedPipeline) RunSliceToCompletion(
 	ctx context.Context,
 	bars []SliceBar,
+	initialSessionOpen time.Time,
 	coord SliceCoordinator,
 ) error {
 	if coord == nil {
@@ -147,16 +148,14 @@ func (sp *ShardedPipeline) RunSliceToCompletion(
 	perShardDeferred := make([][]shardEmission, sp.nworkers)
 
 	// initialDayOpen seeds each shard worker's currentDayOpen cursor
-	// so the first bar of the run doesn't trigger a superfluous
-	// Reset* pass — the caller has already called InitAggregators
-	// with this same SessionOpen during warmup, and the first reset
-	// would fire a no-op regime detection against an empty HTF
-	// aggregator, drifting the RegimeShifted event count by tens of
-	// thousands compared to the single-threaded baseline.
-	var initialDayOpen time.Time
-	if len(bars) > 0 {
-		initialDayOpen = bars[0].SessionOpen
-	}
+	// to the SessionOpen the caller used when calling
+	// InitAggregators at warmup. That way a shard's first bar
+	// correctly fires a day-boundary reset IF it falls on a later
+	// ET session open than the warmup one (which is the normal case
+	// — fromTime is e.g. 2025-04-01 and the first bar is e.g.
+	// 2025-04-01 09:31 or 2025-04-02 09:31), but doesn't fire a
+	// spurious reset when the first bar's session matches warmup.
+	initialDayOpen := initialSessionOpen
 
 	var wg sync.WaitGroup
 	errs := make([]error, sp.nworkers)
