@@ -395,7 +395,8 @@ func (s *BreakRetestStrategy) OnBar(ctx start.Context, symbol string, bar start.
 					"tp2_price":         fmt.Sprintf("%.10f", tp2),
 					"regime_5m":         regimeTag,
 					"confluence":        fmt.Sprintf("%d", conf.Score),
-					"confluence_detail": conf.FormatDetail(),
+					"confluence_detail":     conf.FormatDetail(),
+					"confluence_components": conf.ComponentsJSON(),
 				}
 
 				if cfg.AIEnabled {
