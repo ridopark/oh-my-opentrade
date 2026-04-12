@@ -5,6 +5,7 @@ import { CapabilityGrid } from "@/components/landing/capability-grid";
 import { StrategyFamilies } from "@/components/landing/strategy-families";
 import { ArchitectureHex } from "@/components/landing/architecture-hex";
 import { ReliabilitySection } from "@/components/landing/reliability-section";
+import { BacktestPerformance } from "@/components/landing/backtest-performance";
 import { OperatorFeed } from "@/components/landing/operator-feed";
 import { RoadmapTimeline } from "@/components/landing/roadmap-timeline";
 import { LimitationsSection } from "@/components/landing/limitations-section";
@@ -20,6 +21,7 @@ export default function LandingPage() {
       <StrategyFamilies />
       <ArchitectureHex />
       <ReliabilitySection />
+      <BacktestPerformance />
       <OperatorFeed />
       <RoadmapTimeline />
       <LimitationsSection />

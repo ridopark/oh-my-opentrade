@@ -57,11 +57,41 @@ and [docs/plans/ROADMAP.md](docs/plans/ROADMAP.md) for deeper context.
 - Parameterized bar aggregation, per-symbol session tracking
 - Black-Scholes options pricing (see limitations below)
 - Per-trade, per-day, per-symbol P&L; Sharpe, Sortino, max drawdown
+- **86% faster** after a 5-phase optimization sprint (see below)
 
 **Operations**
 - TimescaleDB hypertables for bars, trades, equity snapshots
 - Prometheus metrics, Loki structured logs
 - Discord/Telegram webhooks for trades and risk alerts
+
+## Backtest performance
+
+A five-phase optimization sprint reduced wall-time by **86%** across all workloads while
+preserving deterministic signal-count parity:
+
+| Workload | Before | After | Reduction |
+|---|---|---|---|
+| 30 symbols / 1 year | ~130 s | **18 s** | -86% |
+| 8 symbols / 1 year | 31.6 s | **5.0 s** | -84% |
+| 8 symbols / 3 months | 10.1 s | **1.9 s** | -81% |
+
+Each phase was gated by a benchmark — we only advanced when the prior phase wasn't enough:
+
+1. **Phase 1 — Direct dispatch.** Replaced the pub/sub event bus with direct function calls
+   (`ingestion.ProcessBar → monitor.HandleMarketBar → runner.HandleBarDirect`), shrunk
+   indicator windows from 250 → 60 bars, and reordered struct layouts for cache locality.
+2. **Phase 2 — Shard infrastructure.** Cloned monitor + runner per shard so each goroutine
+   owns disjoint mutable state. This phase missed its gate (per-tick barriers cost more than
+   the work they parallelized) but delivered the sharding scaffolding Phase 3 needed.
+3. **Phase 3 — Slice-to-completion.** Each shard runs its full bar stream to completion with
+   no per-tick synchronization, then a k-way merge replays signals in tick order. Eliminated
+   240 k barrier wake-ups per year of data.
+4. **Phase 4+5 — Allocation reduction.** Typed hot paths bypass `domain.Event` construction.
+   Pre-sized slabs, zero-alloc ingestion, and eliminated idempotency-key string concatenation
+   cut total allocations from 19 GB → 9.7 GB per run. GC CPU dropped from 12 s → 8 s.
+
+See [docs/perf/README.md](docs/perf/README.md) for the full roadmap, pprof analysis, and
+commit history.
 
 ## Strengths
 
