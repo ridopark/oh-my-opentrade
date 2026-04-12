@@ -91,6 +91,13 @@ type Service struct {
 	pendingStrict       []domain.Event
 	pendingBestEffort   []domain.Event
 	pendingStateUpdates []domain.IndicatorSnapshot
+	// scratchStrict / scratchBestEffort are per-bar scratch buffers for
+	// handleBarCore. Reusing slices across bars avoids ~315 MB of
+	// append-growth allocations per 30 sym / 1 yr run (publishStrict
+	// and publishBestEffort were locally declared and grew from nil
+	// every bar).
+	scratchStrict     []domain.Event
+	scratchBestEffort []domain.Event
 	anchorResolverFn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
 	prevDayBarsFn    func(symbol string, since time.Time) []start.Bar
 	nyLoc            *time.Location // cached America/New_York location
@@ -656,8 +663,12 @@ func (s *Service) handleBarCore(ctx context.Context, bar domain.MarketBar, tenan
 	} else {
 		l = s.log
 	}
-	var publishStrict []domain.Event
-	var publishBestEffort []domain.Event
+	publishStrict := s.scratchStrict[:0]
+	publishBestEffort := s.scratchBestEffort[:0]
+	defer func() {
+		s.scratchStrict = publishStrict
+		s.scratchBestEffort = publishBestEffort
+	}()
 	s.mu.Lock()
 	if !s.isAllowedSymbolLocked(string(bar.Symbol)) {
 		s.mu.Unlock()
