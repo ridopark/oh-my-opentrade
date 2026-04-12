@@ -221,7 +221,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 	speed := req.Speed
 	if speed == "" {
-		speed = "5x"
+		speed = "max"
 	}
 
 	// When daily screener is on, expand candidate pool to a broad universe
