@@ -109,7 +109,7 @@ export function BottomPanel({
   const symbolsWithRegime = useMemo(() => Object.keys(regimeBySymbol).sort(), [regimeBySymbol]);
   const [expanded, setExpanded] = useState(false);
   const strategyList = useStrategyList();
-  const strategyIds = useMemo(() => (strategyList.data ?? []).map((s) => s.id), [strategyList.data]);
+  const strategyIds = useMemo(() => [...new Set((strategyList.data ?? []).map((s) => s.id))], [strategyList.data]);
   const [decayStrategy, setDecayStrategy] = useState<string>("");
   const activeDecayStrategy = decayStrategy || strategyIds[0] || "";
   const rollingDecay = useRollingDecay(bottomTab === "decay" ? activeDecayStrategy : "");
