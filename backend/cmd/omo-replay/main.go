@@ -967,7 +967,17 @@ func main() {
 		// This is effectively nextMinTime run to exhaustion without
 		// dispatching — each bar is tagged with its tickTime and
 		// pushed into a single slice the slice dispatcher consumes.
-		var sliceBars []backtest.SliceBar
+		//
+		// Pre-size the slab from the total bar count across all
+		// streams. Growing from 0 via append doubling allocates
+		// ~2× the slice size in cumulative backing arrays (~8 GB
+		// on a 30 sym / 1 yr run); pre-sizing reserves the exact
+		// capacity up front and drops that cost to near-zero.
+		totalBars := 0
+		for _, s := range streams {
+			totalBars += len(s.bars)
+		}
+		sliceBars := make([]backtest.SliceBar, 0, totalBars)
 		for ctx.Err() == nil {
 			minTime, ok := nextMinTime(streams)
 			if !ok {

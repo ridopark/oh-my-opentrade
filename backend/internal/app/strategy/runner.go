@@ -695,12 +695,34 @@ func (r *Runner) HandleStateUpdatedDirect(ctx context.Context, event domain.Even
 	return r.handleStateUpdated(ctx, event)
 }
 
+// HandleStateUpdatedSnap is a typed direct-dispatch entry that
+// accepts the IndicatorSnapshot value without Event wrapping. Used
+// by the backtest Pipeline to route monitor drain results into the
+// runner's indicator cache without paying the Event struct allocation
+// + IdempotencyKey concat per bar — the single largest source of GC
+// pressure in the Phase 3 profile. Delegates to the same shared body
+// as handleStateUpdated.
+func (r *Runner) HandleStateUpdatedSnap(_ context.Context, snap domain.IndicatorSnapshot) error {
+	r.applyStateUpdate(snap)
+	return nil
+}
+
 func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error {
 	snap, ok := event.Payload.(domain.IndicatorSnapshot)
 	if !ok {
 		return nil
 	}
+	r.applyStateUpdate(snap)
+	return nil
+}
+
+// applyStateUpdate writes the snapshot's indicator values into the
+// per-symbol cache and applies dark-pool + whale overlay data.
+// Shared body between handleStateUpdated (legacy Event-wrapped) and
+// HandleStateUpdatedSnap (typed direct-dispatch).
+func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	// Reuse the previously-allocated AnchorRegimes / HTF maps for this
 	// symbol to avoid ~1.3M map allocations per backtest. Safe under
 	// replay's SyncBus dispatch — events process serially so no reader
@@ -839,9 +861,6 @@ func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error
 			r.indicators[sym] = ind
 		}
 	}
-
-	r.mu.Unlock()
-	return nil
 }
 
 // tfDuration converts a domain.Timeframe to a time.Duration.
