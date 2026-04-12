@@ -740,21 +740,41 @@ func main() {
 	// 3-4 Publish hops per bar with direct method calls, keeping the bus
 	// only for multi-consumer fan-out (signals, fills). See
 	// docs/perf/p1-2-backtest-pipeline-design.md.
-	var directPipeline *backtest.Pipeline
+	//
+	// In backtest mode the pipeline is always wrapped in a ShardedPipeline
+	// — Phase 2 per-tick parallelisation routes every bar through the shard
+	// that owns its symbol. Step 2 starts at Nworkers=1 so the wrapper is
+	// functionally identical to the previous single-pipeline path; the
+	// same factory is invoked N times under Step 3 to yield Nworkers real
+	// shard instances.
+	var shardedPipeline *backtest.ShardedPipeline
 	if backtestFlag {
 		var runnerPtr *strategy.Runner
 		if pipeline != nil {
 			runnerPtr = pipeline.Runner
 		}
-		directPipeline = backtest.NewPipeline(backtest.PipelineInfra{
-			Ingestion:  ingBundle.Service,
-			Monitor:    monitorSvc,
-			Runner:     runnerPtr,
+		// Step 2 single-shard factory: hand back the legacy pre-built
+		// services for every slab. Under Nworkers=1 the slab is the full
+		// symbol universe and every per-symbol setup call already ran on
+		// these instances, so the shard is trivially ready to run.
+		shardFactory := func(slab []domain.Symbol) (backtest.ShardServices, error) {
+			return backtest.ShardServices{
+				Ingestion: ingBundle.Service,
+				Monitor:   monitorSvc,
+				Runner:    runnerPtr,
+			}, nil
+		}
+		var err error
+		shardedPipeline, err = backtest.NewShardedPipeline(1, symbols, backtest.ShardedInfra{
 			PriceCache: posMonPriceCache,
 			Collector:  collectorInst,
 			EventBus:   eventBus,
+			Factory:    shardFactory,
 		})
-		log.Info().Msg("backtest direct-dispatch pipeline enabled")
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to build sharded pipeline")
+		}
+		log.Info().Int("nworkers", shardedPipeline.ShardCount()).Msg("backtest sharded direct-dispatch pipeline enabled")
 	}
 
 	log.Info().
@@ -823,8 +843,8 @@ func main() {
 			// cheaper to format.
 			idemKey := strconv.FormatInt(bar.Time.UnixNano(), 36) + string(bar.Symbol)
 			evt := domain.NewBacktestEvent(domain.EventMarketBarReceived, tenantID, envMode, idemKey, bar, bar.Time)
-			if directPipeline != nil {
-				if err := directPipeline.ProcessBar(ctx, evt); err != nil {
+			if shardedPipeline != nil {
+				if err := shardedPipeline.Dispatch(ctx, evt); err != nil {
 					if ctx.Err() != nil {
 						break
 					}
@@ -841,6 +861,16 @@ func main() {
 				}
 			}
 			barsProcessed++
+		}
+
+		// Barrier: wait for every shard to finish this tick before running
+		// serial post-tick work (exit rules, fills). Under Step 2 Dispatch
+		// is synchronous so WaitTick is a no-op; Step 4 replaces the
+		// Dispatch body with worker-pool fan-out and WaitTick becomes the
+		// WaitGroup barrier. Keeping the call in place now commits the
+		// final loop shape and lets Step 4 land as an internal-only change.
+		if shardedPipeline != nil {
+			shardedPipeline.WaitTick()
 		}
 
 		if backtestFlag {

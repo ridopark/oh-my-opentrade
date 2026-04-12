@@ -44,6 +44,21 @@ type PipelineInfra struct {
 	EventBus   ports.EventBusPort
 }
 
+// Ingestion returns the ingestion.Service this pipeline drives. Used by
+// sharded setup paths that need to seed the adaptive filter per shard.
+func (p *Pipeline) Ingestion() *ingestion.Service { return p.ingestion }
+
+// Monitor returns the monitor.Service this pipeline drives. Used by
+// sharded setup paths that need to reach per-shard monitor state
+// (WarmUp, MarkReady, InitAggregators, ResetSessionIndicators).
+func (p *Pipeline) Monitor() *monitor.Service { return p.monitor }
+
+// Runner returns the strategy.Runner this pipeline drives. Used by
+// sharded setup paths that need to reach per-shard runner state
+// (WarmUp, InitAggregators, SetAIAnchorResolver, ClearAllPendingStates,
+// SetSuppressProgressEvents).
+func (p *Pipeline) Runner() *strategy.Runner { return p.runner }
+
 // NewPipeline wires up the per-bar direct-dispatch chain. The caller must
 // already have constructed the services (typically via the bootstrap
 // package) and called eventBus.FreezeHandlers afterward. NewPipeline also
