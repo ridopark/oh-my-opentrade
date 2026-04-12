@@ -1,5 +1,16 @@
 # S1. Dark Pool Absorption Divergence
 
+> **STATUS: DEPRIORITIZED (2026-04-12)**
+>
+> The predictive power study found that intraday rolling 30m DP buy_ratio
+> has IC = -0.004 (t = -1.18) against 60m forward returns — indistinguishable
+> from noise. The 5m bar granularity washes out the absorption signal.
+> The quintile spread is ~1 bps, not exploitable after transaction costs.
+>
+> Could be revisited if tick-level DP data becomes available. The daily-
+> horizon signal is real (IC = -0.039) and is captured by the new
+> [Overnight Z-Score Bias](overnight-z-bias.md) strategy instead.
+
 ## Thesis
 
 When large dark pool volume accumulates at a price level WITHOUT moving
