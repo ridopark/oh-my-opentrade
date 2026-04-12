@@ -689,6 +689,14 @@ func (r *Runner) HandleBarDirect(ctx context.Context, event domain.Event) error 
 	return r.handleBar(ctx, event)
 }
 
+// HandleBarDirectTyped is the typed fast path for backtest slice
+// dispatch: accepts the bar + envelope metadata directly, skipping
+// Event construction on the caller side. Saves ~1.87 GB of
+// allocation per 30 sym / 1 yr run from toEvent() calls.
+func (r *Runner) HandleBarDirectTyped(ctx context.Context, bar domain.MarketBar, tenantID string, envMode domain.EnvMode) error {
+	return r.handleBarCore(ctx, bar, tenantID, envMode)
+}
+
 // HandleStateUpdatedDirect is the public direct-dispatch entry to
 // handleStateUpdated, mirroring HandleBarDirect.
 func (r *Runner) HandleStateUpdatedDirect(ctx context.Context, event domain.Event) error {
@@ -971,7 +979,13 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	if !ok {
 		return fmt.Errorf("strategy runner: payload is not a MarketBar, got %T", event.Payload)
 	}
+	return r.handleBarCore(ctx, bar, event.TenantID, event.EnvMode)
+}
 
+// handleBarCore is the shared body for handleBar (Event-wrapped) and
+// HandleBarDirectTyped (typed fast path). Takes the bar and envelope
+// metadata directly.
+func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenantID string, envMode domain.EnvMode) error {
 	loopStart := time.Now()
 	r.lastBarTime.Store(loopStart.UnixNano())
 	symbol := bar.Symbol.String()
@@ -1161,8 +1175,8 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		instCtx.logger = inst.Logger()
 		instCtx.emit = nil
 		instCtx.ctx = ctx
-		instCtx.tenantID = event.TenantID
-		instCtx.envMode = event.EnvMode
+		instCtx.tenantID = tenantID
+		instCtx.envMode = envMode
 		instCtx.runner = r
 		r.applyTideData(inst, symbol)
 		signals, err := r.safeOnBar(inst, instCtx, symbol, sBar, indicators)
@@ -1277,8 +1291,8 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 			instCtx.logger = inst.Logger()
 			instCtx.emit = nil
 			instCtx.ctx = ctx
-			instCtx.tenantID = event.TenantID
-			instCtx.envMode = event.EnvMode
+			instCtx.tenantID = tenantID
+			instCtx.envMode = envMode
 			instCtx.runner = r
 			r.applyTideData(inst, symbol)
 			signals, err := r.safeOnBar(inst, instCtx, symbol, htfBar, htfIndicators)
@@ -1366,7 +1380,7 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 		}
 		r.logger.Info("EMIT SIGNAL", "symbol", sig.Symbol, "type", sig.Type, "side", sig.Side, "instance", sig.StrategyInstanceID.String(),
 			"setup", sig.Tags["setup"], "confluence", sig.Tags["confluence"], "confluence_detail", sig.Tags["confluence_detail"])
-		if err := r.emitSignal(ctx, event.TenantID, event.EnvMode, sig); err != nil {
+		if err := r.emitSignal(ctx, tenantID, envMode, sig); err != nil {
 			r.logger.Error("failed to emit SignalCreated",
 				"instance_id", sig.StrategyInstanceID.String(),
 				"symbol", sig.Symbol,
