@@ -70,6 +70,10 @@ func (s *Service) recordPipelineLiveness(sym domain.Symbol) {
 	}
 }
 
+// Filter returns the adaptive filter this ingestion service wraps. Used by
+// the backtest sharded warmup to seed per-shard filter state.
+func (s *Service) Filter() *AdaptiveFilter { return s.filter }
+
 func (s *Service) SetMetrics(m *metrics.Metrics) { s.metrics = m }
 
 func (s *Service) SetBarWriter(w *AsyncBarWriter) { s.barWriter = w }
