@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
 	"github.com/oh-my-opentrade/backend/internal/ports"
@@ -18,6 +19,12 @@ import (
 // Used by LedgerWriter to replay today's trades on startup.
 type TradeReaderPort interface {
 	GetTrades(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) ([]domain.Trade, error)
+}
+
+// DecayStatsWriter is an optional dependency for recording per-trade stats
+// into strategy_trade_stats for decay telemetry.
+type DecayStatsWriter interface {
+	InsertTradeStats(ctx context.Context, tradeID uuid.UUID, strategy, symbol string, pnl float64, regime, vixBucket string) error
 }
 
 type positionEntry struct {
@@ -44,6 +51,8 @@ type LedgerWriter struct {
 	accountEquity float64
 
 	nowFunc func() time.Time // injectable clock for backtests
+
+	decayStats DecayStatsWriter // optional; nil = no decay telemetry recording
 
 	// Per-strategy tracking (dual-write).
 	stratDailyPnL  map[string]*stratDayAccum // key: tenantID:envMode:strategy:date
@@ -108,6 +117,11 @@ func NewLedgerWriter(
 		stratDailyPnL:  make(map[string]*stratDayAccum),
 		stratPositions: make(map[string]*positionEntry),
 	}
+}
+
+// SetDecayStats injects the optional decay telemetry writer.
+func (lw *LedgerWriter) SetDecayStats(w DecayStatsWriter) {
+	lw.decayStats = w
 }
 
 // SetAccountEquity updates the account equity used for drawdown calculations.
@@ -271,6 +285,13 @@ func (lw *LedgerWriter) processFill(ctx context.Context, tenantID string, envMod
 
 	if persist && realizedPayload != nil {
 		lw.emitTradeRealized(ctx, tenantID, envMode, symbol, *realizedPayload)
+
+		if lw.decayStats != nil {
+			tradeID := uuid.New()
+			if err := lw.decayStats.InsertTradeStats(ctx, tradeID, strategy, symbol, fillPnL, "", ""); err != nil {
+				lw.log.Error().Err(err).Str("symbol", symbol).Msg("decay: failed to record trade stats")
+			}
+		}
 	}
 
 	dateKey := fmt.Sprintf("%s:%s:%s", tenantID, string(envMode), now.Format("2006-01-02"))
