@@ -19,7 +19,7 @@ symbols = [
     "NET", "NFLX", "NVDA", "OXY", "PLTR", "RBLX", "RIVN", "SMCI",
     "SNOW", "SOFI", "SOXL", "SPY", "TSLA", "XOM"
 ]
-timeframes = ["1d"]
+timeframes = ["5m"]
 priority = 50
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
