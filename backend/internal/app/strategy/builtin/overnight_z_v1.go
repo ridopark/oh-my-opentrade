@@ -166,8 +166,9 @@ func (s *OvernightZStrategy) OnBar(ctx start.Context, symbol string, bar start.B
 				sig, err := start.NewSignal(instanceID, symbol, start.SignalExit,
 					exitSide(ozSt.PositionSide), 0.95,
 					map[string]string{
-						"setup":  "oz_hard_stop",
-						"reason": fmt.Sprintf("hard stop: %.0f bps against entry", -moveBPS),
+						"setup":     "oz_hard_stop",
+						"ref_price": fmt.Sprintf("%.10f", bar.Close),
+						"reason":    fmt.Sprintf("hard stop: %.0f bps against entry", -moveBPS),
 					})
 				if err != nil {
 					return ozSt, nil, err
@@ -183,8 +184,9 @@ func (s *OvernightZStrategy) OnBar(ctx start.Context, symbol string, bar start.B
 			sig, err := start.NewSignal(instanceID, symbol, start.SignalExit,
 				exitSide(ozSt.PositionSide), 0.90,
 				map[string]string{
-					"setup":  "oz_moc_exit",
-					"reason": fmt.Sprintf("MOC exit at %s ET", cfg.ExitTime),
+					"setup":     "oz_moc_exit",
+					"ref_price": fmt.Sprintf("%.10f", bar.Close),
+					"reason":    fmt.Sprintf("MOC exit at %s ET", cfg.ExitTime),
 				})
 			if err != nil {
 				return ozSt, nil, err
@@ -267,9 +269,10 @@ func (s *OvernightZStrategy) OnBar(ctx start.Context, symbol string, bar start.B
 
 	sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, side, 0.80,
 		map[string]string{
-			"setup":  "overnight_z_entry",
-			"reason": fmt.Sprintf("late Z=%.2f %s threshold=%.2f", lateZ, side, cfg.LateZLongThreshold),
-			"late_z": fmt.Sprintf("%.3f", lateZ),
+			"setup":     "overnight_z_entry",
+			"ref_price": fmt.Sprintf("%.10f", bar.Close),
+			"reason":    fmt.Sprintf("late Z=%.2f %s threshold=%.2f", lateZ, side, cfg.LateZLongThreshold),
+			"late_z":    fmt.Sprintf("%.3f", lateZ),
 		})
 	if err != nil {
 		return ozSt, nil, err

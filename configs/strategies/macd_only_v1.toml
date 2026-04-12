@@ -80,6 +80,7 @@ signals = { engine = "builtin", name = "macd" }
 
 [gate_chain]
 monitor = [
+    { name = "dna_approval" },
 ]
 
 execution = [
