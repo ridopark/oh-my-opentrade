@@ -208,8 +208,10 @@ func (s *ORBStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st 
 		"htf_bias":          htfBiasTag,
 		"confluence":            fmt.Sprintf("%d", conf.Score),
 		"confluence_detail":     conf.FormatDetail(),
+		"confluence_components": conf.ComponentsJSON(),
 		"retest_quality":        fmt.Sprintf("%d", rq.Score),
 		"retest_quality_detail": rq.FormatDetail(),
+		"retest_components":     rq.ComponentsJSON(),
 	}
 
 	if orbState.Config.SignalATRStopMult > 0 && orbState.Indicators.ATR > 0 {
