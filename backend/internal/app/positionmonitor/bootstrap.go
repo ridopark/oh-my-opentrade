@@ -164,18 +164,16 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 		}
 
 		if len(omo.thesis) > 0 {
-			var thesis domain.EntryThesis
-			if err := json.Unmarshal(omo.thesis, &thesis); err == nil {
-				pos.EntryThesis = &thesis
+			if et, _, err := domain.ParseThesisJSON(omo.thesis); err == nil && et != nil {
+				pos.EntryThesis = et
 				s.log.Info().Str("symbol", string(sym)).Msg("bootstrap: entry thesis restored from trade history")
 			}
 		}
 
 		if pos.EntryThesis == nil {
 			if thesisJSON, err := s.repo.GetLatestThesisForSymbol(ctx, s.tenantID, s.envMode, sym); err == nil && len(thesisJSON) > 0 {
-				var thesis domain.EntryThesis
-				if err := json.Unmarshal(thesisJSON, &thesis); err == nil {
-					pos.EntryThesis = &thesis
+				if et, _, err := domain.ParseThesisJSON(thesisJSON); err == nil && et != nil {
+					pos.EntryThesis = et
 					s.log.Info().Str("symbol", string(sym)).Msg("bootstrap: entry thesis restored via retroactive lookup")
 				}
 			}
