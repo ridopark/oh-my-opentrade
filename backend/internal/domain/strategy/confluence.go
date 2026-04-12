@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -40,6 +41,26 @@ func MergeConfluence(results ...ConfluenceResult) ConfluenceResult {
 // suitable for signal tags (e.g., "ema_stack+adx_strong+vwap_aligned").
 func (cr ConfluenceResult) FormatDetail() string {
 	return strings.Join(cr.Factors, "+")
+}
+
+// ComponentsJSON serializes Components as compact JSON for signal tags.
+func (cr ConfluenceResult) ComponentsJSON() string {
+	if len(cr.Components) == 0 {
+		return ""
+	}
+	type comp struct {
+		Name   string  `json:"n"`
+		Group  string  `json:"g"`
+		Weight int     `json:"w"`
+		Value  float64 `json:"v,omitempty"`
+		Fired  bool    `json:"f"`
+	}
+	out := make([]comp, len(cr.Components))
+	for i, c := range cr.Components {
+		out[i] = comp(c)
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
 }
 
 // ────────────────────────────────────────────────────────────────────

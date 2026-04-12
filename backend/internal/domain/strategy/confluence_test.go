@@ -277,6 +277,27 @@ func TestConfluenceResult_FormatDetail(t *testing.T) {
 	assert.Equal(t, "ema_stack+adx_strong+vwap_aligned", r.FormatDetail())
 }
 
+func TestConfluenceResult_ComponentsJSON(t *testing.T) {
+	r := s.ConfluenceResult{
+		Score:   25,
+		Factors: []string{"ema_stack", "adx_strong"},
+		Components: []s.ComponentScore{
+			{Name: "ema_stack", Group: "technical", Weight: 15, Value: 3.0, Fired: true},
+			{Name: "adx_strong", Group: "technical", Weight: 10, Value: 30.0, Fired: true},
+		},
+	}
+	j := r.ComponentsJSON()
+	assert.Contains(t, j, `"n":"ema_stack"`)
+	assert.Contains(t, j, `"g":"technical"`)
+	assert.Contains(t, j, `"w":15`)
+	assert.Contains(t, j, `"f":true`)
+}
+
+func TestConfluenceResult_ComponentsJSON_Empty(t *testing.T) {
+	r := s.ConfluenceResult{}
+	assert.Equal(t, "", r.ComponentsJSON())
+}
+
 // ─── Retest Quality ─────────────────────────────────────────────────────────
 
 func TestScoreRetestQuality_Perfect(t *testing.T) {
