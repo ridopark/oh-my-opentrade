@@ -657,12 +657,53 @@ func main() {
 	}
 	warmWg.Wait()
 
+	// Build the sharded direct-dispatch pipeline BEFORE the serial warmup so
+	// warmup calls can be routed through ForEachShard / RouteSymbol to the
+	// correct shard. At Stage 3a the factory returns the pre-built legacy
+	// services for every slab, so Nworkers=1 is functionally identical to
+	// the unsharded path — the routing is pure indirection. Stage 3b swaps
+	// the factory to build fresh services per slab and bumps Nworkers.
+	var shardedPipeline *backtest.ShardedPipeline
+	if backtestFlag {
+		var runnerPtr *strategy.Runner
+		if pipeline != nil {
+			runnerPtr = pipeline.Runner
+		}
+		shardFactory := func(slab []domain.Symbol) (backtest.ShardServices, error) {
+			return backtest.ShardServices{
+				Ingestion: ingBundle.Service,
+				Monitor:   monitorSvc,
+				Runner:    runnerPtr,
+			}, nil
+		}
+		var err error
+		shardedPipeline, err = backtest.NewShardedPipeline(1, symbols, backtest.ShardedInfra{
+			PriceCache: posMonPriceCache,
+			Collector:  collectorInst,
+			EventBus:   eventBus,
+			Factory:    shardFactory,
+		})
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to build sharded pipeline")
+		}
+		log.Info().Int("nworkers", shardedPipeline.ShardCount()).Msg("backtest sharded direct-dispatch pipeline enabled")
+	}
+
 	// Phase 2: serial WarmUp (mutates monitorSvc shared state).
 	for _, wr := range warmResults {
 		warmupBarsCache[wr.sym.String()] = wr.bars
-		n := monitorSvc.WarmUp(wr.bars)
-		monitorSvc.ResetSessionIndicators(wr.sym.String())
-		monitorSvc.MarkReady(wr.sym.String())
+		var n int
+		if shardedPipeline != nil {
+			shardedPipeline.RouteSymbol(wr.sym.String(), func(p *backtest.Pipeline) {
+				n = p.Monitor().WarmUp(wr.bars)
+				p.Monitor().ResetSessionIndicators(wr.sym.String())
+				p.Monitor().MarkReady(wr.sym.String())
+			})
+		} else {
+			n = monitorSvc.WarmUp(wr.bars)
+			monitorSvc.ResetSessionIndicators(wr.sym.String())
+			monitorSvc.MarkReady(wr.sym.String())
+		}
 		warmupLog.Info().Str("symbol", wr.sym.String()).Int("warmup_bars", n).Msg("indicator warmup done")
 	}
 
@@ -673,35 +714,87 @@ func main() {
 			if bridgeCount > len(replayBars) {
 				bridgeCount = len(replayBars)
 			}
-			monitorSvc.WarmUp(replayBars[:bridgeCount])
+			if shardedPipeline != nil {
+				shardedPipeline.RouteSymbol(s.symbol.String(), func(p *backtest.Pipeline) {
+					p.Monitor().WarmUp(replayBars[:bridgeCount])
+				})
+			} else {
+				monitorSvc.WarmUp(replayBars[:bridgeCount])
+			}
 		}
 	}
 
 	for _, sym := range symbols {
-		if bars, ok := warmupBarsCache[sym.String()]; ok && len(bars) > 0 {
+		bars, ok := warmupBarsCache[sym.String()]
+		if !ok || len(bars) == 0 {
+			continue
+		}
+		if shardedPipeline != nil {
+			shardedPipeline.RouteSymbol(sym.String(), func(p *backtest.Pipeline) {
+				if ing := p.Ingestion(); ing != nil {
+					if f := ing.Filter(); f != nil {
+						f.Seed(sym, bars)
+					}
+				}
+			})
+		} else {
 			ingBundle.Filter.Seed(sym, bars)
 		}
 	}
 
 	fromET := fromTime.In(loc)
 	replaySessionOpen := time.Date(fromET.Year(), fromET.Month(), fromET.Day(), 9, 30, 0, 0, loc)
-	monitorSvc.InitAggregators(symbols, replaySessionOpen)
+	if shardedPipeline != nil {
+		_ = shardedPipeline.ForEachShard(func(p *backtest.Pipeline, slab []domain.Symbol) error {
+			p.Monitor().InitAggregators(slab, replaySessionOpen)
+			return nil
+		})
+	} else {
+		monitorSvc.InitAggregators(symbols, replaySessionOpen)
+	}
 
 	if pipeline != nil && pipeline.Runner != nil {
 		// Drop telemetry-only EntryGated/ORBPhaseUpdate events — replay has
 		// no SSE consumer and they cost ~1M allocations per run.
-		pipeline.Runner.SetSuppressProgressEvents(true)
+		if shardedPipeline != nil {
+			_ = shardedPipeline.ForEachShard(func(p *backtest.Pipeline, _ []domain.Symbol) error {
+				p.Runner().SetSuppressProgressEvents(true)
+				return nil
+			})
+		} else {
+			pipeline.Runner.SetSuppressProgressEvents(true)
+		}
 		snapshotFn := makeSnapshotFn()
 		for _, sym := range symbols {
 			bars := warmupBarsCache[sym.String()]
 			if len(bars) == 0 {
 				continue
 			}
-			pipeline.Runner.WarmUp(sym.String(), bars, snapshotFn)
+			if shardedPipeline != nil {
+				shardedPipeline.RouteSymbol(sym.String(), func(p *backtest.Pipeline) {
+					p.Runner().WarmUp(sym.String(), bars, snapshotFn)
+				})
+			} else {
+				pipeline.Runner.WarmUp(sym.String(), bars, snapshotFn)
+			}
 		}
-		pipeline.Runner.InitAggregators(replaySessionOpen)
+		if shardedPipeline != nil {
+			_ = shardedPipeline.ForEachShard(func(p *backtest.Pipeline, _ []domain.Symbol) error {
+				p.Runner().InitAggregators(replaySessionOpen)
+				return nil
+			})
+		} else {
+			pipeline.Runner.InitAggregators(replaySessionOpen)
+		}
 		warmupLog.Info().Time("session_open", replaySessionOpen).Msg("strategy runner HTF aggregators initialized")
-		pipeline.Runner.ClearAllPendingStates()
+		if shardedPipeline != nil {
+			_ = shardedPipeline.ForEachShard(func(p *backtest.Pipeline, _ []domain.Symbol) error {
+				p.Runner().ClearAllPendingStates()
+				return nil
+			})
+		} else {
+			pipeline.Runner.ClearAllPendingStates()
+		}
 		warmupLog.Info().Msg("strategy runner pending states cleared after warmup")
 
 		sessionResolver := backtest.NewSessionResolver(loc)
@@ -726,7 +819,14 @@ func main() {
 			isCrypto := strings.Contains(sym.String(), "/") || strings.HasSuffix(sym.String(), "USD")
 			aiResolver.RegisterSymbol(sym.String(), isCrypto)
 		}
-		pipeline.Runner.SetAIAnchorResolver(aiResolver)
+		if shardedPipeline != nil {
+			_ = shardedPipeline.ForEachShard(func(p *backtest.Pipeline, _ []domain.Symbol) error {
+				p.Runner().SetAIAnchorResolver(aiResolver)
+				return nil
+			})
+		} else {
+			pipeline.Runner.SetAIAnchorResolver(aiResolver)
+		}
 		warmupLog.Info().Msg("AI anchor resolver configured for replay (with session baseline)")
 	}
 	log.Info().Time("session_open", replaySessionOpen).Msg("MTFA aggregators initialized for replay")
@@ -736,46 +836,9 @@ func main() {
 	// copy per event and was ~67% of backtest CPU samples on large runs.
 	eventBus.FreezeHandlers()
 
-	// Build the direct-dispatch backtest pipeline. This replaces the
-	// 3-4 Publish hops per bar with direct method calls, keeping the bus
-	// only for multi-consumer fan-out (signals, fills). See
-	// docs/perf/p1-2-backtest-pipeline-design.md.
-	//
-	// In backtest mode the pipeline is always wrapped in a ShardedPipeline
-	// — Phase 2 per-tick parallelisation routes every bar through the shard
-	// that owns its symbol. Step 2 starts at Nworkers=1 so the wrapper is
-	// functionally identical to the previous single-pipeline path; the
-	// same factory is invoked N times under Step 3 to yield Nworkers real
-	// shard instances.
-	var shardedPipeline *backtest.ShardedPipeline
-	if backtestFlag {
-		var runnerPtr *strategy.Runner
-		if pipeline != nil {
-			runnerPtr = pipeline.Runner
-		}
-		// Step 2 single-shard factory: hand back the legacy pre-built
-		// services for every slab. Under Nworkers=1 the slab is the full
-		// symbol universe and every per-symbol setup call already ran on
-		// these instances, so the shard is trivially ready to run.
-		shardFactory := func(slab []domain.Symbol) (backtest.ShardServices, error) {
-			return backtest.ShardServices{
-				Ingestion: ingBundle.Service,
-				Monitor:   monitorSvc,
-				Runner:    runnerPtr,
-			}, nil
-		}
-		var err error
-		shardedPipeline, err = backtest.NewShardedPipeline(1, symbols, backtest.ShardedInfra{
-			PriceCache: posMonPriceCache,
-			Collector:  collectorInst,
-			EventBus:   eventBus,
-			Factory:    shardFactory,
-		})
-		if err != nil {
-			log.Fatal().Err(err).Msg("failed to build sharded pipeline")
-		}
-		log.Info().Int("nworkers", shardedPipeline.ShardCount()).Msg("backtest sharded direct-dispatch pipeline enabled")
-	}
+	// shardedPipeline was constructed before warmup so setup calls could
+	// route through it. FreezeHandlers above sealed the subscriber set —
+	// the dispatch loop below uses the existing shardedPipeline handle.
 
 	log.Info().
 		Strs("symbols", symbolStrings(symbols)).
@@ -809,9 +872,19 @@ func main() {
 		minET := minTime.In(loc)
 		dayOpen := time.Date(minET.Year(), minET.Month(), minET.Day(), 9, 30, 0, 0, loc)
 		if dayOpen.After(currentSessionDate) {
-			monitorSvc.ResetAggregators(dayOpen)
-			for _, sym := range symbols {
-				monitorSvc.ResetSessionIndicators(sym.String())
+			if shardedPipeline != nil {
+				_ = shardedPipeline.ForEachShard(func(p *backtest.Pipeline, slab []domain.Symbol) error {
+					p.Monitor().ResetAggregators(dayOpen)
+					for _, sym := range slab {
+						p.Monitor().ResetSessionIndicators(sym.String())
+					}
+					return nil
+				})
+			} else {
+				monitorSvc.ResetAggregators(dayOpen)
+				for _, sym := range symbols {
+					monitorSvc.ResetSessionIndicators(sym.String())
+				}
 			}
 			currentSessionDate = dayOpen
 			log.Debug().Time("new_session_open", dayOpen).Msg("MTFA aggregators reset for new trading day")
