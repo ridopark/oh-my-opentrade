@@ -2,8 +2,11 @@
 
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Activity, Zap, ChevronUp, ChevronDown } from "lucide-react";
+import { Activity, Zap, ChevronUp, ChevronDown, TrendingDown } from "lucide-react";
 import type { StrategySignalEvent, RegimeType, EntryGatedPayload, ORBPhaseUpdatePayload } from "@/lib/types";
+import { useRollingDecay, useComponentAttribution } from "@/hooks/use-decay";
+import { RollingPfChart } from "@/components/decay/rolling-pf-chart";
+import { AttributionChart } from "@/components/decay/attribution-chart";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,7 +25,9 @@ export interface BarLogEntry {
   volume: number;
 }
 
-export type BottomTab = "signals" | "market" | "bars" | "strategy";
+export type BottomTab = "signals" | "market" | "bars" | "strategy" | "decay";
+
+const DECAY_STRATEGIES = ["avwap_v1", "macd_only_v1", "orb_v1", "break_retest_v1"] as const;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -103,6 +108,9 @@ export function BottomPanel({
 }: BottomPanelProps) {
   const symbolsWithRegime = useMemo(() => Object.keys(regimeBySymbol).sort(), [regimeBySymbol]);
   const [expanded, setExpanded] = useState(false);
+  const [decayStrategy, setDecayStrategy] = useState<string>(DECAY_STRATEGIES[0]);
+  const rollingDecay = useRollingDecay(bottomTab === "decay" ? decayStrategy : "");
+  const componentAttribution = useComponentAttribution(bottomTab === "decay" ? decayStrategy : "");
 
   const strategySummary = useMemo(() => {
     const avwapCount = avwapProgress.size;
@@ -138,7 +146,7 @@ export function BottomPanel({
     <div className={`mt-1 rounded-t-lg border border-border bg-card flex flex-col shrink-0 ${expanded ? "h-[200px]" : ""}`}>
       {/* Tab bar */}
       <div className="flex items-center gap-0 border-b border-border shrink-0">
-        {(["signals", "market", "bars", "strategy"] as const).map((tab) => (
+        {(["signals", "market", "bars", "strategy", "decay"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => { setBottomTab(tab); if (!expanded) setExpanded(true); }}
@@ -160,6 +168,11 @@ export function BottomPanel({
               <span className="flex items-center gap-1.5">
                 <Activity className="w-3 h-3" />
                 Strategy
+              </span>
+            ) : tab === "decay" ? (
+              <span className="flex items-center gap-1.5">
+                <TrendingDown className="w-3 h-3" />
+                Decay
               </span>
             ) : (
               <span className="flex items-center gap-1.5">
@@ -436,6 +449,36 @@ export function BottomPanel({
                 </tbody>
               </table>
             )}
+          </div>
+        )}
+
+        {bottomTab === "decay" && (
+          <div className="p-2 h-[300px] flex flex-col">
+            {/* Strategy selector */}
+            <div className="flex items-center gap-2 mb-2 shrink-0">
+              <label htmlFor="decay-strategy" className="text-[10px] text-muted-foreground uppercase font-medium">
+                Strategy
+              </label>
+              <select
+                id="decay-strategy"
+                value={decayStrategy}
+                onChange={(e) => setDecayStrategy(e.target.value)}
+                className="rounded border border-border bg-muted/30 px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              >
+                {DECAY_STRATEGIES.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </div>
+            {/* Charts row */}
+            <div className="flex gap-2 flex-1 min-h-0">
+              <div className="w-[60%] h-full">
+                <RollingPfChart data={rollingDecay.data} isLoading={rollingDecay.isLoading} />
+              </div>
+              <div className="w-[40%] h-full">
+                <AttributionChart data={componentAttribution.data} isLoading={componentAttribution.isLoading} />
+              </div>
+            </div>
           </div>
         )}
       </div>}
