@@ -56,6 +56,27 @@ func (p *Pipeline) stashDeferredForPhaseB(_ context.Context, strict, bestEffort 
 	}
 }
 
+// TakeDeferred returns and clears the strict + best-effort deferred
+// event slices populated by ProcessBarPhaseA. Used by slice-to-
+// completion dispatch to relocate monitor pending events into a
+// per-shard event stream for later merge + replay. The returned
+// slices are fresh copies — safe for the caller to retain — and the
+// pipeline's internal buffers are truncated so the next ProcessBar
+// starts fresh.
+func (p *Pipeline) TakeDeferred() (strict, bestEffort []domain.Event) {
+	if len(p.deferredStrict) > 0 {
+		strict = make([]domain.Event, len(p.deferredStrict))
+		copy(strict, p.deferredStrict)
+		p.deferredStrict = p.deferredStrict[:0]
+	}
+	if len(p.deferredBestEffort) > 0 {
+		bestEffort = make([]domain.Event, len(p.deferredBestEffort))
+		copy(bestEffort, p.deferredBestEffort)
+		p.deferredBestEffort = p.deferredBestEffort[:0]
+	}
+	return strict, bestEffort
+}
+
 // drainDeferredForPhaseB publishes every stashed Phase A event through
 // the shared event bus in dispatch order, then truncates the buffers.
 func (p *Pipeline) drainDeferredForPhaseB(ctx context.Context) {
