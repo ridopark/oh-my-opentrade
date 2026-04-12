@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -12,17 +13,42 @@ import (
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
 
-// SliceBar is an input row for RunSliceToCompletion: the original
-// MarketBarReceived event together with the tick time (minTime under
-// the single-threaded dispatch loop) that groups it with other
-// symbols, and the ET-session-open timestamp the single-threaded
-// dispatch loop computes (via time.Date in the replay loc) to drive
-// day-boundary aggregator resets. Pre-computing SessionOpen in the
-// caller saves the shard worker from pulling in time-zone handling.
+// SliceBar is an input row for RunSliceToCompletion: the raw market
+// bar together with the tick time (minTime under the single-threaded
+// dispatch loop) that groups it with other symbols, and the ET
+// session-open timestamp the single-threaded dispatch loop computes
+// (via time.Date in the replay loc) to drive day-boundary aggregator
+// resets.
+//
+// Events are NOT pre-built: the shard worker and replay loop each
+// construct a domain.Event lazily via toEvent(). Building events
+// up-front on a 30 sym / 1 yr run allocated ~6 GB of event structs
+// in main.main — the largest single source of GC pressure on the
+// run. Lazy construction drops that slice's retained memory from
+// ~6 GB to ~400 MB of raw MarketBar values.
 type SliceBar struct {
 	TickTime    time.Time
 	SessionOpen time.Time
-	Event       domain.Event
+	Bar         domain.MarketBar
+	TenantID    string
+	EnvMode     domain.EnvMode
+}
+
+// toEvent builds a MarketBarReceived domain.Event from this row.
+// Called once per bar during Phase A and once again during replay —
+// short-lived allocations the young-gen GC reclaims cheaply,
+// compared to the retained-for-the-full-run giant slice the old
+// design kept in main.main.
+func (sb SliceBar) toEvent() domain.Event {
+	idemKey := strconv.FormatInt(sb.Bar.Time.UnixNano(), 36) + string(sb.Bar.Symbol)
+	return domain.NewBacktestEvent(
+		domain.EventMarketBarReceived,
+		sb.TenantID,
+		sb.EnvMode,
+		idemKey,
+		sb.Bar,
+		sb.Bar.Time,
+	)
 }
 
 // SliceCoordinator is the callback surface RunSliceToCompletion uses
@@ -130,11 +156,7 @@ func (sp *ShardedPipeline) RunSliceToCompletion(
 	// near-zero.
 	perShardBars := make([][]int, sp.nworkers)
 	for i := range bars {
-		bar, ok := bars[i].Event.Payload.(domain.MarketBar)
-		if !ok {
-			return fmt.Errorf("backtest: slice bar %d has non-MarketBar payload %T", i, bars[i].Event.Payload)
-		}
-		idx, known := sp.symbolToShard[bar.Symbol.String()]
+		idx, known := sp.symbolToShard[bars[i].Bar.Symbol.String()]
 		if !known {
 			continue
 		}
@@ -199,7 +221,7 @@ func (sp *ShardedPipeline) RunSliceToCompletion(
 					currentDayOpen = dayOpen
 				}
 
-				_, dropped, err := shard.ProcessBarPhaseA(ctx, bars[flatIdx].Event)
+				_, dropped, err := shard.ProcessBarPhaseA(ctx, bars[flatIdx].toEvent())
 				if err != nil {
 					errs[idx] = err
 					return
@@ -287,26 +309,29 @@ func (sp *ShardedPipeline) replayFlat(
 			}
 		}
 
-		bar, ok := bars[i].Event.Payload.(domain.MarketBar)
-		if !ok {
-			continue
-		}
-		shardIdx, known := sp.symbolToShard[bar.Symbol.String()]
+		shardIdx, known := sp.symbolToShard[bars[i].Bar.Symbol.String()]
 		if !known {
 			continue
 		}
 
+		// Build the bar event lazily — reused by coord.OnBar,
+		// collector, and priceCache below, then discarded so the
+		// young-gen GC reclaims it after the iteration. Avoids
+		// retaining 6 GB of pre-built events in the flat slab for
+		// the full run.
+		evt := bars[i].toEvent()
+
 		// Per-bar serial side effects.
-		if err := coord.OnBar(ctx, bars[i].Event); err != nil {
+		if err := coord.OnBar(ctx, evt); err != nil {
 			return fmt.Errorf("backtest: slice coordinator OnBar: %w", err)
 		}
 		if sp.collector != nil {
-			_ = sp.collector.OnBarDirect(ctx, bars[i].Event)
+			_ = sp.collector.OnBarDirect(ctx, evt)
 		}
 		if sp.priceCache != nil {
 			// Use the raw bar event — adaptive filter runs in
 			// backtest PassThrough mode so sanitized == raw.
-			_ = sp.priceCache.HandleBarDirect(ctx, bars[i].Event)
+			_ = sp.priceCache.HandleBarDirect(ctx, evt)
 		}
 
 		// Drain any signals this shard emitted while processing

@@ -988,12 +988,12 @@ func main() {
 				}
 				bar := *barPtr
 				_ = s.pop()
-				idemKey := strconv.FormatInt(bar.Time.UnixNano(), 36) + string(bar.Symbol)
-				evt := domain.NewBacktestEvent(domain.EventMarketBarReceived, tenantID, envMode, idemKey, bar, bar.Time)
 				sliceBars = append(sliceBars, backtest.SliceBar{
 					TickTime:    minTime,
 					SessionOpen: sessionOpen,
-					Event:       evt,
+					Bar:         bar,
+					TenantID:    tenantID,
+					EnvMode:     envMode,
 				})
 				barsProcessed++
 			}
