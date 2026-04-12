@@ -124,8 +124,7 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	portfolioHandler.SetRepo(infra.repo)
 	imux.Handle("/api/portfolio/", portfolioHandler)
 
-	decayRepo := timescaledb.NewDecayRepository(infra.sqlDB, httpLog.With().Str("component", "decay_repo").Logger())
-	decayHandler := omhttp.NewDecayHandler(decayRepo, httpLog)
+	decayHandler := omhttp.NewDecayHandler(infra.decayRepo, httpLog)
 	imux.Handle("/api/decay/", decayHandler)
 
 	imux.Mux.HandleFunc("/debug/ai-screener/run", func(w http.ResponseWriter, r *http.Request) {
@@ -377,9 +376,6 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	perfHandler := omhttp.NewPerformanceHandler(infra.pnlRepo, infra.repo, httpLog)
 	imux.Handle("/performance/", perfHandler)
 
-	// Decay telemetry API
-	decayHandler := omhttp.NewDecayHandler(infra.decayRepo, httpLog)
-	imux.Handle("/api/decay/", decayHandler)
 	// Historical orders API
 	orderHandler := omhttp.NewOrderHandler(infra.repo, httpLog)
 	imux.Handle("/orders", orderHandler)

@@ -2358,26 +2358,6 @@ func (cr confluenceResult) applyDPSizing(strength float64) float64 {
 	return strength
 }
 
-// ComponentsJSON serializes the Components as compact JSON for signal tags.
-func (cr confluenceResult) ComponentsJSON() string {
-	if len(cr.Components) == 0 {
-		return ""
-	}
-	type comp struct {
-		Name   string  `json:"n"`
-		Group  string  `json:"g"`
-		Weight int     `json:"w"`
-		Value  float64 `json:"v,omitempty"`
-		Fired  bool    `json:"f"`
-	}
-	out := make([]comp, len(cr.Components))
-	for i, c := range cr.Components {
-		out[i] = comp{Name: c.Name, Group: c.Group, Weight: c.Weight, Value: c.Value, Fired: c.Fired}
-	}
-	b, _ := json.Marshal(out)
-	return string(b)
-}
-
 func computeConfluence(
 	cfg AVWAPConfig,
 	bar start.Bar,
@@ -2453,8 +2433,6 @@ func computeConfluence(
 	}
 	res.Components = append(res.Components, fibComp)
 
-	res.Components = append(res.Components, csFib)
-
 	// Factor 2: Key Level (+3)
 	keyComp := start.ComponentScore{Name: "key_level", Group: "structure", Weight: 3}
 	if cfg.KeyLevelConfluenceEnabled && len(keyLevels) > 0 {
@@ -2469,8 +2447,6 @@ func computeConfluence(
 		}
 	}
 	res.Components = append(res.Components, keyComp)
-
-	res.Components = append(res.Components, csKeyLevel)
 
 	// Factor 3: Candlestick (+2)
 	candleComp := start.ComponentScore{Name: "candle_pattern", Group: "price_action", Weight: 2}

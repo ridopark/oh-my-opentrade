@@ -2,6 +2,7 @@ package timescaledb
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -53,14 +54,14 @@ const (
 	GROUP BY comp->>'name', comp->>'group'`
 )
 
-// DecayRepository implements ports.DecayTelemetryPort using TimescaleDB.
+// DecayRepository implements decay telemetry persistence.
 type DecayRepository struct {
-	db  DBTX
+	db  *sql.DB
 	log zerolog.Logger
 }
 
-// NewDecayRepository creates a new decay telemetry repository.
-func NewDecayRepository(db DBTX, log zerolog.Logger) *DecayRepository {
+// NewDecayRepository creates a new DecayRepository.
+func NewDecayRepository(db *sql.DB, log zerolog.Logger) *DecayRepository {
 	return &DecayRepository{db: db, log: log}
 }
 
