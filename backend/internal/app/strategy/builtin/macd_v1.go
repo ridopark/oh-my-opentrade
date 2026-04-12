@@ -74,6 +74,14 @@ type BMConfig struct {
 	// Empirically stationary across 2025 and 2026 (see docs/research).
 	RangeGateEnabled bool    // Default false.
 	RangeGateADXMax  float64 // Default 20.
+
+	// Late-session DP Z conditioning (INVERTED for momentum strategies).
+	// High Z (>1.0) = strong prior trend = MACD-favorable (momentum continuation).
+	// Low Z (<-1.0) = reversal setup = MACD-adverse (PF 0.854, loses money).
+	DPZConditioningEnabled   bool    // Default false.
+	DPZMACDFavorableThreshold float64 // Z above this is good for MACD. Default 1.0.
+	DPZMACDSuppressThreshold  float64 // Z below this suppresses entries. Default -1.0.
+	DPZMACDSuppressMode       string  // "block" or "raise_threshold". Default "block".
 }
 
 // BMState holds per-symbol state.
@@ -158,6 +166,11 @@ func parseBMConfig(params map[string]any) BMConfig {
 		RollingWRWindow:     getInt(params, "rolling_wr_window", 20),
 		RangeGateEnabled:    getBool(params, "range_gate_enabled", false),
 		RangeGateADXMax:     getFloat64(params, "range_gate_adx_max", 20.0),
+
+		DPZConditioningEnabled:    getBool(params, "dp_z_conditioning_enabled", false),
+		DPZMACDFavorableThreshold: getFloat64(params, "dp_z_macd_favorable_threshold", 1.0),
+		DPZMACDSuppressThreshold:  getFloat64(params, "dp_z_macd_suppress_threshold", -1.0),
+		DPZMACDSuppressMode:       getString(params, "dp_z_macd_suppress_mode", "block"),
 	}
 }
 
@@ -412,6 +425,18 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 		emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "regime",
 			fmt.Sprintf("range gate: BALANCE regime with adx %.1f < %.1f", ind.ADX, cfg.RangeGateADXMax))
 		return bmSt, nil, nil
+	}
+
+	// Late-session DP Z conditioning (INVERTED logic for momentum strategy).
+	// Low Z (<-1.0) = prior day had abnormally low DP buying = mean-reversion setup.
+	// MACD catches momentum continuation, NOT mean-reversion — suppress entries.
+	if cfg.DPZConditioningEnabled && ind.LateSessionDPZ != 0 {
+		if ind.LateSessionDPZ <= cfg.DPZMACDSuppressThreshold && cfg.DPZMACDSuppressMode == "block" {
+			bmSt.PrevMACDHist = ind.MACDHistogram
+			emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters",
+				fmt.Sprintf("dp_z suppress: late Z=%.2f <= %.2f (MACD-adverse regime)", ind.LateSessionDPZ, cfg.DPZMACDSuppressThreshold))
+			return bmSt, nil, nil
+		}
 	}
 
 	// MACD crossover detection (for macd_only mode):

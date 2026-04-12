@@ -51,6 +51,14 @@ rolling_wr_window = 20
 range_gate_enabled = true
 range_gate_adx_max = 20.0
 
+# Late-session DP Z conditioning (INVERTED for momentum).
+# High Z (>1.0) = strong prior trend = MACD-favorable (momentum continuation).
+# Low Z (<-1.0) = reversal setup = MACD-adverse (PF 0.854 in backtest).
+dp_z_conditioning_enabled = false
+dp_z_macd_favorable_threshold = 1.0
+dp_z_macd_suppress_threshold = -1.0
+dp_z_macd_suppress_mode = "block"
+
 # Risk — smaller per-trade for higher turnover
 risk_per_trade_bps = 500
 max_position_bps = 2000

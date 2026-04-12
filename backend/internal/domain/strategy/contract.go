@@ -181,6 +181,11 @@ type IndicatorData struct {
 	DPSupportLevel     float64 // nearest DP volume shelf below price (DPVWAP)
 	DPResistanceLevel  float64 // nearest DP volume shelf above price (DPVWAP)
 
+	// Late-session dark pool Z-score: yesterday's 14:00-15:30 ET buy_ratio
+	// normalized over 20 trading days. Negative = abnormally low DP buying
+	// (bullish reversal for mean-reversion strategies like AVWAP).
+	LateSessionDPZ float64
+
 	// Whale accumulation score (populated from whale_accumulation when available)
 	WhaleScore int // aggregate 13F accumulation score (0 = no data)
 }
