@@ -34,7 +34,7 @@ func TestRunSliceToCompletion_RejectsNilCoordinator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewShardedPipeline: %v", err)
 	}
-	bars := []SliceBar{{TickTime: time.Now(), Event: domain.Event{Payload: domain.MarketBar{Symbol: "AAPL"}}}}
+	bars := []SliceBar{{TickTime: time.Now(), Bar: domain.MarketBar{Symbol: "AAPL"}}}
 	if err := sp.RunSliceToCompletion(context.Background(), bars, time.Time{}, nil); err == nil {
 		t.Fatal("expected error for nil coordinator")
 	}
