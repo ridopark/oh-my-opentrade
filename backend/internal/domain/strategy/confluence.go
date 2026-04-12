@@ -6,10 +6,22 @@ import (
 	"strings"
 )
 
+// ComponentScore captures a single confluence scorer's output for attribution.
+// No json tags — this is an in-memory value object. Use ThesisConfluence for
+// serialization to JSONB.
+type ComponentScore struct {
+	Name   string  // "ema_stack", "dp_buy", "rq_speed", etc.
+	Group  string  // "technical", "darkpool", "retest", "options"
+	Weight int     // points contributed (0 if not fired)
+	Value  float64 // raw metric value (ADX=28.3, RSI=62, etc.)
+	Fired  bool    // crossed threshold
+}
+
 // ConfluenceResult holds the computed confluence score and contributing factors.
 type ConfluenceResult struct {
-	Score   int
-	Factors []string
+	Score      int
+	Factors    []string
+	Components []ComponentScore
 }
 
 // MergeConfluence combines multiple ConfluenceResults into one by summing scores
@@ -19,6 +31,7 @@ func MergeConfluence(results ...ConfluenceResult) ConfluenceResult {
 	for _, r := range results {
 		merged.Score += r.Score
 		merged.Factors = append(merged.Factors, r.Factors...)
+		merged.Components = append(merged.Components, r.Components...)
 	}
 	return merged
 }
@@ -38,7 +51,7 @@ func (cr ConfluenceResult) FormatDetail() string {
 // Long: Close > EMA9 > EMA21 > EMA50. Short: reversed.
 func ScoreEMAStack(bar Bar, ind IndicatorData, isLong bool) ConfluenceResult {
 	if ind.EMA9 <= 0 || ind.EMA21 <= 0 || ind.EMA50 <= 0 {
-		return ConfluenceResult{}
+		return ConfluenceResult{Components: []ComponentScore{{Name: "ema_stack", Group: "technical", Value: 0}}}
 	}
 	count := 0
 	if isLong {
@@ -62,78 +75,118 @@ func ScoreEMAStack(bar Bar, ind IndicatorData, isLong bool) ConfluenceResult {
 			count++
 		}
 	}
+	cs := ComponentScore{Name: "ema_stack", Group: "technical", Value: float64(count)}
 	switch count {
 	case 3:
-		return ConfluenceResult{Score: 15, Factors: []string{"ema_stack"}}
+		cs.Weight = 15
+		cs.Fired = true
+		return ConfluenceResult{Score: 15, Factors: []string{"ema_stack"}, Components: []ComponentScore{cs}}
 	case 2:
-		return ConfluenceResult{Score: 10, Factors: []string{"ema_partial"}}
+		cs.Name = "ema_partial"
+		cs.Weight = 10
+		cs.Fired = true
+		return ConfluenceResult{Score: 10, Factors: []string{"ema_partial"}, Components: []ComponentScore{cs}}
 	case 1:
-		return ConfluenceResult{Score: 5}
+		cs.Weight = 5
+		return ConfluenceResult{Score: 5, Components: []ComponentScore{cs}}
 	default:
-		return ConfluenceResult{}
+		return ConfluenceResult{Components: []ComponentScore{cs}}
 	}
 }
 
 // ScoreADX evaluates trend strength via ADX (0-15).
 func ScoreADX(ind IndicatorData) ConfluenceResult {
+	cs := ComponentScore{Name: "adx", Group: "technical", Value: ind.ADX}
 	if ind.ADX <= 0 {
-		return ConfluenceResult{}
+		return ConfluenceResult{Components: []ComponentScore{cs}}
 	}
 	switch {
 	case ind.ADX >= 30:
-		return ConfluenceResult{Score: 15, Factors: []string{"adx_strong"}}
+		cs.Name = "adx_strong"
+		cs.Weight = 15
+		cs.Fired = true
+		return ConfluenceResult{Score: 15, Factors: []string{"adx_strong"}, Components: []ComponentScore{cs}}
 	case ind.ADX >= 25:
-		return ConfluenceResult{Score: 12, Factors: []string{"adx_trend"}}
+		cs.Name = "adx_trend"
+		cs.Weight = 12
+		cs.Fired = true
+		return ConfluenceResult{Score: 12, Factors: []string{"adx_trend"}, Components: []ComponentScore{cs}}
 	case ind.ADX >= 20:
-		return ConfluenceResult{Score: 8, Factors: []string{"adx_ok"}}
+		cs.Name = "adx_ok"
+		cs.Weight = 8
+		cs.Fired = true
+		return ConfluenceResult{Score: 8, Factors: []string{"adx_ok"}, Components: []ComponentScore{cs}}
 	case ind.ADX >= 15:
-		return ConfluenceResult{Score: 4}
+		cs.Weight = 4
+		return ConfluenceResult{Score: 4, Components: []ComponentScore{cs}}
 	default:
-		return ConfluenceResult{}
+		return ConfluenceResult{Components: []ComponentScore{cs}}
 	}
 }
 
 // ScoreRSI evaluates RSI position for directional quality (0-10).
 // Long: 45-65 ideal. Short: 35-55 ideal.
 func ScoreRSI(ind IndicatorData, isLong bool) ConfluenceResult {
+	cs := ComponentScore{Name: "rsi", Group: "technical", Value: ind.RSI}
 	if ind.RSI <= 0 {
-		return ConfluenceResult{}
+		return ConfluenceResult{Components: []ComponentScore{cs}}
 	}
 	if isLong {
 		switch {
 		case ind.RSI >= 45 && ind.RSI <= 65:
-			return ConfluenceResult{Score: 10, Factors: []string{"rsi_ideal"}}
+			cs.Name = "rsi_ideal"
+			cs.Weight = 10
+			cs.Fired = true
+			return ConfluenceResult{Score: 10, Factors: []string{"rsi_ideal"}, Components: []ComponentScore{cs}}
 		case (ind.RSI >= 35 && ind.RSI < 45) || (ind.RSI > 65 && ind.RSI <= 75):
-			return ConfluenceResult{Score: 5, Factors: []string{"rsi_ok"}}
+			cs.Name = "rsi_ok"
+			cs.Weight = 5
+			cs.Fired = true
+			return ConfluenceResult{Score: 5, Factors: []string{"rsi_ok"}, Components: []ComponentScore{cs}}
 		}
 	} else {
 		switch {
 		case ind.RSI >= 35 && ind.RSI <= 55:
-			return ConfluenceResult{Score: 10, Factors: []string{"rsi_ideal"}}
+			cs.Name = "rsi_ideal"
+			cs.Weight = 10
+			cs.Fired = true
+			return ConfluenceResult{Score: 10, Factors: []string{"rsi_ideal"}, Components: []ComponentScore{cs}}
 		case (ind.RSI > 55 && ind.RSI <= 65) || (ind.RSI >= 25 && ind.RSI < 35):
-			return ConfluenceResult{Score: 5, Factors: []string{"rsi_ok"}}
+			cs.Name = "rsi_ok"
+			cs.Weight = 5
+			cs.Fired = true
+			return ConfluenceResult{Score: 5, Factors: []string{"rsi_ok"}, Components: []ComponentScore{cs}}
 		}
 	}
-	return ConfluenceResult{}
+	return ConfluenceResult{Components: []ComponentScore{cs}}
 }
 
 // ScoreVolume evaluates volume relative to its SMA (0-8).
 func ScoreVolume(bar Bar, ind IndicatorData) ConfluenceResult {
 	if ind.VolumeSMA <= 0 {
-		return ConfluenceResult{}
+		return ConfluenceResult{Components: []ComponentScore{{Name: "volume", Group: "technical", Value: 0}}}
 	}
 	ratio := bar.Volume / ind.VolumeSMA
+	cs := ComponentScore{Name: "volume", Group: "technical", Value: ratio}
 	switch {
 	case ratio >= 1.5:
-		return ConfluenceResult{Score: 8, Factors: []string{"vol_surge"}}
+		cs.Name = "vol_surge"
+		cs.Weight = 8
+		cs.Fired = true
+		return ConfluenceResult{Score: 8, Factors: []string{"vol_surge"}, Components: []ComponentScore{cs}}
 	case ratio >= 1.2:
-		return ConfluenceResult{Score: 6, Factors: []string{"vol_above_avg"}}
+		cs.Name = "vol_above_avg"
+		cs.Weight = 6
+		cs.Fired = true
+		return ConfluenceResult{Score: 6, Factors: []string{"vol_above_avg"}, Components: []ComponentScore{cs}}
 	case ratio >= 1.0:
-		return ConfluenceResult{Score: 4}
+		cs.Weight = 4
+		return ConfluenceResult{Score: 4, Components: []ComponentScore{cs}}
 	case ratio >= 0.8:
-		return ConfluenceResult{Score: 2}
+		cs.Weight = 2
+		return ConfluenceResult{Score: 2, Components: []ComponentScore{cs}}
 	default:
-		return ConfluenceResult{}
+		return ConfluenceResult{Components: []ComponentScore{cs}}
 	}
 }
 
@@ -141,68 +194,101 @@ func ScoreVolume(bar Bar, ind IndicatorData) ConfluenceResult {
 func ScoreCandle(bar Bar, isLong bool) ConfluenceResult {
 	barRange := bar.High - bar.Low
 	if barRange <= 0 {
-		return ConfluenceResult{}
+		return ConfluenceResult{Components: []ComponentScore{{Name: "candle", Group: "technical", Value: 0}}}
 	}
 	bodyRatio := math.Abs(bar.Close-bar.Open) / barRange
 	directional := (isLong && bar.Close > bar.Open) || (!isLong && bar.Close < bar.Open)
+	cs := ComponentScore{Name: "candle", Group: "technical", Value: bodyRatio}
 	switch {
 	case bodyRatio > 0.7 && directional:
-		return ConfluenceResult{Score: 8, Factors: []string{"candle_strong"}}
+		cs.Name = "candle_strong"
+		cs.Weight = 8
+		cs.Fired = true
+		return ConfluenceResult{Score: 8, Factors: []string{"candle_strong"}, Components: []ComponentScore{cs}}
 	case bodyRatio > 0.5 && directional:
-		return ConfluenceResult{Score: 6, Factors: []string{"candle_ok"}}
+		cs.Name = "candle_ok"
+		cs.Weight = 6
+		cs.Fired = true
+		return ConfluenceResult{Score: 6, Factors: []string{"candle_ok"}, Components: []ComponentScore{cs}}
 	case directional:
-		return ConfluenceResult{Score: 4, Factors: []string{"candle_dir"}}
+		cs.Name = "candle_dir"
+		cs.Weight = 4
+		cs.Fired = true
+		return ConfluenceResult{Score: 4, Factors: []string{"candle_dir"}, Components: []ComponentScore{cs}}
 	default:
-		return ConfluenceResult{}
+		return ConfluenceResult{Components: []ComponentScore{cs}}
 	}
 }
 
 // ScoreBB evaluates Bollinger Band %B position (0-7).
 // Long: 0.5-0.8 ideal (trending, not overextended). Short: 0.2-0.5 ideal.
 func ScoreBB(ind IndicatorData, isLong bool) ConfluenceResult {
+	cs := ComponentScore{Name: "bb", Group: "technical", Value: ind.BBPercentB}
 	if isLong {
 		switch {
 		case ind.BBPercentB >= 0.5 && ind.BBPercentB <= 0.8:
-			return ConfluenceResult{Score: 7, Factors: []string{"bb_trend"}}
+			cs.Name = "bb_trend"
+			cs.Weight = 7
+			cs.Fired = true
+			return ConfluenceResult{Score: 7, Factors: []string{"bb_trend"}, Components: []ComponentScore{cs}}
 		case ind.BBPercentB >= 0.3 && ind.BBPercentB < 0.5:
-			return ConfluenceResult{Score: 4}
+			cs.Weight = 4
+			return ConfluenceResult{Score: 4, Components: []ComponentScore{cs}}
 		}
 	} else {
 		switch {
 		case ind.BBPercentB >= 0.2 && ind.BBPercentB <= 0.5:
-			return ConfluenceResult{Score: 7, Factors: []string{"bb_trend"}}
+			cs.Name = "bb_trend"
+			cs.Weight = 7
+			cs.Fired = true
+			return ConfluenceResult{Score: 7, Factors: []string{"bb_trend"}, Components: []ComponentScore{cs}}
 		case ind.BBPercentB > 0.5 && ind.BBPercentB <= 0.7:
-			return ConfluenceResult{Score: 4}
+			cs.Weight = 4
+			return ConfluenceResult{Score: 4, Components: []ComponentScore{cs}}
 		}
 	}
-	return ConfluenceResult{}
+	return ConfluenceResult{Components: []ComponentScore{cs}}
 }
 
 // ScoreHTFBias evaluates higher-timeframe bias agreement (0-8).
 func ScoreHTFBias(ind IndicatorData, isLong bool) ConfluenceResult {
 	htf, ok := ind.HTF["1d"]
 	if !ok || htf.Bias == "" {
-		return ConfluenceResult{}
+		return ConfluenceResult{Components: []ComponentScore{{Name: "htf_bias", Group: "technical", Value: 0}}}
 	}
+	cs := ComponentScore{Name: "htf_bias", Group: "technical"}
 	if (isLong && htf.Bias == "BULLISH") || (!isLong && htf.Bias == "BEARISH") {
-		return ConfluenceResult{Score: 8, Factors: []string{"htf_agree"}}
+		cs.Name = "htf_agree"
+		cs.Weight = 8
+		cs.Fired = true
+		cs.Value = 1
+		return ConfluenceResult{Score: 8, Factors: []string{"htf_agree"}, Components: []ComponentScore{cs}}
 	}
 	if htf.Bias == "NEUTRAL" {
-		return ConfluenceResult{Score: 4, Factors: []string{"htf_neutral"}}
+		cs.Name = "htf_neutral"
+		cs.Weight = 4
+		cs.Fired = true
+		cs.Value = 0.5
+		return ConfluenceResult{Score: 4, Factors: []string{"htf_neutral"}, Components: []ComponentScore{cs}}
 	}
-	return ConfluenceResult{} // opposing bias: 0
+	return ConfluenceResult{Components: []ComponentScore{cs}}
 }
 
 // ScoreVWAP evaluates VWAP alignment (0-7).
 // Long: price above VWAP. Short: price below VWAP.
 func ScoreVWAP(bar Bar, ind IndicatorData, isLong bool) ConfluenceResult {
+	cs := ComponentScore{Name: "vwap", Group: "technical"}
 	if ind.VWAP <= 0 {
-		return ConfluenceResult{}
+		return ConfluenceResult{Components: []ComponentScore{cs}}
 	}
+	cs.Value = (bar.Close - ind.VWAP) / ind.VWAP
 	if (isLong && bar.Close > ind.VWAP) || (!isLong && bar.Close < ind.VWAP) {
-		return ConfluenceResult{Score: 7, Factors: []string{"vwap_aligned"}}
+		cs.Name = "vwap_aligned"
+		cs.Weight = 7
+		cs.Fired = true
+		return ConfluenceResult{Score: 7, Factors: []string{"vwap_aligned"}, Components: []ComponentScore{cs}}
 	}
-	return ConfluenceResult{}
+	return ConfluenceResult{Components: []ComponentScore{cs}}
 }
 
 // ScoreDarkPool evaluates dark pool activity as a confluence signal (0-10).
@@ -211,37 +297,60 @@ func ScoreVWAP(bar Bar, ind IndicatorData, isLong bool) ConfluenceResult {
 // falling back to a static 0.50 threshold when Z-score is zero.
 func ScoreDarkPool(ind IndicatorData, isLong bool) ConfluenceResult {
 	if ind.DPRatio <= 0 {
-		return ConfluenceResult{}
+		return ConfluenceResult{Components: []ComponentScore{
+			{Name: "dp_elevated", Group: "darkpool", Value: ind.DPRatio},
+			{Name: "dp_direction", Group: "darkpool", Value: ind.DPBuyRatio},
+			{Name: "dp_blocks", Group: "darkpool", Value: ind.DPLargePrintPct},
+		}}
 	}
 	score := 0
 	var factors []string
+	components := make([]ComponentScore, 0, 3)
 
-	// Elevated DP ratio — prefer Z-score when available, fallback to static threshold
+	// Elevated DP ratio
+	csElevated := ComponentScore{Name: "dp_elevated", Group: "darkpool", Value: ind.DPRatioZScore}
 	if ind.DPRatioZScore >= 1.5 {
 		score += 3
 		factors = append(factors, "dp_elevated")
+		csElevated.Weight = 3
+		csElevated.Fired = true
 	} else if ind.DPRatioZScore == 0 && ind.DPRatio >= 0.50 {
-		// Fallback for callers that don't compute Z-score
 		score += 3
 		factors = append(factors, "dp_elevated")
+		csElevated.Value = ind.DPRatio
+		csElevated.Weight = 3
+		csElevated.Fired = true
 	}
+	components = append(components, csElevated)
 
 	// Directional pressure
+	csDir := ComponentScore{Name: "dp_direction", Group: "darkpool", Value: ind.DPBuyRatio}
 	if isLong && ind.DPBuyRatio >= 0.60 {
 		score += 4
 		factors = append(factors, "dp_buy")
+		csDir.Name = "dp_buy"
+		csDir.Weight = 4
+		csDir.Fired = true
 	} else if !isLong && ind.DPBuyRatio <= 0.40 {
 		score += 4
 		factors = append(factors, "dp_sell")
+		csDir.Name = "dp_sell"
+		csDir.Weight = 4
+		csDir.Fired = true
 	}
+	components = append(components, csDir)
 
 	// Large block prints
+	csBlocks := ComponentScore{Name: "dp_blocks", Group: "darkpool", Value: ind.DPLargePrintPct}
 	if ind.DPLargePrintPct >= 0.15 {
 		score += 3
 		factors = append(factors, "dp_blocks")
+		csBlocks.Weight = 3
+		csBlocks.Fired = true
 	}
+	components = append(components, csBlocks)
 
-	return ConfluenceResult{Score: score, Factors: factors}
+	return ConfluenceResult{Score: score, Factors: factors, Components: components}
 }
 
 // DPVeto returns true (blocked) when dark pool flow opposes the trade direction.
@@ -289,44 +398,65 @@ func DPSizingMultiplier(ind IndicatorData, isLong bool, maxBoost float64) float6
 func ScoreRetestQuality(retestBarCount int, pullbackDepthPct float64, retestAvgVolume float64, breakoutVolume float64, confirmBodyRatio float64, confirmDirectional bool) ConfluenceResult {
 	var score int
 	var factors []string
+	components := make([]ComponentScore, 0, 4)
 
-	// Factor 1: Speed (0-5) — fast retests = strong demand
+	// Factor 1: Speed (0-5)
+	csSpeed := ComponentScore{Name: "rq_speed", Group: "retest", Value: float64(retestBarCount)}
 	switch {
 	case retestBarCount <= 3:
 		score += 5
 		factors = append(factors, "rq_speed")
+		csSpeed.Weight = 5
+		csSpeed.Fired = true
 	case retestBarCount <= 6:
 		score += 2
+		csSpeed.Weight = 2
 	}
+	components = append(components, csSpeed)
 
-	// Factor 2: Pullback depth (0-5) — shallow = level respected
+	// Factor 2: Pullback depth (0-5)
+	csDepth := ComponentScore{Name: "rq_shallow", Group: "retest", Value: pullbackDepthPct}
 	switch {
 	case pullbackDepthPct < 0.382:
 		score += 5
 		factors = append(factors, "rq_shallow")
+		csDepth.Weight = 5
+		csDepth.Fired = true
 	case pullbackDepthPct < 0.50:
 		score += 3
+		csDepth.Weight = 3
 	}
+	components = append(components, csDepth)
 
-	// Factor 3: Volume dry-up (0-3) — low retest volume = healthy pullback
+	// Factor 3: Volume dry-up (0-3)
+	csVol := ComponentScore{Name: "rq_dryup", Group: "retest"}
 	if breakoutVolume > 0 {
 		volRatio := retestAvgVolume / breakoutVolume
+		csVol.Value = volRatio
 		switch {
 		case volRatio < 0.60:
 			score += 3
 			factors = append(factors, "rq_dryup")
+			csVol.Weight = 3
+			csVol.Fired = true
 		case volRatio < 0.80:
 			score++
+			csVol.Weight = 1
 		}
 	}
+	components = append(components, csVol)
 
-	// Factor 4: Confirm candle quality (0-3) — strong directional close
+	// Factor 4: Confirm candle quality (0-3)
+	csConfirm := ComponentScore{Name: "rq_confirm", Group: "retest", Value: confirmBodyRatio}
 	if confirmBodyRatio > 0.6 && confirmDirectional {
 		score += 3
 		factors = append(factors, "rq_confirm")
+		csConfirm.Weight = 3
+		csConfirm.Fired = true
 	}
+	components = append(components, csConfirm)
 
-	return ConfluenceResult{Score: score, Factors: factors}
+	return ConfluenceResult{Score: score, Factors: factors, Components: components}
 }
 
 // ────────────────────────────────────────────────────────────────────
