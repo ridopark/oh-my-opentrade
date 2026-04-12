@@ -97,6 +97,15 @@ type Runner struct {
 	deferSignalPublish bool
 	pendingSignals     []domain.Event
 
+	// deferReconcile, when true, skips the in-handleBar ReconcileSignals
+	// pass so slice-to-completion shards don't apply reversal-entry ↔
+	// close-position conversion against stale (empty) positions. The
+	// replay loop re-runs ReconcileSignals with live posLookup just
+	// before publishing each signal, which preserves exact single-
+	// threaded semantics. Orthogonal to deferSignalPublish: both flags
+	// are set together for slice-mode runners.
+	deferReconcile bool
+
 	// noInstancesLogged records symbols for which we've already logged a
 	// "no instances for symbol" line, so unused symbols don't emit an Info
 	// log on every bar (hot path — ~8% of backtest CPU pre-gating).
@@ -1278,7 +1287,9 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	}
 
 	allSignals = r.filterByAllowedDirections(allSignals)
-	allSignals = ReconcileSignals(allSignals, r.posLookup, r.logger)
+	if !r.deferReconcile {
+		allSignals = ReconcileSignals(allSignals, r.posLookup, r.logger)
+	}
 
 	// Unlock BEFORE signal emission. The emitSignal cascade can trigger sync
 	// handlers (e.g. handleRejection) that also acquire r.mu — holding the lock
@@ -1622,6 +1633,14 @@ func (r *Runner) emitSignal(ctx context.Context, tenantID string, envMode domain
 // HandleBarDirect to flush the buffer; otherwise signals sit unpublished.
 func (r *Runner) SetDeferSignalPublish(v bool) {
 	r.deferSignalPublish = v
+}
+
+// SetDeferReconcile flips handleBar to skip the in-process
+// ReconcileSignals pass. Used by slice-to-completion backtest so the
+// reversal-entry conversion runs against live positions in the replay
+// loop instead of the empty positions a shard sees mid-slice.
+func (r *Runner) SetDeferReconcile(v bool) {
+	r.deferReconcile = v
 }
 
 // DrainPendingSignals returns the buffered SignalCreated events in
