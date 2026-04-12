@@ -213,17 +213,33 @@ func (p *Pipeline) ProcessBarPhaseA(ctx context.Context, evt domain.Event) (sani
 		}
 	}
 
-	// stage 4 (partial): drain monitor pending strict events — only
-	// StateUpdated → runner needs to happen in Phase A because the runner
-	// reads its indicator cache on the NEXT bar's handleBar. The other
-	// strict events (regime, setup) and all best-effort events are
-	// deferred to Phase B where they go through the bus in dispatch order.
+	// stage 4a: typed StateUpdated drain — monitor pushes
+	// IndicatorSnapshot values directly onto pendingStateUpdates in
+	// direct-dispatch mode (no Event wrapping), and the runner
+	// consumes them via HandleStateUpdatedSnap. This is the
+	// single-largest GC win of Phase 4: the Event struct allocation
+	// + IdempotencyKey concat + interface boxing accounted for
+	// ~1.5 GB of allocations per 30 sym / 1 yr run.
+	if p.monitor != nil && p.runner != nil {
+		snaps := p.monitor.DrainPendingStateUpdates()
+		for i := range snaps {
+			if err := p.runner.HandleStateUpdatedSnap(ctx, snaps[i]); err != nil {
+				return domain.Event{}, false, err
+			}
+		}
+	}
+
+	// stage 4b: drain monitor pending regime/setup/HTF events. These
+	// go to multi-consumer bus handlers (debate enricher, etc.) and
+	// must publish in dispatch order during Phase B.
 	var deferredStrict, deferredBestEffort []domain.Event
 	if p.monitor != nil {
 		strict, bestEffort := p.monitor.DrainPending()
 		for i := range strict {
 			ev := &strict[i]
 			if ev.Type == domain.EventStateUpdated {
+				// Legacy bus-mode leftover — should be empty in
+				// direct-dispatch, but guard just in case.
 				if p.runner != nil {
 					if err := p.runner.HandleStateUpdatedDirect(ctx, *ev); err != nil {
 						return domain.Event{}, false, err

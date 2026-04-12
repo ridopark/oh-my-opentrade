@@ -81,9 +81,16 @@ type Service struct {
 	// pendingBestEffort instead of calling eventBus.Publish, and the caller
 	// drains them via DrainPending{Strict,BestEffort}. Single-goroutine use
 	// only (Pipeline.ProcessBar is serial).
-	directDispatch     bool
-	pendingStrict      []domain.Event
-	pendingBestEffort  []domain.Event
+	//
+	// pendingStateUpdates carries IndicatorSnapshot values directly (no
+	// Event wrapping) so the direct-dispatch drain can hand them to the
+	// runner via HandleStateUpdatedSnap without paying the Event struct
+	// allocation + IdempotencyKey concat per bar — those were the single
+	// largest GC source (~1.5 GB/run) in the Phase 3 profile.
+	directDispatch      bool
+	pendingStrict       []domain.Event
+	pendingBestEffort   []domain.Event
+	pendingStateUpdates []domain.IndicatorSnapshot
 	anchorResolverFn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
 	prevDayBarsFn    func(symbol string, since time.Time) []start.Bar
 	nyLoc            *time.Location // cached America/New_York location
@@ -114,6 +121,20 @@ func (s *Service) DrainPending() (strict, bestEffort []domain.Event) {
 	s.pendingStrict = s.pendingStrict[:0]
 	s.pendingBestEffort = s.pendingBestEffort[:0]
 	return strict, bestEffort
+}
+
+// DrainPendingStateUpdates returns the IndicatorSnapshot values
+// collected during the most recent direct-dispatch HandleMarketBar
+// call and clears the internal buffer. Only meaningful when
+// SetDirectDispatch(true). Pipeline.ProcessBarPhaseA drains this
+// alongside DrainPending so the runner can receive snapshots via a
+// typed path that bypasses Event wrapping (saving the Event struct
+// alloc + IdempotencyKey concat on every bar — the biggest single
+// source of GC pressure in the Phase 3 profile).
+func (s *Service) DrainPendingStateUpdates() []domain.IndicatorSnapshot {
+	out := s.pendingStateUpdates
+	s.pendingStateUpdates = s.pendingStateUpdates[:0]
+	return out
 }
 
 // SetAnchorResolverFn installs a function that resolves anchor times (pd_high, pd_low,
@@ -759,15 +780,27 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 		Str("regime", string(regime.Type)).
 		Float64("regime_strength", regime.Strength).
 		Msg("indicator snapshot")
-	stateUpdatedEv := domain.NewBacktestEvent(
-		domain.EventStateUpdated,
-		event.TenantID,
-		event.EnvMode,
-		event.IdempotencyKey+"-state-updated",
-		snap,
-		event.OccurredAt,
-	)
-	publishStrict = append(publishStrict, stateUpdatedEv)
+	// In direct-dispatch mode we push the snapshot value directly onto
+	// pendingStateUpdates — the backtest Pipeline drains it via a typed
+	// path and hands it straight to runner.HandleStateUpdatedSnap,
+	// skipping the Event struct alloc + IdempotencyKey concat entirely.
+	// The StateUpdated Event is only materialized for the legacy
+	// bus-publish path where downstream subscribers expect a full
+	// Event envelope.
+	var stateUpdatedEv domain.Event
+	if s.directDispatch {
+		s.pendingStateUpdates = append(s.pendingStateUpdates, snap)
+	} else {
+		stateUpdatedEv = domain.NewBacktestEvent(
+			domain.EventStateUpdated,
+			event.TenantID,
+			event.EnvMode,
+			event.IdempotencyKey+"-state-updated",
+			snap,
+			event.OccurredAt,
+		)
+		publishStrict = append(publishStrict, stateUpdatedEv)
+	}
 	l.Debug().
 		Str("regime", string(regime.Type)).
 		Float64("strength", regime.Strength).
