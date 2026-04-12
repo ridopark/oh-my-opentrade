@@ -57,6 +57,12 @@ type Runner struct {
 	// dpRolling maintains per-symbol rolling statistics for DP ratio Z-score computation.
 	dpRolling map[string]*dpRollingStats
 
+	// Late-session DP Z-score: daily signal derived from 14:00-15:30 ET buy ratio.
+	// Computed once per trading day from previous day's DP bars.
+	lateSessionDPZ       map[string]float64         // sym → current day's late Z
+	lateSessionDPRolling map[string]*dpRollingStats  // sym → 20-day rolling late buy ratios
+	lateSessionDPDate    map[string]int              // sym → yyyymmdd of last computed day
+
 	// Whale accumulation lookup: ticker -> latest score.
 	whaleLookup map[string]domain.WhaleAccumulation
 
@@ -870,6 +876,60 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 				}
 			}
 
+			r.indicators[sym] = ind
+		}
+	}
+
+	// Overlay late-session DP Z-score (daily signal from previous day's 14:00-15:30 ET).
+	if len(r.dpLookup) > 0 && etLocation != nil {
+		sym := snap.Symbol.String()
+		barTime := snap.Time.UTC()
+		etTime := barTime.In(etLocation)
+		dayKey := etTime.Year()*10000 + int(etTime.Month())*100 + etTime.Day()
+
+		if r.lateSessionDPDate == nil {
+			r.lateSessionDPDate = make(map[string]int)
+			r.lateSessionDPZ = make(map[string]float64)
+			r.lateSessionDPRolling = make(map[string]*dpRollingStats)
+		}
+
+		if r.lateSessionDPDate[sym] != dayKey {
+			r.lateSessionDPDate[sym] = dayKey
+			prevDay := etTime.AddDate(0, 0, -1)
+			for prevDay.Weekday() == time.Saturday || prevDay.Weekday() == time.Sunday {
+				prevDay = prevDay.AddDate(0, 0, -1)
+			}
+			lateStart := time.Date(prevDay.Year(), prevDay.Month(), prevDay.Day(), 14, 0, 0, 0, etLocation).UTC()
+			lateEnd := time.Date(prevDay.Year(), prevDay.Month(), prevDay.Day(), 15, 30, 0, 0, etLocation).UTC()
+
+			var lateBuy, lateSell float64
+			for t := lateStart.Truncate(5 * time.Minute); t.Before(lateEnd); t = t.Add(5 * time.Minute) {
+				if dp, ok := r.dpLookup[DPLookupKey{Symbol: sym, Time: t}]; ok {
+					lateBuy += dp.BuyVolume
+					lateSell += dp.SellVolume
+				}
+			}
+
+			if lateBuy+lateSell > 0 {
+				lateRatio := lateBuy / (lateBuy + lateSell)
+				rs, ok := r.lateSessionDPRolling[sym]
+				if !ok {
+					rs = newDPRollingStats(20)
+					r.lateSessionDPRolling[sym] = rs
+				}
+				rs.push(lateRatio)
+				mean, std := rs.meanStd()
+				if std > 0 {
+					r.lateSessionDPZ[sym] = (lateRatio - mean) / std
+				} else {
+					r.lateSessionDPZ[sym] = 0
+				}
+			}
+		}
+
+		if z, ok := r.lateSessionDPZ[sym]; ok {
+			ind := r.indicators[sym]
+			ind.LateSessionDPZ = z
 			r.indicators[sym] = ind
 		}
 	}
