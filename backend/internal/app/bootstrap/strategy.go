@@ -58,12 +58,39 @@ type StrategyPipeline struct {
 	Activator    *PipelineActivator
 }
 
-// BuildStrategyPipeline constructs the canonical strategy v2 pipeline:
-//
-//	Runner → SignalDebateEnricher → RiskSizer
-//
-// This produces the IDENTICAL pipeline as omo-core's initStrategyPipeline().
-func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
+// StrategyShared holds the parts of the strategy v2 pipeline that are
+// constructed once per backtest run and reused across all worker shards:
+// the builtin strategy registry, the loaded spec list, the clock closure,
+// and the post-signal services that subscribe to the shared event bus
+// (SignalDebateEnricher, RiskSizer). Phase 2 per-tick sharding builds one
+// of these, then builds N per-shard Runner+Router pairs via
+// BuildStrategyShard. Single-pipeline callers (legacy path, tests,
+// dashboard runner) go through BuildStrategyPipeline which wraps both.
+type StrategyShared struct {
+	Registry  *strategy.MemRegistry
+	Specs     []stratports.Spec
+	Enricher  *strategy.SignalDebateEnricher // nil when DisableEnricher
+	RiskSizer *strategy.RiskSizer
+	Clock     func() time.Time
+	Logger    *slog.Logger
+}
+
+// StrategyShard is a per-shard (Router, Runner) pair plus the subset of
+// symbols that shard actually owns. Instances are only registered on the
+// shard's Router when their declared symbol appears in the slab passed to
+// BuildStrategyShard — empty slab means "no symbols restriction" and is
+// how BuildStrategyPipeline gets the full legacy behavior.
+type StrategyShard struct {
+	Router      *strategy.Router
+	Runner      *strategy.Runner
+	BaseSymbols []string
+}
+
+// BuildStrategyShared constructs the shared portion of the strategy v2
+// pipeline. Safe to call once per backtest run — the returned enricher and
+// risk sizer are stateless-per-bar subscribers on the shared event bus and
+// can service events from any shard.
+func BuildStrategyShared(deps StrategyDeps) (*StrategyShared, error) {
 	stratLog := slog.Default()
 	if deps.BacktestID != "" {
 		stratLog = stratLog.With("backtest_id", deps.BacktestID)
@@ -90,66 +117,9 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 		return nil, fmt.Errorf("bootstrap: strategy: no strategy specs found")
 	}
 
-	router := strategy.NewRouter()
-	allSymbols := make(map[string]struct{})
-
 	clockFn := deps.Clock
 	if clockFn == nil {
 		clockFn = time.Now
-	}
-
-	for _, spec := range allSpecs {
-		// Skip deactivated strategies entirely — they should not register instances or
-		// consume symbols. The PipelineActivator also enforces this for dynamic symbols.
-		if !spec.Lifecycle.State.IsActive() {
-			deps.Logger.Debug().Str("spec_id", spec.ID.String()).Str("state", spec.Lifecycle.State.String()).Msg("bootstrap: strategy: spec is not active, skipping")
-			continue
-		}
-		deps.Logger.Info().Str("spec_id", spec.ID.String()).Str("state", spec.Lifecycle.State.String()).Msg("bootstrap: strategy: activating spec")
-
-		hookRef, hasHook := spec.Hooks["signals"]
-		if !hasHook {
-			deps.Logger.Warn().Str("spec_id", spec.ID.String()).Msg("bootstrap: strategy: spec has no signals hook, skipping")
-			continue
-		}
-		implID, err := start.NewStrategyID(hookRef.Name)
-		if err != nil {
-			deps.Logger.Warn().Str("spec_id", spec.ID.String()).Str("hook_name", hookRef.Name).Err(err).Msg("bootstrap: strategy: invalid hook signal name, skipping")
-			continue
-		}
-		impl, err := registry.Get(implID)
-		if err != nil {
-			deps.Logger.Warn().Str("spec_id", spec.ID.String()).Str("impl_id", implID.String()).Msg("bootstrap: strategy: no builtin implementation for hook, skipping")
-			continue
-		}
-
-		for _, sym := range spec.Routing.Symbols {
-			instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", spec.ID, spec.Version, sym))
-			inst := strategy.NewInstance(instanceID, impl, spec.ParamsForSymbol(sym), strategy.InstanceAssignment{
-				Symbols:           []string{sym},
-				Timeframes:        spec.Routing.Timeframes,
-				Priority:          spec.Routing.Priority,
-				AllowedDirections: spec.Routing.AllowedDirections,
-			}, spec.Lifecycle.State, stratLog)
-
-			initCtx := strategy.NewContext(clockFn(), stratLog, nil)
-			if err := inst.InitSymbol(initCtx, sym, nil); err != nil {
-				return nil, fmt.Errorf("bootstrap: strategy: failed to init %s symbol %s: %w", spec.ID, sym, err)
-			}
-			router.Register(inst)
-			allSymbols[sym] = struct{}{}
-		}
-	}
-
-	runner := strategy.NewRunner(deps.EventBus, router, deps.TenantID, deps.EnvMode, stratLog)
-	if deps.PositionLookup != nil {
-		runner.SetPositionLookup(deps.PositionLookup)
-	}
-	if deps.TideTracker != nil {
-		runner.SetTideTracker(deps.TideTracker)
-	}
-	if deps.Notifier != nil {
-		runner.SetNotifier(deps.Notifier)
 	}
 
 	var enricher *strategy.SignalDebateEnricher
@@ -178,29 +148,146 @@ func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
 	if deps.OptionsMarket != nil {
 		riskSizer.SetOptionsMarket(deps.OptionsMarket)
 	}
-	lifecycleSvc := strategy.NewLifecycleService(router, stratLog)
+
+	return &StrategyShared{
+		Registry:  registry,
+		Specs:     allSpecs,
+		Enricher:  enricher,
+		RiskSizer: riskSizer,
+		Clock:     clockFn,
+		Logger:    stratLog,
+	}, nil
+}
+
+// BuildStrategyShard constructs a per-shard Router+Runner using the shared
+// services. Instances are registered only for symbols that appear in slab;
+// passing an empty slab disables the filter and registers every
+// spec×symbol instance (legacy single-pipeline behavior).
+func BuildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps StrategyDeps) (*StrategyShard, error) {
+	if shared == nil {
+		return nil, fmt.Errorf("bootstrap: strategy: nil StrategyShared")
+	}
+
+	var slabFilter map[string]struct{}
+	if len(slab) > 0 {
+		slabFilter = make(map[string]struct{}, len(slab))
+		for _, s := range slab {
+			slabFilter[s.String()] = struct{}{}
+		}
+	}
+
+	router := strategy.NewRouter()
+	allSymbols := make(map[string]struct{})
+
+	for _, spec := range shared.Specs {
+		// Skip deactivated strategies entirely — they should not register
+		// instances or consume symbols. The PipelineActivator also enforces
+		// this for dynamic symbols.
+		if !spec.Lifecycle.State.IsActive() {
+			deps.Logger.Debug().Str("spec_id", spec.ID.String()).Str("state", spec.Lifecycle.State.String()).Msg("bootstrap: strategy: spec is not active, skipping")
+			continue
+		}
+		deps.Logger.Info().Str("spec_id", spec.ID.String()).Str("state", spec.Lifecycle.State.String()).Msg("bootstrap: strategy: activating spec")
+
+		hookRef, hasHook := spec.Hooks["signals"]
+		if !hasHook {
+			deps.Logger.Warn().Str("spec_id", spec.ID.String()).Msg("bootstrap: strategy: spec has no signals hook, skipping")
+			continue
+		}
+		implID, err := start.NewStrategyID(hookRef.Name)
+		if err != nil {
+			deps.Logger.Warn().Str("spec_id", spec.ID.String()).Str("hook_name", hookRef.Name).Err(err).Msg("bootstrap: strategy: invalid hook signal name, skipping")
+			continue
+		}
+		impl, err := shared.Registry.Get(implID)
+		if err != nil {
+			deps.Logger.Warn().Str("spec_id", spec.ID.String()).Str("impl_id", implID.String()).Msg("bootstrap: strategy: no builtin implementation for hook, skipping")
+			continue
+		}
+
+		for _, sym := range spec.Routing.Symbols {
+			if slabFilter != nil {
+				if _, ok := slabFilter[sym]; !ok {
+					continue
+				}
+			}
+
+			instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", spec.ID, spec.Version, sym))
+			inst := strategy.NewInstance(instanceID, impl, spec.ParamsForSymbol(sym), strategy.InstanceAssignment{
+				Symbols:           []string{sym},
+				Timeframes:        spec.Routing.Timeframes,
+				Priority:          spec.Routing.Priority,
+				AllowedDirections: spec.Routing.AllowedDirections,
+			}, spec.Lifecycle.State, shared.Logger)
+
+			initCtx := strategy.NewContext(shared.Clock(), shared.Logger, nil)
+			if err := inst.InitSymbol(initCtx, sym, nil); err != nil {
+				return nil, fmt.Errorf("bootstrap: strategy: failed to init %s symbol %s: %w", spec.ID, sym, err)
+			}
+			router.Register(inst)
+			allSymbols[sym] = struct{}{}
+		}
+	}
+
+	runner := strategy.NewRunner(deps.EventBus, router, deps.TenantID, deps.EnvMode, shared.Logger)
+	if deps.PositionLookup != nil {
+		runner.SetPositionLookup(deps.PositionLookup)
+	}
+	if deps.TideTracker != nil {
+		runner.SetTideTracker(deps.TideTracker)
+	}
+	if deps.Notifier != nil {
+		runner.SetNotifier(deps.Notifier)
+	}
 
 	baseSymbols := make([]string, 0, len(allSymbols))
 	for sym := range allSymbols {
 		baseSymbols = append(baseSymbols, sym)
 	}
 
+	return &StrategyShard{
+		Router:      router,
+		Runner:      runner,
+		BaseSymbols: baseSymbols,
+	}, nil
+}
+
+// BuildStrategyPipeline constructs the canonical single-shard strategy v2
+// pipeline:
+//
+//	Runner → SignalDebateEnricher → RiskSizer
+//
+// This produces the IDENTICAL pipeline as omo-core's initStrategyPipeline().
+// Internally it delegates to BuildStrategyShared + BuildStrategyShard(nil)
+// so every spec×symbol instance is registered on one Router — the same
+// behavior as before Phase 2's bootstrap split.
+func BuildStrategyPipeline(deps StrategyDeps) (*StrategyPipeline, error) {
+	shared, err := BuildStrategyShared(deps)
+	if err != nil {
+		return nil, err
+	}
+	shard, err := BuildStrategyShard(shared, nil, deps)
+	if err != nil {
+		return nil, err
+	}
+
+	lifecycleSvc := strategy.NewLifecycleService(shard.Router, shared.Logger)
 	activator := &PipelineActivator{
-		runner:   runner,
-		router:   router,
-		registry: registry,
-		specs:    allSpecs,
+		runner:   shard.Runner,
+		router:   shard.Router,
+		registry: shared.Registry,
+		specs:    shared.Specs,
 		logger:   slog.Default(),
-		clock:    clockFn,
+		clock:    shared.Clock,
 	}
 
 	return &StrategyPipeline{
-		Runner:       runner,
-		Router:       router,
-		Enricher:     enricher,
-		RiskSizer:    riskSizer,
+		Runner:       shard.Runner,
+		Router:       shard.Router,
+		Enricher:     shared.Enricher,
+		RiskSizer:    shared.RiskSizer,
 		LifecycleSvc: lifecycleSvc,
-		BaseSymbols:  baseSymbols,
+		BaseSymbols:  shard.BaseSymbols,
 		Activator:    activator,
 	}, nil
 }
