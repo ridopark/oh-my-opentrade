@@ -573,6 +573,7 @@ func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, lo
 		}
 
 		acctLedger := perf.NewLedgerWriter(infra.eventBus, infra.pnlRepo, acctAdapter, infra.repo, acctEquity, acctLog.With().Str("component", "ledger").Logger())
+		acctLedger.SetDecayStats(infra.decayRepo)
 		acctBreaker := risk.NewDailyLossBreaker(
 			cfg.Trading.MaxDailyLossPct/100.0,
 			cfg.Trading.MaxDailyLossUSD,
