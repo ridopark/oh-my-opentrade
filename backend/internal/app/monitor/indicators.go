@@ -228,11 +228,23 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 	state.lows = append(state.lows, bar.Low)
 	state.volumes = append(state.volumes, bar.Volume)
 
+	// Trim rolling windows via copy-shift instead of re-slice. The old
+	// pattern (state.closes = state.closes[1:]) moved the slice start
+	// pointer while retaining the backing array, leaving just 1 element
+	// of capacity after maxWindowSize bars. Every subsequent append
+	// allocated a new backing array — 901 MB of cumulative allocations
+	// per 30 sym / 1 yr run. Copy-shift preserves the original backing
+	// array: after the initial fill, capacity == maxWindowSize and no
+	// further growth occurs.
 	if len(state.closes) > maxWindowSize {
-		state.closes = state.closes[1:]
-		state.highs = state.highs[1:]
-		state.lows = state.lows[1:]
-		state.volumes = state.volumes[1:]
+		copy(state.closes, state.closes[1:])
+		state.closes = state.closes[:maxWindowSize]
+		copy(state.highs, state.highs[1:])
+		state.highs = state.highs[:maxWindowSize]
+		copy(state.lows, state.lows[1:])
+		state.lows = state.lows[:maxWindowSize]
+		copy(state.volumes, state.volumes[1:])
+		state.volumes = state.volumes[:maxWindowSize]
 	}
 
 	// VWAP + Welford's online variance for SD bands
@@ -306,7 +318,8 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 
 		state.stochKs = append(state.stochKs, stochK)
 		if len(state.stochKs) > stochDPeriod {
-			state.stochKs = state.stochKs[1:]
+			copy(state.stochKs, state.stochKs[1:])
+			state.stochKs = state.stochKs[:stochDPeriod]
 		}
 		if len(state.stochKs) > 0 {
 			stochD = smaSlice(state.stochKs)
@@ -418,7 +431,8 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 		}
 		state.bbBandwidths = append(state.bbBandwidths, bbBandwidth)
 		if len(state.bbBandwidths) > maxWindowSize {
-			state.bbBandwidths = state.bbBandwidths[1:]
+			copy(state.bbBandwidths, state.bbBandwidths[1:])
+			state.bbBandwidths = state.bbBandwidths[:maxWindowSize]
 		}
 	}
 
@@ -527,7 +541,8 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 	if state.ema50Init {
 		state.ema50History = append(state.ema50History, state.ema50)
 		if len(state.ema50History) > emaSlopeWindow+1 {
-			state.ema50History = state.ema50History[1:]
+			copy(state.ema50History, state.ema50History[1:])
+			state.ema50History = state.ema50History[:emaSlopeWindow+1]
 		}
 	}
 
