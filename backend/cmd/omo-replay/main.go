@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"runtime"
@@ -948,74 +949,124 @@ func main() {
 	// Track current session date for multi-day replays (reset aggregators on new day).
 	currentSessionDate := replaySessionOpen
 
-	for ctx.Err() == nil {
-
-		minTime, ok := nextMinTime(streams)
-		if !ok {
-			break
-		}
-
-		groupsProcessed++
-
-		currentBarTime.Store(minTime)
-
-		// Reset MTFA aggregators on new trading day boundary.
-		minET := minTime.In(loc)
-		dayOpen := time.Date(minET.Year(), minET.Month(), minET.Day(), 9, 30, 0, 0, loc)
-		if dayOpen.After(currentSessionDate) {
-			if shardedPipeline != nil {
-				_ = shardedPipeline.ForEachShard(func(p *backtest.Pipeline, slab []domain.Symbol) error {
-					p.Monitor().ResetAggregators(dayOpen)
-					for _, sym := range slab {
-						p.Monitor().ResetSessionIndicators(sym.String())
-					}
-					return nil
-				})
-			} else {
-				monitorSvc.ResetAggregators(dayOpen)
-				for _, sym := range symbols {
-					monitorSvc.ResetSessionIndicators(sym.String())
-				}
+	// Phase 3 slice-to-completion: in backtest mode, enable deferred
+	// signal publish + deferred reconciliation on every shard runner,
+	// assemble every bar into a flat chronological SliceBar list, and
+	// run it through ShardedPipeline.RunSliceToCompletion. Non-backtest
+	// mode falls through to the legacy per-tick dispatch loop below.
+	if backtestFlag && shardedPipeline != nil {
+		_ = shardedPipeline.ForEachShard(func(p *backtest.Pipeline, _ []domain.Symbol) error {
+			if r := p.Runner(); r != nil {
+				r.SetDeferSignalPublish(true)
+				r.SetDeferReconcile(true)
 			}
-			currentSessionDate = dayOpen
-			log.Debug().Time("new_session_open", dayOpen).Msg("MTFA aggregators reset for new trading day")
-		}
-		for _, s := range streams {
-			if ctx.Err() != nil {
+			return nil
+		})
+
+		// Pre-assemble the flat bar stream in chronological order.
+		// This is effectively nextMinTime run to exhaustion without
+		// dispatching — each bar is tagged with its tickTime and
+		// pushed into a single slice the slice dispatcher consumes.
+		var sliceBars []backtest.SliceBar
+		for ctx.Err() == nil {
+			minTime, ok := nextMinTime(streams)
+			if !ok {
 				break
 			}
-			barPtr := s.peek()
-			if barPtr == nil || !barPtr.Time.Equal(minTime) {
-				continue
-			}
-			bar := *barPtr
-			_ = s.pop()
-
-			// In backtest mode, feed SimBroker the bar close price BEFORE publishing
-			// so fills use the correct price.
-			if simBrokerInst != nil {
-				simBrokerInst.UpdatePrice(bar.Symbol, bar.Close, bar.Time)
-			}
-
-			// Advance the fast-clock so every domain.NewEvent created while
-			// processing this bar shares one OccurredAt stamp without
-			// calling time.Now() repeatedly.
-			domain.SetFastClock(bar.Time)
-
-			// Avoid bar.Time.String() — time.Time.Format was ~450k allocs
-			// per backtest. The integer nano stamp is unique-per-bar and
-			// cheaper to format.
-			idemKey := strconv.FormatInt(bar.Time.UnixNano(), 36) + string(bar.Symbol)
-			evt := domain.NewBacktestEvent(domain.EventMarketBarReceived, tenantID, envMode, idemKey, bar, bar.Time)
-			if shardedPipeline != nil {
-				if err := shardedPipeline.Dispatch(ctx, evt); err != nil {
-					if ctx.Err() != nil {
-						break
-					}
-					log.Error().Err(err).Str("symbol", bar.Symbol.String()).Msg("pipeline process bar failed")
+			groupsProcessed++
+			// Pre-compute the ET session open for this tick once so
+			// every bar in the tick carries the same SessionOpen.
+			minET := minTime.In(loc)
+			sessionOpen := time.Date(minET.Year(), minET.Month(), minET.Day(), 9, 30, 0, 0, loc)
+			for _, s := range streams {
+				if ctx.Err() != nil {
+					break
+				}
+				barPtr := s.peek()
+				if barPtr == nil || !barPtr.Time.Equal(minTime) {
 					continue
 				}
-			} else {
+				bar := *barPtr
+				_ = s.pop()
+				idemKey := strconv.FormatInt(bar.Time.UnixNano(), 36) + string(bar.Symbol)
+				evt := domain.NewBacktestEvent(domain.EventMarketBarReceived, tenantID, envMode, idemKey, bar, bar.Time)
+				sliceBars = append(sliceBars, backtest.SliceBar{
+					TickTime:    minTime,
+					SessionOpen: sessionOpen,
+					Event:       evt,
+				})
+				barsProcessed++
+			}
+		}
+
+		coord := &replaySliceCoord{
+			log:              &log,
+			loc:              loc,
+			symbols:          symbols,
+			shardedPipeline:  shardedPipeline,
+			currentBarTime:   &currentBarTime,
+			currentDay:       currentSessionDate,
+			eventBus:         eventBus,
+			simBrokerInst:    simBrokerInst,
+			posMonSvc:        posMonSvc,
+			posMonPriceCache: posMonPriceCache,
+			optionBarsCache:  optionBarsCache,
+			optionBarsMu:     &optionBarsMu,
+		}
+
+		if err := shardedPipeline.RunSliceToCompletion(ctx, sliceBars, coord); err != nil {
+			log.Error().Err(err).Msg("slice-to-completion replay failed")
+		}
+	} else {
+		for ctx.Err() == nil {
+
+			minTime, ok := nextMinTime(streams)
+			if !ok {
+				break
+			}
+
+			groupsProcessed++
+
+			currentBarTime.Store(minTime)
+
+			// Reset MTFA aggregators on new trading day boundary.
+			minET := minTime.In(loc)
+			dayOpen := time.Date(minET.Year(), minET.Month(), minET.Day(), 9, 30, 0, 0, loc)
+			if dayOpen.After(currentSessionDate) {
+				if shardedPipeline != nil {
+					_ = shardedPipeline.ForEachShard(func(p *backtest.Pipeline, slab []domain.Symbol) error {
+						p.Monitor().ResetAggregators(dayOpen)
+						for _, sym := range slab {
+							p.Monitor().ResetSessionIndicators(sym.String())
+						}
+						return nil
+					})
+				} else {
+					monitorSvc.ResetAggregators(dayOpen)
+					for _, sym := range symbols {
+						monitorSvc.ResetSessionIndicators(sym.String())
+					}
+				}
+				currentSessionDate = dayOpen
+				log.Debug().Time("new_session_open", dayOpen).Msg("MTFA aggregators reset for new trading day")
+			}
+			for _, s := range streams {
+				if ctx.Err() != nil {
+					break
+				}
+				barPtr := s.peek()
+				if barPtr == nil || !barPtr.Time.Equal(minTime) {
+					continue
+				}
+				bar := *barPtr
+				_ = s.pop()
+
+				if simBrokerInst != nil {
+					simBrokerInst.UpdatePrice(bar.Symbol, bar.Close, bar.Time)
+				}
+				domain.SetFastClock(bar.Time)
+				idemKey := strconv.FormatInt(bar.Time.UnixNano(), 36) + string(bar.Symbol)
+				evt := domain.NewBacktestEvent(domain.EventMarketBarReceived, tenantID, envMode, idemKey, bar, bar.Time)
 				if err := eventBus.Publish(ctx, evt); err != nil {
 					if ctx.Err() != nil {
 						break
@@ -1023,50 +1074,15 @@ func main() {
 					log.Error().Err(err).Str("symbol", bar.Symbol.String()).Msg("failed to publish MarketBarReceived")
 					continue
 				}
+				barsProcessed++
 			}
-			barsProcessed++
-		}
-
-		// Barrier: wait for every shard to finish this tick before running
-		// serial post-tick work (exit rules, fills). Under Step 2 Dispatch
-		// is synchronous so WaitTick is a no-op; Step 4 replaces the
-		// Dispatch body with worker-pool fan-out and WaitTick becomes the
-		// WaitGroup barrier. Keeping the call in place now commits the
-		// final loop shape and lets Step 4 land as an internal-only change.
-		if shardedPipeline != nil {
-			shardedPipeline.WaitTick()
-		}
-
-		if backtestFlag {
-			eventBus.WaitPending()
-			if posMonSvc != nil {
-				if posMonPriceCache != nil {
-					optionBarsMu.Lock()
-					for sym, bars := range optionBarsCache {
-						for i := len(bars) - 1; i >= 0; i-- {
-							if !bars[i].Time.After(minTime) {
-								posMonPriceCache.UpdatePrice(sym, bars[i].Close, bars[i].Time)
-								break
-							}
-						}
-					}
-					optionBarsMu.Unlock()
+			if perBarDelay > 0 {
+				t := time.NewTimer(perBarDelay)
+				select {
+				case <-ctx.Done():
+					t.Stop()
+				case <-t.C:
 				}
-				posMonSvc.EvalExitRules(minTime)
-				eventBus.WaitPending()
-			}
-		}
-
-		if ctx.Err() != nil {
-			break
-		}
-		if perBarDelay > 0 {
-			t := time.NewTimer(perBarDelay)
-			select {
-			case <-ctx.Done():
-				t.Stop()
-				break
-			case <-t.C:
 			}
 		}
 	}
@@ -1512,3 +1528,106 @@ func (f *filteredSpecStore) Save(ctx context.Context, spec portstrategy.Spec) er
 func (f *filteredSpecStore) Watch(ctx context.Context) (<-chan start.StrategyID, error) {
 	return f.inner.Watch(ctx)
 }
+
+// replaySliceCoord implements backtest.SliceCoordinator for the
+// omo-replay backtest mode. It forwards per-tick and per-bar
+// callbacks the slice-to-completion dispatcher invokes into the
+// existing backtest services (simbroker price feed, pos monitor
+// exit-rule eval, day-rollover aggregator reset, option-bars
+// price injection) while tracking the replay clock the legacy
+// per-tick loop used to advance.
+type replaySliceCoord struct {
+	log              *zerolog.Logger
+	loc              *time.Location
+	symbols          []domain.Symbol
+	shardedPipeline  *backtest.ShardedPipeline
+	currentBarTime   *atomic.Value
+	currentDay       time.Time
+	eventBus         *memory.Bus
+	simBrokerInst    *simbroker.Broker
+	posMonSvc        *positionmonitor.Service
+	posMonPriceCache *positionmonitor.PriceCache
+	optionBarsCache  map[domain.Symbol][]domain.MarketBar
+	optionBarsMu     *sync.Mutex
+}
+
+// OnTickBegin advances the replay clock, resets monitor + runner
+// session indicators on a new trading day, and pokes the fast event
+// clock so domain.NewEvent calls during the replayed tick share one
+// OccurredAt stamp.
+func (c *replaySliceCoord) OnTickBegin(_ context.Context, tickTime time.Time) error {
+	c.currentBarTime.Store(tickTime)
+	domain.SetFastClock(tickTime)
+
+	minET := tickTime.In(c.loc)
+	dayOpen := time.Date(minET.Year(), minET.Month(), minET.Day(), 9, 30, 0, 0, c.loc)
+	if dayOpen.After(c.currentDay) {
+		_ = c.shardedPipeline.ForEachShard(func(p *backtest.Pipeline, slab []domain.Symbol) error {
+			p.Monitor().ResetAggregators(dayOpen)
+			for _, sym := range slab {
+				p.Monitor().ResetSessionIndicators(sym.String())
+			}
+			return nil
+		})
+		c.currentDay = dayOpen
+	}
+	return nil
+}
+
+// OnTickEnd drains pending bus handlers, injects the latest option
+// bar prices into the price cache (same behavior the legacy
+// per-tick loop had), and runs position-monitor exit rules for the
+// closing tick.
+func (c *replaySliceCoord) OnTickEnd(ctx context.Context, tickTime time.Time) error {
+	if c.eventBus != nil {
+		c.eventBus.WaitPending()
+	}
+	if c.posMonSvc == nil {
+		return nil
+	}
+	if c.posMonPriceCache != nil && c.optionBarsCache != nil && c.optionBarsMu != nil {
+		c.optionBarsMu.Lock()
+		for sym, bars := range c.optionBarsCache {
+			for i := len(bars) - 1; i >= 0; i-- {
+				if !bars[i].Time.After(tickTime) {
+					c.posMonPriceCache.UpdatePrice(sym, bars[i].Close, bars[i].Time)
+					break
+				}
+			}
+		}
+		c.optionBarsMu.Unlock()
+	}
+	c.posMonSvc.EvalExitRules(tickTime)
+	if c.eventBus != nil {
+		c.eventBus.WaitPending()
+	}
+	return nil
+}
+
+// OnBar pokes simbroker's last-price map so fills triggered by any
+// signal this bar eventually emits use the right close price.
+func (c *replaySliceCoord) OnBar(_ context.Context, raw domain.Event) error {
+	if c.simBrokerInst == nil {
+		return nil
+	}
+	bar, ok := raw.Payload.(domain.MarketBar)
+	if !ok {
+		return nil
+	}
+	c.simBrokerInst.UpdatePrice(bar.Symbol, bar.Close, bar.Time)
+	return nil
+}
+
+// PosLookup forwards to the shared position monitor so replay-time
+// ReconcileSignals sees live positions.
+func (c *replaySliceCoord) PosLookup(symbol string) (domain.MonitoredPosition, bool) {
+	if c.posMonSvc == nil {
+		return domain.MonitoredPosition{}, false
+	}
+	return c.posMonSvc.LookupPosition(symbol)
+}
+
+// Logger returns nil so the slice dispatch falls through to
+// slog.Default() inside ReconcileSignals. omo-replay's replay-path
+// logs already cover reconciliation via the runner's logger.
+func (c *replaySliceCoord) Logger() *slog.Logger { return nil }
