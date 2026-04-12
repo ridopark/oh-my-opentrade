@@ -131,8 +131,13 @@ func NewShardedPipeline(nworkers int, symbols []domain.Symbol, infra ShardedInfr
 		eventBus:      infra.EventBus,
 	}
 
-	for _, sym := range symbols {
-		idx := shardIndex(sym.String(), nworkers)
+	// Round-robin assignment produces near-perfect balance when the
+	// caller sorts symbols alphabetically (which omo-replay does).
+	// The old FNV-1a hash produced 3:1 imbalance on the 30-symbol
+	// universe (shard 7 had 6 symbols vs shard 5's 2), turning the
+	// straggler shard into the parallel-phase wall-time floor.
+	for i, sym := range symbols {
+		idx := i % nworkers
 		sp.slabs[idx] = append(sp.slabs[idx], sym)
 		sp.symbolToShard[sym.String()] = idx
 	}
