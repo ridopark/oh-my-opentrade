@@ -999,15 +999,18 @@ func main() {
 				if barPtr == nil || !barPtr.Time.Equal(minTime) {
 					continue
 				}
-				bar := *barPtr
 				_ = s.pop()
-				sliceBars = append(sliceBars, backtest.SliceBar{
-					TickTime:    minTime,
-					SessionOpen: sessionOpen,
-					Bar:         bar,
-					TenantID:    tenantID,
-					EnvMode:     envMode,
-				})
+				// Write directly into the pre-sized slice element to
+				// save one 100-byte struct copy per bar (was: copy bar
+				// into local, then copy local into struct literal).
+				n := len(sliceBars)
+				sliceBars = sliceBars[:n+1]
+				sb := &sliceBars[n]
+				sb.TickTime = minTime
+				sb.SessionOpen = sessionOpen
+				sb.Bar = *barPtr
+				sb.TenantID = tenantID
+				sb.EnvMode = envMode
 				barsProcessed++
 			}
 		}
