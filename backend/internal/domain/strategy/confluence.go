@@ -247,7 +247,6 @@ func ScoreHTFBias(ind IndicatorData, isLong bool) ConfluenceResult {
 	if !ok || htf.Bias == "" {
 		return ConfluenceResult{Components: []ComponentScore{comp}}
 	}
-	cs := ComponentScore{Name: "htf_bias", Group: "technical"}
 	if (isLong && htf.Bias == "BULLISH") || (!isLong && htf.Bias == "BEARISH") {
 		comp.Fired = true
 		return ConfluenceResult{Score: 8, Factors: []string{"htf_agree"}, Components: []ComponentScore{comp}}
@@ -266,7 +265,7 @@ func ScoreVWAP(bar Bar, ind IndicatorData, isLong bool) ConfluenceResult {
 	if ind.VWAP <= 0 {
 		return ConfluenceResult{Components: []ComponentScore{comp}}
 	}
-	cs.Value = (bar.Close - ind.VWAP) / ind.VWAP
+	comp.Value = (bar.Close - ind.VWAP) / ind.VWAP
 	if (isLong && bar.Close > ind.VWAP) || (!isLong && bar.Close < ind.VWAP) {
 		comp.Fired = true
 		return ConfluenceResult{Score: 7, Factors: []string{"vwap_aligned"}, Components: []ComponentScore{comp}}
@@ -285,50 +284,27 @@ func ScoreDarkPool(ind IndicatorData, isLong bool) ConfluenceResult {
 	}
 	score := 0
 	var factors []string
-	components := make([]ComponentScore, 0, 3)
 
-	// Elevated DP ratio
-	csElevated := ComponentScore{Name: "dp_elevated", Group: "darkpool", Value: ind.DPRatioZScore}
 	if ind.DPRatioZScore >= 1.5 {
 		score += 3
 		factors = append(factors, "dp_elevated")
-		csElevated.Weight = 3
-		csElevated.Fired = true
 	} else if ind.DPRatioZScore == 0 && ind.DPRatio >= 0.50 {
 		score += 3
 		factors = append(factors, "dp_elevated")
-		csElevated.Value = ind.DPRatio
-		csElevated.Weight = 3
-		csElevated.Fired = true
 	}
-	components = append(components, csElevated)
 
-	// Directional pressure
-	csDir := ComponentScore{Name: "dp_direction", Group: "darkpool", Value: ind.DPBuyRatio}
 	if isLong && ind.DPBuyRatio >= 0.60 {
 		score += 4
 		factors = append(factors, "dp_buy")
-		csDir.Name = "dp_buy"
-		csDir.Weight = 4
-		csDir.Fired = true
 	} else if !isLong && ind.DPBuyRatio <= 0.40 {
 		score += 4
 		factors = append(factors, "dp_sell")
-		csDir.Name = "dp_sell"
-		csDir.Weight = 4
-		csDir.Fired = true
 	}
-	components = append(components, csDir)
 
-	// Large block prints
-	csBlocks := ComponentScore{Name: "dp_blocks", Group: "darkpool", Value: ind.DPLargePrintPct}
 	if ind.DPLargePrintPct >= 0.15 {
 		score += 3
 		factors = append(factors, "dp_blocks")
-		csBlocks.Weight = 3
-		csBlocks.Fired = true
 	}
-	components = append(components, csBlocks)
 
 	comp.Fired = score > 0
 	return ConfluenceResult{Score: score, Factors: factors, Components: []ComponentScore{comp}}
@@ -379,63 +355,38 @@ func DPSizingMultiplier(ind IndicatorData, isLong bool, maxBoost float64) float6
 func ScoreRetestQuality(retestBarCount int, pullbackDepthPct float64, retestAvgVolume float64, breakoutVolume float64, confirmBodyRatio float64, confirmDirectional bool) ConfluenceResult {
 	var score int
 	var factors []string
-	components := make([]ComponentScore, 0, 4)
 
-	// Factor 1: Speed (0-5)
-	csSpeed := ComponentScore{Name: "rq_speed", Group: "retest", Value: float64(retestBarCount)}
 	switch {
 	case retestBarCount <= 3:
 		score += 5
 		factors = append(factors, "rq_speed")
-		csSpeed.Weight = 5
-		csSpeed.Fired = true
 	case retestBarCount <= 6:
 		score += 2
-		csSpeed.Weight = 2
 	}
-	components = append(components, csSpeed)
 
-	// Factor 2: Pullback depth (0-5)
-	csDepth := ComponentScore{Name: "rq_shallow", Group: "retest", Value: pullbackDepthPct}
 	switch {
 	case pullbackDepthPct < 0.382:
 		score += 5
 		factors = append(factors, "rq_shallow")
-		csDepth.Weight = 5
-		csDepth.Fired = true
 	case pullbackDepthPct < 0.50:
 		score += 3
-		csDepth.Weight = 3
 	}
-	components = append(components, csDepth)
 
-	// Factor 3: Volume dry-up (0-3)
-	csVol := ComponentScore{Name: "rq_dryup", Group: "retest"}
 	if breakoutVolume > 0 {
 		volRatio := retestAvgVolume / breakoutVolume
-		csVol.Value = volRatio
 		switch {
 		case volRatio < 0.60:
 			score += 3
 			factors = append(factors, "rq_dryup")
-			csVol.Weight = 3
-			csVol.Fired = true
 		case volRatio < 0.80:
 			score++
-			csVol.Weight = 1
 		}
 	}
-	components = append(components, csVol)
 
-	// Factor 4: Confirm candle quality (0-3)
-	csConfirm := ComponentScore{Name: "rq_confirm", Group: "retest", Value: confirmBodyRatio}
 	if confirmBodyRatio > 0.6 && confirmDirectional {
 		score += 3
 		factors = append(factors, "rq_confirm")
-		csConfirm.Weight = 3
-		csConfirm.Fired = true
 	}
-	components = append(components, csConfirm)
 
 	comp := ComponentScore{Name: "retest_quality", Group: "setup", Weight: 16, Value: pullbackDepthPct, Fired: score > 0}
 	return ConfluenceResult{Score: score, Factors: factors, Components: []ComponentScore{comp}}
