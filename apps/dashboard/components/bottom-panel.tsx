@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Activity, Zap, ChevronUp, ChevronDown, TrendingDown } from "lucide-react";
 import type { StrategySignalEvent, RegimeType, EntryGatedPayload, ORBPhaseUpdatePayload } from "@/lib/types";
 import { useRollingDecay, useComponentAttribution } from "@/hooks/use-decay";
+import { useStrategyList } from "@/hooks/queries";
 import { RollingPfChart } from "@/components/decay/rolling-pf-chart";
 import { AttributionChart } from "@/components/decay/attribution-chart";
 
@@ -27,7 +28,6 @@ export interface BarLogEntry {
 
 export type BottomTab = "signals" | "market" | "bars" | "strategy" | "decay";
 
-const DECAY_STRATEGIES = ["avwap_v1", "macd_only_v1", "orb_v1", "break_retest_v1"] as const;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -108,9 +108,12 @@ export function BottomPanel({
 }: BottomPanelProps) {
   const symbolsWithRegime = useMemo(() => Object.keys(regimeBySymbol).sort(), [regimeBySymbol]);
   const [expanded, setExpanded] = useState(false);
-  const [decayStrategy, setDecayStrategy] = useState<string>(DECAY_STRATEGIES[0]);
-  const rollingDecay = useRollingDecay(bottomTab === "decay" ? decayStrategy : "");
-  const componentAttribution = useComponentAttribution(bottomTab === "decay" ? decayStrategy : "");
+  const strategyList = useStrategyList();
+  const strategyIds = useMemo(() => (strategyList.data ?? []).map((s) => s.id), [strategyList.data]);
+  const [decayStrategy, setDecayStrategy] = useState<string>("");
+  const activeDecayStrategy = decayStrategy || strategyIds[0] || "";
+  const rollingDecay = useRollingDecay(bottomTab === "decay" ? activeDecayStrategy : "");
+  const componentAttribution = useComponentAttribution(bottomTab === "decay" ? activeDecayStrategy : "");
 
   const strategySummary = useMemo(() => {
     const avwapCount = avwapProgress.size;
@@ -461,12 +464,12 @@ export function BottomPanel({
               </label>
               <select
                 id="decay-strategy"
-                value={decayStrategy}
+                value={activeDecayStrategy}
                 onChange={(e) => setDecayStrategy(e.target.value)}
                 className="rounded border border-border bg-muted/30 px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-emerald-500"
               >
-                {DECAY_STRATEGIES.map((s) => (
-                  <option key={s} value={s}>{s}</option>
+                {strategyIds.map((id) => (
+                  <option key={id} value={id}>{id}</option>
                 ))}
               </select>
             </div>
