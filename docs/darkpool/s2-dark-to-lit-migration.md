@@ -1,5 +1,17 @@
 # S2. Dark-to-Lit Migration Momentum
 
+> **STATUS: DEPRIORITIZED (2026-04-12)**
+>
+> The predictive power study found that early-session (9:30-10:00) DP
+> buy_ratio has IC = +0.001 (t = 0.13) against next-day returns — zero
+> signal. The migration detection mechanism (early_dark_ratio > 1.5x
+> historical) would fire on noise given the tiny 30-minute estimation
+> window and high day-to-day variance.
+>
+> The daily-horizon signal exists but is inverted (high DP buying →
+> lower next-day returns). This is captured by the new
+> [Overnight Z-Score Bias](overnight-z-bias.md) strategy instead.
+
 ## Thesis
 
 Informed institutions begin accumulating (or distributing) in dark pools
