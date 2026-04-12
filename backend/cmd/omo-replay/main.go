@@ -27,6 +27,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/app/backtest"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
+	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
 	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
@@ -257,10 +258,25 @@ func main() {
 		posMonSvc         *positionmonitor.Service
 		posMonPriceCache  *positionmonitor.PriceCache
 		pipeline          *bootstrap.StrategyPipeline
+		strategyShared    *bootstrap.StrategyShared
+		shardedPipeline   *backtest.ShardedPipeline
 		alpacaAdapt       *alpacaadapter.Adapter
 		optionBarsCache   map[domain.Symbol][]domain.MarketBar
 		optionBarsMu      sync.Mutex
 	)
+
+	// snapshotFn routes GetLastSnapshot lookups to the sharded pipeline
+	// when backtest mode has built one; otherwise it falls through to the
+	// legacy single monitor. Declared as a late-bound closure because the
+	// pos-monitor factory needs a SnapshotFn *before* shardedPipeline is
+	// constructed, but it will only be *called* (from EvalExitRules) after
+	// the dispatch loop has assigned shardedPipeline.
+	snapshotFnRouted := func(sym string) (domain.IndicatorSnapshot, bool) {
+		if shardedPipeline != nil {
+			return shardedPipeline.LookupSnapshot(sym)
+		}
+		return monitorSvc.GetLastSnapshot(sym)
+	}
 	if err := eventBus.Subscribe(ctx, domain.EventSignalCreated, func(_ context.Context, ev domain.Event) error {
 		signalsMu.Lock()
 		defer signalsMu.Unlock()
@@ -310,7 +326,7 @@ func main() {
 			PositionGate: execBundle.PositionGate,
 			Broker:       simBrokerInst,
 			SpecStore:    specStore,
-			SnapshotFn:   monitorSvc.GetLastSnapshot,
+			SnapshotFn:   snapshotFnRouted,
 			TenantID:     "default",
 			EnvMode:      domain.EnvModePaper,
 			Clock:        clockFn,
@@ -373,12 +389,15 @@ func main() {
 			log.Warn().Msg("backtest: no Alpaca adapter — options_ai_scalping signals will be skipped")
 		}
 
-		pipeline, err = bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
+		// Shared strategy services: registry, specs, enricher, risk sizer.
+		// Built once; per-shard runner+router is constructed inside the
+		// shard factory below via BuildStrategyShard.
+		strategyDeps := bootstrap.StrategyDeps{
 			EventBus:        eventBus,
 			SpecStore:       specStore,
 			AIAdvisor:       llm.NewNoOpAdvisor(),
 			PositionLookup:  posMonBundle.Service.LookupPosition,
-			MarketDataFn:    monitorSvc.GetLastSnapshot,
+			MarketDataFn:    snapshotFnRouted,
 			OptionsMarket:   optionsMarket,
 			Repo:            nil,
 			TenantID:        "default",
@@ -387,19 +406,19 @@ func main() {
 			Clock:           clockFn,
 			DisableEnricher: noAIFlag,
 			Logger:          log,
-		})
+		}
+		strategyShared, err = bootstrap.BuildStrategyShared(strategyDeps)
 		if err != nil {
-			log.Fatal().Err(err).Msg("failed to build strategy pipeline")
+			log.Fatal().Err(err).Msg("failed to build strategy shared services")
 		}
 
-		if pipeline.Enricher == nil {
+		if strategyShared.Enricher == nil {
 			if err := eventBus.Subscribe(ctx, domain.EventSignalCreated, signalPassthrough(eventBus, log)); err != nil {
 				log.Fatal().Err(err).Msg("failed to subscribe signal passthrough")
 			}
 		}
 
 		signalTracker := perf.NewSignalTracker(eventBus, &noop.NoopPnLRepo{}, log.With().Str("component", "signal_tracker").Logger())
-		monitorSvc.SetBaseSymbols(pipeline.BaseSymbols)
 
 		// Backtest collector subscribes to FillReceived + MarketBarReceived.
 		collectorInst, err = backtest.NewCollector(eventBus, backtest.Config{
@@ -419,12 +438,104 @@ func main() {
 			log.Fatal().Err(err).Msg("failed to subscribe OrderIntentCreated counter")
 		}
 
-		if err := ingBundle.Service.Start(ctx); err != nil {
-			log.Fatal().Err(err).Msg("failed to start ingestion")
+		// Capture ORB spec config for per-shard monitor application.
+		var orbParamsCaptured map[string]any
+		var orbTimeframeCaptured string
+		if orbSpec, orbErr := specStore.GetLatest(context.Background(), orbID); orbErr == nil {
+			orbParamsCaptured = orbSpec.Params
+			if len(orbSpec.Routing.Timeframes) > 0 {
+				orbTimeframeCaptured = string(orbSpec.Routing.Timeframes[0])
+			}
 		}
-		if err := monitorSvc.Start(ctx); err != nil {
-			log.Fatal().Err(err).Msg("failed to start monitor")
+
+		// Shard factory — invoked once per slab by NewShardedPipeline.
+		// Each shard owns its own ingestion filter, monitor, and runner.
+		// The shared enricher and risk sizer live outside any shard and
+		// serve signals from every shard via the common event bus.
+		shardFactory := func(slab []domain.Symbol) (backtest.ShardServices, error) {
+			shardLog := log.With().Str("shard_symbols", fmt.Sprintf("%d", len(slab))).Logger()
+
+			filter := ingestion.NewAdaptiveFilter(20, 4.0)
+			filter.SetPassthrough(true)
+			ingSvc := ingestion.NewService(eventBus, &noop.NoopRepo{}, filter, shardLog.With().Str("component", "ingestion_shard").Logger())
+			ingSvc.SetBacktest(true)
+
+			monSvc, err := bootstrap.BuildMonitor(bootstrap.MonitorDeps{
+				EventBus: eventBus,
+				Repo:     repo,
+				Logger:   shardLog,
+			})
+			if err != nil {
+				return backtest.ShardServices{}, fmt.Errorf("shard monitor: %w", err)
+			}
+			if orbParamsCaptured != nil {
+				monSvc.SetORBConfig(orbParamsCaptured)
+			}
+			if orbTimeframeCaptured != "" {
+				monSvc.SetORBTimeframe(orbTimeframeCaptured)
+			}
+
+			shardStrat, err := bootstrap.BuildStrategyShard(strategyShared, slab, strategyDeps)
+			if err != nil {
+				return backtest.ShardServices{}, fmt.Errorf("shard strategy: %w", err)
+			}
+
+			return backtest.ShardServices{
+				Ingestion: ingSvc,
+				Monitor:   monSvc,
+				Runner:    shardStrat.Runner,
+			}, nil
 		}
+
+		nworkers := runtime.GOMAXPROCS(0)
+		if nworkers > len(symbols) {
+			nworkers = len(symbols)
+		}
+		if nworkers < 1 {
+			nworkers = 1
+		}
+		shardedPipeline, err = backtest.NewShardedPipeline(nworkers, symbols, backtest.ShardedInfra{
+			PriceCache: posMonPriceCache,
+			Collector:  collectorInst,
+			EventBus:   eventBus,
+			Factory:    shardFactory,
+		})
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to build sharded pipeline")
+		}
+		log.Info().Int("nworkers", shardedPipeline.ShardCount()).Msg("backtest sharded direct-dispatch pipeline enabled")
+
+		// Per-shard SetBaseSymbols — each shard's base set is exactly its
+		// slab (sharded dispatch guarantees a shard never sees a bar
+		// outside its slab, so restricting base symbols this way is both
+		// safe and avoids loose allowlist behavior).
+		_ = shardedPipeline.ForEachShard(func(p *backtest.Pipeline, slab []domain.Symbol) error {
+			syms := make([]string, len(slab))
+			for i, s := range slab {
+				syms[i] = s.String()
+			}
+			p.Monitor().SetBaseSymbols(syms)
+			return nil
+		})
+
+		// Start per-shard monitors + runners. Monitor/runner Start()
+		// registers bus subscriptions; direct dispatch bypasses those in
+		// the hot loop, but bus-path handlers (FillReceived,
+		// OrderIntentRejected) still need a live subscription per shard.
+		// Per-shard handleFill is safe: each shard's runner filters by
+		// its own slab-owned instances and returns nil for foreign fills.
+		if err := shardedPipeline.ForEachShard(func(p *backtest.Pipeline, _ []domain.Symbol) error {
+			if err := p.Monitor().Start(ctx); err != nil {
+				return fmt.Errorf("start shard monitor: %w", err)
+			}
+			if err := p.Runner().Start(ctx); err != nil {
+				return fmt.Errorf("start shard runner: %w", err)
+			}
+			return nil
+		}); err != nil {
+			log.Fatal().Err(err).Msg("failed to start sharded monitor/runner")
+		}
+
 		if err := execBundle.LedgerWriter.Start(ctx, "backtest", domain.EnvModePaper); err != nil {
 			log.Fatal().Err(err).Msg("failed to start ledger writer")
 		}
@@ -440,22 +551,16 @@ func main() {
 		if err := posMonBundle.Service.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start position monitor")
 		}
-		if err := pipeline.Runner.Start(ctx); err != nil {
-			log.Fatal().Err(err).Msg("failed to start strategy runner")
-		}
-		if pipeline.Enricher != nil {
-			if err := pipeline.Enricher.Start(ctx); err != nil {
+		if strategyShared.Enricher != nil {
+			if err := strategyShared.Enricher.Start(ctx); err != nil {
 				log.Fatal().Err(err).Msg("failed to start signal debate enricher")
 			}
 		}
 		// Inject replay clock into risk sizer so exit cooldowns and circuit
 		// breakers use simulated bar time instead of wall-clock time.
-		pipeline.RiskSizer.SetNowFn(clockFn)
-		if backtestFlag {
-			pipeline.RiskSizer.SetExitCooldown(3 * time.Minute)
-		}
-
-		if err := pipeline.RiskSizer.Start(ctx); err != nil {
+		strategyShared.RiskSizer.SetNowFn(clockFn)
+		strategyShared.RiskSizer.SetExitCooldown(3 * time.Minute)
+		if err := strategyShared.RiskSizer.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start risk sizer")
 		}
 
@@ -657,37 +762,8 @@ func main() {
 	}
 	warmWg.Wait()
 
-	// Build the sharded direct-dispatch pipeline BEFORE the serial warmup so
-	// warmup calls can be routed through ForEachShard / RouteSymbol to the
-	// correct shard. At Stage 3a the factory returns the pre-built legacy
-	// services for every slab, so Nworkers=1 is functionally identical to
-	// the unsharded path — the routing is pure indirection. Stage 3b swaps
-	// the factory to build fresh services per slab and bumps Nworkers.
-	var shardedPipeline *backtest.ShardedPipeline
-	if backtestFlag {
-		var runnerPtr *strategy.Runner
-		if pipeline != nil {
-			runnerPtr = pipeline.Runner
-		}
-		shardFactory := func(slab []domain.Symbol) (backtest.ShardServices, error) {
-			return backtest.ShardServices{
-				Ingestion: ingBundle.Service,
-				Monitor:   monitorSvc,
-				Runner:    runnerPtr,
-			}, nil
-		}
-		var err error
-		shardedPipeline, err = backtest.NewShardedPipeline(1, symbols, backtest.ShardedInfra{
-			PriceCache: posMonPriceCache,
-			Collector:  collectorInst,
-			EventBus:   eventBus,
-			Factory:    shardFactory,
-		})
-		if err != nil {
-			log.Fatal().Err(err).Msg("failed to build sharded pipeline")
-		}
-		log.Info().Int("nworkers", shardedPipeline.ShardCount()).Msg("backtest sharded direct-dispatch pipeline enabled")
-	}
+	// shardedPipeline was constructed inside the backtest block (via
+	// BuildStrategyShared + shard factory) before warmup.
 
 	// Phase 2: serial WarmUp (mutates monitorSvc shared state).
 	for _, wr := range warmResults {
@@ -753,7 +829,7 @@ func main() {
 		monitorSvc.InitAggregators(symbols, replaySessionOpen)
 	}
 
-	if pipeline != nil && pipeline.Runner != nil {
+	if shardedPipeline != nil || (pipeline != nil && pipeline.Runner != nil) {
 		// Drop telemetry-only EntryGated/ORBPhaseUpdate events — replay has
 		// no SSE consumer and they cost ~1M allocations per run.
 		if shardedPipeline != nil {
@@ -994,7 +1070,12 @@ func main() {
 	signalsMu.Unlock()
 
 	var rthSuppressed int64
-	if pipeline != nil && pipeline.Runner != nil {
+	if shardedPipeline != nil {
+		_ = shardedPipeline.ForEachShard(func(p *backtest.Pipeline, _ []domain.Symbol) error {
+			rthSuppressed += p.Runner().SignalsRTHSuppressed()
+			return nil
+		})
+	} else if pipeline != nil && pipeline.Runner != nil {
 		rthSuppressed = pipeline.Runner.SignalsRTHSuppressed()
 	}
 
