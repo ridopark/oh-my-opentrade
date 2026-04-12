@@ -781,114 +781,117 @@ func main() {
 	// shardedPipeline was constructed inside the backtest block (via
 	// BuildStrategyShared + shard factory) before warmup.
 
-	// Phase 2: serial WarmUp (mutates monitorSvc shared state).
+	// Populate warmup bars cache for later use in runner warmup.
 	for _, wr := range warmResults {
 		warmupBarsCache[wr.sym.String()] = wr.bars
-		var n int
-		if shardedPipeline != nil {
-			shardedPipeline.RouteSymbol(wr.sym.String(), func(p *backtest.Pipeline) {
-				n = p.Monitor().WarmUp(wr.bars)
-				p.Monitor().ResetSessionIndicators(wr.sym.String())
-				p.Monitor().MarkReady(wr.sym.String())
-			})
-		} else {
-			n = monitorSvc.WarmUp(wr.bars)
-			monitorSvc.ResetSessionIndicators(wr.sym.String())
-			monitorSvc.MarkReady(wr.sym.String())
-		}
-		warmupLog.Info().Str("symbol", wr.sym.String()).Int("warmup_bars", n).Msg("indicator warmup done")
-	}
-
-	for _, s := range streams {
-		replayBars := s.bars
-		if len(replayBars) > 0 {
-			bridgeCount := 50
-			if bridgeCount > len(replayBars) {
-				bridgeCount = len(replayBars)
-			}
-			if shardedPipeline != nil {
-				shardedPipeline.RouteSymbol(s.symbol.String(), func(p *backtest.Pipeline) {
-					p.Monitor().WarmUp(replayBars[:bridgeCount])
-				})
-			} else {
-				monitorSvc.WarmUp(replayBars[:bridgeCount])
-			}
-		}
-	}
-
-	for _, sym := range symbols {
-		bars, ok := warmupBarsCache[sym.String()]
-		if !ok || len(bars) == 0 {
-			continue
-		}
-		if shardedPipeline != nil {
-			shardedPipeline.RouteSymbol(sym.String(), func(p *backtest.Pipeline) {
-				if ing := p.Ingestion(); ing != nil {
-					if f := ing.Filter(); f != nil {
-						f.Seed(sym, bars)
-					}
-				}
-			})
-		} else {
-			ingBundle.Filter.Seed(sym, bars)
-		}
 	}
 
 	fromET := fromTime.In(loc)
 	replaySessionOpen := time.Date(fromET.Year(), fromET.Month(), fromET.Day(), 9, 30, 0, 0, loc)
+
+	// Phase 2: per-shard warmup + setup in parallel. Each shard's
+	// monitor/runner/ingestion is isolated, so N shards can warm up
+	// concurrently. The serial loop was ~1-2 s on a 30-sym run; at
+	// 8 shards the parallel version finishes in ~0.2-0.3 s.
 	if shardedPipeline != nil {
-		_ = shardedPipeline.ForEachShard(func(p *backtest.Pipeline, slab []domain.Symbol) error {
-			p.Monitor().InitAggregators(slab, replaySessionOpen)
-			return nil
-		})
+		snapshotFn := makeSnapshotFn()
+		var warmWg2 sync.WaitGroup
+		for shardIdx := 0; shardIdx < shardedPipeline.ShardCount(); shardIdx++ {
+			warmWg2.Add(1)
+			go func(idx int) {
+				defer warmWg2.Done()
+				p := shardedPipeline.Shards()[idx]
+				slab := shardedPipeline.Slab(idx)
+				// Monitor warmup + reset + mark ready.
+				for _, sym := range slab {
+					if bars, ok := warmupBarsCache[sym.String()]; ok && len(bars) > 0 {
+						p.Monitor().WarmUp(bars)
+						p.Monitor().ResetSessionIndicators(sym.String())
+						p.Monitor().MarkReady(sym.String())
+					}
+				}
+				// Bridge warmup: first 50 replay bars per symbol.
+				for _, s := range streams {
+					if shardedPipeline.ShardIndexFor(s.symbol.String()) != idx {
+						continue
+					}
+					if len(s.bars) > 0 {
+						bridgeCount := 50
+						if bridgeCount > len(s.bars) {
+							bridgeCount = len(s.bars)
+						}
+						p.Monitor().WarmUp(s.bars[:bridgeCount])
+					}
+				}
+				// Seed adaptive filter.
+				for _, sym := range slab {
+					if bars, ok := warmupBarsCache[sym.String()]; ok && len(bars) > 0 {
+						if ing := p.Ingestion(); ing != nil {
+							if f := ing.Filter(); f != nil {
+								f.Seed(sym, bars)
+							}
+						}
+					}
+				}
+				// InitAggregators for the shard's slab.
+				p.Monitor().InitAggregators(slab, replaySessionOpen)
+				// Runner warmup + suppress + init.
+				p.Runner().SetSuppressProgressEvents(true)
+				for _, sym := range slab {
+					if bars, ok := warmupBarsCache[sym.String()]; ok && len(bars) > 0 {
+						p.Runner().WarmUp(sym.String(), bars, snapshotFn)
+					}
+				}
+				p.Runner().InitAggregators(replaySessionOpen)
+				p.Runner().ClearAllPendingStates()
+			}(shardIdx)
+		}
+		warmWg2.Wait()
+		warmupLog.Info().Int("shards", shardedPipeline.ShardCount()).Msg("parallel per-shard warmup complete")
 	} else {
+		// Legacy single-shard warmup path.
+		for _, wr := range warmResults {
+			n := monitorSvc.WarmUp(wr.bars)
+			monitorSvc.ResetSessionIndicators(wr.sym.String())
+			monitorSvc.MarkReady(wr.sym.String())
+			warmupLog.Info().Str("symbol", wr.sym.String()).Int("warmup_bars", n).Msg("indicator warmup done")
+		}
+		for _, s := range streams {
+			if len(s.bars) > 0 {
+				bridgeCount := 50
+				if bridgeCount > len(s.bars) {
+					bridgeCount = len(s.bars)
+				}
+				monitorSvc.WarmUp(s.bars[:bridgeCount])
+			}
+		}
+		for _, sym := range symbols {
+			if bars, ok := warmupBarsCache[sym.String()]; ok && len(bars) > 0 {
+				ingBundle.Filter.Seed(sym, bars)
+			}
+		}
 		monitorSvc.InitAggregators(symbols, replaySessionOpen)
 	}
 
-	if shardedPipeline != nil || (pipeline != nil && pipeline.Runner != nil) {
-		// Drop telemetry-only EntryGated/ORBPhaseUpdate events — replay has
-		// no SSE consumer and they cost ~1M allocations per run.
-		if shardedPipeline != nil {
-			_ = shardedPipeline.ForEachShard(func(p *backtest.Pipeline, _ []domain.Symbol) error {
-				p.Runner().SetSuppressProgressEvents(true)
-				return nil
-			})
-		} else {
-			pipeline.Runner.SetSuppressProgressEvents(true)
-		}
+	// Runner warmup for the legacy non-sharded path (sharded path
+	// already did runner warmup inside the parallel block above).
+	if shardedPipeline == nil && pipeline != nil && pipeline.Runner != nil {
+		pipeline.Runner.SetSuppressProgressEvents(true)
 		snapshotFn := makeSnapshotFn()
 		for _, sym := range symbols {
 			bars := warmupBarsCache[sym.String()]
 			if len(bars) == 0 {
 				continue
 			}
-			if shardedPipeline != nil {
-				shardedPipeline.RouteSymbol(sym.String(), func(p *backtest.Pipeline) {
-					p.Runner().WarmUp(sym.String(), bars, snapshotFn)
-				})
-			} else {
-				pipeline.Runner.WarmUp(sym.String(), bars, snapshotFn)
-			}
+			pipeline.Runner.WarmUp(sym.String(), bars, snapshotFn)
 		}
-		if shardedPipeline != nil {
-			_ = shardedPipeline.ForEachShard(func(p *backtest.Pipeline, _ []domain.Symbol) error {
-				p.Runner().InitAggregators(replaySessionOpen)
-				return nil
-			})
-		} else {
-			pipeline.Runner.InitAggregators(replaySessionOpen)
-		}
+		pipeline.Runner.InitAggregators(replaySessionOpen)
 		warmupLog.Info().Time("session_open", replaySessionOpen).Msg("strategy runner HTF aggregators initialized")
-		if shardedPipeline != nil {
-			_ = shardedPipeline.ForEachShard(func(p *backtest.Pipeline, _ []domain.Symbol) error {
-				p.Runner().ClearAllPendingStates()
-				return nil
-			})
-		} else {
-			pipeline.Runner.ClearAllPendingStates()
-		}
+		pipeline.Runner.ClearAllPendingStates()
 		warmupLog.Info().Msg("strategy runner pending states cleared after warmup")
+	}
 
+	if shardedPipeline != nil || (pipeline != nil && pipeline.Runner != nil) {
 		sessionResolver := backtest.NewSessionResolver(loc)
 		// Parallelize per-symbol session loads — pure DB work, no shared state.
 		// The resolver's Load method is safe to call concurrently on different
