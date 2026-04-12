@@ -33,26 +33,6 @@ type SliceBar struct {
 	EnvMode     domain.EnvMode
 }
 
-// toEvent builds a MarketBarReceived domain.Event from this row.
-// Called once per bar during Phase A and once again during replay —
-// short-lived allocations the young-gen GC reclaims cheaply.
-//
-// The idempotency key is left empty: direct-dispatch doesn't route
-// through any handler that deduplicates on it, so the 40-byte
-// strconv.FormatInt + symbol concat is pure waste in backtest.
-// ~450 MB of allocations per 30 sym / 1 yr run disappear as a
-// result.
-func (sb SliceBar) toEvent() domain.Event {
-	return domain.NewBacktestEvent(
-		domain.EventMarketBarReceived,
-		sb.TenantID,
-		sb.EnvMode,
-		"",
-		sb.Bar,
-		sb.Bar.Time,
-	)
-}
-
 // SliceCoordinator is the callback surface RunSliceToCompletion uses
 // to let the caller run per-tick pre- and post-processing (clock
 // advance, day rollover, exit rule evaluation) without the backtest
@@ -76,9 +56,8 @@ type SliceCoordinator interface {
 	// collector / priceCache side effects run in the replay loop.
 	// Implementations typically call simbroker.UpdatePrice so fills
 	// triggered by signals from this bar use the correct close
-	// price. Receives the raw MarketBarReceived event (not the
-	// sanitized one) so callers can extract the original bar.
-	OnBar(ctx context.Context, raw domain.Event) error
+	// price.
+	OnBar(ctx context.Context, bar domain.MarketBar) error
 
 	// PosLookup is the live position-lookup function the replay loop
 	// uses to rerun ReconcileSignals against fresh positions before
@@ -316,24 +295,18 @@ func (sp *ShardedPipeline) replayFlat(
 			continue
 		}
 
-		// Build the bar event lazily — reused by coord.OnBar,
-		// collector, and priceCache below, then discarded so the
-		// young-gen GC reclaims it after the iteration. Avoids
-		// retaining 6 GB of pre-built events in the flat slab for
-		// the full run.
-		evt := bars[i].toEvent()
-
-		// Per-bar serial side effects.
-		if err := coord.OnBar(ctx, evt); err != nil {
+		// Per-bar serial side effects — typed paths avoid building
+		// a domain.Event per bar (~950 MB of allocations per run
+		// in the old toEvent() approach).
+		bar := bars[i].Bar
+		if err := coord.OnBar(ctx, bar); err != nil {
 			return fmt.Errorf("backtest: slice coordinator OnBar: %w", err)
 		}
 		if sp.collector != nil {
-			_ = sp.collector.OnBarDirect(ctx, evt)
+			sp.collector.OnBarTyped(bar)
 		}
 		if sp.priceCache != nil {
-			// Use the raw bar event — adaptive filter runs in
-			// backtest PassThrough mode so sanitized == raw.
-			_ = sp.priceCache.HandleBarDirect(ctx, evt)
+			sp.priceCache.HandleBarTyped(bar)
 		}
 
 		// Drain any signals this shard emitted while processing

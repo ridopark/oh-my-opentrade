@@ -381,6 +381,76 @@ func (c *Collector) OnBarDirect(ctx context.Context, event domain.Event) error {
 	return c.onBar(ctx, event)
 }
 
+// OnBarTyped is the allocation-free variant of onBar for the slice
+// replay loop. Accepts the raw MarketBar without Event wrapping —
+// saves ~300 MB of Event struct allocations per 30 sym / 1 yr run.
+// Semantics are identical to onBar: incremental mark-to-market,
+// daily Sharpe tracking, drawdown, equity curve sampling.
+func (c *Collector) OnBarTyped(bar domain.MarketBar) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	sym := string(bar.Symbol)
+	c.lastPrices[sym] = bar.Close
+
+	oldPV := c.posValue[sym]
+	var newPV float64
+	if opens := c.openBuys[sym]; len(opens) > 0 {
+		for _, tr := range opens {
+			mult := tr.Multiplier
+			if mult <= 0 {
+				mult = 1
+			}
+			newPV += tr.Quantity * bar.Close * mult
+		}
+	}
+	if opens := c.openSells[sym]; len(opens) > 0 {
+		for _, tr := range opens {
+			mult := tr.Multiplier
+			if mult <= 0 {
+				mult = 1
+			}
+			newPV -= tr.Quantity * bar.Close * mult
+		}
+	}
+	c.posValue[sym] = newPV
+	c.totalPosValue += newPV - oldPV
+	equity := c.cash + c.totalPosValue
+
+	y, m, d := bar.Time.Date()
+	barDay := y*10000 + int(m)*100 + d
+	if c.currentDay == 0 {
+		c.currentDay = barDay
+	} else if barDay != c.currentDay {
+		if c.prevDayEquity > 0 {
+			r := (c.latestEquity - c.prevDayEquity) / c.prevDayEquity
+			c.returnSum += r
+			c.returnSumSq += r * r
+			c.returnCount++
+		}
+		if !c.lastBarTime.IsZero() {
+			c.equityCurve = append(c.equityCurve, EquityPoint{
+				T:  c.lastBarTime.Unix(),
+				Eq: c.latestEquity,
+			})
+		}
+		c.prevDayEquity = c.latestEquity
+		c.currentDay = barDay
+	}
+	c.latestEquity = equity
+	c.lastBarTime = bar.Time
+
+	if equity > c.peakEquity {
+		c.peakEquity = equity
+	}
+	if c.peakEquity > 0 {
+		dd := (c.peakEquity - equity) / c.peakEquity
+		if dd > c.maxDrawdown {
+			c.maxDrawdown = dd
+		}
+	}
+}
+
 // onBar processes a MarketBarReceived event to track last prices and equity.
 // Uses incremental mark-to-market: only recomputes position value for the
 // bar's symbol rather than iterating all open positions on every bar.

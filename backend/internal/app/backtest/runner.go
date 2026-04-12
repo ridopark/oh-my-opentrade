@@ -2036,12 +2036,8 @@ func (c *runnerSliceCoord) OnTickEnd(ctx context.Context, tickTime time.Time) er
 	return nil
 }
 
-func (c *runnerSliceCoord) OnBar(_ context.Context, raw domain.Event) error {
+func (c *runnerSliceCoord) OnBar(_ context.Context, bar domain.MarketBar) error {
 	if c.sim == nil {
-		return nil
-	}
-	bar, ok := raw.Payload.(domain.MarketBar)
-	if !ok {
 		return nil
 	}
 	c.sim.UpdatePrice(bar.Symbol, bar.Close, bar.Time)

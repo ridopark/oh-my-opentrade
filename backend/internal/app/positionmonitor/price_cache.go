@@ -51,6 +51,19 @@ func (pc *PriceCache) HandleBarDirect(ctx context.Context, event domain.Event) e
 	return pc.handleBar(ctx, event)
 }
 
+// HandleBarTyped is the allocation-free variant for the slice replay
+// loop. Accepts bar data directly without Event wrapping.
+func (pc *PriceCache) HandleBarTyped(bar domain.MarketBar) {
+	pc.mu.Lock()
+	pc.prices[bar.Symbol] = ports.PriceSnapshot{
+		Price:      bar.Close,
+		High:       bar.High,
+		Low:        bar.Low,
+		ObservedAt: pc.clock(),
+	}
+	pc.mu.Unlock()
+}
+
 // handleBar processes a MarketBarSanitized event and updates the cache.
 func (pc *PriceCache) handleBar(_ context.Context, event domain.Event) error {
 	bar, ok := event.Payload.(domain.MarketBar)
