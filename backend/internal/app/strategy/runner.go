@@ -460,6 +460,9 @@ func NewRunner(
 		regimeDetector: monitor.NewRegimeDetector(),
 		anchorRegimes:          make(map[string]map[string]domain.MarketRegime),
 		collectedAnchorRegimes: make(map[string]map[string]start.AnchorRegime),
+		lateSessionDPZ:       make(map[string]float64),
+		lateSessionDPRolling: make(map[string]*dpRollingStats),
+		lateSessionDPDate:    make(map[string]int),
 	}
 }
 
@@ -887,12 +890,6 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 		etTime := barTime.In(etLocation)
 		dayKey := etTime.Year()*10000 + int(etTime.Month())*100 + etTime.Day()
 
-		if r.lateSessionDPDate == nil {
-			r.lateSessionDPDate = make(map[string]int)
-			r.lateSessionDPZ = make(map[string]float64)
-			r.lateSessionDPRolling = make(map[string]*dpRollingStats)
-		}
-
 		if r.lateSessionDPDate[sym] != dayKey {
 			r.lateSessionDPDate[sym] = dayKey
 			prevDay := etTime.AddDate(0, 0, -1)
@@ -1189,6 +1186,13 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		}
 	}
 
+	// Late-session DP Z-score: daily signal from prior day's late-session DP flow.
+	// Must be outside the per-bar DP block because Z is computed once per day
+	// in applyStateUpdate and doesn't depend on the current bar having DP data.
+	if z, ok := r.lateSessionDPZ[symbol]; ok {
+		indicators.LateSessionDPZ = z
+	}
+
 	if !r.indLogOnce[symbol] {
 		if indicators.RSI == 0 || indicators.VolumeSMA == 0 {
 			r.logger.Debug("indicators may not be populated yet",
@@ -1364,6 +1368,10 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 				// Copy S/R levels from 1m overlay
 				htfIndicators.DPSupportLevel = indicators.DPSupportLevel
 				htfIndicators.DPResistanceLevel = indicators.DPResistanceLevel
+			}
+			// Copy late-session Z (daily signal, independent of per-bar DP data)
+			if z, ok := r.lateSessionDPZ[symbol]; ok {
+				htfIndicators.LateSessionDPZ = z
 			}
 		}
 

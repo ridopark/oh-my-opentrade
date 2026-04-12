@@ -383,9 +383,7 @@ func mergeTelemetry(dst, src map[string]string) {
 // across the AVWAP entry evaluators.
 func (s *AVWAPState) newEntrySignal(ec entryContext, side start.Side, strength float64, tags map[string]string) (start.Signal, error) {
 	mergeTelemetry(tags, entryTelemetryTags(ec, s.Indicators))
-	if s.Indicators.LateSessionDPZ != 0 {
-		tags["late_session_dp_z"] = fmt.Sprintf("%.3f", s.Indicators.LateSessionDPZ)
-	}
+	tags["late_session_dp_z"] = fmt.Sprintf("%.3f", s.Indicators.LateSessionDPZ)
 	return start.NewSignal(ec.instanceID, ec.symbol, start.SignalEntry, side, strength, tags)
 }
 
