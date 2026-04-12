@@ -63,12 +63,34 @@ runner `SetDeferSignalPublish`, two-phase split, persistent worker
 pool. Only the coordination model (per-tick barriers → single
 end-of-run merge) is missing.
 
-**Phase 3: IN PROGRESS.** Slice-to-completion architecture, per the
-go-architect consultation during Phase 2. Partition bars by symbol
-hash at replay start, run shards to completion in parallel, k-way
-merge signals + fills in tick order at the end. Eliminates per-tick
-barriers entirely. Target: **6–8 s** realistic, **6 s** stretch. Plan:
-[`phase3-slice-to-completion-plan.md`](phase3-slice-to-completion-plan.md).
+**Phase 3: COMPLETE.** Slice-to-completion architecture shipped.
+Eliminates 240k per-tick barriers; shards run to completion in
+parallel, k-way merge replays signals in tick order.
+
+| | 30 sym / 1yr |
+|---|---|
+| Post Phase 3+4+5 (slice + alloc reduction) | **18–20 s** |
+| Phase 3 target | ≤6 s |
+| **Gate result** | **❌ target missed, but 86% reduction from pre-sprint** |
+
+**Phase 4+5 (allocation reduction)** also complete. Total allocs
+dropped from 19 GB → 9.7 GB per run. Typed hot-path methods
+(monitor, runner, ingestion, pipeline) bypass Event construction on
+the Phase A path. GC eliminated from pprof top-25.
+
+**Dashboard backtest runner** also ported to slice dispatch at
+Nworkers=1 (from the pre-Phase-1 eventBus.PublishDirect path).
+
+Full trajectory from pre-sprint to current:
+
+| Workload | Pre-sprint | Current | Reduction |
+|---|---|---|---|
+| 8 sym / 3 mo | 10.14 s | **1.88 s** | -81% |
+| 8 sym / 1 yr | 31.60 s | **5.01 s** | -84% |
+| 30 sym / 1 yr | ~130 s | **18–20 s** | -86% |
+
+Docs: [`p3-gate3-findings.md`](p3-gate3-findings.md),
+[`p4-allocation-reduction.md`](p4-allocation-reduction.md).
 
 ## The 16-task plan
 
@@ -110,48 +132,47 @@ bars/shard) is below Go's scheduler coordination floor. No tuning
 inside the per-tick-barrier architecture can cross the ~15 s wall-time
 floor, let alone reach 6 s.
 
-### Phase 3 — slice-to-completion architecture (IN PROGRESS)
-Target: 30 sym / 1yr ≤ 6-8 s on an 8-core host. Effort estimate:
-**1-2 days** for backtest path. Full live integration and unified
-scheduler is a separate follow-up (~1 week) that can ship
-independently.
+### Phase 3 — slice-to-completion architecture (COMPLETE)
+Target: 30 sym / 1yr ≤ 6 s. Actual: **18–20 s** (gate missed, but
+86% reduction from pre-sprint baseline).
 
-**Scope (backtest-first).** Partition the full bar stream by FNV-1a
-symbol hash into Nworkers disjoint slices at replay start. Spawn one
-goroutine per shard that runs every bar in its slice to completion
-(ingestion + monitor + runner, with signals deferred). Each shard
-writes emitted signals into a per-shard ordered buffer tagged with
-the original tick timestamp. After all shards finish, main performs
-a serial k-way merge of the per-shard buffers and replays the merged
-stream through the event bus in dispatch order. Downstream handlers
-(risk sizer, execution, sim broker, position monitor) see signals in
-identical order to the single-threaded path, so parity is preserved.
+| # | Task | Status | Commit / notes |
+|---|---|---|---|
+| P3-1 | Runner/gate position-read audit | ✅ done | [`p3-1-runner-position-read-audit.md`](p3-1-runner-position-read-audit.md) — only `ReconcileSignals` reads positions; deferred to replay via `SetDeferReconcile` |
+| P3-2 | Slice-to-completion dispatch | ✅ done | `RunSliceToCompletion` + `replayFlat` in `slice_pipeline.go` |
+| P3-3 | K-way merge + replay | ✅ done | Flat-indexed per-shard emission buffers, replay iterates input bars in order |
+| P3-4 | Position-state handling | ✅ done | Batch-reconcile per bar in replay loop against live `PosLookup` |
+| P3-5 | omo-replay + dashboard wiring | ✅ done | Both paths use `RunSliceToCompletion` at max speed |
+| **GATE-3** | Re-benchmark | ❌ **missed** | 18–20 s vs 6 s target. See [`p3-gate3-findings.md`](p3-gate3-findings.md) |
 
-**Why this beats per-tick fan-out.** Eliminates the 240 k per-tick
-barriers. N workers run continuously for the full ~6 s of parallel
-work instead of sleeping and waking 240 k times. Futex overhead drops
-from 6 s to ~0. Work granularity per worker becomes "entire slice
-of the bar stream" — seconds of work, not microseconds.
-
-**Soundness requirement: no mid-shard position reads.** If strategy
-gate logic in `runner.handleBar` reads mutable position state
-(`posLookup`) during bar processing, the pass will see stale
-positions because signals aren't yet executed. Resolution path
-chosen in P3-1 audit below.
+### Phase 4+5 — allocation reduction (COMPLETE)
 
 | # | Task | Status | Notes |
 |---|---|---|---|
-| P3-1 | Runner/gate position-read audit + strategy classification | ⏳ pending | Grep `runner.handleBar`, strategy impls, gate chain for `posLookup` / position-state reads. Classify each as (a) pure indicator-based (no audit needed), (b) reads positions but can tolerate stale reads, (c) requires fresh position state → needs deferred gate eval. |
-| P3-2 | Slice-to-completion dispatch in `ShardedPipeline` | ⏳ pending | New `RunSliceToCompletion(ctx, bars)` entry point. Partitions bars, spawns N goroutines, each runs to completion on its shard's slice. Each shard's runner emits into a `[]TimestampedSignal` buffer (tick time + event). |
-| P3-3 | K-way merge + replay | ⏳ pending | After join, k-way merge per-shard buffers by `(tick, shardIdx, seq)` and replay each signal through the real event bus. Exit-rule evaluation happens between merged ticks on the main goroutine — same shape as the current WaitTick model. |
-| P3-4 | Position-state handling | ⏳ pending | Based on P3-1: either (a) snapshot positions at start of each shard slice (coarse = faster, risks stale reads for fast-flipping strategies), (b) defer gate eval to replay pass (more surgery, exact parity), or (c) accept drift on position-suppressed signals if the strategies don't materially depend on them. |
-| P3-5 | omo-replay wiring + parity + GATE-3 | ⏳ pending | Swap `shardedPipeline.Dispatch` for `RunSliceToCompletion`. Parity targets: 155/603/3386. Gate: ≤6 s on 8 cores. |
+| P4a | Typed StateUpdated drain | ✅ done | `pendingStateUpdates` + `HandleStateUpdatedSnap` — saved ~2 GB/run |
+| P4a | Presize sliceBars slab | ✅ done | Saved ~8 GB of append-growth |
+| P4b | `ingestion.ProcessBarTyped` | ✅ done | Zero-alloc ingestion hot path |
+| P4b | Empty IdempotencyKey | ✅ done | Saved ~450 MB/run |
+| P5 | Typed monitor/runner fast paths | ✅ done | `HandleMarketBarTyped` + `HandleBarDirectTyped` — bypass Event creation |
+| P5b | Scratch publish event slices | ✅ done | Reuse across bars |
+| P5c | Round-robin shard balance | ✅ done | 4-4-4-4-4-4-3-3 vs old 6-2 FNV imbalance |
+| P5d | Dashboard runner port | ✅ done | `backtest/runner.go` uses `RunSliceToCompletion` at max speed |
 
-Previous Phase 3 goals (actor model, live runner migration) move to a
-separate **Phase 4**: unified live+backtest scheduler, shared service
-sharding across execution pipeline, cross-symbol coordinator for
-features that genuinely need it. Decoupled from Phase 3 so backtest
-speedup can ship before the live-path refactor.
+See [`p4-allocation-reduction.md`](p4-allocation-reduction.md).
+
+### Future work (not started)
+
+- **Nworkers > 1 for dashboard runner** — currently wraps pre-built
+  services as single shard. Graduating to N=8 with the shard factory
+  would give full multi-core parallelism.
+- **Startup overlap** — stream bar loading into Phase A instead of
+  load-all-then-process. Would hide ~6 s of DB I/O behind Phase A
+  work.
+- **Unified live+backtest scheduler** — same code path for both,
+  different clock source. Original Phase 4 scope.
+- **Cross-symbol coordinator** for SPY/QQQ tide state updates.
+- **Struct-of-arrays indicator state** — deepest refactor, would
+  eliminate per-bar `duffcopy` and map-hash overhead.
 
 ### Non-goals (explicitly NOT in this plan)
 
