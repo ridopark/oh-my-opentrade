@@ -10,7 +10,8 @@ type BarAggregator struct {
 	symbol      Symbol
 	tf          Timeframe
 	sessionOpen time.Time
-	cur         *MarketBar
+	cur         MarketBar
+	hasCur      bool
 	curEnd      time.Time
 }
 
@@ -27,7 +28,7 @@ func NewBarAggregator(symbol Symbol, targetTF Timeframe, sessionOpen time.Time) 
 		symbol:      symbol,
 		tf:          targetTF,
 		sessionOpen: sessionOpen,
-		cur:         nil,
+		
 		curEnd:      time.Time{},
 	}, nil
 }
@@ -48,7 +49,7 @@ func NewClockAlignedAggregator(symbol Symbol, targetTF Timeframe) (*BarAggregato
 		symbol:      symbol,
 		tf:          targetTF,
 		sessionOpen: epoch,
-		cur:         nil,
+		
 		curEnd:      time.Time{},
 	}, nil
 }
@@ -74,10 +75,10 @@ func (a *BarAggregator) Push(bar MarketBar) (closed MarketBar, ok bool) {
 	}
 
 	switch {
-	case a.cur == nil:
+	case !a.hasCur:
 		a.startNew(end, dur, bar)
 	case end.After(a.curEnd):
-		out := *a.cur
+		out := a.cur
 		a.startNew(end, dur, bar)
 		return out, true
 	default:
@@ -85,8 +86,8 @@ func (a *BarAggregator) Push(bar MarketBar) (closed MarketBar, ok bool) {
 	}
 
 	if !bar.Time.Add(time.Minute).Before(a.curEnd) {
-		out := *a.cur
-		a.cur = nil
+		out := a.cur
+		a.hasCur = false
 		a.curEnd = time.Time{}
 		return out, true
 	}
@@ -96,7 +97,7 @@ func (a *BarAggregator) Push(bar MarketBar) (closed MarketBar, ok bool) {
 
 func (a *BarAggregator) Reset(sessionOpen time.Time) {
 	a.sessionOpen = sessionOpen
-	a.cur = nil
+	a.hasCur = false
 	a.curEnd = time.Time{}
 }
 
@@ -135,16 +136,16 @@ func (a *BarAggregator) startNew(end time.Time, dur time.Duration, bar MarketBar
 
 	agg, err := NewMarketBar(start, a.symbol, a.tf, bar.Open, bar.High, bar.Low, bar.Close, bar.Volume)
 	if err != nil {
-		a.cur = nil
+		a.hasCur = false
 		a.curEnd = time.Time{}
 		return
 	}
 	agg.Suspect = bar.Suspect
-	a.cur = &agg
+	a.cur = agg; a.hasCur = true
 }
 
 func (a *BarAggregator) apply(bar MarketBar) {
-	if a.cur == nil {
+	if !a.hasCur {
 		return
 	}
 	if bar.High > a.cur.High {
