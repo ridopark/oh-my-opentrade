@@ -3,6 +3,7 @@ package backtest
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
@@ -41,6 +42,39 @@ type ShardedPipeline struct {
 	priceCache *positionmonitor.PriceCache
 	collector  *Collector
 	eventBus   ports.EventBusPort
+
+	// tickJobs accumulates bars dispatched during the current tick. Kept
+	// in dispatch order so WaitTick can replay Phase B sequentially —
+	// parity with the single-threaded path requires signals to be
+	// published in the same order the bars arrived.
+	tickJobs []shardJob
+	// perShardScratch is a reusable slab of per-shard job pointer slices
+	// populated at WaitTick time from tickJobs. Cleared between ticks to
+	// avoid per-tick allocations on the hot path.
+	perShardScratch [][]*shardJob
+
+	// Persistent worker pool: one goroutine per shard reading jobs from
+	// its inbox channel. Spawned once by startWorkers and torn down by
+	// Close. Per-tick goroutine spawn overhead (24 × 240k ticks = 5.8M
+	// spawns on the 30sym/1yr run) was a noticeable tax in the naive
+	// implementation; persistent workers replace it with a single chan
+	// send + wg.Done per active shard per tick.
+	workerInbox []chan []*shardJob
+	workerWG    sync.WaitGroup
+	workersOnce sync.Once
+}
+
+// shardJob captures one bar's trip through Phase A + Phase B. Fields are
+// populated in two passes: Dispatch records (shardIdx, ctx, evt); the
+// Phase A worker goroutine fills (sanitized, dropped, err); Phase B runs
+// serially and consumes the stored values.
+type shardJob struct {
+	shardIdx  int
+	ctx       context.Context
+	evt       domain.Event
+	sanitized domain.Event
+	dropped   bool
+	err       error
 }
 
 // ShardServices is the per-shard (ingestion, monitor, runner) triple
@@ -196,11 +230,13 @@ func (sp *ShardedPipeline) LookupSnapshot(sym string) (domain.IndicatorSnapshot,
 	return domain.IndicatorSnapshot{}, false
 }
 
-// Dispatch routes a MarketBarReceived event to the shard that owns the
-// bar's symbol and runs ProcessBar synchronously on that shard. Step 4
-// replaces this body with worker-pool fan-out; Step 1 keeps it synchronous
-// so parity testing can proceed without touching the hot loop's dispatch
-// mechanics.
+// Dispatch enqueues a MarketBarReceived bar on its owning shard's Phase B
+// queue without running any work synchronously. The actual Phase A fan-out
+// and Phase B replay happen in WaitTick at the end of the tick. Enqueueing
+// preserves dispatch order — parity with the single-threaded path depends
+// on Phase B replaying bars in arrival order so downstream bus handlers
+// (risk sizer, execution, sim broker) see signals in a deterministic
+// sequence.
 func (sp *ShardedPipeline) Dispatch(ctx context.Context, evt domain.Event) error {
 	bar, ok := evt.Payload.(domain.MarketBar)
 	if !ok {
@@ -208,19 +244,110 @@ func (sp *ShardedPipeline) Dispatch(ctx context.Context, evt domain.Event) error
 	}
 	idx, ok := sp.symbolToShard[bar.Symbol.String()]
 	if !ok {
-		// Unregistered symbol — drop (parity with single-pipeline case which
-		// also has no handler for an unknown symbol).
+		// Unregistered symbol — drop (parity with single-pipeline case
+		// which also has no handler for an unknown symbol).
 		return nil
 	}
-	return sp.shards[idx].ProcessBar(ctx, evt)
+	sp.tickJobs = append(sp.tickJobs, shardJob{shardIdx: idx, ctx: ctx, evt: evt})
+	return nil
 }
 
-// WaitTick is a no-op in Step 1 (Dispatch is synchronous). Step 4 will use
-// it to barrier-sync worker goroutines at the end of a replay tick before
-// the coordinator advances to exit-rule evaluation. Exposing the method
-// now lets omo-replay's main loop commit to the final call shape in Step 2
-// without another round of wiring changes when Step 4 lands.
-func (sp *ShardedPipeline) WaitTick() {}
+// startWorkers spawns one persistent goroutine per shard. Each worker
+// loops on its inbox channel, runs ProcessBarPhaseA on every job it
+// receives, and calls workerWG.Done when the batch is complete.
+// Idempotent — only the first call spawns; subsequent calls are no-ops.
+func (sp *ShardedPipeline) startWorkers() {
+	sp.workersOnce.Do(func() {
+		sp.workerInbox = make([]chan []*shardJob, sp.nworkers)
+		for i := 0; i < sp.nworkers; i++ {
+			sp.workerInbox[i] = make(chan []*shardJob, 1)
+			go func(idx int) {
+				shard := sp.shards[idx]
+				for jobs := range sp.workerInbox[idx] {
+					for _, job := range jobs {
+						job.sanitized, job.dropped, job.err = shard.ProcessBarPhaseA(job.ctx, job.evt)
+					}
+					sp.workerWG.Done()
+				}
+			}(i)
+		}
+	})
+}
+
+// Close tears down the persistent worker goroutines. Safe to call more
+// than once; only the first call actually closes the inbox channels.
+// Not required for correctness — process exit tears down goroutines too
+// — but exposed so tests and long-lived hosts can avoid goroutine leaks.
+func (sp *ShardedPipeline) Close() {
+	for _, ch := range sp.workerInbox {
+		if ch != nil {
+			close(ch)
+		}
+	}
+	sp.workerInbox = nil
+}
+
+// WaitTick runs Phase A for every tick-accumulated job across the worker
+// pool and then replays Phase B serially in dispatch order. Returns after
+// all work completes and clears the tick queue. Called once per replay
+// tick, after the main loop has dispatched every bar for that tick.
+func (sp *ShardedPipeline) WaitTick() {
+	if len(sp.tickJobs) == 0 {
+		return
+	}
+	sp.startWorkers()
+
+	// Bucket job pointers by shard so each worker goroutine can iterate
+	// only its own slice without touching foreign memory. Reuse the
+	// scratch slab across ticks to avoid allocations on the hot path.
+	if cap(sp.perShardScratch) < sp.nworkers {
+		sp.perShardScratch = make([][]*shardJob, sp.nworkers)
+	} else {
+		sp.perShardScratch = sp.perShardScratch[:sp.nworkers]
+		for i := range sp.perShardScratch {
+			sp.perShardScratch[i] = sp.perShardScratch[i][:0]
+		}
+	}
+	for j := range sp.tickJobs {
+		idx := sp.tickJobs[j].shardIdx
+		sp.perShardScratch[idx] = append(sp.perShardScratch[idx], &sp.tickJobs[j])
+	}
+
+	// Phase A: wake persistent workers for shards with jobs this tick.
+	activeWorkers := 0
+	for i := 0; i < sp.nworkers; i++ {
+		if len(sp.perShardScratch[i]) == 0 {
+			continue
+		}
+		activeWorkers++
+	}
+	if activeWorkers > 0 {
+		sp.workerWG.Add(activeWorkers)
+		for i := 0; i < sp.nworkers; i++ {
+			jobs := sp.perShardScratch[i]
+			if len(jobs) == 0 {
+				continue
+			}
+			sp.workerInbox[i] <- jobs
+		}
+		sp.workerWG.Wait()
+	}
+
+	// Phase B: serial replay in dispatch order. Must stay serial because
+	// every downstream bus handler (risk sizer, execution service, sim
+	// broker, position monitor) mutates shared state and assumes
+	// deterministic signal ordering. The cost is paid at signal-time,
+	// which is the rare case — most bars emit zero signals.
+	for j := range sp.tickJobs {
+		job := &sp.tickJobs[j]
+		if job.err != nil || job.dropped {
+			continue
+		}
+		_ = sp.shards[job.shardIdx].ProcessBarPhaseB(job.ctx, job.evt, job.sanitized)
+	}
+
+	sp.tickJobs = sp.tickJobs[:0]
+}
 
 // shardIndex hashes sym to [0, n) using FNV-1a. Stable across runs and
 // across platforms — the partition layout must be deterministic so that

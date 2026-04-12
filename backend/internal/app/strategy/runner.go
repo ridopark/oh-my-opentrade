@@ -86,6 +86,17 @@ type Runner struct {
 	// backtests where no SSE client is listening — was ~1M alloc per run.
 	suppressProgressEvents bool
 
+	// deferSignalPublish, when true, routes emitSignal into the pendingSignals
+	// slice instead of publishing to the event bus. Used by the backtest
+	// ShardedPipeline so multiple shards can run handleBar in parallel
+	// (Phase A) and have the main goroutine drain + publish signals in
+	// dispatch order (Phase B) to preserve single-threaded signal ordering
+	// for downstream risk sizer / execution / position monitor state.
+	// Single-writer per-runner — each shard owns its own Runner, so no
+	// synchronization is needed on pendingSignals.
+	deferSignalPublish bool
+	pendingSignals     []domain.Event
+
 	// noInstancesLogged records symbols for which we've already logged a
 	// "no instances for symbol" line, so unused symbols don't emit an Info
 	// log on every bar (hot path — ~8% of backtest CPU pre-gating).
@@ -1581,7 +1592,12 @@ func (r *Runner) filterByAllowedDirections(signals []start.Signal) []start.Signa
 	return filtered
 }
 
-// emitSignal publishes a SignalCreated domain event.
+// emitSignal publishes a SignalCreated domain event. When
+// deferSignalPublish is true, the event is appended to pendingSignals
+// instead — DrainPendingSignals is the sole caller that flushes them,
+// and the backtest ShardedPipeline is expected to serialize drains per
+// shard in dispatch order to preserve parity with the single-threaded
+// path.
 func (r *Runner) emitSignal(ctx context.Context, tenantID string, envMode domain.EnvMode, sig start.Signal) error {
 	ev, err := domain.NewEvent(
 		domain.EventSignalCreated,
@@ -1593,7 +1609,29 @@ func (r *Runner) emitSignal(ctx context.Context, tenantID string, envMode domain
 	if err != nil {
 		return fmt.Errorf("strategy runner: failed to create signal event: %w", err)
 	}
+	if r.deferSignalPublish {
+		r.pendingSignals = append(r.pendingSignals, *ev)
+		return nil
+	}
 	return r.eventBus.Publish(ctx, *ev)
+}
+
+// SetDeferSignalPublish flips emitSignal into buffer-only mode. When set,
+// SignalCreated events go into pendingSignals instead of reaching the
+// event bus. Callers MUST then invoke DrainPendingSignals after each
+// HandleBarDirect to flush the buffer; otherwise signals sit unpublished.
+func (r *Runner) SetDeferSignalPublish(v bool) {
+	r.deferSignalPublish = v
+}
+
+// DrainPendingSignals returns the buffered SignalCreated events in
+// FIFO order and clears the slice. The returned slice aliases the
+// runner's internal buffer and is only valid until the next
+// HandleBarDirect / DrainPendingSignals call.
+func (r *Runner) DrainPendingSignals() []domain.Event {
+	out := r.pendingSignals
+	r.pendingSignals = r.pendingSignals[:0]
+	return out
 }
 
 // emitDomainEvent publishes an arbitrary domain event (used by strategy Context).

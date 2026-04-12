@@ -480,6 +480,13 @@ func main() {
 				return backtest.ShardServices{}, fmt.Errorf("shard strategy: %w", err)
 			}
 
+			// Defer SignalCreated publication so Phase A can run runner
+			// in parallel across shards. Phase B drains via
+			// DrainPendingSignals in dispatch order, preserving the
+			// single-threaded signal ordering downstream handlers
+			// (risk sizer, execution, sim broker, pos monitor) expect.
+			shardStrat.Runner.SetDeferSignalPublish(true)
+
 			return backtest.ShardServices{
 				Ingestion: ingSvc,
 				Monitor:   monSvc,
@@ -487,7 +494,15 @@ func main() {
 			}, nil
 		}
 
-		nworkers := runtime.GOMAXPROCS(0)
+		// Nworkers=8 matches the Phase 2 gate target and empirically
+		// produces better cache locality than Nworkers=GOMAXPROCS on
+		// hosts with > 8 logical cores: a replay tick has ~20 bars, so
+		// 8 shards give ~2.5 bars of work per worker per tick, which
+		// amortizes the channel + WaitGroup overhead. 24 workers left
+		// each worker with < 1 bar per tick, making coordination
+		// dominate. Clamp to len(symbols) so tiny runs don't spin up
+		// idle shards.
+		nworkers := 8
 		if nworkers > len(symbols) {
 			nworkers = len(symbols)
 		}

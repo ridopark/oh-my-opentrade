@@ -31,6 +31,44 @@ type Pipeline struct {
 	priceCache *positionmonitor.PriceCache
 	collector  *Collector
 	eventBus   ports.EventBusPort
+
+	// deferredStrict / deferredBestEffort hold monitor pending events that
+	// Phase A couldn't dispatch directly (regime, setup, HTF events) —
+	// they go to multi-consumer bus handlers and must publish in Phase B
+	// in dispatch order. Populated once per bar by Phase A; drained by
+	// Phase B. Single-writer per-pipeline because each shard owns exactly
+	// one Pipeline and a shard's Phase A worker is the only goroutine
+	// touching the fields until the barrier completes.
+	deferredStrict     []domain.Event
+	deferredBestEffort []domain.Event
+}
+
+// stashDeferredForPhaseB appends monitor drain events that Phase A
+// couldn't handle directly to the pipeline's deferred buffers. Called at
+// most once per Phase A invocation; the shard's worker goroutine is the
+// sole writer, and Phase B is the sole reader (after the barrier).
+func (p *Pipeline) stashDeferredForPhaseB(_ context.Context, strict, bestEffort []domain.Event) {
+	if len(strict) > 0 {
+		p.deferredStrict = append(p.deferredStrict, strict...)
+	}
+	if len(bestEffort) > 0 {
+		p.deferredBestEffort = append(p.deferredBestEffort, bestEffort...)
+	}
+}
+
+// drainDeferredForPhaseB publishes every stashed Phase A event through
+// the shared event bus in dispatch order, then truncates the buffers.
+func (p *Pipeline) drainDeferredForPhaseB(ctx context.Context) {
+	if p.eventBus != nil {
+		for i := range p.deferredStrict {
+			_ = p.eventBus.Publish(ctx, p.deferredStrict[i])
+		}
+		for i := range p.deferredBestEffort {
+			_ = p.eventBus.Publish(ctx, p.deferredBestEffort[i])
+		}
+	}
+	p.deferredStrict = p.deferredStrict[:0]
+	p.deferredBestEffort = p.deferredBestEffort[:0]
 }
 
 // PipelineInfra is the injection struct — construct one and pass it to
@@ -83,24 +121,55 @@ func NewPipeline(infra PipelineInfra) *Pipeline {
 // series of direct method calls. Returns the first non-nil error encountered.
 // If the bar is dropped by the adaptive filter, ProcessBar returns nil with
 // no downstream work performed.
+//
+// Sharded callers split the work into ProcessBarPhaseA (parallel-safe) and
+// ProcessBarPhaseB (must run in dispatch order). Single-shard callers can
+// still invoke ProcessBar directly — it chains both phases sequentially and
+// preserves the pre-sharding semantics exactly.
 func (p *Pipeline) ProcessBar(ctx context.Context, evt domain.Event) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-
-	// stage 0: collector observes every MarketBarReceived for mark-to-market
-	// tracking. Before ingestion so the count matches the old bus path.
-	if p.collector != nil {
-		_ = p.collector.OnBarDirect(ctx, evt)
-	}
-
-	// stage 1: ingestion — spike filter + repair.
-	sanitized, ok, err := p.ingestion.ProcessBar(ctx, evt)
-	if err != nil {
+	sanitized, dropped, err := p.ProcessBarPhaseA(ctx, evt)
+	if err != nil || dropped {
 		return err
 	}
+	return p.ProcessBarPhaseB(ctx, evt, sanitized)
+}
+
+// ProcessBarPhaseA runs the parallel-safe portion of the bar hot chain:
+// collector observation (stage 0), ingestion filter (stage 1), monitor
+// indicator update (stage 2), price cache update, monitor pending drain
+// for StateUpdated → runner, and strategy runner handleBar (stage 3).
+// Signal publication is DEFERRED — runner.emitSignal buffers into
+// pendingSignals when deferSignalPublish is true, which Phase B drains
+// and publishes in dispatch order.
+//
+// No event bus publishes run on the hot path (monitor/runner pending
+// events stay buffered until Phase B), so N shards can call this method
+// concurrently from separate goroutines.
+//
+// dropped=true indicates the adaptive filter rejected the bar — the caller
+// must skip Phase B for that job.
+func (p *Pipeline) ProcessBarPhaseA(ctx context.Context, evt domain.Event) (sanitized domain.Event, dropped bool, err error) {
+	if cerr := ctx.Err(); cerr != nil {
+		return domain.Event{}, false, cerr
+	}
+
+	// collector.OnBarDirect and priceCache.HandleBarDirect are deferred
+	// to Phase B. Both services hold a single shared mutex, so calling
+	// them from N shard goroutines in Phase A serializes the shards on
+	// the mutex and erases any parallelism win. Phase B runs serially
+	// anyway, so there's no correctness cost to moving them down.
+
+	// stage 1: ingestion — spike filter + repair.
+	var ok bool
+	sanitized, ok, err = p.ingestion.ProcessBar(ctx, evt)
+	if err != nil {
+		return domain.Event{}, false, err
+	}
 	if !ok {
-		return nil
+		return domain.Event{}, true, nil
 	}
 
 	// stage 2: monitor — indicator calc, HTF aggregation, regime, ORB.
@@ -109,59 +178,102 @@ func (p *Pipeline) ProcessBar(ctx context.Context, evt domain.Event) error {
 	// pending slices instead of calling eventBus.Publish.
 	if p.monitor != nil {
 		if err := p.monitor.HandleMarketBar(ctx, sanitized); err != nil {
-			return err
+			return domain.Event{}, false, err
 		}
 	}
 
-	// stage 3: strategy runner handles the 1m bar (runs strategies, its
-	// own HTF aggregation, emits SignalCreated via the bus).
+	// stage 3: strategy runner handles the 1m bar. With
+	// deferSignalPublish set at shard construction time, any
+	// SignalCreated emit lands in the runner's pendingSignals slice;
+	// Phase B drains them.
 	if p.runner != nil {
 		if err := p.runner.HandleBarDirect(ctx, sanitized); err != nil {
-			return err
+			return domain.Event{}, false, err
 		}
 	}
 
-	// stage 4: drain the monitor's pending events and dispatch them by
-	// type. StateUpdated goes to strategy.Runner; HTF Sanitized events are
-	// dropped (strategy.Runner does its own HTF aggregation); Regime and
-	// Setup events still go to the bus because they have multi-consumer
-	// fan-out (debate enricher, etc.).
+	// stage 4 (partial): drain monitor pending strict events — only
+	// StateUpdated → runner needs to happen in Phase A because the runner
+	// reads its indicator cache on the NEXT bar's handleBar. The other
+	// strict events (regime, setup) and all best-effort events are
+	// deferred to Phase B where they go through the bus in dispatch order.
+	var deferredStrict, deferredBestEffort []domain.Event
 	if p.monitor != nil {
 		strict, bestEffort := p.monitor.DrainPending()
 		for i := range strict {
 			ev := &strict[i]
-			switch ev.Type {
-			case domain.EventStateUpdated:
+			if ev.Type == domain.EventStateUpdated {
 				if p.runner != nil {
 					if err := p.runner.HandleStateUpdatedDirect(ctx, *ev); err != nil {
-						return err
+						return domain.Event{}, false, err
 					}
 				}
-			default:
-				// Multi-consumer fan-out — keep on the bus.
-				if p.eventBus != nil {
-					_ = p.eventBus.Publish(ctx, *ev)
-				}
+				continue
 			}
+			deferredStrict = append(deferredStrict, *ev)
 		}
 		for i := range bestEffort {
 			ev := &bestEffort[i]
-			switch ev.Type {
-			case domain.EventMarketBarSanitized:
-				// HTF self-publishes; strategy.Runner has already
-				// aggregated 1m → HTF internally. Drop.
-			default:
-				if p.eventBus != nil {
-					_ = p.eventBus.Publish(ctx, *ev)
-				}
+			if ev.Type == domain.EventMarketBarSanitized {
+				continue
 			}
+			deferredBestEffort = append(deferredBestEffort, *ev)
 		}
 	}
+	if len(deferredStrict) > 0 || len(deferredBestEffort) > 0 {
+		p.stashDeferredForPhaseB(ctx, deferredStrict, deferredBestEffort)
+	}
 
-	// stage 5: position monitor price cache.
+	return sanitized, false, nil
+}
+
+// ProcessBarPhaseB publishes a bar's deferred Phase A effects:
+//   - collector mark-to-market observation
+//   - price cache update
+//   - runner SignalCreated buffer drain
+//   - monitor pending regime/setup events
+//
+// Must be called in dispatch order so downstream bus handlers (risk
+// sizer, execution service, sim broker, position monitor) see signals
+// in the same order the single-threaded path would produce.
+//
+// The original evt (MarketBarReceived) and sanitized (MarketBarSanitized)
+// events are both re-used here: collector keys off the received bar,
+// priceCache keys off the sanitized bar. Passing both avoids making
+// Phase B re-run ingestion.
+func (p *Pipeline) ProcessBarPhaseB(ctx context.Context, evt domain.Event, sanitized domain.Event) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// stage 0 (deferred): collector observes every MarketBarReceived for
+	// mark-to-market equity tracking. Single shared mutex — running
+	// serially here keeps it off the Phase A hot path.
+	if p.collector != nil {
+		_ = p.collector.OnBarDirect(ctx, evt)
+	}
+
+	// stage 5 (deferred): position monitor price cache. Single shared
+	// mutex. Post-tick EvalExitRules reads this cache, so it needs to be
+	// fresh by the time the barrier completes — which serial Phase B
+	// guarantees.
 	if p.priceCache != nil {
 		_ = p.priceCache.HandleBarDirect(ctx, sanitized)
 	}
 
+	// Drain runner's buffered SignalCreated events — risk sizer,
+	// enricher, etc. all subscribe to SignalCreated and must see them in
+	// bar-dispatch order.
+	if p.runner != nil {
+		sigs := p.runner.DrainPendingSignals()
+		for i := range sigs {
+			if p.eventBus != nil {
+				_ = p.eventBus.Publish(ctx, sigs[i])
+			}
+		}
+	}
+	// Drain any non-StateUpdated monitor pending events stashed during
+	// Phase A (regime shifts, setup detections, HTF events).
+	p.drainDeferredForPhaseB(ctx)
 	return nil
 }
