@@ -31,8 +31,10 @@ Extrapolated pre-sprint 30-symbol / 1-year cost: ~130 s.
 
 ## Current status (end of last session)
 
-**Phase 1: COMPLETE.** All five P1 tasks shipped. Gate benchmark met parity
-targets but not absolute target.
+**Phase 1: COMPLETE.** All five P1 tasks shipped. Gate benchmark missed
+the 15 s absolute target but the structural win is clear — per-symbol
+cost flattened, scaling is linear, and the remaining cost is per-bar
+compute.
 
 | | 8 sym / 1yr | 30 sym / 1yr |
 |---|---|---|
@@ -41,13 +43,32 @@ targets but not absolute target.
 | Phase 1 target | — | ≤15 s |
 | **Gate result** | — | **❌ target missed, proceed to Phase 2** |
 
-Per-symbol cost is now flat at ~990 ms across 8→30 symbols. The remaining
-29.7 s is per-bar compute, ideal for parallelisation.
+**Phase 2: COMPLETE, gate MISSED.** P2-1 through P2-4 all shipped in
+one worktree session. Parity is preserved end-to-end (155 / 603 / 3386
+RTH signals) but the per-tick worker-pool architecture cannot reach
+6 s on this workload — pprof showed 240 420 per-tick barriers × 8
+worker wakeups = ~6 s of `runtime.futex` alone, more than the entire
+target. Full writeup in
+[`p2-4-contention-findings.md`](p2-4-contention-findings.md).
 
-**Phase 2: in progress.** Only P2-1 (audit) is done. P2-2 through the
-gate are pending, captured in [`phase2-restart-plan.md`](phase2-restart-plan.md).
+| | 30 sym / 1yr |
+|---|---|
+| Post Phase 2 (N=8 workers, per-tick fan-out) | **29.26 s** |
+| Phase 2 target | ≤6 s |
+| **Gate result** | **❌ target missed, proceed to Phase 3** |
 
-**Phase 3: not started.** Conditional on Phase 2 not meeting its gate.
+Phase 2 still delivered the mechanical groundwork Phase 3 needs:
+`ShardedPipeline`, `BuildStrategyShared` / `BuildStrategyShard`,
+runner `SetDeferSignalPublish`, two-phase split, persistent worker
+pool. Only the coordination model (per-tick barriers → single
+end-of-run merge) is missing.
+
+**Phase 3: IN PROGRESS.** Slice-to-completion architecture, per the
+go-architect consultation during Phase 2. Partition bars by symbol
+hash at replay start, run shards to completion in parallel, k-way
+merge signals + fills in tick order at the end. Eliminates per-tick
+barriers entirely. Target: **6–8 s** realistic, **6 s** stretch. Plan:
+[`phase3-slice-to-completion-plan.md`](phase3-slice-to-completion-plan.md).
 
 ## The 16-task plan
 
@@ -68,38 +89,69 @@ in one session.**
 | P1-5 | Struct layout pass on `symbolState` | ✅ done | `0b2456f` |
 | **GATE-1** | Re-benchmark and decide on Phase 2 | ✅ done | 29.73 s at 30 sym — target missed, Phase 2 required |
 
-### Phase 2 — per-tick worker pool (IN PROGRESS)
+### Phase 2 — per-tick worker pool (COMPLETE, gate missed)
 Target: 30 sym / 1yr ≤ 6 s on an 8-core host. Effort estimate: **11-17
-hours** (see [`phase2-restart-plan.md`](phase2-restart-plan.md) for
-breakdown). Scope: shard-owned `monitor.Service` + `strategy.Runner` per
+hours**. Scope: shard-owned `monitor.Service` + `strategy.Runner` per
 worker, worker-pool dispatch inside the tick loop, shared execution
 pipeline.
 
+| # | Task | Status | Commit / notes |
+|---|---|---|---|
+| P2-1 | Inventory cross-symbol state in monitor and runner | ✅ done | [`p2-1-shared-state-inventory.md`](p2-1-shared-state-inventory.md) |
+| P2-2 | Per-symbol sharding of hot maps (shard-owned services) | ✅ done | commits `c320091`, `fdf1ef4`, `00736d9`, `7f3024b` |
+| P2-3 | Worker-pool dispatch inside tick loop | ✅ done | commit `c69b00a` — two-phase split + persistent worker pool + runner `SetDeferSignalPublish` |
+| P2-4 | Contention measurement and shard-local pools | ✅ done | [`p2-4-contention-findings.md`](p2-4-contention-findings.md) |
+| **GATE-2** | Re-benchmark and decide on Phase 3 | ❌ **missed** | 29.26 s measured vs 6 s target. Parity ✅ (155/603/3386). Phase 3 required. |
+
+Key finding from P2-4: `runtime.futex` alone is ~6 s because the
+scheduler must round-trip 240 k per-tick barriers × 8 worker wakeups
+at ~25 µs each. Work granularity (20 bars/tick ÷ 8 shards = 2.5
+bars/shard) is below Go's scheduler coordination floor. No tuning
+inside the per-tick-barrier architecture can cross the ~15 s wall-time
+floor, let alone reach 6 s.
+
+### Phase 3 — slice-to-completion architecture (IN PROGRESS)
+Target: 30 sym / 1yr ≤ 6-8 s on an 8-core host. Effort estimate:
+**1-2 days** for backtest path. Full live integration and unified
+scheduler is a separate follow-up (~1 week) that can ship
+independently.
+
+**Scope (backtest-first).** Partition the full bar stream by FNV-1a
+symbol hash into Nworkers disjoint slices at replay start. Spawn one
+goroutine per shard that runs every bar in its slice to completion
+(ingestion + monitor + runner, with signals deferred). Each shard
+writes emitted signals into a per-shard ordered buffer tagged with
+the original tick timestamp. After all shards finish, main performs
+a serial k-way merge of the per-shard buffers and replays the merged
+stream through the event bus in dispatch order. Downstream handlers
+(risk sizer, execution, sim broker, position monitor) see signals in
+identical order to the single-threaded path, so parity is preserved.
+
+**Why this beats per-tick fan-out.** Eliminates the 240 k per-tick
+barriers. N workers run continuously for the full ~6 s of parallel
+work instead of sleeping and waking 240 k times. Futex overhead drops
+from 6 s to ~0. Work granularity per worker becomes "entire slice
+of the bar stream" — seconds of work, not microseconds.
+
+**Soundness requirement: no mid-shard position reads.** If strategy
+gate logic in `runner.handleBar` reads mutable position state
+(`posLookup`) during bar processing, the pass will see stale
+positions because signals aren't yet executed. Resolution path
+chosen in P3-1 audit below.
+
 | # | Task | Status | Notes |
 |---|---|---|---|
-| P2-1 | Inventory cross-symbol state in monitor and runner | ✅ done | [p2-1-shared-state-inventory.md](p2-1-shared-state-inventory.md) |
-| P2-2 | Per-symbol sharding of hot maps (shard-owned services) | ⏳ pending | Restart plan Step 1-3 |
-| P2-3 | Worker-pool dispatch inside tick loop | ⏳ pending | Restart plan Step 4 — use Option B (batch per tick + sync.WaitGroup) |
-| P2-4 | Contention measurement and shard-local pools | ⏳ pending | Restart plan Step 5 — `-blockprofile` + `-mutexprofile` |
-| **GATE-2** | Re-benchmark and decide on Phase 3 | ⏳ pending | Target: 30 sym ≤ 6 s on 8 cores. Parity check first (603 @ 8sym, 3386 @ 30sym). |
+| P3-1 | Runner/gate position-read audit + strategy classification | ⏳ pending | Grep `runner.handleBar`, strategy impls, gate chain for `posLookup` / position-state reads. Classify each as (a) pure indicator-based (no audit needed), (b) reads positions but can tolerate stale reads, (c) requires fresh position state → needs deferred gate eval. |
+| P3-2 | Slice-to-completion dispatch in `ShardedPipeline` | ⏳ pending | New `RunSliceToCompletion(ctx, bars)` entry point. Partitions bars, spawns N goroutines, each runs to completion on its shard's slice. Each shard's runner emits into a `[]TimestampedSignal` buffer (tick time + event). |
+| P3-3 | K-way merge + replay | ⏳ pending | After join, k-way merge per-shard buffers by `(tick, shardIdx, seq)` and replay each signal through the real event bus. Exit-rule evaluation happens between merged ticks on the main goroutine — same shape as the current WaitTick model. |
+| P3-4 | Position-state handling | ⏳ pending | Based on P3-1: either (a) snapshot positions at start of each shard slice (coarse = faster, risks stale reads for fast-flipping strategies), (b) defer gate eval to replay pass (more surgery, exact parity), or (c) accept drift on position-suppressed signals if the strategies don't materially depend on them. |
+| P3-5 | omo-replay wiring + parity + GATE-3 | ⏳ pending | Swap `shardedPipeline.Dispatch` for `RunSliceToCompletion`. Parity targets: 155/603/3386. Gate: ≤6 s on 8 cores. |
 
-### Phase 3 — full sharded architecture (NOT STARTED)
-Target: near-linear scaling to ~100+ symbols; unified live + backtest
-scheduler. Effort estimate: **2-4 weeks.** Scope: shard-owned service
-instances including execution pipeline, explicit tick scheduler,
-cross-symbol coordinator actor for features that genuinely need it.
-
-**Only start if Phase 2's gate benchmark shows the worker pool is bottlenecked
-on a shared service** (execution, position monitor) rather than on per-bar
-work. If Phase 2 hits its target, Phase 3 is unnecessary.
-
-| # | Task | Status | Notes |
-|---|---|---|---|
-| P3-1 | Cross-symbol feature audit | ⏳ pending | Inventory features reading state from other symbols: `tideTracker`, anchor resolver caches, cross-symbol gates, portfolio-level risk, position monitor. Classify as (a) shardable with duplication, (b) needs coordinator actor, or (c) move to post-barrier execution. |
-| P3-2 | Shard-owned service instances | ⏳ pending | Each worker owns `monitor.Service`, `strategy.Runner`, local event bus. Shared services (simbroker, position monitor, risk, execution) behind a single-writer channel or single lock, serialized by tick barrier. |
-| P3-3 | Tick scheduler | ⏳ pending | Explicit scheduler coordinates ticks: broadcast start → wait for all → run execution → broadcast next. Backtest and live share the scheduler; backtest replaces wall-clock advance with bar-time advance. |
-| P3-4 | Cross-symbol message bus | ⏳ pending | Low-latency channel for SPY/QQQ state updates that other shards subscribe to. Only touched when needed — doesn't affect per-symbol hot path. Used for tide tracker and similar. |
-| P3-5 | Migrate live runner to sharded architecture | ⏳ pending | Same code path as backtest, different clock source. Prove symmetry with a replay-matches-live integration test. |
+Previous Phase 3 goals (actor model, live runner migration) move to a
+separate **Phase 4**: unified live+backtest scheduler, shared service
+sharding across execution pipeline, cross-symbol coordinator for
+features that genuinely need it. Decoupled from Phase 3 so backtest
+speedup can ship before the live-path refactor.
 
 ### Non-goals (explicitly NOT in this plan)
 
