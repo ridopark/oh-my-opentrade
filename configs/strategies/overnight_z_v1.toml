@@ -1,0 +1,67 @@
+schema_version = 2
+
+[strategy]
+id = "overnight_z_v1"
+version = "1.0.0"
+name = "Overnight Z-Score Bias"
+description = "Late-session DP buy_ratio Z predicts next-day mean-reversion; long equity shares at open, exit MOC"
+author = "system"
+created_at = "2026-04-12T00:00:00Z"
+
+[lifecycle]
+state = "Deactivated"
+paper_only = true
+
+[routing]
+symbols = [
+    "AAPL", "AMD", "AMZN", "AVGO", "BA", "COIN", "CRM", "GOOGL",
+    "IWM", "JPM", "LLY", "META", "MRNA", "MRVL", "MSFT", "MU",
+    "NET", "NFLX", "NVDA", "OXY", "PLTR", "RBLX", "RIVN", "SMCI",
+    "SNOW", "SOFI", "SOXL", "SPY", "TSLA", "XOM"
+]
+timeframes = ["1d"]
+priority = 50
+conflict_policy = "priority_wins"
+exclusive_per_symbol = false
+watchlist_mode = "static"
+asset_classes = ["EQUITY"]
+allowed_directions = ["LONG"]
+
+[params]
+# Late-session window: 14:00-15:30 ET (computed in runner, not here)
+# Z lookback: 20 days (computed in runner)
+
+late_z_long_threshold = -1.5
+late_z_short_threshold = 1.5
+long_only = true
+
+entry_time = "09:35"
+exit_time = "15:45"
+allowed_hours_tz = "America/New_York"
+
+hard_stop_bps = 200
+
+risk_per_trade_pct = 2.0
+max_positions = 6
+max_per_sector = 2
+
+# Kill switch: disable entries if trailing 20-trade WR drops below 38%
+rolling_wr_kill_threshold = 0.38
+rolling_wr_kill_window = 20
+rolling_wr_cooldown_days = 5
+
+[hooks]
+signals = { engine = "builtin", name = "overnight_z" }
+
+[gate_chain]
+monitor = [
+    { name = "dna_approval" },
+]
+
+execution = [
+    { name = "exposure_guard" },
+    { name = "portfolio_guard" },
+    { name = "risk_engine" },
+    { name = "trading_window" },
+    { name = "buying_power_guard" },
+]

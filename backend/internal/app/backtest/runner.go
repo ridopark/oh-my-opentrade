@@ -1293,6 +1293,12 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			shardStrat.Runner.SetDeferSignalPublish(true)
 			shardStrat.Runner.SetDeferReconcile(true)
+			if len(dpLookup) > 0 {
+				shardStrat.Runner.SetDarkPoolLookup(dpLookup)
+			}
+			if len(whaleLookup) > 0 {
+				shardStrat.Runner.SetWhaleLookup(whaleLookup)
+			}
 
 			return ShardServices{
 				Ingestion: ingSvc,

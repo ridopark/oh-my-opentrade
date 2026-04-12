@@ -3,6 +3,7 @@ package positionmonitor
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -90,6 +91,10 @@ type fillMsg struct {
 	AssetClass   domain.AssetClass
 	ExitRules    []domain.ExitRule // set by bootstrap; nil from live fill events
 	RiskModifier domain.RiskModifier
+
+	// Signal tags propagated from the entry signal through OrderIntent.Meta.
+	// Used to carry per-trade exit modifiers (e.g. Z-conditioned multipliers).
+	SignalTags map[string]string
 
 	// Option metadata (populated only for option fills).
 	InstrumentType domain.InstrumentType
@@ -607,6 +612,18 @@ func (s *Service) processFill(fill fillMsg) {
 							pos.CustomState[key] = n
 						}
 					}
+				}
+			}
+		}
+	}
+
+	// Store Z-conditioned exit multipliers from signal tags into CustomState.
+	// These modulate PREMIUM_TARGET and STAGNATION_EXIT evaluators per-trade.
+	if pos.CustomState != nil && fill.SignalTags != nil {
+		for _, tagKey := range []string{"dp_z_premium_target_mult", "dp_z_stagnation_mult"} {
+			if v, ok := fill.SignalTags[tagKey]; ok {
+				if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+					pos.CustomState[tagKey] = f
 				}
 			}
 		}
