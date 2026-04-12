@@ -20,16 +20,29 @@ and [docs/plans/ROADMAP.md](docs/plans/ROADMAP.md) for deeper context.
 **Data**
 - Real-time 1m/5m/15m bar streaming from Alpaca WebSocket with 4-sigma sanitization
 - Historical backfill from Alpaca REST + YahooFinance
-- Dark-pool print aggregation from SIP trade feed
+- Dark-pool print aggregation from SIP trade feed (5m bars: volume, buy/sell,
+  large prints, VWAP)
+- Late-session DP Z-score indicator (14:00-15:30 ET buy ratio, 20-day rolling
+  normalization) for next-day directional bias
 - Whale accumulation scoring from SEC 13F filings
 - Historical options chains sourced from DoltHub
 
-**Strategies (3 live)**
+**Strategies (3 live + 1 staged)**
 - **ORB** — opening-range breakout, volume confirmation, regime-gated
-- **AVWAP** — anchored VWAP mean reversion from 5m/15m regime extremes
-- **MACD** — crossover with swing stops and dark-pool block-flow veto
+- **AVWAP** — anchored VWAP mean reversion from 5m/15m regime extremes, with
+  late-session dark-pool Z-score entry suppression (Sharpe +0.39)
+- **MACD** — crossover with swing stops, dark-pool block-flow veto, and inverted
+  Z-score regime filter that blocks entries in losing reversal regimes (PF +0.08)
+- **Overnight Z-Score Bias** — daily-horizon strategy using late-session DP buy_ratio
+  Z-score as a next-day directional signal. Equity shares only, no options. Staged
+  for paper validation.
 - Confluence layer combines technical, dark-pool, and 13F signals into a 0-100 score
   that gates every entry
+- **Late-session DP Z conditioning** — the 14:00-15:30 ET dark-pool buy ratio,
+  normalized over 20 trading days, predicts next-day returns (IC=-0.039, t=-3.92).
+  AVWAP and MACD respond oppositely: AVWAP benefits from low-Z days (mean-reversion
+  tailwind), MACD benefits from high-Z days (momentum continuation). Each strategy
+  applies the signal in its own direction.
 
 **Execution (8 gates)**
 - short_direction, exposure_guard, portfolio_guard, risk_engine, slippage_guard,
@@ -60,6 +73,9 @@ and [docs/plans/ROADMAP.md](docs/plans/ROADMAP.md) for deeper context.
 - **Dark-pool + 13F confluence** — trades only fire when technical, dark-pool, and
   institutional positioning agree. Empirically cuts churn versus single-indicator
   systems.
+- **Late-session DP Z conditioning** — late-hour (14:00-15:30 ET) dark-pool flow
+  predicts next-day returns. AVWAP and MACD each apply the signal in their own
+  direction (mean-reversion vs momentum), validated across 13,204 trades.
 - **Multi-timeframe regime detection** — 5m/15m anchors classify market state
   (TREND/BALANCE/REVERSAL) before 1m entries fire, filtering regime-mismatch churn.
 - **Crash resilience** — order journal + broker reconciliation + position monitor

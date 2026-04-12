@@ -3,15 +3,15 @@ const columns = [
     kicker: "01 / DATA",
     title: "Multi-Source Intake",
     body:
-      "Real-time 1m/5m/15m bars from Alpaca WebSocket with 4-sigma sanitization. Dark-pool aggregation from SIP prints. Whale accumulation scoring from SEC 13F filings. Historical options chains sourced from DoltHub.",
-    items: ["Alpaca WebSocket + REST", "SEC 13F whale filings", "DoltHub options history", "YahooFinance fallback"],
+      "Real-time 1m/5m/15m bars from Alpaca WebSocket with 4-sigma sanitization. Dark-pool aggregation from SIP prints with late-session Z-score for next-day bias. Whale accumulation scoring from SEC 13F filings. Historical options chains sourced from DoltHub.",
+    items: ["Alpaca WebSocket + REST", "Dark-pool late-session Z-score", "SEC 13F whale filings", "DoltHub options history"],
   },
   {
     kicker: "02 / STRATEGY",
     title: "Deterministic Engines",
     body:
-      "Three live strategies run as plain Go code on the hot path. Multi-timeframe regime detection (5m/15m anchors) gates 1m entries. Confluence scoring combines technical, dark-pool, and institutional signals before a single order is emitted.",
-    items: ["ORB opening-range breakout", "AVWAP anchored mean reversion", "MACD crossover with dark-pool veto", "Confluence-gated entries"],
+      "Four strategies run as plain Go code on the hot path. Multi-timeframe regime detection (5m/15m anchors) gates 1m entries. Late-session DP Z-score conditions each strategy in its own direction: mean-reversion vs momentum.",
+    items: ["ORB opening-range breakout", "AVWAP + Z-score entry gating", "MACD + inverted Z regime filter", "Overnight Z-Score Bias (staged)"],
   },
   {
     kicker: "03 / EXECUTION",

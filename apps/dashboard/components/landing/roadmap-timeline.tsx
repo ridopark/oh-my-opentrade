@@ -1,21 +1,23 @@
 const columns = [
   {
     phase: "SHIPPED",
-    kicker: "SPRINT 1 – 3",
+    kicker: "SPRINT 1 – 4",
     items: [
       "Panic recovery + feed-age watchdog",
       "Write-ahead order journal",
       "Startup broker reconciliation",
       "IBKR broker adapter (paper)",
-      "Discord reconnect escalation",
-      "SystemD heartbeat",
+      "Dark-pool 5m bar pipeline",
+      "Late-session DP Z-score indicator",
+      "Per-strategy Z conditioning (AVWAP + MACD)",
+      "Overnight Z-Score Bias strategy (staged)",
     ],
   },
   {
     phase: "IN PROGRESS",
-    kicker: "SPRINT 3.5 – 4",
+    kicker: "SPRINT 4.5 – 5",
     items: [
-      "Journal flag removal (24h gate)",
+      "Overnight Z paper validation (20+ trades)",
       "Portfolio heat metric",
       "Sector/industry exposure limits",
       "Directional bias cap",
@@ -24,11 +26,11 @@ const columns = [
   },
   {
     phase: "NEXT",
-    kicker: "SPRINT 5 – 7",
+    kicker: "SPRINT 6 – 8",
     items: [
       "IBKR BAG combo options execution",
-      "Dark-pool block-size filter (>1% ADV)",
-      "Regime-conditional DP weighting",
+      "13F + options skew confirmation (S3)",
+      "Options vol-spread informed trading proxy",
       "Pluggable backtest fill models",
       "Intrabar stop decomposition",
     ],
