@@ -155,6 +155,47 @@ func (sp *ShardedPipeline) ShardForSymbol(sym string) *Pipeline {
 	return sp.shards[idx]
 }
 
+// ForEachShard iterates every shard with its owned symbol slab. Used by
+// setup paths that must fan out a per-shard operation (InitAggregators,
+// ResetAggregators, Start, ClearAllPendingStates, SetSuppressProgressEvents,
+// SetAIAnchorResolver, SetBaseSymbols). Stops on the first error.
+func (sp *ShardedPipeline) ForEachShard(fn func(p *Pipeline, slab []domain.Symbol) error) error {
+	for i, p := range sp.shards {
+		if err := fn(p, sp.slabs[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RouteSymbol invokes fn on the shard that owns sym. Used by per-symbol
+// setup paths (MarkReady, ResetSessionIndicators, per-symbol WarmUp).
+// Returns false when the symbol is unregistered.
+func (sp *ShardedPipeline) RouteSymbol(sym string, fn func(p *Pipeline)) bool {
+	p := sp.ShardForSymbol(sym)
+	if p == nil {
+		return false
+	}
+	fn(p)
+	return true
+}
+
+// LookupSnapshot routes a GetLastSnapshot-style lookup to the shard that
+// owns sym. Returns a zero snapshot and false when the symbol is unknown.
+// Used to build a shard-aware MarketDataFn closure for enricher / posMon
+// snapshot callbacks — the single-pipeline code hit one monitor.Service
+// directly; sharded code needs a routing wrapper.
+func (sp *ShardedPipeline) LookupSnapshot(sym string) (domain.IndicatorSnapshot, bool) {
+	p := sp.ShardForSymbol(sym)
+	if p == nil {
+		return domain.IndicatorSnapshot{}, false
+	}
+	if m := p.Monitor(); m != nil {
+		return m.GetLastSnapshot(sym)
+	}
+	return domain.IndicatorSnapshot{}, false
+}
+
 // Dispatch routes a MarketBarReceived event to the shard that owns the
 // bar's symbol and runs ProcessBar synchronously on that shard. Step 4
 // replaces this body with worker-pool fan-out; Step 1 keeps it synchronous
