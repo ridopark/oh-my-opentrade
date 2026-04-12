@@ -37,6 +37,7 @@ type Runner struct {
 	indLogOnce           map[string]bool
 	metrics              *metrics.Metrics
 	aggregators          map[string]*domain.BarAggregator
+	aggKeysBySym         map[string]map[string]string // sym → tf → "sym:tf"
 	htfCalcs             map[string]*monitor.IndicatorCalculator // key: "symbol:tf"
 	regimeDetector       *monitor.RegimeDetector
 	anchorRegimes          map[string]map[string]domain.MarketRegime   // symbol → tf → latest regime
@@ -617,6 +618,19 @@ func (r *Runner) InitAggregators(sessionOpen time.Time) {
 			}
 		}
 	}
+	// Build per-symbol aggregator key cache so handleBarCore can
+	// look up "sym:tf" keys without allocating a concat on every bar.
+	r.aggKeysBySym = make(map[string]map[string]string, len(r.aggregators))
+	for key := range r.aggregators {
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) == 2 {
+			sym, tf := parts[0], parts[1]
+			if r.aggKeysBySym[sym] == nil {
+				r.aggKeysBySym[sym] = make(map[string]string, 4)
+			}
+			r.aggKeysBySym[sym][tf] = key
+		}
+	}
 }
 
 // Start subscribes the runner to MarketBarSanitized, StateUpdated, FillReceived,
@@ -1193,7 +1207,15 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 	}
 
 	for tf, htfInsts := range htfNeeded {
-		key := symbol + ":" + tf
+		// Use pre-computed key from aggKeysBySym to avoid per-bar
+		// string concat (was 2.65M allocations per run).
+		key := ""
+		if symKeys := r.aggKeysBySym[symbol]; symKeys != nil {
+			key = symKeys[tf]
+		}
+		if key == "" {
+			key = symbol + ":" + tf
+		}
 		agg, ok := r.aggregators[key]
 		if !ok {
 			continue
