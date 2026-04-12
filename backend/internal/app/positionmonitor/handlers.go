@@ -33,6 +33,7 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 	optionExpiryStr, _ := payload["option_expiry"].(string)
 	ivAtEntryStr, _ := payload["iv_at_entry"].(string)
 	deltaAtEntryStr, _ := payload["delta_at_entry"].(string)
+	signalTags, _ := payload["signal_tags"].(map[string]string)
 
 	if symbol == "" || price <= 0 || quantity <= 0 {
 		return nil
@@ -67,6 +68,7 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 		OptionRight:    optionRight,
 		IVAtEntry:      ivAtEntry,
 		DeltaAtEntry:   deltaAtEntry,
+		SignalTags:     signalTags,
 	}:
 	default:
 		s.log.Warn().Str("symbol", symbol).Msg("position monitor: fill channel full, dropping fill")

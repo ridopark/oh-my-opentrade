@@ -177,6 +177,8 @@ type AVWAPConfig struct {
 	DPZAdverseThreshold        float64 // Z above this is adverse. Default 1.0.
 	DPZFavorableTargetMult     float64 // widen premium target on favorable days. Default 1.2.
 	DPZAdverseHoldTimeMult     float64 // tighten hold time on adverse days. Default 0.70.
+	DPZSuppressAdverseEntries  bool    // block entries when Z > suppress threshold. Default false.
+	DPZSuppressThreshold       float64 // Z above this suppresses entries. Default 1.5.
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -384,6 +386,24 @@ func mergeTelemetry(dst, src map[string]string) {
 func (s *AVWAPState) newEntrySignal(ec entryContext, side start.Side, strength float64, tags map[string]string) (start.Signal, error) {
 	mergeTelemetry(tags, entryTelemetryTags(ec, s.Indicators))
 	tags["late_session_dp_z"] = fmt.Sprintf("%.3f", s.Indicators.LateSessionDPZ)
+
+	// Z-conditioned exit multipliers: modulate PREMIUM_TARGET and STAGNATION_EXIT
+	// based on late-session dark pool Z-score. Tags flow through OrderIntent.Meta
+	// into the position monitor's CustomState for per-trade exit adjustments.
+	cfg := ec.cfg
+	if cfg.DPZConditioningEnabled && s.Indicators.LateSessionDPZ != 0 {
+		z := s.Indicators.LateSessionDPZ
+		if z <= cfg.DPZFavorableThreshold {
+			// Favorable: wider premium target, longer stagnation timeout
+			tags["dp_z_premium_target_mult"] = fmt.Sprintf("%.3f", cfg.DPZFavorableTargetMult)
+			tags["dp_z_stagnation_mult"] = fmt.Sprintf("%.3f", 1.0/cfg.DPZAdverseHoldTimeMult)
+		} else if z >= cfg.DPZAdverseThreshold {
+			// Adverse: tighter premium target, shorter stagnation timeout
+			tags["dp_z_premium_target_mult"] = fmt.Sprintf("%.3f", 1.0/cfg.DPZFavorableTargetMult)
+			tags["dp_z_stagnation_mult"] = fmt.Sprintf("%.3f", cfg.DPZAdverseHoldTimeMult)
+		}
+	}
+
 	return start.NewSignal(ec.instanceID, ec.symbol, start.SignalEntry, side, strength, tags)
 }
 
@@ -776,7 +796,9 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		DPZFavorableThreshold:  getFloat64(params, "dp_z_favorable_threshold", -1.0),
 		DPZAdverseThreshold:    getFloat64(params, "dp_z_adverse_threshold", 1.0),
 		DPZFavorableTargetMult: getFloat64(params, "dp_z_favorable_target_mult", 1.2),
-		DPZAdverseHoldTimeMult: getFloat64(params, "dp_z_adverse_hold_time_mult", 0.70),
+		DPZAdverseHoldTimeMult:    getFloat64(params, "dp_z_adverse_hold_time_mult", 0.70),
+		DPZSuppressAdverseEntries: getBool(params, "dp_z_suppress_adverse_entries", false),
+		DPZSuppressThreshold:      getFloat64(params, "dp_z_suppress_threshold", 1.5),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
 
@@ -1933,6 +1955,12 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 //   7. Bounce — lowest conviction, mean-reversion at AVWAP
 func (s *AVWAPState) evaluateEntries(ec entryContext) (*start.Signal, error) {
 	s.entryChecks = s.entryChecks[:0]
+
+	// Z conditioning: suppress entries on extreme adverse Z days.
+	if ec.cfg.DPZConditioningEnabled && ec.cfg.DPZSuppressAdverseEntries &&
+		s.Indicators.LateSessionDPZ >= ec.cfg.DPZSuppressThreshold {
+		return nil, nil
+	}
 
 	if sig, err := s.evaluatePinch(ec); err != nil || sig != nil {
 		if sig != nil {
