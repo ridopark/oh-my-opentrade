@@ -124,6 +124,10 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	portfolioHandler.SetRepo(infra.repo)
 	imux.Handle("/api/portfolio/", portfolioHandler)
 
+	decayRepo := timescaledb.NewDecayRepository(infra.sqlDB, httpLog.With().Str("component", "decay_repo").Logger())
+	decayHandler := omhttp.NewDecayHandler(decayRepo, httpLog)
+	imux.Handle("/api/decay/", decayHandler)
+
 	imux.Mux.HandleFunc("/debug/ai-screener/run", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
