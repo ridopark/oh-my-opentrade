@@ -175,6 +175,17 @@ dp_veto_enabled = false
 dp_veto_buy_ratio_min = 0.50
 dp_veto_sell_ratio_max = 0.50
 
+# Late-session DP Z conditioning (mean-reversion alignment).
+# Low Z (<-1.0) = bullish reversal tailwind → more patient exits, wider target.
+# High Z (>1.0) = adverse for mean-reversion → tighter exits.
+dp_z_conditioning_enabled = true
+dp_z_favorable_threshold = -1.0
+dp_z_adverse_threshold = 1.0
+dp_z_favorable_target_mult = 1.0
+dp_z_adverse_hold_time_mult = 1.0
+dp_z_suppress_adverse_entries = true
+dp_z_suppress_threshold = 1.0
+
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
 

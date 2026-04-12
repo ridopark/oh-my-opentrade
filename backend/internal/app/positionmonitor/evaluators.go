@@ -667,6 +667,13 @@ func evaluateStagnationExit(rule domain.ExitRule, pos *domain.MonitoredPosition,
 		return false, ""
 	}
 
+	// Apply Z-conditioned stagnation multiplier (stored at entry from signal tags).
+	if pos.CustomState != nil {
+		if mult := pos.CustomState["dp_z_stagnation_mult"]; mult > 0 {
+			minutes *= mult
+		}
+	}
+
 	if pos.CustomState != nil && pos.CustomState["highest_sd_crossed"] > 0 {
 		return false, ""
 	}
@@ -1007,6 +1014,14 @@ func evaluatePremiumTarget(rule domain.ExitRule, pos *domain.MonitoredPosition, 
 	if targetPct <= 0 {
 		return false, ""
 	}
+
+	// Apply Z-conditioned premium target multiplier (stored at entry from signal tags).
+	if pos.CustomState != nil {
+		if mult := pos.CustomState["dp_z_premium_target_mult"]; mult > 0 {
+			targetPct *= mult
+		}
+	}
+
 	entryPremium, ok := pos.CustomState["option_premium"]
 	if !ok || entryPremium <= 0 {
 		return false, ""
