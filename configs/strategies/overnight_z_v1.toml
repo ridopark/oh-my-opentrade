@@ -9,7 +9,7 @@ author = "system"
 created_at = "2026-04-12T00:00:00Z"
 
 [lifecycle]
-state = "Disabled"
+state = "Deactivated"
 paper_only = true
 
 [routing]
