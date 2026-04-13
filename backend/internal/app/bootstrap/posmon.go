@@ -19,9 +19,10 @@ type PosMonitorDeps struct {
 	Repo         ports.RepositoryPort                  // optional — used in live mode for bootstrap reconciliation
 	SpecStore    portstrategy.SpecStore                // optional — set on service if non-nil
 	SnapshotFn   positionmonitor.IndicatorSnapshotFunc // optional — ATR/VWAP/SD for exit rule evaluation
-	OptionsPrice ports.OptionsPricePort                // optional — polls live option prices so MAX_LOSS/PROFIT_TARGET fire intraday
-	IntentJournal ports.OrderIntentJournal             // optional — Sprint 2 journal-aware startup reconciliation
-	Notifier     ports.NotifierPort                    // optional — Discord/Telegram sink for bootstrap reconciliation alerts
+	OptionsPrice     ports.OptionsPricePort         // optional — polls live option prices so MAX_LOSS/PROFIT_TARGET fire intraday
+	EarningsCalendar ports.EarningsCalendarPort    // optional — days-to-earnings for IV ramp model
+	IntentJournal    ports.OrderIntentJournal      // optional — Sprint 2 journal-aware startup reconciliation
+	Notifier         ports.NotifierPort            // optional — Discord/Telegram sink for bootstrap reconciliation alerts
 	TenantID     string
 	EnvMode      domain.EnvMode
 	Clock        func() time.Time
@@ -55,6 +56,10 @@ func BuildPositionMonitor(deps PosMonitorDeps) (*PosMonitorBundle, error) {
 
 	if deps.OptionsPrice != nil {
 		opts = append(opts, positionmonitor.WithOptionsPricePort(deps.OptionsPrice))
+	}
+
+	if deps.EarningsCalendar != nil {
+		opts = append(opts, positionmonitor.WithEarningsCalendar(deps.EarningsCalendar))
 	}
 
 	if deps.IsBacktest {

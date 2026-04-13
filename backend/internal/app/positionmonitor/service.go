@@ -55,10 +55,11 @@ type Service struct {
 	pendingGlobalDrifts  map[domain.Symbol]int                // key: symbol → consecutive broker>DB drift observations
 	mu                   sync.RWMutex                         // protects positions for concurrent reads (e.g. PositionCount)
 
-	barDurCache         map[string]time.Duration // cached barDurationFor results
-	snapshotFn          IndicatorSnapshotFunc
-	optionsPricePort    ports.OptionsPricePort
-	optionsPollInterval time.Duration
+	barDurCache          map[string]time.Duration // cached barDurationFor results
+	snapshotFn           IndicatorSnapshotFunc
+	optionsPricePort     ports.OptionsPricePort
+	earningsCalendar     ports.EarningsCalendarPort
+	optionsPollInterval  time.Duration
 
 	// Config.
 	tickInterval            time.Duration
@@ -230,6 +231,11 @@ func WithSnapshotFunc(fn IndicatorSnapshotFunc) Option {
 
 func WithOptionsPricePort(p ports.OptionsPricePort) Option {
 	return func(s *Service) { s.optionsPricePort = p }
+}
+
+// WithEarningsCalendar injects the earnings calendar port for days-to-earnings lookups.
+func WithEarningsCalendar(ec ports.EarningsCalendarPort) Option {
+	return func(s *Service) { s.earningsCalendar = ec }
 }
 
 // NewService creates a new position monitor service.
@@ -544,6 +550,18 @@ func (s *Service) processFill(fill fillMsg) {
 			// Store VIX level at entry for dynamic IV adjustment
 			if vixSnap, ok := s.priceCache.LatestPrice("VIX"); ok && vixSnap.Price > 0 {
 				pos.CustomState["vix_at_entry"] = vixSnap.Price
+			}
+			// Compute days-to-earnings for IV ramp model
+			if s.earningsCalendar != nil {
+				underlying := string(domain.UnderlyingFromOCC(fill.Symbol))
+				if underlying != "" {
+					if entry, err := s.earningsCalendar.GetNextEarnings(context.Background(), underlying); err == nil && entry != nil {
+						days := int(entry.EarningsDate.Sub(fill.FilledAt.Truncate(24*time.Hour)).Hours() / 24)
+						if days >= 0 {
+							pos.CustomState["days_to_earnings"] = float64(days)
+						}
+					}
+				}
 			}
 			// BSM recalculation fields: extract strike from OCC symbol
 			if _, _, _, strike, ok := domain.ParseOCC(fill.Symbol); ok && strike > 0 {
