@@ -79,6 +79,16 @@ func (s *Service) tick() {
 			continue
 		}
 
+		// Skip exit evaluation outside RTH for non-crypto positions.
+		// Exchanges reject orders when closed, causing infinite retry loops.
+		// Positions will be re-evaluated when the next RTH session opens.
+		if pos.AssetClass != domain.AssetClassCrypto {
+			cal := domain.CalendarFor(pos.AssetClass)
+			if !cal.IsOpen(now) {
+				continue
+			}
+		}
+
 		// For options, look up price by underlying symbol (bar data comes in under the underlying)
 		priceSymbol := pos.Symbol
 		if pos.InstrumentType == domain.InstrumentTypeOption {
@@ -351,6 +361,16 @@ func (s *Service) reconcileFilledOrder(pos *domain.MonitoredPosition) bool {
 
 // triggerExit marks a position as exit-pending and emits an exit order intent.
 func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRule, reason string, currentPrice float64, now time.Time) {
+	const maxExitRetries = 50
+	if pos.ExitRetryCount >= maxExitRetries {
+		s.log.Warn().
+			Str("symbol", string(pos.Symbol)).
+			Str("rule", string(rule.Type)).
+			Int("retry_count", pos.ExitRetryCount).
+			Msg("exit retry limit reached — requires manual intervention")
+		return
+	}
+
 	pos.ExitPending = true
 	pos.ExitPendingAt = now
 

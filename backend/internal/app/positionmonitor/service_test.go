@@ -238,7 +238,7 @@ func TestService_processFill_FillAddsPosition(t *testing.T) {
 	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
 
 	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(), WithNowFunc(func() time.Time {
-		return time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+		return time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	}))
 
 	svc.processFill(fillMsg{
@@ -331,7 +331,7 @@ func TestService_Start_PublishFillReceived_ActorProcessesFill(t *testing.T) {
 	pc := NewPriceCache(zerolog.Nop())
 	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
 		WithNowFunc(func() time.Time { return now }),
 		WithTickInterval(10*time.Millisecond),
@@ -363,7 +363,7 @@ func TestService_tick_TrailingStop_EmitsOutboxAndPublishesEvents(t *testing.T) {
 	pc := NewPriceCache(zerolog.Nop())
 	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
 		WithNowFunc(func() time.Time { return now }),
 		WithTickInterval(10*time.Millisecond),
@@ -406,7 +406,7 @@ func TestService_tick_ExitPendingPreventsDoubleExit(t *testing.T) {
 	pc := NewPriceCache(zerolog.Nop())
 	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
 		WithNowFunc(func() time.Time { return now }),
 		WithTickInterval(10*time.Millisecond),
@@ -446,7 +446,7 @@ func TestService_tick_ExitPendingTimeoutClearsLock(t *testing.T) {
 	pc := NewPriceCache(zerolog.Nop())
 	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(), WithNowFunc(func() time.Time { return now }))
 
 	svc.processFill(fillMsg{
@@ -474,7 +474,7 @@ func TestService_tick_ExitTimeoutIncrementsRetryCount(t *testing.T) {
 	pc := NewPriceCache(zerolog.Nop())
 	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(), WithNowFunc(func() time.Time { return now }))
 
 	svc.processFill(fillMsg{
@@ -505,7 +505,7 @@ func TestService_tick_ExitTimeoutCancelsStaleOrder(t *testing.T) {
 	broker := &mockBrokerWithCancel{}
 	pg := execution.NewPositionGate(broker, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
 		WithNowFunc(func() time.Time { return now }),
 		WithBroker(broker),
@@ -756,7 +756,7 @@ func TestService_bootstrapPositions_RestoresOMOPositionThatExistsOnBroker(t *tes
 	}}}
 	pg := execution.NewPositionGate(broker, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	repo := &mockRepo{trades: []domain.Trade{{
 		Symbol:     domain.Symbol("AAPL"),
 		Side:       "BUY",
@@ -791,7 +791,7 @@ func TestService_bootstrapPositions_SkipsPositionsNotOnBroker(t *testing.T) {
 	broker := &mockBroker{positions: nil}
 	pg := execution.NewPositionGate(broker, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	repo := &mockRepo{trades: []domain.Trade{{
 		Symbol:     domain.Symbol("AAPL"),
 		Side:       "BUY",
@@ -827,7 +827,7 @@ func TestService_bootstrapPositions_SkipsManuallyOpenedBrokerPositions(t *testin
 	}}}
 	pg := execution.NewPositionGate(broker, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	repo := &mockRepo{trades: []domain.Trade{{
 		Symbol:     domain.Symbol("AAPL"),
 		Side:       "BUY",
@@ -856,7 +856,7 @@ func TestService_bootstrapPositions_HandlesClosedPositionsCorrectly(t *testing.T
 	broker := &mockBroker{positions: nil}
 	pg := execution.NewPositionGate(broker, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	repo := &mockRepo{trades: []domain.Trade{
 		{
 			Symbol:     domain.Symbol("AAPL"),
@@ -906,7 +906,7 @@ func TestService_bootstrapPositions_HandlesPartialFills(t *testing.T) {
 	}}}
 	pg := execution.NewPositionGate(broker, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	repo := &mockRepo{trades: []domain.Trade{
 		{
 			Symbol:     domain.Symbol("AAPL"),
@@ -1189,7 +1189,7 @@ func TestService_bootstrapPositions_RetroactiveThesisLookupWhenTradeHasNoThesis(
 	}}}
 	pg := execution.NewPositionGate(broker, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	repo := &mockRepo{
 		trades: []domain.Trade{{
 			Symbol:     domain.Symbol("AAPL"),
@@ -1237,7 +1237,7 @@ func TestService_bootstrapPositions_RetroactiveThesisSkippedWhenTradeHasThesis(t
 	}}}
 	pg := execution.NewPositionGate(broker, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	repo := &mockRepo{
 		trades: []domain.Trade{{
 			Symbol:     domain.Symbol("AAPL"),
@@ -1284,7 +1284,7 @@ func TestService_bootstrapPositions_RetroactiveThesisHandlesNoThesisInDB(t *test
 	}}}
 	pg := execution.NewPositionGate(broker, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	repo := &mockRepo{
 		trades: []domain.Trade{{
 			Symbol:     domain.Symbol("AAPL"),
@@ -1537,7 +1537,7 @@ func TestTickRoundTrip_TrailingStop(t *testing.T) {
 	pc := NewPriceCache(zerolog.Nop())
 	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
 		WithNowFunc(func() time.Time { return now }),
 	)
@@ -1575,7 +1575,7 @@ func TestTickRoundTrip_MaxLossFiresBeforeTrailingStop(t *testing.T) {
 	pc := NewPriceCache(zerolog.Nop())
 	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
 		WithNowFunc(func() time.Time { return now }),
 	)
@@ -1631,7 +1631,7 @@ func TestTickRoundTrip_VolatilityStopWithIndicators(t *testing.T) {
 	pc := NewPriceCache(zerolog.Nop())
 	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
 		WithNowFunc(func() time.Time { return now }),
 		WithSnapshotFunc(func(symbol string) (domain.IndicatorSnapshot, bool) {
@@ -1666,7 +1666,7 @@ func TestTickRoundTrip_ShortPosition_MaxLoss(t *testing.T) {
 	pc := NewPriceCache(zerolog.Nop())
 	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
 
-	now := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
 	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
 		WithNowFunc(func() time.Time { return now }),
 	)
