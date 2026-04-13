@@ -1,9 +1,9 @@
 const limits = [
   {
     n: "01",
-    title: "Options backtests run ±20% optimistic",
+    title: "Options IV model is first-order, not stochastic",
     body:
-      "Black-Scholes pricing assumes entry IV persists through exit and ignores bid-ask spread and theta bleed. Realistic fill models queued for Sprint 7.",
+      "Same-day exits adjust IV via VIX-beta scaling, time-of-day seasonality, and an earnings ramp from Finnhub. Multi-day holds use real DoltHub bids. This captures ~60% of IV variance but misses idiosyncratic events and skew dynamics.",
   },
   {
     n: "02",

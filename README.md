@@ -26,6 +26,7 @@ and [docs/plans/ROADMAP.md](docs/plans/ROADMAP.md) for deeper context.
   normalization) for next-day directional bias
 - Whale accumulation scoring from SEC 13F filings
 - Historical options chains sourced from DoltHub
+- Earnings calendar from Finnhub (daily refresh, 90-day lookahead)
 
 **Strategies (3 live + 1 staged)**
 - **ORB** — opening-range breakout, volume confirmation, regime-gated
@@ -55,7 +56,9 @@ and [docs/plans/ROADMAP.md](docs/plans/ROADMAP.md) for deeper context.
 **Backtest**
 - Full event-bus backtester with isolated SimBroker
 - Parameterized bar aggregation, per-symbol session tracking
-- Black-Scholes options pricing with tiered bid-ask spread and IV calibration
+- Black-Scholes options pricing with tiered bid-ask spread, IV calibration,
+  and dynamic IV adjustments (VIX-beta scaling, time-of-day seasonality,
+  earnings IV ramp from Finnhub calendar)
 - Per-trade, per-day, per-symbol P&L; Sharpe, Sortino, max drawdown
 - **86% faster** after a 5-phase optimization sprint (see below)
 
@@ -113,10 +116,11 @@ commit history.
 
 ## Honest limitations
 
-1. **Same-day options exits use static IV.** Multi-day holds price exits from real
-   historical bids (DoltHub), capturing actual IV dynamics. Same-day exits fall back
-   to BSM with entry IV held constant — IV crush or spikes within the day are not
-   reflected. Bid-ask spread (tiered 0.3–1.5%) and theta decay are modeled.
+1. **Options IV model is first-order, not stochastic.** Multi-day holds use real
+   historical bids (DoltHub). Same-day exits adjust IV via VIX-beta scaling (0.7),
+   time-of-day seasonality (U-shape), and earnings ramp (Finnhub calendar). These
+   capture ~60% of IV variance but miss idiosyncratic events, skew dynamics, and
+   intraday VIX-stock decorrelation.
 2. **IBKR live execution is unvalidated.** The adapter is fully implemented and runs
    in paper mode. Live validation on a funded account is pending.
 3. **Universe is 34 hardcoded symbols.** Adding a symbol currently requires a code
