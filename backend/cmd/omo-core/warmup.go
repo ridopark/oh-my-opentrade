@@ -328,6 +328,11 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 	var runnerWarmupCalc *monitor.IndicatorCalculator
 	var runnerWarmupSnapshotFn strategy.IndicatorSnapshotFunc
 	if svc.useStrategyV2 && svc.strategyRunner != nil {
+		// Suppress progress events during warmup replay so the SSE cache
+		// doesn't end up with stale "position" or other gates from
+		// historical bars. Re-enabled after ClearAllPendingStates below.
+		svc.strategyRunner.SetSuppressProgressEvents(true)
+
 		runnerWarmupCalc = monitor.NewIndicatorCalculator()
 		runnerWarmupSnapshotFn = func(bar domain.MarketBar) start.IndicatorData {
 			snap := runnerWarmupCalc.Update(bar)
@@ -491,6 +496,7 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 	// clean before live bars arrive.
 	if svc.strategyRunner != nil {
 		svc.strategyRunner.ClearAllPendingStates()
+		svc.strategyRunner.SetSuppressProgressEvents(false)
 		warmupLog.Info().Msg("cleared all pending states after warmup")
 	}
 	warmupLog.Info().Int("symbols", len(readyStrs)).Msg("all base symbols marked ready")
