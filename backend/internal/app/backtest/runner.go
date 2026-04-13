@@ -439,16 +439,17 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	posMonBundle, err := bootstrap.BuildPositionMonitor(bootstrap.PosMonitorDeps{
-		EventBus:     r.infra.EventBus,
-		PositionGate: execBundle.PositionGate,
-		Broker:       sim,
-		SpecStore:    specStore,
-		SnapshotFn:   monitorSvc.GetLastSnapshot,
-		TenantID:     "default",
-		EnvMode:      domain.EnvModePaper,
-		Clock:        clockFn,
-		IsBacktest:   true,
-		Logger:       r.log,
+		EventBus:         r.infra.EventBus,
+		PositionGate:     execBundle.PositionGate,
+		Broker:           sim,
+		SpecStore:        specStore,
+		SnapshotFn:       monitorSvc.GetLastSnapshot,
+		EarningsCalendar: r.infra.EarningsCalendar,
+		TenantID:         "default",
+		EnvMode:          domain.EnvModePaper,
+		Clock:            clockFn,
+		IsBacktest:       true,
+		Logger:           r.log,
 	})
 	if err != nil {
 		r.status.Store("error")
