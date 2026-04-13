@@ -60,6 +60,10 @@ type OZConfig struct {
 	LateLPZThreshold float64 // large print Z threshold (default -1.5)
 	LateNFZThreshold float64 // net flow Z threshold (default -1.5)
 
+	// LP_Z floor: reject entries where large-print imbalance Z is too extreme
+	// (informed flow, not mean-reversion). 0 = disabled.
+	LateLPZFloor float64
+
 	// Daily-timeframe entry filters (available at bar #1 via HTF["1d"])
 	MinATR         float64 // min daily ATR(14); 0 = disabled
 	MinWhaleScore  int     // min 13F whale accumulation score; 0 = disabled
@@ -133,6 +137,7 @@ func parseOZConfig(params map[string]any) OZConfig {
 		CompositeMode:          getString(params, "composite_mode", "off"),
 		LateLPZThreshold:       getFloat64(params, "late_lp_z_threshold", -1.5),
 		LateNFZThreshold:       getFloat64(params, "late_nf_z_threshold", -1.5),
+		LateLPZFloor:           getFloat64(params, "late_lp_z_floor", 0),
 		MinATR:                 getFloat64(params, "min_daily_atr", 0),
 		MinWhaleScore:          getInt(params, "min_whale_score", 0),
 		RequireHTFBull:         getBool(params, "require_htf_bull", false),
@@ -327,6 +332,11 @@ func (s *OvernightZStrategy) OnBar(ctx start.Context, symbol string, bar start.B
 		if !hasDaily || daily.Bias != "BULLISH" {
 			return ozSt, nil, nil
 		}
+	}
+
+	// LP_Z floor: reject extreme large-print imbalance (informed flow, not mean-reversion).
+	if cfg.LateLPZFloor != 0 && ozSt.LastLateLPZ != 0 && ozSt.LastLateLPZ < cfg.LateLPZFloor {
+		return ozSt, nil, nil
 	}
 
 	// Need valid late Z signal based on selected metric.
