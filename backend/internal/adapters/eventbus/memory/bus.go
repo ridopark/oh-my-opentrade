@@ -197,7 +197,7 @@ func (b *Bus) SubscribeAsync(ctx context.Context, eventType domain.EventType, ha
 	b.closeMu.Unlock()
 
 	sub := &asyncSub{
-		ch:      make(chan asyncTask, 64),
+		ch:      make(chan asyncTask, 256),
 		done:    make(chan struct{}),
 		handler: handler,
 	}
