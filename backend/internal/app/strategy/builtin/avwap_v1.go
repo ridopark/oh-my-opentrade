@@ -535,6 +535,8 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 func (s *AVWAPState) ClearPendingEntry() {
 	s.PendingEntry = ""
 	s.PendingEntryAt = time.Time{}
+	// PositionSide is intentionally not cleared here — it represents
+	// a real position tracked from fill confirmations.
 }
 
 // UpdateCalcAnchor feeds a bar into a single named anchor in the AVWAP calculator.
@@ -1126,7 +1128,7 @@ func (s *AVWAPState) evaluateCapitulationReclaim(ec entryContext) (*start.Signal
 			reason = "AVWAP value missing"
 			continue
 		}
-		volumeOK := s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA
+		volumeOK := cfg.VolumeMult == 0 || (s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA)
 		if ec.lockedLong {
 			reason = "locked LONG"
 			continue
@@ -1198,7 +1200,7 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 		if s.Indicators.VolumeSMA > 0 {
 			volRatio = bar.Volume / s.Indicators.VolumeSMA
 		}
-		volumeOK := s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA
+		volumeOK := cfg.VolumeMult == 0 || (s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA)
 
 		if s.AboveCount[anchorName] >= cfg.HoldBars && volumeOK && !ec.lockedLong {
 			if cfg.RequireHigherLows && !hasHigherLows(s.RecentLows) {
@@ -1251,7 +1253,7 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 			if s.Indicators.VolumeSMA > 0 {
 				volRatio = bar.Volume / s.Indicators.VolumeSMA
 			}
-			volumeOK := s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA
+			volumeOK := cfg.VolumeMult == 0 || (s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA)
 
 			if s.BelowCount[anchorName] >= cfg.HoldBars && volumeOK && !ec.lockedShort {
 				// Regime gating handled by evaluateEntries — breakout only called in REVERSAL
@@ -1368,7 +1370,7 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 		if s.Indicators.VolumeSMA > 0 {
 			volRatio = bar.Volume / s.Indicators.VolumeSMA
 		}
-		volumeOK := s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA
+		volumeOK := cfg.VolumeMult == 0 || (s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA)
 		rsiOK := s.Indicators.RSI >= cfg.PullbackRSIMin && s.Indicators.RSI <= cfg.PullbackRSIMax
 
 		// Long pullback: was above AVWAP for trend bars, low touches AVWAP, closes above, RSI mid-range.
@@ -1530,7 +1532,7 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 	if s.Indicators.VolumeSMA > 0 {
 		volRatio = bar.Volume / s.Indicators.VolumeSMA
 	}
-	volumeOK := s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA
+	volumeOK := cfg.VolumeMult == 0 || (s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA)
 	// Use first anchor's AVWAP value for confluence scoring in pinch
 	pinchAVWAPValue := avwapValues[sortedAnchors[0]]
 	gapBPS := (maxAVWAP - minAVWAP) / minAVWAP * 10000.0
@@ -1632,7 +1634,7 @@ func (s *AVWAPState) evaluateGapReclaim(ec entryContext) (*start.Signal, error) 
 	if s.Indicators.VolumeSMA > 0 {
 		volRatio = bar.Volume / s.Indicators.VolumeSMA
 	}
-	volumeOK := s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA
+	volumeOK := cfg.VolumeMult == 0 || (s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA)
 	for _, anchorName := range sortedAnchors {
 		avwapValue := avwapValues[anchorName]
 		prev := s.CrossedBelowBar[anchorName]
@@ -1742,7 +1744,7 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 				if s.Indicators.VolumeSMA > 0 {
 					volRatio = bar.Volume / s.Indicators.VolumeSMA
 				}
-				volumeOK := s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA
+				volumeOK := cfg.VolumeMult == 0 || (s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA)
 				if !volumeOK {
 					reason = fmt.Sprintf("vol %.1fx < %.1fx min", volRatio, cfg.VolumeMult)
 				} else {
@@ -1809,7 +1811,7 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 				if s.Indicators.VolumeSMA > 0 {
 					volRatio = bar.Volume / s.Indicators.VolumeSMA
 				}
-				volumeOK := s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA
+				volumeOK := cfg.VolumeMult == 0 || (s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA)
 				if !volumeOK {
 					reason = fmt.Sprintf("vol %.1fx < %.1fx min", volRatio, cfg.VolumeMult)
 				} else {
@@ -2984,11 +2986,20 @@ func (s *AVWAPStrategy) OnEvent(ctx start.Context, symbol string, evt any, st st
 	switch e := evt.(type) {
 	case start.FillConfirmation:
 		if avwapSt.PendingEntry != "" {
+			// Entry fill: promote PendingEntry to confirmed position.
 			avwapSt.PositionSide = avwapSt.PendingEntry
 			avwapSt.PendingEntry = ""
 			avwapSt.PendingEntryAt = time.Time{}
 			if ctx != nil && ctx.Logger() != nil {
 				ctx.Logger().Info("AVWAPStrategy: fill confirmed, position active", "symbol", symbol, "side", avwapSt.PositionSide, "price", e.Price)
+			}
+		} else if avwapSt.PositionSide != "" {
+			// Exit fill: position was closed by position monitor exit rules.
+			// Clear PositionSide so the strategy can re-enter.
+			exitSide := avwapSt.PositionSide
+			avwapSt.PositionSide = ""
+			if ctx != nil && ctx.Logger() != nil {
+				ctx.Logger().Info("AVWAPStrategy: exit fill confirmed, position cleared", "symbol", symbol, "prev_side", exitSide, "price", e.Price)
 			}
 		}
 		return avwapSt, nil, nil

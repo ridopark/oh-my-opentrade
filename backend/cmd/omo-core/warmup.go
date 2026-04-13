@@ -485,6 +485,14 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 	if svc.activationSvc != nil {
 		svc.activationSvc.MarkWarmed(readyStrs...)
 	}
+	// Clear any pending entry / position state left over from warmup replay.
+	// Warmup bars can trigger signal emission in loosened configs, leaving
+	// PendingEntry or PositionSide set. This ensures all strategies start
+	// clean before live bars arrive.
+	if svc.strategyRunner != nil {
+		svc.strategyRunner.ClearAllPendingStates()
+		warmupLog.Info().Msg("cleared all pending states after warmup")
+	}
 	warmupLog.Info().Int("symbols", len(readyStrs)).Msg("all base symbols marked ready")
 }
 

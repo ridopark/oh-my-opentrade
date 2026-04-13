@@ -358,7 +358,9 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 	// For daily regime, we also check HTF bias.
 	priceAboveEMA9 := ind.EMA9 > 0 && bar.Close > ind.EMA9
 	priceBelowEMA9 := ind.EMA9 > 0 && bar.Close < ind.EMA9
-	if !priceAboveEMA9 && !priceBelowEMA9 {
+	// When EMA9 is not yet available (indicator warmup), skip the regime gate
+	// rather than blocking all entries indefinitely after restart.
+	if ind.EMA9 > 0 && !priceAboveEMA9 && !priceBelowEMA9 {
 		bmSt.GateRegime++
 		bmSt.PrevMACDHist = ind.MACDHistogram
 		emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "regime", "no EMA9 directional bias")

@@ -448,7 +448,7 @@ func TestBus_DroppedEvents_Counter(t *testing.T) {
 
 	require.NoError(t, bus.SubscribeAsync(ctx, domain.EventMarketBarReceived, handler))
 
-	const totalPublished = 200
+	const totalPublished = 512
 	event, err := domain.NewEvent(domain.EventMarketBarReceived, "tenant-1", domain.EnvModePaper, "idem-1", nil)
 	require.NoError(t, err)
 
@@ -487,10 +487,10 @@ func TestBus_DroppedEventsByType_MultipleTypes(t *testing.T) {
 	orderEvent, err := domain.NewEvent(domain.EventOrderSubmitted, "tenant-1", domain.EnvModePaper, "idem-2", nil)
 	require.NoError(t, err)
 
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 512; i++ {
 		_ = bus.Publish(ctx, *barEvent)
 	}
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 512; i++ {
 		_ = bus.Publish(ctx, *orderEvent)
 	}
 

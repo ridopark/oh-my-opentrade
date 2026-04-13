@@ -2069,7 +2069,7 @@ func (r *Runner) handleFill(_ context.Context, event domain.Event) error {
 	}
 
 	r.mu.Lock()
-	signals, err := inst.OnEvent(instCtx, symbol, confirmation)
+	signals, err := inst.OnEvent(instCtx, routingSymbol, confirmation)
 	r.mu.Unlock()
 
 	if err != nil {
