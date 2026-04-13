@@ -46,6 +46,7 @@ func newTestBroker() *Broker {
 	return New(Config{SlippageBPS: 5, DisableFillChan: true}, zerolog.Nop())
 }
 
+
 func makeOptionExitIntent(sym string, meta map[string]string) domain.OrderIntent {
 	inst := &domain.Instrument{
 		Type:             domain.InstrumentTypeOption,
@@ -327,4 +328,201 @@ func TestComputeOptionExitPrice(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestComputeOptionExitPrice_VIXBetaScaling(t *testing.T) {
+	baseMeta := map[string]string{
+		"strike":           "150.0",
+		"expiry":           "2026-04-10",
+		"option_right":     "CALL",
+		"iv_at_entry":      "0.30",
+		"premium":          "5.00",
+		"entry_underlying": "150.0",
+		"entry_date":       "2026-04-06",
+		"underlying":       "AAPL",
+	}
+
+	t.Run("VIX spike increases exit price", func(t *testing.T) {
+		// Baseline: no VIX adjustment
+		bBase := newTestBroker()
+		barTime, _ := time.Parse("2006-01-02 15:04", "2026-04-06 14:30")
+		basePrice := bBase.computeOptionExitPrice(
+			makeOptionExitIntent("AAPL260410C00150000", baseMeta), 153.0, barTime)
+
+		// With VIX spike: entry 15, now 21 (+40%)
+		bAdj := New(Config{SlippageBPS: 5, DisableFillChan: true, VIXIVBeta: 1.0}, zerolog.Nop())
+		bAdj.prices[domain.Symbol("VIX")] = 21.0
+
+		metaWithVIX := make(map[string]string)
+		for k, v := range baseMeta {
+			metaWithVIX[k] = v
+		}
+		metaWithVIX["vix_at_entry"] = "15.0"
+
+		adjPrice := bAdj.computeOptionExitPrice(
+			makeOptionExitIntent("AAPL260410C00150000", metaWithVIX), 153.0, barTime)
+
+		assert.Greater(t, adjPrice, basePrice,
+			"VIX spike should increase call exit price (higher IV = more time value)")
+	})
+
+	t.Run("VIX drop decreases exit price", func(t *testing.T) {
+		bBase := newTestBroker()
+		barTime, _ := time.Parse("2006-01-02 15:04", "2026-04-06 14:30")
+		basePrice := bBase.computeOptionExitPrice(
+			makeOptionExitIntent("AAPL260410C00150000", baseMeta), 153.0, barTime)
+
+		bAdj := New(Config{SlippageBPS: 5, DisableFillChan: true, VIXIVBeta: 1.0}, zerolog.Nop())
+		bAdj.prices[domain.Symbol("VIX")] = 12.0
+
+		metaWithVIX := make(map[string]string)
+		for k, v := range baseMeta {
+			metaWithVIX[k] = v
+		}
+		metaWithVIX["vix_at_entry"] = "15.0"
+
+		adjPrice := bAdj.computeOptionExitPrice(
+			makeOptionExitIntent("AAPL260410C00150000", metaWithVIX), 153.0, barTime)
+
+		assert.Less(t, adjPrice, basePrice,
+			"VIX drop should decrease call exit price (lower IV = less time value)")
+	})
+
+	t.Run("no VIX data leaves price unchanged", func(t *testing.T) {
+		bBase := newTestBroker()
+		bAdj := New(Config{SlippageBPS: 5, DisableFillChan: true, VIXIVBeta: 1.0}, zerolog.Nop())
+		// VIX price NOT set — should gracefully skip
+
+		barTime, _ := time.Parse("2006-01-02 15:04", "2026-04-06 14:30")
+
+		basePrice := bBase.computeOptionExitPrice(
+			makeOptionExitIntent("AAPL260410C00150000", baseMeta), 153.0, barTime)
+		adjPrice := bAdj.computeOptionExitPrice(
+			makeOptionExitIntent("AAPL260410C00150000", baseMeta), 153.0, barTime)
+
+		assert.InDelta(t, basePrice, adjPrice, 0.01,
+			"missing VIX data should produce same price as no adjustment")
+	})
+}
+
+func TestComputeOptionExitPrice_TODSeasonality(t *testing.T) {
+	meta := map[string]string{
+		"strike":           "150.0",
+		"expiry":           "2026-04-10",
+		"option_right":     "CALL",
+		"iv_at_entry":      "0.30",
+		"premium":          "5.00",
+		"entry_underlying": "150.0",
+		"entry_date":       "2026-04-06",
+		"underlying":       "AAPL",
+	}
+
+	t.Run("opening IV premium vs midday dip", func(t *testing.T) {
+		bAdj := New(Config{SlippageBPS: 5, DisableFillChan: true, TODSeasonalEnabled: true}, zerolog.Nop())
+		intent := makeOptionExitIntent("AAPL260410C00150000", meta)
+
+		// 9:40 ET = opening premium
+		openTime, _ := time.ParseInLocation("2006-01-02 15:04", "2026-04-06 09:40", mustLoadET())
+		openPrice := bAdj.computeOptionExitPrice(intent, 153.0, openTime)
+
+		// 12:30 ET = midday dip
+		midTime, _ := time.ParseInLocation("2006-01-02 15:04", "2026-04-06 12:30", mustLoadET())
+		midPrice := bAdj.computeOptionExitPrice(intent, 153.0, midTime)
+
+		assert.Greater(t, openPrice, midPrice,
+			"opening IV premium should produce higher exit price than midday dip")
+	})
+}
+
+func TestComputeOptionExitPrice_EarningsRamp(t *testing.T) {
+	t.Run("earnings tomorrow vs no earnings", func(t *testing.T) {
+		bBase := newTestBroker()
+		bAdj := New(Config{SlippageBPS: 5, DisableFillChan: true, EarningsRampEnabled: true}, zerolog.Nop())
+
+		barTime, _ := time.Parse("2006-01-02 15:04", "2026-04-06 14:30")
+
+		baseMeta := map[string]string{
+			"strike":           "150.0",
+			"expiry":           "2026-04-10",
+			"option_right":     "CALL",
+			"iv_at_entry":      "0.30",
+			"premium":          "5.00",
+			"entry_underlying": "150.0",
+			"entry_date":       "2026-04-06",
+			"underlying":       "AAPL",
+		}
+		basePrice := bBase.computeOptionExitPrice(
+			makeOptionExitIntent("AAPL260410C00150000", baseMeta), 153.0, barTime)
+
+		earningsMeta := make(map[string]string)
+		for k, v := range baseMeta {
+			earningsMeta[k] = v
+		}
+		earningsMeta["days_to_earnings"] = "1"
+
+		earningsPrice := bAdj.computeOptionExitPrice(
+			makeOptionExitIntent("AAPL260410C00150000", earningsMeta), 153.0, barTime)
+
+		assert.Greater(t, earningsPrice, basePrice,
+			"1-day-to-earnings IV ramp should increase exit price significantly")
+		// sqrt(5)/sqrt(1) ≈ 2.24x IV multiplier — price should be notably higher
+		assert.Greater(t, earningsPrice, basePrice*1.3,
+			"earnings ramp should produce >30% higher exit price")
+	})
+
+	t.Run("no earnings meta leaves price unchanged", func(t *testing.T) {
+		bBase := newTestBroker()
+		bAdj := New(Config{SlippageBPS: 5, DisableFillChan: true, EarningsRampEnabled: true}, zerolog.Nop())
+
+		barTime, _ := time.Parse("2006-01-02 15:04", "2026-04-06 14:30")
+
+		meta := map[string]string{
+			"strike":           "150.0",
+			"expiry":           "2026-04-10",
+			"option_right":     "CALL",
+			"iv_at_entry":      "0.30",
+			"premium":          "5.00",
+			"entry_underlying": "150.0",
+			"entry_date":       "2026-04-06",
+			"underlying":       "AAPL",
+		}
+
+		basePrice := bBase.computeOptionExitPrice(
+			makeOptionExitIntent("AAPL260410C00150000", meta), 153.0, barTime)
+		adjPrice := bAdj.computeOptionExitPrice(
+			makeOptionExitIntent("AAPL260410C00150000", meta), 153.0, barTime)
+
+		assert.InDelta(t, basePrice, adjPrice, 0.01,
+			"no earnings meta should produce same price")
+	})
+}
+
+func TestMinutesSinceMarketOpen(t *testing.T) {
+	et := mustLoadET()
+	tests := []struct {
+		name     string
+		time     time.Time
+		expected int
+	}{
+		{"market open", time.Date(2026, 4, 6, 9, 30, 0, 0, et), 0},
+		{"10:00 ET", time.Date(2026, 4, 6, 10, 0, 0, 0, et), 30},
+		{"12:00 ET", time.Date(2026, 4, 6, 12, 0, 0, 0, et), 150},
+		{"16:00 ET", time.Date(2026, 4, 6, 16, 0, 0, 0, et), 390},
+		{"pre-market", time.Date(2026, 4, 6, 8, 0, 0, 0, et), 0},
+		{"after hours", time.Date(2026, 4, 6, 18, 0, 0, 0, et), 390},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := minutesSinceMarketOpen(tc.time)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+func mustLoadET() *time.Location {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		panic(err)
+	}
+	return loc
 }

@@ -53,9 +53,12 @@ func BuildBacktestInfra(deps BacktestDeps, slippageBPS int64, initialEquity floa
 	importer := optionsimport.NewService(dolthubClient, histOptRepo, log)
 
 	sim := simbroker.New(simbroker.Config{
-		SlippageBPS:     slippageBPS,
-		InitialEquity:   initialEquity,
-		DisableFillChan: true,
+		SlippageBPS:         slippageBPS,
+		InitialEquity:       initialEquity,
+		DisableFillChan:     true,
+		VIXIVBeta:           0.7,  // large-cap equity default
+		TODSeasonalEnabled:  true,
+		EarningsRampEnabled: true,
 	}, log.With().Str("component", "simbroker").Logger())
 
 	var aiAdvisor ports.AIAdvisorPort = llm.NewNoOpAdvisor()

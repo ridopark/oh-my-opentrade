@@ -541,6 +541,10 @@ func (s *Service) processFill(fill fillMsg) {
 			if fill.IVAtEntry > 0 {
 				pos.CustomState["iv_at_entry"] = fill.IVAtEntry
 			}
+			// Store VIX level at entry for dynamic IV adjustment
+			if vixSnap, ok := s.priceCache.LatestPrice("VIX"); ok && vixSnap.Price > 0 {
+				pos.CustomState["vix_at_entry"] = vixSnap.Price
+			}
 			// BSM recalculation fields: extract strike from OCC symbol
 			if _, _, _, strike, ok := domain.ParseOCC(fill.Symbol); ok && strike > 0 {
 				pos.CustomState["strike"] = strike
