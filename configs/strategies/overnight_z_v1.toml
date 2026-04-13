@@ -28,8 +28,8 @@ asset_classes = ["EQUITY", "OPTION"]
 allowed_directions = ["LONG"]
 
 [params]
-late_z_long_threshold = -2.0
-late_z_long_floor = -2.5
+late_z_long_threshold = -2.50
+late_z_long_floor = 0
 late_z_short_threshold = 2.0
 long_only = true
 
@@ -62,6 +62,12 @@ late_nf_z_threshold = -1.5
 min_daily_atr = 0
 min_whale_score = 0
 require_htf_bull = false
+
+# Z-metric selection: "buy_ratio" (default), "dp_ratio" (signing-free), "large_print"
+z_metric = "buy_ratio"
+
+# Entry time window: 0 = exact match at entry_time (default), >0 = allow ±N minutes
+entry_window_min = 0
 
 [hooks]
 signals = { engine = "builtin", name = "overnight_z" }

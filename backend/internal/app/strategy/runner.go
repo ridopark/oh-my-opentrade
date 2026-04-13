@@ -66,6 +66,8 @@ type Runner struct {
 	lateSessionLPRolling map[string]*dpRollingStats  // sym → 20-day rolling late LP imbalance
 	lateSessionNFZ       map[string]float64         // sym → current day's late net-flow Z
 	lateSessionNFRolling map[string]*dpRollingStats  // sym → 20-day rolling late net flow
+	lateSessionDPVolRatioZ       map[string]float64         // sym → current day's late DP volume ratio Z
+	lateSessionDPVolRatioRolling map[string]*dpRollingStats  // sym → 20-day rolling late DP vol ratio
 
 	// Whale accumulation lookup: ticker -> latest score.
 	whaleLookup map[string]domain.WhaleAccumulation
@@ -186,7 +188,9 @@ func (rs *dpRollingStats) meanStd() (mean, std float64) {
 		d := rs.values[i] - mean
 		variance += d * d
 	}
-	variance /= float64(n)
+	if n > 1 {
+		variance /= float64(n - 1) // Bessel's correction for sample std
+	}
 	std = math.Sqrt(variance)
 	return mean, std
 }
@@ -471,6 +475,8 @@ func NewRunner(
 		lateSessionLPRolling: make(map[string]*dpRollingStats),
 		lateSessionNFZ:       make(map[string]float64),
 		lateSessionNFRolling: make(map[string]*dpRollingStats),
+		lateSessionDPVolRatioZ:       make(map[string]float64),
+		lateSessionDPVolRatioRolling: make(map[string]*dpRollingStats),
 	}
 }
 
@@ -913,64 +919,95 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 			for prevDay.Weekday() == time.Saturday || prevDay.Weekday() == time.Sunday {
 				prevDay = prevDay.AddDate(0, 0, -1)
 			}
+			// Holiday skip: if no DP data exists for prevDay, step back further.
+			for attempts := 0; attempts < 5; attempts++ {
+				probe := time.Date(prevDay.Year(), prevDay.Month(), prevDay.Day(), 14, 0, 0, 0, etLocation).UTC()
+				if _, ok := r.dpLookup[DPLookupKey{Symbol: sym, Time: probe}]; ok {
+					break
+				}
+				prevDay = prevDay.AddDate(0, 0, -1)
+				for prevDay.Weekday() == time.Saturday || prevDay.Weekday() == time.Sunday {
+					prevDay = prevDay.AddDate(0, 0, -1)
+				}
+			}
 			lateStart := time.Date(prevDay.Year(), prevDay.Month(), prevDay.Day(), 14, 0, 0, 0, etLocation).UTC()
 			lateEnd := time.Date(prevDay.Year(), prevDay.Month(), prevDay.Day(), 15, 30, 0, 0, etLocation).UTC()
 
-			var lateBuy, lateSell, lateLargePrint float64
+			var lateBuy, lateSell, lateLargePrint, lateDPVol, lateLitVol float64
 			for t := lateStart.Truncate(5 * time.Minute); t.Before(lateEnd); t = t.Add(5 * time.Minute) {
 				if dp, ok := r.dpLookup[DPLookupKey{Symbol: sym, Time: t}]; ok {
 					lateBuy += dp.BuyVolume
 					lateSell += dp.SellVolume
 					lateLargePrint += dp.LargePrintVolume
+					lateDPVol += dp.DPVolume
+					lateLitVol += dp.LitVolume
 				}
 			}
 
 			if lateBuy+lateSell > 0 {
 				lateRatio := lateBuy / (lateBuy + lateSell)
 
-				// 1) Buy ratio Z (existing)
+				// 1) Buy ratio Z — compute Z BEFORE pushing today's value
+				// to avoid lookback bias (today's observation contaminating its own Z).
 				rs, ok := r.lateSessionDPRolling[sym]
 				if !ok {
 					rs = newDPRollingStats(20)
 					r.lateSessionDPRolling[sym] = rs
 				}
-				rs.push(lateRatio)
 				mean, std := rs.meanStd()
 				if std > 0 {
 					r.lateSessionDPZ[sym] = (lateRatio - mean) / std
 				} else {
 					r.lateSessionDPZ[sym] = 0
 				}
+				rs.push(lateRatio)
 
-				// 2) Large print imbalance Z: LP volume * directional sign
+				// 2) Large print imbalance Z — same fix: Z before push.
 				lpImbalance := lateLargePrint * (2*lateRatio - 1)
 				lpRS, lpOK := r.lateSessionLPRolling[sym]
 				if !lpOK {
 					lpRS = newDPRollingStats(20)
 					r.lateSessionLPRolling[sym] = lpRS
 				}
-				lpRS.push(lpImbalance)
 				lpMean, lpStd := lpRS.meanStd()
 				if lpStd > 0 {
 					r.lateSessionLPZ[sym] = (lpImbalance - lpMean) / lpStd
 				} else {
 					r.lateSessionLPZ[sym] = 0
 				}
+				lpRS.push(lpImbalance)
 
-				// 3) Net flow Z: buy - sell (absolute volume, preserves magnitude)
+				// 3) Net flow Z — same fix: Z before push.
 				netFlow := lateBuy - lateSell
 				nfRS, nfOK := r.lateSessionNFRolling[sym]
 				if !nfOK {
 					nfRS = newDPRollingStats(20)
 					r.lateSessionNFRolling[sym] = nfRS
 				}
-				nfRS.push(netFlow)
 				nfMean, nfStd := nfRS.meanStd()
 				if nfStd > 0 {
 					r.lateSessionNFZ[sym] = (netFlow - nfMean) / nfStd
 				} else {
 					r.lateSessionNFZ[sym] = 0
 				}
+				nfRS.push(netFlow)
+			}
+
+			// 4) DP volume ratio Z (signing-free) — avoids buy/sell misclassification.
+			if lateDPVol+lateLitVol > 0 {
+				dpVolRatio := lateDPVol / (lateDPVol + lateLitVol)
+				vrRS, vrOK := r.lateSessionDPVolRatioRolling[sym]
+				if !vrOK {
+					vrRS = newDPRollingStats(20)
+					r.lateSessionDPVolRatioRolling[sym] = vrRS
+				}
+				vrMean, vrStd := vrRS.meanStd()
+				if vrStd > 0 {
+					r.lateSessionDPVolRatioZ[sym] = (dpVolRatio - vrMean) / vrStd
+				} else {
+					r.lateSessionDPVolRatioZ[sym] = 0
+				}
+				vrRS.push(dpVolRatio)
 			}
 		}
 
@@ -982,6 +1019,9 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 			}
 			if nfZ, nfOK := r.lateSessionNFZ[sym]; nfOK {
 				ind.LateSessionNetFlowZ = nfZ
+			}
+			if vrZ, vrOK := r.lateSessionDPVolRatioZ[sym]; vrOK {
+				ind.LateSessionDPVolRatioZ = vrZ
 			}
 			r.indicators[sym] = ind
 		}
@@ -1255,6 +1295,9 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		if nfZ, nfOK := r.lateSessionNFZ[symbol]; nfOK {
 			indicators.LateSessionNetFlowZ = nfZ
 		}
+		if vrZ, vrOK := r.lateSessionDPVolRatioZ[symbol]; vrOK {
+			indicators.LateSessionDPVolRatioZ = vrZ
+		}
 	}
 
 	if !r.indLogOnce[symbol] {
@@ -1441,6 +1484,9 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 				}
 				if nfZ, nfOK := r.lateSessionNFZ[symbol]; nfOK {
 					htfIndicators.LateSessionNetFlowZ = nfZ
+				}
+				if vrZ, vrOK := r.lateSessionDPVolRatioZ[symbol]; vrOK {
+					htfIndicators.LateSessionDPVolRatioZ = vrZ
 				}
 			}
 		}
