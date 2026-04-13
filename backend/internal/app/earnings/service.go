@@ -98,6 +98,9 @@ func (s *Service) nextRunTime(now time.Time) time.Time {
 }
 
 // Refresh fetches earnings dates for all configured symbols and upserts them.
+// Uses per-symbol queries rather than the batch endpoint because the Finnhub
+// batch endpoint omits many symbols (only returns a subset per date range).
+// 34 symbols × 1 call each is well within the free tier's 60 calls/min limit.
 func (s *Service) Refresh(ctx context.Context) error {
 	from := time.Now()
 	to := from.AddDate(0, 0, s.cfg.LookbackDays)
@@ -108,9 +111,21 @@ func (s *Service) Refresh(ctx context.Context) error {
 		Str("to", to.Format("2006-01-02")).
 		Msg("fetching earnings calendar")
 
-	entries, err := s.finnhub.FetchEarningsBatch(ctx, s.cfg.Symbols, from, to)
-	if err != nil {
-		return err
+	var entries []ports.EarningsEntry
+	for _, sym := range s.cfg.Symbols {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		entry, err := s.finnhub.FetchEarnings(ctx, sym, from, to)
+		if err != nil {
+			s.log.Warn().Err(err).Str("symbol", sym).Msg("failed to fetch earnings")
+			continue
+		}
+		if entry != nil {
+			entries = append(entries, *entry)
+		}
+		// Respect rate limit: 30 calls/sec max
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	if len(entries) == 0 {
