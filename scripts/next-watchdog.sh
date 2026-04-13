@@ -25,6 +25,17 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM
 
+descendants() {
+  # Recursively collect all descendant PIDs of a given PID
+  local parent=$1
+  local children
+  children=$(pgrep -P "$parent" 2>/dev/null || true)
+  for child in $children; do
+    echo "$child"
+    descendants "$child"
+  done
+}
+
 while true; do
   echo "[watchdog] starting next dev..."
   cd "$DIR"
@@ -35,9 +46,9 @@ while true; do
   sleep 5
 
   while kill -0 "$NEXT_PID" 2>/dev/null; do
-    # Sum RSS of all child processes (next dev spawns workers)
+    # Sum RSS of entire process tree (next dev spawns deeply nested workers)
     TOTAL_RSS=0
-    for pid in $(pgrep -P "$NEXT_PID" 2>/dev/null) $NEXT_PID; do
+    for pid in $NEXT_PID $(descendants "$NEXT_PID"); do
       if [[ -f "/proc/$pid/status" ]]; then
         rss=$(awk '/^VmRSS:/ {print $2}' "/proc/$pid/status" 2>/dev/null || echo 0)
         TOTAL_RSS=$((TOTAL_RSS + rss))
@@ -45,9 +56,11 @@ while true; do
     done
 
     TOTAL_RSS_MB=$((TOTAL_RSS / 1024))
+    echo "[watchdog] RSS: ${TOTAL_RSS_MB} MB / ${MAX_RSS_MB} MB"
     if [[ $TOTAL_RSS -gt $MAX_RSS_KB ]]; then
       echo "[watchdog] RSS ${TOTAL_RSS_MB} MB exceeds limit ${MAX_RSS_MB} MB — restarting"
-      kill "$NEXT_PID" 2>/dev/null
+      # Kill the entire process group to reach deeply nested next-server
+      kill -- -"$NEXT_PID" 2>/dev/null || kill "$NEXT_PID" 2>/dev/null
       wait "$NEXT_PID" 2>/dev/null || true
       sleep 2
       break  # restart outer loop
