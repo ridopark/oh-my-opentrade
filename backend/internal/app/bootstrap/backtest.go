@@ -32,10 +32,11 @@ type BacktestInfra struct {
 	Repo        *timescaledb.Repository // concrete type — backtest needs FindDataGaps/SaveMarketBars
 	NoopRepo    ports.RepositoryPort
 	NoopPnLRepo ports.PnLPort
-	SimBroker   *simbroker.Broker
-	HistOptRepo ports.HistoricalOptionsPort
-	Importer    *optionsimport.Service
-	AIAdvisor   ports.AIAdvisorPort
+	SimBroker        *simbroker.Broker
+	HistOptRepo      ports.HistoricalOptionsPort
+	EarningsCalendar ports.EarningsCalendarPort
+	Importer         *optionsimport.Service
+	AIAdvisor        ports.AIAdvisorPort
 }
 
 // BuildBacktestInfra constructs all adapter-layer dependencies for a backtest.
@@ -61,6 +62,8 @@ func BuildBacktestInfra(deps BacktestDeps, slippageBPS int64, initialEquity floa
 		EarningsRampEnabled: true,
 	}, log.With().Str("component", "simbroker").Logger())
 
+	earningsRepo := timescaledb.NewEarningsRepo(deps.DB, log.With().Str("component", "earnings_repo").Logger())
+
 	var aiAdvisor ports.AIAdvisorPort = llm.NewNoOpAdvisor()
 	if !noAI && deps.AppCfg.AI.Enabled {
 		aiAdvisor = llm.NewAdvisor(deps.AppCfg.AI.BaseURL, deps.AppCfg.AI.Model, deps.AppCfg.AI.APIKey, nil)
@@ -72,9 +75,10 @@ func BuildBacktestInfra(deps BacktestDeps, slippageBPS int64, initialEquity floa
 		Repo:        repo,
 		NoopRepo:    &noop.NoopRepo{},
 		NoopPnLRepo: &noop.NoopPnLRepo{},
-		SimBroker:   sim,
-		HistOptRepo: histOptRepo,
-		Importer:    importer,
+		SimBroker:        sim,
+		HistOptRepo:      histOptRepo,
+		EarningsCalendar: earningsRepo,
+		Importer:         importer,
 		AIAdvisor:   aiAdvisor,
 	}
 }

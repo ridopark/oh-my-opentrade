@@ -15,12 +15,14 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
 	"github.com/oh-my-opentrade/backend/internal/adapters/dolthub"
+	"github.com/oh-my-opentrade/backend/internal/adapters/finnhub"
 	"github.com/oh-my-opentrade/backend/internal/adapters/notification"
 	"github.com/oh-my-opentrade/backend/internal/adapters/openfigi"
 	"github.com/oh-my-opentrade/backend/internal/adapters/sec"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/adapters/yfinance"
 	"github.com/oh-my-opentrade/backend/internal/app/datarefresh"
+	"github.com/oh-my-opentrade/backend/internal/app/earnings"
 	"github.com/oh-my-opentrade/backend/internal/app/ivcollector"
 	"github.com/oh-my-opentrade/backend/internal/app/optionsimport"
 	"github.com/oh-my-opentrade/backend/internal/app/whale13f"
@@ -202,6 +204,22 @@ func main() {
 		}, edgarClient, figiClient, cusipCache, whaleRepo, log.With().Str("component", "whale_13f").Logger())
 	}
 
+	// Earnings calendar (Finnhub — daily refresh of next earnings dates)
+	var earningsSvc *earnings.Service
+	if apiKey := os.Getenv("FINNHUB_API_KEY"); apiKey != "" {
+		finnhubClient := finnhub.NewClient(apiKey, log.With().Str("component", "finnhub").Logger())
+		earningsRepo := timescaledb.NewEarningsRepo(sqlDB, log.With().Str("component", "earnings_repo").Logger())
+		earningsSvc = earnings.NewService(earnings.Config{
+			Symbols:       symbols,
+			RunAtHourET:   5,
+			RunAtMinuteET: 30,
+			LookbackDays:  90,
+		}, finnhubClient, earningsRepo, log.With().Str("component", "earnings").Logger())
+		if notifier != nil {
+			earningsSvc.SetNotifier(notifier)
+		}
+	}
+
 	if runOnce {
 		log.Info().Msg("run-once mode: executing all tasks")
 		refreshSvc.RefreshAll(ctx)
@@ -211,6 +229,11 @@ func main() {
 		if whaleSvc != nil {
 			if err := whaleSvc.Refresh(ctx); err != nil {
 				log.Warn().Err(err).Msg("whale 13F refresh failed")
+			}
+		}
+		if earningsSvc != nil {
+			if err := earningsSvc.Refresh(ctx); err != nil {
+				log.Warn().Err(err).Msg("earnings calendar refresh failed")
 			}
 		}
 		dolthubSvc.RunOnce(ctx)
@@ -232,6 +255,12 @@ func main() {
 	if whaleSvc != nil {
 		if err := whaleSvc.Start(ctx); err != nil {
 			log.Warn().Err(err).Msg("13F whale service failed to start")
+		}
+	}
+
+	if earningsSvc != nil {
+		if err := earningsSvc.Start(ctx); err != nil {
+			log.Warn().Err(err).Msg("earnings calendar service failed to start")
 		}
 	}
 
