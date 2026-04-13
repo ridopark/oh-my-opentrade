@@ -40,7 +40,7 @@ allowed_hours_tz = "America/New_York"
 hard_stop_bps = 200
 
 risk_per_trade_pct = 2.0
-risk_per_trade_bps = 200
+risk_per_trade_bps = 800
 max_positions = 8
 max_per_sector = 2
 
@@ -57,6 +57,7 @@ dp_ratio_z_min = 0.0
 composite_mode = "off"
 late_lp_z_threshold = -1.5
 late_nf_z_threshold = -1.5
+late_lp_z_floor = -9
 
 # Daily-timeframe entry filters (via HTF["1d"], available at bar #1)
 min_daily_atr = 0
