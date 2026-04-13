@@ -26,19 +26,21 @@ import (
 
 func main() {
 	var (
-		symbolsFlag string
-		fromFlag    string
-		toFlag      string
-		resume      bool
-		concurrency int
-		batchSize   int
-		configPath  string
-		envPath     string
+		symbolsFlag   string
+		fromFlag      string
+		toFlag        string
+		timeframeFlag string
+		resume        bool
+		concurrency   int
+		batchSize     int
+		configPath    string
+		envPath       string
 	)
 
 	flag.StringVar(&symbolsFlag, "symbols", "", "Comma-separated symbols (default: active trading universe)")
 	flag.StringVar(&fromFlag, "from", "", "Start date YYYY-MM-DD (required unless --resume)")
 	flag.StringVar(&toFlag, "to", "", "End date YYYY-MM-DD (default: now)")
+	flag.StringVar(&timeframeFlag, "timeframe", "1m", "Bar timeframe: 1m, 5m, 1h, 1d")
 	flag.BoolVar(&resume, "resume", false, "Resume from last stored bar per symbol")
 	flag.IntVar(&concurrency, "concurrency", 4, "Number of parallel symbol workers")
 	flag.IntVar(&batchSize, "batch-size", 500, "Database batch insert size")
@@ -137,7 +139,7 @@ func main() {
 	log.Info().Msg("[1/2] backfilling 1m candles...")
 	svc := backfill.NewService(alpacaAdapter, repo, backfill.Config{
 		Symbols:         symbols,
-		Timeframe:       "1m",
+		Timeframe:       domain.Timeframe(timeframeFlag),
 		From:            fromTime,
 		To:              toTime,
 		Resume:          resume,
@@ -153,7 +155,12 @@ func main() {
 	}
 	log.Info().Msg("[1/2] candle backfill complete")
 
-	// --- Step 2: Import historical options data from DoltHub ---
+	// --- Step 2: Import historical options data from DoltHub (skip for non-1m) ---
+	if timeframeFlag != "1m" {
+		log.Info().Str("timeframe", timeframeFlag).Msg("skipping options import for non-1m timeframe")
+		log.Info().Msg("backfill finished successfully")
+		return
+	}
 	log.Info().Msg("[2/2] importing historical options data...")
 	histOptRepo := timescaledb.NewHistoricalOptionsRepository(dbAdapter, log.With().Str("component", "hist_options").Logger())
 	dolthubClient := dolthub.NewClient(nil, log)

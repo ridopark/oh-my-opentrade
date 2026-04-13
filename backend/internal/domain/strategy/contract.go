@@ -194,6 +194,10 @@ type IndicatorData struct {
 	// Preserves absolute volume magnitude unlike the ratio formulation.
 	LateSessionNetFlowZ float64
 
+	// Late-session DP volume ratio Z: dp_volume/(dp_volume+lit_volume) Z-normalized.
+	// Signing-free — avoids buy/sell misclassification bias.
+	LateSessionDPVolRatioZ float64
+
 	// Whale accumulation score (populated from whale_accumulation when available)
 	WhaleScore int // aggregate 13F accumulation score (0 = no data)
 }
