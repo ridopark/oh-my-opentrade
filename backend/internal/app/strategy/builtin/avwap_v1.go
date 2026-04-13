@@ -426,6 +426,17 @@ func (s *AVWAPState) SetIndicators(ind start.IndicatorData) {
 
 func (s *AVWAPState) AnchorNames() []string { return s.Config.Anchors }
 
+// HasAnchor reports whether the named anchor exists in the AVWAP calc.
+// Used to detect anchors that were skipped during pre-market startup
+// (zero-time session_open) so the runner can re-resolve on first RTH bar.
+func (s *AVWAPState) HasAnchor(name string) bool {
+	if s.Calc == nil {
+		return false
+	}
+	_, exists := s.Calc.AnchorPoints()[name]
+	return exists
+}
+
 // SetKeyLevels stores key price levels (pd_high, pd_low, or_high, or_low) for confluence scoring.
 func (s *AVWAPState) SetKeyLevels(levels map[string]float64) {
 	s.KeyLevels = levels
