@@ -163,9 +163,22 @@ type AVWAPConfig struct {
 	DPStopEnabled      bool    // when true, tighten stops to DP support level. Default false.
 	DPLevelLookback    int     // number of 5m DP bars to scan for S/R levels. Default 20.
 
-	AllowedHoursStart string // "HH:MM" entry window start (ET)
+	AllowedHoursStart string // "HH:MM" entry window start (ET) — fallback when SessionWeightEnabled=false
 	AllowedHoursEnd   string // "HH:MM" entry window end (ET)
 	AllowedHoursTZ    string // IANA timezone (default America/New_York)
+
+	// Session-time weighting: graduated multiplier on entry strength per time bucket.
+	// When enabled, replaces the binary AllowedHours gate. Weight=0.0 blocks entry.
+	SessionWeightEnabled      bool
+	SessionWeightTZ           string  // IANA timezone (default America/New_York)
+	SessionWeightOpen         float64 // 09:30-10:00 opening drive
+	SessionWeightExtendedOpen float64 // 10:00-10:30 initial balance extension
+	SessionWeightMidMorning   float64 // 10:30-12:00
+	SessionWeightLunch        float64 // 12:00-14:00 midday chop
+	SessionWeightAfternoon    float64 // 14:00-15:00
+	SessionWeightMOC          float64 // 15:00-15:30 MOC imbalance
+	SessionWeightClose        float64 // 15:30-16:00
+	SessionWeightOutside      float64 // outside RTH
 
 	RegimeBlockedDirections map[string]string // regime -> blocked direction ("LONG" or "SHORT")
 
@@ -283,6 +296,10 @@ type entryContext struct {
 	spyTideDevBps float64
 	spyTideReady  bool
 	tideIndexName string
+
+	// Session-time weighting (populated when SessionWeightEnabled=true).
+	sessionBucket string  // e.g. "open", "extended_open", "outside"
+	sessionMult   float64 // multiplier on entry strength (default 1.0 when disabled)
 }
 
 // entryTelemetryTags returns a map of entry-time telemetry fields derived from
@@ -386,6 +403,12 @@ func mergeTelemetry(dst, src map[string]string) {
 func (s *AVWAPState) newEntrySignal(ec entryContext, side start.Side, strength float64, tags map[string]string) (start.Signal, error) {
 	mergeTelemetry(tags, entryTelemetryTags(ec, s.Indicators))
 	tags["late_session_dp_z"] = fmt.Sprintf("%.3f", s.Indicators.LateSessionDPZ)
+
+	// Session-time weighting tags for post-hoc P&L analysis by bucket.
+	if ec.sessionBucket != "" {
+		tags["session_bucket"] = ec.sessionBucket
+		tags["session_mult"] = fmt.Sprintf("%.2f", ec.sessionMult)
+	}
 
 	// Z-conditioned exit multipliers: modulate PREMIUM_TARGET and STAGNATION_EXIT
 	// based on late-session dark pool Z-score. Tags flow through OrderIntent.Meta
@@ -803,6 +826,17 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		AllowedHoursEnd:   getString(params, "allowed_hours_end", ""),
 		AllowedHoursTZ:    getString(params, "allowed_hours_tz", "America/New_York"),
 
+		SessionWeightEnabled:      getBool(params, "session_weight_enabled", false),
+		SessionWeightTZ:           getString(params, "session_weight_tz", "America/New_York"),
+		SessionWeightOpen:         getFloat64(params, "session_weight_open", 1.15),
+		SessionWeightExtendedOpen: getFloat64(params, "session_weight_extended_open", 1.10),
+		SessionWeightMidMorning:   getFloat64(params, "session_weight_mid_morning", 1.00),
+		SessionWeightLunch:        getFloat64(params, "session_weight_lunch", 0.85),
+		SessionWeightAfternoon:    getFloat64(params, "session_weight_afternoon", 1.00),
+		SessionWeightMOC:          getFloat64(params, "session_weight_moc", 1.10),
+		SessionWeightClose:        getFloat64(params, "session_weight_close", 0.95),
+		SessionWeightOutside:      getFloat64(params, "session_weight_outside", 0.0),
+
 		DPZConditioningEnabled: getBool(params, "dp_z_conditioning_enabled", false),
 		DPZFavorableThreshold:  getFloat64(params, "dp_z_favorable_threshold", -1.0),
 		DPZAdverseThreshold:    getFloat64(params, "dp_z_adverse_threshold", 1.0),
@@ -1105,7 +1139,7 @@ func (s *AVWAPState) evaluateCapitulationReclaim(ec entryContext) (*start.Signal
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
-			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.9+float64(conf.Score)*0.03))
+			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.9+float64(conf.Score)*0.03)) * ec.sessionMult
 			volRatio := 0.0
 			if s.Indicators.VolumeSMA > 0 {
 				volRatio = bar.Volume / s.Indicators.VolumeSMA
@@ -1184,7 +1218,7 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
-			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.7+float64(conf.Score)*0.03))
+			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.7+float64(conf.Score)*0.03)) * ec.sessionMult
 			sig, err := s.newEntrySignal(ec, start.SideBuy, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_breakout",
@@ -1263,7 +1297,7 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 					reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 					continue
 				}
-				adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.7+float64(conf.Score)*0.03))
+				adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.7+float64(conf.Score)*0.03)) * ec.sessionMult
 				sig, err := s.newEntrySignal(ec, start.SideSell, adjustedStrength, map[string]string{
 					"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 					"setup":             "avwap_breakout",
@@ -1366,7 +1400,7 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
-			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03))
+			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03)) * ec.sessionMult
 			sig, err := s.newEntrySignal(ec, start.SideBuy, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_pullback",
@@ -1431,7 +1465,7 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
-			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03))
+			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03)) * ec.sessionMult
 			sig, err := s.newEntrySignal(ec, start.SideSell, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_pullback",
@@ -1511,7 +1545,7 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 				if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 					reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				} else {
-					adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.9+float64(conf.Score)*0.03))
+					adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.9+float64(conf.Score)*0.03)) * ec.sessionMult
 					sig, err := s.newEntrySignal(ec, start.SideBuy, adjustedStrength, map[string]string{
 						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 						"setup":             "avwap_pinch",
@@ -1547,7 +1581,7 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 				if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 					reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				} else {
-					adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.9+float64(conf.Score)*0.03))
+					adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.9+float64(conf.Score)*0.03)) * ec.sessionMult
 					sig, err := s.newEntrySignal(ec, start.SideSell, adjustedStrength, map[string]string{
 						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 						"setup":             "avwap_pinch",
@@ -1633,7 +1667,7 @@ func (s *AVWAPState) evaluateGapReclaim(ec entryContext) (*start.Signal, error) 
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
-			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03))
+			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03)) * ec.sessionMult
 			sig, err := s.newEntrySignal(ec, start.SideBuy, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_gap_reclaim",
@@ -1731,7 +1765,7 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 						reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 						continue
 					}
-					adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03))
+					adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03)) * ec.sessionMult
 					sig, err := s.newEntrySignal(ec, start.SideBuy, adjustedStrength, map[string]string{
 						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 						"setup":             "avwap_handoff",
@@ -1802,7 +1836,7 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 						reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 						continue
 					}
-					adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03))
+					adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.85+float64(conf.Score)*0.03)) * ec.sessionMult
 					sig, err := s.newEntrySignal(ec, start.SideSell, adjustedStrength, map[string]string{
 						"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 						"setup":             "avwap_handoff",
@@ -1872,7 +1906,7 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
-			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.6+float64(conf.Score)*0.03))
+			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.6+float64(conf.Score)*0.03)) * ec.sessionMult
 			sig, err := s.newEntrySignal(ec, start.SideBuy, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_bounce",
@@ -1927,7 +1961,7 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
 			}
-			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.6+float64(conf.Score)*0.03))
+			adjustedStrength := conf.applyDPSizing(math.Min(1.0, 0.6+float64(conf.Score)*0.03)) * ec.sessionMult
 			sig, err := s.newEntrySignal(ec, start.SideSell, adjustedStrength, map[string]string{
 				"ref_price":         fmt.Sprintf("%.10f", bar.Close),
 				"setup":             "avwap_bounce",
@@ -2117,6 +2151,7 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 			spyTideDevBps: s.SpyTideDevBps,
 			spyTideReady:  s.SpyTideReady,
 			tideIndexName: s.TideIndexName,
+			sessionMult:   1.0, // preview context — no session gating
 		}
 		_, _ = s.evaluateEntries(ec)
 	}
@@ -2416,6 +2451,63 @@ func (cr confluenceResult) ComponentsJSON() string {
 	return string(b)
 }
 
+// SessionBucket maps a time in the given location to a session bucket name.
+func SessionBucket(t time.Time, loc *time.Location) string {
+	lt := t.In(loc)
+	h, m := lt.Hour(), lt.Minute()
+	mins := h*60 + m // minutes since midnight
+
+	switch {
+	case mins >= 570 && mins < 600: // 09:30-10:00
+		return "open"
+	case mins >= 600 && mins < 630: // 10:00-10:30
+		return "extended_open"
+	case mins >= 630 && mins < 720: // 10:30-12:00
+		return "mid_morning"
+	case mins >= 720 && mins < 840: // 12:00-14:00
+		return "lunch"
+	case mins >= 840 && mins < 900: // 14:00-15:00
+		return "afternoon"
+	case mins >= 900 && mins < 930: // 15:00-15:30
+		return "moc"
+	case mins >= 930 && mins < 960: // 15:30-16:00
+		return "close"
+	default:
+		return "outside"
+	}
+}
+
+// SessionWeight returns the session bucket name and its weight multiplier for the given time.
+func (cfg AVWAPConfig) SessionWeight(t time.Time) (string, float64) {
+	tz := cfg.SessionWeightTZ
+	if tz == "" {
+		tz = "America/New_York"
+	}
+	loc := cachedLocation(tz)
+	if loc == nil {
+		loc = etLocation
+	}
+	bucket := SessionBucket(t, loc)
+	switch bucket {
+	case "open":
+		return bucket, cfg.SessionWeightOpen
+	case "extended_open":
+		return bucket, cfg.SessionWeightExtendedOpen
+	case "mid_morning":
+		return bucket, cfg.SessionWeightMidMorning
+	case "lunch":
+		return bucket, cfg.SessionWeightLunch
+	case "afternoon":
+		return bucket, cfg.SessionWeightAfternoon
+	case "moc":
+		return bucket, cfg.SessionWeightMOC
+	case "close":
+		return bucket, cfg.SessionWeightClose
+	default:
+		return bucket, cfg.SessionWeightOutside
+	}
+}
+
 // applyDPSizing adjusts strength with DP sizing multiplier when configured.
 func (cr confluenceResult) applyDPSizing(strength float64) float64 {
 	if cr.dpCfg == nil || !cr.dpCfg.DPSizingEnabled {
@@ -2650,8 +2742,18 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		return avwapSt, nil, nil
 	}
 
-	// 1b. Trading window gate — block entries outside allowed hours.
-	if cfg.AllowedHoursStart != "" && cfg.AllowedHoursEnd != "" {
+	// 1b. Trading window gate.
+	// When session-time weighting is enabled, use graduated multipliers per bucket.
+	// When disabled, fall back to the binary AllowedHours gate.
+	var sessionBucket string
+	sessionMult := 1.0
+	if cfg.SessionWeightEnabled {
+		sessionBucket, sessionMult = cfg.SessionWeight(now)
+		if sessionMult <= 0 {
+			avwapSt.emitEarlyGated(ctx, symbol, bar, "hours", fmt.Sprintf("session bucket %s (weight 0)", sessionBucket))
+			return avwapSt, nil, nil
+		}
+	} else if cfg.AllowedHoursStart != "" && cfg.AllowedHoursEnd != "" {
 		loc := etLocation
 		if cfg.AllowedHoursTZ != "" {
 			if parsed := cachedLocation(cfg.AllowedHoursTZ); parsed != nil {
@@ -2767,6 +2869,8 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		spyTideDevBps: avwapSt.SpyTideDevBps,
 		spyTideReady:  avwapSt.SpyTideReady,
 		tideIndexName: avwapSt.TideIndexName,
+		sessionBucket: sessionBucket,
+		sessionMult:   sessionMult,
 	}
 
 	// 5. Exit signals (check even if cooldown would block new entries).
