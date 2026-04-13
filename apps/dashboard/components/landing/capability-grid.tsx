@@ -3,8 +3,8 @@ const columns = [
     kicker: "01 / DATA",
     title: "Multi-Source Intake",
     body:
-      "Real-time 1m/5m/15m bars from Alpaca WebSocket with 4-sigma sanitization. Dark-pool aggregation from SIP prints with late-session Z-score for next-day bias. Whale accumulation scoring from SEC 13F filings. Historical options chains sourced from DoltHub.",
-    items: ["Alpaca WebSocket + REST", "Dark-pool late-session Z-score", "SEC 13F whale filings", "DoltHub options history"],
+      "Real-time 1m/5m/15m bars from Alpaca WebSocket with 4-sigma sanitization. Dark-pool aggregation from SIP prints with late-session Z-score for next-day bias. Whale accumulation scoring from SEC 13F filings. Historical options chains from DoltHub. Earnings calendar from Finnhub with dynamic IV adjustments.",
+    items: ["Alpaca WebSocket + REST", "Dark-pool late-session Z-score", "SEC 13F whale filings", "DoltHub options + Finnhub earnings"],
   },
   {
     kicker: "02 / STRATEGY",
