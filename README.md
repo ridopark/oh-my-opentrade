@@ -55,7 +55,7 @@ and [docs/plans/ROADMAP.md](docs/plans/ROADMAP.md) for deeper context.
 **Backtest**
 - Full event-bus backtester with isolated SimBroker
 - Parameterized bar aggregation, per-symbol session tracking
-- Black-Scholes options pricing (see limitations below)
+- Black-Scholes options pricing with tiered bid-ask spread and IV calibration
 - Per-trade, per-day, per-symbol P&L; Sharpe, Sortino, max drawdown
 - **86% faster** after a 5-phase optimization sprint (see below)
 
@@ -113,9 +113,10 @@ commit history.
 
 ## Honest limitations
 
-1. **Options backtests run ~20% optimistic.** Black-Scholes pricing assumes entry IV
-   persists through exit and ignores bid-ask spread and theta bleed. Realistic fill
-   models are queued for Sprint 7.
+1. **Same-day options exits use static IV.** Multi-day holds price exits from real
+   historical bids (DoltHub), capturing actual IV dynamics. Same-day exits fall back
+   to BSM with entry IV held constant — IV crush or spikes within the day are not
+   reflected. Bid-ask spread (tiered 0.3–1.5%) and theta decay are modeled.
 2. **IBKR live execution is unvalidated.** The adapter is fully implemented and runs
    in paper mode. Live validation on a funded account is pending.
 3. **Universe is 34 hardcoded symbols.** Adding a symbol currently requires a code
