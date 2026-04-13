@@ -199,6 +199,33 @@ func (r *Runner) SignalsRTHSuppressed() int64 {
 	return r.signalsRTHSuppressed.Load()
 }
 
+// hasMissingAnchor returns true if any configured AVWAP anchor is absent from
+// the calc state for the given symbol. This happens when omo-core starts
+// pre-market: session_open resolves to zero-time and is skipped by
+// ResetAnchors. Detecting this lets handleBarCore re-resolve on the first
+// RTH bar so the anchor gets a valid time.
+func (r *Runner) hasMissingAnchor(symbol string) bool {
+	instances := r.router.InstancesForSymbol(symbol)
+	for _, inst := range instances {
+		st, ok := inst.GetState(symbol)
+		if !ok {
+			continue
+		}
+		type anchorChecker interface {
+			AnchorNames() []string
+			HasAnchor(string) bool
+		}
+		if checker, ok := st.(anchorChecker); ok {
+			for _, name := range checker.AnchorNames() {
+				if !checker.HasAnchor(name) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func (r *Runner) SetAnchorResolver(fn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time) {
 	r.anchorResolver = fn
 	r.lastSessionDate = make(map[string]int)
@@ -1185,6 +1212,10 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 
 		if newSession {
 			r.resolveAIAnchors(ctx, symbol, bar, AnchorResolveOption{SyncAI: true})
+		} else if r.hasMissingAnchor(symbol) {
+			// Pre-market startup: session_open resolved to zero-time and was
+			// skipped. Re-resolve now that RTH has started.
+			r.resolveAIAnchors(ctx, symbol, bar, AnchorResolveOption{SyncAI: true})
 		}
 	} else if r.anchorResolver != nil {
 		loc := domain.NYLocation()
@@ -1192,6 +1223,10 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		barDate := y*10000 + int(m)*100 + d
 		if r.lastSessionDate[symbol] != barDate {
 			r.lastSessionDate[symbol] = barDate
+			r.resolveSessionAnchors(symbol, bar.Time)
+		} else if r.hasMissingAnchor(symbol) {
+			// Pre-market startup: session_open resolved to zero-time and was
+			// skipped. Re-resolve now that RTH has started.
 			r.resolveSessionAnchors(symbol, bar.Time)
 		}
 	}
