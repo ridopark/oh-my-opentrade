@@ -3,9 +3,9 @@
 **Algorithmic trading, built like infrastructure.**
 
 A broker-agnostic, hexagonal-architecture trading system for US equities and options.
-Three deterministic strategies run on the hot path, eight gates enforce risk, and every
-order intent is journaled before the broker sees it so the system can recover cleanly
-from a hard crash.
+Two active strategies (AVWAP, MACD) plus one staged (Overnight Z) run on the hot path,
+eight gates enforce risk, and every order intent is journaled before the broker sees it
+so the system can recover cleanly from a hard crash.
 
 - Single Go binary, Next.js dashboard, TimescaleDB, NATS event bus
 - Alpaca + Interactive Brokers adapters
@@ -28,8 +28,7 @@ and [docs/plans/ROADMAP.md](docs/plans/ROADMAP.md) for deeper context.
 - Historical options chains sourced from DoltHub
 - Earnings calendar from Finnhub (daily refresh, 90-day lookahead)
 
-**Strategies (3 live + 1 staged)**
-- **ORB** — opening-range breakout, volume confirmation, regime-gated
+**Strategies (2 active + 1 staged)**
 - **AVWAP** — anchored VWAP mean reversion from 5m/15m regime extremes, with
   late-session dark-pool Z-score entry suppression (Sharpe +0.39)
 - **MACD** — crossover with swing stops, dark-pool block-flow veto, and inverted
@@ -193,6 +192,6 @@ docs/plans/           Sprint plans and roadmap
 
 ## Roadmap
 
-See [docs/plans/ROADMAP.md](docs/plans/ROADMAP.md). Currently in Sprint 3.5
-(journal flag removal, pending 24h validation gate) with Sprint 4 queued for
-risk-management gates and a 3-state kill switch.
+See [docs/plans/ROADMAP.md](docs/plans/ROADMAP.md). Sprint 3.5 (journal flag
+removal) is gated on 24h live validation. Sprint 4 (risk-management gates +
+3-state kill switch) is queued next.
