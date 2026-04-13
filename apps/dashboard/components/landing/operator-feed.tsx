@@ -11,14 +11,14 @@ const messages: Message[] = [
     channel: "#omo-lifecycle",
     title: "STRATEGY ACTIVATED",
     timestamp: "09:28:04 ET",
-    body: "ORB v1 (paper) online · 34 symbols · 15m anchors loaded · confluence gate armed.",
+    body: "AVWAP v4 (paper) online · 34 symbols · 15m anchors loaded · confluence gate armed.",
     tone: "default",
   },
   {
     channel: "#omo-orders",
     title: "ORDER FILLED",
     timestamp: "10:12:47 ET",
-    body: "AAPL LONG 100 @ 187.42 · strategy AVWAP_v1 · risk $210 · stop 185.32 · target 191.61",
+    body: "AAPL LONG 100 @ 187.42 · strategy AVWAP_v4 · risk $210 · stop 185.32 · target 191.61",
     tone: "success",
   },
   {
