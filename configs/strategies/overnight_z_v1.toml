@@ -24,7 +24,7 @@ priority = 50
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
 watchlist_mode = "static"
-asset_classes = ["EQUITY", "OPTION"]
+asset_classes = ["OPTION"]
 allowed_directions = ["LONG"]
 
 [params]
@@ -84,8 +84,8 @@ min_dte = 7
 max_dte = 21
 target_delta_low = 0.35
 target_delta_high = 0.55
-min_open_interest = 500
-max_spread_pct = 0.05
+min_open_interest = 300
+max_spread_pct = 0.07
 max_iv = 1.2
 
 [gate_chain]
