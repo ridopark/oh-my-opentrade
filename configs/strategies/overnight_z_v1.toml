@@ -9,14 +9,14 @@ author = "system"
 created_at = "2026-04-12T00:00:00Z"
 
 [lifecycle]
-state = "Deactivated"
+state = "PaperActive"
 paper_only = true
 
 [routing]
 symbols = [
-    "AAPL", "AMD", "AMZN", "AVGO", "BA", "COIN", "CRM", "GOOGL",
-    "IWM", "JPM", "LLY", "META", "MRNA", "MRVL", "MSFT", "MU",
-    "NET", "NFLX", "NVDA", "OXY", "PLTR", "RBLX", "RIVN", "SMCI",
+    "AAPL", "AFRM", "AMD", "AMZN", "AVGO", "BA", "COIN", "CRM", "GOOGL",
+    "HIMS", "HOOD", "IWM", "JPM", "LLY", "META", "MRNA", "MRVL", "MSFT", "MU",
+    "NET", "NFLX", "NVDA", "OXY", "PLTR", "QQQ", "RBLX", "RIVN", "SMCI",
     "SNOW", "SOFI", "SOXL", "SPY", "TSLA", "XOM"
 ]
 timeframes = ["5m"]
@@ -24,15 +24,13 @@ priority = 50
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
 watchlist_mode = "static"
-asset_classes = ["EQUITY"]
+asset_classes = ["EQUITY", "OPTION"]
 allowed_directions = ["LONG"]
 
 [params]
-# Late-session window: 14:00-15:30 ET (computed in runner, not here)
-# Z lookback: 20 days (computed in runner)
-
-late_z_long_threshold = -1.5
-late_z_short_threshold = 1.5
+late_z_long_threshold = -2.0
+late_z_long_floor = -2.5
+late_z_short_threshold = 2.0
 long_only = true
 
 entry_time = "09:35"
@@ -42,7 +40,8 @@ allowed_hours_tz = "America/New_York"
 hard_stop_bps = 200
 
 risk_per_trade_pct = 2.0
-max_positions = 6
+risk_per_trade_bps = 200
+max_positions = 8
 max_per_sector = 2
 
 # Kill switch: disable entries if trailing 20-trade WR drops below 38%
@@ -50,8 +49,38 @@ rolling_wr_kill_threshold = 0.38
 rolling_wr_kill_window = 20
 rolling_wr_cooldown_days = 5
 
+# DP Ratio Regime Gate: skip entries when institutional DP participation is low
+dp_ratio_regime_gate = false
+dp_ratio_z_min = 0.0
+
+# Composite signal: combine multiple Z-scores ("off", "any", "all")
+composite_mode = "off"
+late_lp_z_threshold = -1.5
+late_nf_z_threshold = -1.5
+
+# Daily-timeframe entry filters (via HTF["1d"], available at bar #1)
+min_daily_atr = 0
+min_whale_score = 0
+require_htf_bull = false
+
 [hooks]
 signals = { engine = "builtin", name = "overnight_z" }
+
+[options]
+enabled = true
+max_contracts = 50
+limit_spread_pct = 1.00
+limit_buffer_bps = 1000
+stale_cancel_secs = 90
+
+[options.defaults]
+min_dte = 7
+max_dte = 21
+target_delta_low = 0.35
+target_delta_high = 0.55
+min_open_interest = 500
+max_spread_pct = 0.05
+max_iv = 1.2
 
 [gate_chain]
 monitor = [

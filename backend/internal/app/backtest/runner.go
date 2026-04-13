@@ -812,43 +812,53 @@ func (r *Runner) Run(ctx context.Context) error {
 		warmupWg.Wait()
 		r.log.Info().Dur("elapsed", time.Since(phaseStart)).Msg("phase: warmup data fetch complete")
 		indicatorStart := time.Now()
+		// Pass 1: Set static HTF data (daily EMA200, ATR, NR7) BEFORE
+		// WarmUp so that buildHTFMap() can read it during the warmup
+		// snapshot build. This ensures HTF data is in lastSnaps for
+		// SeedIndicatorSnapshot to forward to strategies on bar #1.
 		for _, res := range warmupResults {
-			warmupBarsCache[res.sym] = res.bars
-			dailyBarsCache[res.sym] = res.bars1d
-			monitorSvc.WarmUp(res.bars)
 			if len(res.bars1d) > 0 {
-				// Use only bars before backtest start for HTF EMA200 (no look-ahead bias).
 				var preBars []domain.MarketBar
 				for _, b := range res.bars1d {
 					if b.Time.Before(r.cfg.From) {
 						preBars = append(preBars, b)
 					}
 				}
-				closes := make([]float64, len(preBars))
-				for i, b := range preBars {
-					closes[i] = b.Close
-				}
-				dailyBarsNeeded := 200
-				ema200 := monitor.ComputeStaticEMA(closes, dailyBarsNeeded)
-				if ema200 > 0 {
-					bias := "NEUTRAL"
-					lastClose := preBars[len(preBars)-1].Close
-					if lastClose > ema200*1.005 {
-						bias = "BULLISH"
-					} else if lastClose < ema200*0.995 {
-						bias = "BEARISH"
+				if len(preBars) > 0 {
+					closes := make([]float64, len(preBars))
+					for i, b := range preBars {
+						closes[i] = b.Close
 					}
+					ema200 := monitor.ComputeStaticEMA(closes, 200)
 					nr7 := monitor.ComputeNR7(preBars)
 					dailyATR := monitor.ComputeDailyATR(preBars, 14)
-					monitorSvc.SetStaticHTFData(res.sym, "1d", domain.HTFData{
-						EMA200:   ema200,
-						Bias:     bias,
-						NR7:      nr7,
-						DailyATR: dailyATR,
-					})
-					r.log.Info().Str("symbol", res.sym).Float64("ema200", ema200).Str("bias", bias).Bool("nr7", nr7).Float64("daily_atr", dailyATR).Int("daily_bars", len(preBars)).Msg("1D HTF warmup complete")
+					bias := "NEUTRAL"
+					if ema200 > 0 {
+						lastClose := preBars[len(preBars)-1].Close
+						if lastClose > ema200*1.005 {
+							bias = "BULLISH"
+						} else if lastClose < ema200*0.995 {
+							bias = "BEARISH"
+						}
+					}
+					// Always set HTF data — DailyATR only needs 14 bars, not 200.
+					if ema200 > 0 || dailyATR > 0 {
+						monitorSvc.SetStaticHTFData(res.sym, "1d", domain.HTFData{
+							EMA200:   ema200,
+							Bias:     bias,
+							NR7:      nr7,
+							DailyATR: dailyATR,
+						})
+						r.log.Info().Str("symbol", res.sym).Float64("ema200", ema200).Str("bias", bias).Bool("nr7", nr7).Float64("daily_atr", dailyATR).Int("daily_bars", len(preBars)).Msg("1D HTF warmup complete")
+					}
 				}
 			}
+		}
+		// Pass 2: Warm up 5m indicator calculators (now with HTF static data already set).
+		for _, res := range warmupResults {
+			warmupBarsCache[res.sym] = res.bars
+			dailyBarsCache[res.sym] = res.bars1d
+			monitorSvc.WarmUp(res.bars)
 			if len(res.bars1h) > 0 {
 				// Use only bars before backtest start for 1H EMA50 (no look-ahead bias).
 				var preHourly []domain.MarketBar
@@ -912,6 +922,17 @@ func (r *Runner) Run(ctx context.Context) error {
 			pipeline.Runner.WarmUpHTF(sym.String(), bars, snapshotFn, loc)
 		}
 		pipeline.Runner.ClearAllPendingStates()
+
+		// Seed the strategy runner's indicator cache with the monitor's last
+		// snapshot for each symbol. This ensures that HTF data (DailyATR,
+		// NR7, Bias) from SetStaticHTFData is available to strategies on
+		// bar #1 — before the pipeline's drain-after-bar cycle would
+		// normally populate it.
+		for _, sym := range r.cfg.Symbols {
+			if snap, ok := monitorSvc.GetLastSnapshot(sym.String()); ok {
+				pipeline.Runner.SeedIndicatorSnapshot(snap)
+			}
+		}
 
 		sessionResolver = NewSessionResolver(loc)
 		// Extend lookback by 5 calendar days so previous-day anchors (pd_high, pd_low, etc.)
@@ -1380,16 +1401,18 @@ func (r *Runner) Run(ctx context.Context) error {
 								closes[k] = b.Close
 							}
 							ema200 := monitor.ComputeStaticEMA(closes, 200)
+							nr7 := monitor.ComputeNR7(preBars)
+							dailyATR := monitor.ComputeDailyATR(preBars, 14)
+							bias := "NEUTRAL"
 							if ema200 > 0 {
 								lastClose := preBars[len(preBars)-1].Close
-								bias := "NEUTRAL"
 								if lastClose > ema200*1.005 {
 									bias = "BULLISH"
 								} else if lastClose < ema200*0.995 {
 									bias = "BEARISH"
 								}
-								nr7 := monitor.ComputeNR7(preBars)
-								dailyATR := monitor.ComputeDailyATR(preBars, 14)
+							}
+							if ema200 > 0 || dailyATR > 0 {
 								p.Monitor().SetStaticHTFData(symStr, "1d", domain.HTFData{
 									EMA200:   ema200,
 									Bias:     bias,
@@ -1425,6 +1448,14 @@ func (r *Runner) Run(ctx context.Context) error {
 				p.Monitor().InitAggregators(slab, replaySessionOpen)
 				p.Runner().InitAggregators(replaySessionOpen)
 				p.Runner().ClearAllPendingStates()
+				// Seed the strategy runner's indicator cache with
+				// the monitor's last snapshot so HTF data (DailyATR,
+				// NR7, Bias) is available on bar #1.
+				for _, sym := range slab {
+					if snap, ok := p.Monitor().GetLastSnapshot(sym.String()); ok {
+						p.Runner().SeedIndicatorSnapshot(snap)
+					}
+				}
 				// Wire session resolver + lookups.
 				p.Runner().SetAnchorResolver(sessionResolver.ResolveAnchors)
 				p.Runner().SetPrevDayBarsFn(func(symbol string, since time.Time) []start.Bar {

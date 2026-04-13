@@ -32,11 +32,12 @@ func (s *OvernightZStrategy) WarmupBars() int  { return 5 }
 // OZConfig holds DNA parameters parsed from TOML [params].
 type OZConfig struct {
 	LateZLongThreshold  float64 // Z below this triggers long entry (default -1.5)
+	LateZLongFloor      float64 // Z below this floor is rejected (extreme overshoot); 0 = disabled
 	LateZShortThreshold float64 // Z above this triggers short entry (default 1.5)
 	LongOnly            bool    // when true, only take long entries (default true)
 
-	EntryTime string // ET time for entry, e.g. "09:35"
-	ExitTime  string // ET time for MOC exit, e.g. "15:45"
+	EntryTime  string // ET time for entry, e.g. "09:35"
+	ExitTime   string // ET time for MOC exit, e.g. "15:45"
 	TimezoneTZ string
 
 	HardStopBPS float64 // max adverse move before stop (default 200)
@@ -49,6 +50,20 @@ type OZConfig struct {
 	RollingWRKillThreshold float64 // disable entries below this WR (default 0.38)
 	RollingWRKillWindow    int     // number of trades for rolling WR (default 20)
 	RollingWRCooldownDays  int     // trading days to disable after kill switch (default 5)
+
+	// DP Ratio Regime Gate: skip entries when institutional DP participation is low
+	DPRatioRegimeGate bool    // enable DP ratio Z regime gate (default false)
+	DPRatioZMin       float64 // min DP ratio Z-score to allow entry (default 0)
+
+	// Composite signal: combine multiple Z-scores
+	CompositeMode    string  // "off" = buy_ratio only, "any" = OR, "all" = AND (default "off")
+	LateLPZThreshold float64 // large print Z threshold (default -1.5)
+	LateNFZThreshold float64 // net flow Z threshold (default -1.5)
+
+	// Daily-timeframe entry filters (available at bar #1 via HTF["1d"])
+	MinATR         float64 // min daily ATR(14); 0 = disabled
+	MinWhaleScore  int     // min 13F whale accumulation score; 0 = disabled
+	RequireHTFBull bool    // require daily HTF bias = BULLISH for longs; false = disabled
 }
 
 // OZState holds per-symbol state.
@@ -64,13 +79,15 @@ type OZState struct {
 	EntryFillPrice float64    `json:"entryFillPrice,omitempty"`
 
 	LastLateZ     float64 `json:"lastLateZ"`
+	LastLateLPZ   float64 `json:"lastLateLPZ"`
+	LastLateNFZ   float64 `json:"lastLateNFZ"`
 	LastTradeDate string  `json:"lastTradeDate,omitempty"`
 	TradesToday   int     `json:"tradesToday"`
 
 	// Rolling performance for kill switch
-	TradeOutcomes    []int8 `json:"tradeOutcomes,omitempty"`
-	KillSwitchUntil  string `json:"killSwitchUntil,omitempty"` // YYYY-MM-DD when kill switch expires
-	KillSwitchDaysLeft int  `json:"killSwitchDaysLeft,omitempty"`
+	TradeOutcomes      []int8 `json:"tradeOutcomes,omitempty"`
+	KillSwitchUntil    string `json:"killSwitchUntil,omitempty"`
+	KillSwitchDaysLeft int    `json:"killSwitchDaysLeft,omitempty"`
 
 	// Signal progress tracking
 	LastGatedBarTime time.Time `json:"-"`
@@ -91,6 +108,7 @@ func (st *OZState) Unmarshal(data []byte) error { return json.Unmarshal(data, st
 func parseOZConfig(params map[string]any) OZConfig {
 	return OZConfig{
 		LateZLongThreshold:     getFloat64(params, "late_z_long_threshold", -1.5),
+		LateZLongFloor:         getFloat64(params, "late_z_long_floor", 0),
 		LateZShortThreshold:    getFloat64(params, "late_z_short_threshold", 1.5),
 		LongOnly:               getBool(params, "long_only", true),
 		EntryTime:              getString(params, "entry_time", "09:35"),
@@ -103,6 +121,14 @@ func parseOZConfig(params map[string]any) OZConfig {
 		RollingWRKillThreshold: getFloat64(params, "rolling_wr_kill_threshold", 0.38),
 		RollingWRKillWindow:    getInt(params, "rolling_wr_kill_window", 20),
 		RollingWRCooldownDays:  getInt(params, "rolling_wr_cooldown_days", 5),
+		DPRatioRegimeGate:      getBool(params, "dp_ratio_regime_gate", false),
+		DPRatioZMin:            getFloat64(params, "dp_ratio_z_min", 0),
+		CompositeMode:          getString(params, "composite_mode", "off"),
+		LateLPZThreshold:       getFloat64(params, "late_lp_z_threshold", -1.5),
+		LateNFZThreshold:       getFloat64(params, "late_nf_z_threshold", -1.5),
+		MinATR:                 getFloat64(params, "min_daily_atr", 0),
+		MinWhaleScore:          getInt(params, "min_whale_score", 0),
+		RequireHTFBull:         getBool(params, "require_htf_bull", false),
 	}
 }
 
@@ -146,9 +172,15 @@ func (s *OvernightZStrategy) OnBar(ctx start.Context, symbol string, bar start.B
 		ozSt.LastTradeDate = today
 	}
 
-	// Cache yesterday's late Z from indicator pipeline.
+	// Cache Z-scores from indicator pipeline.
 	if ind.LateSessionDPZ != 0 {
 		ozSt.LastLateZ = ind.LateSessionDPZ
+	}
+	if ind.LateSessionLPZ != 0 {
+		ozSt.LastLateLPZ = ind.LateSessionLPZ
+	}
+	if ind.LateSessionNetFlowZ != 0 {
+		ozSt.LastLateNFZ = ind.LateSessionNetFlowZ
 	}
 
 	instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
@@ -156,7 +188,7 @@ func (s *OvernightZStrategy) OnBar(ctx start.Context, symbol string, bar start.B
 	// ─── EXIT EVALUATION ─────────────────────────────────────────────
 
 	if ozSt.PositionSide != "" {
-		// Hard stop: 200 bps adverse move.
+		// Hard stop: configurable bps adverse move.
 		if ozSt.EntryPrice > 0 {
 			moveBPS := (bar.Close - ozSt.EntryPrice) / ozSt.EntryPrice * 10000
 			if ozSt.PositionSide == start.SideSell {
@@ -240,12 +272,31 @@ func (s *OvernightZStrategy) OnBar(ctx start.Context, symbol string, bar start.B
 		}
 	}
 	if ozSt.KillSwitchDaysLeft > 0 {
-		// Decrement on new trading day.
 		if ozSt.KillSwitchUntil != today {
 			ozSt.KillSwitchUntil = today
 			ozSt.KillSwitchDaysLeft--
 		}
 		if ozSt.KillSwitchDaysLeft > 0 {
+			return ozSt, nil, nil
+		}
+	}
+
+	// DP Ratio Regime Gate: skip entries when institutional participation is low.
+	if cfg.DPRatioRegimeGate && ind.DPRatioZScore < cfg.DPRatioZMin {
+		return ozSt, nil, nil
+	}
+
+	// Indicator-based entry filters — use daily (1d) data since we enter at bar #1.
+	daily, hasDaily := ind.HTF["1d"]
+
+	if cfg.MinATR > 0 && hasDaily && daily.DailyATR < cfg.MinATR {
+		return ozSt, nil, nil
+	}
+	if cfg.MinWhaleScore > 0 && ind.WhaleScore < cfg.MinWhaleScore {
+		return ozSt, nil, nil
+	}
+	if cfg.RequireHTFBull {
+		if !hasDaily || daily.Bias != "BULLISH" {
 			return ozSt, nil, nil
 		}
 	}
@@ -256,23 +307,30 @@ func (s *OvernightZStrategy) OnBar(ctx start.Context, symbol string, bar start.B
 		return ozSt, nil, nil
 	}
 
-	var side start.Side
-	if lateZ <= cfg.LateZLongThreshold {
-		side = start.SideBuy
-	} else if !cfg.LongOnly && lateZ >= cfg.LateZShortThreshold {
-		side = start.SideSell
-	}
+	// Evaluate entry signal based on composite mode.
+	side := s.evaluateEntry(cfg, ozSt)
 
 	if side == "" {
 		return ozSt, nil, nil
 	}
 
+	dailyATR := 0.0
+	if hasDaily {
+		dailyATR = daily.DailyATR
+	}
+
 	sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, side, 0.80,
 		map[string]string{
-			"setup":     "overnight_z_entry",
-			"ref_price": fmt.Sprintf("%.10f", bar.Close),
-			"reason":    fmt.Sprintf("late Z=%.2f %s threshold=%.2f", lateZ, side, cfg.LateZLongThreshold),
-			"late_z":    fmt.Sprintf("%.3f", lateZ),
+			"setup":      "overnight_z_entry",
+			"ref_price":  fmt.Sprintf("%.10f", bar.Close),
+			"reason":     fmt.Sprintf("late Z=%.2f LP_Z=%.2f NF_Z=%.2f mode=%s", lateZ, ozSt.LastLateLPZ, ozSt.LastLateNFZ, cfg.CompositeMode),
+			"late_z":     fmt.Sprintf("%.3f", lateZ),
+			"late_lp_z":  fmt.Sprintf("%.3f", ozSt.LastLateLPZ),
+			"late_nf_z":  fmt.Sprintf("%.3f", ozSt.LastLateNFZ),
+			"dp_ratio_z": fmt.Sprintf("%.3f", ind.DPRatioZScore),
+			"daily_atr":  fmt.Sprintf("%.3f", dailyATR),
+			"htf_bias":   func() string { if hasDaily { return daily.Bias }; return "" }(),
+			"whale":      fmt.Sprintf("%d", ind.WhaleScore),
 		})
 	if err != nil {
 		return ozSt, nil, err
@@ -284,6 +342,51 @@ func (s *OvernightZStrategy) OnBar(ctx start.Context, symbol string, bar start.B
 	ozSt.TradesToday++
 
 	return ozSt, []start.Signal{sig}, nil
+}
+
+// evaluateEntry determines entry side based on composite mode.
+func (s *OvernightZStrategy) evaluateEntry(cfg OZConfig, ozSt *OZState) start.Side {
+	lateZ := ozSt.LastLateZ
+	lpZ := ozSt.LastLateLPZ
+	nfZ := ozSt.LastLateNFZ
+
+	// Check long signal from buy_ratio Z
+	ratioLong := lateZ <= cfg.LateZLongThreshold &&
+		(cfg.LateZLongFloor == 0 || lateZ >= cfg.LateZLongFloor)
+
+	switch cfg.CompositeMode {
+	case "any":
+		// OR mode: fire if ANY Z-score is below its threshold
+		lpLong := lpZ != 0 && lpZ <= cfg.LateLPZThreshold
+		nfLong := nfZ != 0 && nfZ <= cfg.LateNFZThreshold
+		if ratioLong || lpLong || nfLong {
+			return start.SideBuy
+		}
+
+	case "all":
+		// AND mode: require ALL available Z-scores to confirm
+		if !ratioLong {
+			return ""
+		}
+		if lpZ != 0 && lpZ > cfg.LateLPZThreshold {
+			return "" // LP Z doesn't confirm
+		}
+		if nfZ != 0 && nfZ > cfg.LateNFZThreshold {
+			return "" // NF Z doesn't confirm
+		}
+		return start.SideBuy
+
+	default:
+		// "off" — original behavior: buy_ratio Z only
+		if ratioLong {
+			return start.SideBuy
+		}
+		if !cfg.LongOnly && lateZ >= cfg.LateZShortThreshold {
+			return start.SideSell
+		}
+	}
+
+	return ""
 }
 
 func (s *OvernightZStrategy) OnEvent(_ start.Context, _ string, evt any, st start.State) (start.State, []start.Signal, error) {
@@ -340,6 +443,12 @@ func (s *OvernightZStrategy) ReplayOnBar(_ start.Context, _ string, _ start.Bar,
 	ozSt.CalcBarCount++
 	if indicators.LateSessionDPZ != 0 {
 		ozSt.LastLateZ = indicators.LateSessionDPZ
+	}
+	if indicators.LateSessionLPZ != 0 {
+		ozSt.LastLateLPZ = indicators.LateSessionLPZ
+	}
+	if indicators.LateSessionNetFlowZ != 0 {
+		ozSt.LastLateNFZ = indicators.LateSessionNetFlowZ
 	}
 	return ozSt, nil
 }

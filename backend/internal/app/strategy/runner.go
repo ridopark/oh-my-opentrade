@@ -59,9 +59,13 @@ type Runner struct {
 
 	// Late-session DP Z-score: daily signal derived from 14:00-15:30 ET buy ratio.
 	// Computed once per trading day from previous day's DP bars.
-	lateSessionDPZ       map[string]float64         // sym → current day's late Z
+	lateSessionDPZ       map[string]float64         // sym → current day's late Z (buy ratio)
 	lateSessionDPRolling map[string]*dpRollingStats  // sym → 20-day rolling late buy ratios
 	lateSessionDPDate    map[string]int              // sym → yyyymmdd of last computed day
+	lateSessionLPZ       map[string]float64         // sym → current day's late large-print imbalance Z
+	lateSessionLPRolling map[string]*dpRollingStats  // sym → 20-day rolling late LP imbalance
+	lateSessionNFZ       map[string]float64         // sym → current day's late net-flow Z
+	lateSessionNFRolling map[string]*dpRollingStats  // sym → 20-day rolling late net flow
 
 	// Whale accumulation lookup: ticker -> latest score.
 	whaleLookup map[string]domain.WhaleAccumulation
@@ -463,6 +467,10 @@ func NewRunner(
 		lateSessionDPZ:       make(map[string]float64),
 		lateSessionDPRolling: make(map[string]*dpRollingStats),
 		lateSessionDPDate:    make(map[string]int),
+		lateSessionLPZ:       make(map[string]float64),
+		lateSessionLPRolling: make(map[string]*dpRollingStats),
+		lateSessionNFZ:       make(map[string]float64),
+		lateSessionNFRolling: make(map[string]*dpRollingStats),
 	}
 }
 
@@ -738,6 +746,15 @@ func (r *Runner) HandleStateUpdatedSnap(_ context.Context, snap domain.Indicator
 	return nil
 }
 
+// SeedIndicatorSnapshot seeds the runner's per-symbol indicator cache
+// with a pre-computed monitor snapshot. Call after bridge warmup so
+// strategies that enter on bar #1 (e.g. overnight_z_v1) see HTF data
+// (DailyATR, NR7, Bias) immediately instead of waiting one bar for
+// the pipeline's drain-after-bar cycle to populate them.
+func (r *Runner) SeedIndicatorSnapshot(snap domain.IndicatorSnapshot) {
+	r.applyStateUpdate(snap)
+}
+
 func (r *Runner) handleStateUpdated(_ context.Context, event domain.Event) error {
 	snap, ok := event.Payload.(domain.IndicatorSnapshot)
 	if !ok {
@@ -899,16 +916,19 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 			lateStart := time.Date(prevDay.Year(), prevDay.Month(), prevDay.Day(), 14, 0, 0, 0, etLocation).UTC()
 			lateEnd := time.Date(prevDay.Year(), prevDay.Month(), prevDay.Day(), 15, 30, 0, 0, etLocation).UTC()
 
-			var lateBuy, lateSell float64
+			var lateBuy, lateSell, lateLargePrint float64
 			for t := lateStart.Truncate(5 * time.Minute); t.Before(lateEnd); t = t.Add(5 * time.Minute) {
 				if dp, ok := r.dpLookup[DPLookupKey{Symbol: sym, Time: t}]; ok {
 					lateBuy += dp.BuyVolume
 					lateSell += dp.SellVolume
+					lateLargePrint += dp.LargePrintVolume
 				}
 			}
 
 			if lateBuy+lateSell > 0 {
 				lateRatio := lateBuy / (lateBuy + lateSell)
+
+				// 1) Buy ratio Z (existing)
 				rs, ok := r.lateSessionDPRolling[sym]
 				if !ok {
 					rs = newDPRollingStats(20)
@@ -921,12 +941,48 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 				} else {
 					r.lateSessionDPZ[sym] = 0
 				}
+
+				// 2) Large print imbalance Z: LP volume * directional sign
+				lpImbalance := lateLargePrint * (2*lateRatio - 1)
+				lpRS, lpOK := r.lateSessionLPRolling[sym]
+				if !lpOK {
+					lpRS = newDPRollingStats(20)
+					r.lateSessionLPRolling[sym] = lpRS
+				}
+				lpRS.push(lpImbalance)
+				lpMean, lpStd := lpRS.meanStd()
+				if lpStd > 0 {
+					r.lateSessionLPZ[sym] = (lpImbalance - lpMean) / lpStd
+				} else {
+					r.lateSessionLPZ[sym] = 0
+				}
+
+				// 3) Net flow Z: buy - sell (absolute volume, preserves magnitude)
+				netFlow := lateBuy - lateSell
+				nfRS, nfOK := r.lateSessionNFRolling[sym]
+				if !nfOK {
+					nfRS = newDPRollingStats(20)
+					r.lateSessionNFRolling[sym] = nfRS
+				}
+				nfRS.push(netFlow)
+				nfMean, nfStd := nfRS.meanStd()
+				if nfStd > 0 {
+					r.lateSessionNFZ[sym] = (netFlow - nfMean) / nfStd
+				} else {
+					r.lateSessionNFZ[sym] = 0
+				}
 			}
 		}
 
 		if z, ok := r.lateSessionDPZ[sym]; ok {
 			ind := r.indicators[sym]
 			ind.LateSessionDPZ = z
+			if lpZ, lpOK := r.lateSessionLPZ[sym]; lpOK {
+				ind.LateSessionLPZ = lpZ
+			}
+			if nfZ, nfOK := r.lateSessionNFZ[sym]; nfOK {
+				ind.LateSessionNetFlowZ = nfZ
+			}
 			r.indicators[sym] = ind
 		}
 	}
@@ -1002,9 +1058,11 @@ func convertHTFDataInto(dst map[string]start.HTFIndicator, htf map[domain.Timefr
 	}
 	for tf, d := range htf {
 		dst[tf.String()] = start.HTFIndicator{
-			EMA50:  d.EMA50,
-			EMA200: d.EMA200,
-			Bias:   d.Bias,
+			EMA50:    d.EMA50,
+			EMA200:   d.EMA200,
+			Bias:     d.Bias,
+			DailyATR: d.DailyATR,
+			NR7:      d.NR7,
 		}
 	}
 	return dst
@@ -1191,6 +1249,12 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 	// in applyStateUpdate and doesn't depend on the current bar having DP data.
 	if z, ok := r.lateSessionDPZ[symbol]; ok {
 		indicators.LateSessionDPZ = z
+		if lpZ, lpOK := r.lateSessionLPZ[symbol]; lpOK {
+			indicators.LateSessionLPZ = lpZ
+		}
+		if nfZ, nfOK := r.lateSessionNFZ[symbol]; nfOK {
+			indicators.LateSessionNetFlowZ = nfZ
+		}
 	}
 
 	if !r.indLogOnce[symbol] {
@@ -1372,6 +1436,12 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 			// Copy late-session Z (daily signal, independent of per-bar DP data)
 			if z, ok := r.lateSessionDPZ[symbol]; ok {
 				htfIndicators.LateSessionDPZ = z
+				if lpZ, lpOK := r.lateSessionLPZ[symbol]; lpOK {
+					htfIndicators.LateSessionLPZ = lpZ
+				}
+				if nfZ, nfOK := r.lateSessionNFZ[symbol]; nfOK {
+					htfIndicators.LateSessionNetFlowZ = nfZ
+				}
 			}
 		}
 
