@@ -1163,12 +1163,14 @@ func (s *Service) buildHTFMap(sym string, currentClose float64) map[domain.Timef
 		htf[domain.Timeframe("1h")] = domain.HTFData{EMA50: hSnap.EMA50}
 	}
 	dailyKey := sym + ":1d"
-	if dStatic, ok := s.htfStatic[dailyKey]; ok && dStatic.EMA200 > 0 {
+	if dStatic, ok := s.htfStatic[dailyKey]; ok && (dStatic.EMA200 > 0 || dStatic.DailyATR > 0) {
 		bias := "NEUTRAL"
-		if currentClose > dStatic.EMA200*1.005 {
-			bias = "BULLISH"
-		} else if currentClose < dStatic.EMA200*0.995 {
-			bias = "BEARISH"
+		if dStatic.EMA200 > 0 {
+			if currentClose > dStatic.EMA200*1.005 {
+				bias = "BULLISH"
+			} else if currentClose < dStatic.EMA200*0.995 {
+				bias = "BEARISH"
+			}
 		}
 		htf[domain.Timeframe("1d")] = domain.HTFData{
 			EMA200:   dStatic.EMA200,

@@ -186,14 +186,24 @@ type IndicatorData struct {
 	// (bullish reversal for mean-reversion strategies like AVWAP).
 	LateSessionDPZ float64
 
+	// Late-session large print imbalance Z: institutional block flow
+	// direction (large_print_volume * (2*buy_ratio - 1)) Z-normalized.
+	LateSessionLPZ float64
+
+	// Late-session net flow Z: (buy_volume - sell_volume) Z-normalized.
+	// Preserves absolute volume magnitude unlike the ratio formulation.
+	LateSessionNetFlowZ float64
+
 	// Whale accumulation score (populated from whale_accumulation when available)
 	WhaleScore int // aggregate 13F accumulation score (0 = no data)
 }
 
 type HTFIndicator struct {
-	EMA50  float64
-	EMA200 float64
-	Bias   string
+	EMA50    float64
+	EMA200   float64
+	Bias     string
+	DailyATR float64 // ATR(14) from daily bars — available at bar #1
+	NR7      bool    // prior day had narrowest range in 7 sessions
 }
 
 type AnchorRegime struct {
