@@ -127,7 +127,7 @@ if tmux has-session -t "$DASH_SESSION" 2>/dev/null; then
 else
   kill_port "$DASH_PORT"
   info "Starting dashboard in tmux session..."
-  tmux new-session -d -s "$DASH_SESSION" -c "$ROOT_DIR/apps/dashboard" "npm run dev"
+  tmux new-session -d -s "$DASH_SESSION" -c "$ROOT_DIR" "$ROOT_DIR/scripts/next-watchdog.sh 3072"
   info "dashboard started →  tmux attach -t $DASH_SESSION"
 fi
 

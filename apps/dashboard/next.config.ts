@@ -4,6 +4,12 @@ const backendUrl = process.env.BACKEND_URL || "http://omo-core:8080";
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  // Reduce dev server memory footprint
+  productionBrowserSourceMaps: false,
+  experimental: {
+    // Reduce webpack persistent cache memory usage
+    webpackMemoryOptimizations: true,
+  },
   async rewrites() {
     return [
       {
