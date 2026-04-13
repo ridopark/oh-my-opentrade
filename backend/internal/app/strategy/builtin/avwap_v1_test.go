@@ -1,6 +1,7 @@
 package builtin_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -921,4 +922,81 @@ func TestAVWAPState_ResetAnchors_NilCalc(t *testing.T) {
 	points := st.Calc.AnchorPoints()
 	_, hasA := points["a"]
 	assert.True(t, hasA, "should create calc from scratch when nil")
+}
+
+// ─── Session-Time Weighting ──────────────────────────────────────────────────
+
+func TestSessionBucket(t *testing.T) {
+	et, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+
+	tests := []struct {
+		hour, min int
+		want      string
+	}{
+		{9, 29, "outside"},
+		{9, 30, "open"},
+		{9, 59, "open"},
+		{10, 0, "extended_open"},
+		{10, 29, "extended_open"},
+		{10, 30, "mid_morning"},
+		{11, 59, "mid_morning"},
+		{12, 0, "lunch"},
+		{13, 59, "lunch"},
+		{14, 0, "afternoon"},
+		{14, 59, "afternoon"},
+		{15, 0, "moc"},
+		{15, 29, "moc"},
+		{15, 30, "close"},
+		{15, 59, "close"},
+		{16, 0, "outside"},
+		{4, 0, "outside"},
+	}
+	for _, tc := range tests {
+		t.Run(fmt.Sprintf("%02d:%02d", tc.hour, tc.min), func(t *testing.T) {
+			tm := time.Date(2026, 4, 13, tc.hour, tc.min, 0, 0, et)
+			got := builtin.SessionBucket(tm, et)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestSessionWeight(t *testing.T) {
+	cfg := builtin.AVWAPConfig{
+		SessionWeightEnabled:      true,
+		SessionWeightTZ:           "America/New_York",
+		SessionWeightOpen:         1.15,
+		SessionWeightExtendedOpen: 0.90,
+		SessionWeightMidMorning:   0.70,
+		SessionWeightLunch:        0.0,
+		SessionWeightAfternoon:    0.50,
+		SessionWeightMOC:          1.10,
+		SessionWeightClose:        0.95,
+		SessionWeightOutside:      0.0,
+	}
+
+	et, _ := time.LoadLocation("America/New_York")
+
+	tests := []struct {
+		hour, min  int
+		wantBucket string
+		wantWeight float64
+	}{
+		{9, 45, "open", 1.15},
+		{10, 15, "extended_open", 0.90},
+		{11, 0, "mid_morning", 0.70},
+		{12, 30, "lunch", 0.0},
+		{14, 30, "afternoon", 0.50},
+		{15, 10, "moc", 1.10},
+		{15, 45, "close", 0.95},
+		{8, 0, "outside", 0.0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.wantBucket, func(t *testing.T) {
+			tm := time.Date(2026, 4, 13, tc.hour, tc.min, 0, 0, et)
+			bucket, weight := cfg.SessionWeight(tm)
+			assert.Equal(t, tc.wantBucket, bucket)
+			assert.InDelta(t, tc.wantWeight, weight, 0.001)
+		})
+	}
 }

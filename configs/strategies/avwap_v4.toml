@@ -120,9 +120,22 @@ risk_per_trade_bps = 500         # smaller per trade (was 2000) — more attempt
 max_position_bps = 1500          # reduced from 3000
 
 # --- Timing ---
-# Trading window (ET). Entries only allowed within this range.
-allowed_hours_start = "09:35"
-allowed_hours_end = "10:00"      # morning-only (10:00-10:59 was PF 0.57)
+# Session-time weighting: graduated multiplier on entry strength per bucket.
+# Replaces binary allowed_hours gate. Weight=0.0 blocks entry for that bucket.
+session_weight_enabled = true
+session_weight_tz = "America/New_York"
+session_weight_open = 1.15          # 09:30-10:00 opening drive (boosted)
+session_weight_extended_open = 0.90 # 10:00-10:30 still in initial balance
+session_weight_mid_morning = 0.80   # 10:30-12:00 TEST: open for today
+session_weight_lunch = 0.70         # 12:00-14:00 TEST: open for today
+session_weight_afternoon = 0.80     # 14:00-15:00 TEST: open for today
+session_weight_moc = 0.90           # 15:00-15:30 TEST: open for today
+session_weight_close = 0.85         # 15:30-16:00 TEST: open until 15:45
+session_weight_outside = 0.0        # pre/post market blocked
+
+# Legacy binary gate (active when session_weight_enabled = false)
+# allowed_hours_start = "09:35"
+# allowed_hours_end = "10:00"
 allowed_hours_tz = "America/New_York"
 
 # Cooldown between trades on the same symbol (seconds)
