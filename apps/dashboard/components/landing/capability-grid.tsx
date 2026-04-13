@@ -10,8 +10,8 @@ const columns = [
     kicker: "02 / STRATEGY",
     title: "Deterministic Engines",
     body:
-      "Four strategies run as plain Go code on the hot path. Multi-timeframe regime detection (5m/15m anchors) gates 1m entries. Late-session DP Z-score conditions each strategy in its own direction: mean-reversion vs momentum.",
-    items: ["ORB opening-range breakout", "AVWAP + Z-score entry gating", "MACD + inverted Z regime filter", "Overnight Z-Score Bias (staged)"],
+      "Two active strategies plus one staged run as plain Go code on the hot path. Multi-timeframe regime detection (5m/15m anchors) gates 1m entries. Late-session DP Z-score conditions each strategy in its own direction: mean-reversion vs momentum.",
+    items: ["AVWAP + Z-score entry gating", "MACD + inverted Z regime filter", "Overnight Z-Score Bias (staged)"],
   },
   {
     kicker: "03 / EXECUTION",
