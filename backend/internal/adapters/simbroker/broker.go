@@ -21,6 +21,11 @@ type Config struct {
 	SlippageBPS     int64   // slippage in basis points (default 5 per PRD)
 	InitialEquity   float64 // starting cash/equity for the simulated account (default 100000)
 	DisableFillChan bool    // skip fillCh sends; set when syncFill handles fills directly
+
+	// IV adjustment parameters for same-day option exits
+	VIXIVBeta          float64 // VIX-beta IV scaling exponent (0 = disabled; typical 0.7 for large caps)
+	TODSeasonalEnabled bool    // enable time-of-day IV seasonality multiplier (U-shape)
+	EarningsRampEnabled bool   // enable earnings IV ramp model (sqrt decay)
 }
 
 // simOrder tracks a submitted order and its fill details.
@@ -46,11 +51,14 @@ type position struct {
 // and ports.OrderStreamPort. It fills orders instantly at the last known bar
 // close price with configurable slippage.
 type Broker struct {
-	slippageBPS       int64
-	initialEquity     float64
-	disableFillChan   bool
-	historicalOptions ports.HistoricalOptionsPort
-	log               zerolog.Logger
+	slippageBPS         int64
+	initialEquity       float64
+	disableFillChan     bool
+	vixIVBeta           float64
+	todSeasonalEnabled  bool
+	earningsRampEnabled bool
+	historicalOptions   ports.HistoricalOptionsPort
+	log                 zerolog.Logger
 
 	mu        sync.RWMutex
 	prices    map[domain.Symbol]float64
@@ -78,10 +86,13 @@ func New(cfg Config, log zerolog.Logger) *Broker {
 		equity = 100_000
 	}
 	return &Broker{
-		slippageBPS:     cfg.SlippageBPS,
-		initialEquity:   equity,
-		disableFillChan: cfg.DisableFillChan,
-		log:             log.With().Str("component", "simbroker").Logger(),
+		slippageBPS:         cfg.SlippageBPS,
+		initialEquity:       equity,
+		disableFillChan:     cfg.DisableFillChan,
+		vixIVBeta:           cfg.VIXIVBeta,
+		todSeasonalEnabled:  cfg.TODSeasonalEnabled,
+		earningsRampEnabled: cfg.EarningsRampEnabled,
+		log:                 log.With().Str("component", "simbroker").Logger(),
 		prices:          make(map[domain.Symbol]float64),
 		barTimes:        make(map[domain.Symbol]time.Time),
 		orders:          make(map[string]*simOrder),
@@ -447,7 +458,8 @@ func (b *Broker) SubscribeOrderUpdates(_ context.Context) (<-chan ports.OrderUpd
 
 // computeOptionExitPrice computes the BSM price for an options exit using the
 // current underlying price and the entry metadata (strike, DTE, IV, right).
-// Applies intraday IV decay and bid-ask spread for realistic pricing.
+// Applies dynamic IV adjustments (VIX-beta, time-of-day, earnings ramp) and
+// bid-ask spread for realistic pricing.
 func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPrice float64, barTime time.Time) float64 {
 	if intent.Meta == nil {
 		return 0
@@ -521,6 +533,31 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 	}
 
 	if iv > 0 && strike > 0 {
+		// Apply dynamic IV adjustments for same-day exits
+		adj := options.IVAdjustment{
+			VIXBeta:             b.vixIVBeta,
+			TODSeasonalEnabled:  b.todSeasonalEnabled,
+			EarningsRampEnabled: b.earningsRampEnabled,
+		}
+		// VIX-beta: read current VIX and entry VIX from meta
+		if b.vixIVBeta > 0 {
+			adj.VIXNow = b.prices[domain.Symbol("VIX")]
+			var vixEntry float64
+			_, _ = fmt.Sscanf(intent.Meta["vix_at_entry"], "%f", &vixEntry)
+			adj.VIXAtEntry = vixEntry
+		}
+		// Time-of-day seasonality: compute minutes since 9:30 ET
+		if b.todSeasonalEnabled {
+			adj.MinutesSinceOpen = minutesSinceMarketOpen(barTime)
+		}
+		// Earnings IV ramp
+		if b.earningsRampEnabled {
+			var dte int
+			_, _ = fmt.Sscanf(intent.Meta["days_to_earnings"], "%d", &dte)
+			adj.DaysToEarnings = dte
+		}
+		iv = options.AdjustIV(iv, adj)
+
 		exitPremium := options.BSMPriceAtTime(underlyingPrice, strike, dteYears, riskFreeRate, iv, isCall)
 
 		// Apply half-spread cost (selling at bid) — tiered by premium level
@@ -594,4 +631,23 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 	}
 
 	return exitPremium
+}
+
+// minutesSinceMarketOpen returns minutes elapsed since 9:30 ET on the bar's date.
+// Returns 0 for pre-market, 390 for post-close.
+func minutesSinceMarketOpen(barTime time.Time) int {
+	et, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return 195 // midday default
+	}
+	t := barTime.In(et)
+	marketOpen := time.Date(t.Year(), t.Month(), t.Day(), 9, 30, 0, 0, et)
+	diff := int(t.Sub(marketOpen).Minutes())
+	if diff < 0 {
+		return 0
+	}
+	if diff > 390 {
+		return 390
+	}
+	return diff
 }

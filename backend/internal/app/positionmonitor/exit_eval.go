@@ -458,6 +458,12 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 				if delta := pos.CustomState["delta_at_entry"]; delta != 0 {
 					intent.Meta["delta_at_entry"] = fmt.Sprintf("%.4f", delta)
 				}
+				if vix := pos.CustomState["vix_at_entry"]; vix > 0 {
+					intent.Meta["vix_at_entry"] = fmt.Sprintf("%.2f", vix)
+				}
+				if dte := pos.CustomState["days_to_earnings"]; dte > 0 {
+					intent.Meta["days_to_earnings"] = fmt.Sprintf("%.0f", dte)
+				}
 			}
 		}
 	}
