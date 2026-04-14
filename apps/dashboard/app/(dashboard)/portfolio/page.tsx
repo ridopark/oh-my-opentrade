@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useState, useCallback, useMemo } from "react";
-import { relativeTime } from "@/lib/format";
+import { relativeTime, formatQty } from "@/lib/format";
 import {
   Card,
   CardContent,
@@ -438,7 +438,7 @@ export default function PortfolioPage() {
                             </Badge>
                           </TableCell>
                           <TableCell className="text-right font-mono tabular-nums">
-                            {pos.quantity}
+                            {formatQty(pos.quantity)}
                           </TableCell>
                           <TableCell className="text-right font-mono tabular-nums">
                             {formatCurrency(pos.avg_entry_price)}

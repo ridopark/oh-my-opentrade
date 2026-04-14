@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useMemo, useImperativeHandle, forwardRef } from "react";
+import { formatQty } from "@/lib/format";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   createChart,
@@ -667,7 +668,7 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
                   </span>
                 </td>
                 <td className="px-2 py-1 text-muted-foreground">{p.strategy}</td>
-                <td className="px-2 py-1 text-right text-foreground">{p.qty.toFixed(0)}</td>
+                <td className="px-2 py-1 text-right text-foreground">{formatQty(p.qty)}</td>
                 <td className="px-2 py-1 text-right text-emerald-400">${p.entryPrice.toFixed(2)}</td>
                 <td className="px-2 py-1">
                   {p.entryTime ? (
