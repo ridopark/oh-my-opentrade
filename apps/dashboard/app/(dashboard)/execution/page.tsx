@@ -1,7 +1,7 @@
 "use client";
 
 import { useExecutionEvents } from "@/lib/event-stream";
-import { relativeTime, formatPrice } from "@/lib/format";
+import { relativeTime, formatPrice, formatQty } from "@/lib/format";
 import type {
   OrderIntentEvent,
   OrderIntentStatus,
@@ -204,7 +204,7 @@ function OrderDetailSheet({ order, open, onOpenChange }: { order: DisplayOrder |
             </div>
             <div>
               <p className="text-[11px] text-muted-foreground">Quantity</p>
-              <p className="font-mono text-lg font-medium">{order.quantity}</p>
+              <p className="font-mono text-lg font-medium">{formatQty(order.quantity)}</p>
             </div>
             <div>
               <p className="text-[11px] text-muted-foreground">Confidence</p>
@@ -221,7 +221,7 @@ function OrderDetailSheet({ order, open, onOpenChange }: { order: DisplayOrder |
               </div>
               <div>
                 <p className="text-[11px] text-emerald-400">Fill Qty</p>
-                <p className="font-mono text-lg font-medium text-emerald-400">{order.filledQty}</p>
+                <p className="font-mono text-lg font-medium text-emerald-400">{formatQty(order.filledQty ?? 0)}</p>
               </div>
             </div>
           )}
@@ -511,11 +511,11 @@ export default function ExecutionPage() {
                     </TableCell>
                     <TableCell>
                       <span className={`text-xs font-medium ${order.direction === "LONG" ? "text-emerald-400" : "text-red-400"}`}>
-                        {order.direction === "LONG" ? "BUY" : "SELL"} {order.quantity}
+                        {order.direction === "LONG" ? "BUY" : "SELL"} {formatQty(order.quantity)}
                       </span>
                     </TableCell>
                     <TableCell className="text-right font-mono tabular-nums text-xs">
-                      {order.quantity}
+                      {formatQty(order.quantity)}
                     </TableCell>
                     <TableCell className="text-right">
                       <PriceCell order={order} quote={quotes[order.symbol]} onFetch={() => fetchQuote(order.symbol)} />

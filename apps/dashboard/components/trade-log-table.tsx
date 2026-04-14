@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import { formatQty } from "@/lib/format";
 import {
   useReactTable,
   getCoreRowModel,
@@ -185,7 +186,7 @@ export function TradeLogTable({
         );
       },
       cell: ({ row }) => (
-        <div className="text-right font-mono">{row.original.quantity}</div>
+        <div className="text-right font-mono">{formatQty(row.original.quantity)}</div>
       ),
     },
     {

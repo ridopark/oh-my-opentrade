@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { formatQty } from "@/lib/format";
 import {
   Search,
   Star,
@@ -512,7 +513,7 @@ export default function BacktestHistoryPage() {
                   {detail.data.trades.slice(0, 200).map((t) => (
                     <div key={t.seq} className="flex justify-between py-0.5 border-b last:border-0">
                       <span>
-                        {t.symbol} {t.side} {t.quantity}@${t.price.toFixed(2)}
+                        {t.symbol} {t.side} {formatQty(t.quantity)}@${t.price.toFixed(2)}
                       </span>
                       <span className={cn(t.pnl && t.pnl > 0 ? "text-emerald-500" : t.pnl && t.pnl < 0 ? "text-red-500" : "")}>
                         {t.pnl ? `$${t.pnl.toFixed(2)}` : ""}

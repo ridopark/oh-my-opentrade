@@ -26,7 +26,7 @@ Verify the build succeeds (exit code 0) before proceeding. If the build fails, *
 ### Step 3: Shutdown running services
 
 ```bash
-./scripts/shutdown.sh
+./scripts/shutdown.sh > /tmp/omo-shutdown.log 2>&1 && cat /tmp/omo-shutdown.log
 ```
 
 This gracefully stops `omo-core` and `omo-dashboard` tmux sessions. Monitoring stack (Grafana, Prometheus, Loki) is left running.
@@ -34,7 +34,7 @@ This gracefully stops `omo-core` and `omo-dashboard` tmux sessions. Monitoring s
 ### Step 4: Restart all services
 
 ```bash
-./scripts/start.sh
+./scripts/start.sh > /tmp/omo-start.log 2>&1 && cat /tmp/omo-start.log
 ```
 
 This rebuilds the binary, kills stale processes on ports 8080/8000, and starts `omo-core` + `omo-dashboard` in tmux sessions with logging.
@@ -52,6 +52,18 @@ Both services must be running. If either failed, check logs:
 tail -20 logs/omo-core.log
 ```
 
+### Step 6: Verify RSS watchdog is active
+
+```bash
+pgrep -af next-watchdog || echo "WARNING: next-watchdog is NOT running"
+```
+
+The dashboard **must** run under `scripts/next-watchdog.sh`, not bare `npm run dev`. The watchdog caps RSS at 3 GB and auto-restarts next-server before the OOM killer strikes. If it's not running, kill the bare dashboard and restart via:
+
+```bash
+./scripts/shutdown.sh && ./scripts/start.sh
+```
+
 ## Quick Reference
 
 | Step | Command | Abort on failure? |
@@ -61,6 +73,7 @@ tail -20 logs/omo-core.log
 | Shutdown | `./scripts/shutdown.sh` | No (warn if already stopped) |
 | Restart | `./scripts/start.sh` | **Yes** |
 | Verify | `tmux has-session -t omo-core` | Report status |
+| Watchdog | `pgrep -af next-watchdog` | Warn if missing |
 
 ## Important Notes
 

@@ -56,3 +56,16 @@ export function isMarketOpen(): boolean {
 export function isCryptoSymbol(symbol: string): boolean {
   return symbol.includes("/");
 }
+
+/**
+ * Format a trade quantity with appropriate decimal places.
+ * - qty < 1: 6 decimals (fractional crypto like 0.095 BTC)
+ * - qty >= 1 and < 100: 2 decimals
+ * - qty >= 100: 0 decimals
+ */
+export function formatQty(qty: number): string {
+  const abs = Math.abs(qty);
+  if (abs < 1) return qty.toFixed(6);
+  if (abs < 100) return qty.toFixed(2);
+  return qty.toFixed(0);
+}
