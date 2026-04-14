@@ -104,6 +104,7 @@ func BuildStrategyShared(deps StrategyDeps) (*StrategyShared, error) {
 		builtin.NewBreakRetestStrategy(),
 		builtin.NewMACDStrategy(),
 		builtin.NewOvernightZStrategy(),
+		builtin.NewCryptoTSMStrategy(),
 	} {
 		if err := registry.Register(s); err != nil {
 			return nil, fmt.Errorf("bootstrap: strategy: failed to register builtin %s: %w", s.Meta().ID, err)
