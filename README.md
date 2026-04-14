@@ -10,6 +10,7 @@ so the system can recover cleanly from a hard crash.
 - Single Go binary, Next.js dashboard, TimescaleDB, NATS event bus
 - Alpaca + Interactive Brokers adapters
 - Dark-pool and 13F whale accumulation confluence scoring
+- LLM-augmented Bull/Bear/Judge debate enriches every entry signal
 - Paper trading stable; live validation in progress on IBKR
 
 See [docs/PRD.md](docs/PRD.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
@@ -43,6 +44,36 @@ and [docs/plans/ROADMAP.md](docs/plans/ROADMAP.md) for deeper context.
   AVWAP and MACD respond oppositely: AVWAP benefits from low-Z days (mean-reversion
   tailwind), MACD benefits from high-Z days (momentum continuation). Each strategy
   applies the signal in its own direction.
+
+**AI-augmented decision layer**
+- **Bull/Bear/Judge debate** — every entry signal is enriched by a structured
+  adversarial LLM debate. A Bull agent argues the long thesis, a Bear agent
+  argues the opposing case, and a Judge agent rules with JSON-structured output:
+  `direction`, `confidence (0-1)`, `risk_modifier (TIGHT|NORMAL|WIDE)`, and
+  `rationale`. The Judge can veto the trade outright.
+- **Signal enrichment port** — `SignalEnrichment` is a first-class domain type
+  with explicit status (`ok | timeout | error | skipped | vetoed`). When the
+  LLM is unreachable or times out, strategies fall back to deterministic rules
+  — AI never blocks the hot path.
+- **Provider-agnostic** — OpenAI-compatible endpoint works with OpenRouter,
+  Anthropic, Ollama, and vLLM. Switch providers with a config change, no code.
+- **Context injection** — functional options let the pipeline attach option
+  chains, recent news (Finnhub), strategy performance history, and signal
+  metadata to the debate prompt without coupling the debate to any strategy.
+- **LLM anchor selection** — Anchored-VWAP candidates (swing highs, volume
+  rotations, weekly opens) are ranked by an LLM with confidence scores before
+  the numerical AVWAP engine computes the band. The LLM picks *which* anchor
+  matters; the deterministic engine decides *when* to fire.
+- **Privacy boundary** — the LLM sees only public market data (RSI, Stoch,
+  VWAP, EMA, regime type, confluence score). Strategy DNA, parameters, and
+  position sizing never cross the port.
+- **Risk modifier feedback** — the Judge's `TIGHT|NORMAL|WIDE` ruling flows
+  back into the risk engine to tighten or loosen stops and size, giving the
+  LLM a graduated voice rather than a binary veto.
+
+This is the layer that turns OMO from a deterministic system into an
+opinionated one. The numeric confluence score tells us *whether* the setup is
+clean; the debate tells us *whether the story makes sense right now*.
 
 **Execution (8 gates)**
 - short_direction, exposure_guard, portfolio_guard, risk_engine, slippage_guard,
@@ -105,6 +136,11 @@ commit history.
 - **Dark-pool + 13F confluence** — trades only fire when technical, dark-pool, and
   institutional positioning agree. Empirically cuts churn versus single-indicator
   systems.
+- **LLM debate as a second opinion** — adversarial Bull/Bear/Judge enrichment
+  reviews every entry with structured JSON output (direction, confidence, risk
+  modifier). Deterministic strategies produce the signal; the LLM stress-tests
+  the thesis and can veto, tighten, or widen risk. Graceful fallback preserves
+  hot-path reliability.
 - **Late-session DP Z conditioning** — late-hour (14:00-15:30 ET) dark-pool flow
   predicts next-day returns. AVWAP and MACD each apply the signal in their own
   direction (mean-reversion vs momentum), validated across 13,204 trades.
