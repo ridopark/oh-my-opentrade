@@ -233,7 +233,7 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to build monitor")
 	}
 
-	const specDir = "/home/ridopark/src/oh-my-opentrade/configs/strategies"
+	const specDir = "configs/strategies"
 	var specStore portstrategy.SpecStore = store_fs.NewStore(specDir, strategy.LoadSpecFile)
 	if len(strategyIDs) > 0 {
 		specStore = &filteredSpecStore{inner: specStore, allowed: strategyIDs}
