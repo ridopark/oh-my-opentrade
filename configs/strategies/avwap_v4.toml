@@ -203,17 +203,36 @@ type = "PREMIUM_STOP"
 [exit_rules.params]
 threshold = 0.10
 
-# Premium target: take profit at 6% premium gain.
-# Tuned 2026-04-14 Pass 2: 10% → 6% after option spread-cost audit.
-# Baseline (mult=1.0, no entry spread): PF 1.996 — optimistic, do NOT use for planning.
-# Realistic (mult=2.0, entry spread on): PF 1.75, P&L $145k, Sharpe 4.63 — planning number.
-# Conservative (mult=2.5): PF 1.63, P&L $127k, Sharpe 4.01 — stress case.
-# Target 6% dominates target 8% at every spread assumption, so 6% is the right ship value.
-# Split-half H1=2.03 / H2=1.96. Outlier-resistant (PF w/o top 20 = 1.57).
+# Chandelier premium trail (2026-04-14): replaces fixed PREMIUM_TARGET 6%.
+# Arms when premium MFE exceeds 4%; exits on 5% giveback from peak. Unlike a
+# fixed target it lets winners run arbitrarily high — the 197% MFE outlier that
+# baseline clipped at 6% would exit near 187% here. Engine change routes the
+# rule through premium_mfe_pct for options (instrument-aware).
+#
+# Tuning (27 symbols, 5m, 2025-04-14 → 2026-04-14, slip 10 bps):
+#   Baseline PT 6%  : PF 1.996 | WR 58.1% | PnL $178.6k | DD 4.84% | Sharpe 5.70
+#   Chandelier 4/5  : PF 2.311 | WR 64.2% | PnL $193.1k | DD 2.59% | Sharpe 6.58
+# Walk-forward H1=2.572 / H2=2.124 (OOS stronger — not an overfitting signature).
+# Outlier: ex-top-20 PF 1.781 (baseline was 1.57). Slippage 2x: PF 2.253.
+# Pair w/ macd_only_v1: combined PF 1.631→1.741 (+6.7%), PnL +$12.4k, DD 4.67→3.85%.
+# MACD drift -1.0% (within ±2% harness tolerance). Quant ship-approved.
+#
+# Artifact audit: MFE tracking (exit_eval.go:129) and exit fills (exit_eval.go:106)
+# both read snap.Price = bar.Close — no intrabar path bias.
+#
+# Hot-swap fallback: a=0.05 g=0.05 (Sharpe 5.99, solo PF 2.116) if live spread
+# delta exceeds model by >30%.
 [[exit_rules]]
-type = "PREMIUM_TARGET"
+type = "CHANDELIER_TRAIL"
 [exit_rules.params]
-target_pct = 0.06
+activate_pct = 0.04
+giveback_pct = 0.05
+
+# Previous PREMIUM_TARGET retained for reference:
+# [[exit_rules]]
+# type = "PREMIUM_TARGET"
+# [exit_rules.params]
+# target_pct = 0.06
 
 # FAST_FAIL_EXIT was tested 2026-04-10 and rejected:
 #   - In 2026 (IS):  PF 1.53→1.39, P&L +$25,964→+$20,541, DD 5.19%→7.79%

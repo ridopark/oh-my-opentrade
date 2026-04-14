@@ -78,10 +78,96 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 	case domain.ExitRuleFastFail:
 		return evaluateFastFail(rule, pos, now)
 	case domain.ExitRuleChandelierTrail:
-		return evaluateChandelierTrail(rule, pos, currentPrice)
+		return evaluateChandelierTrail(rule, pos, currentPrice, now)
 	default:
 		return false, ""
 	}
+}
+
+// evaluateChandelierTrail trails a fraction of the maximum favorable excursion
+// (MFE) back from the peak once MFE exceeds an activation threshold. It is
+// instrument-type aware:
+//
+//   - For option positions it reads `premium_mfe_pct` from CustomState (tracked
+//     by exit_eval.go) and compares against the current premium %-change computed
+//     from `pos.EstimatedPremium`. This captures nonlinear premium moves (delta,
+//     IV, theta) that a spot-based chandelier trail would miss.
+//   - For non-option positions it uses water-mark-derived MFE and the current
+//     unrealized P&L percentage (`pos.UnrealizedPnLPct`). Behavior here is a
+//     pure extension — existing tests that exercised the spot path must still
+//     pass byte-identical.
+//
+// Params:
+//
+//	"activate_pct" — minimum MFE fraction before the trail arms (default 0 = always armed)
+//	"giveback_pct" — fraction of MFE to give back from peak before exiting (default 0.35)
+func evaluateChandelierTrail(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time) (bool, string) {
+	activate := rule.Param("activate_pct", 0)
+	giveback := rule.Param("giveback_pct", 0.35)
+	if giveback <= 0 || giveback >= 1 {
+		return false, ""
+	}
+
+	if pos.InstrumentType == domain.InstrumentTypeOption {
+		// Options branch: use premium-space MFE tracked by exit_eval.go.
+		if pos.CustomState == nil {
+			return false, ""
+		}
+		mfe, hasMFE := pos.CustomState["premium_mfe_pct"]
+		if !hasMFE || mfe < activate {
+			return false, ""
+		}
+		entryPremium, hasEntry := pos.CustomState["option_premium"]
+		if !hasEntry || entryPremium <= 0 {
+			return false, ""
+		}
+		currentPremium := pos.EstimatedPremium(currentPrice, now)
+		if currentPremium <= 0 {
+			return false, ""
+		}
+		currentPct := (currentPremium - entryPremium) / entryPremium
+		trailLevel := mfe * (1 - giveback)
+		if currentPct < trailLevel {
+			return true, fmt.Sprintf("chandelier_trail(premium): mfe=%.2f%% trail=%.2f%% current=%.2f%%",
+				mfe*100, trailLevel*100, currentPct*100)
+		}
+		return false, ""
+	}
+
+	// Non-options branch: spot MFE from water marks, unrealized P&L for current.
+	if pos.EntryPrice <= 0 {
+		return false, ""
+	}
+	var mfe float64
+	if pos.IsShort() {
+		if pos.LowWaterMark <= 0 || pos.LowWaterMark >= pos.EntryPrice {
+			mfe = 0
+		} else {
+			mfe = (pos.EntryPrice - pos.LowWaterMark) / pos.EntryPrice
+		}
+	} else {
+		if pos.HighWaterMark <= pos.EntryPrice {
+			mfe = 0
+		} else {
+			mfe = (pos.HighWaterMark - pos.EntryPrice) / pos.EntryPrice
+		}
+	}
+	// Allow CustomState override if a future exit_eval populates `spot_mfe_pct`.
+	if pos.CustomState != nil {
+		if v, ok := pos.CustomState["spot_mfe_pct"]; ok && v > mfe {
+			mfe = v
+		}
+	}
+	if mfe < activate {
+		return false, ""
+	}
+	unrealizedPct := pos.UnrealizedPnLPct(currentPrice)
+	trailLevel := mfe * (1 - giveback)
+	if unrealizedPct < trailLevel {
+		return true, fmt.Sprintf("chandelier_trail: mfe=%.2f%% trail=%.2f%% current=%.2f%%",
+			mfe*100, trailLevel*100, unrealizedPct*100)
+	}
+	return false, ""
 }
 
 // evaluateFastFail triggers when a position has failed to show profit progress
@@ -395,35 +481,6 @@ func evaluateMaxLoss(rule domain.ExitRule, pos *domain.MonitoredPosition, curren
 	if pnl <= -pct {
 		return true, fmt.Sprintf("max_loss: loss %.2f%% >= limit %.2f%% (entry=%.4f, current=%.4f)",
 			-pnl*100, pct*100, pos.EntryPrice, currentPrice)
-	}
-	return false, ""
-}
-
-// evaluateChandelierTrail triggers when unrealized PnL % gives back a fraction of
-// the maximum favorable excursion ("spot_mfe_pct" in CustomState). Only activates
-// after MFE exceeds activate_pct, acting as a profit-protection trail.
-//
-// Params:
-//
-//	"activate_pct" — minimum MFE (as decimal) before trail arms (e.g. 0.08 = 8%)
-//	"giveback_pct" — fraction of MFE allowed to give back (e.g. 0.35 = 35%)
-func evaluateChandelierTrail(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64) (bool, string) {
-	activate := rule.Param("activate_pct", 0)
-	giveback := rule.Param("giveback_pct", 0.35)
-	if pos.CustomState == nil {
-		return false, ""
-	}
-	mfe, ok := pos.CustomState["spot_mfe_pct"]
-	if !ok || mfe < activate {
-		return false, ""
-	}
-	if giveback <= 0 || giveback >= 1 {
-		return false, ""
-	}
-	unrealized := pos.UnrealizedPnLPct(currentPrice)
-	trail := mfe * (1 - giveback)
-	if unrealized < trail {
-		return true, fmt.Sprintf("chandelier_trail: mfe=%.2f%% trail=%.2f%% current=%.2f%%", mfe*100, trail*100, unrealized*100)
 	}
 	return false, ""
 }

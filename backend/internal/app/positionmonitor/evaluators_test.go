@@ -1912,71 +1912,120 @@ func TestPremiumMFEMAE_ImmediateProfitable(t *testing.T) {
 	assert.InDelta(t, 0.10, pos.CustomState["premium_mfe_pct"], 0.001)
 }
 
+// TestEvaluateChandelierTrail exercises the non-options (spot) branch of the
+// CHANDELIER_TRAIL rule: MFE is derived from the position's HighWaterMark and
+// the trigger condition uses UnrealizedPnLPct(currentPrice).
 func TestEvaluateChandelierTrail(t *testing.T) {
 	etLoc := mustETLocation(t)
-	entryTime := time.Date(2026, 3, 6, 10, 0, 0, 0, etLoc)
-	now := entryTime.Add(30 * time.Minute)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+	entryTime := now.Add(-30 * time.Minute)
 
-	rule, err := domain.NewExitRule(domain.ExitRuleChandelierTrail, map[string]float64{
-		"activate_pct": 0.08,
-		"giveback_pct": 0.35,
+	t.Run("below_activate_never_triggers", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+		pos.HighWaterMark = 105 // MFE=0.05, below activate=0.08
+		rule := domain.ExitRule{Type: domain.ExitRuleChandelierTrail, Params: map[string]float64{
+			"activate_pct": 0.08, "giveback_pct": 0.35,
+		}}
+		// Current price far below entry — would trigger if armed.
+		triggered, reason := Evaluate(rule, pos, 90, now, EvalContext{})
+		assert.False(t, triggered)
+		assert.Empty(t, reason)
 	})
-	require.NoError(t, err)
 
-	tests := []struct {
-		name         string
-		mfe          float64
-		setCustom    bool
-		currentPrice float64
-		wantTrigger  bool
-	}{
-		{
-			name:         "triggers when unrealized drops below trail",
-			mfe:          0.20,
-			setCustom:    true,
-			currentPrice: 112, // 12% unrealized, trail = 20%*(1-0.35)=13% -> 12 < 13 trigger
-			wantTrigger:  true,
-		},
-		{
-			name:         "no trigger when still above trail",
-			mfe:          0.20,
-			setCustom:    true,
-			currentPrice: 115, // 15% unrealized >= 13% trail
-			wantTrigger:  false,
-		},
-		{
-			name:         "no trigger when MFE below activate",
-			mfe:          0.05,
-			setCustom:    true,
-			currentPrice: 95, // underwater, but MFE < activate
-			wantTrigger:  false,
-		},
-		{
-			name:         "no trigger when CustomState nil",
-			mfe:          0,
-			setCustom:    false,
-			currentPrice: 90,
-			wantTrigger:  false,
-		},
-	}
+	t.Run("armed_but_above_trail_level", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+		pos.HighWaterMark = 120 // MFE=0.20; trail level = 0.20*(1-0.35)=0.13
+		rule := domain.ExitRule{Type: domain.ExitRuleChandelierTrail, Params: map[string]float64{
+			"activate_pct": 0.08, "giveback_pct": 0.35,
+		}}
+		// unrealized = (113.5-100)/100 = 0.135 >= 0.13 -> should NOT fire
+		triggered, _ := Evaluate(rule, pos, 113.5, now, EvalContext{})
+		assert.False(t, triggered)
+	})
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassCrypto)
-			pos.Side = "BUY"
-			if tc.setCustom {
-				pos.CustomState["spot_mfe_pct"] = tc.mfe
-			} else {
-				pos.CustomState = nil
-			}
+	t.Run("armed_and_gave_back_triggers", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+		pos.HighWaterMark = 120 // MFE=0.20; trail level = 0.13
+		rule := domain.ExitRule{Type: domain.ExitRuleChandelierTrail, Params: map[string]float64{
+			"activate_pct": 0.08, "giveback_pct": 0.35,
+		}}
+		// unrealized = 0.12 < 0.13 -> triggers
+		triggered, reason := Evaluate(rule, pos, 112, now, EvalContext{})
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "chandelier_trail")
+		assert.NotContains(t, reason, "premium")
+	})
 
-			triggered, reason := Evaluate(rule, pos, tc.currentPrice, now, EvalContext{})
-			if tc.wantTrigger {
-				assert.True(t, triggered, "expected trigger; reason=%q", reason)
-				assert.Contains(t, reason, "chandelier_trail")
-			} else {
-				assert.False(t, triggered, "unexpected trigger; reason=%q", reason)
-			}
-		})
-	}
+	t.Run("invalid_giveback_disables_rule", func(t *testing.T) {
+		pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+		pos.HighWaterMark = 120
+		rule := domain.ExitRule{Type: domain.ExitRuleChandelierTrail, Params: map[string]float64{
+			"activate_pct": 0.08, "giveback_pct": 0,
+		}}
+		triggered, _ := Evaluate(rule, pos, 50, now, EvalContext{})
+		assert.False(t, triggered)
+	})
+}
+
+// TestEvaluateChandelierTrail_Options exercises the options-aware branch, which
+// reads premium_mfe_pct (tracked in exit_eval.go) and compares against the
+// current premium percent-change computed via EstimatedPremium. The
+// delta-linear fallback path is used here (no strike/iv in CustomState).
+func TestEvaluateChandelierTrail_Options(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+	entryTime := now.Add(-30 * time.Minute)
+
+	rule := domain.ExitRule{Type: domain.ExitRuleChandelierTrail, Params: map[string]float64{
+		"activate_pct": 0.05, "giveback_pct": 0.35,
+	}}
+
+	t.Run("no_activate", func(t *testing.T) {
+		// entry premium=1.0, delta=1.0, entry underlying=100
+		pos := newOptionPosition(t, 100, entryTime, 1.00, 1.00)
+		pos.CustomState["premium_mfe_pct"] = 0.03 // below activate 0.05
+		// Even if current premium is well below entry, rule must NOT fire.
+		triggered, reason := Evaluate(rule, pos, 50, now, EvalContext{})
+		assert.False(t, triggered)
+		assert.Empty(t, reason)
+	})
+
+	t.Run("trail_armed_not_triggered", func(t *testing.T) {
+		// MFE=0.20, trail level = 0.20*(1-0.35) = 0.13.
+		// est = entryPremium + delta*(underlying-entryUnderlying) - spreadCost
+		//     = 1.0 + 1.0*(u-100) - 0.015.
+		// For u=100.20 -> est=1.185 -> currentPct=0.185, well above trail 0.13.
+		pos := newOptionPosition(t, 100, entryTime, 1.00, 1.00)
+		pos.CustomState["premium_mfe_pct"] = 0.20
+		triggered, _ := Evaluate(rule, pos, 100.20, now, EvalContext{})
+		assert.False(t, triggered, "currentPct above trail level should not trigger")
+	})
+
+	t.Run("trail_armed_triggers", func(t *testing.T) {
+		// For u=100.10 -> est=1.085 -> currentPct=0.085 < trail 0.13 -> triggers.
+		pos := newOptionPosition(t, 100, entryTime, 1.00, 1.00)
+		pos.CustomState["premium_mfe_pct"] = 0.20
+		triggered, reason := Evaluate(rule, pos, 100.10, now, EvalContext{})
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "chandelier_trail(premium)")
+		assert.Contains(t, reason, "mfe=20.00%")
+		assert.Contains(t, reason, "trail=13.00%")
+	})
+
+	t.Run("missing_entry_premium", func(t *testing.T) {
+		// option position without option_premium key -> safe no-op.
+		pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassEquity)
+		pos.InstrumentType = domain.InstrumentTypeOption
+		pos.CustomState["premium_mfe_pct"] = 0.20
+		// no option_premium, no delta_at_entry
+		triggered, _ := Evaluate(rule, pos, 50, now, EvalContext{})
+		assert.False(t, triggered)
+	})
+
+	t.Run("missing_mfe_key", func(t *testing.T) {
+		// No premium_mfe_pct tracked yet -> safe no-op.
+		pos := newOptionPosition(t, 100, entryTime, 1.00, 1.00)
+		triggered, _ := Evaluate(rule, pos, 95, now, EvalContext{})
+		assert.False(t, triggered)
+	})
 }

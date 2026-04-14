@@ -30,7 +30,7 @@ const (
 	ExitRulePremiumTrail   ExitRuleType = "PREMIUM_TRAIL"  // trail X% from premium high-water mark
 	ExitRulePremiumTarget  ExitRuleType = "PREMIUM_TARGET" // exit if premium rises X% from entry
 	ExitRuleFastFail       ExitRuleType = "FAST_FAIL_EXIT" // exit if no MFE progress after N minutes
-	ExitRuleChandelierTrail ExitRuleType = "CHANDELIER_TRAIL" // trail from MFE high-water mark by giveback_pct after activate_pct
+	ExitRuleChandelierTrail ExitRuleType = "CHANDELIER_TRAIL" // trail giveback_pct of MFE once above activate_pct
 )
 
 func (e ExitRuleType) String() string { return string(e) }
