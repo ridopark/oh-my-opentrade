@@ -48,6 +48,12 @@ type infraDeps struct {
 	streamingSource string
 }
 
+// discordLogHook is the package-level hook returned from initLogger so
+// services.go can wire the Discord notifier once it has been built. Using
+// a package variable (rather than threading the hook through multiple
+// init functions) keeps the call sites unchanged.
+var discordLogHook *logger.DiscordHook
+
 func initLogger() zerolog.Logger {
 	logLevel := zerolog.InfoLevel
 	if lvl := os.Getenv("LOG_LEVEL"); lvl != "" {
@@ -55,9 +61,11 @@ func initLogger() zerolog.Logger {
 			logLevel = parsed
 		}
 	}
+	discordLogHook = logger.NewDiscordHook("default")
 	log := logger.New(logger.Config{
 		Level:  logLevel,
 		Pretty: os.Getenv("LOG_PRETTY") == "true",
+		Hooks:  []zerolog.Hook{discordLogHook},
 	}).With().Str("service", "omo-core").Logger()
 
 	log.Info().Msg("starting")
