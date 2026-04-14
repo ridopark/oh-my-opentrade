@@ -1911,3 +1911,72 @@ func TestPremiumMFEMAE_ImmediateProfitable(t *testing.T) {
 	assert.Equal(t, 1.0, pos.CustomState["minutes_to_first_profit"])
 	assert.InDelta(t, 0.10, pos.CustomState["premium_mfe_pct"], 0.001)
 }
+
+func TestEvaluateChandelierTrail(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 3, 6, 10, 0, 0, 0, etLoc)
+	now := entryTime.Add(30 * time.Minute)
+
+	rule, err := domain.NewExitRule(domain.ExitRuleChandelierTrail, map[string]float64{
+		"activate_pct": 0.08,
+		"giveback_pct": 0.35,
+	})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name         string
+		mfe          float64
+		setCustom    bool
+		currentPrice float64
+		wantTrigger  bool
+	}{
+		{
+			name:         "triggers when unrealized drops below trail",
+			mfe:          0.20,
+			setCustom:    true,
+			currentPrice: 112, // 12% unrealized, trail = 20%*(1-0.35)=13% -> 12 < 13 trigger
+			wantTrigger:  true,
+		},
+		{
+			name:         "no trigger when still above trail",
+			mfe:          0.20,
+			setCustom:    true,
+			currentPrice: 115, // 15% unrealized >= 13% trail
+			wantTrigger:  false,
+		},
+		{
+			name:         "no trigger when MFE below activate",
+			mfe:          0.05,
+			setCustom:    true,
+			currentPrice: 95, // underwater, but MFE < activate
+			wantTrigger:  false,
+		},
+		{
+			name:         "no trigger when CustomState nil",
+			mfe:          0,
+			setCustom:    false,
+			currentPrice: 90,
+			wantTrigger:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pos := newTestMonitoredPosition(t, 100, entryTime, domain.AssetClassCrypto)
+			pos.Side = "BUY"
+			if tc.setCustom {
+				pos.CustomState["spot_mfe_pct"] = tc.mfe
+			} else {
+				pos.CustomState = nil
+			}
+
+			triggered, reason := Evaluate(rule, pos, tc.currentPrice, now, EvalContext{})
+			if tc.wantTrigger {
+				assert.True(t, triggered, "expected trigger; reason=%q", reason)
+				assert.Contains(t, reason, "chandelier_trail")
+			} else {
+				assert.False(t, triggered, "unexpected trigger; reason=%q", reason)
+			}
+		})
+	}
+}
