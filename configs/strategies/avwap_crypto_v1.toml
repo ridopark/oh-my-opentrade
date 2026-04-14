@@ -36,7 +36,7 @@ pd_range_mode = "24H"
 
 # --- Entry Types ---
 breakout_enabled = true
-hold_bars = 2
+hold_bars = 5
 
 pullback_enabled = true
 pullback_trend_bars = 5
@@ -60,7 +60,8 @@ handoff_min_mom_bps = 30
 
 # --- Volume & Regime ---
 volume_mult = 0.8
-allow_regimes = ["TREND_UP", "TREND_DOWN", "BALANCE"]
+allow_regimes = ["TREND_UP", "TREND_DOWN"]
+regime_blocked_directions = { TREND_UP = "SHORT", TREND_DOWN = "LONG" }
 asset_class = "CRYPTO"
 
 # --- Structural Filters ---
@@ -104,7 +105,7 @@ avwap_stop_bars = 3
 avwap_stop_buffer_bps = 30
 
 # --- Confluence Weighting ---
-min_confluence_score = 5
+min_confluence_score = 6
 fib_confluence_enabled = true
 key_level_confluence_enabled = true
 candle_confluence_enabled = true
@@ -121,8 +122,6 @@ enabled = true
 
 # --- Exit Rules ---
 
-# No profit target — let winners run, exit via stagnation/time/stop
-
 [[exit_rules]]
 type = "MAX_HOLDING_TIME"
 [exit_rules.params]
@@ -131,7 +130,7 @@ minutes = 240
 [[exit_rules]]
 type = "STAGNATION_EXIT"
 [exit_rules.params]
-minutes = 90
+minutes = 240
 sd_threshold = 0.3
 profit_gate_pct = 0.005
 

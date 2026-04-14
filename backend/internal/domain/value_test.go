@@ -202,8 +202,8 @@ func TestAssetClass_SupportsShort(t *testing.T) {
 		assert.True(t, assetClass.SupportsShort())
 	})
 
-	t.Run("Crypto does not support short", func(t *testing.T) {
+	t.Run("Crypto supports short via IBKR ZEROHASH", func(t *testing.T) {
 		assetClass := domain.AssetClassCrypto
-		assert.False(t, assetClass.SupportsShort())
+		assert.True(t, assetClass.SupportsShort())
 	})
 }
