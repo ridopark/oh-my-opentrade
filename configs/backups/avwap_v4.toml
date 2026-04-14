@@ -120,9 +120,22 @@ risk_per_trade_bps = 500         # smaller per trade (was 2000) — more attempt
 max_position_bps = 1500          # reduced from 3000
 
 # --- Timing ---
-# Trading window (ET). Entries only allowed within this range.
-allowed_hours_start = "09:35"
-allowed_hours_end = "10:00"      # morning-only (10:00-10:59 was PF 0.57)
+# Session-time weighting: graduated multiplier on entry strength per bucket.
+# Replaces binary allowed_hours gate. Weight=0.0 blocks entry for that bucket.
+session_weight_enabled = true
+session_weight_tz = "America/New_York"
+session_weight_open = 1.15          # 09:30-10:00 opening drive (boosted)
+session_weight_extended_open = 0.90 # 10:00-10:30 still in initial balance
+session_weight_mid_morning = 0.80   # 10:30-12:00 TEST: open for today
+session_weight_lunch = 0.70         # 12:00-14:00 TEST: open for today
+session_weight_afternoon = 0.80     # 14:00-15:00 TEST: open for today
+session_weight_moc = 0.90           # 15:00-15:30 TEST: open for today
+session_weight_close = 0.85         # 15:30-16:00 TEST: open until 15:45
+session_weight_outside = 0.0        # pre/post market blocked
+
+# Legacy binary gate (active when session_weight_enabled = false)
+# allowed_hours_start = "09:35"
+# allowed_hours_end = "10:00"
 allowed_hours_tz = "America/New_York"
 
 # Cooldown between trades on the same symbol (seconds)
@@ -135,7 +148,7 @@ max_trades_per_day = 2           # limit overtrading per symbol
 # These were the values used during tuning (commit 33da264: PF 1.32, DD 10%).
 # Without them, backtests default to unlimited positions which worsens DD significantly.
 max_positions = 6                # max simultaneous open positions
-max_per_group = 2                # max positions per sector group
+max_per_group = 3                # solo optimum (was 2). Lifted after the OCC sector-classification fix made per-sector caps meaningful. In multi-strategy backtests the runner takes max-of per-spec values, so this also ends up the pair's effective cap — which the pair stress test confirms is the right shape for it.
 
 # Bars to hold before basic AVWAP exit check fires
 exit_hold_bars = 3               # bars on wrong side of AVWAP before strategy exit
@@ -175,6 +188,17 @@ dp_veto_enabled = false
 dp_veto_buy_ratio_min = 0.50
 dp_veto_sell_ratio_max = 0.50
 
+# Late-session DP Z conditioning (mean-reversion alignment).
+# Low Z (<-1.0) = bullish reversal tailwind → more patient exits, wider target.
+# High Z (>1.0) = adverse for mean-reversion → tighter exits.
+dp_z_conditioning_enabled = true
+dp_z_favorable_threshold = -1.0
+dp_z_adverse_threshold = 1.0
+dp_z_favorable_target_mult = 1.0
+dp_z_adverse_hold_time_mult = 1.0
+dp_z_suppress_adverse_entries = true
+dp_z_suppress_threshold = 1.0
+
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
 
@@ -183,13 +207,25 @@ enabled = true
 
 # --- Exit Rules ---
 
-# Premium target: take quick profit at 15% premium gain
+# Premium target: take profit at 10% premium gain
 [[exit_rules]]
 type = "PREMIUM_TARGET"
 [exit_rules.params]
 target_pct = 0.10
 
-# Safety stagnation: circuit breaker for zombie trades (3 hours)
+# FAST_FAIL_EXIT was tested 2026-04-10 and rejected:
+#   - In 2026 (IS):  PF 1.53→1.39, P&L +$25,964→+$20,541, DD 5.19%→7.79%
+#   - In 2025 (OOS): PF 1.248→1.253, P&L +$40,098→+$39,523 (flat)
+# The rule fired on 52% false positives in 2025 — winners that were
+# still underwater at minute 30 but rallied later. End-of-trade MFE is
+# a monotonic peak and does NOT reflect mid-trade state; a 30-min MFE
+# check kills slow-starter winners alongside never-profitable losers.
+# The rule code stays in the engine for future experimentation with
+# longer windows (45-60 min) or MAE depth constraints.
+
+# Safety stagnation: circuit breaker for zombie trades (90 min).
+# Note: tighter values (30m) clip winners before PREMIUM_TARGET hits.
+# Tested 2026-04-10: 90m is optimal for this strategy's structure.
 [[exit_rules]]
 type = "STAGNATION_EXIT"
 [exit_rules.params]

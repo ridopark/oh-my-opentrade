@@ -19,7 +19,7 @@ priority = 70
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
 watchlist_mode = "static"
-asset_classes = ["EQUITY", "OPTION"]
+asset_classes = ["OPTION"]
 allowed_directions = ["LONG", "SHORT"]
 
 [params]
@@ -43,13 +43,29 @@ dp_level_lookback = 20
 rolling_wr_min = 0.25
 rolling_wr_window = 20
 
+# Low-trend range gate. Blocks entries when 5m regime is BALANCE and ADX
+# is below the threshold — MACD crossovers in that condition are noise.
+# Validated as the only stationary entry filter across 2025 and 2026:
+# the (BALANCE ∧ adx<20) bucket was net-negative in both years. See
+# docs/research/macd_range_gate_validation.md.
+range_gate_enabled = true
+range_gate_adx_max = 20.0
+
+# Late-session DP Z conditioning (INVERTED for momentum).
+# High Z (>1.0) = strong prior trend = MACD-favorable (momentum continuation).
+# Low Z (<-1.0) = reversal setup = MACD-adverse (PF 0.854 in backtest).
+dp_z_conditioning_enabled = true
+dp_z_macd_favorable_threshold = 1.0
+dp_z_macd_suppress_threshold = -1.0
+dp_z_macd_suppress_mode = "block"
+
 # Risk — smaller per-trade for higher turnover
 risk_per_trade_bps = 500
 max_position_bps = 2000
 
 # Portfolio limits — focused for intraday
 max_positions = 10
-max_per_group = 3
+max_per_group = 2                # solo optimum (was 3). Tightened after the OCC sector-classification fix. Sweep showed mpg=2 is Pareto-dominant when MACD runs alone. In a pair backtest the runner takes max-of per-spec values, so the pair's effective cap is set by AVWAP (mpg=3); that's intentional — the pair stress test showed forcing global mpg=2 cost ~$40k combined PnL, so this value applies only when MACD runs solo or as the higher-mpg leg.
 
 # Timing
 allowed_hours_start = "09:35"
