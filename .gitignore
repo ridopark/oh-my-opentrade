@@ -2,6 +2,8 @@
 # compiled Go entrypoint produced by `go build ./cmd/<name>`
 backend/bin/
 backend/omo-*
+backend/submit-limit-order
+bin/
 
 # Environment
 .env
