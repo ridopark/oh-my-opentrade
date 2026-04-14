@@ -616,3 +616,89 @@ func TestWaitPending_CascadingEvents(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&handlerACalled), "handler A should have completed")
 	assert.Equal(t, int32(1), atomic.LoadInt32(&handlerBCalled), "handler B should have completed")
 }
+
+// TestBus_FreezeHandlers_PostFreezeSubscribesAreInvisible documents and locks
+// in a critical gotcha: any Subscribe call made AFTER FreezeHandlers() does
+// NOT receive events from subsequent Publish calls (which use the frozen
+// snapshot fast-path).
+//
+// This was the root cause of a dual-pipeline state divergence bug in the
+// backtest engine: the sharded pipeline's runners called Subscribe AFTER
+// freeze, so FillReceived events bypassed them entirely, leaving strategies
+// stuck in PendingEntry state on daily timeframe. Fix: freeze AFTER all
+// pipeline runners have started.
+//
+// If this test ever fails, FreezeHandlers semantics changed and the backtest
+// runner's freeze ordering may need re-examination.
+func TestBus_FreezeHandlers_PostFreezeSubscribesAreInvisible(t *testing.T) {
+	bus := memory.NewBus()
+	ctx := context.Background()
+
+	var preFreezeCalled, postFreezeCalled int32
+
+	preFreezeHandler := func(_ context.Context, _ domain.Event) error {
+		atomic.AddInt32(&preFreezeCalled, 1)
+		return nil
+	}
+	postFreezeHandler := func(_ context.Context, _ domain.Event) error {
+		atomic.AddInt32(&postFreezeCalled, 1)
+		return nil
+	}
+
+	// Pre-freeze subscription
+	require.NoError(t, bus.Subscribe(ctx, domain.EventMarketBarReceived, preFreezeHandler))
+
+	// Freeze the snapshot
+	bus.FreezeHandlers()
+
+	// Post-freeze subscription — invisible to fast-path Publish
+	require.NoError(t, bus.Subscribe(ctx, domain.EventMarketBarReceived, postFreezeHandler))
+
+	event, err := domain.NewEvent(domain.EventMarketBarReceived, "tenant", domain.EnvModePaper, "idem", nil)
+	require.NoError(t, err)
+	require.NoError(t, bus.Publish(ctx, *event))
+	bus.WaitPending()
+
+	assert.Equal(t, int32(1), atomic.LoadInt32(&preFreezeCalled),
+		"pre-freeze handler should receive the event via frozen snapshot")
+	assert.Equal(t, int32(0), atomic.LoadInt32(&postFreezeCalled),
+		"post-freeze handler must NOT receive the event — Subscribe-after-freeze "+
+			"is invisible to the publish fast-path. This is intentional and the "+
+			"backtest runner must freeze AFTER all pipelines start (see "+
+			"backtest/runner.go FreezeHandlers callsites).")
+}
+
+// TestBus_FreezeHandlers_AfterAllSubscribesDeliversToAll documents the
+// CORRECT ordering: when FreezeHandlers is called AFTER all Subscribes, every
+// handler receives published events. This is the ordering the backtest runner
+// must follow (post-Tier-2 fix in 2026-04-14).
+func TestBus_FreezeHandlers_AfterAllSubscribesDeliversToAll(t *testing.T) {
+	bus := memory.NewBus()
+	ctx := context.Background()
+
+	var legacyCalled, shardCalled int32
+
+	// Simulate two pipelines (legacy + sharded) both subscribing to the same
+	// event type before the freeze.
+	require.NoError(t, bus.Subscribe(ctx, domain.EventFillReceived, func(_ context.Context, _ domain.Event) error {
+		atomic.AddInt32(&legacyCalled, 1)
+		return nil
+	}))
+	require.NoError(t, bus.Subscribe(ctx, domain.EventFillReceived, func(_ context.Context, _ domain.Event) error {
+		atomic.AddInt32(&shardCalled, 1)
+		return nil
+	}))
+
+	// Freeze AFTER both subscribes — correct ordering.
+	bus.FreezeHandlers()
+
+	event, err := domain.NewEvent(domain.EventFillReceived, "tenant", domain.EnvModePaper, "idem", nil)
+	require.NoError(t, err)
+	require.NoError(t, bus.Publish(ctx, *event))
+	bus.WaitPending()
+
+	assert.Equal(t, int32(1), atomic.LoadInt32(&legacyCalled),
+		"legacy handler must receive the event")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&shardCalled),
+		"shard handler must also receive the event when Subscribe happened pre-freeze")
+}
