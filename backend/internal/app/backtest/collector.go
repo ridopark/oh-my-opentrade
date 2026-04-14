@@ -43,6 +43,8 @@ type TradeRecord struct {
 	PnL               float64 `json:"pnl,omitempty"`
 	PremiumMFE        float64 `json:"premium_mfe_pct,omitempty"`
 	PremiumMAE        float64 `json:"premium_mae_pct,omitempty"`
+	SpotMFE           float64 `json:"spot_mfe_pct,omitempty"`
+	SpotMAE           float64 `json:"spot_mae_pct,omitempty"`
 	MinutesToFirstProfit float64 `json:"minutes_to_first_profit,omitempty"`
 	MinutesHeld          float64 `json:"minutes_held,omitempty"`
 	Multiplier        float64 `json:"-"` // 100 for options, 1 for equity (internal use)
@@ -165,6 +167,8 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 	instrumentType, _ := payload["instrument_type"].(string)
 	premiumMFEStr, _ := payload["premium_mfe_pct"].(string)
 	premiumMAEStr, _ := payload["premium_mae_pct"].(string)
+	spotMFEStr, _ := payload["spot_mfe_pct"].(string)
+	spotMAEStr, _ := payload["spot_mae_pct"].(string)
 	minutesToFirstProfitStr, _ := payload["minutes_to_first_profit"].(string)
 	minutesHeldStr, _ := payload["minutes_held"].(string)
 	signalTags, _ := payload["signal_tags"].(map[string]string)
@@ -219,6 +223,16 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 	if premiumMAEStr != "" {
 		if v, err := strconv.ParseFloat(premiumMAEStr, 64); err == nil {
 			tr.PremiumMAE = v
+		}
+	}
+	if spotMFEStr != "" {
+		if v, err := strconv.ParseFloat(spotMFEStr, 64); err == nil {
+			tr.SpotMFE = v
+		}
+	}
+	if spotMAEStr != "" {
+		if v, err := strconv.ParseFloat(spotMAEStr, 64); err == nil {
+			tr.SpotMAE = v
 		}
 	}
 	if minutesToFirstProfitStr != "" {

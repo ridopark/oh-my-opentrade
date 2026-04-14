@@ -106,6 +106,22 @@ func (s *Service) tick() {
 			price := snap.Price
 			pos.UpdateWaterMarks(price)
 
+			// Track spot MFE/MAE (% of entry) for non-option positions.
+			// Always-on instrumentation — mirrors premium_mfe_pct/premium_mae_pct
+			// for options, but for equities and crypto spot.
+			if pos.InstrumentType != domain.InstrumentTypeOption && pos.EntryPrice > 0 {
+				if pos.CustomState == nil {
+					pos.CustomState = make(map[string]float64)
+				}
+				pctChange := pos.UnrealizedPnLPct(price)
+				if mfe, ok := pos.CustomState["spot_mfe_pct"]; !ok || pctChange > mfe {
+					pos.CustomState["spot_mfe_pct"] = pctChange
+				}
+				if mae, ok := pos.CustomState["spot_mae_pct"]; !ok || pctChange < mae {
+					pos.CustomState["spot_mae_pct"] = pctChange
+				}
+			}
+
 			// Track premium high-water mark for option positions.
 			// Premium-based exit rules (PREMIUM_TRAIL) use this to trail
 			// from the best estimated premium since entry.
@@ -428,6 +444,14 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 			}
 			if v, ok := pos.CustomState["premium_mae_pct"]; ok {
 				intent.Meta["premium_mae_pct"] = fmt.Sprintf("%.6f", v)
+			}
+			if pos.InstrumentType != domain.InstrumentTypeOption {
+				if v, ok := pos.CustomState["spot_mfe_pct"]; ok {
+					intent.Meta["spot_mfe_pct"] = fmt.Sprintf("%.6f", v)
+				}
+				if v, ok := pos.CustomState["spot_mae_pct"]; ok {
+					intent.Meta["spot_mae_pct"] = fmt.Sprintf("%.6f", v)
+				}
 			}
 			if v, ok := pos.CustomState["minutes_to_first_profit"]; ok {
 				intent.Meta["minutes_to_first_profit"] = fmt.Sprintf("%.1f", v)
