@@ -76,7 +76,7 @@ minutes = 20160  # 14 days
 [[exit_rules]]
 type = "MAX_LOSS"
 [exit_rules.params]
-pct = 0.05  # parameter key must be "pct" per evaluators.go:383
+pct = 0.08  # parameter key must be "pct" per evaluators.go:383
 
 # No EOD flatten — crypto trades 24/7
 
