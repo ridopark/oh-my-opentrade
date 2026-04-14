@@ -79,7 +79,7 @@ handoff_min_mom_bps = 25
 
 # --- Volume & Regime ---
 # Minimum volume multiple vs 20-bar SMA to confirm entries
-volume_mult = 2.5                # tighter filter for higher quality entries (tuned)
+volume_mult = 1.5                # relaxed from 2.5 (was filtering 70% of bars)
 
 # Allowed EMA regimes (drop TREND_UP — longs in uptrends get faded)
 allow_regimes = ["TREND_UP", "TREND_DOWN", "BALANCE"]
@@ -120,9 +120,22 @@ risk_per_trade_bps = 500         # smaller per trade (was 2000) — more attempt
 max_position_bps = 1500          # reduced from 3000
 
 # --- Timing ---
-# Trading window (ET). Entries only allowed within this range.
-allowed_hours_start = "09:35"
-allowed_hours_end = "09:50"      # tighter window (09:50+ was breakeven)
+# Session-time weighting: graduated multiplier on entry strength per bucket.
+# Replaces binary allowed_hours gate. Weight=0.0 blocks entry for that bucket.
+session_weight_enabled = true
+session_weight_tz = "America/New_York"
+session_weight_open = 1.15          # 09:30-10:00 opening drive (boosted)
+session_weight_extended_open = 0.90 # 10:00-10:30 still in initial balance
+session_weight_mid_morning = 0.0    # 10:30-12:00 blocked (PF 0.57 in backtest)
+session_weight_lunch = 0.0          # 12:00-14:00 blocked
+session_weight_afternoon = 0.0      # 14:00-15:00 blocked
+session_weight_moc = 0.0            # 15:00-15:30 blocked
+session_weight_close = 0.0          # 15:30-16:00 blocked
+session_weight_outside = 0.0        # pre/post market blocked
+
+# Legacy binary gate (active when session_weight_enabled = false)
+# allowed_hours_start = "09:35"
+# allowed_hours_end = "10:00"
 allowed_hours_tz = "America/New_York"
 
 # Cooldown between trades on the same symbol (seconds)
@@ -193,15 +206,6 @@ signals = { engine = "builtin", name = "avwap" }
 enabled = true
 
 # --- Exit Rules ---
-
-# Premium stop: cap loss at 10% premium drop (symmetric with target).
-# Tuned 2026-04-14: PF 1.159→1.604, DD 17.8→7.4%, Sharpe 1.78→3.97. Split-half
-# validated (H1 PF 1.57, H2 PF 1.59). Outlier-resistant (PF w/o top 10 = 1.34).
-# Tighter 5% was rejected — Sharpe 6.46 indicates simulation artifact on 5m bars.
-[[exit_rules]]
-type = "PREMIUM_STOP"
-[exit_rules.params]
-threshold = 0.10
 
 # Premium target: take profit at 10% premium gain
 [[exit_rules]]
