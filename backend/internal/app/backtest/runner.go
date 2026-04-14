@@ -238,7 +238,14 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	repo := r.infra.Repo
 
-	const replayTimeframe = domain.Timeframe("1m")
+	// resolveReplayTimeframe picks the replay bar granularity based on the user's
+	// requested strategy timeframe. Default: 1m for intraday strategies.
+	// For daily strategies, replay 1d bars directly (no aggregation) since
+	// 1m data is sparse and 7-day warmup can't produce enough daily bars.
+	replayTimeframe := domain.Timeframe("1m")
+	if r.cfg.Timeframe == "1d" {
+		replayTimeframe = domain.Timeframe("1d")
+	}
 
 	var currentBarTime atomic.Value
 	currentBarTime.Store(r.cfg.From) // use backtest start time, not wall clock
@@ -640,7 +647,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	if userTF == "" {
 		userTF = "1m"
 	}
-	useAggregation := userTF != "1m"
+	useAggregation := string(replayTimeframe) != userTF
 
 	aggregators := make(map[string]*BarAggregator, len(r.cfg.Symbols))
 	for _, sym := range r.cfg.Symbols {
@@ -904,23 +911,46 @@ func (r *Runner) Run(ctx context.Context) error {
 	var sessionResolver *SessionResolver
 	if pipeline.Runner != nil {
 		snapshotFn := makeSnapshotFn()
-		for _, sym := range r.cfg.Symbols {
-			bars := warmupBarsCache[sym.String()]
-			if len(bars) == 0 {
-				continue
+		if replayTimeframe == "1d" {
+			// Daily replay: feed the pre-backtest daily bars directly to
+			// daily-timeframe strategy instances. Skip 1m warmup and HTF
+			// aggregation since the replay bars are already 1d.
+			for _, sym := range r.cfg.Symbols {
+				all1d := dailyBarsCache[sym.String()]
+				if len(all1d) == 0 {
+					continue
+				}
+				var preBars []domain.MarketBar
+				for _, b := range all1d {
+					if b.Time.Before(r.cfg.From) {
+						preBars = append(preBars, b)
+					}
+				}
+				if len(preBars) == 0 {
+					continue
+				}
+				pipeline.Runner.WarmUpTF(sym.String(), "1d", preBars, snapshotFn)
 			}
-			pipeline.Runner.WarmUp(sym.String(), bars, snapshotFn)
-		}
-		pipeline.Runner.InitAggregators(replaySessionOpen)
-		// Aggregate warmup 1m bars into HTF candles (5m, 15m, etc.) and feed
-		// them through strategy instances that are configured for those timeframes.
-		// Without this, HTF instances start with empty state on the first replay day.
-		for _, sym := range r.cfg.Symbols {
-			bars := warmupBarsCache[sym.String()]
-			if len(bars) == 0 {
-				continue
+			pipeline.Runner.InitAggregators(replaySessionOpen)
+		} else {
+			for _, sym := range r.cfg.Symbols {
+				bars := warmupBarsCache[sym.String()]
+				if len(bars) == 0 {
+					continue
+				}
+				pipeline.Runner.WarmUp(sym.String(), bars, snapshotFn)
 			}
-			pipeline.Runner.WarmUpHTF(sym.String(), bars, snapshotFn, loc)
+			pipeline.Runner.InitAggregators(replaySessionOpen)
+			// Aggregate warmup 1m bars into HTF candles (5m, 15m, etc.) and feed
+			// them through strategy instances that are configured for those timeframes.
+			// Without this, HTF instances start with empty state on the first replay day.
+			for _, sym := range r.cfg.Symbols {
+				bars := warmupBarsCache[sym.String()]
+				if len(bars) == 0 {
+					continue
+				}
+				pipeline.Runner.WarmUpHTF(sym.String(), bars, snapshotFn, loc)
+			}
 		}
 		pipeline.Runner.ClearAllPendingStates()
 
@@ -1211,9 +1241,15 @@ func (r *Runner) Run(ctx context.Context) error {
 	prevMemLimit := debug.SetMemoryLimit(4 * 1024 * 1024 * 1024) // 4 GB
 	defer debug.SetMemoryLimit(prevMemLimit)
 
-	// Freeze the handler map so PublishDirect can bypass locking.
-	// All Subscribe calls have completed by this point.
-	r.infra.EventBus.FreezeHandlers()
+	// NOTE: FreezeHandlers() is intentionally NOT called here.
+	// The sharded pipeline (built later inside the isMaxSpeed branch) calls
+	// Subscribe on its per-shard runners. Freezing too early omits those
+	// subscriptions from the publish fast-path, causing FillReceived events
+	// to bypass shard runners and route only to the legacy runner — leading
+	// to state divergence (OnBar runs on shard instance, OnEvent on legacy
+	// instance). Freeze is now done at the end of each pipeline's setup,
+	// just before its replay loop begins (see the two FreezeHandlers calls
+	// in the isMaxSpeed branch and the legacy heap-dispatch block).
 
 	const tenantID = "default"
 	envMode := domain.EnvModePaper
@@ -1372,6 +1408,12 @@ func (r *Runner) Run(ctx context.Context) error {
 			return fmt.Errorf("start sharded services: %w", startErr)
 		}
 
+		// Freeze the event bus AFTER all shard runners have subscribed.
+		// This ensures FillReceived events reach both legacy and shard
+		// runners' handleFill subscriptions (legacy harmlessly no-ops on
+		// empty state; shard correctly mutates the instance the OnBar ran on).
+		r.infra.EventBus.FreezeHandlers()
+
 		// Per-shard warmup: replay the same warmup data through each
 		// shard's monitor + runner so indicator state is warm when
 		// Phase A starts. Without this the per-shard services are cold
@@ -1387,11 +1429,26 @@ func (r *Runner) Run(ctx context.Context) error {
 						p.Monitor().WarmUp(bars)
 						p.Monitor().ResetSessionIndicators(symStr)
 						p.Monitor().MarkReady(symStr)
-						p.Runner().WarmUp(symStr, bars, snapshotFn)
-						p.Runner().WarmUpHTF(symStr, bars, snapshotFn, loc)
+						if replayTimeframe != "1d" {
+							p.Runner().WarmUp(symStr, bars, snapshotFn)
+							p.Runner().WarmUpHTF(symStr, bars, snapshotFn, loc)
+						}
 						if ing := p.Ingestion(); ing != nil {
 							if f := ing.Filter(); f != nil {
 								f.Seed(sym, bars)
+							}
+						}
+					}
+					if replayTimeframe == "1d" {
+						if bars1d, ok := dailyBarsCache[symStr]; ok && len(bars1d) > 0 {
+							var preBars []domain.MarketBar
+							for _, b := range bars1d {
+								if b.Time.Before(r.cfg.From) {
+									preBars = append(preBars, b)
+								}
+							}
+							if len(preBars) > 0 {
+								p.Runner().WarmUpTF(symStr, "1d", preBars, snapshotFn)
 							}
 						}
 					}
@@ -1565,6 +1622,11 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Legacy heap-dispatch loop (speed < max, or paused at start).
 	{
+	// Freeze handlers now that all subscriptions are complete (legacy pipeline
+	// only — sharded path was skipped). All Subscribe calls happened before
+	// this point via pipeline.Runner.Start, RiskSizer.Start, etc.
+	r.infra.EventBus.FreezeHandlers()
+
 	clear(warmupBarsCache)
 	clear(dailyBarsCache)
 	runtime.GC()
