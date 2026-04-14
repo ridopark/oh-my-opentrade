@@ -70,6 +70,10 @@ allowed_hours_start = "09:30"
 allowed_hours_end = "14:00"        # revert — timing doesn't help PF
 allowed_hours_tz = "America/New_York"
 
+# Portfolio-level position caps (read by backtest runner when not set in API request)
+max_positions = 6                  # max simultaneous open positions
+max_per_group = 2                  # max positions per sector group
+
 [regime_filter]
 enabled = true
 allowed_regimes = ["TREND", "TREND_UP", "TREND_DOWN", "SQUEEZE", "RANGE", "NEUTRAL"]
