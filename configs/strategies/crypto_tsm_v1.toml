@@ -36,7 +36,7 @@ cap filters prevent entries in contracting or crashing markets.\
 lookback_days = 28
 decay_tau_divisor = 3.0
 zscore_window = 90
-entry_z_threshold = 0.5
+entry_z_threshold = 0.75
 exit_z_threshold = 0.0
 
 # --- Volume Regime Filter ---
