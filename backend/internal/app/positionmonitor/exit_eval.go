@@ -377,7 +377,7 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 	idempotencyKey := fmt.Sprintf("EXIT:%s:%s:%s:%d:%s:%d",
 		pos.TenantID, pos.EnvMode, pos.Symbol, pos.EntryTime.Unix(), rule.Type, pos.ExitRetryCount)
 
-	exitPrice, orderType, tif := exitOrderParams(rule.Type, currentPrice, pos.ExitRetryCount, pos.IsShort())
+	exitPrice, orderType, tif := exitOrderParams(rule.Type, currentPrice, pos.ExitRetryCount, pos.IsShort(), pos.InstrumentType == domain.InstrumentTypeOption)
 
 	exitDirection := domain.DirectionCloseLong
 	if pos.IsShort() {
@@ -571,20 +571,26 @@ func isForcedExit(ruleType domain.ExitRuleType) bool {
 
 // exitOrderParams determines order type, price, and TIF based on exit rule
 // and retry count. All exits escalate: first attempt uses an aggressive limit
-// with 5% buffer, subsequent retries and forced exits use market IOC.
-// Options have 5-20% bid/ask spreads and IBKR paper rarely fills tight limits,
-// so reliability of fill matters more than price improvement.
-func exitOrderParams(ruleType domain.ExitRuleType, currentPrice float64, retryCount int, short bool) (price float64, orderType, tif string) {
+// with 5% buffer, subsequent retries and forced exits use market.
+// Options use DAY TIF because IBKR paper expires MKT IOC options orders
+// immediately (no simulated liquidity). Equities use IOC.
+func exitOrderParams(ruleType domain.ExitRuleType, currentPrice float64, retryCount int, short, isOption bool) (price float64, orderType, tif string) {
+	optionTIF := func(baseTIF string) string {
+		if isOption {
+			return "day"
+		}
+		return baseTIF
+	}
+
 	// Forced exits (EOD flatten, max loss, max holding time) go straight to market.
 	// Any retry (retryCount >= 1) also escalates to market.
 	if isForcedExit(ruleType) || retryCount >= 1 {
-		return currentPrice, "market", "ioc"
+		return currentPrice, "market", optionTIF("ioc")
 	}
 	// First attempt: aggressive limit with 5% buffer to catch wide spreads.
 	buf := 0.05
 	if short {
-		// For shorts, buying back — offer a higher price to fill.
-		return currentPrice * (1 + buf), "limit", "ioc"
+		return currentPrice * (1 + buf), "limit", optionTIF("ioc")
 	}
-	return currentPrice * (1 - buf), "limit", "ioc"
+	return currentPrice * (1 - buf), "limit", optionTIF("ioc")
 }
