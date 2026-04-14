@@ -193,6 +193,19 @@ type AVWAPConfig struct {
 	DPZAdverseHoldTimeMult     float64 // tighten hold time on adverse days. Default 0.70.
 	DPZSuppressAdverseEntries  bool    // block entries when Z > suppress threshold. Default false.
 	DPZSuppressThreshold       float64 // Z above this suppresses entries. Default 1.5.
+
+	// Crypto 24/7 session-time weighting buckets (only used when AssetClass=CRYPTO).
+	SessionWeightUSPeak     float64 // session_weight_us_peak: 09:30-16:00 ET
+	SessionWeightUSEvening  float64 // session_weight_us_evening: 16:00-21:00 ET
+	SessionWeightAsiaPeak   float64 // session_weight_asia_peak: 21:00-04:00 ET
+	SessionWeightEuropePeak float64 // session_weight_europe_peak: 04:00-09:30 ET
+
+	// Entry priority order: "standard" (default) or "bounce_first".
+	EntryPriority string
+
+	// ATR-scaled stops and targets (overrides fixed stop_bps / target when > 0).
+	StopATRMult   float64 // stop_atr_mult: 0 = disabled (use stop_bps), >0 = N * ATR stop
+	TargetATRMult float64 // target_atr_mult: 0 = disabled, >0 = N * ATR target
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -425,6 +438,29 @@ func (s *AVWAPState) newEntrySignal(ec entryContext, side start.Side, strength f
 			// Adverse: tighter premium target, shorter stagnation timeout
 			tags["dp_z_premium_target_mult"] = fmt.Sprintf("%.3f", 1.0/cfg.DPZFavorableTargetMult)
 			tags["dp_z_stagnation_mult"] = fmt.Sprintf("%.3f", cfg.DPZAdverseHoldTimeMult)
+		}
+	}
+
+	// ATR-scaled stop (overrides fixed stop_bps when enabled).
+	if cfg.StopATRMult > 0 && s.Indicators.ATR > 0 {
+		atr := s.Indicators.ATR
+		if side == start.SideBuy {
+			stopPrice := ec.bar.Close - cfg.StopATRMult*atr
+			tags["stop_price"] = fmt.Sprintf("%.4f", stopPrice)
+			tags["stop_bps"] = fmt.Sprintf("%.0f", (ec.bar.Close-stopPrice)/ec.bar.Close*10000)
+		} else {
+			stopPrice := ec.bar.Close + cfg.StopATRMult*atr
+			tags["stop_price"] = fmt.Sprintf("%.4f", stopPrice)
+			tags["stop_bps"] = fmt.Sprintf("%.0f", (stopPrice-ec.bar.Close)/ec.bar.Close*10000)
+		}
+	}
+	// ATR-scaled target (overrides fixed target when enabled).
+	if cfg.TargetATRMult > 0 && s.Indicators.ATR > 0 {
+		atr := s.Indicators.ATR
+		if side == start.SideBuy {
+			tags["target_price"] = fmt.Sprintf("%.4f", ec.bar.Close+cfg.TargetATRMult*atr)
+		} else {
+			tags["target_price"] = fmt.Sprintf("%.4f", ec.bar.Close-cfg.TargetATRMult*atr)
 		}
 	}
 
@@ -848,6 +884,16 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		DPZAdverseHoldTimeMult:    getFloat64(params, "dp_z_adverse_hold_time_mult", 0.70),
 		DPZSuppressAdverseEntries: getBool(params, "dp_z_suppress_adverse_entries", false),
 		DPZSuppressThreshold:      getFloat64(params, "dp_z_suppress_threshold", 1.5),
+
+		SessionWeightUSPeak:     getFloat64(params, "session_weight_us_peak", 0),
+		SessionWeightUSEvening:  getFloat64(params, "session_weight_us_evening", 0),
+		SessionWeightAsiaPeak:   getFloat64(params, "session_weight_asia_peak", 0),
+		SessionWeightEuropePeak: getFloat64(params, "session_weight_europe_peak", 0),
+
+		EntryPriority: getString(params, "entry_priority", "standard"),
+
+		StopATRMult:   getFloat64(params, "stop_atr_mult", 0),
+		TargetATRMult: getFloat64(params, "target_atr_mult", 0),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
 
@@ -2015,6 +2061,15 @@ func (s *AVWAPState) evaluateEntries(ec entryContext) (*start.Signal, error) {
 		return nil, nil
 	}
 
+	if ec.cfg.EntryPriority == "bounce_first" {
+		return s.evaluateEntriesBounceFirst(ec)
+	}
+	return s.evaluateEntriesStandard(ec)
+}
+
+// evaluateEntriesStandard is the default entry priority order:
+// pinch > cap_reclaim > gap_reclaim > pullback > handoff > breakout > bounce.
+func (s *AVWAPState) evaluateEntriesStandard(ec entryContext) (*start.Signal, error) {
 	if sig, err := s.evaluatePinch(ec); err != nil || sig != nil {
 		if sig != nil {
 			s.recordCheckPassed("pinch")
@@ -2054,6 +2109,55 @@ func (s *AVWAPState) evaluateEntries(ec entryContext) (*start.Signal, error) {
 	if sig, err := s.evaluateBounce(ec); err != nil || sig != nil {
 		if sig != nil {
 			s.recordCheckPassed("bounce")
+		}
+		return sig, err
+	}
+	return nil, nil
+}
+
+// evaluateEntriesBounceFirst reorders entries to prioritize pullback-to-AVWAP
+// setups, which tend to perform better for crypto's mean-reverting microstructure.
+// Order: bounce > pullback > pinch > cap_reclaim > gap_reclaim > handoff > breakout.
+func (s *AVWAPState) evaluateEntriesBounceFirst(ec entryContext) (*start.Signal, error) {
+	if sig, err := s.evaluateBounce(ec); err != nil || sig != nil {
+		if sig != nil {
+			s.recordCheckPassed("bounce")
+		}
+		return sig, err
+	}
+	if sig, err := s.evaluatePullback(ec); err != nil || sig != nil {
+		if sig != nil {
+			s.recordCheckPassed("pullback")
+		}
+		return sig, err
+	}
+	if sig, err := s.evaluatePinch(ec); err != nil || sig != nil {
+		if sig != nil {
+			s.recordCheckPassed("pinch")
+		}
+		return sig, err
+	}
+	if sig, err := s.evaluateCapitulationReclaim(ec); err != nil || sig != nil {
+		if sig != nil {
+			s.recordCheckPassed("cap_reclaim")
+		}
+		return sig, err
+	}
+	if sig, err := s.evaluateGapReclaim(ec); err != nil || sig != nil {
+		if sig != nil {
+			s.recordCheckPassed("gap_reclaim")
+		}
+		return sig, err
+	}
+	if sig, err := s.evaluateHandoff(ec); err != nil || sig != nil {
+		if sig != nil {
+			s.recordCheckPassed("handoff")
+		}
+		return sig, err
+	}
+	if sig, err := s.evaluateBreakout(ec); err != nil || sig != nil {
+		if sig != nil {
+			s.recordCheckPassed("breakout")
 		}
 		return sig, err
 	}
@@ -2485,8 +2589,33 @@ func SessionBucket(t time.Time, loc *time.Location) string {
 	}
 }
 
+// CryptoSessionBucket maps a time in the given location to a crypto-specific
+// 24/7 session bucket. Unlike equity RTH buckets, crypto never returns "outside"
+// — the entire day is covered by four regional liquidity windows.
+func CryptoSessionBucket(t time.Time, loc *time.Location) string {
+	lt := t.In(loc)
+	h, m := lt.Hour(), lt.Minute()
+	mins := h*60 + m
+	switch {
+	case mins >= 570 && mins < 960: // 09:30-16:00 ET
+		return "us_peak"
+	case mins >= 960 && mins < 1260: // 16:00-21:00 ET
+		return "us_evening"
+	case mins >= 1260 || mins < 240: // 21:00-04:00 ET (crosses midnight)
+		return "asia_peak"
+	default: // 04:00-09:30 ET
+		return "europe_peak"
+	}
+}
+
 // SessionWeight returns the session bucket name and its weight multiplier for the given time.
 func (cfg AVWAPConfig) SessionWeight(t time.Time) (string, float64) {
+	// Crypto uses 24/7 buckets instead of equity RTH buckets,
+	// but only when at least one crypto weight is configured.
+	if strings.EqualFold(cfg.AssetClass, "CRYPTO") && cfg.hasCryptoWeights() {
+		return cfg.cryptoSessionWeight(t)
+	}
+
 	tz := cfg.SessionWeightTZ
 	if tz == "" {
 		tz = "America/New_York"
@@ -2513,6 +2642,37 @@ func (cfg AVWAPConfig) SessionWeight(t time.Time) (string, float64) {
 		return bucket, cfg.SessionWeightClose
 	default:
 		return bucket, cfg.SessionWeightOutside
+	}
+}
+
+// hasCryptoWeights returns true if any crypto session weight is configured (non-zero).
+func (cfg AVWAPConfig) hasCryptoWeights() bool {
+	return cfg.SessionWeightUSPeak > 0 || cfg.SessionWeightUSEvening > 0 ||
+		cfg.SessionWeightAsiaPeak > 0 || cfg.SessionWeightEuropePeak > 0
+}
+
+// cryptoSessionWeight resolves the crypto session bucket and its configured weight.
+func (cfg AVWAPConfig) cryptoSessionWeight(t time.Time) (string, float64) {
+	tz := cfg.SessionWeightTZ
+	if tz == "" {
+		tz = "America/New_York"
+	}
+	loc := cachedLocation(tz)
+	if loc == nil {
+		loc = etLocation
+	}
+	bucket := CryptoSessionBucket(t, loc)
+	switch bucket {
+	case "us_peak":
+		return bucket, cfg.SessionWeightUSPeak
+	case "us_evening":
+		return bucket, cfg.SessionWeightUSEvening
+	case "asia_peak":
+		return bucket, cfg.SessionWeightAsiaPeak
+	case "europe_peak":
+		return bucket, cfg.SessionWeightEuropePeak
+	default:
+		return bucket, 0
 	}
 }
 
@@ -2757,11 +2917,6 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 	sessionMult := 1.0
 	if cfg.SessionWeightEnabled {
 		sessionBucket, sessionMult = cfg.SessionWeight(now)
-		// Crypto symbols trade 24/7 — enforce a minimum session weight floor
-		// so "outside" hours are reduced but not blocked.
-		if sessionMult <= 0 && strings.Contains(symbol, "/") {
-			sessionMult = 0.50
-		}
 		if sessionMult <= 0 {
 			avwapSt.emitEarlyGated(ctx, symbol, bar, "hours", fmt.Sprintf("session bucket %s (weight 0)", sessionBucket))
 			return avwapSt, nil, nil
