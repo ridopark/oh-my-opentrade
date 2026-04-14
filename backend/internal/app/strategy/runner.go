@@ -1426,7 +1426,17 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		if !ok {
 			continue
 		}
-		closed, emitted := agg.Push(bar)
+		var closed domain.MarketBar
+		var emitted bool
+		// Passthrough: if incoming bar already matches target HTF (e.g. native 1d
+		// replay for daily strategies), the aggregator cannot downsize from same→same
+		// (it expects 1m input). Emit directly.
+		if string(bar.Timeframe) == tf {
+			closed = bar
+			emitted = true
+		} else {
+			closed, emitted = agg.Push(bar)
+		}
 		if !emitted {
 			continue
 		}
