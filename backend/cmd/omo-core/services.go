@@ -250,6 +250,12 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	// }
 	multiNotifier := notification.NewMultiNotifier(notifiers...)
 	svc.notifier = multiNotifier
+	// Wire the Discord log hook (constructed in initLogger) now that the
+	// multi-notifier exists. Every ErrorLevel log from anywhere in the
+	// process will fan out to Discord asynchronously.
+	if discordLogHook != nil {
+		discordLogHook.SetNotifier(multiNotifier)
+	}
 	// Position monitor was built earlier in this function (before the
 	// notifier adapters existed), so wire the reconciliation notifier now
 	// that the sink is available. Bootstrap reconciliation runs at Start()

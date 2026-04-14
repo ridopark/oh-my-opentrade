@@ -31,6 +31,10 @@ type Config struct {
 	// Pretty enables human-readable console output (development mode).
 	// In production, leave false for JSON output.
 	Pretty bool
+	// Hooks are attached to the root logger. Use NewDiscordHook to route
+	// ErrorLevel events to a NotifierPort; wire the notifier after services
+	// are assembled via DiscordHook.SetNotifier.
+	Hooks []zerolog.Hook
 }
 
 // New constructs a root zerolog.Logger from the given Config.
@@ -44,7 +48,11 @@ func New(cfg Config) zerolog.Logger {
 	} else {
 		base = zerolog.New(os.Stderr).With().Timestamp().Logger()
 	}
-	return base.Level(cfg.Level)
+	l := base.Level(cfg.Level)
+	for _, h := range cfg.Hooks {
+		l = l.Hook(h)
+	}
+	return l
 }
 
 // WithCtx stores a logger into a context, returning a new context.
