@@ -574,37 +574,50 @@ func TestExitOrderParams_Escalation(t *testing.T) {
 	price := 67000.0
 
 	t.Run("forced exit retry 0: market IOC immediately", func(t *testing.T) {
-		p, ot, tif := exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 0, false)
+		p, ot, tif := exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 0, false, false)
 		assert.Equal(t, price, p)
 		assert.Equal(t, "market", ot)
 		assert.Equal(t, "ioc", tif)
 	})
 
 	t.Run("forced exit retry 1: still market IOC", func(t *testing.T) {
-		_, ot, tif := exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 1, false)
+		_, ot, tif := exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 1, false, false)
 		assert.Equal(t, "market", ot)
 		assert.Equal(t, "ioc", tif)
 	})
 
 	t.Run("non-forced exit retry 0: limit with 5pct buffer", func(t *testing.T) {
-		p, ot, tif := exitOrderParams(domain.ExitRuleTrailingStop, price, 0, false)
+		p, ot, tif := exitOrderParams(domain.ExitRuleTrailingStop, price, 0, false, false)
 		assert.InEpsilon(t, price*0.95, p, 0.001)
 		assert.Equal(t, "limit", ot)
 		assert.Equal(t, "ioc", tif)
 	})
 
 	t.Run("non-forced exit retry 0 short: limit with 5pct buffer above", func(t *testing.T) {
-		p, ot, tif := exitOrderParams(domain.ExitRuleTrailingStop, price, 0, true)
+		p, ot, tif := exitOrderParams(domain.ExitRuleTrailingStop, price, 0, true, false)
 		assert.InEpsilon(t, price*1.05, p, 0.001)
 		assert.Equal(t, "limit", ot)
 		assert.Equal(t, "ioc", tif)
 	})
 
 	t.Run("non-forced exit retry 1: escalates to market", func(t *testing.T) {
-		p, ot, tif := exitOrderParams(domain.ExitRuleTrailingStop, price, 1, false)
+		p, ot, tif := exitOrderParams(domain.ExitRuleTrailingStop, price, 1, false, false)
 		assert.Equal(t, price, p)
 		assert.Equal(t, "market", ot)
 		assert.Equal(t, "ioc", tif)
+	})
+
+	t.Run("option forced exit uses DAY not IOC", func(t *testing.T) {
+		p, ot, tif := exitOrderParams(domain.ExitRuleEODFlatten, price, 0, false, true)
+		assert.Equal(t, price, p)
+		assert.Equal(t, "market", ot)
+		assert.Equal(t, "day", tif)
+	})
+
+	t.Run("option non-forced retry uses DAY", func(t *testing.T) {
+		_, ot, tif := exitOrderParams(domain.ExitRuleTrailingStop, price, 1, false, true)
+		assert.Equal(t, "market", ot)
+		assert.Equal(t, "day", tif)
 	})
 }
 

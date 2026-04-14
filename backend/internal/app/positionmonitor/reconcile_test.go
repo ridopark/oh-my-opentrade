@@ -197,7 +197,12 @@ func TestReconcile_ShutdownFlag_ShortCircuits(t *testing.T) {
 	assert.Empty(t, repo.savedTrades, "no reconciliation trades must be written during shutdown")
 }
 
-func TestReconcile_DBOrphanPatching(t *testing.T) {
+func TestReconcile_GhostRemoved_NoSyntheticTradeWritten(t *testing.T) {
+	// Reconciler must NEVER write synthetic trades to "balance the books".
+	// Stale broker data (e.g. IBKR paper's ib.Positions() returning phantom
+	// values) previously caused synthetic SELL fills that corrupted the
+	// trade ledger. The reconciler now only removes ghost positions from
+	// in-memory state and surfaces drift via ERROR logs for manual action.
 	broker := &mockBroker{positions: nil}
 	repo := &capturingRepo{}
 	svc := newTestServiceWithBrokerAndRepo(broker, repo)
@@ -206,18 +211,7 @@ func TestReconcile_DBOrphanPatching(t *testing.T) {
 
 	svc.reconcileWithBroker(context.Background())
 	svc.reconcileWithBroker(context.Background())
-	assert.Empty(t, repo.savedTrades, "no DB write before ghost threshold")
-
 	svc.reconcileWithBroker(context.Background())
 	assert.Equal(t, 0, svc.PositionCount(), "ghost removed after threshold")
-
-	require.Len(t, repo.savedTrades, 1)
-	reconcileTrade := repo.savedTrades[0]
-	assert.Equal(t, "SELL", reconcileTrade.Side)
-	assert.Equal(t, domain.Symbol("AAPL"), reconcileTrade.Symbol)
-	assert.Equal(t, 10.0, reconcileTrade.Quantity)
-	assert.Equal(t, 100.0, reconcileTrade.Price)
-	assert.Equal(t, "reconciliation", reconcileTrade.Strategy)
-	assert.Equal(t, "FILLED", reconcileTrade.Status)
-	assert.Contains(t, reconcileTrade.Rationale, "auto-reconcile")
+	assert.Empty(t, repo.savedTrades, "reconciler must not write synthetic trades")
 }
