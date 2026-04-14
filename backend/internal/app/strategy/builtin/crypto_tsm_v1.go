@@ -280,10 +280,11 @@ func (s *CryptoTSMStrategy) OnBar(ctx start.Context, symbol string, bar start.Ba
 		if exitReason != "" {
 			instanceID, _ := start.NewInstanceID(symbol)
 			sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideSell, 1.0, map[string]string{
-				"reason":   exitReason,
-				"z_score":  fmt.Sprintf("%.3f", zScore),
-				"vol5d":    fmt.Sprintf("%.1f", realizedVol5),
-				"strategy": "crypto_tsm",
+				"reason":    exitReason,
+				"ref_price": fmt.Sprintf("%.10f", bar.Close),
+				"z_score":   fmt.Sprintf("%.3f", zScore),
+				"vol5d":     fmt.Sprintf("%.1f", realizedVol5),
+				"strategy":  "crypto_tsm",
 			})
 			if err == nil {
 				signals = append(signals, sig)
@@ -300,8 +301,14 @@ func (s *CryptoTSMStrategy) OnBar(ctx start.Context, symbol string, bar start.Ba
 	// -----------------------------------------------------------------------
 	// ENTRY LOGIC
 	// -----------------------------------------------------------------------
-	if tsmSt.PositionSide != "" || tsmSt.PendingEntry != "" {
-		return tsmSt, nil, nil // already in position or pending
+	// Only gate on confirmed position. PendingEntry tracking still happens
+	// in OnEvent for state mutation, but we don't use it as an entry gate.
+	// The position-monitor + position-gate combination prevents true
+	// duplicate orders via real broker state lookup. This makes the strategy
+	// resilient to fill-event routing issues that can leave PendingEntry
+	// stuck (see project notes on dual-pipeline state divergence).
+	if tsmSt.PositionSide != "" {
+		return tsmSt, nil, nil // already in position
 	}
 
 	// Cooldown check.
@@ -329,13 +336,14 @@ func (s *CryptoTSMStrategy) OnBar(ctx start.Context, symbol string, bar start.Ba
 
 	instanceID, _ := start.NewInstanceID(symbol)
 	sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, strength, map[string]string{
-		"reason":       "vwtsm_entry",
-		"z_score":      fmt.Sprintf("%.3f", zScore),
-		"raw_signal":   fmt.Sprintf("%.6f", rawSignal),
-		"vol20d":       fmt.Sprintf("%.1f", realizedVol20),
+		"reason":        "vwtsm_entry",
+		"ref_price":     fmt.Sprintf("%.10f", bar.Close),
+		"z_score":       fmt.Sprintf("%.3f", zScore),
+		"raw_signal":    fmt.Sprintf("%.6f", rawSignal),
+		"vol20d":        fmt.Sprintf("%.1f", realizedVol20),
 		"vol_expanding": fmt.Sprintf("%v", volExpanding),
-		"atr":          fmt.Sprintf("%.2f", atr),
-		"strategy":     "crypto_tsm",
+		"atr":           fmt.Sprintf("%.2f", atr),
+		"strategy":      "crypto_tsm",
 	})
 	if err != nil {
 		return tsmSt, nil, err
@@ -351,7 +359,7 @@ func (s *CryptoTSMStrategy) OnBar(ctx start.Context, symbol string, bar start.Ba
 // OnEvent — handle fills and rejections
 // ---------------------------------------------------------------------------
 
-func (s *CryptoTSMStrategy) OnEvent(_ start.Context, _ string, evt any, st start.State) (start.State, []start.Signal, error) {
+func (s *CryptoTSMStrategy) OnEvent(ctx start.Context, sym string, evt any, st start.State) (start.State, []start.Signal, error) {
 	tsmSt, ok := st.(*CryptoTSMState)
 	if !ok {
 		return st, nil, nil
@@ -367,8 +375,19 @@ func (s *CryptoTSMStrategy) OnEvent(_ start.Context, _ string, evt any, st start
 			tsmSt.HighSinceEntry = e.Price
 			tsmSt.TradesToday++
 		} else if e.Side == start.SideSell {
-			// Exit fill confirmed — state already cleared in OnBar.
+			// Exit fill confirmed — clear all position state. The sell may have
+			// been initiated by our OnBar logic OR by an external exit rule
+			// (MAX_HOLDING_TIME, MAX_LOSS) from position_monitor. Either way,
+			// we're flat now and must be ready to re-enter.
 			tsmSt.PendingEntry = ""
+			tsmSt.PositionSide = ""
+			tsmSt.EntryPrice = 0
+			tsmSt.EntryTime = time.Time{}
+			tsmSt.HighSinceEntry = 0
+			// Note: CooldownUntil is seeded by OnBar exit. For external exits
+			// (MAX_HOLDING_TIME), next OnBar will check CooldownUntil before
+			// re-entering; if 0, entry can fire same bar, which is acceptable
+			// because the z-score gate still applies.
 		}
 	case start.EntryRejection:
 		tsmSt.PendingEntry = ""
