@@ -388,7 +388,7 @@ func TestCryptoE2E_DomainLogic(t *testing.T) {
 
 	t.Run("asset class properties", func(t *testing.T) {
 		assert.True(t, domain.AssetClassCrypto.Is24x7(), "crypto should be 24x7")
-		assert.False(t, domain.AssetClassCrypto.SupportsShort(), "crypto should not support short")
+		assert.True(t, domain.AssetClassCrypto.SupportsShort(), "crypto should support short via IBKR ZEROHASH")
 		assert.False(t, domain.AssetClassEquity.Is24x7(), "equity should not be 24x7")
 		assert.True(t, domain.AssetClassEquity.SupportsShort(), "equity should support short")
 	})

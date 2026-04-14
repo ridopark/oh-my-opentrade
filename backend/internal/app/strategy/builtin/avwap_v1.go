@@ -2757,11 +2757,6 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 	sessionMult := 1.0
 	if cfg.SessionWeightEnabled {
 		sessionBucket, sessionMult = cfg.SessionWeight(now)
-		// Crypto symbols trade 24/7 — enforce a minimum session weight floor
-		// so "outside" hours are reduced but not blocked.
-		if sessionMult <= 0 && strings.Contains(symbol, "/") {
-			sessionMult = 0.50
-		}
 		if sessionMult <= 0 {
 			avwapSt.emitEarlyGated(ctx, symbol, bar, "hours", fmt.Sprintf("session bucket %s (weight 0)", sessionBucket))
 			return avwapSt, nil, nil
