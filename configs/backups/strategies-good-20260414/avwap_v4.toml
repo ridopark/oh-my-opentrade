@@ -1,0 +1,274 @@
+schema_version = 2
+
+[strategy]
+id = "avwap_v4"
+version = "4.3.0"
+name = "AVWAP v4.3 - Confluence-Weighted Entries"
+description = "Anchored VWAP strategy with multi-anchor lines, confluence-weighted entries, price-action exits, and options trading."
+author = "system"
+created_at = "2026-03-29T00:00:00Z"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "AFRM", "JPM", "XOM", "OXY", "LLY", "RIVN", "RBLX", "BA", "QQQ", "IWM", "SOXL"]
+timeframes = ["5m"]
+priority = 80
+conflict_policy = "priority_wins"
+exclusive_per_symbol = false
+watchlist_mode = "static"
+asset_classes = ["OPTION"]
+allowed_directions = ["LONG", "SHORT"]
+
+[screening]
+description = """\
+Anchored VWAP momentum/mean-reversion strategy trading options on US equities.
+
+IDEAL CANDIDATES (score 4-5):
+- Daily ATR% >= 2.0% (need intraday movement for AVWAP entries)
+- Gap% between 1-8% absolute (provides clear anchor point for AVWAP)
+- RVOL >= 1.5x (volume confirmation for breakout/pullback)
+- EMA200 bias matches gap direction (trend alignment)
+- NR7 = Y is a bonus (compression before expansion)
+
+POOR CANDIDATES (score 0-1):
+- ATR% < 1.0% (too slow, AVWAP entries won't trigger)
+- Gap% < 0.5% (no clear anchor event)
+- RVOL < 0.5x (no institutional participation)
+- Leveraged ETFs (SOXL, TQQQ, SQQQ) — synthetic price action, poor VWAP respect
+
+Score = probability this symbol generates a valid AVWAP entry signal today.\
+"""
+
+[params]
+# --- Anchors ---
+# AVWAP lines anchored at session open and previous day's high/low
+anchors = ["session_open", "pd_high", "pd_low"]
+
+# --- Entry Types ---
+# Breakout: price sustains above/below AVWAP for hold_bars with volume confirmation
+breakout_enabled = true
+hold_bars = 2                    # faster entry (was 4 = 20min delay)
+
+# Pullback: price pulls back to AVWAP in an established trend, closes on right side
+pullback_enabled = false         # disable pullback — test impact
+pullback_trend_bars = 3          # reduced from 5
+pullback_tolerance_bps = 40      # wider tolerance (was 25) — easier to qualify
+pullback_rsi_min = 25.0          # wider RSI range (was 30)
+pullback_rsi_max = 75.0          # wider RSI range (was 65)
+
+# Bounce: mean-reversion touch of AVWAP with RSI confirmation
+bounce_enabled = false           # disable mean-reversion (low WR intraday)
+rsi_bounce_max = 40.0
+
+# Pinch: dual-AVWAP compression breakout (gap between anchors narrows)
+pinch_enabled = true             # testing pinch mode
+pinch_min_bps = 3
+pinch_max_bps = 50
+
+# Gap Reclaim: price dips below AVWAP then reclaims it within N bars
+gap_reclaim_enabled = false      # disable gap reclaim (unreliable)
+gap_reclaim_bars = 8
+
+# Handoff: momentum acceleration away from AVWAP (consecutive bars of increasing distance)
+handoff_enabled = false          # disable momentum chasing
+handoff_bars = 3
+handoff_min_mom_bps = 25
+
+# --- Volume & Regime ---
+# Minimum volume multiple vs 20-bar SMA to confirm entries
+volume_mult = 2.5                # tighter filter for higher quality entries (tuned)
+
+# Allowed EMA regimes (drop TREND_UP — longs in uptrends get faded)
+allow_regimes = ["TREND_UP", "TREND_DOWN", "BALANCE"]
+
+# Underlying asset class (used for midday trap shield and session hours)
+asset_class = "EQUITY"
+
+# --- Structural Filters ---
+# Require consecutive higher lows for long breakout entries
+require_higher_lows = false      # disabled — hurts overall PF
+higher_lows_bars = 3             # reduced from 5
+
+# Block entries during 11:00-13:00 ET unless volume exceeds this multiple
+midday_trap_shield = true        # block low-quality 11-13 ET entries
+midday_volume_mult = 1.5
+
+# Directional bias: only long when price is above AVWAP, only short when below
+enforce_avwap_bias = true        # only long above AVWAP, short below
+
+# AVWAP slope must exceed this threshold (bps/bar) for trend confirmation
+min_slope_bps = 0.5              # require stronger AVWAP slope
+slope_lookback = 10              # shorter lookback (was 15)
+
+# Shorts above AVWAP require a capitulation event
+require_capitulation_for_shorts = true   # shorts need capitulation signal
+
+# --- Risk ---
+# Underlying stop distance in basis points
+stop_bps = 50                    # tighter stop for options (not firing — premium exits dominate)
+
+# Limit order offset from current price in basis points
+limit_offset_bps = 10            # more aggressive fill (was 5)
+
+# Maximum risk per trade as basis points of equity
+risk_per_trade_bps = 500         # smaller per trade (was 2000) — more attempts
+
+# Maximum position size as basis points of equity
+max_position_bps = 1500          # reduced from 3000
+
+# --- Timing ---
+# Trading window (ET). Entries only allowed within this range.
+allowed_hours_start = "09:35"
+allowed_hours_end = "09:50"      # tighter window (09:50+ was breakeven)
+allowed_hours_tz = "America/New_York"
+
+# Cooldown between trades on the same symbol (seconds)
+cooldown_seconds = 3600          # 1hr cooldown per symbol
+
+# Maximum entries per symbol per session
+max_trades_per_day = 2           # limit overtrading per symbol
+
+# Portfolio-level position caps (read by backtest runner when not set in API request)
+# These were the values used during tuning (commit 33da264: PF 1.32, DD 10%).
+# Without them, backtests default to unlimited positions which worsens DD significantly.
+max_positions = 6                # max simultaneous open positions
+max_per_group = 3                # solo optimum (was 2). Lifted after the OCC sector-classification fix made per-sector caps meaningful. In multi-strategy backtests the runner takes max-of per-spec values, so this also ends up the pair's effective cap — which the pair stress test confirms is the right shape for it.
+
+# Bars to hold before basic AVWAP exit check fires
+exit_hold_bars = 3               # bars on wrong side of AVWAP before strategy exit
+premium_hold_bars = 1            # bars before premium target/trail can fire (prevents same-bar exits)
+
+# --- Regime-Direction Blocking ---
+# Block specific directions in specific regimes (AVWAP longs underperform in BALANCE)
+# regime_blocked_directions removed — allow all directions in all regimes
+
+# --- AVWAP Stop ---
+# Strategy-level exit when price closes on wrong side of AVWAP for N consecutive bars
+avwap_stop_enabled = true
+avwap_stop_bars = 3              # more patient (was 2)
+avwap_stop_buffer_bps = 20       # wider buffer (was 10) — less noise exits
+
+# --- Confluence Weighting ---
+# Entries scored 0-10 based on confirmation factors. Below threshold = filtered out.
+min_confluence_score = 8         # high-conviction entries only
+
+# Fibonacci convergence (+3): AVWAP aligns with 38.2%/50%/61.8% retracement
+fib_confluence_enabled = true
+
+# Key level alignment (+3): AVWAP converges with pd_high, pd_low, or_high, or_low
+key_level_confluence_enabled = true
+
+# Candlestick pattern (+2): Inside Bar, Morning Star, or strength candle
+candle_confluence_enabled = true
+
+# Band zone (+2): price within zone between min/max AVWAP lines
+band_confluence_enabled = true
+
+# Dark pool (+10): elevated DP ratio, directional pressure, block prints
+dp_confluence_enabled = true
+
+# Dark pool veto: disabled — no improvement at 0.50 threshold
+dp_veto_enabled = false
+dp_veto_buy_ratio_min = 0.50
+dp_veto_sell_ratio_max = 0.50
+
+# Late-session DP Z conditioning (mean-reversion alignment).
+# Low Z (<-1.0) = bullish reversal tailwind → more patient exits, wider target.
+# High Z (>1.0) = adverse for mean-reversion → tighter exits.
+dp_z_conditioning_enabled = true
+dp_z_favorable_threshold = -1.0
+dp_z_adverse_threshold = 1.0
+dp_z_favorable_target_mult = 1.0
+dp_z_adverse_hold_time_mult = 1.0
+dp_z_suppress_adverse_entries = true
+dp_z_suppress_threshold = 1.0
+
+[hooks]
+signals = { engine = "builtin", name = "avwap" }
+
+[dynamic_risk]
+enabled = true
+
+# --- Exit Rules ---
+
+# Premium stop: cap loss at 10% premium drop (symmetric with target).
+# Tuned 2026-04-14: PF 1.159→1.604, DD 17.8→7.4%, Sharpe 1.78→3.97. Split-half
+# validated (H1 PF 1.57, H2 PF 1.59). Outlier-resistant (PF w/o top 10 = 1.34).
+# Tighter 5% was rejected — Sharpe 6.46 indicates simulation artifact on 5m bars.
+[[exit_rules]]
+type = "PREMIUM_STOP"
+[exit_rules.params]
+threshold = 0.10
+
+# Premium target: take profit at 6% premium gain.
+# Tuned 2026-04-14 Pass 2: 10% → 6% after option spread-cost audit.
+# Baseline (mult=1.0, no entry spread): PF 1.996 — optimistic, do NOT use for planning.
+# Realistic (mult=2.0, entry spread on): PF 1.75, P&L $145k, Sharpe 4.63 — planning number.
+# Conservative (mult=2.5): PF 1.63, P&L $127k, Sharpe 4.01 — stress case.
+# Target 6% dominates target 8% at every spread assumption, so 6% is the right ship value.
+# Split-half H1=2.03 / H2=1.96. Outlier-resistant (PF w/o top 20 = 1.57).
+[[exit_rules]]
+type = "PREMIUM_TARGET"
+[exit_rules.params]
+target_pct = 0.06
+
+# FAST_FAIL_EXIT was tested 2026-04-10 and rejected:
+#   - In 2026 (IS):  PF 1.53→1.39, P&L +$25,964→+$20,541, DD 5.19%→7.79%
+#   - In 2025 (OOS): PF 1.248→1.253, P&L +$40,098→+$39,523 (flat)
+# The rule fired on 52% false positives in 2025 — winners that were
+# still underwater at minute 30 but rallied later. End-of-trade MFE is
+# a monotonic peak and does NOT reflect mid-trade state; a 30-min MFE
+# check kills slow-starter winners alongside never-profitable losers.
+# The rule code stays in the engine for future experimentation with
+# longer windows (45-60 min) or MAE depth constraints.
+
+# Safety stagnation: circuit breaker for zombie trades (90 min).
+# Note: tighter values (30m) clip winners before PREMIUM_TARGET hits.
+# Tested 2026-04-10: 90m is optimal for this strategy's structure.
+[[exit_rules]]
+type = "STAGNATION_EXIT"
+[exit_rules.params]
+minutes = 90
+sd_threshold = 0
+profit_gate_pct = 0.005
+
+# EOD flatten
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 15
+
+# --- Options ---
+
+[options]
+enabled = true
+
+# Cap contract count to limit spread drag on cheap options
+max_contracts = 50
+
+# Limit price = mid + 50% of spread (moderate for AVWAP swing entries)
+limit_spread_pct = 1.00
+# Fallback when spread is zero: ask + 2%
+limit_buffer_bps = 1000
+# Cancel unfilled option orders after 90 seconds
+stale_cancel_secs = 90
+
+[options.defaults]
+min_dte = 3                      # short DTE for faster premium response
+max_dte = 7                      # minimal theta cost for intraday
+target_delta_low = 0.60          # ITM for less extrinsic, more delta
+target_delta_high = 0.75         # ITM — premium tracks underlying closely
+min_open_interest = 50           # ensure liquidity
+max_spread_pct = 0.10            # reject illiquid strikes
+max_iv = 1.2                     # avoid IV crush risk
+
+[options.regime_overrides.BALANCE]
+target_delta_low = 0.35
+target_delta_high = 0.50
+min_dte = 7
+max_dte = 21
+
+# No symbol overrides — same params for all symbols to avoid overfitting

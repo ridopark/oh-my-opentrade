@@ -1,0 +1,103 @@
+schema_version = 2
+
+[strategy]
+id = "overnight_z_v1"
+version = "1.0.0"
+name = "Overnight Z-Score Bias"
+description = "Late-session DP buy_ratio Z predicts next-day mean-reversion; long equity shares at open, exit MOC"
+author = "system"
+created_at = "2026-04-12T00:00:00Z"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+symbols = [
+    "AAPL", "AFRM", "AMD", "AMZN", "AVGO", "BA", "COIN", "CRM", "GOOGL",
+    "HIMS", "HOOD", "IWM", "JPM", "LLY", "META", "MRNA", "MRVL", "MSFT", "MU",
+    "NET", "NFLX", "NVDA", "OXY", "PLTR", "QQQ", "RBLX", "RIVN", "SMCI",
+    "SNOW", "SOFI", "SOXL", "SPY", "TSLA", "XOM"
+]
+timeframes = ["5m"]
+priority = 50
+conflict_policy = "priority_wins"
+exclusive_per_symbol = false
+watchlist_mode = "static"
+asset_classes = ["OPTION"]
+allowed_directions = ["LONG"]
+
+[params]
+late_z_long_threshold = -2.50
+late_z_long_floor = 0
+late_z_short_threshold = 2.0
+long_only = true
+
+entry_time = "09:35"
+exit_time = "15:45"
+allowed_hours_tz = "America/New_York"
+
+hard_stop_bps = 200
+
+risk_per_trade_pct = 2.0
+risk_per_trade_bps = 800
+max_positions = 8
+max_per_sector = 2
+
+# Kill switch: disable entries if trailing 20-trade WR drops below 38%
+rolling_wr_kill_threshold = 0.38
+rolling_wr_kill_window = 20
+rolling_wr_cooldown_days = 5
+
+# DP Ratio Regime Gate: skip entries when institutional DP participation is low
+dp_ratio_regime_gate = false
+dp_ratio_z_min = 0.0
+
+# Composite signal: combine multiple Z-scores ("off", "any", "all")
+composite_mode = "off"
+late_lp_z_threshold = -1.5
+late_nf_z_threshold = -1.5
+late_lp_z_floor = -9
+
+# Daily-timeframe entry filters (via HTF["1d"], available at bar #1)
+min_daily_atr = 0
+min_whale_score = 0
+require_htf_bull = false
+
+# Z-metric selection: "buy_ratio" (default), "dp_ratio" (signing-free), "large_print"
+z_metric = "buy_ratio"
+
+# Entry time window: 0 = exact match at entry_time (default), >0 = allow ±N minutes
+entry_window_min = 0
+
+[hooks]
+signals = { engine = "builtin", name = "overnight_z" }
+
+[options]
+enabled = true
+max_contracts = 50
+limit_spread_pct = 1.00
+limit_buffer_bps = 1000
+stale_cancel_secs = 90
+
+[options.defaults]
+min_dte = 7
+max_dte = 21
+target_delta_low = 0.35
+target_delta_high = 0.55
+min_open_interest = 300
+max_spread_pct = 0.07
+max_iv = 1.2
+
+[gate_chain]
+monitor = [
+    { name = "dna_approval" },
+]
+
+execution = [
+    { name = "exposure_guard" },
+    { name = "portfolio_guard" },
+    { name = "risk_engine" },
+    { name = "trading_window" },
+    { name = "buying_power_guard" },
+]
