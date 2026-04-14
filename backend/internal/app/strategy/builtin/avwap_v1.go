@@ -1320,7 +1320,7 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 				// Note: require_higher_lows is NOT applied to shorts — the bias gate
 				// + slope gate already confirm downtrend structure. Requiring strict
 				// lower highs blocked 9000+ short attempts in backtests.
-				if cfg.MiddayTrapShield && strings.EqualFold(cfg.AssetClass, "EQUITY") {
+				if cfg.MiddayTrapShield && strings.EqualFold(cfg.AssetClass, "EQUITY") && ec.etLocation != nil {
 					barET := bar.Time.In(ec.etLocation)
 					hour := barET.Hour()
 					if hour >= 11 && hour < 13 {
