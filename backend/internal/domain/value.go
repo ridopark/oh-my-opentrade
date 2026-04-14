@@ -174,9 +174,9 @@ func (a AssetClass) Is24x7() bool {
 }
 
 // SupportsShort returns true if short selling is supported for this asset class.
-// IBKR ZEROHASH supports crypto shorting, so all asset classes allow shorts.
+// IBKR ZEROHASH only supports long spot crypto — no short selling.
 func (a AssetClass) SupportsShort() bool {
-	return true
+	return a != AssetClassCrypto
 }
 
 // FmtPrice formats a price with appropriate decimal precision based on magnitude.

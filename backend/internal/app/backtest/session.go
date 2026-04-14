@@ -272,6 +272,11 @@ func (r *SessionResolver) ResolveAnchors(symbol string, barTime time.Time, ancho
 			result[name] = todayData.ORLowTime
 		case "session_open":
 			result[name] = todayData.OpenTime
+		case "weekly_open":
+			weekOpenTime := r.findWeekOpen(symSessions, et)
+			if !weekOpenTime.IsZero() {
+				result[name] = weekOpenTime
+			}
 		}
 	}
 
@@ -514,4 +519,25 @@ func (r *SessionResolver) findPreviousDay(sessions map[string]SessionData, et ti
 		}
 	}
 	return SessionData{}
+}
+
+// findWeekOpen returns the open time of the first trading day in the current ISO week.
+// For crypto (which trades 24/7), this anchors to Monday's first session bar.
+func (r *SessionResolver) findWeekOpen(sessions map[string]SessionData, et time.Time) time.Time {
+	// Find Monday of the current week (ISO: Monday=1, Sunday=7).
+	weekday := et.Weekday()
+	if weekday == time.Sunday {
+		weekday = 7
+	}
+	monday := et.AddDate(0, 0, -int(weekday-time.Monday))
+
+	// Walk forward from Monday to find the first session with data.
+	for i := 0; i < 7; i++ {
+		day := monday.AddDate(0, 0, i)
+		dayStr := day.Format("2006-01-02")
+		if sd, ok := sessions[dayStr]; ok && !sd.OpenTime.IsZero() {
+			return sd.OpenTime
+		}
+	}
+	return time.Time{}
 }
