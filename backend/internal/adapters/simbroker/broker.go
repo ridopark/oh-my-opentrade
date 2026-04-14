@@ -26,6 +26,12 @@ type Config struct {
 	VIXIVBeta          float64 // VIX-beta IV scaling exponent (0 = disabled; typical 0.7 for large caps)
 	TODSeasonalEnabled bool    // enable time-of-day IV seasonality multiplier (U-shape)
 	EarningsRampEnabled bool   // enable earnings IV ramp model (sqrt decay)
+
+	// Option bid-ask spread realism knobs for fill simulation.
+	// OptionExitSpreadMultiplier scales the tiered exit half-spread (0 treated as 1.0).
+	// OptionEntrySpreadEnabled adds the same tiered half-spread to option entry fills.
+	OptionExitSpreadMultiplier float64
+	OptionEntrySpreadEnabled   bool
 }
 
 // simOrder tracks a submitted order and its fill details.
@@ -57,6 +63,8 @@ type Broker struct {
 	vixIVBeta           float64
 	todSeasonalEnabled  bool
 	earningsRampEnabled bool
+	optionExitSpreadMult    float64
+	optionEntrySpreadEnabled bool
 	historicalOptions   ports.HistoricalOptionsPort
 	log                 zerolog.Logger
 
@@ -85,6 +93,10 @@ func New(cfg Config, log zerolog.Logger) *Broker {
 	if equity == 0 {
 		equity = 100_000
 	}
+	exitMult := cfg.OptionExitSpreadMultiplier
+	if exitMult == 0 {
+		exitMult = 1.0
+	}
 	return &Broker{
 		slippageBPS:         cfg.SlippageBPS,
 		initialEquity:       equity,
@@ -92,6 +104,8 @@ func New(cfg Config, log zerolog.Logger) *Broker {
 		vixIVBeta:           cfg.VIXIVBeta,
 		todSeasonalEnabled:  cfg.TODSeasonalEnabled,
 		earningsRampEnabled: cfg.EarningsRampEnabled,
+		optionExitSpreadMult:     exitMult,
+		optionEntrySpreadEnabled: cfg.OptionEntrySpreadEnabled,
 		log:                 log.With().Str("component", "simbroker").Logger(),
 		prices:          make(map[domain.Symbol]float64),
 		barTimes:        make(map[domain.Symbol]time.Time),
@@ -158,6 +172,13 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 				return "", fmt.Errorf("simbroker: options entry has no limit price for %s", intent.Symbol)
 			}
 			fillPrice = intent.LimitPrice * (1 + slippage) // buying: slippage works against us
+			if b.optionEntrySpreadEnabled {
+				// Charge the same tiered half-spread as the exit path so entry
+				// and exit costs are symmetric. Gated behind the flag so default
+				// backtests stay byte-identical to prior behavior.
+				spreadPct := optionSpreadPct(intent.LimitPrice) * b.optionExitSpreadMult
+				fillPrice += intent.LimitPrice * spreadPct
+			}
 			side = "buy"
 		}
 	} else {
@@ -571,17 +592,7 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 		if entryPremium <= 0 {
 			entryPremium = exitPremium // use BSM price for spread tier
 		}
-		var spreadPct float64
-		switch {
-		case entryPremium >= 10.0:
-			spreadPct = 0.003
-		case entryPremium >= 5.0:
-			spreadPct = 0.005
-		case entryPremium >= 2.0:
-			spreadPct = 0.008
-		default:
-			spreadPct = 0.015
-		}
+		spreadPct := optionSpreadPct(entryPremium) * b.optionExitSpreadMult
 		exitPremium -= entryPremium * spreadPct
 
 		if exitPremium < 0.01 {
@@ -613,17 +624,7 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 	underlyingMove := underlyingPrice - entryUnderlying
 	exitPremium := entryPremium + delta*underlyingMove
 
-	var spreadPct float64
-	switch {
-	case entryPremium >= 10.0:
-		spreadPct = 0.003
-	case entryPremium >= 5.0:
-		spreadPct = 0.005
-	case entryPremium >= 2.0:
-		spreadPct = 0.008
-	default:
-		spreadPct = 0.015
-	}
+	spreadPct := optionSpreadPct(entryPremium) * b.optionExitSpreadMult
 	exitPremium -= entryPremium * spreadPct
 
 	if exitPremium < 0.01 {
@@ -631,6 +632,21 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 	}
 
 	return exitPremium
+}
+
+// optionSpreadPct returns the tiered half-spread percentage applied to an
+// option fill given the premium level. Shared by entry and exit paths.
+func optionSpreadPct(premium float64) float64 {
+	switch {
+	case premium >= 10.0:
+		return 0.003
+	case premium >= 5.0:
+		return 0.005
+	case premium >= 2.0:
+		return 0.008
+	default:
+		return 0.015
+	}
 }
 
 // minutesSinceMarketOpen returns minutes elapsed since 9:30 ET on the bar's date.

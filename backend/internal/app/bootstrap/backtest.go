@@ -39,9 +39,20 @@ type BacktestInfra struct {
 	AIAdvisor        ports.AIAdvisorPort
 }
 
+// BacktestInfraOptions holds optional knobs for BuildBacktestInfra. Zero values
+// preserve prior behavior so existing callers need not set them.
+type BacktestInfraOptions struct {
+	OptionExitSpreadMultiplier float64 // 0 => 1.0 (no scaling)
+	OptionEntrySpreadEnabled   bool    // false => entries skip option half-spread (legacy)
+}
+
 // BuildBacktestInfra constructs all adapter-layer dependencies for a backtest.
 // This keeps adapter imports out of the app/backtest package.
-func BuildBacktestInfra(deps BacktestDeps, slippageBPS int64, initialEquity float64, noAI bool) BacktestInfra {
+func BuildBacktestInfra(deps BacktestDeps, slippageBPS int64, initialEquity float64, noAI bool, opts ...BacktestInfraOptions) BacktestInfra {
+	var opt BacktestInfraOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 	log := deps.Logger
 
 	bus := memory.NewSyncBus()
@@ -60,6 +71,8 @@ func BuildBacktestInfra(deps BacktestDeps, slippageBPS int64, initialEquity floa
 		VIXIVBeta:           0.7,  // large-cap equity default
 		TODSeasonalEnabled:  true,
 		EarningsRampEnabled: true,
+		OptionExitSpreadMultiplier: opt.OptionExitSpreadMultiplier,
+		OptionEntrySpreadEnabled:   opt.OptionEntrySpreadEnabled,
 	}, log.With().Str("component", "simbroker").Logger())
 
 	earningsRepo := timescaledb.NewEarningsRepo(deps.DB, log.With().Str("component", "earnings_repo").Logger())

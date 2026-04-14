@@ -108,7 +108,7 @@ require_capitulation_for_shorts = true   # shorts need capitulation signal
 
 # --- Risk ---
 # Underlying stop distance in basis points
-stop_bps = 50                    # tighter stop for options
+stop_bps = 50                    # tighter stop for options (not firing — premium exits dominate)
 
 # Limit order offset from current price in basis points
 limit_offset_bps = 10            # more aggressive fill (was 5)
@@ -203,11 +203,17 @@ type = "PREMIUM_STOP"
 [exit_rules.params]
 threshold = 0.10
 
-# Premium target: take profit at 10% premium gain
+# Premium target: take profit at 6% premium gain.
+# Tuned 2026-04-14 Pass 2: 10% → 6% after option spread-cost audit.
+# Baseline (mult=1.0, no entry spread): PF 1.996 — optimistic, do NOT use for planning.
+# Realistic (mult=2.0, entry spread on): PF 1.75, P&L $145k, Sharpe 4.63 — planning number.
+# Conservative (mult=2.5): PF 1.63, P&L $127k, Sharpe 4.01 — stress case.
+# Target 6% dominates target 8% at every spread assumption, so 6% is the right ship value.
+# Split-half H1=2.03 / H2=1.96. Outlier-resistant (PF w/o top 20 = 1.57).
 [[exit_rules]]
 type = "PREMIUM_TARGET"
 [exit_rules.params]
-target_pct = 0.10
+target_pct = 0.06
 
 # FAST_FAIL_EXIT was tested 2026-04-10 and rejected:
 #   - In 2026 (IS):  PF 1.53→1.39, P&L +$25,964→+$20,541, DD 5.19%→7.79%

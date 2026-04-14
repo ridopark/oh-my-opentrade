@@ -36,6 +36,10 @@ type backtestRunRequest struct {
 	MaxPositions     int      `json:"max_positions"`
 	MaxPerGroup      int      `json:"max_per_group"`
 	CompoundEquity   *bool    `json:"compound_equity"`
+
+	// Option fill-realism knobs. Zero/false preserve prior behavior.
+	OptionSpreadMultiplier   float64 `json:"option_spread_multiplier"`
+	OptionEntrySpreadEnabled bool    `json:"option_entry_spread_enabled"`
 }
 
 type backtestControlRequest struct {
@@ -272,7 +276,10 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		DB:     h.db,
 		AppCfg: h.appCfg,
 		Logger: h.log,
-	}, slippage, equity, req.NoAI), h.appCfg, h.marketData, h.log)
+	}, slippage, equity, req.NoAI, bootstrap.BacktestInfraOptions{
+		OptionExitSpreadMultiplier: req.OptionSpreadMultiplier,
+		OptionEntrySpreadEnabled:   req.OptionEntrySpreadEnabled,
+	}), h.appCfg, h.marketData, h.log)
 
 	// Wire history persistence: capture meta & DNA now, so the save is
 	// deterministic even if config files change mid-run. The save itself
