@@ -78,6 +78,11 @@ type = "MAX_LOSS"
 [exit_rules.params]
 pct = 0.08  # parameter key must be "pct" per evaluators.go:383
 
+# CHANDELIER_TRAIL tested (activate ∈ {0.08, 0.15, 0.20} × giveback ∈ {0.30, 0.35, 0.50})
+# — no Pareto improvement on this universe: most winners peak in 8-15% MFE range
+# where trail either exits too early or never fires. Rule is implemented and
+# available; omitted here pending a universe with bigger MFE tails.
+
 # No EOD flatten — crypto trades 24/7
 
 [options]

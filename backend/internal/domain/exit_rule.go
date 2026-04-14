@@ -30,6 +30,7 @@ const (
 	ExitRulePremiumTrail   ExitRuleType = "PREMIUM_TRAIL"  // trail X% from premium high-water mark
 	ExitRulePremiumTarget  ExitRuleType = "PREMIUM_TARGET" // exit if premium rises X% from entry
 	ExitRuleFastFail       ExitRuleType = "FAST_FAIL_EXIT" // exit if no MFE progress after N minutes
+	ExitRuleChandelierTrail ExitRuleType = "CHANDELIER_TRAIL" // trail from MFE high-water mark by giveback_pct after activate_pct
 )
 
 func (e ExitRuleType) String() string { return string(e) }
@@ -57,7 +58,7 @@ func NewExitRuleType(s string) (ExitRuleType, error) {
 		ExitRuleSwingStop,
 		ExitRuleTieredTP, ExitRuleTimePartial,
 		ExitRulePremiumStop, ExitRulePremiumTrail, ExitRulePremiumTarget,
-		ExitRuleFastFail:
+		ExitRuleFastFail, ExitRuleChandelierTrail:
 		return ExitRuleType(s), nil
 	default:
 		return "", fmt.Errorf("invalid exit rule type: %q", s)
