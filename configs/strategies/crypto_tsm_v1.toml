@@ -1,0 +1,84 @@
+schema_version = 2
+
+[strategy]
+id = "crypto_tsm_v1"
+version = "1.0.0"
+name = "Crypto Time-Series Momentum v1"
+description = "Volume-weighted TS momentum on daily bars for crypto spot (Huang et al. 2024, Sharpe 1.51)"
+author = "system"
+created_at = "2026-04-14T00:00:00Z"
+
+[lifecycle]
+state = "Paper"
+paper_only = true
+
+[routing]
+symbols = ["BTC/USD", "ETH/USD", "SOL/USD"]
+timeframes = ["1d"]
+priority = 60
+conflict_policy = "priority_wins"
+exclusive_per_symbol = false
+watchlist_mode = "static"
+asset_classes = ["CRYPTO"]
+allowed_directions = ["LONG"]
+
+[screening]
+description = """\
+Volume-weighted time-series momentum for 24/7 crypto markets.
+Evaluates daily at 00:00 UTC. Long-only on IBKR ZEROHASH spot.
+Academic basis: 28-day lookback with exp decay, volume-weighted returns,
+z-scored against trailing 90-day window. Volume regime and volatility
+cap filters prevent entries in contracting or crashing markets.\
+"""
+
+[params]
+# --- Signal ---
+lookback_days = 28
+decay_tau_divisor = 3.0
+zscore_window = 90
+entry_z_threshold = 0.5
+exit_z_threshold = 0.0
+
+# --- Volume Regime Filter ---
+vol_regime_fast = 20
+vol_regime_slow = 50
+
+# --- Volatility Caps (annualized %) ---
+realized_vol_cap_pct = 120.0
+crash_vol_exit_pct = 150.0
+vol_annualize_factor = 19.105  # sqrt(365) for 24/7 crypto
+
+# --- Risk ---
+trailing_stop_atr_mult = 2.5
+atr_period = 14
+max_hold_days = 14
+hard_stop_pct = 0.05
+risk_per_trade_bps = 200
+max_gross_exposure_pct = 80.0
+max_positions = 3
+
+# --- Execution ---
+cooldown_days = 2
+
+[hooks]
+signals = { engine = "builtin", name = "crypto_tsm" }
+
+[dynamic_risk]
+enabled = true
+
+# --- Exit Rules ---
+
+[[exit_rules]]
+type = "MAX_HOLDING_TIME"
+[exit_rules.params]
+minutes = 20160  # 14 days
+
+[[exit_rules]]
+type = "MAX_LOSS"
+[exit_rules.params]
+max_loss_pct = 0.05
+
+# No EOD flatten — crypto trades 24/7
+
+[options]
+enabled = false
