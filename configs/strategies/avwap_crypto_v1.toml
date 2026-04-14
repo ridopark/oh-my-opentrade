@@ -9,22 +9,22 @@ author = "system"
 created_at = "2026-04-13T00:00:00Z"
 
 [lifecycle]
-state = "PaperActive"
+state = "Retired"
 paper_only = true
 
 [routing]
-symbols = ["BTC/USD", "ETH/USD"]
+symbols = ["BTC/USD", "ETH/USD", "SOL/USD"]
 timeframes = ["5m"]
 priority = 70
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
 watchlist_mode = "static"
 asset_classes = ["CRYPTO"]
-allowed_directions = ["LONG", "SHORT"]
+allowed_directions = ["LONG"]
 
 [screening]
 description = """\
-Anchored VWAP strategy for crypto (BTC, ETH) traded via IBKR ZEROHASH.
+Anchored VWAP strategy for crypto (BTC, ETH, SOL) traded via IBKR ZEROHASH.
 Uses ET session structure because US market hours drive 40-50% of daily
 crypto volume. pd_high/pd_low use full 24h range to capture overnight moves.\
 """
@@ -35,17 +35,19 @@ anchors = ["session_open", "pd_high", "pd_low"]
 pd_range_mode = "24H"
 
 # --- Entry Types ---
+entry_priority = "bounce_first"
+
 breakout_enabled = true
 hold_bars = 5
 
 pullback_enabled = true
 pullback_trend_bars = 5
-pullback_tolerance_bps = 80
+pullback_tolerance_bps = 120
 pullback_rsi_min = 30.0
 pullback_rsi_max = 70.0
 
 bounce_enabled = true
-rsi_bounce_max = 35.0
+rsi_bounce_max = 45.0
 
 pinch_enabled = true
 pinch_min_bps = 5
@@ -82,14 +84,14 @@ max_position_bps = 800
 # --- Timing ---
 session_weight_enabled = true
 session_weight_tz = "America/New_York"
-session_weight_open = 1.15          # 09:30-10:00 peak crypto volume
-session_weight_extended_open = 1.00 # 10:00-10:30
-session_weight_mid_morning = 0.85   # 10:30-12:00
-session_weight_lunch = 0.70         # 12:00-14:00
-session_weight_afternoon = 0.80     # 14:00-15:00
-session_weight_moc = 0.75           # 15:00-15:30
-session_weight_close = 0.70         # 15:30-16:00
-session_weight_outside = 0.00       # block overnight entries entirely
+session_weight_open = 1.15
+session_weight_extended_open = 1.00
+session_weight_mid_morning = 0.85
+session_weight_lunch = 0.70
+session_weight_afternoon = 0.80
+session_weight_moc = 0.75
+session_weight_close = 0.70
+session_weight_outside = 0.00
 
 allowed_hours_tz = "America/New_York"
 cooldown_seconds = 300
@@ -105,7 +107,7 @@ avwap_stop_bars = 3
 avwap_stop_buffer_bps = 30
 
 # --- Confluence Weighting ---
-min_confluence_score = 6
+min_confluence_score = 7
 fib_confluence_enabled = true
 key_level_confluence_enabled = true
 candle_confluence_enabled = true
@@ -138,6 +140,7 @@ profit_gate_pct = 0.005
 type = "MAX_LOSS"
 [exit_rules.params]
 max_loss_pct = 0.015
+
 
 # No EOD flatten — crypto trades 24/7
 

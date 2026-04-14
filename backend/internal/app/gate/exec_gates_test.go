@@ -67,9 +67,12 @@ func TestShortDirectionGate(t *testing.T) {
 		assert.Nil(t, g.Check(ctx, gctx))
 	})
 
-	t.Run("short crypto passes via IBKR ZEROHASH", func(t *testing.T) {
+	t.Run("short crypto blocks", func(t *testing.T) {
 		gctx := &ExecutionGateContext{Intent: domain.OrderIntent{Direction: domain.DirectionShort, AssetClass: domain.AssetClassCrypto}}
-		assert.Nil(t, g.Check(ctx, gctx))
+		result := g.Check(ctx, gctx)
+		require.NotNil(t, result)
+		assert.Equal(t, "short_direction", result.GateName)
+		assert.Contains(t, result.Reason, "CRYPTO")
 	})
 
 	t.Run("exit skipped", func(t *testing.T) {
