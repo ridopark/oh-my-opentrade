@@ -2,11 +2,11 @@ package backtest
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
-
-	"database/sql"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -153,6 +153,96 @@ func (r *SessionResolver) Load(ctx context.Context, db *sql.DB, sym domain.Symbo
 	return nil
 }
 
+// Load24H loads session data for crypto symbols using full 24h bars (no RTH filter).
+// pd_high/pd_low use the entire calendar day's range. Opening range uses 09:30-10:00 ET
+// because US equity market hours drive peak crypto volume.
+func (r *SessionResolver) Load24H(ctx context.Context, db *sql.DB, sym domain.Symbol, from, to time.Time) error {
+	rows, err := db.QueryContext(ctx, `
+		WITH all_bars AS (
+			SELECT time, open, high, low, close, volume,
+				   DATE(time AT TIME ZONE 'America/New_York') as trading_day,
+				   (time AT TIME ZONE 'America/New_York')::time as bar_time
+			FROM market_bars
+			WHERE symbol = $1 AND timeframe = '1m'
+			  AND time >= $2 AND time < $3
+		),
+		daily AS (
+			SELECT trading_day,
+				   (ARRAY_AGG(open ORDER BY time))[1] as day_open,
+				   MIN(time) as open_time,
+				   MAX(high) as day_high,
+				   MIN(low) as day_low,
+				   (ARRAY_AGG(close ORDER BY time DESC))[1] as day_close
+			FROM all_bars
+			GROUP BY trading_day
+		),
+		high_times AS (
+			SELECT DISTINCT ON (r.trading_day) r.trading_day, r.time as high_time
+			FROM all_bars r JOIN daily d ON r.trading_day = d.trading_day
+			WHERE r.high = d.day_high
+			ORDER BY r.trading_day, r.time
+		),
+		low_times AS (
+			SELECT DISTINCT ON (r.trading_day) r.trading_day, r.time as low_time
+			FROM all_bars r JOIN daily d ON r.trading_day = d.trading_day
+			WHERE r.low = d.day_low
+			ORDER BY r.trading_day, r.time
+		),
+		opening_range AS (
+			SELECT trading_day,
+				   MAX(high) as or_high,
+				   MIN(low) as or_low
+			FROM all_bars
+			WHERE bar_time >= '09:30:00' AND bar_time < '10:00:00'
+			GROUP BY trading_day
+		),
+		or_high_times AS (
+			SELECT DISTINCT ON (r.trading_day) r.trading_day, r.time as or_high_time
+			FROM all_bars r JOIN opening_range o ON r.trading_day = o.trading_day
+			WHERE r.high = o.or_high AND r.bar_time >= '09:30:00' AND r.bar_time < '10:00:00'
+			ORDER BY r.trading_day, r.time
+		),
+		or_low_times AS (
+			SELECT DISTINCT ON (r.trading_day) r.trading_day, r.time as or_low_time
+			FROM all_bars r JOIN opening_range o ON r.trading_day = o.trading_day
+			WHERE r.low = o.or_low AND r.bar_time >= '09:30:00' AND r.bar_time < '10:00:00'
+			ORDER BY r.trading_day, r.time
+		)
+		SELECT d.trading_day, d.day_open, d.open_time, d.day_high, COALESCE(ht.high_time, d.open_time),
+			   d.day_low, COALESCE(lt.low_time, d.open_time), d.day_close,
+			   COALESCE(o.or_high, 0), COALESCE(oht.or_high_time, d.open_time),
+			   COALESCE(o.or_low, 0), COALESCE(olt.or_low_time, d.open_time)
+		FROM daily d
+		LEFT JOIN high_times ht ON d.trading_day = ht.trading_day
+		LEFT JOIN low_times lt ON d.trading_day = lt.trading_day
+		LEFT JOIN opening_range o ON d.trading_day = o.trading_day
+		LEFT JOIN or_high_times oht ON d.trading_day = oht.trading_day
+		LEFT JOIN or_low_times olt ON d.trading_day = olt.trading_day
+		ORDER BY d.trading_day`,
+		string(sym), from, to)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	symSessions := make(map[string]SessionData)
+	for rows.Next() {
+		var s SessionData
+		var day time.Time
+		if scanErr := rows.Scan(&day, &s.Open, &s.OpenTime, &s.High, &s.HighTime,
+			&s.Low, &s.LowTime, &s.Close, &s.ORHigh, &s.ORHighTime, &s.ORLow, &s.ORLowTime); scanErr != nil {
+			continue
+		}
+		s.Date = day.Format("2006-01-02")
+		symSessions[s.Date] = s
+	}
+
+	r.mu.Lock()
+	r.sessions[sym.String()] = symSessions
+	r.mu.Unlock()
+	return nil
+}
+
 func (r *SessionResolver) ResolveAnchors(symbol string, barTime time.Time, anchorNames []string) map[string]time.Time {
 	symSessions := r.sessions[symbol]
 	if symSessions == nil {
@@ -161,13 +251,8 @@ func (r *SessionResolver) ResolveAnchors(symbol string, barTime time.Time, ancho
 
 	et := barTime.In(r.loc)
 	today := et.Format("2006-01-02")
-	yesterday := et.AddDate(0, 0, -1).Format("2006-01-02")
 
-	if et.Weekday() == time.Monday {
-		yesterday = et.AddDate(0, 0, -3).Format("2006-01-02")
-	}
-
-	prevDay := symSessions[yesterday]
+	prevDay := r.findPreviousDay(symSessions, et)
 	todayData := symSessions[today]
 
 	result := make(map[string]time.Time)
@@ -263,15 +348,21 @@ func (r *SessionResolver) PopulateBarCache(sym domain.Symbol, bars []domain.Mark
 	r.mu.Unlock()
 }
 
-// GetBarsSince returns 1m bars for a symbol from `since` to end of that day's RTH session.
-// Uses the in-memory barCache populated by LoadBars; falls back to a DB query on cache miss.
+// GetBarsSince returns 1m bars for a symbol from `since` to end of that day's session.
+// For equities, caps at 16:00 ET (RTH close). For crypto symbols (containing "/"),
+// caps at midnight ET (full 24h day). Uses the in-memory barCache populated by
+// LoadBars; falls back to a DB query on cache miss.
 func (r *SessionResolver) GetBarsSince(ctx context.Context, db *sql.DB, symbol string, since time.Time) []start.Bar {
 	if since.IsZero() {
 		return nil
 	}
 	et := since.In(r.loc)
 	day := dayKey(since, r.loc)
-	eod := time.Date(et.Year(), et.Month(), et.Day(), 16, 0, 0, 0, r.loc)
+	eodHour := 16 // RTH close for equities
+	if strings.Contains(symbol, "/") {
+		eodHour = 24 // full day for crypto
+	}
+	eod := time.Date(et.Year(), et.Month(), et.Day(), eodHour, 0, 0, 0, r.loc)
 
 	key := symbol + ":" + day
 	if cached, ok := r.barCache[key]; ok {
@@ -375,12 +466,8 @@ func (r *SessionResolver) KeyLevelPrices(symbol string, barTime time.Time) map[s
 	}
 	et := barTime.In(r.loc)
 	today := et.Format("2006-01-02")
-	yesterday := et.AddDate(0, 0, -1).Format("2006-01-02")
-	if et.Weekday() == time.Monday {
-		yesterday = et.AddDate(0, 0, -3).Format("2006-01-02")
-	}
 
-	prevDay := symSessions[yesterday]
+	prevDay := r.findPreviousDay(symSessions, et)
 	todayData := symSessions[today]
 
 	levels := make(map[string]float64)
@@ -408,12 +495,23 @@ func (r *SessionResolver) PreviousDay(symbol string, barTime time.Time) *Session
 		return nil
 	}
 	et := barTime.In(r.loc)
-	yesterday := et.AddDate(0, 0, -1).Format("2006-01-02")
-	if et.Weekday() == time.Monday {
-		yesterday = et.AddDate(0, 0, -3).Format("2006-01-02")
-	}
-	if s, ok := symSessions[yesterday]; ok {
-		return &s
+	prev := r.findPreviousDay(symSessions, et)
+	if prev.High > 0 {
+		return &prev
 	}
 	return nil
+}
+
+// findPreviousDay walks back up to 4 days from the given time to find the most
+// recent session with data. For equities this handles Mon→Fri (skip weekends).
+// For crypto (24/7) this finds the actual previous calendar day with bars,
+// including weekends.
+func (r *SessionResolver) findPreviousDay(sessions map[string]SessionData, et time.Time) SessionData {
+	for offset := 1; offset <= 4; offset++ {
+		day := et.AddDate(0, 0, -offset).Format("2006-01-02")
+		if s, ok := sessions[day]; ok {
+			return s
+		}
+	}
+	return SessionData{}
 }

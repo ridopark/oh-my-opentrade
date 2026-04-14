@@ -954,8 +954,14 @@ func (r *Runner) Run(ctx context.Context) error {
 					defer wg.Done()
 					sem <- struct{}{}
 					defer func() { <-sem }()
-					if loadErr := sessionResolver.Load(ctx, r.infra.DB, s, sessionFrom, r.cfg.To); loadErr != nil {
-						r.log.Warn().Err(loadErr).Str("symbol", s.String()).Msg("failed to load session data")
+					if s.IsCryptoSymbol() {
+						if loadErr := sessionResolver.Load24H(ctx, r.infra.DB, s, sessionFrom, r.cfg.To); loadErr != nil {
+							r.log.Warn().Err(loadErr).Str("symbol", s.String()).Msg("failed to load 24H session data")
+						}
+					} else {
+						if loadErr := sessionResolver.Load(ctx, r.infra.DB, s, sessionFrom, r.cfg.To); loadErr != nil {
+							r.log.Warn().Err(loadErr).Str("symbol", s.String()).Msg("failed to load session data")
+						}
 					}
 					// Populate bar cache from already-loaded bars instead of
 					// re-fetching from DB (saves ~2.4 GB on large backtests).
@@ -2042,7 +2048,7 @@ func (s *symbolOverrideSpecStore) intersectSymbols(native []string) []string {
 		}
 	}
 	if len(out) == 0 {
-		return native // no overlap — keep strategy's own symbols
+		return s.symbols // no overlap — use backtest-requested symbols
 	}
 	return out
 }

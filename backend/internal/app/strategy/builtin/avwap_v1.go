@@ -121,6 +121,7 @@ type AVWAPConfig struct {
 	MiddayTrapShield  bool
 	MiddayVolumeMult  float64
 	AssetClass        string
+	PDRangeMode       string // "RTH" (default) or "24H" — controls pd_high/pd_low bar filtering
 	Anchors           []string
 
 	MinSlopeBPS                  float64 // minimum AVWAP slope for entries (bps/bar)
@@ -475,7 +476,7 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 			if t.IsZero() {
 				continue
 			}
-			rthOnly := name == "pd_high" || name == "pd_low"
+			rthOnly := (name == "pd_high" || name == "pd_low") && s.Config.PDRangeMode != "24H"
 			s.Calc.AddAnchor(start.AnchorPoint{Name: name, AnchorTime: t, RTHOnly: rthOnly})
 		}
 		s.AboveCount = make(map[string]int)
@@ -503,7 +504,7 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 			continue
 		}
 
-		rthOnly := name == "pd_high" || name == "pd_low"
+		rthOnly := (name == "pd_high" || name == "pd_low") && s.Config.PDRangeMode != "24H"
 		ap := start.AnchorPoint{Name: name, AnchorTime: t, RTHOnly: rthOnly}
 
 		if oldAP, exists := existingPoints[name]; exists && oldAP.AnchorTime.Equal(t) {
@@ -782,6 +783,7 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		MiddayTrapShield:  getBool(params, "midday_trap_shield", false),
 		MiddayVolumeMult:  getFloat64(params, "midday_volume_mult", 2.0),
 		AssetClass:        getString(params, "asset_class", ""),
+		PDRangeMode:       strings.ToUpper(getString(params, "pd_range_mode", "RTH")),
 		Anchors:           getStringSlice(params, "anchors", []string{"session_open"}),
 
 		MinSlopeBPS:                  getFloat64(params, "min_slope_bps", 0.0),
@@ -867,6 +869,10 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 // Init creates initial state for a symbol.
 func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string]any, prior start.State) (start.State, error) {
 	cfg := parseAVWAPConfig(params)
+	// Auto-detect crypto symbols and enable 24h pd range
+	if strings.Contains(symbol, "/") && cfg.PDRangeMode == "RTH" {
+		cfg.PDRangeMode = "24H"
+	}
 	calc := start.NewAnchoredVWAPCalc()
 
 	anchorNames := getStringSlice(params, "anchors", []string{"session_open"})
@@ -882,7 +888,7 @@ func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string
 				anchorTime = ctx.Now()
 			}
 		}
-		rthOnly := name == "pd_high" || name == "pd_low"
+		rthOnly := (name == "pd_high" || name == "pd_low") && cfg.PDRangeMode != "24H"
 		calc.AddAnchor(start.AnchorPoint{Name: name, AnchorTime: anchorTime, RTHOnly: rthOnly})
 		added++
 	}
@@ -2751,6 +2757,11 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 	sessionMult := 1.0
 	if cfg.SessionWeightEnabled {
 		sessionBucket, sessionMult = cfg.SessionWeight(now)
+		// Crypto symbols trade 24/7 — enforce a minimum session weight floor
+		// so "outside" hours are reduced but not blocked.
+		if sessionMult <= 0 && strings.Contains(symbol, "/") {
+			sessionMult = 0.50
+		}
 		if sessionMult <= 0 {
 			avwapSt.emitEarlyGated(ctx, symbol, bar, "hours", fmt.Sprintf("session bucket %s (weight 0)", sessionBucket))
 			return avwapSt, nil, nil
