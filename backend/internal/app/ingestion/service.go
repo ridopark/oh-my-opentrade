@@ -61,6 +61,23 @@ func (s *Service) LastProcessedAt(feedType string) time.Time {
 	return time.Unix(0, nano)
 }
 
+// LastProcessedAtSymbol returns the most recent processing timestamp for
+// a specific symbol. The ingestion service does not maintain per-symbol
+// counters today (the hot path keeps one atomic per feed type to cap the
+// store cost at one write per bar), so this falls back to the feed-level
+// timestamp for the symbol's asset class. The PipelineHealthReporter port
+// contract allows this fallback; adding per-symbol tracking later is a
+// drop-in change behind the same method signature.
+func (s *Service) LastProcessedAtSymbol(symbol string) time.Time {
+	if symbol == "" {
+		return time.Time{}
+	}
+	if domain.Symbol(symbol).IsCryptoSymbol() {
+		return s.LastProcessedAt("crypto")
+	}
+	return s.LastProcessedAt("equity")
+}
+
 func (s *Service) recordPipelineLiveness(sym domain.Symbol) {
 	now := time.Now().UnixNano()
 	if sym.IsCryptoSymbol() {

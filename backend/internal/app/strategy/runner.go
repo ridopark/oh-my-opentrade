@@ -754,6 +754,17 @@ func (r *Runner) Start(ctx context.Context) error {
 	r.logger.Info("strategy runner subscribed to MarketBarSanitized events")
 	r.lastBarTime.Store(time.Now().UnixNano())
 	go r.barHealthCheck(ctx)
+	// Phase 3 sparkline sampler. Started here (rather than in NewRunner) so
+	// that backtest callers who construct a Runner but never call Start
+	// don't spin up an unused goroutine. Stop is chained off ctx so we
+	// don't need an explicit Runner.Stop() method.
+	if r.liveness != nil {
+		r.liveness.Start(ctx)
+		go func() {
+			<-ctx.Done()
+			r.liveness.Stop()
+		}()
+	}
 	return nil
 }
 

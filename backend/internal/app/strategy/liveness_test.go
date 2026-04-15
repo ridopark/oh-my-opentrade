@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -286,6 +287,171 @@ func TestLivenessTracker_EvaluationNoPublisher(t *testing.T) {
 	snap := tr.Snapshot("alpha")
 	if len(snap) != 1 || snap[0].EvalCount != 5 {
 		t.Fatalf("counters wrong after nil-publisher path: snap=%+v", snap)
+	}
+}
+
+// TestLivenessTracker_BarsPerMinute_Rotation drives rotateAll manually at
+// known wall-clock minute boundaries and verifies (a) each slot holds the
+// eval delta for its minute, (b) slots advance modulo 60, and (c) the
+// Snapshot's barsPerMinute array is ordered oldest->newest relative to the
+// most recent rotation.
+func TestLivenessTracker_BarsPerMinute_Rotation(t *testing.T) {
+	tr := NewLivenessTracker()
+	tr.Register("alpha", "AAPL")
+	entry := tr.entry("alpha", "AAPL")
+
+	// Minute 10: 3 evals.
+	t10 := time.Date(2026, 4, 15, 14, 10, 30, 0, time.UTC)
+	for i := 0; i < 3; i++ {
+		tr.RecordEval("alpha", "AAPL", t10, nil)
+	}
+	tr.rotateAll(t10)
+	if got := entry.barsPerMinute[10]; got != 3 {
+		t.Fatalf("slot 10 after first rotation=%d want 3", got)
+	}
+
+	// Minute 11: 5 more evals (cumulative evalCount=8, delta=5).
+	t11 := t10.Add(time.Minute)
+	for i := 0; i < 5; i++ {
+		tr.RecordEval("alpha", "AAPL", t11, nil)
+	}
+	tr.rotateAll(t11)
+	if got := entry.barsPerMinute[11]; got != 5 {
+		t.Fatalf("slot 11 after second rotation=%d want 5", got)
+	}
+	if got := entry.barsPerMinute[10]; got != 3 {
+		t.Fatalf("slot 10 must not be overwritten by slot-11 rotation, got %d", got)
+	}
+
+	// Minute 12: zero evals -> slot records 0 delta (important: sparkline
+	// draws "silent minute" differently from "tracker never ran").
+	t12 := t11.Add(time.Minute)
+	tr.rotateAll(t12)
+	if got := entry.barsPerMinute[12]; got != 0 {
+		t.Fatalf("slot 12 after idle rotation=%d want 0", got)
+	}
+
+	// Snapshot ordering: newest slot is index 59, oldest index 0. Slot 12
+	// was the most recent rotation, so out[59] == barsPerMinute[12] == 0,
+	// out[58] == slot 11 (5), out[57] == slot 10 (3).
+	snap := tr.Snapshot("alpha")
+	if len(snap) != 1 || len(snap[0].BarsPerMinute) != 60 {
+		t.Fatalf("snap barsPerMinute len=%d", len(snap[0].BarsPerMinute))
+	}
+	bpm := snap[0].BarsPerMinute
+	if bpm[59] != 0 {
+		t.Fatalf("newest slot (idx 59)=%d want 0", bpm[59])
+	}
+	if bpm[58] != 5 {
+		t.Fatalf("idx 58=%d want 5", bpm[58])
+	}
+	if bpm[57] != 3 {
+		t.Fatalf("idx 57=%d want 3", bpm[57])
+	}
+}
+
+// TestLivenessTracker_BarsPerMinute_WrapsHourBoundary checks the modulo-60
+// slot rollover: rotating at minute 59, then 0, must overwrite the oldest
+// slot, not index beyond the ring.
+func TestLivenessTracker_BarsPerMinute_WrapsHourBoundary(t *testing.T) {
+	tr := NewLivenessTracker()
+	tr.Register("alpha", "AAPL")
+	entry := tr.entry("alpha", "AAPL")
+
+	t59 := time.Date(2026, 4, 15, 14, 59, 0, 0, time.UTC)
+	for i := 0; i < 2; i++ {
+		tr.RecordEval("alpha", "AAPL", t59, nil)
+	}
+	tr.rotateAll(t59)
+	if entry.barsPerMinute[59] != 2 {
+		t.Fatalf("slot 59=%d want 2", entry.barsPerMinute[59])
+	}
+
+	t00 := time.Date(2026, 4, 15, 15, 0, 0, 0, time.UTC)
+	for i := 0; i < 7; i++ {
+		tr.RecordEval("alpha", "AAPL", t00, nil)
+	}
+	tr.rotateAll(t00)
+	if entry.barsPerMinute[0] != 7 {
+		t.Fatalf("slot 0 after wrap=%d want 7", entry.barsPerMinute[0])
+	}
+
+	// After the hour boundary rotation, newest=slot 0; oldest should be
+	// slot 1 (empty). Verify oldest->newest ordering still holds.
+	snap := tr.Snapshot("alpha")
+	bpm := snap[0].BarsPerMinute
+	if bpm[59] != 7 {
+		t.Fatalf("newest after wrap=%d want 7", bpm[59])
+	}
+	// slot 59 appears at index 58 (newest-1).
+	if bpm[58] != 2 {
+		t.Fatalf("prev minute slot expected at idx 58=%d want 2", bpm[58])
+	}
+}
+
+// TestLivenessTracker_BarsPerMinute_ConcurrentReaders ensures Snapshot does
+// not panic when rotateAll runs concurrently. Run with -race to catch
+// unsynchronized writes to the ring.
+func TestLivenessTracker_BarsPerMinute_ConcurrentReaders(t *testing.T) {
+	tr := NewLivenessTracker()
+	tr.Register("alpha", "AAPL")
+	tr.Register("alpha", "MSFT")
+
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		now := time.Now()
+		for !stop.Load() {
+			tr.RecordEval("alpha", "AAPL", now, nil)
+			tr.RecordEval("alpha", "MSFT", now, nil)
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		now := time.Now()
+		for !stop.Load() {
+			tr.rotateAll(now)
+			now = now.Add(time.Minute)
+		}
+	}()
+
+	deadline := time.Now().Add(150 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		snap := tr.Snapshot("alpha")
+		for _, row := range snap {
+			if len(row.BarsPerMinute) != 60 {
+				t.Fatalf("barsPerMinute len=%d during concurrent rotation", len(row.BarsPerMinute))
+			}
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
+}
+
+// TestLivenessTracker_StartStopLifecycle ensures Start/Stop don't panic on
+// repeat calls and Stop actually drains the sampler goroutine.
+func TestLivenessTracker_StartStopLifecycle(t *testing.T) {
+	tr := NewLivenessTracker()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tr.Start(ctx)
+	tr.Start(ctx) // second call no-ops via startOnce
+
+	done := make(chan struct{})
+	go func() {
+		tr.Stop()
+		tr.Stop() // idempotent
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Stop did not return within timeout — sampler leaked?")
 	}
 }
 

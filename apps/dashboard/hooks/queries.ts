@@ -15,6 +15,7 @@ import type {
   StrategyRow,
   SymbolAttribution,
   StrategyLiveness,
+  DataSourceHealth,
 } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -51,6 +52,7 @@ export const queryKeys = {
     ["strategies", "perf", id, "signals"] as const,
   strategyLiveness: (id: string) =>
     ["strategies", "perf", id, "liveness"] as const,
+  dataSourceHealth: ["health", "datasources"] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -86,6 +88,31 @@ export function useServiceHealth() {
     queryKey: queryKeys.health,
     queryFn: () => fetchJSON<HealthResponse>("/api/health/services"),
     refetchInterval: 10_000,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Data-source health (Phase 3) — lightweight strip in the dashboard header.
+// Gracefully returns null when the backend endpoint is missing so the header
+// can degrade to "unknown" grey dots instead of crashing the layout.
+// ---------------------------------------------------------------------------
+
+export function useDataSourceHealth() {
+  return useQuery({
+    queryKey: queryKeys.dataSourceHealth,
+    queryFn: async (): Promise<DataSourceHealth | null> => {
+      try {
+        const res = await fetch("/api/health/datasources");
+        if (!res.ok) return null;
+        return (await res.json()) as DataSourceHealth;
+      } catch {
+        return null;
+      }
+    },
+    refetchInterval: 10_000,
+    staleTime: 5_000,
+    // Keep retries low — a missing endpoint shouldn't spam the network log.
+    retry: 1,
   });
 }
 
