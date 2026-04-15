@@ -126,6 +126,17 @@ func (a *Adapter) GetQuote(ctx context.Context, symbol domain.Symbol) (bid float
 		return 0, 0, fmt.Errorf("ibkr: not connected")
 	}
 
+	// Warm streaming tickers (e.g. crypto) bypass the snapshot path entirely
+	// since the uscrypto farm idles between signals and the first snapshot
+	// regularly exceeds 5s. If a warm subscription exists, wait for the first
+	// tick (up to 15s) rather than issuing a fresh snapshot.
+	if a.hasWarmSubscription(symbol) {
+		if b, a2, ok := a.warmBidAskWait(symbol, 15*time.Second); ok {
+			return b, a2, nil
+		}
+		return 0, 0, fmt.Errorf("ibkr: warm quote for %s: no bid/ask after 15s", symbol)
+	}
+
 	contract := newContract(symbol)
 
 	type result struct {
