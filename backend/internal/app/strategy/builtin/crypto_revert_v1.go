@@ -172,6 +172,19 @@ type CryptoRevertState struct {
 	lastBearishSweepIdx int `json:"-"`
 	barIdx              int `json:"-"`
 
+	// Diagnostic counters — track drop-off across OnBar gates. These are
+	// emitted periodically via ctx.Logger() at low verbosity to diagnose
+	// backtest signal scarcity. They are NOT persisted (json:"-").
+	diagBarCount             int `json:"-"`
+	diagVWAPOKCount          int `json:"-"`
+	diagWarmupSkipCount      int `json:"-"`
+	diagEntryGatePassCount   int `json:"-"`
+	diagEmitCount            int `json:"-"`
+	diagPositionLockSkipCount int `json:"-"`
+	diagTFIRejectCount       int `json:"-"`
+	diagInducementRejectCount int `json:"-"`
+	diagDevZRejectCount      int `json:"-"`
+
 	Indicators start.IndicatorData `json:"-"`
 }
 
@@ -322,9 +335,57 @@ func (s *CryptoRevertStrategy) OnBar(ctx start.Context, symbol string, bar start
 	vwap, sigma, devZ, vwapOK := rst.lastVWAP, rst.lastSigma, rst.lastDevZ, rst.lastOK
 	tfi, _ := rst.tfi.Value()
 
+	rst.diagBarCount++
+	if vwapOK {
+		rst.diagVWAPOKCount++
+	}
+	// Periodic diagnostic log: every 5000 bars. Cheap at backtest scale,
+	// invisible at live scale (symbol emits ~288 bars/day on 5m → log fires
+	// every ~17 days). Also logs at bar #1 so we confirm OnBar is called at all.
+	if ctx != nil && (rst.diagBarCount == 1 || rst.diagBarCount%5000 == 0) {
+		if lg := ctx.Logger(); lg != nil {
+			lg.Info("crypto_revert diag",
+				"symbol", symbol,
+				"bar_count", rst.diagBarCount,
+				"vwap_ok_count", rst.diagVWAPOKCount,
+				"warmup_skip_count", rst.diagWarmupSkipCount,
+				"entry_gate_pass_count", rst.diagEntryGatePassCount,
+				"emit_count", rst.diagEmitCount,
+				"position_lock_skip_count", rst.diagPositionLockSkipCount,
+				"tfi_reject_count", rst.diagTFIRejectCount,
+				"inducement_reject_count", rst.diagInducementRejectCount,
+				"devz_reject_count", rst.diagDevZRejectCount,
+				"last_devz", devZ,
+				"last_tfi", tfi,
+				"pos_side", string(rst.PositionSide),
+				"bar_time", bar.Time.Format(time.RFC3339),
+			)
+		}
+	}
+
 	// Not enough data yet — let the system keep warming up.
 	if !vwapOK {
+		rst.diagWarmupSkipCount++
 		return rst, nil, nil
+	}
+
+	// Pending-entry timeout: in the backtest slice pipeline, OnBar for all
+	// bars runs to completion BEFORE any fills are published (fills replay
+	// in phase B). Without a timeout the very first emitted entry would
+	// latch PendingEntry and short-circuit every subsequent OnBar. Mirrors
+	// AVWAP's 5-minute recovery path. In live mode the fill confirmation
+	// arrives within seconds so the timeout never fires.
+	if rst.PendingEntry != "" && !rst.PendingEntryAt.IsZero() &&
+		now.Sub(rst.PendingEntryAt) > 5*time.Minute {
+		if ctx != nil && ctx.Logger() != nil {
+			ctx.Logger().Warn("crypto_revert: pending entry timed out, resetting",
+				"symbol", symbol,
+				"side", string(rst.PendingEntry),
+				"age", now.Sub(rst.PendingEntryAt).String(),
+			)
+		}
+		rst.PendingEntry = ""
+		rst.PendingEntryAt = time.Time{}
 	}
 
 	var signals []start.Signal
@@ -382,11 +443,13 @@ func (s *CryptoRevertStrategy) OnBar(ctx start.Context, symbol string, bar start
 	// ENTRY LOGIC (long only, phase 1)
 	// -----------------------------------------------------------------------
 	if rst.PositionSide != "" || rst.PendingEntry != "" {
+		rst.diagPositionLockSkipCount++
 		return rst, nil, nil
 	}
 
 	// Gate 1: price extended below VWAP.
 	if devZ > cfg.EntryDevZ {
+		rst.diagDevZRejectCount++
 		return rst, nil, nil
 	}
 
@@ -394,6 +457,7 @@ func (s *CryptoRevertStrategy) OnBar(ctx start.Context, symbol string, bar start
 	// despite the drop — tfi > TFIMin (positive).
 	if cfg.RequireTFI {
 		if tfi < cfg.TFIMin {
+			rst.diagTFIRejectCount++
 			return rst, nil, nil
 		}
 	}
@@ -406,13 +470,16 @@ func (s *CryptoRevertStrategy) OnBar(ctx start.Context, symbol string, bar start
 	_ = priorBullishSweepIdx // kept for symmetry / future telemetry
 	if cfg.RequireInducement {
 		if rst.lastBullishSweepIdx < 0 {
+			rst.diagInducementRejectCount++
 			return rst, nil, nil
 		}
 		age := rst.barIdx - rst.lastBullishSweepIdx
 		if age > cfg.InducementLookbackBars {
+			rst.diagInducementRejectCount++
 			return rst, nil, nil
 		}
 	}
+	rst.diagEntryGatePassCount++
 
 	// Phase-2 gates — flipped off by default.
 	if cfg.RequireXVFlow {
@@ -450,6 +517,7 @@ func (s *CryptoRevertStrategy) OnBar(ctx start.Context, symbol string, bar start
 		return rst, nil, err
 	}
 	signals = append(signals, sig)
+	rst.diagEmitCount++
 
 	rst.PendingEntry = start.SideBuy
 	rst.PendingEntryAt = now
