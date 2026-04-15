@@ -30,6 +30,7 @@ import {
 import type { StrategyInfo } from "@/lib/types";
 import { LivenessPill } from "@/components/strategy/LivenessPill";
 import { LivenessCounters } from "@/components/strategy/LivenessCounters";
+import { LastDecision } from "@/components/strategy/LastDecision";
 
 export default function StrategiesPage() {
   const {
@@ -286,13 +287,28 @@ export default function StrategiesPage() {
 }
 
 function StrategyCard({ strat }: { strat: StrategyInfo }) {
+  // List page stays polled: SSE merge is O(N cards) and Phase 2 deltas
+  // are tangential here — the header pill only needs 2s refresh fidelity.
   const { data: liveness } = useStrategyLiveness(strat.id);
-  const symbols = liveness?.symbols ?? [];
+  const symbols = useMemo(() => liveness?.symbols ?? [], [liveness]);
+  const lastDecision = useMemo(() => {
+    let best: { at: number; decision: typeof symbols[0]["lastDecision"] } | null = null;
+    for (const s of symbols) {
+      if (!s.lastDecision?.at) continue;
+      const ms = new Date(s.lastDecision.at).getTime();
+      if (!Number.isFinite(ms)) continue;
+      if (!best || ms > best.at) best = { at: ms, decision: s.lastDecision };
+    }
+    return best?.decision ?? null;
+  }, [symbols]);
   return (
     <Link href={`/strategies/${strat.id}`}>
       <Card className="hover:border-emerald-500/50 transition-colors cursor-pointer">
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-base font-semibold">{strat.name || strat.id}</CardTitle>
+        <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-2">
+          <div className="flex flex-col gap-1">
+            <CardTitle className="text-base font-semibold">{strat.name || strat.id}</CardTitle>
+            <LastDecision decision={lastDecision} compact />
+          </div>
           <div className="flex items-center gap-2">
             <LivenessPill symbols={symbols} />
             <TrendingUp className="h-4 w-4 text-muted-foreground" />
