@@ -25,8 +25,11 @@ import {
   useStrategyList,
   usePromoteInstance,
   useLifecycleAction,
+  useStrategyLiveness,
 } from "@/hooks/queries";
 import type { StrategyInfo } from "@/lib/types";
+import { LivenessPill } from "@/components/strategy/LivenessPill";
+import { LivenessCounters } from "@/components/strategy/LivenessCounters";
 
 export default function StrategiesPage() {
   const {
@@ -159,29 +162,7 @@ export default function StrategiesPage() {
       {groupedStrategies.length > 0 && (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {groupedStrategies.map((strat: StrategyInfo) => (
-            <Link key={strat.id} href={`/strategies/${strat.id}`}>
-              <Card className="hover:border-emerald-500/50 transition-colors cursor-pointer">
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-base font-semibold">{strat.name || strat.id}</CardTitle>
-                  <TrendingUp className="h-4 w-4 text-muted-foreground" />
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center justify-between">
-                    <div className="space-y-1">
-                      <p className="text-xs text-muted-foreground">
-                        v{strat.version} · Priority {strat.priority}
-                      </p>
-                      <p className="text-xs font-mono text-muted-foreground">
-                        {strat.symbols.join(", ")}
-                      </p>
-                    </div>
-                    <Badge variant={strat.active ? "outline" : "secondary"} className={strat.active ? "border-emerald-500 text-emerald-500" : ""}>
-                      {strat.active ? "Active" : "Inactive"}
-                    </Badge>
-                  </div>
-                </CardContent>
-              </Card>
-            </Link>
+            <StrategyCard key={strat.id} strat={strat} />
           ))}
         </div>
       )}
@@ -301,5 +282,42 @@ export default function StrategiesPage() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function StrategyCard({ strat }: { strat: StrategyInfo }) {
+  const { data: liveness } = useStrategyLiveness(strat.id);
+  const symbols = liveness?.symbols ?? [];
+  return (
+    <Link href={`/strategies/${strat.id}`}>
+      <Card className="hover:border-emerald-500/50 transition-colors cursor-pointer">
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardTitle className="text-base font-semibold">{strat.name || strat.id}</CardTitle>
+          <div className="flex items-center gap-2">
+            <LivenessPill symbols={symbols} />
+            <TrendingUp className="h-4 w-4 text-muted-foreground" />
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="space-y-1">
+              <p className="text-xs text-muted-foreground">
+                v{strat.version} · Priority {strat.priority}
+              </p>
+              <p className="text-xs font-mono text-muted-foreground">
+                {strat.symbols.join(", ")}
+              </p>
+            </div>
+            <Badge
+              variant={strat.active ? "outline" : "secondary"}
+              className={strat.active ? "border-emerald-500 text-emerald-500" : ""}
+            >
+              {strat.active ? "Active" : "Inactive"}
+            </Badge>
+          </div>
+          <LivenessCounters symbols={symbols} />
+        </CardContent>
+      </Card>
+    </Link>
   );
 }
