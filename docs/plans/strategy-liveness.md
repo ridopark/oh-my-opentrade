@@ -1,5 +1,7 @@
 # Strategy Liveness Feature Plan
 
+**Status: SHIPPED (2026-04-15).** Phases 1–3 merged to `main`, plus HOLD-reason plumbing on AVWAP + MACD and `SetDisableLiveness(true)` wired at all four backtest entry points (`backtest.NewRunner`, `BuildStrategyShard` sharded path, and both `omo-replay` paths).
+
 ## 0. Summary
 
 Introduce per-strategy liveness telemetry — last tick/eval/signal timestamps, counters, rolling bars-per-minute, last decision reason, plus a global data-source header. Phased so Phase 1 (polled HTTP) unblocks UX, Phase 2 (SSE push) adds real-time feel, Phase 3 (sparkline + feed + header) fills in richness.
