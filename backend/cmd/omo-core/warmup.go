@@ -596,6 +596,17 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 	}()
 	log.Info().Msg("ready — WebSocket streaming active")
 
+	// Open persistent streaming tickers for crypto so slippage-guard GetQuote
+	// calls read from a warm ticker instead of hitting an idle uscrypto farm
+	// and timing out on Snapshot. See ibkr/warm_quote.go.
+	if len(syms.crypto) > 0 {
+		if err := infra.ibkrBroker.WarmMktData(syms.crypto); err != nil {
+			log.Warn().Err(err).Msg("WarmMktData for crypto failed; slippage guard will fall back to Snapshot")
+		} else {
+			log.Info().Int("symbols", len(syms.crypto)).Msg("opened warm IBKR market-data subscriptions for crypto")
+		}
+	}
+
 	// Start IBKR auction data streaming for power-hour strategies (equity only).
 	if infra.streamingSource == "ibkr" && len(syms.equity) > 0 {
 		go func() {

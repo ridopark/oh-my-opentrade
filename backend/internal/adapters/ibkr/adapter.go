@@ -49,6 +49,12 @@ type Adapter struct {
 	orderOut    chan<- ports.OrderUpdate // set by SubscribeOrderUpdates, nil otherwise
 	orderCtx    context.Context         // scopes trade watcher goroutines
 	emittedDone sync.Map                // map[int64]struct{} — dedup terminal emissions
+
+	// Persistent streaming tickers used by GetQuote to avoid the 5s snapshot
+	// timeout when IBKR's uscrypto farm idles between infrequent crypto signals.
+	warmMu            sync.RWMutex
+	warmQuotes        map[domain.Symbol]*warmQuote
+	warmReconnectOnce sync.Once
 }
 
 func NewAdapter(cfg config.IBKRConfig, log zerolog.Logger) (*Adapter, error) {
