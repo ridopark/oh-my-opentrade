@@ -316,3 +316,63 @@ func TestCryptoStreamBars_RESTPollerRestartsOnFailedReconnect(t *testing.T) {
 		t.Fatal("StreamBars did not return after cancel")
 	}
 }
+
+func TestMapAlpacaTakerSide(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"buy_aggressor", "B", "buy"},
+		{"sell_aggressor", "S", "sell"},
+		{"explicit_unknown", "-", ""},
+		{"empty", "", ""},
+		{"unrecognized", "X", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mapAlpacaTakerSide(tc.in)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestCryptoTradeMappingPopulatesTakerSide(t *testing.T) {
+	// Verify the SDK->domain mapping preserves taker side. Alpaca emits
+	// "B"/"S"/"-" on the "tks" field; domain expects "buy"/"sell"/"".
+	ts := time.Date(2026, 4, 15, 13, 30, 0, 0, time.UTC)
+	cases := []struct {
+		name     string
+		tks      string
+		wantSide string
+	}{
+		{"buy", "B", "buy"},
+		{"sell", "S", "sell"},
+		{"unknown_dash", "-", ""},
+		{"unknown_empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ct := alpacastream.CryptoTrade{
+				Symbol:    "BTC/USD",
+				Timestamp: ts,
+				Price:     60000.0,
+				Size:      0.25,
+				TakerSide: tc.tks,
+			}
+			sym, err := domain.NewSymbol(ct.Symbol)
+			require.NoError(t, err)
+			sym = sym.ToSlashFormat()
+			mt := domain.MarketTrade{
+				Time:      ct.Timestamp,
+				Symbol:    sym,
+				Price:     ct.Price,
+				Size:      ct.Size,
+				TakerSide: mapAlpacaTakerSide(ct.TakerSide),
+			}
+			assert.Equal(t, tc.wantSide, mt.TakerSide)
+			assert.Equal(t, ct.Price, mt.Price)
+			assert.Equal(t, ct.Size, mt.Size)
+		})
+	}
+}
