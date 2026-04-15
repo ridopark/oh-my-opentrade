@@ -240,6 +240,127 @@ func TradingDaysBetween(from, to time.Time) int {
 	return count
 }
 
+// ExpectedBarTimestamps returns the canonical sequence of bar-close timestamps
+// expected for sym at tf within [from, to). Equity excludes weekends, NYSE
+// holidays and non-RTH minutes; early-close days end at 13:00 ET. Crypto is
+// 24/7. For tf="1d", returns one timestamp per NYSE trading day (equity)
+// anchored to 16:00 ET, or per calendar day (crypto) anchored to 00:00 UTC.
+// Returns nil for unsupported tf or when from is not strictly before to.
+func ExpectedBarTimestamps(sym Symbol, tf Timeframe, from, to time.Time) []time.Time {
+	if !from.Before(to) {
+		return nil
+	}
+	stepSec, ok := timeframeStepSeconds(tf)
+	if !ok && tf != "1d" {
+		return nil
+	}
+
+	if sym.IsCryptoSymbol() {
+		return cryptoExpectedBars(tf, stepSec, from, to)
+	}
+	return equityExpectedBars(tf, stepSec, from, to)
+}
+
+// timeframeStepSeconds returns the intra-session step size for an intraday tf.
+// 1d is handled separately because daily bars step by trading days, not seconds.
+func timeframeStepSeconds(tf Timeframe) (int, bool) {
+	switch tf {
+	case "1m":
+		return 60, true
+	case "5m":
+		return 300, true
+	case "15m":
+		return 900, true
+	case "1h":
+		return 3600, true
+	}
+	return 0, false
+}
+
+func cryptoExpectedBars(tf Timeframe, stepSec int, from, to time.Time) []time.Time {
+	if tf == "1d" {
+		fromUTC := from.UTC()
+		start := time.Date(fromUTC.Year(), fromUTC.Month(), fromUTC.Day(), 0, 0, 0, 0, time.UTC)
+		if start.Before(fromUTC) {
+			start = start.AddDate(0, 0, 1)
+		}
+		days := int(to.UTC().Sub(start)/(24*time.Hour)) + 2
+		if days < 0 {
+			days = 0
+		}
+		out := make([]time.Time, 0, days)
+		for t := start; t.Before(to); t = t.AddDate(0, 0, 1) {
+			out = append(out, t)
+		}
+		return out
+	}
+	step := time.Duration(stepSec) * time.Second
+	fromUTC := from.UTC()
+	startUnix := ((fromUTC.Unix() + int64(stepSec) - 1) / int64(stepSec)) * int64(stepSec)
+	start := time.Unix(startUnix, 0).UTC()
+	count := int(to.Sub(start)/step) + 1
+	if count < 0 {
+		count = 0
+	}
+	out := make([]time.Time, 0, count)
+	for t := start; t.Before(to); t = t.Add(step) {
+		out = append(out, t)
+	}
+	return out
+}
+
+func equityExpectedBars(tf Timeframe, stepSec int, from, to time.Time) []time.Time {
+	loc := NYLocation()
+	fromET := from.In(loc)
+	toET := to.In(loc)
+
+	day := time.Date(fromET.Year(), fromET.Month(), fromET.Day(), 0, 0, 0, 0, loc)
+	endDay := time.Date(toET.Year(), toET.Month(), toET.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, 1)
+
+	approxDays := int(endDay.Sub(day)/(24*time.Hour)) + 1
+	var perDay int
+	switch tf {
+	case "1m":
+		perDay = 390
+	case "5m":
+		perDay = 78
+	case "15m":
+		perDay = 26
+	case "1h":
+		perDay = 7
+	case "1d":
+		perDay = 1
+	}
+	out := make([]time.Time, 0, approxDays*perDay)
+
+	for d := day; d.Before(endDay); d = d.AddDate(0, 0, 1) {
+		if !isNYSETradingDay(d) {
+			continue
+		}
+		closeH, closeM := NYSECloseTime(d)
+		if tf == "1d" {
+			ts := time.Date(d.Year(), d.Month(), d.Day(), closeH, closeM, 0, 0, loc)
+			if !ts.Before(from) && ts.Before(to) {
+				out = append(out, ts)
+			}
+			continue
+		}
+		open := time.Date(d.Year(), d.Month(), d.Day(), 9, 30, 0, 0, loc)
+		closeT := time.Date(d.Year(), d.Month(), d.Day(), closeH, closeM, 0, 0, loc)
+		step := time.Duration(stepSec) * time.Second
+		// Bars are timestamped at their open. The last bar of the session
+		// opens at closeT-step (its close coincides with the session close).
+		last := closeT.Add(-step)
+		for t := open; !t.After(last); t = t.Add(step) {
+			if t.Before(from) || !t.Before(to) {
+				continue
+			}
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // CalendarFor returns the appropriate TradingCalendar for the given asset class.
 func CalendarFor(ac AssetClass) TradingCalendar {
 	switch ac {

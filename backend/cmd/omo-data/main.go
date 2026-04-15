@@ -23,10 +23,12 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/yfinance"
 	"github.com/oh-my-opentrade/backend/internal/app/datarefresh"
 	"github.com/oh-my-opentrade/backend/internal/app/earnings"
+	"github.com/oh-my-opentrade/backend/internal/app/gapdetect"
 	"github.com/oh-my-opentrade/backend/internal/app/ivcollector"
 	"github.com/oh-my-opentrade/backend/internal/app/optionsimport"
 	"github.com/oh-my-opentrade/backend/internal/app/whale13f"
 	"github.com/oh-my-opentrade/backend/internal/config"
+	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/logger"
 	"github.com/rs/zerolog"
 )
@@ -267,6 +269,17 @@ func main() {
 	if err := dolthubSvc.Start(ctx); err != nil {
 		log.Warn().Err(err).Msg("DoltHub options service failed to start")
 	}
+
+	gapDetector := timescaledb.NewGapDetector(repo)
+	gapSvc := gapdetect.NewService(gapDetector, repo, log.With().Str("component", "gapdetect").Logger(), nil)
+	gapSymbols := make([]domain.Symbol, 0, len(symbols))
+	for _, s := range symbols {
+		gapSymbols = append(gapSymbols, domain.Symbol(s))
+	}
+	go func() {
+		n := gapSvc.RunOnce(ctx, gapSymbols)
+		log.Info().Int("gap_ranges", n).Int("symbols", len(gapSymbols)).Msg("gap detector startup scan complete")
+	}()
 
 	log.Info().Int("symbols", len(symbols)).Msg("omo-data running")
 	<-ctx.Done()
