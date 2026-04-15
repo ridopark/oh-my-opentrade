@@ -15,12 +15,14 @@ import {
   Menu,
   X,
   Settings,
+  Radio,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
 
 const navItems = [
+  { href: "/live", label: "Live", icon: Radio },
   { href: "/signals", label: "Signals", icon: Activity },
   { href: "/portfolio", label: "Portfolio", icon: Wallet },
   { href: "/services", label: "Services", icon: HeartPulse },
