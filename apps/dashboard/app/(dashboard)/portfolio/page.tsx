@@ -29,6 +29,7 @@ import {
   ChevronDown,
   ChevronRight,
 } from "lucide-react";
+import { EquityCurveChart, type EquityPoint } from "@/components/charts/equity-curve-chart";
 
 interface Position {
   symbol: string;
@@ -123,6 +124,29 @@ export default function PortfolioPage() {
   const [confirmCloseAll, setConfirmCloseAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [equity, setEquity] = useState<EquityPoint[] | undefined>(undefined);
+  const [equityRange, setEquityRange] = useState<"1d" | "7d" | "30d" | "90d">("30d");
+  const [equityLoading, setEquityLoading] = useState(true);
+
+  useEffect(() => {
+    let canceled = false;
+    setEquityLoading(true);
+    fetch(`/api/performance/dashboard?range=${equityRange}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (canceled) return;
+        setEquity(Array.isArray(data?.equity) ? data.equity : []);
+      })
+      .catch(() => {
+        if (!canceled) setEquity([]);
+      })
+      .finally(() => {
+        if (!canceled) setEquityLoading(false);
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [equityRange]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -352,6 +376,23 @@ export default function PortfolioPage() {
             </p>
           </CardContent>
         </Card>
+      </div>
+
+      {/* Equity curve */}
+      <div className="grid grid-cols-1 gap-4">
+        <div className="flex items-center justify-end gap-1">
+          {(["1d", "7d", "30d", "90d"] as const).map((r) => (
+            <Button
+              key={r}
+              size="sm"
+              variant={equityRange === r ? "default" : "outline"}
+              onClick={() => setEquityRange(r)}
+            >
+              {r}
+            </Button>
+          ))}
+        </div>
+        <EquityCurveChart data={equity} loading={equityLoading} />
       </div>
 
       {/* Positions Table — grouped by underlying */}

@@ -79,7 +79,6 @@ type dailyAccum struct {
 	envMode     domain.EnvMode
 	realizedPnL float64
 	tradeCount  int
-	maxDrawdown float64
 }
 
 // stratDayAccum accumulates per-strategy realized P&L for a single day.
@@ -308,20 +307,15 @@ func (lw *LedgerWriter) processFill(ctx context.Context, tenantID string, envMod
 	accum.realizedPnL += fillPnL
 	accum.tradeCount++
 
-	currentEquity := lw.accountEquity + accum.realizedPnL
-	if currentEquity < lw.peakEquity {
-		drawdown := (lw.peakEquity - currentEquity) / lw.peakEquity
-		if drawdown > accum.maxDrawdown {
-			accum.maxDrawdown = drawdown
-		}
-	}
-
+	// Attribution-only: daily_pnl is OMO's internal realized P&L tally.
+	// Broker-authoritative equity is sampled and written to equity_curve by
+	// the orchestrator's equity refresh loop — do not compute equity here
+	// (doing so double-counted the day's P&L, once via broker NetLiq and
+	// once via this accumulator).
 	if persist {
 		if lw.metrics != nil {
 			lw.metrics.PnL.RealizedUSD.Set(accum.realizedPnL)
 			lw.metrics.PnL.DayUSD.Set(accum.realizedPnL)
-			lw.metrics.PnL.DayDDUSD.Set(accum.maxDrawdown * lw.peakEquity)
-			lw.metrics.PnL.EquityUSD.Set(currentEquity)
 		}
 
 		pnl := domain.DailyPnL{
@@ -330,22 +324,9 @@ func (lw *LedgerWriter) processFill(ctx context.Context, tenantID string, envMod
 			EnvMode:     accum.envMode,
 			RealizedPnL: accum.realizedPnL,
 			TradeCount:  accum.tradeCount,
-			MaxDrawdown: accum.maxDrawdown,
 		}
 		if err := lw.pnlRepo.UpsertDailyPnL(ctx, pnl); err != nil {
 			lw.log.Error().Err(err).Str("symbol", symbol).Msg("ledger writer: failed to upsert daily P&L")
-		}
-
-		pt := domain.EquityPoint{
-			Time:     now,
-			TenantID: tenantID,
-			EnvMode:  envMode,
-			Equity:   currentEquity,
-			Cash:     lw.accountEquity,
-			Drawdown: accum.maxDrawdown,
-		}
-		if err := lw.pnlRepo.SaveEquityPoint(ctx, pt); err != nil {
-			lw.log.Error().Err(err).Str("symbol", symbol).Msg("ledger writer: failed to save equity point")
 		}
 	}
 
