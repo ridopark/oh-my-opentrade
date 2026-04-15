@@ -81,7 +81,8 @@ EOF
 # Must run from inside a git repo — exits with error otherwise.
 find_primary() {
     git worktree list --porcelain 2>/dev/null \
-        | awk '/^worktree / { print $2; exit }'
+        | awk '/^worktree / { print $2; exit }' \
+        || true
 }
 
 # Split args into (cc args, -- separator, claude passthrough args).

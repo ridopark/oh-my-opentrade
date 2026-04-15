@@ -25,7 +25,7 @@ warn()  { echo -e "${YELLOW}[start]${NC} $*"; }
 check_worktree_safety() {
     local primary
     primary=$(git -C "$ROOT_DIR" worktree list --porcelain 2>/dev/null \
-              | awk '/^worktree / { print $2; exit }')
+              | awk '/^worktree / { print $2; exit }' || true)
     if [[ -z "$primary" || "$ROOT_DIR" == "$primary" ]]; then
         return  # primary worktree or no worktree awareness — safe
     fi
@@ -60,7 +60,7 @@ ensure_env() {
     fi
     local primary
     primary=$(git -C "$ROOT_DIR" worktree list --porcelain 2>/dev/null \
-              | awk '/^worktree / { print $2; exit }')
+              | awk '/^worktree / { print $2; exit }' || true)
     if [[ -z "$primary" || "$primary" == "$ROOT_DIR" ]]; then
         warn "no .env found and no primary worktree detected — cannot bootstrap environment"
         exit 1
