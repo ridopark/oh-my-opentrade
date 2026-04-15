@@ -515,6 +515,13 @@ type MarketTrade struct {
 	Symbol Symbol    `json:"symbol"`
 	Price  float64   `json:"price"`
 	Size   float64   `json:"size"`
+	// TakerSide indicates which side was the aggressor in the trade.
+	// Values: "buy" (taker bought, aggressive buyer lifted the offer),
+	//         "sell" (taker sold, aggressive seller hit the bid),
+	//         ""    (unknown / not provided by the feed).
+	// Required for microstructure gating (e.g. Trade-Flow Imbalance / TFI)
+	// on crypto strategies where venues publish taker side explicitly.
+	TakerSide string `json:"taker_side,omitempty"`
 }
 
 // AuctionImbalanceSnapshot represents NYSE closing auction imbalance data from IBKR tick type 225.
