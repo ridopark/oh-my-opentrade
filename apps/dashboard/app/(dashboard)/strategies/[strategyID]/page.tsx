@@ -30,6 +30,10 @@ import {
   useStrategySignals,
   useAllStrategiesDNA,
 } from "@/hooks/queries";
+import { useStrategyLivenessLive } from "@/hooks/use-strategy-evaluation-stream";
+import { LivenessPill } from "@/components/strategy/LivenessPill";
+import { LivenessCounters } from "@/components/strategy/LivenessCounters";
+import { LastDecision } from "@/components/strategy/LastDecision";
 import {
   Card,
   CardContent,
@@ -98,7 +102,26 @@ export default function StrategyDetailPage({
     isFetchingNextPage,
   } = useStrategySignals(strategyID);
 
-  // 4. Strategy DNA
+  // 4. Liveness (polled + SSE merge — Phase 2)
+  const { data: livenessData } = useStrategyLivenessLive(strategyID);
+  const livenessSymbols = useMemo(
+    () => livenessData?.symbols ?? [],
+    [livenessData],
+  );
+
+  // Card-level "last decision" = the most recently evaluated symbol's decision.
+  const cardLastDecision = useMemo(() => {
+    let best: { at: number; decision: typeof livenessSymbols[0]["lastDecision"] } | null = null;
+    for (const s of livenessSymbols) {
+      if (!s.lastDecision?.at) continue;
+      const ms = new Date(s.lastDecision.at).getTime();
+      if (!Number.isFinite(ms)) continue;
+      if (!best || ms > best.at) best = { at: ms, decision: s.lastDecision };
+    }
+    return best?.decision ?? null;
+  }, [livenessSymbols]);
+
+  // 5. Strategy DNA
   const { data: allDNAs } = useAllStrategiesDNA();
   const strategyDNA = useMemo(
     () => allDNAs?.find((d) => d.id === strategyID) ?? null,
@@ -249,6 +272,71 @@ export default function StrategyDetailPage({
           )}
         </div>
       </div>
+
+      {/* Liveness overview — always visible, above tab content */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+          <div className="flex flex-col gap-1">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Zap className="h-4 w-4 text-amber-500" />
+              Liveness
+              <LivenessPill symbols={livenessSymbols} className="ml-2" />
+            </CardTitle>
+            <LastDecision decision={cardLastDecision} />
+          </div>
+          <LivenessCounters symbols={livenessSymbols} />
+        </CardHeader>
+        <CardContent>
+          {livenessSymbols.length === 0 ? (
+            <div className="text-xs text-muted-foreground">
+              No liveness data available yet.
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Symbol</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Ticks</TableHead>
+                  <TableHead className="text-right">Bars</TableHead>
+                  <TableHead className="text-right">Signals</TableHead>
+                  <TableHead className="text-right">Fills</TableHead>
+                  <TableHead>Last Decision</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {livenessSymbols.map((s) => (
+                  <TableRow key={s.symbol}>
+                    <TableCell className="font-medium">{s.symbol}</TableCell>
+                    <TableCell>
+                      <LivenessPill
+                        lastTickAt={s.lastTickAt}
+                        feedHealthy={s.feedHealthy}
+                        pulseAt={s.lastEvalAt}
+                      />
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">
+                      {s.evalCount.toLocaleString()}
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">
+                      {s.barsToday.toLocaleString()}
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">
+                      {s.signalCount.toLocaleString()}
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">
+                      {s.fillCount.toLocaleString()}
+                    </TableCell>
+                    <TableCell className="max-w-[300px] truncate">
+                      <LastDecision decision={s.lastDecision} />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
 
       {activeTab === "performance" && perfLoading && (
         <div className="flex h-96 items-center justify-center">

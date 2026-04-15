@@ -41,6 +41,7 @@ var eventTypes = []domain.EventType{
 	domain.EventCircuitBreakerTripped,
 	domain.EventStrategySignalLifecycle,
 	domain.EventStrategyStateSnapshot,
+	domain.EventStrategyEvaluation,
 	domain.EventFormingBar,
 	domain.EventEnrichedBar,
 	domain.EventEntryGated,

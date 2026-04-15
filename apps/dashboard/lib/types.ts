@@ -26,7 +26,8 @@ export type EventType =
   | "CircuitBreakerTripped"
   | "FormingBar"
   | "EntryGated"
-  | "ORBPhaseUpdate";
+  | "ORBPhaseUpdate"
+  | "StrategyEvaluation";
 
 // Base domain event envelope
 export interface DomainEvent<T = unknown> {
@@ -461,4 +462,49 @@ export interface ORBPhaseUpdatePayload {
   confidence: number;
   fvg: ORBPhaseFVG;
   bar: BarSnapshot;
+}
+
+// ---------------------------------------------------------------------------
+// Strategy Liveness (Phase 1 — polled)
+// Backend: GET /api/strategies/{id}/liveness
+// ---------------------------------------------------------------------------
+
+export type DecisionOutcome = "HOLD" | "ENTRY" | "EXIT" | "SUPPRESSED" | string;
+
+export interface DecisionReason {
+  at: string; // RFC3339
+  outcome: DecisionOutcome;
+  summary: string;
+  tags?: Record<string, string>;
+}
+
+export interface SymbolLiveness {
+  symbol: string;
+  lastTickAt: string | null; // RFC3339 or null if never
+  lastEvalAt: string | null;
+  lastSignalAt: string | null;
+  evalCount: number;
+  barsToday: number;
+  signalCount: number;
+  fillCount: number;
+  feedType: string;
+  feedLastProcessedAt: string | null;
+  feedHealthy: boolean;
+  lastDecision?: DecisionReason | null;
+}
+
+export interface StrategyLiveness {
+  strategy: string;
+  symbols: SymbolLiveness[];
+  asOf: string; // RFC3339
+}
+
+// SSE payload emitted by backend LivenessTracker.RecordEval (Phase 2)
+export interface StrategyEvaluationPayload {
+  strategy: string;
+  symbol: string;
+  at: string; // RFC3339
+  evalCount: number;
+  barsToday: number;
+  lastDecision?: DecisionReason | null;
 }
