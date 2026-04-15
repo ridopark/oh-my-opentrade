@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"sort"
 	"strconv"
 	"sync"
@@ -76,6 +77,20 @@ type livenessEntry struct {
 	// first RecordEval after registration fires immediately. Subsequent
 	// publishes are throttled to at most one per `evaluationEmitMinGap`.
 	lastEmitNano atomic.Int64
+
+	// Phase 3 sparkline state. barsPerMinute is a 60-slot ring buffer
+	// indexed by minute-of-hour. A background goroutine owned by the
+	// tracker samples evalCount every 60s, computes the delta against
+	// lastSnapshotEvalCount, stores it into the current slot, and advances
+	// the index. Keeping the sampler off the hot path means handleBar
+	// still pays only the counter atomic we already had — no extra
+	// writes per bar. barsMu guards slot writes against concurrent
+	// snapshotBarsPerMinute reads so neither side observes a half-rotated
+	// ring.
+	barsMu                 sync.RWMutex
+	barsPerMinute          [60]uint32
+	lastRotationNano       atomic.Int64
+	lastSnapshotEvalCount  atomic.Uint64
 }
 
 // evaluationEmitMinGap is the minimum gap between two StrategyEvaluation
@@ -112,7 +127,23 @@ type LivenessTracker struct {
 	// from RecordEval. Set via SetPublisher; nil tracker / nil publisher
 	// keeps RecordEval pure-atomic (used in backtest mode).
 	publisher EvaluationPublisher
+
+	// Phase 3 sparkline sampler lifecycle. startOnce/stopOnce make
+	// Start/Stop idempotent — the Runner calls Stop only on shutdown but
+	// callers re-mounting the tracker (tests) shouldn't panic. stopCh is
+	// closed by Stop to release the goroutine; wg lets Stop block until
+	// the sampler has returned so tests don't race the goroutine.
+	startOnce sync.Once
+	stopOnce  sync.Once
+	stopCh    chan struct{}
+	wg        sync.WaitGroup
 }
+
+// rotationInterval is how often the sparkline sampler rotates the 60-slot
+// ring. One minute matches the "bars per minute" semantic — samples aligned
+// to wall-clock minutes would add complexity (clock drift, DST) without
+// changing the UX of a rolling 60-minute activity trail.
+const rotationInterval = time.Minute
 
 // NewLivenessTracker returns an empty tracker. Call Register for each
 // (strategyID, symbol) you intend to observe so the hot-path avoids
@@ -122,7 +153,121 @@ func NewLivenessTracker() *LivenessTracker {
 		entries:    make(map[livenessKey]*livenessEntry),
 		byStrategy: make(map[string][]*livenessEntry),
 		symbolFor:  make(map[*livenessEntry]string),
+		stopCh:     make(chan struct{}),
 	}
+}
+
+// Start launches the background sparkline sampler. Safe to call once per
+// tracker; subsequent calls no-op via startOnce. The Runner invokes Start
+// from Start(ctx); the sampler terminates when either ctx is canceled or
+// Stop is called, whichever comes first.
+func (t *LivenessTracker) Start(ctx context.Context) {
+	if t == nil {
+		return
+	}
+	t.startOnce.Do(func() {
+		t.wg.Add(1)
+		go t.runSampler(ctx)
+	})
+}
+
+// Stop halts the background sparkline sampler and blocks until it returns.
+// Idempotent — multiple callers may invoke Stop (e.g. Runner shutdown plus
+// test teardown) without panicking on a double-close of stopCh.
+func (t *LivenessTracker) Stop() {
+	if t == nil {
+		return
+	}
+	t.stopOnce.Do(func() {
+		close(t.stopCh)
+	})
+	t.wg.Wait()
+}
+
+// runSampler periodically rotates the barsPerMinute ring for every tracked
+// entry. Rotation is O(entries) and runs once per rotationInterval, so the
+// cost stays constant regardless of bar throughput.
+func (t *LivenessTracker) runSampler(ctx context.Context) {
+	defer t.wg.Done()
+	ticker := time.NewTicker(rotationInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.stopCh:
+			return
+		case now := <-ticker.C:
+			t.rotateAll(now)
+		}
+	}
+}
+
+// rotateAll samples every entry's evalCount delta into the current minute
+// slot and stores the rotation timestamp. Exposed for tests so they can
+// drive rotations deterministically instead of waiting on wall-clock ticks.
+func (t *LivenessTracker) rotateAll(now time.Time) {
+	t.mu.RLock()
+	entries := make([]*livenessEntry, 0, len(t.entries))
+	for _, e := range t.entries {
+		entries = append(entries, e)
+	}
+	t.mu.RUnlock()
+	for _, e := range entries {
+		e.rotate(now)
+	}
+}
+
+// rotate samples this entry's evalCount delta into the slot for `now` and
+// updates lastSnapshotEvalCount + lastRotationNano. Slot index is the
+// minute-of-hour, so the 60 slots form a rolling one-hour window.
+func (e *livenessEntry) rotate(now time.Time) {
+	current := e.evalCount.Load()
+	prev := e.lastSnapshotEvalCount.Load()
+	var delta uint32
+	if current >= prev {
+		// Clamp ridiculously large deltas to uint32 max — we never expect
+		// > 4B evals in one minute per (strategy, symbol), but the cast is
+		// a cheap defense against a counter that was already in overflow.
+		d := current - prev
+		if d > uint64(^uint32(0)) {
+			delta = ^uint32(0)
+		} else {
+			delta = uint32(d)
+		}
+	}
+	slot := now.Minute() % 60
+	e.barsMu.Lock()
+	e.barsPerMinute[slot] = delta
+	e.barsMu.Unlock()
+	e.lastSnapshotEvalCount.Store(current)
+	e.lastRotationNano.Store(now.UnixNano())
+}
+
+// snapshotBarsPerMinute returns the ring laid out oldest->newest relative
+// to the last rotation. The slot for `last.Minute()` is the newest; walking
+// backwards modulo 60 yields the oldest. When no rotation has happened yet
+// the raw ring (all zeros) is returned, which is indistinguishable from
+// "sampled but saw zero bars" — acceptable for a sparkline.
+func (e *livenessEntry) snapshotBarsPerMinute() []uint32 {
+	out := make([]uint32, 60)
+	e.barsMu.RLock()
+	defer e.barsMu.RUnlock()
+	lastNano := e.lastRotationNano.Load()
+	if lastNano == 0 {
+		// Ring untouched; return zeros in natural slot order. The UI
+		// treats an all-zero ring as "no activity yet" regardless of
+		// orientation.
+		copy(out, e.barsPerMinute[:])
+		return out
+	}
+	newest := time.Unix(0, lastNano).Minute() % 60
+	// out[59] = newest slot, out[0] = oldest (newest+1 mod 60).
+	for i := 0; i < 60; i++ {
+		src := (newest + 1 + i) % 60
+		out[i] = e.barsPerMinute[src]
+	}
+	return out
 }
 
 // SetPublisher installs the optional EvaluationPublisher. Safe to call once
@@ -325,15 +470,16 @@ func (t *LivenessTracker) Snapshot(strategyID string) []domain.SymbolLiveness {
 	out := make([]domain.SymbolLiveness, 0, len(snap))
 	for _, p := range snap {
 		out = append(out, domain.SymbolLiveness{
-			Symbol:       p.sym,
-			LastTickAt:   nanoToTime(p.e.lastTickAtNano.Load()),
-			LastEvalAt:   nanoToTime(p.e.lastEvalAtNano.Load()),
-			LastSignalAt: nanoToTime(p.e.lastSignalAtNano.Load()),
-			EvalCount:    p.e.evalCount.Load(),
-			BarsToday:    p.e.barsTodayCount.Load(),
-			SignalCount:  p.e.signalCount.Load(),
-			FillCount:    p.e.fillCount.Load(),
-			LastDecision: p.e.reason.Load(),
+			Symbol:        p.sym,
+			LastTickAt:    nanoToTime(p.e.lastTickAtNano.Load()),
+			LastEvalAt:    nanoToTime(p.e.lastEvalAtNano.Load()),
+			LastSignalAt:  nanoToTime(p.e.lastSignalAtNano.Load()),
+			EvalCount:     p.e.evalCount.Load(),
+			BarsToday:     p.e.barsTodayCount.Load(),
+			SignalCount:   p.e.signalCount.Load(),
+			FillCount:     p.e.fillCount.Load(),
+			LastDecision:  p.e.reason.Load(),
+			BarsPerMinute: p.e.snapshotBarsPerMinute(),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Symbol < out[j].Symbol })

@@ -201,6 +201,56 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	healthHandler := omhttp.NewHealthHandler(httpLog, healthChecks...)
 	imux.Handle("/healthz/services", healthHandler)
 
+	// Dashboard data-source header. Reuses the same underlying liveness
+	// signals the existing /healthz/services probes read — ingestion's
+	// PipelineHealthReporter for Alpaca/omo-data, ibkrBroker.IsConnected
+	// for IBKR, and the DB *sql.DB ping for Postgres — so adding /api/health
+	// /datasources does not introduce any new probing paths to maintain.
+	dsChecks := []omhttp.DataSourceCheck{
+		omhttp.FeedDataSource("ibkr", "IBKR", 60*time.Second, func(ctx context.Context) (time.Time, string) {
+			if infra.ibkrBroker == nil {
+				return time.Time{}, "IBKR broker not configured"
+			}
+			if !infra.ibkrBroker.IsConnected() {
+				return time.Time{}, "IB Gateway not connected"
+			}
+			// Connection-level liveness: IBKR exposes "connected" but not a
+			// tick timestamp at this layer. Report now() so the dot stays
+			// green while connected; the UI surfaces the probe time.
+			return time.Now().UTC(), ""
+		}),
+		omhttp.FeedDataSource("alpaca", "Alpaca SIP", 60*time.Second, func(ctx context.Context) (time.Time, string) {
+			if svc.ingestion == nil {
+				return time.Time{}, "ingestion not initialized"
+			}
+			last := svc.ingestion.LastProcessedAt("equity")
+			if last.IsZero() {
+				return time.Time{}, "no equity bars seen"
+			}
+			return last, "stale equity feed"
+		}),
+		omhttp.FeedDataSource("omo-data", "omo-data", 5*time.Minute, func(ctx context.Context) (time.Time, string) {
+			// omo-data fronts crypto 1m bars; we use the crypto pipeline
+			// timestamp as a proxy. Threshold is looser (5m) because crypto
+			// feeds tolerate brief gaps without the watchdog tripping.
+			if svc.ingestion == nil {
+				return time.Time{}, "ingestion not initialized"
+			}
+			last := svc.ingestion.LastProcessedAt("crypto")
+			if last.IsZero() {
+				return time.Time{}, "no crypto bars seen"
+			}
+			return last, "stale crypto feed"
+		}),
+		omhttp.DBDataSource("db", "Database", func(ctx context.Context) error {
+			if infra.sqlDB == nil {
+				return fmt.Errorf("db not initialized")
+			}
+			return infra.sqlDB.PingContext(ctx)
+		}),
+	}
+	imux.Handle("/api/health/datasources", omhttp.NewDataSourceHealthHandler(httpLog, dsChecks...))
+
 	const strategyBasePath = "configs/strategies"
 	configHandler := omhttp.NewConfigHandler(svc.specStore, strategyBasePath, httpLog)
 	imux.Handle("/strategies/config/", configHandler)

@@ -364,6 +364,16 @@ func (f *fakePipeline) LastProcessedAt(feedType string) time.Time {
 	return f.last[feedType]
 }
 
+// LastProcessedAtSymbol resolves the symbol to its feed type and reuses the
+// fake's feed-level map. Mirrors the ingestion service's fallback so handler
+// tests exercise the same branch production code walks.
+func (f *fakePipeline) LastProcessedAtSymbol(symbol string) time.Time {
+	if domain.Symbol(symbol).IsCryptoSymbol() {
+		return f.last["crypto"]
+	}
+	return f.last["equity"]
+}
+
 func TestStrategyPerfHandler_Liveness_Empty(t *testing.T) {
 	// Unknown strategy must return 200 with empty symbols array, not 404.
 	runner := newRunnerWithInstances(t)

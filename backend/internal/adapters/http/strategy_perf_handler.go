@@ -217,13 +217,17 @@ func (h *StrategyPerfHandler) serveLiveness(w http.ResponseWriter, strategyID st
 	}
 
 	now := time.Now().UTC()
-	// Annotate each row with feed-level health. Phase 1 treats "feed fresh
-	// within 60s" as healthy — the same threshold the alpaca watchdog uses.
+	// Annotate each row with per-symbol feed health. Phase 3 promoted the
+	// lookup from feed-level (LastProcessedAt) to symbol-level so future
+	// per-symbol adapters can surface finer-grained staleness without a
+	// handler change. The current ingestion adapter falls back to the
+	// feed-level timestamp, so behavior is unchanged until per-symbol
+	// tracking is added. "Fresh within 60s" remains the healthy threshold
+	// to match the alpaca watchdog.
 	for i := range symbols {
-		feedType := feedTypeForSymbol(symbols[i].Symbol)
-		symbols[i].FeedType = feedType
+		symbols[i].FeedType = feedTypeForSymbol(symbols[i].Symbol)
 		if h.pipeline != nil {
-			last := h.pipeline.LastProcessedAt(feedType)
+			last := h.pipeline.LastProcessedAtSymbol(symbols[i].Symbol)
 			symbols[i].FeedLastProcessedAt = last
 			if !last.IsZero() && now.Sub(last) < 60*time.Second {
 				symbols[i].FeedHealthy = true
