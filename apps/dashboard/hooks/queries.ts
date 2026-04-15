@@ -14,6 +14,7 @@ import type {
   StrategySignalsResponse,
   StrategyRow,
   SymbolAttribution,
+  StrategyLiveness,
 } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -48,6 +49,8 @@ export const queryKeys = {
     ["strategies", "perf", id, "state"] as const,
   strategySignals: (id: string) =>
     ["strategies", "perf", id, "signals"] as const,
+  strategyLiveness: (id: string) =>
+    ["strategies", "perf", id, "liveness"] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -313,6 +316,27 @@ export function useStrategyState(strategyID: string) {
       ),
     enabled: !!strategyID,
     refetchInterval: 15_000,
+  });
+}
+
+export function useStrategyLiveness(strategyID: string) {
+  return useQuery({
+    queryKey: queryKeys.strategyLiveness(strategyID),
+    queryFn: async (): Promise<StrategyLiveness | null> => {
+      const res = await fetch(
+        `/api/strategies/${encodeURIComponent(strategyID)}/liveness`,
+      );
+      // Gracefully handle backend-not-ready cases — caller treats null as "no data".
+      if (!res.ok) return null;
+      try {
+        return (await res.json()) as StrategyLiveness;
+      } catch {
+        return null;
+      }
+    },
+    enabled: !!strategyID,
+    refetchInterval: 2_000,
+    staleTime: 1_000,
   });
 }
 

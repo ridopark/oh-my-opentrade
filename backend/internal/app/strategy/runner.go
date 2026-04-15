@@ -82,6 +82,15 @@ type Runner struct {
 	// showed ~520k allocations per backtest).
 	lastBarTime atomic.Int64
 
+	// liveness tracks per-(strategy,symbol) tick/eval/signal counters so
+	// the dashboard can distinguish idle-but-healthy from broken. Hot path
+	// is lock-free atomic ops; see LivenessTracker.
+	liveness *LivenessTracker
+	// disableLiveness skips all liveness recording. Mirrors
+	// suppressProgressEvents — intended for offline backtests where no
+	// UI is watching and even cheap atomics add up across millions of bars.
+	disableLiveness bool
+
 	// tideTracker, when non-nil, is fed every SPY/QQQ 1m bar to maintain a
 	// running intraday VWAP and expose market-tide deviation to AVWAP
 	// entry-signal telemetry. Phase 1 of AVWAP SPY-tide plumbing — data
@@ -482,7 +491,7 @@ func NewRunner(
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runner{
+	r := &Runner{
 		eventBus:    eventBus,
 		router:      router,
 		logger:      logger.With("component", "strategy_runner"),
@@ -504,8 +513,43 @@ func NewRunner(
 		lateSessionNFRolling: make(map[string]*dpRollingStats),
 		lateSessionDPVolRatioZ:       make(map[string]float64),
 		lateSessionDPVolRatioRolling: make(map[string]*dpRollingStats),
+		liveness:                     NewLivenessTracker(),
 	}
+	// Wire the liveness publisher so throttled StrategyEvaluation events
+	// reach the SSE fan-out. Fire-and-forget: SSE clients don't care about
+	// delivery errors, and publishes use a detached context because they
+	// may happen after the per-bar request chain has returned.
+	r.liveness.SetPublisher(func(evt domain.Event) {
+		_ = r.eventBus.Publish(context.Background(), evt)
+	})
+	return r
 }
+
+// SetDisableLiveness toggles liveness recording. Backtests call with true to
+// skip per-bar atomic updates and counter bookkeeping.
+func (r *Runner) SetDisableLiveness(disable bool) {
+	r.mu.Lock()
+	r.disableLiveness = disable
+	r.mu.Unlock()
+}
+
+// Liveness returns a stable snapshot of per-symbol telemetry for strategyID.
+// Unknown strategies return an empty slice (not nil, not error) — callers
+// treat "no rows yet" and "never seen" identically.
+func (r *Runner) Liveness(strategyID string) []domain.SymbolLiveness {
+	if r.liveness == nil {
+		return []domain.SymbolLiveness{}
+	}
+	snap := r.liveness.Snapshot(strategyID)
+	if snap == nil {
+		return []domain.SymbolLiveness{}
+	}
+	return snap
+}
+
+// LivenessTracker exposes the underlying tracker (for tests and for Phase 2
+// SSE wiring). Nil-safe.
+func (r *Runner) LivenessTracker() *LivenessTracker { return r.liveness }
 
 // Router returns the underlying router for registration.
 func (r *Runner) Router() *Router { return r.router }
@@ -1191,6 +1235,12 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 	r.lastBarTime.Store(loopStart.UnixNano())
 	symbol := bar.Symbol.String()
 
+	// Per-symbol liveness tick — best-effort, does not need to wait for
+	// instance resolution. RecordTick is a lock-free atomic store once
+	// the entry is pre-registered; an unregistered entry lazily registers
+	// under a short write lock. Skipped entirely in backtest mode.
+	trackLiveness := r.liveness != nil && !r.disableLiveness
+
 	// Feed SPY/QQQ 1m bars to the tide tracker before dispatching so AVWAP
 	// entries for any symbol (including SPY/QQQ itself downstream) see the
 	// freshest intraday VWAP. Telemetry only.
@@ -1238,6 +1288,11 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 
 	r.scratchInstances = r.router.InstancesForSymbolInto(symbol, r.scratchInstances)
 	instances := r.scratchInstances
+	if trackLiveness {
+		for _, inst := range instances {
+			r.liveness.RecordTick(inst.configStrategyID(), symbol, bar.Time)
+		}
+	}
 	if len(instances) == 0 {
 		// Log-once per symbol — this fact is static for the run and otherwise
 		// fires on every bar for skipped symbols (~8% of CPU per pprof).
@@ -1414,6 +1469,9 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 			)
 			continue
 		}
+		if trackLiveness {
+			r.liveness.RecordEval(inst.configStrategyID(), symbol, bar.Time, reasonFromSignals(signals))
+		}
 		allSignals = append(allSignals, signals...)
 	}
 
@@ -1562,6 +1620,9 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 				)
 				continue
 			}
+			if trackLiveness {
+				r.liveness.RecordEval(inst.configStrategyID(), symbol, closed.Time, reasonFromSignals(signals))
+			}
 			allSignals = append(allSignals, signals...)
 		}
 	}
@@ -1636,6 +1697,11 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		}
 		r.logger.Info("EMIT SIGNAL", "symbol", sig.Symbol, "type", sig.Type, "side", sig.Side, "instance", sig.StrategyInstanceID.String(),
 			"setup", sig.Tags["setup"], "confluence", sig.Tags["confluence"], "confluence_detail", sig.Tags["confluence_detail"])
+		if trackLiveness {
+			if sid, ok := parseStrategyIDFromInstance(sig.StrategyInstanceID); ok {
+				r.liveness.RecordSignal(sid.String(), sig.Symbol, bar.Time)
+			}
+		}
 		if err := r.emitSignal(ctx, tenantID, envMode, sig); err != nil {
 			r.logger.Error("failed to emit SignalCreated",
 				"instance_id", sig.StrategyInstanceID.String(),
@@ -1677,6 +1743,9 @@ func (r *Runner) ProcessBar(ctx context.Context, symbol string, bar start.Bar, i
 		signals, err := r.safeOnBar(inst, instCtx, symbol, bar, indicators)
 		if err != nil {
 			return allSignals, fmt.Errorf("instance %s: %w", inst.ID(), err)
+		}
+		if r.liveness != nil && !r.disableLiveness {
+			r.liveness.RecordEval(inst.configStrategyID(), symbol, bar.Time, reasonFromSignals(signals))
 		}
 		allSignals = append(allSignals, signals...)
 	}
@@ -2097,6 +2166,9 @@ func (r *Runner) handleFill(_ context.Context, event domain.Event) error {
 	}
 
 	_ = signals // Fill confirmations should not produce new signals.
+	if r.liveness != nil && !r.disableLiveness {
+		r.liveness.RecordFill(strategyName, routingSymbol, filledAt)
+	}
 	r.logger.Info("handleFill: routed to strategy",
 		"instance_id", inst.ID().String(),
 		"symbol", symbol,
