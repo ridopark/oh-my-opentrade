@@ -51,7 +51,7 @@ tfi_lookback_min = 15
 tfi_min          = 0.15   # recal: magnitude floor, not sign-only
 
 # --- Sigma method for SessionVWAP ---
-sigma_method        = "rolling"
+sigma_method        = "ewma"
 sigma_lookback_bars = 96          # 8h at 5m
 session_reset_utc   = 0
 
@@ -61,7 +61,7 @@ max_concurrent  = 2
 
 # --- Gates ---
 require_tfi              = false
-require_inducement       = false
+require_inducement       = true
 inducement_lookback_bars = 2      # recal: crypto sweeps resolve faster
 
 # --- Fallbacks ---
