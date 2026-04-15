@@ -2,6 +2,7 @@ package logger_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 )
+
+var errBoom = errors.New("boom-cause")
 
 type fakeNotifier struct {
 	mu    sync.Mutex
@@ -39,7 +42,7 @@ func (f *fakeNotifier) wait(target int32, timeout time.Duration) bool {
 }
 
 func newTestLogger(h *logger.DiscordHook) zerolog.Logger {
-	return zerolog.New(io.Discard).Hook(h)
+	return zerolog.New(zerolog.MultiLevelWriter(io.Discard, h))
 }
 
 func TestDiscordHook_FiresOnError(t *testing.T) {
@@ -53,7 +56,27 @@ func TestDiscordHook_FiresOnError(t *testing.T) {
 	assert.True(t, n.wait(1, time.Second), "expected hook to deliver 1 message")
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	assert.Equal(t, []string{"boom"}, n.calls)
+	assert.Len(t, n.calls, 1)
+	assert.Contains(t, n.calls[0], "boom")
+	assert.Contains(t, n.calls[0], "[ERROR]")
+}
+
+func TestDiscordHook_IncludesErrorAndFields(t *testing.T) {
+	hook := logger.NewDiscordHook("test")
+	n := &fakeNotifier{}
+	hook.SetNotifier(n)
+
+	log := newTestLogger(hook)
+	log.Error().Err(errBoom).Int("attempt", 3).Str("op", "reconnect").Msg("ibkr: reconnect failed")
+
+	assert.True(t, n.wait(1, time.Second))
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	got := n.calls[0]
+	assert.Contains(t, got, "ibkr: reconnect failed")
+	assert.Contains(t, got, "error=boom-cause")
+	assert.Contains(t, got, "attempt=3")
+	assert.Contains(t, got, "op=reconnect")
 }
 
 func TestDiscordHook_IgnoresBelowError(t *testing.T) {
