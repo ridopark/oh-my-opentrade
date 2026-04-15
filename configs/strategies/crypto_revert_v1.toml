@@ -1,0 +1,109 @@
+schema_version = 2
+
+[strategy]
+id = "crypto_revert_v1"
+version = "0.1.0"
+name = "Crypto Mean Reversion v1 (5m)"
+description = "VWAP-fade on BTC/ETH spot gated by TFI magnitude and a recent bullish liquidity sweep. Phase-1 long-only."
+author = "system"
+created_at = "2026-04-15T00:00:00Z"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+symbols = ["BTC/USD", "ETH/USD"]
+timeframes = ["5m"]
+priority = 55
+conflict_policy = "priority_wins"
+exclusive_per_symbol = false
+watchlist_mode = "static"
+asset_classes = ["CRYPTO"]
+allowed_directions = ["LONG"]
+
+[screening]
+description = """\
+5m mean-reversion on crypto spot majors. Long entries require: price
+extended below session VWAP (dev_z <= entry_dev_z), trade-flow imbalance
+magnitude above floor (tfi >= tfi_min, positive = buyers absorbing the drop),
+and a bullish inducement sweep within the last inducement_lookback_bars.
+Exits on reversion, opposite sweep, hard stop, or time stop.
+
+Quant recalibrations vs the original doc (2026-04-15):
+  * tfi_min raised from 0.0 to 0.15 — a sign-only gate admits
+    too-weak flow; magnitude floor discriminates real absorption.
+  * inducement_lookback_bars dropped from 3 to 2 — crypto sweeps resolve
+    faster than equities (per crypto_inducement.go defaults).
+  * sigma_method / sigma_lookback_bars exposed explicitly; default is
+    rolling/96 (not session-reset), which the quant flagged as the likely
+    cause of noisy early-session reads in the first backtest.\
+"""
+
+[params]
+# --- Entry / exit thresholds (dev_z is signed, negative = below VWAP) ---
+entry_dev_z      = -2.0
+exit_dev_z       = -0.3
+hard_stop_dev_z  = -3.5
+
+# --- TFI gate ---
+tfi_lookback_min = 15
+tfi_min          = 0.15   # recal: magnitude floor, not sign-only
+
+# --- Sigma method for SessionVWAP ---
+sigma_method        = "ewma"
+sigma_lookback_bars = 96          # 8h at 5m
+session_reset_utc   = 0
+
+# --- Time & concurrency ---
+time_stop_min   = 90
+max_concurrent  = 2
+
+# --- Gates ---
+require_tfi              = false
+require_inducement       = true
+inducement_lookback_bars = 2      # recal: crypto sweeps resolve faster
+
+# --- Fallbacks ---
+use_bar_sign_tfi = true   # phase 1 has no tick feed into strategy layer
+
+# --- TFI source ---
+# "auto"       — use live trade-tick events when available (paper/live),
+#                fall back to bar-sign when ticks are stale (backtest).
+# "trade_tick" — strictly tick-only; TFI stays zero in backtests.
+# "bar_sign"   — force legacy bar-sign path (pre-tick-wiring behavior).
+# The quant measured bar-sign TFI as net-negative in the Phase A ablation,
+# so "auto" lets paper/live use real taker-side flow without changing
+# backtest determinism. require_tfi stays false until paper data proves out.
+tfi_source = "auto"
+
+# --- Phase-2 gates (flip when xv-flow + skew adapters land) ---
+require_xv_flow = false
+require_skew_ok = false
+
+# --- Session-time weighting (neutral defaults; tune after paper) ---
+weight_us_hours   = 1.0
+weight_asia_hours = 1.0
+weight_weekend    = 1.0
+
+[hooks]
+signals = { engine = "builtin", name = "crypto_revert" }
+
+[dynamic_risk]
+enabled = true
+
+# --- Exit rules (book-wide stops; the strategy's internal time_stop and
+#     hard_stop are the primary path, these are the belt-and-braces layer) ---
+
+[[exit_rules]]
+type = "MAX_HOLDING_TIME"
+[exit_rules.params]
+minutes = 120   # slightly past strategy time_stop_min (90) as a safety net
+
+[[exit_rules]]
+type = "MAX_LOSS"
+[exit_rules.params]
+pct = 0.03   # 3% hard book-level stop (hard_stop_dev_z should trip first)
+
+[options]
+enabled = false
