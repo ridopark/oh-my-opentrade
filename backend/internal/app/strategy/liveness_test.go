@@ -164,6 +164,131 @@ func TestLivenessTracker_UnknownStrategyEmpty(t *testing.T) {
 	}
 }
 
+// TestLivenessTracker_EvaluationEmitThrottle verifies the 1-second throttle
+// rule: the first RecordEval after registration publishes immediately, and
+// subsequent calls within the window coalesce into a single event. Once the
+// window elapses a second publish is admitted.
+func TestLivenessTracker_EvaluationEmitThrottle(t *testing.T) {
+	tr := NewLivenessTracker()
+	tr.Register("alpha", "AAPL")
+
+	var mu sync.Mutex
+	var events []domain.Event
+	tr.SetPublisher(func(evt domain.Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, evt)
+	})
+
+	at := time.Now()
+	// 10 rapid calls should emit exactly 1 (the first).
+	for i := 0; i < 10; i++ {
+		tr.RecordEval("alpha", "AAPL", at, &domain.DecisionReason{At: at, Outcome: "HOLD"})
+	}
+
+	mu.Lock()
+	count1 := len(events)
+	mu.Unlock()
+	if count1 != 1 {
+		t.Fatalf("want exactly 1 event after 10 rapid calls, got %d", count1)
+	}
+
+	evt := events[0]
+	if evt.Type != domain.EventStrategyEvaluation {
+		t.Fatalf("event type=%q", evt.Type)
+	}
+	payload, ok := evt.Payload.(domain.StrategyEvaluationPayload)
+	if !ok {
+		t.Fatalf("payload type=%T", evt.Payload)
+	}
+	if payload.Strategy != "alpha" || payload.Symbol != "AAPL" {
+		t.Fatalf("payload=%+v", payload)
+	}
+	if payload.LastDecision == nil || payload.LastDecision.Outcome != "HOLD" {
+		t.Fatalf("payload decision=%+v", payload.LastDecision)
+	}
+
+	// After crossing the 1-second gap, one more publish should go through.
+	// We simulate elapsed time by rewinding the entry's lastEmitNano rather
+	// than actually sleeping, to keep the test fast and hermetic.
+	entry := tr.entry("alpha", "AAPL")
+	entry.lastEmitNano.Store(time.Now().Add(-2 * time.Second).UnixNano())
+	tr.RecordEval("alpha", "AAPL", at, nil)
+
+	mu.Lock()
+	count2 := len(events)
+	mu.Unlock()
+	if count2 != 2 {
+		t.Fatalf("want 2 events after gap elapsed, got %d", count2)
+	}
+}
+
+// TestLivenessTracker_EvaluationEmitDifferentKeys asserts throttle state is
+// per (strategy, symbol) — two distinct keys each get their own first-emit
+// even when called back-to-back.
+func TestLivenessTracker_EvaluationEmitDifferentKeys(t *testing.T) {
+	tr := NewLivenessTracker()
+	tr.Register("alpha", "AAPL")
+	tr.Register("alpha", "MSFT")
+	tr.Register("beta", "AAPL")
+
+	var mu sync.Mutex
+	var events []domain.Event
+	tr.SetPublisher(func(evt domain.Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, evt)
+	})
+
+	at := time.Now()
+	tr.RecordEval("alpha", "AAPL", at, nil)
+	tr.RecordEval("alpha", "MSFT", at, nil)
+	tr.RecordEval("beta", "AAPL", at, nil)
+
+	// Second call for each key within the throttle window should be dropped.
+	tr.RecordEval("alpha", "AAPL", at, nil)
+	tr.RecordEval("alpha", "MSFT", at, nil)
+	tr.RecordEval("beta", "AAPL", at, nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 3 {
+		t.Fatalf("want 3 events (one per key), got %d", len(events))
+	}
+
+	seen := make(map[string]bool)
+	for _, evt := range events {
+		p := evt.Payload.(domain.StrategyEvaluationPayload)
+		seen[p.Strategy+":"+p.Symbol] = true
+	}
+	for _, key := range []string{"alpha:AAPL", "alpha:MSFT", "beta:AAPL"} {
+		if !seen[key] {
+			t.Fatalf("missing emit for %s (seen=%v)", key, seen)
+		}
+	}
+}
+
+// TestLivenessTracker_EvaluationNoPublisher confirms RecordEval remains
+// side-effect-free when no publisher is installed. This is the backtest
+// code path (Runner is constructed without SetPublisher wiring) and the
+// broader DisableLiveness path which short-circuits RecordEval entirely.
+func TestLivenessTracker_EvaluationNoPublisher(t *testing.T) {
+	tr := NewLivenessTracker()
+	tr.Register("alpha", "AAPL")
+	// Intentionally omit SetPublisher.
+
+	at := time.Now()
+	for i := 0; i < 5; i++ {
+		tr.RecordEval("alpha", "AAPL", at, nil)
+	}
+
+	// No crash, counters still increment.
+	snap := tr.Snapshot("alpha")
+	if len(snap) != 1 || snap[0].EvalCount != 5 {
+		t.Fatalf("counters wrong after nil-publisher path: snap=%+v", snap)
+	}
+}
+
 // Guard against accidentally holding the tracker's internal mutex during a
 // Record* call — the Snapshot path takes RLock, so if RecordEval holds
 // Lock it would deadlock here.

@@ -491,7 +491,7 @@ func NewRunner(
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runner{
+	r := &Runner{
 		eventBus:    eventBus,
 		router:      router,
 		logger:      logger.With("component", "strategy_runner"),
@@ -515,6 +515,14 @@ func NewRunner(
 		lateSessionDPVolRatioRolling: make(map[string]*dpRollingStats),
 		liveness:                     NewLivenessTracker(),
 	}
+	// Wire the liveness publisher so throttled StrategyEvaluation events
+	// reach the SSE fan-out. Fire-and-forget: SSE clients don't care about
+	// delivery errors, and publishes use a detached context because they
+	// may happen after the per-bar request chain has returned.
+	r.liveness.SetPublisher(func(evt domain.Event) {
+		_ = r.eventBus.Publish(context.Background(), evt)
+	})
+	return r
 }
 
 // SetDisableLiveness toggles liveness recording. Backtests call with true to

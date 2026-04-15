@@ -79,6 +79,69 @@ func TestHandler_ServeHTTP_StreamsEvent(t *testing.T) {
 	assert.Equal(t, "tenant-1", parsed["tenantId"])
 }
 
+func TestHandler_ServeHTTP_ForwardsStrategyEvaluation(t *testing.T) {
+	bus := memory.NewBus()
+	handler := sse.NewHandler(bus, zerolog.Nop())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go func() { _ = handler.Start(ctx) }() //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	pr, pw := newStreamPipe()
+	req := httptest.NewRequest(http.MethodGet, "/events", nil).WithContext(ctx)
+	go handler.ServeHTTP(pw, req)
+
+	evt, err := domain.NewEvent(
+		domain.EventStrategyEvaluation,
+		"tenant-1",
+		domain.EnvModePaper,
+		"liveness-idem-1",
+		domain.StrategyEvaluationPayload{
+			Strategy:  "avwap_reclaim",
+			Symbol:    "AAPL",
+			At:        time.Now().UTC(),
+			EvalCount: 7,
+			BarsToday: 3,
+		},
+	)
+	require.NoError(t, err)
+
+	time.Sleep(20 * time.Millisecond)
+	require.NoError(t, bus.Publish(ctx, *evt))
+
+	scanner := bufio.NewScanner(pr)
+	deadline := time.After(3 * time.Second)
+	var gotEvent, gotData string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "event:") {
+			gotEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		}
+		if strings.HasPrefix(line, "data:") {
+			gotData = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for StrategyEvaluation SSE event")
+		default:
+		}
+	}
+
+	assert.Equal(t, "StrategyEvaluation", gotEvent)
+	require.NotEmpty(t, gotData)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(gotData), &parsed))
+	assert.Equal(t, "StrategyEvaluation", parsed["type"])
+	payload, ok := parsed["payload"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "avwap_reclaim", payload["strategy"])
+	assert.Equal(t, "AAPL", payload["symbol"])
+}
+
 func TestHandler_ServeHTTP_CORSHeaders(t *testing.T) {
 	bus := memory.NewBus()
 	handler := sse.NewHandler(bus, zerolog.Nop())
