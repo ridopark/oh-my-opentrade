@@ -38,11 +38,6 @@ func cryptoRevertDefaultParams() map[string]any {
 	}
 }
 
-// flatBar: symmetric OHLC around price — neutral TFI contribution.
-func flatBar(t time.Time, price, volume float64) strat.Bar {
-	return strat.Bar{Time: t, Open: price, High: price, Low: price, Close: price, Volume: volume}
-}
-
 // bullBar: close > open — positive bar-sign TFI contribution.
 func bullBar(t time.Time, open, close, volume float64) strat.Bar {
 	high := close
@@ -105,7 +100,7 @@ func run(t *testing.T, params map[string]any, bars []strat.Bar) (*builtin.Crypto
 // an infinite z-score, which breaks "not extended" negative tests.
 func buildHistory(start time.Time, priceAnchor float64, n int) []strat.Bar {
 	bars := make([]strat.Bar, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		ts := start.Add(time.Duration(i) * 5 * time.Minute)
 		// Small deterministic oscillation ±50 around anchor.
 		wobble := 50.0
@@ -175,7 +170,7 @@ func TestCryptoRevert_NoEntry_WhenDevZNotExtended(t *testing.T) {
 func TestCryptoRevert_NoEntry_WhenTFIBelowFloor(t *testing.T) {
 	anchor := time.Date(2026, 4, 15, 13, 0, 0, 0, time.UTC)
 	bars := make([]strat.Bar, 0, 96)
-	for i := 0; i < 96; i++ {
+	for i := range 96 {
 		ts := anchor.Add(time.Duration(i) * 5 * time.Minute)
 		// Alternate bull/bear but make the last 5 bars STRONGLY bear so the
 		// 15-min TFI window is negative regardless of what the sweep adds.
