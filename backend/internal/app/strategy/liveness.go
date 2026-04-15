@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -9,6 +10,12 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
+
+// livenessEmitSeq provides monotonic idempotency keys for StrategyEvaluation
+// events without drawing from crypto/rand. Liveness events are transient UI
+// telemetry — downstream consumers don't dedup on the key — so a cheap
+// counter is sufficient and keeps the hot path allocation-free.
+var livenessEmitSeq atomic.Uint64
 
 // reasonFromSignals derives a DecisionReason from the signals a strategy
 // returned for a single bar. Zero-length signals indicate HOLD with no
@@ -64,7 +71,18 @@ type livenessEntry struct {
 	// the correct timezone for day rollover without per-call symbol
 	// parsing. Equity strategies roll at ET midnight; crypto rolls at UTC.
 	crypto bool
+	// lastEmitNano is the wall-clock UnixNano of the most recent
+	// StrategyEvaluation event publish. 0 means "never emitted" so the
+	// first RecordEval after registration fires immediately. Subsequent
+	// publishes are throttled to at most one per `evaluationEmitMinGap`.
+	lastEmitNano atomic.Int64
 }
+
+// evaluationEmitMinGap is the minimum gap between two StrategyEvaluation
+// events for the same (strategy, symbol). 1s matches the dashboard pulse-dot
+// cadence and keeps SSE fan-out bounded even when a strategy evaluates on
+// every trade tick.
+const evaluationEmitMinGap = int64(time.Second)
 
 // livenessKey identifies a tracked (strategy, symbol) pair. Keyed on strings
 // rather than *Instance pointers because DNA hot-reload may recreate the
@@ -73,6 +91,12 @@ type livenessKey struct {
 	strategy string
 	symbol   string
 }
+
+// EvaluationPublisher is the optional hook LivenessTracker calls from
+// RecordEval when the per-key throttle admits a publish. Passing the
+// publisher as a plain function (not ports.EventBusPort) keeps the tracker
+// free of transport concerns and makes it trivial to fake in tests.
+type EvaluationPublisher func(domain.Event)
 
 // LivenessTracker owns per-strategy telemetry. Registration is slow-path
 // (takes a write lock, pre-allocates the entry pointer); the hot path is
@@ -84,6 +108,10 @@ type LivenessTracker struct {
 	byStrategy map[string][]*livenessEntry
 	// symbolFor maps entry pointer -> symbol (for Snapshot output).
 	symbolFor map[*livenessEntry]string
+	// publisher, when non-nil, receives throttled StrategyEvaluation events
+	// from RecordEval. Set via SetPublisher; nil tracker / nil publisher
+	// keeps RecordEval pure-atomic (used in backtest mode).
+	publisher EvaluationPublisher
 }
 
 // NewLivenessTracker returns an empty tracker. Call Register for each
@@ -95,6 +123,18 @@ func NewLivenessTracker() *LivenessTracker {
 		byStrategy: make(map[string][]*livenessEntry),
 		symbolFor:  make(map[*livenessEntry]string),
 	}
+}
+
+// SetPublisher installs the optional EvaluationPublisher. Safe to call once
+// at Runner construction; callers must not race SetPublisher with concurrent
+// RecordEval. Passing nil disables publishing (RecordEval still records
+// counters). This is separate from the backtest-wide DisableLiveness flag —
+// callers that run offline should simply not install a publisher.
+func (t *LivenessTracker) SetPublisher(p EvaluationPublisher) {
+	if t == nil {
+		return
+	}
+	t.publisher = p
 }
 
 // Register pre-allocates the livenessEntry for (strategyID, symbol) so the
@@ -196,11 +236,43 @@ func (t *LivenessTracker) RecordEval(strategyID, symbol string, at time.Time, re
 	}
 	e.rolloverIfNeeded(at)
 	e.lastEvalAtNano.Store(at.UnixNano())
-	e.evalCount.Add(1)
-	e.barsTodayCount.Add(1)
+	evalCount := e.evalCount.Add(1)
+	barsToday := e.barsTodayCount.Add(1)
 	if reason != nil {
 		e.reason.Store(reason)
 	}
+	// Throttled publish — at most one StrategyEvaluation event per
+	// `evaluationEmitMinGap` per (strategy, symbol). First emit fires
+	// immediately because lastEmitNano starts at zero. CAS ensures only
+	// one racing RecordEval wins per gap window.
+	pub := t.publisher
+	if pub == nil {
+		return
+	}
+	nowNano := time.Now().UnixNano()
+	prev := e.lastEmitNano.Load()
+	if prev != 0 && nowNano-prev < evaluationEmitMinGap {
+		return
+	}
+	if !e.lastEmitNano.CompareAndSwap(prev, nowNano) {
+		return
+	}
+	payload := domain.StrategyEvaluationPayload{
+		Strategy:     strategyID,
+		Symbol:       symbol,
+		At:           at.UTC(),
+		EvalCount:    evalCount,
+		BarsToday:    barsToday,
+		LastDecision: reason,
+	}
+	evt := domain.Event{
+		ID:             "liveness-" + strconv.FormatUint(livenessEmitSeq.Add(1), 36),
+		Type:           domain.EventStrategyEvaluation,
+		OccurredAt:     time.Unix(0, nowNano),
+		IdempotencyKey: strategyID + ":" + symbol + ":" + strconv.FormatInt(nowNano, 10),
+		Payload:        payload,
+	}
+	pub(evt)
 }
 
 // RecordSignal bumps the signal counter and the last-signal timestamp.

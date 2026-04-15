@@ -37,3 +37,16 @@ type StrategyLiveness struct {
 	Symbols  []SymbolLiveness `json:"symbols"`
 	AsOf     time.Time        `json:"asOf"`
 }
+
+// StrategyEvaluationPayload is the payload for EventStrategyEvaluation,
+// emitted by LivenessTracker.RecordEval at most once per second per
+// (strategy, symbol). It carries enough context for the dashboard to pulse
+// its liveness dot and update counters without re-polling the REST endpoint.
+type StrategyEvaluationPayload struct {
+	Strategy     string          `json:"strategy"`
+	Symbol       string          `json:"symbol"`
+	At           time.Time       `json:"at"`
+	EvalCount    uint64          `json:"evalCount"`
+	BarsToday    uint64          `json:"barsToday"`
+	LastDecision *DecisionReason `json:"lastDecision,omitempty"`
+}

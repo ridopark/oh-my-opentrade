@@ -79,6 +79,7 @@ const (
 	EventEffectiveSymbolsUpdated EventType = "EffectiveSymbolsUpdated"
 	EventStrategySignalLifecycle EventType = "StrategySignalLifecycle"
 	EventStrategyStateSnapshot   EventType = "StrategyStateSnapshot"
+	EventStrategyEvaluation      EventType = "StrategyEvaluation"
 	EventExitTriggered           EventType = "ExitTriggered"
 	EventExitOrderTerminal       EventType = "ExitOrderTerminal"
 	EventRiskRevaluated          EventType = "RiskRevaluated"
