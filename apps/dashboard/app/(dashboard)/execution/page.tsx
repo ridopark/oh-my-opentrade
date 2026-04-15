@@ -394,17 +394,25 @@ export default function ExecutionPage() {
     return () => clearInterval(iv);
   }, [activeSymbols.join(","), fetchQuote]);
 
+  // Hide the position_monitor exit-retry loop from the Rejected tab.
+  // It generated ~1.2k canceled/expired rows for a single stuck BA position
+  // on 2026-04-13/14. The rows are real IBKR submissions (not accounting
+  // phantoms) and stay in the DB for forensics, but they drown out genuine
+  // rejections in the UI.
+  const isReconcileNoise = (o: { strategy: string; status: string }) =>
+    o.strategy === "reconciliation" && (o.status === "canceled" || o.status === "expired");
+
   // Filter by tab
   const filtered = allOrders.filter((o) => {
     if (activeTab === "active") return isActive(o.status);
     if (activeTab === "filled") return isFilled(o.status);
-    return isRejected(o.status);
+    return isRejected(o.status) && !isReconcileNoise(o);
   });
 
   // Counts
   const activeCount = allOrders.filter((o) => isActive(o.status)).length;
   const filledCount = allOrders.filter((o) => isFilled(o.status)).length;
-  const rejectedCount = allOrders.filter((o) => isRejected(o.status)).length;
+  const rejectedCount = allOrders.filter((o) => isRejected(o.status) && !isReconcileNoise(o)).length;
 
   const tabs: { key: TabFilter; label: string; count: number }[] = [
     { key: "active", label: "Active", count: activeCount },
