@@ -34,6 +34,8 @@ import { useStrategyLivenessLive } from "@/hooks/use-strategy-evaluation-stream"
 import { LivenessPill } from "@/components/strategy/LivenessPill";
 import { LivenessCounters } from "@/components/strategy/LivenessCounters";
 import { LastDecision } from "@/components/strategy/LastDecision";
+import { BarsSparkline } from "@/components/strategy/BarsSparkline";
+import { ActivityFeed } from "@/components/strategy/ActivityFeed";
 import {
   Card,
   CardContent,
@@ -302,6 +304,7 @@ export default function StrategyDetailPage({
                   <TableHead className="text-right">Signals</TableHead>
                   <TableHead className="text-right">Fills</TableHead>
                   <TableHead>Last Decision</TableHead>
+                  <TableHead className="text-right">Bars/min (60m)</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -330,6 +333,11 @@ export default function StrategyDetailPage({
                     <TableCell className="max-w-[300px] truncate">
                       <LastDecision decision={s.lastDecision} />
                     </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end">
+                        <BarsSparkline data={s.barsPerMinute} />
+                      </div>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -337,6 +345,9 @@ export default function StrategyDetailPage({
           )}
         </CardContent>
       </Card>
+
+      {/* Phase 3: activity tail — closed by default to keep the page quiet. */}
+      <ActivityFeed strategyID={strategyID} />
 
       {activeTab === "performance" && perfLoading && (
         <div className="flex h-96 items-center justify-center">
