@@ -967,10 +967,17 @@ func (s *Service) fastPollPosition(ctx context.Context, tenantID string, envMode
 			}
 
 			if detected {
-				// Double-check still pending (WS might have resolved it between check and here).
-				if _, ok := s.pendingOrders.Load(brokerOrderID); !ok {
+				// Atomically claim the pending order before writing. If WS has
+				// already claimed it, LoadAndDelete returns ok=false and we exit
+				// without writing a duplicate trade row. A prior TOCTOU between
+				// Load and cleanupPendingOrder let both paths race through and
+				// each insert a trade (one with a proper IBKR execution_id, one
+				// with ExecutionID="" from recordFillFromDetails).
+				raw, ok := s.pendingOrders.LoadAndDelete(brokerOrderID)
+				if !ok {
 					return
 				}
+				po := raw.(*pendingOrder)
 				l.Info().Float64("position_qty", posQty).Str("broker_order_id", brokerOrderID).
 					Str("direction", direction).
 					Msg("fast position poll: fill detected via livePos")
@@ -983,13 +990,16 @@ func (s *Service) fastPollPosition(ctx context.Context, tenantID string, envMode
 					Side:           string(po.intent.Direction),
 					Qty:            po.intent.Quantity,
 				}, l)
-				s.cleanupPendingOrder(brokerOrderID)
 				if s.positionGate != nil {
 					if isExit {
 						s.positionGate.ClearInflightExit(tenantID, envMode, po.intent.Symbol)
 					} else {
 						s.positionGate.ClearInflight(tenantID, envMode, po.intent.Symbol)
 					}
+				}
+				// Trigger dust sweep on full exit (previously handled inside cleanupPendingOrder).
+				if isExit && !strings.Contains(po.intent.Rationale, "SCALE_OUT") {
+					go s.sweepDustPosition(tenantID, envMode, po.intent.Symbol, brokerOrderID)
 				}
 				return
 			}
@@ -1182,11 +1192,27 @@ const fastFillRetryDelay = 500 * time.Millisecond
 const fastFillMaxRetries = 3
 
 func (s *Service) handleStreamFill(update ports.OrderUpdate, l zerolog.Logger) {
-	raw, ok := s.pendingOrders.Load(update.BrokerOrderID)
+	// partial_fill must peek without claiming, since the terminal "fill" event
+	// is still coming and needs the pending entry.
+	if update.Event == "partial_fill" {
+		if _, ok := s.pendingOrders.Load(update.BrokerOrderID); !ok {
+			return
+		}
+		l.Debug().
+			Float64("incremental_qty", update.Qty).
+			Float64("cumulative_qty", update.FilledQty).
+			Msg("partial fill received — deferring trade record to terminal fill event")
+		return
+	}
+
+	// Atomically claim the pending order. If fastPollPosition already recorded
+	// this fill via livePos, LoadAndDelete returns ok=false and we exit so we
+	// do not write a second trade row for the same execution.
+	raw, ok := s.pendingOrders.LoadAndDelete(update.BrokerOrderID)
 	if !ok {
-		for i := 0; i < fastFillMaxRetries; i++ {
+		for range fastFillMaxRetries {
 			time.Sleep(fastFillRetryDelay)
-			raw, ok = s.pendingOrders.Load(update.BrokerOrderID)
+			raw, ok = s.pendingOrders.LoadAndDelete(update.BrokerOrderID)
 			if ok {
 				break
 			}
@@ -1198,20 +1224,6 @@ func (s *Service) handleStreamFill(update ports.OrderUpdate, l zerolog.Logger) {
 	}
 
 	po := raw.(*pendingOrder)
-
-	// partial_fill: broker is working the order in multiple micro-executions.
-	// Alpaca paper API often sends partial_fill with qty=0, making it impossible
-	// to record accurate incremental trade rows. Skip recording — the terminal
-	// "fill" event carries the definitive filled_qty and filled_avg_price.
-	if update.Event == "partial_fill" {
-		l.Debug().
-			Float64("incremental_qty", update.Qty).
-			Float64("cumulative_qty", update.FilledQty).
-			Msg("partial fill received — deferring trade record to terminal fill event")
-		return
-	}
-
-	s.pendingOrders.Delete(update.BrokerOrderID)
 
 	fillPrice := update.Price
 	if fillPrice <= 0 {
