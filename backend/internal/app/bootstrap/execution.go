@@ -160,3 +160,20 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 		DailyLossBreaker: dailyLossBreaker,
 	}, nil
 }
+
+// BuildPortfolioHeat constructs the Sprint 4 portfolio-heat guard from a
+// position source (typically positionmonitor.Service) and an equity
+// provider. Intended to be called by callers that assemble
+// gate.ExecutionGateDeps before invoking WireExecutionGateChain:
+//
+//	ph := bootstrap.BuildPortfolioHeat(cfg.Trading.MaxPortfolioHeat, posMon, equity, log)
+//	execDeps.PortfolioHeatGuard = ph
+//
+// Returns nil when maxHeatPct <= 0 so callers can leave the gate field
+// unset (the gate treats nil as disabled).
+func BuildPortfolioHeat(maxHeatPct float64, posSource risk.PositionSource, equitySource risk.EquitySource, log zerolog.Logger) *risk.PortfolioHeat {
+	if maxHeatPct <= 0 {
+		return nil
+	}
+	return risk.NewPortfolioHeat(maxHeatPct, posSource, equitySource, log)
+}

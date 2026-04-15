@@ -111,7 +111,11 @@ type TradingConfig struct {
 	MaxDailyLossUSD        float64           `yaml:"max_daily_loss_usd"`
 	MaxSimultaneousPos     int               `yaml:"max_simultaneous_positions"`
 	MaxPositionsPerGroup   int               `yaml:"max_positions_per_group"`
-	OptionsRisk            OptionsRiskConfig `yaml:"options_risk"`
+	// MaxPortfolioHeat caps aggregate risk (Σ |entry-stop|*qty) across
+	// all open positions as a fraction of account equity. 0 = disabled
+	// (default); 0.10 activates the gate at 10% heat.
+	MaxPortfolioHeat float64           `yaml:"max_portfolio_heat"`
+	OptionsRisk      OptionsRiskConfig `yaml:"options_risk"`
 }
 
 type OptionsRiskConfig struct {
@@ -197,6 +201,7 @@ type rawTradingConfig struct {
 	MaxDailyLossUSD        float64           `yaml:"max_daily_loss_usd"`
 	MaxSimultaneousPos     int               `yaml:"max_simultaneous_positions"`
 	MaxPositionsPerGroup   int               `yaml:"max_positions_per_group"`
+	MaxPortfolioHeat       float64           `yaml:"max_portfolio_heat"`
 	OptionsRisk            OptionsRiskConfig `yaml:"options_risk"`
 }
 
@@ -338,6 +343,7 @@ func Load(envPath, yamlPath string) (*Config, error) {
 			MaxDailyLossUSD:        raw.Trading.MaxDailyLossUSD,
 			MaxSimultaneousPos:     raw.Trading.MaxSimultaneousPos,
 			MaxPositionsPerGroup:   raw.Trading.MaxPositionsPerGroup,
+			MaxPortfolioHeat:       raw.Trading.MaxPortfolioHeat,
 			OptionsRisk:            raw.Trading.OptionsRisk,
 		},
 		Symbols:      raw.Symbols,
