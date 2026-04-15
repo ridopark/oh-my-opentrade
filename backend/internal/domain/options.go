@@ -31,6 +31,16 @@ func UnderlyingFromOCC(s Symbol) Symbol {
 	return Symbol(str[:len(str)-15])
 }
 
+// InstrumentMultiplier returns the contract multiplier for a symbol.
+// Standard equity options = 100 (one contract controls 100 shares).
+// Everything else = 1. Callers compute P&L as (exit-entry)*qty*multiplier.
+func InstrumentMultiplier(sym Symbol) float64 {
+	if IsOCCSymbol(sym) {
+		return 100
+	}
+	return 1
+}
+
 // IsOCCSymbol reports whether s looks like an OCC option symbol.
 // OCC format: 1–6 uppercase letters, followed by YYMMDD, C or P, and 8 strike digits.
 // Minimum length is 15 chars (1-char underlying + 6 date + 1 right + 8 strike = 16; realistically ≥15).

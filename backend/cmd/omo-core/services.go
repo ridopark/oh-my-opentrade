@@ -578,7 +578,7 @@ func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, lo
 			acctLog.Warn().Err(eqErr).Float64("fallback", acctEquity).Msg("using fallback equity")
 		}
 
-		acctLedger := perf.NewLedgerWriter(infra.eventBus, infra.pnlRepo, acctAdapter, infra.repo, acctEquity, acctLog.With().Str("component", "ledger").Logger())
+		acctLedger := perf.NewLedgerWriter(infra.eventBus, infra.pnlRepo, acctAdapter, infra.repo, acctLog.With().Str("component", "ledger").Logger())
 		acctLedger.SetDecayStats(infra.decayRepo)
 		acctBreaker := risk.NewDailyLossBreaker(
 			cfg.Trading.MaxDailyLossPct/100.0,
@@ -901,7 +901,6 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 				case <-ticker.C:
 					if eq, err := infra.ibkrBroker.GetAccountEquity(ctx); err == nil {
 						svc.execution.SetAccountEquity(eq)
-						svc.ledgerWriter.SetAccountEquity(eq)
 						svc.strategySvc.SetAccountEquity(eq)
 						if svc.riskSizer != nil {
 							svc.riskSizer.SetAccountEquity(eq)
