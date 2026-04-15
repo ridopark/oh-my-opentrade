@@ -20,10 +20,10 @@ const (
 		id, idempotency_key, tenant_id, env_mode, symbol, direction, asset_class,
 		order_type, time_in_force, quantity, limit_price, stop_loss, max_slippage_bps,
 		strategy, confidence, max_loss_usd, instrument_kind, instrument_json,
-		status, created_at, meta
+		status, created_at, meta, venue
 	) VALUES (
 		$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-		$14, $15, $16, $17, $18, $19, $20, $21
+		$14, $15, $16, $17, $18, $19, $20, $21, $22
 	)`
 
 	queryMarkIntentSubmitted = `UPDATE order_intents
@@ -50,7 +50,7 @@ const (
 		COALESCE(instrument_kind, ''), instrument_json,
 		status, COALESCE(broker_order_id, ''), COALESCE(submit_error, ''),
 		filled_qty, filled_avg_price,
-		created_at, submitted_at, terminal_at, meta
+		created_at, submitted_at, terminal_at, meta, COALESCE(venue, '')
 	FROM order_intents
 	WHERE tenant_id = $1 AND env_mode = $2
 	  AND status NOT IN ('filled', 'canceled', 'rejected', 'expired', 'lost')
@@ -115,6 +115,14 @@ func (r *OrderIntentRepo) SaveOrderIntent(ctx context.Context, intent domain.Ord
 		tif = "gtc"
 	}
 
+	// Venue: empty (NULL) means "implicit default per asset class" for
+	// backward compat; only non-empty venues get persisted so legacy rows
+	// keep their NULL and callers fall through DefaultVenue at read time.
+	var venue any
+	if !intent.Venue.IsUnspecified() {
+		venue = string(intent.Venue)
+	}
+
 	_, err := r.db.ExecContext(ctx, queryInsertOrderIntent,
 		intent.ID,
 		intent.IdempotencyKey,
@@ -137,6 +145,7 @@ func (r *OrderIntentRepo) SaveOrderIntent(ctx context.Context, intent domain.Ord
 		domain.OrderIntentJournalPendingSubmit,
 		time.Now().UTC(),
 		metaJSON,
+		venue,
 	)
 	if err != nil {
 		if isDuplicateKeyErr(err) {
@@ -203,7 +212,7 @@ func (r *OrderIntentRepo) OpenIntents(ctx context.Context, tenantID string, envM
 	out := make([]domain.OrderIntentJournalRow, 0)
 	for rows.Next() {
 		var row domain.OrderIntentJournalRow
-		var envModeStr, symbolStr, directionStr, assetClassStr string
+		var envModeStr, symbolStr, directionStr, assetClassStr, venueStr string
 		var instrumentJSON sql.NullString
 		var submittedAt, terminalAt sql.NullTime
 		var metaJSON sql.NullString
@@ -235,6 +244,7 @@ func (r *OrderIntentRepo) OpenIntents(ctx context.Context, tenantID string, envM
 			&submittedAt,
 			&terminalAt,
 			&metaJSON,
+			&venueStr,
 		); err != nil {
 			return nil, fmt.Errorf("timescaledb: scan open intent: %w", err)
 		}
@@ -242,6 +252,7 @@ func (r *OrderIntentRepo) OpenIntents(ctx context.Context, tenantID string, envM
 		row.Symbol = domain.Symbol(symbolStr)
 		row.Direction = domain.Direction(directionStr)
 		row.AssetClass = domain.AssetClass(assetClassStr)
+		row.Venue = domain.Venue(venueStr)
 		if instrumentJSON.Valid {
 			row.InstrumentJSON = []byte(instrumentJSON.String)
 		}

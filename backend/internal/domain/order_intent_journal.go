@@ -35,6 +35,7 @@ type OrderIntentJournalRow struct {
 	Symbol          Symbol
 	Direction       Direction
 	AssetClass      AssetClass
+	Venue           Venue // execution venue; empty => DefaultVenue(AssetClass)
 	OrderType       string
 	TimeInForce     string
 	Quantity        float64

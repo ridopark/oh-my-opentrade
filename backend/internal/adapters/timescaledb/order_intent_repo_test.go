@@ -64,6 +64,41 @@ func TestOrderIntentRepo_SaveOrderIntent_Insert(t *testing.T) {
 	require.True(t, called)
 }
 
+func TestOrderIntentRepo_SaveOrderIntent_VenueNullWhenUnspecified(t *testing.T) {
+	// Equity intents built before Gap 10 leave Venue empty; the journal
+	// must persist that as NULL so the implicit DefaultVenue path stays
+	// authoritative. Otherwise we'd freeze today's default into old rows.
+	intent := newTestIntent(t)
+	var gotVenue any = "sentinel"
+	db := &mockDB{
+		execFunc: func(ctx context.Context, query string, args ...any) (sql.Result, error) {
+			require.Len(t, args, 22)
+			gotVenue = args[21]
+			return mockResult{affected: 1}, nil
+		},
+	}
+	repo := timescaledb.NewOrderIntentRepo(db, zerolog.Nop())
+	require.NoError(t, repo.SaveOrderIntent(context.Background(), intent))
+	assert.Nil(t, gotVenue, "unspecified venue must map to NULL, not an empty string")
+}
+
+func TestOrderIntentRepo_SaveOrderIntent_VenuePersisted(t *testing.T) {
+	intent := newTestIntent(t)
+	intent.AssetClass = domain.AssetClassCrypto
+	intent.Venue = domain.VenueHyperliquid
+	var gotVenue any
+	db := &mockDB{
+		execFunc: func(ctx context.Context, query string, args ...any) (sql.Result, error) {
+			require.Len(t, args, 22)
+			gotVenue = args[21]
+			return mockResult{affected: 1}, nil
+		},
+	}
+	repo := timescaledb.NewOrderIntentRepo(db, zerolog.Nop())
+	require.NoError(t, repo.SaveOrderIntent(context.Background(), intent))
+	assert.Equal(t, "hyperliquid", gotVenue)
+}
+
 func TestOrderIntentRepo_SaveOrderIntent_DuplicateKey(t *testing.T) {
 	intent := newTestIntent(t)
 	db := &mockDB{
