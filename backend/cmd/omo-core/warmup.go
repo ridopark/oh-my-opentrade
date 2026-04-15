@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
 	"github.com/oh-my-opentrade/backend/internal/app/barbackfill"
 	"github.com/oh-my-opentrade/backend/internal/app/formingbar"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
@@ -531,42 +532,53 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 		Msg("ibkr: live market data mode")
 
 	{
-		infra.alpacaData.SetTradeHandler(func(tCtx context.Context, trade domain.MarketTrade) error {
-			evt, err := domain.NewEvent(domain.EventTradeReceived, "system", domain.EnvModePaper,
-				fmt.Sprintf("trade-%s-%d", trade.Symbol, trade.Time.UnixNano()), trade)
-			if err != nil {
-				return nil
+		// Wire callbacks onto the *streaming* Alpaca adapter — alpacaData is
+		// used for historical REST only and its WS clients are never connected.
+		// Fall back to alpacaData when streaming source isn't Alpaca.
+		var streamAdapter *alpaca.Adapter
+		if a, ok := infra.streamingBroker.(*alpaca.Adapter); ok {
+			streamAdapter = a
+		} else {
+			streamAdapter = infra.alpacaData
+		}
+		if streamAdapter != nil {
+			streamAdapter.SetTradeHandler(func(tCtx context.Context, trade domain.MarketTrade) error {
+				evt, err := domain.NewEvent(domain.EventTradeReceived, "system", domain.EnvModePaper,
+					fmt.Sprintf("trade-%s-%d", trade.Symbol, trade.Time.UnixNano()), trade)
+				if err != nil {
+					return nil
+				}
+				return infra.eventBus.Publish(tCtx, *evt)
+			})
+
+			if ws := streamAdapter.WSClient(); ws != nil {
+				ws.SetPipelineHealth(svc.ingestion)
 			}
-			return infra.eventBus.Publish(tCtx, *evt)
-		})
-
-		if infra.alpacaData.WSClient() != nil {
-			infra.alpacaData.CryptoWSClient().SetDegradedCallback(func(reason string) {
-				evt, err := domain.NewEvent(domain.EventFeedDegraded, "system", domain.EnvModePaper,
-					fmt.Sprintf("feed-degraded-%d", time.Now().UnixNano()),
-					domain.FeedDegradedPayload{Feed: "crypto", Reason: reason})
-				if err != nil {
-					return
-				}
-				_ = infra.eventBus.Publish(ctx, *evt)
-			})
-
-			infra.alpacaData.WSClient().SetPipelineHealth(svc.ingestion)
-			infra.alpacaData.CryptoWSClient().SetPipelineHealth(svc.ingestion)
-
-			infra.alpacaData.CryptoWSClient().SetCircuitBreakerCallback(func(consecutiveFails int, blockedFor time.Duration) {
-				evt, err := domain.NewEvent(domain.EventWSCircuitBreakerTripped, "system", domain.EnvModePaper,
-					fmt.Sprintf("ws-cb-tripped-%d", time.Now().UnixNano()),
-					domain.WSCircuitBreakerTrippedPayload{
-						Feed:              "crypto",
-						ConsecutiveFails:  consecutiveFails,
-						BlockedForSeconds: blockedFor.Seconds(),
-					})
-				if err != nil {
-					return
-				}
-				_ = infra.eventBus.Publish(ctx, *evt)
-			})
+			if cws := streamAdapter.CryptoWSClient(); cws != nil {
+				cws.SetPipelineHealth(svc.ingestion)
+				cws.SetDegradedCallback(func(reason string) {
+					evt, err := domain.NewEvent(domain.EventFeedDegraded, "system", domain.EnvModePaper,
+						fmt.Sprintf("feed-degraded-%d", time.Now().UnixNano()),
+						domain.FeedDegradedPayload{Feed: "crypto", Reason: reason})
+					if err != nil {
+						return
+					}
+					_ = infra.eventBus.Publish(ctx, *evt)
+				})
+				cws.SetCircuitBreakerCallback(func(consecutiveFails int, blockedFor time.Duration) {
+					evt, err := domain.NewEvent(domain.EventWSCircuitBreakerTripped, "system", domain.EnvModePaper,
+						fmt.Sprintf("ws-cb-tripped-%d", time.Now().UnixNano()),
+						domain.WSCircuitBreakerTrippedPayload{
+							Feed:              "crypto",
+							ConsecutiveFails:  consecutiveFails,
+							BlockedForSeconds: blockedFor.Seconds(),
+						})
+					if err != nil {
+						return
+					}
+					_ = infra.eventBus.Publish(ctx, *evt)
+				})
+			}
 		}
 	}
 
