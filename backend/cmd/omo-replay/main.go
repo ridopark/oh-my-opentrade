@@ -837,6 +837,7 @@ func main() {
 				p.Monitor().InitAggregators(slab, replaySessionOpen)
 				// Runner warmup + suppress + init.
 				p.Runner().SetSuppressProgressEvents(true)
+				p.Runner().SetDisableLiveness(true)
 				for _, sym := range slab {
 					if bars, ok := warmupBarsCache[sym.String()]; ok && len(bars) > 0 {
 						p.Runner().WarmUp(sym.String(), bars, snapshotFn)
@@ -877,6 +878,7 @@ func main() {
 	// already did runner warmup inside the parallel block above).
 	if shardedPipeline == nil && pipeline != nil && pipeline.Runner != nil {
 		pipeline.Runner.SetSuppressProgressEvents(true)
+		pipeline.Runner.SetDisableLiveness(true)
 		snapshotFn := makeSnapshotFn()
 		for _, sym := range symbols {
 			bars := warmupBarsCache[sym.String()]
