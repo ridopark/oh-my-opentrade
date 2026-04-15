@@ -67,6 +67,16 @@ inducement_lookback_bars = 2      # recal: crypto sweeps resolve faster
 # --- Fallbacks ---
 use_bar_sign_tfi = true   # phase 1 has no tick feed into strategy layer
 
+# --- TFI source ---
+# "auto"       — use live trade-tick events when available (paper/live),
+#                fall back to bar-sign when ticks are stale (backtest).
+# "trade_tick" — strictly tick-only; TFI stays zero in backtests.
+# "bar_sign"   — force legacy bar-sign path (pre-tick-wiring behavior).
+# The quant measured bar-sign TFI as net-negative in the Phase A ablation,
+# so "auto" lets paper/live use real taker-side flow without changing
+# backtest determinism. require_tfi stays false until paper data proves out.
+tfi_source = "auto"
+
 # --- Phase-2 gates (flip when xv-flow + skew adapters land) ---
 require_xv_flow = false
 require_skew_ok = false

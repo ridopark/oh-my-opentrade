@@ -94,6 +94,16 @@ type CryptoRevertConfig struct {
 	// Fallback: use sign(close-open)*volume when taker side is missing.
 	UseBarSignTFI bool // default true
 
+	// TFISource controls which TFI ingestion path is active:
+	//   "trade_tick" — only UpdateTrade (tick events); never call UpdateBar.
+	//   "bar_sign"   — only UpdateBar (bar-sign fallback); ignore ticks.
+	//   "auto"       — prefer ticks when we've seen any in the last
+	//                  2*tfi_lookback_min window; otherwise fall back to
+	//                  bar-sign. This is the default so backtests (no tick
+	//                  feed yet) keep working while live/paper uses real
+	//                  taker-side data without any config flip.
+	TFISource string // default "auto"
+
 	// Phase-2 gates — disabled by default.
 	RequireXVFlow  bool // default false
 	RequireSkewOK  bool // default false
@@ -121,6 +131,7 @@ func parseCryptoRevertConfig(params map[string]any) CryptoRevertConfig {
 		RequireInducement:      getBool(params, "require_inducement", true),
 		InducementLookbackBars: getInt(params, "inducement_lookback_bars", 2),
 		UseBarSignTFI:          getBool(params, "use_bar_sign_tfi", true),
+		TFISource:              getString(params, "tfi_source", "auto"),
 		RequireXVFlow:          getBool(params, "require_xv_flow", false),
 		RequireSkewOK:          getBool(params, "require_skew_ok", false),
 		WeightUSHours:          getFloat64(params, "weight_us_hours", 1.0),
@@ -163,6 +174,15 @@ type CryptoRevertState struct {
 	// Rolling bar buffer for inducement detection. Capped at the max of the
 	// inducement lookback and the warmup window.
 	bars []start.Bar `json:"-"`
+
+	// Most recent trade-tick timestamp observed via OnEvent(TradeTick).
+	// Used by the "auto" tfi_source mode to decide whether the bar-sign
+	// fallback is still needed. Zero value means "no tick ever seen".
+	lastTradeAt time.Time `json:"-"`
+
+	// Count of UpdateTrade calls — exposed for tests and telemetry so we
+	// can confirm the event-driven path is actually being exercised.
+	tradeTickCount int `json:"-"`
 
 	// Most recent bullish sweep timestamp; -1 if none yet. We store the bar
 	// index into `bars` and compare against current index for the N-bar gate.
@@ -235,12 +255,51 @@ func (st *CryptoRevertState) ensureIndicators() {
 	}
 }
 
+// TradeTickCount returns how many trade ticks the strategy has ingested via
+// OnEvent(TradeTick). Exposed for tests and operator telemetry so the
+// event-driven TFI path can be verified end-to-end.
+func (st *CryptoRevertState) TradeTickCount() int {
+	if st == nil {
+		return 0
+	}
+	return st.tradeTickCount
+}
+
+// tfiUsingTradeTicks reports whether the TFI indicator should rely on
+// live trade-tick events rather than bar-sign fallback. For "auto" mode we
+// require a tick within 2*tfi_lookback_min of the current bar — long enough
+// to survive brief gaps but short enough that a stalled tick feed degrades
+// to bar-sign on its own.
+func (st *CryptoRevertState) tfiUsingTradeTicks(now time.Time) bool {
+	switch st.Config.TFISource {
+	case "trade_tick":
+		return true
+	case "bar_sign":
+		return false
+	default: // "auto" and any unrecognized value
+		if st.lastTradeAt.IsZero() {
+			return false
+		}
+		window := 2 * time.Duration(st.Config.TFILookbackMin) * time.Minute
+		if window <= 0 {
+			window = 30 * time.Minute
+		}
+		return now.Sub(st.lastTradeAt) <= window
+	}
+}
+
 // ingest updates all indicators and the bar buffer for a single bar.
 func (st *CryptoRevertState) ingest(bar start.Bar) {
 	st.ensureIndicators()
 	v, s, z, ok := st.vwap.Update(bar)
 	st.lastVWAP, st.lastSigma, st.lastDevZ, st.lastOK = v, s, z, ok
-	st.tfi.UpdateBar(bar)
+	// Only feed the bar-sign path into TFI when we don't have fresh tick
+	// data. Under live/paper with a healthy trade-tick feed this is skipped
+	// and TFI reflects real taker-side flow; backtests without tick feeds
+	// fall through and keep the deterministic bar-sign behavior.
+	if !st.tfiUsingTradeTicks(bar.Time) {
+		st.tfi.UpdateBar(bar)
+	}
 
 	st.bars = append(st.bars, bar)
 	// Cap the buffer: 120 bars is ~2x CryptoInducement lookback — ample
@@ -535,6 +594,21 @@ func (s *CryptoRevertStrategy) OnEvent(_ start.Context, _ string, evt any, st st
 	}
 
 	switch e := evt.(type) {
+	case start.TradeTick:
+		// Ingest the tick into TFI only if the active source allows it.
+		// This matches tfiUsingTradeTicks so "bar_sign" mode cannot
+		// accidentally poison TFI with stray tick events.
+		rst.ensureIndicators()
+		if rst.Config.TFISource != "bar_sign" {
+			rst.tfi.UpdateTrade(start.MarketTradeLike{
+				Time:      e.Time,
+				Size:      e.Size,
+				TakerSide: e.TakerSide,
+			})
+			rst.tradeTickCount++
+			rst.lastTradeAt = e.Time
+		}
+		return rst, nil, nil
 	case start.FillConfirmation:
 		if rst.PendingEntry == start.SideBuy && e.Side == start.SideBuy {
 			rst.PendingEntry = ""
