@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -63,9 +64,9 @@ func initLogger() zerolog.Logger {
 	}
 	discordLogHook = logger.NewDiscordHook("default")
 	log := logger.New(logger.Config{
-		Level:  logLevel,
-		Pretty: os.Getenv("LOG_PRETTY") == "true",
-		Hooks:  []zerolog.Hook{discordLogHook},
+		Level:   logLevel,
+		Pretty:  os.Getenv("LOG_PRETTY") == "true",
+		Writers: []io.Writer{discordLogHook},
 	}).With().Str("service", "omo-core").Logger()
 
 	log.Info().Msg("starting")
