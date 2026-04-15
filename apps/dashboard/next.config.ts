@@ -29,6 +29,14 @@ const nextConfig: NextConfig = {
         destination: `${backendUrl}/strategies/sweep/:path*`,
       },
       {
+        source: "/api/orders",
+        destination: `${backendUrl}/orders`,
+      },
+      {
+        source: "/api/orders/:path*",
+        destination: `${backendUrl}/orders/:path*`,
+      },
+      {
         source: "/api/:path*",
         destination: `${backendUrl}/api/:path*`,
       },
