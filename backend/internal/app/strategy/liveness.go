@@ -18,14 +18,48 @@ import (
 // counter is sufficient and keeps the hot path allocation-free.
 var livenessEmitSeq atomic.Uint64
 
-// reasonFromSignals derives a DecisionReason from the signals a strategy
-// returned for a single bar. Zero-length signals indicate HOLD with no
-// explicit reason — we still record the outcome so the UI can distinguish
-// "never evaluated" from "evaluated, decided to hold". Non-empty signals
-// use the first actionable signal's type/side/tags.
-func reasonFromSignals(signals []start.Signal) *domain.DecisionReason {
+// HoldReasoner is an optional interface a Strategy implementation may satisfy
+// to surface *why* the current bar produced no signals. The runner invokes
+// LastHoldReason only when the strategy returned zero signals — the returned
+// reason replaces the generic empty-summary HOLD so the dashboard can show
+// actionable detail (blocking gate, threshold numbers, setup scores).
+//
+// Returning nil is always safe — the caller falls back to the generic HOLD
+// reason. Implementations should store the first gate that blocked entry on
+// the current bar and overwrite on each bar; strategy_manager.
+//
+// Kept on the app-layer (not domain/strategy) so not-yet-updated strategies
+// compile unchanged and the domain interface stays minimal.
+type HoldReasoner interface {
+	LastHoldReason(symbol string) *domain.DecisionReason
+}
+
+// reasonFromOutcome derives a DecisionReason from the signals a strategy
+// returned for a single bar. Zero-length signals indicate HOLD — we still
+// record the outcome so the UI can distinguish "never evaluated" from
+// "evaluated, decided to hold". When the strategy implements HoldReasoner
+// and has a per-symbol reason recorded, that replaces the empty summary so
+// the dashboard can show the blocking gate (e.g. "below VWAP bias, score
+// 0.42 < 0.75"). Non-empty signals use the first actionable signal's
+// type/side/tags; strategy / symbol may be nil/"" on that path (and on any
+// legacy caller that doesn't yet route through the instance-aware hook).
+func reasonFromOutcome(signals []start.Signal, strategy start.Strategy, symbol string) *domain.DecisionReason {
 	now := time.Now().UTC()
 	if len(signals) == 0 {
+		if hr, ok := strategy.(HoldReasoner); ok && hr != nil {
+			if r := hr.LastHoldReason(symbol); r != nil {
+				// Clone to prevent a racy mutation if the strategy
+				// decides to overwrite the struct in-place later.
+				out := *r
+				if out.Outcome == "" {
+					out.Outcome = "HOLD"
+				}
+				if out.At.IsZero() {
+					out.At = now
+				}
+				return &out
+			}
+		}
 		return &domain.DecisionReason{At: now, Outcome: "HOLD", Summary: ""}
 	}
 	sig := signals[0]

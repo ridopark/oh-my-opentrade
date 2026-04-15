@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -15,6 +16,59 @@ import (
 // AVWAPStrategy implements breakout and bounce entries anchored to VWAP levels.
 type AVWAPStrategy struct {
 	meta start.Meta
+
+	// holdReasons captures the first entry gate that blocked a symbol on
+	// the current bar so the dashboard can render "why HOLD" in the last-
+	// decision panel. Written by emitEarlyGated / emitEntryGated, cleared
+	// on entry signal emission. sync.Map keeps reads lock-free on the
+	// liveness snapshot path that races with per-bar OnBar writes across
+	// parallel-symbol evaluation.
+	holdReasons sync.Map // map[string]*domain.DecisionReason
+}
+
+// recordHoldReason stores the current HOLD rationale for symbol. Called by
+// every gated early-return so LastHoldReason can surface the blocking gate
+// to the liveness telemetry stream.
+func (s *AVWAPStrategy) recordHoldReason(symbol, gate, detail string, extraTags map[string]string) {
+	if s == nil || symbol == "" {
+		return
+	}
+	tags := map[string]string{"gate": gate}
+	for k, v := range extraTags {
+		tags[k] = v
+	}
+	summary := detail
+	if summary == "" {
+		summary = gate
+	}
+	s.holdReasons.Store(symbol, &domain.DecisionReason{
+		At:      time.Now().UTC(),
+		Outcome: "HOLD",
+		Summary: summary,
+		Tags:    tags,
+	})
+}
+
+// clearHoldReason drops the per-symbol HOLD rationale on entry-signal fire.
+func (s *AVWAPStrategy) clearHoldReason(symbol string) {
+	if s == nil {
+		return
+	}
+	s.holdReasons.Delete(symbol)
+}
+
+// LastHoldReason implements the HoldReasoner interface used by the runner's
+// liveness tracker to populate DecisionReason.Summary on zero-signal bars.
+func (s *AVWAPStrategy) LastHoldReason(symbol string) *domain.DecisionReason {
+	if s == nil {
+		return nil
+	}
+	v, ok := s.holdReasons.Load(symbol)
+	if !ok {
+		return nil
+	}
+	r, _ := v.(*domain.DecisionReason)
+	return r
 }
 
 // NewAVWAPStrategy creates a new AVWAP Breakout/Bounce strategy.
@@ -210,6 +264,15 @@ type AVWAPConfig struct {
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
 type AVWAPState struct {
+	// parent is a non-serialized back-pointer to the AVWAPStrategy that
+	// produced this state. Used by emitEarlyGated / emitEntryGated to
+	// record the first blocking gate into the strategy's per-symbol
+	// holdReasons map so LastHoldReason can serve it to the liveness
+	// tracker. Nil is tolerated (unit tests constructing AVWAPState
+	// directly, prior versions restored from snapshot) — recordHoldReason
+	// silently no-ops when parent is unset.
+	parent *AVWAPStrategy `json:"-"`
+
 	Symbol         string
 	Calc           *start.AnchoredVWAPCalc
 	Indicators     start.IndicatorData
@@ -947,6 +1010,7 @@ func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string
 	}
 
 	st := &AVWAPState{
+		parent:          s,
 		Symbol:          symbol,
 		Calc:            calc,
 		AboveCount:      make(map[string]int),
@@ -2310,6 +2374,12 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 // emitEarlyGated publishes an EntryGated event for early gate returns (cooldown,
 // hours, position, regime) where the full entryContext is not yet available.
 func (s *AVWAPState) emitEarlyGated(ctx start.Context, symbol string, bar start.Bar, blockingGate, blockingDetail string) {
+	// Record the HOLD rationale regardless of ProgressEventsSuppressed — the
+	// liveness tracker surfaces it via LastHoldReason on the generic
+	// DecisionReason path and that runs in both live and backtest modes.
+	if s != nil && s.parent != nil {
+		s.parent.recordHoldReason(symbol, blockingGate, blockingDetail, nil)
+	}
 	if ctx == nil {
 		return
 	}
@@ -2437,6 +2507,20 @@ func (s *AVWAPState) emitEntryGated(ec entryContext) {
 	volRatio := 0.0
 	if s.Indicators.VolumeSMA > 0 {
 		volRatio = ec.bar.Volume / s.Indicators.VolumeSMA
+	}
+
+	// Record the HOLD rationale for the liveness tracker so the dashboard
+	// can show "why HOLD" with the actual score/threshold numbers, not just
+	// a generic blocking-gate tag.
+	if s != nil && s.parent != nil {
+		extra := map[string]string{
+			"score":       fmt.Sprintf("%d", conf.Score),
+			"threshold":   fmt.Sprintf("%d", ec.cfg.MinConfluenceScore),
+			"avwap_bias":  ec.avwapBias,
+			"slope_bps":   fmt.Sprintf("%.2f", ec.avwapSlope),
+			"regime":      ec.regimeTag,
+		}
+		s.parent.recordHoldReason(ec.symbol, blockingGate, blockingDetail, extra)
 	}
 
 	payload := domain.EntryGatedPayload{
@@ -3045,6 +3129,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 	if sig, err := avwapSt.evaluateExits(ec); err != nil {
 		return avwapSt, nil, err
 	} else if sig != nil {
+		s.clearHoldReason(symbol)
 		return avwapSt, []start.Signal{*sig}, nil
 	}
 
@@ -3129,6 +3214,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 	if sig, err := avwapSt.evaluateEntries(ec); err != nil {
 		return avwapSt, nil, err
 	} else if sig != nil {
+		s.clearHoldReason(symbol)
 		return avwapSt, []start.Signal{*sig}, nil
 	}
 

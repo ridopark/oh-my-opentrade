@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -25,6 +26,15 @@ type ConfluenceResult struct {
 // Stop: below swing low. Target: R:R × stop distance.
 type MACDStrategy struct {
 	meta start.Meta
+
+	// holdReasons captures the first entry gate that blocked a symbol on
+	// the current bar so the dashboard can show "why HOLD" instead of a
+	// bare outcome. Keyed by symbol, written on every emitMACDEntryGated
+	// call, cleared when an entry signal actually fires. sync.Map is used
+	// instead of a mutex-protected map because reads (LastHoldReason) and
+	// writes (OnBar via emitMACDEntryGated) can race across different
+	// goroutines when the runner evaluates multiple symbols in parallel.
+	holdReasons sync.Map // map[string]*domain.DecisionReason
 }
 
 func NewMACDStrategy() *MACDStrategy {
@@ -316,7 +326,7 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 	if bmSt.CalcBarCount < cfg.StabilizationBars {
 		bmSt.GateStabilization++
 		bmSt.PrevMACDHist = ind.MACDHistogram
-		emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "warmup", fmt.Sprintf("bar %d/%d", bmSt.CalcBarCount, cfg.StabilizationBars))
+		s.emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "warmup", fmt.Sprintf("bar %d/%d", bmSt.CalcBarCount, cfg.StabilizationBars))
 		return bmSt, nil, nil
 	}
 
@@ -328,7 +338,7 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 	if bmSt.PendingEntry != "" {
 		bmSt.GatePosition++
 		bmSt.PrevMACDHist = ind.MACDHistogram
-		emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters", "pending entry awaiting fill")
+		s.emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters", "pending entry awaiting fill")
 		return bmSt, nil, nil
 	}
 
@@ -336,7 +346,7 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 	if now.Before(bmSt.CooldownUntil) || bmSt.TradesToday >= cfg.MaxTradesPerDay {
 		bmSt.GateCooldown++
 		bmSt.PrevMACDHist = ind.MACDHistogram
-		emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters", "cooldown or max trades reached")
+		s.emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters", "cooldown or max trades reached")
 		return bmSt, nil, nil
 	}
 
@@ -347,7 +357,7 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 			if hhmm < cfg.AllowedHoursStart || hhmm >= cfg.AllowedHoursEnd {
 				bmSt.GateHours++
 				bmSt.PrevMACDHist = ind.MACDHistogram
-				emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters", "outside trading hours")
+				s.emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters", "outside trading hours")
 				return bmSt, nil, nil
 			}
 		}
@@ -363,7 +373,7 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 	if ind.EMA9 > 0 && !priceAboveEMA9 && !priceBelowEMA9 {
 		bmSt.GateRegime++
 		bmSt.PrevMACDHist = ind.MACDHistogram
-		emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "regime", "no EMA9 directional bias")
+		s.emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "regime", "no EMA9 directional bias")
 		return bmSt, nil, nil
 	}
 
@@ -382,7 +392,7 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 		wr := float64(wins) / float64(len(window))
 		if wr < cfg.RollingWRMin {
 			bmSt.PrevMACDHist = ind.MACDHistogram
-			emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters", fmt.Sprintf("rolling WR %.0f%% < %.0f%% min", wr*100, cfg.RollingWRMin*100))
+			s.emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters", fmt.Sprintf("rolling WR %.0f%% < %.0f%% min", wr*100, cfg.RollingWRMin*100))
 			return bmSt, nil, nil
 		}
 	}
@@ -424,7 +434,7 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 	if cfg.RangeGateEnabled && regimeTag == "BALANCE" && ind.ADX > 0 && ind.ADX < cfg.RangeGateADXMax {
 		bmSt.GateRegime++
 		bmSt.PrevMACDHist = ind.MACDHistogram
-		emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "regime",
+		s.emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "regime",
 			fmt.Sprintf("range gate: BALANCE regime with adx %.1f < %.1f", ind.ADX, cfg.RangeGateADXMax))
 		return bmSt, nil, nil
 	}
@@ -435,7 +445,7 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 	if cfg.DPZConditioningEnabled && ind.LateSessionDPZ != 0 {
 		if ind.LateSessionDPZ <= cfg.DPZMACDSuppressThreshold && cfg.DPZMACDSuppressMode == "block" {
 			bmSt.PrevMACDHist = ind.MACDHistogram
-			emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters",
+			s.emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters",
 				fmt.Sprintf("dp_z suppress: late Z=%.2f <= %.2f (MACD-adverse regime)", ind.LateSessionDPZ, cfg.DPZMACDSuppressThreshold))
 			return bmSt, nil, nil
 		}
@@ -611,6 +621,7 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 		bmSt.PendingEntry = sig.Side
 		bmSt.PendingEntryAt = now
 		bmSt.TradesToday++
+		s.clearHoldReason(symbol)
 		if ctx != nil {
 			ctx.Logger().Info("MACD SIGNAL",
 				"symbol", symbol, "side", sig.Side,
@@ -621,7 +632,7 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 	}
 
 	bmSt.GateNoSetup++
-	emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "crossover", "no MACD crossover detected")
+	s.emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "crossover", "no MACD crossover detected")
 	return bmSt, nil, nil
 }
 
@@ -867,7 +878,62 @@ func macdGateIndex(gate string) int {
 
 // emitMACDEntryGated publishes an EntryGated event showing how close
 // this symbol is to triggering a MACD entry signal.
-func emitMACDEntryGated(ctx start.Context, symbol string, bmSt *BMState, bar start.Bar, ind start.IndicatorData, blockingGate, blockingDetail string) {
+func (s *MACDStrategy) recordHoldReason(symbol, gate, detail string, ind start.IndicatorData) {
+	if s == nil || symbol == "" {
+		return
+	}
+	tags := map[string]string{"gate": gate}
+	if ind.MACDLine != 0 || ind.MACDSignal != 0 {
+		tags["macd_line"] = fmt.Sprintf("%.6f", ind.MACDLine)
+		tags["macd_signal"] = fmt.Sprintf("%.6f", ind.MACDSignal)
+	}
+	if ind.ADX > 0 {
+		tags["adx"] = fmt.Sprintf("%.2f", ind.ADX)
+	}
+	summary := detail
+	if summary == "" {
+		summary = gate
+	}
+	reason := &domain.DecisionReason{
+		At:      time.Now().UTC(),
+		Outcome: "HOLD",
+		Summary: summary,
+		Tags:    tags,
+	}
+	s.holdReasons.Store(symbol, reason)
+}
+
+// clearHoldReason drops the per-symbol HOLD rationale. Called on entry-signal
+// emission so a subsequent no-op bar doesn't keep claiming the strategy is
+// blocked when it simply hasn't been re-evaluated yet.
+func (s *MACDStrategy) clearHoldReason(symbol string) {
+	if s == nil {
+		return
+	}
+	s.holdReasons.Delete(symbol)
+}
+
+// LastHoldReason implements HoldReasoner. Returns the first gate that
+// blocked entry on the most recent bar (or nil if no HOLD has been recorded
+// or the strategy just emitted a signal).
+func (s *MACDStrategy) LastHoldReason(symbol string) *domain.DecisionReason {
+	if s == nil {
+		return nil
+	}
+	v, ok := s.holdReasons.Load(symbol)
+	if !ok {
+		return nil
+	}
+	r, _ := v.(*domain.DecisionReason)
+	return r
+}
+
+func (s *MACDStrategy) emitMACDEntryGated(ctx start.Context, symbol string, bmSt *BMState, bar start.Bar, ind start.IndicatorData, blockingGate, blockingDetail string) {
+	// Record the HOLD reason unconditionally — liveness telemetry must reach
+	// the dashboard even when ProgressEventsSuppressed is true (backtest mode
+	// still displays per-symbol "why HOLD" rationale in replay UIs).
+	s.recordHoldReason(symbol, blockingGate, blockingDetail, ind)
+
 	// Caller-side short-circuit: avoid building the EntryGatedPayload struct
 	// (and the nested Confluence/Indicators/BarSnapshot) on every gated
 	// evaluation when the runner is dropping progress telemetry. Was ~800k
