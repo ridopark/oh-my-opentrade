@@ -590,6 +590,13 @@ Source: IBKR-trader risk architecture. Sprint 4 item 3 of 4.
 
 ## Phase 4: 3-State Kill Switch (ACTIVE / HALTED / REDUCING)
 
+**Status: SHIPPED (2026-04-15)** — circuit_breaker.go extended with
+atomic KillSwitchState, new exec_kill_switch gate registered as
+`kill_switch`, admin endpoint `POST/GET /api/v1/admin/kill-switch`,
+persistence via migration 033 (`kill_switch_events` + `kill_switch_state`
+singleton) restoring last state on process restart. IBKR reconnect-fatal
+callback now transitions HALTED instead of toggling the old binary halt.
+
 ### Problem
 Today's `DailyLossBreaker.SetGlobalHalt()` is binary — on or off. When it trips, existing positions can't be closed through the normal strategy path because the halt blocks ALL orders, including exit orders. Operators have to disable the halt, which also unblocks new entries. There's no "quiet shutdown" mode.
 

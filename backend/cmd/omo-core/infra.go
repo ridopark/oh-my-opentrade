@@ -40,6 +40,7 @@ type infraDeps struct {
 	stratPerfRepo   *timescaledb.StrategyPerfRepo
 	decayRepo       *timescaledb.DecayRepository
 	dnaApprovalRepo *timescaledb.DNAApprovalRepo
+	killSwitchRepo  *timescaledb.KillSwitchRepo
 	orderIntentRepo *timescaledb.OrderIntentRepo
 	tokenStore      *timescaledb.TokenStore
 	tracerProvider  *sdktrace.TracerProvider
@@ -179,6 +180,7 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 	stratPerfRepo := timescaledb.NewStrategyPerfRepo(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "strategy_perf").Logger())
 	decayRepo := timescaledb.NewDecayRepository(sqlDB, log.With().Str("component", "decay").Logger())
 	dnaApprovalRepo := timescaledb.NewDNAApprovalRepo(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "dna_approval_repo").Logger())
+	killSwitchRepo := timescaledb.NewKillSwitchRepo(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "kill_switch_repo").Logger())
 	orderIntentRepo := timescaledb.NewOrderIntentRepo(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "order_intent_repo").Logger())
 	tokenStore := timescaledb.NewTokenStore(timescaledb.NewSqlDB(sqlDB))
 
@@ -192,6 +194,7 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 		stratPerfRepo:   stratPerfRepo,
 		decayRepo:       decayRepo,
 		dnaApprovalRepo: dnaApprovalRepo,
+		killSwitchRepo:  killSwitchRepo,
 		orderIntentRepo: orderIntentRepo,
 		tokenStore:      tokenStore,
 		tracerProvider:  tp,
