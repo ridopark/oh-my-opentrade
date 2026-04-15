@@ -240,3 +240,17 @@ type AuctionImbalanceUpdate struct {
 	Price     float64
 	Imbalance float64 // positive = buy imbalance, negative = sell imbalance
 }
+
+// TradeTick is forwarded to strategies when a trade tick (MarketTrade) arrives
+// for one of their subscribed symbols. Strategies that care about aggressor-
+// side microstructure (e.g. crypto TFI gating) handle it in OnEvent; others
+// can ignore it. Intentionally decoupled from domain.MarketTrade so the
+// strategy package stays free of domain imports.
+type TradeTick struct {
+	Symbol    string
+	Time      time.Time
+	Price     float64
+	Size      float64
+	TakerSide string // "buy", "sell", or "" if unknown
+	Venue     string
+}
