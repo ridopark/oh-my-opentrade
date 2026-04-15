@@ -10,6 +10,9 @@ export function MarketingNav() {
         <a href="#capabilities" className="landing-label hover:text-[var(--signal-cyan)] transition-colors">
           CAPABILITIES
         </a>
+        <a href="#ai-edge" className="landing-label hover:text-[var(--signal-cyan)] transition-colors">
+          AI EDGE
+        </a>
         <a href="#strategies" className="landing-label hover:text-[var(--signal-cyan)] transition-colors">
           STRATEGIES
         </a>
