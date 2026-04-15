@@ -540,6 +540,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("build strategy pipeline: %w", err)
 	}
 
+	if pipeline.Runner != nil {
+		pipeline.Runner.SetDisableLiveness(true)
+	}
+
 	if pipeline.Enricher == nil {
 		if subErr := r.infra.EventBus.Subscribe(ctx, domain.EventSignalCreated, signalPassthrough(r.infra.EventBus, r.log)); subErr != nil {
 			r.status.Store("error")
@@ -1385,6 +1389,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			shardStrat.Runner.SetDeferSignalPublish(true)
 			shardStrat.Runner.SetDeferReconcile(true)
+			shardStrat.Runner.SetDisableLiveness(true)
 			if len(dpLookup) > 0 {
 				shardStrat.Runner.SetDarkPoolLookup(dpLookup)
 			}
