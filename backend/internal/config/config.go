@@ -131,6 +131,17 @@ type TradingConfig struct {
 	// by the sector_exposure gate. Empty disables metadata loading.
 	SymbolMetadataPath string            `yaml:"symbol_metadata_path"`
 	OptionsRisk        OptionsRiskConfig `yaml:"options_risk"`
+	// Sprint 4.5 compliance — default-disabled so legacy deploys behave
+	// exactly as before until operators opt in.
+	//
+	// PDTEnforcement: "strict" enables pdt_guard (requires
+	// PatternDayTrader=true AND equity<25k to actually block); "off"
+	// disables the gate unconditionally. Empty string = "off".
+	PDTEnforcement string `yaml:"pdt_enforcement"`
+	// RegTEnforcement enables the Reg-T 50% initial-margin gate. Default
+	// false; intended to be set true only when running on IBKR (paper or
+	// live). Simbroker / Alpaca paper skip this regardless.
+	RegTEnforcement bool `yaml:"reg_t_enforcement"`
 }
 
 type OptionsRiskConfig struct {
@@ -222,6 +233,8 @@ type rawTradingConfig struct {
 	MaxDirectionalBias     float64           `yaml:"max_directional_bias"`
 	SymbolMetadataPath     string            `yaml:"symbol_metadata_path"`
 	OptionsRisk            OptionsRiskConfig `yaml:"options_risk"`
+	PDTEnforcement         string            `yaml:"pdt_enforcement"`
+	RegTEnforcement        bool              `yaml:"reg_t_enforcement"`
 }
 
 type rawConfig struct {
@@ -368,6 +381,8 @@ func Load(envPath, yamlPath string) (*Config, error) {
 			MaxDirectionalBias:     raw.Trading.MaxDirectionalBias,
 			SymbolMetadataPath:     raw.Trading.SymbolMetadataPath,
 			OptionsRisk:            raw.Trading.OptionsRisk,
+			PDTEnforcement:         raw.Trading.PDTEnforcement,
+			RegTEnforcement:        raw.Trading.RegTEnforcement,
 		},
 		Symbols:      raw.Symbols,
 		Server:       raw.Server,

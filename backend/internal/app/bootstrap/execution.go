@@ -229,6 +229,43 @@ func BuildKillSwitch(breaker *risk.DailyLossBreaker) *risk.DailyLossBreaker {
 	return breaker
 }
 
+// BuildPDTGuard constructs the Sprint 4.5 PDT enforcement guard. Returns
+// nil when mode is empty or "off" so callers can leave the
+// ExecutionGateDeps.PDTGuard field unset (the gate treats nil as
+// disabled). The tracker passed in should be a long-lived singleton
+// wired to fill observations; the account port supplies the
+// PatternDayTrader flag at decision time.
+//
+// NOTE: this helper does NOT auto-register the guard into the default
+// execution gate chain — per Sprint 4.5 gating scope the wiring into
+// omo-core/ExecutionGateDeps is deferred until the fill-event hook
+// lands. Callers that want it today can assemble ExecutionGateDeps
+// manually.
+func BuildPDTGuard(
+	mode string,
+	tracker *risk.PDTTracker,
+	account ports.AccountPort,
+	equity risk.EquitySource,
+	accountID string,
+) *risk.PDTGuard {
+	m := risk.PDTEnforcementMode(mode)
+	if m == "" || m == risk.PDTEnforcementOff {
+		return nil
+	}
+	return risk.NewPDTGuard(m, tracker, account, equity, accountID)
+}
+
+// BuildRegTCheck constructs the Sprint 4.5 Reg-T initial-margin guard.
+// Returns nil when enabled is false OR when account is nil so the gate
+// degrades to pass-through. Pair this with a broker check in the caller
+// so simbroker / Alpaca paper bypass Reg-T entirely.
+func BuildRegTCheck(enabled bool, account ports.AccountPort, log zerolog.Logger) *risk.RegTCheck {
+	if !enabled || account == nil {
+		return nil
+	}
+	return risk.NewRegTCheck(account, log)
+}
+
 // WarnMissingSymbolMetadata emits a WARN log for every active symbol absent
 // from the loaded metadata table. These symbols will fail-open through the
 // sector_exposure gate — operators need to know so they can backfill the
