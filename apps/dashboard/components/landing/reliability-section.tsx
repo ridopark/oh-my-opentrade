@@ -23,6 +23,12 @@ const pillars = [
     body:
       "Feed-age monitoring, Discord escalation, and a three-state ACTIVE/HALTED/REDUCING switch (Sprint 4) take the system offline cleanly on anomaly.",
   },
+  {
+    n: "05",
+    title: "Broker-Authoritative Equity",
+    body:
+      "A per-minute sampler writes equity_curve rows from live IBKR NetLiquidation. The Portfolio chart matches the broker's own statement exactly; strategy attribution P&L lives in a separate ledger so internal accounting errors can never drift into the equity story.",
+  },
 ];
 
 export function ReliabilitySection() {

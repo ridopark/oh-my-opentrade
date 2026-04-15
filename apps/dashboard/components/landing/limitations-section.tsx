@@ -7,9 +7,9 @@ const limits = [
   },
   {
     n: "02",
-    title: "IBKR live execution is unvalidated",
+    title: "IBKR funded-account execution pending",
     body:
-      "The IBKR adapter is fully implemented and runs in paper mode. Live validation on a funded account is pending.",
+      "The IBKR adapter runs full paper sessions daily — equities, options, dust-sweep reconciliation, crypto spot all go end-to-end through the real IBKR gateway. Funded-account validation is the remaining step.",
   },
   {
     n: "03",

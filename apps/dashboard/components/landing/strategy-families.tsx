@@ -44,6 +44,15 @@ const families: Family[] = [
     caveat: "Informational signal, most durable",
     path: "M0,36 L8,30 L16,34 L24,26 L32,28 L40,20 L48,22 L56,14 L64,18 L72,10 L80,12 L88,6",
   },
+  {
+    code: "S5",
+    name: "crypto_revert_v1",
+    thesis:
+      "BTC/ETH/SOL mean-reversion on IBKR spot, 5m bars. Warm persistent market-data subscriptions keep the uscrypto farm awake so the pre-trade slippage guard never times out between infrequent signals.",
+    pf: "Live paper",
+    caveat: "First of a five-strategy crypto pipeline",
+    path: "M0,32 L8,36 L16,28 L24,34 L32,22 L40,30 L48,16 L56,26 L64,12 L72,22 L80,10 L88,16",
+  },
 ];
 
 function Sparkline({ path }: { path: string }) {
@@ -66,10 +75,10 @@ export function StrategyFamilies() {
       <div className="mb-20">
         <p className="landing-label landing-cyan">STRATEGY FAMILIES</p>
         <h2 className="landing-display mt-6 text-[clamp(2rem,4.5vw,3.75rem)] max-w-4xl">
-          Three strategies.<br />One confluence gate.
+          Three equity strategies.<br />One confluence gate.<br />Crypto pipeline shipping.
         </h2>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-10">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-10">
         {families.map((f) => (
           <div key={f.name} className="border-t landing-hairline pt-8">
             <div className="flex items-baseline justify-between">
