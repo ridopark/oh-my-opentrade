@@ -105,6 +105,87 @@ func (s Symbol) IsCryptoSymbol() bool {
 	return strings.Contains(str, "/") && strings.HasSuffix(str, "/USD")
 }
 
+// Venue identifies the execution/market-data venue a symbol is traded on.
+// Added for Gap 10 (MFT crypto): perpetual and cross-venue strategies need
+// to distinguish "BTC/USD on Coinbase" from "BTC/USD on Binance" or
+// "BTCUSDT-PERP on Hyperliquid". Equity code paths leave Venue zero (empty)
+// and callers fall back to DefaultVenue(AssetClass) as the implicit venue,
+// preserving existing behavior.
+type Venue string
+
+const (
+	// VenueUnspecified is the zero value; treat as "use DefaultVenue(assetClass)".
+	VenueUnspecified Venue = ""
+
+	// Equity venues
+	VenueAlpaca Venue = "alpaca"
+	VenueIBKR   Venue = "ibkr"
+
+	// Crypto spot venues
+	VenueCoinbase Venue = "coinbase"
+	VenueBinance  Venue = "binance"
+	VenueKraken   Venue = "kraken"
+
+	// Crypto derivatives venues (perps)
+	VenueHyperliquid Venue = "hyperliquid"
+	VenueBinanceFut  Venue = "binance-futures"
+	VenueBybit       Venue = "bybit"
+)
+
+func (v Venue) String() string { return string(v) }
+
+// IsUnspecified returns true when the venue field was never set. Callers
+// should resolve via DefaultVenue(assetClass) before publishing to adapters
+// that require a concrete venue.
+func (v Venue) IsUnspecified() bool { return v == VenueUnspecified }
+
+// NewVenue validates a venue string. Empty string is accepted as
+// VenueUnspecified (implicit default venue for backward compat); any other
+// value is accepted as-is so adapters can introduce new venues without a
+// domain-layer change.
+func NewVenue(v string) (Venue, error) {
+	return Venue(v), nil
+}
+
+// DefaultVenue returns the implicit venue for a given asset class when an
+// entity was constructed without an explicit Venue. Used so equity code
+// paths built before Gap 10 keep working untouched.
+func DefaultVenue(ac AssetClass) Venue {
+	switch ac {
+	case AssetClassEquity:
+		return VenueAlpaca
+	case AssetClassCrypto:
+		return VenueCoinbase
+	default:
+		return VenueUnspecified
+	}
+}
+
+// QualifiedSymbol is a venue-qualified symbol used by cross-venue strategies
+// that need to refer to the same logical pair on different venues (e.g. a
+// basis trade between Coinbase spot and Hyperliquid perp). It is a value
+// object — adapters still persist Symbol and Venue as separate columns.
+type QualifiedSymbol struct {
+	Venue  Venue  `json:"venue"`
+	Symbol Symbol `json:"symbol"`
+}
+
+// String returns "venue:symbol" (e.g. "coinbase:BTC/USD"). When Venue is
+// unspecified the bare symbol is returned so legacy logs stay readable.
+func (q QualifiedSymbol) String() string {
+	if q.Venue.IsUnspecified() {
+		return string(q.Symbol)
+	}
+	return string(q.Venue) + ":" + string(q.Symbol)
+}
+
+// QS is a constructor that defaults Venue from the asset class. Use this in
+// call sites that previously passed a bare Symbol but now need to attach
+// the implicit venue without hard-coding one.
+func QS(sym Symbol, ac AssetClass) QualifiedSymbol {
+	return QualifiedSymbol{Venue: DefaultVenue(ac), Symbol: sym}
+}
+
 // Timeframe represents a candle interval.
 type Timeframe string
 

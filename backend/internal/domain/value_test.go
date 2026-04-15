@@ -61,6 +61,84 @@ func TestSymbol(t *testing.T) {
 	})
 }
 
+func TestVenue(t *testing.T) {
+	t.Run("zero value is unspecified", func(t *testing.T) {
+		var v domain.Venue
+		assert.True(t, v.IsUnspecified())
+		assert.Equal(t, "", v.String())
+	})
+
+	t.Run("explicit venues round-trip", func(t *testing.T) {
+		v, err := domain.NewVenue("coinbase")
+		require.NoError(t, err)
+		assert.Equal(t, domain.VenueCoinbase, v)
+		assert.False(t, v.IsUnspecified())
+	})
+
+	t.Run("unknown venue is accepted so adapters can add new ones", func(t *testing.T) {
+		// Domain must not gatekeep venue names; adapters introduce new
+		// venues (e.g. a new DEX) without a domain change.
+		v, err := domain.NewVenue("some-new-dex")
+		require.NoError(t, err)
+		assert.Equal(t, domain.Venue("some-new-dex"), v)
+	})
+}
+
+func TestDefaultVenue(t *testing.T) {
+	tests := []struct {
+		name string
+		ac   domain.AssetClass
+		want domain.Venue
+	}{
+		{"equity defaults to alpaca", domain.AssetClassEquity, domain.VenueAlpaca},
+		{"crypto defaults to coinbase", domain.AssetClassCrypto, domain.VenueCoinbase},
+		{"unknown asset class is unspecified", domain.AssetClass(""), domain.VenueUnspecified},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, domain.DefaultVenue(tt.ac))
+		})
+	}
+}
+
+func TestQualifiedSymbol_String(t *testing.T) {
+	t.Run("qualified with venue", func(t *testing.T) {
+		qs := domain.QualifiedSymbol{Venue: domain.VenueHyperliquid, Symbol: domain.Symbol("BTC-PERP")}
+		assert.Equal(t, "hyperliquid:BTC-PERP", qs.String())
+	})
+
+	t.Run("unspecified venue shows bare symbol for legacy log compat", func(t *testing.T) {
+		qs := domain.QualifiedSymbol{Symbol: domain.Symbol("AAPL")}
+		assert.Equal(t, "AAPL", qs.String())
+	})
+}
+
+func TestQS_DefaultsVenueFromAssetClass(t *testing.T) {
+	sym := domain.Symbol("BTC/USD")
+
+	crypto := domain.QS(sym, domain.AssetClassCrypto)
+	assert.Equal(t, domain.VenueCoinbase, crypto.Venue)
+	assert.Equal(t, sym, crypto.Symbol)
+
+	equity := domain.QS(domain.Symbol("AAPL"), domain.AssetClassEquity)
+	assert.Equal(t, domain.VenueAlpaca, equity.Venue)
+}
+
+func TestOrderIntent_ResolvedVenue(t *testing.T) {
+	t.Run("explicit venue wins", func(t *testing.T) {
+		o := domain.OrderIntent{AssetClass: domain.AssetClassCrypto, Venue: domain.VenueHyperliquid}
+		assert.Equal(t, domain.VenueHyperliquid, o.ResolvedVenue())
+	})
+
+	t.Run("falls back to default by asset class", func(t *testing.T) {
+		equity := domain.OrderIntent{AssetClass: domain.AssetClassEquity}
+		assert.Equal(t, domain.VenueAlpaca, equity.ResolvedVenue())
+
+		crypto := domain.OrderIntent{AssetClass: domain.AssetClassCrypto}
+		assert.Equal(t, domain.VenueCoinbase, crypto.ResolvedVenue())
+	})
+}
+
 func TestSymbol_ToSlashFormat(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"BTCUSD", "BTC/USD"},
