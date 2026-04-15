@@ -242,9 +242,24 @@ func (r *Runner) Run(ctx context.Context) error {
 	// requested strategy timeframe. Default: 1m for intraday strategies.
 	// For daily strategies, replay 1d bars directly (no aggregation) since
 	// 1m data is sparse and 7-day warmup can't produce enough daily bars.
+	// For crypto 5m strategies, replay 5m natively — 1m crypto coverage in
+	// market_bars is too sparse for useful aggregation, while 5m coverage is
+	// dense (the live crypto pipeline writes 5m directly).
 	replayTimeframe := domain.Timeframe("1m")
 	if r.cfg.Timeframe == "1d" {
 		replayTimeframe = domain.Timeframe("1d")
+	}
+	if r.cfg.Timeframe == "5m" {
+		allCrypto := len(r.cfg.Symbols) > 0
+		for _, s := range r.cfg.Symbols {
+			if !s.IsCryptoSymbol() {
+				allCrypto = false
+				break
+			}
+		}
+		if allCrypto {
+			replayTimeframe = domain.Timeframe("5m")
+		}
 	}
 
 	var currentBarTime atomic.Value
@@ -911,7 +926,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	var sessionResolver *SessionResolver
 	if pipeline.Runner != nil {
 		snapshotFn := makeSnapshotFn()
-		if replayTimeframe == "1d" {
+		switch replayTimeframe {
+		case "1d":
 			// Daily replay: feed the pre-backtest daily bars directly to
 			// daily-timeframe strategy instances. Skip 1m warmup and HTF
 			// aggregation since the replay bars are already 1d.
@@ -932,7 +948,19 @@ func (r *Runner) Run(ctx context.Context) error {
 				pipeline.Runner.WarmUpTF(sym.String(), "1d", preBars, snapshotFn)
 			}
 			pipeline.Runner.InitAggregators(replaySessionOpen)
-		} else {
+		case "5m":
+			// Native 5m replay (crypto): feed warmup 5m bars directly to
+			// 5m-timeframe strategy instances. Skip WarmUp (hardcoded 1m) and
+			// WarmUpHTF (expects 1m input to aggregate up).
+			for _, sym := range r.cfg.Symbols {
+				bars := warmupBarsCache[sym.String()]
+				if len(bars) == 0 {
+					continue
+				}
+				pipeline.Runner.WarmUpTF(sym.String(), "5m", bars, snapshotFn)
+			}
+			pipeline.Runner.InitAggregators(replaySessionOpen)
+		default:
 			for _, sym := range r.cfg.Symbols {
 				bars := warmupBarsCache[sym.String()]
 				if len(bars) == 0 {
@@ -1429,7 +1457,16 @@ func (r *Runner) Run(ctx context.Context) error {
 						p.Monitor().WarmUp(bars)
 						p.Monitor().ResetSessionIndicators(symStr)
 						p.Monitor().MarkReady(symStr)
-						if replayTimeframe != "1d" {
+						switch replayTimeframe {
+						case "1d":
+							// handled below
+						case "5m":
+							// Native crypto 5m replay: warm 5m-timeframe
+							// instances directly; skip the 1m-hardcoded
+							// WarmUp + WarmUpHTF (which expects 1m input
+							// to aggregate up).
+							p.Runner().WarmUpTF(symStr, "5m", bars, snapshotFn)
+						default:
 							p.Runner().WarmUp(symStr, bars, snapshotFn)
 							p.Runner().WarmUpHTF(symStr, bars, snapshotFn, loc)
 						}
