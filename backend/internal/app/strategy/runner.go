@@ -1481,7 +1481,7 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 			continue
 		}
 		if trackLiveness {
-			r.liveness.RecordEval(inst.configStrategyID(), symbol, bar.Time, reasonFromSignals(signals))
+			r.liveness.RecordEval(inst.configStrategyID(), symbol, bar.Time, reasonFromOutcome(signals, inst.Strategy(), symbol))
 		}
 		allSignals = append(allSignals, signals...)
 	}
@@ -1632,7 +1632,7 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 				continue
 			}
 			if trackLiveness {
-				r.liveness.RecordEval(inst.configStrategyID(), symbol, closed.Time, reasonFromSignals(signals))
+				r.liveness.RecordEval(inst.configStrategyID(), symbol, closed.Time, reasonFromOutcome(signals, inst.Strategy(), symbol))
 			}
 			allSignals = append(allSignals, signals...)
 		}
@@ -1756,7 +1756,7 @@ func (r *Runner) ProcessBar(ctx context.Context, symbol string, bar start.Bar, i
 			return allSignals, fmt.Errorf("instance %s: %w", inst.ID(), err)
 		}
 		if r.liveness != nil && !r.disableLiveness {
-			r.liveness.RecordEval(inst.configStrategyID(), symbol, bar.Time, reasonFromSignals(signals))
+			r.liveness.RecordEval(inst.configStrategyID(), symbol, bar.Time, reasonFromOutcome(signals, inst.Strategy(), symbol))
 		}
 		allSignals = append(allSignals, signals...)
 	}

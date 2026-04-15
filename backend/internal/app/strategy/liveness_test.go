@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 )
 
 func TestLivenessTracker_RecordTickAndEval(t *testing.T) {
@@ -478,4 +479,99 @@ func TestLivenessTracker_SnapshotConcurrentWithRecord(t *testing.T) {
 	}
 	stop.Store(true)
 	wg.Wait()
+}
+
+// stubStrategy is a minimal start.Strategy implementation used to verify the
+// reasonFromOutcome fallback path for strategies that do NOT implement
+// HoldReasoner. Methods return zero values — only interface satisfaction
+// matters here.
+type stubStrategy struct{}
+
+func (stubStrategy) Meta() start.Meta { return start.Meta{} }
+func (stubStrategy) WarmupBars() int  { return 0 }
+func (stubStrategy) Init(_ start.Context, _ string, _ map[string]any, _ start.State) (start.State, error) {
+	return nil, nil
+}
+func (stubStrategy) OnBar(_ start.Context, _ string, _ start.Bar, st start.State) (start.State, []start.Signal, error) {
+	return st, nil, nil
+}
+func (stubStrategy) OnEvent(_ start.Context, _ string, _ any, st start.State) (start.State, []start.Signal, error) {
+	return st, nil, nil
+}
+
+// stubReasoner DOES implement HoldReasoner. Used to verify reasonFromOutcome
+// promotes the recorded reason into the returned DecisionReason when the
+// strategy returned zero signals for this bar.
+type stubReasoner struct {
+	reason *domain.DecisionReason
+}
+
+func (r *stubReasoner) Meta() start.Meta { return start.Meta{} }
+func (r *stubReasoner) WarmupBars() int  { return 0 }
+func (r *stubReasoner) Init(_ start.Context, _ string, _ map[string]any, _ start.State) (start.State, error) {
+	return nil, nil
+}
+func (r *stubReasoner) OnBar(_ start.Context, _ string, _ start.Bar, st start.State) (start.State, []start.Signal, error) {
+	return st, nil, nil
+}
+func (r *stubReasoner) OnEvent(_ start.Context, _ string, _ any, st start.State) (start.State, []start.Signal, error) {
+	return st, nil, nil
+}
+func (r *stubReasoner) LastHoldReason(_ string) *domain.DecisionReason { return r.reason }
+
+func TestReasonFromOutcome_EmptySignalsNoReasoner_ReturnsGenericHold(t *testing.T) {
+	got := reasonFromOutcome(nil, stubStrategy{}, "AAPL")
+	if got == nil {
+		t.Fatal("expected non-nil DecisionReason")
+	}
+	if got.Outcome != "HOLD" {
+		t.Fatalf("outcome=%q want HOLD", got.Outcome)
+	}
+	if got.Summary != "" {
+		t.Fatalf("summary=%q want empty (no HoldReasoner installed)", got.Summary)
+	}
+	if got.At.IsZero() {
+		t.Fatal("At should be set to now")
+	}
+}
+
+func TestReasonFromOutcome_EmptySignalsWithReasoner_UsesRecorded(t *testing.T) {
+	at := time.Date(2026, 4, 15, 14, 30, 0, 0, time.UTC)
+	recorded := &domain.DecisionReason{
+		At:      at,
+		Outcome: "HOLD",
+		Summary: "below VWAP bias",
+		Tags:    map[string]string{"gate": "bias", "score": "0.42", "threshold": "0.75"},
+	}
+	got := reasonFromOutcome(nil, &stubReasoner{reason: recorded}, "AAPL")
+	if got == nil {
+		t.Fatal("expected non-nil DecisionReason")
+	}
+	if got.Summary != "below VWAP bias" {
+		t.Fatalf("summary=%q want %q", got.Summary, "below VWAP bias")
+	}
+	if got.Tags["gate"] != "bias" || got.Tags["score"] != "0.42" || got.Tags["threshold"] != "0.75" {
+		t.Fatalf("tags=%+v", got.Tags)
+	}
+}
+
+func TestReasonFromOutcome_EmptySignalsReasonerReturnsNil_FallsBack(t *testing.T) {
+	got := reasonFromOutcome(nil, &stubReasoner{reason: nil}, "AAPL")
+	if got == nil || got.Outcome != "HOLD" || got.Summary != "" {
+		t.Fatalf("want generic HOLD, got %+v", got)
+	}
+}
+
+func TestReasonFromOutcome_NonEmptySignals_IgnoresReasoner(t *testing.T) {
+	// Even when a HoldReasoner is present, a non-empty signal slice wins —
+	// the signal expresses the actual outcome (ENTRY/EXIT).
+	sig := start.Signal{Type: start.SignalEntry, Side: start.SideBuy, Tags: map[string]string{"setup": "x"}}
+	r := &stubReasoner{reason: &domain.DecisionReason{Summary: "should be ignored"}}
+	got := reasonFromOutcome([]start.Signal{sig}, r, "AAPL")
+	if got.Outcome != "ENTRY" {
+		t.Fatalf("outcome=%q want ENTRY", got.Outcome)
+	}
+	if got.Summary == "should be ignored" {
+		t.Fatal("HoldReasoner must not override signal-derived summary")
+	}
 }

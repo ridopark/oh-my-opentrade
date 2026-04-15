@@ -636,3 +636,36 @@ func TestComputeConfluenceScore_ShortSide(t *testing.T) {
 	assert.Contains(t, result.Factors, "vwap_aligned")
 	assert.Contains(t, result.Factors, "bb_trend")
 }
+
+func TestMACDStrategy_LastHoldReason_StabilizationGate(t *testing.T) {
+	// A freshly-initialized MACD instance is inside the stabilization window
+	// (default 2 bars in bmParams). First bar must HOLD and record the
+	// warmup gate so the liveness snapshot shows "bar 1/2" rather than a
+	// bare HOLD.
+	s := builtin.NewMACDStrategy()
+	params := bmParams()
+	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "TEST", params, nil)
+	require.NoError(t, err)
+
+	bar := strat.Bar{
+		Time:   time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC),
+		Open:   100, High: 101, Low: 99, Close: 100, Volume: 1000,
+	}
+	ind := strat.IndicatorData{EMA9: 99, EMA200: 95, VolumeSMA: 1000, RSI: 50}
+
+	_, signals := feedBMBar(t, s, ctx, "TEST", st, bar, ind)
+	require.Empty(t, signals, "stabilization bar must not emit signals")
+
+	reason := s.LastHoldReason("TEST")
+	require.NotNil(t, reason, "stabilization gate should populate LastHoldReason")
+	assert.Equal(t, "HOLD", reason.Outcome)
+	assert.NotEmpty(t, reason.Summary)
+	assert.Equal(t, "warmup", reason.Tags["gate"], "first gate hit is warmup")
+	assert.Contains(t, reason.Summary, "1/2", "summary should include progress through stabilization bars")
+}
+
+func TestMACDStrategy_LastHoldReason_UnknownSymbolReturnsNil(t *testing.T) {
+	s := builtin.NewMACDStrategy()
+	assert.Nil(t, s.LastHoldReason("NEVER_SEEN"))
+}
