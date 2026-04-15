@@ -27,7 +27,8 @@ export type EventType =
   | "FormingBar"
   | "EntryGated"
   | "ORBPhaseUpdate"
-  | "StrategyEvaluation";
+  | "StrategyEvaluation"
+  | "StrategySignalLifecycle";
 
 // Base domain event envelope
 export interface DomainEvent<T = unknown> {
@@ -491,12 +492,34 @@ export interface SymbolLiveness {
   feedLastProcessedAt: string | null;
   feedHealthy: boolean;
   lastDecision?: DecisionReason | null;
+  // Phase 3: 60-slot rolling bars-per-minute ring (oldest → newest).
+  // Optional because older backends don't emit it — UI renders an empty
+  // placeholder when missing so the sparkline column still lines up.
+  barsPerMinute?: number[];
 }
 
 export interface StrategyLiveness {
   strategy: string;
   symbols: SymbolLiveness[];
   asOf: string; // RFC3339
+}
+
+// ---------------------------------------------------------------------------
+// Data source health (Phase 3 — dashboard-wide strip)
+// Backend: GET /api/health/datasources
+// ---------------------------------------------------------------------------
+
+export interface DataSource {
+  id: string;          // stable key: "ibkr" | "alpaca" | "omo-data" | "database" | ...
+  label: string;       // display name
+  healthy: boolean;
+  lastEventAt: string | null; // RFC3339 or null if never seen
+  detail?: string;     // optional human-readable status (e.g. last error)
+}
+
+export interface DataSourceHealth {
+  sources: DataSource[];
+  asOf: string;        // RFC3339
 }
 
 // SSE payload emitted by backend LivenessTracker.RecordEval (Phase 2)

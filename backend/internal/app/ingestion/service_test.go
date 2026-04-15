@@ -315,6 +315,38 @@ func TestService_LastProcessedAt_UnknownFeedType(t *testing.T) {
 	assert.True(t, svc.LastProcessedAt("").IsZero())
 }
 
+// TestService_LastProcessedAtSymbol_Fallback documents the symbol-to-feed
+// fallback contract of the PipelineHealthReporter port. The ingestion
+// service does not track per-symbol timestamps today, so this method must
+// return the feed-level timestamp for the symbol's asset class (equity vs
+// crypto). Adding per-symbol tracking later should leave this test passing.
+func TestService_LastProcessedAtSymbol_Fallback(t *testing.T) {
+	bus := memory.NewBus()
+	repo := &mockRepository{}
+	filter := ingestion.NewAdaptiveFilter(5, 4.0)
+	svc := ingestion.NewService(bus, repo, filter, zerolog.Nop())
+	require.NoError(t, svc.Start(context.Background()))
+
+	equitySym, _ := domain.NewSymbol("AAPL")
+	cryptoSym, _ := domain.NewSymbol("BTC/USD")
+
+	// Drive an equity bar; equity feed timestamp should advance.
+	require.NoError(t, bus.Publish(context.Background(), createTestEvent(t, createBar(t, equitySym, 150.0, 1000.0))))
+	equityLast := svc.LastProcessedAt("equity")
+	assert.Equal(t, equityLast, svc.LastProcessedAtSymbol("AAPL"))
+	assert.Equal(t, equityLast, svc.LastProcessedAtSymbol("MSFT"), "unknown equity symbols fall back to equity feed")
+
+	// Drive a crypto bar; crypto feed timestamp should advance.
+	require.NoError(t, bus.Publish(context.Background(), createTestEvent(t, createBar(t, cryptoSym, 50000.0, 100.0))))
+	cryptoLast := svc.LastProcessedAt("crypto")
+	assert.Equal(t, cryptoLast, svc.LastProcessedAtSymbol("BTC/USD"))
+	assert.Equal(t, cryptoLast, svc.LastProcessedAtSymbol("ETH/USD"), "unknown crypto symbols fall back to crypto feed")
+
+	// Empty symbol returns zero time — defensive contract rather than
+	// defaulting to equity, which would mask a caller bug.
+	assert.True(t, svc.LastProcessedAtSymbol("").IsZero())
+}
+
 func TestService_HandleMarketBar_UpdatesEquityLiveness(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}

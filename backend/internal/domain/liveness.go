@@ -29,6 +29,12 @@ type SymbolLiveness struct {
 	FeedLastProcessedAt time.Time       `json:"feedLastProcessedAt"`
 	FeedHealthy         bool            `json:"feedHealthy"`
 	LastDecision        *DecisionReason `json:"lastDecision,omitempty"`
+	// BarsPerMinute is a 60-slot rolling window of eval-count deltas,
+	// ordered oldest -> newest relative to the tracker's most recent
+	// rotation. Always serialized as a 60-element array; zeros mean "no
+	// activity in that minute" or "tracker not yet rotated" (the UI
+	// treats them identically).
+	BarsPerMinute []uint32 `json:"barsPerMinute"`
 }
 
 // StrategyLiveness bundles all symbols tracked for a single strategy.
