@@ -177,3 +177,43 @@ func BuildPortfolioHeat(maxHeatPct float64, posSource risk.PositionSource, equit
 	}
 	return risk.NewPortfolioHeat(maxHeatPct, posSource, equitySource, log)
 }
+
+// BuildSectorExposure constructs the Sprint 4 sector/industry concentration
+// guard. Returns nil when both caps are <= 0 so callers can leave the gate
+// field unset (the gate treats nil as disabled). Usage mirrors
+// BuildPortfolioHeat:
+//
+//	metadata, err := config.LoadSymbolMetadata(cfg.Trading.SymbolMetadataPath)
+//	se := bootstrap.BuildSectorExposure(cfg.Trading.MaxSectorExposure,
+//	    cfg.Trading.MaxIndustryExposure, metadata, posMon, equity, log)
+//	execDeps.SectorExposureGuard = se
+func BuildSectorExposure(
+	maxSectorPct, maxIndustryPct float64,
+	metadata config.SymbolMetadata,
+	posSource risk.PositionSource,
+	equitySource risk.EquitySource,
+	log zerolog.Logger,
+) *risk.SectorExposure {
+	if maxSectorPct <= 0 && maxIndustryPct <= 0 {
+		return nil
+	}
+	return risk.NewSectorExposure(maxSectorPct, maxIndustryPct, metadata, posSource, equitySource, log)
+}
+
+// WarnMissingSymbolMetadata emits a WARN log for every active symbol absent
+// from the loaded metadata table. These symbols will fail-open through the
+// sector_exposure gate — operators need to know so they can backfill the
+// TOML before relying on the cap.
+func WarnMissingSymbolMetadata(metadata config.SymbolMetadata, activeSymbols []string, log zerolog.Logger) {
+	if metadata == nil || len(activeSymbols) == 0 {
+		return
+	}
+	missing := metadata.MissingSymbols(activeSymbols)
+	if len(missing) == 0 {
+		return
+	}
+	log.Warn().
+		Strs("symbols", missing).
+		Int("count", len(missing)).
+		Msg("sector_exposure: active symbols missing from metadata table; gate will fail-open for these")
+}

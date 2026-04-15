@@ -86,9 +86,10 @@ type ExecutionGateFactory func(params map[string]any, deps *ExecutionGateDeps) (
 // ExecutionGateDeps holds the concrete guard instances injected at bootstrap time.
 // Each field is an interface so the gate package does not import the execution package.
 type ExecutionGateDeps struct {
-	ExposureGuard      ExposureChecker
-	PortfolioGuard     PortfolioChecker
-	PortfolioHeatGuard PortfolioHeatChecker
+	ExposureGuard       ExposureChecker
+	PortfolioGuard      PortfolioChecker
+	PortfolioHeatGuard  PortfolioHeatChecker
+	SectorExposureGuard SectorExposureChecker
 	RiskEngine         RiskValidator
 	OptionsRiskEngine  OptionsRiskValidator
 	SlippageGuard      SlippageChecker
@@ -113,6 +114,13 @@ type PortfolioChecker interface {
 // positions plus the proposed intent stays below the configured max
 // heat fraction of account equity.
 type PortfolioHeatChecker interface {
+	Check(ctx context.Context, intent domain.OrderIntent) error
+}
+
+// SectorExposureChecker validates that the projected sector and industry
+// notional share (sum of open-position notional plus the proposed intent)
+// stays below the configured caps as a fraction of account equity.
+type SectorExposureChecker interface {
 	Check(ctx context.Context, intent domain.OrderIntent) error
 }
 
@@ -188,6 +196,7 @@ func NewDefaultExecutionRegistry() *ExecutionGateRegistry {
 	r.Register("exposure_guard", newExposureGate)
 	r.Register("portfolio_guard", newPortfolioGate)
 	r.Register("portfolio_heat_guard", newPortfolioHeatGate)
+	r.Register("sector_exposure_guard", newSectorExposureGate)
 	r.Register("risk_engine", newRiskGate)
 	r.Register("slippage_guard", newSlippageGate)
 	r.Register("trading_window", newTradingWindowGate)

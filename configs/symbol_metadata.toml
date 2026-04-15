@@ -1,0 +1,140 @@
+# Symbol sector/industry metadata for Sprint 4 exposure limits.
+# Classification follows GICS (Global Industry Classification Standard).
+# ETFs are classified with sector = "ETF" and a descriptive industry label.
+# Update when the trading universe changes.
+
+[AAPL]
+sector = "Technology"
+industry = "Consumer Electronics"
+
+[AFRM]
+sector = "Financials"
+industry = "Consumer Finance"
+
+[AMD]
+sector = "Technology"
+industry = "Semiconductors"
+
+[AMZN]
+sector = "Consumer Discretionary"
+industry = "Internet Retail"
+
+[AVGO]
+sector = "Technology"
+industry = "Semiconductors"
+
+[BA]
+sector = "Industrials"
+industry = "Aerospace & Defense"
+
+[COIN]
+sector = "Financials"
+industry = "Capital Markets"
+
+[CRM]
+sector = "Technology"
+industry = "Software"
+
+[GOOGL]
+sector = "Communication Services"
+industry = "Interactive Media"
+
+[HIMS]
+sector = "Health Care"
+industry = "Health Care Services"
+
+[HOOD]
+sector = "Financials"
+industry = "Capital Markets"
+
+[IWM]
+sector = "ETF"
+industry = "Broad Market ETF"
+
+[JPM]
+sector = "Financials"
+industry = "Banks"
+
+[LLY]
+sector = "Health Care"
+industry = "Pharmaceuticals"
+
+[META]
+sector = "Communication Services"
+industry = "Interactive Media"
+
+[MRNA]
+sector = "Health Care"
+industry = "Biotechnology"
+
+[MRVL]
+sector = "Technology"
+industry = "Semiconductors"
+
+[MSFT]
+sector = "Technology"
+industry = "Software"
+
+[MU]
+sector = "Technology"
+industry = "Semiconductors"
+
+[NET]
+sector = "Technology"
+industry = "Software"
+
+[NFLX]
+sector = "Communication Services"
+industry = "Movies & Entertainment"
+
+[NVDA]
+sector = "Technology"
+industry = "Semiconductors"
+
+[OXY]
+sector = "Energy"
+industry = "Oil Gas & Consumable Fuels"
+
+[PLTR]
+sector = "Technology"
+industry = "Software"
+
+[QQQ]
+sector = "ETF"
+industry = "Broad Market ETF"
+
+[RBLX]
+sector = "Communication Services"
+industry = "Entertainment"
+
+[RIVN]
+sector = "Consumer Discretionary"
+industry = "Automobiles"
+
+[SMCI]
+sector = "Technology"
+industry = "Semiconductors"
+
+[SNOW]
+sector = "Technology"
+industry = "Software"
+
+[SOFI]
+sector = "Financials"
+industry = "Consumer Finance"
+
+[SOXL]
+sector = "ETF"
+industry = "Leveraged Semiconductor ETF"
+
+[SPY]
+sector = "ETF"
+industry = "Broad Market ETF"
+
+[TSLA]
+sector = "Consumer Discretionary"
+industry = "Automobiles"
+
+[XOM]
+sector = "Energy"
+industry = "Oil Gas & Consumable Fuels"
