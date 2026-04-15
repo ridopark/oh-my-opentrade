@@ -1164,7 +1164,6 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			pipeline.RiskSizer.SetAccountEquity(eq)
 			execBundle.Service.SetAccountEquity(eq)
-			execBundle.LedgerWriter.SetAccountEquity(eq)
 			return nil
 		})
 	}

@@ -44,11 +44,9 @@ type LedgerWriter struct {
 	log         zerolog.Logger
 	metrics     *metrics.Metrics
 
-	mu            sync.Mutex
-	dailyPnL      map[string]*dailyAccum    // key: tenantID:envMode:date
-	positions     map[string]*positionEntry // key: tenantID:envMode:symbol
-	peakEquity    float64
-	accountEquity float64
+	mu        sync.Mutex
+	dailyPnL  map[string]*dailyAccum    // key: tenantID:envMode:date
+	positions map[string]*positionEntry // key: tenantID:envMode:symbol
 
 	nowFunc func() time.Time // injectable clock for backtests
 
@@ -100,7 +98,6 @@ func NewLedgerWriter(
 	pnlRepo ports.PnLPort,
 	broker ports.BrokerPort,
 	tradeReader TradeReaderPort,
-	accountEquity float64,
 	log zerolog.Logger,
 ) *LedgerWriter {
 	return &LedgerWriter{
@@ -111,8 +108,6 @@ func NewLedgerWriter(
 		log:            log,
 		dailyPnL:       make(map[string]*dailyAccum),
 		positions:      make(map[string]*positionEntry),
-		peakEquity:     accountEquity,
-		accountEquity:  accountEquity,
 		stratDailyPnL:  make(map[string]*stratDayAccum),
 		stratPositions: make(map[string]*positionEntry),
 	}
@@ -121,16 +116,6 @@ func NewLedgerWriter(
 // SetDecayStats injects the optional decay telemetry writer.
 func (lw *LedgerWriter) SetDecayStats(w DecayStatsWriter) {
 	lw.decayStats = w
-}
-
-// SetAccountEquity updates the account equity used for drawdown calculations.
-func (lw *LedgerWriter) SetAccountEquity(equity float64) {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	lw.accountEquity = equity
-	if equity > lw.peakEquity {
-		lw.peakEquity = equity
-	}
 }
 
 // SetMetrics wires Prometheus metrics into the ledger writer.
@@ -228,6 +213,10 @@ func (lw *LedgerWriter) processFill(ctx context.Context, tenantID string, envMod
 	defer lw.mu.Unlock()
 
 	posKey := fmt.Sprintf("%s:%s:%s", tenantID, string(envMode), symbol)
+	// Option contracts carry a 100x multiplier: one contract represents 100
+	// underlying shares, so the realized P&L per fill is (exit-entry)*qty*100.
+	// Equities and crypto are 1x.
+	multiplier := domain.InstrumentMultiplier(domain.Symbol(symbol))
 	var fillPnL float64
 	var realizedPayload *domain.TradeRealizedPayload
 	switch side {
@@ -252,7 +241,7 @@ func (lw *LedgerWriter) processFill(ctx context.Context, tenantID string, envMod
 			}
 			entryPrice := pos.avgEntry
 			entryAt := pos.entryAt
-			fillPnL = (price - entryPrice) * sellQty
+			fillPnL = (price - entryPrice) * sellQty * multiplier
 
 			var pnlPct float64
 			if entryPrice > 0 {

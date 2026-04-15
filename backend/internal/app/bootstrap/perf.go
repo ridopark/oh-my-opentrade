@@ -29,7 +29,6 @@ func BuildPerfServices(deps PerfDeps) (*PerfBundle, error) {
 		deps.PnLRepo,
 		deps.Broker,
 		deps.TradeReader,
-		deps.InitialEquity,
 		ledgerLog,
 	)
 

@@ -73,7 +73,6 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 		deps.PnLRepo,
 		deps.Broker,
 		deps.TradeReader,
-		deps.InitialEquity,
 		ledgerLog,
 	)
 

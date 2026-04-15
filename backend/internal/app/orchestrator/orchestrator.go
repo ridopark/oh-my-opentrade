@@ -265,9 +265,6 @@ func (o *AccountOrchestrator) applyEquity(h *AccountHandle, equity float64) {
 	if h.Execution != nil {
 		h.Execution.SetAccountEquity(equity)
 	}
-	if h.LedgerWriter != nil {
-		h.LedgerWriter.SetAccountEquity(equity)
-	}
 	if h.RiskSizer != nil {
 		h.RiskSizer.SetAccountEquity(equity)
 	}

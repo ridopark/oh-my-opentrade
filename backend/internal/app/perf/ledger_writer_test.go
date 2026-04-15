@@ -202,7 +202,7 @@ func TestLedgerWriter_HandlesFillAndPersists(t *testing.T) {
 	broker := &mockBroker{}
 	log := zerolog.Nop()
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, nil, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, nil, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
@@ -234,7 +234,7 @@ func TestLedgerWriter_AccumulatesMultipleFills(t *testing.T) {
 	broker := &mockBroker{}
 	log := zerolog.Nop()
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, nil, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, nil, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
@@ -267,7 +267,7 @@ func TestLedgerWriter_GetDailyRealizedPnL(t *testing.T) {
 	broker := &mockBroker{}
 	log := zerolog.Nop()
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, nil, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, nil, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
@@ -290,42 +290,13 @@ func TestLedgerWriter_GetDailyRealizedPnL(t *testing.T) {
 	assert.InDelta(t, 100.0, pnl, 0.01)
 }
 
-func TestLedgerWriter_SetAccountEquity(t *testing.T) {
-	bus := newMockEventBus()
-	repo := &mockPnLRepo{}
-	broker := &mockBroker{}
-	log := zerolog.Nop()
-
-	lw := perf.NewLedgerWriter(bus, repo, broker, nil, 50000.0, log)
-
-	// Update equity
-	lw.SetAccountEquity(75000.0)
-
-	// Start and process a buy+sell to see the new equity reflected
-	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
-	require.NoError(t, err)
-
-	// Buy 1 @ $100
-	err = bus.Publish(context.Background(), makeFillEvent(t, "AAPL", "buy", 1, 100.0))
-	require.NoError(t, err)
-
-	// Sell 1 @ $110 (realized P&L = $10)
-	err = bus.Publish(context.Background(), makeFillEvent(t, "AAPL", "sell", 1, 110.0))
-	require.NoError(t, err)
-
-	repo.mu.Lock()
-	defer repo.mu.Unlock()
-	// LedgerWriter no longer writes equity_curve points.
-	assert.Len(t, repo.points, 0)
-}
-
 func TestLedgerWriter_IgnoresInvalidPayload(t *testing.T) {
 	bus := newMockEventBus()
 	repo := &mockPnLRepo{}
 	broker := &mockBroker{}
 	log := zerolog.Nop()
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, nil, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, nil, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
@@ -345,7 +316,7 @@ func TestLedgerWriter_PartialSellRealizesPartialPnL(t *testing.T) {
 	broker := &mockBroker{}
 	log := zerolog.Nop()
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, nil, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, nil, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
@@ -371,7 +342,7 @@ func TestLedgerWriter_MultipleBuysAverageEntry(t *testing.T) {
 	broker := &mockBroker{}
 	log := zerolog.Nop()
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, nil, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, nil, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
@@ -399,7 +370,7 @@ func TestLedgerWriter_SellWithoutPositionRecordsZero(t *testing.T) {
 	broker := &mockBroker{}
 	log := zerolog.Nop()
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, nil, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, nil, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
@@ -420,7 +391,7 @@ func TestLedgerWriter_BuyProducesZeroPnL(t *testing.T) {
 	broker := &mockBroker{}
 	log := zerolog.Nop()
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, nil, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, nil, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
@@ -459,7 +430,7 @@ func TestLedgerWriter_StrategyDualWrite_BuySellRecordsPnL(t *testing.T) {
 	broker := &mockBroker{}
 	log := zerolog.Nop()
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, nil, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, nil, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
@@ -507,7 +478,7 @@ func TestLedgerWriter_StrategyDualWrite_NoStrategySkipsDualWrite(t *testing.T) {
 	broker := &mockBroker{}
 	log := zerolog.Nop()
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, nil, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, nil, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
@@ -534,7 +505,7 @@ func TestLedgerWriter_StrategyDualWrite_MultipleStrategiesSameSymbol(t *testing.
 	broker := &mockBroker{}
 	log := zerolog.Nop()
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, nil, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, nil, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
@@ -597,7 +568,7 @@ func TestLedgerWriter_StrategyDualWrite_LossTracking(t *testing.T) {
 	broker := &mockBroker{}
 	log := zerolog.Nop()
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, nil, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, nil, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
@@ -640,7 +611,7 @@ func TestReplayTodaysTrades_ReconstructsAccumulators(t *testing.T) {
 		},
 	}
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, tradeReader, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, tradeReader, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
@@ -663,7 +634,7 @@ func TestReplayTodaysTrades_ReconstructsStrategyPositions(t *testing.T) {
 		},
 	}
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, tradeReader, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, tradeReader, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
@@ -689,7 +660,7 @@ func TestReplayTodaysTrades_EmptyDay(t *testing.T) {
 
 	tradeReader := &mockTradeReader{trades: []domain.Trade{}}
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, tradeReader, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, tradeReader, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
@@ -717,7 +688,7 @@ func TestReplayTodaysTrades_DoesNotPersistToDB(t *testing.T) {
 		},
 	}
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, tradeReader, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, tradeReader, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 
@@ -745,7 +716,7 @@ func TestHandleFill_AfterReplay_AccumulatesCorrectly(t *testing.T) {
 		},
 	}
 
-	lw := perf.NewLedgerWriter(bus, repo, broker, tradeReader, 100000.0, log)
+	lw := perf.NewLedgerWriter(bus, repo, broker, tradeReader, log)
 	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
 	require.NoError(t, err)
 

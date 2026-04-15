@@ -738,10 +738,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			}
 		}
 		if s.metrics != nil {
-			side := "sell"
-			if intent.Direction == domain.DirectionLong {
-				side = "buy"
-			}
+			side := strings.ToLower(brokerSideFor(intent.Direction))
 			s.metrics.Orders.Total.WithLabelValues("alpaca", intent.Strategy, side, "limit", "rejected").Inc()
 			s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "api").Inc()
 			s.metrics.Orders.SubmitLat.WithLabelValues("alpaca", intent.Strategy, "limit").Observe(time.Since(submitStart).Seconds())
@@ -764,10 +761,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		return nil
 	}
 	if s.metrics != nil {
-		side := "sell"
-		if intent.Direction == domain.DirectionLong {
-			side = "buy"
-		}
+		side := strings.ToLower(brokerSideFor(intent.Direction))
 		s.metrics.Orders.Total.WithLabelValues("alpaca", intent.Strategy, side, "limit", "placed").Inc()
 		s.metrics.Orders.SubmitLat.WithLabelValues("alpaca", intent.Strategy, "limit").Observe(time.Since(submitStart).Seconds())
 	}
