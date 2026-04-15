@@ -137,7 +137,7 @@ func TestStrategyPerfHandler_ListStrategies(t *testing.T) {
 	inst2 := newInstance(t, "beta_strat", "2.0.0", []string{"TSLA"}, 100)
 	runner := newRunnerWithInstances(t, inst1, inst2)
 
-	h := NewStrategyPerfHandler(runner, &mockPnLRepo{}, zerolog.Nop())
+	h := NewStrategyPerfHandler(runner, &mockPnLRepo{}, nil, zerolog.Nop())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/strategies/", nil)
 	w := httptest.NewRecorder()
@@ -175,7 +175,7 @@ func TestStrategyPerfHandler_Dashboard(t *testing.T) {
 		return want, nil
 	}
 
-	h := NewStrategyPerfHandler(nil, pnl, zerolog.Nop())
+	h := NewStrategyPerfHandler(nil, pnl, nil, zerolog.Nop())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/strategies/orb_break_retest/dashboard?range=30d", nil)
 	w := httptest.NewRecorder()
@@ -206,7 +206,7 @@ func TestStrategyPerfHandler_State(t *testing.T) {
 		t.Fatalf("init MSFT: %v", err)
 	}
 	runner := newRunnerWithInstances(t, inst)
-	h := NewStrategyPerfHandler(runner, &mockPnLRepo{}, zerolog.Nop())
+	h := NewStrategyPerfHandler(runner, &mockPnLRepo{}, nil, zerolog.Nop())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/strategies/test_strat/state", nil)
 	w := httptest.NewRecorder()
@@ -231,7 +231,7 @@ func TestStrategyPerfHandler_StateSingleSymbol(t *testing.T) {
 		t.Fatalf("init AAPL: %v", err)
 	}
 	runner := newRunnerWithInstances(t, inst)
-	h := NewStrategyPerfHandler(runner, &mockPnLRepo{}, zerolog.Nop())
+	h := NewStrategyPerfHandler(runner, &mockPnLRepo{}, nil, zerolog.Nop())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/strategies/test_strat/state/AAPL", nil)
 	w := httptest.NewRecorder()
@@ -259,7 +259,7 @@ func TestStrategyPerfHandler_StateSingleSymbol_NotFound(t *testing.T) {
 		t.Fatalf("init AAPL: %v", err)
 	}
 	runner := newRunnerWithInstances(t, inst)
-	h := NewStrategyPerfHandler(runner, &mockPnLRepo{}, zerolog.Nop())
+	h := NewStrategyPerfHandler(runner, &mockPnLRepo{}, nil, zerolog.Nop())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/strategies/test_strat/state/UNKNOWN", nil)
 	w := httptest.NewRecorder()
@@ -313,7 +313,7 @@ func TestStrategyPerfHandler_Signals(t *testing.T) {
 		return ports.StrategySignalPage{Items: items, NextCursor: "next"}, nil
 	}
 
-	h := NewStrategyPerfHandler(nil, pnl, zerolog.Nop())
+	h := NewStrategyPerfHandler(nil, pnl, nil, zerolog.Nop())
 	req := httptest.NewRequest(http.MethodGet, "/api/strategies/test_strat/signals?range=30d&limit=50&symbol=AAPL&cursor="+cursor, nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -337,7 +337,7 @@ func TestStrategyPerfHandler_Signals(t *testing.T) {
 }
 
 func TestStrategyPerfHandler_CORS(t *testing.T) {
-	h := NewStrategyPerfHandler(nil, &mockPnLRepo{}, zerolog.Nop())
+	h := NewStrategyPerfHandler(nil, &mockPnLRepo{}, nil, zerolog.Nop())
 	req := httptest.NewRequest(http.MethodOptions, "/api/strategies/", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -356,8 +356,95 @@ func TestStrategyPerfHandler_CORS(t *testing.T) {
 	}
 }
 
+type fakePipeline struct {
+	last map[string]time.Time
+}
+
+func (f *fakePipeline) LastProcessedAt(feedType string) time.Time {
+	return f.last[feedType]
+}
+
+func TestStrategyPerfHandler_Liveness_Empty(t *testing.T) {
+	// Unknown strategy must return 200 with empty symbols array, not 404.
+	runner := newRunnerWithInstances(t)
+	h := NewStrategyPerfHandler(runner, &mockPnLRepo{}, nil, zerolog.Nop())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/strategies/unknown_strat/liveness", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var got domain.StrategyLiveness
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Strategy != "unknown_strat" {
+		t.Fatalf("strategy=%q", got.Strategy)
+	}
+	if got.Symbols == nil {
+		t.Fatalf("symbols is nil, want empty slice")
+	}
+	if len(got.Symbols) != 0 {
+		t.Fatalf("symbols len=%d want 0", len(got.Symbols))
+	}
+	if got.AsOf.IsZero() {
+		t.Fatalf("asOf should be non-zero")
+	}
+}
+
+func TestStrategyPerfHandler_Liveness_Populated(t *testing.T) {
+	inst := newInstance(t, "alpha_strat", "1.0.0", []string{"AAPL"}, 100)
+	runner := newRunnerWithInstances(t, inst)
+
+	tracker := runner.LivenessTracker()
+	tracker.Register("alpha_strat", "AAPL")
+	at := time.Date(2026, 4, 15, 14, 30, 0, 0, time.UTC)
+	tracker.RecordTick("alpha_strat", "AAPL", at)
+	tracker.RecordEval("alpha_strat", "AAPL", at, &domain.DecisionReason{At: at, Outcome: "HOLD", Summary: "below VWAP"})
+	tracker.RecordSignal("alpha_strat", "AAPL", at)
+
+	pipeline := &fakePipeline{last: map[string]time.Time{"equity": time.Now().UTC().Add(-5 * time.Second)}}
+	h := NewStrategyPerfHandler(runner, &mockPnLRepo{}, pipeline, zerolog.Nop())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/strategies/alpha_strat/liveness", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var got domain.StrategyLiveness
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Symbols) != 1 {
+		t.Fatalf("symbols len=%d want 1", len(got.Symbols))
+	}
+	row := got.Symbols[0]
+	if row.Symbol != "AAPL" {
+		t.Fatalf("symbol=%q", row.Symbol)
+	}
+	if row.EvalCount != 1 {
+		t.Fatalf("evalCount=%d", row.EvalCount)
+	}
+	if row.SignalCount != 1 {
+		t.Fatalf("signalCount=%d", row.SignalCount)
+	}
+	if row.FeedType != "equity" {
+		t.Fatalf("feedType=%q", row.FeedType)
+	}
+	if !row.FeedHealthy {
+		t.Fatalf("feedHealthy should be true (last=%v)", row.FeedLastProcessedAt)
+	}
+	if row.LastDecision == nil || row.LastDecision.Outcome != "HOLD" {
+		t.Fatalf("lastDecision=%+v", row.LastDecision)
+	}
+}
+
 func TestStrategyPerfHandler_MethodNotAllowed(t *testing.T) {
-	h := NewStrategyPerfHandler(nil, &mockPnLRepo{}, zerolog.Nop())
+	h := NewStrategyPerfHandler(nil, &mockPnLRepo{}, nil, zerolog.Nop())
 	req := httptest.NewRequest(http.MethodPost, "/api/strategies/", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)

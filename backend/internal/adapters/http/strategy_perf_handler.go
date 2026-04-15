@@ -15,13 +15,17 @@ import (
 )
 
 type StrategyPerfHandler struct {
-	runner  *strategy.Runner
-	pnlRepo ports.PnLPort
-	log     zerolog.Logger
+	runner   *strategy.Runner
+	pnlRepo  ports.PnLPort
+	pipeline ports.PipelineHealthReporter
+	log      zerolog.Logger
 }
 
-func NewStrategyPerfHandler(runner *strategy.Runner, pnlRepo ports.PnLPort, log zerolog.Logger) *StrategyPerfHandler {
-	return &StrategyPerfHandler{runner: runner, pnlRepo: pnlRepo, log: log}
+// NewStrategyPerfHandler builds the handler. pipeline may be nil — when nil,
+// the liveness endpoint still returns counters but feedLastProcessedAt will
+// be the zero time and feedHealthy will be false.
+func NewStrategyPerfHandler(runner *strategy.Runner, pnlRepo ports.PnLPort, pipeline ports.PipelineHealthReporter, log zerolog.Logger) *StrategyPerfHandler {
+	return &StrategyPerfHandler{runner: runner, pnlRepo: pnlRepo, pipeline: pipeline, log: log}
 }
 
 func (h *StrategyPerfHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -72,6 +76,9 @@ func (h *StrategyPerfHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	case "signals":
 		h.serveSignals(w, r, strategyID)
+		return
+	case "liveness":
+		h.serveLiveness(w, strategyID)
 		return
 	default:
 		h.jsonError(w, http.StatusNotFound, "not found")
@@ -192,6 +199,57 @@ func (h *StrategyPerfHandler) serveSignals(w http.ResponseWriter, r *http.Reques
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		h.log.Error().Err(err).Msg("failed to encode strategy signals")
 	}
+}
+
+// serveLiveness returns a per-symbol liveness snapshot for the given strategy.
+// Unknown strategies return 200 with an empty symbols array — the dashboard
+// polls every 2s and a 404 would spam the console for newly-configured
+// strategies whose first bar hasn't arrived yet.
+func (h *StrategyPerfHandler) serveLiveness(w http.ResponseWriter, strategyID string) {
+	w.Header().Set("Content-Type", "application/json")
+
+	var symbols []domain.SymbolLiveness
+	if h.runner != nil {
+		symbols = h.runner.Liveness(strategyID)
+	}
+	if symbols == nil {
+		symbols = []domain.SymbolLiveness{}
+	}
+
+	now := time.Now().UTC()
+	// Annotate each row with feed-level health. Phase 1 treats "feed fresh
+	// within 60s" as healthy — the same threshold the alpaca watchdog uses.
+	for i := range symbols {
+		feedType := feedTypeForSymbol(symbols[i].Symbol)
+		symbols[i].FeedType = feedType
+		if h.pipeline != nil {
+			last := h.pipeline.LastProcessedAt(feedType)
+			symbols[i].FeedLastProcessedAt = last
+			if !last.IsZero() && now.Sub(last) < 60*time.Second {
+				symbols[i].FeedHealthy = true
+			}
+		}
+	}
+
+	resp := domain.StrategyLiveness{
+		Strategy: strategyID,
+		Symbols:  symbols,
+		AsOf:     now,
+	}
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		h.log.Error().Err(err).Msg("failed to encode strategy liveness")
+	}
+}
+
+// feedTypeForSymbol resolves a symbol to the feed identifier used by
+// PipelineHealthReporter. Crypto pairs like "BTC/USD" map to "crypto";
+// everything else is "equity". Kept local to avoid importing domain
+// calendar helpers for what is effectively a label lookup.
+func feedTypeForSymbol(symbol string) string {
+	if domain.Symbol(symbol).IsCryptoSymbol() {
+		return "crypto"
+	}
+	return "equity"
 }
 
 func (h *StrategyPerfHandler) jsonError(w http.ResponseWriter, status int, msg string) {

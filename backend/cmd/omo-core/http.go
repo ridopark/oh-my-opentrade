@@ -223,7 +223,7 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	if svc.useStrategyV2 {
 		lifecycleHandler := omhttp.NewLifecycleHandler(svc.lifecycleSvc, httpLog)
 		imux.Handle("/strategies/v2/", lifecycleHandler)
-		stratPerfHandler := omhttp.NewStrategyPerfHandler(svc.strategyRunner, infra.pnlRepo, httpLog)
+		stratPerfHandler := omhttp.NewStrategyPerfHandler(svc.strategyRunner, infra.pnlRepo, svc.ingestion, httpLog)
 		imux.Handle("/api/strategies/", stratPerfHandler)
 	}
 	// Cross-strategy recent signals endpoint (used by dashboard main page).
