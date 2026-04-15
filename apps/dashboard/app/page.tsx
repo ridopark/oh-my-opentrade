@@ -2,6 +2,7 @@ import { MarketingNav } from "@/components/landing/marketing-nav";
 import { Hero } from "@/components/landing/hero";
 import { LiveStrip } from "@/components/landing/live-strip";
 import { CapabilityGrid } from "@/components/landing/capability-grid";
+import { EdgeThesis } from "@/components/landing/edge-thesis";
 import { AIEdge } from "@/components/landing/ai-edge";
 import { StrategyFamilies } from "@/components/landing/strategy-families";
 import { ArchitectureHex } from "@/components/landing/architecture-hex";
@@ -19,6 +20,7 @@ export default function LandingPage() {
       <Hero />
       <LiveStrip />
       <CapabilityGrid />
+      <EdgeThesis />
       <AIEdge />
       <StrategyFamilies />
       <ArchitectureHex />
