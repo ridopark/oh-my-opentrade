@@ -15,6 +15,7 @@ package logger
 
 import (
 	"context"
+	"io"
 	"os"
 	"time"
 
@@ -31,10 +32,14 @@ type Config struct {
 	// Pretty enables human-readable console output (development mode).
 	// In production, leave false for JSON output.
 	Pretty bool
-	// Hooks are attached to the root logger. Use NewDiscordHook to route
-	// ErrorLevel events to a NotifierPort; wire the notifier after services
-	// are assembled via DiscordHook.SetNotifier.
+	// Hooks are attached to the root logger.
 	Hooks []zerolog.Hook
+	// Writers are attached as additional sinks via MultiLevelWriter; each
+	// receives the full serialized JSON event for every log line. Use
+	// NewDiscordHook to route ErrorLevel events (with their structured
+	// fields) to a NotifierPort; wire the notifier after services are
+	// assembled via DiscordHook.SetNotifier.
+	Writers []io.Writer
 }
 
 // New constructs a root zerolog.Logger from the given Config.
@@ -42,12 +47,18 @@ type Config struct {
 func New(cfg Config) zerolog.Logger {
 	zerolog.TimeFieldFormat = time.RFC3339Nano
 
-	var base zerolog.Logger
+	var primary io.Writer
 	if cfg.Pretty {
-		base = zerolog.New(zerolog.NewConsoleWriter()).With().Timestamp().Logger()
+		primary = zerolog.NewConsoleWriter()
 	} else {
-		base = zerolog.New(os.Stderr).With().Timestamp().Logger()
+		primary = os.Stderr
 	}
+	writers := append([]io.Writer{primary}, cfg.Writers...)
+	sink := primary
+	if len(writers) > 1 {
+		sink = zerolog.MultiLevelWriter(writers...)
+	}
+	base := zerolog.New(sink).With().Timestamp().Logger()
 	l := base.Level(cfg.Level)
 	for _, h := range cfg.Hooks {
 		l = l.Hook(h)
