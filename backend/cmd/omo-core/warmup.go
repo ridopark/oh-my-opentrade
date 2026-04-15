@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/app/barbackfill"
 	"github.com/oh-my-opentrade/backend/internal/app/formingbar"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
@@ -149,7 +150,7 @@ func fillBarGaps(ctx context.Context, cfg *config.Config, infra *infraDeps, log 
 	}
 
 	// Timeout the entire gap fill to prevent blocking startup.
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	symbols := cfg.Symbols.AllSymbols()
@@ -161,6 +162,7 @@ func fillBarGaps(ctx context.Context, cfg *config.Config, infra *infraDeps, log 
 	tf := domain.Timeframe("1m")
 
 	var totalBars int
+	var totalHTFBars int
 	var filledSymbols int
 
 	for i, sym := range symbols {
@@ -213,6 +215,17 @@ func fillBarGaps(ctx context.Context, cfg *config.Config, infra *infraDeps, log 
 		totalBars += saved
 		filledSymbols++
 
+		// Also reconstruct 5m/15m/1h HTF gaps that only-1m gap-fill misses.
+		htfBars := barbackfill.AggregateHTF(symDomain, bars, now)
+		if len(htfBars) > 0 {
+			if n, err := infra.repo.SaveMarketBars(ctx, htfBars); err != nil {
+				gapLog.Warn().Err(err).Str("symbol", sym).Int("bars", len(htfBars)).Msg("HTF save failed")
+			} else {
+				totalHTFBars += n
+				gapLog.Debug().Str("symbol", sym).Int("htf_bars", n).Msg("HTF bars backfilled")
+			}
+		}
+
 		gapLog.Info().
 			Str("symbol", sym).
 			Int("bars", saved).
@@ -230,6 +243,7 @@ func fillBarGaps(ctx context.Context, cfg *config.Config, infra *infraDeps, log 
 		Int("symbols_checked", len(symbols)).
 		Int("symbols_filled", filledSymbols).
 		Int("total_bars", totalBars).
+		Int("total_htf_bars", totalHTFBars).
 		Msg("gap-fill complete")
 }
 
