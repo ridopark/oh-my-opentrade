@@ -77,6 +77,12 @@ symbols:
         # Leveraged ETFs (1 — ORB only)
         - "SOXL"
       timeframe: "1m"
+    - asset_class: "CRYPTO"
+      symbols:
+        - "BTC/USD"
+        - "ETH/USD"
+        - "SOL/USD"
+      timeframe: "1m"
 
 server:
   port: 8080
