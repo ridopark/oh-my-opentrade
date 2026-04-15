@@ -115,7 +115,17 @@ type TradingConfig struct {
 	// all open positions as a fraction of account equity. 0 = disabled
 	// (default); 0.10 activates the gate at 10% heat.
 	MaxPortfolioHeat float64           `yaml:"max_portfolio_heat"`
-	OptionsRisk      OptionsRiskConfig `yaml:"options_risk"`
+	// MaxSectorExposure caps the notional share of any single GICS sector
+	// as a fraction of account equity. 0 = disabled (default); 0.30
+	// activates the gate at 30% per-sector concentration.
+	MaxSectorExposure float64 `yaml:"max_sector_exposure"`
+	// MaxIndustryExposure caps the notional share of any single GICS
+	// industry. 0 = disabled; 0.20 activates at 20%.
+	MaxIndustryExposure float64 `yaml:"max_industry_exposure"`
+	// SymbolMetadataPath points to the GICS sector/industry TOML file used
+	// by the sector_exposure gate. Empty disables metadata loading.
+	SymbolMetadataPath string            `yaml:"symbol_metadata_path"`
+	OptionsRisk        OptionsRiskConfig `yaml:"options_risk"`
 }
 
 type OptionsRiskConfig struct {
@@ -202,6 +212,9 @@ type rawTradingConfig struct {
 	MaxSimultaneousPos     int               `yaml:"max_simultaneous_positions"`
 	MaxPositionsPerGroup   int               `yaml:"max_positions_per_group"`
 	MaxPortfolioHeat       float64           `yaml:"max_portfolio_heat"`
+	MaxSectorExposure      float64           `yaml:"max_sector_exposure"`
+	MaxIndustryExposure    float64           `yaml:"max_industry_exposure"`
+	SymbolMetadataPath     string            `yaml:"symbol_metadata_path"`
 	OptionsRisk            OptionsRiskConfig `yaml:"options_risk"`
 }
 
@@ -344,6 +357,9 @@ func Load(envPath, yamlPath string) (*Config, error) {
 			MaxSimultaneousPos:     raw.Trading.MaxSimultaneousPos,
 			MaxPositionsPerGroup:   raw.Trading.MaxPositionsPerGroup,
 			MaxPortfolioHeat:       raw.Trading.MaxPortfolioHeat,
+			MaxSectorExposure:      raw.Trading.MaxSectorExposure,
+			MaxIndustryExposure:    raw.Trading.MaxIndustryExposure,
+			SymbolMetadataPath:     raw.Trading.SymbolMetadataPath,
 			OptionsRisk:            raw.Trading.OptionsRisk,
 		},
 		Symbols:      raw.Symbols,
