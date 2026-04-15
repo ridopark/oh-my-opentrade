@@ -98,6 +98,9 @@ type ExecutionGateDeps struct {
 	TradingWindowGuard TradingWindowChecker
 	SpreadGuard        SpreadChecker
 	BuyingPowerGuard   BuyingPowerChecker
+	// Sprint 4.5 — compliance gates. Nil = disabled (gate passes through).
+	PDTGuard  PDTChecker
+	RegTGuard RegTChecker
 }
 
 // Minimal interfaces for each execution guard.
@@ -215,5 +218,7 @@ func NewDefaultExecutionRegistry() *ExecutionGateRegistry {
 	r.Register("trading_window", newTradingWindowGate)
 	r.Register("spread_guard", newSpreadGate)
 	r.Register("buying_power_guard", newBuyingPowerGate)
+	r.Register("pdt_guard", newPDTGate)
+	r.Register("reg_t_guard", newRegTGate)
 	return r
 }
