@@ -1000,3 +1000,37 @@ func TestSessionWeight(t *testing.T) {
 		})
 	}
 }
+
+func TestAVWAPStrategy_LastHoldReason_MaxTradesGate(t *testing.T) {
+	// max_trades_per_day=0 forces the very first bar to hit the max-trades
+	// early gate (TradesToday=0 >= MaxTradesPerDay=0). That's the simplest
+	// deterministic way to assert emitEarlyGated writes a reason into the
+	// strategy's holdReasons map before any AVWAP math runs.
+	s := builtin.NewAVWAPStrategy()
+	params := avwapParams()
+	params["max_trades_per_day"] = 0
+
+	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "TEST", params, nil)
+	require.NoError(t, err)
+
+	bar := strat.Bar{
+		Time:   time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC),
+		Open:   100, High: 101, Low: 99, Close: 100, Volume: 1000,
+	}
+	ind := strat.IndicatorData{VWAP: 100, VolumeSMA: 1000, RSI: 50}
+
+	_, signals := feedAVWAPBar(t, s, ctx, "TEST", st, bar, ind)
+	require.Empty(t, signals)
+
+	reason := s.LastHoldReason("TEST")
+	require.NotNil(t, reason, "max_trades early gate must populate LastHoldReason")
+	assert.Equal(t, "HOLD", reason.Outcome)
+	assert.Equal(t, "max_trades", reason.Tags["gate"])
+	assert.Contains(t, reason.Summary, "0/0")
+}
+
+func TestAVWAPStrategy_LastHoldReason_UnknownSymbolReturnsNil(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	assert.Nil(t, s.LastHoldReason("NEVER_SEEN"))
+}
