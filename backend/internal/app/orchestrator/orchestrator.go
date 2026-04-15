@@ -204,8 +204,38 @@ func (o *AccountOrchestrator) equityRefreshLoop(ctx context.Context, h *AccountH
 		return
 	}
 	logger := o.shared.Log.With().Str("tenant_id", h.TenantID).Str("component", "equity_refresh").Logger()
+
+	peak := 0.0
+	sample := func(eq float64) {
+		if eq > peak {
+			peak = eq
+		}
+		drawdown := 0.0
+		if peak > 0 {
+			drawdown = (peak - eq) / peak
+		}
+		if o.shared.PnLRepo != nil {
+			pt := domain.EquityPoint{
+				Time:     time.Now().UTC(),
+				TenantID: h.TenantID,
+				EnvMode:  h.EnvMode,
+				Equity:   eq,
+				Cash:     eq,
+				Drawdown: drawdown,
+			}
+			if err := o.shared.PnLRepo.SaveEquityPoint(ctx, pt); err != nil {
+				logger.Warn().Err(err).Msg("failed to persist equity_curve point")
+			}
+		}
+		if o.shared.Metrics != nil {
+			o.shared.Metrics.PnL.EquityUSD.Set(eq)
+			o.shared.Metrics.PnL.DayDDUSD.Set(drawdown * peak)
+		}
+	}
+
 	if eq, err := h.Equity.GetAccountEquity(ctx); err == nil && eq > 0 {
 		o.applyEquity(h, eq)
+		sample(eq)
 		logger.Info().Float64("equity", eq).Msg("account equity refreshed")
 	}
 
@@ -225,6 +255,7 @@ func (o *AccountOrchestrator) equityRefreshLoop(ctx context.Context, h *AccountH
 				continue
 			}
 			o.applyEquity(h, eq)
+			sample(eq)
 			logger.Info().Float64("equity", eq).Msg("account equity refreshed")
 		}
 	}

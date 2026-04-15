@@ -223,10 +223,9 @@ func TestLedgerWriter_HandlesFillAndPersists(t *testing.T) {
 	assert.Equal(t, 2, repo.upserts[1].TradeCount)
 	assert.InDelta(t, 100.0, repo.upserts[1].RealizedPnL, 0.01) // (160-150)*10
 
-	// Verify equity points were saved (one per fill)
-	require.Len(t, repo.points, 2)
-	assert.Equal(t, 100000.0, repo.points[0].Equity)         // buy: no P&L change
-	assert.InDelta(t, 100100.0, repo.points[1].Equity, 0.01) // sell: 100k + 100 realized
+	// LedgerWriter no longer persists equity_curve points — that's owned
+	// by the orchestrator's broker-driven equity sampler.
+	assert.Len(t, repo.points, 0)
 }
 
 func TestLedgerWriter_AccumulatesMultipleFills(t *testing.T) {
@@ -316,11 +315,8 @@ func TestLedgerWriter_SetAccountEquity(t *testing.T) {
 
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
-	require.Len(t, repo.points, 2)
-	// Buy: equity = 75000 + 0 (no P&L) = 75000
-	assert.Equal(t, 75000.0, repo.points[0].Equity)
-	// Sell: equity = 75000 + 10 (realized P&L) = 75010
-	assert.InDelta(t, 75010.0, repo.points[1].Equity, 0.01)
+	// LedgerWriter no longer writes equity_curve points.
+	assert.Len(t, repo.points, 0)
 }
 
 func TestLedgerWriter_IgnoresInvalidPayload(t *testing.T) {
@@ -415,7 +411,7 @@ func TestLedgerWriter_SellWithoutPositionRecordsZero(t *testing.T) {
 	defer repo.mu.Unlock()
 	require.Len(t, repo.upserts, 1)
 	assert.Equal(t, 0.0, repo.upserts[0].RealizedPnL)
-	assert.Equal(t, 100000.0, repo.points[0].Equity) // equity unchanged
+	assert.Len(t, repo.points, 0)
 }
 
 func TestLedgerWriter_BuyProducesZeroPnL(t *testing.T) {
@@ -436,7 +432,7 @@ func TestLedgerWriter_BuyProducesZeroPnL(t *testing.T) {
 	defer repo.mu.Unlock()
 	require.Len(t, repo.upserts, 1)
 	assert.Equal(t, 0.0, repo.upserts[0].RealizedPnL) // buy = zero realized P&L
-	assert.Equal(t, 100000.0, repo.points[0].Equity)  // equity unchanged on buy
+	assert.Len(t, repo.points, 0)
 }
 
 func makeStrategyFillEvent(t *testing.T, symbol, side string, quantity, price float64, strategy string) domain.Event {
