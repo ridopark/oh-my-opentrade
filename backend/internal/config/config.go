@@ -122,6 +122,11 @@ type TradingConfig struct {
 	// MaxIndustryExposure caps the notional share of any single GICS
 	// industry. 0 = disabled; 0.20 activates at 20%.
 	MaxIndustryExposure float64 `yaml:"max_industry_exposure"`
+	// MaxDirectionalBias caps |Σ long − Σ short| / equity across open
+	// non-option positions. 0 = disabled (default); 0.70 activates the
+	// gate at 70% net-directional exposure. Bias-reducing intents are
+	// always allowed — only bias-increasing intents are gated.
+	MaxDirectionalBias float64 `yaml:"max_directional_bias"`
 	// SymbolMetadataPath points to the GICS sector/industry TOML file used
 	// by the sector_exposure gate. Empty disables metadata loading.
 	SymbolMetadataPath string            `yaml:"symbol_metadata_path"`
@@ -214,6 +219,7 @@ type rawTradingConfig struct {
 	MaxPortfolioHeat       float64           `yaml:"max_portfolio_heat"`
 	MaxSectorExposure      float64           `yaml:"max_sector_exposure"`
 	MaxIndustryExposure    float64           `yaml:"max_industry_exposure"`
+	MaxDirectionalBias     float64           `yaml:"max_directional_bias"`
 	SymbolMetadataPath     string            `yaml:"symbol_metadata_path"`
 	OptionsRisk            OptionsRiskConfig `yaml:"options_risk"`
 }
@@ -359,6 +365,7 @@ func Load(envPath, yamlPath string) (*Config, error) {
 			MaxPortfolioHeat:       raw.Trading.MaxPortfolioHeat,
 			MaxSectorExposure:      raw.Trading.MaxSectorExposure,
 			MaxIndustryExposure:    raw.Trading.MaxIndustryExposure,
+			MaxDirectionalBias:     raw.Trading.MaxDirectionalBias,
 			SymbolMetadataPath:     raw.Trading.SymbolMetadataPath,
 			OptionsRisk:            raw.Trading.OptionsRisk,
 		},

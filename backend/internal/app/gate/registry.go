@@ -88,8 +88,9 @@ type ExecutionGateFactory func(params map[string]any, deps *ExecutionGateDeps) (
 type ExecutionGateDeps struct {
 	ExposureGuard       ExposureChecker
 	PortfolioGuard      PortfolioChecker
-	PortfolioHeatGuard  PortfolioHeatChecker
-	SectorExposureGuard SectorExposureChecker
+	PortfolioHeatGuard   PortfolioHeatChecker
+	SectorExposureGuard  SectorExposureChecker
+	DirectionalBiasGuard DirectionalBiasChecker
 	RiskEngine         RiskValidator
 	OptionsRiskEngine  OptionsRiskValidator
 	SlippageGuard      SlippageChecker
@@ -121,6 +122,15 @@ type PortfolioHeatChecker interface {
 // notional share (sum of open-position notional plus the proposed intent)
 // stays below the configured caps as a fraction of account equity.
 type SectorExposureChecker interface {
+	Check(ctx context.Context, intent domain.OrderIntent) error
+}
+
+// DirectionalBiasChecker validates that the projected net directional
+// exposure (Σ long notional − Σ short notional across open positions plus
+// the proposed intent) stays below the configured cap as a fraction of
+// account equity. Bias-reducing intents always pass — only intents that
+// push the account further from neutral are gated.
+type DirectionalBiasChecker interface {
 	Check(ctx context.Context, intent domain.OrderIntent) error
 }
 
@@ -197,6 +207,7 @@ func NewDefaultExecutionRegistry() *ExecutionGateRegistry {
 	r.Register("portfolio_guard", newPortfolioGate)
 	r.Register("portfolio_heat_guard", newPortfolioHeatGate)
 	r.Register("sector_exposure_guard", newSectorExposureGate)
+	r.Register("directional_bias_guard", newDirectionalBiasGate)
 	r.Register("risk_engine", newRiskGate)
 	r.Register("slippage_guard", newSlippageGate)
 	r.Register("trading_window", newTradingWindowGate)

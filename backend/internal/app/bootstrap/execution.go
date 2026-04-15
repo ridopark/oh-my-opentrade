@@ -200,6 +200,21 @@ func BuildSectorExposure(
 	return risk.NewSectorExposure(maxSectorPct, maxIndustryPct, metadata, posSource, equitySource, log)
 }
 
+// BuildDirectionalBias constructs the Sprint 4 net-directional-exposure
+// guard. Returns nil when maxBiasPct <= 0 so callers can leave the gate
+// field unset (the gate treats nil as disabled). Usage mirrors
+// BuildPortfolioHeat and BuildSectorExposure:
+//
+//	db := bootstrap.BuildDirectionalBias(cfg.Trading.MaxDirectionalBias,
+//	    posMon, equity, log)
+//	execDeps.DirectionalBiasGuard = db
+func BuildDirectionalBias(maxBiasPct float64, posSource risk.PositionSource, equitySource risk.EquitySource, log zerolog.Logger) *risk.DirectionalBias {
+	if maxBiasPct <= 0 {
+		return nil
+	}
+	return risk.NewDirectionalBias(maxBiasPct, posSource, equitySource, log)
+}
+
 // WarnMissingSymbolMetadata emits a WARN log for every active symbol absent
 // from the loaded metadata table. These symbols will fail-open through the
 // sector_exposure gate — operators need to know so they can backfill the
