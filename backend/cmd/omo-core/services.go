@@ -858,12 +858,42 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 		}
 	}
 	log.Info().Msg("all services started")
-	// 5c (continued): periodic account equity refresh every 5 minutes.
+	// 5c (continued): periodic account equity refresh + equity_curve sampler.
+	// Broker NetLiq is the authoritative equity source — write each sample
+	// straight through to equity_curve so the dashboard reflects IBKR's own
+	// account state (matching the statement number down to the penny, minus
+	// drift between polls).
 	// Skipped when multi-account is active — orchestrator handles per-account refresh.
 	if svc.orchestrator == nil {
 		go func() {
-			ticker := time.NewTicker(5 * time.Minute)
+			ticker := time.NewTicker(1 * time.Minute)
 			defer ticker.Stop()
+			peak := svc.accountEquity
+			sample := func(eq float64) {
+				if eq > peak {
+					peak = eq
+				}
+				drawdown := 0.0
+				if peak > 0 {
+					drawdown = (peak - eq) / peak
+				}
+				if infra.pnlRepo != nil {
+					pt := domain.EquityPoint{
+						Time:     time.Now().UTC(),
+						TenantID: "default",
+						EnvMode:  domain.EnvModePaper,
+						Equity:   eq,
+						Cash:     eq,
+						Drawdown: drawdown,
+					}
+					if err := infra.pnlRepo.SaveEquityPoint(ctx, pt); err != nil {
+						log.Warn().Err(err).Msg("failed to persist equity_curve point")
+					}
+				}
+			}
+			// Seed immediately with the startup equity so the chart has a point
+			// before the first tick.
+			sample(svc.accountEquity)
 			for {
 				select {
 				case <-ctx.Done():
@@ -876,6 +906,7 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 						if svc.riskSizer != nil {
 							svc.riskSizer.SetAccountEquity(eq)
 						}
+						sample(eq)
 						log.Info().Float64("equity", eq).Msg("account equity refreshed")
 					} else {
 						log.Warn().Err(err).Msg("failed to refresh account equity")
