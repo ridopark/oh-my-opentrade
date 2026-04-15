@@ -213,6 +213,20 @@ func isEntry(intent domain.OrderIntent) bool {
 	return !intent.Direction.IsExit()
 }
 
+// brokerSideFor maps an intent Direction to the broker-facing order side.
+// A prior version flipped to BUY only for DirectionLong, so CLOSE_SHORT
+// (buy-to-cover) intents were recorded in the trade ledger as SELL,
+// producing persistent net-negative rows that the phantom reconciler had
+// to paper over and that tripped bootstrap's orphan alert.
+func brokerSideFor(dir domain.Direction) string {
+	switch dir {
+	case domain.DirectionLong, domain.DirectionCloseShort:
+		return "BUY"
+	default:
+		return "SELL"
+	}
+}
+
 // positionSide returns the net side ("BUY"/"SELL") and total quantity from positions.
 // Handles both internal formats ("BUY"/"SELL") and Alpaca formats ("long"/"short").
 func positionSide(positions []domain.Trade) (side string, qty float64) {

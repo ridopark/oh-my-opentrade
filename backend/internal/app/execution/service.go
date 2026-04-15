@@ -784,10 +784,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	s.emit(ctx, domain.EventOrderSubmitted, event.TenantID, event.EnvMode, intent.ID.String(), submittedPayload)
 
 	// 7. Persist the order record.
-	side := "SELL"
-	if intent.Direction == domain.DirectionLong {
-		side = "BUY"
-	}
+	side := brokerSideFor(intent.Direction)
 	order := domain.BrokerOrder{
 		Time:          s.nowFn().UTC(),
 		TenantID:      event.TenantID,
@@ -1021,10 +1018,7 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 	}
 
 	// Persist trade.
-	side := "SELL"
-	if intent.Direction == domain.DirectionLong {
-		side = "BUY"
-	}
+	side := brokerSideFor(intent.Direction)
 	trade, err := domain.NewTrade(now, tenantID, envMode, uuid.New(), intent.Symbol, side, intent.Quantity, fillPrice, 0, "FILLED", intent.Strategy, intent.Rationale)
 	if err != nil {
 		l.Error().Err(err).Msg("failed to construct trade on fill")
@@ -1261,10 +1255,7 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 		}
 	}
 
-	side := "SELL"
-	if po.intent.Direction == domain.DirectionLong {
-		side = "BUY"
-	}
+	side := brokerSideFor(po.intent.Direction)
 	trade, err := domain.NewTrade(filledAt, po.tenantID, po.envMode, uuid.New(), po.intent.Symbol, side, fillQty, fillPrice, 0, "FILLED", po.intent.Strategy, po.intent.Rationale)
 	if err != nil {
 		l.Error().Err(err).Msg("failed to construct trade on fill")
