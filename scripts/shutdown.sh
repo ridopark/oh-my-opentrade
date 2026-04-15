@@ -21,7 +21,7 @@ warn()  { echo -e "${YELLOW}[shutdown]${NC} $*"; }
 check_worktree_safety() {
     local primary
     primary=$(git -C "$ROOT_DIR" worktree list --porcelain 2>/dev/null \
-              | awk '/^worktree / { print $2; exit }')
+              | awk '/^worktree / { print $2; exit }' || true)
     if [[ -z "$primary" || "$ROOT_DIR" == "$primary" ]]; then
         return  # primary worktree or no worktree awareness — safe
     fi
