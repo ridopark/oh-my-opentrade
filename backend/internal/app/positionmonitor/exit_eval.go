@@ -393,7 +393,20 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 	idempotencyKey := fmt.Sprintf("EXIT:%s:%s:%s:%d:%s:%d",
 		pos.TenantID, pos.EnvMode, pos.Symbol, pos.EntryTime.Unix(), rule.Type, pos.ExitRetryCount)
 
-	exitPrice, orderType, tif := exitOrderParams(rule.Type, currentPrice, pos.ExitRetryCount, pos.IsShort(), pos.InstrumentType == domain.InstrumentTypeOption)
+	// For option positions, currentPrice here is the UNDERLYING spot (used
+	// to evaluate exit rules that are defined in underlying terms). The
+	// exit order needs to be priced in option-premium terms, so translate
+	// via EstimatedPremium before handing to exitOrderParams. Market/IOC
+	// exits ignore the limit, but this keeps the telemetry (DB limit_price,
+	// reconcile checks, UI display) honest.
+	priceForOrder := currentPrice
+	if pos.InstrumentType == domain.InstrumentTypeOption {
+		if est := pos.EstimatedPremium(currentPrice, now); est > 0 {
+			priceForOrder = est
+		}
+	}
+
+	exitPrice, orderType, tif := exitOrderParams(rule.Type, priceForOrder, pos.ExitRetryCount, pos.IsShort(), pos.InstrumentType == domain.InstrumentTypeOption)
 
 	exitDirection := domain.DirectionCloseLong
 	if pos.IsShort() {
