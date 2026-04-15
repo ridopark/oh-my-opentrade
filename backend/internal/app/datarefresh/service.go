@@ -11,6 +11,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
 	"github.com/oh-my-opentrade/backend/internal/adapters/yfinance"
 	"github.com/oh-my-opentrade/backend/internal/app/backfill"
+	"github.com/oh-my-opentrade/backend/internal/app/barbackfill"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
@@ -366,6 +367,10 @@ func (s *Service) refreshDarkPoolBars(ctx context.Context, symbols []string) (sa
 			failed++
 			continue
 		}
+		if sym.IsCryptoSymbol() {
+			// Crypto has no SIP dark pool — skip silently.
+			continue
+		}
 
 		// Resume from last stored bar if available.
 		if latest, err := s.dpRepo.GetLatestDarkPoolBarTime(ctx, sym, "5m"); err == nil && latest != nil {
@@ -404,18 +409,12 @@ func (s *Service) refreshDarkPoolBars(ctx context.Context, symbols []string) (sa
 func (s *Service) backfillIntradayBars(ctx context.Context, symbols []string) {
 	et, _ := time.LoadLocation("America/New_York")
 	nowET := time.Now().In(et)
-	// Session open: today 09:30 ET (or yesterday if before market open)
-	sessionOpen := time.Date(nowET.Year(), nowET.Month(), nowET.Day(), 9, 30, 0, 0, et)
-	if nowET.Before(sessionOpen) {
-		sessionOpen = sessionOpen.AddDate(0, 0, -1)
-	}
-	// Fetch from session open (or start of day for pre-market)
+	// Fetch from 4 AM ET (pre-market start) or yesterday's 4 AM if we are earlier.
 	from := time.Date(nowET.Year(), nowET.Month(), nowET.Day(), 4, 0, 0, 0, et)
 	if nowET.Before(from) {
 		from = from.AddDate(0, 0, -1)
 	}
 
-	htfTimeframes := []domain.Timeframe{"5m", "15m", "1h"}
 	totalBars := 0
 	totalHTF := 0
 
@@ -424,7 +423,16 @@ func (s *Service) backfillIntradayBars(ctx context.Context, symbols []string) {
 		if err != nil {
 			continue
 		}
-		bars, err := s.alpacaData.GetHistoricalBars(ctx, sym, domain.Timeframe("1m"), from, time.Now())
+
+		var fetchFrom time.Time
+		isCrypto := sym.IsCryptoSymbol()
+		if isCrypto {
+			fetchFrom = time.Now().Add(-24 * time.Hour)
+		} else {
+			fetchFrom = from
+		}
+
+		bars, err := s.alpacaData.GetHistoricalBars(ctx, sym, domain.Timeframe("1m"), fetchFrom, time.Now())
 		if err != nil {
 			s.log.Warn().Str("symbol", symStr).Err(err).Msg("failed to fetch 1m bars for backfill")
 			continue
@@ -438,33 +446,30 @@ func (s *Service) backfillIntradayBars(ctx context.Context, symbols []string) {
 			totalBars += n
 		}
 
-		// Aggregate into HTF bars.
-		for _, tf := range htfTimeframes {
-			agg, err := domain.NewBarAggregator(sym, tf, sessionOpen)
-			if err != nil {
-				continue
-			}
-			var htfBars []domain.MarketBar
-			for _, bar := range bars {
-				if closed, ok := agg.Push(bar); ok {
-					htfBars = append(htfBars, closed)
-				}
-			}
-			if len(htfBars) > 0 {
-				if n, err := s.repo.SaveMarketBars(ctx, htfBars); err == nil {
-					totalHTF += n
-				}
+		htfBars := barbackfill.AggregateHTF(sym, bars, time.Now())
+		if len(htfBars) == 0 {
+			continue
+		}
+		if n, err := s.repo.SaveMarketBars(ctx, htfBars); err == nil {
+			totalHTF += n
+		}
 
-				// Persist EMA50 for the latest 1h bar (used for HTF warmup).
-				if tf == domain.Timeframe("1h") && len(htfBars) >= 50 {
-					closes := make([]float64, len(htfBars))
-					for i, b := range htfBars {
-						closes[i] = b.Close
-					}
-					ema50 := monitor.ComputeStaticEMA(closes, 50)
-					if ema50 > 0 {
-						_ = s.repo.UpdateBarIndicators(ctx, sym, domain.Timeframe("1h"), htfBars[len(htfBars)-1].Time, 0, 0, ema50, 0, nil)
-					}
+		// Persist EMA50 for the latest 1h bar (equity only — HTF warmup input).
+		if !isCrypto {
+			var oneH []domain.MarketBar
+			for _, b := range htfBars {
+				if b.Timeframe == domain.Timeframe("1h") {
+					oneH = append(oneH, b)
+				}
+			}
+			if len(oneH) >= 50 {
+				closes := make([]float64, len(oneH))
+				for i, b := range oneH {
+					closes[i] = b.Close
+				}
+				ema50 := monitor.ComputeStaticEMA(closes, 50)
+				if ema50 > 0 {
+					_ = s.repo.UpdateBarIndicators(ctx, sym, domain.Timeframe("1h"), oneH[len(oneH)-1].Time, 0, 0, ema50, 0, nil)
 				}
 			}
 		}
