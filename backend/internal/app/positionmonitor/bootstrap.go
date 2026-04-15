@@ -87,11 +87,15 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 			}
 		case "SELL":
 			e.netQty -= t.Quantity
-			if e.netQty <= 0 {
-				// Position fully closed — clear.
-				e.netQty = 0
+			if e.netQty == 0 {
+				// Position fully closed — clear weighted avg.
 				e.avgEntry = 0
 			}
+			// Negative netQty represents a short and is handled below:
+			// line ~101 skips omo.netQty <= 0 so shorts don't trigger
+			// the long-only "orphan" alert. Clamping to zero here would
+			// lose the short context on subsequent BUY covers and let
+			// phantom-reconcile pairs synthesize a false orphan.
 		}
 	}
 
