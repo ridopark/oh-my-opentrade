@@ -2,16 +2,19 @@
 
 **Algorithmic trading, built like infrastructure.**
 
-A broker-agnostic, hexagonal-architecture trading system for US equities and options.
-Two active strategies (AVWAP, MACD) plus one staged (Overnight Z) run on the hot path,
-eight gates enforce risk, and every order intent is journaled before the broker sees it
-so the system can recover cleanly from a hard crash.
+A broker-agnostic, hexagonal-architecture trading system for US equities, options,
+and crypto. Three equity/options strategies (AVWAP, MACD, Overnight Z) plus a crypto
+mean-reversion (crypto_revert_v1) run on the hot path, eight gates enforce risk, and
+every order intent is journaled before the broker sees it so the system can recover
+cleanly from a hard crash.
 
 - Single Go binary, Next.js dashboard, TimescaleDB, NATS event bus
-- Alpaca + Interactive Brokers adapters
+- Alpaca + Interactive Brokers adapters; IBKR options trade live daily in paper
 - Dark-pool and 13F whale accumulation confluence scoring
 - LLM-augmented Bull/Bear/Judge debate enriches every entry signal
-- Paper trading stable; live validation in progress on IBKR
+- Broker-authoritative equity curve sampled every minute to match IBKR's own NetLiq
+- Crypto uses IBKR warm market-data subscriptions to keep the uscrypto farm alive
+  for slippage checks between infrequent signals
 
 See [docs/PRD.md](docs/PRD.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 and [docs/plans/ROADMAP.md](docs/plans/ROADMAP.md) for deeper context.
@@ -29,7 +32,7 @@ and [docs/plans/ROADMAP.md](docs/plans/ROADMAP.md) for deeper context.
 - Historical options chains sourced from DoltHub
 - Earnings calendar from Finnhub (daily refresh, 90-day lookahead)
 
-**Strategies (2 active + 1 staged)**
+**Strategies (3 active + 1 crypto + pipeline)**
 - **AVWAP** — anchored VWAP mean reversion from 5m/15m regime extremes, with
   late-session dark-pool Z-score entry suppression (Sharpe +0.39)
 - **MACD** — crossover with swing stops, dark-pool block-flow veto, and inverted
@@ -37,6 +40,12 @@ and [docs/plans/ROADMAP.md](docs/plans/ROADMAP.md) for deeper context.
 - **Overnight Z-Score Bias** — daily-horizon strategy using late-session DP buy_ratio
   Z-score as a next-day directional signal. Equity shares only, no options. Staged
   for paper validation.
+- **crypto_revert_v1** — BTC/ETH/SOL mean reversion on IBKR spot, 5m bars, uses
+  warm IBKR market-data subscriptions so the slippage guard never waits on the
+  uscrypto farm cold-start.
+- **MFT crypto pipeline** — four additional designs (pairs, funding-timer,
+  basis-carry, xsec-momo) documented in `docs/MFT-crypto-strategies/` with
+  shared-infra and engine-change plans.
 - Confluence layer combines technical, dark-pool, and 13F signals into a 0-100 score
   that gates every entry
 - **Late-session DP Z conditioning** — the 14:00-15:30 ET dark-pool buy ratio,
@@ -96,6 +105,14 @@ clean; the debate tells us *whether the story makes sense right now*.
 - TimescaleDB hypertables for bars, trades, equity snapshots
 - Prometheus metrics, Loki structured logs
 - Discord/Telegram webhooks for trades and risk alerts
+- **Broker-authoritative equity curve** — a per-minute sampler writes
+  `equity_curve` rows from live IBKR NetLiquidation, so the Portfolio page's
+  chart matches IBKR's own statement (no OMO-internal accounting on top).
+  Attribution P&L lives separately in `daily_pnl`.
+- **Gap detector** — omo-data runs a startup scan that diffs expected vs
+  persisted bars per (symbol, timeframe) using the domain calendar (NYSE
+  sessions, early closes, crypto 24/7), surfacing silent coverage holes
+  before they poison backtests or live replay.
 
 ## Backtest performance
 
@@ -156,8 +173,11 @@ commit history.
    time-of-day seasonality (U-shape), and earnings ramp (Finnhub calendar). These
    capture ~60% of IV variance but miss idiosyncratic events, skew dynamics, and
    intraday VIX-stock decorrelation.
-2. **IBKR live execution is unvalidated.** The adapter is fully implemented and runs
-   in paper mode. Live validation on a funded account is pending.
+2. **IBKR live execution (funded) is still pending.** The adapter is fully
+   implemented and runs a full paper session daily on IBKR — equity and options
+   entries, exits, and dust-sweep reconciliation all execute end-to-end through
+   the real IBKR gateway against a paper account. Funded-account validation is
+   the remaining step.
 3. **Universe is 34 hardcoded symbols.** Adding a symbol currently requires a code
    redeploy. Dynamic discovery is not on the roadmap yet.
 4. **Single-broker dependency during outages.** Alpaca outages halt the system;
