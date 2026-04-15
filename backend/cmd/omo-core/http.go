@@ -261,6 +261,15 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	imux.Handle("/strategies/", strategyHandler)
 	dnaApprovalHandler := omhttp.NewDNAApprovalHandler(svc.dnaApproval, httpLog)
 	imux.Handle("/api/dna/", dnaApprovalHandler)
+
+	if svc.dailyLossBreaker != nil {
+		var eventReader omhttp.KillSwitchEventReader
+		if infra.killSwitchRepo != nil {
+			eventReader = killSwitchEventReaderAdapter{repo: infra.killSwitchRepo}
+		}
+		ksHandler := omhttp.NewKillSwitchHandler(svc.dailyLossBreaker, eventReader, httpLog)
+		imux.Handle("/api/v1/admin/kill-switch", ksHandler)
+	}
 	// KakaoTalk routes disabled — notifier is disabled.
 	// if svc.kakaoNotifier != nil {
 	// 	kakaoRedirectURI := cfg.Notification.KakaoRedirectURI
@@ -484,4 +493,25 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 		}
 		_ = json.NewEncoder(w).Encode(results)
 	})
+}
+
+// killSwitchEventReaderAdapter bridges timescaledb.KillSwitchRepo to
+// omhttp.KillSwitchEventReader without leaking the adapter's concrete
+// DTO into the http package.
+type killSwitchEventReaderAdapter struct {
+	repo *timescaledb.KillSwitchRepo
+}
+
+func (a killSwitchEventReaderAdapter) LastKillSwitchEvent(ctx context.Context) (*omhttp.KillSwitchEventDTO, error) {
+	ev, err := a.repo.LastEvent(ctx)
+	if err != nil || ev == nil {
+		return nil, err
+	}
+	return &omhttp.KillSwitchEventDTO{
+		At:       ev.At,
+		OldState: ev.OldState.String(),
+		NewState: ev.NewState.String(),
+		Reason:   ev.Reason,
+		Actor:    ev.Actor,
+	}, nil
 }

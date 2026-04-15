@@ -91,6 +91,7 @@ type ExecutionGateDeps struct {
 	PortfolioHeatGuard   PortfolioHeatChecker
 	SectorExposureGuard  SectorExposureChecker
 	DirectionalBiasGuard DirectionalBiasChecker
+	KillSwitchGuard      KillSwitchChecker
 	RiskEngine         RiskValidator
 	OptionsRiskEngine  OptionsRiskValidator
 	SlippageGuard      SlippageChecker
@@ -208,6 +209,7 @@ func NewDefaultExecutionRegistry() *ExecutionGateRegistry {
 	r.Register("portfolio_heat_guard", newPortfolioHeatGate)
 	r.Register("sector_exposure_guard", newSectorExposureGate)
 	r.Register("directional_bias_guard", newDirectionalBiasGate)
+	r.Register("kill_switch", newKillSwitchGate)
 	r.Register("risk_engine", newRiskGate)
 	r.Register("slippage_guard", newSlippageGate)
 	r.Register("trading_window", newTradingWindowGate)

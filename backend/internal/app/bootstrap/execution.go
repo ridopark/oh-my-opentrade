@@ -215,6 +215,20 @@ func BuildDirectionalBias(maxBiasPct float64, posSource risk.PositionSource, equ
 	return risk.NewDirectionalBias(maxBiasPct, posSource, equitySource, log)
 }
 
+// BuildKillSwitch returns the DailyLossBreaker cast to the gate-facing
+// KillSwitchChecker interface (via direct field assignment by the caller).
+// This is a thin helper mirroring BuildPortfolioHeat et al. so bootstrap
+// sites wire execDeps.KillSwitchGuard uniformly.
+//
+// Returns nil when breaker is nil so the kill_switch gate degrades to a
+// no-op (same as the other Sprint 4 guards).
+func BuildKillSwitch(breaker *risk.DailyLossBreaker) *risk.DailyLossBreaker {
+	if breaker == nil {
+		return nil
+	}
+	return breaker
+}
+
 // WarnMissingSymbolMetadata emits a WARN log for every active symbol absent
 // from the loaded metadata table. These symbols will fail-open through the
 // sector_exposure gate — operators need to know so they can backfill the
