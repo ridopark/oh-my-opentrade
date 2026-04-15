@@ -26,7 +26,8 @@ export type EventType =
   | "CircuitBreakerTripped"
   | "FormingBar"
   | "EntryGated"
-  | "ORBPhaseUpdate";
+  | "ORBPhaseUpdate"
+  | "StrategyEvaluation";
 
 // Base domain event envelope
 export interface DomainEvent<T = unknown> {
@@ -496,4 +497,14 @@ export interface StrategyLiveness {
   strategy: string;
   symbols: SymbolLiveness[];
   asOf: string; // RFC3339
+}
+
+// SSE payload emitted by backend LivenessTracker.RecordEval (Phase 2)
+export interface StrategyEvaluationPayload {
+  strategy: string;
+  symbol: string;
+  at: string; // RFC3339
+  evalCount: number;
+  barsToday: number;
+  lastDecision?: DecisionReason | null;
 }

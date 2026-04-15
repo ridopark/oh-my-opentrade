@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { SymbolLiveness } from "@/lib/types";
@@ -17,6 +17,10 @@ interface LivenessPillProps {
   lastTickAt?: string | null;
   feedHealthy?: boolean;
   symbols?: SymbolLiveness[];
+  // Drives the transient pulse-ring animation. When this ISO timestamp
+  // changes, the pill flashes a fading ring for ~1s. Phase-2 wires this to
+  // SSE-derived lastEvalAt so the UI feels event-driven, not polled.
+  pulseAt?: string | null;
   className?: string;
 }
 
@@ -68,6 +72,7 @@ export function LivenessPill({
   lastTickAt,
   feedHealthy,
   symbols,
+  pulseAt,
   className,
 }: LivenessPillProps) {
   // Re-derive every second without refetching.
@@ -76,6 +81,38 @@ export function LivenessPill({
     const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+
+  // Derive the most recent pulse trigger: explicit `pulseAt`, else max
+  // lastEvalAt across the symbols array. Using lastEvalAt (not lastTickAt)
+  // matches the SSE StrategyEvaluation cadence Phase 2 emits.
+  const pulseKey = useMemo(() => {
+    if (pulseAt) return pulseAt;
+    if (symbols && symbols.length > 0) {
+      let max: string | null = null;
+      let maxMs = 0;
+      for (const s of symbols) {
+        if (!s.lastEvalAt) continue;
+        const ms = new Date(s.lastEvalAt).getTime();
+        if (Number.isFinite(ms) && ms > maxMs) {
+          maxMs = ms;
+          max = s.lastEvalAt;
+        }
+      }
+      return max;
+    }
+    return null;
+  }, [pulseAt, symbols]);
+
+  const [pulsing, setPulsing] = useState(false);
+  const lastSeenPulseRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!pulseKey) return;
+    if (lastSeenPulseRef.current === pulseKey) return;
+    lastSeenPulseRef.current = pulseKey;
+    setPulsing(true);
+    const id = setTimeout(() => setPulsing(false), 1000);
+    return () => clearTimeout(id);
+  }, [pulseKey]);
 
   // Card-level (symbols-array) takes max-of-symbols for lastTick
   // and "unhealthy if any symbol feed unhealthy" for feedHealthy.
@@ -113,10 +150,19 @@ export function LivenessPill({
       )}
       aria-label={`Liveness: ${status}, last tick ${formatAge(ageS)}`}
     >
-      <span
-        className={cn("h-1.5 w-1.5 rounded-full", DOT_CLASSES[status])}
-        aria-hidden
-      />
+      <span className="relative inline-flex h-1.5 w-1.5" aria-hidden>
+        <span
+          className={cn("h-1.5 w-1.5 rounded-full", DOT_CLASSES[status])}
+        />
+        {pulsing && (
+          <span
+            className={cn(
+              "absolute inset-0 rounded-full opacity-75 animate-ping",
+              DOT_CLASSES[status],
+            )}
+          />
+        )}
+      </span>
       {formatAge(ageS)}
     </Badge>
   );
