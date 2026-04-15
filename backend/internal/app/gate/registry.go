@@ -88,6 +88,7 @@ type ExecutionGateFactory func(params map[string]any, deps *ExecutionGateDeps) (
 type ExecutionGateDeps struct {
 	ExposureGuard      ExposureChecker
 	PortfolioGuard     PortfolioChecker
+	PortfolioHeatGuard PortfolioHeatChecker
 	RiskEngine         RiskValidator
 	OptionsRiskEngine  OptionsRiskValidator
 	SlippageGuard      SlippageChecker
@@ -105,6 +106,13 @@ type ExposureChecker interface {
 
 // PortfolioChecker validates portfolio constraints.
 type PortfolioChecker interface {
+	Check(ctx context.Context, intent domain.OrderIntent) error
+}
+
+// PortfolioHeatChecker validates that the aggregate risk across open
+// positions plus the proposed intent stays below the configured max
+// heat fraction of account equity.
+type PortfolioHeatChecker interface {
 	Check(ctx context.Context, intent domain.OrderIntent) error
 }
 
@@ -179,6 +187,7 @@ func NewDefaultExecutionRegistry() *ExecutionGateRegistry {
 	r.Register("short_direction", newShortDirectionGate)
 	r.Register("exposure_guard", newExposureGate)
 	r.Register("portfolio_guard", newPortfolioGate)
+	r.Register("portfolio_heat_guard", newPortfolioHeatGate)
 	r.Register("risk_engine", newRiskGate)
 	r.Register("slippage_guard", newSlippageGate)
 	r.Register("trading_window", newTradingWindowGate)
