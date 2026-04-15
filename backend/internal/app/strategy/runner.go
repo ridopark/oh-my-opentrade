@@ -702,6 +702,11 @@ func (r *Runner) Start(ctx context.Context) error {
 		r.logger.Warn("failed to subscribe to AuctionImbalance (non-fatal)", "error", err)
 		// Non-fatal: backtests won't have this event
 	}
+	if err := r.eventBus.Subscribe(ctx, domain.EventTradeReceived, r.handleTradeReceived); err != nil {
+		r.logger.Warn("failed to subscribe to TradeReceived (non-fatal)", "error", err)
+		// Non-fatal: backtests don't synthesize trade ticks; strategies fall
+		// back to bar-sign TFI via the `tfi_source = "auto"` knob.
+	}
 	r.logger.Info("strategy runner subscribed to MarketBarSanitized events")
 	r.lastBarTime.Store(time.Now().UnixNano())
 	go r.barHealthCheck(ctx)
@@ -2194,6 +2199,52 @@ func (r *Runner) handleAuctionImbalance(_ context.Context, event domain.Event) e
 	for _, inst := range instances {
 		if _, err := inst.OnEvent(instCtx, symbol, update); err != nil {
 			r.logger.Error("handleAuctionImbalance: OnEvent failed",
+				"instance_id", inst.ID().String(),
+				"symbol", symbol,
+				"error", err,
+			)
+		}
+	}
+	r.mu.Unlock()
+	return nil
+}
+
+// handleTradeReceived routes a MarketTrade event to every strategy instance
+// subscribed to the trade's symbol. Strategies that don't care about tick
+// data can ignore the TradeTick event in their OnEvent switch; only flow-
+// gated strategies (e.g. crypto_revert_v1) act on it. Fan-out is scoped by
+// the router's symbol subscription so non-subscribed strategies are not
+// flooded with ticks.
+func (r *Runner) handleTradeReceived(_ context.Context, event domain.Event) error {
+	trade, ok := event.Payload.(domain.MarketTrade)
+	if !ok {
+		return nil
+	}
+	symbol := string(trade.Symbol)
+	instances := r.router.InstancesForSymbol(symbol)
+	if len(instances) == 0 {
+		return nil
+	}
+
+	tick := start.TradeTick{
+		Symbol:    symbol,
+		Time:      trade.Time,
+		Price:     trade.Price,
+		Size:      trade.Size,
+		TakerSide: trade.TakerSide,
+		Venue:     string(trade.Venue),
+	}
+
+	instCtx := &instanceContext{
+		now:    trade.Time,
+		logger: r.logger.With("symbol", symbol),
+		emit:   func(_ any) error { return nil },
+	}
+
+	r.mu.Lock()
+	for _, inst := range instances {
+		if _, err := inst.OnEvent(instCtx, symbol, tick); err != nil {
+			r.logger.Error("handleTradeReceived: OnEvent failed",
 				"instance_id", inst.ID().String(),
 				"symbol", symbol,
 				"error", err,

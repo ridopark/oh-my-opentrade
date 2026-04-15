@@ -21,6 +21,12 @@ type MarketBar struct {
 	Volume    float64   `json:"volume"`
 	Suspect   bool      `json:"suspect,omitempty"`
 
+	// Venue identifies the market-data venue this bar came from. Optional:
+	// empty preserves pre-Gap-10 behavior (callers resolve implicit venue
+	// from AssetClass via DefaultVenue). Cross-venue crypto strategies
+	// populate this so they can distinguish same-symbol bars across venues.
+	Venue Venue `json:"venue,omitempty"`
+
 	// Microstructure metadata from broker feed.
 	TradeCount uint64 `json:"tradeCount,omitempty"` // number of trades in this bar (0 if unavailable)
 
@@ -84,6 +90,20 @@ type OrderIntent struct {
 	AssetClass AssetClass        `json:"assetClass"`
 	MaxLossUSD float64           `json:"maxLossUSD,omitempty"`
 	Meta       map[string]string `json:"meta,omitempty"`
+	// Venue is the execution venue this intent is routed to. Optional:
+	// when empty, executors fall back to DefaultVenue(AssetClass). Perp
+	// and cross-venue crypto strategies must set this explicitly.
+	Venue Venue `json:"venue,omitempty"`
+}
+
+// ResolvedVenue returns the explicit Venue when set, otherwise the implicit
+// default derived from AssetClass. Use this at adapter boundaries so we
+// never hand a broker an empty venue.
+func (o OrderIntent) ResolvedVenue() Venue {
+	if !o.Venue.IsUnspecified() {
+		return o.Venue
+	}
+	return DefaultVenue(o.AssetClass)
 }
 
 // OrderIntentStatus indicates where in the pipeline an order intent currently sits.
@@ -374,6 +394,7 @@ type Trade struct {
 	Strategy    string
 	Rationale   string
 	AssetClass  AssetClass
+	Venue       Venue // execution venue for this fill; empty => DefaultVenue(AssetClass)
 	Thesis      json.RawMessage
 
 	InstrumentType InstrumentType
@@ -431,6 +452,7 @@ type BrokerOrder struct {
 	Strategy      string
 	Rationale     string
 	Confidence    float64
+	Venue         Venue // execution venue; empty => inferred from asset class
 
 	InstrumentType InstrumentType
 	OptionSymbol   string
@@ -515,6 +537,17 @@ type MarketTrade struct {
 	Symbol Symbol    `json:"symbol"`
 	Price  float64   `json:"price"`
 	Size   float64   `json:"size"`
+	// TakerSide indicates which side was the aggressor in the trade.
+	// Values: "buy" (taker bought, aggressive buyer lifted the offer),
+	//         "sell" (taker sold, aggressive seller hit the bid),
+	//         ""    (unknown / not provided by the feed).
+	// Required for microstructure gating (e.g. Trade-Flow Imbalance / TFI)
+	// on crypto strategies where venues publish taker side explicitly.
+	TakerSide string `json:"taker_side,omitempty"`
+	// Venue identifies where this trade tick originated. Optional; crypto
+	// cross-venue strategies set it to disambiguate the same pair across
+	// feeds. Equity paths leave it empty.
+	Venue Venue `json:"venue,omitempty"`
 }
 
 // AuctionImbalanceSnapshot represents NYSE closing auction imbalance data from IBKR tick type 225.

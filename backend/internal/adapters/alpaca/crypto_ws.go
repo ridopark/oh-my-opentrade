@@ -315,10 +315,11 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 			}
 			sym = sym.ToSlashFormat()
 			mt := domain.MarketTrade{
-				Time:   ct.Timestamp,
-				Symbol: sym,
-				Price:  ct.Price,
-				Size:   ct.Size,
+				Time:      ct.Timestamp,
+				Symbol:    sym,
+				Price:     ct.Price,
+				Size:      ct.Size,
+				TakerSide: mapAlpacaTakerSide(ct.TakerSide),
 			}
 			_ = c.tradeHandler(connCtx, mt)
 		}
@@ -637,6 +638,27 @@ func (c *CryptoWSClient) cryptoGapFill(
 				}
 			}
 		}
+	}
+}
+
+// mapAlpacaTakerSide converts Alpaca's one-character taker side code to the
+// domain.MarketTrade convention ("buy" / "sell" / "").
+// Alpaca crypto trade messages include a "tks" field with values:
+//
+//	"B" — taker bought (aggressive buy, lifted the offer)
+//	"S" — taker sold   (aggressive sell, hit the bid)
+//	"-" — unknown
+//
+// Any other value (including empty) maps to "" so downstream microstructure
+// gating can treat it as unclassified rather than mis-sign it.
+func mapAlpacaTakerSide(s string) string {
+	switch s {
+	case "B":
+		return "buy"
+	case "S":
+		return "sell"
+	default:
+		return ""
 	}
 }
 
