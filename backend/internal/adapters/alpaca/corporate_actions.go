@@ -61,17 +61,56 @@ type corpActionAnnouncement struct {
 	CashAmount        string `json:"cash"`            // dividend cash per share
 }
 
-// GetSplits returns split and reverse-split actions for symbol in [from, to].
-// The Alpaca endpoint returns all announcement types at once; we filter to
-// splits server-side via the ca_types query param. Non-2xx responses and
-// decode errors are logged and surfaced as empty slices so a transient
-// Alpaca outage does not sink an entire backfill job.
+// GetAllSplits returns split and reverse-split actions for all symbols in
+// [from, to] with a single API call. The Alpaca endpoint returns all matching
+// announcements when the symbol parameter is omitted, eliminating the N+1
+// per-symbol pattern.
+func (c *CorporateActionsClient) GetAllSplits(ctx context.Context, from, to time.Time) ([]ports.CorporateAction, error) {
+	if c == nil {
+		return nil, nil
+	}
+	params := url.Values{}
+	params.Set("ca_types", "forward_split,reverse_split")
+	params.Set("since", from.Format("2006-01-02"))
+	params.Set("until", to.Format("2006-01-02"))
+
+	reqURL := fmt.Sprintf("%s/v2/corporate_actions/announcements?%s", c.baseURL, params.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("alpaca_corporate_actions: new request: %w", err)
+	}
+	req.Header.Set(headerAPIKey, c.apiKey)
+	req.Header.Set(headerAPISecret, c.apiSecret)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		c.log.Warn().Err(err).Msg("alpaca corp actions batch request failed")
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		c.log.Warn().Int("status", resp.StatusCode).Msg("alpaca corp actions batch non-2xx")
+		return nil, nil
+	}
+
+	var anns []corpActionAnnouncement
+	if err := json.NewDecoder(resp.Body).Decode(&anns); err != nil {
+		c.log.Warn().Err(err).Msg("alpaca corp actions batch decode failed")
+		return nil, nil
+	}
+
+	return c.parseAnnouncements(anns), nil
+}
+
+// GetSplits returns split and reverse-split actions for a single symbol in
+// [from, to]. Prefer GetAllSplits when refreshing the full universe.
 func (c *CorporateActionsClient) GetSplits(ctx context.Context, symbol string, from, to time.Time) ([]ports.CorporateAction, error) {
 	if c == nil {
 		return nil, nil
 	}
 	params := url.Values{}
-	params.Set("ca_types", "split")
+	params.Set("ca_types", "forward_split,reverse_split")
 	params.Set("since", from.Format("2006-01-02"))
 	params.Set("until", to.Format("2006-01-02"))
 	params.Set("symbol", symbol)
@@ -102,14 +141,19 @@ func (c *CorporateActionsClient) GetSplits(ctx context.Context, symbol string, f
 		return nil, nil
 	}
 
+	return c.parseAnnouncements(anns), nil
+}
+
+func (c *CorporateActionsClient) parseAnnouncements(anns []corpActionAnnouncement) []ports.CorporateAction {
 	out := make([]ports.CorporateAction, 0, len(anns))
 	for _, a := range anns {
-		if a.InitiatingSymbol != symbol && a.TargetSymbol != symbol {
-			continue
-		}
 		effDate, err := time.Parse("2006-01-02", a.EffectiveDate)
 		if err != nil {
 			continue
+		}
+		sym := a.InitiatingSymbol
+		if sym == "" {
+			sym = a.TargetSymbol
 		}
 		oldRate, _ := strconv.ParseFloat(a.OldRate, 64)
 		newRate, _ := strconv.ParseFloat(a.NewRate, 64)
@@ -127,7 +171,7 @@ func (c *CorporateActionsClient) GetSplits(ctx context.Context, symbol string, f
 
 		cash, _ := strconv.ParseFloat(a.CashAmount, 64)
 		out = append(out, ports.CorporateAction{
-			Symbol:           symbol,
+			Symbol:           sym,
 			ActionType:       actionType,
 			EffectiveDate:    effDate,
 			RatioNumerator:   newRate,
@@ -136,5 +180,5 @@ func (c *CorporateActionsClient) GetSplits(ctx context.Context, symbol string, f
 			Source:           "alpaca",
 		})
 	}
-	return out, nil
+	return out
 }

@@ -27,7 +27,7 @@ func TestCorporateActionsClient_NilReceiverIsSafe(t *testing.T) {
 func TestCorporateActionsClient_GetSplits_ParsesForwardSplit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v2/corporate_actions/announcements", r.URL.Path)
-		assert.Equal(t, "split", r.URL.Query().Get("ca_types"))
+		assert.Equal(t, "forward_split,reverse_split", r.URL.Query().Get("ca_types"))
 		assert.Equal(t, "AAPL", r.URL.Query().Get("symbol"))
 		assert.Equal(t, "test-key", r.Header.Get(headerAPIKey))
 		w.Header().Set("Content-Type", "application/json")
