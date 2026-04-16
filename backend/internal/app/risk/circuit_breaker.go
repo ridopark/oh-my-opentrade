@@ -149,9 +149,27 @@ func (d *DailyLossBreaker) State() KillSwitchState {
 // operator identity when the transition came from the admin endpoint,
 // or "system" for automatic transitions.
 func (d *DailyLossBreaker) SetState(s KillSwitchState, reason, actor string) KillSwitchState {
+	t := d.setStateCore(s, reason, actor)
+	if t == nil {
+		return s // no-op: old == new
+	}
+	if d.sink != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := d.sink.RecordTransition(ctx, *t); err != nil {
+			d.log.Error().Err(err).Msg("kill switch: sink.RecordTransition failed")
+		}
+	}
+	return t.OldState
+}
+
+// setStateCore performs the atomic state swap and synchronous log. Returns
+// the transition record if a real transition occurred, nil on no-op.
+// Callers decide whether to invoke the sink synchronously or asynchronously.
+func (d *DailyLossBreaker) setStateCore(s KillSwitchState, reason, actor string) *KillSwitchTransition {
 	old := KillSwitchState(d.state.Swap(int32(s)))
 	if old == s {
-		return old
+		return nil
 	}
 	d.log.Warn().
 		Str("old_state", old.String()).
@@ -159,23 +177,24 @@ func (d *DailyLossBreaker) SetState(s KillSwitchState, reason, actor string) Kil
 		Str("reason", reason).
 		Str("actor", actor).
 		Msg("kill switch state transition")
-	if d.sink != nil {
-		t := KillSwitchTransition{
-			OldState: old,
-			NewState: s,
-			Reason:   reason,
-			Actor:    actor,
-			At:       d.now(),
-		}
-		// Use a short background context so a slow sink doesn't block
-		// the caller (typically a hot-path gate or notifier callback).
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if err := d.sink.RecordTransition(ctx, t); err != nil {
-			d.log.Error().Err(err).Msg("kill switch: sink.RecordTransition failed")
-		}
+	return &KillSwitchTransition{
+		OldState: old,
+		NewState: s,
+		Reason:   reason,
+		Actor:    actor,
+		At:       d.now(),
 	}
-	return old
+}
+
+// sinkTransitionAsync persists a transition in a fire-and-forget goroutine.
+// Used by transitionOnTrip (called under d.mu) to avoid holding the mutex
+// during a potentially slow DB write.
+func (d *DailyLossBreaker) sinkTransitionAsync(t KillSwitchTransition) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := d.sink.RecordTransition(ctx, t); err != nil {
+		d.log.Error().Err(err).Msg("kill switch: async sink.RecordTransition failed")
+	}
 }
 
 func (d *DailyLossBreaker) now() time.Time {
@@ -279,12 +298,19 @@ func (d *DailyLossBreaker) Check(tenantID string, envMode domain.EnvMode, accoun
 // transitionOnTrip bumps the kill switch state on an automatic trip.
 // Once HALTED, we do not downgrade to REDUCING — escalation is monotonic
 // except by operator command.
+//
+// Called with d.mu held (from Check), so the sink call is dispatched
+// asynchronously to avoid blocking concurrent Check() callers during a
+// potentially slow DB write.
 func (d *DailyLossBreaker) transitionOnTrip(s KillSwitchState, reason string) {
 	cur := d.State()
 	if cur >= s {
 		return
 	}
-	d.SetState(s, reason, "system")
+	t := d.setStateCore(s, reason, "system")
+	if t != nil && d.sink != nil {
+		go d.sinkTransitionAsync(*t)
+	}
 }
 
 // IsHalted reports whether trading is currently halted for today.
