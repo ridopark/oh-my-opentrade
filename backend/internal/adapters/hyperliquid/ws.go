@@ -304,10 +304,9 @@ func (ws *WSSubscriber) Run(ctx context.Context) error {
 		}
 
 		// Reset backoff after a long-lived session so the next reconnect
-		// doesn't inherit a stale escalated delay.
-		if time.Since(started) > 5*time.Minute {
-			backoff = wsMinBackoff
-		}
+		// doesn't inherit a stale escalated delay. The reset happens after
+		// the sleep+escalate block so the first retry uses wsMinBackoff.
+		longLived := time.Since(started) > 5*time.Minute
 
 		ws.log.Warn().Err(err).Dur("backoff", backoff).
 			Msg("hyperliquid ws: connection lost, reconnecting")
@@ -318,6 +317,10 @@ func (ws *WSSubscriber) Run(ctx context.Context) error {
 			return nil
 		}
 
+		if longLived {
+			backoff = wsMinBackoff
+			continue
+		}
 		backoff *= 2
 		if backoff > wsMaxBackoff {
 			backoff = wsMaxBackoff
