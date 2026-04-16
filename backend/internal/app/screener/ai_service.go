@@ -72,6 +72,7 @@ type AIService struct {
 	notifier          ports.NotifierPort
 	now               func() time.Time
 	coveredStrategies map[string]bool
+	lastCatchUpDate   string // "2006-01-02" — prevents repeat catch-ups on same day
 }
 
 func NewAIService(
@@ -216,8 +217,11 @@ func (s *AIService) bootstrapFromDB(ctx context.Context) map[string]bool {
 }
 
 func (s *AIService) schedulerLoop(ctx context.Context) {
-	if s.needsCatchUpScreen() {
+	loc, _ := time.LoadLocation("America/New_York")
+	todayStr := s.now().In(loc).Format("2006-01-02")
+	if s.lastCatchUpDate != todayStr && s.needsCatchUpScreen() {
 		s.log.Info().Msg("ai screener: missed today's scheduled run — running catch-up")
+		s.lastCatchUpDate = todayStr
 		if err := s.RunAIScreen(ctx, s.now()); err != nil {
 			s.log.Error().Err(err).Msg("ai screener catch-up run failed")
 		}
