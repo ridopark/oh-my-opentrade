@@ -30,6 +30,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/whale13f"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/oh-my-opentrade/backend/internal/logger"
 	"github.com/rs/zerolog"
 )
@@ -235,6 +236,22 @@ func main() {
 		}, macroRepo, log.With().Str("component", "macro_events").Logger())
 	}
 
+	// Corporate actions client (Alpaca splits)
+	caClient := alpaca.NewCorporateActionsClient(
+		cfg.Alpaca.BaseURL, cfg.Alpaca.APIKeyID, cfg.Alpaca.APISecretKey,
+		log.With().Str("component", "corporate_actions").Logger(),
+	)
+	caRepo := timescaledb.NewCorporateActionsRepo(
+		timescaledb.NewSqlDB(sqlDB),
+		log.With().Str("component", "corporate_actions_repo").Logger(),
+	)
+
+	// Universe history repo (Alpaca asset listing)
+	universeRepo := timescaledb.NewUniverseHistoryRepo(
+		timescaledb.NewSqlDB(sqlDB),
+		log.With().Str("component", "universe_history_repo").Logger(),
+	)
+
 	if runOnce {
 		log.Info().Msg("run-once mode: executing all tasks")
 		refreshSvc.RefreshAll(ctx)
@@ -250,6 +267,12 @@ func main() {
 			if err := earningsSvc.Refresh(ctx); err != nil {
 				log.Warn().Err(err).Msg("earnings calendar refresh failed")
 			}
+		}
+		if err := refreshCorporateActions(ctx, caClient, caRepo, symbols, log); err != nil {
+			log.Warn().Err(err).Msg("corporate actions refresh failed")
+		}
+		if err := refreshUniverseHistory(ctx, alpacaAdapter, universeRepo, symbols, log); err != nil {
+			log.Warn().Err(err).Msg("universe history refresh failed")
 		}
 		if err := macroClient.Refresh(ctx); err != nil {
 			log.Warn().Err(err).Msg("macro events refresh failed")
@@ -306,6 +329,44 @@ func main() {
 		}
 	}()
 
+	// Corporate actions — kick once at startup then once every 24h.
+	go func() {
+		if err := refreshCorporateActions(ctx, caClient, caRepo, symbols, log); err != nil {
+			log.Warn().Err(err).Msg("corporate actions initial refresh failed")
+		}
+		t := time.NewTicker(24 * time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := refreshCorporateActions(ctx, caClient, caRepo, symbols, log); err != nil {
+					log.Warn().Err(err).Msg("corporate actions refresh failed")
+				}
+			}
+		}
+	}()
+
+	// Universe history — kick once at startup then once every 24h.
+	go func() {
+		if err := refreshUniverseHistory(ctx, alpacaAdapter, universeRepo, symbols, log); err != nil {
+			log.Warn().Err(err).Msg("universe history initial refresh failed")
+		}
+		t := time.NewTicker(24 * time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := refreshUniverseHistory(ctx, alpacaAdapter, universeRepo, symbols, log); err != nil {
+					log.Warn().Err(err).Msg("universe history refresh failed")
+				}
+			}
+		}
+	}()
+
 	gapDetector := timescaledb.NewGapDetector(repo)
 	gapSvc := gapdetect.NewService(gapDetector, repo, log.With().Str("component", "gapdetect").Logger(), nil)
 	gapSymbols := make([]domain.Symbol, 0, len(symbols))
@@ -326,6 +387,125 @@ func main() {
 type noopVIXSetter struct{}
 
 func (noopVIXSetter) SetVIXLevel(float64) {}
+
+// refreshCorporateActions iterates configured symbols, fetches splits from
+// Alpaca (5-year lookback), and upserts them into the corporate_actions table.
+func refreshCorporateActions(
+	ctx context.Context,
+	client *alpaca.CorporateActionsClient,
+	repo *timescaledb.CorporateActionsRepo,
+	symbols []string,
+	log zerolog.Logger,
+) error {
+	if client == nil {
+		log.Debug().Msg("corporate_actions: client nil (no API keys), skipping")
+		return nil
+	}
+	now := time.Now()
+	from := now.AddDate(-5, 0, 0)
+	total := 0
+	symbolsWithSplits := 0
+	for _, sym := range symbols {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		splits, err := client.GetSplits(ctx, sym, from, now)
+		if err != nil {
+			log.Warn().Err(err).Str("symbol", sym).Msg("corporate_actions: GetSplits failed")
+			continue
+		}
+		if len(splits) > 0 {
+			symbolsWithSplits++
+		}
+		for _, ca := range splits {
+			if err := repo.Upsert(ctx, ca); err != nil {
+				log.Warn().Err(err).Str("symbol", sym).Msg("corporate_actions: upsert failed")
+				continue
+			}
+			total++
+		}
+	}
+	log.Info().Int("splits", total).Int("symbols_with_splits", symbolsWithSplits).Int("symbols_checked", len(symbols)).
+		Msg("corporate_actions: refreshed")
+	return nil
+}
+
+// refreshUniverseHistory calls Alpaca ListTradeable to determine which
+// configured symbols are active vs inactive, then upserts universe_history
+// rows accordingly: active symbols get an open window (to_date=NULL),
+// inactive symbols get their window closed (to_date=today).
+func refreshUniverseHistory(
+	ctx context.Context,
+	adapter *alpaca.Adapter,
+	repo *timescaledb.UniverseHistoryRepo,
+	symbols []string,
+	log zerolog.Logger,
+) error {
+	assets, err := adapter.ListTradeable(ctx, domain.AssetClassEquity)
+	if err != nil {
+		return fmt.Errorf("universe_history: list tradeable: %w", err)
+	}
+
+	activeSet := make(map[string]bool, len(assets))
+	for _, a := range assets {
+		activeSet[a.Symbol] = true
+	}
+
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	upserted, closed := 0, 0
+	for _, sym := range symbols {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		ds := domain.Symbol(sym)
+
+		// Check existing windows to decide action.
+		windows, err := repo.WindowsFor(ctx, ds)
+		if err != nil {
+			log.Warn().Err(err).Str("symbol", sym).Msg("universe_history: WindowsFor failed")
+			continue
+		}
+
+		if activeSet[sym] {
+			// Symbol is active — ensure an open window exists.
+			hasOpen := false
+			for _, w := range windows {
+				if w.ToDate == nil {
+					hasOpen = true
+					break
+				}
+			}
+			if !hasOpen {
+				if err := repo.Upsert(ctx, ports.UniverseWindow{
+					Symbol:   ds,
+					FromDate: today,
+					Source:   "alpaca",
+					Note:     "auto-detected active",
+				}); err != nil {
+					log.Warn().Err(err).Str("symbol", sym).Msg("universe_history: upsert active failed")
+					continue
+				}
+				upserted++
+			}
+		} else {
+			// Symbol not in active list — close any open window.
+			for _, w := range windows {
+				if w.ToDate == nil {
+					w.ToDate = &today
+					if err := repo.Upsert(ctx, w); err != nil {
+						log.Warn().Err(err).Str("symbol", sym).Msg("universe_history: close window failed")
+						continue
+					}
+					closed++
+				}
+			}
+		}
+	}
+
+	log.Info().Int("new_active", upserted).Int("closed", closed).Int("symbols_checked", len(symbols)).
+		Msg("universe_history: refreshed")
+	return nil
+}
 
 func initDB(cfg *config.Config, log zerolog.Logger) *sql.DB {
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
