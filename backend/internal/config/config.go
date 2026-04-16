@@ -165,6 +165,18 @@ type BacktestConfig struct {
 	LatencyMsOption               int     `yaml:"latency_ms_option"`               // default 200
 	FeeSchedule                   string  `yaml:"fee_schedule"`                    // "alpaca_equity" | "ibkr_options" | "none"
 	PessimisticSlippageMultiplier float64 `yaml:"pessimistic_slippage_multiplier"` // default 2.0
+
+	// EnforceUniverseHistory enables the Sprint-7-addon survivorship-bias
+	// filter: when true, the backtest bar loader consults a
+	// UniverseHistoryPort and drops bars (or skips symbols entirely) for
+	// intervals during which the symbol was not tradable. The flag
+	// defaults to false so existing backtests that operated on the
+	// always-current active-universe list continue to reproduce their
+	// published numbers bit-for-bit until an operator explicitly opts
+	// in. If the flag is true but no UniverseHistoryPort is wired, the
+	// runner logs a warning and proceeds without filtering rather than
+	// failing closed.
+	EnforceUniverseHistory bool `yaml:"enforce_universe_history"`
 }
 
 type OptionsRiskConfig struct {
