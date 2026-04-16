@@ -28,12 +28,15 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/sec"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/adapters/yfinance"
+	"github.com/oh-my-opentrade/backend/internal/adapters/strategy/store_fs"
 	"github.com/oh-my-opentrade/backend/internal/app/datarefresh"
 	"github.com/oh-my-opentrade/backend/internal/app/earnings"
 	"github.com/oh-my-opentrade/backend/internal/app/gapdetect"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/ivcollector"
 	"github.com/oh-my-opentrade/backend/internal/app/optionsimport"
+	screenerapp "github.com/oh-my-opentrade/backend/internal/app/screener"
+	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/whale13f"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -349,6 +352,44 @@ func main() {
 			log.Warn().Err(err).Msg("universe history refresh failed")
 		}
 	}, log)
+
+	// AI screener (scheduled daily at configured time, same as omo-core used to do)
+	if cfg.AIScreener.Enabled {
+		specStore := store_fs.NewStore("configs/strategies", strategy.LoadSpecFile)
+		aiScreenerRepo := timescaledb.NewAIScreenerRepo(
+			timescaledb.NewSqlDB(sqlDB),
+			log.With().Str("component", "ai_screener_repo").Logger(),
+		)
+		var aiNotifier ports.NotifierPort
+		if notifier != nil {
+			aiNotifier = notifier
+		}
+		aiScreenerSvc, err := screenerapp.NewAIService(
+			log.With().Str("component", "ai_screener").Logger(),
+			cfg.AIScreener,
+			cfg.AI,
+			"default",
+			string(domain.EnvModePaper),
+			nil, // no event bus in omo-data
+			alpacaAdapter,
+			alpacaAdapter,
+			alpacaAdapter,
+			aiScreenerRepo,
+			specStore,
+			aiNotifier,
+		)
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to create AI screener service")
+		}
+		if err := aiScreenerSvc.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start AI screener service")
+		}
+		log.Info().
+			Strs("models", cfg.AIScreener.Models).
+			Int("ai_run_hour_et", cfg.AIScreener.AIRunAtHourET).
+			Int("ai_run_minute_et", cfg.AIScreener.AIRunAtMinuteET).
+			Msg("AI screener service started")
+	}
 
 	gapDetector := timescaledb.NewGapDetector(repo)
 	gapSvc := gapdetect.NewService(gapDetector, repo, log.With().Str("component", "gapdetect").Logger(), nil)

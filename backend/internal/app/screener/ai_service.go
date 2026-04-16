@@ -72,7 +72,6 @@ type AIService struct {
 	notifier          ports.NotifierPort
 	now               func() time.Time
 	coveredStrategies map[string]bool
-	lastCatchUpDate   string // "2006-01-02" — prevents repeat catch-ups on same day
 }
 
 func NewAIService(
@@ -94,9 +93,6 @@ func NewAIService(
 	}
 	if envMode == "" {
 		return nil, errors.New("envMode is required")
-	}
-	if bus == nil {
-		return nil, errors.New("bus is required")
 	}
 	if snapshots == nil {
 		return nil, errors.New("snapshots port is required")
@@ -145,10 +141,26 @@ func (s *AIService) CoveredStrategies() map[string]bool {
 }
 
 func (s *AIService) bootstrapFromDB(ctx context.Context) map[string]bool {
+	return BootstrapFromDB(ctx, s.repo, s.specStore, s.tenantID, s.envMode, s.bus, s.log)
+}
+
+// BootstrapFromDB reads the latest AI screener results from the DB for each
+// strategy with a screening description, and publishes EventAIScreenerCompleted
+// events so the symbol router can resolve effective symbols. Returns the set
+// of strategy keys that had results.
+func BootstrapFromDB(
+	ctx context.Context,
+	repo ports.AIScreenerRepoPort,
+	specStore strategyports.SpecStore,
+	tenantID string,
+	envMode string,
+	bus Bus,
+	log zerolog.Logger,
+) map[string]bool {
 	covered := make(map[string]bool)
-	specs, err := s.specStore.List(ctx, nil)
+	specs, err := specStore.List(ctx, nil)
 	if err != nil {
-		s.log.Warn().Err(err).Msg("ai screener bootstrap: failed to list specs")
+		log.Warn().Err(err).Msg("ai screener bootstrap: failed to list specs")
 		return covered
 	}
 
@@ -158,9 +170,9 @@ func (s *AIService) bootstrapFromDB(ctx context.Context) map[string]bool {
 			continue
 		}
 		strategyKey := string(spec.ID)
-		results, err := s.repo.GetLatestAIResults(ctx, s.tenantID, s.envMode, strategyKey)
+		results, err := repo.GetLatestAIResults(ctx, tenantID, envMode, strategyKey)
 		if err != nil {
-			s.log.Warn().Err(err).Str("strategy", strategyKey).Msg("ai screener bootstrap: failed to load results")
+			log.Warn().Err(err).Str("strategy", strategyKey).Msg("ai screener bootstrap: failed to load results")
 			continue
 		}
 		if len(results) == 0 {
@@ -187,22 +199,24 @@ func (s *AIService) bootstrapFromDB(ctx context.Context) map[string]bool {
 		}
 		ev, err := domain.NewEvent(
 			domain.EventAIScreenerCompleted,
-			s.tenantID,
-			domain.EnvMode(s.envMode),
+			tenantID,
+			domain.EnvMode(envMode),
 			results[0].RunID+"-bootstrap-"+strategyKey,
 			payload,
 		)
 		if err != nil {
-			s.log.Warn().Err(err).Str("strategy", strategyKey).Msg("ai screener bootstrap: failed to create event")
+			log.Warn().Err(err).Str("strategy", strategyKey).Msg("ai screener bootstrap: failed to create event")
 			continue
 		}
-		if err := s.bus.Publish(ctx, *ev); err != nil {
-			s.log.Warn().Err(err).Str("strategy", strategyKey).Msg("ai screener bootstrap: failed to publish event")
-			continue
+		if bus != nil {
+			if err := bus.Publish(ctx, *ev); err != nil {
+				log.Warn().Err(err).Str("strategy", strategyKey).Msg("ai screener bootstrap: failed to publish event")
+				continue
+			}
 		}
 		restored++
 		covered[strategyKey] = true
-		s.log.Info().
+		log.Info().
 			Str("strategy", strategyKey).
 			Str("run_id", results[0].RunID).
 			Time("as_of", results[0].AsOf).
@@ -211,22 +225,12 @@ func (s *AIService) bootstrapFromDB(ctx context.Context) map[string]bool {
 	}
 
 	if restored > 0 {
-		s.log.Info().Int("strategies_restored", restored).Msg("ai screener bootstrap: complete")
+		log.Info().Int("strategies_restored", restored).Msg("ai screener bootstrap: complete")
 	}
 	return covered
 }
 
 func (s *AIService) schedulerLoop(ctx context.Context) {
-	loc, _ := time.LoadLocation("America/New_York")
-	todayStr := s.now().In(loc).Format("2006-01-02")
-	if s.lastCatchUpDate != todayStr && s.needsCatchUpScreen() {
-		s.log.Info().Msg("ai screener: missed today's scheduled run — running catch-up")
-		s.lastCatchUpDate = todayStr
-		if err := s.RunAIScreen(ctx, s.now()); err != nil {
-			s.log.Error().Err(err).Msg("ai screener catch-up run failed")
-		}
-	}
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -257,46 +261,6 @@ func (s *AIService) schedulerLoop(ctx context.Context) {
 			s.log.Error().Err(err).Msg("ai screener run failed")
 		}
 	}
-}
-
-func (s *AIService) needsCatchUpScreen() bool {
-	loc, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		return false
-	}
-	nowET := s.now().In(loc)
-
-	if isNonTradingDay(nowET) {
-		return false
-	}
-
-	scheduled := time.Date(nowET.Year(), nowET.Month(), nowET.Day(),
-		s.cfg.AIRunAtHourET, s.cfg.AIRunAtMinuteET, 0, 0, loc)
-	if nowET.Before(scheduled) {
-		return false
-	}
-
-	todayStart := time.Date(nowET.Year(), nowET.Month(), nowET.Day(), 0, 0, 0, 0, loc)
-
-	specs, err := s.specStore.List(context.Background(), nil)
-	if err != nil {
-		return true
-	}
-	foundTodayResult := false
-	for _, spec := range specs {
-		if spec.Screening.Description == "" {
-			continue
-		}
-		results, err := s.repo.GetLatestAIResults(context.Background(), s.tenantID, s.envMode, string(spec.ID))
-		if err != nil || len(results) == 0 {
-			continue
-		}
-		if !results[0].AsOf.In(loc).Before(todayStart) {
-			foundTodayResult = true
-			break
-		}
-	}
-	return !foundTodayResult
 }
 
 func filterByAssetClass(symbols []string, assetClasses []string) []string {
@@ -649,8 +613,10 @@ func (s *AIService) runForStrategy(
 	if err != nil {
 		return fmt.Errorf("ai_screener: new event for %s: %w", strategyKey, err)
 	}
-	if err := s.bus.Publish(ctx, *ev); err != nil {
-		return fmt.Errorf("ai_screener: publish completed for %s: %w", strategyKey, err)
+	if s.bus != nil {
+		if err := s.bus.Publish(ctx, *ev); err != nil {
+			return fmt.Errorf("ai_screener: publish completed for %s: %w", strategyKey, err)
+		}
 	}
 
 	s.log.Info().
