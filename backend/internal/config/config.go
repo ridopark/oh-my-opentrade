@@ -142,6 +142,17 @@ type TradingConfig struct {
 	// false; intended to be set true only when running on IBKR (paper or
 	// live). Simbroker / Alpaca paper skip this regardless.
 	RegTEnforcement bool `yaml:"reg_t_enforcement"`
+	// Sprint 4.6 — earnings blackout per strategy. Keys are strategy
+	// names; values are "strict", "permissive", or "off". Missing
+	// entries default to "off" so legacy strategies are unaffected.
+	EarningsBlackout map[string]string `yaml:"earnings_blackout"`
+	// MacroEventBlackoutMinutes is the half-window (minutes) around a
+	// high-impact macro release during which new entries are rejected.
+	// Default 30 when zero; set to a negative value to force default.
+	MacroEventBlackoutMinutes int `yaml:"macro_event_blackout_minutes"`
+	// MacroEventImpacts lists the impact tags that trigger a blackout.
+	// Default ["high"] when empty.
+	MacroEventImpacts []string `yaml:"macro_event_impacts"`
 }
 
 type OptionsRiskConfig struct {
@@ -235,6 +246,9 @@ type rawTradingConfig struct {
 	OptionsRisk            OptionsRiskConfig `yaml:"options_risk"`
 	PDTEnforcement         string            `yaml:"pdt_enforcement"`
 	RegTEnforcement        bool              `yaml:"reg_t_enforcement"`
+	EarningsBlackout       map[string]string `yaml:"earnings_blackout"`
+	MacroEventBlackoutMinutes int            `yaml:"macro_event_blackout_minutes"`
+	MacroEventImpacts      []string          `yaml:"macro_event_impacts"`
 }
 
 type rawConfig struct {
@@ -383,6 +397,9 @@ func Load(envPath, yamlPath string) (*Config, error) {
 			OptionsRisk:            raw.Trading.OptionsRisk,
 			PDTEnforcement:         raw.Trading.PDTEnforcement,
 			RegTEnforcement:        raw.Trading.RegTEnforcement,
+			EarningsBlackout:       raw.Trading.EarningsBlackout,
+			MacroEventBlackoutMinutes: raw.Trading.MacroEventBlackoutMinutes,
+			MacroEventImpacts:      raw.Trading.MacroEventImpacts,
 		},
 		Symbols:      raw.Symbols,
 		Server:       raw.Server,

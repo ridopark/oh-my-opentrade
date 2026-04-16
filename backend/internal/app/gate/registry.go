@@ -101,6 +101,18 @@ type ExecutionGateDeps struct {
 	// Sprint 4.5 — compliance gates. Nil = disabled (gate passes through).
 	PDTGuard  PDTChecker
 	RegTGuard RegTChecker
+	// Sprint 4.6 — earnings & macro event blackouts. Nil guards =
+	// disabled; the gates short-circuit to pass-through.
+	EarningsBlackoutGuard EarningsBlackoutChecker
+	// EarningsBlackoutModes maps strategy name to enforcement mode
+	// ("strict", "permissive", "off"). Missing entries and empty
+	// values are treated as "off".
+	EarningsBlackoutModes     map[string]string
+	MacroEventGuard           MacroEventChecker
+	MacroEventBlackoutMinutes int
+	// MacroEventImpacts lists the impact levels that should trigger a
+	// rejection. Default ["high"] when empty.
+	MacroEventImpacts []string
 }
 
 // Minimal interfaces for each execution guard.
@@ -220,5 +232,7 @@ func NewDefaultExecutionRegistry() *ExecutionGateRegistry {
 	r.Register("buying_power_guard", newBuyingPowerGate)
 	r.Register("pdt_guard", newPDTGate)
 	r.Register("reg_t_guard", newRegTGate)
+	r.Register("earnings_blackout_gate", newEarningsBlackoutGate)
+	r.Register("macro_event_gate", newMacroEventGate)
 	return r
 }

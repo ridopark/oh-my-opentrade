@@ -266,6 +266,70 @@ func BuildRegTCheck(enabled bool, account ports.AccountPort, log zerolog.Logger)
 	return risk.NewRegTCheck(account, log)
 }
 
+// BuildEarningsBlackout wraps an EarningsCalendarPort as a gate-facing
+// checker. Returns nil when modes is empty or when all entries resolve
+// to "off" so callers can leave the deps field unset (the gate treats
+// nil as disabled). The second return value is the raw modes map that
+// the caller writes to ExecutionGateDeps.EarningsBlackoutModes.
+//
+// Not forced into the default chain — wiring is opt-in per Sprint 4.5
+// conventions.
+func BuildEarningsBlackout(modes map[string]string, port ports.EarningsCalendarPort) (gateChecker gateEarningsChecker, resolved map[string]string) {
+	if len(modes) == 0 || port == nil {
+		return nil, nil
+	}
+	active := false
+	resolved = make(map[string]string, len(modes))
+	for k, v := range modes {
+		resolved[k] = v
+		if v != "" && v != "off" {
+			active = true
+		}
+	}
+	if !active {
+		return nil, nil
+	}
+	return earningsCheckerAdapter{port: port}, resolved
+}
+
+// BuildMacroEventGate wraps a MacroCalendarPort as a gate-facing
+// checker. Returns nil when port is nil so the deps field can be left
+// unset (the gate treats nil as disabled).
+func BuildMacroEventGate(port ports.MacroCalendarPort) gateMacroChecker {
+	if port == nil {
+		return nil
+	}
+	return macroCheckerAdapter{port: port}
+}
+
+// The gate* interface aliases below keep bootstrap decoupled from the
+// gate package's exact type names while still providing compile-time
+// safety at the call site (see bootstrap_wire.go).
+
+type gateEarningsChecker interface {
+	NextEarnings(ctx context.Context, symbol string) (*ports.EarningsEntry, error)
+}
+
+type gateMacroChecker interface {
+	EventsInWindow(ctx context.Context, around time.Time, windowMinutes int) ([]ports.MacroEvent, error)
+}
+
+type earningsCheckerAdapter struct {
+	port ports.EarningsCalendarPort
+}
+
+func (a earningsCheckerAdapter) NextEarnings(ctx context.Context, symbol string) (*ports.EarningsEntry, error) {
+	return a.port.GetNextEarnings(ctx, symbol)
+}
+
+type macroCheckerAdapter struct {
+	port ports.MacroCalendarPort
+}
+
+func (a macroCheckerAdapter) EventsInWindow(ctx context.Context, around time.Time, windowMinutes int) ([]ports.MacroEvent, error) {
+	return a.port.EventsInWindow(ctx, around, windowMinutes)
+}
+
 // WarnMissingSymbolMetadata emits a WARN log for every active symbol absent
 // from the loaded metadata table. These symbols will fail-open through the
 // sector_exposure gate — operators need to know so they can backfill the
