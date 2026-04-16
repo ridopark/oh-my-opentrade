@@ -64,6 +64,23 @@ func BuildBacktestInfra(deps BacktestDeps, slippageBPS int64, initialEquity floa
 	dolthubClient := dolthub.NewClient(nil, log)
 	importer := optionsimport.NewService(dolthubClient, histOptRepo, log)
 
+	// Sprint 7 wiring: resolve fill model + fee schedule from the YAML-backed
+	// BacktestConfig. applyBacktestDefaults guarantees non-empty names, but
+	// if resolution fails (unknown name) we log and fall back to optimistic +
+	// no fees rather than aborting startup — a bad YAML value must not
+	// silently trade live behavior for zero fills.
+	btCfg := deps.AppCfg.Backtest
+	fillModel, err := simbroker.FillModelByName(btCfg.FillModel, btCfg.PessimisticSlippageMultiplier)
+	if err != nil {
+		log.Error().Err(err).Str("fill_model", btCfg.FillModel).Msg("unknown fill model; falling back to optimistic")
+		fillModel = simbroker.OptimisticFillModel{}
+	}
+	feeSchedule, err := simbroker.FeeScheduleByName(btCfg.FeeSchedule)
+	if err != nil {
+		log.Error().Err(err).Str("fee_schedule", btCfg.FeeSchedule).Msg("unknown fee schedule; falling back to NoFees")
+		feeSchedule = simbroker.NoFees{}
+	}
+
 	sim := simbroker.New(simbroker.Config{
 		SlippageBPS:         slippageBPS,
 		InitialEquity:       initialEquity,
@@ -73,6 +90,10 @@ func BuildBacktestInfra(deps BacktestDeps, slippageBPS int64, initialEquity floa
 		EarningsRampEnabled: true,
 		OptionExitSpreadMultiplier: opt.OptionExitSpreadMultiplier,
 		OptionEntrySpreadEnabled:   opt.OptionEntrySpreadEnabled,
+		FillModel:    fillModel,
+		FeeSchedule:  feeSchedule,
+		LatencyMsEq:  btCfg.LatencyMsEquity,
+		LatencyMsOpt: btCfg.LatencyMsOption,
 	}, log.With().Str("component", "simbroker").Logger())
 
 	earningsRepo := timescaledb.NewEarningsRepo(deps.DB, log.With().Str("component", "earnings_repo").Logger())

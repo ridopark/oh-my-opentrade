@@ -32,6 +32,15 @@ type Config struct {
 	// OptionEntrySpreadEnabled adds the same tiered half-spread to option entry fills.
 	OptionExitSpreadMultiplier float64
 	OptionEntrySpreadEnabled   bool
+
+	// Sprint 7 — pluggable fill model + fee schedule. When FillModel is nil
+	// the broker preserves the pre-Sprint-7 optimistic instant-close fill so
+	// legacy callers keep deterministic numbers. When FeeSchedule is nil the
+	// broker charges no fees (NoFees).
+	FillModel     FillModel
+	FeeSchedule   FeeSchedule
+	LatencyMsEq   int // per-equity submission→next-bar latency budget; default 50ms
+	LatencyMsOpt  int // per-option submission→next-bar latency budget; default 200ms
 }
 
 // simOrder tracks a submitted order and its fill details.
@@ -68,9 +77,18 @@ type Broker struct {
 	historicalOptions   ports.HistoricalOptionsPort
 	log                 zerolog.Logger
 
+	fillModel    FillModel
+	feeSchedule  FeeSchedule
+	latencyMsEq  int
+	latencyMsOpt int
+
 	mu        sync.RWMutex
 	prices    map[domain.Symbol]float64
 	barTimes  map[domain.Symbol]time.Time
+	// bars holds the most recently reported OHLC for each symbol so fill
+	// models that care about intrabar range can read it. Populated by
+	// UpdateBar; UpdatePrice leaves it at zero OHLC (only close is known).
+	bars      map[domain.Symbol]Bar
 	orders    map[string]*simOrder
 	positions map[string]*position
 	cash      float64
@@ -97,6 +115,22 @@ func New(cfg Config, log zerolog.Logger) *Broker {
 	if exitMult == 0 {
 		exitMult = 1.0
 	}
+	fm := cfg.FillModel
+	if fm == nil {
+		fm = OptimisticFillModel{}
+	}
+	fs := cfg.FeeSchedule
+	if fs == nil {
+		fs = NoFees{}
+	}
+	latEq := cfg.LatencyMsEq
+	if latEq == 0 {
+		latEq = 50
+	}
+	latOpt := cfg.LatencyMsOpt
+	if latOpt == 0 {
+		latOpt = 200
+	}
 	return &Broker{
 		slippageBPS:         cfg.SlippageBPS,
 		initialEquity:       equity,
@@ -107,13 +141,29 @@ func New(cfg Config, log zerolog.Logger) *Broker {
 		optionExitSpreadMult:     exitMult,
 		optionEntrySpreadEnabled: cfg.OptionEntrySpreadEnabled,
 		log:                 log.With().Str("component", "simbroker").Logger(),
+		fillModel:       fm,
+		feeSchedule:     fs,
+		latencyMsEq:     latEq,
+		latencyMsOpt:    latOpt,
 		prices:          make(map[domain.Symbol]float64),
 		barTimes:        make(map[domain.Symbol]time.Time),
+		bars:            make(map[domain.Symbol]Bar),
 		orders:          make(map[string]*simOrder),
 		positions:       make(map[string]*position),
 		cash:            equity,
 		fillCh:          make(chan ports.OrderUpdate, 256),
 	}
+}
+
+// UpdateBar records the latest OHLC bar for a symbol. Callers that have the
+// full bar (backtest replay) should prefer this over UpdatePrice so realistic
+// fill models can see the intrabar range.
+func (b *Broker) UpdateBar(symbol domain.Symbol, bar Bar) {
+	b.mu.Lock()
+	b.bars[symbol] = bar
+	b.prices[symbol] = bar.Close
+	b.barTimes[symbol] = bar.Time
+	b.mu.Unlock()
 }
 
 // UpdatePrice sets the latest close price for a symbol. Called by the replay loop
@@ -182,34 +232,85 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			side = "buy"
 		}
 	} else {
-		slippage := lastPrice * float64(b.slippageBPS) / 10000.0
+		// Determine side and effective order type for this intent before
+		// handing off to the pluggable fill model.
+		var orderSide string
+		var orderType string
+		var limitPx float64
 		switch intent.Direction {
 		case domain.DirectionLong:
-			side = "buy"
-			fillPrice = lastPrice + slippage
+			orderSide = "BUY"
 		case domain.DirectionShort:
-			side = "sell"
-			fillPrice = lastPrice - slippage
+			orderSide = "SELL"
 		default:
-			// Exit: determine side from existing position.
-			// Use limit price when set (strategy-managed stops/targets).
 			if pos, ok := b.positions[string(intent.Symbol)]; ok && pos.side == "sell" {
-				side = "buy"
-				if intent.LimitPrice > 0 {
-					fillPrice = intent.LimitPrice + slippage
-				} else {
-					fillPrice = lastPrice + slippage
-				}
+				orderSide = "BUY"
 			} else {
-				side = "sell"
-				if intent.LimitPrice > 0 {
-					fillPrice = intent.LimitPrice - slippage
-				} else {
-					fillPrice = lastPrice - slippage
-				}
+				orderSide = "SELL"
+			}
+			if intent.LimitPrice > 0 {
+				orderType = "LMT"
+				limitPx = intent.LimitPrice
 			}
 		}
+		if orderType == "" {
+			if intent.LimitPrice > 0 && intent.OrderType == "limit" {
+				orderType = "LMT"
+				limitPx = intent.LimitPrice
+			} else {
+				orderType = "MKT"
+			}
+		}
+
+		curBar := b.bars[priceSymbol]
+		if curBar.Close == 0 {
+			curBar = Bar{Time: barTime, Close: lastPrice}
+		}
+		fctx := FillContext{
+			Symbol:      string(intent.Symbol),
+			Side:        orderSide,
+			Qty:         intent.Quantity,
+			OrderType:   orderType,
+			LimitPrice:  limitPx,
+			CurrentBar:  curBar,
+			IsOption:    false,
+			SlippageBPS: b.slippageBPS,
+			SubmitTime:  barTime,
+			LatencyMs:   b.latencyMsEq,
+		}
+		res, err := b.fillModel.FillPrice(fctx)
+		if err != nil {
+			return "", fmt.Errorf("simbroker: fill model %s: %w", b.fillModel.Name(), err)
+		}
+		if !res.Filled {
+			return "", fmt.Errorf("simbroker: fill model %s did not fill order for %s: %s",
+				b.fillModel.Name(), intent.Symbol, res.Reason)
+		}
+		fillPrice = res.Price
+		if isBuy(orderSide) {
+			side = "buy"
+		} else {
+			side = "sell"
+		}
 	}
+
+	// Compute fees for this fill. Notional convention: options use the
+	// standard 100-share multiplier so premium * qty * 100 reflects dollar
+	// exposure; equities are straight price*qty. Caller-facing ports.Fees
+	// rides on the OrderUpdate emitted below.
+	notionalMult := 1.0
+	if isOption {
+		notionalMult = 100.0
+	}
+	feeCtx := FeeContext{
+		Symbol:    string(intent.Symbol),
+		IsOption:  isOption,
+		Side:      side,
+		Qty:       intent.Quantity,
+		Notional:  fillPrice * intent.Quantity * notionalMult,
+		FillPrice: fillPrice,
+	}
+	fees := b.feeSchedule.Compute(feeCtx)
 
 	// Generate order ID.
 	seq := b.orderSeq.Add(1)
@@ -304,6 +405,10 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			FilledQty:      intent.Quantity,
 			FilledAvgPrice: fillPrice,
 			FilledAt:       barTime,
+			Commission:     fees.Commission,
+			RegulatoryFee:  fees.Regulatory,
+			ExchangeFee:    fees.Exchange,
+			FeesTotal:      fees.Total,
 		}:
 		default:
 		}
