@@ -346,6 +346,15 @@ function TopBar({
         <input type="number" value={config.initialEquity} onChange={(e) => updateConfig("initialEquity", Number(e.target.value))} className={`${inputCls} w-20`} />
         <span className="text-[10px] text-muted-foreground uppercase">Slip</span>
         <input type="number" value={config.slippageBps} onChange={(e) => updateConfig("slippageBps", Number(e.target.value))} className={`${inputCls} w-12`} />
+        <label className="flex items-center gap-1 cursor-pointer ml-1">
+          <input
+            type="checkbox"
+            checked={!config.noAi}
+            onChange={(e) => updateConfig("noAi", !e.target.checked)}
+            className="h-3 w-3 rounded border-border accent-emerald-500"
+          />
+          <span className="text-[10px] text-muted-foreground uppercase">AI</span>
+        </label>
       </div>
 
       <div className="flex items-center gap-2 ml-auto shrink-0">
