@@ -304,14 +304,18 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 		}
 	}
 
-	// Crypto warmup: 24/7 market, use last 2 hours.
+	// Crypto warmup: 24/7 market. Use 10 hours so the session VWAP and
+	// sigma estimator (sigma_lookback_bars=96 at 5m = 8h) have enough
+	// data to produce stable devZ readings immediately after restart.
+	// The prior 2-hour window left sigma underfed, making devZ unreliable
+	// for ~6 hours after every restart.
 	if len(syms.crypto) > 0 {
 		cryptoWarmupTo := time.Now().UTC()
-		cryptoWarmupFrom := cryptoWarmupTo.Add(-120 * time.Minute)
+		cryptoWarmupFrom := cryptoWarmupTo.Add(-600 * time.Minute)
 		warmupLog.Info().
 			Time("warmup_from", cryptoWarmupFrom).
 			Time("warmup_to", cryptoWarmupTo).
-			Msg("warming crypto indicators from last 2 hours")
+			Msg("warming crypto indicators from last 10 hours")
 		for _, sym := range syms.crypto {
 			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaData, sym, syms.timeframe, cryptoWarmupFrom, cryptoWarmupTo, warmupLog)
 			if err != nil {
