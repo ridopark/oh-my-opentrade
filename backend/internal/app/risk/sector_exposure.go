@@ -126,8 +126,18 @@ func (s *SectorExposure) Check(_ context.Context, intent domain.OrderIntent) err
 }
 
 // intentNotional returns the absolute dollar notional of the proposed intent.
-// Option intents are excluded (handled separately in Sprint 5).
+// Option single-leg intents are excluded (risk accounted separately via
+// MaxLossUSD). Sprint 5 combo intents contribute their capped risk (net debit
+// or width-minus-credit) as a conservative notional proxy so sector caps
+// don't blow past their budget when a strategy starts stacking spreads on the
+// same sector.
 func intentNotional(intent domain.OrderIntent) float64 {
+	if intent.IsCombo() {
+		if r := domain.ComboRisk(intent); r > 0 {
+			return r
+		}
+		return intent.MaxLossUSD
+	}
 	if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
 		return 0
 	}

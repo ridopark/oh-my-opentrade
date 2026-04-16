@@ -107,8 +107,25 @@ func (d *DirectionalBias) Check(_ context.Context, intent domain.OrderIntent) er
 
 // intentSignedNotional returns the signed dollar notional the intent would
 // add to the net-directional sum. Long adds positive, short adds negative.
-// Option intents contribute 0 (deferred to Sprint 5).
+// Single-leg option intents contribute 0 (delta-notional deferred).
+// Sprint 5 combos contribute signed capped-risk: bullish structures
+// (vertical_call_debit, vertical_put_credit) add positive; bearish ones
+// (vertical_put_debit, vertical_call_credit) subtract. This keeps the
+// directional-bias gate honest about net delta exposure.
 func intentSignedNotional(intent domain.OrderIntent) float64 {
+	if intent.IsCombo() {
+		n := domain.ComboRisk(intent)
+		if n <= 0 {
+			n = intent.MaxLossUSD
+		}
+		switch intent.ComboType {
+		case domain.ComboTypeVerticalCallDebit, domain.ComboTypeVerticalPutCredit:
+			return n
+		case domain.ComboTypeVerticalPutDebit, domain.ComboTypeVerticalCallCredit:
+			return -n
+		}
+		return 0
+	}
 	if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
 		return 0
 	}
