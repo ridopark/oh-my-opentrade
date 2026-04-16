@@ -94,6 +94,14 @@ type OrderIntent struct {
 	// when empty, executors fall back to DefaultVenue(AssetClass). Perp
 	// and cross-venue crypto strategies must set this explicitly.
 	Venue Venue `json:"venue,omitempty"`
+
+	// Sprint 5 combo BAG support. When Legs is non-empty this intent represents
+	// a multi-leg BAG order and IsCombo() returns true. Symbol is the underlying
+	// ticker, Quantity is the combo count (1 combo = full leg ratios). ComboType
+	// classifies the structure (e.g. vertical_call_debit). Zero values preserve
+	// pre-Sprint-5 behavior for every existing code path.
+	Legs      []ComboLeg `json:"legs,omitempty"`
+	ComboType ComboType  `json:"comboType,omitempty"`
 }
 
 // ResolvedVenue returns the explicit Venue when set, otherwise the implicit

@@ -86,14 +86,33 @@ type ExecutionGateFactory func(params map[string]any, deps *ExecutionGateDeps) (
 // ExecutionGateDeps holds the concrete guard instances injected at bootstrap time.
 // Each field is an interface so the gate package does not import the execution package.
 type ExecutionGateDeps struct {
-	ExposureGuard      ExposureChecker
-	PortfolioGuard     PortfolioChecker
+	ExposureGuard       ExposureChecker
+	PortfolioGuard      PortfolioChecker
+	PortfolioHeatGuard   PortfolioHeatChecker
+	SectorExposureGuard  SectorExposureChecker
+	DirectionalBiasGuard DirectionalBiasChecker
+	KillSwitchGuard      KillSwitchChecker
 	RiskEngine         RiskValidator
 	OptionsRiskEngine  OptionsRiskValidator
 	SlippageGuard      SlippageChecker
 	TradingWindowGuard TradingWindowChecker
 	SpreadGuard        SpreadChecker
 	BuyingPowerGuard   BuyingPowerChecker
+	// Sprint 4.5 — compliance gates. Nil = disabled (gate passes through).
+	PDTGuard  PDTChecker
+	RegTGuard RegTChecker
+	// Sprint 4.6 — earnings & macro event blackouts. Nil guards =
+	// disabled; the gates short-circuit to pass-through.
+	EarningsBlackoutGuard EarningsBlackoutChecker
+	// EarningsBlackoutModes maps strategy name to enforcement mode
+	// ("strict", "permissive", "off"). Missing entries and empty
+	// values are treated as "off".
+	EarningsBlackoutModes     map[string]string
+	MacroEventGuard           MacroEventChecker
+	MacroEventBlackoutMinutes int
+	// MacroEventImpacts lists the impact levels that should trigger a
+	// rejection. Default ["high"] when empty.
+	MacroEventImpacts []string
 }
 
 // Minimal interfaces for each execution guard.
@@ -105,6 +124,29 @@ type ExposureChecker interface {
 
 // PortfolioChecker validates portfolio constraints.
 type PortfolioChecker interface {
+	Check(ctx context.Context, intent domain.OrderIntent) error
+}
+
+// PortfolioHeatChecker validates that the aggregate risk across open
+// positions plus the proposed intent stays below the configured max
+// heat fraction of account equity.
+type PortfolioHeatChecker interface {
+	Check(ctx context.Context, intent domain.OrderIntent) error
+}
+
+// SectorExposureChecker validates that the projected sector and industry
+// notional share (sum of open-position notional plus the proposed intent)
+// stays below the configured caps as a fraction of account equity.
+type SectorExposureChecker interface {
+	Check(ctx context.Context, intent domain.OrderIntent) error
+}
+
+// DirectionalBiasChecker validates that the projected net directional
+// exposure (Σ long notional − Σ short notional across open positions plus
+// the proposed intent) stays below the configured cap as a fraction of
+// account equity. Bias-reducing intents always pass — only intents that
+// push the account further from neutral are gated.
+type DirectionalBiasChecker interface {
 	Check(ctx context.Context, intent domain.OrderIntent) error
 }
 
@@ -179,10 +221,18 @@ func NewDefaultExecutionRegistry() *ExecutionGateRegistry {
 	r.Register("short_direction", newShortDirectionGate)
 	r.Register("exposure_guard", newExposureGate)
 	r.Register("portfolio_guard", newPortfolioGate)
+	r.Register("portfolio_heat_guard", newPortfolioHeatGate)
+	r.Register("sector_exposure_guard", newSectorExposureGate)
+	r.Register("directional_bias_guard", newDirectionalBiasGate)
+	r.Register("kill_switch", newKillSwitchGate)
 	r.Register("risk_engine", newRiskGate)
 	r.Register("slippage_guard", newSlippageGate)
 	r.Register("trading_window", newTradingWindowGate)
 	r.Register("spread_guard", newSpreadGate)
 	r.Register("buying_power_guard", newBuyingPowerGate)
+	r.Register("pdt_guard", newPDTGate)
+	r.Register("reg_t_guard", newRegTGate)
+	r.Register("earnings_blackout_gate", newEarningsBlackoutGate)
+	r.Register("macro_event_gate", newMacroEventGate)
 	return r
 }

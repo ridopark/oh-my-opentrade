@@ -26,6 +26,7 @@ type ibClient interface {
 	ReqFills(execFilter ...*ibsync.ExecutionFilter) ([]ibsync.Fill, error)
 	ReqMktData(contract *ibsync.Contract, genericTickList string, mktDataOptions ...ibsync.TagValue) *ibsync.Ticker
 	CancelMktData(contract *ibsync.Contract)
+	ReqContractDetails(contract *ibsync.Contract) ([]ibsync.ContractDetails, error)
 }
 
 // Compile-time assertion: *ibsync.IB satisfies ibClient.

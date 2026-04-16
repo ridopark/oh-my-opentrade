@@ -80,6 +80,14 @@ type OrderUpdate struct {
 	FilledQty      float64 // cumulative: total quantity filled so far across all fills
 	FilledAvgPrice float64 // cumulative: volume-weighted average price across all fills
 	FilledAt       time.Time
+	// Commission, regulatory, and exchange fees attributed to THIS fill.
+	// Populated by adapters that price fees internally (e.g. simbroker with a
+	// FeeSchedule). Live adapters that receive fees out-of-band from the
+	// broker leave these at 0.
+	Commission     float64
+	RegulatoryFee  float64
+	ExchangeFee    float64
+	FeesTotal      float64
 }
 
 // OrderStreamPort defines a push-based interface for receiving real-time

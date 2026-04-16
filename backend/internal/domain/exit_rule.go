@@ -133,7 +133,68 @@ type MonitoredPosition struct {
 	OptionExpiry   time.Time      `json:"optionExpiry,omitempty"`
 	OptionRight    string         `json:"optionRight,omitempty"`
 
+	// Sprint 5 combo tracking. When Legs is non-empty this is a multi-leg
+	// BAG position. EntryPrice is the net premium paid (debit) or collected
+	// (credit). Quantity is the combo count. LegFillPrices mirrors Legs
+	// one-to-one with the per-leg fill prices used for P&L attribution.
+	Legs           []ComboLeg `json:"legs,omitempty"`
+	ComboType      ComboType  `json:"comboType,omitempty"`
+	LegFillPrices  []float64  `json:"legFillPrices,omitempty"`
+
 	CustomState map[string]float64 `json:"customState,omitempty"`
+}
+
+// IsCombo reports whether this is a multi-leg combo position.
+func (mp *MonitoredPosition) IsCombo() bool {
+	return len(mp.Legs) > 0
+}
+
+// ComboPnL aggregates P&L across legs of a combo position. `legPrices` is a
+// slice of current per-leg prices, aligned 1:1 with mp.Legs. Returns the
+// realized-or-marked P&L in dollars: for each leg, (currentPrice -
+// entryFill) * |ratio| * quantity * multiplier, signed by whether the leg
+// was bought (ratio > 0) or sold (ratio < 0). Missing leg entry prices or a
+// length mismatch returns 0 to avoid injecting fabricated numbers.
+func (mp *MonitoredPosition) ComboPnL(legPrices []float64) float64 {
+	if !mp.IsCombo() {
+		return 0
+	}
+	if len(legPrices) != len(mp.Legs) || len(mp.LegFillPrices) != len(mp.Legs) {
+		return 0
+	}
+	const mult = 100.0 // equity option multiplier
+	var pnl float64
+	for i, leg := range mp.Legs {
+		if leg.Ratio == 0 {
+			continue
+		}
+		delta := legPrices[i] - mp.LegFillPrices[i]
+		absRatio := leg.Ratio
+		sign := 1.0
+		if absRatio < 0 {
+			absRatio = -absRatio
+			sign = -1.0
+		}
+		pnl += sign * delta * float64(absRatio) * mp.Quantity * mult
+	}
+	return pnl
+}
+
+// ClosingLegs returns the leg slice required to close this combo position:
+// every leg's ratio is inverted so a long becomes a sell-to-close and a
+// short becomes a buy-to-close. The underlying/expiry/strike/right are
+// preserved so the closing BAG contract matches exactly.
+func (mp *MonitoredPosition) ClosingLegs() []ComboLeg {
+	if !mp.IsCombo() {
+		return nil
+	}
+	out := make([]ComboLeg, len(mp.Legs))
+	for i, leg := range mp.Legs {
+		inv := leg
+		inv.Ratio = -leg.Ratio
+		out[i] = inv
+	}
+	return out
 }
 
 // NewMonitoredPosition creates a MonitoredPosition with high/low water marks initialized to entry price.

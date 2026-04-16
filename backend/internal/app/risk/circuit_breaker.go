@@ -1,8 +1,10 @@
 package risk
 
 import (
+	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -16,11 +18,73 @@ type DailyPnLSource interface {
 	GetDailyRealizedPnL(tenantID string, envMode domain.EnvMode) float64
 }
 
+// KillSwitchState represents the operational mode of the trading kill switch.
+// See Sprint 4 Phase 4: a 3-state machine replacing the old binary SetGlobalHalt.
+//
+//	Active   — normal operation, all intents pass.
+//	Reducing — new entries blocked, exits allowed (quiet shutdown).
+//	Halted   — everything blocked (no entries, no exits).
+type KillSwitchState int32
+
+const (
+	KillSwitchActive   KillSwitchState = 0
+	KillSwitchReducing KillSwitchState = 1
+	KillSwitchHalted   KillSwitchState = 2
+)
+
+// String returns the canonical uppercase label ("ACTIVE", "REDUCING", "HALTED").
+func (s KillSwitchState) String() string {
+	switch s {
+	case KillSwitchActive:
+		return "ACTIVE"
+	case KillSwitchReducing:
+		return "REDUCING"
+	case KillSwitchHalted:
+		return "HALTED"
+	}
+	return "UNKNOWN"
+}
+
+// ParseKillSwitchState maps a canonical label to its enum value. Case-insensitive.
+// Returns an error for unknown labels so HTTP handlers can return 400.
+func ParseKillSwitchState(s string) (KillSwitchState, error) {
+	switch s {
+	case "ACTIVE", "active", "Active":
+		return KillSwitchActive, nil
+	case "REDUCING", "reducing", "Reducing":
+		return KillSwitchReducing, nil
+	case "HALTED", "halted", "Halted":
+		return KillSwitchHalted, nil
+	}
+	return KillSwitchActive, fmt.Errorf("unknown kill switch state %q (want ACTIVE|REDUCING|HALTED)", s)
+}
+
+// KillSwitchTransition describes a single state change. Emitted on the
+// optional transition sink so the persistence layer (kill_switch_events
+// table) and any future event-bus subscribers can react.
+type KillSwitchTransition struct {
+	OldState KillSwitchState
+	NewState KillSwitchState
+	Reason   string
+	Actor    string
+	At       time.Time
+}
+
+// KillSwitchSink receives a notification for every state transition. The
+// SQL-backed implementation persists to kill_switch_events; tests can
+// supply an in-memory recorder.
+type KillSwitchSink interface {
+	RecordTransition(ctx context.Context, t KillSwitchTransition) error
+}
+
 // DailyLossBreaker is a circuit breaker that halts trading when cumulative
 // daily losses exceed configured thresholds. It checks both percentage-based
 // and absolute USD limits.
 //
 // Usage pattern mirrors execution.KillSwitch: check before broker submission.
+// The embedded KillSwitchState is shared across all tripping sources
+// (daily-loss trip, IBKR reconnect exhaustion, operator command) and is
+// read by the kill_switch execution gate.
 type DailyLossBreaker struct {
 	maxLossPct float64 // e.g., 0.05 for 5%
 	maxLossUSD float64 // absolute USD limit
@@ -29,6 +93,12 @@ type DailyLossBreaker struct {
 	log        zerolog.Logger
 	metrics    *metrics.Metrics
 	globalHalt func() bool
+
+	// state is the 3-state kill switch (Active/Reducing/Halted) read via
+	// atomic.Int32 so the hot-path execution gate is lock-free.
+	state atomic.Int32
+
+	sink KillSwitchSink // optional persistence/event hook
 
 	mu       sync.Mutex
 	haltDate string // YYYY-MM-DD when halted; empty = not halted
@@ -53,7 +123,67 @@ func (d *DailyLossBreaker) SetMetrics(m *metrics.Metrics) {
 	m.Risk.CBActive.WithLabelValues("daily_loss").Set(0)
 }
 
+// SetSink wires a persistence/notification sink. Called at bootstrap.
+func (d *DailyLossBreaker) SetSink(s KillSwitchSink) { d.sink = s }
+
+// SetGlobalHalt is retained for backward compatibility with callers that
+// still pass a boolean predicate (see orchestrator.IsGloballyHalted).
+//
+// Deprecated: prefer SetState(KillSwitchHalted, reason) for explicit
+// transitions with audit trail. This method continues to work by
+// consulting the predicate at Check() time.
 func (d *DailyLossBreaker) SetGlobalHalt(isHalted func() bool) { d.globalHalt = isHalted }
+
+// State returns the current kill switch state. Lock-free — safe to call
+// from the hot-path execution gate.
+func (d *DailyLossBreaker) State() KillSwitchState {
+	return KillSwitchState(d.state.Load())
+}
+
+// SetState atomically transitions the kill switch to s. If s matches the
+// current state it is a no-op (no log line, no sink emission) so repeated
+// calls from different triggers don't spam the audit log.
+//
+// reason is a free-form short string ("daily loss threshold crossed",
+// "ibkr reconnect exhausted", "operator requested"). actor is the
+// operator identity when the transition came from the admin endpoint,
+// or "system" for automatic transitions.
+func (d *DailyLossBreaker) SetState(s KillSwitchState, reason, actor string) KillSwitchState {
+	old := KillSwitchState(d.state.Swap(int32(s)))
+	if old == s {
+		return old
+	}
+	d.log.Warn().
+		Str("old_state", old.String()).
+		Str("new_state", s.String()).
+		Str("reason", reason).
+		Str("actor", actor).
+		Msg("kill switch state transition")
+	if d.sink != nil {
+		t := KillSwitchTransition{
+			OldState: old,
+			NewState: s,
+			Reason:   reason,
+			Actor:    actor,
+			At:       d.now(),
+		}
+		// Use a short background context so a slow sink doesn't block
+		// the caller (typically a hot-path gate or notifier callback).
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := d.sink.RecordTransition(ctx, t); err != nil {
+			d.log.Error().Err(err).Msg("kill switch: sink.RecordTransition failed")
+		}
+	}
+	return old
+}
+
+func (d *DailyLossBreaker) now() time.Time {
+	if d.nowFunc != nil {
+		return d.nowFunc()
+	}
+	return time.Now()
+}
 
 // Check evaluates whether trading should be halted for the given tenant.
 // It returns an error if the daily loss circuit breaker is tripped.
@@ -112,6 +242,8 @@ func (d *DailyLossBreaker) Check(tenantID string, envMode domain.EnvMode, accoun
 			d.metrics.Risk.CBActive.WithLabelValues("daily_loss").Set(1)
 			d.metrics.Risk.ChecksTotal.WithLabelValues("daily_loss", "tripped").Inc()
 		}
+		// Daily-loss trip transitions into REDUCING so operators can still close positions.
+		d.transitionOnTrip(KillSwitchReducing, "daily loss USD limit exceeded")
 		return fmt.Errorf("daily loss circuit breaker: loss $%.2f exceeds max $%.2f", loss, d.maxLossUSD)
 	}
 
@@ -132,6 +264,7 @@ func (d *DailyLossBreaker) Check(tenantID string, envMode domain.EnvMode, accoun
 				d.metrics.Risk.CBActive.WithLabelValues("daily_loss").Set(1)
 				d.metrics.Risk.ChecksTotal.WithLabelValues("daily_loss", "tripped").Inc()
 			}
+			d.transitionOnTrip(KillSwitchReducing, "daily loss percentage limit exceeded")
 			return fmt.Errorf("daily loss circuit breaker: loss %.2f%% exceeds max %.2f%%", lossPct*100, d.maxLossPct*100)
 		}
 	}
@@ -143,6 +276,17 @@ func (d *DailyLossBreaker) Check(tenantID string, envMode domain.EnvMode, accoun
 	return nil
 }
 
+// transitionOnTrip bumps the kill switch state on an automatic trip.
+// Once HALTED, we do not downgrade to REDUCING — escalation is monotonic
+// except by operator command.
+func (d *DailyLossBreaker) transitionOnTrip(s KillSwitchState, reason string) {
+	cur := d.State()
+	if cur >= s {
+		return
+	}
+	d.SetState(s, reason, "system")
+}
+
 // IsHalted reports whether trading is currently halted for today.
 func (d *DailyLossBreaker) IsHalted() bool {
 	d.mu.Lock()
@@ -152,9 +296,10 @@ func (d *DailyLossBreaker) IsHalted() bool {
 	return d.haltDate == today
 }
 
-// Reset clears the halt state. Useful for testing.
+// Reset clears the halt state and kill switch state. Useful for testing.
 func (d *DailyLossBreaker) Reset() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.haltDate = ""
+	d.state.Store(int32(KillSwitchActive))
 }

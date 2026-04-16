@@ -38,6 +38,12 @@ type Service struct {
 	specStore         portstrategy.SpecStore
 	optionsMarket     ports.OptionsMarketDataPort
 	historicalOptions ports.HistoricalOptionsPort
+	// optionLiveData is the per-contract Greeks/Quote feed (Theta Data
+	// in production, fronted by a composite with Alpaca snapshots as
+	// fallback). Nil disables the live path entirely and the BSM
+	// synthetic IV stays in charge — this is the default until the
+	// operator flips cfg.Options.UseLiveMarketData on at bootstrap.
+	optionLiveData    ports.OptionMarketDataPort
 	minConfidence     float64
 	equity            float64
 	advisorTimeout    time.Duration
@@ -71,6 +77,14 @@ func (s *Service) SetSpecStore(store portstrategy.SpecStore) {
 // SetOptionsMarket sets the options market data provider for options routing.
 func (s *Service) SetOptionsMarket(m ports.OptionsMarketDataPort) {
 	s.optionsMarket = m
+}
+
+// SetOptionLiveData wires the per-contract IV/Greeks feed used by the BSM
+// synthetic-IV path. Bootstrap should pass the composite chain (Theta →
+// Alpaca → ...) here only when cfg.Options.UseLiveMarketData is true; a
+// nil port (the default) keeps the legacy ATR-derived IV behavior intact.
+func (s *Service) SetOptionLiveData(p ports.OptionMarketDataPort) {
+	s.optionLiveData = p
 }
 
 // NewService creates a new debate Service.
@@ -761,15 +775,36 @@ func (s *Service) tryBSMOptionsRoute(
 	// Strike: start at ATM, then adjust for target delta
 	strike := math.Round(underlyingPrice)
 
-	// IV: derive from daily ATR (not 1m ATR which is too small).
-	// Daily ATR ≈ price × σ × sqrt(1/252), so σ ≈ dailyATR / price × sqrt(252)
+	// IV: prefer a live per-contract Greeks snapshot (Theta Data) when
+	// the operator has opted in by wiring optionLiveData. On any error
+	// — including ports.ErrOptionDataNotConfigured — we silently fall
+	// through to the daily-ATR-derived synthetic IV that has shipped
+	// from day one. Daily ATR ≈ price × σ × sqrt(1/252), so
+	// σ ≈ dailyATR / price × sqrt(252).
 	iv := 0.25 // default 25% if no data
-	dailyATR := setup.Snapshot.HTFDailyATR()
-	if dailyATR > 0 && underlyingPrice > 0 {
-		iv = (dailyATR / underlyingPrice) * math.Sqrt(252)
+	atrTargetDelta := math.Round(underlyingPrice) // probe strike for the live lookup
+	expiryProbe := setup.Snapshot.Time.AddDate(0, 0, targetDTE)
+	rightChar := "C"
+	if !isCall {
+		rightChar = "P"
 	}
-	// Add variance risk premium (~3 vol points) — IV typically exceeds realized vol
-	iv += 0.03
+	live, liveErr := s.fetchLiveIV(ctx, string(setup.Symbol), expiryProbe, atrTargetDelta, rightChar)
+	usingLive := liveErr == nil && live > 0
+	if usingLive {
+		iv = live
+		l.Debug().Float64("iv", iv).Msg("BSM: using live IV from option market data")
+	} else {
+		dailyATR := setup.Snapshot.HTFDailyATR()
+		if dailyATR > 0 && underlyingPrice > 0 {
+			iv = (dailyATR / underlyingPrice) * math.Sqrt(252)
+		}
+	}
+	if !usingLive {
+		// Variance risk premium (~3 vol points) — IV typically exceeds
+		// realized vol. Live IV already reflects market-implied premium so
+		// we skip the bump in that branch.
+		iv += 0.03
+	}
 	if iv < 0.10 {
 		iv = 0.10 // minimum 10% IV (no stock trades below this)
 	}
@@ -920,6 +955,20 @@ func (s *Service) tryBSMOptionsRoute(
 		Msg("BSM synthetic options order created")
 
 	return optIntent, true
+}
+
+// fetchLiveIV asks the wired OptionMarketDataPort for a Greeks snapshot
+// and returns just the IV. Returns (0, ErrOptionDataNotConfigured) when
+// no live source is wired so callers can short-circuit cleanly.
+func (s *Service) fetchLiveIV(ctx context.Context, underlying string, expiry time.Time, strike float64, right string) (float64, error) {
+	if s == nil || s.optionLiveData == nil {
+		return 0, ports.ErrOptionDataNotConfigured
+	}
+	g, err := s.optionLiveData.Greeks(ctx, underlying, expiry, strike, right)
+	if err != nil {
+		return 0, err
+	}
+	return g.IV, nil
 }
 
 func (s *Service) emit(ctx context.Context, eventType string, tenantID string, envMode domain.EnvMode, idempotencyKey string, payload any) {

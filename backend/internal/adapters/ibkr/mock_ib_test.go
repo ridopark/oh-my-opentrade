@@ -22,6 +22,8 @@ type mockIB struct {
 	cancelledOrders []int64
 	globalCancelled bool
 	rtBarChans      map[string]chan ibsync.RealTimeBar
+
+	reqContractDetailsFn func(*ibsync.Contract) ([]ibsync.ContractDetails, error)
 }
 
 func (m *mockIB) IsConnected() bool { m.mu.Lock(); defer m.mu.Unlock(); return m.connected }
@@ -120,6 +122,15 @@ func (m *mockIB) ReqMktData(_ *ibsync.Contract, _ string, _ ...ibsync.TagValue) 
 	return ibsync.NewTicker(nil)
 }
 func (m *mockIB) CancelMktData(_ *ibsync.Contract) {}
+
+func (m *mockIB) ReqContractDetails(c *ibsync.Contract) ([]ibsync.ContractDetails, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.reqContractDetailsFn != nil {
+		return m.reqContractDetailsFn(c)
+	}
+	return nil, nil
+}
 
 // makeTrade creates a *ibsync.Trade with given orderID and status for tests.
 func makeTrade(orderID int64, status ibsync.Status, filled float64) *ibsync.Trade {

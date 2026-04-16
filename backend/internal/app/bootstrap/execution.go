@@ -160,3 +160,190 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 		DailyLossBreaker: dailyLossBreaker,
 	}, nil
 }
+
+// BuildPortfolioHeat constructs the Sprint 4 portfolio-heat guard from a
+// position source (typically positionmonitor.Service) and an equity
+// provider. Intended to be called by callers that assemble
+// gate.ExecutionGateDeps before invoking WireExecutionGateChain:
+//
+//	ph := bootstrap.BuildPortfolioHeat(cfg.Trading.MaxPortfolioHeat, posMon, equity, log)
+//	execDeps.PortfolioHeatGuard = ph
+//
+// Returns nil when maxHeatPct <= 0 so callers can leave the gate field
+// unset (the gate treats nil as disabled).
+func BuildPortfolioHeat(maxHeatPct float64, posSource risk.PositionSource, equitySource risk.EquitySource, log zerolog.Logger) *risk.PortfolioHeat {
+	if maxHeatPct <= 0 {
+		return nil
+	}
+	return risk.NewPortfolioHeat(maxHeatPct, posSource, equitySource, log)
+}
+
+// BuildSectorExposure constructs the Sprint 4 sector/industry concentration
+// guard. Returns nil when both caps are <= 0 so callers can leave the gate
+// field unset (the gate treats nil as disabled). Usage mirrors
+// BuildPortfolioHeat:
+//
+//	metadata, err := config.LoadSymbolMetadata(cfg.Trading.SymbolMetadataPath)
+//	se := bootstrap.BuildSectorExposure(cfg.Trading.MaxSectorExposure,
+//	    cfg.Trading.MaxIndustryExposure, metadata, posMon, equity, log)
+//	execDeps.SectorExposureGuard = se
+func BuildSectorExposure(
+	maxSectorPct, maxIndustryPct float64,
+	metadata config.SymbolMetadata,
+	posSource risk.PositionSource,
+	equitySource risk.EquitySource,
+	log zerolog.Logger,
+) *risk.SectorExposure {
+	if maxSectorPct <= 0 && maxIndustryPct <= 0 {
+		return nil
+	}
+	return risk.NewSectorExposure(maxSectorPct, maxIndustryPct, metadata, posSource, equitySource, log)
+}
+
+// BuildDirectionalBias constructs the Sprint 4 net-directional-exposure
+// guard. Returns nil when maxBiasPct <= 0 so callers can leave the gate
+// field unset (the gate treats nil as disabled). Usage mirrors
+// BuildPortfolioHeat and BuildSectorExposure:
+//
+//	db := bootstrap.BuildDirectionalBias(cfg.Trading.MaxDirectionalBias,
+//	    posMon, equity, log)
+//	execDeps.DirectionalBiasGuard = db
+func BuildDirectionalBias(maxBiasPct float64, posSource risk.PositionSource, equitySource risk.EquitySource, log zerolog.Logger) *risk.DirectionalBias {
+	if maxBiasPct <= 0 {
+		return nil
+	}
+	return risk.NewDirectionalBias(maxBiasPct, posSource, equitySource, log)
+}
+
+// BuildKillSwitch returns the DailyLossBreaker cast to the gate-facing
+// KillSwitchChecker interface (via direct field assignment by the caller).
+// This is a thin helper mirroring BuildPortfolioHeat et al. so bootstrap
+// sites wire execDeps.KillSwitchGuard uniformly.
+//
+// Returns nil when breaker is nil so the kill_switch gate degrades to a
+// no-op (same as the other Sprint 4 guards).
+func BuildKillSwitch(breaker *risk.DailyLossBreaker) *risk.DailyLossBreaker {
+	if breaker == nil {
+		return nil
+	}
+	return breaker
+}
+
+// BuildPDTGuard constructs the Sprint 4.5 PDT enforcement guard. Returns
+// nil when mode is empty or "off" so callers can leave the
+// ExecutionGateDeps.PDTGuard field unset (the gate treats nil as
+// disabled). The tracker passed in should be a long-lived singleton
+// wired to fill observations; the account port supplies the
+// PatternDayTrader flag at decision time.
+//
+// NOTE: this helper does NOT auto-register the guard into the default
+// execution gate chain — per Sprint 4.5 gating scope the wiring into
+// omo-core/ExecutionGateDeps is deferred until the fill-event hook
+// lands. Callers that want it today can assemble ExecutionGateDeps
+// manually.
+func BuildPDTGuard(
+	mode string,
+	tracker *risk.PDTTracker,
+	account ports.AccountPort,
+	equity risk.EquitySource,
+	accountID string,
+) *risk.PDTGuard {
+	m := risk.PDTEnforcementMode(mode)
+	if m == "" || m == risk.PDTEnforcementOff {
+		return nil
+	}
+	return risk.NewPDTGuard(m, tracker, account, equity, accountID)
+}
+
+// BuildRegTCheck constructs the Sprint 4.5 Reg-T initial-margin guard.
+// Returns nil when enabled is false OR when account is nil so the gate
+// degrades to pass-through. Pair this with a broker check in the caller
+// so simbroker / Alpaca paper bypass Reg-T entirely.
+func BuildRegTCheck(enabled bool, account ports.AccountPort, log zerolog.Logger) *risk.RegTCheck {
+	if !enabled || account == nil {
+		return nil
+	}
+	return risk.NewRegTCheck(account, log)
+}
+
+// BuildEarningsBlackout wraps an EarningsCalendarPort as a gate-facing
+// checker. Returns nil when modes is empty or when all entries resolve
+// to "off" so callers can leave the deps field unset (the gate treats
+// nil as disabled). The second return value is the raw modes map that
+// the caller writes to ExecutionGateDeps.EarningsBlackoutModes.
+//
+// Not forced into the default chain — wiring is opt-in per Sprint 4.5
+// conventions.
+func BuildEarningsBlackout(modes map[string]string, port ports.EarningsCalendarPort) (gateChecker gateEarningsChecker, resolved map[string]string) {
+	if len(modes) == 0 || port == nil {
+		return nil, nil
+	}
+	active := false
+	resolved = make(map[string]string, len(modes))
+	for k, v := range modes {
+		resolved[k] = v
+		if v != "" && v != "off" {
+			active = true
+		}
+	}
+	if !active {
+		return nil, nil
+	}
+	return earningsCheckerAdapter{port: port}, resolved
+}
+
+// BuildMacroEventGate wraps a MacroCalendarPort as a gate-facing
+// checker. Returns nil when port is nil so the deps field can be left
+// unset (the gate treats nil as disabled).
+func BuildMacroEventGate(port ports.MacroCalendarPort) gateMacroChecker {
+	if port == nil {
+		return nil
+	}
+	return macroCheckerAdapter{port: port}
+}
+
+// The gate* interface aliases below keep bootstrap decoupled from the
+// gate package's exact type names while still providing compile-time
+// safety at the call site (see bootstrap_wire.go).
+
+type gateEarningsChecker interface {
+	NextEarnings(ctx context.Context, symbol string) (*ports.EarningsEntry, error)
+}
+
+type gateMacroChecker interface {
+	EventsInWindow(ctx context.Context, around time.Time, windowMinutes int) ([]ports.MacroEvent, error)
+}
+
+type earningsCheckerAdapter struct {
+	port ports.EarningsCalendarPort
+}
+
+func (a earningsCheckerAdapter) NextEarnings(ctx context.Context, symbol string) (*ports.EarningsEntry, error) {
+	return a.port.GetNextEarnings(ctx, symbol)
+}
+
+type macroCheckerAdapter struct {
+	port ports.MacroCalendarPort
+}
+
+func (a macroCheckerAdapter) EventsInWindow(ctx context.Context, around time.Time, windowMinutes int) ([]ports.MacroEvent, error) {
+	return a.port.EventsInWindow(ctx, around, windowMinutes)
+}
+
+// WarnMissingSymbolMetadata emits a WARN log for every active symbol absent
+// from the loaded metadata table. These symbols will fail-open through the
+// sector_exposure gate — operators need to know so they can backfill the
+// TOML before relying on the cap.
+func WarnMissingSymbolMetadata(metadata config.SymbolMetadata, activeSymbols []string, log zerolog.Logger) {
+	if metadata == nil || len(activeSymbols) == 0 {
+		return
+	}
+	missing := metadata.MissingSymbols(activeSymbols)
+	if len(missing) == 0 {
+		return
+	}
+	log.Warn().
+		Strs("symbols", missing).
+		Int("count", len(missing)).
+		Msg("sector_exposure: active symbols missing from metadata table; gate will fail-open for these")
+}

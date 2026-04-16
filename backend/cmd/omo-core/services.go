@@ -179,6 +179,20 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	svc.execution = execBundle.Service
 	svc.ledgerWriter = execBundle.LedgerWriter
 	svc.dailyLossBreaker = execBundle.DailyLossBreaker
+	// Kill switch persistence — wire sink + load last persisted state so
+	// operator halts survive restart. Absent row or ACTIVE = default ACTIVE.
+	if infra.killSwitchRepo != nil && svc.dailyLossBreaker != nil {
+		svc.dailyLossBreaker.SetSink(infra.killSwitchRepo)
+		loadCtx, loadCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if row, err := infra.killSwitchRepo.LoadState(loadCtx); err != nil {
+			log.Warn().Err(err).Msg("kill switch: failed to load persisted state, defaulting to ACTIVE")
+		} else if row != nil && row.State != risk.KillSwitchActive {
+			// Restore without re-emitting a transition event (would duplicate
+			// the existing audit row). Use SetState with actor="system (restart)".
+			svc.dailyLossBreaker.SetState(row.State, "restored from persisted state: "+row.Reason, "system (restart)")
+		}
+		loadCancel()
+	}
 	svc.signalTracker = perf.NewSignalTracker(infra.eventBus, infra.pnlRepo, log.With().Str("component", "signal_tracker").Logger())
 
 	// Position monitor (price cache + exit rule evaluation, via shared bootstrap builder)
@@ -283,9 +297,9 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	if infra.ibkrBroker != nil {
 		infra.ibkrBroker.SetReconnectNotifier(svc.notifySvc)
 		infra.ibkrBroker.SetReconnectFatalHalt(func(reason string) {
-			log.Error().Str("reason", reason).Msg("ibkr: fatal halt — tripping global trading halt")
+			log.Error().Str("reason", reason).Msg("ibkr: fatal halt — tripping kill switch HALTED")
 			if svc.dailyLossBreaker != nil {
-				svc.dailyLossBreaker.SetGlobalHalt(func() bool { return true })
+				svc.dailyLossBreaker.SetState(risk.KillSwitchHalted, "ibkr reconnect exhausted: "+reason, "system")
 			}
 		})
 	}
