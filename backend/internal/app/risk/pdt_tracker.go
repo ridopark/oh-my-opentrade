@@ -160,6 +160,29 @@ func (p *PDTTracker) DayTradeCount(accountID string, date time.Time) int {
 	return p.dayCounts[countKey{AccountID: accountID, TradingDate: date.Format("2006-01-02")}]
 }
 
+// RollingDayTradeCount sums day-trade counts for accountID over the last
+// windowDays business days ending on asOf (inclusive). Weekends (Sat/Sun)
+// are skipped when walking backwards. This implements the FINRA rolling
+// 5-business-day window for PDT enforcement.
+func (p *PDTTracker) RollingDayTradeCount(accountID string, asOf time.Time, windowDays int) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	total := 0
+	bizDaysCounted := 0
+	d := asOf
+	for bizDaysCounted < windowDays {
+		wd := d.Weekday()
+		if wd != time.Saturday && wd != time.Sunday {
+			ck := countKey{AccountID: accountID, TradingDate: d.Format("2006-01-02")}
+			total += p.dayCounts[ck]
+			bizDaysCounted++
+		}
+		d = d.AddDate(0, 0, -1)
+	}
+	return total
+}
+
 // HasSameDayOpen reports whether the account currently holds an open lot
 // in the given symbol that was opened on `date`. The pdt_guard uses this
 // to decide whether an exit intent would create a same-day round-trip.

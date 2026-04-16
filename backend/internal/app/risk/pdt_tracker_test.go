@@ -48,6 +48,44 @@ func TestPDTTracker_OpenOnlyDoesNotCount(t *testing.T) {
 	assert.Equal(t, 0, tr.DayTradeCount("A1", day))
 }
 
+func TestPDTTracker_RollingDayTradeCount(t *testing.T) {
+	tr := NewPDTTracker(nil, nil, zerolog.Nop())
+	// Mon Apr 13 through Thu Apr 16, 2026 — one day trade each day.
+	mon := time.Date(2026, 4, 13, 10, 0, 0, 0, time.UTC)
+	tue := mon.AddDate(0, 0, 1)
+	wed := mon.AddDate(0, 0, 2)
+	thu := mon.AddDate(0, 0, 3)
+
+	for i, d := range []time.Time{mon, tue, wed} {
+		sym := string(rune('A' + i))
+		tr.RecordOpen("A1", sym, 10, d)
+		tr.RecordClose(context.Background(), "A1", sym, 10, d.Add(time.Hour))
+	}
+
+	t.Run("3 biz days rolling on Wed", func(t *testing.T) {
+		// Mon+Tue+Wed = 3 trades in a 3-day window
+		assert.Equal(t, 3, tr.RollingDayTradeCount("A1", wed, 3))
+	})
+
+	t.Run("5 biz days rolling on Thu sees all 3", func(t *testing.T) {
+		assert.Equal(t, 3, tr.RollingDayTradeCount("A1", thu, 5))
+	})
+
+	t.Run("1 biz day on Thu sees 0", func(t *testing.T) {
+		assert.Equal(t, 0, tr.RollingDayTradeCount("A1", thu, 1))
+	})
+
+	t.Run("skips weekends", func(t *testing.T) {
+		// If asOf is Monday Apr 20 and we look back 5 biz days,
+		// that covers Mon 20, Fri 17, Thu 16, Wed 15, Tue 14 —
+		// which misses Mon 13.
+		nextMon := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+		assert.Equal(t, 2, tr.RollingDayTradeCount("A1", nextMon, 5))
+		// 6 biz days would reach Mon 13
+		assert.Equal(t, 3, tr.RollingDayTradeCount("A1", nextMon, 6))
+	})
+}
+
 func TestPDTTracker_PartialCloses(t *testing.T) {
 	tr := NewPDTTracker(nil, nil, zerolog.Nop())
 	day := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)
