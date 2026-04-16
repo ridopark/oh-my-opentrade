@@ -61,7 +61,7 @@ func (h *KillSwitchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		h.handlePost(w, r)
 	default:
-		h.jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
+		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -112,22 +112,22 @@ func (h *KillSwitchHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 func (h *KillSwitchHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 	var req killSwitchPostRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.jsonError(w, http.StatusBadRequest, "invalid JSON")
+		jsonError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	stateStr := strings.TrimSpace(req.State)
 	if stateStr == "" {
-		h.jsonError(w, http.StatusBadRequest, "state is required")
+		jsonError(w, http.StatusBadRequest, "state is required")
 		return
 	}
 	newState, err := risk.ParseKillSwitchState(stateStr)
 	if err != nil {
-		h.jsonError(w, http.StatusBadRequest, err.Error())
+		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	reason := strings.TrimSpace(req.Reason)
 	if reason == "" {
-		h.jsonError(w, http.StatusBadRequest, "reason is required")
+		jsonError(w, http.StatusBadRequest, "reason is required")
 		return
 	}
 	actor := strings.TrimSpace(req.Actor)
@@ -148,8 +148,3 @@ func (h *KillSwitchHandler) writeJSON(w http.ResponseWriter, status int, v any) 
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func (h *KillSwitchHandler) jsonError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
-}

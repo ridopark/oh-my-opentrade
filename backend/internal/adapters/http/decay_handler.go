@@ -51,14 +51,14 @@ func (h *DecayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *DecayHandler) serveRolling(w http.ResponseWriter, r *http.Request) {
 	strategy := r.URL.Query().Get("strategy")
 	if strategy == "" {
-		h.jsonError(w, http.StatusBadRequest, "strategy query parameter is required")
+		jsonError(w, http.StatusBadRequest, "strategy query parameter is required")
 		return
 	}
 
 	points, err := h.repo.GetRollingDecayStats(r.Context(), strategy)
 	if err != nil {
 		h.log.Error().Err(err).Str("strategy", strategy).Msg("failed to get rolling decay stats")
-		h.jsonError(w, http.StatusInternalServerError, "rolling decay query failed")
+		jsonError(w, http.StatusInternalServerError, "rolling decay query failed")
 		return
 	}
 
@@ -75,14 +75,14 @@ func (h *DecayHandler) serveRolling(w http.ResponseWriter, r *http.Request) {
 func (h *DecayHandler) serveAttribution(w http.ResponseWriter, r *http.Request) {
 	strategy := r.URL.Query().Get("strategy")
 	if strategy == "" {
-		h.jsonError(w, http.StatusBadRequest, "strategy query parameter is required")
+		jsonError(w, http.StatusBadRequest, "strategy query parameter is required")
 		return
 	}
 
 	attrs, err := h.repo.GetComponentAttribution(r.Context(), strategy)
 	if err != nil {
 		h.log.Error().Err(err).Str("strategy", strategy).Msg("failed to get component attribution")
-		h.jsonError(w, http.StatusInternalServerError, "component attribution query failed")
+		jsonError(w, http.StatusInternalServerError, "component attribution query failed")
 		return
 	}
 
@@ -96,10 +96,3 @@ func (h *DecayHandler) serveAttribution(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-func (h *DecayHandler) jsonError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
-		h.log.Error().Err(err).Msg("failed to encode error response")
-	}
-}

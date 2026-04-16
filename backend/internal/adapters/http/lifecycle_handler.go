@@ -31,7 +31,7 @@ func (h *LifecycleHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) < 3 || parts[0] != "strategies" || parts[1] != "v2" {
-		h.jsonError(w, http.StatusNotFound, "not found")
+		jsonError(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -43,7 +43,7 @@ func (h *LifecycleHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost && len(parts) == 5 && parts[2] == "instances" {
 		instanceID, err := start.NewInstanceID(parts[3])
 		if err != nil {
-			h.jsonError(w, http.StatusBadRequest, "invalid instance id")
+			jsonError(w, http.StatusBadRequest, "invalid instance id")
 			return
 		}
 
@@ -58,12 +58,12 @@ func (h *LifecycleHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.handleArchive(w, instanceID)
 			return
 		default:
-			h.jsonError(w, http.StatusNotFound, "not found")
+			jsonError(w, http.StatusNotFound, "not found")
 			return
 		}
 	}
 
-	h.jsonError(w, http.StatusNotFound, "not found")
+	jsonError(w, http.StatusNotFound, "not found")
 }
 
 func (h *LifecycleHandler) handleListInstances(w http.ResponseWriter) {
@@ -79,17 +79,17 @@ func (h *LifecycleHandler) handlePromote(w http.ResponseWriter, r *http.Request,
 		Target string `json:"target"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.jsonError(w, http.StatusBadRequest, "invalid JSON")
+		jsonError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	if strings.TrimSpace(req.Target) == "" {
-		h.jsonError(w, http.StatusBadRequest, "target is required")
+		jsonError(w, http.StatusBadRequest, "target is required")
 		return
 	}
 
 	target, err := start.NewLifecycleState(req.Target)
 	if err != nil {
-		h.jsonError(w, http.StatusBadRequest, "invalid target lifecycle")
+		jsonError(w, http.StatusBadRequest, "invalid target lifecycle")
 		return
 	}
 
@@ -127,13 +127,6 @@ func (h *LifecycleHandler) writeSvcErr(w http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 		msg = "instance not found"
 	}
-	h.jsonError(w, status, msg)
+	jsonError(w, status, msg)
 }
 
-func (h *LifecycleHandler) jsonError(w http.ResponseWriter, statusCode int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
-		h.log.Error().Err(err).Msg("failed to encode error response")
-	}
-}

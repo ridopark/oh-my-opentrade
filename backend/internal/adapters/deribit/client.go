@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/httputil"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
@@ -31,11 +32,6 @@ const (
 	maxRetries         = 3
 	retryBaseDelay     = 500 * time.Millisecond
 )
-
-// HTTPDoer is the minimal interface the client needs from net/http.
-type HTTPDoer interface {
-	Do(req *http.Request) (*http.Response, error)
-}
 
 // Config tunes the Deribit REST client.
 type Config struct {
@@ -76,7 +72,7 @@ type Ticker struct {
 // derived metrics.
 type Client struct {
 	baseURL string
-	http    HTTPDoer
+	http    httputil.HTTPDoer
 	log     zerolog.Logger
 	assets  []string
 
@@ -131,7 +127,7 @@ func NewClient(cfg Config, log zerolog.Logger) (*Client, error) {
 }
 
 // SetHTTPClient swaps the underlying HTTP doer for testing.
-func (c *Client) SetHTTPClient(d HTTPDoer) {
+func (c *Client) SetHTTPClient(d httputil.HTTPDoer) {
 	if c == nil || d == nil {
 		return
 	}

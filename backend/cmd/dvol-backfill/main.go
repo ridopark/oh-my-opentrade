@@ -23,8 +23,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/oh-my-opentrade/backend/internal/dbutil"
 	"github.com/rs/zerolog"
 )
 
@@ -83,22 +82,15 @@ func main() {
 	if dsn == "" {
 		dsn = "postgres://opentrade@localhost:5432/opentrade?sslmode=disable"
 	}
-	pgxCfg, err := pgx.ParseConfig(dsn)
+	db, err := dbutil.Open(dsn)
 	if err != nil {
-		log.Fatal().Err(err).Msg("failed to parse DB config")
+		log.Fatal().Err(err).Msg("failed to connect to TimescaleDB")
 	}
-	db := stdlib.OpenDB(*pgxCfg)
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(4)
 	defer db.Close()
+	log.Info().Msg("TimescaleDB connected")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-
-	if err := db.PingContext(ctx); err != nil {
-		log.Fatal().Err(err).Msg("failed to connect to TimescaleDB")
-	}
-	log.Info().Msg("TimescaleDB connected")
 
 	client := &http.Client{Timeout: 30 * time.Second}
 
