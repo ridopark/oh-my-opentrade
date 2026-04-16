@@ -162,7 +162,7 @@ func (o *AccountOrchestrator) startAccount(h *AccountHandle) error {
 		}
 	}
 	if h.DailyLossBreaker != nil {
-		h.DailyLossBreaker.SetGlobalHalt(o.IsGloballyHalted)
+		h.DailyLossBreaker.SetGlobalHalt(o.IsGloballyHalted) //nolint:staticcheck // predicate-based halt, not replaceable by SetState
 	}
 
 	if h.LedgerWriter == nil || h.Execution == nil {
