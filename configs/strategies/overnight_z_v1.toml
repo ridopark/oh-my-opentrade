@@ -95,9 +95,17 @@ monitor = [
 ]
 
 execution = [
+    { name = "kill_switch" },
+    { name = "portfolio_heat_guard" },
+    { name = "sector_exposure_guard" },
+    { name = "directional_bias_guard" },
     { name = "exposure_guard" },
     { name = "portfolio_guard" },
     { name = "risk_engine" },
     { name = "trading_window" },
     { name = "buying_power_guard" },
+    { name = "pdt_guard" },
+    { name = "reg_t_guard" },
+    { name = "earnings_blackout_gate" },
+    { name = "macro_event_gate" },
 ]
