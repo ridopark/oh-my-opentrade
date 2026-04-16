@@ -71,6 +71,32 @@ func TestPDTGuard_FourthSameDayBlocked(t *testing.T) {
 	assert.Contains(t, err.Error(), "pdt")
 }
 
+func TestPDTGuard_RollingWindowBlocksAcrossDays(t *testing.T) {
+	tr := NewPDTTracker(nil, nil, zerolog.Nop())
+	acct := &pdtStubAccount{bp: ports.BuyingPower{PatternDayTrader: true}}
+	g := NewPDTGuard(PDTEnforcementStrict, tr, acct, fixedEquity(10_000), "A1")
+
+	// 1 day trade on each of Mon, Tue, Wed (3 trades across 3 business days).
+	mon := time.Date(2026, 4, 13, 10, 0, 0, 0, time.UTC)
+	tue := mon.AddDate(0, 0, 1)
+	wed := mon.AddDate(0, 0, 2)
+	thu := mon.AddDate(0, 0, 3)
+
+	for i, d := range []time.Time{mon, tue, wed} {
+		sym := string(rune('A' + i))
+		tr.RecordOpen("A1", sym, 10, d)
+		tr.RecordClose(context.Background(), "A1", sym, 10, d.Add(time.Hour))
+	}
+
+	// On Thursday, open a new position and try to exit same day —
+	// this would be the 4th day trade in the rolling 5-biz-day window.
+	tr.RecordOpen("A1", "ZZZ", 10, thu)
+	intent := domain.OrderIntent{Symbol: "ZZZ", Direction: domain.DirectionCloseLong}
+	err := g.CheckIntent(context.Background(), intent, thu.Add(time.Hour))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pdt")
+}
+
 func TestPDTGuard_PriorDayOpenNotCounted(t *testing.T) {
 	tr := NewPDTTracker(nil, nil, zerolog.Nop())
 	acct := &pdtStubAccount{bp: ports.BuyingPower{PatternDayTrader: true}}

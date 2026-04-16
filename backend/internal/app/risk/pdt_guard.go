@@ -91,7 +91,7 @@ func (g *PDTGuard) CheckIntent(ctx context.Context, intent domain.OrderIntent, n
 	if !g.tracker.HasSameDayOpen(g.accountID, string(intent.Symbol), now) {
 		return nil
 	}
-	count := g.tracker.DayTradeCount(g.accountID, now)
+	count := g.tracker.RollingDayTradeCount(g.accountID, now, 5)
 	if count >= PDTDayTradeCap {
 		return fmt.Errorf(
 			"pdt: 4th same-day round-trip blocked (count=%d, equity=%.2f < %.0f)",
