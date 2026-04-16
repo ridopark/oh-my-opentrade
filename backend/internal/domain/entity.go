@@ -95,6 +95,13 @@ type OrderIntent struct {
 	// and cross-venue crypto strategies must set this explicitly.
 	Venue Venue `json:"venue,omitempty"`
 
+	// LegGroupID groups multiple OrderIntents that must be executed
+	// atomically as a unit. Used by cross-venue strategies (e.g., basis
+	// carry: buy spot + short perp). When non-empty, the execution layer
+	// treats all intents with the same LegGroupID as a paired trade —
+	// if any leg fails, remaining legs are rolled back.
+	LegGroupID string `json:"legGroupId,omitempty"`
+
 	// Sprint 5 combo BAG support. When Legs is non-empty this intent represents
 	// a multi-leg BAG order and IsCombo() returns true. Symbol is the underlying
 	// ticker, Quantity is the combo count (1 combo = full leg ratios). ComboType

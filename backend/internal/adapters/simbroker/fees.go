@@ -3,6 +3,8 @@ package simbroker
 import (
 	"fmt"
 	"math"
+
+	"github.com/oh-my-opentrade/backend/internal/domain"
 )
 
 // FeeContext describes a single fill the broker is about to record. All
@@ -10,11 +12,13 @@ import (
 // wiring change — no caller-side branching per venue.
 type FeeContext struct {
 	Symbol    string
+	Venue     domain.Venue // execution venue; empty for legacy equity paths
 	IsOption  bool
 	Side      string  // "BUY" | "SELL"
 	Qty       float64 // equities: shares; options: contracts
 	Notional  float64 // FillPrice * Qty * multiplier (caller computes)
 	FillPrice float64
+	OrderType string  // "limit", "market", "stop_limit"; empty falls back to adapter default
 }
 
 // Fees is the itemized cost breakdown returned by a FeeSchedule. Total is
@@ -187,6 +191,8 @@ func FeeScheduleByName(name string) (FeeSchedule, error) {
 		return AlpacaEquityFees{}, nil
 	case "ibkr_options":
 		return IBKRTieredOptionsFees{}, nil
+	case "crypto_venue":
+		return DefaultCryptoFees(), nil
 	default:
 		return nil, fmt.Errorf("simbroker: unknown fee_schedule %q", name)
 	}
