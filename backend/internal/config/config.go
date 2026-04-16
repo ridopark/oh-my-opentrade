@@ -73,12 +73,13 @@ type AlpacaConfig struct {
 
 // AIConfig holds configuration for the AI adversarial debate system.
 type AIConfig struct {
-	BaseURL       string  `yaml:"base_url"`
-	Model         string  `yaml:"model"`
-	APIKey        string  `yaml:"api_key"`
-	MinConfidence float64 `yaml:"min_confidence"`
-	Enabled       bool    `yaml:"enabled"`
-	ProviderSort  string  `yaml:"provider_sort"` // OpenRouter provider routing sort (e.g. "latency")
+	BaseURL        string  `yaml:"base_url"`
+	Model          string  `yaml:"model"`
+	BacktestModel  string  `yaml:"backtest_model"` // cheaper/free model for backtests; falls back to Model when empty
+	APIKey         string  `yaml:"api_key"`
+	MinConfidence  float64 `yaml:"min_confidence"`
+	Enabled        bool    `yaml:"enabled"`
+	ProviderSort   string  `yaml:"provider_sort"` // OpenRouter provider routing sort (e.g. "latency")
 }
 
 type AIScreenerConfig struct {
@@ -572,6 +573,9 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	}
 	if val := os.Getenv("LLM_MODEL"); val != "" {
 		cfg.AI.Model = val
+	}
+	if val := os.Getenv("LLM_BACKTEST_MODEL"); val != "" {
+		cfg.AI.BacktestModel = val
 	}
 	if val := os.Getenv("LLM_API_KEY"); val != "" {
 		cfg.AI.APIKey = val

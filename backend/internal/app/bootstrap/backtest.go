@@ -100,7 +100,12 @@ func BuildBacktestInfra(deps BacktestDeps, slippageBPS int64, initialEquity floa
 
 	var aiAdvisor ports.AIAdvisorPort = llm.NewNoOpAdvisor()
 	if !noAI && deps.AppCfg.AI.Enabled {
-		aiAdvisor = llm.NewAdvisor(deps.AppCfg.AI.BaseURL, deps.AppCfg.AI.Model, deps.AppCfg.AI.APIKey, nil)
+		model := deps.AppCfg.AI.BacktestModel
+		if model == "" {
+			model = deps.AppCfg.AI.Model
+		}
+		aiAdvisor = llm.NewAdvisor(deps.AppCfg.AI.BaseURL, model, deps.AppCfg.AI.APIKey, nil)
+		log.Info().Str("model", model).Msg("backtest AI advisor using model")
 	}
 
 	return BacktestInfra{
