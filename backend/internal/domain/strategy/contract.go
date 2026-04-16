@@ -32,6 +32,26 @@ type Strategy interface {
 	OnEvent(ctx Context, symbol string, evt any, st State) (next State, signals []Signal, err error)
 }
 
+// CrossSectionalStrategy extends Strategy with a batch-bar callback.
+// Instead of receiving bars one symbol at a time via OnBar, the runner
+// buffers bars until the full universe is observed at a given timestamp,
+// then dispatches the complete cross-section via OnCrossSectionalBar.
+//
+// Strategies implementing this interface opt into the xsec runner path
+// automatically. The single-symbol OnBar method should return (state, nil, nil)
+// as a no-op — all logic lives in OnCrossSectionalBar.
+type CrossSectionalStrategy interface {
+	Strategy
+	// OnCrossSectionalBar is called once per timestamp with the complete
+	// universe of bars at that time. bars is keyed by symbol string.
+	// The strategy can rank, score, and emit signals for any subset of symbols.
+	OnCrossSectionalBar(ctx Context, ts time.Time, bars map[string]Bar, st State) (State, []Signal, error)
+
+	// Universe returns the set of symbols this strategy covers.
+	// Used by the runner to know when a cross-section is complete.
+	Universe() []string
+}
+
 // ReplayableStrategy is an opt-in interface for strategies that support
 // replay-aware warmup. When implemented, the runner calls ReplayOnBar
 // during warmup instead of OnBar, allowing the strategy to pass replay=true
