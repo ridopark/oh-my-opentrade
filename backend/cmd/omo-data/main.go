@@ -418,8 +418,9 @@ type noopVIXSetter struct{}
 
 func (noopVIXSetter) SetVIXLevel(float64) {}
 
-// refreshCorporateActions iterates configured symbols, fetches splits from
-// Alpaca (5-year lookback), and upserts them into the corporate_actions table.
+// refreshCorporateActions fetches all splits from Alpaca in a single API call
+// (5-year lookback) and upserts them into the corporate_actions table. Filters
+// results to configured symbols so only relevant rows are persisted.
 func refreshCorporateActions(
 	ctx context.Context,
 	client *alpaca.CorporateActionsClient,
@@ -433,30 +434,30 @@ func refreshCorporateActions(
 	}
 	now := time.Now()
 	from := now.AddDate(-5, 0, 0)
+
+	allSplits, err := client.GetAllSplits(ctx, from, now)
+	if err != nil {
+		return fmt.Errorf("corporate_actions: GetAllSplits: %w", err)
+	}
+
+	symSet := make(map[string]struct{}, len(symbols))
+	for _, s := range symbols {
+		symSet[s] = struct{}{}
+	}
+
 	total := 0
-	symbolsWithSplits := 0
-	for _, sym := range symbols {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		splits, err := client.GetSplits(ctx, sym, from, now)
-		if err != nil {
-			log.Warn().Err(err).Str("symbol", sym).Msg("corporate_actions: GetSplits failed")
+	for _, ca := range allSplits {
+		if _, ok := symSet[ca.Symbol]; !ok {
 			continue
 		}
-		if len(splits) > 0 {
-			symbolsWithSplits++
+		if err := repo.Upsert(ctx, ca); err != nil {
+			log.Warn().Err(err).Str("symbol", ca.Symbol).Msg("corporate_actions: upsert failed")
+			continue
 		}
-		for _, ca := range splits {
-			if err := repo.Upsert(ctx, ca); err != nil {
-				log.Warn().Err(err).Str("symbol", sym).Msg("corporate_actions: upsert failed")
-				continue
-			}
-			total++
-		}
+		total++
 	}
-	log.Info().Int("splits", total).Int("symbols_with_splits", symbolsWithSplits).Int("symbols_checked", len(symbols)).
-		Msg("corporate_actions: refreshed")
+	log.Info().Int("splits_upserted", total).Int("total_from_api", len(allSplits)).
+		Msg("corporate_actions: refreshed (single batch call)")
 	return nil
 }
 
