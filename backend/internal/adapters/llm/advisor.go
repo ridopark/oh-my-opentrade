@@ -325,8 +325,11 @@ Respond ONLY with valid JSON — no markdown fences, no extra text.`
 		return nil, fmt.Errorf("llm: completion response contained no choices")
 	}
 
+	raw := completion.Choices[0].Message.Content
+	// Strip markdown code fences that some models (Gemini) wrap around JSON.
+	raw = stripMarkdownFences(raw)
 	var result debateResult
-	if err := json.Unmarshal([]byte(completion.Choices[0].Message.Content), &result); err != nil {
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
 		return nil, fmt.Errorf("llm: failed to parse debate JSON from assistant reply: %w", err)
 	}
 
