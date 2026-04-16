@@ -321,9 +321,11 @@ func TestExecutionChain_Names(t *testing.T) {
 
 func TestDefaultExecutionGateConfigs(t *testing.T) {
 	configs := DefaultExecutionGateConfigs()
-	assert.Len(t, configs, 8)
-	assert.Equal(t, "short_direction", configs[0].Name)
-	assert.Equal(t, "buying_power_guard", configs[7].Name)
+	assert.Len(t, configs, 16)
+	assert.Equal(t, "kill_switch", configs[0].Name)
+	assert.Equal(t, "short_direction", configs[4].Name)
+	assert.Equal(t, "buying_power_guard", configs[11].Name)
+	assert.Equal(t, "macro_event_gate", configs[15].Name)
 }
 
 func TestExecutionRegistry_BuildChain(t *testing.T) {
@@ -332,7 +334,7 @@ func TestExecutionRegistry_BuildChain(t *testing.T) {
 	chain, err := r.BuildChain(DefaultExecutionGateConfigs(), deps, zerolog.Nop())
 	require.NoError(t, err)
 	require.NotNil(t, chain)
-	assert.Len(t, chain.Names(), 8)
+	assert.Len(t, chain.Names(), 16)
 }
 
 func TestExecutionRegistry_UnknownGate(t *testing.T) {
