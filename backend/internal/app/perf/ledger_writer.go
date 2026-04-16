@@ -133,10 +133,31 @@ func (lw *LedgerWriter) Start(ctx context.Context, tenantID string, envMode doma
 		}
 	}
 
+	// Determine which symbols have trades in today's window. For those,
+	// replayTodaysTrades will reconstruct the position from the actual
+	// fill prices. Seeding from the broker AND replaying the same fills
+	// double-counts, producing garbage avgEntry and inflated P&L.
+	replayedSymbols := make(map[string]struct{})
+	if lw.tradeReader != nil {
+		now := time.Now().UTC()
+		todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		if trades, tErr := lw.tradeReader.GetTrades(ctx, tenantID, envMode, todayStart, now); tErr == nil {
+			for _, t := range trades {
+				replayedSymbols[string(t.Symbol)] = struct{}{}
+			}
+		}
+	}
+
 	lw.mu.Lock()
 	now := time.Now()
 	for _, pos := range positions {
 		if pos.Quantity <= 0 || pos.Side == "sell" || pos.Side == "short" {
+			continue
+		}
+		if _, hasTradestoday := replayedSymbols[string(pos.Symbol)]; hasTradestoday {
+			lw.log.Debug().
+				Str("symbol", string(pos.Symbol)).
+				Msg("skipping broker bootstrap — today's trades will rebuild position via replay")
 			continue
 		}
 		posKey := fmt.Sprintf("%s:%s:%s", tenantID, string(envMode), string(pos.Symbol))
