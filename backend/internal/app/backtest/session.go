@@ -10,6 +10,7 @@ import (
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
 // dayKey returns a "YYYY-MM-DD" string using strconv instead of time.Format
@@ -54,14 +55,110 @@ type SessionResolver struct {
 	sessions map[string]map[string]SessionData
 	barCache map[string][]start.Bar // "SYMBOL:2025-03-15" → 1m bars for that day
 	loc      *time.Location
+
+	// Sprint-7 add-on survivorship-bias filter. Both optional; when
+	// enforceUniverse is false (default) these fields have no effect and
+	// the loader returns every row just like before.
+	universe        ports.UniverseHistoryPort
+	enforceUniverse bool
+	// windowCache memoises WindowsFor lookups for the duration of a
+	// backtest run to avoid re-querying the DB for every bar.
+	windowCache map[string][]ports.UniverseWindow
 }
 
 func NewSessionResolver(loc *time.Location) *SessionResolver {
 	return &SessionResolver{
-		sessions: make(map[string]map[string]SessionData),
-		barCache: make(map[string][]start.Bar),
-		loc:      loc,
+		sessions:    make(map[string]map[string]SessionData),
+		barCache:    make(map[string][]start.Bar),
+		loc:         loc,
+		windowCache: make(map[string][]ports.UniverseWindow),
 	}
+}
+
+// SetUniverseHistory wires the Sprint-7-addon survivorship-bias filter.
+// Pass enforce=false (or a nil port) to disable — the loader behaves
+// exactly as before. When enforce=true and port==nil the resolver still
+// disables filtering; the caller is responsible for logging the warning
+// referenced in BacktestConfig.EnforceUniverseHistory.
+func (r *SessionResolver) SetUniverseHistory(port ports.UniverseHistoryPort, enforce bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.universe = port
+	r.enforceUniverse = enforce && port != nil
+	r.windowCache = make(map[string][]ports.UniverseWindow)
+}
+
+// CheckUniverse returns true iff `sym` has any tradable overlap with
+// [from, to). When the filter is disabled it always returns true. Use
+// before paying the cost of LoadBars/Load for a symbol that might not
+// have existed during the requested range.
+func (r *SessionResolver) CheckUniverse(ctx context.Context, sym domain.Symbol, from, to time.Time) (bool, error) {
+	r.mu.Lock()
+	port := r.universe
+	enforce := r.enforceUniverse
+	r.mu.Unlock()
+	if !enforce || port == nil {
+		return true, nil
+	}
+	windows, err := r.loadWindows(ctx, sym)
+	if err != nil {
+		return false, err
+	}
+	for _, w := range windows {
+		// Overlap test: [from_date, to_date) ∩ [from, to) non-empty.
+		winStart := w.FromDate
+		// zero winEnd marks an open-ended (still-tradable) window.
+		var winEnd time.Time
+		if w.ToDate != nil {
+			winEnd = *w.ToDate
+		}
+		if !winStart.Before(to) {
+			continue
+		}
+		if !winEnd.IsZero() && !winEnd.After(from) {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// loadWindows returns cached windows or queries+caches them.
+func (r *SessionResolver) loadWindows(ctx context.Context, sym domain.Symbol) ([]ports.UniverseWindow, error) {
+	key := sym.String()
+	r.mu.Lock()
+	if cached, ok := r.windowCache[key]; ok {
+		r.mu.Unlock()
+		return cached, nil
+	}
+	port := r.universe
+	r.mu.Unlock()
+	if port == nil {
+		return nil, nil
+	}
+	windows, err := port.WindowsFor(ctx, sym)
+	if err != nil {
+		return nil, fmt.Errorf("session: load universe windows for %s: %w", sym, err)
+	}
+	r.mu.Lock()
+	r.windowCache[key] = windows
+	r.mu.Unlock()
+	return windows, nil
+}
+
+// tradableAt reports whether `at` falls inside any window. Operates on
+// already-loaded windows so no DB call happens on the per-bar hot path.
+func tradableAt(windows []ports.UniverseWindow, at time.Time) bool {
+	for _, w := range windows {
+		if at.Before(w.FromDate) {
+			continue
+		}
+		if w.ToDate != nil && !at.Before(*w.ToDate) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (r *SessionResolver) Load(ctx context.Context, db *sql.DB, sym domain.Symbol, from, to time.Time) error {
@@ -311,10 +408,29 @@ func (r *SessionResolver) LoadBars(ctx context.Context, db *sql.DB, sym domain.S
 	}
 	defer rows.Close()
 
+	// Survivorship-bias filter: when enabled, load the symbol's tradable
+	// windows once and drop any bar whose timestamp falls outside. This
+	// is defense-in-depth on top of CheckUniverse — CheckUniverse skips
+	// symbols with zero overlap, but partial overlaps (mid-range IPOs,
+	// delist-then-relist) still need per-row filtering.
+	r.mu.Lock()
+	enforce := r.enforceUniverse
+	r.mu.Unlock()
+	var windows []ports.UniverseWindow
+	if enforce {
+		windows, err = r.loadWindows(ctx, sym)
+		if err != nil {
+			return err
+		}
+	}
+
 	dayBars := make(map[string][]start.Bar)
 	for rows.Next() {
 		var b start.Bar
 		if scanErr := rows.Scan(&b.Time, &b.Open, &b.High, &b.Low, &b.Close, &b.Volume); scanErr != nil {
+			continue
+		}
+		if enforce && !tradableAt(windows, b.Time) {
 			continue
 		}
 		day := dayKey(b.Time, r.loc)

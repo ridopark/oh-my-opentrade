@@ -23,6 +23,8 @@ type Config struct {
 	AI           AIConfig           `yaml:"ai"`
 	AIScreener   AIScreenerConfig   `yaml:"ai_screener"`
 	Notification NotificationConfig `yaml:"notification"`
+	Backtest     BacktestConfig     `yaml:"backtest"`
+	Options      OptionsConfig      `yaml:"options"`
 	OptionsV2    bool               `yaml:"-"`
 	MultiAccount bool               `yaml:"-"`
 	// OrderJournalEnabled toggles the Sprint 2 write-ahead order-intent
@@ -111,7 +113,89 @@ type TradingConfig struct {
 	MaxDailyLossUSD        float64           `yaml:"max_daily_loss_usd"`
 	MaxSimultaneousPos     int               `yaml:"max_simultaneous_positions"`
 	MaxPositionsPerGroup   int               `yaml:"max_positions_per_group"`
-	OptionsRisk            OptionsRiskConfig `yaml:"options_risk"`
+	// MaxPortfolioHeat caps aggregate risk (Σ |entry-stop|*qty) across
+	// all open positions as a fraction of account equity. 0 = disabled
+	// (default); 0.10 activates the gate at 10% heat.
+	MaxPortfolioHeat float64           `yaml:"max_portfolio_heat"`
+	// MaxSectorExposure caps the notional share of any single GICS sector
+	// as a fraction of account equity. 0 = disabled (default); 0.30
+	// activates the gate at 30% per-sector concentration.
+	MaxSectorExposure float64 `yaml:"max_sector_exposure"`
+	// MaxIndustryExposure caps the notional share of any single GICS
+	// industry. 0 = disabled; 0.20 activates at 20%.
+	MaxIndustryExposure float64 `yaml:"max_industry_exposure"`
+	// MaxDirectionalBias caps |Σ long − Σ short| / equity across open
+	// non-option positions. 0 = disabled (default); 0.70 activates the
+	// gate at 70% net-directional exposure. Bias-reducing intents are
+	// always allowed — only bias-increasing intents are gated.
+	MaxDirectionalBias float64 `yaml:"max_directional_bias"`
+	// SymbolMetadataPath points to the GICS sector/industry TOML file used
+	// by the sector_exposure gate. Empty disables metadata loading.
+	SymbolMetadataPath string            `yaml:"symbol_metadata_path"`
+	OptionsRisk        OptionsRiskConfig `yaml:"options_risk"`
+	// Sprint 4.5 compliance — default-disabled so legacy deploys behave
+	// exactly as before until operators opt in.
+	//
+	// PDTEnforcement: "strict" enables pdt_guard (requires
+	// PatternDayTrader=true AND equity<25k to actually block); "off"
+	// disables the gate unconditionally. Empty string = "off".
+	PDTEnforcement string `yaml:"pdt_enforcement"`
+	// RegTEnforcement enables the Reg-T 50% initial-margin gate. Default
+	// false; intended to be set true only when running on IBKR (paper or
+	// live). Simbroker / Alpaca paper skip this regardless.
+	RegTEnforcement bool `yaml:"reg_t_enforcement"`
+	// Sprint 4.6 — earnings blackout per strategy. Keys are strategy
+	// names; values are "strict", "permissive", or "off". Missing
+	// entries default to "off" so legacy strategies are unaffected.
+	EarningsBlackout map[string]string `yaml:"earnings_blackout"`
+	// MacroEventBlackoutMinutes is the half-window (minutes) around a
+	// high-impact macro release during which new entries are rejected.
+	// Default 30 when zero; set to a negative value to force default.
+	MacroEventBlackoutMinutes int `yaml:"macro_event_blackout_minutes"`
+	// MacroEventImpacts lists the impact tags that trigger a blackout.
+	// Default ["high"] when empty.
+	MacroEventImpacts []string `yaml:"macro_event_impacts"`
+}
+
+// BacktestConfig holds Sprint-7 fill-model and fee-schedule knobs. Empty
+// values fall back to defaults that preserve today's backtest numbers
+// (optimistic fills, no fees) unless operators opt in to realism.
+type BacktestConfig struct {
+	FillModel                     string  `yaml:"fill_model"`                      // "optimistic" | "realistic" | "pessimistic"
+	LatencyMsEquity               int     `yaml:"latency_ms_equity"`               // default 50
+	LatencyMsOption               int     `yaml:"latency_ms_option"`               // default 200
+	FeeSchedule                   string  `yaml:"fee_schedule"`                    // "alpaca_equity" | "ibkr_options" | "none"
+	PessimisticSlippageMultiplier float64 `yaml:"pessimistic_slippage_multiplier"` // default 2.0
+
+	// EnforceUniverseHistory enables the Sprint-7-addon survivorship-bias
+	// filter: when true, the backtest bar loader consults a
+	// UniverseHistoryPort and drops bars (or skips symbols entirely) for
+	// intervals during which the symbol was not tradable. The flag
+	// defaults to false so existing backtests that operated on the
+	// always-current active-universe list continue to reproduce their
+	// published numbers bit-for-bit until an operator explicitly opts
+	// in. If the flag is true but no UniverseHistoryPort is wired, the
+	// runner logs a warning and proceeds without filtering rather than
+	// failing closed.
+	EnforceUniverseHistory bool `yaml:"enforce_universe_history"`
+}
+
+// OptionsConfig groups options-pipeline knobs that live outside the
+// per-strategy spec. UseLiveMarketData is the master switch for the
+// Theta Data integration: when false (the default), no live client is
+// instantiated and the existing BSM/ATR synthetic IV path runs unchanged.
+type OptionsConfig struct {
+	UseLiveMarketData bool             `yaml:"use_live_market_data"`
+	ThetaData         ThetaDataConfig  `yaml:"theta_data"`
+}
+
+// ThetaDataConfig holds the credentials and rate-limit cap for the
+// Theta Data REST snapshot client. Empty APIKey leaves the adapter
+// uninstantiated even when UseLiveMarketData is true.
+type ThetaDataConfig struct {
+	APIKey          string `yaml:"api_key"`
+	BaseURL         string `yaml:"base_url"`
+	RateLimitPerSec int    `yaml:"rate_limit_per_sec"`
 }
 
 type OptionsRiskConfig struct {
@@ -197,7 +281,17 @@ type rawTradingConfig struct {
 	MaxDailyLossUSD        float64           `yaml:"max_daily_loss_usd"`
 	MaxSimultaneousPos     int               `yaml:"max_simultaneous_positions"`
 	MaxPositionsPerGroup   int               `yaml:"max_positions_per_group"`
+	MaxPortfolioHeat       float64           `yaml:"max_portfolio_heat"`
+	MaxSectorExposure      float64           `yaml:"max_sector_exposure"`
+	MaxIndustryExposure    float64           `yaml:"max_industry_exposure"`
+	MaxDirectionalBias     float64           `yaml:"max_directional_bias"`
+	SymbolMetadataPath     string            `yaml:"symbol_metadata_path"`
 	OptionsRisk            OptionsRiskConfig `yaml:"options_risk"`
+	PDTEnforcement         string            `yaml:"pdt_enforcement"`
+	RegTEnforcement        bool              `yaml:"reg_t_enforcement"`
+	EarningsBlackout       map[string]string `yaml:"earnings_blackout"`
+	MacroEventBlackoutMinutes int            `yaml:"macro_event_blackout_minutes"`
+	MacroEventImpacts      []string          `yaml:"macro_event_impacts"`
 }
 
 type rawConfig struct {
@@ -210,6 +304,8 @@ type rawConfig struct {
 	AI           AIConfig           `yaml:"ai"`
 	AIScreener   AIScreenerConfig   `yaml:"ai_screener"`
 	Notification NotificationConfig `yaml:"notification"`
+	Backtest     BacktestConfig     `yaml:"backtest"`
+	Options      OptionsConfig      `yaml:"options"`
 }
 
 const (
@@ -338,13 +434,25 @@ func Load(envPath, yamlPath string) (*Config, error) {
 			MaxDailyLossUSD:        raw.Trading.MaxDailyLossUSD,
 			MaxSimultaneousPos:     raw.Trading.MaxSimultaneousPos,
 			MaxPositionsPerGroup:   raw.Trading.MaxPositionsPerGroup,
+			MaxPortfolioHeat:       raw.Trading.MaxPortfolioHeat,
+			MaxSectorExposure:      raw.Trading.MaxSectorExposure,
+			MaxIndustryExposure:    raw.Trading.MaxIndustryExposure,
+			MaxDirectionalBias:     raw.Trading.MaxDirectionalBias,
+			SymbolMetadataPath:     raw.Trading.SymbolMetadataPath,
 			OptionsRisk:            raw.Trading.OptionsRisk,
+			PDTEnforcement:         raw.Trading.PDTEnforcement,
+			RegTEnforcement:        raw.Trading.RegTEnforcement,
+			EarningsBlackout:       raw.Trading.EarningsBlackout,
+			MacroEventBlackoutMinutes: raw.Trading.MacroEventBlackoutMinutes,
+			MacroEventImpacts:      raw.Trading.MacroEventImpacts,
 		},
 		Symbols:      raw.Symbols,
 		Server:       raw.Server,
 		AI:           raw.AI,
 		AIScreener:   applyAIScreenerDefaults(raw.AIScreener),
 		Notification: raw.Notification,
+		Backtest:     applyBacktestDefaults(raw.Backtest),
+		Options:      applyOptionsDefaults(raw.Options),
 	}
 
 	// 3. Overlay environment variables
@@ -492,6 +600,43 @@ func loadEnvFile(path string) error {
 		}
 	}
 	return scanner.Err()
+}
+
+// applyBacktestDefaults fills in zero-valued Sprint-7 fields. Per the Sprint-7
+// plan the runtime default is "realistic" so the §3 AVWAP same-bar look-ahead
+// bug is patched out of the box; operators can still opt back into
+// "optimistic" via YAML for legacy parity runs.
+func applyBacktestDefaults(c BacktestConfig) BacktestConfig {
+	if c.FillModel == "" {
+		c.FillModel = "realistic"
+	}
+	if c.LatencyMsEquity == 0 {
+		c.LatencyMsEquity = 50
+	}
+	if c.LatencyMsOption == 0 {
+		c.LatencyMsOption = 200
+	}
+	if c.FeeSchedule == "" {
+		c.FeeSchedule = "none"
+	}
+	if c.PessimisticSlippageMultiplier == 0 {
+		c.PessimisticSlippageMultiplier = 2.0
+	}
+	return c
+}
+
+// applyOptionsDefaults fills in the Theta Data plumbing defaults. The
+// disabled-by-default UseLiveMarketData stays false unless the YAML
+// explicitly enables it, so behavior is unchanged on every existing
+// deploy.
+func applyOptionsDefaults(c OptionsConfig) OptionsConfig {
+	if c.ThetaData.BaseURL == "" {
+		c.ThetaData.BaseURL = "https://rest.thetadata.net"
+	}
+	if c.ThetaData.RateLimitPerSec <= 0 {
+		c.ThetaData.RateLimitPerSec = 10
+	}
+	return c
 }
 
 func applyAIScreenerDefaults(c AIScreenerConfig) AIScreenerConfig {
