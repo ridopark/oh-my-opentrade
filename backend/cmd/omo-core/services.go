@@ -71,7 +71,6 @@ type appServices struct {
 	router         *strategy.Router
 	symRouterSpecs []symbolrouter.StrategySpec
 
-	aiScreenerSvc     *screenerapp.AIService
 	activationSvc     *activation.Service
 	pipelineActivator *bootstrap.PipelineActivator
 
@@ -821,38 +820,21 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 		}
 	}
 
+	// AI screener scheduling moved to omo-data. Bootstrap from DB to publish
+	// EventAIScreenerCompleted for the symbol router.
 	if cfg.AIScreener.Enabled && svc.useStrategyV2 {
 		aiScreenerRepo := timescaledb.NewAIScreenerRepo(timescaledb.NewSqlDB(infra.sqlDB), log.With().Str("component", "ai_screener_repo").Logger())
-		aiScreenerSvc, err := screenerapp.NewAIService(
-			log.With().Str("component", "ai_screener").Logger(),
-			cfg.AIScreener,
-			cfg.AI,
+		covered := screenerapp.BootstrapFromDB(
+			ctx,
+			aiScreenerRepo,
+			svc.specStore,
 			"default",
 			string(domain.EnvModePaper),
 			infra.eventBus,
-			infra.alpacaData,
-			infra.alpacaData,
-			infra.alpacaData,
-			aiScreenerRepo,
-			svc.specStore,
-			svc.notifier,
+			log.With().Str("component", "ai_screener").Logger(),
 		)
-		if err != nil {
-			log.Fatal().Err(err).Msg("failed to create AI screener service")
-		}
-		if err := aiScreenerSvc.Start(ctx); err != nil {
-			log.Fatal().Err(err).Msg("failed to start AI screener service")
-		}
-		svc.aiScreenerSvc = aiScreenerSvc
-		log.Info().
-			Strs("models", cfg.AIScreener.Models).
-			Int("ai_run_hour_et", cfg.AIScreener.AIRunAtHourET).
-			Int("ai_run_minute_et", cfg.AIScreener.AIRunAtMinuteET).
-			Msg("AI screener service started")
-
-		// Emit fallback base symbols for strategies not covered by the AI screener DB.
 		if svc.symRouter != nil {
-			svc.symRouter.EmitFallbackForMissing(ctx, aiScreenerSvc.CoveredStrategies())
+			svc.symRouter.EmitFallbackForMissing(ctx, covered)
 		}
 	}
 
