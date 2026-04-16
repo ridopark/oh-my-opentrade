@@ -412,6 +412,13 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 	if pos.IsShort() {
 		exitDirection = domain.DirectionCloseShort
 	}
+	// For options, the broker position is always LONG the contract regardless
+	// of the thesis direction (short thesis = long puts, long thesis = long
+	// calls). Closing is always a SELL. CLOSE_SHORT would trigger a BUY via
+	// brokerSideFor, doubling the position instead of closing it.
+	if pos.InstrumentType == domain.InstrumentTypeOption {
+		exitDirection = domain.DirectionCloseLong
+	}
 
 	// Partial close: check if the evaluator set a qty fraction in CustomState.
 	exitQty := pos.Quantity
