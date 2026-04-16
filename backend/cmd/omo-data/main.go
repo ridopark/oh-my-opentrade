@@ -16,6 +16,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
 	"github.com/oh-my-opentrade/backend/internal/adapters/dolthub"
 	"github.com/oh-my-opentrade/backend/internal/adapters/finnhub"
+	"github.com/oh-my-opentrade/backend/internal/adapters/fredfinnhub"
 	"github.com/oh-my-opentrade/backend/internal/adapters/notification"
 	"github.com/oh-my-opentrade/backend/internal/adapters/openfigi"
 	"github.com/oh-my-opentrade/backend/internal/adapters/sec"
@@ -222,6 +223,18 @@ func main() {
 		}
 	}
 
+	// Macro economic calendar (Finnhub + FRED — daily refresh). Uses
+	// the same FINNHUB_API_KEY as the earnings path; FRED_API_KEY is
+	// optional. If neither is set, Refresh is a no-op.
+	var macroClient *fredfinnhub.Client
+	{
+		macroRepo := timescaledb.NewMacroEventsRepo(sqlDB, log.With().Str("component", "macro_events_repo").Logger())
+		macroClient = fredfinnhub.NewClient(fredfinnhub.Config{
+			FinnhubAPIKey: os.Getenv("FINNHUB_API_KEY"),
+			FREDAPIKey:    os.Getenv("FRED_API_KEY"),
+		}, macroRepo, log.With().Str("component", "macro_events").Logger())
+	}
+
 	if runOnce {
 		log.Info().Msg("run-once mode: executing all tasks")
 		refreshSvc.RefreshAll(ctx)
@@ -237,6 +250,9 @@ func main() {
 			if err := earningsSvc.Refresh(ctx); err != nil {
 				log.Warn().Err(err).Msg("earnings calendar refresh failed")
 			}
+		}
+		if err := macroClient.Refresh(ctx); err != nil {
+			log.Warn().Err(err).Msg("macro events refresh failed")
 		}
 		dolthubSvc.RunOnce(ctx)
 		log.Info().Msg("run-once complete")
@@ -269,6 +285,26 @@ func main() {
 	if err := dolthubSvc.Start(ctx); err != nil {
 		log.Warn().Err(err).Msg("DoltHub options service failed to start")
 	}
+
+	// Macro events — kick once at startup then once every 24h. Refresh
+	// is safe to call when no keys are configured (logs debug + exits).
+	go func() {
+		if err := macroClient.Refresh(ctx); err != nil {
+			log.Warn().Err(err).Msg("macro events initial refresh failed")
+		}
+		t := time.NewTicker(24 * time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := macroClient.Refresh(ctx); err != nil {
+					log.Warn().Err(err).Msg("macro events refresh failed")
+				}
+			}
+		}
+	}()
 
 	gapDetector := timescaledb.NewGapDetector(repo)
 	gapSvc := gapdetect.NewService(gapDetector, repo, log.With().Str("component", "gapdetect").Logger(), nil)
