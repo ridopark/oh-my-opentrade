@@ -297,9 +297,16 @@ func (ws *WSSubscriber) Run(ctx context.Context) error {
 			return nil
 		}
 
+		started := time.Now()
 		err := ws.runOnce(ctx)
 		if ctx.Err() != nil {
 			return nil
+		}
+
+		// Reset backoff after a long-lived session so the next reconnect
+		// doesn't inherit a stale escalated delay.
+		if time.Since(started) > 5*time.Minute {
+			backoff = wsMinBackoff
 		}
 
 		ws.log.Warn().Err(err).Dur("backoff", backoff).

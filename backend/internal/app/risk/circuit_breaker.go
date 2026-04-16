@@ -3,6 +3,7 @@ package risk
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,12 +49,12 @@ func (s KillSwitchState) String() string {
 // ParseKillSwitchState maps a canonical label to its enum value. Case-insensitive.
 // Returns an error for unknown labels so HTTP handlers can return 400.
 func ParseKillSwitchState(s string) (KillSwitchState, error) {
-	switch s {
-	case "ACTIVE", "active", "Active":
+	switch strings.ToUpper(s) {
+	case "ACTIVE":
 		return KillSwitchActive, nil
-	case "REDUCING", "reducing", "Reducing":
+	case "REDUCING":
 		return KillSwitchReducing, nil
-	case "HALTED", "halted", "Halted":
+	case "HALTED":
 		return KillSwitchHalted, nil
 	}
 	return KillSwitchActive, fmt.Errorf("unknown kill switch state %q (want ACTIVE|REDUCING|HALTED)", s)

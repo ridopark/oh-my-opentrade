@@ -119,18 +119,10 @@ func inBlackout(now, earningsDate time.Time, mode string) bool {
 }
 
 func hourLabel(h string) string {
-	switch strings.ToLower(h) {
-	case "bmo":
-		return "bmo"
-	case "amc":
-		return "amc"
-	case "dmh":
-		return "dmh"
-	case "":
+	if h == "" {
 		return "tbd"
-	default:
-		return h
 	}
+	return strings.ToLower(h)
 }
 
 // EarningsCalendarAdapter wraps an EarningsCalendarPort so it satisfies

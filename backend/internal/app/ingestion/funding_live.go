@@ -75,7 +75,10 @@ func (l *FundingLive) consumeStream(ctx context.Context, ch <-chan ports.Funding
 				l.log.Warn().
 					Str("venue", string(venue)).
 					Str("symbol", string(sym)).
-					Msg("funding stream channel closed")
+					Msg("funding stream channel closed, falling back to polling")
+				// Stream died without context cancel — fall back to polling
+				// so funding collection continues until the parent shuts down.
+				l.pollLoop(ctx, venue, []domain.Symbol{sym}, 5*time.Minute) //nolint:errcheck
 				return
 			}
 			if err := l.repo.Insert(ctx, []ports.FundingRate{fr}); err != nil {
