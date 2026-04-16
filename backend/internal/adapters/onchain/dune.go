@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/httputil"
 	"github.com/rs/zerolog"
 )
 
@@ -32,16 +33,11 @@ var (
 	ErrDuneNotConfigured = errors.New("dune: API key not configured")
 )
 
-// HTTPDoer is the minimal interface the client needs from net/http.
-type HTTPDoer interface {
-	Do(req *http.Request) (*http.Response, error)
-}
-
 // DuneClient is a read-only REST client for the Dune Analytics API.
 type DuneClient struct {
 	baseURL string
 	apiKey  string
-	http    HTTPDoer
+	http    httputil.HTTPDoer
 	log     zerolog.Logger
 }
 
@@ -62,7 +58,7 @@ func NewDuneClient(apiKey, baseURL string, log zerolog.Logger) (*DuneClient, err
 }
 
 // NewDuneClientWithHTTP creates a client using the provided HTTPDoer (useful for testing).
-func NewDuneClientWithHTTP(apiKey, baseURL string, doer HTTPDoer, log zerolog.Logger) *DuneClient {
+func NewDuneClientWithHTTP(apiKey, baseURL string, doer httputil.HTTPDoer, log zerolog.Logger) *DuneClient {
 	if baseURL == "" {
 		baseURL = defaultDuneBaseURL
 	}

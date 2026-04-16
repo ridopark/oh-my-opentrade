@@ -17,7 +17,7 @@ import (
 //	POST /backtest/history/{id}/pin  — set pinned flag
 func (h *BacktestHandler) handleHistory(w http.ResponseWriter, r *http.Request, rest []string) {
 	if h.historyRepo == nil {
-		jsonError(w, "backtest history disabled", http.StatusServiceUnavailable)
+		jsonError(w, http.StatusServiceUnavailable, "backtest history disabled")
 		return
 	}
 
@@ -75,7 +75,7 @@ func (h *BacktestHandler) handleHistoryList(w http.ResponseWriter, r *http.Reque
 	runs, total, err := h.historyRepo.List(r.Context(), filter)
 	if err != nil {
 		h.log.Error().Err(err).Msg("history list failed")
-		jsonError(w, "list failed: "+err.Error(), http.StatusInternalServerError)
+		jsonError(w, http.StatusInternalServerError, "list failed: "+err.Error())
 		return
 	}
 
@@ -90,11 +90,11 @@ func (h *BacktestHandler) handleHistoryGet(w http.ResponseWriter, r *http.Reques
 	detail, err := h.historyRepo.Get(r.Context(), id)
 	if err != nil {
 		h.log.Error().Err(err).Str("id", id).Msg("history get failed")
-		jsonError(w, "get failed: "+err.Error(), http.StatusInternalServerError)
+		jsonError(w, http.StatusInternalServerError, "get failed: "+err.Error())
 		return
 	}
 	if detail == nil {
-		jsonError(w, "backtest run not found", http.StatusNotFound)
+		jsonError(w, http.StatusNotFound, "backtest run not found")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -106,11 +106,11 @@ func (h *BacktestHandler) handleHistoryTags(w http.ResponseWriter, r *http.Reque
 		Tags []string `json:"tags"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		jsonError(w, "invalid body: "+err.Error(), http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
 	if err := h.historyRepo.SetTags(r.Context(), id, body.Tags); err != nil {
-		jsonError(w, "set tags failed: "+err.Error(), http.StatusInternalServerError)
+		jsonError(w, http.StatusInternalServerError, "set tags failed: "+err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -121,11 +121,11 @@ func (h *BacktestHandler) handleHistoryPin(w http.ResponseWriter, r *http.Reques
 		Pinned bool `json:"pinned"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		jsonError(w, "invalid body: "+err.Error(), http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
 	if err := h.historyRepo.SetPinned(r.Context(), id, body.Pinned); err != nil {
-		jsonError(w, "set pinned failed: "+err.Error(), http.StatusInternalServerError)
+		jsonError(w, http.StatusInternalServerError, "set pinned failed: "+err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

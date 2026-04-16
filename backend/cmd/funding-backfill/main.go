@@ -24,11 +24,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/rs/zerolog"
 
 	"github.com/oh-my-opentrade/backend/internal/adapters/bybit"
+	"github.com/oh-my-opentrade/backend/internal/dbutil"
 	"github.com/oh-my-opentrade/backend/internal/adapters/hyperliquid"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
@@ -104,22 +103,15 @@ func main() {
 		dsn = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
 			cfg.Database.Host, cfg.Database.Port, cfg.Database.User, cfg.Database.Password, cfg.Database.DBName)
 	}
-	pgxCfg, err := pgx.ParseConfig(dsn)
+	sqlDB, err := dbutil.Open(dsn)
 	if err != nil {
-		log.Fatal().Err(err).Msg("failed to parse DB config")
+		log.Fatal().Err(err).Msg("failed to connect to TimescaleDB")
 	}
-	sqlDB := stdlib.OpenDB(*pgxCfg)
-	sqlDB.SetMaxOpenConns(4)
-	sqlDB.SetMaxIdleConns(4)
 	defer sqlDB.Close()
+	log.Info().Msg("TimescaleDB connected")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-
-	if err := sqlDB.PingContext(ctx); err != nil {
-		log.Fatal().Err(err).Msg("failed to connect to TimescaleDB")
-	}
-	log.Info().Msg("TimescaleDB connected")
 
 	// Create venue-specific funding adapter.
 	var fundingAdapter ports.FundingRatesPort

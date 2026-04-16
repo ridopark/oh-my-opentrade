@@ -40,7 +40,7 @@ func (h *DNAApprovalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) < 3 || parts[0] != "api" || parts[1] != "dna" {
-		h.jsonError(w, http.StatusNotFound, "not found")
+		jsonError(w, http.StatusNotFound, "not found")
 		return
 	}
 	parts = parts[2:]
@@ -74,7 +74,7 @@ func (h *DNAApprovalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.jsonError(w, http.StatusNotFound, "not found")
+	jsonError(w, http.StatusNotFound, "not found")
 }
 
 type dnaVersionJSON struct {
@@ -133,13 +133,13 @@ func toApprovalWithVersionJSON(item appdna.ApprovalWithVersion) approvalWithVers
 
 func (h *DNAApprovalHandler) handleListApprovals(w http.ResponseWriter, r *http.Request) {
 	if raw := strings.TrimSpace(r.URL.Query().Get("status")); raw != "" && raw != "pending" {
-		h.jsonError(w, http.StatusBadRequest, "unsupported status")
+		jsonError(w, http.StatusBadRequest, "unsupported status")
 		return
 	}
 	items, err := h.svc.GetPendingApprovals(r.Context())
 	if err != nil {
 		h.log.Error().Err(err).Msg("failed to list dna approvals")
-		h.jsonError(w, http.StatusInternalServerError, "failed to list approvals")
+		jsonError(w, http.StatusInternalServerError, "failed to list approvals")
 		return
 	}
 	resp := make([]approvalWithVersionJSON, 0, len(items))
@@ -157,11 +157,11 @@ func (h *DNAApprovalHandler) handleGetApproval(w http.ResponseWriter, r *http.Re
 	item, err := h.svc.GetApproval(r.Context(), approvalID)
 	if err != nil {
 		h.log.Error().Err(err).Str("approval_id", approvalID).Msg("failed to get dna approval")
-		h.jsonError(w, http.StatusInternalServerError, "failed to get approval")
+		jsonError(w, http.StatusInternalServerError, "failed to get approval")
 		return
 	}
 	if item == nil {
-		h.jsonError(w, http.StatusNotFound, "approval not found")
+		jsonError(w, http.StatusNotFound, "approval not found")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -172,18 +172,18 @@ func (h *DNAApprovalHandler) handleDiff(w http.ResponseWriter, r *http.Request, 
 	item, err := h.svc.GetApproval(r.Context(), approvalID)
 	if err != nil {
 		h.log.Error().Err(err).Str("approval_id", approvalID).Msg("failed to get dna approval for diff")
-		h.jsonError(w, http.StatusInternalServerError, "failed to get approval")
+		jsonError(w, http.StatusInternalServerError, "failed to get approval")
 		return
 	}
 	if item == nil {
-		h.jsonError(w, http.StatusNotFound, "approval not found")
+		jsonError(w, http.StatusNotFound, "approval not found")
 		return
 	}
 
 	active, err := h.svc.GetActiveDNA(r.Context(), item.Version.StrategyKey)
 	if err != nil {
 		h.log.Error().Err(err).Str("strategy_key", item.Version.StrategyKey).Msg("failed to get active dna")
-		h.jsonError(w, http.StatusInternalServerError, "failed to get active dna")
+		jsonError(w, http.StatusInternalServerError, "failed to get active dna")
 		return
 	}
 	base := ""
@@ -204,7 +204,7 @@ func (h *DNAApprovalHandler) handleApprove(w http.ResponseWriter, r *http.Reques
 		Comment   string `json:"comment"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.jsonError(w, http.StatusBadRequest, "invalid JSON")
+		jsonError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	if err := h.svc.Approve(r.Context(), approvalID, req.DecidedBy, req.Comment); err != nil {
@@ -221,7 +221,7 @@ func (h *DNAApprovalHandler) handleReject(w http.ResponseWriter, r *http.Request
 		Comment   string `json:"comment"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.jsonError(w, http.StatusBadRequest, "invalid JSON")
+		jsonError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	if err := h.svc.Reject(r.Context(), approvalID, req.DecidedBy, req.Comment); err != nil {
@@ -236,11 +236,11 @@ func (h *DNAApprovalHandler) handleGetActive(w http.ResponseWriter, r *http.Requ
 	v, err := h.svc.GetActiveDNA(r.Context(), strategyKey)
 	if err != nil {
 		h.log.Error().Err(err).Str("strategy_key", strategyKey).Msg("failed to get active dna")
-		h.jsonError(w, http.StatusInternalServerError, "failed to get active dna")
+		jsonError(w, http.StatusInternalServerError, "failed to get active dna")
 		return
 	}
 	if v == nil {
-		h.jsonError(w, http.StatusNotFound, "active dna not found")
+		jsonError(w, http.StatusNotFound, "active dna not found")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -256,13 +256,6 @@ func (h *DNAApprovalHandler) writeSvcErr(w http.ResponseWriter, err error) {
 	case strings.Contains(msg, "not pending"):
 		status = http.StatusConflict
 	}
-	h.jsonError(w, status, msg)
+	jsonError(w, status, msg)
 }
 
-func (h *DNAApprovalHandler) jsonError(w http.ResponseWriter, statusCode int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
-		h.log.Error().Err(err).Msg("failed to encode error response")
-	}
-}

@@ -54,7 +54,7 @@ func (h *KakaoHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) < 5 || parts[0] != "api" || parts[1] != "v1" || parts[2] != "notifications" || parts[3] != "kakao" {
-		h.jsonError(w, http.StatusNotFound, "not found")
+		jsonError(w, http.StatusNotFound, "not found")
 		return
 	}
 	action := parts[4]
@@ -71,7 +71,7 @@ func (h *KakaoHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && action == "test":
 		h.handleTest(w, r)
 	default:
-		h.jsonError(w, http.StatusNotFound, "not found")
+		jsonError(w, http.StatusNotFound, "not found")
 	}
 }
 
@@ -123,7 +123,7 @@ func (h *KakaoHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
 func (h *KakaoHandler) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	if err := h.tokenStore.DeleteToken(r.Context(), "kakao", "default"); err != nil {
 		h.log.Error().Err(err).Msg("kakao disconnect failed")
-		h.jsonError(w, http.StatusInternalServerError, fmt.Sprintf("disconnect failed: %s", err))
+		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("disconnect failed: %s", err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -133,17 +133,10 @@ func (h *KakaoHandler) handleDisconnect(w http.ResponseWriter, r *http.Request) 
 func (h *KakaoHandler) handleTest(w http.ResponseWriter, r *http.Request) {
 	if err := h.notifier.Notify(r.Context(), "default", "\U0001f514 KakaoTalk test notification from oh-my-opentrade"); err != nil {
 		h.log.Error().Err(err).Msg("kakao test notification failed")
-		h.jsonError(w, http.StatusInternalServerError, fmt.Sprintf("test failed: %s", err))
+		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("test failed: %s", err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
-func (h *KakaoHandler) jsonError(w http.ResponseWriter, statusCode int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
-		h.log.Error().Err(err).Msg("failed to encode error response")
-	}
-}

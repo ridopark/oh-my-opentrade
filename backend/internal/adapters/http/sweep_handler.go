@@ -56,7 +56,7 @@ func (h *SweepHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	parts := strings.SplitN(path, "/", 4)
 
 	if len(parts) < 2 {
-		jsonError(w, "not found", http.StatusNotFound)
+		jsonError(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -75,24 +75,24 @@ func (h *SweepHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case action == "apply" && len(parts) >= 4 && r.Method == http.MethodPost:
 		h.handleApply(w, r, parts[2], parts[3])
 	default:
-		jsonError(w, "not found", http.StatusNotFound)
+		jsonError(w, http.StatusNotFound, "not found")
 	}
 }
 
 func (h *SweepHandler) handleStart(w http.ResponseWriter, r *http.Request, strategyID string) {
 	var req sweepStartRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
 	}
 
 	if len(req.Ranges) == 0 {
-		jsonError(w, "at least one parameter range required", http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "at least one parameter range required")
 		return
 	}
 	for _, rng := range req.Ranges {
 		if rng.Step <= 0 {
-			jsonError(w, fmt.Sprintf("range %q: step must be > 0", rng.Key), http.StatusBadRequest)
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("range %q: step must be > 0", rng.Key))
 			return
 		}
 	}
@@ -104,12 +104,12 @@ func (h *SweepHandler) handleStart(w http.ResponseWriter, r *http.Request, strat
 
 	fromTime, err := parseTimeParam(req.From)
 	if err != nil {
-		jsonError(w, "invalid from date", http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "invalid from date")
 		return
 	}
 	toTime, err := parseTimeParam(req.To)
 	if err != nil {
-		jsonError(w, "invalid to date", http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "invalid to date")
 		return
 	}
 
@@ -138,7 +138,7 @@ func (h *SweepHandler) handleStart(w http.ResponseWriter, r *http.Request, strat
 
 	sweepID, err := h.orchestrator.Start(r.Context(), cfg)
 	if err != nil {
-		jsonError(w, "failed to start sweep: "+err.Error(), http.StatusInternalServerError)
+		jsonError(w, http.StatusInternalServerError, "failed to start sweep: "+err.Error())
 		return
 	}
 
@@ -153,13 +153,13 @@ func (h *SweepHandler) handleStart(w http.ResponseWriter, r *http.Request, strat
 func (h *SweepHandler) handleEvents(w http.ResponseWriter, r *http.Request, sweepID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		jsonError(w, "streaming not supported", http.StatusInternalServerError)
+		jsonError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
 
 	ch, err := h.orchestrator.Events(r.Context(), sweepID)
 	if err != nil {
-		jsonError(w, err.Error(), http.StatusNotFound)
+		jsonError(w, http.StatusNotFound, err.Error())
 		return
 	}
 
@@ -187,11 +187,11 @@ func (h *SweepHandler) handleEvents(w http.ResponseWriter, r *http.Request, swee
 func (h *SweepHandler) handleResults(w http.ResponseWriter, sweepID string) {
 	result, err := h.orchestrator.GetResult(sweepID)
 	if err != nil {
-		jsonError(w, err.Error(), http.StatusNotFound)
+		jsonError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	if result == nil {
-		jsonError(w, "sweep not completed yet", http.StatusAccepted)
+		jsonError(w, http.StatusAccepted, "sweep not completed yet")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -200,7 +200,7 @@ func (h *SweepHandler) handleResults(w http.ResponseWriter, sweepID string) {
 
 func (h *SweepHandler) handleCancel(w http.ResponseWriter, sweepID string) {
 	if err := h.orchestrator.Cancel(sweepID); err != nil {
-		jsonError(w, err.Error(), http.StatusNotFound)
+		jsonError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -210,12 +210,12 @@ func (h *SweepHandler) handleCancel(w http.ResponseWriter, sweepID string) {
 func (h *SweepHandler) handleApply(w http.ResponseWriter, r *http.Request, sweepID string, runIndexStr string) {
 	runIndex, err := strconv.Atoi(runIndexStr)
 	if err != nil {
-		jsonError(w, "invalid run index", http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "invalid run index")
 		return
 	}
 
 	if err := h.orchestrator.ApplyBest(r.Context(), sweepID, runIndex); err != nil {
-		jsonError(w, "apply failed: "+err.Error(), http.StatusInternalServerError)
+		jsonError(w, http.StatusInternalServerError, "apply failed: "+err.Error())
 		return
 	}
 

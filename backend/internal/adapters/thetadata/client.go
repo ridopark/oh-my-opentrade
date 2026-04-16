@@ -24,16 +24,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/httputil"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
-
-// HTTPDoer is the minimal interface the client needs from net/http. It is
-// taken as an interface so tests can substitute httptest.Server-backed
-// clients (or fully synthetic doers) without spinning a real listener.
-type HTTPDoer interface {
-	Do(req *http.Request) (*http.Response, error)
-}
 
 // Config tunes the Theta Data REST client.
 type Config struct {
@@ -54,7 +48,7 @@ type Config struct {
 type Client struct {
 	apiKey  string
 	baseURL string
-	http    HTTPDoer
+	http    httputil.HTTPDoer
 	log     zerolog.Logger
 
 	tokens    chan struct{}
@@ -111,7 +105,7 @@ func NewClient(cfg Config, log zerolog.Logger) (*Client, error) {
 
 // SetHTTPClient swaps the underlying HTTP doer. Tests use this to inject
 // an httptest.Server-backed client.
-func (c *Client) SetHTTPClient(d HTTPDoer) {
+func (c *Client) SetHTTPClient(d httputil.HTTPDoer) {
 	if c == nil || d == nil {
 		return
 	}

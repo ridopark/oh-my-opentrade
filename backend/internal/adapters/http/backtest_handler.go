@@ -153,7 +153,7 @@ func (h *BacktestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	var req backtestRunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
 
@@ -165,29 +165,29 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		useNativeSymbols = true
 	}
 	if len(req.Symbols) == 0 {
-		jsonError(w, "symbols required (provide symbols or strategies with configured symbols)", http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "symbols required (provide symbols or strategies with configured symbols)")
 		return
 	}
 	if req.From == "" {
-		jsonError(w, "from date required", http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "from date required")
 		return
 	}
 
 	fromTime, err := parseTimeParam(req.From)
 	if err != nil {
-		jsonError(w, "invalid from: "+err.Error(), http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "invalid from: "+err.Error())
 		return
 	}
 	toTime := time.Now().UTC()
 	if req.To != "" {
 		toTime, err = parseTimeParam(req.To)
 		if err != nil {
-			jsonError(w, "invalid to: "+err.Error(), http.StatusBadRequest)
+			jsonError(w, http.StatusBadRequest, "invalid to: "+err.Error())
 			return
 		}
 	}
 	if !toTime.After(fromTime) {
-		jsonError(w, "to must be after from", http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "to must be after from")
 		return
 	}
 
@@ -202,7 +202,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	const maxQueued = 4
 	if len(h.runners) >= maxQueued {
 		h.mu.Unlock()
-		jsonError(w, "max queued backtests reached — cancel one first", http.StatusConflict)
+		jsonError(w, http.StatusConflict, "max queued backtests reached — cancel one first")
 		return
 	}
 
@@ -319,7 +319,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 func (h *BacktestHandler) handleEvents(w http.ResponseWriter, r *http.Request, id string) {
 	runner := h.getRunner(id)
 	if runner == nil {
-		jsonError(w, "backtest not found", http.StatusNotFound)
+		jsonError(w, http.StatusNotFound, "backtest not found")
 		return
 	}
 	runner.GetEmitter().ServeHTTP(w, r)
@@ -328,13 +328,13 @@ func (h *BacktestHandler) handleEvents(w http.ResponseWriter, r *http.Request, i
 func (h *BacktestHandler) handleControl(w http.ResponseWriter, r *http.Request, id string) {
 	runner := h.getRunner(id)
 	if runner == nil {
-		jsonError(w, "backtest not found", http.StatusNotFound)
+		jsonError(w, http.StatusNotFound, "backtest not found")
 		return
 	}
 
 	var req backtestControlRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "invalid request body", http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -345,11 +345,11 @@ func (h *BacktestHandler) handleControl(w http.ResponseWriter, r *http.Request, 
 		runner.Resume()
 	case "set_speed":
 		if err := runner.SetSpeed(req.Speed); err != nil {
-			jsonError(w, "invalid speed: "+err.Error(), http.StatusBadRequest)
+			jsonError(w, http.StatusBadRequest, "invalid speed: "+err.Error())
 			return
 		}
 	default:
-		jsonError(w, "unknown action: "+req.Action, http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "unknown action: "+req.Action)
 		return
 	}
 
@@ -363,13 +363,13 @@ func (h *BacktestHandler) handleControl(w http.ResponseWriter, r *http.Request, 
 func (h *BacktestHandler) handleResults(w http.ResponseWriter, _ *http.Request, id string) {
 	runner := h.getRunner(id)
 	if runner == nil {
-		jsonError(w, "backtest not found", http.StatusNotFound)
+		jsonError(w, http.StatusNotFound, "backtest not found")
 		return
 	}
 
 	result := runner.GetResult()
 	if result == nil {
-		jsonError(w, "backtest not yet completed", http.StatusAccepted)
+		jsonError(w, http.StatusAccepted, "backtest not yet completed")
 		return
 	}
 
@@ -380,7 +380,7 @@ func (h *BacktestHandler) handleResults(w http.ResponseWriter, _ *http.Request, 
 func (h *BacktestHandler) handleStatus(w http.ResponseWriter, _ *http.Request, id string) {
 	runner := h.getRunner(id)
 	if runner == nil {
-		jsonError(w, "backtest not found", http.StatusNotFound)
+		jsonError(w, http.StatusNotFound, "backtest not found")
 		return
 	}
 
@@ -399,7 +399,7 @@ func (h *BacktestHandler) handleStatus(w http.ResponseWriter, _ *http.Request, i
 func (h *BacktestHandler) handleCancel(w http.ResponseWriter, _ *http.Request, id string) {
 	runner := h.getRunner(id)
 	if runner == nil {
-		jsonError(w, "backtest not found", http.StatusNotFound)
+		jsonError(w, http.StatusNotFound, "backtest not found")
 		return
 	}
 
@@ -471,7 +471,7 @@ func loadStrategyHeaders(stratDir string) ([]stratHeader, error) {
 func (h *BacktestHandler) handleStrategies(w http.ResponseWriter, r *http.Request) {
 	headers, err := loadStrategyHeaders("configs/strategies")
 	if err != nil {
-		jsonError(w, "failed to read strategies: "+err.Error(), http.StatusInternalServerError)
+		jsonError(w, http.StatusInternalServerError, "failed to read strategies: "+err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -560,7 +560,7 @@ func (h *BacktestHandler) collectStrategySymbols(strategyIDs []string) []string 
 func (h *BacktestHandler) handleSymbols(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.QueryContext(r.Context(), "SELECT DISTINCT symbol FROM market_bars ORDER BY symbol")
 	if err != nil {
-		jsonError(w, "failed to query symbols: "+err.Error(), http.StatusInternalServerError)
+		jsonError(w, http.StatusInternalServerError, "failed to query symbols: "+err.Error())
 		return
 	}
 	defer rows.Close()
@@ -592,8 +592,3 @@ func parseTimeParam(v string) (time.Time, error) {
 	return time.Time{}, &json.UnsupportedValueError{}
 }
 
-func jsonError(w http.ResponseWriter, msg string, code int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
-}

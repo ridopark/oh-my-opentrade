@@ -46,7 +46,7 @@ func (h *ConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	parts := strings.SplitN(path, "/", 2)
 
 	if len(parts) < 2 || parts[1] != "config" || parts[0] == "" {
-		jsonError(w, "not found", http.StatusNotFound)
+		jsonError(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -58,7 +58,7 @@ func (h *ConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		h.handlePut(w, r, strategyID)
 	default:
-		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -104,14 +104,14 @@ type configExitRule struct {
 func (h *ConfigHandler) handleGet(w http.ResponseWriter, _ *http.Request, strategyID string) {
 	id, err := domstrategy.NewStrategyID(strategyID)
 	if err != nil {
-		jsonError(w, "invalid strategy id: "+err.Error(), http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "invalid strategy id: "+err.Error())
 		return
 	}
 
 	spec, err := h.specStore.GetLatest(context.Background(), id)
 	if err != nil {
 		h.log.Warn().Err(err).Str("strategy_id", strategyID).Msg("strategy not found")
-		jsonError(w, "strategy not found", http.StatusNotFound)
+		jsonError(w, http.StatusNotFound, "strategy not found")
 		return
 	}
 
@@ -195,33 +195,33 @@ type configUpdateRequest struct {
 func (h *ConfigHandler) handlePut(w http.ResponseWriter, r *http.Request, strategyID string) {
 	var req configUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
 
 	if req.Strategy.ID != strategyID {
-		jsonError(w, fmt.Sprintf("strategy id mismatch: URL=%q body=%q", strategyID, req.Strategy.ID), http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("strategy id mismatch: URL=%q body=%q", strategyID, req.Strategy.ID))
 		return
 	}
 
 	id, err := domstrategy.NewStrategyID(req.Strategy.ID)
 	if err != nil {
-		jsonError(w, "invalid strategy id: "+err.Error(), http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "invalid strategy id: "+err.Error())
 		return
 	}
 	ver, err := domstrategy.NewVersion(req.Strategy.Version)
 	if err != nil {
-		jsonError(w, "invalid version: "+err.Error(), http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "invalid version: "+err.Error())
 		return
 	}
 	state, err := domstrategy.NewLifecycleState(req.Lifecycle.State)
 	if err != nil {
-		jsonError(w, "invalid lifecycle state: "+err.Error(), http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "invalid lifecycle state: "+err.Error())
 		return
 	}
 	conflict, err := domstrategy.NewConflictPolicy(req.Routing.ConflictPolicy)
 	if err != nil {
-		jsonError(w, "invalid conflict policy: "+err.Error(), http.StatusBadRequest)
+		jsonError(w, http.StatusBadRequest, "invalid conflict policy: "+err.Error())
 		return
 	}
 
@@ -240,19 +240,19 @@ func (h *ConfigHandler) handlePut(w http.ResponseWriter, r *http.Request, strate
 	for i, er := range req.ExitRules {
 		rt, rtErr := domain.NewExitRuleType(er.Type)
 		if rtErr != nil {
-			jsonError(w, fmt.Sprintf("invalid exit_rules[%d].type: %s", i, rtErr), http.StatusBadRequest)
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("invalid exit_rules[%d].type: %s", i, rtErr))
 			return
 		}
 		rule, ruleErr := domain.NewExitRule(rt, er.Params)
 		if ruleErr != nil {
-			jsonError(w, fmt.Sprintf("invalid exit_rules[%d]: %s", i, ruleErr), http.StatusBadRequest)
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("invalid exit_rules[%d]: %s", i, ruleErr))
 			return
 		}
 		exitRules[i] = rule
 	}
 
 	if err := domain.ValidateExitRules(exitRules); err != nil {
-		jsonError(w, "exit rules validation failed: "+err.Error(), http.StatusUnprocessableEntity)
+		jsonError(w, http.StatusUnprocessableEntity, "exit rules validation failed: "+err.Error())
 		return
 	}
 
@@ -296,7 +296,7 @@ func (h *ConfigHandler) handlePut(w http.ResponseWriter, r *http.Request, strate
 
 	tomlBytes, err := store_fs.EncodeFullV2(spec)
 	if err != nil {
-		jsonError(w, "failed to encode TOML: "+err.Error(), http.StatusInternalServerError)
+		jsonError(w, http.StatusInternalServerError, "failed to encode TOML: "+err.Error())
 		return
 	}
 
@@ -310,19 +310,19 @@ func (h *ConfigHandler) handlePut(w http.ResponseWriter, r *http.Request, strate
 
 	tmpPath := tomlPath + ".tmp"
 	if err := os.WriteFile(tmpPath, tomlBytes, 0o644); err != nil {
-		jsonError(w, "failed to write config: "+err.Error(), http.StatusInternalServerError)
+		jsonError(w, http.StatusInternalServerError, "failed to write config: "+err.Error())
 		return
 	}
 
 	if _, err := strategy.LoadSpecFile(tmpPath); err != nil {
 		_ = os.Remove(tmpPath)
-		jsonError(w, "validation failed — config not saved: "+err.Error(), http.StatusUnprocessableEntity)
+		jsonError(w, http.StatusUnprocessableEntity, "validation failed — config not saved: "+err.Error())
 		return
 	}
 
 	if err := os.Rename(tmpPath, tomlPath); err != nil {
 		_ = os.Remove(tmpPath)
-		jsonError(w, "failed to save config: "+err.Error(), http.StatusInternalServerError)
+		jsonError(w, http.StatusInternalServerError, "failed to save config: "+err.Error())
 		return
 	}
 

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/httputil"
 	"github.com/rs/zerolog"
 	"golang.org/x/time/rate"
 )
@@ -41,15 +42,10 @@ var symbolMap = map[string]string{
 	"SOL/USD": "SOLUSDT",
 }
 
-// HTTPDoer is the minimal interface the client needs from net/http.
-type HTTPDoer interface {
-	Do(req *http.Request) (*http.Response, error)
-}
-
 // Client is the Bybit REST adapter for public market data endpoints.
 type Client struct {
 	baseURL string
-	http    HTTPDoer
+	http    httputil.HTTPDoer
 	limiter *rate.Limiter
 	log     zerolog.Logger
 }
@@ -68,7 +64,7 @@ func NewClient(baseURL string, log zerolog.Logger) *Client {
 }
 
 // NewClientWithHTTP creates a client using the provided HTTPDoer (useful for testing).
-func NewClientWithHTTP(baseURL string, doer HTTPDoer, log zerolog.Logger) *Client {
+func NewClientWithHTTP(baseURL string, doer httputil.HTTPDoer, log zerolog.Logger) *Client {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}

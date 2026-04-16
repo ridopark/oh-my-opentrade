@@ -43,7 +43,7 @@ func (h *StrategyPerfHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) < 2 || parts[0] != "api" || parts[1] != "strategies" {
-		h.jsonError(w, http.StatusNotFound, "not found")
+		jsonError(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -55,7 +55,7 @@ func (h *StrategyPerfHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	strategyID := parts[2]
 
 	if len(parts) == 3 {
-		h.jsonError(w, http.StatusNotFound, "not found")
+		jsonError(w, http.StatusNotFound, "not found")
 		return
 	}
 	endpoint := parts[3]
@@ -72,7 +72,7 @@ func (h *StrategyPerfHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			h.serveStateSymbol(w, strategyID, parts[4])
 			return
 		}
-		h.jsonError(w, http.StatusNotFound, "not found")
+		jsonError(w, http.StatusNotFound, "not found")
 		return
 	case "signals":
 		h.serveSignals(w, r, strategyID)
@@ -81,7 +81,7 @@ func (h *StrategyPerfHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		h.serveLiveness(w, strategyID)
 		return
 	default:
-		h.jsonError(w, http.StatusNotFound, "not found")
+		jsonError(w, http.StatusNotFound, "not found")
 		return
 	}
 }
@@ -131,12 +131,12 @@ func (h *StrategyPerfHandler) serveState(w http.ResponseWriter, strategyID strin
 
 func (h *StrategyPerfHandler) serveStateSymbol(w http.ResponseWriter, strategyID, symbol string) {
 	if h.runner == nil {
-		h.jsonError(w, http.StatusNotFound, "not found")
+		jsonError(w, http.StatusNotFound, "not found")
 		return
 	}
 	snap, ok := h.runner.StrategySnapshot(strategyID, symbol)
 	if !ok {
-		h.jsonError(w, http.StatusNotFound, "not found")
+		jsonError(w, http.StatusNotFound, "not found")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -256,10 +256,3 @@ func feedTypeForSymbol(symbol string) string {
 	return "equity"
 }
 
-func (h *StrategyPerfHandler) jsonError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
-		h.log.Error().Err(err).Msg("failed to encode error response")
-	}
-}
