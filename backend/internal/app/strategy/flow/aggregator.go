@@ -133,48 +133,66 @@ func (a *Aggregator) Score(symbol string) FlowScore {
 		return fs
 	}
 
-	// Flatten all trades for this symbol across venues for window calculations.
-	var all []VenueTrade
-	for _, vt := range venueMap {
-		all = append(all, vt...)
+	// Single pass per venue: accumulate global totals and per-venue 60s sums
+	// together, eliminating the flatten allocation and avoiding a second
+	// full scan. VenueAgreement is resolved in a cheap O(venues) pass over
+	// the per-venue sums collected here.
+	cutoff10 := now.Add(-a.cfg.Window10s)
+	cutoff60 := now.Add(-a.cfg.Window60s)
+	var lpBuy, lpSell float64
+
+	type venueSums struct{ buy, sell float64 }
+	perVenue := make([]venueSums, 0, len(venueMap))
+
+	fs.TotalVenues = len(venueMap)
+	for _, trades := range venueMap {
+		var vs venueSums
+		for _, t := range trades {
+			if t.Timestamp.Before(cutoff60) {
+				continue
+			}
+			usd := t.Price * t.Size
+			switch t.TakerSide {
+			case "buy":
+				fs.BuyVol60s += usd
+				vs.buy += usd
+			case "sell":
+				fs.SellVol60s += usd
+				vs.sell += usd
+			}
+			if usd >= a.cfg.LargePrintUSD {
+				fs.LargePrintCount++
+				switch t.TakerSide {
+				case "buy":
+					lpBuy += usd
+				case "sell":
+					lpSell += usd
+				}
+			}
+			if !t.Timestamp.Before(cutoff10) {
+				switch t.TakerSide {
+				case "buy":
+					fs.BuyVol10s += usd
+				case "sell":
+					fs.SellVol10s += usd
+				}
+			}
+		}
+		perVenue = append(perVenue, vs)
 	}
 
-	fs.BuyVol10s, fs.SellVol10s = netVolume(all, a.cfg.Window10s, now)
 	fs.NetFlow10s = safeNetFlow(fs.BuyVol10s, fs.SellVol10s)
-
-	fs.BuyVol60s, fs.SellVol60s = netVolume(all, a.cfg.Window60s, now)
 	fs.NetFlow60s = safeNetFlow(fs.BuyVol60s, fs.SellVol60s)
+	fs.LargePrintNetFlow = safeNetFlow(lpBuy, lpSell)
 
-	// Cross-venue confluence: count venues with same net direction as overall 60s flow.
+	// Cross-venue confluence: O(venues) pass over pre-computed sums.
 	overallDir := direction(fs.NetFlow60s)
-	fs.TotalVenues = len(venueMap)
-	for _, vt := range venueMap {
-		buy, sell := netVolume(vt, a.cfg.Window60s, now)
-		vDir := direction(safeNetFlow(buy, sell))
+	for _, vs := range perVenue {
+		vDir := direction(safeNetFlow(vs.buy, vs.sell))
 		if vDir != 0 && vDir == overallDir {
 			fs.VenueAgreement++
 		}
 	}
-
-	// Large print stats in the 60s window.
-	cutoff := now.Add(-a.cfg.Window60s)
-	var lpBuy, lpSell float64
-	for _, t := range all {
-		if t.Timestamp.Before(cutoff) {
-			continue
-		}
-		usd := t.Price * t.Size
-		if usd >= a.cfg.LargePrintUSD {
-			fs.LargePrintCount++
-			switch t.TakerSide {
-			case "buy":
-				lpBuy += usd
-			case "sell":
-				lpSell += usd
-			}
-		}
-	}
-	fs.LargePrintNetFlow = safeNetFlow(lpBuy, lpSell)
 
 	return fs
 }
@@ -209,24 +227,6 @@ func (a *Aggregator) Evict() {
 			delete(a.trades, sym)
 		}
 	}
-}
-
-// netVolume sums buy and sell volumes (in USD) for trades within the given window.
-func netVolume(trades []VenueTrade, window time.Duration, now time.Time) (buy, sell float64) {
-	cutoff := now.Add(-window)
-	for _, t := range trades {
-		if t.Timestamp.Before(cutoff) {
-			continue
-		}
-		usd := t.Price * t.Size
-		switch t.TakerSide {
-		case "buy":
-			buy += usd
-		case "sell":
-			sell += usd
-		}
-	}
-	return
 }
 
 // safeNetFlow computes (buy - sell) / (buy + sell), returning 0 when total is 0.

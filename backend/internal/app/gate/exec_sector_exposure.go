@@ -20,14 +20,5 @@ func newSectorExposureGate(_ map[string]any, deps *ExecutionGateDeps) (Execution
 func (g *sectorExposureGate) Name() string { return "sector_exposure_guard" }
 
 func (g *sectorExposureGate) Check(ctx context.Context, gctx *ExecutionGateContext) *GateResult {
-	if gctx.Intent.Direction.IsExit() {
-		return nil // exits always bypass — they reduce concentration
-	}
-	if g.checker == nil {
-		return nil // nil guard = disabled
-	}
-	if err := g.checker.Check(ctx, gctx.Intent); err != nil {
-		return &GateResult{GateName: "sector_exposure_guard", Reason: err.Error()}
-	}
-	return nil
+	return checkerGate(ctx, "sector_exposure_guard", g.checker, gctx.Intent)
 }

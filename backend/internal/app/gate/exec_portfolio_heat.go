@@ -21,14 +21,5 @@ func newPortfolioHeatGate(_ map[string]any, deps *ExecutionGateDeps) (ExecutionG
 func (g *portfolioHeatGate) Name() string { return "portfolio_heat_guard" }
 
 func (g *portfolioHeatGate) Check(ctx context.Context, gctx *ExecutionGateContext) *GateResult {
-	if gctx.Intent.Direction.IsExit() {
-		return nil // exits always bypass — they reduce heat
-	}
-	if g.checker == nil {
-		return nil // nil guard = disabled
-	}
-	if err := g.checker.Check(ctx, gctx.Intent); err != nil {
-		return &GateResult{GateName: "portfolio_heat_guard", Reason: err.Error()}
-	}
-	return nil
+	return checkerGate(ctx, "portfolio_heat_guard", g.checker, gctx.Intent)
 }

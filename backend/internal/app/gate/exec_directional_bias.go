@@ -21,14 +21,5 @@ func newDirectionalBiasGate(_ map[string]any, deps *ExecutionGateDeps) (Executio
 func (g *directionalBiasGate) Name() string { return "directional_bias_guard" }
 
 func (g *directionalBiasGate) Check(ctx context.Context, gctx *ExecutionGateContext) *GateResult {
-	if gctx.Intent.Direction.IsExit() {
-		return nil // exits always bypass — they reduce bias
-	}
-	if g.checker == nil {
-		return nil // nil guard = disabled
-	}
-	if err := g.checker.Check(ctx, gctx.Intent); err != nil {
-		return &GateResult{GateName: "directional_bias_guard", Reason: err.Error()}
-	}
-	return nil
+	return checkerGate(ctx, "directional_bias_guard", g.checker, gctx.Intent)
 }

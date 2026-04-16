@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
+	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
 	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	"github.com/oh-my-opentrade/backend/internal/config"
@@ -282,7 +283,7 @@ func BuildEarningsBlackout(modes map[string]string, port ports.EarningsCalendarP
 	if !active {
 		return nil, nil
 	}
-	return earningsCheckerAdapter{port: port}, resolved
+	return gate.EarningsCalendarAdapter{Port: port}, resolved
 }
 
 // BuildMacroEventGate wraps a MacroCalendarPort as a gate-facing
@@ -292,7 +293,7 @@ func BuildMacroEventGate(port ports.MacroCalendarPort) gateMacroChecker {
 	if port == nil {
 		return nil
 	}
-	return macroCheckerAdapter{port: port}
+	return gate.MacroCalendarAdapter{Port: port}
 }
 
 // The gate* interface aliases below keep bootstrap decoupled from the
@@ -305,22 +306,6 @@ type gateEarningsChecker interface {
 
 type gateMacroChecker interface {
 	EventsInWindow(ctx context.Context, around time.Time, windowMinutes int) ([]ports.MacroEvent, error)
-}
-
-type earningsCheckerAdapter struct {
-	port ports.EarningsCalendarPort
-}
-
-func (a earningsCheckerAdapter) NextEarnings(ctx context.Context, symbol string) (*ports.EarningsEntry, error) {
-	return a.port.GetNextEarnings(ctx, symbol)
-}
-
-type macroCheckerAdapter struct {
-	port ports.MacroCalendarPort
-}
-
-func (a macroCheckerAdapter) EventsInWindow(ctx context.Context, around time.Time, windowMinutes int) ([]ports.MacroEvent, error) {
-	return a.port.EventsInWindow(ctx, around, windowMinutes)
 }
 
 // WarnMissingSymbolMetadata emits a WARN log for every active symbol absent
