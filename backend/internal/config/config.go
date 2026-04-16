@@ -15,6 +15,8 @@ import (
 type Config struct {
 	Alpaca       AlpacaConfig       `yaml:"alpaca"`
 	IBKR         IBKRConfig         `yaml:"ibkr"`
+	Hyperliquid  HyperliquidConfig  `yaml:"hyperliquid"`
+	Bybit        BybitConfig        `yaml:"bybit"`
 	StreamingSource string          `yaml:"-"` // "alpaca" or "ibkr"; defaults to "alpaca"
 	Database     DatabaseConfig     `yaml:"database"`
 	Trading      TradingConfig      `yaml:"trading"`
@@ -25,6 +27,8 @@ type Config struct {
 	Notification NotificationConfig `yaml:"notification"`
 	Backtest     BacktestConfig     `yaml:"backtest"`
 	Options      OptionsConfig      `yaml:"options"`
+	Deribit      DeribitConfig      `yaml:"deribit"`
+	OnChain      OnChainConfig      `yaml:"onchain"`
 	OptionsV2    bool               `yaml:"-"`
 	MultiAccount bool               `yaml:"-"`
 	// OrderJournalEnabled toggles the Sprint 2 write-ahead order-intent
@@ -32,6 +36,17 @@ type Config struct {
 	// behavior — cancel-all on startup, no intent persistence) so production
 	// deploys can ship the code and flip the flag independently.
 	OrderJournalEnabled bool `yaml:"-"`
+}
+
+// HyperliquidConfig holds connection and authentication parameters for the
+// Hyperliquid perpetual exchange adapter. Disabled by default — PrivateKey
+// must be set to activate trading, and Network defaults to "testnet" when
+// empty so accidental mainnet orders are impossible without explicit opt-in.
+type HyperliquidConfig struct {
+	Network      string `yaml:"network"`       // "mainnet" or "testnet"; defaults to "testnet"
+	PrivateKey   string `yaml:"private_key"`    // hex-encoded Ethereum private key (without 0x prefix)
+	Address      string `yaml:"address"`        // 0x... address; derived from private key if empty
+	VaultAddress string `yaml:"vault_address"`  // optional vault for sub-account trading
 }
 
 // IBKRConfig holds connection parameters for the IB Gateway adapter.
@@ -198,6 +213,34 @@ type ThetaDataConfig struct {
 	RateLimitPerSec int    `yaml:"rate_limit_per_sec"`
 }
 
+// OnChainConfig holds parameters for the read-only on-chain whale/custodian
+// flow adapter powered by Dune Analytics. Disabled by default: Enabled must
+// be set to true and DuneAPIKey must be non-empty to activate.
+type OnChainConfig struct {
+	DuneAPIKey  string         `yaml:"dune_api_key"`
+	DuneBaseURL string         `yaml:"dune_base_url"` // default https://api.dune.com/api/v1/
+	QueryIDs    map[string]int `yaml:"query_ids"`     // asset -> Dune query ID
+	CacheTTL    string         `yaml:"cache_ttl"`     // default "5m"
+	Enabled     bool           `yaml:"enabled"`       // default false
+}
+
+// BybitConfig holds parameters for the read-only Bybit funding rate adapter.
+// Disabled by default: Enabled must be set to true to activate the adapter.
+// No authentication is needed (public endpoints only).
+type BybitConfig struct {
+	BaseURL string `yaml:"base_url"` // default https://api.bybit.com
+	Enabled bool   `yaml:"enabled"`  // default false
+}
+
+// DeribitConfig holds parameters for the read-only Deribit options IV surface
+// adapter. Disabled by default: an empty Assets list means no polling occurs.
+// No authentication is needed (public endpoints only).
+type DeribitConfig struct {
+	BaseURL      string   `yaml:"base_url"`      // default https://www.deribit.com/api/v2/
+	PollInterval string   `yaml:"poll_interval"` // default "5m"
+	Assets       []string `yaml:"assets"`        // default ["BTC", "ETH"]
+}
+
 type OptionsRiskConfig struct {
 	MinOpenInterest int     `yaml:"min_open_interest"`
 	MaxSpreadPct    float64 `yaml:"max_spread_pct"`
@@ -297,6 +340,8 @@ type rawTradingConfig struct {
 type rawConfig struct {
 	Alpaca       AlpacaConfig       `yaml:"alpaca"`
 	IBKR         IBKRConfig         `yaml:"ibkr"`
+	Hyperliquid  HyperliquidConfig  `yaml:"hyperliquid"`
+	Bybit        BybitConfig        `yaml:"bybit"`
 	Database     DatabaseConfig     `yaml:"database"`
 	Trading      rawTradingConfig   `yaml:"trading"`
 	Symbols      SymbolsConfig      `yaml:"symbols"`
@@ -306,6 +351,8 @@ type rawConfig struct {
 	Notification NotificationConfig `yaml:"notification"`
 	Backtest     BacktestConfig     `yaml:"backtest"`
 	Options      OptionsConfig      `yaml:"options"`
+	Deribit      DeribitConfig      `yaml:"deribit"`
+	OnChain      OnChainConfig      `yaml:"onchain"`
 }
 
 const (
@@ -421,9 +468,11 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Alpaca:   raw.Alpaca,
-		IBKR:     raw.IBKR,
-		Database: raw.Database,
+		Alpaca:      raw.Alpaca,
+		IBKR:        raw.IBKR,
+		Hyperliquid: applyHyperliquidDefaults(raw.Hyperliquid),
+		Bybit:       applyBybitDefaults(raw.Bybit),
+		Database:    raw.Database,
 		Trading: TradingConfig{
 			MaxRiskPercent:         raw.Trading.MaxRiskPercent,
 			DefaultSlippageBPS:     raw.Trading.DefaultSlippageBPS,
@@ -453,6 +502,8 @@ func Load(envPath, yamlPath string) (*Config, error) {
 		Notification: raw.Notification,
 		Backtest:     applyBacktestDefaults(raw.Backtest),
 		Options:      applyOptionsDefaults(raw.Options),
+		Deribit:      applyDeribitDefaults(raw.Deribit),
+		OnChain:      applyOnChainDefaults(raw.OnChain),
 	}
 
 	// 3. Overlay environment variables
@@ -551,6 +602,25 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	if val := os.Getenv("KAKAO_REDIRECT_URI"); val != "" {
 		cfg.Notification.KakaoRedirectURI = val
 	}
+	// Hyperliquid env overlays
+	if val := os.Getenv("HYPERLIQUID_PRIVATE_KEY"); val != "" {
+		cfg.Hyperliquid.PrivateKey = val
+	}
+	if val := os.Getenv("HYPERLIQUID_ADDRESS"); val != "" {
+		cfg.Hyperliquid.Address = val
+	}
+	if val := os.Getenv("HYPERLIQUID_NETWORK"); val != "" {
+		cfg.Hyperliquid.Network = val
+	}
+	if val := os.Getenv("HYPERLIQUID_VAULT_ADDRESS"); val != "" {
+		cfg.Hyperliquid.VaultAddress = val
+	}
+
+	// On-chain / Dune env overlays
+	if val := os.Getenv("DUNE_API_KEY"); val != "" {
+		cfg.OnChain.DuneAPIKey = val
+	}
+
 	if val := os.Getenv("AI_SCREENER_ENABLED"); val != "" {
 		cfg.AIScreener.Enabled = val == "true"
 	}
@@ -639,6 +709,23 @@ func applyOptionsDefaults(c OptionsConfig) OptionsConfig {
 	return c
 }
 
+// applyDeribitDefaults fills in sensible defaults for the Deribit IV surface
+// adapter. The adapter is effectively disabled when Assets is empty — the
+// default populates BTC and ETH so the skew-regime classifier has data
+// immediately on first enable.
+func applyDeribitDefaults(c DeribitConfig) DeribitConfig {
+	if c.BaseURL == "" {
+		c.BaseURL = "https://www.deribit.com/api/v2/"
+	}
+	if c.PollInterval == "" {
+		c.PollInterval = "5m"
+	}
+	if len(c.Assets) == 0 {
+		c.Assets = []string{"BTC", "ETH"}
+	}
+	return c
+}
+
 func applyAIScreenerDefaults(c AIScreenerConfig) AIScreenerConfig {
 	if len(c.Models) == 0 {
 		c.Models = []string{
@@ -670,6 +757,37 @@ func applyAIScreenerDefaults(c AIScreenerConfig) AIScreenerConfig {
 	}
 	if c.TopNPerStrategy == 0 {
 		c.TopNPerStrategy = 10
+	}
+	return c
+}
+
+// applyOnChainDefaults fills in the on-chain flow adapter defaults. The
+// adapter is disabled by default; operators must set enabled: true and
+// provide a Dune API key in YAML to activate.
+func applyOnChainDefaults(c OnChainConfig) OnChainConfig {
+	if c.DuneBaseURL == "" {
+		c.DuneBaseURL = "https://api.dune.com/api/v1/"
+	}
+	if c.CacheTTL == "" {
+		c.CacheTTL = "5m"
+	}
+	return c
+}
+
+// applyBybitDefaults fills in the Bybit adapter defaults. The adapter is
+// disabled by default; operators must set enabled: true in YAML to activate.
+func applyBybitDefaults(c BybitConfig) BybitConfig {
+	if c.BaseURL == "" {
+		c.BaseURL = "https://api.bybit.com"
+	}
+	return c
+}
+
+// applyHyperliquidDefaults fills in safe defaults for HyperliquidConfig.
+// Network defaults to "testnet" so accidental mainnet orders are impossible.
+func applyHyperliquidDefaults(c HyperliquidConfig) HyperliquidConfig {
+	if c.Network == "" {
+		c.Network = "testnet"
 	}
 	return c
 }
