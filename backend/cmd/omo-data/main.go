@@ -14,10 +14,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
+	"github.com/oh-my-opentrade/backend/internal/adapters/deribit"
 	"github.com/oh-my-opentrade/backend/internal/adapters/dolthub"
 	"github.com/oh-my-opentrade/backend/internal/adapters/finnhub"
 	"github.com/oh-my-opentrade/backend/internal/adapters/fredfinnhub"
+	"github.com/oh-my-opentrade/backend/internal/adapters/hyperliquid"
 	"github.com/oh-my-opentrade/backend/internal/adapters/notification"
+	"github.com/oh-my-opentrade/backend/internal/adapters/onchain"
 	"github.com/oh-my-opentrade/backend/internal/adapters/openfigi"
 	"github.com/oh-my-opentrade/backend/internal/adapters/sec"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
@@ -25,6 +28,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/datarefresh"
 	"github.com/oh-my-opentrade/backend/internal/app/earnings"
 	"github.com/oh-my-opentrade/backend/internal/app/gapdetect"
+	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/ivcollector"
 	"github.com/oh-my-opentrade/backend/internal/app/optionsimport"
 	"github.com/oh-my-opentrade/backend/internal/app/whale13f"
@@ -278,6 +282,18 @@ func main() {
 			log.Warn().Err(err).Msg("macro events refresh failed")
 		}
 		dolthubSvc.RunOnce(ctx)
+		// Crypto funding rate -- single poll pass via adapter + repo directly.
+		if err := collectFundingOnce(ctx, cfg.Hyperliquid, sqlDB, log); err != nil {
+			log.Warn().Err(err).Msg("funding rate run-once collection failed")
+		}
+		// Crypto IV surface -- single collection pass.
+		if deribitClient := initDeribitClient(cfg.Deribit, log); deribitClient != nil {
+			defer deribitClient.Close()
+			log.Info().Msg("run-once: collecting Deribit crypto IV surfaces")
+			collectIVSurfaces(ctx, deribitClient, sqlDB, log)
+		}
+		// On-chain whale flow -- single collection pass.
+		collectWhaleFlowOnce(ctx, cfg.OnChain, log)
 		log.Info().Msg("run-once complete")
 		return
 	}
@@ -377,6 +393,40 @@ func main() {
 		n := gapSvc.RunOnce(ctx, gapSymbols)
 		log.Info().Int("gap_ranges", n).Int("symbols", len(gapSymbols)).Msg("gap detector startup scan complete")
 	}()
+
+	// Crypto funding rate live collector (Hyperliquid).
+	// Polls latest funding rates every hour (HL uses 1h intervals).
+	// Gated by Hyperliquid client init -- no-op if not configured.
+	if fundingSvc, cryptoSymbols := initFundingLive(cfg.Hyperliquid, sqlDB, log); fundingSvc != nil {
+		go func() {
+			log.Info().Strs("symbols", symbolsToStrings(cryptoSymbols)).
+				Msg("starting Hyperliquid funding rate live collector")
+			if err := fundingSvc.Run(ctx, domain.VenueHyperliquid, cryptoSymbols, 1*time.Hour); err != nil {
+				if ctx.Err() == nil {
+					log.Warn().Err(err).Msg("funding rate live collector exited with error")
+				}
+			}
+		}()
+	}
+
+	// Crypto IV surface collector (Deribit -- read-only, no auth).
+	// Polls BTC/ETH IV surface every 5 minutes.
+	if deribitClient := initDeribitClient(cfg.Deribit, log); deribitClient != nil {
+		go func() {
+			defer deribitClient.Close()
+			log.Info().Msg("starting Deribit crypto IV surface collector (every 5m)")
+			runCryptoIVCollector(ctx, deribitClient, sqlDB, log.With().Str("component", "crypto_iv").Logger())
+		}()
+	}
+
+	// On-chain whale flow collector (Dune Analytics).
+	// Polls net exchange flows every hour. Gated by DUNE_API_KEY env.
+	if cfg.OnChain.Enabled && cfg.OnChain.DuneAPIKey != "" {
+		go func() {
+			log.Info().Msg("starting on-chain whale flow collector (every 1h)")
+			runWhaleFlowCollector(ctx, cfg.OnChain, log.With().Str("component", "whale_flow").Logger())
+		}()
+	}
 
 	log.Info().Int("symbols", len(symbols)).Msg("omo-data running")
 	<-ctx.Done()
@@ -507,6 +557,120 @@ func refreshUniverseHistory(
 	return nil
 }
 
+// collectIVSurfaces fetches and inserts IV surfaces for BTC/ETH. Shared by
+// both the polling loop and the run-once path to avoid SQL duplication.
+func collectIVSurfaces(ctx context.Context, ivPort ports.OptionsIVPort, sqlDB *sql.DB, log zerolog.Logger) {
+	for _, asset := range []string{"BTC", "ETH"} {
+		surface, err := ivPort.Surface(ctx, asset)
+		if err != nil {
+			log.Warn().Err(err).Str("asset", asset).Msg("crypto IV collection failed")
+			continue
+		}
+		_, err = sqlDB.ExecContext(ctx,
+			`INSERT INTO crypto_iv_surface (asset, timestamp, atm_iv_7d, atm_iv_30d, rr_25d_7d, rr_25d_30d, bf_25d_7d, bf_25d_30d, term_slope, put_skew_7d)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			 ON CONFLICT (asset, timestamp) DO NOTHING`,
+			asset, surface.Timestamp, surface.ATMIV7d, surface.ATMIV30d,
+			surface.RR25d7d, surface.RR25d30d, surface.BF25d7d, surface.BF25d30d,
+			surface.TermSlope, surface.PutSkew7d)
+		if err != nil {
+			log.Warn().Err(err).Str("asset", asset).Msg("crypto IV insert failed")
+			continue
+		}
+		log.Info().Str("asset", asset).Float64("atm_iv_30d", surface.ATMIV30d).
+			Float64("term_slope", surface.TermSlope).Msg("crypto IV surface collected")
+	}
+}
+
+// runCryptoIVCollector polls the Deribit IV surface every 5 minutes.
+// Blocks until ctx is canceled.
+func runCryptoIVCollector(ctx context.Context, ivPort ports.OptionsIVPort, sqlDB *sql.DB, log zerolog.Logger) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	collectIVSurfaces(ctx, ivPort, sqlDB, log)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			collectIVSurfaces(ctx, ivPort, sqlDB, log)
+		}
+	}
+}
+
+// initDeribitClient builds a Deribit read-only client from config. Returns nil
+// if initialization fails (caller should skip IV collection).
+func initDeribitClient(cfg config.DeribitConfig, log zerolog.Logger) *deribit.Client {
+	pollInterval := 5 * time.Minute
+	if cfg.PollInterval != "" {
+		if d, err := time.ParseDuration(cfg.PollInterval); err == nil {
+			pollInterval = d
+		}
+	}
+	c, err := deribit.NewClient(deribit.Config{
+		BaseURL:      cfg.BaseURL,
+		PollInterval: pollInterval,
+		Assets:       cfg.Assets,
+	}, log)
+	if err != nil {
+		log.Warn().Err(err).Msg("Deribit client init failed -- crypto IV collection disabled")
+		return nil
+	}
+	return c
+}
+
+// initFundingLive builds the Hyperliquid funding live collector components.
+// Returns nil service if the HL client cannot be created.
+func initFundingLive(cfg config.HyperliquidConfig, sqlDB *sql.DB, log zerolog.Logger) (*ingestion.FundingLive, []domain.Symbol) {
+	// Override to mainnet for public data reads -- testnet has sparse funding data.
+	hlCfg := cfg
+	if hlCfg.Network == "" {
+		hlCfg.Network = "mainnet"
+	}
+	hlClient, err := hyperliquid.NewClient(hlCfg, log.With().Str("component", "hyperliquid").Logger())
+	if err != nil {
+		log.Warn().Err(err).Msg("Hyperliquid client init failed -- funding rate collection disabled")
+		return nil, nil
+	}
+	rest := hyperliquid.NewRESTClient(hlClient)
+	fundingAdapter := hyperliquid.NewPublicFundingAdapter(rest, log.With().Str("component", "hl_funding").Logger())
+
+	fundingRepo := timescaledb.NewFundingRepo(
+		timescaledb.NewSqlDB(sqlDB),
+		log.With().Str("component", "funding_repo").Logger(),
+	)
+
+	cryptoSymbols := []domain.Symbol{"BTC/USD", "ETH/USD", "SOL/USD"}
+	svc := ingestion.NewFundingLive(fundingAdapter, fundingRepo, log.With().Str("component", "funding_live").Logger())
+	return svc, cryptoSymbols
+}
+
+// collectFundingOnce does a single Latest() poll for each crypto symbol and
+// inserts the result. Reuses initFundingLive for client/repo setup.
+func collectFundingOnce(ctx context.Context, hlCfg config.HyperliquidConfig, sqlDB *sql.DB, log zerolog.Logger) error {
+	svc, cryptoSymbols := initFundingLive(hlCfg, sqlDB, log)
+	if svc == nil {
+		return nil
+	}
+	log.Info().Strs("symbols", symbolsToStrings(cryptoSymbols)).Msg("run-once: collecting Hyperliquid funding rates")
+	// Run with a very short poll interval — FundingLive.Run polls once
+	// immediately then blocks. Use a context that cancels after the first poll.
+	oneShot, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	_ = svc.Run(oneShot, domain.VenueHyperliquid, cryptoSymbols, 24*time.Hour)
+	return nil
+}
+
+// symbolsToStrings converts domain.Symbol slice to string slice for logging.
+func symbolsToStrings(syms []domain.Symbol) []string {
+	out := make([]string, len(syms))
+	for i, s := range syms {
+		out[i] = string(s)
+	}
+	return out
+}
+
 func initDB(cfg *config.Config, log zerolog.Logger) *sql.DB {
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
 		cfg.Database.Host, cfg.Database.Port, cfg.Database.User, cfg.Database.Password, cfg.Database.DBName)
@@ -534,4 +698,72 @@ func initDB(cfg *config.Config, log zerolog.Logger) *sql.DB {
 	}
 	log.Fatal().Msg("failed to connect to TimescaleDB after retries")
 	return nil
+}
+
+// runWhaleFlowCollector polls on-chain whale flow data every hour.
+// Blocks until ctx is canceled.
+func runWhaleFlowCollector(ctx context.Context, cfg config.OnChainConfig, log zerolog.Logger) {
+	tracker, err := onchain.NewFlowTracker(toOnChainCfg(cfg), log)
+	if err != nil {
+		log.Warn().Err(err).Msg("on-chain flow tracker init failed")
+		return
+	}
+
+	assets := []string{"BTC", "ETH", "SOL"}
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	collect := func() {
+		for _, asset := range assets {
+			result, ferr := tracker.NetFlow(ctx, asset, 24)
+			if ferr != nil {
+				log.Warn().Err(ferr).Str("asset", asset).Msg("whale flow fetch failed")
+				continue
+			}
+			log.Info().Str("asset", asset).
+				Float64("net_flow_usd", result.NetFlowUSD).
+				Int("large_count", result.LargeCount).
+				Msg("whale flow collected")
+		}
+	}
+
+	collect()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			collect()
+		}
+	}
+}
+
+func toOnChainCfg(c config.OnChainConfig) onchain.OnChainConfig {
+	return onchain.OnChainConfig{
+		DuneAPIKey:  c.DuneAPIKey,
+		DuneBaseURL: c.DuneBaseURL,
+		QueryIDs:    c.QueryIDs,
+		CacheTTL:    c.CacheTTL,
+		Enabled:     c.Enabled,
+	}
+}
+
+// collectWhaleFlowOnce runs a single whale flow collection (run-once mode).
+func collectWhaleFlowOnce(ctx context.Context, cfg config.OnChainConfig, log zerolog.Logger) {
+	if !cfg.Enabled || cfg.DuneAPIKey == "" {
+		return
+	}
+	tracker, err := onchain.NewFlowTracker(toOnChainCfg(cfg), log)
+	if err != nil {
+		log.Warn().Err(err).Msg("on-chain flow tracker init failed")
+		return
+	}
+	for _, asset := range []string{"BTC", "ETH", "SOL"} {
+		result, ferr := tracker.NetFlow(ctx, asset, 24)
+		if ferr != nil {
+			log.Warn().Err(ferr).Str("asset", asset).Msg("whale flow fetch failed")
+			continue
+		}
+		log.Info().Str("asset", asset).Float64("net_flow_usd", result.NetFlowUSD).Msg("whale flow collected")
+	}
 }

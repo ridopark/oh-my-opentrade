@@ -55,11 +55,25 @@ type simOrder struct {
 
 // position tracks aggregated position state for a symbol.
 type position struct {
-	symbol   domain.Symbol
-	side     string // "buy" or "sell"
-	quantity float64
-	avgCost  float64
-	strategy string // attribution for per-strategy portfolio caps
+	symbol     domain.Symbol
+	venue      domain.Venue      // execution venue; empty for equities (backward compat)
+	side       string            // "buy" or "sell"
+	quantity   float64
+	avgCost    float64
+	strategy   string            // attribution for per-strategy portfolio caps
+	assetClass domain.AssetClass // populated from OrderIntent.AssetClass on fill
+}
+
+// positionKey generates the map key for position tracking.
+// When venue is specified, positions are tracked per-venue so the same symbol
+// can have independent positions on different exchanges (e.g., long BTC/USD on
+// Coinbase + short BTC/USD on Hyperliquid). When venue is unspecified (empty),
+// the key is symbol-only for backward compatibility with equity strategies.
+func positionKey(symbol domain.Symbol, venue domain.Venue) string {
+	if venue.IsUnspecified() {
+		return string(symbol)
+	}
+	return string(venue) + ":" + string(symbol)
 }
 
 // Broker is a simulated broker for backtesting that implements ports.BrokerPort
@@ -98,6 +112,10 @@ type Broker struct {
 	positions map[string]*position
 	cash      float64
 	orderSeq  atomic.Int64
+
+	// Funding accrual tracking for perpetual positions.
+	totalFundingPaid     float64
+	totalFundingReceived float64
 
 	fillCh chan ports.OrderUpdate
 }
@@ -211,7 +229,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 	lastPrice, ok := b.prices[priceSymbol]
 	if (!ok || lastPrice <= 0) && !isOption {
 		if intent.Direction.IsExit() {
-			if pos, posOk := b.positions[string(intent.Symbol)]; posOk && pos.avgCost > 0 {
+			if pos, posOk := b.positions[positionKey(intent.Symbol, intent.Venue)]; posOk && pos.avgCost > 0 {
 				lastPrice = pos.avgCost
 				ok = true
 			}
@@ -267,7 +285,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 		case domain.DirectionShort:
 			orderSide = "SELL"
 		default:
-			if pos, ok := b.positions[string(intent.Symbol)]; ok && pos.side == "sell" {
+			if pos, ok := b.positions[positionKey(intent.Symbol, intent.Venue)]; ok && pos.side == "sell" {
 				orderSide = "BUY"
 			} else {
 				orderSide = "SELL"
@@ -328,11 +346,13 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 	}
 	feeCtx := FeeContext{
 		Symbol:    string(intent.Symbol),
+		Venue:     intent.Venue,
 		IsOption:  isOption,
 		Side:      side,
 		Qty:       intent.Quantity,
 		Notional:  fillPrice * intent.Quantity * notionalMult,
 		FillPrice: fillPrice,
+		OrderType: intent.OrderType,
 	}
 	fees := b.feeSchedule.Compute(feeCtx)
 
@@ -351,10 +371,10 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 	}
 
 	// Update position tracking.
-	posKey := string(intent.Symbol)
+	posKey := positionKey(intent.Symbol, intent.Venue)
 	pos, exists := b.positions[posKey]
 	if !exists {
-		pos = &position{symbol: intent.Symbol}
+		pos = &position{symbol: intent.Symbol, venue: intent.Venue, assetClass: intent.AssetClass}
 		b.positions[posKey] = pos
 	}
 
@@ -475,6 +495,7 @@ func (b *Broker) GetPositions(_ context.Context, _ string, _ domain.EnvMode) ([]
 		}
 		trades = append(trades, domain.Trade{
 			Symbol:   pos.symbol,
+			Venue:    pos.venue,
 			Side:     pos.side,
 			Quantity: pos.quantity,
 			Price:    pos.avgCost,
@@ -503,11 +524,38 @@ func (b *Broker) GetOpenOrders(_ context.Context) ([]ports.OpenOrder, error) {
 func (b *Broker) GetPosition(_ context.Context, symbol domain.Symbol) (float64, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	pos, ok := b.positions[string(symbol)]
+	// Backward compatible: symbol-only lookup (empty venue).
+	pos, ok := b.positions[positionKey(symbol, domain.VenueUnspecified)]
 	if !ok || pos.quantity <= 0 {
 		return 0, nil
 	}
 	return pos.quantity, nil
+}
+
+// GetPositionsByVenue returns all open positions for a specific venue.
+func (b *Broker) GetPositionsByVenue(_ context.Context, venue domain.Venue) ([]domain.Trade, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	var trades []domain.Trade
+	for _, pos := range b.positions {
+		if pos.quantity <= 0 {
+			continue
+		}
+		if pos.venue != venue {
+			continue
+		}
+		trades = append(trades, domain.Trade{
+			Symbol:   pos.symbol,
+			Venue:    pos.venue,
+			Side:     pos.side,
+			Quantity: pos.quantity,
+			Price:    pos.avgCost,
+			Status:   "open",
+			Strategy: pos.strategy,
+		})
+	}
+	return trades, nil
 }
 
 func (b *Broker) ClosePosition(_ context.Context, _ domain.Symbol) (string, error) {
@@ -606,6 +654,103 @@ func (b *Broker) SubscribeOrderUpdates(_ context.Context) (<-chan ports.OrderUpd
 	return b.fillCh, nil
 }
 
+// AccrueFunding applies a funding payment to all open perp positions for symbol.
+// Called by the backtest replay loop at each funding interval (typically every 8h).
+// rate is the funding rate for the period (e.g. 0.0001 = 1 bps).
+// Positive rate: longs pay shorts. Negative rate: shorts pay longs.
+func (b *Broker) AccrueFunding(symbol domain.Symbol, rate float64, ts time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// Find all positions for this symbol across all venues. Funding applies
+	// to every venue holding a perp position for the symbol.
+	var posKeys []string
+	for k, p := range b.positions {
+		if p.symbol == symbol && p.quantity != 0 {
+			posKeys = append(posKeys, k)
+		}
+	}
+	if len(posKeys) == 0 {
+		return
+	}
+
+	for _, pk := range posKeys {
+		b.accrueFundingForPosition(pk, rate, ts)
+	}
+}
+
+// accrueFundingForPosition applies a funding payment to a single position.
+// Caller must hold b.mu.
+func (b *Broker) accrueFundingForPosition(posKey string, rate float64, ts time.Time) {
+	pos, ok := b.positions[posKey]
+	if !ok || pos.quantity == 0 {
+		return
+	}
+	if pos.assetClass != domain.AssetClassCryptoPerp {
+		return
+	}
+
+	markPrice, ok := b.prices[pos.symbol]
+	if !ok || markPrice <= 0 {
+		markPrice = pos.avgCost // fallback to entry cost
+	}
+
+	payment := pos.quantity * markPrice * rate
+
+	if pos.side == "buy" {
+		// Long pays when rate > 0, receives when rate < 0
+		b.cash -= payment
+		if payment > 0 {
+			b.totalFundingPaid += payment
+		} else {
+			b.totalFundingReceived += -payment
+		}
+	} else {
+		// Short receives when rate > 0, pays when rate < 0
+		b.cash += payment
+		if payment > 0 {
+			b.totalFundingReceived += payment
+		} else {
+			b.totalFundingPaid += -payment
+		}
+	}
+
+	b.log.Debug().
+		Str("symbol", string(pos.symbol)).
+		Float64("rate", rate).
+		Float64("mark_price", markPrice).
+		Float64("payment", payment).
+		Str("side", pos.side).
+		Time("ts", ts).
+		Msg("funding accrued")
+
+	// Emit funding event so the P&L tracker records it.
+	if !b.disableFillChan {
+		select {
+		case b.fillCh <- ports.OrderUpdate{
+			Event:    "funding",
+			Price:    payment,
+			FilledAt: ts,
+		}:
+		default:
+		}
+	}
+}
+
+// FundingPnL returns the net funding P&L (received - paid).
+func (b *Broker) FundingPnL() float64 {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.totalFundingReceived - b.totalFundingPaid
+}
+
+// FundingStats returns the total funding paid and received.
+func (b *Broker) FundingStats() (paid, received float64) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.totalFundingPaid, b.totalFundingReceived
+}
+
 // computeOptionExitPrice computes the BSM price for an options exit using the
 // current underlying price and the entry metadata (strike, DTE, IV, right).
 // Applies dynamic IV adjustments (VIX-beta, time-of-day, earnings ramp) and
@@ -620,7 +765,7 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 	rightStr := intent.Meta["option_right"]
 
 	if strikeStr == "" || expiryStr == "" {
-		if pos, ok := b.positions[string(intent.Symbol)]; ok && pos.avgCost > 0 {
+		if pos, ok := b.positions[positionKey(intent.Symbol, intent.Venue)]; ok && pos.avgCost > 0 {
 			return pos.avgCost
 		}
 		return 0
@@ -728,7 +873,7 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 		var entryPremium float64
 		_, _ = fmt.Sscanf(intent.Meta["premium"], "%f", &entryPremium)
 		if entryPremium <= 0 {
-			if pos, ok := b.positions[string(intent.Symbol)]; ok && pos.avgCost > 0 {
+			if pos, ok := b.positions[positionKey(intent.Symbol, intent.Venue)]; ok && pos.avgCost > 0 {
 				entryPremium = pos.avgCost
 			}
 		}
@@ -750,7 +895,7 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 	_, _ = fmt.Sscanf(intent.Meta["delta_at_entry"], "%f", &delta)
 
 	if entryPremium <= 0 {
-		if pos, ok := b.positions[string(intent.Symbol)]; ok && pos.avgCost > 0 {
+		if pos, ok := b.positions[positionKey(intent.Symbol, intent.Venue)]; ok && pos.avgCost > 0 {
 			entryPremium = pos.avgCost
 		}
 	}
@@ -850,6 +995,41 @@ func optionSpreadPct(premium float64) float64 {
 	default:
 		return 0.015
 	}
+}
+
+// SubmitGroup submits all intents as an atomic unit for backtesting paired
+// strategies. If any leg fails to fill, all legs are rejected. Order IDs are
+// returned in the same order as intents.
+func (b *Broker) SubmitGroup(ctx context.Context, intents []domain.OrderIntent) ([]string, error) {
+	if len(intents) == 0 {
+		return nil, fmt.Errorf("simbroker: empty group submission")
+	}
+
+	// Pre-check: all symbols must have a price available before we commit
+	// to filling any leg. This avoids partial-fill states.
+	b.mu.RLock()
+	for _, intent := range intents {
+		sym := intent.Symbol
+		if intent.Instrument != nil && intent.Instrument.UnderlyingSymbol != "" {
+			sym = intent.Instrument.UnderlyingSymbol
+		}
+		if _, ok := b.prices[sym]; !ok {
+			b.mu.RUnlock()
+			return nil, fmt.Errorf("simbroker: group rejected — no price for %s", sym)
+		}
+	}
+	b.mu.RUnlock()
+
+	// Submit each leg. If any fails, reject the whole group.
+	orderIDs := make([]string, 0, len(intents))
+	for i, intent := range intents {
+		oid, err := b.SubmitOrder(ctx, intent)
+		if err != nil {
+			return nil, fmt.Errorf("simbroker: group leg[%d] (%s) failed: %w", i, intent.Symbol, err)
+		}
+		orderIDs = append(orderIDs, oid)
+	}
+	return orderIDs, nil
 }
 
 // minutesSinceMarketOpen returns minutes elapsed since 9:30 ET on the bar's date.

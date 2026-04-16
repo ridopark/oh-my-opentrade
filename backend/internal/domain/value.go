@@ -156,6 +156,8 @@ func DefaultVenue(ac AssetClass) Venue {
 		return VenueAlpaca
 	case AssetClassCrypto:
 		return VenueCoinbase
+	case AssetClassCryptoPerp:
+		return VenueHyperliquid
 	default:
 		return VenueUnspecified
 	}
@@ -234,15 +236,16 @@ func NewRegimeType(r string) (RegimeType, error) {
 type AssetClass string
 
 const (
-	AssetClassEquity AssetClass = "EQUITY"
-	AssetClassCrypto AssetClass = "CRYPTO"
+	AssetClassEquity     AssetClass = "EQUITY"
+	AssetClassCrypto     AssetClass = "CRYPTO"
+	AssetClassCryptoPerp AssetClass = "CRYPTO_PERP"
 )
 
 func (a AssetClass) String() string { return string(a) }
 
 func NewAssetClass(a string) (AssetClass, error) {
 	switch AssetClass(a) {
-	case AssetClassEquity, AssetClassCrypto:
+	case AssetClassEquity, AssetClassCrypto, AssetClassCryptoPerp:
 		return AssetClass(a), nil
 	default:
 		return "", fmt.Errorf("invalid asset class: %q", a)
@@ -251,13 +254,13 @@ func NewAssetClass(a string) (AssetClass, error) {
 
 // Is24x7 returns true if the asset class trades 24/7 (Crypto), false for traditional market hours (Equity).
 func (a AssetClass) Is24x7() bool {
-	return a == AssetClassCrypto
+	return a == AssetClassCrypto || a == AssetClassCryptoPerp
 }
 
 // SupportsShort returns true if short selling is supported for this asset class.
 // IBKR ZEROHASH only supports long spot crypto — no short selling.
 func (a AssetClass) SupportsShort() bool {
-	return a != AssetClassCrypto
+	return a != AssetClassCrypto // crypto spot (ZEROHASH) has no short; perps do support short
 }
 
 // FmtPrice formats a price with appropriate decimal precision based on magnitude.
