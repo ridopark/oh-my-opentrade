@@ -75,6 +75,11 @@ type Broker struct {
 	optionExitSpreadMult    float64
 	optionEntrySpreadEnabled bool
 	historicalOptions   ports.HistoricalOptionsPort
+	// optionLiveData supplies real bid/ask snapshots for option exit
+	// pricing. Nil keeps the legacy tiered-spread BSM approximation in
+	// charge — bootstrap only wires this when the operator opts in via
+	// cfg.Options.UseLiveMarketData.
+	optionLiveData      ports.OptionMarketDataPort
 	log                 zerolog.Logger
 
 	fillModel    FillModel
@@ -100,6 +105,13 @@ type Broker struct {
 // SetHistoricalOptions injects historical options data for realistic exit pricing.
 func (b *Broker) SetHistoricalOptions(h ports.HistoricalOptionsPort) {
 	b.historicalOptions = h
+}
+
+// SetOptionLiveData wires a per-contract Quote/Greeks feed used by the
+// option-exit path. Nil disables the live lookup and keeps the existing
+// BSM + tiered-spread approximation in charge.
+func (b *Broker) SetOptionLiveData(p ports.OptionMarketDataPort) {
+	b.optionLiveData = p
 }
 
 // New creates a new SimBroker with the given configuration.
@@ -620,6 +632,20 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 	underlying := intent.Meta["underlying"]
 	if underlying == "" {
 		underlying = string(domain.UnderlyingFromOCC(intent.Symbol))
+	}
+
+	// Live per-contract bid (Theta Data) takes priority when wired.
+	// On any error we silently fall through to the historical/BSM
+	// branches below — keeps legacy backtests reproducible bit-for-bit.
+	if b.optionLiveData != nil {
+		right := "C"
+		if rightStr == "PUT" {
+			right = "P"
+		}
+		q, qErr := b.optionLiveData.Quote(context.Background(), underlying, expiry, strike, right)
+		if qErr == nil && q.Bid > 0 {
+			return q.Bid
+		}
 	}
 
 	// Multi-day holds: use historical bid from DoltHub (different daily snapshot).

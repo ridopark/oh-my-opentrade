@@ -24,6 +24,7 @@ type Config struct {
 	AIScreener   AIScreenerConfig   `yaml:"ai_screener"`
 	Notification NotificationConfig `yaml:"notification"`
 	Backtest     BacktestConfig     `yaml:"backtest"`
+	Options      OptionsConfig      `yaml:"options"`
 	OptionsV2    bool               `yaml:"-"`
 	MultiAccount bool               `yaml:"-"`
 	// OrderJournalEnabled toggles the Sprint 2 write-ahead order-intent
@@ -179,6 +180,24 @@ type BacktestConfig struct {
 	EnforceUniverseHistory bool `yaml:"enforce_universe_history"`
 }
 
+// OptionsConfig groups options-pipeline knobs that live outside the
+// per-strategy spec. UseLiveMarketData is the master switch for the
+// Theta Data integration: when false (the default), no live client is
+// instantiated and the existing BSM/ATR synthetic IV path runs unchanged.
+type OptionsConfig struct {
+	UseLiveMarketData bool             `yaml:"use_live_market_data"`
+	ThetaData         ThetaDataConfig  `yaml:"theta_data"`
+}
+
+// ThetaDataConfig holds the credentials and rate-limit cap for the
+// Theta Data REST snapshot client. Empty APIKey leaves the adapter
+// uninstantiated even when UseLiveMarketData is true.
+type ThetaDataConfig struct {
+	APIKey          string `yaml:"api_key"`
+	BaseURL         string `yaml:"base_url"`
+	RateLimitPerSec int    `yaml:"rate_limit_per_sec"`
+}
+
 type OptionsRiskConfig struct {
 	MinOpenInterest int     `yaml:"min_open_interest"`
 	MaxSpreadPct    float64 `yaml:"max_spread_pct"`
@@ -286,6 +305,7 @@ type rawConfig struct {
 	AIScreener   AIScreenerConfig   `yaml:"ai_screener"`
 	Notification NotificationConfig `yaml:"notification"`
 	Backtest     BacktestConfig     `yaml:"backtest"`
+	Options      OptionsConfig      `yaml:"options"`
 }
 
 const (
@@ -432,6 +452,7 @@ func Load(envPath, yamlPath string) (*Config, error) {
 		AIScreener:   applyAIScreenerDefaults(raw.AIScreener),
 		Notification: raw.Notification,
 		Backtest:     applyBacktestDefaults(raw.Backtest),
+		Options:      applyOptionsDefaults(raw.Options),
 	}
 
 	// 3. Overlay environment variables
@@ -600,6 +621,20 @@ func applyBacktestDefaults(c BacktestConfig) BacktestConfig {
 	}
 	if c.PessimisticSlippageMultiplier == 0 {
 		c.PessimisticSlippageMultiplier = 2.0
+	}
+	return c
+}
+
+// applyOptionsDefaults fills in the Theta Data plumbing defaults. The
+// disabled-by-default UseLiveMarketData stays false unless the YAML
+// explicitly enables it, so behavior is unchanged on every existing
+// deploy.
+func applyOptionsDefaults(c OptionsConfig) OptionsConfig {
+	if c.ThetaData.BaseURL == "" {
+		c.ThetaData.BaseURL = "https://rest.thetadata.net"
+	}
+	if c.ThetaData.RateLimitPerSec <= 0 {
+		c.ThetaData.RateLimitPerSec = 10
 	}
 	return c
 }
