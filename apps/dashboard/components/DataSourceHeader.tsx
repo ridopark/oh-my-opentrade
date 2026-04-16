@@ -15,7 +15,7 @@ const EXPECTED_SOURCES: Array<{ id: string; label: string }> = [
   { id: "ibkr", label: "IBKR" },
   { id: "alpaca", label: "Alpaca" },
   { id: "omo-data", label: "omo-data" },
-  { id: "database", label: "Database" },
+  { id: "db", label: "Database" },
 ];
 
 function mergeSources(remote: DataSource[] | undefined): DataSource[] {
