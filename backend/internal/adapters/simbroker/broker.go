@@ -240,15 +240,20 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			if intent.LimitPrice <= 0 {
 				return "", fmt.Errorf("simbroker: options entry has no limit price for %s", intent.Symbol)
 			}
-			fillPrice = intent.LimitPrice * (1 + slippage) // buying: slippage works against us
-			if b.optionEntrySpreadEnabled {
-				// Charge the same tiered half-spread as the exit path so entry
-				// and exit costs are symmetric. Gated behind the flag so default
-				// backtests stay byte-identical to prior behavior.
-				spreadPct := optionSpreadPct(intent.LimitPrice) * b.optionExitSpreadMult
-				fillPrice += intent.LimitPrice * spreadPct
+			// Sprint 6.2 — symmetric entry spread realism.
+			// Gate metric: ORB option backtest win rate must drop 2-8% once
+			// OptionEntrySpreadEnabled=true, proving the old mid-ish entry
+			// fills were overstating backtest edge. See
+			// docs/plans/EQUITY-OPTIONS-GAP-PLAN.md §Sprint 6.2.
+			isShortEntry := intent.Direction == domain.DirectionShort
+			fillPrice = b.computeOptionEntryPrice(intent, isShortEntry)
+			if isShortEntry {
+				fillPrice *= (1 - slippage) // selling premium: slippage hurts the short
+				side = "sell"
+			} else {
+				fillPrice *= (1 + slippage) // buying premium: slippage hurts the buyer
+				side = "buy"
 			}
-			side = "buy"
 		}
 	} else {
 		// Determine side and effective order type for this intent before
@@ -770,6 +775,66 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 	}
 
 	return exitPremium
+}
+
+// computeOptionEntryPrice returns the fill price for an option entry leg,
+// mirroring computeOptionExitPrice so entries and exits pay symmetric
+// bid-ask costs. BUY entries are taker trades that pay the ask
+// (mid + half_spread); SELL (short) entries receive the bid
+// (mid - half_spread). When the live option data port is wired and
+// returns a usable Quote, the real ask/bid is used directly; otherwise
+// the tiered-spread approximation is applied around intent.LimitPrice
+// (treated as the mid).
+//
+// Gated by Broker.optionEntrySpreadEnabled so legacy backtests (flag
+// off) keep the previous mid-fill behavior and remain byte-identical.
+func (b *Broker) computeOptionEntryPrice(intent domain.OrderIntent, isShortEntry bool) float64 {
+	mid := intent.LimitPrice
+	if !b.optionEntrySpreadEnabled {
+		return mid
+	}
+
+	// Live per-contract quote takes priority when available.
+	if b.optionLiveData != nil && intent.Meta != nil {
+		strikeStr := intent.Meta["strike"]
+		expiryStr := intent.Meta["expiry"]
+		rightStr := intent.Meta["option_right"]
+		underlying := intent.Meta["underlying"]
+		if underlying == "" {
+			underlying = string(domain.UnderlyingFromOCC(intent.Symbol))
+		}
+		if strikeStr != "" && expiryStr != "" {
+			var strike float64
+			_, _ = fmt.Sscanf(strikeStr, "%f", &strike)
+			if expiry, err := time.Parse("2006-01-02", expiryStr); err == nil {
+				right := "C"
+				if rightStr == "PUT" {
+					right = "P"
+				}
+				q, qErr := b.optionLiveData.Quote(context.Background(), underlying, expiry, strike, right)
+				if qErr == nil {
+					if isShortEntry && q.Bid > 0 {
+						return q.Bid
+					}
+					if !isShortEntry && q.Ask > 0 {
+						return q.Ask
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback: tiered half-spread around the mid (intent limit).
+	spreadPct := optionSpreadPct(mid) * b.optionExitSpreadMult
+	half := mid * spreadPct
+	if isShortEntry {
+		fill := mid - half
+		if fill < 0.01 {
+			fill = 0.01
+		}
+		return fill
+	}
+	return mid + half
 }
 
 // optionSpreadPct returns the tiered half-spread percentage applied to an
