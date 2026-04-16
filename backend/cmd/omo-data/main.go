@@ -327,61 +327,25 @@ func main() {
 
 	// Macro events — kick once at startup then once every 24h. Refresh
 	// is safe to call when no keys are configured (logs debug + exits).
-	go func() {
+	go runDaily(ctx, "macro_events", func(ctx context.Context) {
 		if err := macroClient.Refresh(ctx); err != nil {
-			log.Warn().Err(err).Msg("macro events initial refresh failed")
+			log.Warn().Err(err).Msg("macro events refresh failed")
 		}
-		t := time.NewTicker(24 * time.Hour)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				if err := macroClient.Refresh(ctx); err != nil {
-					log.Warn().Err(err).Msg("macro events refresh failed")
-				}
-			}
-		}
-	}()
+	}, log)
 
 	// Corporate actions — kick once at startup then once every 24h.
-	go func() {
+	go runDaily(ctx, "corporate_actions", func(ctx context.Context) {
 		if err := refreshCorporateActions(ctx, caClient, caRepo, symbols, log); err != nil {
-			log.Warn().Err(err).Msg("corporate actions initial refresh failed")
+			log.Warn().Err(err).Msg("corporate actions refresh failed")
 		}
-		t := time.NewTicker(24 * time.Hour)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				if err := refreshCorporateActions(ctx, caClient, caRepo, symbols, log); err != nil {
-					log.Warn().Err(err).Msg("corporate actions refresh failed")
-				}
-			}
-		}
-	}()
+	}, log)
 
 	// Universe history — kick once at startup then once every 24h.
-	go func() {
+	go runDaily(ctx, "universe_history", func(ctx context.Context) {
 		if err := refreshUniverseHistory(ctx, alpacaAdapter, universeRepo, symbols, log); err != nil {
-			log.Warn().Err(err).Msg("universe history initial refresh failed")
+			log.Warn().Err(err).Msg("universe history refresh failed")
 		}
-		t := time.NewTicker(24 * time.Hour)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				if err := refreshUniverseHistory(ctx, alpacaAdapter, universeRepo, symbols, log); err != nil {
-					log.Warn().Err(err).Msg("universe history refresh failed")
-				}
-			}
-		}
-	}()
+	}, log)
 
 	gapDetector := timescaledb.NewGapDetector(repo)
 	gapSvc := gapdetect.NewService(gapDetector, repo, log.With().Str("component", "gapdetect").Logger(), nil)
@@ -431,6 +395,22 @@ func main() {
 	log.Info().Int("symbols", len(symbols)).Msg("omo-data running")
 	<-ctx.Done()
 	log.Info().Msg("omo-data stopped")
+}
+
+// runDaily calls fn immediately then repeats every 24 hours until ctx is done.
+func runDaily(ctx context.Context, name string, fn func(context.Context), log zerolog.Logger) {
+	fn(ctx)
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			log.Info().Str("job", name).Msg("daily job tick")
+			fn(ctx)
+		}
+	}
 }
 
 // noopVIXSetter satisfies datarefresh.VIXSetter when no monitor is running.
@@ -502,19 +482,24 @@ func refreshUniverseHistory(
 	}
 
 	today := time.Now().UTC().Truncate(24 * time.Hour)
+
+	// Fetch all existing windows in one query instead of per-symbol.
+	domainSyms := make([]domain.Symbol, len(symbols))
+	for i, s := range symbols {
+		domainSyms[i] = domain.Symbol(s)
+	}
+	allWindows, err := repo.WindowsForAll(ctx, domainSyms)
+	if err != nil {
+		return fmt.Errorf("universe_history: WindowsForAll: %w", err)
+	}
+
 	upserted, closed := 0, 0
 	for _, sym := range symbols {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		ds := domain.Symbol(sym)
-
-		// Check existing windows to decide action.
-		windows, err := repo.WindowsFor(ctx, ds)
-		if err != nil {
-			log.Warn().Err(err).Str("symbol", sym).Msg("universe_history: WindowsFor failed")
-			continue
-		}
+		windows := allWindows[ds]
 
 		if activeSet[sym] {
 			// Symbol is active — ensure an open window exists.
@@ -700,6 +685,21 @@ func initDB(cfg *config.Config, log zerolog.Logger) *sql.DB {
 	return nil
 }
 
+// collectWhaleFlowAssets fetches and logs net flow for each asset using the tracker.
+func collectWhaleFlowAssets(ctx context.Context, tracker *onchain.FlowTracker, log zerolog.Logger) {
+	for _, asset := range []string{"BTC", "ETH", "SOL"} {
+		result, ferr := tracker.NetFlow(ctx, asset, 24)
+		if ferr != nil {
+			log.Warn().Err(ferr).Str("asset", asset).Msg("whale flow fetch failed")
+			continue
+		}
+		log.Info().Str("asset", asset).
+			Float64("net_flow_usd", result.NetFlowUSD).
+			Int("large_count", result.LargeCount).
+			Msg("whale flow collected")
+	}
+}
+
 // runWhaleFlowCollector polls on-chain whale flow data every hour.
 // Blocks until ctx is canceled.
 func runWhaleFlowCollector(ctx context.Context, cfg config.OnChainConfig, log zerolog.Logger) {
@@ -709,31 +709,16 @@ func runWhaleFlowCollector(ctx context.Context, cfg config.OnChainConfig, log ze
 		return
 	}
 
-	assets := []string{"BTC", "ETH", "SOL"}
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
-	collect := func() {
-		for _, asset := range assets {
-			result, ferr := tracker.NetFlow(ctx, asset, 24)
-			if ferr != nil {
-				log.Warn().Err(ferr).Str("asset", asset).Msg("whale flow fetch failed")
-				continue
-			}
-			log.Info().Str("asset", asset).
-				Float64("net_flow_usd", result.NetFlowUSD).
-				Int("large_count", result.LargeCount).
-				Msg("whale flow collected")
-		}
-	}
-
-	collect()
+	collectWhaleFlowAssets(ctx, tracker, log)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			collect()
+			collectWhaleFlowAssets(ctx, tracker, log)
 		}
 	}
 }
@@ -758,12 +743,5 @@ func collectWhaleFlowOnce(ctx context.Context, cfg config.OnChainConfig, log zer
 		log.Warn().Err(err).Msg("on-chain flow tracker init failed")
 		return
 	}
-	for _, asset := range []string{"BTC", "ETH", "SOL"} {
-		result, ferr := tracker.NetFlow(ctx, asset, 24)
-		if ferr != nil {
-			log.Warn().Err(ferr).Str("asset", asset).Msg("whale flow fetch failed")
-			continue
-		}
-		log.Info().Str("asset", asset).Float64("net_flow_usd", result.NetFlowUSD).Msg("whale flow collected")
-	}
+	collectWhaleFlowAssets(ctx, tracker, log)
 }

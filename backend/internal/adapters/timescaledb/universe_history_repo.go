@@ -54,6 +54,11 @@ const (
 		WHERE from_date <= $1::date
 		  AND (to_date IS NULL OR to_date > $1::date)
 		ORDER BY symbol`
+
+	querySelectUniverseWindowsForAll = `SELECT symbol, from_date, to_date, source, COALESCE(note, '')
+		FROM universe_history
+		WHERE symbol = ANY($1)
+		ORDER BY symbol, from_date ASC`
 )
 
 // WasTradable returns true iff `at` falls inside a tradable window.
@@ -91,6 +96,45 @@ func (r *UniverseHistoryRepo) WindowsFor(ctx context.Context, sym domain.Symbol)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("universe_history_repo: rows: %w", err)
+	}
+	return out, nil
+}
+
+// WindowsForAll returns all windows for the given symbol set in a single query,
+// keyed by symbol. Callers that need to process many symbols should prefer this
+// over calling WindowsFor in a loop.
+func (r *UniverseHistoryRepo) WindowsForAll(ctx context.Context, syms []domain.Symbol) (map[domain.Symbol][]ports.UniverseWindow, error) {
+	if len(syms) == 0 {
+		return map[domain.Symbol][]ports.UniverseWindow{}, nil
+	}
+	strs := make([]string, len(syms))
+	for i, s := range syms {
+		strs[i] = string(s)
+	}
+	rows, err := r.db.QueryContext(ctx, querySelectUniverseWindowsForAll, strs)
+	if err != nil {
+		return nil, fmt.Errorf("universe_history_repo: windows_for_all: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[domain.Symbol][]ports.UniverseWindow, len(syms))
+	for rows.Next() {
+		var (
+			w      ports.UniverseWindow
+			symbol string
+			to     sql.NullTime
+		)
+		if err := rows.Scan(&symbol, &w.FromDate, &to, &w.Source, &w.Note); err != nil {
+			return nil, fmt.Errorf("universe_history_repo: windows_for_all scan: %w", err)
+		}
+		w.Symbol = domain.Symbol(symbol)
+		if to.Valid {
+			t := to.Time
+			w.ToDate = &t
+		}
+		out[w.Symbol] = append(out[w.Symbol], w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("universe_history_repo: windows_for_all rows: %w", err)
 	}
 	return out, nil
 }
