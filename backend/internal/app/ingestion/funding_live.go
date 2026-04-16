@@ -32,7 +32,9 @@ func NewFundingLive(source ports.FundingRatesPort, repo *timescaledb.FundingRepo
 
 // Run starts live ingestion for the given symbols. It first attempts to
 // subscribe via Stream(); if the source returns an error, it falls back to
-// polling Latest() at pollInterval. Blocks until ctx is canceled.
+// polling Latest() at pollInterval. Blocks until ctx is canceled, even if
+// all stream channels close and individual goroutines degrade to polling —
+// the goroutines are self-healing and the parent only needs to cancel ctx.
 func (l *FundingLive) Run(ctx context.Context, venue domain.Venue, symbols []domain.Symbol, pollInterval time.Duration) error {
 	if pollInterval <= 0 {
 		pollInterval = 5 * time.Minute
