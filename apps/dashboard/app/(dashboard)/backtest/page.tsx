@@ -202,7 +202,7 @@ export default function BacktestPage() {
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              {tab === "trades" ? `Positions (${Math.floor(bt.trades.length / 2)})` : "Results"}
+              {tab === "trades" ? `Positions (${Math.floor((bt.trades?.length ?? 0) / 2)})` : "Results"}
               {bottomTab === tab && (
                 <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />
               )}
@@ -221,7 +221,7 @@ export default function BacktestPage() {
         </div>
 
         <div className="flex-1 min-h-0 overflow-hidden">
-          {bottomTab === "trades" && <TradeLogInline trades={bt.trades} />}
+          {bottomTab === "trades" && <TradeLogInline trades={bt.trades ?? []} />}
           {bottomTab === "results" && <MetricsPanelInline metrics={bt.metrics} result={bt.result} initialEquity={config.initialEquity} />}
         </div>
       </div>
