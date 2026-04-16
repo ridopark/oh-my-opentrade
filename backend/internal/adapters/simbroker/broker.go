@@ -182,6 +182,13 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	// Sprint 5: combo BAG intents are not simulated atomically in simbroker.
+	// Today no strategy emits combo intents; backtest/paper combo support is a
+	// TODO(sprint5) follow-up that will synthesize two sequential leg fills.
+	if intent.IsCombo() {
+		return "", fmt.Errorf("simbroker: combo BAG orders not yet simulated (sprint5 TODO)")
+	}
+
 	isOption := intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption
 
 	priceSymbol := intent.Symbol

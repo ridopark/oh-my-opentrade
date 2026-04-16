@@ -139,6 +139,16 @@ func stopLossFromRules(rules []domain.ExitRule, entry float64) float64 {
 }
 
 func intentRisk(intent domain.OrderIntent) float64 {
+	// Sprint 5: capped-risk combos. Debit spread risk = net debit; credit
+	// spread risk = (strike width - credit received). Fall back to the
+	// explicit MaxLossUSD when ComboRisk can't infer (e.g., missing strike
+	// width on a non-vertical structure).
+	if intent.IsCombo() {
+		if r := domain.ComboRisk(intent); r > 0 {
+			return r
+		}
+		return intent.MaxLossUSD
+	}
 	if intent.StopLoss <= 0 || intent.LimitPrice <= 0 {
 		return 0
 	}
