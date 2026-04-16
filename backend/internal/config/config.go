@@ -23,6 +23,7 @@ type Config struct {
 	AI           AIConfig           `yaml:"ai"`
 	AIScreener   AIScreenerConfig   `yaml:"ai_screener"`
 	Notification NotificationConfig `yaml:"notification"`
+	Backtest     BacktestConfig     `yaml:"backtest"`
 	OptionsV2    bool               `yaml:"-"`
 	MultiAccount bool               `yaml:"-"`
 	// OrderJournalEnabled toggles the Sprint 2 write-ahead order-intent
@@ -155,6 +156,17 @@ type TradingConfig struct {
 	MacroEventImpacts []string `yaml:"macro_event_impacts"`
 }
 
+// BacktestConfig holds Sprint-7 fill-model and fee-schedule knobs. Empty
+// values fall back to defaults that preserve today's backtest numbers
+// (optimistic fills, no fees) unless operators opt in to realism.
+type BacktestConfig struct {
+	FillModel                     string  `yaml:"fill_model"`                      // "optimistic" | "realistic" | "pessimistic"
+	LatencyMsEquity               int     `yaml:"latency_ms_equity"`               // default 50
+	LatencyMsOption               int     `yaml:"latency_ms_option"`               // default 200
+	FeeSchedule                   string  `yaml:"fee_schedule"`                    // "alpaca_equity" | "ibkr_options" | "none"
+	PessimisticSlippageMultiplier float64 `yaml:"pessimistic_slippage_multiplier"` // default 2.0
+}
+
 type OptionsRiskConfig struct {
 	MinOpenInterest int     `yaml:"min_open_interest"`
 	MaxSpreadPct    float64 `yaml:"max_spread_pct"`
@@ -261,6 +273,7 @@ type rawConfig struct {
 	AI           AIConfig           `yaml:"ai"`
 	AIScreener   AIScreenerConfig   `yaml:"ai_screener"`
 	Notification NotificationConfig `yaml:"notification"`
+	Backtest     BacktestConfig     `yaml:"backtest"`
 }
 
 const (
@@ -406,6 +419,7 @@ func Load(envPath, yamlPath string) (*Config, error) {
 		AI:           raw.AI,
 		AIScreener:   applyAIScreenerDefaults(raw.AIScreener),
 		Notification: raw.Notification,
+		Backtest:     applyBacktestDefaults(raw.Backtest),
 	}
 
 	// 3. Overlay environment variables
@@ -553,6 +567,29 @@ func loadEnvFile(path string) error {
 		}
 	}
 	return scanner.Err()
+}
+
+// applyBacktestDefaults fills in zero-valued Sprint-7 fields. Per the Sprint-7
+// plan the runtime default is "realistic" so the §3 AVWAP same-bar look-ahead
+// bug is patched out of the box; operators can still opt back into
+// "optimistic" via YAML for legacy parity runs.
+func applyBacktestDefaults(c BacktestConfig) BacktestConfig {
+	if c.FillModel == "" {
+		c.FillModel = "realistic"
+	}
+	if c.LatencyMsEquity == 0 {
+		c.LatencyMsEquity = 50
+	}
+	if c.LatencyMsOption == 0 {
+		c.LatencyMsOption = 200
+	}
+	if c.FeeSchedule == "" {
+		c.FeeSchedule = "none"
+	}
+	if c.PessimisticSlippageMultiplier == 0 {
+		c.PessimisticSlippageMultiplier = 2.0
+	}
+	return c
 }
 
 func applyAIScreenerDefaults(c AIScreenerConfig) AIScreenerConfig {
