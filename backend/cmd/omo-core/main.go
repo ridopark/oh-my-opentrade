@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	_ "time/tzdata" // Embed IANA timezone database for distroless containers
 
 	"github.com/rs/zerolog"
 )

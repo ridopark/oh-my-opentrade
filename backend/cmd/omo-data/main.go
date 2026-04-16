@@ -10,6 +10,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata" // Embed IANA timezone database in the binary so
+	// LoadLocation("America/New_York") works in distroless containers
+	// that have no /usr/share/zoneinfo.
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
