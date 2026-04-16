@@ -222,13 +222,6 @@ func BuildDirectionalBias(maxBiasPct float64, posSource risk.PositionSource, equ
 //
 // Returns nil when breaker is nil so the kill_switch gate degrades to a
 // no-op (same as the other Sprint 4 guards).
-func BuildKillSwitch(breaker *risk.DailyLossBreaker) *risk.DailyLossBreaker {
-	if breaker == nil {
-		return nil
-	}
-	return breaker
-}
-
 // BuildPDTGuard constructs the Sprint 4.5 PDT enforcement guard. Returns
 // nil when mode is empty or "off" so callers can leave the
 // ExecutionGateDeps.PDTGuard field unset (the gate treats nil as
