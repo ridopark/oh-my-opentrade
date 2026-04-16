@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(): Promise<Response> {
-  const url = `${BACKEND_URL}/healthz/datasources`;
+  const url = `${BACKEND_URL}/api/health/datasources`;
 
   try {
     const res = await fetch(url, {
