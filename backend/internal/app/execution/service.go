@@ -33,6 +33,16 @@ type pendingOrder struct {
 	submitStart time.Time
 }
 
+// PositionStateLookup is a narrow interface over the position monitor that
+// lets execution read live MFE/MAE off a position at fill time. Strategy-
+// emitted exits bypass the monitor's exit_eval.go fill-metadata attachment
+// path, so without this lookup the backtest collector never sees MFE/MAE
+// for strategy-driven exits. Nil-safe: when unset, execution falls back to
+// intent.Meta (legacy behavior).
+type PositionStateLookup interface {
+	LookupPosition(symbol string) (domain.MonitoredPosition, bool)
+}
+
 type Service struct {
 	eventBus           ports.EventBusPort
 	broker             ports.BrokerPort
@@ -51,6 +61,7 @@ type Service struct {
 	buyingPowerGuard   *BuyingPowerGuard
 	optionsRiskEngine  *OptionsRiskEngine
 	executionGateChain *gate.ExecutionGateChain
+	positionLookup     PositionStateLookup
 	accountEquity      float64
 	log                zerolog.Logger
 	metrics            *metrics.Metrics
@@ -119,6 +130,14 @@ func WithIntentJournal(j ports.OrderIntentJournal) Option {
 	return func(s *Service) { s.intentJournal = j }
 }
 
+// WithPositionLookup wires a live position-state reader so handleFill can
+// attach MFE/MAE to strategy-emitted exit fills. Without this, MFE/MAE is
+// only present for exits routed through the position monitor's own exit_eval
+// path, which skips strategies that set strategy_exits_priority=true.
+func WithPositionLookup(p PositionStateLookup) Option {
+	return func(s *Service) { s.positionLookup = p }
+}
+
 // NewService creates a new execution Service.
 func NewService(
 	eventBus ports.EventBusPort,
@@ -166,6 +185,12 @@ func (s *Service) SetAccountEquity(equity float64) {
 
 // SetMetrics injects Prometheus collectors. Safe to leave nil (no-op).
 func (s *Service) SetMetrics(m *metrics.Metrics) { s.metrics = m }
+
+// SetPositionLookup installs the position-state reader after construction.
+// Needed because the position monitor is built after the execution service
+// (it depends on execBundle.PositionGate), so we cannot wire this through
+// the functional option at construction time in that flow.
+func (s *Service) SetPositionLookup(p PositionStateLookup) { s.positionLookup = p }
 
 // SetExecutionGateChain installs a configurable execution gate chain.
 // When set, the chain replaces the inline guard if-blocks for entry intents.
@@ -1051,6 +1076,36 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 		}
 	}
 
+	// Pull MFE/MAE straight off the live position state when available.
+	// Strategy-emitted exits don't flow through positionmonitor.exit_eval's
+	// fill-metadata attachment path, so intent.Meta is empty for them. The
+	// monitor tracks spot_mfe_pct/spot_mae_pct on every tick regardless of
+	// who fires the exit, so a lookup here closes that gap. Prefer monitor
+	// values over intent.Meta — they're the authoritative live HWM/LWM.
+	spotMFE := intent.Meta["spot_mfe_pct"]
+	spotMAE := intent.Meta["spot_mae_pct"]
+	minutesToFirstProfit := intent.Meta["minutes_to_first_profit"]
+	minutesHeld := intent.Meta["minutes_held"]
+	isExit := intent.Direction == domain.DirectionCloseLong || intent.Direction == domain.DirectionCloseShort
+	if isExit && s.positionLookup != nil {
+		if pos, ok := s.positionLookup.LookupPosition(string(intent.Symbol)); ok && pos.CustomState != nil {
+			if v, has := pos.CustomState["spot_mfe_pct"]; has {
+				spotMFE = fmt.Sprintf("%.6f", v)
+			}
+			if v, has := pos.CustomState["spot_mae_pct"]; has {
+				spotMAE = fmt.Sprintf("%.6f", v)
+			}
+			if v, has := pos.CustomState["minutes_to_first_profit"]; has {
+				minutesToFirstProfit = fmt.Sprintf("%.1f", v)
+			} else if minutesToFirstProfit == "" {
+				minutesToFirstProfit = "-1"
+			}
+			if v, has := pos.CustomState["minutes_since_entry"]; has {
+				minutesHeld = fmt.Sprintf("%.1f", v)
+			}
+		}
+	}
+
 	fillPayload := map[string]any{
 		"broker_order_id": brokerOrderID,
 		"intent_id":       intent.ID.String(),
@@ -1068,10 +1123,10 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 		"market_context":        intent.Meta["market_context"],
 		"premium_mfe_pct":       intent.Meta["premium_mfe_pct"],
 		"premium_mae_pct":       intent.Meta["premium_mae_pct"],
-		"spot_mfe_pct":          intent.Meta["spot_mfe_pct"],
-		"spot_mae_pct":          intent.Meta["spot_mae_pct"],
-		"minutes_to_first_profit": intent.Meta["minutes_to_first_profit"],
-		"minutes_held":            intent.Meta["minutes_held"],
+		"spot_mfe_pct":          spotMFE,
+		"spot_mae_pct":          spotMAE,
+		"minutes_to_first_profit": minutesToFirstProfit,
+		"minutes_held":            minutesHeld,
 		"signal_tags":             signalTags,
 	}
 	if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
@@ -1288,6 +1343,35 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 			sigTags[k[4:]] = v // strip "sig_" prefix
 		}
 	}
+
+	// MFE/MAE lookup for strategy-emitted exits — see handleFill for the
+	// same pattern. Backtest fills flow through this poll-based path when
+	// SimBroker's stream returns the fill via OrderStream, so both handlers
+	// need the lookup.
+	spotMFE := po.intent.Meta["spot_mfe_pct"]
+	spotMAE := po.intent.Meta["spot_mae_pct"]
+	minutesToFirstProfit := po.intent.Meta["minutes_to_first_profit"]
+	minutesHeld := po.intent.Meta["minutes_held"]
+	isExit := po.intent.Direction == domain.DirectionCloseLong || po.intent.Direction == domain.DirectionCloseShort
+	if isExit && s.positionLookup != nil {
+		if pos, ok := s.positionLookup.LookupPosition(string(po.intent.Symbol)); ok && pos.CustomState != nil {
+			if v, has := pos.CustomState["spot_mfe_pct"]; has {
+				spotMFE = fmt.Sprintf("%.6f", v)
+			}
+			if v, has := pos.CustomState["spot_mae_pct"]; has {
+				spotMAE = fmt.Sprintf("%.6f", v)
+			}
+			if v, has := pos.CustomState["minutes_to_first_profit"]; has {
+				minutesToFirstProfit = fmt.Sprintf("%.1f", v)
+			} else if minutesToFirstProfit == "" {
+				minutesToFirstProfit = "-1"
+			}
+			if v, has := pos.CustomState["minutes_since_entry"]; has {
+				minutesHeld = fmt.Sprintf("%.1f", v)
+			}
+		}
+	}
+
 	fillPayload := map[string]any{
 		"broker_order_id": brokerOrderID,
 		"intent_id":       po.intent.ID.String(),
@@ -1305,10 +1389,10 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 		"market_context":        po.intent.Meta["market_context"],
 		"premium_mfe_pct":       po.intent.Meta["premium_mfe_pct"],
 		"premium_mae_pct":       po.intent.Meta["premium_mae_pct"],
-		"spot_mfe_pct":          po.intent.Meta["spot_mfe_pct"],
-		"spot_mae_pct":          po.intent.Meta["spot_mae_pct"],
-		"minutes_to_first_profit": po.intent.Meta["minutes_to_first_profit"],
-		"minutes_held":            po.intent.Meta["minutes_held"],
+		"spot_mfe_pct":          spotMFE,
+		"spot_mae_pct":          spotMAE,
+		"minutes_to_first_profit": minutesToFirstProfit,
+		"minutes_held":            minutesHeld,
 		"signal_tags":             sigTags,
 	}
 	if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {

@@ -42,6 +42,11 @@ type ExecutionDeps struct {
 	// that persists OrderIntents before broker submission and stamps terminal
 	// events back. Gated by OMO_ORDER_JOURNAL_ENABLED at the caller.
 	IntentJournal ports.OrderIntentJournal
+	// PositionLookup, when non-nil, lets the execution service read live
+	// MFE/MAE off a position at fill time. Strategy-emitted exits otherwise
+	// bypass the positionmonitor's fill-metadata attachment path and arrive
+	// at the backtest collector without MFE/MAE populated.
+	PositionLookup execution.PositionStateLookup
 }
 
 // ExecutionBundle is returned by BuildExecutionService with all wired components.
@@ -111,6 +116,9 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 	}
 	if deps.IntentJournal != nil {
 		execOpts = append(execOpts, execution.WithIntentJournal(deps.IntentJournal))
+	}
+	if deps.PositionLookup != nil {
+		execOpts = append(execOpts, execution.WithPositionLookup(deps.PositionLookup))
 	}
 
 	if cfg.Trading.MaxSimultaneousPos > 0 || cfg.Trading.MaxPositionsPerGroup > 0 || len(deps.PerStrategyMaxPositions) > 0 {
