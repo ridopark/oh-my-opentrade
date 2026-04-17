@@ -11,6 +11,16 @@
             "statusMessage": "Running /simplify on staged changes..."
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/ridopark/src/oh-my-opentrade/.claude/hooks/plan-first-reminder.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
