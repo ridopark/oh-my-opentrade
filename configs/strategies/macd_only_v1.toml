@@ -124,12 +124,9 @@ limit_buffer_bps = 1000
 stale_cancel_secs = 90
 
 [options.defaults]
-min_dte = 5                      # stopgap widening: our historical_option_chain
-max_dte = 30                     # has monthlies only (first exp ~23 DTE), so 5-14
-                                 # produced 0 fills in HTTP backtests. Revert to
-                                 # 5-14 once synthetic weekly-chain generator or
-                                 # weekly backfill lands. Tracked as Option 3 in
-                                 # the 2026-04-17 backtest-data investigation.
+min_dte = 5                      # weekly window — synthetic chain generator
+max_dte = 14                     # fills gaps when DoltHub has no weeklies
+                                 # (see backtest.synthetic_chain in config).
 target_delta_low = 0.50          # slightly ITM for better delta tracking
 target_delta_high = 0.65         # higher delta = more responsive intraday
 min_open_interest = 100          # tighter liquidity on near-term

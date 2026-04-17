@@ -35,6 +35,10 @@ type contractCacheKey struct {
 //
 // When PreLoad is called, all subsequent GetOptionChain calls are served
 // from an in-memory cache, eliminating per-signal DB round-trips.
+//
+// When the cache or DB has no data for the requested (symbol, date, right),
+// and a SyntheticChainGenerator is attached, the adapter fills the gap by
+// generating a synthetic chain via Black-Scholes — see SetSyntheticGenerator.
 type HistoricalOptionsAdapter struct {
 	repo    ports.HistoricalOptionsPort
 	clockFn func() time.Time
@@ -48,6 +52,15 @@ type HistoricalOptionsAdapter struct {
 	contractCache map[contractCacheKey][]domain.HistoricalOptionChainRow
 
 	loaded bool
+
+	// Synthetic chain generator — populated when the BacktestConfig
+	// enables synthetic chains. Nil when disabled, which preserves
+	// byte-identical behavior with the pre-synthetic path.
+	syntheticGen *SyntheticChainGenerator
+
+	// Cache for synthetic results so a second request on the same key is
+	// O(1). Lazily initialized on first synthetic generation.
+	syntheticCache map[optionCacheKey][]domain.OptionContractSnapshot
 }
 
 // NewHistoricalOptionsAdapter creates an adapter that bridges historical
@@ -58,6 +71,15 @@ func NewHistoricalOptionsAdapter(repo ports.HistoricalOptionsPort, clockFn func(
 		clockFn: clockFn,
 		log:     zerolog.Nop(),
 	}
+}
+
+// SetSyntheticGenerator attaches a synthetic chain generator used as a
+// fallback when neither the in-memory cache nor the DB returns rows for
+// a given (symbol, date, right). A nil argument disables the fallback,
+// which preserves the pre-synthetic behavior (empty chain -> equity
+// fallback in the risk sizer).
+func (a *HistoricalOptionsAdapter) SetSyntheticGenerator(gen *SyntheticChainGenerator) {
+	a.syntheticGen = gen
 }
 
 // SetLogger attaches a structured logger for cache diagnostics.
@@ -160,32 +182,116 @@ func (a *HistoricalOptionsAdapter) IsLoaded() bool {
 // GetOptionChain implements ports.OptionsMarketDataPort by querying the
 // historical options repo for the backtest's current simulated date.
 // When the cache is loaded, this is a zero-DB O(1) map lookup.
+//
+// If both cache and DB return empty and a synthetic generator is attached,
+// the adapter generates a synthetic chain via Black-Scholes for the given
+// DTE window, caches it, and returns it. The expiry argument remains
+// supported for interface-compat but is ignored by the synthetic path,
+// which uses [minDTE, maxDTE] to span multiple weekly expiries.
 func (a *HistoricalOptionsAdapter) GetOptionChain(
 	ctx context.Context,
 	underlying domain.Symbol,
 	expiry time.Time,
 	right domain.OptionRight,
+	minDTE, maxDTE int,
 ) ([]domain.OptionContractSnapshot, error) {
 	now := a.clockFn()
-
-	if a.loaded {
-		callPut := "Call"
-		if right == domain.OptionRightPut {
-			callPut = "Put"
-		}
-		key := optionCacheKey{
-			Symbol: string(underlying),
-			Date:   now.Format("2006-01-02"),
-			Right:  callPut,
-		}
-		if snaps, ok := a.chainCache[key]; ok {
-			return snaps, nil
-		}
-		return nil, nil // no data for this date — not an error
+	callPut := "Call"
+	if right == domain.OptionRightPut {
+		callPut = "Put"
+	}
+	key := optionCacheKey{
+		Symbol: string(underlying),
+		Date:   now.Format("2006-01-02"),
+		Right:  callPut,
 	}
 
-	// Fallback: original per-query DB path.
-	return a.getOptionChainFromDB(ctx, underlying, now, right)
+	if a.loaded {
+		if snaps, ok := a.chainCache[key]; ok && hasExpiryInDTERange(snaps, now, minDTE, maxDTE) {
+			return snaps, nil
+		}
+	} else {
+		snaps, err := a.getOptionChainFromDB(ctx, underlying, now, right)
+		if err != nil {
+			return nil, err
+		}
+		if hasExpiryInDTERange(snaps, now, minDTE, maxDTE) {
+			return snaps, nil
+		}
+	}
+
+	// Synthetic fallback — fires when no cached/DB row has an expiry
+	// inside [minDTE, maxDTE]. DoltHub coverage is monthly-only so a
+	// DTE-5..14 strategy sees 231 rows for MU but zero in-range; the
+	// selector would reject every contract on DTE alone. Synthetic
+	// generates the missing weeklies so the strategy has something to
+	// pick. When the DB DOES have in-range rows (longer-DTE strategies
+	// like overnight_z_v1), the cache/DB path above is returned as-is
+	// and synthetic stays dormant — byte-identical to the pre-fallback
+	// behavior.
+	return a.generateSynthetic(ctx, key, underlying, now, right, minDTE, maxDTE)
+}
+
+// hasExpiryInDTERange reports whether any snapshot's expiry lies within
+// [asOf+minDTE, asOf+maxDTE]. Used as the cache/DB short-circuit so we
+// only fall back to synthetic when real data can't satisfy the strategy's
+// DTE window. A zero max means "no upper bound" (defensive default).
+func hasExpiryInDTERange(snaps []domain.OptionContractSnapshot, asOf time.Time, minDTE, maxDTE int) bool {
+	if len(snaps) == 0 {
+		return false
+	}
+	if maxDTE <= 0 {
+		maxDTE = 3650
+	}
+	lo := asOf.AddDate(0, 0, minDTE)
+	hi := asOf.AddDate(0, 0, maxDTE+1)
+	for _, s := range snaps {
+		exp := s.Expiry
+		if !exp.Before(lo) && exp.Before(hi) {
+			return true
+		}
+	}
+	return false
+}
+
+// generateSynthetic runs the BSM-based generator (if attached), caches the
+// result under the per-day key, and returns it. Returns nil when no
+// generator is attached or the generator produces no output (e.g. missing
+// spot) — both are legitimate "no data" outcomes, not errors.
+func (a *HistoricalOptionsAdapter) generateSynthetic(
+	ctx context.Context,
+	key optionCacheKey,
+	underlying domain.Symbol,
+	asOf time.Time,
+	right domain.OptionRight,
+	minDTE, maxDTE int,
+) ([]domain.OptionContractSnapshot, error) {
+	if a.syntheticGen == nil {
+		return nil, nil
+	}
+	if cached, ok := a.syntheticCache[key]; ok {
+		return cached, nil
+	}
+	snaps, err := a.syntheticGen.GenerateChain(ctx, underlying, asOf, right, minDTE, maxDTE)
+	if err != nil {
+		return nil, err
+	}
+	if len(snaps) == 0 {
+		return nil, nil
+	}
+	if a.syntheticCache == nil {
+		a.syntheticCache = make(map[optionCacheKey][]domain.OptionContractSnapshot, 64)
+	}
+	a.syntheticCache[key] = snaps
+	a.log.Info().
+		Str("symbol", string(underlying)).
+		Str("date", key.Date).
+		Str("right", string(right)).
+		Int("contracts", len(snaps)).
+		Int("min_dte", minDTE).
+		Int("max_dte", maxDTE).
+		Msg("synthetic chain generated")
+	return snaps, nil
 }
 
 // getOptionChainFromDB is the original DB-backed implementation, used as
@@ -363,4 +469,34 @@ func absDays(a, b time.Time) int {
 		return -d
 	}
 	return d
+}
+
+// marketBarReader is the minimal subset of the repository needed for the
+// spot-price lookup. Declaring it locally keeps the backtest package
+// independent of the full RepositoryPort interface.
+type marketBarReader interface {
+	GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error)
+}
+
+// lookupSpot returns the most recent close for the symbol on-or-before
+// asOf, preferring 1d bars over 1m bars. Returns 0 with a nil error when
+// no bars are available — synthetic generator treats that as "no chain".
+func lookupSpot(ctx context.Context, repo marketBarReader, symbol domain.Symbol, asOf time.Time) (float64, error) {
+	// Try 1d first: widest and cheapest lookup.
+	dayStart := time.Date(asOf.Year(), asOf.Month(), asOf.Day(), 0, 0, 0, 0, asOf.Location())
+	dayEnd := dayStart.Add(24 * time.Hour)
+	bars, err := repo.GetMarketBars(ctx, symbol, domain.Timeframe("1d"), dayStart.AddDate(0, 0, -7), dayEnd)
+	if err == nil && len(bars) > 0 {
+		return bars[len(bars)-1].Close, nil
+	}
+	// Fall back to 1m: last bar on-or-before asOf within the last 2 days.
+	from := asOf.Add(-48 * time.Hour)
+	mbars, err := repo.GetMarketBars(ctx, symbol, domain.Timeframe("1m"), from, asOf.Add(time.Minute))
+	if err != nil {
+		return 0, err
+	}
+	if len(mbars) == 0 {
+		return 0, nil
+	}
+	return mbars[len(mbars)-1].Close, nil
 }

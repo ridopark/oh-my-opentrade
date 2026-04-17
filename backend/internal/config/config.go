@@ -208,6 +208,27 @@ type BacktestConfig struct {
 	// runner logs a warning and proceeds without filtering rather than
 	// failing closed.
 	EnforceUniverseHistory bool `yaml:"enforce_universe_history"`
+
+	// SyntheticChain fills gaps in historical_option_chain (DoltHub-only)
+	// by generating BSM-priced weekly expiries on demand during backtests.
+	// Defaults (applied by applyBacktestDefaults) enable it because the
+	// sourced chain has monthlies only — every weekly-biased strategy
+	// produced zero fills until synthetic weeklies landed. Operators can
+	// still kill-switch it via `enabled: false`.
+	SyntheticChain SyntheticChainConfig `yaml:"synthetic_chain"`
+}
+
+// SyntheticChainConfig mirrors backtest.SyntheticChainConfig as a YAML
+// struct. The backtest package deep-copies these fields into its own
+// struct at bootstrap time to keep the adapter packages free of
+// config-package imports.
+type SyntheticChainConfig struct {
+	Enabled         bool    `yaml:"enabled"`
+	StrikeGridPct   float64 `yaml:"strike_grid_pct"`
+	StrikeStepPct   float64 `yaml:"strike_step_pct"`
+	IVDefault       float64 `yaml:"iv_default"`
+	RiskFreeRate    float64 `yaml:"risk_free_rate"`
+	BidAskSpreadPct float64 `yaml:"bid_ask_spread_pct"`
 }
 
 // OptionsConfig groups options-pipeline knobs that live outside the
@@ -774,6 +795,36 @@ func applyBacktestDefaults(c BacktestConfig) BacktestConfig {
 	}
 	if c.PessimisticSlippageMultiplier == 0 {
 		c.PessimisticSlippageMultiplier = 2.0
+	}
+	c.SyntheticChain = applySyntheticChainDefaults(c.SyntheticChain)
+	return c
+}
+
+// applySyntheticChainDefaults materializes synthetic chain defaults. The
+// feature is default-on because DoltHub's historical_option_chain has
+// monthlies only — every weekly-biased strategy produces zero fills
+// without it. Operators flip enabled=false to kill-switch back to the
+// prior behavior; all other fields have safe sentinel defaults.
+func applySyntheticChainDefaults(c SyntheticChainConfig) SyntheticChainConfig {
+	omitted := !c.Enabled && c.StrikeGridPct == 0 && c.StrikeStepPct == 0 &&
+		c.IVDefault == 0 && c.RiskFreeRate == 0 && c.BidAskSpreadPct == 0
+	if omitted {
+		c.Enabled = true
+	}
+	if c.StrikeGridPct == 0 {
+		c.StrikeGridPct = 0.30
+	}
+	if c.StrikeStepPct == 0 {
+		c.StrikeStepPct = 0.01
+	}
+	if c.IVDefault == 0 {
+		c.IVDefault = 0.40
+	}
+	if c.RiskFreeRate == 0 {
+		c.RiskFreeRate = 0.045
+	}
+	if c.BidAskSpreadPct == 0 {
+		c.BidAskSpreadPct = 0.03
 	}
 	return c
 }

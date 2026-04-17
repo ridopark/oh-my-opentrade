@@ -502,6 +502,38 @@ func (r *Runner) Run(ctx context.Context) error {
 	optionsAdapter := NewHistoricalOptionsAdapter(histOptRepo, clockFn)
 	optionsAdapter.SetLogger(r.log)
 
+	// Synthetic chain fallback: fills gaps in historical_option_chain
+	// (DoltHub-sourced, monthlies only) with BSM-priced weekly expiries
+	// so DTE-5..14 strategies can find contracts in backtests. Disabled
+	// via YAML preserves byte-identical behavior with the pre-synthetic path.
+	if btCfg := r.appCfg.Backtest.SyntheticChain; btCfg.Enabled {
+		ivRepo := timescaledb.NewIVRepository(timescaledb.NewSqlDB(r.infra.DB), r.log.With().Str("component", "iv_repo_synth").Logger())
+		genCfg := SyntheticChainConfig{
+			Enabled:         btCfg.Enabled,
+			StrikeGridPct:   btCfg.StrikeGridPct,
+			StrikeStepPct:   btCfg.StrikeStepPct,
+			IVDefault:       btCfg.IVDefault,
+			RiskFreeRate:    btCfg.RiskFreeRate,
+			BidAskSpreadPct: btCfg.BidAskSpreadPct,
+		}
+		spotFn := func(ctx context.Context, sym domain.Symbol, asOf time.Time) (float64, error) {
+			return lookupSpot(ctx, repo, sym, asOf)
+		}
+		ivFn := func(ctx context.Context, sym domain.Symbol, _ time.Time) (float64, error) {
+			snap, err := ivRepo.GetLatestIV(ctx, sym)
+			if err != nil {
+				return 0, nil
+			}
+			return snap.ATMIV, nil
+		}
+		optionsAdapter.SetSyntheticGenerator(NewSyntheticChainGenerator(genCfg, spotFn, ivFn))
+		r.log.Info().
+			Float64("strike_grid_pct", genCfg.StrikeGridPct).
+			Float64("iv_default", genCfg.IVDefault).
+			Float64("risk_free_rate", genCfg.RiskFreeRate).
+			Msg("synthetic options chain enabled")
+	}
+
 	// Wire historical options to simbroker for realistic exit pricing.
 	// Uses the cached adapter instead of the raw repo so that after PreLoad,
 	// SimBroker exit lookups are served from memory.
@@ -1346,6 +1378,29 @@ func (r *Runner) Run(ctx context.Context) error {
 		if sharedErr != nil {
 			r.status.Store("error")
 			return fmt.Errorf("build strategy shared: %w", sharedErr)
+		}
+
+		// The sharded path previously relied on pipeline.Enricher being nil
+		// when DisableEnricher=true, which caused the runner to wire a
+		// signalPassthrough subscriber that converted SignalCreated directly
+		// to SignalEnriched. After the 2026-04-17 refactor pipeline.Enricher
+		// is ALWAYS non-nil, so the passthrough never wires — and the shared
+		// enricher that the sharded pipeline uses was never Start()'d,
+		// leaving no subscriber on SignalCreated. Matches CLI omo-replay
+		// behavior which starts strategyShared.Enricher explicitly.
+		if strategyShared.Enricher != nil {
+			if startErr := strategyShared.Enricher.Start(ctx); startErr != nil {
+				r.status.Store("error")
+				return fmt.Errorf("start shared enricher: %w", startErr)
+			}
+		}
+		if strategyShared.RiskSizer != nil {
+			strategyShared.RiskSizer.SetNowFn(clockFn)
+			strategyShared.RiskSizer.SetExitCooldown(3 * time.Minute)
+			if startErr := strategyShared.RiskSizer.Start(ctx); startErr != nil {
+				r.status.Store("error")
+				return fmt.Errorf("start shared risk sizer: %w", startErr)
+			}
 		}
 
 		stratDeps := bootstrap.StrategyDeps{

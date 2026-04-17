@@ -321,7 +321,15 @@ func (a *Adapter) GetQuote(ctx context.Context, symbol domain.Symbol) (float64, 
 	return a.rest.GetQuote(ctx, a.dataURL, symbol)
 }
 
-func (a *Adapter) GetOptionChain(ctx context.Context, underlying domain.Symbol, expiry time.Time, right domain.OptionRight) ([]domain.OptionContractSnapshot, error) {
+// GetOptionChain satisfies ports.OptionsMarketDataPort. The live Alpaca
+// adapter already fetches a +/- 7-day window around the target expiry via
+// the REST client, so minDTE/maxDTE are intentionally ignored here — the
+// contract selection service does the DTE filtering downstream. Accepting
+// the args keeps the interface uniform with the backtest path where a
+// wider DTE window unlocks synthetic weekly expiries.
+func (a *Adapter) GetOptionChain(ctx context.Context, underlying domain.Symbol, expiry time.Time, right domain.OptionRight, minDTE, maxDTE int) ([]domain.OptionContractSnapshot, error) {
+	_ = minDTE
+	_ = maxDTE
 	return a.rest.GetOptionChain(ctx, a.dataURL, underlying, expiry, right)
 }
 
