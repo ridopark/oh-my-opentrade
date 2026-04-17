@@ -405,7 +405,7 @@ func main() {
 			EnvMode:         domain.EnvModePaper,
 			Equity:          initialEquity,
 			Clock:           clockFn,
-			DisableEnricher: noAIFlag,
+			DisableAI: noAIFlag,
 			Logger:          log,
 		}
 		strategyShared, err = bootstrap.BuildStrategyShared(strategyDeps)
@@ -593,7 +593,7 @@ func main() {
 			EnvMode:         domain.EnvModePaper,
 			Equity:          initialEquity,
 			Clock:           clockFn,
-			DisableEnricher: noAIFlag,
+			DisableAI: noAIFlag,
 			Logger:          log,
 		})
 		if err != nil {

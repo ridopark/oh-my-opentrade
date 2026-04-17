@@ -32,9 +32,14 @@ type StrategyDeps struct {
 	EnvMode         domain.EnvMode
 	Equity          float64
 	Clock           func() time.Time
-	DisableEnricher bool
-	Logger          zerolog.Logger
-	BacktestID      string // non-empty → tag slog output with backtest_id
+	// DisableAI disables the LLM debate but keeps the enricher in the
+	// pipeline. When true, the enricher emits pass-through SignalEnriched
+	// events using the original signal's strength as confidence, so the
+	// risk sizer still fires. This is the setting backtests want when
+	// they pass no_ai=true: "run without LLM", not "kill the pipeline".
+	DisableAI  bool
+	Logger     zerolog.Logger
+	BacktestID string // non-empty → tag slog output with backtest_id
 	// TideTracker, when non-nil, is wired into the strategy runner so AVWAP
 	// entry signals can be tagged with SPY/QQQ intraday-VWAP deviation for
 	// retrospective telemetry analysis. Optional.
@@ -51,7 +56,7 @@ type StrategyDeps struct {
 type StrategyPipeline struct {
 	Runner       *strategy.Runner
 	Router       *strategy.Router
-	Enricher     *strategy.SignalDebateEnricher // nil when DisableEnricher
+	Enricher     *strategy.SignalDebateEnricher // always constructed; runs in skip-AI mode when DisableAI=true
 	RiskSizer    *strategy.RiskSizer
 	LifecycleSvc *strategy.LifecycleService
 	BaseSymbols  []string
@@ -69,7 +74,7 @@ type StrategyPipeline struct {
 type StrategyShared struct {
 	Registry  *strategy.MemRegistry
 	Specs     []stratports.Spec
-	Enricher  *strategy.SignalDebateEnricher // nil when DisableEnricher
+	Enricher  *strategy.SignalDebateEnricher // always constructed; runs in skip-AI mode when DisableAI=true
 	RiskSizer *strategy.RiskSizer
 	Clock     func() time.Time
 	Logger    *slog.Logger
@@ -125,27 +130,30 @@ func BuildStrategyShared(deps StrategyDeps) (*StrategyShared, error) {
 		clockFn = time.Now
 	}
 
-	var enricher *strategy.SignalDebateEnricher
-	if !deps.DisableEnricher {
-		var opts []strategy.EnricherOption
-		if deps.Repo != nil {
-			opts = append(opts, strategy.WithRepository(deps.Repo))
-		}
-		if deps.MarketDataFn != nil {
-			opts = append(opts, strategy.WithMarketDataProvider(deps.MarketDataFn))
-		}
-		if deps.PositionLookup != nil {
-			opts = append(opts, strategy.WithPositionLookup(deps.PositionLookup))
-		}
-		if deps.StratPerf != nil {
-			opts = append(opts, strategy.WithStrategyPerformance(deps.StratPerf))
-		}
-		if deps.NewsProvider != nil {
-			opts = append(opts, strategy.WithNewsProvider(deps.NewsProvider))
-		}
-		opts = append(opts, strategy.WithDebateTimeout(30*time.Second))
-		enricher = strategy.NewSignalDebateEnricher(deps.EventBus, deps.AIAdvisor, stratLog, opts...)
+	// Enricher is always constructed. When DisableAI=true it runs in
+	// skip-AI mode — it still emits SignalEnriched events (using the
+	// original signal's strength as confidence) but bypasses the LLM
+	// round-trip. Prior behavior skipped the whole enricher, which broke
+	// the risk_sizer subscription chain and produced empty backtest
+	// results; see the 2026-04-17 no_ai=true bug.
+	var opts []strategy.EnricherOption
+	if deps.Repo != nil {
+		opts = append(opts, strategy.WithRepository(deps.Repo))
 	}
+	if deps.MarketDataFn != nil {
+		opts = append(opts, strategy.WithMarketDataProvider(deps.MarketDataFn))
+	}
+	if deps.PositionLookup != nil {
+		opts = append(opts, strategy.WithPositionLookup(deps.PositionLookup))
+	}
+	if deps.StratPerf != nil {
+		opts = append(opts, strategy.WithStrategyPerformance(deps.StratPerf))
+	}
+	if deps.NewsProvider != nil {
+		opts = append(opts, strategy.WithNewsProvider(deps.NewsProvider))
+	}
+	opts = append(opts, strategy.WithDebateTimeout(30*time.Second), strategy.WithSkipAI(deps.DisableAI))
+	enricher := strategy.NewSignalDebateEnricher(deps.EventBus, deps.AIAdvisor, stratLog, opts...)
 
 	riskSizer := strategy.NewRiskSizer(deps.EventBus, deps.SpecStore, deps.Equity, stratLog)
 	if deps.OptionsMarket != nil {

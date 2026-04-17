@@ -63,7 +63,7 @@ func TestBuildStrategyPipeline(t *testing.T) {
 		t.Fatal("LifecycleSvc is nil")
 	}
 	if pipeline.Enricher == nil {
-		t.Fatal("Enricher should be non-nil when DisableEnricher=false")
+		t.Fatal("Enricher should be non-nil when DisableAI=false")
 	}
 	if len(pipeline.BaseSymbols) == 0 {
 		t.Fatal("BaseSymbols should not be empty")
@@ -95,7 +95,7 @@ func TestBuildStrategyShared(t *testing.T) {
 		t.Fatal("RiskSizer nil")
 	}
 	if shared.Enricher == nil {
-		t.Fatal("Enricher should be non-nil when DisableEnricher=false")
+		t.Fatal("Enricher should be non-nil when DisableAI=false")
 	}
 }
 
@@ -108,9 +108,9 @@ func TestBuildStrategyShard_SlabFilter(t *testing.T) {
 		TenantID:        "test",
 		EnvMode:         domain.EnvModePaper,
 		Equity:          100_000,
-		Clock:           func() time.Time { return time.Date(2025, 6, 1, 10, 0, 0, 0, time.UTC) },
-		DisableEnricher: true,
-		Logger:          zerolog.Nop(),
+		Clock:     func() time.Time { return time.Date(2025, 6, 1, 10, 0, 0, 0, time.UTC) },
+		DisableAI: true,
+		Logger:    zerolog.Nop(),
 	}
 	shared, err := BuildStrategyShared(deps)
 	if err != nil {
@@ -169,22 +169,25 @@ func TestBuildStrategyPipeline_NoAI(t *testing.T) {
 	specStore := specStoreFromConfigs(t)
 
 	pipeline, err := BuildStrategyPipeline(StrategyDeps{
-		EventBus:        stubEventBus{},
-		SpecStore:       specStore,
-		AIAdvisor:       stubAIAdvisor{},
-		TenantID:        "test",
-		EnvMode:         domain.EnvModePaper,
-		Equity:          100_000,
-		Clock:           func() time.Time { return time.Date(2025, 6, 1, 10, 0, 0, 0, time.UTC) },
-		DisableEnricher: true,
-		Logger:          zerolog.Nop(),
+		EventBus:  stubEventBus{},
+		SpecStore: specStore,
+		AIAdvisor: stubAIAdvisor{},
+		TenantID:  "test",
+		EnvMode:   domain.EnvModePaper,
+		Equity:    100_000,
+		Clock:     func() time.Time { return time.Date(2025, 6, 1, 10, 0, 0, 0, time.UTC) },
+		DisableAI: true,
+		Logger:    zerolog.Nop(),
 	})
 	if err != nil {
 		t.Fatalf("BuildStrategyPipeline returned error: %v", err)
 	}
 
-	if pipeline.Enricher != nil {
-		t.Fatal("Enricher should be nil when DisableEnricher=true")
+	// With DisableAI=true the enricher is still constructed; it just
+	// short-circuits the LLM call. This keeps the risk_sizer subscription
+	// chain intact so no_ai backtests can emit trades.
+	if pipeline.Enricher == nil {
+		t.Fatal("Enricher should be non-nil even when DisableAI=true (skip-AI mode)")
 	}
 	if pipeline.Runner == nil {
 		t.Fatal("Runner is nil")
