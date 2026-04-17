@@ -119,6 +119,21 @@ type CryptoRevertConfig struct {
 	// inducement_flip). Time-only rules (MAX_HOLDING_TIME) still fire as a
 	// safety net. Default false preserves legacy behavior.
 	StrategyExitsPriority bool
+
+	// InducementFlipEnabled: when false, the OnBar exit block skips the
+	// opposite-sweep "inducement_flip" rule. Quant review on Coinbase-backed
+	// data found 27.9% of exits firing flip — opposite sweeps often register
+	// *during* a reversion (mean reversion by definition requires adverse
+	// flow), so flip was exiting into the thesis. Default true for
+	// backward-compat; the TOML flips it off.
+	InducementFlipEnabled bool
+
+	// Trail activates once unrealized PnL% crosses TrailActivationPct (fraction,
+	// e.g. 0.0035 = 0.35%). Once armed, the position tracks its per-bar peak
+	// PnL% and emits an exit when peak - current > TrailGivebackPct. Disabled
+	// when TrailActivationPct <= 0.
+	TrailActivationPct float64 // default 0 (disabled)
+	TrailGivebackPct   float64 // default 0
 }
 
 func parseCryptoRevertConfig(params map[string]any) CryptoRevertConfig {
@@ -144,6 +159,9 @@ func parseCryptoRevertConfig(params map[string]any) CryptoRevertConfig {
 		WeightAsiaHours:        getFloat64(params, "weight_asia_hours", 1.0),
 		WeightWeekend:          getFloat64(params, "weight_weekend", 1.0),
 		StrategyExitsPriority:  getBool(params, "strategy_exits_priority", false),
+		InducementFlipEnabled:  getBool(params, "inducement_flip_enabled", true),
+		TrailActivationPct:     getFloat64(params, "trail_activation_pct", 0),
+		TrailGivebackPct:       getFloat64(params, "trail_giveback_pct", 0),
 	}
 }
 
@@ -164,6 +182,12 @@ type CryptoRevertState struct {
 	PendingEntryAt time.Time  `json:"pendingEntryAt,omitzero"`
 	EntryPrice     float64    `json:"entryPrice,omitempty"`
 	EntryTime      time.Time  `json:"entryTime,omitzero"`
+
+	// TrailPeakPnLPct holds the high-water mark of unrealized PnL (as a
+	// fraction, e.g. 0.005 = 0.5%) for the active long position. Reset to 0
+	// on entry and on exit. Only meaningful when PositionSide == SideBuy and
+	// Config.TrailActivationPct > 0.
+	TrailPeakPnLPct float64 `json:"trailPeakPnLPct,omitempty"`
 
 	// Indicators — not persisted; rebuilt via ReplayOnBar.
 	vwap       *start.SessionVWAP      `json:"-"`
@@ -462,8 +486,29 @@ func (s *CryptoRevertStrategy) OnBar(ctx start.Context, symbol string, bar start
 	if rst.PositionSide == start.SideBuy {
 		exitReason := ""
 
+		// Trailing stop: arm once unrealized PnL% crosses TrailActivationPct,
+		// then exit when giveback from the peak exceeds TrailGivebackPct.
+		// MFE analysis showed 85.6% of losers touched positive territory
+		// (avg +0.478%) before reverting; this rule converts those bleeders
+		// into small locked-in wins. Disabled by default (TrailActivationPct=0).
+		unrealizedPct := 0.0
+		if rst.EntryPrice > 0 {
+			unrealizedPct = (bar.Close - rst.EntryPrice) / rst.EntryPrice
+		}
+		// Update peak before checking trail — peak only grows.
+		if unrealizedPct > rst.TrailPeakPnLPct {
+			rst.TrailPeakPnLPct = unrealizedPct
+		}
+		// Trail exit: fire only after activation threshold has been crossed.
+		if cfg.TrailActivationPct > 0 &&
+			rst.TrailPeakPnLPct >= cfg.TrailActivationPct &&
+			rst.TrailPeakPnLPct-unrealizedPct > cfg.TrailGivebackPct &&
+			exitReason == "" {
+			exitReason = "trail_stop"
+		}
+
 		// Reversion complete: |dev_z| below |ExitDevZ|.
-		if math.Abs(devZ) < math.Abs(cfg.ExitDevZ) {
+		if exitReason == "" && math.Abs(devZ) < math.Abs(cfg.ExitDevZ) {
 			exitReason = "reversion_complete"
 		}
 
@@ -479,8 +524,10 @@ func (s *CryptoRevertStrategy) OnBar(ctx start.Context, symbol string, bar start
 			}
 		}
 
-		// Opposite inducement re-fire (regime flip).
-		if exitReason == "" && rst.lastBearishSweepIdx != priorBearishSweepIdx {
+		// Opposite inducement re-fire (regime flip). Gated by config: mean
+		// reversion often sees adverse flow mid-revert, so opposite sweeps
+		// fire into the thesis and hurt edge on 5m data. Disabled by TOML.
+		if cfg.InducementFlipEnabled && exitReason == "" && rst.lastBearishSweepIdx != priorBearishSweepIdx {
 			exitReason = "inducement_flip"
 		}
 
@@ -505,6 +552,7 @@ func (s *CryptoRevertStrategy) OnBar(ctx start.Context, symbol string, bar start
 			rst.PositionSide = ""
 			rst.EntryPrice = 0
 			rst.EntryTime = time.Time{}
+			rst.TrailPeakPnLPct = 0
 			return rst, signals, nil
 		}
 	}
@@ -607,6 +655,7 @@ func (s *CryptoRevertStrategy) OnBar(ctx start.Context, symbol string, bar start
 	rst.PositionSide = start.SideBuy
 	rst.EntryPrice = bar.Close
 	rst.EntryTime = now
+	rst.TrailPeakPnLPct = 0
 	return rst, signals, nil
 }
 
@@ -660,6 +709,7 @@ func (s *CryptoRevertStrategy) OnEvent(_ start.Context, _ string, evt any, st st
 			rst.PositionSide = ""
 			rst.EntryPrice = 0
 			rst.EntryTime = time.Time{}
+			rst.TrailPeakPnLPct = 0
 		}
 	case start.EntryRejection:
 		// Signal was rejected downstream (risk, exposure, etc.). Roll the
@@ -668,6 +718,7 @@ func (s *CryptoRevertStrategy) OnEvent(_ start.Context, _ string, evt any, st st
 		rst.PositionSide = ""
 		rst.EntryPrice = 0
 		rst.EntryTime = time.Time{}
+		rst.TrailPeakPnLPct = 0
 	}
 
 	return rst, nil, nil
