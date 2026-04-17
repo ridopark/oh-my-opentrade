@@ -25,7 +25,14 @@ author = "system"
 created_at = "2026-04-15T00:00:00Z"
 
 [lifecycle]
-state = "PaperActive"
+# Retired 2026-04-17 — four tuning passes with MFE/MAE data converged to
+# PF ceiling ~0.40 on majors-only 15m (60 trades) and 0.27 on the 11-sym
+# universe (1754 trades). Entry thesis is sound (85.6% of losers touch
+# positive MFE) but retail-scale fill latency (bar-close decision →
+# next-bar-open fill) plus 5 bps slippage consistently erases the edge.
+# Can be reactivated if intra-bar fill simulation lands or if we add a
+# lower-latency execution venue. See commits 7c38710, acf9ebc, f5378b2.
+state = "Deactivated"
 paper_only = true
 
 [routing]
