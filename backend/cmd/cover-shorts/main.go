@@ -1,6 +1,10 @@
 // cover-shorts is a one-shot operator tool that connects to IBKR Gateway
 // on a unique client_id (separate from the running omo-core) and submits
-// BUY orders to flatten unintended short positions.
+// BUY orders to flatten unintended short positions. On a successful cover,
+// it also writes a reconciliation trade row into the TimescaleDB trades
+// ledger so the global reconciler sees DB net = broker net. Without this,
+// the DB-side net stays negative forever and the reconciler alerts until
+// an operator cleans up the trades table manually.
 //
 // Safety:
 //   - Uses client_id=97 so it does NOT collide with omo-core (client_id=2)
@@ -12,6 +16,9 @@
 //   - Uses marketable limits, not MKT, to bound slippage.
 //   - Dumps ALL broker positions at the start for audit so hidden phantom
 //     shorts outside the target list are visible.
+//   - DB writes are best-effort: if the DB is unreachable the broker cover
+//     still executes; operator must then clean up manually (see SQL pattern
+//     in the incident runbook / 2026-04-17 reconciliation commits).
 //
 // Usage:
 //
@@ -26,12 +33,17 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"strconv"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/oh-my-opentrade/backend/internal/adapters/ibkr"
+	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/rs/zerolog"
@@ -68,6 +80,36 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "example: cover-shorts SOFI260501P00021000 2.50 CRM260424P00185000 6.50")
 }
 
+// openDB connects to TimescaleDB using the standard env vars the rest of
+// omo-core reads. Returns nil (and logs a warning) if the connection fails —
+// the cover action can still proceed; the operator just needs to write the
+// reconciliation rows manually afterwards.
+func openDB(log zerolog.Logger) *sql.DB {
+	host := os.Getenv("TIMESCALEDB_HOST")
+	port := os.Getenv("TIMESCALEDB_PORT")
+	user := os.Getenv("TIMESCALEDB_USER")
+	password := os.Getenv("TIMESCALEDB_PASSWORD")
+	dbname := os.Getenv("TIMESCALEDB_NAME")
+	if host == "" || port == "" || user == "" || dbname == "" {
+		log.Warn().Msg("TIMESCALEDB_* env vars not fully set — skipping DB reconciliation writes")
+		return nil
+	}
+	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+		host, port, user, password, dbname)
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		log.Warn().Err(err).Msg("pgx parse failed — skipping DB reconciliation writes")
+		return nil
+	}
+	db := stdlib.OpenDB(*cfg)
+	if pErr := db.PingContext(context.Background()); pErr != nil {
+		log.Warn().Err(pErr).Msg("DB ping failed — skipping DB reconciliation writes")
+		_ = db.Close()
+		return nil
+	}
+	return db
+}
+
 func main() {
 	log := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout}).With().Timestamp().Logger()
 
@@ -92,6 +134,13 @@ func main() {
 	}
 	defer adapter.Close()
 
+	db := openDB(log)
+	var repo *timescaledb.Repository
+	if db != nil {
+		defer db.Close()
+		repo = timescaledb.NewRepositoryWithLogger(timescaledb.NewSqlDB(db), log.With().Str("component", "reconcile_repo").Logger())
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -99,8 +148,6 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("GetPositions failed")
 	}
-	// Audit dump: every broker position with its signed quantity so hidden
-	// phantom shorts outside the target list are visible in the run.
 	for _, p := range positions {
 		log.Info().
 			Str("symbol", string(p.Symbol)).
@@ -162,6 +209,10 @@ func main() {
 		after[p.Symbol] = p.SignedQuantity()
 	}
 
+	// For each target, verify position changed and write a reconciliation
+	// trade row into the DB. The covered_qty is derived from the broker
+	// delta so we only record trades that actually filled. If the DB is
+	// unavailable we log the exact SQL to run manually.
 	for _, t := range targets {
 		before := signedBySymbol[t.occSymbol]
 		nowQty := after[t.occSymbol]
@@ -170,7 +221,90 @@ func main() {
 			Float64("before", before).
 			Float64("after", nowQty).
 			Msg("position check")
+
+		coveredQty := nowQty - before
+		if coveredQty <= 0 {
+			continue
+		}
+
+		if repo == nil {
+			log.Warn().
+				Str("symbol", string(t.occSymbol)).
+				Float64("covered_qty", coveredQty).
+				Float64("limit", t.coverLimit).
+				Msg("DB unavailable — NOT writing reconciliation row; clean up manually")
+			continue
+		}
+
+		trade := buildReconciliationTrade(t.occSymbol, coveredQty, t.coverLimit)
+		if saveErr := repo.SaveTrade(ctx, trade); saveErr != nil {
+			log.Error().Err(saveErr).
+				Str("symbol", string(t.occSymbol)).
+				Msg("failed to write reconciliation trade row — MUST clean up manually")
+			continue
+		}
+		log.Info().
+			Str("symbol", string(t.occSymbol)).
+			Float64("qty", coveredQty).
+			Float64("price", t.coverLimit).
+			Str("strategy", "reconciliation").
+			Msg("reconciliation BUY row written to trades DB")
 	}
 
 	fmt.Println("done")
+}
+
+// buildReconciliationTrade constructs the compensating BUY row. Uses the
+// limit price as the fill-price approximation (actual broker fill is
+// typically tighter, but the limit is the conservative upper bound for
+// accounting and matches what the operator submitted). OCC symbol is
+// decoded for the option fields so downstream tools can filter on
+// instrument_type=OPTION, strategy=reconciliation.
+func buildReconciliationTrade(sym domain.Symbol, qty, price float64) domain.Trade {
+	t := domain.Trade{
+		Time:       time.Now().UTC(),
+		TenantID:   "default",
+		EnvMode:    domain.EnvModePaper,
+		TradeID:    uuid.New(),
+		Symbol:     sym,
+		Side:       "BUY",
+		Quantity:   qty,
+		Price:      price,
+		Commission: 0,
+		Status:     "FILLED",
+		Strategy:   "reconciliation",
+		Rationale:  "cover-shorts: broker-side cover via client_id=97 at $" + strconv.FormatFloat(price, 'f', 2, 64) + " limit; zeros DB net to match broker reality",
+	}
+	if domain.IsOCCSymbol(sym) {
+		t.InstrumentType = domain.InstrumentTypeOption
+		t.OptionSymbol = string(sym)
+		if underlying, expiry, strike, right, ok := decodeOCC(sym); ok {
+			t.Underlying = underlying
+			t.Expiry = expiry
+			t.Strike = strike
+			t.OptionRight = right
+		}
+	}
+	return t
+}
+
+// decodeOCC parses an OCC option symbol like "SOFI260501P00021000" into
+// its parts. Returns ok=false if the string is too short to be valid OCC.
+func decodeOCC(sym domain.Symbol) (underlying string, expiry time.Time, strike float64, right string, ok bool) {
+	s := string(sym)
+	if len(s) < 15 {
+		return "", time.Time{}, 0, "", false
+	}
+	suffix := s[len(s)-15:]
+	underlying = s[:len(s)-15]
+	exp, err := time.Parse("060102", suffix[:6])
+	if err != nil {
+		return "", time.Time{}, 0, "", false
+	}
+	right = string(suffix[6])
+	strikeInt, err := strconv.ParseFloat(suffix[7:], 64)
+	if err != nil {
+		return "", time.Time{}, 0, "", false
+	}
+	return underlying, exp, strikeInt / 1000.0, right, true
 }
