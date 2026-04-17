@@ -651,6 +651,14 @@ func (s *Service) processFill(fill fillMsg) {
 		}
 	}
 
+	// strategy_exits_priority flag: strategy's OnBar exits are authoritative,
+	// skip price-based exit rules (see MonitoredPosition.StrategyExitsPriority).
+	if fill.SignalTags != nil {
+		if v, ok := fill.SignalTags["strategy_exits_priority"]; ok && v == "true" {
+			pos.StrategyExitsPriority = true
+		}
+	}
+
 	s.positions[key] = &pos
 	s.log.Info().
 		Str("symbol", string(fill.Symbol)).

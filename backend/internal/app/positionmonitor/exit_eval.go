@@ -209,29 +209,35 @@ func (s *Service) tick() {
 			}
 			inPremiumHold := timeSinceEntry < time.Duration(premiumHoldBars)*barDur
 
-			for _, rule := range pos.ExitRules {
-				if !rule.Type.RequiresPrice() {
-					continue
-				}
-				if inPremiumHold && isTakeProfitRule(rule.Type) {
-					continue
-				}
-				adjusted := sessionAdjustRule(rule, pos.AssetClass, now)
-				triggered, reason := Evaluate(adjusted, pos, price, now, evalCtx)
-				if !triggered {
-					continue
-				}
+			// When StrategyExitsPriority is set, strategy-emitted exits
+			// (trailing_stop, hard_stop, signal_reversal) are authoritative;
+			// skip price-based rule evaluation. Time-only rules (Phase 2
+			// below) still fire as a safety net (MAX_HOLDING_TIME, EOD).
+			if !pos.StrategyExitsPriority {
+				for _, rule := range pos.ExitRules {
+					if !rule.Type.RequiresPrice() {
+						continue
+					}
+					if inPremiumHold && isTakeProfitRule(rule.Type) {
+						continue
+					}
+					adjusted := sessionAdjustRule(rule, pos.AssetClass, now)
+					triggered, reason := Evaluate(adjusted, pos, price, now, evalCtx)
+					if !triggered {
+						continue
+					}
 
-				s.log.Info().
-					Str("symbol", string(pos.Symbol)).
-					Str("rule", string(rule.Type)).
-					Str("reason", reason).
-					Float64("price", price).
-					Float64("entry_price", pos.EntryPrice).
-					Msg("exit rule triggered")
+					s.log.Info().
+						Str("symbol", string(pos.Symbol)).
+						Str("rule", string(rule.Type)).
+						Str("reason", reason).
+						Float64("price", price).
+						Float64("entry_price", pos.EntryPrice).
+						Msg("exit rule triggered")
 
-				s.triggerExit(pos, rule, reason, price, now)
-				break
+					s.triggerExit(pos, rule, reason, price, now)
+					break
+				}
 			}
 		}
 

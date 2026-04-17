@@ -76,28 +76,35 @@ type CryptoTSMConfig struct {
 
 	// Execution
 	CooldownDays int // minimum days between trades on same symbol (default 2)
+
+	// When true, position-monitor skips price-based exit rules and trusts the
+	// strategy's OnBar exits (trailing_stop, hard_stop, signal_reversal).
+	// Time-only rules (MAX_HOLDING_TIME) still fire as a safety net. Default
+	// false preserves legacy behavior for strategies that rely on exit_rules.
+	StrategyExitsPriority bool
 }
 
 func parseCryptoTSMConfig(params map[string]any) CryptoTSMConfig {
 	return CryptoTSMConfig{
-		LookbackDays:        getInt(params, "lookback_days", 28),
-		DecayTauDivisor:     getFloat64(params, "decay_tau_divisor", 3.0),
-		ZScoreWindow:        getInt(params, "zscore_window", 90),
-		EntryZThreshold:     getFloat64(params, "entry_z_threshold", 0.5),
-		ExitZThreshold:      getFloat64(params, "exit_z_threshold", 0.0),
-		VolRegimeFast:       getInt(params, "vol_regime_fast", 20),
-		VolRegimeSlow:       getInt(params, "vol_regime_slow", 50),
-		RealizedVolCapPct:   getFloat64(params, "realized_vol_cap_pct", 120.0),
-		CrashVolExitPct:     getFloat64(params, "crash_vol_exit_pct", 150.0),
-		VolAnnualizeFactor:  getFloat64(params, "vol_annualize_factor", 19.105), // sqrt(365)
-		TrailingStopATRMult: getFloat64(params, "trailing_stop_atr_mult", 2.5),
-		ATRPeriod:           getInt(params, "atr_period", 14),
-		MaxHoldDays:         getInt(params, "max_hold_days", 14),
-		HardStopPct:         getFloat64(params, "hard_stop_pct", 0.05),
-		RiskPerTradeBPS:     getInt(params, "risk_per_trade_bps", 200),
-		MaxGrossExposurePct: getFloat64(params, "max_gross_exposure_pct", 80.0),
-		MaxPositions:        getInt(params, "max_positions", 3),
-		CooldownDays:        getInt(params, "cooldown_days", 2),
+		LookbackDays:          getInt(params, "lookback_days", 28),
+		DecayTauDivisor:       getFloat64(params, "decay_tau_divisor", 3.0),
+		ZScoreWindow:          getInt(params, "zscore_window", 90),
+		EntryZThreshold:       getFloat64(params, "entry_z_threshold", 0.5),
+		ExitZThreshold:        getFloat64(params, "exit_z_threshold", 0.0),
+		VolRegimeFast:         getInt(params, "vol_regime_fast", 20),
+		VolRegimeSlow:         getInt(params, "vol_regime_slow", 50),
+		RealizedVolCapPct:     getFloat64(params, "realized_vol_cap_pct", 120.0),
+		CrashVolExitPct:       getFloat64(params, "crash_vol_exit_pct", 150.0),
+		VolAnnualizeFactor:    getFloat64(params, "vol_annualize_factor", 19.105), // sqrt(365)
+		TrailingStopATRMult:   getFloat64(params, "trailing_stop_atr_mult", 2.5),
+		ATRPeriod:             getInt(params, "atr_period", 14),
+		MaxHoldDays:           getInt(params, "max_hold_days", 14),
+		HardStopPct:           getFloat64(params, "hard_stop_pct", 0.05),
+		RiskPerTradeBPS:       getInt(params, "risk_per_trade_bps", 200),
+		MaxGrossExposurePct:   getFloat64(params, "max_gross_exposure_pct", 80.0),
+		MaxPositions:          getInt(params, "max_positions", 3),
+		CooldownDays:          getInt(params, "cooldown_days", 2),
+		StrategyExitsPriority: getBool(params, "strategy_exits_priority", false),
 	}
 }
 
@@ -279,13 +286,17 @@ func (s *CryptoTSMStrategy) OnBar(ctx start.Context, symbol string, bar start.Ba
 
 		if exitReason != "" {
 			instanceID, _ := start.NewInstanceID(symbol)
-			sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideSell, 1.0, map[string]string{
+			exitTags := map[string]string{
 				"reason":    exitReason,
 				"ref_price": fmt.Sprintf("%.10f", bar.Close),
 				"z_score":   fmt.Sprintf("%.3f", zScore),
 				"vol5d":     fmt.Sprintf("%.1f", realizedVol5),
 				"strategy":  "crypto_tsm",
-			})
+			}
+			if cfg.StrategyExitsPriority {
+				exitTags["exit_origin"] = "strategy"
+			}
+			sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideSell, 1.0, exitTags)
 			if err == nil {
 				signals = append(signals, sig)
 			}
@@ -335,7 +346,7 @@ func (s *CryptoTSMStrategy) OnBar(ctx start.Context, symbol string, bar start.Ba
 	strength := clampF(zScore/2.0, 0.3, 1.0)
 
 	instanceID, _ := start.NewInstanceID(symbol)
-	sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, strength, map[string]string{
+	entryTags := map[string]string{
 		"reason":        "vwtsm_entry",
 		"ref_price":     fmt.Sprintf("%.10f", bar.Close),
 		"z_score":       fmt.Sprintf("%.3f", zScore),
@@ -344,14 +355,31 @@ func (s *CryptoTSMStrategy) OnBar(ctx start.Context, symbol string, bar start.Ba
 		"vol_expanding": fmt.Sprintf("%v", volExpanding),
 		"atr":           fmt.Sprintf("%.2f", atr),
 		"strategy":      "crypto_tsm",
-	})
+	}
+	if cfg.StrategyExitsPriority {
+		entryTags["strategy_exits_priority"] = "true"
+	}
+	sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, strength, entryTags)
 	if err != nil {
 		return tsmSt, nil, err
 	}
 	signals = append(signals, sig)
 
+	// Eagerly mark the position as open on signal emission. The backtest
+	// slice-dispatch pipeline processes ALL bars in Phase A and only replays
+	// fills (OnEvent) afterward — if we wait for FillConfirmation to set
+	// PositionSide, every subsequent OnBar in Phase A still sees an empty
+	// position and the strategy's own exit rules (trailing_stop, hard_stop,
+	// signal_reversal, vol_spike) never fire. Treating the emitted entry
+	// signal as good-as-filled lets exit evaluation track the hold correctly.
+	// OnEvent still refines EntryPrice with the actual fill price when it
+	// arrives; EntryRejection rolls the position back to flat.
 	tsmSt.PendingEntry = start.SideBuy
 	tsmSt.PendingEntryAt = now
+	tsmSt.PositionSide = start.SideBuy
+	tsmSt.EntryPrice = bar.Close
+	tsmSt.EntryTime = now
+	tsmSt.HighSinceEntry = bar.High
 	return tsmSt, signals, nil
 }
 
@@ -367,30 +395,42 @@ func (s *CryptoTSMStrategy) OnEvent(ctx start.Context, sym string, evt any, st s
 
 	switch e := evt.(type) {
 	case start.FillConfirmation:
-		if tsmSt.PendingEntry == start.SideBuy && e.Side == start.SideBuy {
+		switch e.Side {
+		case start.SideBuy:
+			// OnBar already marked the position open eagerly (see the entry
+			// block). Refresh EntryPrice / HighSinceEntry with the actual
+			// fill price so exit rules evaluate against realized cost basis.
 			tsmSt.PendingEntry = ""
 			tsmSt.PositionSide = start.SideBuy
-			tsmSt.EntryPrice = e.Price
-			tsmSt.EntryTime = tsmSt.PendingEntryAt
-			tsmSt.HighSinceEntry = e.Price
+			if e.Price > 0 {
+				tsmSt.EntryPrice = e.Price
+				if e.Price > tsmSt.HighSinceEntry {
+					tsmSt.HighSinceEntry = e.Price
+				}
+			}
+			if !tsmSt.PendingEntryAt.IsZero() {
+				tsmSt.EntryTime = tsmSt.PendingEntryAt
+			}
 			tsmSt.TradesToday++
-		} else if e.Side == start.SideSell {
-			// Exit fill confirmed — clear all position state. The sell may have
-			// been initiated by our OnBar logic OR by an external exit rule
-			// (MAX_HOLDING_TIME, MAX_LOSS) from position_monitor. Either way,
-			// we're flat now and must be ready to re-enter.
+		case start.SideSell:
+			// Exit fill confirmed — clear all position state. The sell may
+			// have been initiated by our OnBar exit logic OR by an external
+			// exit rule (MAX_HOLDING_TIME, MAX_LOSS) from position_monitor.
+			// Either way we're flat and must be ready to re-enter.
 			tsmSt.PendingEntry = ""
 			tsmSt.PositionSide = ""
 			tsmSt.EntryPrice = 0
 			tsmSt.EntryTime = time.Time{}
 			tsmSt.HighSinceEntry = 0
-			// Note: CooldownUntil is seeded by OnBar exit. For external exits
-			// (MAX_HOLDING_TIME), next OnBar will check CooldownUntil before
-			// re-entering; if 0, entry can fire same bar, which is acceptable
-			// because the z-score gate still applies.
 		}
 	case start.EntryRejection:
+		// Signal was rejected downstream (risk, exposure, etc.). Roll the
+		// eagerly-set position state back to flat so the next bar can retry.
 		tsmSt.PendingEntry = ""
+		tsmSt.PositionSide = ""
+		tsmSt.EntryPrice = 0
+		tsmSt.EntryTime = time.Time{}
+		tsmSt.HighSinceEntry = 0
 	}
 
 	return tsmSt, nil, nil

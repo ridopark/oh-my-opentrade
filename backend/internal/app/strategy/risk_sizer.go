@@ -633,6 +633,15 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 	if rationale == "" {
 		rationale = fmt.Sprintf("signal: %s %s strength=%.2f", sigRef.SignalType, sigRef.Side, enrichment.Confidence)
 	}
+	// Strategy-origin exits: attribute rationale as "strategy:<reason>" so the
+	// trade log distinguishes them from position-monitor-driven "exit_monitor:*"
+	// rationales. Opt-in via the "exit_origin=strategy" tag set by the
+	// strategy when strategy_exits_priority is enabled.
+	if sigRef.SignalType == start.SignalExit.String() && sigRef.Tags["exit_origin"] == "strategy" {
+		if reason := sigRef.Tags["reason"]; reason != "" {
+			rationale = "strategy:" + reason
+		}
+	}
 	intent, err := domain.NewOrderIntent(
 		intentID,
 		event.TenantID,
