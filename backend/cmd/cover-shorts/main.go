@@ -66,15 +66,11 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("GetPositions failed")
 	}
-	// The adapter returns positions with Side+Quantity (magnitude), not signed qty.
-	// Reconstruct the signed position by looking at Side: "SELL" means short.
+	// domain.Trade.SignedQuantity resolves the canonical non-negative-
+	// Quantity + Side contract into a signed position.
 	signedBySymbol := make(map[domain.Symbol]float64, len(positions))
 	for _, p := range positions {
-		q := p.Quantity
-		if p.Side == "SELL" {
-			q = -q
-		}
-		signedBySymbol[p.Symbol] = q
+		signedBySymbol[p.Symbol] = p.SignedQuantity()
 	}
 
 	for _, t := range targets {
@@ -122,11 +118,7 @@ func main() {
 	}
 	after := make(map[domain.Symbol]float64, len(positions2))
 	for _, p := range positions2 {
-		q := p.Quantity
-		if p.Side == "SELL" {
-			q = -q
-		}
-		after[p.Symbol] = q
+		after[p.Symbol] = p.SignedQuantity()
 	}
 
 	for _, t := range targets {

@@ -56,7 +56,7 @@ func (g *ExposureGuard) Check(ctx context.Context, intent domain.OrderIntent) er
 	exposure := make(map[Cluster]float64)
 	for _, p := range positions {
 		cluster := classifySymbol(p.Symbol)
-		exposure[cluster] += p.Quantity * p.Price
+		exposure[cluster] += p.SignedQuantity() * p.Price
 	}
 
 	intentCluster := classifySymbol(intent.Symbol)

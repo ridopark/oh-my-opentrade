@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -421,6 +423,21 @@ type Trade struct {
 	Premium        float64
 	DeltaAtEntry   float64
 	IVAtEntry      float64
+}
+
+// SignedQuantity returns the position-signed quantity: positive for long,
+// negative for short, derived from Side. The canonical Trade contract is
+// non-negative Quantity + Side — NewTrade enforces this. Use this helper
+// whenever you need arithmetic that must preserve direction (net positions,
+// short detection, exposure sign), rather than reading Quantity directly.
+func (t Trade) SignedQuantity() float64 {
+	q := math.Abs(t.Quantity)
+	switch strings.ToLower(t.Side) {
+	case "sell", "short":
+		return -q
+	default:
+		return q
+	}
 }
 
 // NewTrade creates a validated Trade. Quantity must not be negative.

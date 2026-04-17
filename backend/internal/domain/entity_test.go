@@ -240,4 +240,28 @@ func TestTrade(t *testing.T) {
 		_, err := domain.NewTrade(now, tenantID, envMode, tradeID, sym, "BUY", -2.0, 3000.0, 1.5, "FILLED", "", "")
 		assert.ErrorContains(t, err, "quantity cannot be negative")
 	})
+
+	t.Run("SignedQuantity resolves canonical and legacy sign conventions", func(t *testing.T) {
+		cases := []struct {
+			name string
+			side string
+			qty  float64
+			want float64
+		}{
+			{"canonical long (BUY)", "BUY", 19, 19},
+			{"canonical long (long)", "long", 19, 19},
+			{"canonical short (SELL)", "SELL", 19, -19},
+			{"canonical short (short)", "short", 19, -19},
+			{"legacy signed qty (short)", "short", -19, -19},
+			{"mixed-case side", "Sell", 19, -19},
+			{"empty side treated as long", "", 19, 19},
+			{"zero", "BUY", 0, 0},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				tr := domain.Trade{Side: tc.side, Quantity: tc.qty}
+				assert.Equal(t, tc.want, tr.SignedQuantity())
+			})
+		}
+	})
 }
