@@ -28,7 +28,7 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["BTC/USD", "ETH/USD"]
+symbols = ["BTC/USD", "LINK/USD", "DOGE/USD", "XRP/USD"]
 timeframes = ["1d"]
 priority = 60
 conflict_policy = "priority_wins"
