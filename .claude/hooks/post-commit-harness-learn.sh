@@ -138,7 +138,6 @@ jq -n \
   --arg diffstat "$DIFF_STAT" \
   --arg harness "$HARNESS_FILES" \
   '{
-    decision: "allow",
     hookSpecificOutput: {
       hookEventName: "PostToolUse",
       additionalContext: (

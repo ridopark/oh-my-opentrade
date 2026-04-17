@@ -42,7 +42,6 @@ jq -n \
   --arg msg "$COMMIT_MSG" \
   --arg files "$FILES_CHANGED" \
   '{
-    decision: "allow",
     hookSpecificOutput: {
       hookEventName: "PostToolUse",
       additionalContext: (
