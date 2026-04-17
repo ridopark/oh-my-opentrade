@@ -34,13 +34,13 @@ COMMIT_SHA=$(git log -1 --pretty=format:"%h" 2>/dev/null || echo "unknown")
 COMMIT_MSG=$(git log -1 --pretty=format:"%s" 2>/dev/null || echo "unknown")
 FILES_CHANGED=$(git diff --name-only HEAD~1..HEAD 2>/dev/null | head -20 | tr '\n' ', ' || echo "")
 
-# Return JSON telling Claude to run the post-commit-reviewer agent
+# Return JSON telling Claude to invoke /simplify then /review skills
 cat <<EOF
 {
   "decision": "allow",
   "hookSpecificOutput": {
     "hookEventName": "PostToolUse",
-    "additionalContext": "POST-COMMIT REVIEW TRIGGERED for commit ${COMMIT_SHA} (${COMMIT_MSG}). Files changed: ${FILES_CHANGED}. Please spawn the 'post-commit-reviewer' agent to review this commit. If the reviewer returns VERDICT: NEEDS_FIX, ask the user if they want to spawn the 'code-fixer' agent to apply the fixes."
+    "additionalContext": "POST-COMMIT CHECKS TRIGGERED for commit ${COMMIT_SHA} (${COMMIT_MSG}). Files changed: ${FILES_CHANGED}. Invoke the /simplify skill FIRST on this commit's changes — it reviews for reuse, quality, and efficiency and applies fixes if any are found. If /simplify produces a follow-up commit, that commit message MUST include [skip-review] to avoid re-triggering this hook. AFTER /simplify finishes, invoke the /review skill on the final commit for structured review feedback (read-only; no fix commit). If either skill would produce a risky or destructive change, pause and ask the user before applying."
   }
 }
 EOF
