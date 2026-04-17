@@ -67,6 +67,8 @@ type alpacaOptionSnapshot struct {
 	LatestQuote       struct {
 		BP float64 `json:"bp"`
 		AP float64 `json:"ap"`
+		BS int     `json:"bs"`
+		AS int     `json:"as"`
 		// C is a trade condition code string ("A", "I", etc.) — not a price; omitted.
 	} `json:"latestQuote"`
 	LatestTrade struct {
@@ -211,6 +213,8 @@ func (c *RESTClient) GetOptionChain(
 				Bid:       snap.LatestQuote.BP,
 				Ask:       snap.LatestQuote.AP,
 				Last:      snap.LatestTrade.P,
+				BidSize:   snap.LatestQuote.BS,
+				AskSize:   snap.LatestQuote.AS,
 				Timestamp: time.Now(),
 			},
 			Greeks:       greeks,
@@ -265,6 +269,8 @@ func (c *RESTClient) GetOptionPrices(ctx context.Context, dataURL string, symbol
 				Bid:       snap.LatestQuote.BP,
 				Ask:       snap.LatestQuote.AP,
 				Last:      snap.LatestTrade.P,
+				BidSize:   snap.LatestQuote.BS,
+				AskSize:   snap.LatestQuote.AS,
 				Timestamp: time.Now(),
 			}
 		}

@@ -123,8 +123,23 @@ type MonitoredPosition struct {
 	ExitPending      bool   // true when an exit intent has been emitted and is awaiting terminal outcome
 	ExitPendingAt    time.Time
 	ExitOrderID      string       // broker order ID of the active exit order (for cancel-and-chase)
-	ExitRetryCount   int          // number of exit attempts; used to escalate price aggressiveness
+	ExitRetryCount   int          // number of exit attempts (market escalations); re-pegs do NOT increment this
 	EntryThesis      *EntryThesis // nil if no AI enrichment was available at entry
+
+	// Asymmetric exit timeout / re-peg state. A single "exit attempt" can
+	// span several broker orders — the initial limit and up to N re-pegs
+	// tightening toward mid. ExitRepegCount counts re-pegs within the
+	// current attempt; it resets to 0 on market escalation. ExitWallStartedAt
+	// pins the wall-clock start of the attempt so an adverse feed/stuck-broker
+	// combo can't live-lock us in the re-peg sub-loop. ExitManaging is set
+	// while the cancel-and-await goroutine owns the exit lifecycle; it
+	// suppresses re-entrant handleExitTimeout from the tick loop.
+	// ExitLastSentPrice carries the last limit price we sent so the next
+	// re-peg can tighten by one tick rather than recomputing from scratch.
+	ExitRepegCount    int       `json:"exitRepegCount,omitempty"`
+	ExitWallStartedAt time.Time `json:"exitWallStartedAt,omitempty"`
+	ExitManaging      bool      `json:"exitManaging,omitempty"`
+	ExitLastSentPrice float64   `json:"exitLastSentPrice,omitempty"`
 
 	LastRevaluation   *RiskRevaluation `json:"lastRevaluation,omitempty"`
 	LastRevaluationAt time.Time        `json:"lastRevaluationAt,omitempty"`

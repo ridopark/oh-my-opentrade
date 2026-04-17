@@ -31,6 +31,12 @@ type pendingOrder struct {
 	tenantID    string
 	envMode     domain.EnvMode
 	submitStart time.Time
+	// suppressFailureRecord, when true, tells cleanupPendingOrder to skip
+	// positionGate.RecordExitFailure for this order. Set by MarkRepegCancel
+	// so that re-peg cycles — which by design cancel-and-resubmit up to N
+	// times per exit attempt — don't amplify the exit-failure counter 4x
+	// and prematurely trip the circuit breaker.
+	suppressFailureRecord bool
 }
 
 // PositionStateLookup is a narrow interface over the position monitor that
@@ -44,33 +50,35 @@ type PositionStateLookup interface {
 }
 
 type Service struct {
-	eventBus           ports.EventBusPort
-	broker             ports.BrokerPort
-	orderStream        ports.OrderStreamPort
-	repo               ports.RepositoryPort
-	intentJournal      ports.OrderIntentJournal // Sprint 2 write-ahead journal; nil when OMO_ORDER_JOURNAL_ENABLED is false
-	riskEngine         *RiskEngine
-	slippageGuard      *SlippageGuard
-	spreadGuard        *SpreadGuard
-	tradingWindowGuard *TradingWindowGuard
-	killSwitch         *KillSwitch
-	dailyLossBreaker   *risk.DailyLossBreaker
-	positionGate       *PositionGate
-	exposureGuard      *ExposureGuard
-	portfolioGuard     *PortfolioGuard
-	buyingPowerGuard   *BuyingPowerGuard
-	optionsRiskEngine  *OptionsRiskEngine
-	executionGateChain *gate.ExecutionGateChain
-	positionLookup     PositionStateLookup
-	accountEquity      float64
-	log                zerolog.Logger
-	metrics            *metrics.Metrics
-	pendingOrders      sync.Map // brokerOrderID → *pendingOrder
-	tenantID           string
-	envMode            domain.EnvMode
-	syncFill           bool
-	brokerName         string
-	nowFn              func() time.Time
+	eventBus                     ports.EventBusPort
+	broker                       ports.BrokerPort
+	orderStream                  ports.OrderStreamPort
+	repo                         ports.RepositoryPort
+	intentJournal                ports.OrderIntentJournal // Sprint 2 write-ahead journal; nil when OMO_ORDER_JOURNAL_ENABLED is false
+	riskEngine                   *RiskEngine
+	slippageGuard                *SlippageGuard
+	spreadGuard                  *SpreadGuard
+	tradingWindowGuard           *TradingWindowGuard
+	killSwitch                   *KillSwitch
+	dailyLossBreaker             *risk.DailyLossBreaker
+	positionGate                 *PositionGate
+	exposureGuard                *ExposureGuard
+	portfolioGuard               *PortfolioGuard
+	buyingPowerGuard             *BuyingPowerGuard
+	optionsRiskEngine            *OptionsRiskEngine
+	executionGateChain           *gate.ExecutionGateChain
+	positionLookup               PositionStateLookup
+	optionsPricePort             ports.OptionsPricePort // optional — enables marketable-limit dust sweeps on options
+	dustSweepLimitWindowOverride time.Duration          // nonzero to override dustSweepLimitWindow in tests
+	accountEquity                float64
+	log                          zerolog.Logger
+	metrics                      *metrics.Metrics
+	pendingOrders                sync.Map // brokerOrderID → *pendingOrder
+	tenantID                     string
+	envMode                      domain.EnvMode
+	syncFill                     bool
+	brokerName                   string
+	nowFn                        func() time.Time
 }
 
 // Option is a functional option for Service.
@@ -128,6 +136,15 @@ func WithSyncFill() Option {
 // (the default), execution behavior is byte-identical to pre-Sprint-2.
 func WithIntentJournal(j ports.OrderIntentJournal) Option {
 	return func(s *Service) { s.intentJournal = j }
+}
+
+// WithOptionsPricePort wires a live option quote provider. When set, the
+// dust sweep can submit a marketable-limit order on options before falling
+// back to a true market order, which avoids getting filled at the bid on
+// wide-spread contracts. Nil-safe: when unset, the sweep keeps its legacy
+// pure-market behavior.
+func WithOptionsPricePort(p ports.OptionsPricePort) Option {
+	return func(s *Service) { s.optionsPricePort = p }
 }
 
 // WithPositionLookup wires a live position-state reader so handleFill can
@@ -515,12 +532,12 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		// Ownership transfers to pollForFill/syncFill on the happy path;
 		// rejection paths clear it via this deferred fallback.
 		if isEntry(intent) {
-				s.positionGate.MarkInflight(event.TenantID, event.EnvMode, intent.Symbol)
-				defer func() {
-					if !inflightHandedOff {
-						s.positionGate.ClearInflight(event.TenantID, event.EnvMode, intent.Symbol)
-					}
-				}()
+			s.positionGate.MarkInflight(event.TenantID, event.EnvMode, intent.Symbol)
+			defer func() {
+				if !inflightHandedOff {
+					s.positionGate.ClearInflight(event.TenantID, event.EnvMode, intent.Symbol)
+				}
+			}()
 		}
 	}
 
@@ -1015,7 +1032,7 @@ func (s *Service) fastPollPosition(ctx context.Context, tenantID string, envMode
 				}
 				// Trigger dust sweep on full exit (previously handled inside cleanupPendingOrder).
 				if isExit && !strings.Contains(po.intent.Rationale, "SCALE_OUT") {
-					go s.sweepDustPosition(tenantID, envMode, po.intent.Symbol, brokerOrderID)
+					go s.sweepDustPosition(tenantID, envMode, po.intent.Symbol, brokerOrderID, po.intent.Strategy)
 				}
 				return
 			}
@@ -1107,24 +1124,24 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 	}
 
 	fillPayload := map[string]any{
-		"broker_order_id": brokerOrderID,
-		"intent_id":       intent.ID.String(),
-		"symbol":          string(intent.Symbol),
-		"side":            side,
-		"direction":       string(intent.Direction),
-		"quantity":        intent.Quantity,
-		"price":           fillPrice,
-		"filled_at":       now,
-		"strategy":        intent.Strategy,
-		"rationale":       intent.Rationale,
-		"risk_modifier":   intent.Meta["risk_modifier"],
-		"regime":                intent.Meta["regime"],
-		"vix_bucket":            intent.Meta["vix_bucket"],
-		"market_context":        intent.Meta["market_context"],
-		"premium_mfe_pct":       intent.Meta["premium_mfe_pct"],
-		"premium_mae_pct":       intent.Meta["premium_mae_pct"],
-		"spot_mfe_pct":          spotMFE,
-		"spot_mae_pct":          spotMAE,
+		"broker_order_id":         brokerOrderID,
+		"intent_id":               intent.ID.String(),
+		"symbol":                  string(intent.Symbol),
+		"side":                    side,
+		"direction":               string(intent.Direction),
+		"quantity":                intent.Quantity,
+		"price":                   fillPrice,
+		"filled_at":               now,
+		"strategy":                intent.Strategy,
+		"rationale":               intent.Rationale,
+		"risk_modifier":           intent.Meta["risk_modifier"],
+		"regime":                  intent.Meta["regime"],
+		"vix_bucket":              intent.Meta["vix_bucket"],
+		"market_context":          intent.Meta["market_context"],
+		"premium_mfe_pct":         intent.Meta["premium_mfe_pct"],
+		"premium_mae_pct":         intent.Meta["premium_mae_pct"],
+		"spot_mfe_pct":            spotMFE,
+		"spot_mae_pct":            spotMAE,
 		"minutes_to_first_profit": minutesToFirstProfit,
 		"minutes_held":            minutesHeld,
 		"signal_tags":             signalTags,
@@ -1373,24 +1390,24 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 	}
 
 	fillPayload := map[string]any{
-		"broker_order_id": brokerOrderID,
-		"intent_id":       po.intent.ID.String(),
-		"symbol":          string(po.intent.Symbol),
-		"side":            side,
-		"direction":       string(po.intent.Direction),
-		"quantity":        fillQty,
-		"price":           fillPrice,
-		"filled_at":       filledAt,
-		"strategy":        po.intent.Strategy,
-		"asset_class":     string(po.intent.AssetClass),
-		"rationale":       po.intent.Rationale,
-		"regime":                po.intent.Meta["regime"],
-		"vix_bucket":            po.intent.Meta["vix_bucket"],
-		"market_context":        po.intent.Meta["market_context"],
-		"premium_mfe_pct":       po.intent.Meta["premium_mfe_pct"],
-		"premium_mae_pct":       po.intent.Meta["premium_mae_pct"],
-		"spot_mfe_pct":          spotMFE,
-		"spot_mae_pct":          spotMAE,
+		"broker_order_id":         brokerOrderID,
+		"intent_id":               po.intent.ID.String(),
+		"symbol":                  string(po.intent.Symbol),
+		"side":                    side,
+		"direction":               string(po.intent.Direction),
+		"quantity":                fillQty,
+		"price":                   fillPrice,
+		"filled_at":               filledAt,
+		"strategy":                po.intent.Strategy,
+		"asset_class":             string(po.intent.AssetClass),
+		"rationale":               po.intent.Rationale,
+		"regime":                  po.intent.Meta["regime"],
+		"vix_bucket":              po.intent.Meta["vix_bucket"],
+		"market_context":          po.intent.Meta["market_context"],
+		"premium_mfe_pct":         po.intent.Meta["premium_mfe_pct"],
+		"premium_mae_pct":         po.intent.Meta["premium_mae_pct"],
+		"spot_mfe_pct":            spotMFE,
+		"spot_mae_pct":            spotMAE,
 		"minutes_to_first_profit": minutesToFirstProfit,
 		"minutes_held":            minutesHeld,
 		"signal_tags":             sigTags,
@@ -1428,6 +1445,23 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 	}
 }
 
+// MarkRepegCancel tags a live pending order so its upcoming terminal event
+// won't be counted as an exit failure. Called by the position monitor just
+// before it issues a CancelOrder-for-repeg, which will inevitably terminate
+// the order without a fill. Returns true if a pending order with the given
+// broker ID was found and tagged; returns false when the order is already
+// gone (cleanupPendingOrder ran first) — callers can treat that as a
+// no-op because there's nothing left to record against.
+func (s *Service) MarkRepegCancel(brokerOrderID string) bool {
+	raw, ok := s.pendingOrders.Load(brokerOrderID)
+	if !ok {
+		return false
+	}
+	po := raw.(*pendingOrder)
+	po.suppressFailureRecord = true
+	return true
+}
+
 func (s *Service) cleanupPendingOrder(brokerOrderID string) {
 	raw, ok := s.pendingOrders.LoadAndDelete(brokerOrderID)
 	if !ok {
@@ -1442,17 +1476,24 @@ func (s *Service) cleanupPendingOrder(brokerOrderID string) {
 				!strings.Contains(po.intent.Rationale, "SCALE_OUT")
 
 			if isFullExit {
-				go s.sweepDustPosition(po.tenantID, po.envMode, po.intent.Symbol, brokerOrderID)
+				go s.sweepDustPosition(po.tenantID, po.envMode, po.intent.Symbol, brokerOrderID, po.intent.Strategy)
 			} else {
 				s.positionGate.ClearInflightExit(po.tenantID, po.envMode, po.intent.Symbol)
 			}
 
-			if tripped := s.positionGate.RecordExitFailure(po.tenantID, po.envMode, po.intent.Symbol); tripped {
-				s.emit(context.Background(), domain.EventExitCircuitBroken, po.tenantID, po.envMode, brokerOrderID, domain.ExitCircuitBrokenPayload{
-					Symbol:       po.intent.Symbol,
-					Failures:     maxExitFailures,
-					CooldownSecs: exitCooldownDuration.Seconds(),
-				})
+			// Suppress the failure count when the cancel came from a
+			// position-monitor re-peg. Re-pegs are a sub-unit of a single
+			// exit attempt — counting each terminated limit as a failure
+			// would 4x-amplify normal behavior and trip the circuit
+			// breaker on a strategy that legitimately re-pegged twice.
+			if !po.suppressFailureRecord {
+				if tripped := s.positionGate.RecordExitFailure(po.tenantID, po.envMode, po.intent.Symbol); tripped {
+					s.emit(context.Background(), domain.EventExitCircuitBroken, po.tenantID, po.envMode, brokerOrderID, domain.ExitCircuitBrokenPayload{
+						Symbol:       po.intent.Symbol,
+						Failures:     maxExitFailures,
+						CooldownSecs: exitCooldownDuration.Seconds(),
+					})
+				}
 			}
 
 			s.emit(context.Background(), domain.EventExitOrderTerminal, po.tenantID, po.envMode, brokerOrderID, map[string]any{
@@ -1463,8 +1504,98 @@ func (s *Service) cleanupPendingOrder(brokerOrderID string) {
 	}
 }
 
-func (s *Service) sweepDustPosition(tenantID string, envMode domain.EnvMode, symbol domain.Symbol, brokerOrderID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+// Dust-sweep pricing and fallback tunables. See sweepDustPosition for details.
+//
+// dustSweepLimitWindow: how long we wait for the marketable-limit to fill
+// before canceling and falling back to market. Short because dust is small
+// and we want the position flat — not the best possible fill.
+//
+// dustSweepMinAdverseBps / dustSweepBlownSpreadRatio / dustSweepQuoteMaxAge:
+// mirror the positionmonitor exit_pricer guardrails so the sweep skips the
+// marketable-limit path on stale, halted, or blown-out quotes and goes
+// straight to market.
+//
+// dustSweepNearCloseMinutes: hard override window before US equity close.
+// Inside this window, 0DTE or deep-ITM options can get exercised-by-exception
+// if we end the day flat-on-limit-no-fill — so we prefer a guaranteed market
+// fill over price improvement.
+//
+// dustSweepCancelConfirmWait: cap on polling for terminal status after a
+// cancel, BEFORE submitting the market fallback. Without this guard, IBKR
+// could fill both the canceled limit AND the market — flipping net short.
+const (
+	dustSweepLimitWindow       = 15 * time.Second
+	dustSweepMinAdverseBps     = 150.0
+	dustSweepQuoteMaxAge       = 5 * time.Second
+	dustSweepBlownSpreadRatio  = 0.25
+	dustSweepNearCloseMinutes  = 15
+	dustSweepCancelConfirmWait = 1 * time.Second
+)
+
+// isNearClose reports whether now is within dustSweepNearCloseMinutes of
+// the 16:00 ET US equity-options close. Used to skip the marketable-limit
+// path for end-of-day dust sweeps where exercise-by-exception risk
+// outweighs the benefit of better pricing.
+func isNearClose(now time.Time) bool {
+	loc := domain.NYLocation()
+	if loc == nil {
+		return false
+	}
+	et := now.In(loc)
+	if et.Weekday() == time.Saturday || et.Weekday() == time.Sunday {
+		return false
+	}
+	close := time.Date(et.Year(), et.Month(), et.Day(), 16, 0, 0, 0, loc)
+	delta := close.Sub(et)
+	return delta > 0 && delta <= dustSweepNearCloseMinutes*time.Minute
+}
+
+// dustSweepLimitPrice computes a marketable-limit SELL price anchored below
+// the bid. The limit is priced to cross the book (so it is marketable) but
+// floored so we never give up more than max(minBps, spread_bps/2) of the
+// mid. A spread-adaptive floor is needed because illiquid weeklies routinely
+// carry 300-500 bps spreads; a flat 150 bps cap would guarantee non-fills.
+//
+// Returns usable=false when the quote is unusable (stale, halted, blown-
+// spread), so callers fall back to pure market. Caller is responsible for
+// the halt check (bid==0 || ask==0) — this helper still returns false in
+// that case as defense-in-depth.
+func dustSweepLimitPrice(quote domain.OptionQuote, now time.Time) (price float64, usable bool) {
+	if quote.Bid <= 0 || quote.Ask <= 0 {
+		return 0, false
+	}
+	if quote.BidSize == 0 {
+		return 0, false
+	}
+	if !quote.Timestamp.IsZero() && now.Sub(quote.Timestamp) > dustSweepQuoteMaxAge {
+		return 0, false
+	}
+	mid := (quote.Bid + quote.Ask) / 2.0
+	if mid <= 0 {
+		return 0, false
+	}
+	spread := quote.Ask - quote.Bid
+	if spread < 0 {
+		return 0, false
+	}
+	if spread/mid > dustSweepBlownSpreadRatio {
+		return 0, false
+	}
+	spreadBps := (spread / mid) * 10000.0
+	maxAdverseBps := dustSweepMinAdverseBps
+	if half := spreadBps / 2.0; half > maxAdverseBps {
+		maxAdverseBps = half
+	}
+	capped := quote.Bid * (1.0 - maxAdverseBps/10000.0)
+	floor := quote.Bid - 0.01 // never AT the bid — keep one tick above so IBKR treats it as a cross
+	if capped > floor {
+		return capped, true
+	}
+	return floor, true
+}
+
+func (s *Service) sweepDustPosition(tenantID string, envMode domain.EnvMode, symbol domain.Symbol, brokerOrderID, originStrategy string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	sweepFilled := false
 	defer func() {
@@ -1495,9 +1626,187 @@ func (s *Service) sweepDustPosition(tenantID string, envMode domain.EnvMode, sym
 	}
 
 	l.Info().Float64("remaining_qty", remainingQty).
-		Msg("dust sweep: remainder detected — submitting targeted market sell")
+		Msg("dust sweep: remainder detected — evaluating marketable-limit vs market fallback")
 
-	sweepIntent, intentErr := domain.NewOrderIntent(
+	// Try marketable-limit-first on liquid option quotes. Equity/crypto dust
+	// sweeps stay on the legacy market path because spreads are usually tight
+	// and the savings don't justify the extra RTT. For options with usable
+	// live quotes and enough time before close, price a limit one tick below
+	// the bid (floored by an adaptive bps cap) so we cross the book without
+	// eating the full spread. On non-fill within the window, cancel, await
+	// terminal status, and submit true market.
+	now := s.nowFn()
+	canTryLimit := domain.IsOCCSymbol(symbol) && s.optionsPricePort != nil && !isNearClose(now)
+	if canTryLimit {
+		if limitPrice, ok := s.fetchDustSweepLimitPrice(ctx, symbol, now, l); ok {
+			if s.runDustSweepLimit(ctx, tenantID, envMode, symbol, remainingQty, limitPrice, brokerOrderID, originStrategy, l, &sweepFilled) {
+				return
+			}
+			// Limit phase did not fill (timeout, broker rejection, etc.).
+			// Fall through to market fallback.
+		}
+	}
+
+	s.runDustSweepMarket(ctx, tenantID, envMode, symbol, remainingQty, brokerOrderID, originStrategy, l, &sweepFilled)
+}
+
+// fetchDustSweepLimitPrice reads a live option quote and computes the
+// marketable-limit price. Returns ok=false on any guard trip (halt, stale,
+// blown spread, quote fetch error) so the caller can fall through to the
+// market path.
+func (s *Service) fetchDustSweepLimitPrice(ctx context.Context, symbol domain.Symbol, now time.Time, l zerolog.Logger) (float64, bool) {
+	quoteCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	quotes, err := s.optionsPricePort.GetOptionPrices(quoteCtx, []domain.Symbol{symbol})
+	if err != nil {
+		l.Warn().Err(err).Msg("dust sweep: option quote fetch failed — falling back to market")
+		return 0, false
+	}
+	quote, present := quotes[symbol]
+	if !present {
+		l.Warn().Msg("dust sweep: no quote returned — falling back to market")
+		return 0, false
+	}
+	// Halt detection: an option with bid=0 or ask=0 is either halted or the
+	// upstream feed has dropped the quote. Either way, limit pricing is
+	// meaningless; prefer the guaranteed market fill.
+	if quote.Bid <= 0 || quote.Ask <= 0 {
+		l.Info().Float64("bid", quote.Bid).Float64("ask", quote.Ask).
+			Msg("dust sweep: halt detected — falling back to market")
+		return 0, false
+	}
+	price, ok := dustSweepLimitPrice(quote, now)
+	if !ok {
+		l.Info().
+			Float64("bid", quote.Bid).Float64("ask", quote.Ask).
+			Int("bid_size", quote.BidSize).
+			Time("quote_ts", quote.Timestamp).
+			Msg("dust sweep: quote unusable — falling back to market")
+		return 0, false
+	}
+	return price, true
+}
+
+// runDustSweepLimit submits a marketable-limit sell and polls for fill. On
+// fill, records the trade and returns true. On timeout or terminal-without-
+// fill, cancels the order (if still live), waits for terminal confirmation,
+// and returns false so the caller can run the market fallback.
+func (s *Service) runDustSweepLimit(
+	ctx context.Context,
+	tenantID string,
+	envMode domain.EnvMode,
+	symbol domain.Symbol,
+	qty, limitPrice float64,
+	brokerOrderID, originStrategy string,
+	l zerolog.Logger,
+	sweepFilled *bool,
+) bool {
+	intent, intentErr := s.buildSweepIntent(tenantID, envMode, symbol, qty, brokerOrderID, originStrategy)
+	if intentErr != nil {
+		l.Error().Err(intentErr).Msg("dust sweep: failed to build limit intent — falling back to market")
+		return false
+	}
+	intent.OrderType = "limit"
+	intent.LimitPrice = limitPrice
+	intent.TimeInForce = "day"
+
+	orderID, err := s.broker.SubmitOrder(ctx, intent)
+	if err != nil {
+		l.Error().Err(err).Msg("dust sweep: marketable-limit submit failed — falling back to market")
+		return false
+	}
+	if orderID == "" {
+		l.Info().Msg("dust sweep: position already closed during limit submit")
+		*sweepFilled = true
+		return true
+	}
+	l.Info().
+		Str("sweep_order_id", orderID).
+		Float64("limit_price", limitPrice).
+		Msg("dust sweep: marketable-limit accepted — polling")
+
+	window := dustSweepLimitWindow
+	if s.dustSweepLimitWindowOverride > 0 {
+		window = s.dustSweepLimitWindowOverride
+	}
+	filled, terminal := s.pollSweepFill(ctx, orderID, window, tenantID, envMode, symbol, brokerOrderID, originStrategy, l, sweepFilled)
+	if filled {
+		return true
+	}
+	if terminal {
+		// Already canceled/rejected/expired by broker — no need to cancel again.
+		l.Info().Str("sweep_order_id", orderID).Msg("dust sweep: limit terminal without fill — falling back to market")
+		return false
+	}
+
+	// Timeout: order still open. Cancel, await terminal status, then return
+	// false so caller submits market. Awaiting terminal matters because
+	// IBKR may still fill a partially-working limit while we're submitting
+	// the market — which would cross us net short.
+	l.Info().Str("sweep_order_id", orderID).Msg("dust sweep: limit window expired — canceling")
+	if cerr := s.broker.CancelOrder(ctx, orderID); cerr != nil {
+		l.Warn().Err(cerr).Str("sweep_order_id", orderID).
+			Msg("dust sweep: cancel failed — may already be terminal")
+	}
+	if s.waitSweepTerminal(ctx, orderID, tenantID, envMode, symbol, brokerOrderID, originStrategy, l, sweepFilled) {
+		// During the cancel-confirm wait, the limit actually filled — treat
+		// as a success and skip the market fallback.
+		return true
+	}
+	return false
+}
+
+// runDustSweepMarket submits a true market sell and polls for fill. This is
+// both the legacy path and the fallback after a limit non-fill.
+func (s *Service) runDustSweepMarket(
+	ctx context.Context,
+	tenantID string,
+	envMode domain.EnvMode,
+	symbol domain.Symbol,
+	qty float64,
+	brokerOrderID, originStrategy string,
+	l zerolog.Logger,
+	sweepFilled *bool,
+) {
+	intent, intentErr := s.buildSweepIntent(tenantID, envMode, symbol, qty, brokerOrderID, originStrategy)
+	if intentErr != nil {
+		l.Error().Err(intentErr).Msg("dust sweep: failed to build market intent — clearing gate for retry")
+		return
+	}
+	intent.OrderType = "market"
+	intent.TimeInForce = "ioc"
+
+	orderID, err := s.broker.SubmitOrder(ctx, intent)
+	if err != nil {
+		l.Error().Err(err).Msg("dust sweep: market sell failed — clearing gate for retry")
+		return
+	}
+	if orderID == "" {
+		l.Info().Msg("dust sweep: position already closed")
+		return
+	}
+
+	l.Info().Str("sweep_order_id", orderID).Msg("dust sweep: market sell accepted — polling for fill confirmation")
+
+	// Remaining ctx budget after any prior limit phase is still enough for
+	// the market poll because the outer context is 45s.
+	budget := 30 * time.Second
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < budget {
+			budget = remaining
+		}
+	}
+	s.pollSweepFill(ctx, orderID, budget, tenantID, envMode, symbol, brokerOrderID, originStrategy, l, sweepFilled)
+}
+
+// buildSweepIntent constructs the OrderIntent shared by limit and market
+// phases. Rationale embeds the origin strategy so per-strategy P&L can be
+// reconstructed downstream via pattern match on the trade row. The raw
+// Strategy field stays "dust_sweep" for the immutable audit trail (SEC
+// 17a-4 / FINRA 4511).
+func (s *Service) buildSweepIntent(tenantID string, envMode domain.EnvMode, symbol domain.Symbol, qty float64, brokerOrderID, originStrategy string) (domain.OrderIntent, error) {
+	rationale := fmt.Sprintf("sweep remainder after exit %s (origin=%s)", brokerOrderID, originStrategy)
+	return domain.NewOrderIntent(
 		uuid.New(),
 		tenantID,
 		envMode,
@@ -1506,90 +1815,143 @@ func (s *Service) sweepDustPosition(tenantID string, envMode domain.EnvMode, sym
 		1.0,
 		0,
 		0,
-		remainingQty,
+		qty,
 		"dust_sweep",
-		fmt.Sprintf("sweep remainder after exit %s", brokerOrderID),
+		rationale,
 		1.0,
 		fmt.Sprintf("SWEEP:%s:%s:%s:%s", tenantID, string(envMode), string(symbol), brokerOrderID),
 	)
-	if intentErr != nil {
-		l.Error().Err(intentErr).Msg("dust sweep: failed to create sweep intent — clearing gate for retry")
-		return
-	}
-	sweepIntent.OrderType = "market"
-	sweepIntent.TimeInForce = "ioc"
+}
 
-	sweepOrderID, err := s.broker.SubmitOrder(ctx, sweepIntent)
-	if err != nil {
-		l.Error().Err(err).Msg("dust sweep: market sell failed — clearing gate for retry")
-		return
-	}
-
-	if sweepOrderID == "" {
-		l.Info().Msg("dust sweep: position already closed")
-		return
-	}
-
-	l.Info().Str("sweep_order_id", sweepOrderID).Msg("dust sweep: market sell accepted — polling for fill confirmation")
-
-	// Poll broker for fill instead of relying on WS (the sweep creates a new order ID
-	// that isn't in pendingOrders, so WS fills would be silently dropped).
-	ticker := time.NewTicker(2 * time.Second)
+// pollSweepFill polls the broker for the sweep order's terminal status.
+// Returns (filled=true, _) on fill, (false, true) on canceled/expired/
+// rejected without fill, and (false, false) on ctx/budget timeout.
+func (s *Service) pollSweepFill(
+	ctx context.Context,
+	orderID string,
+	budget time.Duration,
+	tenantID string,
+	envMode domain.EnvMode,
+	symbol domain.Symbol,
+	brokerOrderID, originStrategy string,
+	l zerolog.Logger,
+	sweepFilled *bool,
+) (filled, terminalNoFill bool) {
+	pollCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-ctx.Done():
-			l.Warn().Str("sweep_order_id", sweepOrderID).Msg("dust sweep: timed out waiting for fill — will be caught by reconciliation")
-			return
+		case <-pollCtx.Done():
+			return false, false
 		case <-ticker.C:
-			details, err := s.broker.GetOrderDetails(ctx, sweepOrderID)
+			details, err := s.broker.GetOrderDetails(pollCtx, orderID)
 			if err != nil {
-				l.Warn().Err(err).Str("sweep_order_id", sweepOrderID).Msg("dust sweep: failed to get order details — retrying")
+				l.Warn().Err(err).Str("sweep_order_id", orderID).Msg("dust sweep: order-details fetch failed — retrying")
 				continue
 			}
-
 			switch details.Status {
 			case "filled":
-				l.Info().
-					Str("sweep_order_id", sweepOrderID).
-					Float64("filled_qty", details.FilledQty).
-					Float64("filled_avg_price", details.FilledAvgPrice).
-					Msg("dust sweep: fill confirmed via REST — recording trade")
-
-				fillTime := details.FilledAt
-				if fillTime.IsZero() {
-					fillTime = s.nowFn().UTC()
-				}
-				trade, tErr := domain.NewTrade(fillTime, tenantID, envMode, uuid.New(), symbol, "SELL", details.FilledQty, details.FilledAvgPrice, 0, "FILLED", "dust_sweep", fmt.Sprintf("sweep remainder after exit %s", brokerOrderID))
-				if tErr != nil {
-					l.Error().Err(tErr).Msg("dust sweep: failed to construct trade")
-					return
-				}
-				if sErr := s.repo.SaveTrade(ctx, trade); sErr != nil {
-					l.Error().Err(sErr).Msg("dust sweep: failed to save trade")
-					return
-				}
-
-				s.emit(ctx, domain.EventFillReceived, tenantID, envMode, sweepOrderID, map[string]any{
-					"broker_order_id": sweepOrderID,
-					"symbol":          string(symbol),
-					"side":            "SELL",
-					"quantity":        details.FilledQty,
-					"price":           details.FilledAvgPrice,
-					"filled_at":       fillTime,
-					"strategy":        "dust_sweep",
-				})
-				sweepFilled = true
-				return
-
+				s.recordSweepFill(ctx, tenantID, envMode, symbol, orderID, brokerOrderID, originStrategy, details, l)
+				*sweepFilled = true
+				return true, false
 			case "canceled", "expired", "rejected":
-				l.Warn().Str("sweep_order_id", sweepOrderID).Str("status", details.Status).Msg("dust sweep: order terminal without fill")
-				return
+				l.Warn().Str("sweep_order_id", orderID).Str("status", details.Status).
+					Msg("dust sweep: order terminal without fill")
+				return false, true
 			}
 			// "new", "accepted", "pending_new", "partially_filled" — keep polling
 		}
 	}
+}
+
+// waitSweepTerminal polls briefly after a cancel to confirm the order
+// reached a terminal state before the caller submits a fallback market.
+// If during this wait the order actually fills, the caller treats that as
+// the sweep's outcome and skips the market fallback. Returns true if the
+// order filled during the wait.
+func (s *Service) waitSweepTerminal(
+	ctx context.Context,
+	orderID string,
+	tenantID string,
+	envMode domain.EnvMode,
+	symbol domain.Symbol,
+	brokerOrderID, originStrategy string,
+	l zerolog.Logger,
+	sweepFilled *bool,
+) bool {
+	waitCtx, cancel := context.WithTimeout(ctx, dustSweepCancelConfirmWait)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-waitCtx.Done():
+			l.Warn().Str("sweep_order_id", orderID).Msg("dust sweep: cancel-confirm wait expired — proceeding with market fallback")
+			return false
+		case <-ticker.C:
+			details, err := s.broker.GetOrderDetails(waitCtx, orderID)
+			if err != nil {
+				continue
+			}
+			switch details.Status {
+			case "canceled", "expired", "rejected":
+				return false
+			case "filled":
+				// Unusual but possible: cancel lost the race with a fill.
+				s.recordSweepFill(ctx, tenantID, envMode, symbol, orderID, brokerOrderID, originStrategy, details, l)
+				*sweepFilled = true
+				return true
+			}
+		}
+	}
+}
+
+// recordSweepFill persists the trade and emits FillReceived. The raw
+// Strategy stays "dust_sweep" for audit immutability; origin_strategy is
+// surfaced via rationale (already set on the intent) and the event payload.
+func (s *Service) recordSweepFill(
+	ctx context.Context,
+	tenantID string,
+	envMode domain.EnvMode,
+	symbol domain.Symbol,
+	orderID, brokerOrderID, originStrategy string,
+	details ports.OrderDetails,
+	l zerolog.Logger,
+) {
+	l.Info().
+		Str("sweep_order_id", orderID).
+		Float64("filled_qty", details.FilledQty).
+		Float64("filled_avg_price", details.FilledAvgPrice).
+		Msg("dust sweep: fill confirmed via REST — recording trade")
+
+	fillTime := details.FilledAt
+	if fillTime.IsZero() {
+		fillTime = s.nowFn().UTC()
+	}
+	rationale := fmt.Sprintf("sweep remainder after exit %s (origin=%s)", brokerOrderID, originStrategy)
+	trade, tErr := domain.NewTrade(fillTime, tenantID, envMode, uuid.New(), symbol, "SELL", details.FilledQty, details.FilledAvgPrice, 0, "FILLED", "dust_sweep", rationale)
+	if tErr != nil {
+		l.Error().Err(tErr).Msg("dust sweep: failed to construct trade")
+		return
+	}
+	if sErr := s.repo.SaveTrade(ctx, trade); sErr != nil {
+		l.Error().Err(sErr).Msg("dust sweep: failed to save trade")
+		return
+	}
+
+	s.emit(ctx, domain.EventFillReceived, tenantID, envMode, orderID, map[string]any{
+		"broker_order_id": orderID,
+		"symbol":          string(symbol),
+		"side":            "SELL",
+		"quantity":        details.FilledQty,
+		"price":           details.FilledAvgPrice,
+		"filled_at":       fillTime,
+		"strategy":        "dust_sweep",
+		"origin_strategy": originStrategy,
+	})
 }
 
 const reconcileInterval = 60 * time.Second

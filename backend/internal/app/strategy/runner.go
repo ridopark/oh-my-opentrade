@@ -1277,11 +1277,11 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		r.mu.Unlock()
 
 		if newSession {
-			r.resolveAIAnchors(ctx, symbol, bar, AnchorResolveOption{SyncAI: true})
+			r.resolveAIAnchors(ctx, symbol, bar, AnchorResolveOption{SyncAI: false})
 		} else if r.hasMissingAnchor(symbol) {
 			// Pre-market startup: session_open resolved to zero-time and was
 			// skipped. Re-resolve now that RTH has started.
-			r.resolveAIAnchors(ctx, symbol, bar, AnchorResolveOption{SyncAI: true})
+			r.resolveAIAnchors(ctx, symbol, bar, AnchorResolveOption{SyncAI: false})
 		}
 	} else if r.anchorResolver != nil {
 		loc := domain.NYLocation()

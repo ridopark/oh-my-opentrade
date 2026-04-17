@@ -143,10 +143,14 @@ func NewInstrument(itype InstrumentType, sym string, underlying string) (Instrum
 // ─────────────────────────────────────────────
 
 // OptionQuote holds a point-in-time bid/ask/last for an option contract.
+// BidSize/AskSize are populated when the upstream feed reports them; a zero
+// BidSize is meaningful to exit-pricing logic (no bid to hit).
 type OptionQuote struct {
 	Bid       float64
 	Ask       float64
 	Last      float64
+	BidSize   int
+	AskSize   int
 	Timestamp time.Time
 }
 

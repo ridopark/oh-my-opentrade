@@ -39,6 +39,7 @@ type CryptoWSClient struct {
 	fetcher              BarFetcher // REST polling fallback; nil disables polling
 	tradeHandler         ports.TradeHandler
 	pipelineHealth       ports.PipelineHealthReporter
+	deadlockNotifier     ports.NotifierPort // optional — paged synchronously on pipeline deadlock
 	onDegraded           func(reason string)
 	onCircuitBreakerOpen func(consecutiveFails int, blockedFor time.Duration)
 	log                  zerolog.Logger
@@ -85,6 +86,10 @@ func (c *CryptoWSClient) SetTradeHandler(h ports.TradeHandler) { c.tradeHandler 
 
 // SetPipelineHealth injects pipeline liveness reporter for dual-track watchdog.
 func (c *CryptoWSClient) SetPipelineHealth(ph ports.PipelineHealthReporter) { c.pipelineHealth = ph }
+
+// SetDeadlockNotifier wires the notifier used to page operators synchronously
+// before the watchdog calls log.Fatal on pipeline deadlock.
+func (c *CryptoWSClient) SetDeadlockNotifier(n ports.NotifierPort) { c.deadlockNotifier = n }
 
 func (c *CryptoWSClient) SetDegradedCallback(fn func(reason string)) { c.onDegraded = fn }
 
@@ -262,7 +267,7 @@ func (c *CryptoWSClient) StreamBars(ctx context.Context, symbols []domain.Symbol
 		watchdogDone := make(chan struct{})
 		go func() {
 			defer close(watchdogDone)
-			staleFeedWatchdog(connCtx, c.tracker, &staleCancelMu, &staleCancelFn, cryptoStaleThreshold, func() bool { return true }, c.pipelineHealth, "crypto")
+			staleFeedWatchdog(connCtx, c.tracker, &staleCancelMu, &staleCancelFn, cryptoStaleThreshold, func() bool { return true }, c.pipelineHealth, "crypto", c.deadlockNotifier)
 		}()
 
 		c.tracker.setConnected(true)
