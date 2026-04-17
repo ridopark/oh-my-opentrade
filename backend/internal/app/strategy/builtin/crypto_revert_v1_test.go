@@ -545,3 +545,164 @@ func TestCryptoRevert_MixedStream_TFIReflectsTicks(t *testing.T) {
 	assert.Greater(t, tfiVal, 0.6, "TFI should reflect tick flow, not alternating bar signs")
 	assert.InDelta(t, 9.0/11.0, tfiVal, 1e-9)
 }
+
+// ---------------------------------------------------------------------------
+// Strategy-exits-priority wiring tests (mirror of crypto_tsm b6c9fb5 fix)
+// ---------------------------------------------------------------------------
+
+// runCleanEntry builds a warmup + one sweep-triggered entry and returns the
+// resulting state plus the entry signal. Helper for the eager-state tests.
+func runCleanEntry(t *testing.T, params map[string]any) (*builtin.CryptoRevertStrategy, strat.State, strat.Signal, time.Time) {
+	t.Helper()
+	anchor := time.Date(2026, 4, 15, 13, 0, 0, 0, time.UTC)
+	bars := buildHistory(anchor, 101_000, 96)
+	tSweep := anchor.Add(96 * 5 * time.Minute)
+	bars = append(bars, sweepBar(tSweep, 100_000, 100_500, 500))
+
+	s := builtin.NewCryptoRevertStrategy()
+	st, err := s.Init(nil, "BTC/USD", params, nil)
+	require.NoError(t, err)
+	warmup := s.WarmupBars()
+	var sigs []strat.Signal
+	for i, b := range bars {
+		if i < warmup {
+			st, err = s.ReplayOnBar(nil, "BTC/USD", b, st, strat.IndicatorData{})
+		} else {
+			st, sigs, err = s.OnBar(nil, "BTC/USD", b, st)
+		}
+		require.NoError(t, err)
+	}
+	require.Len(t, sigs, 1, "expected exactly one entry signal")
+	require.Equal(t, strat.SignalEntry, sigs[0].Type)
+	return s, st, sigs[0], tSweep
+}
+
+// TestCryptoRevert_OnBar_EagerlySetsPositionSide — the root-cause anti-regression
+// test. After OnBar emits an entry signal (before any FillConfirmation arrives)
+// PositionSide/EntryPrice/EntryTime must already be populated so subsequent
+// OnBar calls in the slice-pipeline's Phase A actually see the open position
+// and can fire strategy exits.
+func TestCryptoRevert_OnBar_EagerlySetsPositionSide(t *testing.T) {
+	_, st, sig, tSweep := runCleanEntry(t, cryptoRevertDefaultParams())
+
+	rst, ok := st.(*builtin.CryptoRevertState)
+	require.True(t, ok)
+	assert.Equal(t, strat.SideBuy, rst.PositionSide, "PositionSide must be set eagerly in OnBar")
+	assert.InDelta(t, 100_500.0, rst.EntryPrice, 1e-9, "EntryPrice must be set to bar.Close eagerly")
+	assert.Equal(t, tSweep, rst.EntryTime, "EntryTime must be stamped to bar.Time eagerly")
+	assert.Equal(t, strat.SignalEntry, sig.Type)
+	assert.Equal(t, strat.SideBuy, sig.Side)
+}
+
+// TestCryptoRevert_OnEvent_EntryRejectionRollsBackState — because OnBar now
+// sets PositionSide/EntryPrice/EntryTime eagerly, a downstream EntryRejection
+// must clear ALL four fields (not just PendingEntry) to return the strategy
+// to a flat state that can re-enter.
+func TestCryptoRevert_OnEvent_EntryRejectionRollsBackState(t *testing.T) {
+	s, st, _, _ := runCleanEntry(t, cryptoRevertDefaultParams())
+
+	// Sanity: state was indeed set up.
+	rstBefore := st.(*builtin.CryptoRevertState)
+	require.Equal(t, strat.SideBuy, rstBefore.PositionSide)
+	require.NotZero(t, rstBefore.EntryPrice)
+	require.False(t, rstBefore.EntryTime.IsZero())
+
+	// Dispatch the rejection.
+	st2, _, err := s.OnEvent(nil, "BTC/USD", strat.EntryRejection{}, st)
+	require.NoError(t, err)
+
+	rst, ok := st2.(*builtin.CryptoRevertState)
+	require.True(t, ok)
+	assert.Equal(t, strat.Side(""), rst.PositionSide, "PositionSide cleared on EntryRejection")
+	assert.Equal(t, strat.Side(""), rst.PendingEntry, "PendingEntry cleared on EntryRejection")
+	assert.Equal(t, 0.0, rst.EntryPrice, "EntryPrice cleared on EntryRejection")
+	assert.True(t, rst.EntryTime.IsZero(), "EntryTime cleared on EntryRejection")
+}
+
+// TestCryptoRevert_ExitSignalTags_WhenPriorityEnabled — with the flag on, an
+// exit signal emitted by OnBar (reversion_complete branch) must carry
+// tags["exit_origin"]=="strategy" so the position monitor can attribute the
+// exit rationale correctly.
+func TestCryptoRevert_ExitSignalTags_WhenPriorityEnabled(t *testing.T) {
+	params := cryptoRevertDefaultParams()
+	params["strategy_exits_priority"] = true
+
+	s, st, entrySig, tSweep := runCleanEntry(t, params)
+	_ = entrySig
+
+	// Simulate fill confirmation at the entry price.
+	st, _, err := s.OnEvent(nil, "BTC/USD", strat.FillConfirmation{
+		Side:  strat.SideBuy,
+		Price: 100_500,
+	}, st)
+	require.NoError(t, err)
+
+	// Rally back into the exit band so dev_z reverts toward 0 and
+	// reversion_complete trips.
+	var sigs []strat.Signal
+	for i := 1; i <= 6; i++ {
+		b := bullBar(tSweep.Add(time.Duration(i)*5*time.Minute), 100_970, 100_990, 100)
+		st, sigs, err = s.OnBar(nil, "BTC/USD", b, st)
+		require.NoError(t, err)
+		if len(sigs) > 0 {
+			break
+		}
+	}
+	require.NotEmpty(t, sigs, "expected an exit signal after reversion")
+	exit := sigs[0]
+	assert.Equal(t, strat.SignalExit, exit.Type)
+	assert.Equal(t, "reversion_complete", exit.Tags["reason"])
+	assert.Equal(t, "strategy", exit.Tags["exit_origin"],
+		"exit_origin tag required when strategy_exits_priority is enabled")
+}
+
+// TestCryptoRevert_EntrySignalTag_WhenPriorityEnabled — with the flag on, the
+// entry signal must carry tags["strategy_exits_priority"]=="true" so the
+// position monitor knows to skip its own price-based exit rules for this
+// position.
+func TestCryptoRevert_EntrySignalTag_WhenPriorityEnabled(t *testing.T) {
+	params := cryptoRevertDefaultParams()
+	params["strategy_exits_priority"] = true
+
+	_, _, sig, _ := runCleanEntry(t, params)
+	assert.Equal(t, strat.SignalEntry, sig.Type)
+	assert.Equal(t, "true", sig.Tags["strategy_exits_priority"],
+		"entry signal must carry strategy_exits_priority=true when flag is set")
+}
+
+// TestCryptoRevert_NoPriorityTags_WhenDisabled — with the flag off (default),
+// neither exit_origin nor strategy_exits_priority tags may appear. This
+// protects other strategies / downstream adapters that don't expect the
+// rationale-attribution path.
+func TestCryptoRevert_NoPriorityTags_WhenDisabled(t *testing.T) {
+	params := cryptoRevertDefaultParams()
+	// explicit for clarity; default is false anyway.
+	params["strategy_exits_priority"] = false
+
+	s, st, entrySig, tSweep := runCleanEntry(t, params)
+
+	_, hasEntryTag := entrySig.Tags["strategy_exits_priority"]
+	assert.False(t, hasEntryTag, "entry signal must NOT carry strategy_exits_priority when flag is off")
+
+	// Drive an exit and assert the same for the exit tag.
+	st, _, err := s.OnEvent(nil, "BTC/USD", strat.FillConfirmation{
+		Side:  strat.SideBuy,
+		Price: 100_500,
+	}, st)
+	require.NoError(t, err)
+
+	var sigs []strat.Signal
+	for i := 1; i <= 6; i++ {
+		b := bullBar(tSweep.Add(time.Duration(i)*5*time.Minute), 100_970, 100_990, 100)
+		st, sigs, err = s.OnBar(nil, "BTC/USD", b, st)
+		require.NoError(t, err)
+		if len(sigs) > 0 {
+			break
+		}
+	}
+	require.NotEmpty(t, sigs, "expected an exit signal after reversion")
+	exit := sigs[0]
+	assert.Equal(t, strat.SignalExit, exit.Type)
+	_, hasExitTag := exit.Tags["exit_origin"]
+	assert.False(t, hasExitTag, "exit signal must NOT carry exit_origin when flag is off")
+}

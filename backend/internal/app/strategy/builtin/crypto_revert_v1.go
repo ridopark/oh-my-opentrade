@@ -113,6 +113,12 @@ type CryptoRevertConfig struct {
 	WeightUSHours   float64 // default 1.0
 	WeightAsiaHours float64 // default 1.0 (doc suggests 0.7; keep neutral until wired)
 	WeightWeekend   float64 // default 1.0 (doc suggests 0.5)
+
+	// When true, position-monitor skips price-based exit rules and trusts the
+	// strategy's OnBar exits (reversion_complete, hard_stop, time_stop,
+	// inducement_flip). Time-only rules (MAX_HOLDING_TIME) still fire as a
+	// safety net. Default false preserves legacy behavior.
+	StrategyExitsPriority bool
 }
 
 func parseCryptoRevertConfig(params map[string]any) CryptoRevertConfig {
@@ -137,6 +143,7 @@ func parseCryptoRevertConfig(params map[string]any) CryptoRevertConfig {
 		WeightUSHours:          getFloat64(params, "weight_us_hours", 1.0),
 		WeightAsiaHours:        getFloat64(params, "weight_asia_hours", 1.0),
 		WeightWeekend:          getFloat64(params, "weight_weekend", 1.0),
+		StrategyExitsPriority:  getBool(params, "strategy_exits_priority", false),
 	}
 }
 
@@ -479,7 +486,7 @@ func (s *CryptoRevertStrategy) OnBar(ctx start.Context, symbol string, bar start
 
 		if exitReason != "" {
 			instanceID, _ := start.NewInstanceID(symbol)
-			sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideSell, 1.0, map[string]string{
+			exitTags := map[string]string{
 				"reason":    exitReason,
 				"ref_price": fmt.Sprintf("%.10f", bar.Close),
 				"dev_z":     fmt.Sprintf("%.3f", devZ),
@@ -487,7 +494,11 @@ func (s *CryptoRevertStrategy) OnBar(ctx start.Context, symbol string, bar start
 				"sigma":     fmt.Sprintf("%.4f", sigma),
 				"tfi":       fmt.Sprintf("%.3f", tfi),
 				"strategy":  "crypto_revert",
-			})
+			}
+			if cfg.StrategyExitsPriority {
+				exitTags["exit_origin"] = "strategy"
+			}
+			sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideSell, 1.0, exitTags)
 			if err == nil {
 				signals = append(signals, sig)
 			}
@@ -563,7 +574,7 @@ func (s *CryptoRevertStrategy) OnBar(ctx start.Context, symbol string, bar start
 	strength = clampF(strength, 0.0, 1.0)
 
 	instanceID, _ := start.NewInstanceID(symbol)
-	sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, strength, map[string]string{
+	entryTags := map[string]string{
 		"reason":    "mean_revert_long",
 		"ref_price": fmt.Sprintf("%.10f", bar.Close),
 		"dev_z":     fmt.Sprintf("%.3f", devZ),
@@ -571,15 +582,31 @@ func (s *CryptoRevertStrategy) OnBar(ctx start.Context, symbol string, bar start
 		"sigma":     fmt.Sprintf("%.4f", sigma),
 		"tfi":       fmt.Sprintf("%.3f", tfi),
 		"strategy":  "crypto_revert",
-	})
+	}
+	if cfg.StrategyExitsPriority {
+		entryTags["strategy_exits_priority"] = "true"
+	}
+	sig, err := start.NewSignal(instanceID, symbol, start.SignalEntry, start.SideBuy, strength, entryTags)
 	if err != nil {
 		return rst, nil, err
 	}
 	signals = append(signals, sig)
 	rst.diagEmitCount++
 
+	// Eagerly mark the position as open on signal emission. The backtest
+	// slice-dispatch pipeline processes ALL bars in Phase A and only replays
+	// fills (OnEvent) afterward — if we wait for FillConfirmation to set
+	// PositionSide, every subsequent OnBar in Phase A still sees an empty
+	// position and the strategy's own exit rules (reversion_complete,
+	// hard_stop, time_stop, inducement_flip) never fire. Treating the emitted
+	// entry signal as good-as-filled lets exit evaluation track the hold.
+	// OnEvent still refines EntryPrice with the actual fill price when it
+	// arrives; EntryRejection rolls the position back to flat.
 	rst.PendingEntry = start.SideBuy
 	rst.PendingEntryAt = now
+	rst.PositionSide = start.SideBuy
+	rst.EntryPrice = bar.Close
+	rst.EntryTime = now
 	return rst, signals, nil
 }
 
@@ -610,19 +637,37 @@ func (s *CryptoRevertStrategy) OnEvent(_ start.Context, _ string, evt any, st st
 		}
 		return rst, nil, nil
 	case start.FillConfirmation:
-		if rst.PendingEntry == start.SideBuy && e.Side == start.SideBuy {
+		switch e.Side {
+		case start.SideBuy:
+			// OnBar already marked the position open eagerly (see the entry
+			// block). Refine EntryPrice with the actual fill price so exit
+			// rules evaluate against the realized cost basis, and stamp
+			// EntryTime to the bar that originated the signal.
 			rst.PendingEntry = ""
 			rst.PositionSide = start.SideBuy
-			rst.EntryPrice = e.Price
-			rst.EntryTime = rst.PendingEntryAt
-		} else if e.Side == start.SideSell {
+			if e.Price > 0 {
+				rst.EntryPrice = e.Price
+			}
+			if !rst.PendingEntryAt.IsZero() {
+				rst.EntryTime = rst.PendingEntryAt
+			}
+		case start.SideSell:
+			// Exit fill confirmed — clear all position state. The sell may
+			// have been initiated by our OnBar exit logic OR by an external
+			// exit rule (MAX_HOLDING_TIME, MAX_LOSS) from position_monitor.
+			// Either way we're flat and must be ready to re-enter.
 			rst.PendingEntry = ""
 			rst.PositionSide = ""
 			rst.EntryPrice = 0
 			rst.EntryTime = time.Time{}
 		}
 	case start.EntryRejection:
+		// Signal was rejected downstream (risk, exposure, etc.). Roll the
+		// eagerly-set position state back to flat so the next bar can retry.
 		rst.PendingEntry = ""
+		rst.PositionSide = ""
+		rst.EntryPrice = 0
+		rst.EntryTime = time.Time{}
 	}
 
 	return rst, nil, nil
