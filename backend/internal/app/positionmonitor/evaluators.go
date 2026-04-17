@@ -30,6 +30,22 @@ type EvalContext struct {
 	// Zero when unavailable (e.g., polling-based price feeds without bar data).
 	BarHigh float64
 	BarLow  float64
+
+	// TrailMult scales PREMIUM_TRAIL.trail_pct by an ATR%-bucket multiplier
+	// computed at position entry (see [exits.atr_trail] in config). Defaults
+	// to 1.0 via newEvalContext() — anything else risks the rule firing at
+	// an unintended price. When zero, evaluatePremiumTrail treats it as 1.0
+	// defensively so future EvalContext literals that forget to initialize
+	// the field do not accidentally collapse the effective trail to zero
+	// and fire immediately on any premium drop.
+	TrailMult float64
+}
+
+// newEvalContext constructs an EvalContext with defensively-safe defaults.
+// TrailMult=1.0 is the byte-identical no-op for PREMIUM_TRAIL — any other
+// default would silently change exit behavior for existing strategies.
+func newEvalContext() EvalContext {
+	return EvalContext{TrailMult: 1.0}
 }
 
 // Evaluate dispatches to the appropriate exit rule evaluator.
@@ -72,7 +88,7 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 	case domain.ExitRulePremiumStop:
 		return evaluatePremiumStop(rule, pos, currentPrice, now)
 	case domain.ExitRulePremiumTrail:
-		return evaluatePremiumTrail(rule, pos, currentPrice, now)
+		return evaluatePremiumTrail(rule, pos, currentPrice, now, ctx)
 	case domain.ExitRulePremiumTarget:
 		return evaluatePremiumTarget(rule, pos, currentPrice, now)
 	case domain.ExitRuleFastFail:
@@ -1056,11 +1072,18 @@ func evaluatePremiumStop(rule domain.ExitRule, pos *domain.MonitoredPosition, cu
 //
 //	"trail_pct"      — trail percentage from premium HWM (e.g. 0.30 = 30%)
 //	"min_activation" — minimum premium gain before trailing activates (e.g. 0.20 = 20%)
-func evaluatePremiumTrail(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time) (bool, string) {
+func evaluatePremiumTrail(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time, ctx EvalContext) (bool, string) {
 	trailPct := rule.Param("trail_pct", 0)
 	if trailPct <= 0 {
 		return false, ""
 	}
+	// ATR-bucketed scale. Defensive fallback to 1.0 when ctx.TrailMult is
+	// zero (uninitialized EvalContext literal) — see EvalContext comment.
+	mult := ctx.TrailMult
+	if mult <= 0 {
+		mult = 1.0
+	}
+	effectiveTrail := trailPct * mult
 	entryPremium, ok := pos.CustomState["option_premium"]
 	if !ok || entryPremium <= 0 {
 		return false, ""
@@ -1083,11 +1106,13 @@ func evaluatePremiumTrail(rule domain.ExitRule, pos *domain.MonitoredPosition, c
 		}
 	}
 
-	// Check trail: premium must have dropped trail_pct% from HWM
+	// Check trail: premium must have dropped effectiveTrail% from HWM.
+	// When mult=1.0 (disabled or low-vol bucket) the comparison is
+	// byte-identical to the pre-fix evaluator.
 	drawdown := (hwm - estPremium) / hwm
-	if drawdown >= trailPct {
-		return true, fmt.Sprintf("premium_trail: drawdown %.2f%% >= trail %.2f%% (hwm=%.2f, est=%.2f, entry=%.2f)",
-			drawdown*100, trailPct*100, hwm, estPremium, entryPremium)
+	if drawdown >= effectiveTrail {
+		return true, fmt.Sprintf("premium_trail: drawdown %.2f%% >= trail %.2f%% (base=%.2f%%, mult=%.2fx, hwm=%.2f, est=%.2f, entry=%.2f)",
+			drawdown*100, effectiveTrail*100, trailPct*100, mult, hwm, estPremium, entryPremium)
 	}
 	return false, ""
 }

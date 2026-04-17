@@ -169,10 +169,15 @@ func (s *Service) tick() {
 				}
 			}
 
-			evalCtx := EvalContext{
-				BarDuration: s.barDurationFor(pos.Strategy),
-				BarHigh:     snap.High,
-				BarLow:      snap.Low,
+			evalCtx := newEvalContext()
+			evalCtx.BarDuration = s.barDurationFor(pos.Strategy)
+			evalCtx.BarHigh = snap.High
+			evalCtx.BarLow = snap.Low
+			// ATR-bucketed PREMIUM_TRAIL multiplier stamped at fill time
+			// into pos.CustomState["atr_trail_mult"]. Zero/missing →
+			// newEvalContext()'s default (1.0) stands.
+			if m, ok := pos.CustomState["atr_trail_mult"]; ok && m > 0 {
+				evalCtx.TrailMult = m
 			}
 			if s.snapshotFn != nil {
 				if indSnap, ok := s.snapshotFn(string(priceSymbol)); ok {

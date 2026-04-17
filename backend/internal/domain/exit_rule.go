@@ -90,6 +90,52 @@ func (r ExitRule) Param(key string, fallback float64) float64 {
 	return fallback
 }
 
+// WidestActiveStopPct returns the maximum downside-stop distance across
+// a slice of active exit rules, expressed as a fraction of entry. The
+// per-position risk cap sizes the expected-loss check against this value
+// because the loosest stop is what actually bounds realized loss — a
+// tight MAX_LOSS loses its meaning if a sibling PREMIUM_TRAIL lets price
+// drift 30% before firing.
+//
+// Source selection (stop_pct_source = "widest_active"):
+//
+//	MAX_LOSS           → param "pct"
+//	PREMIUM_STOP       → param "threshold"   (premium drawdown from entry)
+//	PREMIUM_TRAIL      → param "trail_pct"   (premium drawdown from HWM)
+//	TRAILING_STOP      → param "pct"         (spot drawdown from HWM)
+//	CHANDELIER_TRAIL   → param "giveback_pct"
+//
+// Returns (0, "") when no qualifying rule is present. The source label
+// is surfaced in the rejection payload for operator forensics.
+func WidestActiveStopPct(rules []ExitRule) (pct float64, source string) {
+	for _, r := range rules {
+		var v float64
+		var label string
+		switch r.Type {
+		case ExitRuleMaxLoss:
+			v = r.Param("pct", 0)
+			label = "MAX_LOSS.pct"
+		case ExitRulePremiumStop:
+			v = r.Param("threshold", 0)
+			label = "PREMIUM_STOP.threshold"
+		case ExitRulePremiumTrail:
+			v = r.Param("trail_pct", 0)
+			label = "PREMIUM_TRAIL.trail_pct"
+		case ExitRuleTrailingStop:
+			v = r.Param("pct", 0)
+			label = "TRAILING_STOP.pct"
+		case ExitRuleChandelierTrail:
+			v = r.Param("giveback_pct", 0)
+			label = "CHANDELIER_TRAIL.giveback_pct"
+		}
+		if v > pct {
+			pct = v
+			source = label
+		}
+	}
+	return pct, source
+}
+
 // EntryThesis captures the AI judge's reasoning at position entry time.
 // Stored on MonitoredPosition so the Risk Agent can compare "what we believed
 // at entry" vs "what's true now" during periodic re-evaluation.

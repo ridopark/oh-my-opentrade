@@ -15,11 +15,18 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/app/options"
+	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	stratports "github.com/oh-my-opentrade/backend/internal/ports/strategy"
 )
+
+// REJECTED_RISK_CAP is the machine-readable reason code emitted on
+// OrderIntentRejected events when the per-position expected-loss cap
+// reduces contracts to zero (or would, when RejectOnFloor is true).
+// The string is stable — dashboards and alerting rules key on it.
+const RejectedRiskCap = "REJECTED_RISK_CAP"
 
 // revalStateTTL is how long a degraded revaluation blocks new entries.
 // After the position closes, no new revaluations fire; this TTL ensures
@@ -82,6 +89,13 @@ type RiskSizer struct {
 	exitCooldownDuration time.Duration
 	optionsMarket        ports.OptionsMarketDataPort
 	contractSelector     *options.ContractSelectionService
+
+	// positionRiskCap is the per-position expected-loss cap configured via
+	// [risk.position_cap] in YAML. Nil (or Enabled=false) short-circuits
+	// the cap check so behavior is byte-identical to the pre-fix sizer.
+	// Written once during wiring via SetPositionRiskCap; read on the hot
+	// path under rs.mu alongside accountEquity.
+	positionRiskCap config.PositionRiskCapConfig
 }
 
 func NewRiskSizer(eventBus ports.EventBusPort, specStore stratports.SpecStore, equity float64, logger *slog.Logger) *RiskSizer {
@@ -107,6 +121,17 @@ func (rs *RiskSizer) SetExitCooldown(d time.Duration) { rs.exitCooldownDuration 
 func (rs *RiskSizer) SetOptionsMarket(m ports.OptionsMarketDataPort) { rs.optionsMarket = m }
 func (rs *RiskSizer) SetContractSelector(s *options.ContractSelectionService) {
 	rs.contractSelector = s
+}
+
+// SetPositionRiskCap wires the per-position expected-loss cap configured
+// via [risk.position_cap]. Safe to call before Start; takes effect on
+// every subsequent signal. Passing a zero-value PositionRiskCapConfig
+// (Enabled=false) disables the check — byte-identical to the pre-fix
+// sizer for backward compatibility.
+func (rs *RiskSizer) SetPositionRiskCap(c config.PositionRiskCapConfig) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.positionRiskCap = c
 }
 
 func (rs *RiskSizer) Start(ctx context.Context) error {
@@ -874,6 +899,75 @@ func (rs *RiskSizer) handleOptionsSignal(
 			"symbol", sigRef.Symbol, "computed", qty, "cap", maxContracts)
 		qty = float64(maxContracts)
 	}
+
+	// Per-position expected-loss cap (2026-04-16 MU incident fix).
+	// Runs AFTER MaxContracts so the cap operates on the notional-sized
+	// quantity. If cap reduces qty to 0 and RejectOnFloor is true, emit
+	// a structured OrderIntentRejected with reason REJECTED_RISK_CAP and
+	// bail. Disabled path is byte-identical to the pre-fix sizer.
+	riskDecision := rs.applyPositionRiskCap(qty, premiumPerContract, exitRules, domain.InstrumentTypeOption)
+	if !riskDecision.Disabled {
+		if riskDecision.Qty <= 0 {
+			reason := fmt.Sprintf("%s: expected_loss=%.2f > cap=%.2f (stop=%.2f%% via %s, budget=%.2f %s)",
+				RejectedRiskCap,
+				riskDecision.ComputedLossUSDRaw,
+				riskDecision.CapUSD,
+				riskDecision.StopPct*100,
+				riskDecision.StopSource,
+				riskDecision.DailyBudgetUSD,
+				riskDecision.BudgetMode,
+			)
+			rs.logger.Warn("risk cap rejected trade — expected loss exceeds cap",
+				"symbol", sigRef.Symbol,
+				"contract", string(best.ContractSymbol),
+				"reason", RejectedRiskCap,
+				"expected_loss_usd", riskDecision.ComputedLossUSDRaw,
+				"cap_usd", riskDecision.CapUSD,
+				"stop_pct", riskDecision.StopPct,
+				"stop_source", riskDecision.StopSource,
+				"daily_budget_usd", riskDecision.DailyBudgetUSD,
+				"budget_mode", riskDecision.BudgetMode,
+			)
+			if rs.positionRiskCap.RejectOnFloor {
+				// Synthesize an OrderIntent-shaped payload for the rejection event.
+				// ID uses a fresh UUID because no intent was constructed.
+				rejection := domain.OrderIntentEventPayload{
+					ID:        uuid.NewString(),
+					Symbol:    sigRef.Symbol,
+					Direction: string(direction),
+					Strategy:  strategyName,
+					Reason:    reason,
+					Status:    domain.OrderIntentStatusRejected,
+					Meta: map[string]string{
+						"reject_code":         RejectedRiskCap,
+						"computed_expected_loss": fmt.Sprintf("%.2f", riskDecision.ComputedLossUSDRaw),
+						"cap_usd":             fmt.Sprintf("%.2f", riskDecision.CapUSD),
+						"stop_pct":            fmt.Sprintf("%.6f", riskDecision.StopPct),
+						"stop_source":         riskDecision.StopSource,
+						"daily_budget_usd":    fmt.Sprintf("%.2f", riskDecision.DailyBudgetUSD),
+						"budget_mode":         riskDecision.BudgetMode,
+						"premium_per_contract": fmt.Sprintf("%.4f", premiumPerContract),
+					},
+				}
+				rs.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, rejection.ID, rejection)
+				return nil
+			}
+			// RejectOnFloor=false — operator chose to log-only and continue.
+			// Fall through with original qty; this is a deliberate escape hatch.
+		} else if riskDecision.Adjusted {
+			rs.logger.Info("risk cap reduced contracts",
+				"symbol", sigRef.Symbol,
+				"pre_cap_qty", qty,
+				"post_cap_qty", riskDecision.Qty,
+				"expected_loss_usd", riskDecision.ComputedLossUSDNow,
+				"cap_usd", riskDecision.CapUSD,
+				"stop_pct", riskDecision.StopPct,
+				"stop_source", riskDecision.StopSource,
+			)
+			qty = riskDecision.Qty
+		}
+	}
+
 	maxLossUSD := premiumPerContract * qty
 
 	inst, err := domain.NewInstrument(
@@ -984,6 +1078,134 @@ func (rs *RiskSizer) buildContractSelector(cfg *domain.OptionsConfig) *options.C
 	}
 	regimes := cfg.ToRegimeConstraintsMap()
 	return options.NewContractSelectionServiceWithRegimes(cfg.Defaults, regimes, rs.nowFn)
+}
+
+// riskCapDecision carries the outcome of applyPositionRiskCap so the
+// caller can either resize the order or emit a structured rejection.
+type riskCapDecision struct {
+	Adjusted           bool    // true if Qty was reduced
+	Qty                float64 // final contract count (0 means reject)
+	StopPct            float64 // widest active stop used in the check
+	StopSource         string  // which rule dominated the widest-active pick
+	CapUSD             float64 // computed per-position cap in USD
+	DailyBudgetUSD     float64 // effective daily loss budget used
+	BudgetMode         string  // "account_pct" or "fixed_usd"
+	ComputedLossUSDRaw float64 // expected loss at the ORIGINAL pre-cap qty
+	ComputedLossUSDNow float64 // expected loss at the final qty
+	Disabled           bool    // true when Enabled=false or AppliesTo excludes options — no check performed
+}
+
+// applyPositionRiskCap evaluates the per-position expected-loss cap
+// against the sized order and returns an adjusted qty (possibly 0).
+// The cap is:
+//
+//	cap_usd      = MaxPositionRiskFrac × daily_loss_budget
+//	expected_loss = contracts × premium_per_contract × stop_pct
+//
+// If expected_loss > cap_usd, we reduce contracts to
+// floor(cap_usd / (premium_per_contract × stop_pct)).  The guard
+// short-circuits (no adjustment) when Enabled=false, when
+// InstrumentType isn't in AppliesTo, when widest-active stop is 0
+// (no loss sizing possible), or when equity is unavailable for
+// account_pct mode (log-warn, no cap). This mirrors the quant spec
+// exactly so backtests stay deterministic.
+func (rs *RiskSizer) applyPositionRiskCap(
+	qty float64,
+	premiumPerContract float64,
+	exitRules []domain.ExitRule,
+	instrumentType domain.InstrumentType,
+) riskCapDecision {
+	rs.mu.RLock()
+	cap := rs.positionRiskCap
+	equity := rs.accountEquity
+	rs.mu.RUnlock()
+
+	decision := riskCapDecision{Qty: qty, BudgetMode: cap.Mode}
+	if !cap.Enabled {
+		decision.Disabled = true
+		return decision
+	}
+	if !isInstrumentTypeApplicable(instrumentType, cap.AppliesTo) {
+		decision.Disabled = true
+		return decision
+	}
+
+	stopPct, stopSource := domain.WidestActiveStopPct(exitRules)
+	decision.StopPct = stopPct
+	decision.StopSource = stopSource
+	if stopPct <= 0 {
+		// No quantifiable stop → we cannot compute expected loss. Safer
+		// to skip the cap than to reject everything lacking a stop rule.
+		rs.logger.Warn("risk cap: no widest-active stop on exit rules — skipping cap",
+			"rules", len(exitRules))
+		decision.Disabled = true
+		return decision
+	}
+
+	var budgetUSD float64
+	switch strings.ToLower(cap.Mode) {
+	case "fixed_usd":
+		budgetUSD = cap.DailyLossBudgetUSD
+	default: // "account_pct"
+		if equity <= 0 {
+			// Equity unavailable at sizing time (startup race) — quant
+			// spec: short-circuit to no cap, log warning.
+			rs.logger.Warn("risk cap: equity unavailable — skipping cap (account_pct mode)")
+			decision.Disabled = true
+			return decision
+		}
+		budgetUSD = equity * cap.DailyLossBudgetPct
+	}
+	decision.DailyBudgetUSD = budgetUSD
+
+	capUSD := budgetUSD * cap.MaxPositionRiskFrac
+	decision.CapUSD = capUSD
+
+	lossPerContract := premiumPerContract * stopPct
+	if lossPerContract <= 0 {
+		decision.Disabled = true
+		return decision
+	}
+	decision.ComputedLossUSDRaw = qty * lossPerContract
+
+	if decision.ComputedLossUSDRaw <= capUSD {
+		decision.ComputedLossUSDNow = decision.ComputedLossUSDRaw
+		return decision
+	}
+
+	maxQty := math.Floor(capUSD / lossPerContract)
+	if maxQty < qty {
+		decision.Adjusted = true
+		decision.Qty = maxQty
+	}
+	decision.ComputedLossUSDNow = decision.Qty * lossPerContract
+	return decision
+}
+
+// isInstrumentTypeApplicable reports whether the cap should fire for
+// the given instrument type. Empty list defaults to options-only per
+// quant phase-1 spec.
+func isInstrumentTypeApplicable(it domain.InstrumentType, appliesTo []string) bool {
+	if len(appliesTo) == 0 {
+		return it == domain.InstrumentTypeOption
+	}
+	for _, s := range appliesTo {
+		switch strings.ToLower(s) {
+		case "options":
+			if it == domain.InstrumentTypeOption {
+				return true
+			}
+		case "equity", "equities":
+			if it == domain.InstrumentTypeEquity || it == "" {
+				return true
+			}
+		case "crypto":
+			if it == domain.InstrumentTypeCrypto {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (rs *RiskSizer) emit(ctx context.Context, eventType string, tenantID string, envMode domain.EnvMode, idempotencyKey string, payload any) {

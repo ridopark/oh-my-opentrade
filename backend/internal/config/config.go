@@ -30,6 +30,8 @@ type Config struct {
 	Options      OptionsConfig      `yaml:"options"`
 	Deribit      DeribitConfig      `yaml:"deribit"`
 	OnChain      OnChainConfig      `yaml:"onchain"`
+	Risk         RiskConfig         `yaml:"risk"`
+	Exits        ExitsConfig        `yaml:"exits"`
 	OptionsV2    bool               `yaml:"-"`
 	MultiAccount bool               `yaml:"-"`
 	// OrderJournalEnabled toggles the Sprint 2 write-ahead order-intent
@@ -367,6 +369,62 @@ type rawConfig struct {
 	Options      OptionsConfig      `yaml:"options"`
 	Deribit      DeribitConfig      `yaml:"deribit"`
 	OnChain      OnChainConfig      `yaml:"onchain"`
+	Risk         RiskConfig         `yaml:"risk"`
+	Exits        ExitsConfig        `yaml:"exits"`
+}
+
+// RiskConfig groups cross-cutting risk gates that run outside the per-
+// strategy DNA. Today it carries the per-position expected-loss cap
+// (see PositionRiskCapConfig). Default-on, defense-in-depth for
+// high-premium options that slip through notional sizing.
+type RiskConfig struct {
+	PositionCap PositionRiskCapConfig `yaml:"position_cap"`
+}
+
+// PositionRiskCapConfig bounds a single trade's expected loss at stop
+// against a fraction of the daily-loss budget. When Mode is
+// "account_pct", the budget is live-equity × DailyLossBudgetPct at
+// sizing time (no state duplicated with DailyLossBreaker). When
+// "fixed_usd", DailyLossBudgetUSD is used as-is.
+//
+// Defaults ship ENABLED per quant; the byte-identical-when-Enabled=false
+// invariant is preserved so operators can kill-switch the cap.
+type PositionRiskCapConfig struct {
+	Enabled               bool    `yaml:"enabled"`
+	Mode                  string  `yaml:"mode"`                     // "account_pct" | "fixed_usd"
+	DailyLossBudgetPct    float64 `yaml:"daily_loss_budget_pct"`    // 0.0025 = 25 bps
+	DailyLossBudgetUSD    float64 `yaml:"daily_loss_budget_usd"`    // fallback when Mode=fixed_usd
+	MaxPositionRiskFrac   float64 `yaml:"max_position_risk_frac"`   // 0.20 = 20% of daily budget per trade
+	StopPctSource         string  `yaml:"stop_pct_source"`          // only "widest_active" supported in phase 1
+	ConfluenceBonusEnabled bool    `yaml:"confluence_bonus_enabled"`
+	ConfluenceBonusMax    float64 `yaml:"confluence_bonus_max"`
+	RejectOnFloor         bool    `yaml:"reject_on_floor"`
+	AppliesTo             []string `yaml:"applies_to"`               // ["options"] in phase 1
+}
+
+// ExitsConfig groups exit-engine cross-cutting knobs. Today it carries
+// the ATR-bucketed premium-trail multiplier (see ATRTrailConfig).
+type ExitsConfig struct {
+	ATRTrail ATRTrailConfig `yaml:"atr_trail"`
+}
+
+// ATRTrailConfig scales PREMIUM_TRAIL.trail_pct by an ATR%-percentile
+// bucket. ATR% is computed per-symbol from daily bars over a rolling
+// window; the tercile cutoffs and multipliers are exposed so quant can
+// sweep them without code changes. Disabled defaults preserve
+// byte-identical exit prices.
+type ATRTrailConfig struct {
+	Enabled                       bool      `yaml:"enabled"`
+	ATRPeriod                     int       `yaml:"atr_period"`
+	ATRTimeframe                  string    `yaml:"atr_timeframe"`
+	ATRLookbackDays               int       `yaml:"atr_lookback_days"`
+	ATRLookbackDaysCrypto         int       `yaml:"atr_lookback_days_crypto"`
+	Bucketing                     string    `yaml:"bucketing"` // "per_symbol" only in phase 1
+	TercileLowPctile              float64   `yaml:"tercile_low_pctile"`
+	TercileHighPctile             float64   `yaml:"tercile_high_pctile"`
+	TercileMultipliers            []float64 `yaml:"tercile_multipliers"`
+	InsufficientHistoryMultiplier float64   `yaml:"insufficient_history_multiplier"`
+	MinHistoryDays                int       `yaml:"min_history_days"`
 }
 
 const (
@@ -524,6 +582,8 @@ func Load(envPath, yamlPath string) (*Config, error) {
 		Options:      applyOptionsDefaults(raw.Options),
 		Deribit:      applyDeribitDefaults(raw.Deribit),
 		OnChain:      applyOnChainDefaults(raw.OnChain),
+		Risk:         applyRiskDefaults(raw.Risk),
+		Exits:        applyExitsDefaults(raw.Exits),
 	}
 
 	// 3. Overlay environment variables
@@ -794,6 +854,99 @@ func applyOnChainDefaults(c OnChainConfig) OnChainConfig {
 	if c.CacheTTL == "" {
 		c.CacheTTL = "5m"
 	}
+	return c
+}
+
+// applyRiskDefaults materializes PositionRiskCapConfig defaults. Quant
+// ships this ENABLED with textbook-safe numbers (25 bps daily budget,
+// 20% per trade, widest-active stop source). Operators flip Enabled=false
+// to kill-switch it. When a YAML section exists, only blank/zero fields
+// fall back to defaults so overrides stay surgical.
+func applyRiskDefaults(c RiskConfig) RiskConfig {
+	p := c.PositionCap
+	// Default-on per quant. If YAML omits the section, zero-value Enabled
+	// is false — we must bake the default-on here by presence detection.
+	// We treat "all numeric knobs zero + AppliesTo empty" as "omitted".
+	omitted := p.Mode == "" && p.DailyLossBudgetPct == 0 &&
+		p.DailyLossBudgetUSD == 0 && p.MaxPositionRiskFrac == 0 &&
+		p.StopPctSource == "" && !p.Enabled && len(p.AppliesTo) == 0
+	if omitted {
+		p.Enabled = true
+	}
+	if p.Mode == "" {
+		p.Mode = "account_pct"
+	}
+	if p.DailyLossBudgetPct == 0 {
+		p.DailyLossBudgetPct = 0.0025
+	}
+	if p.DailyLossBudgetUSD == 0 {
+		p.DailyLossBudgetUSD = 2500
+	}
+	if p.MaxPositionRiskFrac == 0 {
+		p.MaxPositionRiskFrac = 0.20
+	}
+	if p.StopPctSource == "" {
+		p.StopPctSource = "widest_active"
+	}
+	if p.ConfluenceBonusMax == 0 {
+		p.ConfluenceBonusMax = 1.0
+	}
+	if len(p.AppliesTo) == 0 {
+		p.AppliesTo = []string{"options"}
+	}
+	// RejectOnFloor: default true when section omitted (enabled path).
+	if omitted {
+		p.RejectOnFloor = true
+	}
+	c.PositionCap = p
+	return c
+}
+
+// applyExitsDefaults materializes ATRTrailConfig defaults. Same
+// presence-detection idiom as applyRiskDefaults so Enabled defaults to
+// true when the YAML section is omitted but operators can still
+// explicitly set enabled: false to kill the scaler.
+func applyExitsDefaults(c ExitsConfig) ExitsConfig {
+	a := c.ATRTrail
+	omitted := !a.Enabled && a.ATRPeriod == 0 && a.ATRTimeframe == "" &&
+		a.ATRLookbackDays == 0 && a.ATRLookbackDaysCrypto == 0 &&
+		a.Bucketing == "" && a.TercileLowPctile == 0 && a.TercileHighPctile == 0 &&
+		len(a.TercileMultipliers) == 0 && a.InsufficientHistoryMultiplier == 0 &&
+		a.MinHistoryDays == 0
+	if omitted {
+		a.Enabled = true
+	}
+	if a.ATRPeriod == 0 {
+		a.ATRPeriod = 14
+	}
+	if a.ATRTimeframe == "" {
+		a.ATRTimeframe = "1d"
+	}
+	if a.ATRLookbackDays == 0 {
+		a.ATRLookbackDays = 60
+	}
+	if a.ATRLookbackDaysCrypto == 0 {
+		a.ATRLookbackDaysCrypto = 42
+	}
+	if a.Bucketing == "" {
+		a.Bucketing = "per_symbol"
+	}
+	if a.TercileLowPctile == 0 {
+		a.TercileLowPctile = 0.33
+	}
+	if a.TercileHighPctile == 0 {
+		a.TercileHighPctile = 0.67
+	}
+	if len(a.TercileMultipliers) == 0 {
+		a.TercileMultipliers = []float64{1.0, 1.5, 2.0}
+	}
+	if a.InsufficientHistoryMultiplier == 0 {
+		a.InsufficientHistoryMultiplier = 1.0
+	}
+	if a.MinHistoryDays == 0 {
+		a.MinHistoryDays = 30
+	}
+	c.ATRTrail = a
 	return c
 }
 

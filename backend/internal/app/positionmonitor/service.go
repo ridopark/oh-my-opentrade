@@ -69,6 +69,16 @@ type Service struct {
 	// — which caused today's SOFI phantom short.
 	repegNotifier RepegNotifier
 
+	// atrTrailCfg carries the ATR-bucketed premium-trail multiplier
+	// configuration (see [exits.atr_trail] in YAML). When Enabled=false
+	// the option-fill stamper short-circuits and positions carry no
+	// atr_trail_mult; EvalContext defaults to 1.0 and evaluatePremiumTrail
+	// produces byte-identical exit prices to the pre-fix code path. Held
+	// as an embedded struct (not *config.ATRTrailConfig) so positionmonitor
+	// does not import the config package on its hot path — SetATRTrailConfig
+	// accepts a config value and copies the fields into this private mirror.
+	atrTrailCfg atrTrailConfigValue
+
 	// Config.
 	tickInterval            time.Duration
 	reconcileInterval       time.Duration
@@ -302,6 +312,45 @@ func WithRepegNotifier(n RepegNotifier) Option {
 // constructor runs before we have a stable handle to execution.Service.
 // Calling this after Start() is safe — it only affects subsequent cancels.
 func (s *Service) SetRepegNotifier(n RepegNotifier) { s.repegNotifier = n }
+
+// atrTrailConfigValue is the private mirror of config.ATRTrailConfig
+// that lives on the Service. Keeping the fields here (rather than an
+// imported config struct) avoids pulling the config package into the
+// positionmonitor hot path, which would complicate backtest wiring.
+type atrTrailConfigValue struct {
+	Enabled                       bool
+	ATRPeriod                     int
+	ATRLookbackDays               int
+	ATRLookbackDaysCrypto         int
+	TercileLowPctile              float64
+	TercileHighPctile             float64
+	TercileMultipliers            []float64
+	InsufficientHistoryMultiplier float64
+	MinHistoryDays                int
+}
+
+// SetATRTrailConfig wires the ATR-bucketed premium-trail config. Called
+// from cmd/omo-core after config load. Calling with Enabled=false (or
+// not calling at all) leaves atr_trail_mult unset on new positions and
+// preserves byte-identical exit behavior via the EvalContext default of 1.0.
+func (s *Service) SetATRTrailConfig(
+	enabled bool,
+	atrPeriod, lookbackDays, lookbackDaysCrypto, minHistoryDays int,
+	tercileLow, tercileHigh, insufficientHistMult float64,
+	tercileMultipliers []float64,
+) {
+	s.atrTrailCfg = atrTrailConfigValue{
+		Enabled:                       enabled,
+		ATRPeriod:                     atrPeriod,
+		ATRLookbackDays:               lookbackDays,
+		ATRLookbackDaysCrypto:         lookbackDaysCrypto,
+		TercileLowPctile:              tercileLow,
+		TercileHighPctile:             tercileHigh,
+		TercileMultipliers:            append([]float64(nil), tercileMultipliers...),
+		InsufficientHistoryMultiplier: insufficientHistMult,
+		MinHistoryDays:                minHistoryDays,
+	}
+}
 
 // NewService creates a new position monitor service.
 func NewService(
@@ -696,6 +745,13 @@ func (s *Service) processFill(fill fillMsg) {
 				pos.LowWaterMark = snap.Price
 			}
 		}
+
+		// Stamp the ATR%-bucket trail multiplier (2026-04-16 MRVL/SOXL
+		// premature-exit fix). Once-per-position: the tick loop reads
+		// pos.CustomState["atr_trail_mult"] on every bar without re-
+		// computing. Enabled=false short-circuits to no-op; missing
+		// history leaves the field unset and EvalContext defaults to 1.0.
+		s.stampATRTrailOnPos(&pos)
 	}
 
 	// Store strategy params for the position monitor's hold-period guards.

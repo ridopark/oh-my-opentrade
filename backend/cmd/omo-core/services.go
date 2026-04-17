@@ -223,6 +223,22 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	// no longer owned because 1603 had filled in the cancel race).
 	svc.posMonitor.SetRepegNotifier(svc.execution)
 
+	// Wire the ATR-bucketed PREMIUM_TRAIL multiplier (2026-04-16 MRVL/SOXL
+	// premature-exit fix). Default-on per quant; operators flip
+	// [exits.atr_trail] enabled: false to kill-switch. Positions stamped
+	// once at fill time; tick loop reads pos.CustomState["atr_trail_mult"].
+	svc.posMonitor.SetATRTrailConfig(
+		cfg.Exits.ATRTrail.Enabled,
+		cfg.Exits.ATRTrail.ATRPeriod,
+		cfg.Exits.ATRTrail.ATRLookbackDays,
+		cfg.Exits.ATRTrail.ATRLookbackDaysCrypto,
+		cfg.Exits.ATRTrail.MinHistoryDays,
+		cfg.Exits.ATRTrail.TercileLowPctile,
+		cfg.Exits.ATRTrail.TercileHighPctile,
+		cfg.Exits.ATRTrail.InsufficientHistoryMultiplier,
+		cfg.Exits.ATRTrail.TercileMultipliers,
+	)
+
 	// 5a-risk-reval: Position revaluator (AI-driven periodic risk re-evaluation).
 	var riskAssessor ports.RiskAssessorPort
 	if cfg.AI.Enabled {
@@ -416,6 +432,12 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	svc.riskSizer = pipeline.RiskSizer
 	svc.lifecycleSvc = pipeline.LifecycleSvc
 	svc.pipelineActivator = pipeline.Activator
+
+	// Wire the per-position expected-loss cap (2026-04-16 MU incident fix).
+	// Quant ships this enabled by default — operators flip [risk.position_cap]
+	// enabled: false to kill-switch. Equity comes live from SetAccountEquity
+	// calls that already run against this riskSizer, so no extra plumbing.
+	svc.riskSizer.SetPositionRiskCap(cfg.Risk.PositionCap)
 
 	aiAnchorResolver := strategy.NewAIAnchorResolver(svc.aiAdvisor, nil, slog.Default())
 	// Wire session-based anchor resolver so pd_high, pd_low, session_open are
@@ -639,6 +661,7 @@ func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, lo
 		acctRunner := strategy.NewRunner(infra.eventBus, svc.router, acct.TenantID, domain.EnvModePaper, acctStratLog)
 		acctRunner.SetPositionLookup(svc.posMonitor.LookupPosition)
 		acctRiskSizer := strategy.NewRiskSizer(infra.eventBus, svc.specStore, acctEquity, acctStratLog)
+		acctRiskSizer.SetPositionRiskCap(cfg.Risk.PositionCap)
 		acctLifecycle := strategy.NewLifecycleService(svc.router, acctStratLog)
 		acctSymRouter := symbolrouter.NewService(
 			infra.eventBus, svc.symRouterSpecs, acct.TenantID, domain.EnvModePaper,
