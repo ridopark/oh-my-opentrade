@@ -782,7 +782,12 @@ func loadEnvFile(path string) error {
 // "optimistic" via YAML for legacy parity runs.
 func applyBacktestDefaults(c BacktestConfig) BacktestConfig {
 	if c.FillModel == "" {
-		c.FillModel = "realistic"
+		// "pessimistic" fills at ask on entry / bid on exit with the
+		// configurable slippage multiplier — matches live execution
+		// more closely than "realistic" (which still crosses at mid
+		// plus microstructure adjustments). "optimistic" is available
+		// for legacy parity runs via YAML override.
+		c.FillModel = "pessimistic"
 	}
 	if c.LatencyMsEquity == 0 {
 		c.LatencyMsEquity = 50
@@ -824,7 +829,12 @@ func applySyntheticChainDefaults(c SyntheticChainConfig) SyntheticChainConfig {
 		c.RiskFreeRate = 0.045
 	}
 	if c.BidAskSpreadPct == 0 {
-		c.BidAskSpreadPct = 0.03
+		// 8% matches typical weekly OPRA spreads on sub-$3 options —
+		// 3% was unrealistically tight and inflated backtest PF by
+		// fitting every exit cleanly through the synthetic spread.
+		// Operators can still override via YAML for research scenarios
+		// where an ideal-spread baseline is useful.
+		c.BidAskSpreadPct = 0.08
 	}
 	return c
 }
