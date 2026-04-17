@@ -1,4 +1,7 @@
 {
+  "permissions": {
+    "defaultMode": "plan"
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -9,16 +12,6 @@
             "prompt": "Review the staged changes (run `git diff --staged`) for code quality, reuse opportunities, and efficiency issues. Apply minimal fixes if needed. Do NOT change test files or config files. Only fix issues in application code. Be concise — skip if changes look clean.",
             "timeout": 120,
             "statusMessage": "Running /simplify on staged changes..."
-          }
-        ]
-      },
-      {
-        "matcher": "Edit|Write|MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash /home/ridopark/src/oh-my-opentrade/.claude/hooks/plan-first-reminder.sh",
-            "timeout": 5
           }
         ]
       }
