@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -103,6 +104,91 @@ func TestMarkRepegCancel_OrderGone(t *testing.T) {
 	s := &Service{log: zerolog.Nop()}
 	ok := s.MarkRepegCancel("never-submitted")
 	assert.False(t, ok)
+}
+
+// sweepProbeBroker reports dust-sweep launches by counting GetPosition
+// calls (sweepDustPosition calls GetPosition as its first action). The
+// SOFI phantom-short bug was caused by cleanupPendingOrder launching
+// sweepDustPosition on a re-peg-canceled order; this mock makes that
+// launch observable from a unit test.
+type sweepProbeBroker struct {
+	noopBroker
+	getPositionCalls int32
+}
+
+func (b *sweepProbeBroker) GetPosition(_ context.Context, _ domain.Symbol) (float64, error) {
+	atomic.AddInt32(&b.getPositionCalls, 1)
+	// Return 0 so any launched sweep exits fast without submitting orders.
+	return 0, nil
+}
+
+// TestMarkRepegCancel_SuppressesDustSweep verifies that after tagging a
+// pending order via MarkRepegCancel, cleanupPendingOrder does NOT launch
+// sweepDustPosition. Observable via GetPosition call count: sweep's first
+// action is GetPosition, so a zero count means no sweep launched.
+func TestMarkRepegCancel_SuppressesDustSweep(t *testing.T) {
+	broker := &sweepProbeBroker{}
+	pg := NewPositionGate(broker, zerolog.Nop())
+	bus := memory.NewBus()
+
+	s := &Service{
+		positionGate: pg,
+		broker:       broker,
+		eventBus:     bus,
+		log:          zerolog.Nop(),
+	}
+
+	// Full-exit rationale (no "SCALE_OUT") — this is the rationale that
+	// normally triggers the dust-sweep launch.
+	intent := mustExitIntent(t, "PREMIUM_TRAIL exit")
+	orderID := "broker-1604"
+	s.pendingOrders.Store(orderID, &pendingOrder{
+		intent:      intent,
+		tenantID:    intent.TenantID,
+		envMode:     intent.EnvMode,
+		submitStart: time.Now(),
+	})
+
+	require.True(t, s.MarkRepegCancel(orderID))
+
+	s.cleanupPendingOrder(orderID)
+
+	// Give any background goroutine a chance to fire before asserting.
+	time.Sleep(50 * time.Millisecond)
+
+	assert.Equal(t, int32(0), atomic.LoadInt32(&broker.getPositionCalls),
+		"suppressed cleanup must NOT launch dust sweep (root cause of SOFI phantom short)")
+}
+
+// TestCleanupPendingOrder_LaunchesDustSweep_WhenNotSuppressed is the
+// baseline complement to TestMarkRepegCancel_SuppressesDustSweep — a
+// full exit WITHOUT suppression should launch the sweep.
+func TestCleanupPendingOrder_LaunchesDustSweep_WhenNotSuppressed(t *testing.T) {
+	broker := &sweepProbeBroker{}
+	pg := NewPositionGate(broker, zerolog.Nop())
+	bus := memory.NewBus()
+
+	s := &Service{
+		positionGate: pg,
+		broker:       broker,
+		eventBus:     bus,
+		log:          zerolog.Nop(),
+	}
+
+	intent := mustExitIntent(t, "PREMIUM_TRAIL exit")
+	orderID := "broker-1603"
+	s.pendingOrders.Store(orderID, &pendingOrder{
+		intent:      intent,
+		tenantID:    intent.TenantID,
+		envMode:     intent.EnvMode,
+		submitStart: time.Now(),
+	})
+
+	s.cleanupPendingOrder(orderID)
+	time.Sleep(50 * time.Millisecond)
+
+	assert.GreaterOrEqual(t, atomic.LoadInt32(&broker.getPositionCalls), int32(1),
+		"baseline: full-exit cleanup without suppression must launch dust sweep")
 }
 
 func mustExitIntent(t *testing.T, rationale string) domain.OrderIntent {

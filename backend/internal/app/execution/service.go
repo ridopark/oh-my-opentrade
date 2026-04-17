@@ -31,12 +31,17 @@ type pendingOrder struct {
 	tenantID    string
 	envMode     domain.EnvMode
 	submitStart time.Time
-	// suppressFailureRecord, when true, tells cleanupPendingOrder to skip
-	// positionGate.RecordExitFailure for this order. Set by MarkRepegCancel
-	// so that re-peg cycles — which by design cancel-and-resubmit up to N
-	// times per exit attempt — don't amplify the exit-failure counter 4x
-	// and prematurely trip the circuit breaker.
-	suppressFailureRecord bool
+	// suppressTerminalActions, when true, tells cleanupPendingOrder to skip
+	// BOTH positionGate.RecordExitFailure AND the sweepDustPosition launch
+	// for this order. Set by MarkRepegCancel so that re-peg cycles — which
+	// by design cancel-and-resubmit up to N times per exit attempt — don't
+	// (a) amplify the exit-failure counter 4x and trip the circuit breaker,
+	// nor (b) fire a dust sweep against a broker order whose "remainder"
+	// is actually a concurrent fill the re-peg cancel raced. The SOFI
+	// phantom-short on 2026-04-16 originated in case (b): the re-peg
+	// cancel of order 1604 triggered sweepDustPosition even though 1603
+	// had just filled broker-side and flattened the position.
+	suppressTerminalActions bool
 }
 
 // PositionStateLookup is a narrow interface over the position monitor that
@@ -1446,19 +1451,20 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 }
 
 // MarkRepegCancel tags a live pending order so its upcoming terminal event
-// won't be counted as an exit failure. Called by the position monitor just
-// before it issues a CancelOrder-for-repeg, which will inevitably terminate
-// the order without a fill. Returns true if a pending order with the given
-// broker ID was found and tagged; returns false when the order is already
-// gone (cleanupPendingOrder ran first) — callers can treat that as a
-// no-op because there's nothing left to record against.
+// won't (a) count as an exit failure, nor (b) launch a dust-sweep. Called
+// by the position monitor just before it issues a CancelOrder-for-repeg,
+// which will inevitably terminate the order without a fill. Returns true
+// if a pending order with the given broker ID was found and tagged;
+// returns false when the order is already gone (cleanupPendingOrder ran
+// first) — callers treat that as a no-op because there's nothing left to
+// record against, and any racing dust-sweep is already in flight.
 func (s *Service) MarkRepegCancel(brokerOrderID string) bool {
 	raw, ok := s.pendingOrders.Load(brokerOrderID)
 	if !ok {
 		return false
 	}
 	po := raw.(*pendingOrder)
-	po.suppressFailureRecord = true
+	po.suppressTerminalActions = true
 	return true
 }
 
@@ -1475,18 +1481,16 @@ func (s *Service) cleanupPendingOrder(brokerOrderID string) {
 			isFullExit := po.intent.Direction.IsExit() &&
 				!strings.Contains(po.intent.Rationale, "SCALE_OUT")
 
-			if isFullExit {
+			// Suppress BOTH the dust-sweep launch AND the failure-count
+			// record when the cancel came from a position-monitor re-peg.
+			// See pendingOrder.suppressTerminalActions for rationale.
+			if isFullExit && !po.suppressTerminalActions {
 				go s.sweepDustPosition(po.tenantID, po.envMode, po.intent.Symbol, brokerOrderID, po.intent.Strategy)
 			} else {
 				s.positionGate.ClearInflightExit(po.tenantID, po.envMode, po.intent.Symbol)
 			}
 
-			// Suppress the failure count when the cancel came from a
-			// position-monitor re-peg. Re-pegs are a sub-unit of a single
-			// exit attempt — counting each terminated limit as a failure
-			// would 4x-amplify normal behavior and trip the circuit
-			// breaker on a strategy that legitimately re-pegged twice.
-			if !po.suppressFailureRecord {
+			if !po.suppressTerminalActions {
 				if tripped := s.positionGate.RecordExitFailure(po.tenantID, po.envMode, po.intent.Symbol); tripped {
 					s.emit(context.Background(), domain.EventExitCircuitBroken, po.tenantID, po.envMode, brokerOrderID, domain.ExitCircuitBrokenPayload{
 						Symbol:       po.intent.Symbol,

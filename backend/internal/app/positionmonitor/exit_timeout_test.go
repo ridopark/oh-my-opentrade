@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -92,7 +94,9 @@ func TestHandleExitTimeout_OrderAlreadyFilled_GetDetailsFails_SchedulesRetry(t *
 
 	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "F")
 	pos := svc.positions[key]
-	assert.False(t, pos.ExitPending, "ExitPending cleared for retry")
+	// Single-ExitPending invariant: ExitPending stays true across the
+	// cancel-filled-race, retry bump is the "attempt advanced" signal.
+	assert.True(t, pos.ExitPending, "ExitPending stays true for retry")
 	assert.Equal(t, 1, pos.ExitRetryCount)
 }
 
@@ -134,7 +138,11 @@ func TestHandleExitTimeout_NormalCancelSuccess_SchedulesRetry(t *testing.T) {
 
 	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "F")
 	pos := svc.positions[key]
-	assert.False(t, pos.ExitPending)
+	// Single-ExitPending invariant (2026-04-16): ExitPending stays true
+	// across cancel+resubmit; the retry bump and cleared ExitOrderID are
+	// the observable "attempt cycled" signals.
+	assert.True(t, pos.ExitPending)
+	assert.Empty(t, pos.ExitOrderID)
 	assert.Equal(t, 1, pos.ExitRetryCount)
 }
 
@@ -312,7 +320,12 @@ func TestHandleExitTimeout_EquityUnchanged_StillEscalates(t *testing.T) {
 
 	assert.Equal(t, 0, pos.ExitRepegCount, "equity never re-pegs")
 	assert.Equal(t, 1, pos.ExitRetryCount, "equity escalates on first timeout")
-	assert.False(t, pos.ExitPending, "ExitPending cleared after terminal confirm")
+	// Single-ExitPending invariant (2026-04-16): ExitPending stays true
+	// throughout re-peg/escalate so concurrent tick-loop rule evaluation
+	// cannot race a parallel CLOSE_LONG. The broker order id was cleared
+	// as the observable "old order terminated" signal.
+	assert.True(t, pos.ExitPending, "ExitPending stays true under new invariant")
+	assert.Empty(t, pos.ExitOrderID, "old broker order id cleared after terminal")
 }
 
 func TestHandleExitTimeout_TimeoutAsymmetric(t *testing.T) {
@@ -362,4 +375,156 @@ func TestHandleExitTimeout_RepegBudget(t *testing.T) {
 			assert.Equal(t, tc.want, exitRepegBudget(pos))
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// SOFI phantom-short regression guards (2026-04-16).
+// ---------------------------------------------------------------------------
+
+// recordingRepegNotifier captures the broker order id handed to
+// MarkRepegCancel so tests can assert ordering: cancel MUST be preceded by
+// a MarkRepegCancel for the same order id.
+type recordingRepegNotifier struct {
+	calls []string
+	// cancelHook fires when the test's fake broker receives the cancel,
+	// so we can assert MarkRepegCancel happened BEFORE the cancel.
+	orderSeen map[string]int // id → call ordinal
+}
+
+func (n *recordingRepegNotifier) MarkRepegCancel(brokerOrderID string) bool {
+	n.calls = append(n.calls, brokerOrderID)
+	if n.orderSeen == nil {
+		n.orderSeen = make(map[string]int)
+	}
+	n.orderSeen[brokerOrderID] = len(n.calls)
+	return true
+}
+
+// orderedCancelBroker remembers the ordinal at which each cancel arrived.
+// Pairing with recordingRepegNotifier lets us assert that MarkRepegCancel
+// occurred BEFORE CancelOrder for the same broker order id.
+type orderedCancelBroker struct {
+	trackingBroker
+	notifier *recordingRepegNotifier
+	// cancelOrdinal[id] = index at which CancelOrder for this id was
+	// called relative to notifier.calls length at that moment.
+	cancelOrdinal map[string]int
+}
+
+func (b *orderedCancelBroker) CancelOrder(ctx context.Context, orderID string) error {
+	if b.cancelOrdinal == nil {
+		b.cancelOrdinal = make(map[string]int)
+	}
+	// Record how many MarkRepegCancel calls the notifier had seen when
+	// the cancel arrived. Expected: >= 1 for the cancel's order id.
+	if b.notifier != nil {
+		b.cancelOrdinal[orderID] = len(b.notifier.calls)
+	}
+	return b.trackingBroker.CancelOrder(ctx, orderID)
+}
+
+func TestHandleExitTimeout_CallsMarkRepegCancelBeforeCancel(t *testing.T) {
+	notifier := &recordingRepegNotifier{}
+	broker := &orderedCancelBroker{
+		trackingBroker: trackingBroker{detailsStatus: "canceled"},
+		notifier:       notifier,
+	}
+	svc := newTestServiceWithBrokerAndRepo(&broker.trackingBroker.mockBroker, &capturingRepo{})
+	svc.broker = broker
+	svc.SetRepegNotifier(notifier)
+
+	pos := seedOptionPendingExit(t, svc, "AAPL_OPT_MR", domain.ExitRulePremiumTarget, time.Second)
+	pos.ExitWallStartedAt = pos.ExitPendingAt
+
+	svc.tick()
+
+	// MarkRepegCancel must have been called with the exact broker order id
+	// that subsequently got canceled.
+	require.Contains(t, notifier.calls, "live-order-1")
+	// And it must have been called BEFORE the cancel arrived — i.e.,
+	// the notifier had recorded the call by the time the broker saw it.
+	assert.GreaterOrEqual(t, broker.cancelOrdinal["live-order-1"], 1,
+		"MarkRepegCancel must precede CancelOrder for the same broker order id")
+}
+
+// TestHandleExitTimeout_SingleExitPendingInvariant verifies ExitPending
+// stays true across the cancel+resubmit cycle. This is the load-bearing
+// guarantee that stops the tick loop from evaluating other exit rules
+// (e.g. STAGNATION_EXIT) and emitting a parallel CLOSE_LONG — which was
+// the SOFI 1605 bug on 2026-04-16.
+func TestHandleExitTimeout_SingleExitPendingInvariant(t *testing.T) {
+	broker := &trackingBroker{detailsStatus: "canceled"}
+	notifier := &recordingRepegNotifier{}
+	svc := newTestServiceWithBrokerAndRepo(&broker.mockBroker, &capturingRepo{})
+	svc.broker = broker
+	svc.SetRepegNotifier(notifier)
+
+	pos := seedOptionPendingExit(t, svc, "AAPL_OPT_INV", domain.ExitRulePremiumTarget, time.Second)
+	pos.ExitWallStartedAt = pos.ExitPendingAt
+
+	svc.tick()
+
+	// After a re-peg cycle: ExitPending must still be true. If it were ever
+	// flipped to false between cancel-terminal and the re-emitted trigger,
+	// the tick loop could fire a parallel exit rule in the gap.
+	assert.True(t, pos.ExitPending,
+		"ExitPending must stay true across re-peg cycle (single-invariant, SOFI fix)")
+	// The old broker order id was cleared because we canceled it; the new
+	// one will be populated by processExitSubmitted when the re-emitted
+	// intent is acked. In this test no event bus is wired to that flow,
+	// so we assert the empty-id intermediate state.
+	assert.Empty(t, pos.ExitOrderID)
+}
+
+// TestHandleExitTimeout_ExitRuleEvalSkippedWhilePending verifies that the
+// tick loop's price/time exit-rule evaluation does NOT fire while a
+// pending exit is in progress. This is the tick-loop side of the
+// single-ExitPending invariant — the complementary guarantee to the
+// handleExitTimeout side. If a STAGNATION_EXIT rule would normally
+// trigger on this position, the tick must short-circuit on ExitPending
+// BEFORE evaluating rules, emitting no outbox message.
+func TestHandleExitTimeout_ExitRuleEvalSkippedWhilePending(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	now := time.Date(2026, 4, 16, 17, 10, 0, 0, time.UTC)
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithNowFunc(func() time.Time { return now }))
+
+	// Seed a position with a rule that WOULD fire in normal conditions
+	// (max_loss at -0.01%). Then mark it ExitPending so the tick's
+	// ExitPending guard should short-circuit BEFORE rule evaluation.
+	svc.processFill(fillMsg{
+		Symbol:     "SOFI",
+		Side:       "BUY",
+		Price:      20.0,
+		Quantity:   19,
+		FilledAt:   now.Add(-1 * time.Hour),
+		Strategy:   "macd",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules: []domain.ExitRule{
+			{Type: domain.ExitRuleMaxLoss, Params: map[string]float64{"pct": 0.0001}},
+		},
+	})
+	pos := svc.positions["tenant-1:Paper:SOFI"]
+	require.NotNil(t, pos)
+	pos.ExitPending = true
+	pos.ExitOrderID = "sofi-limit-1603"
+	// ExitPendingAt set to NOW so timeout does NOT fire — simulating the
+	// ordinary "exit in progress" tick where the concurrent rule would
+	// have raced the cancel+resubmit under the old broken flow.
+	pos.ExitPendingAt = now
+
+	// Push a bar that would blow through MAX_LOSS if evaluated.
+	svc.priceCache.UpdatePrice("SOFI", 1.0, now) // -95% move
+
+	beforePublished := bus.totalPublished()
+	svc.tick()
+	afterPublished := bus.totalPublished()
+
+	// No new intent must have been published — the ExitPending guard
+	// prevents MAX_LOSS evaluation while the exit is already in flight.
+	assert.Equal(t, beforePublished, afterPublished,
+		"tick loop must not publish a parallel exit intent while ExitPending is true")
 }
