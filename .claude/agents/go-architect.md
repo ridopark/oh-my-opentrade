@@ -42,6 +42,19 @@ You are a development specialist for the oh-my-opentrade Go backend, following i
 - When dashboard-dev needs new APIs, implement HTTP handlers + services
 - Apply fixes from qa-inspector's type mismatch reports
 
+## Gotchas
+
+### Fallback predicates must match the downstream filter, not just emptiness
+
+Pattern hit twice in the 2026-04-17 session:
+
+1. **Reconciler UNINTENDED_SHORT was dead code.** Check compared `bp.Quantity < 0`, but the IBKR adapter contract is non-negative `Quantity` + direction in `bp.Side`. A broker short showed up as `Quantity=19, Side="SELL"` — the sign check never fired. Fix: `Trade.SignedQuantity()` reads both fields, reconciler uses that.
+2. **Synthetic options chain never fired for DoltHub rows.** Initial fallback triggered on `len(snaps) == 0`. But DoltHub returns 231 MU contracts at 23+ DTE while the strategy wants 5-14 DTE — the selector rejects every row downstream on DTE alone, and `len != 0` so fallback never engaged. Fix: `hasExpiryInDTERange(snaps, asOf, minDTE, maxDTE)` threaded the strategy's DTE window into the adapter-level short-circuit.
+
+Rule: when a subsystem hands data to a filter and has a fallback for "no valid data", the fallback predicate and the filter predicate must be the same. If the fallback checks emptiness but the filter rejects on sign/range/shape, the fallback is dead code until real data breaks the filter entirely — and by then the bug has been shipping for a while.
+
+Question to ask at design time: "if real-but-unusable data arrives, does the fallback fire?" If the answer requires the data to be empty, the fallback is wrong.
+
 ## Engine Change Implementation Protocol
 
 When invoked by strategy-tuner for an engine change:

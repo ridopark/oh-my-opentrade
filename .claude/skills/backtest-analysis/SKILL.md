@@ -88,3 +88,16 @@ When comparing before/after DNA changes:
 ```
 
 **Key rule**: If trade count dropped significantly but PF only went up, that's just filtering, not improvement. Real improvement is PF increase with trade count maintained (or slightly reduced).
+
+## Known Data Coverage Gaps
+
+### DoltHub options dataset is monthlies only
+
+`historical_option_chain` is sourced from DoltHub's `post-no-preference/options`. Verified 2026-04-17: AAPL on 2026-04-15 has 4 expirations at 14/30/44/64 DTE — no weeklies. SOFI and many smaller names absent entirely. Weekly-biased strategies (macd_only_v1: 5-14 DTE, avwap_v4: 3-7 DTE) return zero trades without the synthetic-chain fallback because every DoltHub row sits at 23+ DTE.
+
+Implications when reading a backtest result:
+- With `[backtest.synthetic_chain] enabled = true` (default), weeklies are BSM-synthesized. P&L is indicative, NOT a faithful live replay — Alpaca's real chain bid/ask/skew differs from flat-IV BSM.
+- With synthetic disabled, weekly-biased strategies produce zero trades. Widen DTE as a stopgap or re-enable synthetic.
+- Live/backtest divergence expected on wing-strike strategies: synthetic assumes flat IV, real market has skew.
+
+`iv_snapshots` is one ATM value per symbol per trading day — synthetic fans this across all strikes. Gamma-scalping / tail-hedge strategies will see material divergence from live.
