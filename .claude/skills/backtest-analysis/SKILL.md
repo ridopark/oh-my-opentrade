@@ -101,3 +101,16 @@ Implications when reading a backtest result:
 - Live/backtest divergence expected on wing-strike strategies: synthetic assumes flat IV, real market has skew.
 
 `iv_snapshots` is one ATM value per symbol per trading day — synthetic fans this across all strikes. Gamma-scalping / tail-hedge strategies will see material divergence from live.
+
+### Dial impact ordering when chasing backtest-vs-live fidelity
+
+Measured on the 2026-04-17 27-sym × 6-strat today-only run when spread + fill model were tightened at the same time:
+
+| Dial | Change | PF impact | Net $ impact |
+|---|---|---|---|
+| Synthetic spread | 3% → 8% (2.7× wider) | 2.76 → 2.44 (−12%) | −$1,012 on $6,035 profit (−17%) |
+| Fill model | realistic → pessimistic | (same measurement — bundled) | (same) |
+
+Backtest went from +$6,035 to +$5,023 — still ~40× the live number (~+$124 realized). The dominant inflator is **flat-IV BSM in the synthetic chain**, not spread or fill model. Future backtest-realism work should skip straight to skew modeling or IV dynamics — tuning spread/fill defaults alone won't close the gap.
+
+Rule: if backtest PF > 2.0 and the strategy exits on a % premium target (e.g. 15% PREMIUM_TARGET), assume flat-IV is lifting PF by at least 2× and treat the absolute number as directional only.
