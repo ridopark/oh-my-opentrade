@@ -5,6 +5,20 @@ id = "avwap_v4"
 version = "4.3.0"
 name = "AVWAP v4.3 - Confluence-Weighted Entries"
 description = "Anchored VWAP strategy with multi-anchor lines, confluence-weighted entries, price-action exits, and options trading."
+novice_description = """\
+Think of VWAP as the "fair price" that big institutions paid for a stock on \
+average, starting from an important moment — the market open, a sharp gap, or \
+a pivot high/low. This strategy draws those average-price lines and waits for \
+the stock to pull back to one of them.
+
+When price returns to that fair-price line and shows signs of bouncing (good \
+volume, trend still intact, other signals agreeing), we buy options betting \
+the move continues in the trend direction. If several signals line up at the \
+same time ("confluence"), we take the trade with more conviction. We exit \
+either when price action breaks or when pre-set profit/stop levels hit.
+
+In plain terms: we wait for a popular stock to briefly dip to a price \
+institutions care about, then ride the bounce with options."""
 author = "system"
 created_at = "2026-03-29T00:00:00Z"
 

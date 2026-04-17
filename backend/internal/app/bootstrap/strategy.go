@@ -222,6 +222,7 @@ func BuildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps Strat
 				Priority:          spec.Routing.Priority,
 				AllowedDirections: spec.Routing.AllowedDirections,
 			}, spec.Lifecycle.State, shared.Logger)
+			inst.SetNoviceDescription(spec.NoviceDescription)
 
 			initCtx := strategy.NewContext(shared.Clock(), shared.Logger, nil)
 			if err := inst.InitSymbol(initCtx, sym, nil); err != nil {
@@ -344,6 +345,7 @@ func (pa *PipelineActivator) ActivateSymbol(symbol string, bars1m, barsHTF []dom
 			Priority:          spec.Routing.Priority,
 			AllowedDirections: spec.Routing.AllowedDirections,
 		}, spec.Lifecycle.State, pa.logger)
+		inst.SetNoviceDescription(spec.NoviceDescription)
 
 		initCtx := strategy.NewContext(pa.clock(), pa.logger, nil)
 		if err := inst.InitSymbol(initCtx, symbol, nil); err != nil {

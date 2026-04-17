@@ -5,6 +5,21 @@ id = "crypto_tsm_v1"
 version = "1.0.0"
 name = "Crypto Time-Series Momentum v1"
 description = "Volume-weighted TS momentum on daily bars for crypto spot (Huang et al. 2024, Sharpe 1.51)"
+novice_description = """\
+Crypto markets tend to trend: coins that have been going up keep going up, \
+and coins that have been going down keep going down — at least for a while. \
+This is the "momentum" effect, and it has been documented in academic \
+research for decades across stocks, commodities, and crypto.
+
+Every day at the close, this strategy looks back over the last several \
+months of daily prices for each coin (BTC, ETH, SOL) and scores how strong \
+its recent trend has been, with extra weight given to days that had heavy \
+trading volume (since those are the moves that matter most). If a coin's \
+score is strongly positive, we hold a long position. If it's strongly \
+negative, we go flat (or short, if enabled).
+
+In plain terms: once a day, buy the crypto that has been trending up with \
+real volume behind it, and get out when the trend fades."""
 author = "system"
 created_at = "2026-04-14T00:00:00Z"
 

@@ -5,6 +5,20 @@ id = "macd_only_v1"
 version = "3.0.0"
 name = "MACD Crossover Options — 5m Intraday"
 description = "5m MACD crossover + options, intraday with EOD flatten"
+novice_description = """\
+MACD is a classic momentum indicator that compares a short-term moving \
+average to a longer-term one. When the short line crosses above the long \
+line, momentum is turning up. When it crosses below, momentum is turning \
+down. That crossover is our entry trigger.
+
+This version watches 5-minute bars during the regular trading day. On a \
+bullish crossover we buy call options (betting price goes up); on a bearish \
+crossover we buy puts (betting price goes down). Every position is closed \
+before the market closes — we never hold options overnight, because their \
+value can erode quickly when the market is shut.
+
+In plain terms: when short-term momentum flips, we ride it with options for \
+the rest of the day, then go flat before the close."""
 author = "system"
 created_at = "2026-04-07T00:00:00Z"
 

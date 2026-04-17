@@ -18,7 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Layers, Pause, Archive, ArrowUpCircle, TrendingUp } from "lucide-react";
+import { Layers, Pause, Archive, ArrowUpCircle, TrendingUp, ChevronDown, ChevronUp, Info } from "lucide-react";
 import { useState, useMemo } from "react";
 import {
   useStrategyInstances,
@@ -301,6 +301,14 @@ function StrategyCard({ strat }: { strat: StrategyInfo }) {
     }
     return best?.decision ?? null;
   }, [symbols]);
+  const [howOpen, setHowOpen] = useState(false);
+  const hasNovice = Boolean(strat.noviceDescription?.trim());
+  const toggleHow = (e: React.MouseEvent) => {
+    // Card is wrapped in a <Link>; don't navigate when toggling the explainer.
+    e.preventDefault();
+    e.stopPropagation();
+    setHowOpen((v) => !v);
+  };
   return (
     <Link href={`/strategies/${strat.id}`}>
       <Card className="hover:border-emerald-500/50 transition-colors cursor-pointer">
@@ -332,6 +340,29 @@ function StrategyCard({ strat }: { strat: StrategyInfo }) {
             </Badge>
           </div>
           <LivenessCounters symbols={symbols} />
+          {hasNovice && (
+            <div className="border-t pt-2">
+              <button
+                type="button"
+                onClick={toggleHow}
+                aria-expanded={howOpen}
+                className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <Info className="h-3.5 w-3.5" />
+                How it works
+                {howOpen ? (
+                  <ChevronUp className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronDown className="h-3.5 w-3.5" />
+                )}
+              </button>
+              {howOpen && (
+                <p className="mt-2 whitespace-pre-line text-xs leading-relaxed text-muted-foreground">
+                  {strat.noviceDescription}
+                </p>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
     </Link>
