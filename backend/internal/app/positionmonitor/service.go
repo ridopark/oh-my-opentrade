@@ -61,6 +61,14 @@ type Service struct {
 	earningsCalendar     ports.EarningsCalendarPort
 	optionsPollInterval  time.Duration
 
+	// repegNotifier, when non-nil, is called by the re-peg/escalate path
+	// just before a broker CancelOrder so the execution service can tag
+	// the soon-to-be-terminal pending order as "do not record as failure,
+	// do not dust-sweep". Nil-safe: without a notifier the cancel still
+	// works, but cleanupPendingOrder will run its default terminal actions
+	// — which caused today's SOFI phantom short.
+	repegNotifier RepegNotifier
+
 	// Config.
 	tickInterval            time.Duration
 	reconcileInterval       time.Duration
@@ -177,6 +185,16 @@ const (
 	globalOrphanMissThreshold = 2
 )
 
+// RepegNotifier is the narrow hook the position monitor uses to tell the
+// execution service a pending broker order is about to be canceled as
+// part of a re-peg/escalate sequence. Implemented by *execution.Service's
+// MarkRepegCancel method. Defined here (not in ports) because it is an
+// app-layer coordination primitive between two app services — there's no
+// domain concept behind it, just a suppression flag.
+type RepegNotifier interface {
+	MarkRepegCancel(brokerOrderID string) bool
+}
+
 // Option is a functional option for the Service.
 type Option func(*Service)
 
@@ -270,6 +288,20 @@ func WithOptionsPricePort(p ports.OptionsPricePort) Option {
 func WithEarningsCalendar(ec ports.EarningsCalendarPort) Option {
 	return func(s *Service) { s.earningsCalendar = ec }
 }
+
+// WithRepegNotifier wires the execution-service hook that suppresses
+// default terminal actions (dust-sweep, failure-count) for broker orders
+// canceled by the re-peg/escalate path.
+func WithRepegNotifier(n RepegNotifier) Option {
+	return func(s *Service) { s.repegNotifier = n }
+}
+
+// SetRepegNotifier is a post-construction setter for WithRepegNotifier.
+// Needed because in cmd/omo-core the execution service is built before the
+// position monitor (shared PositionGate via execBundle), and the monitor's
+// constructor runs before we have a stable handle to execution.Service.
+// Calling this after Start() is safe — it only affects subsequent cancels.
+func (s *Service) SetRepegNotifier(n RepegNotifier) { s.repegNotifier = n }
 
 // NewService creates a new position monitor service.
 func NewService(
@@ -452,15 +484,16 @@ func (s *Service) processExitSubmitted(msg exitOrderSubmittedMsg) {
 		Msg("exit order tracked — position locked for exit")
 }
 
-// processExitTerminal clears ExitPending when an exit order is canceled, rejected, or expired.
-// This allows the position monitor's tick loop to re-evaluate exit rules and retry.
-//
-// Interaction with manageExitTimeout: when the async exit manager cancels
-// an order, it clears ExitPending/ExitOrderID locally and also drives the
-// retry/repeg counters. If the EventExitOrderTerminal event arrives after
-// that local bookkeeping, we'd double-bump ExitRetryCount. Guard by only
-// acting when the terminal event matches a still-tracked order — once the
-// manager has cleared ExitOrderID, this handler becomes a no-op.
+// processExitTerminal is the event-bus handler for EventExitOrderTerminal.
+// Under the single-ExitPending invariant (post SOFI phantom-short fix,
+// 2026-04-16), handleExitTimeout owns the cancel-and-resubmit lifecycle
+// and stamps a fresh ExitPendingAt via triggerExit — ExitPending is
+// never toggled false between attempts. So when this handler sees a
+// terminal event whose broker-order-id no longer matches the tracked
+// ExitOrderID (because handleExitTimeout already cleared or replaced it
+// with the next attempt), it must be a no-op. We do not bump counters
+// and we do not clear ExitPending. The counter bookkeeping lives
+// exclusively in handleExitTimeout from here on.
 func (s *Service) processExitTerminal(msg exitOrderTerminalMsg) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -469,15 +502,18 @@ func (s *Service) processExitTerminal(msg exitOrderTerminalMsg) {
 	if !ok {
 		return
 	}
-	// If the async exit manager already consumed this terminal (cleared
-	// ExitOrderID or ExitPending), this event is a duplicate notification
-	// and must not bump counters again.
-	if pos.ExitOrderID == "" || !pos.ExitPending {
+	if pos.ExitOrderID == "" {
+		// handleExitTimeout already consumed the terminal and is mid-resubmit.
 		return
 	}
 	if pos.ExitOrderID != msg.BrokerOrderID {
+		// Event refers to a stale broker order id (old attempt). Ignore.
 		return
 	}
+	// Terminal for the currently-tracked order WITHOUT handleExitTimeout
+	// having driven the lifecycle (e.g. the broker canceled it unilaterally,
+	// or a rejection arrived on a fresh exit). Preserve legacy behavior:
+	// clear ExitPending so the tick loop re-evaluates on the next pass.
 	pos.ExitPending = false
 	pos.ExitOrderID = ""
 	pos.ExitRetryCount++
@@ -485,7 +521,7 @@ func (s *Service) processExitTerminal(msg exitOrderTerminalMsg) {
 		Str("symbol", string(msg.Symbol)).
 		Str("broker_order_id", msg.BrokerOrderID).
 		Int("retry_count", pos.ExitRetryCount).
-		Msg("exit order terminal — unlocking position for retry")
+		Msg("exit order terminal (unsolicited) — unlocking position for retry")
 }
 
 // processExitRejected removes a ghost position when the broker confirms no position exists.

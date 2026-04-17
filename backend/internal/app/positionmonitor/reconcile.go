@@ -117,6 +117,36 @@ func (s *Service) reconcileGlobal(ctx context.Context) {
 		return
 	}
 
+	// R1 — broker-only detection. Iterate the UNION of DB and broker
+	// symbol sets, not just DB. Today's CRM phantom short (2026-04-16)
+	// showed the broker holding -3 on a symbol whose DB net was 0, which
+	// the DB-only loop below never surfaces. For broker-only symbols we
+	// emit dedicated ERROR-level logs that route to Discord. This pass
+	// is alert-only: no synthetic trades, no auto-cover. Auto-cover is on
+	// a separate risk-manager track.
+	for sym, brokerQty := range brokerBySymbol {
+		if _, inDB := dbPositions[sym]; inDB {
+			continue
+		}
+		if brokerQty < -1e-10 {
+			// Long-only strategies (options are always long the contract)
+			// should never produce a short at the broker. This log prefix
+			// is monitored specifically — do not rephrase without updating
+			// the alerting rules.
+			s.log.Error().
+				Str("symbol", string(sym)).
+				Float64("broker_qty", brokerQty).
+				Msg("UNINTENDED_SHORT: broker holds short qty on long-only instrument — manual intervention required")
+			continue
+		}
+		if brokerQty > 1e-10 {
+			s.log.Error().
+				Str("symbol", string(sym)).
+				Float64("broker_qty", brokerQty).
+				Msg("broker-only position detected — DB has no record of this position")
+		}
+	}
+
 	for sym, dbQty := range dbPositions {
 		if dbQty < -1e-10 {
 			s.log.Error().
@@ -135,6 +165,21 @@ func (s *Service) reconcileGlobal(ctx context.Context) {
 		}
 
 		brokerQty, onBroker := brokerBySymbol[sym]
+
+		// R1b — UNINTENDED_SHORT check for symbols present at both DB and
+		// broker. A broker holding a negative quantity on a long-only
+		// instrument requires manual intervention regardless of the DB
+		// state. Flag and continue; do not attempt drift math on a short.
+		if onBroker && brokerQty < -1e-10 {
+			s.log.Error().
+				Str("symbol", string(sym)).
+				Float64("broker_qty", brokerQty).
+				Float64("db_net_qty", dbQty).
+				Msg("UNINTENDED_SHORT: broker holds short qty on long-only instrument — manual intervention required")
+			delete(s.pendingGlobalOrphans, sym)
+			delete(s.pendingGlobalDrifts, sym)
+			continue
+		}
 
 		if !onBroker {
 			s.pendingGlobalOrphans[sym]++

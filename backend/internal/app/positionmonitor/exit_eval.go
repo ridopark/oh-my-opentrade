@@ -293,24 +293,32 @@ func (s *Service) resolveExitPrice(pos *domain.MonitoredPosition, snap ports.Pri
 }
 
 // handleExitTimeout is invoked from the tick loop when a pending exit has
-// aged out of its asymmetric timeout. It decides re-peg vs market escalation,
-// performs the broker cancel (releasing s.mu across the RPC), then either
-// re-emits a tighter limit or clears the gate so the next tick fires a
-// market retry.
+// aged out of its asymmetric timeout. It picks re-peg vs market escalation,
+// tags the outgoing order via RepegNotifier so execution.cleanupPendingOrder
+// will not launch a dust sweep on the cancel, performs the broker cancel
+// (releasing s.mu across the RPC), and re-emits a new exit intent in the
+// SAME attempt — leaving ExitPending=true throughout.
 //
-// The tick loop holds s.mu when it calls us. We temporarily release it
-// across the broker call (CancelOrder + GetOrderDetails poll) because:
-// holding a service-wide mutex across network I/O is a standing deadlock
-// risk if the broker adapter ever calls back into the monitor; and the
-// position gate's leaf-critical-section invariant forbids calling
-// ClearInflightExit under s.mu. The tick iterator is safe across the
-// release because it re-looks-up each pos by key on the next iteration.
+// Invariant (post-SOFI phantom-short fix, 2026-04-16):
+//
+//	ExitPending stays true from the first triggerExit to either a fill or
+//	full abandonment. Re-peg and market-escalate both re-use triggerExit,
+//	which is idempotent-true→true on ExitPending. This is what stops the
+//	tick loop from evaluating OTHER rules (STAGNATION_EXIT was the rule
+//	that fired order 1605 in parallel with our re-peg cancel) while a
+//	cancel+resubmit is in flight. The old flow cleared ExitPending=false
+//	between the cancel terminal and the next triggerExit — a window where
+//	the tick loop re-evaluated and emitted a parallel intent.
+//
+// The tick loop holds s.mu when it calls us. We release it across the
+// broker call because holding a service-wide mutex across network I/O
+// risks deadlock and the PositionGate leaf-critical-section invariant
+// forbids calling ClearInflightExit under s.mu. The tick iterator is safe
+// across the release because it re-looks-up each pos by key on every
+// iteration.
 func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 	now := s.nowFunc()
 
-	// Pin the wall-clock start of this attempt on first timeout so the
-	// exitMaxWallTime ceiling is evaluated from the original send, not
-	// the most recent re-peg.
 	if pos.ExitWallStartedAt.IsZero() {
 		pos.ExitWallStartedAt = pos.ExitPendingAt
 	}
@@ -322,8 +330,7 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 
 	// TODO(atr-override): risk-manager asked for "if underlying moved
 	// > 0.5*ATR(5m) against us during a pending exit, skip re-peg and go
-	// to market". Wiring an ATR port into positionmonitor is a separate
-	// plumbing effort — punt.
+	// to market". Wiring an ATR port is a separate plumbing effort.
 
 	orderID := pos.ExitOrderID
 	action := "escalate"
@@ -331,15 +338,20 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 		action = "repeg"
 	}
 
-	// Flip ExitManaging under s.mu so that if we release and another tick
-	// fires before we return, it won't re-enter handleExitTimeout on this
-	// position. Cleared in a defer after the full sequence completes.
+	// ExitManaging is kept true across the full cancel-and-resubmit cycle.
+	// With the single-ExitPending invariant it is belt-and-suspenders — the
+	// tick loop's `if pos.ExitPending` check short-circuits rule evaluation
+	// before we ever get here — but we keep the flag to also prevent a
+	// concurrent timer-driven handleExitTimeout re-entry on the same pos
+	// if the re-peg triggerExit somehow stamps an immediately-stale
+	// ExitPendingAt (it won't today, but belt-and-suspenders).
 	pos.ExitManaging = true
 
 	tenantID := pos.TenantID
 	envMode := pos.EnvMode
 	symbol := pos.Symbol
 	key := positionKey(tenantID, envMode, symbol)
+	repegNotifier := s.repegNotifier
 
 	s.log.Warn().
 		Str("symbol", string(symbol)).
@@ -351,53 +363,69 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 		Bool("near_close", nearClose).
 		Msg("exit pending timeout — managing")
 
+	// Tag the pending order BEFORE we release s.mu and BEFORE the broker
+	// cancel goes out. Both the re-peg and escalate paths need this — on
+	// escalate, the to-be-canceled limit would otherwise trigger a
+	// dust-sweep sibling order (the SOFI 1604→1606 bug). The call is
+	// thread-safe against cleanupPendingOrder: if the order is already
+	// gone we get ok=false and carry on. No s.mu held on the execution
+	// side — MarkRepegCancel only touches the sync.Map.
+	if repegNotifier != nil && orderID != "" {
+		if !repegNotifier.MarkRepegCancel(orderID) {
+			s.log.Debug().
+				Str("broker_order_id", orderID).
+				Msg("repeg notify: no pending order — likely already terminal")
+		}
+	}
+
 	// Release s.mu across the broker RPC. pos pointer is not safe to read
 	// after this point — re-acquire and re-lookup by key. handleExitTimeout
-	// is required to return with s.mu held (the caller's defer-unlock
-	// expects it), so every return below must either be hit with s.mu
-	// already re-acquired, or via a re-lock before return.
+	// is required to return with s.mu held.
 	s.mu.Unlock()
 	reconciled := s.cancelAndAwaitTerminal(key, orderID)
 	s.mu.Lock()
 
-	// Re-lookup after reacquire. If pos was deleted (fill reconcile,
-	// orphan cleanup), or its exit order changed (parallel cleanup
-	// already cycled it), abort without touching state. The caller's
-	// tick-loop iteration continues safely because it re-looks-up each
-	// pos by key on every iteration.
 	livePos, ok := s.positions[key]
 	if !ok {
+		// pos deleted during the RPC window (fill reconcile, ghost cleanup).
 		return
 	}
 	if reconciled {
-		// reconcileFilledOrder usually removes the entry from the map;
-		// if we're here with reconciled=true, treat it as a success and
-		// leave the pos as-is (fill reconciliation may have mutated it).
 		livePos.ExitManaging = false
 		return
 	}
 	if livePos.ExitOrderID != orderID {
-		// Another handler already replaced the active exit order. Clear
-		// our managing flag and let that handler's state stand.
+		// Another handler cycled the exit order. Do NOT clear ExitPending
+		// — that handler owns it now.
 		livePos.ExitManaging = false
 		return
 	}
 
-	// Broker order is terminal. Only now do we clear ExitPending and
-	// ExitOrderID. Doing this before terminal confirmation would let the
-	// tick loop fire another triggerExit while the original order was
-	// still live — the double-sell bug this protocol exists to prevent.
-	livePos.ExitPending = false
+	// Broker order is terminal. Under the single-ExitPending invariant we
+	// do NOT clear ExitPending here — triggerExit below will overwrite
+	// ExitPendingAt for the NEW attempt, and processExitSubmitted will
+	// swap ExitOrderID in when the broker acks the resubmission. Leaving
+	// ExitPending=true across this window is what prevents tick-loop rule
+	// evaluation from firing a parallel CLOSE_LONG (the SOFI 1605 bug).
+	//
+	// We DO clear ExitOrderID so processExitTerminal's late-arriving event
+	// for the old order finds "no tracked order" and returns without
+	// bumping counters. triggerExit does not reference ExitOrderID.
 	livePos.ExitOrderID = ""
 
 	if action == "repeg" {
 		livePos.ExitRepegCount++
 		rule, ruleOK := currentExitRule(livePos)
 		if !ruleOK {
+			// No exit rule to re-fire — degrade to escalation and bail.
 			livePos.ExitRetryCount++
 			livePos.ExitRepegCount = 0
 			livePos.ExitManaging = false
-			// Release s.mu across the gate call (leaf critical section).
+			// Keep ExitPending=true so the tick loop sees a pending exit
+			// on the next tick; the asymmetric-timeout branch will re-fire
+			// handleExitTimeout, and with wall-time/budget now exhausted
+			// it will land on the escalate path and market-submit.
+			livePos.ExitPendingAt = s.nowFunc()
 			s.mu.Unlock()
 			if s.positionGate != nil {
 				s.positionGate.ClearInflightExit(tenantID, envMode, symbol)
@@ -407,36 +435,51 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 		}
 		reason := fmt.Sprintf("repeg %d/%d", livePos.ExitRepegCount, exitRepegBudget(livePos))
 		livePos.ExitManaging = false
-		// triggerExit sets ExitPending=true and ExitPendingAt=now; it
-		// enqueues on the outbox with a non-blocking select. It does NOT
-		// touch positionGate, so holding s.mu here is fine.
-		s.triggerExit(livePos, rule, reason, livePos.EntryPrice, s.nowFunc())
-		// Release s.mu across the gate clear (leaf invariant). After the
-		// gate clear, the re-emitted intent (already published to the
-		// outbox) will pass TryMarkInflightExit when the execution
-		// service processes it.
+		// Gate must be cleared BEFORE the re-emitted intent is processed
+		// by execution (it will call TryMarkInflightExit). Release s.mu
+		// (leaf invariant), clear gate, re-acquire, THEN triggerExit so
+		// the sequence is gate-clear → trigger → publish. If we triggered
+		// first the outbox publisher could race us to execution.handleIntent.
 		s.mu.Unlock()
 		if s.positionGate != nil {
 			s.positionGate.ClearInflightExit(tenantID, envMode, symbol)
 		}
 		s.mu.Lock()
+		livePos, ok = s.positions[key]
+		if !ok {
+			return
+		}
+		s.triggerExit(livePos, rule, reason, livePos.EntryPrice, s.nowFunc())
 		return
 	}
 
-	// Escalate path: count this as a real retry. Next triggerExit will
-	// issue a market order (exitOrderParams treats retryCount >= 1 as
-	// market). Reset per-attempt state.
+	// Escalate path: bump retry so exitOrderParams picks market, reset
+	// per-attempt state, and re-emit via triggerExit so ExitPending stays
+	// true continuously. Pick the current exit rule the same way re-peg
+	// does; forced-exit rules will route through market naturally.
 	livePos.ExitRetryCount++
 	livePos.ExitRepegCount = 0
 	livePos.ExitWallStartedAt = time.Time{}
 	livePos.ExitLastSentPrice = 0
 	livePos.ExitManaging = false
 
+	rule, ruleOK := currentExitRule(livePos)
 	s.mu.Unlock()
 	if s.positionGate != nil {
 		s.positionGate.ClearInflightExit(tenantID, envMode, symbol)
 	}
 	s.mu.Lock()
+	livePos, ok = s.positions[key]
+	if !ok {
+		return
+	}
+	if !ruleOK {
+		// No rule — reset ExitPendingAt so the tick loop retries timeout
+		// logic on the next pass. Leaves ExitPending=true.
+		livePos.ExitPendingAt = s.nowFunc()
+		return
+	}
+	s.triggerExit(livePos, rule, "escalate-to-market", livePos.EntryPrice, s.nowFunc())
 }
 
 // cancelAndAwaitTerminal issues the cancel and polls GetOrderDetails until

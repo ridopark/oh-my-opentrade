@@ -466,7 +466,15 @@ func TestService_tick_ExitPendingTimeoutClearsLock(t *testing.T) {
 	pos.ExitPendingAt = now.Add(-11 * time.Second)
 
 	svc.tick()
-	assert.False(t, pos.ExitPending)
+	// Under the single-ExitPending invariant (2026-04-16 fix) the timeout
+	// path keeps ExitPending=true through the cancel+resubmit cycle so the
+	// tick loop cannot fire a parallel exit rule (e.g. STAGNATION_EXIT) in
+	// the gap. The old assertion was ExitPending=false; we now assert that
+	// ExitOrderID was cleared (the observable "lock cleared" signal) and
+	// that ExitPendingAt was advanced to the current tick time.
+	assert.Empty(t, pos.ExitOrderID, "broker order id cleared after terminal")
+	assert.True(t, pos.ExitPending, "ExitPending stays true across re-attempt (new invariant)")
+	assert.Equal(t, now, pos.ExitPendingAt, "ExitPendingAt advanced for next timeout")
 }
 
 func TestService_tick_ExitTimeoutIncrementsRetryCount(t *testing.T) {
@@ -495,7 +503,9 @@ func TestService_tick_ExitTimeoutIncrementsRetryCount(t *testing.T) {
 	pos.ExitRetryCount = 0
 
 	svc.tick()
-	assert.False(t, pos.ExitPending)
+	// Single-ExitPending invariant: ExitPending stays true; the escalate
+	// path bumps retry count and advances ExitPendingAt for the next tick.
+	assert.True(t, pos.ExitPending)
 	assert.Equal(t, 1, pos.ExitRetryCount)
 }
 
@@ -529,7 +539,11 @@ func TestService_tick_ExitTimeoutCancelsStaleOrder(t *testing.T) {
 	pos.ExitOrderID = "stale-order-123"
 
 	svc.tick()
-	assert.False(t, pos.ExitPending)
+	// Single-ExitPending invariant: the broker order was canceled and
+	// cleared, retry count bumped, but ExitPending stays true so a
+	// concurrent tick-loop exit-rule evaluation cannot fire a parallel
+	// CLOSE_LONG (this was the SOFI 1605 bug on 2026-04-16).
+	assert.True(t, pos.ExitPending, "ExitPending stays true across attempt (new invariant)")
 	assert.Equal(t, "", pos.ExitOrderID)
 	assert.Equal(t, 1, pos.ExitRetryCount)
 	assert.Equal(t, "stale-order-123", broker.lastCancelledID)

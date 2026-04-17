@@ -216,6 +216,13 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	svc.priceCache = posMonBundle.PriceCache
 	svc.posMonitor = posMonBundle.Service
 
+	// Wire the re-peg suppression hook. Without this, cleanupPendingOrder
+	// launches a dust sweep every time handleExitTimeout cancels a live
+	// limit for re-peg — which is how the SOFI phantom short occurred on
+	// 2026-04-16 (order 1604 re-peg cancel → dust sweep 1606 sold qty we
+	// no longer owned because 1603 had filled in the cancel race).
+	svc.posMonitor.SetRepegNotifier(svc.execution)
+
 	// 5a-risk-reval: Position revaluator (AI-driven periodic risk re-evaluation).
 	var riskAssessor ports.RiskAssessorPort
 	if cfg.AI.Enabled {
