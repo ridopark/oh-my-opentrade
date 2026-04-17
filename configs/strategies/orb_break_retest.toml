@@ -4,25 +4,52 @@ schema_version = 2
 id = "orb_break_retest"
 version = "1.0.0"
 name = "ORB Break & Retest"
-description = "Opening Range Breakout — Break & Retest with volume confirmation"
+description = "[DEACTIVATED 2026-04-12] Opening Range Breakout — Break & Retest with volume confirmation. Retired from the active stack due to alpha-decay and crowding risk. Best tune landed PF 1.141 (commits be149ce, 9d743e0) — marginal edge. 5m ORB is classified as HIGHEST crowding vulnerability: commodity trigger, ships with every retail charting app, thin early-session books. Academic consensus (McLean & Pontiff 2016) puts published-anomaly alpha decay at ~58% post-publication; high-turnover intraday strategies decay fastest. Active stack narrowed to AVWAP + MACD per portfolio decision."
 novice_description = """\
-In the first few minutes after the market opens, a stock trades inside a \
-small price box — that box is called the "opening range." Whenever price \
-eventually pops above the top of the box or drops below the bottom, that's \
-a breakout: the market is picking a direction for the day.
+**Status: retired 2026-04-12 — dropped from the active strategy stack.**
 
-Naive breakout trading gets whipsawed a lot, so we add one extra rule: we \
-wait for price to briefly come back and touch the breakout level again (the \
-"retest"). If it holds that level on strong volume, we take the trade in the \
-breakout direction — longs for an upside break, shorts for a downside break.
+The idea was straightforward: in the first 15 minutes after the market \
+opens, a stock trades inside a small price box called the "opening \
+range." When price eventually breaks out above or below that box, it's \
+picking a direction for the day. Naive breakouts get whipsawed, so the \
+strategy waited for price to briefly come back and retest the breakout \
+level before entering — longs on upside breaks, shorts on downside.
 
-In plain terms: let the market decide which way it wants to go in the first \
-hour, then jump in on the first successful retest of that line."""
+**Why we retired it:** two related problems.
+
+1. **It's a commodity strategy.** Opening range breakouts are taught in \
+every trading book and ship in every charting app. When thousands of \
+retail traders and algos are watching the same 15-minute box, the \
+breakout *itself* is partly their collective buying — which means late \
+fills get worse prices, and sophisticated HFTs who detect the \
+mechanical cadence can front-run it. Academic work (McLean & Pontiff \
+2016) shows published-anomaly edges lose ~58% of their backtest alpha \
+after publication, and high-turnover intraday strategies decay fastest.
+
+2. **The tuned edge was marginal.** Our best configuration after \
+extensive parameter work came in around profit factor 1.14 — above \
+break-even, but thin enough that small changes in fills, slippage, or \
+regime could push it under water.
+
+**What replaced it:** the active stack is now AVWAP (anchored VWAP \
+pullback) and MACD, both of which route through omo's confluence data \
+layer (dark pool + 13F + options realism) — that's the durable edge, \
+not the entry trigger itself. ORB remains available in the codebase \
+for research and confluence inputs, but it isn't running."""
 author = "system"
 created_at = "2026-03-04T00:00:00Z"
 
 [lifecycle]
-state = "PaperActive"
+# Retired 2026-04-12 by portfolio decision. Two reasons documented:
+# (1) crowding / alpha-decay risk — 5m ORB is a commodity trigger that
+#     every retail charting app ships. Academic grounding in
+#     McLean & Pontiff (2016) and "Crowded Spaces and Anomalies" (2025)
+#     flags high-turnover intraday strategies as fastest-decaying post-
+#     publication. (2) marginal tuned PF 1.141 — above breakeven but
+#     thin enough to flip under regime shifts or slippage changes.
+# Active stack is AVWAP + MACD. ORB kept in-tree for research and
+# potential confluence-input use, not as a standalone trigger.
+state = "Deactivated"
 paper_only = true
 
 [routing]
