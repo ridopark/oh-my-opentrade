@@ -79,7 +79,17 @@ export default function BacktestPage() {
   useEffect(() => {
     fetch("/api/backtest/strategies")
       .then((r) => r.json())
-      .then((data) => { if (Array.isArray(data)) setAvailableStrategies(data); })
+      .then((data) => {
+        if (!Array.isArray(data)) return;
+        // Hide retired/deactivated strategies from the dropdown. Backtests
+        // against them still work if explicitly requested by ID, but they
+        // don't belong in the default selection surface (crypto_revert_v1
+        // retired 2026-04-17, orb_break_retest retired 2026-04-12).
+        const active = (data as StrategyMeta[]).filter(
+          (s) => s.state?.toLowerCase() !== "deactivated",
+        );
+        setAvailableStrategies(active);
+      })
       .catch(() => {});
   }, []);
 
