@@ -92,6 +92,34 @@ clean; the debate tells us *whether the story makes sense right now*.
   new decision — protective stops are never blindly cancelled
 - SystemD watchdog + Docker HEALTHCHECK for auto-restart
 
+**Slippage control on exits**
+- **Spread-aware exit pricing** — option exits read live bid/ask and price the
+  limit at `mid − k·spread`, where `k` scales with days-to-expiry (0.25 ≥14d,
+  0.35 5-14d, 0.45 <5d). Replaces the old blind 5%-off-mid formula that landed
+  below the bid on sub-$3 premiums and forced dust-sweep fallback. Blown-spread
+  guard (`spread/mid > 0.25`) falls back to a fixed-bps cap.
+- **Asymmetric timeout + re-peg toward mid** — stops timeout fast (10s, 1 re-peg)
+  to protect capital; targets get 30s and up to 3 re-pegs that tighten toward
+  mid by one tick each attempt. Wall-time capped at 120s, with a no-re-peg
+  override in the last 15 min to close for deterministic EOD liquidation.
+- **Cancel-await-terminal** — broker cancel is awaited to terminal status and
+  the exit-pending gate clears only after confirmation. Eliminates the
+  cancel/resubmit race that previously produced `position_gate: no_position_to_exit`
+  rejections and forced dust-sweep fallback mid-attempt.
+- **Marketable-limit dust sweep** — the last-resort sweep submits a marketable
+  limit at `max(bid − tick, bid·(1 − 150bps))` with a spread-adaptive floor
+  (`max(150bps, spread/2)`), then falls back to true market after 15s if
+  unfilled. Halt detection (`bid==0`) and near-close override skip the limit
+  phase to avoid OCC exercise-by-exception on 0DTE ITM contracts.
+- **Compliance-safe attribution** — dust-sweep fills keep `Strategy="dust_sweep"`
+  on the raw ledger row (SEC 17a-4 / FINRA 4511 immutability), but the origin
+  strategy is threaded through the rationale and the `FillReceived` event
+  payload. Per-strategy P&L queries credit the origin; audit queries still see
+  the raw broker-authoritative record.
+- **Single-attempt circuit breaker accounting** — re-pegs under one exit attempt
+  collapse into one unit for the exit-failure breaker so multi-attempt fills
+  don't inflate failures 4x and false-trip the symbol lock.
+
 **Backtest**
 - Full event-bus backtester with isolated SimBroker
 - Parameterized bar aggregation, per-symbol session tracking
