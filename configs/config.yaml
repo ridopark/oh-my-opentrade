@@ -82,6 +82,14 @@ symbols:
         - "BTC/USD"
         - "ETH/USD"
         - "SOL/USD"
+        - "LTC/USD"
+        - "BCH/USD"
+        - "ADA/USD"
+        - "XRP/USD"
+        - "DOGE/USD"
+        - "LINK/USD"
+        - "AVAX/USD"
+        - "SUI/USD"
       timeframe: "1m"
 
 server:

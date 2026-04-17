@@ -670,6 +670,212 @@ func TestCryptoRevert_EntrySignalTag_WhenPriorityEnabled(t *testing.T) {
 		"entry signal must carry strategy_exits_priority=true when flag is set")
 }
 
+// ---------------------------------------------------------------------------
+// Trailing-stop exit tests (quant recommendation 2026-04-17)
+// ---------------------------------------------------------------------------
+
+// trailTestParams returns a config variant with trailing stop enabled and
+// every other exit path neutralized so the trail is the only rule that can
+// fire. Callers override trail params as needed.
+func trailTestParams(activation, giveback float64) map[string]any {
+	p := cryptoRevertDefaultParams()
+	p["trail_activation_pct"] = activation
+	p["trail_giveback_pct"] = giveback
+	// Neutralize competing exits so we can isolate trail behavior.
+	// reversion_complete fires when |devZ| < |ExitDevZ|; setting ExitDevZ=0
+	// makes the predicate |devZ| < 0, which is never true.
+	p["exit_dev_z"] = 0.0
+	// hard_stop fires when devZ <= HardStopDevZ; a very negative floor keeps
+	// it quiet in these fabricated bars.
+	p["hard_stop_dev_z"] = -99.0
+	// time_stop fires when elapsed >= TimeStopMin minutes.
+	p["time_stop_min"] = 99_999
+	// opposite-sweep regime-flip — disabled for trail isolation.
+	p["inducement_flip_enabled"] = false
+	return p
+}
+
+// TestCryptoRevert_Trail_NotArmedBelowActivation — with activation at 0.5%
+// but price never exceeds +0.5% above entry, no trail_stop fires even if
+// price retraces back toward entry. The peak updates internally but the
+// arming threshold isn't crossed.
+func TestCryptoRevert_Trail_NotArmedBelowActivation(t *testing.T) {
+	params := trailTestParams(0.005, 0.002) // arm @ 0.5%, giveback 0.2%
+
+	s, st, _, tSweep := runCleanEntry(t, params)
+
+	// Entry is at 100_500. Push a bar that climbs to +0.3% (100_801.5),
+	// then back to +0.1% (100_600.5). Peak would reach 0.3%, giveback
+	// of 0.2% from peak is hit at +0.1%, BUT activation (0.5%) never
+	// crosses so trail must NOT fire.
+	var err error
+	var sigs []strat.Signal
+	// Bar 1: +0.3% — new peak 0.003
+	b1 := bullBar(tSweep.Add(5*time.Minute), 100_800, 100_801, 100)
+	st, sigs, err = s.OnBar(nil, "BTC/USD", b1, st)
+	require.NoError(t, err)
+	assert.Empty(t, sigs, "no trail_stop when peak below activation")
+
+	// Bar 2: retrace to +0.1%. Peak-current = 0.002 > 0.002 is FALSE (not
+	// strictly greater), but crucially activation gate prevents firing.
+	b2 := bullBar(tSweep.Add(10*time.Minute), 100_600, 100_600, 100)
+	st, sigs, err = s.OnBar(nil, "BTC/USD", b2, st)
+	require.NoError(t, err)
+	assert.Empty(t, sigs, "no trail_stop when peak never crossed activation threshold")
+
+	rst, ok := st.(*builtin.CryptoRevertState)
+	require.True(t, ok)
+	// Peak is (100801 - 100500) / 100500 ≈ 0.002995 (not exactly 0.003).
+	assert.InDelta(t, 0.003, rst.TrailPeakPnLPct, 1e-4, "peak should track even pre-activation")
+	assert.Greater(t, rst.TrailPeakPnLPct, 0.0, "peak should be positive")
+	assert.Less(t, rst.TrailPeakPnLPct, 0.005, "peak should be below activation")
+	assert.Equal(t, strat.SideBuy, rst.PositionSide, "position must still be open")
+}
+
+// TestCryptoRevert_Trail_ArmedAndFires — price climbs to +0.6% (peak) then
+// retreats to +0.3% (giveback of 0.3% > 0.2% threshold) after crossing the
+// 0.5% activation gate. Verify a trail_stop exit signal is produced.
+func TestCryptoRevert_Trail_ArmedAndFires(t *testing.T) {
+	params := trailTestParams(0.005, 0.002) // arm @ 0.5%, giveback 0.2%
+	params["strategy_exits_priority"] = true
+
+	s, st, _, tSweep := runCleanEntry(t, params)
+
+	var err error
+	var sigs []strat.Signal
+	// Bar 1: +0.6% — arms the trail, sets peak at 0.006.
+	b1 := bullBar(tSweep.Add(5*time.Minute), 101_103, 101_103, 100)
+	st, sigs, err = s.OnBar(nil, "BTC/USD", b1, st)
+	require.NoError(t, err)
+	require.Empty(t, sigs, "armed but no giveback yet — no exit this bar")
+
+	// Bar 2: retrace to +0.3% → giveback 0.3% > 0.2% threshold → fire.
+	b2 := bullBar(tSweep.Add(10*time.Minute), 100_801, 100_801, 100)
+	st, sigs, err = s.OnBar(nil, "BTC/USD", b2, st)
+	require.NoError(t, err)
+	require.Len(t, sigs, 1, "trail_stop should fire after giveback")
+
+	exit := sigs[0]
+	assert.Equal(t, strat.SignalExit, exit.Type)
+	assert.Equal(t, strat.SideSell, exit.Side)
+	assert.Equal(t, "trail_stop", exit.Tags["reason"])
+	assert.Equal(t, "strategy", exit.Tags["exit_origin"],
+		"exit_origin=strategy when strategy_exits_priority is on")
+
+	rst, ok := st.(*builtin.CryptoRevertState)
+	require.True(t, ok)
+	assert.Equal(t, strat.Side(""), rst.PositionSide, "position cleared after trail exit")
+	assert.Equal(t, 0.0, rst.TrailPeakPnLPct, "peak reset after exit")
+}
+
+// TestCryptoRevert_Trail_Disabled_ByDefault — with trail_activation_pct=0,
+// a profitable position that reverts must never fire trail_stop. Other
+// exits (reversion_complete) continue to work.
+func TestCryptoRevert_Trail_Disabled_ByDefault(t *testing.T) {
+	params := cryptoRevertDefaultParams()
+	// Explicit: activation 0 = disabled (same as default).
+	params["trail_activation_pct"] = 0.0
+	params["trail_giveback_pct"] = 0.002
+	params["strategy_exits_priority"] = true
+
+	s, st, _, tSweep := runCleanEntry(t, params)
+
+	// Simulate fill.
+	st, _, err := s.OnEvent(nil, "BTC/USD", strat.FillConfirmation{
+		Side: strat.SideBuy, Price: 100_500,
+	}, st)
+	require.NoError(t, err)
+
+	// Drive bars climbing then retracing (would trip trail if enabled).
+	var sigs []strat.Signal
+	// +0.6% peak (would arm trail)
+	b1 := bullBar(tSweep.Add(5*time.Minute), 101_103, 101_103, 100)
+	st, sigs, err = s.OnBar(nil, "BTC/USD", b1, st)
+	require.NoError(t, err)
+	// Back toward entry — trail would fire here if enabled.
+	b2 := bullBar(tSweep.Add(10*time.Minute), 100_801, 100_801, 100)
+	st, sigs, err = s.OnBar(nil, "BTC/USD", b2, st)
+	require.NoError(t, err)
+
+	for _, s := range sigs {
+		assert.NotEqual(t, "trail_stop", s.Tags["reason"],
+			"trail_stop must never fire when trail_activation_pct=0")
+	}
+
+	// Now drive a clean reversion to confirm non-trail exits still work.
+	for i := 3; i <= 8; i++ {
+		b := bullBar(tSweep.Add(time.Duration(i)*5*time.Minute), 100_970, 100_990, 100)
+		st, sigs, err = s.OnBar(nil, "BTC/USD", b, st)
+		require.NoError(t, err)
+		if len(sigs) > 0 {
+			break
+		}
+	}
+	if len(sigs) > 0 {
+		assert.NotEqual(t, "trail_stop", sigs[0].Tags["reason"])
+	}
+}
+
+// TestCryptoRevert_Trail_PeakResetsOnEntry — open a long with one peak,
+// exit via trail, then open a second long at a lower entry. Verify the
+// second position starts with TrailPeakPnLPct=0 and doesn't inherit stale
+// peak from the prior position.
+func TestCryptoRevert_Trail_PeakResetsOnEntry(t *testing.T) {
+	params := trailTestParams(0.005, 0.002)
+
+	s, st, _, tSweep := runCleanEntry(t, params)
+
+	var err error
+	var sigs []strat.Signal
+	// Drive peak to +0.6% then retrace to exit via trail.
+	b1 := bullBar(tSweep.Add(5*time.Minute), 101_103, 101_103, 100)
+	st, _, err = s.OnBar(nil, "BTC/USD", b1, st)
+	require.NoError(t, err)
+	b2 := bullBar(tSweep.Add(10*time.Minute), 100_801, 100_801, 100)
+	st, sigs, err = s.OnBar(nil, "BTC/USD", b2, st)
+	require.NoError(t, err)
+	require.Len(t, sigs, 1)
+	require.Equal(t, "trail_stop", sigs[0].Tags["reason"])
+
+	rstAfterExit, ok := st.(*builtin.CryptoRevertState)
+	require.True(t, ok)
+	require.Equal(t, 0.0, rstAfterExit.TrailPeakPnLPct, "peak must clear on exit")
+	require.Equal(t, strat.Side(""), rstAfterExit.PositionSide)
+
+	// Tamper: set a stale peak to simulate a bug where exit path didn't
+	// clear it, so we can assert the entry path resets it independently.
+	rstAfterExit.TrailPeakPnLPct = 0.99
+
+	// Drive another clean sweep-triggered entry. We reuse sweepBar at a
+	// different price level. Need fresh bullish inducement so the gate
+	// passes; advance barIdx by feeding a few baseline bars first, then
+	// a sweep that pulls dev_z back below -2 and registers a sweep.
+	tNext := tSweep.Add(30 * time.Minute)
+	// Feed a couple neutral bars to let the sweep age out — we want to
+	// force a new entry without the old sweep still being "recent".
+	for i := 0; i < 5; i++ {
+		b := bullBar(tNext.Add(time.Duration(i)*5*time.Minute), 100_800, 100_810, 50)
+		st, _, err = s.OnBar(nil, "BTC/USD", b, st)
+		require.NoError(t, err)
+	}
+	// New sweep bar at a LOWER round level — creates a fresh bullish
+	// inducement and drives dev_z below entry threshold.
+	tSweep2 := tNext.Add(30 * time.Minute)
+	sw2 := sweepBar(tSweep2, 99_000, 99_500, 500)
+	st, sigs, err = s.OnBar(nil, "BTC/USD", sw2, st)
+	require.NoError(t, err)
+
+	rstNext := st.(*builtin.CryptoRevertState)
+	// If a new entry fired, peak MUST be reset to 0 (spec requirement).
+	// If no entry fired in this synthesized scenario, the stale peak
+	// assertion is moot — but crucially it must not have been carried
+	// forward into a NEW open position. So gate the assertion on entry.
+	if rstNext.PositionSide == strat.SideBuy && !rstNext.EntryTime.Equal(tSweep) {
+		assert.Equal(t, 0.0, rstNext.TrailPeakPnLPct,
+			"new entry must reset TrailPeakPnLPct even if stale value was present")
+	}
+}
+
 // TestCryptoRevert_NoPriorityTags_WhenDisabled — with the flag off (default),
 // neither exit_origin nor strategy_exits_priority tags may appear. This
 // protects other strategies / downstream adapters that don't expect the

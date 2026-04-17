@@ -29,8 +29,8 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["BTC/USD", "ETH/USD"]
-timeframes = ["5m"]
+symbols = ["BTC/USD", "ETH/USD", "SOL/USD", "LTC/USD", "BCH/USD", "ADA/USD", "XRP/USD", "DOGE/USD", "LINK/USD", "AVAX/USD", "SUI/USD"]
+timeframes = ["15m"]
 priority = 55
 conflict_policy = "priority_wins"
 exclusive_per_symbol = false
@@ -62,6 +62,16 @@ entry_dev_z      = -2.0
 exit_dev_z       = -0.3
 hard_stop_dev_z  = -3.5
 
+# --- Trailing stop (quant recommendation 2026-04-17) ---
+# Once unrealized PnL crosses trail_activation_pct, track the per-bar peak
+# and exit when current PnL gives back more than trail_giveback_pct from
+# that peak. Set trail_activation_pct = 0 to disable (default).
+# MFE analysis on v9 showed 85.6% of losers touched positive MFE (avg
+# +0.478%) before reverting — this rule converts those bleeders into
+# locked-in small wins.
+trail_activation_pct = 0.0035   # arm at +0.35%
+trail_giveback_pct   = 0.0020   # exit on 0.20% retrace from peak
+
 # --- TFI gate ---
 tfi_lookback_min = 15
 tfi_min          = 0.15   # recal: magnitude floor, not sign-only
@@ -79,6 +89,12 @@ max_concurrent  = 2
 require_tfi              = false
 require_inducement       = true
 inducement_lookback_bars = 2      # recal: crypto sweeps resolve faster
+
+# Opposite-sweep exit: quant (2026-04-16) measured 27.9% of exits fire this
+# rule and are net-losing — reversion by definition requires adverse flow,
+# so "opposite sweep" often means the reversion is completing and we exit
+# into the thesis. Disabled after post-wiring re-baseline.
+inducement_flip_enabled  = false
 
 # --- Strategy exits take priority over book-level price exit rules ---
 # When true, the position monitor skips its own price-based exit rules for
