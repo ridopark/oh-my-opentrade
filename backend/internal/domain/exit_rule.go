@@ -133,6 +133,13 @@ type MonitoredPosition struct {
 	OptionExpiry   time.Time      `json:"optionExpiry,omitempty"`
 	OptionRight    string         `json:"optionRight,omitempty"`
 
+	// StrategyExitsPriority, when true, tells the position monitor to skip
+	// its own price-based exit rule evaluation for this position — the
+	// strategy's OnBar exits are authoritative. Time-only rules
+	// (MAX_HOLDING_TIME, EOD_FLATTEN) still fire as a safety net. Set
+	// from the entry signal tag "strategy_exits_priority".
+	StrategyExitsPriority bool `json:"strategyExitsPriority,omitempty"`
+
 	// Sprint 5 combo tracking. When Legs is non-empty this is a multi-leg
 	// BAG position. EntryPrice is the net premium paid (debit) or collected
 	// (credit). Quantity is the combo count. LegFillPrices mirrors Legs
