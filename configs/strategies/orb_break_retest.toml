@@ -5,6 +5,19 @@ id = "orb_break_retest"
 version = "1.0.0"
 name = "ORB Break & Retest"
 description = "Opening Range Breakout — Break & Retest with volume confirmation"
+novice_description = """\
+In the first few minutes after the market opens, a stock trades inside a \
+small price box — that box is called the "opening range." Whenever price \
+eventually pops above the top of the box or drops below the bottom, that's \
+a breakout: the market is picking a direction for the day.
+
+Naive breakout trading gets whipsawed a lot, so we add one extra rule: we \
+wait for price to briefly come back and touch the breakout level again (the \
+"retest"). If it holds that level on strong volume, we take the trade in the \
+breakout direction — longs for an upside break, shorts for a downside break.
+
+In plain terms: let the market decide which way it wants to go in the first \
+hour, then jump in on the first successful retest of that line."""
 author = "system"
 created_at = "2026-03-04T00:00:00Z"
 

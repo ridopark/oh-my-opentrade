@@ -5,6 +5,22 @@ id = "crypto_revert_v1"
 version = "0.1.0"
 name = "Crypto Mean Reversion v1 (5m)"
 description = "VWAP-fade on BTC/ETH spot gated by TFI magnitude and a recent bullish liquidity sweep. Phase-1 long-only."
+novice_description = """\
+Short-term crypto prices often overshoot and then snap back toward their \
+average — that's called mean reversion. This strategy looks for moments \
+where BTC or ETH has dipped unusually far below the day's average trading \
+price (VWAP) and then buys, betting the price will bounce back up toward \
+the average.
+
+We don't buy every dip blindly. We first check two things: (1) are \
+aggressive sellers losing steam? (measured by the balance of buy vs. sell \
+market orders), and (2) did the market recently sweep out a pool of stop \
+orders below a key low? That "stop hunt" pattern often marks a short-term \
+bottom right before a reversal. When both conditions agree with the dip, we \
+take the long.
+
+In plain terms: when BTC/ETH briefly dumps below a fair-price line, and the \
+order flow says sellers are exhausted, we buy the bounce."""
 author = "system"
 created_at = "2026-04-15T00:00:00Z"
 

@@ -44,7 +44,10 @@ type Spec struct {
 	Version       domstrategy.Version
 	Name          string
 	Description   string
-	Author        string
+	// NoviceDescription is a plain-English explanation of the strategy
+	// aimed at non-technical users. Surfaced on the dashboard.
+	NoviceDescription string
+	Author            string
 
 	Lifecycle LifecycleConfig
 	Routing   RoutingConfig

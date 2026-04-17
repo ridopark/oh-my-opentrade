@@ -5,6 +5,23 @@ id = "overnight_z_v1"
 version = "1.0.0"
 name = "Overnight Z-Score Bias"
 description = "Late-session DP buy_ratio Z predicts next-day mean-reversion; long equity shares at open, exit MOC"
+novice_description = """\
+Not every trade happens on the visible exchange. Large institutions often \
+trade in "dark pools" — private venues where big buy and sell orders are \
+matched away from the public order book. Near the end of each trading day, \
+the balance of dark-pool buying vs. selling for a stock can reveal what \
+large players quietly did before the close.
+
+If that late-afternoon dark-pool activity was unusually one-sided \
+(statistically far from the normal range), it often precedes a short-term \
+reversal the next day. This strategy scores each stock's end-of-day \
+dark-pool imbalance, buys a small basket of the most extreme candidates at \
+the next morning's open, and closes the whole basket at the next day's \
+close (a "market-on-close" order). No overnight options, no complicated \
+exits — just one day of exposure.
+
+In plain terms: read the fingerprints institutions leave in dark pools at \
+the end of the day, and trade the expected reversal the following session."""
 author = "system"
 created_at = "2026-04-12T00:00:00Z"
 

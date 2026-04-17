@@ -32,15 +32,16 @@ type InstanceAssignment struct {
 // Instance wraps a Strategy implementation with per-symbol state management
 // and routing assignment. It is the unit of execution within the StrategyRunner.
 type Instance struct {
-	mu         sync.Mutex
-	id         start.InstanceID
-	strategy   start.Strategy
-	params     map[string]any
-	assignment InstanceAssignment
-	lifecycle  start.LifecycleState
-	states     map[string]start.State // per-symbol state
-	warmupLeft map[string]int         // bars remaining for warmup per symbol
-	logger     *slog.Logger
+	mu                sync.Mutex
+	id                start.InstanceID
+	strategy          start.Strategy
+	params            map[string]any
+	assignment        InstanceAssignment
+	lifecycle         start.LifecycleState
+	states            map[string]start.State // per-symbol state
+	warmupLeft        map[string]int         // bars remaining for warmup per symbol
+	logger            *slog.Logger
+	noviceDescription string // plain-English spec from TOML, surfaced on dashboard
 }
 
 // NewInstance creates a new strategy instance with the given assignment.
@@ -80,6 +81,15 @@ func (inst *Instance) configStrategyID() string {
 
 // Strategy returns the underlying strategy implementation.
 func (inst *Instance) Strategy() start.Strategy { return inst.strategy }
+
+// SetNoviceDescription stores a plain-English explanation of the strategy
+// (loaded from the TOML spec). Used by the /api/strategies/ response so the
+// dashboard can show novice-friendly copy without re-reading the spec.
+func (inst *Instance) SetNoviceDescription(s string) { inst.noviceDescription = s }
+
+// NoviceDescription returns the plain-English explanation set via
+// SetNoviceDescription. Empty string if none was provided.
+func (inst *Instance) NoviceDescription() string { return inst.noviceDescription }
 
 // Logger returns the instance-scoped logger (already tagged with instance_id).
 // Used by the runner to avoid allocating a fresh slog child per bar.

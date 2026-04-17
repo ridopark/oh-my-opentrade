@@ -2362,12 +2362,13 @@ func domainBarToStratBar(bar domain.MarketBar) start.Bar {
 
 // StrategyInfo describes a registered strategy for the API.
 type StrategyInfo struct {
-	ID       string   `json:"id"`
-	Name     string   `json:"name"`
-	Version  string   `json:"version"`
-	Symbols  []string `json:"symbols"`
-	Priority int      `json:"priority"`
-	Active   bool     `json:"active"`
+	ID                string   `json:"id"`
+	Name              string   `json:"name"`
+	Version           string   `json:"version"`
+	Symbols           []string `json:"symbols"`
+	Priority          int      `json:"priority"`
+	Active            bool     `json:"active"`
+	NoviceDescription string   `json:"noviceDescription,omitempty"`
 }
 
 func (r *Runner) ListStrategies() []StrategyInfo {
@@ -2376,12 +2377,13 @@ func (r *Runner) ListStrategies() []StrategyInfo {
 	for _, inst := range instances {
 		meta := inst.Strategy().Meta()
 		infos = append(infos, StrategyInfo{
-			ID:       inst.configStrategyID(),
-			Name:     meta.Name,
-			Version:  meta.Version.String(),
-			Symbols:  inst.Assignment().Symbols,
-			Priority: inst.Assignment().Priority,
-			Active:   inst.IsActive(),
+			ID:                inst.configStrategyID(),
+			Name:              meta.Name,
+			Version:           meta.Version.String(),
+			Symbols:           inst.Assignment().Symbols,
+			Priority:          inst.Assignment().Priority,
+			Active:            inst.IsActive(),
+			NoviceDescription: inst.NoviceDescription(),
 		})
 	}
 	return infos

@@ -82,11 +82,12 @@ func (r rawHookRef) toHookRef() (portstrategy.HookRef, error) {
 }
 
 type rawStrategySection struct {
-	ID          string `toml:"id"`
-	Version     any    `toml:"version"`
-	Name        string `toml:"name"`
-	Description string `toml:"description"`
-	Author      string `toml:"author"`
+	ID                string `toml:"id"`
+	Version           any    `toml:"version"`
+	Name              string `toml:"name"`
+	Description       string `toml:"description"`
+	NoviceDescription string `toml:"novice_description"`
+	Author            string `toml:"author"`
 }
 
 type rawLifecycleSection struct {
@@ -176,12 +177,13 @@ func loadV1(content, path string) (portstrategy.Spec, error) {
 	state := domstrategy.LifecycleLiveActive
 
 	return portstrategy.Spec{
-		SchemaVersion: 1,
-		ID:            id,
-		Version:       ver,
-		Name:          raw.Strategy.Name,
-		Description:   raw.Strategy.Description,
-		Author:        raw.Strategy.Author,
+		SchemaVersion:     1,
+		ID:                id,
+		Version:           ver,
+		Name:              raw.Strategy.Name,
+		Description:       raw.Strategy.Description,
+		NoviceDescription: raw.Strategy.NoviceDescription,
+		Author:            raw.Strategy.Author,
 		Lifecycle: portstrategy.LifecycleConfig{
 			State:     state,
 			PaperOnly: false,
@@ -371,12 +373,13 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 	}
 
 	return portstrategy.Spec{
-		SchemaVersion: 2,
-		ID:            id,
-		Version:       ver,
-		Name:          raw.Strategy.Name,
-		Description:   raw.Strategy.Description,
-		Author:        raw.Strategy.Author,
+		SchemaVersion:     2,
+		ID:                id,
+		Version:           ver,
+		Name:              raw.Strategy.Name,
+		Description:       raw.Strategy.Description,
+		NoviceDescription: raw.Strategy.NoviceDescription,
+		Author:            raw.Strategy.Author,
 		Lifecycle: portstrategy.LifecycleConfig{
 			State:     state,
 			PaperOnly: paperOnly,

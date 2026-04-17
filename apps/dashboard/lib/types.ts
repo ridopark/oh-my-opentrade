@@ -293,6 +293,7 @@ export interface StrategyInfo {
   symbols: string[];
   priority: number;
   active: boolean;
+  noviceDescription?: string;
 }
 
 export interface StrategyPerfSummary {
