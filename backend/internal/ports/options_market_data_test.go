@@ -17,6 +17,7 @@ func (m *mockOptionsMarketData) GetOptionChain(
 	underlying domain.Symbol,
 	expiry time.Time,
 	right domain.OptionRight,
+	minDTE, maxDTE int,
 ) ([]domain.OptionContractSnapshot, error) {
 	return nil, nil
 }

@@ -808,6 +808,8 @@ func (rs *RiskSizer) handleOptionsSignal(
 		domain.Symbol(sigRef.Symbol),
 		targetExpiry,
 		optRight,
+		minDTE,
+		maxDTE,
 	)
 	if err != nil {
 		rs.logger.Error("options chain fetch failed",

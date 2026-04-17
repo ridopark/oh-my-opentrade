@@ -193,11 +193,14 @@ func (s *Service) collectSymbol(
 	targetExpiry time.Time,
 	now time.Time,
 ) (domain.IVSnapshot, error) {
-	calls, err := s.optionsData.GetOptionChain(ctx, domain.Symbol(symbol), targetExpiry, domain.OptionRightCall)
+	// IV collector runs on the live data path with a tight DTE window
+	// around the target expiry; 0,0 tells adapters to ignore the range
+	// hint and use their native behavior (Alpaca fetches +/- 7 days).
+	calls, err := s.optionsData.GetOptionChain(ctx, domain.Symbol(symbol), targetExpiry, domain.OptionRightCall, 0, 0)
 	if err != nil {
 		return domain.IVSnapshot{}, err
 	}
-	puts, err := s.optionsData.GetOptionChain(ctx, domain.Symbol(symbol), targetExpiry, domain.OptionRightPut)
+	puts, err := s.optionsData.GetOptionChain(ctx, domain.Symbol(symbol), targetExpiry, domain.OptionRightPut, 0, 0)
 	if err != nil {
 		return domain.IVSnapshot{}, err
 	}
@@ -303,7 +306,9 @@ func (s *Service) saveFullChain(ctx context.Context, symbol string, now time.Tim
 	for _, right := range []domain.OptionRight{domain.OptionRightCall, domain.OptionRightPut} {
 		// Use a target expiry ~30 days out with ±30 day window (covers DTE 1-60).
 		targetExpiry := now.AddDate(0, 0, 30)
-		snaps, err := s.optionsData.GetOptionChain(ctx, domain.Symbol(symbol), targetExpiry, right)
+		// Wide DTE window (1-60) to capture full historical chain; live
+		// adapters ignore these hints and fetch their native +/- window.
+		snaps, err := s.optionsData.GetOptionChain(ctx, domain.Symbol(symbol), targetExpiry, right, 1, 60)
 		if err != nil {
 			s.log.Warn().Err(err).Str("symbol", symbol).Str("right", string(right)).Msg("failed to fetch option chain for historical capture")
 			continue

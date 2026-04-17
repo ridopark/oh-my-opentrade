@@ -122,7 +122,7 @@ func TestE2E_PaperCanary_LongCallOptionTrade(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	chain, err := adapter.GetOptionChain(ctx, domain.Symbol("AAPL"), expiry, domain.OptionRightCall)
+	chain, err := adapter.GetOptionChain(ctx, domain.Symbol("AAPL"), expiry, domain.OptionRightCall, 35, 45)
 	require.NoError(t, err)
 	assert.Len(t, chain, 3, "adapter should parse all 3 contracts with snapshots")
 

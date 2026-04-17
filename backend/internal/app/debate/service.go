@@ -425,7 +425,7 @@ func (s *Service) tryOptionsRoute(
 		(spec.Options.Defaults.MaxDTE-spec.Options.Defaults.MinDTE)/2
 	targetExpiry := setup.Snapshot.Time.AddDate(0, 0, targetDTE)
 
-	chain, chainErr := s.optionsMarket.GetOptionChain(ctx, setup.Symbol, targetExpiry, optRight)
+	chain, chainErr := s.optionsMarket.GetOptionChain(ctx, setup.Symbol, targetExpiry, optRight, spec.Options.Defaults.MinDTE, spec.Options.Defaults.MaxDTE)
 	if chainErr != nil || len(chain) == 0 {
 		l.Warn().Err(chainErr).Str("symbol", string(setup.Symbol)).
 			Str("right", string(optRight)).

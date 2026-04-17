@@ -32,6 +32,7 @@ func (c *cachingOptionsMarket) GetOptionChain(
 	underlying domain.Symbol,
 	expiry time.Time,
 	right domain.OptionRight,
+	minDTE, maxDTE int,
 ) ([]domain.OptionContractSnapshot, error) {
 	key := fmt.Sprintf("%s:%s", underlying, right)
 
@@ -42,7 +43,7 @@ func (c *cachingOptionsMarket) GetOptionChain(
 	}
 	c.mu.Unlock()
 
-	chain, err := c.inner.GetOptionChain(ctx, underlying, expiry, right)
+	chain, err := c.inner.GetOptionChain(ctx, underlying, expiry, right, minDTE, maxDTE)
 	if err != nil {
 		return nil, err
 	}
