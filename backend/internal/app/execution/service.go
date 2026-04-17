@@ -715,11 +715,17 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		var posQty float64
 		for _, p := range positions {
 			if p.Symbol == intent.Symbol {
-				posQty += p.Quantity
+				posQty += p.SignedQuantity()
 			}
 		}
+		// Reject both "no position" (posQty==0) and "short position"
+		// (posQty<0). Issuing a long-close SELL on top of a broker short
+		// would deepen the short — which is exactly how 2026-04-16's
+		// phantom-short race amplified past the broker. Treat any short
+		// as "not ours to exit" at this gate; the global reconciler will
+		// surface the anomaly for manual intervention.
 		if posQty <= 0 {
-			l.Warn().Msg("exit intent but no position found — rejecting")
+			l.Warn().Msg("exit intent but no long position found — rejecting")
 			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, "position_gate: no_position_to_exit"))
 			return nil
 		}

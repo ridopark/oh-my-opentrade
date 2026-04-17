@@ -106,9 +106,14 @@ func (s *Service) reconcileGlobal(ctx context.Context) {
 		s.log.Warn().Err(err).Msg("global-reconcile: failed to query broker positions — skipping")
 		return
 	}
+	// SignedQuantity resolves the broker sign convention: adapters return
+	// non-negative Quantity + Side (canonical NewTrade contract), so we must
+	// reconstruct the signed position here. Reading bp.Quantity directly
+	// would miss shorts entirely — exactly the bug that let today's IBKR
+	// -19 SOFI short go undetected by R1b.
 	brokerBySymbol := make(map[domain.Symbol]float64, len(brokerPositions))
 	for _, bp := range brokerPositions {
-		brokerBySymbol[bp.Symbol] = bp.Quantity
+		brokerBySymbol[bp.Symbol] = bp.SignedQuantity()
 	}
 
 	dbPositions, err := s.repo.GetNetPositions(ctx, s.tenantID, s.envMode)

@@ -428,6 +428,16 @@ func (c *RESTClient) GetPositions(ctx context.Context, tenantID string, envMode 
 			continue
 		}
 
+		// Canonical Trade contract (domain.NewTrade): non-negative Quantity
+		// + Side carrying direction. Alpaca can return a signed qty and/or
+		// a side of "long"/"short"; normalize so Quantity is magnitude and
+		// Side is "BUY"/"SELL" (aligned with IBKR and Hyperliquid adapters).
+		side := "BUY"
+		if qty < 0 || strings.EqualFold(rp.Side, "short") || strings.EqualFold(rp.Side, "sell") {
+			side = "SELL"
+		}
+		qty = math.Abs(qty)
+
 		// Normalize crypto symbols: Alpaca returns "BTCUSD" but we use "BTC/USD".
 		sym = sym.ToSlashFormat()
 
@@ -445,7 +455,7 @@ func (c *RESTClient) GetPositions(ctx context.Context, tenantID string, envMode 
 			EnvMode:    envMode,
 			TradeID:    uuid.New(),
 			Symbol:     sym,
-			Side:       rp.Side,
+			Side:       side,
 			Quantity:   qty,
 			Price:      price,
 			Commission: 0,

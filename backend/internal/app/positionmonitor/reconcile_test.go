@@ -303,4 +303,26 @@ func TestReconcileGlobal_BrokerShort_EmitsUNINTENDED_SHORT(t *testing.T) {
 		assert.True(t, strings.Contains(logs, "UNINTENDED_SHORT"),
 			"R1b: negative broker qty must emit UNINTENDED_SHORT log (CRM phantom-short case)")
 	})
+	t.Run("IBKR-style short (Quantity positive, Side=SELL)", func(t *testing.T) {
+		// IBKR adapter's canonical convention: Quantity is the magnitude,
+		// Side carries direction. An earlier shipped version of R1b read
+		// bp.Quantity directly and compared < -1e-10 — that check was dead
+		// code for IBKR output because Quantity is never negative. This
+		// test locks in the fix: reconciler reads SignedQuantity().
+		var buf bytes.Buffer
+		broker := &mockBroker{
+			positions: []domain.Trade{
+				{Symbol: domain.Symbol("SOFI260501P00021000"), Quantity: 19, Side: "SELL"},
+			},
+		}
+		repo := &capturingRepo{}
+		svc := newTestServiceWithBufferedLog(broker, repo, &buf)
+
+		svc.reconcileGlobal(context.Background())
+
+		logs := buf.String()
+		assert.Contains(t, logs, "UNINTENDED_SHORT",
+			"R1b: IBKR-style magnitude+Side short must fire UNINTENDED_SHORT")
+		assert.Contains(t, logs, "SOFI260501P00021000")
+	})
 }
