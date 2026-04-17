@@ -80,6 +80,16 @@ require_tfi              = false
 require_inducement       = true
 inducement_lookback_bars = 2      # recal: crypto sweeps resolve faster
 
+# --- Strategy exits take priority over book-level price exit rules ---
+# When true, the position monitor skips its own price-based exit rules for
+# positions opened by this strategy — the OnBar exits (reversion_complete,
+# hard_stop, time_stop, inducement_flip) are authoritative. The book-level
+# MAX_HOLDING_TIME (120min) and MAX_LOSS (3%) still fire as a safety net.
+# Without this flag (pre-b6c9fb5-mirror), 97.4% of exits fell through to
+# MAX_HOLDING_TIME because the strategy's own exits were dead code in the
+# slice-pipeline backtest.
+strategy_exits_priority = true
+
 # --- Fallbacks ---
 use_bar_sign_tfi = true   # phase 1 has no tick feed into strategy layer
 
