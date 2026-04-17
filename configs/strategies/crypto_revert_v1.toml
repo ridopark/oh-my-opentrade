@@ -4,23 +4,35 @@ schema_version = 2
 id = "crypto_revert_v1"
 version = "0.1.0"
 name = "Crypto Mean Reversion v1 (5m)"
-description = "VWAP-fade on BTC/ETH spot gated by TFI magnitude and a recent bullish liquidity sweep. Phase-1 long-only."
+description = "[DEACTIVATED 2026-04-17] VWAP-fade on crypto spot gated by TFI magnitude and a bullish liquidity sweep. Entry thesis is real (85.6% of losing trades reached positive MFE with avg peak +0.48%) but retail-scale execution can't capture it: on 15m bars the exit decision fires at close and the fill lands at the next bar's open, and crypto routinely gaps 0.5-1%+ in a single bar — wider than any giveback band we can set. Combined with 5 bps slippage both sides, every parameter variant converged to PF 0.27-0.40. Kept for reactivation if intra-bar fill simulation lands or we move to a lower-latency venue."
 novice_description = """\
-Short-term crypto prices often overshoot and then snap back toward their \
-average — that's called mean reversion. This strategy looks for moments \
-where BTC or ETH has dipped unusually far below the day's average trading \
-price (VWAP) and then buys, betting the price will bounce back up toward \
-the average.
+**Status: retired 2026-04-17 — strategy did not prove out.**
 
-We don't buy every dip blindly. We first check two things: (1) are \
-aggressive sellers losing steam? (measured by the balance of buy vs. sell \
-market orders), and (2) did the market recently sweep out a pool of stop \
-orders below a key low? That "stop hunt" pattern often marks a short-term \
-bottom right before a reversal. When both conditions agree with the dip, we \
-take the long.
+The idea was simple: short-term crypto prices often overshoot and then snap \
+back toward their average — a pattern called mean reversion. The strategy \
+looked for moments where BTC/ETH and other majors had dipped unusually far \
+below the day's average price (VWAP) and bought the bounce, filtered by \
+trade-flow imbalance (are sellers losing steam?) and a recent "stop hunt" \
+sweep pattern.
 
-In plain terms: when BTC/ETH briefly dumps below a fair-price line, and the \
-order flow says sellers are exhausted, we buy the bounce."""
+**What we found when we tested it properly (2 years of continuous data, \
+1,754 trades across 11 Coinbase crypto symbols):** the entry signal \
+actually works — 85.6% of the losing trades were profitable at some point \
+before reverting, averaging about +0.48% in unrealized gain at their peak. \
+That's textbook evidence the dip-and-bounce thesis is real.
+
+**Why it still lost money:** on 15-minute bars, the strategy only sees \
+price snapshots every 15 minutes. By the time it decides to exit and the \
+order fills on the next bar, crypto can gap 0.5-1% or more — straight \
+through whatever profit target we set. The round-trip fees (about 10 \
+basis points in and out) eat what's left. The edge is genuinely there; \
+we just can't grab it with 15-minute bar latency at retail execution \
+speeds.
+
+**When we'd revisit:** either (a) simulate fills inside the bar using \
+intra-bar high/low, or (b) move to a tick-level execution venue where we \
+can exit the instant the target is hit. Until one of those lands, this \
+strategy stays deactivated."""
 author = "system"
 created_at = "2026-04-15T00:00:00Z"
 
