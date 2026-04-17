@@ -11,9 +11,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
+	"github.com/oh-my-opentrade/backend/internal/adapters/coinbase"
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
 	"github.com/oh-my-opentrade/backend/internal/adapters/ibkr"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
+	"github.com/oh-my-opentrade/backend/internal/app/backfill"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/logger"
@@ -34,6 +36,7 @@ type infraDeps struct {
 	eventBus        *memory.Bus
 	ibkrBroker      *ibkr.Adapter
 	alpacaData      *alpaca.Adapter
+	barFetcher      backfill.MarketDataFetcher
 	sqlDB           *sql.DB
 	repo            *timescaledb.Repository
 	pnlRepo         *timescaledb.PnLRepository
@@ -184,10 +187,17 @@ func initInfra(cfg *config.Config, log zerolog.Logger) *infraDeps {
 	orderIntentRepo := timescaledb.NewOrderIntentRepo(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "order_intent_repo").Logger())
 	tokenStore := timescaledb.NewTokenStore(timescaledb.NewSqlDB(sqlDB))
 
+	coinbaseClient := coinbase.NewClient(cfg.Coinbase, log.With().Str("component", "coinbase").Logger())
+	barFetcher := &backfill.RoutingFetcher{
+		Crypto: coinbaseClient,
+		Equity: alpacaData,
+	}
+
 	return &infraDeps{
 		eventBus:        eventBus,
 		ibkrBroker:      ibkrBroker,
 		alpacaData:      alpacaData,
+		barFetcher:      barFetcher,
 		sqlDB:           sqlDB,
 		repo:            repo,
 		pnlRepo:         pnlRepo,

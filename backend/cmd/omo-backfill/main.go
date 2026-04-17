@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
+	"github.com/oh-my-opentrade/backend/internal/adapters/coinbase"
 	"github.com/oh-my-opentrade/backend/internal/adapters/dolthub"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/app/backfill"
@@ -101,6 +102,13 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to create Alpaca adapter")
 	}
 
+	coinbaseClient := coinbase.NewClient(cfg.Coinbase, log.With().Str("component", "coinbase").Logger())
+
+	fetcher := &backfill.RoutingFetcher{
+		Crypto: coinbaseClient,
+		Equity: alpacaAdapter,
+	}
+
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
 		cfg.Database.Host, cfg.Database.Port, cfg.Database.User, cfg.Database.Password, cfg.Database.DBName)
 	pgxCfg, err := pgx.ParseConfig(dsn)
@@ -137,7 +145,7 @@ func main() {
 
 	// --- Step 1: Backfill 1m candles (all hours, RTH + pre/post market) ---
 	log.Info().Msg("[1/2] backfilling 1m candles...")
-	svc := backfill.NewService(alpacaAdapter, repo, backfill.Config{
+	svc := backfill.NewService(fetcher, repo, backfill.Config{
 		Symbols:         symbols,
 		Timeframe:       domain.Timeframe(timeframeFlag),
 		From:            fromTime,

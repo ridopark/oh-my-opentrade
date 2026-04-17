@@ -54,7 +54,7 @@ type Config struct {
 // Service fetches daily bars on a schedule and updates the monitor's VIX level.
 type Service struct {
 	cfg          Config
-	alpacaData   ports.MarketDataPort
+	barFetcher   backfill.MarketDataFetcher
 	yahooClient  *yfinance.Client
 	repo         BarStore
 	monitor      VIXSetter
@@ -75,8 +75,10 @@ func (s *Service) SetNotifier(n ports.NotifierPort) {
 	s.notifier = n
 }
 
-// NewService creates a data refresh service.
-func NewService(cfg Config, alpacaData ports.MarketDataPort, repo BarStore, monitor VIXSetter, log zerolog.Logger) *Service {
+// NewService creates a data refresh service. The barFetcher may be an
+// alpaca.Adapter for equity-only setups, or a backfill.RoutingFetcher when
+// crypto bars should come from Coinbase instead of Alpaca.
+func NewService(cfg Config, barFetcher backfill.MarketDataFetcher, repo BarStore, monitor VIXSetter, log zerolog.Logger) *Service {
 	if cfg.LookbackDays == 0 {
 		cfg.LookbackDays = 90
 	}
@@ -92,7 +94,7 @@ func NewService(cfg Config, alpacaData ports.MarketDataPort, repo BarStore, moni
 	et, _ := time.LoadLocation("America/New_York")
 	return &Service{
 		cfg:        cfg,
-		alpacaData: alpacaData,
+		barFetcher: barFetcher,
 		repo:       repo,
 		monitor:    monitor,
 		log:        log.With().Str("component", "datarefresh").Logger(),
@@ -248,7 +250,7 @@ func (s *Service) refreshDailyBars(ctx context.Context, symbols []string) (saved
 			failed++
 			continue
 		}
-		bars, err := s.alpacaData.GetHistoricalBars(ctx, sym, domain.Timeframe("1d"), from, to)
+		bars, err := s.barFetcher.GetHistoricalBars(ctx, sym, domain.Timeframe("1d"), from, to)
 		if err != nil {
 			s.log.Warn().Str("symbol", symStr).Err(err).Msg("failed to fetch daily bars")
 			failed++
@@ -320,7 +322,7 @@ func (s *Service) fallbackSPYRealizedVol(ctx context.Context) {
 		return
 	}
 	from := time.Now().AddDate(0, 0, -60)
-	bars, err := s.alpacaData.GetHistoricalBars(ctx, spy, domain.Timeframe("1d"), from, time.Now())
+	bars, err := s.barFetcher.GetHistoricalBars(ctx, spy, domain.Timeframe("1d"), from, time.Now())
 	if err != nil || len(bars) < 22 {
 		s.log.Warn().Err(err).Int("bars", len(bars)).Msg("SPY realized vol fallback failed")
 		return
@@ -432,7 +434,7 @@ func (s *Service) backfillIntradayBars(ctx context.Context, symbols []string) {
 			fetchFrom = from
 		}
 
-		bars, err := s.alpacaData.GetHistoricalBars(ctx, sym, domain.Timeframe("1m"), fetchFrom, time.Now())
+		bars, err := s.barFetcher.GetHistoricalBars(ctx, sym, domain.Timeframe("1m"), fetchFrom, time.Now())
 		if err != nil {
 			s.log.Warn().Str("symbol", symStr).Err(err).Msg("failed to fetch 1m bars for backfill")
 			continue

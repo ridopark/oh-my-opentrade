@@ -289,7 +289,7 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 			Time("warmup_to", warmupTo).
 			Msg("warming equity indicators from previous RTH session")
 		for _, sym := range syms.equity {
-			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaData, sym, syms.timeframe, warmupFrom, warmupTo, warmupLog)
+			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.barFetcher, sym, syms.timeframe, warmupFrom, warmupTo, warmupLog)
 			if err != nil {
 				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("equity warmup fetch failed, starting cold")
 				continue
@@ -317,7 +317,7 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 			Time("warmup_to", cryptoWarmupTo).
 			Msg("warming crypto indicators from last 10 hours")
 		for _, sym := range syms.crypto {
-			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaData, sym, syms.timeframe, cryptoWarmupFrom, cryptoWarmupTo, warmupLog)
+			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.barFetcher, sym, syms.timeframe, cryptoWarmupFrom, cryptoWarmupTo, warmupLog)
 			if err != nil {
 				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("crypto warmup fetch failed, starting cold")
 				continue
@@ -433,7 +433,7 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 					from = to.Add(-req.lookback)
 				}
 			}
-			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.alpacaData, req.symbol, req.timeframe, from, to, warmupLog)
+			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.barFetcher, req.symbol, req.timeframe, from, to, warmupLog)
 			if err != nil {
 				warmupLog.Warn().Err(err).
 					Str("symbol", string(req.symbol)).
