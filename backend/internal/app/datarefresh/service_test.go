@@ -128,14 +128,26 @@ func TestBackfillIntradayBars_CryptoUsesClockAlignedAggregator(t *testing.T) {
 	md := newMockMarketData()
 	repo := &mockBarStore{}
 
-	// BTC/USD bars timestamped at 01:00 UTC — well before today's NYSE 09:30 ET.
-	// Under the old session-anchored aggregator these would be rejected.
-	btcStart := time.Date(2026, 4, 15, 1, 0, 0, 0, time.UTC)
+	// Timestamps are computed relative to time.Now() so the test stays
+	// deterministic across wall-clock days. AggregateHTF's equity path picks
+	// its anchor from now; anchoring the bars to the same session keeps
+	// aggregation well-defined on weekends, overnights, and any weekday.
+	now := time.Now()
+
+	// BTC/USD bars inside the crypto 24h window — clock-aligned aggregator
+	// would reject nothing because it isn't session-anchored.
+	btcStart := now.Add(-12 * time.Hour).UTC().Truncate(time.Minute)
 	md.bars[domain.Symbol("BTC/USD")] = makeMinuteBars("BTC/USD", btcStart, 60)
 
-	// AAPL bars at 09:30 ET today — a normal equity session.
+	// AAPL bars anchored at whichever RTH session AggregateHTF will pick.
 	loc, _ := time.LoadLocation("America/New_York")
-	aaplStart := time.Date(2026, 4, 15, 9, 30, 0, 0, loc).UTC()
+	nowET := now.In(loc)
+	aaplAnchor := time.Date(nowET.Year(), nowET.Month(), nowET.Day(), 9, 30, 0, 0, loc)
+	if nowET.Before(aaplAnchor) {
+		prev, _ := domain.PreviousRTHSession(now)
+		aaplAnchor = prev
+	}
+	aaplStart := aaplAnchor.UTC()
 	md.bars[domain.Symbol("AAPL")] = makeMinuteBars("AAPL", aaplStart, 60)
 
 	s := newTestService(md, repo)
