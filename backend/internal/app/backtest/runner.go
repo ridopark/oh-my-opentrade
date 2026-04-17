@@ -478,6 +478,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("build position monitor: %w", err)
 	}
 
+	// Late-bind the position lookup so the execution service can attach
+	// MFE/MAE to strategy-emitted exit fills. Without this, strategy-driven
+	// exits (which bypass positionmonitor.exit_eval) arrive at the backtest
+	// collector with empty spot_mfe_pct / spot_mae_pct fields.
+	execBundle.Service.SetPositionLookup(posMonBundle.Service)
+
 	aiAdvisor := r.infra.AIAdvisor
 	histOptRepo := r.infra.HistOptRepo
 	importer := r.infra.Importer

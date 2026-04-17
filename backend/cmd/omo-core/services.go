@@ -617,6 +617,7 @@ func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, lo
 			acctExecLog,
 			execution.WithPositionGate(acctPosGate),
 			execution.WithOrderStream(acctAdapter),
+			execution.WithPositionLookup(svc.posMonitor),
 		)
 
 		// Per-account strategy pipeline reuses shared router + specStore
