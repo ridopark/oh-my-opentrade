@@ -29,6 +29,7 @@ type SignalDebateEnricher struct {
 	marketData    MarketDataProvider
 	posLookup     PositionLookup
 	newsProvider  NewsProvider
+	skipAI        bool
 
 	makeDebateOpts func(sig start.Signal) []ports.DebateOption
 	logger         *slog.Logger
@@ -77,6 +78,19 @@ func WithStrategyPerformance(port ports.StrategyPerformancePort) EnricherOption 
 func WithNewsProvider(fn NewsProvider) EnricherOption {
 	return func(e *SignalDebateEnricher) {
 		e.newsProvider = fn
+	}
+}
+
+// WithSkipAI configures the enricher to emit a pass-through SignalEnriched
+// without invoking the LLM. The original signal's strength becomes the
+// confidence and direction is derived from the signal side. Used for
+// backtests (no-AI mode) and any scenario where the LLM must be bypassed
+// while the strategy → risk-sizer pipeline stays intact. Exit signals and
+// the pre-LLM negative-expectancy veto still run; only the RequestDebate
+// call is skipped.
+func WithSkipAI(skip bool) EnricherOption {
+	return func(e *SignalDebateEnricher) {
+		e.skipAI = skip
 	}
 }
 
@@ -243,6 +257,25 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 	fallbackConfidence := sig.Strength
 	if !hasNews {
 		fallbackConfidence = 0.65
+	}
+
+	// skipAI short-circuits the LLM call entirely. This is how no-AI
+	// backtests and AI-disabled live runs pass through to the risk sizer.
+	// Prior to this branch we deliberately keep the exit-signal path and
+	// the pre-LLM negative-expectancy veto live — both are non-LLM gates
+	// we want to honor regardless of the AI mode.
+	if e.skipAI {
+		enrichment := domain.SignalEnrichment{
+			Signal:        ref,
+			Status:        domain.EnrichmentSkipped,
+			Confidence:    sig.Strength,
+			Rationale:     fmt.Sprintf("signal: %s %s strength=%.2f (AI skipped: disabled by config)", sig.Type, sig.Side, sig.Strength),
+			Direction:     direction,
+			NewsHeadlines: newsHeadlines,
+		}
+		e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
+		e.saveThoughtLog(ctx, event, enrichment)
+		return nil
 	}
 
 	decision, err := e.aiAdvisor.RequestDebate(

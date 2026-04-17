@@ -237,6 +237,38 @@ func TestSignalDebateEnricher_EntrySignal_AIError(t *testing.T) {
 	assert.Equal(t, domain.DirectionShort, got.Direction)
 }
 
+func TestSignalDebateEnricher_SkipAI_EmitsPassthrough(t *testing.T) {
+	// WithSkipAI(true) must emit SignalEnriched without calling the LLM.
+	// The passthrough preserves the original signal's strength as
+	// confidence so the risk sizer still produces order intents.
+	// Regression test for the 2026-04-17 no_ai=true bug: before this fix,
+	// disabling AI killed the whole enricher and every backtest came back
+	// with trade_count=0.
+	bus := memory.NewBus()
+	advisor := &fakeAIAdvisor{
+		decision: &domain.AdvisoryDecision{Confidence: 0.99, Direction: domain.DirectionLong, Rationale: "should-not-appear"},
+	}
+
+	enricher := strategy.NewSignalDebateEnricher(bus, advisor, nil, strategy.WithSkipAI(true))
+	require.NoError(t, enricher.Start(context.Background()))
+	received := subscribeSignalEnriched(t, bus)
+
+	iid, _ := strat.NewInstanceID("avwap_v1:1.0.0:AAPL")
+	sig, _ := strat.NewSignal(iid, "AAPL", strat.SignalEntry, strat.SideBuy, 0.83, map[string]string{"ref_price": "100"})
+	publishSignalCreated(t, bus, sig)
+
+	evs := waitForEvents(t, received, 1)
+	got := evs[0].Payload.(domain.SignalEnrichment)
+	assert.Equal(t, domain.EnrichmentSkipped, got.Status)
+	assert.InDelta(t, 0.83, got.Confidence, 0.0000001, "confidence must be the original signal strength")
+	assert.Equal(t, domain.DirectionLong, got.Direction)
+	assert.Contains(t, got.Rationale, "AI skipped")
+	assert.NotContains(t, got.Rationale, "should-not-appear", "advisor must not have been consulted")
+	assert.Empty(t, got.BullArgument)
+	assert.Empty(t, got.BearArgument)
+	assert.Equal(t, 0, advisor.calls, "RequestDebate MUST NOT be called when SkipAI=true")
+}
+
 func TestSignalDebateEnricher_ExitSignal_Skipped(t *testing.T) {
 	bus := memory.NewBus()
 	advisor := &fakeAIAdvisor{decision: &domain.AdvisoryDecision{Confidence: 0.99}}

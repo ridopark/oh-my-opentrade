@@ -126,7 +126,7 @@ func TestPipelineIntegration(t *testing.T) {
 		EnvMode:         domain.EnvModePaper,
 		Equity:          100_000,
 		Clock:           clockFn,
-		DisableEnricher: true,
+		DisableAI: true,
 		Logger:          log,
 	})
 	if err != nil {
