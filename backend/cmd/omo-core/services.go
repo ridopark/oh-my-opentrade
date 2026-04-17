@@ -17,6 +17,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/strategy/store_fs"
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/app/activation"
+	"github.com/oh-my-opentrade/backend/internal/app/backtest"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
 	"github.com/oh-my-opentrade/backend/internal/app/debate"
 	"github.com/oh-my-opentrade/backend/internal/app/dnaapproval"
@@ -30,7 +31,6 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
 	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	screenerapp "github.com/oh-my-opentrade/backend/internal/app/screener"
-	"github.com/oh-my-opentrade/backend/internal/app/backtest"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/symbolrouter"
 	"github.com/oh-my-opentrade/backend/internal/config"
@@ -170,6 +170,7 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 		BrokerName:    "ibkr",
 		Logger:        log,
 		IntentJournal: intentJournal,
+		OptionsPrice:  infra.alpacaData,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to build execution service")
@@ -338,6 +339,11 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		if cfg.AI.ProviderSort != "" {
 			advisorOpts = append(advisorOpts, llm.WithProviderRouting(cfg.AI.ProviderSort, nil))
 		}
+		// Circuit breaker: after 5 consecutive failures skip calls for 60s.
+		// Upstream LLM providers (OpenRouter) periodically return 402/5xx or
+		// hang mid-stream — the breaker prevents per-bar retry storms and
+		// protects callers from cumulative latency.
+		advisorOpts = append(advisorOpts, llm.WithCircuitBreaker(5, 60*time.Second))
 		svc.aiAdvisor = llm.NewAdvisor(cfg.AI.BaseURL, cfg.AI.Model, cfg.AI.APIKey, nil, advisorOpts...)
 		svc.newsClient = alpaca.NewNewsClient(cfg.Alpaca.DataURL, cfg.Alpaca.APIKeyID, cfg.Alpaca.APISecretKey, nil)
 		log.Info().
@@ -618,6 +624,7 @@ func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, lo
 			execution.WithPositionGate(acctPosGate),
 			execution.WithOrderStream(acctAdapter),
 			execution.WithPositionLookup(svc.posMonitor),
+			execution.WithOptionsPricePort(infra.alpacaData),
 		)
 
 		// Per-account strategy pipeline reuses shared router + specStore

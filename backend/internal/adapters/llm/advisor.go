@@ -194,7 +194,20 @@ type Advisor struct {
 	provider    *providerRouting // optional — OpenRouter provider routing config
 	mu          sync.Mutex
 	lastCall    time.Time
+
+	// Circuit breaker: after N consecutive failures, skip calls for cooldown.
+	// Prevents wasted round-trips (and hung HTTP2 streams) when the upstream
+	// endpoint is broken (e.g. OpenRouter returning 402 out-of-credits).
+	cbMu            sync.Mutex
+	cbFailCount     int
+	cbOpenUntil     time.Time
+	cbFailThreshold int           // 0 disables the breaker
+	cbCooldown      time.Duration // cooldown window once open
 }
+
+// errCircuitOpen is returned when the LLM circuit breaker is open and the
+// caller should skip the LLM call entirely and fall back.
+var errCircuitOpen = fmt.Errorf("llm: circuit breaker open — upstream endpoint recently failed")
 
 // AdvisorOption is a functional option for Advisor.
 type AdvisorOption func(*Advisor)
@@ -204,6 +217,18 @@ type AdvisorOption func(*Advisor)
 // hitting the endpoint. Use this to stay within free-tier rate limits.
 func WithMinInterval(d time.Duration) AdvisorOption {
 	return func(a *Advisor) { a.minInterval = d }
+}
+
+// WithCircuitBreaker enables a failure-count-based circuit breaker.
+// After failThreshold consecutive errors, SelectAnchors/RequestDebate return
+// errCircuitOpen immediately (without hitting the network) for cooldown.
+// A successful call resets the failure counter. Pass failThreshold=0 to
+// disable the breaker (default).
+func WithCircuitBreaker(failThreshold int, cooldown time.Duration) AdvisorOption {
+	return func(a *Advisor) {
+		a.cbFailThreshold = failThreshold
+		a.cbCooldown = cooldown
+	}
 }
 
 // WithProviderRouting sets OpenRouter provider-level routing options.
@@ -243,6 +268,39 @@ func NewAdvisor(baseURL, model, apiKey string, httpClient *http.Client, opts ...
 	return a
 }
 
+// circuitAllow returns nil if the next call may proceed, or errCircuitOpen if
+// the breaker is open and the cooldown has not elapsed.
+func (a *Advisor) circuitAllow() error {
+	if a.cbFailThreshold <= 0 {
+		return nil
+	}
+	a.cbMu.Lock()
+	defer a.cbMu.Unlock()
+	if !a.cbOpenUntil.IsZero() && time.Now().Before(a.cbOpenUntil) {
+		return errCircuitOpen
+	}
+	return nil
+}
+
+// circuitRecord updates the breaker state after an attempt. On success the
+// counter resets; on failure it increments and may open the breaker.
+func (a *Advisor) circuitRecord(success bool) {
+	if a.cbFailThreshold <= 0 {
+		return
+	}
+	a.cbMu.Lock()
+	defer a.cbMu.Unlock()
+	if success {
+		a.cbFailCount = 0
+		a.cbOpenUntil = time.Time{}
+		return
+	}
+	a.cbFailCount++
+	if a.cbFailCount >= a.cbFailThreshold {
+		a.cbOpenUntil = time.Now().Add(a.cbCooldown)
+	}
+}
+
 // RequestDebate POSTs a structured adversarial debate prompt to /v1/chat/completions
 // and parses the JSON embedded in the assistant's reply into an AdvisoryDecision.
 // Returns an error if the HTTP call fails, the response is not 2xx,
@@ -255,7 +313,11 @@ func (a *Advisor) RequestDebate(
 	regime domain.MarketRegime,
 	indicators domain.IndicatorSnapshot,
 	opts ...DebateOption,
-) (*domain.AdvisoryDecision, error) {
+) (_ *domain.AdvisoryDecision, retErr error) {
+	if cbErr := a.circuitAllow(); cbErr != nil {
+		return nil, cbErr
+	}
+	defer func() { a.circuitRecord(retErr == nil) }()
 	// Rate-limit guard: reject calls that arrive too soon after the previous one.
 	if a.minInterval > 0 {
 		a.mu.Lock()
@@ -571,7 +633,11 @@ type anchorSelectionResult struct {
 // PRIVACY BOUNDARY — same rules as buildPrompt:
 // Only public market data (price, volume, time, regime) and candidate metadata
 // are sent. No strategy DNA, parameters, or proprietary logic.
-func (a *Advisor) SelectAnchors(ctx context.Context, req ports.AnchorSelectionRequest) (*strategy.AnchorSelection, error) {
+func (a *Advisor) SelectAnchors(ctx context.Context, req ports.AnchorSelectionRequest) (_ *strategy.AnchorSelection, retErr error) {
+	if cbErr := a.circuitAllow(); cbErr != nil {
+		return nil, cbErr
+	}
+	defer func() { a.circuitRecord(retErr == nil) }()
 	if a.minInterval > 0 {
 		a.mu.Lock()
 		elapsed := time.Since(a.lastCall)

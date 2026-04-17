@@ -557,9 +557,15 @@ func startStreaming(ctx context.Context, infra *infraDeps, svc *appServices, sym
 
 			if ws := streamAdapter.WSClient(); ws != nil {
 				ws.SetPipelineHealth(svc.ingestion)
+				if svc.notifier != nil {
+					ws.SetDeadlockNotifier(svc.notifier)
+				}
 			}
 			if cws := streamAdapter.CryptoWSClient(); cws != nil {
 				cws.SetPipelineHealth(svc.ingestion)
+				if svc.notifier != nil {
+					cws.SetDeadlockNotifier(svc.notifier)
+				}
 				cws.SetDegradedCallback(func(reason string) {
 					evt, err := domain.NewEvent(domain.EventFeedDegraded, "system", domain.EnvModePaper,
 						fmt.Sprintf("feed-degraded-%d", time.Now().UnixNano()),

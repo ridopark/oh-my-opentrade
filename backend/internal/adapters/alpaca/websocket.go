@@ -31,18 +31,19 @@ type connectFn func(ctx context.Context) error
 
 // WSClient handles WebSocket connections for Alpaca market data.
 type WSClient struct {
-	dataURL        string
-	apiKey         string
-	apiSecret      string
-	feed           string
-	fetcher        BarFetcher // REST poller fallback; nil disables polling
-	tradeHandler   ports.TradeHandler
-	pipelineHealth ports.PipelineHealthReporter
-	closeOnce      sync.Once
-	cancel         context.CancelFunc
-	mu             sync.Mutex
-	metrics        *metrics.Metrics
-	tracker        *feedTracker
+	dataURL          string
+	apiKey           string
+	apiSecret        string
+	feed             string
+	fetcher          BarFetcher // REST poller fallback; nil disables polling
+	tradeHandler     ports.TradeHandler
+	pipelineHealth   ports.PipelineHealthReporter
+	deadlockNotifier ports.NotifierPort // optional — paged synchronously when pipeline deadlock detected
+	closeOnce        sync.Once
+	cancel           context.CancelFunc
+	mu               sync.Mutex
+	metrics          *metrics.Metrics
+	tracker          *feedTracker
 
 	// activeClient is the currently connected StocksClient, if any.
 	// Protected by mu. Used for dynamic symbol subscription via SubscribeSymbols.
@@ -86,6 +87,11 @@ func (w *WSClient) SetTradeHandler(h ports.TradeHandler) { w.tradeHandler = h }
 
 // SetPipelineHealth injects pipeline liveness reporter for dual-track watchdog.
 func (w *WSClient) SetPipelineHealth(ph ports.PipelineHealthReporter) { w.pipelineHealth = ph }
+
+// SetDeadlockNotifier wires the notifier used to page operators synchronously
+// before the watchdog calls log.Fatal on pipeline deadlock. Without this, the
+// normal async Discord sink loses the event because os.Exit runs first.
+func (w *WSClient) SetDeadlockNotifier(n ports.NotifierPort) { w.deadlockNotifier = n }
 
 // FeedHealth returns a point-in-time snapshot of WebSocket feed status.
 func (w *WSClient) FeedHealth() FeedHealth {
@@ -529,7 +535,7 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 		watchdogDone := make(chan struct{})
 		go func() {
 			defer close(watchdogDone)
-			staleFeedWatchdog(connCtx, w.tracker, &staleCancelMu, &staleCancelFn, staleFeedThresholdRTH, isCoreMarketHours, w.pipelineHealth, "equity")
+			staleFeedWatchdog(connCtx, w.tracker, &staleCancelMu, &staleCancelFn, staleFeedThresholdRTH, isCoreMarketHours, w.pipelineHealth, "equity", w.deadlockNotifier)
 		}()
 
 		w.tracker.setConnected(true)
@@ -835,7 +841,7 @@ func dumpGoroutineProfile() string {
 	return path
 }
 
-func staleFeedWatchdog(ctx context.Context, tracker *feedTracker, cancelMu *sync.Mutex, cancelFn *context.CancelFunc, threshold time.Duration, shouldMonitor func() bool, pipeline ports.PipelineHealthReporter, feedType string) {
+func staleFeedWatchdog(ctx context.Context, tracker *feedTracker, cancelMu *sync.Mutex, cancelFn *context.CancelFunc, threshold time.Duration, shouldMonitor func() bool, pipeline ports.PipelineHealthReporter, feedType string, deadlockNotifier ports.NotifierPort) {
 	ticker := time.NewTicker(staleFeedCheckInterval)
 	defer ticker.Stop()
 
@@ -864,6 +870,16 @@ func staleFeedWatchdog(ctx context.Context, tracker *feedTracker, cancelMu *sync
 					pipelineAge := time.Since(pipelineLast)
 					if IsPipelineDeadlocked(networkAge, pipelineAge) {
 						profPath := dumpGoroutineProfile()
+						// Page operators synchronously BEFORE log.Fatal, because
+						// zerolog's Discord hook is async and os.Exit will kill
+						// its goroutine before the webhook POST completes.
+						if deadlockNotifier != nil {
+							msg := fmt.Sprintf("[FATAL] pipeline deadlock detected — forcing restart | feed_type=%s network_age=%s pipeline_age=%s goroutine_dump=%s",
+								feedType, networkAge.Round(time.Second), pipelineAge.Round(time.Second), profPath)
+							nctx, ncancel := context.WithTimeout(context.Background(), 10*time.Second)
+							_ = deadlockNotifier.Notify(nctx, "default", msg)
+							ncancel()
+						}
 						log.Fatal().
 							Dur("network_age", networkAge).
 							Dur("pipeline_age", pipelineAge).

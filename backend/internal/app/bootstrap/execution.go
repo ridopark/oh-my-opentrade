@@ -47,6 +47,10 @@ type ExecutionDeps struct {
 	// bypass the positionmonitor's fill-metadata attachment path and arrive
 	// at the backtest collector without MFE/MAE populated.
 	PositionLookup execution.PositionStateLookup
+	// OptionsPrice, when non-nil, lets the execution service price dust
+	// sweeps as marketable-limit orders on options instead of pure market
+	// (which on wide-spread contracts fills at the bid).
+	OptionsPrice ports.OptionsPricePort
 }
 
 // ExecutionBundle is returned by BuildExecutionService with all wired components.
@@ -119,6 +123,9 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 	}
 	if deps.PositionLookup != nil {
 		execOpts = append(execOpts, execution.WithPositionLookup(deps.PositionLookup))
+	}
+	if deps.OptionsPrice != nil {
+		execOpts = append(execOpts, execution.WithOptionsPricePort(deps.OptionsPrice))
 	}
 
 	if cfg.Trading.MaxSimultaneousPos > 0 || cfg.Trading.MaxPositionsPerGroup > 0 || len(deps.PerStrategyMaxPositions) > 0 {

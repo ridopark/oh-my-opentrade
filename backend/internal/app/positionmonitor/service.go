@@ -131,7 +131,40 @@ type exitRejectedMsg struct {
 }
 
 const (
+	// exitPendingTimeout is the legacy equity timeout and the default when a
+	// rule has no asymmetric override. Kept for the equity path which has no
+	// re-peg budget (tight US-equity spreads make chasing a worse idea than
+	// market-escalating after 10s).
 	exitPendingTimeout = 10 * time.Second
+
+	// Asymmetric exit pending timeouts. Stops protect capital — cancel fast
+	// and market-escalate. Targets defer profit — give the book time to come
+	// up before giving up the spread. Equity stays at 10s regardless.
+	exitPendingTimeoutEquity       = 10 * time.Second
+	exitPendingTimeoutOptionStop   = 10 * time.Second
+	exitPendingTimeoutOptionTarget = 30 * time.Second
+
+	// Re-peg budget: how many tightening cancel/resubmit cycles per exit
+	// attempt before we escalate to market. Stops get one re-peg (fast
+	// escalation); targets get three (more patience for profit-taking).
+	exitMaxRepegsStop   = 1
+	exitMaxRepegsTarget = 3
+
+	// exitMaxWallTime bounds a single exit attempt end-to-end. Guards
+	// against a pathological broker-feed combo where cancel+resubmit cycles
+	// could loop indefinitely under the per-retry cap.
+	exitMaxWallTime = 120 * time.Second
+
+	// exitCancelConfirm caps the wait for terminal broker status after a
+	// cancel before proceeding. Past this we log and force-clear because
+	// live-trading cannot wedge waiting for a single order ack.
+	exitCancelConfirm = 1 * time.Second
+
+	// exitNoRepegBeforeCloseMin is the t-minus window before session close
+	// during which we stop re-pegging and go straight to market. Avoids
+	// ending the day flat-on-limit-no-fill on 0DTE / deep-ITM exits.
+	exitNoRepegBeforeCloseMin = 15
+
 	defaultReconcileInterval       = 5 * time.Minute
 	defaultGlobalReconcileInterval = 5 * time.Minute
 	ghostMissThreshold             = 3
@@ -421,6 +454,13 @@ func (s *Service) processExitSubmitted(msg exitOrderSubmittedMsg) {
 
 // processExitTerminal clears ExitPending when an exit order is canceled, rejected, or expired.
 // This allows the position monitor's tick loop to re-evaluate exit rules and retry.
+//
+// Interaction with manageExitTimeout: when the async exit manager cancels
+// an order, it clears ExitPending/ExitOrderID locally and also drives the
+// retry/repeg counters. If the EventExitOrderTerminal event arrives after
+// that local bookkeeping, we'd double-bump ExitRetryCount. Guard by only
+// acting when the terminal event matches a still-tracked order — once the
+// manager has cleared ExitOrderID, this handler becomes a no-op.
 func (s *Service) processExitTerminal(msg exitOrderTerminalMsg) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -429,8 +469,13 @@ func (s *Service) processExitTerminal(msg exitOrderTerminalMsg) {
 	if !ok {
 		return
 	}
-	// Only clear if this terminal event matches the tracked exit order.
-	if pos.ExitOrderID != "" && pos.ExitOrderID != msg.BrokerOrderID {
+	// If the async exit manager already consumed this terminal (cleared
+	// ExitOrderID or ExitPending), this event is a duplicate notification
+	// and must not bump counters again.
+	if pos.ExitOrderID == "" || !pos.ExitPending {
+		return
+	}
+	if pos.ExitOrderID != msg.BrokerOrderID {
 		return
 	}
 	pos.ExitPending = false
