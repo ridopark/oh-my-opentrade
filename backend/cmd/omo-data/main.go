@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
+	"github.com/oh-my-opentrade/backend/internal/adapters/coinbase"
 	"github.com/oh-my-opentrade/backend/internal/adapters/deribit"
 	"github.com/oh-my-opentrade/backend/internal/adapters/dolthub"
 	"github.com/oh-my-opentrade/backend/internal/adapters/finnhub"
@@ -29,6 +30,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/adapters/yfinance"
 	"github.com/oh-my-opentrade/backend/internal/adapters/strategy/store_fs"
+	"github.com/oh-my-opentrade/backend/internal/app/backfill"
 	"github.com/oh-my-opentrade/backend/internal/app/datarefresh"
 	"github.com/oh-my-opentrade/backend/internal/app/earnings"
 	"github.com/oh-my-opentrade/backend/internal/app/gapdetect"
@@ -112,6 +114,16 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to create Alpaca adapter")
 	}
 
+	// Coinbase REST client for crypto historical bars. Alpaca's US crypto feed
+	// returns zero-volume bars for most time windows (their US aggregator
+	// misses most global flow), so we route all crypto GetHistoricalBars calls
+	// through Coinbase and keep Alpaca for equities + live streaming only.
+	coinbaseClient := coinbase.NewClient(cfg.Coinbase, log.With().Str("component", "coinbase").Logger())
+	barFetcher := &backfill.RoutingFetcher{
+		Crypto: coinbaseClient,
+		Equity: alpacaAdapter,
+	}
+
 	// Yahoo Finance client (for VIX)
 	yahooClient := yfinance.NewClient(log.With().Str("component", "yfinance").Logger())
 
@@ -148,7 +160,7 @@ func main() {
 		RunAtHourET:    16,
 		RunAtMinuteET:  15,
 		LookbackDays:   90,
-	}, alpacaAdapter, repo, noopVIXSetter{}, log)
+	}, barFetcher, repo, noopVIXSetter{}, log)
 	refreshSvc.SetYahooClient(yahooClient)
 	refreshSvc.SetDarkPool(alpacaAdapter, dpRepo)
 	if notifier != nil {

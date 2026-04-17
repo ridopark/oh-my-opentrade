@@ -14,6 +14,7 @@ import (
 // Config represents the complete application configuration.
 type Config struct {
 	Alpaca       AlpacaConfig       `yaml:"alpaca"`
+	Coinbase     CoinbaseConfig     `yaml:"coinbase"`
 	IBKR         IBKRConfig         `yaml:"ibkr"`
 	Hyperliquid  HyperliquidConfig  `yaml:"hyperliquid"`
 	Bybit        BybitConfig        `yaml:"bybit"`
@@ -69,6 +70,17 @@ type AlpacaConfig struct {
 	PaperMode     bool   `yaml:"paper_mode"`
 	CryptoDataURL string `yaml:"crypto_data_url"`
 	CryptoFeed    string `yaml:"crypto_feed"`
+}
+
+// CoinbaseConfig holds parameters for the read-only Coinbase Exchange public
+// market-data adapter. Only the /products/{id}/candles endpoint is used so no
+// API credentials are needed. Defaults are seeded in Load when the YAML
+// omits the section entirely so the adapter works out of the box for crypto
+// backfills replacing Alpaca's low-volume US crypto feed.
+type CoinbaseConfig struct {
+	BaseURL        string `yaml:"base_url"`         // default https://api.exchange.coinbase.com
+	RateLimitRPS   int    `yaml:"rate_limit_rps"`   // default 8 (public cap is 10 rps)
+	TimeoutSeconds int    `yaml:"timeout_seconds"`  // default 30
 }
 
 // AIConfig holds configuration for the AI adversarial debate system.
@@ -340,6 +352,7 @@ type rawTradingConfig struct {
 
 type rawConfig struct {
 	Alpaca       AlpacaConfig       `yaml:"alpaca"`
+	Coinbase     CoinbaseConfig     `yaml:"coinbase"`
 	IBKR         IBKRConfig         `yaml:"ibkr"`
 	Hyperliquid  HyperliquidConfig  `yaml:"hyperliquid"`
 	Bybit        BybitConfig        `yaml:"bybit"`
@@ -404,6 +417,11 @@ func Load(envPath, yamlPath string) (*Config, error) {
 			Feed:          defaultFeed,
 			CryptoDataURL: defaultCryptoDataURL,
 			CryptoFeed:    defaultCryptoFeed,
+		},
+		Coinbase: CoinbaseConfig{
+			BaseURL:        "https://api.exchange.coinbase.com",
+			RateLimitRPS:   8,
+			TimeoutSeconds: 30,
 		},
 		IBKR: IBKRConfig{
 			Host:      "localhost",
@@ -470,6 +488,7 @@ func Load(envPath, yamlPath string) (*Config, error) {
 
 	cfg := &Config{
 		Alpaca:      raw.Alpaca,
+		Coinbase:    applyCoinbaseDefaults(raw.Coinbase),
 		IBKR:        raw.IBKR,
 		Hyperliquid: applyHyperliquidDefaults(raw.Hyperliquid),
 		Bybit:       applyBybitDefaults(raw.Bybit),
@@ -783,6 +802,22 @@ func applyOnChainDefaults(c OnChainConfig) OnChainConfig {
 func applyBybitDefaults(c BybitConfig) BybitConfig {
 	if c.BaseURL == "" {
 		c.BaseURL = "https://api.bybit.com"
+	}
+	return c
+}
+
+// applyCoinbaseDefaults fills in the Coinbase Exchange public market-data
+// adapter defaults. Always safe to call — the adapter is read-only and needs
+// no credentials, so omitted YAML sections still produce a usable client.
+func applyCoinbaseDefaults(c CoinbaseConfig) CoinbaseConfig {
+	if c.BaseURL == "" {
+		c.BaseURL = "https://api.exchange.coinbase.com"
+	}
+	if c.RateLimitRPS <= 0 {
+		c.RateLimitRPS = 8
+	}
+	if c.TimeoutSeconds <= 0 {
+		c.TimeoutSeconds = 30
 	}
 	return c
 }
