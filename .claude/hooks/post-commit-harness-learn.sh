@@ -125,14 +125,39 @@ case "$DOMAINS" in
     HARNESS_FILES="${HARNESS_FILES}- .claude/agents/qa-inspector.md\n" ;;
 esac
 
-# Return JSON telling Claude to analyze for harness updates
-cat <<EOF
-{
-  "decision": "allow",
-  "hookSpecificOutput": {
-    "hookEventName": "PostToolUse",
-    "additionalContext": "HARNESS LEARNING TRIGGERED for commit ${COMMIT_SHA}.\nDetected domains: ${DOMAINS}\n\nCommit message:\n${COMMIT_MSG}\n\nFiles changed: ${FILES_CHANGED}\nDiff stats: ${DIFF_STAT}\n\n${HARNESS_FILES}\nPlease analyze this commit and the session context for lessons learned. Check if any of these warrant an update to the relevant agent or skill files:\n\n1. New bug classes or gotchas discovered\n2. New interaction effects or ordering dependencies\n3. New workflow priorities or best practices\n4. Updated guides with tested values or ranges\n5. New operational lessons (rebuild, restart, config parsing, etc.)\n6. Patterns that worked well and should be codified\n7. Patterns that failed and should be warned against\n\nIf there are learnings worth capturing, update the relevant files. If not, say 'No new harness learnings from this commit' and move on. Do NOT update if the lesson is already documented. Keep updates minimal and focused."
-  }
-}
-EOF
+# Return JSON telling Claude to analyze for harness updates.
+# Use jq -n so that commit messages containing quotes, backticks, or
+# other JSON special characters are escaped correctly. HEREDOC-style
+# interpolation breaks here because commit bodies regularly contain
+# literal `"` and `\` from code fences.
+jq -n \
+  --arg sha "$COMMIT_SHA" \
+  --arg domains "$DOMAINS" \
+  --arg msg "$COMMIT_MSG" \
+  --arg files "$FILES_CHANGED" \
+  --arg diffstat "$DIFF_STAT" \
+  --arg harness "$HARNESS_FILES" \
+  '{
+    decision: "allow",
+    hookSpecificOutput: {
+      hookEventName: "PostToolUse",
+      additionalContext: (
+        "HARNESS LEARNING TRIGGERED for commit " + $sha + ".\n" +
+        "Detected domains: " + $domains + "\n\n" +
+        "Commit message:\n" + $msg + "\n\n" +
+        "Files changed: " + $files + "\n" +
+        "Diff stats: " + $diffstat + "\n\n" +
+        $harness + "\n" +
+        "Please analyze this commit and the session context for lessons learned. Check if any of these warrant an update to the relevant agent or skill files:\n\n" +
+        "1. New bug classes or gotchas discovered\n" +
+        "2. New interaction effects or ordering dependencies\n" +
+        "3. New workflow priorities or best practices\n" +
+        "4. Updated guides with tested values or ranges\n" +
+        "5. New operational lessons (rebuild, restart, config parsing, etc.)\n" +
+        "6. Patterns that worked well and should be codified\n" +
+        "7. Patterns that failed and should be warned against\n\n" +
+        "If there are learnings worth capturing, update the relevant files. If not, say \"No new harness learnings from this commit\" and move on. Do NOT update if the lesson is already documented. Keep updates minimal and focused."
+      )
+    }
+  }'
 exit 0
