@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     max_output_tokens: int = 4096
     proxy_shared_secret: str = ""
     recursion_limit: int = 25
+    rate_limit: str = "20/minute"
 
     allowed_tables: tuple[str, ...] = ALLOWED_TABLES
 
