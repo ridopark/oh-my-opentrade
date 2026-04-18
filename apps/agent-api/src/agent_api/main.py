@@ -10,6 +10,8 @@ from .agent import build_agent, to_langchain_messages
 from .config import get_settings
 from .schema import ChatRequest, ChatResponse
 
+TOOL_SQL_DB_QUERY = "sql_db_query"
+
 log = logging.getLogger("agent_api")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -42,15 +44,15 @@ def chat(req: ChatRequest, x_proxy_secret: str | None = Header(default=None)):
 
     result = agent.graph.invoke(
         {"messages": to_langchain_messages(req.messages)},
-        config={"recursion_limit": 25},
+        config={"recursion_limit": settings.recursion_limit},
     )
 
     sql_queries: list[str] = []
     answer = ""
     for msg in result["messages"]:
         if isinstance(msg, AIMessage):
-            for call in getattr(msg, "tool_calls", None) or []:
-                if call.get("name") == "sql_db_query":
+            for call in msg.tool_calls or []:
+                if call.get("name") == TOOL_SQL_DB_QUERY:
                     query = (call.get("args") or {}).get("query")
                     if query:
                         sql_queries.append(str(query))

@@ -4,7 +4,6 @@ import { useState, useRef, useEffect } from "react";
 import { Send, Database, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 import { type ChatMessage, useChatMutation } from "./use-chat";
 
 interface AssistantTurn {
@@ -113,37 +112,33 @@ function UserBubble({ content }: { content: string }) {
 function AssistantBubble({ turn }: { turn: AssistantTurn }) {
   const [showSql, setShowSql] = useState(false);
   return (
-    <div className="flex justify-start">
-      <div className="max-w-[85%] space-y-2">
-        <div className="rounded-lg bg-accent px-3 py-2 text-sm text-accent-foreground whitespace-pre-wrap">
-          {turn.content || <span className="italic text-muted-foreground">(empty response)</span>}
-        </div>
-        {turn.sql.length > 0 && (
-          <div className="text-xs">
-            <button
-              onClick={() => setShowSql((v) => !v)}
-              className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
-            >
-              <Database className="h-3 w-3" />
-              {turn.sql.length} SQL {turn.sql.length === 1 ? "query" : "queries"} · {turn.durationMs}ms
-            </button>
-            {showSql && (
-              <div className="mt-1 space-y-1">
-                {turn.sql.map((q, i) => (
-                  <pre
-                    key={i}
-                    className={cn(
-                      "overflow-x-auto rounded border border-border bg-background px-2 py-1 font-mono text-[11px] leading-snug"
-                    )}
-                  >
-                    {q}
-                  </pre>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+    <div className="max-w-[85%] space-y-2">
+      <div className="rounded-lg bg-accent px-3 py-2 text-sm text-accent-foreground whitespace-pre-wrap">
+        {turn.content || <span className="italic text-muted-foreground">(empty response)</span>}
       </div>
+      {turn.sql.length > 0 && (
+        <div className="text-xs">
+          <button
+            onClick={() => setShowSql((v) => !v)}
+            className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
+          >
+            <Database className="h-3 w-3" />
+            {turn.sql.length} SQL {turn.sql.length === 1 ? "query" : "queries"} · {turn.durationMs}ms
+          </button>
+          {showSql && (
+            <div className="mt-1 space-y-1">
+              {turn.sql.map((q, i) => (
+                <pre
+                  key={i}
+                  className="overflow-x-auto rounded border border-border bg-background px-2 py-1 font-mono text-[11px] leading-snug"
+                >
+                  {q}
+                </pre>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
