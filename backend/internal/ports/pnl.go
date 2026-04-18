@@ -46,6 +46,11 @@ type PnLPort interface {
 	// ListSymbolAttribution returns per-symbol P&L breakdown. If strategy is empty, returns across all strategies.
 	ListSymbolAttribution(ctx context.Context, tenantID string, envMode domain.EnvMode, strategy string, from, to time.Time) ([]domain.SymbolAttribution, error)
 
+	// GetLargestWinPerStrategy returns the largest single-trade winning P&L per
+	// strategy in the window. Used to compute outlier-removed profit factor.
+	// Empty map (not error) when no trades match.
+	GetLargestWinPerStrategy(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) (map[string]float64, error)
+
 	// --- Per-strategy performance methods ---
 
 	// UpsertStrategyDailyPnL inserts or updates the per-strategy daily P&L record.

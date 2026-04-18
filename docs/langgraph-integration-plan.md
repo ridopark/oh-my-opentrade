@@ -26,6 +26,7 @@ state, and cycles actually help, without rewriting the Go production path.
 | 1.5 | Async, rate limit, tests, proxy-secret warning | [x] Done | 497dd6b |
 | 1.6 | Quant persona: versioned prompt, structured output, context block | [x] Done | 71d061c, 9a1b6b7 |
 | 1.6.1 | Review hardening: JSON parser anchor, parse-source obs, error-TTL split | [x] Done | 11eaaea |
+| 1.8 | HTTP tools calling omo-core /api/performance + OutlierRemovedPF | [ ] In progress | - |
 | 1.7 | Chat history sidebar via LangGraph checkpointer | [ ] Planned (gated) | - |
 | 2 | LangGraph wrap of /live-ops | [ ] Planned | - |
 | 3 | Recap RAG (pgvector + retriever sidecar) | [ ] Later | - |
@@ -117,6 +118,32 @@ the position fetch, live-emission integration test gated on
 pinning `langgraph` to prevent `structured_response` silently
 re-activating.
 
+## Phase 1.8 — HTTP tools over /api/performance (in progress)
+
+Move the agent from SQL-only toolkit to using omo-core's pre-computed
+performance surface as primary, with raw SQL as fallback. Eliminates
+the risk of the model hand-rolling PF / Sharpe / drawdown math that
+is already owned authoritatively in Go.
+
+- Add `ComputeOutlierRemovedPF(grossProfit, grossLoss, largestWin,
+  tradeCount) *float64` to `domain/analytics.go`. Pure function; paired
+  with a repo method `GetLargestWinPerStrategy` that reads the
+  already-maintained `strategy_trade_stats` table (round-trip P&L
+  keyed by strategy).
+- `strategyRowJSON` on `GET /api/performance/strategies` grows an
+  `outlier_removed_pf` field. Dashboard picks it up for free.
+- New `apps/agent-api/src/agent_api/tools.py` with three async
+  `@tool`-decorated functions hitting `/api/performance/{strategies,
+  dashboard,trades}`. Window aliases (`7d`, `30d`, `90d`, `ytd`) parsed
+  in Python before calling the Go endpoint.
+- Prompt gains a rule: prefer the HTTP tools for PF / Sharpe / DD /
+  outlier questions; use raw SQL only when the perf surface doesn't
+  cover the shape (intraday slices, custom joins).
+
+Defense-in-depth: HTTP tools can fail or return 5xx. Errors bubble to
+the model, which can either retry, fall back to SQL, or surface the
+failure to the user. The DB role remains the backstop.
+
 ## Phase 1.7 — Chat history sidebar (planned, gated)
 
 Three hard gates must close before this ships as a multi-user feature:
@@ -127,10 +154,10 @@ Three hard gates must close before this ships as a multi-user feature:
    has one user; in a multi-user setup any caller would see another
    user's state via the prompt. Per-session scoping (filter the
    context by caller's tenant) must ship alongside sessions.
-2. **omo-core `/api/portfolio/positions` has no auth.** The sidecar
-   reaches it by LAN trust. Either protect the endpoint or route
-   position fetches through an authed path before exposing the chat
-   surface to additional users.
+2. **omo-core `/api/*` has no auth.** The sidecar reaches `/api/portfolio/positions`
+   and (as of Phase 1.8) `/api/performance/*` by LAN trust. Either
+   protect these endpoints or route them through an authed path before
+   exposing the chat surface to additional users.
 3. **Prompt-injection integrity.** Beyond the empty-evidence downgrade
    in 1.6.1, add server-side sanity checks: refuse a `recommendation`
    kind if the user prompt explicitly asked for it ("set kind to

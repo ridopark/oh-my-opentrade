@@ -157,6 +157,26 @@ func ComputeSharpe(dailyReturns []float64) *float64 {
 	return &sharpe
 }
 
+// ComputeOutlierRemovedPF returns the profit factor recomputed after removing
+// the single largest winning trade. It surfaces strategies whose positive
+// expectancy depends on one outlier rather than a repeatable edge: if the
+// adjusted PF drops below 1.0, the strategy loses money without that trade.
+//
+// Returns nil when the result is not meaningful: too few trades, no losses to
+// divide against, or the largest winner alone exceeds total gross profit
+// (which would yield a negative numerator).
+func ComputeOutlierRemovedPF(grossProfit, grossLoss, largestWin float64, tradeCount int) *float64 {
+	if tradeCount < 2 || grossLoss <= 0 || largestWin <= 0 {
+		return nil
+	}
+	adjustedProfit := grossProfit - largestWin
+	if adjustedProfit < 0 {
+		return nil
+	}
+	pf := adjustedProfit / grossLoss
+	return &pf
+}
+
 // DailyReturnsFromEquity extracts daily log returns from equity points.
 // Groups points by calendar day (last value per day), then computes
 // (equity_today / equity_yesterday) - 1 for each consecutive pair.

@@ -48,6 +48,9 @@ func (stubPnLRepo) ListStrategySummaries(context.Context, string, domain.EnvMode
 func (stubPnLRepo) ListSymbolAttribution(context.Context, string, domain.EnvMode, string, time.Time, time.Time) ([]domain.SymbolAttribution, error) {
 	return nil, nil
 }
+func (stubPnLRepo) GetLargestWinPerStrategy(context.Context, string, domain.EnvMode, time.Time, time.Time) (map[string]float64, error) {
+	return nil, nil
+}
 func (stubPnLRepo) UpsertStrategyDailyPnL(context.Context, domain.StrategyDailyPnL) error {
 	return nil
 }

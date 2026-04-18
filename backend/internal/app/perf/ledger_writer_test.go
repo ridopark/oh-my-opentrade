@@ -135,6 +135,9 @@ func (m *mockPnLRepo) ListStrategySummaries(_ context.Context, _ string, _ domai
 func (m *mockPnLRepo) ListSymbolAttribution(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) ([]domain.SymbolAttribution, error) {
 	return nil, nil
 }
+func (m *mockPnLRepo) GetLargestWinPerStrategy(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (map[string]float64, error) {
+	return nil, nil
+}
 
 type mockBroker struct{}
 
