@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from datetime import UTC, datetime, timedelta
 
@@ -21,6 +20,9 @@ def resolve_window(window: str) -> tuple[str, str]:
       - `7d`, `30d`, `90d`, `180d`, `1y` — rolling lookback from now.
       - `ytd` — start of current UTC year through now.
       - `YYYY-MM-DD..YYYY-MM-DD` — explicit range.
+
+    Month and year units are calendar-approximated: `m` = 30 days, `y` = 365
+    days. Use an explicit range if you need exact month-end or leap-year math.
     """
     now = datetime.now(UTC).replace(microsecond=0)
     w = window.strip().lower()
@@ -62,9 +64,9 @@ def make_performance_tools(omo_core_url: str, timeout: float = 5.0) -> list:
             resp = await client.get(f"{base_url}{path}", params=params)
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
-            return json.dumps({"error": "omo-core returned non-200", "status": e.response.status_code, "path": path})
+            return f"error: omo-core returned {e.response.status_code} for {path}"
         except httpx.HTTPError as e:
-            return json.dumps({"error": f"omo-core request failed: {type(e).__name__}: {e}", "path": path})
+            return f"error: omo-core request failed ({type(e).__name__}): {e}"
         return resp.text
 
     @tool
@@ -78,7 +80,7 @@ def make_performance_tools(omo_core_url: str, timeout: float = 5.0) -> list:
         try:
             frm, to = resolve_window(window)
         except WindowError as e:
-            return json.dumps({"error": str(e)})
+            return f"error: {e}"
         return await _get("/performance/strategies", {"from": frm, "to": to})
 
     @tool
@@ -91,7 +93,7 @@ def make_performance_tools(omo_core_url: str, timeout: float = 5.0) -> list:
         try:
             frm, to = resolve_window(window)
         except WindowError as e:
-            return json.dumps({"error": str(e)})
+            return f"error: {e}"
         params = {"from": frm, "to": to}
         if strategy:
             params["strategy"] = strategy
@@ -107,7 +109,7 @@ def make_performance_tools(omo_core_url: str, timeout: float = 5.0) -> list:
         try:
             frm, to = resolve_window(window)
         except WindowError as e:
-            return json.dumps({"error": str(e)})
+            return f"error: {e}"
         params: dict = {"from": frm, "to": to, "limit": max(1, min(int(limit), 200))}
         if strategy:
             params["strategy"] = strategy

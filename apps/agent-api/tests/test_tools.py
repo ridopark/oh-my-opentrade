@@ -1,5 +1,3 @@
-import json
-
 import httpx
 import pytest
 
@@ -13,6 +11,8 @@ def test_resolve_window_rolling_days():
     assert frm < to
     d_from = datetime.fromisoformat(frm)
     d_to = datetime.fromisoformat(to)
+    # 7 days = 604800 seconds; tolerance absorbs microsecond truncation in
+    # resolve_window and any test-runner scheduling jitter.
     assert 604700 <= (d_to - d_from).total_seconds() <= 604900
 
 
@@ -113,9 +113,7 @@ async def test_http_error_is_returned_as_tool_output():
     tools = _build_mock_tools(handler)
     perf = next(t for t in tools if t.name == "get_strategy_performance")
     out = await perf.ainvoke({"window": "30d"})
-    payload = json.loads(out)
-    assert payload["error"].startswith("omo-core returned non-200")
-    assert payload["status"] == 500
+    assert out.startswith("error: omo-core returned 500")
 
 
 @pytest.mark.asyncio

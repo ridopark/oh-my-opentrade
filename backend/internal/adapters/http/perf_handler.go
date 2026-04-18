@@ -365,13 +365,16 @@ func (h *PerformanceHandler) serveStrategies(w http.ResponseWriter, r *http.Requ
 			wr := float64(row.WinCount) / float64(row.TotalTrades)
 			item.WinRate = &wr
 		}
-		if row.GrossLoss != 0 {
-			pf := row.GrossProfit / (-row.GrossLoss)
+		// GrossLoss is stored signed (negative); metric formulas want the
+		// magnitude, so negate once and reuse.
+		lossMagnitude := -row.GrossLoss
+		if lossMagnitude > 0 {
+			pf := row.GrossProfit / lossMagnitude
 			item.ProfitFactor = &pf
 		}
 		if largest, ok := largestWins[row.Strategy]; ok {
 			item.OutlierRemovedPF = domain.ComputeOutlierRemovedPF(
-				row.GrossProfit, -row.GrossLoss, largest, row.TotalTrades,
+				row.GrossProfit, lossMagnitude, largest, row.TotalTrades,
 			)
 		}
 		items = append(items, item)
