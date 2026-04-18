@@ -25,7 +25,7 @@ state, and cycles actually help, without rewriting the Go production path.
 | 1 | Dashboard NL query sidecar | [x] Done | c32d193, be2e3f6 |
 | 1.5 | Async, rate limit, tests, proxy-secret warning | [x] Done | 497dd6b |
 | 1.6 | Quant persona: versioned prompt, structured output, context block | [x] Done | 71d061c, 9a1b6b7 |
-| 1.6.1 | Review hardening: JSON parser anchor, parse-source obs, error-TTL split | [ ] In progress | - |
+| 1.6.1 | Review hardening: JSON parser anchor, parse-source obs, error-TTL split | [x] Done | 11eaaea |
 | 1.7 | Chat history sidebar via LangGraph checkpointer | [ ] Planned (gated) | - |
 | 2 | LangGraph wrap of /live-ops | [ ] Planned | - |
 | 3 | Recap RAG (pgvector + retriever sidecar) | [ ] Later | - |
@@ -86,7 +86,7 @@ Make the chatbot answer the way `quant-analyst` would:
 Fallback: if `response_format` fights with SQL tool-calling in practice,
 switch to JSON-frontmatter parsing on the final AIMessage.
 
-## Phase 1.6.1 — Review hardening (in progress)
+## Phase 1.6.1 — Review hardening (done)
 
 Follow-ups from the Phase 1.6 review, bundled so Phase 1.7 lands on a
 stable base:
