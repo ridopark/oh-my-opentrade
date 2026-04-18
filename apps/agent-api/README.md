@@ -33,3 +33,23 @@ Then set `AGENT_DB_URL` to match.
 ## Tests
 
     uv run pytest
+
+## Audit trail
+
+Every `/chat` call emits a structured JSON log line (`event: chat`) to stdout
+with turn count, SQL count, duration, and answer length. In the prod container
+stack these are picked up by fluent-bit -> Loki, searchable via Grafana. No
+DB-side audit table is maintained.
+
+## Rate limit
+
+Requests to `/chat` are throttled per remote IP. Default is `20/minute`; tune
+via `AGENT_RATE_LIMIT` using any [slowapi](https://slowapi.readthedocs.io/)
+string (e.g. `5/second`, `100/hour`). When exceeded the endpoint returns 429.
+
+## Proxy secret
+
+If `AGENT_PROXY_SHARED_SECRET` is set, requests must send matching
+`X-Proxy-Secret`. When unset the sidecar logs a startup WARNING and accepts
+unauthenticated requests - dev only. The Next.js `/api/chat` proxy reads the
+secret from its own env and injects the header.
