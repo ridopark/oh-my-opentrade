@@ -562,6 +562,56 @@ func TestLedgerWriter_StrategyDualWrite_MultipleStrategiesSameSymbol(t *testing.
 	assert.Equal(t, 1, lastAVWAP.WinCount)
 }
 
+// Regression: strategy_daily_pnl realized P&L must apply the option
+// contract multiplier (100x), not just the per-share delta. Without the
+// multiplier, a -$951 options day gets recorded as -$9.51 in
+// strategy_daily_pnl while daily_pnl records -$951 -- a 100x split that
+// breaks any UI or consumer that aggregates across the strategy table.
+//
+// Reproduces the 2026-04-16 RBLX 62-put round-trip observed in prod:
+//   BUY 6 @ 6.25 + BUY 6 @ 5.95 (avg entry 6.10) → SELL 12 @ 5.55
+//   Expected realized: (5.55 - 6.10) * 12 * 100 = -$660
+func TestLedgerWriter_StrategyDualWrite_OptionsMultiplierApplied(t *testing.T) {
+	bus := newMockEventBus()
+	repo := &mockPnLRepo{}
+	broker := &mockBroker{}
+	log := zerolog.Nop()
+
+	lw := perf.NewLedgerWriter(bus, repo, broker, nil, log)
+	err := lw.Start(context.Background(), "default", domain.EnvModePaper)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	// OCC-formatted symbol so domain.InstrumentMultiplier returns 100.
+	sym := "RBLX260501P00062000"
+	strategy := "macd_only_v1"
+
+	require.NoError(t, bus.Publish(ctx, makeStrategyFillEvent(t, sym, "buy", 6, 6.25, strategy)))
+	require.NoError(t, bus.Publish(ctx, makeStrategyFillEvent(t, sym, "buy", 6, 5.95, strategy)))
+	require.NoError(t, bus.Publish(ctx, makeStrategyFillEvent(t, sym, "sell", 12, 5.55, strategy)))
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+
+	// Day-level: already multiplied before this fix. Must stay at -$660.
+	require.Len(t, repo.upserts, 3)
+	assert.InDelta(t, -660.0, repo.upserts[2].RealizedPnL, 0.01,
+		"day-level P&L must equal (sell - avg_entry) * qty * 100")
+
+	// Strategy-level: must now equal day-level for a single-strategy day.
+	var lastMACD domain.StrategyDailyPnL
+	for _, u := range repo.stratUpserts {
+		if u.Strategy == strategy {
+			lastMACD = u
+		}
+	}
+	assert.InDelta(t, -660.0, lastMACD.RealizedPnL, 0.01,
+		"strategy-level P&L must match day-level when there's only one strategy; before the fix this was -6.60 (100x under)")
+	assert.InDelta(t, -660.0, lastMACD.GrossLoss, 0.01)
+	assert.Equal(t, 1, lastMACD.LossCount)
+	assert.Equal(t, 0, lastMACD.WinCount)
+}
+
 func TestLedgerWriter_StrategyDualWrite_LossTracking(t *testing.T) {
 	bus := newMockEventBus()
 	repo := &mockPnLRepo{}

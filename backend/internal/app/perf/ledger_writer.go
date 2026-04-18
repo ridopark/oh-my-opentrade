@@ -363,7 +363,11 @@ func (lw *LedgerWriter) processFill(ctx context.Context, tenantID string, envMod
 				if sellQty > sPos.quantity {
 					sellQty = sPos.quantity
 				}
-				stratFillPnL = (price - sPos.avgEntry) * sellQty
+				// Apply the same instrument multiplier the day-level path
+				// uses. Without this, options P&L was reported at 1/100th
+				// its real magnitude, diverging from both broker NetLiq
+				// and the day-level daily_pnl accumulator.
+				stratFillPnL = (price - sPos.avgEntry) * sellQty * multiplier
 				sPos.quantity -= sellQty
 				if sPos.quantity <= 0 {
 					sPos.quantity = 0
