@@ -26,10 +26,15 @@ def client_factory(monkeypatch):
         from agent_api import agent as agent_module
         from agent_api import main as main_module
 
-        canned = {"messages": [AIMessage(content="42")]}
+        from agent_api.schema import QuantAnswer
+
+        canned = {
+            "messages": [AIMessage(content="42")],
+            "structured_response": QuantAnswer(kind="factual", answer="42", evidence=[]),
+        }
         fake_bundle = agent_module.AgentBundle(graph=FakeGraph(canned=canned), db=None)
-        monkeypatch.setattr(agent_module, "build_agent", lambda _s: fake_bundle)
-        monkeypatch.setattr(main_module, "build_agent", lambda _s: fake_bundle)
+        monkeypatch.setattr(agent_module, "build_agent", lambda _s, context_builder=None: fake_bundle)
+        monkeypatch.setattr(main_module, "build_agent", lambda _s, context_builder=None: fake_bundle)
 
         main_module.limiter.reset()
         return TestClient(main_module.app)
@@ -45,7 +50,10 @@ def test_chat_200_when_no_secret_configured(client_factory):
     with client_factory(proxy_secret="") as client:
         r = client.post("/chat", json=_msg())
         assert r.status_code == 200
-        assert r.json()["answer"] == "42"
+        body = r.json()
+        assert body["answer"] == "42"
+        assert body["kind"] == "factual"
+        assert body["prompt_version"] == "v1"
 
 
 def test_chat_401_on_mismatched_secret(client_factory):

@@ -24,7 +24,9 @@ state, and cycles actually help, without rewriting the Go production path.
 |---|-------|--------|-----------|
 | 1 | Dashboard NL query sidecar | [x] Done | c32d193, be2e3f6 |
 | 1.5 | Async, rate limit, tests, proxy-secret warning | [x] Done | 497dd6b |
-| 2 | LangGraph wrap of /live-ops | [ ] Next | - |
+| 1.6 | Quant persona: versioned prompt, structured output, context block | [ ] In progress | - |
+| 1.7 | Chat history sidebar via LangGraph checkpointer | [ ] Planned | - |
+| 2 | LangGraph wrap of /live-ops | [ ] Planned | - |
 | 3 | Recap RAG (pgvector + retriever sidecar) | [ ] Later | - |
 | 4 | Strategy research graph | [ ] Deferred | - |
 
@@ -65,7 +67,41 @@ From Phase 1 code review:
 
 Deferred within 1.5: DB audit table, frontend tests, per-user quotas.
 
-## Phase 2 — LangGraph wrap of /live-ops (next)
+## Phase 1.6 — Quant persona (in progress)
+
+Make the chatbot answer the way `quant-analyst` would:
+- Versioned system prompt (`prompts.py`, `PROMPT_VERSION = "v1"`) teaching
+  PF / Sharpe / DD / expectancy framing, outlier-dependency rule,
+  sample-size caveats, deployed stack (AVWAP + MACD; ORB deprecated),
+  session-time weighting, and when to push back on the premise.
+- Structured output via `create_react_agent(response_format=QuantAnswer)`;
+  every answer carries `kind: factual | analysis | recommendation` plus
+  an `evidence` list of cited SQL or derived numbers. Dashboard renders
+  kind as a colored badge.
+- TTL-cached context block (latest P&L, active strategies, latest data
+  date, recap one-liner) prepended to the system prompt. Anthropic
+  prompt cache absorbs the per-request cost.
+
+Fallback: if `response_format` fights with SQL tool-calling in practice,
+switch to JSON-frontmatter parsing on the final AIMessage.
+
+## Phase 1.7 — Chat history sidebar (planned)
+
+ChatGPT-style history via LangGraph's `PostgresSaver` keyed by
+`thread_id = session_id`. Earns its keep because:
+- LangGraph owns message persistence natively, no bespoke
+  `chat_messages` table.
+- Same checkpointer pattern lands in Phase 2 for live-ops crash-resume,
+  so adopting it here buys two phases with one integration.
+- Dashboard grows a left sidebar listing sessions by title; first-turn
+  title auto-generated via a cheap Haiku call and stored in a small
+  `chat_sessions(id, title, created_at, updated_at)` table.
+
+Endpoints: `GET /sessions`, `GET /sessions/{id}`, `PATCH /sessions/{id}`
+(rename), `DELETE /sessions/{id}`. `POST /chat` accepts an optional
+`session_id`; if omitted, creates a new session and returns it.
+
+## Phase 2 — LangGraph wrap of /live-ops (planned)
 
 Goal: replace the file-passing skill pipeline with a typed LangGraph so
 state is explicit, crash-resumable, and supports human approval.

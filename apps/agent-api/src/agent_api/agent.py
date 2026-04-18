@@ -1,27 +1,16 @@
 from dataclasses import dataclass
+from typing import Callable
+
 from langchain_anthropic import ChatAnthropic
 from langchain_community.agent_toolkits.sql.toolkit import SQLDatabaseToolkit
 from langchain_community.utilities import SQLDatabase
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
 
 from .config import Settings
+from .context import ContextBuilder
+from .prompts import QUANT_V1_SYSTEM_PROMPT
 from .schema import ChatMessage
-
-SYSTEM_PROMPT = """You are a read-only SQL analyst for the oh-my-opentrade trading system.
-
-Answer the user's question by querying the Postgres database through the provided tools.
-
-Rules:
-- Only query tables listed in your toolkit schema. The database role is read-only; any attempted write will fail.
-- Prefer a single aggregate query over many row-level queries.
-- Always add LIMIT 500 to queries that could return large row sets.
-- Time columns are TIMESTAMPTZ. The app's trading day is US/Eastern.
-- Dollar amounts in `daily_pnl`, `strategy_daily_pnl`, and `trades` are already net of fees.
-- If the question is ambiguous, ask a brief clarifying question instead of guessing.
-- If the question is outside the scope of the whitelisted tables, say so plainly.
-
-Respond with a concise answer. When numbers matter, include them inline. Do not apologize."""
 
 
 @dataclass
@@ -30,7 +19,7 @@ class AgentBundle:
     db: SQLDatabase
 
 
-def build_agent(settings: Settings) -> AgentBundle:
+def build_agent(settings: Settings, context_builder: ContextBuilder | None = None) -> AgentBundle:
     db = SQLDatabase.from_uri(
         settings.db_url,
         include_tables=list(settings.allowed_tables),
@@ -43,8 +32,26 @@ def build_agent(settings: Settings) -> AgentBundle:
         timeout=60,
     )
     toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-    graph = create_react_agent(llm, toolkit.get_tools(), prompt=SYSTEM_PROMPT)
+    prompt_fn = _make_prompt_fn(context_builder)
+    graph = create_react_agent(
+        llm,
+        toolkit.get_tools(),
+        prompt=prompt_fn,
+    )
     return AgentBundle(graph=graph, db=db)
+
+
+def _make_prompt_fn(context_builder: ContextBuilder | None) -> Callable:
+    def prompt_fn(state):
+        parts = [QUANT_V1_SYSTEM_PROMPT]
+        if context_builder is not None:
+            ctx = context_builder.build()
+            if ctx:
+                parts.append(ctx)
+        system = SystemMessage(content="\n\n".join(parts))
+        return [system] + list(state["messages"])
+
+    return prompt_fn
 
 
 def to_langchain_messages(messages: list[ChatMessage]):

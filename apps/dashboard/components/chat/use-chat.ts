@@ -7,9 +7,14 @@ export interface ChatMessage {
   content: string;
 }
 
+export type AnswerKind = "factual" | "analysis" | "recommendation";
+
 export interface ChatResponse {
   answer: string;
+  kind: AnswerKind;
+  evidence: string[];
   sql_queries: string[];
+  prompt_version: string;
   duration_ms: number;
 }
 
