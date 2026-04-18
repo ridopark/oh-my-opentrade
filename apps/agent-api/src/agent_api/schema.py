@@ -14,7 +14,12 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     session_id: UUID | None = None
-    user_message: str = Field(..., min_length=1, max_length=8000)
+    user_message: str = Field(
+        ...,
+        min_length=1,
+        max_length=8000,
+        description="Single user turn; 8000 char cap matches the LLM context budget for one Q.",
+    )
 
 
 class QuantAnswer(BaseModel):
