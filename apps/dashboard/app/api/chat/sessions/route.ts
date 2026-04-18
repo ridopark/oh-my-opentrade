@@ -1,0 +1,34 @@
+import { type NextRequest } from "next/server";
+
+const AGENT_API_URL =
+  process.env.AGENT_API_URL?.replace(/\/$/, "") ?? "http://agent-api:8100";
+const PROXY_SECRET = process.env.AGENT_PROXY_SHARED_SECRET ?? "";
+const TIMEOUT_MS = 10_000;
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+export async function GET(req: NextRequest): Promise<Response> {
+  const qs = req.nextUrl.search;
+  try {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (PROXY_SECRET) headers["X-Proxy-Secret"] = PROXY_SECRET;
+    const res = await fetch(`${AGENT_API_URL}/sessions${qs}`, {
+      headers,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    return new Response(await res.text(), {
+      status: res.status,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return new Response(JSON.stringify({ error: message }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+}

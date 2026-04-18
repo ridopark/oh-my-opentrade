@@ -20,7 +20,11 @@ class AgentBundle:
     db: SQLDatabase
 
 
-def build_agent(settings: Settings, context_builder: ContextBuilder | None = None) -> AgentBundle:
+def build_agent(
+    settings: Settings,
+    context_builder: ContextBuilder | None = None,
+    checkpointer: object | None = None,
+) -> AgentBundle:
     db = SQLDatabase.from_uri(
         settings.db_url,
         include_tables=list(settings.allowed_tables),
@@ -41,6 +45,7 @@ def build_agent(settings: Settings, context_builder: ContextBuilder | None = Non
         llm,
         tools,
         prompt=prompt_fn,
+        checkpointer=checkpointer,
     )
     return AgentBundle(graph=graph, db=db)
 
