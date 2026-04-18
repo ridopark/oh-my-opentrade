@@ -79,3 +79,62 @@ func TestGetPosition_ZeroWhenMissing(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, float64(0), qty)
 }
+
+// Regression: IBKR's TWS API reports option AvgCost as per-contract
+// (premium × multiplier). Before the fix broker.go returned Price = AvgCost
+// for options, so a $6.10 premium position showed up as Price = $610 per
+// share; the ledger writer then bootstrapped avgEntry=610 and any later SELL
+// computed a catastrophically wrong fill P&L. The fix divides by the
+// contract multiplier so Price is per-share for the rest of the system.
+func TestOptionPerShareFromAvgCost(t *testing.T) {
+	cases := []struct {
+		name       string
+		avgCost    float64
+		multiplier string
+		want       float64
+	}{
+		{"standard equity option, explicit 100", 610.0, "100", 6.10},
+		{"standard equity option, empty multiplier falls back to 100", 610.0, "", 6.10},
+		{"standard equity option, unparseable falls back to 100", 610.0, "NaN", 6.10},
+		{"zero multiplier string falls back to 100 (no divide-by-zero)", 610.0, "0", 6.10},
+		{"mini-index option with 50x multiplier honored", 305.0, "50", 6.10},
+		{"zero avg cost stays zero", 0.0, "100", 0.0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := optionPerShareFromAvgCost(tc.avgCost, tc.multiplier)
+			assert.InDelta(t, tc.want, got, 1e-9)
+		})
+	}
+}
+
+// Regression for the full GetPositions path: constructing a trade from a
+// livePos entry for an option must return Price as per-share, not the
+// raw per-contract AvgCost that IBKR hands over.
+func TestGetPositions_OptionPriceIsPerShare(t *testing.T) {
+	mock := &mockIB{connected: true}
+	a := NewAdapterWithClientAndCfg(mock, config.IBKRConfig{AccountID: "DU111111"}, zerolog.Nop())
+	// RBLX 62-put, 12 contracts, per-share premium 6.10 → AvgCost=610 per contract.
+	a.livePos[1] = ibsync.Position{
+		Account: "DU111111",
+		Contract: &ibsync.Contract{
+			ConID: 1, Symbol: "RBLX",
+			SecType: "OPT", Right: "P", Strike: 62.0,
+			LastTradeDateOrContractMonth: "20260501",
+			Multiplier:                   "100",
+		},
+		Position: ibsync.StringToDecimal("12"),
+		AvgCost:  610.42,
+	}
+	trades, err := a.GetPositions(context.Background(), "tenant", domain.EnvModePaper)
+	require.NoError(t, err)
+	require.Len(t, trades, 1)
+	tr := trades[0]
+	assert.Equal(t, domain.InstrumentTypeOption, tr.InstrumentType)
+	assert.InDelta(t, 6.1042, tr.Price, 1e-9,
+		"option Price must be per-share; AvgCost=610.42 / multiplier=100 = 6.1042")
+	// Sanity: contract metadata still populates as before.
+	assert.Equal(t, "RBLX", tr.Underlying)
+	assert.Equal(t, 62.0, tr.Strike)
+	assert.Equal(t, "P", tr.OptionRight)
+}
