@@ -37,6 +37,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/ivcollector"
 	"github.com/oh-my-opentrade/backend/internal/app/optionsimport"
+	"github.com/oh-my-opentrade/backend/internal/app/recap"
 	screenerapp "github.com/oh-my-opentrade/backend/internal/app/screener"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/whale13f"
@@ -274,6 +275,36 @@ func main() {
 		log.With().Str("component", "universe_history_repo").Logger(),
 	)
 
+	// EOD recap service (omo-data scheduled job). Declared before runOnce
+	// so both the one-shot path and the long-running scheduler path can
+	// reference it.
+	var recapSched *recap.ScheduledService
+	if cfg.Recap.Enabled {
+		recapChat := recap.NewHTTPChatClient(cfg.AI.BaseURL, cfg.AI.APIKey, nil)
+		pnlRepo := timescaledb.NewPnLRepository(
+			timescaledb.NewSqlDB(sqlDB),
+			log.With().Str("component", "pnl_repo").Logger(),
+		)
+		recapSink := timescaledb.NewRecapRepo(sqlDB, log.With().Str("component", "recap_repo").Logger())
+		recapModel := cfg.Recap.Model
+		if recapModel == "" {
+			recapModel = cfg.AI.Model
+		}
+		var recapNotifier ports.NotifierPort
+		if notifier != nil {
+			recapNotifier = notifier
+		}
+		recapSvc := recap.NewService(
+			recap.Config{Model: recapModel},
+			repo, pnlRepo, recapSink, recapChat, recapNotifier,
+			log.With().Str("component", "recap").Logger(),
+		)
+		recapSched = recap.NewScheduledService(recap.ScheduledConfig{
+			RunAtHourET:   cfg.Recap.RunAtHourET,
+			RunAtMinuteET: cfg.Recap.RunAtMinuteET,
+		}, recapSvc, log)
+	}
+
 	if runOnce {
 		log.Info().Msg("run-once mode: executing all tasks")
 		refreshSvc.RefreshAll(ctx)
@@ -312,6 +343,10 @@ func main() {
 		}
 		// On-chain whale flow -- single collection pass.
 		collectWhaleFlowOnce(ctx, cfg.OnChain, log)
+		// EOD recap -- one-shot if enabled.
+		if recapSched != nil {
+			recapSched.RunOnce(ctx)
+		}
 		log.Info().Msg("run-once complete")
 		return
 	}
@@ -341,6 +376,12 @@ func main() {
 
 	if err := dolthubSvc.Start(ctx); err != nil {
 		log.Warn().Err(err).Msg("DoltHub options service failed to start")
+	}
+
+	if recapSched != nil {
+		if err := recapSched.Start(ctx); err != nil {
+			log.Warn().Err(err).Msg("recap scheduled service failed to start")
+		}
 	}
 
 	// Macro events — kick once at startup then once every 24h. Refresh

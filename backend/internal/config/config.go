@@ -25,6 +25,7 @@ type Config struct {
 	Server       ServerConfig       `yaml:"server"`
 	AI           AIConfig           `yaml:"ai"`
 	AIScreener   AIScreenerConfig   `yaml:"ai_screener"`
+	Recap        RecapConfig        `yaml:"recap"`
 	Notification NotificationConfig `yaml:"notification"`
 	Backtest     BacktestConfig     `yaml:"backtest"`
 	Options      OptionsConfig      `yaml:"options"`
@@ -110,6 +111,16 @@ type AIScreenerConfig struct {
 	Pass0MinATRPct       float64  `yaml:"pass0_min_atr_pct"` // skip symbols with daily ATR% below this (0 = disabled)
 	MaxCandidatesPerCall int      `yaml:"max_candidates_per_call"`
 	TopNPerStrategy      int      `yaml:"top_n_per_strategy"`
+}
+
+// RecapConfig configures the daily EOD trading recap job (omo-data).
+// Disabled by default -- operator opts in via YAML. Reuses cfg.AI.BaseURL +
+// APIKey so no new credentials live here.
+type RecapConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	RunAtHourET   int    `yaml:"run_at_hour_et"`   // default 17
+	RunAtMinuteET int    `yaml:"run_at_minute_et"` // default 15
+	Model         string `yaml:"model"`            // override cfg.AI.Model when set
 }
 
 // NotificationConfig holds credentials for notification adapters.
@@ -385,6 +396,7 @@ type rawConfig struct {
 	Server       ServerConfig       `yaml:"server"`
 	AI           AIConfig           `yaml:"ai"`
 	AIScreener   AIScreenerConfig   `yaml:"ai_screener"`
+	Recap        RecapConfig        `yaml:"recap"`
 	Notification NotificationConfig `yaml:"notification"`
 	Backtest     BacktestConfig     `yaml:"backtest"`
 	Options      OptionsConfig      `yaml:"options"`
@@ -598,6 +610,7 @@ func Load(envPath, yamlPath string) (*Config, error) {
 		Server:       raw.Server,
 		AI:           raw.AI,
 		AIScreener:   applyAIScreenerDefaults(raw.AIScreener),
+		Recap:        applyRecapDefaults(raw.Recap),
 		Notification: raw.Notification,
 		Backtest:     applyBacktestDefaults(raw.Backtest),
 		Options:      applyOptionsDefaults(raw.Options),
@@ -866,6 +879,16 @@ func applyDeribitDefaults(c DeribitConfig) DeribitConfig {
 	}
 	if len(c.Assets) == 0 {
 		c.Assets = []string{"BTC", "ETH"}
+	}
+	return c
+}
+
+// applyRecapDefaults stamps ET-time defaults onto RecapConfig. Enabled stays
+// false unless the operator explicitly sets it.
+func applyRecapDefaults(c RecapConfig) RecapConfig {
+	if c.RunAtHourET == 0 && c.RunAtMinuteET == 0 {
+		c.RunAtHourET = 17
+		c.RunAtMinuteET = 15
 	}
 	return c
 }
