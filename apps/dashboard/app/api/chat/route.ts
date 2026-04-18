@@ -3,6 +3,7 @@ import { type NextRequest } from "next/server";
 const AGENT_API_URL =
   process.env.AGENT_API_URL?.replace(/\/$/, "") ?? "http://agent-api:8100";
 const PROXY_SECRET = process.env.AGENT_PROXY_SHARED_SECRET ?? "";
+const REQUEST_TIMEOUT_MS = 90_000;
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -20,7 +21,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       method: "POST",
       headers,
       body,
-      signal: AbortSignal.timeout(90_000),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
 
     const text = await res.text();

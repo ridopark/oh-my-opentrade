@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     model: str = "claude-sonnet-4-6"
     max_output_tokens: int = 4096
     proxy_shared_secret: str = ""
-    cors_origin: str = "http://localhost:3000"
+    recursion_limit: int = 25
 
     allowed_tables: tuple[str, ...] = ALLOWED_TABLES
 
