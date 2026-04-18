@@ -120,7 +120,12 @@ func (r *Repository) SaveMarketBars(ctx context.Context, bars []domain.MarketBar
 	args := make([]any, 0, len(bars)*11)
 	idx := 0
 	for _, bar := range bars {
-		if bar.Volume <= 0 {
+		// Drop only truly-empty bars. Volume==0 alone is legitimate for
+		// indexes (VIX, SPX) which Yahoo + some feeds report with real
+		// OHLC but zero volume; the prior `Volume <= 0` guard silently
+		// discarded every VIX bar even after migration 013 relaxed the
+		// DB CHECK(volume > 0) constraint.
+		if bar.Open == 0 && bar.High == 0 && bar.Low == 0 && bar.Close == 0 {
 			continue
 		}
 		if idx > 0 {
