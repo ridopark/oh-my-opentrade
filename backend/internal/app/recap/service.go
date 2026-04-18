@@ -302,21 +302,49 @@ No opening filler. No bullet points on line 1.`,
 }
 
 // ----------------------------------------------------------------------
-// HTTPChatClient -- OpenAI-compatible /v1/chat/completions client.
+// HTTPChatClient -- speaks either the OpenAI-compatible /v1/chat/completions
+// protocol or Anthropic's native /v1/messages protocol, selected by
+// `provider`. Same Chat(...) interface so the service layer is agnostic.
 // ----------------------------------------------------------------------
 
+const (
+	ProviderOpenAI    = "openai"
+	ProviderAnthropic = "anthropic"
+	anthropicVersion  = "2023-06-01"
+	anthropicMaxTok   = 1024
+)
+
 type HTTPChatClient struct {
-	baseURL string
-	apiKey  string
-	http    *http.Client
+	baseURL  string
+	apiKey   string
+	provider string
+	http     *http.Client
 }
 
+// NewHTTPChatClient returns a client that speaks the OpenAI-compatible
+// chat-completions protocol. Kept for callers that don't care about provider.
 func NewHTTPChatClient(baseURL, apiKey string, httpClient *http.Client) *HTTPChatClient {
+	return NewHTTPChatClientWithProvider(ProviderOpenAI, baseURL, apiKey, httpClient)
+}
+
+// NewHTTPChatClientWithProvider picks the wire protocol via `provider`
+// ("openai" or "anthropic"). Empty string == "openai".
+func NewHTTPChatClientWithProvider(provider, baseURL, apiKey string, httpClient *http.Client) *HTTPChatClient {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 120 * time.Second}
 	}
-	return &HTTPChatClient{baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, http: httpClient}
+	if provider == "" {
+		provider = ProviderOpenAI
+	}
+	return &HTTPChatClient{
+		baseURL:  strings.TrimRight(baseURL, "/"),
+		apiKey:   apiKey,
+		provider: provider,
+		http:     httpClient,
+	}
 }
+
+// -- OpenAI-compatible shapes -----------------------------------------
 
 type chatMsg struct {
 	Role    string `json:"role"`
@@ -333,7 +361,34 @@ type chatResp struct {
 	Choices []chatChoice `json:"choices"`
 }
 
+// -- Anthropic native shapes ------------------------------------------
+
+type anthMsg struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+type anthReq struct {
+	Model     string    `json:"model"`
+	MaxTokens int       `json:"max_tokens"`
+	System    string    `json:"system,omitempty"`
+	Messages  []anthMsg `json:"messages"`
+}
+type anthContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+type anthResp struct {
+	Content []anthContent `json:"content"`
+}
+
 func (c *HTTPChatClient) Chat(ctx context.Context, model, system, user string) (string, error) {
+	if c.provider == ProviderAnthropic {
+		return c.chatAnthropic(ctx, model, system, user)
+	}
+	return c.chatOpenAI(ctx, model, system, user)
+}
+
+func (c *HTTPChatClient) chatOpenAI(ctx context.Context, model, system, user string) (string, error) {
 	reqBody, err := json.Marshal(chatReq{
 		Model: model,
 		Messages: []chatMsg{
@@ -376,4 +431,49 @@ func (c *HTTPChatClient) Chat(ctx context.Context, model, system, user string) (
 		return "", fmt.Errorf("no choices in response")
 	}
 	return out.Choices[0].Message.Content, nil
+}
+
+func (c *HTTPChatClient) chatAnthropic(ctx context.Context, model, system, user string) (string, error) {
+	reqBody, err := json.Marshal(anthReq{
+		Model:     model,
+		MaxTokens: anthropicMaxTok,
+		System:    system,
+		Messages:  []anthMsg{{Role: "user", Content: user}},
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/messages", bytes.NewReader(reqBody))
+	if err != nil {
+		return "", fmt.Errorf("request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("anthropic-version", anthropicVersion)
+	if c.apiKey != "" {
+		req.Header.Set("x-api-key", c.apiKey)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("do: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		snippet := string(body)
+		if len(snippet) > 400 {
+			snippet = snippet[:400]
+		}
+		return "", fmt.Errorf("anthropic status %d: %s", resp.StatusCode, snippet)
+	}
+	var out anthResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("decode: %w", err)
+	}
+	for _, blk := range out.Content {
+		if blk.Type == "text" && blk.Text != "" {
+			return blk.Text, nil
+		}
+	}
+	return "", fmt.Errorf("no text content in anthropic response")
 }

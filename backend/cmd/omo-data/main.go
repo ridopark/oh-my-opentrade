@@ -280,7 +280,28 @@ func main() {
 	// reference it.
 	var recapSched *recap.ScheduledService
 	if cfg.Recap.Enabled {
-		recapChat := recap.NewHTTPChatClient(cfg.AI.BaseURL, cfg.AI.APIKey, nil)
+		// Resolve provider + credentials. "anthropic" routes direct to
+		// api.anthropic.com via a separate env var so ai_screener and
+		// other cfg.AI consumers keep their OpenRouter key intact.
+		provider := cfg.Recap.Provider
+		if provider == "" {
+			provider = recap.ProviderOpenAI
+		}
+		baseURL := cfg.Recap.BaseURL
+		if baseURL == "" {
+			baseURL = cfg.AI.BaseURL
+		}
+		apiKey := cfg.AI.APIKey
+		if cfg.Recap.APIKeyEnv != "" {
+			if v := os.Getenv(cfg.Recap.APIKeyEnv); v != "" {
+				apiKey = v
+			} else {
+				log.Warn().Str("env", cfg.Recap.APIKeyEnv).
+					Msg("recap: api_key_env is set but environment variable is empty")
+			}
+		}
+		recapChat := recap.NewHTTPChatClientWithProvider(provider, baseURL, apiKey, nil)
+
 		pnlRepo := timescaledb.NewPnLRepository(
 			timescaledb.NewSqlDB(sqlDB),
 			log.With().Str("component", "pnl_repo").Logger(),
@@ -303,6 +324,12 @@ func main() {
 			RunAtHourET:   cfg.Recap.RunAtHourET,
 			RunAtMinuteET: cfg.Recap.RunAtMinuteET,
 		}, recapSvc, log)
+		log.Info().
+			Str("provider", provider).
+			Str("base_url", baseURL).
+			Str("model", recapModel).
+			Bool("api_key_set", apiKey != "").
+			Msg("recap service wired")
 	}
 
 	if runOnce {

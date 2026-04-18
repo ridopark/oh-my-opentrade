@@ -114,13 +114,26 @@ type AIScreenerConfig struct {
 }
 
 // RecapConfig configures the daily EOD trading recap job (omo-data).
-// Disabled by default -- operator opts in via YAML. Reuses cfg.AI.BaseURL +
-// APIKey so no new credentials live here.
+// Disabled by default -- operator opts in via YAML.
+//
+// Provider selects which LLM protocol to speak:
+//   - "" or "openai" -- OpenAI-compatible POST /v1/chat/completions. Reuses
+//     cfg.AI.BaseURL + LLM_API_KEY unless BaseURL/APIKeyEnv are set.
+//   - "anthropic"   -- native POST /v1/messages with x-api-key +
+//     anthropic-version headers. BaseURL defaults to
+//     https://api.anthropic.com and APIKeyEnv to ANTHROPIC_API_KEY.
+//
+// Keeping recap on its own provider path means ai_screener and other
+// cfg.AI consumers stay pointed at whatever they were using (e.g.
+// OpenRouter) without collateral change.
 type RecapConfig struct {
 	Enabled       bool   `yaml:"enabled"`
 	RunAtHourET   int    `yaml:"run_at_hour_et"`   // default 17
 	RunAtMinuteET int    `yaml:"run_at_minute_et"` // default 15
+	Provider      string `yaml:"provider"`         // "openai" (default) | "anthropic"
+	BaseURL       string `yaml:"base_url"`         // override provider default
 	Model         string `yaml:"model"`            // override cfg.AI.Model when set
+	APIKeyEnv     string `yaml:"api_key_env"`      // env var name holding the API key
 }
 
 // NotificationConfig holds credentials for notification adapters.
@@ -883,12 +896,25 @@ func applyDeribitDefaults(c DeribitConfig) DeribitConfig {
 	return c
 }
 
-// applyRecapDefaults stamps ET-time defaults onto RecapConfig. Enabled stays
-// false unless the operator explicitly sets it.
+// applyRecapDefaults stamps ET-time + provider defaults onto RecapConfig.
+// Enabled stays false unless the operator explicitly sets it.
 func applyRecapDefaults(c RecapConfig) RecapConfig {
 	if c.RunAtHourET == 0 && c.RunAtMinuteET == 0 {
 		c.RunAtHourET = 17
 		c.RunAtMinuteET = 15
+	}
+	switch c.Provider {
+	case "anthropic":
+		if c.BaseURL == "" {
+			c.BaseURL = "https://api.anthropic.com"
+		}
+		if c.APIKeyEnv == "" {
+			c.APIKeyEnv = "ANTHROPIC_API_KEY"
+		}
+	default:
+		// "openai" / empty: fall back to cfg.AI.BaseURL + LLM_API_KEY at
+		// wire time; leave BaseURL/APIKeyEnv empty so the caller can tell
+		// a sentinel ("use cfg.AI") from an override ("use these instead").
 	}
 	return c
 }
