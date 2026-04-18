@@ -151,3 +151,30 @@ func TestComputeSummary_IntegrationWithAllKPIs(t *testing.T) {
 	require.NotNil(t, s.Expectancy)
 	require.NotNil(t, s.CAGR)
 }
+
+func TestComputeOutlierRemovedPF_OutlierDependent(t *testing.T) {
+	// 10 trades, gross_profit=$1100 driven almost entirely by one $1000 winner;
+	// remaining trades produce $100 gross profit against $300 gross loss.
+	// Headline PF = 1100 / 300 ≈ 3.67; outlier-removed PF = 100 / 300 ≈ 0.33.
+	pf := domain.ComputeOutlierRemovedPF(1100, 300, 1000, 10)
+	require.NotNil(t, pf)
+	assert.InDelta(t, 0.333, *pf, 0.01)
+}
+
+func TestComputeOutlierRemovedPF_Robust(t *testing.T) {
+	// Even with the top winner removed, adjusted PF stays above 1.0.
+	pf := domain.ComputeOutlierRemovedPF(1000, 400, 150, 20)
+	require.NotNil(t, pf)
+	assert.InDelta(t, 2.125, *pf, 0.01) // (1000 - 150) / 400
+}
+
+func TestComputeOutlierRemovedPF_EdgeCases(t *testing.T) {
+	// Too few trades.
+	assert.Nil(t, domain.ComputeOutlierRemovedPF(500, 100, 300, 1))
+	// No losses to divide against.
+	assert.Nil(t, domain.ComputeOutlierRemovedPF(500, 0, 100, 5))
+	// No winners at all.
+	assert.Nil(t, domain.ComputeOutlierRemovedPF(0, 100, 0, 5))
+	// Largest winner alone exceeds gross profit (shouldn't happen, but be safe).
+	assert.Nil(t, domain.ComputeOutlierRemovedPF(100, 50, 200, 5))
+}

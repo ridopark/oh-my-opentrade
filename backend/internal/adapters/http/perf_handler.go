@@ -317,16 +317,17 @@ func (h *PerformanceHandler) serveTrades(w http.ResponseWriter, r *http.Request)
 // ---------- Strategies ----------
 
 type strategyRowJSON struct {
-	Strategy     string   `json:"strategy"`
-	RealizedPnL  float64  `json:"realized_pnl"`
-	Fees         float64  `json:"fees"`
-	TotalTrades  int      `json:"total_trades"`
-	WinCount     int      `json:"win_count"`
-	LossCount    int      `json:"loss_count"`
-	WinRate      *float64 `json:"win_rate"`
-	ProfitFactor *float64 `json:"profit_factor"`
-	GrossProfit  float64  `json:"gross_profit"`
-	GrossLoss    float64  `json:"gross_loss"`
+	Strategy         string   `json:"strategy"`
+	RealizedPnL      float64  `json:"realized_pnl"`
+	Fees             float64  `json:"fees"`
+	TotalTrades      int      `json:"total_trades"`
+	WinCount         int      `json:"win_count"`
+	LossCount        int      `json:"loss_count"`
+	WinRate          *float64 `json:"win_rate"`
+	ProfitFactor     *float64 `json:"profit_factor"`
+	OutlierRemovedPF *float64 `json:"outlier_removed_pf"`
+	GrossProfit      float64  `json:"gross_profit"`
+	GrossLoss        float64  `json:"gross_loss"`
 }
 
 func (h *PerformanceHandler) serveStrategies(w http.ResponseWriter, r *http.Request) {
@@ -338,6 +339,14 @@ func (h *PerformanceHandler) serveStrategies(w http.ResponseWriter, r *http.Requ
 		h.log.Error().Err(err).Msg("failed to list strategy summaries")
 		http.Error(w, `{"error":"strategy summaries query failed"}`, http.StatusInternalServerError)
 		return
+	}
+
+	// Largest-win lookup is a best-effort enrichment — a failure here should not
+	// take down the whole strategies endpoint.
+	largestWins, err := h.pnlRepo.GetLargestWinPerStrategy(ctx, "default", domain.EnvModePaper, from, to)
+	if err != nil {
+		h.log.Warn().Err(err).Msg("failed to load largest wins; outlier_removed_pf will be nil")
+		largestWins = map[string]float64{}
 	}
 
 	items := make([]strategyRowJSON, 0, len(rows))
@@ -359,6 +368,11 @@ func (h *PerformanceHandler) serveStrategies(w http.ResponseWriter, r *http.Requ
 		if row.GrossLoss != 0 {
 			pf := row.GrossProfit / (-row.GrossLoss)
 			item.ProfitFactor = &pf
+		}
+		if largest, ok := largestWins[row.Strategy]; ok {
+			item.OutlierRemovedPF = domain.ComputeOutlierRemovedPF(
+				row.GrossProfit, -row.GrossLoss, largest, row.TotalTrades,
+			)
 		}
 		items = append(items, item)
 	}

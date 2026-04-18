@@ -360,6 +360,38 @@ func (r *PnLRepository) ListStrategySummaries(ctx context.Context, tenantID stri
 	return results, nil
 }
 
+// GetLargestWinPerStrategy returns the single largest winning-trade pnl per
+// strategy in the window, grouped from strategy_trade_stats. Used to compute
+// outlier-removed profit factor without pairing fills at query time.
+func (r *PnLRepository) GetLargestWinPerStrategy(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) (map[string]float64, error) {
+	_ = tenantID
+	_ = envMode
+	const q = `SELECT strategy, MAX(pnl) AS largest_win
+		FROM strategy_trade_stats
+		WHERE inserted_at >= $1 AND inserted_at < $2 AND pnl > 0
+		GROUP BY strategy`
+	rows, err := r.db.QueryContext(ctx, q, from, to)
+	if err != nil {
+		r.log.Error().Err(err).Msg("failed to query largest wins per strategy")
+		return nil, fmt.Errorf("timescaledb: largest win per strategy: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]float64)
+	for rows.Next() {
+		var strategy string
+		var largest float64
+		if err := rows.Scan(&strategy, &largest); err != nil {
+			return nil, fmt.Errorf("timescaledb: scan largest win: %w", err)
+		}
+		result[strategy] = largest
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("timescaledb: iterate largest wins: %w", err)
+	}
+	return result, nil
+}
+
 func (r *PnLRepository) ListSymbolAttribution(ctx context.Context, tenantID string, envMode domain.EnvMode, strategy string, from, to time.Time) ([]domain.SymbolAttribution, error) {
 	var b strings.Builder
 	b.WriteString(`SELECT t.symbol,

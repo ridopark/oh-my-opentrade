@@ -82,3 +82,7 @@ func (n *NoopPnLRepo) ListStrategySummaries(_ context.Context, _ string, _ domai
 func (n *NoopPnLRepo) ListSymbolAttribution(_ context.Context, _ string, _ domain.EnvMode, _ string, _, _ time.Time) ([]domain.SymbolAttribution, error) {
 	return nil, nil
 }
+
+func (n *NoopPnLRepo) GetLargestWinPerStrategy(_ context.Context, _ string, _ domain.EnvMode, _, _ time.Time) (map[string]float64, error) {
+	return nil, nil
+}
