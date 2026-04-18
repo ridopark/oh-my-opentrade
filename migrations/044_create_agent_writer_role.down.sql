@@ -1,0 +1,8 @@
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM agent_writer;
+
+REVOKE ALL ON chat_sessions FROM agent_writer;
+REVOKE USAGE, CREATE ON SCHEMA public FROM agent_writer;
+REVOKE CONNECT ON DATABASE opentrade FROM agent_writer;
+
+DROP ROLE IF EXISTS agent_writer;

@@ -27,7 +27,7 @@ state, and cycles actually help, without rewriting the Go production path.
 | 1.6 | Quant persona: versioned prompt, structured output, context block | [x] Done | 71d061c, 9a1b6b7 |
 | 1.6.1 | Review hardening: JSON parser anchor, parse-source obs, error-TTL split | [x] Done | 11eaaea |
 | 1.8 | HTTP tools calling omo-core /performance + OutlierRemovedPF | [x] Done | f5a7976, 2b1c9f9 |
-| 1.7 | Chat history sidebar via LangGraph checkpointer | [ ] Planned (gated) | - |
+| 1.7 | Chat history sidebar via LangGraph checkpointer | [ ] In progress | - |
 | 2 | LangGraph wrap of /live-ops | [ ] Planned | - |
 | 3 | Recap RAG (pgvector + retriever sidecar) | [ ] Later | - |
 | 4 | Strategy research graph | [ ] Deferred | - |

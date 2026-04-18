@@ -20,8 +20,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="AGENT_", extra="ignore")
 
     db_url: str
+    writer_db_url: str
     anthropic_api_key: str
     model: str = "claude-sonnet-4-6"
+    title_model: str = "claude-haiku-4-5-20251001"
     max_output_tokens: int = 4096
     proxy_shared_secret: str = ""
     recursion_limit: int = 25
@@ -29,6 +31,7 @@ class Settings(BaseSettings):
     context_ttl_seconds: float = 300.0
     context_error_ttl_seconds: float = 30.0
     omo_core_url: str = "http://localhost:8080"
+    session_list_limit: int = 50
 
     allowed_tables: tuple[str, ...] = ALLOWED_TABLES
 

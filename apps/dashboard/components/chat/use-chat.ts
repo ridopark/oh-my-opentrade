@@ -9,20 +9,27 @@ export interface ChatMessage {
 
 export type AnswerKind = "factual" | "analysis" | "recommendation";
 
+export interface ChatRequest {
+  session_id?: string;
+  user_message: string;
+}
+
 export interface ChatResponse {
+  session_id: string;
   answer: string;
   kind: AnswerKind;
   evidence: string[];
   sql_queries: string[];
   prompt_version: string;
   duration_ms: number;
+  created_session: boolean;
 }
 
-async function postChat(messages: ChatMessage[]): Promise<ChatResponse> {
+async function postChat(req: ChatRequest): Promise<ChatResponse> {
   const res = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify(req),
   });
   if (!res.ok) {
     const text = await res.text();
@@ -32,7 +39,7 @@ async function postChat(messages: ChatMessage[]): Promise<ChatResponse> {
 }
 
 export function useChatMutation() {
-  return useMutation<ChatResponse, Error, ChatMessage[]>({
+  return useMutation<ChatResponse, Error, ChatRequest>({
     mutationFn: postChat,
   });
 }

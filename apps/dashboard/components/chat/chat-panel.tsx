@@ -1,12 +1,22 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import { Send, Database, Loader2, CheckSquare } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { CheckSquare, Database, Loader2, Send } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { type AnswerKind, type ChatMessage, useChatMutation } from "./use-chat";
+import {
+  type AnswerKind,
+  type ChatResponse,
+  useChatMutation,
+} from "./use-chat";
+import { useInvalidateSessions, useSession } from "./use-sessions";
 
+interface UserTurn {
+  role: "user";
+  content: string;
+}
 interface AssistantTurn {
   role: "assistant";
   content: string;
@@ -16,7 +26,7 @@ interface AssistantTurn {
   durationMs: number;
 }
 
-type Turn = { role: "user"; content: string } | AssistantTurn;
+type Turn = UserTurn | AssistantTurn;
 
 const KIND_BADGE: Record<AnswerKind, { label: string; className: string }> = {
   factual: { label: "FACTUAL", className: "bg-muted text-muted-foreground border-transparent" },
@@ -30,40 +40,78 @@ const KIND_BADGE: Record<AnswerKind, { label: string; className: string }> = {
   },
 };
 
-export function ChatPanel() {
-  const [turns, setTurns] = useState<Turn[]>([]);
-  const [draft, setDraft] = useState("");
+interface Props {
+  sessionId: string | null;
+}
+
+export function ChatPanel({ sessionId }: Props) {
+  const router = useRouter();
+  const invalidateSessions = useInvalidateSessions();
+  const session = useSession(sessionId);
   const mutation = useChatMutation();
+
+  const [localTurns, setLocalTurns] = useState<Turn[]>([]);
+  const [draft, setDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Hydrate local turns from persisted session messages whenever the selected
+  // session changes. For a brand-new session (no id in the URL) start empty.
+  useEffect(() => {
+    if (!sessionId) {
+      setLocalTurns([]);
+      return;
+    }
+    if (session.data) {
+      setLocalTurns(
+        session.data.messages.map((m) =>
+          m.role === "user"
+            ? { role: "user", content: m.content }
+            : {
+                role: "assistant",
+                content: m.content,
+                kind: "factual",
+                evidence: [],
+                sql: [],
+                durationMs: 0,
+              },
+        ),
+      );
+    }
+  }, [sessionId, session.data]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [turns, mutation.isPending]);
+  }, [localTurns, mutation.isPending]);
 
   const send = () => {
     const text = draft.trim();
     if (!text || mutation.isPending) return;
 
-    const nextTurns: Turn[] = [...turns, { role: "user", content: text }];
-    setTurns(nextTurns);
+    setLocalTurns((prev) => [...prev, { role: "user", content: text }]);
     setDraft("");
 
-    const history: ChatMessage[] = nextTurns.map((t) => ({ role: t.role, content: t.content }));
-    mutation.mutate(history, {
-      onSuccess: (resp) => {
-        setTurns((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content: resp.answer,
-            kind: resp.kind,
-            evidence: resp.evidence,
-            sql: resp.sql_queries,
-            durationMs: resp.duration_ms,
-          },
-        ]);
+    mutation.mutate(
+      { session_id: sessionId ?? undefined, user_message: text },
+      {
+        onSuccess: (resp: ChatResponse) => {
+          setLocalTurns((prev) => [
+            ...prev,
+            {
+              role: "assistant",
+              content: resp.answer,
+              kind: resp.kind,
+              evidence: resp.evidence,
+              sql: resp.sql_queries,
+              durationMs: resp.duration_ms,
+            },
+          ]);
+          invalidateSessions();
+          if (resp.created_session && !sessionId) {
+            router.replace(`/chat/${resp.session_id}`);
+          }
+        },
       },
-    });
+    );
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -73,12 +121,19 @@ export function ChatPanel() {
     }
   };
 
+  const hydrating = !!sessionId && session.isLoading;
+
   return (
     <div className="flex h-[calc(100vh-8rem)] flex-col rounded-lg border border-border bg-card">
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
-        {turns.length === 0 && <EmptyState />}
-        {turns.map((turn, i) =>
-          turn.role === "user" ? <UserBubble key={i} content={turn.content} /> : <AssistantBubble key={i} turn={turn} />
+        {hydrating && <HydratingState />}
+        {!hydrating && localTurns.length === 0 && <EmptyState />}
+        {localTurns.map((turn, i) =>
+          turn.role === "user" ? (
+            <UserBubble key={i} content={turn.content} />
+          ) : (
+            <AssistantBubble key={i} turn={turn} />
+          ),
         )}
         {mutation.isPending && <PendingBubble />}
         {mutation.isError && <ErrorBubble message={mutation.error.message} />}
@@ -106,7 +161,7 @@ export function ChatPanel() {
 function EmptyState() {
   const examples = [
     "What was my total realized P&L last 7 days?",
-    "Which strategy had the worst drawdown in March?",
+    "Is MACD working? Compare its PF and DD to AVWAP.",
     "Show me today's AVWAP trades.",
   ];
   return (
@@ -117,6 +172,15 @@ function EmptyState() {
           <li key={e} className="italic">&ldquo;{e}&rdquo;</li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function HydratingState() {
+  return (
+    <div className="mt-8 flex items-center justify-center gap-2 text-sm text-muted-foreground">
+      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      loading session...
     </div>
   );
 }

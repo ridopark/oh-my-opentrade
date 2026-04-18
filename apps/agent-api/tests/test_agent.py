@@ -16,30 +16,36 @@ def test_allowed_tables_covers_core_trading_surface():
     assert required.issubset(set(ALLOWED_TABLES))
 
 
-def test_chat_request_rejects_empty_messages():
+def test_chat_request_rejects_empty_user_message():
     try:
-        ChatRequest(messages=[])
-    except Exception as e:
-        assert "at least 1" in str(e).lower() or "min_length" in str(e).lower()
-        return
-    raise AssertionError("empty messages should have failed validation")
-
-
-def test_chat_request_rejects_too_many_turns():
-    msgs = [ChatMessage(role="user", content=f"q{i}") for i in range(41)]
-    try:
-        ChatRequest(messages=msgs)
+        ChatRequest(user_message="")
     except Exception:
         return
-    raise AssertionError("40+ messages should have failed validation")
+    raise AssertionError("empty user_message should have failed validation")
+
+
+def test_chat_request_rejects_oversized_user_message():
+    try:
+        ChatRequest(user_message="x" * 9000)
+    except Exception:
+        return
+    raise AssertionError("9000-char user_message should have failed validation")
+
+
+def test_chat_request_accepts_valid_shape():
+    req = ChatRequest(user_message="how many trades?")
+    assert req.session_id is None
+    assert req.user_message == "how many trades?"
 
 
 def test_settings_env_prefix(monkeypatch):
     monkeypatch.setenv("AGENT_DB_URL", "postgresql+psycopg2://x:y@z/db")
+    monkeypatch.setenv("AGENT_WRITER_DB_URL", "postgresql+psycopg://x:y@z/db")
     monkeypatch.setenv("AGENT_ANTHROPIC_API_KEY", "sk-ant-test")
     s = Settings()  # type: ignore[call-arg]
     assert s.db_url.startswith("postgresql+psycopg2://")
     assert s.model == "claude-sonnet-4-6"
+    assert s.title_model.startswith("claude-haiku")
     assert s.allowed_tables == ALLOWED_TABLES
     assert s.rate_limit == "20/minute"
 
