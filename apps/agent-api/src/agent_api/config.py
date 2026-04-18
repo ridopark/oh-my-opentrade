@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     recursion_limit: int = 25
     rate_limit: str = "20/minute"
     context_ttl_seconds: float = 300.0
+    context_error_ttl_seconds: float = 30.0
     omo_core_url: str = "http://localhost:8080"
 
     allowed_tables: tuple[str, ...] = ALLOWED_TABLES

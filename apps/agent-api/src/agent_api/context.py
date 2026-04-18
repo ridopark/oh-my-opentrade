@@ -14,31 +14,41 @@ log = logging.getLogger("agent_api")
 @dataclass
 class _Cached:
     block: str
-    fetched_at: float
+    expires_at: float
 
 
 class ContextBuilder:
-    def __init__(self, fetcher: Callable[[], str], ttl_seconds: float = 300.0):
+    def __init__(
+        self,
+        fetcher: Callable[[], str],
+        ttl_seconds: float = 300.0,
+        error_ttl_seconds: float = 30.0,
+    ):
         self._fetcher = fetcher
         self._ttl = ttl_seconds
+        self._error_ttl = error_ttl_seconds
         self._cached: _Cached | None = None
         self._call_count = 0
 
     def build(self) -> str:
         now = time.monotonic()
-        if self._cached and (now - self._cached.fetched_at) < self._ttl:
+        if self._cached and now < self._cached.expires_at:
             return self._cached.block
-        block = self._safe_fetch()
-        self._cached = _Cached(block=block, fetched_at=now)
+        block, ok = self._safe_fetch()
+        ttl = self._ttl if ok else self._error_ttl
+        self._cached = _Cached(block=block, expires_at=now + ttl)
         return block
 
-    def _safe_fetch(self) -> str:
+    def _safe_fetch(self) -> tuple[str, bool]:
         self._call_count += 1
         try:
-            return self._fetcher()
+            result = self._fetcher()
         except Exception as e:
             log.warning(json.dumps({"event": "context_fetch_failed", "error": str(e)}))
-            return ""
+            return "", False
+        if not result:
+            log.info(json.dumps({"event": "context_empty"}))
+        return result, True
 
 
 def fetch_context_from_db(engine: Engine) -> str:

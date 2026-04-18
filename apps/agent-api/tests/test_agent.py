@@ -121,43 +121,76 @@ def test_parse_agent_result_empty_when_no_ai_text():
     assert sql == ["SELECT 1"]
 
 
-def test_extract_quant_answer_from_structured_response():
+def test_extract_quant_answer_structured_response_safety_net():
+    # response_format is not wired today, but if a LangGraph upgrade
+    # re-populates structured_response we still honor it.
     quant = QuantAnswer(kind="analysis", answer="MACD PF is 1.3", evidence=["SELECT 1"])
     result = {"messages": [], "structured_response": quant}
-    out = extract_quant_answer(result)
+    out, source = extract_quant_answer(result)
+    assert source == "structured"
     assert out.kind == "analysis"
-    assert out.answer == "MACD PF is 1.3"
     assert out.evidence == ["SELECT 1"]
 
 
-def test_extract_quant_answer_from_structured_dict():
-    result = {
-        "messages": [],
-        "structured_response": {
-            "kind": "recommendation",
-            "answer": "Cut size on MACD.",
-            "evidence": ["PF=0.8 over 120 trades"],
-        },
-    }
-    out = extract_quant_answer(result)
-    assert out.kind == "recommendation"
-    assert out.evidence == ["PF=0.8 over 120 trades"]
-
-
-def test_extract_quant_answer_from_frontmatter_fallback():
-    payload = '```json\n{"kind":"factual","answer":"579 trades","evidence":[]}\n```'
-    result = {"messages": [AIMessage(content=payload)]}
-    out = extract_quant_answer(result)
+def test_extract_quant_answer_json_block_tail():
+    raw = (
+        "There are 579 trades total.\n\n"
+        '```json\n{"kind":"factual","answer":"579 trades","evidence":[]}\n```'
+    )
+    result = {"messages": [AIMessage(content=raw)]}
+    out, source = extract_quant_answer(result)
+    assert source == "json_block"
     assert out.kind == "factual"
-    assert out.answer == "579 trades"
+    assert "579" in out.answer
 
 
-def test_extract_quant_answer_plain_text_fallback():
+def test_extract_quant_answer_plain_when_no_block():
     result = {"messages": [AIMessage(content="just 579")]}
-    out = extract_quant_answer(result)
+    out, source = extract_quant_answer(result)
+    assert source == "plain"
     assert out.kind == "factual"
     assert out.answer == "just 579"
     assert out.evidence == []
+
+
+def test_extract_quant_answer_mid_body_block_is_ignored():
+    # A JSON-looking fence in the middle of the response (e.g. the model
+    # quoting a prior tool result) must not be mistaken for the classifier.
+    raw = (
+        "Here is the row I found:\n"
+        '```json\n{"symbol":"AAPL","qty":100}\n```\n'
+        "So the answer is AAPL."
+    )
+    result = {"messages": [AIMessage(content=raw)]}
+    out, source = extract_quant_answer(result)
+    assert source == "plain"
+    assert "AAPL" in out.answer
+
+
+def test_extract_quant_answer_invalid_json_falls_back_to_plain():
+    raw = 'An answer.\n```json\n{kind: factual, broken}\n```'
+    result = {"messages": [AIMessage(content=raw)]}
+    out, source = extract_quant_answer(result)
+    assert source == "plain"
+    assert out.kind == "factual"
+
+
+def test_extract_quant_answer_missing_required_field_falls_back():
+    raw = 'The answer.\n```json\n{"kind":"analysis"}\n```'
+    result = {"messages": [AIMessage(content=raw)]}
+    out, source = extract_quant_answer(result)
+    assert source == "plain"
+
+
+def test_extract_quant_answer_downgrades_unsubstantiated_recommendation():
+    raw = (
+        "You should stop trading.\n"
+        '```json\n{"kind":"recommendation","answer":"Stop.","evidence":[]}\n```'
+    )
+    result = {"messages": [AIMessage(content=raw)]}
+    out, source = extract_quant_answer(result)
+    assert source == "json_block"
+    assert out.kind == "analysis"
 
 
 def test_prompt_version_is_v1():
