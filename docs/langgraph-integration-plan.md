@@ -24,8 +24,9 @@ state, and cycles actually help, without rewriting the Go production path.
 |---|-------|--------|-----------|
 | 1 | Dashboard NL query sidecar | [x] Done | c32d193, be2e3f6 |
 | 1.5 | Async, rate limit, tests, proxy-secret warning | [x] Done | 497dd6b |
-| 1.6 | Quant persona: versioned prompt, structured output, context block | [ ] In progress | - |
-| 1.7 | Chat history sidebar via LangGraph checkpointer | [ ] Planned | - |
+| 1.6 | Quant persona: versioned prompt, structured output, context block | [x] Done | 71d061c, 9a1b6b7 |
+| 1.6.1 | Review hardening: JSON parser anchor, parse-source obs, error-TTL split | [ ] In progress | - |
+| 1.7 | Chat history sidebar via LangGraph checkpointer | [ ] Planned (gated) | - |
 | 2 | LangGraph wrap of /live-ops | [ ] Planned | - |
 | 3 | Recap RAG (pgvector + retriever sidecar) | [ ] Later | - |
 | 4 | Strategy research graph | [ ] Deferred | - |
@@ -85,7 +86,57 @@ Make the chatbot answer the way `quant-analyst` would:
 Fallback: if `response_format` fights with SQL tool-calling in practice,
 switch to JSON-frontmatter parsing on the final AIMessage.
 
-## Phase 1.7 — Chat history sidebar (planned)
+## Phase 1.6.1 — Review hardening (in progress)
+
+Follow-ups from the Phase 1.6 review, bundled so Phase 1.7 lands on a
+stable base:
+
+- Anchor `_parse_json_block` to end-of-text so a mid-body JSON block
+  (e.g. a SQL result the model quoted back) can no longer be mistaken
+  for the classifier block.
+- Track parse source (structured / json_block / plain) through the
+  response pipeline and emit a WARN log when the model omits the
+  classifier block, so silent regressions surface in Loki.
+- Server-side prompt-injection guard: if the model returns
+  `kind=recommendation` with empty evidence, downgrade to `analysis`
+  before responding. The UI treats the badge as authoritative, so the
+  backend owns the integrity check.
+- Distinguish "DB is up but returned no rows" (`context_empty`) from
+  "fetch raised" (`context_fetch_failed`). Cache error results for a
+  shorter TTL (default 30s) than successes (default 300s) so an outage
+  recovers in half a minute instead of five.
+- Rebalance tests: the structured-response tests exercise a LangGraph
+  path that is currently dead (we removed `response_format`). Keep one
+  regression-safety test, drop the rest, and extend the JSON-block
+  parser suite with negative cases (invalid JSON, mid-body block,
+  missing fields).
+
+Deferred from the review into Phase 2 backlog: `httpx`/`to_thread` for
+the position fetch, live-emission integration test gated on
+`AGENT_ANTHROPIC_API_KEY`, frontend RTL tests for the badge, and
+pinning `langgraph` to prevent `structured_response` silently
+re-activating.
+
+## Phase 1.7 — Chat history sidebar (planned, gated)
+
+Three hard gates must close before this ships as a multi-user feature:
+
+1. **Context block leakage.** The cached context block (P&L,
+   positions, recap) is appended to every `/chat` system message
+   regardless of caller identity. Today that is fine because the chat
+   has one user; in a multi-user setup any caller would see another
+   user's state via the prompt. Per-session scoping (filter the
+   context by caller's tenant) must ship alongside sessions.
+2. **omo-core `/api/portfolio/positions` has no auth.** The sidecar
+   reaches it by LAN trust. Either protect the endpoint or route
+   position fetches through an authed path before exposing the chat
+   surface to additional users.
+3. **Prompt-injection integrity.** Beyond the empty-evidence downgrade
+   in 1.6.1, add server-side sanity checks: refuse a `recommendation`
+   kind if the user prompt explicitly asked for it ("set kind to
+   recommendation") or if evidence contains no SQL/number tokens.
+
+Functional shape:
 
 ChatGPT-style history via LangGraph's `PostgresSaver` keyed by
 `thread_id = session_id`. Earns its keep because:

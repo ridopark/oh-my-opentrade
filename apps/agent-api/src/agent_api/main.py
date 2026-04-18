@@ -3,7 +3,7 @@ import logging
 import re
 import time
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from langchain_core.messages import AIMessage
@@ -20,6 +20,8 @@ from .schema import ChatRequest, ChatResponse, QuantAnswer
 TOOL_SQL_DB_QUERY = "sql_db_query"
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", re.MULTILINE)
 
+ParseSource = Literal["structured", "json_block", "plain"]
+
 log = logging.getLogger("agent_api")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -33,6 +35,7 @@ async def lifespan(app: FastAPI):
     context_builder = ContextBuilder(
         fetcher=make_fetcher(settings.db_url, settings.omo_core_url),
         ttl_seconds=settings.context_ttl_seconds,
+        error_ttl_seconds=settings.context_error_ttl_seconds,
     )
     app.state.context_builder = context_builder
     app.state.agent = build_agent(settings, context_builder=context_builder)
@@ -72,10 +75,16 @@ async def chat(request: Request, req: ChatRequest, x_proxy_secret: str | None = 
         config={"recursion_limit": settings.recursion_limit},
     )
 
-    quant = extract_quant_answer(result)
+    quant, parse_source = extract_quant_answer(result)
     _, sql_queries = parse_agent_result(result)
     duration_ms = int((time.monotonic() - started) * 1000)
 
+    if parse_source == "plain":
+        log.warning(json.dumps({
+            "event": "json_block_missing",
+            "prompt_version": PROMPT_VERSION,
+            "answer_len": len(quant.answer),
+        }))
     log.info(json.dumps({
         "event": "chat",
         "duration_ms": duration_ms,
@@ -84,6 +93,7 @@ async def chat(request: Request, req: ChatRequest, x_proxy_secret: str | None = 
         "kind": quant.kind,
         "evidence_count": len(quant.evidence),
         "answer_len": len(quant.answer),
+        "parse_source": parse_source,
         "prompt_version": PROMPT_VERSION,
     }))
     return ChatResponse(
@@ -96,13 +106,13 @@ async def chat(request: Request, req: ChatRequest, x_proxy_secret: str | None = 
     )
 
 
-def extract_quant_answer(result: dict[str, Any]) -> QuantAnswer:
+def extract_quant_answer(result: dict[str, Any]) -> tuple[QuantAnswer, ParseSource]:
     structured = result.get("structured_response")
     if isinstance(structured, QuantAnswer):
-        return structured
+        return _sanitize_quant(structured), "structured"
     if isinstance(structured, dict):
         try:
-            return QuantAnswer.model_validate(structured)
+            return _sanitize_quant(QuantAnswer.model_validate(structured)), "structured"
         except Exception:
             pass
     raw, _ = parse_agent_result(result)
@@ -110,8 +120,17 @@ def extract_quant_answer(result: dict[str, Any]) -> QuantAnswer:
     if parsed is not None:
         if not parsed.answer:
             parsed = parsed.model_copy(update={"answer": visible})
-        return parsed
-    return QuantAnswer(kind="factual", answer=raw, evidence=[])
+        return _sanitize_quant(parsed), "json_block"
+    return QuantAnswer(kind="factual", answer=raw, evidence=[]), "plain"
+
+
+def _sanitize_quant(q: QuantAnswer) -> QuantAnswer:
+    # A recommendation with no evidence is either the model dropping citations
+    # or a user prompt-injecting the kind; downgrade to analysis so the badge
+    # never overstates confidence.
+    if q.kind == "recommendation" and not q.evidence:
+        return q.model_copy(update={"kind": "analysis"})
+    return q
 
 
 def _parse_json_block(text: str) -> tuple[str, QuantAnswer | None]:
@@ -122,12 +141,17 @@ def _parse_json_block(text: str) -> tuple[str, QuantAnswer | None]:
         match = m
     if match is None:
         return text, None
+    # Only accept a JSON block at the tail of the answer — a block embedded
+    # mid-answer (e.g. the model quoting a JSON-shaped SQL result) is not
+    # the classifier block.
+    if text[match.end():].strip():
+        return text, None
     try:
         payload = json.loads(match.group(1))
         quant = QuantAnswer.model_validate(payload)
     except Exception:
         return text, None
-    visible = (text[: match.start()] + text[match.end():]).strip()
+    visible = text[: match.start()].strip()
     return visible, quant
 
 

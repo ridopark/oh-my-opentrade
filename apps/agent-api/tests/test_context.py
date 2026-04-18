@@ -46,8 +46,38 @@ def test_fetcher_error_is_cached_to_avoid_hot_retry():
         calls["n"] += 1
         raise RuntimeError("db down")
 
-    cb = ContextBuilder(fetcher=fetch, ttl_seconds=60.0)
+    cb = ContextBuilder(fetcher=fetch, ttl_seconds=60.0, error_ttl_seconds=60.0)
     cb.build()
     cb.build()
     cb.build()
+    assert calls["n"] == 1
+
+
+def test_error_ttl_is_shorter_than_success_ttl():
+    calls = {"n": 0}
+
+    def fetch():
+        calls["n"] += 1
+        raise RuntimeError("db down")
+
+    cb = ContextBuilder(fetcher=fetch, ttl_seconds=300.0, error_ttl_seconds=0.01)
+    cb.build()
+    time.sleep(0.02)
+    cb.build()
+    assert calls["n"] == 2
+
+
+def test_success_uses_long_ttl_even_after_error_window():
+    results = iter(["block-ok", "block-second"])
+    calls = {"n": 0}
+
+    def fetch():
+        calls["n"] += 1
+        return next(results)
+
+    cb = ContextBuilder(fetcher=fetch, ttl_seconds=60.0, error_ttl_seconds=0.01)
+    first = cb.build()
+    time.sleep(0.02)
+    second = cb.build()
+    assert first == second == "block-ok"
     assert calls["n"] == 1
