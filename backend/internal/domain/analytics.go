@@ -162,18 +162,19 @@ func ComputeSharpe(dailyReturns []float64) *float64 {
 // expectancy depends on one outlier rather than a repeatable edge: if the
 // adjusted PF drops below 1.0, the strategy loses money without that trade.
 //
-// Returns nil when the result is not meaningful: too few trades, no losses to
-// divide against, or the largest winner alone exceeds total gross profit
-// (which would yield a negative numerator).
-func ComputeOutlierRemovedPF(grossProfit, grossLoss, largestWin float64, tradeCount int) *float64 {
-	if tradeCount < 2 || grossLoss <= 0 || largestWin <= 0 {
+// grossLossMagnitude is the absolute value of gross losses (positive), not the
+// signed StrategySummaryRow.GrossLoss. Returns nil when the result is not
+// meaningful: too few trades, no losses to divide against, or the largest
+// winner alone exceeds total gross profit.
+func ComputeOutlierRemovedPF(grossProfit, grossLossMagnitude, largestWin float64, tradeCount int) *float64 {
+	if tradeCount < 2 || grossLossMagnitude <= 0 || largestWin <= 0 {
 		return nil
 	}
 	adjustedProfit := grossProfit - largestWin
 	if adjustedProfit < 0 {
 		return nil
 	}
-	pf := adjustedProfit / grossLoss
+	pf := adjustedProfit / grossLossMagnitude
 	return &pf
 }
 
