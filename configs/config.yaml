@@ -103,6 +103,15 @@ ai:
   min_confidence: 0.6
   enabled: false
 
+recap:
+  enabled: true
+  provider: "anthropic"       # "openai" (via cfg.AI) or "anthropic" (direct)
+  model: "claude-haiku-4-5"   # canonical Anthropic model id
+  # base_url: defaults to https://api.anthropic.com for provider=anthropic
+  # api_key_env: defaults to ANTHROPIC_API_KEY for provider=anthropic
+  # run_at_hour_et: 17 (default)
+  # run_at_minute_et: 15 (default)
+
 notification:
   # telegram_bot_token: loaded from env TELEGRAM_BOT_TOKEN
   # telegram_chat_id: loaded from env TELEGRAM_CHAT_ID
