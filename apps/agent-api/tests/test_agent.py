@@ -1,8 +1,9 @@
 from langchain_core.messages import AIMessage, HumanMessage
 
 from agent_api.config import ALLOWED_TABLES, Settings
-from agent_api.main import parse_agent_result
-from agent_api.schema import ChatMessage, ChatRequest
+from agent_api.main import extract_quant_answer, parse_agent_result
+from agent_api.prompts import PROMPT_VERSION
+from agent_api.schema import ChatMessage, ChatRequest, QuantAnswer
 
 
 def test_allowed_tables_excludes_sensitive():
@@ -118,3 +119,46 @@ def test_parse_agent_result_empty_when_no_ai_text():
     answer, sql = parse_agent_result(result)
     assert answer == ""
     assert sql == ["SELECT 1"]
+
+
+def test_extract_quant_answer_from_structured_response():
+    quant = QuantAnswer(kind="analysis", answer="MACD PF is 1.3", evidence=["SELECT 1"])
+    result = {"messages": [], "structured_response": quant}
+    out = extract_quant_answer(result)
+    assert out.kind == "analysis"
+    assert out.answer == "MACD PF is 1.3"
+    assert out.evidence == ["SELECT 1"]
+
+
+def test_extract_quant_answer_from_structured_dict():
+    result = {
+        "messages": [],
+        "structured_response": {
+            "kind": "recommendation",
+            "answer": "Cut size on MACD.",
+            "evidence": ["PF=0.8 over 120 trades"],
+        },
+    }
+    out = extract_quant_answer(result)
+    assert out.kind == "recommendation"
+    assert out.evidence == ["PF=0.8 over 120 trades"]
+
+
+def test_extract_quant_answer_from_frontmatter_fallback():
+    payload = '```json\n{"kind":"factual","answer":"579 trades","evidence":[]}\n```'
+    result = {"messages": [AIMessage(content=payload)]}
+    out = extract_quant_answer(result)
+    assert out.kind == "factual"
+    assert out.answer == "579 trades"
+
+
+def test_extract_quant_answer_plain_text_fallback():
+    result = {"messages": [AIMessage(content="just 579")]}
+    out = extract_quant_answer(result)
+    assert out.kind == "factual"
+    assert out.answer == "just 579"
+    assert out.evidence == []
+
+
+def test_prompt_version_is_v1():
+    assert PROMPT_VERSION == "v1"

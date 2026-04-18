@@ -1,19 +1,27 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Database, Loader2 } from "lucide-react";
+import { Send, Database, Loader2, CheckSquare } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { type ChatMessage, useChatMutation } from "./use-chat";
+import { type AnswerKind, type ChatMessage, useChatMutation } from "./use-chat";
 
 interface AssistantTurn {
   role: "assistant";
   content: string;
+  kind: AnswerKind;
+  evidence: string[];
   sql: string[];
   durationMs: number;
 }
 
 type Turn = { role: "user"; content: string } | AssistantTurn;
+
+const KIND_STYLE: Record<AnswerKind, { label: string; className: string }> = {
+  factual: { label: "FACTUAL", className: "bg-muted text-muted-foreground" },
+  analysis: { label: "ANALYSIS", className: "bg-amber-500/15 text-amber-700 dark:text-amber-300" },
+  recommendation: { label: "RECOMMENDATION", className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" },
+};
 
 export function ChatPanel() {
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -38,7 +46,14 @@ export function ChatPanel() {
       onSuccess: (resp) => {
         setTurns((prev) => [
           ...prev,
-          { role: "assistant", content: resp.answer, sql: resp.sql_queries, durationMs: resp.duration_ms },
+          {
+            role: "assistant",
+            content: resp.answer,
+            kind: resp.kind,
+            evidence: resp.evidence,
+            sql: resp.sql_queries,
+            durationMs: resp.duration_ms,
+          },
         ]);
       },
     });
@@ -111,11 +126,30 @@ function UserBubble({ content }: { content: string }) {
 
 function AssistantBubble({ turn }: { turn: AssistantTurn }) {
   const [showSql, setShowSql] = useState(false);
+  const kindStyle = KIND_STYLE[turn.kind] ?? KIND_STYLE.factual;
   return (
     <div className="max-w-[85%] space-y-2">
+      <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wide ${kindStyle.className}`}>
+        {kindStyle.label}
+      </span>
       <div className="rounded-lg bg-accent px-3 py-2 text-sm text-accent-foreground whitespace-pre-wrap">
         {turn.content || <span className="italic text-muted-foreground">(empty response)</span>}
       </div>
+      {turn.evidence.length > 0 && (
+        <div className="rounded border border-border/70 bg-background/50 px-2.5 py-2 text-xs">
+          <div className="mb-1 flex items-center gap-1 text-muted-foreground">
+            <CheckSquare className="h-3 w-3" />
+            <span className="font-semibold">Evidence</span>
+          </div>
+          <ul className="space-y-1">
+            {turn.evidence.map((e, i) => (
+              <li key={i} className="text-muted-foreground">
+                {e}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {turn.sql.length > 0 && (
         <div className="text-xs">
           <button
