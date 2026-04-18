@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Send, Database, Loader2, CheckSquare } from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { type AnswerKind, type ChatMessage, useChatMutation } from "./use-chat";
 
@@ -17,10 +18,16 @@ interface AssistantTurn {
 
 type Turn = { role: "user"; content: string } | AssistantTurn;
 
-const KIND_STYLE: Record<AnswerKind, { label: string; className: string }> = {
-  factual: { label: "FACTUAL", className: "bg-muted text-muted-foreground" },
-  analysis: { label: "ANALYSIS", className: "bg-amber-500/15 text-amber-700 dark:text-amber-300" },
-  recommendation: { label: "RECOMMENDATION", className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" },
+const KIND_BADGE: Record<AnswerKind, { label: string; className: string }> = {
+  factual: { label: "FACTUAL", className: "bg-muted text-muted-foreground border-transparent" },
+  analysis: {
+    label: "ANALYSIS",
+    className: "border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300",
+  },
+  recommendation: {
+    label: "RECOMMENDATION",
+    className: "border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+  },
 };
 
 export function ChatPanel() {
@@ -126,12 +133,12 @@ function UserBubble({ content }: { content: string }) {
 
 function AssistantBubble({ turn }: { turn: AssistantTurn }) {
   const [showSql, setShowSql] = useState(false);
-  const kindStyle = KIND_STYLE[turn.kind] ?? KIND_STYLE.factual;
+  const badge = KIND_BADGE[turn.kind] ?? KIND_BADGE.factual;
   return (
     <div className="max-w-[85%] space-y-2">
-      <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wide ${kindStyle.className}`}>
-        {kindStyle.label}
-      </span>
+      <Badge variant="outline" className={`text-[10px] tracking-wide ${badge.className}`}>
+        {badge.label}
+      </Badge>
       <div className="rounded-lg bg-accent px-3 py-2 text-sm text-accent-foreground whitespace-pre-wrap">
         {turn.content || <span className="italic text-muted-foreground">(empty response)</span>}
       </div>

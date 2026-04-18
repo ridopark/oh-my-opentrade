@@ -1,7 +1,6 @@
 import json
 import logging
 import time
-import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Callable
@@ -88,7 +87,7 @@ def fetch_open_positions(omo_core_url: str, timeout: float = 2.0) -> str:
             if resp.status != 200:
                 return ""
             payload = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+    except Exception:
         return ""
 
     positions = payload if isinstance(payload, list) else payload.get("positions", [])
