@@ -156,13 +156,37 @@ services:
     restart: unless-stopped
     depends_on:
     - omo-core
+    - agent-api
     expose:
     - '3000'
     environment:
     - NODE_ENV=production
     - BACKEND_URL=http://omo-core:8080
+    - AGENT_API_URL=http://agent-api:8100
+    - AGENT_PROXY_SHARED_SECRET=${AGENT_PROXY_SHARED_SECRET:-}
     ports:
     - 3000:3000
+    networks:
+    - default
+  agent-api:
+    build:
+      context: ../apps/agent-api
+      dockerfile: Dockerfile
+    container_name: omo-agent-api
+    restart: unless-stopped
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+    - ../.env
+    environment:
+    - AGENT_DB_URL=postgresql+psycopg2://agent_reader:${AGENT_READER_PASSWORD:-changeme_agent_reader}@timescaledb:5432/opentrade
+    - AGENT_ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    - AGENT_PROXY_SHARED_SECRET=${AGENT_PROXY_SHARED_SECRET:-}
+    expose:
+    - '8100'
     networks:
     - default
   prometheus:

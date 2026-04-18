@@ -16,6 +16,7 @@ import {
   X,
   Settings,
   Radio,
+  MessageSquare,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -34,6 +35,7 @@ const navItems = [
   { href: "/screener", label: "Screener", icon: Activity },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   { href: "/strategies", label: "Strategies", icon: Layers },
+  { href: "/chat", label: "Chat", icon: MessageSquare },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
