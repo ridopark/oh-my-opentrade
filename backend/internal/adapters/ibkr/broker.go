@@ -321,13 +321,30 @@ func (a *Adapter) GetPositions(_ context.Context, tenantID string, envMode domai
 				t.Symbol = domain.Symbol(occ)
 				t.OptionSymbol = occ
 			}
-			// AvgCost for options is per-share, not per-contract
-			t.Price = p.AvgCost
+			t.Price = optionPerShareFromAvgCost(p.AvgCost, p.Contract.Multiplier)
 		}
 
 		trades = append(trades, t)
 	}
 	return trades, nil
+}
+
+// optionPerShareFromAvgCost converts IBKR's per-contract AvgCost (=
+// premium × multiplier, standard IB TWS API convention) to per-share so
+// the rest of the system -- which expects Price to be per-share and
+// applies domain.InstrumentMultiplier downstream -- doesn't 100x-inflate
+// P&L when a broker-bootstrapped option position is later sold. Falls
+// back to 100 if the contract string is missing or unparseable; zero
+// is rejected to avoid a divide-by-zero that would silently mask the
+// bug instead of surfacing it.
+func optionPerShareFromAvgCost(avgCost float64, multiplierStr string) float64 {
+	mult := 100.0
+	if multiplierStr != "" {
+		if parsed, err := strconv.ParseFloat(multiplierStr, 64); err == nil && parsed > 0 {
+			mult = parsed
+		}
+	}
+	return avgCost / mult
 }
 
 func (a *Adapter) GetPosition(_ context.Context, symbol domain.Symbol) (float64, error) {
@@ -538,7 +555,7 @@ func (a *Adapter) GetFreshPositions(_ context.Context, tenantID string, envMode 
 				t.Symbol = domain.Symbol(occ)
 				t.OptionSymbol = occ
 			}
-			t.Price = p.AvgCost
+			t.Price = optionPerShareFromAvgCost(p.AvgCost, p.Contract.Multiplier)
 		}
 		trades = append(trades, t)
 	}
