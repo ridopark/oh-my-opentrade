@@ -7,7 +7,10 @@ interface Props {
 
 export default async function ChatPage({ params }: Props) {
   const { session_id } = await params;
-  const activeId = session_id?.[0] ?? null;
+  // Only accept a single-segment session id. Deeper paths like /chat/a/b are
+  // bogus; treat them as a no-session landing instead of silently snapping
+  // onto the first segment.
+  const activeId = session_id && session_id.length === 1 ? session_id[0] : null;
 
   return (
     <div className="-m-3 flex h-[calc(100vh-4.5rem)] md:-m-6">

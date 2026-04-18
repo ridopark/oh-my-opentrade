@@ -32,12 +32,26 @@ async def generate_and_persist_title(
         exchange = f"User: {user_message}\n\nAssistant: {assistant_answer}"[:2000]
         resp = await llm.ainvoke([SystemMessage(content=_TITLE_SYSTEM), HumanMessage(content=exchange)])
         title = _clean_title(resp.content if isinstance(resp.content, str) else str(resp.content))
-        if not title:
-            return
-        await repo.rename(session_id, title)
-        log.info(json.dumps({"event": "title_generated", "session_id": str(session_id), "title": title}))
     except Exception as e:
         log.warning(json.dumps({"event": "title_gen_failed", "session_id": str(session_id), "error": str(e)}))
+        return
+
+    if not title:
+        log.info(json.dumps({"event": "title_gen_empty", "session_id": str(session_id)}))
+        return
+
+    try:
+        await repo.rename(session_id, title)
+    except Exception as e:
+        log.warning(json.dumps({
+            "event": "title_gen_persist_failed",
+            "session_id": str(session_id),
+            "title": title,
+            "error": str(e),
+        }))
+        return
+
+    log.info(json.dumps({"event": "title_generated", "session_id": str(session_id), "title": title}))
 
 
 def _clean_title(raw: str) -> str:

@@ -64,6 +64,9 @@ class SessionRepo:
         return [_row(r) for r in rows]
 
     async def rename(self, session_id: UUID, title: str) -> Optional[ChatSessionRow]:
+        # Two-query pattern (UPDATE + follow-up SELECT) keeps this working
+        # against both Postgres in prod and aiosqlite in tests — SQLite does
+        # not support UPDATE ... RETURNING through aiosqlite's driver.
         now = datetime.now(UTC)
         async with self._session() as s, s.begin():
             await s.execute(

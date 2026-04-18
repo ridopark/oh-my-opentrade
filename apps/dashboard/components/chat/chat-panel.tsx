@@ -54,30 +54,32 @@ export function ChatPanel({ sessionId }: Props) {
   const [draft, setDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Hydrate local turns from persisted session messages whenever the selected
-  // session changes. For a brand-new session (no id in the URL) start empty.
+  // Hydrate local turns once per selected session. Re-running this when
+  // `session.data` changes (e.g. a refetch after sending a turn) would clobber
+  // the locally-appended turn with the rehydrated history; gate hydration to
+  // actual session switches.
   useEffect(() => {
     if (!sessionId) {
       setLocalTurns([]);
       return;
     }
-    if (session.data) {
-      setLocalTurns(
-        session.data.messages.map((m) =>
-          m.role === "user"
-            ? { role: "user", content: m.content }
-            : {
-                role: "assistant",
-                content: m.content,
-                kind: "factual",
-                evidence: [],
-                sql: [],
-                durationMs: 0,
-              },
-        ),
-      );
-    }
-  }, [sessionId, session.data]);
+    if (!session.data) return;
+    setLocalTurns(
+      session.data.messages.map((m) =>
+        m.role === "user"
+          ? { role: "user", content: m.content }
+          : {
+              role: "assistant",
+              content: m.content,
+              kind: "factual",
+              evidence: [],
+              sql: [],
+              durationMs: 0,
+            },
+      ),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });

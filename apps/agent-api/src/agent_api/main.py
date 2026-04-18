@@ -7,8 +7,8 @@ from contextlib import asynccontextmanager
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Header, Request
-from langchain_core.messages import AIMessage, HumanMessage
+from fastapi import FastAPI, HTTPException, Header, Request
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -139,13 +139,22 @@ async def chat(request: Request, req: ChatRequest, x_proxy_secret: str | None = 
     agent = app.state.agent
     started = time.monotonic()
 
-    result = await agent.graph.ainvoke(
-        {"messages": [HumanMessage(content=req.user_message)]},
-        config={
-            "recursion_limit": settings.recursion_limit,
-            "configurable": {"thread_id": str(session_id)},
-        },
-    )
+    try:
+        result = await agent.graph.ainvoke(
+            {"messages": [HumanMessage(content=req.user_message)]},
+            config={
+                "recursion_limit": settings.recursion_limit,
+                "configurable": {"thread_id": str(session_id)},
+            },
+        )
+    except Exception:
+        # Don't leave an orphan empty session behind if the very first turn
+        # fails (LLM quota, network, etc.). Sessions created before this call
+        # get rolled back; existing sessions are left alone so their history
+        # survives the failure.
+        if created_session:
+            await repo.soft_delete(session_id)
+        raise
 
     quant, parse_source = extract_quant_answer(result)
     _, sql_queries = parse_agent_result(result)
@@ -218,24 +227,28 @@ async def get_session(
     settings: Settings = app.state.settings
     _check_proxy_secret(settings, x_proxy_secret)
     repo: SessionRepo = app.state.session_repo
-    row = await repo.get(session_id)
+    agent = app.state.agent
+
+    async def _snap():
+        try:
+            return await agent.graph.aget_state(
+                {"configurable": {"thread_id": str(session_id)}}
+            )
+        except Exception as e:
+            log.warning(json.dumps({
+                "event": "session_state_fetch_failed",
+                "session_id": str(session_id),
+                "error": str(e),
+            }))
+            return None
+
+    row, snap = await asyncio.gather(repo.get(session_id), _snap())
     if row is None:
         raise HTTPException(status_code=404, detail="session not found")
 
-    agent = app.state.agent
     messages: list[ChatMessage] = []
-    try:
-        snap = await agent.graph.aget_state(
-            {"configurable": {"thread_id": str(session_id)}}
-        )
-        if snap and snap.values:
-            messages = _snapshot_to_user_facing(snap.values.get("messages", []))
-    except Exception as e:
-        log.warning(json.dumps({
-            "event": "session_state_fetch_failed",
-            "session_id": str(session_id),
-            "error": str(e),
-        }))
+    if snap and snap.values:
+        messages = _snapshot_to_user_facing(snap.values.get("messages", []))
 
     summary = _row_to_summary(row)
     return SessionDetail(**summary.model_dump(), messages=messages)
@@ -283,16 +296,15 @@ def _row_to_summary(row) -> SessionSummary:
     )
 
 
-def _snapshot_to_user_facing(raw_messages: list) -> list[ChatMessage]:
+def _snapshot_to_user_facing(raw_messages: list[BaseMessage]) -> list[ChatMessage]:
     out: list[ChatMessage] = []
     for m in raw_messages:
-        role = getattr(m, "type", None)
-        if role == "human":
-            text = _extract_text(getattr(m, "content", ""))
+        if isinstance(m, HumanMessage):
+            text = _extract_text(m.content)
             if text:
                 out.append(ChatMessage(role="user", content=text))
-        elif role == "ai":
-            text = _extract_text(getattr(m, "content", ""))
+        elif isinstance(m, AIMessage):
+            text = _extract_text(m.content)
             if text:
                 # Strip the fenced JSON classifier block before showing to the user.
                 visible, _ = _parse_json_block(text)
