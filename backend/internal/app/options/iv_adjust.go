@@ -83,11 +83,21 @@ func AdjustIV(baseIV float64, adj IVAdjustment) float64 {
 }
 
 // moveCrushMultiplier returns the IV multiplier from the move-based crush
-// component. Uses MoveCrushCallK for calls and MoveCrushPutK for puts. Zero k
-// for the relevant side disables the effect. Output is floored at
-// MoveCrushFloor (or 0.1 if unset) so a large move can't collapse IV
-// arbitrarily.
+// component. Only fires when the underlying moved in the option's favorable
+// direction: calls crush on up-moves, puts crush on down-moves. On adverse
+// moves the option was NOT positioned for, IV typically holds or expands
+// (skew support), so we leave IV unchanged.
+//
+// Uses MoveCrushCallK for calls and MoveCrushPutK for puts. Zero k for
+// the relevant side disables the effect. Output is floored at
+// MoveCrushFloor (or 0.1 if unset) so a large favorable move can't collapse
+// IV arbitrarily.
 func moveCrushMultiplier(adj IVAdjustment) float64 {
+	favorable := (adj.IsCall && adj.UnderlyingRetPct > 0) ||
+		(!adj.IsCall && adj.UnderlyingRetPct < 0)
+	if !favorable {
+		return 1.0
+	}
 	k := adj.MoveCrushPutK
 	if adj.IsCall {
 		k = adj.MoveCrushCallK
@@ -96,9 +106,6 @@ func moveCrushMultiplier(adj IVAdjustment) float64 {
 		return 1.0
 	}
 	absRet := math.Abs(adj.UnderlyingRetPct)
-	if absRet <= 0 {
-		return 1.0
-	}
 	mult := 1.0 - k*absRet
 	floor := adj.MoveCrushFloor
 	if floor <= 0 {

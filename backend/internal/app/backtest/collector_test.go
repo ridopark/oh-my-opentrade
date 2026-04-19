@@ -291,6 +291,31 @@ func TestResult_AllLosses(t *testing.T) {
 	assert.InDelta(t, 0.0, r.ProfitFactor, 1e-9)
 }
 
+// TestOnFill_PartialSellsCountIndividually pins the partial-exit semantic:
+// each sell is one round-trip trade even if the buy side was one fill.
+// Before Phase 3, sells below cost were counted as separate losing trades
+// while winners collapsed into a single trade; the new rule is symmetric
+// across win/loss and across full/partial exits.
+func TestOnFill_PartialSellsCountIndividually(t *testing.T) {
+	bus, c := newCollector(t, backtest.Config{InitialEquity: 10_000, PeriodsPerYear: 252})
+	t0 := time.Date(2026, 1, 1, 9, 30, 0, 0, time.UTC)
+
+	// 100 long @ $10, exited in 4 x 25-share sells at varied prices.
+	publishFill(t, bus, "b1", fillPayload("AAPL", "buy", 100.0, 10.0, t0))
+	publishFill(t, bus, "s1", fillPayload("AAPL", "sell", 25.0, 12.0, t0.Add(1*time.Second)))
+	publishFill(t, bus, "s2", fillPayload("AAPL", "sell", 25.0, 9.0, t0.Add(2*time.Second)))
+	publishFill(t, bus, "s3", fillPayload("AAPL", "sell", 25.0, 11.0, t0.Add(3*time.Second)))
+	publishFill(t, bus, "s4", fillPayload("AAPL", "sell", 25.0, 10.0, t0.Add(4*time.Second)))
+
+	r := c.Result()
+	assert.Equal(t, 4, r.TradeCount, "each partial sell counts as one round-trip")
+	assert.Equal(t, 2, r.WinCount, "s1 and s3 are wins")
+	assert.Equal(t, 1, r.LossCount, "s2 is a loss")
+	// s4 is breakeven — counts in TradeCount but neither wins nor losses.
+	// PnL: 25*(12-10) + 25*(9-10) + 25*(11-10) + 25*(10-10) = 50 - 25 + 25 = 50
+	assert.InDelta(t, 50.0, r.TotalPnL, 1e-9)
+}
+
 // TestOnFill_BreakevenRoundTripCountsAsTrade guards the round-trip
 // definition: a flat exit (PnL == 0) is still one closed trade and must
 // increment TradeCount, but it adds to neither WinCount nor LossCount.
