@@ -199,7 +199,7 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 			// green while connected; the UI surfaces the probe time.
 			return time.Now().UTC(), ""
 		}),
-		omhttp.FeedDataSource("alpaca", "Alpaca SIP", 60*time.Second, func(ctx context.Context) (time.Time, string) {
+		omhttp.GatedFeedDataSource("alpaca", "Alpaca SIP", 60*time.Second, func(ctx context.Context) (time.Time, string) {
 			if svc.ingestion == nil {
 				return time.Time{}, "ingestion not initialized"
 			}
@@ -208,7 +208,7 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 				return time.Time{}, "no equity bars seen"
 			}
 			return last, "stale equity feed"
-		}),
+		}, func() bool { return domain.IsEquityMarketOpen(time.Now()) }),
 		omhttp.FeedDataSource("omo-data", "omo-data", 5*time.Minute, func(ctx context.Context) (time.Time, string) {
 			// omo-data fronts crypto 1m bars; we use the crypto pipeline
 			// timestamp as a proxy. Threshold is looser (5m) because crypto

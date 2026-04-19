@@ -510,10 +510,13 @@ export interface StrategyLiveness {
 // Backend: GET /api/health/datasources
 // ---------------------------------------------------------------------------
 
+export type DataSourceState = "healthy" | "unhealthy" | "closed";
+
 export interface DataSource {
   id: string;          // stable key: "ibkr" | "alpaca" | "omo-data" | "database" | ...
   label: string;       // display name
   healthy: boolean;
+  state?: DataSourceState; // tri-state; absent on backends predating the rollout (fall back to healthy)
   lastEventAt: string | null; // RFC3339 or null if never seen
   detail?: string;     // optional human-readable status (e.g. last error)
 }

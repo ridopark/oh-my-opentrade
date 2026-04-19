@@ -9,18 +9,32 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// DataSourceState is the tri-state the dashboard renders: healthy (green),
+// unhealthy (red), or closed (gray). "closed" means the source is intentionally
+// idle — e.g. the US equity WebSocket feed during weekends and after hours —
+// which is operationally different from a feed that should be live but isn't.
+type DataSourceState string
+
+const (
+	StateHealthy   DataSourceState = "healthy"
+	StateUnhealthy DataSourceState = "unhealthy"
+	StateClosed    DataSourceState = "closed"
+)
+
 // DataSourceStatus is the per-source row returned by GET /api/health/datasources.
 // The dashboard header renders four dots (IBKR, Alpaca, omo-data, DB) using
 // this shape — the id/label split lets the client key on a stable id while
 // still rendering a human-friendly label. LastEventAt is optional (zero
 // value marshals as the RFC3339 zero time and the UI treats IsZero as
-// "never").
+// "never"). Healthy is kept alongside State for dashboards that predate the
+// tri-state rollout: Healthy == (State == StateHealthy).
 type DataSourceStatus struct {
-	ID          string    `json:"id"`
-	Label       string    `json:"label"`
-	Healthy     bool      `json:"healthy"`
-	LastEventAt time.Time `json:"lastEventAt"`
-	Detail      string    `json:"detail,omitempty"`
+	ID          string          `json:"id"`
+	Label       string          `json:"label"`
+	Healthy     bool            `json:"healthy"`
+	State       DataSourceState `json:"state"`
+	LastEventAt time.Time       `json:"lastEventAt"`
+	Detail      string          `json:"detail,omitempty"`
 }
 
 // DataSourceHealthResponse is the envelope for /api/health/datasources.
@@ -91,7 +105,7 @@ func (h *DataSourceHealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Reque
 // sidecar the core talks to directly).
 func StaticDataSource(id, label string) DataSourceCheck {
 	return func(_ context.Context) DataSourceStatus {
-		return DataSourceStatus{ID: id, Label: label, Healthy: true}
+		return DataSourceStatus{ID: id, Label: label, Healthy: true, State: StateHealthy}
 	}
 }
 
@@ -103,9 +117,9 @@ func DBDataSource(id, label string, ping func(ctx context.Context) error) DataSo
 		pCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 		if err := ping(pCtx); err != nil {
-			return DataSourceStatus{ID: id, Label: label, Healthy: false, Detail: err.Error()}
+			return DataSourceStatus{ID: id, Label: label, Healthy: false, State: StateUnhealthy, Detail: err.Error()}
 		}
-		return DataSourceStatus{ID: id, Label: label, Healthy: true, LastEventAt: time.Now().UTC()}
+		return DataSourceStatus{ID: id, Label: label, Healthy: true, State: StateHealthy, LastEventAt: time.Now().UTC()}
 	}
 }
 
@@ -116,15 +130,36 @@ func DBDataSource(id, label string, ping func(ctx context.Context) error) DataSo
 // within threshold" logic in every wiring site. probe returns (lastEvent,
 // detail) — detail is shown on the UI only when the dot is unhealthy.
 func FeedDataSource(id, label string, threshold time.Duration, probe func(ctx context.Context) (time.Time, string)) DataSourceCheck {
+	return GatedFeedDataSource(id, label, threshold, probe, nil)
+}
+
+// GatedFeedDataSource is FeedDataSource plus an optional openGate. When the
+// gate returns false AND the feed is not healthy, the source reports
+// state=closed with a "market closed" detail instead of red-unhealthy. This
+// lets the dashboard distinguish "feed intentionally quiet (weekends, after
+// hours)" from "feed should be live but isn't". When openGate is nil, behavior
+// matches FeedDataSource.
+func GatedFeedDataSource(
+	id, label string,
+	threshold time.Duration,
+	probe func(ctx context.Context) (time.Time, string),
+	openGate func() bool,
+) DataSourceCheck {
 	return func(ctx context.Context) DataSourceStatus {
 		last, detail := probe(ctx)
-		status := DataSourceStatus{ID: id, Label: label, LastEventAt: last, Detail: detail}
+		status := DataSourceStatus{ID: id, Label: label, LastEventAt: last, Detail: detail, State: StateUnhealthy}
 		if !last.IsZero() && time.Since(last) < threshold {
 			status.Healthy = true
+			status.State = StateHealthy
 			// A healthy dot shouldn't carry the detail line; the UI would
 			// otherwise render "IBKR OK — last tick 3s ago" vs the cleaner
 			// plain "IBKR".
 			status.Detail = ""
+			return status
+		}
+		if openGate != nil && !openGate() {
+			status.State = StateClosed
+			status.Detail = "market closed"
 		}
 		return status
 	}

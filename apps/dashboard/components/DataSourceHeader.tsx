@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useDataSourceHealth } from "@/hooks/queries";
 import { cn } from "@/lib/utils";
-import type { DataSource } from "@/lib/types";
+import type { DataSource, DataSourceState } from "@/lib/types";
 
 // Phase 3: dashboard-wide health strip. Designed to be subtle — one row of
 // small dots + labels, no icons, no card chrome — so it sits above every
@@ -41,11 +41,24 @@ function mergeSources(remote: DataSource[] | undefined): DataSource[] {
   return merged;
 }
 
-function dotColor(source: DataSource, unknown: boolean): string {
+// Backends predating the tri-state rollout send only `healthy`. Derive state
+// from that single flag so this component works against mixed deployments.
+function resolveState(source: DataSource): DataSourceState {
+  if (source.state) return source.state;
+  return source.healthy ? "healthy" : "unhealthy";
+}
+
+function dotColor(state: DataSourceState, unknown: boolean): string {
   if (unknown) return "bg-muted-foreground/40";
-  if (!source.healthy) return "bg-rose-500";
-  if (source.lastEventAt === null) return "bg-muted-foreground/50";
-  return "bg-emerald-500";
+  switch (state) {
+    case "healthy":
+      return "bg-emerald-500";
+    case "closed":
+      return "bg-muted-foreground/40";
+    case "unhealthy":
+    default:
+      return "bg-rose-500";
+  }
 }
 
 function formatAge(ts: string | null, nowMs: number): string {
@@ -86,9 +99,15 @@ export function DataSourceHeader({ className }: { className?: string }) {
       </span>
       {sources.map((s) => {
         const unknown = endpointUnknown;
+        const state = resolveState(s);
         const tooltip = unknown
           ? `${s.label}: unknown (endpoint unavailable)`
-          : `${s.label}: ${s.healthy ? "healthy" : "unhealthy"} · last event ${formatAge(s.lastEventAt, nowMs)}${s.detail ? ` · ${s.detail}` : ""}`;
+          : `${s.label}: ${state} · last event ${formatAge(s.lastEventAt, nowMs)}${s.detail ? ` · ${s.detail}` : ""}`;
+        const ageLabel = unknown
+          ? "unknown"
+          : state === "closed"
+            ? `${formatAge(s.lastEventAt, nowMs)} · market closed`
+            : formatAge(s.lastEventAt, nowMs);
         return (
           <span
             key={s.id}
@@ -99,13 +118,11 @@ export function DataSourceHeader({ className }: { className?: string }) {
               aria-hidden
               className={cn(
                 "inline-block h-2 w-2 rounded-full",
-                dotColor(s, unknown),
+                dotColor(state, unknown),
               )}
             />
             <span className="text-foreground/80">{s.label}</span>
-            <span className="tabular-nums text-muted-foreground">
-              {unknown ? "unknown" : formatAge(s.lastEventAt, nowMs)}
-            </span>
+            <span className="tabular-nums text-muted-foreground">{ageLabel}</span>
           </span>
         );
       })}
