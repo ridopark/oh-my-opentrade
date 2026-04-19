@@ -152,10 +152,13 @@ type OptionQuote struct {
 	BidSize   int
 	AskSize   int
 	Timestamp time.Time
-	// IsSyntheticLast is true when Last is a fabricated value (e.g. the mid)
-	// rather than an actual trade print. Consumers that treat Last as a
-	// realized price should filter on this flag; the zero value (false)
-	// preserves existing live-path behavior.
+	// IsSyntheticLast refers to the Last field ONLY. True when Last is a
+	// fabricated value (e.g. the mid) rather than an actual trade print.
+	// A snapshot can have IsSyntheticLast=true while the surrounding
+	// Bid/Ask/IV/Greeks are real historical data (e.g. DoltHub rows have
+	// real quotes and Greeks but no trade-print column). Consumers that
+	// treat Last as a realized price should filter on this flag; do NOT
+	// use it to infer anything about the other fields on the snapshot.
 	IsSyntheticLast bool
 }
 

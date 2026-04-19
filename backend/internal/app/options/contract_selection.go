@@ -73,7 +73,9 @@ func (s *ContractSelectionService) SelectBestContract(
 			continue
 		}
 
-		if snap.OpenInterest < active.MinOpenInterest {
+		// Skip OI filter when the source doesn't supply OI (DoltHub rows
+		// arrive with 0). Liquidity is gated by MaxSpreadPct below.
+		if snap.OpenInterest > 0 && snap.OpenInterest < active.MinOpenInterest {
 			continue
 		}
 
@@ -111,7 +113,7 @@ func (s *ContractSelectionService) SelectBestContract(
 				deltaReject++
 				continue
 			}
-			if snap.OpenInterest < active.MinOpenInterest {
+			if snap.OpenInterest > 0 && snap.OpenInterest < active.MinOpenInterest {
 				oiReject++
 				continue
 			}

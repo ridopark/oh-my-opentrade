@@ -828,15 +828,17 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 	// Compute remaining DTE in years
 	dteYears := expiry.Sub(barTime).Hours() / (365.25 * 24)
 	if dteYears <= 0 {
-		// Expired — intrinsic value only
+		// Expired — intrinsic value only. OTM-at-expiry returns 0
+		// (worthless), not a $0.01 floor that silently adds
+		// contracts * $0.01 * 100 per universe to the backtest P&L.
 		var intrinsic float64
 		if isCall {
 			intrinsic = underlyingPrice - strike
 		} else {
 			intrinsic = strike - underlyingPrice
 		}
-		if intrinsic < 0.01 {
-			intrinsic = 0.01
+		if intrinsic < 0 {
+			intrinsic = 0
 		}
 		return intrinsic
 	}
@@ -970,6 +972,12 @@ func (b *Broker) computeOptionEntryPrice(intent domain.OrderIntent, isShortEntry
 	}
 
 	// Fallback: tiered half-spread around the mid (intent limit).
+	// optionExitSpreadMult is intentionally reused here — the knob
+	// scales the tiered-spread model on BOTH entry and exit fills so
+	// a single config value controls symmetric spread realism. The
+	// field is still named "exit" for backward compatibility; fold
+	// into an OptionSpreadMultiplier rename when the HTTP surface
+	// next changes.
 	spreadPct := optionSpreadPct(mid) * b.optionExitSpreadMult
 	half := mid * spreadPct
 	if isShortEntry {
