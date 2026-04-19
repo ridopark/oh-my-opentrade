@@ -120,7 +120,7 @@ func RankRuns(runs []SweepRunResult, metric string, ascending bool) []SweepRunRe
 func metricValue(r backtest.Result, metric string) float64 {
 	switch metric {
 	case "sharpe_ratio":
-		return r.SharpeRatio
+		return sharpeOrWorst(r.SharpeRatio)
 	case "profit_factor":
 		return r.ProfitFactor
 	case "total_pnl":
@@ -132,6 +132,16 @@ func metricValue(r backtest.Result, metric string) float64 {
 	case "trade_count":
 		return float64(r.TradeCount)
 	default:
-		return r.SharpeRatio
+		return sharpeOrWorst(r.SharpeRatio)
 	}
+}
+
+// sharpeOrWorst unwraps the nullable Sharpe for sorting. Nil (insufficient
+// data) becomes -Inf so single-day/degenerate runs rank below any valid run
+// instead of tying with a legitimate 0.0.
+func sharpeOrWorst(s *float64) float64 {
+	if s == nil {
+		return math.Inf(-1)
+	}
+	return *s
 }

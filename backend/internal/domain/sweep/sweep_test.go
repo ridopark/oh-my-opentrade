@@ -72,10 +72,11 @@ func TestTotalRuns(t *testing.T) {
 }
 
 func TestRankRuns(t *testing.T) {
+	s1, s2, s3 := 1.0, 3.0, 2.0
 	runs := []SweepRunResult{
-		{Index: 0, Metrics: backtest.Result{SharpeRatio: 1.0}},
-		{Index: 1, Metrics: backtest.Result{SharpeRatio: 3.0}},
-		{Index: 2, Metrics: backtest.Result{SharpeRatio: 2.0}},
+		{Index: 0, Metrics: backtest.Result{SharpeRatio: &s1}},
+		{Index: 1, Metrics: backtest.Result{SharpeRatio: &s2}},
+		{Index: 2, Metrics: backtest.Result{SharpeRatio: &s3}},
 	}
 
 	ranked := RankRuns(runs, "sharpe_ratio", false)

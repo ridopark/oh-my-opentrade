@@ -68,7 +68,7 @@ export function SweepResultsTable({ runs, sweptKeys, onApply, appliedIndex }: Sw
                 <td className={`px-2 py-1.5 font-mono ${pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
                   ${pnl?.toFixed(2)}
                 </td>
-                <td className="px-2 py-1.5 font-mono">{run.metrics.sharpe_ratio?.toFixed(3)}</td>
+                <td className="px-2 py-1.5 font-mono">{run.metrics.sharpe_ratio == null ? "N/A" : run.metrics.sharpe_ratio.toFixed(3)}</td>
                 <td className="px-2 py-1.5 font-mono">{run.metrics.profit_factor?.toFixed(2)}</td>
                 <td className="px-2 py-1.5 font-mono text-red-400">{run.metrics.max_drawdown_pct?.toFixed(2)}%</td>
                 <td className="px-2 py-1.5">
@@ -93,7 +93,7 @@ export function SweepResultsTable({ runs, sweptKeys, onApply, appliedIndex }: Sw
 function metricVal(run: SweepRunResult, key: SortKey): number {
   switch (key) {
     case "total_pnl": return run.metrics.total_pnl ?? 0;
-    case "sharpe_ratio": return run.metrics.sharpe_ratio ?? 0;
+    case "sharpe_ratio": return run.metrics.sharpe_ratio ?? -Infinity;
     case "profit_factor": return run.metrics.profit_factor ?? 0;
     case "win_rate_pct": return run.metrics.win_rate_pct ?? 0;
     case "trade_count": return run.metrics.trade_count ?? 0;

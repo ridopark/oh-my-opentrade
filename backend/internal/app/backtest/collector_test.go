@@ -106,7 +106,8 @@ func TestNewCollector_DefaultPeriodsPerYearAndSubscribes(t *testing.T) {
 	std := math.Sqrt(sumSq / float64(len(returns)-1))
 	expected := (mean / std) * math.Sqrt(252)
 
-	assert.InDelta(t, expected, r.SharpeRatio, 1e-9)
+	require.NotNil(t, r.SharpeRatio)
+	assert.InDelta(t, expected, *r.SharpeRatio, 1e-9)
 }
 
 func TestOnFill_FIFOClosesPosition(t *testing.T) {
@@ -208,7 +209,7 @@ func TestResult_NoTrades(t *testing.T) {
 	assert.Equal(t, 0, r.LossCount)
 	assert.InDelta(t, 0.0, r.WinRate, 1e-9)
 	assert.InDelta(t, 0.0, r.MaxDrawdown, 1e-9)
-	assert.InDelta(t, 0.0, r.SharpeRatio, 1e-9)
+	assert.Nil(t, r.SharpeRatio)
 	assert.InDelta(t, 0.0, r.ProfitFactor, 1e-9)
 }
 
