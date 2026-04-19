@@ -204,11 +204,11 @@ func TestAdjustIV_EarningsRamp(t *testing.T) {
 }
 
 func TestAdjustIV_MoveCrush(t *testing.T) {
-	t.Run("call crushes harder than put on same move", func(t *testing.T) {
+	t.Run("call crushes harder than put on favorable 2% move", func(t *testing.T) {
 		base := 0.30
-		ret := 0.02 // +2% move since entry
-		callAdj := IVAdjustment{MoveCrushEnabled: true, MoveCrushCallK: 0.6, MoveCrushPutK: 0.4, MoveCrushFloor: 0.5, UnderlyingRetPct: ret, IsCall: true}
-		putAdj := IVAdjustment{MoveCrushEnabled: true, MoveCrushCallK: 0.6, MoveCrushPutK: 0.4, MoveCrushFloor: 0.5, UnderlyingRetPct: ret, IsCall: false}
+		// Call on +2% move (favorable) vs put on -2% move (favorable).
+		callAdj := IVAdjustment{MoveCrushEnabled: true, MoveCrushCallK: 0.6, MoveCrushPutK: 0.4, MoveCrushFloor: 0.5, UnderlyingRetPct: 0.02, IsCall: true}
+		putAdj := IVAdjustment{MoveCrushEnabled: true, MoveCrushCallK: 0.6, MoveCrushPutK: 0.4, MoveCrushFloor: 0.5, UnderlyingRetPct: -0.02, IsCall: false}
 		callIV := AdjustIV(base, callAdj)
 		putIV := AdjustIV(base, putAdj)
 		// Call: 0.30 * (1 - 0.6*0.02) = 0.30 * 0.988 = 0.2964
@@ -220,16 +220,35 @@ func TestAdjustIV_MoveCrush(t *testing.T) {
 			t.Errorf("put crushed IV expected 0.2976, got %f", putIV)
 		}
 		if callIV >= putIV {
-			t.Errorf("call IV (%f) should crush harder than put (%f) on up-move", callIV, putIV)
+			t.Errorf("call IV (%f) should crush harder than put (%f) at the same magnitude", callIV, putIV)
 		}
 	})
 
-	t.Run("down-move symmetric: abs(ret) drives crush", func(t *testing.T) {
+	t.Run("adverse move leaves call IV unchanged", func(t *testing.T) {
+		// Call with underlying DOWN 2% — losing trade. IV does not crush
+		// (skew typically supports the option on adverse moves); leave
+		// untouched so the losing trade prices out via its real terminal IV.
 		adj := IVAdjustment{MoveCrushEnabled: true, MoveCrushCallK: 0.6, MoveCrushFloor: 0.5, UnderlyingRetPct: -0.02, IsCall: true}
 		result := AdjustIV(0.30, adj)
-		expected := 0.30 * (1 - 0.6*0.02)
+		if result != 0.30 {
+			t.Errorf("adverse-move call should leave IV unchanged, got %f", result)
+		}
+	})
+
+	t.Run("put crushes on down-move", func(t *testing.T) {
+		adj := IVAdjustment{MoveCrushEnabled: true, MoveCrushPutK: 0.4, MoveCrushFloor: 0.5, UnderlyingRetPct: -0.02, IsCall: false}
+		result := AdjustIV(0.30, adj)
+		expected := 0.30 * (1 - 0.4*0.02)
 		if math.Abs(result-expected) > 0.0001 {
-			t.Errorf("expected ~%.4f, got %f", expected, result)
+			t.Errorf("favorable-move put should crush; expected ~%.4f, got %f", expected, result)
+		}
+	})
+
+	t.Run("put on up-move leaves IV unchanged (adverse)", func(t *testing.T) {
+		adj := IVAdjustment{MoveCrushEnabled: true, MoveCrushPutK: 0.4, UnderlyingRetPct: 0.02, IsCall: false}
+		result := AdjustIV(0.30, adj)
+		if result != 0.30 {
+			t.Errorf("adverse-move put should leave IV unchanged, got %f", result)
 		}
 	})
 
