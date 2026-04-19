@@ -30,6 +30,7 @@ Boundary verification requires opening both sides of the code and comparing them
 - [ ] All HTTP handler JSON response shapes match corresponding frontend types
 - [ ] snake_case (Go JSON tags) to camelCase (TypeScript) conversion is consistent
 - [ ] Pagination response wrapping structures are correctly unwrapped in frontend
+- [ ] Slice/array fields are initialized as `[]T{}` (not `var s []T`) so empty values marshal as `[]` not `null` — frontend `.length`/`.map` will TypeError on null. Bug surfaces only when conditions reduce a previously-populated list to zero entries (e.g. realism.flags after Sharpe drops below the threshold).
 
 ### DB to Domain to Repository
 - [ ] SQL migration column names match Repository query column references
