@@ -20,6 +20,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/coinbase"
 	"github.com/oh-my-opentrade/backend/internal/adapters/deribit"
 	"github.com/oh-my-opentrade/backend/internal/adapters/dolthub"
+	"github.com/oh-my-opentrade/backend/internal/adapters/tradier"
 	"github.com/oh-my-opentrade/backend/internal/adapters/finnhub"
 	"github.com/oh-my-opentrade/backend/internal/adapters/fredfinnhub"
 	"github.com/oh-my-opentrade/backend/internal/adapters/hyperliquid"
@@ -37,6 +38,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/ivcollector"
 	"github.com/oh-my-opentrade/backend/internal/app/optionsimport"
+	"github.com/oh-my-opentrade/backend/internal/app/tradierimport"
 	"github.com/oh-my-opentrade/backend/internal/app/recap"
 	screenerapp "github.com/oh-my-opentrade/backend/internal/app/screener"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
@@ -216,6 +218,28 @@ func main() {
 		dolthubSvc.SetNotifier(notifier)
 	}
 
+	// Tradier nightly chain snapshot — fills the 10 symbols DoltHub doesn't
+	// carry (AFRM, IWM, MRVL, NET, QQQ, RBLX, RIVN, SNOW, SOFI, SOXL).
+	// Writes into the same historical_option_chain table so the simbroker
+	// consumes Tradier and DoltHub rows uniformly. No-op if TRADIER_TOKEN
+	// is unset.
+	var tradierSvc *tradierimport.ScheduledService
+	if token := os.Getenv("TRADIER_TOKEN"); token != "" {
+		tradierClient := tradier.NewClient(tradier.Config{
+			Token:   token,
+			BaseURL: os.Getenv("TRADIER_BASE_URL"),
+		}, log)
+		tradierImporter := tradierimport.NewService(tradierClient, histOptRepo, log)
+		tradierSvc = tradierimport.NewScheduledService(tradierimport.ScheduledConfig{
+			Symbols:       []string{"AFRM", "IWM", "MRVL", "NET", "QQQ", "RBLX", "RIVN", "SNOW", "SOFI", "SOXL"},
+			RunAtHourET:   16,
+			RunAtMinuteET: 30,
+		}, tradierImporter, log)
+		if notifier != nil {
+			tradierSvc.SetNotifier(notifier)
+		}
+	}
+
 	// 13F whale accumulation (periodic refresh — only when SEC_USER_AGENT is set)
 	var whaleSvc *whale13f.Service
 	if ua := os.Getenv("SEC_USER_AGENT"); ua != "" {
@@ -358,6 +382,9 @@ func main() {
 			log.Warn().Err(err).Msg("macro events refresh failed")
 		}
 		dolthubSvc.RunOnce(ctx)
+		if tradierSvc != nil {
+			tradierSvc.RunOnce(ctx)
+		}
 		// Crypto funding rate -- single poll pass via adapter + repo directly.
 		if err := collectFundingOnce(ctx, cfg.Hyperliquid, sqlDB, log); err != nil {
 			log.Warn().Err(err).Msg("funding rate run-once collection failed")
@@ -403,6 +430,12 @@ func main() {
 
 	if err := dolthubSvc.Start(ctx); err != nil {
 		log.Warn().Err(err).Msg("DoltHub options service failed to start")
+	}
+
+	if tradierSvc != nil {
+		if err := tradierSvc.Start(ctx); err != nil {
+			log.Warn().Err(err).Msg("Tradier options snapshot service failed to start")
+		}
 	}
 
 	if recapSched != nil {
