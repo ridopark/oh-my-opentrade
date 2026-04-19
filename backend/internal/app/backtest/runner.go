@@ -1922,7 +1922,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					"max_drawdown":   m.MaxDrawdown,
 					"sharpe":         m.SharpeRatio,
 					"profit_factor":  m.ProfitFactor,
-					"open_positions": len(r.collector.openBuys),
+					"open_positions": r.collector.OpenPositionCount(),
 				})
 			}
 		}
@@ -2357,7 +2357,7 @@ func (c *runnerSliceCoord) OnTickEnd(ctx context.Context, tickTime time.Time) er
 				"max_drawdown":   m.MaxDrawdown,
 				"sharpe":         m.SharpeRatio,
 				"profit_factor":  m.ProfitFactor,
-				"open_positions": len(c.r.collector.openBuys),
+				"open_positions": c.r.collector.OpenPositionCount(),
 			})
 		}
 	}

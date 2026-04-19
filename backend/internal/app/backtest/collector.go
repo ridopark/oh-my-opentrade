@@ -719,6 +719,16 @@ func (c *Collector) Result() Result {
 	return r
 }
 
+// OpenPositionCount returns the number of symbols with at least one open
+// long position. Takes c.mu because openBuys is mutated by handler
+// goroutines; the runner's progress emitter may race with onFill
+// otherwise.
+func (c *Collector) OpenPositionCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.openBuys)
+}
+
 // LiveMetrics returns lightweight progress metrics without iterating trades.
 // O(1), no allocation — safe to call every 200ms in the replay loop.
 func (c *Collector) LiveMetrics() Result {
