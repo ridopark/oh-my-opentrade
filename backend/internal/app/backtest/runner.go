@@ -325,7 +325,6 @@ func (r *Runner) Run(ctx context.Context) error {
 			break
 		}
 	}
-	var spyDailyBars []domain.MarketBar
 	if orbSelected {
 		orbID, _ := start.NewStrategyID("orb_break_retest")
 		if orbSpec, loadErr := specStore.GetLatest(context.Background(), orbID); loadErr == nil {
@@ -334,12 +333,20 @@ func (r *Runner) Run(ctx context.Context) error {
 				monitorSvc.SetORBTimeframe(string(orbSpec.Routing.Timeframes[0]))
 			}
 		}
+	}
 
-		// Fetch SPY daily bars ONCE for the entire backtest range (with 60-day
-		// lookback before From) so we can recompute realized vol per day without
-		// repeated DB queries.
+	sim := r.infra.SimBroker
+
+	// Fetch SPY daily bars ONCE for the entire backtest range (with 60-day
+	// lookback before From) so we can recompute realized vol per day without
+	// repeated DB queries. Used as a VIX proxy: monitor.Service gates ORB on
+	// it, simbroker feeds it into the AdjustIV VIX-beta factor on same-day
+	// option exits. Loading is unconditional since both consumers are active
+	// for any backtest running options or the monitor regime gates.
+	var spyDailyBars []domain.MarketBar
+	{
 		spySym, _ := domain.NewSymbol("SPY")
-		rvFrom := r.cfg.From.Add(-60 * 24 * time.Hour) // 60 days to have enough for 20-day window
+		rvFrom := r.cfg.From.Add(-60 * 24 * time.Hour)
 		spyDailyBars, _ = repo.GetMarketBars(ctx, spySym, "1d", rvFrom, r.cfg.To)
 		if len(spyDailyBars) == 0 && r.marketData != nil {
 			apiBars, _ := r.marketData.GetHistoricalBars(ctx, spySym, "1d", rvFrom, r.cfg.To)
@@ -347,7 +354,6 @@ func (r *Runner) Run(ctx context.Context) error {
 				spyDailyBars = apiBars
 			}
 		}
-		// Set initial VIX level using bars up to the backtest start.
 		var initBars []domain.MarketBar
 		for _, b := range spyDailyBars {
 			if b.Time.Before(r.cfg.From) {
@@ -357,11 +363,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		if len(initBars) > 21 {
 			rv := monitor.ComputeRealizedVol(initBars, 20)
 			monitorSvc.SetVIXLevel(rv)
-			r.log.Info().Float64("realized_vol", rv).Int("daily_bars", len(spyDailyBars)).Msg("VIX level set from SPY realized volatility")
+			sim.UpdatePrice(domain.Symbol("VIX"), rv, r.cfg.From)
+			r.log.Info().Float64("realized_vol", rv).Int("daily_bars", len(spyDailyBars)).Msg("VIX level seeded from SPY realized volatility")
 		}
 	}
-
-	sim := r.infra.SimBroker
 
 	// Apply backtest-specific overrides to a copy of the app config
 	// to avoid mutating the shared config across concurrent backtests.
@@ -1721,18 +1726,19 @@ func (r *Runner) Run(ctx context.Context) error {
 			currentSessionDate = dayOpen
 
 			// Recompute realized vol for this trading day from cached SPY daily bars.
-			if orbSelected {
-				rvCutoff := dayOpen.Add(-60 * 24 * time.Hour)
-				var windowBars []domain.MarketBar
-				for _, b := range spyDailyBars {
-					if !b.Time.Before(rvCutoff) && b.Time.Before(dayOpen) {
-						windowBars = append(windowBars, b)
-					}
+			// Fed to monitor (for ORB regime gates if ORB is active) and to the sim
+			// broker (for AdjustIV VIX-beta scaling on same-day option exits).
+			rvCutoff := dayOpen.Add(-60 * 24 * time.Hour)
+			var windowBars []domain.MarketBar
+			for _, b := range spyDailyBars {
+				if !b.Time.Before(rvCutoff) && b.Time.Before(dayOpen) {
+					windowBars = append(windowBars, b)
 				}
-				if len(windowBars) > 21 {
-					rv := monitor.ComputeRealizedVol(windowBars, 20)
-					monitorSvc.SetVIXLevel(rv)
-				}
+			}
+			if len(windowBars) > 21 {
+				rv := monitor.ComputeRealizedVol(windowBars, 20)
+				monitorSvc.SetVIXLevel(rv)
+				sim.UpdatePrice(domain.Symbol("VIX"), rv, dayOpen)
 			}
 		}
 
@@ -2204,7 +2210,10 @@ func (c *runnerSliceCoord) OnTickBegin(_ context.Context, tickTime time.Time) er
 			}
 			return nil
 		})
-		if c.orbSelected && c.monitorSvc != nil {
+		// Recompute realized vol for this trading day from cached SPY daily bars.
+		// Fed to monitor (ORB gates) and to the sim broker (AdjustIV VIX-beta)
+		// regardless of orbSelected, since same-day option exits read VIX too.
+		if c.monitorSvc != nil || c.sim != nil {
 			rvCutoff := dayOpen.Add(-60 * 24 * time.Hour)
 			var windowBars []domain.MarketBar
 			for _, b := range c.spyDailyBars {
@@ -2214,7 +2223,12 @@ func (c *runnerSliceCoord) OnTickBegin(_ context.Context, tickTime time.Time) er
 			}
 			if len(windowBars) > 21 {
 				rv := monitor.ComputeRealizedVol(windowBars, 20)
-				c.monitorSvc.SetVIXLevel(rv)
+				if c.monitorSvc != nil {
+					c.monitorSvc.SetVIXLevel(rv)
+				}
+				if c.sim != nil {
+					c.sim.UpdatePrice(domain.Symbol("VIX"), rv, dayOpen)
+				}
 			}
 		}
 		c.currentDay = dayOpen
