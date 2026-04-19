@@ -48,9 +48,6 @@ type RunConfig struct {
 	NoAI             bool
 	StrategyDir      string
 	Strategies       []string
-	UseDailyScreener bool            // dynamically pick symbols each day using screener
-	ScreenerTopN     int             // how many top symbols to pick per day (default 5)
-	FixedSymbols     []domain.Symbol // user's original symbols (always active, union with screener)
 	MaxPositions     int             // portfolio-level max simultaneous positions (0=use config default)
 	MaxPerGroup      int             // max positions per sector group (0=use config default)
 	CompoundEquity   bool            // when true, position sizing compounds with P&L
@@ -1227,65 +1224,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("subscribe emitter: %w", subErr)
 	}
 
-	// Pre-compute daily screener if enabled
-	var dailyScreenerMap map[string]map[string]bool
-	if r.cfg.UseDailyScreener && r.marketData != nil {
-		r.emitter.EmitSetup("Computing daily screener…")
-		topN := r.cfg.ScreenerTopN
-		if topN <= 0 {
-			topN = 5
-		}
-
-		// Collect all unique trading days from the bar streams
-		tradingDays := func() []time.Time {
-			seen := make(map[string]bool)
-			var days []time.Time
-			for _, s := range streams {
-				for _, bar := range s.bars {
-					et := bar.Time.In(loc)
-					dayOpen := time.Date(et.Year(), et.Month(), et.Day(), 9, 30, 0, 0, loc)
-					key := dayOpen.Format("2006-01-02")
-					if !seen[key] {
-						seen[key] = true
-						days = append(days, dayOpen)
-					}
-				}
-			}
-			sort.Slice(days, func(i, j int) bool { return days[i].Before(days[j]) })
-			return days
-		}()
-		// Build a larger candidate pool from the strategy's routing config.
-		// The user's symbol list is the candidate pool; topN picks the best each day.
-		// If candidate pool <= topN, warn that screener won't filter anything.
-		candidates := r.cfg.Symbols
-		if len(candidates) <= topN {
-			r.log.Warn().
-				Int("candidates", len(candidates)).
-				Int("top_n", topN).
-				Msg("daily screener: candidate pool <= top_n, screener will not filter. Add more symbols to the candidate pool.")
-		}
-		r.log.Info().Int("trading_days", len(tradingDays)).Int("top_n", topN).Int("candidates", len(candidates)).Msg("pre-computing daily screener")
-
-		screener := NewDailyScreener(repo, r.marketData, r.log)
-		dailyScreenerMap = screener.PrecomputeAll(ctx, tradingDays, candidates, topN, func(day, total int, date string) {
-			r.emitter.EmitSetup(fmt.Sprintf("Screening day %d/%d (%s)…", day+1, total, date))
-		})
-
-		// Log sample of screener results
-		totalSymsAcrossDays := 0
-		for date, syms := range dailyScreenerMap {
-			totalSymsAcrossDays += len(syms)
-			if len(syms) > 0 {
-				symList := make([]string, 0, len(syms))
-				for s := range syms {
-					symList = append(symList, s)
-				}
-				r.log.Debug().Str("date", date).Strs("symbols", symList).Msg("daily screener picks")
-			}
-		}
-		r.log.Info().Int("days_screened", len(dailyScreenerMap)).Int("total_symbol_days", totalSymsAcrossDays).Msg("daily screener pre-computation complete")
-	}
-
 	r.emitter.EmitSetup("Replaying bars…")
 
 	// --- Load historical auction data for synthetic imbalance events ---
@@ -1352,12 +1290,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	barsProcessed := 0
 	var lastBarTime time.Time
 	currentSessionDate := replaySessionOpen
-
-	// Pre-build fixed symbol set for O(1) lookup in the hot loop.
-	fixedSymbolSet := make(map[string]bool, len(r.cfg.FixedSymbols))
-	for _, fs := range r.cfg.FixedSymbols {
-		fixedSymbolSet[fs.String()] = true
-	}
 
 	// Warmup caches are cleared AFTER the slice fast-path's per-shard
 	// warmup pass (which re-reads warmupBarsCache + dailyBarsCache).
@@ -1694,18 +1626,6 @@ func (r *Runner) Run(ctx context.Context) error {
 				if s.idx < len(s.bars) {
 					heap.Push(&sh, s)
 				}
-				// Daily screener filter
-				if dailyScreenerMap != nil {
-					symStr := bar.Symbol.String()
-					if !fixedSymbolSet[symStr] {
-						dateKey := sessionOpen.Format("2006-01-02")
-						if activeSyms, ok := dailyScreenerMap[dateKey]; ok && len(activeSyms) > 0 {
-							if !activeSyms[symStr] {
-								continue
-							}
-						}
-					}
-				}
 				sliceBars = append(sliceBars, SliceBar{
 					TickTime:    minTime,
 					SessionOpen: sessionOpen,
@@ -1830,20 +1750,6 @@ func (r *Runner) Run(ctx context.Context) error {
 			// Re-push stream if it has more bars.
 			if s.idx < len(s.bars) {
 				heap.Push(&sh, s)
-			}
-
-			// Daily screener filter: allow bars if symbol is in today's screened set
-			// OR in the user's fixed symbol list (union of both, like live trading).
-			if dailyScreenerMap != nil {
-				symStr := bar.Symbol.String()
-				if !fixedSymbolSet[symStr] {
-					dateKey := currentSessionDate.Format("2006-01-02")
-					if activeSyms, ok := dailyScreenerMap[dateKey]; ok && len(activeSyms) > 0 {
-						if !activeSyms[symStr] {
-							continue
-						}
-					}
-				}
 			}
 
 			sim.UpdatePrice(bar.Symbol, bar.Close, bar.Time)

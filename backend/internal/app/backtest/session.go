@@ -46,9 +46,6 @@ type SessionData struct {
 	ORHighTime time.Time
 	ORLow      float64
 	ORLowTime  time.Time
-
-	SwingHighs []start.CandidateAnchor
-	SwingLows  []start.CandidateAnchor
 }
 
 type SessionResolver struct {
@@ -426,17 +423,6 @@ func (r *SessionResolver) ResolveAnchors(symbol string, barTime time.Time, ancho
 		}
 	}
 
-	if len(prevDay.SwingHighs) > 0 {
-		for i, sh := range prevDay.SwingHighs {
-			result[fmt.Sprintf("swing_high_%d", i+1)] = sh.Time
-		}
-	}
-	if len(prevDay.SwingLows) > 0 {
-		for i, sl := range prevDay.SwingLows {
-			result[fmt.Sprintf("swing_low_%d", i+1)] = sl.Time
-		}
-	}
-
 	return result
 }
 
@@ -572,64 +558,6 @@ func (r *SessionResolver) GetBarsSince(ctx context.Context, db *sql.DB, symbol s
 		bars = append(bars, b)
 	}
 	return bars
-}
-
-// LoadSwings runs a SwingDetector over pre-loaded 1m bars to populate
-// SwingHighs/SwingLows on each SessionData. Call after Load().
-func (r *SessionResolver) LoadSwings(ctx context.Context, db *sql.DB, sym domain.Symbol, from, to time.Time) error {
-	rows, err := db.QueryContext(ctx, `
-		SELECT time, open, high, low, close, volume
-		FROM market_bars
-		WHERE symbol = $1 AND timeframe = '1m'
-		  AND time >= $2 AND time < $3
-		ORDER BY time`,
-		string(sym), from, to)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	det := start.NewSwingDetector(5, "1m")
-	r.mu.RLock()
-	symSessions := r.sessions[sym.String()]
-	r.mu.RUnlock()
-	if symSessions == nil {
-		return nil
-	}
-
-	for rows.Next() {
-		var t time.Time
-		var o, h, l, c, v float64
-		if scanErr := rows.Scan(&t, &o, &h, &l, &c, &v); scanErr != nil {
-			continue
-		}
-
-		candidates := det.Push(start.Bar{Time: t, Open: o, High: h, Low: l, Close: c, Volume: v})
-		if len(candidates) == 0 {
-			continue
-		}
-
-		et := t.In(r.loc)
-		day := et.Format("2006-01-02")
-		sess, ok := symSessions[day]
-		if !ok {
-			continue
-		}
-
-		for _, ca := range candidates {
-			switch ca.Type {
-			case start.AnchorSwingHigh:
-				sess.SwingHighs = append(sess.SwingHighs, ca)
-			case start.AnchorSwingLow:
-				sess.SwingLows = append(sess.SwingLows, ca)
-			}
-		}
-		symSessions[day] = sess
-	}
-	r.mu.Lock()
-	r.sessions[sym.String()] = symSessions
-	r.mu.Unlock()
-	return nil
 }
 
 // KeyLevelPrices returns key price levels (pd_high, pd_low, or_high, or_low)
