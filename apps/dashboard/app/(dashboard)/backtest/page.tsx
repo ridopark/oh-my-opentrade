@@ -21,6 +21,7 @@ import {
   type BacktestResult,
 } from "@/lib/use-backtest";
 import { Button } from "@/components/ui/button";
+import { RealismPanel } from "@/components/backtest/realism-panel";
 
 /** Extract a human-readable exit reason from the rationale string.
  *  e.g. "exit_monitor:VOLATILITY_STOP:..." → "VOL_STOP" */
@@ -70,6 +71,10 @@ function formatCurrency(v: number) {
 
 function formatPct(v: number) {
   return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
+}
+
+function formatSharpe(v: number | null | undefined) {
+  return v == null ? "N/A" : v.toFixed(3);
 }
 
 export default function BacktestPage() {
@@ -236,7 +241,7 @@ export default function BacktestPage() {
                 <span className="text-muted-foreground">P&L <span className={`${(bt.result?.total_pnl ?? bt.metrics?.total_pnl ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>{formatCurrency(bt.result?.total_pnl ?? bt.metrics?.total_pnl ?? 0)}</span></span>
                 <span className="text-muted-foreground">Trades <span className="text-foreground">{bt.result?.trade_count ?? bt.metrics?.trades ?? 0}</span></span>
                 <span className="text-muted-foreground">Win <span className="text-foreground">{(bt.result?.win_rate_pct ?? bt.metrics?.win_rate ?? 0).toFixed(1)}%</span></span>
-                <span className="text-muted-foreground">Sharpe <span className="text-foreground">{(bt.result?.sharpe_ratio ?? bt.metrics?.sharpe ?? 0).toFixed(3)}</span></span>
+                <span className="text-muted-foreground">Sharpe <span className="text-foreground">{formatSharpe(bt.result?.sharpe_ratio ?? bt.metrics?.sharpe)}</span></span>
               </div>
             )}
           </div>
@@ -788,7 +793,7 @@ function MetricsPanelInline({
   const tradeCount = result?.trade_count ?? metrics?.trades ?? 0;
   const winRate = result?.win_rate_pct ?? metrics?.win_rate ?? 0;
   const drawdown = result?.max_drawdown_pct ?? metrics?.max_drawdown ?? 0;
-  const sharpe = result?.sharpe_ratio ?? metrics?.sharpe ?? 0;
+  const sharpe = result?.sharpe_ratio ?? metrics?.sharpe ?? null;
   const profitFactor = result?.profit_factor ?? metrics?.profit_factor ?? 0;
   const avgWin = result?.avg_win ?? 0;
   const avgLoss = result?.avg_loss ?? 0;
@@ -800,7 +805,7 @@ function MetricsPanelInline({
     { label: "Trades", value: String(tradeCount), color: "" },
     { label: "Win Rate", value: `${winRate.toFixed(1)}%`, color: winRate >= 50 ? "text-emerald-400" : "text-red-400" },
     { label: "Max Drawdown", value: `${drawdown.toFixed(2)}%`, color: "text-red-400" },
-    { label: "Sharpe Ratio", value: sharpe.toFixed(3), color: sharpe > 0 ? "text-emerald-400" : "text-red-400" },
+    { label: "Sharpe Ratio", value: formatSharpe(sharpe), color: sharpe == null ? "text-muted-foreground" : sharpe > 0 ? "text-emerald-400" : "text-red-400" },
     { label: "Profit Factor", value: profitFactor.toFixed(2), color: profitFactor >= 1 ? "text-emerald-400" : "text-red-400" },
     { label: "Avg Win", value: formatCurrency(avgWin), color: "text-emerald-400" },
     { label: "Avg Loss", value: formatCurrency(avgLoss), color: "text-red-400" },
@@ -816,6 +821,7 @@ function MetricsPanelInline({
           </div>
         ))}
       </div>
+      {result?.realism ? <RealismPanel realism={result.realism} backtestPnL={pnl} /> : null}
     </div>
   );
 }

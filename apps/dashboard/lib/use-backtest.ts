@@ -64,7 +64,7 @@ export interface BacktestMetrics {
   trades: number;
   win_rate: number;
   max_drawdown: number;
-  sharpe: number;
+  sharpe: number | null;
   profit_factor: number;
   open_positions: number;
 }
@@ -77,6 +77,25 @@ export interface BacktestProgress {
   replay_speed: string;
 }
 
+export type RealismFlagLevel = "red" | "yellow" | "green";
+
+export interface RealismFlag {
+  level: RealismFlagLevel;
+  metric: string;
+  message: string;
+}
+
+export interface RealismEstimate {
+  live_sharpe: number;
+  live_dd_pct: number;
+  live_pf: number;
+  fixed_notional_pnl: number;
+  compounded_pnl_estimate: number;
+  compounding_ramp: number;
+  flags: RealismFlag[];
+  disclaimer: string;
+}
+
 export interface BacktestResult {
   initial_equity: number;
   final_equity: number;
@@ -87,13 +106,14 @@ export interface BacktestResult {
   loss_count: number;
   win_rate_pct: number;
   max_drawdown_pct: number;
-  sharpe_ratio: number;
+  sharpe_ratio: number | null;
   profit_factor: number;
   avg_win: number;
   avg_loss: number;
   largest_win: number;
   largest_loss: number;
   trades?: BacktestTrade[]; // trades with collector-computed PnL (includes 100x for options)
+  realism?: RealismEstimate | null;
 }
 
 type BacktestStatus = "idle" | "running" | "paused" | "completed" | "error" | "cancelled";

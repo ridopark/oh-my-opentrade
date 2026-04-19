@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/app/realism"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
@@ -69,7 +70,7 @@ type Result struct {
 	LossCount     int           `json:"loss_count"`
 	WinRate       float64       `json:"win_rate_pct"`
 	MaxDrawdown   float64       `json:"max_drawdown_pct"`
-	SharpeRatio   float64       `json:"sharpe_ratio"`
+	SharpeRatio   *float64      `json:"sharpe_ratio"`
 	ProfitFactor  float64       `json:"profit_factor"`
 	AvgWin        float64       `json:"avg_win"`
 	AvgLoss       float64       `json:"avg_loss"`
@@ -77,6 +78,7 @@ type Result struct {
 	LargestLoss   float64       `json:"largest_loss"`
 	Trades        []TradeRecord `json:"trades"`
 	EquityCurve   []EquityPoint `json:"equity_curve,omitempty"`
+	Realism       *realism.Estimate `json:"realism,omitempty"`
 }
 
 // Collector aggregates fill and bar events to produce backtest metrics.
@@ -697,6 +699,23 @@ func (c *Collector) Result() Result {
 	// Sharpe ratio from equity curve returns.
 	r.SharpeRatio = c.computeSharpe()
 
+	// Realism estimate: deflated live expectations + flag analysis.
+	var backtestDays int
+	if n := len(curve); n >= 2 {
+		backtestDays = int((curve[n-1].T - curve[0].T) / 86400)
+	}
+	r.Realism = realism.Compute(realism.Inputs{
+		InitialEquity:  r.InitialEquity,
+		FinalEquity:    r.FinalEquity,
+		TotalPnL:       r.TotalPnL,
+		TradeCount:     r.TradeCount,
+		WinRatePct:     r.WinRate,
+		MaxDrawdownPct: r.MaxDrawdown,
+		SharpeRatio:    r.SharpeRatio,
+		ProfitFactor:   r.ProfitFactor,
+		BacktestDays:   backtestDays,
+	})
+
 	return r
 }
 
@@ -733,7 +752,10 @@ func (c *Collector) LiveMetrics() Result {
 
 // computeSharpe calculates an annualized Sharpe ratio from daily returns.
 // Non-mutating: includes the in-progress day without modifying accumulators.
-func (c *Collector) computeSharpe() float64 {
+// Returns nil when the sample is too small or degenerate to yield a meaningful
+// ratio (single-day windows, zero variance) — callers should surface this as
+// "N/A" rather than a misleading 0.
+func (c *Collector) computeSharpe() *float64 {
 	// Include the in-progress day without mutating state.
 	sum := c.returnSum
 	sumSq := c.returnSumSq
@@ -747,17 +769,18 @@ func (c *Collector) computeSharpe() float64 {
 
 	n := float64(count)
 	if n < 2 {
-		return 0
+		return nil
 	}
 
 	mean := sum / n
 	// Var = E[X²] - E[X]², with Bessel's correction.
 	variance := (sumSq - sum*sum/n) / (n - 1)
 	if variance <= 0 {
-		return 0
+		return nil
 	}
 
-	return (mean / math.Sqrt(variance)) * math.Sqrt(c.cfg.PeriodsPerYear)
+	s := (mean / math.Sqrt(variance)) * math.Sqrt(c.cfg.PeriodsPerYear)
+	return &s
 }
 
 // PrintReport writes a human-readable report to stdout.
@@ -769,7 +792,11 @@ func (r *Result) PrintReport() {
 	fmt.Printf("Trade Count:      %d\n", r.TradeCount)
 	fmt.Printf("Win Rate:         %.1f%% (%d wins / %d losses)\n", r.WinRate, r.WinCount, r.LossCount)
 	fmt.Printf("Max Drawdown:     %.2f%%\n", r.MaxDrawdown)
-	fmt.Printf("Sharpe Ratio:     %.3f\n", r.SharpeRatio)
+	if r.SharpeRatio != nil {
+		fmt.Printf("Sharpe Ratio:     %.3f\n", *r.SharpeRatio)
+	} else {
+		fmt.Printf("Sharpe Ratio:     N/A (insufficient data)\n")
+	}
 	fmt.Printf("Profit Factor:    %.2f\n", r.ProfitFactor)
 	fmt.Printf("Avg Win:          $%.2f\n", r.AvgWin)
 	fmt.Printf("Avg Loss:         $%.2f\n", r.AvgLoss)
