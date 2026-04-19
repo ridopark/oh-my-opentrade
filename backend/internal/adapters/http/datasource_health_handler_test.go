@@ -88,6 +88,56 @@ func TestDataSourceHealthHandler_StaleSourceUnhealthy(t *testing.T) {
 	}
 }
 
+func TestGatedFeedDataSource_ClosedWhenGateFalseAndFeedStale(t *testing.T) {
+	stale := time.Now().Add(-10 * time.Minute)
+	check := GatedFeedDataSource("alpaca", "Alpaca SIP", 60*time.Second,
+		func(ctx context.Context) (time.Time, string) {
+			return stale, "stale equity feed"
+		},
+		func() bool { return false },
+	)
+	got := check(context.Background())
+	if got.State != StateClosed {
+		t.Fatalf("state=%q want %q", got.State, StateClosed)
+	}
+	if got.Healthy {
+		t.Fatalf("closed state should not be healthy")
+	}
+	if got.Detail != "market closed" {
+		t.Fatalf("detail=%q want 'market closed'", got.Detail)
+	}
+}
+
+func TestGatedFeedDataSource_HealthyWinsOverGate(t *testing.T) {
+	// When the feed is inside the staleness window, the gate value does not
+	// matter — a green feed stays green even if market "closed" reports false.
+	fresh := time.Now().Add(-5 * time.Second)
+	check := GatedFeedDataSource("alpaca", "Alpaca SIP", 60*time.Second,
+		func(ctx context.Context) (time.Time, string) { return fresh, "" },
+		func() bool { return false },
+	)
+	got := check(context.Background())
+	if got.State != StateHealthy || !got.Healthy {
+		t.Fatalf("expected healthy regardless of gate, got state=%q healthy=%v", got.State, got.Healthy)
+	}
+}
+
+func TestGatedFeedDataSource_UnhealthyWhenGateTrueAndFeedStale(t *testing.T) {
+	// Market is open, feed is stale → real problem, render red.
+	stale := time.Now().Add(-10 * time.Minute)
+	check := GatedFeedDataSource("alpaca", "Alpaca SIP", 60*time.Second,
+		func(ctx context.Context) (time.Time, string) { return stale, "stale equity feed" },
+		func() bool { return true },
+	)
+	got := check(context.Background())
+	if got.State != StateUnhealthy {
+		t.Fatalf("state=%q want %q", got.State, StateUnhealthy)
+	}
+	if got.Detail != "stale equity feed" {
+		t.Fatalf("detail=%q", got.Detail)
+	}
+}
+
 func TestDataSourceHealthHandler_MethodNotAllowed(t *testing.T) {
 	h := NewDataSourceHealthHandler(zerolog.Nop())
 	req := httptest.NewRequest(http.MethodPost, "/api/health/datasources", nil)
