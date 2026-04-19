@@ -519,10 +519,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		spotFn := func(ctx context.Context, sym domain.Symbol, asOf time.Time) (float64, error) {
 			return lookupSpot(ctx, repo, sym, asOf)
 		}
-		ivFn := func(ctx context.Context, sym domain.Symbol, _ time.Time) (float64, error) {
-			snap, err := ivRepo.GetLatestIV(ctx, sym)
+		ivDefault := btCfg.IVDefault
+		ivFn := func(ctx context.Context, sym domain.Symbol, asOf time.Time) (float64, error) {
+			snap, err := ivRepo.GetIVAtOrBefore(ctx, sym, asOf)
 			if err != nil {
-				return 0, nil
+				r.log.Warn().
+					Err(err).
+					Str("sym", string(sym)).
+					Time("asOf", asOf).
+					Float64("iv_default", ivDefault).
+					Msg("iv lookup missed; using IVDefault")
+				return ivDefault, nil
 			}
 			return snap.ATMIV, nil
 		}

@@ -153,3 +153,46 @@ func TestAdapter_SyntheticFallback_CachesResult(t *testing.T) {
 	_, _ = adapter.GetOptionChain(context.Background(), "AAPL", asOf, domain.OptionRightCall, 1, 14)
 	assert.Equal(t, 1, calls, "second call should hit the synthetic cache, not regenerate")
 }
+
+// TestAdapter_SyntheticFallback_DifferentDTEWindowsNotShared guards the cache
+// key fix: a DTE 1..14 chain must not satisfy a later DTE 30..60 request.
+// The generator must fire twice, producing different contract sets per window.
+func TestAdapter_SyntheticFallback_DifferentDTEWindowsNotShared(t *testing.T) {
+	asOf := time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC)
+	adapter := NewHistoricalOptionsAdapter(stubHistOptRepo{}, func() time.Time { return asOf })
+	calls := 0
+	spotFn := func(_ context.Context, _ domain.Symbol, _ time.Time) (float64, error) {
+		calls++
+		return 100.0, nil
+	}
+	adapter.SetSyntheticGenerator(NewSyntheticChainGenerator(
+		defaultTestConfig(), spotFn, constantIV(0.30),
+	))
+
+	shortWin, err := adapter.GetOptionChain(context.Background(), "AAPL", asOf, domain.OptionRightCall, 1, 14)
+	require.NoError(t, err)
+	longWin, err := adapter.GetOptionChain(context.Background(), "AAPL", asOf, domain.OptionRightCall, 30, 60)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, calls, "different DTE windows must each generate; no cache sharing")
+	require.NotEmpty(t, shortWin)
+	require.NotEmpty(t, longWin)
+
+	// Expiries in the two windows should not overlap: short-window max
+	// expiry < long-window min expiry. If the cache were shared, one call
+	// would return the other's set and this would fail.
+	var shortMaxExp, longMinExp time.Time
+	for _, s := range shortWin {
+		if shortMaxExp.IsZero() || s.OptionContract.Expiry.After(shortMaxExp) {
+			shortMaxExp = s.OptionContract.Expiry
+		}
+	}
+	for _, s := range longWin {
+		if longMinExp.IsZero() || s.OptionContract.Expiry.Before(longMinExp) {
+			longMinExp = s.OptionContract.Expiry
+		}
+	}
+	assert.True(t, shortMaxExp.Before(longMinExp),
+		"short-window max expiry %s must precede long-window min expiry %s",
+		shortMaxExp.Format("2006-01-02"), longMinExp.Format("2006-01-02"))
+}

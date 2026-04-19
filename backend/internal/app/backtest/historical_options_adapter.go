@@ -14,12 +14,25 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// optionCacheKey indexes pre-loaded option chain snapshots by
-// (symbol, date, right) for O(1) lookup during replay.
+// optionCacheKey indexes the pre-loaded full chain (all expiries/strikes)
+// by (symbol, date, right). GetOptionChain looks up the whole set and the
+// consumer filters by DTE window, so no DTE component is needed here.
 type optionCacheKey struct {
 	Symbol string // e.g. "AAPL"
 	Date   string // "2006-01-02"
 	Right  string // "Call" or "Put"
+}
+
+// syntheticCacheKey indexes synthetic-generator output by
+// (symbol, date, right, DTE window). Unlike the historical chain, the
+// synthetic generator materializes a DIFFERENT contract set per window,
+// so two requests with different windows must not share cached output.
+type syntheticCacheKey struct {
+	Symbol string
+	Date   string
+	Right  string
+	MinDTE int
+	MaxDTE int
 }
 
 // contractCacheKey indexes individual contract rows for SimBroker exit pricing.
@@ -59,8 +72,9 @@ type HistoricalOptionsAdapter struct {
 	syntheticGen *SyntheticChainGenerator
 
 	// Cache for synthetic results so a second request on the same key is
-	// O(1). Lazily initialized on first synthetic generation.
-	syntheticCache map[optionCacheKey][]domain.OptionContractSnapshot
+	// O(1). Lazily initialized on first synthetic generation. Keyed on
+	// DTE window to prevent cross-strategy contamination.
+	syntheticCache map[syntheticCacheKey][]domain.OptionContractSnapshot
 }
 
 // NewHistoricalOptionsAdapter creates an adapter that bridges historical
@@ -255,12 +269,12 @@ func hasExpiryInDTERange(snaps []domain.OptionContractSnapshot, asOf time.Time, 
 }
 
 // generateSynthetic runs the BSM-based generator (if attached), caches the
-// result under the per-day key, and returns it. Returns nil when no
-// generator is attached or the generator produces no output (e.g. missing
-// spot) — both are legitimate "no data" outcomes, not errors.
+// result under the per-day + DTE-window key, and returns it. Returns nil
+// when no generator is attached or the generator produces no output (e.g.
+// missing spot) — both are legitimate "no data" outcomes, not errors.
 func (a *HistoricalOptionsAdapter) generateSynthetic(
 	ctx context.Context,
-	key optionCacheKey,
+	chainKey optionCacheKey,
 	underlying domain.Symbol,
 	asOf time.Time,
 	right domain.OptionRight,
@@ -269,7 +283,14 @@ func (a *HistoricalOptionsAdapter) generateSynthetic(
 	if a.syntheticGen == nil {
 		return nil, nil
 	}
-	if cached, ok := a.syntheticCache[key]; ok {
+	synthKey := syntheticCacheKey{
+		Symbol: chainKey.Symbol,
+		Date:   chainKey.Date,
+		Right:  chainKey.Right,
+		MinDTE: minDTE,
+		MaxDTE: maxDTE,
+	}
+	if cached, ok := a.syntheticCache[synthKey]; ok {
 		return cached, nil
 	}
 	snaps, err := a.syntheticGen.GenerateChain(ctx, underlying, asOf, right, minDTE, maxDTE)
@@ -280,12 +301,12 @@ func (a *HistoricalOptionsAdapter) generateSynthetic(
 		return nil, nil
 	}
 	if a.syntheticCache == nil {
-		a.syntheticCache = make(map[optionCacheKey][]domain.OptionContractSnapshot, 64)
+		a.syntheticCache = make(map[syntheticCacheKey][]domain.OptionContractSnapshot, 64)
 	}
-	a.syntheticCache[key] = snaps
+	a.syntheticCache[synthKey] = snaps
 	a.log.Info().
 		Str("symbol", string(underlying)).
-		Str("date", key.Date).
+		Str("date", synthKey.Date).
 		Str("right", string(right)).
 		Int("contracts", len(snaps)).
 		Int("min_dte", minDTE).
