@@ -30,8 +30,6 @@ type backtestRunRequest struct {
 	Speed         string   `json:"speed"`
 	NoAI             bool     `json:"no_ai"`
 	Strategies       []string `json:"strategies"`
-	UseDailyScreener bool     `json:"use_daily_screener"`
-	ScreenerTopN     int      `json:"screener_top_n"`
 	StrategyDir      string   `json:"strategy_dir"`
 	MaxPositions     int      `json:"max_positions"`
 	MaxPerGroup      int      `json:"max_per_group"`
@@ -228,34 +226,8 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		speed = "max"
 	}
 
-	// When daily screener is on, expand candidate pool to a broad universe
-	// of liquid US equities for effective screening.
-	backtestSymbols := symbols
-	if req.UseDailyScreener {
-		seen := make(map[string]bool)
-		for _, s := range backtestSymbols {
-			seen[string(s)] = true
-		}
-		// Canonical universe of liquid US equities from domain.KnownSymbols().
-		screenPool := domain.KnownSymbols()
-		for _, s := range screenPool {
-			if !seen[s] {
-				backtestSymbols = append(backtestSymbols, domain.Symbol(s))
-				seen[s] = true
-			}
-		}
-		// Also include any config symbols not already in the pool
-		for _, s := range h.appCfg.Symbols.AllSymbols() {
-			if !seen[s] && !strings.Contains(s, "/") {
-				backtestSymbols = append(backtestSymbols, domain.Symbol(s))
-				seen[s] = true
-			}
-		}
-		h.log.Info().Int("user_symbols", len(symbols)).Int("expanded_pool", len(backtestSymbols)).Msg("daily screener: expanded candidate pool")
-	}
-
 	runner := backtest.NewRunner(backtest.RunConfig{
-		Symbols:       backtestSymbols,
+		Symbols:       symbols,
 		From:          fromTime,
 		To:            toTime,
 		Timeframe:     tf,
@@ -265,9 +237,6 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		NoAI:             req.NoAI,
 		Strategies:       req.Strategies,
 		StrategyDir:      req.StrategyDir,
-		UseDailyScreener: req.UseDailyScreener,
-		ScreenerTopN:     req.ScreenerTopN,
-		FixedSymbols:     symbols, // user's original picks — always active
 		MaxPositions:     req.MaxPositions,
 		MaxPerGroup:      req.MaxPerGroup,
 		UseNativeSymbols: useNativeSymbols,
@@ -288,7 +257,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		meta := backtestRunMeta{
 			id:            runner.ID(),
 			strategies:    append([]string(nil), req.Strategies...),
-			symbols:       symbolsAsStrings(backtestSymbols),
+			symbols:       symbolsAsStrings(symbols),
 			periodStart:   fromTime,
 			periodEnd:     toTime,
 			initialEquity: equity,
