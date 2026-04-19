@@ -236,8 +236,10 @@ func TestComputeOptionExitPrice(t *testing.T) {
 
 		price := b.computeOptionExitPrice(intent, underlyingPrice, barTime)
 
-		// OTM: intrinsic = 145 - 150 = -5, clamped to 0.01
-		assert.InDelta(t, 0.01, price, 0.001, "expired OTM call should return 0.01 floor")
+		// OTM: intrinsic = 145 - 150 = -5, clamped to 0 (worthless).
+		// Previously floored at $0.01 which silently added
+		// (contracts * $0.01 * 100) of spurious P&L per universe.
+		assert.InDelta(t, 0.0, price, 0.001, "expired OTM call should return 0")
 	})
 
 	t.Run("nil meta returns zero", func(t *testing.T) {

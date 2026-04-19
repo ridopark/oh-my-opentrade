@@ -167,7 +167,7 @@ func (a *HistoricalOptionsAdapter) PreLoad(ctx context.Context, symbols []domain
 				Rho:   r.Rho,
 				IV:    r.IV,
 			},
-			OpenInterest: estimateOpenInterest(r),
+			OpenInterest: historicalOpenInterest(r),
 		}
 		chainCache[chainKey] = append(chainCache[chainKey], snap)
 
@@ -384,7 +384,7 @@ func (a *HistoricalOptionsAdapter) getOptionChainFromDB(
 				Rho:   r.Rho,
 				IV:    r.IV,
 			},
-			OpenInterest: estimateOpenInterest(r),
+			OpenInterest: historicalOpenInterest(r),
 		})
 	}
 
@@ -426,6 +426,12 @@ func (a *HistoricalOptionsAdapter) GetHistoricalContract(
 		if rel := 0.02 * strike; rel > strikeTol {
 			strikeTol = rel
 		}
+		// Expiry tolerance tightened to +/-2 days. The previous +/-7 was
+		// aggressive for short-dated options: a 7DTE exit could match a
+		// 14DTE contract's bid, mis-pricing by a week of theta. For
+		// longer-dated holds, the 2-day window still covers weekend + 1d
+		// data gaps without silently crossing to a neighboring expiry.
+		const maxExpiryDriftDays = 2
 		var best *domain.HistoricalOptionChainRow
 		bestStrikeDist := 999999.0
 		bestExpiryDist := 999
@@ -436,7 +442,7 @@ func (a *HistoricalOptionsAdapter) GetHistoricalContract(
 				continue
 			}
 			expiryDist := absDays(r.Expiration, expiry)
-			if expiryDist > 7 {
+			if expiryDist > maxExpiryDriftDays {
 				continue
 			}
 			if best == nil ||
@@ -495,19 +501,13 @@ func (a *HistoricalOptionsAdapter) SaveBatch(
 	return a.repo.SaveBatch(ctx, rows)
 }
 
-// estimateOpenInterest returns a reasonable OI estimate from historical data.
-// DoltHub data may not include OI, so we default to a value that passes
-// the min_open_interest filter (typically 100) for liquid contracts.
-func estimateOpenInterest(r domain.HistoricalOptionChainRow) int {
-	// If bid and ask are both present with reasonable spread, assume liquid.
-	if r.Bid > 0 && r.Ask > 0 && r.Ask > r.Bid {
-		spread := (r.Ask - r.Bid) / r.Ask
-		if spread < 0.20 {
-			return 500 // liquid
-		}
-		return 50 // illiquid
-	}
-	return 10 // very illiquid / no quotes
+// historicalOpenInterest returns OI from the DoltHub row when the source
+// carries it (future schema extension) or 0 when unknown. Contract selection
+// treats 0 as "unknown, skip the OI filter" rather than "zero liquidity",
+// so backtests stop silently passing every contract through a fabricated
+// spread-based estimate. Real liquidity is gated by MaxSpreadPct instead.
+func historicalOpenInterest(_ domain.HistoricalOptionChainRow) int {
+	return 0
 }
 
 func abs(x float64) float64 {
