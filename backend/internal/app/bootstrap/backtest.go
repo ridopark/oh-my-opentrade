@@ -82,18 +82,22 @@ func BuildBacktestInfra(deps BacktestDeps, slippageBPS int64, initialEquity floa
 	}
 
 	sim := simbroker.New(simbroker.Config{
-		SlippageBPS:         slippageBPS,
-		InitialEquity:       initialEquity,
-		DisableFillChan:     true,
-		VIXIVBeta:           0.7,  // large-cap equity default
-		TODSeasonalEnabled:  true,
-		EarningsRampEnabled: true,
+		SlippageBPS:                slippageBPS,
+		InitialEquity:              initialEquity,
+		DisableFillChan:            true,
+		VIXIVBeta:                  0.7, // large-cap equity default
+		TODSeasonalEnabled:         true,
+		EarningsRampEnabled:        true,
+		MoveCrushEnabled:           true,
+		MoveCrushCallK:             0.6, // calls crush harder on underlying moves
+		MoveCrushPutK:              0.4, // puts crush less due to supportive skew
+		MoveCrushFloor:             0.5, // cap crush at 50% of entry IV
 		OptionExitSpreadMultiplier: opt.OptionExitSpreadMultiplier,
 		OptionEntrySpreadEnabled:   opt.OptionEntrySpreadEnabled,
-		FillModel:    fillModel,
-		FeeSchedule:  feeSchedule,
-		LatencyMsEq:  btCfg.LatencyMsEquity,
-		LatencyMsOpt: btCfg.LatencyMsOption,
+		FillModel:                  fillModel,
+		FeeSchedule:                feeSchedule,
+		LatencyMsEq:                btCfg.LatencyMsEquity,
+		LatencyMsOpt:               btCfg.LatencyMsOption,
 	}, log.With().Str("component", "simbroker").Logger())
 
 	earningsRepo := timescaledb.NewEarningsRepo(deps.DB, log.With().Str("component", "earnings_repo").Logger())

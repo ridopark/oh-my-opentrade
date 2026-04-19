@@ -23,9 +23,18 @@ type Config struct {
 	DisableFillChan bool    // skip fillCh sends; set when syncFill handles fills directly
 
 	// IV adjustment parameters for same-day option exits
-	VIXIVBeta          float64 // VIX-beta IV scaling exponent (0 = disabled; typical 0.7 for large caps)
-	TODSeasonalEnabled bool    // enable time-of-day IV seasonality multiplier (U-shape)
-	EarningsRampEnabled bool   // enable earnings IV ramp model (sqrt decay)
+	VIXIVBeta           float64 // VIX-beta IV scaling exponent (0 = disabled; typical 0.7 for large caps)
+	TODSeasonalEnabled  bool    // enable time-of-day IV seasonality multiplier (U-shape)
+	EarningsRampEnabled bool    // enable earnings IV ramp model (sqrt decay)
+
+	// Move-based IV crush for single-name spot-vol correlation (distinct
+	// from index-level VIX-beta). Captures the empirical ATM-IV drop
+	// when the underlying makes a directional move the option was
+	// positioned for. All zero fields disable the path.
+	MoveCrushEnabled bool
+	MoveCrushCallK   float64 // typical 0.6
+	MoveCrushPutK    float64 // typical 0.4
+	MoveCrushFloor   float64 // min multiplier; typical 0.5
 
 	// Option bid-ask spread realism knobs for fill simulation.
 	// OptionExitSpreadMultiplier scales the tiered exit half-spread (0 treated as 1.0).
@@ -86,6 +95,10 @@ type Broker struct {
 	vixIVBeta           float64
 	todSeasonalEnabled  bool
 	earningsRampEnabled bool
+	moveCrushEnabled    bool
+	moveCrushCallK      float64
+	moveCrushPutK       float64
+	moveCrushFloor      float64
 	optionExitSpreadMult    float64
 	optionEntrySpreadEnabled bool
 	historicalOptions   ports.HistoricalOptionsPort
@@ -168,6 +181,10 @@ func New(cfg Config, log zerolog.Logger) *Broker {
 		vixIVBeta:           cfg.VIXIVBeta,
 		todSeasonalEnabled:  cfg.TODSeasonalEnabled,
 		earningsRampEnabled: cfg.EarningsRampEnabled,
+		moveCrushEnabled:    cfg.MoveCrushEnabled,
+		moveCrushCallK:      cfg.MoveCrushCallK,
+		moveCrushPutK:       cfg.MoveCrushPutK,
+		moveCrushFloor:      cfg.MoveCrushFloor,
 		optionExitSpreadMult:     exitMult,
 		optionEntrySpreadEnabled: cfg.OptionEntrySpreadEnabled,
 		log:                 log.With().Str("component", "simbroker").Logger(),
@@ -849,6 +866,11 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 			VIXBeta:             b.vixIVBeta,
 			TODSeasonalEnabled:  b.todSeasonalEnabled,
 			EarningsRampEnabled: b.earningsRampEnabled,
+			MoveCrushEnabled:    b.moveCrushEnabled,
+			MoveCrushCallK:      b.moveCrushCallK,
+			MoveCrushPutK:       b.moveCrushPutK,
+			MoveCrushFloor:      b.moveCrushFloor,
+			IsCall:              isCall,
 		}
 		// VIX-beta: read current VIX and entry VIX from meta
 		if b.vixIVBeta > 0 {
@@ -866,6 +888,14 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 			var dte int
 			_, _ = fmt.Sscanf(intent.Meta["days_to_earnings"], "%d", &dte)
 			adj.DaysToEarnings = dte
+		}
+		// Move-based IV crush: signed return since entry, expressed as decimal.
+		if b.moveCrushEnabled {
+			var entryUnderlying float64
+			_, _ = fmt.Sscanf(intent.Meta["entry_underlying"], "%f", &entryUnderlying)
+			if entryUnderlying > 0 && underlyingPrice > 0 {
+				adj.UnderlyingRetPct = (underlyingPrice - entryUnderlying) / entryUnderlying
+			}
 		}
 		iv = options.AdjustIV(iv, adj)
 

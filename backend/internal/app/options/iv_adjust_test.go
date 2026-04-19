@@ -203,6 +203,71 @@ func TestAdjustIV_EarningsRamp(t *testing.T) {
 	})
 }
 
+func TestAdjustIV_MoveCrush(t *testing.T) {
+	t.Run("call crushes harder than put on same move", func(t *testing.T) {
+		base := 0.30
+		ret := 0.02 // +2% move since entry
+		callAdj := IVAdjustment{MoveCrushEnabled: true, MoveCrushCallK: 0.6, MoveCrushPutK: 0.4, MoveCrushFloor: 0.5, UnderlyingRetPct: ret, IsCall: true}
+		putAdj := IVAdjustment{MoveCrushEnabled: true, MoveCrushCallK: 0.6, MoveCrushPutK: 0.4, MoveCrushFloor: 0.5, UnderlyingRetPct: ret, IsCall: false}
+		callIV := AdjustIV(base, callAdj)
+		putIV := AdjustIV(base, putAdj)
+		// Call: 0.30 * (1 - 0.6*0.02) = 0.30 * 0.988 = 0.2964
+		// Put:  0.30 * (1 - 0.4*0.02) = 0.30 * 0.992 = 0.2976
+		if math.Abs(callIV-0.2964) > 0.0001 {
+			t.Errorf("call crushed IV expected 0.2964, got %f", callIV)
+		}
+		if math.Abs(putIV-0.2976) > 0.0001 {
+			t.Errorf("put crushed IV expected 0.2976, got %f", putIV)
+		}
+		if callIV >= putIV {
+			t.Errorf("call IV (%f) should crush harder than put (%f) on up-move", callIV, putIV)
+		}
+	})
+
+	t.Run("down-move symmetric: abs(ret) drives crush", func(t *testing.T) {
+		adj := IVAdjustment{MoveCrushEnabled: true, MoveCrushCallK: 0.6, MoveCrushFloor: 0.5, UnderlyingRetPct: -0.02, IsCall: true}
+		result := AdjustIV(0.30, adj)
+		expected := 0.30 * (1 - 0.6*0.02)
+		if math.Abs(result-expected) > 0.0001 {
+			t.Errorf("expected ~%.4f, got %f", expected, result)
+		}
+	})
+
+	t.Run("floor prevents runaway crush on huge move", func(t *testing.T) {
+		adj := IVAdjustment{MoveCrushEnabled: true, MoveCrushCallK: 2.0, MoveCrushFloor: 0.5, UnderlyingRetPct: 0.50, IsCall: true}
+		result := AdjustIV(0.30, adj)
+		// Raw multiplier would be 1 - 2.0*0.50 = 0, floored at 0.5
+		expected := 0.30 * 0.5
+		if math.Abs(result-expected) > 0.0001 {
+			t.Errorf("expected floor-clamped %.4f, got %f", expected, result)
+		}
+	})
+
+	t.Run("zero k disables path for that side", func(t *testing.T) {
+		adj := IVAdjustment{MoveCrushEnabled: true, MoveCrushCallK: 0.0, MoveCrushPutK: 0.4, UnderlyingRetPct: 0.05, IsCall: true}
+		result := AdjustIV(0.30, adj)
+		if result != 0.30 {
+			t.Errorf("zero k for calls should leave IV unchanged, got %f", result)
+		}
+	})
+
+	t.Run("disabled flag leaves IV unchanged", func(t *testing.T) {
+		adj := IVAdjustment{MoveCrushEnabled: false, MoveCrushCallK: 0.6, UnderlyingRetPct: 0.02, IsCall: true}
+		result := AdjustIV(0.30, adj)
+		if result != 0.30 {
+			t.Errorf("disabled move crush should leave IV unchanged, got %f", result)
+		}
+	})
+
+	t.Run("zero return leaves IV unchanged", func(t *testing.T) {
+		adj := IVAdjustment{MoveCrushEnabled: true, MoveCrushCallK: 0.6, UnderlyingRetPct: 0, IsCall: true}
+		result := AdjustIV(0.30, adj)
+		if result != 0.30 {
+			t.Errorf("zero underlying return should leave IV unchanged, got %f", result)
+		}
+	})
+}
+
 func TestAdjustIV_CombinedEffects(t *testing.T) {
 	t.Run("all three adjustments stack multiplicatively", func(t *testing.T) {
 		adj := IVAdjustment{
