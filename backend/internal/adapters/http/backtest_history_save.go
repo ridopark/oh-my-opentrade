@@ -35,6 +35,16 @@ func symbolsAsStrings(syms []domain.Symbol) []string {
 	return out
 }
 
+// derefSharpe flattens a nullable Sharpe for the history row. The DB column is
+// non-nullable float — nil (insufficient data) becomes 0 here, matching the
+// pre-nullable behavior of existing historical rows.
+func derefSharpe(s *float64) float64 {
+	if s == nil {
+		return 0
+	}
+	return *s
+}
+
 // saveBacktestHistory runs in its own goroutine off the Runner's finalizer.
 // It has a 10s timeout so a slow DB can't leak goroutines, and all errors
 // are logged — the backtest run itself has already completed by the time
@@ -73,7 +83,7 @@ func saveBacktestHistory(repo ports.BacktestHistoryPort, meta backtestRunMeta, r
 		WinRate:       res.WinRate,
 		Expectancy:    expectancy,
 		MaxDrawdown:   res.MaxDrawdown,
-		Sharpe:        res.SharpeRatio,
+		Sharpe:        derefSharpe(res.SharpeRatio),
 		TradeCount:    res.TradeCount,
 		WinCount:      res.WinCount,
 		LossCount:     res.LossCount,

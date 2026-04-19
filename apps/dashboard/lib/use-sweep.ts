@@ -31,7 +31,7 @@ export interface SweepRunResult {
     trade_count: number;
     win_rate_pct: number;
     max_drawdown_pct: number;
-    sharpe_ratio: number;
+    sharpe_ratio: number | null;
     profit_factor: number;
     initial_equity: number;
     final_equity: number;
