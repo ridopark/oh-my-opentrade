@@ -14,14 +14,31 @@ type IVAdjustment struct {
 	// Time-of-day seasonality: deterministic IV multiplier based on
 	// minutes since market open (9:30 ET). The U-shape pattern is well
 	// documented in options microstructure literature.
-	MinutesSinceOpen    int
-	TODSeasonalEnabled  bool
+	MinutesSinceOpen   int
+	TODSeasonalEnabled bool
 
 	// Earnings IV ramp: if the underlying is within DaysToEarnings of an
 	// earnings date, IV ramps as sqrt(daysToEarnings). BaselineDTE is the
 	// DTE at which the ramp starts (typically 5–10 trading days).
-	DaysToEarnings      int  // 0 or negative = no earnings nearby
+	DaysToEarnings      int // 0 or negative = no earnings nearby
 	EarningsRampEnabled bool
+
+	// Move-based IV crush: single-name spot-vol correlation that VIX-beta
+	// (index-level) misses. When the underlying makes a directional move
+	// since entry, ATM IV typically crushes — calls more than puts because
+	// skew supports puts on down-moves. Modeled as
+	//     iv *= max(MoveCrushFloor, 1 - k * |underlyingRetPct|)
+	// with separate k for calls (stronger crush) vs puts (weaker crush).
+	//
+	// UnderlyingRetPct is the signed percent return since entry expressed
+	// as a decimal (0.02 for +2%). The multiplier uses its absolute value;
+	// both directions crush ATM IV. MoveCrushEnabled gates the whole path.
+	MoveCrushEnabled bool
+	MoveCrushCallK   float64 // typical 0.6; 0 disables for calls
+	MoveCrushPutK    float64 // typical 0.4; 0 disables for puts
+	MoveCrushFloor   float64 // min multiplier; typical 0.5
+	UnderlyingRetPct float64 // signed return since entry, e.g. 0.02 for 2% up-move
+	IsCall           bool    // true = use MoveCrushCallK, false = MoveCrushPutK
 }
 
 // AdjustIV applies all enabled IV adjustments and returns the modified IV.
@@ -49,6 +66,11 @@ func AdjustIV(baseIV float64, adj IVAdjustment) float64 {
 		iv *= earningsRampMultiplier(adj.DaysToEarnings)
 	}
 
+	// 4. Move-based IV crush (single-name spot-vol correlation)
+	if adj.MoveCrushEnabled {
+		iv *= moveCrushMultiplier(adj)
+	}
+
 	// Clamp to reasonable range
 	if iv < 0.01 {
 		iv = 0.01
@@ -58,6 +80,34 @@ func AdjustIV(baseIV float64, adj IVAdjustment) float64 {
 	}
 
 	return iv
+}
+
+// moveCrushMultiplier returns the IV multiplier from the move-based crush
+// component. Uses MoveCrushCallK for calls and MoveCrushPutK for puts. Zero k
+// for the relevant side disables the effect. Output is floored at
+// MoveCrushFloor (or 0.1 if unset) so a large move can't collapse IV
+// arbitrarily.
+func moveCrushMultiplier(adj IVAdjustment) float64 {
+	k := adj.MoveCrushPutK
+	if adj.IsCall {
+		k = adj.MoveCrushCallK
+	}
+	if k <= 0 {
+		return 1.0
+	}
+	absRet := math.Abs(adj.UnderlyingRetPct)
+	if absRet <= 0 {
+		return 1.0
+	}
+	mult := 1.0 - k*absRet
+	floor := adj.MoveCrushFloor
+	if floor <= 0 {
+		floor = 0.1
+	}
+	if mult < floor {
+		mult = floor
+	}
+	return mult
 }
 
 // todSeasonalMultiplier returns a deterministic IV multiplier based on
