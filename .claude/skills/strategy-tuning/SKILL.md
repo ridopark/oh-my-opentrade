@@ -612,6 +612,24 @@ For each accepted change:
 3. **Reject if improvement is negative in either half**
 This catches regime-specific overfitting. Costs 2 extra backtests per accepted change.
 
+**CRITICAL — in-sample-twice anti-pattern.** Split-half validation only
+catches *regime* overfitting, not *parameter-selection* overfitting. If the
+parameter value being tested was chosen using analysis of the FULL period
+(e.g. bucket-level PF on the pooled year), then running it on H1 and H2 is
+in-sample-twice — both halves saw the selection. Such "validation" can't
+distinguish real edge from finite-sample artifact that happens to be stable
+across both halves.
+
+When the change is a param value selected from backtest data (vs. a fresh
+hypothesis), use the anchored walk-forward protocol in
+`references/wfa_protocol.md` instead: fit on a train segment only, freeze,
+test once on a held-out segment that was never looked at during fitting.
+
+**Menu-selection correction.** When sweeping N variants and picking the best,
+false-positive rate inflates with N. Required delta on train:
+`baseline_stddev × √(2 × ln(N))`. For N=4 at α=0.05 that's ~19% FP; N=10 is
+~40%. Document N before running the sweep — do not decide retroactively.
+
 #### Correlated Pair Mini-Grids
 Run 3x3 grids for known interacting pairs (defined per strategy below).
 Only 9 backtests per pair. Accept best combo if it clears threshold + split-half.
@@ -792,6 +810,23 @@ Before tuning, scan for these known issues:
 
 Removing trades via entry filters can backfill freed position slots with worse replacement trades, causing net PF decrease.
 **Mitigation:** Apply structural filters (time window, regime) FIRST to constrain the replacement pool, THEN tighten entry quality within the narrower pool.
+
+## Diagnostic Backtests
+
+Cheap, high-value backtests that aren't in the tuning loop but disambiguate structural questions.
+
+### Slippage stress test
+When a variant "wins" by a margin, run the winner and a reference config at **3x nominal slippage** (e.g. 10 → 30 bps). Compare the PF gap:
+- Gap collapses > 50% → the edge was largely a fill-model artifact. Do NOT ship.
+- Gap holds (shrinks < 20%) → real structural edge. Fill model isn't the driver.
+
+Two extra backtests, answers a question the normal loop can't.
+
+### Time-of-day PnL attribution
+When a variant changes entry timing/window, bucket the no-gate variant's trades by 15-min entry-time windows and compute per-bucket PF + avg confluence score + avg spread. Direct evidence on whether observed failure is spread-driven, setup-quality-driven, or regime-driven. Uses `minutes_held` on close trades to derive entry time from `filled_at`.
+
+### Fill-model sanity check
+If baseline Sharpe > 5 on intraday options, suspect the fill model before trusting any ranking. Check DoltHub real bid/ask coverage for the universe — if < 50% of symbols have real data, results are dominated by BSM-synth friction layers which don't reflect live spread costs. Expand DoltHub coverage before tuning further.
 
 ## Rebuild & Restart After Engine Changes
 
