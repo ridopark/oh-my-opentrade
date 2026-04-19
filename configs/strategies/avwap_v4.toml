@@ -51,7 +51,9 @@ POOR CANDIDATES (score 0-1):
 - ATR% < 1.0% (too slow, AVWAP entries won't trigger)
 - Gap% < 0.5% (no clear anchor event)
 - RVOL < 0.5x (no institutional participation)
-- Leveraged ETFs (SOXL, TQQQ, SQQQ) — synthetic price action, poor VWAP respect
+- Note: SOXL was previously flagged here as poor. Pair-test 2026-04-18 with
+  inducement+no-gate showed SOXL contributes +$109k net PnL vs 26-sym without
+  it, and DD unchanged. Retained. TQQQ/SQQQ untested.
 
 Score = probability this symbol generates a valid AVWAP entry signal today.\
 """
@@ -136,8 +138,17 @@ max_position_bps = 1500          # reduced from 3000
 # --- Timing ---
 # Trading window (ET). Entries only allowed within this range.
 allowed_hours_start = "09:35"
-allowed_hours_end = "09:50"      # tighter window (09:50+ was breakeven)
+allowed_hours_end = "15:45"
 allowed_hours_tz = "America/New_York"
+
+# Hour gate dropped 2026-04-18 after Phase 4 OOS test. With inducement Factor 7
+# active, the gate's timing filter is partially redundant — inducement captures
+# high-conviction setups regardless of time-of-day. Solo holdout-12: DD widens
+# 3.63→5.27%, PF drops 3.34→2.48, but PnL +42% ($293k→$417k). Pair w/
+# macd_only_v1 (27 incl SOXL): DD IMPROVES 7.14→5.06% (freed slots reduce
+# contention), PF 2.95→2.64, PnL +8.4%. User risk tolerance: DD <= 10%, so
+# accept the risk/return trade. Midday_trap_shield (11:00-13:00 volume gate)
+# remains active as secondary filter.
 
 # Cooldown between trades on the same symbol (seconds)
 cooldown_seconds = 3600          # 1hr cooldown per symbol
