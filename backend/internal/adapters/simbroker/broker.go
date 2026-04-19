@@ -874,7 +874,7 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 		}
 		// VIX-beta: read current VIX and entry VIX from meta
 		if b.vixIVBeta > 0 {
-			adj.VIXNow = b.prices[domain.Symbol("VIX")]
+			adj.VIXNow = b.prices[domain.SymbolVIX]
 			var vixEntry float64
 			_, _ = fmt.Sscanf(intent.Meta["vix_at_entry"], "%f", &vixEntry)
 			adj.VIXAtEntry = vixEntry

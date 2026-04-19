@@ -111,6 +111,11 @@ type Collector struct {
 	lossCount   int
 	grossProfit float64
 	grossLoss   float64
+	// largestWin is the biggest positive realized PnL seen so far;
+	// largestLoss is the most negative. Tracked incrementally so
+	// Result() doesn't need a full trade scan to produce final metrics.
+	largestWin  float64
+	largestLoss float64
 
 	// Daily Sharpe: aggregate one return per trading day, annualize with sqrt(252).
 	prevDayEquity float64 // equity at end of previous trading day
@@ -259,9 +264,8 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 	}
 
 	// Use direction to classify entries vs exits. isExit drives the
-	// round-trip trade counter below: every exit counts as one trade,
-	// even breakeven, to match the round-trip definition agreed on in
-	// the Phase 1/3 tuning work. Entries never count.
+	// round-trip trade counter below: every exit counts as one trade
+	// (even breakeven). Entries never count.
 	var isExit bool
 	switch domain.Direction(direction) {
 	case domain.DirectionLong:
@@ -368,9 +372,15 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 		if tr.PnL > 0 {
 			c.winCount++
 			c.grossProfit += tr.PnL
+			if tr.PnL > c.largestWin {
+				c.largestWin = tr.PnL
+			}
 		} else if tr.PnL < 0 {
 			c.lossCount++
 			c.grossLoss += math.Abs(tr.PnL)
+			if tr.PnL < c.largestLoss {
+				c.largestLoss = tr.PnL
+			}
 		}
 	}
 
@@ -620,9 +630,15 @@ func (c *Collector) CloseOpenPositions(endTime time.Time) {
 				if pnl > 0 {
 					c.winCount++
 					c.grossProfit += pnl
+					if pnl > c.largestWin {
+						c.largestWin = pnl
+					}
 				} else if pnl < 0 {
 					c.lossCount++
 					c.grossLoss += math.Abs(pnl)
+					if pnl < c.largestLoss {
+						c.largestLoss = pnl
+					}
 				}
 			}
 			delete(positions, sym)
@@ -647,33 +663,11 @@ func (c *Collector) Result() Result {
 	// Final mark-to-market equity (already tracked incrementally).
 	finalEquity := c.cash + c.totalPosValue
 
-	// Round-trip stats: every exit counts as one trade (including
-	// breakeven exits that don't add to wins or losses). Largest
-	// win/loss track PnL extremes and ignore zero-PnL rows.
-	var grossProfit, grossLoss float64
-	var tradeCount, winCount, lossCount int
-	var largestWin, largestLoss float64
-	for _, tr := range c.trades {
-		if !tr.IsExit {
-			continue
-		}
-		tradeCount++
-		if tr.PnL > 0 {
-			winCount++
-			grossProfit += tr.PnL
-			if tr.PnL > largestWin {
-				largestWin = tr.PnL
-			}
-		} else if tr.PnL < 0 {
-			lossCount++
-			grossLoss += math.Abs(tr.PnL)
-			if math.Abs(tr.PnL) > math.Abs(largestLoss) {
-				largestLoss = tr.PnL
-			}
-		}
-	}
-
-	realizedPnL := grossProfit - grossLoss
+	// Round-trip stats come straight from the incremental counters maintained
+	// under c.mu during onFill and CloseOpenPositions. The earlier re-scan
+	// of c.trades recomputed the same values with a second filter rule;
+	// they agreed only by accident. Single source of truth now.
+	realizedPnL := c.grossProfit - c.grossLoss
 
 	// Snapshot the equity curve and append the in-progress day's close so the
 	// final day is represented. Non-mutating: the collector's own slice is
@@ -696,11 +690,11 @@ func (c *Collector) Result() Result {
 		TotalPnL:      realizedPnL,
 		MaxDrawdown:   c.maxDrawdown * 100,
 		Trades:        c.trades,
-		TradeCount:    tradeCount,
-		WinCount:      winCount,
-		LossCount:     lossCount,
-		LargestWin:    largestWin,
-		LargestLoss:   largestLoss,
+		TradeCount:    c.tradeCount,
+		WinCount:      c.winCount,
+		LossCount:     c.lossCount,
+		LargestWin:    c.largestWin,
+		LargestLoss:   c.largestLoss,
 		EquityCurve:   curve,
 	}
 
@@ -712,13 +706,13 @@ func (c *Collector) Result() Result {
 		r.WinRate = float64(r.WinCount) / float64(r.TradeCount) * 100
 	}
 	if r.WinCount > 0 {
-		r.AvgWin = grossProfit / float64(r.WinCount)
+		r.AvgWin = c.grossProfit / float64(r.WinCount)
 	}
 	if r.LossCount > 0 {
-		r.AvgLoss = grossLoss / float64(r.LossCount)
+		r.AvgLoss = c.grossLoss / float64(r.LossCount)
 	}
-	if grossLoss > 0 {
-		r.ProfitFactor = grossProfit / grossLoss
+	if c.grossLoss > 0 {
+		r.ProfitFactor = c.grossProfit / c.grossLoss
 	}
 
 	// Sharpe ratio from equity curve returns.

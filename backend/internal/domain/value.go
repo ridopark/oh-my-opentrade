@@ -72,6 +72,12 @@ func NewDirection(d string) (Direction, error) {
 // Symbol represents a trading pair identifier (e.g. "BTC/USD").
 type Symbol string
 
+// Well-known symbols used across the codebase. Keeps raw-string
+// references at a minimum so typos surface at compile time.
+const (
+	SymbolVIX Symbol = "VIX"
+)
+
 func (s Symbol) String() string { return string(s) }
 
 func NewSymbol(s string) (Symbol, error) {
