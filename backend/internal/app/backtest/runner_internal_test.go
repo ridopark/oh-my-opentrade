@@ -59,6 +59,27 @@ func TestIsRTHGap(t *testing.T) {
 			end:      time.Date(2026, 2, 10, 12, 0, 0, 0, loc),
 			expected: false,
 		},
+		{
+			// US DST began 2026-03-08 02:00 ET. A same-day gap on the
+			// Monday after spring-forward must still resolve 09:30 and
+			// 16:00 in the current (EDT) local time — catches any
+			// regression where the function hard-codes EST offsets.
+			name:     "same-day RTH gap on first trading day after DST",
+			start:    time.Date(2026, 3, 9, 10, 0, 0, 0, loc),
+			end:      time.Date(2026, 3, 9, 14, 0, 0, 0, loc),
+			expected: true,
+		},
+		{
+			// Multi-day gap crossing the spring-forward weekend. The
+			// Monday session (Mar 9 09:30 EDT - 16:00 EDT) lands fully
+			// inside Sat 17:00 EST - Tue 10:00 EDT, so IsRTHGap must
+			// return true even though the loop counter advances through
+			// the 23-hour DST day.
+			name:     "multi-day gap spanning DST spring-forward weekend",
+			start:    time.Date(2026, 3, 7, 17, 0, 0, 0, loc),
+			end:      time.Date(2026, 3, 10, 10, 0, 0, 0, loc),
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {

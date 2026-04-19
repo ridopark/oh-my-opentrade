@@ -172,6 +172,37 @@ func TestSessionResolver_SetUniverseHistory_NilPortDisablesEnforce(t *testing.T)
 	assert.True(t, ok)
 }
 
+// TestSessionResolver_GetBarsSince_CryptoCap24H verifies the crypto-vs-equity
+// end-of-day cap. Equity caps at 16:00 ET; crypto (symbol contains "/") caps
+// at 24:00 ET. Covers the Load24H-adjacent crypto session path that previously
+// had no assertions.
+func TestSessionResolver_GetBarsSince_CryptoCap24H(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	r := NewSessionResolver(loc)
+
+	day := time.Date(2026, 4, 15, 0, 0, 0, 0, loc)
+	at := func(hour, min int) time.Time {
+		return time.Date(2026, 4, 15, hour, min, 0, 0, loc)
+	}
+	bars := []domain.MarketBar{
+		{Time: at(10, 0), Close: 100},
+		{Time: at(15, 30), Close: 101},
+		{Time: at(18, 0), Close: 102}, // post-RTH for equities; in-session for crypto
+		{Time: at(22, 0), Close: 103},
+	}
+	r.PopulateBarCache("AAPL", bars)
+	r.PopulateBarCache("BTC/USD", bars)
+
+	// Equity cap 16:00: only the 10:00 and 15:30 bars are in-session.
+	equityBars := r.GetBarsSince(context.Background(), nil, "AAPL", day.Add(9*time.Hour))
+	assert.Len(t, equityBars, 2, "equity GetBarsSince should cap at 16:00 ET")
+
+	// Crypto cap 24:00: all four bars are in-session.
+	cryptoBars := r.GetBarsSince(context.Background(), nil, "BTC/USD", day.Add(9*time.Hour))
+	assert.Len(t, cryptoBars, 4, "crypto GetBarsSince should include full 24h")
+}
+
 // TestSessionResolver_Stats_TracksUnknownSymbolHits - seeding gap visibility.
 // CheckUniverse on a symbol with no windows must increment unknownSymbolHits
 // so the end-of-run summary can surface "you backtested with an incomplete
