@@ -1306,6 +1306,20 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	publishedAuctions := make(map[string]bool, len(auctionByDateSym))
 
+	// Shared auction publisher — single code path used by both the legacy
+	// heap loop and the slice-pipeline coord so auction events fire
+	// identically across replay speeds.
+	auctionPub := &auctionPublisher{
+		loc:               loc,
+		eventBus:          r.infra.EventBus,
+		monitorSvc:        monitorSvc,
+		auctionByDateSym:  auctionByDateSym,
+		publishedAuctions: publishedAuctions,
+		tenantID:          "default",
+		envMode:           domain.EnvModePaper,
+		log:               r.log,
+	}
+
 	// Use default GC frequency (GOGC=100) to keep heap tight and avoid swap
 	// thrashing on memory-constrained machines. The previous GOGC=200 let the
 	// heap grow 2x before collecting, which caused OOM/swap on large backtests.
@@ -1715,8 +1729,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			symbols:          r.cfg.Symbols,
 			totalBars:        len(sliceBars),
 			barsReplayed:     &barsProcessed,
-			auctionByDateSym: auctionByDateSym,
-			publishedAuctions: make(map[string]bool),
+			auctionPub:       auctionPub,
 			sp:               sp,
 		}
 
@@ -1831,42 +1844,10 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 			}
 
-			// Emit synthetic auction imbalance event at 15:45 ET for any
-			// strategy that handles OnEvent(AuctionImbalanceUpdate).
-			// Published BEFORE the bar so strategies have the auction
-			// snapshot when processing the 15:45+ bar.
-			if len(auctionByDateSym) > 0 {
-				barET := bar.Time.In(loc)
-				if barET.Hour() == 15 && barET.Minute() >= 45 {
-					symStr := bar.Symbol.String()
-					dateKey := barET.Format("2006-01-02") + ":" + symStr
-					if !publishedAuctions[dateKey] {
-						if aSnap, ok := auctionByDateSym[dateKey]; ok {
-							// Derive synthetic imbalance direction from bar close vs VWAP (option B).
-							imbalance := aSnap.Volume // default positive
-							if snap, snapOK := monitorSvc.GetLastSnapshot(symStr); snapOK && snap.VWAP > 0 {
-								if bar.Close < snap.VWAP {
-									imbalance = -aSnap.Volume
-								}
-							}
-							synthSnap := domain.AuctionImbalanceSnapshot{
-								Time:      bar.Time,
-								Symbol:    bar.Symbol,
-								Volume:    aSnap.Volume,
-								Price:     aSnap.Price,
-								Imbalance: imbalance,
-							}
-							aEvt := domain.NewBacktestEvent(
-								domain.EventAuctionImbalance, tenantID, envMode,
-								bar.Time.String()+"-auction-"+symStr, synthSnap, bar.Time,
-							)
-							_ = r.infra.EventBus.PublishDirect(ctx, aEvt)
-							r.infra.EventBus.Flush()
-							publishedAuctions[dateKey] = true
-						}
-					}
-				}
-			}
+			// Publish auction imbalance BEFORE the bar so strategies
+			// observe the auction snapshot when processing the 15:45+ bar.
+			// Shared helper with the slice-path coord to prevent drift.
+			auctionPub.maybePublish(ctx, bar)
 
 			// Publish market bar event (backtest fast path: counter ID, no UUID, no time.Now, no lock).
 			evt := domain.NewBacktestEvent(domain.EventMarketBarReceived, tenantID, envMode, bar.Time.String()+string(bar.Symbol), bar, bar.Time)
@@ -2280,8 +2261,7 @@ type runnerSliceCoord struct {
 	symbols          []domain.Symbol
 	totalBars        int
 	barsReplayed     *int
-	auctionByDateSym map[string]domain.AuctionImbalanceSnapshot
-	publishedAuctions map[string]bool
+	auctionPub       *auctionPublisher
 	sp               *ShardedPipeline
 	ticksSeen        int
 }
@@ -2356,7 +2336,11 @@ func (c *runnerSliceCoord) OnTickEnd(ctx context.Context, tickTime time.Time) er
 	return nil
 }
 
-func (c *runnerSliceCoord) OnBar(_ context.Context, bar domain.MarketBar) error {
+func (c *runnerSliceCoord) OnBar(ctx context.Context, bar domain.MarketBar) error {
+	// Publish auction imbalance BEFORE the bar enters any shard so
+	// strategies handling the 15:45+ bar observe the auction snapshot
+	// in the expected order. Matches the legacy heap loop.
+	c.auctionPub.maybePublish(ctx, bar)
 	if c.sim == nil {
 		return nil
 	}
@@ -2372,3 +2356,93 @@ func (c *runnerSliceCoord) PosLookup(symbol string) (domain.MonitoredPosition, b
 }
 
 func (c *runnerSliceCoord) Logger() *slog.Logger { return nil }
+
+// auctionBus is the narrow subset of ports.BacktestBus the publisher needs.
+// Defined locally so tests can stub it without the full BacktestBus surface.
+type auctionBus interface {
+	PublishDirect(ctx context.Context, event domain.Event) error
+	Flush()
+}
+
+// vwapProvider exposes just the per-symbol VWAP lookup used for the
+// synthetic-sign fallback. Concrete implementation: *monitor.Service.
+type vwapProvider interface {
+	GetLastSnapshot(symbol string) (domain.IndicatorSnapshot, bool)
+}
+
+// auctionPublisher emits AuctionImbalance events at the first bar on-or-after
+// 15:45 ET for each (date, symbol). Single source of truth for both the
+// legacy heap-dispatch path and the slice-pipeline path so the two cannot
+// drift. The publisher is constructed once per backtest run; its
+// publishedAuctions map dedupes within that run.
+//
+// Safe for serial use only — both calling paths dispatch bars sequentially.
+type auctionPublisher struct {
+	loc               *time.Location
+	eventBus          auctionBus
+	monitorSvc        vwapProvider
+	auctionByDateSym  map[string]domain.AuctionImbalanceSnapshot
+	publishedAuctions map[string]bool
+	tenantID          string
+	envMode           domain.EnvMode
+	log               zerolog.Logger
+
+	// syntheticSignCount tracks how often we fell back to bar-derived
+	// sign because the DB's Imbalance field was zero. Reported at
+	// end-of-run to surface silent data-quality issues.
+	syntheticSignCount int
+}
+
+func (p *auctionPublisher) maybePublish(ctx context.Context, bar domain.MarketBar) {
+	if p == nil || len(p.auctionByDateSym) == 0 {
+		return
+	}
+	barET := bar.Time.In(p.loc)
+	if barET.Hour() != 15 || barET.Minute() < 45 {
+		return
+	}
+	symStr := bar.Symbol.String()
+	dateKey := barET.Format("2006-01-02") + ":" + symStr
+	if p.publishedAuctions[dateKey] {
+		return
+	}
+	aSnap, ok := p.auctionByDateSym[dateKey]
+	if !ok {
+		return
+	}
+
+	// Respect the DB's real NYSE imbalance when present. Fall back to
+	// a bar-derived sign (close vs VWAP) only when the DB row carries
+	// zero, which happens for rows ingested before the Imbalance
+	// column existed.
+	imbalance := aSnap.Imbalance
+	if imbalance == 0 {
+		imbalance = aSnap.Volume
+		if p.monitorSvc != nil {
+			if snap, snapOK := p.monitorSvc.GetLastSnapshot(symStr); snapOK && snap.VWAP > 0 {
+				if bar.Close < snap.VWAP {
+					imbalance = -aSnap.Volume
+				}
+			}
+		}
+		p.syntheticSignCount++
+	}
+
+	synthSnap := domain.AuctionImbalanceSnapshot{
+		Time:      bar.Time,
+		Symbol:    bar.Symbol,
+		Volume:    aSnap.Volume,
+		Price:     aSnap.Price,
+		Imbalance: imbalance,
+	}
+	aEvt := domain.NewBacktestEvent(
+		domain.EventAuctionImbalance, p.tenantID, p.envMode,
+		bar.Time.String()+"-auction-"+symStr, synthSnap, bar.Time,
+	)
+	if err := p.eventBus.PublishDirect(ctx, aEvt); err != nil {
+		p.log.Warn().Err(err).Str("sym", symStr).Time("bar", bar.Time).Msg("auction publish failed")
+		return
+	}
+	p.eventBus.Flush()
+	p.publishedAuctions[dateKey] = true
+}
