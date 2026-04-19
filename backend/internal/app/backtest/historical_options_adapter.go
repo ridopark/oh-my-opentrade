@@ -27,18 +27,6 @@ type optionCacheKey struct {
 	Right  string // "Call" or "Put"
 }
 
-// syntheticCacheKey indexes synthetic-generator output by
-// (symbol, date, right, DTE window). Unlike the historical chain, the
-// synthetic generator materializes a DIFFERENT contract set per window,
-// so two requests with different windows must not share cached output.
-type syntheticCacheKey struct {
-	Symbol string
-	Date   string
-	Right  string
-	MinDTE int
-	MaxDTE int
-}
-
 // contractCacheKey indexes individual contract rows for SimBroker exit pricing.
 type contractCacheKey struct {
 	Symbol string // underlying e.g. "AAPL"
@@ -74,11 +62,6 @@ type HistoricalOptionsAdapter struct {
 	// enables synthetic chains. Nil when disabled, which preserves
 	// byte-identical behavior with the pre-synthetic path.
 	syntheticGen *SyntheticChainGenerator
-
-	// Cache for synthetic results so a second request on the same key is
-	// O(1). Lazily initialized on first synthetic generation. Keyed on
-	// DTE window to prevent cross-strategy contamination.
-	syntheticCache map[syntheticCacheKey][]domain.OptionContractSnapshot
 
 	// Diagnostics: track how often each path actually served data, so
 	// the runner can emit an end-of-run summary and flag accidentally
@@ -289,10 +272,17 @@ func hasExpiryInDTERange(snaps []domain.OptionContractSnapshot, asOf time.Time, 
 	return false
 }
 
-// generateSynthetic runs the BSM-based generator (if attached), caches the
-// result under the per-day + DTE-window key, and returns it. Returns nil
-// when no generator is attached or the generator produces no output (e.g.
-// missing spot) — both are legitimate "no data" outcomes, not errors.
+// generateSynthetic runs the BSM-based generator (if attached) and returns
+// the result. Returns nil when no generator is attached or the generator
+// produces no output (e.g. missing spot) — both are legitimate "no data"
+// outcomes, not errors.
+//
+// No caching: the prior per-day cache froze the underlying spot at the
+// time of the first call, so intraday moves silently re-used stale BSM
+// prices. Strategy entries on post-move bars bought at pre-move premium
+// and exited via current-spot BSM, booking phantom PnL. Regenerating on
+// every call is cheap (~100 BSM evaluations) and keeps premium coherent
+// with the current 1m spot.
 func (a *HistoricalOptionsAdapter) generateSynthetic(
 	ctx context.Context,
 	chainKey optionCacheKey,
@@ -304,17 +294,6 @@ func (a *HistoricalOptionsAdapter) generateSynthetic(
 	if a.syntheticGen == nil {
 		return nil, nil
 	}
-	synthKey := syntheticCacheKey{
-		Symbol: chainKey.Symbol,
-		Date:   chainKey.Date,
-		Right:  chainKey.Right,
-		MinDTE: minDTE,
-		MaxDTE: maxDTE,
-	}
-	if cached, ok := a.syntheticCache[synthKey]; ok {
-		a.syntheticHits++
-		return cached, nil
-	}
 	snaps, err := a.syntheticGen.GenerateChain(ctx, underlying, asOf, right, minDTE, maxDTE)
 	if err != nil {
 		return nil, err
@@ -323,13 +302,9 @@ func (a *HistoricalOptionsAdapter) generateSynthetic(
 		return nil, nil
 	}
 	a.syntheticHits++
-	if a.syntheticCache == nil {
-		a.syntheticCache = make(map[syntheticCacheKey][]domain.OptionContractSnapshot, 64)
-	}
-	a.syntheticCache[synthKey] = snaps
-	a.log.Info().
+	a.log.Debug().
 		Str("symbol", string(underlying)).
-		Str("date", synthKey.Date).
+		Str("date", chainKey.Date).
 		Str("right", string(right)).
 		Int("contracts", len(snaps)).
 		Int("min_dte", minDTE).
@@ -532,18 +507,12 @@ type marketBarReader interface {
 	GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error)
 }
 
-// lookupSpot returns the most recent close for the symbol on-or-before
-// asOf, preferring 1d bars over 1m bars. Returns 0 with a nil error when
-// no bars are available — synthetic generator treats that as "no chain".
+// lookupSpot returns the most recent 1m close at-or-before asOf. The
+// earlier implementation preferred daily bars, which leaked EOD closes
+// into intraday synthetic-chain pricing (look-ahead). Returns 0 with a
+// nil error when no bars are available — synthetic generator treats
+// that as "no chain".
 func lookupSpot(ctx context.Context, repo marketBarReader, symbol domain.Symbol, asOf time.Time) (float64, error) {
-	// Try 1d first: widest and cheapest lookup.
-	dayStart := time.Date(asOf.Year(), asOf.Month(), asOf.Day(), 0, 0, 0, 0, asOf.Location())
-	dayEnd := dayStart.Add(24 * time.Hour)
-	bars, err := repo.GetMarketBars(ctx, symbol, domain.Timeframe("1d"), dayStart.AddDate(0, 0, -7), dayEnd)
-	if err == nil && len(bars) > 0 {
-		return bars[len(bars)-1].Close, nil
-	}
-	// Fall back to 1m: last bar on-or-before asOf within the last 2 days.
 	from := asOf.Add(-48 * time.Hour)
 	mbars, err := repo.GetMarketBars(ctx, symbol, domain.Timeframe("1m"), from, asOf.Add(time.Minute))
 	if err != nil {

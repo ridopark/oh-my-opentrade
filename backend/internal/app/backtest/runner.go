@@ -1187,20 +1187,37 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.status.Store("error")
 		return fmt.Errorf("start strategy runner: %w", startErr)
 	}
-	if pipeline.Enricher != nil {
-		if startErr := pipeline.Enricher.Start(ctx); startErr != nil {
-			r.status.Store("error")
-			return fmt.Errorf("start signal enricher: %w", startErr)
+
+	// When the sharded max-speed path runs, it builds and starts its own
+	// Enricher and RiskSizer from BuildStrategyShared. Starting the legacy
+	// pipeline's copies would double-subscribe to SignalCreated /
+	// SignalEnriched / FillReceived and produce duplicate OrderIntentCreated
+	// events (the second one gets rejected by the position gate, but the
+	// work is wasted and shows up as noise in logs). The handleFill double
+	// on the Runner is explicitly tolerated by the existing design (see
+	// FreezeHandlers comment below); this change removes only the Enricher
+	// / RiskSizer duplication.
+	useSharded := r.speedDelay.Load().(time.Duration) == 0 && !r.paused.Load()
+	activeRiskSizer := pipeline.RiskSizer
+	if !useSharded {
+		if pipeline.Enricher != nil {
+			if startErr := pipeline.Enricher.Start(ctx); startErr != nil {
+				r.status.Store("error")
+				return fmt.Errorf("start signal enricher: %w", startErr)
+			}
 		}
-	}
-	pipeline.RiskSizer.SetNowFn(clockFn)
-	pipeline.RiskSizer.SetExitCooldown(3 * time.Minute)
-	if startErr := pipeline.RiskSizer.Start(ctx); startErr != nil {
-		r.status.Store("error")
-		return fmt.Errorf("start risk sizer: %w", startErr)
+		pipeline.RiskSizer.SetNowFn(clockFn)
+		pipeline.RiskSizer.SetExitCooldown(3 * time.Minute)
+		if startErr := pipeline.RiskSizer.Start(ctx); startErr != nil {
+			r.status.Store("error")
+			return fmt.Errorf("start risk sizer: %w", startErr)
+		}
 	}
 
 	// Compound equity: update position sizing after each fill so P&L compounds.
+	// activeRiskSizer is rebound below when the sharded path installs its own
+	// strategyShared.RiskSizer; the closure captures the var, not the pointer,
+	// so it picks up the rebind at fire time.
 	if r.cfg.CompoundEquity {
 		subErr := r.infra.EventBus.Subscribe(ctx, domain.EventFillReceived, func(ctx context.Context, _ domain.Event) error {
 			eq, err := sim.GetAccountEquity(ctx)
@@ -1208,7 +1225,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				r.log.Warn().Err(err).Msg("compound-equity update skipped: GetAccountEquity failed")
 				return nil
 			}
-			pipeline.RiskSizer.SetAccountEquity(eq)
+			activeRiskSizer.SetAccountEquity(eq)
 			execBundle.Service.SetAccountEquity(eq)
 			return nil
 		})
@@ -1303,8 +1320,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	// parallelism on the Phase A hot path. Falls through to the legacy
 	// heap-dispatch loop when speed != max (pause/resume needs per-bar
 	// control that slice dispatch doesn't support).
-	isMaxSpeed := r.speedDelay.Load().(time.Duration) == 0
-	if isMaxSpeed && !r.paused.Load() {
+	//
+	// useSharded was computed above (same predicate) to gate the legacy
+	// Enricher/RiskSizer Start calls; reuse it here.
+	isMaxSpeed := useSharded
+	if isMaxSpeed {
 		// Capture ORB config for per-shard monitor application.
 		var orbParamsCaptured map[string]any
 		var orbTimeframeCaptured string
@@ -1358,6 +1378,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		if strategyShared.RiskSizer != nil {
 			strategyShared.RiskSizer.SetNowFn(clockFn)
 			strategyShared.RiskSizer.SetExitCooldown(3 * time.Minute)
+			// Rebind the compound-equity closure target before Start().
+			// Start() wires subscriptions; the first fill can land before
+			// this function returns, so the rebind must precede it.
+			activeRiskSizer = strategyShared.RiskSizer
 			if startErr := strategyShared.RiskSizer.Start(ctx); startErr != nil {
 				r.status.Store("error")
 				return fmt.Errorf("start shared risk sizer: %w", startErr)
