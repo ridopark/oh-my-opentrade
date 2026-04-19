@@ -92,12 +92,20 @@ func TestNewCollector_DefaultPeriodsPerYearAndSubscribes(t *testing.T) {
 	r := c.Result()
 	require.NotEmpty(t, r.Trades)
 
-	// Compute expected daily Sharpe: 3 daily returns from 4 end-of-day equity snapshots.
-	returns := make([]float64, 0, len(closes)-1)
-	for i := 1; i < len(closes); i++ {
-		returns = append(returns, (closes[i]-closes[i-1])/closes[i-1])
+	// Compute expected daily Sharpe. With the first-day-return seed in
+	// NewCollector, the sample includes initial-equity -> day-1 close
+	// as the first return. Cfg.InitialEquity=100, the buy cost exactly
+	// 100, and the day-1 close equity is 100, so that first return is 0.
+	samples := append([]float64{100.0}, closes...) // seed + 4 day closes
+	returns := make([]float64, 0, len(samples)-1)
+	for i := 1; i < len(samples); i++ {
+		returns = append(returns, (samples[i]-samples[i-1])/samples[i-1])
 	}
-	mean := (returns[0] + returns[1] + returns[2]) / float64(len(returns))
+	var sum float64
+	for _, rr := range returns {
+		sum += rr
+	}
+	mean := sum / float64(len(returns))
 	var sumSq float64
 	for _, rr := range returns {
 		d := rr - mean
@@ -281,6 +289,23 @@ func TestResult_AllLosses(t *testing.T) {
 	assert.InDelta(t, 0.0, r.LargestWin, 1e-9)
 	assert.InDelta(t, -20.0, r.LargestLoss, 1e-9)
 	assert.InDelta(t, 0.0, r.ProfitFactor, 1e-9)
+}
+
+// TestOnFill_BreakevenRoundTripCountsAsTrade guards the round-trip
+// definition: a flat exit (PnL == 0) is still one closed trade and must
+// increment TradeCount, but it adds to neither WinCount nor LossCount.
+func TestOnFill_BreakevenRoundTripCountsAsTrade(t *testing.T) {
+	bus, c := newCollector(t, backtest.Config{InitialEquity: 1000, PeriodsPerYear: 252})
+	t0 := time.Date(2026, 1, 1, 9, 30, 0, 0, time.UTC)
+
+	publishFill(t, bus, "b1", fillPayload("AAPL", "buy", 10.0, 10.0, t0))
+	publishFill(t, bus, "s1", fillPayload("AAPL", "sell", 10.0, 10.0, t0.Add(time.Second)))
+
+	r := c.Result()
+	assert.Equal(t, 1, r.TradeCount, "breakeven exit must count as one round-trip trade")
+	assert.Equal(t, 0, r.WinCount)
+	assert.Equal(t, 0, r.LossCount)
+	assert.InDelta(t, 0.0, r.TotalPnL, 1e-9)
 }
 
 func TestPrintReport_DoesNotPanic(t *testing.T) {
