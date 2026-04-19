@@ -138,20 +138,54 @@ func TestAdapter_SyntheticFallback_NoOpWhenDisabled(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, chain)
 }
-func TestAdapter_SyntheticFallback_CachesResult(t *testing.T) {
+// TestAdapter_SyntheticFallback_RegeneratesOnSpotMove is a direct
+// regression for the stale-chain phantom-PnL bug: the synthetic chain
+// used to be cached per (symbol, date, right, DTE window) all day, so
+// intraday underlying moves produced no repricing. Strategy entries on
+// post-move bars bought at pre-move premium and exited via current-spot
+// BSM, booking arbitrage-free phantom gains (e.g. AFRM 47.5C +305% in
+// 4 minutes with the underlying moving 0.3%). This test confirms the
+// generator re-runs on every GetOptionChain call so the chain tracks
+// the current spot.
+func TestAdapter_SyntheticFallback_RegeneratesOnSpotMove(t *testing.T) {
 	asOf := time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC)
 	adapter := NewHistoricalOptionsAdapter(stubHistOptRepo{}, func() time.Time { return asOf })
 	calls := 0
+	var currentSpot float64 = 100.0
 	spotFn := func(_ context.Context, _ domain.Symbol, _ time.Time) (float64, error) {
 		calls++
-		return 100.0, nil
+		return currentSpot, nil
 	}
 	adapter.SetSyntheticGenerator(NewSyntheticChainGenerator(
 		defaultTestConfig(), spotFn, constantIV(0.30),
 	))
-	_, _ = adapter.GetOptionChain(context.Background(), "AAPL", asOf, domain.OptionRightCall, 1, 14)
-	_, _ = adapter.GetOptionChain(context.Background(), "AAPL", asOf, domain.OptionRightCall, 1, 14)
-	assert.Equal(t, 1, calls, "second call should hit the synthetic cache, not regenerate")
+
+	chain1, err := adapter.GetOptionChain(context.Background(), "AAPL", asOf, domain.OptionRightCall, 1, 14)
+	require.NoError(t, err)
+	require.NotEmpty(t, chain1)
+
+	// Underlying gaps up between signals.
+	currentSpot = 110.0
+	chain2, err := adapter.GetOptionChain(context.Background(), "AAPL", asOf, domain.OptionRightCall, 1, 14)
+	require.NoError(t, err)
+	require.NotEmpty(t, chain2)
+
+	assert.Equal(t, 2, calls, "generator must re-run each call — stale chains produce phantom PnL")
+
+	// Strike grid is spot-anchored, so the two chains must disagree on
+	// at least one strike — if the second call had returned a cached
+	// copy of the first, every strike would match.
+	strikeDiffers := false
+	for i := 0; i < len(chain1) && i < len(chain2); i++ {
+		if chain1[i].OptionContract.Strike != chain2[i].OptionContract.Strike {
+			strikeDiffers = true
+			break
+		}
+	}
+	if !strikeDiffers && len(chain1) != len(chain2) {
+		strikeDiffers = true
+	}
+	assert.True(t, strikeDiffers, "strike grid should track spot move; chain reused from prior spot")
 }
 
 // TestAdapter_SyntheticFallback_DifferentDTEWindowsNotShared guards the cache

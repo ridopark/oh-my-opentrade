@@ -890,7 +890,7 @@ func isTakeProfitRule(ruleType domain.ExitRuleType) bool {
 	switch ruleType {
 	case domain.ExitRuleProfitTarget, domain.ExitRulePremiumTarget,
 		domain.ExitRulePremiumTrail, domain.ExitRuleTieredTP,
-		domain.ExitRuleSDTarget:
+		domain.ExitRuleSDTarget, domain.ExitRuleChandelierTrail:
 		return true
 	default:
 		return false
