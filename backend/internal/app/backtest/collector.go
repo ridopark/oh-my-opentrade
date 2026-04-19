@@ -32,6 +32,11 @@ type TradeRecord struct {
 	Symbol    string    `json:"symbol"`
 	Side      string    `json:"side"`
 	Direction string    `json:"direction,omitempty"` // "LONG", "SHORT", or "CLOSE"
+	// IsExit is true for any fill that closes a position (CLOSE_LONG,
+	// CLOSE_SHORT, legacy "sell" matching an open long, or the forced
+	// end-of-run close). Round-trip trade counting in Result() filters
+	// on this flag so breakeven exits (PnL == 0) still count as trades.
+	IsExit    bool      `json:"is_exit,omitempty"`
 	Quantity  float64   `json:"quantity"`
 	Price     float64   `json:"price"`
 	FilledAt  time.Time `json:"filled_at"`
@@ -132,10 +137,15 @@ func NewCollector(bus ports.EventBusPort, cfg Config, log zerolog.Logger) (*Coll
 		log:        log.With().Str("component", "backtest_collector").Logger(),
 		cash:       cfg.InitialEquity,
 		peakEquity: cfg.InitialEquity,
-		lastPrices: make(map[string]float64),
-		openBuys:   make(map[string][]TradeRecord),
-		openSells:  make(map[string][]TradeRecord),
-		posValue:   make(map[string]float64),
+		// Seed prevDayEquity so the first day's return is captured.
+		// Without this the first trading-day-to-second-trading-day
+		// transition is dropped by the historical `> 0` gate and the
+		// Sharpe sample size is off by one.
+		prevDayEquity: cfg.InitialEquity,
+		lastPrices:    make(map[string]float64),
+		openBuys:      make(map[string][]TradeRecord),
+		openSells:     make(map[string][]TradeRecord),
+		posValue:      make(map[string]float64),
 	}
 
 	ctx := context.Background()
@@ -248,7 +258,11 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 		}
 	}
 
-	// Use direction to classify entries vs exits.
+	// Use direction to classify entries vs exits. isExit drives the
+	// round-trip trade counter below: every exit counts as one trade,
+	// even breakeven, to match the round-trip definition agreed on in
+	// the Phase 1/3 tuning work. Entries never count.
+	var isExit bool
 	switch domain.Direction(direction) {
 	case domain.DirectionLong:
 		// Long entry: buy to open.
@@ -263,6 +277,7 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 		c.cash += quantity * price * multiplier
 
 	case domain.DirectionCloseLong, domain.DirectionCloseShort:
+		isExit = true
 		// Exit: close whichever position is open (long or short).
 		if opens := c.openBuys[symbol]; len(opens) > 0 {
 			// Closing a long: PnL = (exit - entry) × qty × multiplier.
@@ -319,6 +334,7 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 			c.openBuys[symbol] = append(c.openBuys[symbol], tr)
 			c.cash -= quantity * price
 		case "sell":
+			isExit = true
 			opens := c.openBuys[symbol]
 			remainQty := quantity
 			var realizedPnL float64
@@ -340,17 +356,22 @@ func (c *Collector) onFill(_ context.Context, event domain.Event) error {
 		}
 	}
 
+	tr.IsExit = isExit
 	c.trades = append(c.trades, tr)
 
-	// Update incremental trade stats.
-	if tr.PnL > 0 {
+	// Update incremental trade stats. Round-trip counting: every exit
+	// is one trade regardless of PnL sign; entries never count. A
+	// breakeven exit (PnL == 0) still bumps tradeCount but adds to
+	// neither wins nor losses.
+	if isExit {
 		c.tradeCount++
-		c.winCount++
-		c.grossProfit += tr.PnL
-	} else if tr.PnL < 0 {
-		c.tradeCount++
-		c.lossCount++
-		c.grossLoss += math.Abs(tr.PnL)
+		if tr.PnL > 0 {
+			c.winCount++
+			c.grossProfit += tr.PnL
+		} else if tr.PnL < 0 {
+			c.lossCount++
+			c.grossLoss += math.Abs(tr.PnL)
+		}
 	}
 
 	// Recompute posValue for this symbol after position change.
@@ -438,12 +459,13 @@ func (c *Collector) OnBarTyped(bar domain.MarketBar) {
 	if c.currentDay == 0 {
 		c.currentDay = barDay
 	} else if barDay != c.currentDay {
-		if c.prevDayEquity > 0 {
-			r := (c.latestEquity - c.prevDayEquity) / c.prevDayEquity
-			c.returnSum += r
-			c.returnSumSq += r * r
-			c.returnCount++
-		}
+		// prevDayEquity is seeded with InitialEquity in NewCollector so
+		// the first transition (initial equity -> first trading day close)
+		// always fires and the first daily return enters the Sharpe sample.
+		r := (c.latestEquity - c.prevDayEquity) / c.prevDayEquity
+		c.returnSum += r
+		c.returnSumSq += r * r
+		c.returnCount++
 		if !c.lastBarTime.IsZero() {
 			c.equityCurve = append(c.equityCurve, EquityPoint{
 				T:  c.lastBarTime.Unix(),
@@ -518,12 +540,12 @@ func (c *Collector) onBar(_ context.Context, event domain.Event) error {
 		c.currentDay = barDay
 	} else if barDay != c.currentDay {
 		// Day changed — compute daily return from previous day's close.
-		if c.prevDayEquity > 0 {
-			r := (c.latestEquity - c.prevDayEquity) / c.prevDayEquity
-			c.returnSum += r
-			c.returnSumSq += r * r
-			c.returnCount++
-		}
+		// prevDayEquity is seeded with InitialEquity in NewCollector so
+		// the first transition captures the initial-to-day-1 return.
+		r := (c.latestEquity - c.prevDayEquity) / c.prevDayEquity
+		c.returnSum += r
+		c.returnSumSq += r * r
+		c.returnCount++
 		// Sample the previous day's close onto the equity curve before
 		// rolling over. lastBarTime still points at the prior day's last bar.
 		if !c.lastBarTime.IsZero() {
@@ -578,6 +600,7 @@ func (c *Collector) CloseOpenPositions(endTime time.Time) {
 					Symbol:    sym,
 					Side:      "sell",
 					Direction: "CLOSE",
+					IsExit:    true,
 					Quantity:  entry.Quantity,
 					Price:     price,
 					FilledAt:  endTime,
@@ -624,12 +647,14 @@ func (c *Collector) Result() Result {
 	// Final mark-to-market equity (already tracked incrementally).
 	finalEquity := c.cash + c.totalPosValue
 
-	// Compute win/loss stats from trades with realized P&L (exits).
+	// Round-trip stats: every exit counts as one trade (including
+	// breakeven exits that don't add to wins or losses). Largest
+	// win/loss track PnL extremes and ignore zero-PnL rows.
 	var grossProfit, grossLoss float64
 	var tradeCount, winCount, lossCount int
 	var largestWin, largestLoss float64
 	for _, tr := range c.trades {
-		if tr.PnL == 0 {
+		if !tr.IsExit {
 			continue
 		}
 		tradeCount++
