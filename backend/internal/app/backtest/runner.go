@@ -1207,9 +1207,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	// Compound equity: update position sizing after each fill so P&L compounds.
-	// activeRiskSizer is rebound below when the sharded path installs its own
-	// strategyShared.RiskSizer; the closure captures the var, not the pointer,
-	// so it picks up the rebind at fire time.
+	// activeRiskSizer is rebound inside the sharded branch before its
+	// RiskSizer.Start so the first fill lands on the correct sizer.
 	if r.cfg.CompoundEquity {
 		subErr := r.infra.EventBus.Subscribe(ctx, domain.EventFillReceived, func(ctx context.Context, _ domain.Event) error {
 			eq, err := sim.GetAccountEquity(ctx)
@@ -1312,9 +1311,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	// parallelism on the Phase A hot path. Falls through to the legacy
 	// heap-dispatch loop when speed != max (pause/resume needs per-bar
 	// control that slice dispatch doesn't support).
-	//
-	// useSharded was computed above (same predicate) to gate the legacy
-	// Enricher/RiskSizer Start calls; reuse it here.
 	isMaxSpeed := useSharded
 	if isMaxSpeed {
 		// Capture ORB config for per-shard monitor application.

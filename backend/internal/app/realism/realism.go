@@ -117,7 +117,7 @@ func Compute(in Inputs) *Estimate {
 // with the overfitting detection checklist in
 // .claude/skills/strategy-tuning/SKILL.md.
 func computeFlags(in Inputs) []Flag {
-	var flags []Flag
+	flags := []Flag{}
 
 	// RED flags: strong signals of backtest over-optimism.
 	if in.SharpeRatio != nil && *in.SharpeRatio > 5.0 {

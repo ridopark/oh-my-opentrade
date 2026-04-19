@@ -89,9 +89,9 @@ export function RealismPanel({ realism, backtestPnL }: Props) {
         ))}
       </div>
 
-      {realism.flags.length > 0 ? (
+      {(realism.flags ?? []).length > 0 ? (
         <div className="space-y-1.5">
-          {realism.flags.map((flag, idx) => (
+          {(realism.flags ?? []).map((flag, idx) => (
             <div
               key={idx}
               className={`flex items-start gap-2 rounded border px-3 py-1.5 text-xs ${flagColor[flag.level]}`}
