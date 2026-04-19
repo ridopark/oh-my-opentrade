@@ -152,6 +152,11 @@ type OptionQuote struct {
 	BidSize   int
 	AskSize   int
 	Timestamp time.Time
+	// IsSyntheticLast is true when Last is a fabricated value (e.g. the mid)
+	// rather than an actual trade print. Consumers that treat Last as a
+	// realized price should filter on this flag; the zero value (false)
+	// preserves existing live-path behavior.
+	IsSyntheticLast bool
 }
 
 // ─────────────────────────────────────────────

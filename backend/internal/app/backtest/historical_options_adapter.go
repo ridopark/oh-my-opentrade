@@ -75,6 +75,12 @@ type HistoricalOptionsAdapter struct {
 	// O(1). Lazily initialized on first synthetic generation. Keyed on
 	// DTE window to prevent cross-strategy contamination.
 	syntheticCache map[syntheticCacheKey][]domain.OptionContractSnapshot
+
+	// Diagnostics: track how often each path actually served data, so
+	// the runner can emit an end-of-run summary and flag accidentally
+	// all-synthetic backtests.
+	historicalHits int
+	syntheticHits  int
 }
 
 // NewHistoricalOptionsAdapter creates an adapter that bridges historical
@@ -143,10 +149,11 @@ func (a *HistoricalOptionsAdapter) PreLoad(ctx context.Context, symbols []domain
 		snap := domain.OptionContractSnapshot{
 			OptionContract: contract,
 			OptionQuote: domain.OptionQuote{
-				Bid:       r.Bid,
-				Ask:       r.Ask,
-				Last:      r.Mid(),
-				Timestamp: r.Date,
+				Bid:             r.Bid,
+				Ask:             r.Ask,
+				Last:            r.Mid(),
+				Timestamp:       r.Date,
+				IsSyntheticLast: true, // DoltHub rows carry no trade prints
 			},
 			Greeks: domain.Greeks{
 				Delta: r.Delta,
@@ -193,6 +200,14 @@ func (a *HistoricalOptionsAdapter) IsLoaded() bool {
 	return a.loaded
 }
 
+// Stats returns how many option-chain requests were served from historical
+// data vs the synthetic generator. Intended for end-of-run diagnostics;
+// a backtest whose syntheticHits dominate historicalHits is effectively
+// running on fabricated prices.
+func (a *HistoricalOptionsAdapter) Stats() (historicalHits, syntheticHits int) {
+	return a.historicalHits, a.syntheticHits
+}
+
 // GetOptionChain implements ports.OptionsMarketDataPort by querying the
 // historical options repo for the backtest's current simulated date.
 // When the cache is loaded, this is a zero-DB O(1) map lookup.
@@ -222,6 +237,7 @@ func (a *HistoricalOptionsAdapter) GetOptionChain(
 
 	if a.loaded {
 		if snaps, ok := a.chainCache[key]; ok && hasExpiryInDTERange(snaps, now, minDTE, maxDTE) {
+			a.historicalHits++
 			return snaps, nil
 		}
 	} else {
@@ -230,6 +246,7 @@ func (a *HistoricalOptionsAdapter) GetOptionChain(
 			return nil, err
 		}
 		if hasExpiryInDTERange(snaps, now, minDTE, maxDTE) {
+			a.historicalHits++
 			return snaps, nil
 		}
 	}
@@ -291,6 +308,7 @@ func (a *HistoricalOptionsAdapter) generateSynthetic(
 		MaxDTE: maxDTE,
 	}
 	if cached, ok := a.syntheticCache[synthKey]; ok {
+		a.syntheticHits++
 		return cached, nil
 	}
 	snaps, err := a.syntheticGen.GenerateChain(ctx, underlying, asOf, right, minDTE, maxDTE)
@@ -300,6 +318,7 @@ func (a *HistoricalOptionsAdapter) generateSynthetic(
 	if len(snaps) == 0 {
 		return nil, nil
 	}
+	a.syntheticHits++
 	if a.syntheticCache == nil {
 		a.syntheticCache = make(map[syntheticCacheKey][]domain.OptionContractSnapshot, 64)
 	}
@@ -347,10 +366,11 @@ func (a *HistoricalOptionsAdapter) getOptionChainFromDB(
 		snapshots = append(snapshots, domain.OptionContractSnapshot{
 			OptionContract: contract,
 			OptionQuote: domain.OptionQuote{
-				Bid:       r.Bid,
-				Ask:       r.Ask,
-				Last:      r.Mid(),
-				Timestamp: r.Date,
+				Bid:             r.Bid,
+				Ask:             r.Ask,
+				Last:            r.Mid(),
+				Timestamp:       r.Date,
+				IsSyntheticLast: true,
 			},
 			Greeks: domain.Greeks{
 				Delta: r.Delta,
@@ -393,22 +413,31 @@ func (a *HistoricalOptionsAdapter) GetHistoricalContract(
 			return nil, fmt.Errorf("hist_options_cache: no cached contract for %s on %s", symbol, date.Format("2006-01-02"))
 		}
 
-		// Find closest strike within +/-2.0 and expiry within +/-7 days
-		// (same logic as the SQL query in GetHistoricalContract).
+		// Find closest strike within max($2, 2% of requested strike) and
+		// expiry within +/-7 days. The absolute $2 floor keeps behavior
+		// intact for sub-$100 names; the 2% relative term prevents a
+		// nonsense match for names trading in the hundreds (where $2
+		// misses every listed strike).
+		strikeTol := 2.0
+		if rel := 0.02 * strike; rel > strikeTol {
+			strikeTol = rel
+		}
 		var best *domain.HistoricalOptionChainRow
-		bestStrikeDist := 999.0
+		bestStrikeDist := 999999.0
 		bestExpiryDist := 999
 		for i := range rows {
 			r := &rows[i]
 			strikeDist := abs(r.Strike - strike)
-			if strikeDist > 2.0 {
+			if strikeDist > strikeTol {
 				continue
 			}
 			expiryDist := absDays(r.Expiration, expiry)
 			if expiryDist > 7 {
 				continue
 			}
-			if best == nil || strikeDist < bestStrikeDist || (strikeDist == bestStrikeDist && expiryDist < bestExpiryDist) {
+			if best == nil ||
+				strikeDist < bestStrikeDist ||
+				(strikeDist == bestStrikeDist && expiryDist < bestExpiryDist) {
 				best = r
 				bestStrikeDist = strikeDist
 				bestExpiryDist = expiryDist

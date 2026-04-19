@@ -1202,15 +1202,20 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Compound equity: update position sizing after each fill so P&L compounds.
 	if r.cfg.CompoundEquity {
-		_ = r.infra.EventBus.Subscribe(ctx, domain.EventFillReceived, func(_ context.Context, _ domain.Event) error {
+		subErr := r.infra.EventBus.Subscribe(ctx, domain.EventFillReceived, func(ctx context.Context, _ domain.Event) error {
 			eq, err := sim.GetAccountEquity(ctx)
 			if err != nil {
+				r.log.Warn().Err(err).Msg("compound-equity update skipped: GetAccountEquity failed")
 				return nil
 			}
 			pipeline.RiskSizer.SetAccountEquity(eq)
 			execBundle.Service.SetAccountEquity(eq)
 			return nil
 		})
+		if subErr != nil {
+			r.status.Store("error")
+			return fmt.Errorf("subscribe compound-equity handler: %w", subErr)
+		}
 	}
 
 	// Subscribe emitter LAST so all pipeline handlers (strategy runner's
@@ -1855,6 +1860,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				if ctx.Err() != nil {
 					break
 				}
+				r.log.Warn().Err(pubErr).Str("sym", bar.Symbol.String()).Time("bar", bar.Time).Msg("market bar publish failed; skipping")
 				continue
 			}
 			barsProcessed++
@@ -1954,6 +1960,16 @@ backtestComplete:
 
 	// Force-close any remaining open positions at last known price.
 	r.collector.CloseOpenPositions(lastBarTime)
+
+	// End-of-run diagnostics: surface the data-quality signals the
+	// replay loop accumulated but never individually logged at INFO.
+	histHits, synthHits := optionsAdapter.Stats()
+	r.log.Info().
+		Int("options_historical_hits", histHits).
+		Int("options_synthetic_hits", synthHits).
+		Int("auction_synthetic_sign_fallbacks", auctionPub.syntheticSignCount).
+		Int("auction_events_published", len(auctionPub.publishedAuctions)).
+		Msg("backtest data-quality summary")
 
 	finalResult := r.collector.Result()
 	r.result.Store(&finalResult)
