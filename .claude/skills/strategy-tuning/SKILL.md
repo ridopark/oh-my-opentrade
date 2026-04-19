@@ -849,6 +849,14 @@ Flag as suspect if:
 - Split-half divergence (improvement in one half, regression in other)
 - PF jumps > 0.3 from a single parameter tweak (suspect unless engine fix)
 
+**These same thresholds are codified in `backend/internal/app/realism`** and run automatically on every backtest. The Compute() function returns a `realism` field in the `/backtest/:id/results` JSON (also rendered as a panel on the dashboard backtest page) with deflated live estimates and a flag list. Deflator constants (calibrated for intraday-options strategies):
+- `live_sharpe = backtest / 2.8` (SharpeDivisor)
+- `live_dd = backtest × 1.8` (DrawdownMultiplier)
+- `live_pf = 1 + (pf - 1) / 1.5` (PFDecayFactor)
+- `fixed_notional_pnl = total_pnl × (initial_equity / final_equity)` (exact, removes compounding ramp)
+
+Reference the realism estimate when reporting backtest results to the user so headline figures (especially compounded PnL) aren't over-interpreted.
+
 ## Healthy Metric Ranges
 
 | Metric | Minimum | Target | Red Flag |
