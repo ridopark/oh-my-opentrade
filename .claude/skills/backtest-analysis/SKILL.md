@@ -7,6 +7,10 @@ description: "Backtest result interpretation, performance metric analysis, and s
 
 Interpret oh-my-opentrade backtest results and derive strategy improvement directions.
 
+**Evidence tags required.** Every metric, comparison, and conclusion in analysis output must carry `[actual]`, `[inference]`, or `[assumption]` per `../strategy-tuning/references/evidence_tags.md`. Untagged narrative is banned — it's the firewall against decisions being made on unclear provenance.
+
+**Factor attribution before declaring edge.** If the analysis is being used to decide whether a strategy has real alpha (vs. factor exposure in disguise), run the regression in `../strategy-tuning/references/factor_attribution.md` and report alpha / betas / R-squared / residual Sharpe alongside the headline metrics. Gross PF and Sharpe alone can hide long-beta-long-vol as "edge".
+
 ## Running a Backtest
 
 ```bash
