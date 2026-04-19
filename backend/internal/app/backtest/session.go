@@ -52,7 +52,10 @@ type SessionData struct {
 }
 
 type SessionResolver struct {
-	mu       sync.Mutex // guards sessions and barCache during concurrent Load
+	// RWMutex so ResolveAnchors/KeyLevelPrices/PreviousDay/GetBarsSince
+	// can run concurrently during replay. Load*/PopulateBarCache and
+	// counter increments still take the write lock.
+	mu       sync.RWMutex
 	sessions map[string]map[string]SessionData
 	barCache map[string][]start.Bar // "SYMBOL:2025-03-15" → 1m bars for that day
 	loc      *time.Location
@@ -110,10 +113,10 @@ func (r *SessionResolver) SetUniverseHistory(port ports.UniverseHistoryPort, enf
 // universe port entirely (distinct from a symbol whose windows simply
 // don't overlap the requested range), so callers notice seeding gaps.
 func (r *SessionResolver) CheckUniverse(ctx context.Context, sym domain.Symbol, from, to time.Time) (bool, error) {
-	r.mu.Lock()
+	r.mu.RLock()
 	port := r.universe
 	enforce := r.enforceUniverse
-	r.mu.Unlock()
+	r.mu.RUnlock()
 	if !enforce || port == nil {
 		return true, nil
 	}
@@ -154,21 +157,21 @@ func (r *SessionResolver) CheckUniverse(ctx context.Context, sym domain.Symbol, 
 // Stats returns end-of-run counters for observability. Safe to call any
 // time; reads are protected by the resolver's mutex.
 func (r *SessionResolver) Stats() (scanErrors, unknownSymbols int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.scanErrors, r.unknownSymbolHits
 }
 
 // loadWindows returns cached windows or queries+caches them.
 func (r *SessionResolver) loadWindows(ctx context.Context, sym domain.Symbol) ([]ports.UniverseWindow, error) {
 	key := sym.String()
-	r.mu.Lock()
+	r.mu.RLock()
 	if cached, ok := r.windowCache[key]; ok {
-		r.mu.Unlock()
+		r.mu.RUnlock()
 		return cached, nil
 	}
 	port := r.universe
-	r.mu.Unlock()
+	r.mu.RUnlock()
 	if port == nil {
 		return nil, nil
 	}
@@ -385,6 +388,8 @@ func (r *SessionResolver) Load24H(ctx context.Context, db *sql.DB, sym domain.Sy
 }
 
 func (r *SessionResolver) ResolveAnchors(symbol string, barTime time.Time, anchorNames []string) map[string]time.Time {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	symSessions := r.sessions[symbol]
 	if symSessions == nil {
 		return nil
@@ -457,9 +462,9 @@ func (r *SessionResolver) LoadBars(ctx context.Context, db *sql.DB, sym domain.S
 	// is defense-in-depth on top of CheckUniverse — CheckUniverse skips
 	// symbols with zero overlap, but partial overlaps (mid-range IPOs,
 	// delist-then-relist) still need per-row filtering.
-	r.mu.Lock()
+	r.mu.RLock()
 	enforce := r.enforceUniverse
-	r.mu.Unlock()
+	r.mu.RUnlock()
 	var windows []ports.UniverseWindow
 	if enforce {
 		windows, err = r.loadWindows(ctx, sym)
@@ -530,8 +535,13 @@ func (r *SessionResolver) GetBarsSince(ctx context.Context, db *sql.DB, symbol s
 	eod := time.Date(et.Year(), et.Month(), et.Day(), eodHour, 0, 0, 0, r.loc)
 
 	key := symbol + ":" + day
-	if cached, ok := r.barCache[key]; ok {
-		// Filter to bars >= since && < eod
+	r.mu.RLock()
+	cached, ok := r.barCache[key]
+	r.mu.RUnlock()
+	if ok {
+		// Filter to bars >= since && < eod. Read cached slice header
+		// outside the lock; the slice backing array isn't mutated after
+		// publication so a read-only iteration is safe.
 		var result []start.Bar
 		for _, b := range cached {
 			if !b.Time.Before(since) && b.Time.Before(eod) {
@@ -580,9 +590,9 @@ func (r *SessionResolver) LoadSwings(ctx context.Context, db *sql.DB, sym domain
 	defer rows.Close()
 
 	det := start.NewSwingDetector(5, "1m")
-	r.mu.Lock()
+	r.mu.RLock()
 	symSessions := r.sessions[sym.String()]
-	r.mu.Unlock()
+	r.mu.RUnlock()
 	if symSessions == nil {
 		return nil
 	}
@@ -625,6 +635,8 @@ func (r *SessionResolver) LoadSwings(ctx context.Context, db *sql.DB, sym domain
 // KeyLevelPrices returns key price levels (pd_high, pd_low, or_high, or_low)
 // for confluence scoring in the AVWAP strategy.
 func (r *SessionResolver) KeyLevelPrices(symbol string, barTime time.Time) map[string]float64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	symSessions := r.sessions[symbol]
 	if symSessions == nil {
 		return nil
@@ -655,6 +667,8 @@ func (r *SessionResolver) KeyLevelPrices(symbol string, barTime time.Time) map[s
 }
 
 func (r *SessionResolver) PreviousDay(symbol string, barTime time.Time) *SessionData {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	symSessions := r.sessions[symbol]
 	if symSessions == nil {
 		return nil
