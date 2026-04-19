@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,20 +39,22 @@ import (
 
 // RunConfig holds the parameters for a backtest run.
 type RunConfig struct {
-	Symbols          []domain.Symbol
-	From             time.Time
-	To               time.Time
-	Timeframe        domain.Timeframe
-	InitialEquity    float64
+	Symbols       []domain.Symbol
+	From          time.Time
+	To            time.Time
+	Timeframe     domain.Timeframe
+	InitialEquity float64
+	// SlippageBPS carries the sim-broker slippage into BuildBacktestInfra.
+	// The runner itself does not read this field; the sweep orchestrator does.
 	SlippageBPS      int64
 	Speed            string
 	NoAI             bool
 	StrategyDir      string
 	Strategies       []string
-	MaxPositions     int             // portfolio-level max simultaneous positions (0=use config default)
-	MaxPerGroup      int             // max positions per sector group (0=use config default)
-	CompoundEquity   bool            // when true, position sizing compounds with P&L
-	UseNativeSymbols bool            // when true, skip symbol override — each strategy uses its TOML symbols
+	MaxPositions     int  // portfolio-level max simultaneous positions (0=use config default)
+	MaxPerGroup      int  // max positions per sector group (0=use config default)
+	CompoundEquity   bool // when true, position sizing compounds with P&L
+	UseNativeSymbols bool // when true, skip symbol override - each strategy uses its TOML symbols
 }
 
 // ProgressInfo tracks replay progress.
@@ -116,7 +119,7 @@ func NewRunner(cfg RunConfig, infra bootstrap.BacktestInfra, appCfg *config.Conf
 		pauseCh:    make(chan struct{}),
 	}
 
-	delay, _ := parseSpeedToDelay(cfg.Speed, cfg.Timeframe)
+	delay, _ := parseSpeedToDelay(cfg.Speed)
 	r.speedDelay.Store(delay)
 	r.status.Store("pending")
 	r.progress.Store((*ProgressInfo)(nil))
@@ -184,7 +187,7 @@ func (r *Runner) Resume() {
 
 // SetSpeed dynamically changes the replay speed.
 func (r *Runner) SetSpeed(speedStr string) error {
-	delay, err := parseSpeedToDelay(speedStr, r.cfg.Timeframe)
+	delay, err := parseSpeedToDelay(speedStr)
 	if err != nil {
 		return err
 	}
@@ -291,12 +294,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	if specDir == "" {
 		specDir = "/home/ridopark/src/oh-my-opentrade/configs/strategies"
 	}
-	// Fallback for Docker container
+	// Fallback for Docker container layout (bind-mounted /configs).
 	if _, err := os.Stat(specDir); err != nil {
 		specDir = "/configs/strategies"
-	}
-	if specDir == "" {
-		specDir = "/home/ridopark/src/oh-my-opentrade/configs/strategies"
 	}
 	var specStore = bootstrap.NewBacktestSpecStore(specDir)
 	if len(r.cfg.Strategies) > 0 {
@@ -314,9 +314,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		specStore = newSymbolOverrideSpecStore(specStore, syms)
 	}
 
-	// Only load ORB config if orb_break_retest is among the selected strategies
-	// (or no strategy filter is set, meaning all are active).
-	orbSelected := len(r.cfg.Strategies) == 0
+	// Only load ORB config when orb_break_retest is explicitly selected.
+	// ORB was deprecated 2026-04-12; defaulting to on for "run all" pulled
+	// SPY dailies, VIX init, the debate service, and per-shard ORB seeding
+	// into every backtest that didn't name its strategies.
+	orbSelected := false
 	for _, s := range r.cfg.Strategies {
 		if s == "orb_break_retest" {
 			orbSelected = true
@@ -624,11 +626,6 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	loc := domain.NYLocation()
 
-	// Gap-fill is disabled by default — run `omo-backfill --gap-fill` before
-	// backtesting to ensure data is complete. This avoids slow gap detection
-	// queries on every backtest run.
-	//
-	// To re-enable inline gap-fill, set GapFill: true in RunConfig.
 
 	phaseStart := time.Now()
 	r.emitter.EmitSetup("Loading market data…")
@@ -1990,7 +1987,7 @@ func makeSnapshotFn() strategy.IndicatorSnapshotFunc {
 	}
 }
 
-func parseSpeedToDelay(speedStr string, _ domain.Timeframe) (time.Duration, error) {
+func parseSpeedToDelay(speedStr string) (time.Duration, error) {
 	s := strings.TrimSpace(strings.ToLower(speedStr))
 	switch s {
 	case "", "max":
@@ -2005,7 +2002,7 @@ func parseSpeedToDelay(speedStr string, _ domain.Timeframe) (time.Duration, erro
 		return 10 * time.Millisecond, nil
 	default:
 		s = strings.TrimSuffix(s, "x")
-		f, parseErr := parseFloat(s)
+		f, parseErr := strconv.ParseFloat(s, 64)
 		if parseErr != nil {
 			return 0, fmt.Errorf("invalid speed %q: %w", speedStr, parseErr)
 		}
@@ -2018,12 +2015,6 @@ func parseSpeedToDelay(speedStr string, _ domain.Timeframe) (time.Duration, erro
 		}
 		return delay, nil
 	}
-}
-
-func parseFloat(s string) (float64, error) {
-	var f float64
-	_, err := fmt.Sscanf(s, "%f", &f)
-	return f, err
 }
 
 func symbolStrings(syms []domain.Symbol) []string {

@@ -132,7 +132,7 @@ func TestAuctionPublisher_SkipsBefore1545(t *testing.T) {
 	assert.Empty(t, bus.published)
 }
 
-// TestAuctionPublisher_LegacyAndSliceParity — single publisher instance
+// TestAuctionPublisher_LegacyAndSliceParity - single publisher instance
 // (the shared one built in runner.go) is invoked with the same bars across
 // both paths, so identical inputs produce identical outputs. This is the
 // guard against the original slice-path bug where max-speed replays
@@ -144,14 +144,14 @@ func TestAuctionPublisher_LegacyAndSliceParity(t *testing.T) {
 		Symbol: "AAPL", Volume: 1000, Price: 150.0, Imbalance: 500,
 	}
 
-	// Path 1: simulate legacy heap loop — single publisher used for one bar.
+	// Path 1: simulate legacy heap loop - single publisher used for one bar.
 	pubLegacy, busLegacy := newPublisher(t,
 		map[string]domain.AuctionImbalanceSnapshot{"2026-04-15:AAPL": snap},
 		stubVWAPProvider{},
 	)
 	pubLegacy.maybePublish(context.Background(), barAt(t, et, "AAPL", 150.0))
 
-	// Path 2: simulate slice-pipeline OnBar — fresh publisher, same bar.
+	// Path 2: simulate slice-pipeline OnBar - fresh publisher, same bar.
 	pubSlice, busSlice := newPublisher(t,
 		map[string]domain.AuctionImbalanceSnapshot{"2026-04-15:AAPL": snap},
 		stubVWAPProvider{},

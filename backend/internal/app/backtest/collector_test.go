@@ -75,7 +75,7 @@ func TestNewCollector_DefaultPeriodsPerYearAndSubscribes(t *testing.T) {
 	filledAt := time.Date(2026, 1, 1, 9, 30, 0, 0, time.UTC)
 	publishFill(t, bus, "fill-buy-1", fillPayload("AAPL", "buy", 1.0, 100.0, filledAt))
 
-	// Sharpe uses daily returns — send bars across multiple days.
+	// Sharpe uses daily returns - send bars across multiple days.
 	symbol := domain.Symbol("AAPL")
 	day1 := time.Date(2026, 1, 1, 15, 59, 0, 0, time.UTC)
 	day2 := time.Date(2026, 1, 2, 15, 59, 0, 0, time.UTC)

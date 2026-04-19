@@ -96,7 +96,7 @@ func TestAdapter_SyntheticFallback_UsedWhenDBEmpty(t *testing.T) {
 func TestAdapter_SyntheticFallback_SkippedWhenDBHasData(t *testing.T) {
 	// nonEmptyHistOptRepo always returns one row, so synthetic path must
 	// NOT be triggered. A generator with an always-panicking spot function
-	// proves it — if synthetic ran, this test would panic.
+	// proves it - if synthetic ran, this test would panic.
 	panicSpot := func(_ context.Context, _ domain.Symbol, _ time.Time) (float64, error) {
 		panic("synthetic generator should not run when DB has data")
 	}

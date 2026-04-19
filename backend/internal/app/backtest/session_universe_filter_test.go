@@ -70,12 +70,12 @@ func TestSessionResolver_CheckUniverse(t *testing.T) {
 		want     bool
 	}{
 		{
-			name: "filter disabled — always tradable",
+			name: "filter disabled - always tradable",
 			sym:  "UNKNOWN", from: date(1990, 1, 1), to: date(1991, 1, 1),
 			want: true,
 		},
 		{
-			name: "enforce but no port — fail open",
+			name: "enforce but no port - fail open",
 			enforce: true, port: nil, sym: "HOOD",
 			from: date(2019, 1, 1), to: date(2020, 1, 1),
 			want: true,
@@ -99,7 +99,7 @@ func TestSessionResolver_CheckUniverse(t *testing.T) {
 			want: false,
 		},
 		{
-			name:    "range straddles delist — partial overlap",
+			name:    "range straddles delist - partial overlap",
 			enforce: true, port: store, sym: "HOOD",
 			from: date(2023, 5, 1), to: date(2023, 8, 1),
 			want: true,
@@ -172,7 +172,7 @@ func TestSessionResolver_SetUniverseHistory_NilPortDisablesEnforce(t *testing.T)
 	assert.True(t, ok)
 }
 
-// TestSessionResolver_Stats_TracksUnknownSymbolHits — seeding gap visibility.
+// TestSessionResolver_Stats_TracksUnknownSymbolHits - seeding gap visibility.
 // CheckUniverse on a symbol with no windows must increment unknownSymbolHits
 // so the end-of-run summary can surface "you backtested with an incomplete
 // universe seed" instead of silently marking all those symbols non-tradable.
@@ -185,10 +185,10 @@ func TestSessionResolver_Stats_TracksUnknownSymbolHits(t *testing.T) {
 	r := NewSessionResolver(loc)
 	r.SetUniverseHistory(store, true)
 
-	// Seeded symbol — no counter increment.
+	// Seeded symbol - no counter increment.
 	_, err = r.CheckUniverse(context.Background(), "AAPL", date(2024, 1, 1), date(2025, 1, 1))
 	require.NoError(t, err)
-	// Unseeded symbols — each must count.
+	// Unseeded symbols - each must count.
 	for _, sym := range []domain.Symbol{"NOPE", "ALSO_NOPE"} {
 		_, err = r.CheckUniverse(context.Background(), sym, date(2024, 1, 1), date(2025, 1, 1))
 		require.NoError(t, err)

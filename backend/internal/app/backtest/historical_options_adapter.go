@@ -7,12 +7,16 @@ import (
 	"context"
 	"fmt"
 	"time"
-	"unsafe"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
+
+// Approximate in-memory cost per cached chain row. Sum of the snapshot
+// struct (~216 bytes on amd64) and the raw DB row struct (~176 bytes).
+// Used only for the PreLoad diagnostic log; exact value doesn't matter.
+const bytesPerCachedChainRow = 400
 
 // optionCacheKey indexes the pre-loaded full chain (all expiries/strikes)
 // by (symbol, date, right). GetOptionChain looks up the whole set and the
@@ -177,7 +181,7 @@ func (a *HistoricalOptionsAdapter) PreLoad(ctx context.Context, symbols []domain
 	}
 
 	// Estimate memory usage: ~200 bytes per snapshot + ~150 bytes per raw row.
-	estimatedBytes := len(rows) * (int(unsafe.Sizeof(domain.OptionContractSnapshot{})) + int(unsafe.Sizeof(domain.HistoricalOptionChainRow{})))
+	estimatedBytes := len(rows) * bytesPerCachedChainRow
 	estimatedMB := estimatedBytes / (1024 * 1024)
 
 	a.chainCache = chainCache

@@ -103,7 +103,7 @@ func (r *SessionResolver) SetUniverseHistory(port ports.UniverseHistoryPort, enf
 
 // CheckUniverse returns true iff `sym` has any tradable overlap with
 // [from, to). When the filter is disabled it always returns true. Use
-// before paying the cost of LoadBars/Load for a symbol that might not
+// before paying the cost of Load for a symbol that might not
 // have existed during the requested range.
 //
 // Logs a warning at the first observation of a symbol missing from the
@@ -426,60 +426,6 @@ func (r *SessionResolver) ResolveAnchors(symbol string, barTime time.Time, ancho
 	return result
 }
 
-// LoadBars pre-fetches all 1m bars for a symbol across the full date range and
-// indexes them by trading day in the barCache. Call once per symbol during init
-// so that GetBarsSince can serve from memory instead of hitting the DB.
-//
-// Deprecated: prefer PopulateBarCache to reuse bars already loaded for replay.
-func (r *SessionResolver) LoadBars(ctx context.Context, db *sql.DB, sym domain.Symbol, from, to time.Time) error {
-	rows, err := db.QueryContext(ctx, `
-		SELECT time, open, high, low, close, volume
-		FROM market_bars
-		WHERE symbol = $1 AND timeframe = '1m'
-		  AND time >= $2 AND time < $3
-		ORDER BY time`, string(sym), from, to)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	// Survivorship-bias filter: when enabled, load the symbol's tradable
-	// windows once and drop any bar whose timestamp falls outside. This
-	// is defense-in-depth on top of CheckUniverse — CheckUniverse skips
-	// symbols with zero overlap, but partial overlaps (mid-range IPOs,
-	// delist-then-relist) still need per-row filtering.
-	r.mu.RLock()
-	enforce := r.enforceUniverse
-	r.mu.RUnlock()
-	var windows []ports.UniverseWindow
-	if enforce {
-		windows, err = r.loadWindows(ctx, sym)
-		if err != nil {
-			return err
-		}
-	}
-
-	dayBars := make(map[string][]start.Bar)
-	for rows.Next() {
-		var b start.Bar
-		if scanErr := rows.Scan(&b.Time, &b.Open, &b.High, &b.Low, &b.Close, &b.Volume); scanErr != nil {
-			continue
-		}
-		if enforce && !tradableAt(windows, b.Time) {
-			continue
-		}
-		day := dayKey(b.Time, r.loc)
-		dayBars[day] = append(dayBars[day], b)
-	}
-
-	r.mu.Lock()
-	for day, bars := range dayBars {
-		r.barCache[sym.String()+":"+day] = bars
-	}
-	r.mu.Unlock()
-	return nil
-}
-
 // PopulateBarCache indexes already-loaded MarketBars by trading day so that
 // GetBarsSince can serve from memory without a second DB round-trip.
 func (r *SessionResolver) PopulateBarCache(sym domain.Symbol, bars []domain.MarketBar) {
@@ -507,7 +453,7 @@ func (r *SessionResolver) PopulateBarCache(sym domain.Symbol, bars []domain.Mark
 // GetBarsSince returns 1m bars for a symbol from `since` to end of that day's session.
 // For equities, caps at 16:00 ET (RTH close). For crypto symbols (containing "/"),
 // caps at midnight ET (full 24h day). Uses the in-memory barCache populated by
-// LoadBars; falls back to a DB query on cache miss.
+// PopulateBarCache; falls back to a DB query on cache miss.
 func (r *SessionResolver) GetBarsSince(ctx context.Context, db *sql.DB, symbol string, since time.Time) []start.Bar {
 	if since.IsZero() {
 		return nil
@@ -537,7 +483,7 @@ func (r *SessionResolver) GetBarsSince(ctx context.Context, db *sql.DB, symbol s
 		return result
 	}
 
-	// Fallback: DB query (should rarely happen if LoadBars was called)
+	// Fallback: DB query (should rarely happen if PopulateBarCache was called)
 	rows, err := db.QueryContext(ctx, `
 		SELECT time, open, high, low, close, volume
 		FROM market_bars

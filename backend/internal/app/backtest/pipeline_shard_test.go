@@ -9,7 +9,7 @@ import (
 )
 
 // Use a stub factory that returns mostly-nil services. NewPipeline tolerates
-// nil monitor/runner/priceCache/collector at construction — ProcessBar isn't
+// nil monitor/runner/priceCache/collector at construction - ProcessBar isn't
 // called in these tests.
 func stubShardFactory(t *testing.T) ShardFactory {
 	t.Helper()
