@@ -53,8 +53,10 @@ function dotColor(state: DataSourceState, unknown: boolean): string {
   switch (state) {
     case "healthy":
       return "bg-emerald-500";
+    // Slightly dimmer than the "unknown" dot so an intentionally-quiet feed
+    // reads as gray-but-distinct from "endpoint unavailable" at a glance.
     case "closed":
-      return "bg-muted-foreground/40";
+      return "bg-muted-foreground/25";
     case "unhealthy":
     default:
       return "bg-rose-500";
@@ -100,14 +102,20 @@ export function DataSourceHeader({ className }: { className?: string }) {
       {sources.map((s) => {
         const unknown = endpointUnknown;
         const state = resolveState(s);
+        const age = formatAge(s.lastEventAt, nowMs);
+        // `detail` already describes the state on closed/unhealthy dots, so
+        // prefer it over the bare state word to avoid "closed · market closed".
+        const reason = state !== "healthy" && s.detail ? s.detail : state;
         const tooltip = unknown
           ? `${s.label}: unknown (endpoint unavailable)`
-          : `${s.label}: ${state} · last event ${formatAge(s.lastEventAt, nowMs)}${s.detail ? ` · ${s.detail}` : ""}`;
+          : `${s.label}: ${reason} · last event ${age}`;
         const ageLabel = unknown
           ? "unknown"
-          : state === "closed"
-            ? `${formatAge(s.lastEventAt, nowMs)} · market closed`
-            : formatAge(s.lastEventAt, nowMs);
+          : state === "healthy"
+            ? age
+            : s.detail
+              ? `${age} · ${s.detail}`
+              : age;
         return (
           <span
             key={s.id}
