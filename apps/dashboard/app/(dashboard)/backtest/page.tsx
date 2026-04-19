@@ -133,6 +133,18 @@ export default function BacktestPage() {
     setHydrated(true);
   }, []);
 
+  // Drop any restored IDs that are no longer available (e.g. deactivated
+  // strategies left over in localStorage). Without this, stale IDs ride along
+  // silently in config.strategies even though the UI never shows them.
+  useEffect(() => {
+    if (!hydrated || availableStrategies.length === 0) return;
+    const availableIds = new Set(availableStrategies.map((s) => s.id));
+    setSelectedStrategies((prev) => {
+      const pruned = prev.filter((id) => availableIds.has(id));
+      return pruned.length === prev.length ? prev : pruned;
+    });
+  }, [hydrated, availableStrategies]);
+
   // When selected strategies change, update config.strategies (symbols come from each strategy's TOML).
   useEffect(() => {
     if (selectedStrategies.length === 0 || availableStrategies.length === 0) return;
