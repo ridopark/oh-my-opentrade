@@ -27,6 +27,12 @@ const (
 		ORDER BY time DESC
 		LIMIT 1`
 
+	querySelectIVAtOrBefore = `SELECT time, symbol, atm_iv, atm_strike, spot_price, call_iv, put_iv
+		FROM iv_snapshots
+		WHERE symbol = $1 AND time <= $2
+		ORDER BY time DESC
+		LIMIT 1`
+
 	// IV Rank = (current - 52w_low) / (52w_high - 52w_low)
 	// IV Percentile = count(days where IV < current) / total_days
 	querySelectIVStats = `WITH window AS (
@@ -96,6 +102,21 @@ func (r *IVRepository) GetLatestIV(ctx context.Context, symbol domain.Symbol) (d
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.IVSnapshot{}, fmt.Errorf("no IV snapshots for %s", symbol)
+		}
+		return domain.IVSnapshot{}, err
+	}
+	snap.Symbol = domain.Symbol(sym)
+	return snap, nil
+}
+
+func (r *IVRepository) GetIVAtOrBefore(ctx context.Context, symbol domain.Symbol, asOf time.Time) (domain.IVSnapshot, error) {
+	row := r.db.QueryRowContext(ctx, querySelectIVAtOrBefore, string(symbol), asOf)
+	var snap domain.IVSnapshot
+	var sym string
+	err := row.Scan(&snap.Time, &sym, &snap.ATMIV, &snap.ATMStrike, &snap.SpotPrice, &snap.CallIV, &snap.PutIV)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.IVSnapshot{}, fmt.Errorf("no IV snapshot for %s at or before %s: %w", symbol, asOf.Format(time.RFC3339), sql.ErrNoRows)
 		}
 		return domain.IVSnapshot{}, err
 	}
