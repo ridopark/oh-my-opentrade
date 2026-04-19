@@ -200,6 +200,24 @@ dp_z_adverse_hold_time_mult = 1.0
 dp_z_suppress_adverse_entries = true
 dp_z_suppress_threshold = 1.0
 
+# --- Inducement (liquidity sweep) — Factor 7 confluence ---
+# Detects price sweeping past a recent swing high/low then reversing.
+# Additive to min_confluence_score (max +5); does not block entries on its own.
+#
+# Enabled 2026-04-18 after OOS validation on deployed-27 split:
+#   train-15: PF 3.160→3.180, Sharpe 6.98→7.20, PnL +3.8%
+#   holdout-12: PF 3.160→3.336, Sharpe 6.63→6.95, PnL +13.6%
+# Holdout lift > train lift = anti-overfitting signature. Defaults from spec,
+# not tuned. Pair w/ macd_only_v1: combined PnL +1.7%, DD unchanged 7.14%.
+inducement_enabled = true
+inducement_swing_n = 3
+inducement_swing_depth = 8
+inducement_max_age_bars = 60
+inducement_breach_min_bps = 5
+inducement_breach_max_bps = 80
+inducement_reversal_bars = 3
+inducement_volume_min_ratio = 1.2
+
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
 

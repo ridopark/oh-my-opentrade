@@ -260,6 +260,17 @@ type AVWAPConfig struct {
 	// ATR-scaled stops and targets (overrides fixed stop_bps / target when > 0).
 	StopATRMult   float64 // stop_atr_mult: 0 = disabled (use stop_bps), >0 = N * ATR stop
 	TargetATRMult float64 // target_atr_mult: 0 = disabled, >0 = N * ATR target
+
+	// Inducement detector params (Factor 7 confluence — liquidity sweep).
+	// Disabled by default; enabling adds scoring only (no entry blocking).
+	InducementEnabled        bool
+	InducementSwingN         int
+	InducementSwingDepth     int
+	InducementMaxAgeBars     int
+	InducementBreachMinBps   int
+	InducementBreachMaxBps   int
+	InducementReversalBars   int
+	InducementVolumeMinRatio float64
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -314,6 +325,15 @@ type AVWAPState struct {
 	SpyTideDevBps  float64 // (last_close - intraday_vwap) / intraday_vwap * 10000
 	SpyTideReady   bool    // false until the index tracker has enough warmup bars
 	TideIndexName  string  // "SPY" or "QQQ" — which index this stock maps to
+
+	// Inducement detector state (Factor 7 confluence). Populated only when
+	// Config.InducementEnabled. InducementSwing is a strategy-local detector
+	// to avoid coupling with the shared anchor-resolver's timeframe-specific N.
+	InducementSwing      *start.SwingDetector        `json:"-"`
+	RecentSwingHighs     []start.SwingLevel          // ring buffer capped at InducementSwingDepth
+	RecentSwingLows      []start.SwingLevel          // ring buffer capped at InducementSwingDepth
+	PendingInducement    *start.PendingInducement    // in-flight multi-bar reversal candidate
+	LastInducementSignal *start.InducementSignal     `json:"-"` // consumed by computeConfluence on current bar
 }
 
 // SetTideData is called by the strategy runner before every OnBar with the
@@ -545,6 +565,89 @@ func logShortGate(ctx start.Context, symbol, gate, anchor string, kvs ...string)
 // SetIndicators implements the indicatorSetter interface.
 func (s *AVWAPState) SetIndicators(ind start.IndicatorData) {
 	s.Indicators = ind
+}
+
+// updateInducement advances the inducement detector one bar. Safe to call
+// when cfg.InducementEnabled is false — it is a no-op. Maintains the per-
+// strategy SwingDetector, ages and prunes swing ring buffers, and stores
+// the detected signal on LastInducementSignal for computeConfluence to read.
+func (s *AVWAPState) updateInducement(bar start.Bar, cfg AVWAPConfig) {
+	s.LastInducementSignal = nil
+	if !cfg.InducementEnabled {
+		return
+	}
+	if s.InducementSwing == nil {
+		n := cfg.InducementSwingN
+		if n < 1 {
+			n = 3
+		}
+		s.InducementSwing = start.NewSwingDetector(n, "5m")
+	}
+	// Age existing swings by one bar before adding new confirmed ones.
+	for i := range s.RecentSwingHighs {
+		s.RecentSwingHighs[i].BarAge++
+	}
+	for i := range s.RecentSwingLows {
+		s.RecentSwingLows[i].BarAge++
+	}
+	// Push this bar; SwingDetector emits confirmed pivots lagged by N.
+	for _, ca := range s.InducementSwing.Push(bar) {
+		lvl := start.SwingLevel{
+			Time:   ca.Time,
+			Price:  ca.Price,
+			BarAge: s.InducementSwing.N(), // confirmed bar is N bars back
+		}
+		switch ca.Type {
+		case start.AnchorSwingHigh:
+			lvl.Side = start.InducementSwingHigh
+			s.RecentSwingHighs = appendSwingLevel(s.RecentSwingHighs, lvl, cfg.InducementSwingDepth)
+		case start.AnchorSwingLow:
+			lvl.Side = start.InducementSwingLow
+			s.RecentSwingLows = appendSwingLevel(s.RecentSwingLows, lvl, cfg.InducementSwingDepth)
+		}
+	}
+	// Prune stale swings beyond the age cap.
+	s.RecentSwingHighs = pruneStaleSwings(s.RecentSwingHighs, cfg.InducementMaxAgeBars)
+	s.RecentSwingLows = pruneStaleSwings(s.RecentSwingLows, cfg.InducementMaxAgeBars)
+
+	// Detect.
+	icfg := start.InducementConfig{
+		BreachMinBPS:   float64(cfg.InducementBreachMinBps),
+		BreachMaxBPS:   float64(cfg.InducementBreachMaxBps),
+		ReversalBars:   cfg.InducementReversalBars,
+		VolumeMinRatio: cfg.InducementVolumeMinRatio,
+		MaxAgeBars:     cfg.InducementMaxAgeBars,
+	}
+	sig, pending := start.DetectInducement(
+		bar, s.RecentSwingHighs, s.RecentSwingLows,
+		s.PendingInducement, icfg, s.Indicators.VolumeSMA,
+	)
+	s.PendingInducement = pending
+	s.LastInducementSignal = sig
+}
+
+// appendSwingLevel pushes lvl onto buf and trims from the front when the
+// buffer exceeds depth. depth<=0 disables capping.
+func appendSwingLevel(buf []start.SwingLevel, lvl start.SwingLevel, depth int) []start.SwingLevel {
+	buf = append(buf, lvl)
+	if depth > 0 && len(buf) > depth {
+		buf = buf[len(buf)-depth:]
+	}
+	return buf
+}
+
+// pruneStaleSwings drops swings older than maxAge. maxAge<=0 disables pruning.
+func pruneStaleSwings(buf []start.SwingLevel, maxAge int) []start.SwingLevel {
+	if maxAge <= 0 {
+		return buf
+	}
+	out := buf[:0]
+	for _, sw := range buf {
+		if sw.BarAge <= maxAge {
+			out = append(out, sw)
+		}
+	}
+	return out
 }
 
 func (s *AVWAPState) AnchorNames() []string { return s.Config.Anchors }
@@ -957,6 +1060,15 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 
 		StopATRMult:   getFloat64(params, "stop_atr_mult", 0),
 		TargetATRMult: getFloat64(params, "target_atr_mult", 0),
+
+		InducementEnabled:        getBool(params, "inducement_enabled", false),
+		InducementSwingN:         getInt(params, "inducement_swing_n", 3),
+		InducementSwingDepth:     getInt(params, "inducement_swing_depth", 8),
+		InducementMaxAgeBars:     getInt(params, "inducement_max_age_bars", 60),
+		InducementBreachMinBps:   getInt(params, "inducement_breach_min_bps", 5),
+		InducementBreachMaxBps:   getInt(params, "inducement_breach_max_bps", 80),
+		InducementReversalBars:   getInt(params, "inducement_reversal_bars", 3),
+		InducementVolumeMinRatio: getFloat64(params, "inducement_volume_min_ratio", 1.2),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
 
@@ -1252,7 +1364,7 @@ func (s *AVWAPState) evaluateCapitulationReclaim(ec entryContext) (*start.Signal
 		if s.AboveCount[anchorName] >= 1 && s.AboveCount[anchorName] <= cfg.HoldBars &&
 			bar.Close > avwapValue && bar.Close > bar.Open && volumeOK {
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
-				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50, s.LastInducementSignal)
 			if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
@@ -1331,7 +1443,7 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 				continue
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
-				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50, s.LastInducementSignal)
 			if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
@@ -1410,7 +1522,7 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 					continue
 				}
 				conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
-					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50, s.LastInducementSignal)
 				if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 					reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 					continue
@@ -1513,7 +1625,7 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 				continue
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
-				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50, s.LastInducementSignal)
 			if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
@@ -1578,7 +1690,7 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 				continue
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
-				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50, s.LastInducementSignal)
 			if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
@@ -1659,7 +1771,7 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 		if bar.Close > maxAVWAP && volumeOK && !ec.lockedLong {
 			if !cfg.EnforceAVWAPBias || ec.avwapBias == "" || ec.avwapBias == "LONG" {
 				conf := computeConfluence(cfg, bar, pinchAVWAPValue, ec.avwapValues, s.Indicators,
-					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50, s.LastInducementSignal)
 				if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 					reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				} else {
@@ -1695,7 +1807,7 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 				reason = "capitulation required for short"
 			case !cfg.EnforceAVWAPBias || ec.avwapBias == "" || ec.avwapBias == "SHORT":
 				conf := computeConfluence(cfg, bar, pinchAVWAPValue, ec.avwapValues, s.Indicators,
-					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+					s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50, s.LastInducementSignal)
 				if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 					reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				} else {
@@ -1780,7 +1892,7 @@ func (s *AVWAPState) evaluateGapReclaim(ec entryContext) (*start.Signal, error) 
 				continue
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
-				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50, s.LastInducementSignal)
 			if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
@@ -1878,7 +1990,7 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 					}
 					handoffAVWAP := avwapValues[anchorName]
 					conf := computeConfluence(cfg, bar, handoffAVWAP, ec.avwapValues, s.Indicators,
-						s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+						s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50, s.LastInducementSignal)
 					if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 						reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 						continue
@@ -1949,7 +2061,7 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 					}
 					shortHandoffAVWAP := avwapValues[anchorName]
 					conf := computeConfluence(cfg, bar, shortHandoffAVWAP, ec.avwapValues, s.Indicators,
-						s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+						s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50, s.LastInducementSignal)
 					if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 						reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 						continue
@@ -2019,7 +2131,7 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 				continue
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
-				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50, s.LastInducementSignal)
 			if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
@@ -2074,7 +2186,7 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 				continue // block short bounces above AVWAP without capitulation
 			}
 			conf := computeConfluence(cfg, bar, avwapValue, ec.avwapValues, s.Indicators,
-				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50)
+				s.PrevBars, s.PrevBarCount, ec.keyLevels, s.BarHighs50, s.BarLows50, s.LastInducementSignal)
 			if conf.Vetoed || (cfg.MinConfluenceScore > 0 && conf.Score < cfg.MinConfluenceScore) {
 				reason = fmt.Sprintf("confluence %d < %d", conf.Score, cfg.MinConfluenceScore)
 				continue
@@ -2248,6 +2360,7 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 				cfg, s.PrevBars[0], avwapVal, avwapValues,
 				s.Indicators, s.PrevBars, s.PrevBarCount,
 				s.KeyLevels, s.BarHighs50, s.BarLows50,
+				s.LastInducementSignal,
 			)
 		}
 	}
@@ -2397,7 +2510,7 @@ func (s *AVWAPState) emitEarlyGated(ctx start.Context, symbol string, bar start.
 		if avwapVal, ok := s.Calc.Values()[cfg.Anchors[0]]; ok {
 			conf := computeConfluence(cfg, bar, avwapVal, s.Calc.Values(),
 				s.Indicators, s.PrevBars, s.PrevBarCount,
-				s.KeyLevels, s.BarHighs50, s.BarLows50)
+				s.KeyLevels, s.BarHighs50, s.BarLows50, s.LastInducementSignal)
 			score = conf.Score
 		}
 	}
@@ -2472,6 +2585,7 @@ func (s *AVWAPState) emitEntryGated(ec entryContext) {
 				ec.cfg, ec.bar, avwapVal, ec.avwapValues,
 				s.Indicators, s.PrevBars, s.PrevBarCount,
 				s.KeyLevels, s.BarHighs50, s.BarLows50,
+				s.LastInducementSignal,
 			)
 		}
 	}
@@ -2782,6 +2896,7 @@ func computeConfluence(
 	prevBarCount int,
 	keyLevels map[string]float64,
 	barHighs50, barLows50 []float64,
+	inducementSig *start.InducementSignal,
 ) confluenceResult {
 	var res confluenceResult
 
@@ -2959,6 +3074,23 @@ func computeConfluence(
 	}
 	res.Components = append(res.Components, whaleComp)
 
+	// Factor 7: Inducement (liquidity sweep, +5 max, opt-in).
+	// Only fires when the detected sweep direction matches the entry direction
+	// implied by price vs AVWAP. Sweep of a swing HIGH (SideSell) aligns with
+	// short entries (isLongEntry=false); sweep of a swing LOW (SideBuy) aligns
+	// with longs.
+	inducementComp := start.ComponentScore{Name: "inducement", Group: "microstructure", Weight: 5}
+	if cfg.InducementEnabled && inducementSig != nil {
+		sigIsLong := inducementSig.Direction == start.SideBuy
+		if sigIsLong == isLongEntry {
+			res.Score += inducementSig.Score
+			res.Factors = append(res.Factors, inducementSig.Tag)
+			inducementComp.Fired = true
+			inducementComp.Value = float64(inducementSig.Score)
+		}
+	}
+	res.Components = append(res.Components, inducementComp)
+
 	return res
 }
 
@@ -3058,6 +3190,10 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 	if len(avwapSt.BarLows50) > 50 {
 		avwapSt.BarLows50 = avwapSt.BarLows50[1:]
 	}
+
+	// 2e. Inducement detector (Factor 7) — updates swing ring buffers and
+	// detects same-bar / multi-bar liquidity sweeps. Disabled by default.
+	avwapSt.updateInducement(bar, cfg)
 
 	// 3. Regime gating.
 	regimeAllowed := false
