@@ -47,6 +47,28 @@ func TestWeeklyExpiries_EmptyRange(t *testing.T) {
 	got := weeklyExpiries(asOf, 20, 10) // inverted range
 	assert.Empty(t, got)
 }
+
+// TestWeeklyExpiries_SameDayDroppedAfterSettlement guards the new 16:00 ET
+// cutoff. An expiring-today contract is live until 16:00 ET; past that,
+// real equity options stop trading. Backtests calling the synthetic
+// generator at 17:00 ET should not see today's expiry in the output.
+func TestWeeklyExpiries_SameDayDroppedAfterSettlement(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+
+	// 2026-04-17 is a Friday.
+	pre := time.Date(2026, 4, 17, 10, 0, 0, 0, loc)
+	post := time.Date(2026, 4, 17, 17, 0, 0, 0, loc)
+
+	// Pre-settlement: today's Friday is included.
+	preList := weeklyExpiries(pre, 0, 0)
+	require.Len(t, preList, 1, "pre-settlement Friday must be live")
+	assert.Equal(t, "2026-04-17", preList[0].Format("2006-01-02"))
+
+	// Post-settlement: today's Friday is dropped.
+	postList := weeklyExpiries(post, 0, 0)
+	assert.Empty(t, postList, "post-settlement same-day Friday must be dropped")
+}
 func TestStrikeGrid_Spot100Pct20Step1(t *testing.T) {
 	strikes := strikeGrid(100.0, 0.20, 0.01)
 	// spot=100, grid [80..120], step 1 → 41 strikes at integer values.

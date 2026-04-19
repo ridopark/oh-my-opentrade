@@ -162,15 +162,31 @@ func (g *SyntheticChainGenerator) GenerateChain(
 // explicitly out of scope for v1 — the BSM pricing difference from a
 // Thursday-vs-Friday expiry on a 7-DTE option is well under 1%, so we ship
 // plain Fridays and revisit if telemetry shows a material divergence.
+//
+// Settlement cutoff: same-day expiries are dropped once the backtest clock
+// crosses ~20:00 UTC (loose approximation of 16:00 ET) on the expiry's
+// calendar day. Real equity options stop trading at 16:00 ET; treating
+// them as live until midnight UTC inflates late-Friday fills.
 func weeklyExpiries(asOf time.Time, minDTE, maxDTE int) []time.Time {
 	day := truncateToDate(asOf)
 	start := day.AddDate(0, 0, minDTE)
 	end := day.AddDate(0, 0, maxDTE)
-	// Advance start to the next Friday on-or-after start.
 	offset := (int(time.Friday) - int(start.Weekday()) + 7) % 7
 	firstFriday := start.AddDate(0, 0, offset)
+
+	// 16:00 ET is 20:00 UTC (EST) / 20:00 UTC (EDT offset 4h → 20:00);
+	// close enough for a generator that only fires for non-covered
+	// symbols. Expiries are stored as the caller-timezone midnight of
+	// the calendar day, so compare in UTC to avoid tz-conversion traps.
+	const settlementHourUTC = 20
+	asOfUTC := asOf.UTC()
 	var out []time.Time
 	for d := firstFriday; !d.After(end); d = d.AddDate(0, 0, 7) {
+		dUTC := d.UTC()
+		sameUTCDay := dUTC.Year() == asOfUTC.Year() && dUTC.YearDay() == asOfUTC.YearDay()
+		if sameUTCDay && asOfUTC.Hour() >= settlementHourUTC {
+			continue
+		}
 		out = append(out, d)
 	}
 	return out
