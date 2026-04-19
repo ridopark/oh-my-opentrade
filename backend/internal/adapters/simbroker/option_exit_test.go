@@ -353,7 +353,7 @@ func TestComputeOptionExitPrice_VIXBetaScaling(t *testing.T) {
 
 		// With VIX spike: entry 15, now 21 (+40%)
 		bAdj := New(Config{SlippageBPS: 5, DisableFillChan: true, VIXIVBeta: 1.0}, zerolog.Nop())
-		bAdj.prices[domain.Symbol("VIX")] = 21.0
+		bAdj.prices[domain.SymbolVIX] = 21.0
 
 		metaWithVIX := make(map[string]string)
 		for k, v := range baseMeta {
@@ -375,7 +375,7 @@ func TestComputeOptionExitPrice_VIXBetaScaling(t *testing.T) {
 			makeOptionExitIntent("AAPL260410C00150000", baseMeta), 153.0, barTime)
 
 		bAdj := New(Config{SlippageBPS: 5, DisableFillChan: true, VIXIVBeta: 1.0}, zerolog.Nop())
-		bAdj.prices[domain.Symbol("VIX")] = 12.0
+		bAdj.prices[domain.SymbolVIX] = 12.0
 
 		metaWithVIX := make(map[string]string)
 		for k, v := range baseMeta {

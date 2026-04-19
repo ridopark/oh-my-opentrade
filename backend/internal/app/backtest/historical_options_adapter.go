@@ -6,6 +6,7 @@ package backtest
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -412,7 +413,7 @@ func (a *HistoricalOptionsAdapter) GetHistoricalContract(
 		bestExpiryDist := 999
 		for i := range rows {
 			r := &rows[i]
-			strikeDist := abs(r.Strike - strike)
+			strikeDist := math.Abs(r.Strike - strike)
 			if strikeDist > strikeTol {
 				continue
 			}
@@ -483,13 +484,6 @@ func (a *HistoricalOptionsAdapter) SaveBatch(
 // spread-based estimate. Real liquidity is gated by MaxSpreadPct instead.
 func historicalOpenInterest(_ domain.HistoricalOptionChainRow) int {
 	return 0
-}
-
-func abs(x float64) float64 {
-	if x < 0 {
-		return -x
-	}
-	return x
 }
 
 func absDays(a, b time.Time) int {
