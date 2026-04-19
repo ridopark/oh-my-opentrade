@@ -192,8 +192,18 @@ func (ds *DailyScreener) ComputeForDate(ctx context.Context, asOf time.Time, can
 				score -= 20
 			}
 
-			// Minimum quality threshold
+			// Minimum quality threshold. Drops are visible at Debug so a
+			// user wondering why top-N shrunk can see what was rejected
+			// and at what score, instead of a silent skip.
 			if score < 25 {
+				ds.log.Debug().
+					Str("sym", string(sym)).
+					Float64("score", score).
+					Float64("atr_pct", atrPct).
+					Float64("gap_pct", gapPct).
+					Float64("rvol", rvol).
+					Time("asOf", asOf).
+					Msg("screener: symbol dropped (score below 25)")
 				return
 			}
 

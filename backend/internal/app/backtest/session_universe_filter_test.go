@@ -171,3 +171,30 @@ func TestSessionResolver_SetUniverseHistory_NilPortDisablesEnforce(t *testing.T)
 	require.NoError(t, err)
 	assert.True(t, ok)
 }
+
+// TestSessionResolver_Stats_TracksUnknownSymbolHits — seeding gap visibility.
+// CheckUniverse on a symbol with no windows must increment unknownSymbolHits
+// so the end-of-run summary can surface "you backtested with an incomplete
+// universe seed" instead of silently marking all those symbols non-tradable.
+func TestSessionResolver_Stats_TracksUnknownSymbolHits(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	store := &stubUniverse{windows: map[domain.Symbol][]ports.UniverseWindow{
+		"AAPL": {{Symbol: "AAPL", FromDate: date(2020, 1, 1), Source: "seed"}},
+	}}
+	r := NewSessionResolver(loc)
+	r.SetUniverseHistory(store, true)
+
+	// Seeded symbol — no counter increment.
+	_, err = r.CheckUniverse(context.Background(), "AAPL", date(2024, 1, 1), date(2025, 1, 1))
+	require.NoError(t, err)
+	// Unseeded symbols — each must count.
+	for _, sym := range []domain.Symbol{"NOPE", "ALSO_NOPE"} {
+		_, err = r.CheckUniverse(context.Background(), sym, date(2024, 1, 1), date(2025, 1, 1))
+		require.NoError(t, err)
+	}
+
+	scanErrs, unknownSyms := r.Stats()
+	assert.Equal(t, 0, scanErrs)
+	assert.Equal(t, 2, unknownSyms)
+}

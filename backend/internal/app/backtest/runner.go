@@ -1043,6 +1043,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		sessionResolver = NewSessionResolver(loc)
+		sessionResolver.SetLogger(r.log)
 		// Extend lookback by 5 calendar days so previous-day anchors (pd_high, pd_low, etc.)
 		// are available on the first replay day even on Mondays (need Friday = -3 calendar days).
 		sessionFrom := r.cfg.From.Add(-5 * 24 * time.Hour)
@@ -1739,9 +1740,14 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		if err := sp.RunSliceToCompletion(ctx, sliceBars, replaySessionOpen, coord); err != nil {
-			if ctx.Err() == nil {
-				r.log.Error().Err(err).Msg("slice-to-completion failed")
+			if ctx.Err() != nil {
+				// Graceful shutdown: fall through to normal completion so
+				// partial metrics are emitted for what actually ran.
+				goto backtestComplete
 			}
+			r.log.Error().Err(err).Msg("slice-to-completion failed")
+			r.status.Store("error")
+			return fmt.Errorf("slice-to-completion: %w", err)
 		}
 
 		goto backtestComplete
@@ -1964,12 +1970,18 @@ backtestComplete:
 	// End-of-run diagnostics: surface the data-quality signals the
 	// replay loop accumulated but never individually logged at INFO.
 	histHits, synthHits := optionsAdapter.Stats()
-	r.log.Info().
+	summary := r.log.Info().
 		Int("options_historical_hits", histHits).
 		Int("options_synthetic_hits", synthHits).
 		Int("auction_synthetic_sign_fallbacks", auctionPub.syntheticSignCount).
-		Int("auction_events_published", len(auctionPub.publishedAuctions)).
-		Msg("backtest data-quality summary")
+		Int("auction_events_published", len(auctionPub.publishedAuctions))
+	if sessionResolver != nil {
+		scanErrs, unknownSyms := sessionResolver.Stats()
+		summary = summary.
+			Int("session_scan_errors", scanErrs).
+			Int("session_unknown_symbols", unknownSyms)
+	}
+	summary.Msg("backtest data-quality summary")
 
 	finalResult := r.collector.Result()
 	r.result.Store(&finalResult)

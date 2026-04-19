@@ -11,6 +11,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
+	"github.com/rs/zerolog"
 )
 
 // dayKey returns a "YYYY-MM-DD" string using strconv instead of time.Format
@@ -55,6 +56,7 @@ type SessionResolver struct {
 	sessions map[string]map[string]SessionData
 	barCache map[string][]start.Bar // "SYMBOL:2025-03-15" → 1m bars for that day
 	loc      *time.Location
+	log      zerolog.Logger
 
 	// Sprint-7 add-on survivorship-bias filter. Both optional; when
 	// enforceUniverse is false (default) these fields have no effect and
@@ -64,6 +66,10 @@ type SessionResolver struct {
 	// windowCache memoises WindowsFor lookups for the duration of a
 	// backtest run to avoid re-querying the DB for every bar.
 	windowCache map[string][]ports.UniverseWindow
+
+	// Diagnostics counters. Protected by mu alongside sessions.
+	scanErrors         int
+	unknownSymbolHits  int
 }
 
 func NewSessionResolver(loc *time.Location) *SessionResolver {
@@ -71,8 +77,15 @@ func NewSessionResolver(loc *time.Location) *SessionResolver {
 		sessions:    make(map[string]map[string]SessionData),
 		barCache:    make(map[string][]start.Bar),
 		loc:         loc,
+		log:         zerolog.Nop(),
 		windowCache: make(map[string][]ports.UniverseWindow),
 	}
+}
+
+// SetLogger attaches a logger for diagnostics. Safe to call before or
+// after Load/Load24H; calls with a zero logger effectively disable output.
+func (r *SessionResolver) SetLogger(log zerolog.Logger) {
+	r.log = log.With().Str("component", "session_resolver").Logger()
 }
 
 // SetUniverseHistory wires the Sprint-7-addon survivorship-bias filter.
@@ -92,6 +105,10 @@ func (r *SessionResolver) SetUniverseHistory(port ports.UniverseHistoryPort, enf
 // [from, to). When the filter is disabled it always returns true. Use
 // before paying the cost of LoadBars/Load for a symbol that might not
 // have existed during the requested range.
+//
+// Logs a warning at the first observation of a symbol missing from the
+// universe port entirely (distinct from a symbol whose windows simply
+// don't overlap the requested range), so callers notice seeding gaps.
 func (r *SessionResolver) CheckUniverse(ctx context.Context, sym domain.Symbol, from, to time.Time) (bool, error) {
 	r.mu.Lock()
 	port := r.universe
@@ -103,6 +120,17 @@ func (r *SessionResolver) CheckUniverse(ctx context.Context, sym domain.Symbol, 
 	windows, err := r.loadWindows(ctx, sym)
 	if err != nil {
 		return false, err
+	}
+	if len(windows) == 0 {
+		r.mu.Lock()
+		r.unknownSymbolHits++
+		r.mu.Unlock()
+		r.log.Warn().
+			Str("sym", sym.String()).
+			Time("from", from).
+			Time("to", to).
+			Msg("universe filter: symbol has no seeded windows; treating as non-tradable")
+		return false, nil
 	}
 	for _, w := range windows {
 		// Overlap test: [from_date, to_date) ∩ [from, to) non-empty.
@@ -121,6 +149,14 @@ func (r *SessionResolver) CheckUniverse(ctx context.Context, sym domain.Symbol, 
 		return true, nil
 	}
 	return false, nil
+}
+
+// Stats returns end-of-run counters for observability. Safe to call any
+// time; reads are protected by the resolver's mutex.
+func (r *SessionResolver) Stats() (scanErrors, unknownSymbols int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.scanErrors, r.unknownSymbolHits
 }
 
 // loadWindows returns cached windows or queries+caches them.
@@ -238,6 +274,10 @@ func (r *SessionResolver) Load(ctx context.Context, db *sql.DB, sym domain.Symbo
 		var day time.Time
 		if scanErr := rows.Scan(&day, &s.Open, &s.OpenTime, &s.High, &s.HighTime,
 			&s.Low, &s.LowTime, &s.Close, &s.ORHigh, &s.ORHighTime, &s.ORLow, &s.ORLowTime); scanErr != nil {
+			r.mu.Lock()
+			r.scanErrors++
+			r.mu.Unlock()
+			r.log.Warn().Err(scanErr).Str("sym", sym.String()).Msg("session row scan failed; skipping row")
 			continue
 		}
 		s.Date = day.Format("2006-01-02")
@@ -328,6 +368,10 @@ func (r *SessionResolver) Load24H(ctx context.Context, db *sql.DB, sym domain.Sy
 		var day time.Time
 		if scanErr := rows.Scan(&day, &s.Open, &s.OpenTime, &s.High, &s.HighTime,
 			&s.Low, &s.LowTime, &s.Close, &s.ORHigh, &s.ORHighTime, &s.ORLow, &s.ORLowTime); scanErr != nil {
+			r.mu.Lock()
+			r.scanErrors++
+			r.mu.Unlock()
+			r.log.Warn().Err(scanErr).Str("sym", sym.String()).Msg("session row scan failed (24h); skipping row")
 			continue
 		}
 		s.Date = day.Format("2006-01-02")
