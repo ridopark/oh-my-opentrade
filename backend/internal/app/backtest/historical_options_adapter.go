@@ -275,15 +275,11 @@ func hasExpiryInDTERange(snaps []domain.OptionContractSnapshot, asOf time.Time, 
 
 // generateSynthetic runs the BSM-based generator (if attached) and returns
 // the result. Returns nil when no generator is attached or the generator
-// produces no output (e.g. missing spot) — both are legitimate "no data"
-// outcomes, not errors.
+// produces no output (e.g. missing spot).
 //
-// No caching: the prior per-day cache froze the underlying spot at the
-// time of the first call, so intraday moves silently re-used stale BSM
-// prices. Strategy entries on post-move bars bought at pre-move premium
-// and exited via current-spot BSM, booking phantom PnL. Regenerating on
-// every call is cheap (~100 BSM evaluations) and keeps premium coherent
-// with the current 1m spot.
+// Not cached: the prior per-day cache froze spot at first-request time, so
+// intraday moves left subsequent entries priced off a stale underlying
+// while the exit path used current spot — booking phantom PnL.
 func (a *HistoricalOptionsAdapter) generateSynthetic(
 	ctx context.Context,
 	chainKey optionCacheKey,
@@ -501,11 +497,9 @@ type marketBarReader interface {
 	GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error)
 }
 
-// lookupSpot returns the most recent 1m close at-or-before asOf. The
-// earlier implementation preferred daily bars, which leaked EOD closes
-// into intraday synthetic-chain pricing (look-ahead). Returns 0 with a
-// nil error when no bars are available — synthetic generator treats
-// that as "no chain".
+// lookupSpot returns the most recent 1m close at-or-before asOf. Daily
+// bars are not consulted — they leak the EOD close into intraday pricing.
+// Returns 0 with a nil error when no bars are available.
 func lookupSpot(ctx context.Context, repo marketBarReader, symbol domain.Symbol, asOf time.Time) (float64, error) {
 	from := asOf.Add(-48 * time.Hour)
 	mbars, err := repo.GetMarketBars(ctx, symbol, domain.Timeframe("1m"), from, asOf.Add(time.Minute))
