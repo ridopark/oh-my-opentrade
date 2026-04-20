@@ -8,6 +8,8 @@ import { useRollingDecay, useComponentAttribution } from "@/hooks/use-decay";
 import { useStrategyList } from "@/hooks/queries";
 import { RollingPfChart } from "@/components/decay/rolling-pf-chart";
 import { AttributionChart } from "@/components/decay/attribution-chart";
+import { useResizableHeight, SIGNALS_BOTTOM_KEY } from "@/lib/use-resizable-height";
+import { ResizeHandle } from "@/components/resize-handle";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -106,6 +108,7 @@ export function BottomPanel({
 }: BottomPanelProps) {
   const symbolsWithRegime = useMemo(() => Object.keys(regimeBySymbol).sort(), [regimeBySymbol]);
   const [expanded, setExpanded] = useState(false);
+  const { height, handleProps } = useResizableHeight(SIGNALS_BOTTOM_KEY, 350, { min: 140, max: 700 });
   const strategyList = useStrategyList();
   const strategyIds = useMemo(() => [...new Set((strategyList.data ?? []).map((s) => s.id))], [strategyList.data]);
   const [decayStrategy, setDecayStrategy] = useState<string>("");
@@ -137,7 +140,11 @@ export function BottomPanel({
   }, [avwapProgress, macdProgress]);
 
   return (
-    <div className={`mt-1 rounded-t-lg border border-border bg-card flex flex-col shrink-0 ${expanded ? "h-[200px]" : ""}`}>
+    <div
+      className="mt-1 rounded-t-lg border border-border bg-card flex flex-col shrink-0"
+      style={expanded ? { height: `${height}px` } : undefined}
+    >
+      {expanded && <ResizeHandle {...handleProps} />}
       {/* Tab bar */}
       <div className="flex items-center gap-0 border-b border-border shrink-0">
         {(["signals", "market", "bars", "strategy", "decay"] as const).map((tab) => (
