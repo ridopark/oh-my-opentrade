@@ -10,12 +10,12 @@ export default function DashboardLayout({
   return (
     <QueryProvider>
       <Sidebar />
-      <main className="ml-0 md:ml-56 h-screen bg-background overflow-y-auto">
+      <main className="ml-0 md:ml-56 h-screen bg-background flex flex-col">
         {/* Subtle, single-row health strip — sits above every dashboard page
             so outages surface immediately without stealing focus from the
             main content. */}
         <DataSourceHeader />
-        <div className="p-3 md:p-6">{children}</div>
+        <div className="flex-1 min-h-0 overflow-y-auto p-3 md:p-6">{children}</div>
       </main>
     </QueryProvider>
   );
