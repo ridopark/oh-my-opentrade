@@ -48,15 +48,32 @@ function EntryChecksPanel({ checks }: { checks: EntryCheckResult[] }) {
     <div className="mt-2 rounded border border-zinc-800 bg-zinc-900/50 px-3 py-2">
       <span className="text-[10px] text-zinc-500 uppercase mb-1 block">Entry Checks</span>
       <div className="grid grid-cols-1 gap-x-6 gap-y-0.5 sm:grid-cols-2">
-        {checks.map((c) => (
-          <div key={c.name} className="flex items-center gap-1.5">
-            <span className={c.passed ? "text-emerald-400" : "text-zinc-600"}>
-              {c.passed ? "\u2713" : "\u2717"}
-            </span>
-            <span className="font-mono text-[11px] text-zinc-300 min-w-[80px]">{c.name}</span>
-            <span className="text-[11px] text-zinc-500 truncate">{c.reason}</span>
-          </div>
-        ))}
+        {checks.map((c) => {
+          const disabled = c.reason === "disabled";
+          const showBar = !c.passed && !disabled;
+          const prox = Math.max(0, Math.min(1, c.proximity ?? 0));
+          const barColor = prox >= 0.75 ? "bg-emerald-500" : prox >= 0.5 ? "bg-yellow-500" : "bg-zinc-600";
+          return (
+            <div key={c.name} className="flex items-center gap-1.5">
+              <span className={c.passed ? "text-emerald-400" : "text-zinc-600"}>
+                {c.passed ? "\u2713" : "\u2717"}
+              </span>
+              <span className="font-mono text-[11px] text-zinc-300 min-w-[80px]">{c.name}</span>
+              {showBar && (
+                <div
+                  className="h-1 w-12 shrink-0 rounded-full bg-zinc-800 overflow-hidden"
+                  title={`${(prox * 100).toFixed(0)}% to entry`}
+                >
+                  <div
+                    className={`h-full rounded-full transition-all ${barColor}`}
+                    style={{ width: `${Math.max(prox * 100, 2)}%` }}
+                  />
+                </div>
+              )}
+              <span className="text-[11px] text-zinc-500 truncate">{c.reason}</span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
