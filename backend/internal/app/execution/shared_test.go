@@ -72,7 +72,7 @@ func (m *mockBroker) GetPosition(_ context.Context, _ domain.Symbol) (float64, e
 	return 0, nil
 }
 
-func (m *mockBroker) ClosePosition(_ context.Context, _ domain.Symbol) (string, error) {
+func (m *mockBroker) CloseAtMarket(_ context.Context, _ domain.Symbol) (string, error) {
 	return "", nil
 }
 

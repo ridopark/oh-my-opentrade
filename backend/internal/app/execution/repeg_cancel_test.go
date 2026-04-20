@@ -32,7 +32,7 @@ func (b *noopBroker) GetPositions(_ context.Context, _ string, _ domain.EnvMode)
 	return nil, nil
 }
 func (b *noopBroker) GetPosition(_ context.Context, _ domain.Symbol) (float64, error) { return 0, nil }
-func (b *noopBroker) ClosePosition(_ context.Context, _ domain.Symbol) (string, error) {
+func (b *noopBroker) CloseAtMarket(_ context.Context, _ domain.Symbol) (string, error) {
 	return "", nil
 }
 func (b *noopBroker) GetOrderDetails(_ context.Context, _ string) (ports.OrderDetails, error) {

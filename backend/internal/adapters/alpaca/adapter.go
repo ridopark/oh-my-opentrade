@@ -306,8 +306,8 @@ func (a *Adapter) GetPosition(ctx context.Context, symbol domain.Symbol) (float6
 	return a.rest.GetPosition(ctx, symbol)
 }
 
-func (a *Adapter) ClosePosition(ctx context.Context, symbol domain.Symbol) (string, error) {
-	return a.rest.ClosePosition(ctx, symbol)
+func (a *Adapter) CloseAtMarket(ctx context.Context, symbol domain.Symbol) (string, error) {
+	return a.rest.CloseAtMarket(ctx, symbol)
 }
 
 func (a *Adapter) GetOrderDetails(ctx context.Context, orderID string) (ports.OrderDetails, error) {

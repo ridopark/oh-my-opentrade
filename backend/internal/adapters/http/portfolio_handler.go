@@ -17,7 +17,7 @@ import (
 type PortfolioBroker interface {
 	GetPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error)
 	GetFreshPositions(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error)
-	ClosePosition(ctx context.Context, symbol domain.Symbol) (string, error)
+	CloseAtMarket(ctx context.Context, symbol domain.Symbol) (string, error)
 	GetPosition(ctx context.Context, symbol domain.Symbol) (float64, error)
 	CancelOpenOrders(ctx context.Context, symbol domain.Symbol, side string) (int, error)
 	RefreshPositions()
@@ -305,7 +305,7 @@ func (h *PortfolioHandler) handleClosePosition(w http.ResponseWriter, r *http.Re
 	if canceled, cancelErr := h.broker.CancelOpenOrders(r.Context(), sym, "sell"); cancelErr == nil && canceled > 0 {
 		h.log.Info().Str("symbol", symbol).Int("canceled", canceled).Msg("canceled existing sell orders before close")
 	}
-	orderID, err := h.broker.ClosePosition(r.Context(), sym)
+	orderID, err := h.broker.CloseAtMarket(r.Context(), sym)
 	if err != nil {
 		h.log.Error().Err(err).Str("symbol", symbol).Msg("failed to close position")
 		jsonErr(w, "failed to close "+symbol+": "+err.Error(), http.StatusInternalServerError)
@@ -343,7 +343,7 @@ func (h *PortfolioHandler) handleCloseAll(w http.ResponseWriter, r *http.Request
 	for _, p := range positions {
 		// Cancel existing sell orders first
 		_, _ = h.broker.CancelOpenOrders(r.Context(), p.Symbol, "sell")
-		orderID, closeErr := h.broker.ClosePosition(r.Context(), p.Symbol)
+		orderID, closeErr := h.broker.CloseAtMarket(r.Context(), p.Symbol)
 		if closeErr != nil {
 			h.log.Error().Err(closeErr).Str("symbol", string(p.Symbol)).Msg("failed to close position")
 			results = append(results, closeResult{Symbol: string(p.Symbol), Error: closeErr.Error()})

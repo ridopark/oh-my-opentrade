@@ -575,7 +575,7 @@ func (b *Broker) GetPositionsByVenue(_ context.Context, venue domain.Venue) ([]d
 	return trades, nil
 }
 
-func (b *Broker) ClosePosition(_ context.Context, _ domain.Symbol) (string, error) {
+func (b *Broker) CloseAtMarket(_ context.Context, _ domain.Symbol) (string, error) {
 	return "", nil
 }
 

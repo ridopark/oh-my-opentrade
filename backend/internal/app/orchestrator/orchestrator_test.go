@@ -57,7 +57,7 @@ func (m *mockBroker) GetOpenOrders(_ context.Context) ([]ports.OpenOrder, error)
 func (m *mockBroker) GetPosition(_ context.Context, _ domain.Symbol) (float64, error) {
 	return 0, nil
 }
-func (m *mockBroker) ClosePosition(_ context.Context, _ domain.Symbol) (string, error) {
+func (m *mockBroker) CloseAtMarket(_ context.Context, _ domain.Symbol) (string, error) {
 	return "", nil
 }
 func (m *mockBroker) GetOrderDetails(_ context.Context, _ string) (ports.OrderDetails, error) {

@@ -44,7 +44,7 @@ func (v *venueBroker) GetPositions(context.Context, string, domain.EnvMode) ([]d
 	return nil, nil
 }
 func (v *venueBroker) GetPosition(context.Context, domain.Symbol) (float64, error) { return 0, nil }
-func (v *venueBroker) ClosePosition(context.Context, domain.Symbol) (string, error) {
+func (v *venueBroker) CloseAtMarket(context.Context, domain.Symbol) (string, error) {
 	return "", nil
 }
 func (v *venueBroker) GetOrderDetails(context.Context, string) (ports.OrderDetails, error) {

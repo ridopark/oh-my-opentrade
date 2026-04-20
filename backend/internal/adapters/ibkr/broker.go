@@ -378,7 +378,7 @@ func (a *Adapter) GetPosition(_ context.Context, symbol domain.Symbol) (float64,
 	return 0, nil
 }
 
-func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string, error) {
+func (a *Adapter) CloseAtMarket(_ context.Context, symbol domain.Symbol) (string, error) {
 	ib := a.conn.IB()
 	if ib == nil {
 		return "", fmt.Errorf("ibkr: not connected")
@@ -413,7 +413,7 @@ func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string
 	a.log.Info().
 		Str("symbol", string(symbol)).
 		Float64("raw_qty", qty).
-		Msg("ibkr: ClosePosition position lookup result")
+		Msg("ibkr: CloseAtMarket position lookup result")
 
 	if qty == 0 {
 		return "", nil
@@ -434,7 +434,7 @@ func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string
 
 	trade := ib.PlaceOrder(contract, order)
 	if trade == nil {
-		return "", fmt.Errorf("ibkr: ClosePosition PlaceOrder returned nil")
+		return "", fmt.Errorf("ibkr: CloseAtMarket PlaceOrder returned nil")
 	}
 
 	// Launch Done() watcher if order stream is active.
