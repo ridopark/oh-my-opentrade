@@ -319,8 +319,8 @@ func (b *Broker) GetPosition(ctx context.Context, symbol domain.Symbol) (float64
 	return 0, nil
 }
 
-// ClosePosition liquidates any remaining position for a symbol.
-func (b *Broker) ClosePosition(ctx context.Context, symbol domain.Symbol) (string, error) {
+// CloseAtMarket liquidates any remaining position for a symbol.
+func (b *Broker) CloseAtMarket(ctx context.Context, symbol domain.Symbol) (string, error) {
 	qty, err := b.GetPosition(ctx, symbol)
 	if err != nil {
 		return "", err

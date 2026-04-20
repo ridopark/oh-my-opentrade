@@ -499,7 +499,7 @@ func (c *RESTClient) GetPosition(ctx context.Context, symbol domain.Symbol) (flo
 	return qty, nil
 }
 
-func (c *RESTClient) ClosePosition(ctx context.Context, symbol domain.Symbol) (string, error) {
+func (c *RESTClient) CloseAtMarket(ctx context.Context, symbol domain.Symbol) (string, error) {
 	symStr := strings.ReplaceAll(symbol.String(), "/", "")
 	path := pathPositions + "/" + symStr
 

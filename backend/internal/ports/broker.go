@@ -22,9 +22,12 @@ type BrokerPort interface {
 	// GetPosition returns the current quantity held for a single symbol.
 	// Returns (0, nil) if no position exists — this is not an error.
 	GetPosition(ctx context.Context, symbol domain.Symbol) (qty float64, err error)
-	// ClosePosition liquidates any remaining position for a symbol via broker-native API.
+	// CloseAtMarket liquidates any remaining position for a symbol via a
+	// broker-native MKT order. Guaranteed-fill primitive; pays the spread.
+	// Strategy exits and dust-sweeps use priced paths instead — this is the
+	// last-resort/emergency primitive for operator-initiated liquidation.
 	// Returns ("", nil) if the position was already fully closed (broker returns 404/422).
-	ClosePosition(ctx context.Context, symbol domain.Symbol) (orderID string, err error)
+	CloseAtMarket(ctx context.Context, symbol domain.Symbol) (orderID string, err error)
 	// GetOrderDetails returns full order details from the broker including cumulative fill info.
 	GetOrderDetails(ctx context.Context, orderID string) (OrderDetails, error)
 	// CancelAllOpenOrders cancels every open order on the broker account.

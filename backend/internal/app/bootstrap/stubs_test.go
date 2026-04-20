@@ -38,7 +38,7 @@ func (stubBroker) GetPositions(context.Context, string, domain.EnvMode) ([]domai
 	return nil, nil
 }
 func (stubBroker) GetPosition(context.Context, domain.Symbol) (float64, error) { return 0, nil }
-func (stubBroker) ClosePosition(context.Context, domain.Symbol) (string, error) {
+func (stubBroker) CloseAtMarket(context.Context, domain.Symbol) (string, error) {
 	return "", nil
 }
 func (stubBroker) GetOrderDetails(context.Context, string) (ports.OrderDetails, error) {

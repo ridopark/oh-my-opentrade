@@ -81,7 +81,7 @@ func (b *dustMockBroker) GetPositions(context.Context, string, domain.EnvMode) (
 func (b *dustMockBroker) GetPosition(context.Context, domain.Symbol) (float64, error) {
 	return b.positionQty, nil
 }
-func (b *dustMockBroker) ClosePosition(context.Context, domain.Symbol) (string, error) {
+func (b *dustMockBroker) CloseAtMarket(context.Context, domain.Symbol) (string, error) {
 	return "", nil
 }
 func (b *dustMockBroker) GetOrderDetails(_ context.Context, orderID string) (ports.OrderDetails, error) {
