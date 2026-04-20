@@ -35,9 +35,11 @@ type backtestRunRequest struct {
 	MaxPerGroup      int      `json:"max_per_group"`
 	CompoundEquity   *bool    `json:"compound_equity"`
 
-	// Option fill-realism knobs. Zero/false preserve prior behavior.
+	// Option fill-realism knobs. OptionEntrySpreadEnabled is nullable so an
+	// omitted field gets the realistic default (half-spread applied on entry);
+	// pass false explicitly to reproduce legacy mid-fill backtests.
 	OptionSpreadMultiplier   float64 `json:"option_spread_multiplier"`
-	OptionEntrySpreadEnabled bool    `json:"option_entry_spread_enabled"`
+	OptionEntrySpreadEnabled *bool   `json:"option_entry_spread_enabled"`
 }
 
 type backtestControlRequest struct {
