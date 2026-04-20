@@ -583,6 +583,67 @@ func (r *Repository) UpdateOrderFill(ctx context.Context, brokerOrderID string, 
 	return nil
 }
 
+// RecordFill atomically marks the order filled and inserts the trade row.
+func (r *Repository) RecordFill(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64, trade domain.Trade) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("timescaledb: record fill: begin tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err := tx.ExecContext(ctx, queryUpdateOrderFill, brokerOrderID, filledAt, filledPrice, filledQty); err != nil {
+		return fmt.Errorf("timescaledb: record fill: update order: %w", err)
+	}
+
+	var thesisArg any
+	if len(trade.Thesis) > 0 {
+		thesisArg = []byte(trade.Thesis)
+	}
+	var execIDArg any
+	if trade.ExecutionID != "" {
+		execIDArg = trade.ExecutionID
+	}
+	instType := string(trade.InstrumentType)
+	if instType == "" {
+		instType = "EQUITY"
+	}
+	var optSym, underlying, optRight *string
+	var strike, premium, deltaEntry, ivEntry *float64
+	var expiry *time.Time
+	if trade.InstrumentType == domain.InstrumentTypeOption {
+		optSym = &trade.OptionSymbol
+		underlying = &trade.Underlying
+		optRight = &trade.OptionRight
+		strike = &trade.Strike
+		premium = &trade.Premium
+		deltaEntry = &trade.DeltaAtEntry
+		ivEntry = &trade.IVAtEntry
+		if !trade.Expiry.IsZero() {
+			expiry = &trade.Expiry
+		}
+	}
+	if _, err := tx.ExecContext(ctx, queryInsertTrade, trade.Time, trade.TenantID, string(trade.EnvMode), trade.TradeID, string(trade.Symbol), trade.Side, trade.Quantity, trade.Price, trade.Commission, trade.Status, trade.Strategy, trade.Rationale, thesisArg, execIDArg, instType, optSym, underlying, strike, expiry, optRight, premium, deltaEntry, ivEntry); err != nil {
+		// Duplicate execution_id means the fill was already recorded; the
+		// order-fill UPDATE is idempotent, so committing is safe.
+		if strings.Contains(err.Error(), "idx_trades_execution_id") {
+			r.log.Debug().Str("execution_id", trade.ExecutionID).Msg("duplicate fill ignored (execution_id conflict)")
+		} else {
+			return fmt.Errorf("timescaledb: record fill: insert trade: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("timescaledb: record fill: commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
 // ListTrades retrieves trades with optional filters and keyset pagination.
 func (r *Repository) ListTrades(ctx context.Context, q ports.TradeQuery) (ports.TradePage, error) {
 	var b strings.Builder

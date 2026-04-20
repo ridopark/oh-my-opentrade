@@ -127,6 +127,10 @@ func (m *mockDB) QueryRowContext(ctx context.Context, query string, args ...any)
 	return m.queryRowFunc(ctx, query, args...)
 }
 
+func (m *mockDB) BeginTx(_ context.Context, _ *sql.TxOptions) (*sql.Tx, error) {
+	return nil, errors.New("mockDB: BeginTx not supported")
+}
+
 func TestRepository_ImplementsRepositoryPort(t *testing.T) {
 	var _ ports.RepositoryPort = (*timescaledb.Repository)(nil)
 }

@@ -23,6 +23,13 @@ type RepositoryPort interface {
 	SaveOrder(ctx context.Context, order domain.BrokerOrder) error
 	UpdateOrderFill(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64) error
 
+	// RecordFill atomically updates the order row as filled and inserts the
+	// trade row in a single transaction. Prevents a half-written record where
+	// orders.status=filled but the trade row is missing (or vice versa) on
+	// transient DB failure. Duplicate trade rows (same execution_id) are
+	// silently ignored and still commit the order-fill update.
+	RecordFill(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64, trade domain.Trade) error
+
 	// ListTrades retrieves trades with optional filters and keyset pagination.
 	// cursor is the (time, trade_id) composite for keyset pagination.
 	ListTrades(ctx context.Context, q TradeQuery) (TradePage, error)

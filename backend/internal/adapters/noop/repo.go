@@ -48,6 +48,10 @@ func (n *NoopRepo) UpdateOrderFill(_ context.Context, _ string, _ time.Time, _, 
 	return nil
 }
 
+func (n *NoopRepo) RecordFill(_ context.Context, _ string, _ time.Time, _, _ float64, _ domain.Trade) error {
+	return nil
+}
+
 func (n *NoopRepo) ListTrades(_ context.Context, _ ports.TradeQuery) (ports.TradePage, error) {
 	return ports.TradePage{}, nil
 }
