@@ -101,10 +101,7 @@ func (r *Repository) SaveMarketBars(ctx context.Context, bars []domain.MarketBar
 	if len(bars) > maxBatchSize {
 		total := 0
 		for i := 0; i < len(bars); i += maxBatchSize {
-			end := i + maxBatchSize
-			if end > len(bars) {
-				end = len(bars)
-			}
+			end := min(i+maxBatchSize, len(bars))
 			n, err := r.SaveMarketBars(ctx, bars[i:end])
 			total += n
 			if err != nil {
@@ -157,10 +154,7 @@ func (r *Repository) SaveMarketBars(ctx context.Context, bars []domain.MarketBar
 // is based on extended trading hours (4am-8pm ET) so pre-/post-market bars
 // don't overflow.
 func estimateBarCount(tf domain.Timeframe, from, to time.Time) int {
-	days := int(to.Sub(from)/(24*time.Hour)) + 1
-	if days < 1 {
-		days = 1
-	}
+	days := max(int(to.Sub(from)/(24*time.Hour))+1, 1)
 	var perDay int
 	switch tf {
 	case "1m":
