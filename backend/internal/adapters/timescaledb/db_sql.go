@@ -28,3 +28,7 @@ func (s *SqlDB) QueryContext(ctx context.Context, query string, args ...any) (Ro
 func (s *SqlDB) QueryRowContext(ctx context.Context, query string, args ...any) Row {
 	return s.db.QueryRowContext(ctx, query, args...)
 }
+
+func (s *SqlDB) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
+	return s.db.BeginTx(ctx, opts)
+}

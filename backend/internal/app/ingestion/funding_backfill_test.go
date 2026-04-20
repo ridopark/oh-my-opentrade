@@ -65,6 +65,10 @@ func (m *mockFundingDB) QueryRowContext(_ context.Context, _ string, _ ...any) t
 	return nil
 }
 
+func (m *mockFundingDB) BeginTx(_ context.Context, _ *sql.TxOptions) (*sql.Tx, error) {
+	return nil, errors.New("mockFundingDB: BeginTx not supported")
+}
+
 type mockSQLResult struct{ affected int64 }
 
 func (m mockSQLResult) LastInsertId() (int64, error) { return 0, nil }

@@ -1372,9 +1372,6 @@ func (s *Service) handleStreamFill(update ports.OrderUpdate, l zerolog.Logger) {
 func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fillPrice, fillQty float64, filledAt time.Time, executionID string, l zerolog.Logger) {
 	ctx := context.Background()
 
-	if err := s.repo.UpdateOrderFill(ctx, brokerOrderID, filledAt, fillPrice, fillQty); err != nil {
-		l.Error().Err(err).Msg("failed to update order fill")
-	}
 	if s.intentJournal != nil {
 		if jerr := s.intentJournal.MarkIntentTerminal(ctx, brokerOrderID, domain.OrderIntentJournalFilled, fillQty, fillPrice, filledAt); jerr != nil {
 			l.Error().Err(jerr).Msg("failed to mark intent filled in journal")
@@ -1385,6 +1382,9 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 	trade, err := domain.NewTrade(filledAt, po.tenantID, po.envMode, uuid.New(), po.intent.Symbol, side, fillQty, fillPrice, 0, "FILLED", po.intent.Strategy, po.intent.Rationale)
 	if err != nil {
 		l.Error().Err(err).Msg("failed to construct trade on fill")
+		if ferr := s.repo.UpdateOrderFill(ctx, brokerOrderID, filledAt, fillPrice, fillQty); ferr != nil {
+			l.Error().Err(ferr).Msg("failed to update order fill")
+		}
 	} else {
 		trade.ExecutionID = executionID
 		if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {
@@ -1408,8 +1408,8 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 				trade.IVAtEntry = iv
 			}
 		}
-		if err := s.repo.SaveTrade(ctx, trade); err != nil {
-			l.Error().Err(err).Msg("failed to save trade on fill")
+		if err := s.repo.RecordFill(ctx, brokerOrderID, filledAt, fillPrice, fillQty, trade); err != nil {
+			l.Error().Err(err).Msg("failed to record fill atomically")
 		}
 	}
 

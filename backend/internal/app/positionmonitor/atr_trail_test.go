@@ -363,6 +363,9 @@ func (mockRepoStub) SaveOrder(_ context.Context, _ domain.BrokerOrder) error { r
 func (mockRepoStub) UpdateOrderFill(_ context.Context, _ string, _ time.Time, _, _ float64) error {
 	return nil
 }
+func (mockRepoStub) RecordFill(_ context.Context, _ string, _ time.Time, _, _ float64, _ domain.Trade) error {
+	return nil
+}
 func (mockRepoStub) ListTrades(_ context.Context, _ ports.TradeQuery) (ports.TradePage, error) {
 	return ports.TradePage{}, nil
 }

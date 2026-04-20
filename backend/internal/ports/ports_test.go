@@ -152,6 +152,10 @@ func (m *mockRepository) UpdateOrderFill(ctx context.Context, brokerOrderID stri
 	return nil
 }
 
+func (m *mockRepository) RecordFill(context.Context, string, time.Time, float64, float64, domain.Trade) error {
+	return nil
+}
+
 func (m *mockRepository) ListTrades(_ context.Context, _ ports.TradeQuery) (ports.TradePage, error) {
 	return ports.TradePage{}, nil
 }

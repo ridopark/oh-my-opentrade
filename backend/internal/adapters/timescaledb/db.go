@@ -25,6 +25,7 @@ type DBTX interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) Row
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
 }
 
 // Repository implements ports.RepositoryPort using TimescaleDB for persistent storage of market data, trades, and strategy configurations.
