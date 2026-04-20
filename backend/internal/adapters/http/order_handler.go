@@ -85,9 +85,14 @@ func (h *OrderHandler) serveOrders(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	envMode := domain.EnvModePaper
+	if raw := strings.ToLower(q.Get("env")); raw == "live" {
+		envMode = domain.EnvModeLive
+	}
+
 	query := ports.OrderQuery{
 		TenantID: "default",
-		EnvMode:  domain.EnvModePaper,
+		EnvMode:  envMode,
 		From:     from,
 		To:       to,
 		Symbol:   q.Get("symbol"),
