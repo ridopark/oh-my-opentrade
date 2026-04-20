@@ -7,7 +7,7 @@ import { BottomPanel, type BarLogEntry, type BottomTab } from "@/components/bott
 import type { StrategySignalEvent, StrategySignalsResponse, RegimeType } from "@/lib/types";
 
 export default function SignalMonitorPage() {
-  const { avwapProgress, macdProgress, orbProgress, connected } = useSignalProgress();
+  const { avwapProgress, macdProgress, connected } = useSignalProgress();
 
   const [bottomTab, setBottomTab] = useState<BottomTab>("signals");
   const [recentSignalEvents, setRecentSignalEvents] = useState<StrategySignalEvent[]>([]);
@@ -105,7 +105,7 @@ export default function SignalMonitorPage() {
         </div>
       </div>
       <div className="flex-1 min-h-0 overflow-auto">
-        <SignalProgressTable avwapProgress={avwapProgress} macdProgress={macdProgress} orbProgress={orbProgress} />
+        <SignalProgressTable avwapProgress={avwapProgress} macdProgress={macdProgress} />
       </div>
       <BottomPanel
         bottomTab={bottomTab}
@@ -116,7 +116,6 @@ export default function SignalMonitorPage() {
         barLog={barLog}
         avwapProgress={avwapProgress}
         macdProgress={macdProgress}
-        orbProgress={orbProgress}
       />
     </div>
   );
