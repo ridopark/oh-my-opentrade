@@ -850,7 +850,9 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		// via brokerOrderID; only the audit journal degrades.
 		var jerr error
 		for attempt := range 3 {
-			jerr = s.intentJournal.MarkIntentSubmitted(ctx, intent.ID, brokerOrderID, s.nowFn())
+			attemptCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			jerr = s.intentJournal.MarkIntentSubmitted(attemptCtx, intent.ID, brokerOrderID, s.nowFn())
+			cancel()
 			if jerr == nil {
 				break
 			}

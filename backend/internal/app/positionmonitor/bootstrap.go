@@ -260,7 +260,9 @@ func (s *Service) warmPriceCache(ctx context.Context) {
 		if _, cached := s.priceCache.LatestPrice(priceSym); cached {
 			continue
 		}
-		bars, err := s.repo.GetMarketBars(ctx, priceSym, "1m", from, now)
+		qCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		bars, err := s.repo.GetMarketBars(qCtx, priceSym, "1m", from, now)
+		cancel()
 		if err != nil || len(bars) == 0 {
 			continue
 		}

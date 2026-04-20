@@ -19,13 +19,10 @@ const (
 	ClusterCrypto     Cluster = "crypto"
 )
 
-// ExposureGuard caps GROSS notional deployed per cluster. Longs and shorts
-// both consume budget — a +$10k long and a -$10k short occupy $20k of the
-// cluster cap, not $0. The motivation is correlated-blowup protection: in
-// a flash-crash regime, correlations within a cluster move toward 1 and
-// net-delta-neutral books fail on both legs. Net-directional risk belongs
-// to DirectionalBias; per-industry gross concentration belongs to
-// SectorExposure; this guard is the coarser cluster-level gross cap.
+// ExposureGuard caps gross notional deployed per cluster — longs and
+// shorts both consume budget. Motivation is correlated-blowup protection:
+// in stress, intra-cluster correlations move toward 1 and net-delta-neutral
+// books fail on both legs.
 type ExposureGuard struct {
 	broker ports.BrokerPort
 	caps   map[Cluster]float64
