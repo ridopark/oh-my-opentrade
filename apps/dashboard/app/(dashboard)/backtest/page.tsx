@@ -74,7 +74,7 @@ function formatPct(v: number) {
 }
 
 function formatSharpe(v: number | null | undefined) {
-  return v == null ? "N/A" : v.toFixed(3);
+  return v === null || v === undefined ? "N/A" : v.toFixed(3);
 }
 
 export default function BacktestPage() {
@@ -805,7 +805,7 @@ function MetricsPanelInline({
     { label: "Trades", value: String(tradeCount), color: "" },
     { label: "Win Rate", value: `${winRate.toFixed(1)}%`, color: winRate >= 50 ? "text-emerald-400" : "text-red-400" },
     { label: "Max Drawdown", value: `${drawdown.toFixed(2)}%`, color: "text-red-400" },
-    { label: "Sharpe Ratio", value: formatSharpe(sharpe), color: sharpe == null ? "text-muted-foreground" : sharpe > 0 ? "text-emerald-400" : "text-red-400" },
+    { label: "Sharpe Ratio", value: formatSharpe(sharpe), color: sharpe === null || sharpe === undefined ? "text-muted-foreground" : sharpe > 0 ? "text-emerald-400" : "text-red-400" },
     { label: "Profit Factor", value: profitFactor.toFixed(2), color: profitFactor >= 1 ? "text-emerald-400" : "text-red-400" },
     { label: "Avg Win", value: formatCurrency(avgWin), color: "text-emerald-400" },
     { label: "Avg Loss", value: formatCurrency(avgLoss), color: "text-red-400" },
