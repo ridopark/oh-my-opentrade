@@ -31,6 +31,7 @@ Autonomous tune→backtest→evaluate loop for oh-my-opentrade strategy DNA (sch
 12. **Match the tuning mode to the parameter's scope.** Some parameters are *strategy-internal* (entry rules, exit rules, signal quality) — tune these solo. Others are *portfolio-infrastructure* (max_positions, max_per_group, risk_per_trade_bps, max_position_bps, options sizing) — these MUST be tuned in the same multi-strategy configuration the user actually deploys, because solo and pair optima diverge. **Always pair-validate at the end of every tuning pass**, even for solo-tuned parameters: one extra backtest with all deployed strategies enabled. If the pair regresses, the parameter has cross-strategy interaction and you re-tune it in pair mode. See the "Solo vs. Pair Tuning" section below for the full rule.
 13. **Factor attribution on every accept.** Before promoting a tuning result or declaring a baseline as genuine alpha, run the factor regression in `references/factor_attribution.md`. Headline PF / Sharpe are not enough — you must also report alpha, betas, R-squared, and residual Sharpe so hidden long-beta-long-vol exposure does not get labeled as novel edge. A strategy that fails this check is not automatically rejected, but it must be labeled as factor-harvesting rather than alpha.
 14. **Tag every claim.** Every metric, comparison, and conclusion in tuning reports and Discord notifications must carry `[actual]`, `[inference]`, or `[assumption]` per `references/evidence_tags.md`. Untagged narrative is banned. This is the firewall against "Claude said PF improved by X" rot where it's unclear whether the number was measured, inferred, or modeled.
+15. **Test at 10 bps AND 20 bps.** Every tuning candidate must survive both slippage levels. Rank candidates at 10 (central/realistic); gate ship/no-ship at 20 (stress/conservative). A change that beats baseline at 10 but regresses at 20 is execution-dependent and too fragile for live. See "Slippage Stress Protocol" below.
 
 ## Discord Notifications
 
@@ -150,6 +151,27 @@ schema_version = 2
   "max_per_group": 2
 }
 ```
+
+### Slippage Stress Protocol
+
+Every tuning decision must be tested at two slippage values:
+
+| Level | `slippage_bps` | Role | Used for |
+|---|---|---|---|
+| Central | **10** | Realistic friction beyond the modeled bid-ask spread on liquid large-cap underlyings | Ranking candidates during a sweep |
+| Stress | **20** | Conservative execution assumption | Ship/no-ship gate before promotion |
+
+**Decision rule:**
+- Accept a change only if it beats baseline at BOTH 10 and 20 bps.
+- Better at 10 but worse at 20 → reject. The edge is fragile to execution quality and won't survive live.
+- Every accepted change must be re-verified at 20 bps as a final gate.
+
+**Why two values:** slippage is a multiplier applied ON TOP OF the already-modeled entry/exit half-spread — it captures submission latency, limit-chase, and residual market impact, all of which fluctuate with conditions. Testing at only one value lets overfit-to-optimistic-execution slip through.
+
+**Calibration reference (AVWAP v4 full-window baseline):**
+- 10 bps → PF ~1.33, honest but slightly optimistic
+- 20 bps → PF ~1.27, stress-realistic
+- >30 bps is unreasonable for retail-size liquid options; only use when simulating illiquid strikes.
 
 ### Run Backtest
 ```bash
