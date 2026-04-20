@@ -113,3 +113,62 @@ func TestExposureGuard_RejectsOnBrokerError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "positions fetch failed")
 }
+
+// Gross semantics: an existing short counts against the cluster budget
+// just like an existing long. +$20k long AAPL plus -$10k short NVDA is
+// $30k of tech-cluster exposure, not $10k net.
+func TestExposureGuard_ShortPositionCountsAsGross(t *testing.T) {
+	broker := &mockBroker{
+		GetPositionsFunc: func(_ context.Context, _ string, _ domain.EnvMode) ([]domain.Trade, error) {
+			return []domain.Trade{
+				{Symbol: "AAPL", Quantity: 100, Price: 200, Side: "long"},
+				{Symbol: "NVDA", Quantity: 100, Price: 100, Side: "short"},
+			}, nil
+		},
+	}
+	guard := execution.NewExposureGuard(broker, 100_000, zerolog.Nop())
+	// $20k long + $10k short = $30k gross. Tech cap is $35k. A $10k entry
+	// would push gross to $40k and must reject.
+	intent := makeExposureIntent("GOOGL", 100, 100)
+
+	err := guard.Check(context.Background(), intent)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tech_equity")
+}
+
+// Short entry is a new position that deploys gross capital too.
+func TestExposureGuard_ShortEntryConsumesBudget(t *testing.T) {
+	broker := &mockBroker{
+		GetPositionsFunc: func(_ context.Context, _ string, _ domain.EnvMode) ([]domain.Trade, error) {
+			return []domain.Trade{
+				{Symbol: "AAPL", Quantity: 100, Price: 300, Side: "long"},
+			}, nil
+		},
+	}
+	guard := execution.NewExposureGuard(broker, 100_000, zerolog.Nop())
+	// $30k long. Tech cap is $35k. A $10k short entry would be $40k gross
+	// and must reject — shorts do not "offset" the long under gross.
+	intent := makeExposureIntent("NVDA", 100, 100)
+	intent.Direction = domain.DirectionShort
+
+	err := guard.Check(context.Background(), intent)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tech_equity")
+}
+
+// Short entry into empty cluster still respects cap.
+func TestExposureGuard_ShortEntryIntoEmptyClusterCapped(t *testing.T) {
+	broker := &mockBroker{
+		GetPositionsFunc: func(_ context.Context, _ string, _ domain.EnvMode) ([]domain.Trade, error) {
+			return []domain.Trade{}, nil
+		},
+	}
+	guard := execution.NewExposureGuard(broker, 100_000, zerolog.Nop())
+	// $40k short into an empty tech cluster exceeds the $35k cap.
+	intent := makeExposureIntent("TSLA", 200, 200)
+	intent.Direction = domain.DirectionShort
+
+	err := guard.Check(context.Background(), intent)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tech_equity")
+}
