@@ -1301,14 +1301,26 @@ const fastFillMaxRetries = 3
 
 func (s *Service) handleStreamFill(update ports.OrderUpdate, l zerolog.Logger) {
 	// partial_fill must peek without claiming, since the terminal "fill" event
-	// is still coming and needs the pending entry.
+	// is still coming and needs the pending entry. Tables stay terminal-only
+	// (broker REST reconciliation at reconcilePendingOrders is the durable
+	// catch); this Info log is the forensic record if a crash + broker
+	// rotation ever leaves us with no terminal event.
 	if update.Event == "partial_fill" {
-		if _, ok := s.pendingOrders.Load(update.BrokerOrderID); !ok {
+		raw, ok := s.pendingOrders.Load(update.BrokerOrderID)
+		if !ok {
 			return
 		}
-		l.Debug().
-			Float64("incremental_qty", update.Qty).
+		po := raw.(*pendingOrder)
+		l.Info().
+			Str("intent_id", po.intent.ID.String()).
+			Str("symbol", string(po.intent.Symbol)).
+			Str("strategy", po.intent.Strategy).
+			Str("execution_id", update.ExecutionID).
+			Float64("leg_qty", update.Qty).
+			Float64("leg_price", update.Price).
 			Float64("cumulative_qty", update.FilledQty).
+			Float64("cumulative_avg_price", update.FilledAvgPrice).
+			Time("filled_at", update.FilledAt).
 			Msg("partial fill received — deferring trade record to terminal fill event")
 		return
 	}
