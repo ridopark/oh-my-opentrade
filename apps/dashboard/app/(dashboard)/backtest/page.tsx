@@ -22,6 +22,8 @@ import {
 } from "@/lib/use-backtest";
 import { Button } from "@/components/ui/button";
 import { RealismPanel } from "@/components/backtest/realism-panel";
+import { useResizableHeight, BACKTEST_BOTTOM_KEY } from "@/lib/use-resizable-height";
+import { ResizeHandle } from "@/components/resize-handle";
 
 /** Extract a human-readable exit reason from the rationale string.
  *  e.g. "exit_monitor:VOLATILITY_STOP:..." → "VOL_STOP" */
@@ -191,6 +193,8 @@ export default function BacktestPage() {
   const selectedStrats = availableStrategies.filter((s) => selectedStrategies.includes(s.id));
 
   const [bottomTab, setBottomTab] = useState<"trades" | "results">("trades");
+  const { height: bottomHeight, handleProps: bottomHandleProps } =
+    useResizableHeight(BACKTEST_BOTTOM_KEY, 350, { min: 140, max: 700 });
 
   return (
     <div className="flex flex-col min-h-[calc(100vh-3rem)]">
@@ -217,7 +221,11 @@ export default function BacktestPage() {
         <EquityCurveMain data={bt.equityCurve} />
       </div>
 
-      <div className="h-[350px] mt-1 rounded-t-lg border border-border bg-card flex flex-col">
+      <div
+        className="mt-1 rounded-t-lg border border-border bg-card flex flex-col"
+        style={{ height: `${bottomHeight}px` }}
+      >
+        <ResizeHandle {...bottomHandleProps} />
         <div className="flex items-center gap-0 border-b border-border shrink-0">
           {(["trades", "results"] as const).map((tab) => (
             <button
