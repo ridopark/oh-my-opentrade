@@ -1381,10 +1381,11 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 	side := brokerSideFor(po.intent.Direction)
 	trade, err := domain.NewTrade(filledAt, po.tenantID, po.envMode, uuid.New(), po.intent.Symbol, side, fillQty, fillPrice, 0, "FILLED", po.intent.Strategy, po.intent.Rationale)
 	if err != nil {
-		l.Error().Err(err).Msg("failed to construct trade on fill")
-		if ferr := s.repo.UpdateOrderFill(ctx, brokerOrderID, filledAt, fillPrice, fillQty); ferr != nil {
-			l.Error().Err(ferr).Msg("failed to update order fill")
-		}
+		// NewTrade only rejects quantity < 0, which the broker never sends.
+		// If we somehow get here, skip BOTH writes to preserve the
+		// order-row/trade-row atomicity invariant — reconcileOnBoot will
+		// pick up the broker state on next restart.
+		l.Error().Err(err).Msg("failed to construct trade on fill — skipping order+trade writes to preserve atomicity")
 	} else {
 		trade.ExecutionID = executionID
 		if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {
