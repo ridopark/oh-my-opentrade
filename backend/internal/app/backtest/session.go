@@ -398,6 +398,19 @@ func (r *SessionResolver) ResolveAnchors(symbol string, barTime time.Time, ancho
 	prevDay := r.findPreviousDay(symSessions, et)
 	todayData := symSessions[today]
 
+	// Today's row is absent from the preloaded session data when omo-core
+	// starts before 09:30 ET (no RTH bars yet) and Load ran with today
+	// empty. In that case, synthesize session_open as today's 09:30 ET so
+	// the anchor has a valid future time; the calc stays inactive until
+	// the first RTH bar crosses it. Without this, session_open returns a
+	// zero time and ResetAnchors drops the anchor, which perpetually
+	// triggers hasMissingAnchor and wipes CalcBarCount every bar.
+	todaySessionOpen := todayData.OpenTime
+	if todaySessionOpen.IsZero() {
+		y, m, d := et.Date()
+		todaySessionOpen = time.Date(y, m, d, 9, 30, 0, 0, r.loc)
+	}
+
 	result := make(map[string]time.Time)
 	for _, name := range anchorNames {
 		switch name {
@@ -414,7 +427,7 @@ func (r *SessionResolver) ResolveAnchors(symbol string, barTime time.Time, ancho
 		case "or_low":
 			result[name] = todayData.ORLowTime
 		case "session_open":
-			result[name] = todayData.OpenTime
+			result[name] = todaySessionOpen
 		case "weekly_open":
 			weekOpenTime := r.findWeekOpen(symSessions, et)
 			if !weekOpenTime.IsZero() {
