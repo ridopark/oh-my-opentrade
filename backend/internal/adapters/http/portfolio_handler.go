@@ -182,17 +182,24 @@ func (h *PortfolioHandler) handleGetPositions(w http.ResponseWriter, r *http.Req
 		if strings.EqualFold(p.Side, "short") || strings.EqualFold(p.Side, "sell") {
 			side = "short"
 		}
-		currentPrice := p.Price // entry price as fallback
-		// Use live price if available
+		// Both currentPrice and p.Price stay in per-share units — matches
+		// IBKR's "Avg Price" column convention. The 100x contract
+		// multiplier is applied once, inside marketValue/entryValue, so
+		// the two sides share scale and P&L doesn't inflate 100x.
+		currentPrice := p.Price
 		if livePrice, ok := optionPrices[p.Symbol]; ok && livePrice > 0 {
-			currentPrice = livePrice * 100 // options: price per share → per contract
+			currentPrice = livePrice
 		} else if h.lastPriceFn != nil {
 			if eqPrice, ok := h.lastPriceFn(string(p.Symbol)); ok {
 				currentPrice = eqPrice
 			}
 		}
-		marketValue := p.Quantity * currentPrice
-		entryValue := p.Quantity * p.Price
+		multiplier := 1.0
+		if p.InstrumentType == domain.InstrumentTypeOption {
+			multiplier = 100.0
+		}
+		marketValue := p.Quantity * currentPrice * multiplier
+		entryValue := p.Quantity * p.Price * multiplier
 		pnl := 0.0
 		pnlPct := 0.0
 		if p.Price > 0 && p.Quantity > 0 {
