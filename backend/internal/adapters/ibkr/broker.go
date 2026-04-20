@@ -6,7 +6,6 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -385,18 +384,13 @@ func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string
 		return "", fmt.Errorf("ibkr: not connected")
 	}
 
+	// ib.Positions() is stale on IBKR paper accounts — see GetPositions.
+	<-a.posReady
+	a.posMu.RLock()
 	var qty float64
 	if domain.IsOCCSymbol(symbol) {
 		target := newOptionContract(symbol)
-		for _, p := range ib.Positions() {
-			if p.Contract.SecType == "OPT" {
-				a.log.Info().
-					Str("broker_sym", p.Contract.Symbol).Str("target_sym", target.Symbol).
-					Float64("broker_strike", p.Contract.Strike).Float64("target_strike", target.Strike).
-					Str("broker_right", p.Contract.Right).Str("target_right", target.Right).
-					Str("broker_expiry", p.Contract.LastTradeDateOrContractMonth).Str("target_expiry", target.LastTradeDateOrContractMonth).
-					Msg("ibkr: ClosePosition comparing option contract")
-			}
+		for _, p := range a.livePos {
 			if p.Contract.SecType == "OPT" &&
 				strings.EqualFold(p.Contract.Symbol, target.Symbol) &&
 				p.Contract.Strike == target.Strike &&
@@ -408,14 +402,14 @@ func (a *Adapter) ClosePosition(_ context.Context, symbol domain.Symbol) (string
 		}
 	} else {
 		sym := strings.ToUpper(string(symbol))
-		for _, p := range ib.Positions() {
+		for _, p := range a.livePos {
 			if strings.EqualFold(p.Contract.Symbol, sym) && p.Contract.SecType == "STK" {
 				qty = p.Position.Float()
-
 				break
 			}
 		}
 	}
+	a.posMu.RUnlock()
 	a.log.Info().
 		Str("symbol", string(symbol)).
 		Float64("raw_qty", qty).
@@ -489,15 +483,23 @@ func (a *Adapter) startPositionTracker() {
 	ch := ib.PositionChan()
 	ib.ReqPositions()
 
+	// Ready fires on the first PositionChan delivery OR a 3s fallback for
+	// empty accounts where PositionChan never emits.
+	firstPos := make(chan struct{}, 1)
 	go func() {
-		var ready sync.Once
-		// Wait briefly for the initial batch, then mark ready.
-		go func() {
-			time.Sleep(3 * time.Second)
-			ready.Do(func() { close(a.posReady) })
-		}()
+		select {
+		case <-firstPos:
+		case <-time.After(3 * time.Second):
+		}
+		close(a.posReady)
+	}()
 
+	go func() {
 		for p := range ch {
+			select {
+			case firstPos <- struct{}{}:
+			default:
+			}
 			a.posMu.Lock()
 			if p.Position.Float() == 0 {
 				delete(a.livePos, p.Contract.ConID)

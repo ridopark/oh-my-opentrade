@@ -35,14 +35,12 @@ func (g *SpreadGuard) Check(ctx context.Context, intent domain.OrderIntent) erro
 
 	maxBPS, err := strconv.ParseFloat(raw, 64)
 	if err != nil || maxBPS <= 0 {
-		return nil // invalid config — allow (don't block trading on bad config)
+		return fmt.Errorf("spread_guard: invalid max_spread_bps %q for %s", raw, intent.Symbol)
 	}
 
 	bid, ask, err := g.provider.GetQuote(ctx, intent.Symbol)
 	if err != nil {
-		g.log.Warn().Err(err).Str("symbol", string(intent.Symbol)).
-			Msg("spread guard: quote fetch failed — allowing order through")
-		return nil
+		return fmt.Errorf("spread_guard: quote fetch failed for %s: %w", intent.Symbol, err)
 	}
 	if bid <= 0 || ask <= 0 {
 		return fmt.Errorf("spread_guard: zero bid/ask for %s (bid=%.2f, ask=%.2f)", intent.Symbol, bid, ask)

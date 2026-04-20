@@ -709,6 +709,9 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		positions, posErr := s.broker.GetPositions(ctx, event.TenantID, event.EnvMode)
 		if posErr != nil {
 			l.Error().Err(posErr).Msg("failed to query positions for exit — rejecting conservatively")
+			if s.positionGate != nil {
+				s.positionGate.ClearInflightExit(event.TenantID, event.EnvMode, intent.Symbol)
+			}
 			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, fmt.Sprintf("exit position query failed: %v", posErr)))
 			return nil
 		}
@@ -726,6 +729,9 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		// surface the anomaly for manual intervention.
 		if posQty <= 0 {
 			l.Warn().Msg("exit intent but no long position found — rejecting")
+			if s.positionGate != nil {
+				s.positionGate.ClearInflightExit(event.TenantID, event.EnvMode, intent.Symbol)
+			}
 			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, "position_gate: no_position_to_exit"))
 			return nil
 		}
@@ -778,7 +784,21 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		}
 	}
 
-	// 6. Submit to broker.
+	// 6. Submit to broker. Re-check kill switch — entry intents can spend
+	// hundreds of lines in pre-submit work (journal, guards, position query),
+	// during which a concurrent intent's stop-out can trip the halt. Without
+	// this re-check, intent A submits against a policy that was repealed
+	// while it was queued.
+	if !intent.Direction.IsExit() && s.killSwitch.IsHalted(event.TenantID, intent.Symbol) {
+		l.Warn().Msg("kill switch tripped during pre-submit pipeline — aborting")
+		if s.intentJournal != nil {
+			if jerr := s.intentJournal.MarkIntentSubmitFailed(ctx, intent.ID, "kill_switch_engaged", s.nowFn()); jerr != nil {
+				l.Error().Err(jerr).Msg("failed to mark intent submit-failed in journal")
+			}
+		}
+		s.emit(ctx, domain.EventKillSwitchEngaged, event.TenantID, event.EnvMode, event.IdempotencyKey, nil)
+		return nil
+	}
 	submitStart := s.nowFn()
 	brokerOrderID, err := s.broker.SubmitOrder(ctx, intent)
 	if err != nil {
@@ -821,8 +841,25 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	span.SetAttributes(attribute.String("order.broker_order_id", brokerOrderID))
 	l.Info().Str("broker_order_id", brokerOrderID).Msg("order submitted to broker")
 	if s.intentJournal != nil {
-		if jerr := s.intentJournal.MarkIntentSubmitted(ctx, intent.ID, brokerOrderID, s.nowFn()); jerr != nil {
-			l.Error().Err(jerr).Msg("failed to mark intent submitted in journal — continuing, fill path will still update")
+		// Retry on transient DB errors: without a journal row recording the
+		// broker_order_id, reconcileOpenOrdersOnBoot cannot match the live
+		// broker order back to its intent, and MarkIntentTerminal (keyed by
+		// broker_order_id) will miss the fill, leaving the journal row stuck
+		// in pending_submit forever. The broker already has the order, so we
+		// do NOT cancel on exhaustion — the order+trade tables still correlate
+		// via brokerOrderID; only the audit journal degrades.
+		var jerr error
+		for attempt := range 3 {
+			jerr = s.intentJournal.MarkIntentSubmitted(ctx, intent.ID, brokerOrderID, s.nowFn())
+			if jerr == nil {
+				break
+			}
+			if attempt < 2 {
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+		if jerr != nil {
+			l.Error().Err(jerr).Str("broker_order_id", brokerOrderID).Msg("journal MarkIntentSubmitted failed after retries — journal will be stale for this order, broker state unchanged")
 		}
 	}
 	submittedPayload := domain.NewOrderIntentEventPayload(intent, domain.OrderIntentStatusSubmitted)

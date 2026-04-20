@@ -31,8 +31,7 @@ func (g *BuyingPowerGuard) Check(ctx context.Context, intent domain.OrderIntent)
 
 	bp, err := g.account.GetAccountBuyingPower(ctx)
 	if err != nil {
-		g.log.Error().Err(err).Msg("buying power guard: failed to fetch buying power — allowing order through")
-		return nil
+		return fmt.Errorf("buying_power: fetch failed: %w", err)
 	}
 
 	orderCost := intent.LimitPrice * intent.Quantity

@@ -3,7 +3,9 @@ package ibkr
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,12 +48,26 @@ func (a *Adapter) watchTradeDone(ctx context.Context, trade *ibsync.Trade, out c
 	if trade == nil || trade.Order == nil {
 		return
 	}
+	// Watchers are not tracked in the SubscribeOrderUpdates WaitGroup, so
+	// close(out) during teardown can race this goroutine's send. The send
+	// select guards with ctx.Done(), but Go's select is non-deterministic
+	// when both cases are ready — recover narrowly from the send-on-closed
+	// panic and re-raise anything else.
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		if e, ok := r.(runtime.Error); ok && strings.Contains(e.Error(), "closed channel") {
+			return
+		}
+		panic(r)
+	}()
 	select {
 	case <-ctx.Done():
 		return
 	case <-trade.Done():
 		orderID := trade.Order.OrderID
-		// Dedup: only emit once per order.
 		if _, loaded := a.emittedDone.LoadOrStore(orderID, struct{}{}); loaded {
 			return
 		}
