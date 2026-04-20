@@ -70,7 +70,7 @@ func TestSpreadGuard_RejectsZeroBidAsk(t *testing.T) {
 	assert.Contains(t, err.Error(), "zero bid/ask")
 }
 
-func TestSpreadGuard_AllowsOnQuoteError(t *testing.T) {
+func TestSpreadGuard_RejectsOnQuoteError(t *testing.T) {
 	qp := &mockQuoteProvider{Err: assert.AnError}
 	guard := execution.NewSpreadGuard(qp, zerolog.Nop())
 
@@ -78,7 +78,8 @@ func TestSpreadGuard_AllowsOnQuoteError(t *testing.T) {
 	intent.Meta = map[string]string{"max_spread_bps": "25"}
 
 	err := guard.Check(context.Background(), intent)
-	assert.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "quote fetch failed")
 }
 
 func TestSpreadGuard_BoundaryExactlyAtMax(t *testing.T) {

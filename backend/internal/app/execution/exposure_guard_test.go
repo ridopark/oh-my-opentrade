@@ -100,7 +100,7 @@ func TestExposureGuard_SkipsExitOrders(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestExposureGuard_AllowsOnBrokerError(t *testing.T) {
+func TestExposureGuard_RejectsOnBrokerError(t *testing.T) {
 	broker := &mockBroker{
 		GetPositionsFunc: func(_ context.Context, _ string, _ domain.EnvMode) ([]domain.Trade, error) {
 			return nil, assert.AnError
@@ -110,5 +110,6 @@ func TestExposureGuard_AllowsOnBrokerError(t *testing.T) {
 	intent := makeExposureIntent("AAPL", 100, 200)
 
 	err := guard.Check(context.Background(), intent)
-	assert.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "positions fetch failed")
 }

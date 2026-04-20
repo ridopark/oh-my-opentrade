@@ -29,7 +29,10 @@ type BrokerPort interface {
 	GetOrderDetails(ctx context.Context, orderID string) (OrderDetails, error)
 	// CancelAllOpenOrders cancels every open order on the broker account.
 	// Used at startup to clear stale orders from a prior session.
-	// Returns the number of orders that were successfully canceled.
+	// Returns the number of orders for which cancellation was requested —
+	// NOT the number confirmed terminal. Some brokers (IBKR ReqGlobalCancel)
+	// issue the cancel asynchronously; callers should reconcile via
+	// GetOpenOrders if confirmation is required.
 	CancelAllOpenOrders(ctx context.Context) (int, error)
 	// GetOpenOrders returns the broker's view of every currently-working
 	// order on the account. Used by startup reconciliation to cross-reference

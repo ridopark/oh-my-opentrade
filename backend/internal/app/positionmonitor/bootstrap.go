@@ -227,7 +227,47 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 			Msg("bootstrap: position restored from trade history")
 	}
 
+	s.warmPriceCache(ctx)
 	s.log.Info().Int("bootstrapped", bootstrapped).Int("broker_total", len(brokerPositions)).Msg("bootstrap complete")
+}
+
+// warmPriceCache seeds priceCache from the last persisted 1m bar for each
+// bootstrapped position's price-symbol (underlying for options, symbol for
+// equities). Without this, exit rules that require a current price are
+// silent during the cold-start window between posMonitor.Start and first
+// live bar arrival — a bounded window, but long enough to matter on fast
+// opens. The warmed price uses the bar's real timestamp so the staleness
+// gate still rejects it if it is too old (e.g. overnight startup).
+func (s *Service) warmPriceCache(ctx context.Context) {
+	if s.priceCache == nil || s.repo == nil {
+		return
+	}
+	now := s.nowFunc()
+	from := now.Add(-30 * time.Minute)
+	seen := make(map[domain.Symbol]struct{})
+	for _, pos := range s.positions {
+		priceSym := pos.Symbol
+		if domain.IsOCCSymbol(priceSym) {
+			priceSym = domain.UnderlyingFromOCC(priceSym)
+		}
+		if priceSym == "" {
+			continue
+		}
+		if _, dup := seen[priceSym]; dup {
+			continue
+		}
+		seen[priceSym] = struct{}{}
+		if _, cached := s.priceCache.LatestPrice(priceSym); cached {
+			continue
+		}
+		bars, err := s.repo.GetMarketBars(ctx, priceSym, "1m", from, now)
+		if err != nil || len(bars) == 0 {
+			continue
+		}
+		last := bars[len(bars)-1]
+		s.priceCache.UpdatePrice(priceSym, last.Close, last.Time)
+		s.log.Debug().Str("symbol", string(priceSym)).Float64("price", last.Close).Time("observed_at", last.Time).Msg("bootstrap: priceCache warmed from DB")
+	}
 }
 
 // resolveExitRules looks up exit rules from the strategy spec store.

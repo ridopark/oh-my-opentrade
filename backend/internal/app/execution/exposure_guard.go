@@ -49,8 +49,7 @@ func (g *ExposureGuard) Check(ctx context.Context, intent domain.OrderIntent) er
 
 	positions, err := g.broker.GetPositions(ctx, intent.TenantID, intent.EnvMode)
 	if err != nil {
-		g.log.Error().Err(err).Msg("exposure guard: failed to fetch positions — allowing order through")
-		return nil
+		return fmt.Errorf("exposure_guard: positions fetch failed: %w", err)
 	}
 
 	exposure := make(map[Cluster]float64)
