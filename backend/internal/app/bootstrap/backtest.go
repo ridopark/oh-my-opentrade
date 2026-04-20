@@ -40,10 +40,11 @@ type BacktestInfra struct {
 }
 
 // BacktestInfraOptions holds optional knobs for BuildBacktestInfra. Zero values
-// preserve prior behavior so existing callers need not set them.
+// give realistic fills (entry half-spread on); pass an explicit &false to
+// OptionEntrySpreadEnabled to reproduce legacy byte-identical backtests.
 type BacktestInfraOptions struct {
 	OptionExitSpreadMultiplier float64 // 0 => 1.0 (no scaling)
-	OptionEntrySpreadEnabled   bool    // false => entries skip option half-spread (legacy)
+	OptionEntrySpreadEnabled   *bool   // nil => default true (spread applied); &false => legacy mid-fill
 }
 
 // BuildBacktestInfra constructs all adapter-layer dependencies for a backtest.
@@ -93,7 +94,7 @@ func BuildBacktestInfra(deps BacktestDeps, slippageBPS int64, initialEquity floa
 		MoveCrushPutK:              0.4, // puts crush less due to supportive skew
 		MoveCrushFloor:             0.5, // cap crush at 50% of entry IV
 		OptionExitSpreadMultiplier: opt.OptionExitSpreadMultiplier,
-		OptionEntrySpreadEnabled:   opt.OptionEntrySpreadEnabled,
+		OptionEntrySpreadEnabled:   opt.OptionEntrySpreadEnabled == nil || *opt.OptionEntrySpreadEnabled,
 		FillModel:                  fillModel,
 		FeeSchedule:                feeSchedule,
 		LatencyMsEq:                btCfg.LatencyMsEquity,
