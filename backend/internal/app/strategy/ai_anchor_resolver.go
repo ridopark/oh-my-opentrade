@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,6 +12,23 @@ import (
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
+
+// isAIUnavailableErr identifies errors that indicate the LLM advisor is
+// temporarily out of reach rather than producing a bad response — circuit
+// breaker open, or an upstream non-2xx like 402 Payment Required. These
+// are routine (we fall back to rank-based selection) and shouldn't clutter
+// Warn-level logs.
+func isAIUnavailableErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "circuit breaker open") ||
+		strings.Contains(msg, "non-2xx status: 402") ||
+		strings.Contains(msg, "non-2xx status: 401") ||
+		strings.Contains(msg, "non-2xx status: 429") ||
+		strings.Contains(msg, "non-2xx status: 5")
+}
 
 const (
 	maxCandidatesPerSymbol = 50
@@ -235,7 +253,11 @@ func (r *AIAnchorResolver) ResolveAnchors(
 				Indicators:   indicators,
 			})
 			if err != nil {
-				r.logger.Warn("sync AI anchor selection failed, using fallback", "symbol", symbol, "error", err)
+				if isAIUnavailableErr(err) {
+					r.logger.Debug("sync AI anchor selection unavailable, using fallback", "symbol", symbol, "error", err)
+				} else {
+					r.logger.Warn("sync AI anchor selection failed, using fallback", "symbol", symbol, "error", err)
+				}
 			} else {
 				selection = sel
 			}
@@ -275,7 +297,16 @@ func (r *AIAnchorResolver) asyncSelectAnchors(symbol string, scored []start.Cand
 		Indicators:   indicators,
 	})
 	if err != nil {
-		r.logger.Warn("async AI anchor selection failed", "symbol", symbol, "error", err)
+		// Transient LLM unavailability is routine — circuit-breaker or
+		// upstream non-2xx (e.g. 402 out of credits). Sync fallback has
+		// already produced a rank-based selection; this async attempt is
+		// best-effort. Keep the log at Debug so we don't spam Warn-level
+		// entries every bar while the endpoint is out.
+		if isAIUnavailableErr(err) {
+			r.logger.Debug("async AI anchor selection unavailable", "symbol", symbol, "error", err)
+		} else {
+			r.logger.Warn("async AI anchor selection failed", "symbol", symbol, "error", err)
+		}
 		return
 	}
 	if sel == nil {
