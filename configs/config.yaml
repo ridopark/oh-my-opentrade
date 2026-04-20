@@ -27,6 +27,18 @@ trading:
   max_daily_loss_pct: 5.0           # halt trading if daily loss exceeds 5% of equity
   max_daily_loss_usd: 5000           # halt trading if daily loss exceeds $5000
 
+risk:
+  # Per-trade expected-loss cap. Default-on with 25 bps daily / 20% per
+  # trade would cap a single trade at ~0.05% of equity (~$37 on $73k),
+  # which rejects most options setups. Backtests bypass this cap
+  # entirely (services.go never wires it in), so flip it off here to
+  # keep live sizing behavior in parity with backtest results. Note:
+  # we still need mode set explicitly — applyRiskDefaults treats an
+  # all-zero block as "omitted" and force-enables it.
+  position_cap:
+    enabled: false
+    mode: "account_pct"
+
 symbols:
   groups:
     - asset_class: "EQUITY"
