@@ -104,7 +104,7 @@ export default function BacktestPage() {
     to: new Date().toISOString().split("T")[0],
     timeframe: "5m",
     initialEquity: 100000,
-    slippageBps: 20,
+    slippageBps: 10,
     speed: "max",
     noAi: true,
     strategies: [],

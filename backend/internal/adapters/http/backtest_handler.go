@@ -221,7 +221,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 	slippage := req.SlippageBPS
 	if slippage <= 0 {
-		slippage = 20
+		slippage = 10
 	}
 	speed := req.Speed
 	if speed == "" {
