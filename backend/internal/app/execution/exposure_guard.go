@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -18,6 +19,13 @@ const (
 	ClusterCrypto     Cluster = "crypto"
 )
 
+// ExposureGuard caps GROSS notional deployed per cluster. Longs and shorts
+// both consume budget — a +$10k long and a -$10k short occupy $20k of the
+// cluster cap, not $0. The motivation is correlated-blowup protection: in
+// a flash-crash regime, correlations within a cluster move toward 1 and
+// net-delta-neutral books fail on both legs. Net-directional risk belongs
+// to DirectionalBias; per-industry gross concentration belongs to
+// SectorExposure; this guard is the coarser cluster-level gross cap.
 type ExposureGuard struct {
 	broker ports.BrokerPort
 	caps   map[Cluster]float64
@@ -55,7 +63,7 @@ func (g *ExposureGuard) Check(ctx context.Context, intent domain.OrderIntent) er
 	exposure := make(map[Cluster]float64)
 	for _, p := range positions {
 		cluster := classifySymbol(p.Symbol)
-		exposure[cluster] += p.SignedQuantity() * p.Price
+		exposure[cluster] += math.Abs(p.SignedQuantity() * p.Price)
 	}
 
 	intentCluster := classifySymbol(intent.Symbol)
