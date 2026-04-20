@@ -104,7 +104,7 @@ export default function BacktestPage() {
     to: new Date().toISOString().split("T")[0],
     timeframe: "5m",
     initialEquity: 100000,
-    slippageBps: 5,
+    slippageBps: 20,
     speed: "max",
     noAi: true,
     strategies: [],
@@ -811,6 +811,8 @@ function MetricsPanelInline({
     { label: "Avg Loss", value: formatCurrency(avgLoss), color: "text-red-400" },
   ];
 
+  const costs = result?.costs ?? null;
+
   return (
     <div className="p-4 h-full overflow-y-auto">
       <div className="grid grid-cols-5 gap-x-6 gap-y-3">
@@ -821,6 +823,25 @@ function MetricsPanelInline({
           </div>
         ))}
       </div>
+      {costs && costs.total > 0 ? (
+        <div className="mt-4 pt-3 border-t border-border">
+          <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2">Realism Costs (deducted from P&L)</div>
+          <div className="grid grid-cols-5 gap-x-6 gap-y-1">
+            {[
+              { label: "Commission", value: costs.commission },
+              { label: "Exchange", value: costs.exchange },
+              { label: "Regulatory", value: costs.regulatory },
+              { label: "Slippage", value: costs.slippage },
+              { label: "Total", value: costs.total, bold: true },
+            ].map((c) => (
+              <div key={c.label}>
+                <div className="text-[10px] text-muted-foreground uppercase tracking-wider">{c.label}</div>
+                <div className={`text-sm font-mono ${c.bold ? "font-semibold text-foreground" : "text-red-400"}`}>{formatCurrency(-c.value)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
       {result?.realism ? <RealismPanel realism={result.realism} backtestPnL={pnl} /> : null}
     </div>
   );

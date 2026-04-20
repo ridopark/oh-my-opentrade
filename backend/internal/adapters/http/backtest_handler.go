@@ -221,7 +221,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 	slippage := req.SlippageBPS
 	if slippage <= 0 {
-		slippage = 5
+		slippage = 20
 	}
 	speed := req.Speed
 	if speed == "" {
@@ -276,6 +276,16 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 
 	h.runners[runner.ID()] = runner
 	h.mu.Unlock()
+
+	entrySpread := req.OptionEntrySpreadEnabled == nil || *req.OptionEntrySpreadEnabled
+	h.log.Info().
+		Str("backtest_id", runner.ID()).
+		Int64("slippage_bps", slippage).
+		Str("fill_model", h.appCfg.Backtest.FillModel).
+		Str("fee_schedule", h.appCfg.Backtest.FeeSchedule).
+		Bool("option_entry_spread", entrySpread).
+		Float64("option_spread_mult", req.OptionSpreadMultiplier).
+		Msg("backtest enqueued — realism knobs resolved")
 
 	h.queue <- &backtestJob{runner: runner, log: h.log}
 
