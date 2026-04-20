@@ -116,10 +116,10 @@ func (c *connection) connect() error {
 	port := c.effectivePort()
 
 	if c.cfg.PaperMode && port == portLive {
-		c.log.Warn().Int("port", port).Msg("ibkr: PaperMode=true but connecting to live port 4001 — intended?")
+		return fmt.Errorf("ibkr: PaperMode=true but port=%d is live; set Port=4002 or unset", port)
 	}
 	if !c.cfg.PaperMode && port == portPaper {
-		c.log.Warn().Int("port", port).Msg("ibkr: PaperMode=false but connecting to paper port 4002 — intended?")
+		return fmt.Errorf("ibkr: PaperMode=false but port=%d is paper; set Port=4001 or unset", port)
 	}
 
 	ib := ibsync.NewIB()
