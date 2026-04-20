@@ -350,7 +350,8 @@ func (s *AVWAPState) ResetGatedBarTime() {
 	s.LastGatedBarTime = time.Time{}
 }
 
-// recordCheck appends a failed entry check result.
+// recordCheck appends a failed entry check result with proximity=0
+// (unknown / not meaningful).
 func (s *AVWAPState) recordCheck(name, reason string) {
 	s.entryChecks = append(s.entryChecks, domain.EntryCheckResult{
 		Name:   name,
@@ -359,12 +360,32 @@ func (s *AVWAPState) recordCheck(name, reason string) {
 	})
 }
 
+// recordCheckProx appends a failed entry check result with a 0..1
+// proximity value indicating how close this check is to passing. Used
+// where the blocking condition has a meaningful numeric signal
+// (breakout hold_bars vs required, pinch gap vs accepted range).
+func (s *AVWAPState) recordCheckProx(name, reason string, proximity float64) {
+	if proximity < 0 {
+		proximity = 0
+	}
+	if proximity > 1 {
+		proximity = 1
+	}
+	s.entryChecks = append(s.entryChecks, domain.EntryCheckResult{
+		Name:      name,
+		Passed:    false,
+		Reason:    reason,
+		Proximity: proximity,
+	})
+}
+
 // recordCheckPassed appends a passed entry check result.
 func (s *AVWAPState) recordCheckPassed(name string) {
 	s.entryChecks = append(s.entryChecks, domain.EntryCheckResult{
-		Name:   name,
-		Passed: true,
-		Reason: "fired",
+		Name:      name,
+		Passed:    true,
+		Reason:    "fired",
+		Proximity: 1.0,
 	})
 }
 
@@ -1552,7 +1573,20 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 			}
 		}
 	}
-	s.recordCheck("breakout", reason)
+	var breakoutProx float64
+	if cfg.HoldBars > 0 {
+		// Whichever side is closest to triggering — long uses AboveCount,
+		// short uses BelowCount. Take the max so the bar reflects the
+		// nearest-to-firing direction.
+		above := maxAboveCount(s.AboveCount, sortedAnchors)
+		below := maxAboveCount(s.BelowCount, sortedAnchors)
+		best := above
+		if below > best {
+			best = below
+		}
+		breakoutProx = math.Min(1.0, float64(best)/float64(cfg.HoldBars))
+	}
+	s.recordCheckProx("breakout", reason, breakoutProx)
 	return nil, nil
 }
 
@@ -1835,7 +1869,25 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 			}
 		}
 	}
-	s.recordCheck("pinch", reason)
+	// Pinch proximity: if gap is inside the acceptable band, we're already
+	// at 1.0 (blocked by some inner condition — bias, breakout, confluence).
+	// If gap is outside, map distance-from-band to a 0..1 bar, with one
+	// band-width of overflow mapping to 0.
+	var pinchProx float64
+	lo, hi := float64(cfg.PinchMinBPS), float64(cfg.PinchMaxBPS)
+	rangeW := hi - lo
+	if gapBPS >= lo && gapBPS <= hi {
+		pinchProx = 1.0
+	} else if rangeW > 0 {
+		var dist float64
+		if gapBPS < lo {
+			dist = lo - gapBPS
+		} else {
+			dist = gapBPS - hi
+		}
+		pinchProx = math.Max(0, 1.0-dist/rangeW)
+	}
+	s.recordCheckProx("pinch", reason, pinchProx)
 	return nil, nil
 }
 

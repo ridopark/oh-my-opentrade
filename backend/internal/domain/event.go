@@ -244,10 +244,14 @@ type EntryGatedConfluence struct {
 
 // EntryCheckResult describes the outcome of a single entry type evaluation.
 // When Passed is false, Reason explains why the entry type did not fire.
+// Proximity is a 0.0..1.0 "how close to passing" value for UI progress
+// indicators; only populated for checks with a meaningful numeric signal
+// (breakout hold_bars, pinch gap). Disabled / binary checks leave it at 0.
 type EntryCheckResult struct {
-	Name   string `json:"name"`   // "pinch", "cap_reclaim", "gap_reclaim", "pullback", "handoff", "breakout", "bounce"
-	Passed bool   `json:"passed"`
-	Reason string `json:"reason"` // short human-readable reason
+	Name      string  `json:"name"` // "pinch", "cap_reclaim", "gap_reclaim", "pullback", "handoff", "breakout", "bounce"
+	Passed    bool    `json:"passed"`
+	Reason    string  `json:"reason"` // short human-readable reason
+	Proximity float64 `json:"proximity,omitempty"`
 }
 
 type EntryGatedIndicators struct {

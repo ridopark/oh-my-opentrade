@@ -90,13 +90,30 @@ function EntryCheckIcon({ passed }: { passed: boolean }) {
 function EntryChecksGrid({ checks }: { checks: EntryCheckResult[] }) {
   return (
     <div className="grid grid-cols-1 gap-x-8 gap-y-1 px-4 py-3 sm:grid-cols-2">
-      {checks.map((check) => (
-        <div key={check.name} className="flex items-center gap-2">
-          <EntryCheckIcon passed={check.passed} />
-          <span className="font-mono text-xs text-zinc-300">{check.name}:</span>
-          <span className="text-xs text-zinc-500">{check.reason}</span>
-        </div>
-      ))}
+      {checks.map((check) => {
+        const disabled = check.reason === "disabled";
+        const showBar = !check.passed && !disabled;
+        const prox = Math.max(0, Math.min(1, check.proximity ?? 0));
+        const barColor = prox >= 0.75 ? "bg-emerald-500" : prox >= 0.5 ? "bg-yellow-500" : "bg-zinc-600";
+        return (
+          <div key={check.name} className="flex items-center gap-2">
+            <EntryCheckIcon passed={check.passed} />
+            <span className="font-mono text-xs text-zinc-300">{check.name}:</span>
+            {showBar && (
+              <div
+                className="h-1 w-12 shrink-0 rounded-full bg-zinc-800 overflow-hidden"
+                title={`${(prox * 100).toFixed(0)}% to entry`}
+              >
+                <div
+                  className={`h-full rounded-full transition-all ${barColor}`}
+                  style={{ width: `${Math.max(prox * 100, 2)}%` }}
+                />
+              </div>
+            )}
+            <span className="text-xs text-zinc-500">{check.reason}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

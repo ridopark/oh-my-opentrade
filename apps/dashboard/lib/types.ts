@@ -378,6 +378,10 @@ export interface EntryCheckResult {
   name: string;
   passed: boolean;
   reason: string;
+  // 0..1 "how close to passing" value. Only populated for checks with a
+  // meaningful numeric signal (breakout hold_bars, pinch gap). Absent on
+  // disabled or binary checks — treat undefined as 0.
+  proximity?: number;
 }
 
 // Signal Formation Progress types (maps to domain.EntryGatedPayload / ORBPhaseUpdatePayload)
