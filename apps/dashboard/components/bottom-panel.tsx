@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Activity, Zap, ChevronUp, ChevronDown, TrendingDown } from "lucide-react";
-import type { StrategySignalEvent, RegimeType, EntryGatedPayload, ORBPhaseUpdatePayload } from "@/lib/types";
+import type { StrategySignalEvent, RegimeType, EntryGatedPayload } from "@/lib/types";
 import { useRollingDecay, useComponentAttribution } from "@/hooks/use-decay";
 import { useStrategyList } from "@/hooks/queries";
 import { RollingPfChart } from "@/components/decay/rolling-pf-chart";
@@ -92,7 +92,6 @@ interface BottomPanelProps {
   barLog: BarLogEntry[];
   avwapProgress: Map<string, EntryGatedPayload>;
   macdProgress: Map<string, EntryGatedPayload>;
-  orbProgress: Map<string, ORBPhaseUpdatePayload>;
 }
 
 export function BottomPanel({
@@ -104,7 +103,6 @@ export function BottomPanel({
   barLog,
   avwapProgress,
   macdProgress,
-  orbProgress,
 }: BottomPanelProps) {
   const symbolsWithRegime = useMemo(() => Object.keys(regimeBySymbol).sort(), [regimeBySymbol]);
   const [expanded, setExpanded] = useState(false);
@@ -132,18 +130,11 @@ export function BottomPanel({
       macdGateBreakdown[p.blockingGate] = (macdGateBreakdown[p.blockingGate] ?? 0) + 1;
     }
 
-    const orbCount = orbProgress.size;
-    const phaseBreakdown: Record<string, number> = {};
-    for (const [, p] of orbProgress) {
-      phaseBreakdown[p.phase] = (phaseBreakdown[p.phase] ?? 0) + 1;
-    }
-
     return {
       avwapCount, avwapReady, avwapGateBreakdown,
       macdCount, macdReady, macdGateBreakdown,
-      orbCount, phaseBreakdown,
     };
-  }, [avwapProgress, macdProgress, orbProgress]);
+  }, [avwapProgress, macdProgress]);
 
   return (
     <div className={`mt-1 rounded-t-lg border border-border bg-card flex flex-col shrink-0 ${expanded ? "h-[200px]" : ""}`}>
@@ -366,24 +357,6 @@ export function BottomPanel({
                       .sort(([, a], [, b]) => b - a)
                       .map(([gate, count]) => `${count} blocked by ${gate}`)
                       .join(", ") || "All symbols passed gates."}
-              </p>
-            </div>
-            <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-bold">ORB (Opening Range Breakout)</span>
-                <Badge variant="outline" className="text-[9px]">5m</Badge>
-              </div>
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-[10px] text-muted-foreground w-14">Active</span>
-                <span className="text-xs font-mono font-medium">{strategySummary.orbCount} symbols</span>
-              </div>
-              <p className="text-xs text-muted-foreground leading-relaxed">
-                {strategySummary.orbCount === 0
-                  ? "No symbols being tracked."
-                  : Object.entries(strategySummary.phaseBreakdown)
-                      .sort(([, a], [, b]) => b - a)
-                      .map(([phase, count]) => `${count} in ${phase.replace(/_/g, " ").toLowerCase()}`)
-                      .join(", ") + "."}
               </p>
             </div>
           </div>

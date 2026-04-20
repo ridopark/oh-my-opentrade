@@ -3,7 +3,7 @@
 import { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { X, GripHorizontal } from "lucide-react";
-import type { EntryGatedPayload, EntryCheckResult, ORBPhaseUpdatePayload, BarSnapshot } from "@/lib/types";
+import type { EntryGatedPayload, EntryCheckResult, BarSnapshot } from "@/lib/types";
 import { LiveChart, avwapAnchorColor, avwapAnchorLabel } from "@/components/live-chart";
 import { useChartData } from "@/lib/use-chart-data";
 
@@ -14,7 +14,6 @@ import { useChartData } from "@/lib/use-chart-data";
 interface SignalProgressTableProps {
   avwapProgress: Map<string, EntryGatedPayload>;
   macdProgress: Map<string, EntryGatedPayload>;
-  orbProgress: Map<string, ORBPhaseUpdatePayload>;
 }
 
 // ---------------------------------------------------------------------------
@@ -25,39 +24,8 @@ interface UnifiedRow {
   symbol: string;
   avwap: EntryGatedPayload | undefined;
   macd: EntryGatedPayload | undefined;
-  orb: ORBPhaseUpdatePayload | undefined;
   bar: BarSnapshot | undefined;
   compositeScore: number;
-}
-
-// ---------------------------------------------------------------------------
-// AVWAP helper functions
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// ORB helper functions
-// ---------------------------------------------------------------------------
-
-const PHASE_ORDER: Record<string, number> = {
-  PRE_OPEN: 0,
-  FORMING_RANGE: 1,
-  RANGE_SET: 2,
-  BREAKOUT_SEEN: 3,
-  AWAITING_RETEST: 3,
-  RETEST_CONFIRMED: 4,
-  SIGNAL_FIRED: 5,
-  DONE_FOR_SESSION: 5,
-  INVALID: -1,
-};
-
-function phaseStep(phase: string): number {
-  return PHASE_ORDER[phase] ?? -1;
-}
-
-function confidenceColor(c: number): string {
-  if (c >= 0.75) return "bg-emerald-500";
-  if (c >= 0.5) return "bg-yellow-500";
-  return "bg-red-500";
 }
 
 // ---------------------------------------------------------------------------
@@ -69,53 +37,6 @@ function borderColor(score: number): string {
   if (score >= 5) return "border-l-yellow-500";
   if (score >= 3) return "border-l-red-500";
   return "border-l-zinc-700";
-}
-
-// ---------------------------------------------------------------------------
-// PhaseIndicator (expanded ORB detail)
-// ---------------------------------------------------------------------------
-
-function PhaseIndicator({ phase }: { phase: string }) {
-  const step = phaseStep(phase);
-  const isInvalid = phase === "INVALID";
-  const totalSteps = 6;
-
-  return (
-    <div className="flex flex-col items-start gap-1">
-      <div className="flex items-center">
-        {Array.from({ length: totalSteps }).map((_, i) => {
-          let dotClass: string;
-          if (isInvalid) {
-            dotClass = "bg-red-500";
-          } else if (i < step) {
-            dotClass = "bg-emerald-500";
-          } else if (i === step) {
-            dotClass = "bg-yellow-500 animate-pulse";
-          } else {
-            dotClass = "bg-zinc-700";
-          }
-
-          return (
-            <div key={i} className="flex items-center">
-              {i > 0 && (
-                <div
-                  className={`w-4 h-0.5 ${
-                    isInvalid
-                      ? "bg-red-500/40"
-                      : i <= step
-                        ? "bg-emerald-500/40"
-                        : "bg-zinc-700"
-                  }`}
-                />
-              )}
-              <div className={`w-2 h-2 rounded-full ${dotClass}`} />
-            </div>
-          );
-        })}
-      </div>
-      <span className="text-xs text-zinc-500">{phase.replace(/_/g, " ")}</span>
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -263,104 +184,6 @@ function MACDDetail({ macd }: { macd: EntryGatedPayload }) {
 }
 
 // ---------------------------------------------------------------------------
-// ORBDetail (popover content)
-// ---------------------------------------------------------------------------
-
-function ORBDetail({ orb }: { orb: ORBPhaseUpdatePayload }) {
-  const hasBreakout = !!orb.breakout.direction;
-
-  return (
-    <div className="space-y-3">
-      <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">ORB Phase</h4>
-      <PhaseIndicator phase={orb.phase} />
-      <div className="flex flex-wrap items-start gap-4">
-        <div className="flex flex-col gap-0.5">
-          <span className="text-[10px] text-zinc-500 uppercase">Range</span>
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`h-2 w-2 rounded-full ${orb.range.valid ? "bg-emerald-500" : "bg-red-500"}`}
-            />
-            <span className="text-zinc-200 text-xs">
-              {orb.range.high.toFixed(2)} - {orb.range.low.toFixed(2)}
-            </span>
-          </div>
-          <span className="text-zinc-500 text-xs">
-            ({orb.range.barCount}/{orb.range.expectedBars} bars)
-          </span>
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <span className="text-[10px] text-zinc-500 uppercase">Breakout</span>
-          {hasBreakout ? (
-            <div className="flex flex-col gap-0.5">
-              <span
-                className={`text-xs font-medium ${
-                  orb.breakout.direction === "LONG" ? "text-emerald-400" : "text-red-400"
-                }`}
-              >
-                {orb.breakout.direction} @ {orb.breakout.breakClose.toFixed(2)}
-              </span>
-              <span className="text-zinc-500 text-xs">
-                RVOL {orb.breakout.rvol.toFixed(1)}x
-              </span>
-            </div>
-          ) : (
-            <span className="text-zinc-500 text-xs">Watching...</span>
-          )}
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <span className="text-[10px] text-zinc-500 uppercase">Retest</span>
-          {!hasBreakout ? (
-            <span className="text-zinc-600 text-xs">{"\u2014"}</span>
-          ) : orb.retest.holdConfirmed ? (
-            <span className="text-emerald-400 text-xs font-medium">Confirmed</span>
-          ) : orb.retest.touched ? (
-            <span className="text-yellow-400 text-xs">
-              Touched @ {orb.retest.touchPrice.toFixed(2)}
-            </span>
-          ) : (
-            <div className="flex flex-col gap-1">
-              <span className="text-zinc-400 text-xs">
-                Pending ({orb.retest.barsSinceBreak}/{orb.retest.maxRetestBars})
-              </span>
-              <div className="h-1 w-16 rounded-full bg-zinc-800 overflow-hidden">
-                <div
-                  className="h-full rounded-full bg-zinc-500"
-                  style={{
-                    width: `${
-                      orb.retest.maxRetestBars > 0
-                        ? (orb.retest.barsSinceBreak / orb.retest.maxRetestBars) * 100
-                        : 0
-                    }%`,
-                  }}
-                />
-              </div>
-            </div>
-          )}
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <span className="text-[10px] text-zinc-500 uppercase">Confidence</span>
-          <div className="flex items-center gap-2">
-            <div className="h-2 w-16 rounded-full bg-zinc-800 overflow-hidden">
-              <div
-                className={`h-full rounded-full ${confidenceColor(orb.confidence)}`}
-                style={{ width: `${orb.confidence * 100}%` }}
-              />
-            </div>
-            <span className="text-zinc-400 text-xs">
-              {(orb.confidence * 100).toFixed(0)}%
-            </span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Heatmap cell background by normalized value (0-1)
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Segmented Gate Bar — compact readiness indicator
 // ---------------------------------------------------------------------------
 
@@ -412,23 +235,6 @@ function macdSegments(macd: EntryGatedPayload): GateBarSegment[] {
   }));
 }
 
-function orbSegments(orb: ORBPhaseUpdatePayload): GateBarSegment[] {
-  const LABELS = ["Range", "Breakout", "Retest", "Signal"] as const;
-  const THRESHOLDS = [2, 3, 4, 5];
-  const step = phaseStep(orb.phase);
-
-  if (orb.phase === "INVALID") {
-    return LABELS.map((label) => ({ label, status: "pending" as const }));
-  }
-
-  return LABELS.map((label, i) => {
-    if (step >= THRESHOLDS[i]) return { label, status: "passed" as const };
-    const prevPassed = i === 0 ? true : step >= THRESHOLDS[i - 1];
-    if (prevPassed && step < THRESHOLDS[i]) return { label, status: "active" as const };
-    return { label, status: "pending" as const };
-  });
-}
-
 function PillGateBar({
   segments,
   onClick,
@@ -462,13 +268,12 @@ function PillGateBar({
 // ---------------------------------------------------------------------------
 
 function DetailPanel({
-  symbol, bar, avwap, macd, orb, anchorRect, onClose,
+  symbol, bar, avwap, macd, anchorRect, onClose,
 }: {
   symbol: string;
   bar: BarSnapshot | undefined;
   avwap: EntryGatedPayload | undefined;
   macd: EntryGatedPayload | undefined;
-  orb: ORBPhaseUpdatePayload | undefined;
   anchorRect: DOMRect;
   onClose: () => void;
 }) {
@@ -502,7 +307,6 @@ function DetailPanel({
     { key: "session_open", label: avwapAnchorLabel("session_open"), color: avwapAnchorColor("session_open") },
     { key: "pd_high", label: avwapAnchorLabel("pd_high"), color: avwapAnchorColor("pd_high") },
     { key: "pd_low", label: avwapAnchorLabel("pd_low"), color: avwapAnchorColor("pd_low") },
-    { key: "ORB", label: "ORB", color: "rgba(59, 130, 246, 0.5)" },
   ], []);
 
   // Position panel to the left of the anchor button on mount
@@ -605,7 +409,6 @@ function DetailPanel({
               bars={chartBars}
               showLabels={false}
               hiddenSeries={hiddenSeries}
-              orbWindowMinutes={orb?.range.windowMinutes}
             />
           ) : (
             <div className="flex items-center justify-center h-full text-xs text-zinc-600">
@@ -619,7 +422,6 @@ function DetailPanel({
       <div className="p-4 space-y-4">
         {avwap && <AVWAPDetail avwap={avwap} />}
         {macd && <MACDDetail macd={macd} />}
-        {orb && <ORBDetail orb={orb} />}
       </div>
     </div>,
     document.body,
@@ -631,14 +433,13 @@ function DetailPanel({
 // ---------------------------------------------------------------------------
 
 function SignalRow({ row }: { row: UnifiedRow }) {
-  const { symbol, avwap, macd, orb, bar } = row;
+  const { symbol, avwap, macd, bar } = row;
   const priceUp = bar ? bar.close >= bar.open : true;
 
   const [open, setOpen] = useState(false);
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
   const avwapBarRef = useRef<HTMLDivElement>(null);
   const macdBarRef = useRef<HTMLDivElement>(null);
-  const orbBarRef = useRef<HTMLDivElement>(null);
 
   const handleOpen = useCallback((ref: React.RefObject<HTMLDivElement | null>) => (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -653,7 +454,6 @@ function SignalRow({ row }: { row: UnifiedRow }) {
   // Strategy segments
   const avwapSegs = avwap ? avwapSegments(avwap) : null;
   const macdSegs = macd ? macdSegments(macd) : null;
-  const orbSegs = orb ? orbSegments(orb) : null;
 
   return (
     <tr className="border-b border-zinc-800/60 hover:bg-zinc-800/40 cursor-default h-8 text-[11px]">
@@ -699,27 +499,12 @@ function SignalRow({ row }: { row: UnifiedRow }) {
         ) : (
           <span className="text-zinc-700 text-[10px]">{"\u2014"}</span>
         )}
-      </td>
-
-      {/* ORB Readiness */}
-      <td className="px-2 text-center">
-        {orbSegs ? (
-          <div ref={orbBarRef} className="inline-block">
-            <PillGateBar
-              segments={orbSegs}
-              onClick={handleOpen(orbBarRef)}
-            />
-          </div>
-        ) : (
-          <span className="text-zinc-700 text-[10px]">{"\u2014"}</span>
-        )}
         {open && anchorRect && (
           <DetailPanel
             symbol={symbol}
             bar={bar}
             avwap={avwap}
             macd={macd}
-            orb={orb}
             anchorRect={anchorRect}
             onClose={() => setOpen(false)}
           />
@@ -737,38 +522,34 @@ const COL_GROUPS = [
   { label: "", span: 2 },
   { label: "AVWAP", span: 1 },
   { label: "MACD", span: 1 },
-  { label: "ORB", span: 1 },
 ] as const;
 
-const COLUMNS = ["Sym", "Price", "Readiness", "Readiness", "Readiness"] as const;
+const COLUMNS = ["Sym", "Price", "Readiness", "Readiness"] as const;
 
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
-export function SignalProgressTable({ avwapProgress, macdProgress, orbProgress }: SignalProgressTableProps) {
+export function SignalProgressTable({ avwapProgress, macdProgress }: SignalProgressTableProps) {
   const rows: UnifiedRow[] = useMemo(() => {
     const symbols = new Set<string>();
     for (const key of avwapProgress.keys()) symbols.add(key);
     for (const key of macdProgress.keys()) symbols.add(key);
-    for (const key of orbProgress.keys()) symbols.add(key);
 
     const result: UnifiedRow[] = [];
     for (const symbol of symbols) {
       const avwap = avwapProgress.get(symbol);
       const macd = macdProgress.get(symbol);
-      const orb = orbProgress.get(symbol);
-      const bar = avwap?.bar ?? macd?.bar ?? orb?.bar;
+      const bar = avwap?.bar ?? macd?.bar;
       const avwapScore = avwap ? avwap.confluence.score : 0;
       const macdScore = macd ? macd.confluence.score : 0;
-      const orbScore = orb ? orb.confidence * 10 : 0;
-      const compositeScore = Math.max(avwapScore, macdScore, orbScore);
-      result.push({ symbol, avwap, macd, orb, bar, compositeScore });
+      const compositeScore = Math.max(avwapScore, macdScore);
+      result.push({ symbol, avwap, macd, bar, compositeScore });
     }
 
     result.sort((a, b) => b.compositeScore - a.compositeScore);
     return result;
-  }, [avwapProgress, macdProgress, orbProgress]);
+  }, [avwapProgress, macdProgress]);
 
   if (rows.length === 0) {
     return (
