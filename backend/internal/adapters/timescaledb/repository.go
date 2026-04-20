@@ -16,6 +16,7 @@ import (
 )
 
 const (
+	defaultInstrumentType     = "EQUITY"
 	queryInsertMarketBar      = `INSERT INTO market_bars (time, account_id, env_mode, symbol, timeframe, open, high, low, close, volume, suspect) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (symbol, timeframe, time) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume, suspect=EXCLUDED.suspect`
 	querySelectMarketBars     = `SELECT time, symbol, timeframe, open, high, low, close, volume, suspect, ema9, ema21, ema50, ema200, avwaps FROM market_bars WHERE symbol = $1 AND timeframe = $2 AND time >= $3 AND time < $4 ORDER BY time`
 	queryUpdateBarIndicators  = `UPDATE market_bars SET ema9=$4, ema21=$5, ema50=$6, ema200=$7, avwaps=$8 WHERE symbol=$1 AND timeframe=$2 AND time=$3`
@@ -400,7 +401,7 @@ func tradeInsertArgs(trade domain.Trade) []any {
 	}
 	instType := string(trade.InstrumentType)
 	if instType == "" {
-		instType = "EQUITY"
+		instType = defaultInstrumentType
 	}
 	var optSym, underlying, optRight *string
 	var strike, premium, deltaEntry, ivEntry *float64
@@ -547,7 +548,7 @@ func (r *Repository) GetLatestStrategyDNA(ctx context.Context, tenantID string, 
 func (r *Repository) SaveOrder(ctx context.Context, order domain.BrokerOrder) error {
 	instType := string(order.InstrumentType)
 	if instType == "" {
-		instType = "EQUITY"
+		instType = defaultInstrumentType
 	}
 	var optSym, underlying, optRight *string
 	var strike *float64
