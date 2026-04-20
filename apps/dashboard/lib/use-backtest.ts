@@ -114,6 +114,15 @@ export interface BacktestResult {
   largest_loss: number;
   trades?: BacktestTrade[]; // trades with collector-computed PnL (includes 100x for options)
   realism?: RealismEstimate | null;
+  costs?: CostBreakdown | null;
+}
+
+export interface CostBreakdown {
+  commission: number;
+  exchange: number;
+  regulatory: number;
+  slippage: number;
+  total: number;
 }
 
 type BacktestStatus = "idle" | "running" | "paused" | "completed" | "error" | "cancelled";

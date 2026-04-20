@@ -96,6 +96,13 @@ server:
   port: 8080
   log_level: "info"
 
+backtest:
+  fill_model: "pessimistic"         # entries at ask, exits at bid + slippage mult (live-parity)
+  latency_ms_equity: 50
+  latency_ms_option: 200
+  fee_schedule: "ibkr_options"      # $0.65/contract, $1 min-per-order, $0.04 exchange + SEC on sells
+  pessimistic_slippage_multiplier: 2.0
+
 ai:
   base_url: "http://localhost:11434"  # any OpenAI-compatible endpoint (Ollama, LM Studio, OpenAI, vLLM)
   model: "gpt-4o-mini"               # model name to request

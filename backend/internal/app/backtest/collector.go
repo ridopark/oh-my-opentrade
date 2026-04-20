@@ -84,6 +84,18 @@ type Result struct {
 	Trades        []TradeRecord `json:"trades"`
 	EquityCurve   []EquityPoint `json:"equity_curve,omitempty"`
 	Realism       *realism.Estimate `json:"realism,omitempty"`
+	Costs         *CostBreakdown    `json:"costs,omitempty"`
+}
+
+// CostBreakdown mirrors simbroker.CostTotals but stays in the backtest-result
+// package so Result consumers don't need an adapter import. Populated by the
+// runner after the pipeline drains.
+type CostBreakdown struct {
+	Commission float64 `json:"commission"`
+	Exchange   float64 `json:"exchange"`
+	Regulatory float64 `json:"regulatory"`
+	Slippage   float64 `json:"slippage"`
+	Total      float64 `json:"total"`
 }
 
 // Collector aggregates fill and bar events to produce backtest metrics.

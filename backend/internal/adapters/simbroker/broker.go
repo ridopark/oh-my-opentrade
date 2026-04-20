@@ -130,7 +130,41 @@ type Broker struct {
 	totalFundingPaid     float64
 	totalFundingReceived float64
 
+	// Cumulative fill-realism costs for backtest reporting. Not mutex-locked
+	// separately — all SubmitOrder increments happen under b.mu. Exposed via
+	// CostTotals(); live paths leave these at zero since FeeSchedule=NoFees
+	// and slippage attribution is tracked elsewhere.
+	costCommission float64
+	costExchange   float64
+	costRegulatory float64
+	costSlippage   float64
+
 	fillCh chan ports.OrderUpdate
+}
+
+// CostTotals aggregates the cumulative fill-realism costs tallied by the
+// broker across a backtest run.
+type CostTotals struct {
+	Commission float64 `json:"commission"`
+	Exchange   float64 `json:"exchange"`
+	Regulatory float64 `json:"regulatory"`
+	Slippage   float64 `json:"slippage"`
+	Total      float64 `json:"total"`
+}
+
+// CostTotals returns the cumulative fill-realism costs accumulated since
+// broker construction. Safe to call from the finalizer goroutine after the
+// backtest pipeline has drained.
+func (b *Broker) CostTotals() CostTotals {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return CostTotals{
+		Commission: b.costCommission,
+		Exchange:   b.costExchange,
+		Regulatory: b.costRegulatory,
+		Slippage:   b.costSlippage,
+		Total:      b.costCommission + b.costExchange + b.costRegulatory + b.costSlippage,
+	}
 }
 
 // SetHistoricalOptions injects historical options data for realistic exit pricing.
@@ -260,6 +294,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 
 	var fillPrice float64
 	var side string
+	var preSlippagePrice float64 // tracked to attribute slippage cost
 	if isOption {
 		slippage := float64(b.slippageBPS) / 10000.0
 		switch {
@@ -269,6 +304,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			if fillPrice <= 0 {
 				fillPrice = 0.01
 			}
+			preSlippagePrice = fillPrice
 			fillPrice *= (1 - slippage) // selling: slippage works against us
 			side = "sell"
 		default:
@@ -282,6 +318,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			// docs/plans/EQUITY-OPTIONS-GAP-PLAN.md §Sprint 6.2.
 			isShortEntry := intent.Direction == domain.DirectionShort
 			fillPrice = b.computeOptionEntryPrice(intent, isShortEntry)
+			preSlippagePrice = fillPrice
 			if isShortEntry {
 				fillPrice *= (1 - slippage) // selling premium: slippage hurts the short
 				side = "sell"
@@ -346,10 +383,24 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 				b.fillModel.Name(), intent.Symbol, res.Reason)
 		}
 		fillPrice = res.Price
+		// Fill model applies slippage internally; reconstruct the pre-slippage
+		// mid by undoing the bps multiplier so downstream slippage attribution
+		// is consistent with the option branch above.
+		slip := float64(b.slippageBPS) / 10000.0
 		if isBuy(orderSide) {
 			side = "buy"
+			if slip > 0 {
+				preSlippagePrice = fillPrice / (1 + slip)
+			} else {
+				preSlippagePrice = fillPrice
+			}
 		} else {
 			side = "sell"
+			if slip > 0 {
+				preSlippagePrice = fillPrice / (1 - slip)
+			} else {
+				preSlippagePrice = fillPrice
+			}
 		}
 	}
 
@@ -372,6 +423,34 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 		OrderType: intent.OrderType,
 	}
 	fees := b.feeSchedule.Compute(feeCtx)
+
+	// Slippage is attributed from the pre-slippage price so the dollar value
+	// reflects the intended bps friction instead of compounding with the
+	// later fee embed.
+	b.costCommission += fees.Commission
+	b.costExchange += fees.Exchange
+	b.costRegulatory += fees.Regulatory
+	if preSlippagePrice > 0 && b.slippageBPS > 0 {
+		slipMag := float64(b.slippageBPS) / 10000.0
+		b.costSlippage += slipMag * preSlippagePrice * intent.Quantity * notionalMult
+	}
+
+	// Backtest path only: bake fee.Total into fillPrice so downstream PnL
+	// accounting reflects commissions without threading a separate fee field
+	// through execution, FillReceived, and the collector. Live adapters
+	// return fees out-of-band from the broker and this branch is a no-op
+	// because FeeSchedule=NoFees in production execution paths.
+	if fees.Total > 0 && intent.Quantity > 0 {
+		perUnitAdj := fees.Total / (intent.Quantity * notionalMult)
+		if side == "buy" {
+			fillPrice += perUnitAdj
+		} else {
+			fillPrice -= perUnitAdj
+			if fillPrice < 0.01 {
+				fillPrice = 0.01
+			}
+		}
+	}
 
 	// Generate order ID.
 	seq := b.orderSeq.Add(1)

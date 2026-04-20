@@ -1893,6 +1893,18 @@ backtestComplete:
 	summary.Msg("backtest data-quality summary")
 
 	finalResult := r.collector.Result()
+	if r.infra.SimBroker != nil {
+		ct := r.infra.SimBroker.CostTotals()
+		if ct.Total > 0 {
+			finalResult.Costs = &CostBreakdown{
+				Commission: ct.Commission,
+				Exchange:   ct.Exchange,
+				Regulatory: ct.Regulatory,
+				Slippage:   ct.Slippage,
+				Total:      ct.Total,
+			}
+		}
+	}
 	r.result.Store(&finalResult)
 	r.emitter.EmitComplete(&finalResult)
 
