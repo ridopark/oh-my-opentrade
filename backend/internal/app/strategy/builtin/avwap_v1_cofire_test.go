@@ -48,8 +48,12 @@ func cofireReadyState() *AVWAPState {
 }
 
 func cofireBar() strat.Bar {
+	// 2026-04-20 is a Monday. computeCofireVeto doesn't check weekday (only
+	// updateCofireVetoState does), but keeping the test date on a weekday
+	// prevents the fixture from looking wrong if it's ever reused for the
+	// state-update tests.
 	return strat.Bar{
-		Time:   time.Date(2026, 4, 18, 14, 30, 0, 0, time.UTC),
+		Time:   time.Date(2026, 4, 20, 14, 30, 0, 0, time.UTC),
 		Open:   99.9,
 		High:   100.1,
 		Low:    99.8,
@@ -135,6 +139,26 @@ func TestUpdateCofireVetoState_ResetsOnNewSession(t *testing.T) {
 	// Session returns should not span the boundary.
 	assert.LessOrEqual(t, len(s.CofireSessionReturns), 1,
 		"session returns must not carry over across days")
+}
+
+func TestUpdateCofireVetoState_SkipsZeroVolumeBar(t *testing.T) {
+	if etLocation == nil {
+		t.Skip("etLocation not initialized")
+	}
+	s := &AVWAPState{}
+	// Pre-populate a bucket with a real sample so we can verify a zero-volume
+	// bar doesn't displace it.
+	s.CofireTODBuckets = map[string][]float64{"14:30": {1000, 1100, 1050}}
+	bar := strat.Bar{
+		Time:   time.Date(2026, 4, 20, 14, 30, 0, 0, etLocation), // Monday RTH
+		Open:   100, High: 100.5, Low: 99.8, Close: 100.0,
+		Volume: 0, // halt / illiquid print
+	}
+	s.updateCofireVetoState(bar)
+	assert.Equal(t, []float64{1000, 1100, 1050}, s.CofireTODBuckets["14:30"],
+		"zero-volume bar must not append to TOD bucket")
+	assert.Zero(t, s.CofireSessionVWAPDen,
+		"zero-volume bar must not accumulate VWAP denominator")
 }
 
 func TestUpdateCofireVetoState_SkipsExtendedHours(t *testing.T) {

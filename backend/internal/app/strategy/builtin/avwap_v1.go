@@ -681,17 +681,13 @@ func (s *AVWAPState) updateInducement(bar start.Bar, cfg AVWAPConfig) {
 // meaningful anchor outside RTH and the research validated the veto on RTH 5m
 // bars only.
 func (s *AVWAPState) updateCofireVetoState(bar start.Bar) {
+	if !domain.IsEquityMarketOpen(bar.Time) {
+		return
+	}
 	if etLocation == nil {
 		return
 	}
 	et := bar.Time.In(etLocation)
-	if et.Weekday() == time.Saturday || et.Weekday() == time.Sunday {
-		return
-	}
-	minutes := et.Hour()*60 + et.Minute()
-	if minutes < 9*60+30 || minutes >= 16*60 {
-		return
-	}
 
 	date := et.Format("2006-01-02")
 	if date != s.CofireSessionDate {
@@ -700,6 +696,13 @@ func (s *AVWAPState) updateCofireVetoState(bar start.Bar) {
 		s.CofireSessionVWAPDen = 0
 		s.CofireSessionReturns = s.CofireSessionReturns[:0]
 		s.CofireLastClose = 0
+	}
+
+	// Skip zero- or negative-volume bars (halts, illiquid prints) so they
+	// don't displace valid samples from the 20-session TOD bucket ring and
+	// don't pollute session VWAP. Log-return append already guards bar.Close.
+	if bar.Volume <= 0 {
+		return
 	}
 
 	typical := (bar.High + bar.Low + bar.Close) / 3.0
