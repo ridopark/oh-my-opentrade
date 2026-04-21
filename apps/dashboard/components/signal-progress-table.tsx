@@ -70,7 +70,7 @@ function EntryChecksPanel({ checks }: { checks: EntryCheckResult[] }) {
                   />
                 </div>
               )}
-              <span className="text-[11px] text-zinc-500 truncate">{c.reason}</span>
+              <span className="text-[11px] text-zinc-500 truncate" title={c.reason}>{c.reason}</span>
             </div>
           );
         })}
