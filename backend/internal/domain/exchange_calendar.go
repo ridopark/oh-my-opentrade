@@ -156,6 +156,27 @@ func PreviousRTHSession(now time.Time) (start, end time.Time) {
 	return start, end
 }
 
+// PreviousNRTHSessions returns the start of the earliest and end of the latest
+// of the N most recent prior RTH sessions (excluding any in-progress session).
+// Non-trading days (weekends, NYSE holidays) are skipped.
+//
+// Used for indicator warmup that needs multi-day history: a single RTH session
+// produces 78 5m bars, which is not enough to warm 200-period EMAs, rolling
+// stddev/ADX windows, etc. N=3 covers ~234 5m bars = full 200-period warmup.
+func PreviousNRTHSessions(now time.Time, n int) (start, end time.Time) {
+	if n < 1 {
+		n = 1
+	}
+	_, end = PreviousRTHSession(now)
+	cursor := now
+	for i := 0; i < n; i++ {
+		s, _ := PreviousRTHSession(cursor)
+		start = s
+		cursor = s.Add(-time.Second)
+	}
+	return start, end
+}
+
 // TradingCalendar defines market session queries for an asset class.
 type TradingCalendar interface {
 	IsOpen(t time.Time) bool
