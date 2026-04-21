@@ -32,6 +32,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	screenerapp "github.com/oh-my-opentrade/backend/internal/app/screener"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
+	"github.com/oh-my-opentrade/backend/internal/app/strategywatchdog"
 	"github.com/oh-my-opentrade/backend/internal/app/symbolrouter"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -74,8 +75,9 @@ type appServices struct {
 	activationSvc     *activation.Service
 	pipelineActivator *bootstrap.PipelineActivator
 
-	orchestrator *orchestrator.AccountOrchestrator
-	debateSvc    *debate.Service
+	orchestrator     *orchestrator.AccountOrchestrator
+	strategyWatchdog *strategywatchdog.Service
+	debateSvc        *debate.Service
 	aiAdvisor    ports.AIAdvisorPort
 	newsClient   *alpaca.NewsClient
 	// kakaoNotifier *notification.KakaoNotifier — disabled
@@ -828,6 +830,27 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 	}
 	if err := svc.dnaApproval.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start dna approval service")
+	}
+
+	if svc.useStrategyV2 && svc.strategyRunner != nil {
+		runner := svc.strategyRunner
+		svc.strategyWatchdog = strategywatchdog.New(strategywatchdog.Deps{
+			ListStrategies: func() []strategywatchdog.WatchedStrategy {
+				infos := runner.ListStrategies()
+				out := make([]strategywatchdog.WatchedStrategy, 0, len(infos))
+				for _, info := range infos {
+					out = append(out, strategywatchdog.WatchedStrategy{
+						ID: info.ID, Symbols: info.Symbols, Active: info.Active,
+					})
+				}
+				return out
+			},
+			LivenessFor: runner.Liveness,
+			Notifier:    svc.notifier,
+			Log:         log.With().Str("component", "strategy_watchdog").Logger(),
+		}, strategywatchdog.Config{})
+		svc.strategyWatchdog.Start(ctx)
+		log.Info().Msg("strategy watchdog started")
 	}
 
 	// Seed initial DNA version detection for all loaded strategy TOMLs.
