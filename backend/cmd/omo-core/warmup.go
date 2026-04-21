@@ -460,6 +460,12 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("ORB warmup fetch failed")
 				continue
 			}
+			// Feed today's session bars through monitor indicators so EMA21/50/200,
+			// MACD, and session VWAP reach the same state a continuous-from-open run
+			// would have. Without this, 5m regime computed from a yesterday-seeded
+			// calculator diverges from backtest (seen as REVERSAL vs BALANCE) and
+			// silently gates AVWAP signals for the rest of the session.
+			svc.monitor.WarmUp(orbBars)
 			svc.monitor.WarmUpORB(orbBars)
 			if svc.useStrategyV2 && svc.strategyRunner != nil {
 				if runnerWarmupCalc == nil {
