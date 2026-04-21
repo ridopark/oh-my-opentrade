@@ -239,7 +239,7 @@ inducement_volume_min_ratio = 1.2
 #   a month of live data if behaviour matches expectations.
 #   Thresholds locked to the validated operating point (|stretch_z| in [2,3]).
 cofire_veto_enabled = false
-cofire_veto_shadow = false
+cofire_veto_shadow = true
 cofire_veto_long_only = true
 cofire_veto_stretch_z_min = 2.0
 cofire_veto_stretch_z_max = 3.0
