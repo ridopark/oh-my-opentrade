@@ -1712,7 +1712,17 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 		}
 		volumeOK := cfg.VolumeMult == 0 || (s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA)
 
-		if s.AboveCount[anchorName] >= cfg.HoldBars && volumeOK && !ec.lockedLong {
+		// Split outer gate into individual checks so the UI reports the
+		// specific blocker instead of the default "hold bars N < M" when N >= M.
+		if s.AboveCount[anchorName] >= cfg.HoldBars {
+			if ec.lockedLong {
+				reason = "locked long (cooldown/position)"
+				continue
+			}
+			if !volumeOK {
+				reason = fmt.Sprintf("vol %.2fx < %.1fx min", volRatio, cfg.VolumeMult)
+				continue
+			}
 			if cfg.RequireHigherLows && !hasHigherLows(s.RecentLows) {
 				reason = "higher lows not met"
 				continue
@@ -1765,7 +1775,17 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 			}
 			volumeOK := cfg.VolumeMult == 0 || (s.Indicators.VolumeSMA > 0 && bar.Volume > cfg.VolumeMult*s.Indicators.VolumeSMA)
 
-			if s.BelowCount[anchorName] >= cfg.HoldBars && volumeOK && !ec.lockedShort {
+			// Split outer gate so short-breakout blockers surface specifically
+			// rather than the default "hold bars N < M" fallback (see long path).
+			if s.BelowCount[anchorName] >= cfg.HoldBars {
+				if ec.lockedShort {
+					reason = "locked short (cooldown/position)"
+					continue
+				}
+				if !volumeOK {
+					reason = fmt.Sprintf("vol %.2fx < %.1fx min", volRatio, cfg.VolumeMult)
+					continue
+				}
 				// Regime gating handled by evaluateEntries — breakout only called in REVERSAL
 				if cfg.EnforceAVWAPBias && ec.avwapBias != "" && ec.avwapBias != "SHORT" {
 					logShortGate(ctx, ec.symbol, "enforce_avwap_bias", anchorName, "bias", ec.avwapBias)
