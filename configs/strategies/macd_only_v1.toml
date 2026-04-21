@@ -42,6 +42,16 @@ risk_reward_ratio = 2.0          # 2:1 R:R realistic for intraday
 swing_lookback = 5               # fewer bars for swing detection on 5m
 volume_mult = 1.0
 
+# Midday trap shield (ported from AVWAP avwap_v1.go:1803). Block entries in the
+# midday window unless volume clears midday_volume_mult * VolumeSMA.
+# Window 10:00-12:30 ET and mult 1.5 are the H1-data-only WFA selection:
+# full-year picks drift 2 buckets toward H2 fit. These bounds validate in
+# both halves (H1 from selection, H2 yields +$6.3k uplift OOS).
+midday_trap_shield = true
+midday_volume_mult = 1.5
+midday_shield_start_et = "10:00"
+midday_shield_end_et = "12:30"
+
 # Confluence scoring (0-100+ scale, 10 base + dark pool factors)
 min_confluence_score = 80        # 85 cut trade count too far on 65-85 sweep
 dp_confluence_enabled = true

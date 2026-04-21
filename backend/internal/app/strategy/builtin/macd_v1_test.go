@@ -669,3 +669,98 @@ func TestMACDStrategy_LastHoldReason_UnknownSymbolReturnsNil(t *testing.T) {
 	s := builtin.NewMACDStrategy()
 	assert.Nil(t, s.LastHoldReason("NEVER_SEEN"))
 }
+
+// ─── Midday trap shield ──────────────────────────────────────────────────────
+
+// TestMACD_MiddayTrapShield verifies the 11-13 ET volume gate.
+// June 2025 is EDT (UTC-4), so ET hour = UTC hour - 4.
+func TestMACD_MiddayTrapShield(t *testing.T) {
+	const volumeSMA = 1000.0
+	const lowVolume = 900.0
+	const highVolume = 2500.0 // > 2.0 * 1000
+
+	cases := []struct {
+		name       string
+		shieldOn   bool
+		startET    string // optional custom window start; "" → use default 11:00
+		endET      string // optional custom window end; "" → use default 13:00
+		utcHour    int
+		utcMinute  int
+		volume     float64
+		volumeSMA  float64
+		wantSignal bool
+	}{
+		{"shield off, hour=11:30 ET, low vol, passes", false, "", "", 15, 30, lowVolume, volumeSMA, true},
+		{"shield on, hour=10 ET, low vol, passes (outside window)", true, "", "", 14, 0, lowVolume, volumeSMA, true},
+		{"shield on, hour=13 ET, low vol, passes (boundary: hour<13)", true, "", "", 17, 0, lowVolume, volumeSMA, true},
+		{"shield on, hour=11 ET, high vol, passes", true, "", "", 15, 0, highVolume, volumeSMA, true},
+		{"shield on, hour=11:30 ET, low vol, blocked", true, "", "", 15, 30, lowVolume, volumeSMA, false},
+		{"shield on, hour=12:30 ET, VolumeSMA=0, blocked (no escape)", true, "", "", 16, 30, lowVolume, 0, false},
+		// Custom 10:30-13:30 window: widens both ends by 30 min.
+		{"custom 10:30-13:30, hour=10:45 ET, low vol, blocked (now in window)", true, "10:30", "13:30", 14, 45, lowVolume, volumeSMA, false},
+		{"custom 10:30-13:30, hour=13:15 ET, low vol, blocked (now in window)", true, "10:30", "13:30", 17, 15, lowVolume, volumeSMA, false},
+		{"custom 10:30-13:30, hour=13:30 ET, low vol, passes (boundary: end exclusive)", true, "10:30", "13:30", 17, 30, lowVolume, volumeSMA, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := builtin.NewMACDStrategy()
+			params := bmParams()
+			if tc.shieldOn {
+				params["midday_trap_shield"] = true
+				params["midday_volume_mult"] = 2.0
+			}
+			if tc.startET != "" {
+				params["midday_shield_start_et"] = tc.startET
+			}
+			if tc.endET != "" {
+				params["midday_shield_end_et"] = tc.endET
+			}
+
+			ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
+			st, err := s.Init(ctx, "TEST", params, nil)
+			require.NoError(t, err)
+
+			// Warmup bars must sit outside whatever midday-shield window the
+			// case configures, otherwise gate 4b blocks them and PrevMACDLine
+			// never gets populated — which then breaks crossover detection on
+			// the test bar. Space at 1-minute intervals from 09:25 ET so all
+			// three bars land in the pre-shield safe zone for any reasonable
+			// shield start >= 09:30.
+			warmupBase := time.Date(2025, 6, 2, 13, 35, 0, 0, time.UTC) // 09:35 ET
+			for i := 0; i < 3; i++ {
+				bar := strat.Bar{
+					Time:   warmupBase.Add(time.Duration(i) * time.Minute),
+					Open:   100, High: 101, Low: 99, Close: 100,
+					Volume: 1000,
+				}
+				ind := strat.IndicatorData{
+					EMA9: 99, EMA200: 95, VolumeSMA: 1000,
+					MACDLine: -0.5, MACDSignal: -0.3, MACDHistogram: -0.2,
+					RSI: 50,
+				}
+				st, _ = feedBMBar(t, s, ctx, "TEST", st, bar, ind)
+			}
+
+			crossBar := strat.Bar{
+				Time:   time.Date(2025, 6, 2, tc.utcHour, tc.utcMinute, 0, 0, time.UTC),
+				Open:   100, High: 102, Low: 99, Close: 101,
+				Volume: tc.volume,
+			}
+			crossInd := strat.IndicatorData{
+				EMA9: 100, EMA200: 95, VolumeSMA: tc.volumeSMA,
+				MACDLine: 0.1, MACDSignal: 0.05, MACDHistogram: 0.05,
+				RSI: 55,
+			}
+			_, sigs := feedBMBar(t, s, ctx, "TEST", st, crossBar, crossInd)
+			if tc.wantSignal {
+				require.Len(t, sigs, 1, "expected signal to fire")
+			} else {
+				require.Empty(t, sigs, "expected signal to be blocked")
+				reason := s.LastHoldReason("TEST")
+				require.NotNil(t, reason)
+				assert.Contains(t, reason.Summary, "midday trap shield", "hold reason should mention the shield")
+			}
+		})
+	}
+}
