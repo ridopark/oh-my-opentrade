@@ -774,6 +774,21 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 			)
 		})
 		log.Info().Msg("enriched bar persistence subscriber registered")
+
+		// Persist aggregated HTF (5m, 15m, 30m, 1h) bars so backtests and charts
+		// can read live-session HTF history back. 1m is already written by
+		// ingestion, so skip it here to avoid redundant writes.
+		_ = infra.eventBus.SubscribeAsync(ctx, domain.EventMarketBarSanitized, func(_ context.Context, evt domain.Event) error {
+			bar, ok := evt.Payload.(domain.MarketBar)
+			if !ok {
+				return nil
+			}
+			if bar.Timeframe == "1m" {
+				return nil
+			}
+			return infra.repo.SaveMarketBar(ctx, bar)
+		})
+		log.Info().Msg("HTF bar persistence subscriber registered")
 	}
 	if svc.symRouter != nil {
 		if err := svc.symRouter.Start(ctx); err != nil {
