@@ -10,26 +10,26 @@ import (
 type ExitRuleType string
 
 const (
-	ExitRuleTrailingStop   ExitRuleType = "TRAILING_STOP"
-	ExitRuleProfitTarget   ExitRuleType = "PROFIT_TARGET"
-	ExitRuleTimeExit       ExitRuleType = "TIME_EXIT"
-	ExitRuleEODFlatten     ExitRuleType = "EOD_FLATTEN"
-	ExitRuleMaxHoldingTime ExitRuleType = "MAX_HOLDING_TIME"
-	ExitRuleMaxLoss        ExitRuleType = "MAX_LOSS"
-	ExitRuleVolatilityStop ExitRuleType = "VOLATILITY_STOP"
-	ExitRuleSDTarget       ExitRuleType = "SD_TARGET"
-	ExitRuleStepStop       ExitRuleType = "STEP_STOP"
-	ExitRuleStagnationExit ExitRuleType = "STAGNATION_EXIT"
-	ExitRuleBreakevenStop  ExitRuleType = "BREAKEVEN_STOP"
-	ExitRuleDTEFloor       ExitRuleType = "DTE_FLOOR"
-	ExitRuleExpiryWatch    ExitRuleType = "EXPIRY_WATCH"
-	ExitRuleSwingStop      ExitRuleType = "SWING_STOP"
-	ExitRuleTieredTP       ExitRuleType = "TIERED_TP"
-	ExitRuleTimePartial    ExitRuleType = "TIME_PARTIAL"
-	ExitRulePremiumStop    ExitRuleType = "PREMIUM_STOP"   // exit if premium drops X% from entry
-	ExitRulePremiumTrail   ExitRuleType = "PREMIUM_TRAIL"  // trail X% from premium high-water mark
-	ExitRulePremiumTarget  ExitRuleType = "PREMIUM_TARGET" // exit if premium rises X% from entry
-	ExitRuleFastFail       ExitRuleType = "FAST_FAIL_EXIT" // exit if no MFE progress after N minutes
+	ExitRuleTrailingStop    ExitRuleType = "TRAILING_STOP"
+	ExitRuleProfitTarget    ExitRuleType = "PROFIT_TARGET"
+	ExitRuleTimeExit        ExitRuleType = "TIME_EXIT"
+	ExitRuleEODFlatten      ExitRuleType = "EOD_FLATTEN"
+	ExitRuleMaxHoldingTime  ExitRuleType = "MAX_HOLDING_TIME"
+	ExitRuleMaxLoss         ExitRuleType = "MAX_LOSS"
+	ExitRuleVolatilityStop  ExitRuleType = "VOLATILITY_STOP"
+	ExitRuleSDTarget        ExitRuleType = "SD_TARGET"
+	ExitRuleStepStop        ExitRuleType = "STEP_STOP"
+	ExitRuleStagnationExit  ExitRuleType = "STAGNATION_EXIT"
+	ExitRuleBreakevenStop   ExitRuleType = "BREAKEVEN_STOP"
+	ExitRuleDTEFloor        ExitRuleType = "DTE_FLOOR"
+	ExitRuleExpiryWatch     ExitRuleType = "EXPIRY_WATCH"
+	ExitRuleSwingStop       ExitRuleType = "SWING_STOP"
+	ExitRuleTieredTP        ExitRuleType = "TIERED_TP"
+	ExitRuleTimePartial     ExitRuleType = "TIME_PARTIAL"
+	ExitRulePremiumStop     ExitRuleType = "PREMIUM_STOP"     // exit if premium drops X% from entry
+	ExitRulePremiumTrail    ExitRuleType = "PREMIUM_TRAIL"    // trail X% from premium high-water mark
+	ExitRulePremiumTarget   ExitRuleType = "PREMIUM_TARGET"   // exit if premium rises X% from entry
+	ExitRuleFastFail        ExitRuleType = "FAST_FAIL_EXIT"   // exit if no MFE progress after N minutes
 	ExitRuleChandelierTrail ExitRuleType = "CHANDELIER_TRAIL" // trail giveback_pct of MFE once above activate_pct
 )
 
@@ -168,9 +168,17 @@ type MonitoredPosition struct {
 	Side             string // "BUY" (long) or "SELL" (short) — set from fill side
 	ExitPending      bool   // true when an exit intent has been emitted and is awaiting terminal outcome
 	ExitPendingAt    time.Time
-	ExitOrderID      string       // broker order ID of the active exit order (for cancel-and-chase)
-	ExitRetryCount   int          // number of exit attempts (market escalations); re-pegs do NOT increment this
-	EntryThesis      *EntryThesis // nil if no AI enrichment was available at entry
+	ExitOrderID      string // broker order ID of the active exit order (for cancel-and-chase)
+
+	// PendingExitOrderIDs is the authoritative set of broker-working exit
+	// orders for this position. Populated by processExitSubmitted, drained by
+	// processExitTerminal. Used to enforce "no parallel working exits" on the
+	// escalate-to-market path. ExitOrderID (singular) retains its existing
+	// meaning as the order currently being managed by handleExitTimeout.
+	PendingExitOrderIDs map[string]struct{} `json:"-"`
+
+	ExitRetryCount int          // number of exit attempts (market escalations); re-pegs do NOT increment this
+	EntryThesis    *EntryThesis // nil if no AI enrichment was available at entry
 
 	// Asymmetric exit timeout / re-peg state. A single "exit attempt" can
 	// span several broker orders — the initial limit and up to N re-pegs
@@ -205,9 +213,9 @@ type MonitoredPosition struct {
 	// BAG position. EntryPrice is the net premium paid (debit) or collected
 	// (credit). Quantity is the combo count. LegFillPrices mirrors Legs
 	// one-to-one with the per-leg fill prices used for P&L attribution.
-	Legs           []ComboLeg `json:"legs,omitempty"`
-	ComboType      ComboType  `json:"comboType,omitempty"`
-	LegFillPrices  []float64  `json:"legFillPrices,omitempty"`
+	Legs          []ComboLeg `json:"legs,omitempty"`
+	ComboType     ComboType  `json:"comboType,omitempty"`
+	LegFillPrices []float64  `json:"legFillPrices,omitempty"`
 
 	CustomState map[string]float64 `json:"customState,omitempty"`
 }
@@ -293,19 +301,20 @@ func NewMonitoredPosition(
 	}
 
 	return MonitoredPosition{
-		Symbol:           symbol,
-		EntryPrice:       entryPrice,
-		EntryTime:        entryTime,
-		HighWaterMark:    entryPrice,
-		LowWaterMark:     entryPrice,
-		Strategy:         strategy,
-		AssetClass:       assetClass,
-		ExitRules:        exitRules,
-		InitialExitRules: initialRules,
-		TenantID:         tenantID,
-		EnvMode:          envMode,
-		Quantity:         quantity,
-		CustomState:      make(map[string]float64),
+		Symbol:              symbol,
+		EntryPrice:          entryPrice,
+		EntryTime:           entryTime,
+		HighWaterMark:       entryPrice,
+		LowWaterMark:        entryPrice,
+		Strategy:            strategy,
+		AssetClass:          assetClass,
+		ExitRules:           exitRules,
+		InitialExitRules:    initialRules,
+		TenantID:            tenantID,
+		EnvMode:             envMode,
+		Quantity:            quantity,
+		CustomState:         make(map[string]float64),
+		PendingExitOrderIDs: make(map[string]struct{}),
 	}, nil
 }
 

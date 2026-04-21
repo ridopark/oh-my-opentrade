@@ -473,9 +473,19 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 	if s.positionGate != nil {
 		s.positionGate.ClearInflightExit(tenantID, envMode, symbol)
 	}
+	// Cancel any peer exit orders that may be working for this position
+	// (e.g. an EOD_FLATTEN submitted in the gap between an unsolicited
+	// broker-cancel of the primary limit and the escalate firing). The
+	// single-slot ExitOrderID cannot police parallels; this enforces
+	// "at most one working exit" before the market order goes out.
+	peerReconciled := s.cancelAllPendingExits(key)
 	s.mu.Lock()
 	livePos, ok = s.positions[key]
 	if !ok {
+		return
+	}
+	if peerReconciled {
+		// A peer cancel raced a fill and reconcile removed the position.
 		return
 	}
 	if !ruleOK {
@@ -485,6 +495,32 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 		return
 	}
 	s.triggerExit(livePos, rule, "escalate-to-market", livePos.EntryPrice, s.nowFunc())
+}
+
+// cancelAllPendingExits iterates pos.PendingExitOrderIDs and cancels each
+// via cancelAndAwaitTerminal. Safe against races: the existing single-order
+// helper returns (reconciled=true) if a cancel-fill race occurred, and the
+// map entry will be removed by processExitTerminal before the race unwinds.
+// The caller must NOT hold s.mu on entry — this helper acquires it to
+// snapshot the set, then releases it before performing broker RPCs.
+func (s *Service) cancelAllPendingExits(key string) (reconciledAny bool) {
+	s.mu.Lock()
+	pos, ok := s.positions[key]
+	if !ok {
+		s.mu.Unlock()
+		return false
+	}
+	ids := make([]string, 0, len(pos.PendingExitOrderIDs))
+	for id := range pos.PendingExitOrderIDs {
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+	for _, id := range ids {
+		if r := s.cancelAndAwaitTerminal(key, id); r {
+			reconciledAny = true
+		}
+	}
+	return
 }
 
 // cancelAndAwaitTerminal issues the cancel and polls GetOrderDetails until

@@ -155,12 +155,12 @@ func TestHandleExitTimeout_NormalCancelSuccess_SchedulesRetry(t *testing.T) {
 // cancel-and-await protocol through its branches.
 type trackingBroker struct {
 	mockBroker
-	cancelCalls    []string
-	detailsCalls   int
-	detailsStatus  string
-	cancelReturn   error
-	detailsResult  ports.OrderDetails
-	detailsErr     error
+	cancelCalls   []string
+	detailsCalls  int
+	detailsStatus string
+	cancelReturn  error
+	detailsResult ports.OrderDetails
+	detailsErr    error
 }
 
 func (m *trackingBroker) CancelOrder(_ context.Context, orderID string) error {
@@ -527,4 +527,196 @@ func TestHandleExitTimeout_ExitRuleEvalSkippedWhilePending(t *testing.T) {
 	// prevents MAX_LOSS evaluation while the exit is already in flight.
 	assert.Equal(t, beforePublished, afterPublished,
 		"tick loop must not publish a parallel exit intent while ExitPending is true")
+}
+
+// ---------------------------------------------------------------------------
+// Parallel-working-exits guards (2026-04-21 HIMS/XOM regression).
+// ---------------------------------------------------------------------------
+
+// TestEscalateToMarket_CancelsAllWorkingExits verifies that the escalate
+// branch of handleExitTimeout cancels every broker-working exit order
+// recorded in PendingExitOrderIDs, not just the one tracked in
+// ExitOrderID. The HIMS/XOM bug was caused by EOD_FLATTEN + escalate
+// submitting parallel SELL orders because the single-slot ExitOrderID
+// was stale when escalate fired.
+func TestEscalateToMarket_CancelsAllWorkingExits(t *testing.T) {
+	broker := &trackingBroker{detailsStatus: "canceled"}
+	svc := newTestServiceWithBrokerAndRepo(&broker.mockBroker, &capturingRepo{})
+	svc.broker = broker
+
+	// Equity stop → budget 0 → first timeout escalates (no re-peg).
+	now := svc.nowFunc()
+	svc.processFill(fillMsg{
+		Symbol:     "HIMS",
+		Side:       "BUY",
+		Price:      30.0,
+		Quantity:   13,
+		FilledAt:   now.Add(-10 * time.Minute),
+		Strategy:   "macd",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules:  []domain.ExitRule{{Type: domain.ExitRuleTrailingStop, Params: map[string]float64{}}},
+	})
+	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "HIMS")
+	pos := svc.positions[key]
+	require.NotNil(t, pos)
+	// Two parallel working exits: the primary (tracked) and a peer
+	// (e.g. an EOD_FLATTEN submitted in the gap after an unsolicited
+	// broker cancel of the primary limit).
+	pos.ExitPending = true
+	pos.ExitOrderID = "primary-limit"
+	pos.PendingExitOrderIDs = map[string]struct{}{
+		"primary-limit":  {},
+		"peer-eod-order": {},
+	}
+	pos.ExitPendingAt = now.Add(-exitPendingTimeoutEquity - time.Second)
+
+	svc.tick()
+
+	// Both ids must have been canceled at the broker. The primary-limit
+	// may appear twice (once from handleExitTimeout's primary cancel, once
+	// from the peer sweep since no event bus is wired here to drain the
+	// set between). That's acceptable — idempotent cancel-then-resubmit is
+	// the whole point. What matters: the peer was not left working.
+	assert.Contains(t, broker.cancelCalls, "primary-limit",
+		"primary limit must be canceled")
+	assert.Contains(t, broker.cancelCalls, "peer-eod-order",
+		"escalate must cancel every working exit — not just the tracked one")
+}
+
+// TestEscalateToMarket_PeerCancelledWhenPrimaryAlreadyTerminal pins the
+// exact 2026-04-21 HIMS/XOM scenario: ExitOrderID points to a stale
+// (already-terminal) primary limit and the authoritative working order
+// is only tracked in PendingExitOrderIDs. The new sweep path is the only
+// thing that can catch the live peer — cancelAndAwaitTerminal on the
+// stale primary is a no-op. Guards against a regression that would make
+// cancelAllPendingExits skip ids already handled via the tracked slot.
+func TestEscalateToMarket_PeerCancelledWhenPrimaryAlreadyTerminal(t *testing.T) {
+	broker := &trackingBroker{detailsStatus: "canceled"}
+	svc := newTestServiceWithBrokerAndRepo(&broker.mockBroker, &capturingRepo{})
+	svc.broker = broker
+
+	now := svc.nowFunc()
+	svc.processFill(fillMsg{
+		Symbol:     "HIMS",
+		Side:       "BUY",
+		Price:      30.0,
+		Quantity:   13,
+		FilledAt:   now.Add(-10 * time.Minute),
+		Strategy:   "macd",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules:  []domain.ExitRule{{Type: domain.ExitRuleTrailingStop, Params: map[string]float64{}}},
+	})
+	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "HIMS")
+	pos := svc.positions[key]
+	require.NotNil(t, pos)
+	// Incident-exact: ExitOrderID points to a terminal primary (its entry
+	// was drained from PendingExitOrderIDs when processExitTerminal saw it),
+	// and the EOD_FLATTEN peer is the only broker-working exit.
+	pos.ExitPending = true
+	pos.ExitOrderID = "stale-terminal-primary"
+	pos.PendingExitOrderIDs = map[string]struct{}{
+		"working-eod-peer": {},
+	}
+	pos.ExitPendingAt = now.Add(-exitPendingTimeoutEquity - time.Second)
+
+	svc.tick()
+
+	assert.Contains(t, broker.cancelCalls, "working-eod-peer",
+		"sweep must cancel peers even when ExitOrderID points to a terminal primary")
+}
+
+// TestProcessExitTerminal_WithRemainingPeers_KeepsExitPending verifies
+// that when a terminal event arrives for one of several working exits,
+// ExitPending stays true and the remaining peers are canceled. Without
+// this, an unsolicited broker cancel for order A would clear
+// ExitPending while order B is still working — leaving the tick loop
+// free to fire a third rule.
+func TestProcessExitTerminal_WithRemainingPeers_KeepsExitPending(t *testing.T) {
+	broker := &trackingBroker{detailsStatus: "canceled"}
+	svc := newTestServiceWithBrokerAndRepo(&broker.mockBroker, &capturingRepo{})
+	svc.broker = broker
+
+	svc.processFill(fillMsg{
+		Symbol:     "XOM",
+		Side:       "BUY",
+		Price:      148.0,
+		Quantity:   8,
+		FilledAt:   time.Now().Add(-10 * time.Minute),
+		Strategy:   "macd",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules:  []domain.ExitRule{},
+	})
+	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "XOM")
+	pos := svc.positions[key]
+	require.NotNil(t, pos)
+	pos.ExitPending = true
+	pos.ExitOrderID = "order-A"
+	pos.PendingExitOrderIDs = map[string]struct{}{
+		"order-A": {},
+		"order-B": {},
+	}
+
+	svc.processExitTerminal(exitOrderTerminalMsg{
+		Symbol:        "XOM",
+		BrokerOrderID: "order-A",
+	})
+
+	assert.True(t, pos.ExitPending, "ExitPending must stay true while peer exit still working")
+	assert.NotContains(t, pos.PendingExitOrderIDs, "order-A", "terminal order drained from set")
+	assert.Contains(t, pos.PendingExitOrderIDs, "order-B", "peer retained until its own terminal")
+	assert.Contains(t, broker.cancelCalls, "order-B",
+		"peer must be canceled when terminal arrives for its sibling")
+}
+
+// TestProcessExitTerminal_LastPeer_ClearsExitPending verifies the normal
+// single-exit path still clears state: when the last entry in
+// PendingExitOrderIDs goes terminal, ExitPending/ExitOrderID reset so
+// the tick loop can re-evaluate exits on the next pass.
+func TestProcessExitTerminal_LastPeer_ClearsExitPending(t *testing.T) {
+	broker := &trackingBroker{detailsStatus: "canceled"}
+	svc := newTestServiceWithBrokerAndRepo(&broker.mockBroker, &capturingRepo{})
+	svc.broker = broker
+
+	svc.processFill(fillMsg{
+		Symbol:     "XOM",
+		Side:       "BUY",
+		Price:      148.0,
+		Quantity:   8,
+		FilledAt:   time.Now().Add(-10 * time.Minute),
+		Strategy:   "macd",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules:  []domain.ExitRule{},
+	})
+	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "XOM")
+	pos := svc.positions[key]
+	require.NotNil(t, pos)
+	pos.ExitPending = true
+	pos.ExitOrderID = "order-A"
+	pos.PendingExitOrderIDs = map[string]struct{}{
+		"order-A": {},
+		"order-B": {},
+	}
+
+	// First terminal: peer remains, ExitPending stays true.
+	svc.processExitTerminal(exitOrderTerminalMsg{
+		Symbol:        "XOM",
+		BrokerOrderID: "order-A",
+	})
+	require.True(t, pos.ExitPending)
+
+	// With the peer canceled via the cancelAllPendingExits path above,
+	// processExitTerminal will be re-invoked by the broker for order-B.
+	// Simulate that terminal arriving. ExitOrderID still tracks "order-A"
+	// because handleExitTimeout never ran; adjust ExitOrderID to match
+	// the last working order so the terminal matches the tracked slot.
+	pos.ExitOrderID = "order-B"
+
+	svc.processExitTerminal(exitOrderTerminalMsg{
+		Symbol:        "XOM",
+		BrokerOrderID: "order-B",
+	})
+
+	assert.False(t, pos.ExitPending, "ExitPending cleared when last peer goes terminal")
+	assert.Empty(t, pos.ExitOrderID)
+	assert.Empty(t, pos.PendingExitOrderIDs)
 }

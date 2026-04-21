@@ -26,19 +26,19 @@ import (
 // This design eliminates race conditions by construction and avoids blocking
 // the synchronous in-memory event bus.
 type Service struct {
-	eventBus     ports.EventBusPort
-	priceCache   ports.PriceCachePort
-	positionGate *execution.PositionGate
+	eventBus      ports.EventBusPort
+	priceCache    ports.PriceCachePort
+	positionGate  *execution.PositionGate
 	broker        ports.BrokerPort
 	repo          ports.RepositoryPort
 	intentJournal ports.OrderIntentJournal // Sprint 2 — nil means legacy cancel-all bootstrap
 	// notifier, when non-nil, is used by the bootstrap reconciler to raise
 	// Discord/Telegram alerts for unmanaged broker orders and lost journal
 	// intents. Nil is safe — alerts fall back to log warnings only.
-	notifier     ports.NotifierPort
-	specStore    portstrategy.SpecStore
-	log          zerolog.Logger
-	nowFunc      func() time.Time
+	notifier  ports.NotifierPort
+	specStore portstrategy.SpecStore
+	log       zerolog.Logger
+	nowFunc   func() time.Time
 
 	// Actor channels.
 	fills         chan fillMsg
@@ -55,11 +55,11 @@ type Service struct {
 	pendingGlobalDrifts  map[domain.Symbol]int                // key: symbol → consecutive broker>DB drift observations
 	mu                   sync.RWMutex                         // protects positions for concurrent reads (e.g. PositionCount)
 
-	barDurCache          map[string]time.Duration // cached barDurationFor results
-	snapshotFn           IndicatorSnapshotFunc
-	optionsPricePort     ports.OptionsPricePort
-	earningsCalendar     ports.EarningsCalendarPort
-	optionsPollInterval  time.Duration
+	barDurCache         map[string]time.Duration // cached barDurationFor results
+	snapshotFn          IndicatorSnapshotFunc
+	optionsPricePort    ports.OptionsPricePort
+	earningsCalendar    ports.EarningsCalendarPort
+	optionsPollInterval time.Duration
 
 	// repegNotifier, when non-nil, is called by the re-peg/escalate path
 	// just before a broker CancelOrder so the execution service can tag
@@ -522,6 +522,10 @@ func (s *Service) processExitSubmitted(msg exitOrderSubmittedMsg) {
 		return
 	}
 	pos.ExitOrderID = msg.BrokerOrderID
+	if pos.PendingExitOrderIDs == nil {
+		pos.PendingExitOrderIDs = make(map[string]struct{})
+	}
+	pos.PendingExitOrderIDs[msg.BrokerOrderID] = struct{}{}
 	if !pos.ExitPending {
 		pos.ExitPending = true
 		pos.ExitPendingAt = s.nowFunc()
@@ -545,24 +549,46 @@ func (s *Service) processExitSubmitted(msg exitOrderSubmittedMsg) {
 // exclusively in handleExitTimeout from here on.
 func (s *Service) processExitTerminal(msg exitOrderTerminalMsg) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	key := fmt.Sprintf("%s:%s:%s", s.tenantID, s.envMode, msg.Symbol)
 	pos, ok := s.positions[key]
 	if !ok {
+		s.mu.Unlock()
 		return
+	}
+	if pos.PendingExitOrderIDs != nil {
+		delete(pos.PendingExitOrderIDs, msg.BrokerOrderID)
 	}
 	if pos.ExitOrderID == "" {
 		// handleExitTimeout already consumed the terminal and is mid-resubmit.
+		s.mu.Unlock()
 		return
 	}
 	if pos.ExitOrderID != msg.BrokerOrderID {
 		// Event refers to a stale broker order id (old attempt). Ignore.
+		s.mu.Unlock()
 		return
 	}
 	// Terminal for the currently-tracked order WITHOUT handleExitTimeout
 	// having driven the lifecycle (e.g. the broker canceled it unilaterally,
-	// or a rejection arrived on a fresh exit). Preserve legacy behavior:
-	// clear ExitPending so the tick loop re-evaluates on the next pass.
+	// or a rejection arrived on a fresh exit). If other peer exit orders
+	// are still working on this position, keep ExitPending set and cancel
+	// them — the single-slot ExitOrderID cannot police a parallel working
+	// exit, and the tick loop's ExitPending guard is the only thing that
+	// stops a new rule from firing a second order in the gap.
+	if len(pos.PendingExitOrderIDs) > 0 {
+		// Clear the just-terminal id from the tracked slot so a follow-up
+		// handleExitTimeout tick does not cancel-probe an already-terminal
+		// order. ExitPending stays true; the peer sweep drives the lifecycle.
+		pos.ExitOrderID = ""
+		s.log.Warn().
+			Str("symbol", string(msg.Symbol)).
+			Str("terminal_order_id", msg.BrokerOrderID).
+			Int("peer_count", len(pos.PendingExitOrderIDs)).
+			Msg("exit order terminal with peer working exits - canceling peers, holding ExitPending")
+		s.mu.Unlock()
+		s.cancelAllPendingExits(key)
+		return
+	}
 	pos.ExitPending = false
 	pos.ExitOrderID = ""
 	pos.ExitRetryCount++
@@ -571,6 +597,7 @@ func (s *Service) processExitTerminal(msg exitOrderTerminalMsg) {
 		Str("broker_order_id", msg.BrokerOrderID).
 		Int("retry_count", pos.ExitRetryCount).
 		Msg("exit order terminal (unsolicited) — unlocking position for retry")
+	s.mu.Unlock()
 }
 
 // processExitRejected removes a ghost position when the broker confirms no position exists.
