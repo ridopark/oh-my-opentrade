@@ -89,6 +89,7 @@ func TestTick_WarnThreshold_NoNotify(t *testing.T) {
 
 func TestTick_AlertThreshold_Notifies(t *testing.T) {
 	now := rthNow()
+	startAt := now.Add(-1 * time.Hour) // service was running before LastEvalAt
 	nf := &fakeNotifier{}
 	svc := New(Deps{
 		ListStrategies: func() []WatchedStrategy {
@@ -99,6 +100,7 @@ func TestTick_AlertThreshold_Notifies(t *testing.T) {
 		},
 		Notifier: nf,
 		Log:      zerolog.Nop(),
+		Now:      func() time.Time { return startAt },
 	}, Config{})
 	svc.Tick(context.Background(), now)
 	require.Equal(t, 1, nf.count(), "alert should notify once")
@@ -108,6 +110,7 @@ func TestTick_AlertThreshold_Notifies(t *testing.T) {
 
 func TestTick_AlertDedupe(t *testing.T) {
 	now := rthNow()
+	startAt := now.Add(-1 * time.Hour)
 	nf := &fakeNotifier{}
 	staleAt := now.Add(-5 * time.Minute)
 	svc := New(Deps{
@@ -119,6 +122,7 @@ func TestTick_AlertDedupe(t *testing.T) {
 		},
 		Notifier: nf,
 		Log:      zerolog.Nop(),
+		Now:      func() time.Time { return startAt },
 	}, Config{DedupeWindow: 10 * time.Minute})
 	svc.Tick(context.Background(), now)
 	svc.Tick(context.Background(), now.Add(30*time.Second))
@@ -144,6 +148,28 @@ func TestTick_InactiveStrategy_Skipped(t *testing.T) {
 	}, Config{})
 	svc.Tick(context.Background(), now)
 	require.Zero(t, nf.count(), "inactive strategies should be skipped")
+}
+
+func TestTick_LastEvalBeforeStart_NotAlerted(t *testing.T) {
+	// LastEvalAt stamped by warmup replay with historical bar time (days ago)
+	// must not trigger alerts — no live eval has occurred yet post-start.
+	now := rthNow()
+	startAt := now.Add(-2 * time.Minute) // service just started
+	historicalWarmupBar := now.Add(-3 * 24 * time.Hour)
+	nf := &fakeNotifier{}
+	svc := New(Deps{
+		ListStrategies: func() []WatchedStrategy {
+			return []WatchedStrategy{{ID: "avwap_v4", Active: true, Symbols: []string{"IWM"}}}
+		},
+		LivenessFor: func(string) []domain.SymbolLiveness {
+			return []domain.SymbolLiveness{{Symbol: "IWM", LastEvalAt: historicalWarmupBar}}
+		},
+		Notifier: nf,
+		Log:      zerolog.Nop(),
+		Now:      func() time.Time { return startAt },
+	}, Config{})
+	svc.Tick(context.Background(), now)
+	require.Zero(t, nf.count(), "warmup-replayed LastEvalAt must not trigger alerts")
 }
 
 func TestTick_ZeroLastEval_NotAlerted(t *testing.T) {

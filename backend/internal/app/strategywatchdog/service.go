@@ -66,6 +66,8 @@ type Service struct {
 	deps Deps
 	cfg  Config
 
+	startTime time.Time // set at New; used to ignore warmup-replayed LastEvalAt
+
 	mu          sync.Mutex
 	lastAlertAt map[string]time.Time // key: "strategy:symbol"
 }
@@ -78,6 +80,7 @@ func New(deps Deps, cfg Config) *Service {
 	return &Service{
 		deps:        deps,
 		cfg:         cfg,
+		startTime:   deps.Now(),
 		lastAlertAt: make(map[string]time.Time),
 	}
 }
@@ -120,6 +123,13 @@ func (s *Service) Tick(ctx context.Context, now time.Time) {
 		snap := s.deps.LivenessFor(ws.ID)
 		for _, sl := range snap {
 			if sl.LastEvalAt.IsZero() {
+				continue
+			}
+			// Ignore LastEvalAt stamped by warmup-replay before the watchdog
+			// started — those are historical bar times from the replay path,
+			// not live evaluations. Only alert once we've observed a post-
+			// start eval; until then staleness is meaningless.
+			if sl.LastEvalAt.Before(s.startTime) {
 				continue
 			}
 			staleFor := now.Sub(sl.LastEvalAt)
