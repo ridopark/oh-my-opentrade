@@ -1810,6 +1810,29 @@ func (r *Runner) WarmUpTF(symbol string, tf string, bars []domain.MarketBar, sna
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Warm the per-(symbol,tf) IndicatorCalculator with historical bars. The
+	// live path creates this lazily on first bar, so without warmup SMA/EMA/
+	// RSI/ATR/etc. are all zero for ~20 live bars and entry gates requiring
+	// VolumeSMA > 0 (breakout volume check, etc.) never fire for the first
+	// ~100 min post-restart. snapshotFn supplies indicators for the strategy
+	// state itself — htfCalcs is a separate instance owned by the runner.
+	if tf != "1m" {
+		key := symbol + ":" + tf
+		if symKeys := r.aggKeysBySym[symbol]; symKeys != nil {
+			if k := symKeys[tf]; k != "" {
+				key = k
+			}
+		}
+		htfCalc, ok := r.htfCalcs[key]
+		if !ok {
+			htfCalc = monitor.NewIndicatorCalculator()
+			r.htfCalcs[key] = htfCalc
+		}
+		for _, bar := range bars {
+			htfCalc.Update(bar)
+		}
+	}
+
 	var lastIndicators start.IndicatorData
 	for _, bar := range bars {
 		indicators := snapshotFn(bar)
