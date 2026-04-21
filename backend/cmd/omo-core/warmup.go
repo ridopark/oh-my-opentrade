@@ -277,10 +277,13 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 
 	svc.monitor.InitAggregators(syms.all, todayOpen)
 
-	// Equity warmup: use full previous NYSE RTH session for proper VWAP/confluence.
+	// Equity warmup: 3 previous NYSE RTH sessions (~234 5m bars) so 200-period
+	// indicators like EMA200 can stabilize by first live bar. Single-session
+	// warmup produced only 78 5m bars, leaving EMA200 / long SMA windows cold
+	// for ~2.5 trading days after every restart.
 	if len(syms.equity) > 0 {
-		prevStart, prevEnd := domain.PreviousRTHSession(time.Now())
-		warmupFrom := prevStart // full session from 9:30 ET (was last 2 hours)
+		prevStart, prevEnd := domain.PreviousNRTHSessions(time.Now(), 3)
+		warmupFrom := prevStart
 		warmupTo := prevEnd
 		warmupLog.Info().
 			Time("prev_session_start", prevStart).
