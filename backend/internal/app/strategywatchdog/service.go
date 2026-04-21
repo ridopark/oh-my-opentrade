@@ -38,10 +38,17 @@ type Deps struct {
 }
 
 // Config holds tunable thresholds. Zero values fall back to defaults.
+//
+// Thresholds must exceed a strategy's natural bar cadence because LastEvalAt
+// is stamped with bar.Time (not wall clock). For a 5m-bar strategy the
+// 12:30 bucket is emitted at wall clock ~12:34, so peak natural staleness
+// between evaluations is ~5m. 90s/180s thresholds fired on every cycle as
+// false positives (2026-04-21 12:35 CDT alert storm). New defaults assume
+// strategies run on 5m bars — raise further for 15m+.
 type Config struct {
 	TickInterval time.Duration // default 30s
-	WarnStale    time.Duration // default 90s — log WARN per tick
-	AlertStale   time.Duration // default 180s — log ERROR + notify, deduped
+	WarnStale    time.Duration // default 6m — log WARN per tick
+	AlertStale   time.Duration // default 8m — log ERROR + notify, deduped
 	DedupeWindow time.Duration // default 10m — per strategy+symbol
 }
 
@@ -50,10 +57,10 @@ func (c *Config) applyDefaults() {
 		c.TickInterval = 30 * time.Second
 	}
 	if c.WarnStale == 0 {
-		c.WarnStale = 90 * time.Second
+		c.WarnStale = 6 * time.Minute
 	}
 	if c.AlertStale == 0 {
-		c.AlertStale = 180 * time.Second
+		c.AlertStale = 8 * time.Minute
 	}
 	if c.DedupeWindow == 0 {
 		c.DedupeWindow = 10 * time.Minute
