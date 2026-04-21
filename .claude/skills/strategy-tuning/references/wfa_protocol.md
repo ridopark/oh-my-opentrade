@@ -83,6 +83,76 @@ the same test segment.
 - The pair-validation backtest. That is cross-strategy robustness, not
   out-of-sample discipline.
 
+## Symbol-holdout split (orthogonal to time-split)
+
+Time-split OOS is necessary but **not sufficient** for factor/signal validation.
+A parameter or feature can pass time-split but fail on held-out symbols if it
+was exploiting microstructure specific to the tuning universe.
+
+When this applies: any new factor, signal, or feature proposed from
+cross-sectional backtest data. Pure parameter tweaks on a single symbol are
+exempt.
+
+Protocol:
+1. Partition the liquid universe into a tuning set and a held-out set of
+   comparable character (same asset class, similar ADV, similar sector mix).
+   Typical: 5 tune symbols, 3-5 held-out. Held-out must NEVER appear in any
+   tuning backtest.
+2. Run the standard time-split IS/OOS on the tune set.
+3. Freeze the config. Run ONCE on the held-out set with the edge-test window
+   frozen too (full period, no re-split).
+
+Diagnostic for symbol-specific overfit:
+- Threshold-calibration problems produce **same-sign, smaller-magnitude** edge
+  on held-out. Edge compresses but doesn't flip.
+- Overfit to microstructure produces **sign flips** (often visible only at
+  longer horizons like r12 where noise has cleared), OR **fire-rate collapse**
+  (factor barely fires on held-out because its trigger conditions don't match
+  the held-out symbols' structure).
+
+If you observe either, shelve the factor or restrict to the structurally
+robust sub-finding (e.g., a veto/filter that depends only on co-occurrence
+direction, not on the factor's magnitude). Don't retune on a broader universe
+to "fix" sign flips — a broader fit will just relocate the same flaw.
+
+**Observed case (2026-04-20, reversal-factor research):** tune-set IS r6 =
++1.69 bps (t=2.77), time-split OOS r6 = +1.61 bps (t=1.04), looked marginal
+but same sign. Held-out (NVDA/AMZN/GOOGL) r12 flipped from +2.43 to -1.31,
+fire rate collapsed 6.3% → 3.15%. Factor shelved; only the same-bar co-fire
+veto (a structural finding robust across all three windows) was shipped.
+
+## When WFA is NOT the right validation path (rare-event safety filters)
+
+Walk-forward and held-out validation assume the feature fires often enough
+that trade-level outcomes carry statistical signal in a reasonable window.
+Some features — safety filters, vetoes, circuit breakers — are designed to
+fire rarely on a narrow intersection of conditions. For these, the WFA frame
+is misleading and produces the wrong deployment timeline.
+
+Diagnostic: when `|live-decision-bars ∩ research-population-bars|` is much
+smaller than the research population itself. Example from the 2026-04-20
+cofire-veto thread: research validated at N=144 co-fire bars on held-out
+symbols (t=-3.08), but the deployment intersects only with AVWAP entry-
+candidate bars, which is ~2% of all bars. The 10-month backtest saw 3 veto
+fires out of 2,765 entries — zero statistical power to validate from trade
+outcomes, regardless of how long you wait.
+
+Correct framing:
+- **Validation grounds**: the bar-level research, already done. Don't try
+  to re-validate via live trade outcomes — the arithmetic doesn't support
+  it (~12 fires/year × need 100+ for significance = 8+ years).
+- **Shadow-mode purpose**: plumbing verification. Confirm predicate fires
+  in live as designed, logs look right, no crashes, no spurious fires.
+  One month of even-zero-fires suffices if the telemetry is clean.
+- **Ship decision**: after plumbing check, enforce based on the research,
+  not on a statistical re-derivation from deployment data.
+- **Rollout cadence**: use time-based gates (1 month shadow → 1 month
+  enforce-restricted → enforce-broad), not "wait for statistical
+  significance," which will never arrive for rare events.
+
+Applies to: vetoes, circuit breakers, regime-specific gates, any filter on
+a narrow subset of an existing strategy's decision surface.
+
 ## Anti-patterns observed in this project (2026-04-18 session)
 
 - "Split the data, validate on each half" when the endpoint 09:55 was
