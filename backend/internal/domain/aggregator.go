@@ -85,10 +85,10 @@ func (a *BarAggregator) Push(bar MarketBar) (closed MarketBar, ok bool) {
 		return MarketBar{}, false
 	}
 	if bar.Time.Before(a.sessionOpen) {
+		// Legitimate during warmup replay (yesterday's bars pushed to today's
+		// session-aligned aggregator). Counter lets us spot unexpected spikes
+		// without logging per bar — 52k WARN writes during warmup saturated I/O.
 		aggRejectedSessionOpen.Add(1)
-		slog.Warn("aggregator: bar.Time before sessionOpen — dropped",
-			"symbol", a.symbol, "tf", a.tf,
-			"bar_time", bar.Time, "session_open", a.sessionOpen)
 		return MarketBar{}, false
 	}
 	if bar.High < bar.Low || bar.Volume <= 0 {
