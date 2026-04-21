@@ -78,7 +78,7 @@ func TestTick_WarnThreshold_NoNotify(t *testing.T) {
 			return []WatchedStrategy{{ID: "avwap_v4", Active: true, Symbols: []string{"IWM"}}}
 		},
 		LivenessFor: func(string) []domain.SymbolLiveness {
-			return []domain.SymbolLiveness{{Symbol: "IWM", LastEvalAt: now.Add(-120 * time.Second)}}
+			return []domain.SymbolLiveness{{Symbol: "IWM", LastEvalAt: now.Add(-7 * time.Minute)}}
 		},
 		Notifier: nf,
 		Log:      zerolog.Nop(),
@@ -96,7 +96,7 @@ func TestTick_AlertThreshold_Notifies(t *testing.T) {
 			return []WatchedStrategy{{ID: "avwap_v4", Active: true, Symbols: []string{"IWM"}}}
 		},
 		LivenessFor: func(string) []domain.SymbolLiveness {
-			return []domain.SymbolLiveness{{Symbol: "IWM", LastEvalAt: now.Add(-5 * time.Minute)}}
+			return []domain.SymbolLiveness{{Symbol: "IWM", LastEvalAt: now.Add(-10 * time.Minute)}}
 		},
 		Notifier: nf,
 		Log:      zerolog.Nop(),
@@ -112,7 +112,7 @@ func TestTick_AlertDedupe(t *testing.T) {
 	now := rthNow()
 	startAt := now.Add(-1 * time.Hour)
 	nf := &fakeNotifier{}
-	staleAt := now.Add(-5 * time.Minute)
+	staleAt := now.Add(-10 * time.Minute)
 	svc := New(Deps{
 		ListStrategies: func() []WatchedStrategy {
 			return []WatchedStrategy{{ID: "avwap_v4", Active: true, Symbols: []string{"IWM"}}}
