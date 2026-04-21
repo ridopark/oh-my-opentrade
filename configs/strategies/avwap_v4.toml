@@ -229,6 +229,23 @@ inducement_breach_max_bps = 80
 inducement_reversal_bars = 3
 inducement_volume_min_ratio = 1.2
 
+# ─── Co-fire veto (price-volume structure shift) ────────────────────────
+# Blocks entries on bars where inducement fires AND a climactic-exhaustion
+# pattern fires same-bar. Research (omo-signal-corr IS/OOS/held-out, Apr 2026):
+# this subset has consistently negative r6/r12 returns (-3 to -12 bps, held-out
+# t=-3.08). The reversal factor's standalone signal was dead; only the co-fire
+# veto survived all three validation windows.
+#   Stage 1: long-only (held-out r12 damage worst on longs). Add shorts after
+#   a month of live data if behaviour matches expectations.
+#   Thresholds locked to the validated operating point (|stretch_z| in [2,3]).
+cofire_veto_enabled = false
+cofire_veto_shadow = false
+cofire_veto_long_only = true
+cofire_veto_stretch_z_min = 2.0
+cofire_veto_stretch_z_max = 3.0
+cofire_veto_vol_shift_max = -0.5
+cofire_veto_session_sigma_min_bars = 6
+
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
 

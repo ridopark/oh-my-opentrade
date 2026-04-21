@@ -271,6 +271,20 @@ type AVWAPConfig struct {
 	InducementBreachMaxBps   int
 	InducementReversalBars   int
 	InducementVolumeMinRatio float64
+
+	// Co-fire veto: block entries on bars where inducement fires AND the
+	// climactic-exhaustion pattern (stretch_z, vol_shift) also fires same-bar.
+	// Research (omo-signal-corr, IS/OOS/held-out) showed this subset has
+	// consistently negative forward returns. Disabled by default. Shadow mode
+	// logs would-have-blocked events without enforcing; long-only gate starts
+	// conservative per quant recommendation.
+	CofireVetoEnabled             bool
+	CofireVetoShadow              bool
+	CofireVetoLongOnly            bool
+	CofireVetoStretchZMin         float64
+	CofireVetoStretchZMax         float64
+	CofireVetoVolShiftMax         float64
+	CofireVetoSessionSigmaMinBars int
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -334,6 +348,16 @@ type AVWAPState struct {
 	RecentSwingLows      []start.SwingLevel          // ring buffer capped at InducementSwingDepth
 	PendingInducement    *start.PendingInducement    // in-flight multi-bar reversal candidate
 	LastInducementSignal *start.InducementSignal     `json:"-"` // consumed by computeConfluence on current bar
+
+	// Co-fire veto state. Not persisted: on restart, the 10-session warmup
+	// during which the veto cannot fire is the conservative default.
+	CofireSessionDate    string               `json:"-"`
+	CofireSessionVWAPNum float64              `json:"-"`
+	CofireSessionVWAPDen float64              `json:"-"`
+	CofireSessionReturns []float64            `json:"-"`
+	CofireLastClose      float64              `json:"-"`
+	CofireTODBuckets     map[string][]float64 `json:"-"`
+	CofireBucketedZHist  []float64            `json:"-"`
 }
 
 // SetTideData is called by the strategy runner before every OnBar with the
@@ -645,6 +669,232 @@ func (s *AVWAPState) updateInducement(bar start.Bar, cfg AVWAPConfig) {
 	)
 	s.PendingInducement = pending
 	s.LastInducementSignal = sig
+}
+
+// updateCofireVetoState maintains the per-symbol session VWAP, rolling session
+// sigma, and time-of-day bucketed volume state needed to evaluate the co-fire
+// veto on each RTH bar. Runs on every bar regardless of whether the veto is
+// enabled, so enabling the flag does not need a warmup restart. Computation is
+// a handful of float ops plus one map lookup per bar — trivial on the hot path.
+//
+// RTH-only: extended hours bars are skipped because session VWAP has no
+// meaningful anchor outside RTH and the research validated the veto on RTH 5m
+// bars only.
+func (s *AVWAPState) updateCofireVetoState(bar start.Bar) {
+	if etLocation == nil {
+		return
+	}
+	et := bar.Time.In(etLocation)
+	if et.Weekday() == time.Saturday || et.Weekday() == time.Sunday {
+		return
+	}
+	minutes := et.Hour()*60 + et.Minute()
+	if minutes < 9*60+30 || minutes >= 16*60 {
+		return
+	}
+
+	date := et.Format("2006-01-02")
+	if date != s.CofireSessionDate {
+		s.CofireSessionDate = date
+		s.CofireSessionVWAPNum = 0
+		s.CofireSessionVWAPDen = 0
+		s.CofireSessionReturns = s.CofireSessionReturns[:0]
+		s.CofireLastClose = 0
+	}
+
+	typical := (bar.High + bar.Low + bar.Close) / 3.0
+	s.CofireSessionVWAPNum += typical * bar.Volume
+	s.CofireSessionVWAPDen += bar.Volume
+
+	if s.CofireLastClose > 0 && bar.Close > 0 {
+		s.CofireSessionReturns = append(s.CofireSessionReturns, math.Log(bar.Close/s.CofireLastClose))
+	}
+	s.CofireLastClose = bar.Close
+
+	if s.CofireTODBuckets == nil {
+		s.CofireTODBuckets = make(map[string][]float64)
+	}
+	key := et.Format("15:04")
+	hist := s.CofireTODBuckets[key]
+
+	// Compute bucketed_z from hist BEFORE appending current bar so the current
+	// observation doesn't self-bias the z-score.
+	var bucketedZ float64
+	bucketReady := false
+	if len(hist) >= 10 {
+		med := cofireMedian(hist)
+		if med > 0 && bar.Volume > 0 {
+			logRatios := make([]float64, 0, len(hist))
+			for _, v := range hist {
+				if v > 0 {
+					logRatios = append(logRatios, math.Log(v/med))
+				}
+			}
+			sd := cofireStdev(logRatios)
+			if sd > 0 {
+				bucketedZ = math.Log(bar.Volume/med) / sd
+				bucketReady = true
+			}
+		}
+	}
+
+	hist = append(hist, bar.Volume)
+	const todBucketCap = 20
+	if len(hist) > todBucketCap {
+		hist = hist[len(hist)-todBucketCap:]
+	}
+	s.CofireTODBuckets[key] = hist
+
+	if bucketReady {
+		s.CofireBucketedZHist = append(s.CofireBucketedZHist, bucketedZ)
+		const zHistCap = 8
+		if len(s.CofireBucketedZHist) > zHistCap {
+			s.CofireBucketedZHist = s.CofireBucketedZHist[len(s.CofireBucketedZHist)-zHistCap:]
+		}
+	}
+}
+
+// computeCofireVeto returns (veto, stretchZ, volShift) for the current bar.
+// The veto fires when:
+//   (1) inducement fired on this bar (s.LastInducementSignal != nil)
+//   (2) session sigma has enough samples
+//   (3) bucketed vol_shift has 8 prior z-scores
+//   (4) |stretch_z| in [min, max] AND vol_shift < max
+//
+// Direction-neutral: the caller checks the long-only gate against the
+// evaluated entry's Side.
+func (s *AVWAPState) computeCofireVeto(bar start.Bar, cfg AVWAPConfig) (bool, float64, float64) {
+	if s.LastInducementSignal == nil {
+		return false, 0, 0
+	}
+	minBars := cfg.CofireVetoSessionSigmaMinBars
+	if minBars <= 0 {
+		minBars = 6
+	}
+	if len(s.CofireSessionReturns) < minBars {
+		return false, 0, 0
+	}
+	if len(s.CofireBucketedZHist) < 8 {
+		return false, 0, 0
+	}
+	if s.CofireSessionVWAPDen <= 0 {
+		return false, 0, 0
+	}
+	sessionVWAP := s.CofireSessionVWAPNum / s.CofireSessionVWAPDen
+	// Session sigma in price units: stdev of log-returns * current close is a
+	// first-order approximation sufficient for a threshold gate. Matches the
+	// formulation validated in the signal-corr research.
+	sigma := cofireStdev(s.CofireSessionReturns) * bar.Close
+	if sigma <= 0 {
+		return false, 0, 0
+	}
+	stretchZ := (bar.Close - sessionVWAP) / sigma
+	absZ := math.Abs(stretchZ)
+	if absZ < cfg.CofireVetoStretchZMin || absZ > cfg.CofireVetoStretchZMax {
+		return false, stretchZ, 0
+	}
+	hist := s.CofireBucketedZHist
+	fast := hist[len(hist)-3:]
+	slow := hist[len(hist)-8 : len(hist)-3]
+	volShift := cofireMean(fast) - cofireMean(slow)
+	if volShift >= cfg.CofireVetoVolShiftMax {
+		return false, stretchZ, volShift
+	}
+	return true, stretchZ, volShift
+}
+
+// applyCofireVeto wraps an entry signal with the co-fire veto. Returns the
+// original signal unchanged when the veto is disabled, long-only gate rejects
+// the side, or the veto conditions don't fire. In shadow mode, logs a
+// would-have-blocked event and returns the signal. In enforced mode, records
+// a hold reason and returns nil.
+func (s *AVWAPState) applyCofireVeto(ec entryContext, sig *start.Signal, err error) (*start.Signal, error) {
+	if err != nil || sig == nil {
+		return sig, err
+	}
+	if !ec.cfg.CofireVetoEnabled && !ec.cfg.CofireVetoShadow {
+		return sig, err
+	}
+	if ec.cfg.CofireVetoLongOnly && sig.Side != start.SideBuy {
+		return sig, err
+	}
+	veto, stretchZ, volShift := s.computeCofireVeto(ec.bar, ec.cfg)
+	if !veto {
+		return sig, err
+	}
+	if ec.cfg.CofireVetoShadow && !ec.cfg.CofireVetoEnabled {
+		if ec.ctx != nil && ec.ctx.Logger() != nil {
+			ec.ctx.Logger().Info("cofire veto SHADOW would have blocked entry",
+				"symbol", ec.symbol,
+				"side", string(sig.Side),
+				"stretch_z", stretchZ,
+				"vol_shift", volShift,
+			)
+		}
+		return sig, err
+	}
+	if s.parent != nil {
+		s.parent.recordHoldReason(ec.symbol, "cofire_veto",
+			fmt.Sprintf("stretch_z=%.2f vol_shift=%.2f ind=%s", stretchZ, volShift, s.LastInducementSignal.Tag),
+			map[string]string{
+				"veto_stretch_z": fmt.Sprintf("%.2f", stretchZ),
+				"veto_vol_shift": fmt.Sprintf("%.2f", volShift),
+			})
+	}
+	if ec.ctx != nil && ec.ctx.Logger() != nil {
+		ec.ctx.Logger().Info("cofire veto blocked entry",
+			"symbol", ec.symbol,
+			"side", string(sig.Side),
+			"stretch_z", stretchZ,
+			"vol_shift", volShift,
+		)
+	}
+	return nil, nil
+}
+
+// cofireMean/Stdev/Median are local helpers kept unexported to avoid widening
+// the package surface. Inline to avoid pulling a new stats dependency.
+func cofireMean(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, x := range xs {
+		sum += x
+	}
+	return sum / float64(len(xs))
+}
+
+func cofireStdev(xs []float64) float64 {
+	if len(xs) < 2 {
+		return 0
+	}
+	m := cofireMean(xs)
+	var ss float64
+	for _, x := range xs {
+		d := x - m
+		ss += d * d
+	}
+	return math.Sqrt(ss / float64(len(xs)-1))
+}
+
+func cofireMedian(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	cp := make([]float64, len(xs))
+	copy(cp, xs)
+	// Simple insertion sort — xs is small (<=20).
+	for i := 1; i < len(cp); i++ {
+		for j := i; j > 0 && cp[j-1] > cp[j]; j-- {
+			cp[j-1], cp[j] = cp[j], cp[j-1]
+		}
+	}
+	n := len(cp)
+	if n%2 == 1 {
+		return cp[n/2]
+	}
+	return (cp[n/2-1] + cp[n/2]) / 2
 }
 
 // appendSwingLevel pushes lvl onto buf and trims from the front when the
@@ -1090,6 +1340,14 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		InducementBreachMaxBps:   getInt(params, "inducement_breach_max_bps", 80),
 		InducementReversalBars:   getInt(params, "inducement_reversal_bars", 3),
 		InducementVolumeMinRatio: getFloat64(params, "inducement_volume_min_ratio", 1.2),
+
+		CofireVetoEnabled:             getBool(params, "cofire_veto_enabled", false),
+		CofireVetoShadow:              getBool(params, "cofire_veto_shadow", false),
+		CofireVetoLongOnly:            getBool(params, "cofire_veto_long_only", true),
+		CofireVetoStretchZMin:         getFloat64(params, "cofire_veto_stretch_z_min", 2.0),
+		CofireVetoStretchZMax:         getFloat64(params, "cofire_veto_stretch_z_max", 3.0),
+		CofireVetoVolShiftMax:         getFloat64(params, "cofire_veto_vol_shift_max", -0.5),
+		CofireVetoSessionSigmaMinBars: getInt(params, "cofire_veto_session_sigma_min_bars", 6),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
 
@@ -2289,10 +2547,14 @@ func (s *AVWAPState) evaluateEntries(ec entryContext) (*start.Signal, error) {
 		return nil, nil
 	}
 
+	var sig *start.Signal
+	var err error
 	if ec.cfg.EntryPriority == "bounce_first" {
-		return s.evaluateEntriesBounceFirst(ec)
+		sig, err = s.evaluateEntriesBounceFirst(ec)
+	} else {
+		sig, err = s.evaluateEntriesStandard(ec)
 	}
-	return s.evaluateEntriesStandard(ec)
+	return s.applyCofireVeto(ec, sig, err)
 }
 
 // evaluateEntriesStandard is the default entry priority order:
@@ -3246,6 +3508,11 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 	// 2e. Inducement detector (Factor 7) — updates swing ring buffers and
 	// detects same-bar / multi-bar liquidity sweeps. Disabled by default.
 	avwapSt.updateInducement(bar, cfg)
+
+	// 2f. Co-fire veto state: session VWAP, sigma, bucketed volume history.
+	// Runs every bar; veto itself is applied at entry-evaluation time only
+	// when cfg.CofireVetoEnabled / cfg.CofireVetoShadow is true.
+	avwapSt.updateCofireVetoState(bar)
 
 	// 3. Regime gating.
 	regimeAllowed := false
