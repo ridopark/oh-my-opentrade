@@ -23,7 +23,7 @@ author = "system"
 created_at = "2026-04-07T00:00:00Z"
 
 [lifecycle]
-state = "Deactivated"
+state = "PaperActive"
 paper_only = true
 
 [routing]
@@ -139,12 +139,17 @@ type = "PREMIUM_TARGET"
 [exit_rules.params]
 target_pct = 0.15
 
-# Trail to limit drawdown (net-negative P&L but provides DD protection)
+# Proportional trail: arm at +5% premium MFE, exit on 3% giveback from peak.
+# Replaces legacy PREMIUM_TRAIL (2 winners / 88 fires in 3-month IS).
+# IS 2026-Q1: PF 0.84->0.93, DD 43%->28%, P&L +$20.5k vs baseline.
+# OOS 2026-04-01..04-20: PF 1.43->1.31, WR 56%->67%, DD 8.8->7.5, P&L -$4.1k
+# (trims some big winners but catches 4/16 MAX_HOLDING losers with MFE>=5%).
+# Backup: configs/backups/macd_only_v1_pre_chandelier_20260421_1503.toml
 [[exit_rules]]
-type = "PREMIUM_TRAIL"
+type = "CHANDELIER_TRAIL"
 [exit_rules.params]
-trail_pct = 0.12
-min_activation = 0.08
+activate_pct = 0.05
+giveback_pct = 0.03
 
 # Stagnation: kill zombie trades after 90 min
 [[exit_rules]]
