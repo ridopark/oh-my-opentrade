@@ -49,7 +49,7 @@ volume_mult = 1.0
 # both halves (H1 from selection, H2 yields +$6.3k uplift OOS).
 midday_trap_shield = true
 midday_volume_mult = 1.5
-midday_shield_start_et = "10:00"
+midday_shield_start_et = "10:30"
 midday_shield_end_et = "12:30"
 
 # Confluence scoring (0-100+ scale, 10 base + dark pool factors)
@@ -83,14 +83,15 @@ dp_z_macd_favorable_threshold = 1.0
 dp_z_macd_suppress_threshold = -0.5
 dp_z_macd_suppress_mode = "block"
 
-# Risk sizing: 300/1000 per 9a2ac6a baseline;
-# 500/2000 amplified left-tail losses in 2025-Q4.
-risk_per_trade_bps = 300
-max_position_bps = 1000
+# Risk sizing matched to AVWAP (500/1500) so MACD scales on shared equity
+# base. Prior 500/2000 amplified left-tail losses in 2025-Q4; max_position
+# held at 1500 and midday_trap_shield provides the left-tail mitigation.
+risk_per_trade_bps = 500
+max_position_bps = 1500
 
 # Portfolio limits — focused for intraday
-max_positions = 10
-max_per_group = 2                # solo optimum (was 3). Tightened after the OCC sector-classification fix. Sweep showed mpg=2 is Pareto-dominant when MACD runs alone. In a pair backtest the runner takes max-of per-spec values, so the pair's effective cap is set by AVWAP (mpg=3); that's intentional — the pair stress test showed forcing global mpg=2 cost ~$40k combined PnL, so this value applies only when MACD runs solo or as the higher-mpg leg.
+max_positions = 6
+max_per_group = 3                # solo optimum (was 3). Tightened after the OCC sector-classification fix. Sweep showed mpg=2 is Pareto-dominant when MACD runs alone. In a pair backtest the runner takes max-of per-spec values, so the pair's effective cap is set by AVWAP (mpg=3); that's intentional — the pair stress test showed forcing global mpg=2 cost ~$40k combined PnL, so this value applies only when MACD runs solo or as the higher-mpg leg.
 
 # Timing
 allowed_hours_start = "09:35"
@@ -129,9 +130,9 @@ execution = [
 
 [options]
 enabled = true
-# Per 9a2ac6a PF-1.16 baseline. 50 combined with larger position_bps
-# pushed per-trade dollar risk 10x vs the tuned config.
-max_contracts = 5
+# Matched to AVWAP (50) so MACD contribution scales with the shared equity
+# base. max_position_bps (1500) is the binding dollar-risk cap.
+max_contracts = 50
 limit_spread_pct = 1.00
 limit_buffer_bps = 1000
 stale_cancel_secs = 90
