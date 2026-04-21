@@ -43,7 +43,7 @@ swing_lookback = 5               # fewer bars for swing detection on 5m
 volume_mult = 1.0
 
 # Confluence scoring (0-100+ scale, 10 base + dark pool factors)
-min_confluence_score = 80        # tightened 2026-04-21 retune: 65->70->75->80 sweet spot; 85 cut trade count too far
+min_confluence_score = 80        # 85 cut trade count too far on 65-85 sweep
 dp_confluence_enabled = true
 dp_veto_enabled = true
 dp_veto_buy_ratio_min = 0.45
@@ -73,9 +73,8 @@ dp_z_macd_favorable_threshold = 1.0
 dp_z_macd_suppress_threshold = -0.5
 dp_z_macd_suppress_mode = "block"
 
-# Risk — smaller per-trade for higher turnover
-# Reverted to 9a2ac6a sizing (300/1000) to cap per-trade dollar risk.
-# Current (500/2000) amplified left-tail losses during 2025-Q4 regression.
+# Risk sizing: 300/1000 per 9a2ac6a baseline;
+# 500/2000 amplified left-tail losses in 2025-Q4.
 risk_per_trade_bps = 300
 max_position_bps = 1000
 
@@ -120,9 +119,8 @@ execution = [
 
 [options]
 enabled = true
-# max_contracts 5 per 9a2ac6a PF-1.16 baseline. Was inflated to 50 during
-# live-broker loosen; combined with larger position_bps it pushed per-trade
-# dollar risk 10x vs the tuned config.
+# Per 9a2ac6a PF-1.16 baseline. 50 combined with larger position_bps
+# pushed per-trade dollar risk 10x vs the tuned config.
 max_contracts = 5
 limit_spread_pct = 1.00
 limit_buffer_bps = 1000
@@ -144,10 +142,10 @@ type = "PREMIUM_TARGET"
 [exit_rules.params]
 target_pct = 0.15
 
-# Premium hard stop DISABLED in this retune — testing showed 40% added
-# no edge (neutral) and 25% cut recovering winners. STAGNATION+MAX_HOLDING
-# handle the long-duration losers, and the tighter confluence floor (80)
-# upstream suppresses the entries that would have required this stop.
+# Premium hard stop DISABLED. Testing showed 40% added no edge (neutral)
+# and 25% cut recovering winners. STAGNATION + MAX_HOLDING handle the
+# long-duration losers; tighter confluence floor (80) suppresses the
+# entries that would have required this stop.
 # [[exit_rules]]
 # type = "PREMIUM_STOP"
 # [exit_rules.params]
