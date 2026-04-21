@@ -39,17 +39,15 @@ type Deps struct {
 
 // Config holds tunable thresholds. Zero values fall back to defaults.
 //
-// Thresholds must exceed a strategy's natural bar cadence because LastEvalAt
-// is stamped with bar.Time (not wall clock). For a 5m-bar strategy the
-// 12:30 bucket is emitted at wall clock ~12:34, so peak natural staleness
-// between evaluations is ~5m. 90s/180s thresholds fired on every cycle as
-// false positives (2026-04-21 12:35 CDT alert storm). New defaults assume
-// strategies run on 5m bars — raise further for 15m+.
+// Defaults assume wall-clock-stamped LastDecision.At (see Tick) — staleness
+// is now the real time since the last evaluation, not inflated by bar-time
+// semantics. A healthy 5m strategy evaluates every ~5m wall clock so 6m is
+// a safe warn threshold (single missed cycle); 10m alerts on two missed.
 type Config struct {
 	TickInterval time.Duration // default 30s
 	WarnStale    time.Duration // default 6m — log WARN per tick
-	AlertStale   time.Duration // default 8m — log ERROR + notify, deduped
-	DedupeWindow time.Duration // default 10m — per strategy+symbol
+	AlertStale   time.Duration // default 10m — log ERROR + notify, deduped
+	DedupeWindow time.Duration // default 15m — per strategy+symbol
 }
 
 func (c *Config) applyDefaults() {
@@ -60,10 +58,10 @@ func (c *Config) applyDefaults() {
 		c.WarnStale = 6 * time.Minute
 	}
 	if c.AlertStale == 0 {
-		c.AlertStale = 8 * time.Minute
+		c.AlertStale = 10 * time.Minute
 	}
 	if c.DedupeWindow == 0 {
-		c.DedupeWindow = 10 * time.Minute
+		c.DedupeWindow = 15 * time.Minute
 	}
 }
 
@@ -129,17 +127,27 @@ func (s *Service) Tick(ctx context.Context, now time.Time) {
 		}
 		snap := s.deps.LivenessFor(ws.ID)
 		for _, sl := range snap {
-			if sl.LastEvalAt.IsZero() {
+			// Prefer LastDecision.At (wall clock at eval time) over LastEvalAt
+			// (bar.Time, which is always ~5m stale for 5m-bar strategies and
+			// caused a false-alert storm on 2026-04-21 even with an 8-minute
+			// threshold). LastDecision is populated whenever a strategy records
+			// a HOLD/ENTRY/EXIT reason, which covers every live evaluation for
+			// avwap_v4 and macd_only_v1.
+			evalAt := sl.LastEvalAt
+			if sl.LastDecision != nil && !sl.LastDecision.At.IsZero() {
+				evalAt = sl.LastDecision.At
+			}
+			if evalAt.IsZero() {
 				continue
 			}
-			// Ignore LastEvalAt stamped by warmup-replay before the watchdog
+			// Ignore timestamps stamped by warmup-replay before the watchdog
 			// started — those are historical bar times from the replay path,
 			// not live evaluations. Only alert once we've observed a post-
 			// start eval; until then staleness is meaningless.
-			if sl.LastEvalAt.Before(s.startTime) {
+			if evalAt.Before(s.startTime) {
 				continue
 			}
-			staleFor := now.Sub(sl.LastEvalAt)
+			staleFor := now.Sub(evalAt)
 			if s.deps.StaleGauge != nil {
 				s.deps.StaleGauge.WithLabelValues(ws.ID, sl.Symbol).Set(staleFor.Seconds())
 			}
@@ -151,7 +159,7 @@ func (s *Service) Tick(ctx context.Context, now time.Time) {
 					Str("strategy", ws.ID).
 					Str("symbol", sl.Symbol).
 					Dur("stale", staleFor).
-					Time("last_eval_at", sl.LastEvalAt).
+					Time("last_eval_at", evalAt).
 					Msg("strategy liveness: eval stale")
 			}
 		}
