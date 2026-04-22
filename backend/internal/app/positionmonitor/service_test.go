@@ -131,6 +131,8 @@ type mockRepo struct {
 
 	latestThesis    json.RawMessage
 	latestThesisErr error
+
+	netPositions map[domain.Symbol]float64
 }
 
 func (m *mockRepo) SaveMarketBar(ctx context.Context, bar domain.MarketBar) error { return nil }
@@ -186,7 +188,7 @@ func (m *mockRepo) GetRecordedFillQty(_ context.Context, _ string, _ domain.EnvM
 }
 func (m *mockRepo) UpdateOrderStatus(_ context.Context, _ string, _ string) error { return nil }
 func (m *mockRepo) GetNetPositions(_ context.Context, _ string, _ domain.EnvMode) (map[domain.Symbol]float64, error) {
-	return nil, nil
+	return m.netPositions, nil
 }
 func (m *mockRepo) GetAvgEntryPrice(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol) (float64, error) {
 	return 0, nil

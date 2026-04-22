@@ -327,17 +327,6 @@ func TestReconcileGlobal_BrokerShort_EmitsUNINTENDED_SHORT(t *testing.T) {
 	})
 }
 
-// netPositionsRepo returns a configurable map from GetNetPositions so we
-// can exercise the DB>0 / broker=0 orphan branch.
-type netPositionsRepo struct {
-	capturingRepo
-	nets map[domain.Symbol]float64
-}
-
-func (r *netPositionsRepo) GetNetPositions(_ context.Context, _ string, _ domain.EnvMode) (map[domain.Symbol]float64, error) {
-	return r.nets, nil
-}
-
 // TestReconcileGlobal_SuppressesOrphanDuringInFlightClose covers the
 // follow-up to ef5a4ff: when the monitor has emitted an exit for a symbol
 // but the fill has not been recorded in the DB yet, broker=0 / DB>0 is the
@@ -346,9 +335,9 @@ func (r *netPositionsRepo) GetNetPositions(_ context.Context, _ string, _ domain
 func TestReconcileGlobal_SuppressesOrphanDuringInFlightClose(t *testing.T) {
 	var buf bytes.Buffer
 	broker := &mockBroker{positions: nil}
-	repo := &netPositionsRepo{nets: map[domain.Symbol]float64{
+	repo := &capturingRepo{mockRepo: mockRepo{netPositions: map[domain.Symbol]float64{
 		domain.Symbol("AAPL"): 10,
-	}}
+	}}}
 	bus := &mockEventBus{}
 	pc := NewPriceCache(zerolog.Nop())
 	pg := execution.NewPositionGate(broker, zerolog.Nop())
@@ -386,9 +375,9 @@ func TestReconcileGlobal_SuppressesOrphanDuringInFlightClose(t *testing.T) {
 func TestReconcileGlobal_OrphanStillFiresWhenNotInFlight(t *testing.T) {
 	var buf bytes.Buffer
 	broker := &mockBroker{positions: nil}
-	repo := &netPositionsRepo{nets: map[domain.Symbol]float64{
+	repo := &capturingRepo{mockRepo: mockRepo{netPositions: map[domain.Symbol]float64{
 		domain.Symbol("MSFT"): 5,
-	}}
+	}}}
 	bus := &mockEventBus{}
 	pc := NewPriceCache(zerolog.Nop())
 	pg := execution.NewPositionGate(broker, zerolog.Nop())

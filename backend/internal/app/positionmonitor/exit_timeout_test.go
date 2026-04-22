@@ -721,6 +721,12 @@ func TestProcessExitTerminal_LastPeer_ClearsExitPending(t *testing.T) {
 	assert.Empty(t, pos.PendingExitOrderIDs)
 }
 
+func drainOutbox(svc *Service) {
+	for len(svc.outbox) > 0 {
+		<-svc.outbox
+	}
+}
+
 // TestTriggerExit_SuppressedWhilePriorInFlight verifies cross-reason exit
 // arbitration: a rule-driven triggerExit that fires while a prior exit is
 // still working at the broker (ExitPending=true AND PendingExitOrderIDs
@@ -755,10 +761,7 @@ func TestTriggerExit_SuppressedWhilePriorInFlight(t *testing.T) {
 		"premium-trail-order": {},
 	}
 
-	// Drain any outbox traffic from the seed path.
-	for len(svc.outbox) > 0 {
-		<-svc.outbox
-	}
+	drainOutbox(svc)
 
 	// A new rule-driven trigger (EOD_FLATTEN) while the prior is in flight.
 	rule := mustExitRule(t, domain.ExitRuleEODFlatten, map[string]float64{"minutes_before_close": 5})
@@ -798,17 +801,13 @@ func TestTriggerExit_RetryReasonsAllowed(t *testing.T) {
 	pos.ExitPending = true
 	pos.PendingExitOrderIDs = map[string]struct{}{"stale-limit": {}}
 
-	for len(svc.outbox) > 0 {
-		<-svc.outbox
-	}
+	drainOutbox(svc)
 
 	rule := pos.ExitRules[0]
 	svc.triggerExit(pos, rule, "escalate-to-market", 148.0, now)
 	assert.Equal(t, 1, len(svc.outbox), "escalate-to-market retry must emit an intent")
 
-	for len(svc.outbox) > 0 {
-		<-svc.outbox
-	}
+	drainOutbox(svc)
 	svc.triggerExit(pos, rule, "repeg 1/3", 148.0, now)
 	assert.Equal(t, 1, len(svc.outbox), "repeg retry must emit an intent")
 }

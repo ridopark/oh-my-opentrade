@@ -225,6 +225,15 @@ func (mp *MonitoredPosition) IsCombo() bool {
 	return len(mp.Legs) > 0
 }
 
+// HasExitInFlight reports whether an exit is currently in flight for this
+// position anywhere in the pipeline — from triggerExit setting ExitPending
+// through the broker's terminal event draining PendingExitOrderIDs. Used by
+// the cross-reason arbitration guard in triggerExit and by the reconciler
+// to suppress orphan alerts during the broker-ack/SaveTrade gap.
+func (mp *MonitoredPosition) HasExitInFlight() bool {
+	return mp.ExitPending || len(mp.PendingExitOrderIDs) > 0
+}
+
 // ComboPnL aggregates P&L across legs of a combo position. `legPrices` is a
 // slice of current per-leg prices, aligned 1:1 with mp.Legs. Returns the
 // realized-or-marked P&L in dollars: for each leg, (currentPrice -

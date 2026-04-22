@@ -438,7 +438,7 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 			s.mu.Lock()
 			return
 		}
-		reason := fmt.Sprintf("repeg %d/%d", livePos.ExitRepegCount, exitRepegBudget(livePos))
+		reason := fmt.Sprintf(exitReasonRepegPrefix+"%d/%d", livePos.ExitRepegCount, exitRepegBudget(livePos))
 		livePos.ExitManaging = false
 		// Gate must be cleared BEFORE the re-emitted intent is processed
 		// by execution (it will call TryMarkInflightExit). Release s.mu
@@ -494,7 +494,7 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 		livePos.ExitPendingAt = s.nowFunc()
 		return
 	}
-	s.triggerExit(livePos, rule, "escalate-to-market", livePos.EntryPrice, s.nowFunc())
+	s.triggerExit(livePos, rule, exitReasonEscalateMarket, livePos.EntryPrice, s.nowFunc())
 }
 
 // cancelAllPendingExits iterates pos.PendingExitOrderIDs and cancels each
@@ -679,13 +679,17 @@ func (s *Service) reconcileFilledOrder(pos *domain.MonitoredPosition) bool {
 	return true
 }
 
-// isExitRetryReason reports whether a triggerExit call is part of the
-// cancel-and-resubmit lifecycle owned by handleExitTimeout (re-peg or
-// market-escalate). New rule-driven reasons (PREMIUM_TRAIL, EOD_FLATTEN,
-// stops, targets) are NOT retries. Used by triggerExit to hard-skip a
-// second rule-driven trigger while a prior exit is still in flight.
+// Retry-reason markers used by handleExitTimeout when re-emitting via
+// triggerExit. The allowlist lets re-peg and market-escalate bypass the
+// in-flight suppression guard, since they pair with cancelAndAwaitTerminal.
+const (
+	exitReasonEscalateMarket = "escalate-to-market"
+	exitReasonRepegPrefix    = "repeg "
+)
+
+// isExitRetryReason reports whether reason comes from handleExitTimeout's cancel-and-resubmit lifecycle.
 func isExitRetryReason(reason string) bool {
-	return reason == "escalate-to-market" || strings.HasPrefix(reason, "repeg ")
+	return reason == exitReasonEscalateMarket || strings.HasPrefix(reason, exitReasonRepegPrefix)
 }
 
 // triggerExit marks a position as exit-pending and emits an exit order intent.
@@ -701,13 +705,12 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 	}
 
 	// Cross-reason exit arbitration: if an exit is already in flight AND this
-	// is not a retry (re-peg/escalate), skip. The tick-loop Phase 1/Phase 2
-	// guard handles the intra-tick case; this protects against any
-	// out-of-band caller (future evaluator, revaluator, bootstrap) emitting
-	// a parallel intent while a prior exit order is still working at the
-	// broker. EOD_FLATTEN firing while a PREMIUM_TRAIL limit is working is
-	// the motivating case — both reaching SubmitOrder caused duplicate fills.
-	if pos.ExitPending && !isExitRetryReason(reason) && len(pos.PendingExitOrderIDs) > 0 {
+	// is not a retry (re-peg/escalate), skip. Protects against an out-of-band
+	// caller (revaluator, bootstrap, future evaluator) or a pre-ACK race
+	// (ExitPending set, map not yet populated) emitting a parallel intent
+	// while a prior exit is live. EOD_FLATTEN firing while a PREMIUM_TRAIL
+	// limit is working is the motivating case — both reached SubmitOrder.
+	if !isExitRetryReason(reason) && pos.HasExitInFlight() {
 		s.log.Warn().
 			Str("symbol", string(pos.Symbol)).
 			Str("rule", string(rule.Type)).
