@@ -35,22 +35,26 @@ func (w *EntryGatedWriter) Handle(ctx context.Context, ev domain.Event) error {
 	}
 	payload, ok := ev.Payload.(domain.EntryGatedPayload)
 	if !ok {
+		w.log.Warn().Str("event_type", ev.Type).Msg("EntryGated subscriber received non-EntryGated payload")
 		return nil
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
+		w.log.Warn().Err(err).Msg("EntryGated payload marshal failed")
 		return nil
 	}
 	reason := payload.BlockingGate
 	if payload.BlockingDetail != "" {
 		reason = payload.BlockingGate + ": " + payload.BlockingDetail
 	}
-	// SignalID must be unique enough to avoid primary-key collisions across
-	// bars. Bar-time + strategy + symbol is sufficient: emitEarlyGated
-	// dedups on LastGatedBarTime, so at most one event per bar per symbol
-	// per strategy instance reaches here.
+	// SignalID is unique per emitted event; ev.OccurredAt is event-creation
+	// time, not bar time, so duplicates are possible when FlushSignalProgress
+	// re-emits a cached EntryGated on startup. Those duplicates render as
+	// distinct rows at distinct timestamps, which is acceptable for an
+	// append-only audit log — operators see "latest bar eval at 09:35" plus
+	// "same bar re-seeded at 09:40 startup" as two separate decisions.
 	signalID := fmt.Sprintf("gated:%s:%s:%d", payload.Strategy, payload.Symbol, ev.OccurredAt.UnixNano())
-	side := inferSideFromBias(payload.Indicators.AVWAPBias)
+	side := sideFromAVWAPBias(payload.Indicators.AVWAPBias)
 	confidence := 0.0
 	if payload.Confluence.MaxScore > 0 {
 		confidence = float64(payload.Confluence.Score) / float64(payload.Confluence.MaxScore)
@@ -70,6 +74,10 @@ func (w *EntryGatedWriter) Handle(ctx context.Context, ev domain.Event) error {
 		raw,
 	)
 	if err != nil {
+		w.log.Warn().Err(err).
+			Str("symbol", payload.Symbol).
+			Str("strategy", payload.Strategy).
+			Msg("failed to build StrategySignalEvent from EntryGated payload")
 		return nil
 	}
 	if saveErr := w.repo.SaveStrategySignalEvent(ctx, evt); saveErr != nil {
@@ -81,15 +89,18 @@ func (w *EntryGatedWriter) Handle(ctx context.Context, ev domain.Event) error {
 	return nil
 }
 
-// inferSideFromBias maps the AVWAPBias string onto the same BUY/SELL
-// vocabulary strategy-emitted signals use, so dashboard filters that key on
-// Side still render blocked rows. Empty bias (e.g. MACD setups that don't
-// populate it) falls back to BUY because MACD today is a long-only setup.
-func inferSideFromBias(bias string) string {
+// sideFromAVWAPBias maps the AVWAPBias string to the BUY/SELL vocabulary.
+// Returns empty for setups without a populated bias (e.g. MACD, which is
+// long-only today but may not be tomorrow) — the dashboard renders a dash
+// and downstream filters can ignore the row rather than wrongly counting it
+// as a long attempt.
+func sideFromAVWAPBias(bias string) string {
 	switch bias {
+	case "LONG":
+		return "BUY"
 	case "SHORT":
 		return "SELL"
 	default:
-		return "BUY"
+		return ""
 	}
 }
