@@ -1079,8 +1079,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Always set session-based anchor resolution and prev-day bar replay
 	// so AVWAP strategies get correct anchor warmup.
 	pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
-	pipeline.Runner.SetPrevDayBarsFn(func(symbol string, since time.Time) []start.Bar {
-		return sessionResolver.GetBarsSince(ctx, r.infra.DB, symbol, since)
+	pipeline.Runner.SetPrevDayBarsFn(func(symbol string, since, until time.Time) []start.Bar {
+		return sessionResolver.GetBarsBetween(ctx, r.infra.DB, symbol, since, until)
 	})
 	pipeline.Runner.SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
 	if len(dpLookup) > 0 {
@@ -1597,8 +1597,8 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 				// Wire session resolver + lookups.
 				p.Runner().SetAnchorResolver(sessionResolver.ResolveAnchors)
-				p.Runner().SetPrevDayBarsFn(func(symbol string, since time.Time) []start.Bar {
-					return sessionResolver.GetBarsSince(ctx, r.infra.DB, symbol, since)
+				p.Runner().SetPrevDayBarsFn(func(symbol string, since, until time.Time) []start.Bar {
+					return sessionResolver.GetBarsBetween(ctx, r.infra.DB, symbol, since, until)
 				})
 				p.Runner().SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
 				if len(dpLookup) > 0 {
