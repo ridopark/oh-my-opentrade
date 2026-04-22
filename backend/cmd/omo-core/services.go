@@ -197,15 +197,6 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	}
 	svc.signalTracker = perf.NewSignalTracker(infra.eventBus, infra.pnlRepo, log.With().Str("component", "signal_tracker").Logger())
 
-	// Persist EntryGated events (blocked signals) asynchronously so the
-	// dashboard's /signals page can surface "why didn't we trade" history
-	// alongside the strategy-emitted lifecycle events. SubscribeAsync keeps
-	// DB writes off the strategy runner's hot path.
-	entryGatedWriter := strategy.NewEntryGatedWriter(infra.pnlRepo, log)
-	if err := infra.eventBus.SubscribeAsync(context.Background(), domain.EventEntryGated, entryGatedWriter.Handle); err != nil {
-		log.Warn().Err(err).Msg("failed to subscribe EntryGated writer — blocked signals will not persist")
-	}
-
 	// Position monitor (price cache + exit rule evaluation, via shared bootstrap builder)
 	posMonBundle, err := bootstrap.BuildPositionMonitor(bootstrap.PosMonitorDeps{
 		EventBus:      infra.eventBus,
@@ -809,6 +800,16 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 			return infra.repo.SaveMarketBar(ctx, bar)
 		})
 		log.Info().Msg("HTF bar persistence subscriber registered")
+
+		// Persist EntryGated events (blocked signals) asynchronously so the
+		// dashboard's /signals page can surface "why didn't we trade" history
+		// alongside the strategy-emitted lifecycle events. SubscribeAsync
+		// keeps DB writes off the strategy runner's hot path; the parent ctx
+		// unwinds the subscription on graceful shutdown.
+		entryGatedWriter := strategy.NewEntryGatedWriter(infra.pnlRepo, log)
+		if err := infra.eventBus.SubscribeAsync(ctx, domain.EventEntryGated, entryGatedWriter.Handle); err != nil {
+			log.Warn().Err(err).Msg("failed to subscribe EntryGated writer — blocked signals will not persist")
+		}
 	}
 	if svc.symRouter != nil {
 		if err := svc.symRouter.Start(ctx); err != nil {
