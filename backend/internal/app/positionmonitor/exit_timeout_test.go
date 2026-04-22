@@ -720,3 +720,95 @@ func TestProcessExitTerminal_LastPeer_ClearsExitPending(t *testing.T) {
 	assert.Empty(t, pos.ExitOrderID)
 	assert.Empty(t, pos.PendingExitOrderIDs)
 }
+
+// TestTriggerExit_SuppressedWhilePriorInFlight verifies cross-reason exit
+// arbitration: a rule-driven triggerExit that fires while a prior exit is
+// still working at the broker (ExitPending=true AND PendingExitOrderIDs
+// non-empty) must be dropped without emitting a new intent. The motivating
+// case is EOD_FLATTEN firing after an unsolicited broker cancel stamped
+// ExitPending=false only transiently — the original limit may still be
+// live at the broker, so emitting the EOD market order produces a double
+// exit (duplicate SELL).
+func TestTriggerExit_SuppressedWhilePriorInFlight(t *testing.T) {
+	broker := &mockBroker{}
+	svc := newTestServiceWithBrokerAndRepo(broker, &capturingRepo{})
+
+	now := svc.nowFunc()
+	svc.processFill(fillMsg{
+		Symbol:     "XOM",
+		Side:       "BUY",
+		Price:      148.0,
+		Quantity:   8,
+		FilledAt:   now.Add(-10 * time.Minute),
+		Strategy:   "macd",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules:  []domain.ExitRule{},
+	})
+	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "XOM")
+	pos := svc.positions[key]
+	require.NotNil(t, pos)
+
+	// Simulate a prior PREMIUM_TRAIL exit working at the broker.
+	pos.ExitPending = true
+	pos.ExitOrderID = "premium-trail-order"
+	pos.PendingExitOrderIDs = map[string]struct{}{
+		"premium-trail-order": {},
+	}
+
+	// Drain any outbox traffic from the seed path.
+	for len(svc.outbox) > 0 {
+		<-svc.outbox
+	}
+
+	// A new rule-driven trigger (EOD_FLATTEN) while the prior is in flight.
+	rule := mustExitRule(t, domain.ExitRuleEODFlatten, map[string]float64{"minutes_before_close": 5})
+	svc.triggerExit(pos, rule, "EOD flatten: 5 min before session close", 149.0, now)
+
+	assert.Equal(t, 0, len(svc.outbox),
+		"rule-driven trigger must be suppressed while a prior exit is in flight")
+	assert.Equal(t, "premium-trail-order", pos.ExitOrderID,
+		"ExitOrderID must not be mutated by a suppressed trigger")
+}
+
+// TestTriggerExit_RetryReasonsAllowed verifies the retry allowlist: re-peg
+// and market-escalate triggers — which are owned by handleExitTimeout and
+// always paired with cancelAndAwaitTerminal on the prior order — must NOT
+// be suppressed even when ExitPending=true and PendingExitOrderIDs is
+// non-empty (there is still a stale id between cancel and resubmit).
+func TestTriggerExit_RetryReasonsAllowed(t *testing.T) {
+	broker := &mockBroker{}
+	svc := newTestServiceWithBrokerAndRepo(broker, &capturingRepo{})
+
+	now := svc.nowFunc()
+	svc.processFill(fillMsg{
+		Symbol:     "XOM",
+		Side:       "BUY",
+		Price:      148.0,
+		Quantity:   8,
+		FilledAt:   now.Add(-10 * time.Minute),
+		Strategy:   "macd",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules: []domain.ExitRule{
+			mustExitRule(t, domain.ExitRuleTrailingStop, map[string]float64{}),
+		},
+	})
+	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "XOM")
+	pos := svc.positions[key]
+	require.NotNil(t, pos)
+	pos.ExitPending = true
+	pos.PendingExitOrderIDs = map[string]struct{}{"stale-limit": {}}
+
+	for len(svc.outbox) > 0 {
+		<-svc.outbox
+	}
+
+	rule := pos.ExitRules[0]
+	svc.triggerExit(pos, rule, "escalate-to-market", 148.0, now)
+	assert.Equal(t, 1, len(svc.outbox), "escalate-to-market retry must emit an intent")
+
+	for len(svc.outbox) > 0 {
+		<-svc.outbox
+	}
+	svc.triggerExit(pos, rule, "repeg 1/3", 148.0, now)
+	assert.Equal(t, 1, len(svc.outbox), "repeg retry must emit an intent")
+}

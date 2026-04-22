@@ -679,6 +679,15 @@ func (s *Service) reconcileFilledOrder(pos *domain.MonitoredPosition) bool {
 	return true
 }
 
+// isExitRetryReason reports whether a triggerExit call is part of the
+// cancel-and-resubmit lifecycle owned by handleExitTimeout (re-peg or
+// market-escalate). New rule-driven reasons (PREMIUM_TRAIL, EOD_FLATTEN,
+// stops, targets) are NOT retries. Used by triggerExit to hard-skip a
+// second rule-driven trigger while a prior exit is still in flight.
+func isExitRetryReason(reason string) bool {
+	return reason == "escalate-to-market" || strings.HasPrefix(reason, "repeg ")
+}
+
 // triggerExit marks a position as exit-pending and emits an exit order intent.
 func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRule, reason string, currentPrice float64, now time.Time) {
 	const maxExitRetries = 50
@@ -688,6 +697,23 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 			Str("rule", string(rule.Type)).
 			Int("retry_count", pos.ExitRetryCount).
 			Msg("exit retry limit reached — requires manual intervention")
+		return
+	}
+
+	// Cross-reason exit arbitration: if an exit is already in flight AND this
+	// is not a retry (re-peg/escalate), skip. The tick-loop Phase 1/Phase 2
+	// guard handles the intra-tick case; this protects against any
+	// out-of-band caller (future evaluator, revaluator, bootstrap) emitting
+	// a parallel intent while a prior exit order is still working at the
+	// broker. EOD_FLATTEN firing while a PREMIUM_TRAIL limit is working is
+	// the motivating case — both reaching SubmitOrder caused duplicate fills.
+	if pos.ExitPending && !isExitRetryReason(reason) && len(pos.PendingExitOrderIDs) > 0 {
+		s.log.Warn().
+			Str("symbol", string(pos.Symbol)).
+			Str("rule", string(rule.Type)).
+			Str("reason", reason).
+			Int("pending_orders", len(pos.PendingExitOrderIDs)).
+			Msg("exit trigger suppressed — prior exit still in flight")
 		return
 	}
 

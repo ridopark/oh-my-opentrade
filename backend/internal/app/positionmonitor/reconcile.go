@@ -122,6 +122,21 @@ func (s *Service) reconcileGlobal(ctx context.Context) {
 		return
 	}
 
+	// Snapshot symbols with an exit currently in flight. When the monitor has
+	// emitted an exit order but the fill has not been recorded in the DB yet
+	// (the gap from broker ack to SaveTrade), broker=0 / DB>0 is the expected
+	// transient — not an orphan. Suppress the ERROR log and miss-count bump
+	// for these symbols so Discord does not re-fire every 5 min until the
+	// next session reconciles the DB.
+	inFlightClosing := make(map[domain.Symbol]struct{})
+	s.mu.RLock()
+	for _, pos := range s.positions {
+		if pos.ExitPending || len(pos.PendingExitOrderIDs) > 0 {
+			inFlightClosing[pos.Symbol] = struct{}{}
+		}
+	}
+	s.mu.RUnlock()
+
 	// R1 — broker-only detection. Iterate the UNION of DB and broker
 	// symbol sets, not just DB. Today's CRM phantom short (2026-04-16)
 	// showed the broker holding -3 on a symbol whose DB net was 0, which
@@ -187,6 +202,17 @@ func (s *Service) reconcileGlobal(ctx context.Context) {
 		}
 
 		if !onBroker {
+			if _, closing := inFlightClosing[sym]; closing {
+				// Monitor has an exit in flight — broker=0 / DB>0 is the
+				// expected transient between broker-ack and DB SaveTrade.
+				// Drop miss count and downgrade log so we do not alert.
+				delete(s.pendingGlobalOrphans, sym)
+				s.log.Debug().
+					Str("symbol", string(sym)).
+					Float64("db_net_qty", dbQty).
+					Msg("global-reconcile: suppressing orphan check — exit in flight")
+				continue
+			}
 			s.pendingGlobalOrphans[sym]++
 			missCount := s.pendingGlobalOrphans[sym]
 
