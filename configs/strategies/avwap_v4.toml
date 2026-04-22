@@ -27,7 +27,7 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "AFRM", "JPM", "XOM", "OXY", "LLY", "RIVN", "RBLX", "BA", "QQQ", "IWM", "SOXL"]
+symbols = ["TSLA", "MRNA", "HIMS", "SPY", "AMD", "NFLX", "COIN", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "AFRM", "JPM", "XOM", "OXY", "LLY", "RIVN", "RBLX", "BA", "QQQ", "IWM", "SOXL"]
 timeframes = ["5m"]
 priority = 80
 conflict_policy = "priority_wins"
@@ -337,7 +337,7 @@ stale_cancel_secs = 90
 
 [options.defaults]
 min_dte = 3                      # short DTE for faster premium response
-max_dte = 7                      # minimal theta cost for intraday
+max_dte = 14                     # minimal theta cost for intraday
 target_delta_low = 0.60          # ITM for less extrinsic, more delta
 target_delta_high = 0.75         # ITM — premium tracks underlying closely
 min_open_interest = 50           # ensure liquidity
