@@ -100,6 +100,11 @@ const (
 	SignalStatusSuppressed     SignalStatus = "suppressed"
 	SignalStatusRejected       SignalStatus = "rejected"
 	SignalStatusDebateOverride SignalStatus = "debate_override"
+	// SignalStatusBlocked records an EntryGated event — the strategy
+	// evaluated a bar but a pre-entry gate (slope, regime, confluence, etc.)
+	// prevented emission. Persisted via the async EventEntryGated subscriber
+	// so operators can audit "why didn't we trade" from the dashboard.
+	SignalStatusBlocked SignalStatus = "blocked"
 )
 
 // StrategySignalEvent is an append-only record tracking a signal's lifecycle.
