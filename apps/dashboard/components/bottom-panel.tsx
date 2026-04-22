@@ -74,6 +74,7 @@ function statusBadgeColor(status: string): string {
     case "executed":        return "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
     case "validated":       return "bg-blue-500/15 text-blue-400 border-blue-500/30";
     case "generated":       return "bg-zinc-500/15 text-zinc-400 border-zinc-500/30";
+    case "blocked":         return "bg-orange-500/15 text-orange-400 border-orange-500/30";
     case "rejected":        return "bg-red-500/15 text-red-400 border-red-500/30";
     case "suppressed":      return "bg-amber-500/15 text-amber-400 border-amber-500/30";
     case "debate_override": return "bg-purple-500/15 text-purple-400 border-purple-500/30";
@@ -213,6 +214,7 @@ export function BottomPanel({
                     <th className="text-left py-1 px-2 font-medium">Kind</th>
                     <th className="text-left py-1 px-2 font-medium">Status</th>
                     <th className="text-left py-1 px-2 font-medium">Confidence</th>
+                    <th className="text-left py-1 px-2 font-medium">Reason</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -250,6 +252,9 @@ export function BottomPanel({
                               </span>
                             </div>
                           )}
+                        </td>
+                        <td className="py-1.5 px-2 text-muted-foreground text-[11px] max-w-[320px] truncate" title={sig.Reason}>
+                          {sig.Reason}
                         </td>
                       </tr>
                     );
