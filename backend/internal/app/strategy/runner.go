@@ -1215,6 +1215,17 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	if !ok {
 		return fmt.Errorf("strategy runner: payload is not a MarketBar, got %T", event.Payload)
 	}
+	// Monitor re-emits its own HTF aggregated bars as EventMarketBarSanitized
+	// (used by SSE display and DB HTF backfill at services.go:792). The runner
+	// has its own per-symbol aggregator seeded via WarmUpHTF and fed from the
+	// 1m stream, so consuming monitor's HTF bars here would double-feed
+	// htfCalcs[sym:5m] — corrupting VolumeSMA, regime classification, and
+	// every downstream gate that reads htfSnap. Backtest's native-HTF replay
+	// path (daily crypto) reaches handleBarCore via HandleBarDirectTyped,
+	// which bypasses this gate.
+	if bar.Timeframe != "1m" {
+		return nil
+	}
 	return r.handleBarCore(ctx, bar, event.TenantID, event.EnvMode)
 }
 

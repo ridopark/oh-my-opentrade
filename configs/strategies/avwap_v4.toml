@@ -115,8 +115,13 @@ midday_volume_mult = 1.5
 # Directional bias: only long when price is above AVWAP, only short when below
 enforce_avwap_bias = true        # only long above AVWAP, short below
 
-# AVWAP slope must exceed this threshold (bps/bar) for trend confirmation
-min_slope_bps = 0.5              # require stronger AVWAP slope
+# AVWAP slope must exceed this threshold (bps/bar) for trend confirmation.
+# 0.5 sat inside the 5m midday noise floor (empirically: live slopes in
+# [-0.26, 0.12] bps mid-session) which meant knife-edge gate decisions
+# diverged between live and backtest on tiny numerical micro-differences.
+# 1.0 lifts the threshold out of the noise band — see quant-analyst note
+# 2026-04-22. Re-backtest before treating live PnL as backtest-validated.
+min_slope_bps = 1.0
 slope_lookback = 10              # shorter lookback (was 15)
 
 # Shorts above AVWAP require a capitulation event
