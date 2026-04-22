@@ -77,8 +77,13 @@ type alpacaOptionSnapshot struct {
 	OpenInterest int `json:"openInterest"`
 }
 
-// GetOptionChain retrieves option contract snapshots with greeks and quotes for the given
-// underlying symbol, expiry date, and option right (call/put).
+// GetOptionChain retrieves option contract snapshots with greeks and quotes for
+// the given underlying symbol, calendar-date window, and option right.
+//
+// expiryFrom/expiryTo are inclusive date bounds on the Alpaca
+// expiration_date_gte/lte parameters — callers pass the full configured DTE
+// range so the 250-contract cap doesn't get consumed by out-of-range expiries
+// ordered before the target window.
 //
 // Two-step process:
 //  1. Fetch OCC contract symbols from the broker API (/v2/options/contracts).
@@ -88,7 +93,7 @@ func (c *RESTClient) GetOptionChain(
 	ctx context.Context,
 	dataURL string,
 	underlying domain.Symbol,
-	expiry time.Time,
+	expiryFrom, expiryTo time.Time,
 	right domain.OptionRight,
 ) ([]domain.OptionContractSnapshot, error) {
 	if underlying == "" {
@@ -97,16 +102,12 @@ func (c *RESTClient) GetOptionChain(
 
 	rightStr := strings.ToLower(string(right))
 
-	// Use a ±7 day window around the target expiry to find the nearest listed
-	// expiry. Options expire on Fridays and monthlies; an exact date match is
-	// rarely available, so we widen the search and let the caller's DTE filter
-	// (in ContractSelectionService) narrow it down.
-	expiryFrom := expiry.AddDate(0, 0, -7).Format("2006-01-02")
-	expiryTo := expiry.AddDate(0, 0, 7).Format("2006-01-02")
+	fromStr := expiryFrom.Format("2006-01-02")
+	toStr := expiryTo.Format("2006-01-02")
 
 	contractsPath := fmt.Sprintf(
 		"/v2/options/contracts?underlying_symbols=%s&expiration_date_gte=%s&expiration_date_lte=%s&type=%s&limit=250",
-		underlying.String(), expiryFrom, expiryTo, rightStr,
+		underlying.String(), fromStr, toStr, rightStr,
 	)
 
 	contractsResp, err := c.doReqWithOpts(ctx, http.MethodGet, contractsPath, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})

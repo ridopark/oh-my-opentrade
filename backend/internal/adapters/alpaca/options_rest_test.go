@@ -93,7 +93,7 @@ func TestGetOptionChain_HappyPath(t *testing.T) {
 
 	expiry := time.Date(2027, 1, 19, 0, 0, 0, 0, time.UTC)
 	sym, _ := domain.NewSymbol("AAPL")
-	chain, err := client.GetOptionChain(context.Background(), dataServer.URL, sym, expiry, domain.OptionRightCall)
+	chain, err := client.GetOptionChain(context.Background(), dataServer.URL, sym, expiry, expiry, domain.OptionRightCall)
 
 	require.NoError(t, err)
 	assert.Len(t, chain, 3)
@@ -117,7 +117,7 @@ func TestGetOptionChain_EmptyContractList(t *testing.T) {
 
 	expiry := time.Date(2027, 1, 19, 0, 0, 0, 0, time.UTC)
 	sym, _ := domain.NewSymbol("AAPL")
-	chain, err := client.GetOptionChain(context.Background(), dataServer.URL, sym, expiry, domain.OptionRightCall)
+	chain, err := client.GetOptionChain(context.Background(), dataServer.URL, sym, expiry, expiry, domain.OptionRightCall)
 
 	require.NoError(t, err)
 	assert.Empty(t, chain)
@@ -141,7 +141,7 @@ func TestGetOptionChain_BrokerHTTPError(t *testing.T) {
 
 	expiry := time.Date(2027, 1, 19, 0, 0, 0, 0, time.UTC)
 	sym, _ := domain.NewSymbol("AAPL")
-	_, err := client.GetOptionChain(context.Background(), dataServer.URL, sym, expiry, domain.OptionRightCall)
+	_, err := client.GetOptionChain(context.Background(), dataServer.URL, sym, expiry, expiry, domain.OptionRightCall)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "500")
@@ -167,11 +167,11 @@ func TestGetOptionChain_FilterByRight(t *testing.T) {
 	expiry := time.Date(2027, 1, 19, 0, 0, 0, 0, time.UTC)
 	sym, _ := domain.NewSymbol("AAPL")
 
-	_, err := client.GetOptionChain(context.Background(), dataServer.URL, sym, expiry, domain.OptionRightCall)
+	_, err := client.GetOptionChain(context.Background(), dataServer.URL, sym, expiry, expiry, domain.OptionRightCall)
 	require.NoError(t, err)
 	assert.Equal(t, "call", capturedType)
 
-	_, err = client.GetOptionChain(context.Background(), dataServer.URL, sym, expiry, domain.OptionRightPut)
+	_, err = client.GetOptionChain(context.Background(), dataServer.URL, sym, expiry, expiry, domain.OptionRightPut)
 	require.NoError(t, err)
 	assert.Equal(t, "put", capturedType)
 }
@@ -181,7 +181,7 @@ func TestGetOptionChain_EmptyUnderlying(t *testing.T) {
 	client := NewRESTClient("http://localhost:9999", "test-key", "test-secret", limiter, zerolog.Nop())
 
 	expiry := time.Date(2027, 1, 19, 0, 0, 0, 0, time.UTC)
-	_, err := client.GetOptionChain(context.Background(), "http://localhost:9998", domain.Symbol(""), expiry, domain.OptionRightCall)
+	_, err := client.GetOptionChain(context.Background(), "http://localhost:9998", domain.Symbol(""), expiry, expiry, domain.OptionRightCall)
 
 	require.Error(t, err)
 }
@@ -219,7 +219,7 @@ func TestGetOptionChain_SkipsNonTradableContracts(t *testing.T) {
 
 	expiry := time.Date(2027, 1, 19, 0, 0, 0, 0, time.UTC)
 	sym, _ := domain.NewSymbol("AAPL")
-	chain, err := client.GetOptionChain(context.Background(), dataServer.URL, sym, expiry, domain.OptionRightCall)
+	chain, err := client.GetOptionChain(context.Background(), dataServer.URL, sym, expiry, expiry, domain.OptionRightCall)
 
 	require.NoError(t, err)
 	assert.Len(t, chain, 1)
