@@ -451,21 +451,19 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	svc.strategyRunner.SetAnchorResolver(sessionResolver.ResolveAnchors)
 	svc.strategyRunner.SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
 	svc.strategyRunner.SetAIAnchorResolver(aiAnchorResolver)
-	// Wire prev-day bar replay for AVWAP anchors (pd_high, pd_low).
-	// Without this, all AVWAP lines overlap because they activate on
-	// today's first bar instead of accumulating from their anchor time.
+	// Wire bar replay for AVWAP anchors. Returns 1m bars in [since, until)
+	// so a mid-session restart can seed all anchors (including session_open)
+	// with today's bars up to the current bar-time, matching the state that
+	// bar-by-bar backtest accumulation produces at the same moment.
 	// Shared by both the strategy runner and the monitor's standalone AVWAP.
-	prevDayBarsFn := func(symbol string, since time.Time) []start.Bar {
-		if since.IsZero() {
+	prevDayBarsFn := func(symbol string, since, until time.Time) []start.Bar {
+		if since.IsZero() || !until.After(since) {
 			return nil
 		}
-		loc, _ := time.LoadLocation("America/New_York")
-		et := since.In(loc)
-		eod := time.Date(et.Year(), et.Month(), et.Day(), 16, 0, 0, 0, loc)
 		rows, qErr := infra.sqlDB.QueryContext(context.Background(),
 			`SELECT time, open, high, low, close, volume FROM market_bars
 			 WHERE symbol = $1 AND timeframe = '1m' AND time >= $2 AND time < $3
-			 ORDER BY time`, symbol, since, eod)
+			 ORDER BY time`, symbol, since, until)
 		if qErr != nil {
 			return nil
 		}

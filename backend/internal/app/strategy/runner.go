@@ -44,7 +44,7 @@ type Runner struct {
 	collectedAnchorRegimes map[string]map[string]start.AnchorRegime   // per-symbol reusable result map
 	signalsRTHSuppressed atomic.Int64
 	anchorResolver       func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
-	prevDayBarsFn        func(symbol string, since time.Time) []start.Bar
+	prevDayBarsFn        func(symbol string, since, until time.Time) []start.Bar
 	keyLevelPricesFn     func(symbol string, barTime time.Time) map[string]float64
 	keyLevelsBySymbol    map[string]map[string]float64
 	aiAnchorResolver     *AIAnchorResolver
@@ -240,7 +240,7 @@ func (r *Runner) SetAnchorResolver(fn func(symbol string, barTime time.Time, anc
 	r.lastSessionDate = make(map[string]int)
 }
 
-func (r *Runner) SetPrevDayBarsFn(fn func(symbol string, since time.Time) []start.Bar) {
+func (r *Runner) SetPrevDayBarsFn(fn func(symbol string, since, until time.Time) []start.Bar) {
 	r.prevDayBarsFn = fn
 }
 
@@ -271,6 +271,42 @@ func (r *Runner) SetAIAnchorResolver(resolver *AIAnchorResolver) {
 type anchorResettable interface {
 	AnchorNames() []string
 	ResetAnchors(map[string]time.Time)
+}
+
+type anchorUpdater interface {
+	UpdateCalcAnchor(name string, bar start.Bar)
+}
+
+// replayBarsForAnchors feeds 1m bars from each anchor's time up to `barTime`
+// into the state's cumulative AVWAP calculators. At a fresh-session reset,
+// anchor_time == barTime for session_open so the replay is a no-op; on
+// mid-session restart it seeds the bars needed to match bar-by-bar
+// accumulation at the same moment.
+func (r *Runner) replayBarsForAnchors(st any, symbol string, anchors map[string]time.Time, barTime time.Time) {
+	if r.prevDayBarsFn == nil {
+		return
+	}
+	au, ok := st.(anchorUpdater)
+	if !ok {
+		return
+	}
+	sortedNames := make([]string, 0, len(anchors))
+	for name := range anchors {
+		sortedNames = append(sortedNames, name)
+	}
+	sort.Strings(sortedNames)
+	for _, name := range sortedNames {
+		prevBars := r.prevDayBarsFn(symbol, anchors[name], barTime)
+		if len(prevBars) == 0 {
+			continue
+		}
+		r.logger.Info("replaying bars for anchor",
+			"symbol", symbol, "anchor", name, "bars", len(prevBars),
+			"from", prevBars[0].Time, "to", prevBars[len(prevBars)-1].Time)
+		for _, b := range prevBars {
+			au.UpdateCalcAnchor(name, b)
+		}
+	}
 }
 
 // ResolveAnchorsForWarmup triggers anchor resolution for all given symbols.
@@ -307,36 +343,7 @@ func (r *Runner) resolveSessionAnchors(symbol string, barTime time.Time) {
 					r.logger.Info("AVWAP anchor resolved", "symbol", symbol, "anchor", name, "anchor_time", t, "bar_time", barTime)
 				}
 				ar.ResetAnchors(resolved)
-				// Replay previous day's bars from each anchor time to end of session.
-				// Without this, pd_high/pd_low anchors activate on today's first bar
-				// and produce identical AVWAP values as session_open.
-				if r.prevDayBarsFn != nil {
-					type anchorUpdater interface {
-						UpdateCalcAnchor(name string, bar start.Bar)
-					}
-					if au, ok := st.(anchorUpdater); ok {
-						// Sort for deterministic replay order
-						sortedNames := make([]string, 0, len(resolved))
-						for name := range resolved {
-							if name != "session_open" {
-								sortedNames = append(sortedNames, name)
-							}
-						}
-						sort.Strings(sortedNames)
-						for _, name := range sortedNames {
-							anchorTime := resolved[name]
-							prevBars := r.prevDayBarsFn(symbol, anchorTime)
-							if len(prevBars) > 0 {
-								r.logger.Info("replaying prev-day bars for anchor",
-									"symbol", symbol, "anchor", name, "bars", len(prevBars),
-									"from", prevBars[0].Time, "to", prevBars[len(prevBars)-1].Time)
-								for _, b := range prevBars {
-									au.UpdateCalcAnchor(name, b)
-								}
-							}
-						}
-					}
-				}
+				r.replayBarsForAnchors(st, symbol, resolved, barTime)
 				r.logger.Info("reset AVWAP anchors for new session", "symbol", symbol, "anchors", len(resolved))
 			}
 
@@ -426,34 +433,7 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 				merged[k] = v
 			}
 			ar.ResetAnchors(merged)
-			// Replay previous day's bars for non-session_open anchors
-			if r.prevDayBarsFn != nil {
-				type anchorUpdater interface {
-					UpdateCalcAnchor(name string, bar start.Bar)
-				}
-				if au, ok2 := st.(anchorUpdater); ok2 {
-					// Sort anchor names for deterministic replay order
-					sortedNames := make([]string, 0, len(merged))
-					for name := range merged {
-						if name != "session_open" {
-							sortedNames = append(sortedNames, name)
-						}
-					}
-					sort.Strings(sortedNames)
-					for _, name := range sortedNames {
-						anchorTime := merged[name]
-						prevBars := r.prevDayBarsFn(symbol, anchorTime)
-						if len(prevBars) > 0 {
-							r.logger.Info("replaying prev-day bars for anchor",
-								"symbol", symbol, "anchor", name, "bars", len(prevBars),
-								"from", prevBars[0].Time, "to", prevBars[len(prevBars)-1].Time)
-							for _, b := range prevBars {
-								au.UpdateCalcAnchor(name, b)
-							}
-						}
-					}
-				}
-			}
+			r.replayBarsForAnchors(st, symbol, merged, bar.Time)
 			r.logger.Info("AI anchor resolution complete", "symbol", symbol, "anchors", len(merged))
 		}
 

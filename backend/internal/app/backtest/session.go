@@ -463,46 +463,73 @@ func (r *SessionResolver) PopulateBarCache(sym domain.Symbol, bars []domain.Mark
 	r.mu.Unlock()
 }
 
-// GetBarsSince returns 1m bars for a symbol from `since` to end of that day's session.
-// For equities, caps at 16:00 ET (RTH close). For crypto symbols (containing "/"),
-// caps at midnight ET (full 24h day). Uses the in-memory barCache populated by
-// PopulateBarCache; falls back to a DB query on cache miss.
+// GetBarsSince returns 1m bars for a symbol from `since` to end of that day's
+// session. Equities cap at 16:00 ET (RTH close); crypto symbols (containing "/")
+// cap at midnight ET (full 24h day).
 func (r *SessionResolver) GetBarsSince(ctx context.Context, db *sql.DB, symbol string, since time.Time) []start.Bar {
 	if since.IsZero() {
 		return nil
 	}
 	et := since.In(r.loc)
-	day := dayKey(since, r.loc)
-	eodHour := 16 // RTH close for equities
+	eodHour := 16
 	if strings.Contains(symbol, "/") {
-		eodHour = 24 // full day for crypto
+		eodHour = 24
 	}
 	eod := time.Date(et.Year(), et.Month(), et.Day(), eodHour, 0, 0, 0, r.loc)
+	return r.getBarsInRange(ctx, db, symbol, since, eod)
+}
 
-	key := symbol + ":" + day
+// GetBarsBetween returns 1m bars for a symbol in [since, until). Spans the
+// day boundary so an anchor from a prior day can include today's bars up to
+// the caller-supplied cutoff — used for mid-session AVWAP anchor seeding so
+// live restart and bar-by-bar backtest accumulation converge at the cutoff.
+func (r *SessionResolver) GetBarsBetween(ctx context.Context, db *sql.DB, symbol string, since, until time.Time) []start.Bar {
+	return r.getBarsInRange(ctx, db, symbol, since, until)
+}
+
+// getBarsInRange serves bars in [since, until) from barCache when any day in
+// the range is populated; otherwise falls back to DB. Assumes PopulateBarCache
+// covers full ranges for a symbol: partial population is not supported and
+// would produce incomplete results.
+func (r *SessionResolver) getBarsInRange(ctx context.Context, db *sql.DB, symbol string, since, until time.Time) []start.Bar {
+	if since.IsZero() || !until.After(since) {
+		return nil
+	}
+
+	sinceET := since.In(r.loc)
+	untilET := until.In(r.loc)
+	startDay := time.Date(sinceET.Year(), sinceET.Month(), sinceET.Day(), 0, 0, 0, 0, r.loc)
+	endDay := time.Date(untilET.Year(), untilET.Month(), untilET.Day(), 0, 0, 0, 0, r.loc)
+
+	// Snapshot cached slice headers under RLock, then filter outside so slice
+	// growth doesn't contend with concurrent shard goroutines.
+	var cachedSlices [][]start.Bar
 	r.mu.RLock()
-	cached, ok := r.barCache[key]
+	for d := startDay; !d.After(endDay); d = d.AddDate(0, 0, 1) {
+		key := symbol + ":" + dayKey(d, r.loc)
+		if cached, ok := r.barCache[key]; ok {
+			cachedSlices = append(cachedSlices, cached)
+		}
+	}
 	r.mu.RUnlock()
-	if ok {
-		// Filter to bars >= since && < eod. Read cached slice header
-		// outside the lock; the slice backing array isn't mutated after
-		// publication so a read-only iteration is safe.
+	if len(cachedSlices) > 0 {
 		var result []start.Bar
-		for _, b := range cached {
-			if !b.Time.Before(since) && b.Time.Before(eod) {
-				result = append(result, b)
+		for _, cached := range cachedSlices {
+			for _, b := range cached {
+				if !b.Time.Before(since) && b.Time.Before(until) {
+					result = append(result, b)
+				}
 			}
 		}
 		return result
 	}
 
-	// Fallback: DB query (should rarely happen if PopulateBarCache was called)
 	rows, err := db.QueryContext(ctx, `
 		SELECT time, open, high, low, close, volume
 		FROM market_bars
 		WHERE symbol = $1 AND timeframe = '1m'
 		  AND time >= $2 AND time < $3
-		ORDER BY time`, symbol, since, eod)
+		ORDER BY time`, symbol, since, until)
 	if err != nil {
 		return nil
 	}

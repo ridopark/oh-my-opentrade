@@ -99,7 +99,7 @@ type Service struct {
 	scratchStrict     []domain.Event
 	scratchBestEffort []domain.Event
 	anchorResolverFn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
-	prevDayBarsFn    func(symbol string, since time.Time) []start.Bar
+	prevDayBarsFn    func(symbol string, since, until time.Time) []start.Bar
 	nyLoc            *time.Location // cached America/New_York location
 }
 // SetAVWAPFn installs a function that returns current anchored VWAP values
@@ -152,9 +152,10 @@ func (s *Service) SetAnchorResolverFn(fn func(symbol string, barTime time.Time, 
 	s.anchorResolverFn = fn
 }
 
-// SetPrevDayBarsFn installs a function that returns previous-day 1m bars from a given
-// time for replaying into AVWAP anchors (pd_high, pd_low).
-func (s *Service) SetPrevDayBarsFn(fn func(symbol string, since time.Time) []start.Bar) {
+// SetPrevDayBarsFn installs a function that returns 1m bars in [since, until)
+// for replaying into AVWAP anchors. Spans the day boundary so a mid-session
+// restart can seed all anchors (including session_open) up to `until`.
+func (s *Service) SetPrevDayBarsFn(fn func(symbol string, since, until time.Time) []start.Bar) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prevDayBarsFn = fn
@@ -691,19 +692,19 @@ func (s *Service) handleBarCore(ctx context.Context, bar domain.MarketBar, tenan
 				}
 				s.avwapCalcs[symStr] = calc
 
-				// Replay prev-day bars for non-session_open anchors so they
-				// accumulate volume from their actual anchor time.
+				// Replay bars from each anchor time up to bar.Time so cumulative
+				// PV/V matches the bar-by-bar path at reset time. For session_open
+				// at a fresh session boundary, anchor_time == bar.Time so the
+				// replay is a no-op; on mid-session restart it seeds today's bars.
 				if s.prevDayBarsFn != nil {
 					sortedNames := make([]string, 0, len(resolved))
 					for name := range resolved {
-						if name != "session_open" {
-							sortedNames = append(sortedNames, name)
-						}
+						sortedNames = append(sortedNames, name)
 					}
 					sort.Strings(sortedNames)
 					for _, name := range sortedNames {
 						anchorTime := resolved[name]
-						prevBars := s.prevDayBarsFn(symStr, anchorTime)
+						prevBars := s.prevDayBarsFn(symStr, anchorTime, bar.Time)
 						for _, b := range prevBars {
 							calc.UpdateSingleAnchor(name, b.Time, b.High, b.Low, b.Close, b.Volume)
 						}
