@@ -441,16 +441,25 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	// calls that already run against this riskSizer, so no extra plumbing.
 	svc.riskSizer.SetPositionRiskCap(cfg.Risk.PositionCap)
 
-	aiAnchorResolver := strategy.NewAIAnchorResolver(svc.aiAdvisor, nil, slog.Default())
-	// Wire session-based anchor resolver so pd_high, pd_low, session_open are
-	// resolved from actual previous-day price data. Without this, the AI anchor
-	// resolver has no session context and these anchors are never set.
+	// The static session resolver (session_open, pd_high, pd_low from DB) is
+	// always wired. The AIAnchorResolver on top is gated by config: when
+	// disabled, live takes the same resolveSessionAnchors path as backtest
+	// with no_ai=true, avoiding divergence from candidate detectors and
+	// fallbackRank ordering. See cfg.AI.AnchorResolverEnabled.
 	loc, _ := time.LoadLocation("America/New_York")
 	sessionResolver := backtest.NewSessionResolver(loc)
-	aiAnchorResolver.SetSessionResolver(sessionResolver.ResolveAnchors)
 	svc.strategyRunner.SetAnchorResolver(sessionResolver.ResolveAnchors)
 	svc.strategyRunner.SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
-	svc.strategyRunner.SetAIAnchorResolver(aiAnchorResolver)
+
+	var aiAnchorResolver *strategy.AIAnchorResolver
+	if cfg.AI.AnchorResolverEnabled {
+		aiAnchorResolver = strategy.NewAIAnchorResolver(svc.aiAdvisor, nil, slog.Default())
+		aiAnchorResolver.SetSessionResolver(sessionResolver.ResolveAnchors)
+		svc.strategyRunner.SetAIAnchorResolver(aiAnchorResolver)
+		log.Info().Msg("AI anchor resolver wired (cfg.ai.anchor_resolver_enabled = true)")
+	} else {
+		log.Info().Msg("AI anchor resolver disabled — live uses static session resolver (backtest-parity path)")
+	}
 	// Wire bar replay for AVWAP anchors. Returns 1m bars in [since, until)
 	// so a mid-session restart can seed all anchors (including session_open)
 	// with today's bars up to the current bar-time, matching the state that
@@ -490,8 +499,10 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		for _, sym := range spec.Routing.Symbols {
 			if !anchorSymbols[sym] {
 				anchorSymbols[sym] = true
-				isCrypto := strings.Contains(sym, "/") || strings.HasSuffix(sym, "USD") || strings.HasSuffix(sym, "USDT")
-				aiAnchorResolver.RegisterSymbol(sym, isCrypto)
+				if aiAnchorResolver != nil {
+					isCrypto := strings.Contains(sym, "/") || strings.HasSuffix(sym, "USD") || strings.HasSuffix(sym, "USDT")
+					aiAnchorResolver.RegisterSymbol(sym, isCrypto)
+				}
 			}
 		}
 	}

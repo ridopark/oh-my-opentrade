@@ -95,6 +95,13 @@ type AIConfig struct {
 	MinConfidence  float64 `yaml:"min_confidence"`
 	Enabled        bool    `yaml:"enabled"`
 	ProviderSort   string  `yaml:"provider_sort"` // OpenRouter provider routing sort (e.g. "latency")
+
+	// AnchorResolverEnabled wires the candidate-accumulating, score-ranked
+	// AIAnchorResolver into the strategy runner. When false (default), live
+	// takes the same deterministic resolveSessionAnchors path backtest uses
+	// with no_ai=true — avoids candidate detectors, fallbackRank ordering,
+	// and async LLM hot-swaps diverging from backtest parity.
+	AnchorResolverEnabled bool `yaml:"anchor_resolver_enabled"`
 }
 
 type AIScreenerConfig struct {
