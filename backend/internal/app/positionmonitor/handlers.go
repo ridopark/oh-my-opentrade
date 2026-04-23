@@ -169,26 +169,7 @@ func (s *Service) handleChandelierTrailArm(_ context.Context, event domain.Event
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var target *domain.MonitoredPosition
-	for _, pos := range s.positions {
-		if pos == nil {
-			continue
-		}
-		if string(pos.Symbol) != payload.ContractSymbol {
-			continue
-		}
-		if payload.TenantID != "" && pos.TenantID != payload.TenantID {
-			continue
-		}
-		if payload.EnvMode != "" && string(pos.EnvMode) != payload.EnvMode {
-			continue
-		}
-		if payload.Strategy != "" && pos.Strategy != payload.Strategy {
-			continue
-		}
-		target = pos
-		break
-	}
+	target := s.findPositionByContract(payload.ContractSymbol, payload.TenantID, payload.EnvMode, payload.Strategy)
 	if target == nil {
 		s.log.Warn().
 			Str("contract_symbol", payload.ContractSymbol).
@@ -236,26 +217,7 @@ func (s *Service) handleCopytradeExitRequest(_ context.Context, event domain.Eve
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var target *domain.MonitoredPosition
-	for _, pos := range s.positions {
-		if pos == nil {
-			continue
-		}
-		if string(pos.Symbol) != payload.ContractSymbol {
-			continue
-		}
-		if payload.TenantID != "" && pos.TenantID != payload.TenantID {
-			continue
-		}
-		if payload.EnvMode != "" && string(pos.EnvMode) != payload.EnvMode {
-			continue
-		}
-		if payload.Strategy != "" && pos.Strategy != payload.Strategy {
-			continue
-		}
-		target = pos
-		break
-	}
+	target := s.findPositionByContract(payload.ContractSymbol, payload.TenantID, payload.EnvMode, payload.Strategy)
 	if target == nil {
 		s.log.Warn().
 			Str("contract_symbol", payload.ContractSymbol).
@@ -286,5 +248,33 @@ func (s *Service) handleCopytradeExitRequest(_ context.Context, event domain.Eve
 		Float64("fraction", payload.Fraction).
 		Str("keyword", payload.Reason).
 		Msg("copytrade_exit_request dispatched")
+	return nil
+}
+
+// findPositionByContract scans s.positions for the open position matching an
+// OCC contract symbol. tenantID/envMode/strategy are optional discriminators:
+// empty strings mean "don't filter by this field". Caller must hold s.mu.
+// Returns nil when no position matches. Shared by handleChandelierTrailArm
+// and handleCopytradeExitRequest, both of which identify their target by the
+// exact contract symbol published on the payload.
+func (s *Service) findPositionByContract(contractSymbol, tenantID string, envMode string, strategy string) *domain.MonitoredPosition {
+	for _, pos := range s.positions {
+		if pos == nil {
+			continue
+		}
+		if string(pos.Symbol) != contractSymbol {
+			continue
+		}
+		if tenantID != "" && pos.TenantID != tenantID {
+			continue
+		}
+		if envMode != "" && string(pos.EnvMode) != envMode {
+			continue
+		}
+		if strategy != "" && pos.Strategy != strategy {
+			continue
+		}
+		return pos
+	}
 	return nil
 }

@@ -2387,13 +2387,7 @@ func (r *Runner) handleCopytradeSignal(ctx context.Context, event domain.Event) 
 		return nil
 	}
 
-	var inst *Instance
-	for _, candidate := range r.router.AllInstances() {
-		if candidate.configStrategyID() == "copytrade_v1" && candidate.IsActive() {
-			inst = candidate
-			break
-		}
-	}
+	inst := r.findInstanceByStrategy("copytrade_v1")
 	if inst == nil {
 		r.logger.Debug("handleCopytradeSignal: no active copytrade_v1 instance")
 		return nil
@@ -2499,6 +2493,19 @@ func (r *Runner) handleCopytradeSignal(ctx context.Context, event domain.Event) 
 				"symbol", sig.Symbol,
 				"error", emitErr,
 			)
+		}
+	}
+	return nil
+}
+
+// findInstanceByStrategy returns the first active instance matching the given
+// strategy ID across all registered instances, ignoring symbol routing. Used
+// by handlers dispatching event-driven strategies (copytrade) that don't have
+// per-symbol routing. Returns nil when no active instance matches.
+func (r *Runner) findInstanceByStrategy(strategyName string) *Instance {
+	for _, inst := range r.router.AllInstances() {
+		if inst.configStrategyID() == strategyName && inst.IsActive() {
+			return inst
 		}
 	}
 	return nil
