@@ -142,7 +142,7 @@ max_position_bps = 1500          # reduced from 3000
 
 # --- Timing ---
 # Trading window (ET). Entries only allowed within this range.
-allowed_hours_start = "09:35"
+allowed_hours_start = "09:30"    # 5m bars use bucket-START timestamps, so the first RTH bar carries 09:30. Setting to 09:30 lets it pass; 09:35 blocked it stale until 09:40.
 allowed_hours_end = "15:45"
 allowed_hours_tz = "America/New_York"
 
