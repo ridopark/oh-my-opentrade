@@ -190,6 +190,27 @@ s.bus.Publish(domain.Event{
 })
 ```
 
+## Gotchas
+
+### TOML array-of-tables decodes to `[]map[string]any`, not `[]any`
+`[[params.foo]]` in a spec TOML arrives in `spec.Params["foo"]` as
+`[]map[string]any`. Parsers that type-assert only `[]any` silently return
+empty and the feature appears dead at runtime (no error, no log). Accept
+both shapes when parsing, and add a spec-loader test that loads the real
+TOML and asserts the list is non-empty — hand-built test params go through
+the `[]any` path and hide the bug. Also: flat keys placed AFTER
+`[[params.foo]]` in the same file attach to the last array entry, not back
+to `[params]`. Put flat keys first.
+
+### `Instance.OnEvent` does not stamp `StrategyInstanceID`; only `OnBar` does
+`instance.go`'s `OnBar` stamps `sig.StrategyInstanceID = inst.id` before
+returning signals; `OnEvent` does not. Existing callers (`handleFill`,
+`handleRejection`, `handleAuctionImbalance`, `handleTradeReceived`) discard
+the returned signals, so the gap is invisible in practice. If a new
+handler forwards OnEvent-returned signals via `r.emitSignal`, stamp the
+instance ID post-hoc or `SignalCreated` events will have an empty ID and
+the strategy-label metrics will bucket as `unknown`.
+
 ## References
 - Full port list: see `backend/internal/ports/*.go` directly
 - Event list: `backend/internal/domain/event.go`
