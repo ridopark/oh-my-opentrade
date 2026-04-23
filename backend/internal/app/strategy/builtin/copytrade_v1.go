@@ -44,6 +44,13 @@ func NewCopytradeStrategy() *CopytradeStrategy {
 func (s *CopytradeStrategy) Meta() start.Meta { return s.meta }
 func (s *CopytradeStrategy) WarmupBars() int  { return 0 }
 
+// copytradeFullCloseTolerance is the residual-fraction threshold below which
+// an STC is treated as a full close and the position is deleted. Handles
+// float drift from successive multiplicative partials (e.g. 0.5 * 0.33 * 0.5
+// chains) so a tiny leftover doesn't keep the position open with a broker
+// order that rounds to zero contracts.
+const copytradeFullCloseTolerance = 0.005
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -355,7 +362,7 @@ func (s *CopytradeStrategy) handleSTC(ctx start.Context, cst *copytradeState, si
 	// The strategy's internal RemainingFrac is the multiplicative residual
 	// so we can model partial-over-partial without knowing absolute qty.
 	newRemaining := pos.RemainingFrac * (1.0 - fraction)
-	fullClose := fraction >= 1.0 || newRemaining < 0.005
+	fullClose := fraction >= 1.0 || newRemaining < copytradeFullCloseTolerance
 
 	exitPayload := domain.CopytradeExitRequestPayload{
 		Strategy:       "copytrade_v1",
@@ -371,7 +378,7 @@ func (s *CopytradeStrategy) handleSTC(ctx start.Context, cst *copytradeState, si
 	}
 
 	// First-partial trail arming: only on a strictly partial close and only
-	// once per position. Matches the handoff spec line 249-251.
+	// once per position. Full-close STCs do not arm (the position is exiting).
 	if !fullClose && !pos.TrailArmed && cst.Config.TrailOnPartial {
 		armPayload := domain.ChandelierTrailArmPayload{
 			Strategy:       "copytrade_v1",

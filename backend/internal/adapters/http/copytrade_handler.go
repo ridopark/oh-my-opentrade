@@ -31,6 +31,10 @@ type CopytradeHandler struct {
 	seenCap int
 }
 
+// defaultCopytradeDedupeCap sizes the dedupe map. At ~100 signals/day and a
+// 120s freshness_ttl, active-window entries stay under 20; the cap exists
+// only to bound growth from a runaway sidecar burst or an attacker POSTing
+// unique signal_ids. Purge scans under mutex, so we keep the cap small.
 const defaultCopytradeDedupeCap = 4096
 
 // NewCopytradeHandler constructs a CopytradeHandler. freshnessTTL is the
