@@ -1,0 +1,40 @@
+services:
+  watcher:
+    build: .
+    container_name: omo-discord-copytrade
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      STATE_DIR: /app/state
+    volumes:
+      - ./state:/app/state
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import pathlib, time, sys
+          p = pathlib.Path('/app/state/heartbeat')
+          sys.exit(0 if p.exists() and time.time() - p.stat().st_mtime < 120 else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  bootstrap:
+    build: .
+    container_name: omo-discord-copytrade-bootstrap
+    profiles: ["bootstrap"]
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      STATE_DIR: /app/state
+      DISPLAY: ${DISPLAY:-:0}
+    volumes:
+      - ./state:/app/state
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
+    command: ["python3", "-m", "bootstrap"]

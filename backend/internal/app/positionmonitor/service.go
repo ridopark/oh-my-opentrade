@@ -407,6 +407,12 @@ func (s *Service) Start(ctx context.Context) error {
 	if err := s.eventBus.Subscribe(ctx, domain.EventOrderIntentRejected, s.handleExitRejected); err != nil {
 		return fmt.Errorf("position_monitor: failed to subscribe to OrderIntentRejected: %w", err)
 	}
+	if err := s.eventBus.Subscribe(ctx, domain.EventChandelierTrailArm, s.handleChandelierTrailArm); err != nil {
+		return fmt.Errorf("position_monitor: failed to subscribe to ChandelierTrailArm: %w", err)
+	}
+	if err := s.eventBus.Subscribe(ctx, domain.EventCopytradeExitRequest, s.handleCopytradeExitRequest); err != nil {
+		return fmt.Errorf("position_monitor: failed to subscribe to CopytradeExitRequest: %w", err)
+	}
 
 	// Bootstrap: seed monitor with OMO-opened positions that are still on the broker.
 	if !s.disableReconcile {

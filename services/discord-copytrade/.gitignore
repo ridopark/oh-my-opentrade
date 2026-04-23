@@ -1,0 +1,7 @@
+# Browser session state — contains live Discord auth token. Never commit.
+state/
+# Local config — shared-secret + channel URL live here.
+.env
+# Python bytecode cache.
+__pycache__/
+*.pyc

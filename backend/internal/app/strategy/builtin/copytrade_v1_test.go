@@ -1,0 +1,311 @@
+package builtin
+
+import (
+	"context"
+	"log/slog"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/oh-my-opentrade/backend/internal/app/strategy"
+	"github.com/oh-my-opentrade/backend/internal/domain"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// copyCtx is a lightweight start.Context that captures every EmitDomainEvent
+// call so tests can assert on the ChandelierTrailArm / CopytradeExitRequest
+// payloads emitted by the strategy's STC path.
+type copyCtx struct {
+	mu    sync.Mutex
+	now   time.Time
+	emits []any
+}
+
+func newCopyCtx() *copyCtx {
+	return &copyCtx{now: time.Date(2026, 4, 23, 14, 0, 0, 0, time.UTC)}
+}
+
+func (c *copyCtx) Now() time.Time       { return c.now }
+func (c *copyCtx) Logger() *slog.Logger { return slog.Default() }
+func (c *copyCtx) EmitDomainEvent(evt any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.emits = append(c.emits, evt)
+	return nil
+}
+func (c *copyCtx) ProgressEventsSuppressed() bool { return false }
+
+func (c *copyCtx) exitRequests() []domain.CopytradeExitRequestPayload {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []domain.CopytradeExitRequestPayload
+	for _, e := range c.emits {
+		if p, ok := e.(domain.CopytradeExitRequestPayload); ok {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (c *copyCtx) armRequests() []domain.ChandelierTrailArmPayload {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []domain.ChandelierTrailArmPayload
+	for _, e := range c.emits {
+		if p, ok := e.(domain.ChandelierTrailArmPayload); ok {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func copytradeDefaultParams() map[string]any {
+	return map[string]any{
+		"skip_avg":                 true,
+		"trail_on_partial_enabled": true,
+		"trail_giveback_pct":       0.15,
+		"default_stc_fraction":     0.33,
+		"max_positions":            5,
+		"partial_fractions": []any{
+			map[string]any{"keyword": "all out", "fraction": 1.0},
+			map[string]any{"keyword": "stop hit", "fraction": 1.0},
+			map[string]any{"keyword": "stopped", "fraction": 1.0},
+			map[string]any{"keyword": "half out", "fraction": 0.5},
+			map[string]any{"keyword": "taking more", "fraction": 0.33},
+			map[string]any{"keyword": "partial", "fraction": 0.33},
+			map[string]any{"keyword": "trim", "fraction": 0.25},
+		},
+	}
+}
+
+func copytradeSignal(action, ticker string, strike float64, right, tail string, price float64) start.CopytradeSignal {
+	return start.CopytradeSignal{
+		SignalID:  action + ":" + ticker,
+		MessageID: "msg-1",
+		Author:    "alice",
+		PostedAt:  time.Date(2026, 4, 23, 14, 0, 0, 0, time.UTC),
+		Action:    action,
+		Ticker:    ticker,
+		Expiry:    time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
+		Strike:    strike,
+		Right:     right,
+		Price:     price,
+		Tail:      tail,
+		RawLine:   action + " " + ticker,
+	}
+}
+
+func initCopytrade(t *testing.T, params map[string]any) (*CopytradeStrategy, start.State) {
+	t.Helper()
+	s := NewCopytradeStrategy()
+	st, err := s.Init(nil, "__copytrade__", params, nil)
+	require.NoError(t, err)
+	return s, st
+}
+
+func TestCopytrade_BTO_EmitsSignalWithForceTags(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+	sig := copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20)
+
+	next, signals, err := s.OnEvent(ctx, "__copytrade__", sig, st)
+	require.NoError(t, err)
+	require.Len(t, signals, 1)
+
+	out := signals[0]
+	assert.Equal(t, start.SignalEntry, out.Type)
+	assert.Equal(t, start.SideBuy, out.Side)
+	assert.Equal(t, "AAPL", out.Symbol)
+	assert.Equal(t, "2026-04-25", out.Tags["force_expiry"])
+	assert.Equal(t, "190", out.Tags["force_strike"])
+	assert.Equal(t, "CALL", out.Tags["force_right"])
+	assert.Equal(t, "1.2", out.Tags["force_ref_premium"])
+	assert.Equal(t, "1", out.Tags["generation"])
+	assert.Equal(t, "alice", out.Tags["author"])
+	assert.NotEmpty(t, out.Tags["contract_symbol"])
+
+	cst := next.(*copytradeState)
+	require.Len(t, cst.Positions, 1)
+	for _, pos := range cst.Positions {
+		assert.Equal(t, 1.0, pos.RemainingFrac)
+		assert.False(t, pos.TrailArmed)
+		assert.Equal(t, 1.20, pos.EntryPremium)
+	}
+	assert.Empty(t, ctx.exitRequests())
+	assert.Empty(t, ctx.armRequests())
+}
+
+func TestCopytrade_STC_Partial_ArmsChandelierOnce(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
+	require.NoError(t, err)
+
+	st, sigs, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "half out at 1.80", 1.80), st)
+	require.NoError(t, err)
+	assert.Empty(t, sigs, "STC should not emit start.Signals (exit goes via domain event)")
+
+	exits := ctx.exitRequests()
+	require.Len(t, exits, 1)
+	assert.Equal(t, 0.5, exits[0].Fraction)
+	assert.Equal(t, "half out", exits[0].Reason)
+	assert.Equal(t, "AAPL", exits[0].Symbol)
+	assert.NotEmpty(t, exits[0].ContractSymbol)
+	assert.Equal(t, "copytrade_v1", exits[0].Strategy)
+
+	arms := ctx.armRequests()
+	require.Len(t, arms, 1)
+	assert.Equal(t, 1.80, arms[0].PeakPremium)
+	assert.Equal(t, exits[0].ContractSymbol, arms[0].ContractSymbol)
+
+	// Second partial: no new arm, just another exit request.
+	_, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "taking more", 1.95), st)
+	require.NoError(t, err)
+	assert.Len(t, ctx.exitRequests(), 2, "second partial should still emit exit")
+	assert.Len(t, ctx.armRequests(), 1, "chandelier arm must only fire once")
+}
+
+func TestCopytrade_STC_AllOut_ClosesAndBumpsGeneration(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
+	require.NoError(t, err)
+	st, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "all out at 2.50", 2.50), st)
+	require.NoError(t, err)
+
+	cst := st.(*copytradeState)
+	assert.Empty(t, cst.Positions, "full close should delete position")
+	assert.Len(t, ctx.exitRequests(), 1)
+	assert.Equal(t, 1.0, ctx.exitRequests()[0].Fraction)
+	assert.Empty(t, ctx.armRequests(), "full close on first STC must not arm chandelier")
+
+	// Re-entry on same contract bumps generation.
+	st, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "reload", 1.10), st)
+	require.NoError(t, err)
+	cst = st.(*copytradeState)
+	require.Len(t, cst.Positions, 1)
+	for _, pos := range cst.Positions {
+		assert.Equal(t, 2, pos.Generation)
+	}
+}
+
+func TestCopytrade_STC_Default_WhenNoKeywordMatches(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "TSLA", 250, "P", "starter", 3.50), st)
+	require.NoError(t, err)
+	_, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "TSLA", 250, "P", "at 4.00", 4.00), st)
+	require.NoError(t, err)
+
+	exits := ctx.exitRequests()
+	require.Len(t, exits, 1)
+	assert.InDelta(t, 0.33, exits[0].Fraction, 1e-9)
+	assert.Equal(t, "default", exits[0].Reason)
+}
+
+func TestCopytrade_STC_WithoutBTO_Dropped(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	_, sigs, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "half out", 1.50), st)
+	require.NoError(t, err)
+	assert.Empty(t, sigs)
+	assert.Empty(t, ctx.exitRequests())
+	assert.Empty(t, ctx.armRequests())
+}
+
+func TestCopytrade_AVG_Skipped(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	_, sigs, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("AVG", "AAPL", 190, "C", "averaged down", 1.10), st)
+	require.NoError(t, err)
+	assert.Empty(t, sigs)
+	assert.Empty(t, ctx.exitRequests())
+}
+
+func TestCopytrade_AuthorWhitelist_Blocks(t *testing.T) {
+	params := copytradeDefaultParams()
+	params["author_whitelist"] = []string{"bob"}
+	s, st := initCopytrade(t, params)
+	ctx := newCopyCtx()
+
+	_, sigs, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
+	require.NoError(t, err)
+	assert.Empty(t, sigs, "alice is not whitelisted")
+	assert.Empty(t, ctx.exitRequests())
+}
+
+func TestCopytrade_AuthorWhitelist_Allows(t *testing.T) {
+	params := copytradeDefaultParams()
+	params["author_whitelist"] = []string{"Alice"} // case-insensitive
+	s, st := initCopytrade(t, params)
+	ctx := newCopyCtx()
+
+	_, sigs, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
+	require.NoError(t, err)
+	assert.Len(t, sigs, 1)
+}
+
+func TestCopytrade_TrailDisabled_NoArmOnPartial(t *testing.T) {
+	params := copytradeDefaultParams()
+	params["trail_on_partial_enabled"] = false
+	s, st := initCopytrade(t, params)
+	ctx := newCopyCtx()
+
+	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
+	require.NoError(t, err)
+	_, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "half out", 1.80), st)
+	require.NoError(t, err)
+
+	assert.Len(t, ctx.exitRequests(), 1)
+	assert.Empty(t, ctx.armRequests())
+}
+
+func TestCopytrade_StateRoundTrip(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
+	require.NoError(t, err)
+
+	data, err := st.Marshal()
+	require.NoError(t, err)
+
+	revived := newCopytradeState(parseCopytradeConfig(copytradeDefaultParams()))
+	require.NoError(t, revived.Unmarshal(data))
+	require.Len(t, revived.Positions, 1)
+}
+
+// Guard: the strategy must satisfy the start.Strategy contract end-to-end,
+// including plugging into an Instance the way the runner does. This is a
+// compile-time + tiny runtime check — if the interface drifts, this breaks.
+func TestCopytrade_InstanceLifecycle(t *testing.T) {
+	t.Parallel()
+	s := NewCopytradeStrategy()
+	instID, _ := start.NewInstanceID("copytrade_v1:__copytrade__")
+	inst := strategy.NewInstance(
+		instID,
+		s,
+		copytradeDefaultParams(),
+		strategy.InstanceAssignment{Symbols: []string{"__copytrade__"}, Timeframes: []string{"1m"}, Priority: 90},
+		start.LifecyclePaperActive,
+		nil,
+	)
+	ctx := newCopyCtx()
+	require.NoError(t, inst.InitSymbol(ctx, "__copytrade__", nil))
+
+	sigs, err := inst.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "NVDA", 900, "C", "starter", 4.25))
+	require.NoError(t, err)
+	require.Len(t, sigs, 1)
+	// Instance.OnEvent does not stamp StrategyInstanceID (only OnBar does);
+	// the runner's handleCopytradeSignal stamps it post-hoc before emitSignal.
+	// We just verify the signal carries the expected symbol/type.
+	assert.Equal(t, "NVDA", sigs[0].Symbol)
+	assert.Equal(t, start.SignalEntry, sigs[0].Type)
+	_ = context.Background() // keep import
+}

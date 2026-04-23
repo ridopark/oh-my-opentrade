@@ -1967,6 +1967,75 @@ func TestEvaluateChandelierTrail(t *testing.T) {
 	})
 }
 
+// TestEvaluateChandelierTrail_ExternalArm exercises activate_mode=1 on the
+// options branch. Strategy-armed peak tracks running max and fires on giveback
+// against the peak; MFE thresholds are ignored in this mode.
+func TestEvaluateChandelierTrail_ExternalArm(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+	entryTime := now.Add(-30 * time.Minute)
+
+	rule := domain.ExitRule{Type: domain.ExitRuleChandelierTrail, Params: map[string]float64{
+		"activate_mode": 1,
+		"giveback_pct":  0.15,
+	}}
+
+	t.Run("not_armed_never_fires", func(t *testing.T) {
+		// entry premium=5, delta=1, entry underlying=100.
+		// No arm flag set — current price at 100 (premium 5) should never fire.
+		pos := newOptionPosition(t, 100, entryTime, 5.00, 1.00)
+		triggered, reason := Evaluate(rule, pos, 100, now, EvalContext{})
+		assert.False(t, triggered)
+		assert.Empty(t, reason)
+	})
+
+	t.Run("armed_price_flat_no_fire", func(t *testing.T) {
+		pos := newOptionPosition(t, 100, entryTime, 5.00, 1.00)
+		pos.CustomState["chandelier_ext_armed"] = 1
+		pos.CustomState["chandelier_ext_peak"] = 5.0
+		// Underlying=100 → est premium = 5.0 + 1*(100-100) = 5.0
+		// Peak=5.0; 5.0 >= 5.0*(1-0.15)=4.25 — no fire
+		triggered, _ := Evaluate(rule, pos, 100, now, EvalContext{})
+		assert.False(t, triggered)
+	})
+
+	t.Run("armed_price_rises_peak_tracks", func(t *testing.T) {
+		pos := newOptionPosition(t, 100, entryTime, 5.00, 1.00)
+		pos.CustomState["chandelier_ext_armed"] = 1
+		pos.CustomState["chandelier_ext_peak"] = 5.0
+		// Underlying moves up — delta-linear plus theta gives currentPremium
+		// slightly under the naive 6.0 but still > 5.0 peak. Peak must ratchet
+		// up; rule must not fire at the new (higher) level.
+		triggered, _ := Evaluate(rule, pos, 101, now, EvalContext{})
+		assert.False(t, triggered)
+		assert.Greater(t, pos.CustomState["chandelier_ext_peak"], 5.0)
+	})
+
+	t.Run("armed_premium_drops_past_giveback_fires", func(t *testing.T) {
+		pos := newOptionPosition(t, 100, entryTime, 5.00, 1.00)
+		pos.CustomState["chandelier_ext_armed"] = 1
+		// Peak forced high; current underlying matches entry, so est premium is
+		// at or near entry (well below peak * 0.85). Must fire.
+		pos.CustomState["chandelier_ext_peak"] = 10.0
+		triggered, reason := Evaluate(rule, pos, 100, now, EvalContext{})
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "chandelier_trail(external)")
+	})
+
+	t.Run("mfe_mode_still_default_when_not_armed", func(t *testing.T) {
+		// activate_mode omitted → defaults to 0 (MFE mode). MFE-based
+		// behavior must stay byte-identical.
+		mfeRule := domain.ExitRule{Type: domain.ExitRuleChandelierTrail, Params: map[string]float64{
+			"activate_pct": 0.05,
+			"giveback_pct": 0.35,
+		}}
+		pos := newOptionPosition(t, 100, entryTime, 1.00, 1.00)
+		pos.CustomState["premium_mfe_pct"] = 0.03
+		triggered, _ := Evaluate(mfeRule, pos, 50, now, EvalContext{})
+		assert.False(t, triggered)
+	})
+}
+
 // TestEvaluateChandelierTrail_Options exercises the options-aware branch, which
 // reads premium_mfe_pct (tracked in exit_eval.go) and compares against the
 // current premium percent-change computed via EstimatedPremium. The

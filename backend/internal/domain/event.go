@@ -104,6 +104,20 @@ const (
 	EventSystemStarted           EventType = "SystemStarted"
 	EventIBKRConnected           EventType = "IBKRConnected"
 	EventSymbolsActivated        EventType = "SymbolsActivated"
+
+	// Copytrade: a Discord signal arrived from the discord-copytrade sidecar.
+	EventCopytradeSignalReceived EventType = "CopytradeSignalReceived"
+
+	// Copytrade: a strategy requests the position monitor to externally-arm
+	// a CHANDELIER_TRAIL rule on an existing option position. Fired by the
+	// copytrade strategy when the author's first STC-partial is processed.
+	EventChandelierTrailArm EventType = "ChandelierTrailArm"
+
+	// Copytrade: the copytrade strategy requests the position monitor to close
+	// a fraction of an existing option position. Fired on each STC keyword
+	// match. Routing is by OCC contract symbol; the fraction is stashed in
+	// pos.CustomState and consumed by positionmonitor.triggerExit.
+	EventCopytradeExitRequest EventType = "CopytradeExitRequest"
 )
 
 type SymbolsActivatedPayload struct {

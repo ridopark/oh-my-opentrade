@@ -31,6 +31,7 @@ const (
 	ExitRulePremiumTarget   ExitRuleType = "PREMIUM_TARGET"   // exit if premium rises X% from entry
 	ExitRuleFastFail        ExitRuleType = "FAST_FAIL_EXIT"   // exit if no MFE progress after N minutes
 	ExitRuleChandelierTrail ExitRuleType = "CHANDELIER_TRAIL" // trail giveback_pct of MFE once above activate_pct
+	ExitRuleCopytradeSTC    ExitRuleType = "COPYTRADE_STC"    // synthetic: partial/full close driven by copytrade author STC
 )
 
 func (e ExitRuleType) String() string { return string(e) }
@@ -58,7 +59,7 @@ func NewExitRuleType(s string) (ExitRuleType, error) {
 		ExitRuleSwingStop,
 		ExitRuleTieredTP, ExitRuleTimePartial,
 		ExitRulePremiumStop, ExitRulePremiumTrail, ExitRulePremiumTarget,
-		ExitRuleFastFail, ExitRuleChandelierTrail:
+		ExitRuleFastFail, ExitRuleChandelierTrail, ExitRuleCopytradeSTC:
 		return ExitRuleType(s), nil
 	default:
 		return "", fmt.Errorf("invalid exit rule type: %q", s)

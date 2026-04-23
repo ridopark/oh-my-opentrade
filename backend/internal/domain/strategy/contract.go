@@ -274,3 +274,21 @@ type TradeTick struct {
 	TakerSide string // "buy", "sell", or "" if unknown
 	Venue     string
 }
+
+// CopytradeSignal is forwarded to the copytrade strategy when the sidecar
+// posts a parsed Discord message. Kept string-typed so this package does not
+// import domain.
+type CopytradeSignal struct {
+	SignalID  string
+	MessageID string
+	Author    string
+	PostedAt  time.Time
+	Action    string // "BTO" | "STC" | "AVG"
+	Ticker    string
+	Expiry    time.Time
+	Strike    float64
+	Right     string // "C" | "P"
+	Price     float64
+	Tail      string
+	RawLine   string
+}

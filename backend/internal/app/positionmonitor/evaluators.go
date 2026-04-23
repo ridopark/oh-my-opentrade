@@ -120,15 +120,42 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 func evaluateChandelierTrail(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time) (bool, string) {
 	activate := rule.Param("activate_pct", 0)
 	giveback := rule.Param("giveback_pct", 0.35)
+	// activate_mode: 0 (default) = MFE-threshold arm, 1 = external arm.
+	// External arm ignores MFE — the strategy sets pos.CustomState
+	// ["chandelier_ext_armed"] = 1 and the initial peak via
+	// EventChandelierTrailArm. Peak tracks running max from arm onward.
+	activateMode := int(rule.Param("activate_mode", 0))
 	if giveback <= 0 || giveback >= 1 {
 		return false, ""
 	}
 
 	if pos.InstrumentType == domain.InstrumentTypeOption {
-		// Options branch: use premium-space MFE tracked by exit_eval.go.
 		if pos.CustomState == nil {
 			return false, ""
 		}
+		if activateMode == 1 {
+			if pos.CustomState["chandelier_ext_armed"] <= 0 {
+				return false, ""
+			}
+			currentPremium := pos.EstimatedPremium(currentPrice, now)
+			if currentPremium <= 0 {
+				return false, ""
+			}
+			peak := pos.CustomState["chandelier_ext_peak"]
+			if currentPremium > peak {
+				pos.CustomState["chandelier_ext_peak"] = currentPremium
+				peak = currentPremium
+			}
+			if peak <= 0 {
+				return false, ""
+			}
+			if currentPremium < peak*(1-giveback) {
+				return true, fmt.Sprintf("chandelier_trail(external): peak=%.4f current=%.4f giveback=%.1f%%",
+					peak, currentPremium, giveback*100)
+			}
+			return false, ""
+		}
+		// Options branch (default): use premium-space MFE tracked by exit_eval.go.
 		mfe, hasMFE := pos.CustomState["premium_mfe_pct"]
 		if !hasMFE || mfe < activate {
 			return false, ""

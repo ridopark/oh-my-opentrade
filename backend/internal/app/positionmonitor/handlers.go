@@ -146,3 +146,145 @@ func (s *Service) handleOrderSubmitted(_ context.Context, event domain.Event) er
 	}
 	return nil
 }
+
+// handleChandelierTrailArm externally arms a CHANDELIER_TRAIL rule on a
+// matching option position. Target position is identified by the contract
+// symbol (OCC); tenant/env are matched when supplied on the payload.
+//
+// Writes pos.CustomState["chandelier_ext_armed"] = 1 and seeds
+// ["chandelier_ext_peak"] with the payload peak. The evaluator then tracks
+// running peak and fires on giveback.
+//
+// Idempotent: re-arming updates peak only if the new peak is higher than the
+// tracked one (callers typically arm exactly once per position).
+func (s *Service) handleChandelierTrailArm(_ context.Context, event domain.Event) error {
+	payload, ok := event.Payload.(domain.ChandelierTrailArmPayload)
+	if !ok {
+		return nil
+	}
+	if payload.ContractSymbol == "" {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var target *domain.MonitoredPosition
+	for _, pos := range s.positions {
+		if pos == nil {
+			continue
+		}
+		if string(pos.Symbol) != payload.ContractSymbol {
+			continue
+		}
+		if payload.TenantID != "" && pos.TenantID != payload.TenantID {
+			continue
+		}
+		if payload.EnvMode != "" && string(pos.EnvMode) != payload.EnvMode {
+			continue
+		}
+		if payload.Strategy != "" && pos.Strategy != payload.Strategy {
+			continue
+		}
+		target = pos
+		break
+	}
+	if target == nil {
+		s.log.Warn().
+			Str("contract_symbol", payload.ContractSymbol).
+			Str("strategy", payload.Strategy).
+			Msg("chandelier_trail_arm: no matching position")
+		return nil
+	}
+	if target.CustomState == nil {
+		target.CustomState = make(map[string]float64)
+	}
+	target.CustomState["chandelier_ext_armed"] = 1
+	if payload.PeakPremium > target.CustomState["chandelier_ext_peak"] {
+		target.CustomState["chandelier_ext_peak"] = payload.PeakPremium
+	}
+	s.log.Info().
+		Str("contract_symbol", payload.ContractSymbol).
+		Str("strategy", payload.Strategy).
+		Float64("peak_premium", target.CustomState["chandelier_ext_peak"]).
+		Msg("chandelier_trail armed externally")
+	return nil
+}
+
+// handleCopytradeExitRequest routes a copytrade STC to the existing triggerExit
+// path. The target position is identified by OCC contract symbol. Fraction is
+// stashed in pos.CustomState["copytrade_exit_qty_frac"]; the fracKey loop in
+// triggerExit consumes it to size the partial-close order. A synthetic
+// COPYTRADE_STC rule is passed so logs and the idempotency key reflect the
+// source.
+func (s *Service) handleCopytradeExitRequest(_ context.Context, event domain.Event) error {
+	payload, ok := event.Payload.(domain.CopytradeExitRequestPayload)
+	if !ok {
+		return nil
+	}
+	if payload.ContractSymbol == "" {
+		return nil
+	}
+	if payload.Fraction <= 0 || payload.Fraction > 1.0 {
+		s.log.Warn().
+			Str("contract_symbol", payload.ContractSymbol).
+			Float64("fraction", payload.Fraction).
+			Msg("copytrade_exit_request: fraction out of range")
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var target *domain.MonitoredPosition
+	for _, pos := range s.positions {
+		if pos == nil {
+			continue
+		}
+		if string(pos.Symbol) != payload.ContractSymbol {
+			continue
+		}
+		if payload.TenantID != "" && pos.TenantID != payload.TenantID {
+			continue
+		}
+		if payload.EnvMode != "" && string(pos.EnvMode) != payload.EnvMode {
+			continue
+		}
+		if payload.Strategy != "" && pos.Strategy != payload.Strategy {
+			continue
+		}
+		target = pos
+		break
+	}
+	if target == nil {
+		s.log.Warn().
+			Str("contract_symbol", payload.ContractSymbol).
+			Str("strategy", payload.Strategy).
+			Msg("copytrade_exit_request: no matching position")
+		return nil
+	}
+	if target.CustomState == nil {
+		target.CustomState = make(map[string]float64)
+	}
+	// triggerExit's fracKey loop only honors frac < 1.0 for the partial path.
+	// A 1.0 full close stashes the value but the loop will simply delete it
+	// and proceed with exitQty = pos.Quantity, which is the correct behavior.
+	target.CustomState["copytrade_exit_qty_frac"] = payload.Fraction
+
+	reason := "copytrade:stc"
+	if payload.Reason != "" {
+		reason = fmt.Sprintf("copytrade:stc:%s", payload.Reason)
+	}
+	rule := domain.ExitRule{Type: domain.ExitRuleCopytradeSTC}
+	// For option positions, triggerExit translates currentPrice via
+	// EstimatedPremium if set. Pass EntryPrice as the underlying-price
+	// equivalent (mirrors the re-peg/escalate callers at exit_eval.go:457,497).
+	s.triggerExit(target, rule, reason, target.EntryPrice, s.nowFunc())
+	s.log.Info().
+		Str("contract_symbol", payload.ContractSymbol).
+		Str("strategy", payload.Strategy).
+		Float64("fraction", payload.Fraction).
+		Str("keyword", payload.Reason).
+		Msg("copytrade_exit_request dispatched")
+	return nil
+}

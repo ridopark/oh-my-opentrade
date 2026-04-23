@@ -102,6 +102,12 @@ type Runner struct {
 	// the panic metric. Set via SetNotifier.
 	notifier ports.NotifierPort
 
+	// universeHistory, when non-nil, lets copytrade gate author signals to
+	// symbols that were in the tradable universe at PostedAt. Nil is safe —
+	// the copytrade handler treats "no port" as "don't gate". Set via
+	// SetUniverseHistory.
+	universeHistory ports.UniverseHistoryPort
+
 	// suppressProgressEvents, when true, causes emitDomainEvent to drop
 	// telemetry-only payloads (EntryGatedPayload, ORBPhaseUpdatePayload)
 	// without allocating an Event or publishing. Intended for offline
@@ -593,6 +599,11 @@ func (r *Runner) applyTideData(inst *Instance, symbol string) {
 
 func (r *Runner) SetPositionLookup(fn PositionLookupFunc) { r.posLookup = fn }
 
+// SetUniverseHistory installs the port used by the copytrade handler to gate
+// incoming author signals to symbols that were tradable at PostedAt. Nil keeps
+// gating disabled (the handler skips the check).
+func (r *Runner) SetUniverseHistory(p ports.UniverseHistoryPort) { r.universeHistory = p }
+
 // SetDarkPoolLookup injects pre-loaded dark pool bars for backtesting.
 // The strategy runner overlays DP data onto IndicatorData during bar processing.
 func (r *Runner) SetDarkPoolLookup(lookup map[DPLookupKey]domain.DarkPoolBar) {
@@ -730,6 +741,10 @@ func (r *Runner) Start(ctx context.Context) error {
 		r.logger.Warn("failed to subscribe to TradeReceived (non-fatal)", "error", err)
 		// Non-fatal: backtests don't synthesize trade ticks; strategies fall
 		// back to bar-sign TFI via the `tfi_source = "auto"` knob.
+	}
+	if err := r.eventBus.Subscribe(ctx, domain.EventCopytradeSignalReceived, r.handleCopytradeSignal); err != nil {
+		r.logger.Warn("failed to subscribe to CopytradeSignalReceived (non-fatal)", "error", err)
+		// Non-fatal: most deployments/backtests don't run the copytrade strategy.
 	}
 	r.logger.Info("strategy runner subscribed to MarketBarSanitized events")
 	r.lastBarTime.Store(time.Now().UnixNano())
@@ -2052,6 +2067,10 @@ func (r *Runner) emitDomainEvent(ctx context.Context, tenantID string, envMode d
 		eventType = domain.EventORBPhaseUpdate
 		cacheKey = "ORBPhaseUpdate:" + p.Symbol
 		isProgress = true
+	case domain.ChandelierTrailArmPayload:
+		eventType = domain.EventChandelierTrailArm
+	case domain.CopytradeExitRequestPayload:
+		eventType = domain.EventCopytradeExitRequest
 	}
 	if isProgress && r.suppressProgressEvents {
 		return nil
@@ -2349,6 +2368,139 @@ func (r *Runner) handleTradeReceived(_ context.Context, event domain.Event) erro
 		}
 	}
 	r.mu.Unlock()
+	return nil
+}
+
+// copytradeSentinelSymbol is the fixed symbol key under which the single-
+// instance copytrade strategy stores its state. The strategy has no per-
+// symbol routing (symbols = []); using a sentinel keeps Instance.states
+// consistent with every other code path that indexes by symbol.
+const copytradeSentinelSymbol = "__copytrade__"
+
+// handleCopytradeSignal routes a parsed Discord signal from the discord-
+// copytrade sidecar to the single copytrade strategy instance. Because the
+// strategy uses symbols = [], it lives in r.router.instances but not in the
+// per-symbol routing map; we look it up by configStrategyID.
+func (r *Runner) handleCopytradeSignal(ctx context.Context, event domain.Event) error {
+	payload, ok := event.Payload.(domain.CopytradeSignalPayload)
+	if !ok {
+		return nil
+	}
+
+	var inst *Instance
+	for _, candidate := range r.router.AllInstances() {
+		if candidate.configStrategyID() == "copytrade_v1" && candidate.IsActive() {
+			inst = candidate
+			break
+		}
+	}
+	if inst == nil {
+		r.logger.Debug("handleCopytradeSignal: no active copytrade_v1 instance")
+		return nil
+	}
+
+	// Universe gate: if a history port is wired, drop signals for tickers that
+	// were not tradable at PostedAt. Use PostedAt (not now) so replayed / backfilled
+	// messages are validated against the state when the author posted.
+	if r.universeHistory != nil {
+		ok, err := r.universeHistory.WasTradable(ctx, domain.Symbol(payload.Ticker), payload.PostedAt)
+		if err != nil {
+			r.logger.Warn("handleCopytradeSignal: universe check failed",
+				"ticker", string(payload.Ticker),
+				"error", err,
+			)
+		} else if !ok {
+			r.logger.Info("handleCopytradeSignal: ticker out-of-universe — dropping",
+				"ticker", string(payload.Ticker),
+				"author", payload.Author,
+				"action", string(payload.Action),
+				"posted_at", payload.PostedAt,
+			)
+			if r.notifier != nil {
+				msg := fmt.Sprintf("copytrade: skipping out-of-universe %s %s %s %g%s @ %g (%s)",
+					payload.Action, payload.Ticker,
+					payload.Expiry.Format("2006-01-02"),
+					payload.Strike, payload.Right,
+					payload.Price, payload.Author,
+				)
+				_ = r.notifier.Notify(ctx, r.tenantID, msg)
+			}
+			return nil
+		}
+	}
+
+	// Lazy-init sentinel state if bootstrap didn't seed it (defense in depth).
+	if _, seeded := inst.GetState(copytradeSentinelSymbol); !seeded {
+		initCtx := &instanceContext{
+			ctx:      ctx,
+			now:      time.Now(),
+			logger:   r.logger.With("instance_id", inst.ID().String(), "symbol", copytradeSentinelSymbol),
+			tenantID: r.tenantID,
+			envMode:  r.envMode,
+			runner:   r,
+		}
+		if err := inst.InitSymbol(initCtx, copytradeSentinelSymbol, nil); err != nil {
+			r.logger.Error("handleCopytradeSignal: InitSymbol failed",
+				"instance_id", inst.ID().String(),
+				"error", err,
+			)
+			return nil
+		}
+	}
+
+	copySig := start.CopytradeSignal{
+		SignalID:  payload.SignalID,
+		MessageID: payload.MessageID,
+		Author:    payload.Author,
+		PostedAt:  payload.PostedAt,
+		Action:    string(payload.Action),
+		Ticker:    string(payload.Ticker),
+		Expiry:    payload.Expiry,
+		Strike:    payload.Strike,
+		Right:     string(payload.Right),
+		Price:     payload.Price,
+		Tail:      payload.Tail,
+		RawLine:   payload.RawLine,
+	}
+
+	instCtx := &instanceContext{
+		ctx:      ctx,
+		now:      time.Now(),
+		logger:   r.logger.With("instance_id", inst.ID().String(), "author", payload.Author, "ticker", string(payload.Ticker)),
+		tenantID: r.tenantID,
+		envMode:  r.envMode,
+		runner:   r,
+	}
+
+	r.mu.Lock()
+	signals, err := inst.OnEvent(instCtx, copytradeSentinelSymbol, copySig)
+	r.mu.Unlock()
+	if err != nil {
+		r.logger.Error("handleCopytradeSignal: OnEvent failed",
+			"instance_id", inst.ID().String(),
+			"error", err,
+		)
+		return nil
+	}
+
+	for i := range signals {
+		// Instance.OnEvent does not stamp StrategyInstanceID on returned
+		// signals (only Instance.OnBar does). Stamp here so downstream
+		// metrics and the SignalCreated event carry the right attribution.
+		signals[i].StrategyInstanceID = inst.ID()
+	}
+	for _, sig := range signals {
+		if !sig.Type.IsActionable() {
+			continue
+		}
+		if emitErr := r.emitSignal(ctx, r.tenantID, r.envMode, sig); emitErr != nil {
+			r.logger.Error("handleCopytradeSignal: emitSignal failed",
+				"instance_id", inst.ID().String(),
+				"symbol", sig.Symbol,
+				"error", emitErr,
+			)
+		}
+	}
 	return nil
 }
 
