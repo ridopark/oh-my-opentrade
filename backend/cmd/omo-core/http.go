@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/pprof"
+	"os"
 	"strconv"
 	"time"
 
@@ -264,6 +265,14 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 		imux.Handle("/strategies/v2/", lifecycleHandler)
 		stratPerfHandler := omhttp.NewStrategyPerfHandler(svc.strategyRunner, infra.pnlRepo, svc.ingestion, httpLog)
 		imux.Handle("/api/strategies/", stratPerfHandler)
+	}
+	// Copytrade sidecar ingress. Enabled when OMO_COPYTRADE_SECRET is set;
+	// silently skipped otherwise so a missing env var doesn't expose the
+	// endpoint unauthenticated. Freshness TTL mirrors the strategy config
+	// default; shared-secret is a constant-time compare in the handler.
+	if secret := os.Getenv("OMO_COPYTRADE_SECRET"); secret != "" {
+		copytradeHandler := omhttp.NewCopytradeHandler(infra.eventBus, secret, 120*time.Second, httpLog)
+		imux.Handle("/internal/copytrade/signal", copytradeHandler)
 	}
 	// Cross-strategy recent signals endpoint (used by dashboard main page).
 	imux.HandleFunc("/api/signals/recent", func(w http.ResponseWriter, r *http.Request) {

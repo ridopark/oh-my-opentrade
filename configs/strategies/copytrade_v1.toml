@@ -1,0 +1,105 @@
+schema_version = 2
+
+[strategy]
+id = "copytrade_v1"
+version = "1.0.0"
+name = "Copytrade v1 - Discord Signal Mirror"
+description = "Mirrors options trades posted to a vetted Discord channel."
+author = "system"
+created_at = "2026-04-23T00:00:00Z"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+# Sentinel symbol so the runner's per-symbol Init loop seeds the catch-all
+# state bucket. The strategy itself ignores the symbol arg and keys positions
+# internally by (author, ticker, expiry, strike, right, generation).
+symbols = ["__copytrade__"]
+timeframes = ["1m"]
+priority = 90
+conflict_policy = "priority_wins"
+exclusive_per_symbol = false
+watchlist_mode = "dynamic"
+asset_classes = ["OPTION"]
+allowed_directions = ["LONG"]
+
+[screening]
+description = "No screening. Channel membership is the vetting layer."
+
+[params]
+author_whitelist = []
+freshness_ttl_secs = 120
+skip_avg = true
+require_universe_membership = true
+
+# Trailing stop armed externally on first STC-partial per position.
+trail_on_partial_enabled = true
+trail_giveback_pct = 0.15
+
+default_stc_fraction = 0.33
+risk_per_trade_bps = 300
+max_position_bps = 1000
+max_positions = 5
+
+# Partial-exit keyword table. Longest keyword wins (sorted by the strategy).
+# Fraction applies to REMAINING contracts at position-monitor level.
+# NOTE: keep this block last under [params] — TOML sub-tables attach to
+# the nearest preceding table header, so any flat key after this list
+# would land in the final array entry, not back under [params].
+[[params.partial_fractions]]
+keyword = "all out"
+fraction = 1.00
+[[params.partial_fractions]]
+keyword = "stop hit"
+fraction = 1.00
+[[params.partial_fractions]]
+keyword = "stopped"
+fraction = 1.00
+[[params.partial_fractions]]
+keyword = "mostly out"
+fraction = 0.75
+[[params.partial_fractions]]
+keyword = "half out"
+fraction = 0.50
+[[params.partial_fractions]]
+keyword = "taking more"
+fraction = 0.33
+[[params.partial_fractions]]
+keyword = "partial"
+fraction = 0.33
+[[params.partial_fractions]]
+keyword = "a few"
+fraction = 0.25
+[[params.partial_fractions]]
+keyword = "trim"
+fraction = 0.25
+
+[hooks]
+signals = { engine = "builtin", name = "copytrade_v1" }
+
+[dynamic_risk]
+enabled = false
+
+# --- Exit rules (safety only; primary exits driven by STC Discord posts) ---
+
+[[exit_rules]]
+type = "CHANDELIER_TRAIL"
+[exit_rules.params]
+activate_mode = 1.0
+giveback_pct = 0.15
+
+# --- Options ---
+
+[options]
+enabled = true
+max_contracts = 20
+limit_spread_pct = 1.00
+limit_buffer_bps = 1000
+stale_cancel_secs = 60
+
+[options.defaults]
+min_open_interest = 25
+max_spread_pct = 0.25
+max_iv = 2.0

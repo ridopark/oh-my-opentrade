@@ -776,9 +776,20 @@ func (rs *RiskSizer) handleOptionsSignal(
 	limitPrice float64,
 	equity float64,
 ) error {
-	optRight := domain.OptionRightCall
-	if direction == domain.DirectionShort {
-		optRight = domain.OptionRightPut
+	// Force-contract path: when the signal carries force_expiry + force_strike
+	// + force_right tags (set by the copytrade strategy from a parsed Discord
+	// message), skip delta/DTE screening and pin the exact contract. Callers
+	// that do their own contract selection upstream use this path; normal
+	// strategies leave these tags empty and go through ContractSelectionService.
+	forced, forcedOK := extractForcedContract(sigRef.Tags)
+	var optRight domain.OptionRight
+	if forcedOK {
+		optRight = forced.Right
+	} else {
+		optRight = domain.OptionRightCall
+		if direction == domain.DirectionShort {
+			optRight = domain.OptionRightPut
+		}
 	}
 
 	regime := domain.RegimeTrend
@@ -788,20 +799,34 @@ func (rs *RiskSizer) handleOptionsSignal(
 		}
 	}
 
-	// Use the widest DTE range across defaults and all regime overrides
-	// so the chain fetch covers all possible contract selection windows.
-	minDTE := spec.Options.Defaults.MinDTE
-	maxDTE := spec.Options.Defaults.MaxDTE
-	for _, override := range spec.Options.RegimeOverrides {
-		if override.MinDTE > 0 && override.MinDTE < minDTE {
-			minDTE = override.MinDTE
+	var minDTE, maxDTE int
+	var targetExpiry time.Time
+	if forcedOK {
+		// For a pinned contract, target the exact expiry and bracket the DTE
+		// window tightly so the chain fetch (including backtest synthesizers)
+		// returns just that expiry's strikes.
+		targetExpiry = forced.Expiry
+		days := int(math.Ceil(forced.Expiry.Sub(rs.nowFn()).Hours() / 24))
+		if days < 0 {
+			days = 0
 		}
-		if override.MaxDTE > maxDTE {
-			maxDTE = override.MaxDTE
+		minDTE, maxDTE = days, days
+	} else {
+		// Use the widest DTE range across defaults and all regime overrides
+		// so the chain fetch covers all possible contract selection windows.
+		minDTE = spec.Options.Defaults.MinDTE
+		maxDTE = spec.Options.Defaults.MaxDTE
+		for _, override := range spec.Options.RegimeOverrides {
+			if override.MinDTE > 0 && override.MinDTE < minDTE {
+				minDTE = override.MinDTE
+			}
+			if override.MaxDTE > maxDTE {
+				maxDTE = override.MaxDTE
+			}
 		}
+		targetDTE := minDTE + (maxDTE-minDTE)/2
+		targetExpiry = rs.nowFn().AddDate(0, 0, targetDTE)
 	}
-	targetDTE := minDTE + (maxDTE-minDTE)/2
-	targetExpiry := rs.nowFn().AddDate(0, 0, targetDTE)
 
 	chain, err := rs.optionsMarket.GetOptionChain(
 		ctx,
@@ -828,17 +853,35 @@ func (rs *RiskSizer) handleOptionsSignal(
 		return errOptionsChainEmpty
 	}
 
-	selector := rs.buildContractSelector(spec.Options)
-	best, err := selector.SelectBestContract(direction, regime, chain)
-	if err != nil {
-		rs.logger.Warn("no suitable option contract found",
-			"symbol", sigRef.Symbol,
-			"option_right", string(optRight),
-			"regime", string(regime),
-			"chain_size", len(chain),
-			"error", err,
-		)
-		return errOptionsChainEmpty // trigger equity fallback
+	var best domain.OptionContractSnapshot
+	if forcedOK {
+		match, found := findPinnedContract(chain, forced.Expiry, forced.Strike)
+		if !found {
+			rs.logger.Warn("forced option contract not in chain — skipping",
+				"symbol", sigRef.Symbol,
+				"force_expiry", forced.Expiry.Format("2006-01-02"),
+				"force_strike", forced.Strike,
+				"force_right", string(forced.Right),
+				"chain_size", len(chain),
+			)
+			// Do not fall through to equity — copytrade is contract-specific.
+			return nil
+		}
+		best = match
+	} else {
+		selector := rs.buildContractSelector(spec.Options)
+		picked, err := selector.SelectBestContract(direction, regime, chain)
+		if err != nil {
+			rs.logger.Warn("no suitable option contract found",
+				"symbol", sigRef.Symbol,
+				"option_right", string(optRight),
+				"regime", string(regime),
+				"chain_size", len(chain),
+				"error", err,
+			)
+			return errOptionsChainEmpty // trigger equity fallback
+		}
+		best = picked
 	}
 
 	midPrice := (best.Bid + best.Ask) / 2
@@ -1006,17 +1049,12 @@ func (rs *RiskSizer) handleOptionsSignal(
 		return fmt.Errorf("risk sizer: failed to create option order intent: %w", err)
 	}
 
-	staleSecs := 60 // default: cancel unfilled option orders after 60s
+	staleSecs := 120 // default: cancel unfilled option orders after 120s
 	if spec.Options.StaleCancelSecs != nil {
 		staleSecs = *spec.Options.StaleCancelSecs
 	}
 
 	intent.AssetClass = domain.AssetClassEquity
-	// IBKR paper trading rarely fills option limit orders. Use market orders
-	// on paper to ensure fill reliability for testing.
-	if event.EnvMode == domain.EnvModePaper {
-		intent.OrderType = "market"
-	}
 	intent.Meta = map[string]string{
 		"instrument_type":    "OPTION",
 		"option_right":       string(optRight),

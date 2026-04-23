@@ -780,7 +780,7 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 
 	// Partial close: check if the evaluator set a qty fraction in CustomState.
 	exitQty := pos.Quantity
-	for _, fracKey := range []string{"tiered_tp_exit_qty_frac", "time_partial_exit_qty_frac"} {
+	for _, fracKey := range []string{"tiered_tp_exit_qty_frac", "time_partial_exit_qty_frac", "copytrade_exit_qty_frac"} {
 		if frac := pos.CustomState[fracKey]; frac > 0 && frac < 1.0 {
 			partial := math.Ceil(pos.Quantity * frac)
 			if partial > 0 && partial < pos.Quantity {
