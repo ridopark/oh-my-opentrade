@@ -1,275 +1,175 @@
-# copytrade_v1 — session handoff (2026-04-23)
+# copytrade_v1 — session handoff (2026-04-23, end of day)
 
-Pick up here next session. The plan was signed off in the prior
-conversation; this doc exists so a fresh session can continue without
-re-deriving architecture.
+Pick up here next session. Tasks #4–#6 shipped and committed to main;
+task #7 (paper dry-run) is blocked on one MUST-fix plus two SHOULD-fixes
+that a post-commit /review and two agent consults surfaced.
 
-## Decisions locked (do not re-ask)
+## Commits on main (copytrade feature)
 
-- Full-stack option A: register as a normal strategy, integrate with
-  risk_sizer, position monitor, PnL aggregator, lifecycle.
-- TOML aligns with existing conventions (avwap_v4 shape): bps-of-equity
-  sizing, `[lifecycle] paper_only = true`, `[options]` section, etc.
-- All authors in the source channel are pre-vetted — whitelist optional.
-- Partial-exit: mirror partials via keyword-table from TOML `[params]`.
-- Sizing via existing risk_sizer; TOML-configurable bps.
-- Expiry: mirror exactly what author posts (no DTE filter).
-- Paper-only for v1.
-- Runs on workstation in a Docker container (Playwright).
-- Exits from STC keywords are primary; safety net is **CHANDELIER_TRAIL
-  with external arm** (arm on first STC-partial). No STAGNATION_EXIT,
-  no EOD_FLATTEN.
-- Out-of-universe ticker → skip signal + notify via existing
-  `DISCORD_WEBHOOK_URL` (reuses `notification.DiscordNotifier`).
-- Login stays manual via one-time bootstrap to `storage_state.json` in a
-  container volume. No credentials in .env.
+- `de305d0` feat(copytrade): mirror vetted Discord option trades end-to-end
+- `fdd1cce` refactor(copytrade): consolidate lookup helpers and name magic tolerances
+- `8f6f6a5` docs(go-hexagonal): note TOML array-of-tables shape and OnEvent stamping gap
 
-## What's shipped (uncommitted)
+Running omo-core in tmux is still on the OLD binary (built 11:11 today,
+before the copytrade merge). Do NOT restart it with the new binary until
+the MUST-fix below is applied — the sentinel symbol `__copytrade__` will
+leak into the activation service and trigger WS subscribe attempts for a
+fake ticker.
 
-All green, full test suites pass for touched packages.
+## Bootstrap already done (do not redo)
 
-### Python sidecar
-- `services/discord-copytrade/parser.py` + `test_parser.py` (40 tests)
-- `services/discord-copytrade/discord_dom.py`
-- `services/discord-copytrade/emit.py`
-- `services/discord-copytrade/watcher.py`
-- `services/discord-copytrade/bootstrap.py`
-- `services/discord-copytrade/Dockerfile`
-- `services/discord-copytrade/docker-compose.yml`
-- `services/discord-copytrade/requirements.txt`
-- `services/discord-copytrade/.env.example`
-- `services/discord-copytrade/README.md`
-- `services/discord-copytrade/_demo_parse.py` — can delete after review
+- `services/discord-copytrade/.env` filled with real channel URL + shared secret
+- Root `.env` appended with matching `OMO_COPYTRADE_SECRET`
+- Playwright bootstrap ran via user's terminal (NOT `run_in_background`,
+  that detaches stdin and returns EOF before login completes). State saved
+  to `services/discord-copytrade/state/storage_state.json` — 87 localStorage
+  entries confirmed (Discord stores its auth token in localStorage, not
+  cookies). State file is now user-owned.
+- Sidecar image built.
 
-### Go domain
-- `backend/internal/domain/event.go` — added `EventCopytradeSignalReceived`
-  and `EventChandelierTrailArm` constants
-- `backend/internal/domain/copytrade.go` (new): `CopytradeAction`,
-  `CopytradeSignalPayload`, `ChandelierTrailArmPayload`
-- `backend/internal/domain/strategy/contract.go` — appended
-  `CopytradeSignal` strategy-layer event struct
+## MUST fix before next restart
 
-### Go engine: force_contract tags
-- `backend/internal/app/strategy/risk_sizer.go` —
-  `handleOptionsSignal` branches on pinned-contract tags
-- `backend/internal/app/strategy/risk_sizer_force_contract.go` (new):
-  `extractForcedContract`, `findPinnedContract`, tag-key constants
-  `TagForceExpiry`, `TagForceStrike`, `TagForceRight`, `TagForceRefPremium`
-- `backend/internal/app/strategy/risk_sizer_force_contract_test.go` (new):
-  8 tests
+### 1. Sentinel symbol leak into activation/ingestion
 
-### Go engine: CHANDELIER_TRAIL external-arm
-- `backend/internal/app/positionmonitor/evaluators.go` —
-  `activate_mode=1` branch reads `chandelier_ext_armed` +
-  `chandelier_ext_peak` CustomState; tracks running peak; fires on
-  giveback. MFE-mode behavior unchanged.
-- `backend/internal/app/positionmonitor/handlers.go` —
-  `handleChandelierTrailArm` handler that finds the matching position by
-  contract symbol and seeds the CustomState keys.
-- `backend/internal/app/positionmonitor/service.go` — subscribes to
-  `EventChandelierTrailArm` in `Start`.
-- `backend/internal/app/positionmonitor/evaluators_test.go` — 6 new
-  subtests under `TestEvaluateChandelierTrail_ExternalArm`.
+`routing.symbols = ["__copytrade__"]` in `configs/strategies/copytrade_v1.toml`
+seeds the per-symbol Init loop correctly (that part works), but the same
+list flows through `cmd/omo-core/services.go:530-534` into
+`svc.symRouterSpecs`, and the `symbolrouter.EmitFallbackForMissing` path
+publishes `EffectiveSymbolsUpdated{Symbols:["__copytrade__"]}`.
+`activation.Service.handleEffectiveSymbolsUpdated` then calls
+`activateOne("__copytrade__")` which fetches historical bars (fails — no
+such ticker) and `subscriber.SubscribeSymbols` which attempts a WS
+subscribe for the fake ticker.
 
-## Remaining tasks
+Minimal fix: in `cmd/omo-core/services.go:521-535`, skip the spec whose
+`hookRef.Name == "copytrade_v1"` (or more generally, any spec whose
+`spec.Routing.Symbols` are all sentinel-prefixed with `__`) from
+`symRouterSpecs`. Leave the instance-creation loop alone — it still needs
+the sentinel to seed state.
 
-### Task #4: HTTP handler (~120 LOC)
-- `backend/internal/adapters/http/copytrade_handler.go`
-- POST `/internal/copytrade/signal`
-- Auth via shared secret (env `OMO_COPYTRADE_SECRET`, header
-  `X-Copytrade-Secret`)
-- Unmarshal JSON to `CopytradeSignalPayload`, publish on event bus
-- Dedup by `signal_id` (short-lived LRU or relay to strategy state)
-- Unit tests: auth pass/fail, malformed payload, valid happy path
+Cosmetic (defer to follow-up): `__copytrade__` still shows up in
+`ListStrategies()` (dashboard `/api/strategies/` response) and
+`SystemStartedPayload.StrategySymbols`. Harmless but ugly.
 
-### Task #5: Copytrade strategy + state (biggest task)
-- `backend/internal/app/strategy/builtin/copytrade_v1.go` (new)
-- Implement the `strategy.Strategy` interface (Meta, WarmupBars, Init,
-  OnBar, OnEvent)
-- OnBar: no-op (copytrade is event-driven)
-- OnEvent: dispatches on `CopytradeSignal` (strategy-layer type)
-  - BTO → build `Signal{Type: SignalEntry, Side: SideBuy}` with tags:
-    `ref_price`, `force_expiry`, `force_strike`, `force_right`,
-    `force_ref_premium`. Let risk_sizer do sizing via the pinned-contract
-    path added in Task #8.
-  - STC → look up position by (author, ticker, expiry, strike, right,
-    generation); apply keyword-table fraction to remaining contracts;
-    build exit `Signal`. On FIRST STC-partial per position, also emit
-    `domain.ChandelierTrailArmPayload` via `Context.EmitDomainEvent`.
-  - AVG → skip if `skip_avg=true`; log only.
-  - Out-of-universe → call `UniverseHistoryPort.WasTradable`; if false,
-    post to `notification.DiscordNotifier` and drop.
-- State: map keyed by (author, ticker, expiry, strike, right, generation)
-  → `CopytradePosition{RemainingQty, Fills, TrailArmed}`. Marshal/
-  Unmarshal for persistence.
-- Runner plumbing: new `handleCopytradeSignal` in `runner.go` that
-  subscribes to `EventCopytradeSignalReceived`, finds the copytrade
-  instance, calls `inst.OnEvent(instCtx, ticker, CopytradeSignal{...})`.
-  Strategy is single-instance, catch-all — instance lookup cannot use
-  symbol routing. Simplest: iterate `r.instances` looking for
-  `strategy.ID == "copytrade_v1"`.
+## SHOULD fix before paper dry-run (architect called these out)
 
-### Task #6: Config + wiring (~80 LOC)
-- `configs/strategies/copytrade_v1.toml` (see signed-off shape below)
-- `backend/cmd/omo-core/services.go` — register
-  `NewCopytradeStrategy()` in the registry (line 406-427 area).
-- Register HTTP handler in whatever wires
-  `backend/internal/adapters/http/handler.go` routes.
-- Env: `OMO_COPYTRADE_SECRET` in `.env` + `.env.example`.
+Without these, state desyncs silently in exactly the scenarios paper mode
+is supposed to catch. Recommended budget: 1–2 hours.
 
-### Task #7: Dry run
-- Fill `.env` for sidecar; run bootstrap to save storage_state
-- `docker compose up -d` the sidecar
-- Start omo-core; tail logs for `CopytradeSignalReceived` events
-- Cross-check Discord post log vs paper order tape
+### 2. Ghost position on BTO reject or pre-fill STC (Correctness C)
 
-## Signed-off TOML shape (task #6)
+Strategy writes `cst.Positions[key]` synchronously on BTO event at
+`builtin/copytrade_v1.go:318-344`, independent of broker fill confirmation.
+If `risk_sizer.handleOptionsSignal` returns `errOptionsChainEmpty` (empty
+chain, IBKR reject), the BTO never reaches the broker but the strategy
+thinks a position is open. A subsequent STC decrements `RemainingFrac` and
+emits `CopytradeExitRequestPayload`; `findPositionByContract` returns nil
+(no position exists) and the handler silently no-ops. State now permanently
+diverged from broker.
 
-Drop `STAGNATION_EXIT` and `EOD_FLATTEN` from the earlier draft.
-CHANDELIER_TRAIL with `activate_mode = 1` is the only exit rule; author
-STC posts are the primary exit path.
+Fix shape (architect-recommended, minimal):
 
-```toml
-schema_version = 2
+- Add `Pending bool` to `copytradePosition`, set `true` at BTO commit.
+- `handleFill` at `runner.go:2120` currently uses
+  `findInstanceByStrategyAndSymbol(strategy, routingSymbol)` which will
+  NOT find the copytrade instance (no per-symbol routing). Fall back to
+  `findInstanceByStrategy(strategy)` (already extracted in fdd1cce) when
+  the symbol-routed lookup misses AND the strategy is known to be
+  event-driven.
+- Strategy `OnEvent` handles `start.FillConfirmation`: find position by
+  ContractSymbol, flip `Pending=false`.
+- `handleSTC` refuses (warn log, no state mutation) when `pos.Pending`.
+- Subscribe `EventOrderIntentRejected`/`EventOrderRejected` too; on match,
+  delete the position key and decrement the generation counter back.
 
-[strategy]
-id = "copytrade_v1"
-version = "1.0.0"
-name = "Copytrade v1 - Discord Signal Mirror"
-description = "Mirrors options trades posted to a vetted Discord channel."
-author = "system"
-created_at = "2026-04-23T00:00:00Z"
+### 3. In-flight partial drops silently (Correctness D)
 
-[lifecycle]
-state = "PaperActive"
-paper_only = true
+`positionmonitor.triggerExit` at `exit_eval.go:713` returns early when
+`pos.HasExitInFlight()`. Strategy has already done
+`pos.RemainingFrac *= (1 - fraction)` at `copytrade_v1.go:357` before the
+`EmitDomainEvent` call. Two rapid "half out" posts land strategy at 0.25
+residual while broker has 0.5.
 
-[routing]
-symbols = []
-timeframes = ["1m"]
-priority = 90
-conflict_policy = "priority_wins"
-exclusive_per_symbol = false
-watchlist_mode = "dynamic"
-asset_classes = ["OPTION"]
-allowed_directions = ["LONG"]
+Fix shape (minimal, short-path):
 
-[screening]
-description = "No screening. Channel membership is the vetting layer."
+- In `handleCopytradeExitRequest`, pre-check `target.HasExitInFlight()`
+  BEFORE mutating `CustomState`. If in-flight, return a warn log and
+  publish a new `EventCopytradeExitRejected` (or reuse a similar channel)
+  with payload `{ContractSymbol, Fraction, Reason: "exit_in_flight"}`.
+- Strategy subscribes to that rejection, rolls `RemainingFrac /=
+  (1 - fraction)` back.
 
-[params]
-author_whitelist = []
-freshness_ttl_secs = 120
-skip_avg = true
-require_universe_membership = true
+Cleaner long-term (architect-preferred): move strategy `RemainingFrac`
+commit to after a successful `CopytradeExitAccepted` event. Needs a new
+event pair; larger blast radius.
 
-# Trailing stop armed externally on first STC-partial per position.
-trail_on_partial_enabled = true
-trail_giveback_pct = 0.15
+## DEFER to follow-up commit (before LIVE flip — paper is fine without)
 
-# Partial-exit keyword table. First match wins. Fraction applies to
-# REMAINING contracts.
-[[params.partial_fractions]]
-keyword = "all out"
-fraction = 1.00
-[[params.partial_fractions]]
-keyword = "stop hit"
-fraction = 1.00
-[[params.partial_fractions]]
-keyword = "stopped"
-fraction = 1.00
-[[params.partial_fractions]]
-keyword = "mostly out"
-fraction = 0.75
-[[params.partial_fractions]]
-keyword = "half out"
-fraction = 0.50
-[[params.partial_fractions]]
-keyword = "taking more"
-fraction = 0.33
-[[params.partial_fractions]]
-keyword = "partial"
-fraction = 0.33
-[[params.partial_fractions]]
-keyword = "a few"
-fraction = 0.25
-[[params.partial_fractions]]
-keyword = "trim"
-fraction = 0.25
+### A. HTTP body-size unbounded
 
-default_stc_fraction = 0.33
+`copytrade_handler.go:82` `json.NewDecoder(r.Body).Decode(&req)`. Add
+`r.Body = http.MaxBytesReader(w, r.Body, 16<<10)` before Decode. One-liner.
 
-risk_per_trade_bps = 300
-max_position_bps = 1000
-max_positions = 5
+### B. TenantID/EnvMode not stamped on strategy-emitted payloads
 
-[hooks]
-signals = { engine = "builtin", name = "copytrade_v1" }
+`CopytradeExitRequestPayload` and `ChandelierTrailArmPayload` leave
+TenantID/EnvMode zero. Handlers fall through to "empty means don't filter"
+which is correct in single-tenant paper but becomes a cross-tenant
+close-anything bug the moment a second tenant exists.
 
-[dynamic_risk]
-enabled = false
+Architect-preferred fix (option iii, NOT option i): in
+`runner.emitDomainEvent` at `runner.go:2042-2084`, extend the existing type
+switch to stamp `TenantID` / `EnvMode` into the payload struct before
+publishing. Keeps strategies ignorant of infra concerns. Then flip
+`findPositionByContract` to require non-empty tenant/env so the "empty =
+any" contract is gone.
 
-# --- Exit rules (safety only; primary exits driven by STC Discord posts) ---
+### Other deferred items
 
-[[exit_rules]]
-type = "CHANDELIER_TRAIL"
-[exit_rules.params]
-activate_mode = 1.0
-giveback_pct = 0.15
+- **Snapshot-on-OnEvent.** `handleCopytradeSignal` mutates strategy state
+  but never calls the snapshot persister (bar-driven strategies snapshot
+  in the post-bar path). If omo-core restarts between BTO and the next
+  forced-snapshot, the BTO is lost on disk but the broker position is
+  live. On restart, next STC finds `gen == 0` and drops. Fix: emit
+  `EventStrategyStateSnapshot` after `inst.OnEvent` returns in
+  `runner.go:2471`.
+- **Dedupe map in-memory only.** 120s freshness window replay on restart
+  will re-accept any signal the sidecar retries. Paper: produces
+  duplicated trades, not corruption. Fix: short journal on boot, or lower
+  `freshness_ttl_secs` during testing.
+- **Fail-closed logging.** `runner.go:2394` logs "no active copytrade_v1
+  instance" at Debug level. If the instance fails to bootstrap (spec load
+  error, TOML typo), every Discord signal drops silently. Bump to Warn and
+  fire a one-shot `r.notifier` alert on startup.
+- **Hard-coded `"system"` tenant at HTTP ingress.** `copytrade_handler.go:118`
+  constructs the event with TenantID `"system"` and `EnvModePaper`. Fine
+  for paper. For live, pull from config.
+- **Rate limiting + IP allowlist on `/internal/copytrade/signal`.** None
+  today. Paper: acceptable (localhost sidecar only). Live: add per-IP
+  leaky bucket + `OMO_COPYTRADE_ENABLED=false` override.
+- **Observability.** No metrics on accepted/rejected signal counts. Add
+  `copytrade_signal_accepted_total{action,author}` +
+  `copytrade_signal_rejected_total{reason}` before live flip.
+- **OCC precision** for non-standard strikes ($150.125 etc.). No author
+  trades these today. Document and defer.
 
-# --- Options ---
+## Known behavior notes (not bugs, reference)
 
-[options]
-enabled = true
-max_contracts = 20
-limit_spread_pct = 1.00
-limit_buffer_bps = 1000
-stale_cancel_secs = 60
+- Instance.OnEvent does NOT stamp `StrategyInstanceID` on returned signals
+  (only OnBar does). `handleCopytradeSignal` stamps it post-hoc in
+  `runner.go:2494`. Documented in
+  `.claude/skills/go-hexagonal/SKILL.md` "Gotchas" section.
+- TOML `[[params.partial_fractions]]` decodes to `[]map[string]any`, not
+  `[]any`. `parsePartialFractions` in `copytrade_v1.go:85` handles both.
+  Also documented in go-hexagonal SKILL.md.
+- PeakPremium seeding uses STC post price, not BTO fill price
+  (`copytrade_v1.go:380`). Divergent from actual peak-so-far tracking but
+  matches author intent. Log line only, no fix.
 
-[options.defaults]
-min_open_interest = 25
-max_spread_pct = 0.25
-max_iv = 2.0
-```
+## Session-start prompt for next run
 
-## Critical behavioral notes for the next session
-
-1. **Strategy is single-instance, not per-symbol.** `symbols = []` +
-   `watchlist_mode = "dynamic"` means the runner must not try to
-   instantiate per symbol. The strategy owns its own per-ticker state
-   internally. Runner dispatch is by strategy ID, not symbol.
-
-2. **BTO entry signals must set `force_contract` tags.** The pinned-
-   contract path added in Task #8 is a no-op unless all of
-   `TagForceExpiry` + `TagForceStrike` + `TagForceRight` are set. Code
-   all three in the OnEvent BTO branch.
-
-3. **First-partial detection.** A STC whose keyword maps to a
-   fraction < 1.0 (i.e., anything except "all out"/"stop hit"/"stopped")
-   is the trigger to emit `ChandelierTrailArmPayload`. Track with a
-   bool flag in `CopytradePosition` so we don't re-emit on subsequent
-   partials.
-
-4. **Re-entry generations.** After "all out" the position is closed.
-   If the same author posts a new BTO on the same ticker/expiry/strike
-   later, that's a new position; bump the generation counter in the
-   state key.
-
-5. **Freshness TTL.** Compare `PostedAt` to `time.Now()` at the HTTP
-   handler. Reject signals older than `freshness_ttl_secs` to avoid
-   executing on stale messages during a sidecar catch-up after a
-   restart.
-
-6. **Universe check timestamp.** Call
-   `UniverseHistoryPort.WasTradable(ctx, ticker, PostedAt)` — NOT
-   `time.Now()` — so backfilled/replayed messages check the state at
-   the time the author posted.
-
-## Session handoff prompt suggestion
-
-Paste this into the next session to continue:
-
-> Continuing copytrade_v1 implementation. Read
-> `_workspace/copytrade_session_handoff.md` for full context and
-> decisions. Pick up at Task #4 (HTTP handler) and work through to
-> Task #7 (dry run).
+> Resuming copytrade_v1. Read
+> `_workspace/copytrade_session_handoff.md`. Apply the MUST fix (sentinel
+> symbol leak in services.go) and the two SHOULD fixes (ghost position +
+> in-flight partial). Then rebuild-commit-restart, start the sidecar
+> container, and tail both logs for the dry run.
