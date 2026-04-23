@@ -94,7 +94,7 @@ max_positions = 6
 max_per_group = 3                # solo optimum (was 3). Tightened after the OCC sector-classification fix. Sweep showed mpg=2 is Pareto-dominant when MACD runs alone. In a pair backtest the runner takes max-of per-spec values, so the pair's effective cap is set by AVWAP (mpg=3); that's intentional — the pair stress test showed forcing global mpg=2 cost ~$40k combined PnL, so this value applies only when MACD runs solo or as the higher-mpg leg.
 
 # Timing
-allowed_hours_start = "09:35"
+allowed_hours_start = "09:30"    # 5m bars use bucket-START timestamps, so the first RTH bar carries 09:30. Setting to 09:30 lets it pass; 09:35 blocked it stale until 09:40.
 allowed_hours_end = "15:30"
 allowed_hours_tz = "America/New_York"
 cooldown_seconds = 180           # 3 bars on 5m
