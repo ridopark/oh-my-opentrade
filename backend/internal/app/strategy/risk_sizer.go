@@ -1026,7 +1026,7 @@ func (rs *RiskSizer) handleOptionsSignal(
 
 	intentID := uuid.New()
 	rationale := enrichment.Rationale
-	if override, ok := sigRef.Tags["author_text"]; ok && override != "" {
+	if override, ok := sigRef.Tags[domain.TagAuthorText]; ok && override != "" {
 		rationale = override
 	}
 	if rationale == "" {
