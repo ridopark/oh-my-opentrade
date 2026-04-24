@@ -135,7 +135,7 @@ enabled = true
 max_contracts = 50
 limit_spread_pct = 1.00
 limit_buffer_bps = 1000
-stale_cancel_secs = 90
+stale_cancel_secs = 120
 
 [options.defaults]
 min_dte = 5                      # weekly window — synthetic chain generator
