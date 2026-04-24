@@ -15,20 +15,23 @@ export default function SignalMonitorPage() {
   const [barLog, setBarLog] = useState<BarLogEntry[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [hideBlocked, setHideBlocked] = useState(false);
 
   // Blocked signals only persist to DB (no StrategySignalLifecycle SSE push),
   // so we re-poll /api/signals/recent to surface each bar-close batch.
+  // hideBlocked is a dep: flipping it clears the list and refetches with/without
+  // exclude_status=blocked so "Load older" walks a filtered keyset at the DB.
   useEffect(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const from = today.toISOString();
+    const url = `/api/signals/recent?from=${from}&limit=200${hideBlocked ? "&exclude_status=blocked" : ""}`;
+
     const loadRecent = () => {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const from = today.toISOString();
-      fetch(`/api/signals/recent?from=${from}&limit=200`)
+      fetch(url)
         .then((r) => r.json())
         .then((data: StrategySignalsResponse) => {
-          if (data.items?.length) {
-            setRecentSignalEvents(data.items);
-          }
+          setRecentSignalEvents(data.items ?? []);
           setNextCursor(data.next_cursor ?? null);
         })
         .catch(() => {});
@@ -49,7 +52,7 @@ export default function SignalMonitorPage() {
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, []);
+  }, [hideBlocked]);
 
   const handleLoadOlder = useCallback(() => {
     if (!nextCursor || loadingMore) return;
@@ -57,7 +60,8 @@ export default function SignalMonitorPage() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const from = today.toISOString();
-    fetch(`/api/signals/recent?from=${from}&limit=200&cursor=${encodeURIComponent(nextCursor)}`)
+    const url = `/api/signals/recent?from=${from}&limit=200&cursor=${encodeURIComponent(nextCursor)}${hideBlocked ? "&exclude_status=blocked" : ""}`;
+    fetch(url)
       .then((r) => r.json())
       .then((data: StrategySignalsResponse) => {
         if (data.items?.length) {
@@ -67,18 +71,19 @@ export default function SignalMonitorPage() {
       })
       .catch(() => {})
       .finally(() => setLoadingMore(false));
-  }, [nextCursor, loadingMore]);
+  }, [nextCursor, loadingMore, hideBlocked]);
 
   const handleSignalLifecycle = useCallback((evt: DomainEvent) => {
     const sig = evt.payload as StrategySignalEvent;
     if (!sig?.Symbol || !sig?.TS) return;
+    if (hideBlocked && sig.Status === "blocked") return;
     setRecentSignalEvents((prev) => {
       if (prev.some((s) => s.SignalID === sig.SignalID && s.Status === sig.Status)) return prev;
       // Cap is high enough to tolerate several "Load older" pages without
       // truncating paginated history on new SSE prepends.
       return [sig, ...prev].slice(0, 5000);
     });
-  }, []);
+  }, [hideBlocked]);
 
   const handleStateUpdated = useCallback((evt: DomainEvent) => {
     const snap = evt.payload as {
@@ -145,6 +150,8 @@ export default function SignalMonitorPage() {
         onLoadOlderSignals={handleLoadOlder}
         hasMoreSignals={nextCursor !== null}
         loadingMoreSignals={loadingMore}
+        hideBlocked={hideBlocked}
+        onToggleHideBlocked={() => setHideBlocked((v) => !v)}
       />
     </div>
   );
