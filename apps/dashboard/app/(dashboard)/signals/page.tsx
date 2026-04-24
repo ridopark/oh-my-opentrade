@@ -13,6 +13,8 @@ export default function SignalMonitorPage() {
   const [recentSignalEvents, setRecentSignalEvents] = useState<StrategySignalEvent[]>([]);
   const [regimeBySymbol, setRegimeBySymbol] = useState<Record<string, { regime: RegimeType; strength: number; rsi: number }>>({});
   const [barLog, setBarLog] = useState<BarLogEntry[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   // Blocked signals only persist to DB (no StrategySignalLifecycle SSE push),
   // so we re-poll /api/signals/recent to surface each bar-close batch.
@@ -27,6 +29,7 @@ export default function SignalMonitorPage() {
           if (data.items?.length) {
             setRecentSignalEvents(data.items);
           }
+          setNextCursor(data.next_cursor ?? null);
         })
         .catch(() => {});
     };
@@ -48,12 +51,32 @@ export default function SignalMonitorPage() {
     };
   }, []);
 
+  const handleLoadOlder = useCallback(() => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const from = today.toISOString();
+    fetch(`/api/signals/recent?from=${from}&limit=200&cursor=${encodeURIComponent(nextCursor)}`)
+      .then((r) => r.json())
+      .then((data: StrategySignalsResponse) => {
+        if (data.items?.length) {
+          setRecentSignalEvents((prev) => [...prev, ...data.items]);
+        }
+        setNextCursor(data.next_cursor ?? null);
+      })
+      .catch(() => {})
+      .finally(() => setLoadingMore(false));
+  }, [nextCursor, loadingMore]);
+
   const handleSignalLifecycle = useCallback((evt: DomainEvent) => {
     const sig = evt.payload as StrategySignalEvent;
     if (!sig?.Symbol || !sig?.TS) return;
     setRecentSignalEvents((prev) => {
       if (prev.some((s) => s.SignalID === sig.SignalID && s.Status === sig.Status)) return prev;
-      return [sig, ...prev].slice(0, 200);
+      // Cap is high enough to tolerate several "Load older" pages without
+      // truncating paginated history on new SSE prepends.
+      return [sig, ...prev].slice(0, 5000);
     });
   }, []);
 
@@ -119,6 +142,9 @@ export default function SignalMonitorPage() {
         barLog={barLog}
         avwapProgress={avwapProgress}
         macdProgress={macdProgress}
+        onLoadOlderSignals={handleLoadOlder}
+        hasMoreSignals={nextCursor !== null}
+        loadingMoreSignals={loadingMore}
       />
     </div>
   );

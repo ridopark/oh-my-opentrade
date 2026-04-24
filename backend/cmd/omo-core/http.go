@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/pprof"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	omhttp "github.com/oh-my-opentrade/backend/internal/adapters/http"
@@ -317,6 +319,25 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 			From:     from,
 			To:       to,
 			Limit:    limit,
+		}
+		if raw := q.Get("cursor"); raw != "" {
+			decoded, err := base64.URLEncoding.DecodeString(raw)
+			if err != nil {
+				http.Error(w, `{"error":"invalid cursor"}`, http.StatusBadRequest)
+				return
+			}
+			parts := strings.SplitN(string(decoded), "|", 2)
+			if len(parts) != 2 {
+				http.Error(w, `{"error":"invalid cursor"}`, http.StatusBadRequest)
+				return
+			}
+			cursorTime, err := time.Parse(time.RFC3339Nano, parts[0])
+			if err != nil {
+				http.Error(w, `{"error":"invalid cursor"}`, http.StatusBadRequest)
+				return
+			}
+			query.CursorTime = &cursorTime
+			query.CursorID = parts[1]
 		}
 		page, err := infra.pnlRepo.GetStrategySignalEvents(r.Context(), query)
 		if err != nil {
