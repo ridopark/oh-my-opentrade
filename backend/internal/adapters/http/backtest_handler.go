@@ -215,8 +215,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 
 	if copytradeSelected {
 		if req.CopytradeHistory == "" {
-			jsonError(w, http.StatusBadRequest, "copytrade_v1 requires copytrade_history (path to JSONL)")
-			return
+			req.CopytradeHistory = "services/discord-copytrade/state/history_90d.jsonl"
 		}
 		if _, statErr := os.Stat(req.CopytradeHistory); statErr != nil {
 			jsonError(w, http.StatusBadRequest, "copytrade_history unreadable: "+statErr.Error())
