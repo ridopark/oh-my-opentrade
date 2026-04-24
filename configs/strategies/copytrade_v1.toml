@@ -43,6 +43,13 @@ risk_per_trade_bps = 300
 max_position_bps = 1000
 max_positions = 5
 
+# Ghost-position TTL: sweep Pending entries older than this. Prevents silent
+# BTO drops from permanently eating a max_positions slot. Backtest runs in
+# EnvModePaper so it uses the paper value against simulated time. Set to 0
+# on a given env to disable the sweep there.
+pending_ttl_paper_seconds = 120
+pending_ttl_live_seconds = 90
+
 # Partial-exit keyword table. Longest keyword wins (sorted by the strategy).
 # Fraction applies to REMAINING contracts at position-monitor level.
 # NOTE: keep this block last under [params] — TOML sub-tables attach to

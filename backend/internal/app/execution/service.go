@@ -228,7 +228,10 @@ func (s *Service) Start(ctx context.Context, tenantID string, envMode domain.Env
 	if err := s.eventBus.SubscribeAsync(ctx, domain.EventRiskDowngraded, s.handleRiskDowngrade); err != nil {
 		return fmt.Errorf("execution: failed to subscribe to RiskDowngraded: %w", err)
 	}
-	s.log.Info().Msg("subscribed to OrderIntentCreated and RiskDowngraded events")
+	if err := s.eventBus.SubscribeAsync(ctx, domain.EventCopytradeEntryExpired, s.handleCopytradeEntryExpired); err != nil {
+		return fmt.Errorf("execution: failed to subscribe to CopytradeEntryExpired: %w", err)
+	}
+	s.log.Info().Msg("subscribed to OrderIntentCreated, RiskDowngraded, CopytradeEntryExpired events")
 
 	s.reconcileOnBoot(ctx)
 
@@ -1275,6 +1278,49 @@ func (s *Service) handleRiskDowngrade(ctx context.Context, event domain.Event) e
 			Msg("pending entry orders canceled due to risk downgrade")
 	}
 
+	return nil
+}
+
+// handleCopytradeEntryExpired cancels the outstanding broker order that backs
+// a Pending copytrade position the strategy just swept out for TTL expiry.
+// In backtest this is a no-op cancel against the simulated broker; live, it
+// frees the slot broker-side so a late fill can't materialize.
+func (s *Service) handleCopytradeEntryExpired(ctx context.Context, event domain.Event) error {
+	payload, ok := event.Payload.(domain.CopytradeEntryExpiredPayload)
+	if !ok {
+		return fmt.Errorf("execution: invalid payload for CopytradeEntryExpired: %T", event.Payload)
+	}
+	var toCancel []string
+	s.pendingOrders.Range(func(key, value any) bool {
+		brokerOrderID := key.(string)
+		po := value.(*pendingOrder)
+		if po.intent.Strategy != payload.StrategyID {
+			return true
+		}
+		if po.intent.Direction.IsExit() {
+			return true
+		}
+		if string(po.intent.Symbol) != payload.ContractSymbol {
+			return true
+		}
+		toCancel = append(toCancel, brokerOrderID)
+		return true
+	})
+	for _, brokerOrderID := range toCancel {
+		if err := s.broker.CancelOrder(ctx, brokerOrderID); err != nil {
+			s.log.Error().Err(err).
+				Str("broker_order_id", brokerOrderID).
+				Str("contract_symbol", payload.ContractSymbol).
+				Float64("age_seconds", payload.AgeSeconds).
+				Msg("execution: failed to cancel expired copytrade BTO")
+			continue
+		}
+		s.log.Warn().
+			Str("broker_order_id", brokerOrderID).
+			Str("contract_symbol", payload.ContractSymbol).
+			Float64("age_seconds", payload.AgeSeconds).
+			Msg("execution: canceled expired copytrade BTO")
+	}
 	return nil
 }
 
