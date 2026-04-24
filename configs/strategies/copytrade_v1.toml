@@ -33,6 +33,7 @@ author_whitelist = []
 freshness_ttl_secs = 120
 skip_avg = true
 require_universe_membership = true
+pin_to_author_ref = false
 
 # Trailing stop armed externally on first STC-partial per position.
 trail_on_partial_enabled = true
@@ -47,6 +48,11 @@ max_positions = 10
 # max_positions slots. Backtests inherit paper (they run as EnvModePaper). 0 disables.
 pending_ttl_paper_seconds = 120
 pending_ttl_live_seconds = 90
+
+# Pin Paper-env fills (entry + exit) to the author's stated premium instead
+# of synthetic BSM pricing. Set false for BSM-only A/B runs. Live trading
+# is unaffected regardless — broker always owns fill pricing there.
+pin_to_author_ref = true
 
 # Partial-exit keyword table. Longest keyword wins (sorted by the strategy).
 # Fraction applies to REMAINING contracts at position-monitor level.

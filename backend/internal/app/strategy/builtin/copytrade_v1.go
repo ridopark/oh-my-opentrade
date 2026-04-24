@@ -70,6 +70,7 @@ type copytradeConfig struct {
 	MaxPositions          int
 	PendingTTLPaperSecs   int
 	PendingTTLLiveSecs    int
+	PinAuthorRef          bool
 }
 
 func parseCopytradeConfig(params map[string]any) copytradeConfig {
@@ -82,6 +83,7 @@ func parseCopytradeConfig(params map[string]any) copytradeConfig {
 		MaxPositions:        getInt(params, "max_positions", 5),
 		PendingTTLPaperSecs: getInt(params, "pending_ttl_paper_seconds", 0),
 		PendingTTLLiveSecs:  getInt(params, "pending_ttl_live_seconds", 0),
+		PinAuthorRef:        getBool(params, "pin_to_author_ref", true),
 	}
 	cfg.PartialFractions = parsePartialFractions(params["partial_fractions"])
 	// Longest-keyword first so "all out" matches before "out" (if ever added).
@@ -324,7 +326,9 @@ func (s *CopytradeStrategy) handleBTO(ctx start.Context, cst *copytradeState, si
 		"force_expiry":               sig.Expiry.Format("2006-01-02"),
 		"force_strike":               formatFloat(sig.Strike),
 		"force_right":                string(right),
-		"force_ref_premium":          formatFloat(sig.Price),
+	}
+	if cst.Config.PinAuthorRef {
+		tags["force_ref_premium"] = formatFloat(sig.Price)
 	}
 
 	entry, err := start.NewSignal(
@@ -403,7 +407,9 @@ func (s *CopytradeStrategy) handleSTC(ctx start.Context, cst *copytradeState, si
 		Reason:         keyword,
 		Author:         sig.Author,
 		RawLine:        sig.RawLine,
-		RefPremium:     sig.Price,
+	}
+	if cst.Config.PinAuthorRef {
+		exitPayload.RefPremium = sig.Price
 	}
 	if ctx != nil {
 		if err := ctx.EmitDomainEvent(exitPayload); err != nil {
