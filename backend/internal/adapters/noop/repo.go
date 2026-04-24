@@ -82,6 +82,10 @@ func (n *NoopRepo) GetNonTerminalOrders(_ context.Context, _ string, _ domain.En
 	return nil, nil
 }
 
+func (n *NoopRepo) GetOrderByBrokerOrderID(_ context.Context, _ string) (*domain.BrokerOrder, error) {
+	return nil, nil
+}
+
 func (n *NoopRepo) GetRecordedFillQty(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol, _ string, _ time.Time) (float64, error) {
 	return 0, nil
 }

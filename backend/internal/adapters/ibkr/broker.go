@@ -202,6 +202,57 @@ func (a *Adapter) GetOpenOrders(_ context.Context) ([]ports.OpenOrder, error) {
 	return out, nil
 }
 
+// GetFilledOrders returns every filled order visible in the current ib.Trades()
+// list. Used by execution.Service.backfillFromBrokerHistory to restore orders
+// whose DB row was never written (e.g. session crashed after IBKR accepted the
+// order but before SaveOrder ran). Only status=="filled" with FilledQty>0 is
+// returned; everything else is handled by reconcileOnBoot/reconcileOpenOrdersOnBoot.
+func (a *Adapter) GetFilledOrders(_ context.Context) ([]ports.FilledOrder, error) {
+	ib := a.conn.IB()
+	if ib == nil {
+		return nil, fmt.Errorf("ibkr: not connected")
+	}
+	trades := ib.Trades()
+	out := make([]ports.FilledOrder, 0, len(trades))
+	for _, t := range trades {
+		if t == nil || t.Contract == nil || t.Order == nil {
+			continue
+		}
+		if mapStatus(t.OrderStatus.Status) != "filled" {
+			continue
+		}
+		filledQty := t.OrderStatus.Filled.Float()
+		if filledQty <= 0 {
+			continue
+		}
+		symbol := t.Contract.Symbol
+		if t.Contract.SecType == "OPT" {
+			if expiry, err := time.Parse("20060102", t.Contract.LastTradeDateOrContractMonth); err == nil {
+				right := domain.OptionRightCall
+				if strings.EqualFold(t.Contract.Right, "P") {
+					right = domain.OptionRightPut
+				}
+				symbol = domain.FormatOCCSymbol(t.Contract.Symbol, expiry, right, t.Contract.Strike)
+			}
+		}
+		var filledAt time.Time
+		if fills := t.Fills(); len(fills) > 0 {
+			filledAt = fills[len(fills)-1].Time
+		}
+		out = append(out, ports.FilledOrder{
+			BrokerOrderID:  strconv.FormatInt(t.Order.OrderID, 10),
+			Symbol:         symbol,
+			Side:           strings.ToUpper(t.Order.Action),
+			Quantity:       t.Order.TotalQuantity.Float(),
+			FilledQty:      filledQty,
+			FilledAvgPrice: t.OrderStatus.AvgFillPrice,
+			FilledAt:       filledAt,
+			Status:         "filled",
+		})
+	}
+	return out, nil
+}
+
 func (a *Adapter) GetOrderStatus(_ context.Context, orderID string) (string, error) {
 	ib := a.conn.IB()
 	if ib == nil {

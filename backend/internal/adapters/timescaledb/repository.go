@@ -33,6 +33,7 @@ const (
 	queryInsertOrder = `INSERT INTO orders (time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, strategy, rationale, confidence, instrument_type, option_symbol, underlying, strike, expiry, option_right) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) ON CONFLICT (broker_order_id) DO UPDATE SET time = EXCLUDED.time, account_id = EXCLUDED.account_id, env_mode = EXCLUDED.env_mode, intent_id = EXCLUDED.intent_id, symbol = EXCLUDED.symbol, side = EXCLUDED.side, quantity = EXCLUDED.quantity, limit_price = EXCLUDED.limit_price, stop_loss = EXCLUDED.stop_loss, status = EXCLUDED.status, strategy = EXCLUDED.strategy, rationale = EXCLUDED.rationale, confidence = EXCLUDED.confidence, instrument_type = EXCLUDED.instrument_type, option_symbol = EXCLUDED.option_symbol, underlying = EXCLUDED.underlying, strike = EXCLUDED.strike, expiry = EXCLUDED.expiry, option_right = EXCLUDED.option_right, filled_at = NULL, filled_price = NULL, filled_qty = NULL`
 	queryUpdateOrderFill      = `UPDATE orders SET status = 'filled', filled_at = $2, filled_price = $3, filled_qty = $4 WHERE broker_order_id = $1`
 	queryGetNonTerminalOrders = `SELECT time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, COALESCE(filled_at, '0001-01-01'::timestamptz), COALESCE(filled_price, 0), COALESCE(filled_qty, 0), COALESCE(strategy, ''), COALESCE(rationale, ''), COALESCE(confidence, 0) FROM orders WHERE account_id = $1 AND env_mode = $2 AND status NOT IN ('filled', 'canceled', 'expired', 'rejected') ORDER BY time ASC`
+	queryGetOrderByBrokerID   = `SELECT time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, COALESCE(filled_at, '0001-01-01'::timestamptz), COALESCE(filled_price, 0), COALESCE(filled_qty, 0), COALESCE(strategy, ''), COALESCE(rationale, ''), COALESCE(confidence, 0) FROM orders WHERE broker_order_id = $1 LIMIT 1`
 	queryGetRecordedFillQty   = `SELECT COALESCE(SUM(quantity), 0) FROM trades WHERE account_id = $1 AND env_mode = $2 AND symbol = $3 AND side = $4 AND time >= $5`
 	queryUpdateOrderStatus    = `UPDATE orders SET status = $2 WHERE broker_order_id = $1`
 	queryGetNetPositions      = `SELECT symbol, SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END) AS net_qty FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= NOW() - INTERVAL '30 days' GROUP BY symbol HAVING ABS(SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END)) > 1e-10`
@@ -901,6 +902,32 @@ func (r *Repository) GetNonTerminalOrders(ctx context.Context, tenantID string, 
 		return nil, fmt.Errorf("timescaledb: iterate non-terminal orders: %w", err)
 	}
 	return orders, nil
+}
+
+// GetOrderByBrokerOrderID returns the row matching the given broker_order_id
+// or (nil, nil) when none exists. Used by boot-time backfill to detect orders
+// whose DB row was never written (e.g. session crashed after broker accepted
+// the order but before SaveOrder ran).
+func (r *Repository) GetOrderByBrokerOrderID(ctx context.Context, brokerOrderID string) (*domain.BrokerOrder, error) {
+	row := r.db.QueryRowContext(ctx, queryGetOrderByBrokerID, brokerOrderID)
+	var o domain.BrokerOrder
+	var sym, acct, env string
+	var filledAt time.Time
+	if err := row.Scan(&o.Time, &acct, &env, &o.IntentID, &o.BrokerOrderID, &sym, &o.Side, &o.Quantity, &o.LimitPrice, &o.StopLoss, &o.Status,
+		&filledAt, &o.FilledPrice, &o.FilledQty,
+		&o.Strategy, &o.Rationale, &o.Confidence); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("timescaledb: get order by broker_order_id: %w", err)
+	}
+	o.Symbol = domain.Symbol(sym)
+	o.TenantID = acct
+	o.EnvMode = domain.EnvMode(env)
+	if !filledAt.IsZero() {
+		o.FilledAt = &filledAt
+	}
+	return &o, nil
 }
 
 func (r *Repository) GetRecordedFillQty(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol, side string, since time.Time) (float64, error) {

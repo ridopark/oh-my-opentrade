@@ -57,6 +57,11 @@ type RepositoryPort interface {
 	// (filled/canceled/expired/rejected). Used at startup to reconcile pending orders.
 	GetNonTerminalOrders(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.BrokerOrder, error)
 
+	// GetOrderByBrokerOrderID returns the order row for a given broker_order_id,
+	// or (nil, nil) when no row exists. Used by boot-time backfill to detect
+	// orders the DB has never recorded. Returns an error only on DB failure.
+	GetOrderByBrokerOrderID(ctx context.Context, brokerOrderID string) (*domain.BrokerOrder, error)
+
 	// GetRecordedFillQty returns the total recorded fill quantity for a symbol+side since a given time.
 	// Used during startup fill reconciliation to determine how much has already been recorded.
 	GetRecordedFillQty(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol, side string, since time.Time) (float64, error)

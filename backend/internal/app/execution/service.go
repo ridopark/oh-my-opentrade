@@ -463,6 +463,160 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 		Int("fills_reconciled", reconciled).
 		Int("statuses_updated", updated).
 		Msg("startup fill reconciliation complete")
+
+	s.backfillFromBrokerHistory(ctx)
+}
+
+// backfillFromBrokerHistory restores orders the DB never recorded. Scans the
+// broker's filled-order history (FilledOrderLister capability) and, for any
+// terminal fill with no matching row in the orders table, writes a synthetic
+// orders+trades pair so accounting catches up. Covers the crash-before-SaveOrder
+// gap that reconcileOnBoot cannot see — that loop only iterates rows already in
+// the DB. Runs on boot and every dbReconcileInterval via runReconciliationLoop.
+//
+// Idempotent: deterministicTradeID(brokerOrderID, filledQty) + a fixed
+// "backfill:"-prefixed execution_id means repeat runs hit the orders ON CONFLICT
+// (UPDATE) path and the trades unique (execution_id, time) index.
+//
+// Skips anything missing FilledAvgPrice or FilledAt — a zero-priced trade would
+// silently poison PnL, and a zero FilledAt would break idempotency across runs.
+// No-op when the broker doesn't implement FilledOrderLister.
+func (s *Service) backfillFromBrokerHistory(ctx context.Context) {
+	l := s.log.With().Str("component", "backfill_from_broker").Logger()
+
+	lister, ok := s.broker.(ports.FilledOrderLister)
+	if !ok {
+		return
+	}
+
+	filled, err := lister.GetFilledOrders(ctx)
+	if err != nil {
+		l.Warn().Err(err).Msg("broker history backfill: GetFilledOrders failed — skipping")
+		return
+	}
+	if len(filled) == 0 {
+		return
+	}
+
+	backfilled := 0
+	for _, fo := range filled {
+		ol := l.With().
+			Str("broker_order_id", fo.BrokerOrderID).
+			Str("symbol", fo.Symbol).
+			Str("side", fo.Side).
+			Logger()
+
+		if fo.FilledAvgPrice <= 0 || fo.FilledAt.IsZero() {
+			ol.Warn().
+				Float64("filled_avg_price", fo.FilledAvgPrice).
+				Time("filled_at", fo.FilledAt).
+				Msg("broker history backfill: skipping order with missing price or fill time")
+			continue
+		}
+
+		existing, err := s.repo.GetOrderByBrokerOrderID(ctx, fo.BrokerOrderID)
+		if err != nil {
+			ol.Warn().Err(err).Msg("broker history backfill: DB lookup failed — skipping")
+			continue
+		}
+		if existing != nil {
+			continue
+		}
+
+		sym := domain.Symbol(fo.Symbol)
+		side := strings.ToUpper(fo.Side)
+		order := domain.BrokerOrder{
+			Time:          fo.FilledAt,
+			TenantID:      s.tenantID,
+			EnvMode:       s.envMode,
+			IntentID:      uuid.New(),
+			BrokerOrderID: fo.BrokerOrderID,
+			Symbol:        sym,
+			Side:          side,
+			Quantity:      fo.Quantity,
+			LimitPrice:    fo.FilledAvgPrice,
+			Status:        "filled",
+			Strategy:      "backfill",
+			Rationale:     "broker history backfill: orders row missing at boot",
+		}
+		if domain.IsOCCSymbol(sym) {
+			underlying, expiry, right, strike, parseOK := domain.ParseOCC(sym)
+			if parseOK {
+				order.InstrumentType = domain.InstrumentTypeOption
+				order.OptionSymbol = string(sym)
+				order.Underlying = underlying
+				order.Strike = strike
+				order.Expiry = expiry
+				order.OptionRight = right
+			} else {
+				order.InstrumentType = domain.InstrumentTypeEquity
+			}
+		} else {
+			order.InstrumentType = domain.InstrumentTypeEquity
+		}
+
+		if err := s.repo.SaveOrder(ctx, order); err != nil {
+			ol.Error().Err(err).Msg("broker history backfill: SaveOrder failed — skipping trade write")
+			continue
+		}
+
+		tradeID := deterministicTradeID(fo.BrokerOrderID, fo.FilledQty)
+		trade, tErr := domain.NewTrade(
+			fo.FilledAt, s.tenantID, s.envMode, tradeID,
+			sym, side, fo.FilledQty, fo.FilledAvgPrice, 0,
+			"FILLED", order.Strategy,
+			fmt.Sprintf("broker history backfill: recovered %.8f @ %.6f from broker for order %s", fo.FilledQty, fo.FilledAvgPrice, fo.BrokerOrderID),
+		)
+		if tErr != nil {
+			ol.Error().Err(tErr).Msg("broker history backfill: NewTrade failed — orders row already written")
+			continue
+		}
+		trade.ExecutionID = "backfill:" + fo.BrokerOrderID
+		if order.InstrumentType == domain.InstrumentTypeOption {
+			trade.InstrumentType = domain.InstrumentTypeOption
+			trade.OptionSymbol = order.OptionSymbol
+			trade.Underlying = order.Underlying
+			trade.OptionRight = order.OptionRight
+			trade.Strike = order.Strike
+			trade.Expiry = order.Expiry
+			trade.Premium = fo.FilledAvgPrice
+		}
+		if err := s.repo.SaveTrade(ctx, trade); err != nil {
+			ol.Error().Err(err).Msg("broker history backfill: SaveTrade failed")
+			continue
+		}
+
+		if err := s.repo.UpdateOrderFill(ctx, fo.BrokerOrderID, fo.FilledAt, fo.FilledAvgPrice, fo.FilledQty); err != nil {
+			ol.Error().Err(err).Msg("broker history backfill: UpdateOrderFill failed")
+			continue
+		}
+
+		s.emit(ctx, domain.EventFillReceived, s.tenantID, s.envMode, fo.BrokerOrderID, map[string]any{
+			"broker_order_id": fo.BrokerOrderID,
+			"symbol":          string(sym),
+			"side":            side,
+			"quantity":        fo.FilledQty,
+			"price":           fo.FilledAvgPrice,
+			"filled_at":       fo.FilledAt,
+			"strategy":        order.Strategy,
+			"synthetic":       true,
+			"source":          "broker_history_backfill",
+		})
+
+		backfilled++
+		ol.Info().
+			Float64("qty", fo.FilledQty).
+			Float64("price", fo.FilledAvgPrice).
+			Time("filled_at", fo.FilledAt).
+			Msg("broker history backfill: synthetic orders+trade row inserted")
+	}
+
+	if backfilled > 0 {
+		l.Info().
+			Int("candidates", len(filled)).
+			Int("backfilled", backfilled).
+			Msg("broker history backfill complete")
+	}
 }
 
 // deterministicTradeID generates an idempotent UUID from the broker order ID and cumulative

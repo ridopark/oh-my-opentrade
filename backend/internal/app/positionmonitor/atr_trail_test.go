@@ -388,6 +388,9 @@ func (mockRepoStub) GetLatestThesisForSymbol(_ context.Context, _ string, _ doma
 func (mockRepoStub) GetNonTerminalOrders(_ context.Context, _ string, _ domain.EnvMode) ([]domain.BrokerOrder, error) {
 	return nil, nil
 }
+func (mockRepoStub) GetOrderByBrokerOrderID(_ context.Context, _ string) (*domain.BrokerOrder, error) {
+	return nil, nil
+}
 func (mockRepoStub) GetRecordedFillQty(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol, _ string, _ time.Time) (float64, error) {
 	return 0, nil
 }
