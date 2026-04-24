@@ -43,10 +43,8 @@ risk_per_trade_bps = 300
 max_position_bps = 1000
 max_positions = 5
 
-# Ghost-position TTL: sweep Pending entries older than this. Prevents silent
-# BTO drops from permanently eating a max_positions slot. Backtest runs in
-# EnvModePaper so it uses the paper value against simulated time. Set to 0
-# on a given env to disable the sweep there.
+# Evict Pending entries the broker never filled/rejected so they stop eating
+# max_positions slots. Backtests inherit paper (they run as EnvModePaper). 0 disables.
 pending_ttl_paper_seconds = 120
 pending_ttl_live_seconds = 90
 

@@ -601,10 +601,9 @@ func (s *CopytradeStrategy) handleEntryRejection(ctx start.Context, cst *copytra
 	return cst, nil, nil
 }
 
-// rollbackGeneration decrements Generations[base] if the expired/rejected
-// position held the top generation, so a subsequent retry for the same base
-// starts at the same gen instead of skipping one. Shared between
-// handleEntryRejection and expireStalePending.
+// rollbackGeneration ensures a retry for `base` reuses the same generation
+// rather than skipping one, by decrementing only when the caller held the
+// top gen.
 func rollbackGeneration(cst *copytradeState, base string, generation int) {
 	if base == "" {
 		return
@@ -619,10 +618,8 @@ func rollbackGeneration(cst *copytradeState, base string, generation int) {
 	cst.Generations[base] = generation - 1
 }
 
-// expireStalePending sweeps Pending positions older than the configured TTL,
-// emits CopytradeEntryExpiredPayload for each so execution cancels the broker
-// order, and rolls back generations. Returns the (possibly mutated) state.
-// Returns early when TTL is 0 (feature disabled) or ctx is nil.
+// expireStalePending emits CopytradeEntryExpiredPayload per eviction so
+// execution cancels the outstanding broker order. TTL=0 disables.
 func expireStalePending(ctx start.Context, cst *copytradeState) *copytradeState {
 	if ctx == nil {
 		return cst
@@ -667,9 +664,8 @@ func expireStalePending(ctx start.Context, cst *copytradeState) *copytradeState 
 	return cst
 }
 
-// pickPendingTTL selects the per-env TTL. Backtests run as EnvModePaper, so
-// they inherit the paper TTL (simulated time — fires fast in wall clock terms).
-// A TTL of 0 disables the sweep for that env mode.
+// pickPendingTTL returns 0 when the sweep is disabled for the current env.
+// Backtests inherit the paper TTL because they run as EnvModePaper.
 func pickPendingTTL(ctx start.Context, cfg copytradeConfig) time.Duration {
 	switch ctx.EnvMode() {
 	case start.EnvModeLive:

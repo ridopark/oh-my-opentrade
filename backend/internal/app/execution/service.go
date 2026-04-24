@@ -1281,10 +1281,10 @@ func (s *Service) handleRiskDowngrade(ctx context.Context, event domain.Event) e
 	return nil
 }
 
-// handleCopytradeEntryExpired cancels the outstanding broker order that backs
-// a Pending copytrade position the strategy just swept out for TTL expiry.
-// In backtest this is a no-op cancel against the simulated broker; live, it
-// frees the slot broker-side so a late fill can't materialize.
+// handleCopytradeEntryExpired pairs with the strategy's optimistic slot free:
+// we cancel the outstanding BTO at the broker so a late fill can't materialize
+// and over-position the account. SimBroker's cancel is a no-op (orders fill
+// same-tick), so this only matters in paper/live.
 func (s *Service) handleCopytradeEntryExpired(ctx context.Context, event domain.Event) error {
 	payload, ok := event.Payload.(domain.CopytradeEntryExpiredPayload)
 	if !ok {
