@@ -337,8 +337,8 @@ max_contracts = 50
 limit_spread_pct = 1.00
 # Fallback when spread is zero: ask + 2%
 limit_buffer_bps = 1000
-# Cancel unfilled option orders after 90 seconds
-stale_cancel_secs = 90
+# Cancel unfilled option orders after 120 seconds
+stale_cancel_secs = 120
 
 [options.defaults]
 min_dte = 3                      # short DTE for faster premium response
