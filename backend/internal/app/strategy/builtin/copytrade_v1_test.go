@@ -18,9 +18,10 @@ import (
 // call so tests can assert on the ChandelierTrailArm / CopytradeExitRequest
 // payloads emitted by the strategy's STC path.
 type copyCtx struct {
-	mu    sync.Mutex
-	now   time.Time
-	emits []any
+	mu      sync.Mutex
+	now     time.Time
+	emits   []any
+	envMode start.EnvMode
 }
 
 func newCopyCtx() *copyCtx {
@@ -36,6 +37,12 @@ func (c *copyCtx) EmitDomainEvent(evt any) error {
 	return nil
 }
 func (c *copyCtx) ProgressEventsSuppressed() bool { return false }
+func (c *copyCtx) EnvMode() start.EnvMode {
+	if c.envMode != "" {
+		return c.envMode
+	}
+	return start.EnvModePaper
+}
 
 func (c *copyCtx) exitRequests() []domain.CopytradeExitRequestPayload {
 	c.mu.Lock()
@@ -430,4 +437,143 @@ func TestCopytrade_InstanceLifecycle(t *testing.T) {
 	assert.Equal(t, "NVDA", sigs[0].Symbol)
 	assert.Equal(t, start.SignalEntry, sigs[0].Type)
 	_ = context.Background() // keep import
+}
+
+func copytradeTTLParams(paperSecs, liveSecs int) map[string]any {
+	params := copytradeDefaultParams()
+	params["pending_ttl_paper_seconds"] = paperSecs
+	params["pending_ttl_live_seconds"] = liveSecs
+	return params
+}
+
+func (c *copyCtx) entryExpired() []domain.CopytradeEntryExpiredPayload {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []domain.CopytradeEntryExpiredPayload
+	for _, e := range c.emits {
+		if p, ok := e.(domain.CopytradeEntryExpiredPayload); ok {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (c *copyCtx) orphanFills() []domain.CopytradeOrphanFillPayload {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []domain.CopytradeOrphanFillPayload
+	for _, e := range c.emits {
+		if p, ok := e.(domain.CopytradeOrphanFillPayload); ok {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func TestExpireStalePending_RemovesStalePendingKeepsOpenAndFresh(t *testing.T) {
+	params := copytradeTTLParams(60, 60)
+	_, st := initCopytrade(t, params)
+	ctx := newCopyCtx()
+	cst := st.(*copytradeState)
+
+	base1 := positionBase("alice", "AAPL", time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC), 190, "CALL")
+	base2 := positionBase("alice", "TSLA", time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC), 250, "PUT")
+	base3 := positionBase("alice", "NVDA", time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC), 900, "CALL")
+	base4 := positionBase("alice", "MSFT", time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC), 400, "CALL")
+
+	twoMinAgo := ctx.now.Add(-2 * time.Minute)
+	ninetySecAgo := ctx.now.Add(-90 * time.Second)
+	tenSecAgo := ctx.now.Add(-10 * time.Second)
+	anHourAgo := ctx.now.Add(-1 * time.Hour)
+
+	cst.Positions[positionKey(base1, 1)] = &copytradePosition{ContractSymbol: "AAPL260425C00190000", Base: base1, OpenedAt: twoMinAgo, RemainingFrac: 1.0, Generation: 1, Pending: true}
+	cst.Positions[positionKey(base2, 1)] = &copytradePosition{ContractSymbol: "TSLA260425P00250000", Base: base2, OpenedAt: ninetySecAgo, RemainingFrac: 1.0, Generation: 1, Pending: true}
+	cst.Positions[positionKey(base3, 1)] = &copytradePosition{ContractSymbol: "NVDA260425C00900000", Base: base3, OpenedAt: tenSecAgo, RemainingFrac: 1.0, Generation: 1, Pending: true}
+	cst.Positions[positionKey(base4, 1)] = &copytradePosition{ContractSymbol: "MSFT260425C00400000", Base: base4, OpenedAt: anHourAgo, RemainingFrac: 1.0, Generation: 1, Pending: false}
+	cst.Generations[base1] = 1
+	cst.Generations[base2] = 1
+	cst.Generations[base3] = 1
+	cst.Generations[base4] = 1
+
+	out := expireStalePending(ctx, cst)
+
+	assert.NotContains(t, out.Positions, positionKey(base1, 1))
+	assert.NotContains(t, out.Positions, positionKey(base2, 1))
+	assert.Contains(t, out.Positions, positionKey(base3, 1), "fresh pending must be kept")
+	assert.Contains(t, out.Positions, positionKey(base4, 1), "open position must be kept regardless of age")
+
+	_, exists1 := out.Generations[base1]
+	_, exists2 := out.Generations[base2]
+	assert.False(t, exists1, "generation for base1 must roll back to empty (gen==1)")
+	assert.False(t, exists2, "generation for base2 must roll back to empty (gen==1)")
+	assert.Equal(t, 1, out.Generations[base3], "generation for still-pending base3 unchanged")
+	assert.Equal(t, 1, out.Generations[base4], "generation for open base4 unchanged")
+
+	expired := ctx.entryExpired()
+	require.Len(t, expired, 2)
+	contracts := []string{expired[0].ContractSymbol, expired[1].ContractSymbol}
+	assert.Contains(t, contracts, "AAPL260425C00190000")
+	assert.Contains(t, contracts, "TSLA260425P00250000")
+	for _, e := range expired {
+		assert.Equal(t, "copytrade_v1", e.StrategyID)
+		assert.Equal(t, ctx.now, e.ExpiredAt)
+		assert.Greater(t, e.AgeSeconds, 60.0, "AgeSeconds must reflect actual elapsed time past TTL")
+	}
+}
+
+func TestExpireStalePending_RespectsTTLMode(t *testing.T) {
+	t.Run("paper_mode_30s_ttl_expires_60s_pending", func(t *testing.T) {
+		params := copytradeTTLParams(30, 0)
+		_, st := initCopytrade(t, params)
+		ctx := newCopyCtx()
+		ctx.envMode = start.EnvModePaper
+		cst := st.(*copytradeState)
+
+		base := positionBase("alice", "AAPL", time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC), 190, "CALL")
+		cst.Positions[positionKey(base, 1)] = &copytradePosition{
+			ContractSymbol: "AAPL260425C00190000", Base: base,
+			OpenedAt: ctx.now.Add(-60 * time.Second), RemainingFrac: 1.0, Generation: 1, Pending: true,
+		}
+		cst.Generations[base] = 1
+
+		out := expireStalePending(ctx, cst)
+		assert.Empty(t, out.Positions, "60s-old pending must expire under 30s paper TTL")
+		assert.Len(t, ctx.entryExpired(), 1)
+	})
+
+	t.Run("live_mode_ttl_zero_disables_sweep", func(t *testing.T) {
+		params := copytradeTTLParams(30, 0)
+		_, st := initCopytrade(t, params)
+		ctx := newCopyCtx()
+		ctx.envMode = start.EnvModeLive
+		cst := st.(*copytradeState)
+
+		base := positionBase("alice", "AAPL", time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC), 190, "CALL")
+		cst.Positions[positionKey(base, 1)] = &copytradePosition{
+			ContractSymbol: "AAPL260425C00190000", Base: base,
+			OpenedAt: ctx.now.Add(-60 * time.Second), RemainingFrac: 1.0, Generation: 1, Pending: true,
+		}
+		cst.Generations[base] = 1
+
+		out := expireStalePending(ctx, cst)
+		assert.Len(t, out.Positions, 1, "live TTL=0 must leave pending alone (feature disabled)")
+		assert.Empty(t, ctx.entryExpired())
+	})
+}
+
+func TestOrphanFillEmitsEventAndErrorLogs(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	fc := start.FillConfirmation{Symbol: "AAPL260425C00190000", Side: start.SideBuy, Quantity: 5, Price: 1.35}
+	_, _, err := s.OnEvent(ctx, "__copytrade__", fc, st)
+	require.NoError(t, err)
+
+	orphans := ctx.orphanFills()
+	require.Len(t, orphans, 1)
+	assert.Equal(t, "copytrade_v1", orphans[0].StrategyID)
+	assert.Equal(t, "AAPL260425C00190000", orphans[0].ContractSymbol)
+	assert.Equal(t, 1.35, orphans[0].FillPrice)
+	assert.Equal(t, 5.0, orphans[0].Qty)
+	assert.Equal(t, ctx.now, orphans[0].ObservedAt)
 }

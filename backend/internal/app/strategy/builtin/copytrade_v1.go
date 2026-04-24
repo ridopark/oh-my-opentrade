@@ -61,23 +61,27 @@ type copytradePartial struct {
 }
 
 type copytradeConfig struct {
-	AuthorWhitelist    []string
-	SkipAVG            bool
-	TrailOnPartial     bool
-	TrailGivebackPct   float64
-	PartialFractions   []copytradePartial // pre-sorted longest-keyword first
-	DefaultSTCFraction float64
-	MaxPositions       int
+	AuthorWhitelist       []string
+	SkipAVG               bool
+	TrailOnPartial        bool
+	TrailGivebackPct      float64
+	PartialFractions      []copytradePartial // pre-sorted longest-keyword first
+	DefaultSTCFraction    float64
+	MaxPositions          int
+	PendingTTLPaperSecs   int
+	PendingTTLLiveSecs    int
 }
 
 func parseCopytradeConfig(params map[string]any) copytradeConfig {
 	cfg := copytradeConfig{
-		AuthorWhitelist:    getStringSlice(params, "author_whitelist", nil),
-		SkipAVG:            getBool(params, "skip_avg", true),
-		TrailOnPartial:     getBool(params, "trail_on_partial_enabled", true),
-		TrailGivebackPct:   getFloat64(params, "trail_giveback_pct", 0.15),
-		DefaultSTCFraction: getFloat64(params, "default_stc_fraction", 0.33),
-		MaxPositions:       getInt(params, "max_positions", 5),
+		AuthorWhitelist:     getStringSlice(params, "author_whitelist", nil),
+		SkipAVG:             getBool(params, "skip_avg", true),
+		TrailOnPartial:      getBool(params, "trail_on_partial_enabled", true),
+		TrailGivebackPct:    getFloat64(params, "trail_giveback_pct", 0.15),
+		DefaultSTCFraction:  getFloat64(params, "default_stc_fraction", 0.33),
+		MaxPositions:        getInt(params, "max_positions", 5),
+		PendingTTLPaperSecs: getInt(params, "pending_ttl_paper_seconds", 0),
+		PendingTTLLiveSecs:  getInt(params, "pending_ttl_live_seconds", 0),
 	}
 	cfg.PartialFractions = parsePartialFractions(params["partial_fractions"])
 	// Longest-keyword first so "all out" matches before "out" (if ever added).
@@ -222,6 +226,8 @@ func (s *CopytradeStrategy) OnEvent(ctx start.Context, _ string, evt any, st sta
 	if !ok {
 		return st, nil, fmt.Errorf("CopytradeStrategy.OnEvent: expected *copytradeState, got %T", st)
 	}
+
+	cst = expireStalePending(ctx, cst)
 
 	switch e := evt.(type) {
 	case start.FillConfirmation:
@@ -481,7 +487,9 @@ func formatFloat(v float64) string {
 
 // handleFillConfirmation flips Pending=false on the matching pending position.
 // Matches by (ContractSymbol, Pending=true) on BUY-side fills; SELL-side fills
-// (partial/full closes) do not affect Pending.
+// (partial/full closes) do not affect Pending. When no Pending position matches
+// a BUY fill, emits CopytradeOrphanFillPayload so operators get paged — this
+// race happens when TTL sweep deleted the position a beat before the fill.
 func (s *CopytradeStrategy) handleFillConfirmation(ctx start.Context, cst *copytradeState, fc start.FillConfirmation) (start.State, []start.Signal, error) {
 	if fc.Side != start.SideBuy {
 		return cst, nil, nil
@@ -496,6 +504,17 @@ func (s *CopytradeStrategy) handleFillConfirmation(ctx start.Context, cst *copyt
 		}
 	}
 	if match == nil {
+		if ctx != nil {
+			ctx.Logger().Error("copytrade: ORPHAN FILL — buy fill with no matching Pending position (likely late cancel); manual intervention required",
+				"contract_symbol", fc.Symbol, "fill_price", fc.Price, "fill_qty", fc.Quantity)
+			_ = ctx.EmitDomainEvent(domain.CopytradeOrphanFillPayload{
+				StrategyID:     "copytrade_v1",
+				ContractSymbol: fc.Symbol,
+				FillPrice:      fc.Price,
+				Qty:            fc.Quantity,
+				ObservedAt:     ctx.Now(),
+			})
+		}
 		return cst, nil, nil
 	}
 	match.Pending = false
@@ -574,16 +593,88 @@ func (s *CopytradeStrategy) handleEntryRejection(ctx start.Context, cst *copytra
 		return cst, nil, nil
 	}
 	delete(cst.Positions, matchKey)
-	if match.Base != "" && cst.Generations[match.Base] == match.Generation {
-		if match.Generation <= 1 {
-			delete(cst.Generations, match.Base)
-		} else {
-			cst.Generations[match.Base] = match.Generation - 1
-		}
-	}
+	rollbackGeneration(cst, match.Base, match.Generation)
 	if ctx != nil {
 		ctx.Logger().Warn("copytrade: BTO rejected — unwinding ghost position",
 			"contract_symbol", rej.Symbol, "generation", match.Generation, "reason", rej.Reason)
 	}
 	return cst, nil, nil
+}
+
+// rollbackGeneration decrements Generations[base] if the expired/rejected
+// position held the top generation, so a subsequent retry for the same base
+// starts at the same gen instead of skipping one. Shared between
+// handleEntryRejection and expireStalePending.
+func rollbackGeneration(cst *copytradeState, base string, generation int) {
+	if base == "" {
+		return
+	}
+	if cst.Generations[base] != generation {
+		return
+	}
+	if generation <= 1 {
+		delete(cst.Generations, base)
+		return
+	}
+	cst.Generations[base] = generation - 1
+}
+
+// expireStalePending sweeps Pending positions older than the configured TTL,
+// emits CopytradeEntryExpiredPayload for each so execution cancels the broker
+// order, and rolls back generations. Returns the (possibly mutated) state.
+// Returns early when TTL is 0 (feature disabled) or ctx is nil.
+func expireStalePending(ctx start.Context, cst *copytradeState) *copytradeState {
+	if ctx == nil {
+		return cst
+	}
+	ttl := pickPendingTTL(ctx, cst.Config)
+	if ttl <= 0 {
+		return cst
+	}
+	now := ctx.Now()
+	var toExpire []string
+	for posKey, pos := range cst.Positions {
+		if pos == nil || !pos.Pending {
+			continue
+		}
+		if now.Sub(pos.OpenedAt) <= ttl {
+			continue
+		}
+		toExpire = append(toExpire, posKey)
+	}
+	if len(toExpire) == 0 {
+		return cst
+	}
+	for _, posKey := range toExpire {
+		pos := cst.Positions[posKey]
+		ageSec := now.Sub(pos.OpenedAt).Seconds()
+		_ = ctx.EmitDomainEvent(domain.CopytradeEntryExpiredPayload{
+			StrategyID:     "copytrade_v1",
+			ContractSymbol: pos.ContractSymbol,
+			PositionKey:    posKey,
+			ExpiredAt:      now,
+			AgeSeconds:     ageSec,
+		})
+		ctx.Logger().Warn("copytrade: ghost position expired — no fill within TTL",
+			"contract_symbol", pos.ContractSymbol,
+			"base", pos.Base,
+			"generation", pos.Generation,
+			"age_seconds", ageSec,
+			"ttl_seconds", ttl.Seconds())
+		delete(cst.Positions, posKey)
+		rollbackGeneration(cst, pos.Base, pos.Generation)
+	}
+	return cst
+}
+
+// pickPendingTTL selects the per-env TTL. Backtests run as EnvModePaper, so
+// they inherit the paper TTL (simulated time — fires fast in wall clock terms).
+// A TTL of 0 disables the sweep for that env mode.
+func pickPendingTTL(ctx start.Context, cfg copytradeConfig) time.Duration {
+	switch ctx.EnvMode() {
+	case start.EnvModeLive:
+		return time.Duration(cfg.PendingTTLLiveSecs) * time.Second
+	default:
+		return time.Duration(cfg.PendingTTLPaperSecs) * time.Second
+	}
 }
