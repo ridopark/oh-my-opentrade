@@ -32,8 +32,7 @@ description = "No screening. Channel membership is the vetting layer."
 author_whitelist = []
 freshness_ttl_secs = 120
 skip_avg = true
-require_universe_membership = true
-pin_to_author_ref = false
+require_universe_membership = false
 
 # Trailing stop armed externally on first STC-partial per position.
 trail_on_partial_enabled = true
