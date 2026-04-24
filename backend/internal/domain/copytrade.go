@@ -72,3 +72,28 @@ type CopytradeExitRejectedPayload struct {
 	Fraction       float64
 	Reason         string // why it was rejected, e.g. "exit_in_flight"
 }
+
+// CopytradeEntryExpiredPayload is emitted by the strategy when it sweeps a
+// Pending position whose BTO never filled within the TTL. Execution subscribes
+// and cancels the matching outstanding broker order. Strategy leaves tenant/env
+// blank on the envelope; the runner stamps them.
+type CopytradeEntryExpiredPayload struct {
+	StrategyID     string    `json:"strategyID"`
+	ContractSymbol string    `json:"contractSymbol"`
+	PositionKey    string    `json:"positionKey"`
+	ExpiredAt      time.Time `json:"expiredAt"`
+	AgeSeconds     float64   `json:"ageSeconds"`
+}
+
+// CopytradeOrphanFillPayload is emitted when a BUY fill arrives for a contract
+// with no matching Pending strategy position — typically the TTL sweep just
+// freed the slot a beat before the broker acknowledged the fill. notify.Service
+// subscribes and pages operators via Discord; no auto-remediation is attempted.
+type CopytradeOrphanFillPayload struct {
+	StrategyID     string    `json:"strategyID"`
+	ContractSymbol string    `json:"contractSymbol"`
+	BrokerOrderID  string    `json:"brokerOrderID"`
+	FillPrice      float64   `json:"fillPrice"`
+	Qty            float64   `json:"qty"`
+	ObservedAt     time.Time `json:"observedAt"`
+}

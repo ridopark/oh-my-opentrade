@@ -33,6 +33,7 @@ func (c *testContext) EmitDomainEvent(evt any) error {
 	return nil
 }
 func (c *testContext) ProgressEventsSuppressed() bool { return false }
+func (c *testContext) EnvMode() strat.EnvMode         { return strat.EnvModePaper }
 
 // orbParams returns default ORB config as a params map.
 func orbParams() map[string]any {

@@ -146,6 +146,18 @@ type Runner struct {
 	scratchOneMin    []*Instance
 	scratchHTFNeeded map[string][]*Instance
 	scratchInstances []*Instance
+
+	// pendingCopytradeCallbacks queues strategy-callback dispatches (e.g.
+	// CopytradeExitRejected → Instance.OnEvent) that would otherwise run
+	// synchronously inside an outer Instance.OnEvent on the same goroutine —
+	// a reentrant mutex deadlock in syncMode backtests. Handlers enqueue a
+	// closure and return; drainCopytradeCallbacks runs them AFTER r.mu and
+	// inst.mu have been released by the outer call. Guarded by its own
+	// mutex, not r.mu, so enqueue from inside a handler holding r.mu is
+	// safe. Drain loops until empty because a drained callback can itself
+	// publish events that enqueue more work.
+	copytradeCallbackMu sync.Mutex
+	copytradeCallbacks  []func()
 }
 
 // strategyEmitSeq is a monotonic counter used to generate cheap
@@ -2074,6 +2086,10 @@ func (r *Runner) emitDomainEvent(ctx context.Context, tenantID string, envMode d
 		eventType = domain.EventChandelierTrailArm
 	case domain.CopytradeExitRequestPayload:
 		eventType = domain.EventCopytradeExitRequest
+	case domain.CopytradeEntryExpiredPayload:
+		eventType = domain.EventCopytradeEntryExpired
+	case domain.CopytradeOrphanFillPayload:
+		eventType = domain.EventCopytradeOrphanFill
 	}
 	if isProgress && r.suppressProgressEvents {
 		return nil
@@ -2209,6 +2225,7 @@ func (r *Runner) handleFill(_ context.Context, event domain.Event) error {
 	r.mu.Lock()
 	signals, err := inst.OnEvent(instCtx, dispatchSymbol, confirmation)
 	r.mu.Unlock()
+	r.DrainCopytradeCallbacks()
 
 	if err != nil {
 		r.logger.Error("handleFill: OnEvent failed",
@@ -2271,7 +2288,7 @@ func (r *Runner) handleRejection(_ context.Context, event domain.Event) error {
 	}
 
 	instCtx := &instanceContext{
-		now:    time.Now(), // rejection timing is not critical for determinism
+		now:    r.handlerNow(event, "handleRejection"),
 		logger: r.logger.With("instance_id", inst.ID().String(), "symbol", payload.Symbol),
 		emit:   func(_ any) error { return nil },
 	}
@@ -2285,6 +2302,7 @@ func (r *Runner) handleRejection(_ context.Context, event domain.Event) error {
 	r.mu.Lock()
 	signals, err := inst.OnEvent(instCtx, dispatchSymbol, rejection)
 	r.mu.Unlock()
+	r.DrainCopytradeCallbacks()
 
 	if err != nil {
 		r.logger.Error("handleRejection: OnEvent failed",
@@ -2394,6 +2412,21 @@ func (r *Runner) handleTradeReceived(_ context.Context, event domain.Event) erro
 // consistent with every other code path that indexes by symbol.
 const copytradeSentinelSymbol = "__copytrade__"
 
+// handlerNow returns the clock the instance context should expose via Now()
+// for a handler-dispatched event. Uses event.OccurredAt so backtests (which
+// stamp sim-time via NewBacktestEvent) see sim-time and live (which stamps
+// wall-clock via NewEvent) sees wall-clock. Falls back to wall clock when
+// the envelope is zero-valued — in practice the backtest path always stamps,
+// so the fallback only logs as a canary.
+func (r *Runner) handlerNow(event domain.Event, handler string) time.Time {
+	if !event.OccurredAt.IsZero() {
+		return event.OccurredAt
+	}
+	r.logger.Debug("handler: event.OccurredAt is zero, falling back to wall clock",
+		"handler", handler, "event_id", event.ID)
+	return time.Now()
+}
+
 // handleCopytradeSignal routes a parsed Discord signal from the discord-
 // copytrade sidecar to the single copytrade strategy instance. Because the
 // strategy uses symbols = [], it lives in r.router.instances but not in the
@@ -2444,7 +2477,7 @@ func (r *Runner) handleCopytradeSignal(ctx context.Context, event domain.Event) 
 	if _, seeded := inst.GetState(copytradeSentinelSymbol); !seeded {
 		initCtx := &instanceContext{
 			ctx:      ctx,
-			now:      time.Now(),
+			now:      r.handlerNow(event, "handleCopytradeSignal.init"),
 			logger:   r.logger.With("instance_id", inst.ID().String(), "symbol", copytradeSentinelSymbol),
 			tenantID: r.tenantID,
 			envMode:  r.envMode,
@@ -2476,7 +2509,7 @@ func (r *Runner) handleCopytradeSignal(ctx context.Context, event domain.Event) 
 
 	instCtx := &instanceContext{
 		ctx:      ctx,
-		now:      time.Now(),
+		now:      r.handlerNow(event, "handleCopytradeSignal"),
 		logger:   r.logger.With("instance_id", inst.ID().String(), "author", payload.Author, "ticker", string(payload.Ticker)),
 		tenantID: r.tenantID,
 		envMode:  r.envMode,
@@ -2486,6 +2519,7 @@ func (r *Runner) handleCopytradeSignal(ctx context.Context, event domain.Event) 
 	r.mu.Lock()
 	signals, err := inst.OnEvent(instCtx, copytradeSentinelSymbol, copySig)
 	r.mu.Unlock()
+	r.DrainCopytradeCallbacks()
 	if err != nil {
 		r.logger.Error("handleCopytradeSignal: OnEvent failed",
 			"instance_id", inst.ID().String(),
@@ -2519,6 +2553,11 @@ func (r *Runner) handleCopytradeSignal(ctx context.Context, event domain.Event) 
 // rejection (prior exit in flight) to the copytrade strategy so it can roll
 // its RemainingFrac back. The strategy has no per-symbol routing so we look
 // up the single instance by strategy ID and dispatch on the sentinel symbol.
+//
+// This runs on the same goroutine that holds inst.mu and r.mu when syncMode
+// is on (backtest), so we defer the actual Instance.OnEvent dispatch into
+// pendingCopytradeCallbacks instead of invoking it here. Callers drain the
+// queue after the outer OnEvent returns (see DrainCopytradeCallbacks).
 func (r *Runner) handleCopytradeExitRejected(ctx context.Context, event domain.Event) error {
 	payload, ok := event.Payload.(domain.CopytradeExitRejectedPayload)
 	if !ok {
@@ -2531,7 +2570,7 @@ func (r *Runner) handleCopytradeExitRejected(ctx context.Context, event domain.E
 	}
 	instCtx := &instanceContext{
 		ctx:      ctx,
-		now:      time.Now(),
+		now:      r.handlerNow(event, "handleCopytradeExitRejected"),
 		logger:   r.logger.With("instance_id", inst.ID().String(), "contract_symbol", payload.ContractSymbol),
 		tenantID: r.tenantID,
 		envMode:  r.envMode,
@@ -2542,16 +2581,41 @@ func (r *Runner) handleCopytradeExitRejected(ctx context.Context, event domain.E
 		Fraction:       payload.Fraction,
 		Reason:         payload.Reason,
 	}
-	r.mu.Lock()
-	_, err := inst.OnEvent(instCtx, copytradeSentinelSymbol, rej)
-	r.mu.Unlock()
-	if err != nil {
-		r.logger.Error("handleCopytradeExitRejected: OnEvent failed",
-			"instance_id", inst.ID().String(),
-			"error", err,
-		)
-	}
+	r.enqueueCopytradeCallback(func() {
+		if _, err := inst.OnEvent(instCtx, copytradeSentinelSymbol, rej); err != nil {
+			r.logger.Error("handleCopytradeExitRejected: OnEvent failed",
+				"instance_id", inst.ID().String(),
+				"error", err,
+			)
+		}
+	})
 	return nil
+}
+
+func (r *Runner) enqueueCopytradeCallback(fn func()) {
+	r.copytradeCallbackMu.Lock()
+	r.copytradeCallbacks = append(r.copytradeCallbacks, fn)
+	r.copytradeCallbackMu.Unlock()
+}
+
+// DrainCopytradeCallbacks runs every queued strategy callback on the caller's
+// goroutine. Must be invoked with inst.mu AND r.mu released. Loops until the
+// queue is empty because a drained callback can itself publish events that
+// enqueue more work.
+func (r *Runner) DrainCopytradeCallbacks() {
+	for {
+		r.copytradeCallbackMu.Lock()
+		if len(r.copytradeCallbacks) == 0 {
+			r.copytradeCallbackMu.Unlock()
+			return
+		}
+		batch := r.copytradeCallbacks
+		r.copytradeCallbacks = nil
+		r.copytradeCallbackMu.Unlock()
+		for _, fn := range batch {
+			fn()
+		}
+	}
 }
 
 // findInstanceByStrategy returns the first active instance matching the given

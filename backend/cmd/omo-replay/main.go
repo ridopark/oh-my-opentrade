@@ -1202,6 +1202,9 @@ func main() {
 				if _, err := copytradeReplaySvc.AdvanceTo(ctx, minTime); err != nil {
 					log.Error().Err(err).Time("tick", minTime).Msg("copytrade replay: advance failed")
 				}
+				if pipeline != nil && pipeline.Runner != nil {
+					pipeline.Runner.DrainCopytradeCallbacks()
+				}
 			}
 			if perBarDelay > 0 {
 				t := time.NewTimer(perBarDelay)
@@ -1841,13 +1844,16 @@ func (c *replaySliceCoord) OnTickEnd(ctx context.Context, tickTime time.Time) er
 		// resulting SignalCreated events sit in the sentinel-owner shard's
 		// pendingSignals buffer. The normal drain in replayFlat only fires
 		// mid-bar (Phase B); here in OnTickEnd we're past that, so flush
-		// every shard's buffer directly to the bus.
+		// every shard's buffer directly to the bus. Callback drain runs
+		// first because rollback callbacks can emit strategy state that
+		// produces additional signals needing the same drain pass.
 		if c.shardedPipeline != nil {
 			_ = c.shardedPipeline.ForEachShard(func(p *backtest.Pipeline, _ []domain.Symbol) error {
 				r := p.Runner()
 				if r == nil {
 					return nil
 				}
+				r.DrainCopytradeCallbacks()
 				pending := r.DrainPendingSignals()
 				for i := range pending {
 					if err := c.eventBus.Publish(ctx, pending[i]); err != nil {
