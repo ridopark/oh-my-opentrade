@@ -313,12 +313,13 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 			}
 		}
 		query := ports.StrategySignalQuery{
-			TenantID: "default",
-			EnvMode:  domain.EnvModePaper,
-			Symbol:   q.Get("symbol"),
-			From:     from,
-			To:       to,
-			Limit:    limit,
+			TenantID:      "default",
+			EnvMode:       domain.EnvModePaper,
+			Symbol:        q.Get("symbol"),
+			ExcludeStatus: q.Get("exclude_status"),
+			From:          from,
+			To:            to,
+			Limit:         limit,
 		}
 		if raw := q.Get("cursor"); raw != "" {
 			decoded, err := base64.URLEncoding.DecodeString(raw)

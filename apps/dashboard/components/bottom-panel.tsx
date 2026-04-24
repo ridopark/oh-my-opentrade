@@ -98,6 +98,8 @@ interface BottomPanelProps {
   onLoadOlderSignals?: () => void;
   hasMoreSignals?: boolean;
   loadingMoreSignals?: boolean;
+  hideBlocked?: boolean;
+  onToggleHideBlocked?: () => void;
 }
 
 export function BottomPanel({
@@ -112,16 +114,16 @@ export function BottomPanel({
   onLoadOlderSignals,
   hasMoreSignals,
   loadingMoreSignals,
+  hideBlocked = false,
+  onToggleHideBlocked,
 }: BottomPanelProps) {
   const symbolsWithRegime = useMemo(() => Object.keys(regimeBySymbol).sort(), [regimeBySymbol]);
   const [expanded, setExpanded] = useState(false);
-  const [hideBlocked, setHideBlocked] = useState(false);
+  // When filter is OFF, recentSignalEvents still includes blocked rows and we
+  // can show an accurate count on the "Hide blocked" pill. When the filter is
+  // ON, the server already excluded them, so we hide the count.
   const blockedCount = useMemo(
-    () => recentSignalEvents.reduce((n, s) => (s.Status === "blocked" ? n + 1 : n), 0),
-    [recentSignalEvents],
-  );
-  const visibleSignals = useMemo(
-    () => (hideBlocked ? recentSignalEvents.filter((s) => s.Status !== "blocked") : recentSignalEvents),
+    () => (hideBlocked ? 0 : recentSignalEvents.reduce((n, s) => (s.Status === "blocked" ? n + 1 : n), 0)),
     [recentSignalEvents, hideBlocked],
   );
   const { height, handleProps } = useResizableHeight(SIGNALS_BOTTOM_KEY, 350, { min: 140, max: 700 });
@@ -174,7 +176,7 @@ export function BottomPanel({
             {tab === "signals" ? (
               <span className="flex items-center gap-1.5">
                 <Zap className="w-3 h-3" />
-                Signals ({hideBlocked ? `${visibleSignals.length} of ${recentSignalEvents.length}` : recentSignalEvents.length})
+                Signals ({recentSignalEvents.length}{hideBlocked ? ", no blocked" : ""})
               </span>
             ) : tab === "bars" ? (
               <span className="flex items-center gap-1.5">
@@ -214,20 +216,20 @@ export function BottomPanel({
       {expanded && <div className="flex-1 min-h-0 overflow-auto">
         {bottomTab === "signals" && (
           <div className="p-2">
-            {(blockedCount > 0 || hideBlocked) && (
+            {onToggleHideBlocked && (blockedCount > 0 || hideBlocked) && (
               <div className="flex items-center justify-end pb-1.5">
                 <button
-                  onClick={() => setHideBlocked((v) => !v)}
+                  onClick={onToggleHideBlocked}
                   className="text-[10px] font-mono px-2 py-0.5 rounded border border-border bg-card hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
                 >
-                  {hideBlocked ? `Show blocked (${blockedCount})` : `Hide blocked (${blockedCount})`}
+                  {hideBlocked ? "Show blocked" : `Hide blocked (${blockedCount})`}
                 </button>
               </div>
             )}
-            {visibleSignals.length === 0 ? (
+            {recentSignalEvents.length === 0 ? (
               <p className="text-xs text-muted-foreground text-center py-8">
-                {hideBlocked && recentSignalEvents.length > 0
-                  ? "All current signals are blocked. Toggle \"Show blocked\" above to view them."
+                {hideBlocked
+                  ? "No non-blocked signals in range. Toggle \"Show blocked\" to view blocked rows, or click Load older."
                   : "No signals yet. Signals appear when strategies generate buy/sell decisions."}
               </p>
             ) : (
@@ -245,7 +247,7 @@ export function BottomPanel({
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleSignals.map((sig, idx) => {
+                  {recentSignalEvents.map((sig, idx) => {
                     const badge = sideBadge(sig);
                     return (
                       <tr

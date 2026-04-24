@@ -215,6 +215,11 @@ func (r *PnLRepository) GetStrategySignalEvents(ctx context.Context, q ports.Str
 		args = append(args, q.Symbol)
 		argIdx++
 	}
+	if q.ExcludeStatus != "" {
+		fmt.Fprintf(&b, " AND status <> $%d", argIdx)
+		args = append(args, q.ExcludeStatus)
+		argIdx++
+	}
 	if q.CursorTime != nil && q.CursorID != "" {
 		fmt.Fprintf(&b, " AND (ts, signal_id) < ($%d, $%d)", argIdx, argIdx+1)
 		args = append(args, *q.CursorTime, q.CursorID)
