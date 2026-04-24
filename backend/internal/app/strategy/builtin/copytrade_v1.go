@@ -403,6 +403,7 @@ func (s *CopytradeStrategy) handleSTC(ctx start.Context, cst *copytradeState, si
 		Reason:         keyword,
 		Author:         sig.Author,
 		RawLine:        sig.RawLine,
+		RefPremium:     sig.Price,
 	}
 	if ctx != nil {
 		if err := ctx.EmitDomainEvent(exitPayload); err != nil {

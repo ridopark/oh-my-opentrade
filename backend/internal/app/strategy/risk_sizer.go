@@ -901,6 +901,14 @@ func (rs *RiskSizer) handleOptionsSignal(
 	var fillPrice float64
 	spread := best.Ask - best.Bid
 	switch {
+	case event.EnvMode == domain.EnvModePaper && forcedOK && forced.RefPremium > 0:
+		fillPrice = forced.RefPremium
+		rs.logger.Info("risk sizer: pinned entry to author ref premium",
+			"strategy", strategyName,
+			"contract", string(best.ContractSymbol),
+			"ref_premium", forced.RefPremium,
+			"mid", midPrice,
+		)
 	case best.Ask > 0 && best.Bid > 0 && spread > 0:
 		fillPrice = midPrice + spreadPct*spread
 	case best.Ask > 0:

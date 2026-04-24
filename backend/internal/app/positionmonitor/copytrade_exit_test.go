@@ -206,3 +206,60 @@ func TestHandleCopytradeExitRequest_PropagatesEntrySignalTags(t *testing.T) {
 	assert.Equal(t, "1.20", msg.Intent.Meta["sig_ref_price"])
 	assert.Equal(t, "1", msg.Intent.Meta["sig_generation"])
 }
+
+func TestHandleCopytradeExitRequest_PinsRefPremiumInPaper(t *testing.T) {
+	svc := newCopytradeExitService()
+	contract := domain.Symbol("AAPL260425C00190000")
+	pos := seedOptionPosition(t, svc, contract, 10)
+
+	payload := domain.CopytradeExitRequestPayload{
+		TenantID:       svc.tenantID,
+		EnvMode:        string(svc.envMode),
+		Strategy:       "copytrade_v1",
+		Symbol:         "AAPL",
+		ContractSymbol: string(contract),
+		Fraction:       0.5,
+		Reason:         "half out",
+		RefPremium:     1.80,
+	}
+	require.NoError(t, svc.handleCopytradeExitRequest(context.Background(), domain.Event{
+		Type:    domain.EventCopytradeExitRequest,
+		Payload: payload,
+	}))
+
+	require.GreaterOrEqual(t, len(svc.outbox), 1)
+	msg := <-svc.outbox
+	assert.Equal(t, "1.8000", msg.Intent.Meta["copytrade_exit_ref_premium"])
+	_, lingering := pos.CustomState["copytrade_exit_ref_premium"]
+	assert.False(t, lingering, "CustomState key must be consumed after triggerExit stamps Meta")
+}
+
+func TestHandleCopytradeExitRequest_IgnoresRefPremiumInLive(t *testing.T) {
+	svc := newCopytradeExitService()
+	svc.envMode = domain.EnvModeLive
+	contract := domain.Symbol("AAPL260425C00190000")
+	pos := seedOptionPosition(t, svc, contract, 10)
+	pos.EnvMode = domain.EnvModeLive
+
+	payload := domain.CopytradeExitRequestPayload{
+		TenantID:       svc.tenantID,
+		EnvMode:        string(svc.envMode),
+		Strategy:       "copytrade_v1",
+		Symbol:         "AAPL",
+		ContractSymbol: string(contract),
+		Fraction:       0.5,
+		Reason:         "half out",
+		RefPremium:     1.80,
+	}
+	require.NoError(t, svc.handleCopytradeExitRequest(context.Background(), domain.Event{
+		Type:    domain.EventCopytradeExitRequest,
+		Payload: payload,
+	}))
+
+	_, stashed := pos.CustomState["copytrade_exit_ref_premium"]
+	assert.False(t, stashed, "Live must not stash copytrade_exit_ref_premium")
+	require.GreaterOrEqual(t, len(svc.outbox), 1)
+	msg := <-svc.outbox
+	_, stampedMeta := msg.Intent.Meta["copytrade_exit_ref_premium"]
+	assert.False(t, stampedMeta, "Live exit intent Meta must not carry the pin key")
+}

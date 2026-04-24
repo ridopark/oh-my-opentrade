@@ -856,6 +856,13 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 		return 0
 	}
 
+	if refStr := intent.Meta["copytrade_exit_ref_premium"]; refStr != "" {
+		var ref float64
+		if _, err := fmt.Sscanf(refStr, "%f", &ref); err == nil && ref > 0 {
+			return ref
+		}
+	}
+
 	strikeStr := intent.Meta["strike"]
 	expiryStr := intent.Meta["expiry"]
 	rightStr := intent.Meta["option_right"]

@@ -734,8 +734,21 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 	// reconcile checks, UI display) honest.
 	priceForOrder := currentPrice
 	if pos.InstrumentType == domain.InstrumentTypeOption {
-		if est := pos.EstimatedPremium(currentPrice, now); est > 0 {
-			priceForOrder = est
+		pinned := false
+		if rule.Type == domain.ExitRuleCopytradeSTC && pos.EnvMode == domain.EnvModePaper {
+			if ref := pos.CustomState["copytrade_exit_ref_premium"]; ref > 0 {
+				priceForOrder = ref
+				pinned = true
+				s.log.Info().
+					Str("contract", string(pos.Symbol)).
+					Float64("ref_premium", ref).
+					Msg("copytrade exit pinned to author ref premium")
+			}
+		}
+		if !pinned {
+			if est := pos.EstimatedPremium(currentPrice, now); est > 0 {
+				priceForOrder = est
+			}
 		}
 	}
 
@@ -889,6 +902,12 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 				}
 				if dte := pos.CustomState["days_to_earnings"]; dte > 0 {
 					intent.Meta["days_to_earnings"] = fmt.Sprintf("%.0f", dte)
+				}
+			}
+			if rule.Type == domain.ExitRuleCopytradeSTC && pos.EnvMode == domain.EnvModePaper {
+				if ref := pos.CustomState["copytrade_exit_ref_premium"]; ref > 0 {
+					intent.Meta["copytrade_exit_ref_premium"] = fmt.Sprintf("%.4f", ref)
+					delete(pos.CustomState, "copytrade_exit_ref_premium")
 				}
 			}
 		}
