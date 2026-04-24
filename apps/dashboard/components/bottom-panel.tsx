@@ -95,6 +95,9 @@ interface BottomPanelProps {
   barLog: BarLogEntry[];
   avwapProgress: Map<string, EntryGatedPayload>;
   macdProgress: Map<string, EntryGatedPayload>;
+  onLoadOlderSignals?: () => void;
+  hasMoreSignals?: boolean;
+  loadingMoreSignals?: boolean;
 }
 
 export function BottomPanel({
@@ -106,6 +109,9 @@ export function BottomPanel({
   barLog,
   avwapProgress,
   macdProgress,
+  onLoadOlderSignals,
+  hasMoreSignals,
+  loadingMoreSignals,
 }: BottomPanelProps) {
   const symbolsWithRegime = useMemo(() => Object.keys(regimeBySymbol).sort(), [regimeBySymbol]);
   const [expanded, setExpanded] = useState(false);
@@ -261,6 +267,17 @@ export function BottomPanel({
                   })}
                 </tbody>
               </table>
+            )}
+            {onLoadOlderSignals && hasMoreSignals && (
+              <div className="flex justify-center py-2">
+                <button
+                  onClick={onLoadOlderSignals}
+                  disabled={loadingMoreSignals}
+                  className="text-xs font-mono px-3 py-1 rounded border border-border bg-card hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {loadingMoreSignals ? "Loading..." : "Load older"}
+                </button>
+              </div>
             )}
           </div>
         )}
