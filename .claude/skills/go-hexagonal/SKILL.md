@@ -227,6 +227,27 @@ helper (picks `event.OccurredAt`, falls back to wall-clock with a canary
 log if the envelope is zero) in every handler that populates
 `instanceContext.now`.
 
+### Reconciliation gaps + multi-write sequencing for crash recovery
+The execution path has three reconcilers — `execution.reconcileOnBoot` (DB
+orders table), `positionmonitor.reconcileOpenOrdersOnBoot` (broker open
+orders), and the WS `handleStreamFill` in-memory path. They cover disjoint
+(broker-state × DB-state) cells; a crash between `broker.SubmitOrder` and
+`repo.SaveOrder` lands in the uncovered cell (broker=filled / DB=no-row)
+and the fill is permanently lost. When adding a reconciler, enumerate
+which cell of that matrix it covers and confirm no cell is orphaned.
+`backfillFromBrokerHistory` fills the last gap via the optional
+`ports.FilledOrderLister` broker capability.
+
+When the repo lacks a single atomic call for a multi-step write (e.g.
+SaveOrder + SaveTrade + UpdateOrderFill), sequence the writes so any
+intermediate failure leaves the row in a state an EXISTING reconciler
+already heals. Concretely: seed the order as `status="submitted"` BEFORE
+writing the trade, and let `UpdateOrderFill` flip it to `filled` last.
+If SaveTrade or UpdateOrderFill fail, `reconcileOnBoot` finds the
+non-terminal row and pulls fill state via `broker.GetOrderDetails` on
+the next tick. Writing `status="filled"` up front would orphan the row
+with no trade attached — invisible to every reconciler.
+
 ### `Instance.OnEvent` does not stamp `StrategyInstanceID`; only `OnBar` does
 `instance.go`'s `OnBar` stamps `sig.StrategyInstanceID = inst.id` before
 returning signals; `OnEvent` does not. Existing callers (`handleFill`,
