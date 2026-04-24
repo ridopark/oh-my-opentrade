@@ -19,6 +19,7 @@ type signalCorr struct {
 	signalID string
 	kind     string
 	side     string
+	reason   string
 }
 
 type SignalTracker struct {
@@ -79,10 +80,11 @@ func (st *SignalTracker) handleSignalCreated(ctx context.Context, event domain.E
 
 	instanceKey := fmt.Sprintf("%s:%s:%s:%s", sig.StrategyInstanceID.String(), sig.Symbol, kind, sig.Side.String())
 	scopeKey := st.scopeKey(event.TenantID, event.EnvMode, strategy, sig.Symbol)
+	reason := sig.Tags[domain.TagAuthorText]
 
 	st.mu.Lock()
 	st.byInstanceKey[instanceKey] = signalID
-	st.latestByScope[scopeKey] = signalCorr{signalID: signalID, kind: kind, side: side}
+	st.latestByScope[scopeKey] = signalCorr{signalID: signalID, kind: kind, side: side, reason: reason}
 	st.mu.Unlock()
 
 	payload := mustJSON(sig)
@@ -97,7 +99,7 @@ func (st *SignalTracker) handleSignalCreated(ctx context.Context, event domain.E
 		kind,
 		side,
 		domain.SignalStatusGenerated,
-		"",
+		reason,
 		sig.Strength,
 		payload,
 	)
@@ -124,6 +126,10 @@ func (st *SignalTracker) handleIntentValidated(ctx context.Context, event domain
 	}
 
 	corr := st.getOrDeriveCorr(event.TenantID, event.EnvMode, p.Strategy, p.Symbol, p.Direction)
+	if p.Rationale != "" {
+		corr.reason = p.Rationale
+		st.updateCorrReason(event.TenantID, event.EnvMode, p.Strategy, p.Symbol, p.Rationale)
+	}
 	payload := mustJSON(p)
 
 	evt, err := domain.NewStrategySignalEvent(
@@ -136,7 +142,7 @@ func (st *SignalTracker) handleIntentValidated(ctx context.Context, event domain
 		corr.kind,
 		corr.side,
 		domain.SignalStatusValidated,
-		"",
+		corr.reason,
 		p.Confidence,
 		payload,
 	)
@@ -228,7 +234,7 @@ func (st *SignalTracker) handleFill(ctx context.Context, event domain.Event) err
 		corr.kind,
 		corr.side,
 		domain.SignalStatusExecuted,
-		"",
+		corr.reason,
 		0,
 		payload,
 	)
@@ -256,6 +262,18 @@ func (st *SignalTracker) publishLifecycle(ctx context.Context, evt domain.Strate
 
 func (st *SignalTracker) scopeKey(tenantID string, envMode domain.EnvMode, strategy string, symbol string) string {
 	return fmt.Sprintf("%s:%s:%s:%s", tenantID, string(envMode), strategy, symbol)
+}
+
+func (st *SignalTracker) updateCorrReason(tenantID string, envMode domain.EnvMode, strategy string, symbol string, reason string) {
+	scopeKey := st.scopeKey(tenantID, envMode, strategy, symbol)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	ref, ok := st.latestByScope[scopeKey]
+	if !ok {
+		return
+	}
+	ref.reason = reason
+	st.latestByScope[scopeKey] = ref
 }
 
 func (st *SignalTracker) getOrDeriveCorr(tenantID string, envMode domain.EnvMode, strategy string, symbol string, direction string) signalCorr {
