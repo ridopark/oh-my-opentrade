@@ -118,6 +118,11 @@ const (
 	// match. Routing is by OCC contract symbol; the fraction is stashed in
 	// pos.CustomState and consumed by positionmonitor.triggerExit.
 	EventCopytradeExitRequest EventType = "CopytradeExitRequest"
+
+	// Copytrade: the position monitor refused an exit request because a prior
+	// exit is already in flight for the target position. The strategy consumes
+	// this event to roll RemainingFrac back so its view matches the broker.
+	EventCopytradeExitRejected EventType = "CopytradeExitRejected"
 )
 
 type SymbolsActivatedPayload struct {

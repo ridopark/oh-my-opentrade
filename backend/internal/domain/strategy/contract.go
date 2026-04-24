@@ -275,6 +275,16 @@ type TradeTick struct {
 	Venue     string
 }
 
+// CopytradeExitRejection is forwarded to the copytrade strategy when the
+// position monitor refuses an exit request (e.g. prior exit already in flight).
+// The strategy rolls RemainingFrac back by the original Fraction so its view
+// matches the broker's actual closing position.
+type CopytradeExitRejection struct {
+	ContractSymbol string
+	Fraction       float64
+	Reason         string
+}
+
 // CopytradeSignal is forwarded to the copytrade strategy when the sidecar
 // posts a parsed Discord message. Kept string-typed so this package does not
 // import domain.

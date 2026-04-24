@@ -138,11 +138,16 @@ func parsePartialFractions(v any) []copytradePartial {
 // one-shot CHANDELIER_TRAIL arming on first partial.
 type copytradePosition struct {
 	ContractSymbol string    `json:"contractSymbol"`
+	Base           string    `json:"base"` // positionBase(author,ticker,expiry,strike,right) — lets EntryRejection unwind Generations[base]
 	OpenedAt       time.Time `json:"openedAt"`
 	EntryPremium   float64   `json:"entryPremium"`
 	RemainingFrac  float64   `json:"remainingFrac"`
 	TrailArmed     bool      `json:"trailArmed"`
 	Generation     int       `json:"generation"`
+	// Pending is true between BTO emit and FillConfirmation. STC posts are
+	// refused while true so a pre-fill STC can't decrement RemainingFrac
+	// against a position the broker hasn't opened yet.
+	Pending bool `json:"pending"`
 }
 
 // copytradeState is the per-instance catch-all state. It lives under the
@@ -209,17 +214,27 @@ func (s *CopytradeStrategy) OnBar(_ start.Context, _ string, _ start.Bar, st sta
 	return st, nil, nil
 }
 
-// OnEvent dispatches on start.CopytradeSignal. All other event types are
-// ignored (no fills or rejections route to this instance because it has no
-// per-symbol routing).
+// OnEvent dispatches on start.CopytradeSignal plus broker feedback events
+// (FillConfirmation, EntryRejection) routed by the runner's fallback lookup.
+// All other event types are ignored.
 func (s *CopytradeStrategy) OnEvent(ctx start.Context, _ string, evt any, st start.State) (start.State, []start.Signal, error) {
-	sig, ok := evt.(start.CopytradeSignal)
-	if !ok {
-		return st, nil, nil
-	}
 	cst, ok := st.(*copytradeState)
 	if !ok {
 		return st, nil, fmt.Errorf("CopytradeStrategy.OnEvent: expected *copytradeState, got %T", st)
+	}
+
+	switch e := evt.(type) {
+	case start.FillConfirmation:
+		return s.handleFillConfirmation(ctx, cst, e)
+	case start.EntryRejection:
+		return s.handleEntryRejection(ctx, cst, e)
+	case start.CopytradeExitRejection:
+		return s.handleExitRejection(ctx, cst, e)
+	}
+
+	sig, ok := evt.(start.CopytradeSignal)
+	if !ok {
+		return st, nil, nil
 	}
 	if !authorAllowed(cst.Config.AuthorWhitelist, sig.Author) {
 		if ctx != nil {
@@ -283,10 +298,12 @@ func (s *CopytradeStrategy) handleBTO(ctx start.Context, cst *copytradeState, si
 	}
 	cst.Positions[key] = &copytradePosition{
 		ContractSymbol: contractSym,
+		Base:           base,
 		OpenedAt:       openedAt,
 		EntryPremium:   sig.Price,
 		RemainingFrac:  1.0,
 		Generation:     gen,
+		Pending:        true,
 	}
 	cst.Generations[base] = gen
 
@@ -340,6 +357,13 @@ func (s *CopytradeStrategy) handleSTC(ctx start.Context, cst *copytradeState, si
 	if !ok {
 		if ctx != nil {
 			ctx.Logger().Warn("copytrade: STC but position not tracked — dropping", "key", key)
+		}
+		return cst, nil, nil
+	}
+	if pos.Pending {
+		if ctx != nil {
+			ctx.Logger().Warn("copytrade: STC refused — BTO not yet confirmed by broker",
+				"key", key, "contract_symbol", pos.ContractSymbol, "tail", sig.Tail)
 		}
 		return cst, nil, nil
 	}
@@ -453,4 +477,113 @@ func resolveFraction(tail string, table []copytradePartial, def float64) (float6
 
 func formatFloat(v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
+// handleFillConfirmation flips Pending=false on the matching pending position.
+// Matches by (ContractSymbol, Pending=true) on BUY-side fills; SELL-side fills
+// (partial/full closes) do not affect Pending.
+func (s *CopytradeStrategy) handleFillConfirmation(ctx start.Context, cst *copytradeState, fc start.FillConfirmation) (start.State, []start.Signal, error) {
+	if fc.Side != start.SideBuy {
+		return cst, nil, nil
+	}
+	var match *copytradePosition
+	for _, pos := range cst.Positions {
+		if pos == nil || !pos.Pending || pos.ContractSymbol != fc.Symbol {
+			continue
+		}
+		if match == nil || pos.OpenedAt.Before(match.OpenedAt) {
+			match = pos
+		}
+	}
+	if match == nil {
+		return cst, nil, nil
+	}
+	match.Pending = false
+	if ctx != nil {
+		ctx.Logger().Info("copytrade: BTO fill confirmed",
+			"contract_symbol", fc.Symbol, "generation", match.Generation,
+			"fill_price", fc.Price, "fill_qty", fc.Quantity)
+	}
+	return cst, nil, nil
+}
+
+// handleExitRejection rolls RemainingFrac back when position monitor refuses a
+// partial exit (e.g. prior exit still in flight). The strategy already
+// decremented on the emit path; without rollback, strategy and broker residuals
+// diverge. Matches by (ContractSymbol, Pending=false); a Pending match means
+// the strategy was never authoritative for this contract and rollback is a
+// no-op to avoid corrupting state.
+func (s *CopytradeStrategy) handleExitRejection(ctx start.Context, cst *copytradeState, rej start.CopytradeExitRejection) (start.State, []start.Signal, error) {
+	if rej.Fraction <= 0 || rej.Fraction >= 1.0 {
+		return cst, nil, nil
+	}
+	var match *copytradePosition
+	for _, pos := range cst.Positions {
+		if pos == nil || pos.Pending || pos.ContractSymbol != rej.ContractSymbol {
+			continue
+		}
+		if match == nil || pos.Generation > match.Generation {
+			match = pos
+		}
+	}
+	if match == nil {
+		if ctx != nil {
+			ctx.Logger().Warn("copytrade: exit rejection for unknown position — ignoring",
+				"contract_symbol", rej.ContractSymbol, "fraction", rej.Fraction, "reason", rej.Reason)
+		}
+		return cst, nil, nil
+	}
+	before := match.RemainingFrac
+	match.RemainingFrac /= 1.0 - rej.Fraction
+	if match.RemainingFrac > 1.0 {
+		match.RemainingFrac = 1.0
+	}
+	if ctx != nil {
+		ctx.Logger().Warn("copytrade: exit rejected — rolling RemainingFrac back",
+			"contract_symbol", rej.ContractSymbol,
+			"fraction", rej.Fraction,
+			"reason", rej.Reason,
+			"remaining_before", before,
+			"remaining_after", match.RemainingFrac)
+	}
+	return cst, nil, nil
+}
+
+// handleEntryRejection deletes the pending position and rolls Generations[base]
+// back so a subsequent re-entry for the same (author,ticker,expiry,strike,right)
+// starts at the same generation instead of skipping one. Matches by
+// (ContractSymbol, Pending=true) on BUY-side rejections.
+func (s *CopytradeStrategy) handleEntryRejection(ctx start.Context, cst *copytradeState, rej start.EntryRejection) (start.State, []start.Signal, error) {
+	if rej.Side != start.SideBuy {
+		return cst, nil, nil
+	}
+	var (
+		matchKey string
+		match    *copytradePosition
+	)
+	for k, pos := range cst.Positions {
+		if pos == nil || !pos.Pending || pos.ContractSymbol != rej.Symbol {
+			continue
+		}
+		if match == nil || pos.OpenedAt.Before(match.OpenedAt) {
+			matchKey = k
+			match = pos
+		}
+	}
+	if match == nil {
+		return cst, nil, nil
+	}
+	delete(cst.Positions, matchKey)
+	if match.Base != "" && cst.Generations[match.Base] == match.Generation {
+		if match.Generation <= 1 {
+			delete(cst.Generations, match.Base)
+		} else {
+			cst.Generations[match.Base] = match.Generation - 1
+		}
+	}
+	if ctx != nil {
+		ctx.Logger().Warn("copytrade: BTO rejected — unwinding ghost position",
+			"contract_symbol", rej.Symbol, "generation", match.Generation, "reason", rej.Reason)
+	}
+	return cst, nil, nil
 }
