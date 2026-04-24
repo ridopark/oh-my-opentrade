@@ -202,6 +202,62 @@ func (a *Adapter) GetOpenOrders(_ context.Context) ([]ports.OpenOrder, error) {
 	return out, nil
 }
 
+// GetAllFills returns every execution fill visible in ibsync's local cache,
+// optionally refreshed via ReqFills(). Used by execution.Service.reconcileFillsOnBoot
+// to dedup against trades.execution_id and insert any missed legs.
+//
+// Each broker order with N partial fills produces N FillRecords sharing the
+// same BrokerOrderID with distinct ExecutionIDs. CumQty/AvgPrice on each
+// record are the broker's running totals as of THAT exec.
+func (a *Adapter) GetAllFills(_ context.Context) ([]ports.FillRecord, error) {
+	ib := a.conn.IB()
+	if ib == nil {
+		return nil, fmt.Errorf("ibkr: not connected")
+	}
+	// Refresh ibsync's local cache from the gateway. Blocking call; ok at boot.
+	if _, err := ib.ReqFills(); err != nil {
+		a.log.Warn().Err(err).Msg("ibkr: ReqFills refresh failed, falling back to local cache")
+	}
+	fills := ib.Fills()
+	out := make([]ports.FillRecord, 0, len(fills))
+	for _, f := range fills {
+		if f.Execution == nil || f.Contract == nil {
+			continue
+		}
+		exec := f.Execution
+		symbol := f.Contract.Symbol
+		if f.Contract.SecType == "OPT" {
+			if expiry, err := time.Parse("20060102", f.Contract.LastTradeDateOrContractMonth); err == nil {
+				right := domain.OptionRightCall
+				if strings.EqualFold(f.Contract.Right, "P") {
+					right = domain.OptionRightPut
+				}
+				symbol = domain.FormatOCCSymbol(f.Contract.Symbol, expiry, right, f.Contract.Strike)
+			}
+		}
+		// IBKR ExecDetails Side is "BOT"/"SLD"; normalize to BUY/SELL.
+		side := strings.ToUpper(exec.Side)
+		switch side {
+		case "BOT":
+			side = "BUY"
+		case "SLD":
+			side = "SELL"
+		}
+		out = append(out, ports.FillRecord{
+			BrokerOrderID: strconv.FormatInt(exec.OrderID, 10),
+			ExecutionID:   exec.ExecID,
+			Symbol:        symbol,
+			Side:          side,
+			Qty:           exec.Shares.Float(),
+			Price:         exec.Price,
+			CumQty:        exec.CumQty.Float(),
+			AvgPrice:      exec.AvgPrice,
+			FilledAt:      f.Time,
+		})
+	}
+	return out, nil
+}
+
 // GetFilledOrders returns every filled order visible in the current ib.Trades()
 // list. Used by execution.Service.backfillFromBrokerHistory to restore orders
 // whose DB row was never written (e.g. session crashed after IBKR accepted the

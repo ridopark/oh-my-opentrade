@@ -70,6 +70,12 @@ type RepositoryPort interface {
 	// Used to mark orders as canceled/expired without a fill during reconciliation.
 	UpdateOrderStatus(ctx context.Context, brokerOrderID string, status string) error
 
+	// GetRecordedExecutionIDs returns the set of execution_ids already present
+	// in trades for the given symbols. Used by boot fill-reconciliation to
+	// cheaply diff broker fills against what the DB has, so we only INSERT the
+	// missing legs. Returns an empty set (not nil) when nothing matches.
+	GetRecordedExecutionIDs(ctx context.Context, tenantID string, envMode domain.EnvMode, since time.Time) (map[string]struct{}, error)
+
 	// GetNetPositions returns the net quantity per symbol from the trades table.
 	// Only returns symbols with |net_qty| > epsilon (1e-10).
 	// Used by global portfolio reconciliation to detect DB-vs-broker drift.

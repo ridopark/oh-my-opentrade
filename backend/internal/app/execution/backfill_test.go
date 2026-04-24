@@ -145,6 +145,9 @@ func (r *backfillMockRepo) GetRecordedFillQty(context.Context, string, domain.En
 	return 0, nil
 }
 func (r *backfillMockRepo) UpdateOrderStatus(context.Context, string, string) error { return nil }
+func (r *backfillMockRepo) GetRecordedExecutionIDs(context.Context, string, domain.EnvMode, time.Time) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
 func (r *backfillMockRepo) GetNetPositions(context.Context, string, domain.EnvMode) (map[domain.Symbol]float64, error) {
 	return nil, nil
 }

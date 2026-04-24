@@ -85,6 +85,32 @@ type FilledOrderLister interface {
 	GetFilledOrders(ctx context.Context) ([]FilledOrder, error)
 }
 
+// FillRecord is one execution leg as reported by the broker. Multi-fill
+// orders produce multiple FillRecords sharing the same BrokerOrderID but
+// carrying distinct ExecutionIDs. CumQty/AvgPrice are the running totals
+// reported by the broker as of THIS exec; treating them as authoritative
+// (vs. recomputing locally) makes the fill recorder race-free under
+// out-of-order delivery.
+type FillRecord struct {
+	BrokerOrderID string
+	ExecutionID   string
+	Symbol        string
+	Side          string
+	Qty           float64
+	Price         float64
+	CumQty        float64
+	AvgPrice      float64
+	FilledAt      time.Time
+}
+
+// FillLister is an optional broker capability used by boot reconciliation
+// to recover fills missed during crashes, disconnects, or stream gaps. The
+// returned slice MUST include every fill the broker holds for the current
+// session; the caller dedups against trades.execution_id before inserting.
+type FillLister interface {
+	GetAllFills(ctx context.Context) ([]FillRecord, error)
+}
+
 // OrderDetails contains full order information from the broker, including
 // cumulative fill data needed for fill reconciliation.
 type OrderDetails struct {

@@ -105,6 +105,9 @@ func (m *mockRepository) GetRecordedFillQty(context.Context, string, domain.EnvM
 	return 0, nil
 }
 func (m *mockRepository) UpdateOrderStatus(context.Context, string, string) error { return nil }
+func (m *mockRepository) GetRecordedExecutionIDs(context.Context, string, domain.EnvMode, time.Time) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
 func (m *mockRepository) GetNetPositions(context.Context, string, domain.EnvMode) (map[domain.Symbol]float64, error) {
 	return nil, nil
 }

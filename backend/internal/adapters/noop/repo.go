@@ -90,6 +90,10 @@ func (n *NoopRepo) GetRecordedFillQty(_ context.Context, _ string, _ domain.EnvM
 	return 0, nil
 }
 
+func (n *NoopRepo) GetRecordedExecutionIDs(_ context.Context, _ string, _ domain.EnvMode, _ time.Time) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
+
 func (n *NoopRepo) UpdateOrderStatus(_ context.Context, _ string, _ string) error { return nil }
 
 func (n *NoopRepo) GetNetPositions(_ context.Context, _ string, _ domain.EnvMode) (map[domain.Symbol]float64, error) {

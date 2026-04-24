@@ -31,7 +31,24 @@ const (
 	// Overwriting the stale row is safe: actual fills live in `trades`,
 	// `orders` is operational state for the active session.
 	queryInsertOrder = `INSERT INTO orders (time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, strategy, rationale, confidence, instrument_type, option_symbol, underlying, strike, expiry, option_right) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) ON CONFLICT (broker_order_id) DO UPDATE SET time = EXCLUDED.time, account_id = EXCLUDED.account_id, env_mode = EXCLUDED.env_mode, intent_id = EXCLUDED.intent_id, symbol = EXCLUDED.symbol, side = EXCLUDED.side, quantity = EXCLUDED.quantity, limit_price = EXCLUDED.limit_price, stop_loss = EXCLUDED.stop_loss, status = EXCLUDED.status, strategy = EXCLUDED.strategy, rationale = EXCLUDED.rationale, confidence = EXCLUDED.confidence, instrument_type = EXCLUDED.instrument_type, option_symbol = EXCLUDED.option_symbol, underlying = EXCLUDED.underlying, strike = EXCLUDED.strike, expiry = EXCLUDED.expiry, option_right = EXCLUDED.option_right, filled_at = NULL, filled_price = NULL, filled_qty = NULL`
-	queryUpdateOrderFill      = `UPDATE orders SET status = 'filled', filled_at = $2, filled_price = $3, filled_qty = $4 WHERE broker_order_id = $1`
+	// Multi-fill safe: GREATEST + WHERE guard make this idempotent under
+	// out-of-order delivery (same exec arriving twice; later exec arriving
+	// before earlier). Status promotes monotonically submitted →
+	// partially_filled → filled. Callers pass cumulative-as-of-this-exec
+	// values from the broker (IBKR's exec.CumQty / exec.AvgPrice, Alpaca's
+	// order.filled_qty / order.filled_avg_price) which are server-side
+	// authoritative.
+	queryUpdateOrderFill = `UPDATE orders SET
+		filled_at = GREATEST(COALESCE(filled_at, '0001-01-01'::timestamptz), $2),
+		filled_price = $3,
+		filled_qty = GREATEST(COALESCE(filled_qty, 0), $4),
+		status = CASE
+			WHEN $4 + 1e-9 >= quantity THEN 'filled'
+			WHEN status = 'filled' THEN 'filled'
+			WHEN COALESCE(filled_qty, 0) < $4 THEN 'partially_filled'
+			ELSE status
+		END
+		WHERE broker_order_id = $1 AND COALESCE(filled_qty, 0) <= $4`
 	queryGetNonTerminalOrders = `SELECT time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, COALESCE(filled_at, '0001-01-01'::timestamptz), COALESCE(filled_price, 0), COALESCE(filled_qty, 0), COALESCE(strategy, ''), COALESCE(rationale, ''), COALESCE(confidence, 0) FROM orders WHERE account_id = $1 AND env_mode = $2 AND status NOT IN ('filled', 'canceled', 'expired', 'rejected') ORDER BY time ASC`
 	queryGetOrderByBrokerID   = `SELECT time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, COALESCE(filled_at, '0001-01-01'::timestamptz), COALESCE(filled_price, 0), COALESCE(filled_qty, 0), COALESCE(strategy, ''), COALESCE(rationale, ''), COALESCE(confidence, 0) FROM orders WHERE broker_order_id = $1 LIMIT 1`
 	queryGetRecordedFillQty   = `SELECT COALESCE(SUM(quantity), 0) FROM trades WHERE account_id = $1 AND env_mode = $2 AND symbol = $3 AND side = $4 AND time >= $5`
@@ -938,6 +955,31 @@ func (r *Repository) GetRecordedFillQty(ctx context.Context, tenantID string, en
 		return 0, fmt.Errorf("timescaledb: get recorded fill qty: %w", err)
 	}
 	return qty, nil
+}
+
+// GetRecordedExecutionIDs returns the set of execution_ids in trades for the
+// given tenant/env since `since`. Used by boot fill-reconciliation to dedup
+// against broker-reported fills before INSERTing missing legs.
+func (r *Repository) GetRecordedExecutionIDs(ctx context.Context, tenantID string, envMode domain.EnvMode, since time.Time) (map[string]struct{}, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT execution_id FROM trades
+		  WHERE account_id = $1 AND env_mode = $2 AND time >= $3
+		    AND execution_id IS NOT NULL AND execution_id <> ''`,
+		tenantID, string(envMode), since)
+	if err != nil {
+		return nil, fmt.Errorf("timescaledb: get recorded execution ids: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]struct{})
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("timescaledb: scan execution id: %w", err)
+		}
+		out[id] = struct{}{}
+	}
+	return out, rows.Err()
 }
 
 func (r *Repository) UpdateOrderStatus(ctx context.Context, brokerOrderID string, status string) error {
