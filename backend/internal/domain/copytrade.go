@@ -79,6 +79,7 @@ type CopytradeExitRequestPayload struct {
 	Reason         string  // audit trail: the keyword that matched, e.g. "half out"
 	Author         string  // Discord author name — surfaced in exit intent Rationale
 	RawLine        string  // raw Discord line — surfaced in exit intent Rationale
+	RefPremium     float64 // author's stated STC premium; backtest pins fill to this when >0
 }
 
 // CopytradeExitRejectedPayload tells the strategy its exit request was rejected

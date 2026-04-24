@@ -257,6 +257,10 @@ func (s *Service) handleCopytradeExitRequest(_ context.Context, event domain.Eve
 	// and proceed with exitQty = pos.Quantity, which is the correct behavior.
 	target.CustomState["copytrade_exit_qty_frac"] = payload.Fraction
 
+	if payload.RefPremium > 0 && target.EnvMode == domain.EnvModePaper {
+		target.CustomState["copytrade_exit_ref_premium"] = payload.RefPremium
+	}
+
 	reason := "copytrade:stc"
 	if composed := domain.ComposeAuthorText(payload.Author, payload.RawLine); composed != "" {
 		reason = composed
