@@ -467,20 +467,20 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 	s.backfillFromBrokerHistory(ctx)
 }
 
-// backfillFromBrokerHistory restores orders the DB never recorded. Scans the
-// broker's filled-order history (FilledOrderLister capability) and, for any
-// terminal fill with no matching row in the orders table, writes a synthetic
-// orders+trades pair so accounting catches up. Covers the crash-before-SaveOrder
-// gap that reconcileOnBoot cannot see — that loop only iterates rows already in
-// the DB. Runs on boot and every dbReconcileInterval via runReconciliationLoop.
+// backfillFromBrokerHistory restores orders the DB never recorded — the
+// crash-before-SaveOrder gap reconcileOnBoot cannot see, since that loop
+// iterates the orders table only.
 //
-// Idempotent: deterministicTradeID(brokerOrderID, filledQty) + a fixed
-// "backfill:"-prefixed execution_id means repeat runs hit the orders ON CONFLICT
-// (UPDATE) path and the trades unique (execution_id, time) index.
+// Order matters: row is seeded as "submitted" first, then SaveTrade, then
+// UpdateOrderFill flips to "filled". If SaveTrade fails we leave a non-terminal
+// row, so the next reconcileOnBoot tick heals it via the existing GetOrderDetails
+// path rather than orphaning a half-complete row with no trade attached.
 //
-// Skips anything missing FilledAvgPrice or FilledAt — a zero-priced trade would
-// silently poison PnL, and a zero FilledAt would break idempotency across runs.
-// No-op when the broker doesn't implement FilledOrderLister.
+// Idempotent: deterministicTradeID + "backfill:"-prefixed execution_id mean
+// re-runs hit the orders ON CONFLICT (UPDATE) path and the trades unique
+// (execution_id, time) index. Skips zero price / zero FilledAt: the first would
+// poison PnL, the second would break idempotency across runs because the trades
+// unique key includes time.
 func (s *Service) backfillFromBrokerHistory(ctx context.Context) {
 	l := s.log.With().Str("component", "backfill_from_broker").Logger()
 
@@ -526,33 +526,29 @@ func (s *Service) backfillFromBrokerHistory(ctx context.Context) {
 		sym := domain.Symbol(fo.Symbol)
 		side := strings.ToUpper(fo.Side)
 		order := domain.BrokerOrder{
-			Time:          fo.FilledAt,
-			TenantID:      s.tenantID,
-			EnvMode:       s.envMode,
-			IntentID:      uuid.New(),
-			BrokerOrderID: fo.BrokerOrderID,
-			Symbol:        sym,
-			Side:          side,
-			Quantity:      fo.Quantity,
-			LimitPrice:    fo.FilledAvgPrice,
-			Status:        "filled",
-			Strategy:      "backfill",
-			Rationale:     "broker history backfill: orders row missing at boot",
+			Time:           fo.FilledAt,
+			TenantID:       s.tenantID,
+			EnvMode:        s.envMode,
+			IntentID:       uuid.New(),
+			BrokerOrderID:  fo.BrokerOrderID,
+			Symbol:         sym,
+			Side:           side,
+			Quantity:       fo.Quantity,
+			LimitPrice:     fo.FilledAvgPrice,
+			Status:         "submitted",
+			Strategy:       "backfill",
+			Rationale:      "broker history backfill: orders row missing at boot",
+			InstrumentType: domain.InstrumentTypeEquity,
 		}
 		if domain.IsOCCSymbol(sym) {
-			underlying, expiry, right, strike, parseOK := domain.ParseOCC(sym)
-			if parseOK {
+			if underlying, expiry, right, strike, ok := domain.ParseOCC(sym); ok {
 				order.InstrumentType = domain.InstrumentTypeOption
 				order.OptionSymbol = string(sym)
 				order.Underlying = underlying
 				order.Strike = strike
 				order.Expiry = expiry
 				order.OptionRight = right
-			} else {
-				order.InstrumentType = domain.InstrumentTypeEquity
 			}
-		} else {
-			order.InstrumentType = domain.InstrumentTypeEquity
 		}
 
 		if err := s.repo.SaveOrder(ctx, order); err != nil {
@@ -568,7 +564,7 @@ func (s *Service) backfillFromBrokerHistory(ctx context.Context) {
 			fmt.Sprintf("broker history backfill: recovered %.8f @ %.6f from broker for order %s", fo.FilledQty, fo.FilledAvgPrice, fo.BrokerOrderID),
 		)
 		if tErr != nil {
-			ol.Error().Err(tErr).Msg("broker history backfill: NewTrade failed — orders row already written")
+			ol.Error().Err(tErr).Msg("broker history backfill: NewTrade failed — submitted row left for next reconcile")
 			continue
 		}
 		trade.ExecutionID = "backfill:" + fo.BrokerOrderID
