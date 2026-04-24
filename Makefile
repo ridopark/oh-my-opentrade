@@ -4,7 +4,8 @@ BACKEND_DIR := backend
 BIN_DIR := $(BACKEND_DIR)/bin
 
 .PHONY: all build backfill ingest test test-v test-race test-cover test-integration clean lint migrate fmt debug-chrome debug-chrome-headless install-hooks \
-	prod-logs prod-logs-signals prod-logs-orders prod-logs-exits prod-logs-errors prod-logs-tail
+	prod-logs prod-logs-signals prod-logs-orders prod-logs-exits prod-logs-errors prod-logs-tail \
+	restart-copytrade
 
 all: test build
 
@@ -108,3 +109,12 @@ prod-logs-errors:
 ## Free-text search production logs (usage: make prod-logs Q="your search term")
 prod-logs:
 	@$(PROD_LOGS) | grep -iE "$(Q)" | tail -$(PROD_LINES) || echo "No matches for '$(Q)'"
+
+## Recreate the Discord copytrade watcher with the current WSL2 eth0 IP.
+## Docker Desktop's host-gateway doesn't reach the WSL2 distro where omo-core
+## runs, so we pin host.docker.internal to the live eth0 address each time.
+restart-copytrade:
+	@ip=$$(ip -4 addr show eth0 | grep -oP 'inet \K[\d.]+'); \
+	test -n "$$ip" || { echo "restart-copytrade: failed to detect eth0 IP"; exit 1; }; \
+	echo "restart-copytrade: WSL_HOST_IP=$$ip"; \
+	cd services/discord-copytrade && WSL_HOST_IP=$$ip docker compose up -d --force-recreate watcher
