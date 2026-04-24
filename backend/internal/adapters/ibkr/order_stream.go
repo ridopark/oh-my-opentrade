@@ -79,7 +79,7 @@ func (a *Adapter) watchTradeDone(ctx context.Context, trade *ibsync.Trade, out c
 		// Fills come from execReconciler (per-ExecID, race-free vs OrderStatus
 		// snapshots). Suppress them here to keep this goroutine to the
 		// non-fill terminal lane only.
-		if update.Event == "fill" {
+		if update.Event == ports.OrderEventFill {
 			return
 		}
 		if _, loaded := a.emittedDone.LoadOrStore(orderID, struct{}{}); loaded {
@@ -140,11 +140,11 @@ func (a *Adapter) pollOrderUpdates(ctx context.Context, out chan<- ports.OrderUp
 					// Fills flow through execReconciler (per-ExecID). Skip them
 					// here so a single terminal OrderStatus snapshot doesn't
 					// replace N distinct exec events.
-					if update.Event == "fill" {
+					if update.Event == ports.OrderEventFill {
 						continue
 					}
 					// Dedup non-fill terminal events against the Done() watcher.
-					if update.Event == "canceled" || update.Event == "expired" {
+					if update.Event == ports.OrderEventCanceled || update.Event == ports.OrderEventExpired {
 						if _, already := a.emittedDone.LoadOrStore(id, struct{}{}); already {
 							continue
 						}
@@ -198,6 +198,14 @@ func (a *Adapter) execReconciler(ctx context.Context, out chan<- ports.OrderUpda
 			}
 			// Fills() is non-blocking — reads from ibsync's local state.
 			fills := ib.Fills()
+			// Index trades by OrderID so each fill resolves in O(1) instead
+			// of scanning the whole trades slice per leg.
+			tradesByOrder := make(map[int64]*ibsync.Trade)
+			for _, t := range ib.Trades() {
+				if t != nil && t.Order != nil {
+					tradesByOrder[t.Order.OrderID] = t
+				}
+			}
 			for _, f := range fills {
 				if f.Execution == nil {
 					continue
@@ -214,20 +222,13 @@ func (a *Adapter) execReconciler(ctx context.Context, out chan<- ports.OrderUpda
 				// OrderStatus. The last leg of a multi-fill order must arrive
 				// as Event="fill" so execution.handleStreamFill knows when to
 				// claim the pending entry and run lifecycle cleanup.
-				update.Event = "partial_fill"
-				orderID := f.Execution.OrderID
+				update.Event = ports.OrderEventPartialFill
 				totalQty := 0.0
-				statusFilled := false
-				for _, t := range ib.Trades() {
-					if t == nil || t.Order == nil || t.Order.OrderID != orderID {
-						continue
-					}
+				if t, ok := tradesByOrder[f.Execution.OrderID]; ok {
 					totalQty = t.Order.TotalQuantity.Float()
-					statusFilled = t.OrderStatus.Status == ibsync.Filled
-					break
-				}
-				if statusFilled && totalQty > 0 && update.FilledQty+1e-9 >= totalQty {
-					update.Event = "fill"
+					if t.OrderStatus.Status == ibsync.Filled && totalQty > 0 && update.FilledQty+1e-9 >= totalQty {
+						update.Event = ports.OrderEventFill
+					}
 				}
 
 				a.log.Info().
@@ -284,7 +285,7 @@ func fillToOrderUpdate(f ibsync.Fill) ports.OrderUpdate {
 	return ports.OrderUpdate{
 		BrokerOrderID:  strconv.FormatInt(exec.OrderID, 10),
 		ExecutionID:    exec.ExecID,
-		Event:          "fill",
+		Event:          ports.OrderEventFill,
 		Qty:            exec.Shares.Float(),
 		Price:          exec.Price,
 		FilledQty:      exec.CumQty.Float(),
@@ -325,17 +326,17 @@ func tradeToOrderUpdate(t *ibsync.Trade) ports.OrderUpdate {
 func mapStatusToEvent(s ibsync.Status) string {
 	switch s {
 	case ibsync.Filled:
-		return "fill"
+		return ports.OrderEventFill
 	case ibsync.Submitted:
-		return "new"
+		return ports.OrderEventNew
 	case ibsync.PreSubmitted:
-		return "accepted"
+		return ports.OrderEventAccepted
 	case ibsync.PendingSubmit, ibsync.ApiPending:
-		return "new"
+		return ports.OrderEventNew
 	case ibsync.Cancelled, ibsync.ApiCancelled: //nolint:misspell // external ibsync constant
-		return "canceled"
+		return ports.OrderEventCanceled
 	case ibsync.Inactive:
-		return "expired"
+		return ports.OrderEventExpired
 	default:
 		return "new"
 	}
