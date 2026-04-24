@@ -202,6 +202,31 @@ the `[]any` path and hide the bug. Also: flat keys placed AFTER
 `[[params.foo]]` in the same file attach to the last array entry, not back
 to `[params]`. Put flat keys first.
 
+### syncMode bus + in-handler publish re-enters the same goroutine
+In backtest, `memory.Bus` runs in syncMode — `SubscribeAsync` becomes
+`Subscribe`, and after `FreezeHandlers()` the fast-path publishes directly
+on the caller's stack. If a strategy inside `Instance.OnEvent` (holding
+`inst.mu`) emits a domain event whose subscribers call back into the same
+instance (e.g. `handleCopytradeExitRejected` → `inst.IsActive()`), the
+inner call tries to re-acquire `inst.mu` and deadlocks. Make state read
+by any reentrant path lock-free (`atomic.Pointer[...]` for lifecycle
+worked well), and defer the inner `Instance.OnEvent` dispatch into a
+runner-level callback queue drained by every handler entry-point AFTER
+`inst.mu` and `r.mu` are released. See `runner_copytrade_reentry_test.go`
+for the reproduction.
+
+### Copytrade handlers must use `event.OccurredAt`, not `time.Now()`
+`handleFill` threads the fill payload's `filled_at` into `instCtx.now`
+correctly, but `handleCopytradeSignal`, `handleCopytradeExitRejected`,
+and `handleRejection` historically used `time.Now()`. In backtest the
+event bus stamps sim-time via `NewBacktestEvent` but wall-clock is
+~months ahead — any strategy code comparing `sig.PostedAt` (sim) against
+`ctx.Now()` (wall) sees tens-of-millions-of-seconds deltas and any TTL
+check fires immediately. Use the `Runner.handlerNow(event, handler)`
+helper (picks `event.OccurredAt`, falls back to wall-clock with a canary
+log if the envelope is zero) in every handler that populates
+`instanceContext.now`.
+
 ### `Instance.OnEvent` does not stamp `StrategyInstanceID`; only `OnBar` does
 `instance.go`'s `OnBar` stamps `sig.StrategyInstanceID = inst.id` before
 returning signals; `OnEvent` does not. Existing callers (`handleFill`,
