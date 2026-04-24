@@ -556,10 +556,11 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
       const entry = openBySymbol.get(key);
       if (entry) {
         openBySymbol.delete(key);
-        // For options: determine underlying direction from OCC symbol (C=Call=LONG, P=Put=SHORT)
+        // Option position side is always LONG (we buy calls or puts). Bearish
+        // bias on the underlying for puts is reflected in the "LONG PUT" label,
+        // not by calling the contract position "SHORT".
         const isPut = /P\d{8}$/.test(entry.symbol);
         const isOption = (t.instrument_type === "OPTION" || entry.instrument_type === "OPTION");
-        // Equity short vs options: bought puts represent bearish direction
         const isEquityShort = (entry.direction ?? "") === "SHORT" && !isOption;
         const isBearish = isEquityShort || isPut;
         const qty = entry.quantity ?? 0;
@@ -578,7 +579,7 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
         positions.push({
           symbol: t.symbol,
           strategy: t.strategy ?? "",
-          direction: isBearish ? "SHORT" : "LONG",
+          direction: isOption ? (isPut ? "LONG PUT" : "LONG CALL") : (isEquityShort ? "SHORT" : "LONG"),
           entry,
           exit: t,
           qty,
@@ -600,10 +601,13 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
   }
 
   for (const [, entry] of openBySymbol) {
+    const isPut = /P\d{8}$/.test(entry.symbol);
+    const isOption = entry.instrument_type === "OPTION" || isPut || /C\d{8}$/.test(entry.symbol);
+    const isEquityShort = (entry.direction ?? "") === "SHORT" && !isOption;
     positions.push({
       symbol: entry.symbol,
       strategy: entry.strategy ?? "",
-      direction: ((entry.direction ?? "") === "SHORT" || /P\d{8}$/.test(entry.symbol)) ? "SHORT" : "LONG",
+      direction: isOption ? (isPut ? "LONG PUT" : "LONG CALL") : (isEquityShort ? "SHORT" : "LONG"),
       entry,
       exit: null,
       qty: entry.quantity ?? 0,
@@ -712,7 +716,7 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
                 <td className="px-2 py-1 text-foreground">{p.symbol}</td>
                 <td className="px-2 py-1">
                   <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                    p.direction === "SHORT" ? "bg-red-500/20 text-red-400" : "bg-emerald-500/20 text-emerald-400"
+                    (p.direction === "SHORT" || p.direction === "LONG PUT") ? "bg-red-500/20 text-red-400" : "bg-emerald-500/20 text-emerald-400"
                   }`}>
                     {p.direction}
                   </span>
