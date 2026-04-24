@@ -6,10 +6,40 @@ import {
   ColorType,
   CandlestickSeries,
   CrosshairMode,
+  TickMarkType,
   type IChartApi,
   type ISeriesApi,
   type Time,
 } from "lightweight-charts";
+
+const ET_TZ = "America/New_York";
+
+function formatET(timeSec: number, opts: Intl.DateTimeFormatOptions): string {
+  return new Date(timeSec * 1000).toLocaleString("en-US", { timeZone: ET_TZ, ...opts });
+}
+
+function tickMarkFormatterET(time: Time, tickMarkType: TickMarkType): string {
+  const sec = typeof time === "number" ? time : 0;
+  if (sec === 0) return "";
+  switch (tickMarkType) {
+    case TickMarkType.Year:
+      return formatET(sec, { year: "numeric" });
+    case TickMarkType.Month:
+      return formatET(sec, { month: "short" });
+    case TickMarkType.DayOfMonth:
+      return formatET(sec, { month: "short", day: "numeric" });
+    case TickMarkType.TimeWithSeconds:
+      return formatET(sec, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+    default:
+      return formatET(sec, { hour: "2-digit", minute: "2-digit", hour12: false });
+  }
+}
+
+function crosshairFormatterET(time: Time): string {
+  const sec = typeof time === "number" ? time : 0;
+  if (sec === 0) return "";
+  return formatET(sec, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+}
 import type { OHLCBar } from "@/lib/use-chart-data";
 
 interface Props {
@@ -40,6 +70,10 @@ export function LiveSymbolChart({ bars, forming, stale }: Props) {
         borderColor: "rgba(82, 82, 91, 0.3)",
         timeVisible: true,
         secondsVisible: false,
+        tickMarkFormatter: tickMarkFormatterET,
+      },
+      localization: {
+        timeFormatter: crosshairFormatterET,
       },
       crosshair: { mode: CrosshairMode.Normal },
       autoSize: true,
