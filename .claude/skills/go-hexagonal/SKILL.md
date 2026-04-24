@@ -248,6 +248,33 @@ non-terminal row and pulls fill state via `broker.GetOrderDetails` on
 the next tick. Writing `status="filled"` up front would orphan the row
 with no trade attached — invisible to every reconciler.
 
+### Per-execution trade rows for multi-fill orders
+Large orders split into N partial fills must produce N trade rows keyed
+by `execution_id`, not one cumulative row. Writing one row with
+cumulative qty + the last leg's ExecID loses per-leg price detail and
+breaks under any OrderStatus/Fills race in the adapter — the 2026-04-24
+SPY call incident landed a single `qty=1` row for a 34-contract fully
+filled order because `tradeToOrderUpdate` read `t.Fills()[len-1]` while
+`OrderStatus.Filled` was stale. Adapters must emit one OrderUpdate per
+ExecID; execution writes per-leg via `RecordFill` (execution_id UNIQUE
+dedups); `orders.filled_qty` is bumped via a monotonic `GREATEST(...)`
+UPDATE with a `WHERE filled_qty <= $new` guard and CASE-based status
+promotion. This makes the write idempotent under replay, out-of-order
+delivery, and boot reconcile. The matrix is now four reconcilers:
+add `reconcileFillsOnBoot` (via optional `ports.FillLister`) at fill-leg
+granularity alongside the three order-level ones.
+
+### Broker adapter: never derive terminal state from multi-source snapshots
+When the adapter exposes both cumulative state (`OrderStatus.Filled`)
+and per-exec state (`Trade.Fills()`), a single "terminal" OrderUpdate
+that reads both is racy — ibsync can flip `OrderStatus.Status=Filled`
+before the Fills slice catches up. Prefer per-ExecID events sourced from
+one cache (`ib.Fills()` is authoritative, server-side), and treat
+`OrderStatus.Status` only as the "label which leg is last" hint. Order-
+level dedup keyed on `OrderID` (rather than `ExecID`) will silently
+drop every leg after the first once ANY source emits a terminal — the
+pre-fix adapter's `emittedDone` set did exactly this.
+
 ### `Instance.OnEvent` does not stamp `StrategyInstanceID`; only `OnBar` does
 `instance.go`'s `OnBar` stamps `sig.StrategyInstanceID = inst.id` before
 returning signals; `OnEvent` does not. Existing callers (`handleFill`,
