@@ -888,6 +888,19 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 				}
 			}
 		}
+
+		if len(pos.EntrySignalTags) > 0 {
+			if intent.Meta == nil {
+				intent.Meta = make(map[string]string, len(pos.EntrySignalTags))
+			}
+			for k, v := range pos.EntrySignalTags {
+				key := "sig_" + k
+				if _, exists := intent.Meta[key]; exists {
+					continue
+				}
+				intent.Meta[key] = v
+			}
+		}
 	}
 	if err != nil {
 		s.log.Error().Err(err).Str("symbol", string(pos.Symbol)).Msg("failed to create exit order intent")

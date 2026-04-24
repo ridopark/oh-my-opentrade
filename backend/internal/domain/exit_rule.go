@@ -219,6 +219,10 @@ type MonitoredPosition struct {
 	LegFillPrices []float64  `json:"legFillPrices,omitempty"`
 
 	CustomState map[string]float64 `json:"customState,omitempty"`
+
+	// Stored WITHOUT the sig_ prefix to match fill.SignalTags shape; re-prefixed
+	// on copy into exit intent Meta.
+	EntrySignalTags map[string]string `json:"entrySignalTags,omitempty"`
 }
 
 // IsCombo reports whether this is a multi-leg combo position.

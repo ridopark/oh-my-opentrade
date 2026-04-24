@@ -829,6 +829,13 @@ func (s *Service) processFill(fill fillMsg) {
 		}
 	}
 
+	if len(fill.SignalTags) > 0 {
+		pos.EntrySignalTags = make(map[string]string, len(fill.SignalTags))
+		for k, v := range fill.SignalTags {
+			pos.EntrySignalTags[k] = v
+		}
+	}
+
 	s.positions[key] = &pos
 	s.log.Info().
 		Str("symbol", string(fill.Symbol)).
