@@ -21,29 +21,52 @@ import (
 // per-leg writes and the final orders state. It also enforces the
 // monotonic-update + execution_id UNIQUE semantics of the production repo
 // so out-of-order delivery stays correct.
+type orderFillState struct {
+	filledQty   float64
+	filledPrice float64
+	filledAt    time.Time
+	status      string
+}
+
 type multiFillRepo struct {
-	mu               sync.Mutex
-	fills            []domain.Trade // every trade row written, in order
-	execIDs          map[string]struct{}
-	orderFilledQty   map[string]float64
-	orderFilledPrice map[string]float64
-	orderFilledAt    map[string]time.Time
-	orderStatus      map[string]string
+	mu      sync.Mutex
+	fills   []domain.Trade // every trade row written, in order
+	execIDs map[string]struct{}
+	orders  map[string]orderFillState
 }
 
 func newMultiFillRepo() *multiFillRepo {
 	return &multiFillRepo{
-		execIDs:          make(map[string]struct{}),
-		orderFilledQty:   make(map[string]float64),
-		orderFilledPrice: make(map[string]float64),
-		orderFilledAt:    make(map[string]time.Time),
-		orderStatus:      make(map[string]string),
+		execIDs: make(map[string]struct{}),
+		orders:  make(map[string]orderFillState),
 	}
 }
 
 // orderQty is the intent quantity used for status promotion in the mock.
 // Set by the test before firing updates.
 const multiFillOrderQty = 34.0
+
+// applyMonotonicFill mirrors the production GREATEST/WHERE orders update:
+// qty/price advance only when the incoming filledQty exceeds the recorded
+// cumulative, and status promotes submitted → partially_filled → filled.
+func (r *multiFillRepo) applyMonotonicFill(brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64) {
+	cur := r.orders[brokerOrderID]
+	if filledQty > cur.filledQty {
+		cur.filledQty = filledQty
+		cur.filledPrice = filledPrice
+	}
+	if filledAt.After(cur.filledAt) {
+		cur.filledAt = filledAt
+	}
+	if cur.status != "filled" {
+		if filledQty+1e-9 >= multiFillOrderQty {
+			cur.status = "filled"
+		} else {
+			cur.status = "partially_filled"
+		}
+	}
+	r.orders[brokerOrderID] = cur
+}
 
 func (r *multiFillRepo) RecordFill(_ context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64, trade domain.Trade) error {
 	r.mu.Lock()
@@ -56,32 +79,14 @@ func (r *multiFillRepo) RecordFill(_ context.Context, brokerOrderID string, fill
 		r.execIDs[trade.ExecutionID] = struct{}{}
 	}
 	r.fills = append(r.fills, trade)
-
-	// Mirror the production GREATEST/WHERE monotonic update.
-	if cur := r.orderFilledQty[brokerOrderID]; filledQty > cur {
-		r.orderFilledQty[brokerOrderID] = filledQty
-		r.orderFilledPrice[brokerOrderID] = filledPrice
-	}
-	if cur := r.orderFilledAt[brokerOrderID]; filledAt.After(cur) {
-		r.orderFilledAt[brokerOrderID] = filledAt
-	}
-	if r.orderStatus[brokerOrderID] != "filled" {
-		if filledQty+1e-9 >= multiFillOrderQty {
-			r.orderStatus[brokerOrderID] = "filled"
-		} else {
-			r.orderStatus[brokerOrderID] = "partially_filled"
-		}
-	}
+	r.applyMonotonicFill(brokerOrderID, filledAt, filledPrice, filledQty)
 	return nil
 }
 
 func (r *multiFillRepo) UpdateOrderFill(_ context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if cur := r.orderFilledQty[brokerOrderID]; filledQty > cur {
-		r.orderFilledQty[brokerOrderID] = filledQty
-		r.orderFilledPrice[brokerOrderID] = filledPrice
-	}
+	r.applyMonotonicFill(brokerOrderID, filledAt, filledPrice, filledQty)
 	return nil
 }
 
@@ -249,13 +254,14 @@ func TestHandleStreamFill_MultiFillPerLeg(t *testing.T) {
 	}
 
 	// Orders-row monotonic state after all legs.
-	assert.InDelta(t, 34.0, repo.orderFilledQty["3222"], 1e-9, "final cumulative filled_qty")
+	final := repo.orders["3222"]
+	assert.InDelta(t, 34.0, final.filledQty, 1e-9, "final cumulative filled_qty")
 	expectedVWAP := (1*1.00 + 5*1.00 + 25*1.00 + 3*0.99) / 34
-	assert.InDelta(t, expectedVWAP, repo.orderFilledPrice["3222"], 1e-6, "final VWAP filled_price")
-	assert.Equal(t, "filled", repo.orderStatus["3222"], "final orders.status")
+	assert.InDelta(t, expectedVWAP, final.filledPrice, 1e-6, "final VWAP filled_price")
+	assert.Equal(t, "filled", final.status, "final orders.status")
 
 	// Final filled_at is the last leg's timestamp.
-	assert.Equal(t, incidentLegs[len(incidentLegs)-1].ts, repo.orderFilledAt["3222"])
+	assert.Equal(t, incidentLegs[len(incidentLegs)-1].ts, final.filledAt)
 
 	// Pending map cleared after terminal fill.
 	_, stillPending := svc.pendingOrders.Load("3222")
@@ -281,7 +287,7 @@ func TestHandleStreamFill_DedupOnReplay(t *testing.T) {
 	}
 
 	assert.Len(t, repo.fills, 4, "replay should not insert duplicate trade rows")
-	assert.InDelta(t, 34.0, repo.orderFilledQty["3222"], 1e-9, "cumulative unchanged on replay")
+	assert.InDelta(t, 34.0, repo.orders["3222"].filledQty, 1e-9, "cumulative unchanged on replay")
 }
 
 // TestHandleStreamFill_CumulativeFallbackClosesOrder exercises the defensive
@@ -302,7 +308,7 @@ func TestHandleStreamFill_CumulativeFallbackClosesOrder(t *testing.T) {
 	}
 
 	assert.Len(t, repo.fills, 4, "all four legs persisted even without terminal label")
-	assert.InDelta(t, 34.0, repo.orderFilledQty["3222"], 1e-9)
+	assert.InDelta(t, 34.0, repo.orders["3222"].filledQty, 1e-9)
 	_, stillPending := svc.pendingOrders.Load("3222")
 	assert.False(t, stillPending, "cumulative match should finalize when broker omits terminal label")
 }
@@ -329,8 +335,9 @@ func TestHandleStreamFill_SingleFillStillWorks(t *testing.T) {
 	require.Len(t, repo.fills, 1)
 	assert.Equal(t, "exec-single", repo.fills[0].ExecutionID)
 	assert.InDelta(t, 34.0, repo.fills[0].Quantity, 1e-9)
-	assert.InDelta(t, 34.0, repo.orderFilledQty["3222"], 1e-9)
-	assert.Equal(t, "filled", repo.orderStatus["3222"])
+	final := repo.orders["3222"]
+	assert.InDelta(t, 34.0, final.filledQty, 1e-9)
+	assert.Equal(t, "filled", final.status)
 }
 
 // Ensure the helper stays consistent even if someone changes floats.

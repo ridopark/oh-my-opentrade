@@ -124,6 +124,19 @@ type OrderDetails struct {
 	Qty            float64
 }
 
+// OrderUpdate.Event values emitted by broker adapters. Terminal "fill" is
+// the canonical "this order is done" signal; "partial_fill" means more
+// execs still coming for the same BrokerOrderID.
+const (
+	OrderEventFill        = "fill"
+	OrderEventPartialFill = "partial_fill"
+	OrderEventCanceled    = "canceled"
+	OrderEventExpired     = "expired"
+	OrderEventRejected    = "rejected"
+	OrderEventNew         = "new"
+	OrderEventAccepted    = "accepted"
+)
+
 // OrderUpdate represents a real-time order status change received from the
 // broker's streaming API. It carries enough information for the execution
 // service to correlate, persist, and emit fill events without additional

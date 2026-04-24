@@ -470,10 +470,10 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 
 // reconcileFillsOnBoot diffs per-execution fills from the broker against
 // trades.execution_id and inserts any that the stream missed (crash, WS
-// gap, or pre-fix multi-fill bug). Independent of reconcileOnBoot (orders
-// table walk) and backfillFromBrokerHistory (per-order seed) — this one
-// operates at the fill-leg granularity and is idempotent on re-run because
-// execution_id UNIQUE skips dupes.
+// gap). Independent of reconcileOnBoot (orders table walk) and
+// backfillFromBrokerHistory (per-order seed) — this one operates at the
+// fill-leg granularity and is idempotent on re-run: execution_id UNIQUE
+// skips dupes.
 //
 // Only runs when the broker implements ports.FillLister (IBKR). Simbroker
 // and alpaca stub skip this path; simbroker has no gap bug and alpaca's
@@ -1608,11 +1608,11 @@ func (s *Service) handleOrderUpdate(update ports.OrderUpdate) {
 		Logger()
 
 	switch update.Event {
-	case "fill", "partial_fill":
+	case ports.OrderEventFill, ports.OrderEventPartialFill:
 		s.handleStreamFill(update, l)
-	case "canceled", "expired", "rejected":
+	case ports.OrderEventCanceled, ports.OrderEventExpired, ports.OrderEventRejected:
 		l.Info().Msg("order terminal via stream")
-		if s.intentJournal != nil && update.Event != "partial_fill" {
+		if s.intentJournal != nil {
 			if jerr := s.intentJournal.MarkIntentTerminal(context.Background(), update.BrokerOrderID, update.Event, update.FilledQty, update.FilledAvgPrice, s.nowFn()); jerr != nil {
 				l.Error().Err(jerr).Msg("failed to mark intent terminal in journal")
 			}
@@ -1645,34 +1645,13 @@ func (s *Service) handleStreamFill(update ports.OrderUpdate, l zerolog.Logger) {
 	po := raw.(*pendingOrder)
 
 	// Incremental fields for the trade row (what THIS exec leg filled).
-	legPrice := update.Price
-	if legPrice <= 0 {
-		legPrice = update.FilledAvgPrice
-	}
-	if legPrice <= 0 {
-		legPrice = po.intent.LimitPrice
-	}
-	legQty := update.Qty
-	if legQty <= 0 {
-		// Broker sent only cumulative. Derive the leg by diffing against
-		// what the DB already has for this order — safe because the repo
-		// UPDATE is monotonic on filled_qty.
-		legQty = update.FilledQty
-	}
-	if legQty <= 0 {
-		legQty = po.intent.Quantity
-	}
+	legPrice := firstPositive(update.Price, update.FilledAvgPrice, po.intent.LimitPrice)
+	legQty := firstPositive(update.Qty, update.FilledQty, po.intent.Quantity)
 
 	// Cumulative values for the orders-row bump (broker-authoritative
 	// running totals as of THIS exec).
-	cumQty := update.FilledQty
-	if cumQty <= 0 {
-		cumQty = legQty
-	}
-	cumAvgPrice := update.FilledAvgPrice
-	if cumAvgPrice <= 0 {
-		cumAvgPrice = legPrice
-	}
+	cumQty := firstPositive(update.FilledQty, legQty)
+	cumAvgPrice := firstPositive(update.FilledAvgPrice, legPrice)
 	filledAt := update.FilledAt
 	if filledAt.IsZero() {
 		filledAt = s.nowFn().UTC()
@@ -1681,10 +1660,9 @@ func (s *Service) handleStreamFill(update ports.OrderUpdate, l zerolog.Logger) {
 	s.insertFillLeg(po, update.BrokerOrderID, update.ExecutionID, filledAt, legPrice, legQty, cumQty, cumAvgPrice, l)
 
 	// Final fill? Either the broker marked this event as terminal
-	// (Event=="fill"; Alpaca/simbroker pattern) OR cumulative reached
-	// the intent quantity (IBKR reconciler doesn't label events terminal,
-	// so quantity is the tell).
-	isFinal := update.Event == "fill" || cumQty+1e-9 >= po.intent.Quantity
+	// (Alpaca/simbroker pattern) OR cumulative reached intent qty (defensive
+	// fallback for brokers that omit the terminal label).
+	isFinal := update.Event == ports.OrderEventFill || cumQty+1e-9 >= po.intent.Quantity
 	if !isFinal {
 		// Emit a per-leg FillReceived so downstream consumers keyed by
 		// execution_id pick up the partial immediately. PnL aggregator
@@ -1703,6 +1681,45 @@ func (s *Service) handleStreamFill(update ports.OrderUpdate, l zerolog.Logger) {
 	s.runFillFinalization(po, update.BrokerOrderID, cumAvgPrice, cumQty, filledAt, l)
 }
 
+// enrichTradeOptionsFromIntent populates option-specific trade fields from
+// intent.Meta (strike, expiry, premium, Greeks). No-op on non-option intents.
+func enrichTradeOptionsFromIntent(trade *domain.Trade, intent domain.OrderIntent) {
+	if intent.Instrument == nil || intent.Instrument.Type != domain.InstrumentTypeOption {
+		return
+	}
+	trade.InstrumentType = domain.InstrumentTypeOption
+	trade.OptionSymbol = intent.Instrument.Symbol.String()
+	trade.Underlying = string(intent.Instrument.UnderlyingSymbol)
+	trade.OptionRight = intent.Meta["option_right"]
+	if st, err := strconv.ParseFloat(intent.Meta["strike"], 64); err == nil {
+		trade.Strike = st
+	}
+	if exp, err := time.Parse("2006-01-02", intent.Meta["expiry"]); err == nil {
+		trade.Expiry = exp
+	}
+	if p, err := strconv.ParseFloat(intent.Meta["premium"], 64); err == nil {
+		trade.Premium = p
+	}
+	if d, err := strconv.ParseFloat(intent.Meta["delta_at_entry"], 64); err == nil {
+		trade.DeltaAtEntry = d
+	}
+	if iv, err := strconv.ParseFloat(intent.Meta["iv_at_entry"], 64); err == nil {
+		trade.IVAtEntry = iv
+	}
+}
+
+// firstPositive returns the first non-zero/positive value in the list.
+// Used to resolve fill prices/qtys with a chain of fallbacks (adapter
+// value → cumulative → intent default).
+func firstPositive(values ...float64) float64 {
+	for _, v := range values {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
 // insertFillLeg persists ONE execution leg (trade row + monotonic orders.filled_qty
 // bump). Multi-fill orders call this N times, once per ExecID. The trade row
 // carries the incremental qty/price; the orders row carries broker-cumulative
@@ -1717,27 +1734,7 @@ func (s *Service) insertFillLeg(po *pendingOrder, brokerOrderID, executionID str
 		return
 	}
 	trade.ExecutionID = executionID
-	if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {
-		trade.InstrumentType = domain.InstrumentTypeOption
-		trade.OptionSymbol = po.intent.Instrument.Symbol.String()
-		trade.Underlying = string(po.intent.Instrument.UnderlyingSymbol)
-		trade.OptionRight = po.intent.Meta["option_right"]
-		if st, err := strconv.ParseFloat(po.intent.Meta["strike"], 64); err == nil {
-			trade.Strike = st
-		}
-		if exp, err := time.Parse("2006-01-02", po.intent.Meta["expiry"]); err == nil {
-			trade.Expiry = exp
-		}
-		if p, err := strconv.ParseFloat(po.intent.Meta["premium"], 64); err == nil {
-			trade.Premium = p
-		}
-		if d, err := strconv.ParseFloat(po.intent.Meta["delta_at_entry"], 64); err == nil {
-			trade.DeltaAtEntry = d
-		}
-		if iv, err := strconv.ParseFloat(po.intent.Meta["iv_at_entry"], 64); err == nil {
-			trade.IVAtEntry = iv
-		}
-	}
+	enrichTradeOptionsFromIntent(&trade, po.intent)
 	if err := s.repo.RecordFill(ctx, brokerOrderID, filledAt, cumAvgPrice, cumQty, trade); err != nil {
 		l.Error().Err(err).Str("execution_id", executionID).Msg("failed to record fill leg")
 	}
@@ -1856,6 +1853,7 @@ func (s *Service) runFillFinalization(po *pendingOrder, brokerOrderID string, fi
 		"minutes_to_first_profit": minutesToFirstProfit,
 		"minutes_held":            minutesHeld,
 		"signal_tags":             sigTags,
+		"partial":                 false,
 	}
 	if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {
 		fillPayload["instrument_type"] = string(domain.InstrumentTypeOption)
