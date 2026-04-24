@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
@@ -176,6 +177,20 @@ func BuildStrategyShared(deps StrategyDeps) (*StrategyShared, error) {
 // passing an empty slab disables the filter and registers every
 // spec×symbol instance (legacy single-pipeline behavior).
 func BuildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps StrategyDeps) (*StrategyShard, error) {
+	return buildStrategyShard(shared, slab, deps, false)
+}
+
+// BuildStrategyShardWithSentinels is BuildStrategyShard but also registers
+// sentinel-routed strategies (symbols shaped like __name__) that would
+// otherwise be filtered out by slab. Sentinel strategies consume events, not
+// bars, so they attach to a single shard regardless of slab membership.
+// Callers must arrange to pass true to exactly one shard per pipeline,
+// otherwise handlers on the shared bus will fire N times per event.
+func BuildStrategyShardWithSentinels(shared *StrategyShared, slab []domain.Symbol, deps StrategyDeps) (*StrategyShard, error) {
+	return buildStrategyShard(shared, slab, deps, true)
+}
+
+func buildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps StrategyDeps, includeSentinels bool) (*StrategyShard, error) {
 	if shared == nil {
 		return nil, fmt.Errorf("bootstrap: strategy: nil StrategyShared")
 	}
@@ -220,7 +235,9 @@ func BuildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps Strat
 		for _, sym := range spec.Routing.Symbols {
 			if slabFilter != nil {
 				if _, ok := slabFilter[sym]; !ok {
-					continue
+					if !includeSentinels || !isSentinelSymbol(sym) {
+						continue
+					}
 				}
 			}
 
@@ -263,6 +280,15 @@ func BuildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps Strat
 		Runner:      runner,
 		BaseSymbols: baseSymbols,
 	}, nil
+}
+
+// isSentinelSymbol recognizes symbols shaped like "__name__" used as routing
+// keys for event-driven strategies that don't subscribe to per-symbol bars
+// (e.g. the copytrade strategy's "__copytrade__"). These strategies need a
+// runner instance somewhere to consume events, but do not participate in the
+// per-symbol slab distribution used by sharded bar dispatch.
+func isSentinelSymbol(sym string) bool {
+	return strings.HasPrefix(sym, "__") && strings.HasSuffix(sym, "__") && len(sym) >= 4
 }
 
 // BuildStrategyPipeline constructs the canonical single-shard strategy v2
