@@ -31,7 +31,6 @@ import {
 } from "@/hooks/queries";
 import { DrawdownChart } from "@/components/charts/drawdown-chart";
 import { DailyPnlChart } from "@/components/charts/daily-pnl-chart";
-import { SymbolAttributionChart } from "@/components/charts/symbol-attribution-chart";
 import { StrategyComparisonTable } from "@/components/strategy-comparison-table";
 import { TradeLogTable } from "@/components/trade-log-table";
 import {
@@ -336,11 +335,8 @@ function PerformanceContent() {
         <DailyPnlChart data={daily_pnl} />
       </div>
 
-      {/* Strategy + Symbol breakdowns side by side */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <StrategyComparisonTable data={strategies} />
-        <SymbolAttributionChart data={symbolData} />
-      </div>
+      {/* Strategy breakdown */}
+      <StrategyComparisonTable data={strategies} />
 
       {/* Trade Log */}
       <TradeLogTable
