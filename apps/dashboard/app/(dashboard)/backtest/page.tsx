@@ -562,7 +562,6 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
         const isPut = /P\d{8}$/.test(entry.symbol);
         const isOption = (t.instrument_type === "OPTION" || entry.instrument_type === "OPTION");
         const isEquityShort = (entry.direction ?? "") === "SHORT" && !isOption;
-        const isBearish = isEquityShort || isPut;
         const qty = entry.quantity ?? 0;
         const entryPx = entry.price ?? 0;
         const exitPx = t.price ?? 0;
