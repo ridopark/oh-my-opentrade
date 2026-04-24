@@ -1,8 +1,10 @@
 package builtin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -684,4 +686,327 @@ func pickPendingTTL(ctx start.Context, cfg copytradeConfig) time.Duration {
 	default:
 		return time.Duration(cfg.PendingTTLPaperSecs) * time.Second
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap (restart state rehydration)
+// ---------------------------------------------------------------------------
+
+// copytradePersistedStrategyName is the value written to strategy_signal_events.strategy
+// for every copytrade lifecycle row. Computed in SignalTracker.parseStrategyIDFromInstanceLocal
+// as the first colon-separated token of the InstanceID ("copytrade_v1:1.0.0:__copytrade__"),
+// and hard-coded as intent.Strategy on the STC exit path.
+const copytradePersistedStrategyName = "copytrade_v1"
+
+// copytradeLookbackDays sets the replay window. Matches positionmonitor.bootstrap
+// so we do not restore state for trades the broker already reconciled-out.
+const copytradeLookbackDays = 30
+
+// SignalEventsFn fetches historical strategy_signal_events rows. The real
+// implementation in bootstrap wraps ports.PnLPort.GetStrategySignalEvents.
+// Accepting a closure instead of the full port keeps the strategy package
+// free of ports imports and makes bootstrap unit tests trivial.
+type SignalEventsFn func(ctx context.Context, strategy string, from, to time.Time) ([]domain.StrategySignalEvent, error)
+
+// PositionsFn returns current broker positions. Wraps
+// ports.BrokerPort.GetPositions at the adapter boundary; accepting a closure
+// keeps the strategy package decoupled from the broker interface.
+type PositionsFn func(ctx context.Context) ([]domain.Trade, error)
+
+// CopytradeBootstrapDeps carries the narrow dependency surface Bootstrap
+// needs. The runner wiring constructs this from the broader ports and passes
+// it in via the bootstrap-hook type assertion.
+type CopytradeBootstrapDeps struct {
+	TenantID     string
+	EnvMode      domain.EnvMode
+	Now          time.Time
+	SignalEvents SignalEventsFn
+	Positions    PositionsFn
+	Logger       *slog.Logger
+}
+
+// signalPayloadTags is the subset of a persisted BTO SignalCreated payload we
+// need. SignalTracker.handleSignalCreated writes a mustJSON(start.Signal)
+// blob; start.Signal has no json struct tags, so the marshaled field is
+// capitalized "Tags". Other fields are ignored.
+type signalPayloadTags struct {
+	Tags map[string]string `json:"Tags"`
+}
+
+// Bootstrap rehydrates the author-book after a restart by replaying recent
+// strategy_signal_events in TS order and cross-referencing surviving entries
+// against current broker positions. Called once per instance by the
+// bootstrap wiring before the runner dispatches the first signal.
+//
+// Skipped for TenantID="backtest" (no cross-run state worth replaying) and
+// when the broker is unavailable (positionmonitor does the same — losing
+// broker cross-check defeats the safety pass, so we prefer empty state).
+func (s *CopytradeStrategy) Bootstrap(ctx context.Context, st start.State, deps CopytradeBootstrapDeps) (start.State, error) {
+	cst, ok := st.(*copytradeState)
+	if !ok {
+		return st, fmt.Errorf("CopytradeStrategy.Bootstrap: expected *copytradeState, got %T", st)
+	}
+
+	log := deps.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	log = log.With("component", "copytrade_bootstrap")
+
+	if deps.TenantID == "backtest" {
+		return cst, nil
+	}
+	if deps.SignalEvents == nil {
+		log.Warn("copytrade: bootstrap skipped — SignalEvents closure not wired")
+		return cst, nil
+	}
+	if deps.Positions == nil {
+		log.Warn("copytrade: bootstrap skipped — broker unavailable")
+		return cst, nil
+	}
+
+	now := deps.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	from := now.Add(-copytradeLookbackDays * 24 * time.Hour)
+
+	events, err := deps.SignalEvents(ctx, copytradePersistedStrategyName, from, now)
+	if err != nil {
+		log.Warn("copytrade: bootstrap skipped — signal events query failed", "error", err)
+		return cst, nil
+	}
+
+	brokerPositions, err := deps.Positions(ctx)
+	if err != nil {
+		log.Warn("copytrade: bootstrap skipped — broker unavailable", "error", err)
+		return cst, nil
+	}
+
+	// Query adapter returns DESC; replay semantics require ascending TS.
+	sort.SliceStable(events, func(i, j int) bool {
+		if !events[i].TS.Equal(events[j].TS) {
+			return events[i].TS.Before(events[j].TS)
+		}
+		return events[i].SignalID < events[j].SignalID
+	})
+
+	for _, evt := range events {
+		if evt.Status == domain.SignalStatusBlocked {
+			continue
+		}
+		bootstrapReplayEvent(cst, evt, log)
+	}
+
+	brokerByOCC := make(map[string]float64, len(brokerPositions))
+	for _, bp := range brokerPositions {
+		if !domain.IsOCCSymbol(bp.Symbol) {
+			continue
+		}
+		brokerByOCC[string(bp.Symbol)] += bp.Quantity
+	}
+
+	// Broker-confirm sweep: drop phantom positions the broker no longer
+	// holds. Decrementing Generations[base] on drop is the non-obvious bit —
+	// it keeps the next BTO for the same (author,ticker,expiry,strike,right)
+	// at gen+1 rather than skipping a generation, matching handleEntryRejection.
+	restored := 0
+	authors := make(map[string]struct{})
+	for key, pos := range cst.Positions {
+		qty := brokerByOCC[pos.ContractSymbol]
+		if qty <= 0 {
+			delete(cst.Positions, key)
+			rollbackGeneration(cst, pos.Base, pos.Generation)
+			log.Info("copytrade: bootstrap dropped position — not present on broker",
+				"key", key,
+				"contract_symbol", pos.ContractSymbol,
+				"base", pos.Base,
+				"generation", pos.Generation)
+			continue
+		}
+		pos.Pending = false
+		restored++
+		if author := authorFromBase(pos.Base); author != "" {
+			authors[author] = struct{}{}
+		}
+		log.Info("copytrade: bootstrap restored position",
+			"key", key,
+			"base", pos.Base,
+			"generation", pos.Generation,
+			"contract_symbol", pos.ContractSymbol,
+			"remaining_frac", pos.RemainingFrac,
+			"trail_armed", pos.TrailArmed)
+	}
+
+	log.Info("copytrade: bootstrap complete",
+		"restored", restored,
+		"authors", len(authors),
+		"events_replayed", len(events))
+	return cst, nil
+}
+
+// bootstrapReplayEvent dispatches one persisted lifecycle event into state.
+// BTO rows carry the full tag map from handleBTO; STC rows come from the
+// exit-intent path and must be reconstructed from the OCC Symbol + rationale.
+func bootstrapReplayEvent(cst *copytradeState, evt domain.StrategySignalEvent, log *slog.Logger) {
+	// Every lifecycle row for a single signal is persisted at least twice —
+	// once at handleSignalCreated (status=generated) and again at
+	// handleIntentValidated (status=validated). Acting on the "generated"
+	// row for BTOs and the "validated" row for STCs gives us exactly-once
+	// replay without needing an explicit de-dupe set keyed by signal_id.
+	tags := decodeSignalTags(evt.Payload)
+	if evt.Status == domain.SignalStatusGenerated && tags["copytrade_action"] == "BTO" {
+		bootstrapApplyBTO(cst, evt, tags, log)
+		return
+	}
+	if isBootstrapSTCCandidate(evt) {
+		bootstrapApplySTC(cst, evt, log)
+	}
+}
+
+func decodeSignalTags(payload json.RawMessage) map[string]string {
+	if len(payload) == 0 {
+		return nil
+	}
+	var decoded signalPayloadTags
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return nil
+	}
+	return decoded.Tags
+}
+
+func bootstrapApplyBTO(cst *copytradeState, evt domain.StrategySignalEvent, tags map[string]string, log *slog.Logger) {
+	author := tags["author"]
+	ticker := strings.ToUpper(evt.Symbol)
+	contractSym := tags["contract_symbol"]
+	expiryStr := tags["force_expiry"]
+	strikeStr := tags["force_strike"]
+	right := normalizeRight(tags["force_right"])
+
+	if author == "" || ticker == "" || contractSym == "" || expiryStr == "" || strikeStr == "" {
+		log.Warn("copytrade: bootstrap skipping BTO — missing required tags",
+			"signal_id", evt.SignalID, "symbol", evt.Symbol)
+		return
+	}
+	expiry, err := time.Parse("2006-01-02", expiryStr)
+	if err != nil {
+		log.Warn("copytrade: bootstrap skipping BTO — bad force_expiry", "signal_id", evt.SignalID, "value", expiryStr)
+		return
+	}
+	strike, err := strconv.ParseFloat(strikeStr, 64)
+	if err != nil {
+		log.Warn("copytrade: bootstrap skipping BTO — bad force_strike", "signal_id", evt.SignalID, "value", strikeStr)
+		return
+	}
+	refPrice := 0.0
+	if v, err := strconv.ParseFloat(tags["ref_price"], 64); err == nil {
+		refPrice = v
+	}
+
+	base := positionBase(author, ticker, expiry.UTC(), strike, string(right))
+	gen := cst.Generations[base] + 1
+	key := positionKey(base, gen)
+	if _, exists := cst.Positions[key]; exists {
+		return
+	}
+	cst.Positions[key] = &copytradePosition{
+		ContractSymbol: contractSym,
+		Base:           base,
+		OpenedAt:       evt.TS,
+		EntryPremium:   refPrice,
+		RemainingFrac:  1.0,
+		Generation:     gen,
+		Pending:        true,
+	}
+	cst.Generations[base] = gen
+}
+
+// isBootstrapSTCCandidate detects a persisted copytrade STC lifecycle row.
+// STCs flow as OrderIntent rows: SignalTracker.handleIntentValidated writes
+// (kind="exit", side="SELL", status="validated") via deriveKindSideFromDirection
+// for CLOSE_LONG. We only act on "validated" — "executed" for the same
+// signal_id would double-apply the fraction.
+func isBootstrapSTCCandidate(evt domain.StrategySignalEvent) bool {
+	if evt.Status != domain.SignalStatusValidated {
+		return false
+	}
+	if !strings.EqualFold(evt.Side, "SELL") {
+		return false
+	}
+	if !strings.EqualFold(evt.Kind, "exit") {
+		return false
+	}
+	return domain.IsOCCSymbol(domain.Symbol(evt.Symbol))
+}
+
+func bootstrapApplySTC(cst *copytradeState, evt domain.StrategySignalEvent, log *slog.Logger) {
+	ticker, expiry, rightStr, strike, ok := domain.ParseOCC(domain.Symbol(evt.Symbol))
+	if !ok {
+		return
+	}
+	author, rawLine := splitAuthorRationale(evt.Reason)
+	if author == "" {
+		log.Warn("copytrade: bootstrap skipping STC — no author in rationale",
+			"signal_id", evt.SignalID, "contract_symbol", evt.Symbol, "rationale", evt.Reason)
+		return
+	}
+	right := normalizeRight(rightStr)
+	base := positionBase(author, ticker, expiry, strike, string(right))
+	gen := cst.Generations[base]
+	if gen == 0 {
+		return
+	}
+	key := positionKey(base, gen)
+	pos, exists := cst.Positions[key]
+	if !exists {
+		return
+	}
+
+	fraction, _ := resolveFraction(rawLine, cst.Config.PartialFractions, cst.Config.DefaultSTCFraction)
+	if fraction > pos.RemainingFrac {
+		fraction = pos.RemainingFrac
+	}
+	if fraction <= 0 {
+		return
+	}
+
+	newRemaining := pos.RemainingFrac * (1.0 - fraction)
+	fullClose := fraction >= 1.0 || newRemaining < copytradeFullCloseTolerance
+
+	if !fullClose && !pos.TrailArmed && cst.Config.TrailOnPartial {
+		pos.TrailArmed = true
+	}
+	if fullClose {
+		delete(cst.Positions, key)
+		return
+	}
+	pos.RemainingFrac = newRemaining
+}
+
+// splitAuthorRationale reverses domain.ComposeAuthorText. A rationale that
+// begins with "copytrade:stc" came from the no-rawLine fallback at
+// handlers.go:268 and carries no author — unrecoverable, caller must skip.
+func splitAuthorRationale(rationale string) (author, rawLine string) {
+	if rationale == "" {
+		return "", ""
+	}
+	if strings.HasPrefix(rationale, "copytrade:stc") {
+		return "", rationale
+	}
+	parts := strings.SplitN(rationale, ": ", 2)
+	if len(parts) != 2 {
+		return "", rationale
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+}
+
+// authorFromBase extracts the author component of positionBase output.
+// positionBase format is "author|TICKER|YYYY-MM-DD|strike|RIGHT" — author is
+// the first pipe-delimited field, lowercased by positionBase.
+func authorFromBase(base string) string {
+	idx := strings.IndexByte(base, '|')
+	if idx <= 0 {
+		return ""
+	}
+	return base[:idx]
 }

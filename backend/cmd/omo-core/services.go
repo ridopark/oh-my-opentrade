@@ -423,7 +423,9 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		// svc.notifier is the raw MultiNotifier (Telegram + Discord fan-out),
 		// not the event-driven svc.notifySvc. Panic alerts must bypass the
 		// batching pipeline and fire immediately, so we wire the raw sink.
-		Notifier: svc.notifier,
+		Notifier:       svc.notifier,
+		PnLRepo:        infra.pnlRepo,
+		GetPositionsFn: copytradeBrokerPositionsFn(infra.ibkrBroker, "default", domain.EnvModePaper),
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("strategy v2: failed to build pipeline")
@@ -599,6 +601,18 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	}
 
 	svc.monitor.SetBaseSymbols(pipeline.BaseSymbols)
+}
+
+// copytradeBrokerPositionsFn wraps BrokerPort.GetPositions into the narrow
+// closure shape bootstrap.StrategyDeps expects. Returns nil when broker is
+// absent — the bootstrap hook treats that as "skip" rather than "error".
+func copytradeBrokerPositionsFn(broker ports.BrokerPort, tenantID string, envMode domain.EnvMode) func(context.Context) ([]domain.Trade, error) {
+	if broker == nil {
+		return nil
+	}
+	return func(ctx context.Context) ([]domain.Trade, error) {
+		return broker.GetPositions(ctx, tenantID, envMode)
+	}
 }
 
 func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, log zerolog.Logger) {
