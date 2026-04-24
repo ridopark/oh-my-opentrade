@@ -170,12 +170,32 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Drop sentinel symbols (e.g. __copytrade__) up front — they can come
+	// from either the TOML-driven collectStrategySymbols path or from an
+	// explicit client payload that forwarded strategy-meta.symbols verbatim.
+	if len(req.Symbols) > 0 {
+		filtered := req.Symbols[:0]
+		for _, s := range req.Symbols {
+			if strings.HasPrefix(s, "__") {
+				continue
+			}
+			filtered = append(filtered, s)
+		}
+		req.Symbols = filtered
+	}
+
 	// When no symbols provided, collect union from selected strategy configs
 	// so each strategy runs on its own tuned symbol list.
 	useNativeSymbols := false
 	if len(req.Symbols) == 0 && len(req.Strategies) > 0 {
 		req.Symbols = h.collectStrategySymbols(req.Strategies)
 		useNativeSymbols = true
+	}
+	// Copytrade strategies route everything through the sentinel, so no
+	// strategy TOML has a tradeable symbol list. Fall back to the canonical
+	// 23-symbol universe covered by the scraped history window.
+	if copytradeSelected && len(req.Symbols) == 0 {
+		req.Symbols = copytradeDefaultSymbols()
 	}
 	if len(req.Symbols) == 0 {
 		if copytradeSelected && len(req.Strategies) == 1 {
@@ -611,5 +631,18 @@ func parseTimeParam(v string) (time.Time, error) {
 		return t.UTC(), nil
 	}
 	return time.Time{}, &json.UnsupportedValueError{}
+}
+
+// copytradeDefaultSymbols returns the canonical 23-symbol universe covered
+// by services/discord-copytrade/state/history_90d.jsonl. The copytrade_v1
+// TOML only lists the sentinel symbol, so neither collectStrategySymbols
+// nor a dashboard forwarding strategy-meta.symbols can yield a tradeable
+// list — fall back here when copytrade is selected and symbols are empty.
+func copytradeDefaultSymbols() []string {
+	return []string{
+		"AAPL", "AMZN", "BABA", "BIDU", "ENPH", "FSLR", "GLD", "GOOGL",
+		"INTC", "IWM", "KWEB", "MARA", "MSFT", "NIO", "NVDA", "ORCL",
+		"PDD", "QQQ", "RKLB", "SLV", "SPY", "TSLA", "TSM",
+	}
 }
 
