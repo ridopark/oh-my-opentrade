@@ -123,6 +123,16 @@ const (
 	// exit is already in flight for the target position. The strategy consumes
 	// this event to roll RemainingFrac back so its view matches the broker.
 	EventCopytradeExitRejected EventType = "CopytradeExitRejected"
+
+	// Copytrade: the strategy swept a Pending position whose BTO never filled
+	// within the configured TTL. Execution subscribes and cancels the matching
+	// outstanding broker order so the slot is actually freed at the broker.
+	EventCopytradeEntryExpired EventType = "CopytradeEntryExpired"
+
+	// Copytrade: a BUY fill arrived for a contract with no matching Pending
+	// position in the strategy (race: TTL sweep freed the slot just before the
+	// broker fill). notify.Service subscribes and alerts operators via Discord.
+	EventCopytradeOrphanFill EventType = "CopytradeOrphanFill"
 )
 
 type SymbolsActivatedPayload struct {

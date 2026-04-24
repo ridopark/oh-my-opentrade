@@ -27,6 +27,7 @@ func (c *testCtx) Now() time.Time                 { return c.now }
 func (c *testCtx) Logger() *slog.Logger           { return c.logger }
 func (c *testCtx) EmitDomainEvent(_ any) error    { return nil }
 func (c *testCtx) ProgressEventsSuppressed() bool { return false }
+func (c *testCtx) EnvMode() strat.EnvMode         { return strat.EnvModePaper }
 
 func newTestCtx() *testCtx {
 	return &testCtx{now: time.Date(2026, 3, 4, 15, 0, 0, 0, time.UTC), logger: slog.Default()}

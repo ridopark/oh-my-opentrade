@@ -139,6 +139,16 @@ type SignalProgressEmitter interface {
 	EmitSignalProgress() []any // returns payload values (not domain.Event)
 }
 
+// EnvMode mirrors domain.EnvMode as a local string type so the strategy
+// contract package stays free of domain imports. Values match the domain
+// constants 1:1; the runner casts when it reads from instanceContext.
+type EnvMode string
+
+const (
+	EnvModePaper EnvMode = "Paper"
+	EnvModeLive  EnvMode = "Live"
+)
+
 // Context provides strategies with controlled access to the environment.
 // Strategies must not import adapters or infrastructure directly.
 type Context interface {
@@ -158,6 +168,10 @@ type Context interface {
 	// saving both allocations and gate-evaluation work in the common case
 	// where no SSE consumer is listening.
 	ProgressEventsSuppressed() bool
+
+	// EnvMode returns the execution environment the strategy is running in.
+	// Backtests run as EnvModePaper with tenantID="backtest".
+	EnvMode() EnvMode
 }
 
 // IndicatorData provides pre-computed technical indicators alongside a bar.

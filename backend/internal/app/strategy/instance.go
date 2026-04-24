@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -31,13 +32,20 @@ type InstanceAssignment struct {
 
 // Instance wraps a Strategy implementation with per-symbol state management
 // and routing assignment. It is the unit of execution within the StrategyRunner.
+//
+// lifecycle is an atomic.Pointer so IsActive/Lifecycle/SetLifecycle never
+// acquire inst.mu. This matters because syncMode bus dispatch can re-enter
+// the runner on the same goroutine that holds inst.mu via OnEvent — any
+// lifecycle read inside that reentrant handler would deadlock if it tried
+// to re-acquire inst.mu. The mutex still serializes the per-symbol states
+// map which is what we actually need it for.
 type Instance struct {
 	mu                sync.Mutex
 	id                start.InstanceID
 	strategy          start.Strategy
 	params            map[string]any
 	assignment        InstanceAssignment
-	lifecycle         start.LifecycleState
+	lifecycle         atomic.Pointer[start.LifecycleState]
 	states            map[string]start.State // per-symbol state
 	warmupLeft        map[string]int         // bars remaining for warmup per symbol
 	logger            *slog.Logger
@@ -56,16 +64,18 @@ func NewInstance(
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Instance{
+	inst := &Instance{
 		id:         id,
 		strategy:   strategy,
 		params:     params,
 		assignment: assignment,
-		lifecycle:  lifecycle,
 		states:     make(map[string]start.State),
 		warmupLeft: make(map[string]int),
 		logger:     logger.With("instance_id", id.String()),
 	}
+	lc := lifecycle
+	inst.lifecycle.Store(&lc)
+	return inst
 }
 
 // ID returns the instance identifier.
@@ -98,24 +108,28 @@ func (inst *Instance) Logger() *slog.Logger { return inst.logger }
 // Assignment returns the routing assignment.
 func (inst *Instance) Assignment() InstanceAssignment { return inst.assignment }
 
-// Lifecycle returns the current lifecycle state.
+// Lifecycle returns the current lifecycle state. Lock-free.
 func (inst *Instance) Lifecycle() start.LifecycleState {
-	inst.mu.Lock()
-	defer inst.mu.Unlock()
-	return inst.lifecycle
+	if p := inst.lifecycle.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 func (inst *Instance) SetLifecycle(state start.LifecycleState) {
-	inst.mu.Lock()
-	defer inst.mu.Unlock()
-	inst.lifecycle = state
+	lc := state
+	inst.lifecycle.Store(&lc)
 }
 
 // IsActive returns true if the instance is in an active lifecycle state.
+// Lock-free so bus handlers that need a liveness check during reentrant
+// dispatch don't deadlock on inst.mu (see type doc).
 func (inst *Instance) IsActive() bool {
-	inst.mu.Lock()
-	defer inst.mu.Unlock()
-	return inst.lifecycle.IsActive()
+	p := inst.lifecycle.Load()
+	if p == nil {
+		return false
+	}
+	return p.IsActive()
 }
 
 // InitSymbol initializes the strategy for a specific symbol.
@@ -140,7 +154,7 @@ func (inst *Instance) OnBar(ctx start.Context, symbol string, bar start.Bar, ind
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 
-	if !inst.lifecycle.IsActive() {
+	if !inst.IsActive() {
 		return nil, nil
 	}
 
@@ -240,7 +254,7 @@ func (inst *Instance) OnEvent(ctx start.Context, symbol string, evt any) ([]star
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 
-	if !inst.lifecycle.IsActive() {
+	if !inst.IsActive() {
 		return nil, nil
 	}
 
@@ -379,6 +393,18 @@ func (c *instanceContext) ProgressEventsSuppressed() bool {
 		return c.runner.suppressProgressEvents
 	}
 	return false
+}
+
+// EnvMode maps domain.EnvMode → the strategy-package EnvMode. Unpopulated
+// construction sites (sync.Pool reuse, NewContext in tests) default to Paper
+// so strategy code that branches on env mode picks the safer/longer TTL.
+func (c *instanceContext) EnvMode() start.EnvMode {
+	switch c.envMode {
+	case domain.EnvModeLive:
+		return start.EnvModeLive
+	default:
+		return start.EnvModePaper
+	}
 }
 
 // NewContext creates a start.Context for use outside the runner (e.g., main.go wiring).
