@@ -37,13 +37,10 @@ const (
 // and re-peg attempt count. Wider k = give up more of the spread. Short-dated
 // options (0-4 DTE) are the most time-sensitive and get priced more
 // aggressively to fill; longer-dated contracts have room to wait for a
-// better print.
-//
-// repegN tightens the first-attempt k by +0.25 per re-peg (capped at 1.0).
-// The bid+tick floor in buildExitLimitPrice is the real bound; the cap is
-// defensive. Purpose: each re-peg slides the limit toward the bid instead
-// of hoping a fresh-quote retry at the same aggression will fill. See
-// exit-side bleed analysis 2026-04-23.
+// better print. Each re-peg slides the limit toward the bid so a failed
+// first attempt doesn't just hope a fresh-quote retry at the same
+// aggression will fill; the bid+tick floor in buildExitLimitPrice is the
+// real bound, the 1.0 cap here is defensive.
 func kForDTE(dte, repegN int) float64 {
 	var k float64
 	switch {
@@ -54,11 +51,7 @@ func kForDTE(dte, repegN int) float64 {
 	default:
 		k = 0.45
 	}
-	k += 0.25 * float64(repegN)
-	if k > 1.0 {
-		k = 1.0
-	}
-	return k
+	return min(k+0.25*float64(repegN), 1.0)
 }
 
 // buildExitLimitPrice computes an option exit limit price using the live
