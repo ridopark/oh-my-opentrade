@@ -2412,12 +2412,9 @@ func (r *Runner) handleTradeReceived(_ context.Context, event domain.Event) erro
 // consistent with every other code path that indexes by symbol.
 const copytradeSentinelSymbol = "__copytrade__"
 
-// handlerNow returns the clock the instance context should expose via Now()
-// for a handler-dispatched event. Uses event.OccurredAt so backtests (which
-// stamp sim-time via NewBacktestEvent) see sim-time and live (which stamps
-// wall-clock via NewEvent) sees wall-clock. Falls back to wall clock when
-// the envelope is zero-valued — in practice the backtest path always stamps,
-// so the fallback only logs as a canary.
+// handlerNow returns event.OccurredAt so backtests see sim-time and live
+// sees wall-clock. Falls back to wall clock if the envelope is unstamped,
+// which should not happen — the canary log flags any path that misses it.
 func (r *Runner) handlerNow(event domain.Event, handler string) time.Time {
 	if !event.OccurredAt.IsZero() {
 		return event.OccurredAt
@@ -2598,10 +2595,9 @@ func (r *Runner) enqueueCopytradeCallback(fn func()) {
 	r.copytradeCallbackMu.Unlock()
 }
 
-// DrainCopytradeCallbacks runs every queued strategy callback on the caller's
-// goroutine. Must be invoked with inst.mu AND r.mu released. Loops until the
-// queue is empty because a drained callback can itself publish events that
-// enqueue more work.
+// DrainCopytradeCallbacks must be invoked after inst.mu and r.mu are
+// released. Loops to handle cascading work — a drained callback can
+// publish events that enqueue more callbacks.
 func (r *Runner) DrainCopytradeCallbacks() {
 	for {
 		r.copytradeCallbackMu.Lock()

@@ -30,14 +30,14 @@ func TestRunner_CopytradeExitRejected_NoReentrantDeadlock(t *testing.T) {
 	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
 
 	var innerOnEventCount atomic.Int32
-	var outerReturned atomic.Bool
 
 	fs := newFakeStrategy("copytrade_v1", "1.0.0")
 	fs.onEventFn = func(ctx strat.Context, _ string, evt any, st strat.State) (strat.State, []strat.Signal, error) {
 		switch evt.(type) {
 		case strat.CopytradeSignal:
-			// Simulate the real handleSTC path: publish an exit-rejected-style
-			// payload via the sync bus while still inside OnEvent.
+			// Simulate the real handleSTC path: publish an exit-rejected
+			// payload via the sync bus while still inside OnEvent. Pre-fix
+			// this would deadlock on inst.mu.
 			rejEvt, _ := domain.NewEvent(
 				domain.EventCopytradeExitRejected,
 				"test-tenant",
@@ -50,9 +50,6 @@ func TestRunner_CopytradeExitRejected_NoReentrantDeadlock(t *testing.T) {
 				},
 			)
 			_ = bus.Publish(context.Background(), *rejEvt)
-			// If the sync bus re-entered us here (old behavior), we'd have
-			// deadlocked on inst.mu before reaching this line.
-			assert.False(t, outerReturned.Load(), "outer OnEvent must not have returned yet")
 		case strat.CopytradeExitRejection:
 			innerOnEventCount.Add(1)
 		}
@@ -95,7 +92,6 @@ func TestRunner_CopytradeExitRejected_NoReentrantDeadlock(t *testing.T) {
 			},
 		)
 		_ = bus.Publish(ctx, *sigEvt)
-		outerReturned.Store(true)
 	}()
 
 	select {
