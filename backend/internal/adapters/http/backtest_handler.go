@@ -40,6 +40,11 @@ type backtestRunRequest struct {
 	// pass false explicitly to reproduce legacy mid-fill backtests.
 	OptionSpreadMultiplier   float64 `json:"option_spread_multiplier"`
 	OptionEntrySpreadEnabled *bool   `json:"option_entry_spread_enabled"`
+
+	// Copytrade replay wiring (required when "copytrade_v1" is in Strategies).
+	// CopytradeLedgerDir defaults to "_workspace/copytrade_replay" when empty.
+	CopytradeHistory   string `json:"copytrade_history"`
+	CopytradeLedgerDir string `json:"copytrade_ledger_dir"`
 }
 
 type backtestControlRequest struct {
@@ -157,6 +162,14 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	copytradeSelected := false
+	for _, s := range req.Strategies {
+		if s == "copytrade_v1" {
+			copytradeSelected = true
+			break
+		}
+	}
+
 	// When no symbols provided, collect union from selected strategy configs
 	// so each strategy runs on its own tuned symbol list.
 	useNativeSymbols := false
@@ -165,6 +178,10 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		useNativeSymbols = true
 	}
 	if len(req.Symbols) == 0 {
+		if copytradeSelected && len(req.Strategies) == 1 {
+			jsonError(w, http.StatusBadRequest, "copytrade_v1 has no non-sentinel symbols — pass explicit symbols in request body")
+			return
+		}
 		jsonError(w, http.StatusBadRequest, "symbols required (provide symbols or strategies with configured symbols)")
 		return
 	}
@@ -228,6 +245,24 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		speed = "max"
 	}
 
+	if copytradeSelected {
+		if req.CopytradeHistory == "" {
+			jsonError(w, http.StatusBadRequest, "copytrade_v1 requires copytrade_history (path to JSONL)")
+			return
+		}
+		if _, statErr := os.Stat(req.CopytradeHistory); statErr != nil {
+			jsonError(w, http.StatusBadRequest, "copytrade_history unreadable: "+statErr.Error())
+			return
+		}
+		if speed != "max" {
+			jsonError(w, http.StatusBadRequest, "copytrade_v1 backtest requires speed=max (sharded pipeline only)")
+			return
+		}
+		if req.CopytradeLedgerDir == "" {
+			req.CopytradeLedgerDir = "_workspace/copytrade_replay"
+		}
+	}
+
 	runner := backtest.NewRunner(backtest.RunConfig{
 		Symbols:       symbols,
 		From:          fromTime,
@@ -243,6 +278,8 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		MaxPerGroup:      req.MaxPerGroup,
 		UseNativeSymbols: useNativeSymbols,
 		CompoundEquity:   req.CompoundEquity == nil || *req.CompoundEquity,
+		CopytradeHistory:   req.CopytradeHistory,
+		CopytradeLedgerDir: req.CopytradeLedgerDir,
 	}, bootstrap.BuildBacktestInfra(bootstrap.BacktestDeps{
 		DB:     h.db,
 		AppCfg: h.appCfg,
@@ -529,6 +566,9 @@ func (h *BacktestHandler) collectStrategySymbols(strategyIDs []string) []string 
 			continue
 		}
 		for _, s := range h.Symbols {
+			if strings.HasPrefix(s, "__") {
+				continue
+			}
 			if !seen[s] {
 				seen[s] = true
 				symbols = append(symbols, s)
