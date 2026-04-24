@@ -3,11 +3,13 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
@@ -308,6 +310,11 @@ func (h *PortfolioHandler) handleGetAccount(w http.ResponseWriter, r *http.Reque
 
 func (h *PortfolioHandler) handleClosePosition(w http.ResponseWriter, r *http.Request, symbol string) {
 	sym := domain.Symbol(symbol)
+	// Capture signed position before the close so we can record side + quantity.
+	signedQty, posErr := h.broker.GetPosition(r.Context(), sym)
+	if posErr != nil {
+		h.log.Warn().Err(posErr).Str("symbol", symbol).Msg("failed to read position before close")
+	}
 	// Cancel any existing open sell orders to avoid stacking duplicates
 	if canceled, cancelErr := h.broker.CancelOpenOrders(r.Context(), sym, "sell"); cancelErr == nil && canceled > 0 {
 		h.log.Info().Str("symbol", symbol).Int("canceled", canceled).Msg("canceled existing sell orders before close")
@@ -323,6 +330,8 @@ func (h *PortfolioHandler) handleClosePosition(w http.ResponseWriter, r *http.Re
 		h.pendingClose = make(map[string]time.Time)
 	}
 	h.pendingClose[symbol] = time.Now()
+
+	h.recordManualClose(r.Context(), sym, signedQty, orderID)
 
 	h.log.Info().Str("symbol", symbol).Str("order_id", orderID).Msg("position close requested")
 	w.Header().Set("Content-Type", "application/json")
@@ -348,6 +357,10 @@ func (h *PortfolioHandler) handleCloseAll(w http.ResponseWriter, r *http.Request
 
 	results := make([]closeResult, 0, len(positions))
 	for _, p := range positions {
+		signedQty, posErr := h.broker.GetPosition(r.Context(), p.Symbol)
+		if posErr != nil {
+			h.log.Warn().Err(posErr).Str("symbol", string(p.Symbol)).Msg("failed to read position before close")
+		}
 		// Cancel existing sell orders first
 		_, _ = h.broker.CancelOpenOrders(r.Context(), p.Symbol, "sell")
 		orderID, closeErr := h.broker.CloseAtMarket(r.Context(), p.Symbol)
@@ -360,12 +373,57 @@ func (h *PortfolioHandler) handleCloseAll(w http.ResponseWriter, r *http.Request
 				h.pendingClose = make(map[string]time.Time)
 			}
 			h.pendingClose[string(p.Symbol)] = time.Now()
+			h.recordManualClose(r.Context(), p.Symbol, signedQty, orderID)
 		}
 	}
 
 	h.log.Info().Int("total", len(positions)).Msg("close all positions requested")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"results": results})
+}
+
+// recordManualClose persists a synthetic BrokerOrder row so manual closes
+// appear on the Execution Monitor alongside strategy-driven executions.
+// The orderID is the broker order ID returned by CloseAtMarket; when the
+// fill lands, the existing fill-recording path will update this row in
+// place via broker_order_id (see repository.queryInsertOrder ON CONFLICT).
+func (h *PortfolioHandler) recordManualClose(ctx context.Context, sym domain.Symbol, signedQty float64, orderID string) {
+	if h.repo == nil || orderID == "" || signedQty == 0 {
+		return
+	}
+	side := "SELL"
+	if signedQty < 0 {
+		side = "BUY"
+	}
+	order := domain.BrokerOrder{
+		Time:          time.Now(),
+		TenantID:      h.tenantID,
+		EnvMode:       h.envMode,
+		IntentID:      uuid.New(),
+		BrokerOrderID: orderID,
+		Symbol:        sym,
+		Side:          side,
+		Quantity:      math.Abs(signedQty),
+		Status:        "submitted",
+		Strategy:      "manual",
+		Rationale:     "Manual close via portfolio UI",
+	}
+	if domain.IsOCCSymbol(sym) {
+		underlying, expiry, right, strike, ok := domain.ParseOCC(sym)
+		if ok {
+			order.InstrumentType = domain.InstrumentTypeOption
+			order.OptionSymbol = string(sym)
+			order.Underlying = underlying
+			order.Strike = strike
+			order.Expiry = expiry
+			order.OptionRight = right
+		}
+	} else {
+		order.InstrumentType = domain.InstrumentTypeEquity
+	}
+	if err := h.repo.SaveOrder(ctx, order); err != nil {
+		h.log.Error().Err(err).Str("symbol", string(sym)).Str("order_id", orderID).Msg("failed to persist manual close order")
+	}
 }
 
 func (h *PortfolioHandler) handleGetQuote(w http.ResponseWriter, r *http.Request, symbol string) {
