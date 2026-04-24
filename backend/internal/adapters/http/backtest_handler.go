@@ -208,6 +208,29 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	speed := req.Speed
+	if speed == "" {
+		speed = "max"
+	}
+
+	if copytradeSelected {
+		if req.CopytradeHistory == "" {
+			jsonError(w, http.StatusBadRequest, "copytrade_v1 requires copytrade_history (path to JSONL)")
+			return
+		}
+		if _, statErr := os.Stat(req.CopytradeHistory); statErr != nil {
+			jsonError(w, http.StatusBadRequest, "copytrade_history unreadable: "+statErr.Error())
+			return
+		}
+		if speed != "max" {
+			jsonError(w, http.StatusBadRequest, "copytrade_v1 backtest requires speed=max (sharded pipeline only)")
+			return
+		}
+		if req.CopytradeLedgerDir == "" {
+			req.CopytradeLedgerDir = "_workspace/copytrade_replay"
+		}
+	}
+
 	h.mu.Lock()
 	// Prune finished runners to avoid unbounded growth.
 	for id, r := range h.runners {
@@ -239,28 +262,6 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	slippage := req.SlippageBPS
 	if slippage <= 0 {
 		slippage = 10
-	}
-	speed := req.Speed
-	if speed == "" {
-		speed = "max"
-	}
-
-	if copytradeSelected {
-		if req.CopytradeHistory == "" {
-			jsonError(w, http.StatusBadRequest, "copytrade_v1 requires copytrade_history (path to JSONL)")
-			return
-		}
-		if _, statErr := os.Stat(req.CopytradeHistory); statErr != nil {
-			jsonError(w, http.StatusBadRequest, "copytrade_history unreadable: "+statErr.Error())
-			return
-		}
-		if speed != "max" {
-			jsonError(w, http.StatusBadRequest, "copytrade_v1 backtest requires speed=max (sharded pipeline only)")
-			return
-		}
-		if req.CopytradeLedgerDir == "" {
-			req.CopytradeLedgerDir = "_workspace/copytrade_replay"
-		}
 	}
 
 	runner := backtest.NewRunner(backtest.RunConfig{
