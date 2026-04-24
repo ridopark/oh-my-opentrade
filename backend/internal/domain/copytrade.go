@@ -2,6 +2,25 @@ package domain
 
 import "time"
 
+// TagAuthorText is the Signal.Tags key carrying the pre-composed
+// "<author>: <raw_line>" rationale string that risk_sizer reads to
+// override the AI-enricher default on copytrade option intents.
+const TagAuthorText = "author_text"
+
+// ComposeAuthorText produces the "<author>: <raw_line>" rationale string
+// shared between the copytrade strategy (BTO tag) and positionmonitor
+// (STC exit reason). Empty raw_line returns empty; empty author returns
+// just raw_line.
+func ComposeAuthorText(author, rawLine string) string {
+	if rawLine == "" {
+		return ""
+	}
+	if author == "" {
+		return rawLine
+	}
+	return author + ": " + rawLine
+}
+
 // CopytradeAction enumerates the author's intent on a parsed Discord message.
 type CopytradeAction string
 

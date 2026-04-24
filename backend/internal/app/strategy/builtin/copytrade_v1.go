@@ -315,7 +315,7 @@ func (s *CopytradeStrategy) handleBTO(ctx start.Context, cst *copytradeState, si
 
 	tags := map[string]string{
 		"author":                     sig.Author,
-		"author_text":                composeAuthorText(sig.Author, sig.RawLine),
+		domain.TagAuthorText:         domain.ComposeAuthorText(sig.Author, sig.RawLine),
 		"generation":                 strconv.Itoa(gen),
 		"contract_symbol":            contractSym,
 		"signal_id":                  sig.SignalID,
@@ -488,18 +488,6 @@ func formatFloat(v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
-// composeAuthorText produces the "<author>: <raw_line>" rationale string used
-// as the OrderIntent.Rationale for copytrade entries and exits. Falls back
-// to just raw_line when author is missing, and empty when both are missing.
-func composeAuthorText(author, rawLine string) string {
-	if rawLine == "" {
-		return ""
-	}
-	if author == "" {
-		return rawLine
-	}
-	return author + ": " + rawLine
-}
 
 // handleFillConfirmation flips Pending=false on the matching pending position.
 // Matches by (ContractSymbol, Pending=true) on BUY-side fills; SELL-side fills
