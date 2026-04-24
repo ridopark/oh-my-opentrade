@@ -38,3 +38,16 @@ services:
       - ./state:/app/state
       - /tmp/.X11-unix:/tmp/.X11-unix:ro
     command: ["python3", "-m", "bootstrap"]
+
+  scrape:
+    build: .
+    container_name: omo-discord-copytrade-scrape
+    profiles: ["scrape"]
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      STATE_DIR: /app/state
+    volumes:
+      - ./state:/app/state
+    entrypoint: ["python3", "-m", "scrape_history"]

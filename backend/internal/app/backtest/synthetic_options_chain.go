@@ -74,6 +74,13 @@ func (g *SyntheticChainGenerator) GenerateChain(
 	if maxDTE < minDTE {
 		return nil, nil
 	}
+	// Copytrade-style forced expiries pin (expiry, strike, right) at the
+	// risk_sizer boundary and reject any chain that lacks the exact strike.
+	// The default step-based grid skips common integer strikes for stocks
+	// priced $100+; widen the grid to standard-tick granularity whenever
+	// the DTE window is pinned (min == max), so all listed strikes in
+	// [low, high] are represented.
+	exactStrikes := minDTE == maxDTE
 	spot := 0.0
 	if g.spot != nil {
 		s, err := g.spot(ctx, symbol, asOf)
@@ -103,6 +110,9 @@ func (g *SyntheticChainGenerator) GenerateChain(
 		return nil, nil
 	}
 	strikes := strikeGrid(spot, g.cfg.StrikeGridPct, g.cfg.StrikeStepPct)
+	if exactStrikes {
+		strikes = unionStandardStrikes(strikes, spot, g.cfg.StrikeGridPct)
+	}
 	if len(strikes) == 0 {
 		return nil, nil
 	}
@@ -172,11 +182,26 @@ func weeklyExpiries(asOf time.Time, minDTE, maxDTE int) []time.Time {
 	day := truncateToDate(asOf)
 	start := day.AddDate(0, 0, minDTE)
 	end := day.AddDate(0, 0, maxDTE)
+	loc := domain.NYLocation()
+	var cal domain.NYSECalendar
+
+	// When caller pins a single DTE (minDTE == maxDTE), return the exact
+	// date if it's a valid trading day. This serves copytrade-style forced
+	// expiries that can land on any weekday (Mon/Wed/Fri common for index
+	// options, arbitrary for single-names). Friday-only generation misses
+	// these entirely and silently drops the signal upstream.
+	if minDTE == maxDTE && minDTE >= 0 {
+		y, m, dd := start.Date()
+		dETDay := time.Date(y, m, dd, 0, 0, 0, 0, loc)
+		if start.Weekday() != time.Saturday && start.Weekday() != time.Sunday && asOf.Before(cal.SessionClose(dETDay)) {
+			return []time.Time{start}
+		}
+		return nil
+	}
+
 	offset := (int(time.Friday) - int(start.Weekday()) + 7) % 7
 	firstFriday := start.AddDate(0, 0, offset)
 
-	loc := domain.NYLocation()
-	var cal domain.NYSECalendar
 	var out []time.Time
 	for d := firstFriday; !d.After(end); d = d.AddDate(0, 0, 7) {
 		y, m, dd := d.Date()
@@ -216,6 +241,48 @@ func strikeGrid(spot, gridPct, stepPct float64) []float64 {
 	}
 	return out
 }
+// unionStandardStrikes adds all exchange-standard tick strikes in
+// [spot*(1-gridPct), spot*(1+gridPct)] to base, deduplicated. Used when
+// the caller pinned a single DTE — see GenerateChain — so forced strikes
+// that miss the step-based grid still land in the chain.
+func unionStandardStrikes(base []float64, spot, gridPct float64) []float64 {
+	if spot <= 0 || gridPct <= 0 {
+		return base
+	}
+	low := spot * (1 - gridPct)
+	high := spot * (1 + gridPct)
+	seen := make(map[float64]struct{}, len(base)+64)
+	for _, k := range base {
+		seen[k] = struct{}{}
+	}
+	out := append([]float64(nil), base...)
+	addIf := func(k float64) {
+		if k < low || k > high {
+			return
+		}
+		if _, dup := seen[k]; dup {
+			return
+		}
+		seen[k] = struct{}{}
+		out = append(out, k)
+	}
+	switch {
+	case spot >= 50:
+		for k := math.Floor(low); k <= math.Ceil(high); k++ {
+			addIf(k)
+		}
+	case spot >= 10:
+		for k := math.Floor(low*2) / 2; k <= math.Ceil(high*2)/2; k += 0.5 {
+			addIf(math.Round(k*2) / 2)
+		}
+	default:
+		for k := math.Floor(low*4) / 4; k <= math.Ceil(high*4)/4; k += 0.25 {
+			addIf(math.Round(k*4) / 4)
+		}
+	}
+	return out
+}
+
 // roundStrike snaps a raw strike to a listable tick. Cheap heuristic: the
 // cheaper the stock, the finer the grid.
 func roundStrike(k float64) float64 {

@@ -28,6 +28,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/timescaledb"
 	"github.com/oh-my-opentrade/backend/internal/app/backtest"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
+	"github.com/oh-my-opentrade/backend/internal/app/copytradereplay"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
@@ -59,6 +60,8 @@ func main() {
 		noAIFlag       bool
 		cpuProfile     string
 		memProfile     string
+		copytradeHist     string
+		copytradeLedgerDir string
 	)
 
 	flag.StringVar(&symbolsFlag, "symbols", "", "Comma-separated symbols to replay (default: use config file symbols)")
@@ -76,6 +79,8 @@ func main() {
 	flag.BoolVar(&noAIFlag, "no-ai", true, "Disable AI signal debate enricher (default: true for backtest)")
 	flag.StringVar(&cpuProfile, "cpuprofile", "", "Write CPU profile to file (pprof)")
 	flag.StringVar(&memProfile, "memprofile", "", "Write heap profile to file (pprof) after run")
+	flag.StringVar(&copytradeHist, "copytrade-history", "", "Path to Discord copytrade history JSONL; when set (and --backtest), replays messages through the event bus")
+	flag.StringVar(&copytradeLedgerDir, "copytrade-ledger-dir", "_workspace/copytrade_replay", "Directory for per-fill and author-stated CSV ledgers (created if missing)")
 	flag.Parse()
 
 	// Replay and backtest binaries don't need cryptographically-unique event
@@ -264,6 +269,7 @@ func main() {
 		alpacaAdapt       *alpacaadapter.Adapter
 		optionBarsCache   map[domain.Symbol][]domain.MarketBar
 		optionBarsMu      sync.Mutex
+		histOptsAdapter   *backtest.HistoricalOptionsAdapter
 	)
 
 	// snapshotFn routes GetLastSnapshot lookups to the sharded pipeline
@@ -341,7 +347,7 @@ func main() {
 		posMonPriceCache = posMonBundle.PriceCache
 		optionBarsCache = make(map[domain.Symbol][]domain.MarketBar)
 
-		if cfg.Alpaca.APIKeyID != "" {
+		if cfg.Alpaca.APIKeyID != "" && copytradeHist == "" {
 			a, alpacaErr := alpacaadapter.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca_replay").Logger())
 			if alpacaErr != nil {
 				log.Warn().Err(alpacaErr).Msg("backtest: failed to create alpaca adapter — options chain and bar fetching disabled")
@@ -383,10 +389,60 @@ func main() {
 		}
 
 		var optionsMarket ports.OptionsMarketDataPort
-		if alpacaAdapt != nil {
+		switch {
+		case copytradeHist != "":
+			histOptRepo := timescaledb.NewHistoricalOptionsRepository(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "hist_options_repo").Logger())
+			histOptsAdapter = backtest.NewHistoricalOptionsAdapter(histOptRepo, clockFn)
+			histOptsAdapter.SetLogger(log)
+
+			if btCfg := cfg.Backtest.SyntheticChain; btCfg.Enabled {
+				ivRepo := timescaledb.NewIVRepository(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "iv_repo_synth").Logger())
+				genCfg := backtest.SyntheticChainConfig{
+					Enabled:         btCfg.Enabled,
+					StrikeGridPct:   btCfg.StrikeGridPct,
+					StrikeStepPct:   btCfg.StrikeStepPct,
+					IVDefault:       btCfg.IVDefault,
+					RiskFreeRate:    btCfg.RiskFreeRate,
+					BidAskSpreadPct: btCfg.BidAskSpreadPct,
+				}
+				ivDefault := btCfg.IVDefault
+				spotFn := func(ctx context.Context, sym domain.Symbol, asOf time.Time) (float64, error) {
+					bars, err := repo.GetMarketBars(ctx, sym, domain.Timeframe("1m"), asOf.Add(-48*time.Hour), asOf.Add(time.Minute))
+					if err != nil {
+						return 0, err
+					}
+					if len(bars) == 0 {
+						return 0, nil
+					}
+					return bars[len(bars)-1].Close, nil
+				}
+				ivFn := func(ctx context.Context, sym domain.Symbol, asOf time.Time) (float64, error) {
+					snap, err := ivRepo.GetIVAtOrBefore(ctx, sym, asOf)
+					if err != nil {
+						return ivDefault, nil
+					}
+					return snap.ATMIV, nil
+				}
+				histOptsAdapter.SetSyntheticGenerator(backtest.NewSyntheticChainGenerator(genCfg, spotFn, ivFn))
+				log.Info().
+					Float64("strike_grid_pct", genCfg.StrikeGridPct).
+					Float64("iv_default", genCfg.IVDefault).
+					Msg("copytrade replay: synthetic options chain enabled")
+			}
+
+			if err := histOptsAdapter.PreLoad(ctx, symbols, fromTime, toTime); err != nil {
+				log.Warn().Err(err).Msg("copytrade replay: options PreLoad failed — adapter will fall back to per-query DB")
+			}
+
+			optionsMarket = histOptsAdapter
+			if simBrokerInst != nil {
+				simBrokerInst.SetHistoricalOptions(histOptsAdapter)
+			}
+			log.Info().Msg("copytrade replay: options chain served by HistoricalOptionsAdapter (DoltHub + synthetic BSM)")
+		case alpacaAdapt != nil:
 			optionsMarket = newCachingOptionsMarket(alpacaAdapt)
 			log.Info().Msg("backtest: options chain data enabled via Alpaca (cached per symbol+right)")
-		} else {
+		default:
 			log.Warn().Msg("backtest: no Alpaca adapter — options_ai_scalping signals will be skipped")
 		}
 
@@ -453,6 +509,11 @@ func main() {
 		// Each shard owns its own ingestion filter, monitor, and runner.
 		// The shared enricher and risk sizer live outside any shard and
 		// serve signals from every shard via the common event bus.
+		//
+		// Sentinel-routed strategies (e.g. copytrade_v1 on "__copytrade__")
+		// bind to the first shard only so the bus-subscribed handler fires
+		// once per event, not once per shard.
+		var sentinelOwnerAssigned bool
 		shardFactory := func(slab []domain.Symbol) (backtest.ShardServices, error) {
 			shardLog := log.With().Str("shard_symbols", fmt.Sprintf("%d", len(slab))).Logger()
 
@@ -476,7 +537,13 @@ func main() {
 				monSvc.SetORBTimeframe(orbTimeframeCaptured)
 			}
 
-			shardStrat, err := bootstrap.BuildStrategyShard(strategyShared, slab, strategyDeps)
+			var shardStrat *bootstrap.StrategyShard
+			if !sentinelOwnerAssigned {
+				shardStrat, err = bootstrap.BuildStrategyShardWithSentinels(strategyShared, slab, strategyDeps)
+				sentinelOwnerAssigned = true
+			} else {
+				shardStrat, err = bootstrap.BuildStrategyShard(strategyShared, slab, strategyDeps)
+			}
 			if err != nil {
 				return backtest.ShardServices{}, fmt.Errorf("shard strategy: %w", err)
 			}
@@ -928,6 +995,41 @@ func main() {
 	}
 	log.Info().Time("session_open", replaySessionOpen).Msg("MTFA aggregators initialized for replay")
 
+	// Copytrade replay injector + per-fill ledger. Must happen BEFORE
+	// FreezeHandlers — Subscribe calls after freeze silently no-op (the
+	// bus's Publish fast path reads from an atomic snapshot captured at
+	// freeze time).
+	var copytradeReplaySvc *copytradereplay.Service
+	var copytradeLedger *copytradereplay.Ledger
+	if backtestFlag && copytradeHist != "" {
+		copytradeReplaySvc = copytradereplay.New(eventBus, "default", domain.EnvModePaper, log.With().Str("component", "copytrade_replay").Logger())
+		ctStats, err := copytradeReplaySvc.Load(copytradeHist, fromTime, toTime)
+		if err != nil {
+			log.Fatal().Err(err).Str("path", copytradeHist).Msg("copytrade replay: load failed")
+		}
+		log.Info().
+			Int("messages_read", ctStats.MessagesRead).
+			Int("messages_dropped", ctStats.MessagesDropped).
+			Int("signals_loaded", ctStats.SignalsLoaded).
+			Int("bto", ctStats.ByAction[domain.CopytradeActionBTO]).
+			Int("stc", ctStats.ByAction[domain.CopytradeActionSTC]).
+			Int("avg", ctStats.ByAction[domain.CopytradeActionAVG]).
+			Msg("copytrade replay ready")
+
+		if err := os.MkdirAll(copytradeLedgerDir, 0o755); err != nil {
+			log.Fatal().Err(err).Str("dir", copytradeLedgerDir).Msg("copytrade replay: cannot create ledger dir")
+		}
+		fillLedgerPath := copytradeLedgerDir + "/fills.csv"
+		copytradeLedger, err = copytradereplay.NewLedger(fillLedgerPath, log.With().Str("component", "copytrade_ledger").Logger())
+		if err != nil {
+			log.Fatal().Err(err).Str("path", fillLedgerPath).Msg("copytrade replay: ledger init failed")
+		}
+		if err := copytradeLedger.Subscribe(ctx, eventBus); err != nil {
+			log.Fatal().Err(err).Msg("copytrade replay: ledger subscribe failed")
+		}
+		log.Info().Str("path", fillLedgerPath).Msg("copytrade replay: per-fill ledger active")
+	}
+
 	// All subscribers are wired by now. Freeze the event bus handler map so
 	// Publish can take the lock-free fast path — this avoids an RLock + slice
 	// copy per event and was ~67% of backtest CPU samples on large runs.
@@ -950,6 +1052,7 @@ func main() {
 	envMode := domain.EnvModePaper
 	barsProcessed := 0
 	groupsProcessed := 0
+
 
 	// Track current session date for multi-day replays (reset aggregators on new day).
 	currentSessionDate := replaySessionOpen
@@ -1030,6 +1133,7 @@ func main() {
 			posMonPriceCache: posMonPriceCache,
 			optionBarsCache:  optionBarsCache,
 			optionBarsMu:     &optionBarsMu,
+			copytradeReplay:  copytradeReplaySvc,
 		}
 
 		if err := shardedPipeline.RunSliceToCompletion(ctx, sliceBars, replaySessionOpen, coord); err != nil {
@@ -1093,6 +1197,11 @@ func main() {
 					continue
 				}
 				barsProcessed++
+			}
+			if copytradeReplaySvc != nil {
+				if _, err := copytradeReplaySvc.AdvanceTo(ctx, minTime); err != nil {
+					log.Error().Err(err).Time("tick", minTime).Msg("copytrade replay: advance failed")
+				}
 			}
 			if perBarDelay > 0 {
 				t := time.NewTimer(perBarDelay)
@@ -1164,6 +1273,62 @@ func main() {
 	sort.Strings(keys)
 	for _, k := range keys {
 		fmt.Printf("- %s: %d\n", k, eventCounts[k])
+	}
+
+	if copytradeReplaySvc != nil {
+		ct := copytradeReplaySvc.StatsSnapshot()
+		fmt.Println("\n=== COPYTRADE REPLAY ===")
+		fmt.Printf("Messages read:       %d\n", ct.MessagesRead)
+		fmt.Printf("Messages dropped:    %d\n", ct.MessagesDropped)
+		fmt.Printf("Signals loaded:      %d (BTO=%d STC=%d AVG=%d)\n",
+			ct.SignalsLoaded,
+			ct.ByAction[domain.CopytradeActionBTO],
+			ct.ByAction[domain.CopytradeActionSTC],
+			ct.ByAction[domain.CopytradeActionAVG])
+		fmt.Printf("Signals published:   %d\n", ct.SignalsPublished)
+		fmt.Printf("Pending at shutdown: %d\n", copytradeReplaySvc.Pending())
+		if histOptsAdapter != nil {
+			histHits, synHits := histOptsAdapter.Stats()
+			total := histHits + synHits
+			synPct := 0.0
+			if total > 0 {
+				synPct = float64(synHits) / float64(total) * 100
+			}
+			fmt.Printf("Option chain queries: %d (DoltHub=%d synthetic=%d / %.1f%% synthetic)\n",
+				total, histHits, synHits, synPct)
+		}
+
+		if copytradeLedger != nil {
+			if err := copytradeLedger.Close(); err != nil {
+				log.Warn().Err(err).Msg("copytrade replay: ledger close failed")
+			}
+			fmt.Printf("Fill ledger rows:    %d (%s/fills.csv)\n", copytradeLedger.Rows(), copytradeLedgerDir)
+		}
+
+		copytradeCTID, _ := start.NewStrategyID("copytrade_v1")
+		if ctSpec, ctErr := specStore.GetLatest(context.Background(), copytradeCTID); ctErr == nil {
+			partials := parseLedgerPartials(ctSpec.Params["partial_fractions"])
+			defaultFrac := 0.33
+			if v, ok := ctSpec.Params["default_stc_fraction"].(float64); ok {
+				defaultFrac = v
+			}
+			authorPath := copytradeLedgerDir + "/author_stated.csv"
+			trades, err := copytradeReplaySvc.WriteAuthorStatedLedger(authorPath, partials, defaultFrac)
+			if err != nil {
+				log.Warn().Err(err).Msg("copytrade replay: author ledger failed")
+			} else {
+				summary := copytradereplay.SummarizeAuthorStated(trades)
+				fmt.Println("\n--- Author-stated (per contract) ---")
+				fmt.Printf("Positions:           %d (closed=%d open=%d)\n", summary.Positions, summary.Closed, summary.Open)
+				fmt.Printf("Total author PnL/ct: $%.2f\n", summary.PnLPerContract)
+				fmt.Printf("Win rate:            %.1f%% (%d wins / %d losses)\n", summary.WinRate, summary.Wins, summary.Losses)
+				fmt.Printf("Avg win/loss/ct:     +$%.2f / -$%.2f\n", summary.AvgWinPerCtr, summary.AvgLossPerCtr)
+				fmt.Printf("Largest win/loss/ct: +$%.2f / -$%.2f\n", summary.LargestWinPer, summary.LargestLossPer)
+				fmt.Printf("Author ledger rows:  %d (%s)\n", len(trades), authorPath)
+			}
+		} else {
+			log.Warn().Err(ctErr).Msg("copytrade replay: could not load copytrade_v1 spec for author ledger")
+		}
 	}
 
 	// Backtest results.
@@ -1321,6 +1486,48 @@ func (t *eventTracer) Counts() map[string]int {
 	return out
 }
 
+// parseLedgerPartials mirrors copytrade_v1's [[params.partial_fractions]]
+// shape so the author-stated ledger can reuse the same keyword → fraction
+// table the live strategy uses. Tolerates both []map[string]any (TOML
+// unmarshal) and []any (hand-built test params) in case callers shape the
+// spec themselves.
+func parseLedgerPartials(v any) []copytradereplay.PartialFractionEntry {
+	var entries []map[string]any
+	switch typed := v.(type) {
+	case []map[string]any:
+		entries = typed
+	case []any:
+		for _, item := range typed {
+			if m, ok := item.(map[string]any); ok {
+				entries = append(entries, m)
+			}
+		}
+	default:
+		return nil
+	}
+	out := make([]copytradereplay.PartialFractionEntry, 0, len(entries))
+	for _, m := range entries {
+		kw, _ := m["keyword"].(string)
+		if kw == "" {
+			continue
+		}
+		var frac float64
+		switch f := m["fraction"].(type) {
+		case float64:
+			frac = f
+		case int64:
+			frac = float64(f)
+		case int:
+			frac = float64(f)
+		}
+		if frac <= 0 || frac > 1.0 {
+			continue
+		}
+		out = append(out, copytradereplay.PartialFractionEntry{Keyword: kw, Fraction: frac})
+	}
+	return out
+}
+
 func allEventTypes() []domain.EventType {
 	return []domain.EventType{
 		domain.EventMarketBarReceived,
@@ -1346,6 +1553,9 @@ func allEventTypes() []domain.EventType {
 		domain.EventSignalCreated,
 		domain.EventSignalEnriched,
 		domain.EventSignalGated,
+		domain.EventCopytradeSignalReceived,
+		domain.EventCopytradeExitRequest,
+		domain.EventCopytradeExitRejected,
 		"StrategyDomainEvent",
 	}
 }
@@ -1567,6 +1777,7 @@ type replaySliceCoord struct {
 	posMonPriceCache *positionmonitor.PriceCache
 	optionBarsCache  map[domain.Symbol][]domain.MarketBar
 	optionBarsMu     *sync.Mutex
+	copytradeReplay  *copytradereplay.Service
 }
 
 // OnTickBegin advances the replay clock, resets monitor + runner
@@ -1618,6 +1829,35 @@ func (c *replaySliceCoord) OnTickEnd(ctx context.Context, tickTime time.Time) er
 	c.posMonSvc.EvalExitRules(tickTime)
 	if c.eventBus != nil {
 		c.eventBus.WaitPending()
+	}
+	if c.copytradeReplay != nil {
+		if _, err := c.copytradeReplay.AdvanceTo(ctx, tickTime); err != nil {
+			c.log.Error().Err(err).Time("tick", tickTime).Msg("copytrade replay: advance failed")
+		}
+		if c.eventBus != nil {
+			c.eventBus.WaitPending()
+		}
+		// handleCopytradeSignal runs under SetDeferSignalPublish, so the
+		// resulting SignalCreated events sit in the sentinel-owner shard's
+		// pendingSignals buffer. The normal drain in replayFlat only fires
+		// mid-bar (Phase B); here in OnTickEnd we're past that, so flush
+		// every shard's buffer directly to the bus.
+		if c.shardedPipeline != nil {
+			_ = c.shardedPipeline.ForEachShard(func(p *backtest.Pipeline, _ []domain.Symbol) error {
+				r := p.Runner()
+				if r == nil {
+					return nil
+				}
+				pending := r.DrainPendingSignals()
+				for i := range pending {
+					if err := c.eventBus.Publish(ctx, pending[i]); err != nil {
+						c.log.Error().Err(err).Time("tick", tickTime).Msg("copytrade replay: drain publish failed")
+					}
+				}
+				return nil
+			})
+			c.eventBus.WaitPending()
+		}
 	}
 	return nil
 }
