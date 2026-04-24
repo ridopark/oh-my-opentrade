@@ -120,6 +120,9 @@ func (stubRepo) GetRecordedFillQty(context.Context, string, domain.EnvMode, doma
 	return 0, nil
 }
 func (stubRepo) UpdateOrderStatus(context.Context, string, string) error { return nil }
+func (stubRepo) GetRecordedExecutionIDs(context.Context, string, domain.EnvMode, time.Time) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
 func (stubRepo) GetNetPositions(context.Context, string, domain.EnvMode) (map[domain.Symbol]float64, error) {
 	return nil, nil
 }

@@ -465,6 +465,129 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 		Msg("startup fill reconciliation complete")
 
 	s.backfillFromBrokerHistory(ctx)
+	s.reconcileFillsOnBoot(ctx)
+}
+
+// reconcileFillsOnBoot diffs per-execution fills from the broker against
+// trades.execution_id and inserts any that the stream missed (crash, WS
+// gap, or pre-fix multi-fill bug). Independent of reconcileOnBoot (orders
+// table walk) and backfillFromBrokerHistory (per-order seed) — this one
+// operates at the fill-leg granularity and is idempotent on re-run because
+// execution_id UNIQUE skips dupes.
+//
+// Only runs when the broker implements ports.FillLister (IBKR). Simbroker
+// and alpaca stub skip this path; simbroker has no gap bug and alpaca's
+// trade stream already delivers per-exec events.
+func (s *Service) reconcileFillsOnBoot(ctx context.Context) {
+	l := s.log.With().Str("component", "reconcile_fills_on_boot").Logger()
+
+	lister, ok := s.broker.(ports.FillLister)
+	if !ok {
+		return
+	}
+
+	fills, err := lister.GetAllFills(ctx)
+	if err != nil {
+		l.Warn().Err(err).Msg("fill reconcile: GetAllFills failed — skipping")
+		return
+	}
+	if len(fills) == 0 {
+		return
+	}
+
+	// IBKR's ReqFills returns the current session (today). Query the same
+	// window from the DB so we're comparing apples to apples. Use UTC day
+	// start with a 24h slack to handle sessions that straddle midnight.
+	since := s.nowFn().UTC().Add(-24 * time.Hour)
+	recorded, err := s.repo.GetRecordedExecutionIDs(ctx, s.tenantID, s.envMode, since)
+	if err != nil {
+		l.Warn().Err(err).Msg("fill reconcile: GetRecordedExecutionIDs failed — skipping")
+		return
+	}
+
+	inserted := 0
+	for _, f := range fills {
+		if f.ExecutionID == "" {
+			continue
+		}
+		if _, seen := recorded[f.ExecutionID]; seen {
+			continue
+		}
+
+		ol := l.With().
+			Str("broker_order_id", f.BrokerOrderID).
+			Str("execution_id", f.ExecutionID).
+			Str("symbol", f.Symbol).
+			Logger()
+
+		// Look up the existing orders row for this broker_order_id to
+		// recover tenant/env/strategy/etc. If the orders row is missing
+		// too, backfillFromBrokerHistory ran just before us and should
+		// have seeded it — but on a race we just skip and let the next
+		// boot heal.
+		existing, err := s.repo.GetOrderByBrokerOrderID(ctx, f.BrokerOrderID)
+		if err != nil {
+			ol.Warn().Err(err).Msg("fill reconcile: order lookup failed — skipping")
+			continue
+		}
+		if existing == nil {
+			ol.Debug().Msg("fill reconcile: orders row not found — deferring to next boot")
+			continue
+		}
+
+		filledAt := f.FilledAt
+		if filledAt.IsZero() {
+			filledAt = s.nowFn().UTC()
+		}
+		cumQty := f.CumQty
+		if cumQty <= 0 {
+			cumQty = f.Qty
+		}
+		cumAvgPrice := f.AvgPrice
+		if cumAvgPrice <= 0 {
+			cumAvgPrice = f.Price
+		}
+
+		trade, tErr := domain.NewTrade(
+			filledAt, s.tenantID, s.envMode, uuid.New(),
+			domain.Symbol(f.Symbol), f.Side, f.Qty, f.Price, 0,
+			"FILLED", existing.Strategy,
+			fmt.Sprintf("reconcile_fills_on_boot: recovered leg %s for order %s", f.ExecutionID, f.BrokerOrderID),
+		)
+		if tErr != nil {
+			ol.Error().Err(tErr).Msg("fill reconcile: NewTrade failed")
+			continue
+		}
+		trade.ExecutionID = f.ExecutionID
+		if existing.InstrumentType == domain.InstrumentTypeOption {
+			trade.InstrumentType = domain.InstrumentTypeOption
+			trade.OptionSymbol = existing.OptionSymbol
+			trade.Underlying = existing.Underlying
+			trade.OptionRight = existing.OptionRight
+			trade.Strike = existing.Strike
+			trade.Expiry = existing.Expiry
+			trade.Premium = f.Price
+		}
+
+		if rErr := s.repo.RecordFill(ctx, f.BrokerOrderID, filledAt, cumAvgPrice, cumQty, trade); rErr != nil {
+			ol.Error().Err(rErr).Msg("fill reconcile: RecordFill failed")
+			continue
+		}
+		inserted++
+		ol.Info().
+			Float64("leg_qty", f.Qty).
+			Float64("leg_price", f.Price).
+			Float64("cum_qty", cumQty).
+			Msg("fill reconcile: inserted missed leg")
+	}
+
+	if inserted > 0 {
+		l.Info().
+			Int("broker_fills", len(fills)).
+			Int("already_recorded", len(recorded)).
+			Int("inserted", inserted).
+			Msg("fill reconciliation complete")
+	}
 }
 
 // backfillFromBrokerHistory restores orders the DB never recorded — the
@@ -1199,7 +1322,11 @@ func (s *Service) fastPollPosition(ctx context.Context, tenantID string, envMode
 			if isExit {
 				detected = posQty == 0
 			} else {
-				detected = posQty != 0
+				// Wait for full entry fill before short-circuiting. Multi-fill
+				// orders deliver N stream events keyed by ExecID — firing on
+				// the first partial would claim pending and drop subsequent
+				// legs. The 30s timeout still catches the stream-silent case.
+				detected = posQty+1e-9 >= po.intent.Quantity
 			}
 
 			if detected {
@@ -1498,39 +1625,14 @@ const fastFillRetryDelay = 500 * time.Millisecond
 const fastFillMaxRetries = 3
 
 func (s *Service) handleStreamFill(update ports.OrderUpdate, l zerolog.Logger) {
-	// partial_fill must peek without claiming, since the terminal "fill" event
-	// is still coming and needs the pending entry. Tables stay terminal-only
-	// (broker REST reconciliation at reconcilePendingOrders is the durable
-	// catch); this Info log is the forensic record if a crash + broker
-	// rotation ever leaves us with no terminal event.
-	if update.Event == "partial_fill" {
-		raw, ok := s.pendingOrders.Load(update.BrokerOrderID)
-		if !ok {
-			return
-		}
-		po := raw.(*pendingOrder)
-		l.Info().
-			Str("intent_id", po.intent.ID.String()).
-			Str("symbol", string(po.intent.Symbol)).
-			Str("strategy", po.intent.Strategy).
-			Str("execution_id", update.ExecutionID).
-			Float64("leg_qty", update.Qty).
-			Float64("leg_price", update.Price).
-			Float64("cumulative_qty", update.FilledQty).
-			Float64("cumulative_avg_price", update.FilledAvgPrice).
-			Time("filled_at", update.FilledAt).
-			Msg("partial fill received — deferring trade record to terminal fill event")
-		return
-	}
-
-	// Atomically claim the pending order. If fastPollPosition already recorded
-	// this fill via livePos, LoadAndDelete returns ok=false and we exit so we
-	// do not write a second trade row for the same execution.
-	raw, ok := s.pendingOrders.LoadAndDelete(update.BrokerOrderID)
+	// Peek (not claim). The pending entry must survive across partial fills
+	// so N exec events all land against it. Final fill atomically claims it
+	// and runs the terminal-cleanup pipeline.
+	raw, ok := s.pendingOrders.Load(update.BrokerOrderID)
 	if !ok {
 		for range fastFillMaxRetries {
 			time.Sleep(fastFillRetryDelay)
-			raw, ok = s.pendingOrders.LoadAndDelete(update.BrokerOrderID)
+			raw, ok = s.pendingOrders.Load(update.BrokerOrderID)
 			if ok {
 				break
 			}
@@ -1540,34 +1642,152 @@ func (s *Service) handleStreamFill(update ports.OrderUpdate, l zerolog.Logger) {
 			return
 		}
 	}
-
 	po := raw.(*pendingOrder)
 
-	fillPrice := update.Price
-	if fillPrice <= 0 {
-		fillPrice = update.FilledAvgPrice
+	// Incremental fields for the trade row (what THIS exec leg filled).
+	legPrice := update.Price
+	if legPrice <= 0 {
+		legPrice = update.FilledAvgPrice
 	}
-	if fillPrice <= 0 {
-		fillPrice = po.intent.LimitPrice
+	if legPrice <= 0 {
+		legPrice = po.intent.LimitPrice
 	}
-
-	// For terminal fill events, FilledQty is cumulative and authoritative.
-	// Prefer it over Qty (which is the incremental per-leg fill and only
-	// reflects the LAST fill leg in multi-fill orders, causing ghost positions
-	// when e.g. an 11-lot fills in legs of 10+1 — Qty would be 1 while the
-	// broker position is flat).
-	fillQty := update.FilledQty
-	if fillQty <= 0 {
-		fillQty = update.Qty
+	legQty := update.Qty
+	if legQty <= 0 {
+		// Broker sent only cumulative. Derive the leg by diffing against
+		// what the DB already has for this order — safe because the repo
+		// UPDATE is monotonic on filled_qty.
+		legQty = update.FilledQty
 	}
-	if fillQty <= 0 {
-		fillQty = po.intent.Quantity
+	if legQty <= 0 {
+		legQty = po.intent.Quantity
 	}
 
-	s.handleFillWithPrice(po, update.BrokerOrderID, fillPrice, fillQty, update.FilledAt, update.ExecutionID, l)
+	// Cumulative values for the orders-row bump (broker-authoritative
+	// running totals as of THIS exec).
+	cumQty := update.FilledQty
+	if cumQty <= 0 {
+		cumQty = legQty
+	}
+	cumAvgPrice := update.FilledAvgPrice
+	if cumAvgPrice <= 0 {
+		cumAvgPrice = legPrice
+	}
+	filledAt := update.FilledAt
+	if filledAt.IsZero() {
+		filledAt = s.nowFn().UTC()
+	}
+
+	s.insertFillLeg(po, update.BrokerOrderID, update.ExecutionID, filledAt, legPrice, legQty, cumQty, cumAvgPrice, l)
+
+	// Final fill? Either the broker marked this event as terminal
+	// (Event=="fill"; Alpaca/simbroker pattern) OR cumulative reached
+	// the intent quantity (IBKR reconciler doesn't label events terminal,
+	// so quantity is the tell).
+	isFinal := update.Event == "fill" || cumQty+1e-9 >= po.intent.Quantity
+	if !isFinal {
+		// Emit a per-leg FillReceived so downstream consumers keyed by
+		// execution_id pick up the partial immediately. PnL aggregator
+		// and the position monitor both tolerate per-leg events.
+		s.emitPartialFillReceived(po, update.BrokerOrderID, legPrice, legQty, filledAt, update.ExecutionID, l)
+		return
+	}
+
+	// Atomically claim pending. If fastPollPosition or the reconcile loop
+	// already claimed, LoadAndDelete returns false and we exit without
+	// double-firing the cleanup pipeline. The per-leg trade is already in
+	// the DB via insertFillLeg above.
+	if _, claimed := s.pendingOrders.LoadAndDelete(update.BrokerOrderID); !claimed {
+		return
+	}
+	s.runFillFinalization(po, update.BrokerOrderID, cumAvgPrice, cumQty, filledAt, l)
+}
+
+// insertFillLeg persists ONE execution leg (trade row + monotonic orders.filled_qty
+// bump). Multi-fill orders call this N times, once per ExecID. The trade row
+// carries the incremental qty/price; the orders row carries broker-cumulative
+// values from THIS exec. Safe under out-of-order delivery: execution_id UNIQUE
+// dedups trades, GREATEST guards the orders update.
+func (s *Service) insertFillLeg(po *pendingOrder, brokerOrderID, executionID string, filledAt time.Time, legPrice, legQty, cumQty, cumAvgPrice float64, l zerolog.Logger) {
+	ctx := context.Background()
+	side := brokerSideFor(po.intent.Direction)
+	trade, err := domain.NewTrade(filledAt, po.tenantID, po.envMode, uuid.New(), po.intent.Symbol, side, legQty, legPrice, 0, "FILLED", po.intent.Strategy, po.intent.Rationale)
+	if err != nil {
+		l.Error().Err(err).Msg("failed to construct trade leg — skipping persist (reconcile will heal)")
+		return
+	}
+	trade.ExecutionID = executionID
+	if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {
+		trade.InstrumentType = domain.InstrumentTypeOption
+		trade.OptionSymbol = po.intent.Instrument.Symbol.String()
+		trade.Underlying = string(po.intent.Instrument.UnderlyingSymbol)
+		trade.OptionRight = po.intent.Meta["option_right"]
+		if st, err := strconv.ParseFloat(po.intent.Meta["strike"], 64); err == nil {
+			trade.Strike = st
+		}
+		if exp, err := time.Parse("2006-01-02", po.intent.Meta["expiry"]); err == nil {
+			trade.Expiry = exp
+		}
+		if p, err := strconv.ParseFloat(po.intent.Meta["premium"], 64); err == nil {
+			trade.Premium = p
+		}
+		if d, err := strconv.ParseFloat(po.intent.Meta["delta_at_entry"], 64); err == nil {
+			trade.DeltaAtEntry = d
+		}
+		if iv, err := strconv.ParseFloat(po.intent.Meta["iv_at_entry"], 64); err == nil {
+			trade.IVAtEntry = iv
+		}
+	}
+	if err := s.repo.RecordFill(ctx, brokerOrderID, filledAt, cumAvgPrice, cumQty, trade); err != nil {
+		l.Error().Err(err).Str("execution_id", executionID).Msg("failed to record fill leg")
+	}
+}
+
+// emitPartialFillReceived emits a FillReceived carrying the per-exec qty/price
+// so downstream consumers pick up partials as they arrive. Lean vs the final
+// payload — no MFE/MAE lookup (those only matter on the completing leg).
+func (s *Service) emitPartialFillReceived(po *pendingOrder, brokerOrderID string, legPrice, legQty float64, filledAt time.Time, executionID string, l zerolog.Logger) {
+	side := brokerSideFor(po.intent.Direction)
+	payload := map[string]any{
+		"broker_order_id": brokerOrderID,
+		"intent_id":       po.intent.ID.String(),
+		"execution_id":    executionID,
+		"symbol":          string(po.intent.Symbol),
+		"side":            side,
+		"direction":       string(po.intent.Direction),
+		"quantity":        legQty,
+		"price":           legPrice,
+		"filled_at":       filledAt,
+		"strategy":        po.intent.Strategy,
+		"asset_class":     string(po.intent.AssetClass),
+		"rationale":       po.intent.Rationale,
+		"partial":         true,
+	}
+	if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {
+		payload["instrument_type"] = string(domain.InstrumentTypeOption)
+	}
+	s.emit(context.Background(), domain.EventFillReceived, po.tenantID, po.envMode, brokerOrderID, payload)
+	l.Info().
+		Str("execution_id", executionID).
+		Float64("leg_qty", legQty).
+		Float64("leg_price", legPrice).
+		Msg("partial fill leg persisted")
 }
 
 func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fillPrice, fillQty float64, filledAt time.Time, executionID string, l zerolog.Logger) {
+	// Write the single (all-at-once) trade leg. Non-stream callers (syncFill,
+	// recordFillFromDetails, reconcilePendingOrders) treat every fill as a
+	// one-shot — they lack per-exec detail from the broker.
+	s.insertFillLeg(po, brokerOrderID, executionID, filledAt, fillPrice, fillQty, fillQty, fillPrice, l)
+	s.runFillFinalization(po, brokerOrderID, fillPrice, fillQty, filledAt, l)
+}
+
+// runFillFinalization performs the end-of-order cleanup: intent-journal
+// terminal mark, FillReceived emit with full payload (MFE/MAE, signal tags,
+// option metadata), metrics, position-gate transitions. Does NOT write a
+// trade row — callers (handleFillWithPrice, handleStreamFill) handle that
+// via insertFillLeg.
+func (s *Service) runFillFinalization(po *pendingOrder, brokerOrderID string, fillPrice, fillQty float64, filledAt time.Time, l zerolog.Logger) {
 	ctx := context.Background()
 
 	if s.intentJournal != nil {
@@ -1577,40 +1797,6 @@ func (s *Service) handleFillWithPrice(po *pendingOrder, brokerOrderID string, fi
 	}
 
 	side := brokerSideFor(po.intent.Direction)
-	trade, err := domain.NewTrade(filledAt, po.tenantID, po.envMode, uuid.New(), po.intent.Symbol, side, fillQty, fillPrice, 0, "FILLED", po.intent.Strategy, po.intent.Rationale)
-	if err != nil {
-		// NewTrade only rejects quantity < 0, which the broker never sends.
-		// If we somehow get here, skip BOTH writes to preserve the
-		// order-row/trade-row atomicity invariant — reconcileOnBoot will
-		// pick up the broker state on next restart.
-		l.Error().Err(err).Msg("failed to construct trade on fill — skipping order+trade writes to preserve atomicity")
-	} else {
-		trade.ExecutionID = executionID
-		if po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption {
-			trade.InstrumentType = domain.InstrumentTypeOption
-			trade.OptionSymbol = po.intent.Instrument.Symbol.String()
-			trade.Underlying = string(po.intent.Instrument.UnderlyingSymbol)
-			trade.OptionRight = po.intent.Meta["option_right"]
-			if s, err := strconv.ParseFloat(po.intent.Meta["strike"], 64); err == nil {
-				trade.Strike = s
-			}
-			if exp, err := time.Parse("2006-01-02", po.intent.Meta["expiry"]); err == nil {
-				trade.Expiry = exp
-			}
-			if p, err := strconv.ParseFloat(po.intent.Meta["premium"], 64); err == nil {
-				trade.Premium = p
-			}
-			if d, err := strconv.ParseFloat(po.intent.Meta["delta_at_entry"], 64); err == nil {
-				trade.DeltaAtEntry = d
-			}
-			if iv, err := strconv.ParseFloat(po.intent.Meta["iv_at_entry"], 64); err == nil {
-				trade.IVAtEntry = iv
-			}
-		}
-		if err := s.repo.RecordFill(ctx, brokerOrderID, filledAt, fillPrice, fillQty, trade); err != nil {
-			l.Error().Err(err).Msg("failed to record fill atomically")
-		}
-	}
 
 	// Collect signal tags (sig_* prefixed keys) from intent Meta.
 	sigTags := make(map[string]string)
