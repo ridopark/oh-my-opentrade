@@ -527,6 +527,10 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 			continue
 		}
 
+		if hookRef.Name == "copytrade_v1" {
+			continue
+		}
+
 		svc.symRouterSpecs = append(svc.symRouterSpecs, symbolrouter.StrategySpec{
 			Key:           spec.ID.String(),
 			BaseSymbols:   spec.Routing.Symbols,

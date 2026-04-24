@@ -105,6 +105,24 @@ func initCopytrade(t *testing.T, params map[string]any) (*CopytradeStrategy, sta
 	return s, st
 }
 
+// confirmBTOFills flips Pending=false on the single in-flight position created
+// by a BTO OnEvent. Tests that chain BTO → STC use this to simulate the
+// runner's handleFill → FillConfirmation dispatch.
+func confirmBTOFills(t *testing.T, s *CopytradeStrategy, ctx start.Context, st start.State) start.State {
+	t.Helper()
+	cst := st.(*copytradeState)
+	for _, pos := range cst.Positions {
+		if !pos.Pending {
+			continue
+		}
+		fc := start.FillConfirmation{Symbol: pos.ContractSymbol, Side: start.SideBuy, Quantity: 1, Price: pos.EntryPremium}
+		next, _, err := s.OnEvent(ctx, "__copytrade__", fc, st)
+		require.NoError(t, err)
+		st = next
+	}
+	return st
+}
+
 func TestCopytrade_BTO_EmitsSignalWithForceTags(t *testing.T) {
 	s, st := initCopytrade(t, copytradeDefaultParams())
 	ctx := newCopyCtx()
@@ -143,6 +161,7 @@ func TestCopytrade_STC_Partial_ArmsChandelierOnce(t *testing.T) {
 
 	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
 	require.NoError(t, err)
+	st = confirmBTOFills(t, s, ctx, st)
 
 	st, sigs, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "half out at 1.80", 1.80), st)
 	require.NoError(t, err)
@@ -174,6 +193,7 @@ func TestCopytrade_STC_AllOut_ClosesAndBumpsGeneration(t *testing.T) {
 
 	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
 	require.NoError(t, err)
+	st = confirmBTOFills(t, s, ctx, st)
 	st, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "all out at 2.50", 2.50), st)
 	require.NoError(t, err)
 
@@ -199,6 +219,7 @@ func TestCopytrade_STC_Default_WhenNoKeywordMatches(t *testing.T) {
 
 	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "TSLA", 250, "P", "starter", 3.50), st)
 	require.NoError(t, err)
+	st = confirmBTOFills(t, s, ctx, st)
 	_, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "TSLA", 250, "P", "at 4.00", 4.00), st)
 	require.NoError(t, err)
 
@@ -260,6 +281,7 @@ func TestCopytrade_TrailDisabled_NoArmOnPartial(t *testing.T) {
 
 	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
 	require.NoError(t, err)
+	st = confirmBTOFills(t, s, ctx, st)
 	_, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "half out", 1.80), st)
 	require.NoError(t, err)
 
@@ -279,6 +301,106 @@ func TestCopytrade_StateRoundTrip(t *testing.T) {
 	revived := newCopytradeState(parseCopytradeConfig(copytradeDefaultParams()))
 	require.NoError(t, revived.Unmarshal(data))
 	require.Len(t, revived.Positions, 1)
+}
+
+func TestCopytrade_STC_RefusedWhilePending(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
+	require.NoError(t, err)
+
+	cst := st.(*copytradeState)
+	require.Len(t, cst.Positions, 1)
+	for _, pos := range cst.Positions {
+		assert.True(t, pos.Pending, "BTO must leave position Pending until FillConfirmation")
+	}
+
+	st, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "half out", 1.80), st)
+	require.NoError(t, err)
+	assert.Empty(t, ctx.exitRequests(), "STC must not dispatch while pending")
+	for _, pos := range st.(*copytradeState).Positions {
+		assert.Equal(t, 1.0, pos.RemainingFrac, "RemainingFrac must not decay on refused STC")
+	}
+}
+
+func TestCopytrade_FillConfirmation_ClearsPending(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
+	require.NoError(t, err)
+
+	var contractSym string
+	for _, pos := range st.(*copytradeState).Positions {
+		contractSym = pos.ContractSymbol
+	}
+	fc := start.FillConfirmation{Symbol: contractSym, Side: start.SideBuy, Quantity: 5, Price: 1.25}
+	st, _, err = s.OnEvent(ctx, "__copytrade__", fc, st)
+	require.NoError(t, err)
+
+	for _, pos := range st.(*copytradeState).Positions {
+		assert.False(t, pos.Pending, "FillConfirmation BUY must clear Pending")
+	}
+
+	// STC now works.
+	st, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "half out", 1.80), st)
+	require.NoError(t, err)
+	assert.Len(t, ctx.exitRequests(), 1)
+}
+
+func TestCopytrade_EntryRejection_UnwindsGhostPosition(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
+	require.NoError(t, err)
+
+	var contractSym string
+	for _, pos := range st.(*copytradeState).Positions {
+		contractSym = pos.ContractSymbol
+	}
+
+	rej := start.EntryRejection{Symbol: contractSym, Side: start.SideBuy, Reason: "options_chain_empty"}
+	st, _, err = s.OnEvent(ctx, "__copytrade__", rej, st)
+	require.NoError(t, err)
+
+	cst := st.(*copytradeState)
+	assert.Empty(t, cst.Positions, "rejection must delete pending position")
+	// Generation counter rolls back so the next BTO for the same base starts at gen 1.
+	st, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "retry", 1.25), st)
+	require.NoError(t, err)
+	cst = st.(*copytradeState)
+	require.Len(t, cst.Positions, 1)
+	for _, pos := range cst.Positions {
+		assert.Equal(t, 1, pos.Generation, "after rejection rollback, retry must start at gen 1")
+	}
+}
+
+func TestCopytrade_ExitRejection_RollsRemainingFracBack(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
+	require.NoError(t, err)
+	st = confirmBTOFills(t, s, ctx, st)
+
+	st, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "half out", 1.80), st)
+	require.NoError(t, err)
+
+	var contractSym string
+	for _, pos := range st.(*copytradeState).Positions {
+		contractSym = pos.ContractSymbol
+		assert.InDelta(t, 0.5, pos.RemainingFrac, 1e-9, "after first partial, residual should be 0.5")
+	}
+
+	// Position monitor rejects the in-flight follow-up. Strategy must undo the 0.5.
+	rej := start.CopytradeExitRejection{ContractSymbol: contractSym, Fraction: 0.5, Reason: "exit_in_flight"}
+	st, _, err = s.OnEvent(ctx, "__copytrade__", rej, st)
+	require.NoError(t, err)
+	for _, pos := range st.(*copytradeState).Positions {
+		assert.InDelta(t, 1.0, pos.RemainingFrac, 1e-9, "rollback must restore pre-STC residual")
+	}
 }
 
 // Guard: the strategy must satisfy the start.Strategy contract end-to-end,

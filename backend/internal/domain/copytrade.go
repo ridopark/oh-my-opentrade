@@ -59,3 +59,16 @@ type CopytradeExitRequestPayload struct {
 	Fraction       float64 // fraction of REMAINING quantity to close, (0, 1]
 	Reason         string  // audit trail: the keyword that matched, e.g. "half out"
 }
+
+// CopytradeExitRejectedPayload tells the strategy its exit request was rejected
+// by the position monitor (e.g. because a prior exit is already in flight).
+// Fraction is the exact value from the original request so the strategy can roll
+// its RemainingFrac back via RemainingFrac /= (1 - Fraction).
+type CopytradeExitRejectedPayload struct {
+	TenantID       string
+	EnvMode        string
+	Strategy       string
+	ContractSymbol string
+	Fraction       float64
+	Reason         string // why it was rejected, e.g. "exit_in_flight"
+}

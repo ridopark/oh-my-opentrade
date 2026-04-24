@@ -225,6 +225,30 @@ func (s *Service) handleCopytradeExitRequest(_ context.Context, event domain.Eve
 			Msg("copytrade_exit_request: no matching position")
 		return nil
 	}
+
+	// Pre-check exit-in-flight BEFORE mutating CustomState. triggerExit would
+	// silently skip a parallel exit here, which leaves the strategy's
+	// RemainingFrac desynced from the broker (it has already decremented on
+	// the emit path). Publish a rejection so the strategy can roll back.
+	if target.HasExitInFlight() {
+		s.log.Warn().
+			Str("contract_symbol", payload.ContractSymbol).
+			Str("strategy", payload.Strategy).
+			Float64("fraction", payload.Fraction).
+			Int("pending_orders", len(target.PendingExitOrderIDs)).
+			Msg("copytrade_exit_request: prior exit in flight — rejecting")
+		rejection := domain.CopytradeExitRejectedPayload{
+			TenantID:       payload.TenantID,
+			EnvMode:        payload.EnvMode,
+			Strategy:       payload.Strategy,
+			ContractSymbol: payload.ContractSymbol,
+			Fraction:       payload.Fraction,
+			Reason:         "exit_in_flight",
+		}
+		idemKey := fmt.Sprintf("COPYTRADE_EXIT_REJ:%s:%d:%s", payload.ContractSymbol, s.nowFunc().UnixNano(), payload.Reason)
+		s.emit(context.Background(), string(domain.EventCopytradeExitRejected), payload.TenantID, domain.EnvMode(payload.EnvMode), idemKey, rejection)
+		return nil
+	}
 	if target.CustomState == nil {
 		target.CustomState = make(map[string]float64)
 	}

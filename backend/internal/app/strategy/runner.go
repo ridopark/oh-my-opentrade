@@ -746,6 +746,9 @@ func (r *Runner) Start(ctx context.Context) error {
 		r.logger.Warn("failed to subscribe to CopytradeSignalReceived (non-fatal)", "error", err)
 		// Non-fatal: most deployments/backtests don't run the copytrade strategy.
 	}
+	if err := r.eventBus.Subscribe(ctx, domain.EventCopytradeExitRejected, r.handleCopytradeExitRejected); err != nil {
+		r.logger.Warn("failed to subscribe to CopytradeExitRejected (non-fatal)", "error", err)
+	}
 	r.logger.Info("strategy runner subscribed to MarketBarSanitized events")
 	r.lastBarTime.Store(time.Now().UnixNano())
 	go r.barHealthCheck(ctx)
@@ -2166,6 +2169,13 @@ func (r *Runner) handleFill(_ context.Context, event domain.Event) error {
 	}
 
 	inst := r.findInstanceByStrategyAndSymbol(strategyName, routingSymbol)
+	dispatchSymbol := routingSymbol
+	if inst == nil && strategyName == "copytrade_v1" {
+		if fallback := r.findInstanceByStrategy(strategyName); fallback != nil {
+			inst = fallback
+			dispatchSymbol = copytradeSentinelSymbol
+		}
+	}
 	if inst == nil {
 		r.logger.Debug("handleFill: no matching instance", "strategy", strategyName, "symbol", symbol)
 		return nil
@@ -2197,7 +2207,7 @@ func (r *Runner) handleFill(_ context.Context, event domain.Event) error {
 	}
 
 	r.mu.Lock()
-	signals, err := inst.OnEvent(instCtx, routingSymbol, confirmation)
+	signals, err := inst.OnEvent(instCtx, dispatchSymbol, confirmation)
 	r.mu.Unlock()
 
 	if err != nil {
@@ -2248,6 +2258,13 @@ func (r *Runner) handleRejection(_ context.Context, event domain.Event) error {
 		rejSymbol = string(underlying)
 	}
 	inst := r.findInstanceByStrategyAndSymbol(payload.Strategy, rejSymbol)
+	dispatchSymbol := payload.Symbol
+	if inst == nil && payload.Strategy == "copytrade_v1" {
+		if fallback := r.findInstanceByStrategy(payload.Strategy); fallback != nil {
+			inst = fallback
+			dispatchSymbol = copytradeSentinelSymbol
+		}
+	}
 	if inst == nil {
 		r.logger.Debug("handleRejection: no matching instance", "strategy", payload.Strategy, "symbol", rejSymbol)
 		return nil
@@ -2266,7 +2283,7 @@ func (r *Runner) handleRejection(_ context.Context, event domain.Event) error {
 	}
 
 	r.mu.Lock()
-	signals, err := inst.OnEvent(instCtx, payload.Symbol, rejection)
+	signals, err := inst.OnEvent(instCtx, dispatchSymbol, rejection)
 	r.mu.Unlock()
 
 	if err != nil {
@@ -2494,6 +2511,45 @@ func (r *Runner) handleCopytradeSignal(ctx context.Context, event domain.Event) 
 				"error", emitErr,
 			)
 		}
+	}
+	return nil
+}
+
+// handleCopytradeExitRejected routes a position-monitor-published exit
+// rejection (prior exit in flight) to the copytrade strategy so it can roll
+// its RemainingFrac back. The strategy has no per-symbol routing so we look
+// up the single instance by strategy ID and dispatch on the sentinel symbol.
+func (r *Runner) handleCopytradeExitRejected(ctx context.Context, event domain.Event) error {
+	payload, ok := event.Payload.(domain.CopytradeExitRejectedPayload)
+	if !ok {
+		return nil
+	}
+	inst := r.findInstanceByStrategy("copytrade_v1")
+	if inst == nil {
+		r.logger.Debug("handleCopytradeExitRejected: no active copytrade_v1 instance")
+		return nil
+	}
+	instCtx := &instanceContext{
+		ctx:      ctx,
+		now:      time.Now(),
+		logger:   r.logger.With("instance_id", inst.ID().String(), "contract_symbol", payload.ContractSymbol),
+		tenantID: r.tenantID,
+		envMode:  r.envMode,
+		runner:   r,
+	}
+	rej := start.CopytradeExitRejection{
+		ContractSymbol: payload.ContractSymbol,
+		Fraction:       payload.Fraction,
+		Reason:         payload.Reason,
+	}
+	r.mu.Lock()
+	_, err := inst.OnEvent(instCtx, copytradeSentinelSymbol, rej)
+	r.mu.Unlock()
+	if err != nil {
+		r.logger.Error("handleCopytradeExitRejected: OnEvent failed",
+			"instance_id", inst.ID().String(),
+			"error", err,
+		)
 	}
 	return nil
 }
