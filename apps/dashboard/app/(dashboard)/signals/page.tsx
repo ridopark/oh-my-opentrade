@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useSignalProgress } from "@/lib/event-stream";
+import { useState, useEffect, useCallback } from "react";
+import { useSignalProgress, useEventListener } from "@/lib/event-stream";
 import { SignalProgressTable } from "@/components/signal-progress-table";
 import { BottomPanel, type BarLogEntry, type BottomTab } from "@/components/bottom-panel";
-import type { StrategySignalEvent, StrategySignalsResponse, RegimeType } from "@/lib/types";
+import type { DomainEvent, StrategySignalEvent, StrategySignalsResponse, RegimeType } from "@/lib/types";
 
 export default function SignalMonitorPage() {
   const { avwapProgress, macdProgress, connected } = useSignalProgress();
@@ -29,69 +29,53 @@ export default function SignalMonitorPage() {
       .catch(() => {});
   }, []);
 
-  // SSE for live signals, regime, and bar log
-  useEffect(() => {
-    const es = new EventSource("/api/events");
-
-    es.addEventListener("StrategySignalLifecycle", (e: MessageEvent) => {
-      try {
-        const envelope = JSON.parse(e.data) as { payload: StrategySignalEvent };
-        const sig = envelope.payload;
-        if (!sig?.Symbol || !sig?.TS) return;
-        setRecentSignalEvents((prev) => {
-          if (prev.some((s) => s.SignalID === sig.SignalID && s.Status === sig.Status)) return prev;
-          return [sig, ...prev].slice(0, 200);
-        });
-      } catch { /* noop */ }
+  const handleSignalLifecycle = useCallback((evt: DomainEvent) => {
+    const sig = evt.payload as StrategySignalEvent;
+    if (!sig?.Symbol || !sig?.TS) return;
+    setRecentSignalEvents((prev) => {
+      if (prev.some((s) => s.SignalID === sig.SignalID && s.Status === sig.Status)) return prev;
+      return [sig, ...prev].slice(0, 200);
     });
-
-    es.addEventListener("StateUpdated", (e: MessageEvent) => {
-      try {
-        const envelope = JSON.parse(e.data) as {
-          payload: {
-            Symbol: string;
-            Timeframe: string;
-            RSI: number;
-            anchorRegimes?: Record<string, { Type: RegimeType; Strength: number }>;
-          };
-        };
-        const snap = envelope.payload;
-        if (!snap?.Symbol) return;
-        const currentRegime = snap.anchorRegimes?.[snap.Timeframe];
-        if (!currentRegime) return;
-        setRegimeBySymbol((prev) => ({
-          ...prev,
-          [snap.Symbol]: { regime: currentRegime.Type, strength: currentRegime.Strength, rsi: snap.RSI },
-        }));
-      } catch { /* noop */ }
-    });
-
-    const handleBarLog = (e: MessageEvent) => {
-      try {
-        const envelope = JSON.parse(e.data) as { type?: string; payload: { symbol: string; timeframe: string; time: string; open: number; high: number; low: number; close: number; volume: number } };
-        const bar = envelope.payload;
-        if (!bar?.symbol || !bar?.time) return;
-        const eventType = envelope.type === "FormingBar" ? "forming" as const : "bar" as const;
-        setBarLog((prev) => [{
-          receivedAt: Date.now(),
-          eventType,
-          symbol: bar.symbol,
-          timeframe: bar.timeframe,
-          time: bar.time,
-          open: bar.open,
-          high: bar.high,
-          low: bar.low,
-          close: bar.close,
-          volume: bar.volume,
-        }, ...prev].slice(0, 200));
-      } catch { /* noop */ }
-    };
-
-    es.addEventListener("MarketBarSanitized", handleBarLog);
-    es.addEventListener("FormingBar", handleBarLog);
-
-    return () => es.close();
   }, []);
+
+  const handleStateUpdated = useCallback((evt: DomainEvent) => {
+    const snap = evt.payload as {
+      Symbol: string;
+      Timeframe: string;
+      RSI: number;
+      anchorRegimes?: Record<string, { Type: RegimeType; Strength: number }>;
+    };
+    if (!snap?.Symbol) return;
+    const currentRegime = snap.anchorRegimes?.[snap.Timeframe];
+    if (!currentRegime) return;
+    setRegimeBySymbol((prev) => ({
+      ...prev,
+      [snap.Symbol]: { regime: currentRegime.Type, strength: currentRegime.Strength, rsi: snap.RSI },
+    }));
+  }, []);
+
+  const handleBarLog = useCallback((evt: DomainEvent) => {
+    const bar = evt.payload as { symbol: string; timeframe: string; time: string; open: number; high: number; low: number; close: number; volume: number };
+    if (!bar?.symbol || !bar?.time) return;
+    const eventType = evt.type === "FormingBar" ? "forming" as const : "bar" as const;
+    setBarLog((prev) => [{
+      receivedAt: Date.now(),
+      eventType,
+      symbol: bar.symbol,
+      timeframe: bar.timeframe,
+      time: bar.time,
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: bar.volume,
+    }, ...prev].slice(0, 200));
+  }, []);
+
+  useEventListener("StrategySignalLifecycle", handleSignalLifecycle);
+  useEventListener("StateUpdated", handleStateUpdated);
+  useEventListener("MarketBarSanitized", handleBarLog);
+  useEventListener("FormingBar", handleBarLog);
 
   return (
     <div className="flex flex-col gap-4 h-full">
