@@ -14,19 +14,38 @@ export default function SignalMonitorPage() {
   const [regimeBySymbol, setRegimeBySymbol] = useState<Record<string, { regime: RegimeType; strength: number; rsi: number }>>({});
   const [barLog, setBarLog] = useState<BarLogEntry[]>([]);
 
-  // Load today's signals from DB on mount
+  // Blocked signals only persist to DB (no StrategySignalLifecycle SSE push),
+  // so we re-poll /api/signals/recent to surface each bar-close batch.
   useEffect(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const from = today.toISOString();
-    fetch(`/api/signals/recent?from=${from}&limit=200`)
-      .then((r) => r.json())
-      .then((data: StrategySignalsResponse) => {
-        if (data.items?.length) {
-          setRecentSignalEvents(data.items);
-        }
-      })
-      .catch(() => {});
+    const loadRecent = () => {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const from = today.toISOString();
+      fetch(`/api/signals/recent?from=${from}&limit=200`)
+        .then((r) => r.json())
+        .then((data: StrategySignalsResponse) => {
+          if (data.items?.length) {
+            setRecentSignalEvents(data.items);
+          }
+        })
+        .catch(() => {});
+    };
+
+    loadRecent();
+
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") loadRecent();
+    }, 30_000);
+
+    const onVis = () => {
+      if (document.visibilityState === "visible") loadRecent();
+    };
+    document.addEventListener("visibilitychange", onVis);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, []);
 
   const handleSignalLifecycle = useCallback((evt: DomainEvent) => {
