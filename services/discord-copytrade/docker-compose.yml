@@ -2,8 +2,12 @@ services:
   watcher:
     build: .
     container_name: omo-discord-copytrade
-    network_mode: host
     restart: unless-stopped
+    # Docker Desktop's host-gateway points at the Docker VM, not the WSL2
+    # distro where omo-core runs. WSL_HOST_IP is supplied at compose-up time
+    # by `make restart-copytrade`, which reads the current eth0 IP.
+    extra_hosts:
+      - "host.docker.internal:${WSL_HOST_IP:?set WSL_HOST_IP or run \"make restart-copytrade\" from repo root}"
     env_file:
       - .env
     environment:
