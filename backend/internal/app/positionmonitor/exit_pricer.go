@@ -33,19 +33,32 @@ const (
 	exitTickOption       = 0.01
 )
 
-// kForDTE returns the spread-aggression factor k for a given days-to-expiry.
-// Wider k = give up more of the spread. Short-dated options (0-4 DTE) are
-// the most time-sensitive and get priced more aggressively to fill; longer-
-// dated contracts have room to wait for a better print.
-func kForDTE(dte int) float64 {
+// kForDTE returns the spread-aggression factor k for a given days-to-expiry
+// and re-peg attempt count. Wider k = give up more of the spread. Short-dated
+// options (0-4 DTE) are the most time-sensitive and get priced more
+// aggressively to fill; longer-dated contracts have room to wait for a
+// better print.
+//
+// repegN tightens the first-attempt k by +0.25 per re-peg (capped at 1.0).
+// The bid+tick floor in buildExitLimitPrice is the real bound; the cap is
+// defensive. Purpose: each re-peg slides the limit toward the bid instead
+// of hoping a fresh-quote retry at the same aggression will fill. See
+// exit-side bleed analysis 2026-04-23.
+func kForDTE(dte, repegN int) float64 {
+	var k float64
 	switch {
 	case dte >= 14:
-		return 0.25
+		k = 0.25
 	case dte >= 5:
-		return 0.35
+		k = 0.35
 	default:
-		return 0.45
+		k = 0.45
 	}
+	k += 0.25 * float64(repegN)
+	if k > 1.0 {
+		k = 1.0
+	}
+	return k
 }
 
 // buildExitLimitPrice computes an option exit limit price using the live
@@ -71,7 +84,7 @@ func kForDTE(dte int) float64 {
 //
 // Short/buy direction is supported for symmetry, though current call sites
 // only exit long options via SELL.
-func buildExitLimitPrice(quote domain.OptionQuote, now time.Time, dte int, isShort bool) (price float64, usable bool) {
+func buildExitLimitPrice(quote domain.OptionQuote, now time.Time, dte, repegN int, isShort bool) (price float64, usable bool) {
 	if quote.Bid <= 0 || quote.Ask <= 0 {
 		return 0, false
 	}
@@ -93,7 +106,7 @@ func buildExitLimitPrice(quote domain.OptionQuote, now time.Time, dte int, isSho
 		return 0, false
 	}
 
-	k := kForDTE(dte)
+	k := kForDTE(dte, repegN)
 	discount := k * spread
 	if cap := exitBpsCap * mid; discount > cap {
 		discount = cap
