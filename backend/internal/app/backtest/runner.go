@@ -23,6 +23,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/backfill"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
+	"github.com/oh-my-opentrade/backend/internal/app/copytradereplay"
 	"github.com/oh-my-opentrade/backend/internal/app/debate"
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
@@ -55,6 +56,16 @@ type RunConfig struct {
 	MaxPerGroup      int  // max positions per sector group (0=use config default)
 	CompoundEquity   bool // when true, position sizing compounds with P&L
 	UseNativeSymbols bool // when true, skip symbol override - each strategy uses its TOML symbols
+
+	// CopytradeHistory, when non-empty, enables copytrade_v1 replay: parses
+	// the JSONL at this path, publishes each message as
+	// EventCopytradeSignalReceived at its sim-time PostedAt, and subscribes a
+	// per-fill CSV ledger. Empty disables the feature.
+	CopytradeHistory string
+	// CopytradeLedgerDir is the directory to write fills.csv + author_stated.csv
+	// into. Ignored when CopytradeHistory is empty; HTTP handler defaults it
+	// to "_workspace/copytrade_replay".
+	CopytradeLedgerDir string
 }
 
 // ProgressInfo tracks replay progress.
@@ -1191,6 +1202,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	// / RiskSizer duplication.
 	useSharded := r.speedDelay.Load().(time.Duration) == 0 && !r.paused.Load()
 	activeRiskSizer := pipeline.RiskSizer
+
+	var copytradeReplaySvc *copytradereplay.Service
+	var copytradeLedger *copytradereplay.Ledger
 	if !useSharded {
 		if pipeline.Enricher != nil {
 			if startErr := pipeline.Enricher.Start(ctx); startErr != nil {
@@ -1394,6 +1408,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			TideTracker:     tideTracker,
 		}
 
+		var sentinelOwnerAssigned bool
 		shardFactory := func(slab []domain.Symbol) (ShardServices, error) {
 			filter := ingestion.NewAdaptiveFilter(20, 4.0)
 			filter.SetPassthrough(true)
@@ -1416,7 +1431,14 @@ func (r *Runner) Run(ctx context.Context) error {
 				monSvc.SetORBTimeframe(orbTimeframeCaptured)
 			}
 
-			shardStrat, stratErr := bootstrap.BuildStrategyShard(strategyShared, slab, stratDeps)
+			var shardStrat *bootstrap.StrategyShard
+			var stratErr error
+			if r.cfg.CopytradeHistory != "" && !sentinelOwnerAssigned {
+				shardStrat, stratErr = bootstrap.BuildStrategyShardWithSentinels(strategyShared, slab, stratDeps)
+				sentinelOwnerAssigned = true
+			} else {
+				shardStrat, stratErr = bootstrap.BuildStrategyShard(strategyShared, slab, stratDeps)
+			}
 			if stratErr != nil {
 				return ShardServices{}, fmt.Errorf("shard strategy: %w", stratErr)
 			}
@@ -1472,6 +1494,39 @@ func (r *Runner) Run(ctx context.Context) error {
 		}); startErr != nil {
 			r.status.Store("error")
 			return fmt.Errorf("start sharded services: %w", startErr)
+		}
+
+		if r.cfg.CopytradeHistory != "" {
+			copytradeReplaySvc = copytradereplay.New(r.infra.EventBus, "default", domain.EnvModePaper,
+				r.log.With().Str("component", "copytrade_replay").Logger())
+			ctStats, ctErr := copytradeReplaySvc.Load(r.cfg.CopytradeHistory, r.cfg.From, r.cfg.To)
+			if ctErr != nil {
+				r.status.Store("error")
+				return fmt.Errorf("copytrade replay: load %s: %w", r.cfg.CopytradeHistory, ctErr)
+			}
+			r.log.Info().
+				Int("messages_read", ctStats.MessagesRead).
+				Int("messages_dropped", ctStats.MessagesDropped).
+				Int("signals_loaded", ctStats.SignalsLoaded).
+				Msg("copytrade replay ready")
+
+			if err := os.MkdirAll(r.cfg.CopytradeLedgerDir, 0o755); err != nil {
+				r.status.Store("error")
+				return fmt.Errorf("copytrade replay: mkdir %s: %w", r.cfg.CopytradeLedgerDir, err)
+			}
+			fillPath := r.cfg.CopytradeLedgerDir + "/fills.csv"
+			var lErr error
+			copytradeLedger, lErr = copytradereplay.NewLedger(fillPath,
+				r.log.With().Str("component", "copytrade_ledger").Logger())
+			if lErr != nil {
+				r.status.Store("error")
+				return fmt.Errorf("copytrade replay: ledger open %s: %w", fillPath, lErr)
+			}
+			if err := copytradeLedger.Subscribe(ctx, r.infra.EventBus); err != nil {
+				r.status.Store("error")
+				return fmt.Errorf("copytrade replay: ledger subscribe: %w", err)
+			}
+			r.log.Info().Str("path", fillPath).Msg("copytrade replay: per-fill ledger active")
 		}
 
 		// Freeze the event bus AFTER all shard runners have subscribed.
@@ -1671,6 +1726,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			barsReplayed:     &barsProcessed,
 			auctionPub:       auctionPub,
 			sp:               sp,
+			copytradeReplay:  copytradeReplaySvc,
 		}
 
 		if err := sp.RunSliceToCompletion(ctx, sliceBars, replaySessionOpen, coord); err != nil {
@@ -1908,6 +1964,39 @@ backtestComplete:
 	r.result.Store(&finalResult)
 	r.emitter.EmitComplete(&finalResult)
 
+	if copytradeReplaySvc != nil {
+		summary := map[string]any{
+			"stats":               copytradeReplaySvc.StatsSnapshot(),
+			"pending_at_shutdown": copytradeReplaySvc.Pending(),
+		}
+		if copytradeLedger != nil {
+			if err := copytradeLedger.Close(); err != nil {
+				r.log.Warn().Err(err).Msg("copytrade replay: ledger close failed")
+			}
+			summary["fill_ledger_rows"] = copytradeLedger.Rows()
+			summary["fill_ledger_path"] = r.cfg.CopytradeLedgerDir + "/fills.csv"
+		}
+		copytradeID, _ := start.NewStrategyID("copytrade_v1")
+		if ctSpec, ctErr := specStore.GetLatest(context.Background(), copytradeID); ctErr == nil {
+			partials := parseCopytradePartials(ctSpec.Params["partial_fractions"])
+			defaultFrac := 0.33
+			if v, ok := ctSpec.Params["default_stc_fraction"].(float64); ok {
+				defaultFrac = v
+			}
+			authorPath := r.cfg.CopytradeLedgerDir + "/author_stated.csv"
+			if trades, err := copytradeReplaySvc.WriteAuthorStatedLedger(authorPath, partials, defaultFrac); err != nil {
+				r.log.Warn().Err(err).Msg("copytrade replay: author ledger failed")
+			} else {
+				summary["author_stated"] = copytradereplay.SummarizeAuthorStated(trades)
+				summary["author_stated_path"] = authorPath
+				summary["author_stated_rows"] = len(trades)
+			}
+		} else {
+			r.log.Warn().Err(ctErr).Msg("copytrade replay: cannot load copytrade_v1 spec for author ledger")
+		}
+		r.emitter.Emit(SSEEvent{Type: "backtest:copytrade_summary", Data: summary})
+	}
+
 	if r.Status() != "canceled" {
 		r.status.Store("completed")
 	}
@@ -2070,6 +2159,46 @@ func symbolStrings(syms []domain.Symbol) []string {
 	out := make([]string, len(syms))
 	for i, s := range syms {
 		out[i] = s.String()
+	}
+	return out
+}
+
+// parseCopytradePartials mirrors copytrade_v1's [[params.partial_fractions]]
+// shape. Copied from cmd/omo-replay/main.go rather than shared to keep the
+// CLI / HTTP wiring boundaries independent.
+func parseCopytradePartials(v any) []copytradereplay.PartialFractionEntry {
+	var entries []map[string]any
+	switch typed := v.(type) {
+	case []map[string]any:
+		entries = typed
+	case []any:
+		for _, item := range typed {
+			if m, ok := item.(map[string]any); ok {
+				entries = append(entries, m)
+			}
+		}
+	default:
+		return nil
+	}
+	out := make([]copytradereplay.PartialFractionEntry, 0, len(entries))
+	for _, m := range entries {
+		kw, _ := m["keyword"].(string)
+		if kw == "" {
+			continue
+		}
+		var frac float64
+		switch f := m["fraction"].(type) {
+		case float64:
+			frac = f
+		case int64:
+			frac = float64(f)
+		case int:
+			frac = float64(f)
+		}
+		if frac <= 0 || frac > 1.0 {
+			continue
+		}
+		out = append(out, copytradereplay.PartialFractionEntry{Keyword: kw, Fraction: frac})
 	}
 	return out
 }
@@ -2238,6 +2367,7 @@ type runnerSliceCoord struct {
 	auctionPub       *auctionPublisher
 	sp               *ShardedPipeline
 	ticksSeen        int
+	copytradeReplay  *copytradereplay.Service
 }
 
 func (c *runnerSliceCoord) OnTickBegin(_ context.Context, tickTime time.Time) error {
@@ -2266,6 +2396,27 @@ func (c *runnerSliceCoord) OnTickEnd(ctx context.Context, tickTime time.Time) er
 	if c.posMonSvc != nil {
 		c.posMonSvc.EvalExitRules(tickTime)
 		c.eventBus.Flush()
+	}
+	if c.copytradeReplay != nil {
+		if _, err := c.copytradeReplay.AdvanceTo(ctx, tickTime); err != nil && c.r != nil {
+			c.r.log.Error().Err(err).Time("tick", tickTime).Msg("copytrade replay: advance failed")
+		}
+		c.eventBus.Flush()
+		if c.sp != nil {
+			_ = c.sp.ForEachShard(func(p *Pipeline, _ []domain.Symbol) error {
+				rr := p.Runner()
+				if rr == nil {
+					return nil
+				}
+				rr.DrainCopytradeCallbacks()
+				pending := rr.DrainPendingSignals()
+				for i := range pending {
+					_ = c.eventBus.Publish(ctx, pending[i])
+				}
+				return nil
+			})
+			c.eventBus.Flush()
+		}
 	}
 	c.ticksSeen++
 	if c.ticksSeen%50 == 0 && c.r != nil {
