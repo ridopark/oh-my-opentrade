@@ -50,6 +50,16 @@ type StrategyDeps struct {
 	// the log entry and prometheus counter. Optional: without this the runner
 	// still recovers and logs panics — only the operator-facing alert is lost.
 	Notifier ports.NotifierPort
+	// PnLRepo, when non-nil, lets sentinel-routed strategies (e.g. copytrade)
+	// replay their own persisted strategy_signal_events on startup to
+	// rehydrate in-memory per-author state. Optional; absent repo skips the
+	// bootstrap hook.
+	PnLRepo ports.PnLPort
+	// GetPositionsFn, when non-nil, is called during sentinel-strategy
+	// bootstrap so replayed state can be cross-referenced against the
+	// broker's current view and phantom positions dropped. Wraps
+	// ports.BrokerPort.GetPositions at the caller site.
+	GetPositionsFn func(ctx context.Context) ([]domain.Trade, error)
 }
 
 // StrategyPipeline is the return value of BuildStrategyPipeline, exposing the
@@ -254,6 +264,9 @@ func buildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps Strat
 			if err := inst.InitSymbol(initCtx, sym, nil); err != nil {
 				return nil, fmt.Errorf("bootstrap: strategy: failed to init %s symbol %s: %w", spec.ID, sym, err)
 			}
+			if isSentinelSymbol(sym) {
+				invokeSentinelBootstrap(inst, sym, deps, shared.Clock())
+			}
 			router.Register(inst)
 			allSymbols[sym] = struct{}{}
 		}
@@ -289,6 +302,52 @@ func buildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps Strat
 // per-symbol slab distribution used by sharded bar dispatch.
 func isSentinelSymbol(sym string) bool {
 	return strings.HasPrefix(sym, "__") && strings.HasSuffix(sym, "__") && len(sym) >= 4
+}
+
+// invokeSentinelBootstrap runs the optional per-instance rehydration hook
+// for sentinel-routed strategies whose in-memory state does not survive
+// restart. Currently only copytrade implements this; unknown strategies
+// and specs with no bootstrap dependencies wired are silent no-ops.
+func invokeSentinelBootstrap(inst *strategy.Instance, sym string, deps StrategyDeps, now time.Time) {
+	cs, ok := inst.Strategy().(*builtin.CopytradeStrategy)
+	if !ok {
+		return
+	}
+	state, ok := inst.GetState(sym)
+	if !ok {
+		return
+	}
+	if deps.PnLRepo == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	bootDeps := builtin.CopytradeBootstrapDeps{
+		TenantID: deps.TenantID,
+		EnvMode:  deps.EnvMode,
+		Now:      now,
+		SignalEvents: func(qctx context.Context, stratName string, from, to time.Time) ([]domain.StrategySignalEvent, error) {
+			page, err := deps.PnLRepo.GetStrategySignalEvents(qctx, ports.StrategySignalQuery{
+				TenantID: deps.TenantID,
+				EnvMode:  deps.EnvMode,
+				Strategy: stratName,
+				From:     from,
+				To:       to,
+				Limit:    200,
+			})
+			if err != nil {
+				return nil, err
+			}
+			return page.Items, nil
+		},
+		Logger: slog.Default().With("strategy", "copytrade_v1"),
+	}
+	if deps.GetPositionsFn != nil {
+		bootDeps.Positions = deps.GetPositionsFn
+	}
+	if _, err := cs.Bootstrap(ctx, state, bootDeps); err != nil {
+		deps.Logger.Warn().Err(err).Str("strategy", "copytrade_v1").Msg("bootstrap: sentinel strategy Bootstrap returned error")
+	}
 }
 
 // BuildStrategyPipeline constructs the canonical single-shard strategy v2
