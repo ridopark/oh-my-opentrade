@@ -98,6 +98,9 @@ func (m *mockRepository) GetLatestThesisForSymbol(context.Context, string, domai
 func (m *mockRepository) GetNonTerminalOrders(context.Context, string, domain.EnvMode) ([]domain.BrokerOrder, error) {
 	return nil, nil
 }
+func (m *mockRepository) GetOrderByBrokerOrderID(context.Context, string) (*domain.BrokerOrder, error) {
+	return nil, nil
+}
 func (m *mockRepository) GetRecordedFillQty(context.Context, string, domain.EnvMode, domain.Symbol, string, time.Time) (float64, error) {
 	return 0, nil
 }

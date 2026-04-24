@@ -60,6 +60,31 @@ type OpenOrder struct {
 	CreatedAt     time.Time
 }
 
+// FilledOrder is the broker's view of a terminal (filled) order from the
+// current session's trade list. Used by startup backfill to restore orders
+// the DB never recorded (session crashed before the orders row was written).
+type FilledOrder struct {
+	BrokerOrderID  string
+	Symbol         string
+	Side           string  // "BUY" / "SELL" (as reported by broker)
+	Quantity       float64 // original order quantity
+	FilledQty      float64 // cumulative filled quantity
+	FilledAvgPrice float64
+	FilledAt       time.Time
+	Status         string // should be "filled"
+}
+
+// FilledOrderLister is an optional broker capability for backfill-on-boot.
+// Brokers that can enumerate filled orders from the current session implement
+// this; others (simbroker, alpaca stub) skip the backfill path. Kept off
+// BrokerPort so adding broker adapters stays cheap.
+type FilledOrderLister interface {
+	// GetFilledOrders returns every terminal (filled) order currently visible
+	// on the broker session. Implementations MUST filter to status=="filled"
+	// with FilledQty>0; open/canceled/rejected orders belong elsewhere.
+	GetFilledOrders(ctx context.Context) ([]FilledOrder, error)
+}
+
 // OrderDetails contains full order information from the broker, including
 // cumulative fill data needed for fill reconciliation.
 type OrderDetails struct {
