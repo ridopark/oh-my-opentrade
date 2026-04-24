@@ -774,7 +774,7 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 	if isOption {
 		dte = dteFromExpiry(pos.OptionExpiry, now)
 	}
-	exitPrice, orderType, tif := s.exitOrderParams(rule.Type, priceForOrder, pos.ExitRetryCount, pos.IsShort(), isOption, quote, dte, now)
+	exitPrice, orderType, tif := s.exitOrderParams(rule.Type, priceForOrder, pos.ExitRetryCount, pos.ExitRepegCount, pos.IsShort(), isOption, quote, dte, now)
 	// Record the last-sent limit price so the re-peg path can tighten
 	// against it on a subsequent cycle.
 	pos.ExitLastSentPrice = exitPrice
@@ -1022,6 +1022,7 @@ func (s *Service) exitOrderParams(
 	ruleType domain.ExitRuleType,
 	currentPrice float64,
 	retryCount int,
+	repegCount int,
 	short, isOption bool,
 	quote *domain.OptionQuote,
 	dte int,
@@ -1041,7 +1042,7 @@ func (s *Service) exitOrderParams(
 	}
 
 	if isOption && quote != nil {
-		if p, ok := buildExitLimitPrice(*quote, now, dte, short); ok {
+		if p, ok := buildExitLimitPrice(*quote, now, dte, repegCount, short); ok {
 			s.log.Debug().
 				Float64("bid", quote.Bid).
 				Float64("ask", quote.Ask).

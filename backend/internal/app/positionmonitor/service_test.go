@@ -595,54 +595,54 @@ func TestExitOrderParams_Escalation(t *testing.T) {
 	svc := &Service{log: zerolog.Nop()}
 
 	t.Run("forced exit retry 0: market IOC immediately", func(t *testing.T) {
-		p, ot, tif := svc.exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 0, false, false, nil, 0, now)
+		p, ot, tif := svc.exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 0, 0, false, false, nil, 0, now)
 		assert.Equal(t, price, p)
 		assert.Equal(t, "market", ot)
 		assert.Equal(t, "ioc", tif)
 	})
 
 	t.Run("forced exit retry 1: still market IOC", func(t *testing.T) {
-		_, ot, tif := svc.exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 1, false, false, nil, 0, now)
+		_, ot, tif := svc.exitOrderParams(domain.ExitRuleMaxHoldingTime, price, 1, 0, false, false, nil, 0, now)
 		assert.Equal(t, "market", ot)
 		assert.Equal(t, "ioc", tif)
 	})
 
 	t.Run("non-forced exit retry 0: limit with 5pct buffer", func(t *testing.T) {
-		p, ot, tif := svc.exitOrderParams(domain.ExitRuleTrailingStop, price, 0, false, false, nil, 0, now)
+		p, ot, tif := svc.exitOrderParams(domain.ExitRuleTrailingStop, price, 0, 0, false, false, nil, 0, now)
 		assert.InEpsilon(t, price*0.95, p, 0.001)
 		assert.Equal(t, "limit", ot)
 		assert.Equal(t, "ioc", tif)
 	})
 
 	t.Run("non-forced exit retry 0 short: limit with 5pct buffer above", func(t *testing.T) {
-		p, ot, tif := svc.exitOrderParams(domain.ExitRuleTrailingStop, price, 0, true, false, nil, 0, now)
+		p, ot, tif := svc.exitOrderParams(domain.ExitRuleTrailingStop, price, 0, 0, true, false, nil, 0, now)
 		assert.InEpsilon(t, price*1.05, p, 0.001)
 		assert.Equal(t, "limit", ot)
 		assert.Equal(t, "ioc", tif)
 	})
 
 	t.Run("non-forced exit retry 1: escalates to market", func(t *testing.T) {
-		p, ot, tif := svc.exitOrderParams(domain.ExitRuleTrailingStop, price, 1, false, false, nil, 0, now)
+		p, ot, tif := svc.exitOrderParams(domain.ExitRuleTrailingStop, price, 1, 0, false, false, nil, 0, now)
 		assert.Equal(t, price, p)
 		assert.Equal(t, "market", ot)
 		assert.Equal(t, "ioc", tif)
 	})
 
 	t.Run("option forced exit uses DAY not IOC", func(t *testing.T) {
-		p, ot, tif := svc.exitOrderParams(domain.ExitRuleEODFlatten, price, 0, false, true, nil, 0, now)
+		p, ot, tif := svc.exitOrderParams(domain.ExitRuleEODFlatten, price, 0, 0, false, true, nil, 0, now)
 		assert.Equal(t, price, p)
 		assert.Equal(t, "market", ot)
 		assert.Equal(t, "day", tif)
 	})
 
 	t.Run("option non-forced retry uses DAY", func(t *testing.T) {
-		_, ot, tif := svc.exitOrderParams(domain.ExitRuleTrailingStop, price, 1, false, true, nil, 0, now)
+		_, ot, tif := svc.exitOrderParams(domain.ExitRuleTrailingStop, price, 1, 0, false, true, nil, 0, now)
 		assert.Equal(t, "market", ot)
 		assert.Equal(t, "day", tif)
 	})
 
 	t.Run("option first-attempt nil quote falls back to 5pct mid", func(t *testing.T) {
-		p, ot, tif := svc.exitOrderParams(domain.ExitRuleTrailingStop, 1.75, 0, false, true, nil, 7, now)
+		p, ot, tif := svc.exitOrderParams(domain.ExitRuleTrailingStop, 1.75, 0, 0, false, true, nil, 7, now)
 		assert.InEpsilon(t, 1.75*0.95, p, 0.001)
 		assert.Equal(t, "limit", ot)
 		assert.Equal(t, "day", tif)
@@ -651,7 +651,7 @@ func TestExitOrderParams_Escalation(t *testing.T) {
 	t.Run("option first-attempt with healthy quote prices off spread", func(t *testing.T) {
 		q := &domain.OptionQuote{Bid: 1.70, Ask: 1.80, BidSize: 10, AskSize: 10, Timestamp: now}
 		// DTE=10 -> k=0.35, spread=0.10, target = 1.75 - 0.035 = 1.715
-		p, ot, tif := svc.exitOrderParams(domain.ExitRuleTrailingStop, 1.75, 0, false, true, q, 10, now)
+		p, ot, tif := svc.exitOrderParams(domain.ExitRuleTrailingStop, 1.75, 0, 0, false, true, q, 10, now)
 		assert.InDelta(t, 1.715, p, 1e-9)
 		assert.Equal(t, "limit", ot)
 		assert.Equal(t, "day", tif)
@@ -659,8 +659,20 @@ func TestExitOrderParams_Escalation(t *testing.T) {
 
 	t.Run("option first-attempt blown-out quote falls back to 5pct mid", func(t *testing.T) {
 		q := &domain.OptionQuote{Bid: 1.50, Ask: 2.00, BidSize: 10, AskSize: 10, Timestamp: now}
-		p, _, _ := svc.exitOrderParams(domain.ExitRuleTrailingStop, 1.75, 0, false, true, q, 10, now)
+		p, _, _ := svc.exitOrderParams(domain.ExitRuleTrailingStop, 1.75, 0, 0, false, true, q, 10, now)
 		assert.InEpsilon(t, 1.75*0.95, p, 0.001)
+	})
+
+	t.Run("option repeg tightens limit vs first attempt", func(t *testing.T) {
+		// bid=10.00 ask=10.40 mid=10.20 spread=0.40 DTE=10
+		// repeg 0: k=0.35, discount=0.14, target=10.06
+		// repeg 1: k=0.60, discount=0.24, target=9.96 -> floored to 10.01
+		q := &domain.OptionQuote{Bid: 10.00, Ask: 10.40, BidSize: 10, AskSize: 10, Timestamp: now}
+		p0, _, _ := svc.exitOrderParams(domain.ExitRuleTrailingStop, 10.20, 0, 0, false, true, q, 10, now)
+		p1, _, _ := svc.exitOrderParams(domain.ExitRuleTrailingStop, 10.20, 0, 1, false, true, q, 10, now)
+		assert.InDelta(t, 10.06, p0, 1e-9)
+		assert.InDelta(t, 10.01, p1, 1e-9)
+		assert.Less(t, p1, p0, "repeg must tighten toward bid")
 	})
 }
 
