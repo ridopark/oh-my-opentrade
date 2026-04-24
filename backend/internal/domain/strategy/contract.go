@@ -139,9 +139,8 @@ type SignalProgressEmitter interface {
 	EmitSignalProgress() []any // returns payload values (not domain.Event)
 }
 
-// EnvMode mirrors domain.EnvMode as a local string type so the strategy
-// contract package stays free of domain imports. Values match the domain
-// constants 1:1; the runner casts when it reads from instanceContext.
+// EnvMode is defined locally (shadowing domain.EnvMode) to keep the
+// strategy contract package free of domain imports.
 type EnvMode string
 
 const (

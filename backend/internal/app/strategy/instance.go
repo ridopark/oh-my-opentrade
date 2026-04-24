@@ -395,9 +395,9 @@ func (c *instanceContext) ProgressEventsSuppressed() bool {
 	return false
 }
 
-// EnvMode maps domain.EnvMode → the strategy-package EnvMode. Unpopulated
-// construction sites (sync.Pool reuse, NewContext in tests) default to Paper
-// so strategy code that branches on env mode picks the safer/longer TTL.
+// EnvMode defaults to Paper on zero-value envMode so callers that branch
+// on env mode fall into the safer bucket (e.g. longer TTLs) rather than
+// the live bucket.
 func (c *instanceContext) EnvMode() start.EnvMode {
 	switch c.envMode {
 	case domain.EnvModeLive:
