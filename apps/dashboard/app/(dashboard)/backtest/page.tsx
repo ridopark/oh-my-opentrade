@@ -559,8 +559,8 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
         // Option position side is always LONG (we buy calls or puts). Bearish
         // bias on the underlying for puts is reflected in the "LONG PUT" label,
         // not by calling the contract position "SHORT".
-        const isPut = /P\d{8}$/.test(entry.symbol);
-        const isOption = (t.instrument_type === "OPTION" || entry.instrument_type === "OPTION");
+        const isOption = /[CP]\d{8}$/.test(entry.symbol) || t.instrument_type === "OPTION" || entry.instrument_type === "OPTION";
+        const isPut = isOption && /P\d{8}$/.test(entry.symbol);
         const isEquityShort = (entry.direction ?? "") === "SHORT" && !isOption;
         const qty = entry.quantity ?? 0;
         const entryPx = entry.price ?? 0;
@@ -600,8 +600,8 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
   }
 
   for (const [, entry] of openBySymbol) {
-    const isPut = /P\d{8}$/.test(entry.symbol);
-    const isOption = entry.instrument_type === "OPTION" || isPut || /C\d{8}$/.test(entry.symbol);
+    const isOption = /[CP]\d{8}$/.test(entry.symbol) || entry.instrument_type === "OPTION";
+    const isPut = isOption && /P\d{8}$/.test(entry.symbol);
     const isEquityShort = (entry.direction ?? "") === "SHORT" && !isOption;
     positions.push({
       symbol: entry.symbol,
