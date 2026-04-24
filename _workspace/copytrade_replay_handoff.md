@@ -233,11 +233,236 @@ Data + scraping:
 
 ## Session-start prompt for next run
 
-> Resuming copytrade replay backtest. Days 1-4 shipped in commit 77ab911;
-> read `_workspace/copytrade_replay_handoff.md`. The pipeline is live and
-> producing ledgers in `_workspace/copytrade_replay/`. Day 5 is optional
-> polish — top candidates: (1) backfill missing-symbol bars to unlock the
-> OOU half of the sample, (2) STC fill attribution via `sig_*` tag
-> propagation, (3) ghost-position auto-expire. Ask before starting; the
-> analytical value of #1 depends on whether more replay iterations are
-> planned.
+> Resuming copytrade replay backtest. Days 1-4 shipped (commit 77ab911).
+> Day 5 session 3 (2026-04-23 late evening) shipped ghost-position TTL
+> auto-expire plus the prerequisite reentrant-mutex deadlock fix +
+> wall-clock→sim-time fix in the runner (commits 4461d26, c7ec395).
+> Replay matches baseline $5807.31 / 5 round-trips with zero orphans.
+> Remaining work: (a) HTTP backtest wiring for copytrade_v1 (plan
+> still drafted in "Day 5 session 2"); (b) STC fill attribution via
+> sig_* tag propagation. Read "Day 5 session 3" below before starting.
+
+----
+
+## Day 5 session 2 (2026-04-23, evening)
+
+### Shipped
+
+**Symbol backfill** — all 10 fully-missing tickers now have 1m bars for
+the full replay window (Jan 27 → Apr 23 2026):
+
+    BABA, BIDU, ENPH, FSLR, GLD, KWEB, PDD, RKLB, SLV, TSM
+
+- 389,702 bars inserted via `omo-backfill`, 0 errors, 2m39s elapsed.
+- DoltHub options imported for FSLR (62 days) and ENPH (62 days). The
+  other 8 aren't in DoltHub, so synthetic BSM fallback covers them.
+- No source changes — reproduce with:
+
+      /tmp/omo-backfill-bin --symbols BABA,BIDU,ENPH,FSLR,GLD,KWEB,PDD,RKLB,SLV,TSM \
+        --from 2026-01-27 --to 2026-04-24 --timeframe 1m \
+        --config configs/config.yaml --env-file .env
+
+  Log: `backend/_workspace/copytrade_replay/backfill_missing.log`
+
+- Partial-coverage symbols (INTC/ORCL last 04-13, MARA/NIO last 03-31)
+  were checked — every BTO in the sample falls within the existing
+  coverage window, so extension wasn't needed.
+
+### Replay rerun with 23-symbol universe
+
+Ran via omo-replay CLI — nothing else changed vs commit 77ab911:
+
+    /tmp/omo-replay-bin --backtest \
+      --copytrade-history services/discord-copytrade/state/history_90d.jsonl \
+      --strategies copytrade_v1 \
+      --symbols AAPL,AMZN,BABA,BIDU,ENPH,FSLR,GLD,GOOGL,INTC,IWM,KWEB,MARA,MSFT,NIO,NVDA,ORCL,PDD,QQQ,RKLB,SLV,SPY,TSLA,TSM \
+      --from 2026-01-27 --to 2026-04-23 \
+      --config configs/config.yaml --env-file .env
+
+Results (full log: `backend/_workspace/copytrade_replay/replay_23sym.log`):
+
+    metric          baseline (13)   expanded (23)   delta
+    SignalCreated   7               7               unchanged
+    round-trips     3               5               +2
+    Total PnL       +$4,306.63      +$5,807.31      +35%
+    Sharpe          2.809           2.019           lower (ENPH loser)
+
+New fills: SLV 79c 2/09 +$2,761 (winner), ENPH 40c 3/20 -$1,260 (loser).
+
+**Key finding — the binding constraint shifted.** With symbol coverage
+fixed, `max_positions = 5` is now the limiter, not missing bars. The
+seven BTOs that pass the cap are the same seven as before; coverage fix
+just lets more of them actually fill. More trades per run = ghost-expire
+work (Day 5 item #3) is now the highest-ROI next lever.
+
+### Discovered: HTTP backtest broken for copytrade_v1
+
+Dashboard `POST /backtest/run` with `strategies=["copytrade_v1"]` fails
+deterministically. Two stacked problems:
+
+1. **Wrong symbols collected.** `collectStrategySymbols` in
+   `backend/internal/adapters/http/backtest_handler.go:514` reads
+   `routing.symbols` from the TOML, which is the sentinel `__copytrade__`.
+   Runner then hits Alpaca for bars on `__COPYTRADE__` and gets
+   HTTP 400 `invalid symbol: __COPYTRADE__`. Visible in
+   `logs/omo-core.log` around the `backtest_id` logged at 21:15:20.
+
+2. **None of the copytrade pipeline is wired into `backtest.Runner`.**
+   The history parser, signal injector, sentinel-first-shard assignment,
+   fills ledger, and OnTickEnd drain all live exclusively in
+   `cmd/omo-replay/main.go`. The HTTP runner
+   (`backend/internal/app/backtest/runner.go`) never constructs any of it.
+
+Options adapter (`HistoricalOptionsAdapter` + synthetic BSM) IS already
+present in the HTTP runner — only piece already wired. Alpaca
+option-bar fetch subscription doesn't exist in the HTTP path at all, so
+no gate needed.
+
+### Plan — port copytrade wiring into HTTP backtest (NOT IMPLEMENTED)
+
+Approved at the planning stage, did not yet touch code. Files + edits:
+
+**`backend/internal/adapters/http/backtest_handler.go`** (~40 LOC)
+- Add `CopytradeHistory string` + `CopytradeLedgerDir string` to
+  `backtestRunRequest`.
+- In `handleRun`: when `copytrade_v1` is in `Strategies`, require
+  `CopytradeHistory`, reject with 400 if missing or file unreadable;
+  default `CopytradeLedgerDir` to `_workspace/copytrade_replay`.
+- In `collectStrategySymbols`: filter out any symbol starting with `__`
+  (the sentinel prefix). If the only selected strategy is copytrade and
+  `Symbols` is empty after filtering, 400 with a message telling the
+  caller to pass explicit symbols.
+- Plumb both new fields into `backtest.RunConfig`.
+
+**`backend/internal/app/backtest/runner.go`** (~160 LOC)
+- Add `CopytradeHistory`, `CopytradeLedgerDir` to `RunConfig`.
+- Import `copytradereplay`.
+- In `shardFactory` (line 1397): add `sentinelOwnerAssigned` bool and
+  switch the first shard's strategy to
+  `bootstrap.BuildStrategyShardWithSentinels` when
+  `cfg.CopytradeHistory != ""`. Others keep `BuildStrategyShard`
+  unchanged.
+- Before `r.infra.EventBus.FreezeHandlers()` at line 1481: when
+  `cfg.CopytradeHistory != ""`, construct `copytradereplay.Service`,
+  `Load()` history, construct `copytradereplay.Ledger`, subscribe it.
+- Extend `runnerSliceCoord` (line ~2240) with a `copytradeReplay`
+  field; in `OnTickEnd` (line 2264) mirror
+  `replaySliceCoord.OnTickEnd` in omo-replay:main.go:1810 — call
+  `AdvanceTo(ctx, tickTime)`, `WaitPending`, per-shard
+  `DrainPendingSignals` publish loop, final `WaitPending`.
+- At end-of-run (where `emitter.EmitComplete` fires): emit one
+  `copytrade_summary` SSE event and write `author_stated.csv` via
+  `Service.WriteAuthorStatedLedger`. Close the ledger file in the
+  runner's cleanup path.
+
+**Out of scope** for this slice:
+- Dashboard UI changes (backend contract only, manual curl verify first).
+- Consolidating CLI and HTTP wiring into a shared builder.
+- Mid-run copytrade progress events (end-of-run summary only).
+- Author-whitelist request override (read from TOML as today).
+- Integration test.
+
+**Risks to watch**:
+- Double-publish on multi-shard runs — `sentinelOwnerAssigned` bool
+  guard is critical (pattern from `omo-replay/main.go:516`).
+- `FreezeHandlers()` ordering — ledger `Subscribe` must run BEFORE the
+  freeze at line 1481, otherwise it silently no-ops.
+- Ledger dir `_workspace/copytrade_replay/` is shared with the CLI;
+  concurrent runs would clobber `fills.csv`. Acceptable since the HTTP
+  queue is single-worker.
+
+Blast radius: non-copytrade backtests unchanged when
+`CopytradeHistory == ""` — the sentinel-first-shard switch, the new
+subscribers, and the OnTickEnd injector are all guarded by that
+predicate.
+
+**Verification checklist** before shipping:
+- `go build ./cmd/omo-core` clean.
+- `go test ./internal/app/backtest/... ./internal/adapters/http/...`
+  passes (9 test files in backtest alone).
+- Manual curl with 23-symbol list + history path reproduces CLI
+  baseline (+$5,807.31, 5 round-trips) within slippage noise.
+- Regression: POST any non-copytrade strategy, verify unchanged.
+
+### Files updated by this session
+
+- TimescaleDB `market_bars` — 389,702 new rows.
+- TimescaleDB `historical_options_*` — FSLR and ENPH coverage extended.
+- `_workspace/copytrade_replay/{fills.csv,author_stated.csv}` —
+  overwritten with 23-symbol rerun output.
+- `backend/_workspace/copytrade_replay/{backfill_missing.log,replay_23sym.log}`
+  — new log files.
+
+No source code changed this session. No commits made.
+
+----
+
+## Day 5 session 3 (2026-04-23, late evening)
+
+### Shipped
+
+**Ghost-position TTL auto-expire** and two prerequisite runner fixes.
+
+Commits (on `main`):
+
+- `4461d26` — fix(strategy): prevent reentrant deadlock + use sim-time
+  in copytrade handlers. Lock-free `Instance.IsActive`/`Lifecycle`/
+  `SetLifecycle` via `atomic.Pointer[LifecycleState]`; defer re-entrant
+  `handleCopytradeExitRejected` → `Instance.OnEvent` via runner-level
+  callback queue drained after inst.mu + r.mu released. Four copytrade
+  handler sites now thread `event.OccurredAt` into `instCtx.now` via a
+  new `Runner.handlerNow` helper so backtests see sim-time.
+- `99dd814` — refactor: tighten docstrings + drop redundant reentry-test
+  assertion. [skip-review]
+- `c7ec395` — feat(copytrade): ghost-position TTL auto-expire with
+  broker cancel. Config: `pending_ttl_paper_seconds=120`,
+  `pending_ttl_live_seconds=90` (0 disables). Strategy sweeps stale
+  Pending at top of OnEvent, emits `CopytradeEntryExpired` →
+  execution cancels the BTO at the broker (SimBroker no-ops safely;
+  IBKR does a real cancel). On race (fill arrives after slot freed)
+  strategy emits `CopytradeOrphanFill` → notify formatter pages Discord.
+- `af01344` — refactor: tighten TTL-sweep docstrings. [skip-review]
+
+### Replay result after the fix (23-symbol, 90d)
+
+    metric                baseline (TTL=0)   post-fix (TTL=120/90)
+    round-trips           5                  5
+    Total PnL             +$5,807.31         +$5,807.31
+    Win rate              80%                80%
+    Max drawdown          1.18%              1.18%
+    Sharpe                2.019              2.019
+    Ghost-expires fired   —                  0
+    Orphan fills          —                  0
+
+Identical output. The 23-symbol universe has no "silent drop" positions,
+so the sweep finds nothing to expire; the feature is a safety net for
+live trading. The *old* pre-fix hung run showed 4 false expires due to
+the wall-clock-vs-sim-time bug — that's what the sim-time fix resolved.
+
+### What the new `go-hexagonal/SKILL.md` gotchas capture
+
+Two architectural traps worth remembering for any future copytrade /
+event-driven strategy work:
+
+1. **syncMode bus + in-handler publish re-enters the same goroutine.**
+   Holding `inst.mu` across `strategy.OnEvent` AND having a bus
+   subscriber that touches the same instance is a recipe for deadlock
+   in backtest. Fix pattern: atomic lifecycle + runner-level callback
+   queue drained at handler exit.
+2. **Copytrade handlers must use `event.OccurredAt`, not `time.Now()`.**
+   `handleFill` already did. `handleCopytradeSignal` /
+   `handleCopytradeExitRejected` / `handleRejection` did not — the
+   mismatch silently miscomputed any strategy-side age math in backtest.
+
+### Remaining work
+
+- **(a) HTTP backtest wiring for copytrade_v1.** Plan is drafted in
+  "Day 5 session 2 → Plan — port copytrade wiring into HTTP backtest
+  (NOT IMPLEMENTED)" above. Ready to implement; no new dependencies
+  discovered this session.
+- **(b) STC fill attribution.** Propagate `sig_*` tags from the BTO
+  fill through `MonitoredPosition.EntrySignalTags` onto the STC
+  `OrderIntent.Meta` so `fills.csv` is pivotable by author/signal_id.
+  Plan in the "Known gotchas" section still applies.
+
+No longer in scope: (c) ghost-position auto-expire — shipped.
