@@ -1026,6 +1026,9 @@ func (rs *RiskSizer) handleOptionsSignal(
 
 	intentID := uuid.New()
 	rationale := enrichment.Rationale
+	if override, ok := sigRef.Tags["author_text"]; ok && override != "" {
+		rationale = override
+	}
 	if rationale == "" {
 		rationale = fmt.Sprintf("option: %s %s delta=%.2f DTE=%d",
 			optRight, best.ContractSymbol, best.Delta, int(best.Expiry.Sub(rs.nowFn()).Hours()/24))

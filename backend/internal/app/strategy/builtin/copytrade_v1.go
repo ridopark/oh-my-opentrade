@@ -315,6 +315,7 @@ func (s *CopytradeStrategy) handleBTO(ctx start.Context, cst *copytradeState, si
 
 	tags := map[string]string{
 		"author":                     sig.Author,
+		"author_text":                composeAuthorText(sig.Author, sig.RawLine),
 		"generation":                 strconv.Itoa(gen),
 		"contract_symbol":            contractSym,
 		"signal_id":                  sig.SignalID,
@@ -400,6 +401,8 @@ func (s *CopytradeStrategy) handleSTC(ctx start.Context, cst *copytradeState, si
 		ContractSymbol: pos.ContractSymbol,
 		Fraction:       fraction,
 		Reason:         keyword,
+		Author:         sig.Author,
+		RawLine:        sig.RawLine,
 	}
 	if ctx != nil {
 		if err := ctx.EmitDomainEvent(exitPayload); err != nil {
@@ -483,6 +486,19 @@ func resolveFraction(tail string, table []copytradePartial, def float64) (float6
 
 func formatFloat(v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
+// composeAuthorText produces the "<author>: <raw_line>" rationale string used
+// as the OrderIntent.Rationale for copytrade entries and exits. Falls back
+// to just raw_line when author is missing, and empty when both are missing.
+func composeAuthorText(author, rawLine string) string {
+	if rawLine == "" {
+		return ""
+	}
+	if author == "" {
+		return rawLine
+	}
+	return author + ": " + rawLine
 }
 
 // handleFillConfirmation flips Pending=false on the matching pending position.
