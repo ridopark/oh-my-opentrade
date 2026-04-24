@@ -33,7 +33,9 @@ function parseExitReason(rationale?: string): string | null {
   if (m) return m[1].replace(/_/g, " ");
   if (rationale.includes("avwap_exit")) return "AVWAP EXIT";
   if (rationale.includes("passthrough") && rationale.includes("exit")) return "TREND REVERSAL";
-  return null;
+  // Fallback: show the rationale verbatim so strategies without a recognized
+  // prefix (e.g. copytrade's "<author>: <raw_line>") still surface context.
+  return rationale;
 }
 
 /** Extract entry setup type from the rationale string.
@@ -41,11 +43,15 @@ function parseExitReason(rationale?: string): string | null {
 function parseEntryReason(rationale?: string): string | null {
   if (!rationale) return null;
   const m = rationale.match(/setup:(\S+)/);
-  if (!m) return null;
-  // Strip strategy prefix (e.g. "avwap_breakout" → "BREAKOUT", "orb_break_retest" → "BREAK RETEST")
-  const raw = m[1];
-  const stripped = raw.replace(/^(avwap|orb)_/, "");
-  return stripped.toUpperCase().replace(/_/g, " ");
+  if (m) {
+    // Strip strategy prefix (e.g. "avwap_breakout" → "BREAKOUT", "orb_break_retest" → "BREAK RETEST")
+    const raw = m[1];
+    const stripped = raw.replace(/^(avwap|orb)_/, "");
+    return stripped.toUpperCase().replace(/_/g, " ");
+  }
+  // Fallback for strategies whose rationale doesn't encode a setup tag
+  // (e.g. copytrade emits "<author>: <raw_line>" verbatim).
+  return rationale;
 }
 
 /** Extract confluence score and detail from the rationale string.
