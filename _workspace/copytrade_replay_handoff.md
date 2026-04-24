@@ -1,301 +1,243 @@
-# copytrade replay backtest — session handoff (2026-04-23, end of day)
+# copytrade replay backtest — session handoff (2026-04-23, Day 1-4 shipped)
 
 Pick up here. The goal is to backtest the live `copytrade_v1` strategy against
 90 days of scraped Discord messages, using the same code paths as paper trading
 (Chandelier trail, partial STCs, Pending-flag semantics, max_positions gate) so
 the result reflects what a real copier would have experienced.
 
-This session produced: (a) a Discord history scraper, (b) the 90d JSONL, and
-(c) design agreement with go-architect + Explore on how the replay should
-hook in. Zero code yet toward the replay itself.
+Days 1-4 landed in commit `77ab911` — end-to-end pipeline is live and
+producing ledgers. Day 5 is optional polish; this doc is organized for a
+cold-start pickup.
 
-## What's already in place
+## TL;DR for the next session
 
-- `services/discord-copytrade/state/history_90d.jsonl` — 261 raw Discord
-  messages, Jan 27 → Apr 23, sorted oldest-first. 5 authors, 79 BTO / 106 STC /
-  16 AVG action-bearing lines.
-- `services/discord-copytrade/scrape_history.py` — one-shot Playwright scraper
-  reusing `state/storage_state.json`, wired as compose profile `scrape`. Run
-  again anytime with `docker compose --profile scrape run --rm scrape --days N
-  --out /app/state/history_Nd.jsonl`.
-- Live copytrade is already correct end-to-end (commit `72da48b` landed this
-  session, covering the sentinel-symbol leak, ghost-position flag, and
-  in-flight partial rejection). The strategy, runner subscription, and
-  positionmonitor handler all work in backtest mode too because they subscribe
-  to the same `ports.EventBusPort`.
+1. Read "What's shipped" below to understand the pipeline that exists.
+2. Run this to reproduce current results (takes ~45s on warm cache):
 
-## What the Discord data looks like (coverage against DoltHub)
+       cd backend
+       go build -o /tmp/omo-replay-bin ./cmd/omo-replay
+       cd ..
+       /tmp/omo-replay-bin --backtest \
+         --copytrade-history services/discord-copytrade/state/history_90d.jsonl \
+         --strategies copytrade_v1 \
+         --symbols AAPL,AMZN,GOOGL,INTC,IWM,MARA,MSFT,NIO,NVDA,ORCL,QQQ,SPY,TSLA \
+         --from 2026-01-27 --to 2026-04-23 \
+         --config configs/config.yaml --env-file .env
 
-Probing 12 random BTOs from "covered" symbols against the local
-`historical_option_chain` table (against the exact ticker+date+expiration+
-strike+right tuple the author specified):
+3. Expected output: 79 BTOs parsed → 7 SignalCreated → 3 round-trips → +$4,306.
+   Full summary block at the end of replay prints author-stated vs actual.
 
-- **2/12 exact hits.** Only INTC 3/20 55c (a standard monthly expiry) matched.
-- **Root cause is expiration sparsity, not ticker coverage.** DoltHub stores
-  2–4 expirations per `(symbol, date)` snapshot, skewed mid-to-long-dated.
-  Near-term weeklies (0–9 DTE, which is where 46 of 79 BTOs live) are
-  systematically absent.
-- **EOD-only snapshots.** Schema has `date`, not `timestamp`. The author posts
-  at 10:20 ET; the best we can get is the 16:00 close bid/ask — a 6-hour
-  pricing gap per trade.
-- **37% of tickers not covered at all.** NIO, BIDU, KWEB, BABA, PDD, TSM, SLV,
-  GLD, ENPH, RKLB — 24 of 79 BTOs.
+4. Ledgers written to `_workspace/copytrade_replay/{fills,author_stated}.csv`.
 
-Upshot: a naive replay that only uses DoltHub drops ~70% of BTOs. The
-fallback plan is to wire the existing synthetic-BSM generator (used elsewhere
-in the backtest stack) as a secondary source when DoltHub misses, and report
-coverage stats at end-of-run.
+## What's shipped (Days 1-4)
 
-## Design decisions (from go-architect + Explore consultation)
+- `backend/internal/app/copytradereplay/` — new package:
+  - `parser.go` — Go port of the Python Discord text parser, golden-tested
+    against all 261 history rows (bit-identical output).
+  - `service.go` — `Load(path, from, to)` pre-sorts the queue by
+    `(PostedAt, BTO<AVG<STC)` and `AdvanceTo(ctx, clockTime)` drains any
+    signal with `PostedAt <= clockTime` at tick END, publishing
+    `EventCopytradeSignalReceived` directly to the sync bus. Bypasses the
+    HTTP handler's 120s freshness TTL. 5 unit tests pass.
+  - `ledger.go` — subscribes to `EventFillReceived` filtered by
+    `strategy=copytrade_v1`, writes per-fill CSV.
+  - `author_ledger.go` — walks the parsed queue, pairs BTOs with their
+    same-key STCs, applies partial-fraction keyword rules, writes
+    reconstructed per-position CSV with author-stated VWAP exit and
+    PnL-per-contract.
+- `backend/cmd/omo-replay/main.go` — flags `--copytrade-history` and
+  `--copytrade-ledger-dir` (default `_workspace/copytrade_replay`). Injector
+  + ledger subscribe **before** `FreezeHandlers()` (critical — post-freeze
+  Subscribe silently no-ops under the atomic handler snapshot). `OnTickEnd`
+  calls `AdvanceTo` after `EvalExitRules` then explicitly drains every
+  shard's `pendingSignals` buffer since the Phase-B bar-index drain doesn't
+  catch signals emitted from bus handlers.
+- `backend/internal/app/bootstrap/strategy.go` —
+  `BuildStrategyShardWithSentinels` variant: registers `__name__`
+  sentinel-routed specs even when slab filter excludes them. Called from
+  exactly the first shard factory in omo-replay via a
+  `sentinelOwnerAssigned` bool, so the bus handler fires once per event
+  (not N times for N shards). Non-copytrade callers pass through the
+  non-sentinel path unchanged.
+- `backend/internal/app/backtest/synthetic_options_chain.go` — two fixes
+  that activate **only** when `minDTE == maxDTE` (forced-expiry mode from
+  risk_sizer — byte-identical for range-DTE backtests):
+  1. `weeklyExpiries` returns the exact date regardless of weekday. Was
+     Friday-only, which silently dropped any author post with a Mon/Wed
+     expiry.
+  2. `GenerateChain` unions exchange-standard tick strikes into the grid
+     ($1 for ≥\$50, $0.50 for ≥\$10, $0.25 otherwise). Before, a spot-based
+     step of 1% skipped common integer strikes — AMZN \$245 wasn't in the
+     grid for spot ~\$230.
+- `services/discord-copytrade/scrape_history.py` + compose profile — the
+  Playwright scraper wired as `docker compose --profile scrape run --rm
+  scrape --days N --out /app/state/history_Nd.jsonl`.
+- Options data path: when `--copytrade-history` is set, swap
+  `cachingOptionsMarket(alpacaAdapt)` for `HistoricalOptionsAdapter` with
+  the synthetic BSM fallback enabled by default. PreLoad runs over the
+  from/to window. `Stats()` prints DoltHub/synthetic hit counts at
+  end-of-run. Alpaca option-bar fetch subscription is gated off in
+  copytrade mode (chandelier trail uses underlying→BSM, not option marks,
+  so the Alpaca fetch just produced noise).
 
-### 1. Injector placement
+## Resolved decisions
 
-New app-layer service: `backend/internal/app/copytradereplay/`.
+All six pre-code blockers are resolved (see commit `77ab911` message for
+detail):
 
-    service.go      — Load(path), AdvanceTo(ctx, clockTime)
-    parser.go       — Go port of the Python regex parser
-    parser_test.go  — golden test against all 261 history rows
-    ledger.go       — per-trade CSV writer subscribing to FillReceived
+- **#1 Parser port** — ported to Go, golden test locked in.
+- **#2 Synthetic BSM fallback** — accepted + reported.
+- **#3 Option-bar feed** — single-mark path chosen; chandelier trail works
+  via underlying→BSM so option bars aren't on the critical path.
+- **#4 Universe gate wiring** — not yet wired. Turned out to be a
+  *non-gate*: the runner's `universeHistory` port is nil in backtest, so
+  signals pass the gate by default. The real filter is at the sharded-
+  pipeline level (slab symbols). OOU BTOs pass the runner but never
+  execute because no bars arrive — they stay Pending forever and consume
+  `max_positions` slots.
+- **#5 Author whitelist** — copytrade_v1.toml has `author_whitelist = []`
+  (allow all). No authors in the 90d sample are filtered here.
+- **#6 Freshness TTL bypass** — injector publishes directly to the bus;
+  never routes through the HTTP handler.
 
-**Not** under `cmd/omo-replay/` (that's orchestration, not logic) and **not**
-an adapter (adapters satisfy external-world ports; this one injects domain
-events into the bus). `cmd/omo-replay/main.go` constructs the service
-alongside the other `bootstrap.Build*` calls under a new `--copytrade-history
-<path>` flag, gated on `--backtest`.
+## 90d run results (commit 77ab911, 13-symbol universe)
 
-### 2. Timing model
+    Input:  79 BTOs, 103 STCs, 14 AVGs from 5 authors over Jan 27 - Apr 23 2026
+    Injector: 196 signals published (100% of parsed input, 60 non-action drops)
 
-Pre-sorted priority queue, drained at **tick END** (not start). Reasoning:
+    Strategy emits:
+      7 SignalCreated (of 79 BTOs)
+      reasons for the 72 drops — all logged at WARN level in copytrade_v1:
+        ~72  "dropping BTO — max_positions reached"
+          2  "BTO rejected — unwinding ghost position"
+         67  "STC with no prior BTO — dropping"  (corresponding BTOs dropped)
+          3  "STC refused — BTO not yet confirmed by broker"
+         14  "skipping AVG"  (skip_avg=true — intended)
 
-- The copytrade strategy sets `Pending=true` on BTO emit and refuses STCs
-  against pending positions. Draining signals at tick start would inject
-  same-minute BTO+STC pairs before SimBroker has a chance to fill the BTO →
-  the STC gets refused → state desync.
-- Drain-at-tick-end order: bar publish → fills post back → positionmonitor
-  processes → strategy handleFillConfirmation clears Pending → injector
-  drains any signals with `ts <= tickTime+1min`.
-- Same-minute BTO/STC pairs (rare in the 90d sample — median gap is 7+ min)
-  need deterministic within-tick ordering: BTO first, STC second. Achieved
-  by stable-sorting the queue with a secondary key on action (BTO < AVG <
-  STC) when timestamps tie at the bar boundary.
+    Fills: 6 (3 BTO + 3 STC round-trips completed)
+    Actual P&L:    +$4,306.63 / 3 wins / 0 losses / Sharpe 2.809
+    Author P&L:    +$1,192.84 per contract across 53 positions / 77.8% WR
 
-The replay event bus is `memory.NewSyncBus` (synchronous), so `eventBus.
-Publish` from a single-threaded dispatcher is the clean path. No goroutines.
+    Trade log:
+      AMZN 245c 2/02  BTO $3.52 → STC $3.86   +$266   (author: +$31.69/ct)
+      TSLA 445c 2/04  BTO $4.19 → STC $5.77   +$1108  (author: +$6.54/ct)
+      INTC 55c 3/20   BTO $0.96 → STC $2.43   +$2932  (author: +$8.25/ct, 33% closed)
 
-### 3. Options data path
+## Why only 3 trades out of 79 BTOs?
 
-Hybrid: historical DoltHub primary + synthetic BSM fallback. The current
-replay wires `alpacaAdapt.GetOptionChain` (LIVE Alpaca, not historical) via
-`cachingOptionsMarket` at `cmd/omo-replay/main.go:386` — this is wrong for a
-historical replay and must be swapped.
+Two constraints compound:
 
-The project already has the right adapter:
-`backend/internal/app/backtest/historical_options_adapter.go` —
-`GetOptionChain` at :208, `hasExpiryInDTERange` at :258, `generateSynthetic`
-at :283. It's currently only used by the batch `omo-backfill` path. Wiring it
-into omo-replay when `--copytrade-history` is set is the change.
+1. **Symbol coverage gap.** 10 of the 23 tickers in the sample
+   (BABA/PDD/TSM/ENPH/SLV/GLD/KWEB/BIDU/NIO/RKLB/FSLR) have no bars in
+   `market_bars`. These BTOs emit → reach the risk sizer → intent
+   resolves via synthetic chain → SimBroker **fails to fill** (no price
+   for the underlying) → intent sits unresolved → strategy's position
+   counter treats them as still-open ("Pending=true, ghost position").
 
-Copytrade doesn't let risk_sizer pick from a chain — the Discord message
-pins strike+expiry+right via `force_*` tags in handleBTO. So the adapter
-just needs to answer "does this exact contract have a sane quote at this
-date?" and return a synthetic OCC contract at PostedAt-spot when DoltHub
-misses. `HistoricalOptionsAdapter.Stats()` (:195) already exists — print at
-end of run.
+2. **`max_positions = 5`.** Once 5 Pending-or-open positions accumulate,
+   every subsequent BTO drops with `max_positions reached`. With OOU
+   tickers never clearing from Pending, the cap fills early and stays
+   full. The 2 `unwinding ghost position` log lines show the strategy
+   *eventually* reconciles some stuck positions on OrderIntentRejected,
+   but this path doesn't fire often enough to keep the cap open.
 
-### 4. Exit pricing feed (option bars during replay)
+The strategy logic is correct. The constraint is data coverage + the
+cap's interaction with unresolved positions. Backfilling the missing
+symbols to `market_bars` would unlock roughly half the sample. Beyond
+that, the author-stated ledger suggests the untouched positions would
+have been a net positive (+$1,192/ct across 53, 77.8% WR).
 
-Currently, `cmd/omo-replay/main.go:350` lazily fetches `alpacaAdapt.
-GetHistoricalOptionBars` per-contract on FillReceived and stuffs minute bars
-into `optionBarsCache` for positionmonitor to mark exits. For copytrade
-replay, Alpaca historical options bars only go back ~30 days and cost per
-request; DoltHub has EOD only.
+## Known gotchas (non-obvious)
 
-Two options the next session must pick from:
+- **`FreezeHandlers` ordering.** Any `bus.Subscribe` after
+  `FreezeHandlers()` is silently ignored at delivery time — the bus's
+  fast-path `Publish` reads from an atomic snapshot. When adding new
+  subscribers to omo-replay, put them before the freeze call
+  (`main.go:1036`).
+- **Sentinel-shard single-fire.** The copytrade strategy registers in the
+  *first* shard only via a `sentinelOwnerAssigned` bool in the factory
+  closure. If you refactor shard construction to parallel / non-deterministic
+  order, the "first" assignment still works because Go maps aren't iterated
+  in the factory — shard factory is called serially per slab by
+  `NewShardedPipeline`.
+- **Forced-expiry synthetic path.** `minDTE == maxDTE` is the signal to
+  the synthetic generator that the caller has pinned a specific date and
+  wants full coverage. Any call with a range (e.g. DTE 5-14 from a spec's
+  `options.defaults`) takes the original Friday-only, step-based path.
+- **STC fill attribution gap.** BTO fills carry `author`/`signal_id` via
+  `sig_*` tag propagation. STC fills do not — position-monitor-driven
+  exits don't propagate those tags onto the OrderIntent. Correlate STCs
+  to BTOs by `contract_symbol` when analyzing the fills CSV.
+- **Author-stated PnL multiplier.** `AuthorPnLPerCtr` multiplies by 100
+  (options contract size) so dollars align with the backtest collector.
+  Multiply by actual contract count to compare to the real ledger.
 
-  (a) DoltHub-backed bar reader that interpolates EOD-mid across the trading
-      day (repeats EOD bid/ask per minute bar). ~3 days of work. Inaccurate
-      but doesn't pretend otherwise.
-  (b) Single-mark pricing: hold the contract mark at entry premium until
-      STC, then mark at EOD bid. ~1 day of work. Accurate at STC time;
-      meaningless for any mid-day trail that needs running mark.
+## Day 5 — optional polish
 
-Recommendation: ship (b) first for a fast end-to-end run, then upgrade to
-(a) if the initial numbers look worth polishing. Chandelier trail will be
-noise under (b), so report trail behavior separately (did it arm? did it
-fire? was it stale?).
+Priority order based on analytical ROI:
 
-### 5. Exit order execution
+1. **Backfill missing-symbol bars.** Would unlock ~half the author sample.
+   `omo-backfill` binary exists; check its flags. Candidates:
+   BABA, PDD, TSM, ENPH, SLV, GLD, KWEB, BIDU, NIO, RKLB, FSLR.
+2. **STC fill attribution.** Propagate the source BTO's `sig_*` tags onto
+   the exit intent in `positionmonitor/handlers.go:triggerExit`. Carefully
+   scoped: don't break non-copytrade exits. Makes fills.csv pivotable by
+   `signal_id`.
+3. **Ghost-position auto-expire.** If a BTO stays Pending for >N minutes
+   without a fill (because the symbol has no bars), auto-unwind. Would
+   prevent max_positions from filling with phantom positions.
+4. **Integration test.** 10-message synthetic history → assert expected
+   fill count + ledger row count. Locks in the pipeline against regression
+   but doesn't reveal new info.
 
-Already works in `--backtest`. Verified chain:
-
-  positionmonitor.Start subscribes EventCopytradeExitRequest (service.go:413)
-  handleCopytradeExitRequest → triggerExit (handlers.go:201 → :268)
-  triggerExit emits OrderIntent on outbox (drains via drainOutbox in backtest)
-  SimBroker handles InstrumentTypeOption (broker.go:273), supports partials
-  FillReceived → runner.handleFill → strategy.handleFillConfirmation
-
-No wiring change needed. Just pass `--strategies copytrade_v1` (or whatever
-the current strategy filter flag is) when invoking omo-replay.
-
-### 6. Reporting
-
-Reuse `backtest.Collector` (already wired at `cmd/omo-replay/main.go:425`)
-for PnL / Sharpe / drawdown / trade count. Add a copytrade-specific ledger
-under `copytradereplay/ledger.go`:
-
-  one CSV row per FillReceived event filtered by strategy=copytrade_v1:
-  signal_id, author, ts_posted, ts_filled, contract_symbol, action,
-  qty, fill_price, remaining_frac_after, generation, keyword
-
-Post-process to pair BTO → STC sequences by position base key and compute
-round-trip PnL. Parallel CSV for "author-stated" PnL (parsed directly from
-the 90d history's BTO premium and each STC premium weighted by keyword
-fraction) gives us the cheap eval for free — comparison of the two columns
-tells us how much of the author's edge survives real copier execution.
-
-End-of-run summary should print:
-- Messages ingested, parsed, dropped (by reason)
-- BTOs issued, filled, rejected (by reason)
-- STCs issued, refused (by reason — pending, no-position, in-flight)
-- HistoricalOptionsAdapter.Stats() — DoltHub hits vs synthetic
-- backtest.Collector report
-- Copytrade ledger vs author-stated ledger deltas
-
-## Blockers requiring human decision before code
-
-Priority order:
-
-1. **Parser port**. Python regex in `services/discord-copytrade/parser.py` is
-   ~20 LOC of straightforward regex plus `_resolve_expiry`. Reimplement in
-   Go (`copytradereplay/parser.go`) vs. run sidecar as pre-processor
-   dumping parsed JSONL. **Decision: port to Go.** Avoids Python dep in the
-   replay binary, simpler CI, golden test against all 261 messages.
-
-2. **Synthetic fallback acceptance**. **RESOLVED 2026-04-23: accept + report.**
-   `HistoricalOptionsAdapter.Stats()` prints DoltHub hits vs synthetic
-   coverage in end-of-run summary.
-
-3. **Option-bar feed for running mark**. **RESOLVED 2026-04-23: single-mark
-   (option b).** Rationale from agent consultation:
-   - quant-analyst: option (a) EOD-repeat is *worse* than (b) for 0-9 DTE
-     weeklies. Staircase input creates false-precision trail fires on stale
-     data. (b)'s bias is small and symmetric for the sample's hold-time
-     distribution. If signal survives (b), upgrade to real intraday (Polygon
-     flat files), not synthetic interpolation.
-   - Explore revealed: chandelier trail does NOT consume option bars. It
-     reprices via `pos.EstimatedPremium(currentUnderlyingPrice, now)` (BSM)
-     on every tick from `PriceCache`, fed by underlying bars (already
-     publishing in replay). So (b) does NOT disable the trail — the
-     handoff's earlier "trail will be noise" note is wrong.
-   - go-architect: (b) is ~0.5 day (not 1) — 30-line swap on FillReceived
-     handler. Formal port exists at `ports/options_historical_bars.go:13`.
-   - Guardrail: cap holding at author STC or (expiry - 1 day), mark
-     expired-unSTC'd contracts at intrinsic. Otherwise stale-mark bugs
-     dominate any bias discussion.
-   - Instrument chandelier arm + would-have-fire events separately from
-     STC-driven exits so we can measure trail contribution.
-
-4. **Universe gate wiring**. `universeHistory` is optional — nil skips the
-   gate. Wiring it in replay makes out-of-universe drops early and
-   countable, but requires constructing the history port for the replay
-   context. **Default: wire it.** Low risk.
-
-5. **Author whitelist match**. Replay must use the same copytrade TOML spec
-   as production. If production's `author_whitelist` excludes authors in
-   the 90d sample (TradingTheTrend, Edtrader, TB22, beendoubleyou), those
-   BTOs silently drop. Confirm the spec before kicking off a full run.
-
-6. **Freshness TTL bypass**. The HTTP handler rejects messages older than
-   120s. The injector MUST publish `CopytradeSignalPayload` directly to
-   the bus, bypassing the HTTP handler. (This is why the injector is an
-   app-service, not a fake HTTP client.) Already baked into the design;
-   flagged here so nobody "helpfully" routes through the HTTP layer.
-
-## Work sequence — 5 days
-
-**Day 1. Parser + domain plumbing.**
-- Port Discord text parser to Go: `copytradereplay/parser.go`.
-- Golden test against all 261 history rows — require 100% parse success or
-  explicit drop reasons (non-action text, malformed strikes).
-- Sanity check: parsed output matches live sidecar's HTTP payload shape
-  (compare to `copytrade_handler.go:151 buildPayload`).
-
-**Day 2. Injector service + replay wiring.**
-- Implement `copytradereplay.Service` with `Load(path)`, `Pending() int`,
-  `AdvanceTo(ctx, clockTime) error`.
-- Wire into `cmd/omo-replay/main.go` under `--copytrade-history <path>` flag.
-- Integrate with both the slice-to-completion path (`replaySliceCoord.
-  OnTickEnd` ≈ `main.go:1618`) and the legacy single-shard loop (just before
-  the next-bar iteration ≈ `main.go:1087`).
-- Dry-run: confirm signals reach `handleCopytradeSignal` and produce
-  `SignalCreated` events. Tracer count check.
-
-**Day 3. Options data path.**
-- Replace `cachingOptionsMarket(alpacaAdapt)` (at `main.go:386`) with
-  `HistoricalOptionsAdapter` + synthetic generator when
-  `--copytrade-history` is set.
-- Pick option-bar feed strategy (see Blocker #3). Implement.
-- Run end-to-end, verify positions open and close across the 90d window.
-
-**Day 4. Reporting + ledger.**
-- Add `copytradereplay.Ledger` subscribing to `EventFillReceived`, emitting
-  per-trade CSV.
-- Add parallel author-stated CSV generator from the parsed history.
-- End-of-run summary block (see Reporting above).
-
-**Day 5. Validation + tests.**
-- Unit tests for parser, injector queue, ledger.
-- Integration test: small synthetic history (10 messages, covered
-  tickers only) through the full pipeline, asserting expected fill counts
-  and ledger rows.
-- Run against full 90d; triage drops (expiry misses, universe gate,
-  parser failures).
-- Update this doc with observed coverage + decisions for the next iteration.
+Not worth doing (lower ROI):
+- Expiry-1d cap + intrinsic mark at expiry (the guardrail flagged by
+  quant-analyst). No expired-unSTC positions in the sample — the 4
+  unclosed ones are all still within their expiry window.
 
 ## Key file pointers
 
-Replay pipeline:
-- `backend/cmd/omo-replay/main.go` — lines 188 (SyncBus), 213 (clockFn),
-  294-582 backtest block, 350 option bar fetch, 386 options market wrap,
-  1020 slice coord, 1577 OnTickBegin clock advance, 1618 OnTickEnd
-- `backend/cmd/omo-replay/options_cache.go` — to replace/supplement
+Replay pipeline (for the next session):
 
-Copytrade live path (already correct):
-- `backend/internal/app/strategy/runner.go` — handleCopytradeSignal :2401,
-  handleCopytradeExitRejected :2522, subscriptions :745
-- `backend/internal/app/strategy/builtin/copytrade_v1.go` — Init, OnEvent,
-  handleBTO :272, handleSTC, handleFillConfirmation, handleEntryRejection,
-  handleExitRejection
+- `backend/cmd/omo-replay/main.go` —
+  - `:95` copytrade-history flag
+  - `:969` injector + ledger construction (before FreezeHandlers)
+  - `:392` options market switch (copytrade → hist adapter, else alpaca)
+  - `:461` shardFactory sentinel-first-shard assignment
+  - `:1629` OnTickEnd AdvanceTo + explicit pendingSignals drain
+  - `:1278` end-of-run `=== COPYTRADE REPLAY ===` block
+  - `:1308` end-of-run author-stated block + summary
+- `backend/internal/app/copytradereplay/` — package lives here
+- `backend/internal/app/bootstrap/strategy.go:186` —
+  `BuildStrategyShardWithSentinels` + `isSentinelSymbol`
+- `backend/internal/app/backtest/synthetic_options_chain.go:171` —
+  `weeklyExpiries` forced-expiry branch
+- `backend/internal/app/backtest/synthetic_options_chain.go:249` —
+  `unionStandardStrikes` helper
+
+Live copytrade path (unchanged by this work):
+
+- `backend/internal/app/strategy/runner.go:745` — bus subscription for
+  `EventCopytradeSignalReceived`
+- `backend/internal/app/strategy/runner.go:2401` — `handleCopytradeSignal`
+- `backend/internal/app/strategy/builtin/copytrade_v1.go` — strategy logic
 - `backend/internal/app/positionmonitor/handlers.go:201` —
-  handleCopytradeExitRequest
-- `backend/internal/app/positionmonitor/service.go:413` — subscription
-- `backend/internal/adapters/http/copytrade_handler.go` — production entry;
-  replay injector BYPASSES this
-
-Data adapters:
-- `backend/internal/app/backtest/historical_options_adapter.go` — full
-  DoltHub+synthetic adapter (:208 GetOptionChain, :258 hasExpiryInDTERange,
-  :283 generateSynthetic, :195 Stats)
-- `backend/internal/adapters/timescaledb/historical_options_repo.go` —
-  repo under the adapter
-- `backend/internal/ports/options_market_data.go` — OptionsMarketDataPort
-- `backend/internal/ports/historical_options.go` — HistoricalOptionsPort
-- `backend/internal/adapters/simbroker/broker.go:273` — option fill path
+  `handleCopytradeExitRequest` (where STC exits dispatch)
 
 Data + scraping:
-- `services/discord-copytrade/state/history_90d.jsonl` — 261 raw messages
-- `services/discord-copytrade/scrape_history.py` — re-run scraper
-- `services/discord-copytrade/parser.py` — Python parser to port
 
-Architecture reference:
-- `.claude/skills/go-hexagonal/SKILL.md` — rules on placement (ports vs.
-  adapters vs. app services)
+- `services/discord-copytrade/state/history_90d.jsonl` — 261 raw messages
+- `services/discord-copytrade/scrape_history.py` — re-run scraper any time
+- `backend/internal/app/copytradereplay/testdata/parsed_ground_truth.jsonl`
+  — Python parser output captured as golden reference for Go parser tests
 
 ## Session-start prompt for next run
 
-> Resuming copytrade replay backtest. Read
-> `_workspace/copytrade_replay_handoff.md`. Start with Day 1 — port the
-> Discord parser to Go and golden-test against the 261 history rows. Before
-> Day 3, get a decision from the user on Blockers #2 and #3 (synthetic
-> fallback acceptance and option-bar feed strategy). The 90d history file
-> is at `services/discord-copytrade/state/history_90d.jsonl`.
+> Resuming copytrade replay backtest. Days 1-4 shipped in commit 77ab911;
+> read `_workspace/copytrade_replay_handoff.md`. The pipeline is live and
+> producing ledgers in `_workspace/copytrade_replay/`. Day 5 is optional
+> polish — top candidates: (1) backfill missing-symbol bars to unlock the
+> OOU half of the sample, (2) STC fill attribution via `sig_*` tag
+> propagation, (3) ghost-position auto-expire. Ask before starting; the
+> analytical value of #1 depends on whether more replay iterations are
+> planned.
