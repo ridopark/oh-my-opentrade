@@ -58,6 +58,8 @@ type CopytradeExitRequestPayload struct {
 	ContractSymbol string  // OCC contract symbol of the specific option leg
 	Fraction       float64 // fraction of REMAINING quantity to close, (0, 1]
 	Reason         string  // audit trail: the keyword that matched, e.g. "half out"
+	Author         string  // Discord author name — surfaced in exit intent Rationale
+	RawLine        string  // raw Discord line — surfaced in exit intent Rationale
 }
 
 // CopytradeExitRejectedPayload tells the strategy its exit request was rejected

@@ -258,7 +258,13 @@ func (s *Service) handleCopytradeExitRequest(_ context.Context, event domain.Eve
 	target.CustomState["copytrade_exit_qty_frac"] = payload.Fraction
 
 	reason := "copytrade:stc"
-	if payload.Reason != "" {
+	if payload.RawLine != "" {
+		if payload.Author != "" {
+			reason = payload.Author + ": " + payload.RawLine
+		} else {
+			reason = payload.RawLine
+		}
+	} else if payload.Reason != "" {
 		reason = fmt.Sprintf("copytrade:stc:%s", payload.Reason)
 	}
 	rule := domain.ExitRule{Type: domain.ExitRuleCopytradeSTC}

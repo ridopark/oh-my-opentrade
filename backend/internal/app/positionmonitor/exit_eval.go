@@ -793,6 +793,10 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 		}
 	}
 
+	rationale := fmt.Sprintf("exit_monitor:%s:%s", rule.Type, reason)
+	if rule.Type == domain.ExitRuleCopytradeSTC && reason != "" {
+		rationale = reason
+	}
 	intent, err := domain.NewOrderIntent(
 		uuid.New(),
 		pos.TenantID,
@@ -804,7 +808,7 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 		0,
 		exitQty,
 		pos.Strategy,
-		fmt.Sprintf("exit_monitor:%s:%s", rule.Type, reason),
+		rationale,
 		1.0,
 		idempotencyKey,
 	)
