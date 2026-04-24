@@ -233,14 +233,13 @@ Data + scraping:
 
 ## Session-start prompt for next run
 
-> Resuming copytrade replay backtest. Days 1-4 shipped (commit 77ab911).
-> Day 5 session 3 (2026-04-23 late evening) shipped ghost-position TTL
-> auto-expire plus the prerequisite reentrant-mutex deadlock fix +
-> wall-clock→sim-time fix in the runner (commits 4461d26, c7ec395).
-> Replay matches baseline $5807.31 / 5 round-trips with zero orphans.
-> Remaining work: (a) HTTP backtest wiring for copytrade_v1 (plan
-> still drafted in "Day 5 session 2"); (b) STC fill attribution via
-> sig_* tag propagation. Read "Day 5 session 3" below before starting.
+> Copytrade replay sprint complete. Days 1-4 shipped the pipeline (77ab911).
+> Day 5 session 2 shipped symbol backfill. Day 5 session 3 shipped
+> ghost-position TTL auto-expire + the prerequisite runner fixes
+> (4461d26, c7ec395). Day 5 session 4 shipped HTTP backtest wiring and
+> STC sig_* fill attribution (27d1567, 7e20f8d). Dashboard can now drive
+> copytrade_v1 backtests and fills.csv rows carry author/signal_id for
+> pivoting. No remaining work in the original punch list.
 
 ----
 
@@ -456,13 +455,87 @@ event-driven strategy work:
 
 ### Remaining work
 
-- **(a) HTTP backtest wiring for copytrade_v1.** Plan is drafted in
-  "Day 5 session 2 → Plan — port copytrade wiring into HTTP backtest
-  (NOT IMPLEMENTED)" above. Ready to implement; no new dependencies
-  discovered this session.
-- **(b) STC fill attribution.** Propagate `sig_*` tags from the BTO
-  fill through `MonitoredPosition.EntrySignalTags` onto the STC
-  `OrderIntent.Meta` so `fills.csv` is pivotable by author/signal_id.
-  Plan in the "Known gotchas" section still applies.
+None in the original punch list. Both (a) and (b) shipped in Day 5
+session 4 — see below.
 
-No longer in scope: (c) ghost-position auto-expire — shipped.
+----
+
+## Day 5 session 4 (2026-04-23, late late evening)
+
+Sprint close-out.
+
+### Shipped
+
+- `27d1567` — feat(copytrade): wire replay pipeline into HTTP-driven
+  backtest runner. Two new `RunConfig` fields (`CopytradeHistory`,
+  `CopytradeLedgerDir`) gate the entire copytrade code path;
+  `backtest_handler.go` validates history path + enforces `speed=max`
+  + filters sentinel `__*` symbols. Sharded path gains the sentinel-
+  first-shard switch, the subscribe-before-freeze injector/ledger
+  construction, an `OnTickEnd` leg that runs `AdvanceTo` +
+  `DrainCopytradeCallbacks` + `DrainPendingSignals` per shard, and an
+  end-of-run `backtest:copytrade_summary` SSE event + author-ledger
+  write. Non-copytrade backtests unchanged (guarded on
+  `CopytradeHistory == ""`).
+
+- `7e20f8d` — feat(positionmonitor): propagate entry `sig_*` tags onto
+  STC exit intent. New `MonitoredPosition.EntrySignalTags` field (no-op
+  nil for non-copytrade), populated from `fill.SignalTags` on first BUY
+  fill (scale-in path preserves original BTO attribution); `triggerExit`
+  re-prefixes each tag with `sig_` onto `intent.Meta` (skip-if-present
+  for defensive non-clobber). Execution strips `sig_` uniformly for
+  BTO and STC fills, so `copytradereplay.Ledger`'s existing `author` /
+  `signal_id` / `copytrade_action` / `ref_price` / `generation` columns
+  now populate on STC rows with no schema change.
+
+### Verification
+
+- `go build ./cmd/omo-core ./cmd/omo-replay` clean.
+- Full regression scope (positionmonitor, backtest, http, strategy,
+  execution, copytradereplay, domain, notify) all PASS.
+- End-to-end HTTP curl not performed this session (omo-core running old
+  binary); restart + manual exercise deferred to next live session.
+
+### How to exercise the HTTP backtest path
+
+After `omo-core` picks up the new binary:
+
+    curl -X POST http://localhost:8080/backtest/run \
+      -H 'Content-Type: application/json' \
+      -d '{
+        "strategies": ["copytrade_v1"],
+        "symbols": ["AAPL","AMZN","BABA","BIDU","ENPH","FSLR","GLD","GOOGL","INTC","IWM","KWEB","MARA","MSFT","NIO","NVDA","ORCL","PDD","QQQ","RKLB","SLV","SPY","TSLA","TSM"],
+        "from": "2026-01-27",
+        "to":   "2026-04-23",
+        "timeframe": "1m",
+        "initial_equity": 100000,
+        "speed": "max",
+        "copytrade_history": "services/discord-copytrade/state/history_90d.jsonl"
+      }'
+
+Expected: 202 Accepted with `{backtest_id, status}`. Stream via
+`/backtest/events/{id}` for `backtest:copytrade_summary` + `backtest:complete`.
+
+Error-case curls:
+- Missing `copytrade_history` → 400 "copytrade_v1 requires copytrade_history (path to JSONL)".
+- Unreadable path → 400 "copytrade_history unreadable: ...".
+- `speed != "max"` → 400 "copytrade_v1 backtest requires speed=max (sharded pipeline only)".
+- Empty post-filter symbols → 400 "copytrade_v1 has no non-sentinel symbols — pass explicit symbols in request body".
+
+### Sprint ledger
+
+Full commit list for the sprint, in order:
+
+    77ab911  feat(copytrade-replay): pipeline (Days 1-4)
+    8eeb2d3  docs: handoff after Days 1-4
+    4461d26  fix(strategy): reentrant deadlock + sim-time in copytrade handlers
+    99dd814  refactor: tighten docstrings + drop redundant test assertion [skip-review]
+    c7ec395  feat(copytrade): ghost-position TTL auto-expire
+    af01344  refactor(copytrade): tighten TTL-sweep docstrings [skip-review]
+    1b560cc  docs(go-hexagonal): syncMode reentry + handler-clock gotchas [skip-review]
+    a3f5808  docs(copytrade-replay): Day 5 session 3 handoff [skip-review]
+    27d1567  feat(copytrade): HTTP backtest wiring
+    7e20f8d  feat(positionmonitor): STC sig_* fill attribution
+    (this one)  docs(copytrade-replay): Day 5 session 4 close-out [skip-review]
+
+Sprint done.
