@@ -171,3 +171,38 @@ func TestHandleCopytradeExitRequest_TenantMismatch_SkipsPosition(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, pos.ExitPending, "tenant mismatch must not trigger exit on this position")
 }
+
+func TestHandleCopytradeExitRequest_PropagatesEntrySignalTags(t *testing.T) {
+	svc := newCopytradeExitService()
+	contract := domain.Symbol("AAPL260425C00190000")
+	pos := seedOptionPosition(t, svc, contract, 10)
+	pos.EntrySignalTags = map[string]string{
+		"author":           "alice",
+		"signal_id":        "msg-1:0",
+		"copytrade_action": "BTO",
+		"ref_price":        "1.20",
+		"generation":       "1",
+	}
+
+	payload := domain.CopytradeExitRequestPayload{
+		TenantID:       svc.tenantID,
+		EnvMode:        string(svc.envMode),
+		Strategy:       "copytrade_v1",
+		Symbol:         "AAPL",
+		ContractSymbol: string(contract),
+		Fraction:       0.5,
+		Reason:         "half out",
+	}
+	require.NoError(t, svc.handleCopytradeExitRequest(context.Background(), domain.Event{
+		Type:    domain.EventCopytradeExitRequest,
+		Payload: payload,
+	}))
+
+	require.GreaterOrEqual(t, len(svc.outbox), 1, "partial exit should queue an intent in the outbox")
+	msg := <-svc.outbox
+	assert.Equal(t, "alice", msg.Intent.Meta["sig_author"])
+	assert.Equal(t, "msg-1:0", msg.Intent.Meta["sig_signal_id"])
+	assert.Equal(t, "BTO", msg.Intent.Meta["sig_copytrade_action"])
+	assert.Equal(t, "1.20", msg.Intent.Meta["sig_ref_price"])
+	assert.Equal(t, "1", msg.Intent.Meta["sig_generation"])
+}
