@@ -44,6 +44,7 @@ import (
 type appServices struct {
 	ingestion        *ingestion.Service
 	barWriter        *ingestion.AsyncBarWriter
+	tradeWriter      *ingestion.AsyncTradeWriter
 	monitor          *monitor.Service
 	execution        *execution.Service
 	priceCache       *positionmonitor.PriceCache
@@ -103,6 +104,13 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	svc.ingestion = ingBundle.Service
 	svc.barWriter = ingBundle.BarWriter
 	svc.barWriter.Start()
+
+	// Phase 0 of the backtest/live parity plan: persist every live trade
+	// tick into market_trades so Phase 4 (live DP aggregator) can replay-on
+	// -boot the partial 5m bucket and Phase 5 (omo-data audit) can SQL-diff
+	// against darkpool_bars instead of refetching trades over REST.
+	svc.tradeWriter = ingestion.NewAsyncTradeWriter(infra.repo, log)
+	svc.tradeWriter.Start()
 
 	// Monitor
 	monitorSvc, err := bootstrap.BuildMonitor(bootstrap.MonitorDeps{
@@ -738,6 +746,18 @@ func initDebateService(cfg *config.Config, infra *infraDeps, svc *appServices, l
 func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, svc *appServices, log zerolog.Logger) {
 	if err := svc.ingestion.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start ingestion")
+	}
+	if svc.tradeWriter != nil {
+		if err := infra.eventBus.Subscribe(ctx, domain.EventTradeReceived, func(_ context.Context, evt domain.Event) error {
+			t, ok := evt.Payload.(domain.MarketTrade)
+			if !ok {
+				return nil
+			}
+			svc.tradeWriter.Enqueue(t)
+			return nil
+		}); err != nil {
+			log.Fatal().Err(err).Msg("failed to subscribe trade writer to TradeReceived")
+		}
 	}
 	if err := svc.monitor.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start monitor")

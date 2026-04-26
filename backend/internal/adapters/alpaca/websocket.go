@@ -516,10 +516,13 @@ func (w *WSClient) StreamBars(ctx context.Context, symbols []domain.Symbol, _ do
 				return
 			}
 			mt := domain.MarketTrade{
-				Time:   t.Timestamp,
-				Symbol: sym,
-				Price:  t.Price,
-				Size:   float64(t.Size),
+				Time:       t.Timestamp,
+				Symbol:     sym,
+				Price:      t.Price,
+				Size:       float64(t.Size),
+				Exchange:   t.Exchange,
+				Conditions: t.Conditions,
+				Tape:       t.Tape,
 			}
 			_ = w.tradeHandler(streamCtx, mt)
 		}

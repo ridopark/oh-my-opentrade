@@ -563,7 +563,9 @@ type ThoughtLog struct {
 }
 
 // MarketTrade represents a single trade tick from the exchange.
-// Used for real-time chart candle formation only — not persisted.
+// Persisted to market_trades by the AsyncTradeWriter (Phase 0); also feeds
+// formingbar candle construction and the strategy runner's tick handler in
+// flight.
 type MarketTrade struct {
 	Time   time.Time `json:"time"`
 	Symbol Symbol    `json:"symbol"`
@@ -580,6 +582,17 @@ type MarketTrade struct {
 	// cross-venue strategies set it to disambiguate the same pair across
 	// feeds. Equity paths leave it empty.
 	Venue Venue `json:"venue,omitempty"`
+	// Exchange is the equity-tape exchange code. "D" identifies FINRA ADF
+	// (dark-pool / off-exchange) prints, which the live DP aggregator
+	// (Phase 4) keys on. Empty for crypto.
+	Exchange string `json:"exchange,omitempty"`
+	// Conditions are SIP trade condition codes (Form-T late prints,
+	// regular-way, odd-lot, etc). Persisted so the audit path can replay
+	// the same exclusion logic the live DP aggregator applies.
+	Conditions []string `json:"conditions,omitempty"`
+	// Tape identifies the listing tape ("A"=NYSE, "B"=AMEX/regional,
+	// "C"=Nasdaq). Useful for cross-feed reconciliation.
+	Tape string `json:"tape,omitempty"`
 }
 
 // AuctionImbalanceSnapshot represents NYSE closing auction imbalance data from IBKR tick type 225.

@@ -89,6 +89,9 @@ func waitForShutdown(cancel context.CancelFunc, server *http.Server, infra *infr
 	// 4. Cancel app context so stream goroutines and services exit.
 	cancel()
 	svc.barWriter.Close()
+	if svc.tradeWriter != nil {
+		svc.tradeWriter.Close()
+	}
 	svc.notifySvc.Stop()
 	infra.eventBus.Close()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
