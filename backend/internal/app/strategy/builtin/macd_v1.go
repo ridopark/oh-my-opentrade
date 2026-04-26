@@ -1043,8 +1043,9 @@ func (s *MACDStrategy) emitMACDEntryGated(ctx start.Context, symbol string, bmSt
 		BlockingGate:   blockingGate,
 		BlockingDetail: blockingDetail,
 		Confluence: domain.EntryGatedConfluence{
-			Score:    conf.Score,
-			MaxScore: bmSt.Config.MinConfluenceScore,
+			Score:      conf.Score,
+			MaxScore:   bmSt.Config.MinConfluenceScore,
+			Components: toEntryGatedComponents(conf.Components),
 		},
 		Indicators: domain.EntryGatedIndicators{
 			RSI:         ind.RSI,

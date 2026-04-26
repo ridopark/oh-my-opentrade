@@ -2801,6 +2801,7 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 			Candle:         factorSet["inside_bar"] || factorSet["strength_candle"] || factorSet["morning_star"],
 			CandleDetail:   extractCandleFactor(conf.Factors),
 			Band:           factorSet["band_zone"],
+			Components:     toEntryGatedComponents(conf.Components),
 		},
 		Indicators: domain.EntryGatedIndicators{
 			RSI:         s.Indicators.RSI,
@@ -2810,6 +2811,7 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 			AboveCount:  copyIntMap(s.AboveCount),
 			BelowCount:  copyIntMap(s.BelowCount),
 		},
+		AVWAPState: avwapStateFromCalc(s.Calc),
 		Bar: domain.BarSnapshot{
 			Open:   s.PrevBars[0].Open,
 			High:   s.PrevBars[0].High,
@@ -2884,6 +2886,7 @@ func (s *AVWAPState) emitEarlyGated(ctx start.Context, symbol string, bar start.
 			AVWAPBias: avwapBias,
 			SlopeBPS:  slopeBPS,
 		},
+		AVWAPState: avwapStateFromCalc(s.Calc),
 		Bar: domain.BarSnapshot{
 			Open: bar.Open, High: bar.High, Low: bar.Low, Close: bar.Close, Volume: bar.Volume,
 		},
@@ -2993,6 +2996,7 @@ func (s *AVWAPState) emitEntryGated(ec entryContext) {
 			Candle:   factorSet["inside_bar"] || factorSet["strength_candle"] || factorSet["morning_star"],
 			CandleDetail: extractCandleFactor(conf.Factors),
 			Band:     factorSet["band_zone"],
+			Components: toEntryGatedComponents(conf.Components),
 		},
 		Indicators: domain.EntryGatedIndicators{
 			RSI:         s.Indicators.RSI,
@@ -3002,6 +3006,7 @@ func (s *AVWAPState) emitEntryGated(ec entryContext) {
 			AboveCount:  copyIntMap(s.AboveCount),
 			BelowCount:  copyIntMap(s.BelowCount),
 		},
+		AVWAPState: avwapStateFromCalc(s.Calc),
 		Bar: domain.BarSnapshot{
 			Open:   ec.bar.Open,
 			High:   ec.bar.High,
@@ -3063,6 +3068,55 @@ func copyIntMap(m map[string]int) map[string]int {
 		out[k] = v
 	}
 	return out
+}
+
+// toEntryGatedComponents copies a strategy ComponentScore slice into the
+// JSON DTO domain.EntryGatedComponent expected by EntryGatedConfluence.
+// Used by both AVWAP and MACD EntryGated emit paths so live and backtest
+// blocked rows carry the same per-factor breakdown for SQL diffing.
+func toEntryGatedComponents(in []start.ComponentScore) []domain.EntryGatedComponent {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]domain.EntryGatedComponent, len(in))
+	for i, c := range in {
+		out[i] = domain.EntryGatedComponent{
+			Name:   c.Name,
+			Group:  c.Group,
+			Weight: c.Weight,
+			Value:  c.Value,
+			Fired:  c.Fired,
+		}
+	}
+	return out
+}
+
+// avwapStateFromCalc snapshots the AnchoredVWAPCalc into the JSON DTO
+// expected by EntryGatedPayload.AVWAPState. Returns the zero value when
+// calc is nil; consumers see an empty avwapState in the JSON payload.
+func avwapStateFromCalc(c *start.AnchoredVWAPCalc) domain.EntryGatedAVWAPState {
+	if c == nil {
+		return domain.EntryGatedAVWAPState{}
+	}
+	snap := c.Snapshot()
+	if len(snap) == 0 {
+		return domain.EntryGatedAVWAPState{LastBarTime: c.LastBarTime()}
+	}
+	anchors := make(map[string]domain.EntryGatedAnchor, len(snap))
+	for name, a := range snap {
+		anchors[name] = domain.EntryGatedAnchor{
+			VWAP:      a.VWAP,
+			SlopeBPS:  a.SlopeBPS,
+			BarCount:  a.BarCount,
+			VWAPCount: a.VWAPCount,
+			Active:    a.Active,
+		}
+	}
+	return domain.EntryGatedAVWAPState{
+		LastBarTime: c.LastBarTime(),
+		AnchorCount: len(anchors),
+		Anchors:     anchors,
+	}
 }
 
 // --- Confluence scoring ---

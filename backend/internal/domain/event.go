@@ -256,6 +256,7 @@ type EntryGatedPayload struct {
 	EntryChecks   []EntryCheckResult    `json:"entryChecks,omitempty"`
 	Confluence    EntryGatedConfluence  `json:"confluence"`
 	Indicators    EntryGatedIndicators  `json:"indicators"`
+	AVWAPState    EntryGatedAVWAPState  `json:"avwapState,omitempty"`
 	Bar           BarSnapshot           `json:"bar"`
 }
 
@@ -269,6 +270,23 @@ type EntryGatedConfluence struct {
 	Candle         bool   `json:"candle"`
 	CandleDetail   string `json:"candleDetail,omitempty"`
 	Band           bool   `json:"band"`
+	// Components is the per-factor breakdown (fib, key_level, candle,
+	// band, dp, inducement, whale, ...) the confluence scorer returned
+	// for this evaluation. Each entry mirrors strategy.ComponentScore;
+	// the field is a JSON DTO so domain/event.go avoids depending on
+	// domain/strategy. Phase 2 of the parity plan: this is what makes
+	// blocked rows comparable between live and backtest.
+	Components []EntryGatedComponent `json:"components,omitempty"`
+}
+
+// EntryGatedComponent is one row of the confluence-factor breakdown
+// captured at an EntryGated evaluation. Mirror of strategy.ComponentScore.
+type EntryGatedComponent struct {
+	Name   string  `json:"name"`
+	Group  string  `json:"group"`
+	Weight int     `json:"weight"`
+	Value  float64 `json:"value,omitempty"`
+	Fired  bool    `json:"fired"`
 }
 
 // EntryCheckResult describes the outcome of a single entry type evaluation.
@@ -290,6 +308,26 @@ type EntryGatedIndicators struct {
 	SlopeBPS    float64            `json:"slopeBPS"`
 	AboveCount  map[string]int     `json:"aboveCount,omitempty"`
 	BelowCount  map[string]int     `json:"belowCount,omitempty"`
+}
+
+// EntryGatedAVWAPState captures the AVWAP calc state at the bar an
+// EntryGated event was emitted. Empty for strategies that don't use
+// AnchoredVWAPCalc (e.g. MACD). Phase 2 of the parity plan: lets a
+// SQL diff between live and backtest show whether an AVWAP anchor
+// disagreed on slope or bar count at the same evaluation moment.
+type EntryGatedAVWAPState struct {
+	LastBarTime time.Time                 `json:"lastBarTime,omitempty"`
+	AnchorCount int                       `json:"anchorCount"`
+	Anchors     map[string]EntryGatedAnchor `json:"anchors,omitempty"`
+}
+
+// EntryGatedAnchor is one anchor's view at evaluation time.
+type EntryGatedAnchor struct {
+	VWAP      float64 `json:"vwap"`
+	SlopeBPS  float64 `json:"slopeBPS"`
+	BarCount  int     `json:"barCount"`
+	VWAPCount int     `json:"vwapCount"`
+	Active    bool    `json:"active"`
 }
 
 // ORBPhaseUpdatePayload is emitted on ORB state machine transitions.
