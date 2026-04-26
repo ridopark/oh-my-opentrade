@@ -1490,6 +1490,7 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		instCtx.tenantID = tenantID
 		instCtx.envMode = envMode
 		instCtx.runner = r
+		instCtx.specID = inst.configStrategyID()
 		r.applyTideData(inst, symbol)
 		signals, err := r.safeOnBar(inst, instCtx, symbol, sBar, indicators)
 		instanceContextPool.Put(instCtx)
@@ -1640,6 +1641,7 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 			instCtx.tenantID = tenantID
 			instCtx.envMode = envMode
 			instCtx.runner = r
+			instCtx.specID = inst.configStrategyID()
 			r.applyTideData(inst, symbol)
 			signals, err := r.safeOnBar(inst, instCtx, symbol, htfBar, htfIndicators)
 			instanceContextPool.Put(instCtx)
