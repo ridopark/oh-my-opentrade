@@ -211,6 +211,15 @@ func (r *Repository) SaveMarketTrades(ctx context.Context, trades []domain.Marke
 		base := idx*11 + 1
 		fmt.Fprintf(&b, "($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
 			base, base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10)
+		// stringArray(nil).Value() returns SQL NULL by design (the type
+		// preserves the nil/empty distinction for read paths). The
+		// conditions column is NOT NULL, so coerce nil to an empty
+		// non-nil slice here — crypto trades and any equity prints
+		// without condition codes arrive with a nil Conditions field.
+		conds := t.Conditions
+		if conds == nil {
+			conds = []string{}
+		}
 		args = append(args,
 			t.Time,
 			"",
@@ -219,7 +228,7 @@ func (r *Repository) SaveMarketTrades(ctx context.Context, trades []domain.Marke
 			t.Price,
 			t.Size,
 			t.Exchange,
-			stringArray(t.Conditions),
+			stringArray(conds),
 			t.Tape,
 			t.TakerSide,
 			string(t.Venue),
