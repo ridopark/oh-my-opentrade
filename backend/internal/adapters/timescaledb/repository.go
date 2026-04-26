@@ -168,6 +168,73 @@ func (r *Repository) SaveMarketBars(ctx context.Context, bars []domain.MarketBar
 	return idx, nil
 }
 
+// SaveMarketTrades inserts a batch of raw trade ticks into market_trades.
+// Phase 0 of the backtest/live parity plan; consumers (Phase 4 live DP
+// aggregator, Phase 5 audit) read these rows back. No ON CONFLICT — trade
+// ticks have no natural primary key in our schema today, and brief
+// duplicates from a WS reconnect-replay are acceptable for the audit/replay
+// use cases (downstream queries dedupe at read time when needed).
+func (r *Repository) SaveMarketTrades(ctx context.Context, trades []domain.MarketTrade) (int, error) {
+	if len(trades) == 0 {
+		return 0, nil
+	}
+
+	const maxBatchSize = 5000
+	if len(trades) > maxBatchSize {
+		total := 0
+		for i := 0; i < len(trades); i += maxBatchSize {
+			end := min(i+maxBatchSize, len(trades))
+			n, err := r.SaveMarketTrades(ctx, trades[i:end])
+			total += n
+			if err != nil {
+				return total, err
+			}
+		}
+		return total, nil
+	}
+
+	var b strings.Builder
+	b.WriteString("INSERT INTO market_trades (time, account_id, env_mode, symbol, price, size, exchange, conditions, tape, taker_side, venue) VALUES ")
+
+	args := make([]any, 0, len(trades)*11)
+	idx := 0
+	for _, t := range trades {
+		if t.Price == 0 && t.Size == 0 {
+			continue
+		}
+		if idx > 0 {
+			b.WriteString(", ")
+		}
+		base := idx*11 + 1
+		fmt.Fprintf(&b, "($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			base, base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10)
+		args = append(args,
+			t.Time,
+			"",
+			string(domain.EnvModePaper),
+			string(t.Symbol),
+			t.Price,
+			t.Size,
+			t.Exchange,
+			stringArray(t.Conditions),
+			t.Tape,
+			t.TakerSide,
+			string(t.Venue),
+		)
+		idx++
+	}
+
+	if idx == 0 {
+		return 0, nil
+	}
+
+	if _, err := r.db.ExecContext(ctx, b.String(), args...); err != nil {
+		r.log.Error().Err(err).Int("batch_size", idx).Msg("failed to save market trades batch")
+		return 0, fmt.Errorf("timescaledb: save market trades batch: %w", err)
+	}
+	return idx, nil
+}
+
 // estimateBarCount returns a rough upper bound on bars in a window, used to
 // pre-size result slices and skip most append grow-reallocations. The guess
 // is based on extended trading hours (4am-8pm ET) so pre-/post-market bars
