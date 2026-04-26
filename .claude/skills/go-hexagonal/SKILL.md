@@ -284,6 +284,20 @@ handler forwards OnEvent-returned signals via `r.emitSignal`, stamp the
 instance ID post-hoc or `SignalCreated` events will have an empty ID and
 the strategy-label metrics will bucket as `unknown`.
 
+### Builtin engine name vs TOML spec id on lifecycle payloads
+Strategies hardcode their builtin engine name (`"avwap"`, `"macd"`) into
+payload fields like `EntryGatedPayload.Strategy` because they don't have
+access to their own TOML spec. The runner re-stamps the field at the
+boundary in `instanceContext.EmitDomainEvent` using `instCtx.specID =
+inst.configStrategyID()` set at every pool-Get site in `handleBarCore`.
+When adding a new payload type that carries a `Strategy`/`StrategyID`
+field, decide which side owns it: if the strategy hardcodes it, route the
+emit through `instanceContext.EmitDomainEvent` so the override fires; if
+the runner constructs the payload (e.g. liveness `RecordEval`), pass
+`inst.configStrategyID()` directly. A mismatch silently breaks dashboard
+joins on `strategy_signal_events.strategy` because rows for the same
+instance get split between the engine name and the spec id.
+
 ## References
 - Full port list: see `backend/internal/ports/*.go` directly
 - Event list: `backend/internal/domain/event.go`
