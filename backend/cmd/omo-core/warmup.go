@@ -11,6 +11,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
+	"github.com/oh-my-opentrade/backend/internal/app/tradereplay"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -507,6 +508,32 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 				Str("symbol", string(sym)).
 				Int("bars", len(orbBars)).
 				Msg("ORB warmup complete")
+		}
+
+		// Phase 6 of the parity plan: boot-time replay scaffolding for
+		// stateful tick consumers. Today the sink is a no-op so this is a
+		// pure smoke test for the read pipeline (market_trades reader +
+		// per-symbol fan-out). Phase 4 will swap LoggingSink for the live
+		// DP aggregator's AddTrade. Logged stats catch wire-level coverage
+		// gaps (writer not running, retention misconfigured, indexes off)
+		// before they manifest as silent live/backtest divergence.
+		if svc.tradeReplayer != nil && len(syms.equity) > 0 {
+			equitySymbols := make([]domain.Symbol, len(syms.equity))
+			copy(equitySymbols, syms.equity)
+			stats, err := svc.tradeReplayer.Replay(ctx, todayOpen.UTC(), equitySymbols, tradereplay.LoggingSink())
+			if err != nil {
+				warmupLog.Warn().Err(err).
+					Int("symbols_ok", stats.Symbols).
+					Int("symbols_failed", stats.SymbolsFailed).
+					Int("trades", stats.Trades).
+					Msg("market_trades boot replay had errors")
+			} else {
+				warmupLog.Info().
+					Int("symbols", stats.Symbols).
+					Int("trades", stats.Trades).
+					Time("since", todayOpen.UTC()).
+					Msg("market_trades boot replay complete")
+			}
 		}
 	}
 

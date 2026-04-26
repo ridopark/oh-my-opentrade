@@ -247,6 +247,67 @@ func (r *Repository) SaveMarketTrades(ctx context.Context, trades []domain.Marke
 	return idx, nil
 }
 
+// querySelectMarketTrades is the read counterpart of the writer in
+// SaveMarketTrades. Time-ordered ascending so the Phase 6 boot replayer can
+// feed the DP aggregator (and any other per-symbol consumer) in chronological
+// order. Filters by symbol and the half-open window [from, to); the
+// idx_market_trades_symbol_time index covers it.
+const querySelectMarketTrades = `SELECT time, symbol, price, size, exchange, conditions, tape, taker_side, venue
+FROM market_trades
+WHERE symbol = $1 AND time >= $2 AND time < $3
+ORDER BY time ASC`
+
+// GetMarketTrades returns raw trade ticks for a single symbol in the
+// half-open window [from, to), ordered by time ascending. Phase 6 of the
+// parity plan: on omo-core boot during RTH, the live DP aggregator (Phase 4)
+// replays trades since session open from this read path instead of
+// re-fetching them over Alpaca REST.
+func (r *Repository) GetMarketTrades(ctx context.Context, symbol domain.Symbol, from, to time.Time) ([]domain.MarketTrade, error) {
+	rows, err := r.db.QueryContext(ctx, querySelectMarketTrades, string(symbol), from, to)
+	if err != nil {
+		r.log.Error().Err(err).
+			Str("symbol", string(symbol)).
+			Time("from", from).
+			Time("to", to).
+			Msg("failed to query market trades")
+		return nil, fmt.Errorf("timescaledb: get market trades: %w", err)
+	}
+	defer rows.Close()
+
+	// Pre-size based on a coarse RTH peak: ~1.7k trades/min/symbol at the
+	// open auction. Two-decimal headroom avoids grow thrash for typical
+	// session-open replay windows; over-estimate is bounded by retention.
+	mins := max(int(to.Sub(from)/time.Minute)+1, 1)
+	trades := make([]domain.MarketTrade, 0, mins*2000)
+
+	var sym string
+	var conds stringArray
+	for rows.Next() {
+		n := len(trades)
+		if n >= cap(trades) {
+			trades = append(trades, domain.MarketTrade{})
+		} else {
+			trades = trades[:n+1]
+		}
+		t := &trades[n]
+		var venue string
+		if err := rows.Scan(&t.Time, &sym, &t.Price, &t.Size, &t.Exchange, &conds, &t.Tape, &t.TakerSide, &venue); err != nil {
+			return nil, fmt.Errorf("timescaledb: scan market trade: %w", err)
+		}
+		t.Symbol = domain.Symbol(sym)
+		t.Venue = domain.Venue(venue)
+		if len(conds) > 0 {
+			t.Conditions = append([]string(nil), conds...)
+		} else {
+			t.Conditions = nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("timescaledb: iterate market trades: %w", err)
+	}
+	return trades, nil
+}
+
 // estimateBarCount returns a rough upper bound on bars in a window, used to
 // pre-size result slices and skip most append grow-reallocations. The guess
 // is based on extended trading hours (4am-8pm ET) so pre-/post-market bars
