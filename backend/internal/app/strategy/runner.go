@@ -52,7 +52,12 @@ type Runner struct {
 	lastResolvedRegime   map[string]domain.RegimeType
 
 	// Dark pool lookup for backtests: keyed by "symbol|5m-truncated-time".
-	dpLookup map[DPLookupKey]domain.DarkPoolBar
+	// dpSource is the runner's read port for dark-pool 5m bars. NewRunner
+	// installs noopDPSource so it is never nil. SetDarkPoolLookup wraps a
+	// map in staticDPSource for the backtest path; SetDarkPoolSource takes
+	// the live aggregator (Phase 4 of the parity plan) directly. The two
+	// setters are mutually exclusive — last write wins.
+	dpSource DPSource
 
 	// dpRolling maintains per-symbol rolling statistics for DP ratio Z-score computation.
 	dpRolling map[string]*dpRollingStats
@@ -519,6 +524,7 @@ func NewRunner(
 		lateSessionNFRolling: make(map[string]*dpRollingStats),
 		lateSessionDPVolRatioZ:       make(map[string]float64),
 		lateSessionDPVolRatioRolling: make(map[string]*dpRollingStats),
+		dpSource:                     noopDPSource{},
 		liveness:                     NewLivenessTracker(),
 	}
 	// Wire the liveness publisher so throttled StrategyEvaluation events
@@ -635,10 +641,23 @@ func (r *Runner) SetPositionLookup(fn PositionLookupFunc) { r.posLookup = fn }
 // gating disabled (the handler skips the check).
 func (r *Runner) SetUniverseHistory(p ports.UniverseHistoryPort) { r.universeHistory = p }
 
-// SetDarkPoolLookup injects pre-loaded dark pool bars for backtesting.
-// The strategy runner overlays DP data onto IndicatorData during bar processing.
+// SetDarkPoolLookup injects pre-loaded dark pool bars for backtesting. The
+// strategy runner overlays DP data onto IndicatorData during bar processing.
+// Internally wraps the map in a staticDPSource so the per-bar access path
+// is the same as the live path (Phase 4 of the parity plan).
 func (r *Runner) SetDarkPoolLookup(lookup map[DPLookupKey]domain.DarkPoolBar) {
-	r.dpLookup = lookup
+	r.dpSource = staticDPSource{lookup: lookup}
+}
+
+// SetDarkPoolSource installs a DPSource implementation directly. Used by
+// the live path to plug in livedarkpool.Service (Phase 4) without going
+// through the legacy map shape. Mutually exclusive with SetDarkPoolLookup —
+// last write wins.
+func (r *Runner) SetDarkPoolSource(src DPSource) {
+	if src == nil {
+		src = noopDPSource{}
+	}
+	r.dpSource = src
 }
 
 // SetWhaleLookup provides whale accumulation scores for 13F confluence.
@@ -932,9 +951,10 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 		HTF:           newHTF,
 	}
 
-	// Overlay dark pool microstructure data when available (backtest only).
-	// Aggregates all 5m DP bars within the decision bar's time window for correct alignment.
-	if len(r.dpLookup) > 0 {
+	// Overlay dark pool microstructure data when the runner's DPSource has
+	// any (backtest, or Phase 4 live aggregator). Aggregates all 5m DP bars
+	// within the decision bar's time window for correct alignment.
+	if r.dpSource.HasData() {
 		sym := snap.Symbol.String()
 		barStart := snap.Time.UTC()
 		// Determine bar duration from timeframe; fallback to 5m for unknown/1m bars.
@@ -947,8 +967,7 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 		// Aggregate all 5m DP bars within the decision window.
 		var dpVol, dpBuy, dpSell, dpLarge, dpTotal float64
 		for t := barStart.Truncate(5 * time.Minute); t.Before(barEnd); t = t.Add(5 * time.Minute) {
-			key := DPLookupKey{Symbol: sym, Time: t}
-			if dp, ok := r.dpLookup[key]; ok {
+			if dp, ok := r.dpSource.Lookup(sym, t); ok {
 				dpVol += dp.DPVolume
 				dpBuy += dp.BuyVolume
 				dpSell += dp.SellVolume
@@ -996,7 +1015,7 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 				var dpBars []dpBarEntry
 				levelStart := barEnd.Add(-20 * 5 * time.Minute)
 				for t := levelStart.Truncate(5 * time.Minute); t.Before(barEnd); t = t.Add(5 * time.Minute) {
-					if dp, ok2 := r.dpLookup[DPLookupKey{Symbol: sym, Time: t}]; ok2 && dp.DPVolume > 0 && dp.DPVWAP > 0 {
+					if dp, ok2 := r.dpSource.Lookup(sym, t); ok2 && dp.DPVolume > 0 && dp.DPVWAP > 0 {
 						dpBars = append(dpBars, dpBarEntry{vol: dp.DPVolume, vwap: dp.DPVWAP})
 					}
 				}
@@ -1023,7 +1042,7 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 	}
 
 	// Overlay late-session DP Z-score (daily signal from previous day's 14:00-15:30 ET).
-	if len(r.dpLookup) > 0 && etLocation != nil {
+	if r.dpSource.HasData() && etLocation != nil {
 		sym := snap.Symbol.String()
 		barTime := snap.Time.UTC()
 		etTime := barTime.In(etLocation)
@@ -1038,7 +1057,7 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 			// Holiday skip: if no DP data exists for prevDay, step back further.
 			for attempts := 0; attempts < 5; attempts++ {
 				probe := time.Date(prevDay.Year(), prevDay.Month(), prevDay.Day(), 14, 0, 0, 0, etLocation).UTC()
-				if _, ok := r.dpLookup[DPLookupKey{Symbol: sym, Time: probe}]; ok {
+				if _, ok := r.dpSource.Lookup(sym, probe); ok {
 					break
 				}
 				prevDay = prevDay.AddDate(0, 0, -1)
@@ -1051,7 +1070,7 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 
 			var lateBuy, lateSell, lateLargePrint, lateDPVol, lateLitVol float64
 			for t := lateStart.Truncate(5 * time.Minute); t.Before(lateEnd); t = t.Add(5 * time.Minute) {
-				if dp, ok := r.dpLookup[DPLookupKey{Symbol: sym, Time: t}]; ok {
+				if dp, ok := r.dpSource.Lookup(sym, t); ok {
 					lateBuy += dp.BuyVolume
 					lateSell += dp.SellVolume
 					lateLargePrint += dp.LargePrintVolume
@@ -1369,7 +1388,7 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 	// Overlay dark pool data directly in handleBar to ensure it's fresh
 	// when the strategy processes this bar. The handleStateUpdated overlay
 	// can be overwritten by subsequent 1m snapshots before the 15m handleBar fires.
-	if len(r.dpLookup) > 0 {
+	if r.dpSource.HasData() {
 		barStart := bar.Time.UTC()
 		barDur := tfDuration(bar.Timeframe)
 		if barDur < 5*time.Minute {
@@ -1378,7 +1397,7 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		barEnd := barStart.Add(barDur)
 		var dpVol, dpBuy, dpLarge, dpTotal float64
 		for t := barStart.Truncate(5 * time.Minute); t.Before(barEnd); t = t.Add(5 * time.Minute) {
-			if dp, ok := r.dpLookup[DPLookupKey{Symbol: symbol, Time: t}]; ok {
+			if dp, ok := r.dpSource.Lookup(symbol, t); ok {
 				dpVol += dp.DPVolume
 				dpBuy += dp.BuyVolume
 				dpLarge += dp.LargePrintVolume
@@ -1406,7 +1425,7 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 				type dpE struct{ vol, vwap float64 }
 				var dpBars []dpE
 				for t := levelStart.Truncate(5 * time.Minute); t.Before(barEnd); t = t.Add(5 * time.Minute) {
-					if dp, ok := r.dpLookup[DPLookupKey{Symbol: symbol, Time: t}]; ok && dp.DPVolume > 0 && dp.DPVWAP > 0 {
+					if dp, ok := r.dpSource.Lookup(symbol, t); ok && dp.DPVolume > 0 && dp.DPVWAP > 0 {
 						dpBars = append(dpBars, dpE{dp.DPVolume, dp.DPVWAP})
 					}
 				}
@@ -1606,12 +1625,12 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		}
 
 		// Overlay DP data onto HTF indicators using the closed bar's time window.
-		if len(r.dpLookup) > 0 {
+		if r.dpSource.HasData() {
 			htfStart := closed.Time.UTC()
 			htfEnd := htfStart.Add(tfDuration(domain.Timeframe(tf)))
 			var hDPVol, hDPBuy, hDPLarge, hDPTotal float64
 			for t := htfStart.Truncate(5 * time.Minute); t.Before(htfEnd); t = t.Add(5 * time.Minute) {
-				if dp, ok := r.dpLookup[DPLookupKey{Symbol: symbol, Time: t}]; ok {
+				if dp, ok := r.dpSource.Lookup(symbol, t); ok {
 					hDPVol += dp.DPVolume
 					hDPBuy += dp.BuyVolume
 					hDPLarge += dp.LargePrintVolume
