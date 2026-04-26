@@ -387,8 +387,13 @@ type instanceContext struct {
 func (c *instanceContext) Now() time.Time       { return c.now }
 func (c *instanceContext) Logger() *slog.Logger { return c.logger }
 func (c *instanceContext) EmitDomainEvent(evt any) error {
-	if p, ok := evt.(domain.EntryGatedPayload); ok && c.specID != "" {
-		p.Strategy = c.specID
+	if p, ok := evt.(domain.EntryGatedPayload); ok {
+		if c.specID != "" {
+			p.Strategy = c.specID
+		}
+		if c.runner != nil {
+			p.AIEnabled = !c.runner.disableAI
+		}
 		evt = p
 	}
 	if c.runner != nil {
