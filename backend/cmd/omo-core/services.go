@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -105,10 +106,6 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	svc.barWriter = ingBundle.BarWriter
 	svc.barWriter.Start()
 
-	// Phase 0 of the backtest/live parity plan: persist every live trade
-	// tick into market_trades so Phase 4 (live DP aggregator) can replay-on
-	// -boot the partial 5m bucket and Phase 5 (omo-data audit) can SQL-diff
-	// against darkpool_bars instead of refetching trades over REST.
 	svc.tradeWriter = ingestion.NewAsyncTradeWriter(infra.repo, log)
 	svc.tradeWriter.Start()
 
@@ -751,6 +748,7 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 		if err := infra.eventBus.Subscribe(ctx, domain.EventTradeReceived, func(_ context.Context, evt domain.Event) error {
 			t, ok := evt.Payload.(domain.MarketTrade)
 			if !ok {
+				log.Error().Str("payload_type", fmt.Sprintf("%T", evt.Payload)).Msg("trade writer: unexpected payload on TradeReceived")
 				return nil
 			}
 			svc.tradeWriter.Enqueue(t)
