@@ -284,6 +284,20 @@ handler forwards OnEvent-returned signals via `r.emitSignal`, stamp the
 instance ID post-hoc or `SignalCreated` events will have an empty ID and
 the strategy-label metrics will bucket as `unknown`.
 
+### `json:",omitempty"` does not skip zero-value structs
+encoding/json honors `omitempty` only for nil pointers, nil maps,
+empty slices, and zero primitives — not for zero-value embedded
+structs. A field declared `Foo MyStruct \`json:"foo,omitempty"\`` will
+always serialize as `"foo":{...}` with default values, regardless of
+whether the parent ever populated it. The Phase-2 EntryGatedPayload
+landed with this mistake on `AVWAPState` and emitted an empty stub on
+every MACD block until simplify-pass review caught it. When a JSON
+DTO has an "absent vs zero" semantic distinction, declare the field
+as a pointer: `Foo *MyStruct \`json:"foo,omitempty"\``. Slices/maps
+already work because their nil form is distinguishable from the
+populated form. Same trap exists for `time.Time` (zero is a real
+timestamp) — pointer-fy or use a custom marshaller.
+
 ### Builtin engine name vs TOML spec id on lifecycle payloads
 Strategies hardcode their builtin engine name (`"avwap"`, `"macd"`) into
 payload fields like `EntryGatedPayload.Strategy` because they don't have
