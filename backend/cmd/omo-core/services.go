@@ -35,6 +35,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/strategywatchdog"
 	"github.com/oh-my-opentrade/backend/internal/app/symbolrouter"
+	"github.com/oh-my-opentrade/backend/internal/app/tradereplay"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -46,6 +47,7 @@ type appServices struct {
 	ingestion        *ingestion.Service
 	barWriter        *ingestion.AsyncBarWriter
 	tradeWriter      *ingestion.AsyncTradeWriter
+	tradeReplayer    *tradereplay.Service
 	monitor          *monitor.Service
 	execution        *execution.Service
 	priceCache       *positionmonitor.PriceCache
@@ -108,6 +110,12 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 
 	svc.tradeWriter = ingestion.NewAsyncTradeWriter(infra.repo, log)
 	svc.tradeWriter.Start()
+
+	// Phase 6 of the parity plan: boot-time replay scaffolding for
+	// stateful tick consumers (live DP aggregator in Phase 4). Runs read-
+	// only at boot today with a logging sink — the smoke test validates
+	// the full read pipeline without depending on Phase 4 shipping first.
+	svc.tradeReplayer = tradereplay.New(infra.repo, log)
 
 	// Monitor
 	monitorSvc, err := bootstrap.BuildMonitor(bootstrap.MonitorDeps{
