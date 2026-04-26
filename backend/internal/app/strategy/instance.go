@@ -375,11 +375,22 @@ type instanceContext struct {
 	tenantID string
 	envMode  domain.EnvMode
 	runner   *Runner
+	// specID is the TOML spec id (e.g. "avwap_v4"), parsed from the instance
+	// id's first segment. Strategies hardcode their builtin engine name into
+	// EntryGatedPayload.Strategy ("avwap", "macd") because they have no
+	// access to the spec; we overwrite it here so blocked-signal rows in
+	// strategy_signal_events match the spec id used by every other lifecycle
+	// status (generated/validated/executed).
+	specID string
 }
 
 func (c *instanceContext) Now() time.Time       { return c.now }
 func (c *instanceContext) Logger() *slog.Logger { return c.logger }
 func (c *instanceContext) EmitDomainEvent(evt any) error {
+	if p, ok := evt.(domain.EntryGatedPayload); ok && c.specID != "" {
+		p.Strategy = c.specID
+		evt = p
+	}
 	if c.runner != nil {
 		return c.runner.emitDomainEvent(c.ctx, c.tenantID, c.envMode, evt)
 	}
