@@ -422,7 +422,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		EnvMode:         domain.EnvModePaper,
 		Equity:          svc.accountEquity,
 		Clock:           time.Now,
-		DisableAI: false,
+		DisableAI: !cfg.AI.Enabled,
 		Logger:          log,
 		TideTracker:     tideTracker,
 		// svc.notifier is the raw MultiNotifier (Telegram + Discord fan-out),
