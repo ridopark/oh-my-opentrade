@@ -693,6 +693,7 @@ func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, lo
 		// Per-account strategy pipeline reuses shared router + specStore
 		acctStratLog := slog.Default()
 		acctRunner := strategy.NewRunner(infra.eventBus, svc.router, acct.TenantID, domain.EnvModePaper, acctStratLog)
+		acctRunner.SetDisableAI(!cfg.AI.Enabled)
 		acctRunner.SetPositionLookup(svc.posMonitor.LookupPosition)
 		acctRiskSizer := strategy.NewRiskSizer(infra.eventBus, svc.specStore, acctEquity, acctStratLog)
 		acctRiskSizer.SetPositionRiskCap(cfg.Risk.PositionCap)

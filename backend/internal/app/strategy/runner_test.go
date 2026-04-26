@@ -414,6 +414,72 @@ func TestRunner_ProcessBar_SingleInstance_Signal(t *testing.T) {
 	assert.Equal(t, 0.85, signals[0].Strength)
 }
 
+// TestRunner_EntryGated_StampsAIEnabledAndSpecID exercises the
+// instanceContext.EmitDomainEvent stamp path for EntryGatedPayload.
+// Parity plan Phase 2: the live and backtest blocked-row payloads must
+// carry the runner's AI mode so a SQL diff on the same symbol/bar can
+// confirm both paths ran with the same enricher state. Drives the
+// handleBar entry (production path) via bus.Publish since ProcessBar's
+// test-only instCtx wiring skips the stamp.
+func TestRunner_EntryGated_StampsAIEnabledAndSpecID(t *testing.T) {
+	cases := []struct {
+		name      string
+		disableAI bool
+		want      bool
+	}{
+		{"ai_on", false, true},
+		{"ai_off", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := memory.NewBus()
+			router := strategy.NewRouter()
+			envMode, _ := domain.NewEnvMode("paper")
+			runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+			runner.SetDisableAI(tc.disableAI)
+
+			fs := newFakeStrategy("test_spec", "1.0.0")
+			fs.onBarFunc = func(c strat.Context, symbol string, _ strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+				_ = c.EmitDomainEvent(domain.EntryGatedPayload{
+					Symbol:   symbol,
+					Strategy: "raw_engine_name",
+				})
+				return st, nil, nil
+			}
+
+			id, _ := strat.NewInstanceID("test_spec:1.0.0:AAPL")
+			inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+				Symbols:    []string{"AAPL"},
+				Timeframes: []string{"1m"},
+				Priority:   100,
+			}, strat.LifecycleLiveActive, nil)
+
+			tctx := newTestCtx()
+			require.NoError(t, inst.InitSymbol(tctx, "AAPL", nil))
+			router.Register(inst)
+
+			ctx := context.Background()
+			var captured []domain.Event
+			require.NoError(t, bus.Subscribe(ctx, domain.EventEntryGated, func(_ context.Context, ev domain.Event) error {
+				captured = append(captured, ev)
+				return nil
+			}))
+			require.NoError(t, runner.Start(ctx))
+
+			sym, _ := domain.NewSymbol("AAPL")
+			bar, _ := domain.NewMarketBar(time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC), sym, "1m", 100, 101, 99, 100, 10)
+			ev, _ := domain.NewEvent(domain.EventMarketBarSanitized, "test-tenant", envMode, "bar-1", bar)
+			require.NoError(t, bus.Publish(ctx, *ev))
+
+			require.Len(t, captured, 1, "expected one EntryGated event")
+			payload, ok := captured[0].Payload.(domain.EntryGatedPayload)
+			require.True(t, ok, "payload type")
+			assert.Equal(t, tc.want, payload.AIEnabled, "AIEnabled stamp")
+			assert.Equal(t, "test_spec", payload.Strategy, "specID overrides raw engine name")
+		})
+	}
+}
+
 func TestRunner_ProcessBar_DynamicMetricLabels(t *testing.T) {
 	bus := memory.NewBus()
 	router := strategy.NewRouter()

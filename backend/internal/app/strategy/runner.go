@@ -91,6 +91,14 @@ type Runner struct {
 	// UI is watching and even cheap atomics add up across millions of bars.
 	disableLiveness bool
 
+	// disableAI mirrors bootstrap.StrategyDeps.DisableAI on the runner so
+	// the instance-context emit path can stamp EntryGatedPayload.AIEnabled.
+	// Parity plan Phase 2: makes "live and backtest blocked rows ran with
+	// the same AI mode" provable via a SQL diff. The enricher itself is
+	// still the authoritative consumer of DisableAI; this is read-only
+	// telemetry derived from it.
+	disableAI bool
+
 	// tideTracker, when non-nil, is fed every SPY/QQQ 1m bar to maintain a
 	// running intraday VWAP and expose market-tide deviation to AVWAP
 	// entry-signal telemetry. Phase 1 of AVWAP SPY-tide plumbing — data
@@ -528,6 +536,17 @@ func NewRunner(
 func (r *Runner) SetDisableLiveness(disable bool) {
 	r.mu.Lock()
 	r.disableLiveness = disable
+	r.mu.Unlock()
+}
+
+// SetDisableAI records whether the strategy pipeline this runner belongs to
+// has the AI enricher disabled. The flag is consumed only by the instance-
+// context emit path to stamp EntryGatedPayload.AIEnabled (parity plan
+// Phase 2). It does NOT short-circuit the enricher itself — the enricher
+// owns its own SkipAI option, set by bootstrap.
+func (r *Runner) SetDisableAI(disable bool) {
+	r.mu.Lock()
+	r.disableAI = disable
 	r.mu.Unlock()
 }
 

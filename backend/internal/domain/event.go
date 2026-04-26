@@ -257,7 +257,15 @@ type EntryGatedPayload struct {
 	Confluence    EntryGatedConfluence  `json:"confluence"`
 	Indicators    EntryGatedIndicators  `json:"indicators"`
 	AVWAPState    *EntryGatedAVWAPState `json:"avwapState,omitempty"`
-	Bar           BarSnapshot           `json:"bar"`
+	// AIEnabled records whether the strategy pipeline that produced this
+	// blocked row would have routed an emitted signal through the AI
+	// enricher. Stamped from the runner's disableAI flag at emit time;
+	// see parity plan Phase 2 — it is the only AI-state signal available
+	// at gate-evaluation time (the enricher itself runs post-emission, so
+	// blocked rows never carry an enrichment Status/Confidence). False
+	// also when the instance was emitted without a runner (tests).
+	AIEnabled  bool        `json:"aiEnabled"`
+	Bar        BarSnapshot `json:"bar"`
 }
 
 type EntryGatedConfluence struct {

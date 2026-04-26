@@ -273,6 +273,7 @@ func buildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps Strat
 	}
 
 	runner := strategy.NewRunner(deps.EventBus, router, deps.TenantID, deps.EnvMode, shared.Logger)
+	runner.SetDisableAI(deps.DisableAI)
 	if deps.PositionLookup != nil {
 		runner.SetPositionLookup(deps.PositionLookup)
 	}
