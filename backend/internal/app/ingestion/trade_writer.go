@@ -48,17 +48,21 @@ func WithTradeFlushInterval(d time.Duration) TradeWriterOption {
 	return func(w *AsyncTradeWriter) { w.flushInterval = d }
 }
 
-// WithTradeChannelSize sets the buffered channel capacity (default 10000).
+// WithTradeChannelSize sets the buffered channel capacity (default 50000).
 func WithTradeChannelSize(n int) TradeWriterOption {
 	return func(w *AsyncTradeWriter) { w.ch = make(chan domain.MarketTrade, n) }
 }
 
 // NewAsyncTradeWriter creates a writer with the given saver and options.
 // Call Start() to launch the worker goroutine.
+//
+// Channel cap 50k absorbs ~5s of buffer at the open-bell peak burst
+// (~10k trades/sec across the 34-symbol universe) so a single 2-3s DB
+// stall doesn't trip the drop branch. ~5 MB memory cost.
 func NewAsyncTradeWriter(saver TradeBatchSaver, log zerolog.Logger, opts ...TradeWriterOption) *AsyncTradeWriter {
 	w := &AsyncTradeWriter{
 		saver:         saver,
-		ch:            make(chan domain.MarketTrade, 10000),
+		ch:            make(chan domain.MarketTrade, 50000),
 		done:          make(chan struct{}),
 		log:           log.With().Str("component", "trade_writer").Logger(),
 		batchSize:     500,

@@ -199,7 +199,10 @@ func (r *Repository) SaveMarketTrades(ctx context.Context, trades []domain.Marke
 	args := make([]any, 0, len(trades)*11)
 	idx := 0
 	for _, t := range trades {
-		if t.Price == 0 && t.Size == 0 {
+		// Size==0 with valid price is legitimate (auction indicative, halt-
+		// resume cross, opening cross). Price<=0 has no economic meaning;
+		// only those rows are dropped.
+		if t.Price <= 0 {
 			continue
 		}
 		if idx > 0 {
