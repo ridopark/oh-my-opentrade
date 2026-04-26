@@ -256,7 +256,7 @@ type EntryGatedPayload struct {
 	EntryChecks   []EntryCheckResult    `json:"entryChecks,omitempty"`
 	Confluence    EntryGatedConfluence  `json:"confluence"`
 	Indicators    EntryGatedIndicators  `json:"indicators"`
-	AVWAPState    EntryGatedAVWAPState  `json:"avwapState,omitempty"`
+	AVWAPState    *EntryGatedAVWAPState `json:"avwapState,omitempty"`
 	Bar           BarSnapshot           `json:"bar"`
 }
 
@@ -311,17 +311,17 @@ type EntryGatedIndicators struct {
 }
 
 // EntryGatedAVWAPState captures the AVWAP calc state at the bar an
-// EntryGated event was emitted. Empty for strategies that don't use
-// AnchoredVWAPCalc (e.g. MACD). Phase 2 of the parity plan: lets a
-// SQL diff between live and backtest show whether an AVWAP anchor
-// disagreed on slope or bar count at the same evaluation moment.
+// EntryGated event was emitted. Phase 2 of the parity plan: lets a SQL
+// diff between live and backtest show whether an AVWAP anchor disagreed
+// on slope or bar count at the same evaluation moment. Pointer field
+// on EntryGatedPayload so MACD blocks (which don't use AnchoredVWAPCalc)
+// emit no avwapState key at all rather than an empty stub.
 type EntryGatedAVWAPState struct {
-	LastBarTime time.Time                 `json:"lastBarTime,omitempty"`
-	AnchorCount int                       `json:"anchorCount"`
+	LastBarTime time.Time                   `json:"lastBarTime,omitempty"`
+	AnchorCount int                         `json:"anchorCount"`
 	Anchors     map[string]EntryGatedAnchor `json:"anchors,omitempty"`
 }
 
-// EntryGatedAnchor is one anchor's view at evaluation time.
 type EntryGatedAnchor struct {
 	VWAP      float64 `json:"vwap"`
 	SlopeBPS  float64 `json:"slopeBPS"`

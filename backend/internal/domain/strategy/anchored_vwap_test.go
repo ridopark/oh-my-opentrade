@@ -308,7 +308,7 @@ func TestAnchoredVWAPCalc_Snapshot(t *testing.T) {
 	c.AddAnchor(strategy.AnchorPoint{Name: "session_open", AnchorTime: t0.Add(2 * time.Minute), Price: 0})
 
 	// Empty snapshot before any bars: anchors registered but inactive.
-	snap := c.Snapshot()
+	snap := c.Snapshot(5)
 	require.Len(t, snap, 2)
 	assert.False(t, snap["pd_high"].Active)
 	assert.Equal(t, 0, snap["pd_high"].BarCount)
@@ -318,7 +318,7 @@ func TestAnchoredVWAPCalc_Snapshot(t *testing.T) {
 		c.Update(t0.Add(time.Duration(i)*time.Minute), 102+float64(i), 98+float64(i), 100+float64(i), 1000)
 	}
 
-	snap = c.Snapshot()
+	snap = c.Snapshot(5)
 	pd := snap["pd_high"]
 	assert.True(t, pd.Active)
 	assert.Equal(t, 8, pd.BarCount)

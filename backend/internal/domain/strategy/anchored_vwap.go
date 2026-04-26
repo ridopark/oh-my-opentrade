@@ -340,16 +340,17 @@ type AnchorSnapshot struct {
 	Active    bool
 }
 
-// Snapshot returns one AnchorSnapshot per registered anchor. The slope
-// uses a fixed 5-bar lookback (matches the default cfg.SlopeLookback in
-// shipped strategies); when fewer than 5 VWAP samples have accumulated
-// or the regression is degenerate, SlopeBPS is 0.
-func (c *AnchoredVWAPCalc) Snapshot() map[string]AnchorSnapshot {
+// Snapshot returns one AnchorSnapshot per registered anchor. Pass the
+// same slopeLookback the strategy uses for its slope gate so the
+// diagnostic value matches the gate decision; mismatched lookbacks are
+// the most common reason a parity-diff query points at the wrong gate.
+// When fewer than slopeLookback VWAP samples have accumulated or the
+// regression is degenerate, SlopeBPS is 0.
+func (c *AnchoredVWAPCalc) Snapshot(slopeLookback int) map[string]AnchorSnapshot {
 	out := make(map[string]AnchorSnapshot)
 	if c == nil {
 		return out
 	}
-	const slopeLookback = 5
 	for name, e := range c.anchors {
 		if e == nil {
 			continue
@@ -368,7 +369,6 @@ func (c *AnchoredVWAPCalc) Snapshot() map[string]AnchorSnapshot {
 	return out
 }
 
-// LastBarTime returns the most recent bar timestamp the calc has applied.
 func (c *AnchoredVWAPCalc) LastBarTime() time.Time {
 	if c == nil {
 		return time.Time{}

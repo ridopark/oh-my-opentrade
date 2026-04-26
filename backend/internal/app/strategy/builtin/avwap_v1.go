@@ -2811,7 +2811,7 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 			AboveCount:  copyIntMap(s.AboveCount),
 			BelowCount:  copyIntMap(s.BelowCount),
 		},
-		AVWAPState: avwapStateFromCalc(s.Calc),
+		AVWAPState: avwapStateFromCalc(s.Calc, cfg.SlopeLookback),
 		Bar: domain.BarSnapshot{
 			Open:   s.PrevBars[0].Open,
 			High:   s.PrevBars[0].High,
@@ -2886,7 +2886,7 @@ func (s *AVWAPState) emitEarlyGated(ctx start.Context, symbol string, bar start.
 			AVWAPBias: avwapBias,
 			SlopeBPS:  slopeBPS,
 		},
-		AVWAPState: avwapStateFromCalc(s.Calc),
+		AVWAPState: avwapStateFromCalc(s.Calc, cfg.SlopeLookback),
 		Bar: domain.BarSnapshot{
 			Open: bar.Open, High: bar.High, Low: bar.Low, Close: bar.Close, Volume: bar.Volume,
 		},
@@ -3006,7 +3006,7 @@ func (s *AVWAPState) emitEntryGated(ec entryContext) {
 			AboveCount:  copyIntMap(s.AboveCount),
 			BelowCount:  copyIntMap(s.BelowCount),
 		},
-		AVWAPState: avwapStateFromCalc(s.Calc),
+		AVWAPState: avwapStateFromCalc(s.Calc, ec.cfg.SlopeLookback),
 		Bar: domain.BarSnapshot{
 			Open:   ec.bar.Open,
 			High:   ec.bar.High,
@@ -3092,15 +3092,17 @@ func toEntryGatedComponents(in []start.ComponentScore) []domain.EntryGatedCompon
 }
 
 // avwapStateFromCalc snapshots the AnchoredVWAPCalc into the JSON DTO
-// expected by EntryGatedPayload.AVWAPState. Returns the zero value when
-// calc is nil; consumers see an empty avwapState in the JSON payload.
-func avwapStateFromCalc(c *start.AnchoredVWAPCalc) domain.EntryGatedAVWAPState {
+// expected by EntryGatedPayload.AVWAPState. Returns nil when calc is
+// nil; the pointer field on EntryGatedPayload then drops the key from
+// the emitted JSON. slopeLookback must match the strategy's gate
+// configuration so the diagnostic slope and the gate slope agree.
+func avwapStateFromCalc(c *start.AnchoredVWAPCalc, slopeLookback int) *domain.EntryGatedAVWAPState {
 	if c == nil {
-		return domain.EntryGatedAVWAPState{}
+		return nil
 	}
-	snap := c.Snapshot()
+	snap := c.Snapshot(slopeLookback)
 	if len(snap) == 0 {
-		return domain.EntryGatedAVWAPState{LastBarTime: c.LastBarTime()}
+		return &domain.EntryGatedAVWAPState{LastBarTime: c.LastBarTime()}
 	}
 	anchors := make(map[string]domain.EntryGatedAnchor, len(snap))
 	for name, a := range snap {
@@ -3112,7 +3114,7 @@ func avwapStateFromCalc(c *start.AnchoredVWAPCalc) domain.EntryGatedAVWAPState {
 			Active:    a.Active,
 		}
 	}
-	return domain.EntryGatedAVWAPState{
+	return &domain.EntryGatedAVWAPState{
 		LastBarTime: c.LastBarTime(),
 		AnchorCount: len(anchors),
 		Anchors:     anchors,
