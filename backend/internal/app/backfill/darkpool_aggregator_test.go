@@ -1,6 +1,7 @@
 package backfill
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -124,4 +125,122 @@ func TestDPAggregator_FlushResetsState(t *testing.T) {
 
 	assert.Equal(t, base.Add(10*time.Minute), bars2[0].Time)
 	assert.InDelta(t, 200.0, bars2[0].DPVolume, 0.01)
+}
+
+// TestDPAggregator_FlushClosed_LeavesInflightBucket exercises the live path:
+// FlushClosed must emit only buckets whose 5m window has ended on or before
+// now.Truncate(5m). The bucket containing `now` itself is in-flight and stays
+// in memory so the next ticker doesn't see a partial double-emit.
+func TestDPAggregator_FlushClosed_LeavesInflightBucket(t *testing.T) {
+	agg := NewDPAggregator("AAPL")
+	base := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC) // 14:00 UTC = aligned 5m start
+
+	// Three buckets: 14:00 (closed), 14:05 (closed), 14:10 (in-flight).
+	agg.AddTrade(base, "D", 100, 1000)
+	agg.AddTrade(base.Add(5*time.Minute), "D", 101, 2000)
+	agg.AddTrade(base.Add(10*time.Minute+30*time.Second), "D", 102, 500)
+
+	now := base.Add(13 * time.Minute) // mid-14:10 bucket
+	bars := agg.FlushClosed(now)
+	require.Len(t, bars, 2, "only 14:00 and 14:05 are closed at now=14:13")
+	assert.Equal(t, base, bars[0].Time)
+	assert.Equal(t, base.Add(5*time.Minute), bars[1].Time)
+
+	// 14:10 bucket survives. Re-flushing with a later cutoff in the same
+	// bucket produces no new bars (the in-flight one still hasn't closed).
+	more := agg.FlushClosed(base.Add(14 * time.Minute))
+	assert.Empty(t, more, "in-flight bucket must not be re-emitted while still open")
+
+	// Once now advances past 14:15 the bucket closes and is emitted.
+	closed := agg.FlushClosed(base.Add(15 * time.Minute))
+	require.Len(t, closed, 1)
+	assert.Equal(t, base.Add(10*time.Minute), closed[0].Time)
+	assert.InDelta(t, 500.0, closed[0].DPVolume, 0.01)
+}
+
+// TestDPAggregator_FlushClosed_NoBuckets handles the boot-replay case where
+// FlushClosed is called before any trade arrives.
+func TestDPAggregator_FlushClosed_NoBuckets(t *testing.T) {
+	agg := NewDPAggregator("AAPL")
+	bars := agg.FlushClosed(time.Now())
+	assert.Empty(t, bars)
+}
+
+// TestDPAggregator_FlushClosed_AllInflight checks that when every bucket
+// is still open, FlushClosed returns nothing and leaves state intact for
+// the next pass.
+func TestDPAggregator_FlushClosed_AllInflight(t *testing.T) {
+	agg := NewDPAggregator("AAPL")
+	now := time.Date(2026, 4, 27, 14, 3, 0, 0, time.UTC)
+	agg.AddTrade(now, "D", 100, 100)
+
+	bars := agg.FlushClosed(now)
+	assert.Empty(t, bars)
+
+	// State preserved: a subsequent Flush after the bucket closes still
+	// emits the trade.
+	closed := agg.FlushClosed(now.Add(5 * time.Minute))
+	require.Len(t, closed, 1)
+	assert.InDelta(t, 100.0, closed[0].DPVolume, 0.01)
+}
+
+// TestDPAggregator_ConcurrentAddTradeAndFlush exercises the mutex: 1000
+// trades from multiple goroutines while another goroutine repeatedly
+// flushes. The combined DP volume across all flushes plus the residual
+// in-flight bucket must equal the total submitted volume — the mutex
+// prevents lost updates and double-counting.
+func TestDPAggregator_ConcurrentAddTradeAndFlush(t *testing.T) {
+	agg := NewDPAggregator("AAPL")
+	base := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC)
+
+	const writers = 8
+	const tradesPerWriter = 125
+	totalExpected := float64(writers * tradesPerWriter)
+
+	done := make(chan struct{})
+	var collectedVol float64
+	var mu sync.Mutex
+	var flushWG sync.WaitGroup
+	flushWG.Add(1)
+	go func() {
+		defer flushWG.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			bars := agg.FlushClosed(base.Add(15 * time.Minute))
+			for _, b := range bars {
+				mu.Lock()
+				collectedVol += b.DPVolume
+				mu.Unlock()
+			}
+			time.Sleep(time.Microsecond)
+		}
+	}()
+
+	var wg sync.WaitGroup
+	wg.Add(writers)
+	for w := 0; w < writers; w++ {
+		go func(offset int) {
+			defer wg.Done()
+			for i := 0; i < tradesPerWriter; i++ {
+				// Spread trades across the 14:00 and 14:05 buckets;
+				// both close before the flusher's cutoff of 14:15.
+				bucket := base.Add(time.Duration(i%2) * 5 * time.Minute)
+				agg.AddTrade(bucket.Add(time.Duration(i)*time.Microsecond), "D", 100, 1)
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(done)
+	flushWG.Wait() // ensure flusher goroutine has exited before reading collectedVol
+
+	// Drain remainder.
+	bars := agg.Flush()
+	for _, b := range bars {
+		collectedVol += b.DPVolume
+	}
+	assert.InDelta(t, totalExpected, collectedVol, 0.01, "concurrent AddTrade/FlushClosed must not lose or double-count volume")
 }
