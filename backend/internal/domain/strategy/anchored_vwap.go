@@ -327,6 +327,55 @@ func (c *AnchoredVWAPCalc) Value(name string) (float64, bool) {
 	return e.state.Value(), true
 }
 
+// AnchorSnapshot is one anchor's evaluation-time view: the running VWAP,
+// the slope (bps per bar over the most recent ring-buffer fill), and the
+// counters that drive readiness checks. Used by EntryGated diagnostics
+// (Phase 2 of the parity plan) so a SQL diff can pinpoint per-anchor
+// disagreements between live and backtest at the same bar.
+type AnchorSnapshot struct {
+	VWAP      float64
+	SlopeBPS  float64
+	BarCount  int
+	VWAPCount int
+	Active    bool
+}
+
+// Snapshot returns one AnchorSnapshot per registered anchor. The slope
+// uses a fixed 5-bar lookback (matches the default cfg.SlopeLookback in
+// shipped strategies); when fewer than 5 VWAP samples have accumulated
+// or the regression is degenerate, SlopeBPS is 0.
+func (c *AnchoredVWAPCalc) Snapshot() map[string]AnchorSnapshot {
+	out := make(map[string]AnchorSnapshot)
+	if c == nil {
+		return out
+	}
+	const slopeLookback = 5
+	for name, e := range c.anchors {
+		if e == nil {
+			continue
+		}
+		snap := AnchorSnapshot{
+			VWAP:      e.state.Value(),
+			BarCount:  e.barCount,
+			VWAPCount: e.vwapCount,
+			Active:    e.active,
+		}
+		if slope, ok := c.Slope(name, slopeLookback); ok {
+			snap.SlopeBPS = slope
+		}
+		out[name] = snap
+	}
+	return out
+}
+
+// LastBarTime returns the most recent bar timestamp the calc has applied.
+func (c *AnchoredVWAPCalc) LastBarTime() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	return c.lastBarTime
+}
+
 func (c *AnchoredVWAPCalc) States() map[string]AnchoredVWAPState {
 	out := make(map[string]AnchoredVWAPState)
 	if c == nil {
