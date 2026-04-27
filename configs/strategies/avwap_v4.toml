@@ -188,12 +188,6 @@ min_confluence_score = 8         # high-conviction entries only
 # Fibonacci convergence (+3): AVWAP aligns with 38.2%/50%/61.8% retracement
 fib_confluence_enabled = true
 
-# Skip non-RTH bars when populating the 50-bar high/low buffer the Fibonacci
-# range is computed from. Matches the AVWAP calc's RTH gate so live (which
-# may boot pre-market and ingest 09:16-09:30 bars) and backtest (which warms
-# from prior-day RTH only) produce the same fib levels at any RTH evaluation.
-fib_buffer_rth_only = true
-
 # Key level alignment (+3): AVWAP converges with pd_high, pd_low, or_high, or_low
 key_level_confluence_enabled = true
 
