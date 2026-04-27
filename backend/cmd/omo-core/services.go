@@ -25,6 +25,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
+	"github.com/oh-my-opentrade/backend/internal/app/livedarkpool"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/notify"
 	"github.com/oh-my-opentrade/backend/internal/app/orchestrator"
@@ -48,6 +49,7 @@ type appServices struct {
 	barWriter        *ingestion.AsyncBarWriter
 	tradeWriter      *ingestion.AsyncTradeWriter
 	tradeReplayer    *tradereplay.Service
+	liveDarkPool     *livedarkpool.Service
 	monitor          *monitor.Service
 	execution        *execution.Service
 	priceCache       *positionmonitor.PriceCache
@@ -116,6 +118,19 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	// only at boot today with a logging sink — the smoke test validates
 	// the full read pipeline without depending on Phase 4 shipping first.
 	svc.tradeReplayer = tradereplay.New(infra.repo, log)
+
+	// Phase 4 of the parity plan: live in-process DP 5m aggregator.
+	// Construction is unconditional so /metrics gauges and the lookup
+	// API always exist; the bus subscription, the flush ticker, and the
+	// runner SetDarkPoolSource hook below are all gated on
+	// cfg.LiveDarkPoolEnabled. Off-path Service.HasData() returns false
+	// and the strategy runner skips DP overlay blocks, exactly as
+	// today's pre-Phase-4 behavior.
+	dpRepo := timescaledb.NewDarkPoolRepo(
+		timescaledb.NewSqlDB(infra.sqlDB),
+		log.With().Str("component", "darkpool_repo_live").Logger(),
+	)
+	svc.liveDarkPool = livedarkpool.New(dpRepo, log)
 
 	// Monitor
 	monitorSvc, err := bootstrap.BuildMonitor(bootstrap.MonitorDeps{
@@ -703,6 +718,9 @@ func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, lo
 		acctRunner := strategy.NewRunner(infra.eventBus, svc.router, acct.TenantID, domain.EnvModePaper, acctStratLog)
 		acctRunner.SetDisableAI(!cfg.AI.Enabled)
 		acctRunner.SetPositionLookup(svc.posMonitor.LookupPosition)
+		if cfg.LiveDarkPoolEnabled && svc.liveDarkPool != nil {
+			acctRunner.SetDarkPoolSource(svc.liveDarkPool)
+		}
 		acctRiskSizer := strategy.NewRiskSizer(infra.eventBus, svc.specStore, acctEquity, acctStratLog)
 		acctRiskSizer.SetPositionRiskCap(cfg.Risk.PositionCap)
 		acctLifecycle := strategy.NewLifecycleService(svc.router, acctStratLog)
@@ -765,6 +783,30 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 		}); err != nil {
 			log.Fatal().Err(err).Msg("failed to subscribe trade writer to TradeReceived")
 		}
+	}
+
+	// Phase 4 (B/E): live DP aggregator. When enabled: subscribe to the
+	// trade bus alongside the writer so every tick is both persisted (for
+	// audit + boot replay) and aggregated in-process (for the runner's
+	// per-bar Lookup). Run the flush ticker on a background goroutine that
+	// exits when ctx cancels. Wire the Service into every account's strategy
+	// runner via SetDarkPoolSource so the existing DP overlay code paths
+	// (Phase 4 C) read from the live aggregator instead of the
+	// noopDPSource default.
+	if cfg.LiveDarkPoolEnabled && svc.liveDarkPool != nil {
+		if err := infra.eventBus.Subscribe(ctx, domain.EventTradeReceived, func(_ context.Context, evt domain.Event) error {
+			if t, ok := evt.Payload.(domain.MarketTrade); ok {
+				svc.liveDarkPool.AddTrade(t)
+			}
+			return nil
+		}); err != nil {
+			log.Fatal().Err(err).Msg("failed to subscribe live dark pool to TradeReceived")
+		}
+		go svc.liveDarkPool.Run(ctx)
+		if svc.strategyRunner != nil {
+			svc.strategyRunner.SetDarkPoolSource(svc.liveDarkPool)
+		}
+		log.Info().Msg("live dark pool aggregator enabled")
 	}
 	if err := svc.monitor.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start monitor")

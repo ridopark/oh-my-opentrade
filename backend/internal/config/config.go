@@ -40,6 +40,14 @@ type Config struct {
 	// behavior — cancel-all on startup, no intent persistence) so production
 	// deploys can ship the code and flip the flag independently.
 	OrderJournalEnabled bool `yaml:"-"`
+
+	// LiveDarkPoolEnabled toggles the in-process dark-pool 5m aggregator
+	// (Phase 4 of the parity plan). Default off — when off, livedarkpool.
+	// Service is constructed but not Run, the bus subscriber doesn't
+	// dispatch trades to it, and the strategy runner falls back to whatever
+	// DPSource was last set (noopDPSource by default in live, the static
+	// backtest map in offline runs). Flip via LIVE_DARK_POOL_ENABLED=true.
+	LiveDarkPoolEnabled bool `yaml:"-"`
 }
 
 // HyperliquidConfig holds connection and authentication parameters for the
@@ -769,6 +777,9 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	}
 	if val := os.Getenv("OMO_ORDER_JOURNAL_ENABLED"); val == "true" {
 		cfg.OrderJournalEnabled = true
+	}
+	if val := os.Getenv("LIVE_DARK_POOL_ENABLED"); val == "true" {
+		cfg.LiveDarkPoolEnabled = true
 	}
 
 	// Validate configuration

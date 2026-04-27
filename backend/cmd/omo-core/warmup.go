@@ -510,17 +510,26 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 				Msg("ORB warmup complete")
 		}
 
-		// Phase 6 of the parity plan: boot-time replay scaffolding for
-		// stateful tick consumers. Today the sink is a no-op so this is a
-		// pure smoke test for the read pipeline (market_trades reader +
-		// per-symbol fan-out). Phase 4 will swap LoggingSink for the live
-		// DP aggregator's AddTrade. Logged stats catch wire-level coverage
-		// gaps (writer not running, retention misconfigured, indexes off)
-		// before they manifest as silent live/backtest divergence.
+		// Phase 6/Phase 4(D) of the parity plan: boot-time replay of
+		// market_trades since session_open. When the live DP aggregator is
+		// enabled, the sink dispatches each tick into livedarkpool.AddTrade
+		// so the in-memory aggregator state for the partial 5m bucket and
+		// every closed-but-unflushed earlier bucket is rebuilt from the
+		// persisted trade history. Off-path (flag false) the sink is a
+		// no-op LoggingSink and the replayer just validates the read
+		// pipeline end-to-end on production data.
 		if svc.tradeReplayer != nil && len(syms.equity) > 0 {
 			equitySymbols := make([]domain.Symbol, len(syms.equity))
 			copy(equitySymbols, syms.equity)
-			stats, err := svc.tradeReplayer.Replay(ctx, todayOpen.UTC(), equitySymbols, tradereplay.LoggingSink())
+			sink := tradereplay.LoggingSink()
+			if cfg.LiveDarkPoolEnabled && svc.liveDarkPool != nil {
+				dp := svc.liveDarkPool
+				sink = func(_ context.Context, t domain.MarketTrade) error {
+					dp.AddTrade(t)
+					return nil
+				}
+			}
+			stats, err := svc.tradeReplayer.Replay(ctx, todayOpen.UTC(), equitySymbols, sink)
 			if err != nil {
 				warmupLog.Warn().Err(err).
 					Int("symbols_ok", stats.Symbols).
@@ -532,7 +541,14 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 					Int("symbols", stats.Symbols).
 					Int("trades", stats.Trades).
 					Time("since", todayOpen.UTC()).
+					Bool("livedp_sink", cfg.LiveDarkPoolEnabled && svc.liveDarkPool != nil).
 					Msg("market_trades boot replay complete")
+			}
+			if cfg.LiveDarkPoolEnabled && svc.liveDarkPool != nil {
+				// Force an immediate flush so the runner can Lookup any
+				// session-open buckets that have already closed before the
+				// 1-minute ticker would otherwise fire.
+				svc.liveDarkPool.FlushNow(ctx)
 			}
 		}
 	}
