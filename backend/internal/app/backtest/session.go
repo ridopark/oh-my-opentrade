@@ -70,6 +70,12 @@ type SessionResolver struct {
 	// Diagnostics counters. Protected by mu alongside sessions.
 	scanErrors         int
 	unknownSymbolHits  int
+
+	// barFetcher overrides the DB query path in getBarsInRange. Production
+	// leaves this nil; the inline market_bars query runs as before. Tests
+	// inject a stub so the partial-cache-fallback path can be exercised
+	// without standing up a real *sql.DB.
+	barFetcher func(ctx context.Context, symbol string, since, until time.Time) []start.Bar
 }
 
 func NewSessionResolver(loc *time.Location) *SessionResolver {
@@ -487,32 +493,47 @@ func (r *SessionResolver) GetBarsBetween(ctx context.Context, db *sql.DB, symbol
 	return r.getBarsInRange(ctx, db, symbol, since, until)
 }
 
-// getBarsInRange serves bars in [since, until) from barCache when any day in
-// the range is populated; otherwise falls back to DB. Assumes PopulateBarCache
-// covers full ranges for a symbol: partial population is not supported and
-// would produce incomplete results.
+// getBarsInRange serves bars in [since, until) from barCache when ALL days
+// in the range are populated; otherwise falls back to the DB. Partial
+// coverage previously returned silently truncated results — load_bars
+// missing prior-session days for AVWAP anchor warmup was the root cause
+// of pd_high/pd_low/session_open collapsing into a single shared state
+// in backtest, breaking live-vs-backtest parity.
 func (r *SessionResolver) getBarsInRange(ctx context.Context, db *sql.DB, symbol string, since, until time.Time) []start.Bar {
 	if since.IsZero() || !until.After(since) {
 		return nil
 	}
 
 	sinceET := since.In(r.loc)
-	untilET := until.In(r.loc)
+	// `until` is the exclusive upper bound, so the last bar that can be in
+	// range comes from (until-1ns)'s day. Without this adjustment crypto
+	// callers with eod = next-day midnight would require the next day's
+	// cache to be populated, defeating the partial-coverage check below.
+	untilET := until.Add(-time.Nanosecond).In(r.loc)
 	startDay := time.Date(sinceET.Year(), sinceET.Month(), sinceET.Day(), 0, 0, 0, 0, r.loc)
 	endDay := time.Date(untilET.Year(), untilET.Month(), untilET.Day(), 0, 0, 0, 0, r.loc)
+	if endDay.Before(startDay) {
+		endDay = startDay
+	}
 
 	// Snapshot cached slice headers under RLock, then filter outside so slice
-	// growth doesn't contend with concurrent shard goroutines.
+	// growth doesn't contend with concurrent shard goroutines. Require ALL
+	// days to be present — partial cache means we'd miss bars from the
+	// uncached days, producing wrong anchor warmups.
+	allCached := true
 	var cachedSlices [][]start.Bar
 	r.mu.RLock()
 	for d := startDay; !d.After(endDay); d = d.AddDate(0, 0, 1) {
 		key := symbol + ":" + dayKey(d, r.loc)
-		if cached, ok := r.barCache[key]; ok {
-			cachedSlices = append(cachedSlices, cached)
+		cached, ok := r.barCache[key]
+		if !ok {
+			allCached = false
+			break
 		}
+		cachedSlices = append(cachedSlices, cached)
 	}
 	r.mu.RUnlock()
-	if len(cachedSlices) > 0 {
+	if allCached && len(cachedSlices) > 0 {
 		var result []start.Bar
 		for _, cached := range cachedSlices {
 			for _, b := range cached {
@@ -522,6 +543,10 @@ func (r *SessionResolver) getBarsInRange(ctx context.Context, db *sql.DB, symbol
 			}
 		}
 		return result
+	}
+
+	if r.barFetcher != nil {
+		return r.barFetcher(ctx, symbol, since, until)
 	}
 
 	rows, err := db.QueryContext(ctx, `
