@@ -35,9 +35,11 @@ type dpWindow struct {
 // drives FlushClosed; batch use (omo-data backfill) is single-goroutine and
 // pays only the uncontended-mutex cost.
 type DPAggregator struct {
-	mu      sync.Mutex
-	symbol  domain.Symbol
-	windows map[time.Time]*dpWindow
+	mu           sync.Mutex
+	symbol       domain.Symbol
+	windows      map[time.Time]*dpWindow
+	latestBucket time.Time
+	onClosed     func([]domain.DarkPoolBar)
 }
 
 // NewDPAggregator creates a new aggregator for the given symbol.
@@ -48,11 +50,34 @@ func NewDPAggregator(symbol domain.Symbol) *DPAggregator {
 	}
 }
 
+// SetOnBucketClosed installs a callback invoked from AddTrade whenever a tick
+// arrives in a strictly newer bucket than any previously seen, with the
+// now-closed prior buckets drained from the window map. Live use sets this
+// so the strategy runner sees DP data within ~ms of bar close. Batch callers
+// leave it unset and rely on Flush()/FlushClosed() at the end of the stream;
+// without a callback the transition-drain path is skipped entirely.
+//
+// The callback runs after a.mu has been released so it can re-enter the
+// aggregator (e.g. for a stats lookup) without deadlocking.
+func (a *DPAggregator) SetOnBucketClosed(fn func([]domain.DarkPoolBar)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.onClosed = fn
+}
+
 // AddTrade processes a single trade tick, classifying it into the appropriate 5-minute window.
 func (a *DPAggregator) AddTrade(t time.Time, exchange string, price, size float64) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	bucket := t.Truncate(dpBucketInterval)
+
+	var closed []domain.DarkPoolBar
+	if a.onClosed != nil && !a.latestBucket.IsZero() && bucket.After(a.latestBucket) {
+		closed = a.drainLocked(func(b time.Time) bool { return !b.Before(bucket) })
+	}
+	if bucket.After(a.latestBucket) {
+		a.latestBucket = bucket
+	}
+
 	w := a.windows[bucket]
 	if w == nil {
 		w = &dpWindow{}
@@ -91,6 +116,13 @@ func (a *DPAggregator) AddTrade(t time.Time, exchange string, price, size float6
 		}
 	} else {
 		w.litVolume += size
+	}
+
+	cb := a.onClosed
+	a.mu.Unlock()
+
+	if len(closed) > 0 && cb != nil {
+		cb(closed)
 	}
 }
 
