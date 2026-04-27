@@ -312,6 +312,23 @@ the runner constructs the payload (e.g. liveness `RecordEval`), pass
 joins on `strategy_signal_events.strategy` because rows for the same
 instance get split between the engine name and the spec id.
 
+### Aggregator flush cadence vs downstream evaluation cadence
+An event-driven aggregator that batches output on a periodic ticker will
+silently starve any downstream consumer that evaluates on every input.
+`livedarkpool.Service` flushed closed 5m DP buckets on a 1-minute ticker;
+the strategy runner evaluated each 5m bar within ~150ms of close. The
+just-closed bucket only landed in the lookup cache up to 60s later, so
+the runner's `dpSource.Lookup` for the bar it was evaluating always
+missed and the dark-pool confluence factor scored 0 every time. Symptom:
+DB had the correct buckets persisted, in-memory cache lagged by exactly
+one bucket. Fix: push-emit on bucket transition — when a tick arrives in
+a strictly newer bucket than `latestBucket`, drain prior buckets via an
+optional callback installed by the consumer, and keep the periodic
+ticker as a safety net for symbols that go quiet without a transition
+trade. Same shape applies to any other roll-on-boundary aggregator
+(formingbar, ibkr/bar_aggregator) if a consumer ever polls them at a
+finer cadence than their flush.
+
 ## References
 - Full port list: see `backend/internal/ports/*.go` directly
 - Event list: `backend/internal/domain/event.go`
