@@ -167,6 +167,113 @@ func TestService_AddTrade_EmptySymbol_Ignored(t *testing.T) {
 	assert.Equal(t, 0, repo.saveCall)
 }
 
+// TestService_AddTrade_PushEmitsClosedBucketsToCache exercises the
+// transition push-emit: when a trade arrives in a strictly newer 5m bucket,
+// prior buckets must appear in the cache without any FlushNow / ticker tick.
+// This closes the cache-vs-strategy timing race observed in the parity plan.
+func TestService_AddTrade_PushEmitsClosedBucketsToCache(t *testing.T) {
+	repo := &fakeRepo{}
+	base := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC)
+	// `now` is irrelevant for push-emit — drain is driven by the trade itself.
+	svc := livedarkpool.New(repo, discardLogger(), livedarkpool.WithNow(func() time.Time { return base }))
+
+	svc.AddTrade(mkTrade("AAPL", base, 100, 1000, "D"))
+	// In-flight bucket must NOT be in cache.
+	_, ok := svc.Lookup("AAPL", base)
+	require.False(t, ok)
+
+	// Trade in 14:05 triggers push-emit of 14:00.
+	svc.AddTrade(mkTrade("AAPL", base.Add(5*time.Minute+100*time.Millisecond), 101, 500, "D"))
+
+	bar, ok := svc.Lookup("AAPL", base)
+	require.True(t, ok, "push-emit must populate cache before any FlushNow / ticker")
+	assert.InDelta(t, 1000.0, bar.DPVolume, 0.01)
+
+	// 14:05 itself is now in-flight — must not yet be cached.
+	_, ok = svc.Lookup("AAPL", base.Add(5*time.Minute))
+	assert.False(t, ok)
+
+	// Save has not happened yet — pendingPersist holds the bar until the ticker.
+	assert.Equal(t, 0, repo.saveCall)
+}
+
+// TestService_FlushNow_DrainsPendingPersist: after a push-emit transition,
+// FlushNow must persist the buffered bars and clear the buffer so a second
+// FlushNow with no new trades is a no-op (no double-persist).
+func TestService_FlushNow_DrainsPendingPersist(t *testing.T) {
+	repo := &fakeRepo{}
+	base := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC)
+	now := base.Add(7 * time.Minute) // 14:00 closed by time, but we'll trigger via push-emit too
+	svc := livedarkpool.New(repo, discardLogger(), livedarkpool.WithNow(func() time.Time { return now }))
+
+	svc.AddTrade(mkTrade("AAPL", base, 100, 1000, "D"))
+	svc.AddTrade(mkTrade("AAPL", base.Add(5*time.Minute), 101, 500, "D")) // push-emit 14:00
+
+	svc.FlushNow(context.Background())
+	require.Equal(t, 1, repo.totalSaved(), "first flush persists the push-emitted bar")
+
+	// Second flush with no new trades and no time advance: nothing to persist.
+	svc.FlushNow(context.Background())
+	assert.Equal(t, 1, repo.totalSaved(), "second flush must not double-persist")
+}
+
+// TestService_FlushNow_MergesPushEmitWithTimeBasedDrain: two symbols, one
+// with a transition trade (push-emit) and one quiet (time-based drain). A
+// single FlushNow must persist both in one SaveDarkPoolBars call.
+func TestService_FlushNow_MergesPushEmitWithTimeBasedDrain(t *testing.T) {
+	repo := &fakeRepo{}
+	base := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC)
+	now := base.Add(7 * time.Minute)
+	svc := livedarkpool.New(repo, discardLogger(), livedarkpool.WithNow(func() time.Time { return now }))
+
+	// AAPL: transition trade — push-emits 14:00 to cache + pendingPersist.
+	svc.AddTrade(mkTrade("AAPL", base, 100, 1000, "D"))
+	svc.AddTrade(mkTrade("AAPL", base.Add(5*time.Minute), 101, 500, "D"))
+
+	// MSFT: only one trade in 14:00, no follow-up — relies on time-based drain.
+	svc.AddTrade(mkTrade("MSFT", base, 350, 800, "D"))
+
+	svc.FlushNow(context.Background())
+
+	require.Equal(t, 1, repo.saveCall, "push-emit and time-based drain must batch into one save call")
+	assert.Equal(t, 2, repo.totalSaved())
+
+	bAAPL, ok := svc.Lookup("AAPL", base)
+	require.True(t, ok)
+	assert.InDelta(t, 1000.0, bAAPL.DPVolume, 0.01)
+
+	bMSFT, ok := svc.Lookup("MSFT", base)
+	require.True(t, ok)
+	assert.InDelta(t, 800.0, bMSFT.DPVolume, 0.01)
+}
+
+// TestService_FlushNow_RepoError_PreservesPendingPersist: when the repo
+// fails, push-emitted bars must be re-queued so the next flush retries them.
+// Cache stays populated regardless so the runner is unaffected.
+func TestService_FlushNow_RepoError_PreservesPendingPersist(t *testing.T) {
+	repo := &fakeRepo{saveErr: errors.New("connection reset")}
+	base := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC)
+	svc := livedarkpool.New(repo, discardLogger(), livedarkpool.WithNow(func() time.Time { return base }))
+
+	svc.AddTrade(mkTrade("AAPL", base, 100, 1000, "D"))
+	svc.AddTrade(mkTrade("AAPL", base.Add(5*time.Minute), 101, 500, "D")) // push-emit
+
+	svc.FlushNow(context.Background())
+	require.Equal(t, 1, repo.saveCall)
+	require.Equal(t, 0, repo.totalSaved(), "save failed on first attempt")
+
+	_, ok := svc.Lookup("AAPL", base)
+	assert.True(t, ok, "cache populated despite save failure")
+
+	// Recover and retry — the previously-failed bar must persist on this pass.
+	repo.mu.Lock()
+	repo.saveErr = nil
+	repo.mu.Unlock()
+
+	svc.FlushNow(context.Background())
+	assert.Equal(t, 1, repo.totalSaved(), "retry persists the bar that failed earlier")
+}
+
 // TestService_Run_FlushesOnTicker drives Run with a short flushInterval and
 // asserts the ticker actually persists bars without manual FlushNow calls.
 func TestService_Run_FlushesOnTicker(t *testing.T) {

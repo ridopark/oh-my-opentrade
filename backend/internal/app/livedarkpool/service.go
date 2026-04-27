@@ -48,9 +48,10 @@ type Service struct {
 	// x ≤1 bucket per minute = trivial write rate).
 	flushInterval time.Duration
 
-	mu    sync.Mutex
-	aggs  map[domain.Symbol]*backfill.DPAggregator
-	cache map[cacheKey]domain.DarkPoolBar
+	mu             sync.Mutex
+	aggs           map[domain.Symbol]*backfill.DPAggregator
+	cache          map[cacheKey]domain.DarkPoolBar
+	pendingPersist []domain.DarkPoolBar
 }
 
 // cacheKey indexes the in-memory lookup the runner queries via Lookup.
@@ -97,6 +98,11 @@ func New(repo Repo, log zerolog.Logger, opts ...Option) *Service {
 // AddTrade dispatches a tick to the per-symbol aggregator, lazy-init on
 // first sight. Called from the bus subscriber goroutine for live trades
 // and from the boot replay sink for historical session-open replay.
+//
+// On first sight of a symbol we wire SetOnBucketClosed so the aggregator
+// surfaces just-closed buckets via handlePushedBars the moment a trade
+// crosses a 5m boundary — closing the cache-vs-strategy timing race
+// where the runner evaluates a bar before the next 1-minute ticker fire.
 func (s *Service) AddTrade(t domain.MarketTrade) {
 	if t.Symbol == "" {
 		return
@@ -105,12 +111,32 @@ func (s *Service) AddTrade(t domain.MarketTrade) {
 	agg, ok := s.aggs[t.Symbol]
 	if !ok {
 		agg = backfill.NewDPAggregator(t.Symbol)
+		sym := string(t.Symbol)
+		agg.SetOnBucketClosed(func(bars []domain.DarkPoolBar) {
+			s.handlePushedBars(sym, bars)
+		})
 		s.aggs[t.Symbol] = agg
 	}
 	s.mu.Unlock()
 	// AddTrade has its own internal mutex (Phase 4 A) so we drop ours
 	// before delegating — keeps Service.mu scoped to map reads.
 	agg.AddTrade(t.Time, t.Exchange, t.Price, t.Size)
+}
+
+// handlePushedBars receives bars drained synchronously inside an aggregator's
+// AddTrade when a tick crossed a 5m boundary. Cache update makes the runner's
+// next Lookup hit; pendingPersist defers the DB write until the next ticker
+// fire so per-tick latency stays in-memory only.
+func (s *Service) handlePushedBars(sym string, bars []domain.DarkPoolBar) {
+	if len(bars) == 0 {
+		return
+	}
+	s.mu.Lock()
+	for _, b := range bars {
+		s.cache[cacheKey{sym: sym, time: b.Time}] = b
+	}
+	s.pendingPersist = append(s.pendingPersist, bars...)
+	s.mu.Unlock()
 }
 
 // Lookup implements strategy.DPSource. Returns the cached bar for the
@@ -160,15 +186,18 @@ func (s *Service) FlushNow(ctx context.Context) {
 	s.flushClosed(ctx)
 }
 
-// flushClosed iterates every aggregator and calls FlushClosed(now). For
-// each emitted bar: write to cache (so the runner can Lookup it) and
-// persist to darkpool_bars (so a mid-day restart's boot replay sees the
-// same closed buckets via Phase 6 + this Service combined).
+// flushClosed batches DB persistence for: (1) bars push-emitted from
+// AddTrade since the last tick (already in cache), and (2) any time-based
+// laggards from per-aggregator FlushClosed for symbols that went quiet
+// without a transition trade. Cache is updated for the second class so
+// Lookup eventually sees them; the first class is already cached.
 func (s *Service) flushClosed(ctx context.Context) {
 	now := s.now()
 
 	s.mu.Lock()
-	if len(s.aggs) == 0 {
+	pending := s.pendingPersist
+	s.pendingPersist = nil
+	if len(s.aggs) == 0 && len(pending) == 0 {
 		s.mu.Unlock()
 		return
 	}
@@ -185,7 +214,7 @@ func (s *Service) flushClosed(ctx context.Context) {
 	}
 	s.mu.Unlock()
 
-	var emitted []domain.DarkPoolBar
+	emitted := pending
 	for _, p := range work {
 		bars := p.agg.FlushClosed(now)
 		if len(bars) == 0 {
@@ -206,6 +235,13 @@ func (s *Service) flushClosed(ctx context.Context) {
 
 	saved, err := s.repo.SaveDarkPoolBars(ctx, emitted)
 	if err != nil {
+		// Re-queue everything we tried so a future tick retries. Cache
+		// already holds the data for the runner regardless. Per-aggregator
+		// bars were drained from the aggregator, so the pendingPersist
+		// buffer is now the only place they live until the next save.
+		s.mu.Lock()
+		s.pendingPersist = append(emitted, s.pendingPersist...)
+		s.mu.Unlock()
 		s.log.Warn().Err(err).Int("bars", len(emitted)).Msg("save dark pool bars failed; retaining in cache for next pass")
 		return
 	}

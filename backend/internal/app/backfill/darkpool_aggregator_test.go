@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -182,6 +183,129 @@ func TestDPAggregator_FlushClosed_AllInflight(t *testing.T) {
 	closed := agg.FlushClosed(now.Add(5 * time.Minute))
 	require.Len(t, closed, 1)
 	assert.InDelta(t, 100.0, closed[0].DPVolume, 0.01)
+}
+
+// TestDPAggregator_OnBucketClosed_FirstTrade verifies that the very first
+// trade for a fresh aggregator never invokes the callback — there is no
+// prior bucket to close.
+func TestDPAggregator_OnBucketClosed_FirstTrade(t *testing.T) {
+	agg := NewDPAggregator("AAPL")
+	var calls int
+	agg.SetOnBucketClosed(func([]domain.DarkPoolBar) { calls++ })
+
+	base := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC)
+	agg.AddTrade(base, "D", 100, 50)
+
+	assert.Equal(t, 0, calls, "first trade must not trigger transition callback")
+}
+
+// TestDPAggregator_OnBucketClosed_SameBucket: trades within the same 5m
+// bucket must not invoke the callback regardless of intra-bucket ordering.
+func TestDPAggregator_OnBucketClosed_SameBucket(t *testing.T) {
+	agg := NewDPAggregator("AAPL")
+	var calls int
+	agg.SetOnBucketClosed(func([]domain.DarkPoolBar) { calls++ })
+
+	base := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC)
+	agg.AddTrade(base, "D", 100, 50)
+	agg.AddTrade(base.Add(30*time.Second), "D", 101, 25)
+	agg.AddTrade(base.Add(4*time.Minute+59*time.Second), "Q", 100.5, 100)
+
+	assert.Equal(t, 0, calls, "same-bucket trades must not trigger transition callback")
+}
+
+// TestDPAggregator_OnBucketClosed_TransitionEmits: the moment a tick lands in
+// a strictly newer bucket, prior buckets are drained and surfaced via the
+// callback. The new bucket survives in-flight.
+func TestDPAggregator_OnBucketClosed_TransitionEmits(t *testing.T) {
+	agg := NewDPAggregator("AAPL")
+	var emitted [][]domain.DarkPoolBar
+	agg.SetOnBucketClosed(func(bars []domain.DarkPoolBar) {
+		emitted = append(emitted, bars)
+	})
+
+	base := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC)
+	agg.AddTrade(base, "D", 100, 1000) // bucket 14:00
+	agg.AddTrade(base.Add(5*time.Minute+1*time.Second), "D", 101, 500) // bucket 14:05 — transition
+
+	require.Len(t, emitted, 1)
+	require.Len(t, emitted[0], 1)
+	assert.Equal(t, base, emitted[0][0].Time)
+	assert.InDelta(t, 1000.0, emitted[0][0].DPVolume, 0.01)
+
+	// 14:05 bucket survives in-flight; a final Flush returns it.
+	final := agg.Flush()
+	require.Len(t, final, 1)
+	assert.Equal(t, base.Add(5*time.Minute), final[0].Time)
+	assert.InDelta(t, 500.0, final[0].DPVolume, 0.01)
+}
+
+// TestDPAggregator_OnBucketClosed_SkipAhead: a tick that skips multiple
+// buckets must drain all prior buckets in time order in a single callback.
+func TestDPAggregator_OnBucketClosed_SkipAhead(t *testing.T) {
+	agg := NewDPAggregator("AAPL")
+	var got [][]domain.DarkPoolBar
+	agg.SetOnBucketClosed(func(bars []domain.DarkPoolBar) {
+		got = append(got, bars)
+	})
+
+	base := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC)
+	agg.AddTrade(base, "D", 100, 100)
+	agg.AddTrade(base.Add(5*time.Minute), "D", 101, 200)
+	// Skip 14:10, jump to 14:15.
+	agg.AddTrade(base.Add(15*time.Minute), "D", 102, 300)
+
+	// Two transitions: 14:00→14:05 (drains 14:00) and 14:05→14:15 (drains 14:05).
+	require.Len(t, got, 2)
+	require.Len(t, got[0], 1)
+	assert.Equal(t, base, got[0][0].Time)
+	require.Len(t, got[1], 1)
+	assert.Equal(t, base.Add(5*time.Minute), got[1][0].Time)
+}
+
+// TestDPAggregator_OnBucketClosed_LatePrintReopens: a late print arriving in
+// an already-drained bucket re-creates that bucket in the window map. It does
+// not retrigger the callback (no transition past latestBucket); the next
+// forward transition or FlushClosed picks it up with the late print included.
+func TestDPAggregator_OnBucketClosed_LatePrintReopens(t *testing.T) {
+	agg := NewDPAggregator("AAPL")
+	var got [][]domain.DarkPoolBar
+	agg.SetOnBucketClosed(func(bars []domain.DarkPoolBar) {
+		got = append(got, bars)
+	})
+
+	base := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC)
+	agg.AddTrade(base, "D", 100, 100)                    // bucket 14:00
+	agg.AddTrade(base.Add(5*time.Minute), "D", 101, 200) // bucket 14:05 — drains 14:00
+	require.Len(t, got, 1)
+
+	// Late print landing back in the 14:00 bucket. No new callback (bucket
+	// is older than latestBucket), but the window is recreated.
+	agg.AddTrade(base.Add(30*time.Second), "D", 99.5, 50)
+	assert.Len(t, got, 1, "late print to drained bucket must not retrigger callback")
+
+	// Forward transition to 14:10 drains the re-opened 14:00 bucket and 14:05.
+	agg.AddTrade(base.Add(10*time.Minute), "D", 102, 300)
+	require.Len(t, got, 2)
+	assert.Len(t, got[1], 2, "re-opened 14:00 plus closed 14:05 drain together")
+	assert.Equal(t, base, got[1][0].Time)
+	assert.InDelta(t, 50.0, got[1][0].DPVolume, 0.01, "drained 14:00 contains only the late print volume")
+	assert.Equal(t, base.Add(5*time.Minute), got[1][1].Time)
+}
+
+// TestDPAggregator_OnBucketClosed_NotInstalled: with no callback set, the
+// aggregator behaves exactly as before — no transition drain, all data
+// lives in the window map until Flush/FlushClosed is called.
+func TestDPAggregator_OnBucketClosed_NotInstalled(t *testing.T) {
+	agg := NewDPAggregator("AAPL")
+
+	base := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC)
+	agg.AddTrade(base, "D", 100, 100)
+	agg.AddTrade(base.Add(5*time.Minute), "D", 101, 200)
+	agg.AddTrade(base.Add(10*time.Minute), "D", 102, 300)
+
+	bars := agg.Flush()
+	require.Len(t, bars, 3, "without callback, all buckets remain until Flush")
 }
 
 // TestDPAggregator_ConcurrentAddTradeAndFlush exercises the mutex: 1000
