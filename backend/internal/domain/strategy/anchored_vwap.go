@@ -57,10 +57,8 @@ func init() {
 	}
 }
 
-// IsRTH returns true if barTime falls within Regular Trading Hours (09:30-16:00 ET).
-// Exported so confluence-related lookbacks in builtin strategies can match the
-// AVWAP calc's RTH gate (e.g. fib retracement buffer ingestion).
-func IsRTH(barTime time.Time) bool {
+// isRTH returns true if barTime falls within Regular Trading Hours (09:30-16:00 ET).
+func isRTH(barTime time.Time) bool {
 	et := barTime.In(etLoc)
 	hhmm := et.Hour()*60 + et.Minute()
 	return hhmm >= 9*60+30 && hhmm < 16*60
@@ -156,7 +154,7 @@ func (c *AnchoredVWAPCalc) Update(barTime time.Time, high, low, close_, volume f
 	tp := (high + low + close_) / 3.0
 	pv := tp * volume
 
-	rthOK := IsRTH(barTime) // precompute once per bar
+	rthOK := isRTH(barTime) // precompute once per bar
 
 	for _, e := range c.anchors {
 		if !e.active {
