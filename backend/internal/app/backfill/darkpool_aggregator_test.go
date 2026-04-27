@@ -381,6 +381,28 @@ func TestDPAggregator_Snapshot_AfterPushEmit(t *testing.T) {
 	assert.InDelta(t, 500.0, snap.DPVolume, 0.01)
 }
 
+// TestDPAggregator_LookupAcrossTimezones: a trade time delivered with a
+// non-UTC location (e.g. CDT from a DB driver configured for local time)
+// must produce a bucket key reachable by a UTC lookup of the same instant.
+// Without UTC normalization Go map equality would fail because time.Time
+// compares both instant AND Location.
+func TestDPAggregator_LookupAcrossTimezones(t *testing.T) {
+	cdt := time.FixedZone("CDT", -5*60*60)
+	agg := NewDPAggregator("AAPL")
+
+	// Trade timestamp arrives in CDT.
+	tradeTime := time.Date(2026, 4, 27, 10, 35, 30, 0, cdt) // 15:35:30 UTC
+	agg.AddTrade(tradeTime, "D", 100, 500)
+
+	// Lookup arrives in UTC for the same instant.
+	utcQuery := time.Date(2026, 4, 27, 15, 35, 0, 0, time.UTC)
+	bar, ok := agg.Snapshot(utcQuery)
+	require.True(t, ok, "snapshot must hit despite cross-zone trade vs query times")
+	assert.InDelta(t, 500.0, bar.DPVolume, 0.01)
+	assert.Equal(t, time.UTC, bar.Time.Location(), "bar.Time must be UTC")
+	assert.True(t, bar.Time.Equal(utcQuery), "bar.Time matches the canonical bucket")
+}
+
 // TestDPAggregator_ConcurrentAddTradeAndFlush exercises the mutex: 1000
 // trades from multiple goroutines while another goroutine repeatedly
 // flushes. The combined DP volume across all flushes plus the residual

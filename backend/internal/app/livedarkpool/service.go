@@ -140,8 +140,12 @@ func (s *Service) handlePushedBars(bars []domain.DarkPoolBar) {
 // where the strategy evaluates before a trade in the next bucket has
 // triggered push-emit.
 func (s *Service) Lookup(sym string, t time.Time) (domain.DarkPoolBar, bool) {
+	// Canonicalize cache key to UTC for the same reason DPAggregator does:
+	// same-instant times sourced from different zones (DB driver local,
+	// broker WS, runner UTC) must hash to the same map slot.
+	key := cacheKey{sym: sym, time: t.UTC()}
 	s.mu.Lock()
-	if bar, ok := s.cache[cacheKey{sym: sym, time: t}]; ok {
+	if bar, ok := s.cache[key]; ok {
 		s.mu.Unlock()
 		return bar, true
 	}

@@ -68,7 +68,13 @@ func (a *DPAggregator) SetOnBucketClosed(fn func([]domain.DarkPoolBar)) {
 // AddTrade processes a single trade tick, classifying it into the appropriate 5-minute window.
 func (a *DPAggregator) AddTrade(t time.Time, exchange string, price, size float64) {
 	a.mu.Lock()
-	bucket := t.Truncate(dpBucketInterval)
+	// Canonicalize to UTC. Producer paths source trade.Time from mixed
+	// zones (DB driver local for boot replay, broker-WS for live), but
+	// the runner's DP overlay always queries UTC. Go map equality on
+	// time.Time compares both instant AND Location, so without UTC
+	// normalization a same-instant bucket gets filed under a key the
+	// lookup will never produce.
+	bucket := t.UTC().Truncate(dpBucketInterval)
 
 	var closed []domain.DarkPoolBar
 	if bucket.After(a.latestBucket) {
@@ -142,7 +148,7 @@ func (a *DPAggregator) Flush() []domain.DarkPoolBar {
 func (a *DPAggregator) FlushClosed(now time.Time) []domain.DarkPoolBar {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	cutoff := now.Truncate(dpBucketInterval)
+	cutoff := now.UTC().Truncate(dpBucketInterval)
 	keep := func(bucket time.Time) bool {
 		// bucket end is bucket+5m; "closed" means bucket end <= cutoff,
 		// i.e. bucket+5m <= cutoff, i.e. bucket < cutoff (strict).
