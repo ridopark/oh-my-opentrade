@@ -99,10 +99,9 @@ func New(repo Repo, log zerolog.Logger, opts ...Option) *Service {
 // first sight. Called from the bus subscriber goroutine for live trades
 // and from the boot replay sink for historical session-open replay.
 //
-// On first sight of a symbol we wire SetOnBucketClosed so the aggregator
-// surfaces just-closed buckets via handlePushedBars the moment a trade
-// crosses a 5m boundary — closing the cache-vs-strategy timing race
-// where the runner evaluates a bar before the next 1-minute ticker fire.
+// The aggregator's bucket-transition callback (handlePushedBars) closes
+// the cache-vs-strategy timing race where the runner evaluates a bar
+// before the next 1-minute ticker fire.
 func (s *Service) AddTrade(t domain.MarketTrade) {
 	if t.Symbol == "" {
 		return
@@ -111,15 +110,10 @@ func (s *Service) AddTrade(t domain.MarketTrade) {
 	agg, ok := s.aggs[t.Symbol]
 	if !ok {
 		agg = backfill.NewDPAggregator(t.Symbol)
-		sym := string(t.Symbol)
-		agg.SetOnBucketClosed(func(bars []domain.DarkPoolBar) {
-			s.handlePushedBars(sym, bars)
-		})
+		agg.SetOnBucketClosed(s.handlePushedBars)
 		s.aggs[t.Symbol] = agg
 	}
 	s.mu.Unlock()
-	// AddTrade has its own internal mutex (Phase 4 A) so we drop ours
-	// before delegating — keeps Service.mu scoped to map reads.
 	agg.AddTrade(t.Time, t.Exchange, t.Price, t.Size)
 }
 
@@ -127,13 +121,13 @@ func (s *Service) AddTrade(t domain.MarketTrade) {
 // AddTrade when a tick crossed a 5m boundary. Cache update makes the runner's
 // next Lookup hit; pendingPersist defers the DB write until the next ticker
 // fire so per-tick latency stays in-memory only.
-func (s *Service) handlePushedBars(sym string, bars []domain.DarkPoolBar) {
+func (s *Service) handlePushedBars(bars []domain.DarkPoolBar) {
 	if len(bars) == 0 {
 		return
 	}
 	s.mu.Lock()
 	for _, b := range bars {
-		s.cache[cacheKey{sym: sym, time: b.Time}] = b
+		s.cache[cacheKey{sym: string(b.Symbol), time: b.Time}] = b
 	}
 	s.pendingPersist = append(s.pendingPersist, bars...)
 	s.mu.Unlock()
@@ -221,7 +215,6 @@ func (s *Service) flushClosed(ctx context.Context) {
 			continue
 		}
 		emitted = append(emitted, bars...)
-		// Update cache under the Service mutex.
 		s.mu.Lock()
 		for _, b := range bars {
 			s.cache[cacheKey{sym: string(p.sym), time: b.Time}] = b
@@ -235,10 +228,8 @@ func (s *Service) flushClosed(ctx context.Context) {
 
 	saved, err := s.repo.SaveDarkPoolBars(ctx, emitted)
 	if err != nil {
-		// Re-queue everything we tried so a future tick retries. Cache
-		// already holds the data for the runner regardless. Per-aggregator
-		// bars were drained from the aggregator, so the pendingPersist
-		// buffer is now the only place they live until the next save.
+		// Aggregator already drained these bars; pendingPersist is the only
+		// place they live until the next save attempt.
 		s.mu.Lock()
 		s.pendingPersist = append(emitted, s.pendingPersist...)
 		s.mu.Unlock()

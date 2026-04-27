@@ -71,10 +71,10 @@ func (a *DPAggregator) AddTrade(t time.Time, exchange string, price, size float6
 	bucket := t.Truncate(dpBucketInterval)
 
 	var closed []domain.DarkPoolBar
-	if a.onClosed != nil && !a.latestBucket.IsZero() && bucket.After(a.latestBucket) {
-		closed = a.drainLocked(func(b time.Time) bool { return !b.Before(bucket) })
-	}
 	if bucket.After(a.latestBucket) {
+		if a.onClosed != nil && !a.latestBucket.IsZero() {
+			closed = a.drainLocked(func(b time.Time) bool { return !b.Before(bucket) })
+		}
 		a.latestBucket = bucket
 	}
 
@@ -138,11 +138,7 @@ func (a *DPAggregator) Flush() []domain.DarkPoolBar {
 // FlushClosed emits and removes only buckets whose window has ended on or
 // before now.Truncate(5m). The in-flight bucket (the one still receiving
 // trades for `now`) stays in memory so live aggregators don't double-emit
-// it on subsequent ticker calls.
-//
-// Phase 4 of the parity plan: the live DP service runs FlushClosed on a
-// 1-minute ticker and persists the returned bars to darkpool_bars + emits
-// a DarkPoolBarReady event for each. Batch callers continue to use Flush.
+// it on subsequent ticker calls. Batch callers should use Flush instead.
 func (a *DPAggregator) FlushClosed(now time.Time) []domain.DarkPoolBar {
 	a.mu.Lock()
 	defer a.mu.Unlock()
