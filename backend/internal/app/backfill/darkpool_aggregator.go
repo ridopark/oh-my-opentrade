@@ -151,6 +151,51 @@ func (a *DPAggregator) FlushClosed(now time.Time) []domain.DarkPoolBar {
 	return a.drainLocked(keep)
 }
 
+// windowToBar materializes the current state of an accumulator window into
+// a DarkPoolBar without mutating the aggregator. Caller must hold a.mu.
+func (a *DPAggregator) windowToBar(t time.Time, w *dpWindow) domain.DarkPoolBar {
+	dpvwap := 0.0
+	if w.dpVolume > 0 {
+		dpvwap = w.dpNotional / w.dpVolume
+	}
+	dpRatio := 0.0
+	if w.totalVolume > 0 {
+		dpRatio = w.dpVolume / w.totalVolume
+	}
+	return domain.DarkPoolBar{
+		Time:             t,
+		Symbol:           a.symbol,
+		Timeframe:        dpBarTimeframe,
+		DPVolume:         w.dpVolume,
+		DPTrades:         w.dpTrades,
+		DPVWAP:           dpvwap,
+		LitVolume:        w.litVolume,
+		TotalVolume:      w.totalVolume,
+		DPRatio:          dpRatio,
+		BuyVolume:        w.buyVolume,
+		SellVolume:       w.sellVolume,
+		LargePrintVolume: w.largePrintVol,
+		LargePrintCount:  w.largePrintCount,
+		MaxPrintSize:     w.maxPrintSize,
+	}
+}
+
+// Snapshot returns the current state of the bucket containing t without
+// draining or mutating the aggregator. Used by livedarkpool.Service.Lookup
+// to serve the runner's DP overlay query for the just-closed bucket
+// before any push-emit or ticker flush has surfaced it to the cache.
+// Returns (zero, false) if no trades have landed in that bucket yet.
+func (a *DPAggregator) Snapshot(t time.Time) (domain.DarkPoolBar, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	bucket := t.Truncate(dpBucketInterval)
+	w := a.windows[bucket]
+	if w == nil {
+		return domain.DarkPoolBar{}, false
+	}
+	return a.windowToBar(bucket, w), true
+}
+
 // drainLocked is the shared body for Flush / FlushClosed. retain is called
 // for each bucket; if it returns true the bucket survives the drain. nil
 // retain drains everything (Flush semantics). Caller must hold a.mu.
@@ -169,31 +214,7 @@ func (a *DPAggregator) drainLocked(retain func(time.Time) bool) []domain.DarkPoo
 			survivors[t] = w
 			continue
 		}
-		dpvwap := 0.0
-		if w.dpVolume > 0 {
-			dpvwap = w.dpNotional / w.dpVolume
-		}
-		dpRatio := 0.0
-		if w.totalVolume > 0 {
-			dpRatio = w.dpVolume / w.totalVolume
-		}
-
-		bars = append(bars, domain.DarkPoolBar{
-			Time:             t,
-			Symbol:           a.symbol,
-			Timeframe:        dpBarTimeframe,
-			DPVolume:         w.dpVolume,
-			DPTrades:         w.dpTrades,
-			DPVWAP:           dpvwap,
-			LitVolume:        w.litVolume,
-			TotalVolume:      w.totalVolume,
-			DPRatio:          dpRatio,
-			BuyVolume:        w.buyVolume,
-			SellVolume:       w.sellVolume,
-			LargePrintVolume: w.largePrintVol,
-			LargePrintCount:  w.largePrintCount,
-			MaxPrintSize:     w.maxPrintSize,
-		})
+		bars = append(bars, a.windowToBar(t, w))
 	}
 
 	sort.Slice(bars, func(i, j int) bool {

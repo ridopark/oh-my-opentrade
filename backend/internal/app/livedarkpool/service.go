@@ -134,14 +134,23 @@ func (s *Service) handlePushedBars(bars []domain.DarkPoolBar) {
 }
 
 // Lookup implements strategy.DPSource. Returns the cached bar for the
-// (symbol, 5m-bucket) key written by the most recent flushClosed pass;
-// returns (zero, false) for keys not yet flushed (including the
-// in-flight bucket).
+// (symbol, 5m-bucket) key written by the most recent flushClosed pass or
+// push-emit. On cache miss falls back to a read-only snapshot of the
+// per-symbol aggregator's in-flight bucket — covers the bar-close race
+// where the strategy evaluates before a trade in the next bucket has
+// triggered push-emit.
 func (s *Service) Lookup(sym string, t time.Time) (domain.DarkPoolBar, bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	bar, ok := s.cache[cacheKey{sym: sym, time: t}]
-	return bar, ok
+	if bar, ok := s.cache[cacheKey{sym: sym, time: t}]; ok {
+		s.mu.Unlock()
+		return bar, true
+	}
+	agg := s.aggs[domain.Symbol(sym)]
+	s.mu.Unlock()
+	if agg == nil {
+		return domain.DarkPoolBar{}, false
+	}
+	return agg.Snapshot(t)
 }
 
 // HasData implements strategy.DPSource. Reports whether any bucket has
