@@ -308,6 +308,79 @@ func TestDPAggregator_OnBucketClosed_NotInstalled(t *testing.T) {
 	require.Len(t, bars, 3, "without callback, all buckets remain until Flush")
 }
 
+// TestDPAggregator_Snapshot_ReadOnly: Snapshot must return current bucket
+// state without draining or mutating the aggregator. A subsequent Flush
+// produces the same data because the bucket is still there.
+func TestDPAggregator_Snapshot_ReadOnly(t *testing.T) {
+	agg := NewDPAggregator("AAPL")
+	base := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC)
+	agg.AddTrade(base, "D", 100, 500)
+	agg.AddTrade(base.Add(time.Minute), "Q", 101, 2000)
+
+	snap, ok := agg.Snapshot(base)
+	require.True(t, ok)
+	assert.InDelta(t, 500.0, snap.DPVolume, 0.01)
+	assert.InDelta(t, 2000.0, snap.LitVolume, 0.01)
+	assert.InDelta(t, 2500.0, snap.TotalVolume, 0.01)
+
+	// State preserved: Flush still produces the same bucket.
+	bars := agg.Flush()
+	require.Len(t, bars, 1)
+	assert.InDelta(t, 500.0, bars[0].DPVolume, 0.01)
+	assert.InDelta(t, 2500.0, bars[0].TotalVolume, 0.01)
+}
+
+// TestDPAggregator_Snapshot_BucketAlignment: Snapshot truncates the query
+// time to the 5m boundary, so any time within the bucket window returns the
+// same bar.
+func TestDPAggregator_Snapshot_BucketAlignment(t *testing.T) {
+	agg := NewDPAggregator("AAPL")
+	base := time.Date(2026, 4, 27, 14, 5, 0, 0, time.UTC)
+	agg.AddTrade(base.Add(2*time.Minute+30*time.Second), "D", 100, 1000)
+
+	for _, off := range []time.Duration{0, time.Second, 2 * time.Minute, 4*time.Minute + 59*time.Second} {
+		snap, ok := agg.Snapshot(base.Add(off))
+		require.True(t, ok, "offset %v should hit the same bucket", off)
+		assert.InDelta(t, 1000.0, snap.DPVolume, 0.01, "offset %v", off)
+		assert.Equal(t, base, snap.Time, "all offsets resolve to bucket start time")
+	}
+}
+
+// TestDPAggregator_Snapshot_NoData: querying a bucket with no trades returns
+// (zero, false).
+func TestDPAggregator_Snapshot_NoData(t *testing.T) {
+	agg := NewDPAggregator("AAPL")
+	base := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC)
+
+	_, ok := agg.Snapshot(base)
+	assert.False(t, ok, "empty aggregator must report no data")
+
+	// One trade in 14:00; query 14:05 still returns false.
+	agg.AddTrade(base, "D", 100, 1000)
+	_, ok = agg.Snapshot(base.Add(5 * time.Minute))
+	assert.False(t, ok, "bucket with no trades must report no data")
+}
+
+// TestDPAggregator_Snapshot_AfterPushEmit: a snapshot of a bucket already
+// drained via push-emit returns false (window was removed from the map).
+// Cache is the authoritative source for drained buckets; in-flight only
+// for live ones.
+func TestDPAggregator_Snapshot_AfterPushEmit(t *testing.T) {
+	agg := NewDPAggregator("AAPL")
+	agg.SetOnBucketClosed(func([]domain.DarkPoolBar) {})
+
+	base := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC)
+	agg.AddTrade(base, "D", 100, 1000)
+	agg.AddTrade(base.Add(5*time.Minute), "D", 101, 500) // transition drains 14:00
+
+	_, ok := agg.Snapshot(base)
+	assert.False(t, ok, "drained bucket no longer in window map")
+
+	snap, ok := agg.Snapshot(base.Add(5 * time.Minute))
+	require.True(t, ok, "in-flight bucket still present")
+	assert.InDelta(t, 500.0, snap.DPVolume, 0.01)
+}
+
 // TestDPAggregator_ConcurrentAddTradeAndFlush exercises the mutex: 1000
 // trades from multiple goroutines while another goroutine repeatedly
 // flushes. The combined DP volume across all flushes plus the residual

@@ -67,9 +67,11 @@ func TestService_AddTrade_LazyInitsAggregatorPerSymbol(t *testing.T) {
 	svc.AddTrade(mkTrade("AAPL", base, 100, 1000, "D"))
 	svc.AddTrade(mkTrade("MSFT", base, 350, 500, "D"))
 
-	// Before any flush, cache must be empty (in-flight bucket only).
-	_, ok := svc.Lookup("AAPL", base)
-	assert.False(t, ok)
+	// Lookup hits via the snapshot fallback even before any flush; HasData
+	// still reports false because nothing has been written to the cache yet.
+	bar, ok := svc.Lookup("AAPL", base)
+	require.True(t, ok)
+	assert.InDelta(t, 1000.0, bar.DPVolume, 0.01)
 	assert.False(t, svc.HasData())
 }
 
@@ -96,8 +98,13 @@ func TestService_FlushNow_PopulatesCacheAndPersists(t *testing.T) {
 	require.True(t, ok)
 	assert.InDelta(t, 2000.0, bar05.DPVolume, 0.01)
 
-	_, ok = svc.Lookup("AAPL", base.Add(10*time.Minute))
-	assert.False(t, ok, "in-flight bucket must not be in the cache yet")
+	// In-flight bucket is served via the aggregator snapshot fallback, so
+	// Lookup hits with the partial accumulator state. This is the
+	// bar-close-race fix: the strategy can read the just-closed bucket
+	// before any push-emit or ticker has populated the cache.
+	bar10, ok := svc.Lookup("AAPL", base.Add(10*time.Minute))
+	require.True(t, ok, "in-flight bucket must be served via snapshot fallback")
+	assert.InDelta(t, 800.0, bar10.DPVolume, 0.01)
 
 	assert.True(t, svc.HasData())
 	assert.Equal(t, 2, repo.totalSaved(), "both closed buckets persisted to darkpool_bars")
@@ -178,23 +185,59 @@ func TestService_AddTrade_PushEmitsClosedBucketsToCache(t *testing.T) {
 	svc := livedarkpool.New(repo, discardLogger(), livedarkpool.WithNow(func() time.Time { return base }))
 
 	svc.AddTrade(mkTrade("AAPL", base, 100, 1000, "D"))
-	// In-flight bucket must NOT be in cache.
-	_, ok := svc.Lookup("AAPL", base)
-	require.False(t, ok)
+	// In-flight bucket is served via the snapshot fallback even before any
+	// transition. This is intentional — covers the bar-close race where the
+	// strategy queries the just-closed bucket before push-emit can fire.
+	preBar, ok := svc.Lookup("AAPL", base)
+	require.True(t, ok, "snapshot fallback must serve in-flight bucket")
+	assert.InDelta(t, 1000.0, preBar.DPVolume, 0.01)
 
-	// Trade in 14:05 triggers push-emit of 14:00.
+	// Trade in 14:05 triggers push-emit of 14:00, populating the cache.
 	svc.AddTrade(mkTrade("AAPL", base.Add(5*time.Minute+100*time.Millisecond), 101, 500, "D"))
 
 	bar, ok := svc.Lookup("AAPL", base)
 	require.True(t, ok, "push-emit must populate cache before any FlushNow / ticker")
 	assert.InDelta(t, 1000.0, bar.DPVolume, 0.01)
 
-	// 14:05 itself is now in-flight — must not yet be cached.
-	_, ok = svc.Lookup("AAPL", base.Add(5*time.Minute))
-	assert.False(t, ok)
+	// 14:05 itself is now in-flight — snapshot fallback returns the partial
+	// accumulator state (just the one trade we put there).
+	bar05, ok := svc.Lookup("AAPL", base.Add(5*time.Minute))
+	require.True(t, ok)
+	assert.InDelta(t, 500.0, bar05.DPVolume, 0.01)
 
 	// Save has not happened yet — pendingPersist holds the bar until the ticker.
 	assert.Equal(t, 0, repo.saveCall)
+}
+
+// TestService_Lookup_SnapshotFallback exercises the cache-miss path: when no
+// push-emit or ticker has populated the cache yet, Lookup must serve the
+// per-symbol aggregator's in-flight state directly. Closes the bar-close
+// race where the strategy reads the just-closed bucket within ~30ms of the
+// boundary, before any trade in the next bucket has triggered push-emit.
+func TestService_Lookup_SnapshotFallback(t *testing.T) {
+	repo := &fakeRepo{}
+	base := time.Date(2026, 4, 27, 14, 0, 0, 0, time.UTC)
+	svc := livedarkpool.New(repo, discardLogger(), livedarkpool.WithNow(func() time.Time { return base }))
+
+	svc.AddTrade(mkTrade("AAPL", base.Add(30*time.Second), 100, 1000, "D"))
+	svc.AddTrade(mkTrade("AAPL", base.Add(time.Minute), 101, 4000, "Q"))
+
+	// No flush, no transition. Cache is empty. Lookup must still return
+	// the bar via the aggregator snapshot path.
+	bar, ok := svc.Lookup("AAPL", base)
+	require.True(t, ok)
+	assert.InDelta(t, 1000.0, bar.DPVolume, 0.01)
+	assert.InDelta(t, 4000.0, bar.LitVolume, 0.01)
+	assert.InDelta(t, 5000.0, bar.TotalVolume, 0.01)
+	assert.InDelta(t, 0.20, bar.DPRatio, 0.001)
+
+	// Unknown symbol returns false — no aggregator instantiated.
+	_, ok = svc.Lookup("MSFT", base)
+	assert.False(t, ok)
+
+	// Symbol with aggregator but bucket with no trades returns false.
+	_, ok = svc.Lookup("AAPL", base.Add(15*time.Minute))
+	assert.False(t, ok)
 }
 
 // TestService_FlushNow_DrainsPendingPersist: after a push-emit transition,
