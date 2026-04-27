@@ -1725,7 +1725,25 @@ func firstPositive(values ...float64) float64 {
 // carries the incremental qty/price; the orders row carries broker-cumulative
 // values from THIS exec. Safe under out-of-order delivery: execution_id UNIQUE
 // dedups trades, GREATEST guards the orders update.
+//
+// Exit-side guard: when the intent is a CLOSE_*, reject the persist if the
+// fill quantity exceeds the position's currently-open qty per positionLookup.
+// Closes the duplicate-exit-fill window observed on RIVN 2026-04-27, where a
+// re-pegged exit raced the original order's fill: both filled at IBKR within
+// 31ms and both got persisted, leaving the trades ledger at -47 net (BUY 47 -
+// SELL 47 - SELL 47). The reconciler caught the negative inventory but only
+// post-fact; this guard refuses the second fill at write time.
 func (s *Service) insertFillLeg(po *pendingOrder, brokerOrderID, executionID string, filledAt time.Time, legPrice, legQty, cumQty, cumAvgPrice float64, l zerolog.Logger) {
+	if reason, blocked := s.shouldBlockExitFill(po, legQty); blocked {
+		l.Error().
+			Str("broker_order_id", brokerOrderID).
+			Str("execution_id", executionID).
+			Str("symbol", string(po.intent.Symbol)).
+			Float64("leg_qty", legQty).
+			Str("reason", reason).
+			Msg("exit fill rejected: would exceed open position quantity (likely duplicate from race)")
+		return
+	}
 	ctx := context.Background()
 	side := brokerSideFor(po.intent.Direction)
 	trade, err := domain.NewTrade(filledAt, po.tenantID, po.envMode, uuid.New(), po.intent.Symbol, side, legQty, legPrice, 0, "FILLED", po.intent.Strategy, po.intent.Rationale)
@@ -1738,6 +1756,31 @@ func (s *Service) insertFillLeg(po *pendingOrder, brokerOrderID, executionID str
 	if err := s.repo.RecordFill(ctx, brokerOrderID, filledAt, cumAvgPrice, cumQty, trade); err != nil {
 		l.Error().Err(err).Str("execution_id", executionID).Msg("failed to record fill leg")
 	}
+}
+
+// shouldBlockExitFill returns (reason, true) when an exit-direction fill leg
+// would exceed the position's open quantity per positionLookup, which means
+// it's almost certainly a duplicate from a re-peg race. Entry directions
+// always pass through; missing position lookup or absent position data also
+// pass (best-effort guard, not a hard constraint).
+func (s *Service) shouldBlockExitFill(po *pendingOrder, legQty float64) (string, bool) {
+	if po == nil || s.positionLookup == nil {
+		return "", false
+	}
+	if po.intent.Direction != domain.DirectionCloseLong && po.intent.Direction != domain.DirectionCloseShort {
+		return "", false
+	}
+	pos, ok := s.positionLookup.LookupPosition(string(po.intent.Symbol))
+	if !ok {
+		// No tracked position. Could be a stale exit chasing a closed position
+		// (the prior fill already drove qty to 0 and removed the entry from
+		// the monitor) — treat as duplicate.
+		return "no open position for symbol", true
+	}
+	if legQty > pos.Quantity+1e-9 {
+		return fmt.Sprintf("leg_qty=%.4f exceeds open_qty=%.4f", legQty, pos.Quantity), true
+	}
+	return "", false
 }
 
 // emitPartialFillReceived emits a FillReceived carrying the per-exec qty/price
