@@ -117,14 +117,21 @@ func (s *AVWAPStrategy) ReplayOnBar(_ start.Context, _ string, bar start.Bar, st
 		avwapSt.PrevBarCount++
 	}
 
-	// Rolling 50-bar high/low window for Fibonacci
-	avwapSt.BarHighs50 = append(avwapSt.BarHighs50, bar.High)
-	if len(avwapSt.BarHighs50) > 50 {
-		avwapSt.BarHighs50 = avwapSt.BarHighs50[1:]
-	}
-	avwapSt.BarLows50 = append(avwapSt.BarLows50, bar.Low)
-	if len(avwapSt.BarLows50) > 50 {
-		avwapSt.BarLows50 = avwapSt.BarLows50[1:]
+	// Rolling 50-bar high/low window for Fibonacci. Skip non-RTH bars when
+	// FibBufferRTHOnly is set so the fib retracement range matches the AVWAP
+	// calc's RTH gate (anchored_vwap.go IsRTH). Without this gate, pre-market
+	// thin-volume gap ranges contaminate fib levels and live (continuous from
+	// pre-market boot) diverges from backtest (cleanly warmed from prior-day
+	// RTH bars).
+	if !avwapSt.Config.FibBufferRTHOnly || start.IsRTH(bar.Time) {
+		avwapSt.BarHighs50 = append(avwapSt.BarHighs50, bar.High)
+		if len(avwapSt.BarHighs50) > 50 {
+			avwapSt.BarHighs50 = avwapSt.BarHighs50[1:]
+		}
+		avwapSt.BarLows50 = append(avwapSt.BarLows50, bar.Low)
+		if len(avwapSt.BarLows50) > 50 {
+			avwapSt.BarLows50 = avwapSt.BarLows50[1:]
+		}
 	}
 
 	// Update AboveCount/BelowCount so breakout hold_bars are warm after restart.
@@ -206,6 +213,7 @@ type AVWAPConfig struct {
 
 	MinConfluenceScore        int  // minimum confluence score for entry (0 = no gate)
 	FibConfluenceEnabled      bool // enable Fibonacci confluence factor
+	FibBufferRTHOnly          bool // when true, BarHighs50/Lows50 ignore non-RTH bars to align with AVWAP RTH gating
 	KeyLevelConfluenceEnabled bool // enable key level confluence factor
 	CandleConfluenceEnabled   bool // enable candlestick pattern confluence factor
 	BandConfluenceEnabled     bool // enable AVWAP band zone confluence factor
@@ -1290,6 +1298,7 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 
 		MinConfluenceScore:        getInt(params, "min_confluence_score", 0),
 		FibConfluenceEnabled:      getBool(params, "fib_confluence_enabled", true),
+		FibBufferRTHOnly:          getBool(params, "fib_buffer_rth_only", true),
 		KeyLevelConfluenceEnabled: getBool(params, "key_level_confluence_enabled", true),
 		CandleConfluenceEnabled:   getBool(params, "candle_confluence_enabled", true),
 		BandConfluenceEnabled:     getBool(params, "band_confluence_enabled", true),
@@ -3574,14 +3583,17 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 		avwapSt.PrevBarCount++
 	}
 
-	// 2d. Rolling 50-bar high/low window for Fibonacci.
-	avwapSt.BarHighs50 = append(avwapSt.BarHighs50, bar.High)
-	if len(avwapSt.BarHighs50) > 50 {
-		avwapSt.BarHighs50 = avwapSt.BarHighs50[1:]
-	}
-	avwapSt.BarLows50 = append(avwapSt.BarLows50, bar.Low)
-	if len(avwapSt.BarLows50) > 50 {
-		avwapSt.BarLows50 = avwapSt.BarLows50[1:]
+	// 2d. Rolling 50-bar high/low window for Fibonacci. RTH-gated to match
+	// the AVWAP calc; mirrors the same guard in ReplayOnBar above.
+	if !cfg.FibBufferRTHOnly || start.IsRTH(bar.Time) {
+		avwapSt.BarHighs50 = append(avwapSt.BarHighs50, bar.High)
+		if len(avwapSt.BarHighs50) > 50 {
+			avwapSt.BarHighs50 = avwapSt.BarHighs50[1:]
+		}
+		avwapSt.BarLows50 = append(avwapSt.BarLows50, bar.Low)
+		if len(avwapSt.BarLows50) > 50 {
+			avwapSt.BarLows50 = avwapSt.BarLows50[1:]
+		}
 	}
 
 	// 2e. Inducement detector (Factor 7) — updates swing ring buffers and
