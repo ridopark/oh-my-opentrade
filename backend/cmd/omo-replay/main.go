@@ -34,6 +34,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
 	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
+	"github.com/oh-my-opentrade/backend/internal/app/warmup"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -801,7 +802,17 @@ func main() {
 	}
 	sort.Slice(streams, func(i, j int) bool { return streams[i].symbol.String() < streams[j].symbol.String() })
 
-	const minWarmupBars = 250
+	// Canonical warmup spec — same loader live and the HTTP backtest path
+	// consume. RTH filter applies to equity intraday timeframes; crypto
+	// gets the no-filter spec.
+	equitySpec := warmup.EquitySpec()
+	cryptoSpec := warmup.CryptoSpec()
+	specFor := func(sym domain.Symbol) warmup.Spec {
+		if sym.IsCryptoSymbol() {
+			return cryptoSpec
+		}
+		return equitySpec
+	}
 	warmupBarsCache := make(map[string][]domain.MarketBar, len(symbols))
 	// Phase 1: parallel fetch of warmup bars (DB-bound, no shared state).
 	type warmResult struct {
@@ -814,19 +825,20 @@ func main() {
 		warmWg.Add(1)
 		go func(i int, sym domain.Symbol) {
 			defer warmWg.Done()
+			spec := specFor(sym)
+			required := spec.Required[replayTimeframe]
 			warmupEnd := fromTime
 			if t, ok := firstBarTime[sym.String()]; ok {
 				warmupEnd = t
 			}
-			warmupStart := warmupEnd.Add(-7 * 24 * time.Hour)
+			warmupStart := warmupEnd.Add(-warmup.CalendarLookback(replayTimeframe))
 
 			bars, fetchErr := repo.GetMarketBars(ctx, sym, replayTimeframe, warmupStart, warmupEnd)
 			if fetchErr != nil {
 				warmupLog.Warn().Err(fetchErr).Str("symbol", sym.String()).Msg("warmup fetch failed")
 			}
-			if len(bars) < minWarmupBars && backtestFlag && alpacaAdapt != nil {
-				apiFrom := warmupEnd.Add(-30 * 24 * time.Hour)
-				apiBars, apiErr := alpacaAdapt.GetHistoricalBars(ctx, sym, replayTimeframe, apiFrom, warmupEnd)
+			if len(bars) < required && backtestFlag && alpacaAdapt != nil {
+				apiBars, apiErr := alpacaAdapt.GetHistoricalBars(ctx, sym, replayTimeframe, warmupStart, warmupEnd)
 				if apiErr == nil && len(apiBars) > len(bars) {
 					warmupLog.Info().Str("symbol", sym.String()).Int("db_bars", len(bars)).Int("api_bars", len(apiBars)).Msg("fetched warmup bars from market data API")
 					for _, b := range apiBars {
@@ -837,9 +849,7 @@ func main() {
 					warmupLog.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("API warmup fetch failed")
 				}
 			}
-			if len(bars) > minWarmupBars {
-				bars = bars[len(bars)-minWarmupBars:]
-			}
+			bars = warmup.Trim(spec, replayTimeframe, bars)
 			warmResults[i] = warmResult{sym: sym, bars: bars}
 		}(i, sym)
 	}
