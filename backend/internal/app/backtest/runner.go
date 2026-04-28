@@ -859,21 +859,7 @@ func (r *Runner) Run(ctx context.Context) error {
 						r.log.Warn().Err(apiErr).Str("symbol", symStr).Msg("API warmup fetch failed")
 					}
 				}
-				bars = warmup.Trim(warmupSpec, replayTimeframe, bars)
-
-				// Boot+1 bar: append the single bar at warmupEnd-tfDur,
-				// regardless of RTH filter. Mirrors live's real-time
-				// processing of the bar that closes between boot and the
-				// first replay snapshot. Without this, the very first
-				// snapshot has one fewer bar in calc state than live.
-				tfDur := warmup.TfDuration(replayTimeframe)
-				if prev, perr := repo.GetMarketBars(ctx, sym, replayTimeframe, warmupEnd.Add(-tfDur), warmupEnd); perr == nil {
-					for _, b := range prev {
-						if !b.Time.Before(warmupEnd.Add(-tfDur)) && b.Time.Before(warmupEnd) {
-							bars = append(bars, b)
-						}
-					}
-				}
+				bars = warmup.TrimWithBoot1(warmupSpec, replayTimeframe, bars, warmupEnd)
 
 				// 1D bars: API fallback when batch is short. Pass 1 will
 				// further filter to b.Time.Before(cfg.From) and compute

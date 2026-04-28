@@ -849,23 +849,7 @@ func main() {
 					warmupLog.Warn().Err(apiErr).Str("symbol", sym.String()).Msg("API warmup fetch failed")
 				}
 			}
-			bars = warmup.Trim(spec, replayTimeframe, bars)
-
-			// Boot+1 bar: feed the single bar at warmupEnd-tfDur through
-			// the calc, mirroring live's real-time processing of the bar
-			// that closes between boot completion and the first replay
-			// snapshot. RTH filter intentionally not applied — live's
-			// real-time path admits pre-market bars. Without this,
-			// replay's calc state at cfg.From has one fewer bar than
-			// live's, manifesting as ~$1 EMA9 divergence.
-			tfDur := warmup.TfDuration(replayTimeframe)
-			if prev, perr := repo.GetMarketBars(ctx, sym, replayTimeframe, warmupEnd.Add(-tfDur), warmupEnd); perr == nil {
-				for _, b := range prev {
-					if !b.Time.Before(warmupEnd.Add(-tfDur)) && b.Time.Before(warmupEnd) {
-						bars = append(bars, b)
-					}
-				}
-			}
+			bars = warmup.TrimWithBoot1(spec, replayTimeframe, bars, warmupEnd)
 			warmResults[i] = warmResult{sym: sym, bars: bars}
 		}(i, sym)
 	}
