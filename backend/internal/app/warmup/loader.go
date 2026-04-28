@@ -15,6 +15,29 @@ type BarRepo interface {
 	GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error)
 }
 
+// TfDuration returns the bar-interval duration for the given timeframe.
+// Used for the boot+1 bar fetch — the bar at warmupEnd-TfDuration mirrors
+// the bar live processes in real-time between boot completion and the
+// first replay snapshot.
+func TfDuration(tf domain.Timeframe) time.Duration {
+	switch tf {
+	case "1m":
+		return time.Minute
+	case "5m":
+		return 5 * time.Minute
+	case "15m":
+		return 15 * time.Minute
+	case "30m":
+		return 30 * time.Minute
+	case "1h":
+		return time.Hour
+	case "1d":
+		return 24 * time.Hour
+	default:
+		return time.Minute
+	}
+}
+
 // CalendarLookback returns a generous window the loader needs to fetch
 // from the repo to satisfy spec.Required[tf] after RTH filter and
 // truncation. Exposed so callers (e.g. backtest) can batch-fetch every
