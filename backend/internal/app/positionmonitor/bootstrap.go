@@ -3,13 +3,23 @@ package positionmonitor
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"strings"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/app/options"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	domstrategy "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	portstrategy "github.com/oh-my-opentrade/backend/internal/ports/strategy"
 )
+
+// bootstrapDefaultIV is the fallback implied volatility used when
+// IV cannot be calibrated from entry premium at restart (e.g. no
+// underlying bar history at the entry timestamp). 30% is a reasonable
+// stocks-equity-options anchor — high enough not to silently
+// underestimate premium decay, low enough not to over-fire premium
+// stops on real but slow-moving positions.
+const bootstrapDefaultIV = 0.30
 
 // bootstrapPositions seeds the monitor with OMO-opened positions that still exist on the broker.
 // It cross-references broker positions with our trade DB to identify positions that OMO opened.
@@ -194,6 +204,17 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 						Float64("option_premium", entryPrice).
 						Msg("bootstrap: overrode options entry price to underlying")
 				}
+				// Restore the BSM input set so EstimatedPremium has a usable
+				// primary path post-restart. Without this rehydration,
+				// EstimatedPremium returns 0 and PREMIUM_STOP false-fires
+				// (the 2026-04-28 LLY 850P incident). strike/expiry/is_call
+				// come straight from OCC; iv_at_entry is calibrated from the
+				// recorded entry premium against the underlying price near
+				// entry time, falling back to a 30% default if calibration
+				// can't run (no bar history, malformed entry, etc).
+				if underlyingPrice > 0 {
+					s.restoreOptionBSMInputs(ctx, &pos, sym, underlying, entryPrice, underlyingPrice, entryTime)
+				}
 			}
 		}
 
@@ -270,6 +291,112 @@ func (s *Service) warmPriceCache(ctx context.Context) {
 		s.priceCache.UpdatePrice(priceSym, last.Close, last.Time)
 		s.log.Debug().Str("symbol", string(priceSym)).Float64("price", last.Close).Time("observed_at", last.Time).Msg("bootstrap: priceCache warmed from DB")
 	}
+}
+
+// restoreOptionBSMInputs populates pos.CustomState with the inputs
+// EstimatedPremium needs to run BSM after a restart. strike/expiry/is_call
+// are derived directly from the OCC symbol (zero-cost, exact). iv_at_entry
+// is calibrated by inverting BSM against the recorded entry premium with
+// the underlying price near entry time as the reference spot. When bar
+// history is unavailable for the entry timestamp, falls back to the
+// current underlying price; when calibration itself can't converge,
+// stamps bootstrapDefaultIV. The CustomState marker
+// "bsm_inputs_restored_at_boot" is set so downstream code can distinguish
+// fill-time-stamped IV from boot-restored IV.
+func (s *Service) restoreOptionBSMInputs(
+	ctx context.Context,
+	pos *domain.MonitoredPosition,
+	occSym domain.Symbol,
+	underlying domain.Symbol,
+	entryPremium, currentUnderlying float64,
+	entryTime time.Time,
+) {
+	if pos == nil || pos.CustomState == nil {
+		return
+	}
+	_, expiry, right, strike, ok := domain.ParseOCC(occSym)
+	if !ok || strike <= 0 {
+		s.log.Warn().Str("symbol", string(occSym)).Msg("bootstrap: OCC parse failed — BSM inputs not restored")
+		return
+	}
+	pos.CustomState["strike"] = strike
+	pos.CustomState["expiry_unix"] = float64(expiry.Unix())
+	if right == string(domain.OptionRightCall) {
+		pos.CustomState["is_call"] = 1.0
+	} else {
+		pos.CustomState["is_call"] = 0.0
+	}
+	pos.OptionExpiry = expiry
+	pos.OptionRight = right
+
+	// Resolve underlying-at-entry. Best estimate of the IV that originally
+	// produced entryPremium is from the spot at entry time, not now.
+	underlyingAtEntry := s.fetchUnderlyingAtEntry(ctx, underlying, entryTime)
+	if underlyingAtEntry == 0 {
+		underlyingAtEntry = currentUnderlying
+	}
+
+	// Calibrate IV. ImpliedVol returns the chain-IV seed (defaultIV here)
+	// unchanged when calibration can't run (deep ITM/OTM, expired, vega
+	// near zero). That fallback is acceptable — HasBSMInputs() returns
+	// true either way, which is the property evaluatePremiumStop relies on.
+	ivAtEntry := bootstrapDefaultIV
+	if entryPremium > 0 && underlyingAtEntry > 0 && !expiry.IsZero() && !entryTime.IsZero() {
+		dteYears := expiry.Sub(entryTime).Hours() / (365.25 * 24)
+		if dteYears > 0 {
+			isCall := right == string(domain.OptionRightCall)
+			calibrated := options.ImpliedVol(
+				entryPremium, underlyingAtEntry, strike, dteYears, 0.045, isCall, bootstrapDefaultIV,
+			)
+			if calibrated > 0 && !math.IsNaN(calibrated) && !math.IsInf(calibrated, 0) {
+				ivAtEntry = calibrated
+			}
+		}
+	}
+	pos.CustomState["iv_at_entry"] = ivAtEntry
+	pos.CustomState["bsm_inputs_restored_at_boot"] = 1.0
+
+	s.log.Info().
+		Str("symbol", string(occSym)).
+		Float64("strike", strike).
+		Time("expiry", expiry).
+		Str("right", right).
+		Float64("entry_premium", entryPremium).
+		Float64("underlying_at_entry", underlyingAtEntry).
+		Float64("iv_at_entry", ivAtEntry).
+		Msg("bootstrap: BSM inputs restored")
+}
+
+// fetchUnderlyingAtEntry queries the bar repo for the bar nearest entryTime
+// in a +/- 30 minute window. Returns 0 when the window has no bars.
+func (s *Service) fetchUnderlyingAtEntry(ctx context.Context, underlying domain.Symbol, entryTime time.Time) float64 {
+	if s.repo == nil || entryTime.IsZero() {
+		return 0
+	}
+	const window = 30 * time.Minute
+	qCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	bars, err := s.repo.GetMarketBars(qCtx, underlying, "1m", entryTime.Add(-window), entryTime.Add(window))
+	cancel()
+	if err != nil || len(bars) == 0 {
+		return 0
+	}
+	best := bars[0]
+	bestDiff := absDuration(best.Time.Sub(entryTime))
+	for _, b := range bars[1:] {
+		d := absDuration(b.Time.Sub(entryTime))
+		if d < bestDiff {
+			best = b
+			bestDiff = d
+		}
+	}
+	return best.Close
+}
+
+func absDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
 }
 
 // resolveExitRules looks up exit rules from the strategy spec store.

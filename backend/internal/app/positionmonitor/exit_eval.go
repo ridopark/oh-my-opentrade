@@ -727,37 +727,13 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 	idempotencyKey := fmt.Sprintf("EXIT:%s:%s:%s:%d:%s:%d",
 		pos.TenantID, pos.EnvMode, pos.Symbol, pos.EntryTime.Unix(), rule.Type, pos.ExitRetryCount)
 
-	// For option positions, currentPrice here is the UNDERLYING spot (used
-	// to evaluate exit rules that are defined in underlying terms). The
-	// exit order needs to be priced in option-premium terms, so translate
-	// via EstimatedPremium before handing to exitOrderParams. Market/IOC
-	// exits ignore the limit, but this keeps the telemetry (DB limit_price,
-	// reconcile checks, UI display) honest.
-	priceForOrder := currentPrice
-	if pos.InstrumentType == domain.InstrumentTypeOption {
-		pinned := false
-		if rule.Type == domain.ExitRuleCopytradeSTC && pos.EnvMode == domain.EnvModePaper {
-			if ref := pos.CustomState["copytrade_exit_ref_premium"]; ref > 0 {
-				priceForOrder = ref
-				pinned = true
-				s.log.Info().
-					Str("contract", string(pos.Symbol)).
-					Float64("ref_premium", ref).
-					Msg("copytrade exit pinned to author ref premium")
-			}
-		}
-		if !pinned {
-			if est := pos.EstimatedPremium(currentPrice, now); est > 0 {
-				priceForOrder = est
-			}
-		}
-	}
-
-	// For options on the first attempt, try to price the exit limit against
-	// the live bid/ask. This catches cases where the 5%-below-mid formula
-	// would sit stranded above the bid — the symptom that motivated this
-	// change. If the quote is stale, blown out, or missing, fall through to
-	// the mid-based formula unchanged.
+	// For options on the first attempt, fetch the live bid/ask up-front so
+	// we can decide whether quote-based pricing will work BEFORE choosing
+	// the magnitude anchor for priceForOrder. Pre-fix this fetch happened
+	// after the EstimatedPremium attempt, which left a window where est=0
+	// + no-quote silently fell through to currentPrice (the underlying
+	// spot) — the 2026-04-28 LLY 850P leak path. If the quote is stale,
+	// blown out, or missing, fall through to the mid-based formula unchanged.
 	isOption := pos.InstrumentType == domain.InstrumentTypeOption
 	var quote *domain.OptionQuote
 	if isOption && !isForcedExit(rule.Type) && pos.ExitRetryCount == 0 && s.optionsPricePort != nil {
@@ -775,7 +751,87 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 	if isOption {
 		dte = dteFromExpiry(pos.OptionExpiry, now)
 	}
+
+	// For option positions, currentPrice here is the UNDERLYING spot (used
+	// to evaluate exit rules that are defined in underlying terms). The
+	// exit order needs to be priced in option-premium terms, so translate
+	// via EstimatedPremium before handing to exitOrderParams. Market/IOC
+	// exits ignore the limit, but this keeps the telemetry (DB limit_price,
+	// reconcile checks, UI display) honest.
+	priceForOrder := currentPrice
+	forceMarket := false
+	if isOption {
+		pinned := false
+		if rule.Type == domain.ExitRuleCopytradeSTC && pos.EnvMode == domain.EnvModePaper {
+			if ref := pos.CustomState["copytrade_exit_ref_premium"]; ref > 0 {
+				priceForOrder = ref
+				pinned = true
+				s.log.Info().
+					Str("contract", string(pos.Symbol)).
+					Float64("ref_premium", ref).
+					Msg("copytrade exit pinned to author ref premium")
+			}
+		}
+		if !pinned {
+			est := pos.EstimatedPremium(currentPrice, now)
+			quoteUsable := false
+			if quote != nil {
+				if _, ok := buildExitLimitPrice(*quote, now, dte, pos.ExitRepegCount, pos.IsShort()); ok {
+					quoteUsable = true
+				}
+			}
+			switch {
+			case est > 0:
+				// BSM happy path: priceForOrder is option-magnitude.
+				priceForOrder = est
+			case quoteUsable:
+				// buildExitLimitPrice will replace priceForOrder inside
+				// exitOrderParams; use mid as the telemetry stamp until then.
+				priceForOrder = (quote.Bid + quote.Ask) / 2.0
+			case pos.CustomState["option_premium"] > 0:
+				// No BSM, no usable quote, but we know the entry premium.
+				// Use it as the magnitude anchor and force MARKET routing
+				// so the broker doesn't honor an underlying-magnitude limit.
+				priceForOrder = pos.CustomState["option_premium"]
+				forceMarket = true
+				s.log.Warn().
+					Str("symbol", string(pos.Symbol)).
+					Str("rule", string(rule.Type)).
+					Str("reason", reason).
+					Float64("entry_premium", priceForOrder).
+					Float64("current_price", currentPrice).
+					Msg("triggerExit: BSM unavailable + no usable quote — forcing market exit with entry-premium anchor")
+			default:
+				// No anchor at all. Refusing is safer than shipping an
+				// underlying-magnitude limit through to the broker. Clear
+				// ExitPending so the next tick can re-try after data
+				// availability changes (price cache warms, BSM rehydrated, etc).
+				s.log.Error().
+					Str("symbol", string(pos.Symbol)).
+					Str("rule", string(rule.Type)).
+					Str("reason", reason).
+					Float64("current_price", currentPrice).
+					Msg("triggerExit: cannot resolve option price (no BSM, no quote, no option_premium) — skipping this attempt")
+				pos.ExitPending = false
+				pos.ExitPendingAt = time.Time{}
+				return
+			}
+		}
+	}
+
 	exitPrice, orderType, tif := s.exitOrderParams(rule.Type, priceForOrder, pos.ExitRetryCount, pos.ExitRepegCount, pos.IsShort(), isOption, quote, dte, now)
+	if forceMarket {
+		// Anchor failure path: we cannot trust the limit-pricing fallbacks.
+		// Override to MARKET regardless of what exitOrderParams chose.
+		// optionTIF semantics: options use "day", equities/crypto use "ioc".
+		exitPrice = priceForOrder
+		orderType = "market"
+		if isOption {
+			tif = "day"
+		} else {
+			tif = "ioc"
+		}
+	}
 	// Record the last-sent limit price so the re-peg path can tighten
 	// against it on a subsequent cycle.
 	pos.ExitLastSentPrice = exitPrice
