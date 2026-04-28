@@ -329,6 +329,12 @@ trade. Same shape applies to any other roll-on-boundary aggregator
 (formingbar, ibkr/bar_aggregator) if a consumer ever polls them at a
 finer cadence than their flush.
 
+### Session-anchored aggregator silently drops pre-anchor bars during warmup
+`domain.BarAggregator.Push` rejects any bar where `bar.Time.Before(a.sessionOpen)` and bumps an `aggRejectedSessionOpen` counter — no log, no error return. Use sites that call `InitAggregators(syms, todayOpen)` then push pre-today warmup bars (e.g. `monitor.Service.WarmUp(800 1m bars)`) silently get every bar dropped at the aggregator gate. The downstream `s.calculator.Update(closed_5m)` is never called and the per-(sym, "5m") `symbolState` stays un-seeded — invisible until the first live close emits a snapshot with `ema9=0`. Mitigations:
+- For warmup paths that span pre-anchor history, bypass the aggregator and seed the calculator directly from native HTF bars (`monitor.Service.WarmUpNative`).
+- Or anchor the aggregator at the first warmup bar's date and re-anchor at session boundary (`Runner.WarmUpHTF` does this, but the constructed aggregator is per-call and discarded — runtime aggregators stay anchored at todayOpen).
+- Don't trust "WarmUp succeeded" log lines as evidence of HTF state — they reflect the 1m calc only. Verify HTF state with parity-diag (`PARITY_DIAG_ENABLED=true`) showing the per-(sym, tf) snapshot has non-zero EMAs.
+
 ### `time.Time` map keys include Location, so UTC vs local mismatch silently misses
 Two `time.Time` values for the same instant compare unequal as map keys
 when their `Location()` differs — the runtime hashes the wall+ext+loc
