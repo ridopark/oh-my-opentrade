@@ -15,7 +15,12 @@ type BarRepo interface {
 	GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error)
 }
 
-func calendarLookback(tf domain.Timeframe) time.Duration {
+// CalendarLookback returns a generous window the loader needs to fetch
+// from the repo to satisfy spec.Required[tf] after RTH filter and
+// truncation. Exposed so callers (e.g. backtest) can batch-fetch every
+// symbol in one DB roundtrip and feed the result through Trim, instead
+// of issuing N per-symbol Load calls.
+func CalendarLookback(tf domain.Timeframe) time.Duration {
 	switch tf {
 	case "1m", "5m":
 		return 30 * 24 * time.Hour
@@ -28,30 +33,34 @@ func calendarLookback(tf domain.Timeframe) time.Duration {
 	}
 }
 
-// Load returns the last `spec.Required[tf]` bars after RTH filtering, or
+// Trim applies the spec's RTH filter (intraday only) and truncates to
+// the last spec.Required[tf] bars. Pure transform — safe to call on a
+// pre-fetched batch slice. If Required[tf] is unset, returns the bars
+// after filtering only (no truncation).
+func Trim(spec Spec, tf domain.Timeframe, bars []domain.MarketBar) []domain.MarketBar {
+	if spec.RTHFilter && (tf == "1m" || tf == "5m") {
+		bars = filterRTH(bars)
+	}
+	if required := spec.Required[tf]; required > 0 && len(bars) > required {
+		bars = bars[len(bars)-required:]
+	}
+	return bars
+}
+
+// Load returns the last spec.Required[tf] bars after RTH filtering, or
 // fewer if the DB doesn't have enough. The caller is responsible for
 // logging a degradation warning when the result is short — long-period
 // indicators may not be fully converged.
 func Load(ctx context.Context, repo BarRepo, spec Spec, sym domain.Symbol, tf domain.Timeframe, now time.Time) ([]domain.MarketBar, error) {
-	required, ok := spec.Required[tf]
-	if !ok || required <= 0 {
+	if _, ok := spec.Required[tf]; !ok {
 		return nil, fmt.Errorf("warmup: no required bars configured for timeframe %q", tf)
 	}
-
-	from := now.Add(-calendarLookback(tf))
+	from := now.Add(-CalendarLookback(tf))
 	bars, err := repo.GetMarketBars(ctx, sym, tf, from, now)
 	if err != nil {
 		return nil, fmt.Errorf("warmup: load %s %s: %w", sym, tf, err)
 	}
-
-	if spec.RTHFilter && (tf == "1m" || tf == "5m") {
-		bars = filterRTH(bars)
-	}
-
-	if len(bars) > required {
-		bars = bars[len(bars)-required:]
-	}
-	return bars, nil
+	return Trim(spec, tf, bars), nil
 }
 
 func filterRTH(bars []domain.MarketBar) []domain.MarketBar {
