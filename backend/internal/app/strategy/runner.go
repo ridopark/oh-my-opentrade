@@ -41,6 +41,7 @@ type Runner struct {
 	aggregators          map[string]*domain.BarAggregator
 	aggKeysBySym         map[string]map[string]string // sym → tf → "sym:tf"
 	htfCalcs             map[string]*monitor.IndicatorCalculator // key: "symbol:tf"
+	htfLabelSuffix       string                                   // empty in live; "_backtest_<id>" when TagBacktest called
 	regimeDetector       *monitor.RegimeDetector
 	anchorRegimes          map[string]map[string]domain.MarketRegime   // symbol → tf → latest regime
 	collectedAnchorRegimes map[string]map[string]start.AnchorRegime   // per-symbol reusable result map
@@ -559,6 +560,17 @@ func NewRunner(
 		_ = r.eventBus.Publish(context.Background(), evt)
 	})
 	return r
+}
+
+// TagBacktest annotates lazily-created htfCalc instances so an in-process
+// backtest does not pollute live parity-diag log filters keyed on
+// `"calc":"runner_htf"`. Mirrors monitor.Service.TagBacktest. Must be called
+// before any bar feeds reach handleBarCore or WarmUpTF — bootstrap invokes
+// it synchronously after NewRunner when StrategyDeps.BacktestID is non-empty.
+func (r *Runner) TagBacktest(backtestID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.htfLabelSuffix = "_backtest_" + backtestID
 }
 
 // SetDisableLiveness toggles liveness recording. Backtests call with true to
@@ -1633,7 +1645,7 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		htfCalc, ok := r.htfCalcs[key]
 		if !ok {
 			htfCalc = monitor.NewIndicatorCalculator()
-			htfCalc.Label = "runner_htf"
+			htfCalc.Label = "runner_htf" + r.htfLabelSuffix
 			r.htfCalcs[key] = htfCalc
 		}
 		htfSnap := htfCalc.Update(closed)
@@ -1944,7 +1956,7 @@ func (r *Runner) WarmUpTF(symbol string, tf string, bars []domain.MarketBar, sna
 			return 0
 		}
 		htfCalc := monitor.NewIndicatorCalculator()
-		htfCalc.Label = "runner_htf"
+		htfCalc.Label = "runner_htf" + r.htfLabelSuffix
 		r.htfCalcs[key] = htfCalc
 		for _, bar := range bars {
 			htfCalc.Update(bar)
