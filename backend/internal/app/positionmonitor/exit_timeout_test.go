@@ -203,6 +203,16 @@ func seedOptionPendingExit(
 	require.NotNil(t, pos)
 	pos.InstrumentType = domain.InstrumentTypeOption
 	pos.OptionRight = "CALL"
+	// Stamp option_premium so triggerExit's option-price resolution has a
+	// magnitude anchor when re-pegging without a live quote (see Fix 3,
+	// 2026-04-28). Pre-fix the underlying spot leaked through; post-fix
+	// triggerExit refuses to ship if no anchor is present, which is the
+	// intended safety behavior — we set the anchor here to keep the
+	// re-peg/escalate flow under test.
+	if pos.CustomState == nil {
+		pos.CustomState = make(map[string]float64)
+	}
+	pos.CustomState["option_premium"] = 1.23
 	pos.ExitPending = true
 	pos.ExitOrderID = "live-order-1"
 	// Force the tick loop to see this as past-timeout using the rule's

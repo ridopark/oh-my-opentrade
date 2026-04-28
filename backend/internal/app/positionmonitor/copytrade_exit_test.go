@@ -39,7 +39,9 @@ func seedOptionPosition(t *testing.T, svc *Service, contract domain.Symbol, qty 
 		EntryTime:      time.Now().Add(-5 * time.Minute),
 		Side:           "BUY",
 		ExitRules:      []domain.ExitRule{},
-		CustomState:    map[string]float64{},
+		// option_premium anchors triggerExit's price resolution when BSM
+		// inputs and live quote are unavailable (Fix 3, 2026-04-28).
+		CustomState: map[string]float64{"option_premium": 1.20},
 	}
 	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, contract)
 	svc.positions[key] = pos
