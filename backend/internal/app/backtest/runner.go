@@ -30,6 +30,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
 	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
+	"github.com/oh-my-opentrade/backend/internal/app/warmup"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -726,9 +727,10 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	phaseStart = time.Now()
 	r.emitter.EmitSetup("Warming up indicators…")
-	const minWarmupBars = 250
-	const dailyBarsNeeded = 200
-	const hourlyBarsNeeded = 20
+	warmupSpec := warmup.EquitySpec()
+	requiredReplay := warmupSpec.Required[replayTimeframe]
+	requiredDaily := warmupSpec.Required["1d"]
+	requiredHourly := warmupSpec.Required["1h"]
 	warmupBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
 	dailyBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
 	var dpLookup map[strategy.DPLookupKey]domain.DarkPoolBar
@@ -743,12 +745,14 @@ func (r *Runner) Run(ctx context.Context) error {
 		warmupResults := make([]warmupResult, len(r.cfg.Symbols))
 
 		// --- Batch fetch: 3 queries instead of 93 (amortize planning cost) ---
+		// Windows come from warmup.CalendarLookback so the batch fetch covers
+		// what warmup.Trim will need after the RTH filter and truncation.
 		warmupEnd := r.cfg.From
-		warmupStart := warmupEnd.Add(-7 * 24 * time.Hour)
+		warmupStart := warmupEnd.Add(-warmup.CalendarLookback(replayTimeframe))
 		dailyTo := r.cfg.To
-		dailyFrom := r.cfg.From.Add(-time.Duration(float64(dailyBarsNeeded)*2.0) * 24 * time.Hour)
+		dailyFrom := r.cfg.From.Add(-warmup.CalendarLookback("1d"))
 		hourlyTo := r.cfg.From
-		hourlyFrom := hourlyTo.Add(-time.Duration(float64(hourlyBarsNeeded)*2.0) * time.Hour)
+		hourlyFrom := hourlyTo.Add(-warmup.CalendarLookback("1h"))
 
 		batchStart := time.Now()
 		var batch1m, batch1d, batch1h map[string][]domain.MarketBar
@@ -837,12 +841,13 @@ func (r *Runner) Run(ctx context.Context) error {
 				defer warmupWg.Done()
 				symStr := sym.String()
 
-				// 1m warmup bars
+				// 1m/5m warmup bars: pulled from batch, API fallback when
+				// the DB hasn't been backfilled yet, then RTH-filtered and
+				// truncated by warmup.Trim to match the live boot path.
 				bars := batch1m[symStr]
-				if len(bars) < minWarmupBars && r.marketData != nil {
+				if len(bars) < requiredReplay && r.marketData != nil {
 					warmupSem <- struct{}{}
-					apiFrom := warmupEnd.Add(-30 * 24 * time.Hour)
-					apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, apiFrom, warmupEnd)
+					apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, warmupStart, warmupEnd)
 					<-warmupSem
 					if apiErr == nil && len(apiBars) > len(bars) {
 						r.log.Info().Str("symbol", symStr).Int("db_bars", len(bars)).Int("api_bars", len(apiBars)).Msg("fetched warmup bars from market data API")
@@ -854,18 +859,18 @@ func (r *Runner) Run(ctx context.Context) error {
 						r.log.Warn().Err(apiErr).Str("symbol", symStr).Msg("API warmup fetch failed")
 					}
 				}
-				if len(bars) > minWarmupBars {
-					bars = bars[len(bars)-minWarmupBars:]
-				}
+				bars = warmup.Trim(warmupSpec, replayTimeframe, bars)
 
-				// 1D bars: use batch result, API fallback if insufficient
+				// 1D bars: API fallback when batch is short. Pass 1 will
+				// further filter to b.Time.Before(cfg.From) and compute
+				// EMA200/NR7/ATR from the resulting subset.
 				bars1d := batch1d[symStr]
-				if len(bars1d) < dailyBarsNeeded && r.marketData != nil {
+				if len(bars1d) < requiredDaily && r.marketData != nil {
 					warmupSem <- struct{}{}
 					fetched, err := r.marketData.GetHistoricalBars(ctx, sym, "1d", dailyFrom, dailyTo)
 					<-warmupSem
-					if err != nil || len(fetched) < dailyBarsNeeded {
-						r.log.Warn().Err(err).Str("symbol", symStr).Int("db_bars", len(bars1d)).Int("api_bars", len(fetched)).Int("needed", dailyBarsNeeded).Msg("insufficient 1D bars for HTF EMA200")
+					if err != nil || len(fetched) < requiredDaily {
+						r.log.Warn().Err(err).Str("symbol", symStr).Int("db_bars", len(bars1d)).Int("api_bars", len(fetched)).Int("needed", requiredDaily).Msg("insufficient 1D bars for HTF EMA200")
 					}
 					if len(fetched) > len(bars1d) {
 						bars1d = fetched
@@ -876,8 +881,8 @@ func (r *Runner) Run(ctx context.Context) error {
 				// directionally useful even with partial data, and the IBKR
 				// API serialization adds ~17s for 31 symbols).
 				bars1h := batch1h[symStr]
-				if len(bars1h) < hourlyBarsNeeded {
-					r.log.Debug().Str("symbol", symStr).Int("got", len(bars1h)).Int("needed", hourlyBarsNeeded).Msg("partial 1H bars for HTF EMA50 (using available)")
+				if len(bars1h) < requiredHourly {
+					r.log.Debug().Str("symbol", symStr).Int("got", len(bars1h)).Int("needed", requiredHourly).Msg("partial 1H bars for HTF EMA50 (using available)")
 				}
 
 				warmupResults[i] = warmupResult{sym: symStr, bars: bars, bars1d: bars1d, bars1h: bars1h}
