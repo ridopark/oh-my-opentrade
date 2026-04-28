@@ -28,10 +28,11 @@ func TestEquitySpecRequiredCounts(t *testing.T) {
 		t.Fatal("EquitySpec must have RTHFilter=true")
 	}
 	want := map[domain.Timeframe]int{
-		"1m": 800,
-		"5m": 800,
-		"1h": 200,
-		"1d": 800,
+		"1m":  800,
+		"5m":  800,
+		"15m": 200,
+		"1h":  200,
+		"1d":  800,
 	}
 	for tf, exp := range want {
 		if got := s.Required[tf]; got != exp {
@@ -223,7 +224,7 @@ func TestTrimWithBoot1_NoDuplicateWhenAlreadyKept(t *testing.T) {
 
 func TestLoad_UnknownTimeframeErrors(t *testing.T) {
 	repo := &stubRepo{}
-	_, err := Load(context.Background(), repo, EquitySpec(), "SPY", "15m", time.Now())
+	_, err := Load(context.Background(), repo, EquitySpec(), "SPY", "30m", time.Now())
 	if err == nil {
 		t.Fatal("expected error for unknown timeframe")
 	}

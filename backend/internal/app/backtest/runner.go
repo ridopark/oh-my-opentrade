@@ -2067,6 +2067,7 @@ func signalPassthrough(bus ports.EventBusPort, log zerolog.Logger) func(context.
 
 func makeSnapshotFn() strategy.IndicatorSnapshotFunc {
 	calc := monitor.NewIndicatorCalculator()
+	calc.Label = "backtest_snapshot_fn"
 	return func(bar domain.MarketBar) start.IndicatorData {
 		snap := calc.Update(bar)
 		return start.IndicatorData{

@@ -14,6 +14,11 @@ const convergenceFactor = 4
 const (
 	emaLongestPeriod = 200
 	ema1hPeriod      = 50
+	// 15m anchors mid-horizon regime classification (ADX, EMA50 slope, BB
+	// bandwidth) — none of which need EMA200 convergence. EMA50 × 4 = 200
+	// bars matches the 1h spec's reasoning and gives ADX/slope windows
+	// plenty of headroom.
+	ema15mPeriod = 50
 )
 
 type Spec struct {
@@ -23,10 +28,11 @@ type Spec struct {
 
 func defaultRequired() map[domain.Timeframe]int {
 	return map[domain.Timeframe]int{
-		"1m": emaLongestPeriod * convergenceFactor,
-		"5m": emaLongestPeriod * convergenceFactor,
-		"1h": ema1hPeriod * convergenceFactor,
-		"1d": emaLongestPeriod * convergenceFactor,
+		"1m":  emaLongestPeriod * convergenceFactor,
+		"5m":  emaLongestPeriod * convergenceFactor,
+		"15m": ema15mPeriod * convergenceFactor,
+		"1h":  ema1hPeriod * convergenceFactor,
+		"1d":  emaLongestPeriod * convergenceFactor,
 	}
 }
 

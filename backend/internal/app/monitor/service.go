@@ -244,10 +244,12 @@ func (s *Service) WarmUpHTF(bars []domain.MarketBar) int {
 // NewService creates a new monitor Service.
 func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zerolog.Logger) *Service {
 	nyLoc, _ := time.LoadLocation("America/New_York")
+	calc := NewIndicatorCalculator()
+	calc.Label = "monitor"
 	return &Service{
 		eventBus:         eventBus,
 		repo:             repo,
-		calculator:       NewIndicatorCalculator(),
+		calculator:       calc,
 		regimeDetector:   NewRegimeDetector(),
 		orbTracker:       NewORBTrackerWithSource("monitor"),
 		orbCfg:           DefaultORBConfig(),
