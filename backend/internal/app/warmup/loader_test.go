@@ -163,6 +163,29 @@ func TestLoad_RTHFilterDropsPreMarket(t *testing.T) {
 	}
 }
 
+// Trim must NOT append the boot+1 bar — that is the whole reason the
+// HTF replay path was switched off TrimWithBoot1. Replay's HTF runtime
+// aggregator closes the boot+1 5m bucket on its own; if Trim seeded it
+// during warmup, the calc would receive the same UTC bar twice and
+// drift relative to live's WarmUpNative path.
+func TestTrim_DoesNotAppendBoot1Bar(t *testing.T) {
+	loc := domain.NYLocation()
+	rthTue := time.Date(2026, 4, 21, 9, 30, 0, 0, loc)
+	preMarketWed := time.Date(2026, 4, 22, 8, 30, 0, 0, loc)
+
+	raw := []domain.MarketBar{
+		{Symbol: "SPY", Timeframe: "1m", Time: rthTue},
+		{Symbol: "SPY", Timeframe: "1m", Time: preMarketWed},
+	}
+	out := Trim(EquitySpec(), "1m", raw)
+	if len(out) != 1 {
+		t.Fatalf("Trim must drop pre-market boot+1 bar, got %d bars", len(out))
+	}
+	if !out[0].Time.Equal(rthTue) {
+		t.Errorf("Trim should keep only the RTH bar, got %s", out[0].Time)
+	}
+}
+
 func TestTrimWithBoot1_AppendsPreMarketBar(t *testing.T) {
 	loc := domain.NYLocation()
 	rthTue := time.Date(2026, 4, 21, 9, 30, 0, 0, loc)

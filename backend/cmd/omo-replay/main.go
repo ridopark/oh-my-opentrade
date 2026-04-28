@@ -892,7 +892,15 @@ func main() {
 					warmupLog.Warn().Err(fetchErr).Str("symbol", sym.String()).Str("tf", string(htfTF)).Msg("HTF warmup fetch failed")
 					return
 				}
-				trimmed := warmup.TrimWithBoot1(spec, htfTF, raw, warmupEnd)
+				// HTF warmup uses plain Trim (no boot+1) to mirror live's
+				// warmup.Load path. Appending the boot+1 5m bar would seed
+				// the runner's htfCalc once during warmup, then the runtime
+				// 1m aggregator would re-fire the same UTC bucket on close,
+				// double-feeding EMA/MACD state. 1m warmup at line 852 still
+				// uses TrimWithBoot1 because runtime there starts strictly
+				// at firstBarTime[sym], so the bar at firstBarTime-1m would
+				// otherwise be lost.
+				trimmed := warmup.Trim(spec, htfTF, raw)
 				htfMu.Lock()
 				htfCache[htfTF][sym.String()] = trimmed
 				htfMu.Unlock()
