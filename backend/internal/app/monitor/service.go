@@ -241,6 +241,40 @@ func (s *Service) WarmUpHTF(bars []domain.MarketBar) int {
 	}
 	return len(bars)
 }
+
+// WarmUpNative seeds the calculator's per-(sym, tf) state directly from
+// native HTF bars, bypassing s.aggregators. The session-aligned aggregator
+// at domain/aggregator.go rejects pre-today bars, so the 1m-warmup path
+// silently fails to seed 5m/15m/1h calc states for the given symbol. This
+// method is the single seeding path for HTF indicator state — caller
+// supplies bars at the target timeframe (5m, 15m, 1h, etc) already.
+//
+// Side state populated: s.lastHTFSnaps[sym:tf] (consumed by buildHTFMap)
+// and s.anchorRegimes[sym:tf] (consumed by HandleMarketBar's regime-shift
+// detection — without it, the first live close fires a spurious shift).
+// Does NOT publish events.
+func (s *Service) WarmUpNative(sym domain.Symbol, tf domain.Timeframe, bars []domain.MarketBar) int {
+	if len(bars) == 0 {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var lastSnap domain.IndicatorSnapshot
+	for _, bar := range bars {
+		lastSnap = s.calculator.Update(bar)
+	}
+
+	key := sym.String() + ":" + tf.String()
+	if s.lastHTFSnaps == nil {
+		s.lastHTFSnaps = make(map[string]domain.IndicatorSnapshot)
+	}
+	s.lastHTFSnaps[key] = lastSnap
+	if reg, ok := s.regimeDetector.Detect(lastSnap); ok {
+		s.anchorRegimes[key] = reg
+	}
+	return len(bars)
+}
 // NewService creates a new monitor Service.
 func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zerolog.Logger) *Service {
 	nyLoc, _ := time.LoadLocation("America/New_York")

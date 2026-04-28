@@ -1958,6 +1958,25 @@ func (r *Runner) WarmUpTF(symbol string, tf string, bars []domain.MarketBar, sna
 	return len(bars)
 }
 
+// HTFTimeframesForSymbol returns the unique non-1m timeframes registered by
+// any strategy instance assigned to the given symbol. Used by warmup paths
+// to drive per-(sym, tf) native HTF fetches.
+func (r *Runner) HTFTimeframesForSymbol(symbol string) []string {
+	seen := make(map[string]struct{})
+	for _, inst := range r.router.InstancesForSymbol(symbol) {
+		for _, tf := range inst.Assignment().Timeframes {
+			if tf != "1m" {
+				seen[tf] = struct{}{}
+			}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for tf := range seen {
+		result = append(result, tf)
+	}
+	return result
+}
+
 // WarmUpHTF aggregates 1m warmup bars into each HTF timeframe required by
 // registered instances and feeds the resulting candles through WarmUpTF.
 // Must be called AFTER InitAggregators.

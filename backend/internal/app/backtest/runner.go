@@ -733,6 +733,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	requiredHourly := warmupSpec.Required["1h"]
 	warmupBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
 	dailyBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
+	htf5mCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
+	htf15mCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
+	htf1hCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
 	var dpLookup map[strategy.DPLookupKey]domain.DarkPoolBar
 	var whaleLookup map[string]domain.WhaleAccumulation
 	{
@@ -754,12 +757,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		hourlyTo := r.cfg.From
 		hourlyFrom := hourlyTo.Add(-warmup.CalendarLookback("1h"))
 
+		htf5mFrom := r.cfg.From.Add(-warmup.CalendarLookback("5m"))
+		htf15mFrom := r.cfg.From.Add(-warmup.CalendarLookback("15m"))
+
 		batchStart := time.Now()
-		var batch1m, batch1d, batch1h map[string][]domain.MarketBar
+		var batch1m, batch1d, batch1h, batch5m, batch15m map[string][]domain.MarketBar
 		var batchDP map[string][]domain.DarkPoolBar
-		var b1mErr, b1dErr, b1hErr, bDPErr error
+		var b1mErr, b1dErr, b1hErr, b5mErr, b15mErr, bDPErr error
 		var batchWg sync.WaitGroup
-		batchWg.Add(4)
+		batchWg.Add(6)
 		go func() {
 			defer batchWg.Done()
 			batch1m, b1mErr = repo.GetMarketBarsMulti(ctx, r.cfg.Symbols, replayTimeframe, warmupStart, warmupEnd)
@@ -771,6 +777,14 @@ func (r *Runner) Run(ctx context.Context) error {
 		go func() {
 			defer batchWg.Done()
 			batch1h, b1hErr = repo.GetMarketBarsMulti(ctx, r.cfg.Symbols, "1h", hourlyFrom, hourlyTo)
+		}()
+		go func() {
+			defer batchWg.Done()
+			batch5m, b5mErr = repo.GetMarketBarsMulti(ctx, r.cfg.Symbols, "5m", htf5mFrom, r.cfg.From)
+		}()
+		go func() {
+			defer batchWg.Done()
+			batch15m, b15mErr = repo.GetMarketBarsMulti(ctx, r.cfg.Symbols, "15m", htf15mFrom, r.cfg.From)
 		}()
 		go func() {
 			defer batchWg.Done()
@@ -787,6 +801,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		if b1hErr != nil {
 			r.log.Warn().Err(b1hErr).Msg("batch 1h warmup fetch failed")
 		}
+		if b5mErr != nil {
+			r.log.Warn().Err(b5mErr).Msg("batch 5m warmup fetch failed")
+		}
+		if b15mErr != nil {
+			r.log.Warn().Err(b15mErr).Msg("batch 15m warmup fetch failed")
+		}
 		if bDPErr != nil {
 			r.log.Warn().Err(bDPErr).Msg("batch dark pool bars fetch failed")
 		}
@@ -799,8 +819,26 @@ func (r *Runner) Run(ctx context.Context) error {
 		if batch1h == nil {
 			batch1h = map[string][]domain.MarketBar{}
 		}
+		if batch5m == nil {
+			batch5m = map[string][]domain.MarketBar{}
+		}
+		if batch15m == nil {
+			batch15m = map[string][]domain.MarketBar{}
+		}
 		if batchDP == nil {
 			batchDP = map[string][]domain.DarkPoolBar{}
+		}
+		// Hand HTF batch results out of the inner block via the function-scope
+		// caches so the runner-warmup branches below can apply Trim and feed
+		// per-(sym, tf).
+		for sym, bars := range batch5m {
+			htf5mCache[sym] = bars
+		}
+		for sym, bars := range batch15m {
+			htf15mCache[sym] = bars
+		}
+		for sym, bars := range batch1h {
+			htf1hCache[sym] = bars
 		}
 
 		// Build dark pool lookup map for O(1) access during replay.
@@ -1025,15 +1063,38 @@ func (r *Runner) Run(ctx context.Context) error {
 				pipeline.Runner.WarmUp(sym.String(), bars, snapshotFn)
 			}
 			pipeline.Runner.InitAggregators(replaySessionOpen)
-			// Aggregate warmup 1m bars into HTF candles (5m, 15m, etc.) and feed
-			// them through strategy instances that are configured for those timeframes.
-			// Without this, HTF instances start with empty state on the first replay day.
+			// Native HTF warmup: per (sym, tf) feed canonical-spec bar count
+			// directly into the runner's HTF calc and monitor's shared calc.
+			// Replaces the prior 1m-aggregate-into-HTF approach (which yielded
+			// 161 5m bars from 800 1m, far short of the 800 EMA200 needs).
 			for _, sym := range r.cfg.Symbols {
-				bars := warmupBarsCache[sym.String()]
-				if len(bars) == 0 {
+				symStr := sym.String()
+				tfs := pipeline.Runner.HTFTimeframesForSymbol(symStr)
+				if len(tfs) == 0 {
 					continue
 				}
-				pipeline.Runner.WarmUpHTF(sym.String(), bars, snapshotFn, loc)
+				spec := warmup.EquitySpec()
+				if sym.IsCryptoSymbol() {
+					spec = warmup.CryptoSpec()
+				}
+				for _, tf := range tfs {
+					htfTF := domain.Timeframe(tf)
+					var raw []domain.MarketBar
+					switch tf {
+					case "5m":
+						raw = htf5mCache[symStr]
+					case "15m":
+						raw = htf15mCache[symStr]
+					case "1h":
+						raw = htf1hCache[symStr]
+					}
+					if len(raw) == 0 {
+						continue
+					}
+					bars := warmup.TrimWithBoot1(spec, htfTF, raw, r.cfg.From)
+					pipeline.Runner.WarmUpTF(symStr, tf, bars, snapshotFn)
+					monitorSvc.WarmUpNative(sym, htfTF, bars)
+				}
 			}
 		}
 		pipeline.Runner.ClearAllPendingStates()
