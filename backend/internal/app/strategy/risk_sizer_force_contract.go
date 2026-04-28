@@ -17,15 +17,23 @@ type forcedContract struct {
 	Strike     float64
 	Right      domain.OptionRight
 	RefPremium float64 // optional: author-stated fill price, for logging only
+	BufferPct  float64 // upside fill-price tolerance vs RefPremium (0.10 = 10%)
 }
 
 // Tag keys. Kept as constants so strategy code and risk_sizer agree on names.
 const (
-	TagForceExpiry     = "force_expiry"      // "YYYY-MM-DD"
-	TagForceStrike     = "force_strike"      // float as string
-	TagForceRight      = "force_right"       // "C" | "P" | "CALL" | "PUT"
-	TagForceRefPremium = "force_ref_premium" // float as string; optional
+	TagForceExpiry            = "force_expiry"             // "YYYY-MM-DD"
+	TagForceStrike            = "force_strike"             // float as string
+	TagForceRight             = "force_right"              // "C" | "P" | "CALL" | "PUT"
+	TagForceRefPremium        = "force_ref_premium"        // float as string; optional
+	TagForcePremiumBufferPct  = "force_premium_buffer_pct" // float as string; optional, default 0.10
 )
+
+// DefaultRefPremiumBufferPct sets the limit cap above the author's
+// reported fill so the order can lift the offer when the contract has
+// already drifted up by a small amount. If the live ask exceeds the
+// cap, the trade is rejected with reason price_buffer_exceeded.
+const DefaultRefPremiumBufferPct = 0.10
 
 // extractForcedContract returns a pinned contract and true if all three
 // required tags are present and parseable. Partial sets return false.
@@ -62,11 +70,18 @@ func extractForcedContract(tags map[string]string) (forcedContract, bool) {
 			refPremium = v
 		}
 	}
+	bufferPct := DefaultRefPremiumBufferPct
+	if bp := strings.TrimSpace(tags[TagForcePremiumBufferPct]); bp != "" {
+		if v, err := strconv.ParseFloat(bp, 64); err == nil && v >= 0 {
+			bufferPct = v
+		}
+	}
 	return forcedContract{
 		Expiry:     expiry,
 		Strike:     strike,
 		Right:      right,
 		RefPremium: refPremium,
+		BufferPct:  bufferPct,
 	}, true
 }
 

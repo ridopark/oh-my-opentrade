@@ -56,6 +56,9 @@ func (st *SignalTracker) Start(ctx context.Context) error {
 	if err := st.eventBus.SubscribeAsync(ctx, domain.EventFillReceived, st.handleFill); err != nil {
 		return fmt.Errorf("perf: signal tracker failed to subscribe to FillReceived: %w", err)
 	}
+	if err := st.eventBus.Subscribe(ctx, domain.EventStaleOrderCancelled, st.handleStaleCanceled); err != nil {
+		return fmt.Errorf("perf: signal tracker failed to subscribe to StaleOrderCancelled: %w", err)
+	}
 	st.log.Info().Msg("signal tracker subscribed to signal lifecycle events")
 	return nil
 }
@@ -183,6 +186,46 @@ func (st *SignalTracker) handleIntentRejected(ctx context.Context, event domain.
 		domain.SignalStatusRejected,
 		p.Reason,
 		p.Confidence,
+		payload,
+	)
+	if err != nil {
+		st.log.Error().Err(err).Msg("signal tracker: invalid StrategySignalEvent")
+		return nil
+	}
+
+	if err := st.pnlRepo.SaveStrategySignalEvent(ctx, evt); err != nil {
+		st.log.Error().Err(err).Msg("signal tracker: failed to save StrategySignalEvent")
+		return nil
+	}
+	st.publishLifecycle(ctx, evt)
+	return nil
+}
+
+func (st *SignalTracker) handleStaleCanceled(ctx context.Context, event domain.Event) error {
+	p, ok := event.Payload.(domain.StaleOrderCancelledPayload)
+	if !ok {
+		return nil
+	}
+	if p.Strategy == "" || p.Symbol == "" {
+		return nil
+	}
+
+	corr := st.getOrDeriveCorr(event.TenantID, event.EnvMode, p.Strategy, string(p.Symbol), p.Direction)
+	reason := fmt.Sprintf("limit unfilled for %.0fs at $%.2f — auto-canceled", p.AgeSeconds, p.LimitPrice)
+	payload := mustJSON(p)
+
+	evt, err := domain.NewStrategySignalEvent(
+		event.OccurredAt.UTC(),
+		event.TenantID,
+		event.EnvMode,
+		p.Strategy,
+		corr.signalID,
+		string(p.Symbol),
+		corr.kind,
+		corr.side,
+		domain.SignalStatusCanceled,
+		reason,
+		0,
 		payload,
 	)
 	if err != nil {

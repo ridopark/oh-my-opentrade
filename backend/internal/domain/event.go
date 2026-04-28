@@ -171,6 +171,7 @@ type StaleOrderCancelledPayload struct {
 	Strategy      string
 	Direction     string
 	AgeSeconds    float64
+	LimitPrice    float64
 }
 
 type ExitCircuitBrokenPayload struct {

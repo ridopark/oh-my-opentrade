@@ -906,12 +906,38 @@ func (rs *RiskSizer) handleOptionsSignal(
 	spread := best.Ask - best.Bid
 	switch {
 	case event.EnvMode == domain.EnvModePaper && forcedOK && forced.RefPremium > 0:
-		fillPrice = forced.RefPremium
-		rs.logger.Info("risk sizer: pinned entry to author ref premium",
+		priceCap := forced.RefPremium * (1.0 + forced.BufferPct)
+		if best.Ask > 0 && best.Ask > priceCap {
+			reason := fmt.Sprintf("price_buffer_exceeded: live ask $%.2f above author ref $%.2f +%.0f%% buffer",
+				best.Ask, forced.RefPremium, forced.BufferPct*100)
+			rs.logger.Warn("risk sizer: live ask above author ref premium + buffer — rejecting",
+				"strategy", strategyName,
+				"contract", string(best.ContractSymbol),
+				"ref_premium", forced.RefPremium,
+				"buffer_pct", forced.BufferPct,
+				"cap", priceCap,
+				"ask", best.Ask,
+			)
+			rejection := domain.OrderIntentEventPayload{
+				ID:        uuid.NewString(),
+				Symbol:    sigRef.Symbol,
+				Direction: string(direction),
+				Strategy:  strategyName,
+				Reason:    reason,
+				Status:    domain.OrderIntentStatusRejected,
+			}
+			rs.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, rejection.ID, rejection)
+			return nil
+		}
+		fillPrice = priceCap
+		rs.logger.Info("risk sizer: pinned entry to author ref premium + buffer",
 			"strategy", strategyName,
 			"contract", string(best.ContractSymbol),
 			"ref_premium", forced.RefPremium,
+			"buffer_pct", forced.BufferPct,
+			"limit", fillPrice,
 			"mid", midPrice,
+			"ask", best.Ask,
 		)
 	case best.Ask > 0 && best.Bid > 0 && spread > 0:
 		fillPrice = midPrice + spreadPct*spread
