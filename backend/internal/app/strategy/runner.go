@@ -792,6 +792,35 @@ func (r *Runner) InitAggregators(sessionOpen time.Time) {
 	}
 }
 
+// PrimeAggregators feeds 1m bars through the runtime HTF aggregators
+// without driving the per-(sym, tf) indicator calculator. Used at boot
+// after canonical-spec HTF warmup so the first live 5m/15m/1h close
+// after boot contains today's pre-boot 1m bars, not just post-boot ones.
+// htfCalc state is owned by WarmUpTF; this only primes aggregator buckets.
+func (r *Runner) PrimeAggregators(symbol string, bars1m []domain.MarketBar) {
+	if len(bars1m) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	symKeys := r.aggKeysBySym[symbol]
+	if symKeys == nil {
+		return
+	}
+	for tf, key := range symKeys {
+		if tf == "1m" {
+			continue
+		}
+		agg, ok := r.aggregators[key]
+		if !ok {
+			continue
+		}
+		for _, bar := range bars1m {
+			_, _ = agg.Push(bar)
+		}
+	}
+}
+
 // Start subscribes the runner to MarketBarSanitized, StateUpdated, FillReceived,
 // and OrderIntentRejected events on the event bus.
 func (r *Runner) Start(ctx context.Context) error {
