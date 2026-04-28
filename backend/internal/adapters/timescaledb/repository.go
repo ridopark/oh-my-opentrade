@@ -50,7 +50,7 @@ const (
 		END
 		WHERE broker_order_id = $1 AND COALESCE(filled_qty, 0) <= $4`
 	queryGetNonTerminalOrders = `SELECT time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, COALESCE(filled_at, '0001-01-01'::timestamptz), COALESCE(filled_price, 0), COALESCE(filled_qty, 0), COALESCE(strategy, ''), COALESCE(rationale, ''), COALESCE(confidence, 0) FROM orders WHERE account_id = $1 AND env_mode = $2 AND status NOT IN ('filled', 'canceled', 'expired', 'rejected') ORDER BY time ASC`
-	queryGetOrderByBrokerID   = `SELECT time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, COALESCE(filled_at, '0001-01-01'::timestamptz), COALESCE(filled_price, 0), COALESCE(filled_qty, 0), COALESCE(strategy, ''), COALESCE(rationale, ''), COALESCE(confidence, 0) FROM orders WHERE broker_order_id = $1 LIMIT 1`
+	queryGetOrderByBrokerID   = `SELECT time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, COALESCE(filled_at, '0001-01-01'::timestamptz), COALESCE(filled_price, 0), COALESCE(filled_qty, 0), COALESCE(strategy, ''), COALESCE(rationale, ''), COALESCE(confidence, 0), COALESCE(instrument_type, ''), COALESCE(option_symbol, ''), COALESCE(underlying, ''), COALESCE(strike, 0), COALESCE(expiry, '0001-01-01'::timestamptz), COALESCE(option_right, '') FROM orders WHERE broker_order_id = $1 LIMIT 1`
 	queryGetRecordedFillQty   = `SELECT COALESCE(SUM(quantity), 0) FROM trades WHERE account_id = $1 AND env_mode = $2 AND symbol = $3 AND side = $4 AND time >= $5`
 	queryUpdateOrderStatus    = `UPDATE orders SET status = $2 WHERE broker_order_id = $1`
 	queryGetNetPositions      = `SELECT symbol, SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END) AS net_qty FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= NOW() - INTERVAL '30 days' GROUP BY symbol HAVING ABS(SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END)) > 1e-10`
@@ -1069,10 +1069,12 @@ func (r *Repository) GetOrderByBrokerOrderID(ctx context.Context, brokerOrderID 
 	row := r.db.QueryRowContext(ctx, queryGetOrderByBrokerID, brokerOrderID)
 	var o domain.BrokerOrder
 	var sym, acct, env string
-	var filledAt time.Time
+	var filledAt, expiry time.Time
+	var instType string
 	if err := row.Scan(&o.Time, &acct, &env, &o.IntentID, &o.BrokerOrderID, &sym, &o.Side, &o.Quantity, &o.LimitPrice, &o.StopLoss, &o.Status,
 		&filledAt, &o.FilledPrice, &o.FilledQty,
-		&o.Strategy, &o.Rationale, &o.Confidence); err != nil {
+		&o.Strategy, &o.Rationale, &o.Confidence,
+		&instType, &o.OptionSymbol, &o.Underlying, &o.Strike, &expiry, &o.OptionRight); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -1083,6 +1085,10 @@ func (r *Repository) GetOrderByBrokerOrderID(ctx context.Context, brokerOrderID 
 	o.EnvMode = domain.EnvMode(env)
 	if !filledAt.IsZero() {
 		o.FilledAt = &filledAt
+	}
+	o.InstrumentType = domain.InstrumentType(instType)
+	if !expiry.IsZero() {
+		o.Expiry = expiry
 	}
 	return &o, nil
 }

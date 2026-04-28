@@ -387,3 +387,74 @@ func TestRepository_GetLatestStrategyDNA_NotFound(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Nil(t, dna)
 }
+
+func TestRepository_GetOrderByBrokerOrderID_LoadsOptionMetadata(t *testing.T) {
+	orderTime := time.Date(2026, 4, 27, 16, 35, 0, 550879000, time.UTC)
+	intentID := uuid.New()
+	expiry := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+
+	db := &mockDB{
+		queryRowFunc: func(_ context.Context, query string, args ...any) timescaledb.Row {
+			assert.Contains(t, query, "instrument_type")
+			assert.Contains(t, query, "option_symbol")
+			assert.Contains(t, query, "underlying")
+			assert.Contains(t, query, "strike")
+			assert.Contains(t, query, "expiry")
+			assert.Contains(t, query, "option_right")
+			assert.Equal(t, "3512", args[0])
+			return &mockRow{
+				scanFunc: func(dest ...any) error {
+					require.Len(t, dest, 23)
+					*dest[0].(*time.Time) = orderTime
+					*dest[1].(*string) = "tenant-1"
+					*dest[2].(*string) = string(domain.EnvModeLive)
+					*dest[3].(*uuid.UUID) = intentID
+					*dest[4].(*string) = "3512"
+					*dest[5].(*string) = "NVDA260501C00207500"
+					*dest[6].(*string) = "BUY"
+					*dest[7].(*float64) = 4
+					*dest[8].(*float64) = 7.70
+					*dest[9].(*float64) = 0
+					*dest[10].(*string) = "filled"
+					*dest[11].(*time.Time) = orderTime
+					*dest[12].(*float64) = 7.761
+					*dest[13].(*float64) = 4
+					*dest[14].(*string) = "avwap_v4"
+					*dest[15].(*string) = "signal: entry buy"
+					*dest[16].(*float64) = 0
+					*dest[17].(*string) = string(domain.InstrumentTypeOption)
+					*dest[18].(*string) = "NVDA260501C00207500"
+					*dest[19].(*string) = "NVDA"
+					*dest[20].(*float64) = 207.5
+					*dest[21].(*time.Time) = expiry
+					*dest[22].(*string) = "C"
+					return nil
+				},
+			}
+		},
+	}
+	repo := timescaledb.NewRepository(db)
+
+	order, err := repo.GetOrderByBrokerOrderID(context.Background(), "3512")
+	require.NoError(t, err)
+	require.NotNil(t, order)
+	assert.Equal(t, domain.InstrumentTypeOption, order.InstrumentType)
+	assert.Equal(t, "NVDA260501C00207500", order.OptionSymbol)
+	assert.Equal(t, "NVDA", order.Underlying)
+	assert.Equal(t, 207.5, order.Strike)
+	assert.Equal(t, expiry, order.Expiry)
+	assert.Equal(t, "C", order.OptionRight)
+}
+
+func TestRepository_GetOrderByBrokerOrderID_NotFound(t *testing.T) {
+	db := &mockDB{
+		queryRowFunc: func(_ context.Context, _ string, _ ...any) timescaledb.Row {
+			return &mockRow{scanFunc: func(_ ...any) error { return sql.ErrNoRows }}
+		},
+	}
+	repo := timescaledb.NewRepository(db)
+
+	order, err := repo.GetOrderByBrokerOrderID(context.Background(), "missing")
+	assert.NoError(t, err)
+	assert.Nil(t, order)
+}
