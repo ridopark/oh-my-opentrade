@@ -70,6 +70,37 @@ func Trim(spec Spec, tf domain.Timeframe, bars []domain.MarketBar) []domain.Mark
 	return bars
 }
 
+// TrimWithBoot1 is like Trim but also appends the boot+1 bar — the
+// most recent bar in rawBars with Time in [warmupEnd-TfDuration(tf),
+// warmupEnd) — regardless of RTH filter. Use this in replay and
+// backtest paths to mirror live's real-time processing of the bar that
+// closes between boot completion and the first replay snapshot.
+//
+// The boot+1 candidate is captured before Trim runs, since filterRTH
+// mutates rawBars's backing array in place.
+func TrimWithBoot1(spec Spec, tf domain.Timeframe, rawBars []domain.MarketBar, warmupEnd time.Time) []domain.MarketBar {
+	cutoff := warmupEnd.Add(-TfDuration(tf))
+	var boot1 *domain.MarketBar
+	for i := len(rawBars) - 1; i >= 0; i-- {
+		t := rawBars[i].Time
+		if t.Before(cutoff) {
+			break
+		}
+		if t.Before(warmupEnd) {
+			cp := rawBars[i]
+			boot1 = &cp
+			break
+		}
+	}
+	trimmed := Trim(spec, tf, rawBars)
+	if boot1 != nil {
+		if len(trimmed) == 0 || !trimmed[len(trimmed)-1].Time.Equal(boot1.Time) {
+			trimmed = append(trimmed, *boot1)
+		}
+	}
+	return trimmed
+}
+
 // Load returns the last spec.Required[tf] bars after RTH filtering, or
 // fewer if the DB doesn't have enough. The caller is responsible for
 // logging a degradation warning when the result is short — long-period

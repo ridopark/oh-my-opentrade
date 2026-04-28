@@ -162,6 +162,65 @@ func TestLoad_RTHFilterDropsPreMarket(t *testing.T) {
 	}
 }
 
+func TestTrimWithBoot1_AppendsPreMarketBar(t *testing.T) {
+	loc := domain.NYLocation()
+	rthTue := time.Date(2026, 4, 21, 9, 30, 0, 0, loc)
+	preMarketWed := time.Date(2026, 4, 22, 8, 30, 0, 0, loc)
+	warmupEnd := time.Date(2026, 4, 22, 8, 31, 0, 0, loc)
+
+	raw := []domain.MarketBar{
+		{Symbol: "SPY", Timeframe: "1m", Time: rthTue},
+		{Symbol: "SPY", Timeframe: "1m", Time: preMarketWed},
+	}
+	out := TrimWithBoot1(EquitySpec(), "1m", raw, warmupEnd)
+	if len(out) != 2 {
+		t.Fatalf("got %d bars, want 2 (RTH + boot1)", len(out))
+	}
+	if !out[0].Time.Equal(rthTue) {
+		t.Errorf("first bar should be RTH, got %s", out[0].Time)
+	}
+	if !out[1].Time.Equal(preMarketWed) {
+		t.Errorf("second bar should be the pre-market boot+1, got %s", out[1].Time)
+	}
+}
+
+// Regression: filterRTH mutates the input slice's backing array (bars[:0]
+// + append). If the boot+1 lookup runs after Trim, it walks a corrupted
+// backing array and may pick up the wrong bar. Capture the candidate
+// before Trim runs.
+func TestTrimWithBoot1_HonorsBackingArrayMutation(t *testing.T) {
+	loc := domain.NYLocation()
+	rthMon := time.Date(2026, 4, 20, 9, 30, 0, 0, loc)
+	rthTue := time.Date(2026, 4, 21, 9, 30, 0, 0, loc)
+	preMarketWed := time.Date(2026, 4, 22, 8, 30, 0, 0, loc)
+	warmupEnd := time.Date(2026, 4, 22, 8, 31, 0, 0, loc)
+
+	raw := []domain.MarketBar{
+		{Symbol: "SPY", Timeframe: "1m", Time: rthMon, Close: 100},
+		{Symbol: "SPY", Timeframe: "1m", Time: rthTue, Close: 101},
+		{Symbol: "SPY", Timeframe: "1m", Time: preMarketWed, Close: 102},
+	}
+	out := TrimWithBoot1(EquitySpec(), "1m", raw, warmupEnd)
+	if len(out) != 3 {
+		t.Fatalf("got %d bars, want 3 (2 RTH + 1 boot1)", len(out))
+	}
+	if out[2].Close != 102 {
+		t.Errorf("boot+1 bar should be the pre-market 102 close, got %v (backing array was corrupted by filterRTH?)", out[2].Close)
+	}
+}
+
+func TestTrimWithBoot1_NoDuplicateWhenAlreadyKept(t *testing.T) {
+	loc := domain.NYLocation()
+	rthBar := time.Date(2026, 4, 22, 9, 30, 0, 0, loc)
+	warmupEnd := time.Date(2026, 4, 22, 9, 31, 0, 0, loc)
+
+	raw := []domain.MarketBar{{Symbol: "SPY", Timeframe: "1m", Time: rthBar}}
+	out := TrimWithBoot1(EquitySpec(), "1m", raw, warmupEnd)
+	if len(out) != 1 {
+		t.Fatalf("RTH bar already kept by Trim should not be re-appended: got %d", len(out))
+	}
+}
+
 func TestLoad_UnknownTimeframeErrors(t *testing.T) {
 	repo := &stubRepo{}
 	_, err := Load(context.Background(), repo, EquitySpec(), "SPY", "15m", time.Now())
