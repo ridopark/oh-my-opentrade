@@ -12,6 +12,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/tradereplay"
+	"github.com/oh-my-opentrade/backend/internal/app/warmup"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -24,6 +25,18 @@ type warmupBarDB interface {
 
 type warmupBarBroker interface {
 	GetHistoricalBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error)
+}
+
+// warmupRepoFetcher adapts (repo, broker) into warmup.BarRepo so the
+// warmup loader can keep its broker-fallback behavior on cold-start DBs.
+type warmupRepoFetcher struct {
+	repo   warmupBarDB
+	broker warmupBarBroker
+	log    zerolog.Logger
+}
+
+func (f warmupRepoFetcher) GetMarketBars(ctx context.Context, sym domain.Symbol, tf domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
+	return fetchBarsForWarmup(ctx, f.repo, f.broker, sym, tf, from, to, f.log)
 }
 
 func timeframeDuration(tf domain.Timeframe) time.Duration {
@@ -278,25 +291,31 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 
 	svc.monitor.InitAggregators(syms.all, todayOpen)
 
-	// Equity warmup: 3 previous NYSE RTH sessions (~234 5m bars) so 200-period
-	// indicators like EMA200 can stabilize by first live bar. Single-session
-	// warmup produced only 78 5m bars, leaving EMA200 / long SMA windows cold
-	// for ~2.5 trading days after every restart.
+	// Equity warmup uses the canonical warmup.EquitySpec — same loader
+	// the backtest path consumes, so indicator state at boot equals
+	// indicator state at backtest cfg.From for the same instant. RTH
+	// filter applied at the loader; pre/post bars never seed EMA/RSI/ATR.
 	if len(syms.equity) > 0 {
-		prevStart, prevEnd := domain.PreviousNRTHSessions(time.Now(), 3)
-		warmupFrom := prevStart
-		warmupTo := prevEnd
+		spec := warmup.EquitySpec()
+		fetcher := warmupRepoFetcher{repo: infra.repo, broker: infra.barFetcher, log: warmupLog}
+		required := spec.Required[syms.timeframe]
 		warmupLog.Info().
-			Time("prev_session_start", prevStart).
-			Time("prev_session_end", prevEnd).
-			Time("warmup_from", warmupFrom).
-			Time("warmup_to", warmupTo).
-			Msg("warming equity indicators from previous RTH session")
+			Str("timeframe", string(syms.timeframe)).
+			Int("required_bars", required).
+			Bool("rth_filter", spec.RTHFilter).
+			Msg("warming equity indicators (canonical spec)")
 		for _, sym := range syms.equity {
-			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.barFetcher, sym, syms.timeframe, warmupFrom, warmupTo, warmupLog)
+			bars, err := warmup.Load(ctx, fetcher, spec, sym, syms.timeframe, time.Now())
 			if err != nil {
 				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("equity warmup fetch failed, starting cold")
 				continue
+			}
+			if len(bars) < required {
+				warmupLog.Warn().
+					Str("symbol", string(sym)).
+					Int("got", len(bars)).
+					Int("required", required).
+					Msg("equity warmup short — long-period indicators may not fully converge")
 			}
 			n := svc.monitor.WarmUp(bars)
 			svc.monitor.ResetSessionIndicators(sym.String())
