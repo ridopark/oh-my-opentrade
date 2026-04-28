@@ -277,6 +277,42 @@ func TestSignalTracker_FillReceived_PersistsExecutedAndCorrelatesSignalID(t *tes
 	assert.Equal(t, "BUY", executed.Side)
 }
 
+func TestSignalTracker_ExitIntentAfterEntry_DerivesExitKindAndNewSignalID(t *testing.T) {
+	bus := newSignalTrackerEventBus()
+	repo := &signalTrackerPnLRepo{}
+	st := perf.NewSignalTracker(bus, repo, zerolog.Nop())
+	require.NoError(t, st.Start(context.Background()))
+
+	require.NoError(t, bus.Publish(context.Background(), signalTrackerMakeSignalEvent(t, "avwap_v4:1:AAPL", "AAPL", strat.SignalEntry, strat.SideBuy, 0.7)))
+	require.NoError(t, bus.Publish(context.Background(), signalTrackerMakeIntentEvent(t, domain.EventOrderIntentValidated, "avwap_v4", "AAPL", "LONG", "validated", "", 0.7)))
+	require.NoError(t, bus.Publish(context.Background(), signalTrackerMakeFillEvent(t, "avwap_v4", "AAPL", "BUY")))
+	require.NoError(t, bus.Publish(context.Background(), signalTrackerMakeIntentEvent(t, domain.EventOrderIntentValidated, "avwap_v4", "AAPL", "CLOSE_LONG", "validated", "", 0.0)))
+	require.NoError(t, bus.Publish(context.Background(), signalTrackerMakeFillEvent(t, "avwap_v4", "AAPL", "SELL")))
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	require.Len(t, repo.events, 5)
+
+	entryCreated := repo.events[0]
+	entryValidated := repo.events[1]
+	entryExecuted := repo.events[2]
+	exitValidated := repo.events[3]
+	exitExecuted := repo.events[4]
+
+	assert.Equal(t, "entry", entryCreated.Kind)
+	assert.Equal(t, "entry", entryValidated.Kind)
+	assert.Equal(t, "entry", entryExecuted.Kind)
+	assert.Equal(t, entryCreated.SignalID, entryValidated.SignalID)
+	assert.Equal(t, entryCreated.SignalID, entryExecuted.SignalID)
+
+	assert.Equal(t, "exit", exitValidated.Kind)
+	assert.Equal(t, "SELL", exitValidated.Side)
+	assert.Equal(t, "exit", exitExecuted.Kind)
+	assert.Equal(t, "SELL", exitExecuted.Side)
+	assert.Equal(t, exitValidated.SignalID, exitExecuted.SignalID)
+	assert.NotEqual(t, entryCreated.SignalID, exitValidated.SignalID)
+}
+
 func TestSignalTracker_UnknownPayloadTypes_AreSilentlySkipped(t *testing.T) {
 	bus := newSignalTrackerEventBus()
 	repo := &signalTrackerPnLRepo{}

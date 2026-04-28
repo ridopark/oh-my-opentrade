@@ -278,23 +278,26 @@ func (st *SignalTracker) updateCorrReason(tenantID string, envMode domain.EnvMod
 
 func (st *SignalTracker) getOrDeriveCorr(tenantID string, envMode domain.EnvMode, strategy string, symbol string, direction string) signalCorr {
 	scopeKey := st.scopeKey(tenantID, envMode, strategy, symbol)
+	derivedKind, derivedSide := deriveKindSideFromDirection(direction)
 
 	st.mu.Lock()
+	defer st.mu.Unlock()
+
 	ref, ok := st.latestByScope[scopeKey]
-	st.mu.Unlock()
+	// Reuse the cached corr when (a) we have one, and (b) the caller's direction
+	// either is unknown (fills carry no direction) or agrees with the cached
+	// kind/side. When the direction disagrees — e.g. an exit OrderIntent
+	// (CLOSE_LONG) following a previously-cached entry — mint a fresh corr so
+	// the row is persisted with the correct kind=exit instead of inheriting
+	// the stale entry tag.
 	if ok && ref.signalID != "" {
-		return ref
+		if derivedKind == "" || (derivedKind == ref.kind && derivedSide == ref.side) {
+			return ref
+		}
 	}
 
-	ref = signalCorr{signalID: uuid.NewString(), kind: "", side: ""}
-	kind, side := deriveKindSideFromDirection(direction)
-	ref.kind = kind
-	ref.side = side
-
-	st.mu.Lock()
+	ref = signalCorr{signalID: uuid.NewString(), kind: derivedKind, side: derivedSide}
 	st.latestByScope[scopeKey] = ref
-	st.mu.Unlock()
-
 	return ref
 }
 
