@@ -863,11 +863,6 @@ func main() {
 		warmupBarsCache[wr.sym.String()] = wr.bars
 	}
 
-	// Native HTF warmup bars per (symbol, anchor tf). Fetched at the target
-	// timeframe instead of aggregating 1m, so the runner's HTF calc and
-	// monitor's shared calc seed from the canonical-spec bar count (e.g. 800
-	// 5m bars for EMA200 convergence) instead of the ~161 5m bars that
-	// aggregating 800 1m bars yields.
 	htfTimeframes := []domain.Timeframe{"5m", "15m", "1h"}
 	htfCache := make(map[domain.Timeframe]map[string][]domain.MarketBar, len(htfTimeframes))
 	var htfMu sync.Mutex
@@ -961,10 +956,6 @@ func main() {
 					}
 				}
 				p.Runner().InitAggregators(replaySessionOpen)
-				// Native HTF warmup per (sym, anchor tf): seed runner's HTF
-				// calc and monitor's shared calc from canonical-spec bar
-				// counts (vs the prior 1m-aggregate-into-HTF approach which
-				// produced 161 5m bars from 800 1m, far short of EMA200).
 				for _, sym := range slab {
 					symStr := sym.String()
 					for _, htfTF := range htfTimeframes {
@@ -1020,7 +1011,6 @@ func main() {
 			pipeline.Runner.WarmUp(sym.String(), bars, snapshotFn)
 		}
 		pipeline.Runner.InitAggregators(replaySessionOpen)
-		// Native HTF warmup per (sym, anchor tf) — see sharded path comment.
 		for _, sym := range symbols {
 			symStr := sym.String()
 			for _, htfTF := range htfTimeframes {

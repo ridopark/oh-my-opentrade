@@ -455,7 +455,7 @@ func (pa *PipelineActivator) ActivateSymbol(symbol string, bars1m, barsHTF []dom
 	if len(bars1m) > 0 {
 		pa.runner.WarmUp(symbol, bars1m, snapshotFn)
 	}
-	for _, tf := range collectHTFTimeframes(pa.router, symbol) {
+	for _, tf := range pa.runner.HTFTimeframesForSymbol(symbol) {
 		if len(barsHTF) > 0 {
 			pa.runner.WarmUpTF(symbol, tf, barsHTF, snapshotFn)
 		}
@@ -498,18 +498,3 @@ func makeSnapshotFn() strategy.IndicatorSnapshotFunc {
 	}
 }
 
-func collectHTFTimeframes(router *strategy.Router, symbol string) []string {
-	seen := make(map[string]struct{})
-	for _, inst := range router.InstancesForSymbol(symbol) {
-		for _, tf := range inst.Assignment().Timeframes {
-			if tf != "1m" {
-				seen[tf] = struct{}{}
-			}
-		}
-	}
-	result := make([]string, 0, len(seen))
-	for tf := range seen {
-		result = append(result, tf)
-	}
-	return result
-}

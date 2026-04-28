@@ -733,9 +733,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	requiredHourly := warmupSpec.Required["1h"]
 	warmupBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
 	dailyBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
-	htf5mCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
-	htf15mCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
-	htf1hCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
+	htfBarsCache := map[domain.Timeframe]map[string][]domain.MarketBar{
+		"5m":  {},
+		"15m": {},
+		"1h":  {},
+	}
 	var dpLookup map[strategy.DPLookupKey]domain.DarkPoolBar
 	var whaleLookup map[string]domain.WhaleAccumulation
 	{
@@ -828,18 +830,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		if batchDP == nil {
 			batchDP = map[string][]domain.DarkPoolBar{}
 		}
-		// Hand HTF batch results out of the inner block via the function-scope
-		// caches so the runner-warmup branches below can apply Trim and feed
-		// per-(sym, tf).
-		for sym, bars := range batch5m {
-			htf5mCache[sym] = bars
-		}
-		for sym, bars := range batch15m {
-			htf15mCache[sym] = bars
-		}
-		for sym, bars := range batch1h {
-			htf1hCache[sym] = bars
-		}
+		// Hand HTF batches out of the inner block via the function-scope cache.
+		htfBarsCache["5m"] = batch5m
+		htfBarsCache["15m"] = batch15m
+		htfBarsCache["1h"] = batch1h
 
 		// Build dark pool lookup map for O(1) access during replay.
 		dpLookup = make(map[strategy.DPLookupKey]domain.DarkPoolBar)
@@ -1063,10 +1057,6 @@ func (r *Runner) Run(ctx context.Context) error {
 				pipeline.Runner.WarmUp(sym.String(), bars, snapshotFn)
 			}
 			pipeline.Runner.InitAggregators(replaySessionOpen)
-			// Native HTF warmup: per (sym, tf) feed canonical-spec bar count
-			// directly into the runner's HTF calc and monitor's shared calc.
-			// Replaces the prior 1m-aggregate-into-HTF approach (which yielded
-			// 161 5m bars from 800 1m, far short of the 800 EMA200 needs).
 			for _, sym := range r.cfg.Symbols {
 				symStr := sym.String()
 				tfs := pipeline.Runner.HTFTimeframesForSymbol(symStr)
@@ -1079,15 +1069,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 				for _, tf := range tfs {
 					htfTF := domain.Timeframe(tf)
-					var raw []domain.MarketBar
-					switch tf {
-					case "5m":
-						raw = htf5mCache[symStr]
-					case "15m":
-						raw = htf15mCache[symStr]
-					case "1h":
-						raw = htf1hCache[symStr]
-					}
+					raw := htfBarsCache[htfTF][symStr]
 					if len(raw) == 0 {
 						continue
 					}

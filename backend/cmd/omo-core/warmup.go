@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
@@ -424,10 +425,8 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 		}
 		svc.strategyRunner.ResolveAnchorsForWarmup(allSymStrs, time.Now())
 
-		// Wait for fillBarGaps to finish writing HTF aggregates to market_bars
-		// before reading them — otherwise warmup.Load returns a stale tail and
-		// the 5m/15m/1h calc states warm from a discontinuous series. 120s
-		// matches fillBarGaps's own context timeout.
+		// HTF Load reads market_bars; gate on fillBarGaps's HTF aggregation
+		// to avoid a stale-tail read. Timeout matches fillBarGaps's own.
 		select {
 		case <-gapFillDone:
 		case <-time.After(120 * time.Second):
@@ -436,14 +435,9 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 			return
 		}
 
-		// Native per-(sym, tf) HTF warmup: fetches the canonical
-		// warmup.EquitySpec/CryptoSpec bar count at the target timeframe
-		// directly, instead of aggregating 1m bars (which yields ~161 5m bars
-		// from 800 1m, far short of the 800 needed for EMA200 convergence).
-		// Single seeding path for both the runner's HTF calc and monitor's
-		// shared calc — eliminates Defect A (under-warmed runner_htf) and
-		// Defect B (un-seeded monitor calc) for HTF state.
 		fetcher := warmupRepoFetcher{repo: infra.repo, broker: infra.barFetcher, log: warmupLog}
+		htfSem := make(chan struct{}, 8)
+		var htfWg sync.WaitGroup
 		for _, sym := range syms.all {
 			tfs := svc.strategyRunner.HTFTimeframesForSymbol(string(sym))
 			if len(tfs) == 0 {
@@ -463,31 +457,38 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 						Msg("no canonical bar count for timeframe — skipping HTF warmup")
 					continue
 				}
-				bars, err := warmup.Load(ctx, fetcher, spec, sym, htfTF, time.Now())
-				if err != nil {
-					warmupLog.Warn().Err(err).
+				htfWg.Add(1)
+				htfSem <- struct{}{}
+				go func(sym domain.Symbol, htfTF domain.Timeframe, spec warmup.Spec, required int) {
+					defer htfWg.Done()
+					defer func() { <-htfSem }()
+					bars, err := warmup.Load(ctx, fetcher, spec, sym, htfTF, time.Now())
+					if err != nil {
+						warmupLog.Warn().Err(err).
+							Str("symbol", string(sym)).
+							Str("timeframe", string(htfTF)).
+							Msg("HTF warmup fetch failed, starting cold")
+						return
+					}
+					if len(bars) < required {
+						warmupLog.Warn().
+							Str("symbol", string(sym)).
+							Str("timeframe", string(htfTF)).
+							Int("got", len(bars)).
+							Int("required", required).
+							Msg("HTF warmup short — long-period indicators may not fully converge")
+					}
+					n := svc.strategyRunner.WarmUpTF(string(sym), string(htfTF), bars, runnerWarmupSnapshotFn)
+					svc.monitor.WarmUpNative(sym, htfTF, bars)
+					warmupLog.Info().
 						Str("symbol", string(sym)).
-						Str("timeframe", tf).
-						Msg("HTF warmup fetch failed, starting cold")
-					continue
-				}
-				if len(bars) < required {
-					warmupLog.Warn().
-						Str("symbol", string(sym)).
-						Str("timeframe", tf).
-						Int("got", len(bars)).
-						Int("required", required).
-						Msg("HTF warmup short — long-period indicators may not fully converge")
-				}
-				n := svc.strategyRunner.WarmUpTF(string(sym), tf, bars, runnerWarmupSnapshotFn)
-				svc.monitor.WarmUpNative(sym, htfTF, bars)
-				warmupLog.Info().
-					Str("symbol", string(sym)).
-					Str("timeframe", tf).
-					Int("bars", n).
-					Msg("HTF warmup complete (canonical spec)")
+						Str("timeframe", string(htfTF)).
+						Int("bars", n).
+						Msg("HTF warmup complete (canonical spec)")
+				}(sym, htfTF, spec, required)
 			}
 		}
+		htfWg.Wait()
 	}
 
 	isWeekday := nowET.Weekday() != time.Saturday && nowET.Weekday() != time.Sunday
