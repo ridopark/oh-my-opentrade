@@ -325,9 +325,11 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 // re-labels the IndicatorCalculator so backtest ORB and parity-diag emits
 // are distinguishable from live ones in the shared log file.
 func (s *Service) TagBacktest(backtestID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	l := slog.Default().With("source", "monitor", "backtest_id", backtestID)
 	s.orbTracker.SetLogger(l)
-	s.calculator.Label = "monitor:" + backtestID
+	s.calculator.Label = "monitor_backtest_" + backtestID
 }
 
 // SetORBConfig overrides the default ORB configuration with values from
