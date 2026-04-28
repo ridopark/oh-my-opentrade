@@ -16,6 +16,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
+	"github.com/oh-my-opentrade/backend/internal/observability/parity"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel"
@@ -1076,6 +1077,17 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		return nil
 	}
 	submitStart := s.nowFn()
+	if parity.Enabled() {
+		l.Info().
+			Str("stage", "OrderSubmitted").
+			Str("symbol", string(intent.Symbol)).
+			Str("strategy", intent.Strategy).
+			Str("direction", string(intent.Direction)).
+			Float64("quantity", intent.Quantity).
+			Float64("limit_price", intent.LimitPrice).
+			Time("submit_start", submitStart).
+			Msg("parity-diag")
+	}
 	brokerOrderID, err := s.broker.SubmitOrder(ctx, intent)
 	if err != nil {
 		span.RecordError(err)
@@ -1753,6 +1765,21 @@ func (s *Service) insertFillLeg(po *pendingOrder, brokerOrderID, executionID str
 	}
 	trade.ExecutionID = executionID
 	enrichTradeOptionsFromIntent(&trade, po.intent)
+	if parity.Enabled() {
+		l.Info().
+			Str("stage", "FillRecorded").
+			Str("symbol", string(po.intent.Symbol)).
+			Str("strategy", po.intent.Strategy).
+			Str("direction", string(po.intent.Direction)).
+			Str("broker_order_id", brokerOrderID).
+			Str("execution_id", executionID).
+			Time("filled_at", filledAt).
+			Float64("leg_qty", legQty).
+			Float64("leg_price", legPrice).
+			Float64("cum_qty", cumQty).
+			Float64("cum_avg_price", cumAvgPrice).
+			Msg("parity-diag")
+	}
 	if err := s.repo.RecordFill(ctx, brokerOrderID, filledAt, cumAvgPrice, cumQty, trade); err != nil {
 		l.Error().Err(err).Str("execution_id", executionID).Msg("failed to record fill leg")
 	}
