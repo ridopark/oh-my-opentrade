@@ -376,14 +376,37 @@ func (mp *MonitoredPosition) DrawdownFromHighPct(currentPrice float64) float64 {
 	return (mp.HighWaterMark - currentPrice) / mp.HighWaterMark
 }
 
+// HasBSMInputs reports whether CustomState carries the full set of inputs
+// required to run the Black-Scholes-Merton premium recalculation: strike,
+// expiry, entry-IV, and option right. Used by callers that need to
+// distinguish "premium estimate is unavailable" from "premium went to
+// zero" — the former is a data-availability problem (e.g. post-restart
+// before BSM inputs are restored), the latter is a real exit signal.
+func (mp *MonitoredPosition) HasBSMInputs() bool {
+	if mp.CustomState == nil {
+		return false
+	}
+	strike, hasStrike := mp.CustomState["strike"]
+	_, hasExpiry := mp.CustomState["expiry_unix"]
+	ivAtEntry, hasIV := mp.CustomState["iv_at_entry"]
+	_, hasRight := mp.CustomState["is_call"]
+	return hasStrike && hasExpiry && hasIV && hasRight && strike > 0 && ivAtEntry > 0
+}
+
 // EstimatedPremium computes the current option premium using Black-Scholes-Merton
 // recalculation when strike, expiry, IV, and option right are available in
 // CustomState. Falls back to the legacy delta-linear approximation when BSM
-// inputs are missing (backward compatibility with older positions).
+// inputs are missing AND delta_at_entry is present (backward compatibility
+// with older positions that pre-date BSM-input recording).
 //
 // The BSM approach accounts for gamma (convexity), theta (time decay), and all
 // higher-order Greeks, fixing the 5-25% error that delta-linear produces for
 // ATM options on 1-3% underlying moves.
+//
+// Returns 0 only when neither path can run — option_premium missing, or
+// neither BSM nor delta inputs are recoverable. Callers that key safety
+// behavior off the zero return must distinguish "BSM unavailable" from
+// "premium went to zero" via HasBSMInputs() — see evaluatePremiumStop.
 //
 // Spread cost is subtracted using the same tiers as SimBroker:
 // >=10 -> 0.3%, >=5 -> 0.5%, >=2 -> 0.8%, <2 -> 1.5%.
@@ -394,22 +417,21 @@ func (mp *MonitoredPosition) EstimatedPremium(currentUnderlyingPrice float64, no
 	if mp.CustomState == nil {
 		return 0
 	}
-	entryPremium, ok1 := mp.CustomState["option_premium"]
-	delta, ok2 := mp.CustomState["delta_at_entry"]
-	if !ok1 || !ok2 || entryPremium <= 0 {
+	entryPremium, ok := mp.CustomState["option_premium"]
+	if !ok || entryPremium <= 0 {
 		return 0
 	}
 
 	// Spread cost tiers (matching simbroker)
 	spreadCost := spreadCostForPremium(entryPremium)
 
-	// Try BSM recalculation if all inputs are available.
-	strike, hasStrike := mp.CustomState["strike"]
-	expiryUnix, hasExpiry := mp.CustomState["expiry_unix"]
-	ivAtEntry, hasIV := mp.CustomState["iv_at_entry"]
-	isCallVal, hasRight := mp.CustomState["is_call"]
+	// Primary path: BSM recalculation when full input set is available.
+	if mp.HasBSMInputs() {
+		strike := mp.CustomState["strike"]
+		expiryUnix := mp.CustomState["expiry_unix"]
+		ivAtEntry := mp.CustomState["iv_at_entry"]
+		isCallVal := mp.CustomState["is_call"]
 
-	if hasStrike && hasExpiry && hasIV && hasRight && strike > 0 && ivAtEntry > 0 {
 		expiryTime := time.Unix(int64(expiryUnix), 0)
 		// Remaining DTE in years. Use market close (16:00 ET) as expiry time
 		// for more accurate intraday theta.
@@ -442,7 +464,11 @@ func (mp *MonitoredPosition) EstimatedPremium(currentUnderlyingPrice float64, no
 		return est
 	}
 
-	// Fallback: legacy delta-linear approximation.
+	// Fallback: legacy delta-linear approximation. Requires delta_at_entry.
+	delta, hasDelta := mp.CustomState["delta_at_entry"]
+	if !hasDelta {
+		return 0
+	}
 	underlyingMove := currentUnderlyingPrice - mp.EntryPrice
 	est := entryPremium + delta*underlyingMove - spreadCost
 	if est < 0 {

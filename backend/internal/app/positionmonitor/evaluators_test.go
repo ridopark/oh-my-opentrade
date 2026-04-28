@@ -1011,6 +1011,71 @@ func TestEvaluate_PremiumStop(t *testing.T) {
 			price:     140,
 			wantFired: false,
 		},
+		// Regression: 2026-04-28 LLY 850P incident. Post-restart, BSM inputs
+		// (strike/expiry/iv/is_call) are not yet rehydrated, and delta_at_entry
+		// is missing too. EstimatedPremium returns 0; pre-fix this fired
+		// "premium exhausted" on the first tick. After the fix, the evaluator
+		// must distinguish "BSM unavailable" from "premium went to zero" and
+		// stay quiet.
+		{
+			name: "does not trigger when BSM inputs missing AND est==0 (post-restart)",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumStop, Params: map[string]float64{"threshold": 0.40}},
+			pos: func() *domain.MonitoredPosition {
+				p := newTestMonitoredPosition(t, 150, now.Add(-30*time.Minute), domain.AssetClassEquity)
+				p.InstrumentType = domain.InstrumentTypeOption
+				if p.CustomState == nil {
+					p.CustomState = make(map[string]float64)
+				}
+				// Only option_premium restored (matches bootstrap.go behavior);
+				// no delta_at_entry, no BSM inputs.
+				p.CustomState["option_premium"] = 25.66
+				return p
+			}(),
+			price:     869.37, // underlying spot — BSM would compute a real premium, but inputs are missing
+			wantFired: false,
+		},
+		// Counter-regression: when BSM inputs ARE present and est genuinely
+		// collapses to zero (e.g. deep OTM put about to expire worthless),
+		// the evaluator MUST still fire — the post-restart guard above is
+		// the only suppression, not a blanket disable.
+		{
+			name: "does trigger when BSM inputs present AND est==0",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumStop, Params: map[string]float64{"threshold": 0.40}},
+			pos: func() *domain.MonitoredPosition {
+				p := newTestMonitoredPosition(t, 150, now.Add(-30*time.Minute), domain.AssetClassEquity)
+				p.InstrumentType = domain.InstrumentTypeOption
+				p.OptionRight = "CALL"
+				expiry := time.Date(2026, 3, 6, 16, 0, 0, 0, etLoc) // expires today
+				if p.CustomState == nil {
+					p.CustomState = make(map[string]float64)
+				}
+				p.CustomState["option_premium"] = 5.00
+				p.CustomState["strike"] = 150.0
+				p.CustomState["expiry_unix"] = float64(expiry.Unix())
+				p.CustomState["iv_at_entry"] = 0.30
+				p.CustomState["is_call"] = 1.0
+				return p
+			}(),
+			price:      130, // far OTM call — intrinsic = 0
+			wantFired:  true,
+			wantSubstr: "premium exhausted",
+		},
+		// Legitimate fire on the delta-linear path: BSM inputs absent but
+		// delta_at_entry present, premium drops below zero per the linear
+		// model. The post-restart suppression must NOT block this — it
+		// only kicks in when BOTH paths are unavailable.
+		{
+			name: "does trigger when delta-linear path drives premium to zero",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumStop, Params: map[string]float64{"threshold": 0.40}},
+			pos: func() *domain.MonitoredPosition {
+				// entry premium=5.00, delta=0.50, entry underlying=150.
+				// At underlying 140: 5.00 + 0.50*(140-150) - spread = -0.025 -> 0.
+				return newOptionPosition(t, 150, now.Add(-30*time.Minute), 5.00, 0.50)
+			}(),
+			price:      140,
+			wantFired:  true,
+			wantSubstr: "premium exhausted",
+		},
 	}
 
 	for _, tc := range tests {
@@ -1306,6 +1371,89 @@ func TestEstimatedPremium(t *testing.T) {
 		// OTM: underlying at 148, intrinsic = 0
 		estOTM := pos.EstimatedPremium(148, now)
 		assert.Equal(t, 0.0, estOTM)
+	})
+
+	// Regression: pre-fix this returned 0 because the early-return required
+	// delta_at_entry even when full BSM inputs were present. After the fix
+	// (2026-04-28) BSM is the primary path and delta is needed only for the
+	// legacy fallback. Bootstrap-restored option positions hit this path —
+	// LLY 850P false-fire incident traced to it.
+	t.Run("BSM works without delta_at_entry", func(t *testing.T) {
+		expiry := time.Date(2026, 3, 13, 16, 0, 0, 0, etLoc)
+		pos := newTestMonitoredPosition(t, 150, now, domain.AssetClassEquity)
+		pos.InstrumentType = domain.InstrumentTypeOption
+		pos.OptionRight = "PUT"
+		pos.CustomState["option_premium"] = 5.00
+		pos.CustomState["strike"] = 150.0
+		pos.CustomState["expiry_unix"] = float64(expiry.Unix())
+		pos.CustomState["iv_at_entry"] = 0.30
+		pos.CustomState["is_call"] = 0.0
+		// No delta_at_entry.
+
+		est := pos.EstimatedPremium(148, now)
+		assert.Greater(t, est, 0.0, "BSM must produce a non-zero premium without delta_at_entry")
+		assert.Less(t, est, 10.0, "BSM premium should be reasonable for ATM-ish put")
+	})
+}
+
+func TestHasBSMInputs(t *testing.T) {
+	etLoc := mustETLocation(t)
+	expiry := time.Date(2026, 3, 13, 16, 0, 0, 0, etLoc)
+
+	t.Run("nil CustomState returns false", func(t *testing.T) {
+		pos := &domain.MonitoredPosition{InstrumentType: domain.InstrumentTypeOption}
+		assert.False(t, pos.HasBSMInputs())
+	})
+
+	t.Run("complete inputs return true", func(t *testing.T) {
+		pos := &domain.MonitoredPosition{
+			InstrumentType: domain.InstrumentTypeOption,
+			CustomState: map[string]float64{
+				"strike":      150.0,
+				"expiry_unix": float64(expiry.Unix()),
+				"iv_at_entry": 0.30,
+				"is_call":     1.0,
+			},
+		}
+		assert.True(t, pos.HasBSMInputs())
+	})
+
+	t.Run("missing iv returns false", func(t *testing.T) {
+		pos := &domain.MonitoredPosition{
+			InstrumentType: domain.InstrumentTypeOption,
+			CustomState: map[string]float64{
+				"strike":      150.0,
+				"expiry_unix": float64(expiry.Unix()),
+				"is_call":     1.0,
+			},
+		}
+		assert.False(t, pos.HasBSMInputs())
+	})
+
+	t.Run("zero strike returns false", func(t *testing.T) {
+		pos := &domain.MonitoredPosition{
+			InstrumentType: domain.InstrumentTypeOption,
+			CustomState: map[string]float64{
+				"strike":      0,
+				"expiry_unix": float64(expiry.Unix()),
+				"iv_at_entry": 0.30,
+				"is_call":     1.0,
+			},
+		}
+		assert.False(t, pos.HasBSMInputs())
+	})
+
+	t.Run("zero iv returns false", func(t *testing.T) {
+		pos := &domain.MonitoredPosition{
+			InstrumentType: domain.InstrumentTypeOption,
+			CustomState: map[string]float64{
+				"strike":      150.0,
+				"expiry_unix": float64(expiry.Unix()),
+				"iv_at_entry": 0,
+				"is_call":     1.0,
+			},
+		}
+		assert.False(t, pos.HasBSMInputs())
 	})
 }
 

@@ -1078,7 +1078,20 @@ func evaluatePremiumStop(rule domain.ExitRule, pos *domain.MonitoredPosition, cu
 	}
 	estPremium := pos.EstimatedPremium(currentPrice, now)
 	if estPremium <= 0 {
-		// Premium went to zero — definitely triggered
+		// EstimatedPremium returns 0 in two distinct cases:
+		//   (a) the option premium really has collapsed to zero / intrinsic
+		//       is non-positive — a legitimate exit signal,
+		//   (b) NO estimator path can run because neither BSM inputs
+		//       (strike/expiry/iv/is_call) nor delta_at_entry are present
+		//       — a data-availability problem we MUST NOT treat as an
+		//       exit signal. Bootstrap-restored positions hit this until
+		//       full state rehydration completes.
+		// Distinguishing the two prevents the post-restart false-fire that
+		// caused the 2026-04-28 LLY 850P phantom +$84k incident.
+		_, hasDelta := pos.CustomState["delta_at_entry"]
+		if !pos.HasBSMInputs() && !hasDelta {
+			return false, ""
+		}
 		return true, fmt.Sprintf("premium_stop: premium exhausted (entry=%.2f, est=0.00, threshold=%.0f%%)",
 			entryPremium, threshold*100)
 	}
