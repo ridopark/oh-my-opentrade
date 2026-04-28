@@ -155,7 +155,9 @@ func buildSymbolLists(cfg *config.Config) symbolLists {
 // bar time from TimescaleDB, and if a gap of more than 2 minutes exists (but
 // less than 7 days), it fetches the missing bars from Alpaca and saves them.
 // Symbols with no bars at all are skipped (use omo-backfill for cold-start).
-func fillBarGaps(ctx context.Context, cfg *config.Config, infra *infraDeps, log zerolog.Logger) {
+func fillBarGaps(ctx context.Context, cfg *config.Config, infra *infraDeps, log zerolog.Logger, done chan<- struct{}) {
+	defer close(done)
+
 	gapLog := log.With().Str("component", "gap-fill").Logger()
 	gapLog.Info().Msg("starting bar gap fill")
 
@@ -262,7 +264,7 @@ func fillBarGaps(ctx context.Context, cfg *config.Config, infra *infraDeps, log 
 		Msg("gap-fill complete")
 }
 
-func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps, svc *appServices, syms symbolLists, log zerolog.Logger) {
+func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps, svc *appServices, syms symbolLists, log zerolog.Logger, gapFillDone <-chan struct{}) {
 	equityStrs := cfg.Symbols.SymbolsByAssetClass("EQUITY")
 	cryptoStrs := cfg.Symbols.SymbolsByAssetClass("CRYPTO")
 
@@ -413,20 +415,6 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 
 		svc.strategyRunner.InitAggregators(todayOpen)
 
-		// Feed cached 1m bars through HTF aggregators so 5m strategies
-		// (AVWAP, PHM) receive proper warmup bars via WarmUpHTF.
-		for _, sym := range syms.all {
-			bars := warmupBarsCache[string(sym)]
-			if len(bars) == 0 {
-				continue
-			}
-			svc.strategyRunner.WarmUpHTF(string(sym), bars, runnerWarmupSnapshotFn, loc)
-			warmupLog.Info().
-				Str("symbol", string(sym)).
-				Int("bars_1m", len(bars)).
-				Msg("strategy runner HTF warmup from 1m bars")
-		}
-
 		// Resolve AVWAP anchors for today's session so HTF warmup bars
 		// feed into properly initialized AVWAP calculators with real
 		// anchor times (session_open, pd_high, pd_low) and key levels.
@@ -436,41 +424,69 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 		}
 		svc.strategyRunner.ResolveAnchorsForWarmup(allSymStrs, time.Now())
 
-		htfReqs := collectHTFWarmupReqs(svc.strategyRunner)
-		if len(htfReqs) > 0 {
-			warmupLog.Info().Int("htf_pairs", len(htfReqs)).Msg("warming up HTF strategies")
+		// Wait for fillBarGaps to finish writing HTF aggregates to market_bars
+		// before reading them — otherwise warmup.Load returns a stale tail and
+		// the 5m/15m/1h calc states warm from a discontinuous series. 120s
+		// matches fillBarGaps's own context timeout.
+		select {
+		case <-gapFillDone:
+		case <-time.After(120 * time.Second):
+			warmupLog.Warn().Msg("gap-fill did not finish in 120s, proceeding with HTF warmup anyway")
+		case <-ctx.Done():
+			return
 		}
-		for _, req := range htfReqs {
-			var from, to time.Time
-			if req.symbol.IsCryptoSymbol() {
-				to = time.Now().UTC()
-				from = to.Add(-req.lookback)
-			} else {
-				prevStart, prevEnd := domain.PreviousRTHSession(time.Now())
-				to = prevEnd
-				// Use full session for 5m strategies (need VWAP from open)
-				// but respect the requested lookback if it's longer.
-				sessionDur := prevEnd.Sub(prevStart)
-				if req.lookback < sessionDur {
-					from = prevStart
-				} else {
-					from = to.Add(-req.lookback)
-				}
-			}
-			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.barFetcher, req.symbol, req.timeframe, from, to, warmupLog)
-			if err != nil {
-				warmupLog.Warn().Err(err).
-					Str("symbol", string(req.symbol)).
-					Str("timeframe", string(req.timeframe)).
-					Msg("HTF warmup fetch failed, starting cold")
+
+		// Native per-(sym, tf) HTF warmup: fetches the canonical
+		// warmup.EquitySpec/CryptoSpec bar count at the target timeframe
+		// directly, instead of aggregating 1m bars (which yields ~161 5m bars
+		// from 800 1m, far short of the 800 needed for EMA200 convergence).
+		// Single seeding path for both the runner's HTF calc and monitor's
+		// shared calc — eliminates Defect A (under-warmed runner_htf) and
+		// Defect B (un-seeded monitor calc) for HTF state.
+		fetcher := warmupRepoFetcher{repo: infra.repo, broker: infra.barFetcher, log: warmupLog}
+		for _, sym := range syms.all {
+			tfs := svc.strategyRunner.HTFTimeframesForSymbol(string(sym))
+			if len(tfs) == 0 {
 				continue
 			}
-			n := svc.strategyRunner.WarmUpTF(string(req.symbol), string(req.timeframe), bars, runnerWarmupSnapshotFn)
-			warmupLog.Info().
-				Str("symbol", string(req.symbol)).
-				Str("timeframe", string(req.timeframe)).
-				Int("bars", n).
-				Msg("HTF strategy warmup complete")
+			spec := warmup.EquitySpec()
+			if sym.IsCryptoSymbol() {
+				spec = warmup.CryptoSpec()
+			}
+			for _, tf := range tfs {
+				htfTF := domain.Timeframe(tf)
+				required := spec.Required[htfTF]
+				if required == 0 {
+					warmupLog.Warn().
+						Str("symbol", string(sym)).
+						Str("timeframe", tf).
+						Msg("no canonical bar count for timeframe — skipping HTF warmup")
+					continue
+				}
+				bars, err := warmup.Load(ctx, fetcher, spec, sym, htfTF, time.Now())
+				if err != nil {
+					warmupLog.Warn().Err(err).
+						Str("symbol", string(sym)).
+						Str("timeframe", tf).
+						Msg("HTF warmup fetch failed, starting cold")
+					continue
+				}
+				if len(bars) < required {
+					warmupLog.Warn().
+						Str("symbol", string(sym)).
+						Str("timeframe", tf).
+						Int("got", len(bars)).
+						Int("required", required).
+						Msg("HTF warmup short — long-period indicators may not fully converge")
+				}
+				n := svc.strategyRunner.WarmUpTF(string(sym), tf, bars, runnerWarmupSnapshotFn)
+				svc.monitor.WarmUpNative(sym, htfTF, bars)
+				warmupLog.Info().
+					Str("symbol", string(sym)).
+					Str("timeframe", tf).
+					Int("bars", n).
+					Msg("HTF warmup complete (canonical spec)")
+			}
 		}
 	}
 
@@ -906,52 +922,3 @@ func warmupHTF(ctx context.Context, infra *infraDeps, svc *appServices, syms sym
 	log.Info().Msg("HTF warmup finished")
 }
 
-type htfWarmupReq struct {
-	symbol    domain.Symbol
-	timeframe domain.Timeframe
-	lookback  time.Duration
-}
-
-func collectHTFWarmupReqs(runner *strategy.Runner) []htfWarmupReq {
-	seen := make(map[string]struct{})
-	var reqs []htfWarmupReq
-	for _, inst := range runner.Router().AllInstances() {
-		tfs := inst.Assignment().Timeframes
-		if len(tfs) == 0 {
-			continue
-		}
-		warmupBars := inst.Strategy().WarmupBars()
-		for _, tf := range tfs {
-			if tf == "1m" {
-				continue
-			}
-			for _, sym := range inst.Assignment().Symbols {
-				key := sym + ":" + tf
-				if _, ok := seen[key]; ok {
-					continue
-				}
-				seen[key] = struct{}{}
-				var barDur time.Duration
-				switch tf {
-				case "5m":
-					barDur = 5 * time.Minute
-				case "15m":
-					barDur = 15 * time.Minute
-				case "1h":
-					barDur = time.Hour
-				case "1d":
-					barDur = 24 * time.Hour
-				default:
-					barDur = time.Minute
-				}
-				lookback := time.Duration(float64(warmupBars) * float64(barDur) * 1.2)
-				reqs = append(reqs, htfWarmupReq{
-					symbol:    domain.Symbol(sym),
-					timeframe: domain.Timeframe(tf),
-					lookback:  lookback,
-				})
-			}
-		}
-	}
-	return reqs
-}

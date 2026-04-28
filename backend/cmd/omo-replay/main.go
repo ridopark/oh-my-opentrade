@@ -863,6 +863,46 @@ func main() {
 		warmupBarsCache[wr.sym.String()] = wr.bars
 	}
 
+	// Native HTF warmup bars per (symbol, anchor tf). Fetched at the target
+	// timeframe instead of aggregating 1m, so the runner's HTF calc and
+	// monitor's shared calc seed from the canonical-spec bar count (e.g. 800
+	// 5m bars for EMA200 convergence) instead of the ~161 5m bars that
+	// aggregating 800 1m bars yields.
+	htfTimeframes := []domain.Timeframe{"5m", "15m", "1h"}
+	htfCache := make(map[domain.Timeframe]map[string][]domain.MarketBar, len(htfTimeframes))
+	var htfMu sync.Mutex
+	for _, htfTF := range htfTimeframes {
+		htfCache[htfTF] = make(map[string][]domain.MarketBar, len(symbols))
+	}
+	var htfWg sync.WaitGroup
+	for _, sym := range symbols {
+		for _, htfTF := range htfTimeframes {
+			htfWg.Add(1)
+			go func(sym domain.Symbol, htfTF domain.Timeframe) {
+				defer htfWg.Done()
+				spec := specFor(sym)
+				if spec.Required[htfTF] == 0 {
+					return
+				}
+				warmupEnd := fromTime
+				if t, ok := firstBarTime[sym.String()]; ok {
+					warmupEnd = t
+				}
+				warmupStart := warmupEnd.Add(-warmup.CalendarLookback(htfTF))
+				raw, fetchErr := repo.GetMarketBars(ctx, sym, htfTF, warmupStart, warmupEnd)
+				if fetchErr != nil {
+					warmupLog.Warn().Err(fetchErr).Str("symbol", sym.String()).Str("tf", string(htfTF)).Msg("HTF warmup fetch failed")
+					return
+				}
+				trimmed := warmup.TrimWithBoot1(spec, htfTF, raw, warmupEnd)
+				htfMu.Lock()
+				htfCache[htfTF][sym.String()] = trimmed
+				htfMu.Unlock()
+			}(sym, htfTF)
+		}
+	}
+	htfWg.Wait()
+
 	fromET := fromTime.In(loc)
 	replaySessionOpen := time.Date(fromET.Year(), fromET.Month(), fromET.Day(), 9, 30, 0, 0, loc)
 
@@ -921,6 +961,21 @@ func main() {
 					}
 				}
 				p.Runner().InitAggregators(replaySessionOpen)
+				// Native HTF warmup per (sym, anchor tf): seed runner's HTF
+				// calc and monitor's shared calc from canonical-spec bar
+				// counts (vs the prior 1m-aggregate-into-HTF approach which
+				// produced 161 5m bars from 800 1m, far short of EMA200).
+				for _, sym := range slab {
+					symStr := sym.String()
+					for _, htfTF := range htfTimeframes {
+						bars := htfCache[htfTF][symStr]
+						if len(bars) == 0 {
+							continue
+						}
+						p.Runner().WarmUpTF(symStr, string(htfTF), bars, snapshotFn)
+						p.Monitor().WarmUpNative(sym, htfTF, bars)
+					}
+				}
 				p.Runner().ClearAllPendingStates()
 			}(shardIdx)
 		}
@@ -965,6 +1020,18 @@ func main() {
 			pipeline.Runner.WarmUp(sym.String(), bars, snapshotFn)
 		}
 		pipeline.Runner.InitAggregators(replaySessionOpen)
+		// Native HTF warmup per (sym, anchor tf) — see sharded path comment.
+		for _, sym := range symbols {
+			symStr := sym.String()
+			for _, htfTF := range htfTimeframes {
+				bars := htfCache[htfTF][symStr]
+				if len(bars) == 0 {
+					continue
+				}
+				pipeline.Runner.WarmUpTF(symStr, string(htfTF), bars, snapshotFn)
+				monitorSvc.WarmUpNative(sym, htfTF, bars)
+			}
+		}
 		warmupLog.Info().Time("session_open", replaySessionOpen).Msg("strategy runner HTF aggregators initialized")
 		pipeline.Runner.ClearAllPendingStates()
 		warmupLog.Info().Msg("strategy runner pending states cleared after warmup")

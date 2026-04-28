@@ -31,8 +31,9 @@ func main() {
 	startWatchdogNotify(ctx, log, svc.ingestion)
 
 	syms := buildSymbolLists(cfg)
-	go fillBarGaps(ctx, cfg, infra, log) // background — not critical for live trading
-	warmupIndicators(ctx, cfg, infra, svc, syms, log)
+	gapFillDone := make(chan struct{})
+	go fillBarGaps(ctx, cfg, infra, log, gapFillDone)
+	warmupIndicators(ctx, cfg, infra, svc, syms, log, gapFillDone)
 	if svc.strategyRunner != nil {
 		svc.strategyRunner.FlushSignalProgress()
 	}
