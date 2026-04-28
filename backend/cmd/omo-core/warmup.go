@@ -294,6 +294,20 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 
 	svc.monitor.InitAggregators(syms.all, todayOpen)
 
+	// Pre-mark HTF slots that the canonical-spec warmup will seed (Phase A
+	// at the HTF native loop below). Without this, the historical 1m WarmUp
+	// at line ~323 drives the aggregator and feeds today's pre-boot 5m
+	// closes into s.calculator BEFORE WarmUpNative runs, double-counting
+	// those bars in EMA/VWAP/ATR state.
+	if svc.useStrategyV2 && svc.strategyRunner != nil {
+		for _, sym := range syms.all {
+			tfs := svc.strategyRunner.HTFTimeframesForSymbol(string(sym))
+			for _, tf := range tfs {
+				svc.monitor.ReserveHTFNative(sym, domain.Timeframe(tf))
+			}
+		}
+	}
+
 	// Equity warmup uses the canonical warmup.EquitySpec — same loader
 	// the backtest path consumes, so indicator state at boot equals
 	// indicator state at backtest cfg.From for the same instant. RTH
@@ -538,9 +552,10 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 					}
 				}
 				_ = svc.strategyRunner.WarmUp(string(sym), orbBars, runnerWarmupSnapshotFn)
-				// Also aggregate 1m bars into HTF (5m) for strategies like ORB
-				// that are registered on the 5m timeframe.
-				svc.strategyRunner.WarmUpHTF(string(sym), orbBars, runnerWarmupSnapshotFn, loc)
+				// Prime runtime HTF aggregators so the first post-boot 5m/15m/1h
+				// close contains today's pre-boot 1m bars. The htfCalcs themselves
+				// were seeded in Phase A's WarmUpTF; this only primes bucket state.
+				svc.strategyRunner.PrimeAggregators(string(sym), orbBars)
 			}
 			warmupLog.Info().
 				Str("symbol", string(sym)).

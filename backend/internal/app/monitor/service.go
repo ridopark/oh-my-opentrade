@@ -56,6 +56,11 @@ type Service struct {
 	orbTimeframe     domain.Timeframe                 // timeframe for ORB bar delivery (default "5m")
 	anchorRegimes    map[string]domain.MarketRegime
 	lastHTFSnaps     map[string]domain.IndicatorSnapshot
+	// htfNativeReserved marks (sym, tf) slots that WarmUpNative will seed
+	// during boot. Service.WarmUp's HTF aggregator path skips calc.Update
+	// for reserved slots so today's pre-boot 5m closes don't get fed twice
+	// (once via aggregator emit, once via WarmUpNative direct).
+	htfNativeReserved map[string]bool
 	htfStatic        map[string]domain.HTFData
 	readySymbols     map[string]struct{}
 	log              zerolog.Logger
@@ -249,6 +254,21 @@ func (s *Service) WarmUpHTF(bars []domain.MarketBar) int {
 // buildHTFMap) and s.anchorRegimes[sym:tf] (consumed by HandleMarketBar's
 // regime-shift detection — without it, the first live close fires a
 // spurious shift). Does NOT publish events.
+// ReserveHTFNative pre-marks a (sym, tf) slot as canonically seeded by
+// WarmUpNative. Must be called BEFORE Service.WarmUp(historical1mBars)
+// runs — otherwise the historical 1m WarmUp's HTF aggregator path will
+// drive calc.Update on today's pre-boot 5m bars, and WarmUpNative's
+// later seed double-counts those bars in the streaming EMA/VWAP/ATR
+// state.
+func (s *Service) ReserveHTFNative(sym domain.Symbol, tf domain.Timeframe) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.htfNativeReserved == nil {
+		s.htfNativeReserved = make(map[string]bool)
+	}
+	s.htfNativeReserved[sym.String()+":"+tf.String()] = true
+}
+
 func (s *Service) WarmUpNative(sym domain.Symbol, tf domain.Timeframe, bars []domain.MarketBar) int {
 	if len(bars) == 0 {
 		return 0
@@ -299,6 +319,7 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 		orbAggregators:   make(map[string]*domain.BarAggregator),
 		orbTimeframe:     "5m",
 		anchorRegimes:    make(map[string]domain.MarketRegime),
+		htfNativeReserved: make(map[string]bool),
 		avwapCalcs:       make(map[string]*start.AnchoredVWAPCalc),
 		avwapLastSession:    make(map[string]string),
 		avwapLastSessionInt: make(map[string]int),
@@ -1279,6 +1300,15 @@ func (s *Service) WarmUp(bars []domain.MarketBar) int {
 			}
 			closed, ok := agg.Push(bar)
 			if !ok {
+				continue
+			}
+			// WarmUpNative is the canonical HTF seed for reserved slots.
+			// Skip the calc/regime/lastHTFSnaps writes here — those time
+			// bars will be fed via WarmUpNative directly, and re-feeding
+			// closed bars from the aggregator double-counts them in the
+			// streaming EMA/VWAP/ATR state. Aggregator above is still
+			// pushed so its bucket state is primed for runtime.
+			if s.htfNativeReserved[aggKey] {
 				continue
 			}
 			htfSnap := s.calculator.Update(closed)

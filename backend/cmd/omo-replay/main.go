@@ -909,12 +909,14 @@ func main() {
 	// concurrently. The serial loop was ~1-2 s on a 30-sym run; at
 	// 8 shards the parallel version finishes in ~0.2-0.3 s.
 	if shardedPipeline != nil {
-		snapshotFn := makeSnapshotFn()
 		var warmWg2 sync.WaitGroup
 		for shardIdx := 0; shardIdx < shardedPipeline.ShardCount(); shardIdx++ {
 			warmWg2.Add(1)
 			go func(idx int) {
 				defer warmWg2.Done()
+				// Per-shard snapshotFn — its captured IndicatorCalculator is
+				// not thread-safe, so a shared instance across shards races.
+				snapshotFn := makeSnapshotFn()
 				p := shardedPipeline.Shards()[idx]
 				slab := shardedPipeline.Slab(idx)
 				// Monitor warmup + reset + mark ready.
