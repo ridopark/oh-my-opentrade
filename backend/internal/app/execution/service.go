@@ -1691,7 +1691,27 @@ func (s *Service) handleStreamFill(update ports.OrderUpdate, l zerolog.Logger) {
 	po := raw.(*pendingOrder)
 
 	// Incremental fields for the trade row (what THIS exec leg filled).
-	legPrice := firstPositive(update.Price, update.FilledAvgPrice, po.intent.LimitPrice)
+	// For options the intent.LimitPrice fallback is unsafe: triggerExit can
+	// silently route the underlying spot into intent.LimitPrice when BSM is
+	// unavailable (see 2026-04-28 LLY 850P incident). Recording that as the
+	// trade price contaminates ledger P&L by a factor of 30x or more. If the
+	// broker stream gave us no price for this exec, defer the leg — the
+	// next event or the boot reconciler's ReqFills will heal it. Non-option
+	// instruments keep the legacy fallback because intent.LimitPrice in
+	// equity/crypto contexts cannot carry an underlying-magnitude leak.
+	legPrice := firstPositive(update.Price, update.FilledAvgPrice)
+	if legPrice == 0 {
+		isOpt := po.intent.Instrument != nil && po.intent.Instrument.Type == domain.InstrumentTypeOption
+		if isOpt {
+			l.Warn().
+				Str("broker_order_id", update.BrokerOrderID).
+				Str("execution_id", update.ExecutionID).
+				Str("symbol", string(po.intent.Symbol)).
+				Msg("option fill update missing broker price — deferring leg (reconcile will heal)")
+			return
+		}
+		legPrice = po.intent.LimitPrice
+	}
 	legQty := firstPositive(update.Qty, update.FilledQty, po.intent.Quantity)
 
 	// Cumulative values for the orders-row bump (broker-authoritative
@@ -1790,6 +1810,16 @@ func (s *Service) insertFillLeg(po *pendingOrder, brokerOrderID, executionID str
 			Msg("exit fill rejected: would exceed open position quantity (likely duplicate from race)")
 		return
 	}
+	if reason, blocked := s.shouldBlockOptionLegMagnitude(po, legPrice); blocked {
+		l.Error().
+			Str("broker_order_id", brokerOrderID).
+			Str("execution_id", executionID).
+			Str("symbol", string(po.intent.Symbol)).
+			Float64("leg_price", legPrice).
+			Str("reason", reason).
+			Msg("option fill rejected: leg_price exceeds sane multiple of reference premium (likely underlying-spot contamination)")
+		return
+	}
 	ctx := context.Background()
 	side := brokerSideFor(po.intent.Direction)
 	trade, err := domain.NewTrade(filledAt, po.tenantID, po.envMode, uuid.New(), po.intent.Symbol, side, legQty, legPrice, 0, "FILLED", po.intent.Strategy, po.intent.Rationale)
@@ -1818,6 +1848,56 @@ func (s *Service) insertFillLeg(po *pendingOrder, brokerOrderID, executionID str
 	if err := s.repo.RecordFill(ctx, brokerOrderID, filledAt, cumAvgPrice, cumQty, trade); err != nil {
 		l.Error().Err(err).Str("execution_id", executionID).Msg("failed to record fill leg")
 	}
+}
+
+// optionLegMagnitudeMultiple is the upper bound on legPrice / referencePremium
+// before a recorded option leg is treated as poisoned. A 5x cap is well above
+// any realistic intraday option move (3-4x is exceptional even on event days)
+// while comfortably below the 30-100x ratio produced when the underlying spot
+// price contaminates an option order limit.
+const optionLegMagnitudeMultiple = 5.0
+
+// shouldBlockOptionLegMagnitude returns (reason, true) when an option fill
+// leg's recorded price is more than optionLegMagnitudeMultiple times its
+// reference premium — almost always a sign that the underlying spot leaked
+// into the trade row via a corrupted intent.LimitPrice. Reference premium
+// resolution order:
+//  1. position monitor's CustomState["option_premium"] (entry premium for
+//     exits; authoritative when the position is still tracked)
+//  2. intent.Meta["premium"] (set on entry intents by risk_sizer)
+//  3. intent.LimitPrice itself, only when it is itself plausibly an
+//     option-magnitude number (skip when it could already be contaminated)
+//
+// When no reference is resolvable the leg is allowed through — the magnitude
+// check is a safety net, not a hard requirement. Non-option legs always pass.
+func (s *Service) shouldBlockOptionLegMagnitude(po *pendingOrder, legPrice float64) (string, bool) {
+	if po == nil || po.intent.Instrument == nil || po.intent.Instrument.Type != domain.InstrumentTypeOption {
+		return "", false
+	}
+	if legPrice <= 0 {
+		return "", false
+	}
+
+	var ref float64
+	isExit := po.intent.Direction == domain.DirectionCloseLong || po.intent.Direction == domain.DirectionCloseShort
+	if isExit && s.positionLookup != nil {
+		if pos, ok := s.positionLookup.LookupPosition(string(po.intent.Symbol)); ok && pos.CustomState != nil {
+			ref = pos.CustomState["option_premium"]
+		}
+	}
+	if ref <= 0 {
+		if v, err := strconv.ParseFloat(po.intent.Meta["premium"], 64); err == nil && v > 0 {
+			ref = v
+		}
+	}
+	if ref <= 0 {
+		return "", false
+	}
+
+	if legPrice > ref*optionLegMagnitudeMultiple {
+		return fmt.Sprintf("leg_price=%.4f exceeds %.0fx reference premium=%.4f", legPrice, optionLegMagnitudeMultiple, ref), true
+	}
+	return "", false
 }
 
 // shouldBlockExitFill returns (reason, true) when an exit-direction fill leg
