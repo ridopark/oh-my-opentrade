@@ -12,6 +12,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/domain/screener"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	"github.com/oh-my-opentrade/backend/internal/observability/parity"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
@@ -642,6 +643,20 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	bar, ok := event.Payload.(domain.MarketBar)
 	if !ok {
 		return fmt.Errorf("monitor: payload is not a MarketBar, got %T", event.Payload)
+	}
+	if parity.Enabled() {
+		s.log.Info().
+			Str("stage", "BarReceived").
+			Str("symbol", string(bar.Symbol)).
+			Str("timeframe", string(bar.Timeframe)).
+			Time("ts", bar.Time).
+			Float64("open", bar.Open).
+			Float64("high", bar.High).
+			Float64("low", bar.Low).
+			Float64("close", bar.Close).
+			Float64("volume", bar.Volume).
+			Str("env_mode", string(event.EnvMode)).
+			Msg("parity-diag")
 	}
 	return s.handleBarCore(ctx, bar, event.TenantID, event.EnvMode, event.IdempotencyKey, event.OccurredAt)
 }

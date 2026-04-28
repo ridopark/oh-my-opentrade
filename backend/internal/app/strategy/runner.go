@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -18,6 +19,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
+	"github.com/oh-my-opentrade/backend/internal/observability/parity"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
@@ -2063,6 +2065,39 @@ func (r *Runner) filterByAllowedDirections(signals []start.Signal) []start.Signa
 // shard in dispatch order to preserve parity with the single-threaded
 // path.
 func (r *Runner) emitSignal(ctx context.Context, tenantID string, envMode domain.EnvMode, sig start.Signal) error {
+	// Parity-diag mirror of the EntryGated emit site: capture firing signals'
+	// state alongside the dpRolling buffer so live and backtest can diff at
+	// the same bar regardless of whether the gate fired or blocked. Gated by
+	// PARITY_DIAG_ENABLED.
+	if parity.Enabled() {
+		rollingMean, rollingStd, rollingCount := 0.0, 0.0, 0
+		rollingValuesJSON := []byte("null")
+		if rs, ok := r.dpRolling[string(sig.Symbol)]; ok && rs != nil {
+			rollingMean, rollingStd = rs.meanStd()
+			rollingCount = rs.size
+			if !rs.full {
+				rollingCount = rs.idx
+			}
+			snapshot := make([]float64, rollingCount)
+			if rs.full {
+				for i := 0; i < rollingCount; i++ {
+					snapshot[i] = rs.values[(rs.idx+i)%rs.size]
+				}
+			} else {
+				copy(snapshot, rs.values[:rollingCount])
+			}
+			rollingValuesJSON, _ = json.Marshal(snapshot)
+		}
+		r.logger.Info("parity-diag SignalCreated",
+			"symbol", string(sig.Symbol),
+			"strategy_instance_id", sig.StrategyInstanceID,
+			"side", string(sig.Side),
+			"strength", sig.Strength,
+			"dp_rolling_mean", rollingMean,
+			"dp_rolling_std", rollingStd,
+			"dp_rolling_count", rollingCount,
+			"dp_rolling_values", string(rollingValuesJSON))
+	}
 	ev, err := domain.NewEvent(
 		domain.EventSignalCreated,
 		tenantID,
@@ -2118,6 +2153,61 @@ func (r *Runner) emitDomainEvent(ctx context.Context, tenantID string, envMode d
 		eventType = domain.EventEntryGated
 		cacheKey = "EntryGated:" + p.Strategy + ":" + p.Symbol
 		isProgress = true
+		// Parity-diag: log every EntryGated emission so live and backtest can
+		// be diffed at the same bar. Live also persists blocked rows to
+		// strategy_signal_events via EntryGatedWriter, so this log is mainly
+		// useful in backtest (which uses NoopPnLRepo and doesn't persist
+		// blocked rows). Gated by PARITY_DIAG_ENABLED to keep prod log
+		// volume zero unless an investigation is active.
+		if parity.Enabled() {
+			compsJSON, _ := json.Marshal(p.Confluence.Components)
+			checksJSON, _ := json.Marshal(p.EntryChecks)
+			barJSON, _ := json.Marshal(p.Bar)
+			anchorsJSON := []byte("null")
+			if p.AVWAPState != nil {
+				anchorsJSON, _ = json.Marshal(p.AVWAPState.Anchors)
+			}
+			// dpRolling buffer state for live-vs-backtest comparison.
+			rollingMean, rollingStd, rollingCount := 0.0, 0.0, 0
+			rollingValuesJSON := []byte("null")
+			if rs, ok := r.dpRolling[p.Symbol]; ok && rs != nil {
+				rollingMean, rollingStd = rs.meanStd()
+				rollingCount = rs.size
+				if !rs.full {
+					rollingCount = rs.idx
+				}
+				snapshot := make([]float64, rollingCount)
+				if rs.full {
+					// chronological order: oldest at idx, newest at idx-1
+					for i := 0; i < rollingCount; i++ {
+						snapshot[i] = rs.values[(rs.idx+i)%rs.size]
+					}
+				} else {
+					copy(snapshot, rs.values[:rollingCount])
+				}
+				rollingValuesJSON, _ = json.Marshal(snapshot)
+			}
+			r.logger.Info("parity-diag EntryGated",
+				"symbol", p.Symbol,
+				"strategy", p.Strategy,
+				"setup", p.SetupType,
+				"score", p.Confluence.Score,
+				"max_score", p.Confluence.MaxScore,
+				"blocking_gate", p.BlockingGate,
+				"blocking_detail", p.BlockingDetail,
+				"avwap_bias", p.Indicators.AVWAPBias,
+				"slope_bps", p.Indicators.SlopeBPS,
+				"rsi", p.Indicators.RSI,
+				"vol_ratio", p.Indicators.VolumeRatio,
+				"components", string(compsJSON),
+				"entry_checks", string(checksJSON),
+				"bar", string(barJSON),
+				"avwap_anchors", string(anchorsJSON),
+				"dp_rolling_mean", rollingMean,
+				"dp_rolling_std", rollingStd,
+				"dp_rolling_count", rollingCount,
+				"dp_rolling_values", string(rollingValuesJSON))
+		}
 	case domain.ORBPhaseUpdatePayload:
 		eventType = domain.EventORBPhaseUpdate
 		cacheKey = "ORBPhaseUpdate:" + p.Symbol

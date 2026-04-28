@@ -2,9 +2,17 @@ package monitor
 
 import (
 	"math"
+	"os"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/observability/parity"
+	"github.com/rs/zerolog"
 )
+
+// parityIndicatorLog is a package-level zerolog writer used only by the
+// parity-diag emit in Update. Cheap to construct, only used when
+// parity.Enabled().
+var parityIndicatorLog = zerolog.New(os.Stderr).With().Str("service", "omo-core").Str("component", "indicator_calc").Logger()
 
 const (
 	rsiPeriod       = 14
@@ -645,6 +653,24 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 		snap.ADX = adxVal
 	}
 	snap.RegimeScore = regimeScore
+	if parity.Enabled() {
+		parityIndicatorLog.Info().
+			Str("stage", "IndicatorSnapshot").
+			Str("symbol", string(bar.Symbol)).
+			Str("timeframe", string(bar.Timeframe)).
+			Time("ts", bar.Time).
+			Float64("rsi", snap.RSI).
+			Float64("ema9", snap.EMA9).
+			Float64("ema21", snap.EMA21).
+			Float64("ema50", snap.EMA50).
+			Float64("ema200", snap.EMA200).
+			Float64("vwap", snap.VWAP).
+			Float64("atr", snap.ATR).
+			Float64("vwap_sd", snap.VWAPSD).
+			Float64("bb_pct_b", snap.BBPercentB).
+			Float64("regime_score", snap.RegimeScore).
+			Msg("parity-diag")
+	}
 	return snap
 }
 

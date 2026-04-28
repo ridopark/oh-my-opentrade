@@ -18,6 +18,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	"github.com/oh-my-opentrade/backend/internal/observability/parity"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	stratports "github.com/oh-my-opentrade/backend/internal/ports/strategy"
 )
@@ -758,6 +759,9 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		}
 	}
 
+	if parity.Enabled() {
+		rs.parityDiagSized(intent, event)
+	}
 	rs.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)
 	return nil
 }
@@ -1119,6 +1123,9 @@ func (rs *RiskSizer) handleOptionsSignal(
 		"max_loss_usd", maxLossUSD,
 	)
 
+	if parity.Enabled() {
+		rs.parityDiagSized(intent, event)
+	}
 	rs.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)
 	return nil
 }
@@ -1359,4 +1366,30 @@ func extractBool(params map[string]any, key string) (bool, bool) {
 		return b, true
 	}
 	return false, false
+}
+
+// parityDiagSized emits a parity-diag log line at risk-sizer emit time so
+// live and backtest can be diffed at the contract-selection / quantity
+// stage. Captures the inputs and outputs of risk sizing: signal symbol,
+// direction, sized qty/price, and option metadata when present.
+func (rs *RiskSizer) parityDiagSized(intent domain.OrderIntent, event domain.Event) {
+	instrumentType := ""
+	if intent.Instrument != nil {
+		instrumentType = string(intent.Instrument.Type)
+	}
+	rs.logger.Info("parity-diag",
+		"stage", "RiskSized",
+		"symbol", string(intent.Symbol),
+		"strategy", intent.Strategy,
+		"direction", string(intent.Direction),
+		"asset_class", string(intent.AssetClass),
+		"instrument_type", instrumentType,
+		"quantity", intent.Quantity,
+		"limit_price", intent.LimitPrice,
+		"stop_loss", intent.StopLoss,
+		"premium", intent.Meta["premium"],
+		"expiry", intent.Meta["expiry"],
+		"option_right", intent.Meta["option_right"],
+		"max_loss_usd", intent.Meta["max_loss_usd"],
+		"env_mode", string(event.EnvMode))
 }
