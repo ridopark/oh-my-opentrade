@@ -643,17 +643,18 @@ func (s *Service) reconcileFilledOrder(pos *domain.MonitoredPosition) bool {
 
 	if s.repo != nil {
 		trade := domain.Trade{
-			Time:      s.nowFunc(),
-			TenantID:  s.tenantID,
-			EnvMode:   s.envMode,
-			TradeID:   uuid.New(),
-			Symbol:    pos.Symbol,
-			Side:      "SELL",
-			Quantity:  missingQty,
-			Price:     details.FilledAvgPrice,
-			Status:    "FILLED",
-			Strategy:  pos.Strategy,
-			Rationale: fmt.Sprintf("exit-timeout: fill reconciliation for order %s (missed WS fill events)", pos.ExitOrderID),
+			Time:          s.nowFunc(),
+			TenantID:      s.tenantID,
+			EnvMode:       s.envMode,
+			TradeID:       uuid.New(),
+			BrokerOrderID: pos.ExitOrderID,
+			Symbol:        pos.Symbol,
+			Side:          "SELL",
+			Quantity:      missingQty,
+			Price:         details.FilledAvgPrice,
+			Status:        "FILLED",
+			Strategy:      pos.Strategy,
+			Rationale:     fmt.Sprintf("exit-timeout: fill reconciliation for order %s (missed WS fill events)", pos.ExitOrderID),
 		}
 		if err := s.repo.SaveTrade(ctx, trade); err != nil {
 			s.log.Error().Err(err).

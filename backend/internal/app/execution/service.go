@@ -423,6 +423,7 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 			ol.Error().Err(tErr).Msg("reconcile: failed to construct synthetic trade")
 			continue
 		}
+		trade.BrokerOrderID = order.BrokerOrderID
 
 		if sErr := s.repo.SaveTrade(ctx, trade); sErr != nil {
 			ol.Error().Err(sErr).Msg("reconcile: failed to save synthetic trade")
@@ -560,6 +561,7 @@ func (s *Service) reconcileFillsOnBoot(ctx context.Context) {
 			continue
 		}
 		trade.ExecutionID = f.ExecutionID
+		trade.BrokerOrderID = f.BrokerOrderID
 		if existing.InstrumentType == domain.InstrumentTypeOption {
 			trade.InstrumentType = domain.InstrumentTypeOption
 			trade.OptionSymbol = existing.OptionSymbol
@@ -692,6 +694,7 @@ func (s *Service) backfillFromBrokerHistory(ctx context.Context) {
 			continue
 		}
 		trade.ExecutionID = "backfill:" + fo.BrokerOrderID
+		trade.BrokerOrderID = fo.BrokerOrderID
 		if order.InstrumentType == domain.InstrumentTypeOption {
 			trade.InstrumentType = domain.InstrumentTypeOption
 			trade.OptionSymbol = order.OptionSymbol
@@ -1401,6 +1404,7 @@ func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent dom
 	if err != nil {
 		l.Error().Err(err).Msg("failed to construct trade on fill")
 	} else {
+		trade.BrokerOrderID = brokerOrderID
 		if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
 			trade.InstrumentType = domain.InstrumentTypeOption
 			trade.OptionSymbol = intent.Instrument.Symbol.String()
@@ -1764,6 +1768,7 @@ func (s *Service) insertFillLeg(po *pendingOrder, brokerOrderID, executionID str
 		return
 	}
 	trade.ExecutionID = executionID
+	trade.BrokerOrderID = brokerOrderID
 	enrichTradeOptionsFromIntent(&trade, po.intent)
 	if parity.Enabled() {
 		l.Info().
@@ -2449,6 +2454,7 @@ func (s *Service) recordSweepFill(
 		l.Error().Err(tErr).Msg("dust sweep: failed to construct trade")
 		return
 	}
+	trade.BrokerOrderID = orderID
 	if sErr := s.repo.SaveTrade(ctx, trade); sErr != nil {
 		l.Error().Err(sErr).Msg("dust sweep: failed to save trade")
 		return
