@@ -99,6 +99,7 @@ const (
 	SignalStatusExecuted       SignalStatus = "executed"
 	SignalStatusSuppressed     SignalStatus = "suppressed"
 	SignalStatusRejected       SignalStatus = "rejected"
+	SignalStatusCanceled       SignalStatus = "canceled"
 	SignalStatusDebateOverride SignalStatus = "debate_override"
 	// SignalStatusBlocked records an EntryGated event — the strategy
 	// evaluated a bar but a pre-entry gate (slope, regime, confluence, etc.)

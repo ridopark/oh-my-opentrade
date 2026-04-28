@@ -256,6 +256,41 @@ func TestSignalTracker_IntentRejected_PersistsRejectedWithReason(t *testing.T) {
 	assert.NotEmpty(t, rejected.SignalID)
 }
 
+func TestSignalTracker_StaleOrderCancelled_PersistsCanceledWithReasonAndCorrelatesSignalID(t *testing.T) {
+	bus := newSignalTrackerEventBus()
+	repo := &signalTrackerPnLRepo{}
+	st := perf.NewSignalTracker(bus, repo, zerolog.Nop())
+	require.NoError(t, st.Start(context.Background()))
+
+	require.NoError(t, bus.Publish(context.Background(), signalTrackerMakeSignalEvent(t, "copytrade_v1:1:NVDA", "NVDA260508C00220000", strat.SignalEntry, strat.SideBuy, 0.9)))
+	require.NoError(t, bus.Publish(context.Background(), signalTrackerMakeIntentEvent(t, domain.EventOrderIntentValidated, "copytrade_v1", "NVDA260508C00220000", "LONG", "validated", "", 0.9)))
+
+	cancelPayload := domain.StaleOrderCancelledPayload{
+		Symbol:        "NVDA260508C00220000",
+		BrokerOrderID: "3971",
+		Strategy:      "copytrade_v1",
+		Direction:     "LONG",
+		AgeSeconds:    135.4,
+		LimitPrice:    2.45,
+	}
+	cancelEvt, err := domain.NewEvent(domain.EventStaleOrderCancelled, "default", domain.EnvModePaper, "stale-3971", cancelPayload)
+	require.NoError(t, err)
+	require.NoError(t, bus.Publish(context.Background(), *cancelEvt))
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	require.Len(t, repo.events, 3)
+
+	canceled := repo.events[2]
+	assert.Equal(t, domain.SignalStatusCanceled, canceled.Status)
+	assert.Equal(t, "entry", canceled.Kind)
+	assert.Equal(t, "BUY", canceled.Side)
+	assert.Equal(t, "NVDA260508C00220000", canceled.Symbol)
+	assert.Equal(t, repo.events[0].SignalID, canceled.SignalID)
+	assert.Contains(t, canceled.Reason, "135s")
+	assert.Contains(t, canceled.Reason, "$2.45")
+}
+
 func TestSignalTracker_FillReceived_PersistsExecutedAndCorrelatesSignalID(t *testing.T) {
 	bus := newSignalTrackerEventBus()
 	repo := &signalTrackerPnLRepo{}

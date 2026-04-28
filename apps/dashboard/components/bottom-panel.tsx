@@ -76,6 +76,7 @@ function statusBadgeColor(status: string): string {
     case "generated":       return "bg-zinc-500/15 text-zinc-400 border-zinc-500/30";
     case "blocked":         return "bg-orange-500/15 text-orange-400 border-orange-500/30";
     case "rejected":        return "bg-red-500/15 text-red-400 border-red-500/30";
+    case "canceled":        return "bg-rose-500/15 text-rose-400 border-rose-500/30";
     case "suppressed":      return "bg-amber-500/15 text-amber-400 border-amber-500/30";
     case "debate_override": return "bg-purple-500/15 text-purple-400 border-purple-500/30";
     default:                return "bg-zinc-500/15 text-zinc-400 border-zinc-500/30";

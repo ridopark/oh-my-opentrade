@@ -33,6 +33,49 @@ func TestExtractForcedContract_Valid(t *testing.T) {
 	}
 }
 
+func TestExtractForcedContract_BufferPctDefaultAndOverride(t *testing.T) {
+	base := map[string]string{
+		TagForceExpiry: "2026-04-27",
+		TagForceStrike: "205",
+		TagForceRight:  "C",
+	}
+	got, ok := extractForcedContract(base)
+	if !ok {
+		t.Fatalf("extractForcedContract returned !ok")
+	}
+	if got.BufferPct != DefaultRefPremiumBufferPct {
+		t.Errorf("default buffer = %v, want %v", got.BufferPct, DefaultRefPremiumBufferPct)
+	}
+
+	override := map[string]string{
+		TagForceExpiry:           "2026-04-27",
+		TagForceStrike:           "205",
+		TagForceRight:            "C",
+		TagForcePremiumBufferPct: "0.05",
+	}
+	got, ok = extractForcedContract(override)
+	if !ok {
+		t.Fatalf("extractForcedContract returned !ok with override")
+	}
+	if got.BufferPct != 0.05 {
+		t.Errorf("override buffer = %v, want 0.05", got.BufferPct)
+	}
+
+	bad := map[string]string{
+		TagForceExpiry:           "2026-04-27",
+		TagForceStrike:           "205",
+		TagForceRight:            "C",
+		TagForcePremiumBufferPct: "not-a-float",
+	}
+	got, ok = extractForcedContract(bad)
+	if !ok {
+		t.Fatalf("extractForcedContract returned !ok with bad buffer override")
+	}
+	if got.BufferPct != DefaultRefPremiumBufferPct {
+		t.Errorf("malformed buffer should fall back to default; got %v", got.BufferPct)
+	}
+}
+
 func TestExtractForcedContract_PutVariants(t *testing.T) {
 	for _, rightStr := range []string{"P", "PUT", "put", "p"} {
 		tags := map[string]string{

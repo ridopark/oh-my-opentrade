@@ -2724,6 +2724,7 @@ func (s *Service) reconcilePendingOrders(ctx context.Context) {
 				Strategy:      po.intent.Strategy,
 				Direction:     string(po.intent.Direction),
 				AgeSeconds:    time.Since(po.submitStart).Seconds(),
+				LimitPrice:    po.intent.LimitPrice,
 			})
 			s.cleanupPendingOrder(brokerOrderID)
 		}
