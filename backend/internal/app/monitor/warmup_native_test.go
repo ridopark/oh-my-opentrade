@@ -12,11 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestWarmUpNative_SeedsCalculatorState_5m is the primary correctness test
-// for Phase 2a of the 5m parity fix. After WarmUpNative with 800 bars, the
-// calculator's per-(sym, "5m") state must produce a converged EMA200 on the
-// next live bar — proving the pre-Phase-2a bug (aggregator silently dropping
-// pre-today bars during warmup) is closed.
+// After WarmUpNative with 800 5m bars, the calculator's per-(sym, "5m")
+// state must produce a converged EMA200 on the next snapshot. Pins the
+// invariant that monitor's HTF state seeds without going through the
+// session-anchored aggregator.
 func TestWarmUpNative_SeedsCalculatorState_5m(t *testing.T) {
 	bus := memory.NewBus()
 	svc := monitor.NewService(bus, &mockRepository{}, zerolog.Nop())
@@ -36,8 +35,8 @@ func TestWarmUpNative_SeedsCalculatorState_5m(t *testing.T) {
 	assert.Greater(t, snap.ATR, 0.0)
 }
 
-// TestWarmUpNative_15m_PopulatesHTFSnap mirrors the 5m test for the 15m
-// anchor timeframe added to EquitySpec in Phase 0.
+// 15m anchor TF with 200 bars (EquitySpec.Required["15m"]) — EMA50 must
+// converge.
 func TestWarmUpNative_15m_PopulatesHTFSnap(t *testing.T) {
 	bus := memory.NewBus()
 	svc := monitor.NewService(bus, &mockRepository{}, zerolog.Nop())
