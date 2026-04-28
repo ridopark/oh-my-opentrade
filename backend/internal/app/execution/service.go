@@ -506,14 +506,33 @@ func (s *Service) reconcileFillsOnBoot(ctx context.Context) {
 		l.Warn().Err(err).Msg("fill reconcile: GetRecordedExecutionIDs failed — skipping")
 		return
 	}
+	// Second dedup gate: orders already represented in trades regardless of
+	// execution_id. Live IBKR option fills land via fastPollPosition which
+	// writes with executionID="", so the exec_id set above never sees them
+	// and reconcile would otherwise insert a duplicate Path A row per leg
+	// at every boot. fastPoll only triggers when the position has reached
+	// the full intent quantity, so a recorded broker_order_id implies the
+	// full order is covered.
+	reconciledOrders, err := s.repo.GetReconciledOrderIDs(ctx, s.tenantID, s.envMode, since)
+	if err != nil {
+		l.Warn().Err(err).Msg("fill reconcile: GetReconciledOrderIDs failed — skipping")
+		return
+	}
 
 	inserted := 0
+	skippedByOrder := 0
 	for _, f := range fills {
 		if f.ExecutionID == "" {
 			continue
 		}
 		if _, seen := recorded[f.ExecutionID]; seen {
 			continue
+		}
+		if f.BrokerOrderID != "" {
+			if _, seen := reconciledOrders[f.BrokerOrderID]; seen {
+				skippedByOrder++
+				continue
+			}
 		}
 
 		ol := l.With().
@@ -584,10 +603,11 @@ func (s *Service) reconcileFillsOnBoot(ctx context.Context) {
 			Msg("fill reconcile: inserted missed leg")
 	}
 
-	if inserted > 0 {
+	if inserted > 0 || skippedByOrder > 0 {
 		l.Info().
 			Int("broker_fills", len(fills)).
 			Int("already_recorded", len(recorded)).
+			Int("skipped_by_order", skippedByOrder).
 			Int("inserted", inserted).
 			Msg("fill reconciliation complete")
 	}
