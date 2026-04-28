@@ -329,6 +329,56 @@ trade. Same shape applies to any other roll-on-boundary aggregator
 (formingbar, ibkr/bar_aggregator) if a consumer ever polls them at a
 finer cadence than their flush.
 
+### `time.Time` map keys include Location, so UTC vs local mismatch silently misses
+Two `time.Time` values for the same instant compare unequal as map keys
+when their `Location()` differs — the runtime hashes the wall+ext+loc
+triple, not just the absolute instant. The DP aggregator built bucket
+keys from `t.Truncate(5*time.Minute)` while the inbound trade timestamp
+was in CDT (`America/Chicago`); the strategy runner queried with a UTC
+bar timestamp. Diag dumped `latest=2026-04-27T10:35:00-05:00` and
+`probe=2026-04-27T15:35:00Z` — same instant, different Location, no
+match in `map[time.Time]*Bucket`. Fix: normalize to UTC at every site
+that produces or consumes a time-keyed map entry (`AddTrade`,
+`Snapshot`, `FlushClosed`, the consumer's `Lookup`). Equivalent rule
+for any cross-process or cross-package time map: pick a canonical zone
+(UTC) and normalize at the boundary; never trust upstream Location.
+
+### Caches that return partial coverage as success silently truncate the answer
+`SessionResolver.getBarsInRange` cached per-day bar slices and returned
+whatever was in the cache when any day in the requested range hit —
+even if other days in the range missed. Backtests that crossed a
+weekend got Friday-only or Monday-only results depending on which day
+was warm, and multi-anchor AVWAPs (`pd_high`, `pd_low`, `session_open`)
+all converged to byte-identical state because each anchor replayed the
+same truncated slice. Symptom: backtest reproduced live's narrow
+behavior but the diag dump showed identical `vwap`/`slope`/`barCount`
+across anchors that should diverge. Fix: track `allCached` across the
+full range and only return cached data when every requested day was
+present; otherwise fall through to the fetcher. General rule: a cache
+read for a range is a hit iff *every* sub-key is present — anything
+less is a miss, not a partial answer.
+
+### Re-peg cancel/replace can race the original fill into a duplicate position
+Exit-order re-pegging issues a `Cancel(old)` + `Submit(new)` pair, but
+the broker can fill `old` after we requested cancel and `new` before
+the cancel ack returns. Both fills then hit `insertFillLeg` and create
+two separate trade rows for one logical exit, leaving `db_net_qty`
+double-decremented (RIVN: SELL 47 at 18:30:01, REPEG SELL 47 at
+18:30:12.281, both filled within 31ms; resulting `db_net_qty=-47` on a
+position that was already flat). Fix: in `insertFillLeg`, gate exit
+fills by current tracked position quantity — reject when
+`legQty > pos.Quantity + epsilon` or when no position is tracked. This
+is the only safe boundary because the cancel-vs-fill race is owned by
+the broker and we never get a deterministic ordering from their async
+acks. Same pattern applies to any cancel-replace flow: the application
+must be idempotent against double-fills, never assume cancel won.
+
+### In-place slice filter mutates the caller's backing array
+The idiomatic Go pattern `out := s[:0]; for _, x := range s { if pred(x) { out = append(out, x) } }; return out` is allocation-free but **silently overwrites the caller's backing array**. The returned slice is correct, but the caller's slice (same backing) now has filtered values in positions 0..len(filtered)-1 and stale-original values beyond. Any caller that re-walks the original slice after calling such a filter will read corrupted data (`warmup.filterRTH` is one example; `warmup.TrimWithBoot1` initially picked the wrong boot+1 bar because it walked rawBars after Trim ran). Fix patterns:
+- Capture whatever you need from the original slice **before** calling the filter (`cp := rawBars[i]; boot1 = &cp`).
+- Or have the filter allocate a fresh slice instead of reusing the backing array — accepts the allocation cost in exchange for caller-safety.
+- The function-local view always looks correct because tests only inspect the returned slice; this bug is invisible to the function's own test suite and only surfaces at call sites that touch the original slice afterwards.
+
 ## References
 - Full port list: see `backend/internal/ports/*.go` directly
 - Event list: `backend/internal/domain/event.go`
