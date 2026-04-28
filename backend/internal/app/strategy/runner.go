@@ -1909,12 +1909,14 @@ func (r *Runner) WarmUpTF(symbol string, tf string, bars []domain.MarketBar, sna
 				key = k
 			}
 		}
-		htfCalc, ok := r.htfCalcs[key]
-		if !ok {
-			htfCalc = monitor.NewIndicatorCalculator()
-			htfCalc.Label = "runner_htf"
-			r.htfCalcs[key] = htfCalc
+		// Idempotent: a second call would double-feed Update and ratchet
+		// EMAs further from steady-state. First call is authoritative.
+		if _, exists := r.htfCalcs[key]; exists {
+			return 0
 		}
+		htfCalc := monitor.NewIndicatorCalculator()
+		htfCalc.Label = "runner_htf"
+		r.htfCalcs[key] = htfCalc
 		for _, bar := range bars {
 			htfCalc.Update(bar)
 		}
