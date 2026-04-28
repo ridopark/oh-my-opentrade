@@ -341,6 +341,9 @@ Once `WarmUpNative` is the canonical HTF seed, the legacy `Service.WarmUp(1m bar
 ### Captured closures shared across goroutines need their own state
 `omo-replay`'s sharded warmup called `makeSnapshotFn()` once outside the per-shard goroutine loop and passed the result to all shards. The captured `IndicatorCalculator` is not thread-safe, so concurrent shard goroutines hit `concurrent map read and map write` on its `states` map and the runtime panicked. Pattern: any factory whose return value is captured into a closure that goroutines invoke concurrently must either be called inside each goroutine, or the captured value must be explicitly thread-safe. Static analysis won't catch this — the panic is non-deterministic and depends on tick-rate.
 
+### In-process backtest pollutes live parity-diag log if calc Label collides
+A `/backtest/run` call creates its own `monitor.Service` via `bootstrap.BuildMonitor`, which calls `NewService` and sets `calc.Label = "monitor"` — the SAME label as the live monitor's calc. Both processes emit parity-diag rows into the same log file via the same logger, so `grep '"calc":"monitor"'` returns live + backtest emits intermixed. The backtest's calc has fresh state (no warmup), so it emits ema200=0, vwap=first-typical-price for early bars — looks like a divergence in live but is just a different process. `Service.TagBacktest(backtestID)` now also re-labels the calc to `"monitor_backtest_<id>"` so backtest emits are filterable. Lesson: any per-process diagnostic ID that appears in shared log output must be discriminated at the emit site; relying on `Label = "monitor"` being unique across all monitor instances was wrong.
+
 ### `time.Time` map keys include Location, so UTC vs local mismatch silently misses
 Two `time.Time` values for the same instant compare unequal as map keys
 when their `Location()` differs — the runtime hashes the wall+ext+loc
