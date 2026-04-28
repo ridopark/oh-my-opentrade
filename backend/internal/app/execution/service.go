@@ -410,7 +410,17 @@ func (s *Service) reconcileOnBoot(ctx context.Context) {
 		tradeID := deterministicTradeID(order.BrokerOrderID, details.FilledQty)
 		fillTime := details.FilledAt
 		if fillTime.IsZero() {
-			fillTime = s.nowFn().UTC()
+			// Stable fallback: prefer the orders row's filled_at (set by an
+			// earlier reconcile pass), then the order placement time. Using
+			// nowFn() here would make (trade_id, time) drift between passes
+			// for the same broker_order_id+filled_qty, defeating the PK
+			// dedup if the delta-vs-dbFilledQty check ever returns a stale
+			// answer (async write batching, float jitter, etc).
+			if order.FilledAt != nil && !order.FilledAt.IsZero() {
+				fillTime = *order.FilledAt
+			} else {
+				fillTime = order.Time
+			}
 		}
 
 		trade, tErr := domain.NewTrade(
