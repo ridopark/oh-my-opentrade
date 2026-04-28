@@ -655,7 +655,7 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 	snap.RegimeScore = regimeScore
 	if parity.Enabled() {
 		parityIndicatorLog.Info().
-			Str("stage", "IndicatorSnapshot").
+			Str("stage", parity.StageIndicatorSnapshot).
 			Str("symbol", string(bar.Symbol)).
 			Str("timeframe", string(bar.Timeframe)).
 			Time("ts", bar.Time).

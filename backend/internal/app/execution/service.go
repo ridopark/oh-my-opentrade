@@ -1079,7 +1079,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 	submitStart := s.nowFn()
 	if parity.Enabled() {
 		l.Info().
-			Str("stage", "OrderSubmitted").
+			Str("stage", parity.StageOrderSubmitted).
 			Str("symbol", string(intent.Symbol)).
 			Str("strategy", intent.Strategy).
 			Str("direction", string(intent.Direction)).
@@ -1767,7 +1767,7 @@ func (s *Service) insertFillLeg(po *pendingOrder, brokerOrderID, executionID str
 	enrichTradeOptionsFromIntent(&trade, po.intent)
 	if parity.Enabled() {
 		l.Info().
-			Str("stage", "FillRecorded").
+			Str("stage", parity.StageFillRecorded).
 			Str("symbol", string(po.intent.Symbol)).
 			Str("strategy", po.intent.Strategy).
 			Str("direction", string(po.intent.Direction)).
