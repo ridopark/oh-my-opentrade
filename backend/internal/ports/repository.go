@@ -76,6 +76,13 @@ type RepositoryPort interface {
 	// missing legs. Returns an empty set (not nil) when nothing matches.
 	GetRecordedExecutionIDs(ctx context.Context, tenantID string, envMode domain.EnvMode, since time.Time) (map[string]struct{}, error)
 
+	// GetReconciledOrderIDs returns the set of broker_order_ids that have at
+	// least one trade row in the window. Lets boot fill-reconciliation skip
+	// orders whose live writes lacked an execution_id (the IBKR fastPoll
+	// path), which GetRecordedExecutionIDs cannot see. Returns an empty set
+	// (not nil) when nothing matches.
+	GetReconciledOrderIDs(ctx context.Context, tenantID string, envMode domain.EnvMode, since time.Time) (map[string]struct{}, error)
+
 	// GetNetPositions returns the net quantity per symbol from the trades table.
 	// Only returns symbols with |net_qty| > epsilon (1e-10).
 	// Used by global portfolio reconciliation to detect DB-vs-broker drift.

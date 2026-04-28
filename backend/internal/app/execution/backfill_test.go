@@ -148,6 +148,10 @@ func (r *backfillMockRepo) UpdateOrderStatus(context.Context, string, string) er
 func (r *backfillMockRepo) GetRecordedExecutionIDs(context.Context, string, domain.EnvMode, time.Time) (map[string]struct{}, error) {
 	return map[string]struct{}{}, nil
 }
+
+func (r *backfillMockRepo) GetReconciledOrderIDs(context.Context, string, domain.EnvMode, time.Time) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
 func (r *backfillMockRepo) GetNetPositions(context.Context, string, domain.EnvMode) (map[domain.Symbol]float64, error) {
 	return nil, nil
 }

@@ -94,6 +94,10 @@ func (n *NoopRepo) GetRecordedExecutionIDs(_ context.Context, _ string, _ domain
 	return map[string]struct{}{}, nil
 }
 
+func (n *NoopRepo) GetReconciledOrderIDs(_ context.Context, _ string, _ domain.EnvMode, _ time.Time) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
+
 func (n *NoopRepo) UpdateOrderStatus(_ context.Context, _ string, _ string) error { return nil }
 
 func (n *NoopRepo) GetNetPositions(_ context.Context, _ string, _ domain.EnvMode) (map[domain.Symbol]float64, error) {

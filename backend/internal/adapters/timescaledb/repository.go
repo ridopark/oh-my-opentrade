@@ -1132,6 +1132,31 @@ func (r *Repository) GetRecordedExecutionIDs(ctx context.Context, tenantID strin
 	return out, rows.Err()
 }
 
+// GetReconciledOrderIDs returns the set of broker_order_ids that already
+// have at least one trade row in the window. Lets boot fill-reconciliation
+// skip orders whose live writes lacked an execution_id.
+func (r *Repository) GetReconciledOrderIDs(ctx context.Context, tenantID string, envMode domain.EnvMode, since time.Time) (map[string]struct{}, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT DISTINCT broker_order_id FROM trades
+		  WHERE account_id = $1 AND env_mode = $2 AND time >= $3
+		    AND broker_order_id IS NOT NULL AND broker_order_id <> ''`,
+		tenantID, string(envMode), since)
+	if err != nil {
+		return nil, fmt.Errorf("timescaledb: get reconciled order ids: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]struct{})
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("timescaledb: scan broker_order_id: %w", err)
+		}
+		out[id] = struct{}{}
+	}
+	return out, rows.Err()
+}
+
 func (r *Repository) UpdateOrderStatus(ctx context.Context, brokerOrderID string, status string) error {
 	_, err := r.db.ExecContext(ctx, queryUpdateOrderStatus, brokerOrderID, status)
 	if err != nil {

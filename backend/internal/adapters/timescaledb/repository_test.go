@@ -487,6 +487,31 @@ func TestRepository_GetOrderByBrokerOrderID_LoadsOptionMetadata(t *testing.T) {
 	assert.Equal(t, "C", order.OptionRight)
 }
 
+func TestRepository_GetReconciledOrderIDs(t *testing.T) {
+	since := time.Date(2026, 4, 27, 0, 0, 0, 0, time.UTC)
+	db := &mockDB{
+		queryFunc: func(_ context.Context, query string, args ...any) (timescaledb.Rows, error) {
+			assert.Contains(t, query, "DISTINCT broker_order_id")
+			assert.Contains(t, query, "FROM trades")
+			assert.Contains(t, query, "broker_order_id IS NOT NULL")
+			assert.Equal(t, "tenant-1", args[0])
+			assert.Equal(t, "Live", args[1])
+			assert.Equal(t, since, args[2])
+			return &mockRows{
+				data: [][]any{{"3487"}, {"3510"}, {"3512"}},
+			}, nil
+		},
+	}
+	repo := timescaledb.NewRepository(db)
+
+	got, err := repo.GetReconciledOrderIDs(context.Background(), "tenant-1", domain.EnvModeLive, since)
+	require.NoError(t, err)
+	assert.Len(t, got, 3)
+	assert.Contains(t, got, "3487")
+	assert.Contains(t, got, "3510")
+	assert.Contains(t, got, "3512")
+}
+
 func TestRepository_GetOrderByBrokerOrderID_NotFound(t *testing.T) {
 	db := &mockDB{
 		queryRowFunc: func(_ context.Context, _ string, _ ...any) timescaledb.Row {

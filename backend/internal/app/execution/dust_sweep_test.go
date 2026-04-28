@@ -171,6 +171,10 @@ func (r *dustMockRepo) UpdateOrderStatus(context.Context, string, string) error 
 func (r *dustMockRepo) GetRecordedExecutionIDs(context.Context, string, domain.EnvMode, time.Time) (map[string]struct{}, error) {
 	return map[string]struct{}{}, nil
 }
+
+func (r *dustMockRepo) GetReconciledOrderIDs(context.Context, string, domain.EnvMode, time.Time) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
 func (r *dustMockRepo) GetNetPositions(context.Context, string, domain.EnvMode) (map[domain.Symbol]float64, error) {
 	return nil, nil
 }
