@@ -262,6 +262,47 @@ func TestRepository_SaveTrade_Success(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestRepository_SaveTrade_PropagatesBrokerOrderID(t *testing.T) {
+	tradeTime := time.Date(2026, 4, 27, 16, 35, 0, 0, time.UTC)
+	trade, err := domain.NewTrade(tradeTime, "tenant-1", domain.EnvModeLive, uuid.New(), "AAPL", "BUY", 4.0, 7.70, 0, "FILLED", "avwap_v4", "test")
+	require.NoError(t, err)
+	trade.BrokerOrderID = "3512"
+
+	var captured []any
+	db := &mockDB{
+		execFunc: func(_ context.Context, query string, args ...any) (sql.Result, error) {
+			assert.Contains(t, query, "broker_order_id")
+			assert.Contains(t, query, "$24")
+			captured = args
+			return mockResult{affected: 1}, nil
+		},
+	}
+	repo := timescaledb.NewRepository(db)
+
+	require.NoError(t, repo.SaveTrade(context.Background(), trade))
+	require.Len(t, captured, 24)
+	assert.Equal(t, "3512", captured[23])
+}
+
+func TestRepository_SaveTrade_NilBrokerOrderIDWhenEmpty(t *testing.T) {
+	tradeTime := time.Date(2026, 4, 27, 16, 35, 0, 0, time.UTC)
+	trade, err := domain.NewTrade(tradeTime, "tenant-1", domain.EnvModeLive, uuid.New(), "AAPL", "BUY", 4.0, 7.70, 0, "FILLED", "avwap_v4", "test")
+	require.NoError(t, err)
+
+	var captured []any
+	db := &mockDB{
+		execFunc: func(_ context.Context, _ string, args ...any) (sql.Result, error) {
+			captured = args
+			return mockResult{affected: 1}, nil
+		},
+	}
+	repo := timescaledb.NewRepository(db)
+
+	require.NoError(t, repo.SaveTrade(context.Background(), trade))
+	require.Len(t, captured, 24)
+	assert.Nil(t, captured[23], "empty BrokerOrderID must arrive as NULL, not empty string")
+}
+
 func TestRepository_SaveTrade_DBError(t *testing.T) {
 	tradeTime := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
 	tradeID := uuid.New()

@@ -20,7 +20,7 @@ const (
 	queryInsertMarketBar      = `INSERT INTO market_bars (time, account_id, env_mode, symbol, timeframe, open, high, low, close, volume, suspect) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (symbol, timeframe, time) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume, suspect=EXCLUDED.suspect`
 	querySelectMarketBars     = `SELECT time, symbol, timeframe, open, high, low, close, volume, suspect, ema9, ema21, ema50, ema200, avwaps FROM market_bars WHERE symbol = $1 AND timeframe = $2 AND time >= $3 AND time < $4 ORDER BY time`
 	queryUpdateBarIndicators  = `UPDATE market_bars SET ema9=$4, ema21=$5, ema50=$6, ema200=$7, avwaps=$8 WHERE symbol=$1 AND timeframe=$2 AND time=$3`
-	queryInsertTrade          = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status, strategy, rationale, thesis, execution_id, instrument_type, option_symbol, underlying, strike, expiry, option_right, premium, delta_at_entry, iv_at_entry) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) ON CONFLICT (trade_id, time) DO NOTHING`
+	queryInsertTrade          = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status, strategy, rationale, thesis, execution_id, instrument_type, option_symbol, underlying, strike, expiry, option_right, premium, delta_at_entry, iv_at_entry, broker_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) ON CONFLICT (trade_id, time) DO NOTHING`
 	querySelectTrades         = `SELECT time, trade_id, COALESCE(execution_id, ''), symbol, side, quantity, price, commission, status, COALESCE(strategy, ''), COALESCE(rationale, ''), thesis FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4 ORDER BY time`
 	queryInsertStrategyDNA    = `INSERT INTO strategy_dna_history (time, account_id, env_mode, strategy_id, version, parameters, performance) VALUES ($1, $2, $3, $4, $5, $6, $7)`
 	querySelectLatestDNA      = `SELECT time, strategy_id, version, parameters, performance FROM strategy_dna_history WHERE account_id = $1 AND env_mode = $2 ORDER BY time DESC LIMIT 1`
@@ -557,6 +557,10 @@ func tradeInsertArgs(trade domain.Trade) []any {
 	if trade.ExecutionID != "" {
 		execIDArg = trade.ExecutionID
 	}
+	var brokerOrderIDArg any
+	if trade.BrokerOrderID != "" {
+		brokerOrderIDArg = trade.BrokerOrderID
+	}
 	instType := string(trade.InstrumentType)
 	if instType == "" {
 		instType = defaultInstrumentType
@@ -581,7 +585,7 @@ func tradeInsertArgs(trade domain.Trade) []any {
 		string(trade.Symbol), trade.Side, trade.Quantity, trade.Price,
 		trade.Commission, trade.Status, trade.Strategy, trade.Rationale,
 		thesisArg, execIDArg, instType, optSym, underlying, strike, expiry,
-		optRight, premium, deltaEntry, ivEntry,
+		optRight, premium, deltaEntry, ivEntry, brokerOrderIDArg,
 	}
 }
 
