@@ -62,6 +62,57 @@ func TestWarmUpNative_EmptyBarsNoOp(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// Pins the load-bearing contract that the 1m WarmUp path does NOT seed
+// HTF state when warmup bars are pre-sessionOpen — because BarAggregator
+// silently drops them. WarmUpNative exists precisely to bypass this gate;
+// a future change that "helpfully" makes the aggregator accept pre-anchor
+// bars must update this test consciously, not silently re-introduce the
+// double-feed it caused before the parity fix.
+func TestServiceWarmUp_DoesNotSeedHTFFromPreSessionBars(t *testing.T) {
+	bus := memory.NewBus()
+	svc := monitor.NewService(bus, &mockRepository{}, zerolog.Nop())
+
+	sym := domain.Symbol("AAPL")
+	sessionOpen := time.Date(2026, 5, 1, 9, 30, 0, 0, time.UTC)
+	svc.InitAggregators([]domain.Symbol{sym}, sessionOpen)
+
+	bars := makeSyntheticBars("AAPL", "1m", 800, 100.0, time.Minute)
+	for i := range bars {
+		bars[i].Time = sessionOpen.Add(-time.Duration(800-i) * time.Minute)
+	}
+
+	n := svc.WarmUp(bars)
+	require.Equal(t, 800, n)
+
+	_, ok := svc.GetHTFSnapshot("AAPL", "5m")
+	assert.False(t, ok, "1m WarmUp must not seed 5m HTF state from pre-sessionOpen bars")
+	_, ok = svc.GetHTFSnapshot("AAPL", "15m")
+	assert.False(t, ok)
+	_, ok = svc.GetHTFSnapshot("AAPL", "1h")
+	assert.False(t, ok)
+}
+
+// Idempotency: a second WarmUpNative call for the same (sym, tf) must not
+// double-feed the calculator. Returns 0 (no-op) and leaves snap unchanged.
+func TestWarmUpNative_IsIdempotent(t *testing.T) {
+	bus := memory.NewBus()
+	svc := monitor.NewService(bus, &mockRepository{}, zerolog.Nop())
+
+	bars := makeSyntheticBars("AAPL", "5m", 800, 100.0, 5*time.Minute)
+	n1 := svc.WarmUpNative(domain.Symbol("AAPL"), domain.Timeframe("5m"), bars)
+	require.Equal(t, 800, n1)
+	first, ok := svc.GetHTFSnapshot("AAPL", "5m")
+	require.True(t, ok)
+
+	n2 := svc.WarmUpNative(domain.Symbol("AAPL"), domain.Timeframe("5m"), bars)
+	assert.Equal(t, 0, n2, "second call must return 0 (no-op)")
+
+	second, ok := svc.GetHTFSnapshot("AAPL", "5m")
+	require.True(t, ok)
+	assert.Equal(t, first.EMA200, second.EMA200, "EMA200 must not ratchet on second call")
+	assert.Equal(t, first.RSI, second.RSI)
+}
+
 // makeSyntheticBars builds a deterministic OHLCV series with a small
 // drift so EMAs and RSI can converge to non-zero values.
 func makeSyntheticBars(symbol, tf string, count int, startPrice float64, step time.Duration) []domain.MarketBar {

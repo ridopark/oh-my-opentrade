@@ -256,12 +256,20 @@ func (s *Service) WarmUpNative(sym domain.Symbol, tf domain.Timeframe, bars []do
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	key := sym.String() + ":" + tf.String()
+	// Idempotent: a second call would double-feed s.calculator.Update and
+	// ratchet EMAs further from steady-state. The first call is the
+	// authoritative seed; later seeding goes through the runtime
+	// aggregator path in HandleMarketBar.
+	if _, seeded := s.lastHTFSnaps[key]; seeded {
+		return 0
+	}
+
 	var lastSnap domain.IndicatorSnapshot
 	for _, bar := range bars {
 		lastSnap = s.calculator.Update(bar)
 	}
 
-	key := sym.String() + ":" + tf.String()
 	if s.lastHTFSnaps == nil {
 		s.lastHTFSnaps = make(map[string]domain.IndicatorSnapshot)
 	}

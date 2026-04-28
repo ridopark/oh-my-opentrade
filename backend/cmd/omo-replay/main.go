@@ -869,12 +869,15 @@ func main() {
 	for _, htfTF := range htfTimeframes {
 		htfCache[htfTF] = make(map[string][]domain.MarketBar, len(symbols))
 	}
+	htfSem := make(chan struct{}, 8)
 	var htfWg sync.WaitGroup
 	for _, sym := range symbols {
 		for _, htfTF := range htfTimeframes {
 			htfWg.Add(1)
+			htfSem <- struct{}{}
 			go func(sym domain.Symbol, htfTF domain.Timeframe) {
 				defer htfWg.Done()
+				defer func() { <-htfSem }()
 				spec := specFor(sym)
 				if spec.Required[htfTF] == 0 {
 					return
