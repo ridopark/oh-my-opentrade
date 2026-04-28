@@ -646,7 +646,7 @@ func (s *Service) HandleMarketBar(ctx context.Context, event domain.Event) error
 	}
 	if parity.Enabled() {
 		s.log.Info().
-			Str("stage", "BarReceived").
+			Str("stage", parity.StageBarReceived).
 			Str("symbol", string(bar.Symbol)).
 			Str("timeframe", string(bar.Timeframe)).
 			Time("ts", bar.Time).

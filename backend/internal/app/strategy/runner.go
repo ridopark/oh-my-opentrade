@@ -212,6 +212,28 @@ func (rs *dpRollingStats) push(v float64) {
 	}
 }
 
+// snapshot returns the current ring buffer contents in chronological order
+// (oldest first) and the count of populated entries. Returns nil + 0 when
+// the buffer is empty. Used by parity-diag emits.
+func (rs *dpRollingStats) snapshot() ([]float64, int) {
+	n := rs.size
+	if !rs.full {
+		n = rs.idx
+	}
+	if n == 0 {
+		return nil, 0
+	}
+	out := make([]float64, n)
+	if rs.full {
+		for i := 0; i < n; i++ {
+			out[i] = rs.values[(rs.idx+i)%rs.size]
+		}
+	} else {
+		copy(out, rs.values[:n])
+	}
+	return out, n
+}
+
 func (rs *dpRollingStats) meanStd() (mean, std float64) {
 	n := rs.size
 	if !rs.full {
@@ -2065,30 +2087,20 @@ func (r *Runner) filterByAllowedDirections(signals []start.Signal) []start.Signa
 // shard in dispatch order to preserve parity with the single-threaded
 // path.
 func (r *Runner) emitSignal(ctx context.Context, tenantID string, envMode domain.EnvMode, sig start.Signal) error {
-	// Parity-diag mirror of the EntryGated emit site: capture firing signals'
-	// state alongside the dpRolling buffer so live and backtest can diff at
-	// the same bar regardless of whether the gate fired or blocked. Gated by
-	// PARITY_DIAG_ENABLED.
+	// Live persists fired signals via SignalTracker; this mirror captures
+	// the dpRolling buffer alongside so backtest can diff on the same bar.
 	if parity.Enabled() {
-		rollingMean, rollingStd, rollingCount := 0.0, 0.0, 0
+		rollingMean, rollingStd := 0.0, 0.0
 		rollingValuesJSON := []byte("null")
+		rollingCount := 0
 		if rs, ok := r.dpRolling[string(sig.Symbol)]; ok && rs != nil {
 			rollingMean, rollingStd = rs.meanStd()
-			rollingCount = rs.size
-			if !rs.full {
-				rollingCount = rs.idx
-			}
-			snapshot := make([]float64, rollingCount)
-			if rs.full {
-				for i := 0; i < rollingCount; i++ {
-					snapshot[i] = rs.values[(rs.idx+i)%rs.size]
-				}
-			} else {
-				copy(snapshot, rs.values[:rollingCount])
-			}
-			rollingValuesJSON, _ = json.Marshal(snapshot)
+			snap, n := rs.snapshot()
+			rollingCount = n
+			rollingValuesJSON, _ = json.Marshal(snap)
 		}
-		r.logger.Info("parity-diag SignalCreated",
+		r.logger.Info("parity-diag",
+			"stage", parity.StageSignalCreated,
 			"symbol", string(sig.Symbol),
 			"strategy_instance_id", sig.StrategyInstanceID,
 			"side", string(sig.Side),
@@ -2153,12 +2165,10 @@ func (r *Runner) emitDomainEvent(ctx context.Context, tenantID string, envMode d
 		eventType = domain.EventEntryGated
 		cacheKey = "EntryGated:" + p.Strategy + ":" + p.Symbol
 		isProgress = true
-		// Parity-diag: log every EntryGated emission so live and backtest can
-		// be diffed at the same bar. Live also persists blocked rows to
-		// strategy_signal_events via EntryGatedWriter, so this log is mainly
-		// useful in backtest (which uses NoopPnLRepo and doesn't persist
-		// blocked rows). Gated by PARITY_DIAG_ENABLED to keep prod log
-		// volume zero unless an investigation is active.
+		// Live persists blocked rows via EntryGatedWriter — this log line is
+		// mainly for backtest (which uses NoopPnLRepo). Per-bar volume drops
+		// dp_rolling_values (kept at SignalCreated which is rare); mean/std/
+		// count are enough to detect buffer divergence.
 		if parity.Enabled() {
 			compsJSON, _ := json.Marshal(p.Confluence.Components)
 			checksJSON, _ := json.Marshal(p.EntryChecks)
@@ -2167,27 +2177,13 @@ func (r *Runner) emitDomainEvent(ctx context.Context, tenantID string, envMode d
 			if p.AVWAPState != nil {
 				anchorsJSON, _ = json.Marshal(p.AVWAPState.Anchors)
 			}
-			// dpRolling buffer state for live-vs-backtest comparison.
 			rollingMean, rollingStd, rollingCount := 0.0, 0.0, 0
-			rollingValuesJSON := []byte("null")
 			if rs, ok := r.dpRolling[p.Symbol]; ok && rs != nil {
 				rollingMean, rollingStd = rs.meanStd()
-				rollingCount = rs.size
-				if !rs.full {
-					rollingCount = rs.idx
-				}
-				snapshot := make([]float64, rollingCount)
-				if rs.full {
-					// chronological order: oldest at idx, newest at idx-1
-					for i := 0; i < rollingCount; i++ {
-						snapshot[i] = rs.values[(rs.idx+i)%rs.size]
-					}
-				} else {
-					copy(snapshot, rs.values[:rollingCount])
-				}
-				rollingValuesJSON, _ = json.Marshal(snapshot)
+				_, rollingCount = rs.snapshot()
 			}
-			r.logger.Info("parity-diag EntryGated",
+			r.logger.Info("parity-diag",
+				"stage", parity.StageEntryGated,
 				"symbol", p.Symbol,
 				"strategy", p.Strategy,
 				"setup", p.SetupType,
@@ -2205,8 +2201,7 @@ func (r *Runner) emitDomainEvent(ctx context.Context, tenantID string, envMode d
 				"avwap_anchors", string(anchorsJSON),
 				"dp_rolling_mean", rollingMean,
 				"dp_rolling_std", rollingStd,
-				"dp_rolling_count", rollingCount,
-				"dp_rolling_values", string(rollingValuesJSON))
+				"dp_rolling_count", rollingCount)
 		}
 	case domain.ORBPhaseUpdatePayload:
 		eventType = domain.EventORBPhaseUpdate

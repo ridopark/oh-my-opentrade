@@ -23,24 +23,31 @@
 // observability plan that supersedes these log lines.
 package parity
 
-import (
-	"os"
-	"sync"
-)
+import "os"
 
 const envVar = "PARITY_DIAG_ENABLED"
 
-var (
-	once    sync.Once
-	enabled bool
+// Stage identifiers shared across all parity-diag emit sites. Constants
+// instead of literal strings so a misspelling fails the build instead of
+// silently dropping events from grep aggregations.
+const (
+	StageBarReceived       = "BarReceived"
+	StageIndicatorSnapshot = "IndicatorSnapshot"
+	StageEntryGated        = "EntryGated"
+	StageSignalCreated     = "SignalCreated"
+	StageRiskSized         = "RiskSized"
+	StageOrderSubmitted    = "OrderSubmitted"
+	StageFillRecorded      = "FillRecorded"
 )
 
-// Enabled reports whether PARITY_DIAG_ENABLED was set to "true" at the
-// time of the first call. The env var is read once and cached so call
-// sites on the hot path pay only a bool deref.
-func Enabled() bool {
-	once.Do(func() {
-		enabled = os.Getenv(envVar) == "true"
-	})
-	return enabled
-}
+// enabled is set once at process startup. Tests in this package reset it
+// directly. Hot-path callers (millions per backtest) pay a single
+// non-atomic bool load — sync.Once would add an atomic acquire-load per
+// call which we measured as material in long backtest replays.
+var enabled = os.Getenv(envVar) == "true"
+
+// Enabled reports whether PARITY_DIAG_ENABLED was "true" at process
+// start. Mid-process env changes are intentionally ignored — flipping
+// the toggle on a long-running live process to start emitting (or stop)
+// would be a config-drift surprise.
+func Enabled() bool { return enabled }

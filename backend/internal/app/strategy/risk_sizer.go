@@ -1378,7 +1378,7 @@ func (rs *RiskSizer) parityDiagSized(intent domain.OrderIntent, event domain.Eve
 		instrumentType = string(intent.Instrument.Type)
 	}
 	rs.logger.Info("parity-diag",
-		"stage", "RiskSized",
+		"stage", parity.StageRiskSized,
 		"symbol", string(intent.Symbol),
 		"strategy", intent.Strategy,
 		"direction", string(intent.Direction),
