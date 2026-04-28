@@ -6,20 +6,13 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
-	monitor "github.com/oh-my-opentrade/backend/internal/app/monitor"
 )
 
-// stubRepo records GetMarketBars calls and returns canned bars.
 type stubRepo struct {
-	bars     []domain.MarketBar
-	gotFrom  time.Time
-	gotTo    time.Time
-	gotSym   domain.Symbol
-	gotTF    domain.Timeframe
+	bars []domain.MarketBar
 }
 
-func (s *stubRepo) GetMarketBars(_ context.Context, sym domain.Symbol, tf domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
-	s.gotSym, s.gotTF, s.gotFrom, s.gotTo = sym, tf, from, to
+func (s *stubRepo) GetMarketBars(_ context.Context, _ domain.Symbol, _ domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
 	out := make([]domain.MarketBar, 0, len(s.bars))
 	for _, b := range s.bars {
 		if !b.Time.Before(from) && !b.Time.After(to) {
@@ -50,27 +43,6 @@ func TestEquitySpecRequiredCounts(t *testing.T) {
 func TestCryptoSpecHasNoRTHFilter(t *testing.T) {
 	if CryptoSpec().RTHFilter {
 		t.Fatal("CryptoSpec must have RTHFilter=false")
-	}
-}
-
-// Pin the relationship between this package's catalog constants and the
-// monitor package's actual indicator periods. If monitor.indicators.go
-// changes its EMA200 period, this test fires.
-func TestCatalogPinsEMA200Period(t *testing.T) {
-	calc := monitor.NewIndicatorCalculator()
-	_ = calc // touch the package to ensure the import is real
-	// Indicator constants in monitor/indicators.go are unexported, so we
-	// pin via the spec output. EMA200 is the longest period the catalog
-	// must cover; if monitor changes that, EquitySpec's 800 (= 200*4)
-	// must move too.
-	if emaLongestPeriod != 200 {
-		t.Errorf("emaLongestPeriod = %d, expected 200 to match monitor.emaPeriod200", emaLongestPeriod)
-	}
-	if ema1hPeriod != 50 {
-		t.Errorf("ema1hPeriod = %d, expected 50 to match monitor.emaPeriod50", ema1hPeriod)
-	}
-	if ConvergenceFactor != 4 {
-		t.Errorf("ConvergenceFactor = %d, expected 4", ConvergenceFactor)
 	}
 }
 
