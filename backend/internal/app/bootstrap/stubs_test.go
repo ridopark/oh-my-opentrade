@@ -123,6 +123,10 @@ func (stubRepo) UpdateOrderStatus(context.Context, string, string) error { retur
 func (stubRepo) GetRecordedExecutionIDs(context.Context, string, domain.EnvMode, time.Time) (map[string]struct{}, error) {
 	return map[string]struct{}{}, nil
 }
+
+func (stubRepo) GetReconciledOrderIDs(context.Context, string, domain.EnvMode, time.Time) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
 func (stubRepo) GetNetPositions(context.Context, string, domain.EnvMode) (map[domain.Symbol]float64, error) {
 	return nil, nil
 }

@@ -398,6 +398,10 @@ func (mockRepoStub) UpdateOrderStatus(_ context.Context, _ string, _ string) err
 func (mockRepoStub) GetRecordedExecutionIDs(_ context.Context, _ string, _ domain.EnvMode, _ time.Time) (map[string]struct{}, error) {
 	return map[string]struct{}{}, nil
 }
+
+func (mockRepoStub) GetReconciledOrderIDs(_ context.Context, _ string, _ domain.EnvMode, _ time.Time) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
 func (mockRepoStub) GetNetPositions(_ context.Context, _ string, _ domain.EnvMode) (map[domain.Symbol]float64, error) {
 	return nil, nil
 }
