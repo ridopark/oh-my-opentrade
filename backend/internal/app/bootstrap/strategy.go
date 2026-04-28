@@ -465,6 +465,7 @@ func (pa *PipelineActivator) ActivateSymbol(symbol string, bars1m, barsHTF []dom
 
 func makeSnapshotFn() strategy.IndicatorSnapshotFunc {
 	calc := monitor.NewIndicatorCalculator()
+	calc.Label = "bootstrap_snapshot_fn"
 	return func(bar domain.MarketBar) start.IndicatorData {
 		snap := calc.Update(bar)
 		return start.IndicatorData{

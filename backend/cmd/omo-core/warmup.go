@@ -376,6 +376,7 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 		svc.strategyRunner.SetSuppressProgressEvents(true)
 
 		runnerWarmupCalc = monitor.NewIndicatorCalculator()
+		runnerWarmupCalc.Label = "runner_warmup_boot"
 		runnerWarmupSnapshotFn = func(bar domain.MarketBar) start.IndicatorData {
 			snap := runnerWarmupCalc.Update(bar)
 			return start.IndicatorData{
@@ -493,6 +494,7 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 			if svc.useStrategyV2 && svc.strategyRunner != nil {
 				if runnerWarmupCalc == nil {
 					runnerWarmupCalc = monitor.NewIndicatorCalculator()
+					runnerWarmupCalc.Label = "runner_warmup_orb"
 				}
 				if runnerWarmupSnapshotFn == nil {
 					runnerWarmupSnapshotFn = func(bar domain.MarketBar) start.IndicatorData {

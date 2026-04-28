@@ -136,6 +136,11 @@ type stateKey struct {
 type IndicatorCalculator struct {
 	states     map[stateKey]*symbolState
 	emaConfigs map[stateKey]emaConfig
+	// Label distinguishes calculator instances in parity-diag output. The
+	// same (symbol, timeframe) bar can be Update()'d by multiple instances
+	// (monitor's shared calc vs the runner's per-HTF calc), and we need to
+	// know which instance emitted which row when diagnosing parity gaps.
+	Label string
 }
 
 func NewIndicatorCalculator() *IndicatorCalculator {
@@ -656,6 +661,7 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 	if parity.Enabled() {
 		parityIndicatorLog.Info().
 			Str("stage", parity.StageIndicatorSnapshot).
+			Str("calc", ic.Label).
 			Str("symbol", string(bar.Symbol)).
 			Str("timeframe", string(bar.Timeframe)).
 			Time("ts", bar.Time).

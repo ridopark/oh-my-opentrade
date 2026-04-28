@@ -1604,6 +1604,7 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		htfCalc, ok := r.htfCalcs[key]
 		if !ok {
 			htfCalc = monitor.NewIndicatorCalculator()
+			htfCalc.Label = "runner_htf"
 			r.htfCalcs[key] = htfCalc
 		}
 		htfSnap := htfCalc.Update(closed)
@@ -1911,6 +1912,7 @@ func (r *Runner) WarmUpTF(symbol string, tf string, bars []domain.MarketBar, sna
 		htfCalc, ok := r.htfCalcs[key]
 		if !ok {
 			htfCalc = monitor.NewIndicatorCalculator()
+			htfCalc.Label = "runner_htf"
 			r.htfCalcs[key] = htfCalc
 		}
 		for _, bar := range bars {

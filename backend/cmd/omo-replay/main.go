@@ -1611,6 +1611,7 @@ func signalPassthrough(bus *memory.Bus, log zerolog.Logger) func(context.Context
 
 func makeSnapshotFn() func(domain.MarketBar) start.IndicatorData {
 	calc := monitor.NewIndicatorCalculator()
+	calc.Label = "replay_snapshot_fn"
 	return func(bar domain.MarketBar) start.IndicatorData {
 		snap := calc.Update(bar)
 		return start.IndicatorData{
