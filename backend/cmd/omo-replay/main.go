@@ -1111,12 +1111,9 @@ func main() {
 		}
 		sessWg.Wait()
 
-		// Wire the session resolver onto the strategy runner so
-		// resolveAIAnchors's additive merge can overlay full configured
-		// anchors (pd_high, pd_low, session_open) on top of AI's partial
-		// fallback. Without this, the runner's `r.anchorResolver` stays
-		// nil and the merge collapses to AI's session_open only, holding
-		// CalcBarCount at 1 forever and blocking AVWAP bias entry-gate.
+		// Wire session resolver onto each runner so resolveAIAnchors's
+		// additive merge can overlay full configured anchors on top of
+		// AI's partial fallback (otherwise CalcBarCount stays at 1).
 		setSessionWiring := func(rn *strategy.Runner) {
 			rn.SetAnchorResolver(sessionResolver.ResolveAnchors)
 			rn.SetPrevDayBarsFn(func(symbol string, since, until time.Time) []start.Bar {
