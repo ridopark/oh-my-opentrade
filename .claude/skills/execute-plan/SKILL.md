@@ -61,8 +61,23 @@ does not ask for confirmation, clarification, or sign-off mid-flight.
    | Code investigation / unknown root cause | `general-purpose` or `Explore` | n/a |
    | Integration / contract verification | `qa-inspector` | n/a |
    | TDD-required implementation | n/a | `tdd-red` → `tdd-green` → `tdd-refactor` chain |
-   | Post-commit quality check | `code-reviewer` or `post-commit-reviewer` | `code-fixer` |
+   | Post-commit quality check | (auto-fired by `.claude/hooks/post-commit-review.sh`) | `code-fixer` |
    | Live ops incident | `ops-investigator` → `ops-analyst` → `ops-reviewer` → `ops-fixer` | (same chain) |
+
+   Notes on rubric entries:
+   - `general-purpose` and `Explore` are Claude Code built-in subagent
+     types (Task tool), not files in `.claude/agents/`.
+   - `omo-feature` is a *skill*, not an agent — invoke via the Skill
+     tool, not the Agent tool. Routes the cross-stack work itself.
+   - `code-reviewer`, `post-commit-reviewer` are auto-invoked by the
+     project's post-commit hook; the skill consumes their findings
+     rather than dispatching them directly.
+
+   "TDD-required" means the phase produces verifiable behavior change
+   in a function or module that has (or should gain) unit/integration
+   coverage. Pure config edits, doc-only changes, one-shot scripts,
+   and infra wiring without behavioral change skip the TDD chain and
+   route to the domain agent directly.
 
 3. **CONSULT.** Dispatch the chosen sub-agents in parallel via the Agent
    tool (single message, multiple Agent calls). Each gets the relevant
@@ -77,10 +92,12 @@ does not ask for confirmation, clarification, or sign-off mid-flight.
    step 8's failure path, not silently absorbed.
 
 5. **IMPLEMENT.** TDD-first via the `tdd-red` → `tdd-green` → `tdd-refactor`
-   sub-agent chain when tests are appropriate. Otherwise dispatch the
-   domain sub-agent (`go-architect`, `dashboard-dev`, etc.) with explicit
-   TDD instructions in the prompt. After each commit, run `/simplify`
-   ([skip-review] follow-up commit per CLAUDE.md).
+   sub-agent chain when tests are appropriate (see "TDD-required"
+   definition under the routing rubric). Otherwise dispatch the domain
+   sub-agent (`go-architect`, `dashboard-dev`, etc.) with explicit TDD
+   instructions in the prompt. /simplify and post-commit-reviewer fire
+   automatically via PreToolUse / PostToolUse hooks — do NOT invoke
+   them manually; just consume their output if they produce findings.
 
 6. **VALIDATE.** Build + test + (restart if a deploy gate is part of the
    phase) + measure against the plan's pass criteria. Use
@@ -121,6 +138,11 @@ does not ask for confirmation, clarification, or sign-off mid-flight.
 
    - If on `main`: create a feature branch named after the plan file
      (strip `_plan.md` suffix, kebab-case the rest). Push with `-u`.
+   - If the derived branch name already exists on the remote (concurrent
+     run, or a prior failed run that left a stale branch): append a
+     short suffix `-<YYYYMMDD-HHMMSS>` from the current UTC time. Never
+     reuse a remote branch silently — that would race a concurrent run
+     or overwrite divergent state.
    - If already on a feature branch: ensure it's pushed (git push if
      ahead of upstream).
    - Title: short imperative under 70 chars; reflects what the plan
@@ -188,6 +210,24 @@ Signature:
 - Stop after 3 failed iterations of the same phase (each iteration
   applies a distinct hypothesis). On the 4th attempt, post Discord
   `red` and halt without prompting the user.
+
+## Edge cases (fail-fast with Discord, no inline prompts)
+
+- **Plan path missing or unreadable**: post Discord `red`
+  `"<path>: plan not found"` and halt before any sub-agent dispatch.
+- **Plan has zero phases / empty / unparseable**: post Discord `red`
+  with the specific parse failure and halt.
+- **Working tree dirty at invocation**: post Discord `yellow`
+  describing the dirty paths and halt — the skill never auto-stashes
+  or auto-resets uncommitted user work.
+- **Detached HEAD or non-`main`/non-feature-branch state**: post
+  Discord `yellow` and halt — branching policy (step 9) only handles
+  the two known states.
+- **Build fails in step 6 before any test runs**: counts as
+  iteration 1 of the failure budget — root-cause and re-attempt.
+- **PR already open for the derived branch**: append the timestamp
+  suffix from step 9 to create a fresh branch + PR; do not update an
+  existing PR opened by a prior run.
 
 ## Examples
 

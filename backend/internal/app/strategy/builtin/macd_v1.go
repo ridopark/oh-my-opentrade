@@ -123,7 +123,6 @@ type BMState struct {
 	LastTradeDate   string              `json:"lastTradeDate,omitempty"`
 
 	// Position tracking for 1.5x R:R exit
-	EntryPrice  float64 `json:"entryPrice,omitempty"`
 	StopPrice   float64 `json:"stopPrice,omitempty"`
 	TargetPrice float64 `json:"targetPrice,omitempty"`
 
@@ -312,7 +311,7 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 				sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideSell, 0.9, map[string]string{
 					"setup":     "bb_macd_target_hit",
 					"ref_price": fmt.Sprintf("%.10f", bmSt.TargetPrice),
-					"reason":    fmt.Sprintf("1.5R target: entry=%.2f stop=%.2f target=%.2f", bmSt.EntryPrice, bmSt.StopPrice, bmSt.TargetPrice),
+					"reason":    fmt.Sprintf("1.5R target: entry=%.2f stop=%.2f target=%.2f", bmSt.EntryFillPrice, bmSt.StopPrice, bmSt.TargetPrice),
 				})
 				if err == nil {
 					exitSig = &sig
@@ -321,7 +320,7 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 				sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideSell, 0.9, map[string]string{
 					"setup":     "bb_macd_stop_hit",
 					"ref_price": fmt.Sprintf("%.10f", bmSt.StopPrice),
-					"reason":    fmt.Sprintf("swing stop: entry=%.2f stop=%.2f", bmSt.EntryPrice, bmSt.StopPrice),
+					"reason":    fmt.Sprintf("swing stop: entry=%.2f stop=%.2f", bmSt.EntryFillPrice, bmSt.StopPrice),
 				})
 				if err == nil {
 					exitSig = &sig
@@ -333,7 +332,7 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 				sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideBuy, 0.9, map[string]string{
 					"setup":     "bb_macd_target_hit",
 					"ref_price": fmt.Sprintf("%.10f", bmSt.TargetPrice),
-					"reason":    fmt.Sprintf("1.5R target: entry=%.2f stop=%.2f target=%.2f", bmSt.EntryPrice, bmSt.StopPrice, bmSt.TargetPrice),
+					"reason":    fmt.Sprintf("1.5R target: entry=%.2f stop=%.2f target=%.2f", bmSt.EntryFillPrice, bmSt.StopPrice, bmSt.TargetPrice),
 				})
 				if err == nil {
 					exitSig = &sig
@@ -342,7 +341,7 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 				sig, err := start.NewSignal(instanceID, symbol, start.SignalExit, start.SideBuy, 0.9, map[string]string{
 					"setup":     "bb_macd_stop_hit",
 					"ref_price": fmt.Sprintf("%.10f", bmSt.StopPrice),
-					"reason":    fmt.Sprintf("swing stop: entry=%.2f stop=%.2f", bmSt.EntryPrice, bmSt.StopPrice),
+					"reason":    fmt.Sprintf("swing stop: entry=%.2f stop=%.2f", bmSt.EntryFillPrice, bmSt.StopPrice),
 				})
 				if err == nil {
 					exitSig = &sig
@@ -352,7 +351,6 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 
 		if exitSig != nil {
 			bmSt.PositionSide = ""
-			bmSt.EntryPrice = 0
 			bmSt.StopPrice = 0
 			bmSt.TargetPrice = 0
 			cooldown := time.Duration(cfg.CooldownSeconds) * time.Second
@@ -738,7 +736,6 @@ func (s *MACDStrategy) OnEvent(ctx start.Context, _ string, evt any, st start.St
 				}
 			}
 			bmSt.PositionSide = ""
-			bmSt.EntryPrice = 0
 			bmSt.EntryFillPrice = 0
 			bmSt.StopPrice = 0
 			bmSt.TargetPrice = 0
@@ -747,14 +744,13 @@ func (s *MACDStrategy) OnEvent(ctx start.Context, _ string, evt any, st start.St
 			bmSt.PositionSide = ""
 			bmSt.PendingEntry = ""
 			bmSt.PendingEntryAt = time.Time{}
-			bmSt.EntryPrice = 0
 			bmSt.StopPrice = 0
 			bmSt.TargetPrice = 0
 		}
 		if ctx != nil {
 			ctx.Logger().Info("MACD Fill",
 				"symbol", e.Symbol, "side", e.Side, "price", e.Price,
-				"position", bmSt.PositionSide, "entry", bmSt.EntryPrice,
+				"position", bmSt.PositionSide, "entry", bmSt.EntryFillPrice,
 				"stop", bmSt.StopPrice, "target", bmSt.TargetPrice)
 		}
 	case start.EntryRejection:
