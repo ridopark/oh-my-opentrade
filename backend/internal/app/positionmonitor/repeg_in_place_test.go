@@ -47,17 +47,8 @@ func (p *stubOptionsPricePort) GetOptionPrices(_ context.Context, symbols []doma
 	return out, nil
 }
 
-func priceUsable(t *testing.T, sym domain.Symbol, q domain.OptionQuote) {
-	t.Helper()
-	now := time.Now().UTC()
-	if _, ok := buildExitLimitPrice(q, now, 14, 1, false); !ok {
-		t.Fatalf("test fixture pre-condition: buildExitLimitPrice must accept the seeded quote for %s", sym)
-	}
-}
-
 func newModifyTestService(t *testing.T, broker *trackingBroker, notifier *modifyingNotifier, sym domain.Symbol, quote domain.OptionQuote) *Service {
 	t.Helper()
-	priceUsable(t, sym, quote)
 	repo := &capturingRepo{}
 	svc := newTestServiceWithBrokerAndRepo(&broker.mockBroker, repo)
 	svc.broker = broker
@@ -69,10 +60,8 @@ func newModifyTestService(t *testing.T, broker *trackingBroker, notifier *modify
 	return svc
 }
 
-// TestHandleExitTimeout_ModifyInPlace_Success: flag on + viable quote +
-// notifier accepts the modify. Position keeps the same ExitOrderID, repeg
-// count bumps, ExitLastSentPrice updates to the modify limit, and the broker
-// MUST NOT receive any cancel.
+// On a successful modify the broker MUST NOT receive any cancel and
+// ExitOrderID MUST be preserved across the repeg.
 func TestHandleExitTimeout_ModifyInPlace_Success(t *testing.T) {
 	broker := &trackingBroker{}
 	notifier := &modifyingNotifier{modifiedOK: true}
@@ -97,10 +86,8 @@ func TestHandleExitTimeout_ModifyInPlace_Success(t *testing.T) {
 	assert.False(t, pos.ExitManaging, "ExitManaging must clear after a successful modify")
 }
 
-// TestHandleExitTimeout_ModifyInPlace_Unsupported_FallsThrough: flag on but
-// notifier returns ErrUnsupportedModify (e.g. simbroker, or order already
-// terminal). The legacy cancel+place path MUST run unchanged — same broker
-// cancel call, same MarkRepegCancel sequence.
+// ErrUnsupportedModify (simbroker, or order already terminal) MUST fall
+// through to the legacy cancel+place flow unchanged.
 func TestHandleExitTimeout_ModifyInPlace_Unsupported_FallsThrough(t *testing.T) {
 	broker := &trackingBroker{detailsStatus: "canceled"}
 	notifier := &modifyingNotifier{modifiedOK: false, modifyErr: ports.ErrUnsupportedModify}
@@ -119,11 +106,9 @@ func TestHandleExitTimeout_ModifyInPlace_Unsupported_FallsThrough(t *testing.T) 
 		"MarkRepegCancel must precede the cancel on the legacy fallback")
 }
 
-// TestHandleExitTimeout_ModifyInPlace_HardError_RefusesFallThrough: the
-// adapter could not classify the order ("unknown to broker"). The position
-// monitor MUST NOT fall through to cancel+place — that could create a
-// duplicate position. Instead it must clear ExitManaging and reset
-// ExitPendingAt for the next tick to re-evaluate.
+// A hard adapter error (orderID unknown to broker) MUST refuse fall-through
+// to cancel+place; cancel against an unknown order followed by a place
+// would create a duplicate position.
 func TestHandleExitTimeout_ModifyInPlace_HardError_RefusesFallThrough(t *testing.T) {
 	broker := &trackingBroker{}
 	notifier := &modifyingNotifier{modifiedOK: false, modifyErr: errors.New("ibkr: ModifyOrder: order 4118 unknown to broker")}
