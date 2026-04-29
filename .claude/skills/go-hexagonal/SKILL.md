@@ -308,8 +308,29 @@ every MACD block until simplify-pass review caught it. When a JSON
 DTO has an "absent vs zero" semantic distinction, declare the field
 as a pointer: `Foo *MyStruct \`json:"foo,omitempty"\``. Slices/maps
 already work because their nil form is distinguishable from the
-populated form. Same trap exists for `time.Time` (zero is a real
-timestamp) — pointer-fy or use a custom marshaller.
+populated form. For `time.Time` and other concrete struct values,
+the modern fix is `json:",omitzero"` (Go 1.24+), which checks
+`IsZero()` rather than the `omitempty` empty-value rule —
+preferred over pointer-fying when the field is value-typed
+elsewhere in the codebase.
+
+### Storage timestamp ≠ logical identity for cross-binary diffs
+When two binaries (omo-core live + omo-replay backtest) write rows
+into the same hypertable for SQL diffing, the storage timestamp
+column reflects event-creation time, not bar time, and the two
+binaries skew it differently: live's `ts` is `time.Now()` at publish
+(sub-second skew from bar close); backtest's `ts` depends on whether
+`fastClockNano` was set before that emit batch (sometimes per-bar,
+sometimes batched to a single nanosecond when the flush-style emit
+fires after the per-bar set/reset). Either way, JOINing
+live↔backtest rows on the storage timestamp column is fragile.
+Always carry a logical bar-identity field inside the payload (e.g.
+`BarSnapshot.Time`) and JOIN on `(symbol,
+(payload->'bar'->>'time')::timestamptz)` — that field is stable
+across both binaries regardless of how the storage timestamp
+drifts. Caught during the parity-indicator-diag activation
+(PR #18) when the smoke-test rows landed at run-time `ts` despite
+omo-replay calling `domain.SetFastClock` per bar.
 
 ### Builtin engine name vs TOML spec id on lifecycle payloads
 Strategies hardcode their builtin engine name (`"avwap"`, `"macd"`) into
