@@ -8,10 +8,13 @@ BEGIN
     IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'agent_reader') THEN
         CREATE ROLE agent_reader LOGIN PASSWORD 'changeme_agent_reader';
     END IF;
+    -- Use current_database() so the grant targets whatever DB is being
+    -- migrated (prod=opentrade, CI/staging may differ). Hardcoding broke
+    -- CI when the cluster did not have a literal `opentrade` database.
+    EXECUTE format('GRANT CONNECT ON DATABASE %I TO agent_reader', current_database());
 END
 $$;
 
-GRANT CONNECT ON DATABASE opentrade TO agent_reader;
 GRANT USAGE ON SCHEMA public TO agent_reader;
 
 GRANT SELECT ON

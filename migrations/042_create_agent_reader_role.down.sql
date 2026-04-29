@@ -14,6 +14,11 @@ REVOKE ALL ON
 FROM agent_reader;
 
 REVOKE USAGE ON SCHEMA public FROM agent_reader;
-REVOKE CONNECT ON DATABASE opentrade FROM agent_reader;
+
+DO $$
+BEGIN
+    EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM agent_reader', current_database());
+END
+$$;
 
 DROP ROLE IF EXISTS agent_reader;
