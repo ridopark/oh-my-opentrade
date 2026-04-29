@@ -927,11 +927,24 @@ func main() {
 				snapshotFn := makeSnapshotFn()
 				p := shardedPipeline.Shards()[idx]
 				slab := shardedPipeline.Slab(idx)
-				// Monitor warmup + reset + mark ready.
+				// Monitor warmup matches live's boot semantics so parity-diag
+				// emissions converge byte-for-byte: equity uses split-and-
+				// reset at replaySessionOpen (zeroes session-VWAP between
+				// days, matches live's warmup.go split); crypto has no
+				// session-VWAP concept and stays on the legacy
+				// WarmUp+Reset pattern (matches live's warmup.go crypto
+				// branch).
 				for _, sym := range slab {
 					if bars, ok := warmupBarsCache[sym.String()]; ok && len(bars) > 0 {
-						p.Monitor().WarmUp(bars)
-						p.Monitor().ResetSessionIndicators(sym.String())
+						if sym.IsCryptoSymbol() {
+							p.Monitor().WarmUpAndCollect(bars)
+							p.Monitor().ResetSessionIndicators(sym.String())
+						} else {
+							yBars, tBars := monitor.SplitBarsByTime(bars, replaySessionOpen.UTC())
+							p.Monitor().WarmUpAndCollect(yBars)
+							p.Monitor().ResetSessionIndicators(sym.String())
+							p.Monitor().WarmUpAndCollect(tBars)
+						}
 						p.Monitor().MarkReady(sym.String())
 					}
 				}
@@ -986,12 +999,23 @@ func main() {
 		warmWg2.Wait()
 		warmupLog.Info().Int("shards", shardedPipeline.ShardCount()).Msg("parallel per-shard warmup complete")
 	} else {
-		// Legacy single-shard warmup path.
+		// Legacy single-shard warmup path. Equity uses split-and-reset
+		// at replaySessionOpen (matches live boot); crypto stays on the
+		// legacy WarmUp+Reset pattern (live's crypto branch is the same).
 		for _, wr := range warmResults {
-			n := monitorSvc.WarmUp(wr.bars)
+			if wr.sym.IsCryptoSymbol() {
+				monitorSvc.WarmUpAndCollect(wr.bars)
+				monitorSvc.ResetSessionIndicators(wr.sym.String())
+				monitorSvc.MarkReady(wr.sym.String())
+				warmupLog.Info().Str("symbol", wr.sym.String()).Int("warmup_bars", len(wr.bars)).Msg("indicator warmup done")
+				continue
+			}
+			yBars, tBars := monitor.SplitBarsByTime(wr.bars, replaySessionOpen.UTC())
+			monitorSvc.WarmUpAndCollect(yBars)
 			monitorSvc.ResetSessionIndicators(wr.sym.String())
+			monitorSvc.WarmUpAndCollect(tBars)
 			monitorSvc.MarkReady(wr.sym.String())
-			warmupLog.Info().Str("symbol", wr.sym.String()).Int("warmup_bars", n).Msg("indicator warmup done")
+			warmupLog.Info().Str("symbol", wr.sym.String()).Int("warmup_bars", len(wr.bars)).Int("today_bars", len(tBars)).Msg("indicator warmup done")
 		}
 		for _, s := range streams {
 			if len(s.bars) > 0 {
