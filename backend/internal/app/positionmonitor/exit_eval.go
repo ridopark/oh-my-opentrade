@@ -369,12 +369,10 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 		Bool("near_close", nearClose).
 		Msg("exit pending timeout — managing")
 
-	// Modify-first path (Phase 2). When the flag is on, the broker supports
-	// modify-in-place, and the next limit can be priced, mutate the existing
-	// order's price atomically — no cancel fires, no second OrderID. This
-	// eliminates the cancel-fill race that produces duplicate SELL legs.
-	// Falls through to the legacy cancel+place flow on ErrUnsupportedModify
-	// or any non-viable pricing input.
+	// Atomic broker-side modify avoids the cancel-fill race that
+	// double-writes SELL legs. Falls through to cancel+place on
+	// ErrUnsupportedModify (broker can't modify, order already terminal,
+	// or no usable quote).
 	if action == "repeg" && s.repegModifyInPlace && repegNotifier != nil && orderID != "" {
 		if handled := s.tryRepegModifyInPlace(key, orderID, now); handled {
 			return
@@ -1139,16 +1137,11 @@ func positionKey(tenantID string, envMode domain.EnvMode, symbol domain.Symbol) 
 	return fmt.Sprintf("%s:%s:%s", tenantID, envMode, symbol)
 }
 
-// tryRepegModifyInPlace executes the Phase-2 atomic-modify path. Caller MUST
-// hold s.mu on entry; this helper releases the lock across the broker RPC
-// and re-acquires before returning. handled=true means caller must return
-// from handleExitTimeout immediately (modify succeeded, position no longer
-// exists, or hard error blocks fall-through). handled=false means continue
-// with the legacy cancel+place flow.
-//
-// The pos pointer the caller had before this call is invalid afterward; on
-// fall-through (handled=false) the caller will re-look up via key inside
-// the same handleExitTimeout body.
+// tryRepegModifyInPlace runs the modify-first path. MUST be called with
+// s.mu held; releases s.mu across the broker RPC and re-acquires before
+// returning. After this call the caller's pos pointer is invalid (pos may
+// have been deleted during the unlocked window). handled=false means the
+// caller falls through to the legacy cancel+place flow.
 func (s *Service) tryRepegModifyInPlace(key string, orderID string, now time.Time) (handled bool) {
 	pos, ok := s.positions[key]
 	if !ok {
@@ -1164,9 +1157,10 @@ func (s *Service) tryRepegModifyInPlace(key string, orderID string, now time.Tim
 	symbol := pos.Symbol
 
 	s.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	modified, err := notifier.RepegOrderInPlace(ctx, orderID, newLimit)
-	cancel()
+	// IBKR's PlaceOrder is fire-and-forget so a deadline context buys
+	// nothing today; switch to a real timeout once ModifyOrder grows a
+	// blocking ack path.
+	modified, err := notifier.RepegOrderInPlace(context.Background(), orderID, newLimit)
 	s.mu.Lock()
 
 	livePos, ok := s.positions[key]
@@ -1177,23 +1171,23 @@ func (s *Service) tryRepegModifyInPlace(key string, orderID string, now time.Tim
 		livePos.ExitRepegCount++
 		livePos.ExitLastSentPrice = newLimit
 		livePos.ExitManaging = false
+		// Restamp ExitPendingAt so the 1s tick loop honors the next
+		// repeg cadence; without this the timeout stays elapsed and
+		// every subsequent tick re-fires tryRepegModifyInPlace until
+		// the budget exhausts.
+		livePos.ExitPendingAt = now
 		s.log.Info().
 			Str("symbol", string(symbol)).
 			Str("broker_order_id", orderID).
 			Float64("new_limit", newLimit).
 			Int("repeg_count", livePos.ExitRepegCount).
 			Msg("repeg: modify-in-place sent")
-		// Order is still live with the same OrderID; do NOT release the
-		// inflight-exit gate. ExitOrderID and pendingOrders entry both
-		// stay; the eventual fill flows through the existing FillReceived
-		// path and clears them.
 		return true
 	}
 	if err != nil && !errors.Is(err, ports.ErrUnsupportedModify) {
-		// Hard error: refuse to fall through to cancel+place. A cancel
-		// against an unknown orderID could create a duplicate position
-		// when followed by a place. Reset ExitPendingAt so the next tick
-		// re-evaluates after operator/observability looks.
+		// Hard error: cancel against an unknown orderID followed by a
+		// place would create a duplicate position. Reset ExitPendingAt
+		// so the next tick re-evaluates after observability catches up.
 		s.log.Error().
 			Err(err).
 			Str("symbol", string(symbol)).
@@ -1208,16 +1202,13 @@ func (s *Service) tryRepegModifyInPlace(key string, orderID string, now time.Tim
 		s.mu.Lock()
 		return true
 	}
-	// ErrUnsupportedModify: caller falls through to the existing flow.
 	return false
 }
 
-// nextRepegLimit computes the limit price for the next repeg attempt. Returns
-// (price, true) when the inputs are sufficient to call buildExitLimitPrice
-// cleanly; (_, false) signals the caller to fall through to the existing
-// cancel+place flow which has wider fallback coverage (BSM premium, mid-buffer,
-// etc.). Today we narrow modify-in-place to options with a live quote — the
-// actual NFLX/RIVN incident profile.
+// nextRepegLimit narrows modify-in-place to options with a live quote, the
+// actual NFLX/RIVN incident profile. Equity/crypto and forced-exit paths
+// fall through to the legacy flow which has wider fallback coverage
+// (BSM premium, mid-buffer, market with entry anchor).
 func (s *Service) nextRepegLimit(pos *domain.MonitoredPosition, now time.Time) (float64, bool) {
 	if pos.InstrumentType != domain.InstrumentTypeOption {
 		return 0, false
@@ -1236,8 +1227,7 @@ func (s *Service) nextRepegLimit(pos *domain.MonitoredPosition, now time.Time) (
 		return 0, false
 	}
 	dte := dteFromExpiry(pos.OptionExpiry, now)
-	nextRepeg := pos.ExitRepegCount + 1
-	return buildExitLimitPrice(quote, now, dte, nextRepeg, pos.IsShort())
+	return buildExitLimitPrice(quote, now, dte, pos.ExitRepegCount+1, pos.IsShort())
 }
 
 // ruleCategoryIsStop reports whether an exit rule type is a capital-protection

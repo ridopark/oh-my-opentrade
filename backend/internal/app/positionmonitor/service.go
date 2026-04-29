@@ -69,11 +69,9 @@ type Service struct {
 	// — which caused today's SOFI phantom short.
 	repegNotifier RepegNotifier
 
-	// repegModifyInPlace gates the Phase-2 atomic-modify re-peg path. When
-	// true and the broker implements ports.OrderModifier, exit re-pegs use
-	// ibsync's PlaceOrder OrderID-reuse semantics to mutate the limit price
-	// in place — no cancel fires, eliminating the cancel-fill race. When
-	// false (default) the legacy cancel-and-resubmit flow runs unchanged.
+	// repegModifyInPlace gates atomic-modify re-pegs so the cancel-fill
+	// race that double-writes SELL legs cannot occur. False default; flip
+	// is plan-rollout-gated.
 	repegModifyInPlace bool
 
 	// atrTrailCfg carries the ATR-bucketed premium-trail multiplier
@@ -206,17 +204,12 @@ const (
 // execution service a pending broker order is about to be canceled as
 // part of a re-peg/escalate sequence. Implemented by *execution.Service's
 // MarkRepegCancel method. Defined here (not in ports) because it is an
-// app-layer coordination primitive between two app services — there's no
+// app-layer coordination primitive between two app services - there's no
 // domain concept behind it, just a suppression flag.
 //
-// RepegOrderInPlace is the modify-first capability used when the
-// repeg.modify_in_place flag is on. Returns (true, nil) when the broker
-// applied the modify atomically (no cancel/resubmit fired). Returns
-// (false, ports.ErrUnsupportedModify) when the broker can't modify in
-// place (simbroker, or order already terminal at the broker) — the caller
-// then falls through to the existing cancel+place flow. Returns
-// (false, <other error>) when the orderID is unknown to the broker;
-// caller MUST refuse to fall through in that case.
+// RepegOrderInPlace is the modify-first capability gated by
+// repegModifyInPlace; see RepegOrderInPlace's doc on *execution.Service for
+// the contract.
 type RepegNotifier interface {
 	MarkRepegCancel(brokerOrderID string) bool
 	RepegOrderInPlace(ctx context.Context, brokerOrderID string, newLimit float64) (bool, error)
@@ -323,15 +316,14 @@ func WithRepegNotifier(n RepegNotifier) Option {
 	return func(s *Service) { s.repegNotifier = n }
 }
 
-// WithRepegModifyInPlace toggles the atomic-modify re-peg path (Phase 2 of
-// the exit_repeg_dup_fill fix). Default false; flag-flip is gated on a clean
-// Phase-1-only live session per the plan.
+// WithRepegModifyInPlace toggles atomic-modify re-pegs. Default false;
+// flip is plan-rollout-gated.
 func WithRepegModifyInPlace(enabled bool) Option {
 	return func(s *Service) { s.repegModifyInPlace = enabled }
 }
 
-// SetRepegModifyInPlace is a post-construction setter for the same flag.
-// Used at omo-core wire-up after the config has been loaded.
+// SetRepegModifyInPlace is the post-construction setter, used at omo-core
+// wire-up after the config has been loaded.
 func (s *Service) SetRepegModifyInPlace(enabled bool) { s.repegModifyInPlace = enabled }
 
 // SetRepegNotifier is a post-construction setter for WithRepegNotifier.
