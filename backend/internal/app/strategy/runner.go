@@ -479,14 +479,14 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 			// anchors must be seeded first so a partial AI/resolver result
 			// (e.g. session_open only in backtest) does not strip pd_high
 			// /pd_low and re-trigger hasMissingAnchor on the next bar.
-			merged := make(map[string]time.Time)
-			for _, name := range ar.AnchorNames() {
-				if t, ok := ar.AnchorTime(name); ok && !t.IsZero() {
+			names := ar.AnchorNames()
+			merged := make(map[string]time.Time, len(names)+len(resolved))
+			for _, name := range names {
+				if t, ok := ar.AnchorTime(name); ok {
 					merged[name] = t
 				}
 			}
 			if r.anchorResolver != nil {
-				names := ar.AnchorNames()
 				for k, v := range r.anchorResolver(symbol, bar.Time, names) {
 					merged[k] = v
 				}
