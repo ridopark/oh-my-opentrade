@@ -1389,15 +1389,7 @@ func (s *Service) fastPollPosition(ctx context.Context, tenantID string, envMode
 				l.Info().Float64("position_qty", posQty).Str("broker_order_id", brokerOrderID).
 					Str("direction", direction).
 					Msg("fast position poll: fill detected via livePos")
-				s.recordFillFromDetails(po, brokerOrderID, ports.OrderDetails{
-					BrokerOrderID:  brokerOrderID,
-					Status:         "filled",
-					FilledQty:      po.intent.Quantity,
-					FilledAvgPrice: po.intent.LimitPrice,
-					Symbol:         string(po.intent.Symbol),
-					Side:           string(po.intent.Direction),
-					Qty:            po.intent.Quantity,
-				}, l)
+				s.recordFillsFromExecHistory(po, brokerOrderID, l)
 				if s.positionGate != nil {
 					if isExit {
 						s.positionGate.ClearInflightExit(tenantID, envMode, po.intent.Symbol)
@@ -2749,6 +2741,58 @@ func (s *Service) recordFillFromDetails(po *pendingOrder, brokerOrderID string, 
 		filledAt = s.nowFn().UTC()
 	}
 	s.handleFillWithPrice(po, brokerOrderID, fillPrice, fillQty, filledAt, "", l)
+}
+
+// recordFillsFromExecHistory inserts one trade row per broker exec for the
+// given brokerOrderID, populating the real ExecutionID on each. Closes the
+// poll-path exec_id-NULL gap that lets re-peg races escape the
+// idx_trades_execution_id UNIQUE index. Falls back to recordFillFromDetails
+// (today's behavior) when the broker doesn't implement FillLister, when
+// GetAllFills fails, or when the broker reports zero matching legs for the
+// orderID.
+func (s *Service) recordFillsFromExecHistory(po *pendingOrder, brokerOrderID string, l zerolog.Logger) {
+	fallbackDetails := ports.OrderDetails{
+		BrokerOrderID:  brokerOrderID,
+		Status:         "filled",
+		FilledQty:      po.intent.Quantity,
+		FilledAvgPrice: po.intent.LimitPrice,
+		Symbol:         string(po.intent.Symbol),
+		Side:           string(po.intent.Direction),
+		Qty:            po.intent.Quantity,
+	}
+
+	lister, ok := s.broker.(ports.FillLister)
+	if !ok {
+		s.recordFillFromDetails(po, brokerOrderID, fallbackDetails, l)
+		return
+	}
+
+	fills, err := lister.GetAllFills(context.Background())
+	if err != nil {
+		l.Warn().Err(err).Str("broker_order_id", brokerOrderID).
+			Msg("recordFillsFromExecHistory: GetAllFills failed — falling back to single-leg insert")
+		s.recordFillFromDetails(po, brokerOrderID, fallbackDetails, l)
+		return
+	}
+
+	var legs []ports.FillRecord
+	for _, f := range fills {
+		if f.BrokerOrderID == brokerOrderID {
+			legs = append(legs, f)
+		}
+	}
+	if len(legs) == 0 {
+		l.Warn().Str("broker_order_id", brokerOrderID).
+			Msg("recordFillsFromExecHistory: no matching legs at broker — falling back to single-leg insert")
+		s.recordFillFromDetails(po, brokerOrderID, fallbackDetails, l)
+		return
+	}
+
+	l.Info().Str("broker_order_id", brokerOrderID).Int("legs", len(legs)).
+		Msg("recordFillsFromExecHistory: inserting per-exec rows")
+	for _, leg := range legs {
+		s.insertFillLeg(po, brokerOrderID, leg.ExecutionID, leg.FilledAt, leg.Price, leg.Qty, leg.CumQty, leg.AvgPrice, l)
+	}
 }
 
 // exitLimitBuffer returns the IOC limit price buffer (as a fraction) for exit orders.
