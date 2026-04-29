@@ -41,6 +41,12 @@ type backtestRunRequest struct {
 	OptionSpreadMultiplier   float64 `json:"option_spread_multiplier"`
 	OptionEntrySpreadEnabled *bool   `json:"option_entry_spread_enabled"`
 
+	// Tier 1 market-impact knobs. Both zero (default) reproduces today's
+	// fill path byte-identically. Non-zero either field activates the
+	// participation cap and sqrt-impact term on option fills.
+	OptionImpactScaleBps      float64 `json:"option_impact_scale_bps"`
+	OptionMaxParticipationPct float64 `json:"option_max_participation_pct"`
+
 	// Copytrade replay wiring (required when "copytrade_v1" is in Strategies).
 	// CopytradeLedgerDir defaults to "_workspace/copytrade_replay" when empty.
 	CopytradeHistory   string `json:"copytrade_history"`
@@ -307,6 +313,10 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	}, slippage, equity, req.NoAI, bootstrap.BacktestInfraOptions{
 		OptionExitSpreadMultiplier: req.OptionSpreadMultiplier,
 		OptionEntrySpreadEnabled:   req.OptionEntrySpreadEnabled,
+		OptionImpactScaleBps:       req.OptionImpactScaleBps,
+		OptionMaxParticipationPct:  req.OptionMaxParticipationPct,
+		BacktestFrom:               fromTime,
+		BacktestTo:                 toTime,
 	}), h.appCfg, h.marketData, h.log)
 
 	// Wire history persistence: capture meta & DNA now, so the save is
@@ -342,6 +352,8 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		Str("fee_schedule", h.appCfg.Backtest.FeeSchedule).
 		Bool("option_entry_spread", entrySpread).
 		Float64("option_spread_mult", req.OptionSpreadMultiplier).
+		Float64("option_impact_scale_bps", req.OptionImpactScaleBps).
+		Float64("option_max_participation_pct", req.OptionMaxParticipationPct).
 		Msg("backtest enqueued — realism knobs resolved")
 
 	h.queue <- &backtestJob{runner: runner, log: h.log}

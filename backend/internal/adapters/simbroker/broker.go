@@ -5,7 +5,9 @@ package simbroker
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +17,24 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 )
+
+// ErrParticipationCap is returned by SubmitOrder when an option fill's
+// contract count would exceed OptionMaxParticipationPct of the
+// contemporaneous bar volume. Distinct from price-related rejections so the
+// runner can record it as a "size rejected" event in cost diagnostics.
+var ErrParticipationCap = errors.New("simbroker: option participation cap exceeded")
+
+// patientExitReasons enumerates intent.Meta["exit_reason"] values that
+// should pay 1.0x impact (resting limit / patient cancel logic). Anything
+// else — including missing — is treated as urgent and pays the urgency
+// multiplier (default 1.5x).
+var patientExitReasons = map[string]struct{}{
+	"take_profit":    {},
+	"profit_target":  {},
+	"trailing":       {},
+	"trailing_stop":  {},
+	"limit":          {},
+}
 
 // Config holds SimBroker configuration.
 type Config struct {
@@ -41,6 +61,18 @@ type Config struct {
 	// OptionEntrySpreadEnabled adds the same tiered half-spread to option entry fills.
 	OptionExitSpreadMultiplier float64
 	OptionEntrySpreadEnabled   bool
+
+	// Tier 1 market-impact knobs. Both zero = OFF (helper short-circuits, no
+	// port consulted). When either is non-zero the broker applies an impact
+	// term on top of the tiered half-spread:
+	//   impact_bps = OptionImpactScaleBps * sqrt(qty*100 / max(barVol, vol_floor))
+	// Hard rejection if qty*100/barVol > OptionMaxParticipationPct
+	// (returns ErrParticipationCap from SubmitOrder; barVol pre-floor on
+	// the cap check so the cap engages even on very thin bars).
+	OptionImpactScaleBps             float64
+	OptionMaxParticipationPct        float64
+	OptionImpactExitUrgencyMult      float64 // 0 => 1.5x; applied to non-patient exits
+	OptionImpactVolFloor             int64   // 0 => 50
 
 	// Sprint 7 — pluggable fill model + fee schedule. When FillModel is nil
 	// the broker preserves the pre-Sprint-7 optimistic instant-close fill so
@@ -101,6 +133,17 @@ type Broker struct {
 	moveCrushFloor      float64
 	optionExitSpreadMult    float64
 	optionEntrySpreadEnabled bool
+
+	// Tier 1 market-impact state. nil port + both zero knobs = OFF.
+	optionBarVolume         ports.OptionBarVolumePort
+	optionImpactScaleBps    float64
+	optionMaxParticipationPct float64
+	optionImpactExitUrgencyMult float64
+	optionImpactVolFloor    int64
+	impactAppliedCount      atomic.Int64
+	impactNoOpCount         atomic.Int64
+	impactCapRejectCount    atomic.Int64
+
 	historicalOptions   ports.HistoricalOptionsPort
 	// optionLiveData supplies real bid/ask snapshots for option exit
 	// pricing. Nil keeps the legacy tiered-spread BSM approximation in
@@ -152,6 +195,25 @@ type CostTotals struct {
 	Total      float64 `json:"total"`
 }
 
+// ImpactStats returns the cumulative counters for the Tier 1 market-impact
+// path: how many fills had impact applied, how many short-circuited (port
+// no-data or knobs-off), and how many were rejected by the participation
+// cap. Surfaces via the backtest data-quality summary log.
+type ImpactStats struct {
+	Applied    int64 `json:"applied"`
+	NoOp       int64 `json:"no_op"`
+	CapReject  int64 `json:"cap_reject"`
+}
+
+// ImpactStats returns a snapshot of the impact counters.
+func (b *Broker) ImpactStats() ImpactStats {
+	return ImpactStats{
+		Applied:   b.impactAppliedCount.Load(),
+		NoOp:      b.impactNoOpCount.Load(),
+		CapReject: b.impactCapRejectCount.Load(),
+	}
+}
+
 // CostTotals returns the cumulative fill-realism costs accumulated since
 // broker construction. Safe to call from the finalizer goroutine after the
 // backtest pipeline has drained.
@@ -179,6 +241,98 @@ func (b *Broker) SetOptionLiveData(p ports.OptionMarketDataPort) {
 	b.optionLiveData = p
 }
 
+// SetOptionBarVolume wires a historical per-OCC bar-volume lookup used by
+// the Tier 1 market-impact model. Nil disables the impact path even if the
+// scale/max-participation knobs are non-zero — the helper short-circuits.
+func (b *Broker) SetOptionBarVolume(p ports.OptionBarVolumePort) {
+	b.optionBarVolume = p
+}
+
+// applyParticipationImpact scales basePrice by the size-vs-volume impact
+// term and enforces the participation cap. Returns ErrParticipationCap on
+// breach. Short-circuits to (basePrice, nil) when the impact knobs are off
+// or the port is unwired — guarantees the OFF path is byte-identical to
+// today's tiered-spread output. Worst-case-constant: a port error or
+// zero-volume return is also a no-op (logged at debug, never warn).
+//
+// barTime is the underlying's current bar time (already computed by
+// SubmitOrder); we don't re-derive it here because the broker does not
+// track option-symbol bar times — option fills are scheduled against the
+// underlying's bar.
+//
+// direction +1 = adverse impact added (long-side buy / short-side cover);
+// direction -1 = adverse impact subtracted (long-side sell / short-side
+// open) — symmetric with the existing tiered half-spread logic.
+//
+// urgent=true applies optionImpactExitUrgencyMult (default 1.5x) to the
+// raw impact bps. Used for forced exits; patient exits (e.g. take-profit
+// limits) call with urgent=false.
+func (b *Broker) applyParticipationImpact(ctx context.Context, intent domain.OrderIntent, barTime time.Time, basePrice float64, direction float64, urgent bool) (float64, error) {
+	if b.optionImpactScaleBps == 0 && b.optionMaxParticipationPct == 0 {
+		return basePrice, nil
+	}
+	if b.optionBarVolume == nil {
+		return basePrice, nil
+	}
+	if basePrice <= 0 {
+		return basePrice, nil
+	}
+
+	qty := intent.Quantity
+	if qty <= 0 {
+		return basePrice, nil
+	}
+
+	// Pass the SubmitOrder ctx through. The adapter handles its own
+	// per-call timeout (longer for first-touch fetch which pre-loads the
+	// full backtest window for an OCC; shorter for cache hits which are
+	// in-memory and effectively constant-time).
+	barVol, err := b.optionBarVolume.BarVolume(ctx, intent.Symbol, barTime, domain.Timeframe("1m"))
+	if err != nil || barVol <= 0 {
+		b.impactNoOpCount.Add(1)
+		return basePrice, nil
+	}
+
+	// Cap check uses RAW volume (pre-floor) so the cap engages on truly
+	// thin bars. Impact-bps math uses the floored denominator to avoid
+	// pathological infinite impact on near-empty bars.
+	if b.optionMaxParticipationPct > 0 {
+		rawParticipationPct := qty * 100.0 / float64(barVol) * 100.0
+		if rawParticipationPct > b.optionMaxParticipationPct {
+			b.impactCapRejectCount.Add(1)
+			return basePrice, fmt.Errorf("%w: qty=%.0f bar_vol=%d participation=%.2f%% cap=%.2f%%",
+				ErrParticipationCap, qty, barVol, rawParticipationPct, b.optionMaxParticipationPct)
+		}
+	}
+
+	if b.optionImpactScaleBps == 0 {
+		return basePrice, nil
+	}
+
+	denom := float64(barVol)
+	if int64(denom) < b.optionImpactVolFloor {
+		denom = float64(b.optionImpactVolFloor)
+	}
+	participation := qty * 100.0 / denom // contracts*100 shares / contract-bar
+	impactBps := b.optionImpactScaleBps * math.Sqrt(participation)
+	if urgent {
+		impactBps *= b.optionImpactExitUrgencyMult
+	}
+	b.impactAppliedCount.Add(1)
+	return basePrice + direction*(impactBps/10000.0)*basePrice, nil
+}
+
+// isPatientExit returns true if intent.Meta["exit_reason"] names a patient
+// exit (resting limit / take-profit). Forced exits (stop-loss, EOD-flatten,
+// programmatic) and missing exit_reason default to urgent.
+func isPatientExit(intent domain.OrderIntent) bool {
+	if intent.Meta == nil {
+		return false
+	}
+	_, ok := patientExitReasons[intent.Meta["exit_reason"]]
+	return ok
+}
+
 // New creates a new SimBroker with the given configuration.
 func New(cfg Config, log zerolog.Logger) *Broker {
 	if cfg.SlippageBPS == 0 {
@@ -191,6 +345,14 @@ func New(cfg Config, log zerolog.Logger) *Broker {
 	exitMult := cfg.OptionExitSpreadMultiplier
 	if exitMult == 0 {
 		exitMult = 1.0
+	}
+	exitUrgency := cfg.OptionImpactExitUrgencyMult
+	if exitUrgency == 0 {
+		exitUrgency = 1.5
+	}
+	volFloor := cfg.OptionImpactVolFloor
+	if volFloor == 0 {
+		volFloor = 50
 	}
 	fm := cfg.FillModel
 	if fm == nil {
@@ -221,6 +383,10 @@ func New(cfg Config, log zerolog.Logger) *Broker {
 		moveCrushFloor:      cfg.MoveCrushFloor,
 		optionExitSpreadMult:     exitMult,
 		optionEntrySpreadEnabled: cfg.OptionEntrySpreadEnabled,
+		optionImpactScaleBps:        cfg.OptionImpactScaleBps,
+		optionMaxParticipationPct:   cfg.OptionMaxParticipationPct,
+		optionImpactExitUrgencyMult: exitUrgency,
+		optionImpactVolFloor:        volFloor,
 		log:                 log.With().Str("component", "simbroker").Logger(),
 		fillModel:       fm,
 		feeSchedule:     fs,
@@ -304,6 +470,15 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			if fillPrice <= 0 {
 				fillPrice = 0.01
 			}
+			// Tier 1 market impact: forced exits cross the spread; resting
+			// take-profit limits do not. Direction = -1 (we sell into the bid,
+			// adverse impact subtracted from the base price).
+			urgent := !isPatientExit(intent)
+			impacted, impactErr := b.applyParticipationImpact(ctx, intent, barTime, fillPrice, -1.0, urgent)
+			if impactErr != nil {
+				return "", impactErr
+			}
+			fillPrice = impacted
 			preSlippagePrice = fillPrice
 			fillPrice *= (1 - slippage) // selling: slippage works against us
 			side = "sell"
@@ -318,6 +493,18 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			// docs/plans/EQUITY-OPTIONS-GAP-PLAN.md §Sprint 6.2.
 			isShortEntry := intent.Direction == domain.DirectionShort
 			fillPrice = b.computeOptionEntryPrice(intent, isShortEntry)
+			// Tier 1 market impact: long entry pays adverse impact (direction=+1);
+			// short entry receives less (direction=-1). Entries are not "urgent"
+			// in the exit sense — no urgency multiplier.
+			direction := 1.0
+			if isShortEntry {
+				direction = -1.0
+			}
+			impacted, impactErr := b.applyParticipationImpact(ctx, intent, barTime, fillPrice, direction, false)
+			if impactErr != nil {
+				return "", impactErr
+			}
+			fillPrice = impacted
 			preSlippagePrice = fillPrice
 			if isShortEntry {
 				fillPrice *= (1 - slippage) // selling premium: slippage hurts the short
