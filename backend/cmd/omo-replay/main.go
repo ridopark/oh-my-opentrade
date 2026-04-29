@@ -1095,20 +1095,40 @@ func main() {
 
 	if shardedPipeline != nil || (pipeline != nil && pipeline.Runner != nil) {
 		sessionResolver := backtest.NewSessionResolver(loc)
-		// Parallelize per-symbol session loads — pure DB work, no shared state.
-		// The resolver's Load method is safe to call concurrently on different
-		// symbols because it indexes state by symbol under its own lock.
+		// Extend lookback by 5 calendar days so previous-day anchors
+		// (pd_high, pd_low) are available on the first replay day even
+		// across weekends. Mirrors backtest/runner.go's `sessionFrom`.
+		sessionFrom := fromTime.Add(-5 * 24 * time.Hour)
 		var sessWg sync.WaitGroup
 		for _, sym := range symbols {
 			sessWg.Add(1)
 			go func(sym domain.Symbol) {
 				defer sessWg.Done()
-				if loadErr := sessionResolver.Load(ctx, sqlDB, sym, fromTime, toTime); loadErr != nil {
+				if loadErr := sessionResolver.Load(ctx, sqlDB, sym, sessionFrom, toTime); loadErr != nil {
 					warmupLog.Warn().Err(loadErr).Str("symbol", sym.String()).Msg("failed to load session data")
 				}
 			}(sym)
 		}
 		sessWg.Wait()
+
+		// Wire session resolver onto each runner so resolveAIAnchors's
+		// additive merge can overlay full configured anchors on top of
+		// AI's partial fallback (otherwise CalcBarCount stays at 1).
+		setSessionWiring := func(rn *strategy.Runner) {
+			rn.SetAnchorResolver(sessionResolver.ResolveAnchors)
+			rn.SetPrevDayBarsFn(func(symbol string, since, until time.Time) []start.Bar {
+				return sessionResolver.GetBarsBetween(ctx, sqlDB, symbol, since, until)
+			})
+			rn.SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
+		}
+		if shardedPipeline != nil {
+			_ = shardedPipeline.ForEachShard(func(p *backtest.Pipeline, _ []domain.Symbol) error {
+				setSessionWiring(p.Runner())
+				return nil
+			})
+		} else {
+			setSessionWiring(pipeline.Runner)
+		}
 
 		aiResolver := strategy.NewAIAnchorResolver(llm.NewNoOpAdvisor(), nil, nil)
 		aiResolver.SetSessionResolver(sessionResolver.ResolveAnchors)

@@ -93,6 +93,10 @@ When comparing before/after DNA changes:
 
 **Key rule**: If trade count dropped significantly but PF only went up, that's just filtering, not improvement. Real improvement is PF increase with trade count maintained (or slightly reduced).
 
+### Reading reason-class distribution as a runner-bug signal
+
+When `--emit-gated-diag` is on, bucket `strategy_signal_events.reason` by class for the new run_id and compare against live's distribution. If one class dominates at counts that don't match live (e.g. backtest `bias=2210, slope=0` vs live `bias=0, slope=1536`), the cause is usually runner-side state-zeroing per bar — NOT a strategy threshold bug. Common offenders: anchor-reset loops, indicator warmup wiped by a per-bar reset, key-level cache pinned at zero. Diagnose at the runner before tuning DNA. See `go-hexagonal: Per-bar ResetX must be additive`.
+
 ## Known Data Coverage Gaps
 
 ### DoltHub options dataset is monthlies only
