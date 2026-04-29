@@ -326,6 +326,7 @@ func (r *Runner) SetAIAnchorResolver(resolver *AIAnchorResolver) {
 
 type anchorResettable interface {
 	AnchorNames() []string
+	AnchorTime(name string) (time.Time, bool)
 	ResetAnchors(map[string]time.Time)
 }
 
@@ -474,11 +475,16 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 			continue
 		}
 		if ar, ok := st.(anchorResettable); ok {
-			// Merge AI-resolved anchors with existing session anchors.
-			// Preserve configured anchors (session_open, pd_high, pd_low) that
-			// were set during Init or resolveSessionAnchors. The AI resolver
-			// only adds dynamic anchors on top.
+			// Additive merge: existing -> anchorResolver -> AI. Existing
+			// anchors must be seeded first so a partial AI/resolver result
+			// (e.g. session_open only in backtest) does not strip pd_high
+			// /pd_low and re-trigger hasMissingAnchor on the next bar.
 			merged := make(map[string]time.Time)
+			for _, name := range ar.AnchorNames() {
+				if t, ok := ar.AnchorTime(name); ok && !t.IsZero() {
+					merged[name] = t
+				}
+			}
 			if r.anchorResolver != nil {
 				names := ar.AnchorNames()
 				for k, v := range r.anchorResolver(symbol, bar.Time, names) {
