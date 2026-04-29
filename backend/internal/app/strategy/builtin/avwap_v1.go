@@ -937,6 +937,21 @@ func (s *AVWAPState) HasAnchor(name string) bool {
 	return exists
 }
 
+// AnchorTime returns the AnchorTime for the named anchor if present and
+// non-zero. Used by the runner to seed an additive merge so anchors set
+// during Init / resolveSessionAnchors are not stripped when AI re-resolves
+// only a partial set.
+func (s *AVWAPState) AnchorTime(name string) (time.Time, bool) {
+	if s.Calc == nil {
+		return time.Time{}, false
+	}
+	ap, ok := s.Calc.AnchorPoints()[name]
+	if !ok || ap.AnchorTime.IsZero() {
+		return time.Time{}, false
+	}
+	return ap.AnchorTime, true
+}
+
 // SetKeyLevels stores key price levels (pd_high, pd_low, or_high, or_low) for confluence scoring.
 func (s *AVWAPState) SetKeyLevels(levels map[string]float64) {
 	s.KeyLevels = levels
@@ -2714,7 +2729,6 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 			}
 		}
 	}
-
 	var slopeBPS float64
 	if cfg.MinSlopeBPS > 0 && len(cfg.Anchors) > 0 {
 		slopeBPS, _ = s.Calc.Slope(cfg.Anchors[0], cfg.SlopeLookback)
