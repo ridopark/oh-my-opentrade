@@ -937,6 +937,18 @@ func (s *AVWAPState) HasAnchor(name string) bool {
 	return exists
 }
 
+// AnchorTime returns the named anchor's time if it is configured and non-zero.
+func (s *AVWAPState) AnchorTime(name string) (time.Time, bool) {
+	if s.Calc == nil {
+		return time.Time{}, false
+	}
+	ap, ok := s.Calc.AnchorPoints()[name]
+	if !ok || ap.AnchorTime.IsZero() {
+		return time.Time{}, false
+	}
+	return ap.AnchorTime, true
+}
+
 // SetKeyLevels stores key price levels (pd_high, pd_low, or_high, or_low) for confluence scoring.
 func (s *AVWAPState) SetKeyLevels(levels map[string]float64) {
 	s.KeyLevels = levels
