@@ -1034,6 +1034,10 @@ func (s *MACDStrategy) emitMACDEntryGated(ctx start.Context, symbol string, bmSt
 		volRatio = bar.Volume / ind.VolumeSMA
 	}
 
+	indicators := indicatorsFromData(ind)
+	indicators.VolumeRatio = volRatio
+	indicators.Volume = bar.Volume
+
 	payload := domain.EntryGatedPayload{
 		Symbol:         symbol,
 		Strategy:       "macd",
@@ -1047,10 +1051,7 @@ func (s *MACDStrategy) emitMACDEntryGated(ctx start.Context, symbol string, bmSt
 			MaxScore:   bmSt.Config.MinConfluenceScore,
 			Components: toEntryGatedComponents(conf.Components),
 		},
-		Indicators: domain.EntryGatedIndicators{
-			RSI:         ind.RSI,
-			VolumeRatio: volRatio,
-		},
+		Indicators: indicators,
 		Bar: domain.BarSnapshot{
 			Open:   bar.Open,
 			High:   bar.High,

@@ -567,10 +567,28 @@ func NewRunner(
 // `"calc":"runner_htf"`. Mirrors monitor.Service.TagBacktest. Must be called
 // before any bar feeds reach handleBarCore or WarmUpTF — bootstrap invokes
 // it synchronously after NewRunner when StrategyDeps.BacktestID is non-empty.
+// htfLabelSuffix MUST NOT be mutated after that bootstrap call: BacktestTag
+// reads it without locking on the EntryGated emit path.
 func (r *Runner) TagBacktest(backtestID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.htfLabelSuffix = "_backtest_" + backtestID
+}
+
+// BacktestTag returns the runner's backtest label as a payload-friendly string
+// ("backtest_<id>" without the leading underscore TagBacktest stamps), or ""
+// when the runner is in live mode. Used by instance.EmitDomainEvent to stamp
+// EntryGatedPayload.Tag so a SQL diff on strategy_signal_events can distinguish
+// in-process backtest rows from live rows for the same (symbol, ts).
+//
+// Read is unlocked because htfLabelSuffix is set once at bootstrap (see the
+// TagBacktest contract) and never mutated thereafter, so the field is
+// effectively immutable when BacktestTag fires from the EmitDomainEvent path.
+// Locking would be incorrect anyway — handleBarCore already holds r.mu when
+// it calls into the strategy's OnBar → EmitDomainEvent path, and r.mu is a
+// non-reentrant sync.Mutex.
+func (r *Runner) BacktestTag() string {
+	return strings.TrimPrefix(r.htfLabelSuffix, "_")
 }
 
 // SetDisableLiveness toggles liveness recording. Backtests call with true to
