@@ -422,6 +422,12 @@ the broker and we never get a deterministic ordering from their async
 acks. Same pattern applies to any cancel-replace flow: the application
 must be idempotent against double-fills, never assume cancel won.
 
+### Per-bar `ResetX` on runner state must be additive, not replace-from-scratch
+`runner.resolveAIAnchors` originally built `merged` map from `r.anchorResolver` + AI's `resolved` only. In live, both layers return the full anchor set so `merged` was complete. In omo-replay backtest, AI's fallback returns only `session_open` AND `r.anchorResolver` was unwired (omo-replay set `SetAIAnchorResolver` but never `SetAnchorResolver` — half-wired runner). `ar.ResetAnchors(merged)` then dropped `pd_high`/`pd_low`, zeroed `CalcBarCount`, and `hasMissingAnchor` re-fired on the next bar — looping forever and pinning warmup state to 1. The symptom in `strategy_signal_events` is a single block-reason class (`bias`) dominating the distribution at counts that don't match live (2210 vs 0). Fix patterns:
+- Seed the rebuild target from existing state first, then overlay each upstream layer in priority order. The merge becomes additive: anchors not re-resolved by an upstream layer survive across re-resolutions.
+- Audit *each* entry-point's wire-up when the runner is shared across binaries (live, backtest, omo-replay). A half-wired runner produces a degraded but non-error path that silently looks like a strategy bug.
+- Include an interface accessor (e.g. `AnchorTime(name) (time.Time, bool)`) so the runner can read existing state for the seed without leaking concrete-type internals (`AnchorPoints()`).
+
 ### In-place slice filter mutates the caller's backing array
 The idiomatic Go pattern `out := s[:0]; for _, x := range s { if pred(x) { out = append(out, x) } }; return out` is allocation-free but **silently overwrites the caller's backing array**. The returned slice is correct, but the caller's slice (same backing) now has filtered values in positions 0..len(filtered)-1 and stale-original values beyond. Any caller that re-walks the original slice after calling such a filter will read corrupted data (`warmup.filterRTH` is one example; `warmup.TrimWithBoot1` initially picked the wrong boot+1 bar because it walked rawBars after Trim ran). Fix patterns:
 - Capture whatever you need from the original slice **before** calling the filter (`cp := rawBars[i]; boot1 = &cp`).
