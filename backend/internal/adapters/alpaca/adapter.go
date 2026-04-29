@@ -321,16 +321,26 @@ func (a *Adapter) GetQuote(ctx context.Context, symbol domain.Symbol) (float64, 
 	return a.rest.GetQuote(ctx, a.dataURL, symbol)
 }
 
-// GetOptionChain satisfies ports.OptionsMarketDataPort. The live Alpaca
-// adapter already fetches a +/- 7-day window around the target expiry via
-// the REST client, so minDTE/maxDTE are intentionally ignored here — the
-// contract selection service does the DTE filtering downstream. Accepting
-// the args keeps the interface uniform with the backtest path where a
-// wider DTE window unlocks synthetic weekly expiries.
+// GetOptionChain satisfies ports.OptionsMarketDataPort. Fetches the calendar
+// window spanning minDTE..maxDTE with a one-day boundary buffer so expiries
+// that sit right on minDTE or maxDTE aren't missed when wall-clock rounding
+// puts them just outside. Falls back to a ±7-day window around the caller's
+// target expiry when minDTE/maxDTE are not provided (legacy callers).
+//
+// Without an explicit window the REST path used ±7 around a target-date
+// midpoint, which let the API's 250-contract cap get consumed by expiries
+// before minDTE — starving the in-range window of liquid candidates.
 func (a *Adapter) GetOptionChain(ctx context.Context, underlying domain.Symbol, expiry time.Time, right domain.OptionRight, minDTE, maxDTE int) ([]domain.OptionContractSnapshot, error) {
-	_ = minDTE
-	_ = maxDTE
-	return a.rest.GetOptionChain(ctx, a.dataURL, underlying, expiry, right)
+	var expiryFrom, expiryTo time.Time
+	if minDTE > 0 && maxDTE >= minDTE {
+		now := time.Now()
+		expiryFrom = now.AddDate(0, 0, minDTE-1)
+		expiryTo = now.AddDate(0, 0, maxDTE+1)
+	} else {
+		expiryFrom = expiry.AddDate(0, 0, -7)
+		expiryTo = expiry.AddDate(0, 0, 7)
+	}
+	return a.rest.GetOptionChain(ctx, a.dataURL, underlying, expiryFrom, expiryTo, right)
 }
 
 func (a *Adapter) GetOptionPrices(ctx context.Context, symbols []domain.Symbol) (map[domain.Symbol]domain.OptionQuote, error) {

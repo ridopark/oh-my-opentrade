@@ -10,27 +10,28 @@ import (
 type ExitRuleType string
 
 const (
-	ExitRuleTrailingStop   ExitRuleType = "TRAILING_STOP"
-	ExitRuleProfitTarget   ExitRuleType = "PROFIT_TARGET"
-	ExitRuleTimeExit       ExitRuleType = "TIME_EXIT"
-	ExitRuleEODFlatten     ExitRuleType = "EOD_FLATTEN"
-	ExitRuleMaxHoldingTime ExitRuleType = "MAX_HOLDING_TIME"
-	ExitRuleMaxLoss        ExitRuleType = "MAX_LOSS"
-	ExitRuleVolatilityStop ExitRuleType = "VOLATILITY_STOP"
-	ExitRuleSDTarget       ExitRuleType = "SD_TARGET"
-	ExitRuleStepStop       ExitRuleType = "STEP_STOP"
-	ExitRuleStagnationExit ExitRuleType = "STAGNATION_EXIT"
-	ExitRuleBreakevenStop  ExitRuleType = "BREAKEVEN_STOP"
-	ExitRuleDTEFloor       ExitRuleType = "DTE_FLOOR"
-	ExitRuleExpiryWatch    ExitRuleType = "EXPIRY_WATCH"
-	ExitRuleSwingStop      ExitRuleType = "SWING_STOP"
-	ExitRuleTieredTP       ExitRuleType = "TIERED_TP"
-	ExitRuleTimePartial    ExitRuleType = "TIME_PARTIAL"
-	ExitRulePremiumStop    ExitRuleType = "PREMIUM_STOP"   // exit if premium drops X% from entry
-	ExitRulePremiumTrail   ExitRuleType = "PREMIUM_TRAIL"  // trail X% from premium high-water mark
-	ExitRulePremiumTarget  ExitRuleType = "PREMIUM_TARGET" // exit if premium rises X% from entry
-	ExitRuleFastFail       ExitRuleType = "FAST_FAIL_EXIT" // exit if no MFE progress after N minutes
+	ExitRuleTrailingStop    ExitRuleType = "TRAILING_STOP"
+	ExitRuleProfitTarget    ExitRuleType = "PROFIT_TARGET"
+	ExitRuleTimeExit        ExitRuleType = "TIME_EXIT"
+	ExitRuleEODFlatten      ExitRuleType = "EOD_FLATTEN"
+	ExitRuleMaxHoldingTime  ExitRuleType = "MAX_HOLDING_TIME"
+	ExitRuleMaxLoss         ExitRuleType = "MAX_LOSS"
+	ExitRuleVolatilityStop  ExitRuleType = "VOLATILITY_STOP"
+	ExitRuleSDTarget        ExitRuleType = "SD_TARGET"
+	ExitRuleStepStop        ExitRuleType = "STEP_STOP"
+	ExitRuleStagnationExit  ExitRuleType = "STAGNATION_EXIT"
+	ExitRuleBreakevenStop   ExitRuleType = "BREAKEVEN_STOP"
+	ExitRuleDTEFloor        ExitRuleType = "DTE_FLOOR"
+	ExitRuleExpiryWatch     ExitRuleType = "EXPIRY_WATCH"
+	ExitRuleSwingStop       ExitRuleType = "SWING_STOP"
+	ExitRuleTieredTP        ExitRuleType = "TIERED_TP"
+	ExitRuleTimePartial     ExitRuleType = "TIME_PARTIAL"
+	ExitRulePremiumStop     ExitRuleType = "PREMIUM_STOP"     // exit if premium drops X% from entry
+	ExitRulePremiumTrail    ExitRuleType = "PREMIUM_TRAIL"    // trail X% from premium high-water mark
+	ExitRulePremiumTarget   ExitRuleType = "PREMIUM_TARGET"   // exit if premium rises X% from entry
+	ExitRuleFastFail        ExitRuleType = "FAST_FAIL_EXIT"   // exit if no MFE progress after N minutes
 	ExitRuleChandelierTrail ExitRuleType = "CHANDELIER_TRAIL" // trail giveback_pct of MFE once above activate_pct
+	ExitRuleCopytradeSTC    ExitRuleType = "COPYTRADE_STC"    // synthetic: partial/full close driven by copytrade author STC
 )
 
 func (e ExitRuleType) String() string { return string(e) }
@@ -58,7 +59,7 @@ func NewExitRuleType(s string) (ExitRuleType, error) {
 		ExitRuleSwingStop,
 		ExitRuleTieredTP, ExitRuleTimePartial,
 		ExitRulePremiumStop, ExitRulePremiumTrail, ExitRulePremiumTarget,
-		ExitRuleFastFail, ExitRuleChandelierTrail:
+		ExitRuleFastFail, ExitRuleChandelierTrail, ExitRuleCopytradeSTC:
 		return ExitRuleType(s), nil
 	default:
 		return "", fmt.Errorf("invalid exit rule type: %q", s)
@@ -168,9 +169,17 @@ type MonitoredPosition struct {
 	Side             string // "BUY" (long) or "SELL" (short) — set from fill side
 	ExitPending      bool   // true when an exit intent has been emitted and is awaiting terminal outcome
 	ExitPendingAt    time.Time
-	ExitOrderID      string       // broker order ID of the active exit order (for cancel-and-chase)
-	ExitRetryCount   int          // number of exit attempts (market escalations); re-pegs do NOT increment this
-	EntryThesis      *EntryThesis // nil if no AI enrichment was available at entry
+	ExitOrderID      string // broker order ID of the active exit order (for cancel-and-chase)
+
+	// PendingExitOrderIDs is the authoritative set of broker-working exit
+	// orders for this position. Populated by processExitSubmitted, drained by
+	// processExitTerminal. Used to enforce "no parallel working exits" on the
+	// escalate-to-market path. ExitOrderID (singular) retains its existing
+	// meaning as the order currently being managed by handleExitTimeout.
+	PendingExitOrderIDs map[string]struct{} `json:"-"`
+
+	ExitRetryCount int          // number of exit attempts (market escalations); re-pegs do NOT increment this
+	EntryThesis    *EntryThesis // nil if no AI enrichment was available at entry
 
 	// Asymmetric exit timeout / re-peg state. A single "exit attempt" can
 	// span several broker orders — the initial limit and up to N re-pegs
@@ -205,16 +214,29 @@ type MonitoredPosition struct {
 	// BAG position. EntryPrice is the net premium paid (debit) or collected
 	// (credit). Quantity is the combo count. LegFillPrices mirrors Legs
 	// one-to-one with the per-leg fill prices used for P&L attribution.
-	Legs           []ComboLeg `json:"legs,omitempty"`
-	ComboType      ComboType  `json:"comboType,omitempty"`
-	LegFillPrices  []float64  `json:"legFillPrices,omitempty"`
+	Legs          []ComboLeg `json:"legs,omitempty"`
+	ComboType     ComboType  `json:"comboType,omitempty"`
+	LegFillPrices []float64  `json:"legFillPrices,omitempty"`
 
 	CustomState map[string]float64 `json:"customState,omitempty"`
+
+	// Stored WITHOUT the sig_ prefix to match fill.SignalTags shape; re-prefixed
+	// on copy into exit intent Meta.
+	EntrySignalTags map[string]string `json:"entrySignalTags,omitempty"`
 }
 
 // IsCombo reports whether this is a multi-leg combo position.
 func (mp *MonitoredPosition) IsCombo() bool {
 	return len(mp.Legs) > 0
+}
+
+// HasExitInFlight reports whether an exit is currently in flight for this
+// position anywhere in the pipeline — from triggerExit setting ExitPending
+// through the broker's terminal event draining PendingExitOrderIDs. Used by
+// the cross-reason arbitration guard in triggerExit and by the reconciler
+// to suppress orphan alerts during the broker-ack/SaveTrade gap.
+func (mp *MonitoredPosition) HasExitInFlight() bool {
+	return mp.ExitPending || len(mp.PendingExitOrderIDs) > 0
 }
 
 // ComboPnL aggregates P&L across legs of a combo position. `legPrices` is a
@@ -293,19 +315,20 @@ func NewMonitoredPosition(
 	}
 
 	return MonitoredPosition{
-		Symbol:           symbol,
-		EntryPrice:       entryPrice,
-		EntryTime:        entryTime,
-		HighWaterMark:    entryPrice,
-		LowWaterMark:     entryPrice,
-		Strategy:         strategy,
-		AssetClass:       assetClass,
-		ExitRules:        exitRules,
-		InitialExitRules: initialRules,
-		TenantID:         tenantID,
-		EnvMode:          envMode,
-		Quantity:         quantity,
-		CustomState:      make(map[string]float64),
+		Symbol:              symbol,
+		EntryPrice:          entryPrice,
+		EntryTime:           entryTime,
+		HighWaterMark:       entryPrice,
+		LowWaterMark:        entryPrice,
+		Strategy:            strategy,
+		AssetClass:          assetClass,
+		ExitRules:           exitRules,
+		InitialExitRules:    initialRules,
+		TenantID:            tenantID,
+		EnvMode:             envMode,
+		Quantity:            quantity,
+		CustomState:         make(map[string]float64),
+		PendingExitOrderIDs: make(map[string]struct{}),
 	}, nil
 }
 
@@ -353,14 +376,37 @@ func (mp *MonitoredPosition) DrawdownFromHighPct(currentPrice float64) float64 {
 	return (mp.HighWaterMark - currentPrice) / mp.HighWaterMark
 }
 
+// HasBSMInputs reports whether CustomState carries the full set of inputs
+// required to run the Black-Scholes-Merton premium recalculation: strike,
+// expiry, entry-IV, and option right. Used by callers that need to
+// distinguish "premium estimate is unavailable" from "premium went to
+// zero" — the former is a data-availability problem (e.g. post-restart
+// before BSM inputs are restored), the latter is a real exit signal.
+func (mp *MonitoredPosition) HasBSMInputs() bool {
+	if mp.CustomState == nil {
+		return false
+	}
+	strike, hasStrike := mp.CustomState["strike"]
+	_, hasExpiry := mp.CustomState["expiry_unix"]
+	ivAtEntry, hasIV := mp.CustomState["iv_at_entry"]
+	_, hasRight := mp.CustomState["is_call"]
+	return hasStrike && hasExpiry && hasIV && hasRight && strike > 0 && ivAtEntry > 0
+}
+
 // EstimatedPremium computes the current option premium using Black-Scholes-Merton
 // recalculation when strike, expiry, IV, and option right are available in
 // CustomState. Falls back to the legacy delta-linear approximation when BSM
-// inputs are missing (backward compatibility with older positions).
+// inputs are missing AND delta_at_entry is present (backward compatibility
+// with older positions that pre-date BSM-input recording).
 //
 // The BSM approach accounts for gamma (convexity), theta (time decay), and all
 // higher-order Greeks, fixing the 5-25% error that delta-linear produces for
 // ATM options on 1-3% underlying moves.
+//
+// Returns 0 only when neither path can run — option_premium missing, or
+// neither BSM nor delta inputs are recoverable. Callers that key safety
+// behavior off the zero return must distinguish "BSM unavailable" from
+// "premium went to zero" via HasBSMInputs() — see evaluatePremiumStop.
 //
 // Spread cost is subtracted using the same tiers as SimBroker:
 // >=10 -> 0.3%, >=5 -> 0.5%, >=2 -> 0.8%, <2 -> 1.5%.
@@ -371,22 +417,21 @@ func (mp *MonitoredPosition) EstimatedPremium(currentUnderlyingPrice float64, no
 	if mp.CustomState == nil {
 		return 0
 	}
-	entryPremium, ok1 := mp.CustomState["option_premium"]
-	delta, ok2 := mp.CustomState["delta_at_entry"]
-	if !ok1 || !ok2 || entryPremium <= 0 {
+	entryPremium, ok := mp.CustomState["option_premium"]
+	if !ok || entryPremium <= 0 {
 		return 0
 	}
 
 	// Spread cost tiers (matching simbroker)
 	spreadCost := spreadCostForPremium(entryPremium)
 
-	// Try BSM recalculation if all inputs are available.
-	strike, hasStrike := mp.CustomState["strike"]
-	expiryUnix, hasExpiry := mp.CustomState["expiry_unix"]
-	ivAtEntry, hasIV := mp.CustomState["iv_at_entry"]
-	isCallVal, hasRight := mp.CustomState["is_call"]
+	// Primary path: BSM recalculation when full input set is available.
+	if mp.HasBSMInputs() {
+		strike := mp.CustomState["strike"]
+		expiryUnix := mp.CustomState["expiry_unix"]
+		ivAtEntry := mp.CustomState["iv_at_entry"]
+		isCallVal := mp.CustomState["is_call"]
 
-	if hasStrike && hasExpiry && hasIV && hasRight && strike > 0 && ivAtEntry > 0 {
 		expiryTime := time.Unix(int64(expiryUnix), 0)
 		// Remaining DTE in years. Use market close (16:00 ET) as expiry time
 		// for more accurate intraday theta.
@@ -419,7 +464,11 @@ func (mp *MonitoredPosition) EstimatedPremium(currentUnderlyingPrice float64, no
 		return est
 	}
 
-	// Fallback: legacy delta-linear approximation.
+	// Fallback: legacy delta-linear approximation. Requires delta_at_entry.
+	delta, hasDelta := mp.CustomState["delta_at_entry"]
+	if !hasDelta {
+		return 0
+	}
 	underlyingMove := currentUnderlyingPrice - mp.EntryPrice
 	est := entryPremium + delta*underlyingMove - spreadCost
 	if est < 0 {

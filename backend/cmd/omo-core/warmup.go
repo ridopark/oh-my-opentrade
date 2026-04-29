@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
@@ -11,6 +12,8 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
+	"github.com/oh-my-opentrade/backend/internal/app/tradereplay"
+	"github.com/oh-my-opentrade/backend/internal/app/warmup"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -25,21 +28,16 @@ type warmupBarBroker interface {
 	GetHistoricalBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error)
 }
 
-func timeframeDuration(tf domain.Timeframe) time.Duration {
-	switch string(tf) {
-	case "1m":
-		return time.Minute
-	case "5m":
-		return 5 * time.Minute
-	case "15m":
-		return 15 * time.Minute
-	case "1h":
-		return time.Hour
-	case "1d":
-		return 24 * time.Hour
-	default:
-		return time.Minute
-	}
+// warmupRepoFetcher adapts (repo, broker) into warmup.BarRepo so the
+// warmup loader can keep its broker-fallback behavior on cold-start DBs.
+type warmupRepoFetcher struct {
+	repo   warmupBarDB
+	broker warmupBarBroker
+	log    zerolog.Logger
+}
+
+func (f warmupRepoFetcher) GetMarketBars(ctx context.Context, sym domain.Symbol, tf domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error) {
+	return fetchBarsForWarmup(ctx, f.repo, f.broker, sym, tf, from, to, f.log)
 }
 
 func fetchBarsForWarmup(
@@ -68,39 +66,6 @@ func fetchBarsForWarmup(
 			Msg("DB bars query failed, falling back to broker")
 	}
 	return broker.GetHistoricalBars(ctx, sym, tf, from, to)
-}
-
-func fetchIntraSessionBarsWithGapFill(
-	ctx context.Context,
-	repo warmupBarDB,
-	broker warmupBarBroker,
-	sym domain.Symbol,
-	tf domain.Timeframe,
-	from, to time.Time,
-	log zerolog.Logger,
-) ([]domain.MarketBar, error) {
-	dbBars, err := repo.GetMarketBars(ctx, sym, tf, from, to)
-	if err != nil || len(dbBars) == 0 {
-		if err != nil {
-			log.Warn().Err(err).Str("symbol", string(sym)).Msg("DB intra-session query failed, using broker")
-		}
-		return broker.GetHistoricalBars(ctx, sym, tf, from, to)
-	}
-	latestDB := dbBars[len(dbBars)-1].Time
-	barDur := timeframeDuration(tf)
-	gapStart := latestDB.Add(barDur)
-	if to.Sub(gapStart) > 2*barDur {
-		tail, gapErr := broker.GetHistoricalBars(ctx, sym, tf, gapStart, to)
-		if gapErr == nil && len(tail) > 0 {
-			log.Debug().
-				Str("symbol", string(sym)).
-				Int("db_bars", len(dbBars)).
-				Int("gap_bars", len(tail)).
-				Msg("intra-session bars gap-filled from broker")
-			dbBars = append(dbBars, tail...)
-		}
-	}
-	return dbBars, nil
 }
 
 type symbolLists struct {
@@ -141,7 +106,9 @@ func buildSymbolLists(cfg *config.Config) symbolLists {
 // bar time from TimescaleDB, and if a gap of more than 2 minutes exists (but
 // less than 7 days), it fetches the missing bars from Alpaca and saves them.
 // Symbols with no bars at all are skipped (use omo-backfill for cold-start).
-func fillBarGaps(ctx context.Context, cfg *config.Config, infra *infraDeps, log zerolog.Logger) {
+func fillBarGaps(ctx context.Context, cfg *config.Config, infra *infraDeps, log zerolog.Logger, done chan<- struct{}) {
+	defer close(done)
+
 	gapLog := log.With().Str("component", "gap-fill").Logger()
 	gapLog.Info().Msg("starting bar gap fill")
 
@@ -248,7 +215,7 @@ func fillBarGaps(ctx context.Context, cfg *config.Config, infra *infraDeps, log 
 		Msg("gap-fill complete")
 }
 
-func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps, svc *appServices, syms symbolLists, log zerolog.Logger) {
+func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps, svc *appServices, syms symbolLists, log zerolog.Logger, gapFillDone <-chan struct{}) {
 	equityStrs := cfg.Symbols.SymbolsByAssetClass("EQUITY")
 	cryptoStrs := cfg.Symbols.SymbolsByAssetClass("CRYPTO")
 
@@ -277,29 +244,78 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 
 	svc.monitor.InitAggregators(syms.all, todayOpen)
 
-	// Equity warmup: use full previous NYSE RTH session for proper VWAP/confluence.
+	// Pre-mark HTF slots that the HTF native loop below will seed via
+	// WarmUpNative, so the historical 1m WarmUp's aggregator path skips
+	// calc.Update on today's pre-boot closes (would double-feed otherwise).
+	if svc.useStrategyV2 && svc.strategyRunner != nil {
+		for _, sym := range syms.all {
+			tfs := svc.strategyRunner.HTFTimeframesForSymbol(string(sym))
+			for _, tf := range tfs {
+				svc.monitor.ReserveHTFNative(sym, domain.Timeframe(tf))
+			}
+		}
+	}
+
+	// Equity warmup uses the canonical warmup.EquitySpec — same loader
+	// the backtest path consumes, so indicator state at boot equals
+	// indicator state at backtest cfg.From for the same instant. RTH
+	// filter applied at the loader; pre/post bars never seed EMA/RSI/ATR.
+	//
+	// Cache of today's-session BarSnapshots produced by the canonical
+	// WarmUpAndCollect — reused below by SeedORBFromHistory so the ORB
+	// tracker never re-runs s.calculator.Update on bars already seeded.
+	todaySnapsCache := make(map[string][]monitor.BarSnapshot)
+	todayBarsCache := make(map[string][]domain.MarketBar)
 	if len(syms.equity) > 0 {
-		prevStart, prevEnd := domain.PreviousRTHSession(time.Now())
-		warmupFrom := prevStart // full session from 9:30 ET (was last 2 hours)
-		warmupTo := prevEnd
+		// Wait for fillBarGaps to close the trailing-edge minute-bucket gap
+		// before the canonical 1m Load reads market_bars; otherwise today's-
+		// session tail in the canonical window can be short and downstream
+		// SeedORBFromHistory would seed an incomplete ORB tracker. Mirrors
+		// the existing HTF gate; closed channel makes the HTF select a no-op.
+		select {
+		case <-gapFillDone:
+		case <-time.After(120 * time.Second):
+			warmupLog.Warn().Msg("gap-fill did not finish in 120s, proceeding with equity warmup anyway")
+		case <-ctx.Done():
+			return
+		}
+		spec := warmup.EquitySpec()
+		fetcher := warmupRepoFetcher{repo: infra.repo, broker: infra.barFetcher, log: warmupLog}
+		required := spec.Required[syms.timeframe]
 		warmupLog.Info().
-			Time("prev_session_start", prevStart).
-			Time("prev_session_end", prevEnd).
-			Time("warmup_from", warmupFrom).
-			Time("warmup_to", warmupTo).
-			Msg("warming equity indicators from previous RTH session")
+			Str("timeframe", string(syms.timeframe)).
+			Int("required_bars", required).
+			Bool("rth_filter", spec.RTHFilter).
+			Msg("warming equity indicators (canonical spec)")
 		for _, sym := range syms.equity {
-			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.barFetcher, sym, syms.timeframe, warmupFrom, warmupTo, warmupLog)
+			bars, err := warmup.Load(ctx, fetcher, spec, sym, syms.timeframe, time.Now())
 			if err != nil {
 				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("equity warmup fetch failed, starting cold")
 				continue
 			}
-			n := svc.monitor.WarmUp(bars)
+			if len(bars) < required {
+				warmupLog.Warn().
+					Str("symbol", string(sym)).
+					Int("got", len(bars)).
+					Int("required", required).
+					Msg("equity warmup short — long-period indicators may not fully converge")
+			}
+			// Split-and-reset boot path: feed pre-today RTH bars, zero
+			// session-VWAP between days (ResetSessionIndicators only
+			// touches VWAP — no auto-reset exists in calc.Update), then
+			// feed today's bars. Single calc.Update per bar, correct
+			// session VWAP at runtime entry.
+			yesterdayBars, todayBars := monitor.SplitBarsByTime(bars, todayOpen.UTC())
+			_ = svc.monitor.WarmUpAndCollect(yesterdayBars)
 			svc.monitor.ResetSessionIndicators(sym.String())
+			todaySnaps := svc.monitor.WarmUpAndCollect(todayBars)
 			warmupBarsCache[string(sym)] = bars
+			todaySnapsCache[string(sym)] = todaySnaps
+			todayBarsCache[string(sym)] = todayBars
 			warmupLog.Info().
 				Str("symbol", string(sym)).
-				Int("bars", n).
+				Int("bars", len(bars)).
+				Int("today_bars", len(todayBars)).
 				Msg("equity indicator warmup complete")
 		}
 	}
@@ -353,6 +369,7 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 		svc.strategyRunner.SetSuppressProgressEvents(true)
 
 		runnerWarmupCalc = monitor.NewIndicatorCalculator()
+		runnerWarmupCalc.Label = "runner_warmup_boot"
 		runnerWarmupSnapshotFn = func(bar domain.MarketBar) start.IndicatorData {
 			snap := runnerWarmupCalc.Update(bar)
 			return start.IndicatorData{
@@ -389,20 +406,6 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 
 		svc.strategyRunner.InitAggregators(todayOpen)
 
-		// Feed cached 1m bars through HTF aggregators so 5m strategies
-		// (AVWAP, PHM) receive proper warmup bars via WarmUpHTF.
-		for _, sym := range syms.all {
-			bars := warmupBarsCache[string(sym)]
-			if len(bars) == 0 {
-				continue
-			}
-			svc.strategyRunner.WarmUpHTF(string(sym), bars, runnerWarmupSnapshotFn, loc)
-			warmupLog.Info().
-				Str("symbol", string(sym)).
-				Int("bars_1m", len(bars)).
-				Msg("strategy runner HTF warmup from 1m bars")
-		}
-
 		// Resolve AVWAP anchors for today's session so HTF warmup bars
 		// feed into properly initialized AVWAP calculators with real
 		// anchor times (session_open, pd_high, pd_low) and key levels.
@@ -412,42 +415,70 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 		}
 		svc.strategyRunner.ResolveAnchorsForWarmup(allSymStrs, time.Now())
 
-		htfReqs := collectHTFWarmupReqs(svc.strategyRunner)
-		if len(htfReqs) > 0 {
-			warmupLog.Info().Int("htf_pairs", len(htfReqs)).Msg("warming up HTF strategies")
+		// HTF Load reads market_bars; gate on fillBarGaps's HTF aggregation
+		// to avoid a stale-tail read. Timeout matches fillBarGaps's own.
+		select {
+		case <-gapFillDone:
+		case <-time.After(120 * time.Second):
+			warmupLog.Warn().Msg("gap-fill did not finish in 120s, proceeding with HTF warmup anyway")
+		case <-ctx.Done():
+			return
 		}
-		for _, req := range htfReqs {
-			var from, to time.Time
-			if req.symbol.IsCryptoSymbol() {
-				to = time.Now().UTC()
-				from = to.Add(-req.lookback)
-			} else {
-				prevStart, prevEnd := domain.PreviousRTHSession(time.Now())
-				to = prevEnd
-				// Use full session for 5m strategies (need VWAP from open)
-				// but respect the requested lookback if it's longer.
-				sessionDur := prevEnd.Sub(prevStart)
-				if req.lookback < sessionDur {
-					from = prevStart
-				} else {
-					from = to.Add(-req.lookback)
-				}
-			}
-			bars, err := fetchBarsForWarmup(ctx, infra.repo, infra.barFetcher, req.symbol, req.timeframe, from, to, warmupLog)
-			if err != nil {
-				warmupLog.Warn().Err(err).
-					Str("symbol", string(req.symbol)).
-					Str("timeframe", string(req.timeframe)).
-					Msg("HTF warmup fetch failed, starting cold")
+
+		fetcher := warmupRepoFetcher{repo: infra.repo, broker: infra.barFetcher, log: warmupLog}
+		htfSem := make(chan struct{}, 8)
+		var htfWg sync.WaitGroup
+		for _, sym := range syms.all {
+			tfs := svc.strategyRunner.HTFTimeframesForSymbol(string(sym))
+			if len(tfs) == 0 {
 				continue
 			}
-			n := svc.strategyRunner.WarmUpTF(string(req.symbol), string(req.timeframe), bars, runnerWarmupSnapshotFn)
-			warmupLog.Info().
-				Str("symbol", string(req.symbol)).
-				Str("timeframe", string(req.timeframe)).
-				Int("bars", n).
-				Msg("HTF strategy warmup complete")
+			spec := warmup.EquitySpec()
+			if sym.IsCryptoSymbol() {
+				spec = warmup.CryptoSpec()
+			}
+			for _, tf := range tfs {
+				htfTF := domain.Timeframe(tf)
+				required := spec.Required[htfTF]
+				if required == 0 {
+					warmupLog.Warn().
+						Str("symbol", string(sym)).
+						Str("timeframe", tf).
+						Msg("no canonical bar count for timeframe — skipping HTF warmup")
+					continue
+				}
+				htfWg.Add(1)
+				htfSem <- struct{}{}
+				go func(sym domain.Symbol, htfTF domain.Timeframe, spec warmup.Spec, required int) {
+					defer htfWg.Done()
+					defer func() { <-htfSem }()
+					bars, err := warmup.Load(ctx, fetcher, spec, sym, htfTF, time.Now())
+					if err != nil {
+						warmupLog.Warn().Err(err).
+							Str("symbol", string(sym)).
+							Str("timeframe", string(htfTF)).
+							Msg("HTF warmup fetch failed, starting cold")
+						return
+					}
+					if len(bars) < required {
+						warmupLog.Warn().
+							Str("symbol", string(sym)).
+							Str("timeframe", string(htfTF)).
+							Int("got", len(bars)).
+							Int("required", required).
+							Msg("HTF warmup short — long-period indicators may not fully converge")
+					}
+					n := svc.strategyRunner.WarmUpTF(string(sym), string(htfTF), bars, runnerWarmupSnapshotFn)
+					svc.monitor.WarmUpNative(sym, htfTF, bars)
+					warmupLog.Info().
+						Str("symbol", string(sym)).
+						Str("timeframe", string(htfTF)).
+						Int("bars", n).
+						Msg("HTF warmup complete (canonical spec)")
+				}(sym, htfTF, spec, required)
+			}
 		}
+		htfWg.Wait()
 	}
 
 	isWeekday := nowET.Weekday() != time.Saturday && nowET.Weekday() != time.Sunday
@@ -455,15 +486,20 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 	if isOpen && nowET.After(todayOpen) {
 		warmupLog.Info().Msg("replaying current-session bars for ORB state recovery")
 		for _, sym := range syms.equity {
-			orbBars, err := fetchIntraSessionBarsWithGapFill(ctx, infra.repo, infra.alpacaData, sym, syms.timeframe, todayOpen.UTC(), time.Now(), warmupLog)
-			if err != nil {
-				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("ORB warmup fetch failed")
+			todaySnaps := todaySnapsCache[string(sym)]
+			orbBars := todayBarsCache[string(sym)]
+			if len(orbBars) == 0 {
 				continue
 			}
-			svc.monitor.WarmUpORB(orbBars)
+			// SeedORBFromHistory drives the ORB tracker through today's
+			// session using snaps already produced by WarmUpAndCollect.
+			// No additional s.calculator.Update calls — single-pass
+			// invariant preserved, session VWAP unaffected.
+			svc.monitor.SeedORBFromHistory(sym, todaySnaps)
 			if svc.useStrategyV2 && svc.strategyRunner != nil {
 				if runnerWarmupCalc == nil {
 					runnerWarmupCalc = monitor.NewIndicatorCalculator()
+					runnerWarmupCalc.Label = "runner_warmup_orb"
 				}
 				if runnerWarmupSnapshotFn == nil {
 					runnerWarmupSnapshotFn = func(bar domain.MarketBar) start.IndicatorData {
@@ -490,14 +526,54 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 					}
 				}
 				_ = svc.strategyRunner.WarmUp(string(sym), orbBars, runnerWarmupSnapshotFn)
-				// Also aggregate 1m bars into HTF (5m) for strategies like ORB
-				// that are registered on the 5m timeframe.
-				svc.strategyRunner.WarmUpHTF(string(sym), orbBars, runnerWarmupSnapshotFn, loc)
+				svc.strategyRunner.PrimeAggregators(string(sym), orbBars)
 			}
 			warmupLog.Info().
 				Str("symbol", string(sym)).
 				Int("bars", len(orbBars)).
 				Msg("ORB warmup complete")
+		}
+
+		// Phase 6/Phase 4(D) of the parity plan: boot-time replay of
+		// market_trades since session_open. When the live DP aggregator is
+		// enabled, the sink dispatches each tick into livedarkpool.AddTrade
+		// so the in-memory aggregator state for the partial 5m bucket and
+		// every closed-but-unflushed earlier bucket is rebuilt from the
+		// persisted trade history. Off-path (flag false) the sink is a
+		// no-op LoggingSink and the replayer just validates the read
+		// pipeline end-to-end on production data.
+		if svc.tradeReplayer != nil && len(syms.equity) > 0 {
+			equitySymbols := make([]domain.Symbol, len(syms.equity))
+			copy(equitySymbols, syms.equity)
+			sink := tradereplay.LoggingSink()
+			if cfg.LiveDarkPoolEnabled && svc.liveDarkPool != nil {
+				dp := svc.liveDarkPool
+				sink = func(_ context.Context, t domain.MarketTrade) error {
+					dp.AddTrade(t)
+					return nil
+				}
+			}
+			stats, err := svc.tradeReplayer.Replay(ctx, todayOpen.UTC(), equitySymbols, sink)
+			if err != nil {
+				warmupLog.Warn().Err(err).
+					Int("symbols_ok", stats.Symbols).
+					Int("symbols_failed", stats.SymbolsFailed).
+					Int("trades", stats.Trades).
+					Msg("market_trades boot replay had errors")
+			} else {
+				warmupLog.Info().
+					Int("symbols", stats.Symbols).
+					Int("trades", stats.Trades).
+					Time("since", todayOpen.UTC()).
+					Bool("livedp_sink", cfg.LiveDarkPoolEnabled && svc.liveDarkPool != nil).
+					Msg("market_trades boot replay complete")
+			}
+			if cfg.LiveDarkPoolEnabled && svc.liveDarkPool != nil {
+				// Force an immediate flush so the runner can Lookup any
+				// session-open buckets that have already closed before the
+				// 1-minute ticker would otherwise fire.
+				svc.liveDarkPool.FlushNow(ctx)
+			}
 		}
 	}
 
@@ -833,52 +909,3 @@ func warmupHTF(ctx context.Context, infra *infraDeps, svc *appServices, syms sym
 	log.Info().Msg("HTF warmup finished")
 }
 
-type htfWarmupReq struct {
-	symbol    domain.Symbol
-	timeframe domain.Timeframe
-	lookback  time.Duration
-}
-
-func collectHTFWarmupReqs(runner *strategy.Runner) []htfWarmupReq {
-	seen := make(map[string]struct{})
-	var reqs []htfWarmupReq
-	for _, inst := range runner.Router().AllInstances() {
-		tfs := inst.Assignment().Timeframes
-		if len(tfs) == 0 {
-			continue
-		}
-		warmupBars := inst.Strategy().WarmupBars()
-		for _, tf := range tfs {
-			if tf == "1m" {
-				continue
-			}
-			for _, sym := range inst.Assignment().Symbols {
-				key := sym + ":" + tf
-				if _, ok := seen[key]; ok {
-					continue
-				}
-				seen[key] = struct{}{}
-				var barDur time.Duration
-				switch tf {
-				case "5m":
-					barDur = 5 * time.Minute
-				case "15m":
-					barDur = 15 * time.Minute
-				case "1h":
-					barDur = time.Hour
-				case "1d":
-					barDur = 24 * time.Hour
-				default:
-					barDur = time.Minute
-				}
-				lookback := time.Duration(float64(warmupBars) * float64(barDur) * 1.2)
-				reqs = append(reqs, htfWarmupReq{
-					symbol:    domain.Symbol(sym),
-					timeframe: domain.Timeframe(tf),
-					lookback:  lookback,
-				})
-			}
-		}
-	}
-	return reqs
-}

@@ -40,6 +40,14 @@ type Config struct {
 	// behavior — cancel-all on startup, no intent persistence) so production
 	// deploys can ship the code and flip the flag independently.
 	OrderJournalEnabled bool `yaml:"-"`
+
+	// LiveDarkPoolEnabled toggles the in-process dark-pool 5m aggregator
+	// (Phase 4 of the parity plan). Default off — when off, livedarkpool.
+	// Service is constructed but not Run, the bus subscriber doesn't
+	// dispatch trades to it, and the strategy runner falls back to whatever
+	// DPSource was last set (noopDPSource by default in live, the static
+	// backtest map in offline runs). Flip via LIVE_DARK_POOL_ENABLED=true.
+	LiveDarkPoolEnabled bool `yaml:"-"`
 }
 
 // HyperliquidConfig holds connection and authentication parameters for the
@@ -95,6 +103,13 @@ type AIConfig struct {
 	MinConfidence  float64 `yaml:"min_confidence"`
 	Enabled        bool    `yaml:"enabled"`
 	ProviderSort   string  `yaml:"provider_sort"` // OpenRouter provider routing sort (e.g. "latency")
+
+	// AnchorResolverEnabled wires the candidate-accumulating, score-ranked
+	// AIAnchorResolver into the strategy runner. When false (default), live
+	// takes the same deterministic resolveSessionAnchors path backtest uses
+	// with no_ai=true — avoids candidate detectors, fallbackRank ordering,
+	// and async LLM hot-swaps diverging from backtest parity.
+	AnchorResolverEnabled bool `yaml:"anchor_resolver_enabled"`
 }
 
 type AIScreenerConfig struct {
@@ -449,9 +464,15 @@ type PositionRiskCapConfig struct {
 }
 
 // ExitsConfig groups exit-engine cross-cutting knobs. Today it carries
-// the ATR-bucketed premium-trail multiplier (see ATRTrailConfig).
+// the ATR-bucketed premium-trail multiplier (see ATRTrailConfig) and the
+// experimental modify-in-place re-peg flag (see RepegModifyInPlace).
 type ExitsConfig struct {
 	ATRTrail ATRTrailConfig `yaml:"atr_trail"`
+	// RepegModifyInPlace gates atomic-modify exit re-pegs so the
+	// cancel-fill race that double-writes SELL legs cannot occur. False
+	// default; flip only after one clean Phase-1-only live session per
+	// the plan rollout gate.
+	RepegModifyInPlace bool `yaml:"repeg_modify_in_place"`
 }
 
 // ATRTrailConfig scales PREMIUM_TRAIL.trail_pct by an ATR%-percentile
@@ -762,6 +783,9 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	}
 	if val := os.Getenv("OMO_ORDER_JOURNAL_ENABLED"); val == "true" {
 		cfg.OrderJournalEnabled = true
+	}
+	if val := os.Getenv("LIVE_DARK_POOL_ENABLED"); val == "true" {
+		cfg.LiveDarkPoolEnabled = true
 	}
 
 	// Validate configuration

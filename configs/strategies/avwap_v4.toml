@@ -27,7 +27,7 @@ state = "PaperActive"
 paper_only = true
 
 [routing]
-symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "AFRM", "JPM", "XOM", "OXY", "LLY", "RIVN", "RBLX", "BA", "QQQ", "IWM", "SOXL"]
+symbols = ["TSLA", "MRNA", "HIMS", "SPY", "AMD", "NFLX", "COIN", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "AFRM", "JPM", "XOM", "OXY", "LLY", "RIVN", "RBLX", "BA", "QQQ", "IWM", "SOXL"]
 timeframes = ["5m"]
 priority = 80
 conflict_policy = "priority_wins"
@@ -115,8 +115,13 @@ midday_volume_mult = 1.5
 # Directional bias: only long when price is above AVWAP, only short when below
 enforce_avwap_bias = true        # only long above AVWAP, short below
 
-# AVWAP slope must exceed this threshold (bps/bar) for trend confirmation
-min_slope_bps = 0.5              # require stronger AVWAP slope
+# AVWAP slope must exceed this threshold (bps/bar) for trend confirmation.
+# 0.5 sat inside the 5m midday noise floor (empirically: live slopes in
+# [-0.26, 0.12] bps mid-session) which meant knife-edge gate decisions
+# diverged between live and backtest on tiny numerical micro-differences.
+# 1.0 lifts the threshold out of the noise band — see quant-analyst note
+# 2026-04-22. Re-backtest before treating live PnL as backtest-validated.
+min_slope_bps = 1.0
 slope_lookback = 10              # shorter lookback (was 15)
 
 # Shorts above AVWAP require a capitulation event
@@ -137,7 +142,7 @@ max_position_bps = 1500          # reduced from 3000
 
 # --- Timing ---
 # Trading window (ET). Entries only allowed within this range.
-allowed_hours_start = "09:35"
+allowed_hours_start = "09:30"    # 5m bars use bucket-START timestamps, so the first RTH bar carries 09:30. Setting to 09:30 lets it pass; 09:35 blocked it stale until 09:40.
 allowed_hours_end = "15:45"
 allowed_hours_tz = "America/New_York"
 
@@ -229,6 +234,23 @@ inducement_breach_max_bps = 80
 inducement_reversal_bars = 3
 inducement_volume_min_ratio = 1.2
 
+# ─── Co-fire veto (price-volume structure shift) ────────────────────────
+# Blocks entries on bars where inducement fires AND a climactic-exhaustion
+# pattern fires same-bar. Research (omo-signal-corr IS/OOS/held-out, Apr 2026):
+# this subset has consistently negative r6/r12 returns (-3 to -12 bps, held-out
+# t=-3.08). The reversal factor's standalone signal was dead; only the co-fire
+# veto survived all three validation windows.
+#   Stage 1: long-only (held-out r12 damage worst on longs). Add shorts after
+#   a month of live data if behaviour matches expectations.
+#   Thresholds locked to the validated operating point (|stretch_z| in [2,3]).
+cofire_veto_enabled = false
+cofire_veto_shadow = true
+cofire_veto_long_only = true
+cofire_veto_stretch_z_min = 2.0
+cofire_veto_stretch_z_max = 3.0
+cofire_veto_vol_shift_max = -0.5
+cofire_veto_session_sigma_min_bars = 6
+
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
 
@@ -315,12 +337,12 @@ max_contracts = 50
 limit_spread_pct = 1.00
 # Fallback when spread is zero: ask + 2%
 limit_buffer_bps = 1000
-# Cancel unfilled option orders after 90 seconds
-stale_cancel_secs = 90
+# Cancel unfilled option orders after 120 seconds
+stale_cancel_secs = 120
 
 [options.defaults]
 min_dte = 3                      # short DTE for faster premium response
-max_dte = 7                      # minimal theta cost for intraday
+max_dte = 14                     # minimal theta cost for intraday
 target_delta_low = 0.60          # ITM for less extrinsic, more delta
 target_delta_high = 0.75         # ITM — premium tracks underlying closely
 min_open_interest = 50           # ensure liquidity

@@ -127,6 +127,7 @@ func (s *Service) Start(ctx context.Context) error {
 		{domain.EventFeedDegraded, s.fmtFeedDegraded, false},
 		{domain.EventWSCircuitBreakerTripped, s.fmtWSCircuitBreaker, false},
 		{domain.EventExitCircuitBroken, s.fmtExitCircuitBroken, false},
+		{domain.EventCopytradeOrphanFill, s.fmtCopytradeOrphanFill, false},
 
 		// Lifecycle
 		{domain.EventSystemStarted, s.fmtSystemStarted, false},
@@ -661,6 +662,15 @@ func fmtDuration(d time.Duration) string {
 
 func (s *Service) fmtKillSwitch(ev domain.Event) string {
 	return "🚨 **KILL SWITCH ENGAGED** — Trading halted for symbol"
+}
+
+func (s *Service) fmtCopytradeOrphanFill(ev domain.Event) string {
+	p, ok := ev.Payload.(domain.CopytradeOrphanFillPayload)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("🚨 **COPYTRADE ORPHAN FILL** — %s: buy fill of %g @ %.2f with no matching Pending position (broker_order_id=%s). TTL sweep raced a late broker fill; review manually.",
+		p.ContractSymbol, p.Qty, p.FillPrice, p.BrokerOrderID)
 }
 
 func (s *Service) fmtCircuitBreaker(ev domain.Event) string {

@@ -1011,6 +1011,71 @@ func TestEvaluate_PremiumStop(t *testing.T) {
 			price:     140,
 			wantFired: false,
 		},
+		// Regression: 2026-04-28 LLY 850P incident. Post-restart, BSM inputs
+		// (strike/expiry/iv/is_call) are not yet rehydrated, and delta_at_entry
+		// is missing too. EstimatedPremium returns 0; pre-fix this fired
+		// "premium exhausted" on the first tick. After the fix, the evaluator
+		// must distinguish "BSM unavailable" from "premium went to zero" and
+		// stay quiet.
+		{
+			name: "does not trigger when BSM inputs missing AND est==0 (post-restart)",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumStop, Params: map[string]float64{"threshold": 0.40}},
+			pos: func() *domain.MonitoredPosition {
+				p := newTestMonitoredPosition(t, 150, now.Add(-30*time.Minute), domain.AssetClassEquity)
+				p.InstrumentType = domain.InstrumentTypeOption
+				if p.CustomState == nil {
+					p.CustomState = make(map[string]float64)
+				}
+				// Only option_premium restored (matches bootstrap.go behavior);
+				// no delta_at_entry, no BSM inputs.
+				p.CustomState["option_premium"] = 25.66
+				return p
+			}(),
+			price:     869.37, // underlying spot — BSM would compute a real premium, but inputs are missing
+			wantFired: false,
+		},
+		// Counter-regression: when BSM inputs ARE present and est genuinely
+		// collapses to zero (e.g. deep OTM put about to expire worthless),
+		// the evaluator MUST still fire — the post-restart guard above is
+		// the only suppression, not a blanket disable.
+		{
+			name: "does trigger when BSM inputs present AND est==0",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumStop, Params: map[string]float64{"threshold": 0.40}},
+			pos: func() *domain.MonitoredPosition {
+				p := newTestMonitoredPosition(t, 150, now.Add(-30*time.Minute), domain.AssetClassEquity)
+				p.InstrumentType = domain.InstrumentTypeOption
+				p.OptionRight = "CALL"
+				expiry := time.Date(2026, 3, 6, 16, 0, 0, 0, etLoc) // expires today
+				if p.CustomState == nil {
+					p.CustomState = make(map[string]float64)
+				}
+				p.CustomState["option_premium"] = 5.00
+				p.CustomState["strike"] = 150.0
+				p.CustomState["expiry_unix"] = float64(expiry.Unix())
+				p.CustomState["iv_at_entry"] = 0.30
+				p.CustomState["is_call"] = 1.0
+				return p
+			}(),
+			price:      130, // far OTM call — intrinsic = 0
+			wantFired:  true,
+			wantSubstr: "premium exhausted",
+		},
+		// Legitimate fire on the delta-linear path: BSM inputs absent but
+		// delta_at_entry present, premium drops below zero per the linear
+		// model. The post-restart suppression must NOT block this — it
+		// only kicks in when BOTH paths are unavailable.
+		{
+			name: "does trigger when delta-linear path drives premium to zero",
+			rule: domain.ExitRule{Type: domain.ExitRulePremiumStop, Params: map[string]float64{"threshold": 0.40}},
+			pos: func() *domain.MonitoredPosition {
+				// entry premium=5.00, delta=0.50, entry underlying=150.
+				// At underlying 140: 5.00 + 0.50*(140-150) - spread = -0.025 -> 0.
+				return newOptionPosition(t, 150, now.Add(-30*time.Minute), 5.00, 0.50)
+			}(),
+			price:      140,
+			wantFired:  true,
+			wantSubstr: "premium exhausted",
+		},
 	}
 
 	for _, tc := range tests {
@@ -1306,6 +1371,89 @@ func TestEstimatedPremium(t *testing.T) {
 		// OTM: underlying at 148, intrinsic = 0
 		estOTM := pos.EstimatedPremium(148, now)
 		assert.Equal(t, 0.0, estOTM)
+	})
+
+	// Regression: pre-fix this returned 0 because the early-return required
+	// delta_at_entry even when full BSM inputs were present. After the fix
+	// (2026-04-28) BSM is the primary path and delta is needed only for the
+	// legacy fallback. Bootstrap-restored option positions hit this path —
+	// LLY 850P false-fire incident traced to it.
+	t.Run("BSM works without delta_at_entry", func(t *testing.T) {
+		expiry := time.Date(2026, 3, 13, 16, 0, 0, 0, etLoc)
+		pos := newTestMonitoredPosition(t, 150, now, domain.AssetClassEquity)
+		pos.InstrumentType = domain.InstrumentTypeOption
+		pos.OptionRight = "PUT"
+		pos.CustomState["option_premium"] = 5.00
+		pos.CustomState["strike"] = 150.0
+		pos.CustomState["expiry_unix"] = float64(expiry.Unix())
+		pos.CustomState["iv_at_entry"] = 0.30
+		pos.CustomState["is_call"] = 0.0
+		// No delta_at_entry.
+
+		est := pos.EstimatedPremium(148, now)
+		assert.Greater(t, est, 0.0, "BSM must produce a non-zero premium without delta_at_entry")
+		assert.Less(t, est, 10.0, "BSM premium should be reasonable for ATM-ish put")
+	})
+}
+
+func TestHasBSMInputs(t *testing.T) {
+	etLoc := mustETLocation(t)
+	expiry := time.Date(2026, 3, 13, 16, 0, 0, 0, etLoc)
+
+	t.Run("nil CustomState returns false", func(t *testing.T) {
+		pos := &domain.MonitoredPosition{InstrumentType: domain.InstrumentTypeOption}
+		assert.False(t, pos.HasBSMInputs())
+	})
+
+	t.Run("complete inputs return true", func(t *testing.T) {
+		pos := &domain.MonitoredPosition{
+			InstrumentType: domain.InstrumentTypeOption,
+			CustomState: map[string]float64{
+				"strike":      150.0,
+				"expiry_unix": float64(expiry.Unix()),
+				"iv_at_entry": 0.30,
+				"is_call":     1.0,
+			},
+		}
+		assert.True(t, pos.HasBSMInputs())
+	})
+
+	t.Run("missing iv returns false", func(t *testing.T) {
+		pos := &domain.MonitoredPosition{
+			InstrumentType: domain.InstrumentTypeOption,
+			CustomState: map[string]float64{
+				"strike":      150.0,
+				"expiry_unix": float64(expiry.Unix()),
+				"is_call":     1.0,
+			},
+		}
+		assert.False(t, pos.HasBSMInputs())
+	})
+
+	t.Run("zero strike returns false", func(t *testing.T) {
+		pos := &domain.MonitoredPosition{
+			InstrumentType: domain.InstrumentTypeOption,
+			CustomState: map[string]float64{
+				"strike":      0,
+				"expiry_unix": float64(expiry.Unix()),
+				"iv_at_entry": 0.30,
+				"is_call":     1.0,
+			},
+		}
+		assert.False(t, pos.HasBSMInputs())
+	})
+
+	t.Run("zero iv returns false", func(t *testing.T) {
+		pos := &domain.MonitoredPosition{
+			InstrumentType: domain.InstrumentTypeOption,
+			CustomState: map[string]float64{
+				"strike":      150.0,
+				"expiry_unix": float64(expiry.Unix()),
+				"iv_at_entry": 0,
+				"is_call":     1.0,
+			},
+		}
+		assert.False(t, pos.HasBSMInputs())
 	})
 }
 
@@ -1963,6 +2111,75 @@ func TestEvaluateChandelierTrail(t *testing.T) {
 			"activate_pct": 0.08, "giveback_pct": 0,
 		}}
 		triggered, _ := Evaluate(rule, pos, 50, now, EvalContext{})
+		assert.False(t, triggered)
+	})
+}
+
+// TestEvaluateChandelierTrail_ExternalArm exercises activate_mode=1 on the
+// options branch. Strategy-armed peak tracks running max and fires on giveback
+// against the peak; MFE thresholds are ignored in this mode.
+func TestEvaluateChandelierTrail_ExternalArm(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+	entryTime := now.Add(-30 * time.Minute)
+
+	rule := domain.ExitRule{Type: domain.ExitRuleChandelierTrail, Params: map[string]float64{
+		"activate_mode": 1,
+		"giveback_pct":  0.15,
+	}}
+
+	t.Run("not_armed_never_fires", func(t *testing.T) {
+		// entry premium=5, delta=1, entry underlying=100.
+		// No arm flag set — current price at 100 (premium 5) should never fire.
+		pos := newOptionPosition(t, 100, entryTime, 5.00, 1.00)
+		triggered, reason := Evaluate(rule, pos, 100, now, EvalContext{})
+		assert.False(t, triggered)
+		assert.Empty(t, reason)
+	})
+
+	t.Run("armed_price_flat_no_fire", func(t *testing.T) {
+		pos := newOptionPosition(t, 100, entryTime, 5.00, 1.00)
+		pos.CustomState["chandelier_ext_armed"] = 1
+		pos.CustomState["chandelier_ext_peak"] = 5.0
+		// Underlying=100 → est premium = 5.0 + 1*(100-100) = 5.0
+		// Peak=5.0; 5.0 >= 5.0*(1-0.15)=4.25 — no fire
+		triggered, _ := Evaluate(rule, pos, 100, now, EvalContext{})
+		assert.False(t, triggered)
+	})
+
+	t.Run("armed_price_rises_peak_tracks", func(t *testing.T) {
+		pos := newOptionPosition(t, 100, entryTime, 5.00, 1.00)
+		pos.CustomState["chandelier_ext_armed"] = 1
+		pos.CustomState["chandelier_ext_peak"] = 5.0
+		// Underlying moves up — delta-linear plus theta gives currentPremium
+		// slightly under the naive 6.0 but still > 5.0 peak. Peak must ratchet
+		// up; rule must not fire at the new (higher) level.
+		triggered, _ := Evaluate(rule, pos, 101, now, EvalContext{})
+		assert.False(t, triggered)
+		assert.Greater(t, pos.CustomState["chandelier_ext_peak"], 5.0)
+	})
+
+	t.Run("armed_premium_drops_past_giveback_fires", func(t *testing.T) {
+		pos := newOptionPosition(t, 100, entryTime, 5.00, 1.00)
+		pos.CustomState["chandelier_ext_armed"] = 1
+		// Peak forced high; current underlying matches entry, so est premium is
+		// at or near entry (well below peak * 0.85). Must fire.
+		pos.CustomState["chandelier_ext_peak"] = 10.0
+		triggered, reason := Evaluate(rule, pos, 100, now, EvalContext{})
+		assert.True(t, triggered)
+		assert.Contains(t, reason, "chandelier_trail(external)")
+	})
+
+	t.Run("mfe_mode_still_default_when_not_armed", func(t *testing.T) {
+		// activate_mode omitted → defaults to 0 (MFE mode). MFE-based
+		// behavior must stay byte-identical.
+		mfeRule := domain.ExitRule{Type: domain.ExitRuleChandelierTrail, Params: map[string]float64{
+			"activate_pct": 0.05,
+			"giveback_pct": 0.35,
+		}}
+		pos := newOptionPosition(t, 100, entryTime, 1.00, 1.00)
+		pos.CustomState["premium_mfe_pct"] = 0.03
+		triggered, _ := Evaluate(mfeRule, pos, 50, now, EvalContext{})
 		assert.False(t, triggered)
 	})
 }

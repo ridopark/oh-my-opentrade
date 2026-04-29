@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,13 +45,15 @@ func (m *mockFundingSource) Stream(ctx context.Context, venue domain.Venue, sym 
 }
 
 // mockFundingDB implements timescaledb.DBTX for testing the repo layer.
+// execCalls is atomic because FundingLive.Run spawns a goroutine that
+// invokes ExecContext concurrently with the test's read after Run returns.
 type mockFundingDB struct {
-	execCalls int
+	execCalls atomic.Int64
 	execFunc  func(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
 func (m *mockFundingDB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	m.execCalls++
+	m.execCalls.Add(1)
 	if m.execFunc != nil {
 		return m.execFunc(ctx, query, args...)
 	}
@@ -99,7 +102,7 @@ func TestFundingBackfill_Run_ChunksDaily(t *testing.T) {
 	err := bf.Run(context.Background(), domain.VenueBybit, []domain.Symbol{"BTC/USD"}, from, to)
 	require.NoError(t, err)
 	assert.Equal(t, 3, historyCalls, "should fetch 3 daily chunks")
-	assert.Equal(t, 3, db.execCalls, "should insert 3 batches")
+	assert.Equal(t, int64(3), db.execCalls.Load(), "should insert 3 batches")
 }
 
 func TestFundingBackfill_Run_MultipleSymbols(t *testing.T) {
@@ -165,5 +168,5 @@ func TestFundingBackfill_Run_EmptyHistory(t *testing.T) {
 
 	err := bf.Run(context.Background(), domain.VenueBybit, []domain.Symbol{"BTC/USD"}, from, to)
 	require.NoError(t, err)
-	assert.Equal(t, 0, db.execCalls, "should not call DB when no rates returned")
+	assert.Equal(t, int64(0), db.execCalls.Load(), "should not call DB when no rates returned")
 }

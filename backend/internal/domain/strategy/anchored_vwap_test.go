@@ -299,3 +299,37 @@ func TestAnchoredVWAPState_SD_BackwardCompat_ZeroM2(t *testing.T) {
 	assert.Equal(t, 0.0, st.SD(), "zero M2 should return SD=0, not NaN")
 	assert.Equal(t, 0.0, st.Variance())
 }
+
+func TestAnchoredVWAPCalc_Snapshot(t *testing.T) {
+	t0 := time.Date(2026, 1, 2, 9, 30, 0, 0, time.UTC)
+
+	c := strategy.NewAnchoredVWAPCalc()
+	c.AddAnchor(strategy.AnchorPoint{Name: "pd_high", AnchorTime: t0, Price: 0})
+	c.AddAnchor(strategy.AnchorPoint{Name: "session_open", AnchorTime: t0.Add(2 * time.Minute), Price: 0})
+
+	// Empty snapshot before any bars: anchors registered but inactive.
+	snap := c.Snapshot(5)
+	require.Len(t, snap, 2)
+	assert.False(t, snap["pd_high"].Active)
+	assert.Equal(t, 0, snap["pd_high"].BarCount)
+
+	// Feed enough bars to exceed slope-lookback (5) on pd_high.
+	for i := 1; i <= 8; i++ {
+		c.Update(t0.Add(time.Duration(i)*time.Minute), 102+float64(i), 98+float64(i), 100+float64(i), 1000)
+	}
+
+	snap = c.Snapshot(5)
+	pd := snap["pd_high"]
+	assert.True(t, pd.Active)
+	assert.Equal(t, 8, pd.BarCount)
+	assert.GreaterOrEqual(t, pd.VWAPCount, 5, "ring buffer should have >= lookback samples")
+	assert.Greater(t, pd.SlopeBPS, 0.0, "monotonically rising VWAP must produce positive slope")
+	assert.Greater(t, pd.VWAP, 0.0)
+
+	// session_open registered later: should be active and have fewer bars.
+	so := snap["session_open"]
+	assert.True(t, so.Active)
+	assert.Less(t, so.BarCount, pd.BarCount)
+
+	assert.Equal(t, t0.Add(8*time.Minute), c.LastBarTime())
+}

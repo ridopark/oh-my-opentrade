@@ -161,10 +161,20 @@ func (r *dustMockRepo) GetLatestThesisForSymbol(context.Context, string, domain.
 func (r *dustMockRepo) GetNonTerminalOrders(context.Context, string, domain.EnvMode) ([]domain.BrokerOrder, error) {
 	return nil, nil
 }
+func (r *dustMockRepo) GetOrderByBrokerOrderID(context.Context, string) (*domain.BrokerOrder, error) {
+	return nil, nil
+}
 func (r *dustMockRepo) GetRecordedFillQty(context.Context, string, domain.EnvMode, domain.Symbol, string, time.Time) (float64, error) {
 	return 0, nil
 }
 func (r *dustMockRepo) UpdateOrderStatus(context.Context, string, string) error { return nil }
+func (r *dustMockRepo) GetRecordedExecutionIDs(context.Context, string, domain.EnvMode, time.Time) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
+
+func (r *dustMockRepo) GetReconciledOrderIDs(context.Context, string, domain.EnvMode, time.Time) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
 func (r *dustMockRepo) GetNetPositions(context.Context, string, domain.EnvMode) (map[domain.Symbol]float64, error) {
 	return nil, nil
 }

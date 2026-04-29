@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/pprof"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	omhttp "github.com/oh-my-opentrade/backend/internal/adapters/http"
@@ -265,6 +268,14 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 		stratPerfHandler := omhttp.NewStrategyPerfHandler(svc.strategyRunner, infra.pnlRepo, svc.ingestion, httpLog)
 		imux.Handle("/api/strategies/", stratPerfHandler)
 	}
+	// Copytrade sidecar ingress. Enabled when OMO_COPYTRADE_SECRET is set;
+	// silently skipped otherwise so a missing env var doesn't expose the
+	// endpoint unauthenticated. Freshness TTL mirrors the strategy config
+	// default; shared-secret is a constant-time compare in the handler.
+	if secret := os.Getenv("OMO_COPYTRADE_SECRET"); secret != "" {
+		copytradeHandler := omhttp.NewCopytradeHandler(infra.eventBus, secret, 120*time.Second, httpLog)
+		imux.Handle("/internal/copytrade/signal", copytradeHandler)
+	}
 	// Cross-strategy recent signals endpoint (used by dashboard main page).
 	imux.HandleFunc("/api/signals/recent", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -302,12 +313,32 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 			}
 		}
 		query := ports.StrategySignalQuery{
-			TenantID: "default",
-			EnvMode:  domain.EnvModePaper,
-			Symbol:   q.Get("symbol"),
-			From:     from,
-			To:       to,
-			Limit:    limit,
+			TenantID:      "default",
+			EnvMode:       domain.EnvModePaper,
+			Symbol:        q.Get("symbol"),
+			ExcludeStatus: q.Get("exclude_status"),
+			From:          from,
+			To:            to,
+			Limit:         limit,
+		}
+		if raw := q.Get("cursor"); raw != "" {
+			decoded, err := base64.URLEncoding.DecodeString(raw)
+			if err != nil {
+				http.Error(w, `{"error":"invalid cursor"}`, http.StatusBadRequest)
+				return
+			}
+			parts := strings.SplitN(string(decoded), "|", 2)
+			if len(parts) != 2 {
+				http.Error(w, `{"error":"invalid cursor"}`, http.StatusBadRequest)
+				return
+			}
+			cursorTime, err := time.Parse(time.RFC3339Nano, parts[0])
+			if err != nil {
+				http.Error(w, `{"error":"invalid cursor"}`, http.StatusBadRequest)
+				return
+			}
+			query.CursorTime = &cursorTime
+			query.CursorID = parts[1]
 		}
 		page, err := infra.pnlRepo.GetStrategySignalEvents(r.Context(), query)
 		if err != nil {

@@ -2,6 +2,7 @@ package backfill
 
 import (
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -29,9 +30,16 @@ type dpWindow struct {
 }
 
 // DPAggregator accumulates individual trade ticks into 5-minute dark pool bars.
+// Safe for concurrent AddTrade and Flush/FlushClosed calls — live use feeds
+// trades from the event-bus subscriber goroutine while a 1-minute ticker
+// drives FlushClosed; batch use (omo-data backfill) is single-goroutine and
+// pays only the uncontended-mutex cost.
 type DPAggregator struct {
-	symbol  domain.Symbol
-	windows map[time.Time]*dpWindow
+	mu           sync.Mutex
+	symbol       domain.Symbol
+	windows      map[time.Time]*dpWindow
+	latestBucket time.Time
+	onClosed     func([]domain.DarkPoolBar)
 }
 
 // NewDPAggregator creates a new aggregator for the given symbol.
@@ -42,9 +50,40 @@ func NewDPAggregator(symbol domain.Symbol) *DPAggregator {
 	}
 }
 
+// SetOnBucketClosed installs a callback invoked from AddTrade whenever a tick
+// arrives in a strictly newer bucket than any previously seen, with the
+// now-closed prior buckets drained from the window map. Live use sets this
+// so the strategy runner sees DP data within ~ms of bar close. Batch callers
+// leave it unset and rely on Flush()/FlushClosed() at the end of the stream;
+// without a callback the transition-drain path is skipped entirely.
+//
+// The callback runs after a.mu has been released so it can re-enter the
+// aggregator (e.g. for a stats lookup) without deadlocking.
+func (a *DPAggregator) SetOnBucketClosed(fn func([]domain.DarkPoolBar)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.onClosed = fn
+}
+
 // AddTrade processes a single trade tick, classifying it into the appropriate 5-minute window.
 func (a *DPAggregator) AddTrade(t time.Time, exchange string, price, size float64) {
-	bucket := t.Truncate(dpBucketInterval)
+	a.mu.Lock()
+	// Canonicalize to UTC. Producer paths source trade.Time from mixed
+	// zones (DB driver local for boot replay, broker-WS for live), but
+	// the runner's DP overlay always queries UTC. Go map equality on
+	// time.Time compares both instant AND Location, so without UTC
+	// normalization a same-instant bucket gets filed under a key the
+	// lookup will never produce.
+	bucket := t.UTC().Truncate(dpBucketInterval)
+
+	var closed []domain.DarkPoolBar
+	if bucket.After(a.latestBucket) {
+		if a.onClosed != nil && !a.latestBucket.IsZero() {
+			closed = a.drainLocked(func(b time.Time) bool { return !b.Before(bucket) })
+		}
+		a.latestBucket = bucket
+	}
+
 	w := a.windows[bucket]
 	if w == nil {
 		w = &dpWindow{}
@@ -84,49 +123,115 @@ func (a *DPAggregator) AddTrade(t time.Time, exchange string, price, size float6
 	} else {
 		w.litVolume += size
 	}
+
+	cb := a.onClosed
+	a.mu.Unlock()
+
+	if len(closed) > 0 && cb != nil {
+		cb(closed)
+	}
 }
 
 // Flush converts all accumulated windows into sorted DarkPoolBar slices and resets the aggregator.
+// Used by batch callers (omo-data backfill) that process a bounded trade
+// stream in one pass and don't care about partial buckets.
 func (a *DPAggregator) Flush() []domain.DarkPoolBar {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.drainLocked(nil)
+}
+
+// FlushClosed emits and removes only buckets whose window has ended on or
+// before now.Truncate(5m). The in-flight bucket (the one still receiving
+// trades for `now`) stays in memory so live aggregators don't double-emit
+// it on subsequent ticker calls. Batch callers should use Flush instead.
+func (a *DPAggregator) FlushClosed(now time.Time) []domain.DarkPoolBar {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cutoff := now.UTC().Truncate(dpBucketInterval)
+	keep := func(bucket time.Time) bool {
+		// bucket end is bucket+5m; "closed" means bucket end <= cutoff,
+		// i.e. bucket+5m <= cutoff, i.e. bucket < cutoff (strict).
+		return !bucket.Before(cutoff)
+	}
+	return a.drainLocked(keep)
+}
+
+// windowToBar materializes the current state of an accumulator window into
+// a DarkPoolBar without mutating the aggregator. Caller must hold a.mu.
+func (a *DPAggregator) windowToBar(t time.Time, w *dpWindow) domain.DarkPoolBar {
+	dpvwap := 0.0
+	if w.dpVolume > 0 {
+		dpvwap = w.dpNotional / w.dpVolume
+	}
+	dpRatio := 0.0
+	if w.totalVolume > 0 {
+		dpRatio = w.dpVolume / w.totalVolume
+	}
+	return domain.DarkPoolBar{
+		Time:             t,
+		Symbol:           a.symbol,
+		Timeframe:        dpBarTimeframe,
+		DPVolume:         w.dpVolume,
+		DPTrades:         w.dpTrades,
+		DPVWAP:           dpvwap,
+		LitVolume:        w.litVolume,
+		TotalVolume:      w.totalVolume,
+		DPRatio:          dpRatio,
+		BuyVolume:        w.buyVolume,
+		SellVolume:       w.sellVolume,
+		LargePrintVolume: w.largePrintVol,
+		LargePrintCount:  w.largePrintCount,
+		MaxPrintSize:     w.maxPrintSize,
+	}
+}
+
+// Snapshot returns the current state of the bucket containing t without
+// draining or mutating the aggregator. Used by livedarkpool.Service.Lookup
+// to serve the runner's DP overlay query for the just-closed bucket
+// before any push-emit or ticker flush has surfaced it to the cache.
+// Returns (zero, false) if no trades have landed in that bucket yet.
+func (a *DPAggregator) Snapshot(t time.Time) (domain.DarkPoolBar, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	bucket := t.Truncate(dpBucketInterval)
+	w := a.windows[bucket]
+	if w == nil {
+		return domain.DarkPoolBar{}, false
+	}
+	return a.windowToBar(bucket, w), true
+}
+
+// drainLocked is the shared body for Flush / FlushClosed. retain is called
+// for each bucket; if it returns true the bucket survives the drain. nil
+// retain drains everything (Flush semantics). Caller must hold a.mu.
+func (a *DPAggregator) drainLocked(retain func(time.Time) bool) []domain.DarkPoolBar {
 	if len(a.windows) == 0 {
 		return nil
 	}
 
 	bars := make([]domain.DarkPoolBar, 0, len(a.windows))
+	var survivors map[time.Time]*dpWindow
 	for t, w := range a.windows {
-		dpvwap := 0.0
-		if w.dpVolume > 0 {
-			dpvwap = w.dpNotional / w.dpVolume
+		if retain != nil && retain(t) {
+			if survivors == nil {
+				survivors = make(map[time.Time]*dpWindow)
+			}
+			survivors[t] = w
+			continue
 		}
-		dpRatio := 0.0
-		if w.totalVolume > 0 {
-			dpRatio = w.dpVolume / w.totalVolume
-		}
-
-		bars = append(bars, domain.DarkPoolBar{
-			Time:             t,
-			Symbol:           a.symbol,
-			Timeframe:        dpBarTimeframe,
-			DPVolume:         w.dpVolume,
-			DPTrades:         w.dpTrades,
-			DPVWAP:           dpvwap,
-			LitVolume:        w.litVolume,
-			TotalVolume:      w.totalVolume,
-			DPRatio:          dpRatio,
-			BuyVolume:        w.buyVolume,
-			SellVolume:       w.sellVolume,
-			LargePrintVolume: w.largePrintVol,
-			LargePrintCount:  w.largePrintCount,
-			MaxPrintSize:     w.maxPrintSize,
-		})
+		bars = append(bars, a.windowToBar(t, w))
 	}
 
 	sort.Slice(bars, func(i, j int) bool {
 		return bars[i].Time.Before(bars[j].Time)
 	})
 
-	// Reset windows for next use.
-	a.windows = make(map[time.Time]*dpWindow)
+	if survivors == nil {
+		a.windows = make(map[time.Time]*dpWindow)
+	} else {
+		a.windows = survivors
+	}
 
 	return bars
 }

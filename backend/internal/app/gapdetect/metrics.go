@@ -4,6 +4,7 @@ package gapdetect
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -31,12 +32,14 @@ type LatestBarReader interface {
 }
 
 // Service orchestrates per-(symbol, timeframe) gap scans and updates gauges.
-// Phase 1 exposes RunOnce only; Phase 2 will add a ticker.
+// When a BarBackfiller is attached via SetBackfiller, RunOnce also fills the
+// detected ranges from the upstream broker — Phase 5 of the parity plan.
 type Service struct {
-	detector ports.GapDetector
-	reader   LatestBarReader
-	now      func() time.Time
-	log      zerolog.Logger
+	detector   ports.GapDetector
+	reader     LatestBarReader
+	backfiller BarBackfiller
+	now        func() time.Time
+	log        zerolog.Logger
 }
 
 // NewService builds a gap-detection orchestrator. now defaults to time.Now
@@ -46,6 +49,13 @@ func NewService(detector ports.GapDetector, reader LatestBarReader, log zerolog.
 		now = time.Now
 	}
 	return &Service{detector: detector, reader: reader, now: now, log: log}
+}
+
+// SetBackfiller installs an intraday gap filler. Nil disables filling and
+// returns Service to detect-only mode. Idempotent — safe to call repeatedly
+// (e.g. swap a fake for a real one in tests).
+func (s *Service) SetBackfiller(b BarBackfiller) {
+	s.backfiller = b
 }
 
 // scanWindows are the per-tf lookbacks chosen so equity 1m sees ~2 sessions of
@@ -85,6 +95,34 @@ func (s *Service) RunOnce(ctx context.Context, symbols []domain.Symbol) int {
 			}
 			missingBarsCount.WithLabelValues(string(sym), string(w.tf)).Set(float64(missing))
 			totalGaps += len(gaps)
+
+			if s.backfiller != nil && missing > 0 {
+				for _, gap := range gaps {
+					saved, ferr := fillRange(ctx, s.backfiller, gap)
+					if ferr != nil {
+						if errors.Is(ferr, errBackfillSkippedDailyTF) {
+							continue
+						}
+						s.log.Warn().Err(ferr).
+							Str("symbol", string(sym)).
+							Str("timeframe", string(w.tf)).
+							Time("from", gap.Start).
+							Time("to", gap.End).
+							Int("saved", saved).
+							Msg("gap backfill failed")
+						continue
+					}
+					if saved > 0 {
+						s.log.Info().
+							Str("symbol", string(sym)).
+							Str("timeframe", string(w.tf)).
+							Time("from", gap.Start).
+							Time("to", gap.End).
+							Int("bars_saved", saved).
+							Msg("gap backfill complete")
+					}
+				}
+			}
 
 			latest, lerr := s.reader.GetLatestMarketBarTime(ctx, sym, w.tf)
 			if lerr != nil {

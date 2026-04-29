@@ -33,7 +33,9 @@ function parseExitReason(rationale?: string): string | null {
   if (m) return m[1].replace(/_/g, " ");
   if (rationale.includes("avwap_exit")) return "AVWAP EXIT";
   if (rationale.includes("passthrough") && rationale.includes("exit")) return "TREND REVERSAL";
-  return null;
+  // Fallback: show the rationale verbatim so strategies without a recognized
+  // prefix (e.g. copytrade's "<author>: <raw_line>") still surface context.
+  return rationale;
 }
 
 /** Extract entry setup type from the rationale string.
@@ -41,11 +43,15 @@ function parseExitReason(rationale?: string): string | null {
 function parseEntryReason(rationale?: string): string | null {
   if (!rationale) return null;
   const m = rationale.match(/setup:(\S+)/);
-  if (!m) return null;
-  // Strip strategy prefix (e.g. "avwap_breakout" → "BREAKOUT", "orb_break_retest" → "BREAK RETEST")
-  const raw = m[1];
-  const stripped = raw.replace(/^(avwap|orb)_/, "");
-  return stripped.toUpperCase().replace(/_/g, " ");
+  if (m) {
+    // Strip strategy prefix (e.g. "avwap_breakout" → "BREAKOUT", "orb_break_retest" → "BREAK RETEST")
+    const raw = m[1];
+    const stripped = raw.replace(/^(avwap|orb)_/, "");
+    return stripped.toUpperCase().replace(/_/g, " ");
+  }
+  // Fallback for strategies whose rationale doesn't encode a setup tag
+  // (e.g. copytrade emits "<author>: <raw_line>" verbatim).
+  return rationale;
 }
 
 /** Extract confluence score and detail from the rationale string.
@@ -550,12 +556,12 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
       const entry = openBySymbol.get(key);
       if (entry) {
         openBySymbol.delete(key);
-        // For options: determine underlying direction from OCC symbol (C=Call=LONG, P=Put=SHORT)
-        const isPut = /P\d{8}$/.test(entry.symbol);
-        const isOption = (t.instrument_type === "OPTION" || entry.instrument_type === "OPTION");
-        // Equity short vs options: bought puts represent bearish direction
+        // Option position side is always LONG (we buy calls or puts). Bearish
+        // bias on the underlying for puts is reflected in the "LONG PUT" label,
+        // not by calling the contract position "SHORT".
+        const isOption = /[CP]\d{8}$/.test(entry.symbol) || t.instrument_type === "OPTION" || entry.instrument_type === "OPTION";
+        const isPut = isOption && /P\d{8}$/.test(entry.symbol);
         const isEquityShort = (entry.direction ?? "") === "SHORT" && !isOption;
-        const isBearish = isEquityShort || isPut;
         const qty = entry.quantity ?? 0;
         const entryPx = entry.price ?? 0;
         const exitPx = t.price ?? 0;
@@ -572,7 +578,7 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
         positions.push({
           symbol: t.symbol,
           strategy: t.strategy ?? "",
-          direction: isBearish ? "SHORT" : "LONG",
+          direction: isOption ? (isPut ? "LONG PUT" : "LONG CALL") : (isEquityShort ? "SHORT" : "LONG"),
           entry,
           exit: t,
           qty,
@@ -594,10 +600,13 @@ function groupPositions(trades: BacktestTrade[]): Position[] {
   }
 
   for (const [, entry] of openBySymbol) {
+    const isOption = /[CP]\d{8}$/.test(entry.symbol) || entry.instrument_type === "OPTION";
+    const isPut = isOption && /P\d{8}$/.test(entry.symbol);
+    const isEquityShort = (entry.direction ?? "") === "SHORT" && !isOption;
     positions.push({
       symbol: entry.symbol,
       strategy: entry.strategy ?? "",
-      direction: ((entry.direction ?? "") === "SHORT" || /P\d{8}$/.test(entry.symbol)) ? "SHORT" : "LONG",
+      direction: isOption ? (isPut ? "LONG PUT" : "LONG CALL") : (isEquityShort ? "SHORT" : "LONG"),
       entry,
       exit: null,
       qty: entry.quantity ?? 0,
@@ -706,7 +715,7 @@ const TradeLogInline = forwardRef<TradeLogHandle, { trades: BacktestTrade[]; onS
                 <td className="px-2 py-1 text-foreground">{p.symbol}</td>
                 <td className="px-2 py-1">
                   <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                    p.direction === "SHORT" ? "bg-red-500/20 text-red-400" : "bg-emerald-500/20 text-emerald-400"
+                    (p.direction === "SHORT" || p.direction === "LONG PUT") ? "bg-red-500/20 text-red-400" : "bg-emerald-500/20 text-emerald-400"
                   }`}>
                     {p.direction}
                   </span>

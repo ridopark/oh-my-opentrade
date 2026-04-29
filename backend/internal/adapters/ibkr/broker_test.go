@@ -6,6 +6,7 @@ import (
 
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
 	"github.com/scmhub/ibsync"
 	"github.com/stretchr/testify/assert"
@@ -48,6 +49,80 @@ func TestCancelOrder_NotFound_ReturnsError(t *testing.T) {
 	err := a.CancelOrder(context.Background(), "999")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "999")
+}
+
+func TestModifyOrder_ReusesOrderID(t *testing.T) {
+	open := makeTrade(4118, ibsync.Submitted, 0)
+	open.Order.LmtPrice = 1.595
+	open.Contract = &ibsync.Contract{Symbol: "NFLX", SecType: "OPT"}
+	mock := &mockIB{connected: true, openTrades: []*ibsync.Trade{open}}
+	a := NewAdapterWithClient(mock, zerolog.Nop())
+
+	require.NoError(t, a.ModifyOrder(context.Background(), "4118", 1.560, 0))
+
+	require.Len(t, mock.placedOrders, 1, "modify must forward exactly one PlaceOrder call")
+	assert.Equal(t, int64(4118), mock.placedOrders[0].OrderID,
+		"modify must reuse the original OrderID")
+	assert.InDelta(t, 1.560, mock.placedOrders[0].LmtPrice, 1e-9,
+		"modify must apply the new LmtPrice")
+}
+
+func TestModifyOrder_DoneTrade_ReturnsUnsupported(t *testing.T) {
+	done := makeTrade(4118, ibsync.Filled, 10)
+	done.Contract = &ibsync.Contract{Symbol: "NFLX", SecType: "OPT"}
+	mock := &mockIB{connected: true, openTrades: []*ibsync.Trade{done}}
+	a := NewAdapterWithClient(mock, zerolog.Nop())
+
+	err := a.ModifyOrder(context.Background(), "4118", 1.560, 0)
+	require.ErrorIs(t, err, ports.ErrUnsupportedModify)
+	assert.Empty(t, mock.placedOrders, "no PlaceOrder must fire on a done trade")
+}
+
+func TestModifyOrder_UnknownOrder_ReturnsHardError(t *testing.T) {
+	mock := &mockIB{connected: true, openTrades: nil, trades: nil}
+	a := NewAdapterWithClient(mock, zerolog.Nop())
+
+	err := a.ModifyOrder(context.Background(), "4118", 1.560, 0)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ports.ErrUnsupportedModify,
+		"truly unknown orderIDs MUST be hard errors so callers do not fall through to cancel+place")
+}
+
+func TestModifyOrder_NewQty_MutatesTotalQuantity(t *testing.T) {
+	open := makeTrade(4118, ibsync.Submitted, 0)
+	open.Order.LmtPrice = 1.595
+	open.Order.TotalQuantity = ibsync.StringToDecimal("10")
+	open.Contract = &ibsync.Contract{Symbol: "NFLX", SecType: "OPT"}
+	mock := &mockIB{connected: true, openTrades: []*ibsync.Trade{open}}
+	a := NewAdapterWithClient(mock, zerolog.Nop())
+
+	require.NoError(t, a.ModifyOrder(context.Background(), "4118", 1.560, 7))
+
+	require.Len(t, mock.placedOrders, 1)
+	assert.InDelta(t, 7.0, mock.placedOrders[0].TotalQuantity.Float(), 1e-9,
+		"newQty>0 must overwrite TotalQuantity")
+	assert.InDelta(t, 1.560, mock.placedOrders[0].LmtPrice, 1e-9)
+}
+
+// Filled-and-gone-from-OpenTrades is the load-bearing soft-fail path: the
+// order is no longer in OpenTrades, but GetOrderDetails finds it in Trades()
+// with a terminal status. Must return ErrUnsupportedModify so the caller's
+// cancel+place fallback can reconcile via cancelAndAwaitTerminal.
+func TestModifyOrder_FilledAndGone_ReturnsUnsupported(t *testing.T) {
+	filled := makeTrade(4118, ibsync.Filled, 10)
+	filled.Order.TotalQuantity = ibsync.StringToDecimal("10")
+	filled.Contract = &ibsync.Contract{Symbol: "NFLX", SecType: "OPT"}
+	mock := &mockIB{
+		connected:  true,
+		openTrades: nil,                         // gone from open
+		trades:     []*ibsync.Trade{filled},     // still visible historically
+	}
+	a := NewAdapterWithClient(mock, zerolog.Nop())
+
+	err := a.ModifyOrder(context.Background(), "4118", 1.560, 0)
+	require.ErrorIs(t, err, ports.ErrUnsupportedModify,
+		"terminal-but-known order must yield soft fail so callers cancel+place safely")
+	assert.Empty(t, mock.placedOrders, "no PlaceOrder may fire on a terminal order")
 }
 
 func TestGetPositions_FiltersAccountID(t *testing.T) {

@@ -23,12 +23,14 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/backfill"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
+	"github.com/oh-my-opentrade/backend/internal/app/copytradereplay"
 	"github.com/oh-my-opentrade/backend/internal/app/debate"
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
 	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
+	"github.com/oh-my-opentrade/backend/internal/app/warmup"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -55,6 +57,16 @@ type RunConfig struct {
 	MaxPerGroup      int  // max positions per sector group (0=use config default)
 	CompoundEquity   bool // when true, position sizing compounds with P&L
 	UseNativeSymbols bool // when true, skip symbol override - each strategy uses its TOML symbols
+
+	// CopytradeHistory, when non-empty, enables copytrade_v1 replay: parses
+	// the JSONL at this path, publishes each message as
+	// EventCopytradeSignalReceived at its sim-time PostedAt, and subscribes a
+	// per-fill CSV ledger. Empty disables the feature.
+	CopytradeHistory string
+	// CopytradeLedgerDir is the directory to write fills.csv + author_stated.csv
+	// into. Ignored when CopytradeHistory is empty; HTTP handler defaults it
+	// to "_workspace/copytrade_replay".
+	CopytradeLedgerDir string
 }
 
 // ProgressInfo tracks replay progress.
@@ -715,11 +727,17 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	phaseStart = time.Now()
 	r.emitter.EmitSetup("Warming up indicators…")
-	const minWarmupBars = 250
-	const dailyBarsNeeded = 200
-	const hourlyBarsNeeded = 20
+	warmupSpec := warmup.EquitySpec()
+	requiredReplay := warmupSpec.Required[replayTimeframe]
+	requiredDaily := warmupSpec.Required["1d"]
+	requiredHourly := warmupSpec.Required["1h"]
 	warmupBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
 	dailyBarsCache := make(map[string][]domain.MarketBar, len(r.cfg.Symbols))
+	htfBarsCache := map[domain.Timeframe]map[string][]domain.MarketBar{
+		"5m":  {},
+		"15m": {},
+		"1h":  {},
+	}
 	var dpLookup map[strategy.DPLookupKey]domain.DarkPoolBar
 	var whaleLookup map[string]domain.WhaleAccumulation
 	{
@@ -732,19 +750,24 @@ func (r *Runner) Run(ctx context.Context) error {
 		warmupResults := make([]warmupResult, len(r.cfg.Symbols))
 
 		// --- Batch fetch: 3 queries instead of 93 (amortize planning cost) ---
+		// Windows come from warmup.CalendarLookback so the batch fetch covers
+		// what warmup.Trim will need after the RTH filter and truncation.
 		warmupEnd := r.cfg.From
-		warmupStart := warmupEnd.Add(-7 * 24 * time.Hour)
+		warmupStart := warmupEnd.Add(-warmup.CalendarLookback(replayTimeframe))
 		dailyTo := r.cfg.To
-		dailyFrom := r.cfg.From.Add(-time.Duration(float64(dailyBarsNeeded)*2.0) * 24 * time.Hour)
+		dailyFrom := r.cfg.From.Add(-warmup.CalendarLookback("1d"))
 		hourlyTo := r.cfg.From
-		hourlyFrom := hourlyTo.Add(-time.Duration(float64(hourlyBarsNeeded)*2.0) * time.Hour)
+		hourlyFrom := hourlyTo.Add(-warmup.CalendarLookback("1h"))
+
+		htf5mFrom := r.cfg.From.Add(-warmup.CalendarLookback("5m"))
+		htf15mFrom := r.cfg.From.Add(-warmup.CalendarLookback("15m"))
 
 		batchStart := time.Now()
-		var batch1m, batch1d, batch1h map[string][]domain.MarketBar
+		var batch1m, batch1d, batch1h, batch5m, batch15m map[string][]domain.MarketBar
 		var batchDP map[string][]domain.DarkPoolBar
-		var b1mErr, b1dErr, b1hErr, bDPErr error
+		var b1mErr, b1dErr, b1hErr, b5mErr, b15mErr, bDPErr error
 		var batchWg sync.WaitGroup
-		batchWg.Add(4)
+		batchWg.Add(6)
 		go func() {
 			defer batchWg.Done()
 			batch1m, b1mErr = repo.GetMarketBarsMulti(ctx, r.cfg.Symbols, replayTimeframe, warmupStart, warmupEnd)
@@ -756,6 +779,14 @@ func (r *Runner) Run(ctx context.Context) error {
 		go func() {
 			defer batchWg.Done()
 			batch1h, b1hErr = repo.GetMarketBarsMulti(ctx, r.cfg.Symbols, "1h", hourlyFrom, hourlyTo)
+		}()
+		go func() {
+			defer batchWg.Done()
+			batch5m, b5mErr = repo.GetMarketBarsMulti(ctx, r.cfg.Symbols, "5m", htf5mFrom, r.cfg.From)
+		}()
+		go func() {
+			defer batchWg.Done()
+			batch15m, b15mErr = repo.GetMarketBarsMulti(ctx, r.cfg.Symbols, "15m", htf15mFrom, r.cfg.From)
 		}()
 		go func() {
 			defer batchWg.Done()
@@ -772,6 +803,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		if b1hErr != nil {
 			r.log.Warn().Err(b1hErr).Msg("batch 1h warmup fetch failed")
 		}
+		if b5mErr != nil {
+			r.log.Warn().Err(b5mErr).Msg("batch 5m warmup fetch failed")
+		}
+		if b15mErr != nil {
+			r.log.Warn().Err(b15mErr).Msg("batch 15m warmup fetch failed")
+		}
 		if bDPErr != nil {
 			r.log.Warn().Err(bDPErr).Msg("batch dark pool bars fetch failed")
 		}
@@ -784,9 +821,19 @@ func (r *Runner) Run(ctx context.Context) error {
 		if batch1h == nil {
 			batch1h = map[string][]domain.MarketBar{}
 		}
+		if batch5m == nil {
+			batch5m = map[string][]domain.MarketBar{}
+		}
+		if batch15m == nil {
+			batch15m = map[string][]domain.MarketBar{}
+		}
 		if batchDP == nil {
 			batchDP = map[string][]domain.DarkPoolBar{}
 		}
+		// Hand HTF batches out of the inner block via the function-scope cache.
+		htfBarsCache["5m"] = batch5m
+		htfBarsCache["15m"] = batch15m
+		htfBarsCache["1h"] = batch1h
 
 		// Build dark pool lookup map for O(1) access during replay.
 		dpLookup = make(map[strategy.DPLookupKey]domain.DarkPoolBar)
@@ -826,12 +873,13 @@ func (r *Runner) Run(ctx context.Context) error {
 				defer warmupWg.Done()
 				symStr := sym.String()
 
-				// 1m warmup bars
+				// 1m/5m warmup bars: pulled from batch, API fallback when
+				// the DB hasn't been backfilled yet, then RTH-filtered and
+				// truncated by warmup.Trim to match the live boot path.
 				bars := batch1m[symStr]
-				if len(bars) < minWarmupBars && r.marketData != nil {
+				if len(bars) < requiredReplay && r.marketData != nil {
 					warmupSem <- struct{}{}
-					apiFrom := warmupEnd.Add(-30 * 24 * time.Hour)
-					apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, apiFrom, warmupEnd)
+					apiBars, apiErr := r.marketData.GetHistoricalBars(ctx, sym, replayTimeframe, warmupStart, warmupEnd)
 					<-warmupSem
 					if apiErr == nil && len(apiBars) > len(bars) {
 						r.log.Info().Str("symbol", symStr).Int("db_bars", len(bars)).Int("api_bars", len(apiBars)).Msg("fetched warmup bars from market data API")
@@ -843,18 +891,18 @@ func (r *Runner) Run(ctx context.Context) error {
 						r.log.Warn().Err(apiErr).Str("symbol", symStr).Msg("API warmup fetch failed")
 					}
 				}
-				if len(bars) > minWarmupBars {
-					bars = bars[len(bars)-minWarmupBars:]
-				}
+				bars = warmup.TrimWithBoot1(warmupSpec, replayTimeframe, bars, warmupEnd)
 
-				// 1D bars: use batch result, API fallback if insufficient
+				// 1D bars: API fallback when batch is short. Pass 1 will
+				// further filter to b.Time.Before(cfg.From) and compute
+				// EMA200/NR7/ATR from the resulting subset.
 				bars1d := batch1d[symStr]
-				if len(bars1d) < dailyBarsNeeded && r.marketData != nil {
+				if len(bars1d) < requiredDaily && r.marketData != nil {
 					warmupSem <- struct{}{}
 					fetched, err := r.marketData.GetHistoricalBars(ctx, sym, "1d", dailyFrom, dailyTo)
 					<-warmupSem
-					if err != nil || len(fetched) < dailyBarsNeeded {
-						r.log.Warn().Err(err).Str("symbol", symStr).Int("db_bars", len(bars1d)).Int("api_bars", len(fetched)).Int("needed", dailyBarsNeeded).Msg("insufficient 1D bars for HTF EMA200")
+					if err != nil || len(fetched) < requiredDaily {
+						r.log.Warn().Err(err).Str("symbol", symStr).Int("db_bars", len(bars1d)).Int("api_bars", len(fetched)).Int("needed", requiredDaily).Msg("insufficient 1D bars for HTF EMA200")
 					}
 					if len(fetched) > len(bars1d) {
 						bars1d = fetched
@@ -865,8 +913,8 @@ func (r *Runner) Run(ctx context.Context) error {
 				// directionally useful even with partial data, and the IBKR
 				// API serialization adds ~17s for 31 symbols).
 				bars1h := batch1h[symStr]
-				if len(bars1h) < hourlyBarsNeeded {
-					r.log.Debug().Str("symbol", symStr).Int("got", len(bars1h)).Int("needed", hourlyBarsNeeded).Msg("partial 1H bars for HTF EMA50 (using available)")
+				if len(bars1h) < requiredHourly {
+					r.log.Debug().Str("symbol", symStr).Int("got", len(bars1h)).Int("needed", requiredHourly).Msg("partial 1H bars for HTF EMA50 (using available)")
 				}
 
 				warmupResults[i] = warmupResult{sym: symStr, bars: bars, bars1d: bars1d, bars1h: bars1h}
@@ -1009,15 +1057,26 @@ func (r *Runner) Run(ctx context.Context) error {
 				pipeline.Runner.WarmUp(sym.String(), bars, snapshotFn)
 			}
 			pipeline.Runner.InitAggregators(replaySessionOpen)
-			// Aggregate warmup 1m bars into HTF candles (5m, 15m, etc.) and feed
-			// them through strategy instances that are configured for those timeframes.
-			// Without this, HTF instances start with empty state on the first replay day.
 			for _, sym := range r.cfg.Symbols {
-				bars := warmupBarsCache[sym.String()]
-				if len(bars) == 0 {
+				symStr := sym.String()
+				tfs := pipeline.Runner.HTFTimeframesForSymbol(symStr)
+				if len(tfs) == 0 {
 					continue
 				}
-				pipeline.Runner.WarmUpHTF(sym.String(), bars, snapshotFn, loc)
+				spec := warmup.EquitySpec()
+				if sym.IsCryptoSymbol() {
+					spec = warmup.CryptoSpec()
+				}
+				for _, tf := range tfs {
+					htfTF := domain.Timeframe(tf)
+					raw := htfBarsCache[htfTF][symStr]
+					if len(raw) == 0 {
+						continue
+					}
+					bars := warmup.TrimWithBoot1(spec, htfTF, raw, r.cfg.From)
+					pipeline.Runner.WarmUpTF(symStr, tf, bars, snapshotFn)
+					monitorSvc.WarmUpNative(sym, htfTF, bars)
+				}
 			}
 		}
 		pipeline.Runner.ClearAllPendingStates()
@@ -1079,8 +1138,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Always set session-based anchor resolution and prev-day bar replay
 	// so AVWAP strategies get correct anchor warmup.
 	pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
-	pipeline.Runner.SetPrevDayBarsFn(func(symbol string, since time.Time) []start.Bar {
-		return sessionResolver.GetBarsSince(ctx, r.infra.DB, symbol, since)
+	pipeline.Runner.SetPrevDayBarsFn(func(symbol string, since, until time.Time) []start.Bar {
+		return sessionResolver.GetBarsBetween(ctx, r.infra.DB, symbol, since, until)
 	})
 	pipeline.Runner.SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
 	if len(dpLookup) > 0 {
@@ -1191,6 +1250,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	// / RiskSizer duplication.
 	useSharded := r.speedDelay.Load().(time.Duration) == 0 && !r.paused.Load()
 	activeRiskSizer := pipeline.RiskSizer
+
+	var copytradeReplaySvc *copytradereplay.Service
+	var copytradeLedger *copytradereplay.Ledger
 	if !useSharded {
 		if pipeline.Enricher != nil {
 			if startErr := pipeline.Enricher.Start(ctx); startErr != nil {
@@ -1394,6 +1456,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			TideTracker:     tideTracker,
 		}
 
+		var sentinelOwnerAssigned bool
 		shardFactory := func(slab []domain.Symbol) (ShardServices, error) {
 			filter := ingestion.NewAdaptiveFilter(20, 4.0)
 			filter.SetPassthrough(true)
@@ -1416,7 +1479,14 @@ func (r *Runner) Run(ctx context.Context) error {
 				monSvc.SetORBTimeframe(orbTimeframeCaptured)
 			}
 
-			shardStrat, stratErr := bootstrap.BuildStrategyShard(strategyShared, slab, stratDeps)
+			var shardStrat *bootstrap.StrategyShard
+			var stratErr error
+			if r.cfg.CopytradeHistory != "" && !sentinelOwnerAssigned {
+				shardStrat, stratErr = bootstrap.BuildStrategyShardWithSentinels(strategyShared, slab, stratDeps)
+				sentinelOwnerAssigned = true
+			} else {
+				shardStrat, stratErr = bootstrap.BuildStrategyShard(strategyShared, slab, stratDeps)
+			}
 			if stratErr != nil {
 				return ShardServices{}, fmt.Errorf("shard strategy: %w", stratErr)
 			}
@@ -1472,6 +1542,39 @@ func (r *Runner) Run(ctx context.Context) error {
 		}); startErr != nil {
 			r.status.Store("error")
 			return fmt.Errorf("start sharded services: %w", startErr)
+		}
+
+		if r.cfg.CopytradeHistory != "" {
+			copytradeReplaySvc = copytradereplay.New(r.infra.EventBus, "default", domain.EnvModePaper,
+				r.log.With().Str("component", "copytrade_replay").Logger())
+			ctStats, ctErr := copytradeReplaySvc.Load(r.cfg.CopytradeHistory, r.cfg.From, r.cfg.To)
+			if ctErr != nil {
+				r.status.Store("error")
+				return fmt.Errorf("copytrade replay: load %s: %w", r.cfg.CopytradeHistory, ctErr)
+			}
+			r.log.Info().
+				Int("messages_read", ctStats.MessagesRead).
+				Int("messages_dropped", ctStats.MessagesDropped).
+				Int("signals_loaded", ctStats.SignalsLoaded).
+				Msg("copytrade replay ready")
+
+			if err := os.MkdirAll(r.cfg.CopytradeLedgerDir, 0o755); err != nil {
+				r.status.Store("error")
+				return fmt.Errorf("copytrade replay: mkdir %s: %w", r.cfg.CopytradeLedgerDir, err)
+			}
+			fillPath := r.cfg.CopytradeLedgerDir + "/fills.csv"
+			var lErr error
+			copytradeLedger, lErr = copytradereplay.NewLedger(fillPath,
+				r.log.With().Str("component", "copytrade_ledger").Logger())
+			if lErr != nil {
+				r.status.Store("error")
+				return fmt.Errorf("copytrade replay: ledger open %s: %w", fillPath, lErr)
+			}
+			if err := copytradeLedger.Subscribe(ctx, r.infra.EventBus); err != nil {
+				r.status.Store("error")
+				return fmt.Errorf("copytrade replay: ledger subscribe: %w", err)
+			}
+			r.log.Info().Str("path", fillPath).Msg("copytrade replay: per-fill ledger active")
 		}
 
 		// Freeze the event bus AFTER all shard runners have subscribed.
@@ -1597,8 +1700,8 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 				// Wire session resolver + lookups.
 				p.Runner().SetAnchorResolver(sessionResolver.ResolveAnchors)
-				p.Runner().SetPrevDayBarsFn(func(symbol string, since time.Time) []start.Bar {
-					return sessionResolver.GetBarsSince(ctx, r.infra.DB, symbol, since)
+				p.Runner().SetPrevDayBarsFn(func(symbol string, since, until time.Time) []start.Bar {
+					return sessionResolver.GetBarsBetween(ctx, r.infra.DB, symbol, since, until)
 				})
 				p.Runner().SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
 				if len(dpLookup) > 0 {
@@ -1671,6 +1774,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			barsReplayed:     &barsProcessed,
 			auctionPub:       auctionPub,
 			sp:               sp,
+			copytradeReplay:  copytradeReplaySvc,
 		}
 
 		if err := sp.RunSliceToCompletion(ctx, sliceBars, replaySessionOpen, coord); err != nil {
@@ -1890,6 +1994,13 @@ backtestComplete:
 			Int("session_scan_errors", scanErrs).
 			Int("session_unknown_symbols", unknownSyms)
 	}
+	if r.infra.SimBroker != nil {
+		is := r.infra.SimBroker.ImpactStats()
+		summary = summary.
+			Int64("impact_applied", is.Applied).
+			Int64("impact_noop", is.NoOp).
+			Int64("impact_cap_reject", is.CapReject)
+	}
 	summary.Msg("backtest data-quality summary")
 
 	finalResult := r.collector.Result()
@@ -1907,6 +2018,39 @@ backtestComplete:
 	}
 	r.result.Store(&finalResult)
 	r.emitter.EmitComplete(&finalResult)
+
+	if copytradeReplaySvc != nil {
+		summary := map[string]any{
+			"stats":               copytradeReplaySvc.StatsSnapshot(),
+			"pending_at_shutdown": copytradeReplaySvc.Pending(),
+		}
+		if copytradeLedger != nil {
+			if err := copytradeLedger.Close(); err != nil {
+				r.log.Warn().Err(err).Msg("copytrade replay: ledger close failed")
+			}
+			summary["fill_ledger_rows"] = copytradeLedger.Rows()
+			summary["fill_ledger_path"] = r.cfg.CopytradeLedgerDir + "/fills.csv"
+		}
+		copytradeID, _ := start.NewStrategyID("copytrade_v1")
+		if ctSpec, ctErr := specStore.GetLatest(context.Background(), copytradeID); ctErr == nil {
+			partials := parseCopytradePartials(ctSpec.Params["partial_fractions"])
+			defaultFrac := 0.33
+			if v, ok := ctSpec.Params["default_stc_fraction"].(float64); ok {
+				defaultFrac = v
+			}
+			authorPath := r.cfg.CopytradeLedgerDir + "/author_stated.csv"
+			if trades, err := copytradeReplaySvc.WriteAuthorStatedLedger(authorPath, partials, defaultFrac); err != nil {
+				r.log.Warn().Err(err).Msg("copytrade replay: author ledger failed")
+			} else {
+				summary["author_stated"] = copytradereplay.SummarizeAuthorStated(trades)
+				summary["author_stated_path"] = authorPath
+				summary["author_stated_rows"] = len(trades)
+			}
+		} else {
+			r.log.Warn().Err(ctErr).Msg("copytrade replay: cannot load copytrade_v1 spec for author ledger")
+		}
+		r.emitter.Emit(SSEEvent{Type: "backtest:copytrade_summary", Data: summary})
+	}
 
 	if r.Status() != "canceled" {
 		r.status.Store("completed")
@@ -1973,6 +2117,7 @@ func signalPassthrough(bus ports.EventBusPort, log zerolog.Logger) func(context.
 
 func makeSnapshotFn() strategy.IndicatorSnapshotFunc {
 	calc := monitor.NewIndicatorCalculator()
+	calc.Label = "backtest_snapshot_fn"
 	return func(bar domain.MarketBar) start.IndicatorData {
 		snap := calc.Update(bar)
 		return start.IndicatorData{
@@ -2070,6 +2215,46 @@ func symbolStrings(syms []domain.Symbol) []string {
 	out := make([]string, len(syms))
 	for i, s := range syms {
 		out[i] = s.String()
+	}
+	return out
+}
+
+// parseCopytradePartials mirrors copytrade_v1's [[params.partial_fractions]]
+// shape. Copied from cmd/omo-replay/main.go rather than shared to keep the
+// CLI / HTTP wiring boundaries independent.
+func parseCopytradePartials(v any) []copytradereplay.PartialFractionEntry {
+	var entries []map[string]any
+	switch typed := v.(type) {
+	case []map[string]any:
+		entries = typed
+	case []any:
+		for _, item := range typed {
+			if m, ok := item.(map[string]any); ok {
+				entries = append(entries, m)
+			}
+		}
+	default:
+		return nil
+	}
+	out := make([]copytradereplay.PartialFractionEntry, 0, len(entries))
+	for _, m := range entries {
+		kw, _ := m["keyword"].(string)
+		if kw == "" {
+			continue
+		}
+		var frac float64
+		switch f := m["fraction"].(type) {
+		case float64:
+			frac = f
+		case int64:
+			frac = float64(f)
+		case int:
+			frac = float64(f)
+		}
+		if frac <= 0 || frac > 1.0 {
+			continue
+		}
+		out = append(out, copytradereplay.PartialFractionEntry{Keyword: kw, Fraction: frac})
 	}
 	return out
 }
@@ -2238,6 +2423,7 @@ type runnerSliceCoord struct {
 	auctionPub       *auctionPublisher
 	sp               *ShardedPipeline
 	ticksSeen        int
+	copytradeReplay  *copytradereplay.Service
 }
 
 func (c *runnerSliceCoord) OnTickBegin(_ context.Context, tickTime time.Time) error {
@@ -2266,6 +2452,27 @@ func (c *runnerSliceCoord) OnTickEnd(ctx context.Context, tickTime time.Time) er
 	if c.posMonSvc != nil {
 		c.posMonSvc.EvalExitRules(tickTime)
 		c.eventBus.Flush()
+	}
+	if c.copytradeReplay != nil {
+		if _, err := c.copytradeReplay.AdvanceTo(ctx, tickTime); err != nil && c.r != nil {
+			c.r.log.Error().Err(err).Time("tick", tickTime).Msg("copytrade replay: advance failed")
+		}
+		c.eventBus.Flush()
+		if c.sp != nil {
+			_ = c.sp.ForEachShard(func(p *Pipeline, _ []domain.Symbol) error {
+				rr := p.Runner()
+				if rr == nil {
+					return nil
+				}
+				rr.DrainCopytradeCallbacks()
+				pending := rr.DrainPendingSignals()
+				for i := range pending {
+					_ = c.eventBus.Publish(ctx, pending[i])
+				}
+				return nil
+			})
+			c.eventBus.Flush()
+		}
 	}
 	c.ticksSeen++
 	if c.ticksSeen%50 == 0 && c.r != nil {

@@ -144,7 +144,22 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	positions, err := adapter.GetPositions(ctx, "default", domain.EnvModePaper)
+	// Paper accounts stream positions over several seconds after connect;
+	// the adapter's posReady channel fires on the first position only.
+	// Poll up to 10s for the livePos map to settle before proceeding.
+	var positions []domain.Trade
+	for i := 0; i < 10; i++ {
+		p, pErr := adapter.GetPositions(ctx, "default", domain.EnvModePaper)
+		if pErr != nil {
+			err = pErr
+			break
+		}
+		positions = p
+		if len(positions) >= len(targets) {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
 	if err != nil {
 		log.Fatal().Err(err).Msg("GetPositions failed")
 	}

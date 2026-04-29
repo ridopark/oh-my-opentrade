@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -18,6 +19,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
+	"github.com/oh-my-opentrade/backend/internal/observability/parity"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
@@ -39,12 +41,13 @@ type Runner struct {
 	aggregators          map[string]*domain.BarAggregator
 	aggKeysBySym         map[string]map[string]string // sym → tf → "sym:tf"
 	htfCalcs             map[string]*monitor.IndicatorCalculator // key: "symbol:tf"
+	htfLabelSuffix       string                                   // empty in live; "_backtest_<id>" when TagBacktest called
 	regimeDetector       *monitor.RegimeDetector
 	anchorRegimes          map[string]map[string]domain.MarketRegime   // symbol → tf → latest regime
 	collectedAnchorRegimes map[string]map[string]start.AnchorRegime   // per-symbol reusable result map
 	signalsRTHSuppressed atomic.Int64
 	anchorResolver       func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
-	prevDayBarsFn        func(symbol string, since time.Time) []start.Bar
+	prevDayBarsFn        func(symbol string, since, until time.Time) []start.Bar
 	keyLevelPricesFn     func(symbol string, barTime time.Time) map[string]float64
 	keyLevelsBySymbol    map[string]map[string]float64
 	aiAnchorResolver     *AIAnchorResolver
@@ -52,7 +55,12 @@ type Runner struct {
 	lastResolvedRegime   map[string]domain.RegimeType
 
 	// Dark pool lookup for backtests: keyed by "symbol|5m-truncated-time".
-	dpLookup map[DPLookupKey]domain.DarkPoolBar
+	// dpSource is the runner's read port for dark-pool 5m bars. NewRunner
+	// installs noopDPSource so it is never nil. SetDarkPoolLookup wraps a
+	// map in staticDPSource for the backtest path; SetDarkPoolSource takes
+	// the live aggregator (Phase 4 of the parity plan) directly. The two
+	// setters are mutually exclusive — last write wins.
+	dpSource DPSource
 
 	// dpRolling maintains per-symbol rolling statistics for DP ratio Z-score computation.
 	dpRolling map[string]*dpRollingStats
@@ -91,6 +99,14 @@ type Runner struct {
 	// UI is watching and even cheap atomics add up across millions of bars.
 	disableLiveness bool
 
+	// disableAI mirrors bootstrap.StrategyDeps.DisableAI on the runner so
+	// the instance-context emit path can stamp EntryGatedPayload.AIEnabled.
+	// Parity plan Phase 2: makes "live and backtest blocked rows ran with
+	// the same AI mode" provable via a SQL diff. The enricher itself is
+	// still the authoritative consumer of DisableAI; this is read-only
+	// telemetry derived from it.
+	disableAI bool
+
 	// tideTracker, when non-nil, is fed every SPY/QQQ 1m bar to maintain a
 	// running intraday VWAP and expose market-tide deviation to AVWAP
 	// entry-signal telemetry. Phase 1 of AVWAP SPY-tide plumbing — data
@@ -101,6 +117,12 @@ type Runner struct {
 	// strategy panics. Nil is safe — the runner will still log and increment
 	// the panic metric. Set via SetNotifier.
 	notifier ports.NotifierPort
+
+	// universeHistory, when non-nil, lets copytrade gate author signals to
+	// symbols that were in the tradable universe at PostedAt. Nil is safe —
+	// the copytrade handler treats "no port" as "don't gate". Set via
+	// SetUniverseHistory.
+	universeHistory ports.UniverseHistoryPort
 
 	// suppressProgressEvents, when true, causes emitDomainEvent to drop
 	// telemetry-only payloads (EntryGatedPayload, ORBPhaseUpdatePayload)
@@ -140,6 +162,18 @@ type Runner struct {
 	scratchOneMin    []*Instance
 	scratchHTFNeeded map[string][]*Instance
 	scratchInstances []*Instance
+
+	// pendingCopytradeCallbacks queues strategy-callback dispatches (e.g.
+	// CopytradeExitRejected → Instance.OnEvent) that would otherwise run
+	// synchronously inside an outer Instance.OnEvent on the same goroutine —
+	// a reentrant mutex deadlock in syncMode backtests. Handlers enqueue a
+	// closure and return; drainCopytradeCallbacks runs them AFTER r.mu and
+	// inst.mu have been released by the outer call. Guarded by its own
+	// mutex, not r.mu, so enqueue from inside a handler holding r.mu is
+	// safe. Drain loops until empty because a drained callback can itself
+	// publish events that enqueue more work.
+	copytradeCallbackMu sync.Mutex
+	copytradeCallbacks  []func()
 }
 
 // strategyEmitSeq is a monotonic counter used to generate cheap
@@ -177,6 +211,28 @@ func (rs *dpRollingStats) push(v float64) {
 	if rs.idx == 0 {
 		rs.full = true
 	}
+}
+
+// snapshot returns the current ring buffer contents in chronological order
+// (oldest first) and the count of populated entries. Returns nil + 0 when
+// the buffer is empty. Used by parity-diag emits.
+func (rs *dpRollingStats) snapshot() ([]float64, int) {
+	n := rs.size
+	if !rs.full {
+		n = rs.idx
+	}
+	if n == 0 {
+		return nil, 0
+	}
+	out := make([]float64, n)
+	if rs.full {
+		for i := 0; i < n; i++ {
+			out[i] = rs.values[(rs.idx+i)%rs.size]
+		}
+	} else {
+		copy(out, rs.values[:n])
+	}
+	return out, n
 }
 
 func (rs *dpRollingStats) meanStd() (mean, std float64) {
@@ -240,7 +296,7 @@ func (r *Runner) SetAnchorResolver(fn func(symbol string, barTime time.Time, anc
 	r.lastSessionDate = make(map[string]int)
 }
 
-func (r *Runner) SetPrevDayBarsFn(fn func(symbol string, since time.Time) []start.Bar) {
+func (r *Runner) SetPrevDayBarsFn(fn func(symbol string, since, until time.Time) []start.Bar) {
 	r.prevDayBarsFn = fn
 }
 
@@ -271,6 +327,42 @@ func (r *Runner) SetAIAnchorResolver(resolver *AIAnchorResolver) {
 type anchorResettable interface {
 	AnchorNames() []string
 	ResetAnchors(map[string]time.Time)
+}
+
+type anchorUpdater interface {
+	UpdateCalcAnchor(name string, bar start.Bar)
+}
+
+// replayBarsForAnchors feeds 1m bars from each anchor's time up to `barTime`
+// into the state's cumulative AVWAP calculators. At a fresh-session reset,
+// anchor_time == barTime for session_open so the replay is a no-op; on
+// mid-session restart it seeds the bars needed to match bar-by-bar
+// accumulation at the same moment.
+func (r *Runner) replayBarsForAnchors(st any, symbol string, anchors map[string]time.Time, barTime time.Time) {
+	if r.prevDayBarsFn == nil {
+		return
+	}
+	au, ok := st.(anchorUpdater)
+	if !ok {
+		return
+	}
+	sortedNames := make([]string, 0, len(anchors))
+	for name := range anchors {
+		sortedNames = append(sortedNames, name)
+	}
+	sort.Strings(sortedNames)
+	for _, name := range sortedNames {
+		prevBars := r.prevDayBarsFn(symbol, anchors[name], barTime)
+		if len(prevBars) == 0 {
+			continue
+		}
+		r.logger.Info("replaying bars for anchor",
+			"symbol", symbol, "anchor", name, "bars", len(prevBars),
+			"from", prevBars[0].Time, "to", prevBars[len(prevBars)-1].Time)
+		for _, b := range prevBars {
+			au.UpdateCalcAnchor(name, b)
+		}
+	}
 }
 
 // ResolveAnchorsForWarmup triggers anchor resolution for all given symbols.
@@ -307,36 +399,7 @@ func (r *Runner) resolveSessionAnchors(symbol string, barTime time.Time) {
 					r.logger.Info("AVWAP anchor resolved", "symbol", symbol, "anchor", name, "anchor_time", t, "bar_time", barTime)
 				}
 				ar.ResetAnchors(resolved)
-				// Replay previous day's bars from each anchor time to end of session.
-				// Without this, pd_high/pd_low anchors activate on today's first bar
-				// and produce identical AVWAP values as session_open.
-				if r.prevDayBarsFn != nil {
-					type anchorUpdater interface {
-						UpdateCalcAnchor(name string, bar start.Bar)
-					}
-					if au, ok := st.(anchorUpdater); ok {
-						// Sort for deterministic replay order
-						sortedNames := make([]string, 0, len(resolved))
-						for name := range resolved {
-							if name != "session_open" {
-								sortedNames = append(sortedNames, name)
-							}
-						}
-						sort.Strings(sortedNames)
-						for _, name := range sortedNames {
-							anchorTime := resolved[name]
-							prevBars := r.prevDayBarsFn(symbol, anchorTime)
-							if len(prevBars) > 0 {
-								r.logger.Info("replaying prev-day bars for anchor",
-									"symbol", symbol, "anchor", name, "bars", len(prevBars),
-									"from", prevBars[0].Time, "to", prevBars[len(prevBars)-1].Time)
-								for _, b := range prevBars {
-									au.UpdateCalcAnchor(name, b)
-								}
-							}
-						}
-					}
-				}
+				r.replayBarsForAnchors(st, symbol, resolved, barTime)
 				r.logger.Info("reset AVWAP anchors for new session", "symbol", symbol, "anchors", len(resolved))
 			}
 
@@ -426,34 +489,7 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 				merged[k] = v
 			}
 			ar.ResetAnchors(merged)
-			// Replay previous day's bars for non-session_open anchors
-			if r.prevDayBarsFn != nil {
-				type anchorUpdater interface {
-					UpdateCalcAnchor(name string, bar start.Bar)
-				}
-				if au, ok2 := st.(anchorUpdater); ok2 {
-					// Sort anchor names for deterministic replay order
-					sortedNames := make([]string, 0, len(merged))
-					for name := range merged {
-						if name != "session_open" {
-							sortedNames = append(sortedNames, name)
-						}
-					}
-					sort.Strings(sortedNames)
-					for _, name := range sortedNames {
-						anchorTime := merged[name]
-						prevBars := r.prevDayBarsFn(symbol, anchorTime)
-						if len(prevBars) > 0 {
-							r.logger.Info("replaying prev-day bars for anchor",
-								"symbol", symbol, "anchor", name, "bars", len(prevBars),
-								"from", prevBars[0].Time, "to", prevBars[len(prevBars)-1].Time)
-							for _, b := range prevBars {
-								au.UpdateCalcAnchor(name, b)
-							}
-						}
-					}
-				}
-			}
+			r.replayBarsForAnchors(st, symbol, merged, bar.Time)
 			r.logger.Info("AI anchor resolution complete", "symbol", symbol, "anchors", len(merged))
 		}
 
@@ -513,6 +549,7 @@ func NewRunner(
 		lateSessionNFRolling: make(map[string]*dpRollingStats),
 		lateSessionDPVolRatioZ:       make(map[string]float64),
 		lateSessionDPVolRatioRolling: make(map[string]*dpRollingStats),
+		dpSource:                     noopDPSource{},
 		liveness:                     NewLivenessTracker(),
 	}
 	// Wire the liveness publisher so throttled StrategyEvaluation events
@@ -525,11 +562,33 @@ func NewRunner(
 	return r
 }
 
+// TagBacktest annotates lazily-created htfCalc instances so an in-process
+// backtest does not pollute live parity-diag log filters keyed on
+// `"calc":"runner_htf"`. Mirrors monitor.Service.TagBacktest. Must be called
+// before any bar feeds reach handleBarCore or WarmUpTF — bootstrap invokes
+// it synchronously after NewRunner when StrategyDeps.BacktestID is non-empty.
+func (r *Runner) TagBacktest(backtestID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.htfLabelSuffix = "_backtest_" + backtestID
+}
+
 // SetDisableLiveness toggles liveness recording. Backtests call with true to
 // skip per-bar atomic updates and counter bookkeeping.
 func (r *Runner) SetDisableLiveness(disable bool) {
 	r.mu.Lock()
 	r.disableLiveness = disable
+	r.mu.Unlock()
+}
+
+// SetDisableAI records whether the strategy pipeline this runner belongs to
+// has the AI enricher disabled. The flag is consumed only by the instance-
+// context emit path to stamp EntryGatedPayload.AIEnabled (parity plan
+// Phase 2). It does NOT short-circuit the enricher itself — the enricher
+// owns its own SkipAI option, set by bootstrap.
+func (r *Runner) SetDisableAI(disable bool) {
+	r.mu.Lock()
+	r.disableAI = disable
 	r.mu.Unlock()
 }
 
@@ -613,10 +672,28 @@ func (r *Runner) applyTideData(inst *Instance, symbol string) {
 
 func (r *Runner) SetPositionLookup(fn PositionLookupFunc) { r.posLookup = fn }
 
-// SetDarkPoolLookup injects pre-loaded dark pool bars for backtesting.
-// The strategy runner overlays DP data onto IndicatorData during bar processing.
+// SetUniverseHistory installs the port used by the copytrade handler to gate
+// incoming author signals to symbols that were tradable at PostedAt. Nil keeps
+// gating disabled (the handler skips the check).
+func (r *Runner) SetUniverseHistory(p ports.UniverseHistoryPort) { r.universeHistory = p }
+
+// SetDarkPoolLookup injects pre-loaded dark pool bars for backtesting. The
+// strategy runner overlays DP data onto IndicatorData during bar processing.
+// Internally wraps the map in a staticDPSource so the per-bar access path
+// is the same as the live path (Phase 4 of the parity plan).
 func (r *Runner) SetDarkPoolLookup(lookup map[DPLookupKey]domain.DarkPoolBar) {
-	r.dpLookup = lookup
+	r.dpSource = staticDPSource{lookup: lookup}
+}
+
+// SetDarkPoolSource installs a DPSource implementation directly. Used by
+// the live path to plug in livedarkpool.Service (Phase 4) without going
+// through the legacy map shape. Mutually exclusive with SetDarkPoolLookup —
+// last write wins.
+func (r *Runner) SetDarkPoolSource(src DPSource) {
+	if src == nil {
+		src = noopDPSource{}
+	}
+	r.dpSource = src
 }
 
 // SetWhaleLookup provides whale accumulation scores for 13F confluence.
@@ -727,6 +804,35 @@ func (r *Runner) InitAggregators(sessionOpen time.Time) {
 	}
 }
 
+// PrimeAggregators feeds 1m bars through the runtime HTF aggregators
+// without driving the per-(sym, tf) indicator calculator. Used at boot
+// after canonical-spec HTF warmup so the first live 5m/15m/1h close
+// after boot contains today's pre-boot 1m bars, not just post-boot ones.
+// htfCalc state is owned by WarmUpTF; this only primes aggregator buckets.
+func (r *Runner) PrimeAggregators(symbol string, bars1m []domain.MarketBar) {
+	if len(bars1m) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	symKeys := r.aggKeysBySym[symbol]
+	if symKeys == nil {
+		return
+	}
+	for tf, key := range symKeys {
+		if tf == "1m" {
+			continue
+		}
+		agg, ok := r.aggregators[key]
+		if !ok {
+			continue
+		}
+		for _, bar := range bars1m {
+			_, _ = agg.Push(bar)
+		}
+	}
+}
+
 // Start subscribes the runner to MarketBarSanitized, StateUpdated, FillReceived,
 // and OrderIntentRejected events on the event bus.
 func (r *Runner) Start(ctx context.Context) error {
@@ -750,6 +856,13 @@ func (r *Runner) Start(ctx context.Context) error {
 		r.logger.Warn("failed to subscribe to TradeReceived (non-fatal)", "error", err)
 		// Non-fatal: backtests don't synthesize trade ticks; strategies fall
 		// back to bar-sign TFI via the `tfi_source = "auto"` knob.
+	}
+	if err := r.eventBus.Subscribe(ctx, domain.EventCopytradeSignalReceived, r.handleCopytradeSignal); err != nil {
+		r.logger.Warn("failed to subscribe to CopytradeSignalReceived (non-fatal)", "error", err)
+		// Non-fatal: most deployments/backtests don't run the copytrade strategy.
+	}
+	if err := r.eventBus.Subscribe(ctx, domain.EventCopytradeExitRejected, r.handleCopytradeExitRejected); err != nil {
+		r.logger.Warn("failed to subscribe to CopytradeExitRejected (non-fatal)", "error", err)
 	}
 	r.logger.Info("strategy runner subscribed to MarketBarSanitized events")
 	r.lastBarTime.Store(time.Now().UnixNano())
@@ -903,9 +1016,10 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 		HTF:           newHTF,
 	}
 
-	// Overlay dark pool microstructure data when available (backtest only).
-	// Aggregates all 5m DP bars within the decision bar's time window for correct alignment.
-	if len(r.dpLookup) > 0 {
+	// Overlay dark pool microstructure data when the runner's DPSource has
+	// any (backtest, or Phase 4 live aggregator). Aggregates all 5m DP bars
+	// within the decision bar's time window for correct alignment.
+	if r.dpSource.HasData() {
 		sym := snap.Symbol.String()
 		barStart := snap.Time.UTC()
 		// Determine bar duration from timeframe; fallback to 5m for unknown/1m bars.
@@ -918,8 +1032,7 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 		// Aggregate all 5m DP bars within the decision window.
 		var dpVol, dpBuy, dpSell, dpLarge, dpTotal float64
 		for t := barStart.Truncate(5 * time.Minute); t.Before(barEnd); t = t.Add(5 * time.Minute) {
-			key := DPLookupKey{Symbol: sym, Time: t}
-			if dp, ok := r.dpLookup[key]; ok {
+			if dp, ok := r.dpSource.Lookup(sym, t); ok {
 				dpVol += dp.DPVolume
 				dpBuy += dp.BuyVolume
 				dpSell += dp.SellVolume
@@ -967,7 +1080,7 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 				var dpBars []dpBarEntry
 				levelStart := barEnd.Add(-20 * 5 * time.Minute)
 				for t := levelStart.Truncate(5 * time.Minute); t.Before(barEnd); t = t.Add(5 * time.Minute) {
-					if dp, ok2 := r.dpLookup[DPLookupKey{Symbol: sym, Time: t}]; ok2 && dp.DPVolume > 0 && dp.DPVWAP > 0 {
+					if dp, ok2 := r.dpSource.Lookup(sym, t); ok2 && dp.DPVolume > 0 && dp.DPVWAP > 0 {
 						dpBars = append(dpBars, dpBarEntry{vol: dp.DPVolume, vwap: dp.DPVWAP})
 					}
 				}
@@ -994,7 +1107,7 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 	}
 
 	// Overlay late-session DP Z-score (daily signal from previous day's 14:00-15:30 ET).
-	if len(r.dpLookup) > 0 && etLocation != nil {
+	if r.dpSource.HasData() && etLocation != nil {
 		sym := snap.Symbol.String()
 		barTime := snap.Time.UTC()
 		etTime := barTime.In(etLocation)
@@ -1009,7 +1122,7 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 			// Holiday skip: if no DP data exists for prevDay, step back further.
 			for attempts := 0; attempts < 5; attempts++ {
 				probe := time.Date(prevDay.Year(), prevDay.Month(), prevDay.Day(), 14, 0, 0, 0, etLocation).UTC()
-				if _, ok := r.dpLookup[DPLookupKey{Symbol: sym, Time: probe}]; ok {
+				if _, ok := r.dpSource.Lookup(sym, probe); ok {
 					break
 				}
 				prevDay = prevDay.AddDate(0, 0, -1)
@@ -1022,7 +1135,7 @@ func (r *Runner) applyStateUpdate(snap domain.IndicatorSnapshot) {
 
 			var lateBuy, lateSell, lateLargePrint, lateDPVol, lateLitVol float64
 			for t := lateStart.Truncate(5 * time.Minute); t.Before(lateEnd); t = t.Add(5 * time.Minute) {
-				if dp, ok := r.dpLookup[DPLookupKey{Symbol: sym, Time: t}]; ok {
+				if dp, ok := r.dpSource.Lookup(sym, t); ok {
 					lateBuy += dp.BuyVolume
 					lateSell += dp.SellVolume
 					lateLargePrint += dp.LargePrintVolume
@@ -1235,6 +1348,17 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	if !ok {
 		return fmt.Errorf("strategy runner: payload is not a MarketBar, got %T", event.Payload)
 	}
+	// Monitor re-emits its own HTF aggregated bars as EventMarketBarSanitized
+	// (used by SSE display and DB HTF backfill at services.go:792). The runner
+	// has its own per-symbol aggregator seeded via WarmUpHTF and fed from the
+	// 1m stream, so consuming monitor's HTF bars here would double-feed
+	// htfCalcs[sym:5m] — corrupting VolumeSMA, regime classification, and
+	// every downstream gate that reads htfSnap. Backtest's native-HTF replay
+	// path (daily crypto) reaches handleBarCore via HandleBarDirectTyped,
+	// which bypasses this gate.
+	if bar.Timeframe != "1m" {
+		return nil
+	}
 	return r.handleBarCore(ctx, bar, event.TenantID, event.EnvMode)
 }
 
@@ -1329,7 +1453,7 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 	// Overlay dark pool data directly in handleBar to ensure it's fresh
 	// when the strategy processes this bar. The handleStateUpdated overlay
 	// can be overwritten by subsequent 1m snapshots before the 15m handleBar fires.
-	if len(r.dpLookup) > 0 {
+	if r.dpSource.HasData() {
 		barStart := bar.Time.UTC()
 		barDur := tfDuration(bar.Timeframe)
 		if barDur < 5*time.Minute {
@@ -1338,7 +1462,7 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		barEnd := barStart.Add(barDur)
 		var dpVol, dpBuy, dpLarge, dpTotal float64
 		for t := barStart.Truncate(5 * time.Minute); t.Before(barEnd); t = t.Add(5 * time.Minute) {
-			if dp, ok := r.dpLookup[DPLookupKey{Symbol: symbol, Time: t}]; ok {
+			if dp, ok := r.dpSource.Lookup(symbol, t); ok {
 				dpVol += dp.DPVolume
 				dpBuy += dp.BuyVolume
 				dpLarge += dp.LargePrintVolume
@@ -1366,7 +1490,7 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 				type dpE struct{ vol, vwap float64 }
 				var dpBars []dpE
 				for t := levelStart.Truncate(5 * time.Minute); t.Before(barEnd); t = t.Add(5 * time.Minute) {
-					if dp, ok := r.dpLookup[DPLookupKey{Symbol: symbol, Time: t}]; ok && dp.DPVolume > 0 && dp.DPVWAP > 0 {
+					if dp, ok := r.dpSource.Lookup(symbol, t); ok && dp.DPVolume > 0 && dp.DPVWAP > 0 {
 						dpBars = append(dpBars, dpE{dp.DPVolume, dp.DPVWAP})
 					}
 				}
@@ -1469,6 +1593,7 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		instCtx.tenantID = tenantID
 		instCtx.envMode = envMode
 		instCtx.runner = r
+		instCtx.specID = inst.configStrategyID()
 		r.applyTideData(inst, symbol)
 		signals, err := r.safeOnBar(inst, instCtx, symbol, sBar, indicators)
 		instanceContextPool.Put(instCtx)
@@ -1520,6 +1645,7 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		htfCalc, ok := r.htfCalcs[key]
 		if !ok {
 			htfCalc = monitor.NewIndicatorCalculator()
+			htfCalc.Label = "runner_htf" + r.htfLabelSuffix
 			r.htfCalcs[key] = htfCalc
 		}
 		htfSnap := htfCalc.Update(closed)
@@ -1565,12 +1691,12 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		}
 
 		// Overlay DP data onto HTF indicators using the closed bar's time window.
-		if len(r.dpLookup) > 0 {
+		if r.dpSource.HasData() {
 			htfStart := closed.Time.UTC()
 			htfEnd := htfStart.Add(tfDuration(domain.Timeframe(tf)))
 			var hDPVol, hDPBuy, hDPLarge, hDPTotal float64
 			for t := htfStart.Truncate(5 * time.Minute); t.Before(htfEnd); t = t.Add(5 * time.Minute) {
-				if dp, ok := r.dpLookup[DPLookupKey{Symbol: symbol, Time: t}]; ok {
+				if dp, ok := r.dpSource.Lookup(symbol, t); ok {
 					hDPVol += dp.DPVolume
 					hDPBuy += dp.BuyVolume
 					hDPLarge += dp.LargePrintVolume
@@ -1619,6 +1745,7 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 			instCtx.tenantID = tenantID
 			instCtx.envMode = envMode
 			instCtx.runner = r
+			instCtx.specID = inst.configStrategyID()
 			r.applyTideData(inst, symbol)
 			signals, err := r.safeOnBar(inst, instCtx, symbol, htfBar, htfIndicators)
 			instanceContextPool.Put(instCtx)
@@ -1810,6 +1937,32 @@ func (r *Runner) WarmUpTF(symbol string, tf string, bars []domain.MarketBar, sna
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Warm the per-(symbol,tf) IndicatorCalculator with historical bars. The
+	// live path creates this lazily on first bar, so without warmup SMA/EMA/
+	// RSI/ATR/etc. are all zero for ~20 live bars and entry gates requiring
+	// VolumeSMA > 0 (breakout volume check, etc.) never fire for the first
+	// ~100 min post-restart. snapshotFn supplies indicators for the strategy
+	// state itself — htfCalcs is a separate instance owned by the runner.
+	if tf != "1m" {
+		key := symbol + ":" + tf
+		if symKeys := r.aggKeysBySym[symbol]; symKeys != nil {
+			if k := symKeys[tf]; k != "" {
+				key = k
+			}
+		}
+		// Idempotent: a second call would double-feed Update and ratchet
+		// EMAs further from steady-state. First call is authoritative.
+		if _, exists := r.htfCalcs[key]; exists {
+			return 0
+		}
+		htfCalc := monitor.NewIndicatorCalculator()
+		htfCalc.Label = "runner_htf" + r.htfLabelSuffix
+		r.htfCalcs[key] = htfCalc
+		for _, bar := range bars {
+			htfCalc.Update(bar)
+		}
+	}
+
 	var lastIndicators start.IndicatorData
 	for _, bar := range bars {
 		indicators := snapshotFn(bar)
@@ -1846,6 +1999,25 @@ func (r *Runner) WarmUpTF(symbol string, tf string, bars []domain.MarketBar, sna
 	}
 
 	return len(bars)
+}
+
+// HTFTimeframesForSymbol returns the unique non-1m timeframes registered by
+// any strategy instance assigned to the given symbol. Used by warmup paths
+// to drive per-(sym, tf) native HTF fetches.
+func (r *Runner) HTFTimeframesForSymbol(symbol string) []string {
+	seen := make(map[string]struct{})
+	for _, inst := range r.router.InstancesForSymbol(symbol) {
+		for _, tf := range inst.Assignment().Timeframes {
+			if tf != "1m" {
+				seen[tf] = struct{}{}
+			}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for tf := range seen {
+		result = append(result, tf)
+	}
+	return result
 }
 
 // WarmUpHTF aggregates 1m warmup bars into each HTF timeframe required by
@@ -1979,6 +2151,29 @@ func (r *Runner) filterByAllowedDirections(signals []start.Signal) []start.Signa
 // shard in dispatch order to preserve parity with the single-threaded
 // path.
 func (r *Runner) emitSignal(ctx context.Context, tenantID string, envMode domain.EnvMode, sig start.Signal) error {
+	// Live persists fired signals via SignalTracker; this mirror captures
+	// the dpRolling buffer alongside so backtest can diff on the same bar.
+	if parity.Enabled() {
+		rollingMean, rollingStd := 0.0, 0.0
+		rollingValuesJSON := []byte("null")
+		rollingCount := 0
+		if rs, ok := r.dpRolling[string(sig.Symbol)]; ok && rs != nil {
+			rollingMean, rollingStd = rs.meanStd()
+			snap, n := rs.snapshot()
+			rollingCount = n
+			rollingValuesJSON, _ = json.Marshal(snap)
+		}
+		r.logger.Info("parity-diag",
+			"stage", parity.StageSignalCreated,
+			"symbol", string(sig.Symbol),
+			"strategy_instance_id", sig.StrategyInstanceID,
+			"side", string(sig.Side),
+			"strength", sig.Strength,
+			"dp_rolling_mean", rollingMean,
+			"dp_rolling_std", rollingStd,
+			"dp_rolling_count", rollingCount,
+			"dp_rolling_values", string(rollingValuesJSON))
+	}
 	ev, err := domain.NewEvent(
 		domain.EventSignalCreated,
 		tenantID,
@@ -2034,10 +2229,56 @@ func (r *Runner) emitDomainEvent(ctx context.Context, tenantID string, envMode d
 		eventType = domain.EventEntryGated
 		cacheKey = "EntryGated:" + p.Strategy + ":" + p.Symbol
 		isProgress = true
+		// Live persists blocked rows via EntryGatedWriter — this log line is
+		// mainly for backtest (which uses NoopPnLRepo). Per-bar volume drops
+		// dp_rolling_values (kept at SignalCreated which is rare); mean/std/
+		// count are enough to detect buffer divergence.
+		if parity.Enabled() {
+			compsJSON, _ := json.Marshal(p.Confluence.Components)
+			checksJSON, _ := json.Marshal(p.EntryChecks)
+			barJSON, _ := json.Marshal(p.Bar)
+			anchorsJSON := []byte("null")
+			if p.AVWAPState != nil {
+				anchorsJSON, _ = json.Marshal(p.AVWAPState.Anchors)
+			}
+			rollingMean, rollingStd, rollingCount := 0.0, 0.0, 0
+			if rs, ok := r.dpRolling[p.Symbol]; ok && rs != nil {
+				rollingMean, rollingStd = rs.meanStd()
+				_, rollingCount = rs.snapshot()
+			}
+			r.logger.Info("parity-diag",
+				"stage", parity.StageEntryGated,
+				"symbol", p.Symbol,
+				"strategy", p.Strategy,
+				"setup", p.SetupType,
+				"score", p.Confluence.Score,
+				"max_score", p.Confluence.MaxScore,
+				"blocking_gate", p.BlockingGate,
+				"blocking_detail", p.BlockingDetail,
+				"avwap_bias", p.Indicators.AVWAPBias,
+				"slope_bps", p.Indicators.SlopeBPS,
+				"rsi", p.Indicators.RSI,
+				"vol_ratio", p.Indicators.VolumeRatio,
+				"components", string(compsJSON),
+				"entry_checks", string(checksJSON),
+				"bar", string(barJSON),
+				"avwap_anchors", string(anchorsJSON),
+				"dp_rolling_mean", rollingMean,
+				"dp_rolling_std", rollingStd,
+				"dp_rolling_count", rollingCount)
+		}
 	case domain.ORBPhaseUpdatePayload:
 		eventType = domain.EventORBPhaseUpdate
 		cacheKey = "ORBPhaseUpdate:" + p.Symbol
 		isProgress = true
+	case domain.ChandelierTrailArmPayload:
+		eventType = domain.EventChandelierTrailArm
+	case domain.CopytradeExitRequestPayload:
+		eventType = domain.EventCopytradeExitRequest
+	case domain.CopytradeEntryExpiredPayload:
+		eventType = domain.EventCopytradeEntryExpired
+	case domain.CopytradeOrphanFillPayload:
+		eventType = domain.EventCopytradeOrphanFill
 	}
 	if isProgress && r.suppressProgressEvents {
 		return nil
@@ -2133,6 +2374,13 @@ func (r *Runner) handleFill(_ context.Context, event domain.Event) error {
 	}
 
 	inst := r.findInstanceByStrategyAndSymbol(strategyName, routingSymbol)
+	dispatchSymbol := routingSymbol
+	if inst == nil && strategyName == "copytrade_v1" {
+		if fallback := r.findInstanceByStrategy(strategyName); fallback != nil {
+			inst = fallback
+			dispatchSymbol = copytradeSentinelSymbol
+		}
+	}
 	if inst == nil {
 		r.logger.Debug("handleFill: no matching instance", "strategy", strategyName, "symbol", symbol)
 		return nil
@@ -2164,8 +2412,9 @@ func (r *Runner) handleFill(_ context.Context, event domain.Event) error {
 	}
 
 	r.mu.Lock()
-	signals, err := inst.OnEvent(instCtx, routingSymbol, confirmation)
+	signals, err := inst.OnEvent(instCtx, dispatchSymbol, confirmation)
 	r.mu.Unlock()
+	r.DrainCopytradeCallbacks()
 
 	if err != nil {
 		r.logger.Error("handleFill: OnEvent failed",
@@ -2215,13 +2464,20 @@ func (r *Runner) handleRejection(_ context.Context, event domain.Event) error {
 		rejSymbol = string(underlying)
 	}
 	inst := r.findInstanceByStrategyAndSymbol(payload.Strategy, rejSymbol)
+	dispatchSymbol := payload.Symbol
+	if inst == nil && payload.Strategy == "copytrade_v1" {
+		if fallback := r.findInstanceByStrategy(payload.Strategy); fallback != nil {
+			inst = fallback
+			dispatchSymbol = copytradeSentinelSymbol
+		}
+	}
 	if inst == nil {
 		r.logger.Debug("handleRejection: no matching instance", "strategy", payload.Strategy, "symbol", rejSymbol)
 		return nil
 	}
 
 	instCtx := &instanceContext{
-		now:    time.Now(), // rejection timing is not critical for determinism
+		now:    r.handlerNow(event, "handleRejection"),
 		logger: r.logger.With("instance_id", inst.ID().String(), "symbol", payload.Symbol),
 		emit:   func(_ any) error { return nil },
 	}
@@ -2233,8 +2489,9 @@ func (r *Runner) handleRejection(_ context.Context, event domain.Event) error {
 	}
 
 	r.mu.Lock()
-	signals, err := inst.OnEvent(instCtx, payload.Symbol, rejection)
+	signals, err := inst.OnEvent(instCtx, dispatchSymbol, rejection)
 	r.mu.Unlock()
+	r.DrainCopytradeCallbacks()
 
 	if err != nil {
 		r.logger.Error("handleRejection: OnEvent failed",
@@ -2335,6 +2592,227 @@ func (r *Runner) handleTradeReceived(_ context.Context, event domain.Event) erro
 		}
 	}
 	r.mu.Unlock()
+	return nil
+}
+
+// copytradeSentinelSymbol is the fixed symbol key under which the single-
+// instance copytrade strategy stores its state. The strategy has no per-
+// symbol routing (symbols = []); using a sentinel keeps Instance.states
+// consistent with every other code path that indexes by symbol.
+const copytradeSentinelSymbol = "__copytrade__"
+
+// handlerNow returns event.OccurredAt so backtests see sim-time and live
+// sees wall-clock. Falls back to wall clock if the envelope is unstamped,
+// which should not happen — the canary log flags any path that misses it.
+func (r *Runner) handlerNow(event domain.Event, handler string) time.Time {
+	if !event.OccurredAt.IsZero() {
+		return event.OccurredAt
+	}
+	r.logger.Debug("handler: event.OccurredAt is zero, falling back to wall clock",
+		"handler", handler, "event_id", event.ID)
+	return time.Now()
+}
+
+// handleCopytradeSignal routes a parsed Discord signal from the discord-
+// copytrade sidecar to the single copytrade strategy instance. Because the
+// strategy uses symbols = [], it lives in r.router.instances but not in the
+// per-symbol routing map; we look it up by configStrategyID.
+func (r *Runner) handleCopytradeSignal(ctx context.Context, event domain.Event) error {
+	payload, ok := event.Payload.(domain.CopytradeSignalPayload)
+	if !ok {
+		return nil
+	}
+
+	inst := r.findInstanceByStrategy("copytrade_v1")
+	if inst == nil {
+		r.logger.Debug("handleCopytradeSignal: no active copytrade_v1 instance")
+		return nil
+	}
+
+	// Universe gate: if a history port is wired, drop signals for tickers that
+	// were not tradable at PostedAt. Use PostedAt (not now) so replayed / backfilled
+	// messages are validated against the state when the author posted.
+	if r.universeHistory != nil {
+		ok, err := r.universeHistory.WasTradable(ctx, domain.Symbol(payload.Ticker), payload.PostedAt)
+		if err != nil {
+			r.logger.Warn("handleCopytradeSignal: universe check failed",
+				"ticker", string(payload.Ticker),
+				"error", err,
+			)
+		} else if !ok {
+			r.logger.Info("handleCopytradeSignal: ticker out-of-universe — dropping",
+				"ticker", string(payload.Ticker),
+				"author", payload.Author,
+				"action", string(payload.Action),
+				"posted_at", payload.PostedAt,
+			)
+			if r.notifier != nil {
+				msg := fmt.Sprintf("copytrade: skipping out-of-universe %s %s %s %g%s @ %g (%s)",
+					payload.Action, payload.Ticker,
+					payload.Expiry.Format("2006-01-02"),
+					payload.Strike, payload.Right,
+					payload.Price, payload.Author,
+				)
+				_ = r.notifier.Notify(ctx, r.tenantID, msg)
+			}
+			return nil
+		}
+	}
+
+	// Lazy-init sentinel state if bootstrap didn't seed it (defense in depth).
+	if _, seeded := inst.GetState(copytradeSentinelSymbol); !seeded {
+		initCtx := &instanceContext{
+			ctx:      ctx,
+			now:      r.handlerNow(event, "handleCopytradeSignal.init"),
+			logger:   r.logger.With("instance_id", inst.ID().String(), "symbol", copytradeSentinelSymbol),
+			tenantID: r.tenantID,
+			envMode:  r.envMode,
+			runner:   r,
+		}
+		if err := inst.InitSymbol(initCtx, copytradeSentinelSymbol, nil); err != nil {
+			r.logger.Error("handleCopytradeSignal: InitSymbol failed",
+				"instance_id", inst.ID().String(),
+				"error", err,
+			)
+			return nil
+		}
+	}
+
+	copySig := start.CopytradeSignal{
+		SignalID:  payload.SignalID,
+		MessageID: payload.MessageID,
+		Author:    payload.Author,
+		PostedAt:  payload.PostedAt,
+		Action:    string(payload.Action),
+		Ticker:    string(payload.Ticker),
+		Expiry:    payload.Expiry,
+		Strike:    payload.Strike,
+		Right:     string(payload.Right),
+		Price:     payload.Price,
+		Tail:      payload.Tail,
+		RawLine:   payload.RawLine,
+	}
+
+	instCtx := &instanceContext{
+		ctx:      ctx,
+		now:      r.handlerNow(event, "handleCopytradeSignal"),
+		logger:   r.logger.With("instance_id", inst.ID().String(), "author", payload.Author, "ticker", string(payload.Ticker)),
+		tenantID: r.tenantID,
+		envMode:  r.envMode,
+		runner:   r,
+	}
+
+	r.mu.Lock()
+	signals, err := inst.OnEvent(instCtx, copytradeSentinelSymbol, copySig)
+	r.mu.Unlock()
+	r.DrainCopytradeCallbacks()
+	if err != nil {
+		r.logger.Error("handleCopytradeSignal: OnEvent failed",
+			"instance_id", inst.ID().String(),
+			"error", err,
+		)
+		return nil
+	}
+
+	for i := range signals {
+		// Instance.OnEvent does not stamp StrategyInstanceID on returned
+		// signals (only Instance.OnBar does). Stamp here so downstream
+		// metrics and the SignalCreated event carry the right attribution.
+		signals[i].StrategyInstanceID = inst.ID()
+	}
+	for _, sig := range signals {
+		if !sig.Type.IsActionable() {
+			continue
+		}
+		if emitErr := r.emitSignal(ctx, r.tenantID, r.envMode, sig); emitErr != nil {
+			r.logger.Error("handleCopytradeSignal: emitSignal failed",
+				"instance_id", inst.ID().String(),
+				"symbol", sig.Symbol,
+				"error", emitErr,
+			)
+		}
+	}
+	return nil
+}
+
+// handleCopytradeExitRejected routes a position-monitor-published exit
+// rejection (prior exit in flight) to the copytrade strategy so it can roll
+// its RemainingFrac back. The strategy has no per-symbol routing so we look
+// up the single instance by strategy ID and dispatch on the sentinel symbol.
+//
+// This runs on the same goroutine that holds inst.mu and r.mu when syncMode
+// is on (backtest), so we defer the actual Instance.OnEvent dispatch into
+// pendingCopytradeCallbacks instead of invoking it here. Callers drain the
+// queue after the outer OnEvent returns (see DrainCopytradeCallbacks).
+func (r *Runner) handleCopytradeExitRejected(ctx context.Context, event domain.Event) error {
+	payload, ok := event.Payload.(domain.CopytradeExitRejectedPayload)
+	if !ok {
+		return nil
+	}
+	inst := r.findInstanceByStrategy("copytrade_v1")
+	if inst == nil {
+		r.logger.Debug("handleCopytradeExitRejected: no active copytrade_v1 instance")
+		return nil
+	}
+	instCtx := &instanceContext{
+		ctx:      ctx,
+		now:      r.handlerNow(event, "handleCopytradeExitRejected"),
+		logger:   r.logger.With("instance_id", inst.ID().String(), "contract_symbol", payload.ContractSymbol),
+		tenantID: r.tenantID,
+		envMode:  r.envMode,
+		runner:   r,
+	}
+	rej := start.CopytradeExitRejection{
+		ContractSymbol: payload.ContractSymbol,
+		Fraction:       payload.Fraction,
+		Reason:         payload.Reason,
+	}
+	r.enqueueCopytradeCallback(func() {
+		if _, err := inst.OnEvent(instCtx, copytradeSentinelSymbol, rej); err != nil {
+			r.logger.Error("handleCopytradeExitRejected: OnEvent failed",
+				"instance_id", inst.ID().String(),
+				"error", err,
+			)
+		}
+	})
+	return nil
+}
+
+func (r *Runner) enqueueCopytradeCallback(fn func()) {
+	r.copytradeCallbackMu.Lock()
+	r.copytradeCallbacks = append(r.copytradeCallbacks, fn)
+	r.copytradeCallbackMu.Unlock()
+}
+
+// DrainCopytradeCallbacks must be invoked after inst.mu and r.mu are
+// released. Loops to handle cascading work — a drained callback can
+// publish events that enqueue more callbacks.
+func (r *Runner) DrainCopytradeCallbacks() {
+	for {
+		r.copytradeCallbackMu.Lock()
+		if len(r.copytradeCallbacks) == 0 {
+			r.copytradeCallbackMu.Unlock()
+			return
+		}
+		batch := r.copytradeCallbacks
+		r.copytradeCallbacks = nil
+		r.copytradeCallbackMu.Unlock()
+		for _, fn := range batch {
+			fn()
+		}
+	}
+}
+
+// findInstanceByStrategy returns the first active instance matching the given
+// strategy ID across all registered instances, ignoring symbol routing. Used
+// by handlers dispatching event-driven strategies (copytrade) that don't have
+// per-symbol routing. Returns nil when no active instance matches.
+func (r *Runner) findInstanceByStrategy(strategyName string) *Instance {
+	for _, inst := range r.router.AllInstances() {
+		if inst.configStrategyID() == strategyName && inst.IsActive() {
+			return inst
+		}
+	}
 	return nil
 }
 

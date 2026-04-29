@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
+	"github.com/oh-my-opentrade/backend/internal/app/livedarkpool"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/notify"
 	"github.com/oh-my-opentrade/backend/internal/app/orchestrator"
@@ -32,7 +34,9 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	screenerapp "github.com/oh-my-opentrade/backend/internal/app/screener"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
+	"github.com/oh-my-opentrade/backend/internal/app/strategywatchdog"
 	"github.com/oh-my-opentrade/backend/internal/app/symbolrouter"
+	"github.com/oh-my-opentrade/backend/internal/app/tradereplay"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -43,6 +47,9 @@ import (
 type appServices struct {
 	ingestion        *ingestion.Service
 	barWriter        *ingestion.AsyncBarWriter
+	tradeWriter      *ingestion.AsyncTradeWriter
+	tradeReplayer    *tradereplay.Service
+	liveDarkPool     *livedarkpool.Service
 	monitor          *monitor.Service
 	execution        *execution.Service
 	priceCache       *positionmonitor.PriceCache
@@ -74,8 +81,9 @@ type appServices struct {
 	activationSvc     *activation.Service
 	pipelineActivator *bootstrap.PipelineActivator
 
-	orchestrator *orchestrator.AccountOrchestrator
-	debateSvc    *debate.Service
+	orchestrator     *orchestrator.AccountOrchestrator
+	strategyWatchdog *strategywatchdog.Service
+	debateSvc        *debate.Service
 	aiAdvisor    ports.AIAdvisorPort
 	newsClient   *alpaca.NewsClient
 	// kakaoNotifier *notification.KakaoNotifier — disabled
@@ -101,6 +109,28 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	svc.ingestion = ingBundle.Service
 	svc.barWriter = ingBundle.BarWriter
 	svc.barWriter.Start()
+
+	svc.tradeWriter = ingestion.NewAsyncTradeWriter(infra.repo, log)
+	svc.tradeWriter.Start()
+
+	// Phase 6 of the parity plan: boot-time replay scaffolding for
+	// stateful tick consumers (live DP aggregator in Phase 4). Runs read-
+	// only at boot today with a logging sink — the smoke test validates
+	// the full read pipeline without depending on Phase 4 shipping first.
+	svc.tradeReplayer = tradereplay.New(infra.repo, log)
+
+	// Phase 4 of the parity plan: live in-process DP 5m aggregator.
+	// Construction is unconditional so /metrics gauges and the lookup
+	// API always exist; the bus subscription, the flush ticker, and the
+	// runner SetDarkPoolSource hook below are all gated on
+	// cfg.LiveDarkPoolEnabled. Off-path Service.HasData() returns false
+	// and the strategy runner skips DP overlay blocks, exactly as
+	// today's pre-Phase-4 behavior.
+	dpRepo := timescaledb.NewDarkPoolRepo(
+		timescaledb.NewSqlDB(infra.sqlDB),
+		log.With().Str("component", "darkpool_repo_live").Logger(),
+	)
+	svc.liveDarkPool = livedarkpool.New(dpRepo, log)
 
 	// Monitor
 	monitorSvc, err := bootstrap.BuildMonitor(bootstrap.MonitorDeps{
@@ -222,6 +252,11 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	// 2026-04-16 (order 1604 re-peg cancel → dust sweep 1606 sold qty we
 	// no longer owned because 1603 had filled in the cancel race).
 	svc.posMonitor.SetRepegNotifier(svc.execution)
+
+	// Phase 2 of the exit_repeg_dup_fill fix: gate atomic-modify re-pegs
+	// behind a config flag. Default off; flip only after a clean Phase-1
+	// session per the plan rollout gate.
+	svc.posMonitor.SetRepegModifyInPlace(cfg.Exits.RepegModifyInPlace)
 
 	// Wire the ATR-bucketed PREMIUM_TRAIL multiplier (2026-04-16 MRVL/SOXL
 	// premature-exit fix). Default-on per quant; operators flip
@@ -415,13 +450,15 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		EnvMode:         domain.EnvModePaper,
 		Equity:          svc.accountEquity,
 		Clock:           time.Now,
-		DisableAI: false,
+		DisableAI: !cfg.AI.Enabled,
 		Logger:          log,
 		TideTracker:     tideTracker,
 		// svc.notifier is the raw MultiNotifier (Telegram + Discord fan-out),
 		// not the event-driven svc.notifySvc. Panic alerts must bypass the
 		// batching pipeline and fire immediately, so we wire the raw sink.
-		Notifier: svc.notifier,
+		Notifier:       svc.notifier,
+		PnLRepo:        infra.pnlRepo,
+		GetPositionsFn: copytradeBrokerPositionsFn(infra.ibkrBroker, "default", domain.EnvModePaper),
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("strategy v2: failed to build pipeline")
@@ -439,31 +476,38 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	// calls that already run against this riskSizer, so no extra plumbing.
 	svc.riskSizer.SetPositionRiskCap(cfg.Risk.PositionCap)
 
-	aiAnchorResolver := strategy.NewAIAnchorResolver(svc.aiAdvisor, nil, slog.Default())
-	// Wire session-based anchor resolver so pd_high, pd_low, session_open are
-	// resolved from actual previous-day price data. Without this, the AI anchor
-	// resolver has no session context and these anchors are never set.
+	// The static session resolver (session_open, pd_high, pd_low from DB) is
+	// always wired. The AIAnchorResolver on top is gated by config: when
+	// disabled, live takes the same resolveSessionAnchors path as backtest
+	// with no_ai=true, avoiding divergence from candidate detectors and
+	// fallbackRank ordering. See cfg.AI.AnchorResolverEnabled.
 	loc, _ := time.LoadLocation("America/New_York")
 	sessionResolver := backtest.NewSessionResolver(loc)
-	aiAnchorResolver.SetSessionResolver(sessionResolver.ResolveAnchors)
 	svc.strategyRunner.SetAnchorResolver(sessionResolver.ResolveAnchors)
 	svc.strategyRunner.SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
-	svc.strategyRunner.SetAIAnchorResolver(aiAnchorResolver)
-	// Wire prev-day bar replay for AVWAP anchors (pd_high, pd_low).
-	// Without this, all AVWAP lines overlap because they activate on
-	// today's first bar instead of accumulating from their anchor time.
+
+	var aiAnchorResolver *strategy.AIAnchorResolver
+	if cfg.AI.AnchorResolverEnabled {
+		aiAnchorResolver = strategy.NewAIAnchorResolver(svc.aiAdvisor, nil, slog.Default())
+		aiAnchorResolver.SetSessionResolver(sessionResolver.ResolveAnchors)
+		svc.strategyRunner.SetAIAnchorResolver(aiAnchorResolver)
+		log.Info().Msg("AI anchor resolver wired (cfg.ai.anchor_resolver_enabled = true)")
+	} else {
+		log.Info().Msg("AI anchor resolver disabled — live uses static session resolver (backtest-parity path)")
+	}
+	// Wire bar replay for AVWAP anchors. Returns 1m bars in [since, until)
+	// so a mid-session restart can seed all anchors (including session_open)
+	// with today's bars up to the current bar-time, matching the state that
+	// bar-by-bar backtest accumulation produces at the same moment.
 	// Shared by both the strategy runner and the monitor's standalone AVWAP.
-	prevDayBarsFn := func(symbol string, since time.Time) []start.Bar {
-		if since.IsZero() {
+	prevDayBarsFn := func(symbol string, since, until time.Time) []start.Bar {
+		if since.IsZero() || !until.After(since) {
 			return nil
 		}
-		loc, _ := time.LoadLocation("America/New_York")
-		et := since.In(loc)
-		eod := time.Date(et.Year(), et.Month(), et.Day(), 16, 0, 0, 0, loc)
 		rows, qErr := infra.sqlDB.QueryContext(context.Background(),
 			`SELECT time, open, high, low, close, volume FROM market_bars
 			 WHERE symbol = $1 AND timeframe = '1m' AND time >= $2 AND time < $3
-			 ORDER BY time`, symbol, since, eod)
+			 ORDER BY time`, symbol, since, until)
 		if qErr != nil {
 			return nil
 		}
@@ -490,8 +534,10 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		for _, sym := range spec.Routing.Symbols {
 			if !anchorSymbols[sym] {
 				anchorSymbols[sym] = true
-				isCrypto := strings.Contains(sym, "/") || strings.HasSuffix(sym, "USD") || strings.HasSuffix(sym, "USDT")
-				aiAnchorResolver.RegisterSymbol(sym, isCrypto)
+				if aiAnchorResolver != nil {
+					isCrypto := strings.Contains(sym, "/") || strings.HasSuffix(sym, "USD") || strings.HasSuffix(sym, "USDT")
+					aiAnchorResolver.RegisterSymbol(sym, isCrypto)
+				}
 			}
 		}
 	}
@@ -513,6 +559,10 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 			continue
 		}
 		if _, err := start.NewStrategyID(hookRef.Name); err != nil {
+			continue
+		}
+
+		if hookRef.Name == "copytrade_v1" {
 			continue
 		}
 
@@ -584,6 +634,18 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	}
 
 	svc.monitor.SetBaseSymbols(pipeline.BaseSymbols)
+}
+
+// copytradeBrokerPositionsFn wraps BrokerPort.GetPositions into the narrow
+// closure shape bootstrap.StrategyDeps expects. Returns nil when broker is
+// absent — the bootstrap hook treats that as "skip" rather than "error".
+func copytradeBrokerPositionsFn(broker ports.BrokerPort, tenantID string, envMode domain.EnvMode) func(context.Context) ([]domain.Trade, error) {
+	if broker == nil {
+		return nil
+	}
+	return func(ctx context.Context) ([]domain.Trade, error) {
+		return broker.GetPositions(ctx, tenantID, envMode)
+	}
 }
 
 func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, log zerolog.Logger) {
@@ -659,7 +721,11 @@ func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, lo
 		// Per-account strategy pipeline reuses shared router + specStore
 		acctStratLog := slog.Default()
 		acctRunner := strategy.NewRunner(infra.eventBus, svc.router, acct.TenantID, domain.EnvModePaper, acctStratLog)
+		acctRunner.SetDisableAI(!cfg.AI.Enabled)
 		acctRunner.SetPositionLookup(svc.posMonitor.LookupPosition)
+		if cfg.LiveDarkPoolEnabled && svc.liveDarkPool != nil {
+			acctRunner.SetDarkPoolSource(svc.liveDarkPool)
+		}
 		acctRiskSizer := strategy.NewRiskSizer(infra.eventBus, svc.specStore, acctEquity, acctStratLog)
 		acctRiskSizer.SetPositionRiskCap(cfg.Risk.PositionCap)
 		acctLifecycle := strategy.NewLifecycleService(svc.router, acctStratLog)
@@ -709,6 +775,43 @@ func initDebateService(cfg *config.Config, infra *infraDeps, svc *appServices, l
 func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, svc *appServices, log zerolog.Logger) {
 	if err := svc.ingestion.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start ingestion")
+	}
+	if svc.tradeWriter != nil {
+		if err := infra.eventBus.Subscribe(ctx, domain.EventTradeReceived, func(_ context.Context, evt domain.Event) error {
+			t, ok := evt.Payload.(domain.MarketTrade)
+			if !ok {
+				log.Error().Str("payload_type", fmt.Sprintf("%T", evt.Payload)).Msg("trade writer: unexpected payload on TradeReceived")
+				return nil
+			}
+			svc.tradeWriter.Enqueue(t)
+			return nil
+		}); err != nil {
+			log.Fatal().Err(err).Msg("failed to subscribe trade writer to TradeReceived")
+		}
+	}
+
+	// Phase 4 (B/E): live DP aggregator. When enabled: subscribe to the
+	// trade bus alongside the writer so every tick is both persisted (for
+	// audit + boot replay) and aggregated in-process (for the runner's
+	// per-bar Lookup). Run the flush ticker on a background goroutine that
+	// exits when ctx cancels. Wire the Service into every account's strategy
+	// runner via SetDarkPoolSource so the existing DP overlay code paths
+	// (Phase 4 C) read from the live aggregator instead of the
+	// noopDPSource default.
+	if cfg.LiveDarkPoolEnabled && svc.liveDarkPool != nil {
+		if err := infra.eventBus.Subscribe(ctx, domain.EventTradeReceived, func(_ context.Context, evt domain.Event) error {
+			if t, ok := evt.Payload.(domain.MarketTrade); ok {
+				svc.liveDarkPool.AddTrade(t)
+			}
+			return nil
+		}); err != nil {
+			log.Fatal().Err(err).Msg("failed to subscribe live dark pool to TradeReceived")
+		}
+		go svc.liveDarkPool.Run(ctx)
+		if svc.strategyRunner != nil {
+			svc.strategyRunner.SetDarkPoolSource(svc.liveDarkPool)
+		}
+		log.Info().Msg("live dark pool aggregator enabled")
 	}
 	if err := svc.monitor.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start monitor")
@@ -774,6 +877,31 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 			)
 		})
 		log.Info().Msg("enriched bar persistence subscriber registered")
+
+		// Persist aggregated HTF (5m, 15m, 30m, 1h) bars so backtests and charts
+		// can read live-session HTF history back. 1m is already written by
+		// ingestion, so skip it here to avoid redundant writes.
+		_ = infra.eventBus.SubscribeAsync(ctx, domain.EventMarketBarSanitized, func(_ context.Context, evt domain.Event) error {
+			bar, ok := evt.Payload.(domain.MarketBar)
+			if !ok {
+				return nil
+			}
+			if bar.Timeframe == "1m" {
+				return nil
+			}
+			return infra.repo.SaveMarketBar(ctx, bar)
+		})
+		log.Info().Msg("HTF bar persistence subscriber registered")
+
+		// Persist EntryGated events (blocked signals) asynchronously so the
+		// dashboard's /signals page can surface "why didn't we trade" history
+		// alongside the strategy-emitted lifecycle events. SubscribeAsync
+		// keeps DB writes off the strategy runner's hot path; the parent ctx
+		// unwinds the subscription on graceful shutdown.
+		entryGatedWriter := strategy.NewEntryGatedWriter(infra.pnlRepo, log)
+		if err := infra.eventBus.SubscribeAsync(ctx, domain.EventEntryGated, entryGatedWriter.Handle); err != nil {
+			log.Warn().Err(err).Msg("failed to subscribe EntryGated writer — blocked signals will not persist")
+		}
 	}
 	if svc.symRouter != nil {
 		if err := svc.symRouter.Start(ctx); err != nil {
@@ -813,6 +941,27 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 	}
 	if err := svc.dnaApproval.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start dna approval service")
+	}
+
+	if svc.useStrategyV2 && svc.strategyRunner != nil {
+		runner := svc.strategyRunner
+		svc.strategyWatchdog = strategywatchdog.New(strategywatchdog.Deps{
+			ListStrategies: func() []strategywatchdog.WatchedStrategy {
+				infos := runner.ListStrategies()
+				out := make([]strategywatchdog.WatchedStrategy, 0, len(infos))
+				for _, info := range infos {
+					out = append(out, strategywatchdog.WatchedStrategy{
+						ID: info.ID, Symbols: info.Symbols, Active: info.Active,
+					})
+				}
+				return out
+			},
+			LivenessFor: runner.Liveness,
+			Notifier:    svc.notifier,
+			Log:         log.With().Str("component", "strategy_watchdog").Logger(),
+		}, strategywatchdog.Config{})
+		svc.strategyWatchdog.Start(ctx)
+		log.Info().Msg("strategy watchdog started")
 	}
 
 	// Seed initial DNA version detection for all loaded strategy TOMLs.

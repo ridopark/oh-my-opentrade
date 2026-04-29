@@ -3,6 +3,156 @@
 import { useEffect, useRef, useCallback, useState, useMemo } from "react";
 import type { DomainEvent, EventType, DebateEvent, EntryGatedPayload, ORBPhaseUpdatePayload } from "@/lib/types";
 
+const STREAM_URL = "/api/events";
+
+const DEFAULT_EVENT_TYPES: EventType[] = [
+  "MarketBarSanitized",
+  "DebateCompleted",
+  "OrderIntentCreated",
+  "OrderIntentValidated",
+  "OrderIntentRejected",
+  "StateUpdated",
+  "OrderSubmitted",
+  "OrderAccepted",
+  "OrderRejected",
+  "FillReceived",
+  "PositionUpdated",
+  "KillSwitchEngaged",
+  "CircuitBreakerTripped",
+];
+
+type DomainListener = (evt: DomainEvent) => void;
+type ConnectedListener = (connected: boolean) => void;
+
+const BACKOFF_SEQUENCE_MS = [1000, 2000, 5000, 10000];
+const CLOSE_DELAY_MS = 1000;
+
+let es: EventSource | null = null;
+let refCount = 0;
+let closeTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let backoffStep = 0;
+let connectedState = false;
+
+const typeListeners = new Map<EventType, Set<DomainListener>>();
+const boundTypes = new Set<EventType>();
+const connectedListeners = new Set<ConnectedListener>();
+
+function setConnected(next: boolean) {
+  if (connectedState === next) return;
+  connectedState = next;
+  for (const fn of connectedListeners) fn(next);
+}
+
+function dispatch(type: EventType, raw: string) {
+  const listeners = typeListeners.get(type);
+  if (!listeners || listeners.size === 0) return;
+  let event: DomainEvent;
+  try {
+    event = JSON.parse(raw) as DomainEvent;
+  } catch {
+    return;
+  }
+  for (const fn of listeners) {
+    try {
+      fn(event);
+    } catch {
+      // swallow: one listener crashing must not block others
+    }
+  }
+}
+
+function bindType(type: EventType) {
+  if (!es || boundTypes.has(type)) return;
+  es.addEventListener(type, (e: MessageEvent) => dispatch(type, e.data));
+  boundTypes.add(type);
+}
+
+function openConnection() {
+  if (typeof window === "undefined") return;
+  if (es) return;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  es = new EventSource(STREAM_URL);
+  es.onopen = () => {
+    backoffStep = 0;
+    setConnected(true);
+  };
+  es.onerror = () => {
+    setConnected(false);
+    if (!es) return;
+    es.close();
+    es = null;
+    boundTypes.clear();
+    if (refCount === 0) return;
+    const delay = BACKOFF_SEQUENCE_MS[Math.min(backoffStep, BACKOFF_SEQUENCE_MS.length - 1)];
+    backoffStep += 1;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      if (refCount > 0) openConnection();
+    }, delay);
+  };
+  for (const type of typeListeners.keys()) bindType(type);
+}
+
+function closeConnection() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (es) {
+    es.close();
+    es = null;
+  }
+  boundTypes.clear();
+  backoffStep = 0;
+  setConnected(false);
+}
+
+function scheduleClose() {
+  if (closeTimer) clearTimeout(closeTimer);
+  // Debounced close protects against StrictMode / HMR double-mounts churning the connection.
+  closeTimer = setTimeout(() => {
+    closeTimer = null;
+    if (refCount === 0) closeConnection();
+  }, CLOSE_DELAY_MS);
+}
+
+function addListener(type: EventType, fn: DomainListener) {
+  if (closeTimer) {
+    clearTimeout(closeTimer);
+    closeTimer = null;
+  }
+  let set = typeListeners.get(type);
+  if (!set) {
+    set = new Set();
+    typeListeners.set(type, set);
+  }
+  set.add(fn);
+  refCount += 1;
+  if (!es) openConnection();
+  else bindType(type);
+}
+
+function removeListener(type: EventType, fn: DomainListener) {
+  const set = typeListeners.get(type);
+  if (set) {
+    set.delete(fn);
+    if (set.size === 0) typeListeners.delete(type);
+  }
+  refCount = Math.max(0, refCount - 1);
+  if (refCount === 0) scheduleClose();
+}
+
+function subscribeConnected(fn: ConnectedListener): () => void {
+  connectedListeners.add(fn);
+  return () => {
+    connectedListeners.delete(fn);
+  };
+}
+
 interface UseEventStreamOptions {
   url?: string;
   eventTypes?: EventType[];
@@ -15,84 +165,61 @@ interface EventStreamState {
   error: string | null;
 }
 
+export function useSSEConnected(): boolean {
+  const [connected, setLocal] = useState<boolean>(() => connectedState);
+  useEffect(() => {
+    setLocal(connectedState);
+    return subscribeConnected(setLocal);
+  }, []);
+  return connected;
+}
+
+export function useEventListener(
+  eventType: EventType,
+  handler: (payload: DomainEvent) => void,
+): void {
+  const handlerRef = useRef(handler);
+  useEffect(() => {
+    handlerRef.current = handler;
+  }, [handler]);
+
+  useEffect(() => {
+    const listener: DomainListener = (evt) => handlerRef.current(evt);
+    addListener(eventType, listener);
+    return () => removeListener(eventType, listener);
+  }, [eventType]);
+}
+
 export function useEventStream({
-  url = "/api/events",
   eventTypes,
   maxEvents = 100,
 }: UseEventStreamOptions = {}): EventStreamState & {
   clearEvents: () => void;
 } {
-  const [state, setState] = useState<EventStreamState>({
-    events: [],
-    connected: false,
-    error: null,
-  });
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const [events, setEvents] = useState<DomainEvent[]>([]);
+  const [error] = useState<string | null>(null);
+  const connected = useSSEConnected();
 
-  const clearEvents = useCallback(() => {
-    setState((prev) => ({ ...prev, events: [] }));
-  }, []);
+  const clearEvents = useCallback(() => setEvents([]), []);
 
-   // Stabilize eventTypes reference to prevent useEffect re-triggering on every render
-   const stableEventTypes = useMemo(() => eventTypes, [eventTypes]);
+  const stableEventTypes = useMemo(
+    () => eventTypes ?? DEFAULT_EVENT_TYPES,
+    [eventTypes],
+  );
 
   useEffect(() => {
-    const eventSource = new EventSource(url);
-    eventSourceRef.current = eventSource;
-
-    eventSource.onopen = () => {
-      setState((prev) => ({ ...prev, connected: true, error: null }));
+    const listener: DomainListener = (evt) => {
+      setEvents((prev) => [evt, ...prev].slice(0, maxEvents));
     };
-
-    eventSource.onerror = () => {
-      setState((prev) => ({
-        ...prev,
-        connected: false,
-        error: "Connection lost. Retrying...",
-      }));
-    };
-
-    // Listen to all known event types
-    const allTypes: EventType[] = stableEventTypes ?? [
-      "MarketBarSanitized",
-      "DebateCompleted",
-      "OrderIntentCreated",
-      "OrderIntentValidated",
-      "OrderIntentRejected",
-      "StateUpdated",
-      "OrderSubmitted",
-      "OrderAccepted",
-      "OrderRejected",
-      "FillReceived",
-      "PositionUpdated",
-      "KillSwitchEngaged",
-      "CircuitBreakerTripped",
-    ];
-
-     for (const type of allTypes) {
-       eventSource.addEventListener(type, (e: MessageEvent) => {
-         try {
-           const event: DomainEvent = JSON.parse(e.data);
-           setState((prev) => ({
-             ...prev,
-             events: [event, ...prev.events].slice(0, maxEvents),
-           }));
-         } catch {
-           // Skip malformed events
-         }
-       });
-     }
-
+    for (const type of stableEventTypes) addListener(type, listener);
     return () => {
-      eventSource.close();
-      eventSourceRef.current = null;
+      for (const type of stableEventTypes) removeListener(type, listener);
     };
-  }, [url, maxEvents, stableEventTypes]);
+  }, [stableEventTypes, maxEvents]);
 
-  return { ...state, clearEvents };
+  return { events, connected, error, clearEvents };
 }
 
-// Typed filter hooks for specific event types
 export function useDebateEvents(maxEvents = 50) {
   const { events, ...rest } = useEventStream({
     eventTypes: ["DebateCompleted"],
@@ -138,7 +265,6 @@ export function useExecutionEvents(maxEvents = 100) {
     maxEvents,
   });
 
-  // Separate order events and debate events
   const orders = events.filter(
     (e) =>
       e.type === "OrderIntentCreated" ||
@@ -147,7 +273,6 @@ export function useExecutionEvents(maxEvents = 100) {
       e.type === "OrderSubmitted"
   );
 
-  // Build debate lookup by symbol for correlation
   const debateMap = new Map<string, DebateEvent>();
   events
     .filter((e) => e.type === "DebateCompleted")
@@ -182,7 +307,6 @@ export function useSignalProgress(maxEvents = 200) {
   const macdProgress = new Map<string, EntryGatedPayload>();
   const orbProgress = new Map<string, ORBPhaseUpdatePayload>();
 
-  // Events are newest-first; only keep the latest per symbol.
   for (const evt of events) {
     if (evt.type === "EntryGated") {
       const p = evt.payload as EntryGatedPayload;

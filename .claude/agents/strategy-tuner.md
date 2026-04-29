@@ -138,6 +138,20 @@ Then ask the user:
 If the user says continue → start next pass from top priority.
 If the user says stop → keep the improved DNA, suggest a commit message.
 
+### TOML comment hygiene on accepted changes
+
+When writing a WHY-comment next to a retuned parameter, keep only the
+durable rationale for why *this* value was picked. Cut the sweep path
+and the dated retune narrative — git history holds that.
+
+- Bad: `min_confluence_score = 80  # tightened 2026-04-21 retune: 65->70->75->80 sweet spot; 85 cut trade count too far`
+- Good: `min_confluence_score = 80  # 85 cut trade count too far on 65-85 sweep`
+
+- Bad: `# Reverted to 9a2ac6a sizing (300/1000) to cap per-trade dollar risk. Current (500/2000) amplified left-tail losses during 2025-Q4 regression.`
+- Good: `# 300/1000 per 9a2ac6a baseline; 500/2000 amplified left-tail losses in 2025-Q4.`
+
+The word "current" decays the moment the next tuner edits the line. "Reverted to", "tightened during 2026-04-21 retune", etc. are task-referential — they belong in the commit message, not the config.
+
 ## Backtest API
 
 ### Run a backtest

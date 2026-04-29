@@ -3,8 +3,31 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync/atomic"
 	"time"
 )
+
+// Silent Push rejections caused a production stall (2026-04-21 11:50 CDT)
+// where the general 5m aggregator stopped emitting across all symbols while
+// the ORB aggregator kept working. The rejection paths below returned
+// ok=false with no logging, so the failure was invisible until a watchdog
+// detected zero evaluations minutes later. These counters + WARN logs let
+// the next occurrence self-diagnose.
+var (
+	aggRejectedSessionOpen    atomic.Int64
+	aggRejectedBadBar         atomic.Int64
+	aggRejectedBucketEnd      atomic.Int64
+	aggRejectedStartNewFailed atomic.Int64
+)
+
+// AggregatorRejectionCounts returns cumulative Push rejections by reason.
+// A sustained rise in any counter during live trading indicates an
+// aggregator silently dropping bars.
+func AggregatorRejectionCounts() (sessionOpen, badBar, bucketEnd, startNew int64) {
+	return aggRejectedSessionOpen.Load(), aggRejectedBadBar.Load(),
+		aggRejectedBucketEnd.Load(), aggRejectedStartNewFailed.Load()
+}
 
 type BarAggregator struct {
 	symbol      Symbol
@@ -62,15 +85,27 @@ func (a *BarAggregator) Push(bar MarketBar) (closed MarketBar, ok bool) {
 		return MarketBar{}, false
 	}
 	if bar.Time.Before(a.sessionOpen) {
+		// Legitimate during warmup replay (yesterday's bars pushed to today's
+		// session-aligned aggregator). Counter lets us spot unexpected spikes
+		// without logging per bar — 52k WARN writes during warmup saturated I/O.
+		aggRejectedSessionOpen.Add(1)
 		return MarketBar{}, false
 	}
 	if bar.High < bar.Low || bar.Volume <= 0 {
+		aggRejectedBadBar.Add(1)
+		slog.Warn("aggregator: invalid bar shape — dropped",
+			"symbol", a.symbol, "tf", a.tf, "bar_time", bar.Time,
+			"high", bar.High, "low", bar.Low, "volume", bar.Volume)
 		return MarketBar{}, false
 	}
 
 	dur := timeframeDuration(a.tf)
 	end, ok := sessionAlignedBucketEnd(bar.Time, a.sessionOpen, dur)
 	if !ok {
+		aggRejectedBucketEnd.Add(1)
+		slog.Warn("aggregator: sessionAlignedBucketEnd failed — dropped",
+			"symbol", a.symbol, "tf", a.tf,
+			"bar_time", bar.Time, "session_open", a.sessionOpen)
 		return MarketBar{}, false
 	}
 
@@ -136,6 +171,10 @@ func (a *BarAggregator) startNew(end time.Time, dur time.Duration, bar MarketBar
 
 	agg, err := NewMarketBar(start, a.symbol, a.tf, bar.Open, bar.High, bar.Low, bar.Close, bar.Volume)
 	if err != nil {
+		aggRejectedStartNewFailed.Add(1)
+		slog.Warn("aggregator: startNew NewMarketBar failed — state cleared, subsequent bars will retry",
+			"symbol", a.symbol, "tf", a.tf, "bar_time", bar.Time,
+			"bucket_start", start, "error", err)
 		a.hasCur = false
 		a.curEnd = time.Time{}
 		return

@@ -18,6 +18,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
+	"github.com/oh-my-opentrade/backend/internal/observability/parity"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	stratports "github.com/oh-my-opentrade/backend/internal/ports/strategy"
 )
@@ -758,6 +759,9 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		}
 	}
 
+	if parity.Enabled() {
+		rs.parityDiagSized(intent, event)
+	}
 	rs.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)
 	return nil
 }
@@ -776,9 +780,20 @@ func (rs *RiskSizer) handleOptionsSignal(
 	limitPrice float64,
 	equity float64,
 ) error {
-	optRight := domain.OptionRightCall
-	if direction == domain.DirectionShort {
-		optRight = domain.OptionRightPut
+	// Force-contract path: when the signal carries force_expiry + force_strike
+	// + force_right tags (set by the copytrade strategy from a parsed Discord
+	// message), skip delta/DTE screening and pin the exact contract. Callers
+	// that do their own contract selection upstream use this path; normal
+	// strategies leave these tags empty and go through ContractSelectionService.
+	forced, forcedOK := extractForcedContract(sigRef.Tags)
+	var optRight domain.OptionRight
+	if forcedOK {
+		optRight = forced.Right
+	} else {
+		optRight = domain.OptionRightCall
+		if direction == domain.DirectionShort {
+			optRight = domain.OptionRightPut
+		}
 	}
 
 	regime := domain.RegimeTrend
@@ -788,20 +803,34 @@ func (rs *RiskSizer) handleOptionsSignal(
 		}
 	}
 
-	// Use the widest DTE range across defaults and all regime overrides
-	// so the chain fetch covers all possible contract selection windows.
-	minDTE := spec.Options.Defaults.MinDTE
-	maxDTE := spec.Options.Defaults.MaxDTE
-	for _, override := range spec.Options.RegimeOverrides {
-		if override.MinDTE > 0 && override.MinDTE < minDTE {
-			minDTE = override.MinDTE
+	var minDTE, maxDTE int
+	var targetExpiry time.Time
+	if forcedOK {
+		// For a pinned contract, target the exact expiry and bracket the DTE
+		// window tightly so the chain fetch (including backtest synthesizers)
+		// returns just that expiry's strikes.
+		targetExpiry = forced.Expiry
+		days := int(math.Ceil(forced.Expiry.Sub(rs.nowFn()).Hours() / 24))
+		if days < 0 {
+			days = 0
 		}
-		if override.MaxDTE > maxDTE {
-			maxDTE = override.MaxDTE
+		minDTE, maxDTE = days, days
+	} else {
+		// Use the widest DTE range across defaults and all regime overrides
+		// so the chain fetch covers all possible contract selection windows.
+		minDTE = spec.Options.Defaults.MinDTE
+		maxDTE = spec.Options.Defaults.MaxDTE
+		for _, override := range spec.Options.RegimeOverrides {
+			if override.MinDTE > 0 && override.MinDTE < minDTE {
+				minDTE = override.MinDTE
+			}
+			if override.MaxDTE > maxDTE {
+				maxDTE = override.MaxDTE
+			}
 		}
+		targetDTE := minDTE + (maxDTE-minDTE)/2
+		targetExpiry = rs.nowFn().AddDate(0, 0, targetDTE)
 	}
-	targetDTE := minDTE + (maxDTE-minDTE)/2
-	targetExpiry := rs.nowFn().AddDate(0, 0, targetDTE)
 
 	chain, err := rs.optionsMarket.GetOptionChain(
 		ctx,
@@ -828,17 +857,35 @@ func (rs *RiskSizer) handleOptionsSignal(
 		return errOptionsChainEmpty
 	}
 
-	selector := rs.buildContractSelector(spec.Options)
-	best, err := selector.SelectBestContract(direction, regime, chain)
-	if err != nil {
-		rs.logger.Warn("no suitable option contract found",
-			"symbol", sigRef.Symbol,
-			"option_right", string(optRight),
-			"regime", string(regime),
-			"chain_size", len(chain),
-			"error", err,
-		)
-		return errOptionsChainEmpty // trigger equity fallback
+	var best domain.OptionContractSnapshot
+	if forcedOK {
+		match, found := findPinnedContract(chain, forced.Expiry, forced.Strike)
+		if !found {
+			rs.logger.Warn("forced option contract not in chain — skipping",
+				"symbol", sigRef.Symbol,
+				"force_expiry", forced.Expiry.Format("2006-01-02"),
+				"force_strike", forced.Strike,
+				"force_right", string(forced.Right),
+				"chain_size", len(chain),
+			)
+			// Do not fall through to equity — copytrade is contract-specific.
+			return nil
+		}
+		best = match
+	} else {
+		selector := rs.buildContractSelector(spec.Options)
+		picked, err := selector.SelectBestContract(direction, regime, chain)
+		if err != nil {
+			rs.logger.Warn("no suitable option contract found",
+				"symbol", sigRef.Symbol,
+				"option_right", string(optRight),
+				"regime", string(regime),
+				"chain_size", len(chain),
+				"error", err,
+			)
+			return errOptionsChainEmpty // trigger equity fallback
+		}
+		best = picked
 	}
 
 	midPrice := (best.Bid + best.Ask) / 2
@@ -858,6 +905,40 @@ func (rs *RiskSizer) handleOptionsSignal(
 	var fillPrice float64
 	spread := best.Ask - best.Bid
 	switch {
+	case event.EnvMode == domain.EnvModePaper && forcedOK && forced.RefPremium > 0:
+		priceCap := forced.RefPremium * (1.0 + forced.BufferPct)
+		if best.Ask > 0 && best.Ask > priceCap {
+			reason := fmt.Sprintf("price_buffer_exceeded: live ask $%.2f above author ref $%.2f +%.0f%% buffer",
+				best.Ask, forced.RefPremium, forced.BufferPct*100)
+			rs.logger.Warn("risk sizer: live ask above author ref premium + buffer — rejecting",
+				"strategy", strategyName,
+				"contract", string(best.ContractSymbol),
+				"ref_premium", forced.RefPremium,
+				"buffer_pct", forced.BufferPct,
+				"cap", priceCap,
+				"ask", best.Ask,
+			)
+			rejection := domain.OrderIntentEventPayload{
+				ID:        uuid.NewString(),
+				Symbol:    sigRef.Symbol,
+				Direction: string(direction),
+				Strategy:  strategyName,
+				Reason:    reason,
+				Status:    domain.OrderIntentStatusRejected,
+			}
+			rs.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, rejection.ID, rejection)
+			return nil
+		}
+		fillPrice = priceCap
+		rs.logger.Info("risk sizer: pinned entry to author ref premium + buffer",
+			"strategy", strategyName,
+			"contract", string(best.ContractSymbol),
+			"ref_premium", forced.RefPremium,
+			"buffer_pct", forced.BufferPct,
+			"limit", fillPrice,
+			"mid", midPrice,
+			"ask", best.Ask,
+		)
 	case best.Ask > 0 && best.Bid > 0 && spread > 0:
 		fillPrice = midPrice + spreadPct*spread
 	case best.Ask > 0:
@@ -983,6 +1064,9 @@ func (rs *RiskSizer) handleOptionsSignal(
 
 	intentID := uuid.New()
 	rationale := enrichment.Rationale
+	if override, ok := sigRef.Tags[domain.TagAuthorText]; ok && override != "" {
+		rationale = override
+	}
 	if rationale == "" {
 		rationale = fmt.Sprintf("option: %s %s delta=%.2f DTE=%d",
 			optRight, best.ContractSymbol, best.Delta, int(best.Expiry.Sub(rs.nowFn()).Hours()/24))
@@ -1006,17 +1090,12 @@ func (rs *RiskSizer) handleOptionsSignal(
 		return fmt.Errorf("risk sizer: failed to create option order intent: %w", err)
 	}
 
-	staleSecs := 60 // default: cancel unfilled option orders after 60s
+	staleSecs := 120 // default: cancel unfilled option orders after 120s
 	if spec.Options.StaleCancelSecs != nil {
 		staleSecs = *spec.Options.StaleCancelSecs
 	}
 
 	intent.AssetClass = domain.AssetClassEquity
-	// IBKR paper trading rarely fills option limit orders. Use market orders
-	// on paper to ensure fill reliability for testing.
-	if event.EnvMode == domain.EnvModePaper {
-		intent.OrderType = "market"
-	}
 	intent.Meta = map[string]string{
 		"instrument_type":    "OPTION",
 		"option_right":       string(optRight),
@@ -1070,6 +1149,9 @@ func (rs *RiskSizer) handleOptionsSignal(
 		"max_loss_usd", maxLossUSD,
 	)
 
+	if parity.Enabled() {
+		rs.parityDiagSized(intent, event)
+	}
 	rs.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)
 	return nil
 }
@@ -1310,4 +1392,30 @@ func extractBool(params map[string]any, key string) (bool, bool) {
 		return b, true
 	}
 	return false, false
+}
+
+// parityDiagSized emits a parity-diag log line at risk-sizer emit time so
+// live and backtest can be diffed at the contract-selection / quantity
+// stage. Captures the inputs and outputs of risk sizing: signal symbol,
+// direction, sized qty/price, and option metadata when present.
+func (rs *RiskSizer) parityDiagSized(intent domain.OrderIntent, event domain.Event) {
+	instrumentType := ""
+	if intent.Instrument != nil {
+		instrumentType = string(intent.Instrument.Type)
+	}
+	rs.logger.Info("parity-diag",
+		"stage", parity.StageRiskSized,
+		"symbol", string(intent.Symbol),
+		"strategy", intent.Strategy,
+		"direction", string(intent.Direction),
+		"asset_class", string(intent.AssetClass),
+		"instrument_type", instrumentType,
+		"quantity", intent.Quantity,
+		"limit_price", intent.LimitPrice,
+		"stop_loss", intent.StopLoss,
+		"premium", intent.Meta["premium"],
+		"expiry", intent.Meta["expiry"],
+		"option_right", intent.Meta["option_right"],
+		"max_loss_usd", intent.Meta["max_loss_usd"],
+		"env_mode", string(event.EnvMode))
 }

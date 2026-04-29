@@ -83,6 +83,44 @@ func TestSelectBestContract_PicksClosestToMidDelta(t *testing.T) {
 	assert.InDelta(t, 0.50, best.Greeks.Delta, 1e-9)
 }
 
+// TestSelectBestContract_CalendarDTE_MidDayNow locks in the fix for the
+// wall-clock DTE rounding bug: a contract expiring exactly 5 calendar days
+// from today must pass a MinDTE=5 filter even when `now` has an afternoon
+// wall-clock time. The previous implementation computed
+// int(expiry.Sub(now).Hours()/24) = int(4.4) = 4 and rejected it.
+func TestSelectBestContract_CalendarDTE_MidDayNow(t *testing.T) {
+	et, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	now := time.Date(2026, 4, 22, 13, 25, 0, 0, et)
+	expiry := time.Date(2026, 4, 27, 0, 0, 0, 0, et) // 5 calendar days out
+	occ := domain.FormatOCCSymbol("QQQ", expiry, domain.OptionRightCall, 500.0)
+
+	snap := domain.OptionContractSnapshot{
+		OptionContract: domain.OptionContract{
+			ContractSymbol: domain.Symbol(occ),
+			Underlying:     "QQQ",
+			Expiry:         expiry,
+			Strike:         500.0,
+			Right:          domain.OptionRightCall,
+			Style:          domain.OptionStyleAmerican,
+			Multiplier:     100,
+		},
+		OptionQuote:  domain.OptionQuote{Bid: 2.90, Ask: 3.00, Last: 2.95},
+		Greeks:       domain.Greeks{Delta: 0.48, IV: 0.30},
+		OpenInterest: 200,
+	}
+	cfg := options.ContractSelectionConstraints{
+		MinDTE: 5, MaxDTE: 14,
+		TargetDeltaLow: 0.40, TargetDeltaHigh: 0.55,
+		MinOpenInterest: 100, MaxSpreadPct: 0.10, MaxIV: 1.0,
+	}
+	svc := options.NewContractSelectionService(cfg, func() time.Time { return now })
+
+	best, err := svc.SelectBestContract(domain.DirectionLong, domain.RegimeTrend, []domain.OptionContractSnapshot{snap})
+	require.NoError(t, err)
+	assert.Equal(t, domain.Symbol(occ), best.OptionContract.ContractSymbol)
+}
+
 func TestSelectBestContract_EmptyChain(t *testing.T) {
 	now := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 	svc := options.NewContractSelectionService(defaultConstraints(), func() time.Time { return now })

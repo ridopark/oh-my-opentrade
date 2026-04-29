@@ -19,6 +19,7 @@ type signalCorr struct {
 	signalID string
 	kind     string
 	side     string
+	reason   string
 }
 
 type SignalTracker struct {
@@ -55,6 +56,9 @@ func (st *SignalTracker) Start(ctx context.Context) error {
 	if err := st.eventBus.SubscribeAsync(ctx, domain.EventFillReceived, st.handleFill); err != nil {
 		return fmt.Errorf("perf: signal tracker failed to subscribe to FillReceived: %w", err)
 	}
+	if err := st.eventBus.Subscribe(ctx, domain.EventStaleOrderCancelled, st.handleStaleCanceled); err != nil {
+		return fmt.Errorf("perf: signal tracker failed to subscribe to StaleOrderCancelled: %w", err)
+	}
 	st.log.Info().Msg("signal tracker subscribed to signal lifecycle events")
 	return nil
 }
@@ -79,10 +83,11 @@ func (st *SignalTracker) handleSignalCreated(ctx context.Context, event domain.E
 
 	instanceKey := fmt.Sprintf("%s:%s:%s:%s", sig.StrategyInstanceID.String(), sig.Symbol, kind, sig.Side.String())
 	scopeKey := st.scopeKey(event.TenantID, event.EnvMode, strategy, sig.Symbol)
+	reason := sig.Tags[domain.TagAuthorText]
 
 	st.mu.Lock()
 	st.byInstanceKey[instanceKey] = signalID
-	st.latestByScope[scopeKey] = signalCorr{signalID: signalID, kind: kind, side: side}
+	st.latestByScope[scopeKey] = signalCorr{signalID: signalID, kind: kind, side: side, reason: reason}
 	st.mu.Unlock()
 
 	payload := mustJSON(sig)
@@ -97,7 +102,7 @@ func (st *SignalTracker) handleSignalCreated(ctx context.Context, event domain.E
 		kind,
 		side,
 		domain.SignalStatusGenerated,
-		"",
+		reason,
 		sig.Strength,
 		payload,
 	)
@@ -124,6 +129,10 @@ func (st *SignalTracker) handleIntentValidated(ctx context.Context, event domain
 	}
 
 	corr := st.getOrDeriveCorr(event.TenantID, event.EnvMode, p.Strategy, p.Symbol, p.Direction)
+	if p.Rationale != "" {
+		corr.reason = p.Rationale
+		st.updateCorrReason(event.TenantID, event.EnvMode, p.Strategy, p.Symbol, p.Rationale)
+	}
 	payload := mustJSON(p)
 
 	evt, err := domain.NewStrategySignalEvent(
@@ -136,7 +145,7 @@ func (st *SignalTracker) handleIntentValidated(ctx context.Context, event domain
 		corr.kind,
 		corr.side,
 		domain.SignalStatusValidated,
-		"",
+		corr.reason,
 		p.Confidence,
 		payload,
 	)
@@ -192,6 +201,46 @@ func (st *SignalTracker) handleIntentRejected(ctx context.Context, event domain.
 	return nil
 }
 
+func (st *SignalTracker) handleStaleCanceled(ctx context.Context, event domain.Event) error {
+	p, ok := event.Payload.(domain.StaleOrderCancelledPayload)
+	if !ok {
+		return nil
+	}
+	if p.Strategy == "" || p.Symbol == "" {
+		return nil
+	}
+
+	corr := st.getOrDeriveCorr(event.TenantID, event.EnvMode, p.Strategy, string(p.Symbol), p.Direction)
+	reason := fmt.Sprintf("limit unfilled for %.0fs at $%.2f — auto-canceled", p.AgeSeconds, p.LimitPrice)
+	payload := mustJSON(p)
+
+	evt, err := domain.NewStrategySignalEvent(
+		event.OccurredAt.UTC(),
+		event.TenantID,
+		event.EnvMode,
+		p.Strategy,
+		corr.signalID,
+		string(p.Symbol),
+		corr.kind,
+		corr.side,
+		domain.SignalStatusCanceled,
+		reason,
+		0,
+		payload,
+	)
+	if err != nil {
+		st.log.Error().Err(err).Msg("signal tracker: invalid StrategySignalEvent")
+		return nil
+	}
+
+	if err := st.pnlRepo.SaveStrategySignalEvent(ctx, evt); err != nil {
+		st.log.Error().Err(err).Msg("signal tracker: failed to save StrategySignalEvent")
+		return nil
+	}
+	st.publishLifecycle(ctx, evt)
+	return nil
+}
+
 func (st *SignalTracker) handleFill(ctx context.Context, event domain.Event) error {
 	p, ok := event.Payload.(map[string]any)
 	if !ok {
@@ -228,7 +277,7 @@ func (st *SignalTracker) handleFill(ctx context.Context, event domain.Event) err
 		corr.kind,
 		corr.side,
 		domain.SignalStatusExecuted,
-		"",
+		corr.reason,
 		0,
 		payload,
 	)
@@ -258,25 +307,40 @@ func (st *SignalTracker) scopeKey(tenantID string, envMode domain.EnvMode, strat
 	return fmt.Sprintf("%s:%s:%s:%s", tenantID, string(envMode), strategy, symbol)
 }
 
+func (st *SignalTracker) updateCorrReason(tenantID string, envMode domain.EnvMode, strategy string, symbol string, reason string) {
+	scopeKey := st.scopeKey(tenantID, envMode, strategy, symbol)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	ref, ok := st.latestByScope[scopeKey]
+	if !ok {
+		return
+	}
+	ref.reason = reason
+	st.latestByScope[scopeKey] = ref
+}
+
 func (st *SignalTracker) getOrDeriveCorr(tenantID string, envMode domain.EnvMode, strategy string, symbol string, direction string) signalCorr {
 	scopeKey := st.scopeKey(tenantID, envMode, strategy, symbol)
+	derivedKind, derivedSide := deriveKindSideFromDirection(direction)
 
 	st.mu.Lock()
+	defer st.mu.Unlock()
+
 	ref, ok := st.latestByScope[scopeKey]
-	st.mu.Unlock()
+	// Reuse the cached corr when (a) we have one, and (b) the caller's direction
+	// either is unknown (fills carry no direction) or agrees with the cached
+	// kind/side. When the direction disagrees — e.g. an exit OrderIntent
+	// (CLOSE_LONG) following a previously-cached entry — mint a fresh corr so
+	// the row is persisted with the correct kind=exit instead of inheriting
+	// the stale entry tag.
 	if ok && ref.signalID != "" {
-		return ref
+		if derivedKind == "" || (derivedKind == ref.kind && derivedSide == ref.side) {
+			return ref
+		}
 	}
 
-	ref = signalCorr{signalID: uuid.NewString(), kind: "", side: ""}
-	kind, side := deriveKindSideFromDirection(direction)
-	ref.kind = kind
-	ref.side = side
-
-	st.mu.Lock()
+	ref = signalCorr{signalID: uuid.NewString(), kind: derivedKind, side: derivedSide}
 	st.latestByScope[scopeKey] = ref
-	st.mu.Unlock()
-
 	return ref
 }
 

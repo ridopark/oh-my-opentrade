@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Radio, WifiOff, AlertTriangle } from "lucide-react";
 import { LiveSymbolChart } from "@/components/live/live-symbol-chart";
 import { SymbolPicker } from "@/components/live/symbol-picker";
 import { useSymbols } from "@/lib/use-symbols";
 import { useChartData, type OHLCBar } from "@/lib/use-chart-data";
+import { useEventListener, useSSEConnected } from "@/lib/event-stream";
+import type { DomainEvent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type EventKind = "bar" | "forming" | "trade";
@@ -39,50 +41,34 @@ export default function LivePage() {
   const [tickTape, setTickTape] = useState<TickEvent[]>([]);
   const [lastTickAt, setLastTickAt] = useState<number>(0);
   const [tickCount, setTickCount] = useState<number>(0);
-  const [connected, setConnected] = useState<boolean>(false);
+  const connected = useSSEConnected();
   const [formingActive, setFormingActive] = useState<boolean>(false);
   const lastPriceRef = useRef<number>(0);
   const idRef = useRef<number>(0);
   const eventRatesRef = useRef<number[]>([]);
 
-  useEffect(() => {
+  const handleBar = useCallback((evt: DomainEvent) => {
     if (!symbol) return;
-    const es = new EventSource("/api/events");
-    es.onopen = () => setConnected(true);
-    es.onerror = () => setConnected(false);
-
-    const push = (kind: EventKind, sym: string, price: number) => {
-      if (sym !== symbol) return;
-      const now = Date.now();
-      const prev = lastPriceRef.current;
-      const dir: "up" | "down" | "flat" =
-        prev === 0 ? "flat" : price > prev ? "up" : price < prev ? "down" : "flat";
-      lastPriceRef.current = price;
-      eventRatesRef.current.push(now);
-      idRef.current += 1;
-      const evt: TickEvent = { id: idRef.current, kind, symbol: sym, price, ts: now, dir };
-      setLastTickAt(now);
-      setTickCount((c) => c + 1);
-      setTickTape((prev) => [evt, ...prev].slice(0, TICK_TAPE_LEN));
-      if (kind === "forming") setFormingActive(true);
-    };
-
-    const handleBar = (e: MessageEvent) => {
-      try {
-        const env = JSON.parse(e.data) as {
-          type?: string;
-          payload: { symbol: string; close: number };
-        };
-        const p = env.payload;
-        if (!p?.symbol || typeof p.close !== "number") return;
-        push(env.type === "FormingBar" ? "forming" : "bar", p.symbol, p.close);
-      } catch {}
-    };
-    es.addEventListener("MarketBarSanitized", handleBar);
-    es.addEventListener("FormingBar", handleBar);
-
-    return () => es.close();
+    const p = evt.payload as { symbol: string; close: number };
+    if (!p?.symbol || typeof p.close !== "number") return;
+    if (p.symbol !== symbol) return;
+    const kind: EventKind = evt.type === "FormingBar" ? "forming" : "bar";
+    const now = Date.now();
+    const prev = lastPriceRef.current;
+    const dir: "up" | "down" | "flat" =
+      prev === 0 ? "flat" : p.close > prev ? "up" : p.close < prev ? "down" : "flat";
+    lastPriceRef.current = p.close;
+    eventRatesRef.current.push(now);
+    idRef.current += 1;
+    const tick: TickEvent = { id: idRef.current, kind, symbol: p.symbol, price: p.close, ts: now, dir };
+    setLastTickAt(now);
+    setTickCount((c) => c + 1);
+    setTickTape((prev) => [tick, ...prev].slice(0, TICK_TAPE_LEN));
+    if (kind === "forming") setFormingActive(true);
   }, [symbol]);
+
+  useEventListener("MarketBarSanitized", handleBar);
+  useEventListener("FormingBar", handleBar);
 
   // Periodic re-render to refresh "age" readout without event
   const [, setNowTick] = useState(0);

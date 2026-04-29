@@ -326,3 +326,75 @@ func TestReconcileGlobal_BrokerShort_EmitsUNINTENDED_SHORT(t *testing.T) {
 		assert.Contains(t, logs, "SOFI260501P00021000")
 	})
 }
+
+// TestReconcileGlobal_SuppressesOrphanDuringInFlightClose covers the
+// follow-up to ef5a4ff: when the monitor has emitted an exit for a symbol
+// but the fill has not been recorded in the DB yet, broker=0 / DB>0 is the
+// expected transient. The reconciler must NOT bump the orphan miss counter
+// nor emit the ERROR log (which routes to Discord every 5 min).
+func TestReconcileGlobal_SuppressesOrphanDuringInFlightClose(t *testing.T) {
+	var buf bytes.Buffer
+	broker := &mockBroker{positions: nil}
+	repo := &capturingRepo{mockRepo: mockRepo{netPositions: map[domain.Symbol]float64{
+		domain.Symbol("AAPL"): 10,
+	}}}
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+	logger := zerolog.New(&buf)
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, logger,
+		WithBroker(broker),
+		WithRepo(repo),
+	)
+	seedPosition(t, svc, "AAPL")
+
+	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "AAPL")
+	pos := svc.positions[key]
+	require.NotNil(t, pos)
+	pos.ExitPending = true
+	pos.PendingExitOrderIDs = map[string]struct{}{"exit-order-1": {}}
+
+	// Run three cycles — without the fix, the first would bump miss=1,
+	// the second miss=2 and ERROR-log "orphan confirmed".
+	svc.reconcileGlobal(context.Background())
+	svc.reconcileGlobal(context.Background())
+	svc.reconcileGlobal(context.Background())
+
+	logs := buf.String()
+	assert.NotContains(t, logs, "orphan confirmed",
+		"orphan ERROR must be suppressed while an exit is in flight")
+	assert.NotContains(t, logs, "orphan candidate",
+		"orphan candidate WARN must also be suppressed — no miss count accrues")
+	assert.Equal(t, 0, svc.pendingGlobalOrphans[domain.Symbol("AAPL")],
+		"miss counter must stay at 0 while in flight")
+}
+
+// TestReconcileGlobal_OrphanStillFiresWhenNotInFlight guards against over-
+// suppression: an orphan with no in-flight exit (monitor has no position,
+// or position has no pending exit) must still observe and alert normally.
+func TestReconcileGlobal_OrphanStillFiresWhenNotInFlight(t *testing.T) {
+	var buf bytes.Buffer
+	broker := &mockBroker{positions: nil}
+	repo := &capturingRepo{mockRepo: mockRepo{netPositions: map[domain.Symbol]float64{
+		domain.Symbol("MSFT"): 5,
+	}}}
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+	logger := zerolog.New(&buf)
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, logger,
+		WithBroker(broker),
+		WithRepo(repo),
+	)
+	// No seedPosition — MSFT is not monitored. Orphan detection must fire.
+
+	svc.reconcileGlobal(context.Background())
+	logs1 := buf.String()
+	assert.Contains(t, logs1, "orphan candidate",
+		"first miss must log observing WARN")
+
+	svc.reconcileGlobal(context.Background())
+	logs2 := buf.String()
+	assert.Contains(t, logs2, "orphan confirmed",
+		"threshold reached — ERROR must fire")
+}
