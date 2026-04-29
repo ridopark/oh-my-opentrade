@@ -755,6 +755,14 @@ func (b *Broker) CancelOrder(_ context.Context, orderID string) error {
 	return nil
 }
 
+// ModifyOrder satisfies ports.OrderModifier so backtests can exercise the
+// caller's modify-first code path; simbroker fills instantly so there is
+// nothing to modify, and ErrUnsupportedModify routes the caller through the
+// existing cancel+place fallback.
+func (b *Broker) ModifyOrder(_ context.Context, _ string, _, _ float64) error {
+	return ports.ErrUnsupportedModify
+}
+
 // GetOrderStatus always returns "filled" for known orders since SimBroker fills instantly.
 func (b *Broker) GetOrderStatus(_ context.Context, orderID string) (string, error) {
 	b.mu.RLock()

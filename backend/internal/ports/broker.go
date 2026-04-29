@@ -12,6 +12,13 @@ import (
 // of the order (e.g. it was canceled when the previous session disconnected).
 var ErrOrderNotFound = errors.New("order not found at broker")
 
+// ErrUnsupportedModify is returned by OrderModifier.ModifyOrder when the
+// broker either does not implement modify-in-place at all (simbroker, alpaca
+// stub) or cannot apply the modify because the order has already gone
+// terminal at the broker. Callers MUST treat this as a soft signal to fall
+// back to the cancel+place flow, never as a hard error.
+var ErrUnsupportedModify = errors.New("broker does not support order modification")
+
 // BrokerPort defines the interface for interacting with a broker.
 type BrokerPort interface {
 	SubmitOrder(ctx context.Context, intent domain.OrderIntent) (orderID string, err error)
@@ -109,6 +116,21 @@ type FillRecord struct {
 // session; the caller dedups against trades.execution_id before inserting.
 type FillLister interface {
 	GetAllFills(ctx context.Context) ([]FillRecord, error)
+}
+
+// OrderModifier is an optional broker capability for atomic in-place order
+// modification (no cancel + resubmit). Used by the position monitor's exit
+// re-peg flow to eliminate the cancel-fill race that produces duplicate
+// SELL legs when the cancel loses to a fill.
+//
+// Implementations MUST preserve the broker's order id across the modify so
+// downstream FillReceived events still attribute to the same pendingOrder.
+// On any condition that prevents in-place modification (broker doesn't
+// support it, the order is already terminal, the order is unknown to the
+// broker), implementations MUST return ErrUnsupportedModify so the caller
+// can fall back to cancel+place safely.
+type OrderModifier interface {
+	ModifyOrder(ctx context.Context, brokerOrderID string, newLimit, newQty float64) error
 }
 
 // OrderDetails contains full order information from the broker, including
