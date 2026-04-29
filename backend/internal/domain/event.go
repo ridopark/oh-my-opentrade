@@ -265,8 +265,12 @@ type EntryGatedPayload struct {
 	// at gate-evaluation time (the enricher itself runs post-emission, so
 	// blocked rows never carry an enrichment Status/Confidence). False
 	// also when the instance was emitted without a runner (tests).
-	AIEnabled  bool        `json:"aiEnabled"`
-	Bar        BarSnapshot `json:"bar"`
+	AIEnabled bool        `json:"aiEnabled"`
+	Bar       BarSnapshot `json:"bar"`
+	// Tag distinguishes in-process backtest emissions from live ones in
+	// strategy_signal_events. Empty for live; "backtest_<id>" when the
+	// emitting runner was tagged via TagBacktest.
+	Tag string `json:"tag,omitempty"`
 }
 
 type EntryGatedConfluence struct {
@@ -296,6 +300,16 @@ type EntryGatedComponent struct {
 	Weight int     `json:"weight"`
 	Value  float64 `json:"value,omitempty"`
 	Fired  bool    `json:"fired"`
+	// SubScore is the integer the scorer awarded for this component,
+	// equal to ConfluenceResult.Score for single-component scorers.
+	// Diagnostic field: lets a SQL diff attribute a confluence-score
+	// divergence to the specific scorer that disagreed.
+	SubScore int `json:"subScore,omitempty"`
+	// Inputs is the raw numeric inputs the scorer consumed (e.g. for
+	// dark pool: dpRatio, dpRatioZScore, dpBuyRatio, dpLargePrintPct).
+	// Diagnostic field: lets a SQL diff attribute a sub-score divergence
+	// to the specific input that disagreed.
+	Inputs map[string]float64 `json:"inputs,omitempty"`
 }
 
 // EntryCheckResult describes the outcome of a single entry type evaluation.
@@ -311,12 +325,25 @@ type EntryCheckResult struct {
 }
 
 type EntryGatedIndicators struct {
-	RSI         float64            `json:"rsi"`
-	VolumeRatio float64            `json:"volumeRatio"`
-	AVWAPBias   string             `json:"avwapBias"`
-	SlopeBPS    float64            `json:"slopeBPS"`
-	AboveCount  map[string]int     `json:"aboveCount,omitempty"`
-	BelowCount  map[string]int     `json:"belowCount,omitempty"`
+	RSI         float64        `json:"rsi"`
+	VolumeRatio float64        `json:"volumeRatio"`
+	AVWAPBias   string         `json:"avwapBias"`
+	SlopeBPS    float64        `json:"slopeBPS"`
+	AboveCount  map[string]int `json:"aboveCount,omitempty"`
+	BelowCount  map[string]int `json:"belowCount,omitempty"`
+	// Diagnostic raw inputs — populated at gate-emit time so a SQL diff
+	// on payload.indicators can attribute a live/backtest divergence to
+	// the specific indicator value that disagreed (rather than only the
+	// gate-outcome ratio currently surfaced via VolumeRatio).
+	Volume        float64 `json:"volume,omitempty"`
+	VolumeSMA     float64 `json:"volumeSMA,omitempty"`
+	MACDLine      float64 `json:"macdLine,omitempty"`
+	MACDSignal    float64 `json:"macdSignal,omitempty"`
+	MACDHistogram float64 `json:"macdHistogram,omitempty"`
+	EMA21         float64 `json:"ema21,omitempty"`
+	EMA50         float64 `json:"ema50,omitempty"`
+	StochK        float64 `json:"stochK,omitempty"`
+	StochD        float64 `json:"stochD,omitempty"`
 }
 
 // EntryGatedAVWAPState captures the AVWAP calc state at the bar an
