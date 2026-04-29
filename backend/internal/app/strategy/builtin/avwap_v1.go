@@ -2814,6 +2814,7 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 		Indicators: indicators,
 		AVWAPState: avwapStateFromCalc(s.Calc, cfg.SlopeLookback),
 		Bar: domain.BarSnapshot{
+			Time:   s.PrevBars[0].Time,
 			Open:   s.PrevBars[0].Open,
 			High:   s.PrevBars[0].High,
 			Low:    s.PrevBars[0].Low,
@@ -2891,7 +2892,7 @@ func (s *AVWAPState) emitEarlyGated(ctx start.Context, symbol string, bar start.
 		Indicators: indicators,
 		AVWAPState: avwapStateFromCalc(s.Calc, cfg.SlopeLookback),
 		Bar: domain.BarSnapshot{
-			Open: bar.Open, High: bar.High, Low: bar.Low, Close: bar.Close, Volume: bar.Volume,
+			Time: bar.Time, Open: bar.Open, High: bar.High, Low: bar.Low, Close: bar.Close, Volume: bar.Volume,
 		},
 	}
 	_ = ctx.EmitDomainEvent(payload)
@@ -3012,6 +3013,7 @@ func (s *AVWAPState) emitEntryGated(ec entryContext) {
 		Indicators: indicators,
 		AVWAPState: avwapStateFromCalc(s.Calc, ec.cfg.SlopeLookback),
 		Bar: domain.BarSnapshot{
+			Time:   ec.bar.Time,
 			Open:   ec.bar.Open,
 			High:   ec.bar.High,
 			Low:    ec.bar.Low,
