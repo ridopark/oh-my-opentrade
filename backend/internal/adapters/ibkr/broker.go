@@ -2,6 +2,7 @@ package ibkr
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -105,6 +106,91 @@ func (a *Adapter) CancelOrder(_ context.Context, orderID string) error {
 		}
 	}
 	return fmt.Errorf("ibkr: open order %s not found", orderID)
+}
+
+// ModifyOrder mutates the LmtPrice (and optionally TotalQuantity) of an
+// already-submitted order and re-submits it via ibsync's PlaceOrder, which
+// reuses the existing OrderID when the trade is still tracked. The broker
+// applies the change in place — no cancel fires, no second OrderID — so the
+// cancel-fill race that produces duplicate SELL legs cannot occur.
+//
+// Returns ports.ErrUnsupportedModify when the order is no longer modifiable
+// (already terminal, gone from OpenTrades but visible as filled in Trades()).
+// Returns a hard error when the order is unknown to the broker — callers
+// MUST NOT fall through to cancel+place in that case (would create a duplicate
+// position if the orderID was wrong / the gateway just lost track of a real
+// order).
+//
+// newQty=0 is the sentinel for "leave quantity unchanged"; pass a positive
+// number only when shrinking/growing the order.
+func (a *Adapter) ModifyOrder(ctx context.Context, orderID string, newLimit, newQty float64) error {
+	ib := a.conn.IB()
+	if ib == nil {
+		return fmt.Errorf("ibkr: not connected")
+	}
+	if newLimit <= 0 {
+		return fmt.Errorf("ibkr: ModifyOrder: newLimit must be positive, got %f", newLimit)
+	}
+	id, err := strconv.ParseInt(orderID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("ibkr: invalid orderID %q: %w", orderID, err)
+	}
+
+	for _, t := range ib.OpenTrades() {
+		if t == nil || t.Order == nil || t.Contract == nil {
+			continue
+		}
+		if t.Order.OrderID != id {
+			continue
+		}
+		// ibsync briefly leaves done trades in OpenTrades after reconnect.
+		// Don't try to modify a done order — let the caller fall back to
+		// cancel+place which knows how to cope with the filled state via
+		// cancelAndAwaitTerminal.
+		if t.IsDone() {
+			return ports.ErrUnsupportedModify
+		}
+		isCrypto := t.Contract.SecType == "CRYPTO"
+		t.Order.LmtPrice = roundToTick(newLimit, isCrypto)
+		if newQty > 0 {
+			t.Order.TotalQuantity = ibsync.StringToDecimal(strconv.FormatFloat(newQty, 'f', -1, 64))
+		}
+		modified := ib.PlaceOrder(t.Contract, t.Order)
+		if modified == nil {
+			return fmt.Errorf("ibkr: ModifyOrder: PlaceOrder returned nil")
+		}
+		// Race: order may have transitioned terminal between the OpenTrades
+		// read and the PlaceOrder call. ibsync logs but returns the same
+		// Trade either way; only signal is IsDone().
+		if modified.IsDone() {
+			return ports.ErrUnsupportedModify
+		}
+		a.log.Info().
+			Str("order_id", orderID).
+			Float64("new_limit", t.Order.LmtPrice).
+			Float64("new_qty", newQty).
+			Msg("ibkr: order modified in place")
+		return nil
+	}
+
+	// Not in OpenTrades — disambiguate filled-and-gone vs never-seen via
+	// GetOrderDetails. A wrong/missing orderID falling through to cancel+place
+	// would create a duplicate position; refuse instead.
+	details, derr := a.GetOrderDetails(ctx, orderID)
+	if errors.Is(derr, ports.ErrOrderNotFound) {
+		return fmt.Errorf("ibkr: ModifyOrder: order %s unknown to broker", orderID)
+	}
+	if derr != nil {
+		return fmt.Errorf("ibkr: ModifyOrder: GetOrderDetails: %w", derr)
+	}
+	switch details.Status {
+	case "filled", "canceled", "rejected", "expired":
+		// Terminal: the cancel+place fallback will detect the filled state
+		// via cancelAndAwaitTerminal and reconcile cleanly.
+		return ports.ErrUnsupportedModify
+	default:
+		return fmt.Errorf("ibkr: ModifyOrder: order %s in unexpected state %q", orderID, details.Status)
+	}
 }
 
 func (a *Adapter) CancelOpenOrders(_ context.Context, symbol domain.Symbol, side string) (int, error) {
