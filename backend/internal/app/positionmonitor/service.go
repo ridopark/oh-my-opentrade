@@ -69,6 +69,13 @@ type Service struct {
 	// — which caused today's SOFI phantom short.
 	repegNotifier RepegNotifier
 
+	// repegModifyInPlace gates the Phase-2 atomic-modify re-peg path. When
+	// true and the broker implements ports.OrderModifier, exit re-pegs use
+	// ibsync's PlaceOrder OrderID-reuse semantics to mutate the limit price
+	// in place — no cancel fires, eliminating the cancel-fill race. When
+	// false (default) the legacy cancel-and-resubmit flow runs unchanged.
+	repegModifyInPlace bool
+
 	// atrTrailCfg carries the ATR-bucketed premium-trail multiplier
 	// configuration (see [exits.atr_trail] in YAML). When Enabled=false
 	// the option-fill stamper short-circuits and positions carry no
@@ -201,8 +208,18 @@ const (
 // MarkRepegCancel method. Defined here (not in ports) because it is an
 // app-layer coordination primitive between two app services — there's no
 // domain concept behind it, just a suppression flag.
+//
+// RepegOrderInPlace is the modify-first capability used when the
+// repeg.modify_in_place flag is on. Returns (true, nil) when the broker
+// applied the modify atomically (no cancel/resubmit fired). Returns
+// (false, ports.ErrUnsupportedModify) when the broker can't modify in
+// place (simbroker, or order already terminal at the broker) — the caller
+// then falls through to the existing cancel+place flow. Returns
+// (false, <other error>) when the orderID is unknown to the broker;
+// caller MUST refuse to fall through in that case.
 type RepegNotifier interface {
 	MarkRepegCancel(brokerOrderID string) bool
+	RepegOrderInPlace(ctx context.Context, brokerOrderID string, newLimit float64) (bool, error)
 }
 
 // Option is a functional option for the Service.
@@ -305,6 +322,17 @@ func WithEarningsCalendar(ec ports.EarningsCalendarPort) Option {
 func WithRepegNotifier(n RepegNotifier) Option {
 	return func(s *Service) { s.repegNotifier = n }
 }
+
+// WithRepegModifyInPlace toggles the atomic-modify re-peg path (Phase 2 of
+// the exit_repeg_dup_fill fix). Default false; flag-flip is gated on a clean
+// Phase-1-only live session per the plan.
+func WithRepegModifyInPlace(enabled bool) Option {
+	return func(s *Service) { s.repegModifyInPlace = enabled }
+}
+
+// SetRepegModifyInPlace is a post-construction setter for the same flag.
+// Used at omo-core wire-up after the config has been loaded.
+func (s *Service) SetRepegModifyInPlace(enabled bool) { s.repegModifyInPlace = enabled }
 
 // SetRepegNotifier is a post-construction setter for WithRepegNotifier.
 // Needed because in cmd/omo-core the execution service is built before the

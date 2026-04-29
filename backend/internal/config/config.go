@@ -464,9 +464,19 @@ type PositionRiskCapConfig struct {
 }
 
 // ExitsConfig groups exit-engine cross-cutting knobs. Today it carries
-// the ATR-bucketed premium-trail multiplier (see ATRTrailConfig).
+// the ATR-bucketed premium-trail multiplier (see ATRTrailConfig) and the
+// experimental modify-in-place re-peg flag (see RepegModifyInPlace).
 type ExitsConfig struct {
 	ATRTrail ATRTrailConfig `yaml:"atr_trail"`
+	// RepegModifyInPlace enables Phase 2 of the exit_repeg_dup_fill fix.
+	// When true and the broker implements ports.OrderModifier, exit
+	// re-pegs use ibsync's PlaceOrder OrderID-reuse semantics to mutate
+	// the broker-side limit price atomically — no cancel fires, so the
+	// cancel-fill race that produces duplicate SELL legs cannot occur.
+	// When false (default) the legacy cancel-and-resubmit flow runs
+	// unchanged. Flip the flag only after one full live session under
+	// Phase 1 with zero negative incidents (per the plan rollout gate).
+	RepegModifyInPlace bool `yaml:"repeg_modify_in_place"`
 }
 
 // ATRTrailConfig scales PREMIUM_TRAIL.trail_pct by an ATR%-percentile

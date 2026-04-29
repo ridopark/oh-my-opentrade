@@ -410,6 +410,13 @@ func (n *recordingRepegNotifier) MarkRepegCancel(brokerOrderID string) bool {
 	return true
 }
 
+// RepegOrderInPlace returns ErrUnsupportedModify so existing tests stay on the
+// cancel+place path. Tests that exercise the modify-first branch use a
+// dedicated stub instead.
+func (n *recordingRepegNotifier) RepegOrderInPlace(_ context.Context, _ string, _ float64) (bool, error) {
+	return false, ports.ErrUnsupportedModify
+}
+
 // orderedCancelBroker remembers the ordinal at which each cancel arrived.
 // Pairing with recordingRepegNotifier lets us assert that MarkRepegCancel
 // occurred BEFORE CancelOrder for the same broker order id.

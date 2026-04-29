@@ -2091,6 +2091,27 @@ func (s *Service) MarkRepegCancel(brokerOrderID string) bool {
 	return true
 }
 
+// RepegOrderInPlace asks the broker to atomically modify the limit price of
+// an open order so the cancel-fill race that produces duplicate exit legs
+// cannot occur. Returns (true, nil) on broker-applied modify, (false,
+// ports.ErrUnsupportedModify) when the broker doesn't support modify or the
+// order is already terminal (caller should fall back to cancel+place), and
+// (false, other-error) when the order is unknown to the broker (caller MUST
+// NOT fall through — that would create a duplicate position).
+func (s *Service) RepegOrderInPlace(ctx context.Context, brokerOrderID string, newLimit float64) (bool, error) {
+	if _, ok := s.pendingOrders.Load(brokerOrderID); !ok {
+		return false, fmt.Errorf("RepegOrderInPlace: no pending order for %s", brokerOrderID)
+	}
+	mod, ok := s.broker.(ports.OrderModifier)
+	if !ok {
+		return false, ports.ErrUnsupportedModify
+	}
+	if err := mod.ModifyOrder(ctx, brokerOrderID, newLimit, 0); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *Service) cleanupPendingOrder(brokerOrderID string) {
 	raw, ok := s.pendingOrders.LoadAndDelete(brokerOrderID)
 	if !ok {

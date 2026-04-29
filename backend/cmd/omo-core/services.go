@@ -253,6 +253,11 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	// no longer owned because 1603 had filled in the cancel race).
 	svc.posMonitor.SetRepegNotifier(svc.execution)
 
+	// Phase 2 of the exit_repeg_dup_fill fix: gate atomic-modify re-pegs
+	// behind a config flag. Default off; flip only after a clean Phase-1
+	// session per the plan rollout gate.
+	svc.posMonitor.SetRepegModifyInPlace(cfg.Exits.RepegModifyInPlace)
+
 	// Wire the ATR-bucketed PREMIUM_TRAIL multiplier (2026-04-16 MRVL/SOXL
 	// premature-exit fix). Default-on per quant; operators flip
 	// [exits.atr_trail] enabled: false to kill-switch. Positions stamped
