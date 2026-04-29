@@ -300,14 +300,33 @@ func (s *Service) activateOne(ctx context.Context, symbol string) error {
 		l.Info().Float64("ema50", ema50).Str("bias", bias).Bool("nr7", nr7).Float64("daily_atr", dailyATR).Msg("1D HTF warmup complete")
 	}
 
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		loc = time.FixedZone("EST", -5*3600)
+	}
+	nowET := warmupTo.In(loc)
+	todayOpen := time.Date(nowET.Year(), nowET.Month(), nowET.Day(), 9, 30, 0, 0, loc)
+	// Widen the 1m fetch window to cover today's session whenever activation
+	// fires past 09:30 ET; keeps the 120m floor on pre-session/holiday boots.
+	// Single-code-path with the boot's split-and-reset seeding below — no
+	// separate intra-session re-feed needed.
 	warmupFrom := warmupTo.Add(-120 * time.Minute)
+	if todayOpen.Before(warmupFrom) {
+		warmupFrom = todayOpen
+	}
+	var todaySnaps []monitor.BarSnapshot
 	bars1m, err := s.retryFetchBars(ctx, sym, string(s.baseTimeframe), warmupFrom, warmupTo, l)
 	if err != nil {
 		l.Warn().Err(err).Msg("1m indicator warmup fetch failed")
 	} else if len(bars1m) > 0 {
-		n := s.monitor.WarmUp(bars1m)
+		yesterdayBars, todayBars := monitor.SplitBarsByTime(bars1m, todayOpen.UTC())
+		_ = s.monitor.WarmUpAndCollect(yesterdayBars)
 		s.monitor.ResetSessionIndicators(symbol)
-		l.Info().Int("bars", n).Msg("1m indicator warmup complete")
+		todaySnaps = s.monitor.WarmUpAndCollect(todayBars)
+		l.Info().
+			Int("bars", len(bars1m)).
+			Int("today_bars", len(todayBars)).
+			Msg("1m indicator warmup complete")
 
 		if s.spikeFilter != nil {
 			if sym.IsCryptoSymbol() {
@@ -319,12 +338,6 @@ func (s *Service) activateOne(ctx context.Context, symbol string) error {
 		}
 	}
 
-	loc, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		loc = time.FixedZone("EST", -5*3600)
-	}
-	nowET := time.Now().In(loc)
-	todayOpen := time.Date(nowET.Year(), nowET.Month(), nowET.Day(), 9, 30, 0, 0, loc)
 	s.monitor.InitAggregators([]domain.Symbol{sym}, todayOpen)
 
 	if s.strategy != nil {
@@ -334,14 +347,9 @@ func (s *Service) activateOne(ctx context.Context, symbol string) error {
 
 	isWeekday := nowET.Weekday() != time.Saturday && nowET.Weekday() != time.Sunday
 	isOpen := !domain.IsNYSEHoliday(nowET) && isWeekday
-	if isOpen && nowET.After(todayOpen) {
-		orbBars, err := s.retryFetchBars(ctx, sym, string(s.baseTimeframe), todayOpen.UTC(), time.Now(), l)
-		if err != nil {
-			l.Warn().Err(err).Msg("ORB replay fetch failed")
-		} else if len(orbBars) > 0 {
-			s.monitor.WarmUpORB(orbBars)
-			l.Info().Int("bars", len(orbBars)).Msg("ORB replay complete")
-		}
+	if isOpen && nowET.After(todayOpen) && len(todaySnaps) > 0 {
+		s.monitor.SeedORBFromHistory(sym, todaySnaps)
+		l.Info().Int("bars", len(todaySnaps)).Msg("ORB replay complete")
 	}
 
 	s.mu.Lock()

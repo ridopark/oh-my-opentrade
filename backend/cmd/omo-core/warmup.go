@@ -40,23 +40,6 @@ func (f warmupRepoFetcher) GetMarketBars(ctx context.Context, sym domain.Symbol,
 	return fetchBarsForWarmup(ctx, f.repo, f.broker, sym, tf, from, to, f.log)
 }
 
-func timeframeDuration(tf domain.Timeframe) time.Duration {
-	switch string(tf) {
-	case "1m":
-		return time.Minute
-	case "5m":
-		return 5 * time.Minute
-	case "15m":
-		return 15 * time.Minute
-	case "1h":
-		return time.Hour
-	case "1d":
-		return 24 * time.Hour
-	default:
-		return time.Minute
-	}
-}
-
 func fetchBarsForWarmup(
 	ctx context.Context,
 	repo warmupBarDB,
@@ -83,39 +66,6 @@ func fetchBarsForWarmup(
 			Msg("DB bars query failed, falling back to broker")
 	}
 	return broker.GetHistoricalBars(ctx, sym, tf, from, to)
-}
-
-func fetchIntraSessionBarsWithGapFill(
-	ctx context.Context,
-	repo warmupBarDB,
-	broker warmupBarBroker,
-	sym domain.Symbol,
-	tf domain.Timeframe,
-	from, to time.Time,
-	log zerolog.Logger,
-) ([]domain.MarketBar, error) {
-	dbBars, err := repo.GetMarketBars(ctx, sym, tf, from, to)
-	if err != nil || len(dbBars) == 0 {
-		if err != nil {
-			log.Warn().Err(err).Str("symbol", string(sym)).Msg("DB intra-session query failed, using broker")
-		}
-		return broker.GetHistoricalBars(ctx, sym, tf, from, to)
-	}
-	latestDB := dbBars[len(dbBars)-1].Time
-	barDur := timeframeDuration(tf)
-	gapStart := latestDB.Add(barDur)
-	if to.Sub(gapStart) > 2*barDur {
-		tail, gapErr := broker.GetHistoricalBars(ctx, sym, tf, gapStart, to)
-		if gapErr == nil && len(tail) > 0 {
-			log.Debug().
-				Str("symbol", string(sym)).
-				Int("db_bars", len(dbBars)).
-				Int("gap_bars", len(tail)).
-				Msg("intra-session bars gap-filled from broker")
-			dbBars = append(dbBars, tail...)
-		}
-	}
-	return dbBars, nil
 }
 
 type symbolLists struct {
@@ -310,7 +260,25 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 	// the backtest path consumes, so indicator state at boot equals
 	// indicator state at backtest cfg.From for the same instant. RTH
 	// filter applied at the loader; pre/post bars never seed EMA/RSI/ATR.
+	//
+	// Cache of today's-session BarSnapshots produced by the canonical
+	// WarmUpAndCollect — reused below by SeedORBFromHistory so the ORB
+	// tracker never re-runs s.calculator.Update on bars already seeded.
+	todaySnapsCache := make(map[string][]monitor.BarSnapshot)
+	todayBarsCache := make(map[string][]domain.MarketBar)
 	if len(syms.equity) > 0 {
+		// Wait for fillBarGaps to close the trailing-edge minute-bucket gap
+		// before the canonical 1m Load reads market_bars; otherwise today's-
+		// session tail in the canonical window can be short and downstream
+		// SeedORBFromHistory would seed an incomplete ORB tracker. Mirrors
+		// the existing HTF gate; closed channel makes the HTF select a no-op.
+		select {
+		case <-gapFillDone:
+		case <-time.After(120 * time.Second):
+			warmupLog.Warn().Msg("gap-fill did not finish in 120s, proceeding with equity warmup anyway")
+		case <-ctx.Done():
+			return
+		}
 		spec := warmup.EquitySpec()
 		fetcher := warmupRepoFetcher{repo: infra.repo, broker: infra.barFetcher, log: warmupLog}
 		required := spec.Required[syms.timeframe]
@@ -332,12 +300,22 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 					Int("required", required).
 					Msg("equity warmup short — long-period indicators may not fully converge")
 			}
-			n := svc.monitor.WarmUp(bars)
+			// Split-and-reset boot path: feed pre-today RTH bars, zero
+			// session-VWAP between days (ResetSessionIndicators only
+			// touches VWAP — no auto-reset exists in calc.Update), then
+			// feed today's bars. Single calc.Update per bar, correct
+			// session VWAP at runtime entry.
+			yesterdayBars, todayBars := monitor.SplitBarsByTime(bars, todayOpen.UTC())
+			_ = svc.monitor.WarmUpAndCollect(yesterdayBars)
 			svc.monitor.ResetSessionIndicators(sym.String())
+			todaySnaps := svc.monitor.WarmUpAndCollect(todayBars)
 			warmupBarsCache[string(sym)] = bars
+			todaySnapsCache[string(sym)] = todaySnaps
+			todayBarsCache[string(sym)] = todayBars
 			warmupLog.Info().
 				Str("symbol", string(sym)).
-				Int("bars", n).
+				Int("bars", len(bars)).
+				Int("today_bars", len(todayBars)).
 				Msg("equity indicator warmup complete")
 		}
 	}
@@ -508,18 +486,16 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 	if isOpen && nowET.After(todayOpen) {
 		warmupLog.Info().Msg("replaying current-session bars for ORB state recovery")
 		for _, sym := range syms.equity {
-			orbBars, err := fetchIntraSessionBarsWithGapFill(ctx, infra.repo, infra.alpacaData, sym, syms.timeframe, todayOpen.UTC(), time.Now(), warmupLog)
-			if err != nil {
-				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("ORB warmup fetch failed")
+			todaySnaps := todaySnapsCache[string(sym)]
+			orbBars := todayBarsCache[string(sym)]
+			if len(orbBars) == 0 {
 				continue
 			}
-			// Feed today's session bars through monitor indicators so EMA21/50/200,
-			// MACD, and session VWAP reach the same state a continuous-from-open run
-			// would have. Without this, 5m regime computed from a yesterday-seeded
-			// calculator diverges from backtest (seen as REVERSAL vs BALANCE) and
-			// silently gates AVWAP signals for the rest of the session.
-			svc.monitor.WarmUp(orbBars)
-			svc.monitor.WarmUpORB(orbBars)
+			// SeedORBFromHistory drives the ORB tracker through today's
+			// session using snaps already produced by WarmUpAndCollect.
+			// No additional s.calculator.Update calls — single-pass
+			// invariant preserved, session VWAP unaffected.
+			svc.monitor.SeedORBFromHistory(sym, todaySnaps)
 			if svc.useStrategyV2 && svc.strategyRunner != nil {
 				if runnerWarmupCalc == nil {
 					runnerWarmupCalc = monitor.NewIndicatorCalculator()

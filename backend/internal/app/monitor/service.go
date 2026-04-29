@@ -185,16 +185,82 @@ type BarSnapshot struct {
 	Bar      domain.MarketBar
 	Snapshot domain.IndicatorSnapshot
 }
-// WarmUpAndCollect processes historical bars through the indicator calculator
-// and returns per-bar indicator snapshots. It does NOT emit events or persist data.
-// Returns a slice of (MarketBar, IndicatorSnapshot) pairs for use by downstream warmup consumers.
+
+// SplitBarsByTime partitions an ascending-by-time bar slice at the boundary
+// instant: bars strictly before t go to head, the rest (including any bar
+// AT t — the 09:30 ET first-of-day bar belongs to today) go to tail.
+// Used by boot and activation paths to feed pre-today-session bars through
+// WarmUpAndCollect, then call ResetSessionIndicators between days, then
+// feed today's bars in a single calc.Update pass.
+func SplitBarsByTime(bars []domain.MarketBar, t time.Time) ([]domain.MarketBar, []domain.MarketBar) {
+	for i, b := range bars {
+		if !b.Time.Before(t) {
+			return bars[:i], bars[i:]
+		}
+	}
+	return bars, nil
+}
+// WarmUpAndCollect is the canonical seeding entry. It processes historical
+// bars through the indicator calculator, drives the per-symbol HTF aggregator
+// path (anchorRegimes + lastHTFSnaps[1h]) under the htfNativeReserved gate,
+// finalizes lastSnaps[sym] with AnchorRegimes + HTF map, and returns the
+// per-bar 1m snapshots produced by Update. Captured snaps reflect the 1m
+// calc state immediately after Update of that bar (BEFORE any HTF-close
+// update on the same iteration), matching the snap a downstream
+// SeedORBFromHistory caller needs to feed feedORBBar without re-running
+// calc.Update on these bars. Does NOT emit events or persist data.
 func (s *Service) WarmUpAndCollect(bars []domain.MarketBar) []BarSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	result := make([]BarSnapshot, 0, len(bars))
+	var lastSnap domain.IndicatorSnapshot
+	var lastBar domain.MarketBar
 	for _, bar := range bars {
-		snap := s.calculator.Update(bar)
-		result = append(result, BarSnapshot{Bar: bar, Snapshot: snap})
+		lastSnap = s.calculator.Update(bar)
+		lastBar = bar
+		result = append(result, BarSnapshot{Bar: bar, Snapshot: lastSnap})
+		symStr := bar.Symbol.String()
+		for _, tf := range anchorTimeframes {
+			aggKey := symStr + ":" + tf.String()
+			agg, exists := s.aggregators[aggKey]
+			if !exists {
+				continue
+			}
+			closed, ok := agg.Push(bar)
+			if !ok {
+				continue
+			}
+			// Reserved for WarmUpNative; aggregator was still pushed above
+			// to prime bucket state for runtime, but skip the calc.Update
+			// to avoid double-feed.
+			if s.htfNativeReserved[aggKey] {
+				continue
+			}
+			htfSnap := s.calculator.Update(closed)
+			reg, _ := s.regimeDetector.Detect(htfSnap)
+			s.anchorRegimes[aggKey] = reg
+			if tf == "1h" {
+				if s.lastHTFSnaps == nil {
+					s.lastHTFSnaps = make(map[string]domain.IndicatorSnapshot)
+				}
+				s.lastHTFSnaps[aggKey] = htfSnap
+			}
+		}
+	}
+	if len(bars) > 0 {
+		symStr := lastBar.Symbol.String()
+		regime, _ := s.regimeDetector.Detect(lastSnap)
+		lastSnap.AnchorRegimes = map[domain.Timeframe]domain.MarketRegime{
+			lastBar.Timeframe: regime,
+		}
+		for _, tf := range anchorTimeframes {
+			aggKey := symStr + ":" + tf.String()
+			if reg, ok := s.anchorRegimes[aggKey]; ok {
+				lastSnap.AnchorRegimes[tf] = reg
+			}
+		}
+		lastSnap.HTF = s.buildHTFMap(symStr, lastBar.Close)
+		s.lastSnaps[symStr] = lastSnap
 	}
 	return result
 }
@@ -1258,22 +1324,25 @@ func (s *Service) buildHTFMap(sym string, currentClose float64) map[domain.Timef
 	}
 	return htf
 }
-func (s *Service) WarmUpORB(bars []domain.MarketBar) {
+// SeedORBFromHistory drives the ORB tracker through today's session bars
+// using snaps already captured by WarmUpAndCollect, without calling
+// s.calculator.Update again. This preserves the single-pass calc invariant
+// that boot- and replay-time monitor state must match: every 1m bar from
+// the canonical 800-bar window flows through Update exactly once. Marks
+// any ORB range recovered to RANGE_SET as RangeNotified=true so the first
+// live bar after boot does NOT re-emit ORBRangeSet.
+func (s *Service) SeedORBFromHistory(sym domain.Symbol, snaps []BarSnapshot) {
+	if len(snaps) == 0 {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	seen := make(map[string]struct{})
-	for _, bar := range bars {
-		snap := s.calculator.Update(bar)
-		s.feedORBBar(bar, snap, true)
-		seen[string(bar.Symbol)] = struct{}{}
+	for _, sn := range snaps {
+		s.feedORBBar(sn.Bar, sn.Snapshot, true)
 	}
-	// Mark all recovered ORB ranges as already notified so live bars
-	// don't re-emit stale ORBRangeSet notifications.
-	for sym := range seen {
-		if sess := s.orbTracker.GetSession(sym); sess != nil &&
-			sess.State == ORBStateRangeSet && !sess.RangeNotified {
-			sess.RangeNotified = true
-		}
+	if sess := s.orbTracker.GetSession(sym.String()); sess != nil &&
+		sess.State == ORBStateRangeSet && !sess.RangeNotified {
+		sess.RangeNotified = true
 	}
 }
 func (s *Service) GetORBSession(symbol string) *ORBSession {
