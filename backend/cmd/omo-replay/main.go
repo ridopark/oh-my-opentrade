@@ -63,6 +63,7 @@ func main() {
 		memProfile     string
 		copytradeHist     string
 		copytradeLedgerDir string
+		emitGatedDiag     bool
 	)
 
 	flag.StringVar(&symbolsFlag, "symbols", "", "Comma-separated symbols to replay (default: use config file symbols)")
@@ -82,7 +83,13 @@ func main() {
 	flag.StringVar(&memProfile, "memprofile", "", "Write heap profile to file (pprof) after run")
 	flag.StringVar(&copytradeHist, "copytrade-history", "", "Path to Discord copytrade history JSONL; when set (and --backtest), replays messages through the event bus")
 	flag.StringVar(&copytradeLedgerDir, "copytrade-ledger-dir", "_workspace/copytrade_replay", "Directory for per-fill and author-stated CSV ledgers (created if missing)")
+	flag.BoolVar(&emitGatedDiag, "emit-gated-diag", false, "Persist EntryGated rows to strategy_signal_events with tag=backtest_<runID> for live-vs-backtest SQL diff (requires --backtest)")
 	flag.Parse()
+
+	if emitGatedDiag && !backtestFlag {
+		fmt.Fprintln(os.Stderr, "--emit-gated-diag requires --backtest=true (replay-only runs would pollute the live signal-events table)")
+		os.Exit(1)
+	}
 
 	// Replay and backtest binaries don't need cryptographically-unique event
 	// IDs — uuid.NewString() via crypto/rand was ~10% of backtest CPU.
@@ -213,6 +220,21 @@ func main() {
 	defer sqlDB.Close()
 	log.Info().Msg("TimescaleDB connected")
 	repo := timescaledb.NewRepositoryWithLogger(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "timescaledb").Logger())
+
+	// Diagnostic activation: persist EntryGated rows to strategy_signal_events
+	// tagged with this run's id, so a SQL diff against live rows on (symbol, ts)
+	// can attribute a gate divergence to the specific input that disagreed.
+	// runID is the seed for runner.TagBacktest → BacktestTag → payload.Tag.
+	var diagRunID string
+	if emitGatedDiag {
+		diagRunID = fmt.Sprintf("%d", time.Now().Unix())
+		pnlRepo := timescaledb.NewPnLRepository(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "pnl").Logger())
+		writer := strategy.NewEntryGatedWriter(pnlRepo, log)
+		if err := eventBus.SubscribeAsync(ctx, domain.EventEntryGated, writer.Handle); err != nil {
+			log.Fatal().Err(err).Msg("failed to subscribe EntryGated writer for diag mode")
+		}
+		log.Info().Str("run_id", diagRunID).Msg("emit-gated-diag ON — EntryGated rows will land in strategy_signal_events tagged backtest_" + diagRunID)
+	}
 
 	var currentBarTime atomic.Value
 	currentBarTime.Store(time.Now())
@@ -463,6 +485,7 @@ func main() {
 			Equity:          initialEquity,
 			Clock:           clockFn,
 			DisableAI: noAIFlag,
+			BacktestID:      diagRunID,
 			Logger:          log,
 		}
 		strategyShared, err = bootstrap.BuildStrategyShared(strategyDeps)
@@ -662,6 +685,7 @@ func main() {
 			Equity:          initialEquity,
 			Clock:           clockFn,
 			DisableAI: noAIFlag,
+			BacktestID:      diagRunID,
 			Logger:          log,
 		})
 		if err != nil {
@@ -973,8 +997,11 @@ func main() {
 				}
 				// InitAggregators for the shard's slab.
 				p.Monitor().InitAggregators(slab, replaySessionOpen)
-				// Runner warmup + suppress + init.
-				p.Runner().SetSuppressProgressEvents(true)
+				// Runner warmup + suppress + init. Skip the suppress when diag is on
+				// so EntryGated rows reach the EntryGatedWriter subscriber.
+				if !emitGatedDiag {
+					p.Runner().SetSuppressProgressEvents(true)
+				}
 				p.Runner().SetDisableLiveness(true)
 				for _, sym := range slab {
 					if bars, ok := warmupBarsCache[sym.String()]; ok && len(bars) > 0 {
@@ -1037,7 +1064,9 @@ func main() {
 	// Runner warmup for the legacy non-sharded path (sharded path
 	// already did runner warmup inside the parallel block above).
 	if shardedPipeline == nil && pipeline != nil && pipeline.Runner != nil {
-		pipeline.Runner.SetSuppressProgressEvents(true)
+		if !emitGatedDiag {
+			pipeline.Runner.SetSuppressProgressEvents(true)
+		}
 		pipeline.Runner.SetDisableLiveness(true)
 		snapshotFn := makeSnapshotFn()
 		for _, sym := range symbols {

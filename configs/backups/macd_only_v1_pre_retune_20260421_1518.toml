@@ -1,0 +1,172 @@
+schema_version = 2
+
+[strategy]
+id = "macd_only_v1"
+version = "3.0.0"
+name = "MACD Crossover Options — 5m Intraday"
+description = "5m MACD crossover + options, intraday with EOD flatten"
+novice_description = """\
+MACD is a classic momentum indicator that compares a short-term moving \
+average to a longer-term one. When the short line crosses above the long \
+line, momentum is turning up. When it crosses below, momentum is turning \
+down. That crossover is our entry trigger.
+
+This version watches 5-minute bars during the regular trading day. On a \
+bullish crossover we buy call options (betting price goes up); on a bearish \
+crossover we buy puts (betting price goes down). Every position is closed \
+before the market closes — we never hold options overnight, because their \
+value can erode quickly when the market is shut.
+
+In plain terms: when short-term momentum flips, we ride it with options for \
+the rest of the day, then go flat before the close."""
+author = "system"
+created_at = "2026-04-07T00:00:00Z"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+symbols = ["MSFT", "GOOGL", "META", "NVDA", "AMD", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "AFRM", "XOM", "OXY", "LLY", "HIMS", "RIVN", "RBLX", "BA", "SPY", "QQQ", "IWM", "SOXL"]
+timeframes = ["5m"]
+priority = 70
+conflict_policy = "priority_wins"
+exclusive_per_symbol = false
+watchlist_mode = "static"
+asset_classes = ["OPTION"]
+allowed_directions = ["LONG", "SHORT"]
+
+[params]
+macd_zero_band = 0.50            # wider band for 5m (0.02 was too tight for >$50 stocks)
+risk_reward_ratio = 2.0          # 2:1 R:R realistic for intraday
+swing_lookback = 5               # fewer bars for swing detection on 5m
+volume_mult = 1.0
+
+# Confluence scoring (0-100+ scale, 10 base + dark pool factors)
+min_confluence_score = 65        # split the difference — keep some 60s trades
+dp_confluence_enabled = true
+dp_veto_enabled = true
+dp_veto_buy_ratio_min = 0.45
+dp_veto_sell_ratio_max = 0.55
+dp_sizing_enabled = true
+dp_sizing_max_boost = 1.5
+dp_stop_enabled = true
+dp_level_lookback = 20
+
+# Rolling performance gate
+rolling_wr_min = 0.25
+rolling_wr_window = 20
+
+# Low-trend range gate. Blocks entries when 5m regime is BALANCE and ADX
+# is below the threshold — MACD crossovers in that condition are noise.
+# Validated as the only stationary entry filter across 2025 and 2026:
+# the (BALANCE ∧ adx<20) bucket was net-negative in both years. See
+# docs/research/macd_range_gate_validation.md.
+range_gate_enabled = true
+range_gate_adx_max = 20.0
+
+# Late-session DP Z conditioning (INVERTED for momentum).
+# High Z (>1.0) = strong prior trend = MACD-favorable (momentum continuation).
+# Low Z (<-1.0) = reversal setup = MACD-adverse (PF 0.854 in backtest).
+dp_z_conditioning_enabled = true
+dp_z_macd_favorable_threshold = 1.0
+dp_z_macd_suppress_threshold = -1.0
+dp_z_macd_suppress_mode = "block"
+
+# Risk — smaller per-trade for higher turnover
+risk_per_trade_bps = 500
+max_position_bps = 2000
+
+# Portfolio limits — focused for intraday
+max_positions = 10
+max_per_group = 2                # solo optimum (was 3). Tightened after the OCC sector-classification fix. Sweep showed mpg=2 is Pareto-dominant when MACD runs alone. In a pair backtest the runner takes max-of per-spec values, so the pair's effective cap is set by AVWAP (mpg=3); that's intentional — the pair stress test showed forcing global mpg=2 cost ~$40k combined PnL, so this value applies only when MACD runs solo or as the higher-mpg leg.
+
+# Timing
+allowed_hours_start = "09:35"
+allowed_hours_end = "15:30"
+allowed_hours_tz = "America/New_York"
+cooldown_seconds = 180           # 3 bars on 5m
+max_trades_per_day = 8           # more signals on faster timeframe
+stabilization_bars = 6           # 30min warmup
+
+[hooks]
+signals = { engine = "builtin", name = "macd" }
+
+[gate_chain]
+monitor = [
+    { name = "dna_approval" },
+]
+
+execution = [
+    { name = "kill_switch" },
+    { name = "portfolio_heat_guard" },
+    { name = "sector_exposure_guard" },
+    { name = "directional_bias_guard" },
+    { name = "short_direction" },
+    { name = "exposure_guard" },
+    { name = "portfolio_guard" },
+    { name = "risk_engine" },
+    { name = "slippage_guard" },
+    { name = "trading_window" },
+    { name = "spread_guard" },
+    { name = "buying_power_guard" },
+    { name = "pdt_guard" },
+    { name = "reg_t_guard" },
+    { name = "earnings_blackout_gate" },
+    { name = "macro_event_gate" },
+]
+
+[options]
+enabled = true
+max_contracts = 50
+limit_spread_pct = 1.00
+limit_buffer_bps = 1000
+stale_cancel_secs = 90
+
+[options.defaults]
+min_dte = 5                      # weekly window — synthetic chain generator
+max_dte = 14                     # fills gaps when DoltHub has no weeklies
+                                 # (see backtest.synthetic_chain in config).
+target_delta_low = 0.50          # slightly ITM for better delta tracking
+target_delta_high = 0.65         # higher delta = more responsive intraday
+min_open_interest = 100          # tighter liquidity on near-term
+max_spread_pct = 0.10
+max_iv = 1.2
+
+# Premium target: 15% realistic for ATM options on 30min-2hr intraday holds
+[[exit_rules]]
+type = "PREMIUM_TARGET"
+[exit_rules.params]
+target_pct = 0.15
+
+# Proportional trail: arm at +5% premium MFE, exit on 3% giveback from peak.
+# Replaces legacy PREMIUM_TRAIL (2 winners / 88 fires in 3-month IS).
+# IS 2026-Q1: PF 0.84->0.93, DD 43%->28%, P&L +$20.5k vs baseline.
+# OOS 2026-04-01..04-20: PF 1.43->1.31, WR 56%->67%, DD 8.8->7.5, P&L -$4.1k
+# (trims some big winners but catches 4/16 MAX_HOLDING losers with MFE>=5%).
+# Backup: configs/backups/macd_only_v1_pre_chandelier_20260421_1503.toml
+[[exit_rules]]
+type = "CHANDELIER_TRAIL"
+[exit_rules.params]
+activate_pct = 0.05
+giveback_pct = 0.03
+
+# Stagnation: kill zombie trades after 90 min
+[[exit_rules]]
+type = "STAGNATION_EXIT"
+[exit_rules.params]
+minutes = 90
+sd_threshold = 0
+profit_gate_pct = 0.005
+
+# EOD flatten: mandatory close at 15:45 ET
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 15
+
+# Safety: 3hr hard cap
+[[exit_rules]]
+type = "MAX_HOLDING_TIME"
+[exit_rules.params]
+minutes = 180
