@@ -104,6 +104,35 @@ const (
 	EventSystemStarted           EventType = "SystemStarted"
 	EventIBKRConnected           EventType = "IBKRConnected"
 	EventSymbolsActivated        EventType = "SymbolsActivated"
+
+	// Copytrade: a Discord signal arrived from the discord-copytrade sidecar.
+	EventCopytradeSignalReceived EventType = "CopytradeSignalReceived"
+
+	// Copytrade: a strategy requests the position monitor to externally-arm
+	// a CHANDELIER_TRAIL rule on an existing option position. Fired by the
+	// copytrade strategy when the author's first STC-partial is processed.
+	EventChandelierTrailArm EventType = "ChandelierTrailArm"
+
+	// Copytrade: the copytrade strategy requests the position monitor to close
+	// a fraction of an existing option position. Fired on each STC keyword
+	// match. Routing is by OCC contract symbol; the fraction is stashed in
+	// pos.CustomState and consumed by positionmonitor.triggerExit.
+	EventCopytradeExitRequest EventType = "CopytradeExitRequest"
+
+	// Copytrade: the position monitor refused an exit request because a prior
+	// exit is already in flight for the target position. The strategy consumes
+	// this event to roll RemainingFrac back so its view matches the broker.
+	EventCopytradeExitRejected EventType = "CopytradeExitRejected"
+
+	// Copytrade: the strategy swept a Pending position whose BTO never filled
+	// within the configured TTL. Execution subscribes and cancels the matching
+	// outstanding broker order so the slot is actually freed at the broker.
+	EventCopytradeEntryExpired EventType = "CopytradeEntryExpired"
+
+	// Copytrade: a BUY fill arrived for a contract with no matching Pending
+	// position in the strategy (race: TTL sweep freed the slot just before the
+	// broker fill). notify.Service subscribes and alerts operators via Discord.
+	EventCopytradeOrphanFill EventType = "CopytradeOrphanFill"
 )
 
 type SymbolsActivatedPayload struct {
@@ -142,6 +171,7 @@ type StaleOrderCancelledPayload struct {
 	Strategy      string
 	Direction     string
 	AgeSeconds    float64
+	LimitPrice    float64
 }
 
 type ExitCircuitBrokenPayload struct {
@@ -227,7 +257,16 @@ type EntryGatedPayload struct {
 	EntryChecks   []EntryCheckResult    `json:"entryChecks,omitempty"`
 	Confluence    EntryGatedConfluence  `json:"confluence"`
 	Indicators    EntryGatedIndicators  `json:"indicators"`
-	Bar           BarSnapshot           `json:"bar"`
+	AVWAPState    *EntryGatedAVWAPState `json:"avwapState,omitempty"`
+	// AIEnabled records whether the strategy pipeline that produced this
+	// blocked row would have routed an emitted signal through the AI
+	// enricher. Stamped from the runner's disableAI flag at emit time;
+	// see parity plan Phase 2 — it is the only AI-state signal available
+	// at gate-evaluation time (the enricher itself runs post-emission, so
+	// blocked rows never carry an enrichment Status/Confidence). False
+	// also when the instance was emitted without a runner (tests).
+	AIEnabled  bool        `json:"aiEnabled"`
+	Bar        BarSnapshot `json:"bar"`
 }
 
 type EntryGatedConfluence struct {
@@ -240,6 +279,23 @@ type EntryGatedConfluence struct {
 	Candle         bool   `json:"candle"`
 	CandleDetail   string `json:"candleDetail,omitempty"`
 	Band           bool   `json:"band"`
+	// Components is the per-factor breakdown (fib, key_level, candle,
+	// band, dp, inducement, whale, ...) the confluence scorer returned
+	// for this evaluation. Each entry mirrors strategy.ComponentScore;
+	// the field is a JSON DTO so domain/event.go avoids depending on
+	// domain/strategy. Phase 2 of the parity plan: this is what makes
+	// blocked rows comparable between live and backtest.
+	Components []EntryGatedComponent `json:"components,omitempty"`
+}
+
+// EntryGatedComponent is one row of the confluence-factor breakdown
+// captured at an EntryGated evaluation. Mirror of strategy.ComponentScore.
+type EntryGatedComponent struct {
+	Name   string  `json:"name"`
+	Group  string  `json:"group"`
+	Weight int     `json:"weight"`
+	Value  float64 `json:"value,omitempty"`
+	Fired  bool    `json:"fired"`
 }
 
 // EntryCheckResult describes the outcome of a single entry type evaluation.
@@ -261,6 +317,26 @@ type EntryGatedIndicators struct {
 	SlopeBPS    float64            `json:"slopeBPS"`
 	AboveCount  map[string]int     `json:"aboveCount,omitempty"`
 	BelowCount  map[string]int     `json:"belowCount,omitempty"`
+}
+
+// EntryGatedAVWAPState captures the AVWAP calc state at the bar an
+// EntryGated event was emitted. Phase 2 of the parity plan: lets a SQL
+// diff between live and backtest show whether an AVWAP anchor disagreed
+// on slope or bar count at the same evaluation moment. Pointer field
+// on EntryGatedPayload so MACD blocks (which don't use AnchoredVWAPCalc)
+// emit no avwapState key at all rather than an empty stub.
+type EntryGatedAVWAPState struct {
+	LastBarTime time.Time                   `json:"lastBarTime,omitempty"`
+	AnchorCount int                         `json:"anchorCount"`
+	Anchors     map[string]EntryGatedAnchor `json:"anchors,omitempty"`
+}
+
+type EntryGatedAnchor struct {
+	VWAP      float64 `json:"vwap"`
+	SlopeBPS  float64 `json:"slopeBPS"`
+	BarCount  int     `json:"barCount"`
+	VWAPCount int     `json:"vwapCount"`
+	Active    bool    `json:"active"`
 }
 
 // ORBPhaseUpdatePayload is emitted on ORB state machine transitions.

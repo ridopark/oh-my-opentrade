@@ -14,7 +14,12 @@ import (
 )
 
 const orderPollInterval = 2 * time.Second
-const execReconcileInterval = 10 * time.Second
+
+// execReconcileInterval is fast because Fills() is a non-blocking local cache
+// read; the real cost is the periodic ReqFills refresh which runs on its
+// own slower timer. The reconciler is now the single source of fill truth
+// (per-ExecID), so a 2s cadence keeps end-to-end fill latency bounded.
+const execReconcileInterval = 2 * time.Second
 
 func (a *Adapter) SubscribeOrderUpdates(ctx context.Context) (<-chan ports.OrderUpdate, error) {
 	ib := a.conn.IB()
@@ -42,8 +47,10 @@ func (a *Adapter) SubscribeOrderUpdates(ctx context.Context) (<-chan ports.Order
 }
 
 // watchTradeDone waits for a single trade's Done() channel to close, then
-// emits one terminal OrderUpdate. The emittedDone sync.Map prevents duplicates
-// when the poller also detects the same terminal event.
+// emits one terminal OrderUpdate for non-fill terminal states only. Fills
+// are owned by execReconciler (per-ExecID), so an order-level dedup here
+// would mask multi-exec deliveries. emittedDone keys on (orderID, "term")
+// to prevent the poller from re-emitting the same cancel/expire/reject.
 func (a *Adapter) watchTradeDone(ctx context.Context, trade *ibsync.Trade, out chan<- ports.OrderUpdate) {
 	if trade == nil || trade.Order == nil {
 		return
@@ -68,10 +75,16 @@ func (a *Adapter) watchTradeDone(ctx context.Context, trade *ibsync.Trade, out c
 		return
 	case <-trade.Done():
 		orderID := trade.Order.OrderID
+		update := tradeToOrderUpdate(trade)
+		// Fills come from execReconciler (per-ExecID, race-free vs OrderStatus
+		// snapshots). Suppress them here to keep this goroutine to the
+		// non-fill terminal lane only.
+		if update.Event == ports.OrderEventFill {
+			return
+		}
 		if _, loaded := a.emittedDone.LoadOrStore(orderID, struct{}{}); loaded {
 			return
 		}
-		update := tradeToOrderUpdate(trade)
 		a.log.Info().
 			Str("order_id", update.BrokerOrderID).
 			Str("event", update.Event).
@@ -124,8 +137,14 @@ func (a *Adapter) pollOrderUpdates(ctx context.Context, out chan<- ports.OrderUp
 
 				if shouldEmit {
 					update := tradeToOrderUpdate(t)
-					// Skip if Done() watcher already emitted this terminal event.
-					if update.Event == "fill" || update.Event == "canceled" || update.Event == "expired" {
+					// Fills flow through execReconciler (per-ExecID). Skip them
+					// here so a single terminal OrderStatus snapshot doesn't
+					// replace N distinct exec events.
+					if update.Event == ports.OrderEventFill {
+						continue
+					}
+					// Dedup non-fill terminal events against the Done() watcher.
+					if update.Event == ports.OrderEventCanceled || update.Event == ports.OrderEventExpired {
 						if _, already := a.emittedDone.LoadOrStore(id, struct{}{}); already {
 							continue
 						}
@@ -179,6 +198,14 @@ func (a *Adapter) execReconciler(ctx context.Context, out chan<- ports.OrderUpda
 			}
 			// Fills() is non-blocking — reads from ibsync's local state.
 			fills := ib.Fills()
+			// Index trades by OrderID so each fill resolves in O(1) instead
+			// of scanning the whole trades slice per leg.
+			tradesByOrder := make(map[int64]*ibsync.Trade)
+			for _, t := range ib.Trades() {
+				if t != nil && t.Order != nil {
+					tradesByOrder[t.Order.OrderID] = t
+				}
+			}
 			for _, f := range fills {
 				if f.Execution == nil {
 					continue
@@ -191,14 +218,17 @@ func (a *Adapter) execReconciler(ctx context.Context, out chan<- ports.OrderUpda
 
 				update := fillToOrderUpdate(f)
 
-				// Skip if Done() watcher already emitted this terminal event.
-				orderID := f.Execution.OrderID
-				if _, already := a.emittedDone.LoadOrStore(orderID, struct{}{}); already {
-					a.log.Debug().
-						Str("exec_id", execID).
-						Int64("order_id", orderID).
-						Msg("exec reconciler: skipping fill already emitted by Done() watcher")
-					continue
+				// Label terminal vs partial by correlating with the Trade's
+				// OrderStatus. The last leg of a multi-fill order must arrive
+				// as Event="fill" so execution.handleStreamFill knows when to
+				// claim the pending entry and run lifecycle cleanup.
+				update.Event = ports.OrderEventPartialFill
+				totalQty := 0.0
+				if t, ok := tradesByOrder[f.Execution.OrderID]; ok {
+					totalQty = t.Order.TotalQuantity.Float()
+					if t.OrderStatus.Status == ibsync.Filled && totalQty > 0 && update.FilledQty+1e-9 >= totalQty {
+						update.Event = ports.OrderEventFill
+					}
 				}
 
 				a.log.Info().
@@ -206,8 +236,11 @@ func (a *Adapter) execReconciler(ctx context.Context, out chan<- ports.OrderUpda
 					Str("broker_order_id", update.BrokerOrderID).
 					Str("event", update.Event).
 					Float64("qty", update.Qty).
+					Float64("cum_qty", update.FilledQty).
+					Float64("total_qty", totalQty).
 					Float64("price", update.Price).
-					Msg("exec reconciler: detected missed fill")
+					Float64("avg_price", update.FilledAvgPrice).
+					Msg("exec reconciler: emitting fill leg")
 
 				select {
 				case out <- update:
@@ -252,7 +285,7 @@ func fillToOrderUpdate(f ibsync.Fill) ports.OrderUpdate {
 	return ports.OrderUpdate{
 		BrokerOrderID:  strconv.FormatInt(exec.OrderID, 10),
 		ExecutionID:    exec.ExecID,
-		Event:          "fill",
+		Event:          ports.OrderEventFill,
 		Qty:            exec.Shares.Float(),
 		Price:          exec.Price,
 		FilledQty:      exec.CumQty.Float(),
@@ -293,17 +326,17 @@ func tradeToOrderUpdate(t *ibsync.Trade) ports.OrderUpdate {
 func mapStatusToEvent(s ibsync.Status) string {
 	switch s {
 	case ibsync.Filled:
-		return "fill"
+		return ports.OrderEventFill
 	case ibsync.Submitted:
-		return "new"
+		return ports.OrderEventNew
 	case ibsync.PreSubmitted:
-		return "accepted"
+		return ports.OrderEventAccepted
 	case ibsync.PendingSubmit, ibsync.ApiPending:
-		return "new"
+		return ports.OrderEventNew
 	case ibsync.Cancelled, ibsync.ApiCancelled: //nolint:misspell // external ibsync constant
-		return "canceled"
+		return ports.OrderEventCanceled
 	case ibsync.Inactive:
-		return "expired"
+		return ports.OrderEventExpired
 	default:
 		return "new"
 	}

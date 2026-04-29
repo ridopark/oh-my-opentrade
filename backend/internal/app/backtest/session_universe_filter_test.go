@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
+	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -228,4 +229,95 @@ func TestSessionResolver_Stats_TracksUnknownSymbolHits(t *testing.T) {
 	scanErrs, unknownSyms := r.Stats()
 	assert.Equal(t, 0, scanErrs)
 	assert.Equal(t, 2, unknownSyms)
+}
+
+// TestSessionResolver_GetBarsBetween_PartialCacheFallsBackToFetcher: when the
+// requested range spans days where only SOME are in barCache, the function
+// must fall through to the injected barFetcher (production: DB) instead of
+// silently returning a truncated result from the partial cache. This was
+// the root cause of pd_high/pd_low/session_open collapsing into one anchor
+// in backtest — the cross-day prev-day bar replay quietly returned only
+// today's bars.
+func TestSessionResolver_GetBarsBetween_PartialCacheFallsBackToFetcher(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	r := NewSessionResolver(loc)
+
+	monday := time.Date(2026, 4, 27, 0, 0, 0, 0, loc)
+	mondayBars := []domain.MarketBar{
+		{Time: time.Date(2026, 4, 27, 9, 31, 0, 0, loc), Close: 100},
+		{Time: time.Date(2026, 4, 27, 9, 32, 0, 0, loc), Close: 101},
+	}
+	r.PopulateBarCache("MRVL", mondayBars)
+
+	// Stub fetcher records the range it was called with and returns
+	// fabricated Friday + Monday bars representing the DB result.
+	var fetcherCalls int
+	var fetchedSince, fetchedUntil time.Time
+	r.barFetcher = func(_ context.Context, _ string, since, until time.Time) []start.Bar {
+		fetcherCalls++
+		fetchedSince = since
+		fetchedUntil = until
+		return []start.Bar{
+			{Time: time.Date(2026, 4, 24, 14, 50, 0, 0, loc), Close: 162.0}, // Friday
+			{Time: time.Date(2026, 4, 27, 9, 31, 0, 0, loc), Close: 100.0},  // Monday
+		}
+	}
+
+	since := time.Date(2026, 4, 24, 14, 50, 0, 0, loc) // Friday
+	until := monday.Add(15 * time.Hour)                // Monday afternoon
+	bars := r.GetBarsBetween(context.Background(), nil, "MRVL", since, until)
+
+	assert.Equal(t, 1, fetcherCalls, "partial cache must fall through to fetcher")
+	assert.Equal(t, since, fetchedSince)
+	assert.Equal(t, until, fetchedUntil)
+	require.Len(t, bars, 2, "fetcher result returned to caller")
+}
+
+// TestSessionResolver_GetBarsBetween_FullCacheSkipsFetcher: when every day
+// in the requested range is cached, the fetcher is NOT called.
+func TestSessionResolver_GetBarsBetween_FullCacheSkipsFetcher(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	r := NewSessionResolver(loc)
+
+	monday := time.Date(2026, 4, 27, 0, 0, 0, 0, loc)
+	at := func(hour, min int) time.Time {
+		return time.Date(2026, 4, 27, hour, min, 0, 0, loc)
+	}
+	bars := []domain.MarketBar{
+		{Time: at(9, 31), Close: 100},
+		{Time: at(9, 32), Close: 101},
+		{Time: at(9, 33), Close: 102},
+	}
+	r.PopulateBarCache("MRVL", bars)
+
+	r.barFetcher = func(context.Context, string, time.Time, time.Time) []start.Bar {
+		t.Fatal("fetcher must not be called when full cache covers the range")
+		return nil
+	}
+
+	got := r.GetBarsBetween(context.Background(), nil, "MRVL", monday.Add(9*time.Hour+30*time.Minute), monday.Add(15*time.Hour))
+	assert.Len(t, got, 3, "all three cached bars returned")
+}
+
+// TestSessionResolver_GetBarsBetween_NoCacheUsesFetcher: when the cache is
+// empty for the symbol (no PopulateBarCache call), the fetcher serves the
+// request — regression guard for the always-DB path.
+func TestSessionResolver_GetBarsBetween_NoCacheUsesFetcher(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	r := NewSessionResolver(loc)
+
+	var fetcherCalls int
+	r.barFetcher = func(_ context.Context, sym string, since, until time.Time) []start.Bar {
+		fetcherCalls++
+		assert.Equal(t, "TSLA", sym)
+		return []start.Bar{{Time: since, Close: 200.0}}
+	}
+
+	day := time.Date(2026, 4, 27, 0, 0, 0, 0, loc)
+	got := r.GetBarsBetween(context.Background(), nil, "TSLA", day.Add(9*time.Hour+30*time.Minute), day.Add(15*time.Hour))
+	assert.Equal(t, 1, fetcherCalls)
+	assert.Len(t, got, 1)
 }

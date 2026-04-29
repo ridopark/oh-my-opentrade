@@ -77,15 +77,16 @@ type PnLPort interface {
 
 // StrategySignalQuery defines filter and pagination for strategy signal events.
 type StrategySignalQuery struct {
-	TenantID   string
-	EnvMode    domain.EnvMode
-	Strategy   string
-	Symbol     string // optional filter
-	From       time.Time
-	To         time.Time
-	Limit      int
-	CursorTime *time.Time // keyset cursor: events before this time
-	CursorID   string     // keyset cursor: signal_id at cursor time
+	TenantID      string
+	EnvMode       domain.EnvMode
+	Strategy      string
+	Symbol        string // optional filter
+	ExcludeStatus string // optional: omit rows with this status (e.g. "blocked")
+	From          time.Time
+	To            time.Time
+	Limit         int
+	CursorTime    *time.Time // keyset cursor: events before this time
+	CursorID      string     // keyset cursor: signal_id at cursor time
 }
 
 // StrategySignalPage is a paginated result set of strategy signal events.

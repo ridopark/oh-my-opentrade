@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
 	"sync"
 	"time"
 
@@ -92,6 +93,16 @@ type BMConfig struct {
 	DPZMACDFavorableThreshold float64 // Z above this is good for MACD. Default 1.0.
 	DPZMACDSuppressThreshold  float64 // Z below this suppresses entries. Default -1.0.
 	DPZMACDSuppressMode       string  // "block" or "raise_threshold". Default "block".
+
+	// Midday trap shield. When enabled, blocks entries during the configured
+	// ET window unless bar volume is > MiddayVolumeMult * VolumeSMA. Mirrors
+	// the AVWAP filter (avwap_v1.go) that suppresses low-conviction midday chop.
+	MiddayTrapShield     bool    // Default false.
+	MiddayVolumeMult     float64 // Default 2.0.
+	MiddayShieldStartET  string  // "HH:MM" ET window start. Default "11:00".
+	MiddayShieldEndET    string  // "HH:MM" ET window end (exclusive). Default "13:00".
+	MiddayShieldStartMin int     // parsed minute-of-day for StartET (inclusive).
+	MiddayShieldEndMin   int     // parsed minute-of-day for EndET (exclusive).
 }
 
 // BMState holds per-symbol state.
@@ -151,7 +162,38 @@ func (st *BMState) ResetGatedBarTime() {
 func (st *BMState) Marshal() ([]byte, error)   { return json.Marshal(st) }
 func (st *BMState) Unmarshal(data []byte) error { return json.Unmarshal(data, st) }
 
+// hhmmToMin parses "HH:MM" into a minute-of-day [0, 1440). Returns (min, true)
+// on success, (fallback, false) on any parse error. Inlined here instead of
+// promoted to a shared helper: only midday shield needs minute-of-day math;
+// AllowedHoursStart/End use lexicographic string compare on the same format.
+func hhmmToMin(s string, fallback int) (int, bool) {
+	if len(s) != 5 || s[2] != ':' {
+		return fallback, false
+	}
+	h, err := strconv.Atoi(s[:2])
+	if err != nil || h < 0 || h > 23 {
+		return fallback, false
+	}
+	m, err := strconv.Atoi(s[3:])
+	if err != nil || m < 0 || m > 59 {
+		return fallback, false
+	}
+	return h*60 + m, true
+}
+
 func parseBMConfig(params map[string]any) BMConfig {
+	middayStartET := getString(params, "midday_shield_start_et", "11:00")
+	middayEndET := getString(params, "midday_shield_end_et", "13:00")
+	middayStartMin, startOK := hhmmToMin(middayStartET, 11*60)
+	middayEndMin, endOK := hhmmToMin(middayEndET, 13*60)
+	// Fall back to defaults silently on typo — surface the effective window in
+	// the BMConfig strings so the gate-block log reflects what actually ran.
+	if !startOK {
+		middayStartET = "11:00"
+	}
+	if !endOK {
+		middayEndET = "13:00"
+	}
 	return BMConfig{
 		MACDZeroBand:        getFloat64(params, "macd_zero_band", 0.0),
 		RiskRewardRatio:     getFloat64(params, "risk_reward_ratio", 1.5),
@@ -181,6 +223,13 @@ func parseBMConfig(params map[string]any) BMConfig {
 		DPZMACDFavorableThreshold: getFloat64(params, "dp_z_macd_favorable_threshold", 1.0),
 		DPZMACDSuppressThreshold:  getFloat64(params, "dp_z_macd_suppress_threshold", -1.0),
 		DPZMACDSuppressMode:       getString(params, "dp_z_macd_suppress_mode", "block"),
+
+		MiddayTrapShield:     getBool(params, "midday_trap_shield", false),
+		MiddayVolumeMult:     getFloat64(params, "midday_volume_mult", 2.0),
+		MiddayShieldStartET:  middayStartET,
+		MiddayShieldEndET:    middayEndET,
+		MiddayShieldStartMin: middayStartMin,
+		MiddayShieldEndMin:   middayEndMin,
 	}
 }
 
@@ -359,6 +408,26 @@ func (s *MACDStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, st
 				bmSt.PrevMACDHist = ind.MACDHistogram
 				s.emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters", "outside trading hours")
 				return bmSt, nil, nil
+			}
+		}
+	}
+
+	// Gate 4b: Midday trap shield — block entries inside the configured ET
+	// window when volume is unremarkable. Mirrors the AVWAP filter in
+	// avwap_v1.go; window bounds come from TOML (defaults 11:00-13:00).
+	if cfg.MiddayTrapShield {
+		etLoc := cachedLocation("America/New_York")
+		if etLoc != nil {
+			et := bar.Time.In(etLoc)
+			mins := et.Hour()*60 + et.Minute()
+			if mins >= cfg.MiddayShieldStartMin && mins < cfg.MiddayShieldEndMin {
+				middayVolOK := ind.VolumeSMA > 0 && bar.Volume > cfg.MiddayVolumeMult*ind.VolumeSMA
+				if !middayVolOK {
+					bmSt.PrevMACDHist = ind.MACDHistogram
+					s.emitMACDEntryGated(ctx, symbol, bmSt, bar, ind, "filters",
+						fmt.Sprintf("midday trap shield (%s-%s ET)", cfg.MiddayShieldStartET, cfg.MiddayShieldEndET))
+					return bmSt, nil, nil
+				}
 			}
 		}
 	}
@@ -974,8 +1043,9 @@ func (s *MACDStrategy) emitMACDEntryGated(ctx start.Context, symbol string, bmSt
 		BlockingGate:   blockingGate,
 		BlockingDetail: blockingDetail,
 		Confluence: domain.EntryGatedConfluence{
-			Score:    conf.Score,
-			MaxScore: bmSt.Config.MinConfluenceScore,
+			Score:      conf.Score,
+			MaxScore:   bmSt.Config.MinConfluenceScore,
+			Components: toEntryGatedComponents(conf.Components),
 		},
 		Indicators: domain.EntryGatedIndicators{
 			RSI:         ind.RSI,

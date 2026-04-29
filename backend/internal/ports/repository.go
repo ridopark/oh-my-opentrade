@@ -57,6 +57,11 @@ type RepositoryPort interface {
 	// (filled/canceled/expired/rejected). Used at startup to reconcile pending orders.
 	GetNonTerminalOrders(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.BrokerOrder, error)
 
+	// GetOrderByBrokerOrderID returns the order row for a given broker_order_id,
+	// or (nil, nil) when no row exists. Used by boot-time backfill to detect
+	// orders the DB has never recorded. Returns an error only on DB failure.
+	GetOrderByBrokerOrderID(ctx context.Context, brokerOrderID string) (*domain.BrokerOrder, error)
+
 	// GetRecordedFillQty returns the total recorded fill quantity for a symbol+side since a given time.
 	// Used during startup fill reconciliation to determine how much has already been recorded.
 	GetRecordedFillQty(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol, side string, since time.Time) (float64, error)
@@ -64,6 +69,19 @@ type RepositoryPort interface {
 	// UpdateOrderStatus sets the status of an order by broker_order_id.
 	// Used to mark orders as canceled/expired without a fill during reconciliation.
 	UpdateOrderStatus(ctx context.Context, brokerOrderID string, status string) error
+
+	// GetRecordedExecutionIDs returns the set of execution_ids already present
+	// in trades for the given symbols. Used by boot fill-reconciliation to
+	// cheaply diff broker fills against what the DB has, so we only INSERT the
+	// missing legs. Returns an empty set (not nil) when nothing matches.
+	GetRecordedExecutionIDs(ctx context.Context, tenantID string, envMode domain.EnvMode, since time.Time) (map[string]struct{}, error)
+
+	// GetReconciledOrderIDs returns the set of broker_order_ids that have at
+	// least one trade row in the window. Lets boot fill-reconciliation skip
+	// orders whose live writes lacked an execution_id (the IBKR fastPoll
+	// path), which GetRecordedExecutionIDs cannot see. Returns an empty set
+	// (not nil) when nothing matches.
+	GetReconciledOrderIDs(ctx context.Context, tenantID string, envMode domain.EnvMode, since time.Time) (map[string]struct{}, error)
 
 	// GetNetPositions returns the net quantity per symbol from the trades table.
 	// Only returns symbols with |net_qty| > epsilon (1e-10).

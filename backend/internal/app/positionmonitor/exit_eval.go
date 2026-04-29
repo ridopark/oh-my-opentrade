@@ -2,6 +2,7 @@ package positionmonitor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -368,6 +369,16 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 		Bool("near_close", nearClose).
 		Msg("exit pending timeout — managing")
 
+	// Atomic broker-side modify avoids the cancel-fill race that
+	// double-writes SELL legs. Falls through to cancel+place on
+	// ErrUnsupportedModify (broker can't modify, order already terminal,
+	// or no usable quote).
+	if action == "repeg" && s.repegModifyInPlace && repegNotifier != nil && orderID != "" {
+		if handled := s.tryRepegModifyInPlace(key, orderID, now); handled {
+			return
+		}
+	}
+
 	// Tag the pending order BEFORE we release s.mu and BEFORE the broker
 	// cancel goes out. Both the re-peg and escalate paths need this — on
 	// escalate, the to-be-canceled limit would otherwise trigger a
@@ -438,7 +449,7 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 			s.mu.Lock()
 			return
 		}
-		reason := fmt.Sprintf("repeg %d/%d", livePos.ExitRepegCount, exitRepegBudget(livePos))
+		reason := fmt.Sprintf(exitReasonRepegPrefix+"%d/%d", livePos.ExitRepegCount, exitRepegBudget(livePos))
 		livePos.ExitManaging = false
 		// Gate must be cleared BEFORE the re-emitted intent is processed
 		// by execution (it will call TryMarkInflightExit). Release s.mu
@@ -473,9 +484,19 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 	if s.positionGate != nil {
 		s.positionGate.ClearInflightExit(tenantID, envMode, symbol)
 	}
+	// Cancel any peer exit orders that may be working for this position
+	// (e.g. an EOD_FLATTEN submitted in the gap between an unsolicited
+	// broker-cancel of the primary limit and the escalate firing). The
+	// single-slot ExitOrderID cannot police parallels; this enforces
+	// "at most one working exit" before the market order goes out.
+	peerReconciled := s.cancelAllPendingExits(key)
 	s.mu.Lock()
 	livePos, ok = s.positions[key]
 	if !ok {
+		return
+	}
+	if peerReconciled {
+		// A peer cancel raced a fill and reconcile removed the position.
 		return
 	}
 	if !ruleOK {
@@ -484,7 +505,33 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 		livePos.ExitPendingAt = s.nowFunc()
 		return
 	}
-	s.triggerExit(livePos, rule, "escalate-to-market", livePos.EntryPrice, s.nowFunc())
+	s.triggerExit(livePos, rule, exitReasonEscalateMarket, livePos.EntryPrice, s.nowFunc())
+}
+
+// cancelAllPendingExits iterates pos.PendingExitOrderIDs and cancels each
+// via cancelAndAwaitTerminal. Safe against races: the existing single-order
+// helper returns (reconciled=true) if a cancel-fill race occurred, and the
+// map entry will be removed by processExitTerminal before the race unwinds.
+// The caller must NOT hold s.mu on entry — this helper acquires it to
+// snapshot the set, then releases it before performing broker RPCs.
+func (s *Service) cancelAllPendingExits(key string) (reconciledAny bool) {
+	s.mu.Lock()
+	pos, ok := s.positions[key]
+	if !ok {
+		s.mu.Unlock()
+		return false
+	}
+	ids := make([]string, 0, len(pos.PendingExitOrderIDs))
+	for id := range pos.PendingExitOrderIDs {
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+	for _, id := range ids {
+		if r := s.cancelAndAwaitTerminal(key, id); r {
+			reconciledAny = true
+		}
+	}
+	return
 }
 
 // cancelAndAwaitTerminal issues the cancel and polls GetOrderDetails until
@@ -607,17 +654,18 @@ func (s *Service) reconcileFilledOrder(pos *domain.MonitoredPosition) bool {
 
 	if s.repo != nil {
 		trade := domain.Trade{
-			Time:      s.nowFunc(),
-			TenantID:  s.tenantID,
-			EnvMode:   s.envMode,
-			TradeID:   uuid.New(),
-			Symbol:    pos.Symbol,
-			Side:      "SELL",
-			Quantity:  missingQty,
-			Price:     details.FilledAvgPrice,
-			Status:    "FILLED",
-			Strategy:  pos.Strategy,
-			Rationale: fmt.Sprintf("exit-timeout: fill reconciliation for order %s (missed WS fill events)", pos.ExitOrderID),
+			Time:          s.nowFunc(),
+			TenantID:      s.tenantID,
+			EnvMode:       s.envMode,
+			TradeID:       uuid.New(),
+			BrokerOrderID: pos.ExitOrderID,
+			Symbol:        pos.Symbol,
+			Side:          "SELL",
+			Quantity:      missingQty,
+			Price:         details.FilledAvgPrice,
+			Status:        "FILLED",
+			Strategy:      pos.Strategy,
+			Rationale:     fmt.Sprintf("exit-timeout: fill reconciliation for order %s (missed WS fill events)", pos.ExitOrderID),
 		}
 		if err := s.repo.SaveTrade(ctx, trade); err != nil {
 			s.log.Error().Err(err).
@@ -643,6 +691,19 @@ func (s *Service) reconcileFilledOrder(pos *domain.MonitoredPosition) bool {
 	return true
 }
 
+// Retry-reason markers used by handleExitTimeout when re-emitting via
+// triggerExit. The allowlist lets re-peg and market-escalate bypass the
+// in-flight suppression guard, since they pair with cancelAndAwaitTerminal.
+const (
+	exitReasonEscalateMarket = "escalate-to-market"
+	exitReasonRepegPrefix    = "repeg "
+)
+
+// isExitRetryReason reports whether reason comes from handleExitTimeout's cancel-and-resubmit lifecycle.
+func isExitRetryReason(reason string) bool {
+	return reason == exitReasonEscalateMarket || strings.HasPrefix(reason, exitReasonRepegPrefix)
+}
+
 // triggerExit marks a position as exit-pending and emits an exit order intent.
 func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRule, reason string, currentPrice float64, now time.Time) {
 	const maxExitRetries = 50
@@ -655,30 +716,35 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 		return
 	}
 
+	// Cross-reason exit arbitration: if an exit is already in flight AND this
+	// is not a retry (re-peg/escalate), skip. Protects against an out-of-band
+	// caller (revaluator, bootstrap, future evaluator) or a pre-ACK race
+	// (ExitPending set, map not yet populated) emitting a parallel intent
+	// while a prior exit is live. EOD_FLATTEN firing while a PREMIUM_TRAIL
+	// limit is working is the motivating case — both reached SubmitOrder.
+	if !isExitRetryReason(reason) && pos.HasExitInFlight() {
+		s.log.Warn().
+			Str("symbol", string(pos.Symbol)).
+			Str("rule", string(rule.Type)).
+			Str("reason", reason).
+			Int("pending_orders", len(pos.PendingExitOrderIDs)).
+			Msg("exit trigger suppressed — prior exit still in flight")
+		return
+	}
+
 	pos.ExitPending = true
 	pos.ExitPendingAt = now
 
 	idempotencyKey := fmt.Sprintf("EXIT:%s:%s:%s:%d:%s:%d",
 		pos.TenantID, pos.EnvMode, pos.Symbol, pos.EntryTime.Unix(), rule.Type, pos.ExitRetryCount)
 
-	// For option positions, currentPrice here is the UNDERLYING spot (used
-	// to evaluate exit rules that are defined in underlying terms). The
-	// exit order needs to be priced in option-premium terms, so translate
-	// via EstimatedPremium before handing to exitOrderParams. Market/IOC
-	// exits ignore the limit, but this keeps the telemetry (DB limit_price,
-	// reconcile checks, UI display) honest.
-	priceForOrder := currentPrice
-	if pos.InstrumentType == domain.InstrumentTypeOption {
-		if est := pos.EstimatedPremium(currentPrice, now); est > 0 {
-			priceForOrder = est
-		}
-	}
-
-	// For options on the first attempt, try to price the exit limit against
-	// the live bid/ask. This catches cases where the 5%-below-mid formula
-	// would sit stranded above the bid — the symptom that motivated this
-	// change. If the quote is stale, blown out, or missing, fall through to
-	// the mid-based formula unchanged.
+	// For options on the first attempt, fetch the live bid/ask up-front so
+	// we can decide whether quote-based pricing will work BEFORE choosing
+	// the magnitude anchor for priceForOrder. Pre-fix this fetch happened
+	// after the EstimatedPremium attempt, which left a window where est=0
+	// + no-quote silently fell through to currentPrice (the underlying
+	// spot) — the 2026-04-28 LLY 850P leak path. If the quote is stale,
+	// blown out, or missing, fall through to the mid-based formula unchanged.
 	isOption := pos.InstrumentType == domain.InstrumentTypeOption
 	var quote *domain.OptionQuote
 	if isOption && !isForcedExit(rule.Type) && pos.ExitRetryCount == 0 && s.optionsPricePort != nil {
@@ -696,7 +762,87 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 	if isOption {
 		dte = dteFromExpiry(pos.OptionExpiry, now)
 	}
-	exitPrice, orderType, tif := s.exitOrderParams(rule.Type, priceForOrder, pos.ExitRetryCount, pos.IsShort(), isOption, quote, dte, now)
+
+	// For option positions, currentPrice here is the UNDERLYING spot (used
+	// to evaluate exit rules that are defined in underlying terms). The
+	// exit order needs to be priced in option-premium terms, so translate
+	// via EstimatedPremium before handing to exitOrderParams. Market/IOC
+	// exits ignore the limit, but this keeps the telemetry (DB limit_price,
+	// reconcile checks, UI display) honest.
+	priceForOrder := currentPrice
+	forceMarket := false
+	if isOption {
+		pinned := false
+		if rule.Type == domain.ExitRuleCopytradeSTC && pos.EnvMode == domain.EnvModePaper {
+			if ref := pos.CustomState["copytrade_exit_ref_premium"]; ref > 0 {
+				priceForOrder = ref
+				pinned = true
+				s.log.Info().
+					Str("contract", string(pos.Symbol)).
+					Float64("ref_premium", ref).
+					Msg("copytrade exit pinned to author ref premium")
+			}
+		}
+		if !pinned {
+			est := pos.EstimatedPremium(currentPrice, now)
+			quoteUsable := false
+			if quote != nil {
+				if _, ok := buildExitLimitPrice(*quote, now, dte, pos.ExitRepegCount, pos.IsShort()); ok {
+					quoteUsable = true
+				}
+			}
+			switch {
+			case est > 0:
+				// BSM happy path: priceForOrder is option-magnitude.
+				priceForOrder = est
+			case quoteUsable:
+				// buildExitLimitPrice will replace priceForOrder inside
+				// exitOrderParams; use mid as the telemetry stamp until then.
+				priceForOrder = (quote.Bid + quote.Ask) / 2.0
+			case pos.CustomState["option_premium"] > 0:
+				// No BSM, no usable quote, but we know the entry premium.
+				// Use it as the magnitude anchor and force MARKET routing
+				// so the broker doesn't honor an underlying-magnitude limit.
+				priceForOrder = pos.CustomState["option_premium"]
+				forceMarket = true
+				s.log.Warn().
+					Str("symbol", string(pos.Symbol)).
+					Str("rule", string(rule.Type)).
+					Str("reason", reason).
+					Float64("entry_premium", priceForOrder).
+					Float64("current_price", currentPrice).
+					Msg("triggerExit: BSM unavailable + no usable quote — forcing market exit with entry-premium anchor")
+			default:
+				// No anchor at all. Refusing is safer than shipping an
+				// underlying-magnitude limit through to the broker. Clear
+				// ExitPending so the next tick can re-try after data
+				// availability changes (price cache warms, BSM rehydrated, etc).
+				s.log.Error().
+					Str("symbol", string(pos.Symbol)).
+					Str("rule", string(rule.Type)).
+					Str("reason", reason).
+					Float64("current_price", currentPrice).
+					Msg("triggerExit: cannot resolve option price (no BSM, no quote, no option_premium) — skipping this attempt")
+				pos.ExitPending = false
+				pos.ExitPendingAt = time.Time{}
+				return
+			}
+		}
+	}
+
+	exitPrice, orderType, tif := s.exitOrderParams(rule.Type, priceForOrder, pos.ExitRetryCount, pos.ExitRepegCount, pos.IsShort(), isOption, quote, dte, now)
+	if forceMarket {
+		// Anchor failure path: we cannot trust the limit-pricing fallbacks.
+		// Override to MARKET regardless of what exitOrderParams chose.
+		// optionTIF semantics: options use "day", equities/crypto use "ioc".
+		exitPrice = priceForOrder
+		orderType = "market"
+		if isOption {
+			tif = "day"
+		} else {
+			tif = "ioc"
+		}
+	}
 	// Record the last-sent limit price so the re-peg path can tighten
 	// against it on a subsequent cycle.
 	pos.ExitLastSentPrice = exitPrice
@@ -715,7 +861,7 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 
 	// Partial close: check if the evaluator set a qty fraction in CustomState.
 	exitQty := pos.Quantity
-	for _, fracKey := range []string{"tiered_tp_exit_qty_frac", "time_partial_exit_qty_frac"} {
+	for _, fracKey := range []string{"tiered_tp_exit_qty_frac", "time_partial_exit_qty_frac", "copytrade_exit_qty_frac"} {
 		if frac := pos.CustomState[fracKey]; frac > 0 && frac < 1.0 {
 			partial := math.Ceil(pos.Quantity * frac)
 			if partial > 0 && partial < pos.Quantity {
@@ -728,6 +874,10 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 		}
 	}
 
+	rationale := fmt.Sprintf("exit_monitor:%s:%s", rule.Type, reason)
+	if rule.Type == domain.ExitRuleCopytradeSTC && reason != "" {
+		rationale = reason
+	}
 	intent, err := domain.NewOrderIntent(
 		uuid.New(),
 		pos.TenantID,
@@ -739,7 +889,7 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 		0,
 		exitQty,
 		pos.Strategy,
-		fmt.Sprintf("exit_monitor:%s:%s", rule.Type, reason),
+		rationale,
 		1.0,
 		idempotencyKey,
 	)
@@ -821,6 +971,25 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 				if dte := pos.CustomState["days_to_earnings"]; dte > 0 {
 					intent.Meta["days_to_earnings"] = fmt.Sprintf("%.0f", dte)
 				}
+			}
+			if rule.Type == domain.ExitRuleCopytradeSTC && pos.EnvMode == domain.EnvModePaper {
+				if ref := pos.CustomState["copytrade_exit_ref_premium"]; ref > 0 {
+					intent.Meta["copytrade_exit_ref_premium"] = fmt.Sprintf("%.4f", ref)
+					delete(pos.CustomState, "copytrade_exit_ref_premium")
+				}
+			}
+		}
+
+		if len(pos.EntrySignalTags) > 0 {
+			if intent.Meta == nil {
+				intent.Meta = make(map[string]string, len(pos.EntrySignalTags))
+			}
+			for k, v := range pos.EntrySignalTags {
+				key := "sig_" + k
+				if _, exists := intent.Meta[key]; exists {
+					continue
+				}
+				intent.Meta[key] = v
 			}
 		}
 	}
@@ -921,6 +1090,7 @@ func (s *Service) exitOrderParams(
 	ruleType domain.ExitRuleType,
 	currentPrice float64,
 	retryCount int,
+	repegCount int,
 	short, isOption bool,
 	quote *domain.OptionQuote,
 	dte int,
@@ -940,7 +1110,7 @@ func (s *Service) exitOrderParams(
 	}
 
 	if isOption && quote != nil {
-		if p, ok := buildExitLimitPrice(*quote, now, dte, short); ok {
+		if p, ok := buildExitLimitPrice(*quote, now, dte, repegCount, short); ok {
 			s.log.Debug().
 				Float64("bid", quote.Bid).
 				Float64("ask", quote.Ask).
@@ -965,6 +1135,99 @@ func (s *Service) exitOrderParams(
 // re-lookup a position without rebuilding the fmt.Sprintf by hand.
 func positionKey(tenantID string, envMode domain.EnvMode, symbol domain.Symbol) string {
 	return fmt.Sprintf("%s:%s:%s", tenantID, envMode, symbol)
+}
+
+// tryRepegModifyInPlace runs the modify-first path. MUST be called with
+// s.mu held; releases s.mu across the broker RPC and re-acquires before
+// returning. After this call the caller's pos pointer is invalid (pos may
+// have been deleted during the unlocked window). handled=false means the
+// caller falls through to the legacy cancel+place flow.
+func (s *Service) tryRepegModifyInPlace(key string, orderID string, now time.Time) (handled bool) {
+	pos, ok := s.positions[key]
+	if !ok {
+		return true
+	}
+	newLimit, priceOK := s.nextRepegLimit(pos, now)
+	if !priceOK {
+		return false
+	}
+	notifier := s.repegNotifier
+	tenantID := pos.TenantID
+	envMode := pos.EnvMode
+	symbol := pos.Symbol
+
+	s.mu.Unlock()
+	// IBKR's PlaceOrder is fire-and-forget so a deadline context buys
+	// nothing today; switch to a real timeout once ModifyOrder grows a
+	// blocking ack path.
+	modified, err := notifier.RepegOrderInPlace(context.Background(), orderID, newLimit)
+	s.mu.Lock()
+
+	livePos, ok := s.positions[key]
+	if !ok {
+		return true
+	}
+	if modified {
+		livePos.ExitRepegCount++
+		livePos.ExitLastSentPrice = newLimit
+		livePos.ExitManaging = false
+		// Restamp ExitPendingAt so the 1s tick loop honors the next
+		// repeg cadence; without this the timeout stays elapsed and
+		// every subsequent tick re-fires tryRepegModifyInPlace until
+		// the budget exhausts.
+		livePos.ExitPendingAt = now
+		s.log.Info().
+			Str("symbol", string(symbol)).
+			Str("broker_order_id", orderID).
+			Float64("new_limit", newLimit).
+			Int("repeg_count", livePos.ExitRepegCount).
+			Msg("repeg: modify-in-place sent")
+		return true
+	}
+	if err != nil && !errors.Is(err, ports.ErrUnsupportedModify) {
+		// Hard error: cancel against an unknown orderID followed by a
+		// place would create a duplicate position. Reset ExitPendingAt
+		// so the next tick re-evaluates after observability catches up.
+		s.log.Error().
+			Err(err).
+			Str("symbol", string(symbol)).
+			Str("broker_order_id", orderID).
+			Msg("repeg: modify-in-place hard error, refusing fall-through")
+		livePos.ExitManaging = false
+		livePos.ExitPendingAt = s.nowFunc()
+		s.mu.Unlock()
+		if s.positionGate != nil {
+			s.positionGate.ClearInflightExit(tenantID, envMode, symbol)
+		}
+		s.mu.Lock()
+		return true
+	}
+	return false
+}
+
+// nextRepegLimit narrows modify-in-place to options with a live quote, the
+// actual NFLX/RIVN incident profile. Equity/crypto and forced-exit paths
+// fall through to the legacy flow which has wider fallback coverage
+// (BSM premium, mid-buffer, market with entry anchor).
+func (s *Service) nextRepegLimit(pos *domain.MonitoredPosition, now time.Time) (float64, bool) {
+	if pos.InstrumentType != domain.InstrumentTypeOption {
+		return 0, false
+	}
+	if s.optionsPricePort == nil {
+		return 0, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	quotes, err := s.optionsPricePort.GetOptionPrices(ctx, []domain.Symbol{pos.Symbol})
+	if err != nil {
+		return 0, false
+	}
+	quote, ok := quotes[pos.Symbol]
+	if !ok {
+		return 0, false
+	}
+	dte := dteFromExpiry(pos.OptionExpiry, now)
+	return buildExitLimitPrice(quote, now, dte, pos.ExitRepegCount+1, pos.IsShort())
 }
 
 // ruleCategoryIsStop reports whether an exit rule type is a capital-protection

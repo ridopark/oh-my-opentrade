@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
@@ -49,6 +50,16 @@ type StrategyDeps struct {
 	// the log entry and prometheus counter. Optional: without this the runner
 	// still recovers and logs panics — only the operator-facing alert is lost.
 	Notifier ports.NotifierPort
+	// PnLRepo, when non-nil, lets sentinel-routed strategies (e.g. copytrade)
+	// replay their own persisted strategy_signal_events on startup to
+	// rehydrate in-memory per-author state. Optional; absent repo skips the
+	// bootstrap hook.
+	PnLRepo ports.PnLPort
+	// GetPositionsFn, when non-nil, is called during sentinel-strategy
+	// bootstrap so replayed state can be cross-referenced against the
+	// broker's current view and phantom positions dropped. Wraps
+	// ports.BrokerPort.GetPositions at the caller site.
+	GetPositionsFn func(ctx context.Context) ([]domain.Trade, error)
 }
 
 // StrategyPipeline is the return value of BuildStrategyPipeline, exposing the
@@ -111,6 +122,7 @@ func BuildStrategyShared(deps StrategyDeps) (*StrategyShared, error) {
 		builtin.NewOvernightZStrategy(),
 		builtin.NewCryptoTSMStrategy(),
 		builtin.NewCryptoRevertStrategy(),
+		builtin.NewCopytradeStrategy(),
 	} {
 		if err := registry.Register(s); err != nil {
 			return nil, fmt.Errorf("bootstrap: strategy: failed to register builtin %s: %w", s.Meta().ID, err)
@@ -175,6 +187,20 @@ func BuildStrategyShared(deps StrategyDeps) (*StrategyShared, error) {
 // passing an empty slab disables the filter and registers every
 // spec×symbol instance (legacy single-pipeline behavior).
 func BuildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps StrategyDeps) (*StrategyShard, error) {
+	return buildStrategyShard(shared, slab, deps, false)
+}
+
+// BuildStrategyShardWithSentinels is BuildStrategyShard but also registers
+// sentinel-routed strategies (symbols shaped like __name__) that would
+// otherwise be filtered out by slab. Sentinel strategies consume events, not
+// bars, so they attach to a single shard regardless of slab membership.
+// Callers must arrange to pass true to exactly one shard per pipeline,
+// otherwise handlers on the shared bus will fire N times per event.
+func BuildStrategyShardWithSentinels(shared *StrategyShared, slab []domain.Symbol, deps StrategyDeps) (*StrategyShard, error) {
+	return buildStrategyShard(shared, slab, deps, true)
+}
+
+func buildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps StrategyDeps, includeSentinels bool) (*StrategyShard, error) {
 	if shared == nil {
 		return nil, fmt.Errorf("bootstrap: strategy: nil StrategyShared")
 	}
@@ -219,7 +245,9 @@ func BuildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps Strat
 		for _, sym := range spec.Routing.Symbols {
 			if slabFilter != nil {
 				if _, ok := slabFilter[sym]; !ok {
-					continue
+					if !includeSentinels || !isSentinelSymbol(sym) {
+						continue
+					}
 				}
 			}
 
@@ -236,12 +264,19 @@ func BuildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps Strat
 			if err := inst.InitSymbol(initCtx, sym, nil); err != nil {
 				return nil, fmt.Errorf("bootstrap: strategy: failed to init %s symbol %s: %w", spec.ID, sym, err)
 			}
+			if isSentinelSymbol(sym) {
+				invokeSentinelBootstrap(inst, sym, deps, shared.Clock())
+			}
 			router.Register(inst)
 			allSymbols[sym] = struct{}{}
 		}
 	}
 
 	runner := strategy.NewRunner(deps.EventBus, router, deps.TenantID, deps.EnvMode, shared.Logger)
+	if deps.BacktestID != "" {
+		runner.TagBacktest(deps.BacktestID)
+	}
+	runner.SetDisableAI(deps.DisableAI)
 	if deps.PositionLookup != nil {
 		runner.SetPositionLookup(deps.PositionLookup)
 	}
@@ -262,6 +297,61 @@ func BuildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps Strat
 		Runner:      runner,
 		BaseSymbols: baseSymbols,
 	}, nil
+}
+
+// isSentinelSymbol recognizes symbols shaped like "__name__" used as routing
+// keys for event-driven strategies that don't subscribe to per-symbol bars
+// (e.g. the copytrade strategy's "__copytrade__"). These strategies need a
+// runner instance somewhere to consume events, but do not participate in the
+// per-symbol slab distribution used by sharded bar dispatch.
+func isSentinelSymbol(sym string) bool {
+	return strings.HasPrefix(sym, "__") && strings.HasSuffix(sym, "__") && len(sym) >= 4
+}
+
+// invokeSentinelBootstrap runs the optional per-instance rehydration hook
+// for sentinel-routed strategies whose in-memory state does not survive
+// restart. Currently only copytrade implements this; unknown strategies
+// and specs with no bootstrap dependencies wired are silent no-ops.
+func invokeSentinelBootstrap(inst *strategy.Instance, sym string, deps StrategyDeps, now time.Time) {
+	cs, ok := inst.Strategy().(*builtin.CopytradeStrategy)
+	if !ok {
+		return
+	}
+	state, ok := inst.GetState(sym)
+	if !ok {
+		return
+	}
+	if deps.PnLRepo == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	bootDeps := builtin.CopytradeBootstrapDeps{
+		TenantID: deps.TenantID,
+		EnvMode:  deps.EnvMode,
+		Now:      now,
+		SignalEvents: func(qctx context.Context, stratName string, from, to time.Time) ([]domain.StrategySignalEvent, error) {
+			page, err := deps.PnLRepo.GetStrategySignalEvents(qctx, ports.StrategySignalQuery{
+				TenantID: deps.TenantID,
+				EnvMode:  deps.EnvMode,
+				Strategy: stratName,
+				From:     from,
+				To:       to,
+				Limit:    200,
+			})
+			if err != nil {
+				return nil, err
+			}
+			return page.Items, nil
+		},
+		Logger: slog.Default().With("strategy", "copytrade_v1"),
+	}
+	if deps.GetPositionsFn != nil {
+		bootDeps.Positions = deps.GetPositionsFn
+	}
+	if _, err := cs.Bootstrap(ctx, state, bootDeps); err != nil {
+		deps.Logger.Warn().Err(err).Str("strategy", "copytrade_v1").Msg("bootstrap: sentinel strategy Bootstrap returned error")
+	}
 }
 
 // BuildStrategyPipeline constructs the canonical single-shard strategy v2
@@ -368,7 +458,7 @@ func (pa *PipelineActivator) ActivateSymbol(symbol string, bars1m, barsHTF []dom
 	if len(bars1m) > 0 {
 		pa.runner.WarmUp(symbol, bars1m, snapshotFn)
 	}
-	for _, tf := range collectHTFTimeframes(pa.router, symbol) {
+	for _, tf := range pa.runner.HTFTimeframesForSymbol(symbol) {
 		if len(barsHTF) > 0 {
 			pa.runner.WarmUpTF(symbol, tf, barsHTF, snapshotFn)
 		}
@@ -378,6 +468,7 @@ func (pa *PipelineActivator) ActivateSymbol(symbol string, bars1m, barsHTF []dom
 
 func makeSnapshotFn() strategy.IndicatorSnapshotFunc {
 	calc := monitor.NewIndicatorCalculator()
+	calc.Label = "bootstrap_snapshot_fn"
 	return func(bar domain.MarketBar) start.IndicatorData {
 		snap := calc.Update(bar)
 		return start.IndicatorData{
@@ -410,18 +501,3 @@ func makeSnapshotFn() strategy.IndicatorSnapshotFunc {
 	}
 }
 
-func collectHTFTimeframes(router *strategy.Router, symbol string) []string {
-	seen := make(map[string]struct{})
-	for _, inst := range router.InstancesForSymbol(symbol) {
-		for _, tf := range inst.Assignment().Timeframes {
-			if tf != "1m" {
-				seen[tf] = struct{}{}
-			}
-		}
-	}
-	result := make([]string, 0, len(seen))
-	for tf := range seen {
-		result = append(result, tf)
-	}
-	return result
-}

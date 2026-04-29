@@ -139,6 +139,15 @@ type SignalProgressEmitter interface {
 	EmitSignalProgress() []any // returns payload values (not domain.Event)
 }
 
+// EnvMode is defined locally (shadowing domain.EnvMode) to keep the
+// strategy contract package free of domain imports.
+type EnvMode string
+
+const (
+	EnvModePaper EnvMode = "Paper"
+	EnvModeLive  EnvMode = "Live"
+)
+
 // Context provides strategies with controlled access to the environment.
 // Strategies must not import adapters or infrastructure directly.
 type Context interface {
@@ -158,6 +167,10 @@ type Context interface {
 	// saving both allocations and gate-evaluation work in the common case
 	// where no SSE consumer is listening.
 	ProgressEventsSuppressed() bool
+
+	// EnvMode returns the execution environment the strategy is running in.
+	// Backtests run as EnvModePaper with tenantID="backtest".
+	EnvMode() EnvMode
 }
 
 // IndicatorData provides pre-computed technical indicators alongside a bar.
@@ -273,4 +286,32 @@ type TradeTick struct {
 	Size      float64
 	TakerSide string // "buy", "sell", or "" if unknown
 	Venue     string
+}
+
+// CopytradeExitRejection is forwarded to the copytrade strategy when the
+// position monitor refuses an exit request (e.g. prior exit already in flight).
+// The strategy rolls RemainingFrac back by the original Fraction so its view
+// matches the broker's actual closing position.
+type CopytradeExitRejection struct {
+	ContractSymbol string
+	Fraction       float64
+	Reason         string
+}
+
+// CopytradeSignal is forwarded to the copytrade strategy when the sidecar
+// posts a parsed Discord message. Kept string-typed so this package does not
+// import domain.
+type CopytradeSignal struct {
+	SignalID  string
+	MessageID string
+	Author    string
+	PostedAt  time.Time
+	Action    string // "BTO" | "STC" | "AVG"
+	Ticker    string
+	Expiry    time.Time
+	Strike    float64
+	Right     string // "C" | "P"
+	Price     float64
+	Tail      string
+	RawLine   string
 }

@@ -121,6 +121,10 @@ ai:
   # api_key: loaded from env LLM_API_KEY (required for OpenAI, OpenRouter, etc.)
   min_confidence: 0.6
   enabled: false
+  # Wire the AI anchor resolver (candidate detectors + fallbackRank + async LLM).
+  # When false, live uses the same static resolveSessionAnchors path as backtest
+  # with no_ai=true — matching behavior for session_open/pd_high/pd_low anchors.
+  anchor_resolver_enabled: false
 
 recap:
   enabled: true

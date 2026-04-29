@@ -26,19 +26,19 @@ import (
 // This design eliminates race conditions by construction and avoids blocking
 // the synchronous in-memory event bus.
 type Service struct {
-	eventBus     ports.EventBusPort
-	priceCache   ports.PriceCachePort
-	positionGate *execution.PositionGate
+	eventBus      ports.EventBusPort
+	priceCache    ports.PriceCachePort
+	positionGate  *execution.PositionGate
 	broker        ports.BrokerPort
 	repo          ports.RepositoryPort
 	intentJournal ports.OrderIntentJournal // Sprint 2 — nil means legacy cancel-all bootstrap
 	// notifier, when non-nil, is used by the bootstrap reconciler to raise
 	// Discord/Telegram alerts for unmanaged broker orders and lost journal
 	// intents. Nil is safe — alerts fall back to log warnings only.
-	notifier     ports.NotifierPort
-	specStore    portstrategy.SpecStore
-	log          zerolog.Logger
-	nowFunc      func() time.Time
+	notifier  ports.NotifierPort
+	specStore portstrategy.SpecStore
+	log       zerolog.Logger
+	nowFunc   func() time.Time
 
 	// Actor channels.
 	fills         chan fillMsg
@@ -55,11 +55,11 @@ type Service struct {
 	pendingGlobalDrifts  map[domain.Symbol]int                // key: symbol → consecutive broker>DB drift observations
 	mu                   sync.RWMutex                         // protects positions for concurrent reads (e.g. PositionCount)
 
-	barDurCache          map[string]time.Duration // cached barDurationFor results
-	snapshotFn           IndicatorSnapshotFunc
-	optionsPricePort     ports.OptionsPricePort
-	earningsCalendar     ports.EarningsCalendarPort
-	optionsPollInterval  time.Duration
+	barDurCache         map[string]time.Duration // cached barDurationFor results
+	snapshotFn          IndicatorSnapshotFunc
+	optionsPricePort    ports.OptionsPricePort
+	earningsCalendar    ports.EarningsCalendarPort
+	optionsPollInterval time.Duration
 
 	// repegNotifier, when non-nil, is called by the re-peg/escalate path
 	// just before a broker CancelOrder so the execution service can tag
@@ -68,6 +68,11 @@ type Service struct {
 	// works, but cleanupPendingOrder will run its default terminal actions
 	// — which caused today's SOFI phantom short.
 	repegNotifier RepegNotifier
+
+	// repegModifyInPlace gates atomic-modify re-pegs so the cancel-fill
+	// race that double-writes SELL legs cannot occur. False default; flip
+	// is plan-rollout-gated.
+	repegModifyInPlace bool
 
 	// atrTrailCfg carries the ATR-bucketed premium-trail multiplier
 	// configuration (see [exits.atr_trail] in YAML). When Enabled=false
@@ -199,10 +204,15 @@ const (
 // execution service a pending broker order is about to be canceled as
 // part of a re-peg/escalate sequence. Implemented by *execution.Service's
 // MarkRepegCancel method. Defined here (not in ports) because it is an
-// app-layer coordination primitive between two app services — there's no
+// app-layer coordination primitive between two app services - there's no
 // domain concept behind it, just a suppression flag.
+//
+// RepegOrderInPlace is the modify-first capability gated by
+// repegModifyInPlace; see RepegOrderInPlace's doc on *execution.Service for
+// the contract.
 type RepegNotifier interface {
 	MarkRepegCancel(brokerOrderID string) bool
+	RepegOrderInPlace(ctx context.Context, brokerOrderID string, newLimit float64) (bool, error)
 }
 
 // Option is a functional option for the Service.
@@ -306,6 +316,16 @@ func WithRepegNotifier(n RepegNotifier) Option {
 	return func(s *Service) { s.repegNotifier = n }
 }
 
+// WithRepegModifyInPlace toggles atomic-modify re-pegs. Default false;
+// flip is plan-rollout-gated.
+func WithRepegModifyInPlace(enabled bool) Option {
+	return func(s *Service) { s.repegModifyInPlace = enabled }
+}
+
+// SetRepegModifyInPlace is the post-construction setter, used at omo-core
+// wire-up after the config has been loaded.
+func (s *Service) SetRepegModifyInPlace(enabled bool) { s.repegModifyInPlace = enabled }
+
 // SetRepegNotifier is a post-construction setter for WithRepegNotifier.
 // Needed because in cmd/omo-core the execution service is built before the
 // position monitor (shared PositionGate via execBundle), and the monitor's
@@ -406,6 +426,12 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 	if err := s.eventBus.Subscribe(ctx, domain.EventOrderIntentRejected, s.handleExitRejected); err != nil {
 		return fmt.Errorf("position_monitor: failed to subscribe to OrderIntentRejected: %w", err)
+	}
+	if err := s.eventBus.Subscribe(ctx, domain.EventChandelierTrailArm, s.handleChandelierTrailArm); err != nil {
+		return fmt.Errorf("position_monitor: failed to subscribe to ChandelierTrailArm: %w", err)
+	}
+	if err := s.eventBus.Subscribe(ctx, domain.EventCopytradeExitRequest, s.handleCopytradeExitRequest); err != nil {
+		return fmt.Errorf("position_monitor: failed to subscribe to CopytradeExitRequest: %w", err)
 	}
 
 	// Bootstrap: seed monitor with OMO-opened positions that are still on the broker.
@@ -522,6 +548,10 @@ func (s *Service) processExitSubmitted(msg exitOrderSubmittedMsg) {
 		return
 	}
 	pos.ExitOrderID = msg.BrokerOrderID
+	if pos.PendingExitOrderIDs == nil {
+		pos.PendingExitOrderIDs = make(map[string]struct{})
+	}
+	pos.PendingExitOrderIDs[msg.BrokerOrderID] = struct{}{}
 	if !pos.ExitPending {
 		pos.ExitPending = true
 		pos.ExitPendingAt = s.nowFunc()
@@ -545,24 +575,46 @@ func (s *Service) processExitSubmitted(msg exitOrderSubmittedMsg) {
 // exclusively in handleExitTimeout from here on.
 func (s *Service) processExitTerminal(msg exitOrderTerminalMsg) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	key := fmt.Sprintf("%s:%s:%s", s.tenantID, s.envMode, msg.Symbol)
 	pos, ok := s.positions[key]
 	if !ok {
+		s.mu.Unlock()
 		return
+	}
+	if pos.PendingExitOrderIDs != nil {
+		delete(pos.PendingExitOrderIDs, msg.BrokerOrderID)
 	}
 	if pos.ExitOrderID == "" {
 		// handleExitTimeout already consumed the terminal and is mid-resubmit.
+		s.mu.Unlock()
 		return
 	}
 	if pos.ExitOrderID != msg.BrokerOrderID {
 		// Event refers to a stale broker order id (old attempt). Ignore.
+		s.mu.Unlock()
 		return
 	}
 	// Terminal for the currently-tracked order WITHOUT handleExitTimeout
 	// having driven the lifecycle (e.g. the broker canceled it unilaterally,
-	// or a rejection arrived on a fresh exit). Preserve legacy behavior:
-	// clear ExitPending so the tick loop re-evaluates on the next pass.
+	// or a rejection arrived on a fresh exit). If other peer exit orders
+	// are still working on this position, keep ExitPending set and cancel
+	// them — the single-slot ExitOrderID cannot police a parallel working
+	// exit, and the tick loop's ExitPending guard is the only thing that
+	// stops a new rule from firing a second order in the gap.
+	if len(pos.PendingExitOrderIDs) > 0 {
+		// Clear the just-terminal id from the tracked slot so a follow-up
+		// handleExitTimeout tick does not cancel-probe an already-terminal
+		// order. ExitPending stays true; the peer sweep drives the lifecycle.
+		pos.ExitOrderID = ""
+		s.log.Warn().
+			Str("symbol", string(msg.Symbol)).
+			Str("terminal_order_id", msg.BrokerOrderID).
+			Int("peer_count", len(pos.PendingExitOrderIDs)).
+			Msg("exit order terminal with peer working exits - canceling peers, holding ExitPending")
+		s.mu.Unlock()
+		s.cancelAllPendingExits(key)
+		return
+	}
 	pos.ExitPending = false
 	pos.ExitOrderID = ""
 	pos.ExitRetryCount++
@@ -571,6 +623,7 @@ func (s *Service) processExitTerminal(msg exitOrderTerminalMsg) {
 		Str("broker_order_id", msg.BrokerOrderID).
 		Int("retry_count", pos.ExitRetryCount).
 		Msg("exit order terminal (unsolicited) — unlocking position for retry")
+	s.mu.Unlock()
 }
 
 // processExitRejected removes a ghost position when the broker confirms no position exists.
@@ -793,6 +846,13 @@ func (s *Service) processFill(fill fillMsg) {
 	if fill.SignalTags != nil {
 		if v, ok := fill.SignalTags["strategy_exits_priority"]; ok && v == "true" {
 			pos.StrategyExitsPriority = true
+		}
+	}
+
+	if len(fill.SignalTags) > 0 {
+		pos.EntrySignalTags = make(map[string]string, len(fill.SignalTags))
+		for k, v := range fill.SignalTags {
+			pos.EntrySignalTags[k] = v
 		}
 	}
 

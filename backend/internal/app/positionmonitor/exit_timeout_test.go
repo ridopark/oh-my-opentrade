@@ -155,12 +155,12 @@ func TestHandleExitTimeout_NormalCancelSuccess_SchedulesRetry(t *testing.T) {
 // cancel-and-await protocol through its branches.
 type trackingBroker struct {
 	mockBroker
-	cancelCalls    []string
-	detailsCalls   int
-	detailsStatus  string
-	cancelReturn   error
-	detailsResult  ports.OrderDetails
-	detailsErr     error
+	cancelCalls   []string
+	detailsCalls  int
+	detailsStatus string
+	cancelReturn  error
+	detailsResult ports.OrderDetails
+	detailsErr    error
 }
 
 func (m *trackingBroker) CancelOrder(_ context.Context, orderID string) error {
@@ -203,6 +203,16 @@ func seedOptionPendingExit(
 	require.NotNil(t, pos)
 	pos.InstrumentType = domain.InstrumentTypeOption
 	pos.OptionRight = "CALL"
+	// Stamp option_premium so triggerExit's option-price resolution has a
+	// magnitude anchor when re-pegging without a live quote (see Fix 3,
+	// 2026-04-28). Pre-fix the underlying spot leaked through; post-fix
+	// triggerExit refuses to ship if no anchor is present, which is the
+	// intended safety behavior — we set the anchor here to keep the
+	// re-peg/escalate flow under test.
+	if pos.CustomState == nil {
+		pos.CustomState = make(map[string]float64)
+	}
+	pos.CustomState["option_premium"] = 1.23
 	pos.ExitPending = true
 	pos.ExitOrderID = "live-order-1"
 	// Force the tick loop to see this as past-timeout using the rule's
@@ -400,6 +410,13 @@ func (n *recordingRepegNotifier) MarkRepegCancel(brokerOrderID string) bool {
 	return true
 }
 
+// RepegOrderInPlace returns ErrUnsupportedModify so existing tests stay on the
+// cancel+place path. Tests that exercise the modify-first branch use a
+// dedicated stub instead.
+func (n *recordingRepegNotifier) RepegOrderInPlace(_ context.Context, _ string, _ float64) (bool, error) {
+	return false, ports.ErrUnsupportedModify
+}
+
 // orderedCancelBroker remembers the ordinal at which each cancel arrived.
 // Pairing with recordingRepegNotifier lets us assert that MarkRepegCancel
 // occurred BEFORE CancelOrder for the same broker order id.
@@ -527,4 +544,287 @@ func TestHandleExitTimeout_ExitRuleEvalSkippedWhilePending(t *testing.T) {
 	// prevents MAX_LOSS evaluation while the exit is already in flight.
 	assert.Equal(t, beforePublished, afterPublished,
 		"tick loop must not publish a parallel exit intent while ExitPending is true")
+}
+
+// ---------------------------------------------------------------------------
+// Parallel-working-exits guards (2026-04-21 HIMS/XOM regression).
+// ---------------------------------------------------------------------------
+
+// TestEscalateToMarket_CancelsAllWorkingExits verifies that the escalate
+// branch of handleExitTimeout cancels every broker-working exit order
+// recorded in PendingExitOrderIDs, not just the one tracked in
+// ExitOrderID. The HIMS/XOM bug was caused by EOD_FLATTEN + escalate
+// submitting parallel SELL orders because the single-slot ExitOrderID
+// was stale when escalate fired.
+func TestEscalateToMarket_CancelsAllWorkingExits(t *testing.T) {
+	broker := &trackingBroker{detailsStatus: "canceled"}
+	svc := newTestServiceWithBrokerAndRepo(&broker.mockBroker, &capturingRepo{})
+	svc.broker = broker
+
+	// Equity stop → budget 0 → first timeout escalates (no re-peg).
+	now := svc.nowFunc()
+	svc.processFill(fillMsg{
+		Symbol:     "HIMS",
+		Side:       "BUY",
+		Price:      30.0,
+		Quantity:   13,
+		FilledAt:   now.Add(-10 * time.Minute),
+		Strategy:   "macd",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules:  []domain.ExitRule{{Type: domain.ExitRuleTrailingStop, Params: map[string]float64{}}},
+	})
+	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "HIMS")
+	pos := svc.positions[key]
+	require.NotNil(t, pos)
+	// Two parallel working exits: the primary (tracked) and a peer
+	// (e.g. an EOD_FLATTEN submitted in the gap after an unsolicited
+	// broker cancel of the primary limit).
+	pos.ExitPending = true
+	pos.ExitOrderID = "primary-limit"
+	pos.PendingExitOrderIDs = map[string]struct{}{
+		"primary-limit":  {},
+		"peer-eod-order": {},
+	}
+	pos.ExitPendingAt = now.Add(-exitPendingTimeoutEquity - time.Second)
+
+	svc.tick()
+
+	// Both ids must have been canceled at the broker. The primary-limit
+	// may appear twice (once from handleExitTimeout's primary cancel, once
+	// from the peer sweep since no event bus is wired here to drain the
+	// set between). That's acceptable — idempotent cancel-then-resubmit is
+	// the whole point. What matters: the peer was not left working.
+	assert.Contains(t, broker.cancelCalls, "primary-limit",
+		"primary limit must be canceled")
+	assert.Contains(t, broker.cancelCalls, "peer-eod-order",
+		"escalate must cancel every working exit — not just the tracked one")
+}
+
+// TestEscalateToMarket_PeerCancelledWhenPrimaryAlreadyTerminal pins the
+// exact 2026-04-21 HIMS/XOM scenario: ExitOrderID points to a stale
+// (already-terminal) primary limit and the authoritative working order
+// is only tracked in PendingExitOrderIDs. The new sweep path is the only
+// thing that can catch the live peer — cancelAndAwaitTerminal on the
+// stale primary is a no-op. Guards against a regression that would make
+// cancelAllPendingExits skip ids already handled via the tracked slot.
+func TestEscalateToMarket_PeerCancelledWhenPrimaryAlreadyTerminal(t *testing.T) {
+	broker := &trackingBroker{detailsStatus: "canceled"}
+	svc := newTestServiceWithBrokerAndRepo(&broker.mockBroker, &capturingRepo{})
+	svc.broker = broker
+
+	now := svc.nowFunc()
+	svc.processFill(fillMsg{
+		Symbol:     "HIMS",
+		Side:       "BUY",
+		Price:      30.0,
+		Quantity:   13,
+		FilledAt:   now.Add(-10 * time.Minute),
+		Strategy:   "macd",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules:  []domain.ExitRule{{Type: domain.ExitRuleTrailingStop, Params: map[string]float64{}}},
+	})
+	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "HIMS")
+	pos := svc.positions[key]
+	require.NotNil(t, pos)
+	// Incident-exact: ExitOrderID points to a terminal primary (its entry
+	// was drained from PendingExitOrderIDs when processExitTerminal saw it),
+	// and the EOD_FLATTEN peer is the only broker-working exit.
+	pos.ExitPending = true
+	pos.ExitOrderID = "stale-terminal-primary"
+	pos.PendingExitOrderIDs = map[string]struct{}{
+		"working-eod-peer": {},
+	}
+	pos.ExitPendingAt = now.Add(-exitPendingTimeoutEquity - time.Second)
+
+	svc.tick()
+
+	assert.Contains(t, broker.cancelCalls, "working-eod-peer",
+		"sweep must cancel peers even when ExitOrderID points to a terminal primary")
+}
+
+// TestProcessExitTerminal_WithRemainingPeers_KeepsExitPending verifies
+// that when a terminal event arrives for one of several working exits,
+// ExitPending stays true and the remaining peers are canceled. Without
+// this, an unsolicited broker cancel for order A would clear
+// ExitPending while order B is still working — leaving the tick loop
+// free to fire a third rule.
+func TestProcessExitTerminal_WithRemainingPeers_KeepsExitPending(t *testing.T) {
+	broker := &trackingBroker{detailsStatus: "canceled"}
+	svc := newTestServiceWithBrokerAndRepo(&broker.mockBroker, &capturingRepo{})
+	svc.broker = broker
+
+	svc.processFill(fillMsg{
+		Symbol:     "XOM",
+		Side:       "BUY",
+		Price:      148.0,
+		Quantity:   8,
+		FilledAt:   time.Now().Add(-10 * time.Minute),
+		Strategy:   "macd",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules:  []domain.ExitRule{},
+	})
+	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "XOM")
+	pos := svc.positions[key]
+	require.NotNil(t, pos)
+	pos.ExitPending = true
+	pos.ExitOrderID = "order-A"
+	pos.PendingExitOrderIDs = map[string]struct{}{
+		"order-A": {},
+		"order-B": {},
+	}
+
+	svc.processExitTerminal(exitOrderTerminalMsg{
+		Symbol:        "XOM",
+		BrokerOrderID: "order-A",
+	})
+
+	assert.True(t, pos.ExitPending, "ExitPending must stay true while peer exit still working")
+	assert.NotContains(t, pos.PendingExitOrderIDs, "order-A", "terminal order drained from set")
+	assert.Contains(t, pos.PendingExitOrderIDs, "order-B", "peer retained until its own terminal")
+	assert.Contains(t, broker.cancelCalls, "order-B",
+		"peer must be canceled when terminal arrives for its sibling")
+}
+
+// TestProcessExitTerminal_LastPeer_ClearsExitPending verifies the normal
+// single-exit path still clears state: when the last entry in
+// PendingExitOrderIDs goes terminal, ExitPending/ExitOrderID reset so
+// the tick loop can re-evaluate exits on the next pass.
+func TestProcessExitTerminal_LastPeer_ClearsExitPending(t *testing.T) {
+	broker := &trackingBroker{detailsStatus: "canceled"}
+	svc := newTestServiceWithBrokerAndRepo(&broker.mockBroker, &capturingRepo{})
+	svc.broker = broker
+
+	svc.processFill(fillMsg{
+		Symbol:     "XOM",
+		Side:       "BUY",
+		Price:      148.0,
+		Quantity:   8,
+		FilledAt:   time.Now().Add(-10 * time.Minute),
+		Strategy:   "macd",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules:  []domain.ExitRule{},
+	})
+	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "XOM")
+	pos := svc.positions[key]
+	require.NotNil(t, pos)
+	pos.ExitPending = true
+	pos.ExitOrderID = "order-A"
+	pos.PendingExitOrderIDs = map[string]struct{}{
+		"order-A": {},
+		"order-B": {},
+	}
+
+	// First terminal: peer remains, ExitPending stays true.
+	svc.processExitTerminal(exitOrderTerminalMsg{
+		Symbol:        "XOM",
+		BrokerOrderID: "order-A",
+	})
+	require.True(t, pos.ExitPending)
+
+	// With the peer canceled via the cancelAllPendingExits path above,
+	// processExitTerminal will be re-invoked by the broker for order-B.
+	// Simulate that terminal arriving. ExitOrderID still tracks "order-A"
+	// because handleExitTimeout never ran; adjust ExitOrderID to match
+	// the last working order so the terminal matches the tracked slot.
+	pos.ExitOrderID = "order-B"
+
+	svc.processExitTerminal(exitOrderTerminalMsg{
+		Symbol:        "XOM",
+		BrokerOrderID: "order-B",
+	})
+
+	assert.False(t, pos.ExitPending, "ExitPending cleared when last peer goes terminal")
+	assert.Empty(t, pos.ExitOrderID)
+	assert.Empty(t, pos.PendingExitOrderIDs)
+}
+
+func drainOutbox(svc *Service) {
+	for len(svc.outbox) > 0 {
+		<-svc.outbox
+	}
+}
+
+// TestTriggerExit_SuppressedWhilePriorInFlight verifies cross-reason exit
+// arbitration: a rule-driven triggerExit that fires while a prior exit is
+// still working at the broker (ExitPending=true AND PendingExitOrderIDs
+// non-empty) must be dropped without emitting a new intent. The motivating
+// case is EOD_FLATTEN firing after an unsolicited broker cancel stamped
+// ExitPending=false only transiently — the original limit may still be
+// live at the broker, so emitting the EOD market order produces a double
+// exit (duplicate SELL).
+func TestTriggerExit_SuppressedWhilePriorInFlight(t *testing.T) {
+	broker := &mockBroker{}
+	svc := newTestServiceWithBrokerAndRepo(broker, &capturingRepo{})
+
+	now := svc.nowFunc()
+	svc.processFill(fillMsg{
+		Symbol:     "XOM",
+		Side:       "BUY",
+		Price:      148.0,
+		Quantity:   8,
+		FilledAt:   now.Add(-10 * time.Minute),
+		Strategy:   "macd",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules:  []domain.ExitRule{},
+	})
+	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "XOM")
+	pos := svc.positions[key]
+	require.NotNil(t, pos)
+
+	// Simulate a prior PREMIUM_TRAIL exit working at the broker.
+	pos.ExitPending = true
+	pos.ExitOrderID = "premium-trail-order"
+	pos.PendingExitOrderIDs = map[string]struct{}{
+		"premium-trail-order": {},
+	}
+
+	drainOutbox(svc)
+
+	// A new rule-driven trigger (EOD_FLATTEN) while the prior is in flight.
+	rule := mustExitRule(t, domain.ExitRuleEODFlatten, map[string]float64{"minutes_before_close": 5})
+	svc.triggerExit(pos, rule, "EOD flatten: 5 min before session close", 149.0, now)
+
+	assert.Equal(t, 0, len(svc.outbox),
+		"rule-driven trigger must be suppressed while a prior exit is in flight")
+	assert.Equal(t, "premium-trail-order", pos.ExitOrderID,
+		"ExitOrderID must not be mutated by a suppressed trigger")
+}
+
+// TestTriggerExit_RetryReasonsAllowed verifies the retry allowlist: re-peg
+// and market-escalate triggers — which are owned by handleExitTimeout and
+// always paired with cancelAndAwaitTerminal on the prior order — must NOT
+// be suppressed even when ExitPending=true and PendingExitOrderIDs is
+// non-empty (there is still a stale id between cancel and resubmit).
+func TestTriggerExit_RetryReasonsAllowed(t *testing.T) {
+	broker := &mockBroker{}
+	svc := newTestServiceWithBrokerAndRepo(broker, &capturingRepo{})
+
+	now := svc.nowFunc()
+	svc.processFill(fillMsg{
+		Symbol:     "XOM",
+		Side:       "BUY",
+		Price:      148.0,
+		Quantity:   8,
+		FilledAt:   now.Add(-10 * time.Minute),
+		Strategy:   "macd",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules: []domain.ExitRule{
+			mustExitRule(t, domain.ExitRuleTrailingStop, map[string]float64{}),
+		},
+	})
+	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "XOM")
+	pos := svc.positions[key]
+	require.NotNil(t, pos)
+	pos.ExitPending = true
+	pos.PendingExitOrderIDs = map[string]struct{}{"stale-limit": {}}
+
+	drainOutbox(svc)
+
+	rule := pos.ExitRules[0]
+	svc.triggerExit(pos, rule, "escalate-to-market", 148.0, now)
+	assert.Equal(t, 1, len(svc.outbox), "escalate-to-market retry must emit an intent")
+
+	drainOutbox(svc)
+	svc.triggerExit(pos, rule, "repeg 1/3", 148.0, now)
+	assert.Equal(t, 1, len(svc.outbox), "repeg retry must emit an intent")
 }

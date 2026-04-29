@@ -115,10 +115,20 @@ func (m *mockRepo) GetLatestThesisForSymbol(_ context.Context, _ string, _ domai
 func (m *mockRepo) GetNonTerminalOrders(_ context.Context, _ string, _ domain.EnvMode) ([]domain.BrokerOrder, error) {
 	return nil, nil
 }
+func (m *mockRepo) GetOrderByBrokerOrderID(_ context.Context, _ string) (*domain.BrokerOrder, error) {
+	return nil, nil
+}
 func (m *mockRepo) GetRecordedFillQty(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol, _ string, _ time.Time) (float64, error) {
 	return 0, nil
 }
 func (m *mockRepo) UpdateOrderStatus(_ context.Context, _ string, _ string) error { return nil }
+func (m *mockRepo) GetRecordedExecutionIDs(_ context.Context, _ string, _ domain.EnvMode, _ time.Time) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
+
+func (m *mockRepo) GetReconciledOrderIDs(_ context.Context, _ string, _ domain.EnvMode, _ time.Time) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
 func (m *mockRepo) GetNetPositions(_ context.Context, _ string, _ domain.EnvMode) (map[domain.Symbol]float64, error) {
 	return nil, nil
 }

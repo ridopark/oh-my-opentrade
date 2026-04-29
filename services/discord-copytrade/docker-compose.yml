@@ -1,0 +1,57 @@
+services:
+  watcher:
+    build: .
+    container_name: omo-discord-copytrade
+    restart: unless-stopped
+    # Docker Desktop's host-gateway points at the Docker VM, not the WSL2
+    # distro where omo-core runs. WSL_HOST_IP is supplied at compose-up time
+    # by `make restart-copytrade`, which reads the current eth0 IP.
+    extra_hosts:
+      - "host.docker.internal:${WSL_HOST_IP:?set WSL_HOST_IP or run \"make restart-copytrade\" from repo root}"
+    env_file:
+      - .env
+    environment:
+      STATE_DIR: /app/state
+    volumes:
+      - ./state:/app/state
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import pathlib, time, sys
+          p = pathlib.Path('/app/state/heartbeat')
+          sys.exit(0 if p.exists() and time.time() - p.stat().st_mtime < 120 else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  bootstrap:
+    build: .
+    container_name: omo-discord-copytrade-bootstrap
+    profiles: ["bootstrap"]
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      STATE_DIR: /app/state
+      DISPLAY: ${DISPLAY:-:0}
+    volumes:
+      - ./state:/app/state
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
+    command: ["python3", "-m", "bootstrap"]
+
+  scrape:
+    build: .
+    container_name: omo-discord-copytrade-scrape
+    profiles: ["scrape"]
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      STATE_DIR: /app/state
+    volumes:
+      - ./state:/app/state
+    entrypoint: ["python3", "-m", "scrape_history"]

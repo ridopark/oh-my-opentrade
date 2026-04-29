@@ -20,7 +20,7 @@ const (
 	queryInsertMarketBar      = `INSERT INTO market_bars (time, account_id, env_mode, symbol, timeframe, open, high, low, close, volume, suspect) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (symbol, timeframe, time) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume, suspect=EXCLUDED.suspect`
 	querySelectMarketBars     = `SELECT time, symbol, timeframe, open, high, low, close, volume, suspect, ema9, ema21, ema50, ema200, avwaps FROM market_bars WHERE symbol = $1 AND timeframe = $2 AND time >= $3 AND time < $4 ORDER BY time`
 	queryUpdateBarIndicators  = `UPDATE market_bars SET ema9=$4, ema21=$5, ema50=$6, ema200=$7, avwaps=$8 WHERE symbol=$1 AND timeframe=$2 AND time=$3`
-	queryInsertTrade          = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status, strategy, rationale, thesis, execution_id, instrument_type, option_symbol, underlying, strike, expiry, option_right, premium, delta_at_entry, iv_at_entry) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) ON CONFLICT (trade_id, time) DO NOTHING`
+	queryInsertTrade          = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status, strategy, rationale, thesis, execution_id, instrument_type, option_symbol, underlying, strike, expiry, option_right, premium, delta_at_entry, iv_at_entry, broker_order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) ON CONFLICT (trade_id, time) DO NOTHING`
 	querySelectTrades         = `SELECT time, trade_id, COALESCE(execution_id, ''), symbol, side, quantity, price, commission, status, COALESCE(strategy, ''), COALESCE(rationale, ''), thesis FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= $3 AND time <= $4 ORDER BY time`
 	queryInsertStrategyDNA    = `INSERT INTO strategy_dna_history (time, account_id, env_mode, strategy_id, version, parameters, performance) VALUES ($1, $2, $3, $4, $5, $6, $7)`
 	querySelectLatestDNA      = `SELECT time, strategy_id, version, parameters, performance FROM strategy_dna_history WHERE account_id = $1 AND env_mode = $2 ORDER BY time DESC LIMIT 1`
@@ -31,8 +31,26 @@ const (
 	// Overwriting the stale row is safe: actual fills live in `trades`,
 	// `orders` is operational state for the active session.
 	queryInsertOrder = `INSERT INTO orders (time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, strategy, rationale, confidence, instrument_type, option_symbol, underlying, strike, expiry, option_right) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) ON CONFLICT (broker_order_id) DO UPDATE SET time = EXCLUDED.time, account_id = EXCLUDED.account_id, env_mode = EXCLUDED.env_mode, intent_id = EXCLUDED.intent_id, symbol = EXCLUDED.symbol, side = EXCLUDED.side, quantity = EXCLUDED.quantity, limit_price = EXCLUDED.limit_price, stop_loss = EXCLUDED.stop_loss, status = EXCLUDED.status, strategy = EXCLUDED.strategy, rationale = EXCLUDED.rationale, confidence = EXCLUDED.confidence, instrument_type = EXCLUDED.instrument_type, option_symbol = EXCLUDED.option_symbol, underlying = EXCLUDED.underlying, strike = EXCLUDED.strike, expiry = EXCLUDED.expiry, option_right = EXCLUDED.option_right, filled_at = NULL, filled_price = NULL, filled_qty = NULL`
-	queryUpdateOrderFill      = `UPDATE orders SET status = 'filled', filled_at = $2, filled_price = $3, filled_qty = $4 WHERE broker_order_id = $1`
+	// Multi-fill safe: GREATEST + WHERE guard make this idempotent under
+	// out-of-order delivery (same exec arriving twice; later exec arriving
+	// before earlier). Status promotes monotonically submitted →
+	// partially_filled → filled. Callers pass cumulative-as-of-this-exec
+	// values from the broker (IBKR's exec.CumQty / exec.AvgPrice, Alpaca's
+	// order.filled_qty / order.filled_avg_price) which are server-side
+	// authoritative.
+	queryUpdateOrderFill = `UPDATE orders SET
+		filled_at = GREATEST(COALESCE(filled_at, '0001-01-01'::timestamptz), $2),
+		filled_price = $3,
+		filled_qty = GREATEST(COALESCE(filled_qty, 0), $4),
+		status = CASE
+			WHEN $4 + 1e-9 >= quantity THEN 'filled'
+			WHEN status = 'filled' THEN 'filled'
+			WHEN COALESCE(filled_qty, 0) < $4 THEN 'partially_filled'
+			ELSE status
+		END
+		WHERE broker_order_id = $1 AND COALESCE(filled_qty, 0) <= $4`
 	queryGetNonTerminalOrders = `SELECT time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, COALESCE(filled_at, '0001-01-01'::timestamptz), COALESCE(filled_price, 0), COALESCE(filled_qty, 0), COALESCE(strategy, ''), COALESCE(rationale, ''), COALESCE(confidence, 0) FROM orders WHERE account_id = $1 AND env_mode = $2 AND status NOT IN ('filled', 'canceled', 'expired', 'rejected') ORDER BY time ASC`
+	queryGetOrderByBrokerID   = `SELECT time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, COALESCE(filled_at, '0001-01-01'::timestamptz), COALESCE(filled_price, 0), COALESCE(filled_qty, 0), COALESCE(strategy, ''), COALESCE(rationale, ''), COALESCE(confidence, 0), COALESCE(instrument_type, ''), COALESCE(option_symbol, ''), COALESCE(underlying, ''), COALESCE(strike, 0), COALESCE(expiry, '0001-01-01'::timestamptz), COALESCE(option_right, '') FROM orders WHERE broker_order_id = $1 LIMIT 1`
 	queryGetRecordedFillQty   = `SELECT COALESCE(SUM(quantity), 0) FROM trades WHERE account_id = $1 AND env_mode = $2 AND symbol = $3 AND side = $4 AND time >= $5`
 	queryUpdateOrderStatus    = `UPDATE orders SET status = $2 WHERE broker_order_id = $1`
 	queryGetNetPositions      = `SELECT symbol, SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END) AS net_qty FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= NOW() - INTERVAL '30 days' GROUP BY symbol HAVING ABS(SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END)) > 1e-10`
@@ -148,6 +166,146 @@ func (r *Repository) SaveMarketBars(ctx context.Context, bars []domain.MarketBar
 		return 0, fmt.Errorf("timescaledb: save market bars batch: %w", err)
 	}
 	return idx, nil
+}
+
+// SaveMarketTrades inserts a batch of raw trade ticks into market_trades.
+// Phase 0 of the backtest/live parity plan; consumers (Phase 4 live DP
+// aggregator, Phase 5 audit) read these rows back. No ON CONFLICT — trade
+// ticks have no natural primary key in our schema today, and brief
+// duplicates from a WS reconnect-replay are acceptable for the audit/replay
+// use cases (downstream queries dedupe at read time when needed).
+func (r *Repository) SaveMarketTrades(ctx context.Context, trades []domain.MarketTrade) (int, error) {
+	if len(trades) == 0 {
+		return 0, nil
+	}
+
+	const maxBatchSize = 5000
+	if len(trades) > maxBatchSize {
+		total := 0
+		for i := 0; i < len(trades); i += maxBatchSize {
+			end := min(i+maxBatchSize, len(trades))
+			n, err := r.SaveMarketTrades(ctx, trades[i:end])
+			total += n
+			if err != nil {
+				return total, err
+			}
+		}
+		return total, nil
+	}
+
+	var b strings.Builder
+	b.WriteString("INSERT INTO market_trades (time, account_id, env_mode, symbol, price, size, exchange, conditions, tape, taker_side, venue) VALUES ")
+
+	args := make([]any, 0, len(trades)*11)
+	idx := 0
+	for _, t := range trades {
+		// Size==0 with valid price is legitimate (auction indicative, halt-
+		// resume cross, opening cross). Price<=0 has no economic meaning;
+		// only those rows are dropped.
+		if t.Price <= 0 {
+			continue
+		}
+		if idx > 0 {
+			b.WriteString(", ")
+		}
+		base := idx*11 + 1
+		fmt.Fprintf(&b, "($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			base, base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10)
+		// stringArray(nil).Value() returns SQL NULL by design (the type
+		// preserves the nil/empty distinction for read paths). The
+		// conditions column is NOT NULL, so coerce nil to an empty
+		// non-nil slice here — crypto trades and any equity prints
+		// without condition codes arrive with a nil Conditions field.
+		conds := t.Conditions
+		if conds == nil {
+			conds = []string{}
+		}
+		args = append(args,
+			t.Time,
+			"",
+			string(domain.EnvModePaper),
+			string(t.Symbol),
+			t.Price,
+			t.Size,
+			t.Exchange,
+			stringArray(conds),
+			t.Tape,
+			t.TakerSide,
+			string(t.Venue),
+		)
+		idx++
+	}
+
+	if idx == 0 {
+		return 0, nil
+	}
+
+	if _, err := r.db.ExecContext(ctx, b.String(), args...); err != nil {
+		r.log.Error().Err(err).Int("batch_size", idx).Msg("failed to save market trades batch")
+		return 0, fmt.Errorf("timescaledb: save market trades batch: %w", err)
+	}
+	return idx, nil
+}
+
+// querySelectMarketTrades is the read counterpart of the writer in
+// SaveMarketTrades. Time-ordered ascending so the Phase 6 boot replayer can
+// feed the DP aggregator (and any other per-symbol consumer) in chronological
+// order. Filters by symbol and the half-open window [from, to); the
+// idx_market_trades_symbol_time index covers it.
+const querySelectMarketTrades = `SELECT time, symbol, price, size, exchange, conditions, tape, taker_side, venue
+FROM market_trades
+WHERE symbol = $1 AND time >= $2 AND time < $3
+ORDER BY time ASC`
+
+// GetMarketTrades returns raw trade ticks for a single symbol in the
+// half-open window [from, to), ordered by time ascending. Phase 6 of the
+// parity plan: on omo-core boot during RTH, the live DP aggregator (Phase 4)
+// replays trades since session open from this read path instead of
+// re-fetching them over Alpaca REST.
+func (r *Repository) GetMarketTrades(ctx context.Context, symbol domain.Symbol, from, to time.Time) ([]domain.MarketTrade, error) {
+	rows, err := r.db.QueryContext(ctx, querySelectMarketTrades, string(symbol), from, to)
+	if err != nil {
+		r.log.Error().Err(err).
+			Str("symbol", string(symbol)).
+			Time("from", from).
+			Time("to", to).
+			Msg("failed to query market trades")
+		return nil, fmt.Errorf("timescaledb: get market trades: %w", err)
+	}
+	defer rows.Close()
+
+	// Pre-size based on a coarse RTH peak: ~1.7k trades/min/symbol at the
+	// open auction. Two-decimal headroom avoids grow thrash for typical
+	// session-open replay windows; over-estimate is bounded by retention.
+	mins := max(int(to.Sub(from)/time.Minute)+1, 1)
+	trades := make([]domain.MarketTrade, 0, mins*2000)
+
+	var sym string
+	var conds stringArray
+	for rows.Next() {
+		n := len(trades)
+		if n >= cap(trades) {
+			trades = append(trades, domain.MarketTrade{})
+		} else {
+			trades = trades[:n+1]
+		}
+		t := &trades[n]
+		var venue string
+		if err := rows.Scan(&t.Time, &sym, &t.Price, &t.Size, &t.Exchange, &conds, &t.Tape, &t.TakerSide, &venue); err != nil {
+			return nil, fmt.Errorf("timescaledb: scan market trade: %w", err)
+		}
+		t.Symbol = domain.Symbol(sym)
+		t.Venue = domain.Venue(venue)
+		if len(conds) > 0 {
+			t.Conditions = append([]string(nil), conds...)
+		} else {
+			t.Conditions = nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("timescaledb: iterate market trades: %w", err)
+	}
+	return trades, nil
 }
 
 // estimateBarCount returns a rough upper bound on bars in a window, used to
@@ -399,6 +557,10 @@ func tradeInsertArgs(trade domain.Trade) []any {
 	if trade.ExecutionID != "" {
 		execIDArg = trade.ExecutionID
 	}
+	var brokerOrderIDArg any
+	if trade.BrokerOrderID != "" {
+		brokerOrderIDArg = trade.BrokerOrderID
+	}
 	instType := string(trade.InstrumentType)
 	if instType == "" {
 		instType = defaultInstrumentType
@@ -423,7 +585,7 @@ func tradeInsertArgs(trade domain.Trade) []any {
 		string(trade.Symbol), trade.Side, trade.Quantity, trade.Price,
 		trade.Commission, trade.Status, trade.Strategy, trade.Rationale,
 		thesisArg, execIDArg, instType, optSym, underlying, strike, expiry,
-		optRight, premium, deltaEntry, ivEntry,
+		optRight, premium, deltaEntry, ivEntry, brokerOrderIDArg,
 	}
 }
 
@@ -903,6 +1065,38 @@ func (r *Repository) GetNonTerminalOrders(ctx context.Context, tenantID string, 
 	return orders, nil
 }
 
+// GetOrderByBrokerOrderID returns the row matching the given broker_order_id
+// or (nil, nil) when none exists. Used by boot-time backfill to detect orders
+// whose DB row was never written (e.g. session crashed after broker accepted
+// the order but before SaveOrder ran).
+func (r *Repository) GetOrderByBrokerOrderID(ctx context.Context, brokerOrderID string) (*domain.BrokerOrder, error) {
+	row := r.db.QueryRowContext(ctx, queryGetOrderByBrokerID, brokerOrderID)
+	var o domain.BrokerOrder
+	var sym, acct, env string
+	var filledAt, expiry time.Time
+	var instType string
+	if err := row.Scan(&o.Time, &acct, &env, &o.IntentID, &o.BrokerOrderID, &sym, &o.Side, &o.Quantity, &o.LimitPrice, &o.StopLoss, &o.Status,
+		&filledAt, &o.FilledPrice, &o.FilledQty,
+		&o.Strategy, &o.Rationale, &o.Confidence,
+		&instType, &o.OptionSymbol, &o.Underlying, &o.Strike, &expiry, &o.OptionRight); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("timescaledb: get order by broker_order_id: %w", err)
+	}
+	o.Symbol = domain.Symbol(sym)
+	o.TenantID = acct
+	o.EnvMode = domain.EnvMode(env)
+	if !filledAt.IsZero() {
+		o.FilledAt = &filledAt
+	}
+	o.InstrumentType = domain.InstrumentType(instType)
+	if !expiry.IsZero() {
+		o.Expiry = expiry
+	}
+	return &o, nil
+}
+
 func (r *Repository) GetRecordedFillQty(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol, side string, since time.Time) (float64, error) {
 	row := r.db.QueryRowContext(ctx, queryGetRecordedFillQty, tenantID, string(envMode), string(symbol), side, since)
 
@@ -911,6 +1105,56 @@ func (r *Repository) GetRecordedFillQty(ctx context.Context, tenantID string, en
 		return 0, fmt.Errorf("timescaledb: get recorded fill qty: %w", err)
 	}
 	return qty, nil
+}
+
+// GetRecordedExecutionIDs returns the set of execution_ids in trades for the
+// given tenant/env since `since`. Used by boot fill-reconciliation to dedup
+// against broker-reported fills before INSERTing missing legs.
+func (r *Repository) GetRecordedExecutionIDs(ctx context.Context, tenantID string, envMode domain.EnvMode, since time.Time) (map[string]struct{}, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT execution_id FROM trades
+		  WHERE account_id = $1 AND env_mode = $2 AND time >= $3
+		    AND execution_id IS NOT NULL AND execution_id <> ''`,
+		tenantID, string(envMode), since)
+	if err != nil {
+		return nil, fmt.Errorf("timescaledb: get recorded execution ids: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]struct{})
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("timescaledb: scan execution id: %w", err)
+		}
+		out[id] = struct{}{}
+	}
+	return out, rows.Err()
+}
+
+// GetReconciledOrderIDs returns the set of broker_order_ids that already
+// have at least one trade row in the window. Lets boot fill-reconciliation
+// skip orders whose live writes lacked an execution_id.
+func (r *Repository) GetReconciledOrderIDs(ctx context.Context, tenantID string, envMode domain.EnvMode, since time.Time) (map[string]struct{}, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT DISTINCT broker_order_id FROM trades
+		  WHERE account_id = $1 AND env_mode = $2 AND time >= $3
+		    AND broker_order_id IS NOT NULL AND broker_order_id <> ''`,
+		tenantID, string(envMode), since)
+	if err != nil {
+		return nil, fmt.Errorf("timescaledb: get reconciled order ids: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]struct{})
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("timescaledb: scan broker_order_id: %w", err)
+		}
+		out[id] = struct{}{}
+	}
+	return out, rows.Err()
 }
 
 func (r *Repository) UpdateOrderStatus(ctx context.Context, brokerOrderID string, status string) error {

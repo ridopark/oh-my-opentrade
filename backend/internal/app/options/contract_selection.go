@@ -4,10 +4,36 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 )
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// calendarDTE returns the difference between expiry and now in calendar days
+// (number of ET midnights between them). Using hour-based arithmetic with
+// integer truncation (int(expiry.Sub(now).Hours()/24)) rejects contracts that
+// are exactly minDTE days away when the current wall-clock has advanced past
+// midnight ET — e.g. Wed 13:25 ET vs Mon-expiry is 4.7 days → truncates to 4,
+// failing a minDTE=5 filter even though the contract is "5 days out" by the
+// conventional trading-day count.
+func calendarDTE(expiry, now time.Time) int {
+	loc := now.Location()
+	expDay := time.Date(expiry.In(loc).Year(), expiry.In(loc).Month(), expiry.In(loc).Day(), 0, 0, 0, 0, loc)
+	nowDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	days := int(math.Round(expDay.Sub(nowDay).Hours() / 24))
+	if days < 0 {
+		days = 0
+	}
+	return days
+}
 
 type ContractSelectionService struct {
 	constraints       domain.ContractSelectionConstraints
@@ -56,13 +82,29 @@ func (s *ContractSelectionService) SelectBestContract(
 
 	now := s.now()
 	mid := (active.TargetDeltaLow + active.TargetDeltaHigh) / 2.0
+	targetDTE := (active.MinDTE + active.MaxDTE) / 2
+
+	// Sort chain by DTE closeness to the midpoint of the acceptable range so
+	// that when a downstream cap (e.g. the 250-contract Alpaca API limit) has
+	// already truncated the returned chain, in-range candidates are iterated
+	// first and a selection isn't starved because the remaining contracts sit
+	// at an outlier expiry. Secondary key is delta-closeness to preserve the
+	// existing strike-picking intent.
+	sorted := make([]domain.OptionContractSnapshot, len(chain))
+	copy(sorted, chain)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		di := calendarDTE(sorted[i].Expiry, now)
+		dj := calendarDTE(sorted[j].Expiry, now)
+		return abs(di-targetDTE) < abs(dj-targetDTE)
+	})
+	chain = sorted
 
 	var best *domain.OptionContractSnapshot
 	bestDist := math.MaxFloat64
 
 	for i := range chain {
 		snap := chain[i]
-		dte := int(snap.OptionContract.Expiry.Sub(now).Hours() / 24)
+		dte := calendarDTE(snap.Expiry, now)
 
 		if dte < active.MinDTE || dte > active.MaxDTE {
 			continue
@@ -103,7 +145,7 @@ func (s *ContractSelectionService) SelectBestContract(
 		var dteReject, deltaReject, oiReject, spreadReject, ivReject int
 		for i := range chain {
 			snap := chain[i]
-			dte := int(snap.OptionContract.Expiry.Sub(now).Hours() / 24)
+			dte := calendarDTE(snap.Expiry, now)
 			absDelta := math.Abs(snap.Delta)
 			if dte < active.MinDTE || dte > active.MaxDTE {
 				dteReject++

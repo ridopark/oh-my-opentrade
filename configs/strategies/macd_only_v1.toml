@@ -23,7 +23,7 @@ author = "system"
 created_at = "2026-04-07T00:00:00Z"
 
 [lifecycle]
-state = "Deactivated"
+state = "PaperActive"
 paper_only = true
 
 [routing]
@@ -42,8 +42,18 @@ risk_reward_ratio = 2.0          # 2:1 R:R realistic for intraday
 swing_lookback = 5               # fewer bars for swing detection on 5m
 volume_mult = 1.0
 
+# Midday trap shield (ported from AVWAP avwap_v1.go:1803). Block entries in the
+# midday window unless volume clears midday_volume_mult * VolumeSMA.
+# Window 10:00-12:30 ET and mult 1.5 are the H1-data-only WFA selection:
+# full-year picks drift 2 buckets toward H2 fit. These bounds validate in
+# both halves (H1 from selection, H2 yields +$6.3k uplift OOS).
+midday_trap_shield = true
+midday_volume_mult = 1.5
+midday_shield_start_et = "10:30"
+midday_shield_end_et = "12:30"
+
 # Confluence scoring (0-100+ scale, 10 base + dark pool factors)
-min_confluence_score = 65        # split the difference — keep some 60s trades
+min_confluence_score = 80        # 85 cut trade count too far on 65-85 sweep
 dp_confluence_enabled = true
 dp_veto_enabled = true
 dp_veto_buy_ratio_min = 0.45
@@ -70,19 +80,21 @@ range_gate_adx_max = 20.0
 # Low Z (<-1.0) = reversal setup = MACD-adverse (PF 0.854 in backtest).
 dp_z_conditioning_enabled = true
 dp_z_macd_favorable_threshold = 1.0
-dp_z_macd_suppress_threshold = -1.0
+dp_z_macd_suppress_threshold = -0.5
 dp_z_macd_suppress_mode = "block"
 
-# Risk — smaller per-trade for higher turnover
+# Risk sizing matched to AVWAP (500/1500) so MACD scales on shared equity
+# base. Prior 500/2000 amplified left-tail losses in 2025-Q4; max_position
+# held at 1500 and midday_trap_shield provides the left-tail mitigation.
 risk_per_trade_bps = 500
-max_position_bps = 2000
+max_position_bps = 1500
 
 # Portfolio limits — focused for intraday
-max_positions = 10
-max_per_group = 2                # solo optimum (was 3). Tightened after the OCC sector-classification fix. Sweep showed mpg=2 is Pareto-dominant when MACD runs alone. In a pair backtest the runner takes max-of per-spec values, so the pair's effective cap is set by AVWAP (mpg=3); that's intentional — the pair stress test showed forcing global mpg=2 cost ~$40k combined PnL, so this value applies only when MACD runs solo or as the higher-mpg leg.
+max_positions = 6
+max_per_group = 3                # solo optimum (was 3). Tightened after the OCC sector-classification fix. Sweep showed mpg=2 is Pareto-dominant when MACD runs alone. In a pair backtest the runner takes max-of per-spec values, so the pair's effective cap is set by AVWAP (mpg=3); that's intentional — the pair stress test showed forcing global mpg=2 cost ~$40k combined PnL, so this value applies only when MACD runs solo or as the higher-mpg leg.
 
 # Timing
-allowed_hours_start = "09:35"
+allowed_hours_start = "09:30"    # 5m bars use bucket-START timestamps, so the first RTH bar carries 09:30. Setting to 09:30 lets it pass; 09:35 blocked it stale until 09:40.
 allowed_hours_end = "15:30"
 allowed_hours_tz = "America/New_York"
 cooldown_seconds = 180           # 3 bars on 5m
@@ -118,10 +130,12 @@ execution = [
 
 [options]
 enabled = true
+# Matched to AVWAP (50) so MACD contribution scales with the shared equity
+# base. max_position_bps (1500) is the binding dollar-risk cap.
 max_contracts = 50
 limit_spread_pct = 1.00
 limit_buffer_bps = 1000
-stale_cancel_secs = 90
+stale_cancel_secs = 120
 
 [options.defaults]
 min_dte = 5                      # weekly window — synthetic chain generator
@@ -139,12 +153,26 @@ type = "PREMIUM_TARGET"
 [exit_rules.params]
 target_pct = 0.15
 
-# Trail to limit drawdown (net-negative P&L but provides DD protection)
+# Premium hard stop DISABLED. Testing showed 40% added no edge (neutral)
+# and 25% cut recovering winners. STAGNATION + MAX_HOLDING handle the
+# long-duration losers; tighter confluence floor (80) suppresses the
+# entries that would have required this stop.
+# [[exit_rules]]
+# type = "PREMIUM_STOP"
+# [exit_rules.params]
+# threshold = 0.40
+
+# Proportional trail: arm at +5% premium MFE, exit on 3% giveback from peak.
+# Replaces legacy PREMIUM_TRAIL (2 winners / 88 fires in 3-month IS).
+# IS 2026-Q1: PF 0.84->0.93, DD 43%->28%, P&L +$20.5k vs baseline.
+# OOS 2026-04-01..04-20: PF 1.43->1.31, WR 56%->67%, DD 8.8->7.5, P&L -$4.1k
+# (trims some big winners but catches 4/16 MAX_HOLDING losers with MFE>=5%).
+# Backup: configs/backups/macd_only_v1_pre_chandelier_20260421_1503.toml
 [[exit_rules]]
-type = "PREMIUM_TRAIL"
+type = "CHANDELIER_TRAIL"
 [exit_rules.params]
-trail_pct = 0.12
-min_activation = 0.08
+activate_pct = 0.05
+giveback_pct = 0.03
 
 # Stagnation: kill zombie trades after 90 min
 [[exit_rules]]

@@ -113,10 +113,20 @@ func (stubRepo) GetLatestThesisForSymbol(context.Context, string, domain.EnvMode
 func (stubRepo) GetNonTerminalOrders(context.Context, string, domain.EnvMode) ([]domain.BrokerOrder, error) {
 	return nil, nil
 }
+func (stubRepo) GetOrderByBrokerOrderID(context.Context, string) (*domain.BrokerOrder, error) {
+	return nil, nil
+}
 func (stubRepo) GetRecordedFillQty(context.Context, string, domain.EnvMode, domain.Symbol, string, time.Time) (float64, error) {
 	return 0, nil
 }
 func (stubRepo) UpdateOrderStatus(context.Context, string, string) error { return nil }
+func (stubRepo) GetRecordedExecutionIDs(context.Context, string, domain.EnvMode, time.Time) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
+
+func (stubRepo) GetReconciledOrderIDs(context.Context, string, domain.EnvMode, time.Time) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
 func (stubRepo) GetNetPositions(context.Context, string, domain.EnvMode) (map[domain.Symbol]float64, error) {
 	return nil, nil
 }

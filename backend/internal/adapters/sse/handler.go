@@ -12,11 +12,21 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	"github.com/rs/zerolog"
+)
+
+// Per-client buffer must absorb a whole bar-close burst (all symbols x all
+// strategies x many event types). 2048 handles 34 symbols x ~50 events each.
+// sseDropKickMax is cumulative, not consecutive, so oscillating bursts can't
+// mask a truly stuck client.
+const (
+	sseBufferSize  = 2048
+	sseDropKickMax = 1000
 )
 
 // eventTypes is the full set of domain events the SSE handler forwards.
@@ -61,9 +71,9 @@ type wireEvent struct {
 
 // client represents a single connected SSE consumer.
 type client struct {
-	ch           chan wireEvent
-	dropCount    int  // consecutive dropped events
-	disconnected bool // marked for removal
+	ch         chan wireEvent
+	totalDrops atomic.Int64 // cumulative drops since connect
+	kicked     atomic.Bool  // true after close(ch); use CAS to avoid double-close
 }
 
 // SignalProgressProvider supplies initial signal progress snapshots for new SSE
@@ -124,23 +134,30 @@ func (h *Handler) Start(ctx context.Context) error {
 }
 
 // broadcast sends an event to every connected client, disconnecting slow ones.
+//
+// Drops are cumulative (not consecutive), so a client whose reader is pinned
+// can't hide behind bursty traffic that occasionally lets a send through. The
+// first drop is logged to surface silent data loss; the kick log includes the
+// running total for correlation.
 func (h *Handler) broadcast(evt wireEvent) {
 	h.mu.RLock()
 	var stale []*client
 	for c := range h.clients {
-		if c.disconnected {
+		if c.kicked.Load() {
 			continue
 		}
 		select {
 		case c.ch <- evt:
-			c.dropCount = 0
+			// delivered
 		default:
-			c.dropCount++
-			if c.dropCount >= 100 {
-				c.disconnected = true
+			n := c.totalDrops.Add(1)
+			if n == 1 {
+				h.log.Warn().Str("event_type", evt.Type).Msg("SSE: event dropped (client channel full)")
+			}
+			if n >= sseDropKickMax && c.kicked.CompareAndSwap(false, true) {
 				close(c.ch)
 				stale = append(stale, c)
-				h.log.Warn().Int("total_dropped", c.dropCount).Msg("SSE: disconnecting slow consumer")
+				h.log.Warn().Int64("total_dropped", n).Msg("SSE: disconnecting slow consumer")
 			}
 		}
 	}
@@ -179,7 +196,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	c := &client{ch: make(chan wireEvent, 64)}
+	c := &client{ch: make(chan wireEvent, sseBufferSize)}
 	h.mu.Lock()
 	h.clients[c] = struct{}{}
 	clientCount := len(h.clients)

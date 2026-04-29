@@ -362,7 +362,7 @@ export interface StrategySignalEvent {
   Symbol: string;
   Kind: string; // entry, exit, scale_in, scale_out
   Side: string; // BUY, SELL
-  Status: string; // generated, validated, executed, suppressed, rejected, debate_override
+  Status: string; // generated, validated, executed, suppressed, rejected, canceled, debate_override
   Reason: string;
   Confidence: number;
   Payload: Record<string, unknown> | null;

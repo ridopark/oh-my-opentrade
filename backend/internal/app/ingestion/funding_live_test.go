@@ -51,7 +51,7 @@ func TestFundingLive_PollLoop_InsertsNewRates(t *testing.T) {
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	// First immediate poll + at least 1 ticker poll.
 	assert.GreaterOrEqual(t, callCount, 2, "should poll at least twice")
-	assert.GreaterOrEqual(t, db.execCalls, 2, "should persist at least 2 distinct rates")
+	assert.GreaterOrEqual(t, db.execCalls.Load(), int64(2), "should persist at least 2 distinct rates")
 }
 
 func TestFundingLive_PollLoop_SkipsDuplicateTimestamp(t *testing.T) {
@@ -80,7 +80,7 @@ func TestFundingLive_PollLoop_SkipsDuplicateTimestamp(t *testing.T) {
 	_ = live.Run(ctx, domain.VenueBybit, []domain.Symbol{"BTC/USD"}, 50*time.Millisecond)
 	// Only the first poll should actually insert; subsequent polls return the
 	// same timestamp and should be skipped.
-	assert.Equal(t, 1, db.execCalls, "should insert only once for duplicate timestamps")
+	assert.Equal(t, int64(1), db.execCalls.Load(), "should insert only once for duplicate timestamps")
 }
 
 func TestFundingLive_StreamMode(t *testing.T) {
@@ -115,7 +115,7 @@ func TestFundingLive_StreamMode(t *testing.T) {
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	// Give the goroutine a moment to process.
 	time.Sleep(50 * time.Millisecond)
-	assert.GreaterOrEqual(t, db.execCalls, 1, "should persist at least one streamed rate")
+	assert.GreaterOrEqual(t, db.execCalls.Load(), int64(1), "should persist at least one streamed rate")
 }
 
 func TestFundingLive_LatestError(t *testing.T) {
@@ -137,5 +137,5 @@ func TestFundingLive_LatestError(t *testing.T) {
 
 	err := live.Run(ctx, domain.VenueBybit, []domain.Symbol{"BTC/USD"}, 50*time.Millisecond)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
-	assert.Equal(t, 0, db.execCalls, "should not persist when Latest() fails")
+	assert.Equal(t, int64(0), db.execCalls.Load(), "should not persist when Latest() fails")
 }

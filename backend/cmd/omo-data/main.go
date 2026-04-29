@@ -506,14 +506,27 @@ func main() {
 
 	gapDetector := timescaledb.NewGapDetector(repo)
 	gapSvc := gapdetect.NewService(gapDetector, repo, log.With().Str("component", "gapdetect").Logger(), nil)
+	// Phase 5 of the parity plan: omo-core's WS pipeline is the only writer
+	// for intraday market_bars during RTH; if it's down for any portion of
+	// a session the day's bars are silently missing. Attach an intraday
+	// backfiller so detected gaps get filled from Alpaca/Coinbase REST on
+	// every gap-scan pass instead of just being reported as gauges. 1d
+	// timeframe is owned by datarefresh and is short-circuited inside the
+	// backfiller.
+	gapSvc.SetBackfiller(gapdetect.NewIntradayBarBackfiller(barFetcher, repo))
 	gapSymbols := make([]domain.Symbol, 0, len(symbols))
 	for _, s := range symbols {
 		gapSymbols = append(gapSymbols, domain.Symbol(s))
 	}
-	go func() {
+	// Run at startup, then once every 6 hours. Daily would let an early-
+	// session omo-core outage sit unfilled until the following day's run;
+	// 6h is short enough that the next backtest of "today" sees mostly-
+	// complete data, long enough to amortize the Alpaca REST cost across
+	// the universe.
+	go runEvery(ctx, "intraday_gap_scan", 6*time.Hour, func(ctx context.Context) {
 		n := gapSvc.RunOnce(ctx, gapSymbols)
-		log.Info().Int("gap_ranges", n).Int("symbols", len(gapSymbols)).Msg("gap detector startup scan complete")
-	}()
+		log.Info().Int("gap_ranges", n).Int("symbols", len(gapSymbols)).Msg("gap detector scan complete")
+	}, log)
 
 	// Crypto funding rate live collector (Hyperliquid).
 	// Polls latest funding rates every hour (HL uses 1h intervals).
@@ -556,15 +569,22 @@ func main() {
 
 // runDaily calls fn immediately then repeats every 24 hours until ctx is done.
 func runDaily(ctx context.Context, name string, fn func(context.Context), log zerolog.Logger) {
+	runEvery(ctx, name, 24*time.Hour, fn, log)
+}
+
+// runEvery calls fn immediately then repeats on the given interval until ctx
+// is done. Sub-daily generalization of runDaily for jobs that need tighter
+// freshness (e.g. intraday gap fill).
+func runEvery(ctx context.Context, name string, interval time.Duration, fn func(context.Context), log zerolog.Logger) {
 	fn(ctx)
-	ticker := time.NewTicker(24 * time.Hour)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			log.Info().Str("job", name).Msg("daily job tick")
+			log.Info().Str("job", name).Dur("interval", interval).Msg("scheduled job tick")
 			fn(ctx)
 		}
 	}

@@ -40,6 +40,17 @@ type backtestRunRequest struct {
 	// pass false explicitly to reproduce legacy mid-fill backtests.
 	OptionSpreadMultiplier   float64 `json:"option_spread_multiplier"`
 	OptionEntrySpreadEnabled *bool   `json:"option_entry_spread_enabled"`
+
+	// Tier 1 market-impact knobs. Both zero (default) reproduces today's
+	// fill path byte-identically. Non-zero either field activates the
+	// participation cap and sqrt-impact term on option fills.
+	OptionImpactScaleBps      float64 `json:"option_impact_scale_bps"`
+	OptionMaxParticipationPct float64 `json:"option_max_participation_pct"`
+
+	// Copytrade replay wiring (required when "copytrade_v1" is in Strategies).
+	// CopytradeLedgerDir defaults to "_workspace/copytrade_replay" when empty.
+	CopytradeHistory   string `json:"copytrade_history"`
+	CopytradeLedgerDir string `json:"copytrade_ledger_dir"`
 }
 
 type backtestControlRequest struct {
@@ -157,6 +168,28 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	copytradeSelected := false
+	for _, s := range req.Strategies {
+		if s == "copytrade_v1" {
+			copytradeSelected = true
+			break
+		}
+	}
+
+	// Drop sentinel symbols (e.g. __copytrade__) up front — they can come
+	// from either the TOML-driven collectStrategySymbols path or from an
+	// explicit client payload that forwarded strategy-meta.symbols verbatim.
+	if len(req.Symbols) > 0 {
+		filtered := req.Symbols[:0]
+		for _, s := range req.Symbols {
+			if strings.HasPrefix(s, "__") {
+				continue
+			}
+			filtered = append(filtered, s)
+		}
+		req.Symbols = filtered
+	}
+
 	// When no symbols provided, collect union from selected strategy configs
 	// so each strategy runs on its own tuned symbol list.
 	useNativeSymbols := false
@@ -164,7 +197,17 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		req.Symbols = h.collectStrategySymbols(req.Strategies)
 		useNativeSymbols = true
 	}
+	// Copytrade strategies route everything through the sentinel, so no
+	// strategy TOML has a tradeable symbol list. Fall back to the canonical
+	// 23-symbol universe covered by the scraped history window.
+	if copytradeSelected && len(req.Symbols) == 0 {
+		req.Symbols = copytradeDefaultSymbols()
+	}
 	if len(req.Symbols) == 0 {
+		if copytradeSelected && len(req.Strategies) == 1 {
+			jsonError(w, http.StatusBadRequest, "copytrade_v1 has no non-sentinel symbols — pass explicit symbols in request body")
+			return
+		}
 		jsonError(w, http.StatusBadRequest, "symbols required (provide symbols or strategies with configured symbols)")
 		return
 	}
@@ -189,6 +232,28 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	if !toTime.After(fromTime) {
 		jsonError(w, http.StatusBadRequest, "to must be after from")
 		return
+	}
+
+	speed := req.Speed
+	if speed == "" {
+		speed = "max"
+	}
+
+	if copytradeSelected {
+		if req.CopytradeHistory == "" {
+			req.CopytradeHistory = "services/discord-copytrade/state/history_90d.jsonl"
+		}
+		if _, statErr := os.Stat(req.CopytradeHistory); statErr != nil {
+			jsonError(w, http.StatusBadRequest, "copytrade_history unreadable: "+statErr.Error())
+			return
+		}
+		if speed != "max" {
+			jsonError(w, http.StatusBadRequest, "copytrade_v1 backtest requires speed=max (sharded pipeline only)")
+			return
+		}
+		if req.CopytradeLedgerDir == "" {
+			req.CopytradeLedgerDir = "_workspace/copytrade_replay"
+		}
 	}
 
 	h.mu.Lock()
@@ -223,10 +288,6 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	if slippage <= 0 {
 		slippage = 10
 	}
-	speed := req.Speed
-	if speed == "" {
-		speed = "max"
-	}
 
 	runner := backtest.NewRunner(backtest.RunConfig{
 		Symbols:       symbols,
@@ -243,6 +304,8 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		MaxPerGroup:      req.MaxPerGroup,
 		UseNativeSymbols: useNativeSymbols,
 		CompoundEquity:   req.CompoundEquity == nil || *req.CompoundEquity,
+		CopytradeHistory:   req.CopytradeHistory,
+		CopytradeLedgerDir: req.CopytradeLedgerDir,
 	}, bootstrap.BuildBacktestInfra(bootstrap.BacktestDeps{
 		DB:     h.db,
 		AppCfg: h.appCfg,
@@ -250,6 +313,10 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	}, slippage, equity, req.NoAI, bootstrap.BacktestInfraOptions{
 		OptionExitSpreadMultiplier: req.OptionSpreadMultiplier,
 		OptionEntrySpreadEnabled:   req.OptionEntrySpreadEnabled,
+		OptionImpactScaleBps:       req.OptionImpactScaleBps,
+		OptionMaxParticipationPct:  req.OptionMaxParticipationPct,
+		BacktestFrom:               fromTime,
+		BacktestTo:                 toTime,
 	}), h.appCfg, h.marketData, h.log)
 
 	// Wire history persistence: capture meta & DNA now, so the save is
@@ -285,6 +352,8 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		Str("fee_schedule", h.appCfg.Backtest.FeeSchedule).
 		Bool("option_entry_spread", entrySpread).
 		Float64("option_spread_mult", req.OptionSpreadMultiplier).
+		Float64("option_impact_scale_bps", req.OptionImpactScaleBps).
+		Float64("option_max_participation_pct", req.OptionMaxParticipationPct).
 		Msg("backtest enqueued — realism knobs resolved")
 
 	h.queue <- &backtestJob{runner: runner, log: h.log}
@@ -529,6 +598,9 @@ func (h *BacktestHandler) collectStrategySymbols(strategyIDs []string) []string 
 			continue
 		}
 		for _, s := range h.Symbols {
+			if strings.HasPrefix(s, "__") {
+				continue
+			}
 			if !seen[s] {
 				seen[s] = true
 				symbols = append(symbols, s)
@@ -571,5 +643,18 @@ func parseTimeParam(v string) (time.Time, error) {
 		return t.UTC(), nil
 	}
 	return time.Time{}, &json.UnsupportedValueError{}
+}
+
+// copytradeDefaultSymbols returns the canonical 23-symbol universe covered
+// by services/discord-copytrade/state/history_90d.jsonl. The copytrade_v1
+// TOML only lists the sentinel symbol, so neither collectStrategySymbols
+// nor a dashboard forwarding strategy-meta.symbols can yield a tradeable
+// list — fall back here when copytrade is selected and symbols are empty.
+func copytradeDefaultSymbols() []string {
+	return []string{
+		"AAPL", "AMZN", "BABA", "BIDU", "ENPH", "FSLR", "GLD", "GOOGL",
+		"INTC", "IWM", "KWEB", "MARA", "MSFT", "NIO", "NVDA", "ORCL",
+		"PDD", "QQQ", "RKLB", "SLV", "SPY", "TSLA", "TSM",
+	}
 }
 
