@@ -2782,6 +2782,14 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 		_, _ = s.evaluateEntries(ec)
 	}
 
+	indicators := indicatorsFromData(s.Indicators)
+	indicators.VolumeRatio = volRatio
+	indicators.AVWAPBias = avwapBias
+	indicators.SlopeBPS = slopeBPS
+	indicators.AboveCount = copyIntMap(s.AboveCount)
+	indicators.BelowCount = copyIntMap(s.BelowCount)
+	indicators.Volume = s.PrevBars[0].Volume
+
 	payload := domain.EntryGatedPayload{
 		Symbol:       s.Symbol,
 		Strategy:     "avwap",
@@ -2803,14 +2811,7 @@ func (s *AVWAPState) EmitSignalProgress() []any {
 			Band:           factorSet["band_zone"],
 			Components:     toEntryGatedComponents(conf.Components),
 		},
-		Indicators: domain.EntryGatedIndicators{
-			RSI:         s.Indicators.RSI,
-			VolumeRatio: volRatio,
-			AVWAPBias:   avwapBias,
-			SlopeBPS:    slopeBPS,
-			AboveCount:  copyIntMap(s.AboveCount),
-			BelowCount:  copyIntMap(s.BelowCount),
-		},
+		Indicators: indicators,
 		AVWAPState: avwapStateFromCalc(s.Calc, cfg.SlopeLookback),
 		Bar: domain.BarSnapshot{
 			Open:   s.PrevBars[0].Open,
@@ -2870,6 +2871,11 @@ func (s *AVWAPState) emitEarlyGated(ctx start.Context, symbol string, bar start.
 		slopeBPS, _ = s.Calc.Slope(cfg.Anchors[0], cfg.SlopeLookback)
 	}
 
+	indicators := indicatorsFromData(s.Indicators)
+	indicators.AVWAPBias = avwapBias
+	indicators.SlopeBPS = slopeBPS
+	indicators.Volume = bar.Volume
+
 	payload := domain.EntryGatedPayload{
 		Symbol:         symbol,
 		Strategy:       "avwap",
@@ -2882,10 +2888,7 @@ func (s *AVWAPState) emitEarlyGated(ctx start.Context, symbol string, bar start.
 			Score:    score,
 			MaxScore: cfg.MinConfluenceScore,
 		},
-		Indicators: domain.EntryGatedIndicators{
-			AVWAPBias: avwapBias,
-			SlopeBPS:  slopeBPS,
-		},
+		Indicators: indicators,
 		AVWAPState: avwapStateFromCalc(s.Calc, cfg.SlopeLookback),
 		Bar: domain.BarSnapshot{
 			Open: bar.Open, High: bar.High, Low: bar.Low, Close: bar.Close, Volume: bar.Volume,
@@ -2977,6 +2980,14 @@ func (s *AVWAPState) emitEntryGated(ec entryContext) {
 		s.parent.recordHoldReason(ec.symbol, blockingGate, blockingDetail, extra)
 	}
 
+	indicators := indicatorsFromData(s.Indicators)
+	indicators.VolumeRatio = volRatio
+	indicators.AVWAPBias = ec.avwapBias
+	indicators.SlopeBPS = ec.avwapSlope
+	indicators.AboveCount = copyIntMap(s.AboveCount)
+	indicators.BelowCount = copyIntMap(s.BelowCount)
+	indicators.Volume = ec.bar.Volume
+
 	payload := domain.EntryGatedPayload{
 		Symbol:        ec.symbol,
 		Strategy:      "avwap",
@@ -2998,14 +3009,7 @@ func (s *AVWAPState) emitEntryGated(ec entryContext) {
 			Band:     factorSet["band_zone"],
 			Components: toEntryGatedComponents(conf.Components),
 		},
-		Indicators: domain.EntryGatedIndicators{
-			RSI:         s.Indicators.RSI,
-			VolumeRatio: volRatio,
-			AVWAPBias:   ec.avwapBias,
-			SlopeBPS:    ec.avwapSlope,
-			AboveCount:  copyIntMap(s.AboveCount),
-			BelowCount:  copyIntMap(s.BelowCount),
-		},
+		Indicators: indicators,
 		AVWAPState: avwapStateFromCalc(s.Calc, ec.cfg.SlopeLookback),
 		Bar: domain.BarSnapshot{
 			Open:   ec.bar.Open,
@@ -3081,14 +3085,36 @@ func toEntryGatedComponents(in []start.ComponentScore) []domain.EntryGatedCompon
 	out := make([]domain.EntryGatedComponent, len(in))
 	for i, c := range in {
 		out[i] = domain.EntryGatedComponent{
-			Name:   c.Name,
-			Group:  c.Group,
-			Weight: c.Weight,
-			Value:  c.Value,
-			Fired:  c.Fired,
+			Name:     c.Name,
+			Group:    c.Group,
+			Weight:   c.Weight,
+			Value:    c.Value,
+			Fired:    c.Fired,
+			SubScore: c.SubScore,
+			Inputs:   c.Inputs,
 		}
 	}
 	return out
+}
+
+// indicatorsFromData copies the raw diagnostic indicator inputs from an
+// IndicatorData snapshot into an EntryGatedIndicators payload. Site-specific
+// fields (VolumeRatio, AVWAPBias, SlopeBPS, AboveCount/BelowCount, Volume)
+// are filled in by the caller because each emit site reads bar.Volume from a
+// different local variable (s.PrevBars[0] / bar / ec.bar) and the AVWAP-only
+// fields don't apply to MACD.
+func indicatorsFromData(ind start.IndicatorData) domain.EntryGatedIndicators {
+	return domain.EntryGatedIndicators{
+		RSI:           ind.RSI,
+		VolumeSMA:     ind.VolumeSMA,
+		MACDLine:      ind.MACDLine,
+		MACDSignal:    ind.MACDSignal,
+		MACDHistogram: ind.MACDHistogram,
+		EMA21:         ind.EMA21,
+		EMA50:         ind.EMA50,
+		StochK:        ind.StochK,
+		StochD:        ind.StochD,
+	}
 }
 
 // avwapStateFromCalc snapshots the AnchoredVWAPCalc into the JSON DTO

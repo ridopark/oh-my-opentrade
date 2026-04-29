@@ -162,6 +162,19 @@ func TestMyEntity(t *testing.T) {
 }
 ```
 
+### Repo-specific test gotchas
+
+Before writing a new `_test.go` in this repo, lock in these conventions:
+
+- **Module path is `github.com/oh-my-opentrade/backend`.** Not `ridopark/oh-my-opentrade`. Sub-agents often guess the latter from the repo URL; verify with a `head backend/go.mod` first.
+- **Default to internal-package tests (`package foo`, NOT `package foo_test`)** when the test needs unexported types, fields, or methods. Most `app/...` tests do this — `repeg_dup_guard_test.go`, `multi_fill_test.go`, `reconcile_fills_test.go` are all `package execution`. The external `_test` package is reserved for thin "library API" tests.
+- **Reuse the package's existing test fixtures.** Before hand-rolling stub repos / brokers, grep the package for `noopBroker`, `mockBroker`, `trackingBroker`, `capturingRepo`, `reconcileFillsRepo`, `multiFillRepo`. They satisfy the wide `ports.RepositoryPort` / `ports.BrokerPort` surfaces and are extendable via embedding.
+- **Pre-commit hooks block compile-failing commits in this repo.** A pure RED commit (tests reference symbols that do not exist yet) cannot be landed by itself — the lint/typecheck hook rejects it before the commit lands. Two options:
+  1. **Combine RED + GREEN in one commit.** Write the test first, verify it fails as expected in-session, then add the production stub and commit both together. This is the pattern Phase 1's `recordFillsFromExecHistory` used.
+  2. **Land an empty stub of the production symbol first** (returns nil / zero value) so RED can compile and fail by assertion, then GREEN replaces the stub.
+  Never `--no-verify` to bypass the hook.
+- **For sub-agent dispatch (tdd-red, etc.)**: include the module path, the target test package (internal vs external), and the nearest neighbor test file the agent should copy. Agents that probe via reflection waste context; agents that copy proven fixtures land working code first try.
+
 ### SQL Migration
 Filename: `migrations/NNNN_description.up.sql` / `.down.sql`
 ```sql

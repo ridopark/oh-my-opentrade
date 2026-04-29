@@ -393,6 +393,7 @@ func (c *instanceContext) EmitDomainEvent(evt any) error {
 		}
 		if c.runner != nil {
 			p.AIEnabled = !c.runner.disableAI
+			p.Tag = c.runner.BacktestTag()
 		}
 		evt = p
 	}
