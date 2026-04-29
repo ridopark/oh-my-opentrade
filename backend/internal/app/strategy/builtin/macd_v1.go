@@ -1053,6 +1053,7 @@ func (s *MACDStrategy) emitMACDEntryGated(ctx start.Context, symbol string, bmSt
 		},
 		Indicators: indicators,
 		Bar: domain.BarSnapshot{
+			Time:   bar.Time,
 			Open:   bar.Open,
 			High:   bar.High,
 			Low:    bar.Low,
