@@ -2,7 +2,9 @@ package bootstrap
 
 import (
 	"database/sql"
+	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
 	"github.com/oh-my-opentrade/backend/internal/adapters/dolthub"
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
 	"github.com/oh-my-opentrade/backend/internal/adapters/llm"
@@ -45,6 +47,15 @@ type BacktestInfra struct {
 type BacktestInfraOptions struct {
 	OptionExitSpreadMultiplier float64 // 0 => 1.0 (no scaling)
 	OptionEntrySpreadEnabled   *bool   // nil => default true (spread applied); &false => legacy mid-fill
+
+	// Tier 1 market-impact knobs. Both zero (default) is byte-identical to
+	// today: helper short-circuits, port is never constructed. BacktestFrom/To
+	// frame the [from, to] window the bar-volume adapter pre-fetches per OCC
+	// on first touch.
+	OptionImpactScaleBps      float64
+	OptionMaxParticipationPct float64
+	BacktestFrom              time.Time
+	BacktestTo                time.Time
 }
 
 // BuildBacktestInfra constructs all adapter-layer dependencies for a backtest.
@@ -95,11 +106,38 @@ func BuildBacktestInfra(deps BacktestDeps, slippageBPS int64, initialEquity floa
 		MoveCrushFloor:             0.5, // cap crush at 50% of entry IV
 		OptionExitSpreadMultiplier: opt.OptionExitSpreadMultiplier,
 		OptionEntrySpreadEnabled:   opt.OptionEntrySpreadEnabled == nil || *opt.OptionEntrySpreadEnabled,
+		OptionImpactScaleBps:       opt.OptionImpactScaleBps,
+		OptionMaxParticipationPct:  opt.OptionMaxParticipationPct,
 		FillModel:                  fillModel,
 		FeeSchedule:                feeSchedule,
 		LatencyMsEq:                btCfg.LatencyMsEquity,
 		LatencyMsOpt:               btCfg.LatencyMsOption,
 	}, log.With().Str("component", "simbroker").Logger())
+
+	// Tier 1 market-impact: lazy-construct the bar-volume adapter ONLY when
+	// either knob is non-zero. Zero+zero leaves sim.optionBarVolume == nil so
+	// the helper short-circuits. The adapter is bound to [BacktestFrom,
+	// BacktestTo] and pre-fetches one bar series per OCC on first touch via
+	// the existing Alpaca options-bars REST endpoint.
+	if (opt.OptionImpactScaleBps > 0 || opt.OptionMaxParticipationPct > 0) && !opt.BacktestFrom.IsZero() && !opt.BacktestTo.IsZero() {
+		if deps.AppCfg.Alpaca.APIKeyID == "" {
+			log.Warn().Msg("option market-impact knobs ON but Alpaca credentials missing — bar-volume lookup disabled, helper no-ops")
+		} else {
+			alpacaAdapt, alpacaErr := alpaca.NewAdapter(deps.AppCfg.Alpaca, log.With().Str("component", "alpaca_bv").Logger())
+			if alpacaErr != nil {
+				log.Warn().Err(alpacaErr).Msg("option market-impact knobs ON but alpaca adapter failed — bar-volume helper no-ops")
+			} else {
+				barVol := simbroker.NewOptionBarVolumeAdapter(alpacaAdapt, opt.BacktestFrom, opt.BacktestTo, log)
+				sim.SetOptionBarVolume(barVol)
+				log.Info().
+					Float64("scale_bps", opt.OptionImpactScaleBps).
+					Float64("max_part_pct", opt.OptionMaxParticipationPct).
+					Time("from", opt.BacktestFrom).
+					Time("to", opt.BacktestTo).
+					Msg("option market-impact knobs ON — bar-volume adapter wired")
+			}
+		}
+	}
 
 	earningsRepo := timescaledb.NewEarningsRepo(deps.DB, log.With().Str("component", "earnings_repo").Logger())
 

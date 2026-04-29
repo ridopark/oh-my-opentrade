@@ -1994,6 +1994,13 @@ backtestComplete:
 			Int("session_scan_errors", scanErrs).
 			Int("session_unknown_symbols", unknownSyms)
 	}
+	if r.infra.SimBroker != nil {
+		is := r.infra.SimBroker.ImpactStats()
+		summary = summary.
+			Int64("impact_applied", is.Applied).
+			Int64("impact_noop", is.NoOp).
+			Int64("impact_cap_reject", is.CapReject)
+	}
 	summary.Msg("backtest data-quality summary")
 
 	finalResult := r.collector.Result()
