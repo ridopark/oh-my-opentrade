@@ -237,11 +237,17 @@ type EnrichedBarPayload struct {
 
 // BarSnapshot is a compact OHLCV snapshot embedded in signal progress events.
 type BarSnapshot struct {
-	Open   float64 `json:"open"`
-	High   float64 `json:"high"`
-	Low    float64 `json:"low"`
-	Close  float64 `json:"close"`
-	Volume float64 `json:"volume"`
+	// Time is the bar's open timestamp — the canonical bar identity used by
+	// the SQL-diff workflow to JOIN live and backtest rows. Independent of
+	// the strategy_signal_events.ts column, which reflects event-creation
+	// time and can drift sub-second (live) or arbitrarily (backtest, where
+	// the fast-clock plumbing is set per emit-batch rather than per bar).
+	Time   time.Time `json:"time,omitzero"`
+	Open   float64   `json:"open"`
+	High   float64   `json:"high"`
+	Low    float64   `json:"low"`
+	Close  float64   `json:"close"`
+	Volume float64   `json:"volume"`
 }
 
 // EntryGatedPayload is emitted when a strategy evaluates an entry but a gate blocks it.
