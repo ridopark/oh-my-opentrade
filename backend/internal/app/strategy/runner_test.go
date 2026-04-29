@@ -1262,3 +1262,89 @@ func TestRunner_HandleRejection_IgnoresUnknownSymbol(t *testing.T) {
 
 	assert.False(t, called, "OnEvent should not be called for unknown symbol")
 }
+
+// TestRunner_BacktestTag_ReturnsTrimmedSuffix exposes the in-process backtest
+// label as a payload-friendly string. TagBacktest stamps htfLabelSuffix as
+// "_backtest_<id>"; the diag patch needs the leading underscore stripped so the
+// EntryGated payload's Tag field reads "backtest_<id>" — that is the JOIN key
+// for the live-vs-backtest SQL diff in strategy_signal_events.
+func TestRunner_BacktestTag_ReturnsTrimmedSuffix(t *testing.T) {
+	bus := memory.NewBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("paper")
+
+	t.Run("empty when not tagged", func(t *testing.T) {
+		runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+		assert.Equal(t, "", runner.BacktestTag())
+	})
+
+	t.Run("trims leading underscore after TagBacktest", func(t *testing.T) {
+		runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+		runner.TagBacktest("test123")
+		assert.Equal(t, "backtest_test123", runner.BacktestTag())
+	})
+}
+
+// TestRunner_EntryGated_StampsBacktestTag verifies instanceContext.EmitDomainEvent
+// stamps the runner's backtest tag onto the EntryGatedPayload at emit time, so a
+// SQL diff on strategy_signal_events can distinguish backtest rows from live
+// rows for the same (symbol, ts).
+func TestRunner_EntryGated_StampsBacktestTag(t *testing.T) {
+	cases := []struct {
+		name       string
+		backtestID string
+		wantTag    string
+	}{
+		{"live_path_no_tag", "", ""},
+		{"backtest_path_tagged", "abc123", "backtest_abc123"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := memory.NewBus()
+			router := strategy.NewRouter()
+			envMode, _ := domain.NewEnvMode("paper")
+			runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+			if tc.backtestID != "" {
+				runner.TagBacktest(tc.backtestID)
+			}
+
+			fs := newFakeStrategy("test_spec", "1.0.0")
+			fs.onBarFunc = func(c strat.Context, symbol string, _ strat.Bar, st strat.State) (strat.State, []strat.Signal, error) {
+				_ = c.EmitDomainEvent(domain.EntryGatedPayload{
+					Symbol:   symbol,
+					Strategy: "raw_engine_name",
+				})
+				return st, nil, nil
+			}
+
+			id, _ := strat.NewInstanceID("test_spec:1.0.0:AAPL")
+			inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+				Symbols:    []string{"AAPL"},
+				Timeframes: []string{"1m"},
+				Priority:   100,
+			}, strat.LifecycleLiveActive, nil)
+
+			tctx := newTestCtx()
+			require.NoError(t, inst.InitSymbol(tctx, "AAPL", nil))
+			router.Register(inst)
+
+			ctx := context.Background()
+			var captured []domain.Event
+			require.NoError(t, bus.Subscribe(ctx, domain.EventEntryGated, func(_ context.Context, ev domain.Event) error {
+				captured = append(captured, ev)
+				return nil
+			}))
+			require.NoError(t, runner.Start(ctx))
+
+			sym, _ := domain.NewSymbol("AAPL")
+			bar, _ := domain.NewMarketBar(time.Date(2025, 3, 4, 15, 0, 0, 0, time.UTC), sym, "1m", 100, 101, 99, 100, 10)
+			ev, _ := domain.NewEvent(domain.EventMarketBarSanitized, "test-tenant", envMode, "bar-1", bar)
+			require.NoError(t, bus.Publish(ctx, *ev))
+
+			require.Len(t, captured, 1, "expected one EntryGated event")
+			payload, ok := captured[0].Payload.(domain.EntryGatedPayload)
+			require.True(t, ok, "payload type")
+			assert.Equal(t, tc.wantTag, payload.Tag, "Tag stamp")
+		})
+	}
+}
