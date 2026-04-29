@@ -12,6 +12,7 @@ bin/
 # IDE
 .idea/
 .vscode/
+.obsidian/
 *.swp
 *.swo
 
@@ -34,6 +35,7 @@ logs/
 
 # Temp
 tmp/
+_tmp/
 
 # Debug screenshots
 /*.png
