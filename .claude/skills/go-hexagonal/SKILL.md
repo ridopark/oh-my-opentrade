@@ -125,6 +125,8 @@ type Service struct {
 - `services.go` — service instantiation + dependency injection
 - `http.go` — HTTP route registration
 
+**For NEW post-build wiring** (event subscriptions, `SetX` hooks, refreshers, notifiers): add it to `internal/app/pipeline/` as a `Pipeline.WireXxx` method, gated on `Mode`. Don't hand-edit `cmd/omo-core/services.go`, `internal/app/backtest/runner.go`, and `cmd/omo-replay/main.go` independently — that pattern produced seven cataloged divergences (audit H2/H4/M9 + #39-42) where wiring was added in 1-2 of 3 places and forgotten elsewhere. The pipeline package is the single destination; subsequent migration PRs move existing scattered wiring there.
+
 ## Coding Conventions
 
 ### Error Wrapping
@@ -368,6 +370,21 @@ finer cadence than their flush.
 - For warmup paths that span pre-anchor history, bypass the aggregator and seed the calculator directly from native HTF bars (`monitor.Service.WarmUpNative`).
 - Or anchor the aggregator at the first warmup bar's date and re-anchor at session boundary (`Runner.WarmUpHTF` does this, but the constructed aggregator is per-call and discarded — runtime aggregators stay anchored at todayOpen).
 - Don't trust "WarmUp succeeded" log lines as evidence of HTF state — they reflect the 1m calc only. Verify HTF state with parity-diag (`PARITY_DIAG_ENABLED=true`) showing the per-(sym, tf) snapshot has non-zero EMAs.
+
+### Stateful per-bar processors must own a `lastBarTime` dedup, not delegate "don't replay me" to callers
+
+Any type that mutates accumulator state on each bar (`Update`/`Push`/`OnBar`/`Add` on a struct holding running sums, rolling windows, EMAs, state machines, histograms) needs a `lastBarTime time.Time` field and a short-circuit: `if !lastBarTime.IsZero() && !bar.Time.After(lastBarTime) { return /*no-op*/ }; lastBarTime = bar.Time`. Reset paths (`Reset`, `ResetSession`) must clear the watermark so a fresh session accepts any first bar.
+
+Pattern shipped across five processors after the SOLID re-audit:
+- `domain.AnchoredVWAP.UpdateSingleAnchor` — `lastReplayedBarTime` per anchor (PR #25)
+- `monitor.IndicatorCalculator.Update` — `symbolState.lastBarTime` (PR #35, audit M3)
+- `domain.BarAggregator.Push` — `lastBarTime` (PR #43, #36)
+- `monitor.ORBSession.OnBar` — `LastBarTime` exported (PR #44, #37)
+- `strategy.VolumeProfiler.Push` — `lastBarTime` (PR #45, #38)
+
+Why: today only the bridge → runtime overlap in backtest/omo-replay would expose the double-feed (and only because aggregators init AFTER the bridge — coincidence of init order, not class invariant). Future replay paths — parity-observation re-emit, mid-session restart with warmup re-run, omo-replay slice replay — would silently double-count without the dedup. Caller-owned "don't replay me" is wrong on SRP grounds: the accumulator owns its state mutation and should own the invariant.
+
+Test pattern (mirror `TestAggregator_PushDedupsReplay` at `backend/internal/domain/aggregator_test.go`): build `single` (single-pass) and `bridged` (feed first N then replay all M) processors, assert their post-state is identical on every accumulator field. Without dedup, the bridged variant double-counts the overlap and the assertion fails. Pair with a `Reset*ClearsDedup` test that pushes a bar at `t1`, calls Reset with a session start at `t0 < t1`, and asserts a subsequent push at `t0` is accepted.
 
 ### `WarmUpNative` + `Service.WarmUp` aggregator path is a double-feed risk
 Once `WarmUpNative` is the canonical HTF seed, the legacy `Service.WarmUp(1m bars)` path becomes a hazard for any bars the aggregator accepts (today's pre-boot 1m bars, anchored at todayOpen): each closed 5m bar emitted by `s.aggregators[sym:5m]` flows into `s.calculator.Update`, double-counting bars that `WarmUpNative` will also seed. Symptom (2026-04-28): monitor and runner_htf agreed on close-only fields (rsi/ema9/ema21/regime_score) but diverged on cumulative fields (vwap $1.50, atr $1.17, vwap_sd $0.66) at runtime — the calc state had today's session integrated twice. Fix: pre-mark the (sym, tf) slots `WarmUpNative` will handle (`Service.ReserveHTFNative`) before any `Service.WarmUp` call, and gate the HTF block in `WarmUp` on the reservation set. Aggregator priming (`agg.Push`) must still run so the runtime first-close has full bucket coverage; only the `s.calculator.Update(closed)` side effect is skipped. Symbols/tfs without a registered HTF strategy (no WarmUpNative call) fall through to the legacy seeding unchanged. Companion fix on the runner side: `Runner.PrimeAggregators(orbBars)` pushes today's 1m through `r.aggregators` without firing `htfCalc.Update` — the prior code (`Runner.WarmUpHTF`) used a throwaway aggregator and a guarded `WarmUpTF`, leaving the runtime aggregator unprimed and emitting a partial first 5m close.
