@@ -3,6 +3,7 @@ package monitor_test
 import (
 	"context"
 	"encoding/json"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,16 +12,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// rthTestTime is a fixed RTH-ET timestamp (10:00 ET on 2026-04-29, a
+// rthTestTime is the base RTH-ET timestamp (10:00 ET on 2026-04-29, a
 // Wednesday — non-holiday) used by createBar / createBarDetailed so 1m
 // equity bars in tests pass IndicatorCalculator's RTH gate. Using
 // time.Now() is non-deterministic and can fall outside RTH depending on
 // when CI runs.
-var rthTestTime = time.Date(2026, 4, 29, 14, 0, 0, 0, time.UTC)
+//
+// rthTestSeq advances monotonically across calls so successive bars from
+// createBar / createBarDetailed have strictly increasing bar.Time. Required
+// because IndicatorCalculator.Update dedupes on bar.Time — feeding bars
+// with the same timestamp twice would short-circuit on the second call.
+// 1-second increments give 6 hours of headroom (RTH spans 6.5h) before
+// the global counter would push bars past 16:00 ET, which is plenty for
+// every existing test in this package.
+var (
+	rthTestTime = time.Date(2026, 4, 29, 14, 0, 0, 0, time.UTC)
+	rthTestSeq  uint64
+)
+
+func nextRthBarTime() time.Time {
+	n := atomic.AddUint64(&rthTestSeq, 1)
+	return rthTestTime.Add(time.Duration(n-1) * time.Second)
+}
 
 func createBar(t *testing.T, symbol domain.Symbol, closePrice, volume float64) domain.MarketBar {
 	bar, err := domain.NewMarketBar(
-		rthTestTime,
+		nextRthBarTime(),
 		symbol,
 		"1m",
 		closePrice, closePrice, closePrice, closePrice,
@@ -32,7 +49,7 @@ func createBar(t *testing.T, symbol domain.Symbol, closePrice, volume float64) d
 
 func createBarDetailed(t *testing.T, symbol domain.Symbol, o, h, l, c, v float64) domain.MarketBar {
 	bar, err := domain.NewMarketBar(
-		rthTestTime,
+		nextRthBarTime(),
 		symbol,
 		"1m",
 		o, h, l, c,

@@ -2,6 +2,7 @@ package monitor_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -59,6 +60,71 @@ func TestIndicators_RSI_InsufficientData(t *testing.T) {
 
 	snap := calc.Update(createBar(t, sym, 100.0, 10.0))
 	assert.Equal(t, 0.0, snap.RSI, "insufficient data should return 0")
+}
+
+// TestIndicators_Update_DedupsReplayBars covers the M3 bridge double-feed
+// fix. The backtest and omo-replay paths feed the first ~50 replay bars
+// to Service.WarmUp (which calls calc.Update) and then re-feed the same
+// bars through the runtime path. Without dedup, every incremental
+// accumulator (volumes, vwap, RSI window, MACD/ADX) double-counts. This
+// test asserts that feeding the same time-ordered sequence twice produces
+// the same snapshot as a single pass.
+func TestIndicators_Update_DedupsReplayBars(t *testing.T) {
+	sym, _ := domain.NewSymbol("BTC/USD")
+
+	// Build a deterministic sequence of bars with monotonic times so the
+	// replay leg uses identical (sym, tf, time) keys to the warmup leg.
+	const n = 30
+	base := time.Date(2026, 4, 29, 14, 0, 0, 0, time.UTC)
+	bars := make([]domain.MarketBar, n)
+	for i := 0; i < n; i++ {
+		bar, err := domain.NewMarketBar(
+			base.Add(time.Duration(i)*time.Minute),
+			sym,
+			"1m",
+			100.0+float64(i),
+			101.0+float64(i),
+			99.0+float64(i),
+			100.5+float64(i),
+			10.0,
+		)
+		if err != nil {
+			t.Fatalf("createBar: %v", err)
+		}
+		bars[i] = bar
+	}
+
+	// Single-pass baseline.
+	single := monitor.NewIndicatorCalculator()
+	var singleSnap domain.IndicatorSnapshot
+	for _, b := range bars {
+		singleSnap = single.Update(b)
+	}
+
+	// Bridge + runtime: feed the first 10 bars (the bridge), then feed
+	// all 30 bars (the runtime replay). The first 10 overlap.
+	bridged := monitor.NewIndicatorCalculator()
+	for _, b := range bars[:10] {
+		bridged.Update(b)
+	}
+	var bridgedSnap domain.IndicatorSnapshot
+	for _, b := range bars {
+		bridgedSnap = bridged.Update(b)
+	}
+
+	// Snapshots from both paths must match — if dedup is missing, the
+	// bridged path double-counts the first 10 bars and produces drift in
+	// every accumulator-derived field.
+	assert.InDelta(t, singleSnap.VWAP, bridgedSnap.VWAP, 1e-9, "VWAP must match")
+	assert.InDelta(t, singleSnap.RSI, bridgedSnap.RSI, 1e-9, "RSI must match")
+	assert.InDelta(t, singleSnap.EMA9, bridgedSnap.EMA9, 1e-9, "EMA9 must match")
+	assert.InDelta(t, singleSnap.EMA21, bridgedSnap.EMA21, 1e-9, "EMA21 must match")
+	assert.InDelta(t, singleSnap.MACDLine, bridgedSnap.MACDLine, 1e-9, "MACD line must match")
+	assert.InDelta(t, singleSnap.MACDSignal, bridgedSnap.MACDSignal, 1e-9, "MACD signal must match")
+	assert.InDelta(t, singleSnap.ATR, bridgedSnap.ATR, 1e-9, "ATR must match")
+	assert.InDelta(t, singleSnap.VolumeSMA, bridgedSnap.VolumeSMA, 1e-9, "VolumeSMA must match")
+	assert.InDelta(t, singleSnap.BBUpper, bridgedSnap.BBUpper, 1e-9, "BB upper must match")
+	assert.InDelta(t, singleSnap.BBLower, bridgedSnap.BBLower, 1e-9, "BB lower must match")
 }
 
 func TestIndicators_Stochastic(t *testing.T) {
