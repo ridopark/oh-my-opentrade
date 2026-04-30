@@ -28,7 +28,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
-	"github.com/oh-my-opentrade/backend/internal/app/pipeline"
+	pkgpipeline "github.com/oh-my-opentrade/backend/internal/app/pipeline"
 	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/warmup"
@@ -501,7 +501,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// collector with empty spot_mfe_pct / spot_mae_pct fields.
 	execBundle.Service.SetPositionLookup(posMonBundle.Service)
 
-	btPipeline := pipeline.New(pipeline.ModeBacktest)
+	btPipeline := pkgpipeline.New(pkgpipeline.ModeBacktest)
 	btPipeline.WireRepegNotifier(posMonBundle.Service, execBundle.Service)
 	btPipeline.WireATRTrailConfig(posMonBundle.Service, r.appCfg.Exits.ATRTrail)
 	btPipeline.WireNotifiers(posMonBundle.Service, nil)
@@ -1168,10 +1168,18 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Always set session-based anchor resolution and prev-day bar replay
 	// so AVWAP strategies get correct anchor warmup.
 	pipeline.Runner.SetAnchorResolver(sessionResolver.ResolveAnchors)
-	pipeline.Runner.SetPrevDayBarsFn(func(symbol string, since, until time.Time) []start.Bar {
+	prevDayBarsFn := func(symbol string, since, until time.Time) []start.Bar {
 		return sessionResolver.GetBarsBetween(ctx, r.infra.DB, symbol, since, until)
-	})
+	}
+	pipeline.Runner.SetPrevDayBarsFn(prevDayBarsFn)
 	pipeline.Runner.SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
+	btPipeline.WireAVWAPMonitor(monitorSvc, pkgpipeline.AVWAPMonitorWiring{
+		AVWAPFn:            pipeline.Runner.GetAVWAPValues,
+		AnchorResolverFn:   sessionResolver.ResolveAnchors,
+		SessionRefresherFn: nil,
+		PrevDayBarsFn:      prevDayBarsFn,
+		Anchors:            []string{"session_open", "pd_high", "pd_low"},
+	})
 	if len(dpLookup) > 0 {
 		pipeline.Runner.SetDarkPoolLookup(dpLookup)
 	}

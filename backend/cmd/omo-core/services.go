@@ -30,7 +30,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/notify"
 	"github.com/oh-my-opentrade/backend/internal/app/orchestrator"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
-	"github.com/oh-my-opentrade/backend/internal/app/pipeline"
+	pkgpipeline "github.com/oh-my-opentrade/backend/internal/app/pipeline"
 	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
 	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	screenerapp "github.com/oh-my-opentrade/backend/internal/app/screener"
@@ -247,7 +247,7 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	svc.priceCache = posMonBundle.PriceCache
 	svc.posMonitor = posMonBundle.Service
 
-	livePipeline := pipeline.New(pipeline.ModeLive)
+	livePipeline := pkgpipeline.New(pkgpipeline.ModeLive)
 	livePipeline.WireRepegNotifier(svc.posMonitor, svc.execution)
 
 	// Phase 2 of the exit_repeg_dup_fill fix: gate atomic-modify re-pegs
@@ -603,15 +603,13 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		log.With().Str("component", "symbolrouter").Logger(),
 	)
 
-	// Wire AVWAP function so monitor can include anchored VWAP values in enriched bar events.
-	svc.monitor.SetAVWAPFn(svc.strategyRunner.GetAVWAPValues)
-
-	// Wire standalone AVWAP computation in monitor for ALL streaming symbols.
-	// This ensures newly rotated symbols have AVWAP values even before strategy assignment.
-	svc.monitor.SetAnchorResolverFn(sessionResolver.ResolveAnchors)
-	svc.monitor.SetSessionRefresherFn(sessionRefreshFn)
-	svc.monitor.SetPrevDayBarsFn(prevDayBarsFn)
-	svc.monitor.SetAVWAPAnchors([]string{"session_open", "pd_high", "pd_low"})
+	pkgpipeline.New(pkgpipeline.ModeLive).WireAVWAPMonitor(svc.monitor, pkgpipeline.AVWAPMonitorWiring{
+		AVWAPFn:            svc.strategyRunner.GetAVWAPValues,
+		AnchorResolverFn:   sessionResolver.ResolveAnchors,
+		SessionRefresherFn: sessionRefreshFn,
+		PrevDayBarsFn:      prevDayBarsFn,
+		Anchors:            []string{"session_open", "pd_high", "pd_low"},
+	})
 
 	// Load session data for all base symbols (not just strategy-assigned ones)
 	// so the monitor's standalone AVWAP can resolve anchors for any streaming symbol.
