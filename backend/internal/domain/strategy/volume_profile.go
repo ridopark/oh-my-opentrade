@@ -3,6 +3,7 @@ package strategy
 import (
 	"math"
 	"sort"
+	"time"
 )
 
 // VolumeProfiler detects volume rotation zones — tight price ranges with
@@ -28,6 +29,17 @@ type VolumeProfiler struct {
 	rotationAvgVol   float64
 	rotationBars     int
 	rotationLastBar  Bar
+
+	// lastBarTime is set on every state-mutating Push (after the
+	// bucketSize early-exit, before totalVolume/barCount increment).
+	// Replays of bars at or before lastBarTime short-circuit so the
+	// rolling window cannot shift twice (which would corrupt removeBar's
+	// invariant that the evicted bar matches what addBar inserted),
+	// histogram buckets cannot increment twice, and rotation-detection
+	// state cannot advance on the same bar. Mirrors the dedup pattern in
+	// IndicatorCalculator.Update, AnchoredVWAP.UpdateSingleAnchor, and
+	// BarAggregator.Push.
+	lastBarTime time.Time
 }
 
 // NewVolumeProfiler creates a VolumeProfiler.
@@ -136,6 +148,16 @@ func (p *VolumeProfiler) Push(bar Bar) *CandidateAnchor {
 		return nil
 	}
 
+	// Replay dedup: skip bars at or before the last accumulator-running
+	// Push. Placed after the bucketSize seeding (which is idempotent
+	// under same-bar replay) and before any state mutation so the
+	// rolling window, histogram, and rotation state cannot be advanced
+	// twice for the same bar.Time.
+	if !p.lastBarTime.IsZero() && !bar.Time.After(p.lastBarTime) {
+		return nil
+	}
+	p.lastBarTime = bar.Time
+
 	p.totalVolume += bar.Volume
 	p.barCount++
 	avgVolAllTime := p.totalVolume / float64(p.barCount)
@@ -224,4 +246,5 @@ func (p *VolumeProfiler) Reset() {
 	p.barCount = 0
 	p.bucketSize = 0
 	p.rotationDetected = false
+	p.lastBarTime = time.Time{}
 }

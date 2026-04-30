@@ -166,3 +166,63 @@ func TestVolumeProfiler_WarmupPeriod(t *testing.T) {
 		assert.Nil(t, result, "should not trigger during warmup, bar %d", i)
 	}
 }
+
+// TestVolumeProfiler_PushDedupsReplay covers the SRP fix that closes the
+// M3-shape latent bug. Replaying a bar must not double-count totalVolume,
+// double-increment barCount, shift the rolling window twice, double-add
+// to histogram buckets, or advance rotation-detection state. Mirrors the
+// dedup precedent in IndicatorCalculator (PR #35), AnchoredVWAP (PR #25),
+// and BarAggregator.
+func TestVolumeProfiler_PushDedupsReplay(t *testing.T) {
+	t0 := time.Date(2026, 3, 17, 10, 0, 0, 0, time.UTC)
+
+	// Single-pass: feed 8 bars (less than the 10-bar window so we
+	// observe pre-rotation state, where every accumulator is still
+	// growing).
+	single := NewVolumeProfiler(0.25, 10, "5m")
+	for i := 0; i < 8; i++ {
+		single.Push(makeBar(t0, i*5, 100.0, 100.3, 99.8, 100.1, 1000))
+	}
+
+	// Bridge + replay: feed first 4 bars (the bridge), then feed all 8
+	// bars (the runtime replay). Without dedup, bars 0-3 contribute
+	// twice to totalVolume / barCount / histogram.
+	bridged := NewVolumeProfiler(0.25, 10, "5m")
+	for i := 0; i < 4; i++ {
+		bridged.Push(makeBar(t0, i*5, 100.0, 100.3, 99.8, 100.1, 1000))
+	}
+	for i := 0; i < 8; i++ {
+		bridged.Push(makeBar(t0, i*5, 100.0, 100.3, 99.8, 100.1, 1000))
+	}
+
+	// Snapshots must match — if dedup is missing, the bridged path's
+	// totalVolume = 12000 (4 doubled + 4 single = 4000 + 4000 + 4000)
+	// vs single's 8000.
+	assert.Equal(t, single.totalVolume, bridged.totalVolume, "totalVolume must match single-pass")
+	assert.Equal(t, single.barCount, bridged.barCount, "barCount must match single-pass")
+	assert.Equal(t, single.count, bridged.count, "rolling-window count must match")
+	assert.Equal(t, single.head, bridged.head, "rolling-window head must match")
+	require.Equal(t, len(single.histogram), len(bridged.histogram), "histogram bucket count must match")
+	for k, v := range single.histogram {
+		assert.InDelta(t, v, bridged.histogram[k], 1e-9, "histogram bucket %d must match", k)
+	}
+}
+
+// TestVolumeProfiler_ResetClearsDedup asserts Reset clears the dedup
+// watermark so a freshly-reset profiler accepts its first bar regardless
+// of how its time compares to the prior session's last bar.
+func TestVolumeProfiler_ResetClearsDedup(t *testing.T) {
+	vp := NewVolumeProfiler(0.25, 5, "5m")
+	t0 := time.Date(2026, 3, 17, 10, 0, 0, 0, time.UTC)
+
+	// Push a bar at t0 + 30m so lastBarTime advances.
+	vp.Push(makeBar(t0, 30, 100.0, 100.3, 99.8, 100.1, 1000))
+	require.Equal(t, int64(1), vp.barCount)
+
+	// Reset and push a bar EARLIER than the prior lastBarTime.
+	vp.Reset()
+	vp.Push(makeBar(t0, 0, 100.0, 100.3, 99.8, 100.1, 1000))
+
+	// barCount must reflect the post-reset push — proves dedup was cleared.
+	require.Equal(t, int64(1), vp.barCount, "post-Reset push must be accepted regardless of time vs prior lastBarTime")
+}
