@@ -76,6 +76,11 @@ type SessionResolver struct {
 	// inject a stub so the partial-cache-fallback path can be exercised
 	// without standing up a real *sql.DB.
 	barFetcher func(ctx context.Context, symbol string, since, until time.Time) []start.Bar
+
+	// sessionLoader overrides the DB query path in Load. Production leaves
+	// this nil; tests inject a stub so RefreshIfStale's reload path can be
+	// exercised without a real *sql.DB.
+	sessionLoader func(ctx context.Context, sym domain.Symbol, from, to time.Time) (map[string]SessionData, error)
 }
 
 func NewSessionResolver(loc *time.Location) *SessionResolver {
@@ -204,6 +209,16 @@ func tradableAt(windows []ports.UniverseWindow, at time.Time) bool {
 }
 
 func (r *SessionResolver) Load(ctx context.Context, db *sql.DB, sym domain.Symbol, from, to time.Time) error {
+	if r.sessionLoader != nil {
+		symSessions, err := r.sessionLoader(ctx, sym, from, to)
+		if err != nil {
+			return err
+		}
+		r.mu.Lock()
+		r.sessions[sym.String()] = symSessions
+		r.mu.Unlock()
+		return nil
+	}
 	rows, err := db.QueryContext(ctx, `
 		WITH rth_bars AS (
 			SELECT time, open, high, low, close, volume,
@@ -388,6 +403,40 @@ func (r *SessionResolver) Load24H(ctx context.Context, db *sql.DB, sym domain.Sy
 	r.sessions[sym.String()] = symSessions
 	r.mu.Unlock()
 	return nil
+}
+
+// RefreshIfStale lazily re-loads session data when the in-memory map's most
+// recent entry is older than barTime's previous calendar day in NY. Live
+// runs that span multiple session days otherwise serve stale prevDay anchor
+// times from the startup-only Load, causing pd_high/pd_low.AnchorTime to be
+// byte-identical across consecutive days. The preserve-state branch in
+// AVWAPState.ResetAnchors then keeps accumulated state and replayBarsForAnchors
+// re-feeds the cross-day span, inflating barCount by ~390 RTH bars per day.
+//
+// Cheap on the steady-state path: takes a read lock, scans the per-symbol
+// date keys, returns nil if yesterday's date is already loaded. Hits the DB
+// once per symbol per session-day rollover.
+func (r *SessionResolver) RefreshIfStale(ctx context.Context, db *sql.DB, sym domain.Symbol, barTime time.Time) error {
+	et := barTime.In(r.loc)
+	yesterdayKey := et.AddDate(0, 0, -1).Format("2006-01-02")
+
+	r.mu.RLock()
+	symSessions := r.sessions[sym.String()]
+	var latest string
+	for date := range symSessions {
+		if date > latest {
+			latest = date
+		}
+	}
+	r.mu.RUnlock()
+
+	if latest >= yesterdayKey {
+		return nil
+	}
+
+	from := et.AddDate(0, 0, -5)
+	to := et.AddDate(0, 0, 1)
+	return r.Load(ctx, db, sym, from, to)
 }
 
 func (r *SessionResolver) ResolveAnchors(symbol string, barTime time.Time, anchorNames []string) map[string]time.Time {
