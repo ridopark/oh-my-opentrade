@@ -1,11 +1,13 @@
 package builtin_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/app/strategy/builtin"
+	"github.com/oh-my-opentrade/backend/internal/domain"
 	strat "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1171,4 +1173,90 @@ func TestAVWAPStrategy_LastHoldReason_MaxTradesGate(t *testing.T) {
 func TestAVWAPStrategy_LastHoldReason_UnknownSymbolReturnsNil(t *testing.T) {
 	s := builtin.NewAVWAPStrategy()
 	assert.Nil(t, s.LastHoldReason("NEVER_SEEN"))
+}
+
+// TestEntryGated_BarTime_PersistsOnPayload guards the parity-diff workflow.
+// strategy_signal_events rows must carry bar.Time on the EntryGated payload
+// so live↔backtest joins can key on it. The original BarSnapshot.Time tag
+// used `omitzero`, which silently dropped the field when bar.Time was the
+// zero value (warmup/init artifacts) AND made the field appear omitted on
+// any encoder that defaults to omitempty-style elision. Both behaviors broke
+// the `payload->'bar'->>'time'` SQL join pattern. The fix is two-pronged:
+// (a) skip emitEarlyGated entirely when bar.Time.IsZero (no real bar to
+// report), and (b) ensure that for non-zero bars the time field is
+// serialized into JSON.
+func TestEntryGated_BarTime_PersistsOnPayload(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	params := avwapParams()
+	params["max_trades_per_day"] = 0 // force the early gate -> emit path
+
+	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "TEST", params, nil)
+	require.NoError(t, err)
+
+	barTime := time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC)
+	bar := strat.Bar{
+		Time:  barTime,
+		Open:  100, High: 101, Low: 99, Close: 100, Volume: 1000,
+	}
+	ind := strat.IndicatorData{VWAP: 100, VolumeSMA: 1000, RSI: 50}
+
+	ctx.events = nil
+	_, _ = feedAVWAPBar(t, s, ctx, "TEST", st, bar, ind)
+	require.Len(t, ctx.events, 1, "non-zero bar must emit exactly one EntryGated event")
+
+	payload, ok := ctx.events[0].(domain.EntryGatedPayload)
+	require.True(t, ok, "emitted event must be EntryGatedPayload, got %T", ctx.events[0])
+	assert.True(t, payload.Bar.Time.Equal(barTime), "Bar.Time on payload must equal source bar.Time")
+
+	js, err := json.Marshal(payload.Bar)
+	require.NoError(t, err)
+	assert.Contains(t, string(js), `"time":`, "non-zero bar.Time must serialize with the time field")
+}
+
+// TestEntryGated_ZeroBarTime_SkipsEmit guards against polluting
+// strategy_signal_events with rows whose bar.Time is the zero value. Those
+// rows arise from warmup/init artifacts that incorrectly trip the
+// "outside trading hours" gate (zero -> "00:00" < AllowedHoursStart) and
+// are not real bars. The existing emit-dedup at avwap_v1.go:~2866
+// (`bar.Time.Equal(s.LastGatedBarTime)`) coincidentally skips the *first*
+// zero-time bar because both sides start at zero, but once any real bar
+// has emitted, LastGatedBarTime is non-zero and a follow-up zero-time
+// bar is no longer caught by the dedup. The fix must guard explicitly on
+// IsZero before emit so subsequent zero-time bars also get dropped.
+func TestEntryGated_ZeroBarTime_SkipsEmit(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	params := avwapParams()
+	params["max_trades_per_day"] = 0
+
+	ctx := newTestContext(time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC))
+	st, err := s.Init(ctx, "TEST", params, nil)
+	require.NoError(t, err)
+
+	// First, a normal bar establishes LastGatedBarTime on the state. This
+	// emits one EntryGated row (max_trades), as expected.
+	realBarTime := time.Date(2025, 6, 2, 14, 30, 0, 0, time.UTC)
+	realBar := strat.Bar{
+		Time:  realBarTime,
+		Open:  100, High: 101, Low: 99, Close: 100, Volume: 1000,
+	}
+	ind := strat.IndicatorData{VWAP: 100, VolumeSMA: 1000, RSI: 50}
+	ctx.events = nil
+	st2, _ := feedAVWAPBar(t, s, ctx, "TEST", st, realBar, ind)
+	require.Len(t, ctx.events, 1, "real bar must emit one EntryGated row")
+
+	// Now a zero-time bar (warmup/init artifact). The pre-fix code would
+	// emit a second row because zero != realBarTime under the dedup check.
+	// The fix skips the emit entirely.
+	zeroBar := strat.Bar{
+		Time:  time.Time{},
+		Open:  100, High: 101, Low: 99, Close: 100, Volume: 1000,
+	}
+	ctx.events = nil
+	ctx.now = realBarTime // ctx.now stays valid; only bar.Time is zero
+	_, signals, err := s.OnBar(ctx, "TEST", zeroBar, st2)
+	require.NoError(t, err)
+	require.Empty(t, signals)
+	assert.Empty(t, ctx.events,
+		"zero-time bar following a real bar must not emit any EntryGated event")
 }

@@ -2863,6 +2863,13 @@ func (s *AVWAPState) emitEarlyGated(ctx start.Context, symbol string, bar start.
 	if ctx.ProgressEventsSuppressed() {
 		return
 	}
+	// Zero-time bars are warmup/init artifacts, not real market bars. Emitting
+	// for them produces strategy_signal_events rows with empty bar_time
+	// (BarSnapshot.Time omitzero drops the field), breaking the bar-time-keyed
+	// live↔backtest SQL diff workflow.
+	if bar.Time.IsZero() {
+		return
+	}
 	if bar.Time.Equal(s.LastGatedBarTime) {
 		return
 	}
