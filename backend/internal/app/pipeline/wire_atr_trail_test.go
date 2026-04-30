@@ -8,17 +8,14 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/config"
 )
 
+// recordingATRTrail records the SetATRTrailConfig args back into a
+// config.ATRTrailConfig struct so the test can assert with a single
+// DeepEqual instead of 9 field-by-field comparisons. ATRTimeframe and
+// Bucketing on config.ATRTrailConfig are intentionally not propagated
+// by SetATRTrailConfig (see service.go:368-385) and stay zero-valued.
 type recordingATRTrail struct {
-	enabled                      bool
-	atrPeriod                    int
-	lookbackDays                 int
-	lookbackDaysCrypto           int
-	minHistoryDays               int
-	tercileLow                   float64
-	tercileHigh                  float64
-	insufficientHistoryMult      float64
-	tercileMultipliers           []float64
-	calls                        int
+	received config.ATRTrailConfig
+	calls    int
 }
 
 func (r *recordingATRTrail) SetATRTrailConfig(
@@ -27,15 +24,17 @@ func (r *recordingATRTrail) SetATRTrailConfig(
 	tercileLow, tercileHigh, insufficientHistMult float64,
 	tercileMultipliers []float64,
 ) {
-	r.enabled = enabled
-	r.atrPeriod = atrPeriod
-	r.lookbackDays = lookbackDays
-	r.lookbackDaysCrypto = lookbackDaysCrypto
-	r.minHistoryDays = minHistoryDays
-	r.tercileLow = tercileLow
-	r.tercileHigh = tercileHigh
-	r.insufficientHistoryMult = insufficientHistMult
-	r.tercileMultipliers = tercileMultipliers
+	r.received = config.ATRTrailConfig{
+		Enabled:                       enabled,
+		ATRPeriod:                     atrPeriod,
+		ATRLookbackDays:               lookbackDays,
+		ATRLookbackDaysCrypto:         lookbackDaysCrypto,
+		MinHistoryDays:                minHistoryDays,
+		TercileLowPctile:              tercileLow,
+		TercileHighPctile:             tercileHigh,
+		InsufficientHistoryMultiplier: insufficientHistMult,
+		TercileMultipliers:            tercileMultipliers,
+	}
 	r.calls++
 }
 
@@ -62,32 +61,8 @@ func TestPipeline_WireATRTrailConfig(t *testing.T) {
 			if posMon.calls != 1 {
 				t.Errorf("SetATRTrailConfig called %d times; want 1", posMon.calls)
 			}
-			if posMon.enabled != cfg.Enabled {
-				t.Errorf("Enabled = %v; want %v", posMon.enabled, cfg.Enabled)
-			}
-			if posMon.atrPeriod != cfg.ATRPeriod {
-				t.Errorf("ATRPeriod = %d; want %d", posMon.atrPeriod, cfg.ATRPeriod)
-			}
-			if posMon.lookbackDays != cfg.ATRLookbackDays {
-				t.Errorf("ATRLookbackDays = %d; want %d", posMon.lookbackDays, cfg.ATRLookbackDays)
-			}
-			if posMon.lookbackDaysCrypto != cfg.ATRLookbackDaysCrypto {
-				t.Errorf("ATRLookbackDaysCrypto = %d; want %d", posMon.lookbackDaysCrypto, cfg.ATRLookbackDaysCrypto)
-			}
-			if posMon.minHistoryDays != cfg.MinHistoryDays {
-				t.Errorf("MinHistoryDays = %d; want %d", posMon.minHistoryDays, cfg.MinHistoryDays)
-			}
-			if posMon.tercileLow != cfg.TercileLowPctile {
-				t.Errorf("TercileLowPctile = %v; want %v", posMon.tercileLow, cfg.TercileLowPctile)
-			}
-			if posMon.tercileHigh != cfg.TercileHighPctile {
-				t.Errorf("TercileHighPctile = %v; want %v", posMon.tercileHigh, cfg.TercileHighPctile)
-			}
-			if posMon.insufficientHistoryMult != cfg.InsufficientHistoryMultiplier {
-				t.Errorf("InsufficientHistoryMultiplier = %v; want %v", posMon.insufficientHistoryMult, cfg.InsufficientHistoryMultiplier)
-			}
-			if !reflect.DeepEqual(posMon.tercileMultipliers, cfg.TercileMultipliers) {
-				t.Errorf("TercileMultipliers = %v; want %v", posMon.tercileMultipliers, cfg.TercileMultipliers)
+			if !reflect.DeepEqual(posMon.received, cfg) {
+				t.Errorf("received = %+v; want %+v", posMon.received, cfg)
 			}
 		})
 	}
@@ -102,7 +77,7 @@ func TestPipeline_WireATRTrailConfig_DisabledIsNoOp(t *testing.T) {
 	if posMon.calls != 1 {
 		t.Errorf("SetATRTrailConfig still called once with Enabled=false; got %d", posMon.calls)
 	}
-	if posMon.enabled {
+	if posMon.received.Enabled {
 		t.Error("Enabled should propagate as false")
 	}
 }
