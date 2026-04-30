@@ -127,6 +127,16 @@ func filterRTH(bars []domain.MarketBar) []domain.MarketBar {
 	return out
 }
 
+// IsEquityNonRTH reports whether bar is a non-crypto bar outside NYSE
+// regular trading hours and therefore must not feed indicator state or
+// HTF aggregators on RTH-gated paths. Crypto symbols always return
+// false (they trade 24/7). Equity 1m bars in extended hours otherwise
+// contaminate the runtime indicator state that warmup.Trim already
+// excludes for spec.RTHFilter timeframes — diverging live and backtest.
+func IsEquityNonRTH(bar domain.MarketBar) bool {
+	return !bar.Symbol.IsCryptoSymbol() && !IsRTH(bar.Time)
+}
+
 // IsRTH reports whether t falls in the NYSE regular-trading-hours window
 // (09:30 ET inclusive to NYSECloseTime exclusive) on a non-holiday weekday.
 // Exported so runtime indicator/aggregator gates can share one definition

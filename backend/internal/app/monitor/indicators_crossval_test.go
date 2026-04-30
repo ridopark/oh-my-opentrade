@@ -43,7 +43,10 @@ const (
 	refVWAP          = 102.351946
 )
 
-var crossValBaseTime = time.Date(2026, 1, 5, 9, 30, 0, 0, time.UTC)
+// 09:30 ET (14:30 UTC during EST) on a non-holiday Monday. Bars must be
+// inside RTH so IndicatorCalculator's RTH gate doesn't skip them on the
+// 1m equity path.
+var crossValBaseTime = time.Date(2026, 1, 5, 14, 30, 0, 0, time.UTC)
 
 func feedRefBars(t *testing.T, calc *monitor.IndicatorCalculator, sym domain.Symbol) domain.IndicatorSnapshot {
 	t.Helper()

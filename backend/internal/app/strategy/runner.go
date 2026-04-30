@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
+	"github.com/oh-my-opentrade/backend/internal/app/warmup"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/oh-my-opentrade/backend/internal/observability/metrics"
@@ -852,6 +853,9 @@ func (r *Runner) PrimeAggregators(symbol string, bars1m []domain.MarketBar) {
 			continue
 		}
 		for _, bar := range bars1m {
+			if warmup.IsEquityNonRTH(bar) {
+				continue
+			}
 			_, _ = agg.Push(bar)
 		}
 	}
@@ -1635,7 +1639,14 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		allSignals = append(allSignals, signals...)
 	}
 
+	// Native-HTF passthrough (e.g. 1d daily replay) bypasses the 1m
+	// RTH gate — the input bar's timeframe carries the contract.
+	gateHTFEquity := bar.Timeframe == "1m" && warmup.IsEquityNonRTH(bar)
+
 	for tf, htfInsts := range htfNeeded {
+		if gateHTFEquity {
+			break
+		}
 		// Use pre-computed key from aggKeysBySym to avoid per-bar
 		// string concat (was 2.65M allocations per run).
 		key := ""
@@ -2088,6 +2099,9 @@ func (r *Runner) WarmUpHTF(symbol string, bars1m []domain.MarketBar, snapshotFn 
 
 		var htfBars []domain.MarketBar
 		for _, bar := range bars1m {
+			if warmup.IsEquityNonRTH(bar) {
+				continue
+			}
 			closed, emitted := agg.Push(bar)
 			if emitted {
 				htfBars = append(htfBars, closed)

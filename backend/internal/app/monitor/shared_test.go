@@ -11,9 +11,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// rthTestTime is a fixed RTH-ET timestamp (10:00 ET on 2026-04-29, a
+// Wednesday — non-holiday) used by createBar / createBarDetailed so 1m
+// equity bars in tests pass IndicatorCalculator's RTH gate. Using
+// time.Now() is non-deterministic and can fall outside RTH depending on
+// when CI runs.
+var rthTestTime = time.Date(2026, 4, 29, 14, 0, 0, 0, time.UTC)
+
 func createBar(t *testing.T, symbol domain.Symbol, closePrice, volume float64) domain.MarketBar {
 	bar, err := domain.NewMarketBar(
-		time.Now(),
+		rthTestTime,
 		symbol,
 		"1m",
 		closePrice, closePrice, closePrice, closePrice,
@@ -25,7 +32,7 @@ func createBar(t *testing.T, symbol domain.Symbol, closePrice, volume float64) d
 
 func createBarDetailed(t *testing.T, symbol domain.Symbol, o, h, l, c, v float64) domain.MarketBar {
 	bar, err := domain.NewMarketBar(
-		time.Now(),
+		rthTestTime,
 		symbol,
 		"1m",
 		o, h, l, c,
