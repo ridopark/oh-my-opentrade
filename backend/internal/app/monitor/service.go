@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
+	"github.com/oh-my-opentrade/backend/internal/app/warmup"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/domain/screener"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -220,6 +221,10 @@ func (s *Service) WarmUpAndCollect(bars []domain.MarketBar) []BarSnapshot {
 		lastBar = bar
 		result = append(result, BarSnapshot{Bar: bar, Snapshot: lastSnap})
 		symStr := bar.Symbol.String()
+		if warmup.IsEquityNonRTH(bar) {
+			lastBar = bar
+			continue
+		}
 		for _, tf := range anchorTimeframes {
 			aggKey := symStr + ":" + tf.String()
 			agg, exists := s.aggregators[aggKey]
@@ -862,6 +867,9 @@ func (s *Service) handleBarCore(ctx context.Context, bar domain.MarketBar, tenan
 
 	aggKeys := s.aggKeysBySym[symStr]
 	for i, tf := range anchorTimeframes {
+		if warmup.IsEquityNonRTH(bar) {
+			break
+		}
 		var aggKey string
 		if i < len(aggKeys) {
 			aggKey = aggKeys[i]
@@ -1359,6 +1367,9 @@ func (s *Service) WarmUp(bars []domain.MarketBar) int {
 		lastSnap = s.calculator.Update(bar)
 		lastBar = bar
 		symStr := bar.Symbol.String()
+		if warmup.IsEquityNonRTH(bar) {
+			continue
+		}
 		for _, tf := range anchorTimeframes {
 			aggKey := symStr + ":" + tf.String()
 			agg, exists := s.aggregators[aggKey]

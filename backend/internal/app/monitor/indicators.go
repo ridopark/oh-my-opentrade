@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 
+	"github.com/oh-my-opentrade/backend/internal/app/warmup"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/observability/parity"
 	"github.com/rs/zerolog"
@@ -101,6 +102,13 @@ type symbolState struct {
 	ema200Count int
 	macdCount   int
 	dxCount     int
+
+	// === Cached snapshot returned on RTH-gated calls ===
+	// Populated at the end of every successful (RTH or crypto) Update so
+	// that pre-market / after-hours equity bars can return the prior RTH
+	// snapshot instead of zero — preserving callers that read indicator
+	// state during the gated interval.
+	lastSnap domain.IndicatorSnapshot
 
 	// === Boolean flags (packed at tail to minimize padding) ===
 	ema9Init     bool
@@ -222,6 +230,16 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 	if !ok {
 		state = &symbolState{}
 		ic.states[key] = state
+	}
+
+	// HTF (5m+) bars reach this calculator only via aggregators that
+	// have themselves been RTH-gated at their push sites, so their
+	// closes are inherently RTH-aligned. Only the 1m equity input
+	// stream needs the gate; returning state.lastSnap keeps callers
+	// seeing the prior RTH snap during the gated interval rather than
+	// a zero-value snap.
+	if bar.Timeframe == "1m" && warmup.IsEquityNonRTH(bar) {
+		return state.lastSnap
 	}
 
 	// Maintain rolling sums over the last volumeSMAPeriod volumes and
@@ -677,6 +695,7 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 			Float64("regime_score", snap.RegimeScore).
 			Msg("parity-diag")
 	}
+	state.lastSnap = snap
 	return snap
 }
 

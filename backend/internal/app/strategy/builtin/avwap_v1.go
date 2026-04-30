@@ -964,7 +964,7 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 			if t.IsZero() {
 				continue
 			}
-			rthOnly := (name == "pd_high" || name == "pd_low") && s.Config.PDRangeMode != "24H"
+			rthOnly := (name == "pd_high" || name == "pd_low" || name == "session_open") && s.Config.PDRangeMode != "24H"
 			s.Calc.AddAnchor(start.AnchorPoint{Name: name, AnchorTime: t, RTHOnly: rthOnly})
 		}
 		s.AboveCount = make(map[string]int)
@@ -992,7 +992,7 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 			continue
 		}
 
-		rthOnly := (name == "pd_high" || name == "pd_low") && s.Config.PDRangeMode != "24H"
+		rthOnly := (name == "pd_high" || name == "pd_low" || name == "session_open") && s.Config.PDRangeMode != "24H"
 		ap := start.AnchorPoint{Name: name, AnchorTime: t, RTHOnly: rthOnly}
 
 		if oldAP, exists := existingPoints[name]; exists && oldAP.AnchorTime.Equal(t) {
@@ -1403,7 +1403,7 @@ func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string
 				anchorTime = ctx.Now()
 			}
 		}
-		rthOnly := (name == "pd_high" || name == "pd_low") && cfg.PDRangeMode != "24H"
+		rthOnly := (name == "pd_high" || name == "pd_low" || name == "session_open") && cfg.PDRangeMode != "24H"
 		calc.AddAnchor(start.AnchorPoint{Name: name, AnchorTime: anchorTime, RTHOnly: rthOnly})
 		added++
 	}
@@ -1412,7 +1412,7 @@ func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string
 		if ctx != nil {
 			anchorTime = ctx.Now()
 		}
-		calc.AddAnchor(start.AnchorPoint{Name: "session_open", AnchorTime: anchorTime})
+		calc.AddAnchor(start.AnchorPoint{Name: "session_open", AnchorTime: anchorTime, RTHOnly: cfg.PDRangeMode != "24H"})
 	}
 
 	st := &AVWAPState{
