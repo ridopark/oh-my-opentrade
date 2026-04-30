@@ -179,9 +179,21 @@ const (
 	exitMaxWallTime = 120 * time.Second
 
 	// exitCancelConfirm caps the wait for terminal broker status after a
-	// cancel before proceeding. Past this we log and force-clear because
-	// live-trading cannot wedge waiting for a single order ack.
+	// cancel before proceeding. Past this we log and bail to the next tick
+	// without resubmitting — live-trading cannot wedge waiting for a single
+	// order ack, but resubmitting on an unconfirmed cancel was the
+	// HIMS260508P00029000 phantom-short cause (2026-04-28): cancel returned
+	// nil, original order filled 11s later, resubmits also filled, leaving
+	// the broker in a -28 short.
 	exitCancelConfirm = 1 * time.Second
+
+	// maxExitCancelTimeouts is how many consecutive cancel-without-terminal
+	// cycles we tolerate before logging a manual-intervention error and
+	// freezing the exit lifecycle for this position. Each cycle is gated by
+	// the asymmetric exit timeout (5-15s typical), so 5 attempts gives
+	// 25-75s before escalation — long enough that a transient broker latency
+	// recovers, short enough that a wedged position surfaces quickly.
+	maxExitCancelTimeouts = 5
 
 	// exitNoRepegBeforeCloseMin is the t-minus window before session close
 	// during which we stop re-pegging and go straight to market. Avoids

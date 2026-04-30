@@ -76,7 +76,7 @@ func TestHandleExitTimeout_OrderAlreadyFilled_ReconcilesMissingFill(t *testing.T
 	assert.Contains(t, trade.Rationale, "order-abc")
 }
 
-func TestHandleExitTimeout_OrderAlreadyFilled_GetDetailsFails_SchedulesRetry(t *testing.T) {
+func TestHandleExitTimeout_OrderAlreadyFilled_GetDetailsFails_DoesNotResubmit(t *testing.T) {
 	broker := &mockBroker{
 		cancelErr:       fmt.Errorf("alpaca: cancel order failed (status 422): order is already in filled state"),
 		orderDetailsErr: fmt.Errorf("network timeout"),
@@ -94,13 +94,19 @@ func TestHandleExitTimeout_OrderAlreadyFilled_GetDetailsFails_SchedulesRetry(t *
 
 	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "F")
 	pos := svc.positions[key]
-	// Single-ExitPending invariant: ExitPending stays true across the
-	// cancel-filled-race, retry bump is the "attempt advanced" signal.
-	assert.True(t, pos.ExitPending, "ExitPending stays true for retry")
-	assert.Equal(t, 1, pos.ExitRetryCount)
+	// Broker confirmed the order is filled but reconcile failed (network
+	// error fetching details). The fill event will arrive via the normal
+	// pipeline shortly; we MUST NOT submit a fresh exit in the gap or we
+	// risk the HIMS phantom-short pattern. ExitOrderID and retry stay
+	// untouched; the timeout counter is bumped so we eventually escalate
+	// to manual intervention if the broker stays unreachable.
+	assert.True(t, pos.ExitPending, "ExitPending stays true awaiting fill event")
+	assert.Equal(t, 0, pos.ExitRetryCount, "no retry: prior order is filled per broker")
+	assert.Equal(t, "order-abc", pos.ExitOrderID, "ExitOrderID preserved — fill event will reconcile it")
+	assert.Equal(t, 1, pos.ExitCancelTimeoutCount, "timeout counter bumped on unsafe outcome")
 }
 
-func TestHandleExitTimeout_OrderAlreadyFilled_PartialFillOnly_SchedulesRetry(t *testing.T) {
+func TestHandleExitTimeout_OrderAlreadyFilled_PartialFillOnly_DoesNotResubmit(t *testing.T) {
 	broker := &mockBroker{
 		cancelErr: fmt.Errorf("alpaca: cancel order failed (status 422): order is already in filled state"),
 		orderDetailsResult: ports.OrderDetails{
@@ -120,11 +126,25 @@ func TestHandleExitTimeout_OrderAlreadyFilled_PartialFillOnly_SchedulesRetry(t *
 	assert.Empty(t, repo.savedTrades)
 
 	key := fmt.Sprintf("%s:%s:%s", svc.tenantID, svc.envMode, "F")
-	assert.Equal(t, 1, svc.positions[key].ExitRetryCount)
+	pos := svc.positions[key]
+	// Same reasoning as the GetDetailsFails test: broker says "in filled
+	// state" so the order is terminal at the broker. The partial-only
+	// reconcile failure means we couldn't write the trade row, but a fill
+	// event will arrive through the normal pipeline. No fresh exit must
+	// be queued in the gap.
+	assert.Equal(t, 0, pos.ExitRetryCount, "no retry: prior order is filled per broker")
+	assert.Equal(t, "order-abc", pos.ExitOrderID, "ExitOrderID preserved")
+	assert.Equal(t, 1, pos.ExitCancelTimeoutCount)
 }
 
 func TestHandleExitTimeout_NormalCancelSuccess_SchedulesRetry(t *testing.T) {
-	broker := &mockBroker{}
+	broker := &mockBroker{
+		// Broker confirms the cancel reached a terminal state. Without this
+		// the polling loop would force-clear timeout and the new cancelOutcome
+		// would be Unsafe — exactly the path the HIMS fix added to suppress
+		// resubmits on unconfirmed cancels.
+		orderDetailsResult: ports.OrderDetails{Status: "canceled"},
+	}
 	repo := &capturingRepo{}
 	svc := newTestServiceWithBrokerAndRepo(broker, repo)
 
@@ -282,6 +302,59 @@ func TestHandleExitTimeout_WallTimeOverride_EscalatesImmediately(t *testing.T) {
 
 	assert.Equal(t, 0, pos.ExitRepegCount, "wall-time override skips re-peg")
 	assert.Equal(t, 1, pos.ExitRetryCount, "escalate path bumps retry count")
+}
+
+// TestHandleExitTimeout_CancelTimeoutDoesNotResubmit pins down the
+// HIMS260508P00029000 phantom-short fix (2026-04-28). When CancelOrder
+// returns nil but the broker never confirms a terminal status within the
+// confirm window (force-clear timeout), handleExitTimeout MUST NOT clear
+// ExitOrderID and submit a fresh exit — the original order can still fill
+// and a new SELL would compound into a phantom short. The fix introduces
+// cancelOutcomeUnsafe; this test asserts the resubmit branch is suppressed.
+func TestHandleExitTimeout_CancelTimeoutDoesNotResubmit(t *testing.T) {
+	// detailsStatus left empty: GetOrderDetails returns "" status which is
+	// not in {canceled, expired, rejected, filled}. The poll loop times out
+	// on exitCancelConfirm without a terminal observation → Unsafe outcome.
+	broker := &trackingBroker{}
+	svc := newTestServiceWithBrokerAndRepo(&broker.mockBroker, &capturingRepo{})
+	svc.broker = broker
+
+	pos := seedOptionPendingExit(t, svc, "HIMS_OPT_P", domain.ExitRulePremiumTarget, time.Second)
+	pos.ExitWallStartedAt = pos.ExitPendingAt
+
+	svc.tick()
+
+	// Suppression invariants:
+	assert.Equal(t, 0, pos.ExitRepegCount, "no re-peg attempted on unsafe cancel")
+	assert.Equal(t, 0, pos.ExitRetryCount, "no retry bump on unsafe cancel")
+	assert.Equal(t, "live-order-1", pos.ExitOrderID, "ExitOrderID preserved — original may still fill")
+	assert.True(t, pos.ExitPending, "ExitPending stays true awaiting next tick")
+	assert.Equal(t, 1, pos.ExitCancelTimeoutCount, "timeout counter bumped")
+	// Cancel was attempted exactly once — the poll loop is in-process, not
+	// repeated cancel RPCs, so the broker should not see redundant cancels.
+	assert.Equal(t, 1, len(broker.cancelCalls))
+}
+
+// TestHandleExitTimeout_CancelTimeoutThreshold_FreezesLifecycle verifies
+// that after maxExitCancelTimeouts consecutive Unsafe outcomes, the
+// position freezes for manual intervention rather than spinning forever.
+func TestHandleExitTimeout_CancelTimeoutThreshold_FreezesLifecycle(t *testing.T) {
+	broker := &trackingBroker{}
+	svc := newTestServiceWithBrokerAndRepo(&broker.mockBroker, &capturingRepo{})
+	svc.broker = broker
+
+	pos := seedOptionPendingExit(t, svc, "HIMS_OPT_T", domain.ExitRulePremiumTarget, time.Second)
+	pos.ExitWallStartedAt = pos.ExitPendingAt
+	// Pre-load the counter so the next Unsafe outcome trips the threshold.
+	pos.ExitCancelTimeoutCount = maxExitCancelTimeouts - 1
+
+	svc.tick()
+
+	assert.Equal(t, maxExitCancelTimeouts, pos.ExitCancelTimeoutCount,
+		"counter reaches threshold")
+	assert.Equal(t, "live-order-1", pos.ExitOrderID,
+		"ExitOrderID preserved at threshold — manual intervention path")
+	assert.Equal(t, 0, pos.ExitRetryCount, "no retry on the freeze tick")
 }
 
 func TestHandleExitTimeout_CancelReturnsFilled_ReconcilesPosition(t *testing.T) {
