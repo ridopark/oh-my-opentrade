@@ -431,9 +431,11 @@ func (r *SessionResolver) RefreshIfStale(ctx context.Context, db *sql.DB, sym do
 	r.mu.RUnlock()
 
 	if latest >= yesterdayKey {
+		r.log.Info().Str("sym", sym.String()).Str("latest", latest).Str("yesterday", yesterdayKey).Bool("reload", false).Msg("session_refresh")
 		return nil
 	}
 
+	r.log.Info().Str("sym", sym.String()).Str("latest", latest).Str("yesterday", yesterdayKey).Bool("reload", true).Msg("session_refresh")
 	from := et.AddDate(0, 0, -5)
 	to := et.AddDate(0, 0, 1)
 	return r.Load(ctx, db, sym, from, to)

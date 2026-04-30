@@ -483,6 +483,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	// fallbackRank ordering. See cfg.AI.AnchorResolverEnabled.
 	loc, _ := time.LoadLocation("America/New_York")
 	sessionResolver := backtest.NewSessionResolver(loc)
+	sessionResolver.SetLogger(log)
 	svc.strategyRunner.SetAnchorResolver(sessionResolver.ResolveAnchors)
 	svc.strategyRunner.SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
 	sessionRefreshFn := func(sym string, barTime time.Time) {
