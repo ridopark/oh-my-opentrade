@@ -221,10 +221,7 @@ func (s *Service) WarmUpAndCollect(bars []domain.MarketBar) []BarSnapshot {
 		lastBar = bar
 		result = append(result, BarSnapshot{Bar: bar, Snapshot: lastSnap})
 		symStr := bar.Symbol.String()
-		// Equity HTF aggregators ingest RTH-only 1m bars; pre-market /
-		// after-hours 1m must not feed 5m/15m/1h close events that drive
-		// downstream indicator state.
-		if !bar.Symbol.IsCryptoSymbol() && !warmup.IsRTH(bar.Time) {
+		if warmup.IsEquityNonRTH(bar) {
 			lastBar = bar
 			continue
 		}
@@ -868,14 +865,9 @@ func (s *Service) handleBarCore(ctx context.Context, bar domain.MarketBar, tenan
 		}
 	}
 
-	// Equity HTF aggregators ingest RTH-only 1m bars; pre-market /
-	// after-hours 1m must not feed 5m/15m/1h close events that drive
-	// downstream indicator state.
-	gateHTFEquity := !bar.Symbol.IsCryptoSymbol() && !warmup.IsRTH(bar.Time)
-
 	aggKeys := s.aggKeysBySym[symStr]
 	for i, tf := range anchorTimeframes {
-		if gateHTFEquity {
+		if warmup.IsEquityNonRTH(bar) {
 			break
 		}
 		var aggKey string
@@ -1375,10 +1367,7 @@ func (s *Service) WarmUp(bars []domain.MarketBar) int {
 		lastSnap = s.calculator.Update(bar)
 		lastBar = bar
 		symStr := bar.Symbol.String()
-		// Equity HTF aggregators ingest RTH-only 1m bars; pre-market /
-		// after-hours 1m must not feed 5m/15m/1h close events that drive
-		// downstream indicator state.
-		if !bar.Symbol.IsCryptoSymbol() && !warmup.IsRTH(bar.Time) {
+		if warmup.IsEquityNonRTH(bar) {
 			continue
 		}
 		for _, tf := range anchorTimeframes {

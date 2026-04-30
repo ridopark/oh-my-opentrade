@@ -232,17 +232,13 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 		ic.states[key] = state
 	}
 
-	// RTH gate for equity 1m bars. Pre-market / after-hours bars must
-	// not feed indicator state — warmup uses RTH-only equity 1m bars
-	// (warmup.Trim with RTHFilter), so contaminating runtime state with
-	// extended-hours data would diverge live and backtest. HTF (5m+)
-	// bars that reach this calculator come from aggregators that have
-	// already been RTH-gated at their push sites, so their close events
-	// are inherently RTH-aligned and no second gate is needed here.
-	// Crypto trades 24/7 and bypasses the gate. Returning state.lastSnap
-	// keeps downstream callers seeing the prior RTH snapshot during the
-	// gated interval rather than a zero-value snap.
-	if bar.Timeframe == "1m" && !bar.Symbol.IsCryptoSymbol() && !warmup.IsRTH(bar.Time) {
+	// HTF (5m+) bars reach this calculator only via aggregators that
+	// have themselves been RTH-gated at their push sites, so their
+	// closes are inherently RTH-aligned. Only the 1m equity input
+	// stream needs the gate; returning state.lastSnap keeps callers
+	// seeing the prior RTH snap during the gated interval rather than
+	// a zero-value snap.
+	if bar.Timeframe == "1m" && warmup.IsEquityNonRTH(bar) {
 		return state.lastSnap
 	}
 
