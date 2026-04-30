@@ -36,6 +36,16 @@ type BarAggregator struct {
 	cur         MarketBar
 	hasCur      bool
 	curEnd      time.Time
+	// lastBarTime is set to bar.Time on every state-mutating Push (after
+	// validation, before the apply / startNew / close branch). Replays of
+	// bars at or before lastBarTime short-circuit so callers cannot
+	// double-count Volume on a.cur or shift the bucket-state machine
+	// twice. Mirrors the per-anchor lastReplayedBarTime dedup in
+	// internal/domain/strategy/anchored_vwap.go:230 and the
+	// IndicatorCalculator.Update dedup in internal/app/monitor/indicators.go.
+	// Cleared by Reset so a session boundary returns the aggregator to a
+	// fully-permissive state.
+	lastBarTime time.Time
 }
 
 func NewBarAggregator(symbol Symbol, targetTF Timeframe, sessionOpen time.Time) (*BarAggregator, error) {
@@ -99,6 +109,16 @@ func (a *BarAggregator) Push(bar MarketBar) (closed MarketBar, ok bool) {
 		return MarketBar{}, false
 	}
 
+	// Replay dedup: skip bars at or before the last accumulator-running
+	// Push. Placed after validation so rejected bars don't bump
+	// lastBarTime, but before bucket-end computation and the state
+	// switch so replayed bars cannot mutate a.cur or close a bucket
+	// twice.
+	if !a.lastBarTime.IsZero() && !bar.Time.After(a.lastBarTime) {
+		return MarketBar{}, false
+	}
+	a.lastBarTime = bar.Time
+
 	dur := timeframeDuration(a.tf)
 	end, ok := sessionAlignedBucketEnd(bar.Time, a.sessionOpen, dur)
 	if !ok {
@@ -134,6 +154,11 @@ func (a *BarAggregator) Reset(sessionOpen time.Time) {
 	a.sessionOpen = sessionOpen
 	a.hasCur = false
 	a.curEnd = time.Time{}
+	// Clear lastBarTime so a session boundary returns the aggregator to
+	// a fully-permissive state; the next Push starts a fresh dedup cycle
+	// regardless of how the new session's first bar.Time compares to the
+	// prior session's.
+	a.lastBarTime = time.Time{}
 }
 
 func timeframeDuration(tf Timeframe) time.Duration {
