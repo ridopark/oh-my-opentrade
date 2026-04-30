@@ -1141,7 +1141,7 @@ func main() {
 			AnchorResolverFn:   sessionResolver.ResolveAnchors,
 			SessionRefresherFn: nil,
 			PrevDayBarsFn:      prevDayBarsFn,
-			Anchors:            []string{"session_open", "pd_high", "pd_low"},
+			Anchors:            pkgpipeline.DefaultAVWAPAnchors(),
 		})
 
 		aiResolver := strategy.NewAIAnchorResolver(llm.NewNoOpAdvisor(), nil, nil)

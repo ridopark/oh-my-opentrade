@@ -1178,7 +1178,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		AnchorResolverFn:   sessionResolver.ResolveAnchors,
 		SessionRefresherFn: nil,
 		PrevDayBarsFn:      prevDayBarsFn,
-		Anchors:            []string{"session_open", "pd_high", "pd_low"},
+		Anchors:            pkgpipeline.DefaultAVWAPAnchors(),
 	})
 	if len(dpLookup) > 0 {
 		pipeline.Runner.SetDarkPoolLookup(dpLookup)

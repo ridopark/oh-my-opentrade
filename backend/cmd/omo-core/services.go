@@ -608,7 +608,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 		AnchorResolverFn:   sessionResolver.ResolveAnchors,
 		SessionRefresherFn: sessionRefreshFn,
 		PrevDayBarsFn:      prevDayBarsFn,
-		Anchors:            []string{"session_open", "pd_high", "pd_low"},
+		Anchors:            pkgpipeline.DefaultAVWAPAnchors(),
 	})
 
 	// Load session data for all base symbols (not just strategy-assigned ones)

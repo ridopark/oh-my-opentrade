@@ -23,6 +23,14 @@ type AVWAPMonitorWiring struct {
 	Anchors            []string
 }
 
+// DefaultAVWAPAnchors returns the standard anchor set the monitor's
+// standalone-AVWAP path resolves for streaming symbols: session_open,
+// pd_high, pd_low. Returned as a fresh slice so callers can mutate it
+// without affecting the package state.
+func DefaultAVWAPAnchors() []string {
+	return []string{"session_open", "pd_high", "pd_low"}
+}
+
 // MonitorAVWAPSetter is the slice of *monitor.Service surface that
 // AVWAP wiring needs.
 type MonitorAVWAPSetter interface {
