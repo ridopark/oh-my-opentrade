@@ -30,6 +30,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/notify"
 	"github.com/oh-my-opentrade/backend/internal/app/orchestrator"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
+	"github.com/oh-my-opentrade/backend/internal/app/pipeline"
 	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
 	"github.com/oh-my-opentrade/backend/internal/app/risk"
 	screenerapp "github.com/oh-my-opentrade/backend/internal/app/screener"
@@ -246,12 +247,7 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	svc.priceCache = posMonBundle.PriceCache
 	svc.posMonitor = posMonBundle.Service
 
-	// Wire the re-peg suppression hook. Without this, cleanupPendingOrder
-	// launches a dust sweep every time handleExitTimeout cancels a live
-	// limit for re-peg — which is how the SOFI phantom short occurred on
-	// 2026-04-16 (order 1604 re-peg cancel → dust sweep 1606 sold qty we
-	// no longer owned because 1603 had filled in the cancel race).
-	svc.posMonitor.SetRepegNotifier(svc.execution)
+	pipeline.New(pipeline.ModeLive).WireRepegNotifier(svc.posMonitor, svc.execution)
 
 	// Phase 2 of the exit_repeg_dup_fill fix: gate atomic-modify re-pegs
 	// behind a config flag. Default off; flip only after a clean Phase-1
