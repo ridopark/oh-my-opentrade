@@ -10,50 +10,32 @@
 // BuildIngestion, BuildMonitor, BuildExecutionService, BuildPositionMonitor,
 // BuildStrategyPipeline). Pipeline owns the SECOND tier — Set* wiring,
 // Subscribe* registration, and per-mode capability decisions.
-//
-// Mode controls per-mode behavior (which subscribers to wire, which
-// notifiers to install, whether session-refresh polling is active, etc.)
-// without scattering `if isBacktest` branches through business logic.
-//
-// This is the SOLID OCP fix for the divergences cataloged in
-// _workspace/parity_live_vs_backtest_divergence_audit.md (H2, H4, M9,
-// plus four new wiring gaps in #39-42).
 package pipeline
 
 // Mode identifies which composition path this pipeline serves. Every
 // per-mode wiring decision is a switch on Mode — never an inline
-// `if isBacktest` branch.
-type Mode int
+// `if isBacktest` branch. Defined as a string type to match the
+// codebase convention for enum-shaped values (see EnvMode, Direction,
+// Venue, AssetClass in internal/domain/value.go).
+type Mode string
 
 const (
 	// ModeLive: production trading via cmd/omo-core. Wires every
 	// subscriber, refresher, and notifier the live path needs.
-	ModeLive Mode = iota
+	ModeLive Mode = "live"
 
 	// ModeBacktest: in-process backtest via internal/app/backtest
 	// (POST /backtest/run). Wires the deterministic subset; opts in
 	// to EntryGated persistence via RunConfig.EmitGatedDiag.
-	ModeBacktest
+	ModeBacktest Mode = "backtest"
 
 	// ModeReplay: out-of-process replay via cmd/omo-replay. Same
 	// deterministic subset as ModeBacktest, with separate flags for
 	// progress-event suppression and gated-diag emission.
-	ModeReplay
+	ModeReplay Mode = "replay"
 )
 
-// String returns a stable label for logs and error messages.
-func (m Mode) String() string {
-	switch m {
-	case ModeLive:
-		return "live"
-	case ModeBacktest:
-		return "backtest"
-	case ModeReplay:
-		return "replay"
-	default:
-		return "unknown"
-	}
-}
+func (m Mode) String() string { return string(m) }
 
 // IsBacktest reports whether the mode is one of the historical-replay
 // modes (backtest or replay). Useful for the (rare) decisions that
