@@ -48,6 +48,7 @@ type Runner struct {
 	collectedAnchorRegimes map[string]map[string]start.AnchorRegime   // per-symbol reusable result map
 	signalsRTHSuppressed atomic.Int64
 	anchorResolver       func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
+	sessionRefresher     func(symbol string, barTime time.Time)
 	prevDayBarsFn        func(symbol string, since, until time.Time) []start.Bar
 	keyLevelPricesFn     func(symbol string, barTime time.Time) map[string]float64
 	keyLevelsBySymbol    map[string]map[string]float64
@@ -297,6 +298,15 @@ func (r *Runner) SetAnchorResolver(fn func(symbol string, barTime time.Time, anc
 	r.lastSessionDate = make(map[string]int)
 }
 
+// SetSessionRefresher installs a callback that the runner invokes on each
+// session-day rollover before resolving anchors. Production wires this to
+// SessionResolver.RefreshIfStale so the prevDay row for the new session day
+// is loaded before findPreviousDay walks back. Nil is safe — the refresher
+// is only called when set.
+func (r *Runner) SetSessionRefresher(fn func(symbol string, barTime time.Time)) {
+	r.sessionRefresher = fn
+}
+
 func (r *Runner) SetPrevDayBarsFn(fn func(symbol string, since, until time.Time) []start.Bar) {
 	r.prevDayBarsFn = fn
 }
@@ -387,6 +397,9 @@ func (r *Runner) ResolveAnchorsForWarmup(symbols []string, barTime time.Time) {
 }
 
 func (r *Runner) resolveSessionAnchors(symbol string, barTime time.Time) {
+	if r.sessionRefresher != nil {
+		r.sessionRefresher(symbol, barTime)
+	}
 	instances := r.router.InstancesForSymbol(symbol)
 	for _, inst := range instances {
 		st, ok := inst.GetState(symbol)
@@ -488,6 +501,9 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 				}
 			}
 			if r.anchorResolver != nil {
+				if r.sessionRefresher != nil {
+					r.sessionRefresher(symbol, bar.Time)
+				}
 				for k, v := range r.anchorResolver(symbol, bar.Time, names) {
 					merged[k] = v
 				}

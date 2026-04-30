@@ -485,6 +485,12 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	sessionResolver := backtest.NewSessionResolver(loc)
 	svc.strategyRunner.SetAnchorResolver(sessionResolver.ResolveAnchors)
 	svc.strategyRunner.SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
+	sessionRefreshFn := func(sym string, barTime time.Time) {
+		if loadErr := sessionResolver.RefreshIfStale(context.Background(), infra.sqlDB, domain.Symbol(sym), barTime); loadErr != nil {
+			log.Warn().Err(loadErr).Str("symbol", sym).Msg("session resolver refresh failed")
+		}
+	}
+	svc.strategyRunner.SetSessionRefresher(sessionRefreshFn)
 
 	var aiAnchorResolver *strategy.AIAnchorResolver
 	if cfg.AI.AnchorResolverEnabled {
@@ -619,6 +625,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 	// Wire standalone AVWAP computation in monitor for ALL streaming symbols.
 	// This ensures newly rotated symbols have AVWAP values even before strategy assignment.
 	svc.monitor.SetAnchorResolverFn(sessionResolver.ResolveAnchors)
+	svc.monitor.SetSessionRefresherFn(sessionRefreshFn)
 	svc.monitor.SetPrevDayBarsFn(prevDayBarsFn)
 	svc.monitor.SetAVWAPAnchors([]string{"session_open", "pd_high", "pd_low"})
 

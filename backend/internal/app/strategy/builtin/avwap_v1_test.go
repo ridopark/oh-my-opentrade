@@ -924,6 +924,80 @@ func TestAVWAPState_ResetAnchors_NilCalc(t *testing.T) {
 	assert.True(t, hasA, "should create calc from scratch when nil")
 }
 
+// TestAVWAPState_CrossDay_NoAccumulation_WhenAnchorChanges asserts the
+// post-fix contract for pd_high across multi-day live runs: when the
+// session resolver returns DIFFERENT anchor times on consecutive days
+// (i.e., yesterday's high time, the day before yesterday's high time,
+// etc.), the AVWAP state machine must reset cleanly per day. Bar count
+// at the first 5m close of day 3 must be bounded by one day's RTH
+// portion plus replay window, not the 3*390 = 1170 inflation observed
+// in the cross-day-state-retention bug. Companion tests in
+// session_refresh_test.go pin the upstream resolver fix.
+func TestAVWAPState_CrossDay_NoAccumulation_WhenAnchorChanges(t *testing.T) {
+	nyLoc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+
+	st := &builtin.AVWAPState{
+		Calc:       strat.NewAnchoredVWAPCalc(),
+		AboveCount: make(map[string]int),
+		BelowCount: make(map[string]int),
+		Config:     builtin.AVWAPConfig{},
+	}
+
+	day0HighTime := time.Date(2026, 4, 24, 12, 0, 0, 0, nyLoc) // Friday
+	day1HighTime := time.Date(2026, 4, 27, 11, 0, 0, 0, nyLoc) // Monday
+	day2HighTime := time.Date(2026, 4, 28, 13, 30, 0, 0, nyLoc) // Tuesday
+
+	feed1m := func(name string, fromET, untilET time.Time, basePrice float64) {
+		t.Helper()
+		for cur := fromET; cur.Before(untilET); cur = cur.Add(time.Minute) {
+			st.UpdateCalcAnchor(name, strat.Bar{
+				Time:   cur,
+				Open:   basePrice,
+				High:   basePrice + 0.5,
+				Low:    basePrice - 0.5,
+				Close:  basePrice,
+				Volume: 1000,
+			})
+		}
+	}
+
+	day1Open := time.Date(2026, 4, 27, 9, 30, 0, 0, nyLoc)
+	st.ResetAnchors(map[string]time.Time{"pd_high": day0HighTime})
+	feed1m("pd_high", day0HighTime, day1Open, 200.0)
+	for cur := day1Open; cur.Before(time.Date(2026, 4, 27, 16, 0, 0, 0, nyLoc)); cur = cur.Add(time.Minute) {
+		st.Calc.Update(cur, 200.5, 199.5, 200.0, 1000)
+	}
+
+	day2Open := time.Date(2026, 4, 28, 9, 30, 0, 0, nyLoc)
+	st.ResetAnchors(map[string]time.Time{"pd_high": day1HighTime})
+	feed1m("pd_high", day1HighTime, day2Open, 201.0)
+	for cur := day2Open; cur.Before(time.Date(2026, 4, 28, 16, 0, 0, 0, nyLoc)); cur = cur.Add(time.Minute) {
+		st.Calc.Update(cur, 201.5, 200.5, 201.0, 1000)
+	}
+
+	day3Open := time.Date(2026, 4, 29, 9, 30, 0, 0, nyLoc)
+	day3FirstClose := time.Date(2026, 4, 29, 9, 35, 0, 0, nyLoc)
+	st.ResetAnchors(map[string]time.Time{"pd_high": day2HighTime})
+	feed1m("pd_high", day2HighTime, day3Open, 202.0)
+	for cur := day3Open; cur.Before(day3FirstClose); cur = cur.Add(time.Minute) {
+		st.Calc.Update(cur, 202.5, 201.5, 202.0, 1000)
+	}
+
+	snap := st.Calc.Snapshot(0)
+	pdHigh, ok := snap["pd_high"]
+	require.True(t, ok, "pd_high snapshot must be present")
+
+	// Day 2 RTH from 13:30 to 16:00 = 150 minutes of replay + Day 3 09:30
+	// to 09:35 = 5 runtime bars. Total ~155. Tolerance covers off-by-one
+	// at boundaries. The inflated mode (preserve-state across days +
+	// re-replay) would land at ~3*390 = 1170+, well above 395.
+	assert.LessOrEqual(t, pdHigh.BarCount, 395,
+		"pd_high.barCount must be bounded by one day's RTH portion when anchor times differ across sessions")
+	assert.Greater(t, pdHigh.BarCount, 0,
+		"pd_high.barCount must reflect day 2 replay + day 3 runtime accumulation")
+}
+
 // ─── Session-Time Weighting ──────────────────────────────────────────────────
 
 func TestSessionBucket(t *testing.T) {
