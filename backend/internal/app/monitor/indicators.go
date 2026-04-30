@@ -3,6 +3,7 @@ package monitor
 import (
 	"math"
 	"os"
+	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/app/warmup"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -109,6 +110,17 @@ type symbolState struct {
 	// snapshot instead of zero — preserving callers that read indicator
 	// state during the gated interval.
 	lastSnap domain.IndicatorSnapshot
+
+	// === Replay dedup ===
+	// Set to bar.Time on every accumulator-running Update. The bridge
+	// warmup in backtest/runner.go and omo-replay/main.go feeds the first
+	// 50 replay bars to Service.WarmUp, then runtime re-feeds the same
+	// bars via handleBarCore — without dedup, every incremental
+	// accumulator (closes/highs/lows/volumes, vwapNumerator/Denom/M2,
+	// volumeSum20, closesSum20, RSI window, MACD/ADX) double-counts those
+	// 50 bars. Mirrors the per-anchor lastReplayedBarTime dedup in
+	// anchored_vwap.go:230.
+	lastBarTime time.Time
 
 	// === Boolean flags (packed at tail to minimize padding) ===
 	ema9Init     bool
@@ -241,6 +253,15 @@ func (ic *IndicatorCalculator) Update(bar domain.MarketBar) domain.IndicatorSnap
 	if bar.Timeframe == "1m" && warmup.IsEquityNonRTH(bar) {
 		return state.lastSnap
 	}
+
+	// Replay dedup: skip bars at or before the last accumulator-running
+	// Update for this (symbol, timeframe). Returns the prior snapshot so
+	// callers see consistent indicator state across replay seams (the
+	// bridge / runtime overlap in backtest and omo-replay).
+	if !state.lastBarTime.IsZero() && !bar.Time.After(state.lastBarTime) {
+		return state.lastSnap
+	}
+	state.lastBarTime = bar.Time
 
 	// Maintain rolling sums over the last volumeSMAPeriod volumes and
 	// bbPeriod closes so volumeSMA and the BB-middle SMA are O(1) per
