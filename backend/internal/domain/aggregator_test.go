@@ -470,3 +470,86 @@ func TestAggregator_BarTime(t *testing.T) {
 	assert.Equal(t, sessionOpen, out.Time)
 	assert.NotEqual(t, etTime(t, 9, 34), out.Time)
 }
+
+// TestAggregator_PushDedupsReplay covers the SRP fix that closes the
+// M3-shape latent bug. Pushing the same bar twice must not double-count
+// volume on the open bucket or shift the bucket-state machine. Mirrors
+// the dedup semantics in IndicatorCalculator.Update (PR #35) and
+// AnchoredVWAP.UpdateSingleAnchor (PR #25).
+func TestAggregator_PushDedupsReplay(t *testing.T) {
+	sym := mustSymbol(t, "AAPL")
+	tf5m := mustTF(t, "5m")
+	sessionOpen := etTime(t, 9, 30)
+
+	// Single-pass: feed 4 bars (not enough to close the 5m bucket) so
+	// state lives entirely in a.cur. Snapshot the volume.
+	single, err := domain.NewBarAggregator(sym, tf5m, sessionOpen)
+	require.NoError(t, err)
+	for i := 0; i < 4; i++ {
+		bar := must1mBar(t, sessionOpen.Add(time.Duration(i)*time.Minute), sym, 1, 2, 1, 1.5, 10)
+		_, ok := single.Push(bar)
+		require.False(t, ok, "bar %d should not close 5m bucket", i)
+	}
+	// Force-close on the 5th bar to inspect aggregated volume.
+	closingBar := must1mBar(t, sessionOpen.Add(4*time.Minute), sym, 1, 2, 1, 1.5, 10)
+	singleOut, ok := single.Push(closingBar)
+	require.True(t, ok, "5th bar should close 5m bucket")
+	require.Equal(t, 50.0, singleOut.Volume, "single-pass volume = 5 bars * 10")
+
+	// Bridge + replay: feed first 3 bars (the bridge), then feed all 5
+	// bars (the runtime replay). Without dedup, bars 0-2 contribute
+	// twice → volume = 80 (3 doubled + 2 single = 30 + 30 + 20). With
+	// dedup, bars 0-2 are no-ops on the second pass → volume = 50.
+	bridged, err := domain.NewBarAggregator(sym, tf5m, sessionOpen)
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		bar := must1mBar(t, sessionOpen.Add(time.Duration(i)*time.Minute), sym, 1, 2, 1, 1.5, 10)
+		_, _ = bridged.Push(bar)
+	}
+	var bridgedOut domain.MarketBar
+	var bridgedOk bool
+	for i := 0; i < 5; i++ {
+		bar := must1mBar(t, sessionOpen.Add(time.Duration(i)*time.Minute), sym, 1, 2, 1, 1.5, 10)
+		bridgedOut, bridgedOk = bridged.Push(bar)
+	}
+	require.True(t, bridgedOk, "5th bar should close 5m bucket on bridged path")
+	assert.Equal(t, singleOut.Volume, bridgedOut.Volume, "bridged volume must match single-pass — replay must not double-count")
+	assert.Equal(t, singleOut.Open, bridgedOut.Open)
+	assert.Equal(t, singleOut.High, bridgedOut.High)
+	assert.Equal(t, singleOut.Low, bridgedOut.Low)
+	assert.Equal(t, singleOut.Close, bridgedOut.Close)
+}
+
+// TestAggregator_ResetClearsDedup asserts that Reset(sessionOpen) clears
+// the dedup watermark so the next session can accept its first bar even
+// if the prior session's last bar.Time happens to be later (e.g., DST
+// boundary, intentional re-bootstrap with overlapping warmup window).
+func TestAggregator_ResetClearsDedup(t *testing.T) {
+	sym := mustSymbol(t, "AAPL")
+	tf5m := mustTF(t, "5m")
+	day1Open := etTime(t, 9, 30)
+
+	agg, err := domain.NewBarAggregator(sym, tf5m, day1Open)
+	require.NoError(t, err)
+
+	// Push a bar at day1Open + 10m so lastBarTime advances.
+	farBar := must1mBar(t, day1Open.Add(10*time.Minute), sym, 1, 2, 1, 1.5, 10)
+	_, _ = agg.Push(farBar)
+
+	// Reset with a new session that starts BEFORE the prior bar's time.
+	// (Hypothetically — tests the boundary, not a real scenario.)
+	day1NewOpen := day1Open.Add(5 * time.Minute)
+	agg.Reset(day1NewOpen)
+
+	// First bar of new session is at day1NewOpen — earlier than the
+	// prior lastBarTime (day1Open + 10m). With Reset clearing the
+	// dedup, this bar must be accepted.
+	freshBar := must1mBar(t, day1NewOpen, sym, 1, 2, 1, 1.5, 10)
+	_, _ = agg.Push(freshBar)
+
+	// Force-close to confirm the bar contributed.
+	closingBar := must1mBar(t, day1NewOpen.Add(4*time.Minute), sym, 1, 2, 1, 1.5, 10)
+	out, ok := agg.Push(closingBar)
+	require.True(t, ok, "post-Reset push must close the bucket")
+	assert.Equal(t, 20.0, out.Volume, "post-Reset, both fresh bars contributed")
+}
