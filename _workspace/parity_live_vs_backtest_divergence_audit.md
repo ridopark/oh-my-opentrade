@@ -408,3 +408,118 @@ alongside or after H1.
 - `backend/internal/app/bootstrap/ingestion.go`
 - `backend/internal/observability/parity/parity.go`
 - `backend/internal/adapters/eventbus/memory/bus.go`
+
+---
+
+## Addendum: post-fix re-audit (2026-04-30, parallel sub-agent verification)
+
+PR #27 (`fc9d4f80`, dropped the live-only `ResolveAnchorsForWarmup` at
+`warmup.go:416`) and PR #28 (`59d63236`, wired `EntryGatedWriter` in
+the HTTP backtest path conditional on `RunConfig.EmitGatedDiag`) closed
+H1 and H4 respectively. Branch `parity-audit-postfix-update` carries
+the empirical follow-up showing byte-identical `pd_high` state across
+20 (sym, bar.Time) pairs at 13:15 ET / 13:20 ET on 2026-04-30. Four
+parallel sub-agents re-read the codebase against this document on that
+branch and returned the additions below. The original audit holds on
+every claim it makes against the unfixed items. The findings are: one
+new issue (default-knob mismatch between two backtest paths), three
+reclassifications, and four gaps in the post-fix verification that
+need closing before the parity claim is settled.
+
+### Reclassifications
+
+- **M3 -> HIGH.** Bridge warmup at `backtest/runner.go:1000` and
+  `omo-replay/main.go:985` feeds 50 bars through `monitor.WarmUp`,
+  then the runtime loop re-processes the same bars via
+  `HandleMarketBar` -> `s.calculator.Update`.
+  `IndicatorCalculator.Update` keys only on `(Symbol, Timeframe)` and
+  has no `bar.Time` dedup, so the bridge bars feed indicators twice.
+  Diverges from live (no bridge) and from the intended single-pass
+  invariant. Tracked in #30.
+
+- **M9 -> HIGH.** `omo-replay` never calls `SetDarkPoolLookup` /
+  `SetWhaleLookup`. Confluence scoring runs without DP/whale signals
+  in replay mode while backtest uses static maps keyed by exact
+  `(symbol, time.UTC())` and live uses streaming with grace windows.
+  Three-way asymmetry across paths that share the same scoring code.
+  Tracked in #31.
+
+- **M8 -> LOW.** The audit names `risk_sizer` and confluence-multiplier
+  branches that key on `DisableAI` / `AIEnabled` beyond the enricher.
+  Sub-agent grep finds no such branches. Only
+  `signal_debate_enricher.go` (`WithSkipAI`), `instance.go:395`
+  (payload stamp), and `ai_scalping_v1.go:266,295` (strategy-level AI
+  gating) actually branch. M8 collapses into H6 -- there is no
+  separate AI surface.
+
+### New finding: HTTP backtest vs omo-replay disagree on AI default
+
+The two backtest paths default `DisableAI` differently:
+
+- HTTP `POST /backtest/run` (`http/backtest_handler.go:31`):
+  `NoAI bool` zero-value `false` -> AI ON by default.
+- `omo-replay` (`cmd/omo-replay/main.go:81`): `--no-ai` defaults to
+  `true` -> AI OFF by default.
+
+A user comparing measurements collected via HTTP backtest against
+measurements collected via omo-replay is silently comparing AI-on
+output against AI-off output. The original audit treats backtest as
+uniformly `--no-ai=true` (per the v2 plan note); that is true for
+omo-replay only. This is a Phase 2 measurement blocker until the two
+paths align.
+
+### Verification-table gaps (post-fix table on `parity-audit-postfix-update`)
+
+The 20-row "byte-identical" table demonstrates parity for a narrow
+slice of state space. The slices it does not cover:
+
+1. **Anchors.** Only `pd_high` is checked. Production runtime anchor
+   set is `{session_open, pd_high, pd_low}` (`services.go:631`,
+   `monitor/service.go:80`). `pd_low` was in the original empirical
+   divergence (lines 19-21 of this doc: AMZN/GOOGL/IWM `pd_low` slope
+   drift) and has no post-fix datapoint.
+2. **Time window.** All rows are 13:15 ET / 13:20 ET, the first 10
+   minutes of RTH. Pre-fix divergence was sampled at 15:20 ET, 800
+   bars after RTH open. Late-session parity is unverified.
+3. **Symbols.** 10 of 34 universe symbols. Mid-cap names where
+   session-data quality is lower on either side could expose H2
+   (SessionRefresher asymmetry) that mega-caps mask.
+4. **Precision.** `vwap_delta = 0.0000` is rounded to 4 decimals, i.e.
+   parity-to-1bp on a $250 price (~$0.025 of slack), not
+   byte-identical.
+
+Closing those gaps takes four edits to the reference SQL: loop the
+JSON path over `('pd_high','pd_low','session_open')`, widen the
+bar-time window to `[14:30, 16:00)`, drop the symbol filter (let
+`HAVING COUNT(DISTINCT env) = 2` discover symbols), and round
+`vwap_delta` to 6 decimals. Tracked in #32.
+
+### Day +1 cron caveat
+
+The cron at `08:35 CDT 2026-05-01` referenced in the post-fix section
+is `scripts/verify-cross-day-fix.sh`, originally scheduled for PR #24
+(cross-day-state fix). Its threshold logic happens to coincide with
+PR #27's expected effect because both fixes target `pd_high.barCount`
+inflation, but it was not reauthored for PR #27. The script also only
+checks AAPL `pd_high` -- same anchor and same-symbol-only gaps as the
+verification table. Tomorrow's signal is useful but narrow; the
+broader regression query in #32 is the durable check.
+
+### H1 fix-option (a) follow-up gap
+
+The chosen fix relies on the runtime rollover at
+`runner.go:1483-1485` (`if r.lastSessionDate[symbol] != barDate`)
+firing on bar #1. For mid-session boots where
+`lastSessionDate[symbol]` is already populated to today's date by
+some other path, that branch will not fire and the seeding falls
+through to the `hasMissingAnchor` safety net at `:1486`. There is no
+unit test exercising the mid-session boot scenario. Add one before
+the next mid-session restart.
+
+### Follow-up issues opened
+
+- #30 -- M3: bridge warmup 50-bar double-feed in backtest/omo-replay
+- #31 -- M9: omo-replay does not seed DP/whale, three-way confluence
+  asymmetry across live/backtest/omo-replay
+- #32 -- broaden post-fix parity SQL to cover all anchors, late
+  session, full universe, and 6-decimal precision
