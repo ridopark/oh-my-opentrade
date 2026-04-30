@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -339,9 +340,7 @@ func TestAnchoredVWAPCalc_Snapshot(t *testing.T) {
 // inside / outside the package-local isRTH window.
 func rthOpenET(t *testing.T, year int, month time.Month, day int) time.Time {
 	t.Helper()
-	loc, err := time.LoadLocation("America/New_York")
-	require.NoError(t, err)
-	return time.Date(year, month, day, 9, 30, 0, 0, loc).UTC()
+	return time.Date(year, month, day, 9, 30, 0, 0, domain.NYLocation()).UTC()
 }
 
 // TestAnchoredVWAPCalc_UpdateSingleAnchor_RTHOnly_SkipsNonRTH pins the
@@ -452,8 +451,4 @@ func TestAnchoredVWAPCalc_UpdateSingleAnchor_MatchesUpdate_RTHOnly(t *testing.T)
 	// were skipped, leaving 4 RTH-and-positive-volume bars in barCount.
 	assert.Equal(t, 4, singleSnap.BarCount,
 		"only RTH positive-volume bars should count: open + 3 RTH bars")
-
-	// math.Sqrt available via existing import — use it for SD parity if
-	// it shows divergence in future regressions.
-	_ = math.Sqrt(0)
 }
