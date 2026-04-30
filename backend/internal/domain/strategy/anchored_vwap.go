@@ -200,6 +200,14 @@ func (c *AnchoredVWAPCalc) UpdateSingleAnchor(name string, barTime time.Time, hi
 		}
 		e.active = true
 	}
+	// Mirror Update's per-anchor RTH gate (line 167). Without this,
+	// the replay path (runner.replayBarsForAnchors and monitor's
+	// standalone-AVWAP reset) accumulates pre-market and after-hours
+	// bars into pd_high / pd_low even though the runtime path skips
+	// them, causing live<->backtest divergence in barCount and VWAP.
+	if e.RTHOnly && !isRTH(barTime) {
+		return
+	}
 	if volume <= 0 {
 		return
 	}
