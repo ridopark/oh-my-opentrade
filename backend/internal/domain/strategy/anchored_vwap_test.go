@@ -452,3 +452,59 @@ func TestAnchoredVWAPCalc_UpdateSingleAnchor_MatchesUpdate_RTHOnly(t *testing.T)
 	assert.Equal(t, 4, singleSnap.BarCount,
 		"only RTH positive-volume bars should count: open + 3 RTH bars")
 }
+
+// TestAnchoredVWAPCalc_UpdateSingleAnchor_DedupesReplayedBars pins the
+// per-anchor lastReplayedBarTime guard. Replay paths can route the same
+// prior-day window through UpdateSingleAnchor more than once when a
+// caller doesn't honor the freshAnchors return from ResetAnchors. The
+// dedup ensures a re-feed of the same (or earlier) bar time is a no-op,
+// preventing CumPV / CumV / barCount inflation on a preserved-state
+// anchor.
+func TestAnchoredVWAPCalc_UpdateSingleAnchor_DedupesReplayedBars(t *testing.T) {
+	rthOpen := rthOpenET(t, 2026, 1, 5)
+	c := strategy.NewAnchoredVWAPCalc()
+	c.AddAnchor(strategy.AnchorPoint{
+		Name:       "pd_high",
+		AnchorTime: rthOpen,
+		RTHOnly:    true,
+	})
+
+	bar1 := rthOpen.Add(1 * time.Minute)
+	bar2 := rthOpen.Add(2 * time.Minute)
+
+	c.UpdateSingleAnchor("pd_high", bar1, 102, 98, 100, 1000)
+	c.UpdateSingleAnchor("pd_high", bar2, 105, 101, 103, 2000)
+
+	beforeSnap := c.Snapshot(5)["pd_high"]
+	beforeState := c.States()["pd_high"]
+	require.Equal(t, 2, beforeSnap.BarCount, "two bars accepted on first pass")
+
+	// Re-feed the same two bars: must be no-op.
+	c.UpdateSingleAnchor("pd_high", bar1, 102, 98, 100, 1000)
+	c.UpdateSingleAnchor("pd_high", bar2, 105, 101, 103, 2000)
+
+	afterSnap := c.Snapshot(5)["pd_high"]
+	afterState := c.States()["pd_high"]
+	assert.Equal(t, beforeSnap.BarCount, afterSnap.BarCount,
+		"barCount must not grow on re-feed of same bars")
+	assert.InDelta(t, beforeState.CumPV, afterState.CumPV, 1e-9,
+		"CumPV must not grow on re-feed")
+	assert.InDelta(t, beforeState.CumV, afterState.CumV, 1e-9,
+		"CumV must not grow on re-feed")
+	assert.InDelta(t, beforeSnap.VWAP, afterSnap.VWAP, 1e-9,
+		"VWAP must be identical")
+
+	// Out-of-order earlier bar must also be skipped.
+	earlier := rthOpen.Add(-1 * time.Minute)
+	c.UpdateSingleAnchor("pd_high", earlier, 200, 100, 150, 9999)
+	skipSnap := c.Snapshot(5)["pd_high"]
+	assert.Equal(t, beforeSnap.BarCount, skipSnap.BarCount,
+		"out-of-order earlier bar must not increment barCount")
+
+	// A new, strictly-later bar must still accept.
+	bar3 := rthOpen.Add(3 * time.Minute)
+	c.UpdateSingleAnchor("pd_high", bar3, 108, 102, 105, 3000)
+	finalSnap := c.Snapshot(5)["pd_high"]
+	assert.Equal(t, beforeSnap.BarCount+1, finalSnap.BarCount,
+		"a strictly-later bar must increment barCount")
+}

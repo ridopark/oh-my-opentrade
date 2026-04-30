@@ -338,7 +338,12 @@ func (r *Runner) SetAIAnchorResolver(resolver *AIAnchorResolver) {
 type anchorResettable interface {
 	AnchorNames() []string
 	AnchorTime(name string) (time.Time, bool)
-	ResetAnchors(map[string]time.Time)
+	// ResetAnchors returns the names of anchors that were freshly created
+	// (or whose state was dropped because the anchor time changed). Callers
+	// driving a replay after Reset MUST filter the replay set to only those
+	// fresh anchors — re-feeding bars into preserved-state anchors compounds
+	// CumPV/CumV and corrupts pd_high/pd_low VWAP across the day rollover.
+	ResetAnchors(map[string]time.Time) []string
 }
 
 type anchorUpdater interface {
@@ -413,9 +418,19 @@ func (r *Runner) resolveSessionAnchors(symbol string, barTime time.Time) {
 				for name, t := range resolved {
 					r.logger.Info("AVWAP anchor resolved", "symbol", symbol, "anchor", name, "anchor_time", t, "bar_time", barTime)
 				}
-				ar.ResetAnchors(resolved)
-				r.replayBarsForAnchors(st, symbol, resolved, barTime)
-				r.logger.Info("reset AVWAP anchors for new session", "symbol", symbol, "anchors", len(resolved))
+				fresh := ar.ResetAnchors(resolved)
+				if len(fresh) > 0 {
+					freshTimes := make(map[string]time.Time, len(fresh))
+					for _, name := range fresh {
+						if t, ok := resolved[name]; ok {
+							freshTimes[name] = t
+						}
+					}
+					r.replayBarsForAnchors(st, symbol, freshTimes, barTime)
+				}
+				r.logger.Info("reset AVWAP anchors for new session",
+					"symbol", symbol, "anchors", len(resolved),
+					"fresh", len(fresh), "preserved", len(resolved)-len(fresh))
 			}
 
 			// Set key levels for confluence scoring
@@ -511,9 +526,19 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 			for k, v := range resolved {
 				merged[k] = v
 			}
-			ar.ResetAnchors(merged)
-			r.replayBarsForAnchors(st, symbol, merged, bar.Time)
-			r.logger.Info("AI anchor resolution complete", "symbol", symbol, "anchors", len(merged))
+			fresh := ar.ResetAnchors(merged)
+			if len(fresh) > 0 {
+				freshTimes := make(map[string]time.Time, len(fresh))
+				for _, name := range fresh {
+					if t, ok := merged[name]; ok {
+						freshTimes[name] = t
+					}
+				}
+				r.replayBarsForAnchors(st, symbol, freshTimes, bar.Time)
+			}
+			r.logger.Info("AI anchor resolution complete",
+				"symbol", symbol, "anchors", len(merged),
+				"fresh", len(fresh), "preserved", len(merged)-len(fresh))
 		}
 
 		// Set key levels for confluence scoring
