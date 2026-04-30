@@ -242,7 +242,7 @@ type BarSnapshot struct {
 	// the strategy_signal_events.ts column, which reflects event-creation
 	// time and can drift sub-second (live) or arbitrarily (backtest, where
 	// the fast-clock plumbing is set per emit-batch rather than per bar).
-	Time   time.Time `json:"time,omitzero"`
+	Time   time.Time `json:"time"`
 	Open   float64   `json:"open"`
 	High   float64   `json:"high"`
 	Low    float64   `json:"low"`
