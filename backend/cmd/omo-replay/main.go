@@ -1120,11 +1120,12 @@ func main() {
 		// Wire session resolver onto each runner so resolveAIAnchors's
 		// additive merge can overlay full configured anchors on top of
 		// AI's partial fallback (otherwise CalcBarCount stays at 1).
+		prevDayBarsFn := func(symbol string, since, until time.Time) []start.Bar {
+			return sessionResolver.GetBarsBetween(ctx, sqlDB, symbol, since, until)
+		}
 		setSessionWiring := func(rn *strategy.Runner) {
 			rn.SetAnchorResolver(sessionResolver.ResolveAnchors)
-			rn.SetPrevDayBarsFn(func(symbol string, since, until time.Time) []start.Bar {
-				return sessionResolver.GetBarsBetween(ctx, sqlDB, symbol, since, until)
-			})
+			rn.SetPrevDayBarsFn(prevDayBarsFn)
 			rn.SetKeyLevelPricesFn(sessionResolver.KeyLevelPrices)
 		}
 		if shardedPipeline != nil {
@@ -1135,6 +1136,13 @@ func main() {
 		} else {
 			setSessionWiring(pipeline.Runner)
 		}
+		pkgpipeline.New(pkgpipeline.ModeReplay).WireAVWAPMonitor(monitorSvc, pkgpipeline.AVWAPMonitorWiring{
+			AVWAPFn:            pipeline.Runner.GetAVWAPValues,
+			AnchorResolverFn:   sessionResolver.ResolveAnchors,
+			SessionRefresherFn: nil,
+			PrevDayBarsFn:      prevDayBarsFn,
+			Anchors:            pkgpipeline.DefaultAVWAPAnchors(),
+		})
 
 		aiResolver := strategy.NewAIAnchorResolver(llm.NewNoOpAdvisor(), nil, nil)
 		aiResolver.SetSessionResolver(sessionResolver.ResolveAnchors)
