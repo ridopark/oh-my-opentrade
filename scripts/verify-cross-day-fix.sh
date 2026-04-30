@@ -43,7 +43,7 @@ SELECT to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') AS ts_utc,
 FROM strategy_signal_events
 WHERE symbol = 'AAPL'
   AND ts >= '${DATE} 13:34:00+00' AND ts < '${DATE} 13:36:00+00'
-  AND signal_id NOT LIKE '%backtest%'
+  AND COALESCE(payload->>'tag', '') NOT LIKE 'backtest_%'
 ORDER BY ts ASC
 LIMIT 5;
 "
