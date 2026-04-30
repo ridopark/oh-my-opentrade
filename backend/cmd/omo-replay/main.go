@@ -32,6 +32,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
+	pkgpipeline "github.com/oh-my-opentrade/backend/internal/app/pipeline"
 	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/warmup"
@@ -369,6 +370,13 @@ func main() {
 		posMonSvc = posMonBundle.Service
 		posMonPriceCache = posMonBundle.PriceCache
 		optionBarsCache = make(map[domain.Symbol][]domain.MarketBar)
+
+		// Wire the re-peg suppression hook (parity with live + backtest;
+		// closes #39). SimBroker won't fire re-pegs under today's fill
+		// model so the call is harmless on the replay path. Aliased to
+		// `pkgpipeline` because this file has a local variable named
+		// `pipeline` of type *bootstrap.StrategyPipeline.
+		pkgpipeline.New(pkgpipeline.ModeReplay).WireRepegNotifier(posMonBundle.Service, execBundle.Service)
 
 		if cfg.Alpaca.APIKeyID != "" && copytradeHist == "" {
 			a, alpacaErr := alpacaadapter.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca_replay").Logger())
