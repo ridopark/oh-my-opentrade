@@ -398,7 +398,7 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 	// after this point — re-acquire and re-lookup by key. handleExitTimeout
 	// is required to return with s.mu held.
 	s.mu.Unlock()
-	reconciled := s.cancelAndAwaitTerminal(key, orderID)
+	outcome := s.cancelAndAwaitTerminal(key, orderID)
 	s.mu.Lock()
 
 	livePos, ok := s.positions[key]
@@ -406,8 +406,29 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 		// pos deleted during the RPC window (fill reconcile, ghost cleanup).
 		return
 	}
-	if reconciled {
+	if outcome == cancelOutcomeReconciled {
 		livePos.ExitManaging = false
+		return
+	}
+	if outcome == cancelOutcomeUnsafe {
+		// Cancel did not reach a confirmed terminal state. The prior broker
+		// order may still be live and could fill — submitting a new exit
+		// now would risk the HIMS260508P00029000 phantom-short pattern.
+		// Leave ExitOrderID intact, bump the timeout counter, and re-stamp
+		// ExitPendingAt so the next tick re-fires handleExitTimeout (which
+		// re-attempts cancel+poll). After maxExitCancelTimeouts consecutive
+		// unsafe cycles we freeze the exit lifecycle for manual intervention.
+		livePos.ExitCancelTimeoutCount++
+		livePos.ExitManaging = false
+		if livePos.ExitCancelTimeoutCount >= maxExitCancelTimeouts {
+			s.log.Error().
+				Str("symbol", string(livePos.Symbol)).
+				Str("broker_order_id", orderID).
+				Int("timeout_count", livePos.ExitCancelTimeoutCount).
+				Msg("exit cancel never reached terminal — manual intervention required")
+			return
+		}
+		livePos.ExitPendingAt = s.nowFunc()
 		return
 	}
 	if livePos.ExitOrderID != orderID {
@@ -417,16 +438,17 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 		return
 	}
 
-	// Broker order is terminal. Under the single-ExitPending invariant we
-	// do NOT clear ExitPending here — triggerExit below will overwrite
-	// ExitPendingAt for the NEW attempt, and processExitSubmitted will
-	// swap ExitOrderID in when the broker acks the resubmission. Leaving
-	// ExitPending=true across this window is what prevents tick-loop rule
-	// evaluation from firing a parallel CLOSE_LONG (the SOFI 1605 bug).
+	// Broker order is terminal-canceled. Under the single-ExitPending
+	// invariant we do NOT clear ExitPending here — triggerExit below will
+	// overwrite ExitPendingAt for the NEW attempt, and processExitSubmitted
+	// will swap ExitOrderID in when the broker acks the resubmission.
+	// Leaving ExitPending=true across this window is what prevents tick-loop
+	// rule evaluation from firing a parallel CLOSE_LONG (the SOFI 1605 bug).
 	//
 	// We DO clear ExitOrderID so processExitTerminal's late-arriving event
 	// for the old order finds "no tracked order" and returns without
 	// bumping counters. triggerExit does not reference ExitOrderID.
+	livePos.ExitCancelTimeoutCount = 0
 	livePos.ExitOrderID = ""
 
 	if action == "repeg" {
@@ -489,16 +511,34 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 	// broker-cancel of the primary limit and the escalate firing). The
 	// single-slot ExitOrderID cannot police parallels; this enforces
 	// "at most one working exit" before the market order goes out.
-	peerReconciled := s.cancelAllPendingExits(key)
+	peerOutcome := s.cancelAllPendingExits(key)
 	s.mu.Lock()
 	livePos, ok = s.positions[key]
 	if !ok {
 		return
 	}
-	if peerReconciled {
+	if peerOutcome.anyReconciled {
 		// A peer cancel raced a fill and reconcile removed the position.
 		return
 	}
+	if peerOutcome.anyUnsafe {
+		// At least one peer order's terminal status was not confirmed.
+		// Submitting a market order now risks a parallel fill pattern.
+		// Bail to next tick on the same backoff path the primary cancel
+		// uses; ExitRetryCount/RepegCount were already mutated above so
+		// the next handleExitTimeout call will re-enter the escalate arm.
+		livePos.ExitCancelTimeoutCount++
+		if livePos.ExitCancelTimeoutCount >= maxExitCancelTimeouts {
+			s.log.Error().
+				Str("symbol", string(livePos.Symbol)).
+				Int("timeout_count", livePos.ExitCancelTimeoutCount).
+				Msg("exit peer cancel never reached terminal — manual intervention required")
+			return
+		}
+		livePos.ExitPendingAt = s.nowFunc()
+		return
+	}
+	livePos.ExitCancelTimeoutCount = 0
 	if !ruleOK {
 		// No rule — reset ExitPendingAt so the tick loop retries timeout
 		// logic on the next pass. Leaves ExitPending=true.
@@ -508,18 +548,48 @@ func (s *Service) handleExitTimeout(pos *domain.MonitoredPosition) {
 	s.triggerExit(livePos, rule, exitReasonEscalateMarket, livePos.EntryPrice, s.nowFunc())
 }
 
+// cancelOutcome reports the terminal state observed after a cancel attempt.
+// Resubmitting a fresh exit is ONLY safe under cancelOutcomeCanceled — any
+// other outcome means the prior order may still fill at the broker, and a
+// new SELL would risk the HIMS260508P00029000 phantom-short pattern from
+// 2026-04-28 (cancel returned nil with no terminal confirmation, three
+// SELLs all filled against a 14-contract long).
+type cancelOutcome int
+
+const (
+	// cancelOutcomeReconciled — prior order filled and the position was
+	// removed by the reconcile branch (or was already gone). Caller returns.
+	cancelOutcomeReconciled cancelOutcome = iota
+	// cancelOutcomeCanceled — broker confirmed canceled/expired/rejected.
+	// Caller may safely clear ExitOrderID and resubmit a fresh exit.
+	cancelOutcomeCanceled
+	// cancelOutcomeUnsafe — terminal status unconfirmed within the window
+	// (force-clear timeout, broker error, or filled-but-reconcile-failed).
+	// Caller MUST NOT resubmit; leave state intact and re-fire on next tick.
+	cancelOutcomeUnsafe
+)
+
+// peerCancelOutcome aggregates per-order outcomes from cancelAllPendingExits
+// across pos.PendingExitOrderIDs.
+type peerCancelOutcome struct {
+	anyReconciled bool
+	anyUnsafe     bool
+}
+
 // cancelAllPendingExits iterates pos.PendingExitOrderIDs and cancels each
-// via cancelAndAwaitTerminal. Safe against races: the existing single-order
-// helper returns (reconciled=true) if a cancel-fill race occurred, and the
-// map entry will be removed by processExitTerminal before the race unwinds.
+// via cancelAndAwaitTerminal. anyReconciled signals at least one peer
+// raced a fill and was removed; anyUnsafe signals at least one peer did
+// not reach a terminal state we could confirm — escalate must NOT submit
+// a market order in that case.
 // The caller must NOT hold s.mu on entry — this helper acquires it to
 // snapshot the set, then releases it before performing broker RPCs.
-func (s *Service) cancelAllPendingExits(key string) (reconciledAny bool) {
+func (s *Service) cancelAllPendingExits(key string) peerCancelOutcome {
+	var out peerCancelOutcome
 	s.mu.Lock()
 	pos, ok := s.positions[key]
 	if !ok {
 		s.mu.Unlock()
-		return false
+		return out
 	}
 	ids := make([]string, 0, len(pos.PendingExitOrderIDs))
 	for id := range pos.PendingExitOrderIDs {
@@ -527,20 +597,30 @@ func (s *Service) cancelAllPendingExits(key string) (reconciledAny bool) {
 	}
 	s.mu.Unlock()
 	for _, id := range ids {
-		if r := s.cancelAndAwaitTerminal(key, id); r {
-			reconciledAny = true
+		switch s.cancelAndAwaitTerminal(key, id) {
+		case cancelOutcomeReconciled:
+			out.anyReconciled = true
+		case cancelOutcomeUnsafe:
+			out.anyUnsafe = true
 		}
 	}
-	return
+	return out
 }
 
 // cancelAndAwaitTerminal issues the cancel and polls GetOrderDetails until
-// the order reaches a terminal state or the confirm window elapses. Returns
-// reconciled=true when the cancel raced a fill and the reconcile branch has
-// already removed the position from the monitor.
-func (s *Service) cancelAndAwaitTerminal(key, orderID string) (reconciled bool) {
+// the order reaches a terminal state or the confirm window elapses. The
+// outcome drives handleExitTimeout's resubmit decision — only Canceled is
+// safe to resubmit after. Reconciled means the prior order filled and the
+// position was removed; Unsafe covers force-clear timeout, broker errors,
+// and the filled-but-reconcile-failed case (broker confirmed filled but
+// we couldn't write the trade row, so the fill event will arrive through
+// the normal pipeline shortly — no fresh exit must be queued in the gap).
+//
+// Pre-fix this returned a bool that conflated Canceled and Unsafe; that
+// was the HIMS260508P00029000 phantom-short cause on 2026-04-28.
+func (s *Service) cancelAndAwaitTerminal(key, orderID string) cancelOutcome {
 	if orderID == "" || s.broker == nil {
-		return false
+		return cancelOutcomeUnsafe
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), exitCancelConfirm+2*time.Second)
@@ -548,26 +628,32 @@ func (s *Service) cancelAndAwaitTerminal(key, orderID string) (reconciled bool) 
 
 	if err := s.broker.CancelOrder(ctx, orderID); err != nil {
 		if strings.Contains(err.Error(), "filled") {
-			// Cancel lost the race with a fill. Reconcile needs mutable
-			// pos state, so re-acquire s.mu for that path — reconcileFilledOrder
-			// removes the position from the map, which is what we report.
+			// Cancel lost the race with a fill. reconcileFilledOrder needs
+			// mutable pos state, so re-acquire s.mu — it removes the
+			// position on success. On reconcile failure (network error or
+			// partial fill less than remaining) the broker has still
+			// confirmed filled, so we MUST NOT submit a fresh exit; the
+			// fill event will arrive through the normal pipeline.
 			s.mu.Lock()
 			pos, ok := s.positions[key]
 			if !ok {
 				s.mu.Unlock()
-				return true
+				return cancelOutcomeReconciled
 			}
 			if pos.ExitOrderID != orderID {
 				s.mu.Unlock()
-				return false
+				return cancelOutcomeUnsafe
 			}
 			done := s.reconcileFilledOrder(pos)
 			s.mu.Unlock()
-			return done
+			if done {
+				return cancelOutcomeReconciled
+			}
+			return cancelOutcomeUnsafe
 		}
 		s.log.Warn().Err(err).
 			Str("broker_order_id", orderID).
-			Msg("cancel failed — may already be terminal, continuing")
+			Msg("cancel failed — terminal status unconfirmed, will retry on next tick")
 	}
 
 	deadline := time.Now().Add(exitCancelConfirm)
@@ -576,13 +662,13 @@ func (s *Service) cancelAndAwaitTerminal(key, orderID string) (reconciled bool) 
 	for {
 		select {
 		case <-ctx.Done():
-			return false
+			return cancelOutcomeUnsafe
 		case <-ticker.C:
 			if time.Now().After(deadline) {
 				s.log.Warn().
 					Str("broker_order_id", orderID).
-					Msg("cancel-terminal wait expired — proceeding (force-clear)")
-				return false
+					Msg("cancel-terminal wait expired — leaving exit in flight, will retry on next tick")
+				return cancelOutcomeUnsafe
 			}
 			details, err := s.broker.GetOrderDetails(ctx, orderID)
 			if err != nil {
@@ -590,7 +676,7 @@ func (s *Service) cancelAndAwaitTerminal(key, orderID string) (reconciled bool) 
 			}
 			switch details.Status {
 			case "canceled", "expired", "rejected":
-				return false
+				return cancelOutcomeCanceled
 			case "filled":
 				// Cancel lost the race with a fill during the wait. Run the
 				// same reconcile branch as the cancel-error case.
@@ -598,15 +684,18 @@ func (s *Service) cancelAndAwaitTerminal(key, orderID string) (reconciled bool) 
 				pos, ok := s.positions[key]
 				if !ok {
 					s.mu.Unlock()
-					return true
+					return cancelOutcomeReconciled
 				}
 				if pos.ExitOrderID != orderID {
 					s.mu.Unlock()
-					return false
+					return cancelOutcomeUnsafe
 				}
 				done := s.reconcileFilledOrder(pos)
 				s.mu.Unlock()
-				return done
+				if done {
+					return cancelOutcomeReconciled
+				}
+				return cancelOutcomeUnsafe
 			}
 		}
 	}

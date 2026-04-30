@@ -196,6 +196,15 @@ type MonitoredPosition struct {
 	ExitManaging      bool      `json:"exitManaging,omitempty"`
 	ExitLastSentPrice float64   `json:"exitLastSentPrice,omitempty"`
 
+	// ExitCancelTimeoutCount counts consecutive cancel-and-await cycles that
+	// did not reach a terminal broker status within the confirm window. Each
+	// such cycle leaves the original broker order potentially live, so the
+	// resubmit branch is suppressed until the count clears (next confirmed
+	// terminal cancel or fill). After maxExitCancelTimeouts consecutive
+	// unsafe cycles the position is left for manual intervention. Reset to 0
+	// on any confirmed terminal cancel.
+	ExitCancelTimeoutCount int `json:"exitCancelTimeoutCount,omitempty"`
+
 	LastRevaluation   *RiskRevaluation `json:"lastRevaluation,omitempty"`
 	LastRevaluationAt time.Time        `json:"lastRevaluationAt,omitempty"`
 
