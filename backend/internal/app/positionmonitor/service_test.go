@@ -495,10 +495,18 @@ func TestService_tick_ExitPendingTimeoutClearsLock(t *testing.T) {
 func TestService_tick_ExitTimeoutIncrementsRetryCount(t *testing.T) {
 	bus := &mockEventBus{}
 	pc := NewPriceCache(zerolog.Nop())
-	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+	// Broker stub returns a confirmed-canceled status so cancelAndAwaitTerminal
+	// produces cancelOutcomeCanceled — required for the resubmit branch to
+	// run after the HIMS phantom-short fix added an Unsafe outcome that
+	// suppresses retry on unconfirmed cancels.
+	broker := &mockBroker{orderDetailsResult: ports.OrderDetails{Status: "canceled"}}
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
 
 	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
-	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(), WithNowFunc(func() time.Time { return now }))
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithNowFunc(func() time.Time { return now }),
+		WithBroker(broker),
+	)
 
 	svc.processFill(fillMsg{
 		Symbol:     domain.Symbol("AAPL"),
@@ -514,6 +522,7 @@ func TestService_tick_ExitTimeoutIncrementsRetryCount(t *testing.T) {
 	pos := svc.positions["tenant-1:Paper:AAPL"]
 	require.NotNil(t, pos)
 	pos.ExitPending = true
+	pos.ExitOrderID = "stale-order-aapl"
 	pos.ExitPendingAt = now.Add(-11 * time.Second)
 	pos.ExitRetryCount = 0
 
@@ -527,7 +536,12 @@ func TestService_tick_ExitTimeoutIncrementsRetryCount(t *testing.T) {
 func TestService_tick_ExitTimeoutCancelsStaleOrder(t *testing.T) {
 	bus := &mockEventBus{}
 	pc := NewPriceCache(zerolog.Nop())
-	broker := &mockBrokerWithCancel{}
+	// Broker stub also returns a confirmed-canceled status from GetOrderDetails
+	// so the post-HIMS-fix poll path produces cancelOutcomeCanceled instead of
+	// Unsafe (which would suppress the resubmit and leave ExitOrderID intact).
+	broker := &mockBrokerWithCancel{
+		mockBroker: mockBroker{orderDetailsResult: ports.OrderDetails{Status: "canceled"}},
+	}
 	pg := execution.NewPositionGate(broker, zerolog.Nop())
 
 	now := time.Date(2026, 3, 6, 15, 0, 0, 0, time.UTC)
