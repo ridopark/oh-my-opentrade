@@ -501,7 +501,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	// collector with empty spot_mfe_pct / spot_mae_pct fields.
 	execBundle.Service.SetPositionLookup(posMonBundle.Service)
 
-	pipeline.New(pipeline.ModeBacktest).WireRepegNotifier(posMonBundle.Service, execBundle.Service)
+	btPipeline := pipeline.New(pipeline.ModeBacktest)
+	btPipeline.WireRepegNotifier(posMonBundle.Service, execBundle.Service)
+	btPipeline.WireATRTrailConfig(posMonBundle.Service, r.appCfg.Exits.ATRTrail)
 
 	aiAdvisor := r.infra.AIAdvisor
 	histOptRepo := r.infra.HistOptRepo
