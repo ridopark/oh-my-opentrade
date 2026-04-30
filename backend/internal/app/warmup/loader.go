@@ -120,14 +120,18 @@ func Load(ctx context.Context, repo BarRepo, spec Spec, sym domain.Symbol, tf do
 func filterRTH(bars []domain.MarketBar) []domain.MarketBar {
 	out := bars[:0]
 	for _, b := range bars {
-		if isRTH(b.Time) {
+		if IsRTH(b.Time) {
 			out = append(out, b)
 		}
 	}
 	return out
 }
 
-func isRTH(t time.Time) bool {
+// IsRTH reports whether t falls in the NYSE regular-trading-hours window
+// (09:30 ET inclusive to NYSECloseTime exclusive) on a non-holiday weekday.
+// Exported so the omo-replay bar-feed gate can share one definition with
+// the warmup loader, avoiding the fallback-vs-filter mismatch trap.
+func IsRTH(t time.Time) bool {
 	loc := domain.NYLocation()
 	nt := t.In(loc)
 	if nt.Weekday() == time.Saturday || nt.Weekday() == time.Sunday {
