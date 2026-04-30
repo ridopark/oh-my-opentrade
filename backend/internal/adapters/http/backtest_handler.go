@@ -51,6 +51,12 @@ type backtestRunRequest struct {
 	// CopytradeLedgerDir defaults to "_workspace/copytrade_replay" when empty.
 	CopytradeHistory   string `json:"copytrade_history"`
 	CopytradeLedgerDir string `json:"copytrade_ledger_dir"`
+
+	// EmitGatedDiag, when true, persists EntryGated rows to
+	// strategy_signal_events with payload.tag = "backtest_<runID>" so a SQL
+	// diff against live rows on (symbol, bar.Time) can attribute gate
+	// divergences. Off by default. Mirrors omo-replay's --emit-gated-diag.
+	EmitGatedDiag bool `json:"emit_gated_diag"`
 }
 
 type backtestControlRequest struct {
@@ -306,6 +312,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		CompoundEquity:   req.CompoundEquity == nil || *req.CompoundEquity,
 		CopytradeHistory:   req.CopytradeHistory,
 		CopytradeLedgerDir: req.CopytradeLedgerDir,
+		EmitGatedDiag:      req.EmitGatedDiag,
 	}, bootstrap.BuildBacktestInfra(bootstrap.BacktestDeps{
 		DB:     h.db,
 		AppCfg: h.appCfg,

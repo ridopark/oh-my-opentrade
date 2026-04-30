@@ -67,6 +67,14 @@ type RunConfig struct {
 	// into. Ignored when CopytradeHistory is empty; HTTP handler defaults it
 	// to "_workspace/copytrade_replay".
 	CopytradeLedgerDir string
+
+	// EmitGatedDiag, when true, persists EntryGated rows to
+	// strategy_signal_events with payload.tag = "backtest_<runID>" so a SQL
+	// diff against live rows on (symbol, bar.Time) can attribute a gate
+	// divergence to specific inputs. Off by default to keep ad-hoc backtest
+	// runs from polluting the table. Mirrors omo-replay's --emit-gated-diag
+	// flag. See _workspace/parity_live_vs_backtest_divergence_audit.md (H4).
+	EmitGatedDiag bool
 }
 
 // ProgressInfo tracks replay progress.
@@ -602,6 +610,22 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.status.Store("error")
 			return fmt.Errorf("subscribe signal passthrough: %w", subErr)
 		}
+	}
+
+	// Persist EntryGated rows to strategy_signal_events when EmitGatedDiag
+	// is set, so a SQL diff against live rows on (symbol, bar.Time) can
+	// attribute gate divergences. Mirrors omo-replay's --emit-gated-diag and
+	// services.go's always-on live wiring. Without this branch the
+	// in-process HTTP backtest produces zero strategy_signal_events rows
+	// (audit H4).
+	if r.cfg.EmitGatedDiag && r.infra.DB != nil {
+		pnlRepo := timescaledb.NewPnLRepository(timescaledb.NewSqlDB(r.infra.DB), r.log.With().Str("component", "pnl_diag").Logger())
+		writer := strategy.NewEntryGatedWriter(pnlRepo, r.log)
+		if subErr := r.infra.EventBus.SubscribeAsync(ctx, domain.EventEntryGated, writer.Handle); subErr != nil {
+			r.status.Store("error")
+			return fmt.Errorf("subscribe EntryGated writer: %w", subErr)
+		}
+		r.log.Info().Msg("emit-gated-diag ON — EntryGated rows will land in strategy_signal_events tagged backtest_<runID>")
 	}
 
 	signalTracker := perf.NewSignalTracker(r.infra.EventBus, r.infra.NoopPnLRepo, r.log.With().Str("component", "signal_tracker").Logger())
