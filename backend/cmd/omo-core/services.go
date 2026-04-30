@@ -247,28 +247,15 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	svc.priceCache = posMonBundle.PriceCache
 	svc.posMonitor = posMonBundle.Service
 
-	pipeline.New(pipeline.ModeLive).WireRepegNotifier(svc.posMonitor, svc.execution)
+	livePipeline := pipeline.New(pipeline.ModeLive)
+	livePipeline.WireRepegNotifier(svc.posMonitor, svc.execution)
 
 	// Phase 2 of the exit_repeg_dup_fill fix: gate atomic-modify re-pegs
 	// behind a config flag. Default off; flip only after a clean Phase-1
 	// session per the plan rollout gate.
 	svc.posMonitor.SetRepegModifyInPlace(cfg.Exits.RepegModifyInPlace)
 
-	// Wire the ATR-bucketed PREMIUM_TRAIL multiplier (2026-04-16 MRVL/SOXL
-	// premature-exit fix). Default-on per quant; operators flip
-	// [exits.atr_trail] enabled: false to kill-switch. Positions stamped
-	// once at fill time; tick loop reads pos.CustomState["atr_trail_mult"].
-	svc.posMonitor.SetATRTrailConfig(
-		cfg.Exits.ATRTrail.Enabled,
-		cfg.Exits.ATRTrail.ATRPeriod,
-		cfg.Exits.ATRTrail.ATRLookbackDays,
-		cfg.Exits.ATRTrail.ATRLookbackDaysCrypto,
-		cfg.Exits.ATRTrail.MinHistoryDays,
-		cfg.Exits.ATRTrail.TercileLowPctile,
-		cfg.Exits.ATRTrail.TercileHighPctile,
-		cfg.Exits.ATRTrail.InsufficientHistoryMultiplier,
-		cfg.Exits.ATRTrail.TercileMultipliers,
-	)
+	livePipeline.WireATRTrailConfig(svc.posMonitor, cfg.Exits.ATRTrail)
 
 	// 5a-risk-reval: Position revaluator (AI-driven periodic risk re-evaluation).
 	var riskAssessor ports.RiskAssessorPort
