@@ -653,26 +653,49 @@ func (s *Service) reconcileFilledOrder(pos *domain.MonitoredPosition) bool {
 	}
 
 	if s.repo != nil {
-		trade := domain.Trade{
-			Time:          s.nowFunc(),
-			TenantID:      s.tenantID,
-			EnvMode:       s.envMode,
-			TradeID:       uuid.New(),
-			BrokerOrderID: pos.ExitOrderID,
-			Symbol:        pos.Symbol,
-			Side:          "SELL",
-			Quantity:      missingQty,
-			Price:         details.FilledAvgPrice,
-			Status:        "FILLED",
-			Strategy:      pos.Strategy,
-			Rationale:     fmt.Sprintf("exit-timeout: fill reconciliation for order %s (missed WS fill events)", pos.ExitOrderID),
-		}
-		if err := s.repo.SaveTrade(ctx, trade); err != nil {
-			s.log.Error().Err(err).
+		// Idempotency: the WS-driven processExitTerminal path may have
+		// already written the fill row(s) for this broker_order_id. Writing
+		// another would inflate the SELL side — the AAPL/PLTR/SMCI/SNOW/OXY/
+		// MRVL/TSLA phantom-short pattern from 2026-04-30 (rationale text
+		// "exit-timeout: fill reconciliation for order N (missed WS fill events)"
+		// despite the WS path having recorded the legitimate fill). Skip
+		// writing the duplicate; still proceed to close the position
+		// because the broker confirmed the fill.
+		exists, hasErr := s.repo.HasTradeForBrokerOrderID(ctx, pos.ExitOrderID)
+		if hasErr != nil {
+			s.log.Warn().Err(hasErr).
 				Str("symbol", string(pos.Symbol)).
 				Str("broker_order_id", pos.ExitOrderID).
-				Msg("exit-timeout: failed to save reconciliation fill — will retry exit")
+				Msg("exit-timeout: idempotency check failed — will retry exit")
 			return false
+		}
+		if exists {
+			s.log.Info().
+				Str("symbol", string(pos.Symbol)).
+				Str("broker_order_id", pos.ExitOrderID).
+				Msg("exit-timeout: WS fill already recorded — skipping reconciliation write")
+		} else {
+			trade := domain.Trade{
+				Time:          s.nowFunc(),
+				TenantID:      s.tenantID,
+				EnvMode:       s.envMode,
+				TradeID:       uuid.New(),
+				BrokerOrderID: pos.ExitOrderID,
+				Symbol:        pos.Symbol,
+				Side:          "SELL",
+				Quantity:      missingQty,
+				Price:         details.FilledAvgPrice,
+				Status:        "FILLED",
+				Strategy:      pos.Strategy,
+				Rationale:     fmt.Sprintf("exit-timeout: fill reconciliation for order %s (missed WS fill events)", pos.ExitOrderID),
+			}
+			if err := s.repo.SaveTrade(ctx, trade); err != nil {
+				s.log.Error().Err(err).
+					Str("symbol", string(pos.Symbol)).
+					Str("broker_order_id", pos.ExitOrderID).
+					Msg("exit-timeout: failed to save reconciliation fill — will retry exit")
+				return false
+			}
 		}
 	}
 

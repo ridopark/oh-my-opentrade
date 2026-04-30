@@ -161,6 +161,10 @@ func (r *backfillMockRepo) GetAvgEntryPrice(context.Context, string, domain.EnvM
 func (r *backfillMockRepo) HasCanceledExitOrder(context.Context, string, domain.EnvMode, domain.Symbol) (bool, error) {
 	return false, nil
 }
+
+func (r *backfillMockRepo) HasTradeForBrokerOrderID(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
 func (r *backfillMockRepo) UpdateBarIndicators(context.Context, domain.Symbol, domain.Timeframe, time.Time, float64, float64, float64, float64, map[string]float64) error {
 	return nil
 }

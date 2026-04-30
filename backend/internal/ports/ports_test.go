@@ -202,6 +202,10 @@ func (m *mockRepository) GetAvgEntryPrice(_ context.Context, _ string, _ domain.
 func (m *mockRepository) HasCanceledExitOrder(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol) (bool, error) {
 	return false, nil
 }
+
+func (m *mockRepository) HasTradeForBrokerOrderID(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
 func (m *mockRepository) UpdateBarIndicators(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _ time.Time, _, _, _, _ float64, _ map[string]float64) error {
 	return nil
 }

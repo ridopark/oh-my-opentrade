@@ -149,6 +149,10 @@ func (r *reconcileOnBootRepo) GetAvgEntryPrice(context.Context, string, domain.E
 func (r *reconcileOnBootRepo) HasCanceledExitOrder(context.Context, string, domain.EnvMode, domain.Symbol) (bool, error) {
 	return false, nil
 }
+
+func (r *reconcileOnBootRepo) HasTradeForBrokerOrderID(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
 func (r *reconcileOnBootRepo) UpdateBarIndicators(context.Context, domain.Symbol, domain.Timeframe, time.Time, float64, float64, float64, float64, map[string]float64) error {
 	return nil
 }

@@ -184,6 +184,10 @@ func (r *dustMockRepo) GetAvgEntryPrice(context.Context, string, domain.EnvMode,
 func (r *dustMockRepo) HasCanceledExitOrder(context.Context, string, domain.EnvMode, domain.Symbol) (bool, error) {
 	return false, nil
 }
+
+func (r *dustMockRepo) HasTradeForBrokerOrderID(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
 func (r *dustMockRepo) UpdateBarIndicators(context.Context, domain.Symbol, domain.Timeframe, time.Time, float64, float64, float64, float64, map[string]float64) error {
 	return nil
 }

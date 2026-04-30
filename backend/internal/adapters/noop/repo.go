@@ -112,6 +112,10 @@ func (n *NoopRepo) HasCanceledExitOrder(_ context.Context, _ string, _ domain.En
 	return false, nil
 }
 
+func (n *NoopRepo) HasTradeForBrokerOrderID(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+
 func (n *NoopRepo) UpdateBarIndicators(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _ time.Time, _, _, _, _ float64, _ map[string]float64) error {
 	return nil
 }
