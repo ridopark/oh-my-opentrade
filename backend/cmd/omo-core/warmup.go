@@ -406,14 +406,15 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 
 		svc.strategyRunner.InitAggregators(todayOpen)
 
-		// Resolve AVWAP anchors for today's session so HTF warmup bars
-		// feed into properly initialized AVWAP calculators with real
-		// anchor times (session_open, pd_high, pd_low) and key levels.
-		allSymStrs := make([]string, len(syms.all))
-		for i, s := range syms.all {
-			allSymStrs[i] = string(s)
-		}
-		svc.strategyRunner.ResolveAnchorsForWarmup(allSymStrs, time.Now())
+		// AVWAP anchor seeding intentionally deferred to the first runtime
+		// bar's lastSessionDate-rollover branch in handleBar. Calling
+		// ResolveAnchorsForWarmup here would create pd_high/pd_low/session_open
+		// before the HTF warmup loop below, causing the HTF bars to seed
+		// CumPV/CumV/M2/recentVWAPs/barCount on those anchors — which the
+		// backtest path (which never calls ResolveAnchorsForWarmup) does not
+		// do. Empirically this produced ~800-bar barCount inflation, ~1%
+		// VWAP drift, and 3-7x slope drift between live and backtest at the
+		// same (sym, bar.Time). See _workspace/parity_warmup_anchor_seed_plan.md.
 
 		// HTF Load reads market_bars; gate on fillBarGaps's HTF aggregation
 		// to avoid a stale-tail read. Timeout matches fillBarGaps's own.
