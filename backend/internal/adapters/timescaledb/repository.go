@@ -1206,3 +1206,20 @@ func (r *Repository) HasCanceledExitOrder(ctx context.Context, tenantID string, 
 	}
 	return status == "canceled" || status == "expired", nil
 }
+
+// HasTradeForBrokerOrderID is the idempotency check for reconcileFilledOrder.
+// Uses idx_trades_broker_order_id for an indexed lookup — single-row check
+// even on hypertables with millions of rows.
+func (r *Repository) HasTradeForBrokerOrderID(ctx context.Context, brokerOrderID string) (bool, error) {
+	if brokerOrderID == "" {
+		return false, nil
+	}
+	var exists bool
+	err := r.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM trades WHERE broker_order_id = $1 LIMIT 1)`,
+		brokerOrderID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("timescaledb: has trade for broker_order_id: %w", err)
+	}
+	return exists, nil
+}
