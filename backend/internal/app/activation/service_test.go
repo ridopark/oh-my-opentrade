@@ -191,8 +191,11 @@ func makeHourlyBars(symbol string, n int) []domain.MarketBar {
 func makeMinuteBars(symbol string, n int) []domain.MarketBar {
 	bars := make([]domain.MarketBar, n)
 	sym := domain.Symbol(symbol)
+	// 09:30 ET (13:30 UTC during EDT) on Monday 2025-06-02 — a non-holiday
+	// weekday so IndicatorCalculator's RTH gate accepts the synthetic 1m
+	// bars. June 1 is Sunday and would be filtered as non-RTH.
 	for i := 0; i < n; i++ {
-		t := time.Date(2025, 6, 1, 14, 30, 0, 0, time.UTC).Add(time.Duration(i) * time.Minute)
+		t := time.Date(2025, 6, 2, 13, 30, 0, 0, time.UTC).Add(time.Duration(i) * time.Minute)
 		bar, _ := domain.NewMarketBar(t, sym, "1m", 150, 151, 149, 150, 100)
 		bars[i] = bar
 	}
