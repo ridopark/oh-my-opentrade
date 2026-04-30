@@ -302,6 +302,48 @@ func TestHandleExitTimeout_CancelReturnsFilled_ReconcilesPosition(t *testing.T) 
 	assert.Equal(t, "FILLED", repo.savedTrades[0].Status)
 }
 
+// idempotencyRepo lets tests program HasTradeForBrokerOrderID independently
+// of SaveTrade so we can simulate "WS path already wrote the fill row".
+type idempotencyRepo struct {
+	capturingRepo
+	hasTrade bool
+}
+
+func (r *idempotencyRepo) HasTradeForBrokerOrderID(_ context.Context, _ string) (bool, error) {
+	return r.hasTrade, nil
+}
+
+// TestReconcileFilledOrder_SkipsDuplicateWhenWSAlreadyWrote pins down the
+// fix for the AAPL/PLTR/SMCI/SNOW/OXY/MRVL/TSLA phantom-short pattern from
+// 2026-04-30. When HasTradeForBrokerOrderID reports an existing trade row
+// for pos.ExitOrderID (i.e. the WS-driven processExitTerminal path already
+// recorded the legitimate fill), reconcileFilledOrder must NOT write a
+// second SELL row. The position is still removed because the broker
+// confirmed the fill.
+func TestReconcileFilledOrder_SkipsDuplicateWhenWSAlreadyWrote(t *testing.T) {
+	broker := &trackingBroker{
+		cancelReturn:  fmt.Errorf("cancel rejected: order already in filled state"),
+		detailsResult: ports.OrderDetails{FilledQty: 5, FilledAvgPrice: 1.25},
+	}
+	repo := &idempotencyRepo{hasTrade: true}
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&broker.mockBroker, zerolog.Nop())
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithBroker(broker),
+		WithRepo(repo),
+	)
+
+	_ = seedOptionPendingExit(t, svc, "AAPL_OPT_DUP", domain.ExitRulePremiumTarget, time.Second)
+
+	svc.tick()
+
+	assert.Equal(t, 0, svc.PositionCount(),
+		"position must still be removed even when reconciliation row is skipped")
+	assert.Empty(t, repo.savedTrades,
+		"reconcileFilledOrder must NOT write a duplicate trade row when WS path already recorded the fill")
+}
+
 func TestHandleExitTimeout_EquityUnchanged_StillEscalates(t *testing.T) {
 	broker := &trackingBroker{detailsStatus: "canceled"}
 	svc := newTestServiceWithBrokerAndRepo(&broker.mockBroker, &capturingRepo{})

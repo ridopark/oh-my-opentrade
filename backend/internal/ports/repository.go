@@ -98,6 +98,14 @@ type RepositoryPort interface {
 	// so after-hours EOD flatten retries survive restarts.
 	HasCanceledExitOrder(ctx context.Context, tenantID string, envMode domain.EnvMode, symbol domain.Symbol) (bool, error)
 
+	// HasTradeForBrokerOrderID reports whether at least one trade row already
+	// exists for the given broker_order_id. Used by reconcileFilledOrder as
+	// an idempotency check — when the WS-driven fill path has already
+	// recorded the fill, the cancel-fill-race reconcile branch must NOT
+	// write a duplicate trade row (the AAPL/PLTR/SMCI/SNOW/OXY/MRVL/TSLA
+	// phantom-short pattern from 2026-04-30).
+	HasTradeForBrokerOrderID(ctx context.Context, brokerOrderID string) (bool, error)
+
 	// UpdateBarIndicators persists enriched indicator data (EMA, AVWAP) onto an
 	// existing market_bars row identified by (symbol, timeframe, time).
 	UpdateBarIndicators(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, t time.Time, ema9, ema21, ema50, ema200 float64, avwaps map[string]float64) error
