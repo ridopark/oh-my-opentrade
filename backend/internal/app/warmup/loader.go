@@ -129,8 +129,8 @@ func filterRTH(bars []domain.MarketBar) []domain.MarketBar {
 
 // IsRTH reports whether t falls in the NYSE regular-trading-hours window
 // (09:30 ET inclusive to NYSECloseTime exclusive) on a non-holiday weekday.
-// Exported so the omo-replay bar-feed gate can share one definition with
-// the warmup loader, avoiding the fallback-vs-filter mismatch trap.
+// Exported so runtime indicator/aggregator gates can share one definition
+// with the warmup loader, keeping fallback-vs-filter behavior identical.
 func IsRTH(t time.Time) bool {
 	loc := domain.NYLocation()
 	nt := t.In(loc)
