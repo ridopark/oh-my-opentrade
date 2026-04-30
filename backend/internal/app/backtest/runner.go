@@ -504,6 +504,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	btPipeline := pipeline.New(pipeline.ModeBacktest)
 	btPipeline.WireRepegNotifier(posMonBundle.Service, execBundle.Service)
 	btPipeline.WireATRTrailConfig(posMonBundle.Service, r.appCfg.Exits.ATRTrail)
+	btPipeline.WireNotifiers(posMonBundle.Service, nil)
 
 	aiAdvisor := r.infra.AIAdvisor
 	histOptRepo := r.infra.HistOptRepo
