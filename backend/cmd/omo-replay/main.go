@@ -371,7 +371,9 @@ func main() {
 		posMonPriceCache = posMonBundle.PriceCache
 		optionBarsCache = make(map[domain.Symbol][]domain.MarketBar)
 
-		pkgpipeline.New(pkgpipeline.ModeReplay).WireRepegNotifier(posMonBundle.Service, execBundle.Service)
+		replayPipeline := pkgpipeline.New(pkgpipeline.ModeReplay)
+		replayPipeline.WireRepegNotifier(posMonBundle.Service, execBundle.Service)
+		replayPipeline.WireATRTrailConfig(posMonBundle.Service, cfg.Exits.ATRTrail)
 
 		if cfg.Alpaca.APIKeyID != "" && copytradeHist == "" {
 			a, alpacaErr := alpacaadapter.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca_replay").Logger())
