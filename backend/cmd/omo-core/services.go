@@ -316,7 +316,7 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	// that the sink is available. Bootstrap reconciliation runs at Start()
 	// time, well after this point, so the late-binding is safe.
 	if svc.posMonitor != nil {
-		svc.posMonitor.SetNotifier(multiNotifier)
+		livePipeline.WireNotifiers(svc.posMonitor, multiNotifier)
 	}
 	notifyLog := log.With().Str("component", "notify").Logger()
 	chartGen := charting.NewGonumChartGenerator()
