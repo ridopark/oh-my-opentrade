@@ -411,6 +411,10 @@ func (mockRepoStub) GetAvgEntryPrice(_ context.Context, _ string, _ domain.EnvMo
 func (mockRepoStub) HasCanceledExitOrder(_ context.Context, _ string, _ domain.EnvMode, _ domain.Symbol) (bool, error) {
 	return false, nil
 }
+
+func (mockRepoStub) HasTradeForBrokerOrderID(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
 func (mockRepoStub) UpdateBarIndicators(_ context.Context, _ domain.Symbol, _ domain.Timeframe, _ time.Time, _, _, _, _ float64, _ map[string]float64) error {
 	return nil
 }

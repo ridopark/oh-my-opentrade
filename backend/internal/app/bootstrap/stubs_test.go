@@ -136,6 +136,10 @@ func (stubRepo) GetAvgEntryPrice(context.Context, string, domain.EnvMode, domain
 func (stubRepo) HasCanceledExitOrder(context.Context, string, domain.EnvMode, domain.Symbol) (bool, error) {
 	return false, nil
 }
+
+func (stubRepo) HasTradeForBrokerOrderID(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
 func (stubRepo) UpdateBarIndicators(context.Context, domain.Symbol, domain.Timeframe, time.Time, float64, float64, float64, float64, map[string]float64) error {
 	return nil
 }
