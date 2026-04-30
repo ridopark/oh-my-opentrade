@@ -28,6 +28,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
+	"github.com/oh-my-opentrade/backend/internal/app/pipeline"
 	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/warmup"
@@ -499,6 +500,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	// exits (which bypass positionmonitor.exit_eval) arrive at the backtest
 	// collector with empty spot_mfe_pct / spot_mae_pct fields.
 	execBundle.Service.SetPositionLookup(posMonBundle.Service)
+
+	pipeline.New(pipeline.ModeBacktest).WireRepegNotifier(posMonBundle.Service, execBundle.Service)
 
 	aiAdvisor := r.infra.AIAdvisor
 	histOptRepo := r.infra.HistOptRepo
