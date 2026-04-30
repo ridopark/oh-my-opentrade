@@ -104,6 +104,7 @@ type Service struct {
 	scratchStrict     []domain.Event
 	scratchBestEffort []domain.Event
 	anchorResolverFn func(symbol string, barTime time.Time, anchors []string) map[string]time.Time
+	sessionRefresherFn func(symbol string, barTime time.Time)
 	prevDayBarsFn    func(symbol string, since, until time.Time) []start.Bar
 	nyLoc            *time.Location // cached America/New_York location
 }
@@ -155,6 +156,17 @@ func (s *Service) SetAnchorResolverFn(fn func(symbol string, barTime time.Time, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.anchorResolverFn = fn
+}
+
+// SetSessionRefresherFn installs a callback that the monitor invokes on each
+// session-day rollover for a streaming symbol before resolving anchors.
+// Production wires this to SessionResolver.RefreshIfStale to keep the
+// standalone-AVWAP path's prevDay anchor times current across multi-day runs.
+// Nil is safe — only invoked when set.
+func (s *Service) SetSessionRefresherFn(fn func(symbol string, barTime time.Time)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionRefresherFn = fn
 }
 
 // SetPrevDayBarsFn installs a function that returns 1m bars in [since, until)
@@ -828,6 +840,9 @@ func (s *Service) handleBarCore(ctx context.Context, bar domain.MarketBar, tenan
 		barDateInt := y*10000 + int(m)*100 + d
 		if s.avwapLastSessionInt[symStr] != barDateInt {
 			s.avwapLastSessionInt[symStr] = barDateInt
+			if s.sessionRefresherFn != nil {
+				s.sessionRefresherFn(symStr, bar.Time)
+			}
 			resolved := s.anchorResolverFn(symStr, bar.Time, s.avwapAnchors)
 			if len(resolved) > 0 {
 				calc := start.NewAnchoredVWAPCalc()
