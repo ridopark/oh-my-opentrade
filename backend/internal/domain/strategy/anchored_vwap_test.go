@@ -333,3 +333,127 @@ func TestAnchoredVWAPCalc_Snapshot(t *testing.T) {
 
 	assert.Equal(t, t0.Add(8*time.Minute), c.LastBarTime())
 }
+
+// rthOpenET returns the UTC time corresponding to 09:30 ET on the given
+// non-holiday weekday. Used by RTHOnly tests so bar timestamps fall
+// inside / outside the package-local isRTH window.
+func rthOpenET(t *testing.T, year int, month time.Month, day int) time.Time {
+	t.Helper()
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	return time.Date(year, month, day, 9, 30, 0, 0, loc).UTC()
+}
+
+// TestAnchoredVWAPCalc_UpdateSingleAnchor_RTHOnly_SkipsNonRTH pins the
+// invariant that UpdateSingleAnchor must skip non-RTH bars when the
+// per-anchor RTHOnly flag is set, mirroring Update's gate at line 167.
+// Pre-fix: replay path (which calls UpdateSingleAnchor) accumulated all
+// bars regardless of session, inflating pd_high/pd_low barCount and
+// distorting VWAP versus live.
+func TestAnchoredVWAPCalc_UpdateSingleAnchor_RTHOnly_SkipsNonRTH(t *testing.T) {
+	rthOpen := rthOpenET(t, 2026, 1, 5) // Monday, EST
+	preMarket := rthOpen.Add(-2 * time.Hour)
+	rthBar := rthOpen.Add(1 * time.Minute)
+	afterHours := rthOpen.Add(7 * time.Hour) // 16:30 ET
+
+	c := strategy.NewAnchoredVWAPCalc()
+	c.AddAnchor(strategy.AnchorPoint{
+		Name:       "pd_high",
+		AnchorTime: preMarket,
+		RTHOnly:    true,
+	})
+
+	// Pre-market bar after anchor time: must NOT count toward state.
+	c.UpdateSingleAnchor("pd_high", rthOpen.Add(-30*time.Minute), 102, 98, 100, 1000)
+	// RTH bar: must count.
+	c.UpdateSingleAnchor("pd_high", rthBar, 105, 101, 103, 2000)
+	// After-hours bar: must NOT count.
+	c.UpdateSingleAnchor("pd_high", afterHours, 110, 105, 108, 3000)
+
+	snap := c.Snapshot(5)["pd_high"]
+	assert.Equal(t, 1, snap.BarCount, "only the single RTH bar must increment barCount")
+	assert.True(t, snap.Active, "anchor must be active once barTime >= AnchorTime")
+	// VWAP equals the typical price of the lone RTH bar = (105+101+103)/3 = 103.
+	assert.InDelta(t, 103.0, snap.VWAP, 1e-9, "VWAP must reflect only the RTH bar")
+}
+
+// TestAnchoredVWAPCalc_UpdateSingleAnchor_NonRTHOnly_AcceptsAll pins that
+// when RTHOnly is false, UpdateSingleAnchor still accumulates every bar
+// (preserves existing crypto / 24H-mode behavior).
+func TestAnchoredVWAPCalc_UpdateSingleAnchor_NonRTHOnly_AcceptsAll(t *testing.T) {
+	rthOpen := rthOpenET(t, 2026, 1, 5)
+	c := strategy.NewAnchoredVWAPCalc()
+	c.AddAnchor(strategy.AnchorPoint{
+		Name:       "pd_high_24h",
+		AnchorTime: rthOpen.Add(-2 * time.Hour),
+		RTHOnly:    false,
+	})
+
+	c.UpdateSingleAnchor("pd_high_24h", rthOpen.Add(-30*time.Minute), 100, 100, 100, 1000)
+	c.UpdateSingleAnchor("pd_high_24h", rthOpen.Add(1*time.Minute), 100, 100, 100, 1000)
+	c.UpdateSingleAnchor("pd_high_24h", rthOpen.Add(7*time.Hour), 100, 100, 100, 1000)
+
+	snap := c.Snapshot(5)["pd_high_24h"]
+	assert.Equal(t, 3, snap.BarCount, "all three bars must count when RTHOnly is false")
+}
+
+// TestAnchoredVWAPCalc_UpdateSingleAnchor_MatchesUpdate_RTHOnly pins the
+// parity invariant between Update and UpdateSingleAnchor: feeding the
+// same monotonic mixed-RTH bar sequence into two equivalent calcs (one
+// driven via Update, the other via UpdateSingleAnchor) must produce
+// byte-identical state. Without this invariant, replay diverges from
+// runtime even when both paths nominally honor RTHOnly.
+func TestAnchoredVWAPCalc_UpdateSingleAnchor_MatchesUpdate_RTHOnly(t *testing.T) {
+	rthOpen := rthOpenET(t, 2026, 1, 5)
+	anchor := strategy.AnchorPoint{
+		Name:       "pd_high",
+		AnchorTime: rthOpen.Add(-2 * time.Hour),
+		RTHOnly:    true,
+	}
+
+	bars := []struct {
+		t          time.Time
+		h, l, c, v float64
+	}{
+		{rthOpen.Add(-30 * time.Minute), 100, 100, 100, 1000}, // pre-market
+		{rthOpen.Add(0 * time.Minute), 102, 98, 100, 5000},    // RTH open
+		{rthOpen.Add(1 * time.Minute), 105, 101, 103, 2000},   // RTH
+		{rthOpen.Add(2 * time.Minute), 108, 102, 105, 3000},   // RTH
+		{rthOpen.Add(3 * time.Minute), 107, 103, 105, 0},      // RTH but zero volume
+		{rthOpen.Add(4 * time.Minute), 109, 104, 107, 1500},   // RTH
+		{rthOpen.Add(7 * time.Hour), 110, 105, 108, 4000},     // after-hours
+	}
+
+	updateCalc := strategy.NewAnchoredVWAPCalc()
+	updateCalc.AddAnchor(anchor)
+	singleCalc := strategy.NewAnchoredVWAPCalc()
+	singleCalc.AddAnchor(anchor)
+
+	for _, b := range bars {
+		updateCalc.Update(b.t, b.h, b.l, b.c, b.v)
+		singleCalc.UpdateSingleAnchor("pd_high", b.t, b.h, b.l, b.c, b.v)
+	}
+
+	updateSnap := updateCalc.Snapshot(5)["pd_high"]
+	singleSnap := singleCalc.Snapshot(5)["pd_high"]
+
+	assert.Equal(t, updateSnap.BarCount, singleSnap.BarCount, "barCount must match")
+	assert.Equal(t, updateSnap.VWAPCount, singleSnap.VWAPCount, "vwapCount must match")
+	assert.InDelta(t, updateSnap.VWAP, singleSnap.VWAP, 1e-9, "VWAP must match")
+	assert.Equal(t, updateSnap.Active, singleSnap.Active, "active flag must match")
+
+	updateState := updateCalc.States()["pd_high"]
+	singleState := singleCalc.States()["pd_high"]
+	assert.InDelta(t, updateState.CumPV, singleState.CumPV, 1e-9, "CumPV must match")
+	assert.InDelta(t, updateState.CumV, singleState.CumV, 1e-9, "CumV must match")
+	assert.InDelta(t, updateState.M2, singleState.M2, 1e-9, "M2 must match")
+
+	// Sanity: pre-market and after-hours bars (and the zero-volume one)
+	// were skipped, leaving 4 RTH-and-positive-volume bars in barCount.
+	assert.Equal(t, 4, singleSnap.BarCount,
+		"only RTH positive-volume bars should count: open + 3 RTH bars")
+
+	// math.Sqrt available via existing import — use it for SD parity if
+	// it shows divergence in future regressions.
+	_ = math.Sqrt(0)
+}
