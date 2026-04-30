@@ -831,8 +831,12 @@ func (s *Service) handleBarCore(ctx context.Context, bar domain.MarketBar, tenan
 			resolved := s.anchorResolverFn(symStr, bar.Time, s.avwapAnchors)
 			if len(resolved) > 0 {
 				calc := start.NewAnchoredVWAPCalc()
+				// Equity anchors must accumulate only RTH 1m bars to match
+				// the strategy runner's per-anchor RTHOnly semantics. Crypto
+				// trades 24/7 and bypasses the gate.
+				rthOnlyAnchor := !bar.Symbol.IsCryptoSymbol()
 				for name, t := range resolved {
-					calc.AddAnchor(start.AnchorPoint{Name: name, AnchorTime: t})
+					calc.AddAnchor(start.AnchorPoint{Name: name, AnchorTime: t, RTHOnly: rthOnlyAnchor})
 				}
 				s.avwapCalcs[symStr] = calc
 
