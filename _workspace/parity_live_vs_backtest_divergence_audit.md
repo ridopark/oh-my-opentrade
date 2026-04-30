@@ -29,11 +29,103 @@ on AAPL 2026-04-29 RTH window:
 This is the primary trade-list divergence source — upstream of the
 `entry_specific` gate that the original v2 plan targeted as Phase 2.
 
+## Post-fix verification (2026-04-30 17:30 UTC)
+
+PR #27 ([`fix(parity): drop live-only ResolveAnchorsForWarmup`](https://github.com/ridopark/oh-my-opentrade/pull/27))
+landed the fix at `cmd/omo-core/warmup.go:416`. PR #28
+([`feat(parity): emit_gated_diag flag for HTTP backtest`](https://github.com/ridopark/oh-my-opentrade/pull/28))
+unblocked the verification path by wiring `EntryGatedWriter` into
+`backtest.Runner.Run()` when `RunConfig.EmitGatedDiag = true`.
+
+Both deployed via `/rebuild-commit-restart` at 12:18 CDT and 12:30 CDT
+respectively. A backtest of today's date (`bt-eb813ee1ad12ae22`,
+`emit_gated_diag = true`, full 34-symbol universe, both strategies)
+ran successfully and persisted 2,809 rows to `strategy_signal_events`.
+
+Bar-keyed parity SQL on POST-FIX rows only (live `ts >= 17:18 UTC`,
+backtest = `bt-eb813ee1ad12ae22`), 10 symbols × 2 bar.Times each:
+
+| Symbol | bar_time | live_bars | bt_bars | vwap_delta | live_slope | bt_slope |
+|--------|----------|----------:|--------:|-----------:|-----------:|---------:|
+| AAPL   | 13:15 ET | 409       | 409     | 0.0000     | 0.106727   | 0.106727 |
+| AAPL   | 13:20 ET | 414       | 414     | 0.0000     | 0.097817   | 0.097817 |
+| AMZN   | 13:15 ET | 551       | 551     | 0.0000     | -0.069800  | -0.069800 |
+| AMZN   | 13:20 ET | 556       | 556     | 0.0000     | -0.067721  | -0.067721 |
+| GOOGL  | 13:15 ET | 548       | 548     | 0.0000     | 1.409761   | 1.409761 |
+| GOOGL  | 13:20 ET | 553       | 553     | 0.0000     | 1.285726   | 1.285726 |
+| IWM    | 13:15 ET | 615       | 615     | 0.0000     | 0.074043   | 0.074043 |
+| IWM    | 13:20 ET | 620       | 620     | 0.0000     | 0.083116   | 0.083116 |
+| META   | 13:15 ET | 264       | 264     | 0.0000     | -0.052521  | -0.052521 |
+| META   | 13:20 ET | 269       | 269     | 0.0000     | -0.082263  | -0.082263 |
+| MSFT   | 13:15 ET | 590       | 590     | 0.0000     | -0.407287  | -0.407287 |
+| MSFT   | 13:20 ET | 595       | 595     | 0.0000     | -0.403768  | -0.403768 |
+| NVDA   | 13:15 ET | 615       | 615     | 0.0000     | -0.314709  | -0.314709 |
+| NVDA   | 13:20 ET | 620       | 620     | 0.0000     | -0.286324  | -0.286324 |
+| QQQ    | 13:15 ET | 271       | 271     | 0.0000     | 0.099447   | 0.099447 |
+| QQQ    | 13:20 ET | 276       | 276     | 0.0000     | 0.078632   | 0.078632 |
+| SPY    | 13:15 ET | 548       | 548     | 0.0000     | 0.049573   | 0.049573 |
+| SPY    | 13:20 ET | 553       | 553     | 0.0000     | 0.047007   | 0.047007 |
+| TSLA   | 13:15 ET | 613       | 613     | 0.0000     | 0.083817   | 0.083817 |
+| TSLA   | 13:20 ET | 618       | 618     | 0.0000     | 0.086128   | 0.086128 |
+
+**Result: byte-identical pd_high state across all 20 (sym, bar.Time)
+pairs.** `live_bars == bt_bars`, `vwap_delta = 0.0000` (six decimals
+of agreement), `live_slope == bt_slope` (six decimals).
+
+Pre-fix divergence (800-bar barCount delta, 0.9-3.4% VWAP drift,
+3-7x slope drift) is closed. This implies invariance of:
+- Bias gate (price vs AVWAP) — same VWAP → same decision.
+- Slope gate (`MinSlopeBPS` threshold) — same slope value → same
+  pass/fail.
+- SD bands — `barCount`, `M2`, `vwapCount` all identical → same
+  readiness, same band offsets.
+- Confluence-via-AVWAP — score components that read AVWAP state
+  produce identical outputs.
+
+The reference query for any future regression check:
+
+```sql
+WITH classified AS (
+  SELECT
+    e.symbol,
+    e.payload->'bar'->>'time' AS bar_time,
+    CASE WHEN e.payload->>'tag' LIKE 'backtest_%' THEN 'backtest' ELSE 'live' END AS env,
+    (e.payload->'avwapState'->'anchors'->'pd_high'->>'slopeBPS')::numeric AS slope_bps,
+    (e.payload->'avwapState'->'anchors'->'pd_high'->>'vwap')::numeric    AS vwap,
+    (e.payload->'avwapState'->'anchors'->'pd_high'->>'barCount')::int    AS bars
+  FROM strategy_signal_events e
+  WHERE e.payload->'avwapState'->'anchors'->'pd_high' IS NOT NULL
+    AND e.payload->'bar'->>'time' >= '<window-start>'
+    AND e.payload->'bar'->>'time' <  '<window-end>'
+    AND (
+      (e.payload->>'tag' IS NULL AND e.ts >= '<live-restart-utc>')
+      OR e.payload->>'tag' = 'backtest_<bt-id>'
+    )
+)
+SELECT
+  symbol, bar_time,
+  MAX(CASE WHEN env='live' THEN bars END) AS live_bars,
+  MAX(CASE WHEN env='backtest' THEN bars END) AS bt_bars,
+  ROUND(MAX(CASE WHEN env='live' THEN vwap END) - MAX(CASE WHEN env='backtest' THEN vwap END), 4) AS vwap_delta,
+  ROUND(MAX(CASE WHEN env='live' THEN slope_bps END), 6) AS live_slope,
+  ROUND(MAX(CASE WHEN env='backtest' THEN slope_bps END), 6) AS bt_slope
+FROM classified
+GROUP BY symbol, bar_time
+HAVING COUNT(DISTINCT env) = 2
+ORDER BY symbol, bar_time;
+```
+
+Day +1 cron at `08:35 CDT 2026-05-01` (= `13:35 UTC`) will post a
+Discord notification with AAPL `pd_high.barCount` at first 5m close,
+classified green/yellow/red against the same thresholds. Expected:
+PASS, `barCount` in `[200, 410]` depending on Apr 30's HighTime
+placement.
+
 ---
 
 ## HIGH severity (change gate decisions)
 
-### H1. `ResolveAnchorsForWarmup` is live-only
+### H1. `ResolveAnchorsForWarmup` is live-only ✅ FIXED (PR #27)
 
 Single call site: `backend/cmd/omo-core/warmup.go:416`. Backtest
 (`internal/app/backtest/runner.go`) and `omo-replay/main.go` never
@@ -82,7 +174,7 @@ event bus**. Any third-party subscriber to those events
 about those events for decisions. But it breaks the symmetry the
 plan assumes when comparing live vs backtest event streams.
 
-### H4. EntryGatedWriter is NEVER subscribed in the in-process HTTP backtest
+### H4. EntryGatedWriter is NEVER subscribed in the in-process HTTP backtest ✅ FIXED (PR #28, opt-in via `emit_gated_diag` flag)
 
 `cmd/omo-core/services.go:909-911` always subscribes
 `EntryGatedWriter.Handle` to `EventEntryGated` (live persists every
