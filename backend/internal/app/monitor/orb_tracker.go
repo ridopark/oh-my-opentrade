@@ -258,6 +258,17 @@ type ORBSession struct {
 	RangeInvalid      bool    // true if OR range failed ATR/size check
 	RangeNotified     bool    // true once ORBRangeSet event has been emitted
 
+	// LastBarTime is set on every state-mutating OnBar call (after session
+	// lookup, before SessionHigh/Low update and the rolling-window shift).
+	// Replayed bars at or before LastBarTime short-circuit so the state
+	// machine cannot advance twice, the rolling RecentBars window cannot
+	// shift twice, and BarCount cannot increment twice for the same bar.
+	// Mirrors the dedup pattern in BarAggregator.Push, IndicatorCalculator.Update,
+	// and AnchoredVWAP.UpdateSingleAnchor. Cleared by ResetSession via the
+	// session being deleted entirely; a fresh session starts with the zero
+	// value and accepts any first bar.
+	LastBarTime time.Time
+
 	BreakoutBar domain.MarketBar // the candle that triggered the breakout (for retest quality filter)
 
 	// Retest-phase bar tracking for swing stop computation
@@ -347,6 +358,16 @@ func (t *ORBTracker) OnBar(bar domain.MarketBar, snap domain.IndicatorSnapshot, 
 		t.sessions[sym] = sess
 		t.logger.Info("orb: new session", "symbol", sym, "key", key, "state", sess.State)
 	}
+
+	// Replay dedup: skip bars at or before the last accumulator-running
+	// OnBar for this session. Placed before the terminal-state fast-path
+	// and before the rolling-window defer so a replayed bar cannot shift
+	// RecentBars or increment BarCount twice. Mirrors the dedup in
+	// BarAggregator.Push and IndicatorCalculator.Update.
+	if !sess.LastBarTime.IsZero() && !bar.Time.After(sess.LastBarTime) {
+		return nil, false
+	}
+	sess.LastBarTime = bar.Time
 
 	// Terminal state fast-path: once the session has fired or is otherwise
 	// done, we don't update trackers or emit signals — bail out *before*

@@ -364,3 +364,57 @@ func TestORBTracker_SweepDisabled_AllowsImmediately(t *testing.T) {
 	require.False(t, detected, "breakout moves to AWAITING_RETEST")
 	require.Equal(t, monitor.ORBStateAwaitingRetest, tr.GetSession(sym.String()).State)
 }
+
+// TestORBTracker_OnBarDedupsReplay covers the SRP fix that closes the
+// M3-shape latent bug. Replaying a bar must not advance the state
+// machine, shift the rolling RecentBars window, increment BarCount, or
+// double-update SessionHigh/Low. Mirrors the dedup precedent in
+// IndicatorCalculator (PR #35), AnchoredVWAP (PR #25), and BarAggregator.
+func TestORBTracker_OnBarDedupsReplay(t *testing.T) {
+	sym, _ := domain.NewSymbol("AAPL")
+	tr := monitor.NewORBTracker()
+	cfg := monitor.DefaultORBConfig()
+	cfg.WindowMinutes = 30
+
+	// Push 5 bars in monotonic order so the session enters FORMING_RANGE
+	// with BarCount=5, RangeBarCount=5, and RecentBars holding bars 2/3/4.
+	base := time.Date(2025, 3, 4, 14, 30, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		bt := base.Add(time.Duration(i) * time.Minute)
+		bar := createBarAt(t, sym, bt, 100, 101+float64(i), 99-float64(i), 100, 10)
+		snap := createSnap(sym, bt, 10, 10)
+		tr.OnBar(bar, snap, cfg, false)
+	}
+	sess := tr.GetSession(sym.String())
+	require.NotNil(t, sess)
+	preBarCount := sess.BarCount
+	preRangeBarCount := sess.RangeBarCount
+	preSessionHigh := sess.SessionHigh
+	preSessionLow := sess.SessionLow
+	preRecentBars := sess.RecentBars
+	preLastBarTime := sess.LastBarTime
+
+	// Replay the previous 3 bars (timestamps already seen). Each replay
+	// must short-circuit; no field on the session may change.
+	for i := 2; i < 5; i++ {
+		bt := base.Add(time.Duration(i) * time.Minute)
+		bar := createBarAt(t, sym, bt, 100, 200, 50, 100, 999) // wildly different OHLCV to expose any leakage
+		snap := createSnap(sym, bt, 999, 10)
+		setup, detected := tr.OnBar(bar, snap, cfg, false)
+		require.Nil(t, setup, "replay must not emit setup")
+		require.False(t, detected, "replay must not detect")
+	}
+
+	require.Equal(t, preBarCount, sess.BarCount, "BarCount must not advance on replay")
+	require.Equal(t, preRangeBarCount, sess.RangeBarCount, "RangeBarCount must not advance on replay")
+	require.Equal(t, preSessionHigh, sess.SessionHigh, "SessionHigh must not move on replay (would absorb wildly different replay High)")
+	require.Equal(t, preSessionLow, sess.SessionLow, "SessionLow must not move on replay")
+	require.Equal(t, preRecentBars, sess.RecentBars, "RecentBars rolling window must not shift on replay")
+	require.Equal(t, preLastBarTime, sess.LastBarTime, "LastBarTime must remain at the last forward bar")
+
+	// Sanity: the next forward bar must still advance state normally.
+	forwardT := base.Add(5 * time.Minute)
+	tr.OnBar(createBarAt(t, sym, forwardT, 100, 101, 99, 100, 10), createSnap(sym, forwardT, 10, 10), cfg, false)
+	require.Equal(t, preBarCount+1, sess.BarCount, "next forward bar must advance BarCount")
+	require.Equal(t, forwardT, sess.LastBarTime, "next forward bar must update LastBarTime")
+}
