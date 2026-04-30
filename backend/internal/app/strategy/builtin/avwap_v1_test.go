@@ -924,6 +924,70 @@ func TestAVWAPState_ResetAnchors_NilCalc(t *testing.T) {
 	assert.True(t, hasA, "should create calc from scratch when nil")
 }
 
+// TestAVWAPState_ResetAnchors_ReturnsFreshAnchors pins the contract that
+// ResetAnchors returns the names of anchors whose state was dropped (new
+// anchor or anchor time changed). Callers driving a replay after Reset
+// must filter the replay set to only those fresh anchors. Re-feeding bars
+// into preserved-state anchors compounds CumPV / CumV and was the live-
+// only inflation behind pd_high.barCount = 987 vs reconstructed 188.
+func TestAVWAPState_ResetAnchors_ReturnsFreshAnchors(t *testing.T) {
+	st := &builtin.AVWAPState{
+		Calc:       strat.NewAnchoredVWAPCalc(),
+		AboveCount: make(map[string]int),
+		BelowCount: make(map[string]int),
+	}
+
+	anchorA := time.Date(2026, 3, 16, 14, 0, 0, 0, time.UTC)
+	anchorB := time.Date(2026, 3, 16, 10, 0, 0, 0, time.UTC)
+	anchorC := time.Date(2026, 3, 17, 9, 0, 0, 0, time.UTC)
+
+	// First call: nil-calc path. All anchors are fresh.
+	stFirst := &builtin.AVWAPState{}
+	freshFirst := stFirst.ResetAnchors(map[string]time.Time{
+		"a": anchorA, "b": anchorB,
+	})
+	assert.ElementsMatch(t, []string{"a", "b"}, freshFirst,
+		"all anchors fresh when calc is nil")
+
+	// Seed state for two anchors.
+	st.Calc.AddAnchor(strat.AnchorPoint{Name: "a", AnchorTime: anchorA})
+	st.Calc.AddAnchor(strat.AnchorPoint{Name: "b", AnchorTime: anchorB})
+	t0 := time.Date(2026, 3, 17, 14, 35, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		st.Calc.Update(t0.Add(time.Duration(i)*time.Minute),
+			101+float64(i)*0.1, 99+float64(i)*0.1, 100+float64(i)*0.1, 1000)
+	}
+
+	// Reset with same times for a and b: both preserved → empty fresh.
+	fresh := st.ResetAnchors(map[string]time.Time{
+		"a": anchorA, "b": anchorB,
+	})
+	assert.Empty(t, fresh,
+		"unchanged anchor times must report no fresh anchors")
+
+	// Change b's time; keep a; add c. fresh = {b, c}.
+	newBTime := time.Date(2026, 3, 17, 8, 0, 0, 0, time.UTC)
+	fresh = st.ResetAnchors(map[string]time.Time{
+		"a": anchorA,
+		"b": newBTime,
+		"c": anchorC,
+	})
+	assert.ElementsMatch(t, []string{"b", "c"}, fresh,
+		"changed-time anchor and new anchor must be fresh; preserved unchanged anchor must not")
+
+	// Zero-time anchor must be skipped from both the calc and the fresh slice.
+	fresh = st.ResetAnchors(map[string]time.Time{
+		"a": anchorA,
+		"d": time.Time{},
+	})
+	for _, name := range fresh {
+		assert.NotEqual(t, "d", name, "zero-time anchor must not appear in fresh list")
+	}
+	points := st.Calc.AnchorPoints()
+	_, hasD := points["d"]
+	assert.False(t, hasD, "zero-time anchor must not be added to calc")
+}
+
 // TestAVWAPState_CrossDay_NoAccumulation_WhenAnchorChanges asserts the
 // post-fix contract for pd_high across multi-day live runs: when the
 // session resolver returns DIFFERENT anchor times on consecutive days

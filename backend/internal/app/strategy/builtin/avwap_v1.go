@@ -957,15 +957,23 @@ func (s *AVWAPState) SetKeyLevels(levels map[string]float64) {
 // ResetAnchors performs a partial update: anchors with unchanged times
 // preserve their running VWAP state (CumPV/CumV/M2). New or changed
 // anchors start fresh. Removed anchors are dropped.
-func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
+//
+// Returns the names of anchors that were freshly created (or whose
+// state was dropped because the anchor time changed). Anchors whose
+// time matched an existing entry are NOT in the returned slice — their
+// state is preserved and the caller MUST NOT re-replay them, or the
+// CumPV/CumV will double-count.
+func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) []string {
 	if s.Calc == nil {
 		s.Calc = start.NewAnchoredVWAPCalc()
+		fresh := make([]string, 0, len(anchorTimes))
 		for name, t := range anchorTimes {
 			if t.IsZero() {
 				continue
 			}
 			rthOnly := (name == "pd_high" || name == "pd_low" || name == "session_open") && s.Config.PDRangeMode != "24H"
 			s.Calc.AddAnchor(start.AnchorPoint{Name: name, AnchorTime: t, RTHOnly: rthOnly})
+			fresh = append(fresh, name)
 		}
 		s.AboveCount = make(map[string]int)
 		s.BelowCount = make(map[string]int)
@@ -977,7 +985,7 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 		s.TradesToday = 0
 		s.CalcBarCount = 0
 		s.LockedOutSide = ""
-		return
+		return fresh
 	}
 
 	existingStates := s.Calc.States()
@@ -986,6 +994,7 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 	newCalc := start.NewAnchoredVWAPCalc()
 	newAbove := make(map[string]int)
 	newBelow := make(map[string]int)
+	fresh := make([]string, 0, len(anchorTimes))
 
 	for name, t := range anchorTimes {
 		if t.IsZero() {
@@ -1006,6 +1015,7 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 		}
 
 		newCalc.AddAnchor(ap)
+		fresh = append(fresh, name)
 	}
 
 	s.Calc = newCalc
@@ -1019,6 +1029,7 @@ func (s *AVWAPState) ResetAnchors(anchorTimes map[string]time.Time) {
 	s.TradesToday = 0
 	s.CalcBarCount = 0 // reset stabilization counter
 	s.LockedOutSide = ""
+	return fresh
 }
 
 func (s *AVWAPState) ClearPendingEntry() {

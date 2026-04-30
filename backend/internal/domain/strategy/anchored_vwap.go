@@ -79,6 +79,13 @@ type anchoredVWAPEntry struct {
 	recentVWAPs [20]float64
 	vwapIdx     int
 	vwapCount   int
+	// lastReplayedBarTime is the latest bar fed via UpdateSingleAnchor.
+	// Defends UpdateSingleAnchor against re-feeds when callers route the
+	// same prior-day bar window into a preserved-state anchor more than
+	// once. Update (the live runtime path) uses the calc-global
+	// lastBarTime for cross-timeframe dedup; this field is the per-anchor
+	// equivalent for the replay path.
+	lastReplayedBarTime time.Time
 }
 
 func NewAnchoredVWAPCalc() *AnchoredVWAPCalc {
@@ -184,8 +191,12 @@ func (c *AnchoredVWAPCalc) Update(barTime time.Time, high, low, close_, volume f
 }
 
 // UpdateSingleAnchor feeds a bar into ONE specific anchor, bypassing the
-// lastBarTime dedup guard. Used to replay previous-day bars into individual
-// anchors (pd_high, pd_low) without affecting other anchors.
+// calc-global lastBarTime dedup guard (used by Update for cross-timeframe
+// dedup). Applies a per-anchor lastReplayedBarTime dedup instead, so
+// replay paths that route the same prior-day window through more than
+// once cannot compound CumPV / CumV / barCount on a preserved-state
+// anchor. Used to replay previous-day bars into individual anchors
+// (pd_high, pd_low) without affecting other anchors.
 func (c *AnchoredVWAPCalc) UpdateSingleAnchor(name string, barTime time.Time, high, low, close_, volume float64) {
 	if c == nil {
 		return
@@ -211,6 +222,15 @@ func (c *AnchoredVWAPCalc) UpdateSingleAnchor(name string, barTime time.Time, hi
 	if volume <= 0 {
 		return
 	}
+	// Per-anchor replay dedup. Skip if this exact (or earlier) bar was
+	// already fed into this anchor. Catches the case where ResetAnchors
+	// preserves anchor state but a caller still re-invokes the replay
+	// for that anchor, which would otherwise double-feed the prior-day
+	// window into CumPV / CumV.
+	if !e.lastReplayedBarTime.IsZero() && !barTime.After(e.lastReplayedBarTime) {
+		return
+	}
+	e.lastReplayedBarTime = barTime
 	tp := (high + low + close_) / 3.0
 	pv := tp * volume
 	oldVWAP := e.state.Value()
