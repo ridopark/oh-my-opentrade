@@ -64,8 +64,8 @@ func TestIsRTH_RegularWednesday(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := isRTH(c.t); got != c.want {
-				t.Errorf("isRTH(%s) = %v, want %v", c.t, got, c.want)
+			if got := IsRTH(c.t); got != c.want {
+				t.Errorf("IsRTH(%s) = %v, want %v", c.t, got, c.want)
 			}
 		})
 	}
@@ -75,7 +75,7 @@ func TestIsRTH_Weekend(t *testing.T) {
 	loc := domain.NYLocation()
 	sat := time.Date(2026, 4, 25, 12, 0, 0, 0, loc)
 	sun := time.Date(2026, 4, 26, 12, 0, 0, 0, loc)
-	if isRTH(sat) || isRTH(sun) {
+	if IsRTH(sat) || IsRTH(sun) {
 		t.Fatal("weekend midday must not count as RTH")
 	}
 }
@@ -101,7 +101,7 @@ func TestFilterRTH_DropsExtendedHours(t *testing.T) {
 		t.Fatalf("got %d RTH bars, want 3", len(out))
 	}
 	for _, b := range out {
-		if !isRTH(b.Time) {
+		if !IsRTH(b.Time) {
 			t.Errorf("filterRTH let %s through", b.Time)
 		}
 	}
@@ -157,7 +157,7 @@ func TestLoad_RTHFilterDropsPreMarket(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, b := range out {
-		if !isRTH(b.Time) {
+		if !IsRTH(b.Time) {
 			t.Errorf("RTH-filtered Load returned non-RTH bar at %s", b.Time)
 		}
 	}
