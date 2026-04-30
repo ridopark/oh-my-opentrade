@@ -371,11 +371,6 @@ func main() {
 		posMonPriceCache = posMonBundle.PriceCache
 		optionBarsCache = make(map[domain.Symbol][]domain.MarketBar)
 
-		// Wire the re-peg suppression hook (parity with live + backtest;
-		// closes #39). SimBroker won't fire re-pegs under today's fill
-		// model so the call is harmless on the replay path. Aliased to
-		// `pkgpipeline` because this file has a local variable named
-		// `pipeline` of type *bootstrap.StrategyPipeline.
 		pkgpipeline.New(pkgpipeline.ModeReplay).WireRepegNotifier(posMonBundle.Service, execBundle.Service)
 
 		if cfg.Alpaca.APIKeyID != "" && copytradeHist == "" {

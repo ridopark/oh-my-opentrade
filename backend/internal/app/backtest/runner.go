@@ -501,12 +501,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	// collector with empty spot_mfe_pct / spot_mae_pct fields.
 	execBundle.Service.SetPositionLookup(posMonBundle.Service)
 
-	// Wire the re-peg suppression hook into the position monitor so
-	// backtest's exit-eval re-peg cancels suppress the dust-sweep that
-	// would otherwise fire on the cancel ack. Wired identically to live
-	// (closes #39) — re-peg semantics are broker-agnostic; SimBroker
-	// won't fire re-pegs under today's fill model so the call is
-	// harmless, and consistency with live is the point.
 	pipeline.New(pipeline.ModeBacktest).WireRepegNotifier(posMonBundle.Service, execBundle.Service)
 
 	aiAdvisor := r.infra.AIAdvisor
