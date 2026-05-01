@@ -598,3 +598,42 @@ symbols:
 	require.NoError(t, err)
 	assert.Equal(t, "DU123456", cfg.IBKR.AccountID)
 }
+
+func TestApplySyntheticChainDefaults(t *testing.T) {
+	tests := []struct {
+		name        string
+		in          SyntheticChainConfig
+		wantEnabled bool
+	}{
+		{
+			name:        "explicit enabled=false with max_iv set stays disabled",
+			in:          SyntheticChainConfig{Enabled: false, MaxIV: 0.80},
+			wantEnabled: false,
+		},
+		{
+			name:        "fully omitted block defaults to enabled",
+			in:          SyntheticChainConfig{},
+			wantEnabled: true,
+		},
+		{
+			name:        "explicit enabled=true honored",
+			in:          SyntheticChainConfig{Enabled: true, MaxIV: 0.80},
+			wantEnabled: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := applySyntheticChainDefaults(tt.in)
+			assert.Equal(t, tt.wantEnabled, got.Enabled)
+		})
+	}
+}
+
+// Pins the MaxIV-as-sentinel contract: anyone adding a MaxIV default
+// here would silently break the omitted-detection in
+// applySyntheticChainDefaults, so this test fails the moment that
+// happens.
+func TestApplySyntheticChainDefaults_MaxIVStaysZeroWhenOmitted(t *testing.T) {
+	got := applySyntheticChainDefaults(SyntheticChainConfig{})
+	assert.Equal(t, 0.0, got.MaxIV, "MaxIV must remain unset so block-omitted detection works")
+}

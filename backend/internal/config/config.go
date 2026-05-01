@@ -862,9 +862,9 @@ func applyBacktestDefaults(c BacktestConfig) BacktestConfig {
 // without it. Operators flip enabled=false to kill-switch back to the
 // prior behavior; all other fields have safe sentinel defaults.
 func applySyntheticChainDefaults(c SyntheticChainConfig) SyntheticChainConfig {
-	omitted := !c.Enabled && c.StrikeGridPct == 0 && c.StrikeStepPct == 0 &&
-		c.IVDefault == 0 && c.RiskFreeRate == 0 && c.BidAskSpreadPct == 0
-	if omitted {
+	// MaxIV==0 is the "block omitted" sentinel; checking Enabled would
+	// clobber an explicit enabled:false (indistinguishable from zero).
+	if c.MaxIV == 0 {
 		c.Enabled = true
 	}
 	if c.StrikeGridPct == 0 {

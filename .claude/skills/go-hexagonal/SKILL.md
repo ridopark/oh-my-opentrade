@@ -329,6 +329,25 @@ the modern fix is `json:",omitzero"` (Go 1.24+), which checks
 preferred over pointer-fying when the field is value-typed
 elsewhere in the codebase.
 
+### YAML decode: bool fields can't distinguish "omitted" from "explicit false"
+After yaml.Unmarshal, a value-typed `bool` field reads the same whether
+the user wrote `enabled: false` or omitted the key — both produce
+`Enabled == false` (Go zero-value collapse). Any "applyXxxDefaults"
+function that probes `!c.Enabled` as part of a "did the user touch
+this block?" heuristic will silently flip an explicit
+`enabled: false` back to true once the other tunables also sit at
+their zero values. Caught in `applySyntheticChainDefaults` at
+`backend/internal/config/config.go` during the Alpaca-options
+backfill prerequisite (commit b61fe235). When an "absent vs explicit
+false" distinction matters, pick the sentinel from a non-bool field
+with no default fallback (e.g. `c.MaxIV == 0` works because nothing
+below sets a MaxIV default), or upgrade the field to `*bool`.
+`reflect.DeepEqual(c, ZeroStruct{})` looks tempting but reintroduces
+the bug: a struct with only `Enabled: false` set still equals the
+zero value. Pin the sentinel field's "stays-zero" property in a
+defaults test so a future refactor adding a default can't silently
+break the contract.
+
 ### Storage timestamp ≠ logical identity for cross-binary diffs
 When two binaries (omo-core live + omo-replay backtest) write rows
 into the same hypertable for SQL diffing, the storage timestamp
