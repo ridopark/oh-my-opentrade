@@ -140,7 +140,7 @@ func (g *SyntheticChainGenerator) GenerateChain(
 			if price <= 0 {
 				continue
 			}
-			vega := bsmVega(spot, k, dteYears, g.cfg.RiskFreeRate, iv)
+			vega := options.BSMVega(spot, k, dteYears, g.cfg.RiskFreeRate, iv)
 			bid := price * (1 - halfSpread)
 			ask := price * (1 + halfSpread)
 			if bid < 0.01 {
@@ -305,17 +305,6 @@ func roundStrike(k float64) float64 {
 	default:
 		return math.Round(k*4) / 4.0 // $0.25
 	}
-}
-// bsmVega computes vega (per 1.0 change in sigma, NOT per 1%). Needed here
-// because options.BSMPrice only returns price/delta/gamma/theta.
-func bsmVega(s, k, t, r, sigma float64) float64 {
-	if t <= 0 || sigma <= 0 || s <= 0 || k <= 0 {
-		return 0
-	}
-	sqrtT := math.Sqrt(t)
-	d1 := (math.Log(s/k) + (r+0.5*sigma*sigma)*t) / (sigma * sqrtT)
-	npd1 := math.Exp(-0.5*d1*d1) / math.Sqrt(2*math.Pi)
-	return s * sqrtT * npd1
 }
 // truncateToDate zeros the clock of t but preserves its location, so weekday
 // arithmetic matches the caller's timezone (asOf is typically UTC midnight
