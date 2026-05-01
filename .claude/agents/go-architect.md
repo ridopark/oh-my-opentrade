@@ -73,6 +73,17 @@ In the 2026-04-30 session, a `TestService_WithIndicatorShadow_OptionWiring` test
 
 Rule: a test that asserts a property no real implementation can violate (`x != nil` after a constructor that never returns nil; `len(x) >= 0`; `err == nil` from a function with no error path) is dead code. If the goal is to verify a wiring exists, the compiler already does that — the call site in the test compiles iff the API exists. Either delete the test or extend it to drive runtime behaviour and assert an observable property. When a prompt asks for "compile-time verification," interpret it as "the test must compile" — do NOT add a runtime assertion that cannot fail.
 
+### Dual-wiring-site refactors must grep ALL constructor sites
+
+In the 2026-05-01 session, a strategy.WithIndicator threading change touched the per-account runner site at `cmd/omo-core/services.go:717` but missed the main pipeline runner site at `cmd/omo-core/services.go:427` (which goes through `bootstrap.BuildStrategyPipeline`). The miss was latent because no test exercised `cmd/omo-core` boot — every parity test in the migration constructed runners directly via `strategy.NewRunner` with the option already wired. The bug only surfaced when a downstream PR (PR 7) made the previously-optional `indicator.Service` mandatory, turning the latent nil into a runtime panic at boot. The operator-side parity gate (running the actual binary) caught it; CI did not.
+
+Rule: when migrating a constructor option (`WithX`, `WithY`), grep for EVERY call site of the constructor across the repo — not just the one in front of you. `grep -rn 'package.NewType\|bootstrap.BuildType' backend/` returns the full set. Special attention to:
+- `cmd/*/main.go` and `cmd/*/services.go` (boot paths often skipped by tests)
+- `bootstrap/` builders that take Deps structs (the option must be threaded through the Deps field)
+- per-tenant or per-account loops that construct multiple instances of the type
+
+Adding integration coverage for `cmd/*` boot paths is high-leverage: a single "binary starts and serves /health" test would have caught this. Without it, latent nil refs survive as compile-clean code and only fire when a downstream change (mandatory dep, code path activation) makes them reachable.
+
 ## Engine Change Implementation Protocol
 
 When invoked by strategy-tuner for an engine change:
