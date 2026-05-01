@@ -19,7 +19,54 @@ var ErrOrderNotFound = errors.New("order not found at broker")
 // back to the cancel+place flow, never as a hard error.
 var ErrUnsupportedModify = errors.New("broker does not support order modification")
 
-// BrokerPort defines the interface for interacting with a broker.
+// BrokerPort is the abstraction strategy code uses to submit orders
+// and read account state. Multiple adapters satisfy it (SimBroker for
+// backtest, IBKR for equities, Hyperliquid for crypto). LSP requires
+// strategies that work against the port abstraction to behave the same
+// way against any conforming implementation; the contract below names
+// the invariants the brokerporttest harness enforces today.
+//
+// Enforced invariants (run on every adapter via brokerporttest.RunBrokerPortContract):
+//
+//   - SubmitOrder: with a valid OrderIntent (non-empty Symbol, positive
+//     Quantity, set Direction, OrderType="market", non-zero LimitPrice),
+//     returns a non-empty broker orderID and nil error.
+//   - GetPosition: for a symbol with no position, returns (0, nil) —
+//     not an error. Callers depend on this to compute deltas without
+//     special-casing the "no position yet" path.
+//   - GetPositions: on a fresh adapter (no orders submitted), returns
+//     an empty slice and nil error. Reconciliation logic relies on
+//     "empty list = no positions" being a valid post-startup state.
+//   - GetOrderStatus: idempotent on terminal orders. Repeat calls
+//     return the same status; the broker MUST NOT mutate the
+//     observable status of an order between reads. Strategies poll
+//     this for fill reconciliation; non-idempotent reads cause
+//     double-reconciliation bugs.
+//
+// Known unconstrained (DO NOT rely on these in strategy code; they
+// vary across adapters and the harness does not yet enforce parity):
+//
+//   - Fill timing. SimBroker emits OrderEventFill synchronously on
+//     SubmitOrder's call stack; IBKR fills arrive asynchronously via
+//     execReconciler polling at 2-second cadence. Strategies that
+//     gate on PositionSide observe the transition on different bars.
+//   - Partial-fill ordering. IBKR streams OrderEventPartialFill for
+//     each leg before the terminal OrderEventFill; SimBroker emits a
+//     single fill carrying full quantity. FilledQty monotonicity
+//     across the stream is not yet asserted.
+//   - Rejection semantics. SimBroker fails synchronously at SubmitOrder
+//     return; IBKR succeeds at SubmitOrder and emits OrderEventRejected
+//     asynchronously. Whether OrderEventRejected is terminal (i.e., no
+//     subsequent events fire for that BrokerOrderID) is not yet
+//     asserted.
+//   - Slippage model. SimBroker applies a configurable bps offset;
+//     IBKR returns whatever the venue reports; Hyperliquid uses a 5%
+//     hard collar.
+//
+// These gaps trace to audit H5 (parity_live_vs_backtest_divergence_audit.md).
+// Future contract assertions and a stream-aware mockIB extension will
+// close them; until then, strategies cannot assume cross-adapter parity
+// on these surfaces.
 type BrokerPort interface {
 	SubmitOrder(ctx context.Context, intent domain.OrderIntent) (orderID string, err error)
 	CancelOrder(ctx context.Context, orderID string) error
@@ -182,13 +229,42 @@ type OrderUpdate struct {
 	FeesTotal      float64
 }
 
-// OrderStreamPort defines a push-based interface for receiving real-time
-// order updates from the broker. Implementations must handle connection
-// lifecycle (auth, reconnect) internally and deliver events on the returned
-// channel until ctx is canceled.
+// OrderStreamPort is the push-based surface for real-time order
+// updates. Implementations handle connection lifecycle (auth, reconnect)
+// internally and deliver events on the returned channel until ctx is
+// canceled. Optional capability — adapters that don't stream
+// (SimBroker, Hyperliquid today) simply don't implement this.
+//
+// Enforced invariants (brokerporttest.RunOrderStreamPortContract):
+//
+//   - SubscribeOrderUpdates: returns a non-nil channel and nil error
+//     when the broker is connected. Callers can immediately range over
+//     the channel; nil-channel return on success is a contract violation.
+//   - Channel close on ctx cancel: when the caller cancels ctx, the
+//     returned channel closes within a bounded time (currently 6s in
+//     the harness; couples to IBKR's 2s poll cadence). Implementations
+//     MAY drain in-flight events before closing.
+//
+// Known unconstrained (NOT yet asserted by the harness; require a
+// stream-aware mock that can simulate fill emissions):
+//
+//   - FilledQty monotonicity per BrokerOrderID across the event
+//     stream. IBKR enforces this internally via ibsync's CumQty;
+//     SimBroker would too if it ever emitted partials. Strategies
+//     correlating fills should not yet assume monotonicity holds for
+//     every conforming implementation.
+//   - Partial-fill ordering. If an adapter emits OrderEventPartialFill,
+//     the contract intent is that all partials precede the terminal
+//     OrderEventFill for the same BrokerOrderID — but no test enforces
+//     this today.
+//   - Terminal-event idempotency. Once OrderEventRejected /
+//     OrderEventCanceled / OrderEventExpired fires, no subsequent
+//     events for the same BrokerOrderID should be emitted. Not yet
+//     asserted.
+//
+// These gaps pair with the BrokerPort gaps above and trace to audit
+// H5. A future PR adds a stream-aware mockIB and the strict assertions
+// together.
 type OrderStreamPort interface {
-	// SubscribeOrderUpdates returns a channel that receives order status
-	// changes in real time. The channel is closed when ctx is canceled
-	// or the stream terminates. Callers should range over the channel.
 	SubscribeOrderUpdates(ctx context.Context) (<-chan OrderUpdate, error)
 }
