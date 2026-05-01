@@ -598,3 +598,38 @@ symbols:
 	require.NoError(t, err)
 	assert.Equal(t, "DU123456", cfg.IBKR.AccountID)
 }
+
+// TestApplySyntheticChainDefaults pins the omitted-detection contract that
+// keeps the canonical default-on path working while honoring an explicit
+// enabled:false. MaxIV doubles as the "operator touched the block" sentinel
+// because every materialized config sets it; leaving it zero only happens
+// when the YAML omits the synthetic_chain block entirely.
+func TestApplySyntheticChainDefaults(t *testing.T) {
+	tests := []struct {
+		name        string
+		in          SyntheticChainConfig
+		wantEnabled bool
+	}{
+		{
+			name:        "explicit enabled=false with max_iv set stays disabled",
+			in:          SyntheticChainConfig{Enabled: false, MaxIV: 0.80},
+			wantEnabled: false,
+		},
+		{
+			name:        "fully omitted block defaults to enabled",
+			in:          SyntheticChainConfig{},
+			wantEnabled: true,
+		},
+		{
+			name:        "explicit enabled=true honored",
+			in:          SyntheticChainConfig{Enabled: true, MaxIV: 0.80},
+			wantEnabled: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := applySyntheticChainDefaults(tt.in)
+			assert.Equal(t, tt.wantEnabled, got.Enabled)
+		})
+	}
+}
