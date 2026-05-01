@@ -24,6 +24,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/dnaapproval"
 	"github.com/oh-my-opentrade/backend/internal/app/execution"
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
+	"github.com/oh-my-opentrade/backend/internal/app/indicator"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/livedarkpool"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
@@ -52,6 +53,7 @@ type appServices struct {
 	tradeReplayer    *tradereplay.Service
 	liveDarkPool     *livedarkpool.Service
 	monitor          *monitor.Service
+	indicator        *indicator.Service
 	execution        *execution.Service
 	priceCache       *positionmonitor.PriceCache
 	posMonitor       *positionmonitor.Service
@@ -134,10 +136,13 @@ func initCoreServices(cfg *config.Config, infra *infraDeps, log zerolog.Logger) 
 	svc.liveDarkPool = livedarkpool.New(dpRepo, log)
 
 	// Monitor
+	idx := indicator.NewService("monitor_shadow")
+	svc.indicator = idx
 	monitorSvc, err := bootstrap.BuildMonitor(bootstrap.MonitorDeps{
-		EventBus: infra.eventBus,
-		Repo:     infra.repo,
-		Logger:   log,
+		EventBus:        infra.eventBus,
+		Repo:            infra.repo,
+		Logger:          log,
+		IndicatorShadow: idx,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to build monitor")

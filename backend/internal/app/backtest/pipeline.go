@@ -3,6 +3,7 @@ package backtest
 import (
 	"context"
 
+	"github.com/oh-my-opentrade/backend/internal/app/indicator"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
@@ -28,6 +29,7 @@ type Pipeline struct {
 	ingestion  *ingestion.Service
 	monitor    *monitor.Service
 	runner     *strategy.Runner
+	indicator  *indicator.Service
 	priceCache *positionmonitor.PriceCache
 	collector  *Collector
 	eventBus   ports.EventBusPort
@@ -98,6 +100,7 @@ type PipelineInfra struct {
 	Ingestion  *ingestion.Service
 	Monitor    *monitor.Service
 	Runner     *strategy.Runner
+	Indicator  *indicator.Service
 	PriceCache *positionmonitor.PriceCache
 	Collector  *Collector
 	EventBus   ports.EventBusPort
@@ -118,6 +121,11 @@ func (p *Pipeline) Monitor() *monitor.Service { return p.monitor }
 // SetSuppressProgressEvents).
 func (p *Pipeline) Runner() *strategy.Runner { return p.runner }
 
+// Indicator returns the per-shard indicator.Service that mirrors
+// monitor.calculator. Sharded warmup uses it to drive snapshotFn closures
+// against the same calc the live shadow path feeds.
+func (p *Pipeline) Indicator() *indicator.Service { return p.indicator }
+
 // NewPipeline wires up the per-bar direct-dispatch chain. The caller must
 // already have constructed the services (typically via the bootstrap
 // package) and called eventBus.FreezeHandlers afterward. NewPipeline also
@@ -132,6 +140,7 @@ func NewPipeline(infra PipelineInfra) *Pipeline {
 		ingestion:  infra.Ingestion,
 		monitor:    infra.Monitor,
 		runner:     infra.Runner,
+		indicator:  infra.Indicator,
 		priceCache: infra.PriceCache,
 		collector:  infra.Collector,
 		eventBus:   infra.EventBus,

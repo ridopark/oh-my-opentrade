@@ -26,6 +26,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/copytradereplay"
 	"github.com/oh-my-opentrade/backend/internal/app/debate"
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
+	"github.com/oh-my-opentrade/backend/internal/app/indicator"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
 	pkgpipeline "github.com/oh-my-opentrade/backend/internal/app/pipeline"
@@ -300,11 +301,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("build ingestion: %w", err)
 	}
 
+	idx := indicator.NewService(fmt.Sprintf("monitor_backtest_%s_shadow", r.id))
 	monitorSvc, err := bootstrap.BuildMonitor(bootstrap.MonitorDeps{
-		EventBus:   r.infra.EventBus,
-		Repo:       repo,
-		Logger:     r.log,
-		BacktestID: r.id,
+		EventBus:        r.infra.EventBus,
+		Repo:            repo,
+		Logger:          r.log,
+		BacktestID:      r.id,
+		IndicatorShadow: idx,
 	})
 	if err != nil {
 		r.status.Store("error")
@@ -1000,6 +1003,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			warmupBarsCache[res.sym] = res.bars
 			dailyBarsCache[res.sym] = res.bars1d
 			monitorSvc.WarmUp(res.bars)
+			idx.WarmUp(res.bars)
 			if len(res.bars1h) > 0 {
 				// Use only bars before backtest start for 1H EMA50 (no look-ahead bias).
 				var preHourly []domain.MarketBar
@@ -1010,6 +1014,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 				if len(preHourly) > 0 {
 					nh := monitorSvc.WarmUpHTF(preHourly)
+					idx.WarmUp(preHourly)
 					r.log.Info().Str("symbol", res.sym).Int("bars", nh).Msg("1H EMA50 warmup complete")
 				}
 			}
@@ -1028,6 +1033,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				bridgeCount = len(replayBars)
 			}
 			monitorSvc.WarmUp(replayBars[:bridgeCount])
+			idx.WarmUp(replayBars[:bridgeCount])
 		}
 	}
 
@@ -1043,7 +1049,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	var sessionResolver *SessionResolver
 	if pipeline.Runner != nil {
-		snapshotFn := makeSnapshotFn()
+		snapshotFn := indicator.SnapshotFn(idx)
 		switch replayTimeframe {
 		case "1d":
 			// Daily replay: feed the pre-backtest daily bars directly to
@@ -1495,17 +1501,21 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		var sentinelOwnerAssigned bool
+		var shardCounter int
 		shardFactory := func(slab []domain.Symbol) (ShardServices, error) {
 			filter := ingestion.NewAdaptiveFilter(20, 4.0)
 			filter.SetPassthrough(true)
 			ingSvc := ingestion.NewService(r.infra.EventBus, r.infra.NoopRepo, filter, r.log.With().Str("component", "ingestion_shard").Logger())
 			ingSvc.SetBacktest(true)
 
+			shardIdx := indicator.NewService(fmt.Sprintf("monitor_backtest_%s_shard_%d_shadow", r.id, shardCounter))
+			shardCounter++
 			monSvc, monErr := bootstrap.BuildMonitor(bootstrap.MonitorDeps{
-				EventBus:   r.infra.EventBus,
-				Repo:       repo,
-				Logger:     r.log,
-				BacktestID: r.id,
+				EventBus:        r.infra.EventBus,
+				Repo:            repo,
+				Logger:          r.log,
+				BacktestID:      r.id,
+				IndicatorShadow: shardIdx,
 			})
 			if monErr != nil {
 				return ShardServices{}, fmt.Errorf("shard monitor: %w", monErr)
@@ -1542,6 +1552,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				Ingestion: ingSvc,
 				Monitor:   monSvc,
 				Runner:    shardStrat.Runner,
+				Indicator: shardIdx,
 			}, nil
 		}
 
@@ -1628,12 +1639,16 @@ func (r *Runner) Run(ctx context.Context) error {
 		// the shard factory built fresh instances).
 		r.emitter.EmitSetup("Warming up per-shard indicators…")
 		{
-			snapshotFn := makeSnapshotFn()
 			_ = sp.ForEachShard(func(p *Pipeline, slab []domain.Symbol) error {
+				snapshotFn := indicator.SnapshotFn(p.Indicator())
+				shardIdx := p.Indicator()
 				for _, sym := range slab {
 					symStr := sym.String()
 					if bars, ok := warmupBarsCache[symStr]; ok && len(bars) > 0 {
 						p.Monitor().WarmUp(bars)
+						if shardIdx != nil {
+							shardIdx.WarmUp(bars)
+						}
 						p.Monitor().ResetSessionIndicators(symStr)
 						p.Monitor().MarkReady(symStr)
 						switch replayTimeframe {
@@ -1723,6 +1738,9 @@ func (r *Runner) Run(ctx context.Context) error {
 							bridgeCount = len(s.bars)
 						}
 						p.Monitor().WarmUp(s.bars[:bridgeCount])
+						if shardIdx != nil {
+							shardIdx.WarmUp(s.bars[:bridgeCount])
+						}
 					}
 				}
 				p.Monitor().InitAggregators(slab, replaySessionOpen)
@@ -2150,41 +2168,6 @@ func signalPassthrough(bus ports.EventBusPort, log zerolog.Logger) func(context.
 			return nil
 		}
 		return bus.Publish(ctx, *enrichedEvt)
-	}
-}
-
-func makeSnapshotFn() strategy.IndicatorSnapshotFunc {
-	calc := monitor.NewIndicatorCalculator()
-	calc.Label = "backtest_snapshot_fn"
-	return func(bar domain.MarketBar) start.IndicatorData {
-		snap := calc.Update(bar)
-		return start.IndicatorData{
-			RSI:           snap.RSI,
-			StochK:        snap.StochK,
-			StochD:        snap.StochD,
-			EMA9:          snap.EMA9,
-			EMA21:         snap.EMA21,
-			EMAFast:       snap.EMAFast,
-			EMASlow:       snap.EMASlow,
-			EMAFastPeriod: snap.EMAFastPeriod,
-			EMASlowPeriod: snap.EMASlowPeriod,
-			VWAP:          snap.VWAP,
-			Volume:        snap.Volume,
-			VolumeSMA:     snap.VolumeSMA,
-			ATR:           snap.ATR,
-			VWAPSD:        snap.VWAPSD,
-			EMA200:        snap.EMA200,
-			BBUpper:       snap.BBUpper,
-			BBMiddle:      snap.BBMiddle,
-			BBLower:       snap.BBLower,
-			BBPercentB:    snap.BBPercentB,
-			BBBandwidth:   snap.BBBandwidth,
-			MACDLine:      snap.MACDLine,
-			MACDSignal:    snap.MACDSignal,
-			MACDHistogram: snap.MACDHistogram,
-			ADX:           snap.ADX,
-			RegimeScore:   snap.RegimeScore,
-		}
 	}
 }
 
