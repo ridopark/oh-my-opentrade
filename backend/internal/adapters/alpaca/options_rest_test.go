@@ -3,10 +3,12 @@ package alpaca
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -513,6 +515,73 @@ func TestGetOptionDayBar_EmptyOCCRejected(t *testing.T) {
 	client := NewRESTClient("http://unused", "test-key", "test-secret", limiter, zerolog.Nop())
 	_, err := client.GetOptionDayBar(context.Background(), "http://unused", domain.Symbol(""), time.Now())
 	require.Error(t, err)
+}
+
+func TestGetOptionDayBars_ChunksAt100AndMergesResponses(t *testing.T) {
+	// Build 250 OCC symbols. Server should see exactly 3 hits: 100 + 100 + 50.
+	occs := make([]domain.Symbol, 250)
+	for i := range occs {
+		occs[i] = domain.Symbol(fmt.Sprintf("AAPL240119C%08d", (i+1)*1000))
+	}
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		assert.Contains(t, r.URL.Path, "/v1beta1/options/bars")
+		q := r.URL.Query()
+		assert.Equal(t, "1Day", q.Get("timeframe"))
+		got := q.Get("symbols")
+		// Echo a bar for the first symbol of the batch only — proves the
+		// merge step keys by symbol from the response, not by request order.
+		first := strings.SplitN(got, ",", 2)[0]
+		nSymbols := len(strings.Split(got, ","))
+		assert.LessOrEqual(t, nSymbols, 100, "no batch may exceed 100 OCCs per call")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `{"bars": {"%s": [{"t":"2024-01-15T00:00:00Z","o":1.0,"h":2.0,"l":0.5,"c":1.5,"v":100}]}}`, first)
+	}))
+	defer srv.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(srv.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+
+	bars, err := client.GetOptionDayBars(context.Background(), srv.URL, occs, time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	assert.Equal(t, int32(3), hits.Load(), "250 OCCs / 100 per batch = 3 round trips")
+	// 3 batches * 1 echoed-back bar each = 3 entries in the merged map.
+	assert.Len(t, bars, 3)
+}
+
+func TestGetOptionDayBars_EmptyInputReturnsEmptyMap(t *testing.T) {
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient("http://unused", "test-key", "test-secret", limiter, zerolog.Nop())
+	bars, err := client.GetOptionDayBars(context.Background(), "http://unused", nil, time.Now())
+	require.NoError(t, err)
+	assert.Empty(t, bars)
+}
+
+func TestGetOptionDayBars_PartialMissingBarsAreOmittedFromMap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		// Two requested OCCs, server only knows about one.
+		io.WriteString(w, `{
+			"bars": {
+				"AAPL240119C00190000": [{"t":"2024-01-15T00:00:00Z","o":3.10,"h":3.40,"l":3.05,"c":3.25,"v":1234}]
+			}
+		}`)
+	}))
+	defer srv.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(srv.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+
+	bars, err := client.GetOptionDayBars(context.Background(), srv.URL,
+		[]domain.Symbol{"AAPL240119C00190000", "AAPL240119C00999000"},
+		time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	assert.Len(t, bars, 1)
+	require.NotNil(t, bars["AAPL240119C00190000"])
+	assert.Equal(t, 3.25, bars["AAPL240119C00190000"].Close)
+	assert.Nil(t, bars["AAPL240119C00999000"], "missing keys must read nil rather than a zero-valued bar")
 }
 
 func TestGetOptionDayBar_HTTPErrorBubbles(t *testing.T) {

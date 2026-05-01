@@ -476,10 +476,94 @@ func (c *RESTClient) ListOptionContractsAsOf(
 	return out, nil
 }
 
-// GetOptionDayBar fetches the single 1-day bar for an OCC contract on the
-// given date. Returns nil when no bar is published — callers treat that as
-// "skip the row" rather than an error so the historical backfill doesn't
-// poison historical_option_chain with synthetic-zero rows.
+// GetOptionDayBars fetches 1-day bars for a batch of OCC contracts on the
+// given date. Returns a map keyed by OCC symbol; missing keys mean "no bar
+// published" and callers must treat that as "skip the row" rather than as
+// a zero-valued bar (skip-don't-default).
+//
+// Chunks the input list into batches of 100 OCCs per request, matching
+// the Alpaca data API's per-call cap. With 100 OCCs/call, a typical
+// 600-strike (sym, date) collapses from 600 round-trips to 6.
+func (c *RESTClient) GetOptionDayBars(
+	ctx context.Context,
+	dataURL string,
+	occSymbols []domain.Symbol,
+	date time.Time,
+) (map[domain.Symbol]*domain.MarketBar, error) {
+	if len(occSymbols) == 0 {
+		return map[domain.Symbol]*domain.MarketBar{}, nil
+	}
+	day := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
+	end := day.AddDate(0, 0, 1)
+	startStr := day.Format(time.RFC3339)
+	endStr := end.Format(time.RFC3339)
+
+	const batchSize = 100
+	out := make(map[domain.Symbol]*domain.MarketBar, len(occSymbols))
+
+	for i := 0; i < len(occSymbols); i += batchSize {
+		j := i + batchSize
+		if j > len(occSymbols) {
+			j = len(occSymbols)
+		}
+		batch := occSymbols[i:j]
+		batchStrs := make([]string, len(batch))
+		for k, s := range batch {
+			if s == "" {
+				return nil, fmt.Errorf("OCC symbol at index %d must not be empty", i+k)
+			}
+			batchStrs[k] = s.String()
+		}
+
+		path := fmt.Sprintf(
+			"/v1beta1/options/bars?symbols=%s&timeframe=1Day&start=%s&end=%s&limit=10000",
+			strings.Join(batchStrs, ","),
+			startStr,
+			endStr,
+		)
+		resp, err := c.doReqDataAPI(ctx, dataURL, http.MethodGet, path, nil, reqOpts{priority: PriorityBackground, maxRetries: 2})
+		if err != nil {
+			return nil, fmt.Errorf("alpaca: get option day bars (batch %d-%d): %w", i, j-1, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("alpaca: get option day bars (batch %d-%d) failed (status %d): %s",
+				i, j-1, resp.StatusCode, string(body))
+		}
+
+		var page struct {
+			Bars map[string][]struct {
+				T time.Time `json:"t"`
+				O float64   `json:"o"`
+				H float64   `json:"h"`
+				L float64   `json:"l"`
+				C float64   `json:"c"`
+				V float64   `json:"v"`
+			} `json:"bars"`
+		}
+		if err := json.Unmarshal(body, &page); err != nil {
+			return nil, fmt.Errorf("alpaca: decode option day bars (batch %d-%d): %w", i, j-1, err)
+		}
+		for symStr, rawBars := range page.Bars {
+			if len(rawBars) == 0 {
+				continue
+			}
+			b := rawBars[0]
+			bar, err := domain.NewMarketBar(b.T, domain.Symbol(symStr), domain.Timeframe("1d"), b.O, b.H, b.L, b.C, b.V)
+			if err != nil {
+				continue
+			}
+			out[domain.Symbol(symStr)] = &bar
+		}
+	}
+	return out, nil
+}
+
+// GetOptionDayBar fetches a single 1-day bar. Returns nil when no bar is
+// published — callers treat that as "skip the row" rather than an error.
+// Thin wrapper over GetOptionDayBars; preserved so single-OCC callers
+// don't have to construct a one-element slice.
 func (c *RESTClient) GetOptionDayBar(
 	ctx context.Context,
 	dataURL string,
@@ -489,50 +573,9 @@ func (c *RESTClient) GetOptionDayBar(
 	if occSymbol == "" {
 		return nil, fmt.Errorf("OCC symbol must not be empty")
 	}
-	day := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
-	end := day.AddDate(0, 0, 1)
-
-	path := fmt.Sprintf(
-		"/v1beta1/options/bars?symbols=%s&timeframe=1Day&start=%s&end=%s&limit=10",
-		occSymbol.String(),
-		day.Format(time.RFC3339),
-		end.Format(time.RFC3339),
-	)
-
-	resp, err := c.doReqDataAPI(ctx, dataURL, http.MethodGet, path, nil, reqOpts{priority: PriorityBackground, maxRetries: 2})
+	bars, err := c.GetOptionDayBars(ctx, dataURL, []domain.Symbol{occSymbol}, date)
 	if err != nil {
-		return nil, fmt.Errorf("alpaca: get option day bar %s %s: %w",
-			occSymbol, day.Format("2006-01-02"), err)
+		return nil, err
 	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("alpaca: get option day bar %s %s failed (status %d): %s",
-			occSymbol, day.Format("2006-01-02"), resp.StatusCode, string(body))
-	}
-
-	var page struct {
-		Bars map[string][]struct {
-			T time.Time `json:"t"`
-			O float64   `json:"o"`
-			H float64   `json:"h"`
-			L float64   `json:"l"`
-			C float64   `json:"c"`
-			V float64   `json:"v"`
-		} `json:"bars"`
-	}
-	if err := json.Unmarshal(body, &page); err != nil {
-		return nil, fmt.Errorf("alpaca: decode option day bar %s: %w", occSymbol, err)
-	}
-
-	rawBars, ok := page.Bars[occSymbol.String()]
-	if !ok || len(rawBars) == 0 {
-		return nil, nil
-	}
-	b := rawBars[0]
-	bar, err := domain.NewMarketBar(b.T, occSymbol, domain.Timeframe("1d"), b.O, b.H, b.L, b.C, b.V)
-	if err != nil {
-		return nil, fmt.Errorf("alpaca: build option day bar %s: %w", occSymbol, err)
-	}
-	return &bar, nil
+	return bars[occSymbol], nil
 }
