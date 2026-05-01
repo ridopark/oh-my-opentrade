@@ -670,6 +670,12 @@ func (s *Service) processFill(fill fillMsg) {
 	if fill.Direction != "" {
 		isExit = domain.Direction(fill.Direction).IsExit()
 	}
+	s.log.Debug(). // FIX_B_INSTRUMENT - remove after short-leak diagnosis
+			Str("symbol", string(fill.Symbol)).
+			Str("side", fill.Side).
+			Str("direction", fill.Direction).
+			Bool("is_exit", isExit).
+			Msg("processFill side/direction trace")
 	if isExit {
 		pos, exists := s.positions[key]
 		if !exists {
@@ -718,6 +724,15 @@ func (s *Service) processFill(fill fillMsg) {
 	if exitRules == nil {
 		exitRules = s.resolveExitRules(context.Background(), fill.Strategy, fill.Symbol, fill.AssetClass)
 	}
+
+	s.log.Info().
+		Str("symbol", string(fill.Symbol)).
+		Str("side", fill.Side).
+		Str("direction", fill.Direction).
+		Float64("quantity", fill.Quantity).
+		Float64("entry_price", fill.Price).
+		Str("strategy", fill.Strategy).
+		Msg("registering monitored position")
 
 	pos, err := domain.NewMonitoredPosition(
 		fill.Symbol, fill.Price, fill.FilledAt,

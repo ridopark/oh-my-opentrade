@@ -526,7 +526,19 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 		case domain.DirectionShort:
 			orderSide = "SELL"
 		default:
-			if pos, ok := b.positions[positionKey(intent.Symbol, intent.Venue)]; ok && pos.side == "sell" {
+			pos, hasPos := b.positions[positionKey(intent.Symbol, intent.Venue)]
+			posSideForLog := ""
+			if hasPos {
+				posSideForLog = pos.side
+			}
+			b.log.Info(). // FIX_B_INSTRUMENT - remove after short-leak diagnosis
+					Str("symbol", string(intent.Symbol)).
+					Str("venue", string(intent.Venue)).
+					Str("intent_direction", string(intent.Direction)).
+					Bool("pos_found", hasPos).
+					Str("pos_side", posSideForLog).
+					Msg("simbroker exit-direction default branch")
+			if hasPos && pos.side == "sell" {
 				orderSide = "BUY"
 			} else {
 				orderSide = "SELL"

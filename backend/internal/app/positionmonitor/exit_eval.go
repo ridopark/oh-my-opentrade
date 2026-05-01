@@ -73,6 +73,12 @@ func (s *Service) tick() {
 
 	for _, key := range posKeys {
 		pos := s.positions[key]
+		s.log.Debug(). // FIX_B_INSTRUMENT - remove after short-leak diagnosis
+				Str("symbol", string(pos.Symbol)).
+				Str("side", pos.Side).
+				Bool("is_short", pos.IsShort()).
+				Bool("exit_pending", pos.ExitPending).
+				Msg("tick evaluating position")
 		if pos.ExitPending {
 			// ExitManaging means a cancel-and-await goroutine already owns
 			// the exit lifecycle. Re-entering handleExitTimeout here would
