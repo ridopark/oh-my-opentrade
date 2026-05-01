@@ -39,6 +39,7 @@ func main() {
 	)
 
 	var optionsSourceFlag string
+	var rateLimitFlag int
 
 	flag.StringVar(&symbolsFlag, "symbols", "", "Comma-separated symbols (default: active trading universe)")
 	flag.StringVar(&fromFlag, "from", "", "Start date YYYY-MM-DD (required unless --resume)")
@@ -50,6 +51,7 @@ func main() {
 	flag.StringVar(&configPath, "config", "configs/config.yaml", "Path to YAML config file")
 	flag.StringVar(&envPath, "env-file", ".env", "Path to .env file")
 	flag.StringVar(&optionsSourceFlag, "source", "dolthub", "Options chain source: dolthub | alpaca")
+	flag.IntVar(&rateLimitFlag, "rate-limit", 0, "Override Alpaca REST rate limit (req/min). 0=adapter default (200). Paid Algo Trader Plus accepts up to 10,000/min on data endpoints; ~1000 is safe for the alpaca backfill source.")
 	flag.Parse()
 
 	if optionsSourceFlag != "dolthub" && optionsSourceFlag != "alpaca" {
@@ -105,7 +107,11 @@ func main() {
 	}
 
 	// Initialize adapters.
-	alpacaAdapter, err := alpaca.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca").Logger())
+	var alpacaOpts []alpaca.Option
+	if rateLimitFlag > 0 {
+		alpacaOpts = append(alpacaOpts, alpaca.WithRateLimit(rateLimitFlag))
+	}
+	alpacaAdapter, err := alpaca.NewAdapter(cfg.Alpaca, log.With().Str("component", "alpaca").Logger(), alpacaOpts...)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to create Alpaca adapter")
 	}

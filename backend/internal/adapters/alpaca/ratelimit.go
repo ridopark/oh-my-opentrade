@@ -49,6 +49,26 @@ func NewPriorityRateLimiter(globalMaxPerMinute, backgroundMaxPerMinute int) *Rat
 	return r
 }
 
+// LimitPerMin returns the configured global cap as a per-minute integer,
+// rounded. Useful for tests that need to verify a limiter override
+// threaded through correctly.
+func (r *RateLimiter) LimitPerMin() int {
+	if r == nil || r.globalLimiter == nil {
+		return 0
+	}
+	return int(float64(r.globalLimiter.Limit()) * 60.0)
+}
+
+// BackgroundLimitPerMin returns the configured background cap as a
+// per-minute integer. Returns 0 when no background limiter is set
+// (which means PriorityBackground calls only wait on the global cap).
+func (r *RateLimiter) BackgroundLimitPerMin() int {
+	if r == nil || r.backgroundLimiter == nil {
+		return 0
+	}
+	return int(float64(r.backgroundLimiter.Limit()) * 60.0)
+}
+
 // Wait blocks until the rate limiter permits an event to happen or ctx is canceled.
 func (r *RateLimiter) Wait(ctx context.Context) error {
 	return r.WaitWithPriority(ctx, PriorityTrading)
