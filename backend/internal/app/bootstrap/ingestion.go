@@ -51,15 +51,20 @@ func BuildIngestion(deps IngestionDeps) (*IngestionBundle, error) {
 }
 
 type MonitorDeps struct {
-	EventBus   ports.EventBusPort
-	Repo       ports.RepositoryPort
-	Logger     zerolog.Logger
-	BacktestID string // non-empty → tag ORB tracker logs with this ID
+	EventBus        ports.EventBusPort
+	Repo            ports.RepositoryPort
+	Logger          zerolog.Logger
+	BacktestID      string // non-empty → tag ORB tracker logs with this ID
+	IndicatorShadow monitor.IndicatorShadow
 }
 
 func BuildMonitor(deps MonitorDeps) (*monitor.Service, error) {
 	monLog := deps.Logger.With().Str("component", "monitor").Logger()
-	svc := monitor.NewService(deps.EventBus, deps.Repo, monLog)
+	var opts []monitor.Option
+	if deps.IndicatorShadow != nil {
+		opts = append(opts, monitor.WithIndicatorShadow(deps.IndicatorShadow))
+	}
+	svc := monitor.NewService(deps.EventBus, deps.Repo, monLog, opts...)
 	if deps.BacktestID != "" {
 		svc.TagBacktest(deps.BacktestID)
 	}

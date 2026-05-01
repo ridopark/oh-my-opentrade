@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/oh-my-opentrade/backend/internal/app/indicator"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
@@ -86,6 +87,7 @@ type ShardServices struct {
 	Ingestion *ingestion.Service
 	Monitor   *monitor.Service
 	Runner    *strategy.Runner
+	Indicator *indicator.Service
 }
 
 // ShardFactory builds a fresh ShardServices pair configured for the given
@@ -154,6 +156,7 @@ func NewShardedPipeline(nworkers int, symbols []domain.Symbol, infra ShardedInfr
 			Ingestion:  svcs.Ingestion,
 			Monitor:    svcs.Monitor,
 			Runner:     svcs.Runner,
+			Indicator:  svcs.Indicator,
 			PriceCache: infra.PriceCache,
 			Collector:  infra.Collector,
 			EventBus:   infra.EventBus,
