@@ -22,7 +22,7 @@ type ScheduledConfig struct {
 
 // ScheduledService runs daily DoltHub option chain imports.
 type ScheduledService struct {
-	svc      *Service
+	svc      *DoltHubService
 	cfg      ScheduledConfig
 	notifier ports.NotifierPort
 	log      zerolog.Logger
@@ -35,7 +35,7 @@ func (s *ScheduledService) SetNotifier(n ports.NotifierPort) {
 }
 
 // NewScheduledService creates a scheduled DoltHub options import service.
-func NewScheduledService(cfg ScheduledConfig, svc *Service, log zerolog.Logger) *ScheduledService {
+func NewScheduledService(cfg ScheduledConfig, svc *DoltHubService, log zerolog.Logger) *ScheduledService {
 	if cfg.LookbackDays == 0 {
 		cfg.LookbackDays = 7
 	}

@@ -223,7 +223,7 @@ func main() {
 
 	// DoltHub options chain daily refresh (fills gaps not covered by Alpaca snapshots)
 	dolthubClient := dolthub.NewClient(nil, log)
-	importSvc := optionsimport.NewService(dolthubClient, histOptRepo, log)
+	importSvc := optionsimport.NewDoltHubService(dolthubClient, histOptRepo, log)
 	dolthubSvc := optionsimport.NewScheduledService(optionsimport.ScheduledConfig{
 		Symbols:       symbols,
 		LookbackDays:  7,

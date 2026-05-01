@@ -13,16 +13,16 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// Service coordinates importing historical option chain data from DoltHub.
-type Service struct {
+// DoltHubService coordinates importing historical option chain data from DoltHub.
+type DoltHubService struct {
 	client *dolthub.Client
 	repo   ports.HistoricalOptionsPort
 	log    zerolog.Logger
 }
 
-// NewService creates a new options import service.
-func NewService(client *dolthub.Client, repo ports.HistoricalOptionsPort, log zerolog.Logger) *Service {
-	return &Service{
+// NewDoltHubService creates a new options import service.
+func NewDoltHubService(client *dolthub.Client, repo ports.HistoricalOptionsPort, log zerolog.Logger) *DoltHubService {
+	return &DoltHubService{
 		client: client,
 		repo:   repo,
 		log:    log.With().Str("component", "options_import").Logger(),
@@ -31,7 +31,7 @@ func NewService(client *dolthub.Client, repo ports.HistoricalOptionsPort, log ze
 
 // EnsureData checks for missing dates in the local DB and imports them from DoltHub.
 // Skips weekends and dates that already have data. Rate-limits to ~2 req/sec.
-func (s *Service) EnsureData(ctx context.Context, symbol string, from, to time.Time) error {
+func (s *DoltHubService) EnsureData(ctx context.Context, symbol string, from, to time.Time) error {
 	sym := domain.Symbol(symbol)
 
 	// Iterate over trading days in the date range.

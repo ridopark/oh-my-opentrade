@@ -37,7 +37,7 @@ type BacktestInfra struct {
 	SimBroker        *simbroker.Broker
 	HistOptRepo      ports.HistoricalOptionsPort
 	EarningsCalendar ports.EarningsCalendarPort
-	Importer         *optionsimport.Service
+	Importer         *optionsimport.DoltHubService
 	AIAdvisor        ports.AIAdvisorPort
 }
 
@@ -74,7 +74,7 @@ func BuildBacktestInfra(deps BacktestDeps, slippageBPS int64, initialEquity floa
 	histOptRepo := timescaledb.NewHistoricalOptionsRepository(dbAdapter, log.With().Str("component", "hist_options").Logger())
 
 	dolthubClient := dolthub.NewClient(nil, log)
-	importer := optionsimport.NewService(dolthubClient, histOptRepo, log)
+	importer := optionsimport.NewDoltHubService(dolthubClient, histOptRepo, log)
 
 	// Sprint 7 wiring: resolve fill model + fee schedule from the YAML-backed
 	// BacktestConfig. applyBacktestDefaults guarantees non-empty names, but

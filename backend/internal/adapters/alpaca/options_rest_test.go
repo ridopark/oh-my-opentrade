@@ -369,3 +369,166 @@ func TestRetryTransient_RespectsContextCancel(t *testing.T) {
 	assert.True(t, errors.Is(err, context.Canceled), "expected context.Canceled, got %v", err)
 	assert.Equal(t, int32(1), calls.Load(), "should not have retried after ctx cancel")
 }
+
+// --- ListOptionContractsAsOf ---
+
+func TestListOptionContractsAsOf_PaginatedAndPastDateActiveQuirk(t *testing.T) {
+	// Two pages. The second page returns a contract whose expiry already
+	// passed (status=active is the Alpaca-API quirk for past-listed
+	// contracts) — proves we don't filter on tradable/status and instead
+	// pass through whatever the API surfaces.
+	page1 := `{
+		"option_contracts": [
+			{"symbol": "AAPL240119C00190000", "underlying_symbol": "AAPL", "expiration_date": "2024-01-19",
+			 "strike_price": "190", "type": "call", "style": "american", "multiplier": "100",
+			 "open_interest": "500", "tradable": false, "status": "active"}
+		],
+		"next_page_token": "PAGE2"
+	}`
+	page2 := `{
+		"option_contracts": [
+			{"symbol": "AAPL240119P00185000", "underlying_symbol": "AAPL", "expiration_date": "2024-01-19",
+			 "strike_price": "185", "type": "put", "style": "american", "multiplier": "100",
+			 "open_interest": "200", "tradable": false, "status": "active"}
+		],
+		"next_page_token": null
+	}`
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Contains(t, r.URL.Path, "/v2/options/contracts")
+		// expiration_date_gte must equal asOf, expiration_date_lte must
+		// equal asOf+dteRange — pin the URL contract here.
+		q := r.URL.Query()
+		assert.Equal(t, "2024-01-15", q.Get("expiration_date_gte"))
+		assert.Equal(t, "2024-03-15", q.Get("expiration_date_lte"))
+		assert.Equal(t, "active", q.Get("status"))
+
+		w.WriteHeader(http.StatusOK)
+		switch hits.Add(1) {
+		case 1:
+			assert.Empty(t, q.Get("page_token"), "first request must not carry a page_token")
+			io.WriteString(w, page1)
+		case 2:
+			assert.Equal(t, "PAGE2", q.Get("page_token"), "second request must echo prior next_page_token")
+			io.WriteString(w, page2)
+		default:
+			t.Fatalf("unexpected third request — pagination didn't terminate")
+		}
+	}))
+	defer srv.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(srv.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+
+	asOf := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
+	sym, _ := domain.NewSymbol("AAPL")
+	contracts, err := client.ListOptionContractsAsOf(context.Background(), sym, asOf, 60)
+	require.NoError(t, err)
+	require.Len(t, contracts, 2)
+	assert.Equal(t, domain.Symbol("AAPL240119C00190000"), contracts[0].ContractSymbol)
+	assert.Equal(t, domain.OptionRightCall, contracts[0].Right)
+	assert.Equal(t, 190.0, contracts[0].Strike)
+	assert.Equal(t, domain.Symbol("AAPL240119P00185000"), contracts[1].ContractSymbol)
+	assert.Equal(t, domain.OptionRightPut, contracts[1].Right)
+}
+
+func TestListOptionContractsAsOf_EmptyUnderlyingRejected(t *testing.T) {
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient("http://unused", "test-key", "test-secret", limiter, zerolog.Nop())
+	_, err := client.ListOptionContractsAsOf(context.Background(), domain.Symbol(""), time.Now(), 60)
+	require.Error(t, err)
+}
+
+func TestListOptionContractsAsOf_HTTPErrorBubbles(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, `{"error":"boom"}`)
+	}))
+	defer srv.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(srv.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+	sym, _ := domain.NewSymbol("AAPL")
+	_, err := client.ListOptionContractsAsOf(context.Background(), sym, time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC), 60)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "status 500")
+}
+
+// --- GetOptionDayBar ---
+
+func TestGetOptionDayBar_HappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Contains(t, r.URL.Path, "/v1beta1/options/bars")
+		q := r.URL.Query()
+		assert.Equal(t, "AAPL240119C00190000", q.Get("symbols"))
+		assert.Equal(t, "1Day", q.Get("timeframe"))
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `{
+			"bars": {
+				"AAPL240119C00190000": [
+					{"t": "2024-01-15T00:00:00Z", "o": 3.10, "h": 3.40, "l": 3.05, "c": 3.25, "v": 1234}
+				]
+			}
+		}`)
+	}))
+	defer srv.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(srv.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+
+	bar, err := client.GetOptionDayBar(
+		context.Background(),
+		srv.URL,
+		domain.Symbol("AAPL240119C00190000"),
+		time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, bar)
+	assert.Equal(t, 3.25, bar.Close)
+	assert.Equal(t, domain.Timeframe("1d"), bar.Timeframe)
+}
+
+func TestGetOptionDayBar_NoBarReturnsNil(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `{"bars": {}}`)
+	}))
+	defer srv.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(srv.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+	bar, err := client.GetOptionDayBar(
+		context.Background(),
+		srv.URL,
+		domain.Symbol("AAPL240119C00190000"),
+		time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC),
+	)
+	require.NoError(t, err)
+	assert.Nil(t, bar, "no published bar must surface as nil, not a zero-valued bar")
+}
+
+func TestGetOptionDayBar_EmptyOCCRejected(t *testing.T) {
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient("http://unused", "test-key", "test-secret", limiter, zerolog.Nop())
+	_, err := client.GetOptionDayBar(context.Background(), "http://unused", domain.Symbol(""), time.Now())
+	require.Error(t, err)
+}
+
+func TestGetOptionDayBar_HTTPErrorBubbles(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		io.WriteString(w, `{"error":"unavailable"}`)
+	}))
+	defer srv.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(srv.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+	_, err := client.GetOptionDayBar(
+		context.Background(),
+		srv.URL,
+		domain.Symbol("AAPL240119C00190000"),
+		time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC),
+	)
+	require.Error(t, err)
+}
