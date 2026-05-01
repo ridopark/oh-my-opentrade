@@ -172,7 +172,7 @@ func main() {
 	log.Info().Msg("[2/2] importing historical options data...")
 	histOptRepo := timescaledb.NewHistoricalOptionsRepository(dbAdapter, log.With().Str("component", "hist_options").Logger())
 	dolthubClient := dolthub.NewClient(nil, log)
-	importer := optionsimport.NewService(dolthubClient, histOptRepo, log)
+	importer := optionsimport.NewDoltHubService(dolthubClient, histOptRepo, log)
 
 	const maxConcurrentImports = 4
 	importSem := make(chan struct{}, maxConcurrentImports)
