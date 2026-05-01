@@ -268,6 +268,7 @@ type SyntheticChainConfig struct {
 	IVDefault       float64 `yaml:"iv_default"`
 	RiskFreeRate    float64 `yaml:"risk_free_rate"`
 	BidAskSpreadPct float64 `yaml:"bid_ask_spread_pct"`
+	MaxIV           float64 `yaml:"max_iv"`
 }
 
 // OptionsConfig groups options-pipeline knobs that live outside the

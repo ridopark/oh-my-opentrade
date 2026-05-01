@@ -540,6 +540,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			IVDefault:       btCfg.IVDefault,
 			RiskFreeRate:    btCfg.RiskFreeRate,
 			BidAskSpreadPct: btCfg.BidAskSpreadPct,
+			MaxIV:           btCfg.MaxIV,
 		}
 		spotFn := func(ctx context.Context, sym domain.Symbol, asOf time.Time) (float64, error) {
 			return lookupSpot(ctx, repo, sym, asOf)
