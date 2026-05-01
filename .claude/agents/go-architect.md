@@ -67,6 +67,12 @@ Same session: the foundation PR for the indicator service shipped `Updater`/`Rea
 
 Rule: in a multi-PR migration, the foundation PR ships the concrete type only. Interfaces follow consumers — idiomatic Go puts narrow interfaces in the consumer package, not the producer. ISP is satisfied when each consumer declares its own narrow interface against the concrete type. When acting as design consult, the question to ask is: "which file in this PR imports this interface?" If the answer is "none," defer the interface to whichever later PR introduces the first consumer.
 
+### Don't ship vacuous tests masquerading as compile-checks
+
+In the 2026-04-30 session, a `TestService_WithIndicatorShadow_OptionWiring` test was shipped that only asserted `svc != nil` against a constructor that never returned nil. /simplify caught it. The prompt had asked for "a compile-time test verifying the option pattern wires" — the test compiled, but the runtime assertion was unreachable-false; the test passed every run regardless of correctness.
+
+Rule: a test that asserts a property no real implementation can violate (`x != nil` after a constructor that never returns nil; `len(x) >= 0`; `err == nil` from a function with no error path) is dead code. If the goal is to verify a wiring exists, the compiler already does that — the call site in the test compiles iff the API exists. Either delete the test or extend it to drive runtime behaviour and assert an observable property. When a prompt asks for "compile-time verification," interpret it as "the test must compile" — do NOT add a runtime assertion that cannot fail.
+
 ## Engine Change Implementation Protocol
 
 When invoked by strategy-tuner for an engine change:
