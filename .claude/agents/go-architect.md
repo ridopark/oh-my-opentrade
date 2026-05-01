@@ -84,6 +84,21 @@ Rule: when migrating a constructor option (`WithX`, `WithY`), grep for EVERY cal
 
 Adding integration coverage for `cmd/*` boot paths is high-leverage: a single "binary starts and serves /health" test would have caught this. Without it, latent nil refs survive as compile-clean code and only fire when a downstream change (mandatory dep, code path activation) makes them reachable.
 
+### Single-driver invariant for shared services with Subscribe callbacks
+
+In the 2026-05-01 session, PR 6a-2 collapsed `strategy.Runner.aggregators` onto `indicator.Service.Subscribe` but left TWO callers of `indicator.Service.Update` on the shared instance: `monitor.Service.handleBarCore` at :928 and `strategy.Runner.handleBarCore` at :1677. With the in-memory bus dispatching synchronous handlers in registration order, monitor's handler ran first per `EventMarketBarSanitized`, populated runner's `r.htfPending` via the runner's HTF Subscribe callback, and then runner's handler reset `r.htfPending` and called a now-dedup'd Update — `BarAggregator`'s `bar.Time` guard at `domain/aggregator.go:117` short-circuited, no callbacks re-fired, the drain loop saw an empty pending. avwap_v4 + macd_only_v1 (both 5m) emitted 0 SignalCreated events on a 4-month HTTP backtest (1.57M bars, 0 trades). Build passed. Unit tests passed. Only the actual backtest produced the regression.
+
+Rule: when refactoring a "shared mutable service" to expose a Subscribe-callback API for HTF closes (or any aggregator-driven event fan-out), the service's `Update` becomes a critical synchronization point. Declare ONE driver. Concretely:
+
+- The service owns its own Update lifecycle: add `Start(ctx, bus)` that subscribes to the upstream event; consumers register Subscribe callbacks and read state via `LastSnapshot`.
+- Add direct-dispatch entries (`HandleSanitizedDirect`, `HandleSanitizedTyped`) for backtest paths that bypass the bus.
+- Expose `AppendPublish` for derived events that callbacks need to emit; the service drains the queue AFTER its Update returns and the lock is released. This avoids re-entrancy from nested handler calls.
+- Subscribe callback signature carries the parent event's envelope (TenantID, EnvMode, IdemKey, OccurredAt) so callbacks can build derived events without reaching for a side-channel `htfCallCtx`.
+
+Detection: write a regression test that calls Update twice for the same `(sym, time)` bar and asserts the callback count stays at 1 (the dedup-starvation invariant). When this test fails after a future change, someone has re-introduced a second driver.
+
+Anti-pattern signal: a service has `Update` AND `Subscribe`, AND two consumers both call `Update` on the same instance, AND the consumers also Subscribe. Whichever consumer calls Update first wins the callback fan-out; the other one silently starves. Pre-fix code is the canonical example.
+
 ## Engine Change Implementation Protocol
 
 When invoked by strategy-tuner for an engine change:
