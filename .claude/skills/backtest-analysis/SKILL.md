@@ -122,3 +122,13 @@ Measured on the 2026-04-17 27-sym × 6-strat today-only run when spread + fill m
 Backtest went from +$6,035 to +$5,023 — still ~40× the live number (~+$124 realized). The dominant inflator is **flat-IV BSM in the synthetic chain**, not spread or fill model. Future backtest-realism work should skip straight to skew modeling or IV dynamics — tuning spread/fill defaults alone won't close the gap.
 
 Rule: if backtest PF > 2.0 and the strategy exits on a % premium target (e.g. 15% PREMIUM_TARGET), assume flat-IV is lifting PF by at least 2× and treat the absolute number as directional only.
+
+### High-vol leveraged ETF zero-trade signature
+
+If an options strategy backtest produces zero trades on SOXL / SOXS / SQQQ / TQQQ / UVXY specifically while AFRM/MU/MRVL/OXY trade fine on the same run, the cause is the synthetic chain's flat-IV-per-expiry model. These ETFs have real ATM IV >1.0 (SOXL ~1.18 in 2026-04/05); applied flat to every strike via BSM, the delta surface flattens so far that all candidates fall outside the strategy's target_delta band, and the [options] section's `max_iv = 1.20` filter rejects whatever remains.
+
+Diagnostic from omo-core.log: `WARN no suitable option contract found ... constraints={... iv:1.20}` with `delta_reject` near chain_size on the same symbol.
+
+Operator escape hatch: set `backtest.synthetic_chain.max_iv: 0.80` in `configs/config.yaml` (added by PR #71). Default 0 = disabled = byte-identical to pre-knob behavior. Restart omo-core for the YAML to take effect; backtest spec re-reads from disk per request but config is loaded once at startup.
+
+Real fix is per-strike skew/smile on the synthetic chain (scheduled follow-up).
