@@ -426,6 +426,7 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 
 	pipeline, err := bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
 		EventBus:        infra.eventBus,
+		Indicator:       svc.indicator,
 		SpecStore:       svc.specStore,
 		AIAdvisor:       svc.aiAdvisor,
 		PositionLookup:  svc.posMonitor.LookupPosition,
