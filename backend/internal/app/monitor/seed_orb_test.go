@@ -6,8 +6,8 @@ import (
 
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
+	"github.com/oh-my-opentrade/backend/internal/app/monitor/monitortest"
 	"github.com/oh-my-opentrade/backend/internal/domain"
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -67,7 +67,7 @@ func TestSeedORBFromHistory_DoesNotMutateCalcState(t *testing.T) {
 
 	// Service A: WarmUpAndCollect only.
 	busA := memory.NewBus()
-	svcA := monitor.NewService(busA, &mockRepository{}, zerolog.Nop())
+	svcA, _ := monitortest.NewSvc(busA, &mockRepository{}, "seed_orb_A")
 	svcA.InitAggregators([]domain.Symbol{sym}, sessionOpen)
 	snapsA := svcA.WarmUpAndCollect(bars)
 	require.Equal(t, len(bars), len(snapsA), "WarmUpAndCollect must return one snap per bar")
@@ -76,7 +76,7 @@ func TestSeedORBFromHistory_DoesNotMutateCalcState(t *testing.T) {
 
 	// Service B: WarmUpAndCollect + SeedORBFromHistory (must be a calc no-op).
 	busB := memory.NewBus()
-	svcB := monitor.NewService(busB, &mockRepository{}, zerolog.Nop())
+	svcB, _ := monitortest.NewSvc(busB, &mockRepository{}, "seed_orb_B")
 	svcB.InitAggregators([]domain.Symbol{sym}, sessionOpen)
 	snapsB := svcB.WarmUpAndCollect(bars)
 	require.Equal(t, len(bars), len(snapsB))
@@ -109,7 +109,7 @@ func TestSeedORBFromHistory_FeedsORBTracker_AndMarksRangeNotified(t *testing.T) 
 	bars := rthBars(sym, sessionOpen, 35, 100.0)
 
 	bus := memory.NewBus()
-	svc := monitor.NewService(bus, &mockRepository{}, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, &mockRepository{}, "seed_orb")
 	svc.InitAggregators([]domain.Symbol{sym}, sessionOpen)
 
 	snaps := svc.WarmUpAndCollect(bars)
@@ -138,7 +138,7 @@ func TestSeedORBFromHistory_NoCalcUpdate_OnEmptySnaps(t *testing.T) {
 	bars := rthBars(sym, sessionOpen, 20, 100.0)
 
 	bus := memory.NewBus()
-	svc := monitor.NewService(bus, &mockRepository{}, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, &mockRepository{}, "seed_orb")
 	svc.InitAggregators([]domain.Symbol{sym}, sessionOpen)
 	_ = svc.WarmUpAndCollect(bars)
 	before, ok := svc.GetLastSnapshot(sym.String())
@@ -164,7 +164,7 @@ func TestWarmUpAndCollect_SnapOrderMatchesBarOrder(t *testing.T) {
 	bars := rthBars(sym, sessionOpen, 50, 100.0)
 
 	bus := memory.NewBus()
-	svc := monitor.NewService(bus, &mockRepository{}, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, &mockRepository{}, "seed_orb")
 	svc.InitAggregators([]domain.Symbol{sym}, sessionOpen)
 
 	snaps := svc.WarmUpAndCollect(bars)
@@ -194,7 +194,7 @@ func TestWarmUp_DelegateBehavior_PreservesAggregatorAndLastSnap(t *testing.T) {
 
 	// Service A: legacy WarmUp (returns count, ignores snaps).
 	busA := memory.NewBus()
-	svcA := monitor.NewService(busA, &mockRepository{}, zerolog.Nop())
+	svcA, _ := monitortest.NewSvc(busA, &mockRepository{}, "seed_orb_A")
 	svcA.InitAggregators([]domain.Symbol{sym}, sessionOpen)
 	nA := svcA.WarmUp(bars)
 	require.Equal(t, len(bars), nA)
@@ -203,7 +203,7 @@ func TestWarmUp_DelegateBehavior_PreservesAggregatorAndLastSnap(t *testing.T) {
 
 	// Service B: new canonical entry returning per-bar snaps.
 	busB := memory.NewBus()
-	svcB := monitor.NewService(busB, &mockRepository{}, zerolog.Nop())
+	svcB, _ := monitortest.NewSvc(busB, &mockRepository{}, "seed_orb_B")
 	svcB.InitAggregators([]domain.Symbol{sym}, sessionOpen)
 	snapsB := svcB.WarmUpAndCollect(bars)
 	require.Len(t, snapsB, len(bars))
@@ -269,7 +269,7 @@ func TestSeedORBFromHistory_PinsSessionVWAP_AtRuntimeEntry(t *testing.T) {
 
 	// Boot path simulation: split-and-reset then seed.
 	busBoot := memory.NewBus()
-	svcBoot := monitor.NewService(busBoot, &mockRepository{}, zerolog.Nop())
+	svcBoot, _ := monitortest.NewSvc(busBoot, &mockRepository{}, "seed_orb_boot")
 	svcBoot.InitAggregators([]domain.Symbol{sym}, todayOpen)
 	_ = svcBoot.WarmUpAndCollect(yesterdayBars)
 	svcBoot.ResetSessionIndicators(sym.String())
@@ -281,7 +281,7 @@ func TestSeedORBFromHistory_PinsSessionVWAP_AtRuntimeEntry(t *testing.T) {
 	// Reference: today-only run from a fresh service. Equivalent to a
 	// continuous-from-09:30 in-process backtest seeing only today's bars.
 	busRef := memory.NewBus()
-	svcRef := monitor.NewService(busRef, &mockRepository{}, zerolog.Nop())
+	svcRef, _ := monitortest.NewSvc(busRef, &mockRepository{}, "seed_orb_ref")
 	svcRef.InitAggregators([]domain.Symbol{sym}, todayOpen)
 	_ = svcRef.WarmUpAndCollect(todayBars)
 	refSnap, ok := svcRef.GetLastSnapshot(sym.String())
@@ -305,7 +305,7 @@ func TestBootBeforeSessionOpen_VWAPZeroedAfterReset(t *testing.T) {
 	var todayBars []domain.MarketBar // empty: boot before today's 09:30 ET
 
 	bus := memory.NewBus()
-	svc := monitor.NewService(bus, &mockRepository{}, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, &mockRepository{}, "seed_orb")
 	svc.InitAggregators([]domain.Symbol{sym}, todayOpen)
 	_ = svc.WarmUpAndCollect(yesterdayBars)
 	svc.ResetSessionIndicators(sym.String())
@@ -339,7 +339,7 @@ func TestBootMidSession_AllTodayBars_VWAPMatchesTodayOnly(t *testing.T) {
 
 	// Boot path simulation.
 	busBoot := memory.NewBus()
-	svcBoot := monitor.NewService(busBoot, &mockRepository{}, zerolog.Nop())
+	svcBoot, _ := monitortest.NewSvc(busBoot, &mockRepository{}, "seed_orb_boot")
 	svcBoot.InitAggregators([]domain.Symbol{sym}, todayOpen)
 	_ = svcBoot.WarmUpAndCollect(yesterdayBars)
 	svcBoot.ResetSessionIndicators(sym.String())
@@ -350,7 +350,7 @@ func TestBootMidSession_AllTodayBars_VWAPMatchesTodayOnly(t *testing.T) {
 
 	// Reference: today-only.
 	busRef := memory.NewBus()
-	svcRef := monitor.NewService(busRef, &mockRepository{}, zerolog.Nop())
+	svcRef, _ := monitortest.NewSvc(busRef, &mockRepository{}, "seed_orb_ref")
 	svcRef.InitAggregators([]domain.Symbol{sym}, todayOpen)
 	_ = svcRef.WarmUpAndCollect(todayBars)
 	refSnap, ok := svcRef.GetLastSnapshot(sym.String())

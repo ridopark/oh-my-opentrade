@@ -29,6 +29,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/backtest"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
 	"github.com/oh-my-opentrade/backend/internal/app/copytradereplay"
+	"github.com/oh-my-opentrade/backend/internal/app/indicator"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/perf"
@@ -253,10 +254,12 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to build ingestion")
 	}
 
+	idx := indicator.NewService("omo_replay")
 	monitorSvc, err := bootstrap.BuildMonitor(bootstrap.MonitorDeps{
-		EventBus: eventBus,
-		Repo:     repo,
-		Logger:   log,
+		EventBus:        eventBus,
+		Repo:            repo,
+		Logger:          log,
+		IndicatorShadow: idx,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to build monitor")
@@ -552,10 +555,12 @@ func main() {
 			ingSvc := ingestion.NewService(eventBus, &noop.NoopRepo{}, filter, shardLog.With().Str("component", "ingestion_shard").Logger())
 			ingSvc.SetBacktest(true)
 
+			shardIdx := indicator.NewService(fmt.Sprintf("omo_replay_shard_%d", len(slab)))
 			monSvc, err := bootstrap.BuildMonitor(bootstrap.MonitorDeps{
-				EventBus: eventBus,
-				Repo:     repo,
-				Logger:   shardLog,
+				EventBus:        eventBus,
+				Repo:            repo,
+				Logger:          shardLog,
+				IndicatorShadow: shardIdx,
 			})
 			if err != nil {
 				return backtest.ShardServices{}, fmt.Errorf("shard monitor: %w", err)

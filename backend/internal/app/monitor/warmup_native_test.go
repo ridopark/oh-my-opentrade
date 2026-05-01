@@ -5,9 +5,8 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
-	"github.com/oh-my-opentrade/backend/internal/app/monitor"
+	"github.com/oh-my-opentrade/backend/internal/app/monitor/monitortest"
 	"github.com/oh-my-opentrade/backend/internal/domain"
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +17,7 @@ import (
 // session-anchored aggregator.
 func TestWarmUpNative_SeedsCalculatorState_5m(t *testing.T) {
 	bus := memory.NewBus()
-	svc := monitor.NewService(bus, &mockRepository{}, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, &mockRepository{}, "warmup_native_test")
 
 	bars := makeSyntheticBars("AAPL", "5m", 800, 100.0, 5*time.Minute)
 	n := svc.WarmUpNative(domain.Symbol("AAPL"), domain.Timeframe("5m"), bars)
@@ -39,7 +38,7 @@ func TestWarmUpNative_SeedsCalculatorState_5m(t *testing.T) {
 // converge.
 func TestWarmUpNative_15m_PopulatesHTFSnap(t *testing.T) {
 	bus := memory.NewBus()
-	svc := monitor.NewService(bus, &mockRepository{}, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, &mockRepository{}, "warmup_native_test")
 
 	bars := makeSyntheticBars("AAPL", "15m", 200, 100.0, 15*time.Minute)
 	n := svc.WarmUpNative(domain.Symbol("AAPL"), domain.Timeframe("15m"), bars)
@@ -54,7 +53,7 @@ func TestWarmUpNative_15m_PopulatesHTFSnap(t *testing.T) {
 // without panicking on the first-bar dereference.
 func TestWarmUpNative_EmptyBarsNoOp(t *testing.T) {
 	bus := memory.NewBus()
-	svc := monitor.NewService(bus, &mockRepository{}, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, &mockRepository{}, "warmup_native_test")
 
 	n := svc.WarmUpNative(domain.Symbol("AAPL"), domain.Timeframe("5m"), nil)
 	assert.Equal(t, 0, n)
@@ -70,7 +69,7 @@ func TestWarmUpNative_EmptyBarsNoOp(t *testing.T) {
 // double-feed it caused before the parity fix.
 func TestServiceWarmUp_DoesNotSeedHTFFromPreSessionBars(t *testing.T) {
 	bus := memory.NewBus()
-	svc := monitor.NewService(bus, &mockRepository{}, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, &mockRepository{}, "warmup_native_test")
 
 	sym := domain.Symbol("AAPL")
 	sessionOpen := time.Date(2026, 5, 1, 9, 30, 0, 0, time.UTC)
@@ -96,7 +95,7 @@ func TestServiceWarmUp_DoesNotSeedHTFFromPreSessionBars(t *testing.T) {
 // double-feed the calculator. Returns 0 (no-op) and leaves snap unchanged.
 func TestWarmUpNative_IsIdempotent(t *testing.T) {
 	bus := memory.NewBus()
-	svc := monitor.NewService(bus, &mockRepository{}, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, &mockRepository{}, "warmup_native_test")
 
 	bars := makeSyntheticBars("AAPL", "5m", 800, 100.0, 5*time.Minute)
 	n1 := svc.WarmUpNative(domain.Symbol("AAPL"), domain.Timeframe("5m"), bars)
