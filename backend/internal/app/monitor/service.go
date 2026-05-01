@@ -33,6 +33,12 @@ type IndicatorShadow interface {
 	SetSessionOpen(t time.Time)
 	Subscribe(sym domain.Symbol, tf domain.Timeframe, fn func(closed domain.MarketBar, snap domain.IndicatorSnapshot)) func()
 	PrimeAggregator(sym domain.Symbol, tf domain.Timeframe, bars1m []domain.MarketBar)
+	WarmUp(bars []domain.MarketBar)
+	WarmUpCollect(bars []domain.MarketBar) []domain.IndicatorSnapshot
+	ResetSessionIndicators(sym domain.Symbol)
+	RegisterEMAConfig(symbol, timeframe string, fastPeriod, slowPeriod int)
+	SeedState(symbol, timeframe string, ema9, ema21, ema50 float64)
+	SetLabel(label string)
 }
 
 type Option func(*Service)
@@ -59,7 +65,6 @@ type htfCallEnvelope struct {
 type Service struct {
 	eventBus         ports.EventBusPort
 	repo             ports.RepositoryPort
-	calculator       *IndicatorCalculator
 	regimeDetector   *RegimeDetector
 	orbTracker       *ORBTracker
 	orbCfg           ORBConfig
@@ -251,40 +256,46 @@ func SplitBarsByTime(bars []domain.MarketBar, t time.Time) ([]domain.MarketBar, 
 	}
 	return bars, nil
 }
-// WarmUpAndCollect is the canonical seeding entry. It processes historical
-// 1m bars through the monitor calculator, finalizes lastSnaps[sym] with
+// WarmUpAndCollect is the canonical seeding entry. It drives historical 1m
+// bars through the wrapped indicator service, finalizes lastSnaps[sym] with
 // AnchorRegimes (pulled from anchorRegimes seeded by WarmUpNative or live
 // callbacks) + HTF map, and returns the per-bar snapshots produced by
 // Update. Captured snaps reflect the 1m calc state immediately after Update
 // of that bar, matching what SeedORBFromHistory needs to feed feedORBBar
-// without re-running calc.Update on these bars. Does NOT emit events or
-// persist data.
+// without re-running Update on these bars. Does NOT emit events or persist
+// data.
 func (s *Service) WarmUpAndCollect(bars []domain.MarketBar) []BarSnapshot {
+	if len(bars) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	shadow := s.shadowIndicator
+	s.mu.Unlock()
+	if shadow == nil {
+		return nil
+	}
+	snaps := shadow.WarmUpCollect(bars)
+	result := make([]BarSnapshot, len(snaps))
+	for i, snap := range snaps {
+		result[i] = BarSnapshot{Bar: bars[i], Snapshot: snap}
+	}
+	lastBar := bars[len(bars)-1]
+	lastSnap := snaps[len(snaps)-1]
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result := make([]BarSnapshot, 0, len(bars))
-	var lastSnap domain.IndicatorSnapshot
-	var lastBar domain.MarketBar
-	for _, bar := range bars {
-		lastSnap = s.calculator.Update(bar)
-		lastBar = bar
-		result = append(result, BarSnapshot{Bar: bar, Snapshot: lastSnap})
+	symStr := lastBar.Symbol.String()
+	regime, _ := s.regimeDetector.Detect(lastSnap)
+	lastSnap.AnchorRegimes = map[domain.Timeframe]domain.MarketRegime{
+		lastBar.Timeframe: regime,
 	}
-	if len(bars) > 0 {
-		symStr := lastBar.Symbol.String()
-		regime, _ := s.regimeDetector.Detect(lastSnap)
-		lastSnap.AnchorRegimes = map[domain.Timeframe]domain.MarketRegime{
-			lastBar.Timeframe: regime,
+	for _, tf := range anchorTimeframes {
+		aggKey := symStr + ":" + tf.String()
+		if reg, ok := s.anchorRegimes[aggKey]; ok {
+			lastSnap.AnchorRegimes[tf] = reg
 		}
-		for _, tf := range anchorTimeframes {
-			aggKey := symStr + ":" + tf.String()
-			if reg, ok := s.anchorRegimes[aggKey]; ok {
-				lastSnap.AnchorRegimes[tf] = reg
-			}
-		}
-		lastSnap.HTF = s.buildHTFMap(symStr, lastBar.Close)
-		s.lastSnaps[symStr] = lastSnap
 	}
+	lastSnap.HTF = s.buildHTFMap(symStr, lastBar.Close)
+	s.lastSnaps[symStr] = lastSnap
 	return result
 }
 func (s *Service) SetStaticHTFData(sym string, tf domain.Timeframe, data domain.HTFData) {
@@ -295,16 +306,20 @@ func (s *Service) SetStaticHTFData(sym string, tf domain.Timeframe, data domain.
 	}
 	s.htfStatic[sym+":"+tf.String()] = data
 }
-// SeedHTFSnapshot seeds the calculator state and stores an HTF snapshot
-// from pre-computed EMA values. This avoids replaying bars through Update().
+// SeedHTFSnapshot seeds the wrapped indicator service's calc state and stores
+// an HTF snapshot from pre-computed EMA values, avoiding a bar replay through
+// Update.
 func (s *Service) SeedHTFSnapshot(sym string, tf domain.Timeframe, snap domain.IndicatorSnapshot) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.calculator.SeedState(sym, tf.String(), snap.EMA9, snap.EMA21, snap.EMA50)
+	shadow := s.shadowIndicator
 	if s.lastHTFSnaps == nil {
 		s.lastHTFSnaps = make(map[string]domain.IndicatorSnapshot)
 	}
 	s.lastHTFSnaps[sym+":"+tf.String()] = snap
+	s.mu.Unlock()
+	if shadow != nil {
+		shadow.SeedState(sym, tf.String(), snap.EMA9, snap.EMA21, snap.EMA50)
+	}
 }
 
 // GetHTFSnapshot returns the stored HTF snapshot for a symbol:timeframe key.
@@ -316,52 +331,57 @@ func (s *Service) GetHTFSnapshot(sym string, tf domain.Timeframe) (domain.Indica
 }
 
 func (s *Service) WarmUpHTF(bars []domain.MarketBar) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var lastSnap domain.IndicatorSnapshot
-	for _, bar := range bars {
-		lastSnap = s.calculator.Update(bar)
-	}
-	if len(bars) > 0 {
-		sym := bars[0].Symbol.String()
-		tf := bars[0].Timeframe.String()
-		key := sym + ":" + tf
-		if s.lastHTFSnaps == nil {
-			s.lastHTFSnaps = make(map[string]domain.IndicatorSnapshot)
-		}
-		s.lastHTFSnaps[key] = lastSnap
-	}
-	return len(bars)
-}
-
-// WarmUpNative seeds the calculator's per-(sym, tf) state from native HTF
-// bars, bypassing s.aggregators. The session-aligned aggregator rejects
-// pre-today bars, so the 1m-warmup path silently fails to seed 5m/15m/1h
-// state. Side state populated: s.lastHTFSnaps[sym:tf] (consumed by
-// buildHTFMap) and s.anchorRegimes[sym:tf] (consumed by HandleMarketBar's
-// regime-shift detection — without it, the first live close fires a
-// spurious shift). Does NOT publish events.
-func (s *Service) WarmUpNative(sym domain.Symbol, tf domain.Timeframe, bars []domain.MarketBar) int {
 	if len(bars) == 0 {
 		return 0
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	shadow := s.shadowIndicator
+	s.mu.Unlock()
+	if shadow == nil {
+		return 0
+	}
+	shadow.WarmUp(bars)
+	first := bars[0]
+	lastSnap, _ := shadow.LastSnapshot(first.Symbol, first.Timeframe)
+	key := first.Symbol.String() + ":" + first.Timeframe.String()
+	s.mu.Lock()
+	if s.lastHTFSnaps == nil {
+		s.lastHTFSnaps = make(map[string]domain.IndicatorSnapshot)
+	}
+	s.lastHTFSnaps[key] = lastSnap
+	s.mu.Unlock()
+	return len(bars)
+}
 
+// WarmUpNative seeds the wrapped indicator service's per-(sym, tf) state from
+// native HTF bars, bypassing the runtime aggregator. The session-aligned
+// aggregator rejects pre-today bars, so the 1m-warmup path silently fails to
+// seed 5m/15m/1h state. Side state populated: s.lastHTFSnaps[sym:tf] (consumed
+// by buildHTFMap) and s.anchorRegimes[sym:tf] (consumed by HandleMarketBar's
+// regime-shift detection — without it, the first live close fires a spurious
+// shift). Does NOT publish events.
+func (s *Service) WarmUpNative(sym domain.Symbol, tf domain.Timeframe, bars []domain.MarketBar) int {
+	if len(bars) == 0 {
+		return 0
+	}
 	key := sym.String() + ":" + tf.String()
-	// Idempotent: a second call would double-feed s.calculator.Update and
-	// ratchet EMAs further from steady-state. The first call is the
-	// authoritative seed; later seeding goes through the runtime
-	// aggregator path in HandleMarketBar.
+
+	s.mu.Lock()
+	shadow := s.shadowIndicator
 	if _, seeded := s.lastHTFSnaps[key]; seeded {
+		s.mu.Unlock()
+		return 0
+	}
+	s.mu.Unlock()
+	if shadow == nil {
 		return 0
 	}
 
-	var lastSnap domain.IndicatorSnapshot
-	for _, bar := range bars {
-		lastSnap = s.calculator.Update(bar)
-	}
+	shadow.WarmUp(bars)
+	lastSnap, _ := shadow.LastSnapshot(sym, tf)
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.lastHTFSnaps == nil {
 		s.lastHTFSnaps = make(map[string]domain.IndicatorSnapshot)
 	}
@@ -384,12 +404,9 @@ func (s *Service) ReserveHTFNative(sym domain.Symbol, tf domain.Timeframe) {
 // NewService creates a new monitor Service.
 func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zerolog.Logger, opts ...Option) *Service {
 	nyLoc, _ := time.LoadLocation("America/New_York")
-	calc := NewIndicatorCalculator()
-	calc.Label = "monitor"
 	svc := &Service{
 		eventBus:         eventBus,
 		repo:             repo,
-		calculator:       calc,
 		regimeDetector:   NewRegimeDetector(),
 		orbTracker:       NewORBTrackerWithSource("monitor"),
 		orbCfg:           DefaultORBConfig(),
@@ -414,14 +431,17 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 	return svc
 }
 // TagBacktest annotates the ORB tracker's slog logger with backtest_id and
-// re-labels the IndicatorCalculator so backtest ORB and parity-diag emits
-// are distinguishable from live ones in the shared log file.
+// re-labels the wrapped indicator service so backtest ORB and parity-diag
+// emits are distinguishable from live ones in the shared log file.
 func (s *Service) TagBacktest(backtestID string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	shadow := s.shadowIndicator
+	s.mu.Unlock()
 	l := slog.Default().With("source", "monitor", "backtest_id", backtestID)
 	s.orbTracker.SetLogger(l)
-	s.calculator.Label = "monitor_backtest_" + backtestID
+	if shadow != nil {
+		shadow.SetLabel("monitor_backtest_" + backtestID)
+	}
 }
 
 // SetORBConfig overrides the default ORB configuration with values from
@@ -480,15 +500,21 @@ func (s *Service) RegisterEMAConfig(symbols []string, timeframes []string, param
 	fast, slow := extractIntParam(params, "ema_fast", 0), extractIntParam(params, "ema_slow", 0)
 	threshold := extractFloat64Param(params, "ema_divergence_threshold_pct", 0) / 100.0
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	shadow := s.shadowIndicator
 	for _, sym := range symbols {
 		for _, tf := range timeframes {
-			if fast > 0 && slow > 0 && fast < slow {
-				s.calculator.RegisterEMAConfig(sym, tf, fast, slow)
-			}
 			if threshold > 0 {
 				s.regimeDetector.RegisterDivergenceThreshold(sym, tf, threshold)
 			}
+		}
+	}
+	s.mu.Unlock()
+	if shadow == nil || fast <= 0 || slow <= 0 || fast >= slow {
+		return
+	}
+	for _, sym := range symbols {
+		for _, tf := range timeframes {
+			shadow.RegisterEMAConfig(sym, tf, fast, slow)
 		}
 	}
 }
@@ -604,11 +630,12 @@ func (s *Service) IsReady(sym string) bool {
 }
 func (s *Service) ResetSessionIndicators(symbol string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.calculator.ResetSession(symbol, "1m")
-	for _, tf := range anchorTimeframes {
-		s.calculator.ResetSession(symbol, tf.String())
+	shadow := s.shadowIndicator
+	s.mu.Unlock()
+	if shadow == nil {
+		return
 	}
+	shadow.ResetSessionIndicators(domain.Symbol(symbol))
 }
 func (s *Service) InitAggregators(symbols []domain.Symbol, sessionOpen time.Time) {
 	s.mu.Lock()
@@ -884,32 +911,23 @@ func (s *Service) handleBarCore(ctx context.Context, bar domain.MarketBar, tenan
 		s.mu.Unlock()
 		return nil
 	}
-	snap := s.calculator.Update(bar)
-	if s.shadowIndicator != nil {
-		htfDispatch := !warmup.IsEquityNonRTH(bar)
-		if htfDispatch {
-			s.htfCallCtx = htfCallEnvelope{
-				tenantID:   tenantID,
-				envMode:    envMode,
-				idemKey:    idemKey,
-				occurredAt: occurredAt,
-			}
-			s.pendingHTFEvents = s.pendingHTFEvents[:0]
+	if s.shadowIndicator == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("monitor: indicator service not wired; pass WithIndicatorShadow to NewService")
+	}
+	htfDispatch := !warmup.IsEquityNonRTH(bar)
+	if htfDispatch {
+		s.htfCallCtx = htfCallEnvelope{
+			tenantID:   tenantID,
+			envMode:    envMode,
+			idemKey:    idemKey,
+			occurredAt: occurredAt,
 		}
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					// Disable the shadow on first panic so a faulty parallel
-					// calc cannot keep crashing the live bar path.
-					s.log.Error().Interface("panic", r).Str("component", "indicator_shadow").Msg("indicator shadow panic, disabling")
-					s.shadowIndicator = nil
-				}
-			}()
-			s.shadowIndicator.Update(bar)
-		}()
-		if htfDispatch && len(s.pendingHTFEvents) > 0 {
-			publishBestEffort = append(publishBestEffort, s.pendingHTFEvents...)
-		}
+		s.pendingHTFEvents = s.pendingHTFEvents[:0]
+	}
+	snap := s.shadowIndicator.Update(bar)
+	if htfDispatch && len(s.pendingHTFEvents) > 0 {
+		publishBestEffort = append(publishBestEffort, s.pendingHTFEvents...)
 	}
 	symStr := bar.Symbol.String()
 
@@ -1403,28 +1421,32 @@ func (s *Service) GetORBSession(symbol string) *ORBSession {
 	return s.orbTracker.GetSession(symbol)
 }
 func (s *Service) WarmUp(bars []domain.MarketBar) int {
+	if len(bars) == 0 {
+		return 0
+	}
+	s.mu.Lock()
+	shadow := s.shadowIndicator
+	s.mu.Unlock()
+	if shadow == nil {
+		return 0
+	}
+	shadow.WarmUp(bars)
+	lastBar := bars[len(bars)-1]
+	lastSnap, _ := shadow.LastSnapshot(lastBar.Symbol, lastBar.Timeframe)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var lastSnap domain.IndicatorSnapshot
-	var lastBar domain.MarketBar
-	for _, bar := range bars {
-		lastSnap = s.calculator.Update(bar)
-		lastBar = bar
+	symStr := lastBar.Symbol.String()
+	regime, _ := s.regimeDetector.Detect(lastSnap)
+	lastSnap.AnchorRegimes = map[domain.Timeframe]domain.MarketRegime{
+		lastBar.Timeframe: regime,
 	}
-	if len(bars) > 0 {
-		symStr := lastBar.Symbol.String()
-		regime, _ := s.regimeDetector.Detect(lastSnap)
-		lastSnap.AnchorRegimes = map[domain.Timeframe]domain.MarketRegime{
-			lastBar.Timeframe: regime,
+	for _, tf := range anchorTimeframes {
+		aggKey := symStr + ":" + tf.String()
+		if reg, ok := s.anchorRegimes[aggKey]; ok {
+			lastSnap.AnchorRegimes[tf] = reg
 		}
-		for _, tf := range anchorTimeframes {
-			aggKey := symStr + ":" + tf.String()
-			if reg, ok := s.anchorRegimes[aggKey]; ok {
-				lastSnap.AnchorRegimes[tf] = reg
-			}
-		}
-		lastSnap.HTF = s.buildHTFMap(symStr, lastBar.Close)
-		s.lastSnaps[symStr] = lastSnap
 	}
+	lastSnap.HTF = s.buildHTFMap(symStr, lastBar.Close)
+	s.lastSnaps[symStr] = lastSnap
 	return len(bars)
 }

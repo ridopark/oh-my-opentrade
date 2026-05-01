@@ -9,7 +9,7 @@ import (
 
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
 	"github.com/oh-my-opentrade/backend/internal/app/activation"
-	"github.com/oh-my-opentrade/backend/internal/app/monitor"
+	"github.com/oh-my-opentrade/backend/internal/app/monitor/monitortest"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/domain/screener"
 	"github.com/oh-my-opentrade/backend/internal/ports"
@@ -208,7 +208,7 @@ func makeMinuteBars(symbol string, n int) []domain.MarketBar {
 
 func TestService_ActivatesNewSymbols(t *testing.T) {
 	bus := memory.NewBus()
-	mon := monitor.NewService(bus, &mockRepo{}, zerolog.Nop())
+	mon, _ := monitortest.NewSvc(bus, &mockRepo{}, "activation_test")
 	mon.SetBaseSymbols([]string{"AAPL"})
 	data := newMockDataProvider()
 	sub := &mockSubscriber{}
@@ -246,7 +246,7 @@ func TestService_ActivatesNewSymbols(t *testing.T) {
 
 func TestService_SkipsAlreadyWarmedSymbols(t *testing.T) {
 	bus := memory.NewBus()
-	mon := monitor.NewService(bus, &mockRepo{}, zerolog.Nop())
+	mon, _ := monitortest.NewSvc(bus, &mockRepo{}, "activation_test")
 	data := newMockDataProvider()
 
 	svc := activation.NewService(
@@ -275,7 +275,7 @@ func TestService_SkipsAlreadyWarmedSymbols(t *testing.T) {
 
 func TestService_HTFDataAvailableAfterActivation(t *testing.T) {
 	bus := memory.NewBus()
-	mon := monitor.NewService(bus, &mockRepo{}, zerolog.Nop())
+	mon, _ := monitortest.NewSvc(bus, &mockRepo{}, "activation_test")
 	data := newMockDataProvider()
 
 	data.SetBars("GOOG", "1d", makeDailyBars("GOOG", 200))

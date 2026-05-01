@@ -8,9 +8,9 @@ import (
 
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
+	"github.com/oh-my-opentrade/backend/internal/app/monitor/monitortest"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/domain/screener"
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +18,7 @@ import (
 func TestService_StartSubscribes(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -33,7 +33,7 @@ func TestService_StartSubscribes(t *testing.T) {
 func TestService_EmitsStateUpdated(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -60,7 +60,7 @@ func TestService_EmitsStateUpdated(t *testing.T) {
 func TestService_SymbolFilter_AllowsAllWhenNoBaseSymbols(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -83,7 +83,7 @@ func TestService_SymbolFilter_AllowsAllWhenNoBaseSymbols(t *testing.T) {
 func TestService_SymbolFilter_BlocksNonBaseSymbol(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 	svc.SetBaseSymbols([]string{"AAPL"})
 
 	err := svc.Start(context.Background())
@@ -107,7 +107,7 @@ func TestService_SymbolFilter_BlocksNonBaseSymbol(t *testing.T) {
 func TestService_SymbolFilter_AllowsBaseSymbol(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 	svc.SetBaseSymbols([]string{"AAPL"})
 	svc.MarkReady("AAPL")
 
@@ -132,7 +132,7 @@ func TestService_SymbolFilter_AllowsBaseSymbol(t *testing.T) {
 func TestService_EffectiveSymbolsUpdated_OverridesBase(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 	svc.SetBaseSymbols([]string{"AAPL", "MSFT"})
 	svc.MarkReady("AAPL", "MSFT", "TSLA")
 
@@ -172,7 +172,7 @@ func TestService_EffectiveSymbolsUpdated_OverridesBase(t *testing.T) {
 func TestService_ReadinessGate_BlocksUnreadySymbols(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 	svc.SetBaseSymbols([]string{"AAPL", "MSFT"})
 
 	err := svc.Start(context.Background())
@@ -200,7 +200,7 @@ func TestService_ReadinessGate_BlocksUnreadySymbols(t *testing.T) {
 func TestService_ReadinessGate_NoBaseSymbols_AllAllowed(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -221,7 +221,7 @@ func TestService_ReadinessGate_NoBaseSymbols_AllAllowed(t *testing.T) {
 func TestService_EmitsRegimeShifted(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -257,7 +257,7 @@ func TestService_EmitsRegimeShifted(t *testing.T) {
 func TestService_EmitsSetupDetected(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -299,7 +299,7 @@ func TestService_EmitsSetupDetected(t *testing.T) {
 func TestService_WarmUp_SeedsIndicators(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -335,7 +335,7 @@ func TestService_WarmUp_SeedsIndicators(t *testing.T) {
 func TestService_WarmUp_EmitsNoEvents(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -369,7 +369,7 @@ func TestService_WarmUp_EmitsNoEvents(t *testing.T) {
 func TestService_NoSetupWhenNoConditionMet(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -398,7 +398,7 @@ func TestService_NoSetupWhenNoConditionMet(t *testing.T) {
 func TestService_InvalidPayload(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 
 	err := svc.HandleMarketBar(context.Background(), createTestEvent(t, "not a bar"))
 	if assert.Error(t, err) {
@@ -409,7 +409,7 @@ func TestService_InvalidPayload(t *testing.T) {
 func TestService_MaintainsStatePerSymbol(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -451,7 +451,7 @@ func TestService_MaintainsStatePerSymbol(t *testing.T) {
 func TestService_SettlingGuard_SuppressesSetupDetectionForFirstBars(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 
 	err := svc.Start(context.Background())
 	require.NoError(t, err)
@@ -486,7 +486,7 @@ func TestService_SettlingGuard_SuppressesSetupDetectionForFirstBars(t *testing.T
 func TestService_DNAGate_BlocksUnapprovedSetup(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 
 	gate := &mockDNAGate{approved: false}
 	svc.SetDNAGate(gate, "orb_break_retest")
@@ -523,7 +523,7 @@ func TestService_DNAGate_BlocksUnapprovedSetup(t *testing.T) {
 func TestService_DNAGate_AllowsApprovedSetup(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 
 	gate := &mockDNAGate{approved: true}
 	svc.SetDNAGate(gate, "orb_break_retest")
@@ -558,7 +558,7 @@ func TestService_DNAGate_AllowsApprovedSetup(t *testing.T) {
 func TestService_DNAGate_ErrorIsPermissive(t *testing.T) {
 	bus := memory.NewBus()
 	repo := &mockRepository{}
-	svc := monitor.NewService(bus, repo, zerolog.Nop())
+	svc, _ := monitortest.NewSvc(bus, repo, "monitor_test")
 
 	gate := &mockDNAGate{approved: false, err: errors.New("db down")}
 	svc.SetDNAGate(gate, "orb_break_retest")
