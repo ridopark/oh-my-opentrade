@@ -436,6 +436,7 @@ func main() {
 					IVDefault:       btCfg.IVDefault,
 					RiskFreeRate:    btCfg.RiskFreeRate,
 					BidAskSpreadPct: btCfg.BidAskSpreadPct,
+					MaxIV:           btCfg.MaxIV,
 				}
 				ivDefault := btCfg.IVDefault
 				spotFn := func(ctx context.Context, sym domain.Symbol, asOf time.Time) (float64, error) {
