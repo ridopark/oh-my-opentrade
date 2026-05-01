@@ -177,6 +177,19 @@ Before writing a new `_test.go` in this repo, lock in these conventions:
   Never `--no-verify` to bypass the hook.
 - **For sub-agent dispatch (tdd-red, etc.)**: include the module path, the target test package (internal vs external), and the nearest neighbor test file the agent should copy. Agents that probe via reflection waste context; agents that copy proven fixtures land working code first try.
 
+### Port-contract harness pattern (`ports/<port>porttest/`)
+
+When a port has more than one adapter, the contract suite belongs in a **dedicated harness package under `ports/`**, not duplicated per adapter and not in `ports/` itself. The shape we use:
+
+- The harness package (e.g. `internal/ports/brokerporttest/`) imports `internal/ports` and `internal/domain` — and **nothing adapter-specific.** This is the load-bearing rule: it's what keeps the dependency graph acyclic when adapters import the harness from their tests.
+- Each adapter has a `contract_test.go` that constructs its broker, builds an `Env`, and calls `RunBrokerPortContract(t, broker, stream, env)`. The harness owns the suite; adapter tests are thin call sites.
+- Where the adapter test lives is **secondary** — pick whichever package gives the contract test access to the fixtures it needs:
+  - `package <adapter>_test` (external) when public constructors suffice — `simbroker/contract_test.go`.
+  - `package <adapter>` (internal) when private fixtures are required — `hyperliquid/contract_test.go` reaches `newTestBroker`; `ibkr/contract_test.go` reaches the mock-IB plumbing.
+  - The harness never imports the adapter, so the adapter is free to use either form.
+- Sub-suites for optional-port surfaces (e.g. `RunOrderStreamPortContract` for adapters that implement `OrderStreamPort`) take the optional port as a separate argument and early-return on `nil`. Adapters that don't implement the optional port pass `nil`; adapters that do, pass the broker itself. **Compile-anchor each `var _ ports.OptionalPort = (*Broker)(nil)`** in the adapter so signature drift fails the build, not just the test.
+- Three call sites today: `simbroker/contract_test.go`, `hyperliquid/contract_test.go`, `ibkr/contract_test.go`. New broker adapters should follow the same shape.
+
 ### SQL Migration
 Filename: `migrations/NNNN_description.up.sql` / `.down.sql`
 ```sql
