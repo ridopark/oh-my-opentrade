@@ -22,6 +22,27 @@ import (
 type DNAGateChecker interface {
 	IsDNAApproved(ctx context.Context, strategyKey string) (bool, error)
 }
+
+// IndicatorShadow is the minimal port the monitor uses to drive a parallel
+// indicator calculator on every 1m bar. Declaring it here (rather than
+// importing the indicator package) keeps the dependency arrow
+// indicator -> monitor and avoids a cycle. *indicator.Service satisfies
+// this structurally.
+type IndicatorShadow interface {
+	Update(bar domain.MarketBar) domain.IndicatorSnapshot
+}
+
+// Option configures a *Service after the base fields are wired.
+type Option func(*Service)
+
+// WithIndicatorShadow attaches a parallel calculator fed every bar
+// through handleBarCore. The shadow never influences the canonical
+// path; mismatches surface in tests.
+func WithIndicatorShadow(s IndicatorShadow) Option {
+	return func(svc *Service) {
+		svc.shadowIndicator = s
+	}
+}
 const settlingBars = 5
 var anchorTimeframes = []domain.Timeframe{"5m", "15m", "1h"}
 // Service is the monitor application service.
@@ -96,6 +117,7 @@ type Service struct {
 	pendingStrict       []domain.Event
 	pendingBestEffort   []domain.Event
 	pendingStateUpdates []domain.IndicatorSnapshot
+	shadowIndicator     IndicatorShadow
 	// scratchStrict / scratchBestEffort are per-bar scratch buffers for
 	// handleBarCore. Reusing slices across bars avoids ~315 MB of
 	// append-growth allocations per 30 sym / 1 yr run (publishStrict
@@ -376,11 +398,11 @@ func (s *Service) ReserveHTFNative(sym domain.Symbol, tf domain.Timeframe) {
 }
 
 // NewService creates a new monitor Service.
-func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zerolog.Logger) *Service {
+func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zerolog.Logger, opts ...Option) *Service {
 	nyLoc, _ := time.LoadLocation("America/New_York")
 	calc := NewIndicatorCalculator()
 	calc.Label = "monitor"
-	return &Service{
+	svc := &Service{
 		eventBus:         eventBus,
 		repo:             repo,
 		calculator:       calc,
@@ -403,6 +425,10 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 		nyLoc:            nyLoc,
 		log:              log,
 	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 // TagBacktest annotates the ORB tracker's slog logger with backtest_id and
 // re-labels the IndicatorCalculator so backtest ORB and parity-diag emits
@@ -832,6 +858,19 @@ func (s *Service) handleBarCore(ctx context.Context, bar domain.MarketBar, tenan
 		return nil
 	}
 	snap := s.calculator.Update(bar)
+	if s.shadowIndicator != nil {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// Disable the shadow on first panic so a faulty parallel
+					// calc cannot keep crashing the live bar path.
+					s.log.Error().Interface("panic", r).Str("component", "indicator_shadow").Msg("indicator shadow panic, disabling")
+					s.shadowIndicator = nil
+				}
+			}()
+			s.shadowIndicator.Update(bar)
+		}()
+	}
 	symStr := bar.Symbol.String()
 
 	// Standalone AVWAP: resolve anchors on new session day, then update calculator.
