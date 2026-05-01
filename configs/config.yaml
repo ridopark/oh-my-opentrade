@@ -114,6 +114,15 @@ backtest:
   latency_ms_option: 200
   fee_schedule: "ibkr_options"      # $0.65/contract, $1 min-per-order, $0.04 exchange + SEC on sells
   pessimistic_slippage_multiplier: 2.0
+  synthetic_chain:
+    # Caps the per-expiry IV applied to BSM in the synthetic chain. The chain
+    # pulls real Alpaca-collected ATM IV from iv_snapshots, which for high-vol
+    # leveraged ETFs (SOXL, SOXS, SQQQ, TQQQ, UVXY) legitimately runs >1.20.
+    # Applied flat to every strike via BSM, that flattens the delta surface
+    # so far that 0/N candidates land in the strategy's target_delta band.
+    # 0.80 keeps the surface steep enough for [0.50, 0.65] bands to catch
+    # near-ATM strikes. Real fix is per-strike skew (scheduled follow-up).
+    max_iv: 0.80
 
 ai:
   base_url: "http://localhost:11434"  # any OpenAI-compatible endpoint (Ollama, LM Studio, OpenAI, vLLM)
