@@ -36,7 +36,7 @@ func TestService_Subscribe_FiresOnClosedHTFBar(t *testing.T) {
 		snap   domain.IndicatorSnapshot
 	}
 	var hits []hit
-	svc.Subscribe(subSymbol, htfTF, func(closed domain.MarketBar, snap domain.IndicatorSnapshot) {
+	svc.Subscribe(subSymbol, htfTF, func(closed domain.MarketBar, snap domain.IndicatorSnapshot, _ domain.MarketBarEnvelope) {
 		hits = append(hits, hit{closed, snap})
 	})
 
@@ -67,7 +67,7 @@ func TestService_Subscribe_OrderingInvariant(t *testing.T) {
 	bars := indicatortest.MakeBars(subSymbol, 200.0, anchor, 5)
 
 	var fired bool
-	svc.Subscribe(subSymbol, htfTF, func(closed domain.MarketBar, snap domain.IndicatorSnapshot) {
+	svc.Subscribe(subSymbol, htfTF, func(closed domain.MarketBar, snap domain.IndicatorSnapshot, _ domain.MarketBarEnvelope) {
 		fired = true
 		got, ok := svc.LastSnapshot(subSymbol, htfTF)
 		if !ok {
@@ -99,13 +99,13 @@ func TestService_Subscribe_RegistrationOrder(t *testing.T) {
 	bars := indicatortest.MakeBars(subSymbol, 200.0, anchor, 5)
 
 	var order []int
-	svc.Subscribe(subSymbol, htfTF, func(_ domain.MarketBar, _ domain.IndicatorSnapshot) {
+	svc.Subscribe(subSymbol, htfTF, func(_ domain.MarketBar, _ domain.IndicatorSnapshot, _ domain.MarketBarEnvelope) {
 		order = append(order, 1)
 	})
-	svc.Subscribe(subSymbol, htfTF, func(_ domain.MarketBar, _ domain.IndicatorSnapshot) {
+	svc.Subscribe(subSymbol, htfTF, func(_ domain.MarketBar, _ domain.IndicatorSnapshot, _ domain.MarketBarEnvelope) {
 		order = append(order, 2)
 	})
-	svc.Subscribe(subSymbol, htfTF, func(_ domain.MarketBar, _ domain.IndicatorSnapshot) {
+	svc.Subscribe(subSymbol, htfTF, func(_ domain.MarketBar, _ domain.IndicatorSnapshot, _ domain.MarketBarEnvelope) {
 		order = append(order, 3)
 	})
 
@@ -131,7 +131,7 @@ func TestService_Subscribe_Unsubscribe(t *testing.T) {
 	bars := indicatortest.MakeBars(subSymbol, 200.0, anchor, 5)
 
 	var fired int
-	unsub := svc.Subscribe(subSymbol, htfTF, func(_ domain.MarketBar, _ domain.IndicatorSnapshot) {
+	unsub := svc.Subscribe(subSymbol, htfTF, func(_ domain.MarketBar, _ domain.IndicatorSnapshot, _ domain.MarketBarEnvelope) {
 		fired++
 	})
 	unsub()
@@ -153,7 +153,7 @@ func TestService_PrimeAggregator_DoesNotFireSubscribers(t *testing.T) {
 	bars := indicatortest.MakeBars(subSymbol, 200.0, anchor, 5)
 
 	var fired int
-	svc.Subscribe(subSymbol, htfTF, func(_ domain.MarketBar, _ domain.IndicatorSnapshot) {
+	svc.Subscribe(subSymbol, htfTF, func(_ domain.MarketBar, _ domain.IndicatorSnapshot, _ domain.MarketBarEnvelope) {
 		fired++
 	})
 
@@ -187,7 +187,7 @@ func TestService_SetSessionOpen_AlignsAggregators(t *testing.T) {
 	svc.SetSessionOpen(anchor)
 
 	var closedTimes []time.Time
-	svc.Subscribe(subSymbol, htfTF, func(closed domain.MarketBar, _ domain.IndicatorSnapshot) {
+	svc.Subscribe(subSymbol, htfTF, func(closed domain.MarketBar, _ domain.IndicatorSnapshot, _ domain.MarketBarEnvelope) {
 		closedTimes = append(closedTimes, closed.Time)
 	})
 

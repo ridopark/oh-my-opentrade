@@ -594,6 +594,7 @@ func main() {
 				Ingestion: ingSvc,
 				Monitor:   monSvc,
 				Runner:    shardStrat.Runner,
+				Indicator: shardIdx,
 			}, nil
 		}
 
@@ -737,6 +738,10 @@ func main() {
 
 		if err := ingBundle.Service.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start ingestion")
+		}
+		// indicator drives Update; must Start before monitor. See indicator.Service docs.
+		if err := idx.Start(ctx, eventBus); err != nil {
+			log.Fatal().Err(err).Msg("failed to start indicator")
 		}
 		if err := monitorSvc.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start monitor")

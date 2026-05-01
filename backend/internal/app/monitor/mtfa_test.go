@@ -48,11 +48,14 @@ func makeMTFA1mBar(t *testing.T, sym domain.Symbol, minuteOffset int, price, vol
 
 // setupMTFAService creates a monitor service wired to a memory event bus
 // plus an indicator.Service shadow, initialises aggregators for the given
-// symbols, and starts the service.
+// symbols, and starts the service. The indicator.Service is Start'd FIRST
+// so its MarketBarSanitized handler runs before monitor's, satisfying the
+// single-driver contract (monitor reads via LastSnapshot).
 func setupMTFAService(t *testing.T, symbols ...domain.Symbol) (*monitor.Service, *memory.Bus) {
 	t.Helper()
 	bus := memory.NewBus()
 	idx := indicator.NewService("mtfa_test")
+	require.NoError(t, idx.Start(context.Background(), bus))
 	svc := monitor.NewService(bus, &mockRepository{}, zerolog.Nop(), monitor.WithIndicatorShadow(idx))
 	svc.InitAggregators(symbols, mtfaSessionOpen)
 	require.NoError(t, svc.Start(context.Background()))
