@@ -80,6 +80,17 @@ const (
 
 func (s Symbol) String() string { return string(s) }
 
+// SymbolsToStrings converts a Symbol slice to a string slice. Pulled into
+// domain because the same loop body was open-coded in three places
+// (cmd/omo-replay, app/backtest, adapters/http) before consolidation.
+func SymbolsToStrings(syms []Symbol) []string {
+	out := make([]string, len(syms))
+	for i, s := range syms {
+		out[i] = string(s)
+	}
+	return out
+}
+
 func NewSymbol(s string) (Symbol, error) {
 	if s == "" {
 		return "", errors.New("invalid symbol: must not be empty")

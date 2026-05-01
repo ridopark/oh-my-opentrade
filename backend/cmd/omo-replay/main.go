@@ -225,9 +225,7 @@ func main() {
 
 	// Backtest mode delegates to the canonical backtest.Runner used by HTTP
 	// /backtest/run, eliminating the parallel inline implementation that
-	// drifted across PRs (#67 indicator, #73 AVWAP wiring, this run's DP +
-	// whale + HTF). The legacy inline path below this point is unreached
-	// when --backtest is set.
+	// drifted across PRs (#67 indicator, #73 AVWAP wiring, then DP/whale/HTF).
 	if backtestFlag {
 		if err := runBacktestViaRunner(
 			ctx, log, sqlDB, cfg, symbols, fromTime, toTime,

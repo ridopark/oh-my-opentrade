@@ -103,7 +103,7 @@ func runBacktestViaRunner(
 
 	log.Info().
 		Str("backtest_id", runner.ID()).
-		Strs("symbols", symbolStringsForLog(symbols)).
+		Strs("symbols", domain.SymbolsToStrings(symbols)).
 		Time("from", fromTime).
 		Time("to", toTime).
 		Float64("equity", initialEquity).
@@ -141,10 +141,3 @@ func runBacktestViaRunner(
 	return nil
 }
 
-func symbolStringsForLog(syms []domain.Symbol) []string {
-	out := make([]string, len(syms))
-	for i, s := range syms {
-		out[i] = s.String()
-	}
-	return out
-}

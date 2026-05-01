@@ -8,7 +8,6 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/oh-my-opentrade/backend/internal/app/backtest"
-	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
@@ -25,14 +24,6 @@ type backtestRunMeta struct {
 	slippageBPS   int
 	noAI          bool
 	dnaSnapshot   map[string]any
-}
-
-func symbolsAsStrings(syms []domain.Symbol) []string {
-	out := make([]string, len(syms))
-	for i, s := range syms {
-		out[i] = string(s)
-	}
-	return out
 }
 
 // derefSharpe flattens a nullable Sharpe for the history row. The DB column is
