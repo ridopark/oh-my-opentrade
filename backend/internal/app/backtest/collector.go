@@ -627,7 +627,7 @@ func (c *Collector) CloseOpenPositions(endTime time.Time) {
 					Price:     price,
 					FilledAt:  endTime,
 					Strategy:  entry.Strategy,
-					Rationale: "BACKTEST_END",
+					Rationale: "BACKTEST_END_LEAK",
 					PnL:       pnl,
 					Tags:      entry.Tags,
 				}
@@ -636,6 +636,20 @@ func (c *Collector) CloseOpenPositions(endTime time.Time) {
 				}
 				c.trades = append(c.trades, exitTrade)
 				c.cash += pnl
+
+				// Reaching this branch means the upstream EOD-flatten tick
+				// did not emit a CLOSE_LONG/CLOSE_SHORT for this position
+				// before the runner gave up. After Fix B that should be a
+				// zero-event condition; surface it loudly so log-grep
+				// alerting can catch any regression in the exit chain.
+				c.log.Error().
+					Str("symbol", sym).
+					Str("direction", direction).
+					Str("strategy", entry.Strategy).
+					Float64("quantity", entry.Quantity).
+					Float64("price", price).
+					Float64("pnl", pnl).
+					Msg("backtest_end_leak: position not flushed by EOD_FLATTEN tick — investigate exit-chain failure")
 
 				// Update incremental stats.
 				c.tradeCount++
