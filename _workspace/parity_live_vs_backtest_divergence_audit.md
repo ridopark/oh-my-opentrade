@@ -523,3 +523,41 @@ the next mid-session restart.
   asymmetry across live/backtest/omo-replay
 - #32 -- broaden post-fix parity SQL to cover all anchors, late
   session, full universe, and 6-decimal precision
+
+## #46 EMA50 / MACD precision drift -- CLOSED 2026-05-01
+
+The EMA50/MACD drift between live and backtest reported in #46 is
+closed by the IndicatorCalculator unification migration (PRs 1-7
+merged 2026-05-01, PR 8 ships parity contract tests and this note).
+
+Structural root cause: the codebase carried three independently-warmed
+`monitor.IndicatorCalculator` instances (live monitor `L1`, runner
+warmup boot `L2`, runner `htfCalcs` `L3`; mirrored as `B1`/`B2`/`B3`
+in backtest). Each was fed by a different warmup path, so
+`B1.states[(sym,5m)].ema50 != L1.states[(sym,5m)].ema50` after seed,
+with the seed bias decaying at `(1 - 2/51)^N`. The broadened parity
+SQL measured ~1.6e-3 EMA50 delta after 50 bars on a $200 stock.
+
+Fix: collapse all three calcs into a single per-context
+`indicator.Service` owned alongside `monitor.Service` and constructed
+fresh per backtest. Every consumer (monitor enriched-bar emission,
+strategy runner HTF gates, bootstrap activator) now reads through one
+canonical state map. Bit-equality is verified at the read site (PR 4)
+and at the aggregator-write site (PR 6a-2). Operator-side full-RTH
+parity backtest across the trading universe is the final acceptance
+gate documented in the PR 8 description.
+
+Migration log:
+
+- PR 1 (#58 → 31081a10): introduce `internal/app/indicator/` package
+- PR 2 (#59 → 445035f4): wire shadow `indicator.Service` into monitor
+- PR 3 (#60 → 370fabd7): unified warmup, delete `L2`/`B2` calcs
+- PR 4 (#61 → 4cb5a987): migrate runner `htfCalcs` to indicator
+- PR 5 (#62 → da61586e): migrate bootstrap activator closure
+- PR 6a-1 (#63 → 22617880): introduce `Subscribe` API + aggregator
+- PR 6a-2 (#64 → d2231000): migrate aggregator chains onto Subscribe
+- PR 7 (#65 → d92640bd): collapse `monitor.calc` into indicator
+- PR 8 (this branch): parity contract tests + audit closure
+
+The structural roadmap and architectural decisions (D1-D5) are at
+`_workspace/indicator_calculator_unification_plan.md`.
