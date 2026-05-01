@@ -38,6 +38,8 @@ func main() {
 		envPath       string
 	)
 
+	var optionsSourceFlag string
+
 	flag.StringVar(&symbolsFlag, "symbols", "", "Comma-separated symbols (default: active trading universe)")
 	flag.StringVar(&fromFlag, "from", "", "Start date YYYY-MM-DD (required unless --resume)")
 	flag.StringVar(&toFlag, "to", "", "End date YYYY-MM-DD (default: now)")
@@ -47,7 +49,13 @@ func main() {
 	flag.IntVar(&batchSize, "batch-size", 500, "Database batch insert size")
 	flag.StringVar(&configPath, "config", "configs/config.yaml", "Path to YAML config file")
 	flag.StringVar(&envPath, "env-file", ".env", "Path to .env file")
+	flag.StringVar(&optionsSourceFlag, "source", "dolthub", "Options chain source: dolthub | alpaca")
 	flag.Parse()
+
+	if optionsSourceFlag != "dolthub" && optionsSourceFlag != "alpaca" {
+		fmt.Fprintf(os.Stderr, "invalid -source %q: must be 'dolthub' or 'alpaca'\n", optionsSourceFlag)
+		os.Exit(2)
+	}
 
 	log := logger.New(logger.Config{
 		Level:  zerolog.InfoLevel,
@@ -169,26 +177,73 @@ func main() {
 		log.Info().Msg("backfill finished successfully")
 		return
 	}
-	log.Info().Msg("[2/2] importing historical options data...")
+	log.Info().Str("source", optionsSourceFlag).Msg("[2/2] importing historical options data...")
 	histOptRepo := timescaledb.NewHistoricalOptionsRepository(dbAdapter, log.With().Str("component", "hist_options").Logger())
-	dolthubClient := dolthub.NewClient(nil, log)
-	importer := optionsimport.NewService(dolthubClient, histOptRepo, log)
 
-	const maxConcurrentImports = 4
-	importSem := make(chan struct{}, maxConcurrentImports)
-	var importWg sync.WaitGroup
-	for _, sym := range symbols {
-		importWg.Add(1)
-		go func(sym domain.Symbol) {
-			defer importWg.Done()
-			importSem <- struct{}{}
-			defer func() { <-importSem }()
-			if importErr := importer.EnsureData(ctx, string(sym), fromTime, toTime); importErr != nil {
-				log.Warn().Err(importErr).Str("symbol", string(sym)).Msg("DoltHub options import failed")
+	switch optionsSourceFlag {
+	case "dolthub":
+		dolthubClient := dolthub.NewClient(nil, log)
+		importer := optionsimport.NewDoltHubService(dolthubClient, histOptRepo, log)
+
+		const maxConcurrentImports = 4
+		importSem := make(chan struct{}, maxConcurrentImports)
+		var importWg sync.WaitGroup
+		for _, sym := range symbols {
+			importWg.Add(1)
+			go func(sym domain.Symbol) {
+				defer importWg.Done()
+				importSem <- struct{}{}
+				defer func() { <-importSem }()
+				if importErr := importer.EnsureData(ctx, string(sym), fromTime, toTime); importErr != nil {
+					log.Warn().Err(importErr).Str("symbol", string(sym)).Msg("DoltHub options import failed")
+				}
+			}(sym)
+		}
+		importWg.Wait()
+
+	case "alpaca":
+		// Pre-fetch the daily underlying bars for every symbol once,
+		// build a map[date]close, and serve SpotLookup from that map.
+		// Avoids per-(sym, date) Alpaca round-trips against the bars
+		// endpoint and keeps the IV inversion path deterministic.
+		spotByDate := make(map[domain.Symbol]map[string]float64, len(symbols))
+		for _, sym := range symbols {
+			bars, err := alpacaAdapter.GetHistoricalBars(ctx, sym, domain.Timeframe("1d"), fromTime, toTime)
+			if err != nil {
+				log.Warn().Err(err).Str("symbol", string(sym)).Msg("daily bar pre-fetch failed; spot lookups will return 0 and dates will skip")
+				continue
 			}
-		}(sym)
+			byDate := make(map[string]float64, len(bars))
+			for _, b := range bars {
+				key := b.Time.UTC().Format("2006-01-02")
+				byDate[key] = b.Close
+			}
+			spotByDate[sym] = byDate
+		}
+		spotLookup := func(_ context.Context, sym domain.Symbol, date time.Time) (float64, error) {
+			if m, ok := spotByDate[sym]; ok {
+				return m[date.UTC().Format("2006-01-02")], nil
+			}
+			return 0, nil
+		}
+
+		alpacaImporter := optionsimport.NewAlpacaService(
+			alpacaAdapter.RESTClient(),
+			alpacaAdapter.DataURL(),
+			histOptRepo,
+			spotLookup,
+			optionsimport.AlpacaConfig{},
+			log,
+		)
+		symStrs := make([]string, len(symbols))
+		for i, s := range symbols {
+			symStrs[i] = string(s)
+		}
+		if importErr := alpacaImporter.Run(ctx, symStrs, fromTime, toTime); importErr != nil {
+			log.Error().Err(importErr).Msg("Alpaca historical options import failed")
+			os.Exit(1)
+		}
 	}
-	importWg.Wait()
 	log.Info().Msg("[2/2] options import complete")
 
 	log.Info().Msg("backfill finished successfully")

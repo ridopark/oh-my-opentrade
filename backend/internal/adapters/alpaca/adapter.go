@@ -228,6 +228,16 @@ func (a *Adapter) SubscribeOrderUpdates(ctx context.Context) (<-chan ports.Order
 // TradeStream returns the underlying TradeStreamClient for metrics wiring.
 func (a *Adapter) TradeStream() *TradeStreamClient { return a.tradeStream }
 
+// RESTClient exposes the underlying REST client. Used by callers that
+// need adapter methods not surfaced through the higher-level Adapter
+// interface (e.g. omo-backfill calls ListOptionContractsAsOf directly).
+func (a *Adapter) RESTClient() *RESTClient { return a.rest }
+
+// DataURL returns the resolved data API URL the adapter was constructed
+// with, paired with RESTClient() for callers that pass the URL through
+// to data-API methods like GetOptionDayBar.
+func (a *Adapter) DataURL() string { return a.dataURL }
+
 // SubmitOrder places an order through the Alpaca REST API.
 // Crypto orders are validated (long-only) before submission.
 // Options orders are dispatched to SubmitOptionOrder.
