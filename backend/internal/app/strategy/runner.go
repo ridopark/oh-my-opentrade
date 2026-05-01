@@ -25,6 +25,12 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/ports"
 )
 
+type htfClose struct {
+	tf     string
+	closed domain.MarketBar
+	snap   domain.IndicatorSnapshot
+}
+
 // Runner routes market bars to strategy instances and collects signals.
 // It subscribes to MarketBarSanitized events, dispatches bars to matching
 // instances via the Router, and emits SignalCreated events for each signal.
@@ -40,9 +46,17 @@ type Runner struct {
 	indicators           map[string]start.IndicatorData
 	indLogOnce           map[string]bool
 	metrics              *metrics.Metrics
-	aggregators          map[string]*domain.BarAggregator
-	aggKeysBySym         map[string]map[string]string // sym → tf → "sym:tf"
 	indicator            *indicator.Service
+	// htfUnsubs holds the indicator.Service unsubscribe closures for each
+	// (sym, tf) registered in InitAggregators. Re-init paths drop the old
+	// subscriptions before re-registering so callbacks cannot leak.
+	htfUnsubs map[string]func()
+	// htfPending collects (closed HTF bar, snap) tuples produced by
+	// indicator.Service Subscribe callbacks that fire while r.indicator.Update
+	// runs inside handleBarCore. The slice is drained at the same point the
+	// pre-migration aggregator block ran (after the 1m OnBar pass) so HTF
+	// dispatch ordering inside a single bar is preserved.
+	htfPending []htfClose
 	warmedHTFKeys        map[string]bool // "symbol:tf" → true; idempotent guard for WarmUpTF
 	htfLabelSuffix       string          // empty in live; "_backtest_<id>" when TagBacktest called
 	regimeDetector       *monitor.RegimeDetector
@@ -599,7 +613,7 @@ func NewRunner(
 		envMode:     envMode,
 		indicators:     make(map[string]start.IndicatorData),
 		indLogOnce:     make(map[string]bool),
-		aggregators:    make(map[string]*domain.BarAggregator),
+		htfUnsubs:      make(map[string]func()),
 		warmedHTFKeys:  make(map[string]bool),
 		regimeDetector: monitor.NewRegimeDetector(),
 		anchorRegimes:          make(map[string]map[string]domain.MarketRegime),
@@ -837,12 +851,23 @@ func (r *Runner) GetAVWAPValues(symbol string) map[string]float64 {
 	return nil
 }
 
-// InitAggregators creates BarAggregators for all non-1m timeframes needed by registered instances.
-// Must be called after all instances are registered and before Start().
+// InitAggregators registers Subscribe callbacks on the indicator.Service for
+// every (symbol, HTF timeframe) pair declared by the registered instances.
+// Re-init paths drop the previous subscriptions before re-registering, so
+// callbacks cannot leak across activation cycles. Must be called after all
+// instances are registered and before Start().
 func (r *Runner) InitAggregators(sessionOpen time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if r.indicator == nil {
+		return
+	}
+	r.indicator.SetSessionOpen(sessionOpen)
+	for key, unsub := range r.htfUnsubs {
+		unsub()
+		delete(r.htfUnsubs, key)
+	}
 	for _, inst := range r.router.AllInstances() {
 		tfs := inst.Assignment().Timeframes
 		if len(tfs) == 0 {
@@ -854,72 +879,50 @@ func (r *Runner) InitAggregators(sessionOpen time.Time) {
 			}
 			for _, sym := range inst.Assignment().Symbols {
 				key := sym + ":" + tf
-				if _, exists := r.aggregators[key]; exists {
+				if _, exists := r.htfUnsubs[key]; exists {
 					continue
 				}
-				domSym := domain.Symbol(sym)
-				domTF := domain.Timeframe(tf)
-				var agg *domain.BarAggregator
-				var err error
-				if domSym.IsCryptoSymbol() {
-					agg, err = domain.NewClockAlignedAggregator(domSym, domTF)
-				} else {
-					agg, err = domain.NewBarAggregator(domSym, domTF, sessionOpen)
-				}
-				if err != nil {
-					r.logger.Error("failed to create aggregator", "symbol", sym, "timeframe", tf, "error", err)
-					continue
-				}
-				r.aggregators[key] = agg
-				r.logger.Info("HTF aggregator created", "symbol", sym, "timeframe", tf)
+				cb := r.makeHTFCallback(tf)
+				r.htfUnsubs[key] = r.indicator.Subscribe(domain.Symbol(sym), domain.Timeframe(tf), cb)
+				r.logger.Info("HTF subscriber registered", "symbol", sym, "timeframe", tf)
 			}
-		}
-	}
-	// Build per-symbol aggregator key cache so handleBarCore can
-	// look up "sym:tf" keys without allocating a concat on every bar.
-	r.aggKeysBySym = make(map[string]map[string]string, len(r.aggregators))
-	for key := range r.aggregators {
-		parts := strings.SplitN(key, ":", 2)
-		if len(parts) == 2 {
-			sym, tf := parts[0], parts[1]
-			if r.aggKeysBySym[sym] == nil {
-				r.aggKeysBySym[sym] = make(map[string]string, 4)
-			}
-			r.aggKeysBySym[sym][tf] = key
 		}
 	}
 }
 
-// PrimeAggregators feeds 1m bars through the runtime HTF aggregators
-// without driving the per-(sym, tf) indicator calculator. Used at boot
+// makeHTFCallback returns a Subscribe callback that runs synchronously inside
+// indicator.Service.Update for a 1m bar. Because handleBarCore holds r.mu
+// across that Update, the callback writes htfPending without re-locking; the
+// per-tf dispatch loop drains it after Update returns.
+func (r *Runner) makeHTFCallback(tf string) func(closed domain.MarketBar, snap domain.IndicatorSnapshot) {
+	return func(closed domain.MarketBar, snap domain.IndicatorSnapshot) {
+		r.htfPending = append(r.htfPending, htfClose{tf: tf, closed: closed, snap: snap})
+	}
+}
+
+// PrimeAggregators feeds 1m bars through the indicator.Service aggregator
+// chain without firing subscribers or driving calc.Update. Used at boot
 // after canonical-spec HTF warmup so the first live 5m/15m/1h close
 // after boot contains today's pre-boot 1m bars, not just post-boot ones.
-// HTF indicator state is owned by WarmUpTF on the indicator service;
-// this only primes aggregator buckets.
 func (r *Runner) PrimeAggregators(symbol string, bars1m []domain.MarketBar) {
-	if len(bars1m) == 0 {
+	if len(bars1m) == 0 || r.indicator == nil {
+		return
+	}
+	rthBars := make([]domain.MarketBar, 0, len(bars1m))
+	for _, bar := range bars1m {
+		if warmup.IsEquityNonRTH(bar) {
+			continue
+		}
+		rthBars = append(rthBars, bar)
+	}
+	if len(rthBars) == 0 {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	symKeys := r.aggKeysBySym[symbol]
-	if symKeys == nil {
-		return
-	}
-	for tf, key := range symKeys {
-		if tf == "1m" {
-			continue
-		}
-		agg, ok := r.aggregators[key]
-		if !ok {
-			continue
-		}
-		for _, bar := range bars1m {
-			if warmup.IsEquityNonRTH(bar) {
-				continue
-			}
-			_, _ = agg.Push(bar)
-		}
+	domSym := domain.Symbol(symbol)
+	for _, tf := range r.HTFTimeframesForSymbol(symbol) {
+		r.indicator.PrimeAggregator(domSym, domain.Timeframe(tf), rthBars)
 	}
 }
 
@@ -1669,6 +1672,11 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 	}
 	r.scratchOneMin = oneMinInstances
 
+	r.htfPending = r.htfPending[:0]
+	if r.indicator != nil && bar.Timeframe == "1m" && !warmup.IsEquityNonRTH(bar) {
+		r.indicator.Update(bar)
+	}
+
 	sBar := domainBarToStratBar(bar)
 	var allSignals []start.Signal
 	// Add any exit signals from 1m AVWAP exit evaluation
@@ -1701,45 +1709,28 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		allSignals = append(allSignals, signals...)
 	}
 
-	// Native-HTF passthrough (e.g. 1d daily replay) bypasses the 1m
-	// RTH gate — the input bar's timeframe carries the contract.
-	gateHTFEquity := bar.Timeframe == "1m" && warmup.IsEquityNonRTH(bar)
+	// Native-HTF passthrough (e.g. 1d daily replay): the input bar already
+	// matches an HTF the runner consumes, so feed it directly into the
+	// indicator service and dispatch without 1m aggregation. Non-RTH 1m
+	// equity bars never reach this branch — indicator.Update was gated
+	// upstream so r.htfPending stays empty.
+	if bar.Timeframe != "1m" {
+		nativeTF := string(bar.Timeframe)
+		if _, want := htfNeeded[nativeTF]; want && r.indicator != nil {
+			nativeSnap := r.indicator.Update(bar)
+			r.htfPending = append(r.htfPending, htfClose{tf: nativeTF, closed: bar, snap: nativeSnap})
+		}
+	}
 
-	for tf, htfInsts := range htfNeeded {
-		if gateHTFEquity {
-			break
-		}
-		// Use pre-computed key from aggKeysBySym to avoid per-bar
-		// string concat (was 2.65M allocations per run).
-		key := ""
-		if symKeys := r.aggKeysBySym[symbol]; symKeys != nil {
-			key = symKeys[tf]
-		}
-		if key == "" {
-			key = symbol + ":" + tf
-		}
-		agg, ok := r.aggregators[key]
-		if !ok {
+	for _, p := range r.htfPending {
+		tf := p.tf
+		htfInsts := htfNeeded[tf]
+		if len(htfInsts) == 0 {
 			continue
 		}
-		var closed domain.MarketBar
-		var emitted bool
-		// Passthrough: if incoming bar already matches target HTF (e.g. native 1d
-		// replay for daily strategies), the aggregator cannot downsize from same→same
-		// (it expects 1m input). Emit directly.
-		if string(bar.Timeframe) == tf {
-			closed = bar
-			emitted = true
-		} else {
-			closed, emitted = agg.Push(bar)
-		}
-		if !emitted {
-			continue
-		}
+		closed := p.closed
+		htfSnap := p.snap
 		htfBar := domainBarToStratBar(closed)
-
-		// Compute indicators from the aggregated HTF bar (not 1m indicators).
-		htfSnap := r.indicator.Update(closed)
 
 		// Compute and store anchor regime for this HTF bar (keyed sym→tf)
 		regime, _ := r.regimeDetector.Detect(htfSnap)
@@ -2039,11 +2030,6 @@ func (r *Runner) WarmUpTF(symbol string, tf string, bars []domain.MarketBar, sna
 	// would replay against state that already advanced.
 	if tf != "1m" {
 		key := symbol + ":" + tf
-		if symKeys := r.aggKeysBySym[symbol]; symKeys != nil {
-			if k := symKeys[tf]; k != "" {
-				key = k
-			}
-		}
 		if r.warmedHTFKeys[key] {
 			return 0
 		}
