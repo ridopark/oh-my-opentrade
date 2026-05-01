@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
+	"github.com/oh-my-opentrade/backend/internal/app/indicator"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/warmup"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -41,8 +42,9 @@ type Runner struct {
 	metrics              *metrics.Metrics
 	aggregators          map[string]*domain.BarAggregator
 	aggKeysBySym         map[string]map[string]string // sym → tf → "sym:tf"
-	htfCalcs             map[string]*monitor.IndicatorCalculator // key: "symbol:tf"
-	htfLabelSuffix       string                                   // empty in live; "_backtest_<id>" when TagBacktest called
+	indicator            *indicator.Service
+	warmedHTFKeys        map[string]bool // "symbol:tf" → true; idempotent guard for WarmUpTF
+	htfLabelSuffix       string          // empty in live; "_backtest_<id>" when TagBacktest called
 	regimeDetector       *monitor.RegimeDetector
 	anchorRegimes          map[string]map[string]domain.MarketRegime   // symbol → tf → latest regime
 	collectedAnchorRegimes map[string]map[string]start.AnchorRegime   // per-symbol reusable result map
@@ -564,6 +566,19 @@ func (r *Runner) resolveAIAnchors(ctx context.Context, symbol string, bar domain
 // Used for warmup without introducing an import cycle with the monitor package.
 type IndicatorSnapshotFunc func(domain.MarketBar) start.IndicatorData
 
+// Option configures a Runner at construction time.
+type Option func(*Runner)
+
+// WithIndicator injects the indicator.Service that owns HTF state. The
+// runner's HTF read path (handleBarCore) and HTF warmup path (WarmUpTF)
+// route through this service so live and backtest see identical seeded
+// state.
+func WithIndicator(svc *indicator.Service) Option {
+	return func(r *Runner) {
+		r.indicator = svc
+	}
+}
+
 // NewRunner creates a StrategyRunner.
 func NewRunner(
 	eventBus ports.EventBusPort,
@@ -571,6 +586,7 @@ func NewRunner(
 	tenantID string,
 	envMode domain.EnvMode,
 	logger *slog.Logger,
+	opts ...Option,
 ) *Runner {
 	if logger == nil {
 		logger = slog.Default()
@@ -584,7 +600,7 @@ func NewRunner(
 		indicators:     make(map[string]start.IndicatorData),
 		indLogOnce:     make(map[string]bool),
 		aggregators:    make(map[string]*domain.BarAggregator),
-		htfCalcs:       make(map[string]*monitor.IndicatorCalculator),
+		warmedHTFKeys:  make(map[string]bool),
 		regimeDetector: monitor.NewRegimeDetector(),
 		anchorRegimes:          make(map[string]map[string]domain.MarketRegime),
 		collectedAnchorRegimes: make(map[string]map[string]start.AnchorRegime),
@@ -600,6 +616,9 @@ func NewRunner(
 		dpSource:                     noopDPSource{},
 		liveness:                     NewLivenessTracker(),
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
 	// Wire the liveness publisher so throttled StrategyEvaluation events
 	// reach the SSE fan-out. Fire-and-forget: SSE clients don't care about
 	// delivery errors, and publishes use a detached context because they
@@ -610,13 +629,14 @@ func NewRunner(
 	return r
 }
 
-// TagBacktest annotates lazily-created htfCalc instances so an in-process
-// backtest does not pollute live parity-diag log filters keyed on
-// `"calc":"runner_htf"`. Mirrors monitor.Service.TagBacktest. Must be called
-// before any bar feeds reach handleBarCore or WarmUpTF — bootstrap invokes
-// it synchronously after NewRunner when StrategyDeps.BacktestID is non-empty.
-// htfLabelSuffix MUST NOT be mutated after that bootstrap call: BacktestTag
-// reads it without locking on the EntryGated emit path.
+// TagBacktest stamps a backtest suffix that BacktestTag exposes to
+// instance.EmitDomainEvent so EntryGated rows from in-process backtests
+// can be distinguished from live rows in shared SQL output. Mirrors
+// monitor.Service.TagBacktest. Must be called before any bar feeds reach
+// handleBarCore — bootstrap invokes it synchronously after NewRunner
+// when StrategyDeps.BacktestID is non-empty. htfLabelSuffix MUST NOT be
+// mutated after that bootstrap call: BacktestTag reads it without
+// locking on the EntryGated emit path.
 func (r *Runner) TagBacktest(backtestID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -874,7 +894,8 @@ func (r *Runner) InitAggregators(sessionOpen time.Time) {
 // without driving the per-(sym, tf) indicator calculator. Used at boot
 // after canonical-spec HTF warmup so the first live 5m/15m/1h close
 // after boot contains today's pre-boot 1m bars, not just post-boot ones.
-// htfCalc state is owned by WarmUpTF; this only primes aggregator buckets.
+// HTF indicator state is owned by WarmUpTF on the indicator service;
+// this only primes aggregator buckets.
 func (r *Runner) PrimeAggregators(symbol string, bars1m []domain.MarketBar) {
 	if len(bars1m) == 0 {
 		return
@@ -1419,12 +1440,12 @@ func (r *Runner) handleBar(ctx context.Context, event domain.Event) error {
 	}
 	// Monitor re-emits its own HTF aggregated bars as EventMarketBarSanitized
 	// (used by SSE display and DB HTF backfill at services.go:792). The runner
-	// has its own per-symbol aggregator seeded via WarmUpHTF and fed from the
-	// 1m stream, so consuming monitor's HTF bars here would double-feed
-	// htfCalcs[sym:5m] — corrupting VolumeSMA, regime classification, and
-	// every downstream gate that reads htfSnap. Backtest's native-HTF replay
-	// path (daily crypto) reaches handleBarCore via HandleBarDirectTyped,
-	// which bypasses this gate.
+	// has its own per-symbol aggregator fed from the 1m stream and forwards
+	// closed HTF bars to the indicator service, so consuming monitor's HTF
+	// bars here would double-feed the (sym, 5m) state — corrupting VolumeSMA,
+	// regime classification, and every downstream gate that reads htfSnap.
+	// Backtest's native-HTF replay path (daily crypto) reaches handleBarCore
+	// via HandleBarDirectTyped, which bypasses this gate.
 	if bar.Timeframe != "1m" {
 		return nil
 	}
@@ -1718,13 +1739,7 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 		htfBar := domainBarToStratBar(closed)
 
 		// Compute indicators from the aggregated HTF bar (not 1m indicators).
-		htfCalc, ok := r.htfCalcs[key]
-		if !ok {
-			htfCalc = monitor.NewIndicatorCalculator()
-			htfCalc.Label = "runner_htf" + r.htfLabelSuffix
-			r.htfCalcs[key] = htfCalc
-		}
-		htfSnap := htfCalc.Update(closed)
+		htfSnap := r.indicator.Update(closed)
 
 		// Compute and store anchor regime for this HTF bar (keyed sym→tf)
 		regime, _ := r.regimeDetector.Detect(htfSnap)
@@ -2013,12 +2028,15 @@ func (r *Runner) WarmUpTF(symbol string, tf string, bars []domain.MarketBar, sna
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Warm the per-(symbol,tf) IndicatorCalculator with historical bars. The
+	// Warm the per-(symbol,tf) indicator state with historical bars. The
 	// live path creates this lazily on first bar, so without warmup SMA/EMA/
 	// RSI/ATR/etc. are all zero for ~20 live bars and entry gates requiring
 	// VolumeSMA > 0 (breakout volume check, etc.) never fire for the first
 	// ~100 min post-restart. snapshotFn supplies indicators for the strategy
-	// state itself — htfCalcs is a separate instance owned by the runner.
+	// state itself; the indicator service owns HTF state. The early return
+	// preserves idempotency for activation paths that may re-attach a
+	// strategy for the same (symbol, tf) — second-call WarmupOnBar fires
+	// would replay against state that already advanced.
 	if tf != "1m" {
 		key := symbol + ":" + tf
 		if symKeys := r.aggKeysBySym[symbol]; symKeys != nil {
@@ -2026,17 +2044,11 @@ func (r *Runner) WarmUpTF(symbol string, tf string, bars []domain.MarketBar, sna
 				key = k
 			}
 		}
-		// Idempotent: a second call would double-feed Update and ratchet
-		// EMAs further from steady-state. First call is authoritative.
-		if _, exists := r.htfCalcs[key]; exists {
+		if r.warmedHTFKeys[key] {
 			return 0
 		}
-		htfCalc := monitor.NewIndicatorCalculator()
-		htfCalc.Label = "runner_htf" + r.htfLabelSuffix
-		r.htfCalcs[key] = htfCalc
-		for _, bar := range bars {
-			htfCalc.Update(bar)
-		}
+		r.warmedHTFKeys[key] = true
+		r.indicator.WarmUp(bars)
 	}
 
 	var lastIndicators start.IndicatorData

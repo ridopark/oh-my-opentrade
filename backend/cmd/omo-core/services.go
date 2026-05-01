@@ -714,7 +714,7 @@ func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, lo
 
 		// Per-account strategy pipeline reuses shared router + specStore
 		acctStratLog := slog.Default()
-		acctRunner := strategy.NewRunner(infra.eventBus, svc.router, acct.TenantID, domain.EnvModePaper, acctStratLog)
+		acctRunner := strategy.NewRunner(infra.eventBus, svc.router, acct.TenantID, domain.EnvModePaper, acctStratLog, strategy.WithIndicator(svc.indicator))
 		acctRunner.SetDisableAI(!cfg.AI.Enabled)
 		acctRunner.SetPositionLookup(svc.posMonitor.LookupPosition)
 		if cfg.LiveDarkPoolEnabled && svc.liveDarkPool != nil {

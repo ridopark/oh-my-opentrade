@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
+	"github.com/oh-my-opentrade/backend/internal/app/indicator"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy/builtin"
@@ -60,6 +61,10 @@ type StrategyDeps struct {
 	// broker's current view and phantom positions dropped. Wraps
 	// ports.BrokerPort.GetPositions at the caller site.
 	GetPositionsFn func(ctx context.Context) ([]domain.Trade, error)
+	// Indicator is the indicator.Service injected into the strategy
+	// runner. The runner's HTF state lives here so live and backtest
+	// share the same seeded calc per shard.
+	Indicator *indicator.Service
 }
 
 // StrategyPipeline is the return value of BuildStrategyPipeline, exposing the
@@ -272,7 +277,11 @@ func buildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps Strat
 		}
 	}
 
-	runner := strategy.NewRunner(deps.EventBus, router, deps.TenantID, deps.EnvMode, shared.Logger)
+	var runnerOpts []strategy.Option
+	if deps.Indicator != nil {
+		runnerOpts = append(runnerOpts, strategy.WithIndicator(deps.Indicator))
+	}
+	runner := strategy.NewRunner(deps.EventBus, router, deps.TenantID, deps.EnvMode, shared.Logger, runnerOpts...)
 	if deps.BacktestID != "" {
 		runner.TagBacktest(deps.BacktestID)
 	}
