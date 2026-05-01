@@ -55,6 +55,18 @@ Rule: when a subsystem hands data to a filter and has a fallback for "no valid d
 
 Question to ask at design time: "if real-but-unusable data arrives, does the fallback fire?" If the answer requires the data to be empty, the fallback is wrong.
 
+### LSP diagnostics lag for new packages — trust `go build`, not the language server
+
+In the 2026-04-30 session, LSP reported `calc.Label undefined` and `could not import .../indicator (no required module provides package)` three times across separate commits, while `go build ./...` and `go vet ./internal/app/indicator/...` were clean. The field existed at `monitor/indicators.go:163` and the package compiled. Cause: the language server hadn't reindexed after new files appeared.
+
+Rule: when LSP diagnostics conflict with `go build` output, the build is authoritative. After creating a new package or adding files that import freshly-created symbols, re-run `go build ./...` from the module root before reacting to LSP errors. Do not self-report "go build clean" without showing the command output — the verification gap was how the false-positive chain started.
+
+### Don't ship interfaces ahead of consumers in foundation PRs
+
+Same session: the foundation PR for the indicator service shipped `Updater`/`Reader`/`Warmer`/`Calculator` ISP-split interfaces with zero consumers in the package. CLAUDE.md prohibits speculative abstractions, but the design consult had recommended them on ISP grounds and locked-scope inherited the recommendation. /simplify caught it; the follow-up commit deleted all four.
+
+Rule: in a multi-PR migration, the foundation PR ships the concrete type only. Interfaces follow consumers — idiomatic Go puts narrow interfaces in the consumer package, not the producer. ISP is satisfied when each consumer declares its own narrow interface against the concrete type. When acting as design consult, the question to ask is: "which file in this PR imports this interface?" If the answer is "none," defer the interface to whichever later PR introduces the first consumer.
+
 ## Engine Change Implementation Protocol
 
 When invoked by strategy-tuner for an engine change:
