@@ -410,13 +410,14 @@ func parseOCCSymbol(occ string) (domain.OptionContract, error) {
 }
 
 // ListOptionContractsAsOf enumerates OCC option contracts whose expiration
-// falls in [asOf, asOf + dteRangeDays] for the given underlying. For
-// past-dated asOf, expired contracts come back tagged status=active per
-// Alpaca-API issue #262 — that's the historical view the backfill leans on
-// to enumerate the strike grid that was actually listed.
+// falls in [asOf, asOf + dteRangeDays] for the given underlying. Queries
+// both status=active (currently-listed) and status=inactive (expired) and
+// merges by OCC symbol — Alpaca's API tags each contract by its CURRENT
+// status, not its status as of the query's date filter, so for a past-dated
+// asOf the expiries that are now expired come back only via status=inactive.
+// Empty status (no filter) returns nothing on this endpoint.
 //
-// Pagination: the broker API returns up to 1000 contracts per page; this
-// method follows next_page_token until exhausted.
+// Pagination: each side follows next_page_token until exhausted.
 func (c *RESTClient) ListOptionContractsAsOf(
 	ctx context.Context,
 	underlying domain.Symbol,
@@ -433,45 +434,53 @@ func (c *RESTClient) ListOptionContractsAsOf(
 	fromStr := asOf.Format("2006-01-02")
 	toStr := asOf.AddDate(0, 0, dteRangeDays).Format("2006-01-02")
 
-	out := make([]domain.OptionContract, 0, 256)
-	pageToken := ""
-	for {
-		path := fmt.Sprintf(
-			"/v2/options/contracts?underlying_symbols=%s&expiration_date_gte=%s&expiration_date_lte=%s&status=active&limit=1000",
-			underlying.String(), fromStr, toStr,
-		)
-		if pageToken != "" {
-			path += "&page_token=" + pageToken
-		}
+	seen := make(map[string]struct{}, 512)
+	out := make([]domain.OptionContract, 0, 512)
 
-		resp, err := c.doReqWithOpts(ctx, http.MethodGet, path, nil, reqOpts{priority: PriorityBackground, maxRetries: 2})
-		if err != nil {
-			return nil, fmt.Errorf("alpaca: list option contracts asOf %s: %w", fromStr, err)
-		}
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, fmt.Errorf("alpaca: list option contracts asOf %s failed (status %d): %s",
-				fromStr, resp.StatusCode, string(body))
-		}
-
-		var page alpacaOptionsContractListResponse
-		if err := json.NewDecoder(bytes.NewReader(body)).Decode(&page); err != nil {
-			return nil, fmt.Errorf("alpaca: decode option contracts asOf %s: %w", fromStr, err)
-		}
-
-		for _, item := range page.OptionContracts {
-			contract, err := parseOCCSymbol(item.Symbol)
-			if err != nil {
-				continue
+	for _, status := range []string{"active", "inactive"} {
+		pageToken := ""
+		for {
+			path := fmt.Sprintf(
+				"/v2/options/contracts?underlying_symbols=%s&expiration_date_gte=%s&expiration_date_lte=%s&status=%s&limit=1000",
+				underlying.String(), fromStr, toStr, status,
+			)
+			if pageToken != "" {
+				path += "&page_token=" + pageToken
 			}
-			out = append(out, contract)
-		}
 
-		if page.NextPageToken == nil || *page.NextPageToken == "" {
-			break
+			resp, err := c.doReqWithOpts(ctx, http.MethodGet, path, nil, reqOpts{priority: PriorityBackground, maxRetries: 2})
+			if err != nil {
+				return nil, fmt.Errorf("alpaca: list option contracts asOf %s status=%s: %w", fromStr, status, err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				return nil, fmt.Errorf("alpaca: list option contracts asOf %s status=%s failed (status %d): %s",
+					fromStr, status, resp.StatusCode, string(body))
+			}
+
+			var page alpacaOptionsContractListResponse
+			if err := json.NewDecoder(bytes.NewReader(body)).Decode(&page); err != nil {
+				return nil, fmt.Errorf("alpaca: decode option contracts asOf %s status=%s: %w", fromStr, status, err)
+			}
+
+			for _, item := range page.OptionContracts {
+				if _, dup := seen[item.Symbol]; dup {
+					continue
+				}
+				contract, err := parseOCCSymbol(item.Symbol)
+				if err != nil {
+					continue
+				}
+				seen[item.Symbol] = struct{}{}
+				out = append(out, contract)
+			}
+
+			if page.NextPageToken == nil || *page.NextPageToken == "" {
+				break
+			}
+			pageToken = *page.NextPageToken
 		}
-		pageToken = *page.NextPageToken
 	}
 	return out, nil
 }

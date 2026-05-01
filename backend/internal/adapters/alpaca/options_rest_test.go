@@ -374,48 +374,48 @@ func TestRetryTransient_RespectsContextCancel(t *testing.T) {
 
 // --- ListOptionContractsAsOf ---
 
-func TestListOptionContractsAsOf_PaginatedAndPastDateActiveQuirk(t *testing.T) {
-	// Two pages. The second page returns a contract whose expiry already
-	// passed (status=active is the Alpaca-API quirk for past-listed
-	// contracts) — proves we don't filter on tradable/status and instead
-	// pass through whatever the API surfaces.
-	page1 := `{
+func TestListOptionContractsAsOf_QueriesBothStatusesAndDedupes(t *testing.T) {
+	// Active side: a single currently-listed call (Jun-2026 expiry, still
+	// active "today"). Inactive side: a single expired put (Jan-2024
+	// expiry, already past) plus the same active call echoed again to
+	// pin the dedupe-by-OCC contract — both API sides occasionally
+	// return the same row near transition windows.
+	activePage := `{
 		"option_contracts": [
-			{"symbol": "AAPL240119C00190000", "underlying_symbol": "AAPL", "expiration_date": "2024-01-19",
-			 "strike_price": "190", "type": "call", "style": "american", "multiplier": "100",
-			 "open_interest": "500", "tradable": false, "status": "active"}
+			{"symbol": "AAPL260619C00200000", "underlying_symbol": "AAPL", "expiration_date": "2026-06-19",
+			 "strike_price": "200", "type": "call", "style": "american", "multiplier": "100",
+			 "open_interest": "500", "tradable": true, "status": "active"}
 		],
-		"next_page_token": "PAGE2"
+		"next_page_token": null
 	}`
-	page2 := `{
+	inactivePage := `{
 		"option_contracts": [
 			{"symbol": "AAPL240119P00185000", "underlying_symbol": "AAPL", "expiration_date": "2024-01-19",
 			 "strike_price": "185", "type": "put", "style": "american", "multiplier": "100",
-			 "open_interest": "200", "tradable": false, "status": "active"}
+			 "open_interest": "200", "tradable": false, "status": "inactive"},
+			{"symbol": "AAPL260619C00200000", "underlying_symbol": "AAPL", "expiration_date": "2026-06-19",
+			 "strike_price": "200", "type": "call", "style": "american", "multiplier": "100",
+			 "open_interest": "500", "tradable": true, "status": "inactive"}
 		],
 		"next_page_token": null
 	}`
 
-	var hits atomic.Int32
+	var statuses []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Contains(t, r.URL.Path, "/v2/options/contracts")
-		// expiration_date_gte must equal asOf, expiration_date_lte must
-		// equal asOf+dteRange — pin the URL contract here.
 		q := r.URL.Query()
 		assert.Equal(t, "2024-01-15", q.Get("expiration_date_gte"))
 		assert.Equal(t, "2024-03-15", q.Get("expiration_date_lte"))
-		assert.Equal(t, "active", q.Get("status"))
+		statuses = append(statuses, q.Get("status"))
 
 		w.WriteHeader(http.StatusOK)
-		switch hits.Add(1) {
-		case 1:
-			assert.Empty(t, q.Get("page_token"), "first request must not carry a page_token")
-			io.WriteString(w, page1)
-		case 2:
-			assert.Equal(t, "PAGE2", q.Get("page_token"), "second request must echo prior next_page_token")
-			io.WriteString(w, page2)
+		switch q.Get("status") {
+		case "active":
+			io.WriteString(w, activePage)
+		case "inactive":
+			io.WriteString(w, inactivePage)
 		default:
-			t.Fatalf("unexpected third request — pagination didn't terminate")
+			t.Fatalf("unexpected status=%q", q.Get("status"))
 		}
 	}))
 	defer srv.Close()
@@ -427,12 +427,40 @@ func TestListOptionContractsAsOf_PaginatedAndPastDateActiveQuirk(t *testing.T) {
 	sym, _ := domain.NewSymbol("AAPL")
 	contracts, err := client.ListOptionContractsAsOf(context.Background(), sym, asOf, 60)
 	require.NoError(t, err)
-	require.Len(t, contracts, 2)
-	assert.Equal(t, domain.Symbol("AAPL240119C00190000"), contracts[0].ContractSymbol)
-	assert.Equal(t, domain.OptionRightCall, contracts[0].Right)
-	assert.Equal(t, 190.0, contracts[0].Strike)
+	assert.Equal(t, []string{"active", "inactive"}, statuses, "both statuses must be queried")
+	require.Len(t, contracts, 2, "duplicate AAPL260619C00200000 from inactive side must be deduped against active side")
+	assert.Equal(t, domain.Symbol("AAPL260619C00200000"), contracts[0].ContractSymbol)
 	assert.Equal(t, domain.Symbol("AAPL240119P00185000"), contracts[1].ContractSymbol)
-	assert.Equal(t, domain.OptionRightPut, contracts[1].Right)
+}
+
+func TestListOptionContractsAsOf_PaginatesEachStatusIndependently(t *testing.T) {
+	// Active side paginates (PAGE2). Inactive side single-page. Total: 3 hits.
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		q := r.URL.Query()
+		w.WriteHeader(http.StatusOK)
+		switch q.Get("status") {
+		case "active":
+			if q.Get("page_token") == "" {
+				io.WriteString(w, `{"option_contracts": [{"symbol":"AAPL260619C00200000","underlying_symbol":"AAPL","expiration_date":"2026-06-19","strike_price":"200","type":"call","style":"american","multiplier":"100","open_interest":"0","tradable":true,"status":"active"}], "next_page_token":"P2"}`)
+			} else {
+				io.WriteString(w, `{"option_contracts": [{"symbol":"AAPL260619C00210000","underlying_symbol":"AAPL","expiration_date":"2026-06-19","strike_price":"210","type":"call","style":"american","multiplier":"100","open_interest":"0","tradable":true,"status":"active"}], "next_page_token":null}`)
+			}
+		case "inactive":
+			io.WriteString(w, `{"option_contracts": [{"symbol":"AAPL240119P00185000","underlying_symbol":"AAPL","expiration_date":"2024-01-19","strike_price":"185","type":"put","style":"american","multiplier":"100","open_interest":"0","tradable":false,"status":"inactive"}], "next_page_token":null}`)
+		}
+	}))
+	defer srv.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(srv.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+
+	sym, _ := domain.NewSymbol("AAPL")
+	contracts, err := client.ListOptionContractsAsOf(context.Background(), sym, time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC), 60)
+	require.NoError(t, err)
+	assert.Equal(t, int32(3), hits.Load(), "active paginated + inactive single = 3 round trips")
+	assert.Len(t, contracts, 3)
 }
 
 func TestListOptionContractsAsOf_EmptyUnderlyingRejected(t *testing.T) {
