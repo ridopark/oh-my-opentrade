@@ -32,15 +32,13 @@ type IndicatorShadow interface {
 	Update(bar domain.MarketBar) domain.IndicatorSnapshot
 }
 
-// Option configures a *Service after the base fields are wired.
 type Option func(*Service)
 
-// WithIndicatorShadow attaches a parallel calculator fed every bar
-// through handleBarCore. The shadow never influences the canonical
-// path; mismatches surface in tests.
-func WithIndicatorShadow(s IndicatorShadow) Option {
+// WithIndicatorShadow installs a calculator that mirrors handleBarCore
+// without influencing the canonical path; mismatches surface in tests.
+func WithIndicatorShadow(shadow IndicatorShadow) Option {
 	return func(svc *Service) {
-		svc.shadowIndicator = s
+		svc.shadowIndicator = shadow
 	}
 }
 const settlingBars = 5
