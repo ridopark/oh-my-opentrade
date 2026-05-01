@@ -808,6 +808,14 @@ func startServices(ctx context.Context, cfg *config.Config, infra *infraDeps, sv
 		}
 		log.Info().Msg("live dark pool aggregator enabled")
 	}
+	// indicator.Service is the SOLE driver of its own Update lifecycle —
+	// subscribe it to MarketBarSanitized BEFORE monitor and runner so the
+	// indicator handler runs first per bar (synchronous bus dispatches in
+	// registration order). Monitor and runner read fresh state via
+	// LastSnapshot and HTF Subscribe callbacks.
+	if err := svc.indicator.Start(ctx, infra.eventBus); err != nil {
+		log.Fatal().Err(err).Msg("failed to start indicator")
+	}
 	if err := svc.monitor.Start(ctx); err != nil {
 		log.Fatal().Err(err).Msg("failed to start monitor")
 	}

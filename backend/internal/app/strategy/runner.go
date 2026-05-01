@@ -52,10 +52,12 @@ type Runner struct {
 	// subscriptions before re-registering so callbacks cannot leak.
 	htfUnsubs map[string]func()
 	// htfPending collects (closed HTF bar, snap) tuples produced by
-	// indicator.Service Subscribe callbacks that fire while r.indicator.Update
-	// runs inside handleBarCore. The slice is drained at the same point the
-	// pre-migration aggregator block ran (after the 1m OnBar pass) so HTF
-	// dispatch ordering inside a single bar is preserved.
+	// indicator.Service Subscribe callbacks. The indicator service drives
+	// its own Update lifecycle (subscribes to MarketBarSanitized first) and
+	// fires HTF callbacks on bucket close — those callbacks write here, on
+	// the indicator handler's goroutine. handleBarCore runs LATER on the
+	// same goroutine (synchronous bus dispatch) and drains the slice during
+	// HTF strategy fan-out at runner.go:~1725.
 	htfPending []htfClose
 	warmedHTFKeys        map[string]bool // "symbol:tf" → true; idempotent guard for WarmUpTF
 	htfLabelSuffix       string          // empty in live; "_backtest_<id>" when TagBacktest called
@@ -891,11 +893,17 @@ func (r *Runner) InitAggregators(sessionOpen time.Time) {
 }
 
 // makeHTFCallback returns a Subscribe callback that runs synchronously inside
-// indicator.Service.Update for a 1m bar. Because handleBarCore holds r.mu
-// across that Update, the callback writes htfPending without re-locking; the
-// per-tf dispatch loop drains it after Update returns.
-func (r *Runner) makeHTFCallback(tf string) func(closed domain.MarketBar, snap domain.IndicatorSnapshot) {
-	return func(closed domain.MarketBar, snap domain.IndicatorSnapshot) {
+// indicator.Service.UpdateWithEnv when an HTF bucket closes. The indicator
+// service drives Update (subscribed to MarketBarSanitized BEFORE the runner),
+// so the callback fires on the indicator handler's goroutine — the same
+// goroutine that subsequently dispatches the bar to the runner's handleBar.
+// Synchronous bus dispatch means htfPending is single-goroutine: written
+// here, read by handleBarCore at the drain loop.
+//
+// The envelope is unused by the runner (it doesn't publish derived events;
+// monitor's HTF callback handles that via AppendPublish).
+func (r *Runner) makeHTFCallback(tf string) func(closed domain.MarketBar, snap domain.IndicatorSnapshot, env domain.MarketBarEnvelope) {
+	return func(closed domain.MarketBar, snap domain.IndicatorSnapshot, _ domain.MarketBarEnvelope) {
 		r.htfPending = append(r.htfPending, htfClose{tf: tf, closed: closed, snap: snap})
 	}
 }
@@ -1672,11 +1680,13 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 	}
 	r.scratchOneMin = oneMinInstances
 
-	r.htfPending = r.htfPending[:0]
-	if r.indicator != nil && bar.Timeframe == "1m" && !warmup.IsEquityNonRTH(bar) {
-		r.indicator.Update(bar)
-	}
-
+	// htfPending was populated for this bar by indicator.Service Subscribe
+	// callbacks during the indicator's MarketBarSanitized handler — that
+	// handler runs BEFORE the runner's handler on the same goroutine
+	// (synchronous bus dispatch, indicator subscribed first). Driving Update
+	// from here would re-introduce the dual-driver dedup-starvation
+	// regression (PR 6a-2 era): the BarAggregator dedups on bar.Time, the
+	// second Update is a no-op, and only the first caller's callbacks fire.
 	sBar := domainBarToStratBar(bar)
 	var allSignals []start.Signal
 	// Add any exit signals from 1m AVWAP exit evaluation
@@ -1710,15 +1720,16 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 	}
 
 	// Native-HTF passthrough (e.g. 1d daily replay): the input bar already
-	// matches an HTF the runner consumes, so feed it directly into the
-	// indicator service and dispatch without 1m aggregation. Non-RTH 1m
-	// equity bars never reach this branch — indicator.Update was gated
-	// upstream so r.htfPending stays empty.
+	// matches an HTF the runner consumes. The indicator handler ran first
+	// for this bar (subscribed BEFORE the runner) and populated LastSnapshot;
+	// we just read it here and dispatch without 1m aggregation. Non-RTH 1m
+	// equity bars never reach this branch (Timeframe gate above).
 	if bar.Timeframe != "1m" {
 		nativeTF := string(bar.Timeframe)
 		if _, want := htfNeeded[nativeTF]; want && r.indicator != nil {
-			nativeSnap := r.indicator.Update(bar)
-			r.htfPending = append(r.htfPending, htfClose{tf: nativeTF, closed: bar, snap: nativeSnap})
+			if nativeSnap, ok := r.indicator.LastSnapshot(bar.Symbol, bar.Timeframe); ok {
+				r.htfPending = append(r.htfPending, htfClose{tf: nativeTF, closed: bar, snap: nativeSnap})
+			}
 		}
 	}
 
@@ -1846,6 +1857,11 @@ func (r *Runner) handleBarCore(ctx context.Context, bar domain.MarketBar, tenant
 			allSignals = append(allSignals, signals...)
 		}
 	}
+	// Drain consumed: clear so indicator's callback for the NEXT bar starts
+	// from an empty slice. (We can't clear at handleBarCore entry like the
+	// pre-PR-6a-2 code did — the indicator handler runs BEFORE us on the
+	// same goroutine and has already populated htfPending for THIS bar.)
+	r.htfPending = r.htfPending[:0]
 
 	if r.swapManager != nil {
 		swapCtx := &instanceContext{

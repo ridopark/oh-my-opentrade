@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
-	"github.com/oh-my-opentrade/backend/internal/app/warmup"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/domain/screener"
 	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
@@ -23,15 +22,28 @@ type DNAGateChecker interface {
 	IsDNAApproved(ctx context.Context, strategyKey string) (bool, error)
 }
 
-// IndicatorShadow is the port the monitor uses to drive the canonical
+// IndicatorShadow is the port the monitor uses to read the canonical
 // indicator service. Declaring it here (rather than importing the
 // indicator package) keeps the dependency arrow indicator -> monitor and
 // avoids a cycle. *indicator.Service satisfies this structurally.
+//
+// Monitor is a CONSUMER of indicator state, not a driver. The indicator
+// service drives its own Update lifecycle (subscribed to MarketBarSanitized
+// at Start). Monitor reads via LastSnapshot and registers HTF callbacks via
+// Subscribe; HTF callbacks emit derived events via AppendPublish.
 type IndicatorShadow interface {
-	Update(bar domain.MarketBar) domain.IndicatorSnapshot
+	// LastSnapshot returns the most recent snap the indicator handler stored
+	// for (sym, tf). Monitor reads this AFTER the indicator handler has run
+	// for the current bar (subscription order: indicator -> monitor).
 	LastSnapshot(sym domain.Symbol, tf domain.Timeframe) (domain.IndicatorSnapshot, bool)
 	SetSessionOpen(t time.Time)
-	Subscribe(sym domain.Symbol, tf domain.Timeframe, fn func(closed domain.MarketBar, snap domain.IndicatorSnapshot)) func()
+	// Subscribe receives (closed, snap, env) — the envelope carries the parent
+	// MarketBarSanitized event metadata so callbacks can build derived events.
+	Subscribe(sym domain.Symbol, tf domain.Timeframe, fn func(closed domain.MarketBar, snap domain.IndicatorSnapshot, env domain.MarketBarEnvelope)) func()
+	// AppendPublish queues a derived event for fan-out after the current
+	// indicator Update completes and the lock is released. Called from inside
+	// Subscribe callbacks; see indicator.Service docs.
+	AppendPublish(ev domain.Event)
 	PrimeAggregator(sym domain.Symbol, tf domain.Timeframe, bars1m []domain.MarketBar)
 	WarmUp(bars []domain.MarketBar)
 	WarmUpCollect(bars []domain.MarketBar) []domain.IndicatorSnapshot
@@ -53,12 +65,6 @@ func WithIndicatorShadow(shadow IndicatorShadow) Option {
 const settlingBars = 5
 var anchorTimeframes = []domain.Timeframe{"5m", "15m", "1h"}
 
-type htfCallEnvelope struct {
-	tenantID   string
-	envMode    domain.EnvMode
-	idemKey    string
-	occurredAt time.Time
-}
 // Service is the monitor application service.
 // It subscribes to MarketBarSanitized events, computes technical indicators,
 // detects market regime shifts, and identifies trade setups.
@@ -78,15 +84,6 @@ type Service struct {
 	// Re-initialization paths drop the old subscriptions before re-registering
 	// to keep callbacks bounded.
 	htfUnsubs map[string]func()
-	// pendingHTFEvents accumulates HTF MarketBarSanitized + RegimeShifted
-	// events emitted by Subscribe callbacks during s.shadowIndicator.Update,
-	// drained at the end of handleBarCore. Reused across bars; the per-symbol
-	// callback owns the slot for its (sym, tf) pair while s.mu is held.
-	pendingHTFEvents []domain.Event
-	// htfCallCtx carries the in-flight handleBarCore envelope metadata into
-	// Subscribe callbacks that fire while s.mu is held. Single-goroutine read
-	// because callbacks fire synchronously inside shadowIndicator.Update.
-	htfCallCtx htfCallEnvelope
 	// anchorRegimeMaps holds a reusable AnchorRegimes map per symbol so
 	// HandleMarketBar doesn't allocate a fresh map on every bar. Was ~320MB
 	// of bucket allocations per backtest. Safe because each symbol owns its
@@ -676,37 +673,41 @@ func (s *Service) ResetAggregators(sessionOpen time.Time) {
 	}
 }
 
-// makeHTFCallback returns a Subscribe callback that fires synchronously while
-// s.mu is held by handleBarCore (the goroutine that calls
-// shadowIndicator.Update). The callback writes anchorRegimes / lastHTFSnaps
-// directly and appends HTF MarketBarSanitized + RegimeShifted events to
-// pendingHTFEvents for handleBarCore to drain into publishStrict /
-// publishBestEffort after the Update call returns.
-func (s *Service) makeHTFCallback(sym domain.Symbol, tf domain.Timeframe) func(closed domain.MarketBar, htfSnap domain.IndicatorSnapshot) {
+// makeHTFCallback returns a Subscribe callback that fires synchronously
+// while indicator.Service is fanning out HTF closes. The callback writes
+// anchorRegimes / lastHTFSnaps and queues HTF MarketBarSanitized +
+// RegimeShifted events via the indicator's AppendPublish — those events
+// drain to the bus AFTER the indicator's Update lock is released, so
+// downstream subscribers (monitor.HandleMarketBar, strategy.Runner) see
+// fresh state when the HTF event reaches them.
+//
+// The envelope carries the parent 1m bar's tenant/envMode/idem-key/
+// occurredAt — derived events inherit that envelope so idem-key dedup and
+// tenant routing still work.
+func (s *Service) makeHTFCallback(sym domain.Symbol, tf domain.Timeframe) func(closed domain.MarketBar, htfSnap domain.IndicatorSnapshot, env domain.MarketBarEnvelope) {
 	aggKey := sym.String() + ":" + tf.String()
-	return func(closed domain.MarketBar, htfSnap domain.IndicatorSnapshot) {
-		env := s.htfCallCtx
+	return func(closed domain.MarketBar, htfSnap domain.IndicatorSnapshot, env domain.MarketBarEnvelope) {
 		barEv := domain.NewBacktestEvent(
 			domain.EventMarketBarSanitized,
-			env.tenantID,
-			env.envMode,
-			env.idemKey+"-"+tf.String()+"-htf-bar",
+			env.TenantID,
+			env.EnvMode,
+			env.IdemKey+"-"+tf.String()+"-htf-bar",
 			closed,
-			env.occurredAt,
+			env.OccurredAt,
 		)
-		s.pendingHTFEvents = append(s.pendingHTFEvents, barEv)
+		s.shadowIndicator.AppendPublish(barEv)
 		reg, changedAnchor := s.regimeDetector.Detect(htfSnap)
 		s.anchorRegimes[aggKey] = reg
 		if changedAnchor {
 			regimeShiftedEv := domain.NewBacktestEvent(
 				domain.EventRegimeShifted,
-				env.tenantID,
-				env.envMode,
-				env.idemKey+"-"+tf.String()+"-regime-shifted",
+				env.TenantID,
+				env.EnvMode,
+				env.IdemKey+"-"+tf.String()+"-regime-shifted",
 				reg,
-				env.occurredAt,
+				env.OccurredAt,
 			)
-			s.pendingHTFEvents = append(s.pendingHTFEvents, regimeShiftedEv)
+			s.shadowIndicator.AppendPublish(regimeShiftedEv)
 		}
 		if tf == "1h" {
 			if s.lastHTFSnaps == nil {
@@ -915,20 +916,12 @@ func (s *Service) handleBarCore(ctx context.Context, bar domain.MarketBar, tenan
 		s.mu.Unlock()
 		return fmt.Errorf("monitor: indicator service not wired; pass WithIndicatorShadow to NewService")
 	}
-	htfDispatch := !warmup.IsEquityNonRTH(bar)
-	if htfDispatch {
-		s.htfCallCtx = htfCallEnvelope{
-			tenantID:   tenantID,
-			envMode:    envMode,
-			idemKey:    idemKey,
-			occurredAt: occurredAt,
-		}
-		s.pendingHTFEvents = s.pendingHTFEvents[:0]
-	}
-	snap := s.shadowIndicator.Update(bar)
-	if htfDispatch && len(s.pendingHTFEvents) > 0 {
-		publishBestEffort = append(publishBestEffort, s.pendingHTFEvents...)
-	}
+	// Indicator state is driven by indicator.Service's own MarketBarSanitized
+	// handler, which subscribes BEFORE monitor.Start. By the time we reach
+	// here the snap for (sym, tf) is fresh; LastSnapshot returns it. Monitor
+	// is a pure CONSUMER — driving Update from here would re-introduce the
+	// dual-driver dedup-starvation regression (PR 6a-2 era).
+	snap, _ := s.shadowIndicator.LastSnapshot(bar.Symbol, bar.Timeframe)
 	symStr := bar.Symbol.String()
 
 	// Standalone AVWAP: resolve anchors on new session day, then update calculator.

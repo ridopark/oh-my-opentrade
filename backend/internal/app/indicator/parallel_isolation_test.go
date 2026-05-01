@@ -34,10 +34,10 @@ func TestService_ParallelInstances_StateIsolated(t *testing.T) {
 	const tf5m domain.Timeframe = "5m"
 
 	var hits1, hits2 int
-	svc1.Subscribe(symA, tf5m, func(_ domain.MarketBar, _ domain.IndicatorSnapshot) {
+	svc1.Subscribe(symA, tf5m, func(_ domain.MarketBar, _ domain.IndicatorSnapshot, _ domain.MarketBarEnvelope) {
 		hits1++
 	})
-	svc2.Subscribe(symB, tf5m, func(_ domain.MarketBar, _ domain.IndicatorSnapshot) {
+	svc2.Subscribe(symB, tf5m, func(_ domain.MarketBar, _ domain.IndicatorSnapshot, _ domain.MarketBarEnvelope) {
 		hits2++
 	})
 
