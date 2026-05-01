@@ -1,13 +1,12 @@
 # IndicatorCalculator unification - architectural plan
 
-Status: PROPOSED. Drafted 2026-04-30 in response to issue #46
-(EMA50/MACD precision drift between live and backtest). The
-drift's root cause is that the codebase carries multiple
-independently-warmed `IndicatorCalculator` instances. This
-document plans the consolidation. No code changes yet - the plan
-exists to surface scope, sequencing, risks, and the architectural
-decisions taken so the migration can be sized and approved before
-implementation.
+Status: SHIPPED 2026-05-01. Drafted 2026-04-30 in response to issue
+#46 (EMA50/MACD precision drift between live and backtest). The
+drift's root cause was that the codebase carried multiple
+independently-warmed `IndicatorCalculator` instances. The
+consolidation shipped as eight PRs; the migration log at the bottom
+of this document records the merged commits. The audit closure note
+is at `_workspace/parity_live_vs_backtest_divergence_audit.md`.
 
 ## Authoritative inventory of `monitor.IndicatorCalculator`
 
@@ -347,3 +346,18 @@ PR 1 is unblocked. The five architectural decisions are
 committed (D1-D5). Open the PR with the package skeleton, the
 port surface, the microbenchmark, and zero consumer migration.
 Each subsequent PR is independently reviewable.
+
+## Migration log
+
+All eight PRs merged 2026-05-01. Each landed independently
+revertable; commit SHAs are on `main`.
+
+- PR 1 (#58 → 31081a10): introduce `internal/app/indicator/` package
+- PR 2 (#59 → 445035f4): wire shadow `indicator.Service` into monitor
+- PR 3 (#60 → 370fabd7): unified warmup, delete `L2`/`B2` calcs
+- PR 4 (#61 → 4cb5a987): migrate runner `htfCalcs` to indicator
+- PR 5 (#62 → da61586e): migrate bootstrap activator closure
+- PR 6a-1 (#63 → 22617880): introduce `Subscribe` API + aggregator
+- PR 6a-2 (#64 → d2231000): migrate aggregator chains onto Subscribe
+- PR 7 (#65 → d92640bd): collapse `monitor.calc` into indicator
+- PR 8 (this branch): parity contract tests + audit closure
