@@ -162,8 +162,8 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 				}
 			}
 		}
-		e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
 		e.saveThoughtLog(ctx, event, enrichment)
+		e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
 		return nil
 	}
 
@@ -221,8 +221,8 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 					Rationale:  fmt.Sprintf("pre-LLM veto: negative expectancy $%.2f/trade for %s (%d trades, 7d)", symStats.Expectancy, sig.Symbol, symStats.TradeCount),
 					Direction:  direction,
 				}
-				e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
 				e.saveThoughtLog(ctx, event, enrichment)
+				e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
 				return nil
 			}
 		}
@@ -273,8 +273,8 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 			Direction:     direction,
 			NewsHeadlines: newsHeadlines,
 		}
-		e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
 		e.saveThoughtLog(ctx, event, enrichment)
+		e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
 		return nil
 	}
 
@@ -299,8 +299,8 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 			RiskModifier:   decision.RiskModifier,
 			NewsHeadlines:  newsHeadlines,
 		}
-		e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
 		e.saveThoughtLog(ctx, event, enrichment)
+		e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
 		return nil
 	}
 
@@ -315,8 +315,8 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 			Direction:     direction,
 			NewsHeadlines: newsHeadlines,
 		}
-		e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
 		e.saveThoughtLog(ctx, event, enrichment)
+		e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
 		return nil
 	}
 
@@ -335,8 +335,8 @@ func (e *SignalDebateEnricher) handleSignal(ctx context.Context, event domain.Ev
 		NewsHeadlines: newsHeadlines,
 	}
 
-	e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
 	e.saveThoughtLog(ctx, event, enrichment)
+	e.emit(ctx, domain.EventSignalEnriched, event.TenantID, event.EnvMode, event.IdempotencyKey+"-enriched", enrichment)
 	return nil
 }
 
