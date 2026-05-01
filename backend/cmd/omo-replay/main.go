@@ -739,9 +739,7 @@ func main() {
 		if err := ingBundle.Service.Start(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to start ingestion")
 		}
-		// Indicator drives its own Update lifecycle — subscribe FIRST so its
-		// MarketBarSanitized handler runs before monitor and runner per the
-		// single-driver contract.
+		// indicator drives Update; must Start before monitor. See indicator.Service docs.
 		if err := idx.Start(ctx, eventBus); err != nil {
 			log.Fatal().Err(err).Msg("failed to start indicator")
 		}
