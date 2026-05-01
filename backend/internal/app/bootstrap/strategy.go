@@ -29,7 +29,14 @@ type StrategyDeps struct {
 	Repo            ports.RepositoryPort
 	StratPerf       ports.StrategyPerformancePort
 	OptionsMarket   ports.OptionsMarketDataPort
-	TenantID        string
+	// OpenOptionContractsLookup, when set, lets the risk sizer translate a
+	// strategy-emitted exit signal keyed by the underlying ticker into a
+	// CloseLong intent per open option contract. Without this, position_gate
+	// rejects equity-keyed exits with no_position_to_exit because the open
+	// position is keyed by the OCC contract symbol. Wired from
+	// positionmonitor.Service.ListOpenContractsByUnderlying.
+	OpenOptionContractsLookup func(underlying string) []domain.MonitoredPosition
+	TenantID                  string
 	EnvMode         domain.EnvMode
 	Equity          float64
 	Clock           func() time.Time
@@ -174,6 +181,9 @@ func BuildStrategyShared(deps StrategyDeps) (*StrategyShared, error) {
 	riskSizer := strategy.NewRiskSizer(deps.EventBus, deps.SpecStore, deps.Equity, stratLog)
 	if deps.OptionsMarket != nil {
 		riskSizer.SetOptionsMarket(deps.OptionsMarket)
+	}
+	if deps.OpenOptionContractsLookup != nil {
+		riskSizer.SetOpenOptionContractsLookup(deps.OpenOptionContractsLookup)
 	}
 
 	return &StrategyShared{

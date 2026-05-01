@@ -91,6 +91,15 @@ type RiskSizer struct {
 	optionsMarket        ports.OptionsMarketDataPort
 	contractSelector     *options.ContractSelectionService
 
+	// openOptionContractsLookup, when set, resolves an underlying ticker to
+	// the list of currently-open option contracts so strategy-emitted exit
+	// signals on options strategies can be translated from the underlying
+	// symbol to the actual contract symbol the broker tracks. Wired by
+	// bootstrap from positionmonitor.Service.ListOpenContractsByUnderlying.
+	// Nil-safe: when nil the option-exit path falls through to the equity
+	// path (legacy behavior), which is harmless for equity-only strategies.
+	openOptionContractsLookup func(underlying string) []domain.MonitoredPosition
+
 	// positionRiskCap is the per-position expected-loss cap configured via
 	// [risk.position_cap] in YAML. Nil (or Enabled=false) short-circuits
 	// the cap check so behavior is byte-identical to the pre-fix sizer.
@@ -122,6 +131,13 @@ func (rs *RiskSizer) SetExitCooldown(d time.Duration) { rs.exitCooldownDuration 
 func (rs *RiskSizer) SetOptionsMarket(m ports.OptionsMarketDataPort) { rs.optionsMarket = m }
 func (rs *RiskSizer) SetContractSelector(s *options.ContractSelectionService) {
 	rs.contractSelector = s
+}
+
+// SetOpenOptionContractsLookup wires the underlying-to-open-contracts lookup
+// used by the options-exit translation path. Safe to call before Start;
+// nil leaves the path disabled (equity fallback).
+func (rs *RiskSizer) SetOpenOptionContractsLookup(fn func(underlying string) []domain.MonitoredPosition) {
+	rs.openOptionContractsLookup = fn
 }
 
 // SetPositionRiskCap wires the per-position expected-loss cap configured
@@ -620,37 +636,42 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 
 	// Options branch: when the strategy has options enabled, route through
 	// the options pipeline instead of creating an equity OrderIntent.
-	// Falls back to equity if the options chain is empty or fetch fails
-	// (e.g. no historical data for this date range in backtests).
-	if sigRef.SignalType == start.SignalEntry.String() &&
-		spec != nil && spec.Options != nil && spec.Options.Enabled &&
-		rs.optionsMarket != nil {
-		err := rs.handleOptionsSignal(ctx, event, enrichment, sigRef, spec, params, exitRules, direction, strategyName, refPrice, limitPrice, equity)
-		if err == nil {
-			return nil // options trade placed successfully
-		}
-		if errors.Is(err, errOptionsChainEmpty) || errors.Is(err, errOptionsChainFailed) {
-			// Only fall back to equity if the strategy allows it.
-			hasEquity := false
-			for _, ac := range spec.Routing.AssetClasses {
-				if strings.EqualFold(ac, "EQUITY") {
-					hasEquity = true
-					break
+	// Entries call handleOptionsSignal (chain fetch + contract selection) and
+	// fall back to equity if the chain is empty or fetch fails. Exits call
+	// handleOptionsExit, which translates the underlying-keyed signal into
+	// per-contract close intents using the open-positions lookup.
+	if spec != nil && spec.Options != nil && spec.Options.Enabled && rs.optionsMarket != nil {
+		switch sigRef.SignalType {
+		case start.SignalEntry.String():
+			err := rs.handleOptionsSignal(ctx, event, enrichment, sigRef, spec, params, exitRules, direction, strategyName, refPrice, limitPrice, equity)
+			if err == nil {
+				return nil // options trade placed successfully
+			}
+			if errors.Is(err, errOptionsChainEmpty) || errors.Is(err, errOptionsChainFailed) {
+				// Only fall back to equity if the strategy allows it.
+				hasEquity := false
+				for _, ac := range spec.Routing.AssetClasses {
+					if strings.EqualFold(ac, "EQUITY") {
+						hasEquity = true
+						break
+					}
 				}
-			}
-			if !hasEquity {
-				rs.logger.Info("options chain empty, no equity fallback (asset_classes has no EQUITY)",
+				if !hasEquity {
+					rs.logger.Info("options chain empty, no equity fallback (asset_classes has no EQUITY)",
+						"symbol", sigRef.Symbol,
+					)
+					return nil // skip trade entirely
+				}
+				rs.logger.Info("options fallback to equity",
 					"symbol", sigRef.Symbol,
+					"reason", err.Error(),
 				)
-				return nil // skip trade entirely
+				// Fall through to equity path below.
+			} else {
+				return err // real error
 			}
-			rs.logger.Info("options fallback to equity",
-				"symbol", sigRef.Symbol,
-				"reason", err.Error(),
-			)
-			// Fall through to equity path below.
-		} else {
-			return err // real error
+		case start.SignalExit.String():
+			return rs.handleOptionsExit(ctx, event, enrichment, sigRef, strategyName)
 		}
 	}
 
@@ -1162,6 +1183,156 @@ func (rs *RiskSizer) buildContractSelector(cfg *domain.OptionsConfig) *options.C
 	}
 	regimes := cfg.ToRegimeConstraintsMap()
 	return options.NewContractSelectionServiceWithRegimes(cfg.Defaults, regimes, rs.nowFn)
+}
+
+// handleOptionsExit translates a strategy-emitted exit signal keyed by the
+// underlying ticker into one CloseLong intent per open option contract under
+// that underlying. Without this, position_gate filters by Symbol == intent.Symbol
+// and rejects the equity-keyed exit with no_position_to_exit because the open
+// position is keyed by the OCC contract symbol (e.g. MRVL260508C00162500).
+//
+// Multiple open contracts under the same underlying all close (plan default).
+// position_gate's TryMarkInflightExit deduplicates against concurrent
+// position-monitor exits (PREMIUM_STOP, CHANDELIER_TRAIL).
+//
+// When openOptionContractsLookup is unset or returns no positions, the call
+// is a no-op (legitimate stale-exit case logged at INFO).
+func (rs *RiskSizer) handleOptionsExit(
+	ctx context.Context,
+	event domain.Event,
+	enrichment domain.SignalEnrichment,
+	sigRef domain.SignalRef,
+	strategyName string,
+) error {
+	if rs.openOptionContractsLookup == nil {
+		rs.logger.Debug("options exit: open-contracts lookup not wired; skipping",
+			"underlying", sigRef.Symbol,
+		)
+		return nil
+	}
+
+	contracts := rs.openOptionContractsLookup(sigRef.Symbol)
+	if len(contracts) == 0 {
+		rs.logger.Info("options exit: no open contracts to close",
+			"underlying", sigRef.Symbol,
+			"reason", sigRef.Tags["reason"],
+		)
+		return nil
+	}
+
+	rationale := strategyExitRationale(sigRef, enrichment)
+	barTS := exitBarTimestamp(sigRef, rs.nowFn)
+
+	for _, pos := range contracts {
+		if err := rs.emitOptionExitIntent(ctx, event, pos, strategyName, rationale, enrichment.Confidence, barTS, sigRef.Tags); err != nil {
+			rs.logger.Error("options exit: failed to emit close intent",
+				"contract", string(pos.Symbol),
+				"underlying", sigRef.Symbol,
+				"error", err,
+			)
+		}
+	}
+	return nil
+}
+
+func (rs *RiskSizer) emitOptionExitIntent(
+	ctx context.Context,
+	event domain.Event,
+	pos domain.MonitoredPosition,
+	strategyName string,
+	rationale string,
+	confidence float64,
+	barTS time.Time,
+	signalTags map[string]string,
+) error {
+	intentID := uuid.New()
+	idempotencyKey := fmt.Sprintf("STRATEGY_EXIT:%s:%s:%s:%d",
+		event.TenantID, event.EnvMode, pos.Symbol, barTS.Unix())
+
+	// Mirror the position_monitor.triggerExit pattern: build via NewOrderIntent
+	// keyed by the OCC contract symbol so position_gate's Symbol-equality
+	// filter matches. AssetClass = AssetClassEquity matches the existing
+	// option-intent convention. OrderType=market overrides the limit field
+	// at the broker, but NewOrderIntent's validator requires LimitPrice > 0
+	// so the entry premium serves as a sane placeholder. Options always
+	// close as CloseLong because long calls and long puts are both broker-
+	// LONG positions.
+	limitPrice := pos.EntryPrice
+	if limitPrice <= 0 {
+		limitPrice = 0.01
+	}
+	intent, err := domain.NewOrderIntent(
+		intentID,
+		event.TenantID,
+		event.EnvMode,
+		pos.Symbol,
+		domain.DirectionCloseLong,
+		limitPrice,
+		0, // stopLoss not required for exits
+		0, // maxSlippageBPS
+		pos.Quantity,
+		strategyName,
+		rationale,
+		confidence,
+		idempotencyKey,
+	)
+	if err != nil {
+		return fmt.Errorf("build option exit intent: %w", err)
+	}
+	intent.OrderType = "market"
+	intent.TimeInForce = "day"
+	intent.AssetClass = domain.AssetClassEquity
+
+	intent.Meta = map[string]string{
+		"instrument_type": string(domain.InstrumentTypeOption),
+		"underlying":      string(domain.UnderlyingFromOCC(pos.Symbol)),
+		"option_right":    pos.OptionRight,
+		"expiry":          pos.OptionExpiry.Format("2006-01-02"),
+		"exit_origin":     "strategy",
+	}
+	for k, v := range signalTags {
+		intent.Meta["sig_"+k] = v
+	}
+
+	rs.logger.Info("options exit intent emitted",
+		"contract", string(pos.Symbol),
+		"underlying", string(domain.UnderlyingFromOCC(pos.Symbol)),
+		"qty", pos.Quantity,
+		"rationale", rationale,
+	)
+
+	if parity.Enabled() {
+		rs.parityDiagSized(intent, event)
+	}
+	rs.emit(ctx, domain.EventOrderIntentCreated, event.TenantID, event.EnvMode, intentID.String(), intent)
+	return nil
+}
+
+// strategyExitRationale formats the exit rationale tag as "strategy:<reason>"
+// so the trade log distinguishes strategy-origin exits from position-monitor-
+// driven exit_monitor:* rationales. Mirrors the equity-path tagging at the
+// risk_sizer.go SignalExit branch.
+func strategyExitRationale(sigRef domain.SignalRef, enrichment domain.SignalEnrichment) string {
+	if reason := sigRef.Tags["reason"]; reason != "" {
+		return "strategy:" + reason
+	}
+	if enrichment.Rationale != "" {
+		return "strategy:" + enrichment.Rationale
+	}
+	return "strategy:exit"
+}
+
+// exitBarTimestamp pulls the signal bar timestamp from sigRef tags so the
+// idempotency key is stable across re-fires of the same bar; falls back to
+// nowFn when the tag is missing (best-effort dedup, the position-gate
+// inflight-exit lock still guards against double-close at the broker layer).
+func exitBarTimestamp(sigRef domain.SignalRef, nowFn func() time.Time) time.Time {
+	if tsStr, ok := sigRef.Tags["bar_ts"]; ok && tsStr != "" {
+		if t, err := time.Parse(time.RFC3339, tsStr); err == nil {
+			return t
+		}
+	}
+	return nowFn()
 }
 
 // riskCapDecision carries the outcome of applyPositionRiskCap so the

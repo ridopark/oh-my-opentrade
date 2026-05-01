@@ -589,12 +589,13 @@ func (r *Runner) Run(ctx context.Context) error {
 	tideTracker := gate.NewIndexTideTracker(30)
 
 	pipeline, err := bootstrap.BuildStrategyPipeline(bootstrap.StrategyDeps{
-		EventBus:        r.infra.EventBus,
-		SpecStore:       specStore,
-		AIAdvisor:       aiAdvisor,
-		PositionLookup:  posMonBundle.Service.LookupPosition,
-		MarketDataFn:    monitorSvc.GetLastSnapshot,
-		OptionsMarket:   optionsAdapter,
+		EventBus:                  r.infra.EventBus,
+		SpecStore:                 specStore,
+		AIAdvisor:                 aiAdvisor,
+		PositionLookup:            posMonBundle.Service.LookupPosition,
+		OpenOptionContractsLookup: posMonBundle.Service.ListOpenContractsByUnderlying,
+		MarketDataFn:              monitorSvc.GetLastSnapshot,
+		OptionsMarket:             optionsAdapter,
 		Repo:            nil,
 		TenantID:        "default",
 		EnvMode:         domain.EnvModePaper,
@@ -1437,12 +1438,13 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Build shared strategy services (enricher, risk sizer, registry).
 		strategyShared, sharedErr := bootstrap.BuildStrategyShared(bootstrap.StrategyDeps{
-			EventBus:        r.infra.EventBus,
-			SpecStore:       specStore,
-			AIAdvisor:       aiAdvisor,
-			PositionLookup:  posMonBundle.Service.LookupPosition,
-			MarketDataFn:    monitorSvc.GetLastSnapshot,
-			OptionsMarket:   optionsAdapter,
+			EventBus:                  r.infra.EventBus,
+			SpecStore:                 specStore,
+			AIAdvisor:                 aiAdvisor,
+			PositionLookup:            posMonBundle.Service.LookupPosition,
+			OpenOptionContractsLookup: posMonBundle.Service.ListOpenContractsByUnderlying,
+			MarketDataFn:              monitorSvc.GetLastSnapshot,
+			OptionsMarket:             optionsAdapter,
 			Repo:            nil,
 			TenantID:        "default",
 			EnvMode:         domain.EnvModePaper,
@@ -1486,12 +1488,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		stratDeps := bootstrap.StrategyDeps{
-			EventBus:        r.infra.EventBus,
-			SpecStore:       specStore,
-			AIAdvisor:       aiAdvisor,
-			PositionLookup:  posMonBundle.Service.LookupPosition,
-			MarketDataFn:    monitorSvc.GetLastSnapshot,
-			OptionsMarket:   optionsAdapter,
+			EventBus:                  r.infra.EventBus,
+			SpecStore:                 specStore,
+			AIAdvisor:                 aiAdvisor,
+			PositionLookup:            posMonBundle.Service.LookupPosition,
+			OpenOptionContractsLookup: posMonBundle.Service.ListOpenContractsByUnderlying,
+			MarketDataFn:              monitorSvc.GetLastSnapshot,
+			OptionsMarket:             optionsAdapter,
 			Repo:            nil,
 			TenantID:        "default",
 			EnvMode:         domain.EnvModePaper,
