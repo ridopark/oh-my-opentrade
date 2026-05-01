@@ -604,6 +604,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Logger:          r.log,
 		BacktestID:      r.id,
 		TideTracker:     tideTracker,
+		Indicator:       idx,
 	})
 	if err != nil {
 		r.status.Store("error")
@@ -1527,13 +1528,15 @@ func (r *Runner) Run(ctx context.Context) error {
 				monSvc.SetORBTimeframe(orbTimeframeCaptured)
 			}
 
+			shardDeps := stratDeps
+			shardDeps.Indicator = shardIdx
 			var shardStrat *bootstrap.StrategyShard
 			var stratErr error
 			if r.cfg.CopytradeHistory != "" && !sentinelOwnerAssigned {
-				shardStrat, stratErr = bootstrap.BuildStrategyShardWithSentinels(strategyShared, slab, stratDeps)
+				shardStrat, stratErr = bootstrap.BuildStrategyShardWithSentinels(strategyShared, slab, shardDeps)
 				sentinelOwnerAssigned = true
 			} else {
-				shardStrat, stratErr = bootstrap.BuildStrategyShard(strategyShared, slab, stratDeps)
+				shardStrat, stratErr = bootstrap.BuildStrategyShard(strategyShared, slab, shardDeps)
 			}
 			if stratErr != nil {
 				return ShardServices{}, fmt.Errorf("shard strategy: %w", stratErr)
