@@ -9,6 +9,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
 	"github.com/oh-my-opentrade/backend/internal/app/barbackfill"
 	"github.com/oh-my-opentrade/backend/internal/app/formingbar"
+	"github.com/oh-my-opentrade/backend/internal/app/indicator"
 	"github.com/oh-my-opentrade/backend/internal/app/ingestion"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
@@ -16,9 +17,78 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/warmup"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
-	start "github.com/oh-my-opentrade/backend/internal/domain/strategy"
 	"github.com/rs/zerolog"
 )
+
+// EquityWarmupDeps carries the dependencies runEquityWarmup needs without
+// reaching into infra/svc structs, so parity tests can drive the equity
+// warmup path with a fixed clock and stub fetcher.
+type EquityWarmupDeps struct {
+	Monitor    *monitor.Service
+	Indicator  *indicator.Service
+	Fetcher    warmup.BarRepo
+	Symbols    []domain.Symbol
+	Timeframe  domain.Timeframe
+	TodayOpen  time.Time
+	Now        time.Time
+	Log        zerolog.Logger
+	BarsCache  map[string][]domain.MarketBar
+	TodaySnaps map[string][]monitor.BarSnapshot
+	TodayBars  map[string][]domain.MarketBar
+}
+
+// runEquityWarmup loads canonical-spec equity bars per symbol, splits them at
+// today's session open, and feeds both monitor.calculator and the indicator
+// service. Both calc paths receive the same bar stream so post-warmup snapshot
+// state is bit-equal between them.
+func runEquityWarmup(ctx context.Context, deps EquityWarmupDeps) {
+	if len(deps.Symbols) == 0 {
+		return
+	}
+	spec := warmup.EquitySpec()
+	required := spec.Required[deps.Timeframe]
+	deps.Log.Info().
+		Str("timeframe", string(deps.Timeframe)).
+		Int("required_bars", required).
+		Bool("rth_filter", spec.RTHFilter).
+		Msg("warming equity indicators (canonical spec)")
+	for _, sym := range deps.Symbols {
+		bars, err := warmup.Load(ctx, deps.Fetcher, spec, sym, deps.Timeframe, deps.Now)
+		if err != nil {
+			deps.Log.Warn().Err(err).Str("symbol", string(sym)).Msg("equity warmup fetch failed, starting cold")
+			continue
+		}
+		if len(bars) < required {
+			deps.Log.Warn().
+				Str("symbol", string(sym)).
+				Int("got", len(bars)).
+				Int("required", required).
+				Msg("equity warmup short — long-period indicators may not fully converge")
+		}
+		yesterdayBars, todayBars := monitor.SplitBarsByTime(bars, deps.TodayOpen.UTC())
+		_ = deps.Monitor.WarmUpAndCollect(yesterdayBars)
+		deps.Monitor.ResetSessionIndicators(sym.String())
+		todaySnapsOut := deps.Monitor.WarmUpAndCollect(todayBars)
+		if deps.Indicator != nil {
+			deps.Indicator.WarmUp(yesterdayBars)
+			deps.Indicator.WarmUp(todayBars)
+		}
+		if deps.BarsCache != nil {
+			deps.BarsCache[string(sym)] = bars
+		}
+		if deps.TodaySnaps != nil {
+			deps.TodaySnaps[string(sym)] = todaySnapsOut
+		}
+		if deps.TodayBars != nil {
+			deps.TodayBars[string(sym)] = todayBars
+		}
+		deps.Log.Info().
+			Str("symbol", string(sym)).
+			Int("bars", len(bars)).
+			Int("today_bars", len(todayBars)).
+			Msg("equity indicator warmup complete")
+	}
+}
 
 type warmupBarDB interface {
 	GetMarketBars(ctx context.Context, symbol domain.Symbol, timeframe domain.Timeframe, from, to time.Time) ([]domain.MarketBar, error)
@@ -279,45 +349,20 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 		case <-ctx.Done():
 			return
 		}
-		spec := warmup.EquitySpec()
 		fetcher := warmupRepoFetcher{repo: infra.repo, broker: infra.barFetcher, log: warmupLog}
-		required := spec.Required[syms.timeframe]
-		warmupLog.Info().
-			Str("timeframe", string(syms.timeframe)).
-			Int("required_bars", required).
-			Bool("rth_filter", spec.RTHFilter).
-			Msg("warming equity indicators (canonical spec)")
-		for _, sym := range syms.equity {
-			bars, err := warmup.Load(ctx, fetcher, spec, sym, syms.timeframe, time.Now())
-			if err != nil {
-				warmupLog.Warn().Err(err).Str("symbol", string(sym)).Msg("equity warmup fetch failed, starting cold")
-				continue
-			}
-			if len(bars) < required {
-				warmupLog.Warn().
-					Str("symbol", string(sym)).
-					Int("got", len(bars)).
-					Int("required", required).
-					Msg("equity warmup short — long-period indicators may not fully converge")
-			}
-			// Split-and-reset boot path: feed pre-today RTH bars, zero
-			// session-VWAP between days (ResetSessionIndicators only
-			// touches VWAP — no auto-reset exists in calc.Update), then
-			// feed today's bars. Single calc.Update per bar, correct
-			// session VWAP at runtime entry.
-			yesterdayBars, todayBars := monitor.SplitBarsByTime(bars, todayOpen.UTC())
-			_ = svc.monitor.WarmUpAndCollect(yesterdayBars)
-			svc.monitor.ResetSessionIndicators(sym.String())
-			todaySnaps := svc.monitor.WarmUpAndCollect(todayBars)
-			warmupBarsCache[string(sym)] = bars
-			todaySnapsCache[string(sym)] = todaySnaps
-			todayBarsCache[string(sym)] = todayBars
-			warmupLog.Info().
-				Str("symbol", string(sym)).
-				Int("bars", len(bars)).
-				Int("today_bars", len(todayBars)).
-				Msg("equity indicator warmup complete")
-		}
+		runEquityWarmup(ctx, EquityWarmupDeps{
+			Monitor:    svc.monitor,
+			Indicator:  svc.indicator,
+			Fetcher:    fetcher,
+			Symbols:    syms.equity,
+			Timeframe:  syms.timeframe,
+			TodayOpen:  todayOpen,
+			Now:        time.Now(),
+			Log:        warmupLog,
+			BarsCache:  warmupBarsCache,
+			TodaySnaps: todaySnapsCache,
+			TodayBars:  todayBarsCache,
+		})
 	}
 
 	// Crypto warmup: 24/7 market. Use 10 hours so the session VWAP and
@@ -339,6 +384,9 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 				continue
 			}
 			n := svc.monitor.WarmUp(bars)
+			if svc.indicator != nil {
+				svc.indicator.WarmUp(bars)
+			}
 			svc.monitor.ResetSessionIndicators(sym.String())
 			warmupBarsCache[string(sym)] = bars
 			warmupLog.Info().
@@ -360,7 +408,6 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 
 	warmupHTF(ctx, infra, svc, syms, warmupLog)
 
-	var runnerWarmupCalc *monitor.IndicatorCalculator
 	var runnerWarmupSnapshotFn strategy.IndicatorSnapshotFunc
 	if svc.useStrategyV2 && svc.strategyRunner != nil {
 		// Suppress progress events during warmup replay so the SSE cache
@@ -368,30 +415,7 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 		// historical bars. Re-enabled after ClearAllPendingStates below.
 		svc.strategyRunner.SetSuppressProgressEvents(true)
 
-		runnerWarmupCalc = monitor.NewIndicatorCalculator()
-		runnerWarmupCalc.Label = "runner_warmup_boot"
-		runnerWarmupSnapshotFn = func(bar domain.MarketBar) start.IndicatorData {
-			snap := runnerWarmupCalc.Update(bar)
-			return start.IndicatorData{
-				RSI:           snap.RSI,
-				StochK:        snap.StochK,
-				StochD:        snap.StochD,
-				EMA9:          snap.EMA9,
-				EMA21:         snap.EMA21,
-				EMA50:         snap.EMA50,
-				EMAFast:       snap.EMAFast,
-				EMASlow:       snap.EMASlow,
-				EMAFastPeriod: snap.EMAFastPeriod,
-				EMASlowPeriod: snap.EMASlowPeriod,
-				VWAP:          snap.VWAP,
-				Volume:        snap.Volume,
-				VolumeSMA:     snap.VolumeSMA,
-				MACDLine:      snap.MACDLine,
-				MACDSignal:    snap.MACDSignal,
-				MACDHistogram: snap.MACDHistogram,
-				ATR:           snap.ATR,
-			}
-		}
+		runnerWarmupSnapshotFn = indicator.SnapshotFn(svc.indicator)
 		for _, sym := range syms.all {
 			bars := warmupBarsCache[string(sym)]
 			if len(bars) == 0 {
@@ -498,33 +522,8 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 			// invariant preserved, session VWAP unaffected.
 			svc.monitor.SeedORBFromHistory(sym, todaySnaps)
 			if svc.useStrategyV2 && svc.strategyRunner != nil {
-				if runnerWarmupCalc == nil {
-					runnerWarmupCalc = monitor.NewIndicatorCalculator()
-					runnerWarmupCalc.Label = "runner_warmup_orb"
-				}
 				if runnerWarmupSnapshotFn == nil {
-					runnerWarmupSnapshotFn = func(bar domain.MarketBar) start.IndicatorData {
-						snap := runnerWarmupCalc.Update(bar)
-						return start.IndicatorData{
-							RSI:           snap.RSI,
-							StochK:        snap.StochK,
-							StochD:        snap.StochD,
-							EMA9:          snap.EMA9,
-							EMA21:         snap.EMA21,
-							EMA50:         snap.EMA50,
-							EMAFast:       snap.EMAFast,
-							EMASlow:       snap.EMASlow,
-							EMAFastPeriod: snap.EMAFastPeriod,
-							EMASlowPeriod: snap.EMASlowPeriod,
-							VWAP:          snap.VWAP,
-							Volume:        snap.Volume,
-							VolumeSMA:     snap.VolumeSMA,
-							MACDLine:      snap.MACDLine,
-							MACDSignal:    snap.MACDSignal,
-							MACDHistogram: snap.MACDHistogram,
-							ATR:           snap.ATR,
-						}
-					}
+					runnerWarmupSnapshotFn = indicator.SnapshotFn(svc.indicator)
 				}
 				_ = svc.strategyRunner.WarmUp(string(sym), orbBars, runnerWarmupSnapshotFn)
 				svc.strategyRunner.PrimeAggregators(string(sym), orbBars)
