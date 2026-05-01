@@ -44,5 +44,5 @@ func TestBrokerPortContract_SimBroker(t *testing.T) {
 		},
 	}
 
-	brokerporttest.RunBrokerPortContract(t, broker, nil, env)
+	brokerporttest.RunBrokerPortContract(t, broker, broker, env)
 }

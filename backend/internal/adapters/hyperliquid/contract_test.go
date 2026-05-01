@@ -57,8 +57,14 @@ func TestBrokerPortContract_Hyperliquid(t *testing.T) {
 			// order as "closed" — repeated calls return the same value
 			// (idempotent).
 			_, _ = w.Write([]byte(`[]`))
+		case "meta":
+			// SDK-startup asset-map probe (per the file header). The
+			// adapter pre-seeds its asset map so this is rarely hit,
+			// but model it explicitly so it doesn't trip the default
+			// guard below.
+			_, _ = w.Write([]byte(`{"universe":[]}`))
 		default:
-			_, _ = w.Write([]byte(`{}`))
+			t.Errorf("unexpected /info type: %v — extend the test fixture", req["type"])
 		}
 	})
 

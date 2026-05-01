@@ -941,8 +941,48 @@ func (b *Broker) GetAccountEquity(_ context.Context) (float64, error) {
 	return equity, nil
 }
 
-func (b *Broker) SubscribeOrderUpdates(_ context.Context) (<-chan ports.OrderUpdate, error) {
-	return b.fillCh, nil
+// SubscribeOrderUpdates returns a per-call output channel that forwards
+// fills from the shared producer-side b.fillCh until ctx is canceled, at
+// which point the output channel is closed. This honors the
+// OrderStreamPort lifecycle contract (close-on-ctx-cancel) without
+// disturbing producers, which keep using the non-blocking send to
+// b.fillCh.
+//
+// Single-subscriber by design: a second concurrent caller would race the
+// first wrapper for fills off b.fillCh (each fill goes to exactly one
+// subscriber, not fanned out). The sole production consumer is
+// app/execution.Service, which subscribes once on startup, so this is
+// fine; do not add a second subscriber without first replacing this
+// wrapper with a fan-out registry.
+//
+// Producer-side back-pressure is unchanged: SubmitOrder paths use a
+// non-blocking `select { case b.fillCh <- u: default: }` and will drop
+// fills silently when no subscriber drains b.fillCh fast enough. IBKR's
+// producer (order_stream.go) has a guarded ctx-aware send rather than a
+// silent drop; that LSP-shaped gap is out of scope here.
+//
+// Output buffer size mirrors ibkr/order_stream.go.
+func (b *Broker) SubscribeOrderUpdates(ctx context.Context) (<-chan ports.OrderUpdate, error) {
+	out := make(chan ports.OrderUpdate, 64)
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case u, ok := <-b.fillCh:
+				if !ok {
+					return
+				}
+				select {
+				case out <- u:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return out, nil
 }
 
 // AccrueFunding applies a funding payment to all open perp positions for symbol.

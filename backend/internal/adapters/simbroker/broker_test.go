@@ -19,6 +19,7 @@ import (
 var _ ports.BrokerPort = (*simbroker.Broker)(nil)
 var _ execution.QuoteProvider = (*simbroker.Broker)(nil)
 var _ ports.AccountPort = (*simbroker.Broker)(nil)
+var _ ports.OrderStreamPort = (*simbroker.Broker)(nil)
 
 func newIntent(sym domain.Symbol, dir domain.Direction, qty float64) domain.OrderIntent {
 	return domain.OrderIntent{
