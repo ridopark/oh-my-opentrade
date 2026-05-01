@@ -31,6 +31,14 @@ type SyntheticChainConfig struct {
 	IVDefault       float64 // fallback IV when no iv_snapshots row is available
 	RiskFreeRate    float64 // flat across term structure; good enough for v1
 	BidAskSpreadPct float64 // total spread as fraction of mid (split evenly bid/ask)
+	// MaxIV caps the IV applied to BSM. Zero (default) disables the clamp
+	// and preserves byte-identical behavior. Set non-zero to keep high-vol
+	// leveraged ETFs (SOXL, SOXS, SQQQ, etc.) tradeable in backtest: their
+	// real ATM IV legitimately runs >1.20, which over-flattens the BSM
+	// delta curve and pushes every strike outside any reasonable target
+	// delta band. The smile/skew that real chains carry is out of scope
+	// for v1; this cap is the operator-controlled escape hatch.
+	MaxIV float64
 }
 // SpotProvider returns the underlying's spot price on the given date. The
 // generator returns empty when this is zero — it cannot produce a chain
@@ -104,6 +112,9 @@ func (g *SyntheticChainGenerator) GenerateChain(
 	}
 	if iv <= 0 {
 		return nil, nil
+	}
+	if g.cfg.MaxIV > 0 && iv > g.cfg.MaxIV {
+		iv = g.cfg.MaxIV
 	}
 	expiries := weeklyExpiries(asOf, minDTE, maxDTE)
 	if len(expiries) == 0 {
