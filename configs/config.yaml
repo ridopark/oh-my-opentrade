@@ -115,6 +115,7 @@ backtest:
   fee_schedule: "ibkr_options"      # $0.65/contract, $1 min-per-order, $0.04 exchange + SEC on sells
   pessimistic_slippage_multiplier: 2.0
   synthetic_chain:
+    enabled: true
     # Caps the per-expiry IV applied to BSM in the synthetic chain. The chain
     # pulls real Alpaca-collected ATM IV from iv_snapshots, which for high-vol
     # leveraged ETFs (SOXL, SOXS, SQQQ, TQQQ, UVXY) legitimately runs >1.20.
