@@ -3,6 +3,7 @@ package ibkr
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,47 +15,24 @@ import (
 // TestStreamPartialFillPrecedesTerminalFill_IBKR enforces the strict
 // OrderStreamPort invariant the audit (H5) named: for any single
 // BrokerOrderID, every OrderEventPartialFill emitted must precede every
-// terminal event (OrderEventFill / OrderEventCanceled / OrderEventRejected
-// / OrderEventExpired) for the same orderID.
+// terminal event (Fill / Canceled / Rejected / Expired) for that orderID.
 //
-// Why this invariant matters in production (not just LSP purity): the
-// strategy code at avwap_v1.go:3832-3849 and macd_v1.go:712-749 assumes
-// PendingEntry is still populated when partials arrive — it transitions
-// to PositionSide on the terminal event. If a terminal arrived before a
-// partial, execution.handleStreamFill's LoadAndDelete would claim the
-// pending order on the terminal, and the late partial would fail to
-// load and be silently dropped (service.go:1669-1681). MACD's
-// pending-entry timeout (line 380-388) would then block exits for 5
-// minutes while the position book carries qty the strategy doesn't
-// know about.
+// Why this matters in production: AVWAP and MACD strategy code assumes
+// PendingEntry is still set when partials arrive and transitions to
+// PositionSide on the terminal event. If a terminal arrived first,
+// execution.handleStreamFill's LoadAndDelete would claim the pending
+// order on the terminal and the late partial would silently fail to
+// load (service.go:1669-1681). MACD's pending-entry timeout would then
+// block exits for ~5 minutes while the position book carries qty the
+// strategy doesn't know about.
 //
-// Test scenario (engineered against the IBKR adapter's execReconciler
-// labeling at order_stream.go:225-232):
-//   1. Seed mockIB with one trade: TotalQuantity=10, Status=Filled.
-//      Status=Filled is required so IsDone() returns true, which
-//      prevents SubscribeOrderUpdates from spawning a watchTradeDone
-//      goroutine that would block on a nil Done() channel
-//      (mockIB.makeTrade doesn't initialize Done).
-//   2. Subscribe.
-//   3. Inject two fills via mock.SeedFill — partial (cumQty=5) then
-//      terminal (cumQty=10). Order matters: the reconciler iterates
-//      Fills() in slice order, and partial→terminal labeling depends
-//      on cumQty < totalQty for partial vs cumQty >= totalQty for
-//      terminal.
-//   4. Wait one reconciler poll cycle (2s + 500ms margin).
-//   5. Drain events for the test orderID; assert that within the
-//      sequence, every "partial_fill" event index is less than every
-//      terminal event index.
-//
-// Test runtime: ~2.5s — driven by the IBKR adapter's 2s
-// execReconcileInterval (order_stream.go:22). Future PR may add a
-// test-only signal that lets the harness wait for one reconciler
-// cycle deterministically; for now the time.Sleep is acceptable.
+// Runtime: ~2s, driven by the IBKR adapter's execReconcileInterval.
 func TestStreamPartialFillPrecedesTerminalFill_IBKR(t *testing.T) {
 	const (
-		orderID    int64   = 7777
-		totalQty   float64 = 10.0
-		partialQty float64 = 5.0
+		orderID        int64   = 7777
+		totalQty       float64 = 10.0
+		partialQty     float64 = 5.0
+		expectedEvents         = 2
 	)
 
 	// Step 1: seed the trade. Status=Filled so IsDone() returns true
@@ -63,7 +41,7 @@ func TestStreamPartialFillPrecedesTerminalFill_IBKR(t *testing.T) {
 	// labeling threshold.
 	order := &ibsync.Order{}
 	order.OrderID = orderID
-	order.TotalQuantity = ibsync.StringToDecimal(fmt.Sprintf("%.6f", totalQty))
+	order.TotalQuantity = toDecimal(totalQty)
 	trade := &ibsync.Trade{Order: order}
 	trade.OrderStatus.Status = ibsync.Filled
 
@@ -105,17 +83,17 @@ func TestStreamPartialFillPrecedesTerminalFill_IBKR(t *testing.T) {
 	// ordering, not on event-set restriction).
 	wantOrderID := fmt.Sprintf("%d", orderID)
 	var observed []ports.OrderUpdate
-	for len(observed) < 2 {
+	for len(observed) < expectedEvents {
 		select {
 		case ev, ok := <-ch:
 			if !ok {
-				t.Fatalf("channel closed before observing 2 fills; got %d", len(observed))
+				t.Fatalf("channel closed before observing %d fills; got %d", expectedEvents, len(observed))
 			}
 			if ev.BrokerOrderID == wantOrderID {
 				observed = append(observed, ev)
 			}
 		case <-deadline:
-			t.Fatalf("did not observe 2 fills within %s; got %d events with broker_order_id=%s", reconcilerWait+2*time.Second, len(observed), wantOrderID)
+			t.Fatalf("did not observe %d fills within %s; got %d events with broker_order_id=%s", expectedEvents, reconcilerWait+2*time.Second, len(observed), wantOrderID)
 		}
 	}
 
@@ -134,12 +112,24 @@ func TestStreamPartialFillPrecedesTerminalFill_IBKR(t *testing.T) {
 	}
 
 	if lastPartialIdx < 0 {
-		t.Fatalf("no OrderEventPartialFill observed; events=%+v", observed)
+		t.Fatalf("no OrderEventPartialFill observed; sequence=%s", eventSequence(observed))
 	}
 	if firstTerminalIdx < 0 {
-		t.Fatalf("no terminal event observed; events=%+v", observed)
+		t.Fatalf("no terminal event observed; sequence=%s", eventSequence(observed))
 	}
 	if lastPartialIdx >= firstTerminalIdx {
-		t.Errorf("partial_fill at index %d arrived AT OR AFTER terminal at index %d; contract requires every partial_fill to precede every terminal event for the same BrokerOrderID. events=%+v", lastPartialIdx, firstTerminalIdx, observed)
+		t.Errorf("partial_fill at index %d arrived AT OR AFTER terminal at index %d; contract requires every partial_fill to precede every terminal event for the same BrokerOrderID. sequence=%s", lastPartialIdx, firstTerminalIdx, eventSequence(observed))
 	}
+}
+
+// eventSequence formats a slice of OrderUpdates as a compact list of
+// just their Event types, e.g. [partial_fill, fill]. The default %+v
+// formatting drowns the actual event ordering in field detail; a
+// failing test wants the sequence at a glance.
+func eventSequence(events []ports.OrderUpdate) string {
+	parts := make([]string, len(events))
+	for i, ev := range events {
+		parts[i] = ev.Event
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
 }

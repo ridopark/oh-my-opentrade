@@ -139,12 +139,19 @@ func (m *mockIB) SeedFill(orderID int64, execID string, qty, cumQty, price, avgP
 		Execution: &ibsync.Execution{
 			OrderID:  orderID,
 			ExecID:   execID,
-			Shares:   ibsync.StringToDecimal(fmt.Sprintf("%.6f", qty)),
-			CumQty:   ibsync.StringToDecimal(fmt.Sprintf("%.6f", cumQty)),
+			Shares:   toDecimal(qty),
+			CumQty:   toDecimal(cumQty),
 			Price:    price,
 			AvgPrice: avgPrice,
 		},
 	})
+}
+
+// toDecimal converts a float64 to ibsync's decimal type with 6
+// decimals of precision. Centralizes the pattern that previously
+// appeared inline at each ibsync.Decimal field assignment.
+func toDecimal(f float64) ibsync.Decimal {
+	return ibsync.StringToDecimal(fmt.Sprintf("%.6f", f))
 }
 func (m *mockIB) ReqMktData(_ *ibsync.Contract, _ string, _ ...ibsync.TagValue) *ibsync.Ticker {
 	return ibsync.NewTicker(nil)
@@ -166,7 +173,7 @@ func makeTrade(orderID int64, status ibsync.Status, filled float64) *ibsync.Trad
 	order.OrderID = orderID
 	t := &ibsync.Trade{Order: order}
 	t.OrderStatus.Status = status
-	t.OrderStatus.Filled = ibsync.StringToDecimal(fmt.Sprintf("%.6f", filled))
+	t.OrderStatus.Filled = toDecimal(filled)
 	return t
 }
 
