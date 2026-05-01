@@ -9,12 +9,6 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/domain"
 )
 
-// TestMakeSnapshotFn_DrivesIndicatorService verifies that the snapshot
-// closure used by the strategy runner's WarmUp / WarmUpTF entry points
-// drives the per-runner indicator.Service. Without this, pre-PR-3
-// makeSnapshotFn ran a private monitor.IndicatorCalculator and the
-// runner's warmup state diverged from monitor.calculator's state on
-// the same bar stream.
 func TestMakeSnapshotFn_DrivesIndicatorService(t *testing.T) {
 	loc, err := time.LoadLocation("America/New_York")
 	if err != nil {
@@ -34,7 +28,7 @@ func TestMakeSnapshotFn_DrivesIndicatorService(t *testing.T) {
 
 	idx := indicator.NewService("backtest_test_idx")
 	parallel := indicator.NewService("backtest_parallel")
-	snapshotFn := makeSnapshotFn(idx)
+	snapshotFn := indicator.SnapshotFn(idx)
 
 	const barsPerSym = 200
 	for _, ss := range symbols {
