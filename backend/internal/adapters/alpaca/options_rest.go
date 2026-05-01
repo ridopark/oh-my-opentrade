@@ -82,13 +82,20 @@ type alpacaOptionSnapshot struct {
 //
 // expiryFrom/expiryTo are inclusive date bounds on the Alpaca
 // expiration_date_gte/lte parameters — callers pass the full configured DTE
-// range so the 250-contract cap doesn't get consumed by out-of-range expiries
-// ordered before the target window.
+// range so the contract list pulls every relevant strike, not just the
+// expiries ordered first by the API.
 //
 // Two-step process:
-//  1. Fetch OCC contract symbols from the broker API (/v2/options/contracts).
+//  1. Fetch OCC contract symbols from the broker API (/v2/options/contracts),
+//     paginated via next_page_token until exhausted.
 //  2. Fetch live snapshots (greeks, bid/ask, IV) from the data API
 //     (/v1beta1/options/snapshots).
+//
+// optionsChainMaxContracts (set via SetOptionsChainMaxContracts, defaulted to
+// 250 by config.Load) caps the slice returned to callers — the underlying
+// pagination still runs to completion so a WARN log can record the full
+// chain size whenever truncation happens. Lifting the cap (-1) is the
+// promote step after the operator has reviewed the divergence numbers.
 func (c *RESTClient) GetOptionChain(
 	ctx context.Context,
 	dataURL string,
@@ -105,40 +112,71 @@ func (c *RESTClient) GetOptionChain(
 	fromStr := expiryFrom.Format("2006-01-02")
 	toStr := expiryTo.Format("2006-01-02")
 
-	contractsPath := fmt.Sprintf(
-		"/v2/options/contracts?underlying_symbols=%s&expiration_date_gte=%s&expiration_date_lte=%s&type=%s&limit=250",
-		underlying.String(), fromStr, toStr, rightStr,
-	)
-
-	contractsResp, err := c.doReqWithOpts(ctx, http.MethodGet, contractsPath, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
-	if err != nil {
-		return nil, fmt.Errorf("alpaca: list option contracts: %w", err)
-	}
-	defer contractsResp.Body.Close()
-
-	contractsBody, _ := io.ReadAll(contractsResp.Body)
-	if contractsResp.StatusCode < 200 || contractsResp.StatusCode >= 300 {
-		return nil, fmt.Errorf("alpaca: list option contracts failed (status %d): %s", contractsResp.StatusCode, string(contractsBody))
-	}
-
-	var contractList alpacaOptionsContractListResponse
-	if err := json.NewDecoder(bytes.NewReader(contractsBody)).Decode(&contractList); err != nil {
-		return nil, fmt.Errorf("alpaca: decode option contracts list: %w", err)
-	}
-
-	if len(contractList.OptionContracts) == 0 {
-		return nil, nil
-	}
-
-	// Collect tradable OCC symbols.
-	occSymbols := make([]string, 0, len(contractList.OptionContracts))
-	for _, c := range contractList.OptionContracts {
-		if c.Tradable && c.Status == "active" {
-			occSymbols = append(occSymbols, c.Symbol)
+	// Step 1: paginate the contract list across all pages. Mirrors
+	// ListOptionContractsAsOf's loop shape so future maintenance has one
+	// pagination idiom to recognize. We retain each item alongside its
+	// OCC symbol because the snapshot-merge step downstream needs
+	// `OpenInterest` from the contract item as a fallback.
+	occSymbols := make([]string, 0, 1024)
+	itemByOCC := make(map[string]alpacaOptionsContractItem, 1024)
+	pageToken := ""
+	for {
+		contractsPath := fmt.Sprintf(
+			"/v2/options/contracts?underlying_symbols=%s&expiration_date_gte=%s&expiration_date_lte=%s&type=%s&limit=1000",
+			underlying.String(), fromStr, toStr, rightStr,
+		)
+		if pageToken != "" {
+			contractsPath += "&page_token=" + pageToken
 		}
+
+		contractsResp, err := c.doReqWithOpts(ctx, http.MethodGet, contractsPath, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
+		if err != nil {
+			return nil, fmt.Errorf("alpaca: list option contracts: %w", err)
+		}
+		contractsBody, _ := io.ReadAll(contractsResp.Body)
+		contractsResp.Body.Close()
+		if contractsResp.StatusCode < 200 || contractsResp.StatusCode >= 300 {
+			return nil, fmt.Errorf("alpaca: list option contracts failed (status %d): %s", contractsResp.StatusCode, string(contractsBody))
+		}
+
+		var contractList alpacaOptionsContractListResponse
+		if err := json.NewDecoder(bytes.NewReader(contractsBody)).Decode(&contractList); err != nil {
+			return nil, fmt.Errorf("alpaca: decode option contracts list: %w", err)
+		}
+
+		for _, item := range contractList.OptionContracts {
+			if item.Tradable && item.Status == "active" {
+				occSymbols = append(occSymbols, item.Symbol)
+				itemByOCC[item.Symbol] = item
+			}
+		}
+
+		if contractList.NextPageToken == nil || *contractList.NextPageToken == "" {
+			break
+		}
+		pageToken = *contractList.NextPageToken
 	}
+
 	if len(occSymbols) == 0 {
 		return nil, nil
+	}
+
+	// Shadow-mode cap. cap == 0 means uncapped (operator promoted via
+	// options_chain_max_contracts: -1 in YAML, materialized as <=0 here);
+	// cap > 0 truncates while emitting a WARN whenever the full set
+	// exceeded the cap, so the operator can audit divergence in logs
+	// before promoting.
+	cap := c.optionsChainMaxContracts
+	fullCount := len(occSymbols)
+	if cap > 0 && fullCount > cap {
+		c.log.Warn().
+			Str("underlying", underlying.String()).
+			Str("right", rightStr).
+			Int("full_count", fullCount).
+			Int("cap", cap).
+			Int("dropped", fullCount-cap).
+			Msg("option chain truncated by shadow-mode cap; full chain available, set options_chain_max_contracts: -1 to lift")
+		occSymbols = occSymbols[:cap]
 	}
 
 	// ── Step 2: fetch snapshots (greeks, quotes) from data API ──────────────
@@ -181,11 +219,12 @@ func (c *RESTClient) GetOptionChain(
 	}
 
 	// ── Merge contract list with snapshot data ───────────────────────────────
+	// Iterate the (possibly truncated) occSymbols slice rather than the
+	// raw contract list so the cap is honored end-to-end. itemByOCC was
+	// populated alongside occSymbols already filtered for tradable+active.
 	snapshots := make([]domain.OptionContractSnapshot, 0, len(allSnapshots))
-	for _, item := range contractList.OptionContracts {
-		if !item.Tradable || item.Status != "active" {
-			continue
-		}
+	for _, occ := range occSymbols {
+		item := itemByOCC[occ]
 		snap, hasSnap := allSnapshots[item.Symbol]
 		if !hasSnap {
 			// No live snapshot for this contract — skip it.

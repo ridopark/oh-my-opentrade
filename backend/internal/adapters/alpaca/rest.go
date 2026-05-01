@@ -38,6 +38,20 @@ type RESTClient struct {
 	limiter   *RateLimiter
 	client    *http.Client
 	log       zerolog.Logger
+
+	// optionsChainMaxContracts truncates the slice GetOptionChain returns
+	// to its caller. 0 = uncapped (operator-promoted post-shadow). Set
+	// by SetOptionsChainMaxContracts at adapter construction time so
+	// the constructor signature stays stable for existing callers.
+	optionsChainMaxContracts int
+}
+
+// SetOptionsChainMaxContracts configures the post-pagination truncation
+// applied to GetOptionChain's return slice. <=0 uncaps; positive enforces
+// the cap and emits a WARN whenever the full chain exceeded it. See
+// AlpacaConfig.OptionsChainMaxContracts for operational shape.
+func (c *RESTClient) SetOptionsChainMaxContracts(n int) {
+	c.optionsChainMaxContracts = n
 }
 
 func (c *RESTClient) equityFeed() string {
