@@ -18,8 +18,8 @@ type Service struct {
 	last map[snapKey]domain.IndicatorSnapshot
 }
 
-// NewService constructs a Service. The label flows into parity-diag
-// rows so live vs backtest instances stay distinguishable.
+// NewService labels the wrapped calc so parity-diag rows distinguish
+// live vs backtest instances in shared log output.
 func NewService(label string) *Service {
 	calc := monitor.NewIndicatorCalculator()
 	calc.Label = label

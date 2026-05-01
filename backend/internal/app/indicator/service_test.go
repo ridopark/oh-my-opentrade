@@ -71,6 +71,8 @@ var floatFields = []struct {
 	{"EMA21", func(s domain.IndicatorSnapshot) float64 { return s.EMA21 }},
 	{"EMA50", func(s domain.IndicatorSnapshot) float64 { return s.EMA50 }},
 	{"EMA200", func(s domain.IndicatorSnapshot) float64 { return s.EMA200 }},
+	{"EMAFast", func(s domain.IndicatorSnapshot) float64 { return s.EMAFast }},
+	{"EMASlow", func(s domain.IndicatorSnapshot) float64 { return s.EMASlow }},
 	{"VWAP", func(s domain.IndicatorSnapshot) float64 { return s.VWAP }},
 	{"VWAPSD", func(s domain.IndicatorSnapshot) float64 { return s.VWAPSD }},
 	{"Volume", func(s domain.IndicatorSnapshot) float64 { return s.Volume }},
