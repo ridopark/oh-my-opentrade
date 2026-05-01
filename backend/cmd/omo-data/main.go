@@ -188,24 +188,41 @@ func main() {
 			alpacaAdapter, alpacaAdapter, ivRepo,
 			log.With().Str("component", "iv_collector").Logger(),
 		)
-
-		// Enable full option chain capture for backtesting.
-		histOptRepo := timescaledb.NewHistoricalOptionsRepository(
-			timescaledb.NewSqlDB(sqlDB),
-			log.With().Str("component", "hist_options").Logger(),
-		)
-		ivSvc.SetHistoricalOptionsRepo(histOptRepo)
 		if notifier != nil {
 			ivSvc.SetNotifier(notifier)
 		}
 	}
 
-	// DoltHub options chain daily refresh (fills gaps not covered by Alpaca snapshots)
-	dolthubClient := dolthub.NewClient(nil, log)
+	// Historical option chain repo, shared across the live forward-capture
+	// service, the DoltHub gap-fill, and the Tradier nightly snapshot.
 	histOptRepo := timescaledb.NewHistoricalOptionsRepository(
 		timescaledb.NewSqlDB(sqlDB),
 		log.With().Str("component", "hist_options").Logger(),
 	)
+
+	// Forward option chain capture (Alpaca live snapshots into
+	// historical_option_chain). Daily 16:15 ET tick + a startup tick so
+	// omo-data restarts after the IV collector slot still pick up today.
+	var forwardCaptureSvc *optionsimport.ForwardCaptureService
+	if len(ivSymbols) > 0 {
+		forwardCaptureSvc = optionsimport.NewForwardCaptureService(
+			optionsimport.ForwardCaptureConfig{
+				Symbols:       ivSymbols,
+				RunAtHourET:   16,
+				RunAtMinuteET: 15,
+				Concurrency:   4,
+			},
+			alpacaAdapter,
+			histOptRepo,
+			log.With().Str("component", "forward_capture").Logger(),
+		)
+		if notifier != nil {
+			forwardCaptureSvc.SetNotifier(notifier)
+		}
+	}
+
+	// DoltHub options chain daily refresh (fills gaps not covered by Alpaca snapshots)
+	dolthubClient := dolthub.NewClient(nil, log)
 	importSvc := optionsimport.NewService(dolthubClient, histOptRepo, log)
 	dolthubSvc := optionsimport.NewScheduledService(optionsimport.ScheduledConfig{
 		Symbols:       symbols,
@@ -362,6 +379,9 @@ func main() {
 		if ivSvc != nil {
 			ivSvc.CollectAll(ctx)
 		}
+		if forwardCaptureSvc != nil {
+			forwardCaptureSvc.RunOnce(ctx)
+		}
 		if whaleSvc != nil {
 			if err := whaleSvc.Refresh(ctx); err != nil {
 				log.Warn().Err(err).Msg("whale 13F refresh failed")
@@ -413,6 +433,12 @@ func main() {
 	if ivSvc != nil {
 		if err := ivSvc.Start(ctx); err != nil {
 			log.Warn().Err(err).Msg("IV collector failed to start")
+		}
+	}
+
+	if forwardCaptureSvc != nil {
+		if err := forwardCaptureSvc.Start(ctx); err != nil {
+			log.Warn().Err(err).Msg("forward capture service failed to start")
 		}
 	}
 
