@@ -197,10 +197,7 @@ func (p *Pipeline) ProcessBarPhaseATyped(ctx context.Context, bar domain.MarketB
 	if !ok {
 		return true, nil
 	}
-	// Indicator is the SOLE driver of Update — drives state forward AND
-	// fires monitor's + runner's HTF Subscribe callbacks. Must run BEFORE
-	// monitor (which now reads via LastSnapshot) and runner (which drains
-	// htfPending populated by callbacks during this call).
+	// indicator drives Update; see indicator.Service docs for the contract.
 	if p.indicator != nil {
 		if err := p.indicator.HandleSanitizedTyped(ctx, sanitizedBar, tenantID, envMode, bar.Time); err != nil {
 			return false, err
