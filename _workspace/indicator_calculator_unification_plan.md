@@ -1,347 +1,349 @@
-# IndicatorCalculator unification — architectural plan
+# IndicatorCalculator unification - architectural plan
 
 Status: PROPOSED. Drafted 2026-04-30 in response to issue #46
-(EMA50/MACD precision drift). The drift's root cause is that the
-codebase carries three independently-warmed `IndicatorCalculator`
-instances. This document plans the consolidation. No code changes
-yet — the plan exists to surface scope, sequencing, risks, and open
-questions so the migration can be sized and approved before
+(EMA50/MACD precision drift between live and backtest). The
+drift's root cause is that the codebase carries multiple
+independently-warmed `IndicatorCalculator` instances. This
+document plans the consolidation. No code changes yet - the plan
+exists to surface scope, sequencing, risks, and the architectural
+decisions taken so the migration can be sized and approved before
 implementation.
 
-## Current state: three instances per process
+## Authoritative inventory of `monitor.IndicatorCalculator`
 
-All three are the same type (`monitor.IndicatorCalculator`) but
-each owns a separate `states map[stateKey]*symbolState`.
+Three logical instances per process. Some have multiple
+construction sites that are mutually exclusive (gated by
+`if x == nil` or by build path).
 
-### Instance 1 — `monitor.Service.calculator`
+### Live (`omo-core`, `useStrategyV2=true`)
 
-- Construction: `monitor/service.go:381` (`NewIndicatorCalculator()`).
-- Label: `"monitor"` in production; `"monitor_backtest_<id>"` in
-  in-process backtest (set by `Service.TagBacktest`).
-- Warmup feed: `Service.WarmUp` / `WarmUpAndCollect` / `WarmUpHTF` /
-  `WarmUpNative` — called from the live warmup
-  (`cmd/omo-core/warmup.go:309-311`) and the backtest warmup
-  (`internal/app/backtest/runner.go:1002, 1030`).
-- Runtime feed: `Service.handleBarCore` -> `s.calculator.Update(bar)`
-  on every market bar received from the event bus
-  (`monitor/service.go:834`).
-- Consumers: enriched-bar events on the event bus (chart streams,
-  regime detection, dashboard); `monitor.Service.GetLastSnapshot`
-  used by the strategy runner's HTF warmup
-  (`backtest/runner.go:1114-1116`).
+- L1 `monitor.Service.calculator`, label `"monitor"`. Constructed
+  at backend/internal/app/monitor/service.go:381. Warmup feed:
+  `monitor.WarmUpAndCollect` (1m), `WarmUpHTF` (1H),
+  `WarmUpNative` (HTF native), `WarmUp` (crypto 1m). Runtime
+  feed: `Service.handleBarCore`. Consumers: enriched-bar bus
+  events, `GetLastSnapshot`. Holds state for every `(sym, tf)`
+  keyed by symbol and timeframe.
+- L2 `runnerWarmupCalc`, label `"runner_warmup_boot"`. Constructed
+  at backend/cmd/omo-core/warmup.go:371. The `:502` site is the
+  same logical instance under an `if runnerWarmupCalc == nil`
+  guard and never fires when `:371` already ran. Warmup-only;
+  closure-fed by `runnerWarmupSnapshotFn` driven by
+  `strategyRunner.WarmUp` and `WarmUpTF`. Consumers: per-bar
+  `WarmupOnBar` callbacks during initial attach.
+- L3 `strategy.Runner.htfCalcs[(sym,tf)]`, label `"runner_htf"`.
+  Lazily allocated at backend/internal/app/strategy/runner.go:1723
+  and seeded at :2034 by `WarmUpTF`. Runtime fed via the runner's
+  own aggregator at runner.go:1727. Consumers: HTF gates in
+  strategy `OnBar`, regime detector at runner.go:1730.
 
-### Instance 2 — `bootstrap.makeSnapshotFn`'s closure-owned calc
+### Backtest (`backtest.runner.Run`)
 
-- Construction: `bootstrap/strategy.go:470` (`monitor.NewIndicatorCalculator()`).
-- Label: `"bootstrap_snapshot_fn"`.
-- Lifecycle: ONE instance shared across all `WarmUpTF` calls (the
-  closure captures it). Returns `IndicatorSnapshotFunc` consumed by
-  `strategy.Runner.WarmUpTF` at `runner.go:2044` to compute per-bar
-  indicators that feed strategies' `WarmupOnBar` callback.
-- Warmup feed: each call to `snapshotFn(bar)` runs `calc.Update(bar)`.
-- Runtime feed: never (warmup-only).
-- Consumers: strategy `WarmupOnBar` callbacks at attachment time.
+- B1 `monitor.Service.calculator`, label
+  `"monitor_backtest_<id>"` (set by `Service.TagBacktest`).
+  Same construction site as L1. Warmup feed:
+  `monitorSvc.WarmUp` at backtest/runner.go:1002, `WarmUpHTF` at
+  :1012, bridge `WarmUp` at :1030, `WarmUpNative` at :1108.
+- B2 `makeSnapshotFn` calc, label `"backtest_snapshot_fn"`.
+  Constructed at backend/internal/app/backtest/runner.go:2157.
+  Distinct closure from bootstrap's. Driven by
+  `pipeline.Runner.WarmUpTF` and `pipeline.Runner.WarmUp`.
+  Warmup-only.
+- B3 same as L3 (`runner_htf`).
 
-### Instance 3 — `strategy.Runner.htfCalcs[key]`
+### Other snapshot-fn closures in the repo
 
-- Construction: `strategy/runner.go:1723, 2034` (`monitor.NewIndicatorCalculator()`).
-- Label: `"runner_htf"` plus optional suffix.
-- Lifecycle: lazily allocated per `(sym, htfTF)` key, lives for the
-  process.
-- Warmup feed: `Runner.WarmUpTF` at runner.go:2037-2039 — feeds bars
-  through `htfCalc.Update(bar)`.
-- Runtime feed: `Runner.handleBarCore` aggregates 1m -> HTF closed
-  bars, runs `htfCalc.Update(closed)` at runner.go:1727.
-- Consumers: strategies' real-time `OnBar` callbacks read indicators
-  for the active timeframe from `htfSnap`. Anchor regime detection
-  at runner.go:1730 also consumes the snap.
+There are four `makeSnapshotFn`-shaped closures total. Two are
+in-process and listed above (L2, B2). Two are out of scope for
+this plan because they belong to separate one-shot processes:
+
+- backend/internal/app/bootstrap/strategy.go:469
+  (`bootstrap_snapshot_fn`). NOT used during live boot. Fires
+  only on mid-session strategy activation through
+  `StrategyActivator.Activate`. Will be migrated by PR 5.
+- backend/cmd/omo-replay/main.go:1769 (`replay_snapshot_fn`).
+  One-shot replay tool. Out of scope unless replay-vs-live
+  parity becomes a goal.
+- backend/cmd/omo-backfill-indicators/main.go:169. One-shot SQL
+  backfill. Out of scope.
 
 ## How drift originates
 
-The three calcs are fed by independent warmup paths. Even when those
-paths intend to feed the same bars in the same order, no test
-enforces that they actually do. Empirically:
+Three separately-warmed calcs hold state for overlapping
+`(sym, tf)` keys, fed by independent paths. Empirically:
 
-- `monitor.Service.calculator` and `strategy.Runner.htfCalcs` both
-  hold real-time state for `(sym, htfTF)` keys. They are computed
-  from THE SAME bars at runtime (the runner aggregates 1m to HTF;
-  the monitor's aggregator does the same). But during warmup, the
-  paths diverge:
-  - Live: monitor's calc is fed via `WarmUpAndCollect` for 1m and
-    `WarmUpHTF` for 1H; strategy runner's `htfCalcs` are fed via
-    `Runner.WarmUpTF` from the bars `pipeline.Runner.WarmUp` collects.
-  - Backtest: monitor's calc is fed via `monitorSvc.WarmUp(res.bars)`
-    BEFORE `InitAggregators` runs (so the 5m aggregator path
-    short-circuits); strategy runner's `htfCalcs` are fed via the
-    same `WarmUpTF` path live uses.
+- L1 (live monitor) is fed by `WarmUpAndCollect` and `WarmUpHTF`
+  in cmd/omo-core/warmup.go.
+- B1 (backtest monitor) is fed by `monitorSvc.WarmUp` and
+  `WarmUpHTF` in backtest/runner.go BEFORE `InitAggregators`
+  runs, so the 5m aggregator path short-circuits during
+  backtest warmup.
+- L3 and B3 (runner.htfCalcs) are fed by `Runner.WarmUpTF` from
+  the runner's own aggregator chain.
 
-- Consequence: `monitor.calc.states[(sym,5m)].ema50` ≠
-  `runner.htfCalcs[(sym,5m)].ema50` post-warmup. Because EMA carries
-  seed bias forward at `(1 - 2/51)^N` decay, even a 0.012 seed delta
-  shows up as 1.6e-3 drift after 50 bars — exactly what the
-  broadened parity SQL measures.
+After warmup completes, the runner's view of HTF static fields
+(DailyATR, NR7, Bias) is seeded into `IndicatorData.HTF` once
+via `pipeline.Runner.SeedIndicatorSnapshot` at
+backtest/runner.go:1120 and carried forward at
+strategy/runner.go:1766. Per-bar runtime EMA/MACD divergence
+comes from L3 vs B3 having been seeded by slightly different
+bar streams during warmup, not from per-bar monitor reads.
 
-- `strategy_signal_events.payload.indicators` reads from whichever
-  calc the strategy event-handler reaches at gating time. In runtime
-  (which is what we're measuring), that's the runner's `htfCalcs` for
-  HTF gates. Live's runner calc and backtest's runner calc are both
-  fed `WarmUpTF` — but `WarmUpTF` itself produces different state
-  because it depends on `monitor.GetLastSnapshot` (which IS the
-  monitor's calc) for HTF static fields. Backtest's monitor calc is
-  un-seeded for 5m (per the InitAggregators ordering bug), so the
-  HTF static fields it serves to runner's WarmUpTF are stale, and
-  the runner's calc inherits a slightly different starting point.
+Result: `B1.states[(sym,5m)].ema50 != L1.states[(sym,5m)].ema50`,
+and likewise B3 vs L3, with seed-bias decay carrying the delta
+forward at `(1 - 2/51)^N`. The broadened parity SQL measures
+this as ~1.6e-3 EMA50 delta after 50 bars on a $200 stock.
 
-The drift is real, deterministic, and originates in the
-warmup-path divergence between the three calcs that all should be
-seeing the same bars.
+## Target architecture
 
-## Target architecture: one calc per `(sym, tf)`
+A new `internal/app/indicator/` package owns the canonical
+calculator and the 1m -> HTF aggregator chain. Both are
+per-context instances, not process singletons. Three consumers
+read via a port:
 
-A single owning service exposes per-`(sym, tf)` state via a port.
-All consumers (monitor's enrichment path, strategy runner's HTF
-gates, bootstrap's WarmUpTF snapshots) read from the same state
-map. The state is updated in exactly one place per bar.
+- `monitor.Service` for enriched-bar emission.
+- `strategy.Runner` for HTF gates and `WarmUpTF`.
+- `bootstrap.StrategyActivator` and equivalent activation paths
+  (replacing all four `makeSnapshotFn` closures).
 
-Concretely:
+### Architectural decisions
 
-- A new `internal/app/indicator/` service owns the canonical
-  `IndicatorCalculator`.
-- `monitor.Service` no longer owns a calc; calls
-  `indicator.Service.Update(bar)` and reads `Snapshot(sym, tf)` for
-  enrichment.
-- `strategy.Runner` removes `htfCalcs`. Aggregator-driven HTF closes
-  call `indicator.Service.Update(closed)` (or the indicator service
-  subscribes to `EventHTFBarClosed`). Runtime gates read
-  `Snapshot(sym, tf)`.
-- `bootstrap.makeSnapshotFn` either disappears (warmup state read
-  directly from indicator service after a unified warmup pass) or
-  becomes a per-bar replay helper that doesn't own state — the state
-  it would compute is already there.
+D1. Lifecycle: per-context (per-process for live, per-backtest
+    for backtest). `indicator.Service` is constructed alongside
+    `monitor.Service` and lives in the same DI container. The
+    backtest runner constructs its own. Rationale:
+    `Service.TagBacktest` exists today precisely because parallel
+    backtests need isolated calcs. A process singleton would
+    regress that.
 
-Single source of truth. Drift is impossible because there's only one
-state map.
+D2. Aggregator ownership: `indicator.Service` owns the 1m->HTF
+    aggregator chain. Both `monitor.Service.aggregators` and
+    `strategy.Runner.aggregators` are removed. Rationale:
+    aggregation is a pure transformation that two services
+    consume. Putting it in monitor leaves monitor as a de-facto
+    bar-routing hub, exactly the coupling we are removing.
 
-## What's hard about this
+D3. Port shape: pull-based primary, push-based optional.
+    - `Update(bar) Snapshot` returns the snapshot at this bar.
+    - `LastSnapshot(sym, tf) (Snapshot, bool)` for runtime reads.
+    - `Subscribe(sym, tf) <-chan ClosedBar` for consumers that
+      need the closed-HTF stream (the runner, post PR 6a).
+    - Snapshots are returned by value (not pointer) so callers
+      cannot mutate internal state.
+    - Concurrency: single `sync.RWMutex` on the state map for
+      v1. If runtime benchmarks show contention, shard by symbol
+      hash in a follow-up. PR 1 must include a microbenchmark.
 
-1. **Warmup-time per-bar snapshots are a different shape from
-   runtime-time current state.** Today's `bootstrap.makeSnapshotFn`
-   gives strategies indicators AS THEY WERE at each warmup bar's
-   time. The unified calc only stores latest state per `(sym, tf)`.
-   To collapse, either:
-   - Warm up the unified calc with the historical bar sequence in
-     order, capturing per-bar snapshots into a transient store the
-     strategy reads during `WarmupOnBar`, OR
-   - Keep `bootstrap.makeSnapshotFn` as a transient warmup-only
-     calc. It's not a runtime-state duplicator, so it doesn't
-     contribute to the drift observed in #46.
+D4. Snapshot-fn collapse scope: the two in-process closures (L2
+    and B2) are removed. They become thin wrappers over
+    `indicator.Service.LastSnapshot` after PR 3. The bootstrap
+    activation closure (bootstrap/strategy.go:469) is migrated
+    in PR 5. The omo-replay closure stays out of scope.
 
-   **Recommendation**: keep `makeSnapshotFn` as warmup-only. The
-   real fix is collapsing instances 1 and 3, not all three.
+D5. PR sequence: PR 3 (unified warmup) lands BEFORE PR 4
+    (consumer migration) so consumers switch over to already
+    seeded state. PR 6 is split into 6a (synchronous HTF
+    callback) and 6b (event-bus subscription experiment, deferred
+    if not needed).
 
-2. **Mid-session strategy attach.** When a strategy attaches at 13:00
-   ET, it expects warmup bars 12:00-13:00 to flow through its
-   `WarmupOnBar`. The unified calc has those bars' state available,
-   but per-bar snapshots require a backfill query to the bar
-   repository. Acceptable — the bar repo already serves this for the
-   existing warmup path.
+## Migration sequencing - 8 PRs
 
-3. **Test coupling.** ~50 test files construct `monitor.Service`
-   directly with its own calc. Removing `Service.calculator` field
-   forces every test to either inject an indicator service or use a
-   shared test fixture. Mechanical but wide.
-
-4. **The strategy runner's `htfCalcs` lazy allocation** at
-   `runner.go:1721-1726` is keyed by `(sym, tf)`. The unified calc's
-   state map is keyed by `stateKey{Symbol, Timeframe}`. Same shape;
-   just need the runner to read from the indicator service instead
-   of its own map.
-
-5. **Aggregator ownership.** Today the monitor owns the 1m->HTF
-   aggregators. The runner owns its OWN aggregators
-   (`runner.aggregators`) and runs them in `runner.handleBarCore`.
-   Two aggregator instances per `(sym, tf)`. Both produce the same
-   closed HTF bars (from the same 1m input). The unified-calc plan
-   only needs ONE aggregator chain. Either monitor's or runner's
-   aggregator is removed; the other publishes closed-bar events that
-   downstream reads.
-
-   **Recommendation**: keep monitor's aggregator (it's the canonical
-   bar-stream consumer). The runner subscribes to closed-HTF events
-   instead of running its own aggregator. Touches the runner's
-   bar-handling more than the calc collapse alone.
-
-## Migration sequencing — 7 PRs
-
-Each PR is independently reviewable, leaves the system in a
-working state, and ships green-on-day-one. Numbered for ordering.
+Each PR is independently reviewable, leaves the system green on
+day one, and is independently revertable.
 
 ### PR 1: Introduce `internal/app/indicator/` package
 
-- New package with `Service` struct wrapping the existing
-  `monitor.IndicatorCalculator`. Exports `Update(bar) Snapshot` and
-  `LastSnapshot(sym, tf) (Snapshot, bool)`.
-- No changes to existing code paths. The new service has no
-  consumers yet.
-- ~150 LOC. Tests via the existing `brokerporttest` pattern (a
-  contract harness for the indicator service).
+- New package with `Service` struct. Wraps the existing
+  `monitor.IndicatorCalculator` for v1; collapse the wrapper in
+  a follow-up if desirable.
+- Exposes `Update(bar) Snapshot`, `LastSnapshot(sym, tf)
+  (Snapshot, bool)`, `Subscribe(sym, tf) <-chan ClosedBar`,
+  `WarmUp(bars []domain.MarketBar)`.
+- Owns aggregator chain (D2). Construction is per-context
+  (D1).
+- Includes a microbenchmark on `Update` and `LastSnapshot` under
+  realistic concurrent read load.
+- No existing code paths change.
+- ~250 LOC including benchmarks.
 
-### PR 2: Wire `indicator.Service` into the monitor
+### PR 2: Wire `indicator.Service` into the monitor in shadow mode
 
-- `monitor.Service` keeps its calc but ALSO calls
-  `indicator.Service.Update(bar)` on every bar. Equivalent state
-  maintained in two places temporarily.
-- Add a parity test asserting `monitor.calc.states[k] ==
-  indicator.Service.states[k]` after every bar.
-- ~50 LOC. No behavior change yet.
+- `monitor.Service` keeps its calc but also calls
+  `indicator.Service.Update(bar)` on every bar.
+- Add a parity test asserting
+  `monitor.calc.states[k].EMA50 == indicator.Service.LastSnapshot(k).EMA50`
+  bit-for-bit (`math.Float64bits` equality) after every bar.
+- Test runs across the broadened parity SQL window for at least
+  three symbols and three anchor dates.
+- ~80 LOC. No behavior change for users.
 
-### PR 3: Migrate the strategy runner's `htfCalcs` to read from `indicator.Service`
+### PR 3: Unified warmup path
 
-- `runner.handleBarCore` calls `indicator.Service.Update(closedHTFBar)`
-  instead of `htfCalc.Update(closed)`.
-- `runner.htfCalcs` field stays but becomes unused.
-- Existing parity tests must continue to pass; backtest/live drift
-  on 5m EMA50 should drop measurably (#46).
-- ~100 LOC. **First PR with observable behavior change for users:
-  backtest indicator numbers for HTF gates may shift by ~0.001
-  toward live's numbers.** Document the shift in the PR; flag for
-  strategy-tuning baselines that may need re-baselining (per the
-  earlier blast-radius analysis, no committed baselines exist —
-  only operator notes).
+- New `indicator.Service.WarmUp(bars)` is the single entry point
+  for both live boot and backtest boot.
+- backend/cmd/omo-core/warmup.go: replace `WarmUpAndCollect`,
+  `WarmUpHTF`, `WarmUpNative` calls into monitor with one
+  `indicator.WarmUp`. Delete `runnerWarmupCalc` and its closure
+  (L2 collapses).
+- backend/internal/app/backtest/runner.go: replace
+  `monitorSvc.WarmUp` / `WarmUpHTF` / `WarmUpNative` with one
+  `indicator.WarmUp`. Delete `makeSnapshotFn` at :2156 (B2
+  collapses).
+- The `WarmUpNative` double-write at warmup.go:473 (which
+  currently feeds both `runnerWarmupSnapshotFn` and
+  `monitor.WarmUpNative`) is structurally impossible after this
+  PR.
+- monitor.Service still exposes `WarmUpAndCollect` etc. as
+  legacy facades that delegate to the indicator service, until
+  PR 7 deletes them.
+- ~250 LOC. First user-observable behavior change. Backtest
+  EMA50/MACD numbers shift by up to 1.6e-3 toward live's
+  numbers. Document magnitude in PR description.
 
-### PR 4: Migrate the strategy runner's aggregator to subscribe to monitor's closed-HTF events
+### PR 4: Migrate strategy runner's `htfCalcs` to indicator service
 
-- `runner.aggregators` removed; `runner.handleBarCore` subscribes
-  to `monitor.EventHTFBarClosed` (or equivalent) and runs gates
-  against the closed bar.
-- Eliminates the second aggregator chain. Only one closed-HTF stream
-  exists.
-- ~150 LOC. Possibly larger; the runner's bar-handling is intricate.
-- **Risk**: HTF event ordering vs 1m event ordering on the bus. The
-  audit's H3 (`directDispatch`) is relevant — backtest already uses
-  direct dispatch to bypass the bus for monitor->runner state
-  updates. This PR may need to extend that path.
+- `runner.handleBarCore` reads HTF state via
+  `indicator.Service.LastSnapshot(sym, tf)` and calls
+  `indicator.Service.Update(bar)` for the 1m bar (the indicator
+  service's aggregator emits the closed HTF bar internally).
+- `runner.htfCalcs` field deleted.
+- Existing parity tests must continue to pass; backtest/live HTF
+  drift on EMA50 should drop to zero (per PR 2's bit-level test).
+- ~150 LOC.
 
-### PR 5: Remove `monitor.Service.calculator`
+### PR 5: Migrate `bootstrap.StrategyActivator.makeSnapshotFn`
 
-- `monitor.Service.handleBarCore` reads from `indicator.Service`
-  instead of its own calc. The duplicate `Update` from PR 2 is
-  removed.
-- `monitor.Service.calculator` field deleted.
-- Test fixtures across `internal/app/monitor/` updated to inject
-  the indicator service.
-- ~200 LOC. Mostly mechanical test updates.
+- `bootstrap/strategy.go:469` closure becomes a thin wrapper
+  reading `indicator.Service.LastSnapshot`.
+- Mid-session strategy activation flows through the same state
+  map as boot warmup, so newly-attached strategies see the
+  identical indicator stream.
+- ~80 LOC.
 
-### PR 6: Backfill the unified warmup path
+### PR 6a: Migrate runner aggregator (synchronous callback)
 
-- `cmd/omo-core/warmup.go` and `internal/app/backtest/runner.go`
-  call `indicator.Service.WarmUp(bars)` once at process startup.
-- Both paths feed the same bar set in the same order. The
-  `InitAggregators`-ordering bug from #46 root-cause investigation
-  is structurally impossible: there's only one calc, only one
-  aggregator chain, one warmup entry point.
-- ~100 LOC. Removes the `WarmUpAndCollect` / `WarmUpHTF` /
-  `WarmUpNative` / `WarmUp` proliferation in `monitor.Service`.
+- `runner.aggregators` removed. The runner registers a
+  synchronous callback via `indicator.Service.Subscribe(sym, tf)`
+  that fires on the SAME goroutine as the originating 1m
+  `Update(bar)`. This preserves backtest determinism without
+  going through the event bus.
+- Equivalent to extending the existing audit-H3 `directDispatch`
+  pattern that backtest already uses.
+- monitor's aggregator is also removed in this PR; both
+  consumers now read from the indicator service.
+- ~200 LOC. The largest behavior surface in the migration.
+- Risk: ordering of HTF-closed callbacks vs 1m bar handlers.
+  Spec: HTF callbacks fire AFTER the 1m `Update` returns, BEFORE
+  control returns to the caller. Test by feeding a deterministic
+  bar sequence and asserting handler invocation order.
 
-### PR 7: Lock parity via contract test
+### PR 6b: Optional event-bus subscription path (DEFERRED)
 
-- Re-run the broadened parity SQL post-PR-6. Expected: zero drift
-  on EMA21/EMA50/MACD across all 3 anchors and full RTH window.
-- Add a parity contract test that the indicator service's state is
-  byte-identical between live and a backtest of the same date.
+- If a future use case needs cross-process or async HTF
+  subscribers, expose `indicator.Service` as an event-bus
+  publisher. NOT planned for this migration. Tracked separately.
+
+### PR 7: Remove `monitor.Service.calculator` and legacy facades
+
+- `monitor.Service` deletes its `calculator` field and the
+  `WarmUpAndCollect` / `WarmUpHTF` / `WarmUpNative` / `WarmUp`
+  methods (or they become no-ops that log).
+- Test fixtures across `backend/internal/app/monitor/` updated
+  to inject `indicator.Service` via a `monitortest` helper
+  (precedent: `brokerporttest`).
+- Concrete count of `monitor.NewService` callers (production +
+  test) before PR 7 lands so reviewers can size the diff.
+- ~150 LOC if the count is ~10-15 sites; revisit estimate if
+  larger.
+
+### PR 8: Lock parity via contract tests
+
+- Re-run the broadened parity SQL post-PR-7. Acceptance:
+  `math.Float64bits(ema50_live) == math.Float64bits(ema50_backtest)`
+  for all `(sym, tf, anchor_date)` triples in the parity test
+  set, across full RTH.
+- Add a contract test on `EventEnrichedBar` payload asserting
+  the snapshot shape is byte-identical to pre-migration. This
+  protects chart streams, regime detection, and dashboard
+  consumers.
 - Document #46 closed in the audit doc.
-- ~50 LOC test + documentation.
+- ~100 LOC.
 
 ## Risks
 
-### Behavior change in backtest numbers
+### Behavior shift in backtest numbers
 
-PRs 3 and 6 will shift backtest EMA50/MACD values by up to 1.6e-3
-on a $200 stock (per the empirical drift). Strategy-tuning numbers
-may need re-baselining if any operator process compares pre-PR-3
-backtest results to post-PR-3 results. Per the earlier blast-radius
-analysis, no committed performance baselines exist in the repo;
-operator's tuned parameters (avwap_v4 DNA) were calibrated under
-pessimistic-fill semantics, not against specific EMA values, so the
-impact is operator-process-only, not codebase-correctness.
+PR 3 and PR 4 will shift backtest EMA50/MACD values by up to
+1.6e-3 on a $200 stock toward the live numbers. No committed
+performance baselines exist in the repo; tuned avwap_v4 DNA was
+calibrated under pessimistic-fill semantics, not against
+specific EMA values. Operator-process-only impact.
 
-### Aggregator chain consolidation
+### Aggregator consolidation (PR 6a)
 
-PR 4 is the riskiest — runner currently runs its own aggregator and
-emits HTF bars to its own gates. Removing that aggregator and
-subscribing to monitor's closed-HTF events introduces ordering
-sensitivity. Audit H3 (`directDispatch`) is the precedent for this
-kind of bus-bypass coordination; the PR may need to extend that
-path.
+PR 6a is the riskiest PR. Subscribing the runner to
+`indicator.Service`'s closed-HTF stream replaces both monitor's
+and runner's aggregators with one shared chain. Callback
+ordering is load-bearing for backtest determinism. The PR ships
+with an explicit ordering spec and a deterministic-feed test;
+revertable as a unit if the ordering test fails in production.
 
-### Test churn
+### Test churn (PR 7)
 
-PR 5 touches every test that constructs `monitor.Service`. The
-`brokerporttest` harness pattern from Tier 3 is a useful precedent:
-a `monitortest` helper package can centralize the construction.
+Every test that constructs `monitor.Service` needs to inject
+`indicator.Service`. The unit tests inside
+backend/internal/app/monitor/indicators_test.go (~50
+constructions in one file) are tests OF the calc itself and do
+not change. Real churn is `monitor.NewService` callers, count
+TBD before PR 7 lands.
+
+### Backtest isolation
+
+D1 commits to per-backtest construction. `Service.TagBacktest`
+remains operative. Parallel backtests stay isolated.
 
 ### Rollback
 
-Each PR is independently revertable. PR 3 and PR 5 are the
-load-bearing behavior changes; either can be reverted to restore
-pre-unification behavior. PR 6's warmup consolidation can be
-preserved on revert (it's a structural cleanup, not a behavior
-change).
+PR 4 and PR 6a are the load-bearing behavior changes; either
+can be reverted to restore pre-unification HTF behavior. PR 3's
+unified warmup is structural and can be preserved on revert
+(it removes duplication without changing semantics if PR 2's
+parity tests pass).
 
-## Open questions
+## Acceptance criteria (PR 8)
 
-1. **Should `bootstrap.makeSnapshotFn` collapse too?** The current
-   plan keeps it as warmup-only (per "What's hard about this" item
-   1). If we want to truly eliminate all three instances, we need a
-   per-bar snapshot store. Decide before PR 1.
+A migration is "done" iff all of the following hold:
 
-2. **Should the indicator service own the aggregators?** PR 4
-   removes `runner.aggregators`. We could go further and remove
-   `monitor.Service.aggregators` too, having `indicator.Service`
-   own the only aggregator chain. Cleaner; larger PR 4.
-
-3. **Should monitor's parity-diag log emission move?** Today
-   `parityIndicatorLog` is in `monitor/indicators.go:13`. After
-   collapse, it lives in the indicator service. Trivial but
-   touches the parity-diag tooling that operators use.
-
-4. **Should we add a feature flag?** The behavior changes in PR 3
-   and PR 6 are deterministic shifts. A flag (`unified_calc:
-   bool`) would let operators ramp gradually. Adds complexity;
-   probably not worth it given the small magnitude (~1.6e-3).
-
-5. **Timeline.** This is roughly 5-8 PRs across ~3-4 days of focused
-   work. Worth doing as a concentrated effort or spread across
-   weeks?
-
-## Decision points needed before PR 1
-
-- Confirm target architecture (single owning service, three
-  consumers reading via interface).
-- Decide on `bootstrap.makeSnapshotFn` (open question 1).
-- Decide on aggregator consolidation scope (open question 2).
-- Confirm the empirical EMA50 drift is the only #46 symptom worth
-  closing this way (i.e., that the smaller MACD drift will follow
-  for free).
+1. `math.Float64bits(ema50)` equality between live and a
+   backtest of the same date+symbol set across full RTH, for at
+   least three anchor dates and the full universe of trading
+   symbols.
+2. Same for `ema21`, `macd_line`, `macd_signal`, `macd_hist`.
+3. `EventEnrichedBar` payload contract test passes (no
+   downstream subscriber regresses).
+4. Parallel backtests produce isolated state (concurrent runs
+   on different `(sym, tf)` keys do not interfere).
+5. The deterministic-feed test for PR 6a's callback ordering
+   passes.
+6. Microbenchmark from PR 1 shows no `Update` regression vs
+   pre-migration calc and no `LastSnapshot` regression vs the
+   monitor's existing `GetLastSnapshot`.
 
 ## What this plan does NOT do
 
-- It does NOT immediately fix #46. The drift remains until PR 3
-  ships at minimum.
-- It does NOT close audit H5 fully — fill timing / partial-fill
-  semantics are separate Tier 3 concerns.
-- It does NOT change SimBroker's fill model (separate scope).
-- It does NOT touch the AVWAP-side calc (`AnchoredVWAPCalc` in
-  `domain/strategy/anchored_vwap.go`) — that's a different state
-  type with its own warmup path; already byte-identical per the
-  parity SQL.
+- It does not touch the AVWAP calc
+  (`AnchoredVWAPCalc` in `domain/strategy/anchored_vwap.go`);
+  already byte-identical per parity SQL.
+- It does not change SimBroker fill semantics; separate scope.
+- It does not migrate `cmd/omo-replay/main.go`'s snapshot
+  closure; out of scope unless replay-vs-live parity becomes a
+  goal.
+- It does not address audit H5 (fill-timing semantics); separate
+  Tier 3 concern.
 
-## Recommended next step
+## Next step
 
-Before any code, get the open questions answered. The architecture
-question (open question 1: should `makeSnapshotFn` collapse too?)
-materially changes PR 1's surface area. The aggregator question
-(open question 2) materially changes PR 4's risk.
-
-Then ship PR 1 as the foundation. Each subsequent PR is reviewable
-independently and can pause for re-evaluation.
+PR 1 is unblocked. The five architectural decisions are
+committed (D1-D5). Open the PR with the package skeleton, the
+port surface, the microbenchmark, and zero consumer migration.
+Each subsequent PR is independently reviewable.
