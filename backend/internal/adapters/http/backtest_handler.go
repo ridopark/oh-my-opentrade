@@ -333,7 +333,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		meta := backtestRunMeta{
 			id:            runner.ID(),
 			strategies:    append([]string(nil), req.Strategies...),
-			symbols:       symbolsAsStrings(symbols),
+			symbols:       domain.SymbolsToStrings(symbols),
 			periodStart:   fromTime,
 			periodEnd:     toTime,
 			initialEquity: equity,

@@ -251,7 +251,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	r.status.Store("running")
 	r.emitter.EmitSetup("Initializing pipeline…")
 	r.log.Info().
-		Strs("symbols", symbolStrings(r.cfg.Symbols)).
+		Strs("symbols", domain.SymbolsToStrings(r.cfg.Symbols)).
 		Time("from", r.cfg.From).
 		Time("to", r.cfg.To).
 		Str("speed", r.cfg.Speed).
@@ -2239,14 +2239,6 @@ func parseSpeedToDelay(speedStr string) (time.Duration, error) {
 		}
 		return delay, nil
 	}
-}
-
-func symbolStrings(syms []domain.Symbol) []string {
-	out := make([]string, len(syms))
-	for i, s := range syms {
-		out[i] = s.String()
-	}
-	return out
 }
 
 // parseCopytradePartials mirrors copytrade_v1's [[params.partial_fractions]]
