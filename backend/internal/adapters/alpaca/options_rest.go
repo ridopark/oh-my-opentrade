@@ -158,7 +158,9 @@ func (c *RESTClient) GetOptionChain(
 			strings.Join(batch, ","),
 		)
 
-		snapResp, err := c.doReqDataAPI(ctx, dataURL, http.MethodGet, snapshotPath, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
+		snapResp, err := retryTransient(ctx, c.log, "options_snapshots_chain", func() (*http.Response, error) {
+			return c.doReqDataAPI(ctx, dataURL, http.MethodGet, snapshotPath, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
+		})
 		if err != nil {
 			return nil, fmt.Errorf("alpaca: fetch option snapshots: %w", err)
 		}
@@ -250,7 +252,9 @@ func (c *RESTClient) GetOptionPrices(ctx context.Context, dataURL string, symbol
 		batch := syms[i:end]
 
 		snapshotPath := fmt.Sprintf("/v1beta1/options/snapshots?symbols=%s&feed=indicative", strings.Join(batch, ","))
-		resp, err := c.doReqDataAPI(ctx, dataURL, http.MethodGet, snapshotPath, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
+		resp, err := retryTransient(ctx, c.log, "options_snapshots_direct", func() (*http.Response, error) {
+			return c.doReqDataAPI(ctx, dataURL, http.MethodGet, snapshotPath, nil, reqOpts{priority: PriorityBackground, maxRetries: 1})
+		})
 		if err != nil {
 			return nil, fmt.Errorf("alpaca: get option prices: %w", err)
 		}
