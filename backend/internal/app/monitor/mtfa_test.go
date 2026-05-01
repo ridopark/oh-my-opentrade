@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/adapters/eventbus/memory"
+	"github.com/oh-my-opentrade/backend/internal/app/indicator"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/rs/zerolog"
@@ -45,12 +46,14 @@ func makeMTFA1mBar(t *testing.T, sym domain.Symbol, minuteOffset int, price, vol
 	return bar
 }
 
-// setupMTFAService creates a monitor service wired to a memory event bus,
-// initialises aggregators for the given symbols, and starts the service.
+// setupMTFAService creates a monitor service wired to a memory event bus
+// plus an indicator.Service shadow, initialises aggregators for the given
+// symbols, and starts the service.
 func setupMTFAService(t *testing.T, symbols ...domain.Symbol) (*monitor.Service, *memory.Bus) {
 	t.Helper()
 	bus := memory.NewBus()
-	svc := monitor.NewService(bus, &mockRepository{}, zerolog.Nop())
+	idx := indicator.NewService("mtfa_test")
+	svc := monitor.NewService(bus, &mockRepository{}, zerolog.Nop(), monitor.WithIndicatorShadow(idx))
 	svc.InitAggregators(symbols, mtfaSessionOpen)
 	require.NoError(t, svc.Start(context.Background()))
 	return svc, bus
