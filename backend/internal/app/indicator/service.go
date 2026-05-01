@@ -48,6 +48,31 @@ func NewService(label string) *Service {
 	}
 }
 
+// SetLabel relabels the wrapped calc. Used by backtest tagging so parity-diag
+// rows can distinguish parallel runs.
+func (s *Service) SetLabel(label string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calc.Label = label
+}
+
+// RegisterEMAConfig registers custom fast/slow EMA periods on the wrapped calc
+// for the given (symbol, timeframe). No-op if periods are invalid.
+func (s *Service) RegisterEMAConfig(symbol, timeframe string, fastPeriod, slowPeriod int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calc.RegisterEMAConfig(symbol, timeframe, fastPeriod, slowPeriod)
+}
+
+// SeedState pre-populates EMA values for (symbol, timeframe) on the wrapped
+// calc so subsequent Update calls perform incremental EMA computation instead
+// of waiting for SMA seeding.
+func (s *Service) SeedState(symbol, timeframe string, ema9, ema21, ema50 float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calc.SeedState(symbol, timeframe, ema9, ema21, ema50)
+}
+
 func (s *Service) Update(bar domain.MarketBar) domain.IndicatorSnapshot {
 	type firing struct {
 		closed domain.MarketBar
@@ -103,6 +128,41 @@ func (s *Service) WarmUp(bars []domain.MarketBar) {
 	for _, b := range bars {
 		snap := s.calc.Update(b)
 		s.last[snapKey{b.Symbol, b.Timeframe}] = snap
+	}
+}
+
+// WarmUpCollect drives bars through the calc and returns the per-bar snapshot
+// produced by each Update, without pushing into HTF aggregators or firing
+// Subscribe callbacks. Used by warmup paths that need to capture seeded
+// snapshots for downstream replay (e.g. ORB seeding via cached BarSnapshots)
+// while keeping HTF state untouched.
+func (s *Service) WarmUpCollect(bars []domain.MarketBar) []domain.IndicatorSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]domain.IndicatorSnapshot, 0, len(bars))
+	for _, b := range bars {
+		snap := s.calc.Update(b)
+		s.last[snapKey{b.Symbol, b.Timeframe}] = snap
+		out = append(out, snap)
+	}
+	return out
+}
+
+// sessionResetTimeframes are the per-symbol timeframes whose session-aligned
+// state (VWAP accumulators) must be cleared between trading sessions. Mirrors
+// monitor's anchorTimeframes plus 1m.
+var sessionResetTimeframes = []domain.Timeframe{"1m", "5m", "15m", "1h"}
+
+// ResetSessionIndicators clears session-VWAP and other session-reset state for
+// sym across the calc's tracked timeframes, so that the next bar accumulates
+// session VWAP from a clean baseline. Used by boot and replay paths between
+// trading days.
+func (s *Service) ResetSessionIndicators(sym domain.Symbol) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	symStr := sym.String()
+	for _, tf := range sessionResetTimeframes {
+		s.calc.ResetSession(symStr, tf.String())
 	}
 }
 

@@ -25,7 +25,6 @@ import (
 // warmup path with a fixed clock and stub fetcher.
 type EquityWarmupDeps struct {
 	Monitor    *monitor.Service
-	Indicator  *indicator.Service
 	Fetcher    warmup.BarRepo
 	Symbols    []domain.Symbol
 	Timeframe  domain.Timeframe
@@ -38,9 +37,9 @@ type EquityWarmupDeps struct {
 }
 
 // runEquityWarmup loads canonical-spec equity bars per symbol, splits them at
-// today's session open, and feeds both monitor.calculator and the indicator
-// service. Both calc paths receive the same bar stream so post-warmup snapshot
-// state is bit-equal between them.
+// today's session open, and feeds the shared indicator service through
+// monitor.WarmUpAndCollect. The split-and-reset between yesterday and today
+// keeps session-VWAP from leaking across the boundary.
 func runEquityWarmup(ctx context.Context, deps EquityWarmupDeps) {
 	if len(deps.Symbols) == 0 {
 		return
@@ -69,10 +68,6 @@ func runEquityWarmup(ctx context.Context, deps EquityWarmupDeps) {
 		_ = deps.Monitor.WarmUpAndCollect(yesterdayBars)
 		deps.Monitor.ResetSessionIndicators(sym.String())
 		todaySnapsOut := deps.Monitor.WarmUpAndCollect(todayBars)
-		if deps.Indicator != nil {
-			deps.Indicator.WarmUp(yesterdayBars)
-			deps.Indicator.WarmUp(todayBars)
-		}
 		if deps.BarsCache != nil {
 			deps.BarsCache[string(sym)] = bars
 		}
@@ -352,7 +347,6 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 		fetcher := warmupRepoFetcher{repo: infra.repo, broker: infra.barFetcher, log: warmupLog}
 		runEquityWarmup(ctx, EquityWarmupDeps{
 			Monitor:    svc.monitor,
-			Indicator:  svc.indicator,
 			Fetcher:    fetcher,
 			Symbols:    syms.equity,
 			Timeframe:  syms.timeframe,
@@ -384,9 +378,6 @@ func warmupIndicators(ctx context.Context, cfg *config.Config, infra *infraDeps,
 				continue
 			}
 			n := svc.monitor.WarmUp(bars)
-			if svc.indicator != nil {
-				svc.indicator.WarmUp(bars)
-			}
 			svc.monitor.ResetSessionIndicators(sym.String())
 			warmupBarsCache[string(sym)] = bars
 			warmupLog.Info().
