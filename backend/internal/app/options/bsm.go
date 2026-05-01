@@ -118,6 +118,18 @@ func ImpliedVol(marketPrice, s, k, t, r float64, isCall bool, chainIV float64) f
 	return sigma // best estimate after max iterations
 }
 
+// BSMVega returns vega per 1.0 change in sigma (NOT per 1%). BSMPrice does not
+// expose vega in its tuple, so callers that need it (synthetic chain Greeks,
+// historical-backfill IV inversion) read it here.
+func BSMVega(s, k, t, r, sigma float64) float64 {
+	if t <= 0 || sigma <= 0 || s <= 0 || k <= 0 {
+		return 0
+	}
+	sqrtT := math.Sqrt(t)
+	d1 := (math.Log(s/k) + (r+0.5*sigma*sigma)*t) / (sigma * sqrtT)
+	return s * sqrtT * normPDF(d1)
+}
+
 // normCDF computes the standard normal cumulative distribution function.
 func normCDF(x float64) float64 {
 	return 0.5 * (1 + math.Erf(x/math.Sqrt2))
