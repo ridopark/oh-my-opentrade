@@ -670,12 +670,6 @@ func (s *Service) processFill(fill fillMsg) {
 	if fill.Direction != "" {
 		isExit = domain.Direction(fill.Direction).IsExit()
 	}
-	s.log.Debug(). // FIX_B_INSTRUMENT - remove after short-leak diagnosis
-			Str("symbol", string(fill.Symbol)).
-			Str("side", fill.Side).
-			Str("direction", fill.Direction).
-			Bool("is_exit", isExit).
-			Msg("processFill side/direction trace")
 	if isExit {
 		pos, exists := s.positions[key]
 		if !exists {

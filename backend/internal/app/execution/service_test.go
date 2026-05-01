@@ -103,6 +103,50 @@ func TestService_ExitOrderPassesPipeline(t *testing.T) {
 	assert.Contains(t, emittedEvents, domain.EventOrderSubmitted)
 }
 
+// TestService_ExitShortPositionPassesPipeline regression-tests the SHORT-leak
+// bug found 2026-05-01: a CLOSE_SHORT intent (buy-to-cover) was rejected by
+// the exit pre-check at service.go:1018-1047 because GetPositions returned
+// the broker's SHORT position with Side="sell" → SignedQuantity()<0 →
+// posQty<=0 → "no_position_to_exit". Net result: every backtest SHORT rode
+// to BACKTEST_END unflushed (12-trade 1y run, 5/5 SHORTs leaked).
+//
+// Twin of TestService_ExitOrderPassesPipeline above (the LONG case): same
+// shape, opposite direction. If this test fails while the LONG twin passes,
+// the asymmetry is in the exit pre-check, not the broker or the gate chain.
+func TestService_ExitShortPositionPassesPipeline(t *testing.T) {
+	svc, bus, broker, _ := setupTestService(t)
+	// Mock broker returns an existing SHORT position so the CLOSE_SHORT
+	// pre-check at service.go:1027-1047 should resolve qty correctly.
+	broker.GetPositionsFunc = func(ctx context.Context, tenantID string, envMode domain.EnvMode) ([]domain.Trade, error) {
+		trade, _ := domain.NewTrade(
+			time.Now(), tenantID, envMode, uuid.New(),
+			"BTCUSD", "sell", 1.0, 50000, 0, "FILLED", "strategy-1", "test",
+		)
+		return []domain.Trade{trade}, nil
+	}
+	err := svc.Start(context.Background(), "test", domain.EnvModePaper)
+	require.NoError(t, err)
+
+	var emittedEvents []string
+	subscribeAll(t, bus, []string{
+		domain.EventOrderIntentValidated,
+		domain.EventOrderSubmitted,
+		domain.EventOrderIntentRejected,
+	}, &emittedEvents)
+
+	intentEvt := createExitOrderIntentEvent(t, domain.DirectionCloseShort)
+	err = bus.Publish(context.Background(), intentEvt)
+	assert.NoError(t, err)
+	bus.Flush()
+
+	assert.NotContains(t, emittedEvents, domain.EventOrderIntentRejected,
+		"CLOSE_SHORT exit on a SHORT position must not be rejected")
+	assert.Equal(t, 1, broker.SubmitOrderCalls,
+		"CLOSE_SHORT exit must reach the broker for buy-to-cover")
+	assert.Contains(t, emittedEvents, domain.EventOrderIntentValidated)
+	assert.Contains(t, emittedEvents, domain.EventOrderSubmitted)
+}
+
 func TestService_NewShortEquityEntryAllowed(t *testing.T) {
 	svc, bus, broker, _ := setupTestService(t)
 	err := svc.Start(context.Background(), "test", domain.EnvModePaper)
