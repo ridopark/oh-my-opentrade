@@ -18,6 +18,12 @@ import (
 // constructed with `&mockIB{connected: true}`, so the harness's
 // "GetPositions on fresh adapter is empty" invariant holds without
 // SkipFreshPositionsCheck.
+//
+// IBKR's Adapter implements both BrokerPort and OrderStreamPort, so
+// we pass it as the stream argument too. The stream sub-suite runs
+// only its lifecycle invariants today (subscribe returns non-nil;
+// channel closes on ctx cancel) — fill-event invariants need a
+// stream-aware mockIB extension that hasn't been built yet.
 func TestBrokerPortContract_IBKR(t *testing.T) {
 	mock := &mockIB{connected: true}
 	a := NewAdapterWithClient(mock, zerolog.Nop())
@@ -35,5 +41,5 @@ func TestBrokerPortContract_IBKR(t *testing.T) {
 		TestEnvMode:  domain.EnvModePaper,
 	}
 
-	brokerporttest.RunBrokerPortContract(t, a, nil, env)
+	brokerporttest.RunBrokerPortContract(t, a, a, env)
 }
