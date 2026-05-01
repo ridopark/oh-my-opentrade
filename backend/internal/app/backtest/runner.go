@@ -1251,6 +1251,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.status.Store("error")
 		return fmt.Errorf("start ingestion: %w", startErr)
 	}
+	// indicator drives its own Update lifecycle — subscribe FIRST so its
+	// MarketBarSanitized handler runs before monitor and runner (single-
+	// driver contract, see indicator.Service docs).
+	if startErr := idx.Start(ctx, r.infra.EventBus); startErr != nil {
+		r.status.Store("error")
+		return fmt.Errorf("start indicator: %w", startErr)
+	}
 	if startErr := monitorSvc.Start(ctx); startErr != nil {
 		r.status.Store("error")
 		return fmt.Errorf("start monitor: %w", startErr)

@@ -46,7 +46,7 @@ func BenchmarkUpdate(b *testing.B) {
 func BenchmarkUpdateWithSubscriber(b *testing.B) {
 	svc, bars := newWarmService(b)
 	svc.SetSessionOpen(bars[0].Time)
-	svc.Subscribe(testSymbol, domain.Timeframe("5m"), func(_ domain.MarketBar, _ domain.IndicatorSnapshot) {})
+	svc.Subscribe(testSymbol, domain.Timeframe("5m"), func(_ domain.MarketBar, _ domain.IndicatorSnapshot, _ domain.MarketBarEnvelope) {})
 	next := bars[benchPrewarmBars]
 	b.ReportAllocs()
 	b.ResetTimer()

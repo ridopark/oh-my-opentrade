@@ -53,6 +53,10 @@ func TestRunner_HTFSubscribeCallback_DispatchesAtClose(t *testing.T) {
 
 	bars := indicatortest.MakeBars(sym, 200.0, anchor, 10)
 	for i, bar := range bars {
+		// Drive the indicator first (production wiring: indicator.Service
+		// subscribes to MarketBarSanitized BEFORE the runner). Tests using
+		// HandleBarDirectTyped bypass the bus, so we drive Update manually.
+		idx.UpdateWithEnv(bar, domain.MarketBarEnvelope{TenantID: "test-tenant", EnvMode: envMode})
 		if err := r.HandleBarDirectTyped(context.Background(), bar, "test-tenant", envMode); err != nil {
 			t.Fatalf("HandleBarDirectTyped bar %d: %v", i, err)
 		}
@@ -133,6 +137,7 @@ func TestRunner_InitAggregators_UnsubscribesPriorCallbacks(t *testing.T) {
 
 	bars := indicatortest.MakeBars(sym, 200.0, anchor, 10)
 	for i, bar := range bars {
+		idx.UpdateWithEnv(bar, domain.MarketBarEnvelope{TenantID: "test-tenant", EnvMode: envMode})
 		if err := r.HandleBarDirectTyped(context.Background(), bar, "test-tenant", envMode); err != nil {
 			t.Fatalf("HandleBarDirectTyped bar %d: %v", i, err)
 		}

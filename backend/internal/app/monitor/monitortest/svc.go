@@ -5,6 +5,8 @@
 package monitortest
 
 import (
+	"context"
+
 	"github.com/oh-my-opentrade/backend/internal/app/indicator"
 	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/ports"
@@ -12,11 +14,15 @@ import (
 )
 
 // NewSvc returns a monitor.Service wired to a fresh indicator.Service. The
-// returned indicator.Service handle lets callers drive WarmUp directly when
-// tests need to seed indicator state (e.g. parity flows that previously called
-// monitor.WarmUpAndCollect for its side-effects on the embedded calc).
+// indicator.Service is also Start'd against the bus so it subscribes to
+// MarketBarSanitized BEFORE callers wire monitor.Start — tests publishing
+// bars to the bus need the indicator handler to fire first per the
+// single-driver contract.
 func NewSvc(bus ports.EventBusPort, repo ports.RepositoryPort, label string) (*monitor.Service, *indicator.Service) {
 	idx := indicator.NewService(label)
+	if err := idx.Start(context.Background(), bus); err != nil {
+		panic("monitortest: indicator.Start: " + err.Error())
+	}
 	svc := monitor.NewService(bus, repo, zerolog.Nop(), monitor.WithIndicatorShadow(idx))
 	return svc, idx
 }

@@ -197,6 +197,15 @@ func (p *Pipeline) ProcessBarPhaseATyped(ctx context.Context, bar domain.MarketB
 	if !ok {
 		return true, nil
 	}
+	// Indicator is the SOLE driver of Update — drives state forward AND
+	// fires monitor's + runner's HTF Subscribe callbacks. Must run BEFORE
+	// monitor (which now reads via LastSnapshot) and runner (which drains
+	// htfPending populated by callbacks during this call).
+	if p.indicator != nil {
+		if err := p.indicator.HandleSanitizedTyped(ctx, sanitizedBar, tenantID, envMode, bar.Time); err != nil {
+			return false, err
+		}
+	}
 	if p.monitor != nil {
 		if err := p.monitor.HandleMarketBarTyped(ctx, sanitizedBar, tenantID, envMode, bar.Time); err != nil {
 			return false, err
@@ -263,6 +272,18 @@ func (p *Pipeline) ProcessBarPhaseA(ctx context.Context, evt domain.Event) (sani
 	}
 	if !ok {
 		return domain.Event{}, true, nil
+	}
+
+	// stage 1.5: indicator — sole driver of Update. Fires HTF Subscribe
+	// callbacks for monitor (HTF MarketBarSanitized + RegimeShifted via
+	// AppendPublish) and runner (htfPending) BEFORE monitor and runner
+	// run their own logic. Single-driver contract: if monitor or runner
+	// also called Update, the BarAggregator's bar.Time dedup would silently
+	// no-op the second caller's callbacks (PR 6a-2 era regression).
+	if p.indicator != nil {
+		if err := p.indicator.HandleSanitizedDirect(ctx, sanitized); err != nil {
+			return domain.Event{}, false, err
+		}
 	}
 
 	// stage 2: monitor — indicator calc, HTF aggregation, regime, ORB.
