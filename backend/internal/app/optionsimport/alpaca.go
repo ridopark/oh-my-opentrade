@@ -22,7 +22,7 @@ import (
 // ListOptionContractsAsOf/GetOptionDayBar").
 type alpacaOptionsClient interface {
 	ListOptionContractsAsOf(ctx context.Context, underlying domain.Symbol, asOf time.Time, dteRangeDays int) ([]domain.OptionContract, error)
-	GetOptionDayBar(ctx context.Context, dataURL string, occSymbol domain.Symbol, date time.Time) (*domain.MarketBar, error)
+	GetOptionDayBars(ctx context.Context, dataURL string, occSymbols []domain.Symbol, date time.Time) (map[domain.Symbol]*domain.MarketBar, error)
 }
 
 // SpotLookup returns the underlying close on the given date. Returning
@@ -210,9 +210,18 @@ func (s *AlpacaService) CaptureDate(ctx context.Context, sym string, date time.T
 	}
 	halfSpread := spread / 2.0
 
+	occs := make([]domain.Symbol, len(contracts))
+	for i, c := range contracts {
+		occs[i] = c.ContractSymbol
+	}
+	bars, err := s.client.GetOptionDayBars(ctx, s.dataURL, occs, day)
+	if err != nil {
+		return 0, fmt.Errorf("get day bars %s %s: %w", sym, day.Format("2006-01-02"), err)
+	}
+
 	rows := make([]domain.HistoricalOptionChainRow, 0, len(contracts))
 	for _, contract := range contracts {
-		row, ok := s.buildRow(ctx, sym, day, spot, halfSpread, contract)
+		row, ok := s.buildRow(sym, day, spot, halfSpread, contract, bars[contract.ContractSymbol])
 		if !ok {
 			continue
 		}
@@ -234,23 +243,17 @@ func (s *AlpacaService) CaptureDate(ctx context.Context, sym string, date time.T
 	return AlpacaCaptureSaved, nil
 }
 
-// buildRow runs the per-contract pipeline: fetch day bar, derive IV +
-// Greeks, gate on the skip-don't-default rules, return the row. ok=false
+// buildRow runs the per-contract pipeline: derive IV + Greeks from the
+// supplied day bar and gate on the skip-don't-default rules. ok=false
 // means "drop this contract"; the caller treats every drop as silent so
 // one bad strike doesn't poison the rest of the batch.
 func (s *AlpacaService) buildRow(
-	ctx context.Context,
 	sym string,
 	day time.Time,
 	spot, halfSpread float64,
 	contract domain.OptionContract,
+	bar *domain.MarketBar,
 ) (domain.HistoricalOptionChainRow, bool) {
-	bar, err := s.client.GetOptionDayBar(ctx, s.dataURL, contract.ContractSymbol, day)
-	if err != nil {
-		s.log.Debug().Err(err).Str("occ", string(contract.ContractSymbol)).
-			Msg("day bar fetch failed, skipping contract")
-		return domain.HistoricalOptionChainRow{}, false
-	}
 	if bar == nil {
 		return domain.HistoricalOptionChainRow{}, false
 	}

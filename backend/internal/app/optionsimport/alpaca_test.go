@@ -32,17 +32,22 @@ func (f *fakeAlpacaClient) ListOptionContractsAsOf(_ context.Context, _ domain.S
 	return f.contractsByDate[asOf.Format("2006-01-02")], nil
 }
 
-func (f *fakeAlpacaClient) GetOptionDayBar(_ context.Context, _ string, occ domain.Symbol, date time.Time) (*domain.MarketBar, error) {
+func (f *fakeAlpacaClient) GetOptionDayBars(_ context.Context, _ string, occs []domain.Symbol, date time.Time) (map[domain.Symbol]*domain.MarketBar, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.barCalls++
 	if f.barErr != nil {
 		return nil, f.barErr
 	}
-	if m, ok := f.barsByOCCAndDate[string(occ)]; ok {
-		return m[date.Format("2006-01-02")], nil
+	out := make(map[domain.Symbol]*domain.MarketBar, len(occs))
+	for _, occ := range occs {
+		if m, ok := f.barsByOCCAndDate[string(occ)]; ok {
+			if bar := m[date.Format("2006-01-02")]; bar != nil {
+				out[occ] = bar
+			}
+		}
 	}
-	return nil, nil
+	return out, nil
 }
 
 func dayBar(occ string, t time.Time, close float64) *domain.MarketBar {
