@@ -597,12 +597,20 @@ func main() {
 				monSvc.SetORBTimeframe(orbTimeframeCaptured)
 			}
 
+			// Per-shard StrategyDeps copy so each shard's runner uses its
+			// own indicator.Service (matching the per-shard monitor's
+			// IndicatorShadow above). After PR #67 made indicator.Service
+			// the sole HTF warmup driver, the runner's r.indicator must
+			// be non-nil or strategy.WarmUpTF panics on r.indicator.WarmUp.
+			shardStrategyDeps := strategyDeps
+			shardStrategyDeps.Indicator = shardIdx
+
 			var shardStrat *bootstrap.StrategyShard
 			if !sentinelOwnerAssigned {
-				shardStrat, err = bootstrap.BuildStrategyShardWithSentinels(strategyShared, slab, strategyDeps)
+				shardStrat, err = bootstrap.BuildStrategyShardWithSentinels(strategyShared, slab, shardStrategyDeps)
 				sentinelOwnerAssigned = true
 			} else {
-				shardStrat, err = bootstrap.BuildStrategyShard(strategyShared, slab, strategyDeps)
+				shardStrat, err = bootstrap.BuildStrategyShard(strategyShared, slab, shardStrategyDeps)
 			}
 			if err != nil {
 				return backtest.ShardServices{}, fmt.Errorf("shard strategy: %w", err)
@@ -1171,8 +1179,22 @@ func main() {
 		} else {
 			setSessionWiring(pipeline.Runner)
 		}
+		// Resolve AVWAPFn against the active pipeline mode. Backtest sharded
+		// mode dispatches per-symbol to the owning shard's runner; the
+		// non-sharded fallback uses the single global runner.
+		var avwapFn func(symbol string) map[string]float64
+		if shardedPipeline != nil {
+			avwapFn = func(symbol string) map[string]float64 {
+				if p := shardedPipeline.ShardForSymbol(symbol); p != nil {
+					return p.Runner().GetAVWAPValues(symbol)
+				}
+				return nil
+			}
+		} else {
+			avwapFn = pipeline.Runner.GetAVWAPValues
+		}
 		pkgpipeline.New(pkgpipeline.ModeReplay).WireAVWAPMonitor(monitorSvc, pkgpipeline.AVWAPMonitorWiring{
-			AVWAPFn:            pipeline.Runner.GetAVWAPValues,
+			AVWAPFn:            avwapFn,
 			AnchorResolverFn:   sessionResolver.ResolveAnchors,
 			SessionRefresherFn: nil,
 			PrevDayBarsFn:      prevDayBarsFn,
