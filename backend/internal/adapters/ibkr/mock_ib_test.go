@@ -22,6 +22,11 @@ type mockIB struct {
 	cancelledOrders []int64
 	globalCancelled bool
 	rtBarChans      map[string]chan ibsync.RealTimeBar
+	// fills is the list returned by Fills() / ReqFills(). Tests append
+	// via SeedFill while the IBKR adapter's execReconciler polls;
+	// Fills() returns a snapshot so the reconciler iterates a stable
+	// slice while a concurrent SeedFill grows the underlying storage.
+	fills []ibsync.Fill
 
 	reqContractDetailsFn func(*ibsync.Contract) ([]ibsync.ContractDetails, error)
 }
@@ -111,12 +116,42 @@ func (m *mockIB) ReqHistoricalData(_ *ibsync.Contract, _, _, _, _ string, _ bool
 func (m *mockIB) Fills(_ ...*ibsync.ExecutionFilter) []ibsync.Fill {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return nil
+	out := make([]ibsync.Fill, len(m.fills))
+	copy(out, m.fills)
+	return out
 }
 func (m *mockIB) ReqFills(_ ...*ibsync.ExecutionFilter) ([]ibsync.Fill, error) {
+	return m.Fills(), nil
+}
+
+// SeedFill appends a fill to the mock's local cache so the IBKR
+// adapter's execReconciler can detect it on its next 2s poll. orderID
+// must match an existing trade in m.trades for the reconciler to
+// resolve TotalQuantity and label the leg as OrderEventPartialFill
+// vs OrderEventFill (see order_stream.go:225-232). Tests that exercise
+// stream ordering invariants append fills here AFTER calling
+// SubscribeOrderUpdates — fills present at subscribe time are added
+// to seenExecIDs without emission (the seed loop at order_stream.go:174-182).
+func (m *mockIB) SeedFill(orderID int64, execID string, qty, cumQty, price, avgPrice float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return nil, nil
+	m.fills = append(m.fills, ibsync.Fill{
+		Execution: &ibsync.Execution{
+			OrderID:  orderID,
+			ExecID:   execID,
+			Shares:   toDecimal(qty),
+			CumQty:   toDecimal(cumQty),
+			Price:    price,
+			AvgPrice: avgPrice,
+		},
+	})
+}
+
+// toDecimal converts a float64 to ibsync's decimal type with 6
+// decimals of precision. Centralizes the pattern that previously
+// appeared inline at each ibsync.Decimal field assignment.
+func toDecimal(f float64) ibsync.Decimal {
+	return ibsync.StringToDecimal(fmt.Sprintf("%.6f", f))
 }
 func (m *mockIB) ReqMktData(_ *ibsync.Contract, _ string, _ ...ibsync.TagValue) *ibsync.Ticker {
 	return ibsync.NewTicker(nil)
@@ -138,7 +173,7 @@ func makeTrade(orderID int64, status ibsync.Status, filled float64) *ibsync.Trad
 	order.OrderID = orderID
 	t := &ibsync.Trade{Order: order}
 	t.OrderStatus.Status = status
-	t.OrderStatus.Filled = ibsync.StringToDecimal(fmt.Sprintf("%.6f", filled))
+	t.OrderStatus.Filled = toDecimal(filled)
 	return t
 }
 
