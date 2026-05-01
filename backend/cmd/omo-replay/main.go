@@ -328,10 +328,33 @@ func main() {
 			Bool("no_ai", noAIFlag).
 			Msg("backtest mode enabled — wiring SimBroker + execution pipeline")
 
+		// Mirror bootstrap/backtest.go's resolution of YAML-driven fill
+		// realism knobs so omo-replay --backtest produces the same fills
+		// as HTTP /backtest/run for the same config. Without this,
+		// omo-replay fell through to OptimisticFillModel (instant fills
+		// at current close) while HTTP backtest used "pessimistic"
+		// (next-bar with adverse slippage), so identical strategies
+		// produced different P&L on the two paths.
+		btCfg := cfg.Backtest
+		fillModel, fmErr := simbroker.FillModelByName(btCfg.FillModel, btCfg.PessimisticSlippageMultiplier)
+		if fmErr != nil {
+			log.Error().Err(fmErr).Str("fill_model", btCfg.FillModel).Msg("unknown fill model; falling back to optimistic")
+			fillModel = simbroker.OptimisticFillModel{}
+		}
+		feeSchedule, fsErr := simbroker.FeeScheduleByName(btCfg.FeeSchedule)
+		if fsErr != nil {
+			log.Error().Err(fsErr).Str("fee_schedule", btCfg.FeeSchedule).Msg("unknown fee schedule; falling back to NoFees")
+			feeSchedule = simbroker.NoFees{}
+		}
+
 		simBrokerInst = simbroker.New(simbroker.Config{
 			SlippageBPS:     slippageBPS,
 			InitialEquity:   initialEquity,
 			DisableFillChan: true,
+			FillModel:       fillModel,
+			FeeSchedule:     feeSchedule,
+			LatencyMsEq:     btCfg.LatencyMsEquity,
+			LatencyMsOpt:    btCfg.LatencyMsOption,
 		}, log.With().Str("component", "simbroker").Logger())
 
 		execBundle, err := bootstrap.BuildExecutionService(bootstrap.ExecutionDeps{
