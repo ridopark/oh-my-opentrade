@@ -223,6 +223,23 @@ func main() {
 	log.Info().Msg("TimescaleDB connected")
 	repo := timescaledb.NewRepositoryWithLogger(timescaledb.NewSqlDB(sqlDB), log.With().Str("component", "timescaledb").Logger())
 
+	// Backtest mode delegates to the canonical backtest.Runner used by HTTP
+	// /backtest/run, eliminating the parallel inline implementation that
+	// drifted across PRs (#67 indicator, #73 AVWAP wiring, this run's DP +
+	// whale + HTF). The legacy inline path below this point is unreached
+	// when --backtest is set.
+	if backtestFlag {
+		if err := runBacktestViaRunner(
+			ctx, log, sqlDB, cfg, symbols, fromTime, toTime,
+			timeframeFlag, strategiesFlag,
+			initialEquity, slippageBPS, speedFlag, noAIFlag,
+			emitGatedDiag, outputJSON, copytradeHist, copytradeLedgerDir,
+		); err != nil {
+			log.Fatal().Err(err).Msg("backtest run failed")
+		}
+		return
+	}
+
 	// Diagnostic activation: persist EntryGated rows to strategy_signal_events
 	// tagged with this run's id, so a SQL diff against live rows on (symbol, ts)
 	// can attribute a gate divergence to the specific input that disagreed.
