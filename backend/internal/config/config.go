@@ -81,6 +81,17 @@ type AlpacaConfig struct {
 	PaperMode     bool   `yaml:"paper_mode"`
 	CryptoDataURL string `yaml:"crypto_data_url"`
 	CryptoFeed    string `yaml:"crypto_feed"`
+
+	// OptionsChainMaxContracts caps how many OCC contracts GetOptionChain
+	// returns to consumers (live strategy selector, forward capture, IV
+	// collector, debate). The underlying call paginates fully regardless;
+	// this is a behavior gate that keeps strategies running against the
+	// same input distribution they were tuned on while the operator
+	// observes divergence between the truncated set and the full
+	// chain in WARN logs. 0 (the YAML default) is materialized to 250
+	// to preserve the pre-fix truncation. Set to -1 in YAML to lift the
+	// cap after a few days of clean divergence observation.
+	OptionsChainMaxContracts int `yaml:"options_chain_max_contracts"`
 }
 
 // CoinbaseConfig holds parameters for the read-only Coinbase Exchange public
@@ -676,6 +687,12 @@ func Load(envPath, yamlPath string) (*Config, error) {
 	}
 	if val := os.Getenv("APCA_CRYPTO_FEED"); val != "" {
 		cfg.Alpaca.CryptoFeed = val
+	}
+	// Materialize the OptionsChainMaxContracts default. Zero (YAML
+	// omitted) means "preserve the pre-fix 250-cap truncation as a
+	// shadow-mode safety floor". -1 (operator opt-in) means uncapped.
+	if cfg.Alpaca.OptionsChainMaxContracts == 0 {
+		cfg.Alpaca.OptionsChainMaxContracts = 250
 	}
 
 	if val := os.Getenv("STREAMING_SOURCE"); val != "" {

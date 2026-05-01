@@ -81,6 +81,14 @@ func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger, opts ...Option) (*A
 	restLog := log.With().Str("client", "rest").Logger()
 	rest := NewRESTClient(cfg.BaseURL, cfg.APIKeyID, cfg.APISecretKey, limiter, restLog)
 	rest.feed = cfg.Feed
+	// Translate the YAML-facing semantics (-1 = uncapped, default 250 from
+	// config.Load) to the setter's semantics (<=0 = uncapped). config.Load
+	// materializes 0 to 250 so an unset YAML value still truncates.
+	chainCap := cfg.OptionsChainMaxContracts
+	if chainCap < 0 {
+		chainCap = 0
+	}
+	rest.SetOptionsChainMaxContracts(chainCap)
 
 	dataURL := cfg.DataURL
 	if dataURL == "" {

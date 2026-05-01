@@ -637,3 +637,62 @@ func TestApplySyntheticChainDefaults_MaxIVStaysZeroWhenOmitted(t *testing.T) {
 	got := applySyntheticChainDefaults(SyntheticChainConfig{})
 	assert.Equal(t, 0.0, got.MaxIV, "MaxIV must remain unset so block-omitted detection works")
 }
+
+// Pins the OptionsChainMaxContracts shadow-mode default. YAML omitting
+// the key (zero) materializes to 250 — the pre-fix truncation level —
+// so live strategies keep seeing the same input distribution they were
+// tuned on. Operator opts in to the uncapped chain by setting -1 in
+// YAML; that value survives.
+func TestLoad_OptionsChainMaxContracts(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want int
+	}{
+		{
+			name: "omitted defaults to 250",
+			yaml: `alpaca:
+  base_url: https://test
+database:
+  host: localhost
+symbols:
+  symbols: [AAPL]
+  timeframe: 1m`,
+			want: 250,
+		},
+		{
+			name: "explicit -1 lifts the cap",
+			yaml: `alpaca:
+  base_url: https://test
+  options_chain_max_contracts: -1
+database:
+  host: localhost
+symbols:
+  symbols: [AAPL]
+  timeframe: 1m`,
+			want: -1,
+		},
+		{
+			name: "explicit positive value preserved",
+			yaml: `alpaca:
+  base_url: https://test
+  options_chain_max_contracts: 500
+database:
+  host: localhost
+symbols:
+  symbols: [AAPL]
+  timeframe: 1m`,
+			want: 500,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			envPath := writeFile(t, tempDir, ".env", "APCA_API_KEY_ID=k\nAPCA_API_SECRET_KEY=s")
+			yamlPath := writeFile(t, tempDir, "config.yaml", tt.yaml)
+			cfg, err := Load(envPath, yamlPath)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.Alpaca.OptionsChainMaxContracts)
+		})
+	}
+}

@@ -329,6 +329,144 @@ func TestGetOptionChain_GivesUpAfterMaxRetries(t *testing.T) {
 	assert.Equal(t, int32(len(transientRetryBackoffs)+1), calls.Load(), "expected attempts = backoffs + 1")
 }
 
+// TestGetOptionChain_PaginatesContractsList verifies the bug fix for the
+// pre-existing 250-cap behavior: GetOptionChain now follows next_page_token
+// across multiple pages and returns the union, not a truncated first page.
+func TestGetOptionChain_PaginatesContractsList(t *testing.T) {
+	page1 := `{
+		"option_contracts": [
+			{"symbol": "AAPL270119C00190000", "underlying_symbol": "AAPL", "expiration_date": "2027-01-19",
+			 "strike_price": "190", "type": "call", "style": "american", "multiplier": "100",
+			 "open_interest": "500", "tradable": true, "status": "active"}
+		],
+		"next_page_token": "PAGE2"
+	}`
+	page2 := `{
+		"option_contracts": [
+			{"symbol": "AAPL270119C00200000", "underlying_symbol": "AAPL", "expiration_date": "2027-01-19",
+			 "strike_price": "200", "type": "call", "style": "american", "multiplier": "100",
+			 "open_interest": "300", "tradable": true, "status": "active"}
+		],
+		"next_page_token": null
+	}`
+	snapshotsJSON := `{
+		"snapshots": {
+			"AAPL270119C00190000": {"greeks":{"delta":0.5,"gamma":0.04,"theta":-0.1,"vega":0.18,"rho":0.03},"impliedVolatility":0.3,"latestQuote":{"bp":3.10,"ap":3.20},"openInterest":500},
+			"AAPL270119C00200000": {"greeks":{"delta":0.4,"gamma":0.04,"theta":-0.1,"vega":0.18,"rho":0.03},"impliedVolatility":0.3,"latestQuote":{"bp":2.10,"ap":2.20},"openInterest":300}
+		}
+	}`
+
+	var brokerHits atomic.Int32
+	brokerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit := brokerHits.Add(1)
+		assert.Contains(t, r.URL.Path, "/v2/options/contracts")
+		w.WriteHeader(http.StatusOK)
+		switch hit {
+		case 1:
+			assert.Empty(t, r.URL.Query().Get("page_token"))
+			io.WriteString(w, page1)
+		case 2:
+			assert.Equal(t, "PAGE2", r.URL.Query().Get("page_token"))
+			io.WriteString(w, page2)
+		default:
+			t.Fatalf("unexpected third broker request — pagination didn't terminate")
+		}
+	}))
+	defer brokerServer.Close()
+	dataServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, snapshotsJSON)
+	}))
+	defer dataServer.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(brokerServer.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+	// No cap → both pages flow through to the caller.
+	client.SetOptionsChainMaxContracts(0)
+
+	expiry := time.Date(2027, 1, 19, 0, 0, 0, 0, time.UTC)
+	sym, _ := domain.NewSymbol("AAPL")
+	chain, err := client.GetOptionChain(context.Background(), dataServer.URL, sym, expiry, expiry, domain.OptionRightCall)
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), brokerHits.Load(), "must follow next_page_token through both pages")
+	require.Len(t, chain, 2, "merged result must include both pages, not just the first")
+}
+
+// TestGetOptionChain_TruncatesAtCap pins the shadow-mode safety cap. The
+// caller still sees only `cap` contracts; the underlying pagination ran
+// to completion so the WARN log can record the divergence.
+func TestGetOptionChain_TruncatesAtCap(t *testing.T) {
+	page1 := `{
+		"option_contracts": [
+			{"symbol": "AAPL270119C00190000", "underlying_symbol": "AAPL", "expiration_date": "2027-01-19",
+			 "strike_price": "190", "type": "call", "style": "american", "multiplier": "100",
+			 "open_interest": "500", "tradable": true, "status": "active"},
+			{"symbol": "AAPL270119C00195000", "underlying_symbol": "AAPL", "expiration_date": "2027-01-19",
+			 "strike_price": "195", "type": "call", "style": "american", "multiplier": "100",
+			 "open_interest": "400", "tradable": true, "status": "active"},
+			{"symbol": "AAPL270119C00200000", "underlying_symbol": "AAPL", "expiration_date": "2027-01-19",
+			 "strike_price": "200", "type": "call", "style": "american", "multiplier": "100",
+			 "open_interest": "300", "tradable": true, "status": "active"}
+		],
+		"next_page_token": null
+	}`
+	snapshotsJSON := `{
+		"snapshots": {
+			"AAPL270119C00190000": {"greeks":{"delta":0.5,"gamma":0.04,"theta":-0.1,"vega":0.18,"rho":0.03},"impliedVolatility":0.3,"latestQuote":{"bp":3.10,"ap":3.20},"openInterest":500},
+			"AAPL270119C00195000": {"greeks":{"delta":0.45,"gamma":0.04,"theta":-0.1,"vega":0.17,"rho":0.03},"impliedVolatility":0.3,"latestQuote":{"bp":2.50,"ap":2.60},"openInterest":400},
+			"AAPL270119C00200000": {"greeks":{"delta":0.4,"gamma":0.04,"theta":-0.1,"vega":0.16,"rho":0.03},"impliedVolatility":0.3,"latestQuote":{"bp":2.10,"ap":2.20},"openInterest":300}
+		}
+	}`
+	brokerServer, dataServer := makeOptionChainServers(t, page1, snapshotsJSON)
+	defer brokerServer.Close()
+	defer dataServer.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(brokerServer.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+	client.SetOptionsChainMaxContracts(2) // 3 contracts available, cap to 2
+
+	expiry := time.Date(2027, 1, 19, 0, 0, 0, 0, time.UTC)
+	sym, _ := domain.NewSymbol("AAPL")
+	chain, err := client.GetOptionChain(context.Background(), dataServer.URL, sym, expiry, expiry, domain.OptionRightCall)
+	require.NoError(t, err)
+	assert.Len(t, chain, 2, "shadow-mode cap=2 must truncate the 3-contract chain")
+}
+
+// TestGetOptionChain_UncappedReturnsAll is the operator-promoted state:
+// SetOptionsChainMaxContracts(0) (or <0) lifts the cap, every contract flows.
+func TestGetOptionChain_UncappedReturnsAll(t *testing.T) {
+	page1 := `{
+		"option_contracts": [
+			{"symbol": "AAPL270119C00190000", "underlying_symbol": "AAPL", "expiration_date": "2027-01-19",
+			 "strike_price": "190", "type": "call", "style": "american", "multiplier": "100",
+			 "open_interest": "500", "tradable": true, "status": "active"},
+			{"symbol": "AAPL270119C00200000", "underlying_symbol": "AAPL", "expiration_date": "2027-01-19",
+			 "strike_price": "200", "type": "call", "style": "american", "multiplier": "100",
+			 "open_interest": "300", "tradable": true, "status": "active"}
+		],
+		"next_page_token": null
+	}`
+	snapshotsJSON := `{
+		"snapshots": {
+			"AAPL270119C00190000": {"greeks":{"delta":0.5,"gamma":0.04,"theta":-0.1,"vega":0.18,"rho":0.03},"impliedVolatility":0.3,"latestQuote":{"bp":3.10,"ap":3.20},"openInterest":500},
+			"AAPL270119C00200000": {"greeks":{"delta":0.4,"gamma":0.04,"theta":-0.1,"vega":0.16,"rho":0.03},"impliedVolatility":0.3,"latestQuote":{"bp":2.10,"ap":2.20},"openInterest":300}
+		}
+	}`
+	brokerServer, dataServer := makeOptionChainServers(t, page1, snapshotsJSON)
+	defer brokerServer.Close()
+	defer dataServer.Close()
+
+	limiter := NewRateLimiter(200)
+	client := NewRESTClient(brokerServer.URL, "test-key", "test-secret", limiter, zerolog.Nop())
+	client.SetOptionsChainMaxContracts(0) // operator-promoted, no truncation
+
+	expiry := time.Date(2027, 1, 19, 0, 0, 0, 0, time.UTC)
+	sym, _ := domain.NewSymbol("AAPL")
+	chain, err := client.GetOptionChain(context.Background(), dataServer.URL, sym, expiry, expiry, domain.OptionRightCall)
+	require.NoError(t, err)
+	assert.Len(t, chain, 2)
+}
+
 // TestIsTransientError covers the network-error classification for the cases
 // the production bug surfaced: ECONNRESET and io.EOF wrapped inside net.OpError.
 func TestIsTransientError(t *testing.T) {
