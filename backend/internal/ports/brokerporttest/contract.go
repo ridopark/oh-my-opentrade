@@ -96,6 +96,11 @@ func RunBrokerPortContract(t *testing.T, broker ports.BrokerPort, stream ports.O
 			t.Errorf("GetOrderStatus returned %q then %q for the same orderID; contract requires idempotent reads", first, second)
 		}
 	})
+
+	// Stream sub-suite runs after BrokerPort invariants. Adapters
+	// passing nil here (SimBroker, Hyperliquid today) skip the entire
+	// stream suite via RunOrderStreamPortContract's nil-tolerance.
+	RunOrderStreamPortContract(t, stream, env)
 }
 
 // newIntent builds an OrderIntent for the harness's SubmitOrder probe.
