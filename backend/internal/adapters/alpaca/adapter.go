@@ -30,7 +30,8 @@ var _ ports.SnapshotPort = (*Adapter)(nil)
 
 // adapterOptions holds functional options for NewAdapter.
 type adapterOptions struct {
-	noStream bool
+	noStream    bool
+	rateLimitPM int // requests-per-minute override; 0 = use defaultRateLimit
 }
 
 // Option is a functional option for NewAdapter.
@@ -40,6 +41,21 @@ type Option func(*adapterOptions)
 // Use when the adapter is only needed for REST (historical bars, options).
 func WithNoStream() Option {
 	return func(o *adapterOptions) { o.noStream = true }
+}
+
+// WithRateLimit overrides the shared REST rate limiter cap. Defaults
+// are global=200, background=120 (conservative against the broker API's
+// 200/min server-side cap and a 60% headroom reservation for trading-
+// priority calls). Algo Trader Plus accepts 10,000/min on data
+// endpoints, so background batch workloads like omo-backfill can safely
+// raise both caps to ~1000 rpm — broker calls in the mix self-pace at
+// ~17% of total volume so the 200/min server cap stays under-budget at
+// shared cap up to ~1200. Sets BOTH global AND background to rpm
+// because background-priority calls (which the backfill uses) wait on
+// both limiters; bumping only global would leave the 120/min
+// background cap as the bottleneck. Pass 0 to keep the defaults.
+func WithRateLimit(rpm int) Option {
+	return func(o *adapterOptions) { o.rateLimitPM = rpm }
 }
 
 // NewAdapter creates a new Alpaca Adapter.
@@ -56,7 +72,12 @@ func NewAdapter(cfg config.AlpacaConfig, log zerolog.Logger, opts ...Option) (*A
 		opt(o)
 	}
 
-	limiter := NewPriorityRateLimiter(defaultRateLimit, 120)
+	globalRPM, backgroundRPM := defaultRateLimit, 120
+	if o.rateLimitPM > 0 {
+		globalRPM = o.rateLimitPM
+		backgroundRPM = o.rateLimitPM
+	}
+	limiter := NewPriorityRateLimiter(globalRPM, backgroundRPM)
 	restLog := log.With().Str("client", "rest").Logger()
 	rest := NewRESTClient(cfg.BaseURL, cfg.APIKeyID, cfg.APISecretKey, limiter, restLog)
 	rest.feed = cfg.Feed
