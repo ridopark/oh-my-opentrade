@@ -9,7 +9,6 @@ import (
 
 	"github.com/oh-my-opentrade/backend/internal/app/gate"
 	"github.com/oh-my-opentrade/backend/internal/app/indicator"
-	"github.com/oh-my-opentrade/backend/internal/app/monitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy/builtin"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -475,38 +474,11 @@ func (pa *PipelineActivator) ActivateSymbol(symbol string, bars1m, barsHTF []dom
 	pa.runner.InitAggregators(sessionOpen)
 }
 
+// makeSnapshotFn returns a per-call ephemeral indicator wrapper for
+// mid-session strategy activation. The underlying calc replays the
+// activation symbol's recent bars to produce per-bar historical
+// snapshots; canonical state is untouched.
 func makeSnapshotFn() strategy.IndicatorSnapshotFunc {
-	calc := monitor.NewIndicatorCalculator()
-	calc.Label = "bootstrap_snapshot_fn"
-	return func(bar domain.MarketBar) start.IndicatorData {
-		snap := calc.Update(bar)
-		return start.IndicatorData{
-			RSI:           snap.RSI,
-			StochK:        snap.StochK,
-			StochD:        snap.StochD,
-			EMA9:          snap.EMA9,
-			EMA21:         snap.EMA21,
-			EMA50:         snap.EMA50,
-			EMAFast:       snap.EMAFast,
-			EMASlow:       snap.EMASlow,
-			EMAFastPeriod: snap.EMAFastPeriod,
-			EMASlowPeriod: snap.EMASlowPeriod,
-			VWAP:          snap.VWAP,
-			Volume:        snap.Volume,
-			VolumeSMA:     snap.VolumeSMA,
-			ATR:           snap.ATR,
-			EMA200:        snap.EMA200,
-			BBUpper:       snap.BBUpper,
-			BBMiddle:      snap.BBMiddle,
-			BBLower:       snap.BBLower,
-			BBPercentB:    snap.BBPercentB,
-			BBBandwidth:   snap.BBBandwidth,
-			MACDLine:      snap.MACDLine,
-			MACDSignal:    snap.MACDSignal,
-			MACDHistogram: snap.MACDHistogram,
-			ADX:           snap.ADX,
-			RegimeScore:   snap.RegimeScore,
-		}
-	}
+	return indicator.SnapshotFn(indicator.NewService("bootstrap_snapshot_fn"))
 }
 
