@@ -55,7 +55,6 @@ func TestRunEquityWarmup_IndicatorMonitorParity(t *testing.T) {
 
 	deps := EquityWarmupDeps{
 		Monitor:   monSvc,
-		Indicator: idx,
 		Fetcher:   stub,
 		Symbols:   syms,
 		Timeframe: domain.Timeframe("1m"),

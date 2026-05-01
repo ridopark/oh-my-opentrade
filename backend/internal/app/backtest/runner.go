@@ -1004,7 +1004,6 @@ func (r *Runner) Run(ctx context.Context) error {
 			warmupBarsCache[res.sym] = res.bars
 			dailyBarsCache[res.sym] = res.bars1d
 			monitorSvc.WarmUp(res.bars)
-			idx.WarmUp(res.bars)
 			if len(res.bars1h) > 0 {
 				// Use only bars before backtest start for 1H EMA50 (no look-ahead bias).
 				var preHourly []domain.MarketBar
@@ -1015,7 +1014,6 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 				if len(preHourly) > 0 {
 					nh := monitorSvc.WarmUpHTF(preHourly)
-					idx.WarmUp(preHourly)
 					r.log.Info().Str("symbol", res.sym).Int("bars", nh).Msg("1H EMA50 warmup complete")
 				}
 			}
@@ -1034,7 +1032,6 @@ func (r *Runner) Run(ctx context.Context) error {
 				bridgeCount = len(replayBars)
 			}
 			monitorSvc.WarmUp(replayBars[:bridgeCount])
-			idx.WarmUp(replayBars[:bridgeCount])
 		}
 	}
 
