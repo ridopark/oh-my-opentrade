@@ -25,6 +25,11 @@ func RunBrokerPortContract(t *testing.T, broker ports.BrokerPort, stream ports.O
 	if len(env.TestSymbols) == 0 {
 		t.Fatal("brokerporttest: Env.TestSymbols must be non-empty")
 	}
+	for _, sym := range env.TestSymbols {
+		if _, ok := env.InitialPrice[sym]; !ok {
+			t.Fatalf("brokerporttest: Env.InitialPrice missing entry for %q (every TestSymbols entry needs a price; newIntent uses it as LimitPrice for cross-adapter compatibility)", sym)
+		}
+	}
 	if env.Setup != nil {
 		if err := env.Setup(t); err != nil {
 			t.Fatalf("brokerporttest: Env.Setup: %v", err)
@@ -94,21 +99,12 @@ func RunBrokerPortContract(t *testing.T, broker ports.BrokerPort, stream ports.O
 }
 
 // newIntent builds an OrderIntent for the harness's SubmitOrder probe.
-// OrderType=market and LimitPrice (sourced from Env.InitialPrice) keep
-// the intent valid across every current adapter:
-//   - IBKR maps OrderType="market" -> MKT (broker.go:769); empty
-//     OrderType defaults to LMT, which would require a non-zero
-//     LimitPrice and reject a 0-price intent.
-//   - Hyperliquid simulates market orders as aggressive limits using
-//     LimitPrice * 1.05 (or * 0.95) as the slippage bound
-//     (broker.go:90-100); a zero LimitPrice would produce a zero
-//     bound and reject.
-//   - SimBroker reads OrderType only for explicit "limit" branches
-//     and tolerates the field otherwise.
-//
-// Each call generates a fresh UUID + idempotency key so the harness
-// can be re-run without colliding with prior runs in the same test
-// process.
+// OrderType=market and a non-zero LimitPrice (sourced from
+// Env.InitialPrice) are both required by at least one current adapter
+// (IBKR rejects empty OrderType paired with zero LimitPrice;
+// Hyperliquid uses LimitPrice as the slippage-bound base for market
+// orders). The harness validates that every TestSymbols entry has an
+// InitialPrice before any subtest runs, so the lookup here is safe.
 func newIntent(env *Env, sym domain.Symbol, dir domain.Direction, qty float64) domain.OrderIntent {
 	return domain.OrderIntent{
 		ID:             uuid.New(),
