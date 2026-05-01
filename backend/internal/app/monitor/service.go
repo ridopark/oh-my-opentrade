@@ -23,13 +23,16 @@ type DNAGateChecker interface {
 	IsDNAApproved(ctx context.Context, strategyKey string) (bool, error)
 }
 
-// IndicatorShadow is the minimal port the monitor uses to drive a parallel
-// indicator calculator on every 1m bar. Declaring it here (rather than
-// importing the indicator package) keeps the dependency arrow
-// indicator -> monitor and avoids a cycle. *indicator.Service satisfies
-// this structurally.
+// IndicatorShadow is the port the monitor uses to drive the canonical
+// indicator service. Declaring it here (rather than importing the
+// indicator package) keeps the dependency arrow indicator -> monitor and
+// avoids a cycle. *indicator.Service satisfies this structurally.
 type IndicatorShadow interface {
 	Update(bar domain.MarketBar) domain.IndicatorSnapshot
+	LastSnapshot(sym domain.Symbol, tf domain.Timeframe) (domain.IndicatorSnapshot, bool)
+	SetSessionOpen(t time.Time)
+	Subscribe(sym domain.Symbol, tf domain.Timeframe, fn func(closed domain.MarketBar, snap domain.IndicatorSnapshot)) func()
+	PrimeAggregator(sym domain.Symbol, tf domain.Timeframe, bars1m []domain.MarketBar)
 }
 
 type Option func(*Service)
@@ -43,6 +46,13 @@ func WithIndicatorShadow(shadow IndicatorShadow) Option {
 }
 const settlingBars = 5
 var anchorTimeframes = []domain.Timeframe{"5m", "15m", "1h"}
+
+type htfCallEnvelope struct {
+	tenantID   string
+	envMode    domain.EnvMode
+	idemKey    string
+	occurredAt time.Time
+}
 // Service is the monitor application service.
 // It subscribes to MarketBarSanitized events, computes technical indicators,
 // detects market regime shifts, and identifies trade setups.
@@ -58,12 +68,20 @@ type Service struct {
 	effectiveSymbols map[string]struct{}
 	lastSnaps        map[string]domain.IndicatorSnapshot
 	liveBars         map[string]int
-	aggregators      map[string]*domain.BarAggregator
-	// aggKeysBySym caches the per-symbol aggregator key strings ("sym:tf"),
-	// parallel to anchorTimeframes. Populated by InitAggregators so the hot
-	// HandleMarketBar loop can iterate without re-concatenating strings on
-	// every bar (was ~880k allocs per backtest).
-	aggKeysBySym map[string][]string
+	// htfUnsubs holds the indicator.Service unsubscribe closures for each
+	// (sym, tf) anchor-timeframe callback registered by InitAggregators.
+	// Re-initialization paths drop the old subscriptions before re-registering
+	// to keep callbacks bounded.
+	htfUnsubs map[string]func()
+	// pendingHTFEvents accumulates HTF MarketBarSanitized + RegimeShifted
+	// events emitted by Subscribe callbacks during s.shadowIndicator.Update,
+	// drained at the end of handleBarCore. Reused across bars; the per-symbol
+	// callback owns the slot for its (sym, tf) pair while s.mu is held.
+	pendingHTFEvents []domain.Event
+	// htfCallCtx carries the in-flight handleBarCore envelope metadata into
+	// Subscribe callbacks that fire while s.mu is held. Single-goroutine read
+	// because callbacks fire synchronously inside shadowIndicator.Update.
+	htfCallCtx htfCallEnvelope
 	// anchorRegimeMaps holds a reusable AnchorRegimes map per symbol so
 	// HandleMarketBar doesn't allocate a fresh map on every bar. Was ~320MB
 	// of bucket allocations per backtest. Safe because each symbol owns its
@@ -234,14 +252,13 @@ func SplitBarsByTime(bars []domain.MarketBar, t time.Time) ([]domain.MarketBar, 
 	return bars, nil
 }
 // WarmUpAndCollect is the canonical seeding entry. It processes historical
-// bars through the indicator calculator, drives the per-symbol HTF aggregator
-// path (anchorRegimes + lastHTFSnaps[1h]) under the htfNativeReserved gate,
-// finalizes lastSnaps[sym] with AnchorRegimes + HTF map, and returns the
-// per-bar 1m snapshots produced by Update. Captured snaps reflect the 1m
-// calc state immediately after Update of that bar (BEFORE any HTF-close
-// update on the same iteration), matching the snap a downstream
-// SeedORBFromHistory caller needs to feed feedORBBar without re-running
-// calc.Update on these bars. Does NOT emit events or persist data.
+// 1m bars through the monitor calculator, finalizes lastSnaps[sym] with
+// AnchorRegimes (pulled from anchorRegimes seeded by WarmUpNative or live
+// callbacks) + HTF map, and returns the per-bar snapshots produced by
+// Update. Captured snaps reflect the 1m calc state immediately after Update
+// of that bar, matching what SeedORBFromHistory needs to feed feedORBBar
+// without re-running calc.Update on these bars. Does NOT emit events or
+// persist data.
 func (s *Service) WarmUpAndCollect(bars []domain.MarketBar) []BarSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -252,37 +269,6 @@ func (s *Service) WarmUpAndCollect(bars []domain.MarketBar) []BarSnapshot {
 		lastSnap = s.calculator.Update(bar)
 		lastBar = bar
 		result = append(result, BarSnapshot{Bar: bar, Snapshot: lastSnap})
-		symStr := bar.Symbol.String()
-		if warmup.IsEquityNonRTH(bar) {
-			lastBar = bar
-			continue
-		}
-		for _, tf := range anchorTimeframes {
-			aggKey := symStr + ":" + tf.String()
-			agg, exists := s.aggregators[aggKey]
-			if !exists {
-				continue
-			}
-			closed, ok := agg.Push(bar)
-			if !ok {
-				continue
-			}
-			// Reserved for WarmUpNative; aggregator was still pushed above
-			// to prime bucket state for runtime, but skip the calc.Update
-			// to avoid double-feed.
-			if s.htfNativeReserved[aggKey] {
-				continue
-			}
-			htfSnap := s.calculator.Update(closed)
-			reg, _ := s.regimeDetector.Detect(htfSnap)
-			s.anchorRegimes[aggKey] = reg
-			if tf == "1h" {
-				if s.lastHTFSnaps == nil {
-					s.lastHTFSnaps = make(map[string]domain.IndicatorSnapshot)
-				}
-				s.lastHTFSnaps[aggKey] = htfSnap
-			}
-		}
 	}
 	if len(bars) > 0 {
 		symStr := lastBar.Symbol.String()
@@ -409,8 +395,7 @@ func NewService(eventBus ports.EventBusPort, repo ports.RepositoryPort, log zero
 		orbCfg:           DefaultORBConfig(),
 		lastSnaps:        make(map[string]domain.IndicatorSnapshot),
 		liveBars:         make(map[string]int),
-		aggregators:      make(map[string]*domain.BarAggregator),
-		aggKeysBySym:     make(map[string][]string),
+		htfUnsubs:        make(map[string]func()),
 		anchorRegimeMaps: make(map[string]map[domain.Timeframe]domain.MarketRegime),
 		htfDataMaps:      make(map[string]map[domain.Timeframe]domain.HTFData),
 		orbAggregators:   make(map[string]*domain.BarAggregator),
@@ -628,19 +613,22 @@ func (s *Service) ResetSessionIndicators(symbol string) {
 func (s *Service) InitAggregators(symbols []domain.Symbol, sessionOpen time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.shadowIndicator != nil {
+		s.shadowIndicator.SetSessionOpen(sessionOpen)
+		for key, unsub := range s.htfUnsubs {
+			unsub()
+			delete(s.htfUnsubs, key)
+		}
+		for _, sym := range symbols {
+			for _, tf := range anchorTimeframes {
+				key := sym.String() + ":" + tf.String()
+				cb := s.makeHTFCallback(sym, tf)
+				s.htfUnsubs[key] = s.shadowIndicator.Subscribe(sym, tf, cb)
+			}
+		}
+	}
 	for _, sym := range symbols {
 		symStr := sym.String()
-		keys := make([]string, len(anchorTimeframes))
-		for i, tf := range anchorTimeframes {
-			key := symStr + ":" + tf.String()
-			keys[i] = key
-			agg, err := domain.NewBarAggregator(sym, tf, sessionOpen)
-			if err != nil {
-				continue
-			}
-			s.aggregators[key] = agg
-		}
-		s.aggKeysBySym[symStr] = keys
 		// ORB aggregator for the configured timeframe
 		if s.orbTimeframe != "" && s.orbTimeframe != "1m" {
 			orbAgg, err := domain.NewBarAggregator(sym, s.orbTimeframe, sessionOpen)
@@ -653,11 +641,52 @@ func (s *Service) InitAggregators(symbols []domain.Symbol, sessionOpen time.Time
 func (s *Service) ResetAggregators(sessionOpen time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, agg := range s.aggregators {
-		agg.Reset(sessionOpen)
+	if s.shadowIndicator != nil {
+		s.shadowIndicator.SetSessionOpen(sessionOpen)
 	}
 	for _, agg := range s.orbAggregators {
 		agg.Reset(sessionOpen)
+	}
+}
+
+// makeHTFCallback returns a Subscribe callback that fires synchronously while
+// s.mu is held by handleBarCore (the goroutine that calls
+// shadowIndicator.Update). The callback writes anchorRegimes / lastHTFSnaps
+// directly and appends HTF MarketBarSanitized + RegimeShifted events to
+// pendingHTFEvents for handleBarCore to drain into publishStrict /
+// publishBestEffort after the Update call returns.
+func (s *Service) makeHTFCallback(sym domain.Symbol, tf domain.Timeframe) func(closed domain.MarketBar, htfSnap domain.IndicatorSnapshot) {
+	aggKey := sym.String() + ":" + tf.String()
+	return func(closed domain.MarketBar, htfSnap domain.IndicatorSnapshot) {
+		env := s.htfCallCtx
+		barEv := domain.NewBacktestEvent(
+			domain.EventMarketBarSanitized,
+			env.tenantID,
+			env.envMode,
+			env.idemKey+"-"+tf.String()+"-htf-bar",
+			closed,
+			env.occurredAt,
+		)
+		s.pendingHTFEvents = append(s.pendingHTFEvents, barEv)
+		reg, changedAnchor := s.regimeDetector.Detect(htfSnap)
+		s.anchorRegimes[aggKey] = reg
+		if changedAnchor {
+			regimeShiftedEv := domain.NewBacktestEvent(
+				domain.EventRegimeShifted,
+				env.tenantID,
+				env.envMode,
+				env.idemKey+"-"+tf.String()+"-regime-shifted",
+				reg,
+				env.occurredAt,
+			)
+			s.pendingHTFEvents = append(s.pendingHTFEvents, regimeShiftedEv)
+		}
+		if tf == "1h" {
+			if s.lastHTFSnaps == nil {
+				s.lastHTFSnaps = make(map[string]domain.IndicatorSnapshot)
+			}
+			s.lastHTFSnaps[aggKey] = htfSnap
+		}
 	}
 }
 // Start subscribes the service to incoming sanitized market data events.
@@ -857,6 +886,16 @@ func (s *Service) handleBarCore(ctx context.Context, bar domain.MarketBar, tenan
 	}
 	snap := s.calculator.Update(bar)
 	if s.shadowIndicator != nil {
+		htfDispatch := !warmup.IsEquityNonRTH(bar)
+		if htfDispatch {
+			s.htfCallCtx = htfCallEnvelope{
+				tenantID:   tenantID,
+				envMode:    envMode,
+				idemKey:    idemKey,
+				occurredAt: occurredAt,
+			}
+			s.pendingHTFEvents = s.pendingHTFEvents[:0]
+		}
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -868,6 +907,9 @@ func (s *Service) handleBarCore(ctx context.Context, bar domain.MarketBar, tenan
 			}()
 			s.shadowIndicator.Update(bar)
 		}()
+		if htfDispatch && len(s.pendingHTFEvents) > 0 {
+			publishBestEffort = append(publishBestEffort, s.pendingHTFEvents...)
+		}
 	}
 	symStr := bar.Symbol.String()
 
@@ -921,55 +963,6 @@ func (s *Service) handleBarCore(ctx context.Context, bar domain.MarketBar, tenan
 		}
 	}
 
-	aggKeys := s.aggKeysBySym[symStr]
-	for i, tf := range anchorTimeframes {
-		if warmup.IsEquityNonRTH(bar) {
-			break
-		}
-		var aggKey string
-		if i < len(aggKeys) {
-			aggKey = aggKeys[i]
-		} else {
-			aggKey = symStr + ":" + tf.String()
-		}
-		agg, exists := s.aggregators[aggKey]
-		if !exists {
-			continue
-		}
-		closed, ok := agg.Push(bar)
-		if !ok {
-			continue
-		}
-		barEv := domain.NewBacktestEvent(
-			domain.EventMarketBarSanitized,
-			tenantID,
-			envMode,
-			idemKey+"-"+tf.String()+"-htf-bar",
-			closed,
-			occurredAt,
-		)
-		publishBestEffort = append(publishBestEffort, barEv)
-		htfSnap := s.calculator.Update(closed)
-		reg, changedAnchor := s.regimeDetector.Detect(htfSnap)
-		s.anchorRegimes[aggKey] = reg
-		if changedAnchor {
-			regimeShiftedEv := domain.NewBacktestEvent(
-				domain.EventRegimeShifted,
-				tenantID,
-				envMode,
-				idemKey+"-"+tf.String()+"-regime-shifted",
-				reg,
-				occurredAt,
-			)
-			publishBestEffort = append(publishBestEffort, regimeShiftedEv)
-		}
-		if tf == "1h" {
-			if s.lastHTFSnaps == nil {
-				s.lastHTFSnaps = make(map[string]domain.IndicatorSnapshot)
-			}
-			s.lastHTFSnaps[aggKey] = htfSnap
-		}
-	}
 	// Reuse the per-symbol map across bars. The map is stable for this
 	// symbol (cleared + refilled on every call), so lastSnaps[symStr]
 	// continues to reflect the latest snap correctly.
@@ -981,13 +974,8 @@ func (s *Service) handleBarCore(ctx context.Context, bar domain.MarketBar, tenan
 		clear(regimeMap)
 	}
 	snap.AnchorRegimes = regimeMap
-	for i, tf := range anchorTimeframes {
-		var aggKey string
-		if i < len(aggKeys) {
-			aggKey = aggKeys[i]
-		} else {
-			aggKey = symStr + ":" + tf.String()
-		}
+	for _, tf := range anchorTimeframes {
+		aggKey := symStr + ":" + tf.String()
 		if reg, ok := s.anchorRegimes[aggKey]; ok {
 			snap.AnchorRegimes[tf] = reg
 		}
@@ -1422,36 +1410,6 @@ func (s *Service) WarmUp(bars []domain.MarketBar) int {
 	for _, bar := range bars {
 		lastSnap = s.calculator.Update(bar)
 		lastBar = bar
-		symStr := bar.Symbol.String()
-		if warmup.IsEquityNonRTH(bar) {
-			continue
-		}
-		for _, tf := range anchorTimeframes {
-			aggKey := symStr + ":" + tf.String()
-			agg, exists := s.aggregators[aggKey]
-			if !exists {
-				continue
-			}
-			closed, ok := agg.Push(bar)
-			if !ok {
-				continue
-			}
-			// Reserved for WarmUpNative; aggregator was still pushed above
-			// to prime bucket state for runtime, but skip the calc.Update
-			// to avoid double-feed.
-			if s.htfNativeReserved[aggKey] {
-				continue
-			}
-			htfSnap := s.calculator.Update(closed)
-			reg, _ := s.regimeDetector.Detect(htfSnap)
-			s.anchorRegimes[aggKey] = reg
-			if tf == "1h" {
-				if s.lastHTFSnaps == nil {
-					s.lastHTFSnaps = make(map[string]domain.IndicatorSnapshot)
-				}
-				s.lastHTFSnaps[aggKey] = htfSnap
-			}
-		}
 	}
 	if len(bars) > 0 {
 		symStr := lastBar.Symbol.String()
