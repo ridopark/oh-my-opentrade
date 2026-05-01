@@ -981,3 +981,32 @@ func (s *Service) ListPositions() []domain.MonitoredPosition {
 	}
 	return positions
 }
+
+// ListOpenContractsByUnderlying returns copies of every monitored option
+// position whose underlying matches. Used by the strategy risk-sizer to
+// translate underlying-keyed exit signals (avwap_v4 price-action exits,
+// macd_only_v1 bb_macd_stop_hit) into contract-keyed exit intents.
+//
+// Equity / crypto positions are skipped. Tenant + envMode are implicit in
+// the receiver instance, so the caller passes only the underlying ticker.
+// Returns nil (not an empty slice) when no matching contracts are open so
+// callers can treat "no open positions to close" as the legitimate stale
+// exit case.
+func (s *Service) ListOpenContractsByUnderlying(underlying string) []domain.MonitoredPosition {
+	if underlying == "" {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []domain.MonitoredPosition
+	for _, pos := range s.positions {
+		if pos.InstrumentType != domain.InstrumentTypeOption {
+			continue
+		}
+		if string(domain.UnderlyingFromOCC(pos.Symbol)) != underlying {
+			continue
+		}
+		out = append(out, *pos)
+	}
+	return out
+}

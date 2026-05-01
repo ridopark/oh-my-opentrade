@@ -482,12 +482,13 @@ func main() {
 		// Built once; per-shard runner+router is constructed inside the
 		// shard factory below via BuildStrategyShard.
 		strategyDeps := bootstrap.StrategyDeps{
-			EventBus:        eventBus,
-			SpecStore:       specStore,
-			AIAdvisor:       llm.NewNoOpAdvisor(),
-			PositionLookup:  posMonBundle.Service.LookupPosition,
-			MarketDataFn:    snapshotFnRouted,
-			OptionsMarket:   optionsMarket,
+			EventBus:                  eventBus,
+			SpecStore:                 specStore,
+			AIAdvisor:                 llm.NewNoOpAdvisor(),
+			PositionLookup:            posMonBundle.Service.LookupPosition,
+			OpenOptionContractsLookup: posMonBundle.Service.ListOpenContractsByUnderlying,
+			MarketDataFn:              snapshotFnRouted,
+			OptionsMarket:             optionsMarket,
 			Repo:            nil,
 			TenantID:        "default",
 			EnvMode:         domain.EnvModePaper,
