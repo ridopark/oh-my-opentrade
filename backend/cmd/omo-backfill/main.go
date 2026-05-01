@@ -202,15 +202,22 @@ func main() {
 		importWg.Wait()
 
 	case "alpaca":
-		// Pre-fetch the daily underlying bars for every symbol once,
+		// Pre-load the daily underlying bars for every symbol from the
+		// local DB (datarefresh.RefreshAll populates 1d in production),
 		// build a map[date]close, and serve SpotLookup from that map.
-		// Avoids per-(sym, date) Alpaca round-trips against the bars
-		// endpoint and keeps the IV inversion path deterministic.
+		// Reading from the DB avoids re-fetching data the bars table
+		// already has — saves ~9.5K Alpaca round-trips for the universe
+		// and means the backfill can run without a fresh Alpaca session
+		// for spot prices.
 		spotByDate := make(map[domain.Symbol]map[string]float64, len(symbols))
 		for _, sym := range symbols {
-			bars, err := alpacaAdapter.GetHistoricalBars(ctx, sym, domain.Timeframe("1d"), fromTime, toTime)
+			bars, err := repo.GetMarketBars(ctx, sym, domain.Timeframe("1d"), fromTime, toTime.AddDate(0, 0, 1))
 			if err != nil {
-				log.Warn().Err(err).Str("symbol", string(sym)).Msg("daily bar pre-fetch failed; spot lookups will return 0 and dates will skip")
+				log.Warn().Err(err).Str("symbol", string(sym)).Msg("daily bar lookup failed; spot lookups will return 0 and dates will skip")
+				continue
+			}
+			if len(bars) == 0 {
+				log.Warn().Str("symbol", string(sym)).Msg("no 1d bars in DB; run omo-data datarefresh.RefreshAll first or omo-backfill -timeframe 1d to populate")
 				continue
 			}
 			byDate := make(map[string]float64, len(bars))
