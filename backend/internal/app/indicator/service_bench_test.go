@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/app/indicator"
+	"github.com/oh-my-opentrade/backend/internal/app/indicator/indicatortest"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 )
 
@@ -12,8 +13,12 @@ const benchPrewarmBars = 250
 
 func newWarmService(tb testing.TB) (*indicator.Service, []domain.MarketBar) {
 	tb.Helper()
-	t := &testing.T{}
-	bars := makeBars(t, benchPrewarmBars+1)
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		tb.Fatalf("load NY location: %v", err)
+	}
+	anchor := time.Date(2025, 1, 6, 9, 30, 0, 0, loc)
+	bars := indicatortest.MakeBars(testSymbol, 200.0, anchor, benchPrewarmBars+1)
 	svc := indicator.NewService("bench")
 	for _, b := range bars[:benchPrewarmBars] {
 		svc.Update(b)
