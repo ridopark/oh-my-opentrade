@@ -599,11 +599,6 @@ symbols:
 	assert.Equal(t, "DU123456", cfg.IBKR.AccountID)
 }
 
-// TestApplySyntheticChainDefaults pins the omitted-detection contract that
-// keeps the canonical default-on path working while honoring an explicit
-// enabled:false. MaxIV doubles as the "operator touched the block" sentinel
-// because every materialized config sets it; leaving it zero only happens
-// when the YAML omits the synthetic_chain block entirely.
 func TestApplySyntheticChainDefaults(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -632,4 +627,13 @@ func TestApplySyntheticChainDefaults(t *testing.T) {
 			assert.Equal(t, tt.wantEnabled, got.Enabled)
 		})
 	}
+}
+
+// Pins the MaxIV-as-sentinel contract: anyone adding a MaxIV default
+// here would silently break the omitted-detection in
+// applySyntheticChainDefaults, so this test fails the moment that
+// happens.
+func TestApplySyntheticChainDefaults_MaxIVStaysZeroWhenOmitted(t *testing.T) {
+	got := applySyntheticChainDefaults(SyntheticChainConfig{})
+	assert.Equal(t, 0.0, got.MaxIV, "MaxIV must remain unset so block-omitted detection works")
 }
