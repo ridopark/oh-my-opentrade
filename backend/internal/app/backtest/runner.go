@@ -1049,7 +1049,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	var sessionResolver *SessionResolver
 	if pipeline.Runner != nil {
-		snapshotFn := makeSnapshotFn(idx)
+		snapshotFn := indicator.SnapshotFn(idx)
 		switch replayTimeframe {
 		case "1d":
 			// Daily replay: feed the pre-backtest daily bars directly to
@@ -1640,7 +1640,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.emitter.EmitSetup("Warming up per-shard indicators…")
 		{
 			_ = sp.ForEachShard(func(p *Pipeline, slab []domain.Symbol) error {
-				snapshotFn := makeSnapshotFn(p.Indicator())
+				snapshotFn := indicator.SnapshotFn(p.Indicator())
 				shardIdx := p.Indicator()
 				for _, sym := range slab {
 					symStr := sym.String()
@@ -2169,10 +2169,6 @@ func signalPassthrough(bus ports.EventBusPort, log zerolog.Logger) func(context.
 		}
 		return bus.Publish(ctx, *enrichedEvt)
 	}
-}
-
-func makeSnapshotFn(idx *indicator.Service) strategy.IndicatorSnapshotFunc {
-	return indicator.SnapshotFn(idx)
 }
 
 // computeSPYVIXProxy returns the 20-day realized volatility of SPY as of
