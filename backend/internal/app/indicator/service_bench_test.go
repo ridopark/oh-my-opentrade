@@ -39,6 +39,23 @@ func BenchmarkUpdate(b *testing.B) {
 	}
 }
 
+// BenchmarkUpdateWithSubscriber measures the 1m hot path when one subscriber
+// is registered for a 5m HTF aggregator. Microsecond-spaced bars never close
+// a 5m bucket, so the callback never fires; this isolates the per-bar
+// aggregator dispatch cost from the (rare) HTF-close cost.
+func BenchmarkUpdateWithSubscriber(b *testing.B) {
+	svc, bars := newWarmService(b)
+	svc.SetSessionOpen(bars[0].Time)
+	svc.Subscribe(testSymbol, domain.Timeframe("5m"), func(_ domain.MarketBar, _ domain.IndicatorSnapshot) {})
+	next := bars[benchPrewarmBars]
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		next.Time = next.Time.Add(time.Microsecond)
+		svc.Update(next)
+	}
+}
+
 func BenchmarkLastSnapshot(b *testing.B) {
 	svc, bars := newWarmService(b)
 	last := bars[benchPrewarmBars-1]
