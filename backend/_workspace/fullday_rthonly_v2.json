@@ -1,0 +1,131 @@
+{
+  "initial_equity": 100000,
+  "final_equity": 100055.52880359409,
+  "total_return_pct": 0.0555288035940884,
+  "total_pnl": 55.5288035940884,
+  "trade_count": 1,
+  "win_count": 1,
+  "loss_count": 0,
+  "win_rate_pct": 100,
+  "max_drawdown_pct": 0,
+  "sharpe_ratio": 11.224972160321824,
+  "profit_factor": 0,
+  "avg_win": 55.5288035940884,
+  "avg_loss": 0,
+  "largest_win": 55.5288035940884,
+  "largest_loss": 0,
+  "trades": [
+    {
+      "symbol": "OXY260508C00059000",
+      "side": "buy",
+      "direction": "LONG",
+      "quantity": 15,
+      "price": 3.1885934999999996,
+      "filled_at": "2026-04-29T10:54:00-05:00",
+      "strategy": "avwap_v4",
+      "rationale": "signal: entry buy strength=0.94 (AI skipped: disabled by config)",
+      "regime": "TREND_UP",
+      "tags": {
+        "anchor": "pd_high",
+        "atr_pct": "0.291",
+        "avwap": "58.9359",
+        "avwap_slope_bps": "1.077",
+        "bb_bandwidth": "0.01899",
+        "bb_pct_b": "1.091",
+        "confluence": "8",
+        "confluence_components": "[{\"n\":\"fib\",\"g\":\"structure\",\"w\":3,\"v\":58.98255,\"f\":true},{\"n\":\"key_level\",\"g\":\"structure\",\"w\":3,\"v\":59,\"f\":true},{\"n\":\"candle_pattern\",\"g\":\"price_action\",\"w\":2,\"f\":true},{\"n\":\"band_zone\",\"g\":\"structure\",\"w\":2,\"f\":false},{\"n\":\"darkpool\",\"g\":\"flow\",\"w\":10,\"f\":false},{\"n\":\"whale\",\"g\":\"flow\",\"w\":3,\"f\":false},{\"n\":\"inducement\",\"g\":\"microstructure\",\"w\":5,\"f\":false}]",
+        "confluence_detail": "fib_50+key_pd_high+strength_candle",
+        "ext_pd_high": "6.256",
+        "ext_pd_low": "7.190",
+        "ext_session_open": "4.127",
+        "hold_bars": "25",
+        "ind_atr": "0.174879",
+        "ind_vwap": "58.149079",
+        "ind_vwap_sd": "1.509713",
+        "late_session_dp_z": "0.000",
+        "minute_bucket": "11:50",
+        "minute_of_day": "710",
+        "mode": "breakout",
+        "ref_price": "60.0300000000",
+        "regime_5m": "TREND_UP",
+        "rsi": "78.37",
+        "setup": "avwap_breakout",
+        "vol_ratio": "3.77"
+      }
+    },
+    {
+      "symbol": "OXY260508C00059000",
+      "side": "sell",
+      "direction": "CLOSE_LONG",
+      "is_exit": true,
+      "quantity": 15,
+      "price": 3.2256127023960586,
+      "filled_at": "2026-04-29T11:01:00-05:00",
+      "strategy": "avwap_v4",
+      "rationale": "exit_monitor:CHANDELIER_TRAIL:chandelier_trail(premium): mfe=4.04% trail=3.84% current=1.21%",
+      "tags": {
+        "anchor": "pd_high",
+        "atr_pct": "0.291",
+        "avwap": "58.9359",
+        "avwap_slope_bps": "1.077",
+        "bb_bandwidth": "0.01899",
+        "bb_pct_b": "1.091",
+        "confluence": "8",
+        "confluence_components": "[{\"n\":\"fib\",\"g\":\"structure\",\"w\":3,\"v\":58.98255,\"f\":true},{\"n\":\"key_level\",\"g\":\"structure\",\"w\":3,\"v\":59,\"f\":true},{\"n\":\"candle_pattern\",\"g\":\"price_action\",\"w\":2,\"f\":true},{\"n\":\"band_zone\",\"g\":\"structure\",\"w\":2,\"f\":false},{\"n\":\"darkpool\",\"g\":\"flow\",\"w\":10,\"f\":false},{\"n\":\"whale\",\"g\":\"flow\",\"w\":3,\"f\":false},{\"n\":\"inducement\",\"g\":\"microstructure\",\"w\":5,\"f\":false}]",
+        "confluence_detail": "fib_50+key_pd_high+strength_candle",
+        "ext_pd_high": "6.256",
+        "ext_pd_low": "7.190",
+        "ext_session_open": "4.127",
+        "hold_bars": "25",
+        "ind_atr": "0.174879",
+        "ind_vwap": "58.149079",
+        "ind_vwap_sd": "1.509713",
+        "late_session_dp_z": "0.000",
+        "minute_bucket": "11:50",
+        "minute_of_day": "710",
+        "mode": "breakout",
+        "ref_price": "60.0300000000",
+        "regime_5m": "TREND_UP",
+        "rsi": "78.37",
+        "setup": "avwap_breakout",
+        "vol_ratio": "3.77"
+      },
+      "pnl": 55.5288035940884,
+      "premium_mfe_pct": 0.040377,
+      "premium_mae_pct": -0.015393,
+      "minutes_to_first_profit": 2,
+      "minutes_held": 7
+    }
+  ],
+  "equity_curve": [
+    {
+      "t": 1777438740,
+      "eq": 100000
+    },
+    {
+      "t": 1777496040,
+      "eq": 100055.52880359409
+    }
+  ],
+  "realism": {
+    "live_sharpe": 4.0089186286863665,
+    "live_dd_pct": 0,
+    "live_pf": 0,
+    "fixed_notional_pnl": 55.49798622631812,
+    "compounded_pnl_estimate": 83.24697933947718,
+    "compounding_ramp": 1.000555288035941,
+    "flags": [
+      {
+        "level": "red",
+        "metric": "sharpe_ratio",
+        "message": "Sharpe 11.22 \u003e 5 — likely temporal concentration or fill-model optimism; realistic intraday-options Sharpe is 2-3."
+      },
+      {
+        "level": "yellow",
+        "metric": "trade_count",
+        "message": "Only 1 trades — below the 200-trade statistical significance floor."
+      }
+    ],
+    "disclaimer": "Estimates from intraday-options-strategy priors. Not a forecast. Calibrate against live-paper data over 90 days before deploying capital."
+  }
+}
