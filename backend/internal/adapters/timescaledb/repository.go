@@ -53,8 +53,16 @@ const (
 	queryGetOrderByBrokerID   = `SELECT time, account_id, env_mode, intent_id, broker_order_id, symbol, side, quantity, limit_price, stop_loss, status, COALESCE(filled_at, '0001-01-01'::timestamptz), COALESCE(filled_price, 0), COALESCE(filled_qty, 0), COALESCE(strategy, ''), COALESCE(rationale, ''), COALESCE(confidence, 0), COALESCE(instrument_type, ''), COALESCE(option_symbol, ''), COALESCE(underlying, ''), COALESCE(strike, 0), COALESCE(expiry, '0001-01-01'::timestamptz), COALESCE(option_right, '') FROM orders WHERE broker_order_id = $1 LIMIT 1`
 	queryGetRecordedFillQty   = `SELECT COALESCE(SUM(quantity), 0) FROM trades WHERE account_id = $1 AND env_mode = $2 AND symbol = $3 AND side = $4 AND time >= $5`
 	queryUpdateOrderStatus    = `UPDATE orders SET status = $2 WHERE broker_order_id = $1`
-	queryGetNetPositions      = `SELECT symbol, SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END) AS net_qty FROM trades WHERE account_id = $1 AND env_mode = $2 AND time >= NOW() - INTERVAL '30 days' GROUP BY symbol HAVING ABS(SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END)) > 1e-10`
-	queryGetAvgEntryPrice     = `SELECT COALESCE(SUM(quantity * price) / NULLIF(SUM(quantity), 0), 0) FROM trades WHERE account_id = $1 AND env_mode = $2 AND symbol = $3 AND side = 'BUY' AND price > 0 AND time >= NOW() - INTERVAL '30 days'`
+	// Full-history sum: a rolling window can desync once one leg of a
+	// reconciliation pair (e.g. a ledger_rebalance offset for an earlier
+	// duplicate fill) ages out while the other remains, leaving phantom
+	// non-zero nets for symbols that are flat in reality. The HAVING clause
+	// keeps the result set bounded to symbols with material balances.
+	queryGetNetPositions      = `SELECT symbol, SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END) AS net_qty FROM trades WHERE account_id = $1 AND env_mode = $2 GROUP BY symbol HAVING ABS(SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END)) > 1e-10`
+	// Full-history VWAP for the same reason as queryGetNetPositions: a rolling
+	// window returns 0 once all BUY legs age out, even though the position is
+	// still open. price > 0 still excludes zero-priced ledger_rebalance entries.
+	queryGetAvgEntryPrice     = `SELECT COALESCE(SUM(quantity * price) / NULLIF(SUM(quantity), 0), 0) FROM trades WHERE account_id = $1 AND env_mode = $2 AND symbol = $3 AND side = 'BUY' AND price > 0`
 	queryHasCanceledExitOrder = `SELECT status FROM orders WHERE account_id = $1 AND env_mode = $2 AND symbol = $3 AND side = 'SELL' ORDER BY time DESC LIMIT 1`
 )
 
