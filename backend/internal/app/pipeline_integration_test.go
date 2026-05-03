@@ -113,7 +113,11 @@ func (m *mockRepository) UpdateOrderFill(ctx context.Context, brokerOrderID stri
 	return nil
 }
 
-func (m *mockRepository) RecordFill(context.Context, string, time.Time, float64, float64, domain.Trade) error {
+func (m *mockRepository) RecordFillPerExec(context.Context, string, time.Time, float64, float64, domain.Trade) error {
+	return nil
+}
+
+func (m *mockRepository) RecordFillAggregate(context.Context, string, time.Time, float64, float64, domain.Trade) error {
 	return nil
 }
 

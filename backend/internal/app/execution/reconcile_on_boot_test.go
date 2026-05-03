@@ -109,7 +109,10 @@ func (r *reconcileOnBootRepo) GetLatestStrategyDNA(context.Context, string, doma
 	return nil, nil
 }
 func (r *reconcileOnBootRepo) SaveOrder(context.Context, domain.BrokerOrder) error { return nil }
-func (r *reconcileOnBootRepo) RecordFill(context.Context, string, time.Time, float64, float64, domain.Trade) error {
+func (r *reconcileOnBootRepo) RecordFillPerExec(context.Context, string, time.Time, float64, float64, domain.Trade) error {
+	return nil
+}
+func (r *reconcileOnBootRepo) RecordFillAggregate(context.Context, string, time.Time, float64, float64, domain.Trade) error {
 	return nil
 }
 func (r *reconcileOnBootRepo) GetOrderByBrokerOrderID(context.Context, string) (*domain.BrokerOrder, error) {

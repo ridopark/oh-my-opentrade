@@ -136,7 +136,10 @@ func (r *dustMockRepo) SaveOrder(context.Context, domain.BrokerOrder) error { re
 func (r *dustMockRepo) UpdateOrderFill(context.Context, string, time.Time, float64, float64) error {
 	return nil
 }
-func (r *dustMockRepo) RecordFill(context.Context, string, time.Time, float64, float64, domain.Trade) error {
+func (r *dustMockRepo) RecordFillPerExec(context.Context, string, time.Time, float64, float64, domain.Trade) error {
+	return nil
+}
+func (r *dustMockRepo) RecordFillAggregate(context.Context, string, time.Time, float64, float64, domain.Trade) error {
 	return nil
 }
 func (r *dustMockRepo) ListTrades(context.Context, ports.TradeQuery) (ports.TradePage, error) {

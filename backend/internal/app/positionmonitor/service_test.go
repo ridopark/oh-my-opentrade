@@ -163,7 +163,10 @@ func (m *mockRepo) SaveOrder(ctx context.Context, order domain.BrokerOrder) erro
 func (m *mockRepo) UpdateOrderFill(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64) error {
 	return nil
 }
-func (m *mockRepo) RecordFill(context.Context, string, time.Time, float64, float64, domain.Trade) error {
+func (m *mockRepo) RecordFillPerExec(context.Context, string, time.Time, float64, float64, domain.Trade) error {
+	return nil
+}
+func (m *mockRepo) RecordFillAggregate(context.Context, string, time.Time, float64, float64, domain.Trade) error {
 	return nil
 }
 func (m *mockRepo) ListTrades(ctx context.Context, q ports.TradeQuery) (ports.TradePage, error) {
