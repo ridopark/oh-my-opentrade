@@ -54,11 +54,14 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 		brokerBySymbol[bp.Symbol] = bp
 	}
 
-	// 2. Query our trade DB for recent BUY fills to identify OMO-opened positions.
-	//    We look back 30 days to cover long-held positions (especially crypto).
+	// 2. Query our trade DB for ALL fills to identify OMO-opened positions.
+	//    Full history (not a rolling window): a window can desync once one
+	//    leg of a reconciliation/rebalance pair (e.g. a ledger_rebalance
+	//    offset for an earlier duplicate fill) ages out while the other
+	//    remains, leaving a phantom non-zero net for a symbol that is flat
+	//    in reality. Mirrors the d1c8acfb fix to queryGetNetPositions.
 	now := s.nowFunc()
-	from := now.Add(-30 * 24 * time.Hour)
-	trades, err := s.repo.GetTrades(ctx, s.tenantID, s.envMode, from, now)
+	trades, err := s.repo.GetTrades(ctx, s.tenantID, s.envMode, time.Time{}, now)
 	if err != nil {
 		s.log.Warn().Err(err).Msg("bootstrap: failed to query trade history — skipping")
 		return
@@ -117,6 +120,22 @@ func (s *Service) bootstrapPositions(ctx context.Context) {
 		}
 		bp, onBroker := brokerBySymbol[sym]
 		if !onBroker {
+			// Expired OCC contracts are not orphans: the broker auto-closes
+			// the position at expiry without emitting a SELL fill, so our
+			// ledger correctly retains the open BUY while the broker shows
+			// nothing. Downgrade these to INFO so they don't drown out real
+			// orphan alerts.
+			if domain.IsOCCSymbol(sym) {
+				if _, expiry, _, _, ok := domain.ParseOCC(sym); ok && !expiry.IsZero() && expiry.Before(now) {
+					s.log.Info().
+						Str("symbol", string(sym)).
+						Float64("ledger_qty", omo.netQty).
+						Float64("avg_entry", omo.avgEntry).
+						Time("expiry", expiry).
+						Msg("bootstrap: expired OCC absent on broker — assuming auto-close at expiry, no SELL fill expected")
+					continue
+				}
+			}
 			s.log.Error().
 				Str("symbol", string(sym)).
 				Float64("orphan_qty", omo.netQty).
