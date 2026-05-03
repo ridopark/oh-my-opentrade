@@ -1,8 +1,10 @@
 package positionmonitor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -133,6 +135,8 @@ type mockRepo struct {
 	latestThesisErr error
 
 	netPositions map[domain.Symbol]float64
+
+	lastTradesFrom time.Time
 }
 
 func (m *mockRepo) SaveMarketBar(ctx context.Context, bar domain.MarketBar) error { return nil }
@@ -148,6 +152,7 @@ func (m *mockRepo) GetMarketBarsMulti(_ context.Context, _ []domain.Symbol, _ do
 }
 func (m *mockRepo) SaveTrade(ctx context.Context, trade domain.Trade) error { return nil }
 func (m *mockRepo) GetTrades(ctx context.Context, tenantID string, envMode domain.EnvMode, from, to time.Time) ([]domain.Trade, error) {
+	m.lastTradesFrom = from
 	return m.trades, m.tradesErr
 }
 func (m *mockRepo) SaveStrategyDNA(ctx context.Context, dna domain.StrategyDNA) error { return nil }
@@ -1040,6 +1045,135 @@ func TestService_bootstrapPositions_HandlesPartialFills(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, 5.0, pos.Quantity)
 	assert.Equal(t, 155.0, pos.EntryPrice)
+}
+
+// findLogEntry returns the first JSON log line whose "message" field contains
+// substr, or nil if none match. Used to assert log level on a specific entry.
+func findLogEntry(t *testing.T, buf *bytes.Buffer, substr string) map[string]any {
+	t.Helper()
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if msg, _ := entry["message"].(string); strings.Contains(msg, substr) {
+			return entry
+		}
+	}
+	return nil
+}
+
+func TestService_bootstrapPositions_QueriesFullTradeHistory(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	broker := &mockBroker{positions: nil}
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+
+	now := time.Date(2026, 5, 2, 15, 0, 0, 0, time.UTC)
+	repo := &mockRepo{}
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithBroker(broker),
+		WithRepo(repo),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.bootstrapPositions(context.Background())
+	assert.True(t, repo.lastTradesFrom.IsZero(), "GetTrades must be called with zero from-time so reconciliation pairs don't age out")
+}
+
+func TestService_bootstrapPositions_ExpiredOCCOrphanLogsInfoNotError(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	// Broker has an unrelated position so the orphan loop runs (bootstrap
+	// short-circuits with a debug log when broker is fully empty).
+	broker := &mockBroker{positions: []domain.Trade{{
+		Symbol:     domain.Symbol("MSFT"),
+		Quantity:   1,
+		Price:      400,
+		AssetClass: domain.AssetClassEquity,
+		TenantID:   "tenant-1",
+		EnvMode:    domain.EnvModePaper,
+	}}}
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+
+	now := time.Date(2026, 5, 2, 15, 0, 0, 0, time.UTC)
+	// SMCI 2026-04-24 C $24.00 — expired 8 days before `now`.
+	expiredOCC := domain.Symbol("SMCI260424C00024000")
+	repo := &mockRepo{trades: []domain.Trade{{
+		Symbol:     expiredOCC,
+		Side:       "BUY",
+		Price:      1.21,
+		Quantity:   20,
+		Strategy:   "avwap_macd",
+		AssetClass: domain.AssetClassEquity,
+		Time:       now.Add(-15 * 24 * time.Hour),
+		TenantID:   "tenant-1",
+		EnvMode:    domain.EnvModePaper,
+	}}}
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, logger,
+		WithBroker(broker),
+		WithRepo(repo),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.bootstrapPositions(context.Background())
+
+	assert.Equal(t, 0, svc.PositionCount(), "expired OCC must not be seeded")
+	entry := findLogEntry(t, &buf, "expired OCC absent on broker")
+	require.NotNil(t, entry, "expected expired-OCC INFO entry, got logs:\n%s", buf.String())
+	assert.Equal(t, "info", entry["level"])
+	assert.Nil(t, findLogEntry(t, &buf, "investigate manually"), "ERROR alert must not fire for expired OCC")
+}
+
+func TestService_bootstrapPositions_NonExpiredOrphanStillLogsError(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	broker := &mockBroker{positions: []domain.Trade{{
+		Symbol:     domain.Symbol("MSFT"),
+		Quantity:   1,
+		Price:      400,
+		AssetClass: domain.AssetClassEquity,
+		TenantID:   "tenant-1",
+		EnvMode:    domain.EnvModePaper,
+	}}}
+	pg := execution.NewPositionGate(broker, zerolog.Nop())
+
+	now := time.Date(2026, 5, 2, 15, 0, 0, 0, time.UTC)
+	repo := &mockRepo{trades: []domain.Trade{{
+		Symbol:     domain.Symbol("AAPL"),
+		Side:       "BUY",
+		Price:      150,
+		Quantity:   10,
+		Strategy:   "avwap_macd",
+		AssetClass: domain.AssetClassEquity,
+		Time:       now.Add(-1 * time.Hour),
+		TenantID:   "tenant-1",
+		EnvMode:    domain.EnvModePaper,
+	}}}
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, logger,
+		WithBroker(broker),
+		WithRepo(repo),
+		WithNowFunc(func() time.Time { return now }),
+	)
+
+	svc.bootstrapPositions(context.Background())
+
+	assert.Equal(t, 0, svc.PositionCount())
+	entry := findLogEntry(t, &buf, "investigate manually")
+	require.NotNil(t, entry, "expected ERROR orphan alert for non-expired symbol, got logs:\n%s", buf.String())
+	assert.Equal(t, "error", entry["level"])
 }
 
 func TestService_resolveExitRules_UsesSpecStoreWhenAvailable(t *testing.T) {
