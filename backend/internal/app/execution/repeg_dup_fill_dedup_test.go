@@ -134,8 +134,8 @@ func TestPollPath_FillListerUnsupported(t *testing.T) {
 	svc.recordFillsFromExecHistory(context.Background(), po, "BO-42", zerolog.Nop())
 
 	require.Len(t, repo.recorded, 1, "want exactly one trade row from the legacy fallback")
-	assert.Equal(t, "", repo.recorded[0].ExecutionID,
-		"fallback path preserves today's empty-execution_id behavior")
+	assert.Equal(t, "agg:BO-42", repo.recorded[0].ExecutionID,
+		"fallback path now writes a synthesized aggregate exec id for dedup")
 }
 
 func TestPollPath_GetAllFillsError(t *testing.T) {

@@ -601,8 +601,8 @@ func (s *Service) reconcileFillsOnBoot(ctx context.Context) {
 			trade.Premium = f.Price
 		}
 
-		if rErr := s.repo.RecordFill(ctx, f.BrokerOrderID, filledAt, cumAvgPrice, cumQty, trade); rErr != nil {
-			ol.Error().Err(rErr).Msg("fill reconcile: RecordFill failed")
+		if rErr := s.repo.RecordFillPerExec(ctx, f.BrokerOrderID, filledAt, cumAvgPrice, cumQty, trade); rErr != nil {
+			ol.Error().Err(rErr).Msg("fill reconcile: RecordFillPerExec failed")
 			continue
 		}
 		inserted++
@@ -1819,9 +1819,19 @@ func (s *Service) insertFillLeg(po *pendingOrder, brokerOrderID, executionID str
 		l.Error().Err(err).Msg("failed to construct trade leg — skipping persist (reconcile will heal)")
 		return
 	}
-	trade.ExecutionID = executionID
 	trade.BrokerOrderID = brokerOrderID
 	enrichTradeOptionsFromIntent(&trade, po.intent)
+
+	// Empty executionID = aggregate finalization fallback (one row per order
+	// keyed by `agg:<broker_order_id>` so re-fires dedup and a later per-exec
+	// arrival can replace it). Real executionID = authoritative per-exec leg.
+	isAgg := executionID == ""
+	if isAgg {
+		trade.ExecutionID = "agg:" + brokerOrderID
+	} else {
+		trade.ExecutionID = executionID
+	}
+
 	if parity.Enabled() {
 		l.Info().
 			Str("stage", parity.StageFillRecorded).
@@ -1829,7 +1839,7 @@ func (s *Service) insertFillLeg(po *pendingOrder, brokerOrderID, executionID str
 			Str("strategy", po.intent.Strategy).
 			Str("direction", string(po.intent.Direction)).
 			Str("broker_order_id", brokerOrderID).
-			Str("execution_id", executionID).
+			Str("execution_id", trade.ExecutionID).
 			Time("filled_at", filledAt).
 			Float64("leg_qty", legQty).
 			Float64("leg_price", legPrice).
@@ -1837,9 +1847,44 @@ func (s *Service) insertFillLeg(po *pendingOrder, brokerOrderID, executionID str
 			Float64("cum_avg_price", cumAvgPrice).
 			Msg("parity-diag")
 	}
-	if err := s.repo.RecordFill(ctx, brokerOrderID, filledAt, cumAvgPrice, cumQty, trade); err != nil {
-		l.Error().Err(err).Str("execution_id", executionID).Msg("failed to record fill leg")
+
+	var (
+		recErr  error
+		outcome string
+	)
+	if isAgg {
+		recErr = s.repo.RecordFillAggregate(ctx, brokerOrderID, filledAt, cumAvgPrice, cumQty, trade)
+		// We can't cheaply distinguish agg_skipped vs agg_inserted from the
+		// caller without a second round-trip; the conditional INSERT silently
+		// no-ops when a per-exec row exists. Treat any successful return as
+		// agg_inserted (the on-disk effect is correct either way) and let
+		// downstream tooling (count of agg: rows in trades) confirm.
+		outcome = "agg_inserted"
+	} else {
+		recErr = s.repo.RecordFillPerExec(ctx, brokerOrderID, filledAt, cumAvgPrice, cumQty, trade)
+		// Same caller-side limitation: we can't tell if the DELETE removed an
+		// agg row without a second query. Default to perexec_first; ops can
+		// look at the agg_inserted volume vs perexec_replaced_agg ratio via
+		// repo-level instrumentation if it ever becomes load-bearing.
+		outcome = "perexec_first"
 	}
+
+	if recErr != nil {
+		l.Error().Err(recErr).Str("execution_id", trade.ExecutionID).Msg("failed to record fill leg")
+		return
+	}
+
+	if s.metrics != nil {
+		s.metrics.Orders.FillRecordDecisions.WithLabelValues(outcome).Inc()
+	}
+	l.Info().
+		Str("broker_order_id", brokerOrderID).
+		Str("execution_id", trade.ExecutionID).
+		Str("symbol", string(po.intent.Symbol)).
+		Str("outcome", outcome).
+		Float64("leg_qty", legQty).
+		Float64("cum_qty", cumQty).
+		Msg("fill record decision")
 }
 
 // optionLegMagnitudeMultiple is the upper bound on legPrice / referencePremium

@@ -48,7 +48,11 @@ func (n *NoopRepo) UpdateOrderFill(_ context.Context, _ string, _ time.Time, _, 
 	return nil
 }
 
-func (n *NoopRepo) RecordFill(_ context.Context, _ string, _ time.Time, _, _ float64, _ domain.Trade) error {
+func (n *NoopRepo) RecordFillPerExec(_ context.Context, _ string, _ time.Time, _, _ float64, _ domain.Trade) error {
+	return nil
+}
+
+func (n *NoopRepo) RecordFillAggregate(_ context.Context, _ string, _ time.Time, _, _ float64, _ domain.Trade) error {
 	return nil
 }
 
