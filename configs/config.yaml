@@ -8,6 +8,10 @@ alpaca:
   crypto_data_url: "wss://stream.data.alpaca.markets"
   crypto_feed: "us-1"
   paper_mode: true
+  # Lift the shadow-mode 250-contract cap on GetOptionChain. Pagination already
+  # runs to completion; this just stops post-pagination truncation that biases
+  # by raw API order rather than DTE-closeness on wide-window liquid names.
+  options_chain_max_contracts: -1
 
 database:
   host: "localhost"
