@@ -293,11 +293,10 @@ func (h *PortfolioHandler) handleGetPositions(w http.ResponseWriter, r *http.Req
 // The dashboard outer-joins this with /api/portfolio/positions to surface
 // drift between broker reality and OMO's monitored set.
 //
-// Response shape is intentionally a private struct with explicit snake_case
-// json tags (the underlying domain.MonitoredPosition has inconsistent tags
-// and shared maps that would race the live monitor under reflective JSON
-// encoding). CustomState is whitelisted to a small set of keys read into a
-// fresh map so the live monitor's mutations cannot race the encoder.
+// Response is a private snake_case struct rather than a direct encode of
+// domain.MonitoredPosition: the domain type's tags are inconsistent, and
+// its CustomState/PendingExitOrderIDs maps are shared with the live monitor
+// — the encoder's reflective iteration would race the tick loop.
 func (h *PortfolioHandler) handleGetMonitored(w http.ResponseWriter, r *http.Request) {
 	if h.posMonitor == nil {
 		jsonErr(w, "position monitor not configured", http.StatusServiceUnavailable)
@@ -305,23 +304,23 @@ func (h *PortfolioHandler) handleGetMonitored(w http.ResponseWriter, r *http.Req
 	}
 
 	type monitoredJSON struct {
-		Symbol         string             `json:"symbol"`
-		Strategy       string             `json:"strategy"`
-		Side           string             `json:"side"`
-		Quantity       float64            `json:"quantity"`
-		EntryPrice     float64            `json:"entry_price"`
-		HighWaterMark  float64            `json:"high_water_mark"`
-		LowWaterMark   float64            `json:"low_water_mark"`
-		EntryTime      string             `json:"entry_time"`
-		ExitRules      []string           `json:"exit_rules"`
-		InstrumentType string             `json:"instrument_type"`
-		Underlying     string             `json:"underlying"`
-		Strike         *float64           `json:"strike,omitempty"`
-		OptionRight    string             `json:"option_right,omitempty"`
-		Expiry         string             `json:"expiry,omitempty"`
-		IVAtEntry      *float64           `json:"iv_at_entry,omitempty"`
-		AssetClass     string             `json:"asset_class"`
-		CustomState    map[string]float64 `json:"custom_state,omitempty"`
+		Symbol         string   `json:"symbol"`
+		Strategy       string   `json:"strategy"`
+		Side           string   `json:"side"`
+		Quantity       float64  `json:"quantity"`
+		EntryPrice     float64  `json:"entry_price"`
+		HighWaterMark  float64  `json:"high_water_mark"`
+		LowWaterMark   float64  `json:"low_water_mark"`
+		EntryTime      string   `json:"entry_time"`
+		ExitRules      []string `json:"exit_rules"`
+		InstrumentType string   `json:"instrument_type"`
+		Underlying     string   `json:"underlying"`
+		Strike         *float64 `json:"strike,omitempty"`
+		OptionRight    string   `json:"option_right,omitempty"`
+		Expiry         string   `json:"expiry,omitempty"`
+		DTE            *int     `json:"dte,omitempty"`
+		IVAtEntry      *float64 `json:"iv_at_entry,omitempty"`
+		AssetClass     string   `json:"asset_class"`
 	}
 
 	positions := h.posMonitor.ListPositions()
@@ -349,6 +348,11 @@ func (h *PortfolioHandler) handleGetMonitored(w http.ResponseWriter, r *http.Req
 			mj.OptionRight = p.OptionRight
 			if !p.OptionExpiry.IsZero() {
 				mj.Expiry = p.OptionExpiry.Format("2006-01-02")
+				dte := int(time.Until(p.OptionExpiry).Hours() / 24)
+				if dte < 0 {
+					dte = 0
+				}
+				mj.DTE = &dte
 			}
 			if v, ok := p.CustomState["strike"]; ok {
 				strike := v
@@ -357,15 +361,6 @@ func (h *PortfolioHandler) handleGetMonitored(w http.ResponseWriter, r *http.Req
 			if v, ok := p.CustomState["iv_at_entry"]; ok {
 				iv := v
 				mj.IVAtEntry = &iv
-			}
-			whitelist := map[string]float64{}
-			for _, k := range []string{"option_premium", "iv_at_entry", "strike"} {
-				if v, ok := p.CustomState[k]; ok {
-					whitelist[k] = v
-				}
-			}
-			if len(whitelist) > 0 {
-				mj.CustomState = whitelist
 			}
 		} else {
 			mj.Underlying = string(p.Symbol)

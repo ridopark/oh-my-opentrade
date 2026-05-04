@@ -72,9 +72,9 @@ interface MonitoredPosition {
   strike?: number;
   option_right?: string;
   expiry?: string;
+  dte?: number;
   iv_at_entry?: number;
   asset_class: string;
-  custom_state?: Record<string, number>;
 }
 
 interface Account {
@@ -131,23 +131,23 @@ function ContractLabel({ pos }: { pos: Position }) {
   );
 }
 
+// Broker emits "long"/"short"; OMO emits "BUY"/"SELL". Collapse to one axis.
+function normalizeSide(s: string): "BUY" | "SELL" {
+  const upper = s.toUpperCase();
+  return upper === "SHORT" || upper === "SELL" ? "SELL" : "BUY";
+}
+
 function computeStatus(broker: Position, omo: MonitoredPosition | undefined): DriftStatus {
   if (!omo) return "ORPHAN_BROKER";
   if (broker.quantity !== omo.quantity) return "QTY_DRIFT";
-  // Broker side is "long"/"short"; OMO side is "BUY"/"SELL". Map both to BUY/SELL.
-  const brokerSide = broker.side.toLowerCase() === "short" ? "SELL" : "BUY";
-  const omoSide = omo.side.toUpperCase() === "SELL" ? "SELL" : "BUY";
-  if (brokerSide !== omoSide) return "SIDE_DRIFT";
+  if (normalizeSide(broker.side) !== normalizeSide(omo.side)) return "SIDE_DRIFT";
   return "SYNCED";
 }
 
 function synthesizeOrphanOmo(omo: MonitoredPosition): Position {
-  const dte = omo.expiry
-    ? Math.max(0, Math.floor((new Date(omo.expiry + "T00:00:00").getTime() - Date.now()) / 86_400_000))
-    : undefined;
   return {
     symbol: omo.symbol,
-    side: omo.side.toUpperCase() === "SELL" ? "short" : "long",
+    side: normalizeSide(omo.side) === "SELL" ? "short" : "long",
     quantity: omo.quantity,
     avg_entry_price: omo.entry_price,
     current_price: 0,
@@ -159,32 +159,23 @@ function synthesizeOrphanOmo(omo: MonitoredPosition): Position {
     strike: omo.strike,
     option_right: omo.option_right,
     expiry: omo.expiry,
-    dte,
+    dte: omo.dte,
     opened_at: omo.entry_time,
     status: "ORPHAN_OMO",
     omo,
   };
 }
 
+const STATUS_META: Record<DriftStatus, { cls: string; label: string }> = {
+  SYNCED:        { cls: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30", label: "Synced" },
+  ORPHAN_BROKER: { cls: "bg-red-500/15 text-red-400 border-red-500/30",             label: "Not monitored" },
+  ORPHAN_OMO:    { cls: "bg-amber-500/15 text-amber-400 border-amber-500/30",       label: "Broker missing" },
+  QTY_DRIFT:     { cls: "bg-amber-500/15 text-amber-400 border-amber-500/30",       label: "Qty drift" },
+  SIDE_DRIFT:    { cls: "bg-red-500/15 text-red-400 border-red-500/30",             label: "Side drift" },
+};
+
 function StatusBadge({ status }: { status: DriftStatus }) {
-  const cls = (() => {
-    switch (status) {
-      case "SYNCED": return "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
-      case "ORPHAN_BROKER": return "bg-red-500/15 text-red-400 border-red-500/30";
-      case "ORPHAN_OMO": return "bg-amber-500/15 text-amber-400 border-amber-500/30";
-      case "QTY_DRIFT": return "bg-amber-500/15 text-amber-400 border-amber-500/30";
-      case "SIDE_DRIFT": return "bg-red-500/15 text-red-400 border-red-500/30";
-    }
-  })();
-  const label = (() => {
-    switch (status) {
-      case "SYNCED": return "Synced";
-      case "ORPHAN_BROKER": return "Not monitored";
-      case "ORPHAN_OMO": return "Broker missing";
-      case "QTY_DRIFT": return "Qty drift";
-      case "SIDE_DRIFT": return "Side drift";
-    }
-  })();
+  const { cls, label } = STATUS_META[status];
   return (
     <Badge className={`text-[10px] px-1.5 py-0 border ${cls}`} title={status}>
       {label}
@@ -255,11 +246,10 @@ export default function PortfolioPage() {
         const data = await monRes.json();
         monitored = data.monitored || [];
         bootstrap = data.bootstrap_complete !== false;
-      } else if (monRes.status !== 503) {
-        // 503 just means the monitor isn't wired in this build (backtest
-        // binary etc.) — treat as "no OMO view" without surfacing an error.
       }
-      setBootstrapComplete(bootstrap);
+      // 503 is the "monitor not wired" path (backtest binary) — we leave
+      // monitored empty and bootstrap=true so no spurious banner appears.
+      setBootstrapComplete((prev) => (prev === bootstrap ? prev : bootstrap));
 
       const omoBySym = new Map(monitored.map((m) => [m.symbol, m]));
       const merged: Position[] = brokerPositions.map((p) => {
@@ -363,8 +353,12 @@ export default function PortfolioPage() {
       .sort((a, b) => a.underlying.localeCompare(b.underlying));
   }, [positions]);
 
-  const totalUnrealizedPnl = positions.reduce((sum, p) => sum + p.unrealized_pnl, 0);
-  const totalMarketValue = positions.reduce((sum, p) => sum + p.market_value, 0);
+  // Broker-only view drives counts and destructive actions; ORPHAN_OMO rows
+  // are visualized but not real broker positions and must not be tallied
+  // into the "Close All" confirm count.
+  const brokerPositions = positions.filter((p) => p.status !== "ORPHAN_OMO");
+  const totalUnrealizedPnl = brokerPositions.reduce((sum, p) => sum + p.unrealized_pnl, 0);
+  const totalMarketValue = brokerPositions.reduce((sum, p) => sum + p.market_value, 0);
   const driftRows = positions.filter((p) => p.status && p.status !== "SYNCED");
   const showDriftBanner = bootstrapComplete && driftRows.length > 0;
   const driftSummary = driftRows
@@ -388,7 +382,7 @@ export default function PortfolioPage() {
         <div>
           <h1 className="text-2xl font-bold text-foreground">Portfolio</h1>
           <p className="text-sm text-muted-foreground">
-            {positions.length} position{positions.length !== 1 ? "s" : ""} across {groups.length} underlying{groups.length !== 1 ? "s" : ""}
+            {brokerPositions.length} position{brokerPositions.length !== 1 ? "s" : ""} across {groups.length} underlying{groups.length !== 1 ? "s" : ""}
           </p>
         </div>
         <div className="flex gap-2">
@@ -396,7 +390,7 @@ export default function PortfolioPage() {
             <RefreshCw className={`h-4 w-4 mr-1 ${loading ? "animate-spin" : ""}`} />
             Refresh
           </Button>
-          {positions.length > 0 && !confirmCloseAll && (
+          {brokerPositions.length > 0 && !confirmCloseAll && (
             <Button
               variant="destructive"
               size="sm"
@@ -410,7 +404,7 @@ export default function PortfolioPage() {
           {confirmCloseAll && (
             <div className="flex gap-1">
               <Button variant="destructive" size="sm" onClick={closeAllPositions}>
-                Confirm Close All ({positions.length})
+                Confirm Close All ({brokerPositions.length})
               </Button>
               <Button variant="outline" size="sm" onClick={() => setConfirmCloseAll(false)}>
                 Cancel
