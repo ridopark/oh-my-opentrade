@@ -54,7 +54,13 @@ func (r *reconcileFillsRepo) GetReconciledOrderIDs(context.Context, string, doma
 	}
 	return r.reconciledOrderIDs, nil
 }
-func (r *reconcileFillsRepo) RecordFill(_ context.Context, _ string, _ time.Time, _, _ float64, t domain.Trade) error {
+func (r *reconcileFillsRepo) RecordFillPerExec(_ context.Context, _ string, _ time.Time, _, _ float64, t domain.Trade) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recorded = append(r.recorded, t)
+	return nil
+}
+func (r *reconcileFillsRepo) RecordFillAggregate(_ context.Context, _ string, _ time.Time, _, _ float64, t domain.Trade) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.recorded = append(r.recorded, t)

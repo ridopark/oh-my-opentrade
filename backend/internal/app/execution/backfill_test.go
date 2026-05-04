@@ -116,7 +116,10 @@ func (r *backfillMockRepo) SaveStrategyDNA(context.Context, domain.StrategyDNA) 
 func (r *backfillMockRepo) GetLatestStrategyDNA(context.Context, string, domain.EnvMode) (*domain.StrategyDNA, error) {
 	return nil, nil
 }
-func (r *backfillMockRepo) RecordFill(context.Context, string, time.Time, float64, float64, domain.Trade) error {
+func (r *backfillMockRepo) RecordFillPerExec(context.Context, string, time.Time, float64, float64, domain.Trade) error {
+	return nil
+}
+func (r *backfillMockRepo) RecordFillAggregate(context.Context, string, time.Time, float64, float64, domain.Trade) error {
 	return nil
 }
 func (r *backfillMockRepo) ListTrades(context.Context, ports.TradeQuery) (ports.TradePage, error) {

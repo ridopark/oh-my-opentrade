@@ -23,12 +23,17 @@ type RepositoryPort interface {
 	SaveOrder(ctx context.Context, order domain.BrokerOrder) error
 	UpdateOrderFill(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64) error
 
-	// RecordFill atomically updates the order row as filled and inserts the
-	// trade row in a single transaction. Prevents a half-written record where
-	// orders.status=filled but the trade row is missing (or vice versa) on
-	// transient DB failure. Duplicate trade rows (same execution_id) are
-	// silently ignored and still commit the order-fill update.
-	RecordFill(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64, trade domain.Trade) error
+	// RecordFillPerExec persists ONE broker execution leg. Authoritative:
+	// any prior aggregate (`agg:<broker_order_id>`) row is deleted first so
+	// the trades ledger reflects only real exec rows once a per-exec stream
+	// arrives. Caller sets trade.ExecutionID to the real broker exec ID.
+	RecordFillPerExec(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64, trade domain.Trade) error
+
+	// RecordFillAggregate persists an order-level fallback row only when no
+	// per-exec row already exists for the same broker_order_id. Caller MUST
+	// set trade.ExecutionID = "agg:<broker_order_id>" so re-fires collide on
+	// idx_trades_execution_id and a later per-exec write can replace it.
+	RecordFillAggregate(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64, trade domain.Trade) error
 
 	// ListTrades retrieves trades with optional filters and keyset pagination.
 	// cursor is the (time, trade_id) composite for keyset pagination.

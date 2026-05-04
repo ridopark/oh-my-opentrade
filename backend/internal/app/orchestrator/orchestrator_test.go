@@ -90,7 +90,10 @@ func (m *mockRepo) SaveOrder(_ context.Context, _ domain.BrokerOrder) error { re
 func (m *mockRepo) UpdateOrderFill(_ context.Context, _ string, _ time.Time, _, _ float64) error {
 	return nil
 }
-func (m *mockRepo) RecordFill(_ context.Context, _ string, _ time.Time, _, _ float64, _ domain.Trade) error {
+func (m *mockRepo) RecordFillPerExec(_ context.Context, _ string, _ time.Time, _, _ float64, _ domain.Trade) error {
+	return nil
+}
+func (m *mockRepo) RecordFillAggregate(_ context.Context, _ string, _ time.Time, _, _ float64, _ domain.Trade) error {
 	return nil
 }
 func (m *mockRepo) ListTrades(_ context.Context, _ ports.TradeQuery) (ports.TradePage, error) {

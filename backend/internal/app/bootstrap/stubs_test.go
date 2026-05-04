@@ -71,7 +71,10 @@ func (stubRepo) SaveOrder(context.Context, domain.BrokerOrder) error { return ni
 func (stubRepo) UpdateOrderFill(context.Context, string, time.Time, float64, float64) error {
 	return nil
 }
-func (stubRepo) RecordFill(context.Context, string, time.Time, float64, float64, domain.Trade) error {
+func (stubRepo) RecordFillPerExec(context.Context, string, time.Time, float64, float64, domain.Trade) error {
+	return nil
+}
+func (stubRepo) RecordFillAggregate(context.Context, string, time.Time, float64, float64, domain.Trade) error {
 	return nil
 }
 func (stubRepo) ListTrades(context.Context, ports.TradeQuery) (ports.TradePage, error) {

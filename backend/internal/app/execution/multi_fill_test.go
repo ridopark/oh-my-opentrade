@@ -68,7 +68,22 @@ func (r *multiFillRepo) applyMonotonicFill(brokerOrderID string, filledAt time.T
 	r.orders[brokerOrderID] = cur
 }
 
-func (r *multiFillRepo) RecordFill(_ context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64, trade domain.Trade) error {
+func (r *multiFillRepo) RecordFillPerExec(_ context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64, trade domain.Trade) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if trade.ExecutionID != "" {
+		if _, dup := r.execIDs[trade.ExecutionID]; dup {
+			return nil
+		}
+		r.execIDs[trade.ExecutionID] = struct{}{}
+	}
+	r.fills = append(r.fills, trade)
+	r.applyMonotonicFill(brokerOrderID, filledAt, filledPrice, filledQty)
+	return nil
+}
+
+func (r *multiFillRepo) RecordFillAggregate(_ context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64, trade domain.Trade) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
