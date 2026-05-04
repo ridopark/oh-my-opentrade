@@ -3,7 +3,6 @@ package strategy_test
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,9 +31,9 @@ func TestRunner_CopytradeFillReceived_DispatchesFillConfirmation(t *testing.T) {
 	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
 
 	var (
-		mu        sync.Mutex
-		gotFC     []strat.FillConfirmation
-		seenSym   atomic.Pointer[string]
+		mu      sync.Mutex
+		gotFC   []strat.FillConfirmation
+		seenSym string
 	)
 
 	fs := newFakeStrategy("copytrade_v1", "1.0.0")
@@ -42,9 +41,8 @@ func TestRunner_CopytradeFillReceived_DispatchesFillConfirmation(t *testing.T) {
 		if fc, ok := evt.(strat.FillConfirmation); ok {
 			mu.Lock()
 			gotFC = append(gotFC, fc)
+			seenSym = sym
 			mu.Unlock()
-			s := sym
-			seenSym.Store(&s)
 		}
 		return st, nil, nil
 	}
@@ -98,7 +96,5 @@ func TestRunner_CopytradeFillReceived_DispatchesFillConfirmation(t *testing.T) {
 	// because runner.handleFill resolves OCC -> underlying ("SPY") then
 	// falls back to the copytrade-by-strategy lookup which dispatches under
 	// the sentinel.
-	gotSym := seenSym.Load()
-	require.NotNil(t, gotSym)
-	assert.Equal(t, "__copytrade__", *gotSym)
+	assert.Equal(t, "__copytrade__", seenSym)
 }

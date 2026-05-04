@@ -1364,11 +1364,8 @@ func (s *Service) pollForFill(tenantID string, envMode domain.EnvMode, intent do
 					return
 				}
 				po := raw.(*pendingOrder)
-				// Paper-trade slow path: limit price is the fill-price proxy and
-				// the order is treated as a single all-at-once fill. Funnel through
-				// the same insertFillLeg + runFillFinalization pipeline used by the
-				// WS-stream and fast-poll paths so all three persist+emit paths
-				// share one publisher of FillReceived (KISS+DRY).
+				// Funnel through handleFillWithPrice so the slow-poll path shares
+				// one FillReceived publisher with WS-stream and fast-poll.
 				s.handleFillWithPrice(po, brokerOrderID, intent.LimitPrice, intent.Quantity, s.nowFn().UTC(), "", l)
 				return
 			case "canceled", "expired", "rejected":
@@ -2774,25 +2771,15 @@ func (s *Service) recordFillsFromExecHistory(ctx context.Context, po *pendingOrd
 
 	l.Info().Str("broker_order_id", brokerOrderID).Int("legs", len(legs)).
 		Msg("recordFillsFromExecHistory: inserting per-exec rows")
-	var cumQty, notional float64
-	var lastFilledAt time.Time
 	for _, leg := range legs {
 		s.insertFillLeg(po, brokerOrderID, leg.ExecutionID, leg.FilledAt, leg.Price, leg.Qty, leg.CumQty, leg.AvgPrice, l)
-		cumQty += leg.Qty
-		notional += leg.Price * leg.Qty
-		if leg.FilledAt.After(lastFilledAt) {
-			lastFilledAt = leg.FilledAt
-		}
 	}
-	// Single cumulative FillReceived per order — matches WS-stream and slow-poll
-	// semantics so subscribers (copytrade ghost confirm, position monitor entry
-	// registration, signal_tracker, perf ledger) see exactly one event per order
-	// regardless of which persist path won the race.
-	cumAvgPrice := legs[len(legs)-1].AvgPrice
-	if cumAvgPrice <= 0 && cumQty > 0 {
-		cumAvgPrice = notional / cumQty
-	}
-	s.runFillFinalization(po, brokerOrderID, cumAvgPrice, cumQty, lastFilledAt, l)
+	// Single cumulative FillReceived per order so subscribers (copytrade ghost
+	// confirm, position monitor entry registration, signal_tracker, perf ledger)
+	// don't double-count under the per-leg alternative. The last leg's CumQty
+	// and AvgPrice are the broker's authoritative cumulative totals.
+	last := legs[len(legs)-1]
+	s.runFillFinalization(po, brokerOrderID, last.AvgPrice, last.CumQty, last.FilledAt, l)
 }
 
 // exitLimitBuffer returns the IOC limit price buffer (as a fraction) for exit orders.
