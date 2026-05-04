@@ -637,7 +637,7 @@ export default function PortfolioPage() {
                             title="Clean-trigger estimate from PREMIUM_STOP only. Excludes slippage, gap-through, and time-based exits (STAGNATION_EXIT, EOD_FLATTEN). Catastrophic worst case = full premium paid."
                           >
                             {pos.omo?.est_max_loss_usd !== undefined ? (
-                              <span className="text-red-400">{formatCurrency(-pos.omo.est_max_loss_usd)}</span>
+                              <span className="text-red-400">{formatCurrency(pos.omo.est_max_loss_usd)}</span>
                             ) : (
                               <span className="text-muted-foreground">—</span>
                             )}
