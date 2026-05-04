@@ -321,6 +321,10 @@ func (h *PortfolioHandler) handleGetMonitored(w http.ResponseWriter, r *http.Req
 		DTE            *int     `json:"dte,omitempty"`
 		IVAtEntry      *float64 `json:"iv_at_entry,omitempty"`
 		AssetClass     string   `json:"asset_class"`
+		// Clean-trigger estimate from PREMIUM_STOP only; nil when no
+		// PREMIUM_STOP rule is attached (or position is non-option).
+		// Excludes slippage, gap risk, and time-based exits — see UI tooltip.
+		EstMaxLossUSD *float64 `json:"est_max_loss_usd,omitempty"`
 	}
 
 	positions := h.posMonitor.ListPositions()
@@ -361,6 +365,17 @@ func (h *PortfolioHandler) handleGetMonitored(w http.ResponseWriter, r *http.Req
 			if v, ok := p.CustomState["iv_at_entry"]; ok {
 				iv := v
 				mj.IVAtEntry = &iv
+			}
+			if entry, ok := p.CustomState["option_premium"]; ok && entry > 0 {
+				for _, rule := range p.ExitRules {
+					if rule.Type == domain.ExitRulePremiumStop {
+						if t, exists := rule.Params["threshold"]; exists && t > 0 {
+							loss := entry * t * p.Quantity * 100
+							mj.EstMaxLossUSD = &loss
+						}
+						break
+					}
+				}
 			}
 		} else {
 			mj.Underlying = string(p.Symbol)
