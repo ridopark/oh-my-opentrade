@@ -125,6 +125,9 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	})
 	portfolioHandler.SetDailyPnLFn(infra.ibkrBroker.GetDailyPnL)
 	portfolioHandler.SetRepo(infra.repo)
+	if svc.posMonitor != nil {
+		portfolioHandler.SetPositionMonitor(svc.posMonitor)
+	}
 	imux.Handle("/api/portfolio/", portfolioHandler)
 
 	decayHandler := omhttp.NewDecayHandler(infra.decayRepo, httpLog)

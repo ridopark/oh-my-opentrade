@@ -101,6 +101,14 @@ type Service struct {
 	// reconciliation tick firing between orchestrator.Stop() and
 	// broker.Close() cannot emit stale reconciliation trades or events.
 	isShuttingDown atomic.Bool
+
+	// bootstrapReady flips true once Start()'s initial bootstrapPositions
+	// returns. The HTTP /api/portfolio/monitored handler exposes this so
+	// the dashboard can suppress its drift banner during the ~5s window
+	// where ListPositions() is incomplete. Backtest mode (disableReconcile)
+	// flips it true immediately at Start so the flag remains a meaningful
+	// "monitor view is steady-state" signal.
+	bootstrapReady atomic.Bool
 }
 
 // fillMsg is the internal message type enqueued when a FillReceived event arrives.
@@ -450,6 +458,7 @@ func (s *Service) Start(ctx context.Context) error {
 	if !s.disableReconcile {
 		s.bootstrapPositions(ctx)
 	}
+	s.bootstrapReady.Store(true)
 
 	// Outbox publisher goroutine — reads exit intents and publishes them.
 	// In backtest mode (disableTickLoop), drainOutbox handles this synchronously
@@ -989,6 +998,14 @@ func (s *Service) ListPositions() []domain.MonitoredPosition {
 		positions = append(positions, *pos)
 	}
 	return positions
+}
+
+// BootstrapReady reports whether Start()'s initial bootstrap reconcile has
+// finished. Consumed by the portfolio HTTP handler so the dashboard can
+// suppress drift-banner false positives during the ~5s startup window when
+// ListPositions() is still empty.
+func (s *Service) BootstrapReady() bool {
+	return s.bootstrapReady.Load()
 }
 
 // ListOpenContractsByUnderlying returns copies of every monitored option
