@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -1025,33 +1026,70 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, fmt.Sprintf("exit position query failed: %v", posErr)))
 			return nil
 		}
+		// Side-match invariant: the exit intent's direction must agree with
+		// the broker's net position side. Phantom-position defense (2026-04-16
+		// alpaca incident) — issuing a long-close SELL on top of a broker
+		// short would deepen the short; the same logic in reverse blocks a
+		// short-cover BUY on top of a broker long. The original guard was
+		// "any short = reject" which over-corrected and silently dropped
+		// every legitimate CLOSE_SHORT (5/5 backtest leak, 2026-05-01).
 		var posQty float64
+		var posSide string
 		for _, p := range positions {
-			if p.Symbol == intent.Symbol {
-				posQty += p.SignedQuantity()
+			if p.Symbol != intent.Symbol {
+				continue
 			}
+			posQty += p.SignedQuantity()
 		}
-		// Reject both "no position" (posQty==0) and "short position"
-		// (posQty<0). Issuing a long-close SELL on top of a broker short
-		// would deepen the short — which is exactly how 2026-04-16's
-		// phantom-short race amplified past the broker. Treat any short
-		// as "not ours to exit" at this gate; the global reconciler will
-		// surface the anomaly for manual intervention.
-		if posQty <= 0 {
-			l.Warn().Msg("exit intent but no long position found — rejecting")
+		switch {
+		case posQty > 0:
+			posSide = "LONG"
+		case posQty < 0:
+			posSide = "SHORT"
+		}
+		expectedSide := "LONG"
+		if intent.Direction == domain.DirectionCloseShort {
+			expectedSide = "SHORT"
+		}
+		if posSide == "" {
+			l.Warn().Str("expected_side", expectedSide).Msg("exit intent but no position found — rejecting")
 			if s.positionGate != nil {
 				s.positionGate.ClearInflightExit(event.TenantID, event.EnvMode, intent.Symbol)
+			}
+			if s.metrics != nil {
+				s.metrics.Orders.RejectsTotal.WithLabelValues(s.brokerName, intent.Strategy, "no_position_to_exit").Inc()
 			}
 			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, "position_gate: no_position_to_exit"))
 			return nil
 		}
-		intent.Quantity = posQty
+		if posSide != expectedSide {
+			l.Warn().
+				Str("expected_side", expectedSide).
+				Str("found_side", posSide).
+				Float64("pos_qty", posQty).
+				Msg("exit intent direction does not match broker position side — rejecting (phantom-position defense)")
+			if s.positionGate != nil {
+				s.positionGate.ClearInflightExit(event.TenantID, event.EnvMode, intent.Symbol)
+			}
+			if s.metrics != nil {
+				s.metrics.Orders.RejectsTotal.WithLabelValues(s.brokerName, intent.Strategy, "wrong_side_position").Inc()
+			}
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, "position_gate: wrong_side_position"))
+			return nil
+		}
+		intent.Quantity = math.Abs(posQty)
 		if intent.TimeInForce == "" {
 			intent.TimeInForce = "ioc"
 			buffer := exitLimitBuffer(intent.Symbol, intent.AssetClass)
-			intent.LimitPrice *= (1 - buffer)
+			// Cover-by-buy on a SHORT pays the ask: bias the limit UP.
+			// Sell-to-close on a LONG hits the bid: bias the limit DOWN.
+			if intent.Direction == domain.DirectionCloseShort {
+				intent.LimitPrice *= (1 + buffer)
+			} else {
+				intent.LimitPrice *= (1 - buffer)
+			}
 		}
-		l.Info().Float64("exit_qty", posQty).Float64("exit_buffer_bps", exitLimitBuffer(intent.Symbol, intent.AssetClass)*10000).Msg("resolved exit quantity from broker position")
+		l.Info().Float64("exit_qty", intent.Quantity).Str("pos_side", posSide).Float64("exit_buffer_bps", exitLimitBuffer(intent.Symbol, intent.AssetClass)*10000).Msg("resolved exit quantity from broker position")
 	}
 
 	// 5e. Cancel stale open buy orders for this symbol to prevent position doubling and wash trades.

@@ -2042,6 +2042,19 @@ backtestComplete:
 		}
 	}
 
+	// Final EOD-flatten tick at session close so EOD_FLATTEN exit rules fire
+	// on every still-open position (LONG and SHORT). Routes through the real
+	// exit chain so prices/fees/MFE/MAE flow normally. Anything still open
+	// after this is a true leak and gets logged as BACKTEST_END_LEAK below.
+	// Unconditional on useAggregation: the aggregator's last-closed bar may
+	// land before the EOD-flatten window, so this guarantees the
+	// minutes_before_close trigger gets a tick at session close.
+	if posMonBundle.Service != nil && !lastBarTime.IsZero() {
+		lastClose := domain.CalendarFor(domain.AssetClassEquity).SessionClose(lastBarTime)
+		posMonBundle.Service.EvalExitRules(lastClose)
+		r.infra.EventBus.Flush()
+	}
+
 	// Force-close any remaining open positions at last known price.
 	r.collector.CloseOpenPositions(lastBarTime)
 

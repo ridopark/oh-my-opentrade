@@ -719,6 +719,15 @@ func (s *Service) processFill(fill fillMsg) {
 		exitRules = s.resolveExitRules(context.Background(), fill.Strategy, fill.Symbol, fill.AssetClass)
 	}
 
+	s.log.Info().
+		Str("symbol", string(fill.Symbol)).
+		Str("side", fill.Side).
+		Str("direction", fill.Direction).
+		Float64("quantity", fill.Quantity).
+		Float64("entry_price", fill.Price).
+		Str("strategy", fill.Strategy).
+		Msg("registering monitored position")
+
 	pos, err := domain.NewMonitoredPosition(
 		fill.Symbol, fill.Price, fill.FilledAt,
 		fill.Strategy, fill.AssetClass, exitRules,

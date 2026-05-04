@@ -1621,6 +1621,92 @@ func TestEvalExitRules_TriggersEODFlatten(t *testing.T) {
 	}, 500*time.Millisecond, 10*time.Millisecond)
 }
 
+// TestEvalExitRules_FiresEODFlattenOnBothDirections pins the symmetry of
+// the exit chain across LONG and SHORT positions at session close. Fix A
+// reuses EvalExitRules as the final EOD-flatten seam in the backtest
+// runner; if the SHORT path is ever broken anywhere in
+// EvalExitRules → tick → triggerExit → exitDirection, this test fails
+// before the leak shows up downstream as BACKTEST_END_LEAK.
+func TestEvalExitRules_FiresEODFlattenOnBothDirections(t *testing.T) {
+	bus := &mockEventBus{}
+	pc := NewPriceCache(zerolog.Nop())
+	pg := execution.NewPositionGate(&mockBroker{}, zerolog.Nop())
+
+	et, _ := time.LoadLocation("America/New_York")
+	entryTime := time.Date(2026, 3, 10, 10, 0, 0, 0, et)
+
+	svc := NewService(bus, pc, pg, "tenant-1", domain.EnvModePaper, zerolog.Nop(),
+		WithNowFunc(func() time.Time { return entryTime }),
+		WithDisableTickLoop(),
+		WithDisableReconcile(),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, svc.Start(ctx))
+	defer svc.Stop()
+
+	// LONG entry on QQQ.
+	svc.processFill(fillMsg{
+		Symbol:     domain.Symbol("QQQ"),
+		Side:       "BUY",
+		Direction:  string(domain.DirectionLong),
+		Price:      400,
+		Quantity:   10,
+		FilledAt:   entryTime,
+		Strategy:   "avwap_v4",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules: []domain.ExitRule{
+			mustExitRule(t, domain.ExitRuleEODFlatten, map[string]float64{"minutes_before_close": 15}),
+		},
+	})
+
+	// SHORT entry on AAPL — Side="SELL" + Direction="SHORT" is the
+	// pipeline's short-to-open shape. processFill routes via Direction.IsExit()
+	// so this opens a new SHORT, not a phantom exit.
+	svc.processFill(fillMsg{
+		Symbol:     domain.Symbol("AAPL"),
+		Side:       "SELL",
+		Direction:  string(domain.DirectionShort),
+		Price:      150,
+		Quantity:   5,
+		FilledAt:   entryTime,
+		Strategy:   "avwap_v4",
+		AssetClass: domain.AssetClassEquity,
+		ExitRules: []domain.ExitRule{
+			mustExitRule(t, domain.ExitRuleEODFlatten, map[string]float64{"minutes_before_close": 15}),
+		},
+	})
+	require.Equal(t, 2, svc.PositionCount())
+
+	barTime := time.Date(2026, 3, 10, 15, 50, 0, 0, et) // 15:50 ET — 10 min before close
+	pc.UpdatePrice(domain.Symbol("QQQ"), 405, barTime)
+	pc.UpdatePrice(domain.Symbol("AAPL"), 148, barTime)
+
+	svc.EvalExitRules(barTime)
+
+	require.Eventually(t, func() bool {
+		return bus.publishedCount(domain.EventOrderIntentCreated) == 2
+	}, 500*time.Millisecond, 10*time.Millisecond)
+
+	// Inspect the two intents and verify direction symmetry: one CloseLong
+	// (for QQQ) and one CloseShort (for AAPL). Asserting the set rather
+	// than order keeps the test robust to actor scheduling.
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	directions := map[domain.Direction]int{}
+	for _, ev := range bus.published {
+		if ev.Type != domain.EventOrderIntentCreated {
+			continue
+		}
+		intent, ok := ev.Payload.(domain.OrderIntent)
+		require.True(t, ok, "OrderIntentCreated payload must be domain.OrderIntent")
+		directions[intent.Direction]++
+	}
+	assert.Equal(t, 1, directions[domain.DirectionCloseLong], "exactly one CLOSE_LONG intent expected")
+	assert.Equal(t, 1, directions[domain.DirectionCloseShort], "exactly one CLOSE_SHORT intent expected — the SHORT-side EOD-flatten path")
+}
+
 func TestEvalExitRules_DrainsFillsBeforeEval(t *testing.T) {
 	bus := &mockEventBus{}
 	pc := NewPriceCache(zerolog.Nop())

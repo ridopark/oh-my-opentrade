@@ -1,11 +1,13 @@
 package backtest_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -360,4 +362,68 @@ func TestWriteJSON_WritesValidJSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &decoded))
 	assert.InDelta(t, r.InitialEquity, decoded.InitialEquity, 1e-9)
 	assert.InDelta(t, r.FinalEquity, decoded.FinalEquity, 1e-9)
+}
+
+// TestCollector_CloseOpenPositions_EmitsLeakRationaleAndLogs proves
+// CloseOpenPositions is the LEAK path of last resort (post Fix A): each
+// surviving entry yields an exit record tagged BACKTEST_END_LEAK and an
+// ERROR log line so log-grep alerting can catch exit-chain regressions.
+// After Fix B lands the upstream EOD-flatten tick should drain everything,
+// leaving this path with zero hits in production runs.
+func TestCollector_CloseOpenPositions_EmitsLeakRationaleAndLogs(t *testing.T) {
+	bus := memory.NewBus()
+	var logBuf bytes.Buffer
+	log := zerolog.New(&logBuf)
+	c, err := backtest.NewCollector(bus, backtest.Config{InitialEquity: 100_000, PeriodsPerYear: 252}, log)
+	require.NoError(t, err)
+	require.NotNil(t, c)
+
+	t0 := time.Date(2026, 3, 10, 9, 30, 0, 0, time.UTC)
+
+	// LONG entry on QQQ.
+	longEntry := fillPayload("QQQ", "buy", 10.0, 400.0, t0)
+	longEntry["direction"] = string(domain.DirectionLong)
+	publishFill(t, bus, "long-entry", longEntry)
+
+	// SHORT entry on AAPL (side="sell" + direction="SHORT" — this is how the
+	// real pipeline emits a short-to-open and is the path the LEAK guard
+	// must cover symmetrically).
+	shortEntry := fillPayload("AAPL", "sell", 5.0, 150.0, t0.Add(time.Second))
+	shortEntry["direction"] = string(domain.DirectionShort)
+	publishFill(t, bus, "short-entry", shortEntry)
+
+	// Drive lastPrices via market bars so CloseOpenPositions has a valid
+	// exit price for both symbols.
+	publishMarketBar(t, bus, "bar-qqq", domain.MarketBar{
+		Time: t0.Add(2 * time.Second), Symbol: domain.Symbol("QQQ"), Close: 405.0,
+	})
+	publishMarketBar(t, bus, "bar-aapl", domain.MarketBar{
+		Time: t0.Add(3 * time.Second), Symbol: domain.Symbol("AAPL"), Close: 148.0,
+	})
+
+	c.CloseOpenPositions(t0.Add(4 * time.Second))
+
+	r := c.Result()
+
+	require.Len(t, r.Trades, 4, "2 entries + 2 leaked exits expected")
+
+	exits := make([]backtest.TradeRecord, 0, 2)
+	for _, tr := range r.Trades {
+		if tr.IsExit {
+			exits = append(exits, tr)
+		}
+	}
+	require.Len(t, exits, 2)
+	for _, e := range exits {
+		assert.Equal(t, "BACKTEST_END_LEAK", e.Rationale,
+			"every CloseOpenPositions exit must tag the leak rationale so "+
+				"log-grep alerting and the post-run leak count are honest")
+	}
+
+	logOut := logBuf.String()
+	leakLogCount := strings.Count(logOut, "backtest_end_leak")
+	assert.Equal(t, 2, leakLogCount,
+		"one ERROR log per leaked entry; got %d in %q", leakLogCount, logOut)
+	assert.Contains(t, logOut, `"level":"error"`,
+		"leak log must be ERROR-level so it surfaces past INFO filters")
 }
