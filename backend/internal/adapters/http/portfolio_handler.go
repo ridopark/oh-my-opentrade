@@ -33,6 +33,15 @@ type OptionQuoteProvider interface {
 // LastPriceFn returns the last known close price for an equity symbol from in-memory bar data.
 type LastPriceFn func(symbol string) (close float64, ok bool)
 
+// PositionMonitorReader is the read-only view of positionmonitor.Service that
+// the portfolio HTTP handler needs. Narrow on purpose: keeps the http adapter
+// from importing the full positionmonitor package and lets the handler stay
+// nil-safe when the monitor isn't wired (e.g. backtest binaries).
+type PositionMonitorReader interface {
+	ListPositions() []domain.MonitoredPosition
+	BootstrapReady() bool
+}
+
 // PortfolioHandler serves portfolio endpoints: positions, account summary, and close actions.
 type PortfolioHandler struct {
 	broker   PortfolioBroker
@@ -42,6 +51,7 @@ type PortfolioHandler struct {
 	dailyPnLFn   func(ctx context.Context) (realized, unrealized float64, err error)
 	repo         ports.RepositoryPort // for trade history lookups
 	pendingClose map[string]time.Time // symbol → when close was requested
+	posMonitor   PositionMonitorReader // optional; nil → /monitored returns 503
 	equityFn func(ctx context.Context) (float64, error)
 	tenantID string
 	envMode  domain.EnvMode
@@ -81,6 +91,10 @@ func (h *PortfolioHandler) SetDailyPnLFn(fn func(ctx context.Context) (realized,
 // SetRepo provides a repository for trade history lookups (opened_at times).
 func (h *PortfolioHandler) SetRepo(r ports.RepositoryPort) { h.repo = r }
 
+// SetPositionMonitor wires the OMO position monitor read view consumed by
+// GET /api/portfolio/monitored. Optional: when nil, that route returns 503.
+func (h *PortfolioHandler) SetPositionMonitor(m PositionMonitorReader) { h.posMonitor = m }
+
 func (h *PortfolioHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, DELETE, OPTIONS")
@@ -102,6 +116,8 @@ func (h *PortfolioHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(path, "positions/") && r.Method == http.MethodDelete:
 		symbol := strings.TrimPrefix(path, "positions/")
 		h.handleClosePosition(w, r, symbol)
+	case path == "monitored" && r.Method == http.MethodGet:
+		h.handleGetMonitored(w, r)
 	case path == "account" && r.Method == http.MethodGet:
 		h.handleGetAccount(w, r)
 	case strings.HasPrefix(path, "quote/") && r.Method == http.MethodGet:
@@ -271,6 +287,99 @@ func (h *PortfolioHandler) handleGetPositions(w http.ResponseWriter, r *http.Req
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"positions": out})
+}
+
+// handleGetMonitored returns the OMO position monitor's view of open positions.
+// The dashboard outer-joins this with /api/portfolio/positions to surface
+// drift between broker reality and OMO's monitored set.
+//
+// Response shape is intentionally a private struct with explicit snake_case
+// json tags (the underlying domain.MonitoredPosition has inconsistent tags
+// and shared maps that would race the live monitor under reflective JSON
+// encoding). CustomState is whitelisted to a small set of keys read into a
+// fresh map so the live monitor's mutations cannot race the encoder.
+func (h *PortfolioHandler) handleGetMonitored(w http.ResponseWriter, r *http.Request) {
+	if h.posMonitor == nil {
+		jsonErr(w, "position monitor not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	type monitoredJSON struct {
+		Symbol         string             `json:"symbol"`
+		Strategy       string             `json:"strategy"`
+		Side           string             `json:"side"`
+		Quantity       float64            `json:"quantity"`
+		EntryPrice     float64            `json:"entry_price"`
+		HighWaterMark  float64            `json:"high_water_mark"`
+		LowWaterMark   float64            `json:"low_water_mark"`
+		EntryTime      string             `json:"entry_time"`
+		ExitRules      []string           `json:"exit_rules"`
+		InstrumentType string             `json:"instrument_type"`
+		Underlying     string             `json:"underlying"`
+		Strike         *float64           `json:"strike,omitempty"`
+		OptionRight    string             `json:"option_right,omitempty"`
+		Expiry         string             `json:"expiry,omitempty"`
+		IVAtEntry      *float64           `json:"iv_at_entry,omitempty"`
+		AssetClass     string             `json:"asset_class"`
+		CustomState    map[string]float64 `json:"custom_state,omitempty"`
+	}
+
+	positions := h.posMonitor.ListPositions()
+	out := make([]monitoredJSON, 0, len(positions))
+	for _, p := range positions {
+		ruleNames := make([]string, 0, len(p.ExitRules))
+		for _, rule := range p.ExitRules {
+			ruleNames = append(ruleNames, string(rule.Type))
+		}
+		mj := monitoredJSON{
+			Symbol:         string(p.Symbol),
+			Strategy:       p.Strategy,
+			Side:           p.Side,
+			Quantity:       p.Quantity,
+			EntryPrice:     p.EntryPrice,
+			HighWaterMark:  p.HighWaterMark,
+			LowWaterMark:   p.LowWaterMark,
+			EntryTime:      p.EntryTime.UTC().Format(time.RFC3339),
+			ExitRules:      ruleNames,
+			InstrumentType: string(p.InstrumentType),
+			AssetClass:     string(p.AssetClass),
+		}
+		if p.InstrumentType == domain.InstrumentTypeOption {
+			mj.Underlying = string(domain.UnderlyingFromOCC(p.Symbol))
+			mj.OptionRight = p.OptionRight
+			if !p.OptionExpiry.IsZero() {
+				mj.Expiry = p.OptionExpiry.Format("2006-01-02")
+			}
+			if v, ok := p.CustomState["strike"]; ok {
+				strike := v
+				mj.Strike = &strike
+			}
+			if v, ok := p.CustomState["iv_at_entry"]; ok {
+				iv := v
+				mj.IVAtEntry = &iv
+			}
+			whitelist := map[string]float64{}
+			for _, k := range []string{"option_premium", "iv_at_entry", "strike"} {
+				if v, ok := p.CustomState[k]; ok {
+					whitelist[k] = v
+				}
+			}
+			if len(whitelist) > 0 {
+				mj.CustomState = whitelist
+			}
+		} else {
+			mj.Underlying = string(p.Symbol)
+		}
+		out = append(out, mj)
+	}
+
+	sort.Slice(out, func(i, j int) bool { return out[i].Symbol < out[j].Symbol })
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"bootstrap_complete": h.posMonitor.BootstrapReady(),
+		"monitored":          out,
+	})
 }
 
 func (h *PortfolioHandler) handleGetAccount(w http.ResponseWriter, r *http.Request) {

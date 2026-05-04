@@ -31,6 +31,8 @@ import {
 } from "lucide-react";
 import { EquityCurveChart, type EquityPoint } from "@/components/charts/equity-curve-chart";
 
+type DriftStatus = "SYNCED" | "ORPHAN_BROKER" | "ORPHAN_OMO" | "QTY_DRIFT" | "SIDE_DRIFT";
+
 interface Position {
   symbol: string;
   side: string;
@@ -48,6 +50,31 @@ interface Position {
   dte?: number;
   closing?: boolean;
   opened_at?: string;
+  // Drift annotations populated post-fetch by the merge step. broker-only
+  // rows leave omo undefined; ORPHAN_OMO rows are synthesized from the
+  // monitored response so the existing group/render path needs no rework.
+  status?: DriftStatus;
+  omo?: MonitoredPosition;
+}
+
+interface MonitoredPosition {
+  symbol: string;
+  strategy: string;
+  side: string;
+  quantity: number;
+  entry_price: number;
+  high_water_mark: number;
+  low_water_mark: number;
+  entry_time: string;
+  exit_rules: string[];
+  instrument_type: string;
+  underlying: string;
+  strike?: number;
+  option_right?: string;
+  expiry?: string;
+  iv_at_entry?: number;
+  asset_class: string;
+  custom_state?: Record<string, number>;
 }
 
 interface Account {
@@ -104,6 +131,67 @@ function ContractLabel({ pos }: { pos: Position }) {
   );
 }
 
+function computeStatus(broker: Position, omo: MonitoredPosition | undefined): DriftStatus {
+  if (!omo) return "ORPHAN_BROKER";
+  if (broker.quantity !== omo.quantity) return "QTY_DRIFT";
+  // Broker side is "long"/"short"; OMO side is "BUY"/"SELL". Map both to BUY/SELL.
+  const brokerSide = broker.side.toLowerCase() === "short" ? "SELL" : "BUY";
+  const omoSide = omo.side.toUpperCase() === "SELL" ? "SELL" : "BUY";
+  if (brokerSide !== omoSide) return "SIDE_DRIFT";
+  return "SYNCED";
+}
+
+function synthesizeOrphanOmo(omo: MonitoredPosition): Position {
+  const dte = omo.expiry
+    ? Math.max(0, Math.floor((new Date(omo.expiry + "T00:00:00").getTime() - Date.now()) / 86_400_000))
+    : undefined;
+  return {
+    symbol: omo.symbol,
+    side: omo.side.toUpperCase() === "SELL" ? "short" : "long",
+    quantity: omo.quantity,
+    avg_entry_price: omo.entry_price,
+    current_price: 0,
+    market_value: 0,
+    unrealized_pnl: 0,
+    unrealized_pnl_pct: 0,
+    instrument_type: omo.instrument_type || undefined,
+    underlying: omo.underlying,
+    strike: omo.strike,
+    option_right: omo.option_right,
+    expiry: omo.expiry,
+    dte,
+    opened_at: omo.entry_time,
+    status: "ORPHAN_OMO",
+    omo,
+  };
+}
+
+function StatusBadge({ status }: { status: DriftStatus }) {
+  const cls = (() => {
+    switch (status) {
+      case "SYNCED": return "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
+      case "ORPHAN_BROKER": return "bg-red-500/15 text-red-400 border-red-500/30";
+      case "ORPHAN_OMO": return "bg-amber-500/15 text-amber-400 border-amber-500/30";
+      case "QTY_DRIFT": return "bg-amber-500/15 text-amber-400 border-amber-500/30";
+      case "SIDE_DRIFT": return "bg-red-500/15 text-red-400 border-red-500/30";
+    }
+  })();
+  const label = (() => {
+    switch (status) {
+      case "SYNCED": return "Synced";
+      case "ORPHAN_BROKER": return "Not monitored";
+      case "ORPHAN_OMO": return "Broker missing";
+      case "QTY_DRIFT": return "Qty drift";
+      case "SIDE_DRIFT": return "Side drift";
+    }
+  })();
+  return (
+    <Badge className={`text-[10px] px-1.5 py-0 border ${cls}`} title={status}>
+      {label}
+    </Badge>
+  );
+}
+
 function DteBadge({ dte }: { dte?: number }) {
   if (dte === undefined) return null;
   const color =
@@ -116,6 +204,7 @@ function DteBadge({ dte }: { dte?: number }) {
 export default function PortfolioPage() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [account, setAccount] = useState<Account | null>(null);
+  const [bootstrapComplete, setBootstrapComplete] = useState(true);
   const [loading, setLoading] = useState(true);
   const [closing, setClosing] = useState<string | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
@@ -150,14 +239,42 @@ export default function PortfolioPage() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [posRes, accRes] = await Promise.all([
+      const [posRes, accRes, monRes] = await Promise.all([
         fetch("/api/portfolio/positions"),
         fetch("/api/portfolio/account"),
+        fetch("/api/portfolio/monitored"),
       ]);
-      if (posRes.ok) {
-        const data = await posRes.json();
-        setPositions(data.positions || []);
+
+      const brokerPositions: Position[] = posRes.ok
+        ? ((await posRes.json()).positions || [])
+        : [];
+
+      let monitored: MonitoredPosition[] = [];
+      let bootstrap = true;
+      if (monRes.ok) {
+        const data = await monRes.json();
+        monitored = data.monitored || [];
+        bootstrap = data.bootstrap_complete !== false;
+      } else if (monRes.status !== 503) {
+        // 503 just means the monitor isn't wired in this build (backtest
+        // binary etc.) — treat as "no OMO view" without surfacing an error.
       }
+      setBootstrapComplete(bootstrap);
+
+      const omoBySym = new Map(monitored.map((m) => [m.symbol, m]));
+      const merged: Position[] = brokerPositions.map((p) => {
+        const omo = omoBySym.get(p.symbol);
+        const status = computeStatus(p, omo);
+        omoBySym.delete(p.symbol);
+        return { ...p, omo, status };
+      });
+      // Synthesize ORPHAN_OMO rows so the existing grouped renderer
+      // surfaces them without special-casing.
+      for (const omo of omoBySym.values()) {
+        merged.push(synthesizeOrphanOmo(omo));
+      }
+
+      setPositions(merged);
       if (accRes.ok) {
         const data = await accRes.json();
         setAccount(data);
@@ -248,6 +365,12 @@ export default function PortfolioPage() {
 
   const totalUnrealizedPnl = positions.reduce((sum, p) => sum + p.unrealized_pnl, 0);
   const totalMarketValue = positions.reduce((sum, p) => sum + p.market_value, 0);
+  const driftRows = positions.filter((p) => p.status && p.status !== "SYNCED");
+  const showDriftBanner = bootstrapComplete && driftRows.length > 0;
+  const driftSummary = driftRows
+    .slice(0, 3)
+    .map((p) => `${p.underlying || p.symbol}${p.status ? ` (${p.status})` : ""}`)
+    .join(", ") + (driftRows.length > 3 ? `, +${driftRows.length - 3} more` : "");
 
   const toggleGroup = (underlying: string) => {
     setCollapsed((prev) => {
@@ -395,6 +518,16 @@ export default function PortfolioPage() {
         <EquityCurveChart data={equity} loading={equityLoading} />
       </div>
 
+      {/* Drift banner — broker vs OMO position-monitor divergence */}
+      {showDriftBanner && (
+        <div className="flex items-center gap-2 p-3 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-400 text-sm">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span>
+            <span className="font-semibold">{driftRows.length}</span> position{driftRows.length === 1 ? "" : "s"} drifting between broker and OMO: {driftSummary}
+          </span>
+        </div>
+      )}
+
       {/* Positions Table — grouped by underlying */}
       <Card>
         <CardHeader>
@@ -420,6 +553,7 @@ export default function PortfolioPage() {
                   <TableHead className="text-center">DTE</TableHead>
                   <TableHead className="text-right">P&L Open</TableHead>
                   <TableHead className="text-right">Opened</TableHead>
+                  <TableHead className="text-center">Monitored</TableHead>
                   <TableHead className="text-right">Action</TableHead>
                 </TableRow>
               </TableHeader>
@@ -458,11 +592,19 @@ export default function PortfolioPage() {
                         </TableCell>
                         <TableCell />
                         <TableCell />
+                        <TableCell />
                       </TableRow>
 
                       {/* Individual position rows */}
-                      {!isCollapsed && group.positions.map((pos, i) => (
-                        <TableRow key={`${pos.symbol}-${i}`} className="hover:bg-muted/20">
+                      {!isCollapsed && group.positions.map((pos, i) => {
+                        const status = pos.status;
+                        const driftBorder =
+                          status === "ORPHAN_BROKER" || status === "SIDE_DRIFT" ? "border-l-2 border-l-red-500/60" :
+                          status === "ORPHAN_OMO" || status === "QTY_DRIFT" ? "border-l-2 border-l-amber-500/60" :
+                          "";
+                        const isOrphanOmo = status === "ORPHAN_OMO";
+                        return (
+                        <TableRow key={`${pos.symbol}-${i}`} className={`hover:bg-muted/20 ${driftBorder}`}>
                           <TableCell />
                           <TableCell className="pl-8">
                             <ContractLabel pos={pos} />
@@ -485,19 +627,41 @@ export default function PortfolioPage() {
                             {formatCurrency(pos.avg_entry_price)}
                           </TableCell>
                           <TableCell className="text-right font-mono tabular-nums">
-                            {formatCurrency(pos.current_price)}
+                            {isOrphanOmo ? "—" : formatCurrency(pos.current_price)}
                           </TableCell>
                           <TableCell className="text-center">
                             <DteBadge dte={pos.dte} />
                           </TableCell>
                           <TableCell className="text-right font-mono tabular-nums">
-                            <PnlText value={pos.unrealized_pnl} pct={pos.unrealized_pnl_pct} />
+                            {isOrphanOmo ? <span className="text-muted-foreground">—</span> : <PnlText value={pos.unrealized_pnl} pct={pos.unrealized_pnl_pct} />}
                           </TableCell>
                           <TableCell className="text-right text-xs text-muted-foreground whitespace-nowrap">
                             {pos.opened_at ? relativeTime(pos.opened_at) : "—"}
                           </TableCell>
+                          <TableCell className="text-center">
+                            {status ? (
+                              <div className="flex flex-col items-center gap-0.5">
+                                <StatusBadge status={status} />
+                                {pos.omo && (
+                                  <span
+                                    className="text-[10px] text-muted-foreground"
+                                    title={`Strategy: ${pos.omo.strategy}\nExit rules: ${pos.omo.exit_rules.join(", ") || "(none)"}`}
+                                  >
+                                    {pos.omo.strategy} · {pos.omo.exit_rules.length} rule{pos.omo.exit_rules.length === 1 ? "" : "s"}
+                                  </span>
+                                )}
+                                {status === "QTY_DRIFT" && pos.omo && (
+                                  <span className="text-[10px] text-amber-400/80">b={formatQty(pos.quantity)} o={formatQty(pos.omo.quantity)}</span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
                           <TableCell className="text-right">
-                            {(pos.closing || pendingClose.has(pos.symbol)) ? (
+                            {isOrphanOmo ? (
+                              <span className="text-xs text-muted-foreground">—</span>
+                            ) : (pos.closing || pendingClose.has(pos.symbol)) ? (
                               <span className="flex items-center gap-1 text-xs text-amber-400">
                                 <RefreshCw className="h-3 w-3 animate-spin" />
                                 Closing...
@@ -531,7 +695,8 @@ export default function PortfolioPage() {
                             )}
                           </TableCell>
                         </TableRow>
-                      ))}
+                        );
+                      })}
                     </Fragment>
                   );
                 })}
