@@ -1307,7 +1307,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			}
 		}
 	case s.orderStream == nil:
-		go s.pollForFill(event.TenantID, event.EnvMode, intent, brokerOrderID, submitStart, l)
+		go s.pollForFill(event.TenantID, event.EnvMode, intent, brokerOrderID, l)
 	case isEntry(intent):
 		// WS stream active but unreliable on IBKR paper — fast-poll
 		// livePos (PositionChan-backed) to detect fills within ~1s.
@@ -1322,7 +1322,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 
 // pollForFill polls broker.GetOrderStatus until the order is filled, canceled,
 // or the 2-minute timeout is reached. On fill it persists a Trade and emits FillReceived.
-func (s *Service) pollForFill(tenantID string, envMode domain.EnvMode, intent domain.OrderIntent, brokerOrderID string, submitStart time.Time, l zerolog.Logger) {
+func (s *Service) pollForFill(tenantID string, envMode domain.EnvMode, intent domain.OrderIntent, brokerOrderID string, l zerolog.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	defer s.pendingOrders.Delete(brokerOrderID)
@@ -1357,7 +1357,19 @@ func (s *Service) pollForFill(tenantID string, envMode domain.EnvMode, intent do
 
 			switch status {
 			case "filled":
-				s.handleFill(tenantID, envMode, intent, brokerOrderID, submitStart, l)
+				raw, ok := s.pendingOrders.LoadAndDelete(brokerOrderID)
+				if !ok {
+					l.Warn().Str("broker_order_id", brokerOrderID).
+						Msg("fill poll: pending order missing on fill — already claimed by another path")
+					return
+				}
+				po := raw.(*pendingOrder)
+				// Paper-trade slow path: limit price is the fill-price proxy and
+				// the order is treated as a single all-at-once fill. Funnel through
+				// the same insertFillLeg + runFillFinalization pipeline used by the
+				// WS-stream and fast-poll paths so all three persist+emit paths
+				// share one publisher of FillReceived (KISS+DRY).
+				s.handleFillWithPrice(po, brokerOrderID, intent.LimitPrice, intent.Quantity, s.nowFn().UTC(), "", l)
 				return
 			case "canceled", "expired", "rejected":
 				l.Info().Str("broker_order_id", brokerOrderID).Str("status", status).Msg("fill poll: order terminal without fill")
@@ -1442,135 +1454,6 @@ func (s *Service) fastPollPosition(ctx context.Context, tenantID string, envMode
 				return
 			}
 		}
-	}
-}
-
-// handleFill records the fill in the DB and emits FillReceived.
-func (s *Service) handleFill(tenantID string, envMode domain.EnvMode, intent domain.OrderIntent, brokerOrderID string, submitStart time.Time, l zerolog.Logger) {
-	now := s.nowFn().UTC()
-	ctx := context.Background()
-
-	// Use limit price as fill price proxy (paper trading; actual fill price = limit price).
-	fillPrice := intent.LimitPrice
-
-	// Update order record.
-	if err := s.repo.UpdateOrderFill(ctx, brokerOrderID, now, fillPrice, intent.Quantity); err != nil {
-		l.Error().Err(err).Str("broker_order_id", brokerOrderID).Msg("failed to update order fill")
-	}
-
-	// Persist trade.
-	side := brokerSideFor(intent.Direction)
-	trade, err := domain.NewTrade(now, tenantID, envMode, uuid.New(), intent.Symbol, side, intent.Quantity, fillPrice, 0, "FILLED", intent.Strategy, intent.Rationale)
-	if err != nil {
-		l.Error().Err(err).Msg("failed to construct trade on fill")
-	} else {
-		trade.BrokerOrderID = brokerOrderID
-		if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
-			trade.InstrumentType = domain.InstrumentTypeOption
-			trade.OptionSymbol = intent.Instrument.Symbol.String()
-			trade.Underlying = string(intent.Instrument.UnderlyingSymbol)
-			trade.OptionRight = intent.Meta["option_right"]
-			if s, err := strconv.ParseFloat(intent.Meta["strike"], 64); err == nil {
-				trade.Strike = s
-			}
-			if exp, err := time.Parse("2006-01-02", intent.Meta["expiry"]); err == nil {
-				trade.Expiry = exp
-			}
-			if p, err := strconv.ParseFloat(intent.Meta["premium"], 64); err == nil {
-				trade.Premium = p
-			}
-			if d, err := strconv.ParseFloat(intent.Meta["delta_at_entry"], 64); err == nil {
-				trade.DeltaAtEntry = d
-			}
-			if iv, err := strconv.ParseFloat(intent.Meta["iv_at_entry"], 64); err == nil {
-				trade.IVAtEntry = iv
-			}
-		}
-		if err := s.repo.SaveTrade(ctx, trade); err != nil {
-			l.Error().Err(err).Msg("failed to save trade on fill")
-		}
-	}
-
-	// Collect signal tags (sig_* prefixed keys) from intent Meta.
-	signalTags := make(map[string]string)
-	for k, v := range intent.Meta {
-		if len(k) > 4 && k[:4] == "sig_" {
-			signalTags[k[4:]] = v // strip "sig_" prefix
-		}
-	}
-
-	// Pull MFE/MAE straight off the live position state when available.
-	// Strategy-emitted exits don't flow through positionmonitor.exit_eval's
-	// fill-metadata attachment path, so intent.Meta is empty for them. The
-	// monitor tracks spot_mfe_pct/spot_mae_pct on every tick regardless of
-	// who fires the exit, so a lookup here closes that gap. Prefer monitor
-	// values over intent.Meta — they're the authoritative live HWM/LWM.
-	spotMFE := intent.Meta["spot_mfe_pct"]
-	spotMAE := intent.Meta["spot_mae_pct"]
-	minutesToFirstProfit := intent.Meta["minutes_to_first_profit"]
-	minutesHeld := intent.Meta["minutes_held"]
-	isExit := intent.Direction == domain.DirectionCloseLong || intent.Direction == domain.DirectionCloseShort
-	if isExit && s.positionLookup != nil {
-		if pos, ok := s.positionLookup.LookupPosition(string(intent.Symbol)); ok && pos.CustomState != nil {
-			if v, has := pos.CustomState["spot_mfe_pct"]; has {
-				spotMFE = fmt.Sprintf("%.6f", v)
-			}
-			if v, has := pos.CustomState["spot_mae_pct"]; has {
-				spotMAE = fmt.Sprintf("%.6f", v)
-			}
-			if v, has := pos.CustomState["minutes_to_first_profit"]; has {
-				minutesToFirstProfit = fmt.Sprintf("%.1f", v)
-			} else if minutesToFirstProfit == "" {
-				minutesToFirstProfit = "-1"
-			}
-			if v, has := pos.CustomState["minutes_since_entry"]; has {
-				minutesHeld = fmt.Sprintf("%.1f", v)
-			}
-		}
-	}
-
-	fillPayload := map[string]any{
-		"broker_order_id":         brokerOrderID,
-		"intent_id":               intent.ID.String(),
-		"symbol":                  string(intent.Symbol),
-		"side":                    side,
-		"direction":               string(intent.Direction),
-		"quantity":                intent.Quantity,
-		"price":                   fillPrice,
-		"filled_at":               now,
-		"strategy":                intent.Strategy,
-		"rationale":               intent.Rationale,
-		"risk_modifier":           intent.Meta["risk_modifier"],
-		"regime":                  intent.Meta["regime"],
-		"vix_bucket":              intent.Meta["vix_bucket"],
-		"market_context":          intent.Meta["market_context"],
-		"premium_mfe_pct":         intent.Meta["premium_mfe_pct"],
-		"premium_mae_pct":         intent.Meta["premium_mae_pct"],
-		"spot_mfe_pct":            spotMFE,
-		"spot_mae_pct":            spotMAE,
-		"minutes_to_first_profit": minutesToFirstProfit,
-		"minutes_held":            minutesHeld,
-		"signal_tags":             signalTags,
-	}
-	if intent.Instrument != nil && intent.Instrument.Type == domain.InstrumentTypeOption {
-		fillPayload["instrument_type"] = string(domain.InstrumentTypeOption)
-		fillPayload["option_right"] = intent.Meta["option_right"]
-		fillPayload["option_expiry"] = intent.Meta["expiry"]
-		fillPayload["iv_at_entry"] = intent.Meta["iv_at_entry"]
-		fillPayload["delta_at_entry"] = intent.Meta["delta_at_entry"]
-	}
-	s.emit(ctx, domain.EventFillReceived, tenantID, envMode, brokerOrderID, fillPayload)
-
-	l.Info().
-		Str("broker_order_id", brokerOrderID).
-		Float64("fill_price", fillPrice).
-		Float64("quantity", intent.Quantity).
-		Msg("order filled — trade persisted and FillReceived emitted")
-
-	// Record fill metrics.
-	if s.metrics != nil {
-		s.metrics.Orders.FillsTotal.WithLabelValues("alpaca", intent.Strategy, side, "filled").Inc()
-		s.metrics.Orders.FillLat.WithLabelValues("alpaca", intent.Strategy).Observe(time.Since(submitStart).Seconds())
 	}
 }
 
@@ -2891,9 +2774,25 @@ func (s *Service) recordFillsFromExecHistory(ctx context.Context, po *pendingOrd
 
 	l.Info().Str("broker_order_id", brokerOrderID).Int("legs", len(legs)).
 		Msg("recordFillsFromExecHistory: inserting per-exec rows")
+	var cumQty, notional float64
+	var lastFilledAt time.Time
 	for _, leg := range legs {
 		s.insertFillLeg(po, brokerOrderID, leg.ExecutionID, leg.FilledAt, leg.Price, leg.Qty, leg.CumQty, leg.AvgPrice, l)
+		cumQty += leg.Qty
+		notional += leg.Price * leg.Qty
+		if leg.FilledAt.After(lastFilledAt) {
+			lastFilledAt = leg.FilledAt
+		}
 	}
+	// Single cumulative FillReceived per order — matches WS-stream and slow-poll
+	// semantics so subscribers (copytrade ghost confirm, position monitor entry
+	// registration, signal_tracker, perf ledger) see exactly one event per order
+	// regardless of which persist path won the race.
+	cumAvgPrice := legs[len(legs)-1].AvgPrice
+	if cumAvgPrice <= 0 && cumQty > 0 {
+		cumAvgPrice = notional / cumQty
+	}
+	s.runFillFinalization(po, brokerOrderID, cumAvgPrice, cumQty, lastFilledAt, l)
 }
 
 // exitLimitBuffer returns the IOC limit price buffer (as a fraction) for exit orders.
