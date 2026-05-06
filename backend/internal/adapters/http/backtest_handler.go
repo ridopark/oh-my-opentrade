@@ -186,7 +186,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.PreferLiveChain && h.liveOptions == nil {
-		jsonError(w, http.StatusBadRequest, "prefer_live_chain requires Alpaca options data — not configured")
+		jsonError(w, http.StatusBadRequest, "prefer_live_chain requires Alpaca options data: not configured")
 		return
 	}
 
