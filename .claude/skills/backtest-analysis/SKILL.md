@@ -97,6 +97,14 @@ When comparing before/after DNA changes:
 
 When `--emit-gated-diag` is on, bucket `strategy_signal_events.reason` by class for the new run_id and compare against live's distribution. If one class dominates at counts that don't match live (e.g. backtest `bias=2210, slope=0` vs live `bias=0, slope=1536`), the cause is usually runner-side state-zeroing per bar — NOT a strategy threshold bug. Common offenders: anchor-reset loops, indicator warmup wiped by a per-bar reset, key-level cache pinned at zero. Diagnose at the runner before tuning DNA. See `go-hexagonal: Per-bar ResetX must be additive`.
 
+### Parameter inertness signals strategy state divergence, not a tuning failure
+
+If two distinct values for the same parameter (e.g. `atr_stop_mult={1.75, 100.0}` or `exit_body_closes={1, 2, 999}`) produce **byte-identical** trade logs on the same window, the parameter is dead code in the backtest path — the strategy never reaches the branch that reads it. Don't tune harder. Investigate the gate.
+
+Diagnosed example (2026-05-06, `whale_pullback_v1`): the strategy's body-close + ATR-stop exits were gated on `PositionSide != "" && PendingEntry == ""`. The sharded slice pipeline (`backtest/slice_pipeline.go`) defers `SignalCreated` publication via `runner.deferSignalPublish=true` until `replayFlat`, so `FillReceived` reaches `inst.OnEvent` only after Phase A has already advanced strategy state through every bar. The OnBar 5-min `PendingEntry` timeout fires before any `FillConfirmation`, leaving `PositionSide == ""` for the rest of the run. Result: every exit-related parameter became inert, tuning showed PF improvements that were entirely from entry-side filters and engine-level `MAX_LOSS` / `EOD_FLATTEN`.
+
+Cheap diagnostic before tuning a strategy: pick one exit param, run a `value_default` and a `value_extreme` backtest, diff trade counts. Identical = parameter is inert. Strategy-level fix is the `ctx.IsBacktest()` optimistic-set pattern (`Context.IsBacktest` doc); engine-level fix is `_workspace/whale_pullback_v1_backtest_fill_event_plan.md` Section 4.
+
 ## Known Data Coverage Gaps
 
 ### DoltHub options dataset is monthlies only
