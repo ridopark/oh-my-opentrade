@@ -61,11 +61,9 @@ type backtestRunRequest struct {
 
 	// PreferLiveChain enables the live Alpaca options-chain fallback inside
 	// the backtest's HistoricalOptionsAdapter (DoltHub -> live -> synth ->
-	// empty). Pointer-typed so absence is distinguishable from explicit
-	// false: nil -> use server default (on when Alpaca options is wired,
-	// off otherwise). Same-day backtests only; off-day runs WARN at runner
-	// start because the live snapshot reflects current quotes.
-	PreferLiveChain *bool `json:"prefer_live_chain,omitempty"`
+	// empty). Off by default. Same-day backtests only; off-day runs WARN
+	// at runner start because the live snapshot reflects current quotes.
+	PreferLiveChain bool `json:"prefer_live_chain"`
 }
 
 type backtestControlRequest struct {
@@ -187,8 +185,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	preferLive := resolvePreferLiveChain(req.PreferLiveChain, h.liveOptions != nil)
-	if preferLive && h.liveOptions == nil {
+	if req.PreferLiveChain && h.liveOptions == nil {
 		jsonError(w, http.StatusBadRequest, "prefer_live_chain requires Alpaca options data: not configured")
 		return
 	}
@@ -315,7 +312,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var liveChainPort ports.OptionsMarketDataPort
-	if preferLive {
+	if req.PreferLiveChain {
 		liveChainPort = optadapter.NewCachingMarket(h.liveOptions)
 	}
 
@@ -337,7 +334,7 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		CopytradeHistory:   req.CopytradeHistory,
 		CopytradeLedgerDir: req.CopytradeLedgerDir,
 		EmitGatedDiag:      req.EmitGatedDiag,
-		PreferLiveChain:   preferLive,
+		PreferLiveChain:   req.PreferLiveChain,
 		LiveOptionsMarket: liveChainPort,
 	}, bootstrap.BuildBacktestInfra(bootstrap.BacktestDeps{
 		DB:     h.db,
@@ -676,17 +673,6 @@ func parseTimeParam(v string) (time.Time, error) {
 		return t.UTC(), nil
 	}
 	return time.Time{}, &json.UnsupportedValueError{}
-}
-
-// resolvePreferLiveChain decides whether the backtest should opt in to the
-// live-chain fallback. Default: on when Alpaca options is wired, off when
-// not. The pointer-typed request field overrides the default in either
-// direction.
-func resolvePreferLiveChain(reqField *bool, hasLiveOptions bool) bool {
-	if reqField != nil {
-		return *reqField
-	}
-	return hasLiveOptions
 }
 
 // copytradeDefaultSymbols returns the canonical 23-symbol universe covered
