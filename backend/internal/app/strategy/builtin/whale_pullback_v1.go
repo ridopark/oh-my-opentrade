@@ -515,6 +515,7 @@ func rolloverIfNewSession(wp *WhalePullbackState, bar start.Bar) {
 		return
 	}
 	wp.SessionDate = dateStr
+	wp.TradesToday = 0
 
 	anchor := bar.Close
 	newSession := &sessionHist{

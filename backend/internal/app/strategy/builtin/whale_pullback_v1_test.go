@@ -553,6 +553,25 @@ func TestWhalePullback_CooldownPreventsEntry(t *testing.T) {
 	assert.Empty(t, signals, "cooldown should prevent entry signals")
 }
 
+func TestWhalePullback_TradesTodayResetsOnSessionRoll(t *testing.T) {
+	s := builtin.NewWhalePullbackStrategy()
+	ctx := newTestContext(wpBaseET)
+	st, err := s.Init(ctx, "AAPL", wpParams(), nil)
+	require.NoError(t, err)
+
+	wp := st.(*builtin.WhalePullbackState)
+	wp.TradesToday = 99
+	wp.SessionDate = "2026-03-05"
+
+	day2 := mustET(2026, 3, 6, 9, 35)
+	bar := wpBar(day2, 100.0, 100.1, 99.9, 100.0, 1000)
+	st2 := replayWPBar(t, s, ctx, "AAPL", st, bar, wpIndicators(100.0, 1.0))
+
+	wp2 := st2.(*builtin.WhalePullbackState)
+	assert.Equal(t, 0, wp2.TradesToday, "TradesToday must reset on RTH session boundary")
+	assert.Equal(t, "2026-03-06", wp2.SessionDate)
+}
+
 func TestWhalePullback_WindowRoll_BinReKeying(t *testing.T) {
 	s := builtin.NewWhalePullbackStrategy()
 	ctx := newTestContext(wpBaseET)
