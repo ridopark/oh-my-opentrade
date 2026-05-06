@@ -2159,8 +2159,10 @@ backtestComplete:
 			}
 		}
 	}
-	stats := optionsAdapter.StatsWithLive()
-	finalResult.ChainStats = &stats
+	if r.cfg.PreferLiveChain {
+		stats := optionsAdapter.StatsWithLive()
+		finalResult.ChainStats = &stats
+	}
 	r.result.Store(&finalResult)
 	r.emitter.EmitComplete(&finalResult)
 
