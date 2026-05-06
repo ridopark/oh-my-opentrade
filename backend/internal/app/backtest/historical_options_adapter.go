@@ -35,6 +35,17 @@ type contractCacheKey struct {
 	Right  string // "Call" or "Put"
 }
 
+// ChainSourceStats reports per-source serve counts for end-of-run
+// diagnostics. Returned by StatsWithLive(); HistHits and SynthHits
+// mirror the existing Stats() ints so a single struct is the source
+// of truth when the live-fallback path is wired.
+type ChainSourceStats struct {
+	HistHits   uint64
+	LiveHits   uint64
+	SynthHits  uint64
+	LiveErrors uint64
+}
+
 // HistoricalOptionsAdapter wraps a HistoricalOptionsPort to satisfy
 // OptionsMarketDataPort for backtesting. It uses a clock function to
 // determine the "current" backtest date for historical lookups.
@@ -42,9 +53,15 @@ type contractCacheKey struct {
 // When PreLoad is called, all subsequent GetOptionChain calls are served
 // from an in-memory cache, eliminating per-signal DB round-trips.
 //
-// When the cache or DB has no data for the requested (symbol, date, right),
-// and a SyntheticChainGenerator is attached, the adapter fills the gap by
-// generating a synthetic chain via Black-Scholes — see SetSyntheticGenerator.
+// Lookup order in GetOptionChain:
+//
+//  1. DoltHub cache/DB (in-window expiry)
+//  2. liveFallback (if SetLiveChainFallback was called)
+//  3. SyntheticChainGenerator (if SetSyntheticGenerator was called)
+//  4. empty
+//
+// liveFallback is off by default; an adapter with no SetLiveChainFallback
+// call behaves byte-identically to the pre-fallback path.
 type HistoricalOptionsAdapter struct {
 	repo    ports.HistoricalOptionsPort
 	clockFn func() time.Time
@@ -64,11 +81,17 @@ type HistoricalOptionsAdapter struct {
 	// byte-identical behavior with the pre-synthetic path.
 	syntheticGen *SyntheticChainGenerator
 
+	// Live-chain fallback — used between DoltHub and synthetic. Nil by
+	// default; opt-in via SetLiveChainFallback for same-day backtests.
+	liveFallback ports.OptionsMarketDataPort
+
 	// Diagnostics: track how often each path actually served data, so
 	// the runner can emit an end-of-run summary and flag accidentally
-	// all-synthetic backtests.
+	// all-synthetic backtests. The int counters are kept for the legacy
+	// Stats() API; liveStats mirrors them and adds live-path counters.
 	historicalHits int
 	syntheticHits  int
+	liveStats      ChainSourceStats
 }
 
 // NewHistoricalOptionsAdapter creates an adapter that bridges historical
@@ -88,6 +111,14 @@ func NewHistoricalOptionsAdapter(repo ports.HistoricalOptionsPort, clockFn func(
 // fallback in the risk sizer).
 func (a *HistoricalOptionsAdapter) SetSyntheticGenerator(gen *SyntheticChainGenerator) {
 	a.syntheticGen = gen
+}
+
+// SetLiveChainFallback wires a live OptionsMarketDataPort (e.g. Alpaca)
+// as the second-tier fallback after DoltHub and before synthetic. Off by
+// default. Only meaningful for same-day backtests where the live snapshot
+// endpoint returns the actual listed-strike grid that DoltHub lags on.
+func (a *HistoricalOptionsAdapter) SetLiveChainFallback(p ports.OptionsMarketDataPort) {
+	a.liveFallback = p
 }
 
 // SetLogger attaches a structured logger for cache diagnostics.
@@ -196,6 +227,14 @@ func (a *HistoricalOptionsAdapter) Stats() (historicalHits, syntheticHits int) {
 	return a.historicalHits, a.syntheticHits
 }
 
+// StatsWithLive returns the full per-source serve counters, including
+// the live-fallback path. HistHits and SynthHits mirror the legacy Stats()
+// counters so this is the single source of truth for runs that wire a
+// live fallback.
+func (a *HistoricalOptionsAdapter) StatsWithLive() ChainSourceStats {
+	return a.liveStats
+}
+
 // GetOptionChain implements ports.OptionsMarketDataPort by querying the
 // historical options repo for the backtest's current simulated date.
 // When the cache is loaded, this is a zero-DB O(1) map lookup.
@@ -226,6 +265,7 @@ func (a *HistoricalOptionsAdapter) GetOptionChain(
 	if a.loaded {
 		if snaps, ok := a.chainCache[key]; ok && hasExpiryInDTERange(snaps, now, minDTE, maxDTE) {
 			a.historicalHits++
+			a.liveStats.HistHits++
 			return snaps, nil
 		}
 	} else {
@@ -235,20 +275,66 @@ func (a *HistoricalOptionsAdapter) GetOptionChain(
 		}
 		if hasExpiryInDTERange(snaps, now, minDTE, maxDTE) {
 			a.historicalHits++
+			a.liveStats.HistHits++
+			return snaps, nil
+		}
+	}
+
+	// Live fallback — same-day backtests can opt into the live Alpaca
+	// snapshot endpoint to get the actual listed-strike grid that DoltHub
+	// lags on. Off when liveFallback is nil (the default).
+	if a.liveFallback != nil {
+		snaps, err := a.liveFallback.GetOptionChain(ctx, underlying, expiry, right, minDTE, maxDTE)
+		switch {
+		case err != nil:
+			a.liveStats.LiveErrors++
+			a.log.Warn().
+				Str("symbol", string(underlying)).
+				Str("right", string(right)).
+				Err(err).
+				Msg("live chain fallback errored; continuing to synthetic")
+			// Fall through to synth.
+		case len(snaps) == 0:
+			a.log.Info().
+				Str("symbol", string(underlying)).
+				Str("right", string(right)).
+				Str("source", "live").
+				Int("count", 0).
+				Msg("live chain fallback returned empty; continuing to synthetic")
+			// Fall through to synth.
+		default:
+			a.liveStats.LiveHits++
+			a.log.Debug().
+				Str("symbol", string(underlying)).
+				Str("right", string(right)).
+				Str("source", "live").
+				Int("count", len(snaps)).
+				Int("expiries", countDistinctExpiries(snaps)).
+				Msg("live chain fallback hit")
 			return snaps, nil
 		}
 	}
 
 	// Synthetic fallback — fires when no cached/DB row has an expiry
-	// inside [minDTE, maxDTE]. DoltHub coverage is monthly-only so a
-	// DTE-5..14 strategy sees 231 rows for MU but zero in-range; the
-	// selector would reject every contract on DTE alone. Synthetic
-	// generates the missing weeklies so the strategy has something to
-	// pick. When the DB DOES have in-range rows (longer-DTE strategies
-	// like overnight_z_v1), the cache/DB path above is returned as-is
-	// and synthetic stays dormant — byte-identical to the pre-fallback
-	// behavior.
+	// inside [minDTE, maxDTE] and live (if wired) didn't return data.
+	// DoltHub coverage is monthly-only so a DTE-5..14 strategy sees 231
+	// rows for MU but zero in-range; the selector would reject every
+	// contract on DTE alone. Synthetic generates the missing weeklies
+	// so the strategy has something to pick. When the DB DOES have
+	// in-range rows (longer-DTE strategies like overnight_z_v1), the
+	// cache/DB path above is returned as-is and synthetic stays dormant
+	// — byte-identical to the pre-fallback behavior.
 	return a.generateSynthetic(ctx, key, underlying, now, right, minDTE, maxDTE)
+}
+
+// countDistinctExpiries reports how many unique expiries appear in a
+// chain snapshot slice. Used in DEBUG live-hit logs only.
+func countDistinctExpiries(snaps []domain.OptionContractSnapshot) int {
+	seen := make(map[time.Time]struct{}, 4)
+	for _, s := range snaps {
+		seen[s.Expiry] = struct{}{}
+	}
+	return len(seen)
 }
 
 // hasExpiryInDTERange reports whether any snapshot's expiry lies within
@@ -299,6 +385,7 @@ func (a *HistoricalOptionsAdapter) generateSynthetic(
 		return nil, nil
 	}
 	a.syntheticHits++
+	a.liveStats.SynthHits++
 	a.log.Debug().
 		Str("symbol", string(underlying)).
 		Str("date", chainKey.Date).
