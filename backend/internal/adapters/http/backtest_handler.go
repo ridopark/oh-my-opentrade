@@ -12,6 +12,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	optadapter "github.com/oh-my-opentrade/backend/internal/adapters/options"
 	"github.com/oh-my-opentrade/backend/internal/app/backtest"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
 	"github.com/oh-my-opentrade/backend/internal/config"
@@ -57,6 +58,12 @@ type backtestRunRequest struct {
 	// diff against live rows on (symbol, bar.Time) can attribute gate
 	// divergences. Off by default. Mirrors omo-replay's --emit-gated-diag.
 	EmitGatedDiag bool `json:"emit_gated_diag"`
+
+	// PreferLiveChain enables the live Alpaca options-chain fallback inside
+	// the backtest's HistoricalOptionsAdapter (DoltHub -> live -> synth ->
+	// empty). Off by default. Same-day backtests only; off-day runs WARN
+	// at runner start because the live snapshot reflects current quotes.
+	PreferLiveChain bool `json:"prefer_live_chain"`
 }
 
 type backtestControlRequest struct {
@@ -71,7 +78,8 @@ type BacktestHandler struct {
 	appCfg      *config.Config
 	marketData  ports.MarketDataPort
 	log         zerolog.Logger
-	historyRepo ports.BacktestHistoryPort // optional; nil disables history persistence
+	historyRepo ports.BacktestHistoryPort         // optional; nil disables history persistence
+	liveOptions ports.OptionsMarketDataPort       // optional; nil disables prefer_live_chain
 
 	mu      sync.RWMutex
 	runners map[string]*backtest.Runner
@@ -87,14 +95,17 @@ type backtestJob struct {
 
 // NewBacktestHandler creates a handler for backtest HTTP endpoints. The
 // historyRepo is optional; pass nil to skip persistent history (e.g. in
-// tests or when the feature is disabled).
-func NewBacktestHandler(db *sql.DB, appCfg *config.Config, marketData ports.MarketDataPort, historyRepo ports.BacktestHistoryPort, log zerolog.Logger) *BacktestHandler {
+// tests or when the feature is disabled). liveOptionsMarket is optional;
+// pass nil to disable the prefer_live_chain request flag (a request that
+// sets the flag without a configured port returns HTTP 400).
+func NewBacktestHandler(db *sql.DB, appCfg *config.Config, marketData ports.MarketDataPort, historyRepo ports.BacktestHistoryPort, liveOptionsMarket ports.OptionsMarketDataPort, log zerolog.Logger) *BacktestHandler {
 	h := &BacktestHandler{
 		db:          db,
 		appCfg:      appCfg,
 		marketData:  marketData,
 		log:         log.With().Str("component", "backtest_http").Logger(),
 		historyRepo: historyRepo,
+		liveOptions: liveOptionsMarket,
 		runners:     make(map[string]*backtest.Runner),
 		queue:       make(chan *backtestJob, 4), // buffer up to 4 pending backtests
 	}
@@ -171,6 +182,11 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	var req backtestRunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	if req.PreferLiveChain && h.liveOptions == nil {
+		jsonError(w, http.StatusBadRequest, "prefer_live_chain requires Alpaca options data — not configured")
 		return
 	}
 
@@ -295,6 +311,11 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		slippage = 10
 	}
 
+	var liveChainPort ports.OptionsMarketDataPort
+	if req.PreferLiveChain {
+		liveChainPort = optadapter.NewCachingMarket(h.liveOptions)
+	}
+
 	runner := backtest.NewRunner(backtest.RunConfig{
 		Symbols:       symbols,
 		From:          fromTime,
@@ -313,6 +334,8 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		CopytradeHistory:   req.CopytradeHistory,
 		CopytradeLedgerDir: req.CopytradeLedgerDir,
 		EmitGatedDiag:      req.EmitGatedDiag,
+		PreferLiveChain:   req.PreferLiveChain,
+		LiveOptionsMarket: liveChainPort,
 	}, bootstrap.BuildBacktestInfra(bootstrap.BacktestDeps{
 		DB:     h.db,
 		AppCfg: h.appCfg,

@@ -83,7 +83,7 @@ func saveBacktestHistory(repo ports.BacktestHistoryPort, meta backtestRunMeta, r
 		FinalEquity:   res.FinalEquity,
 		EquityCurve:   equityCurve,
 		DNASnapshot:   meta.dnaSnapshot,
-		Tags:          []string{},
+		Tags:          chainSourceTags(res),
 	}
 
 	trades := make([]ports.BacktestTradeRow, 0, len(res.Trades))
@@ -127,3 +127,15 @@ func uuidFromRunID(runID string) uuid.UUID {
 // deriving backtest history row IDs from runner IDs. Do not change once
 // rows exist on disk — it would orphan historical lookups.
 var uuidBacktestNamespace = uuid.MustParse("6b3c2a55-9e2c-4d9f-b4b1-0f5f0f5f0f5f")
+
+// chainSourceTags returns the tag set written to backtest_runs.tags based
+// on the live-chain stats captured during the run. Empty when prefer-live
+// was off or the live fallback never served a contract; "chain_source=
+// live_now" identifies runs whose option fills came (in part) from live
+// Alpaca data so SQL diffs can isolate them from synth-only runs.
+func chainSourceTags(res *backtest.Result) []string {
+	if res == nil || res.ChainStats == nil || res.ChainStats.LiveHits == 0 {
+		return []string{}
+	}
+	return []string{"chain_source=live_now"}
+}
