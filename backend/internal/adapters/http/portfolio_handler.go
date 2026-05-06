@@ -321,6 +321,8 @@ func (h *PortfolioHandler) handleGetMonitored(w http.ResponseWriter, r *http.Req
 		DTE            *int     `json:"dte,omitempty"`
 		IVAtEntry      *float64 `json:"iv_at_entry,omitempty"`
 		AssetClass     string   `json:"asset_class"`
+		// nil when non-option or no PREMIUM_STOP rule attached.
+		EstMaxLossUSD *float64 `json:"est_max_loss_usd,omitempty"`
 	}
 
 	positions := h.posMonitor.ListPositions()
@@ -361,6 +363,9 @@ func (h *PortfolioHandler) handleGetMonitored(w http.ResponseWriter, r *http.Req
 			if v, ok := p.CustomState["iv_at_entry"]; ok {
 				iv := v
 				mj.IVAtEntry = &iv
+			}
+			if loss, ok := p.EstimatePremiumStopLoss(); ok {
+				mj.EstMaxLossUSD = &loss
 			}
 		} else {
 			mj.Underlying = string(p.Symbol)

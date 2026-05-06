@@ -85,6 +85,7 @@ type Result struct {
 	EquityCurve   []EquityPoint `json:"equity_curve,omitempty"`
 	Realism       *realism.Estimate `json:"realism,omitempty"`
 	Costs         *CostBreakdown    `json:"costs,omitempty"`
+	ChainStats    *ChainSourceStats `json:"chain_stats,omitempty"`
 }
 
 // CostBreakdown mirrors simbroker.CostTotals but stays in the backtest-result

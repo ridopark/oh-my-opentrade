@@ -385,6 +385,32 @@ func (mp *MonitoredPosition) DrawdownFromHighPct(currentPrice float64) float64 {
 	return (mp.HighWaterMark - currentPrice) / mp.HighWaterMark
 }
 
+// EstimatePremiumStopLoss returns the dollar loss at a clean PREMIUM_STOP
+// trigger for an option position: entry_premium × threshold × qty × 100.
+// Returns (0, false) for non-options, when no PREMIUM_STOP rule is attached,
+// or when the entry premium is missing — letting callers distinguish "no
+// estimate available" from "estimate is zero".
+func (mp *MonitoredPosition) EstimatePremiumStopLoss() (float64, bool) {
+	if mp.InstrumentType != InstrumentTypeOption {
+		return 0, false
+	}
+	entry, ok := mp.CustomState["option_premium"]
+	if !ok || entry <= 0 {
+		return 0, false
+	}
+	for _, rule := range mp.ExitRules {
+		if rule.Type != ExitRulePremiumStop {
+			continue
+		}
+		threshold := rule.Param("threshold", 0)
+		if threshold <= 0 {
+			return 0, false
+		}
+		return entry * threshold * mp.Quantity * 100, true
+	}
+	return 0, false
+}
+
 // HasBSMInputs reports whether CustomState carries the full set of inputs
 // required to run the Black-Scholes-Merton premium recalculation: strike,
 // expiry, entry-IV, and option right. Used by callers that need to

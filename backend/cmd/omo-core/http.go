@@ -105,11 +105,13 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 	imux.Handle("/events", sseHandler)
 
 	var backtestMarketData ports.MarketDataPort
+	var backtestLiveOptions ports.OptionsMarketDataPort
 	if infra.alpacaData != nil {
 		backtestMarketData = infra.alpacaData
+		backtestLiveOptions = infra.alpacaData
 	}
 	backtestHistoryRepo := timescaledb.NewBacktestHistoryRepo(infra.sqlDB, httpLog.With().Str("component", "backtest_history_repo").Logger())
-	backtestHandler := omhttp.NewBacktestHandler(infra.sqlDB, cfg, backtestMarketData, backtestHistoryRepo, httpLog)
+	backtestHandler := omhttp.NewBacktestHandler(infra.sqlDB, cfg, backtestMarketData, backtestHistoryRepo, backtestLiveOptions, httpLog)
 	imux.Handle("/backtest/", backtestHandler)
 
 	portfolioHandler := omhttp.NewPortfolioHandler(infra.ibkrBroker, infra.ibkrBroker, infra.ibkrBroker.GetAccountEquity, "default", domain.EnvModePaper, httpLog)

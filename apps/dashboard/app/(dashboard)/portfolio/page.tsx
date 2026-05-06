@@ -75,6 +75,7 @@ interface MonitoredPosition {
   dte?: number;
   iv_at_entry?: number;
   asset_class: string;
+  est_max_loss_usd?: number;
 }
 
 interface Account {
@@ -546,6 +547,7 @@ export default function PortfolioPage() {
                   <TableHead className="text-right">Current</TableHead>
                   <TableHead className="text-center">DTE</TableHead>
                   <TableHead className="text-right">P&L Open</TableHead>
+                  <TableHead className="text-right">Max Loss</TableHead>
                   <TableHead className="text-right">Opened</TableHead>
                   <TableHead className="text-center">Monitored</TableHead>
                   <TableHead className="text-right">Action</TableHead>
@@ -584,6 +586,7 @@ export default function PortfolioPage() {
                         <TableCell className="text-right font-mono font-medium">
                           <PnlText value={group.totalPnl} />
                         </TableCell>
+                        <TableCell />
                         <TableCell />
                         <TableCell />
                         <TableCell />
@@ -628,6 +631,16 @@ export default function PortfolioPage() {
                           </TableCell>
                           <TableCell className="text-right font-mono tabular-nums">
                             {isOrphanOmo ? <span className="text-muted-foreground">—</span> : <PnlText value={pos.unrealized_pnl} pct={pos.unrealized_pnl_pct} />}
+                          </TableCell>
+                          <TableCell
+                            className="text-right font-mono tabular-nums text-xs"
+                            title="Clean-trigger estimate from PREMIUM_STOP only. Excludes slippage, gap-through, and time-based exits (STAGNATION_EXIT, EOD_FLATTEN). Catastrophic worst case = full premium paid."
+                          >
+                            {pos.omo?.est_max_loss_usd !== undefined ? (
+                              <span className="text-red-400">{formatCurrency(pos.omo.est_max_loss_usd)}</span>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
                           </TableCell>
                           <TableCell className="text-right text-xs text-muted-foreground whitespace-nowrap">
                             {pos.opened_at ? relativeTime(pos.opened_at) : "—"}

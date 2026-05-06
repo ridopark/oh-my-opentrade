@@ -10,6 +10,7 @@ import (
 	"time"
 
 	alpacaadapter "github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
+	optadapter "github.com/oh-my-opentrade/backend/internal/adapters/options"
 	"github.com/oh-my-opentrade/backend/internal/app/backtest"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
 	"github.com/oh-my-opentrade/backend/internal/config"
@@ -28,6 +29,7 @@ import (
 // Output JSON, if requested, is the same Result shape the HTTP path returns
 // at GET /backtest/results/{id}, so any tooling that consumes one consumes
 // the other.
+// TODO: collapse args to a config struct (18+ positional bools is a smell)
 func runBacktestViaRunner(
 	ctx context.Context,
 	log zerolog.Logger,
@@ -45,7 +47,11 @@ func runBacktestViaRunner(
 	outputJSON string,
 	copytradeHist string,
 	copytradeLedgerDir string,
+	preferLiveChain bool,
 ) error {
+	if preferLiveChain && appCfg.Alpaca.APIKeyID == "" {
+		return fmt.Errorf("--prefer-live-chain requires Alpaca API credentials but APIKeyID is empty")
+	}
 	tf := domain.Timeframe("1m")
 	if timeframeFlag != "" {
 		tf = domain.Timeframe(timeframeFlag)
@@ -96,6 +102,10 @@ func runBacktestViaRunner(
 			log.Warn().Err(err).Msg("backtest: alpaca adapter unavailable; runner falls through to repo-only bar fetches")
 		} else {
 			marketData = a
+			if preferLiveChain {
+				cfg.LiveOptionsMarket = optadapter.NewCachingMarket(a)
+				cfg.PreferLiveChain = true
+			}
 		}
 	}
 

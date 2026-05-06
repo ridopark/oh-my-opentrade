@@ -77,6 +77,45 @@ type RunConfig struct {
 	// runs from polluting the table. Mirrors omo-replay's --emit-gated-diag
 	// flag. See _workspace/parity_live_vs_backtest_divergence_audit.md (H4).
 	EmitGatedDiag bool
+
+	// PreferLiveChain enables the live-chain fallback inside the
+	// HistoricalOptionsAdapter (DoltHub -> live -> synth -> empty) for
+	// same-day backtests. Off by default; behavior is byte-identical to
+	// the pre-fallback path when false. Requires LiveOptionsMarket.
+	PreferLiveChain bool
+	// LiveOptionsMarket is the caller-supplied live options market data
+	// port wired into the adapter when PreferLiveChain is true. Must be
+	// non-nil when PreferLiveChain is true; passing a port with the flag
+	// off is silently ignored (documented no-op).
+	LiveOptionsMarket ports.OptionsMarketDataPort
+}
+
+// validateRunConfig enforces invariants on RunConfig before the runner
+// spawns any goroutines. The HTTP and CLI layers fail-fast on the same
+// predicate; this is a backstop. The inverse case (PreferLiveChain==false
+// with LiveOptionsMarket!=nil) is documented as a no-op and not gated.
+func validateRunConfig(cfg RunConfig) error {
+	if cfg.PreferLiveChain && cfg.LiveOptionsMarket == nil {
+		return fmt.Errorf("prefer_live_chain=true but live options market not provided")
+	}
+	return nil
+}
+
+// sameCalendarDayET reports whether a and b fall on the same calendar
+// day in America/New_York. Used to flag prefer-live-chain runs whose
+// From date is not "today": the live snapshot endpoint reflects current
+// quotes, not the historical From date, so off-day runs will mis-price.
+func sameCalendarDayET(a, b time.Time) bool {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		// Fallback to UTC date comparison; the WARN is best-effort.
+		ay, am, ad := a.UTC().Date()
+		by, bm, bd := b.UTC().Date()
+		return ay == by && am == bm && ad == bd
+	}
+	ay, am, ad := a.In(loc).Date()
+	by, bm, bd := b.In(loc).Date()
+	return ay == by && am == bm && ad == bd
 }
 
 // ProgressInfo tracks replay progress.
@@ -244,6 +283,11 @@ func (r *Runner) currentSpeed() string {
 
 // Run executes the full backtest. Blocks until completion or cancellation.
 func (r *Runner) Run(ctx context.Context) error {
+	if err := validateRunConfig(r.cfg); err != nil {
+		r.status.Store("error")
+		return err
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	r.cancelFn = cancel
 	defer cancel()
@@ -257,6 +301,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		Str("speed", r.cfg.Speed).
 		Float64("equity", r.cfg.InitialEquity).
 		Msg("backtest starting")
+
+	if r.cfg.PreferLiveChain {
+		now := time.Now()
+		if !sameCalendarDayET(r.cfg.From, now) {
+			r.log.Warn().
+				Time("from", r.cfg.From).
+				Time("now", now).
+				Str("reason", "live chain reflects current snapshots, not the From date").
+				Msg("prefer_live_chain enabled for non-today From date")
+		}
+	}
 
 	repo := r.infra.Repo
 
@@ -565,6 +620,14 @@ func (r *Runner) Run(ctx context.Context) error {
 			Float64("iv_default", genCfg.IVDefault).
 			Float64("risk_free_rate", genCfg.RiskFreeRate).
 			Msg("synthetic options chain enabled")
+	}
+
+	// Live-chain fallback for same-day backtests: when wired, the adapter
+	// queries the live OptionsMarketDataPort between DoltHub and synth.
+	// Off by default; validateRunConfig already enforced
+	// (PreferLiveChain => LiveOptionsMarket != nil) above.
+	if r.cfg.PreferLiveChain && r.cfg.LiveOptionsMarket != nil {
+		optionsAdapter.SetLiveChainFallback(r.cfg.LiveOptionsMarket)
 	}
 
 	// Wire historical options to simbroker for realistic exit pricing.
@@ -2060,10 +2123,12 @@ backtestComplete:
 
 	// End-of-run diagnostics: surface the data-quality signals the
 	// replay loop accumulated but never individually logged at INFO.
-	histHits, synthHits := optionsAdapter.Stats()
+	chainStats := optionsAdapter.StatsWithLive()
 	summary := r.log.Info().
-		Int("options_historical_hits", histHits).
-		Int("options_synthetic_hits", synthHits).
+		Uint64("options_historical_hits", chainStats.HistHits).
+		Uint64("options_live_hits", chainStats.LiveHits).
+		Uint64("options_synthetic_hits", chainStats.SynthHits).
+		Uint64("options_live_errors", chainStats.LiveErrors).
 		Int("auction_synthetic_sign_fallbacks", auctionPub.syntheticSignCount).
 		Int("auction_events_published", len(auctionPub.publishedAuctions))
 	if sessionResolver != nil {
@@ -2093,6 +2158,10 @@ backtestComplete:
 				Total:      ct.Total,
 			}
 		}
+	}
+	if r.cfg.PreferLiveChain {
+		stats := optionsAdapter.StatsWithLive()
+		finalResult.ChainStats = &stats
 	}
 	r.result.Store(&finalResult)
 	r.emitter.EmitComplete(&finalResult)
