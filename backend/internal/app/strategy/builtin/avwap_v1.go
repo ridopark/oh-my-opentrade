@@ -1039,17 +1039,14 @@ func (s *AVWAPState) ClearPendingEntry() {
 	// a real position tracked from fill confirmations.
 }
 
-// armPendingEntry records the freshly emitted entry. Live/paper waits
-// for FillConfirmation to set PositionSide; backtest sets it inline so
-// the next OnBar can run exit logic. See Context.IsBacktest doc.
+// armPendingEntry delegates to the shared helper. See pending_entry.go.
 func (s *AVWAPState) armPendingEntry(side start.Side, now time.Time, ctx start.Context) {
-	s.PendingEntry = side
-	s.PendingEntryAt = now
-	if ctx != nil && ctx.IsBacktest() {
-		s.PositionSide = side
-		s.PendingEntry = ""
-		s.PendingEntryAt = time.Time{}
-	}
+	armPendingEntry(&s.PositionSide, &s.PendingEntry, &s.PendingEntryAt, side, now, ctx)
+}
+
+// rollbackPendingEntry delegates to the shared helper. See pending_entry.go.
+func (s *AVWAPState) rollbackPendingEntry() {
+	rollbackPendingEntry(&s.PositionSide, &s.PendingEntry, &s.PendingEntryAt, &s.TradesToday)
 }
 
 // UpdateCalcAnchor feeds a bar into a single named anchor in the AVWAP calculator.
@@ -3850,18 +3847,12 @@ func (s *AVWAPStrategy) OnEvent(ctx start.Context, symbol string, evt any, st st
 		return avwapSt, nil, nil
 
 	case start.EntryRejection:
-		// Roll back optimistic emit-time state (backtest) and refund the daily cap.
 		if avwapSt.PendingEntry != "" || avwapSt.PositionSide != "" {
 			if ctx != nil && ctx.Logger() != nil {
 				ctx.Logger().Warn("AVWAPStrategy: entry rejected, clearing state",
 					"symbol", symbol, "pending_side", avwapSt.PendingEntry, "position_side", avwapSt.PositionSide, "reason", e.Reason)
 			}
-			if avwapSt.TradesToday > 0 {
-				avwapSt.TradesToday--
-			}
-			avwapSt.PositionSide = ""
-			avwapSt.PendingEntry = ""
-			avwapSt.PendingEntryAt = time.Time{}
+			avwapSt.rollbackPendingEntry()
 			avwapSt.CooldownUntil = time.Time{}
 		}
 		return avwapSt, nil, nil

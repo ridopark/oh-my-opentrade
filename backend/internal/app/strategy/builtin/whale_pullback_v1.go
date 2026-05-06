@@ -139,6 +139,16 @@ func (s *WhalePullbackState) ClearPendingEntry() {
 	s.PendingEntryAt = time.Time{}
 }
 
+// armPendingEntry delegates to the shared helper. See pending_entry.go.
+func (s *WhalePullbackState) armPendingEntry(side start.Side, now time.Time, ctx start.Context) {
+	armPendingEntry(&s.PositionSide, &s.PendingEntry, &s.PendingEntryAt, side, now, ctx)
+}
+
+// rollbackPendingEntry delegates to the shared helper. See pending_entry.go.
+func (s *WhalePullbackState) rollbackPendingEntry() {
+	rollbackPendingEntry(&s.PositionSide, &s.PendingEntry, &s.PendingEntryAt, &s.TradesToday)
+}
+
 // HVNContainsPrice reports whether the merged HVN set covers any bin in the
 // inclusive price range [low, high]. Used by tests to assert window-roll
 // re-keying behavior without exposing internal histogram structure.
@@ -337,18 +347,11 @@ func (s *WhalePullbackStrategy) OnBar(ctx start.Context, symbol string, bar star
 	if err != nil {
 		return wp, nil, err
 	}
-	wp.PendingEntry = side
-	wp.PendingEntryAt = now
+	wp.armPendingEntry(side, now, ctx)
 	wp.EntryPrice = bar.Close
 	wp.OppositeBodyCount = 0
 	wp.TradesToday++
 	wp.CooldownUntil = now.Add(cooldown)
-	// Backtest: optimistic-set so OnBar exits run; see Context.IsBacktest doc.
-	if ctx != nil && ctx.IsBacktest() {
-		wp.PositionSide = side
-		wp.PendingEntry = ""
-		wp.PendingEntryAt = time.Time{}
-	}
 	return wp, []start.Signal{sig}, nil
 }
 
@@ -369,15 +372,7 @@ func (s *WhalePullbackStrategy) OnEvent(_ start.Context, _ string, evt any, st s
 			wp.PendingEntryAt = time.Time{}
 		}
 	case start.EntryRejection:
-		// Roll back optimistic emit-time state (backtest) and refund the
-		// daily-cap counter. In live PositionSide is already empty so the
-		// rollback is a no-op for the broker-confirmation handshake.
-		if wp.PositionSide != "" && wp.TradesToday > 0 {
-			wp.TradesToday--
-		}
-		wp.PositionSide = ""
-		wp.PendingEntry = ""
-		wp.PendingEntryAt = time.Time{}
+		wp.rollbackPendingEntry()
 	}
 	return wp, nil, nil
 }

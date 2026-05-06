@@ -201,6 +201,16 @@ func (s *BreakRetestState) ClearPendingEntry() {
 	s.PendingEntryAt = time.Time{}
 }
 
+// armPendingEntry delegates to the shared helper. See pending_entry.go.
+func (s *BreakRetestState) armPendingEntry(side start.Side, now time.Time, ctx start.Context) {
+	armPendingEntry(&s.PositionSide, &s.PendingEntry, &s.PendingEntryAt, side, now, ctx)
+}
+
+// rollbackPendingEntry delegates to the shared helper. See pending_entry.go.
+func (s *BreakRetestState) rollbackPendingEntry() {
+	rollbackPendingEntry(&s.PositionSide, &s.PendingEntry, &s.PendingEntryAt, &s.TradesToday)
+}
+
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
@@ -411,20 +421,13 @@ func (s *BreakRetestStrategy) OnBar(ctx start.Context, symbol string, bar start.
 					return brSt, nil, err
 				}
 
-				brSt.PendingEntry = brSt.BreakoutSide
-				brSt.PendingEntryAt = now
+				brSt.armPendingEntry(brSt.BreakoutSide, now, ctx)
 				brSt.TradesToday++
 				brSt.CooldownUntil = now.Add(cooldown)
 				brSt.LastBarClose = bar.Close
 				brSt.Phase = BRPhaseIdle // Reset after signal emission.
 				brSt.PrevBar = bar
 				brSt.HasPrevBar = true
-				// Backtest: optimistic-set so OnBar exits run; see Context.IsBacktest doc.
-				if ctx != nil && ctx.IsBacktest() {
-					brSt.PositionSide = brSt.BreakoutSide
-					brSt.PendingEntry = ""
-					brSt.PendingEntryAt = time.Time{}
-				}
 				return brSt, []start.Signal{sig}, nil
 			}
 		}
@@ -463,13 +466,7 @@ func (s *BreakRetestStrategy) OnEvent(ctx start.Context, symbol string, evt any,
 			ctx.Logger().Warn("BreakRetestStrategy: entry rejected, clearing state",
 				"symbol", symbol, "side", brSt.PendingEntry, "position_side", brSt.PositionSide, "reason", e.Reason)
 		}
-		// Roll back optimistic emit-time state (backtest) and refund the daily cap.
-		if brSt.PositionSide != "" && brSt.TradesToday > 0 {
-			brSt.TradesToday--
-		}
-		brSt.PositionSide = ""
-		brSt.PendingEntry = ""
-		brSt.PendingEntryAt = time.Time{}
+		brSt.rollbackPendingEntry()
 		return brSt, nil, nil
 
 	case AIDebateResult:
