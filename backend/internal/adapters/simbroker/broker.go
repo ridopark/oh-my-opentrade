@@ -547,7 +547,10 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 
 		curBar := b.bars[priceSymbol]
 		if curBar.Close == 0 {
-			curBar = Bar{Time: barTime, Close: lastPrice}
+			// Replay paths that use UpdatePrice instead of UpdateBar leave OHLC
+			// degenerate. Treat the tick as a flat single-print bar so LMT
+			// trigger logic (which keys on bar.High / bar.Low) behaves sanely.
+			curBar = Bar{Time: barTime, Open: lastPrice, High: lastPrice, Low: lastPrice, Close: lastPrice}
 		}
 		fctx := FillContext{
 			Symbol:      string(intent.Symbol),

@@ -182,3 +182,65 @@ func TestFillModelByName(t *testing.T) {
 		require.Error(t, err)
 	})
 }
+
+// TestFillModels_EquityCushionLimit covers the equity-exit cushion-limit case
+// where exit_eval submits LMT orders far on the favorable side of close as a
+// guaranteed-fill cushion (long close at 0.95 * px, short cover at 1.05 * px).
+// Real fills land at the close, not at the cushion limit; backtest must match.
+func TestFillModels_EquityCushionLimit(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+
+	models := []struct {
+		name string
+		fm   simbroker.FillModel
+	}{
+		{"optimistic", simbroker.OptimisticFillModel{}},
+		{"realistic", simbroker.RealisticFillModel{}},
+		{"pessimistic", simbroker.PessimisticFillModel{SlippageMultiplier: 2.0}},
+	}
+
+	t.Run("long_close_SELL_fills_at_bar_close_when_cushion_limit_below", func(t *testing.T) {
+		bar := simbroker.Bar{Time: now, Open: 99, High: 101, Low: 99, Close: 100}
+		for _, mc := range models {
+			t.Run(mc.name, func(t *testing.T) {
+				res, err := mc.fm.FillPrice(simbroker.FillContext{
+					Symbol: "AAPL", Side: "SELL", Qty: 1, OrderType: "LMT",
+					LimitPrice: 95.0, CurrentBar: bar, NextBar: nil,
+				})
+				require.NoError(t, err)
+				require.True(t, res.Filled)
+				assert.Equal(t, 100.0, res.Price)
+			})
+		}
+	})
+
+	t.Run("short_cover_BUY_fills_at_bar_close_when_cushion_limit_above", func(t *testing.T) {
+		bar := simbroker.Bar{Time: now, Open: 101, High: 101, Low: 99, Close: 100}
+		for _, mc := range models {
+			t.Run(mc.name, func(t *testing.T) {
+				res, err := mc.fm.FillPrice(simbroker.FillContext{
+					Symbol: "AAPL", Side: "BUY", Qty: 1, OrderType: "LMT",
+					LimitPrice: 105.0, CurrentBar: bar, NextBar: nil,
+				})
+				require.NoError(t, err)
+				require.True(t, res.Filled)
+				assert.Equal(t, 100.0, res.Price)
+			})
+		}
+	})
+
+	t.Run("SELL_no_fill_when_bar_high_below_limit", func(t *testing.T) {
+		bar := simbroker.Bar{Time: now, Open: 94, High: 94.5, Low: 93, Close: 94}
+		for _, mc := range models {
+			t.Run(mc.name, func(t *testing.T) {
+				res, err := mc.fm.FillPrice(simbroker.FillContext{
+					Symbol: "AAPL", Side: "SELL", Qty: 1, OrderType: "LMT",
+					LimitPrice: 95.0, CurrentBar: bar, NextBar: nil,
+				})
+				require.NoError(t, err)
+				assert.False(t, res.Filled)
+				assert.NotEmpty(t, res.Reason)
+			})
+		}
+	})
+}

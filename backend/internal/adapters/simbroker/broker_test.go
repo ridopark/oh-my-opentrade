@@ -33,6 +33,21 @@ func newIntent(sym domain.Symbol, dir domain.Direction, qty float64) domain.Orde
 	}
 }
 
+func newLimitIntent(sym domain.Symbol, dir domain.Direction, qty, limitPx float64) domain.OrderIntent {
+	return domain.OrderIntent{
+		ID:             uuid.New(),
+		TenantID:       "tenant-1",
+		EnvMode:        domain.EnvModePaper,
+		Symbol:         sym,
+		Direction:      dir,
+		Quantity:       qty,
+		LimitPrice:     limitPx,
+		OrderType:      "limit",
+		TimeInForce:    "ioc",
+		IdempotencyKey: "idem-" + uuid.NewString(),
+	}
+}
+
 func slippage(lastPrice float64, bps int64) float64 {
 	return lastPrice * float64(bps) / 10000.0
 }
@@ -510,4 +525,52 @@ func TestGetAccountEquity_BuySellCycle(t *testing.T) {
 	assert.Empty(t, positions)
 
 	assert.Greater(t, eqFinal, equity)
+}
+
+// TestSubmitOrder_EquityCushionLMT_FillsAtClose drives the production replay
+// path (UpdatePrice without UpdateBar, synthesizing a flat OHLC bar) with the
+// equity exit "cushion limit" pattern: SELL at 0.95 * close to close a long,
+// BUY at 1.05 * close to cover a short. Pre-fix, simbroker reported every
+// such fill at the cushion limit (5% adverse haircut on every equity exit).
+// Post-fix, fills land at bar close. Covers all three FillModels.
+func TestSubmitOrder_EquityCushionLMT_FillsAtClose(t *testing.T) {
+	log := zerolog.Nop()
+	barTime := time.Unix(1700000000, 0).UTC()
+
+	models := []struct {
+		name string
+		fm   simbroker.FillModel
+	}{
+		{"optimistic", simbroker.OptimisticFillModel{}},
+		{"realistic", simbroker.RealisticFillModel{}},
+		{"pessimistic", simbroker.PessimisticFillModel{SlippageMultiplier: 2.0}},
+	}
+
+	for _, mc := range models {
+		t.Run(mc.name, func(t *testing.T) {
+			t.Run("SELL cushion at 95 fills at close 100", func(t *testing.T) {
+				b := simbroker.New(simbroker.Config{SlippageBPS: 0, FillModel: mc.fm}, log)
+				sym := domain.Symbol("AAPL")
+				b.UpdatePrice(sym, 100.0, barTime)
+
+				id, err := b.SubmitOrder(context.Background(), newLimitIntent(sym, domain.DirectionShort, 1, 95.0))
+				require.NoError(t, err)
+				fill, ok := b.GetFillPrice(id)
+				require.True(t, ok)
+				assert.InDelta(t, 100.0, fill, 0.1, "SELL cushion limit must fill at close, not at the cushion")
+			})
+
+			t.Run("BUY cushion at 105 fills at close 100", func(t *testing.T) {
+				b := simbroker.New(simbroker.Config{SlippageBPS: 0, FillModel: mc.fm}, log)
+				sym := domain.Symbol("AAPL")
+				b.UpdatePrice(sym, 100.0, barTime)
+
+				id, err := b.SubmitOrder(context.Background(), newLimitIntent(sym, domain.DirectionLong, 1, 105.0))
+				require.NoError(t, err)
+				fill, ok := b.GetFillPrice(id)
+				require.True(t, ok)
+				assert.InDelta(t, 100.0, fill, 0.1, "BUY cushion limit must fill at close, not at the cushion")
+			})
+		})
+	}
 }

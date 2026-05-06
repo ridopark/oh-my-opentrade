@@ -73,7 +73,10 @@ func (m OptimisticFillModel) FillPrice(c FillContext) (FillResult, error) {
 		if c.LimitPrice <= 0 {
 			return FillResult{}, fmt.Errorf("optimistic: limit order missing limit price for %s", c.Symbol)
 		}
-		px = c.LimitPrice
+		if !limitTriggered(&c.CurrentBar, c.Side, c.LimitPrice) {
+			return FillResult{Filled: false, At: c.CurrentBar.Time, Reason: "limit not triggered"}, nil
+		}
+		px = clampToLimit(c.CurrentBar.Close, c.Side, c.LimitPrice)
 	case "MKT", "":
 		if isBuy(c.Side) {
 			px += slip
@@ -121,12 +124,15 @@ func (m RealisticFillModel) FillPrice(c FillContext) (FillResult, error) {
 			}
 			return FillResult{Filled: false, At: c.NextBar.Time, Reason: "limit not triggered"}, nil
 		}
-		// Legacy path without lookahead: accept the limit if the current close
-		// is at or better than the posted limit for the order's side.
-		if openFavorable(c.CurrentBar.Close, c.Side, c.LimitPrice) {
-			return FillResult{Filled: true, Price: c.LimitPrice, At: at}, nil
+		// Legacy path without lookahead: trigger off CurrentBar OHLC and clamp
+		// the fill between bar close and the posted limit. Handles both real
+		// resting limits (limit on the near side of close) and exit cushion
+		// limits (limit far on the favorable side of close, which a real
+		// exchange would fill at the close, not at the cushion).
+		if !limitTriggered(&c.CurrentBar, c.Side, c.LimitPrice) {
+			return FillResult{Filled: false, At: at, Reason: "limit not triggered (legacy)"}, nil
 		}
-		return FillResult{Filled: false, At: at, Reason: "limit not triggered (legacy)"}, nil
+		return FillResult{Filled: true, Price: clampToLimit(c.CurrentBar.Close, c.Side, c.LimitPrice), At: at}, nil
 	case "MKT", "":
 		if isBuy(c.Side) {
 			return FillResult{Filled: true, Price: basis + slip, At: at}, nil
@@ -210,6 +216,24 @@ func openFavorable(open float64, side string, limit float64) bool {
 		return open <= limit
 	}
 	return open >= limit
+}
+
+// clampToLimit returns the fill price for a triggered LMT order. A real
+// resting limit fills at its posted price; an exit "cushion" limit posted
+// far on the favorable side of close fills at the close in real markets,
+// not at the cushion. SELL clamps to max(close, limit); BUY clamps to
+// min(close, limit) — neither side is ever worse off than the posted limit.
+func clampToLimit(close float64, side string, limit float64) float64 {
+	if isBuy(side) {
+		if close < limit {
+			return close
+		}
+		return limit
+	}
+	if close > limit {
+		return close
+	}
+	return limit
 }
 
 // FillModelByName maps a config string to a FillModel. Returns an error for
