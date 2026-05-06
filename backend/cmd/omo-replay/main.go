@@ -66,6 +66,7 @@ func main() {
 		copytradeHist     string
 		copytradeLedgerDir string
 		emitGatedDiag     bool
+		preferLiveChain   bool
 	)
 
 	flag.StringVar(&symbolsFlag, "symbols", "", "Comma-separated symbols to replay (default: use config file symbols)")
@@ -86,6 +87,7 @@ func main() {
 	flag.StringVar(&copytradeHist, "copytrade-history", "", "Path to Discord copytrade history JSONL; when set (and --backtest), replays messages through the event bus")
 	flag.StringVar(&copytradeLedgerDir, "copytrade-ledger-dir", "_workspace/copytrade_replay", "Directory for per-fill and author-stated CSV ledgers (created if missing)")
 	flag.BoolVar(&emitGatedDiag, "emit-gated-diag", false, "Persist EntryGated rows to strategy_signal_events with tag=backtest_<runID> for live-vs-backtest SQL diff (requires --backtest)")
+	flag.BoolVar(&preferLiveChain, "prefer-live-chain", false, "Use live Alpaca chain as fallback before synth (default: false). Only meaningful for same-day backtests. CLI runs are not persisted to backtest_runs and are not auto-tagged.")
 	flag.Parse()
 
 	if emitGatedDiag && !backtestFlag {
@@ -232,6 +234,7 @@ func main() {
 			timeframeFlag, strategiesFlag,
 			initialEquity, slippageBPS, speedFlag, noAIFlag,
 			emitGatedDiag, outputJSON, copytradeHist, copytradeLedgerDir,
+			preferLiveChain,
 		); err != nil {
 			log.Fatal().Err(err).Msg("backtest run failed")
 		}
