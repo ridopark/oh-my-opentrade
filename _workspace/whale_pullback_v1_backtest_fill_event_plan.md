@@ -224,3 +224,12 @@ This is an engine-level change with measurable blast radius on every
 backtest. Asking for explicit go-ahead before touching code, plus
 confirmation that the recommended approach (Section 4) is preferred
 over the strategy-level workaround (Section 5 / Option B).
+
+## Postscript -- 2026-05-06
+
+PR #89 landed the engine fix. whale_pullback_v1 was re-backtested
+against live exits and shelved (PF 0.388 train / 0.450 holdout with
+no recoverable parameter slice). See
+_workspace/whale_pullback_v1_sunset_note.md for the post-fix verdict.
+The fill-event fix itself is orthogonal infrastructure: it benefits
+every strategy going forward.

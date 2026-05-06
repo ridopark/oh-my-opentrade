@@ -9,8 +9,14 @@ author = "system"
 created_at = "2026-05-06T00:00:00Z"
 
 [lifecycle]
-state = "PaperActive"
+state = "Deactivated"
 paper_only = true
+# Sunset 2026-05-06. Post-fix backtest revealed PF 0.388 train / 0.450
+# holdout at default params with no recoverable parameter slice (entry-
+# quality problem, not exit tuning). See
+# _workspace/whale_pullback_v1_sunset_note.md
+# Deactivated lifecycle prevents router assignment. Strategy code stays
+# in backend/internal/app/strategy/builtin/whale_pullback_v1.go for history.
 
 [routing]
 symbols = ["TSLA", "MRNA", "HIMS", "SPY", "AMD", "NFLX", "COIN", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "AFRM", "JPM", "XOM", "OXY", "LLY", "RIVN", "RBLX", "BA", "QQQ", "IWM", "SOXL"]

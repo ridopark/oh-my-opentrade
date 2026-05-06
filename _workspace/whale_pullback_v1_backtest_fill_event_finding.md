@@ -126,3 +126,13 @@ Artifacts saved:
 - `_workspace/whale_pullback_v1_atr_100_exit_1.json` (smoking-gun
   diagnostic — atr_stop_mult=100 + exit_body_closes=1 produces
   identical results to atr_stop_mult=1.75 + exit_body_closes=2)
+
+## Postscript -- 2026-05-06
+
+The fill-event fix shipped in PR #89 surfaced the real character of
+whale_pullback_v1's edge: with exits live, the strategy bleeds at PF
+0.388 train / 0.450 holdout on default params. The pre-fix PF 0.983
+result was a mirage: dead exits let losing entries scratch out at EOD.
+
+Verdict: shelved. See _workspace/whale_pullback_v1_sunset_note.md for
+the full diagnostic and what gets kept versus what gets archived.
