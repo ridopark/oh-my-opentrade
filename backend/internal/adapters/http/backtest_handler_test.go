@@ -100,3 +100,31 @@ func TestBacktestHandler_PreferLiveChain_NoLivePort_Returns400(t *testing.T) {
 	}
 }
 
+// TestResolvePreferLiveChain covers the resolution matrix: pointer-typed
+// request field overrides server default, server default tracks whether
+// liveOptions is wired.
+func TestResolvePreferLiveChain(t *testing.T) {
+	yes, no := true, false
+	cases := []struct {
+		name           string
+		reqField       *bool
+		hasLiveOptions bool
+		want           bool
+	}{
+		{"absent_with_live_wired_defaults_on", nil, true, true},
+		{"absent_without_live_wired_defaults_off", nil, false, false},
+		{"explicit_true_with_live_wired", &yes, true, true},
+		{"explicit_true_without_live_wired", &yes, false, true}, // 400 fires later in handler
+		{"explicit_false_with_live_wired", &no, true, false},
+		{"explicit_false_without_live_wired", &no, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolvePreferLiveChain(tc.reqField, tc.hasLiveOptions)
+			if got != tc.want {
+				t.Errorf("got %v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
