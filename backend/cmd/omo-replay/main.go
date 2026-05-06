@@ -640,6 +640,7 @@ func main() {
 			// single-threaded signal ordering downstream handlers
 			// (risk sizer, execution, sim broker, pos monitor) expect.
 			shardStrat.Runner.SetDeferSignalPublish(true)
+			shardStrat.Runner.SetIsBacktest(true)
 
 			return backtest.ShardServices{
 				Ingestion: ingSvc,
@@ -1070,6 +1071,7 @@ func main() {
 					p.Runner().SetSuppressProgressEvents(true)
 				}
 				p.Runner().SetDisableLiveness(true)
+				p.Runner().SetIsBacktest(true)
 				for _, sym := range slab {
 					if bars, ok := warmupBarsCache[sym.String()]; ok && len(bars) > 0 {
 						p.Runner().WarmUp(sym.String(), bars, snapshotFn)
@@ -1135,6 +1137,7 @@ func main() {
 			pipeline.Runner.SetSuppressProgressEvents(true)
 		}
 		pipeline.Runner.SetDisableLiveness(true)
+		pipeline.Runner.SetIsBacktest(true)
 		snapshotFn := makeSnapshotFn()
 		for _, sym := range symbols {
 			bars := warmupBarsCache[sym.String()]
@@ -1309,6 +1312,7 @@ func main() {
 			if r := p.Runner(); r != nil {
 				r.SetDeferSignalPublish(true)
 				r.SetDeferReconcile(true)
+				r.SetIsBacktest(true)
 			}
 			return nil
 		})

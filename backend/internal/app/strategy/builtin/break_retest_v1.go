@@ -201,6 +201,16 @@ func (s *BreakRetestState) ClearPendingEntry() {
 	s.PendingEntryAt = time.Time{}
 }
 
+// armPendingEntry delegates to the shared helper. See pending_entry.go.
+func (s *BreakRetestState) armPendingEntry(side start.Side, now time.Time, ctx start.Context) {
+	armPendingEntry(&s.PositionSide, &s.PendingEntry, &s.PendingEntryAt, side, now, ctx)
+}
+
+// rollbackPendingEntry delegates to the shared helper. See pending_entry.go.
+func (s *BreakRetestState) rollbackPendingEntry() {
+	rollbackPendingEntry(&s.PositionSide, &s.PendingEntry, &s.PendingEntryAt, &s.TradesToday)
+}
+
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
@@ -411,8 +421,7 @@ func (s *BreakRetestStrategy) OnBar(ctx start.Context, symbol string, bar start.
 					return brSt, nil, err
 				}
 
-				brSt.PendingEntry = brSt.BreakoutSide
-				brSt.PendingEntryAt = now
+				brSt.armPendingEntry(brSt.BreakoutSide, now, ctx)
 				brSt.TradesToday++
 				brSt.CooldownUntil = now.Add(cooldown)
 				brSt.LastBarClose = bar.Close
@@ -453,14 +462,11 @@ func (s *BreakRetestStrategy) OnEvent(ctx start.Context, symbol string, evt any,
 		return brSt, nil, nil
 
 	case start.EntryRejection:
-		if brSt.PendingEntry != "" {
-			if ctx != nil && ctx.Logger() != nil {
-				ctx.Logger().Warn("BreakRetestStrategy: entry rejected, clearing pending",
-					"symbol", symbol, "side", brSt.PendingEntry, "reason", e.Reason)
-			}
-			brSt.PendingEntry = ""
-			brSt.PendingEntryAt = time.Time{}
+		if ctx != nil && ctx.Logger() != nil {
+			ctx.Logger().Warn("BreakRetestStrategy: entry rejected, clearing state",
+				"symbol", symbol, "side", brSt.PendingEntry, "position_side", brSt.PositionSide, "reason", e.Reason)
 		}
+		brSt.rollbackPendingEntry()
 		return brSt, nil, nil
 
 	case AIDebateResult:

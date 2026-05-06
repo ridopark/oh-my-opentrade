@@ -171,6 +171,24 @@ type Context interface {
 	// EnvMode returns the execution environment the strategy is running in.
 	// Backtests run as EnvModePaper with tenantID="backtest".
 	EnvMode() EnvMode
+
+	// IsBacktest reports whether the strategy is running inside the backtest
+	// harness (sharded slice replay or legacy heap dispatch). Strategies that
+	// rely on a PendingEntry -> PositionSide handshake driven by broker fill
+	// confirmations need this signal: in backtest the simbroker fills at bar
+	// close and the FillReceived event may not reach OnEvent before subsequent
+	// OnBars (sharded path defers signal publication until replayFlat). When
+	// IsBacktest is true the strategy may transition optimistically on emit
+	// and rely on EntryRejection to roll back. Live and paper trading return
+	// false so live broker semantics are preserved.
+	//
+	// This is a tactical fix (Option B in
+	// _workspace/whale_pullback_v1_backtest_fill_event_plan.md). The
+	// architecturally clean fix is Section 4 of that plan — synchronous
+	// in-shard fill loop in the backtest engine — at which point this flag
+	// becomes unnecessary and strategies no longer need to know which
+	// harness runs them.
+	IsBacktest() bool
 }
 
 // IndicatorData provides pre-computed technical indicators alongside a bar.

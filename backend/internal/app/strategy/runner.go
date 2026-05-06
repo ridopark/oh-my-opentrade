@@ -161,6 +161,9 @@ type Runner struct {
 	deferSignalPublish bool
 	pendingSignals     []domain.Event
 
+	// isBacktest is read by instanceContext.IsBacktest. See Context.IsBacktest doc.
+	isBacktest bool
+
 	// deferReconcile, when true, skips the in-handleBar ReconcileSignals
 	// pass so slice-to-completion shards don't apply reversal-entry ↔
 	// close-position conversion against stale (empty) positions. The
@@ -2290,6 +2293,12 @@ func (r *Runner) emitSignal(ctx context.Context, tenantID string, envMode domain
 // HandleBarDirect to flush the buffer; otherwise signals sit unpublished.
 func (r *Runner) SetDeferSignalPublish(v bool) {
 	r.deferSignalPublish = v
+}
+
+// SetIsBacktest marks this runner as part of the backtest harness so
+// ctx.IsBacktest() returns true to strategies. See Context.IsBacktest doc.
+func (r *Runner) SetIsBacktest(v bool) {
+	r.isBacktest = v
 }
 
 // SetDeferReconcile flips handleBar to skip the in-process

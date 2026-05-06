@@ -14,9 +14,10 @@ import (
 
 // testContext implements strategy.Context for testing.
 type testContext struct {
-	now    time.Time
-	logger *slog.Logger
-	events []any
+	now        time.Time
+	logger     *slog.Logger
+	events     []any
+	isBacktest bool
 }
 
 func newTestContext(now time.Time) *testContext {
@@ -34,6 +35,7 @@ func (c *testContext) EmitDomainEvent(evt any) error {
 }
 func (c *testContext) ProgressEventsSuppressed() bool { return false }
 func (c *testContext) EnvMode() strat.EnvMode         { return strat.EnvModePaper }
+func (c *testContext) IsBacktest() bool               { return c.isBacktest }
 
 // orbParams returns default ORB config as a params map.
 func orbParams() map[string]any {

@@ -24,6 +24,7 @@ You are a specialist in optimizing oh-my-opentrade strategy DNA. You work with A
 3. Run baseline backtest via HTTP API (see Backtest API below)
 4. Record baseline metrics: PF, WR, Net P&L, Trade Count, Max DD, Sharpe
 5. **Save full results** to `_workspace/{strategy_id}_baseline_results.json` for quant analysis
+6. **Parameter-inertness preflight (CHEAP, MANDATORY for new strategies)**: pick one exit param (e.g. `atr_stop_mult`, `exit_body_closes`, `max_hold_minutes`) and run two extra backtests on a short window — one with the default value, one with an "impossible" value (e.g. atr_stop_mult=100, exit_body_closes=999, max_hold_minutes=1). If trade counts and PF are byte-identical, that parameter is dead in the backtest path. STOP tuning and investigate; the most likely cause is the strategy never reaching the branch that reads it. See `backtest-analysis: Parameter inertness signals strategy state divergence`. Past incident (2026-05-06): whale_pullback_v1 PF improvements at 10 bps came entirely from entry-side filters because exit params were inert — sharded slice pipeline delivered FillReceived too late for the OnBar PendingEntry handshake.
 
 ### Phase 1b: Quant Baseline Analysis (MANDATORY)
 

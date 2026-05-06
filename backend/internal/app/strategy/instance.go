@@ -424,6 +424,16 @@ func (c *instanceContext) EnvMode() start.EnvMode {
 	}
 }
 
+// IsBacktest implements start.Context. Defaults to false when the runner
+// pointer is nil so test contexts that build an instanceContext directly
+// keep the live broker-confirmation path.
+func (c *instanceContext) IsBacktest() bool {
+	if c.runner == nil {
+		return false
+	}
+	return c.runner.isBacktest
+}
+
 // NewContext creates a start.Context for use outside the runner (e.g., main.go wiring).
 // The emit function is called when a strategy invokes EmitDomainEvent; pass nil for a no-op.
 func NewContext(now time.Time, logger *slog.Logger, emit func(evt any) error) start.Context {

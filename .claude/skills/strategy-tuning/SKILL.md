@@ -116,7 +116,10 @@ ls configs/strategies/*.toml
 | Strategy ID | Engine | Description |
 |-------------|--------|-------------|
 | `avwap_v4` | `avwap` | Anchored VWAP confluence-weighted entries |
+| `avwap_v4_equity` | `avwap` | Equity-only AVWAP variant (shares, not options) |
 | `orb_break_retest` | `orb_break_retest` | Opening Range Breakout — break & retest |
+| `macd_only_v1` | `macd` | MACD crossover with directional close + ADX |
+| `whale_pullback_v1` | `whale_pullback_v1` | VWAP direction + EMA(N) pullback + volume-profile clear path |
 | *(new)* | *(read hooks.signals.name)* | Any future schema_version = 2 strategy |
 
 ## DNA File Structure
@@ -801,6 +804,73 @@ Then ask: `"Pass {n} complete. {k} params improved. Continue to pass {n+1}?"`
 - Signal scoring has narrow dispersion (0.76-0.99) — needs wider spread to be useful as a filter
 
 **Correlated pairs:** `require_directional_close` × `min_adx`, `min_signal_score` × `hist_accel_bars`
+
+### Whale Pullback (`whale_pullback_v1`)
+
+Parker Brooks-style three-step rule on equity 5m. Single-strategy, equity-only, paper-only on first ship. Direction filter via session VWAP, retracement entry to EMA(N), volume-profile clear-path veto.
+
+#### Universe & Routing (Bucket A — solo tune; revisit if cross-strategy paper data shows signal correlation)
+| Parameter | Location | Range | Step | Effect |
+|-----------|----------|-------|------|--------|
+| `routing.symbols` | `[routing]` | subset of 34-symbol universe | per-symbol | Pass-1 session showed SPY (low intraday ATR/price ~0.1%) drags PF — drop low-volatility ETFs. RIVN ($12-20 stock) was the strongest performer. Always profile per-symbol PF before pruning. |
+| `priority` | `[routing]` | 60-90 | 5 | Lower than avwap_v4 (80) to deconflict slot allocation. Default 70. |
+
+#### Structural Filters (tune FIRST — highest impact)
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `allowed_hours_start` | "09:35"-"10:30" | 15min | External research and pass-1 tuning agree: 09:45 outperforms 09:35. Skip the open-minute volatility surge. |
+| `allowed_hours_end` | "12:00"-"15:30" | 1h | **Highest single-knob impact in pass 1.** Narrowing 15:30 → 12:00 lifted PF 0.648 → 0.759. Sweet-spot research: 09:45-10:30 ET first-pullback window has 65-70%+ WR. Try 11:00, 12:00, 13:30, 15:30. |
+| `vp_required` | true/false | — | When true, an HVN within `vp_clear_atr × ATR` ahead vetoes the signal. Disable to A/B whether the volume-profile filter actually adds edge or just trims trade count. Test BOTH. |
+| `vp_rth_only` | true/false | — | RTH-only volume profile (default true). Including pre/post would change POC drift toward gap-day prints; toggle only as a diagnostic, not for production tuning. |
+
+#### Entry Quality (tune AFTER structural filters)
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `min_trend_bars` | 2-6 | 1 | Bars on trend side of VWAP before pullback qualifies. Higher = stricter chop guard. Quant baseline review flagged 3 as too lax — try 4 first. |
+| `vwap_break_atr` | 0.3-1.5 | 0.1 | "Large-candle break" threshold: latest qualifying bar must close ≥ X × ATR from VWAP. Light noise (0.3-0.5) → over-fires; tight (1.0+) → over-filters. Quant suggests 0.7-1.0 range as the real signal-quality lever. |
+| `pullback_touch_atr` | 0.05-0.30 | 0.05 | How close the wick must come to EMA. Tighter = fewer entries, higher conviction. 0.15 baseline may be too loose given 5m bars routinely range 0.3-0.5 ATR. |
+| `ema_period` | 5-21 | 1 (5,7,9,12,15,21) | Short-term EMA period. Default 9 matches Parker Brooks source. EMA9 well-validated for 5m; EMA21 is the secondary bias the Pine Script reference uses. Larger = slower reversion, longer holds. Be careful: changing this changes both pullback target AND exit trigger. |
+| `vp_hvn_threshold_pct` | 60.0-90.0 | 5.0 | HVN definition: bin volume ≥ X% of POC. Higher = only true peaks count → fewer veto fires. Quant suggested 80 (default) was too strict, try 85 for fewer vetoes. |
+| `vp_clear_atr` | 0.3-1.5 | 0.1 | "Clear path" lookahead distance in ATRs. Smaller = veto less often (only HVN very close ahead matters). Quant suggested 0.6 (current) is reasonable; 1.0 was too strict. |
+| `vp_lookback_days` | 1-20 | 1 | Sessions in volume-profile rolling window. 1 = pure session profile. 5 = quint-week range. >10 = stale for intraday structure (anti-edge per Visible Range research). |
+| `vp_bin_bps` | 5-30 | 5 | Bin width as bps of price. Smaller = finer histogram resolution but noisier HVN. 10 default is a balance. Don't drop below 5; quote tick in liquid names is ~1bp on $500 names. |
+
+#### Exit Rules (in-strategy — these emit BEFORE engine-level rules)
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `exit_body_closes` | 1-3 | 1 | Consecutive opposite-side body closes required to trigger exit. 1 = fast (clips winners on noise). 2 (default) = balanced. 3 = patient but holds losers longer. |
+| `atr_stop_mult` | 1.0-3.0 | 0.25 | Hard stop at `entry ± mult × ATR_at_entry`. ATR-relative so it normalizes across $12 RIVN to $1000 LLY. Tighter = smaller losses but more whipsaws. |
+
+**WARNING — engine-level exit overrides:** The TOML `[[exit_rules]]` blocks (MAX_LOSS, STAGNATION_EXIT) execute and can fire BEFORE the strategy's `exit_body_closes` and `atr_stop_mult`. If you see avg holding time clipped at exactly 60 min or symmetric W/L magnitude, the engine rules are stealing the strategy's exits. **Pass-1 finding: removing STAGNATION_EXIT was the highest-impact single change** (PF 0.485 → 0.602). Use MAX_LOSS only as a true catastrophe stop (e.g., 5% pct), not as a primary risk mechanism.
+
+#### Trade Frequency & Cooldown
+| Parameter | Range | Step | Effect |
+|-----------|-------|------|--------|
+| `max_trades_per_day` | 1-5 | 1 | Per-symbol daily cap. **Critical:** the daily counter MUST reset at RTH session boundary or strategy locks out forever after day 1 (bug fix shipped commit `31415965`). |
+| `cooldown_seconds` | 600-7200 | 600 | Inter-trade cooldown per symbol. 1800 (30min) default. Lower = faster re-entry on whipsaws, higher = better discipline. |
+
+#### Engine-level Exit Rules (TOML `[[exit_rules]]` blocks — keep MINIMAL)
+| Rule | Default | Recommended action |
+|------|---------|--------------------|
+| MAX_LOSS pct | 0.015 | Pass-1: removing it regressed PF (-0.033). Keep as catastrophe stop. Range 0.02-0.05 per the avwap pattern. |
+| STAGNATION_EXIT | 60 min | Pass-1 finding: pre-empts strategy's 2-bar body-close exit. **Remove for whale_pullback_v1.** |
+| EOD_FLATTEN | 15 min before close | Keep. Equity intraday strategy must not hold overnight in v1. |
+
+#### Volume Profile Anchor / Re-keying (DO NOT TUNE)
+- `anchor` = close of first bar of oldest kept session. Recomputed only on window roll.
+- `vp_bin_bps` defines bin width relative to anchor. Window roll re-keys all kept session bin maps under the new anchor (covered by unit test `WindowRoll_BinReKeying`).
+
+#### Correlated Pairs
+- `vwap_break_atr` × `min_trend_bars` — both gate "qualified break". Tightening one without the other can over-filter. Run 3×3 grid: vwap_break ∈ {0.5, 0.8, 1.0} × min_trend_bars ∈ {3, 4, 5}.
+- `pullback_touch_atr` × `exit_body_closes` — entry tightness × exit patience interact. Tight entry + impatient exit = high churn.
+- `allowed_hours_end` × `vp_required` — narrower window means less prior volume for the profile to stabilize. Toggle vp_required when narrowing further.
+
+#### Strategy-Specific Notes (learned 2026-05-06 pass 1)
+- **Daily TradesToday counter MUST reset at session boundary.** Bug surfaced when 6 trades all fired on day 1 of paper backtest, zero across the next ~85 days. Fix in `whale_pullback_v1.go::rolloverIfNewSession`. Always verify across at least 5 trading days that fills are distributed.
+- **Confluence is anti-correlated with success above 50** in baseline (PF 0.61 at conf 40-49 vs 0.03 at conf 70-79). Opposite of avwap_v4 finding. Likely htf_bias + candle_dir stacking pulls into late-trend exhaustion. ENGINE_CHANGE candidate: add `min_confluence` floor and `max_confluence` ceiling as TOML knobs.
+- **Symbol skew is severe.** SPY (PF 0.189) and JPM (PF 0.314) bleed; RIVN (PF 0.761) carries. Always per-symbol diagnose before universe tuning.
+- **Direction skew** mild but real: SHORT PF 0.601 vs LONG PF 0.378 in baseline. Mirrors avwap_v4 historical pattern.
+- **The body-close + ATR exits are wired in the strategy code** (`whale_pullback_v1.go` ~line 489), NOT as TOML exit_rules. The TOML `[[exit_rules]]` blocks add engine-level overrides — keep these minimal.
 
 ### Generic (unknown strategy)
 Infer ranges from current values: try +/- 20%. Parameter naming conventions:
