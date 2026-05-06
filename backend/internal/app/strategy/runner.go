@@ -161,6 +161,14 @@ type Runner struct {
 	deferSignalPublish bool
 	pendingSignals     []domain.Event
 
+	// isBacktest is true when this runner is running inside the backtest
+	// harness (sharded slice replay or legacy heap dispatch). Surfaced to
+	// strategies via instanceContext.IsBacktest so they can treat signal
+	// emission as an immediate fill (sim broker fills at bar close in
+	// backtest); live/paper paths leave this false to preserve broker
+	// fill-confirmation semantics. Set via SetIsBacktest.
+	isBacktest bool
+
 	// deferReconcile, when true, skips the in-handleBar ReconcileSignals
 	// pass so slice-to-completion shards don't apply reversal-entry ↔
 	// close-position conversion against stale (empty) positions. The
@@ -2290,6 +2298,15 @@ func (r *Runner) emitSignal(ctx context.Context, tenantID string, envMode domain
 // HandleBarDirect to flush the buffer; otherwise signals sit unpublished.
 func (r *Runner) SetDeferSignalPublish(v bool) {
 	r.deferSignalPublish = v
+}
+
+// SetIsBacktest marks this runner as part of the backtest harness so
+// strategies can read ctx.IsBacktest() at runtime. Strategies that depend
+// on a PendingEntry -> PositionSide handshake driven by broker fill
+// confirmations use this to optimistically transition state on emit
+// (simbroker fills at bar close); live/paper paths leave this false.
+func (r *Runner) SetIsBacktest(v bool) {
+	r.isBacktest = v
 }
 
 // SetDeferReconcile flips handleBar to skip the in-process

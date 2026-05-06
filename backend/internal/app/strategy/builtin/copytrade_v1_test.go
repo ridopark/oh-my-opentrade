@@ -43,6 +43,7 @@ func (c *copyCtx) EnvMode() start.EnvMode {
 	}
 	return start.EnvModePaper
 }
+func (c *copyCtx) IsBacktest() bool { return false }
 
 func (c *copyCtx) exitRequests() []domain.CopytradeExitRequestPayload {
 	c.mu.Lock()

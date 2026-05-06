@@ -771,3 +771,177 @@ func TestWhalePullback_ReplayThenLive_ParityWithLiveOnly(t *testing.T) {
 	assert.InDelta(t, live.EMAValue, mixed.EMAValue, 1e-9, "EMA must be byte-equal across replay→live and replay-only")
 	assert.Equal(t, live.HVNFingerprint(), mixed.HVNFingerprint(), "HVN merged set must match")
 }
+
+// In backtest mode the strategy must transition to PositionSide on entry
+// emit (rather than waiting for FillConfirmation) so subsequent OnBars
+// can run body-close / ATR-stop exit logic. The simbroker fills at bar
+// close and FillReceived may not reach OnEvent before later OnBars in
+// the sharded slice pipeline, so the optimistic transition is the only
+// way exits get exercised in backtest. Live (IsBacktest=false) keeps
+// the broker-confirmation handshake.
+func TestWhalePullback_BacktestMode_OptimisticPositionSet(t *testing.T) {
+	s := builtin.NewWhalePullbackStrategy()
+	ctx := newTestContext(wpBaseET)
+	ctx.isBacktest = true
+	params := wpParams()
+	params["vp_required"] = false
+	st, err := s.Init(ctx, "AAPL", params, nil)
+	require.NoError(t, err)
+
+	vwap, atr := 100.0, 1.0
+
+	st = buildLongTrend(t, s, ctx, st, vwap, atr, wpBaseET)
+
+	emaPriceBars := []strat.Bar{
+		wpBar(wpBaseET.Add(15*time.Minute), 101.9, 102.0, 101.85, 101.95, 100),
+		wpBar(wpBaseET.Add(20*time.Minute), 101.95, 102.05, 101.9, 102.0, 100),
+		wpBar(wpBaseET.Add(25*time.Minute), 102.0, 102.1, 101.95, 102.05, 100),
+		wpBar(wpBaseET.Add(30*time.Minute), 102.05, 102.15, 102.0, 102.1, 100),
+		wpBar(wpBaseET.Add(35*time.Minute), 102.1, 102.2, 102.05, 102.15, 100),
+		wpBar(wpBaseET.Add(40*time.Minute), 102.15, 102.25, 102.1, 102.2, 100),
+	}
+	ind := wpIndicators(vwap, atr)
+	for _, b := range emaPriceBars {
+		st2, _ := feedWPBar(t, s, ctx, "AAPL", st, b, ind)
+		st = st2
+	}
+
+	wp := st.(*builtin.WhalePullbackState)
+	require.True(t, wp.EMAReady, "EMA should be ready")
+	emaVal := wp.EMAValue
+
+	wickLow := emaVal - 0.05*atr
+	pullback := wpBar(wpBaseET.Add(45*time.Minute), emaVal+0.10, emaVal+0.20, wickLow, emaVal+0.10, 100)
+	st2, signals := feedWPBar(t, s, ctx, "AAPL", st, pullback, ind)
+	require.NotEmpty(t, signals)
+	assert.Equal(t, strat.SignalEntry, signals[0].Type)
+	assert.Equal(t, strat.SideBuy, signals[0].Side)
+
+	wp2 := st2.(*builtin.WhalePullbackState)
+	assert.Equal(t, strat.SideBuy, wp2.PositionSide,
+		"backtest mode must set PositionSide on emit so subsequent OnBars can evaluate exits")
+	assert.Empty(t, string(wp2.PendingEntry),
+		"backtest mode must clear PendingEntry on emit so the OnBar exit guard runs")
+}
+
+func TestWhalePullback_BacktestMode_ATRStopFiresOnNextBar(t *testing.T) {
+	s := builtin.NewWhalePullbackStrategy()
+	ctx := newTestContext(wpBaseET)
+	ctx.isBacktest = true
+	params := wpParams()
+	params["vp_required"] = false
+	params["atr_stop_mult"] = 1.0
+	st, err := s.Init(ctx, "AAPL", params, nil)
+	require.NoError(t, err)
+
+	vwap, atr := 100.0, 1.0
+
+	st = buildLongTrend(t, s, ctx, st, vwap, atr, wpBaseET)
+
+	emaPriceBars := []strat.Bar{
+		wpBar(wpBaseET.Add(15*time.Minute), 101.9, 102.0, 101.85, 101.95, 100),
+		wpBar(wpBaseET.Add(20*time.Minute), 101.95, 102.05, 101.9, 102.0, 100),
+		wpBar(wpBaseET.Add(25*time.Minute), 102.0, 102.1, 101.95, 102.05, 100),
+		wpBar(wpBaseET.Add(30*time.Minute), 102.05, 102.15, 102.0, 102.1, 100),
+		wpBar(wpBaseET.Add(35*time.Minute), 102.1, 102.2, 102.05, 102.15, 100),
+		wpBar(wpBaseET.Add(40*time.Minute), 102.15, 102.25, 102.1, 102.2, 100),
+	}
+	ind := wpIndicators(vwap, atr)
+	for _, b := range emaPriceBars {
+		st2, _ := feedWPBar(t, s, ctx, "AAPL", st, b, ind)
+		st = st2
+	}
+
+	wp := st.(*builtin.WhalePullbackState)
+	emaVal := wp.EMAValue
+
+	wickLow := emaVal - 0.05*atr
+	pullback := wpBar(wpBaseET.Add(45*time.Minute), emaVal+0.10, emaVal+0.20, wickLow, emaVal+0.10, 100)
+	st, _ = feedWPBar(t, s, ctx, "AAPL", st, pullback, ind)
+	wpAfterEntry := st.(*builtin.WhalePullbackState)
+	require.Equal(t, strat.SideBuy, wpAfterEntry.PositionSide,
+		"precondition: backtest mode optimistic-set ran")
+	entryPrice := wpAfterEntry.EntryPrice
+
+	// Next bar: close drops well below entry - 1.0*ATR, so ATR stop must
+	// fire. Without optimistic-set this would NOT trigger because the
+	// exit guard requires PositionSide non-empty.
+	stopBreach := entryPrice - 1.5*atr
+	dropBar := wpBar(wpBaseET.Add(50*time.Minute), emaVal+0.10, emaVal+0.10, stopBreach-0.1, stopBreach, 100)
+	_, signals := feedWPBar(t, s, ctx, "AAPL", st, dropBar, ind)
+	require.NotEmpty(t, signals, "ATR stop must fire on the bar after entry in backtest mode")
+	assert.Equal(t, strat.SignalExit, signals[0].Type)
+	assert.Equal(t, strat.SideSell, signals[0].Side)
+}
+
+func TestWhalePullback_BacktestMode_EntryRejectionRollsBack(t *testing.T) {
+	s := builtin.NewWhalePullbackStrategy()
+	ctx := newTestContext(wpBaseET)
+	ctx.isBacktest = true
+	st, err := s.Init(ctx, "AAPL", wpParams(), nil)
+	require.NoError(t, err)
+
+	wp := st.(*builtin.WhalePullbackState)
+	// Simulate post-emit optimistic-set state.
+	wp.PositionSide = strat.SideBuy
+	wp.PendingEntry = ""
+	wp.EntryPrice = 100.0
+	wp.TradesToday = 1
+
+	evt := strat.EntryRejection{Symbol: "AAPL", Side: strat.SideBuy, Reason: "outside RTH"}
+	st2, signals, err := s.OnEvent(ctx, "AAPL", evt, wp)
+	require.NoError(t, err)
+	assert.Empty(t, signals)
+
+	wp2 := st2.(*builtin.WhalePullbackState)
+	assert.Empty(t, string(wp2.PositionSide),
+		"EntryRejection in backtest mode must roll back PositionSide")
+	assert.Equal(t, 0, wp2.TradesToday,
+		"EntryRejection must refund TradesToday so cap doesn't accidentally exhaust on rejected entries")
+}
+
+// Live mode (IsBacktest=false) must keep the original broker-confirmation
+// handshake — PendingEntry set on emit, PositionSide only set after
+// OnEvent FillConfirmation. Verifies the patch doesn't leak optimistic
+// behavior into paper/live trading.
+func TestWhalePullback_LiveMode_PreservesPendingEntryHandshake(t *testing.T) {
+	s := builtin.NewWhalePullbackStrategy()
+	ctx := newTestContext(wpBaseET)
+	ctx.isBacktest = false
+	params := wpParams()
+	params["vp_required"] = false
+	st, err := s.Init(ctx, "AAPL", params, nil)
+	require.NoError(t, err)
+
+	vwap, atr := 100.0, 1.0
+
+	st = buildLongTrend(t, s, ctx, st, vwap, atr, wpBaseET)
+
+	emaPriceBars := []strat.Bar{
+		wpBar(wpBaseET.Add(15*time.Minute), 101.9, 102.0, 101.85, 101.95, 100),
+		wpBar(wpBaseET.Add(20*time.Minute), 101.95, 102.05, 101.9, 102.0, 100),
+		wpBar(wpBaseET.Add(25*time.Minute), 102.0, 102.1, 101.95, 102.05, 100),
+		wpBar(wpBaseET.Add(30*time.Minute), 102.05, 102.15, 102.0, 102.1, 100),
+		wpBar(wpBaseET.Add(35*time.Minute), 102.1, 102.2, 102.05, 102.15, 100),
+		wpBar(wpBaseET.Add(40*time.Minute), 102.15, 102.25, 102.1, 102.2, 100),
+	}
+	ind := wpIndicators(vwap, atr)
+	for _, b := range emaPriceBars {
+		st2, _ := feedWPBar(t, s, ctx, "AAPL", st, b, ind)
+		st = st2
+	}
+
+	wp := st.(*builtin.WhalePullbackState)
+	emaVal := wp.EMAValue
+
+	wickLow := emaVal - 0.05*atr
+	pullback := wpBar(wpBaseET.Add(45*time.Minute), emaVal+0.10, emaVal+0.20, wickLow, emaVal+0.10, 100)
+	st2, signals := feedWPBar(t, s, ctx, "AAPL", st, pullback, ind)
+	require.NotEmpty(t, signals)
+
+	wp2 := st2.(*builtin.WhalePullbackState)
+	assert.Empty(t, string(wp2.PositionSide),
+		"live mode must NOT set PositionSide on emit — broker fill confirmation drives the transition")
+	assert.Equal(t, strat.SideBuy, wp2.PendingEntry,
+		"live mode keeps PendingEntry until FillConfirmation arrives")
+}

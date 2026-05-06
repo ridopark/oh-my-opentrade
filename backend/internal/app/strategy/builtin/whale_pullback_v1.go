@@ -343,6 +343,16 @@ func (s *WhalePullbackStrategy) OnBar(ctx start.Context, symbol string, bar star
 	wp.OppositeBodyCount = 0
 	wp.TradesToday++
 	wp.CooldownUntil = now.Add(cooldown)
+	// Backtest harness fills at bar close and FillReceived may not reach
+	// OnEvent before the next OnBar (sharded slice pipeline defers signal
+	// publication until replayFlat). Transition optimistically so OnBar's
+	// body-close / ATR-stop guards run; EntryRejection rolls back if the
+	// engine vetoes (e.g. RTH suppression). Live keeps the handshake.
+	if ctx != nil && ctx.IsBacktest() {
+		wp.PositionSide = side
+		wp.PendingEntry = ""
+		wp.PendingEntryAt = time.Time{}
+	}
 	return wp, []start.Signal{sig}, nil
 }
 
@@ -363,6 +373,15 @@ func (s *WhalePullbackStrategy) OnEvent(_ start.Context, _ string, evt any, st s
 			wp.PendingEntryAt = time.Time{}
 		}
 	case start.EntryRejection:
+		// In backtest the optimistic emit-time path also sets PositionSide
+		// (see OnBar). On rejection roll both back and refund the daily-cap
+		// counter so the cap reflects accepted trades, not attempted ones.
+		// In live PositionSide remains empty here so the rollback is a
+		// no-op for the live handshake; only PendingEntry needs clearing.
+		if wp.PositionSide != "" && wp.TradesToday > 0 {
+			wp.TradesToday--
+		}
+		wp.PositionSide = ""
 		wp.PendingEntry = ""
 		wp.PendingEntryAt = time.Time{}
 	}

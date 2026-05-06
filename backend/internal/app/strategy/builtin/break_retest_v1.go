@@ -419,6 +419,15 @@ func (s *BreakRetestStrategy) OnBar(ctx start.Context, symbol string, bar start.
 				brSt.Phase = BRPhaseIdle // Reset after signal emission.
 				brSt.PrevBar = bar
 				brSt.HasPrevBar = true
+				// Backtest harness fills at bar close and FillReceived may
+				// not reach OnEvent before the next OnBar (sharded slice
+				// pipeline). Transition optimistically so subsequent
+				// OnBars run exit logic; EntryRejection rolls back.
+				if ctx != nil && ctx.IsBacktest() {
+					brSt.PositionSide = brSt.BreakoutSide
+					brSt.PendingEntry = ""
+					brSt.PendingEntryAt = time.Time{}
+				}
 				return brSt, []start.Signal{sig}, nil
 			}
 		}
@@ -453,14 +462,19 @@ func (s *BreakRetestStrategy) OnEvent(ctx start.Context, symbol string, evt any,
 		return brSt, nil, nil
 
 	case start.EntryRejection:
-		if brSt.PendingEntry != "" {
-			if ctx != nil && ctx.Logger() != nil {
-				ctx.Logger().Warn("BreakRetestStrategy: entry rejected, clearing pending",
-					"symbol", symbol, "side", brSt.PendingEntry, "reason", e.Reason)
-			}
-			brSt.PendingEntry = ""
-			brSt.PendingEntryAt = time.Time{}
+		if ctx != nil && ctx.Logger() != nil {
+			ctx.Logger().Warn("BreakRetestStrategy: entry rejected, clearing state",
+				"symbol", symbol, "side", brSt.PendingEntry, "position_side", brSt.PositionSide, "reason", e.Reason)
 		}
+		// Backtest emit-time path also sets PositionSide; live keeps it
+		// empty until FillConfirmation. Roll both back and refund the
+		// daily cap so it reflects accepted trades.
+		if brSt.PositionSide != "" && brSt.TradesToday > 0 {
+			brSt.TradesToday--
+		}
+		brSt.PositionSide = ""
+		brSt.PendingEntry = ""
+		brSt.PendingEntryAt = time.Time{}
 		return brSt, nil, nil
 
 	case AIDebateResult:

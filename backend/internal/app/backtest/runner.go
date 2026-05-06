@@ -678,6 +678,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	if pipeline.Runner != nil {
 		pipeline.Runner.SetDisableLiveness(true)
+		pipeline.Runner.SetIsBacktest(true)
 	}
 
 	if pipeline.Enricher == nil {
@@ -1613,6 +1614,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			shardStrat.Runner.SetDeferSignalPublish(true)
 			shardStrat.Runner.SetDeferReconcile(true)
 			shardStrat.Runner.SetDisableLiveness(true)
+			shardStrat.Runner.SetIsBacktest(true)
 			if len(dpLookup) > 0 {
 				shardStrat.Runner.SetDarkPoolLookup(dpLookup)
 			}

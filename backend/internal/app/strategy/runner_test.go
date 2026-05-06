@@ -92,6 +92,7 @@ func (c *testCtx) Logger() *slog.Logger           { return c.logger }
 func (c *testCtx) EmitDomainEvent(_ any) error    { return nil }
 func (c *testCtx) ProgressEventsSuppressed() bool { return false }
 func (c *testCtx) EnvMode() strat.EnvMode         { return strat.EnvModePaper }
+func (c *testCtx) IsBacktest() bool               { return false }
 
 func newTestCtx() *testCtx {
 	return &testCtx{

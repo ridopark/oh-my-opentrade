@@ -1039,6 +1039,21 @@ func (s *AVWAPState) ClearPendingEntry() {
 	// a real position tracked from fill confirmations.
 }
 
+// armPendingEntry records the freshly emitted entry. In live/paper it
+// records the pending side and waits for FillConfirmation; in backtest
+// it also sets PositionSide so the next OnBar can run exit logic
+// (simbroker fills at bar close and FillReceived may not arrive in
+// time on the sharded slice pipeline). EntryRejection rolls back.
+func (s *AVWAPState) armPendingEntry(side start.Side, now time.Time, ctx start.Context) {
+	s.PendingEntry = side
+	s.PendingEntryAt = now
+	if ctx != nil && ctx.IsBacktest() {
+		s.PositionSide = side
+		s.PendingEntry = ""
+		s.PendingEntryAt = time.Time{}
+	}
+}
+
 // UpdateCalcAnchor feeds a bar into a single named anchor in the AVWAP calculator.
 // Used to replay previous-day bars into individual anchors (pd_high, pd_low)
 // without affecting other anchors or the lastBarTime dedup guard.
@@ -1694,8 +1709,7 @@ func (s *AVWAPState) evaluateCapitulationReclaim(ec entryContext) (*start.Signal
 			if err != nil {
 				return nil, err
 			}
-			s.PendingEntry = start.SideBuy
-			s.PendingEntryAt = now
+			s.armPendingEntry(start.SideBuy, now, ec.ctx)
 			s.TradesToday++
 			s.CooldownUntil = now.Add(cooldown)
 			return &sig, nil
@@ -1780,8 +1794,7 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 			if err != nil {
 				return nil, err
 			}
-			s.PendingEntry = start.SideBuy
-			s.PendingEntryAt = now
+			s.armPendingEntry(start.SideBuy, now, ec.ctx)
 			s.TradesToday++
 			s.CooldownUntil = now.Add(cooldown)
 			return &sig, nil
@@ -1869,8 +1882,7 @@ func (s *AVWAPState) evaluateBreakout(ec entryContext) (*start.Signal, error) {
 				if err != nil {
 					return nil, err
 				}
-				s.PendingEntry = start.SideSell
-				s.PendingEntryAt = now
+				s.armPendingEntry(start.SideSell, now, ec.ctx)
 				s.TradesToday++
 				s.CooldownUntil = now.Add(cooldown)
 				return &sig, nil
@@ -1985,8 +1997,7 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 			if err != nil {
 				return nil, err
 			}
-			s.PendingEntry = start.SideBuy
-			s.PendingEntryAt = now
+			s.armPendingEntry(start.SideBuy, now, ec.ctx)
 			s.TradesToday++
 			s.CooldownUntil = now.Add(cooldown)
 			s.PeakAboveCount[anchorName] = 0
@@ -2050,8 +2061,7 @@ func (s *AVWAPState) evaluatePullback(ec entryContext) (*start.Signal, error) {
 			if err != nil {
 				return nil, err
 			}
-			s.PendingEntry = start.SideSell
-			s.PendingEntryAt = now
+			s.armPendingEntry(start.SideSell, now, ec.ctx)
 			s.TradesToday++
 			s.CooldownUntil = now.Add(cooldown)
 			s.PeakBelowCount[anchorName] = 0
@@ -2125,8 +2135,7 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 					if err != nil {
 						return nil, err
 					}
-					s.PendingEntry = start.SideBuy
-					s.PendingEntryAt = now
+					s.armPendingEntry(start.SideBuy, now, ec.ctx)
 					s.TradesToday++
 					s.CooldownUntil = now.Add(cooldown)
 					return &sig, nil
@@ -2161,8 +2170,7 @@ func (s *AVWAPState) evaluatePinch(ec entryContext) (*start.Signal, error) {
 					if err != nil {
 						return nil, err
 					}
-					s.PendingEntry = start.SideSell
-					s.PendingEntryAt = now
+					s.armPendingEntry(start.SideSell, now, ec.ctx)
 					s.TradesToday++
 					s.CooldownUntil = now.Add(cooldown)
 					return &sig, nil
@@ -2266,8 +2274,7 @@ func (s *AVWAPState) evaluateGapReclaim(ec entryContext) (*start.Signal, error) 
 			if err != nil {
 				return nil, err
 			}
-			s.PendingEntry = start.SideBuy
-			s.PendingEntryAt = now
+			s.armPendingEntry(start.SideBuy, now, ec.ctx)
 			s.TradesToday++
 			s.CooldownUntil = now.Add(cooldown)
 			return &sig, nil
@@ -2367,8 +2374,7 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 					if err != nil {
 						return nil, err
 					}
-					s.PendingEntry = start.SideBuy
-					s.PendingEntryAt = now
+					s.armPendingEntry(start.SideBuy, now, ec.ctx)
 					s.TradesToday++
 					s.CooldownUntil = now.Add(cooldown)
 					return &sig, nil
@@ -2438,8 +2444,7 @@ func (s *AVWAPState) evaluateHandoff(ec entryContext) (*start.Signal, error) {
 					if err != nil {
 						return nil, err
 					}
-					s.PendingEntry = start.SideSell
-					s.PendingEntryAt = now
+					s.armPendingEntry(start.SideSell, now, ec.ctx)
 					s.TradesToday++
 					s.CooldownUntil = now.Add(cooldown)
 					return &sig, nil
@@ -2508,8 +2513,7 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 			if err != nil {
 				return nil, err
 			}
-			s.PendingEntry = start.SideBuy
-			s.PendingEntryAt = now
+			s.armPendingEntry(start.SideBuy, now, ec.ctx)
 			s.TradesToday++
 			s.CooldownUntil = now.Add(cooldown)
 			return &sig, nil
@@ -2563,8 +2567,7 @@ func (s *AVWAPState) evaluateBounce(ec entryContext) (*start.Signal, error) {
 			if err != nil {
 				return nil, err
 			}
-			s.PendingEntry = start.SideSell
-			s.PendingEntryAt = now
+			s.armPendingEntry(start.SideSell, now, ec.ctx)
 			s.TradesToday++
 			s.CooldownUntil = now.Add(cooldown)
 			return &sig, nil
@@ -3849,16 +3852,21 @@ func (s *AVWAPStrategy) OnEvent(ctx start.Context, symbol string, evt any, st st
 		return avwapSt, nil, nil
 
 	case start.EntryRejection:
-		if avwapSt.PendingEntry != "" {
+		// Backtest emit-time path also sets PositionSide via armPendingEntry;
+		// live keeps it empty until FillConfirmation. Roll both back and
+		// refund the daily cap so it reflects accepted trades.
+		if avwapSt.PendingEntry != "" || avwapSt.PositionSide != "" {
 			if ctx != nil && ctx.Logger() != nil {
-				ctx.Logger().Warn("AVWAPStrategy: entry rejected, clearing pending", "symbol", symbol, "side", avwapSt.PendingEntry, "reason", e.Reason)
+				ctx.Logger().Warn("AVWAPStrategy: entry rejected, clearing state",
+					"symbol", symbol, "pending_side", avwapSt.PendingEntry, "position_side", avwapSt.PositionSide, "reason", e.Reason)
 			}
-			avwapSt.PendingEntry = ""
-			avwapSt.PendingEntryAt = time.Time{}
-			avwapSt.CooldownUntil = time.Time{}
 			if avwapSt.TradesToday > 0 {
 				avwapSt.TradesToday--
 			}
+			avwapSt.PositionSide = ""
+			avwapSt.PendingEntry = ""
+			avwapSt.PendingEntryAt = time.Time{}
+			avwapSt.CooldownUntil = time.Time{}
 		}
 		return avwapSt, nil, nil
 
