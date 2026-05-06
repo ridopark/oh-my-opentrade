@@ -78,8 +78,8 @@ type BacktestHandler struct {
 	appCfg      *config.Config
 	marketData  ports.MarketDataPort
 	log         zerolog.Logger
-	historyRepo ports.BacktestHistoryPort         // optional; nil disables history persistence
-	liveOptions ports.OptionsMarketDataPort       // optional; nil disables prefer_live_chain
+	historyRepo ports.BacktestHistoryPort // optional; nil disables history persistence
+	liveOptions ports.OptionsMarketDataPort // optional; nil disables prefer_live_chain
 
 	mu      sync.RWMutex
 	runners map[string]*backtest.Runner

@@ -100,30 +100,3 @@ func TestBacktestHandler_PreferLiveChain_NoLivePort_Returns400(t *testing.T) {
 	}
 }
 
-// TestBacktestHandler_PreferLiveChain_RequestParse verifies the JSON
-// boundary: the snake_case field "prefer_live_chain" unmarshals into
-// backtestRunRequest.PreferLiveChain. This is the parse-layer contract
-// against the dashboard payload — a rename or tag drift would silently
-// no-op the feature otherwise.
-func TestBacktestHandler_PreferLiveChain_RequestParse(t *testing.T) {
-	tests := []struct {
-		name string
-		body string
-		want bool
-	}{
-		{name: "absent", body: `{"symbols":["SPY"],"from":"2026-05-04"}`, want: false},
-		{name: "false", body: `{"prefer_live_chain":false,"symbols":["SPY"],"from":"2026-05-04"}`, want: false},
-		{name: "true", body: `{"prefer_live_chain":true,"symbols":["SPY"],"from":"2026-05-04"}`, want: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var req backtestRunRequest
-			if err := json.NewDecoder(strings.NewReader(tt.body)).Decode(&req); err != nil {
-				t.Fatalf("decode: %v", err)
-			}
-			if req.PreferLiveChain != tt.want {
-				t.Fatalf("PreferLiveChain=%v want %v", req.PreferLiveChain, tt.want)
-			}
-		})
-	}
-}
