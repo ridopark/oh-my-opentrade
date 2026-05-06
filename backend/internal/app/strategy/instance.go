@@ -424,10 +424,9 @@ func (c *instanceContext) EnvMode() start.EnvMode {
 	}
 }
 
-// IsBacktest reports whether the strategy is running inside the backtest
-// harness. Returns false when the runner pointer is nil (test contexts that
-// build an instanceContext directly) so the live broker-confirmation path
-// stays the default.
+// IsBacktest implements start.Context. Defaults to false when the runner
+// pointer is nil so test contexts that build an instanceContext directly
+// keep the live broker-confirmation path.
 func (c *instanceContext) IsBacktest() bool {
 	if c.runner == nil {
 		return false

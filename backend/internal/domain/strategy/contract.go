@@ -181,6 +181,13 @@ type Context interface {
 	// IsBacktest is true the strategy may transition optimistically on emit
 	// and rely on EntryRejection to roll back. Live and paper trading return
 	// false so live broker semantics are preserved.
+	//
+	// This is a tactical fix (Option B in
+	// _workspace/whale_pullback_v1_backtest_fill_event_plan.md). The
+	// architecturally clean fix is Section 4 of that plan — synchronous
+	// in-shard fill loop in the backtest engine — at which point this flag
+	// becomes unnecessary and strategies no longer need to know which
+	// harness runs them.
 	IsBacktest() bool
 }
 

@@ -1039,11 +1039,9 @@ func (s *AVWAPState) ClearPendingEntry() {
 	// a real position tracked from fill confirmations.
 }
 
-// armPendingEntry records the freshly emitted entry. In live/paper it
-// records the pending side and waits for FillConfirmation; in backtest
-// it also sets PositionSide so the next OnBar can run exit logic
-// (simbroker fills at bar close and FillReceived may not arrive in
-// time on the sharded slice pipeline). EntryRejection rolls back.
+// armPendingEntry records the freshly emitted entry. Live/paper waits
+// for FillConfirmation to set PositionSide; backtest sets it inline so
+// the next OnBar can run exit logic. See Context.IsBacktest doc.
 func (s *AVWAPState) armPendingEntry(side start.Side, now time.Time, ctx start.Context) {
 	s.PendingEntry = side
 	s.PendingEntryAt = now
@@ -3852,9 +3850,7 @@ func (s *AVWAPStrategy) OnEvent(ctx start.Context, symbol string, evt any, st st
 		return avwapSt, nil, nil
 
 	case start.EntryRejection:
-		// Backtest emit-time path also sets PositionSide via armPendingEntry;
-		// live keeps it empty until FillConfirmation. Roll both back and
-		// refund the daily cap so it reflects accepted trades.
+		// Roll back optimistic emit-time state (backtest) and refund the daily cap.
 		if avwapSt.PendingEntry != "" || avwapSt.PositionSide != "" {
 			if ctx != nil && ctx.Logger() != nil {
 				ctx.Logger().Warn("AVWAPStrategy: entry rejected, clearing state",

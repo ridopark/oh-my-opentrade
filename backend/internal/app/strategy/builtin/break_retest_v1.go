@@ -419,10 +419,7 @@ func (s *BreakRetestStrategy) OnBar(ctx start.Context, symbol string, bar start.
 				brSt.Phase = BRPhaseIdle // Reset after signal emission.
 				brSt.PrevBar = bar
 				brSt.HasPrevBar = true
-				// Backtest harness fills at bar close and FillReceived may
-				// not reach OnEvent before the next OnBar (sharded slice
-				// pipeline). Transition optimistically so subsequent
-				// OnBars run exit logic; EntryRejection rolls back.
+				// Backtest: optimistic-set so OnBar exits run; see Context.IsBacktest doc.
 				if ctx != nil && ctx.IsBacktest() {
 					brSt.PositionSide = brSt.BreakoutSide
 					brSt.PendingEntry = ""
@@ -466,9 +463,7 @@ func (s *BreakRetestStrategy) OnEvent(ctx start.Context, symbol string, evt any,
 			ctx.Logger().Warn("BreakRetestStrategy: entry rejected, clearing state",
 				"symbol", symbol, "side", brSt.PendingEntry, "position_side", brSt.PositionSide, "reason", e.Reason)
 		}
-		// Backtest emit-time path also sets PositionSide; live keeps it
-		// empty until FillConfirmation. Roll both back and refund the
-		// daily cap so it reflects accepted trades.
+		// Roll back optimistic emit-time state (backtest) and refund the daily cap.
 		if brSt.PositionSide != "" && brSt.TradesToday > 0 {
 			brSt.TradesToday--
 		}
