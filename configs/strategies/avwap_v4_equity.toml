@@ -90,7 +90,7 @@ volume_mult = 2.5                # v9 push to 3.0 regressed PF 0.839 -> 0.819; h
 # Allowed EMA regimes — BALANCE removed (sweep v2): 78% of v1 trades and 86%
 # of losses came from BALANCE regime; equity confluence engine has no edge in
 # choppy/ranging markets where the AVWAP-bias gate is meaningless.
-allow_regimes = ["TREND_UP", "TREND_DOWN"]
+allow_regimes = ["TREND_UP"]
 
 # Underlying asset class (used for midday trap shield and session hours)
 asset_class = "EQUITY"
@@ -225,6 +225,29 @@ hvn_threshold_pct = 80.0
 hvn_rth_only = true
 ema_diag_enabled = true
 ema_diag_period = 9
+
+# ─── HVN factor (Phase 1 wiring, default OFF) ───────────────────────────
+# Plan: _workspace/avwap_hvn_ema_promotion_plan.md.
+# Cofire-cloned veto wrapper. When enabled, blocks an entry whose
+# hvn_dist_atr <= hvn_factor_near_atr_max. Honors long_only (default true).
+# DO NOT flip hvn_factor_enabled=true without a clean harness PASS that
+# resolves the sign direction -- year-long verdict (n=10) suggests
+# near-HVN OUTPERFORMS, opposite the original PR #91 hypothesis.
+hvn_factor_enabled = false
+hvn_factor_shadow = false
+hvn_factor_long_only = true
+hvn_factor_near_atr_max = 0.5
+
+# ─── EMA factor (Phase 1 wiring, default OFF) ───────────────────────────
+# Hold-bars conditioner (dp_z-cloned). When enabled, multiplies
+# effective_hold_bars by hold_bars_mult on positions whose primary anchor
+# was crossed within max_bars_since_cross with breach >= min_breach_atr.
+# Defer enabled=true until harness PASS at n_near >= 50 on both holdouts.
+ema_factor_enabled = false
+ema_factor_shadow = false
+ema_factor_max_bars_since_cross = 12
+ema_factor_min_breach_atr = 1.0
+ema_factor_hold_bars_mult = 1.5
 
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
