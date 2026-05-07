@@ -1,0 +1,12 @@
+# Decision-rule view (HVN, EMA)
+Rule: PF lift = full_PF - near/within_PF; PASS iff |lift| >= 0.10 on BOTH holdouts AND signs agree AND n_near >= 50 on BOTH holdouts.
+
+## HVN: full_PF - near_HVN_PF (where near := hvn_dist_atr <= 0.5)
+  TIME_OOS:   full=1.025 near=0.000 lift=+1.025 n_near=0 n_far=27
+  SYMBOL_OOS: full=0.807 near=inf lift=-Inf n_near=1 n_far=50
+  VERDICT: INSUFFICIENT_DATA (n_near < 50 on at least one holdout: time=0 sym=1; cofire-overfit guard)
+
+## EMA: full_PF - within_EMA_PF (where within := |ema_dist_atr| <= 1.0)
+  TIME_OOS:   full=1.025 near=0.000 lift=+1.025 n_near=0 n_far=27
+  SYMBOL_OOS: full=0.807 near=0.000 lift=+0.807 n_near=1 n_far=50
+  VERDICT: INSUFFICIENT_DATA (n_near < 50 on at least one holdout: time=0 sym=1; cofire-overfit guard)

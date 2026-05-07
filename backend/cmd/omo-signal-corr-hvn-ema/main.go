@@ -109,6 +109,7 @@ func main() {
 		holdoutDaysArg  = flag.Int("time-holdout-days", 30, "OOS window (days) before max-trade-date")
 		symHoldoutArg   = flag.Float64("symbol-holdout-fraction", 0.30, "Fraction of symbols (smallest by N) for symbol-OOS")
 		minSymTradesArg = flag.Int("symbol-holdout-min-trades", 5, "Drop a held-out symbol with fewer than this many entries")
+		minNNearArg     = flag.Int("min-n-near", 50, "Minimum n_near per holdout for the decision rule to evaluate; below this, return INSUFFICIENT_DATA")
 	)
 	flag.Parse()
 
@@ -183,7 +184,7 @@ func main() {
 	}
 
 	// pf_lift.txt: decision-rule view.
-	lift := renderPFLift(timeOOS, symOOS)
+	lift := renderPFLift(timeOOS, symOOS, *minNNearArg)
 	if err := writeStringFile(filepath.Join(outDir, "pf_lift.txt"), lift); err != nil {
 		fail("write pf_lift.txt: %v", err)
 	}
@@ -433,16 +434,16 @@ func formatSymbolSet(set map[string]bool) string {
 // renderPFLift produces the decision-rule view: per factor, lift on
 // time-OOS and symbol-OOS independently, PASS only if both lift >=
 // 0.10 absolute AND the lift signs agree.
-func renderPFLift(timeOOS, symOOS []sample) string {
+func renderPFLift(timeOOS, symOOS []sample, minNNear int) string {
 	var b strings.Builder
 	fmt.Fprintln(&b, "# Decision-rule view (HVN, EMA)")
-	fmt.Fprintln(&b, "Rule: PF lift = full_PF - near/within_PF; PASS iff |lift| >= 0.10 on BOTH holdouts AND signs agree.")
+	fmt.Fprintf(&b, "Rule: PF lift = full_PF - near/within_PF; PASS iff |lift| >= 0.10 on BOTH holdouts AND signs agree AND n_near >= %d on BOTH holdouts.\n", minNNear)
 	fmt.Fprintln(&b)
 
 	fmt.Fprintln(&b, "## HVN: full_PF - near_HVN_PF (where near := hvn_dist_atr <= 0.5)")
 	hvnTime := liftRow(timeOOS, hvnNearFar)
 	hvnSym := liftRow(symOOS, hvnNearFar)
-	verdict := decide(hvnTime, hvnSym)
+	verdict := decide(hvnTime, hvnSym, minNNear)
 	fmt.Fprintf(&b, "  TIME_OOS:   full=%s near=%s lift=%+0.3f n_near=%d n_far=%d\n",
 		formatPF(hvnTime.fullPF), formatPF(hvnTime.nearPF), hvnTime.lift, hvnTime.nNear, hvnTime.nFar)
 	fmt.Fprintf(&b, "  SYMBOL_OOS: full=%s near=%s lift=%+0.3f n_near=%d n_far=%d\n",
@@ -452,7 +453,7 @@ func renderPFLift(timeOOS, symOOS []sample) string {
 	fmt.Fprintln(&b, "## EMA: full_PF - within_EMA_PF (where within := |ema_dist_atr| <= 1.0)")
 	emaTime := liftRow(timeOOS, emaWithinOutside)
 	emaSym := liftRow(symOOS, emaWithinOutside)
-	verdictEMA := decide(emaTime, emaSym)
+	verdictEMA := decide(emaTime, emaSym, minNNear)
 	fmt.Fprintf(&b, "  TIME_OOS:   full=%s near=%s lift=%+0.3f n_near=%d n_far=%d\n",
 		formatPF(emaTime.fullPF), formatPF(emaTime.nearPF), emaTime.lift, emaTime.nNear, emaTime.nFar)
 	fmt.Fprintf(&b, "  SYMBOL_OOS: full=%s near=%s lift=%+0.3f n_near=%d n_far=%d\n",
@@ -487,10 +488,11 @@ func liftRow(samples []sample, splitter func([]sample) (*bucket, *bucket)) liftS
 	}
 }
 
-func decide(timeOOS, symOOS liftStat) string {
+func decide(timeOOS, symOOS liftStat, minNNear int) string {
 	const thresh = 0.10
-	if timeOOS.nNear == 0 || symOOS.nNear == 0 {
-		return "INSUFFICIENT_DATA (no entries in near bucket on at least one holdout)"
+	if timeOOS.nNear < minNNear || symOOS.nNear < minNNear {
+		return fmt.Sprintf("INSUFFICIENT_DATA (n_near < %d on at least one holdout: time=%d sym=%d; cofire-overfit guard)",
+			minNNear, timeOOS.nNear, symOOS.nNear)
 	}
 	if math.IsInf(timeOOS.lift, 0) || math.IsInf(symOOS.lift, 0) {
 		return "INSUFFICIENT_DATA (degenerate PF; need more samples)"

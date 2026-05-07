@@ -1,0 +1,21 @@
+# HVN/EMA tag harness summary -- strategy=avwap_v4_equity
+
+Samples: 239 total
+Time split: cutoff=2026-04-06T08:59:00-05:00 -> IS=212, OOS=27
+Symbol holdout (8 symbols): AFRM,AVGO,CRM,GOOGL,NET,PLTR,SNOW,TSLA -> IS=188, OOS=51
+
+## HVN bucket: hvn_dist_atr near (<= 0.5 ATR) vs far
+  [ALL] hvn_dist_atr<=0.5    n=  10 wr= 80.0% pf= 2.162 avg=   54.02 total=   540.19
+  [ALL] hvn_dist_atr>0.5     n= 229 wr= 53.7% pf= 0.875 avg=  -10.95 total= -2507.12
+  [TIME_OOS] hvn_dist_atr<=0.5    n=   0 wr=  0.0% pf= 0.000 avg=    0.00 total=     0.00
+  [TIME_OOS] hvn_dist_atr>0.5     n=  27 wr= 55.6% pf= 1.025 avg=    1.94 total=    52.51
+  [SYMBOL_OOS] hvn_dist_atr<=0.5    n=   1 wr=100.0% pf=   inf avg=  143.38 total=   143.38
+  [SYMBOL_OOS] hvn_dist_atr>0.5     n=  50 wr= 50.0% pf= 0.777 avg=  -20.95 total= -1047.44
+
+## EMA bucket: |ema_dist_atr| within 1.0 ATR vs outside
+  [ALL] |ema_dist_atr|<=1.0  n=   4 wr= 50.0% pf= 0.642 avg=  -32.15 total=  -128.59
+  [ALL] |ema_dist_atr|>1.0   n= 235 wr= 54.9% pf= 0.909 avg=   -7.82 total= -1838.34
+  [TIME_OOS] |ema_dist_atr|<=1.0  n=   0 wr=  0.0% pf= 0.000 avg=    0.00 total=     0.00
+  [TIME_OOS] |ema_dist_atr|>1.0   n=  27 wr= 55.6% pf= 1.025 avg=    1.94 total=    52.51
+  [SYMBOL_OOS] |ema_dist_atr|<=1.0  n=   1 wr=  0.0% pf= 0.000 avg= -184.49 total=  -184.49
+  [SYMBOL_OOS] |ema_dist_atr|>1.0   n=  50 wr= 52.0% pf= 0.840 avg=  -14.39 total=  -719.57
