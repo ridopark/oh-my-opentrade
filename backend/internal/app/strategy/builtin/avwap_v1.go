@@ -1020,22 +1020,10 @@ func (s *AVWAPState) updateHVN(bar start.Bar) {
 	s.hvn.Update(bar, cfg.HVNLookbackDays, cfg.HVNBinBps, cfg.HVNThresholdPct, cfg.HVNRTHOnly, cfg.AllowedHoursTZ)
 }
 
-// applyHVNVeto is the cofire-cloned wrapper for the HVN factor (Phase 1
-// wiring; defaults OFF). When enabled, blocks an entry whose
-// hvn_dist_atr is at or below cfg.HVNFactorNearATRMax. Honors
-// cfg.HVNFactorLongOnly (default true). Shadow mode tags the entry
-// with hvn_factor_would_block but does not block. The factor reads
-// the same hvn_dist_atr the diag-tag emitter writes, so the trade-log
-// row that the harness grades against agrees with the engine decision
-// byte-for-byte.
-//
-// IMPORTANT: the year-long v4_equity Phase 0 verdict shows the
-// strategy is profitable ONLY on near-HVN entries (n=10, PF=2.162) and
-// loses on far-HVN (n=229, PF=0.875). The original PR #91 hypothesis
-// ("fading INTO an HVN HURTS") is contradicted by current data, but
-// the n_near<50 floor blocks promotion either direction. This wiring
-// ships in shadow-only mode; flipping HVNFactorEnabled=true REQUIRES
-// a clean harness PASS that resolves the sign first.
+// applyHVNVeto is the cofire-cloned wrapper for the HVN factor. Reads
+// the same hvn_dist_atr the diag-tag emitter writes so the trade-log
+// row the harness grades agrees with the engine decision byte-for-byte.
+// Promotion gating + sign-flip caveat live in the runbook.
 func (s *AVWAPState) applyHVNVeto(ec entryContext, sig *start.Signal, err error) (*start.Signal, error) {
 	if err != nil || sig == nil {
 		return sig, err
@@ -1846,30 +1834,11 @@ func (s *AVWAPState) evaluateBasicExit(ec entryContext) (*start.Signal, error) {
 		}
 	}
 
-	exitTags := func() map[string]string {
-		t := map[string]string{
-			"ref_price": fmt.Sprintf("%.10f", ec.bar.Close),
-			"setup":     "avwap_exit",
-			"regime_5m": regimeTag,
-		}
-		if emaFactorActive {
-			if emaFactorFavorable {
-				if cfg.EMAFactorEnabled {
-					t["ema_factor_extended"] = "1"
-				} else {
-					t["ema_factor_would_extend"] = "1"
-				}
-			} else {
-				t["ema_factor_favorable"] = "0"
-			}
-		}
-		return t
-	}
-
 	if s.PositionSide == start.SideBuy {
 		for _, belowCnt := range s.BelowCount {
 			if belowCnt >= effectiveHoldBars {
-				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalExit, start.SideSell, 0.8, exitTags())
+				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalExit, start.SideSell, 0.8,
+					avwapExitTags(ec.bar.Close, regimeTag, cfg, emaFactorActive, emaFactorFavorable))
 				if err != nil {
 					return nil, err
 				}
@@ -1886,7 +1855,8 @@ func (s *AVWAPState) evaluateBasicExit(ec entryContext) (*start.Signal, error) {
 	if s.PositionSide == start.SideSell {
 		for _, aboveCnt := range s.AboveCount {
 			if aboveCnt >= effectiveHoldBars {
-				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalExit, start.SideBuy, 0.8, exitTags())
+				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalExit, start.SideBuy, 0.8,
+					avwapExitTags(ec.bar.Close, regimeTag, cfg, emaFactorActive, emaFactorFavorable))
 				if err != nil {
 					return nil, err
 				}
@@ -1901,6 +1871,31 @@ func (s *AVWAPState) evaluateBasicExit(ec entryContext) (*start.Signal, error) {
 		}
 	}
 	return nil, nil
+}
+
+// avwapExitTags builds the tag map for an avwap_exit signal, including
+// the EMA factor decision tag when the factor is configured. Extracted
+// from evaluateBasicExit so the two exit-side branches share one
+// allocation site without a per-call closure.
+func avwapExitTags(close float64, regimeTag string, cfg AVWAPConfig, factorActive, favorable bool) map[string]string {
+	t := map[string]string{
+		"ref_price": fmt.Sprintf("%.10f", close),
+		"setup":     "avwap_exit",
+		"regime_5m": regimeTag,
+	}
+	if !factorActive {
+		return t
+	}
+	if !favorable {
+		t["ema_factor_favorable"] = "0"
+		return t
+	}
+	if cfg.EMAFactorEnabled {
+		t["ema_factor_extended"] = "1"
+	} else {
+		t["ema_factor_would_extend"] = "1"
+	}
+	return t
 }
 
 // evaluateAVWAPStop checks the AVWAP-based stop: exit when price breaks significantly
