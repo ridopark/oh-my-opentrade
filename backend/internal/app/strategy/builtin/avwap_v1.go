@@ -1,10 +1,14 @@
 package builtin
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -154,6 +158,9 @@ func (s *AVWAPStrategy) ReplayOnBar(_ start.Context, _ string, bar start.Bar, st
 		avwapSt.AVWAPDistHistory[anchorName] = hist
 	}
 
+	avwapSt.updateHVN(bar)
+	avwapSt.updateEMA(bar)
+
 	return avwapSt, nil
 }
 
@@ -285,6 +292,14 @@ type AVWAPConfig struct {
 	CofireVetoStretchZMax         float64
 	CofireVetoVolShiftMax         float64
 	CofireVetoSessionSigmaMinBars int
+
+	HVNDiagEnabled  bool
+	HVNLookbackDays int
+	HVNBinBps       float64
+	HVNThresholdPct float64
+	HVNRTHOnly      bool
+	EMADiagEnabled  bool
+	EMADiagPeriod   int
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -358,6 +373,19 @@ type AVWAPState struct {
 	CofireLastClose      float64              `json:"-"`
 	CofireTODBuckets     map[string][]float64 `json:"-"`
 	CofireBucketedZHist  []float64            `json:"-"`
+
+	// HVN scalars are rebuilt by ReplayOnBar from the warmup bar feed; never
+	// restored from snapshot. EMAValue/EMAReady serialize for snapshot
+	// inspection only; the runtime ema pointer is also re-warmed.
+	hvnSessions    []*sessionHist    `json:"-"`
+	hvnMerged      map[int]float64   `json:"-"`
+	hvnSet         map[int]struct{}  `json:"-"`
+	hvnAnchor      float64           `json:"-"`
+	hvnBinBps      float64           `json:"-"`
+	hvnSessionDate string            `json:"-"`
+	ema            *start.EMARolling `json:"-"`
+	EMAValue       float64
+	EMAReady       bool
 }
 
 // SetTideData is called by the strategy runner before every OnBar with the
@@ -592,7 +620,68 @@ func (s *AVWAPState) newEntrySignal(ec entryContext, side start.Side, strength f
 		}
 	}
 
+	s.appendHVNDiagTags(ec, tags)
+	s.appendEMADiagTags(ec, tags)
+
 	return start.NewSignal(ec.instanceID, ec.symbol, start.SignalEntry, side, strength, tags)
+}
+
+func (s *AVWAPState) appendHVNDiagTags(ec entryContext, tags map[string]string) {
+	if !ec.cfg.HVNDiagEnabled || len(s.hvnSet) == 0 {
+		return
+	}
+	atr := s.Indicators.ATR
+	if atr <= 0 || s.hvnAnchor <= 0 || s.hvnBinBps <= 0 {
+		return
+	}
+	binWidth := math.Max(0.01, s.hvnAnchor*s.hvnBinBps*1e-4)
+	anchorFloor := s.hvnAnchor - 5000*binWidth
+	priceIdx := int(math.Floor((ec.bar.Close - anchorFloor) / binWidth))
+
+	var pocVol float64
+	var pocIdx int
+	pocFound := false
+	for idx, v := range s.hvnMerged {
+		if !pocFound || v > pocVol {
+			pocIdx, pocVol, pocFound = idx, v, true
+		}
+	}
+	if pocFound {
+		poc := anchorFloor + (float64(pocIdx)+0.5)*binWidth
+		tags["poc_dist_bps"] = fmt.Sprintf("%.2f", (poc-ec.bar.Close)/ec.bar.Close*10000.0)
+	}
+
+	nearestDistBins := -1
+	densityAbove, densityBelow := 0, 0
+	for idx := range s.hvnSet {
+		d := idx - priceIdx
+		switch {
+		case d > 0:
+			densityAbove++
+		case d < 0:
+			densityBelow++
+			d = -d
+		}
+		if nearestDistBins < 0 || d < nearestDistBins {
+			nearestDistBins = d
+		}
+	}
+	if nearestDistBins >= 0 {
+		tags["hvn_dist_atr"] = fmt.Sprintf("%.3f", float64(nearestDistBins)*binWidth/atr)
+	}
+	tags["hvn_density_above"] = fmt.Sprintf("%d", densityAbove)
+	tags["hvn_density_below"] = fmt.Sprintf("%d", densityBelow)
+}
+
+func (s *AVWAPState) appendEMADiagTags(ec entryContext, tags map[string]string) {
+	if !ec.cfg.EMADiagEnabled || !s.EMAReady {
+		return
+	}
+	tags["ema_value"] = fmt.Sprintf("%.4f", s.EMAValue)
+	tags["ema_dist_bps"] = fmt.Sprintf("%.2f", (ec.bar.Close-s.EMAValue)/s.EMAValue*10000.0)
+	if s.Indicators.ATR > 0 {
+		tags["ema_dist_atr"] = fmt.Sprintf("%.3f", (ec.bar.Close-s.EMAValue)/s.Indicators.ATR)
+	}
 }
 
 // logShortGate emits a structured debug log when a short entry is blocked at a gate.
@@ -853,6 +942,122 @@ func (s *AVWAPState) applyCofireVeto(ec entryContext, sig *start.Signal, err err
 		)
 	}
 	return nil, nil
+}
+
+func (s *AVWAPState) updateHVN(bar start.Bar) {
+	cfg := s.Config
+	if !cfg.HVNDiagEnabled {
+		return
+	}
+	hvnRolloverIfNewSession(s, bar, cfg)
+	hvnAccumulateInCurrentSession(s, bar, cfg)
+}
+
+// updateEMA lazy-inits the EMA pointer so a state restored from a snapshot
+// taken before the diagnostic was enabled gets a fresh pointer on first OnBar
+// after the knob flips on.
+func (s *AVWAPState) updateEMA(bar start.Bar) {
+	cfg := s.Config
+	if !cfg.EMADiagEnabled {
+		return
+	}
+	if s.ema == nil {
+		s.ema = start.NewEMARolling(cfg.EMADiagPeriod)
+	}
+	s.ema.Update(bar.Close)
+	s.EMAValue = s.ema.Value()
+	s.EMAReady = s.ema.IsReady()
+}
+
+func hvnRolloverIfNewSession(s *AVWAPState, bar start.Bar, cfg AVWAPConfig) {
+	loc := cachedLocation(cfg.AllowedHoursTZ)
+	if loc == nil {
+		loc = etLocation
+	}
+	dateStr := bar.Time.In(loc).Format("2006-01-02")
+	if s.hvnSessionDate == dateStr {
+		return
+	}
+	s.hvnSessionDate = dateStr
+	anchor := bar.Close
+	newSession := &sessionHist{
+		hist:   start.NewVolumeHistogram(cfg.HVNBinBps, anchor),
+		anchor: anchor,
+	}
+	s.hvnSessions = append(s.hvnSessions, newSession)
+	for len(s.hvnSessions) > cfg.HVNLookbackDays {
+		s.hvnSessions = s.hvnSessions[1:]
+	}
+	hvnRebuildMerged(s, cfg)
+}
+
+func hvnAccumulateInCurrentSession(s *AVWAPState, bar start.Bar, cfg AVWAPConfig) {
+	if len(s.hvnSessions) == 0 {
+		return
+	}
+	if cfg.HVNRTHOnly && !isRTHBar(bar.Time, cfg.AllowedHoursTZ) {
+		return
+	}
+	cur := s.hvnSessions[len(s.hvnSessions)-1]
+	cur.hist.Accumulate(bar)
+}
+
+// hvnRebuildMerged recomputes the merged HVN snapshot across kept prior
+// sessions (excluding the current in-progress session). Anchor is the oldest
+// kept prior session's anchor; bins from each kept prior session are re-keyed
+// under the new anchor before merging.
+func hvnRebuildMerged(s *AVWAPState, cfg AVWAPConfig) {
+	keep := s.hvnSessions
+	if len(keep) <= 1 {
+		s.hvnMerged = nil
+		s.hvnSet = nil
+		s.hvnAnchor = 0
+		return
+	}
+	prior := keep[:len(keep)-1]
+	if len(prior) > cfg.HVNLookbackDays {
+		prior = prior[len(prior)-cfg.HVNLookbackDays:]
+	}
+	anchor := prior[0].anchor
+	s.hvnAnchor = anchor
+
+	merged := start.NewVolumeHistogram(cfg.HVNBinBps, anchor)
+	for _, sess := range prior {
+		if sess.hist == nil {
+			continue
+		}
+		for oldIdx, v := range sess.hist.Bins() {
+			price := sess.hist.BinCenter(oldIdx)
+			newIdx := merged.BinIndex(price)
+			merged.Bins()[newIdx] += v
+		}
+	}
+	s.hvnMerged = merged.Bins()
+
+	hvnIdx := merged.HVNBins(cfg.HVNThresholdPct)
+	s.hvnSet = make(map[int]struct{}, len(hvnIdx))
+	for _, idx := range hvnIdx {
+		s.hvnSet[idx] = struct{}{}
+	}
+}
+
+// HVNFingerprint returns a deterministic hash over the merged HVN bin set
+// for parity tests asserting byte-equal state across live and warmup paths.
+func (s *AVWAPState) HVNFingerprint() string {
+	if len(s.hvnSet) == 0 {
+		return ""
+	}
+	keys := make([]int, 0, len(s.hvnSet))
+	for k := range s.hvnSet {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+	h := sha256.New()
+	for _, k := range keys {
+		_, _ = h.Write([]byte(strconv.Itoa(k)))
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // cofireMean/Stdev/Median are local helpers kept unexported to avoid widening
@@ -1384,6 +1589,14 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		CofireVetoStretchZMax:         getFloat64(params, "cofire_veto_stretch_z_max", 3.0),
 		CofireVetoVolShiftMax:         getFloat64(params, "cofire_veto_vol_shift_max", -0.5),
 		CofireVetoSessionSigmaMinBars: getInt(params, "cofire_veto_session_sigma_min_bars", 6),
+
+		HVNDiagEnabled:  getBool(params, "hvn_diag_enabled", false),
+		HVNLookbackDays: getInt(params, "hvn_lookback_days", 5),
+		HVNBinBps:       getFloat64(params, "hvn_bin_bps", 10.0),
+		HVNThresholdPct: getFloat64(params, "hvn_threshold_pct", 80.0),
+		HVNRTHOnly:      getBool(params, "hvn_rth_only", true),
+		EMADiagEnabled:  getBool(params, "ema_diag_enabled", false),
+		EMADiagPeriod:   getInt(params, "ema_diag_period", 9),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
 
@@ -1448,6 +1661,10 @@ func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string
 		StopAboveCount:  make(map[string]int),
 		CrossedBelowBar: make(map[string]int),
 		Config:          cfg,
+		hvnBinBps:       cfg.HVNBinBps,
+	}
+	if cfg.EMADiagEnabled {
+		st.ema = start.NewEMARolling(cfg.EMADiagPeriod)
 	}
 
 	if prior != nil {
@@ -1466,6 +1683,18 @@ func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string
 			st.PendingEntry = avwapPrior.PendingEntry
 			st.PendingEntryAt = avwapPrior.PendingEntryAt
 			st.Config = cfg
+			st.hvnSessions = nil
+			st.hvnMerged = nil
+			st.hvnSet = nil
+			st.hvnAnchor = 0
+			st.hvnSessionDate = ""
+			st.hvnBinBps = cfg.HVNBinBps
+			st.EMAValue = 0
+			st.EMAReady = false
+			st.ema = nil
+			if cfg.EMADiagEnabled {
+				st.ema = start.NewEMARolling(cfg.EMADiagPeriod)
+			}
 		} else if ctx != nil && ctx.Logger() != nil {
 			ctx.Logger().Warn("AVWAPStrategy: incompatible prior state, starting fresh", "symbol", symbol)
 		}
@@ -3649,6 +3878,9 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 	// when cfg.CofireVetoEnabled / cfg.CofireVetoShadow is true.
 	avwapSt.updateCofireVetoState(bar)
 
+	avwapSt.updateHVN(bar)
+	avwapSt.updateEMA(bar)
+
 	// 3. Regime gating.
 	regimeAllowed := false
 	regimeTag := "none"
@@ -3888,6 +4120,8 @@ type avwapStateJSON struct {
 	BarHighs50     []float64                          `json:"bar_highs_50,omitempty"`
 	BarLows50      []float64                          `json:"bar_lows_50,omitempty"`
 	KeyLevels      map[string]float64                 `json:"key_levels,omitempty"`
+	EMAValue       float64                            `json:"ema_value,omitempty"`
+	EMAReady       bool                               `json:"ema_ready,omitempty"`
 }
 
 func (s *AVWAPState) Marshal() ([]byte, error) {
@@ -3923,6 +4157,8 @@ func (s *AVWAPState) Marshal() ([]byte, error) {
 		BarHighs50:     s.BarHighs50,
 		BarLows50:      s.BarLows50,
 		KeyLevels:      s.KeyLevels,
+		EMAValue:       s.EMAValue,
+		EMAReady:       s.EMAReady,
 	}
 	return json.Marshal(j)
 }
@@ -3953,6 +4189,8 @@ func (s *AVWAPState) Unmarshal(data []byte) error {
 	s.BarHighs50 = j.BarHighs50
 	s.BarLows50 = j.BarLows50
 	s.KeyLevels = j.KeyLevels
+	s.EMAValue = j.EMAValue
+	s.EMAReady = j.EMAReady
 
 	s.Calc = start.NewAnchoredVWAPCalc()
 	s.Calc.Restore(j.Anchors, j.CalcStates)
