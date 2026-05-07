@@ -1,14 +1,10 @@
 package builtin
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -374,18 +370,13 @@ type AVWAPState struct {
 	CofireTODBuckets     map[string][]float64 `json:"-"`
 	CofireBucketedZHist  []float64            `json:"-"`
 
-	// HVN scalars are rebuilt by ReplayOnBar from the warmup bar feed; never
+	// HVN state is rebuilt by ReplayOnBar from the warmup bar feed; never
 	// restored from snapshot. EMAValue/EMAReady serialize for snapshot
 	// inspection only; the runtime ema pointer is also re-warmed.
-	hvnSessions    []*sessionHist    `json:"-"`
-	hvnMerged      map[int]float64   `json:"-"`
-	hvnSet         map[int]struct{}  `json:"-"`
-	hvnAnchor      float64           `json:"-"`
-	hvnBinBps      float64           `json:"-"`
-	hvnSessionDate string            `json:"-"`
-	ema            *start.EMARolling `json:"-"`
-	EMAValue       float64
-	EMAReady       bool
+	hvn      hvnTracker        `json:"-"`
+	ema      *start.EMARolling `json:"-"`
+	EMAValue float64
+	EMAReady bool
 }
 
 // SetTideData is called by the strategy runner before every OnBar with the
@@ -627,21 +618,24 @@ func (s *AVWAPState) newEntrySignal(ec entryContext, side start.Side, strength f
 }
 
 func (s *AVWAPState) appendHVNDiagTags(ec entryContext, tags map[string]string) {
-	if !ec.cfg.HVNDiagEnabled || len(s.hvnSet) == 0 {
+	hvnSet := s.hvn.HVNSet()
+	if !ec.cfg.HVNDiagEnabled || len(hvnSet) == 0 {
 		return
 	}
 	atr := s.Indicators.ATR
-	if atr <= 0 || s.hvnAnchor <= 0 || s.hvnBinBps <= 0 {
+	anchor := s.hvn.Anchor()
+	binBps := s.hvn.BinBps()
+	if atr <= 0 || anchor <= 0 || binBps <= 0 {
 		return
 	}
-	binWidth := math.Max(0.01, s.hvnAnchor*s.hvnBinBps*1e-4)
-	anchorFloor := s.hvnAnchor - 5000*binWidth
+	binWidth := math.Max(0.01, anchor*binBps*1e-4)
+	anchorFloor := anchor - 5000*binWidth
 	priceIdx := int(math.Floor((ec.bar.Close - anchorFloor) / binWidth))
 
 	var pocVol float64
 	var pocIdx int
 	pocFound := false
-	for idx, v := range s.hvnMerged {
+	for idx, v := range s.hvn.Merged() {
 		if !pocFound || v > pocVol {
 			pocIdx, pocVol, pocFound = idx, v, true
 		}
@@ -653,7 +647,7 @@ func (s *AVWAPState) appendHVNDiagTags(ec entryContext, tags map[string]string) 
 
 	nearestDistBins := -1
 	densityAbove, densityBelow := 0, 0
-	for idx := range s.hvnSet {
+	for idx := range hvnSet {
 		d := idx - priceIdx
 		switch {
 		case d > 0:
@@ -949,8 +943,7 @@ func (s *AVWAPState) updateHVN(bar start.Bar) {
 	if !cfg.HVNDiagEnabled {
 		return
 	}
-	hvnRolloverIfNewSession(s, bar, cfg)
-	hvnAccumulateInCurrentSession(s, bar, cfg)
+	s.hvn.Update(bar, cfg.HVNLookbackDays, cfg.HVNBinBps, cfg.HVNThresholdPct, cfg.HVNRTHOnly, cfg.AllowedHoursTZ)
 }
 
 // updateEMA lazy-inits the EMA pointer so a state restored from a snapshot
@@ -969,96 +962,9 @@ func (s *AVWAPState) updateEMA(bar start.Bar) {
 	s.EMAReady = s.ema.IsReady()
 }
 
-func hvnRolloverIfNewSession(s *AVWAPState, bar start.Bar, cfg AVWAPConfig) {
-	loc := cachedLocation(cfg.AllowedHoursTZ)
-	if loc == nil {
-		loc = etLocation
-	}
-	dateStr := bar.Time.In(loc).Format("2006-01-02")
-	if s.hvnSessionDate == dateStr {
-		return
-	}
-	s.hvnSessionDate = dateStr
-	anchor := bar.Close
-	newSession := &sessionHist{
-		hist:   start.NewVolumeHistogram(cfg.HVNBinBps, anchor),
-		anchor: anchor,
-	}
-	s.hvnSessions = append(s.hvnSessions, newSession)
-	for len(s.hvnSessions) > cfg.HVNLookbackDays {
-		s.hvnSessions = s.hvnSessions[1:]
-	}
-	hvnRebuildMerged(s, cfg)
-}
-
-func hvnAccumulateInCurrentSession(s *AVWAPState, bar start.Bar, cfg AVWAPConfig) {
-	if len(s.hvnSessions) == 0 {
-		return
-	}
-	if cfg.HVNRTHOnly && !isRTHBar(bar.Time, cfg.AllowedHoursTZ) {
-		return
-	}
-	cur := s.hvnSessions[len(s.hvnSessions)-1]
-	cur.hist.Accumulate(bar)
-}
-
-// hvnRebuildMerged recomputes the merged HVN snapshot across kept prior
-// sessions (excluding the current in-progress session). Anchor is the oldest
-// kept prior session's anchor; bins from each kept prior session are re-keyed
-// under the new anchor before merging.
-func hvnRebuildMerged(s *AVWAPState, cfg AVWAPConfig) {
-	keep := s.hvnSessions
-	if len(keep) <= 1 {
-		s.hvnMerged = nil
-		s.hvnSet = nil
-		s.hvnAnchor = 0
-		return
-	}
-	prior := keep[:len(keep)-1]
-	if len(prior) > cfg.HVNLookbackDays {
-		prior = prior[len(prior)-cfg.HVNLookbackDays:]
-	}
-	anchor := prior[0].anchor
-	s.hvnAnchor = anchor
-
-	merged := start.NewVolumeHistogram(cfg.HVNBinBps, anchor)
-	for _, sess := range prior {
-		if sess.hist == nil {
-			continue
-		}
-		for oldIdx, v := range sess.hist.Bins() {
-			price := sess.hist.BinCenter(oldIdx)
-			newIdx := merged.BinIndex(price)
-			merged.Bins()[newIdx] += v
-		}
-	}
-	s.hvnMerged = merged.Bins()
-
-	hvnIdx := merged.HVNBins(cfg.HVNThresholdPct)
-	s.hvnSet = make(map[int]struct{}, len(hvnIdx))
-	for _, idx := range hvnIdx {
-		s.hvnSet[idx] = struct{}{}
-	}
-}
-
 // HVNFingerprint returns a deterministic hash over the merged HVN bin set
 // for parity tests asserting byte-equal state across live and warmup paths.
-func (s *AVWAPState) HVNFingerprint() string {
-	if len(s.hvnSet) == 0 {
-		return ""
-	}
-	keys := make([]int, 0, len(s.hvnSet))
-	for k := range s.hvnSet {
-		keys = append(keys, k)
-	}
-	sort.Ints(keys)
-	h := sha256.New()
-	for _, k := range keys {
-		_, _ = h.Write([]byte(strconv.Itoa(k)))
-		_, _ = h.Write([]byte{0})
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}
+func (s *AVWAPState) HVNFingerprint() string { return s.hvn.Fingerprint() }
 
 // cofireMean/Stdev/Median are local helpers kept unexported to avoid widening
 // the package surface. Inline to avoid pulling a new stats dependency.
@@ -1661,8 +1567,8 @@ func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string
 		StopAboveCount:  make(map[string]int),
 		CrossedBelowBar: make(map[string]int),
 		Config:          cfg,
-		hvnBinBps:       cfg.HVNBinBps,
 	}
+	st.hvn.Reset(cfg.HVNBinBps)
 	if cfg.EMADiagEnabled {
 		st.ema = start.NewEMARolling(cfg.EMADiagPeriod)
 	}
@@ -1683,12 +1589,7 @@ func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string
 			st.PendingEntry = avwapPrior.PendingEntry
 			st.PendingEntryAt = avwapPrior.PendingEntryAt
 			st.Config = cfg
-			st.hvnSessions = nil
-			st.hvnMerged = nil
-			st.hvnSet = nil
-			st.hvnAnchor = 0
-			st.hvnSessionDate = ""
-			st.hvnBinBps = cfg.HVNBinBps
+			st.hvn.Reset(cfg.HVNBinBps)
 			st.EMAValue = 0
 			st.EMAReady = false
 			st.ema = nil
