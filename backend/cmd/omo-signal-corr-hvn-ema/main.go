@@ -183,7 +183,7 @@ func main() {
 	}
 
 	// pf_lift.txt: decision-rule view.
-	lift := renderPFLift(samples, timeIS, timeOOS, symIS, symOOS, cutoff, symOOSet)
+	lift := renderPFLift(timeOOS, symOOS)
 	if err := writeStringFile(filepath.Join(outDir, "pf_lift.txt"), lift); err != nil {
 		fail("write pf_lift.txt: %v", err)
 	}
@@ -433,7 +433,7 @@ func formatSymbolSet(set map[string]bool) string {
 // renderPFLift produces the decision-rule view: per factor, lift on
 // time-OOS and symbol-OOS independently, PASS only if both lift >=
 // 0.10 absolute AND the lift signs agree.
-func renderPFLift(all, timeIS, timeOOS, symIS, symOOS []sample, cutoff time.Time, symOOSet map[string]bool) string {
+func renderPFLift(timeOOS, symOOS []sample) string {
 	var b strings.Builder
 	fmt.Fprintln(&b, "# Decision-rule view (HVN, EMA)")
 	fmt.Fprintln(&b, "Rule: PF lift = full_PF - near/within_PF; PASS iff |lift| >= 0.10 on BOTH holdouts AND signs agree.")
