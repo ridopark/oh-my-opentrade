@@ -251,6 +251,18 @@ cofire_veto_stretch_z_max = 3.0
 cofire_veto_vol_shift_max = -0.5
 cofire_veto_session_sigma_min_bars = 6
 
+# --- HVN + EMA tag-only diagnostic (no entry behavior change) ---
+# Mirrors avwap_v4_equity opt-in to extend the harness's grading sample
+# to SHORT entries (v4_equity is LONG-only). Tag emission only; default
+# off in parser, only avwap_v4 and avwap_v4_equity opt in.
+hvn_diag_enabled = true
+hvn_lookback_days = 5
+hvn_bin_bps = 10.0
+hvn_threshold_pct = 80.0
+hvn_rth_only = true
+ema_diag_enabled = true
+ema_diag_period = 9
+
 [hooks]
 signals = { engine = "builtin", name = "avwap" }
 
