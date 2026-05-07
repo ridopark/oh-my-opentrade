@@ -187,6 +187,105 @@ func TestAVWAP_HVNState_InitFromPrior_ResetsAndRewarms(t *testing.T) {
 		"warmup feed after prior-restore must reproduce the original HVN snapshot byte-equal")
 }
 
+// crossFixtureBars produces a single RTH session with within-session price
+// variation that drives the AVWAP across +1 and -1 sign in turn so
+// AVWAPCrossBarsSince / AVWAPCrossBreachMaxATR have observable state.
+// Layout: 10 bars at $100, 10 bars at $110 (above-cross), 10 bars at $95
+// (below-cross). 5m cadence starting 09:30 ET.
+func crossFixtureBars() []strat.Bar {
+	bars := []strat.Bar{}
+	startT := mustET(2026, 3, 9, 9, 30)
+	prices := []float64{100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+		110, 110, 110, 110, 110, 110, 110, 110, 110, 110,
+		95, 95, 95, 95, 95, 95, 95, 95, 95, 95}
+	for i, p := range prices {
+		bars = append(bars, diagBar(startT.Add(time.Duration(i*5)*time.Minute), p, 1000))
+	}
+	return bars
+}
+
+func TestAVWAP_AVWAPCrossBarsSince_LiveVsWarmup(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	bars := crossFixtureBars()
+	ind := strat.IndicatorData{ATR: 1.0, VWAP: 100.0}
+
+	ctxA := newTestContext(bars[0].Time)
+	stA, err := s.Init(ctxA, "AAPL", avwapDiagParams(), nil)
+	require.NoError(t, err)
+	for _, b := range bars {
+		ctxA.now = b.Time
+		stA, err = s.ReplayOnBar(ctxA, "AAPL", b, stA, ind)
+		require.NoError(t, err)
+	}
+
+	ctxB := newTestContext(bars[0].Time)
+	stB, err := s.Init(ctxB, "AAPL", avwapDiagParams(), nil)
+	require.NoError(t, err)
+	const cut = 15
+	for i, b := range bars {
+		ctxB.now = b.Time
+		if i < cut {
+			stB, err = s.ReplayOnBar(ctxB, "AAPL", b, stB, ind)
+			require.NoError(t, err)
+		} else {
+			avSt := stB.(*builtin.AVWAPState)
+			avSt.SetIndicators(ind)
+			st2, _, err2 := s.OnBar(ctxB, "AAPL", b, stB)
+			require.NoError(t, err2)
+			stB = st2
+		}
+	}
+
+	a := stA.(*builtin.AVWAPState)
+	b := stB.(*builtin.AVWAPState)
+	require.NotEmpty(t, a.AVWAPCrossBarsSince,
+		"crossFixtureBars must produce at least one AVWAP cross")
+	assert.Equal(t, a.AVWAPCrossBarsSince, b.AVWAPCrossBarsSince,
+		"per-anchor bars-since-cross must agree across replay-only and replay-then-live paths")
+}
+
+func TestAVWAP_AVWAPCrossBreachMax_LiveVsWarmup(t *testing.T) {
+	s := builtin.NewAVWAPStrategy()
+	bars := crossFixtureBars()
+	ind := strat.IndicatorData{ATR: 1.0, VWAP: 100.0}
+
+	ctxA := newTestContext(bars[0].Time)
+	stA, err := s.Init(ctxA, "AAPL", avwapDiagParams(), nil)
+	require.NoError(t, err)
+	for _, b := range bars {
+		ctxA.now = b.Time
+		stA, err = s.ReplayOnBar(ctxA, "AAPL", b, stA, ind)
+		require.NoError(t, err)
+	}
+
+	ctxB := newTestContext(bars[0].Time)
+	stB, err := s.Init(ctxB, "AAPL", avwapDiagParams(), nil)
+	require.NoError(t, err)
+	const cut = 15
+	for i, b := range bars {
+		ctxB.now = b.Time
+		if i < cut {
+			stB, err = s.ReplayOnBar(ctxB, "AAPL", b, stB, ind)
+			require.NoError(t, err)
+		} else {
+			avSt := stB.(*builtin.AVWAPState)
+			avSt.SetIndicators(ind)
+			st2, _, err2 := s.OnBar(ctxB, "AAPL", b, stB)
+			require.NoError(t, err2)
+			stB = st2
+		}
+	}
+
+	a := stA.(*builtin.AVWAPState)
+	b := stB.(*builtin.AVWAPState)
+	require.NotEmpty(t, a.AVWAPCrossBreachMaxATR,
+		"crossFixtureBars must populate breach-max for at least one anchor")
+	for k, va := range a.AVWAPCrossBreachMaxATR {
+		assert.InDelta(t, va, b.AVWAPCrossBreachMaxATR[k], 1e-12,
+			"per-anchor max-breach must be ulp-equal across replay-only and replay-then-live paths for anchor %s", k)
+	}
+}
+
 func TestAVWAP_EMAState_InitFromPrior_ResetsAndRewarms(t *testing.T) {
 	s := builtin.NewAVWAPStrategy()
 	bars := diagFixtureBars()

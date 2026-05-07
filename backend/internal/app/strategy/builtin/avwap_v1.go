@@ -1,14 +1,10 @@
 package builtin
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -156,6 +152,7 @@ func (s *AVWAPStrategy) ReplayOnBar(_ start.Context, _ string, bar start.Bar, st
 			hist = hist[len(hist)-10:]
 		}
 		avwapSt.AVWAPDistHistory[anchorName] = hist
+		avwapSt.updateCrossTracking(anchorName, bar, avwapValue, indicators.ATR)
 	}
 
 	avwapSt.updateHVN(bar)
@@ -336,6 +333,14 @@ type AVWAPState struct {
 	CrossedBelowBar  map[string]int       // tracks how many bars ago price crossed below each AVWAP (gap reclaim)
 	AVWAPDistHistory map[string][]float64 // recent close-to-AVWAP distances per anchor (for handoff detection)
 
+	// Per-anchor "bars since the last AVWAP-cross" diagnostic. The key is
+	// only set after a real sign transition (+1 <-> -1); never-crossed
+	// anchors stay absent so emission can skip them. Preserved across
+	// snapshot restart since cross history is long-running indicator state.
+	AVWAPCrossBarsSince    map[string]int     `json:"avwap_cross_bars_since,omitempty"`
+	AVWAPCrossLastSign     map[string]int     `json:"avwap_cross_last_sign,omitempty"`
+	AVWAPCrossBreachMaxATR map[string]float64 `json:"avwap_cross_breach_max_atr,omitempty"`
+
 	LockedOutSide   start.Side // side that was stopped out; prevents same-direction re-entry
 
 	entryChecks      []domain.EntryCheckResult // transient: reset each bar, not serialized
@@ -374,18 +379,13 @@ type AVWAPState struct {
 	CofireTODBuckets     map[string][]float64 `json:"-"`
 	CofireBucketedZHist  []float64            `json:"-"`
 
-	// HVN scalars are rebuilt by ReplayOnBar from the warmup bar feed; never
+	// HVN state is rebuilt by ReplayOnBar from the warmup bar feed; never
 	// restored from snapshot. EMAValue/EMAReady serialize for snapshot
 	// inspection only; the runtime ema pointer is also re-warmed.
-	hvnSessions    []*sessionHist    `json:"-"`
-	hvnMerged      map[int]float64   `json:"-"`
-	hvnSet         map[int]struct{}  `json:"-"`
-	hvnAnchor      float64           `json:"-"`
-	hvnBinBps      float64           `json:"-"`
-	hvnSessionDate string            `json:"-"`
-	ema            *start.EMARolling `json:"-"`
-	EMAValue       float64
-	EMAReady       bool
+	hvn      hvnTracker        `json:"-"`
+	ema      *start.EMARolling `json:"-"`
+	EMAValue float64
+	EMAReady bool
 }
 
 // SetTideData is called by the strategy runner before every OnBar with the
@@ -627,21 +627,24 @@ func (s *AVWAPState) newEntrySignal(ec entryContext, side start.Side, strength f
 }
 
 func (s *AVWAPState) appendHVNDiagTags(ec entryContext, tags map[string]string) {
-	if !ec.cfg.HVNDiagEnabled || len(s.hvnSet) == 0 {
+	hvnSet := s.hvn.HVNSet()
+	if !ec.cfg.HVNDiagEnabled || len(hvnSet) == 0 {
 		return
 	}
 	atr := s.Indicators.ATR
-	if atr <= 0 || s.hvnAnchor <= 0 || s.hvnBinBps <= 0 {
+	anchor := s.hvn.Anchor()
+	binBps := s.hvn.BinBps()
+	if atr <= 0 || anchor <= 0 || binBps <= 0 {
 		return
 	}
-	binWidth := math.Max(0.01, s.hvnAnchor*s.hvnBinBps*1e-4)
-	anchorFloor := s.hvnAnchor - 5000*binWidth
+	binWidth := math.Max(0.01, anchor*binBps*1e-4)
+	anchorFloor := anchor - 5000*binWidth
 	priceIdx := int(math.Floor((ec.bar.Close - anchorFloor) / binWidth))
 
 	var pocVol float64
 	var pocIdx int
 	pocFound := false
-	for idx, v := range s.hvnMerged {
+	for idx, v := range s.hvn.Merged() {
 		if !pocFound || v > pocVol {
 			pocIdx, pocVol, pocFound = idx, v, true
 		}
@@ -653,7 +656,7 @@ func (s *AVWAPState) appendHVNDiagTags(ec entryContext, tags map[string]string) 
 
 	nearestDistBins := -1
 	densityAbove, densityBelow := 0, 0
-	for idx := range s.hvnSet {
+	for idx := range hvnSet {
 		d := idx - priceIdx
 		switch {
 		case d > 0:
@@ -681,6 +684,22 @@ func (s *AVWAPState) appendEMADiagTags(ec entryContext, tags map[string]string) 
 	tags["ema_dist_bps"] = fmt.Sprintf("%.2f", (ec.bar.Close-s.EMAValue)/s.EMAValue*10000.0)
 	if s.Indicators.ATR > 0 {
 		tags["ema_dist_atr"] = fmt.Sprintf("%.3f", (ec.bar.Close-s.EMAValue)/s.Indicators.ATR)
+	}
+	if ec.bar.Low <= s.EMAValue {
+		tags["ema_low_below_ema"] = "1"
+	} else {
+		tags["ema_low_below_ema"] = "0"
+	}
+	if ec.bar.High >= s.EMAValue {
+		tags["ema_high_above_ema"] = "1"
+	} else {
+		tags["ema_high_above_ema"] = "0"
+	}
+	for anchor, barsSince := range s.AVWAPCrossBarsSince {
+		tags["bars_since_avwap_cross_"+anchor] = fmt.Sprintf("%d", barsSince)
+	}
+	for anchor, breach := range s.AVWAPCrossBreachMaxATR {
+		tags["avwap_cross_breach_max_atr_"+anchor] = fmt.Sprintf("%.3f", breach)
 	}
 }
 
@@ -949,8 +968,7 @@ func (s *AVWAPState) updateHVN(bar start.Bar) {
 	if !cfg.HVNDiagEnabled {
 		return
 	}
-	hvnRolloverIfNewSession(s, bar, cfg)
-	hvnAccumulateInCurrentSession(s, bar, cfg)
+	s.hvn.Update(bar, cfg.HVNLookbackDays, cfg.HVNBinBps, cfg.HVNThresholdPct, cfg.HVNRTHOnly, cfg.AllowedHoursTZ)
 }
 
 // updateEMA lazy-inits the EMA pointer so a state restored from a snapshot
@@ -969,95 +987,47 @@ func (s *AVWAPState) updateEMA(bar start.Bar) {
 	s.EMAReady = s.ema.IsReady()
 }
 
-func hvnRolloverIfNewSession(s *AVWAPState, bar start.Bar, cfg AVWAPConfig) {
-	loc := cachedLocation(cfg.AllowedHoursTZ)
-	if loc == nil {
-		loc = etLocation
-	}
-	dateStr := bar.Time.In(loc).Format("2006-01-02")
-	if s.hvnSessionDate == dateStr {
-		return
-	}
-	s.hvnSessionDate = dateStr
-	anchor := bar.Close
-	newSession := &sessionHist{
-		hist:   start.NewVolumeHistogram(cfg.HVNBinBps, anchor),
-		anchor: anchor,
-	}
-	s.hvnSessions = append(s.hvnSessions, newSession)
-	for len(s.hvnSessions) > cfg.HVNLookbackDays {
-		s.hvnSessions = s.hvnSessions[1:]
-	}
-	hvnRebuildMerged(s, cfg)
-}
-
-func hvnAccumulateInCurrentSession(s *AVWAPState, bar start.Bar, cfg AVWAPConfig) {
-	if len(s.hvnSessions) == 0 {
-		return
-	}
-	if cfg.HVNRTHOnly && !isRTHBar(bar.Time, cfg.AllowedHoursTZ) {
-		return
-	}
-	cur := s.hvnSessions[len(s.hvnSessions)-1]
-	cur.hist.Accumulate(bar)
-}
-
-// hvnRebuildMerged recomputes the merged HVN snapshot across kept prior
-// sessions (excluding the current in-progress session). Anchor is the oldest
-// kept prior session's anchor; bins from each kept prior session are re-keyed
-// under the new anchor before merging.
-func hvnRebuildMerged(s *AVWAPState, cfg AVWAPConfig) {
-	keep := s.hvnSessions
-	if len(keep) <= 1 {
-		s.hvnMerged = nil
-		s.hvnSet = nil
-		s.hvnAnchor = 0
-		return
-	}
-	prior := keep[:len(keep)-1]
-	if len(prior) > cfg.HVNLookbackDays {
-		prior = prior[len(prior)-cfg.HVNLookbackDays:]
-	}
-	anchor := prior[0].anchor
-	s.hvnAnchor = anchor
-
-	merged := start.NewVolumeHistogram(cfg.HVNBinBps, anchor)
-	for _, sess := range prior {
-		if sess.hist == nil {
-			continue
-		}
-		for oldIdx, v := range sess.hist.Bins() {
-			price := sess.hist.BinCenter(oldIdx)
-			newIdx := merged.BinIndex(price)
-			merged.Bins()[newIdx] += v
-		}
-	}
-	s.hvnMerged = merged.Bins()
-
-	hvnIdx := merged.HVNBins(cfg.HVNThresholdPct)
-	s.hvnSet = make(map[int]struct{}, len(hvnIdx))
-	for _, idx := range hvnIdx {
-		s.hvnSet[idx] = struct{}{}
-	}
-}
-
 // HVNFingerprint returns a deterministic hash over the merged HVN bin set
 // for parity tests asserting byte-equal state across live and warmup paths.
-func (s *AVWAPState) HVNFingerprint() string {
-	if len(s.hvnSet) == 0 {
-		return ""
+func (s *AVWAPState) HVNFingerprint() string { return s.hvn.Fingerprint() }
+
+// updateCrossTracking advances the "bars since last AVWAP-cross" and
+// "max breach since last cross" diagnostics for one anchor. Called from
+// the AboveCount/BelowCount loop in OnBar AND ReplayOnBar so warmup and
+// live agree byte-for-byte. The bars_since key is only created on a real
+// sign transition (+1 <-> -1); never-crossed anchors stay absent.
+func (s *AVWAPState) updateCrossTracking(anchorName string, bar start.Bar, avwapValue, atr float64) {
+	if s.AVWAPCrossBarsSince == nil {
+		s.AVWAPCrossBarsSince = make(map[string]int)
 	}
-	keys := make([]int, 0, len(s.hvnSet))
-	for k := range s.hvnSet {
-		keys = append(keys, k)
+	if s.AVWAPCrossLastSign == nil {
+		s.AVWAPCrossLastSign = make(map[string]int)
 	}
-	sort.Ints(keys)
-	h := sha256.New()
-	for _, k := range keys {
-		_, _ = h.Write([]byte(strconv.Itoa(k)))
-		_, _ = h.Write([]byte{0})
+	if s.AVWAPCrossBreachMaxATR == nil {
+		s.AVWAPCrossBreachMaxATR = make(map[string]float64)
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	sign := 0
+	if bar.Close > avwapValue {
+		sign = 1
+	} else if bar.Close < avwapValue {
+		sign = -1
+	}
+	last := s.AVWAPCrossLastSign[anchorName]
+	if sign != 0 && last != 0 && sign != last {
+		s.AVWAPCrossBarsSince[anchorName] = 0
+		s.AVWAPCrossBreachMaxATR[anchorName] = 0
+	} else if _, exists := s.AVWAPCrossBarsSince[anchorName]; exists {
+		s.AVWAPCrossBarsSince[anchorName]++
+		if atr > 0 {
+			breach := math.Abs(bar.Close-avwapValue) / atr
+			if breach > s.AVWAPCrossBreachMaxATR[anchorName] {
+				s.AVWAPCrossBreachMaxATR[anchorName] = breach
+			}
+		}
+	}
+	if sign != 0 {
+		s.AVWAPCrossLastSign[anchorName] = sign
+	}
 }
 
 // cofireMean/Stdev/Median are local helpers kept unexported to avoid widening
@@ -1650,19 +1620,22 @@ func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string
 	}
 
 	st := &AVWAPState{
-		parent:          s,
-		Symbol:          symbol,
-		Calc:            calc,
-		AboveCount:      make(map[string]int),
-		BelowCount:      make(map[string]int),
-		PeakAboveCount:  make(map[string]int),
-		PeakBelowCount:  make(map[string]int),
-		StopBelowCount:  make(map[string]int),
-		StopAboveCount:  make(map[string]int),
-		CrossedBelowBar: make(map[string]int),
-		Config:          cfg,
-		hvnBinBps:       cfg.HVNBinBps,
+		parent:                 s,
+		Symbol:                 symbol,
+		Calc:                   calc,
+		AboveCount:             make(map[string]int),
+		BelowCount:             make(map[string]int),
+		PeakAboveCount:         make(map[string]int),
+		PeakBelowCount:         make(map[string]int),
+		StopBelowCount:         make(map[string]int),
+		StopAboveCount:         make(map[string]int),
+		CrossedBelowBar:        make(map[string]int),
+		AVWAPCrossBarsSince:    make(map[string]int),
+		AVWAPCrossLastSign:     make(map[string]int),
+		AVWAPCrossBreachMaxATR: make(map[string]float64),
+		Config:                 cfg,
 	}
+	st.hvn.Reset(cfg.HVNBinBps)
 	if cfg.EMADiagEnabled {
 		st.ema = start.NewEMARolling(cfg.EMADiagPeriod)
 	}
@@ -1677,18 +1650,16 @@ func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string
 			st.StopBelowCount = avwapPrior.StopBelowCount
 			st.StopAboveCount = avwapPrior.StopAboveCount
 			st.CrossedBelowBar = avwapPrior.CrossedBelowBar
+			st.AVWAPCrossBarsSince = avwapPrior.AVWAPCrossBarsSince
+			st.AVWAPCrossLastSign = avwapPrior.AVWAPCrossLastSign
+			st.AVWAPCrossBreachMaxATR = avwapPrior.AVWAPCrossBreachMaxATR
 			st.TradesToday = avwapPrior.TradesToday
 			st.CooldownUntil = avwapPrior.CooldownUntil
 			st.PositionSide = avwapPrior.PositionSide
 			st.PendingEntry = avwapPrior.PendingEntry
 			st.PendingEntryAt = avwapPrior.PendingEntryAt
 			st.Config = cfg
-			st.hvnSessions = nil
-			st.hvnMerged = nil
-			st.hvnSet = nil
-			st.hvnAnchor = 0
-			st.hvnSessionDate = ""
-			st.hvnBinBps = cfg.HVNBinBps
+			st.hvn.Reset(cfg.HVNBinBps)
 			st.EMAValue = 0
 			st.EMAReady = false
 			st.ema = nil
@@ -3922,6 +3893,7 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 			hist = hist[len(hist)-maxHist:]
 		}
 		avwapSt.AVWAPDistHistory[anchorName] = hist
+		avwapSt.updateCrossTracking(anchorName, bar, avwapValue, avwapSt.Indicators.ATR)
 	}
 
 	instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))

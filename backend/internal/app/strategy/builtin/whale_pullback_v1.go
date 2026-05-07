@@ -1,12 +1,9 @@
 package builtin
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
-	"sort"
 	"strconv"
 	"time"
 
@@ -107,11 +104,7 @@ type WhalePullbackState struct {
 	ema      *start.EMARolling `json:"-"`
 
 	SessionDate string
-	sessions    []*sessionHist   `json:"-"`
-	merged      map[int]float64  `json:"-"`
-	hvnSet      map[int]struct{} `json:"-"`
-	currentAnchor float64        `json:"-"`
-	currentBinBps float64        `json:"-"`
+	hvn         hvnTracker `json:"-"`
 
 	OppositeBodyCount int
 
@@ -150,41 +143,17 @@ func (s *WhalePullbackState) rollbackPendingEntry() {
 }
 
 // HVNContainsPrice reports whether the merged HVN set covers any bin in the
-// inclusive price range [low, high]. Used by tests to assert window-roll
-// re-keying behavior without exposing internal histogram structure.
+// inclusive price range [low, high]. thresholdPct is unused (the hvnSet is
+// already filtered at rebuild time) but the parameter is retained on the
+// public signature for callers and tests wired up before the refactor.
 func (s *WhalePullbackState) HVNContainsPrice(low, high, thresholdPct float64) bool {
-	if len(s.hvnSet) == 0 || s.currentBinBps <= 0 {
-		return false
-	}
-	tmp := start.NewVolumeHistogram(s.currentBinBps, s.currentAnchor)
-	loIdx := tmp.BinIndex(low)
-	hiIdx := tmp.BinIndex(high)
-	for idx := range s.hvnSet {
-		if idx >= loIdx && idx <= hiIdx {
-			return true
-		}
-	}
-	return false
+	_ = thresholdPct
+	return s.hvn.HVNContainsPrice(low, high)
 }
 
 // HVNFingerprint returns a deterministic hash over the merged HVN bin set,
 // used by parity tests to assert byte-equal state across replay paths.
-func (s *WhalePullbackState) HVNFingerprint() string {
-	if s.hvnSet == nil {
-		return ""
-	}
-	keys := make([]int, 0, len(s.hvnSet))
-	for k := range s.hvnSet {
-		keys = append(keys, k)
-	}
-	sort.Ints(keys)
-	h := sha256.New()
-	for _, k := range keys {
-		_, _ = h.Write([]byte(strconv.Itoa(k)))
-		_, _ = h.Write([]byte{0})
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}
+func (s *WhalePullbackState) HVNFingerprint() string { return s.hvn.Fingerprint() }
 
 // ---------------------------------------------------------------------------
 // Init
@@ -193,21 +162,17 @@ func (s *WhalePullbackState) HVNFingerprint() string {
 func (s *WhalePullbackStrategy) Init(_ start.Context, symbol string, params map[string]any, prior start.State) (start.State, error) {
 	cfg := parseWhalePullbackConfig(params)
 	st := &WhalePullbackState{
-		Symbol:        symbol,
-		Config:        cfg,
-		ema:           start.NewEMARolling(cfg.EMAPeriod),
-		currentBinBps: cfg.VPBinBps,
+		Symbol: symbol,
+		Config: cfg,
+		ema:    start.NewEMARolling(cfg.EMAPeriod),
 	}
+	st.hvn.Reset(cfg.VPBinBps)
 	if prior != nil {
 		if wp, ok := prior.(*WhalePullbackState); ok {
 			scalars := *wp
 			scalars.Config = cfg
 			scalars.ema = start.NewEMARolling(cfg.EMAPeriod)
-			scalars.currentBinBps = cfg.VPBinBps
-			scalars.sessions = nil
-			scalars.merged = nil
-			scalars.hvnSet = nil
-			scalars.currentAnchor = 0
+			scalars.hvn.Reset(cfg.VPBinBps)
 			scalars.EMAReady = false
 			scalars.EMAValue = 0
 			st = &scalars
@@ -382,8 +347,17 @@ func (s *WhalePullbackStrategy) OnEvent(_ start.Context, _ string, evt any, st s
 // ---------------------------------------------------------------------------
 
 func updateStructure(wp *WhalePullbackState, bar start.Bar) {
-	rolloverIfNewSession(wp, bar)
-	accumulateInCurrentSession(wp, bar)
+	cfg := wp.Config
+	loc := cachedLocation(cfg.AllowedHoursTZ)
+	if loc == nil {
+		loc = etLocation
+	}
+	dateStr := bar.Time.In(loc).Format("2006-01-02")
+	if wp.SessionDate != dateStr {
+		wp.SessionDate = dateStr
+		wp.TradesToday = 0
+	}
+	wp.hvn.Update(bar, cfg.VPLookbackDays, cfg.VPBinBps, cfg.VPHVNThresholdPct, cfg.VPRTHOnly, cfg.AllowedHoursTZ)
 
 	advanceTrend(wp, bar)
 	advancePullback(wp, bar)
@@ -513,43 +487,6 @@ func evalExit(wp *WhalePullbackState, bar start.Bar, atr float64, emaReadyPrev b
 // Volume profile collaborator
 // ---------------------------------------------------------------------------
 
-func rolloverIfNewSession(wp *WhalePullbackState, bar start.Bar) {
-	loc := cachedLocation(wp.Config.AllowedHoursTZ)
-	if loc == nil {
-		loc = etLocation
-	}
-	dateStr := bar.Time.In(loc).Format("2006-01-02")
-	if wp.SessionDate == dateStr {
-		return
-	}
-	wp.SessionDate = dateStr
-	wp.TradesToday = 0
-
-	anchor := bar.Close
-	newSession := &sessionHist{
-		hist:   start.NewVolumeHistogram(wp.Config.VPBinBps, anchor),
-		anchor: anchor,
-	}
-	wp.sessions = append(wp.sessions, newSession)
-
-	for len(wp.sessions) > wp.Config.VPLookbackDays {
-		wp.sessions = wp.sessions[1:]
-	}
-
-	rebuildMerged(wp)
-}
-
-func accumulateInCurrentSession(wp *WhalePullbackState, bar start.Bar) {
-	if len(wp.sessions) == 0 {
-		return
-	}
-	if wp.Config.VPRTHOnly && !isRTHBar(bar.Time, wp.Config.AllowedHoursTZ) {
-		return
-	}
-	cur := wp.sessions[len(wp.sessions)-1]
-	cur.hist.Accumulate(bar)
-}
-
 func isRTHBar(t time.Time, tz string) bool {
 	loc := cachedLocation(tz)
 	if loc == nil {
@@ -559,59 +496,17 @@ func isRTHBar(t time.Time, tz string) bool {
 	return hhmm >= "09:30" && hhmm < "16:00"
 }
 
-// rebuildMerged recomputes the anchor from the oldest kept LOOKBACK session
-// (excluding the current in-progress session) and re-keys all kept session
-// bin maps under the new anchor before merging. The merged HVN set is frozen
-// at this snapshot — current-session accumulation does not influence today's
-// veto query.
-func rebuildMerged(wp *WhalePullbackState) {
-	keep := wp.sessions
-	if len(keep) <= 1 {
-		wp.merged = nil
-		wp.hvnSet = nil
-		wp.currentAnchor = 0
-		return
-	}
-	prior := keep[:len(keep)-1]
-
-	if len(prior) > wp.Config.VPLookbackDays {
-		prior = prior[len(prior)-wp.Config.VPLookbackDays:]
-	}
-
-	anchor := prior[0].anchor
-	wp.currentAnchor = anchor
-
-	merged := start.NewVolumeHistogram(wp.Config.VPBinBps, anchor)
-	for _, sess := range prior {
-		if sess.hist == nil {
-			continue
-		}
-		for oldIdx, v := range sess.hist.Bins() {
-			price := sess.hist.BinCenter(oldIdx)
-			newIdx := merged.BinIndex(price)
-			merged.Bins()[newIdx] += v
-		}
-	}
-	wp.merged = merged.Bins()
-
-	hvnIdx := merged.HVNBins(wp.Config.VPHVNThresholdPct)
-	wp.hvnSet = make(map[int]struct{}, len(hvnIdx))
-	for _, idx := range hvnIdx {
-		wp.hvnSet[idx] = struct{}{}
-	}
-}
-
 // vetoByVP is only called when cfg.VPRequired is true. With no prior-session
-// profile yet, the conservative answer is to veto — explicitly documented as
-// expected first-day behavior on a freshly added symbol in the plan.
+// profile yet (Merged() == nil), the conservative answer is to veto -- the
+// expected first-day behavior on a freshly added symbol.
 func vetoByVP(wp *WhalePullbackState, bar start.Bar, atr float64, side start.Side) bool {
-	if wp.merged == nil {
+	if wp.hvn.Merged() == nil {
 		return true
 	}
 	if atr <= 0 {
 		return true
 	}
-	if len(wp.hvnSet) == 0 {
+	if len(wp.hvn.HVNSet()) == 0 {
 		return false
 	}
 	span := wp.Config.VPClearATR * atr
@@ -621,15 +516,7 @@ func vetoByVP(wp *WhalePullbackState, bar start.Bar, atr float64, side start.Sid
 	} else {
 		lo, hi = bar.Close-span, bar.Close
 	}
-	tmp := start.NewVolumeHistogram(wp.Config.VPBinBps, wp.currentAnchor)
-	loIdx := tmp.BinIndex(lo)
-	hiIdx := tmp.BinIndex(hi)
-	for idx := range wp.hvnSet {
-		if idx >= loIdx && idx <= hiIdx {
-			return true
-		}
-	}
-	return false
+	return wp.hvn.HVNContainsPrice(lo, hi)
 }
 
 // ---------------------------------------------------------------------------
