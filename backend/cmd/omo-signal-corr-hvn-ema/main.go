@@ -491,7 +491,7 @@ func liftRow(samples []sample, splitter func([]sample) (*bucket, *bucket)) liftS
 func decide(timeOOS, symOOS liftStat, minNNear int) string {
 	const thresh = 0.10
 	if timeOOS.nNear < minNNear || symOOS.nNear < minNNear {
-		return fmt.Sprintf("INSUFFICIENT_DATA (n_near < %d on at least one holdout: time=%d sym=%d; cofire-overfit guard)",
+		return fmt.Sprintf("INSUFFICIENT_DATA (n_near < %d min-n-near floor: time=%d sym=%d)",
 			minNNear, timeOOS.nNear, symOOS.nNear)
 	}
 	if math.IsInf(timeOOS.lift, 0) || math.IsInf(symOOS.lift, 0) {
