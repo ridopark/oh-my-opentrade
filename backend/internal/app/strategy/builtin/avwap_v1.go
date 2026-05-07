@@ -297,6 +297,25 @@ type AVWAPConfig struct {
 	HVNRTHOnly      bool
 	EMADiagEnabled  bool
 	EMADiagPeriod   int
+
+	// HVN factor (Phase 1 wiring; defaults OFF). Cofire-cloned veto:
+	// when enabled, blocks an entry whose hvn_dist_atr is at or below
+	// HVNFactorNearATRMax. Honors HVNFactorLongOnly (default true).
+	// Shadow mode tags the entry but does not block.
+	HVNFactorEnabled    bool
+	HVNFactorShadow     bool
+	HVNFactorLongOnly   bool
+	HVNFactorNearATRMax float64
+
+	// EMA factor (Phase 1 wiring; defaults OFF). Hold-bars conditioner:
+	// when enabled and the position's primary anchor was recently crossed
+	// with deep enough breach since cross, multiplies effectiveHoldBars
+	// by EMAFactorHoldBarsMult. Shadow mode tags the exit signal.
+	EMAFactorEnabled           bool
+	EMAFactorShadow            bool
+	EMAFactorMaxBarsSinceCross int
+	EMAFactorMinBreachATR      float64
+	EMAFactorHoldBarsMult      float64
 }
 
 // AVWAPState is the per-symbol state for the AVWAP strategy.
@@ -626,6 +645,42 @@ func (s *AVWAPState) newEntrySignal(ec entryContext, side start.Side, strength f
 	return start.NewSignal(ec.instanceID, ec.symbol, start.SignalEntry, side, strength, tags)
 }
 
+// hvnDistATR returns the distance from bar.Close to the nearest HVN bin
+// in ATR units. Returns ok=false if HVN state is not yet warm (set
+// empty), if anchor/binBps are zero, or if ATR is non-positive. The
+// HVN factor (applyHVNVeto) AND appendHVNDiagTags both read through
+// this so the tag emitted to trade-log JSON matches the value the
+// factor decision was made on byte-for-byte.
+func (s *AVWAPState) hvnDistATR(bar start.Bar) (float64, bool) {
+	hvnSet := s.hvn.HVNSet()
+	if len(hvnSet) == 0 {
+		return 0, false
+	}
+	atr := s.Indicators.ATR
+	anchor := s.hvn.Anchor()
+	binBps := s.hvn.BinBps()
+	if atr <= 0 || anchor <= 0 || binBps <= 0 {
+		return 0, false
+	}
+	binWidth := math.Max(0.01, anchor*binBps*1e-4)
+	anchorFloor := anchor - 5000*binWidth
+	priceIdx := int(math.Floor((bar.Close - anchorFloor) / binWidth))
+	nearestDistBins := -1
+	for idx := range hvnSet {
+		d := idx - priceIdx
+		if d < 0 {
+			d = -d
+		}
+		if nearestDistBins < 0 || d < nearestDistBins {
+			nearestDistBins = d
+		}
+	}
+	if nearestDistBins < 0 {
+		return 0, false
+	}
+	return float64(nearestDistBins) * binWidth / atr, true
+}
+
 func (s *AVWAPState) appendHVNDiagTags(ec entryContext, tags map[string]string) {
 	hvnSet := s.hvn.HVNSet()
 	if !ec.cfg.HVNDiagEnabled || len(hvnSet) == 0 {
@@ -654,23 +709,17 @@ func (s *AVWAPState) appendHVNDiagTags(ec entryContext, tags map[string]string) 
 		tags["poc_dist_bps"] = fmt.Sprintf("%.2f", (poc-ec.bar.Close)/ec.bar.Close*10000.0)
 	}
 
-	nearestDistBins := -1
 	densityAbove, densityBelow := 0, 0
 	for idx := range hvnSet {
-		d := idx - priceIdx
 		switch {
-		case d > 0:
+		case idx > priceIdx:
 			densityAbove++
-		case d < 0:
+		case idx < priceIdx:
 			densityBelow++
-			d = -d
-		}
-		if nearestDistBins < 0 || d < nearestDistBins {
-			nearestDistBins = d
 		}
 	}
-	if nearestDistBins >= 0 {
-		tags["hvn_dist_atr"] = fmt.Sprintf("%.3f", float64(nearestDistBins)*binWidth/atr)
+	if dist, ok := s.hvnDistATR(ec.bar); ok {
+		tags["hvn_dist_atr"] = fmt.Sprintf("%.3f", dist)
 	}
 	tags["hvn_density_above"] = fmt.Sprintf("%d", densityAbove)
 	tags["hvn_density_below"] = fmt.Sprintf("%d", densityBelow)
@@ -969,6 +1018,57 @@ func (s *AVWAPState) updateHVN(bar start.Bar) {
 		return
 	}
 	s.hvn.Update(bar, cfg.HVNLookbackDays, cfg.HVNBinBps, cfg.HVNThresholdPct, cfg.HVNRTHOnly, cfg.AllowedHoursTZ)
+}
+
+// applyHVNVeto is the cofire-cloned wrapper for the HVN factor. Reads
+// the same hvn_dist_atr the diag-tag emitter writes so the trade-log
+// row the harness grades agrees with the engine decision byte-for-byte.
+// Promotion gating + sign-flip caveat live in the runbook.
+func (s *AVWAPState) applyHVNVeto(ec entryContext, sig *start.Signal, err error) (*start.Signal, error) {
+	if err != nil || sig == nil {
+		return sig, err
+	}
+	cfg := ec.cfg
+	if !cfg.HVNFactorEnabled && !cfg.HVNFactorShadow {
+		return sig, err
+	}
+	if cfg.HVNFactorLongOnly && sig.Side != start.SideBuy {
+		return sig, err
+	}
+	distATR, ok := s.hvnDistATR(ec.bar)
+	if !ok {
+		return sig, err
+	}
+	if distATR > cfg.HVNFactorNearATRMax {
+		return sig, err
+	}
+	sig.Tags["hvn_factor_dist_atr"] = fmt.Sprintf("%.3f", distATR)
+	if cfg.HVNFactorShadow && !cfg.HVNFactorEnabled {
+		sig.Tags["hvn_factor_would_block"] = "1"
+		if ec.ctx != nil && ec.ctx.Logger() != nil {
+			ec.ctx.Logger().Info("HVN factor SHADOW would have blocked entry",
+				"symbol", ec.symbol,
+				"side", string(sig.Side),
+				"dist_atr", distATR,
+				"near_max", cfg.HVNFactorNearATRMax,
+			)
+		}
+		return sig, err
+	}
+	if s.parent != nil {
+		s.parent.recordHoldReason(ec.symbol, "hvn_factor_veto",
+			fmt.Sprintf("dist_atr=%.3f near_max=%.3f", distATR, cfg.HVNFactorNearATRMax),
+			map[string]string{"hvn_factor_dist_atr": fmt.Sprintf("%.3f", distATR)})
+	}
+	if ec.ctx != nil && ec.ctx.Logger() != nil {
+		ec.ctx.Logger().Info("HVN factor blocked entry",
+			"symbol", ec.symbol,
+			"side", string(sig.Side),
+			"dist_atr", distATR,
+			"near_max", cfg.HVNFactorNearATRMax,
+		)
+	}
+	return nil, nil
 }
 
 // updateEMA lazy-inits the EMA pointer so a state restored from a snapshot
@@ -1567,6 +1667,17 @@ func parseAVWAPConfig(params map[string]any) AVWAPConfig {
 		HVNRTHOnly:      getBool(params, "hvn_rth_only", true),
 		EMADiagEnabled:  getBool(params, "ema_diag_enabled", false),
 		EMADiagPeriod:   getInt(params, "ema_diag_period", 9),
+
+		HVNFactorEnabled:    getBool(params, "hvn_factor_enabled", false),
+		HVNFactorShadow:     getBool(params, "hvn_factor_shadow", false),
+		HVNFactorLongOnly:   getBool(params, "hvn_factor_long_only", true),
+		HVNFactorNearATRMax: getFloat64(params, "hvn_factor_near_atr_max", 0.5),
+
+		EMAFactorEnabled:           getBool(params, "ema_factor_enabled", false),
+		EMAFactorShadow:            getBool(params, "ema_factor_shadow", false),
+		EMAFactorMaxBarsSinceCross: getInt(params, "ema_factor_max_bars_since_cross", 12),
+		EMAFactorMinBreachATR:      getFloat64(params, "ema_factor_min_breach_atr", 1.0),
+		EMAFactorHoldBarsMult:      getFloat64(params, "ema_factor_hold_bars_mult", 1.5),
 	}
 	cfg.RSIBounceMin = 100 - cfg.RSIBounceMax
 
@@ -1703,14 +1814,31 @@ func (s *AVWAPState) evaluateBasicExit(ec entryContext) (*start.Signal, error) {
 		}
 	}
 
+	// EMA continuation factor (Phase 1 wiring; defaults OFF). Recent
+	// AVWAP cross + deep breach since cross is a continuation signal:
+	// extend hold_bars when active, shadow-tag the exit otherwise.
+	emaFactorFavorable := false
+	emaFactorActive := cfg.EMAFactorEnabled || cfg.EMAFactorShadow
+	if emaFactorActive && len(cfg.Anchors) > 0 {
+		anchor := cfg.Anchors[0]
+		barsSince, hasSince := s.AVWAPCrossBarsSince[anchor]
+		breachMax := s.AVWAPCrossBreachMaxATR[anchor]
+		emaFactorFavorable = hasSince &&
+			barsSince <= cfg.EMAFactorMaxBarsSinceCross &&
+			breachMax >= cfg.EMAFactorMinBreachATR
+		if emaFactorFavorable && cfg.EMAFactorEnabled {
+			effectiveHoldBars = int(float64(effectiveHoldBars) * cfg.EMAFactorHoldBarsMult)
+			if effectiveHoldBars < 1 {
+				effectiveHoldBars = 1
+			}
+		}
+	}
+
 	if s.PositionSide == start.SideBuy {
 		for _, belowCnt := range s.BelowCount {
 			if belowCnt >= effectiveHoldBars {
-				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalExit, start.SideSell, 0.8, map[string]string{
-					"ref_price": fmt.Sprintf("%.10f", ec.bar.Close),
-					"setup":     "avwap_exit",
-					"regime_5m": regimeTag,
-				})
+				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalExit, start.SideSell, 0.8,
+					avwapExitTags(ec.bar.Close, regimeTag, cfg, emaFactorActive, emaFactorFavorable))
 				if err != nil {
 					return nil, err
 				}
@@ -1727,11 +1855,8 @@ func (s *AVWAPState) evaluateBasicExit(ec entryContext) (*start.Signal, error) {
 	if s.PositionSide == start.SideSell {
 		for _, aboveCnt := range s.AboveCount {
 			if aboveCnt >= effectiveHoldBars {
-				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalExit, start.SideBuy, 0.8, map[string]string{
-					"ref_price": fmt.Sprintf("%.10f", ec.bar.Close),
-					"setup":     "avwap_exit",
-					"regime_5m": regimeTag,
-				})
+				sig, err := start.NewSignal(instanceID, ec.symbol, start.SignalExit, start.SideBuy, 0.8,
+					avwapExitTags(ec.bar.Close, regimeTag, cfg, emaFactorActive, emaFactorFavorable))
 				if err != nil {
 					return nil, err
 				}
@@ -1746,6 +1871,31 @@ func (s *AVWAPState) evaluateBasicExit(ec entryContext) (*start.Signal, error) {
 		}
 	}
 	return nil, nil
+}
+
+// avwapExitTags builds the tag map for an avwap_exit signal, including
+// the EMA factor decision tag when the factor is configured. Extracted
+// from evaluateBasicExit so the two exit-side branches share one
+// allocation site without a per-call closure.
+func avwapExitTags(close float64, regimeTag string, cfg AVWAPConfig, factorActive, favorable bool) map[string]string {
+	t := map[string]string{
+		"ref_price": fmt.Sprintf("%.10f", close),
+		"setup":     "avwap_exit",
+		"regime_5m": regimeTag,
+	}
+	if !factorActive {
+		return t
+	}
+	if !favorable {
+		t["ema_factor_favorable"] = "0"
+		return t
+	}
+	if cfg.EMAFactorEnabled {
+		t["ema_factor_extended"] = "1"
+	} else {
+		t["ema_factor_would_extend"] = "1"
+	}
+	return t
 }
 
 // evaluateAVWAPStop checks the AVWAP-based stop: exit when price breaks significantly
@@ -2798,7 +2948,8 @@ func (s *AVWAPState) evaluateEntries(ec entryContext) (*start.Signal, error) {
 	} else {
 		sig, err = s.evaluateEntriesStandard(ec)
 	}
-	return s.applyCofireVeto(ec, sig, err)
+	sig, err = s.applyCofireVeto(ec, sig, err)
+	return s.applyHVNVeto(ec, sig, err)
 }
 
 // evaluateEntriesStandard is the default entry priority order:
