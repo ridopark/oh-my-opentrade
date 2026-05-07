@@ -158,10 +158,8 @@ func (s *AVWAPStrategy) ReplayOnBar(_ start.Context, _ string, bar start.Bar, st
 		avwapSt.AVWAPDistHistory[anchorName] = hist
 	}
 
-	// HVN + EMA tag-only diagnostics. Same updater methods called from OnBar
-	// so warmup and live produce byte-identical state for the parity test.
-	avwapSt.updateHVN(bar, avwapSt.Config)
-	avwapSt.updateEMA(bar, avwapSt.Config)
+	avwapSt.updateHVN(bar)
+	avwapSt.updateEMA(bar)
 
 	return avwapSt, nil
 }
@@ -295,9 +293,6 @@ type AVWAPConfig struct {
 	CofireVetoVolShiftMax         float64
 	CofireVetoSessionSigmaMinBars int
 
-	// HVN + EMA tag-only diagnostic. See _workspace/avwap_v4_equity_hvn_ema_diag_plan.md.
-	// When *_diag_enabled is false the indicators are not advanced and no tags emit;
-	// engine behavior is bit-identical to today.
 	HVNDiagEnabled  bool
 	HVNLookbackDays int
 	HVNBinBps       float64
@@ -379,22 +374,18 @@ type AVWAPState struct {
 	CofireTODBuckets     map[string][]float64 `json:"-"`
 	CofireBucketedZHist  []float64            `json:"-"`
 
-	// HVN diagnostic (volume-profile clear-path). All json:"-": warmup
-	// re-derives via ReplayOnBar so prior-state restoration just resets
-	// these scalars. Plan: _workspace/avwap_v4_equity_hvn_ema_diag_plan.md.
-	hvnSessions    []*sessionHist   `json:"-"` // ring of per-session VolumeHistograms
-	hvnMerged      map[int]float64  `json:"-"` // merged volume map across kept prior sessions
-	hvnSet         map[int]struct{} `json:"-"` // bin indices >= threshold% of POC
-	hvnAnchor      float64          `json:"-"` // anchor price for the merged histogram
-	hvnBinBps      float64          `json:"-"` // bin width in bps (cached from cfg.HVNBinBps)
-	hvnSessionDate string           `json:"-"` // last session date observed (in cfg.AllowedHoursTZ)
-
-	// EMA diagnostic. ema pointer is rebuilt fresh on Init; warmup re-feeds
-	// it via ReplayOnBar. EMAValue/EMAReady serialize "for sanity" so a
-	// snapshot reader can see the last computed value without rerunning warmup.
-	ema      *start.EMARolling `json:"-"`
-	EMAValue float64
-	EMAReady bool
+	// HVN scalars are rebuilt by ReplayOnBar from the warmup bar feed; never
+	// restored from snapshot. EMAValue/EMAReady serialize for snapshot
+	// inspection only; the runtime ema pointer is also re-warmed.
+	hvnSessions    []*sessionHist    `json:"-"`
+	hvnMerged      map[int]float64   `json:"-"`
+	hvnSet         map[int]struct{}  `json:"-"`
+	hvnAnchor      float64           `json:"-"`
+	hvnBinBps      float64           `json:"-"`
+	hvnSessionDate string            `json:"-"`
+	ema            *start.EMARolling `json:"-"`
+	EMAValue       float64
+	EMAReady       bool
 }
 
 // SetTideData is called by the strategy runner before every OnBar with the
@@ -629,17 +620,12 @@ func (s *AVWAPState) newEntrySignal(ec entryContext, side start.Side, strength f
 		}
 	}
 
-	// HVN + EMA diagnostic tags (Factor 7-style tag-only telemetry; no entry
-	// gating, no scoring effect). Plan: _workspace/avwap_v4_equity_hvn_ema_diag_plan.md.
 	s.appendHVNDiagTags(ec, tags)
 	s.appendEMADiagTags(ec, tags)
 
 	return start.NewSignal(ec.instanceID, ec.symbol, start.SignalEntry, side, strength, tags)
 }
 
-// appendHVNDiagTags emits HVN distance + density tags when the diagnostic is
-// enabled and the merged HVN snapshot is populated. Distances are normalized
-// to ATR; density counts HVN bins within +/- 1 ATR of the entry close.
 func (s *AVWAPState) appendHVNDiagTags(ec entryContext, tags map[string]string) {
 	if !ec.cfg.HVNDiagEnabled || len(s.hvnSet) == 0 {
 		return
@@ -648,10 +634,10 @@ func (s *AVWAPState) appendHVNDiagTags(ec entryContext, tags map[string]string) 
 	if atr <= 0 || s.hvnAnchor <= 0 || s.hvnBinBps <= 0 {
 		return
 	}
-	tmp := start.NewVolumeHistogram(s.hvnBinBps, s.hvnAnchor)
-	priceIdx := tmp.BinIndex(ec.bar.Close)
+	binWidth := math.Max(0.01, s.hvnAnchor*s.hvnBinBps*1e-4)
+	anchorFloor := s.hvnAnchor - 5000*binWidth
+	priceIdx := int(math.Floor((ec.bar.Close - anchorFloor) / binWidth))
 
-	// POC distance in bps (signed: positive = POC above price)
 	var pocVol float64
 	var pocIdx int
 	pocFound := false
@@ -660,16 +646,20 @@ func (s *AVWAPState) appendHVNDiagTags(ec entryContext, tags map[string]string) 
 			pocIdx, pocVol, pocFound = idx, v, true
 		}
 	}
-	if pocFound && ec.bar.Close > 0 {
-		poc := tmp.BinCenter(pocIdx)
+	if pocFound {
+		poc := anchorFloor + (float64(pocIdx)+0.5)*binWidth
 		tags["poc_dist_bps"] = fmt.Sprintf("%.2f", (poc-ec.bar.Close)/ec.bar.Close*10000.0)
 	}
 
-	// Nearest HVN distance in ATR (unsigned magnitude)
 	nearestDistBins := -1
+	densityAbove, densityBelow := 0, 0
 	for idx := range s.hvnSet {
 		d := idx - priceIdx
-		if d < 0 {
+		switch {
+		case d > 0:
+			densityAbove++
+		case d < 0:
+			densityBelow++
 			d = -d
 		}
 		if nearestDistBins < 0 || d < nearestDistBins {
@@ -677,41 +667,18 @@ func (s *AVWAPState) appendHVNDiagTags(ec entryContext, tags map[string]string) 
 		}
 	}
 	if nearestDistBins >= 0 {
-		distPrice := float64(nearestDistBins) * tmp.BinWidth()
-		tags["hvn_dist_atr"] = fmt.Sprintf("%.3f", distPrice/atr)
-	}
-
-	// HVN density above/below price — count of HVN bins on each side of the
-	// entry close. No distance bound: the merged HVN snapshot covers up to
-	// hvn_lookback_days of session volume, so a tight ATR window would zero
-	// out most entries (HVNs cluster at session anchors, often several ATR
-	// from intraday entry levels). Using raw count gives the correlation
-	// harness more variance to bucket against.
-	densityAbove, densityBelow := 0, 0
-	for idx := range s.hvnSet {
-		switch {
-		case idx > priceIdx:
-			densityAbove++
-		case idx < priceIdx:
-			densityBelow++
-		}
+		tags["hvn_dist_atr"] = fmt.Sprintf("%.3f", float64(nearestDistBins)*binWidth/atr)
 	}
 	tags["hvn_density_above"] = fmt.Sprintf("%d", densityAbove)
 	tags["hvn_density_below"] = fmt.Sprintf("%d", densityBelow)
 }
 
-// appendEMADiagTags emits the rolling EMA value and its distance from the
-// entry close in bps and ATR units when the diagnostic is enabled and warm.
 func (s *AVWAPState) appendEMADiagTags(ec entryContext, tags map[string]string) {
 	if !ec.cfg.EMADiagEnabled || !s.EMAReady {
 		return
 	}
-	if s.EMAValue <= 0 || ec.bar.Close <= 0 {
-		return
-	}
 	tags["ema_value"] = fmt.Sprintf("%.4f", s.EMAValue)
-	distBps := (ec.bar.Close - s.EMAValue) / s.EMAValue * 10000.0
-	tags["ema_dist_bps"] = fmt.Sprintf("%.2f", distBps)
+	tags["ema_dist_bps"] = fmt.Sprintf("%.2f", (ec.bar.Close-s.EMAValue)/s.EMAValue*10000.0)
 	if s.Indicators.ATR > 0 {
 		tags["ema_dist_atr"] = fmt.Sprintf("%.3f", (ec.bar.Close-s.EMAValue)/s.Indicators.ATR)
 	}
@@ -977,11 +944,8 @@ func (s *AVWAPState) applyCofireVeto(ec entryContext, sig *start.Signal, err err
 	return nil, nil
 }
 
-// updateHVN advances the HVN volume-profile state one bar. No-op when the
-// diagnostic is disabled. Identical math to whale_pullback's volume-profile
-// collaborator; lifted so live/backtest parity holds via a single seam called
-// from both OnBar and ReplayOnBar.
-func (s *AVWAPState) updateHVN(bar start.Bar, cfg AVWAPConfig) {
+func (s *AVWAPState) updateHVN(bar start.Bar) {
+	cfg := s.Config
 	if !cfg.HVNDiagEnabled {
 		return
 	}
@@ -989,10 +953,11 @@ func (s *AVWAPState) updateHVN(bar start.Bar, cfg AVWAPConfig) {
 	hvnAccumulateInCurrentSession(s, bar, cfg)
 }
 
-// updateEMA advances the rolling EMA one bar. No-op when disabled. Lazy-inits
-// the EMA pointer so a state restored from snapshot before the diagnostic was
-// enabled gets a fresh pointer on first OnBar after the knob flips on.
-func (s *AVWAPState) updateEMA(bar start.Bar, cfg AVWAPConfig) {
+// updateEMA lazy-inits the EMA pointer so a state restored from a snapshot
+// taken before the diagnostic was enabled gets a fresh pointer on first OnBar
+// after the knob flips on.
+func (s *AVWAPState) updateEMA(bar start.Bar) {
+	cfg := s.Config
 	if !cfg.EMADiagEnabled {
 		return
 	}
@@ -1040,7 +1005,7 @@ func hvnAccumulateInCurrentSession(s *AVWAPState, bar start.Bar, cfg AVWAPConfig
 // hvnRebuildMerged recomputes the merged HVN snapshot across kept prior
 // sessions (excluding the current in-progress session). Anchor is the oldest
 // kept prior session's anchor; bins from each kept prior session are re-keyed
-// under the new anchor before merging. Mirrors whale_pullback rebuildMerged.
+// under the new anchor before merging.
 func hvnRebuildMerged(s *AVWAPState, cfg AVWAPConfig) {
 	keep := s.hvnSessions
 	if len(keep) <= 1 {
@@ -1718,9 +1683,6 @@ func (s *AVWAPStrategy) Init(ctx start.Context, symbol string, params map[string
 			st.PendingEntry = avwapPrior.PendingEntry
 			st.PendingEntryAt = avwapPrior.PendingEntryAt
 			st.Config = cfg
-			// HVN + EMA diagnostic state is rebuilt fresh; warmup re-derives
-			// via ReplayOnBar. Keeps live/backtest parity bit-equal regardless
-			// of partial prior-state shape.
 			st.hvnSessions = nil
 			st.hvnMerged = nil
 			st.hvnSet = nil
@@ -3916,11 +3878,8 @@ func (s *AVWAPStrategy) OnBar(ctx start.Context, symbol string, bar start.Bar, s
 	// when cfg.CofireVetoEnabled / cfg.CofireVetoShadow is true.
 	avwapSt.updateCofireVetoState(bar)
 
-	// 2g. HVN + EMA tag-only diagnostics. No-op when both diag knobs are off
-	// (default). Same updater methods called from ReplayOnBar so warmup and
-	// live produce byte-identical state.
-	avwapSt.updateHVN(bar, cfg)
-	avwapSt.updateEMA(bar, cfg)
+	avwapSt.updateHVN(bar)
+	avwapSt.updateEMA(bar)
 
 	// 3. Regime gating.
 	regimeAllowed := false
@@ -4230,8 +4189,6 @@ func (s *AVWAPState) Unmarshal(data []byte) error {
 	s.BarHighs50 = j.BarHighs50
 	s.BarLows50 = j.BarLows50
 	s.KeyLevels = j.KeyLevels
-	// EMAValue/EMAReady serialized "for sanity" only; the runtime EMA pointer
-	// is rebuilt by Init from the active config and rewarmed via ReplayOnBar.
 	s.EMAValue = j.EMAValue
 	s.EMAReady = j.EMAReady
 
