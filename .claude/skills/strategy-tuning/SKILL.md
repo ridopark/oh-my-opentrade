@@ -872,6 +872,19 @@ Parker Brooks-style three-step rule on equity 5m. Single-strategy, equity-only, 
 - **Direction skew** mild but real: SHORT PF 0.601 vs LONG PF 0.378 in baseline. Mirrors avwap_v4 historical pattern.
 - **The body-close + ATR exits are wired in the strategy code** (`whale_pullback_v1.go` ~line 489), NOT as TOML exit_rules. The TOML `[[exit_rules]]` blocks add engine-level overrides — keep these minimal.
 
+#### Symbol-prune criterion (learned 2026-05-07, avwap_v4_equity year-long)
+- For a symbol to qualify as a "drop" candidate, require BOTH: (a) `n >= 10` round-trips on the tune window AND (b) net-negative PnL in BOTH halves of the window. Defends against single-period overfit. Naive "drop all symbols with negative pnl" is in-sample selection bias and overfits hard.
+- Symbols with `n < 10` are noise — their per-symbol PnL is dominated by single trades. Ignore them in the prune analysis.
+- `SPLIT` symbols (winning H1, losing H2 or vice versa) are NOT pruneable — they reflect regime/timing dependence, not persistent unfit. Tuning the strategy may capture them on the right side; pruning loses optionality.
+- **Symbol edge DRIFTS.** RIVN was a strong carrier in earlier passes (PF 0.761 above) but turned into a $1,100 dragger on the 2025-05..2026-05 year-long window. Re-audit symbol contribution every quarter; the prune set is not permanent.
+- For avwap_v4_equity year-long 2025-05-07..2026-05-07: dropping {RIVN, AFRM, MRNA, AMD} (n=15/10/13/15, all both-halves-negative) lifted PF 0.7138 → 0.8313 (+0.117). Bigger lever than any single knob sweep on the same window.
+
+#### Optimization criterion for PF<1 strategies (learned 2026-05-07)
+- The +0.05 PF improvement threshold is the right rule when PF >= 1.0 (already-profitable strategies). For PF<1 strategies (still losing on the tune window), the more meaningful objectives are **final_equity** (dollars saved) and **max_drawdown_pct** (capital exposure during decay).
+- Counterexample: avwap_v4_equity volume_mult sweep showed vol=1.5 had the best PF (0.8457) but vol=3.5 had the best final_equity ($97,047 vs $96,364) AND best DD (5.55% vs 7.28%). For a losing strategy, the "fewer-but-better-trades" pattern that vol=3.5 implements is structurally superior even at mid-pack PF.
+- When tuning a PF<1 strategy: sweep all dims, pick by `(final_equity, -DD)` lexicographic order, not by PF. Track PF as a sanity check (rejecting variants that catastrophe-tank PF >= 0.05).
+- **Single-knob big-win pattern**: in PF<1 territory, one threshold knob often dominates (slope=4.0→5.0 delivered +0.12 PF on avwap_v4_equity; all other dims were noise-level at +/- 0.02 PF). Sweep all dims to find which knob is dominant; don't stop at the first one that fails the threshold.
+
 ### Generic (unknown strategy)
 Infer ranges from current values: try +/- 20%. Parameter naming conventions:
 - `_bps` = basis points, `_mult` = multiplier, `_bars` = bar count, `_pct` = percentage
