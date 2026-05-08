@@ -1,0 +1,300 @@
+schema_version = 2
+
+[strategy]
+id = "avwap_v4_equity"
+version = "4.3.0"
+name = "AVWAP v4.3 Equity - Confluence-Weighted Entries"
+description = "Equity-only variant of avwap_v4. Trades shares of US equities (no options) using the same multi-anchor AVWAP, confluence weighting, and price-action exits."
+novice_description = """\
+Same idea as avwap_v4, but trading shares of the underlying stock instead of \
+options. We draw "fair price" lines (AVWAPs) from key anchors — the open, \
+yesterday's high, yesterday's low — and wait for the stock to pull back to \
+one of them with confirming signals. Entries are filtered by a confluence \
+score and exits are triggered by price action, a hard underlying stop, a \
+trailing stop, stagnation, or end-of-day flatten."""
+author = "system"
+created_at = "2026-05-05T00:00:00Z"
+
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+symbols = ["TSLA", "MRNA", "HIMS", "SPY", "AMD", "NFLX", "COIN", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "AFRM", "JPM", "XOM", "OXY", "LLY", "RIVN", "RBLX", "BA", "QQQ", "IWM", "SOXL"]
+timeframes = ["5m"]
+priority = 80
+conflict_policy = "priority_wins"
+exclusive_per_symbol = false
+watchlist_mode = "static"
+asset_classes = ["EQUITY"]
+allowed_directions = ["LONG"]
+
+[screening]
+description = """\
+Anchored VWAP momentum/mean-reversion strategy trading shares of US equities.
+
+IDEAL CANDIDATES (score 4-5):
+- Daily ATR% >= 2.0% (need intraday movement for AVWAP entries)
+- Gap% between 1-8% absolute (provides clear anchor point for AVWAP)
+- RVOL >= 1.5x (volume confirmation for breakout/pullback)
+- EMA200 bias matches gap direction (trend alignment)
+- NR7 = Y is a bonus (compression before expansion)
+
+POOR CANDIDATES (score 0-1):
+- ATR% < 1.0% (too slow, AVWAP entries won't trigger)
+- Gap% < 0.5% (no clear anchor event)
+- RVOL < 0.5x (no institutional participation)
+
+Score = probability this symbol generates a valid AVWAP entry signal today.\
+"""
+
+[params]
+# --- Anchors ---
+# AVWAP lines anchored at session open and previous day's high/low
+anchors = ["session_open", "pd_high", "pd_low"]
+
+# --- Entry Types ---
+# Breakout: price sustains above/below AVWAP for hold_bars with volume confirmation
+breakout_enabled = true
+hold_bars = 2                    # faster entry (was 4 = 20min delay)
+
+# Pullback: price pulls back to AVWAP in an established trend, closes on right side
+pullback_enabled = false         # disable pullback — test impact
+pullback_trend_bars = 3          # reduced from 5
+pullback_tolerance_bps = 40      # wider tolerance (was 25) — easier to qualify
+pullback_rsi_min = 25.0          # wider RSI range (was 30)
+pullback_rsi_max = 75.0          # wider RSI range (was 65)
+
+# Bounce: mean-reversion touch of AVWAP with RSI confirmation
+bounce_enabled = false           # disable mean-reversion (low WR intraday)
+rsi_bounce_max = 40.0
+
+# Pinch: dual-AVWAP compression breakout (gap between anchors narrows)
+pinch_enabled = false            # Sweep v8: disabled — pinch trades ran 42% WR / -$32 avg consistently across v4-v7 (~$3k bleed). Breakout-only is the cleaner book.
+pinch_min_bps = 3
+pinch_max_bps = 50
+
+# Gap Reclaim: price dips below AVWAP then reclaims it within N bars
+gap_reclaim_enabled = false      # disable gap reclaim (unreliable)
+gap_reclaim_bars = 8
+
+# Handoff: momentum acceleration away from AVWAP (consecutive bars of increasing distance)
+handoff_enabled = false          # disable momentum chasing
+handoff_bars = 3
+handoff_min_mom_bps = 25
+
+# --- Volume & Regime ---
+# Minimum volume multiple vs 20-bar SMA to confirm entries
+volume_mult = 2.5                # v9 push to 3.0 regressed PF 0.839 -> 0.819; held at 2.5.
+
+# Allowed EMA regimes — BALANCE removed (sweep v2): 78% of v1 trades and 86%
+# of losses came from BALANCE regime; equity confluence engine has no edge in
+# choppy/ranging markets where the AVWAP-bias gate is meaningless.
+allow_regimes = ["TREND_UP"]
+
+# Underlying asset class (used for midday trap shield and session hours)
+asset_class = "EQUITY"
+
+# --- Structural Filters ---
+# Require consecutive higher lows for long breakout entries
+require_higher_lows = false      # disabled — hurts overall PF
+higher_lows_bars = 3             # reduced from 5
+
+# Block entries during 11:00-13:00 ET unless volume exceeds this multiple
+midday_trap_shield = true        # block low-quality 11-13 ET entries
+midday_volume_mult = 1.5
+
+# Directional bias: only long when price is above AVWAP, only short when below
+enforce_avwap_bias = true        # only long above AVWAP, short below
+
+# AVWAP slope must exceed this threshold (bps/bar) for trend confirmation.
+# 0.5 sat inside the 5m midday noise floor (empirically: live slopes in
+# [-0.26, 0.12] bps mid-session) which meant knife-edge gate decisions
+# diverged between live and backtest on tiny numerical micro-differences.
+# 1.0 lifts the threshold out of the noise band — see quant-analyst note
+# 2026-04-22. Re-backtest before treating live PnL as backtest-validated.
+min_slope_bps = 4.0              # Sweep v7: tightened 3.0 -> 4.0. v6 slope_3-4 bucket lost $22/trade across 247 trades (-$5.6k); slope_4-6 was strongest at -$8/trade.
+slope_lookback = 10              # shorter lookback (was 15)
+
+# Shorts above AVWAP require a capitulation event
+require_capitulation_for_shorts = true   # shorts need capitulation signal
+
+# --- Risk ---
+# Underlying stop distance in basis points
+stop_bps = 50
+
+# Limit order offset from current price in basis points
+limit_offset_bps = 10            # more aggressive fill (was 5)
+
+# Maximum risk per trade as basis points of equity
+risk_per_trade_bps = 500         # smaller per trade (was 2000) — more attempts
+
+# Maximum position size as basis points of equity
+max_position_bps = 1500          # reduced from 3000
+
+# --- Timing ---
+# Trading window (ET). Entries only allowed within this range.
+allowed_hours_start = "09:30"    # v3 09:40 narrowing was rejected (PF 0.715 -> 0.629): early bars contributed CHANDELIER winners alongside losers in the no-BALANCE configuration.
+allowed_hours_end = "15:45"
+allowed_hours_tz = "America/New_York"
+
+# Cooldown between trades on the same symbol (seconds)
+cooldown_seconds = 3600          # 1hr cooldown per symbol
+
+# Maximum entries per symbol per session
+max_trades_per_day = 2           # limit overtrading per symbol
+
+# Portfolio-level position caps (read by backtest runner when not set in API request)
+max_positions = 6                # max simultaneous open positions
+max_per_group = 3
+
+# Bars to hold before basic AVWAP exit check fires
+exit_hold_bars = 3               # bars on wrong side of AVWAP before strategy exit
+premium_hold_bars = 1            # retained for engine compatibility; no premium in equity mode
+
+# --- AVWAP Stop ---
+# Strategy-level exit when price closes on wrong side of AVWAP for N consecutive bars
+avwap_stop_enabled = true
+avwap_stop_bars = 3              # more patient (was 2)
+avwap_stop_buffer_bps = 20       # wider buffer (was 10) — less noise exits
+
+# --- Confluence Weighting ---
+# Entries scored 0-10 based on confirmation factors. Below threshold = filtered out.
+min_confluence_score = 10        # Sweep v5: tightened 8 -> 10. v4 confluence buckets 8 (-$24/trade) and 9 (-$33/trade) bled ~$11.6k together; 10+ buckets are roughly breakeven.
+
+# Fibonacci convergence (+3): AVWAP aligns with 38.2%/50%/61.8% retracement
+fib_confluence_enabled = true
+
+# Key level alignment (+3): AVWAP converges with pd_high, pd_low, or_high, or_low
+key_level_confluence_enabled = true
+
+# Candlestick pattern (+2): Inside Bar, Morning Star, or strength candle
+candle_confluence_enabled = true
+
+# Band zone (+2): price within zone between min/max AVWAP lines
+band_confluence_enabled = true
+
+# Dark pool (+10): elevated DP ratio, directional pressure, block prints
+dp_confluence_enabled = true
+
+# Dark pool veto: disabled — no improvement at 0.50 threshold
+dp_veto_enabled = false
+dp_veto_buy_ratio_min = 0.50
+dp_veto_sell_ratio_max = 0.50
+
+# Late-session DP Z conditioning (mean-reversion alignment).
+dp_z_conditioning_enabled = true
+dp_z_favorable_threshold = -1.0
+dp_z_adverse_threshold = 1.0
+dp_z_favorable_target_mult = 1.0
+dp_z_adverse_hold_time_mult = 1.0
+dp_z_suppress_adverse_entries = true
+dp_z_suppress_threshold = 1.0
+
+# --- Inducement (liquidity sweep) — Factor 7 confluence ---
+# Detects price sweeping past a recent swing high/low then reversing.
+# Additive to min_confluence_score (max +5); does not block entries on its own.
+inducement_enabled = true
+inducement_swing_n = 3
+inducement_swing_depth = 8
+inducement_max_age_bars = 60
+inducement_breach_min_bps = 5
+inducement_breach_max_bps = 80
+inducement_reversal_bars = 3
+inducement_volume_min_ratio = 1.2
+
+# ─── Co-fire veto (price-volume structure shift) ────────────────────────
+cofire_veto_enabled = false
+cofire_veto_shadow = true
+cofire_veto_long_only = true
+cofire_veto_stretch_z_min = 2.0
+cofire_veto_stretch_z_max = 3.0
+cofire_veto_vol_shift_max = -0.5
+cofire_veto_session_sigma_min_bars = 6
+
+# ─── HVN + EMA tag-only diagnostic (no entry behavior change) ───────────
+# Plan: _workspace/avwap_v4_equity_hvn_ema_diag_plan.md.
+# Emit hvn_dist_atr / hvn_density_above|below / poc_dist_bps and
+# ema_value / ema_dist_bps / ema_dist_atr on every entry signal so quant
+# can correlate forward returns post-hoc. Default-off in code; this is the
+# only spec that opts in.
+hvn_diag_enabled = true
+hvn_lookback_days = 5
+hvn_bin_bps = 10.0
+hvn_threshold_pct = 80.0
+hvn_rth_only = true
+ema_diag_enabled = true
+ema_diag_period = 9
+
+# ─── HVN factor (Phase 1 wiring, default OFF) ───────────────────────────
+# Plan: _workspace/avwap_hvn_ema_promotion_plan.md.
+# Cofire-cloned veto wrapper. When enabled, blocks an entry whose
+# hvn_dist_atr <= hvn_factor_near_atr_max. Honors long_only (default true).
+# DO NOT flip hvn_factor_enabled=true without a clean harness PASS that
+# resolves the sign direction -- year-long verdict (n=10) suggests
+# near-HVN OUTPERFORMS, opposite the original PR #91 hypothesis.
+hvn_factor_enabled = false
+hvn_factor_shadow = false
+hvn_factor_long_only = true
+hvn_factor_near_atr_max = 0.5
+
+# ─── EMA factor (Phase 1 wiring, default OFF) ───────────────────────────
+# Hold-bars conditioner (dp_z-cloned). When enabled, multiplies
+# effective_hold_bars by hold_bars_mult on positions whose primary anchor
+# was crossed within max_bars_since_cross with breach >= min_breach_atr.
+# Defer enabled=true until harness PASS at n_near >= 50 on both holdouts.
+ema_factor_enabled = false
+ema_factor_shadow = false
+ema_factor_max_bars_since_cross = 12
+ema_factor_min_breach_atr = 1.0
+ema_factor_hold_bars_mult = 1.5
+
+[hooks]
+signals = { engine = "builtin", name = "avwap" }
+
+[dynamic_risk]
+enabled = true
+
+# --- Exit Rules (equity equivalents of the avwap_v4 options exits) ---
+
+# Underlying hard stop. Equity equivalent of avwap_v4's PREMIUM_STOP 10%.
+# Sweep v10: tightened 0.018 -> 0.012. Quant counterfactual: chandelier
+# winners' MAE is mostly < 0.5%; only ~17% of wins risk being clipped at
+# 1.2%. Smaller per-fire loss with proportional MAX_LOSS bucket.
+[[exit_rules]]
+type = "MAX_LOSS"
+[exit_rules.params]
+pct = 0.012
+
+# Chandelier price trail. CHANDELIER_TRAIL is instrument-aware: for equities
+# the engine reads price MFE rather than premium MFE. Arms when underlying
+# MFE crosses activate_pct, exits on giveback_pct from peak.
+# Starting values 0.8% / 0.6% — UNTUNED for equity; backtest before promoting.
+# Constraint: giveback_pct must be < MAX_LOSS pct (validated by engine).
+[[exit_rules]]
+type = "CHANDELIER_TRAIL"
+[exit_rules.params]
+activate_pct = 0.008
+giveback_pct = 0.006
+
+# Safety stagnation: circuit breaker for zombie trades. Sweep v3': raised
+# 90 -> 180 min — at 90 min STAGNATION p25/p50/p75 were all clipped at the
+# wall (520 trades in v1, all losers); 5m AVWAP setups need more time to
+# either resolve into CHANDELIER profit or fail into EOD.
+[[exit_rules]]
+type = "STAGNATION_EXIT"
+[exit_rules.params]
+minutes = 180
+sd_threshold = 0
+profit_gate_pct = 0.005
+
+# EOD flatten
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 15
+
+# --- Options ---
+
+[options]
+enabled = false
