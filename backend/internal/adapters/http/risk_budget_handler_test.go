@@ -14,16 +14,15 @@ import (
 )
 
 type stubBudgetReader struct {
-	state           string
-	equity          float64
-	dailyLossUSD    float64
-	maxLossUSD      float64
-	maxLossPct      float64
-	maxRiskPct      float64
-	openCount       int
-	openCap         int
-	inflight        int
-	dailyLossCalled int
+	state        string
+	equity       float64
+	dailyLossUSD float64
+	maxLossUSD   float64
+	maxLossPct   float64
+	maxRiskPct   float64
+	openCount    int
+	openCap      int
+	inflight     int
 }
 
 func (s *stubBudgetReader) KillSwitchState() string         { return s.state }
@@ -34,7 +33,6 @@ func (s *stubBudgetReader) InflightIntents() int            { return s.inflight 
 func (s *stubBudgetReader) AccountEquity(_ context.Context) float64 { return s.equity }
 
 func (s *stubBudgetReader) DailyLossUsedUSD(_ context.Context, _ string, _ domain.EnvMode, _ float64) float64 {
-	s.dailyLossCalled++
 	return s.dailyLossUSD
 }
 
