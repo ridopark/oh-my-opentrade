@@ -110,7 +110,7 @@ func (h *TradingTheTrendHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 
 	if h.seenAndRecord(payload.SignalID, now) {
 		h.log.Info().Str("signal_id", payload.SignalID).Msg("tradingthetrend signal deduped")
-		h.writeJSON(w, http.StatusOK, tradingTheTrendSignalResponse{OK: true, Deduped: true})
+		writeJSON(w, http.StatusOK, tradingTheTrendSignalResponse{OK: true, Deduped: true})
 		return
 	}
 
@@ -141,7 +141,7 @@ func (h *TradingTheTrendHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		Float64("trigger", payload.Trigger).
 		Msg("tradingthetrend signal accepted")
 
-	h.writeJSON(w, http.StatusAccepted, tradingTheTrendSignalResponse{OK: true})
+	writeJSON(w, http.StatusAccepted, tradingTheTrendSignalResponse{OK: true})
 }
 
 // buildPayload validates req and returns the domain payload. On failure,
@@ -228,8 +228,3 @@ func (h *TradingTheTrendHandler) seenAndRecord(signalID string, now time.Time) b
 	return false
 }
 
-func (h *TradingTheTrendHandler) writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
