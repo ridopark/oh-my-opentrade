@@ -968,6 +968,10 @@ func (r *Runner) Start(ctx context.Context) error {
 	if err := r.eventBus.Subscribe(ctx, domain.EventCopytradeExitRejected, r.handleCopytradeExitRejected); err != nil {
 		r.logger.Warn("failed to subscribe to CopytradeExitRejected (non-fatal)", "error", err)
 	}
+	if err := r.eventBus.Subscribe(ctx, domain.EventTradingTheTrendSignalReceived, r.handleTradingTheTrendSignal); err != nil {
+		r.logger.Warn("failed to subscribe to TradingTheTrendSignalReceived (non-fatal)", "error", err)
+		// Non-fatal: most deployments/backtests don't run the tradingthetrend strategy.
+	}
 	r.logger.Info("strategy runner subscribed to MarketBarSanitized events")
 	r.lastBarTime.Store(time.Now().UnixNano())
 	go r.barHealthCheck(ctx)
@@ -2903,6 +2907,105 @@ func (r *Runner) DrainCopytradeCallbacks() {
 			fn()
 		}
 	}
+}
+
+// handleTradingTheTrendSignal routes a parsed Discord watchlist line from
+// the discord-tradingthetrend sidecar to the single tradingthetrend
+// instance, keying state by ticker (one arm per ticker per session).
+//
+// Unlike copytrade, TTT has watchlist_mode=dynamic with symbols=[]; per-
+// ticker state is lazy-initialized on the first signal for that ticker.
+// The strategy's OnBar then drives the break-and-retest state machine
+// against bars on that underlying.
+func (r *Runner) handleTradingTheTrendSignal(ctx context.Context, event domain.Event) error {
+	payload, ok := event.Payload.(domain.TradingTheTrendSignalPayload)
+	if !ok {
+		return nil
+	}
+
+	inst := r.findInstanceByStrategy("tradingthetrend_v1")
+	if inst == nil {
+		r.logger.Debug("handleTradingTheTrendSignal: no active tradingthetrend_v1 instance")
+		return nil
+	}
+
+	ticker := string(payload.Ticker)
+	if ticker == "" {
+		r.logger.Warn("handleTradingTheTrendSignal: empty ticker, dropping signal",
+			"signal_id", payload.SignalID)
+		return nil
+	}
+
+	// Lazy-init per-ticker state. TTT uses dynamic watchlist (symbols=[]),
+	// so the bootstrap pass does not seed state for any ticker; first signal
+	// arriving for ticker T is the seeding event.
+	if _, seeded := inst.GetState(ticker); !seeded {
+		initCtx := &instanceContext{
+			ctx:      ctx,
+			now:      r.handlerNow(event, "handleTradingTheTrendSignal.init"),
+			logger:   r.logger.With("instance_id", inst.ID().String(), "symbol", ticker),
+			tenantID: r.tenantID,
+			envMode:  r.envMode,
+			runner:   r,
+		}
+		if err := inst.InitSymbol(initCtx, ticker, nil); err != nil {
+			r.logger.Error("handleTradingTheTrendSignal: InitSymbol failed",
+				"instance_id", inst.ID().String(),
+				"ticker", ticker,
+				"error", err,
+			)
+			return nil
+		}
+	}
+
+	tttSig := start.TradingTheTrendSignal{
+		SignalID:  payload.SignalID,
+		MessageID: payload.MessageID,
+		Author:    payload.Author,
+		PostedAt:  payload.PostedAt,
+		Ticker:    ticker,
+		Strike:    payload.Strike,
+		Right:     string(payload.Right),
+		Trigger:   payload.Trigger,
+		RawLine:   payload.RawLine,
+	}
+
+	instCtx := &instanceContext{
+		ctx:      ctx,
+		now:      r.handlerNow(event, "handleTradingTheTrendSignal"),
+		logger:   r.logger.With("instance_id", inst.ID().String(), "ticker", ticker, "author", payload.Author),
+		tenantID: r.tenantID,
+		envMode:  r.envMode,
+		runner:   r,
+	}
+
+	r.mu.Lock()
+	signals, err := inst.OnEvent(instCtx, ticker, tttSig)
+	r.mu.Unlock()
+	if err != nil {
+		r.logger.Error("handleTradingTheTrendSignal: OnEvent failed",
+			"instance_id", inst.ID().String(),
+			"error", err,
+		)
+		return nil
+	}
+
+	for i := range signals {
+		signals[i].StrategyInstanceID = inst.ID()
+	}
+	for _, sig := range signals {
+		if !sig.Type.IsActionable() {
+			continue
+		}
+		if emitErr := r.emitSignal(ctx, r.tenantID, r.envMode, sig); emitErr != nil {
+			r.logger.Error("handleTradingTheTrendSignal: emitSignal failed",
+				"instance_id", inst.ID().String(),
+				"symbol", sig.Symbol,
+				"error", emitErr,
+			)
+		}
+	}
+	return nil
 }
 
 // findInstanceByStrategy returns the first active instance matching the given
