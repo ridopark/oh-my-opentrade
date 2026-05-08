@@ -139,3 +139,48 @@ func TestDailyLossBreaker_ZeroLimitsDisabled(t *testing.T) {
 	assert.NoError(t, err)
 	assert.False(t, breaker.IsHalted())
 }
+
+func TestInspect_Tripping_NoStateMutation(t *testing.T) {
+	src := &stubPnLSource{pnl: -150.0}
+	breaker := newTestBreaker(0, 100, src, time.Now)
+	sink := &recordingSink{}
+	breaker.SetSink(sink)
+
+	lossUSD, lossPct, tripped, err := breaker.Inspect("default", domain.EnvModePaper, 10000)
+
+	require.NoError(t, err)
+	assert.True(t, tripped)
+	assert.InDelta(t, 150.0, lossUSD, 1e-9)
+	assert.InDelta(t, 0.015, lossPct, 1e-9)
+	assert.False(t, breaker.IsHalted())
+	assert.Equal(t, risk.KillSwitchActive, breaker.State())
+	assert.Equal(t, 0, sink.Len())
+}
+
+func TestInspect_DoesNotResetCheckHalt(t *testing.T) {
+	src := &stubPnLSource{pnl: -150.0}
+	breaker := newTestBreaker(0, 100, src, time.Now)
+
+	err := breaker.Check("default", domain.EnvModePaper, 10000)
+	require.Error(t, err)
+	require.True(t, breaker.IsHalted())
+
+	_, _, tripped, ierr := breaker.Inspect("default", domain.EnvModePaper, 10000)
+	require.NoError(t, ierr)
+	assert.True(t, tripped)
+	assert.True(t, breaker.IsHalted())
+}
+
+func TestInspect_BelowLimits(t *testing.T) {
+	src := &stubPnLSource{pnl: -50.0}
+	breaker := newTestBreaker(0, 100, src, time.Now)
+
+	lossUSD, lossPct, tripped, err := breaker.Inspect("default", domain.EnvModePaper, 10000)
+
+	require.NoError(t, err)
+	assert.False(t, tripped)
+	assert.InDelta(t, 50.0, lossUSD, 1e-9)
+	assert.InDelta(t, 0.005, lossPct, 1e-9)
+	assert.False(t, breaker.IsHalted())
+	assert.Equal(t, risk.KillSwitchActive, breaker.State())
+}

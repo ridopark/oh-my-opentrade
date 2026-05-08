@@ -296,6 +296,45 @@ func (d *DailyLossBreaker) Check(tenantID string, envMode domain.EnvMode, accoun
 	return nil
 }
 
+// Inspect reports whether the daily-loss breaker would trip for the given
+// tenant without mutating any state. It is the read-only twin of Check:
+// no haltDate write, no transitionOnTrip, no trip counters. Used by the
+// proposal handler to probe risk gates without flipping the kill switch.
+//
+// Skipping the optional daily_loss_inspect_total counter: adding a new
+// metric would mean editing the metrics package for a single call site.
+func (d *DailyLossBreaker) Inspect(tenantID string, envMode domain.EnvMode, accountEquity float64) (lossUSD, lossPct float64, tripped bool, err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	today := d.nowFunc().UTC().Format("2006-01-02")
+	if d.globalHalt != nil && d.globalHalt() {
+		return 0, 0, true, nil
+	}
+	if d.haltDate != "" && d.haltDate == today {
+		return 0, 0, true, nil
+	}
+
+	dailyPnL := d.pnlSource.GetDailyRealizedPnL(tenantID, envMode)
+	if dailyPnL >= 0 {
+		return 0, 0, false, nil
+	}
+
+	loss := -dailyPnL
+	var pct float64
+	if accountEquity > 0 {
+		pct = loss / accountEquity
+	}
+
+	if d.maxLossUSD > 0 && loss >= d.maxLossUSD {
+		return loss, pct, true, nil
+	}
+	if d.maxLossPct > 0 && accountEquity > 0 && pct >= d.maxLossPct {
+		return loss, pct, true, nil
+	}
+	return loss, pct, false, nil
+}
+
 // transitionOnTrip bumps the kill switch state on an automatic trip.
 // Once HALTED, we do not downgrade to REDUCING — escalation is monotonic
 // except by operator command.
