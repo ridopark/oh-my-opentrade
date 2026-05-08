@@ -257,6 +257,25 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 		}
 		ksHandler := omhttp.NewKillSwitchHandler(svc.dailyLossBreaker, eventReader, httpLog)
 		imux.Handle("/api/v1/admin/kill-switch", ksHandler)
+
+		// Claude trading prototype HTTP surface. Both endpoints are
+		// localhost-only; HALTED short-circuit lives inside the proposal
+		// handler. Risk fraction comes from cfg/100 to match the per-account
+		// scaling at internal/app/bootstrap/execution.go:149.
+		budgetAdapter := &claudeBudgetAdapter{
+			breaker:     svc.dailyLossBreaker,
+			broker:      infra.ibkrBroker,
+			posMonitor:  svc.posMonitor,
+			maxRiskFrac: cfg.Trading.MaxRiskPercent / 100.0,
+		}
+		budgetHandler := omhttp.NewRiskBudgetHandler(budgetAdapter, httpLog)
+		imux.Handle("/api/risk/budget", budgetHandler)
+
+		if svc.execution != nil {
+			validatorAdapter := &claudeIntentValidator{exec: svc.execution}
+			proposalHandler := omhttp.NewProposalHandler(validatorAdapter, budgetAdapter, httpLog)
+			imux.Handle("/api/proposals/order", proposalHandler)
+		}
 	}
 	// KakaoTalk routes disabled — notifier is disabled.
 	// if svc.kakaoNotifier != nil {
