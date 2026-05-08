@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -381,7 +382,7 @@ func (s *CopytradeStrategy) handleSTC(ctx start.Context, cst *copytradeState, si
 		return cst, nil, nil
 	}
 
-	fraction, keyword := resolveFraction(sig.Tail, cst.Config.PartialFractions, cst.Config.DefaultSTCFraction)
+	fraction, keyword := resolveFraction(sig.Tail, pos.RemainingFrac, cst.Config.PartialFractions, cst.Config.DefaultSTCFraction)
 	// Clamp by remaining fraction so repeated partials never request more
 	// than what's actually open (e.g. two "half out" posts).
 	if fraction > pos.RemainingFrac {
@@ -480,10 +481,60 @@ func normalizeRight(r string) domain.OptionRight {
 	}
 }
 
-// resolveFraction scans the partial-fraction table (assumed longest-keyword
-// first) for the first keyword that appears in tail (case-insensitive). If
-// none match, returns the default. The matched keyword is returned for audit.
-func resolveFraction(tail string, table []copytradePartial, def float64) (float64, string) {
+// holdingTargetRe matches "holding X" / "still holding X" where X expresses
+// the post-sale remaining fraction the author intends to keep. Used to
+// translate target-based author grammar ("holding half") into a delta the
+// position monitor can apply against currentRemaining.
+var holdingTargetRe = regexp.MustCompile(`(?i)(?:still\s+)?holding\s+(half|1/2|1/3|2/3|1/4|3/4|third|quarter)`)
+
+// parseHoldingTarget extracts the post-sale remaining fraction (relative to
+// the original BTO size) from a "holding X" tail. Returns ok=false when no
+// supported phrase is present.
+func parseHoldingTarget(tail string) (float64, bool) {
+	m := holdingTargetRe.FindStringSubmatch(tail)
+	if m == nil {
+		return 0, false
+	}
+	switch strings.ToLower(m[1]) {
+	case "half", "1/2":
+		return 0.5, true
+	case "1/3", "third":
+		return 1.0 / 3.0, true
+	case "2/3":
+		return 2.0 / 3.0, true
+	case "1/4", "quarter":
+		return 0.25, true
+	case "3/4":
+		return 0.75, true
+	}
+	return 0, false
+}
+
+// resolveFraction maps a Discord STC tail to a sell fraction of the position's
+// current remaining contracts. Two grammars are supported:
+//
+//  1. Target-based ("holding half", "still holding 1/3"): the author states
+//     the post-sale remaining fraction relative to the original BTO size.
+//     We compute fraction = 1 - target/currentRemaining and clamp at 0 if
+//     the position is already at or below the stated target.
+//  2. Delta-based (keyword table, longest match wins, case-insensitive): the
+//     author phrase ("partial", "all out") maps directly to a fraction of
+//     current remaining via the configured partial_fractions table.
+//
+// Target-based parsing wins when both appear in the same message ("partial.
+// Holding half") because the explicit target is unambiguous about author
+// intent, while keyword "partial" is just the generic delta default.
+func resolveFraction(tail string, currentRemaining float64, table []copytradePartial, def float64) (float64, string) {
+	if target, ok := parseHoldingTarget(tail); ok {
+		if currentRemaining <= 0 {
+			return 0, "target_holding"
+		}
+		fraction := 1.0 - target/currentRemaining
+		if fraction < 0 {
+			fraction = 0
+		}
+		return fraction, "target_holding"
+	}
 	lowered := strings.ToLower(tail)
 	for _, p := range table {
 		if strings.Contains(lowered, p.Keyword) {
@@ -962,7 +1013,7 @@ func bootstrapApplySTC(cst *copytradeState, evt domain.StrategySignalEvent, log 
 		return
 	}
 
-	fraction, _ := resolveFraction(rawLine, cst.Config.PartialFractions, cst.Config.DefaultSTCFraction)
+	fraction, _ := resolveFraction(rawLine, pos.RemainingFrac, cst.Config.PartialFractions, cst.Config.DefaultSTCFraction)
 	if fraction > pos.RemainingFrac {
 		fraction = pos.RemainingFrac
 	}

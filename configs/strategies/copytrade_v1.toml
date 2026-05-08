@@ -39,9 +39,9 @@ trail_on_partial_enabled = true
 trail_giveback_pct = 0.15
 
 default_stc_fraction = 0.33
-risk_per_trade_bps = 500
-max_position_bps = 1500
-max_positions = 10
+risk_per_trade_bps = 1000
+max_position_bps = 3000
+max_positions = 12
 
 # Evict Pending entries the broker never filled/rejected so they stop eating
 # max_positions slots. Backtests inherit paper (they run as EnvModePaper). 0 disables.
@@ -66,6 +66,15 @@ keyword = "stop hit"
 fraction = 1.00
 [[params.partial_fractions]]
 keyword = "stopped"
+fraction = 1.00
+[[params.partial_fractions]]
+keyword = "cut the last"
+fraction = 1.00
+[[params.partial_fractions]]
+keyword = "last runner"
+fraction = 1.00
+[[params.partial_fractions]]
+keyword = "last one"
 fraction = 1.00
 [[params.partial_fractions]]
 keyword = "mostly out"
