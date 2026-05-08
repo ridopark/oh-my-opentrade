@@ -134,6 +134,7 @@ func BuildStrategyShared(deps StrategyDeps) (*StrategyShared, error) {
 		builtin.NewCryptoTSMStrategy(),
 		builtin.NewCryptoRevertStrategy(),
 		builtin.NewCopytradeStrategy(),
+		builtin.NewTradingTheTrendStrategy(),
 		builtin.NewWhalePullbackStrategy(),
 	} {
 		if err := registry.Register(s); err != nil {
