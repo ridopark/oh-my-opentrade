@@ -1,27 +1,31 @@
-# discord-copytrade sidecar
+# discord-tradingthetrend sidecar
 
-Playwright-based Discord channel watcher that emits parsed trade signals to
-omo-core. Runs in a container; the `copytrade_v1` strategy in omo-core owns
-sizing, state, and execution.
+Playwright-based Discord channel watcher for the TradingTheTrend morning
+watchlist. Emits parsed entry signals to omo-core's
+`/internal/tradingthetrend/signal` endpoint. The `tradingthetrend_v1`
+strategy in omo-core owns the break-and-retest entry filter, OCC contract
+construction, sizing, and mechanical exits.
 
 ## Layout
 
-- `parser.py` — regex parser for `BTO|STC|AVG TICKER M/D STRIKE(C|P) @ PRICE` lines. Tested.
+- `parser.py` — regex parser for `TICKER STRIKE[c|p] > TRIGGER` lines.
 - `watcher.py` — polling loop that scrapes new messages and POSTs to omo-core.
-- `emit.py` — HTTP client to `/internal/copytrade/signal`.
-- `test_parser.py` — 40 unit tests covering sample + adversarial cases.
+- `emit.py` — HTTP client to `/internal/tradingthetrend/signal`.
+- `scrape_history.py` — one-shot historical channel scraper for backtest input.
+- `test_parser.py` — unit tests covering sample + adversarial cases.
 
 DOM extraction (`discord_common.discord_dom`) and the one-time login flow
 (`discord_common.bootstrap`) live in `services/discord_common/` and are
-shared with other Discord-following sidecars.
+shared with the discord-copytrade sidecar.
 
 ## One-time setup
 
 1. Copy `.env.example` to `.env` and fill in:
-   - `DISCORD_CHANNEL_URL` — full URL of the source channel.
-   - `OMO_COPYTRADE_SECRET` — generate with `openssl rand -hex 32`. Must match the value
-     configured in omo-core.
-   - `OMO_BACKEND_URL` — defaults to `http://localhost:8080`.
+   - `DISCORD_CHANNEL_URL` — full URL of the TradingTheTrend channel.
+   - `OMO_TRADINGTHETREND_SECRET` — generate with `openssl rand -hex 32`.
+     Must match the value configured in omo-core
+     (`OMO_TRADINGTHETREND_SECRET` env var).
+   - `OMO_BACKEND_URL` — defaults to `http://host.docker.internal:8080`.
 
 2. Build the container:
 
@@ -56,6 +60,15 @@ after that point. State is persisted to `./state/`:
 - `seen_ids.json` — message IDs already processed.
 - `heartbeat` — touched each tick; healthcheck fails if stale >120s.
 
+## Historical scrape (for backtest)
+
+```
+docker compose --profile scrape run --rm scrape --days 90 --out /app/state/history.jsonl
+```
+
+Writes JSONL sorted oldest-first. Re-run the scrape ~7 days later and diff
+the two outputs to detect post deletions (per the strategy pre-register).
+
 ## Recovering a dead session
 
 Discord occasionally invalidates sessions. Signs: watcher logs
@@ -68,12 +81,8 @@ watcher resumes from `seen_ids.json`.
 
 If Discord ships a web rewrite and the watcher stops seeing messages,
 inspect the DOM under `li[id^="chat-messages-"]` and update
-`discord_dom.py`. The current selectors target:
-
-- Message row: `li[id^="chat-messages-"]`
-- Author: nearest preceding `h3 span[class*="username"]` (messages group)
-- Timestamp: `time[datetime]`
-- Content: `div[id^="message-content-"]`
+`services/discord_common/discord_dom.py`. Both this sidecar and
+discord-copytrade share the same selectors.
 
 ## Safety notes
 
@@ -81,6 +90,6 @@ inspect the DOM under `li[id^="chat-messages-"]` and update
   leave the bootstrap browser window.
 - The shared secret is the only thing standing between the sidecar and
   real paper orders. Rotate it if the `.env` file is ever exposed.
-- `docker compose` is configured with `network_mode: host` on purpose so
-  the sidecar can reach omo-core on localhost. This means the sidecar
-  shares the host network namespace — do not expose additional ports.
+- `docker compose` is configured with `network_mode: host` on the bootstrap
+  and scrape profiles so they can reach localhost. The watcher uses
+  `host.docker.internal` via `WSL_HOST_IP` to reach omo-core.

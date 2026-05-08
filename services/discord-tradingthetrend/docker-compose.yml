@@ -2,14 +2,11 @@ services:
   watcher:
     build:
       context: ..
-      dockerfile: discord-copytrade/Dockerfile
-    container_name: omo-discord-copytrade
+      dockerfile: discord-tradingthetrend/Dockerfile
+    container_name: omo-discord-tradingthetrend
     restart: unless-stopped
-    # Docker Desktop's host-gateway points at the Docker VM, not the WSL2
-    # distro where omo-core runs. WSL_HOST_IP is supplied at compose-up time
-    # by `make restart-copytrade`, which reads the current eth0 IP.
     extra_hosts:
-      - "host.docker.internal:${WSL_HOST_IP:?set WSL_HOST_IP or run \"make restart-copytrade\" from repo root}"
+      - "host.docker.internal:${WSL_HOST_IP:?set WSL_HOST_IP or run \"make restart-tradingthetrend\" from repo root}"
     env_file:
       - .env
     environment:
@@ -33,8 +30,8 @@ services:
   bootstrap:
     build:
       context: ..
-      dockerfile: discord-copytrade/Dockerfile
-    container_name: omo-discord-copytrade-bootstrap
+      dockerfile: discord-tradingthetrend/Dockerfile
+    container_name: omo-discord-tradingthetrend-bootstrap
     profiles: ["bootstrap"]
     network_mode: host
     env_file:
@@ -50,8 +47,8 @@ services:
   scrape:
     build:
       context: ..
-      dockerfile: discord-copytrade/Dockerfile
-    container_name: omo-discord-copytrade-scrape
+      dockerfile: discord-tradingthetrend/Dockerfile
+    container_name: omo-discord-tradingthetrend-scrape
     profiles: ["scrape"]
     network_mode: host
     env_file:

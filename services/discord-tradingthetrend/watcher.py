@@ -1,9 +1,9 @@
-"""Discord channel watcher.
+"""TradingTheTrend Discord channel watcher.
 
-Polls the channel DOM every POLL_INTERVAL_SECS, tracks message IDs it has
-already processed, parses trade lines, and POSTs each parsed signal to
-omo-core. Heartbeats to /app/state/heartbeat so the container healthcheck
-can detect a wedged watcher.
+Polls the channel DOM every POLL_INTERVAL_SECS, tracks message IDs already
+processed, parses morning watchlist lines, and POSTs each parsed signal to
+omo-core's /internal/tradingthetrend/signal. Heartbeats to /app/state/heartbeat
+so the container healthcheck can detect a wedged watcher.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
 from discord_common.discord_dom import extract_recent
-from emit import Emitter, SignalPayload, iso_date
+from emit import Emitter, SignalPayload
 from parser import parse_message
 
 
@@ -31,7 +31,7 @@ def _setup_logging(level: str) -> logging.Logger:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         stream=sys.stdout,
     )
-    return logging.getLogger("copytrade")
+    return logging.getLogger("tradingthetrend")
 
 
 class Watcher:
@@ -62,7 +62,6 @@ class Watcher:
                 self._seen = set()
 
     def _persist_seen(self) -> None:
-        # Keep the file bounded; last ~500 is more than enough.
         bounded = list(self._seen)[-500:]
         self._seen_path.write_text(json.dumps(bounded))
 
@@ -84,12 +83,8 @@ class Watcher:
             page = await context.new_page()
             self._log.info("navigating to %s", self._channel_url)
             await page.goto(self._channel_url, wait_until="domcontentloaded")
-            # Give the chat a moment to render before the first scrape.
             await page.wait_for_selector('li[id^="chat-messages-"]', timeout=30_000)
 
-            # First pass: seed the seen set with whatever is already on screen.
-            # Without this, we'd fire signals for every historical message on
-            # startup, which is both wrong and dangerous.
             if not self._seen:
                 initial = await extract_recent(page, limit=50)
                 self._seen = {m.message_id for m in initial}
@@ -118,17 +113,14 @@ class Watcher:
                 continue
             for i, sig in enumerate(parsed):
                 payload = SignalPayload(
-                    signal_id=f"{m.message_id}:{i}",
+                    signal_id=f"tradingthetrend:{m.message_id}:{i}",
                     message_id=m.message_id,
                     author=m.author,
                     posted_at=m.timestamp_iso or datetime.now(timezone.utc).isoformat(),
-                    action=sig.action,
                     ticker=sig.ticker,
-                    expiry=iso_date(sig.expiry),
-                    strike=sig.strike,
                     right=sig.right,
-                    price=sig.price,
-                    tail=sig.tail,
+                    strike=sig.strike,
+                    trigger=sig.trigger,
                     raw_line=sig.raw_line,
                 )
                 status, body = await self._emitter.emit(payload)
@@ -138,13 +130,11 @@ class Watcher:
                     )
                 else:
                     self._log.info(
-                        "emitted %s %s %s %s%s @ %s (author=%s)",
-                        payload.action,
+                        "emitted %s %s%s > %s (author=%s)",
                         payload.ticker,
-                        payload.expiry,
                         payload.strike,
                         payload.right,
-                        payload.price,
+                        payload.trigger,
                         payload.author,
                     )
         self._persist_seen()
@@ -156,7 +146,7 @@ async def main() -> None:
 
     channel_url = os.getenv("DISCORD_CHANNEL_URL", "").strip()
     backend_url = os.getenv("OMO_BACKEND_URL", "http://localhost:8080").strip()
-    secret = os.getenv("OMO_COPYTRADE_SECRET", "").strip()
+    secret = os.getenv("OMO_TRADINGTHETREND_SECRET", "").strip()
     state_dir = pathlib.Path(os.getenv("STATE_DIR", "./state"))
     poll_interval = float(os.getenv("POLL_INTERVAL_SECS", "1.0"))
 
@@ -164,7 +154,7 @@ async def main() -> None:
         log.error("DISCORD_CHANNEL_URL is required")
         sys.exit(2)
     if not secret:
-        log.error("OMO_COPYTRADE_SECRET is required")
+        log.error("OMO_TRADINGTHETREND_SECRET is required")
         sys.exit(2)
 
     state_dir.mkdir(parents=True, exist_ok=True)

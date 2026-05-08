@@ -8,7 +8,7 @@ COPY discord_common/requirements.txt /tmp/req.txt
 RUN pip install --no-cache-dir -r /tmp/req.txt
 
 COPY discord_common/ /app/discord_common/
-COPY discord-copytrade/ /app/
+COPY discord-tradingthetrend/ /app/
 
 RUN mkdir -p /app/state
 
