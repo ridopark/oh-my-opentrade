@@ -48,6 +48,32 @@ entry_cutoff_et        = "13:30"
 trigger_drift_pct      = 0.5
 freshness_max_age_secs = 60
 
+
+# Options microstructure (Phase 3d). Enforced at the execution layer by
+# the existing OptionsRiskEngine + SpreadGuard; no per-strategy code reads
+# these yet — they sit here so account-level operators can pin TTT-specific
+# limits when wiring lands. Flat-prefixed under [params] per schema_version=2.
+options_max_spread_pct          = 0.05
+options_mega_cap_max_spread_pct = 0.03
+options_min_open_interest       = 500
+options_order_type              = "marketable_limit"
+options_limit_offset_ticks      = 2
+
+# Risk floors per prereg + plan 5e. account_equity_floor is read by the
+# (deferred) live-only kill switch; the rolling-5d PDT counter is enforced
+# system-wide via risk.PDTGuard regardless of this knob.
+risk_account_equity_floor       = 30000
+risk_pdt_max_day_trades         = 3
+
+# Live-only kill switches deferred to Phase 5b wiring (strategy is
+# Deactivated; backtest does not exercise them per plan section 5d:
+# "Live-only kill switches do not apply in backtest"):
+#   - strategy_dd_threshold_pct  = 15    (15% from rolling-5d HWM)
+#   - strategy_dd_window_days    = 5
+#   - sidecar_heartbeat_max_secs = 45
+#   - parse_error_rate_threshold = 0.10  (over last 20 messages)
+#   - realized_slippage_mult     = 3     (over last 5 trades)
+
 [hooks]
 signals = { engine = "builtin", name = "tradingthetrend_v1" }
 
