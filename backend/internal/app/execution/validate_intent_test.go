@@ -157,6 +157,7 @@ func TestValidateIntent_GateOrder_LockstepWithProcess(t *testing.T) {
 		"kill_switch",
 		"position_gate",
 		"exposure_guard",
+		"author_mirror",
 		"portfolio_guard",
 		"risk_engine",
 		"slippage",

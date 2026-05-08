@@ -24,6 +24,7 @@ func (s *Service) gateOrder() []string {
 		"kill_switch",
 		"position_gate",
 		"exposure_guard",
+		"author_mirror",
 		"portfolio_guard",
 		"risk_engine",
 		"slippage",
@@ -56,6 +57,11 @@ func (s *Service) ValidateIntent(ctx context.Context, intent domain.OrderIntent)
 		if s.exposureGuard != nil {
 			if err := s.exposureGuard.Check(ctx, intent); err != nil {
 				return &GateError{Gate: "exposure_guard", Reason: err.Error()}
+			}
+		}
+		if s.authorMirrorBucket != nil {
+			if err := s.authorMirrorBucket.Check(ctx, intent); err != nil {
+				return &GateError{Gate: "author_mirror", Reason: err.Error()}
 			}
 		}
 		if s.portfolioGuard != nil {

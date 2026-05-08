@@ -695,6 +695,15 @@ func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, lo
 		)
 		acctExecLog := acctLog.With().Str("component", "execution").Logger()
 		acctPosGate := execution.NewPositionGate(acctAdapter, acctExecLog)
+		acctEquitySrc := staticEquity{equity: acctEquity}
+		acctBucket := bootstrap.BuildAuthorMirrorBucket(
+			cfg.Risk.AuthorMirror,
+			cfg.Trading.MaxRiskPercent/100.0,
+			svc.posMonitor,
+			acctEquitySrc,
+			time.Now,
+			acctExecLog,
+		)
 		acctExec := execution.NewService(
 			infra.eventBus, acctAdapter, infra.repo,
 			execution.NewRiskEngine(cfg.Trading.MaxRiskPercent),
@@ -712,6 +721,7 @@ func initMultiAccount(cfg *config.Config, infra *infraDeps, svc *appServices, lo
 			execution.WithOrderStream(acctAdapter),
 			execution.WithPositionLookup(svc.posMonitor),
 			execution.WithOptionsPricePort(infra.alpacaData),
+			execution.WithAuthorMirrorBucket(acctBucket),
 		)
 
 		// Per-account strategy pipeline reuses shared router + specStore
@@ -1148,3 +1158,12 @@ func publishDNAVersionDetected(ctx context.Context, bus ports.EventBusPort, log 
 		log.Error().Err(err).Msg("failed to publish DNAVersionDetected event")
 	}
 }
+
+// staticEquity satisfies risk.EquitySource by returning a snapshot value.
+// Used for the per-account author_mirror bucket where equity is fetched
+// once at boot. Live drawdown is not reflected; bucket cap is recomputed
+// only on process restart. Acceptable because (a) other gates also apply
+// and (b) restart is rare and supervised.
+type staticEquity struct{ equity float64 }
+
+func (s staticEquity) AccountEquity() float64 { return s.equity }
