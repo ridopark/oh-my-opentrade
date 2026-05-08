@@ -1357,7 +1357,10 @@ func ruleCategoryIsStop(ruleType domain.ExitRuleType) bool {
 		domain.ExitRuleBreakevenStop,
 		domain.ExitRuleChandelierTrail,
 		domain.ExitRuleStagnationExit,
-		domain.ExitRuleFastFail:
+		domain.ExitRuleFastFail,
+		domain.ExitRuleTieredPremiumStopDTE,
+		domain.ExitRuleChandelierTrailUnderlying,
+		domain.ExitRuleATRExtensionTimeStop:
 		return true
 	}
 	return isForcedExit(ruleType)

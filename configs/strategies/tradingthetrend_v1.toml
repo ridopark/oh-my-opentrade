@@ -53,3 +53,34 @@ signals = { engine = "builtin", name = "tradingthetrend_v1" }
 
 [dynamic_risk]
 enabled = false
+
+# Mechanical exits (Phase 3b). Order-of-evaluation is the array order
+# below; the prereg locks it as: TIERED_PREMIUM_STOP_DTE > EOD_FLATTEN >
+# ATR_EXTENSION_TIME_STOP > CHANDELIER_TRAIL_UNDERLYING. Strategy stays
+# Deactivated until backtest passes the prereg's section 6 gates.
+
+[[exit_rules]]
+type = "TIERED_PREMIUM_STOP_DTE"
+[exit_rules.params]
+tier_0_dte      = 0.25
+tier_1_4_dte    = 0.30
+tier_5_plus_dte = 0.40
+
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 15
+
+[[exit_rules]]
+type = "ATR_EXTENSION_TIME_STOP"
+[exit_rules.params]
+time_stop_bars     = 12
+extension_atr_mult = 0.5
+
+[[exit_rules]]
+type = "CHANDELIER_TRAIL_UNDERLYING"
+[exit_rules.params]
+atr_period    = 14
+atr_mult      = 2.5
+lookback_bars = 20
+activate_pct  = 0.0

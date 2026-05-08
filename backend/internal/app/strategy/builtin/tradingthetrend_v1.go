@@ -513,6 +513,12 @@ func (s *TradingTheTrendStrategy) buildEntrySignal(ctx start.Context, tst *Tradi
 		"force_right":     string(tst.Right),
 		"trigger":         strconv.FormatFloat(tst.Trigger, 'f', -1, 64),
 		"ref_price":       fmt.Sprintf("%.4f", bar.Close),
+		// Stash the breakout trigger and entry-time underlying ATR so the
+		// position-monitor's ATR_EXTENSION_TIME_STOP can compute the required
+		// extension at fire time. service.go's processFill copies these into
+		// pos.CustomState via the tag→CustomState extraction loop.
+		"ttt_trigger_price": strconv.FormatFloat(tst.Trigger, 'f', -1, 64),
+		"ttt_entry_atr":     strconv.FormatFloat(tst.Indicators.ATR, 'f', -1, 64),
 	}
 	if !tst.SignalPostedAt.IsZero() {
 		tags["posted_at"] = tst.SignalPostedAt.UTC().Format(time.RFC3339)
