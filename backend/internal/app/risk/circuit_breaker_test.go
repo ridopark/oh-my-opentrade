@@ -184,3 +184,13 @@ func TestInspect_BelowLimits(t *testing.T) {
 	assert.False(t, breaker.IsHalted())
 	assert.Equal(t, risk.KillSwitchActive, breaker.State())
 }
+
+func TestDailyLossBreaker_MaxLossUSD_Accessor(t *testing.T) {
+	breaker := newTestBreaker(0.05, 1234.56, &stubPnLSource{}, time.Now)
+	assert.InDelta(t, 1234.56, breaker.MaxLossUSD(), 1e-9)
+}
+
+func TestDailyLossBreaker_MaxLossPct_Accessor(t *testing.T) {
+	breaker := newTestBreaker(0.075, 5000, &stubPnLSource{}, time.Now)
+	assert.InDelta(t, 0.075, breaker.MaxLossPct(), 1e-9)
+}

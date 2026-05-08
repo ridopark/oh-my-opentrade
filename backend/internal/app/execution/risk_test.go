@@ -164,3 +164,8 @@ func createValidOrderIntent(t *testing.T, dir domain.Direction, limitPrice, stop
 
 	return intent
 }
+
+func TestRiskEngine_MaxRiskPct_Accessor(t *testing.T) {
+	engine := execution.NewRiskEngine(0.025)
+	assert.InDelta(t, 0.025, engine.MaxRiskPct(), 1e-9)
+}

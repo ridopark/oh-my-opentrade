@@ -332,6 +332,12 @@ func (d *DailyLossBreaker) Inspect(tenantID string, envMode domain.EnvMode, acco
 	return loss, pct, false, nil
 }
 
+// MaxLossUSD returns the configured absolute USD daily-loss cap.
+func (d *DailyLossBreaker) MaxLossUSD() float64 { return d.maxLossUSD }
+
+// MaxLossPct returns the configured fractional daily-loss cap (e.g. 0.05 = 5%).
+func (d *DailyLossBreaker) MaxLossPct() float64 { return d.maxLossPct }
+
 // transitionOnTrip bumps the kill switch state on an automatic trip.
 // Once HALTED, we do not downgrade to REDUCING — escalation is monotonic
 // except by operator command.

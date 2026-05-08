@@ -19,6 +19,9 @@ func NewRiskEngine(maxRiskPct float64) *RiskEngine {
 	return &RiskEngine{maxRiskPct: maxRiskPct}
 }
 
+// MaxRiskPct returns the configured per-intent maximum-risk fraction.
+func (r *RiskEngine) MaxRiskPct() float64 { return r.maxRiskPct }
+
 // Validate checks that the order intent satisfies risk constraints.
 // It verifies stop loss, limit price, and quantity are positive,
 // then ensures the dollar risk does not exceed maxRiskPct * accountEquity.
