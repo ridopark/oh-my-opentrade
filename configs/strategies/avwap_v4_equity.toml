@@ -16,8 +16,9 @@ author = "system"
 created_at = "2026-05-05T00:00:00Z"
 
 [lifecycle]
-state = "PaperActive"
+state = "Deactivated"
 paper_only = true
+# Deactivated 2026-05-08 — sustained paper losses on AVWAP entry stack.
 
 [routing]
 symbols = ["TSLA", "HIMS", "SPY", "NFLX", "COIN", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "AVGO", "MU", "MRVL", "SMCI", "PLTR", "CRM", "SNOW", "NET", "SOFI", "HOOD", "JPM", "XOM", "OXY", "LLY", "RBLX", "BA", "QQQ", "IWM", "SOXL"]
