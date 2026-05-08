@@ -300,9 +300,6 @@ func (d *DailyLossBreaker) Check(tenantID string, envMode domain.EnvMode, accoun
 // tenant without mutating any state. It is the read-only twin of Check:
 // no haltDate write, no transitionOnTrip, no trip counters. Used by the
 // proposal handler to probe risk gates without flipping the kill switch.
-//
-// Skipping the optional daily_loss_inspect_total counter: adding a new
-// metric would mean editing the metrics package for a single call site.
 func (d *DailyLossBreaker) Inspect(tenantID string, envMode domain.EnvMode, accountEquity float64) (lossUSD, lossPct float64, tripped bool, err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -311,7 +308,7 @@ func (d *DailyLossBreaker) Inspect(tenantID string, envMode domain.EnvMode, acco
 	if d.globalHalt != nil && d.globalHalt() {
 		return 0, 0, true, nil
 	}
-	if d.haltDate != "" && d.haltDate == today {
+	if d.haltDate == today {
 		return 0, 0, true, nil
 	}
 
