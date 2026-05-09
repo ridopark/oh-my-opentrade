@@ -590,10 +590,15 @@ func checkTTTHoldConfirm(st *TradingTheTrendState, bar start.Bar, atr float64, c
 
 func (s *TradingTheTrendStrategy) buildEntrySignal(ctx start.Context, tst *TradingTheTrendState, symbol string, bar start.Bar, now time.Time) (start.Signal, error) {
 	instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
+	entryPath := "retest"
+	if tst.EnteredViaFollowthrough {
+		entryPath = "followthrough"
+	}
 	tags := map[string]string{
-		"setup":     "tradingthetrend_break_retest",
-		"trigger":   strconv.FormatFloat(tst.Trigger, 'f', -1, 64),
-		"ref_price": fmt.Sprintf("%.4f", bar.Close),
+		"setup":      "tradingthetrend_break_retest",
+		"entry_path": entryPath,
+		"trigger":    strconv.FormatFloat(tst.Trigger, 'f', -1, 64),
+		"ref_price":  fmt.Sprintf("%.4f", bar.Close),
 		// Stash the breakout trigger and entry-time underlying ATR so the
 		// position-monitor's ATR_EXTENSION_TIME_STOP can compute the required
 		// extension at fire time. service.go's processFill copies these into

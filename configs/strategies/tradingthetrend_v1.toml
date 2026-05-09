@@ -29,7 +29,7 @@ conflict_policy = "priority_wins"
 exclusive_per_symbol = false
 watchlist_mode = "dynamic"
 asset_classes = ["OPTION"]
-allowed_directions = ["LONG"]
+allowed_directions = ["LONG", "SHORT"]
 
 [screening]
 description = "No screening. Author membership is the vetting layer."
@@ -130,16 +130,27 @@ type = "ATR_EXTENSION_TIME_STOP"
 time_stop_bars     = 12
 extension_atr_mult = 0.5
 
+## CHANDELIER_TRAIL_UNDERLYING was structurally wrong for OTM contracts:
+## the underlying-ATR trail width doesn't translate to premium-space giveback
+## because OTM premium is non-linear (gamma + IV). 30-delta contracts saw
+## the trail capture only 14-29% of premium MFE peak. Replaced with
+## PREMIUM_TRAIL which trails on premium directly.
+# [[exit_rules]]
+# type = "CHANDELIER_TRAIL_UNDERLYING"
+# [exit_rules.params]
+# atr_period         = 14
+# atr_mult           = 2.5
+# lookback_bars      = 20
+# activate_pct       = 0.0
+# arm_on_premium_mfe = 0.02
+# armed_atr_mult     = 1.25
+# pre_arm_atr_mult   = 2.5
+
 [[exit_rules]]
-type = "CHANDELIER_TRAIL_UNDERLYING"
+type = "PREMIUM_TRAIL"
 [exit_rules.params]
-atr_period         = 14
-atr_mult           = 2.5
-lookback_bars      = 20
-activate_pct       = 0.0
-arm_on_premium_mfe = 0.02   # arm trail at +2% premium MFE
-armed_atr_mult     = 1.25   # tight trail post-arm
-pre_arm_atr_mult   = 2.5    # legacy-width trail before arm (safety net)
+min_activation = 0.10   # arm trail at +10% premium MFE (was chandelier 0.02 — too low for OTM)
+trail_pct      = 0.20   # exit when premium drops 20% from peak (preserves 80% of MFE)
 
 # --- Options ---
 # Required for the risk sizer to dispatch through the options pipeline. The
