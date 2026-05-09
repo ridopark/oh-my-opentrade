@@ -43,6 +43,10 @@ type recordingCoordinator struct {
 	endTicks   []time.Time
 }
 
+func (r *recordingCoordinator) OnPhaseATickAdvance(_ context.Context, _ time.Time) error {
+	return nil
+}
+
 func (r *recordingCoordinator) OnTickBegin(_ context.Context, t time.Time) error {
 	r.beginTicks = append(r.beginTicks, t)
 	return nil

@@ -878,11 +878,15 @@ func (r *Runner) InitAggregators(sessionOpen time.Time) {
 		if len(tfs) == 0 {
 			tfs = []string{"1m"}
 		}
+		// Use router-routed symbols (Assignment + AddSymbol) so sentinel-
+		// rooted dynamic-watchlist instances (TTT) subscribe HTF callbacks
+		// for every real ticker, not just the sentinel routing key.
+		routedSymbols := r.router.SymbolsForInstance(inst.ID())
 		for _, tf := range tfs {
 			if tf == "1m" {
 				continue
 			}
-			for _, sym := range inst.Assignment().Symbols {
+			for _, sym := range routedSymbols {
 				key := sym + ":" + tf
 				if _, exists := r.htfUnsubs[key]; exists {
 					continue
@@ -892,6 +896,38 @@ func (r *Runner) InitAggregators(sessionOpen time.Time) {
 				r.logger.Info("HTF subscriber registered", "symbol", sym, "timeframe", tf)
 			}
 		}
+	}
+}
+
+// subscribeHTFForInstanceSymbol wires HTF callbacks for a (instance, symbol)
+// pair when a sentinel-routed ticker is added at runtime via AddSymbol. Bootstrap
+// pre-registration is covered by InitAggregators; this path covers dynamic
+// arrivals (live mode, late-day Discord watchlist updates). Idempotent — repeat
+// calls reuse the existing subscription.
+func (r *Runner) subscribeHTFForInstanceSymbol(inst *Instance, symbol string) {
+	if r.indicator == nil || inst == nil {
+		return
+	}
+	tfs := inst.Assignment().Timeframes
+	if len(tfs) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.htfUnsubs == nil {
+		r.htfUnsubs = make(map[string]func())
+	}
+	for _, tf := range tfs {
+		if tf == "1m" {
+			continue
+		}
+		key := symbol + ":" + tf
+		if _, exists := r.htfUnsubs[key]; exists {
+			continue
+		}
+		cb := r.makeHTFCallback(tf)
+		r.htfUnsubs[key] = r.indicator.Subscribe(domain.Symbol(symbol), domain.Timeframe(tf), cb)
+		r.logger.Info("HTF subscriber registered (dynamic)", "symbol", symbol, "timeframe", tf)
 	}
 }
 
@@ -2967,6 +3003,12 @@ func (r *Runner) handleTradingTheTrendSignal(ctx context.Context, event domain.E
 		if r.router != nil {
 			r.router.AddSymbol(inst.ID(), ticker)
 		}
+		// Wire HTF subscribers for the new ticker so 5m/15m/etc. closes
+		// drive the strategy's OnBar. Without this, late-arriving symbols
+		// land in the router but the indicator service never calls back
+		// for them on HTF boundaries (InitAggregators ran at bootstrap
+		// before this ticker existed).
+		r.subscribeHTFForInstanceSymbol(inst, ticker)
 	}
 
 	tttSig := start.TradingTheTrendSignal{

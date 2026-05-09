@@ -215,6 +215,31 @@ func (r *Router) Instance(id start.InstanceID) (*Instance, bool) {
 	return inst, ok
 }
 
+// SymbolsForInstance returns every symbol that routes to the given instance,
+// including both the instance's declared Assignment().Symbols and any symbols
+// added via AddSymbol (sentinel-rooted dynamic-watchlist case). Sentinel
+// routing keys (shaped __name__) are excluded — callers that need HTF
+// callbacks want real tradable tickers, not routing placeholders.
+func (r *Router) SymbolsForInstance(id start.InstanceID) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var out []string
+	for sym, ids := range r.symbolMap {
+		if len(sym) >= 4 && sym[:2] == "__" && sym[len(sym)-2:] == "__" {
+			continue
+		}
+		for _, iid := range ids {
+			if iid == id {
+				out = append(out, sym)
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Symbols returns all symbols that have at least one instance assigned.
 func (r *Router) Symbols() []string {
 	r.mu.RLock()

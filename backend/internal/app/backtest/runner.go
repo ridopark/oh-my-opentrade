@@ -1367,20 +1367,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.status.Store("error")
 		return fmt.Errorf("start position monitor: %w", startErr)
 	}
-	if startErr := pipeline.Runner.Start(ctx); startErr != nil {
-		r.status.Store("error")
-		return fmt.Errorf("start strategy runner: %w", startErr)
-	}
-
 	// When the sharded max-speed path runs, it builds and starts its own
-	// Enricher and RiskSizer from BuildStrategyShared. Starting the legacy
-	// pipeline's copies would double-subscribe to SignalCreated /
-	// SignalEnriched / FillReceived and produce duplicate OrderIntentCreated
-	// events (the second one gets rejected by the position gate, but the
-	// work is wasted and shows up as noise in logs). The handleFill double
-	// on the Runner is explicitly tolerated by the existing design (see
-	// FreezeHandlers comment below); this change removes only the Enricher
-	// / RiskSizer duplication.
+	// Runner / Enricher / RiskSizer from BuildStrategyShared. Starting the
+	// legacy pipeline's copies would double-subscribe to bus events: every
+	// EventTradingTheTrendSignalReceived would fire handleTradingTheTrendSignal
+	// twice (once per Runner), arming each Runner's independent sentinel
+	// instance and producing duplicate OrderIntentCreated events downstream.
+	// The handleFill double on the Runner is explicitly tolerated by the
+	// existing design (see FreezeHandlers comment below); this gate removes
+	// the strategy-runner / enricher / risk-sizer duplication.
 	useSharded := r.speedDelay.Load().(time.Duration) == 0 && !r.paused.Load()
 	activeRiskSizer := pipeline.RiskSizer
 
@@ -1388,6 +1383,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	var copytradeLedger *copytradereplay.Ledger
 	var tttReplaySvc *tradingthetrendreplay.Service
 	if !useSharded {
+		if startErr := pipeline.Runner.Start(ctx); startErr != nil {
+			r.status.Store("error")
+			return fmt.Errorf("start strategy runner: %w", startErr)
+		}
 		if pipeline.Enricher != nil {
 			if startErr := pipeline.Enricher.Start(ctx); startErr != nil {
 				r.status.Store("error")
@@ -2677,6 +2676,29 @@ type runnerSliceCoord struct {
 	ticksSeen        int
 	copytradeReplay  *copytradereplay.Service
 	tttReplay        *tradingthetrendreplay.Service
+}
+
+// OnPhaseATickAdvance fires from the Phase A worker goroutine just before
+// the first bar at a new TickTime is processed. We drain the sentinel-routed
+// replay queues here so handleSignal arms the strategy state BEFORE OnBar
+// runs against that tick's bars. Without this hook the slice pipeline
+// processes every bar in Phase=Idle and Phase B's AdvanceTo arms too late.
+//
+// Safe with nworkers>1 only when the strategy that consumes these signals
+// lives on a single shard — for TTT that's already enforced (nworkers=1
+// when TradingTheTrendHistory != "").
+func (c *runnerSliceCoord) OnPhaseATickAdvance(ctx context.Context, tickTime time.Time) error {
+	if c.copytradeReplay != nil {
+		if _, err := c.copytradeReplay.AdvanceTo(ctx, tickTime); err != nil && c.r != nil {
+			c.r.log.Error().Err(err).Time("tick", tickTime).Msg("copytrade replay: phaseA advance failed")
+		}
+	}
+	if c.tttReplay != nil {
+		if _, err := c.tttReplay.AdvanceTo(ctx, tickTime); err != nil && c.r != nil {
+			c.r.log.Error().Err(err).Time("tick", tickTime).Msg("tradingthetrend replay: phaseA advance failed")
+		}
+	}
+	return nil
 }
 
 func (c *runnerSliceCoord) OnTickBegin(_ context.Context, tickTime time.Time) error {

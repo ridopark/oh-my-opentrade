@@ -2036,6 +2036,15 @@ type replaySliceCoord struct {
 	copytradeReplay  *copytradereplay.Service
 }
 
+// OnPhaseATickAdvance is a no-op for omo-replay's coordinator. The
+// dashboard backtest runner uses this hook to drain TTT/copytrade
+// replay queues into the bus before Phase A processes the tick's
+// bars; omo-replay drives copytrade replay through OnTickEnd as
+// before and does not currently host TTT.
+func (c *replaySliceCoord) OnPhaseATickAdvance(_ context.Context, _ time.Time) error {
+	return nil
+}
+
 // OnTickBegin advances the replay clock, resets monitor + runner
 // session indicators on a new trading day, and pokes the fast event
 // clock so domain.NewEvent calls during the replayed tick share one

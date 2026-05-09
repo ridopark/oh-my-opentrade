@@ -39,6 +39,18 @@ type SliceBar struct {
 // package knowing about position monitor or execution service
 // internals.
 type SliceCoordinator interface {
+	// OnPhaseATickAdvance is invoked from the Phase A worker loop the
+	// first time a bar with a new TickTime is about to be processed.
+	// It runs synchronously on the worker goroutine BEFORE
+	// ProcessBarPhaseATyped, which lets sentinel-routed strategies
+	// (TTT, copytrade) drain their replay queue's signals up to
+	// tickTime so the bar processes against an armed strategy state.
+	// Implementations must be safe to call from a single Phase A
+	// worker goroutine; with nworkers>1 multiple goroutines would
+	// concurrently call this — callers that need single-driver
+	// semantics must force nworkers=1.
+	OnPhaseATickAdvance(ctx context.Context, tickTime time.Time) error
+
 	// OnTickBegin is invoked once just before the first event for
 	// tick t is replayed. Implementations typically advance the
 	// replay clock (atomic store that clockFn reads) and run new-day
@@ -174,6 +186,7 @@ func (sp *ShardedPipeline) RunSliceToCompletion(
 			slabSymbols := sp.slabs[idx]
 			var sigs, def []shardEmission
 			currentDayOpen := initialDayOpen
+			var lastTick time.Time
 			for _, flatIdx := range slab {
 				if cerr := ctx.Err(); cerr != nil {
 					errs[idx] = cerr
@@ -200,6 +213,15 @@ func (sp *ShardedPipeline) RunSliceToCompletion(
 						}
 					}
 					currentDayOpen = dayOpen
+				}
+
+				tt := bars[flatIdx].TickTime
+				if !tt.Equal(lastTick) {
+					if err := coord.OnPhaseATickAdvance(ctx, tt); err != nil {
+						errs[idx] = err
+						return
+					}
+					lastTick = tt
 				}
 
 				dropped, err := shard.ProcessBarPhaseATyped(ctx, bars[flatIdx].Bar, bars[flatIdx].TenantID, bars[flatIdx].EnvMode)
