@@ -74,6 +74,7 @@ func main() {
 		"--backtest",
 		"--no-ai",
 		"--strategies=tradingthetrend_v1",
+		"--force-active=tradingthetrend_v1",
 		"--ttt-history=" + historyPath,
 		"--config=" + configPath,
 		"--env-file=" + envPath,

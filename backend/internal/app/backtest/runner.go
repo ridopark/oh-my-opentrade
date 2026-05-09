@@ -77,6 +77,14 @@ type RunConfig struct {
 	// its sim-time PostedAt. Mirrors CopytradeHistory shape. Empty disables.
 	TradingTheTrendHistory string
 
+	// ForceActiveStrategies, when non-empty, promotes the listed strategy
+	// IDs to LifecyclePaperActive for the backtest run regardless of their
+	// TOML state. Lets operators backtest a strategy whose TOML ships
+	// state="Deactivated" (the safety default for live deploys) without
+	// committing the active state to the file. Backtest-only — the
+	// production lifecycle gate is unchanged.
+	ForceActiveStrategies []string
+
 	// EmitGatedDiag, when true, persists EntryGated rows to
 	// strategy_signal_events with payload.tag = "backtest_<runID>" so a SQL
 	// diff against live rows on (symbol, bar.Time) can attribute a gate
@@ -398,6 +406,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			syms[i] = s.String()
 		}
 		specStore = newSymbolOverrideSpecStore(specStore, syms)
+	}
+	if len(r.cfg.ForceActiveStrategies) > 0 {
+		specStore = newForceActiveSpecStore(specStore, r.cfg.ForceActiveStrategies)
+		r.log.Warn().Strs("strategies", r.cfg.ForceActiveStrategies).
+			Msg("backtest: forcing strategies to PaperActive (TOML state ignored)")
 	}
 
 	// Only load ORB config when orb_break_retest is explicitly selected.
@@ -2529,6 +2542,68 @@ func (s *symbolOverrideSpecStore) Save(ctx context.Context, spec portstrategy.Sp
 
 func (s *symbolOverrideSpecStore) Watch(ctx context.Context) (<-chan start.StrategyID, error) {
 	return s.inner.Watch(ctx)
+}
+
+// forceActiveSpecStore promotes specs whose IDs match the configured set
+// to LifecyclePaperActive at read time. Used by RunConfig.ForceActiveStrategies
+// so an operator can backtest a strategy whose TOML ships
+// state="Deactivated" without committing the active state to the file.
+// Backtest-only — production lifecycle gates are unchanged.
+type forceActiveSpecStore struct {
+	inner   portstrategy.SpecStore
+	allowed map[string]struct{}
+}
+
+func newForceActiveSpecStore(inner portstrategy.SpecStore, ids []string) *forceActiveSpecStore {
+	allow := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		allow[id] = struct{}{}
+	}
+	return &forceActiveSpecStore{inner: inner, allowed: allow}
+}
+
+func (f *forceActiveSpecStore) promote(spec portstrategy.Spec) portstrategy.Spec {
+	if _, ok := f.allowed[spec.ID.String()]; ok {
+		spec.Lifecycle.State = start.LifecyclePaperActive
+	}
+	return spec
+}
+
+func (f *forceActiveSpecStore) List(ctx context.Context, filter *portstrategy.SpecFilter) ([]portstrategy.Spec, error) {
+	specs, err := f.inner.List(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	for i := range specs {
+		specs[i] = f.promote(specs[i])
+	}
+	return specs, nil
+}
+
+func (f *forceActiveSpecStore) Get(ctx context.Context, id start.StrategyID, version start.Version) (*portstrategy.Spec, error) {
+	spec, err := f.inner.Get(ctx, id, version)
+	if err != nil {
+		return nil, err
+	}
+	out := f.promote(*spec)
+	return &out, nil
+}
+
+func (f *forceActiveSpecStore) GetLatest(ctx context.Context, id start.StrategyID) (*portstrategy.Spec, error) {
+	spec, err := f.inner.GetLatest(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	out := f.promote(*spec)
+	return &out, nil
+}
+
+func (f *forceActiveSpecStore) Save(ctx context.Context, spec portstrategy.Spec) error {
+	return f.inner.Save(ctx, spec)
+}
+
+func (f *forceActiveSpecStore) Watch(ctx context.Context) (<-chan start.StrategyID, error) {
+	return f.inner.Watch(ctx)
 }
 
 // runnerSliceCoord implements SliceCoordinator for the dashboard
