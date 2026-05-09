@@ -366,6 +366,146 @@ func TestTradingTheTrend_StaleSignal_Dropped(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Follow-through path tests
+// ---------------------------------------------------------------------------
+
+// tttFollowthroughParams returns the defaults plus the follow-through knobs
+// configured per case. trigger_drift_pct is zeroed because the follow-through
+// scenarios deliberately push close well past trigger by a multi-ATR margin,
+// which the drift gate would reject at any reasonable percentage.
+func tttFollowthroughParams(enabled bool, mult float64, minBars int) map[string]any {
+	p := tttDefaultParams()
+	p["followthrough_enabled"] = enabled
+	p["followthrough_atr_mult"] = mult
+	p["followthrough_min_bars"] = minBars
+	p["trigger_drift_pct"] = 0.0
+	return p
+}
+
+// driveToWaitingRetestWithParams mirrors driveToWaitingRetest but lets the
+// caller pass non-default params (needed to enable follow-through at Init time).
+func driveToWaitingRetestWithParams(t *testing.T, s *builtin.TradingTheTrendStrategy, ctx *testContext, symbol string, st strat.State, baseTime time.Time, trigger float64) strat.State {
+	t.Helper()
+	st = armSignal(t, s, ctx, symbol, st, baseTime, trigger, trigger+2, "C")
+	bar := tttBar(1, trigger, trigger+2, trigger, trigger+1.7, 200)
+	st2, _ := feedTTTBar(t, s, ctx, symbol, st, bar)
+	tst := st2.(*builtin.TradingTheTrendState)
+	require.Equal(t, builtin.TTTPhaseWaitingRetest, tst.Phase)
+	return st2
+}
+
+func TestFollowthrough_Disabled(t *testing.T) {
+	s := builtin.NewTradingTheTrendStrategy()
+	ctx := newTestContext(tttBaseTime)
+	st, err := s.Init(ctx, "RKLB", tttFollowthroughParams(false, 1.0, 1), nil)
+	require.NoError(t, err)
+	st = driveToWaitingRetestWithParams(t, s, ctx, "RKLB", st, tttBaseTime, 100.0)
+
+	// Bars walk up well past breakout_high (=102) without ever entering the
+	// retest zone [99.85, 100.15]. Without follow-through, no entry fires.
+	for i := 2; i <= 6; i++ {
+		bar := tttBar(i, 102.5, 103.5, 102.3, 103.0, 100)
+		var sigs []strat.Signal
+		st, sigs = feedTTTBar(t, s, ctx, "RKLB", st, bar)
+		require.Empty(t, sigs, "bar %d", i)
+	}
+	tst := st.(*builtin.TradingTheTrendState)
+	assert.Equal(t, builtin.TTTPhaseWaitingRetest, tst.Phase)
+	assert.False(t, tst.EnteredToday)
+}
+
+func TestFollowthrough_Fires(t *testing.T) {
+	s := builtin.NewTradingTheTrendStrategy()
+	ctx := newTestContext(tttBaseTime)
+	st, err := s.Init(ctx, "RKLB", tttFollowthroughParams(true, 1.0, 1), nil)
+	require.NoError(t, err)
+	st = driveToWaitingRetestWithParams(t, s, ctx, "RKLB", st, tttBaseTime, 100.0)
+
+	// breakout_high=102, ATR=1.0, mult=1.0 -> threshold=103.
+	// Bars 2,3 are below threshold; bar 4 closes at 103 -> fires same bar.
+	below1 := tttBar(2, 102.3, 102.6, 102.2, 102.5, 100)
+	st, sigs := feedTTTBar(t, s, ctx, "RKLB", st, below1)
+	require.Empty(t, sigs)
+
+	below2 := tttBar(3, 102.5, 102.9, 102.4, 102.8, 100)
+	st, sigs = feedTTTBar(t, s, ctx, "RKLB", st, below2)
+	require.Empty(t, sigs)
+
+	fire := tttBar(4, 102.8, 103.1, 102.7, 103.0, 100)
+	st2, sigs := feedTTTBar(t, s, ctx, "RKLB", st, fire)
+	require.Len(t, sigs, 1, "follow-through bar must emit entry same bar")
+	assert.Equal(t, strat.SignalEntry, sigs[0].Type)
+	assert.Equal(t, strat.SideBuy, sigs[0].Side)
+
+	tst := st2.(*builtin.TradingTheTrendState)
+	assert.Equal(t, builtin.TTTPhaseIdle, tst.Phase)
+	assert.True(t, tst.EnteredToday)
+}
+
+func TestFollowthrough_RespectsMinBars(t *testing.T) {
+	s := builtin.NewTradingTheTrendStrategy()
+	ctx := newTestContext(tttBaseTime)
+	st, err := s.Init(ctx, "RKLB", tttFollowthroughParams(true, 1.0, 3), nil)
+	require.NoError(t, err)
+	st = driveToWaitingRetestWithParams(t, s, ctx, "RKLB", st, tttBaseTime, 100.0)
+
+	// Threshold close (=103) on every subsequent bar; min_bars=3 means
+	// BarsSincePhaseEntry must be >= 3 before fire. Bars 2,3 (BarsSince=1,2)
+	// must NOT fire; bar 4 (BarsSince=3) fires.
+	threshold := tttBar(2, 102.8, 103.1, 102.7, 103.0, 100)
+	st, sigs := feedTTTBar(t, s, ctx, "RKLB", st, threshold)
+	require.Empty(t, sigs, "BarsSincePhaseEntry=1 < min_bars=3")
+
+	threshold2 := tttBar(3, 102.8, 103.1, 102.7, 103.0, 100)
+	st, sigs = feedTTTBar(t, s, ctx, "RKLB", st, threshold2)
+	require.Empty(t, sigs, "BarsSincePhaseEntry=2 < min_bars=3")
+
+	threshold3 := tttBar(4, 102.8, 103.1, 102.7, 103.0, 100)
+	st2, sigs := feedTTTBar(t, s, ctx, "RKLB", st, threshold3)
+	require.Len(t, sigs, 1, "BarsSincePhaseEntry=3 must fire")
+
+	tst := st2.(*builtin.TradingTheTrendState)
+	assert.True(t, tst.EnteredToday)
+}
+
+func TestFollowthrough_PutSide(t *testing.T) {
+	s := builtin.NewTradingTheTrendStrategy()
+	ctx := newTestContext(tttBaseTime)
+	st, err := s.Init(ctx, "RKLB", tttFollowthroughParams(true, 1.0, 1), nil)
+	require.NoError(t, err)
+
+	// Arm a put signal at trigger=100.
+	ctx.now = tttBaseTime
+	sig := tttSignal("RKLB", 100.0, 98.0, "P", tttBaseTime)
+	st2, _, err := s.OnEvent(ctx, "RKLB", sig, st)
+	require.NoError(t, err)
+	st = st2
+
+	// Phase A breakout for puts: close < trigger - buffer (=99.8), close < open,
+	// body=1.7, range=2, volume>=150. Bar low=98 -> BreakoutLow=98.
+	breakout := tttBar(1, 100.0, 100.0, 98.0, 98.3, 200)
+	st, _ = feedTTTBar(t, s, ctx, "RKLB", st, breakout)
+	tst := st.(*builtin.TradingTheTrendState)
+	require.Equal(t, builtin.TTTPhaseWaitingRetest, tst.Phase)
+	require.Equal(t, strat.SideSell, tst.BreakoutSide)
+
+	// Threshold = BreakoutLow(98) - mult(1.0)*ATR(1.0) = 97. Bar close <= 97 fires.
+	// Avoid retest band [99.85, 100.15] on High; avoid invalidation close > 100.5.
+	below := tttBar(2, 98.0, 98.2, 97.5, 97.8, 100)
+	st, sigs := feedTTTBar(t, s, ctx, "RKLB", st, below)
+	require.Empty(t, sigs, "close 97.8 > threshold 97")
+
+	fire := tttBar(3, 97.8, 98.0, 96.8, 97.0, 100)
+	st3, sigs := feedTTTBar(t, s, ctx, "RKLB", st, fire)
+	require.Len(t, sigs, 1, "put follow-through must fire on close <= 97")
+	assert.Equal(t, strat.SideSell, sigs[0].Side)
+
+	tst = st3.(*builtin.TradingTheTrendState)
+	assert.Equal(t, builtin.TTTPhaseIdle, tst.Phase)
+	assert.True(t, tst.EnteredToday)
+}
+
+// ---------------------------------------------------------------------------
 // Parser parity tests
 // ---------------------------------------------------------------------------
 

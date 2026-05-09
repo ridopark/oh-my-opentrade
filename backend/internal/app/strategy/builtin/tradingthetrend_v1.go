@@ -64,6 +64,13 @@ type TradingTheTrendConfig struct {
 	EntryCutoffET      string // "HH:MM" hard cutoff, no entries after this ET wall-clock
 	TriggerDriftPct    float64
 	FreshnessMaxAgeSec int
+
+	// Follow-through path: lets a continuation bar (close >= breakout_high +
+	// followthrough_atr_mult * ATR) bypass the retest+hold-confirm sequence
+	// when the underlying walks past trigger without retracing.
+	FollowthroughEnabled  bool
+	FollowthroughATRMult  float64
+	FollowthroughMinBars  int
 }
 
 func parseTradingTheTrendConfig(params map[string]any) TradingTheTrendConfig {
@@ -82,6 +89,10 @@ func parseTradingTheTrendConfig(params map[string]any) TradingTheTrendConfig {
 		EntryCutoffET:      getString(params, "entry_cutoff_et", "13:30"),
 		TriggerDriftPct:    getFloat64(params, "trigger_drift_pct", 0.5),
 		FreshnessMaxAgeSec: getInt(params, "freshness_max_age_secs", 60),
+
+		FollowthroughEnabled: getBool(params, "followthrough_enabled", false),
+		FollowthroughATRMult: getFloat64(params, "followthrough_atr_mult", 1.0),
+		FollowthroughMinBars: getInt(params, "followthrough_min_bars", 1),
 	}
 }
 
@@ -126,6 +137,13 @@ type TradingTheTrendState struct {
 	PositionSide   start.Side
 	PendingEntry   start.Side
 	PendingEntryAt time.Time
+
+	// Follow-through state. BreakoutHigh/Low capture the breakout candle's
+	// extreme; EnteredViaFollowthrough flags the Confirming transition as
+	// follow-through-driven so OnBar skips the hold-confirm gate.
+	BreakoutHigh            float64
+	BreakoutLow             float64
+	EnteredViaFollowthrough bool
 }
 
 // SetIndicators implements the indicatorSetter interface used by the runner.
@@ -228,6 +246,35 @@ func (s *TradingTheTrendStrategy) OnBar(ctx start.Context, symbol string, bar st
 		// itself. The hold-confirm rule applies to the NEXT bar, so we wait
 		// at least one bar in Confirming before evaluating the hold-confirm.
 		// BarsSincePhaseEntry==0 indicates we just transitioned in this call.
+		//
+		// Follow-through path: the threshold close itself proves continuation,
+		// so skip both the next-bar wait and the hold-confirm gate. The
+		// trigger-drift gate still applies as an independent guard.
+		if tst.EnteredViaFollowthrough {
+			driftLimit := tst.Trigger * (1.0 + cfg.TriggerDriftPct/100.0)
+			if cfg.TriggerDriftPct > 0 && tst.BreakoutSide == start.SideBuy && bar.Close > driftLimit {
+				if ctx != nil && ctx.Logger() != nil {
+					ctx.Logger().Info("TradingTheTrendStrategy: drift gate rejected followthrough entry",
+						"symbol", symbol, "trigger", tst.Trigger,
+						"close", bar.Close, "drift_pct", cfg.TriggerDriftPct)
+				}
+				tst.Phase = TTTPhaseIdle
+				tst.EnteredViaFollowthrough = false
+				tst.PrevBar = bar
+				tst.HasPrevBar = true
+				return tst, nil, nil
+			}
+			sig, err := s.buildEntrySignal(ctx, tst, symbol, bar, now)
+			if err != nil {
+				return tst, nil, err
+			}
+			tst.armPendingEntry(tst.BreakoutSide, now, ctx)
+			tst.EnteredToday = true
+			tst.Phase = TTTPhaseIdle
+			tst.PrevBar = bar
+			tst.HasPrevBar = true
+			return tst, []start.Signal{sig}, nil
+		}
 		if tst.BarsSincePhaseEntry > 0 {
 			if checkTTTHoldConfirm(tst, bar, atr, cfg) {
 				// Trigger-drift gate: reject if underlying is more than
@@ -378,6 +425,8 @@ func advanceTTTStateMachine(st *TradingTheTrendState, bar start.Bar, atr float64
 		if checkTTTMomentumBreakout(st, bar, atr, cfg) {
 			st.Phase = TTTPhaseWaitingRetest
 			st.BarsSincePhaseEntry = 0
+			st.BreakoutHigh = bar.High
+			st.BreakoutLow = bar.Low
 		}
 
 	case TTTPhaseWaitingRetest:
@@ -396,6 +445,15 @@ func advanceTTTStateMachine(st *TradingTheTrendState, bar start.Bar, atr float64
 		// Expiry: too many bars without a retest.
 		if st.BarsSincePhaseEntry > cfg.RetestExpiryBars {
 			st.Phase = TTTPhaseIdle
+			return
+		}
+		// Follow-through path: breakout walks up past trigger without
+		// retracing. The threshold close itself acts as confirmation, so
+		// Confirming transition is flagged to skip the hold-confirm gate.
+		if cfg.FollowthroughEnabled && checkTTTFollowthrough(st, bar, atr, cfg) {
+			st.Phase = TTTPhaseConfirming
+			st.BarsSincePhaseEntry = 0
+			st.EnteredViaFollowthrough = true
 			return
 		}
 		if isTTTInRetestZone(st, bar, atr, cfg) {
@@ -447,6 +505,28 @@ func checkTTTMomentumBreakout(st *TradingTheTrendState, bar start.Bar, atr float
 		}
 	}
 	return true
+}
+
+// checkTTTFollowthrough is the no-retest continuation check. Fires when the
+// bar's close has extended past the breakout candle's extreme by
+// followthrough_atr_mult * ATR, after at least followthrough_min_bars have
+// elapsed inside WaitingRetest. The retest_expiry_bars window is enforced by
+// the caller (advanceTTTStateMachine's Phase B expiry check runs first).
+func checkTTTFollowthrough(st *TradingTheTrendState, bar start.Bar, atr float64, cfg TradingTheTrendConfig) bool {
+	if st.BarsSincePhaseEntry < cfg.FollowthroughMinBars {
+		return false
+	}
+	ext := cfg.FollowthroughATRMult * atr
+	if st.BreakoutSide == start.SideBuy {
+		if st.BreakoutHigh <= 0 {
+			return false
+		}
+		return bar.Close >= st.BreakoutHigh+ext
+	}
+	if st.BreakoutLow <= 0 {
+		return false
+	}
+	return bar.Close <= st.BreakoutLow-ext
 }
 
 // isTTTInRetestZone is the prereg-locked Phase B retest check.
@@ -576,6 +656,9 @@ func resetIfNewSession(st *TradingTheTrendState, now time.Time) {
 		// Phase machine resets at session boundary per prereg.
 		st.Phase = TTTPhaseIdle
 		st.BarsSincePhaseEntry = 0
+		st.EnteredViaFollowthrough = false
+		st.BreakoutHigh = 0
+		st.BreakoutLow = 0
 	}
 }
 
@@ -672,42 +755,48 @@ func ParseTradingTheTrendMessage(text string) []TradingTheTrendParsed {
 // ---------------------------------------------------------------------------
 
 type tradingTheTrendStateJSON struct {
-	Symbol              string              `json:"symbol"`
-	Phase               TTTPhase            `json:"phase"`
-	Trigger             float64             `json:"trigger"`
-	Strike              float64             `json:"strike"`
-	Right               domain.OptionRight  `json:"right"`
-	BreakoutSide        start.Side          `json:"breakout_side"`
-	SignalPostedAt      time.Time           `json:"signal_posted_at"`
-	BarsSincePhaseEntry int                 `json:"bars_since_phase_entry"`
-	PrevBar             barJSON             `json:"prev_bar"`
-	HasPrevBar          bool                `json:"has_prev_bar"`
-	EnteredToday        bool                `json:"entered_today"`
-	LastSessionDay      string              `json:"last_session_day"`
-	PositionSide        start.Side          `json:"position_side"`
-	PendingEntry        start.Side          `json:"pending_entry"`
-	PendingEntryAt      time.Time           `json:"pending_entry_at"`
-	Indicators          start.IndicatorData `json:"indicators"`
+	Symbol                  string              `json:"symbol"`
+	Phase                   TTTPhase            `json:"phase"`
+	Trigger                 float64             `json:"trigger"`
+	Strike                  float64             `json:"strike"`
+	Right                   domain.OptionRight  `json:"right"`
+	BreakoutSide            start.Side          `json:"breakout_side"`
+	SignalPostedAt          time.Time           `json:"signal_posted_at"`
+	BarsSincePhaseEntry     int                 `json:"bars_since_phase_entry"`
+	PrevBar                 barJSON             `json:"prev_bar"`
+	HasPrevBar              bool                `json:"has_prev_bar"`
+	EnteredToday            bool                `json:"entered_today"`
+	LastSessionDay          string              `json:"last_session_day"`
+	PositionSide            start.Side          `json:"position_side"`
+	PendingEntry            start.Side          `json:"pending_entry"`
+	PendingEntryAt          time.Time           `json:"pending_entry_at"`
+	Indicators              start.IndicatorData `json:"indicators"`
+	BreakoutHigh            float64             `json:"breakout_high"`
+	BreakoutLow             float64             `json:"breakout_low"`
+	EnteredViaFollowthrough bool                `json:"entered_via_followthrough"`
 }
 
 func (s *TradingTheTrendState) Marshal() ([]byte, error) {
 	j := tradingTheTrendStateJSON{
-		Symbol:              s.Symbol,
-		Phase:               s.Phase,
-		Trigger:             s.Trigger,
-		Strike:              s.Strike,
-		Right:               s.Right,
-		BreakoutSide:        s.BreakoutSide,
-		SignalPostedAt:      s.SignalPostedAt,
-		BarsSincePhaseEntry: s.BarsSincePhaseEntry,
-		PrevBar:             barToJSON(s.PrevBar),
-		HasPrevBar:          s.HasPrevBar,
-		EnteredToday:        s.EnteredToday,
-		LastSessionDay:      s.LastSessionDay,
-		PositionSide:        s.PositionSide,
-		PendingEntry:        s.PendingEntry,
-		PendingEntryAt:      s.PendingEntryAt,
-		Indicators:          s.Indicators,
+		Symbol:                  s.Symbol,
+		Phase:                   s.Phase,
+		Trigger:                 s.Trigger,
+		Strike:                  s.Strike,
+		Right:                   s.Right,
+		BreakoutSide:            s.BreakoutSide,
+		SignalPostedAt:          s.SignalPostedAt,
+		BarsSincePhaseEntry:     s.BarsSincePhaseEntry,
+		PrevBar:                 barToJSON(s.PrevBar),
+		HasPrevBar:              s.HasPrevBar,
+		EnteredToday:            s.EnteredToday,
+		LastSessionDay:          s.LastSessionDay,
+		PositionSide:            s.PositionSide,
+		PendingEntry:            s.PendingEntry,
+		PendingEntryAt:          s.PendingEntryAt,
+		Indicators:              s.Indicators,
+		BreakoutHigh:            s.BreakoutHigh,
+		BreakoutLow:             s.BreakoutLow,
+		EnteredViaFollowthrough: s.EnteredViaFollowthrough,
 	}
 	return json.Marshal(j)
 }
@@ -733,5 +822,8 @@ func (s *TradingTheTrendState) Unmarshal(data []byte) error {
 	s.PendingEntry = j.PendingEntry
 	s.PendingEntryAt = j.PendingEntryAt
 	s.Indicators = j.Indicators
+	s.BreakoutHigh = j.BreakoutHigh
+	s.BreakoutLow = j.BreakoutLow
+	s.EnteredViaFollowthrough = j.EnteredViaFollowthrough
 	return nil
 }

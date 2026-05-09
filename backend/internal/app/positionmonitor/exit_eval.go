@@ -184,6 +184,7 @@ func (s *Service) tick() {
 				if indSnap, ok := s.snapshotFn(string(priceSymbol)); ok {
 					evalCtx.ATR = indSnap.ATR
 					evalCtx.VWAPValue = indSnap.VWAP
+					evalCtx.HTFDailyATR = indSnap.HTFDailyATR()
 					if indSnap.VWAPSD > 0 {
 						evalCtx.SDBands = make(map[float64]float64)
 						for _, level := range []float64{0.5, 1.0, 1.5, 2.0, 2.5, 3.0} {

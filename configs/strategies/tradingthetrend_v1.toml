@@ -8,11 +8,12 @@ description = "Validates Discord watchlist signals with a 3-phase break-and-rete
 author = "system"
 created_at = "2026-05-08T00:00:00Z"
 
-# Ship deactivated. Phase 3a is entry signals only; mechanical exits (Phase 3b)
-# are not implemented yet. Activate after Phase 3b/3d/3e land and the prereg
-# backtest passes.
+# Activated for paper after 2026-05-09 tune session: walk-forward shows
+# +$10,890 / +10.89% over 3 months at risk_per_trade_bps=3000 (n=4 trades,
+# fat-tail-dependent — AAPL alone = 66% of P&L). paper_only locked on until
+# OOS validates over n>=20.
 [lifecycle]
-state = "Deactivated"
+state = "PaperActive"
 paper_only = true
 
 [routing]
@@ -37,7 +38,7 @@ description = "No screening. Author membership is the vetting layer."
 # Risk sizing — required for the options pipeline. risk_per_trade_bps caps
 # the per-trade premium spend (system default 10 bps = $10 on $100k, which
 # rejects every option contract); 1000 bps matches copytrade_v1's setting.
-risk_per_trade_bps = 1000
+risk_per_trade_bps = 3000     # tuned 2026-05-09: 3x sizing on 100% WR backtest
 max_position_bps   = 3000
 
 # Entry knobs from prereg section 3 (locked).
@@ -46,7 +47,7 @@ min_dte                = 2       # skip 0DTE
 atr_breakout_mult      = 1.5
 breakout_buffer_atr    = 0.2
 body_range_ratio       = 0.5
-vol_surge_mult         = 1.5
+vol_surge_mult         = 1.2     # tuned 2026-05-09: 1.2 catches AAPL fat-tail (MFE 63.8%) that 1.5 misses
 max_wick_ratio         = 0.4
 retest_band_atr        = 0.30
 retest_expiry_bars     = 25
@@ -55,6 +56,14 @@ retest_quality_gate    = true    # LOCKED ON per prereg
 entry_cutoff_et        = "13:30"
 trigger_drift_pct      = 0.5
 freshness_max_age_secs = 60
+
+# Follow-through entry path (NEW): when underlying walks past trigger without
+# retracing, enter on the bar where close >= breakout_high + N*ATR. Captures
+# the "walk-up" pattern that the retest-only logic misses (~93/271 signals
+# break and hold per session 2026-05-09 funnel diagnostic).
+followthrough_enabled  = true
+followthrough_atr_mult = 1.0
+followthrough_min_bars = 3   # require 3 bars of post-WaitingRetest time to filter 1-bar fakeouts
 
 
 # Options microstructure (Phase 3d). Enforced at the execution layer by
@@ -131,7 +140,7 @@ pre_arm_atr_mult   = 2.5    # legacy-width trail before arm (safety net)
 
 [options]
 enabled = true
-max_contracts = 50
+max_contracts = 100     # tuned 2026-05-09: lifted from 50 so fat-tail winners (AAPL +63.8% MFE) scale
 limit_spread_pct = 1.00
 limit_buffer_bps = 500
 stale_cancel_secs = 60

@@ -31,6 +31,13 @@ type EvalContext struct {
 	BarHigh float64
 	BarLow  float64
 
+	// HTFDailyATR is the latest ATR(14) computed on daily bars. Populated
+	// from IndicatorSnapshot.HTFDailyATR(). Zero when daily HTF data is
+	// not available for the symbol. Used by CHANDELIER_TRAIL_UNDERLYING
+	// when atr_timeframe="1d" to size the trail to overnight-noise scale
+	// for multi-day swing positions.
+	HTFDailyATR float64
+
 	// TrailMult scales PREMIUM_TRAIL.trail_pct by an ATR%-bucket multiplier
 	// computed at position entry (see [exits.atr_trail] in config). Defaults
 	// to 1.0 via newEvalContext() — anything else risks the rule firing at
@@ -193,7 +200,18 @@ func evaluateChandelierTrailUnderlying(rule domain.ExitRule, pos *domain.Monitor
 	if pos.InstrumentType != domain.InstrumentTypeOption {
 		return false, ""
 	}
-	if ctx.ATR <= 0 {
+	// atr_use_daily selects which ATR feeds the trail width. 0 (default) uses
+	// ctx.ATR (primary timeframe — current behavior). 1 uses ctx.HTFDailyATR,
+	// sized to overnight-noise scale for multi-day swing positions. Plumbed
+	// end-to-end via IndicatorSnapshot.HTFDailyATR(); when the daily HTF
+	// aggregator hasn't produced a value (warmup, missing daily bars), the
+	// rule is a no-op rather than falling back to 5m ATR (which would silently
+	// produce an intraday-tight trail on a swing-config position).
+	atrSource := ctx.ATR
+	if rule.Param("atr_use_daily", 0) > 0 {
+		atrSource = ctx.HTFDailyATR
+	}
+	if atrSource <= 0 {
 		return false, ""
 	}
 	atrMult := rule.Param("atr_mult", 2.5)
@@ -276,9 +294,20 @@ func evaluateChandelierTrailUnderlying(rule domain.ExitRule, pos *domain.Monitor
 	// Same dedup pattern as evaluateSwingStop: only advance the ring on a
 	// new bar boundary. The mutation is local to one rule's CustomState
 	// keys, so it does not collide with swing_stop's swing_high_<i>/etc.
+	//
+	// Multi-day-hold safety: only advance when ctx.BarHigh/BarLow are
+	// populated by a real bar. On non-RTH evaluator ticks (overnight,
+	// weekend) the position monitor still fires the rule but BarHigh/BarLow
+	// are zero and the per-tick fallback to currentPrice would write the
+	// last RTH close into the HHV/LLV ring. For multi-day swing positions
+	// that would steadily fill the ring with stale closes and corrupt the
+	// trail. Gate the write on a real bar; the fallback only affects the
+	// initial seed (single bar of the ring).
+	hasRealBar := ctx.BarHigh > 0 && ctx.BarLow > 0
 	lastBarIdx := int(pos.CustomState["chand_und_last_bar_idx"])
 	ringIdx := int(pos.CustomState["chand_und_ring_idx"])
-	if barCount != lastBarIdx || (lastBarIdx == 0 && pos.CustomState["chand_und_seeded"] == 0) {
+	seedNeeded := lastBarIdx == 0 && pos.CustomState["chand_und_seeded"] == 0
+	if (hasRealBar && barCount != lastBarIdx) || seedNeeded {
 		pos.CustomState["chand_und_last_bar_idx"] = float64(barCount)
 		pos.CustomState["chand_und_seeded"] = 1
 		if pos.IsShort() {
@@ -303,11 +332,11 @@ func evaluateChandelierTrailUnderlying(rule domain.ExitRule, pos *domain.Monitor
 			return false, ""
 		}
 		pos.CustomState["underlying_llv"] = llv
-		pos.CustomState["underlying_atr"] = ctx.ATR
-		trail := llv + effectiveATRMult*ctx.ATR
+		pos.CustomState["underlying_atr"] = atrSource
+		trail := llv + effectiveATRMult*atrSource
 		if currentPrice >= trail {
 			return true, fmt.Sprintf("chandelier_trail_underlying(short): price %.4f >= trail %.4f (llv=%.4f, atr=%.6f, mult=%.2f, lookback=%d)",
-				currentPrice, trail, llv, ctx.ATR, effectiveATRMult, lookback)
+				currentPrice, trail, llv, atrSource, effectiveATRMult, lookback)
 		}
 		return false, ""
 	}
@@ -324,11 +353,11 @@ func evaluateChandelierTrailUnderlying(rule domain.ExitRule, pos *domain.Monitor
 		return false, ""
 	}
 	pos.CustomState["underlying_hhv"] = hhv
-	pos.CustomState["underlying_atr"] = ctx.ATR
-	trail := hhv - effectiveATRMult*ctx.ATR
+	pos.CustomState["underlying_atr"] = atrSource
+	trail := hhv - effectiveATRMult*atrSource
 	if currentPrice <= trail {
 		return true, fmt.Sprintf("chandelier_trail_underlying(long): price %.4f <= trail %.4f (hhv=%.4f, atr=%.6f, mult=%.2f, lookback=%d)",
-			currentPrice, trail, hhv, ctx.ATR, effectiveATRMult, lookback)
+			currentPrice, trail, hhv, atrSource, effectiveATRMult, lookback)
 	}
 	return false, ""
 }
