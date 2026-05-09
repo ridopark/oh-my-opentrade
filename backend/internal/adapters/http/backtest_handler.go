@@ -358,6 +358,11 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		liveChainPort = optadapter.NewCachingMarket(h.liveOptions)
 	}
 
+	var forceActive []string
+	if tttSelected {
+		forceActive = []string{"tradingthetrend_v1"}
+	}
+
 	runner := backtest.NewRunner(backtest.RunConfig{
 		Symbols:       symbols,
 		From:          fromTime,
@@ -373,10 +378,10 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		MaxPerGroup:      req.MaxPerGroup,
 		UseNativeSymbols: useNativeSymbols,
 		CompoundEquity:   req.CompoundEquity == nil || *req.CompoundEquity,
-		CopytradeHistory:   req.CopytradeHistory,
-		CopytradeLedgerDir: req.CopytradeLedgerDir,
+		CopytradeHistory:       req.CopytradeHistory,
+		CopytradeLedgerDir:     req.CopytradeLedgerDir,
 		TradingTheTrendHistory: req.TradingTheTrendHistory,
-		ForceActiveStrategies:  forceActiveTTT(tttSelected),
+		ForceActiveStrategies:  forceActive,
 		EmitGatedDiag:      req.EmitGatedDiag,
 		PreferLiveChain:   req.PreferLiveChain,
 		LiveOptionsMarket: liveChainPort,
@@ -717,18 +722,6 @@ func parseTimeParam(v string) (time.Time, error) {
 		return t.UTC(), nil
 	}
 	return time.Time{}, &json.UnsupportedValueError{}
-}
-
-// forceActiveTTT returns ["tradingthetrend_v1"] when the strategy is selected
-// so the backtest runner promotes its TOML state from "Deactivated" to
-// PaperActive at read time. Mirrors the omo-tradingthetrend-backtest cmd's
-// --force-active flag — the TOML ships Deactivated by default so live
-// deployments don't accidentally trade the strategy.
-func forceActiveTTT(selected bool) []string {
-	if !selected {
-		return nil
-	}
-	return []string{"tradingthetrend_v1"}
 }
 
 // copytradeDefaultSymbols returns the canonical 23-symbol universe covered
