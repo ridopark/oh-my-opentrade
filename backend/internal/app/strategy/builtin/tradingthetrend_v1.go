@@ -71,6 +71,13 @@ type TradingTheTrendConfig struct {
 	FollowthroughEnabled  bool
 	FollowthroughATRMult  float64
 	FollowthroughMinBars  int
+
+	// UseAuthorStrike controls whether the entry signal pins the OCC contract
+	// to the author's posted strike+expiry (force-contract path) or hands off
+	// to the risk sizer's delta-based ContractSelectionService. true (default)
+	// preserves the legacy behavior; false omits force_* tags so the selector
+	// picks based on [options.defaults] target_delta_low/high + DTE bracket.
+	UseAuthorStrike bool
 }
 
 func parseTradingTheTrendConfig(params map[string]any) TradingTheTrendConfig {
@@ -93,6 +100,7 @@ func parseTradingTheTrendConfig(params map[string]any) TradingTheTrendConfig {
 		FollowthroughEnabled: getBool(params, "followthrough_enabled", false),
 		FollowthroughATRMult: getFloat64(params, "followthrough_atr_mult", 1.0),
 		FollowthroughMinBars: getInt(params, "followthrough_min_bars", 1),
+		UseAuthorStrike:      getBool(params, "use_author_strike", true),
 	}
 }
 
@@ -581,18 +589,11 @@ func checkTTTHoldConfirm(st *TradingTheTrendState, bar start.Bar, atr float64, c
 // ---------------------------------------------------------------------------
 
 func (s *TradingTheTrendStrategy) buildEntrySignal(ctx start.Context, tst *TradingTheTrendState, symbol string, bar start.Bar, now time.Time) (start.Signal, error) {
-	expiry := nearestFridayWithMinDTE(now, tst.Config.ExpiryDTE, tst.Config.MinDTE)
-	contractSym := domain.FormatOCCSymbol(strings.ToUpper(symbol), expiry, tst.Right, tst.Strike)
-
 	instanceID, _ := start.NewInstanceID(fmt.Sprintf("%s:%s:%s", s.meta.ID, s.meta.Version, symbol))
 	tags := map[string]string{
-		"setup":           "tradingthetrend_break_retest",
-		"contract_symbol": contractSym,
-		"force_expiry":    expiry.Format("2006-01-02"),
-		"force_strike":    strconv.FormatFloat(tst.Strike, 'f', -1, 64),
-		"force_right":     string(tst.Right),
-		"trigger":         strconv.FormatFloat(tst.Trigger, 'f', -1, 64),
-		"ref_price":       fmt.Sprintf("%.4f", bar.Close),
+		"setup":     "tradingthetrend_break_retest",
+		"trigger":   strconv.FormatFloat(tst.Trigger, 'f', -1, 64),
+		"ref_price": fmt.Sprintf("%.4f", bar.Close),
 		// Stash the breakout trigger and entry-time underlying ATR so the
 		// position-monitor's ATR_EXTENSION_TIME_STOP can compute the required
 		// extension at fire time. service.go's processFill copies these into
@@ -603,14 +604,35 @@ func (s *TradingTheTrendStrategy) buildEntrySignal(ctx start.Context, tst *Tradi
 	if !tst.SignalPostedAt.IsZero() {
 		tags["posted_at"] = tst.SignalPostedAt.UTC().Format(time.RFC3339)
 	}
+
+	// Force-contract path: emit the OCC tags only when the operator wants the
+	// strategy to pin to the author's exact strike+expiry. When false, the
+	// risk sizer falls through to the delta-based ContractSelectionService
+	// using [options.defaults] target_delta_low/high + DTE bracket.
+	var contractSym string
+	var expiry time.Time
+	if tst.Config.UseAuthorStrike {
+		expiry = nearestFridayWithMinDTE(now, tst.Config.ExpiryDTE, tst.Config.MinDTE)
+		contractSym = domain.FormatOCCSymbol(strings.ToUpper(symbol), expiry, tst.Right, tst.Strike)
+		tags["contract_symbol"] = contractSym
+		tags["force_expiry"] = expiry.Format("2006-01-02")
+		tags["force_strike"] = strconv.FormatFloat(tst.Strike, 'f', -1, 64)
+		tags["force_right"] = string(tst.Right)
+	}
+
 	sig, err := start.NewSignal(instanceID, strings.ToUpper(symbol), start.SignalEntry, tst.BreakoutSide, 0.85, tags)
 	if err != nil {
 		return start.Signal{}, fmt.Errorf("tradingthetrend: NewSignal: %w", err)
 	}
 	if ctx != nil && ctx.Logger() != nil {
-		ctx.Logger().Info("TradingTheTrendStrategy: entry signal emitted",
-			"symbol", symbol, "contract", contractSym,
-			"expiry", expiry.Format("2006-01-02"))
+		if tst.Config.UseAuthorStrike {
+			ctx.Logger().Info("TradingTheTrendStrategy: entry signal emitted",
+				"symbol", symbol, "contract", contractSym,
+				"expiry", expiry.Format("2006-01-02"))
+		} else {
+			ctx.Logger().Info("TradingTheTrendStrategy: entry signal emitted (delta-selected)",
+				"symbol", symbol, "side", string(tst.BreakoutSide))
+		}
 	}
 	return sig, nil
 }

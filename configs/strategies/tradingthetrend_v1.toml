@@ -65,6 +65,16 @@ followthrough_enabled  = true
 followthrough_atr_mult = 1.0
 followthrough_min_bars = 3   # require 3 bars of post-WaitingRetest time to filter 1-bar fakeouts
 
+# Contract selection: when use_author_strike=false, the risk sizer's
+# ContractSelectionService picks the strike via target_delta_low/high in
+# [options.defaults] (slightly OTM = 30-40 delta) instead of pinning to
+# the author's posted strike. The author's strike tends to be AT the
+# breakout level, so by the time the strategy fires, the underlying has
+# crossed it and contracts are ATM-to-slightly-ITM. Switching to delta
+# selection gives slightly OTM at fill (cheaper premium, more leverage,
+# higher per-trade max-loss-to-zero).
+use_author_strike = false
+
 
 # Options microstructure (Phase 3d). Enforced at the execution layer by
 # the existing OptionsRiskEngine + SpreadGuard; no per-strategy code reads
@@ -146,6 +156,10 @@ limit_buffer_bps = 500
 stale_cancel_secs = 60
 
 [options.defaults]
+min_dte           = 2
+max_dte           = 9
+target_delta_low  = 0.30   # slightly OTM band: 30-40 delta
+target_delta_high = 0.40
 min_open_interest = 25
-max_spread_pct = 0.25
-max_iv = 2.0
+max_spread_pct    = 0.25
+max_iv            = 2.0
