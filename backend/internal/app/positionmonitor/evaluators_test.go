@@ -925,6 +925,71 @@ func TestEvaluate_BreakevenStop(t *testing.T) {
 	})
 }
 
+func TestBreakevenStop_NonOption_Unchanged(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+	pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+
+	// Equity at +0.4% crosses activation 0.3% with buffer 0.05%.
+	UpdateBreakevenStopState(pos, 100.40, 0.003, 0.0005)
+	require.Equal(t, 1.0, pos.CustomState["breakeven_activated"])
+	require.InDelta(t, 100.05, pos.CustomState["breakeven_stop_level"], 0.001)
+
+	rule := domain.ExitRule{Type: domain.ExitRuleBreakevenStop, Params: map[string]float64{}}
+	// Underlying drops to 100.00 — below the equity-space stop level → fires.
+	triggered, reason := Evaluate(rule, pos, 100.00, now, EvalContext{})
+	assert.True(t, triggered)
+	assert.Contains(t, reason, "breakeven_stop")
+	assert.NotContains(t, reason, "(option)")
+}
+
+func TestBreakevenStop_Option_ActivatesOnPremiumMFE(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+	pos := newOptionPosition(t, 400, now.Add(-10*time.Minute), 4.26, 0.5)
+	pos.CustomState["premium_mfe_pct"] = 0.15
+
+	// activation 0.10, buffer 0.005. underlying value here is irrelevant —
+	// option-aware path reads CustomState only.
+	UpdateBreakevenStopState(pos, 400, 0.10, 0.005)
+	assert.Equal(t, 1.0, pos.CustomState["breakeven_activated"])
+	// Stop level in PREMIUM space: entry_premium * (1 + buffer) = 4.26 * 1.005
+	assert.InDelta(t, 4.2813, pos.CustomState["breakeven_stop_level"], 0.0005)
+}
+
+func TestBreakevenStop_Option_FiresWhenPremiumRetraces(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+	pos := newOptionPosition(t, 400, now.Add(-10*time.Minute), 4.26, 0.5)
+	// Pre-arm: simulate UpdateBreakevenStopState having already fired.
+	pos.CustomState["breakeven_activated"] = 1
+	pos.CustomState["breakeven_stop_level"] = 4.26 * 1.005
+
+	rule := domain.ExitRule{Type: domain.ExitRuleBreakevenStop, Params: map[string]float64{}}
+	// Underlying back at entry (400). Delta-linear est = 4.26 - spread(0.0341)
+	// = 4.226, which is below stop_level 4.281 → fires.
+	triggered, reason := Evaluate(rule, pos, 400, now, EvalContext{})
+	assert.True(t, triggered)
+	assert.Contains(t, reason, "breakeven_stop(option)")
+}
+
+func TestBreakevenStop_Option_DoesNotFireBelowActivation(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+	pos := newOptionPosition(t, 400, now.Add(-10*time.Minute), 4.26, 0.5)
+	pos.CustomState["premium_mfe_pct"] = 0.05
+
+	// 0.05 MFE < 0.10 activation threshold → no activation.
+	UpdateBreakevenStopState(pos, 400, 0.10, 0.005)
+	assert.Equal(t, 0.0, pos.CustomState["breakeven_activated"])
+	assert.Equal(t, 0.0, pos.CustomState["breakeven_stop_level"])
+
+	rule := domain.ExitRule{Type: domain.ExitRuleBreakevenStop, Params: map[string]float64{}}
+	triggered, reason := Evaluate(rule, pos, 400, now, EvalContext{})
+	assert.False(t, triggered)
+	assert.Empty(t, reason)
+}
+
 func TestEvaluate_UnknownRuleType(t *testing.T) {
 	etLoc := mustETLocation(t)
 	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)

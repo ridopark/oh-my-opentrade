@@ -83,7 +83,7 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 	case domain.ExitRuleStagnationExit:
 		return evaluateStagnationExit(rule, pos, currentPrice, now, ctx)
 	case domain.ExitRuleBreakevenStop:
-		return evaluateBreakevenStop(rule, pos, currentPrice)
+		return evaluateBreakevenStop(rule, pos, currentPrice, now)
 	case domain.ExitRuleDTEFloor:
 		return evaluateDTEFloor(rule, pos, now)
 	case domain.ExitRuleExpiryWatch:
@@ -1208,6 +1208,23 @@ func UpdateBreakevenStopState(pos *domain.MonitoredPosition, currentPrice float6
 	if pos.CustomState["breakeven_activated"] > 0 {
 		return
 	}
+	// Option-aware branch: activation and stop level live in PREMIUM space.
+	// Long puts profit when premium rises (same as long calls at the option
+	// level), so the IsShort()-style inversion used for equity shorts does
+	// not apply here.
+	if pos.InstrumentType == domain.InstrumentTypeOption {
+		mfe, ok := pos.CustomState["premium_mfe_pct"]
+		if !ok || mfe < activationPct {
+			return
+		}
+		entryPremium, ok := pos.CustomState["option_premium"]
+		if !ok || entryPremium <= 0 {
+			return
+		}
+		pos.CustomState["breakeven_activated"] = 1
+		pos.CustomState["breakeven_stop_level"] = entryPremium * (1 + bufferPct)
+		return
+	}
 	pnlPct := pos.UnrealizedPnLPct(currentPrice)
 	if pnlPct >= activationPct {
 		pos.CustomState["breakeven_activated"] = 1
@@ -1225,7 +1242,7 @@ func UpdateBreakevenStopState(pos *domain.MonitoredPosition, currentPrice float6
 // The stop level is set by UpdateBreakevenStopState — this evaluator only reads state.
 //
 // Params: none (stop level comes from CustomState, set by tick loop)
-func evaluateBreakevenStop(_ domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64) (bool, string) {
+func evaluateBreakevenStop(_ domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time) (bool, string) {
 	if pos.CustomState == nil {
 		return false, ""
 	}
@@ -1234,6 +1251,21 @@ func evaluateBreakevenStop(_ domain.ExitRule, pos *domain.MonitoredPosition, cur
 	}
 	stopLevel := pos.CustomState["breakeven_stop_level"]
 	if stopLevel <= 0 {
+		return false, ""
+	}
+	// Option-aware branch: stop level is in PREMIUM space. Compare current
+	// estimated premium against it. Firing means premium retraced back to
+	// entry+buffer regardless of underlying direction.
+	if pos.InstrumentType == domain.InstrumentTypeOption {
+		currentPremium := pos.EstimatedPremium(currentPrice, now)
+		if currentPremium <= 0 {
+			return false, ""
+		}
+		if currentPremium <= stopLevel {
+			entryPremium := pos.CustomState["option_premium"]
+			return true, fmt.Sprintf("breakeven_stop(option): premium %.4f <= stop %.4f (entry_premium=%.4f, buffer=%.4f)",
+				currentPremium, stopLevel, entryPremium, stopLevel-entryPremium)
+		}
 		return false, ""
 	}
 	if pos.IsShort() {

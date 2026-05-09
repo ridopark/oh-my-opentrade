@@ -146,10 +146,21 @@ extension_atr_mult = 0.5
 # armed_atr_mult     = 1.25
 # pre_arm_atr_mult   = 2.5
 
+## BREAKEVEN_STOP fires once premium MFE >= 10%, locking the floor at entry +
+## buffer. Closes PREMIUM_TRAIL's "dead zone" (10% < peak MFE < 25% would
+## otherwise lock a loss when the trail's 20% giveback bottoms below entry).
+## Option-aware as of 2026-05-09 — reads pos.CustomState["premium_mfe_pct"]
+## and compares against pos.EstimatedPremium(underlying, now).
+[[exit_rules]]
+type = "BREAKEVEN_STOP"
+[exit_rules.params]
+activation_pct = 0.10   # activate once premium MFE >= 10%
+buffer_pct     = 0.005  # stop fires just below entry × 1.005
+
 [[exit_rules]]
 type = "PREMIUM_TRAIL"
 [exit_rules.params]
-min_activation = 0.10   # arm trail at +10% premium MFE (was chandelier 0.02 — too low for OTM)
+min_activation = 0.10   # arm trail at +10% premium MFE
 trail_pct      = 0.20   # exit when premium drops 20% from peak (preserves 80% of MFE)
 
 # --- Options ---
