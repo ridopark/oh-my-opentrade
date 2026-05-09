@@ -32,6 +32,7 @@ import (
 	pkgpipeline "github.com/oh-my-opentrade/backend/internal/app/pipeline"
 	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
+	"github.com/oh-my-opentrade/backend/internal/app/tradingthetrendreplay"
 	"github.com/oh-my-opentrade/backend/internal/app/warmup"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -69,6 +70,12 @@ type RunConfig struct {
 	// into. Ignored when CopytradeHistory is empty; HTTP handler defaults it
 	// to "_workspace/copytrade_replay".
 	CopytradeLedgerDir string
+
+	// TradingTheTrendHistory, when non-empty, enables tradingthetrend_v1
+	// replay: parses the JSONL at this path via the builtin TTT message
+	// parser, publishes each line as EventTradingTheTrendSignalReceived at
+	// its sim-time PostedAt. Mirrors CopytradeHistory shape. Empty disables.
+	TradingTheTrendHistory string
 
 	// EmitGatedDiag, when true, persists EntryGated rows to
 	// strategy_signal_events with payload.tag = "backtest_<runID>" so a SQL
@@ -1366,6 +1373,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	var copytradeReplaySvc *copytradereplay.Service
 	var copytradeLedger *copytradereplay.Ledger
+	var tttReplaySvc *tradingthetrendreplay.Service
 	if !useSharded {
 		if pipeline.Enricher != nil {
 			if startErr := pipeline.Enricher.Start(ctx); startErr != nil {
@@ -1700,6 +1708,21 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.log.Info().Str("path", fillPath).Msg("copytrade replay: per-fill ledger active")
 		}
 
+		if r.cfg.TradingTheTrendHistory != "" {
+			tttReplaySvc = tradingthetrendreplay.New(r.infra.EventBus, "default", domain.EnvModePaper,
+				r.log.With().Str("component", "tradingthetrend_replay").Logger())
+			tttStats, tttErr := tttReplaySvc.Load(r.cfg.TradingTheTrendHistory, r.cfg.From, r.cfg.To)
+			if tttErr != nil {
+				r.status.Store("error")
+				return fmt.Errorf("tradingthetrend replay: load %s: %w", r.cfg.TradingTheTrendHistory, tttErr)
+			}
+			r.log.Info().
+				Int("messages_read", tttStats.MessagesRead).
+				Int("messages_dropped", tttStats.MessagesDropped).
+				Int("signals_loaded", tttStats.SignalsLoaded).
+				Msg("tradingthetrend replay ready")
+		}
+
 		// Freeze the event bus AFTER all shard runners have subscribed.
 		// This ensures FillReceived events reach both legacy and shard
 		// runners' handleFill subscriptions (legacy harmlessly no-ops on
@@ -1905,6 +1928,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			auctionPub:       auctionPub,
 			sp:               sp,
 			copytradeReplay:  copytradeReplaySvc,
+			tttReplay:        tttReplaySvc,
 		}
 
 		if err := sp.RunSliceToCompletion(ctx, sliceBars, replaySessionOpen, coord); err != nil {
@@ -2530,6 +2554,7 @@ type runnerSliceCoord struct {
 	sp               *ShardedPipeline
 	ticksSeen        int
 	copytradeReplay  *copytradereplay.Service
+	tttReplay        *tradingthetrendreplay.Service
 }
 
 func (c *runnerSliceCoord) OnTickBegin(_ context.Context, tickTime time.Time) error {
@@ -2564,6 +2589,14 @@ func (c *runnerSliceCoord) OnTickEnd(ctx context.Context, tickTime time.Time) er
 			c.r.log.Error().Err(err).Time("tick", tickTime).Msg("copytrade replay: advance failed")
 		}
 		c.eventBus.Flush()
+	}
+	if c.tttReplay != nil {
+		if _, err := c.tttReplay.AdvanceTo(ctx, tickTime); err != nil && c.r != nil {
+			c.r.log.Error().Err(err).Time("tick", tickTime).Msg("tradingthetrend replay: advance failed")
+		}
+		c.eventBus.Flush()
+	}
+	if c.copytradeReplay != nil || c.tttReplay != nil {
 		if c.sp != nil {
 			_ = c.sp.ForEachShard(func(p *Pipeline, _ []domain.Symbol) error {
 				rr := p.Runner()

@@ -47,6 +47,7 @@ func runBacktestViaRunner(
 	outputJSON string,
 	copytradeHist string,
 	copytradeLedgerDir string,
+	tttHist string,
 	preferLiveChain bool,
 ) error {
 	if preferLiveChain && appCfg.Alpaca.APIKeyID == "" {
@@ -76,8 +77,9 @@ func runBacktestViaRunner(
 		Strategies:         strategies,
 		CompoundEquity:     true,
 		EmitGatedDiag:      emitGatedDiag,
-		CopytradeHistory:   copytradeHist,
-		CopytradeLedgerDir: copytradeLedgerDir,
+		CopytradeHistory:       copytradeHist,
+		CopytradeLedgerDir:     copytradeLedgerDir,
+		TradingTheTrendHistory: tttHist,
 	}
 
 	infra := bootstrap.BuildBacktestInfra(
