@@ -30,7 +30,7 @@ _LINE_RE = re.compile(
     (?P<ticker>[A-Za-z]{1,6})\s+
     (?P<strike>\d+(?:\.\d+)?)
     (?P<right>[CcPp])
-    \s*>\s*
+    \s*(?P<direction>[<>])\s*
     (?P<trigger>\d+(?:\.\d+)?)
     \s*$
     """,
@@ -51,6 +51,11 @@ def parse_message(text: str) -> list[ParsedSignal]:
     """Parse a (potentially multi-line) Discord message body.
 
     Returns an empty list for pure commentary or noise.
+
+    Valid grammar:
+        TICKER STRIKE C > TRIGGER  (call breakout, long-directional)
+        TICKER STRIKE P < TRIGGER  (put breakdown, short-directional)
+    Inconsistent direction (C < or P >) is silently skipped.
     """
     out: list[ParsedSignal] = []
     for raw in text.splitlines():
@@ -60,10 +65,14 @@ def parse_message(text: str) -> list[ParsedSignal]:
         m = _LINE_RE.match(line)
         if not m:
             continue
+        right = m.group("right").upper()
+        direction = m.group("direction")
+        if (right == "C" and direction != ">") or (right == "P" and direction != "<"):
+            continue
         out.append(
             ParsedSignal(
                 ticker=m.group("ticker").upper(),
-                right=m.group("right").upper(),
+                right=right,
                 strike=float(m.group("strike")),
                 trigger=float(m.group("trigger")),
                 raw_line=line,

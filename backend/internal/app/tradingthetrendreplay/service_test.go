@@ -51,7 +51,7 @@ func TestService_LoadAndDrain(t *testing.T) {
 		// Commentary-only message, no entry grammar matches.
 		{ID: "m2", Author: "TradingTheTrend", TS: "2026-02-10T14:30:00Z", Text: "Good luck @everyone"},
 		// One signal arriving later.
-		{ID: "m3", Author: "TradingTheTrend", TS: "2026-02-11T14:00:00Z", Text: "TSLA 425p > 421.00"},
+		{ID: "m3", Author: "TradingTheTrend", TS: "2026-02-11T14:00:00Z", Text: "TSLA 425p < 421.00"},
 	})
 
 	svc, _, captured := newTestService(t)
@@ -155,7 +155,7 @@ func TestLoadUniverse(t *testing.T) {
 	writeJSONL(t, path, []historyMessage{
 		{ID: "early", Author: "a", TS: "2026-01-01T00:00:00Z", Text: "AAPL 200c > 198.00"},
 		{ID: "mid", Author: "a", TS: "2026-02-15T00:00:00Z", Text: "MSFT 425c > 423.00\nAAPL 200c > 198.00"},
-		{ID: "late", Author: "a", TS: "2026-03-01T00:00:00Z", Text: "TSLA 425p > 421.00"},
+		{ID: "late", Author: "a", TS: "2026-03-01T00:00:00Z", Text: "TSLA 425p < 421.00"},
 		{ID: "noise", Author: "a", TS: "2026-02-20T00:00:00Z", Text: "Good luck @everyone"},
 	})
 

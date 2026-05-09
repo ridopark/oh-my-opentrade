@@ -629,10 +629,15 @@ type TradingTheTrendParsed struct {
 	RawLine string
 }
 
-var tttLineRe = regexp.MustCompile(`(?i)^\s*([A-Z]{1,6})\s+(\d+(?:\.\d+)?)([CP])\s*>\s*(\d+(?:\.\d+)?)\s*$`)
+var tttLineRe = regexp.MustCompile(`(?i)^\s*([A-Z]{1,6})\s+(\d+(?:\.\d+)?)([CP])\s*([<>])\s*(\d+(?:\.\d+)?)\s*$`)
 
 // ParseTradingTheTrendMessage parses a multi-line Discord message body and
-// returns one TradingTheTrendParsed per matching line.
+// returns one TradingTheTrendParsed per matching line. Valid grammar:
+//
+//	TICKER STRIKE C > TRIGGER  (call breakout, long-directional)
+//	TICKER STRIKE P < TRIGGER  (put breakdown, short-directional)
+//
+// Inconsistent direction (C < or P >) is silently skipped.
 func ParseTradingTheTrendMessage(text string) []TradingTheTrendParsed {
 	var out []TradingTheTrendParsed
 	for _, raw := range strings.Split(text, "\n") {
@@ -644,11 +649,16 @@ func ParseTradingTheTrendMessage(text string) []TradingTheTrendParsed {
 		if m == nil {
 			continue
 		}
+		right := strings.ToUpper(m[3])
+		direction := m[4]
+		if (right == "C" && direction != ">") || (right == "P" && direction != "<") {
+			continue
+		}
 		strike, _ := strconv.ParseFloat(m[2], 64)
-		trigger, _ := strconv.ParseFloat(m[4], 64)
+		trigger, _ := strconv.ParseFloat(m[5], 64)
 		out = append(out, TradingTheTrendParsed{
 			Ticker:  strings.ToUpper(m[1]),
-			Right:   strings.ToUpper(m[3]),
+			Right:   right,
 			Strike:  strike,
 			Trigger: trigger,
 			RawLine: line,

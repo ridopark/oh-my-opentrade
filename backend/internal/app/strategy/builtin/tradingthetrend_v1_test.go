@@ -388,10 +388,10 @@ func TestTradingTheTrend_ParserParity(t *testing.T) {
 		{"sample_rklb", "RKLB    90c     >    88.00", []expected{{"RKLB", "C", 90.0, 88.0}}},
 		{"sample_msft", "MSFT 425c > 423.00", []expected{{"MSFT", "C", 425.0, 423.0}}},
 		{"sample_nvda_decimal", "NVDA 217.5c > 215.00", []expected{{"NVDA", "C", 217.5, 215.0}}},
-		{"sample_tsla_put", "TSLA 425p > 421.00", []expected{{"TSLA", "P", 425.0, 421.0}}},
+		{"sample_tsla_put", "TSLA 425p < 421.00", []expected{{"TSLA", "P", 425.0, 421.0}}},
 		{"lowercase_ticker", "aapl 150c > 148.00", []expected{{"AAPL", "C", 150.0, 148.0}}},
 		{"no_space_around_gt", "AAPL 150c>148.00", []expected{{"AAPL", "C", 150.0, 148.0}}},
-		{"multiline_full", "RKLB 90c > 88.00\nMSFT 425c > 423.00\nTSLA 425p > 421.00",
+		{"multiline_full", "RKLB 90c > 88.00\nMSFT 425c > 423.00\nTSLA 425p < 421.00",
 			[]expected{
 				{"RKLB", "C", 90.0, 88.0},
 				{"MSFT", "C", 425.0, 423.0},
