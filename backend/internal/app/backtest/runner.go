@@ -2490,21 +2490,44 @@ func newSymbolOverrideSpecStore(inner portstrategy.SpecStore, symbols []string) 
 
 // intersectSymbols returns only symbols present in both the strategy's native
 // list and the backtest request. If the strategy has no native symbols
-// configured, the full request list is used as a fallback.
+// configured, the full request list is used as a fallback. Sentinel symbols
+// (shaped __name__) are preserved verbatim — they're event-driven routing
+// keys for sentinel-rooted strategies (copytrade, tradingthetrend) and must
+// not be filtered by the universe intersection.
 func (s *symbolOverrideSpecStore) intersectSymbols(native []string) []string {
 	if len(native) == 0 {
 		return s.symbols
 	}
-	var out []string
+	var sentinels []string
+	var nonSentinels []string
 	for _, sym := range native {
-		if s.allowedSet[sym] {
-			out = append(out, sym)
+		if isSentinelSymbol(sym) {
+			sentinels = append(sentinels, sym)
+		} else {
+			nonSentinels = append(nonSentinels, sym)
 		}
 	}
-	if len(out) == 0 {
-		return s.symbols // no overlap — use backtest-requested symbols
+	// Pure sentinel routing — preserve as-is (copytrade, tradingthetrend).
+	if len(nonSentinels) == 0 {
+		return sentinels
 	}
-	return out
+	var intersected []string
+	for _, sym := range nonSentinels {
+		if s.allowedSet[sym] {
+			intersected = append(intersected, sym)
+		}
+	}
+	if len(intersected) == 0 && len(sentinels) == 0 {
+		return s.symbols // no overlap and no sentinels — use backtest-requested symbols
+	}
+	return append(sentinels, intersected...)
+}
+
+// isSentinelSymbol mirrors bootstrap/strategy.go: symbols shaped __name__
+// are routing keys, not real tradable symbols. Kept local to avoid the
+// runner package importing app/bootstrap (cyclic).
+func isSentinelSymbol(sym string) bool {
+	return len(sym) >= 4 && sym[:2] == "__" && sym[len(sym)-2:] == "__"
 }
 
 func (s *symbolOverrideSpecStore) List(ctx context.Context, filter *portstrategy.SpecFilter) ([]portstrategy.Spec, error) {

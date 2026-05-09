@@ -16,10 +16,12 @@ state = "Deactivated"
 paper_only = true
 
 [routing]
-# Symbols are seeded at activation time from the watchlist. Empty list keeps
-# the strategy registered without per-symbol Init bindings until the sidecar
-# starts publishing tickers (see Phase 3e wiring).
-symbols = []
+# Sentinel symbol so the runner has exactly one instance to register at
+# bootstrap time. Per-ticker bar routing is added dynamically by the
+# runner's handleTradingTheTrendSignal handler via Router.AddSymbol when
+# each watchlist signal arrives, so bar dispatch follows the actual
+# watchlist tickers (no pre-pinning).
+symbols = ["__tradingthetrend__"]
 timeframes = ["5m"]
 priority = 90
 conflict_policy = "priority_wins"

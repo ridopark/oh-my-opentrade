@@ -129,6 +129,39 @@ func (r *Router) Replace(oldID start.InstanceID, newInst *Instance) *Instance {
 	return old
 }
 
+// AddSymbol attaches an additional symbol to an already-registered
+// instance's routing entry. Used by sentinel-rooted dynamic-watchlist
+// strategies (e.g. tradingthetrend_v1) that grow their per-shard symbol
+// set as signals arrive — the bootstrap registers the instance under a
+// sentinel symbol like "__tradingthetrend__", and on the first signal
+// for ticker T the runner calls AddSymbol(instID, T) so subsequent bars
+// for T dispatch to the same instance. Idempotent: repeat calls are
+// no-ops. Returns false if the instance is not registered.
+func (r *Router) AddSymbol(id start.InstanceID, symbol string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	inst, ok := r.instances[id]
+	if !ok {
+		return false
+	}
+	ids := r.symbolMap[symbol]
+	for _, existing := range ids {
+		if existing == id {
+			return true // already routed
+		}
+	}
+	ids = append(ids, id)
+	sort.Slice(ids, func(i, j int) bool {
+		a := r.instances[ids[i]]
+		b := r.instances[ids[j]]
+		return a.Assignment().Priority > b.Assignment().Priority
+	})
+	r.symbolMap[symbol] = ids
+	_ = inst
+	return true
+}
+
 // InstancesForSymbol returns active instances assigned to the given symbol,
 // sorted by priority (highest first).
 func (r *Router) InstancesForSymbol(symbol string) []*Instance {

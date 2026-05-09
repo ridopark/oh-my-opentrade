@@ -18,12 +18,17 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"syscall"
+
+	"github.com/oh-my-opentrade/backend/internal/app/strategy/builtin"
 )
 
 func main() {
@@ -70,11 +75,23 @@ func main() {
 		bin = resolved
 	}
 
+	tickers, err := tickersFromHistory(historyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ticker extraction failed: %v\n", err)
+		os.Exit(2)
+	}
+	if len(tickers) == 0 {
+		fmt.Fprintln(os.Stderr, "no parseable tickers in history file (parser found 0 entry-grammar matches)")
+		os.Exit(2)
+	}
+	fmt.Fprintf(os.Stderr, "watchlist universe: %d tickers (%s)\n", len(tickers), strings.Join(tickers, ","))
+
 	args := []string{
 		"--backtest",
 		"--no-ai",
 		"--strategies=tradingthetrend_v1",
 		"--force-active=tradingthetrend_v1",
+		"--symbols=" + strings.Join(tickers, ","),
 		"--ttt-history=" + historyPath,
 		"--config=" + configPath,
 		"--env-file=" + envPath,
@@ -97,4 +114,47 @@ func main() {
 		fmt.Fprintf(os.Stderr, "exec failed: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// historyMessage mirrors the JSONL row shape emitted by the scraper.
+type historyMessage struct {
+	Text string `json:"text"`
+}
+
+// tickersFromHistory parses the JSONL via the canonical TTT message
+// parser and returns the sorted union of tickers seen in entry-grammar
+// matches. This becomes the backtest --symbols universe so bars only
+// load for tickers that actually appear in the watchlist.
+func tickersFromHistory(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	seen := make(map[string]struct{})
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var msg historyMessage
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			return nil, fmt.Errorf("unmarshal history line: %w", err)
+		}
+		for _, p := range builtin.ParseTradingTheTrendMessage(msg.Text) {
+			seen[p.Ticker] = struct{}{}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(seen))
+	for t := range seen {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out, nil
 }

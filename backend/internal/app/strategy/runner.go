@@ -2923,12 +2923,6 @@ func (r *Runner) handleTradingTheTrendSignal(ctx context.Context, event domain.E
 		return nil
 	}
 
-	inst := r.findInstanceByStrategy("tradingthetrend_v1")
-	if inst == nil {
-		r.logger.Debug("handleTradingTheTrendSignal: no active tradingthetrend_v1 instance")
-		return nil
-	}
-
 	ticker := string(payload.Ticker)
 	if ticker == "" {
 		r.logger.Warn("handleTradingTheTrendSignal: empty ticker, dropping signal",
@@ -2936,9 +2930,20 @@ func (r *Runner) handleTradingTheTrendSignal(ctx context.Context, event domain.E
 		return nil
 	}
 
-	// Lazy-init per-ticker state. TTT uses dynamic watchlist (symbols=[]),
-	// so the bootstrap pass does not seed state for any ticker; first signal
-	// arriving for ticker T is the seeding event.
+	// TTT registers as a single sentinel-rooted instance per shard
+	// (symbols = ["__tradingthetrend__"] in TOML); per-ticker bar routing
+	// is grown dynamically as signals arrive. This handler:
+	//   1. Finds the sentinel instance
+	//   2. Lazy-inits per-ticker state on it (one arm per ticker per session)
+	//   3. Adds the ticker to the router so subsequent bars dispatch to the
+	//      sentinel instance — bar routing follows the watchlist, not the
+	//      universe slab.
+	inst := r.findInstanceByStrategy("tradingthetrend_v1")
+	if inst == nil {
+		r.logger.Debug("handleTradingTheTrendSignal: no active tradingthetrend_v1 instance")
+		return nil
+	}
+
 	if _, seeded := inst.GetState(ticker); !seeded {
 		initCtx := &instanceContext{
 			ctx:      ctx,
@@ -2955,6 +2960,12 @@ func (r *Runner) handleTradingTheTrendSignal(ctx context.Context, event domain.E
 				"error", err,
 			)
 			return nil
+		}
+		// Register the ticker in the router so subsequent bars for it
+		// dispatch to this sentinel-rooted instance. Bar routing follows
+		// the watchlist union, not the universe slab.
+		if r.router != nil {
+			r.router.AddSymbol(inst.ID(), ticker)
 		}
 	}
 
