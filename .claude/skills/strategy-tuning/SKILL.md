@@ -533,6 +533,24 @@ Some strategies (e.g., MACD options) depend on rare large winners. Signs:
 
 **For fat-tail strategies, tighter risk management REDUCES PF** because it clips the tails the strategy depends on. Do not blindly add stops or tighten trails. Use MFE/MAE data to set levels empirically.
 
+### MFE-Armed Asymmetric Exit Pattern (learned 2026-05-09 tradingthetrend_v1)
+
+When a static trail (one `atr_mult`) is Pareto-suboptimal — tight clips winners but provides cheap loser stops; loose lets winners run but holds losers longer — the binding constraint is **state-dependent exit asymmetry**, not the multiplier value. No PARAM_CHANGE will fix it.
+
+The pattern: **pre-arm wider trail (or no trail at all if other stops cover), then snap to tight trail once premium MFE crosses an arming threshold**. Anchors HHV/LLV from the arm bar, not the entry bar — premium spikes that occurred before the trade became "real" don't bias the trail.
+
+Implemented in `evaluateChandelierTrailUnderlying` via three TOML knobs (all default 0 = legacy behavior):
+- `arm_on_premium_mfe` — fraction of entry premium that triggers arming (e.g. 0.02 = +2%)
+- `armed_atr_mult` — tight multiplier post-arm (typical 1.0-1.5)
+- `pre_arm_atr_mult` — wider safety trail pre-arm (typical 2.0-3.0). **CRITICAL**: setting this to 0 leaves trades that never go positive completely unprotected by the chandelier. The other exit rules (TIERED_PREMIUM_STOP_DTE, ATR_EXTENSION_TIME_STOP) often won't catch a slow bleed in time. iter-2 of the TTT tune lost $2155 on a single trade because of this; iter-3 with `pre_arm_atr_mult=2.5` recovered.
+
+Tuning order:
+1. Set `arm_on_premium_mfe` first (typical 0.01-0.05). Higher = stricter signal of "real" momentum.
+2. Set `pre_arm_atr_mult` to the legacy `atr_mult` value (safety net). Don't leave at 0.
+3. Tune `armed_atr_mult` last (1.0 to 1.75 range).
+
+Do NOT widen the legacy `atr_mult` as a substitute — both winners and losers get the wider trail symmetrically (Pareto-suboptimal).
+
 ## Tuning Workflow
 
 ### Step 1: Setup
@@ -912,6 +930,27 @@ Before tuning, scan for these known issues:
 ### TOML Subtable Scope Termination (CRITICAL)
 **Bug:** `[params.subtable]` terminates `[params]` — all subsequent params become children of the subtable.
 **Fix:** Use inline table: `param = { key = "value" }` within the `[params]` section.
+
+### Missing [options] Block Silently Trades as Equity (CRITICAL)
+**Symptom:** Strategy declares `asset_classes = ["OPTION"]` and emits signals with options tags (`force_expiry`, `force_strike`, `force_right`, `contract_symbol`) but trade rows show fractional quantities of the underlying ticker (e.g. `4.39 SPY @ $683.44`) instead of OCC contract symbols (e.g. `SPY260306C00682000 qty=8 @ $12.21`).
+**Bug:** The risk sizer at `internal/app/strategy/risk_sizer.go:643` dispatches to the options pipeline only when `spec.Options != nil && spec.Options.Enabled`. Without an `[options]` block the spec field is nil and EVERY signal falls through to the equity path, which unconditionally sets `intent.AssetClass = AssetClassEquity` (line 711-715). The strategy's options tags are ignored. No warning is logged.
+**Pre-tune sniff test:** before any sweep on an OPTION strategy, run one baseline backtest and grep the trade rows for OCC symbols (`grep -E '[CP]00[0-9]{8}'`). If zero matches, the entire tune will be on equity simulations and is invalid.
+**Fix:** add a minimal `[options]` block to the TOML mirroring `copytrade_v1.toml`:
+```toml
+[options]
+enabled = true
+max_contracts = 50
+limit_spread_pct = 1.00
+limit_buffer_bps = 500
+stale_cancel_secs = 60
+
+[options.defaults]
+min_open_interest = 25
+max_spread_pct = 0.25
+max_iv = 2.0
+```
+**Also**: add `risk_per_trade_bps` (typical 1000 for options) to `[params]`. The system default of 10 bps caps premium spend at $10-$30 per trade — every option contract priced above that is silently rejected with `option contract premium exceeds risk budget` warning.
+**Status:** discovered tuning tradingthetrend_v1 (2026-05-09). The first ~10 backtest iterations of the session were on equity-not-options, producing meaningless PF readings.
 
 ## Slot Backfill Effect
 
