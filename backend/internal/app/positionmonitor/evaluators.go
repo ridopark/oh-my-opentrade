@@ -205,6 +205,12 @@ func evaluateChandelierTrailUnderlying(rule domain.ExitRule, pos *domain.Monitor
 		return false, ""
 	}
 
+	// MFE-arm extension params. When armOnMFE == 0, this block is inert and
+	// the legacy behavior below runs unchanged.
+	armOnMFE := rule.Param("arm_on_premium_mfe", 0)
+	armedATRMult := rule.Param("armed_atr_mult", 0)
+	preArmATRMult := rule.Param("pre_arm_atr_mult", 0)
+
 	// Activation gate (default 0 = arm immediately on entry).
 	activatePct := rule.Param("activate_pct", 0)
 	if activatePct > 0 {
@@ -229,6 +235,43 @@ func evaluateChandelierTrailUnderlying(rule domain.ExitRule, pos *domain.Monitor
 		barDur = 5 * time.Minute
 	}
 	barCount := int(now.Sub(pos.EntryTime) / barDur)
+
+	// MFE-arm gate. Sticky: once armed, never disarms. On the arm transition,
+	// clear the HHV/LLV ring so post-arm trail anchors from the arm bar — not
+	// from any pre-arm extreme that the entry-time trail had been tracking.
+	effectiveATRMult := atrMult
+	if armOnMFE > 0 {
+		armed := pos.CustomState["chand_und_armed"] > 0
+		if !armed {
+			if mfe, ok := pos.CustomState["premium_mfe_pct"]; ok && mfe >= armOnMFE {
+				pos.CustomState["chand_und_armed"] = 1
+				pos.CustomState["chand_und_arm_bar_idx"] = float64(barCount)
+				for i := 0; i < lookback; i++ {
+					delete(pos.CustomState, fmt.Sprintf("chand_und_high_%d", i))
+					delete(pos.CustomState, fmt.Sprintf("chand_und_low_%d", i))
+				}
+				if pos.IsShort() {
+					pos.CustomState["chand_und_low_0"] = barLow
+				} else {
+					pos.CustomState["chand_und_high_0"] = barHigh
+				}
+				pos.CustomState["chand_und_ring_idx"] = 1
+				pos.CustomState["chand_und_seeded"] = 1
+				pos.CustomState["chand_und_last_bar_idx"] = float64(barCount)
+				armed = true
+			}
+		}
+		if armed {
+			if armedATRMult > 0 {
+				effectiveATRMult = armedATRMult
+			}
+		} else {
+			if preArmATRMult <= 0 {
+				return false, ""
+			}
+			effectiveATRMult = preArmATRMult
+		}
+	}
 
 	// Same dedup pattern as evaluateSwingStop: only advance the ring on a
 	// new bar boundary. The mutation is local to one rule's CustomState
@@ -261,10 +304,10 @@ func evaluateChandelierTrailUnderlying(rule domain.ExitRule, pos *domain.Monitor
 		}
 		pos.CustomState["underlying_llv"] = llv
 		pos.CustomState["underlying_atr"] = ctx.ATR
-		trail := llv + atrMult*ctx.ATR
+		trail := llv + effectiveATRMult*ctx.ATR
 		if currentPrice >= trail {
 			return true, fmt.Sprintf("chandelier_trail_underlying(short): price %.4f >= trail %.4f (llv=%.4f, atr=%.6f, mult=%.2f, lookback=%d)",
-				currentPrice, trail, llv, ctx.ATR, atrMult, lookback)
+				currentPrice, trail, llv, ctx.ATR, effectiveATRMult, lookback)
 		}
 		return false, ""
 	}
@@ -282,10 +325,10 @@ func evaluateChandelierTrailUnderlying(rule domain.ExitRule, pos *domain.Monitor
 	}
 	pos.CustomState["underlying_hhv"] = hhv
 	pos.CustomState["underlying_atr"] = ctx.ATR
-	trail := hhv - atrMult*ctx.ATR
+	trail := hhv - effectiveATRMult*ctx.ATR
 	if currentPrice <= trail {
 		return true, fmt.Sprintf("chandelier_trail_underlying(long): price %.4f <= trail %.4f (hhv=%.4f, atr=%.6f, mult=%.2f, lookback=%d)",
-			currentPrice, trail, hhv, ctx.ATR, atrMult, lookback)
+			currentPrice, trail, hhv, ctx.ATR, effectiveATRMult, lookback)
 	}
 	return false, ""
 }

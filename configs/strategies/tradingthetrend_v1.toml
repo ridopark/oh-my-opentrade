@@ -34,6 +34,12 @@ allowed_directions = ["LONG"]
 description = "No screening. Author membership is the vetting layer."
 
 [params]
+# Risk sizing — required for the options pipeline. risk_per_trade_bps caps
+# the per-trade premium spend (system default 10 bps = $10 on $100k, which
+# rejects every option contract); 1000 bps matches copytrade_v1's setting.
+risk_per_trade_bps = 1000
+max_position_bps   = 3000
+
 # Entry knobs from prereg section 3 (locked).
 expiry_dte             = 0       # 0 = nearest weekly Friday; positive int adds days
 min_dte                = 2       # skip 0DTE
@@ -108,7 +114,29 @@ extension_atr_mult = 0.5
 [[exit_rules]]
 type = "CHANDELIER_TRAIL_UNDERLYING"
 [exit_rules.params]
-atr_period    = 14
-atr_mult      = 2.5
-lookback_bars = 20
-activate_pct  = 0.0
+atr_period         = 14
+atr_mult           = 2.5
+lookback_bars      = 20
+activate_pct       = 0.0
+arm_on_premium_mfe = 0.02   # arm trail at +2% premium MFE
+armed_atr_mult     = 1.25   # tight trail post-arm
+pre_arm_atr_mult   = 2.5    # legacy-width trail before arm (safety net)
+
+# --- Options ---
+# Required for the risk sizer to dispatch through the options pipeline. The
+# strategy uses the force-contract path (force_expiry/force_strike/force_right
+# tags from the Discord watchlist) so delta/DTE selection in [options.defaults]
+# is bypassed at sizing time — the contract is pinned. Defaults still cover the
+# liquidity gates (OI, spread) applied downstream.
+
+[options]
+enabled = true
+max_contracts = 50
+limit_spread_pct = 1.00
+limit_buffer_bps = 500
+stale_cancel_secs = 60
+
+[options.defaults]
+min_open_interest = 25
+max_spread_pct = 0.25
+max_iv = 2.0
