@@ -118,3 +118,12 @@ restart-copytrade:
 	test -n "$$ip" || { echo "restart-copytrade: failed to detect eth0 IP"; exit 1; }; \
 	echo "restart-copytrade: WSL_HOST_IP=$$ip"; \
 	cd services/discord-copytrade && WSL_HOST_IP=$$ip docker compose up -d --force-recreate watcher
+
+## Recreate the Discord tradingthetrend watcher (same WSL2 host-IP pin pattern
+## as restart-copytrade). Referenced by services/discord-tradingthetrend/
+## docker-compose.yml's WSL_HOST_IP error message.
+restart-tradingthetrend:
+	@ip=$$(ip -4 addr show eth0 | grep -oP 'inet \K[\d.]+'); \
+	test -n "$$ip" || { echo "restart-tradingthetrend: failed to detect eth0 IP"; exit 1; }; \
+	echo "restart-tradingthetrend: WSL_HOST_IP=$$ip"; \
+	cd services/discord-tradingthetrend && WSL_HOST_IP=$$ip docker compose up -d --force-recreate watcher
