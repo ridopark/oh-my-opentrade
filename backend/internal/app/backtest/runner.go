@@ -1573,6 +1573,20 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 
+		var sentinelExtraSymbols map[string][]string
+		if r.cfg.TradingTheTrendHistory != "" {
+			tttUniverse, uErr := tradingthetrendreplay.LoadUniverse(r.cfg.TradingTheTrendHistory, r.cfg.From, r.cfg.To)
+			if uErr != nil {
+				r.status.Store("error")
+				return fmt.Errorf("tradingthetrend replay: load universe %s: %w", r.cfg.TradingTheTrendHistory, uErr)
+			}
+			sentinelExtraSymbols = map[string][]string{"tradingthetrend_v1": tttUniverse}
+			r.log.Info().
+				Int("watchlist_universe_size", len(tttUniverse)).
+				Strs("tickers", tttUniverse).
+				Msg("tradingthetrend pre-registration ready")
+		}
+
 		stratDeps := bootstrap.StrategyDeps{
 			EventBus:                  r.infra.EventBus,
 			SpecStore:                 specStore,
@@ -1581,15 +1595,16 @@ func (r *Runner) Run(ctx context.Context) error {
 			OpenOptionContractsLookup: posMonBundle.Service.ListOpenContractsByUnderlying,
 			MarketDataFn:              monitorSvc.GetLastSnapshot,
 			OptionsMarket:             optionsAdapter,
-			Repo:            nil,
-			TenantID:        "default",
-			EnvMode:         domain.EnvModePaper,
-			Equity:          r.cfg.InitialEquity,
-			Clock:           clockFn,
-			DisableAI: r.cfg.NoAI,
-			Logger:          r.log,
-			BacktestID:      r.id,
-			TideTracker:     tideTracker,
+			Repo:                 nil,
+			TenantID:             "default",
+			EnvMode:              domain.EnvModePaper,
+			Equity:               r.cfg.InitialEquity,
+			Clock:                clockFn,
+			DisableAI:            r.cfg.NoAI,
+			Logger:               r.log,
+			BacktestID:           r.id,
+			TideTracker:          tideTracker,
+			SentinelExtraSymbols: sentinelExtraSymbols,
 		}
 
 		var sentinelOwnerAssigned bool

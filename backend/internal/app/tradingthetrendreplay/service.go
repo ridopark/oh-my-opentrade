@@ -158,6 +158,60 @@ func (s *Service) Pending() int {
 	return len(s.queue) - s.cursor
 }
 
+// LoadUniverse scans path for the union of tickers across all parseable
+// messages in [fromTime, toTime] (zero-value bounds disable the respective
+// filter). Used by backtest bootstrap to pre-register sentinel-rooted TTT
+// routing without depending on dynamic AddSymbol-on-signal plumbing.
+//
+// Reuses builtin.ParseTradingTheTrendMessage so the universe is exactly
+// the set of tickers Load would later publish for the same date range.
+func LoadUniverse(path string, fromTime, toTime time.Time) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	seen := make(map[string]struct{})
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(strings.TrimSpace(string(line))) == 0 {
+			continue
+		}
+		var msg historyMessage
+		if err := json.Unmarshal(line, &msg); err != nil {
+			return nil, fmt.Errorf("unmarshal history line: %w", err)
+		}
+		postedAt, err := time.Parse(time.RFC3339Nano, msg.TS)
+		if err != nil {
+			return nil, fmt.Errorf("parse ts %q: %w", msg.TS, err)
+		}
+		postedAt = postedAt.UTC()
+		if !fromTime.IsZero() && postedAt.Before(fromTime) {
+			continue
+		}
+		if !toTime.IsZero() && postedAt.After(toTime) {
+			continue
+		}
+		for _, sig := range builtin.ParseTradingTheTrendMessage(msg.Text) {
+			seen[sig.Ticker] = struct{}{}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("scan: %w", err)
+	}
+
+	out := make([]string, 0, len(seen))
+	for t := range seen {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // AdvanceTo publishes every queued signal whose PostedAt <= clockTime.
 func (s *Service) AdvanceTo(ctx context.Context, clockTime time.Time) (int, error) {
 	published := 0

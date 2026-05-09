@@ -165,6 +165,53 @@ func TestBuildStrategyShard_SlabFilter(t *testing.T) {
 	}
 }
 
+func TestBuildStrategyShard_SentinelExtraSymbols(t *testing.T) {
+	specStore := specStoreFromConfigs(t)
+	deps := StrategyDeps{
+		EventBus:  stubEventBus{},
+		SpecStore: specStore,
+		AIAdvisor: stubAIAdvisor{},
+		TenantID:  "test",
+		EnvMode:   domain.EnvModePaper,
+		Equity:    100_000,
+		Clock:     func() time.Time { return time.Date(2025, 6, 1, 10, 0, 0, 0, time.UTC) },
+		DisableAI: true,
+		Logger:    zerolog.Nop(),
+		SentinelExtraSymbols: map[string][]string{
+			"copytrade_v1": {"FAKE1", "FAKE2"},
+		},
+	}
+	shared, err := BuildStrategyShared(deps)
+	if err != nil {
+		t.Fatalf("BuildStrategyShared: %v", err)
+	}
+
+	shard, err := BuildStrategyShardWithSentinels(shared, nil, deps)
+	if err != nil {
+		t.Fatalf("BuildStrategyShardWithSentinels: %v", err)
+	}
+
+	for _, ticker := range []string{"FAKE1", "FAKE2"} {
+		insts := shard.Router.InstancesForSymbol(ticker)
+		if len(insts) == 0 {
+			t.Fatalf("router missing pre-registered ticker %s", ticker)
+		}
+		var foundCopytrade bool
+		for _, inst := range insts {
+			if inst.Strategy().Meta().ID.String() == "copytrade_v1" {
+				foundCopytrade = true
+				if _, seeded := inst.GetState(ticker); !seeded {
+					t.Fatalf("copytrade_v1 instance has no per-symbol state for pre-registered ticker %s", ticker)
+				}
+				break
+			}
+		}
+		if !foundCopytrade {
+			t.Fatalf("ticker %s did not resolve to copytrade_v1 instance", ticker)
+		}
+	}
+}
+
 func TestBuildStrategyPipeline_NoAI(t *testing.T) {
 	specStore := specStoreFromConfigs(t)
 

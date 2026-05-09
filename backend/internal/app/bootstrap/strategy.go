@@ -71,6 +71,13 @@ type StrategyDeps struct {
 	// runner. The runner's HTF state lives here so live and backtest
 	// share the same seeded calc per shard.
 	Indicator *indicator.Service
+	// SentinelExtraSymbols, when non-nil, pre-registers extra real tickers
+	// onto sentinel-rooted strategy instances at bootstrap. Keyed by
+	// strategy ID (e.g. "tradingthetrend_v1"). Each ticker gets InitSymbol
+	// + Router.AddSymbol against the spec's sentinel instance, so bars for
+	// those tickers reach the strategy without depending on dynamic
+	// AddSymbol-on-event plumbing. Backtest-only — live keeps this nil.
+	SentinelExtraSymbols map[string][]string
 }
 
 // StrategyPipeline is the return value of BuildStrategyPipeline, exposing the
@@ -285,6 +292,18 @@ func buildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps Strat
 			}
 			router.Register(inst)
 			allSymbols[sym] = struct{}{}
+
+			if isSentinelSymbol(sym) {
+				if extras := deps.SentinelExtraSymbols[spec.ID.String()]; len(extras) > 0 {
+					for _, ticker := range extras {
+						if err := inst.InitSymbol(initCtx, ticker, nil); err != nil {
+							return nil, fmt.Errorf("bootstrap: strategy: failed to pre-init %s sentinel ticker %s: %w", spec.ID, ticker, err)
+						}
+						router.AddSymbol(instanceID, ticker)
+						allSymbols[ticker] = struct{}{}
+					}
+				}
+			}
 		}
 	}
 

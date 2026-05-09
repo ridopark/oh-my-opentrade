@@ -149,6 +149,49 @@ func TestService_IdempotentAdvanceTo(t *testing.T) {
 	}
 }
 
+func TestLoadUniverse(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history.jsonl")
+	writeJSONL(t, path, []historyMessage{
+		{ID: "early", Author: "a", TS: "2026-01-01T00:00:00Z", Text: "AAPL 200c > 198.00"},
+		{ID: "mid", Author: "a", TS: "2026-02-15T00:00:00Z", Text: "MSFT 425c > 423.00\nAAPL 200c > 198.00"},
+		{ID: "late", Author: "a", TS: "2026-03-01T00:00:00Z", Text: "TSLA 425p > 421.00"},
+		{ID: "noise", Author: "a", TS: "2026-02-20T00:00:00Z", Text: "Good luck @everyone"},
+	})
+
+	all, err := LoadUniverse(path, time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatalf("LoadUniverse all: %v", err)
+	}
+	wantAll := []string{"AAPL", "MSFT", "TSLA"}
+	if !equalStrings(all, wantAll) {
+		t.Errorf("all universe = %v, want %v", all, wantAll)
+	}
+
+	from := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 2, 28, 0, 0, 0, 0, time.UTC)
+	mid, err := LoadUniverse(path, from, to)
+	if err != nil {
+		t.Fatalf("LoadUniverse mid: %v", err)
+	}
+	wantMid := []string{"AAPL", "MSFT"}
+	if !equalStrings(mid, wantMid) {
+		t.Errorf("mid universe = %v, want %v", mid, wantMid)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestService_SortByPostedAt(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "history.jsonl")
