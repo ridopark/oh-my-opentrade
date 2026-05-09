@@ -1623,7 +1623,8 @@ func (r *Runner) Run(ctx context.Context) error {
 			shardDeps.Indicator = shardIdx
 			var shardStrat *bootstrap.StrategyShard
 			var stratErr error
-			if r.cfg.CopytradeHistory != "" && !sentinelOwnerAssigned {
+			usesSentinels := r.cfg.CopytradeHistory != "" || r.cfg.TradingTheTrendHistory != ""
+			if usesSentinels && !sentinelOwnerAssigned {
 				shardStrat, stratErr = bootstrap.BuildStrategyShardWithSentinels(strategyShared, slab, shardDeps)
 				sentinelOwnerAssigned = true
 			} else {
@@ -1656,6 +1657,14 @@ func (r *Runner) Run(ctx context.Context) error {
 			nworkers = len(r.cfg.Symbols)
 		}
 		if nworkers < 1 {
+			nworkers = 1
+		}
+		// TradingTheTrend is bar-driven on the underlying. Sharded slabs
+		// round-robin watchlist tickers across N shards, so 7/N of bars
+		// would route to shards that don't host the TTT sentinel instance
+		// (registered on shard 0 only via WithSentinels). Force single
+		// shard when TTT history is replayed so all bars reach the sentinel.
+		if r.cfg.TradingTheTrendHistory != "" {
 			nworkers = 1
 		}
 		sp, spErr := NewShardedPipeline(nworkers, r.cfg.Symbols, ShardedInfra{
