@@ -1155,6 +1155,59 @@ func TestEvaluate_PremiumStop(t *testing.T) {
 	}
 }
 
+func TestEarlyPremiumStop_FiresInWindow(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+	// entry premium=5.00, delta=0.50, entry underlying=150, entered 3 min ago.
+	// At underlying 148.05: est = 5.00 + 0.50*(148.05-150) - 5.00*0.005
+	//                          = 5.00 - 0.975 - 0.025 = 4.00 -> 20% drawdown.
+	pos := newOptionPosition(t, 150, now.Add(-3*time.Minute), 5.00, 0.50)
+	rule := domain.ExitRule{Type: domain.ExitRuleEarlyPremiumStop, Params: map[string]float64{
+		"threshold": 0.15, "max_age_minutes": 5,
+	}}
+	triggered, reason := Evaluate(rule, pos, 148.05, now, EvalContext{})
+	assert.True(t, triggered)
+	assert.Contains(t, reason, "early_premium_stop")
+}
+
+func TestEarlyPremiumStop_BelowThresholdInWindow(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+	// At underlying 149.05: est = 5.00 + 0.50*(149.05-150) - 0.025 = 4.50 -> 10% drawdown.
+	pos := newOptionPosition(t, 150, now.Add(-3*time.Minute), 5.00, 0.50)
+	rule := domain.ExitRule{Type: domain.ExitRuleEarlyPremiumStop, Params: map[string]float64{
+		"threshold": 0.15, "max_age_minutes": 5,
+	}}
+	triggered, reason := Evaluate(rule, pos, 149.05, now, EvalContext{})
+	assert.False(t, triggered)
+	assert.Empty(t, reason)
+}
+
+func TestEarlyPremiumStop_OutsideWindow(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+	// 20% drawdown but elapsed 10 min > max_age 5 min -> no fire.
+	pos := newOptionPosition(t, 150, now.Add(-10*time.Minute), 5.00, 0.50)
+	rule := domain.ExitRule{Type: domain.ExitRuleEarlyPremiumStop, Params: map[string]float64{
+		"threshold": 0.15, "max_age_minutes": 5,
+	}}
+	triggered, reason := Evaluate(rule, pos, 148.05, now, EvalContext{})
+	assert.False(t, triggered)
+	assert.Empty(t, reason)
+}
+
+func TestEarlyPremiumStop_NonOption(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+	pos := newTestMonitoredPosition(t, 150, now.Add(-3*time.Minute), domain.AssetClassEquity)
+	rule := domain.ExitRule{Type: domain.ExitRuleEarlyPremiumStop, Params: map[string]float64{
+		"threshold": 0.15, "max_age_minutes": 5,
+	}}
+	triggered, reason := Evaluate(rule, pos, 120, now, EvalContext{})
+	assert.False(t, triggered)
+	assert.Empty(t, reason)
+}
+
 func TestEvaluate_PremiumTrail(t *testing.T) {
 	etLoc := mustETLocation(t)
 	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)

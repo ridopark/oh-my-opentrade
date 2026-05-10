@@ -112,6 +112,16 @@ enabled = false
 # ATR_EXTENSION_TIME_STOP > CHANDELIER_TRAIL_UNDERLYING. Strategy stays
 # Deactivated until backtest passes the prereg's section 6 gates.
 
+## EARLY_PREMIUM_STOP catches "instant fakeout" patterns where premium
+## crashes within minutes of entry — surgically targets the DELL-style
+## case (-27% in 3 minutes) without affecting trades that go deep red
+## later then recover (GOOGL/IWM peaked AFTER deep MAE).
+[[exit_rules]]
+type = "EARLY_PREMIUM_STOP"
+[exit_rules.params]
+threshold       = 0.15   # exit if premium drops 15% from entry
+max_age_minutes = 5      # only fires in first 5 minutes after fill
+
 [[exit_rules]]
 type = "TIERED_PREMIUM_STOP_DTE"
 [exit_rules.params]

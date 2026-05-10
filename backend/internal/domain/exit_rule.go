@@ -27,6 +27,7 @@ const (
 	ExitRuleTieredTP        ExitRuleType = "TIERED_TP"
 	ExitRuleTimePartial     ExitRuleType = "TIME_PARTIAL"
 	ExitRulePremiumStop     ExitRuleType = "PREMIUM_STOP"     // exit if premium drops X% from entry
+	ExitRuleEarlyPremiumStop ExitRuleType = "EARLY_PREMIUM_STOP" // exit if premium drops X% within first N minutes after entry
 	ExitRulePremiumTrail    ExitRuleType = "PREMIUM_TRAIL"    // trail X% from premium high-water mark
 	ExitRulePremiumTarget   ExitRuleType = "PREMIUM_TARGET"   // exit if premium rises X% from entry
 	ExitRuleFastFail        ExitRuleType = "FAST_FAIL_EXIT"   // exit if no MFE progress after N minutes
@@ -63,7 +64,7 @@ func NewExitRuleType(s string) (ExitRuleType, error) {
 		ExitRuleDTEFloor, ExitRuleExpiryWatch,
 		ExitRuleSwingStop,
 		ExitRuleTieredTP, ExitRuleTimePartial,
-		ExitRulePremiumStop, ExitRulePremiumTrail, ExitRulePremiumTarget,
+		ExitRulePremiumStop, ExitRuleEarlyPremiumStop, ExitRulePremiumTrail, ExitRulePremiumTarget,
 		ExitRuleFastFail, ExitRuleChandelierTrail, ExitRuleCopytradeSTC,
 		ExitRuleTieredPremiumStopDTE, ExitRuleChandelierTrailUnderlying, ExitRuleATRExtensionTimeStop:
 		return ExitRuleType(s), nil

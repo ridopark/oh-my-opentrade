@@ -94,6 +94,8 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 		return evaluateTimePartial(rule, pos, currentPrice, now)
 	case domain.ExitRulePremiumStop:
 		return evaluatePremiumStop(rule, pos, currentPrice, now)
+	case domain.ExitRuleEarlyPremiumStop:
+		return evaluateEarlyPremiumStop(rule, pos, currentPrice, now)
 	case domain.ExitRulePremiumTrail:
 		return evaluatePremiumTrail(rule, pos, currentPrice, now, ctx)
 	case domain.ExitRulePremiumTarget:
@@ -1478,6 +1480,51 @@ func evaluatePremiumStop(rule domain.ExitRule, pos *domain.MonitoredPosition, cu
 	if loss >= threshold {
 		return true, fmt.Sprintf("premium_stop: loss %.2f%% >= threshold %.2f%% (entry=%.2f, est=%.2f)",
 			loss*100, threshold*100, entryPremium, estPremium)
+	}
+	return false, ""
+}
+
+// evaluateEarlyPremiumStop fires for option positions whose premium has dropped
+// by `threshold` (e.g. 0.15 = 15% loss from entry) within the first
+// `max_age_minutes` since entry. Designed for "instant fakeout" patterns where
+// a directional bet immediately reverses; ignores trades whose deep MAE
+// happens later (those are handled by TIERED_PREMIUM_STOP_DTE / BREAKEVEN_STOP).
+//
+// Params:
+//
+//	"threshold"        — premium drawdown fraction from entry (e.g. 0.15)
+//	"max_age_minutes"  — minutes after entry the rule remains active (e.g. 5)
+//
+// Both default to 0 = disabled. Non-option positions are no-ops.
+func evaluateEarlyPremiumStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time) (bool, string) {
+	if pos.InstrumentType != domain.InstrumentTypeOption {
+		return false, ""
+	}
+	threshold := rule.Param("threshold", 0)
+	maxAge := rule.Param("max_age_minutes", 0)
+	if threshold <= 0 || maxAge <= 0 {
+		return false, ""
+	}
+
+	elapsedMin := now.Sub(pos.EntryTime).Minutes()
+	if elapsedMin > maxAge {
+		return false, ""
+	}
+
+	entryPremium := pos.CustomState["option_premium"]
+	if entryPremium <= 0 {
+		return false, ""
+	}
+
+	currentPremium := pos.EstimatedPremium(currentPrice, now)
+	if currentPremium <= 0 {
+		return false, ""
+	}
+
+	drawdown := (entryPremium - currentPremium) / entryPremium
+	if drawdown >= threshold {
+		return true, fmt.Sprintf("early_premium_stop: drawdown %.2f%% >= threshold %.2f%% (elapsed %.1f min, window %.0f min)",
+			drawdown*100, threshold*100, elapsedMin, maxAge)
 	}
 	return false, ""
 }
