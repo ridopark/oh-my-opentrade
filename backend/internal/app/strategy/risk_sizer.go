@@ -617,6 +617,21 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		}
 	}
 
+	// Floor equity quantities to whole shares so the order intent matches what
+	// IBKR will actually report on the per-exec stream. Fractional intents on
+	// equities led to dust-residual orphans (IWM 0.4486890237347403 on
+	// 2026-05-06): broker fills the fractional share, our stream only captures
+	// the integer leg, exit sells the integer, broker silently sweeps the dust,
+	// DB carries an open long that the global reconciler can never heal.
+	// Crypto keeps fractional sizing — BTC/ETH books expect it.
+	if !domain.Symbol(sigRef.Symbol).IsCryptoSymbol() {
+		qty = math.Floor(qty)
+		if qty <= 0 {
+			rs.logger.Warn("equity quantity floored to zero; skipping", "symbol", sigRef.Symbol, "limit_price", limitPrice)
+			return nil
+		}
+	}
+
 	direction := domain.DirectionLong
 	if sigRef.SignalType == start.SignalExit.String() {
 		// Use exit_direction from enrichment tags if set by reconciler;
