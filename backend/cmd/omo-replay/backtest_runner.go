@@ -47,6 +47,8 @@ func runBacktestViaRunner(
 	outputJSON string,
 	copytradeHist string,
 	copytradeLedgerDir string,
+	tttHist string,
+	forceActive string,
 	preferLiveChain bool,
 ) error {
 	if preferLiveChain && appCfg.Alpaca.APIKeyID == "" {
@@ -76,8 +78,10 @@ func runBacktestViaRunner(
 		Strategies:         strategies,
 		CompoundEquity:     true,
 		EmitGatedDiag:      emitGatedDiag,
-		CopytradeHistory:   copytradeHist,
-		CopytradeLedgerDir: copytradeLedgerDir,
+		CopytradeHistory:       copytradeHist,
+		CopytradeLedgerDir:     copytradeLedgerDir,
+		TradingTheTrendHistory: tttHist,
+		ForceActiveStrategies:  splitTrim(forceActive),
 	}
 
 	infra := bootstrap.BuildBacktestInfra(
@@ -149,5 +153,18 @@ func runBacktestViaRunner(
 	}
 
 	return nil
+}
+
+func splitTrim(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 

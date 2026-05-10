@@ -1,0 +1,8 @@
+.env
+state/storage_state.json
+state/seen_ids.json
+state/heartbeat
+state/history.jsonl
+__pycache__/
+.pytest_cache/
+*.pyc

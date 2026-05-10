@@ -60,6 +60,37 @@ func TestNewExitRuleType_RejectsInvalid(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestNewExitRuleType_AcceptsTieredPremiumStopDTE(t *testing.T) {
+	rt, err := NewExitRuleType("TIERED_PREMIUM_STOP_DTE")
+	require.NoError(t, err)
+	assert.Equal(t, ExitRuleTieredPremiumStopDTE, rt)
+}
+
+func TestNewExitRuleType_AcceptsChandelierTrailUnderlying(t *testing.T) {
+	rt, err := NewExitRuleType("CHANDELIER_TRAIL_UNDERLYING")
+	require.NoError(t, err)
+	assert.Equal(t, ExitRuleChandelierTrailUnderlying, rt)
+}
+
+func TestNewExitRuleType_AcceptsATRExtensionTimeStop(t *testing.T) {
+	rt, err := NewExitRuleType("ATR_EXTENSION_TIME_STOP")
+	require.NoError(t, err)
+	assert.Equal(t, ExitRuleATRExtensionTimeStop, rt)
+}
+
+func TestExitRuleType_NewRules_RequirePrice(t *testing.T) {
+	cases := []ExitRuleType{
+		ExitRuleTieredPremiumStopDTE,
+		ExitRuleChandelierTrailUnderlying,
+		ExitRuleATRExtensionTimeStop,
+	}
+	for _, rt := range cases {
+		t.Run(string(rt), func(t *testing.T) {
+			assert.True(t, rt.RequiresPrice(), "%s should require a fresh price to evaluate", rt)
+		})
+	}
+}
+
 func TestWidestActiveStopPct(t *testing.T) {
 	cases := []struct {
 		name       string

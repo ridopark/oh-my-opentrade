@@ -70,6 +70,7 @@ type Service struct {
 	dailyLossBreaker             *risk.DailyLossBreaker
 	positionGate                 *PositionGate
 	exposureGuard                *ExposureGuard
+	authorMirrorBucket           *risk.AuthorMirrorBucket
 	portfolioGuard               *PortfolioGuard
 	buyingPowerGuard             *BuyingPowerGuard
 	optionsRiskEngine            *OptionsRiskEngine
@@ -107,6 +108,13 @@ func WithPositionGate(pg *PositionGate) Option {
 
 func WithExposureGuard(eg *ExposureGuard) Option {
 	return func(s *Service) { s.exposureGuard = eg }
+}
+
+// WithAuthorMirrorBucket wires the combined budget bucket shared between
+// author-mirror strategies (copytrade_v1 + tradingthetrend_v1). Disabled
+// when the bucket itself is configured with CapMult <= 0 or empty Members.
+func WithAuthorMirrorBucket(b *risk.AuthorMirrorBucket) Option {
+	return func(s *Service) { s.authorMirrorBucket = b }
 }
 
 func WithPortfolioGuard(pg *PortfolioGuard) Option {
@@ -897,6 +905,17 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 				l.Warn().Err(err).Msg("order intent rejected by exposure guard")
 				if s.metrics != nil {
 					s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "exposure").Inc()
+				}
+				s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
+				return nil
+			}
+		}
+
+		if s.authorMirrorBucket != nil {
+			if err := s.authorMirrorBucket.Check(ctx, intent); err != nil {
+				l.Warn().Err(err).Msg("order intent rejected by author_mirror bucket")
+				if s.metrics != nil {
+					s.metrics.Orders.RejectsTotal.WithLabelValues("alpaca", intent.Strategy, "author_mirror").Inc()
 				}
 				s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, err.Error()))
 				return nil

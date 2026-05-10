@@ -869,6 +869,16 @@ func (s *Service) processFill(fill fillMsg) {
 				}
 			}
 		}
+		// tradingthetrend_v1 stamps the breakout trigger price and the
+		// entry-time underlying ATR snapshot. Read by ATR_EXTENSION_TIME_STOP
+		// (and any future TTT-specific evaluator). Missing => evaluator no-op.
+		for _, tagKey := range []string{"ttt_trigger_price", "ttt_entry_atr"} {
+			if v, ok := fill.SignalTags[tagKey]; ok {
+				if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+					pos.CustomState[tagKey] = f
+				}
+			}
+		}
 	}
 
 	// strategy_exits_priority flag: strategy's OnBar exits are authoritative,

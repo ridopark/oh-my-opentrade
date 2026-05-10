@@ -562,6 +562,106 @@ func TestExpireStalePending_RespectsTTLMode(t *testing.T) {
 	})
 }
 
+func TestParseHoldingTarget(t *testing.T) {
+	cases := []struct {
+		tail string
+		want float64
+		ok   bool
+	}{
+		{"Holding half", 0.5, true},
+		{"holding HALF", 0.5, true},
+		{"Still holding 1/3", 1.0 / 3.0, true},
+		{"still holding 2/3", 2.0 / 3.0, true},
+		{"holding 1/4", 0.25, true},
+		{"holding quarter", 0.25, true},
+		{"holding third", 1.0 / 3.0, true},
+		{"holding 3/4", 0.75, true},
+		{"partial. Holding half", 0.5, true},
+		{"partial selling a few", 0, false},
+		{"all out", 0, false},
+		{"trim", 0, false},
+		{"", 0, false},
+	}
+	for _, tc := range cases {
+		got, ok := parseHoldingTarget(tc.tail)
+		assert.Equal(t, tc.ok, ok, "tail=%q ok mismatch", tc.tail)
+		if ok {
+			assert.InDelta(t, tc.want, got, 1e-9, "tail=%q value mismatch", tc.tail)
+		}
+	}
+}
+
+func TestResolveFraction_TargetBeatsKeyword(t *testing.T) {
+	cfg := []copytradePartial{
+		{Keyword: "all out", Fraction: 1.0},
+		{Keyword: "partial", Fraction: 0.33},
+		{Keyword: "trim", Fraction: 0.25},
+	}
+	// "partial. Holding half" with full position: target 0.5 -> sell 0.5.
+	frac, reason := resolveFraction("partial. Holding half", 1.0, cfg, 0.33)
+	assert.InDelta(t, 0.5, frac, 1e-9)
+	assert.Equal(t, "target_holding", reason)
+
+	// "partial. Still holding 1/3" with full position: sell 2/3.
+	frac, reason = resolveFraction("partial. Still holding 1/3", 1.0, cfg, 0.33)
+	assert.InDelta(t, 2.0/3.0, frac, 1e-9)
+	assert.Equal(t, "target_holding", reason)
+
+	// Already partialed to 0.5, author says "holding half" -> no-op (already at target).
+	frac, reason = resolveFraction("Holding half", 0.5, cfg, 0.33)
+	assert.Equal(t, 0.0, frac)
+	assert.Equal(t, "target_holding", reason)
+
+	// Already partialed to 0.5, author says "Holding 1/3" -> sell 1/3 of remaining.
+	frac, reason = resolveFraction("Holding 1/3", 0.5, cfg, 0.33)
+	assert.InDelta(t, 1.0/3.0, frac, 1e-9)
+	assert.Equal(t, "target_holding", reason)
+
+	// No target, keyword wins.
+	frac, reason = resolveFraction("partial selling a few", 1.0, cfg, 0.33)
+	assert.InDelta(t, 0.33, frac, 1e-9)
+	assert.Equal(t, "partial", reason)
+
+	// No target, no keyword, default.
+	frac, reason = resolveFraction("at 4.00", 1.0, cfg, 0.33)
+	assert.InDelta(t, 0.33, frac, 1e-9)
+	assert.Equal(t, "default", reason)
+}
+
+func TestCopytrade_STC_HoldingHalf_SellsHalf(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "TSLA", 420, "C", "starter", 3.00), st)
+	require.NoError(t, err)
+	st = confirmBTOFills(t, s, ctx, st)
+
+	_, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "TSLA", 420, "C", "partial. Holding half", 5.00), st)
+	require.NoError(t, err)
+
+	exits := ctx.exitRequests()
+	require.Len(t, exits, 1)
+	assert.InDelta(t, 0.5, exits[0].Fraction, 1e-9)
+	assert.Equal(t, "target_holding", exits[0].Reason)
+}
+
+func TestCopytrade_STC_HoldingOneThird_SellsTwoThirds(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "RIOT", 22, "C", "starter", 2.00), st)
+	require.NoError(t, err)
+	st = confirmBTOFills(t, s, ctx, st)
+
+	_, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "RIOT", 22, "C", "partial. Still holding 1/3", 3.44), st)
+	require.NoError(t, err)
+
+	exits := ctx.exitRequests()
+	require.Len(t, exits, 1)
+	assert.InDelta(t, 2.0/3.0, exits[0].Fraction, 1e-9)
+	assert.Equal(t, "target_holding", exits[0].Reason)
+}
+
 func TestOrphanFillEmitsEventAndErrorLogs(t *testing.T) {
 	s, st := initCopytrade(t, copytradeDefaultParams())
 	ctx := newCopyCtx()

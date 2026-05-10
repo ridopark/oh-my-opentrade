@@ -300,6 +300,14 @@ func registerRoutes(imux *metrics.InstrumentedMux, cfg *config.Config, infra *in
 		copytradeHandler := omhttp.NewCopytradeHandler(infra.eventBus, secret, 120*time.Second, httpLog)
 		imux.Handle("/internal/copytrade/signal", copytradeHandler)
 	}
+	// TradingTheTrend sidecar ingress. Enabled when OMO_TRADINGTHETREND_SECRET
+	// is set; same defensive default as copytrade. Freshness TTL is 60s per
+	// the strategy pre-register (live signals must arrive within 60s of the
+	// Discord post or be rejected).
+	if secret := os.Getenv("OMO_TRADINGTHETREND_SECRET"); secret != "" {
+		tradingTheTrendHandler := omhttp.NewTradingTheTrendHandler(infra.eventBus, secret, 60*time.Second, httpLog)
+		imux.Handle("/internal/tradingthetrend/signal", tradingTheTrendHandler)
+	}
 	// Cross-strategy recent signals endpoint (used by dashboard main page).
 	imux.HandleFunc("/api/signals/recent", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")

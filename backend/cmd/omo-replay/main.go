@@ -65,6 +65,8 @@ func main() {
 		memProfile     string
 		copytradeHist     string
 		copytradeLedgerDir string
+		tttHist           string
+		forceActive       string
 		emitGatedDiag     bool
 		preferLiveChain   bool
 	)
@@ -86,6 +88,8 @@ func main() {
 	flag.StringVar(&memProfile, "memprofile", "", "Write heap profile to file (pprof) after run")
 	flag.StringVar(&copytradeHist, "copytrade-history", "", "Path to Discord copytrade history JSONL; when set (and --backtest), replays messages through the event bus")
 	flag.StringVar(&copytradeLedgerDir, "copytrade-ledger-dir", "_workspace/copytrade_replay", "Directory for per-fill and author-stated CSV ledgers (created if missing)")
+	flag.StringVar(&tttHist, "ttt-history", "", "Path to Discord tradingthetrend history JSONL; when set (and --backtest), replays watchlist signals through the event bus")
+	flag.StringVar(&forceActive, "force-active", "", "Comma-separated strategy IDs to force to PaperActive in backtest (overrides TOML state). Backtest-only; production lifecycle gates are unaffected.")
 	flag.BoolVar(&emitGatedDiag, "emit-gated-diag", false, "Persist EntryGated rows to strategy_signal_events with tag=backtest_<runID> for live-vs-backtest SQL diff (requires --backtest)")
 	flag.BoolVar(&preferLiveChain, "prefer-live-chain", false, "Use live Alpaca chain as fallback before synth (default: false). Only meaningful for same-day backtests. CLI runs are not persisted to backtest_runs and are not auto-tagged.")
 	flag.Parse()
@@ -234,6 +238,8 @@ func main() {
 			timeframeFlag, strategiesFlag,
 			initialEquity, slippageBPS, speedFlag, noAIFlag,
 			emitGatedDiag, outputJSON, copytradeHist, copytradeLedgerDir,
+			tttHist,
+			forceActive,
 			preferLiveChain,
 		); err != nil {
 			log.Fatal().Err(err).Msg("backtest run failed")
@@ -2028,6 +2034,15 @@ type replaySliceCoord struct {
 	optionBarsCache  map[domain.Symbol][]domain.MarketBar
 	optionBarsMu     *sync.Mutex
 	copytradeReplay  *copytradereplay.Service
+}
+
+// OnPhaseATickAdvance is a no-op for omo-replay's coordinator. The
+// dashboard backtest runner uses this hook to drain TTT/copytrade
+// replay queues into the bus before Phase A processes the tick's
+// bars; omo-replay drives copytrade replay through OnTickEnd as
+// before and does not currently host TTT.
+func (c *replaySliceCoord) OnPhaseATickAdvance(_ context.Context, _ time.Time) error {
+	return nil
 }
 
 // OnTickBegin advances the replay clock, resets monitor + runner

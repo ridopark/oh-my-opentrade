@@ -32,6 +32,7 @@ import (
 	pkgpipeline "github.com/oh-my-opentrade/backend/internal/app/pipeline"
 	"github.com/oh-my-opentrade/backend/internal/app/positionmonitor"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
+	"github.com/oh-my-opentrade/backend/internal/app/tradingthetrendreplay"
 	"github.com/oh-my-opentrade/backend/internal/app/warmup"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
@@ -69,6 +70,20 @@ type RunConfig struct {
 	// into. Ignored when CopytradeHistory is empty; HTTP handler defaults it
 	// to "_workspace/copytrade_replay".
 	CopytradeLedgerDir string
+
+	// TradingTheTrendHistory, when non-empty, enables tradingthetrend_v1
+	// replay: parses the JSONL at this path via the builtin TTT message
+	// parser, publishes each line as EventTradingTheTrendSignalReceived at
+	// its sim-time PostedAt. Mirrors CopytradeHistory shape. Empty disables.
+	TradingTheTrendHistory string
+
+	// ForceActiveStrategies, when non-empty, promotes the listed strategy
+	// IDs to LifecyclePaperActive for the backtest run regardless of their
+	// TOML state. Lets operators backtest a strategy whose TOML ships
+	// state="Deactivated" (the safety default for live deploys) without
+	// committing the active state to the file. Backtest-only — the
+	// production lifecycle gate is unchanged.
+	ForceActiveStrategies []string
 
 	// EmitGatedDiag, when true, persists EntryGated rows to
 	// strategy_signal_events with payload.tag = "backtest_<runID>" so a SQL
@@ -391,6 +406,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			syms[i] = s.String()
 		}
 		specStore = newSymbolOverrideSpecStore(specStore, syms)
+	}
+	if len(r.cfg.ForceActiveStrategies) > 0 {
+		specStore = newForceActiveSpecStore(specStore, r.cfg.ForceActiveStrategies)
+		r.log.Warn().Strs("strategies", r.cfg.ForceActiveStrategies).
+			Msg("backtest: forcing strategies to PaperActive (TOML state ignored)")
 	}
 
 	// Only load ORB config when orb_break_retest is explicitly selected.
@@ -1347,26 +1367,26 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.status.Store("error")
 		return fmt.Errorf("start position monitor: %w", startErr)
 	}
-	if startErr := pipeline.Runner.Start(ctx); startErr != nil {
-		r.status.Store("error")
-		return fmt.Errorf("start strategy runner: %w", startErr)
-	}
-
 	// When the sharded max-speed path runs, it builds and starts its own
-	// Enricher and RiskSizer from BuildStrategyShared. Starting the legacy
-	// pipeline's copies would double-subscribe to SignalCreated /
-	// SignalEnriched / FillReceived and produce duplicate OrderIntentCreated
-	// events (the second one gets rejected by the position gate, but the
-	// work is wasted and shows up as noise in logs). The handleFill double
-	// on the Runner is explicitly tolerated by the existing design (see
-	// FreezeHandlers comment below); this change removes only the Enricher
-	// / RiskSizer duplication.
+	// Runner / Enricher / RiskSizer from BuildStrategyShared. Starting the
+	// legacy pipeline's copies would double-subscribe to bus events: every
+	// EventTradingTheTrendSignalReceived would fire handleTradingTheTrendSignal
+	// twice (once per Runner), arming each Runner's independent sentinel
+	// instance and producing duplicate OrderIntentCreated events downstream.
+	// The handleFill double on the Runner is explicitly tolerated by the
+	// existing design (see FreezeHandlers comment below); this gate removes
+	// the strategy-runner / enricher / risk-sizer duplication.
 	useSharded := r.speedDelay.Load().(time.Duration) == 0 && !r.paused.Load()
 	activeRiskSizer := pipeline.RiskSizer
 
 	var copytradeReplaySvc *copytradereplay.Service
 	var copytradeLedger *copytradereplay.Ledger
+	var tttReplaySvc *tradingthetrendreplay.Service
 	if !useSharded {
+		if startErr := pipeline.Runner.Start(ctx); startErr != nil {
+			r.status.Store("error")
+			return fmt.Errorf("start strategy runner: %w", startErr)
+		}
 		if pipeline.Enricher != nil {
 			if startErr := pipeline.Enricher.Start(ctx); startErr != nil {
 				r.status.Store("error")
@@ -1552,6 +1572,20 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 
+		var sentinelExtraSymbols map[string][]string
+		if r.cfg.TradingTheTrendHistory != "" {
+			tttUniverse, uErr := tradingthetrendreplay.LoadUniverse(r.cfg.TradingTheTrendHistory, r.cfg.From, r.cfg.To)
+			if uErr != nil {
+				r.status.Store("error")
+				return fmt.Errorf("tradingthetrend replay: load universe %s: %w", r.cfg.TradingTheTrendHistory, uErr)
+			}
+			sentinelExtraSymbols = map[string][]string{"tradingthetrend_v1": tttUniverse}
+			r.log.Info().
+				Int("watchlist_universe_size", len(tttUniverse)).
+				Strs("tickers", tttUniverse).
+				Msg("tradingthetrend pre-registration ready")
+		}
+
 		stratDeps := bootstrap.StrategyDeps{
 			EventBus:                  r.infra.EventBus,
 			SpecStore:                 specStore,
@@ -1560,15 +1594,16 @@ func (r *Runner) Run(ctx context.Context) error {
 			OpenOptionContractsLookup: posMonBundle.Service.ListOpenContractsByUnderlying,
 			MarketDataFn:              monitorSvc.GetLastSnapshot,
 			OptionsMarket:             optionsAdapter,
-			Repo:            nil,
-			TenantID:        "default",
-			EnvMode:         domain.EnvModePaper,
-			Equity:          r.cfg.InitialEquity,
-			Clock:           clockFn,
-			DisableAI: r.cfg.NoAI,
-			Logger:          r.log,
-			BacktestID:      r.id,
-			TideTracker:     tideTracker,
+			Repo:                 nil,
+			TenantID:             "default",
+			EnvMode:              domain.EnvModePaper,
+			Equity:               r.cfg.InitialEquity,
+			Clock:                clockFn,
+			DisableAI:            r.cfg.NoAI,
+			Logger:               r.log,
+			BacktestID:           r.id,
+			TideTracker:          tideTracker,
+			SentinelExtraSymbols: sentinelExtraSymbols,
 		}
 
 		var sentinelOwnerAssigned bool
@@ -1602,7 +1637,8 @@ func (r *Runner) Run(ctx context.Context) error {
 			shardDeps.Indicator = shardIdx
 			var shardStrat *bootstrap.StrategyShard
 			var stratErr error
-			if r.cfg.CopytradeHistory != "" && !sentinelOwnerAssigned {
+			usesSentinels := r.cfg.CopytradeHistory != "" || r.cfg.TradingTheTrendHistory != ""
+			if usesSentinels && !sentinelOwnerAssigned {
 				shardStrat, stratErr = bootstrap.BuildStrategyShardWithSentinels(strategyShared, slab, shardDeps)
 				sentinelOwnerAssigned = true
 			} else {
@@ -1635,6 +1671,14 @@ func (r *Runner) Run(ctx context.Context) error {
 			nworkers = len(r.cfg.Symbols)
 		}
 		if nworkers < 1 {
+			nworkers = 1
+		}
+		// TradingTheTrend is bar-driven on the underlying. Sharded slabs
+		// round-robin watchlist tickers across N shards, so 7/N of bars
+		// would route to shards that don't host the TTT sentinel instance
+		// (registered on shard 0 only via WithSentinels). Force single
+		// shard when TTT history is replayed so all bars reach the sentinel.
+		if r.cfg.TradingTheTrendHistory != "" {
 			nworkers = 1
 		}
 		sp, spErr := NewShardedPipeline(nworkers, r.cfg.Symbols, ShardedInfra{
@@ -1698,6 +1742,21 @@ func (r *Runner) Run(ctx context.Context) error {
 				return fmt.Errorf("copytrade replay: ledger subscribe: %w", err)
 			}
 			r.log.Info().Str("path", fillPath).Msg("copytrade replay: per-fill ledger active")
+		}
+
+		if r.cfg.TradingTheTrendHistory != "" {
+			tttReplaySvc = tradingthetrendreplay.New(r.infra.EventBus, "default", domain.EnvModePaper,
+				r.log.With().Str("component", "tradingthetrend_replay").Logger())
+			tttStats, tttErr := tttReplaySvc.Load(r.cfg.TradingTheTrendHistory, r.cfg.From, r.cfg.To)
+			if tttErr != nil {
+				r.status.Store("error")
+				return fmt.Errorf("tradingthetrend replay: load %s: %w", r.cfg.TradingTheTrendHistory, tttErr)
+			}
+			r.log.Info().
+				Int("messages_read", tttStats.MessagesRead).
+				Int("messages_dropped", tttStats.MessagesDropped).
+				Int("signals_loaded", tttStats.SignalsLoaded).
+				Msg("tradingthetrend replay ready")
 		}
 
 		// Freeze the event bus AFTER all shard runners have subscribed.
@@ -1905,6 +1964,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			auctionPub:       auctionPub,
 			sp:               sp,
 			copytradeReplay:  copytradeReplaySvc,
+			tttReplay:        tttReplaySvc,
 		}
 
 		if err := sp.RunSliceToCompletion(ctx, sliceBars, replaySessionOpen, coord); err != nil {
@@ -2453,21 +2513,44 @@ func newSymbolOverrideSpecStore(inner portstrategy.SpecStore, symbols []string) 
 
 // intersectSymbols returns only symbols present in both the strategy's native
 // list and the backtest request. If the strategy has no native symbols
-// configured, the full request list is used as a fallback.
+// configured, the full request list is used as a fallback. Sentinel symbols
+// (shaped __name__) are preserved verbatim — they're event-driven routing
+// keys for sentinel-rooted strategies (copytrade, tradingthetrend) and must
+// not be filtered by the universe intersection.
 func (s *symbolOverrideSpecStore) intersectSymbols(native []string) []string {
 	if len(native) == 0 {
 		return s.symbols
 	}
-	var out []string
+	var sentinels []string
+	var nonSentinels []string
 	for _, sym := range native {
-		if s.allowedSet[sym] {
-			out = append(out, sym)
+		if isSentinelSymbol(sym) {
+			sentinels = append(sentinels, sym)
+		} else {
+			nonSentinels = append(nonSentinels, sym)
 		}
 	}
-	if len(out) == 0 {
-		return s.symbols // no overlap — use backtest-requested symbols
+	// Pure sentinel routing — preserve as-is (copytrade, tradingthetrend).
+	if len(nonSentinels) == 0 {
+		return sentinels
 	}
-	return out
+	var intersected []string
+	for _, sym := range nonSentinels {
+		if s.allowedSet[sym] {
+			intersected = append(intersected, sym)
+		}
+	}
+	if len(intersected) == 0 && len(sentinels) == 0 {
+		return s.symbols // no overlap and no sentinels — use backtest-requested symbols
+	}
+	return append(sentinels, intersected...)
+}
+
+// isSentinelSymbol mirrors bootstrap/strategy.go: symbols shaped __name__
+// are routing keys, not real tradable symbols. Kept local to avoid the
+// runner package importing app/bootstrap (cyclic).
+func isSentinelSymbol(sym string) bool {
+	return len(sym) >= 4 && sym[:2] == "__" && sym[len(sym)-2:] == "__"
 }
 
 func (s *symbolOverrideSpecStore) List(ctx context.Context, filter *portstrategy.SpecFilter) ([]portstrategy.Spec, error) {
@@ -2507,6 +2590,68 @@ func (s *symbolOverrideSpecStore) Watch(ctx context.Context) (<-chan start.Strat
 	return s.inner.Watch(ctx)
 }
 
+// forceActiveSpecStore promotes specs whose IDs match the configured set
+// to LifecyclePaperActive at read time. Used by RunConfig.ForceActiveStrategies
+// so an operator can backtest a strategy whose TOML ships
+// state="Deactivated" without committing the active state to the file.
+// Backtest-only — production lifecycle gates are unchanged.
+type forceActiveSpecStore struct {
+	inner   portstrategy.SpecStore
+	allowed map[string]struct{}
+}
+
+func newForceActiveSpecStore(inner portstrategy.SpecStore, ids []string) *forceActiveSpecStore {
+	allow := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		allow[id] = struct{}{}
+	}
+	return &forceActiveSpecStore{inner: inner, allowed: allow}
+}
+
+func (f *forceActiveSpecStore) promote(spec portstrategy.Spec) portstrategy.Spec {
+	if _, ok := f.allowed[spec.ID.String()]; ok {
+		spec.Lifecycle.State = start.LifecyclePaperActive
+	}
+	return spec
+}
+
+func (f *forceActiveSpecStore) List(ctx context.Context, filter *portstrategy.SpecFilter) ([]portstrategy.Spec, error) {
+	specs, err := f.inner.List(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	for i := range specs {
+		specs[i] = f.promote(specs[i])
+	}
+	return specs, nil
+}
+
+func (f *forceActiveSpecStore) Get(ctx context.Context, id start.StrategyID, version start.Version) (*portstrategy.Spec, error) {
+	spec, err := f.inner.Get(ctx, id, version)
+	if err != nil {
+		return nil, err
+	}
+	out := f.promote(*spec)
+	return &out, nil
+}
+
+func (f *forceActiveSpecStore) GetLatest(ctx context.Context, id start.StrategyID) (*portstrategy.Spec, error) {
+	spec, err := f.inner.GetLatest(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	out := f.promote(*spec)
+	return &out, nil
+}
+
+func (f *forceActiveSpecStore) Save(ctx context.Context, spec portstrategy.Spec) error {
+	return f.inner.Save(ctx, spec)
+}
+
+func (f *forceActiveSpecStore) Watch(ctx context.Context) (<-chan start.StrategyID, error) {
+	return f.inner.Watch(ctx)
+}
+
 // runnerSliceCoord implements SliceCoordinator for the dashboard
 // backtest Runner. Mirrors replaySliceCoord from omo-replay but
 // uses the runner's emitter for progress emission and handles
@@ -2530,6 +2675,30 @@ type runnerSliceCoord struct {
 	sp               *ShardedPipeline
 	ticksSeen        int
 	copytradeReplay  *copytradereplay.Service
+	tttReplay        *tradingthetrendreplay.Service
+}
+
+// OnPhaseATickAdvance fires from the Phase A worker goroutine just before
+// the first bar at a new TickTime is processed. We drain the sentinel-routed
+// replay queues here so handleSignal arms the strategy state BEFORE OnBar
+// runs against that tick's bars. Without this hook the slice pipeline
+// processes every bar in Phase=Idle and Phase B's AdvanceTo arms too late.
+//
+// Safe with nworkers>1 only when the strategy that consumes these signals
+// lives on a single shard — for TTT that's already enforced (nworkers=1
+// when TradingTheTrendHistory != "").
+func (c *runnerSliceCoord) OnPhaseATickAdvance(ctx context.Context, tickTime time.Time) error {
+	if c.copytradeReplay != nil {
+		if _, err := c.copytradeReplay.AdvanceTo(ctx, tickTime); err != nil && c.r != nil {
+			c.r.log.Error().Err(err).Time("tick", tickTime).Msg("copytrade replay: phaseA advance failed")
+		}
+	}
+	if c.tttReplay != nil {
+		if _, err := c.tttReplay.AdvanceTo(ctx, tickTime); err != nil && c.r != nil {
+			c.r.log.Error().Err(err).Time("tick", tickTime).Msg("tradingthetrend replay: phaseA advance failed")
+		}
+	}
+	return nil
 }
 
 func (c *runnerSliceCoord) OnTickBegin(_ context.Context, tickTime time.Time) error {
@@ -2564,6 +2733,14 @@ func (c *runnerSliceCoord) OnTickEnd(ctx context.Context, tickTime time.Time) er
 			c.r.log.Error().Err(err).Time("tick", tickTime).Msg("copytrade replay: advance failed")
 		}
 		c.eventBus.Flush()
+	}
+	if c.tttReplay != nil {
+		if _, err := c.tttReplay.AdvanceTo(ctx, tickTime); err != nil && c.r != nil {
+			c.r.log.Error().Err(err).Time("tick", tickTime).Msg("tradingthetrend replay: advance failed")
+		}
+		c.eventBus.Flush()
+	}
+	if c.copytradeReplay != nil || c.tttReplay != nil {
 		if c.sp != nil {
 			_ = c.sp.ForEachShard(func(p *Pipeline, _ []domain.Symbol) error {
 				rr := p.Runner()

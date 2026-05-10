@@ -1,6 +1,8 @@
 services:
   watcher:
-    build: .
+    build:
+      context: ..
+      dockerfile: discord-copytrade/Dockerfile
     container_name: omo-discord-copytrade
     restart: unless-stopped
     # Docker Desktop's host-gateway points at the Docker VM, not the WSL2
@@ -29,7 +31,9 @@ services:
       start_period: 60s
 
   bootstrap:
-    build: .
+    build:
+      context: ..
+      dockerfile: discord-copytrade/Dockerfile
     container_name: omo-discord-copytrade-bootstrap
     profiles: ["bootstrap"]
     network_mode: host
@@ -41,10 +45,12 @@ services:
     volumes:
       - ./state:/app/state
       - /tmp/.X11-unix:/tmp/.X11-unix:ro
-    command: ["python3", "-m", "bootstrap"]
+    command: ["python3", "-m", "discord_common.bootstrap"]
 
   scrape:
-    build: .
+    build:
+      context: ..
+      dockerfile: discord-copytrade/Dockerfile
     container_name: omo-discord-copytrade-scrape
     profiles: ["scrape"]
     network_mode: host

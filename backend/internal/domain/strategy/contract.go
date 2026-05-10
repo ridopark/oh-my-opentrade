@@ -333,3 +333,21 @@ type CopytradeSignal struct {
 	Tail      string
 	RawLine   string
 }
+
+// TradingTheTrendSignal is forwarded to the tradingthetrend strategy when the
+// discord-tradingthetrend sidecar posts a parsed watchlist line. Unlike
+// CopytradeSignal there is no expiry, no fill price, no action keyword: the
+// strategy resolves expiry to the nearest weekly Friday and uses Trigger as
+// the underlying breakout level. Kept string-typed so this package does not
+// import domain.
+type TradingTheTrendSignal struct {
+	SignalID  string
+	MessageID string
+	Author    string
+	PostedAt  time.Time
+	Ticker    string
+	Strike    float64
+	Right     string // "C" | "P"
+	Trigger   float64
+	RawLine   string
+}

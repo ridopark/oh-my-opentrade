@@ -15,6 +15,7 @@ import (
 	optadapter "github.com/oh-my-opentrade/backend/internal/adapters/options"
 	"github.com/oh-my-opentrade/backend/internal/app/backtest"
 	"github.com/oh-my-opentrade/backend/internal/app/bootstrap"
+	"github.com/oh-my-opentrade/backend/internal/app/tradingthetrendreplay"
 	"github.com/oh-my-opentrade/backend/internal/config"
 	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
@@ -52,6 +53,11 @@ type backtestRunRequest struct {
 	// CopytradeLedgerDir defaults to "_workspace/copytrade_replay" when empty.
 	CopytradeHistory   string `json:"copytrade_history"`
 	CopytradeLedgerDir string `json:"copytrade_ledger_dir"`
+
+	// TradingTheTrend replay wiring (auto-defaulted when "tradingthetrend_v1"
+	// is in Strategies). Path to a Discord watchlist history JSONL emitted by
+	// services/discord-tradingthetrend.
+	TradingTheTrendHistory string `json:"tradingthetrend_history"`
 
 	// EmitGatedDiag, when true, persists EntryGated rows to
 	// strategy_signal_events with payload.tag = "backtest_<runID>" so a SQL
@@ -191,10 +197,25 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	copytradeSelected := false
+	tttSelected := false
 	for _, s := range req.Strategies {
 		if s == "copytrade_v1" {
 			copytradeSelected = true
-			break
+		}
+		if s == "tradingthetrend_v1" {
+			tttSelected = true
+		}
+	}
+
+	// Default TTT history path early so the universe-derivation step below
+	// can read it before the symbols-required guard fires.
+	if tttSelected {
+		if req.TradingTheTrendHistory == "" {
+			req.TradingTheTrendHistory = "services/discord-tradingthetrend/state/history.jsonl"
+		}
+		if _, statErr := os.Stat(req.TradingTheTrendHistory); statErr != nil {
+			jsonError(w, http.StatusBadRequest, "tradingthetrend_history unreadable: "+statErr.Error())
+			return
 		}
 	}
 
@@ -225,9 +246,26 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	if copytradeSelected && len(req.Symbols) == 0 {
 		req.Symbols = copytradeDefaultSymbols()
 	}
+	// TradingTheTrend has the same sentinel-only routing shape but its
+	// universe is the union of tickers in the JSONL history (which the
+	// caller doesn't necessarily know). Derive it from the history file
+	// rather than baking a static default that drifts as the watchlist
+	// evolves.
+	if tttSelected && len(req.Symbols) == 0 {
+		uni, uErr := tradingthetrendreplay.LoadUniverse(req.TradingTheTrendHistory, time.Time{}, time.Time{})
+		if uErr != nil {
+			jsonError(w, http.StatusBadRequest, "tradingthetrend universe load failed: "+uErr.Error())
+			return
+		}
+		req.Symbols = uni
+	}
 	if len(req.Symbols) == 0 {
 		if copytradeSelected && len(req.Strategies) == 1 {
 			jsonError(w, http.StatusBadRequest, "copytrade_v1 has no non-sentinel symbols — pass explicit symbols in request body")
+			return
+		}
+		if tttSelected && len(req.Strategies) == 1 {
+			jsonError(w, http.StatusBadRequest, "tradingthetrend_v1 universe load returned 0 tickers — check history JSONL")
 			return
 		}
 		jsonError(w, http.StatusBadRequest, "symbols required (provide symbols or strategies with configured symbols)")
@@ -277,6 +315,10 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 			req.CopytradeLedgerDir = "_workspace/copytrade_replay"
 		}
 	}
+	if tttSelected && speed != "max" {
+		jsonError(w, http.StatusBadRequest, "tradingthetrend_v1 backtest requires speed=max (sharded pipeline only)")
+		return
+	}
 
 	h.mu.Lock()
 	// Prune finished runners to avoid unbounded growth.
@@ -316,6 +358,11 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		liveChainPort = optadapter.NewCachingMarket(h.liveOptions)
 	}
 
+	var forceActive []string
+	if tttSelected {
+		forceActive = []string{"tradingthetrend_v1"}
+	}
+
 	runner := backtest.NewRunner(backtest.RunConfig{
 		Symbols:       symbols,
 		From:          fromTime,
@@ -331,8 +378,10 @@ func (h *BacktestHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 		MaxPerGroup:      req.MaxPerGroup,
 		UseNativeSymbols: useNativeSymbols,
 		CompoundEquity:   req.CompoundEquity == nil || *req.CompoundEquity,
-		CopytradeHistory:   req.CopytradeHistory,
-		CopytradeLedgerDir: req.CopytradeLedgerDir,
+		CopytradeHistory:       req.CopytradeHistory,
+		CopytradeLedgerDir:     req.CopytradeLedgerDir,
+		TradingTheTrendHistory: req.TradingTheTrendHistory,
+		ForceActiveStrategies:  forceActive,
 		EmitGatedDiag:      req.EmitGatedDiag,
 		PreferLiveChain:   req.PreferLiveChain,
 		LiveOptionsMarket: liveChainPort,

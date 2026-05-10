@@ -27,11 +27,17 @@ const (
 	ExitRuleTieredTP        ExitRuleType = "TIERED_TP"
 	ExitRuleTimePartial     ExitRuleType = "TIME_PARTIAL"
 	ExitRulePremiumStop     ExitRuleType = "PREMIUM_STOP"     // exit if premium drops X% from entry
+	ExitRuleEarlyPremiumStop ExitRuleType = "EARLY_PREMIUM_STOP" // exit if premium drops X% within first N minutes after entry
 	ExitRulePremiumTrail    ExitRuleType = "PREMIUM_TRAIL"    // trail X% from premium high-water mark
 	ExitRulePremiumTarget   ExitRuleType = "PREMIUM_TARGET"   // exit if premium rises X% from entry
 	ExitRuleFastFail        ExitRuleType = "FAST_FAIL_EXIT"   // exit if no MFE progress after N minutes
 	ExitRuleChandelierTrail ExitRuleType = "CHANDELIER_TRAIL" // trail giveback_pct of MFE once above activate_pct
 	ExitRuleCopytradeSTC    ExitRuleType = "COPYTRADE_STC"    // synthetic: partial/full close driven by copytrade author STC
+
+	// tradingthetrend_v1 prereg-locked rules. See tradingthetrend_prereg.md section 4.
+	ExitRuleTieredPremiumStopDTE     ExitRuleType = "TIERED_PREMIUM_STOP_DTE"     // PREMIUM_STOP variant whose threshold is bucketed by DTE
+	ExitRuleChandelierTrailUnderlying ExitRuleType = "CHANDELIER_TRAIL_UNDERLYING" // chandelier trail computed on the underlying spot, applied to an option
+	ExitRuleATRExtensionTimeStop     ExitRuleType = "ATR_EXTENSION_TIME_STOP"     // exit if breakout has not extended N*ATR within M bars
 )
 
 func (e ExitRuleType) String() string { return string(e) }
@@ -58,8 +64,9 @@ func NewExitRuleType(s string) (ExitRuleType, error) {
 		ExitRuleDTEFloor, ExitRuleExpiryWatch,
 		ExitRuleSwingStop,
 		ExitRuleTieredTP, ExitRuleTimePartial,
-		ExitRulePremiumStop, ExitRulePremiumTrail, ExitRulePremiumTarget,
-		ExitRuleFastFail, ExitRuleChandelierTrail, ExitRuleCopytradeSTC:
+		ExitRulePremiumStop, ExitRuleEarlyPremiumStop, ExitRulePremiumTrail, ExitRulePremiumTarget,
+		ExitRuleFastFail, ExitRuleChandelierTrail, ExitRuleCopytradeSTC,
+		ExitRuleTieredPremiumStopDTE, ExitRuleChandelierTrailUnderlying, ExitRuleATRExtensionTimeStop:
 		return ExitRuleType(s), nil
 	default:
 		return "", fmt.Errorf("invalid exit rule type: %q", s)

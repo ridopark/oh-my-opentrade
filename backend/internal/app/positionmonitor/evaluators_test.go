@@ -1,6 +1,7 @@
 package positionmonitor
 
 import (
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -924,6 +925,71 @@ func TestEvaluate_BreakevenStop(t *testing.T) {
 	})
 }
 
+func TestBreakevenStop_NonOption_Unchanged(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+	pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+
+	// Equity at +0.4% crosses activation 0.3% with buffer 0.05%.
+	UpdateBreakevenStopState(pos, 100.40, 0.003, 0.0005)
+	require.Equal(t, 1.0, pos.CustomState["breakeven_activated"])
+	require.InDelta(t, 100.05, pos.CustomState["breakeven_stop_level"], 0.001)
+
+	rule := domain.ExitRule{Type: domain.ExitRuleBreakevenStop, Params: map[string]float64{}}
+	// Underlying drops to 100.00 — below the equity-space stop level → fires.
+	triggered, reason := Evaluate(rule, pos, 100.00, now, EvalContext{})
+	assert.True(t, triggered)
+	assert.Contains(t, reason, "breakeven_stop")
+	assert.NotContains(t, reason, "(option)")
+}
+
+func TestBreakevenStop_Option_ActivatesOnPremiumMFE(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+	pos := newOptionPosition(t, 400, now.Add(-10*time.Minute), 4.26, 0.5)
+	pos.CustomState["premium_mfe_pct"] = 0.15
+
+	// activation 0.10, buffer 0.005. underlying value here is irrelevant —
+	// option-aware path reads CustomState only.
+	UpdateBreakevenStopState(pos, 400, 0.10, 0.005)
+	assert.Equal(t, 1.0, pos.CustomState["breakeven_activated"])
+	// Stop level in PREMIUM space: entry_premium * (1 + buffer) = 4.26 * 1.005
+	assert.InDelta(t, 4.2813, pos.CustomState["breakeven_stop_level"], 0.0005)
+}
+
+func TestBreakevenStop_Option_FiresWhenPremiumRetraces(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+	pos := newOptionPosition(t, 400, now.Add(-10*time.Minute), 4.26, 0.5)
+	// Pre-arm: simulate UpdateBreakevenStopState having already fired.
+	pos.CustomState["breakeven_activated"] = 1
+	pos.CustomState["breakeven_stop_level"] = 4.26 * 1.005
+
+	rule := domain.ExitRule{Type: domain.ExitRuleBreakevenStop, Params: map[string]float64{}}
+	// Underlying back at entry (400). Delta-linear est = 4.26 - spread(0.0341)
+	// = 4.226, which is below stop_level 4.281 → fires.
+	triggered, reason := Evaluate(rule, pos, 400, now, EvalContext{})
+	assert.True(t, triggered)
+	assert.Contains(t, reason, "breakeven_stop(option)")
+}
+
+func TestBreakevenStop_Option_DoesNotFireBelowActivation(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
+	pos := newOptionPosition(t, 400, now.Add(-10*time.Minute), 4.26, 0.5)
+	pos.CustomState["premium_mfe_pct"] = 0.05
+
+	// 0.05 MFE < 0.10 activation threshold → no activation.
+	UpdateBreakevenStopState(pos, 400, 0.10, 0.005)
+	assert.Equal(t, 0.0, pos.CustomState["breakeven_activated"])
+	assert.Equal(t, 0.0, pos.CustomState["breakeven_stop_level"])
+
+	rule := domain.ExitRule{Type: domain.ExitRuleBreakevenStop, Params: map[string]float64{}}
+	triggered, reason := Evaluate(rule, pos, 400, now, EvalContext{})
+	assert.False(t, triggered)
+	assert.Empty(t, reason)
+}
+
 func TestEvaluate_UnknownRuleType(t *testing.T) {
 	etLoc := mustETLocation(t)
 	now := time.Date(2026, 3, 6, 11, 30, 0, 0, etLoc)
@@ -1087,6 +1153,59 @@ func TestEvaluate_PremiumStop(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEarlyPremiumStop_FiresInWindow(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+	// entry premium=5.00, delta=0.50, entry underlying=150, entered 3 min ago.
+	// At underlying 148.05: est = 5.00 + 0.50*(148.05-150) - 5.00*0.005
+	//                          = 5.00 - 0.975 - 0.025 = 4.00 -> 20% drawdown.
+	pos := newOptionPosition(t, 150, now.Add(-3*time.Minute), 5.00, 0.50)
+	rule := domain.ExitRule{Type: domain.ExitRuleEarlyPremiumStop, Params: map[string]float64{
+		"threshold": 0.15, "max_age_minutes": 5,
+	}}
+	triggered, reason := Evaluate(rule, pos, 148.05, now, EvalContext{})
+	assert.True(t, triggered)
+	assert.Contains(t, reason, "early_premium_stop")
+}
+
+func TestEarlyPremiumStop_BelowThresholdInWindow(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+	// At underlying 149.05: est = 5.00 + 0.50*(149.05-150) - 0.025 = 4.50 -> 10% drawdown.
+	pos := newOptionPosition(t, 150, now.Add(-3*time.Minute), 5.00, 0.50)
+	rule := domain.ExitRule{Type: domain.ExitRuleEarlyPremiumStop, Params: map[string]float64{
+		"threshold": 0.15, "max_age_minutes": 5,
+	}}
+	triggered, reason := Evaluate(rule, pos, 149.05, now, EvalContext{})
+	assert.False(t, triggered)
+	assert.Empty(t, reason)
+}
+
+func TestEarlyPremiumStop_OutsideWindow(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+	// 20% drawdown but elapsed 10 min > max_age 5 min -> no fire.
+	pos := newOptionPosition(t, 150, now.Add(-10*time.Minute), 5.00, 0.50)
+	rule := domain.ExitRule{Type: domain.ExitRuleEarlyPremiumStop, Params: map[string]float64{
+		"threshold": 0.15, "max_age_minutes": 5,
+	}}
+	triggered, reason := Evaluate(rule, pos, 148.05, now, EvalContext{})
+	assert.False(t, triggered)
+	assert.Empty(t, reason)
+}
+
+func TestEarlyPremiumStop_NonOption(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 3, 6, 11, 0, 0, 0, etLoc)
+	pos := newTestMonitoredPosition(t, 150, now.Add(-3*time.Minute), domain.AssetClassEquity)
+	rule := domain.ExitRule{Type: domain.ExitRuleEarlyPremiumStop, Params: map[string]float64{
+		"threshold": 0.15, "max_age_minutes": 5,
+	}}
+	triggered, reason := Evaluate(rule, pos, 120, now, EvalContext{})
+	assert.False(t, triggered)
+	assert.Empty(t, reason)
 }
 
 func TestEvaluate_PremiumTrail(t *testing.T) {
@@ -2245,4 +2364,518 @@ func TestEvaluateChandelierTrail_Options(t *testing.T) {
 		triggered, _ := Evaluate(rule, pos, 95, now, EvalContext{})
 		assert.False(t, triggered)
 	})
+}
+
+// ---------------------------------------------------------------------------
+// tradingthetrend_v1 Phase 3b: TIERED_PREMIUM_STOP_DTE
+// ---------------------------------------------------------------------------
+
+func TestEvaluate_TieredPremiumStopDTE(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 5, 12, 11, 0, 0, 0, etLoc) // Tuesday 11:00 ET
+
+	rule := domain.ExitRule{
+		Type: domain.ExitRuleTieredPremiumStopDTE,
+		Params: map[string]float64{
+			"tier_0_dte":      0.25,
+			"tier_1_4_dte":    0.30,
+			"tier_5_plus_dte": 0.40,
+		},
+	}
+
+	tests := []struct {
+		name      string
+		expiry    time.Time
+		premium   float64
+		delta     float64
+		price     float64
+		wantFired bool
+		wantBkt   string
+	}{
+		{
+			// 1-4 DTE bucket: expiry Friday 2026-05-15 from Tuesday is 3 DTE.
+			// entry premium 5.00, delta 0.50, entry underlying 150
+			// at 144: est = 5 + 0.50*(144-150) - 5*0.005 = 5 - 3 - 0.025 = 1.975
+			// loss = (5 - 1.975) / 5 = 0.605 = 60.5% >= 30% -> fires
+			name:      "1-4 DTE bucket fires at 30% threshold",
+			expiry:    time.Date(2026, 5, 15, 16, 0, 0, 0, etLoc),
+			premium:   5.00,
+			delta:     0.50,
+			price:     144,
+			wantFired: true,
+			wantBkt:   "1-4DTE",
+		},
+		{
+			// 5+ DTE bucket: expiry Friday 2026-05-22 from Tuesday is 10 DTE.
+			// at 148: est = 5 + 0.50*(148-150) - 0.025 = 3.975, loss=20.5% < 40%
+			name:      "5+ DTE bucket no-fire at 20% loss vs 40% threshold",
+			expiry:    time.Date(2026, 5, 22, 16, 0, 0, 0, etLoc),
+			premium:   5.00,
+			delta:     0.50,
+			price:     148,
+			wantFired: false,
+			wantBkt:   "5+DTE",
+		},
+		{
+			// 5+ DTE bucket fire: at 140: est = 5 + 0.50*(140-150) - 0.025 = -0.025 -> 0
+			// "premium exhausted" branch fires.
+			name:      "5+ DTE bucket fires when premium exhausted",
+			expiry:    time.Date(2026, 5, 22, 16, 0, 0, 0, etLoc),
+			premium:   5.00,
+			delta:     0.50,
+			price:     140,
+			wantFired: true,
+			wantBkt:   "5+DTE",
+		},
+		{
+			// 0 DTE bucket: same-day expiry. At 145 with delta 0.50:
+			// est = 5 + 0.50*(145-150) - 0.025 = 2.475, loss = 50.5% >= 25% -> fires
+			name:      "0 DTE bucket fires at 25% threshold",
+			expiry:    time.Date(2026, 5, 12, 16, 0, 0, 0, etLoc),
+			premium:   5.00,
+			delta:     0.50,
+			price:     145,
+			wantFired: true,
+			wantBkt:   "0DTE",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pos := newOptionPosition(t, 150, now.Add(-15*time.Minute), tc.premium, tc.delta)
+			pos.OptionExpiry = tc.expiry
+			triggered, reason := Evaluate(rule, pos, tc.price, now, newEvalContext())
+			assert.Equal(t, tc.wantFired, triggered, "reason=%q", reason)
+			if tc.wantFired {
+				assert.Contains(t, reason, "tiered_premium_stop_dte")
+				assert.Contains(t, reason, tc.wantBkt)
+			}
+		})
+	}
+}
+
+func TestEvaluate_TieredPremiumStopDTE_NoOpOnNonOption(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 5, 12, 11, 0, 0, 0, etLoc)
+	rule := domain.ExitRule{
+		Type:   domain.ExitRuleTieredPremiumStopDTE,
+		Params: map[string]float64{"tier_0_dte": 0.25, "tier_1_4_dte": 0.30, "tier_5_plus_dte": 0.40},
+	}
+	pos := newTestMonitoredPosition(t, 100, now.Add(-10*time.Minute), domain.AssetClassEquity)
+	triggered, _ := Evaluate(rule, pos, 50, now, newEvalContext())
+	assert.False(t, triggered)
+}
+
+func TestEvaluate_TieredPremiumStopDTE_NoOpOnMissingExpiry(t *testing.T) {
+	etLoc := mustETLocation(t)
+	now := time.Date(2026, 5, 12, 11, 0, 0, 0, etLoc)
+	rule := domain.ExitRule{
+		Type:   domain.ExitRuleTieredPremiumStopDTE,
+		Params: map[string]float64{"tier_0_dte": 0.25, "tier_1_4_dte": 0.30, "tier_5_plus_dte": 0.40},
+	}
+	pos := newOptionPosition(t, 150, now.Add(-15*time.Minute), 5.00, 0.50)
+	// OptionExpiry left zero
+	triggered, _ := Evaluate(rule, pos, 140, now, newEvalContext())
+	assert.False(t, triggered)
+}
+
+// ---------------------------------------------------------------------------
+// tradingthetrend_v1 Phase 3b: CHANDELIER_TRAIL_UNDERLYING
+// ---------------------------------------------------------------------------
+
+func TestEvaluate_ChandelierTrailUnderlying_LongFires(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 5, 12, 10, 0, 0, 0, etLoc)
+	rule := domain.ExitRule{
+		Type: domain.ExitRuleChandelierTrailUnderlying,
+		Params: map[string]float64{
+			"atr_period":    14,
+			"atr_mult":      2.0,
+			"lookback_bars": 5,
+			"activate_pct":  0,
+		},
+	}
+
+	// Long call (Side=BUY). Feed several bars of rising highs, then a low
+	// close that pierces the trail.
+	pos := newOptionPosition(t, 150, entryTime, 5.00, 0.50)
+	pos.OptionExpiry = time.Date(2026, 5, 22, 16, 0, 0, 0, etLoc)
+	pos.Side = "BUY"
+
+	ctx := newEvalContext()
+	ctx.BarDuration = 5 * time.Minute
+	ctx.ATR = 1.0
+
+	// Walk five bars with highs ramping 152..156. Each call pretends `now`
+	// has advanced one bar so the ring buffer accepts the new sample.
+	highs := []float64{152, 153, 154, 155, 156}
+	for i, h := range highs {
+		now := entryTime.Add(time.Duration(i+1) * 5 * time.Minute)
+		ctx.BarHigh = h
+		ctx.BarLow = h - 0.5
+		// Closing price during ramp should not yet trigger.
+		fired, _ := Evaluate(rule, pos, h, now, ctx)
+		require.False(t, fired, "should not fire during ramp at bar %d", i)
+	}
+
+	// HHV = 156, ATR = 1.0, mult = 2.0 -> trail = 156 - 2.0 = 154.
+	// A subsequent bar where current price drops to 153.5 (<= 154) fires.
+	now := entryTime.Add(6 * 5 * time.Minute)
+	ctx.BarHigh = 155
+	ctx.BarLow = 153.5
+	fired, reason := Evaluate(rule, pos, 153.5, now, ctx)
+	assert.True(t, fired, "expected trail hit at price 153.5 (trail=154.0)")
+	assert.Contains(t, reason, "chandelier_trail_underlying(long)")
+	assert.InDelta(t, 156.0, pos.CustomState["underlying_hhv"], 1e-9)
+	assert.InDelta(t, 1.0, pos.CustomState["underlying_atr"], 1e-9)
+}
+
+func TestEvaluate_ChandelierTrailUnderlying_NoFireWithoutATR(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 5, 12, 10, 0, 0, 0, etLoc)
+	rule := domain.ExitRule{
+		Type:   domain.ExitRuleChandelierTrailUnderlying,
+		Params: map[string]float64{"atr_mult": 2.5, "lookback_bars": 20},
+	}
+	pos := newOptionPosition(t, 150, entryTime, 5.00, 0.50)
+	pos.Side = "BUY"
+	now := entryTime.Add(10 * time.Minute)
+	ctx := newEvalContext()
+	ctx.BarDuration = 5 * time.Minute
+	ctx.BarHigh = 155
+	ctx.BarLow = 149
+	// ATR = 0 in ctx -> rule must no-op.
+	fired, _ := Evaluate(rule, pos, 145, now, ctx)
+	assert.False(t, fired)
+}
+
+func TestEvaluate_ChandelierTrailUnderlying_NoOpOnNonOption(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 5, 12, 10, 0, 0, 0, etLoc)
+	rule := domain.ExitRule{
+		Type:   domain.ExitRuleChandelierTrailUnderlying,
+		Params: map[string]float64{"atr_mult": 2.5, "lookback_bars": 20},
+	}
+	pos := newTestMonitoredPosition(t, 150, entryTime, domain.AssetClassEquity)
+	now := entryTime.Add(10 * time.Minute)
+	ctx := newEvalContext()
+	ctx.ATR = 1.0
+	ctx.BarDuration = 5 * time.Minute
+	fired, _ := Evaluate(rule, pos, 140, now, ctx)
+	assert.False(t, fired)
+}
+
+// ---------------------------------------------------------------------------
+// CHANDELIER_TRAIL_UNDERLYING — MFE-arm extension
+// ---------------------------------------------------------------------------
+
+// Without arm_on_premium_mfe set, behavior is byte-identical to the legacy
+// path. Mirrors TestEvaluate_ChandelierTrailUnderlying_LongFires.
+func TestChandelierTrailUnderlying_MFEArm_DisabledByDefault(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 5, 12, 10, 0, 0, 0, etLoc)
+	rule := domain.ExitRule{
+		Type: domain.ExitRuleChandelierTrailUnderlying,
+		Params: map[string]float64{
+			"atr_period":    14,
+			"atr_mult":      2.0,
+			"lookback_bars": 5,
+			"activate_pct":  0,
+			// arm_on_premium_mfe omitted -> 0 -> disabled.
+		},
+	}
+	pos := newOptionPosition(t, 150, entryTime, 5.00, 0.50)
+	pos.OptionExpiry = time.Date(2026, 5, 22, 16, 0, 0, 0, etLoc)
+	pos.Side = "BUY"
+
+	ctx := newEvalContext()
+	ctx.BarDuration = 5 * time.Minute
+	ctx.ATR = 1.0
+
+	highs := []float64{152, 153, 154, 155, 156}
+	for i, h := range highs {
+		now := entryTime.Add(time.Duration(i+1) * 5 * time.Minute)
+		ctx.BarHigh = h
+		ctx.BarLow = h - 0.5
+		fired, _ := Evaluate(rule, pos, h, now, ctx)
+		require.False(t, fired, "should not fire during ramp at bar %d", i)
+	}
+
+	// HHV=156, trail = 156 - 2.0*1.0 = 154. price 153.5 should fire.
+	now := entryTime.Add(6 * 5 * time.Minute)
+	ctx.BarHigh = 155
+	ctx.BarLow = 153.5
+	fired, reason := Evaluate(rule, pos, 153.5, now, ctx)
+	assert.True(t, fired)
+	assert.Contains(t, reason, "chandelier_trail_underlying(long)")
+	assert.Equal(t, 0.0, pos.CustomState["chand_und_armed"], "armed flag must remain unset when feature disabled")
+}
+
+// With arm_on_premium_mfe=0.02 and premium_mfe_pct stuck at 0.01, the rule
+// never arms. Pre-arm trail uses pre_arm_atr_mult — set wide so underlying
+// never reaches it. Rule must return false on every call.
+func TestChandelierTrailUnderlying_MFEArm_NeverArms(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 5, 12, 10, 0, 0, 0, etLoc)
+	rule := domain.ExitRule{
+		Type: domain.ExitRuleChandelierTrailUnderlying,
+		Params: map[string]float64{
+			"atr_mult":           2.0,
+			"lookback_bars":      5,
+			"arm_on_premium_mfe": 0.02,
+			"armed_atr_mult":     1.25,
+			"pre_arm_atr_mult":   5.0,
+		},
+	}
+	pos := newOptionPosition(t, 150, entryTime, 5.00, 0.50)
+	pos.Side = "BUY"
+	pos.CustomState["premium_mfe_pct"] = 0.01
+
+	ctx := newEvalContext()
+	ctx.BarDuration = 5 * time.Minute
+	ctx.ATR = 1.0
+
+	// Walk several rising bars; pre-arm trail = HHV - 5*1 -> very wide.
+	highs := []float64{152, 153, 154, 155, 156}
+	for i, h := range highs {
+		now := entryTime.Add(time.Duration(i+1) * 5 * time.Minute)
+		ctx.BarHigh = h
+		ctx.BarLow = h - 0.5
+		fired, reason := Evaluate(rule, pos, h-0.2, now, ctx)
+		assert.False(t, fired, "bar %d unexpected fire: %s", i, reason)
+	}
+	assert.Equal(t, 0.0, pos.CustomState["chand_und_armed"], "armed flag must remain 0")
+}
+
+// MFE crosses arm threshold mid-run; subsequent bars use armed_atr_mult and
+// the post-arm HHV. A retrace under armed trail fires the exit.
+func TestChandelierTrailUnderlying_MFEArm_ArmsAndExits(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 5, 12, 10, 0, 0, 0, etLoc)
+	rule := domain.ExitRule{
+		Type: domain.ExitRuleChandelierTrailUnderlying,
+		Params: map[string]float64{
+			"atr_mult":           5.0, // legacy mult (would-be wide); arming switches to 1.0.
+			"lookback_bars":      10,
+			"arm_on_premium_mfe": 0.02,
+			"armed_atr_mult":     1.0,
+			"pre_arm_atr_mult":   5.0,
+		},
+	}
+	pos := newOptionPosition(t, 150, entryTime, 5.00, 0.50)
+	pos.Side = "BUY"
+
+	ctx := newEvalContext()
+	ctx.BarDuration = 5 * time.Minute
+	ctx.ATR = 1.0
+	ctx.BarHigh = 151
+	ctx.BarLow = 150
+	pos.CustomState["premium_mfe_pct"] = 0.01
+	now := entryTime.Add(5 * time.Minute)
+	fired, _ := Evaluate(rule, pos, 150.5, now, ctx)
+	require.False(t, fired)
+	require.Equal(t, 0.0, pos.CustomState["chand_und_armed"])
+
+	// Bar 2: MFE crosses arm threshold; bar high = 152. Arming clears the
+	// pre-arm 151 sample and re-seeds with 152. Post-arm trail = 152 - 1*1 = 151.
+	pos.CustomState["premium_mfe_pct"] = 0.03
+	ctx.BarHigh = 152
+	ctx.BarLow = 151.5
+	now = entryTime.Add(10 * time.Minute)
+	fired, _ = Evaluate(rule, pos, 151.8, now, ctx)
+	require.False(t, fired, "bar at price 151.8 above trail 151.0 must not fire")
+	require.Equal(t, 1.0, pos.CustomState["chand_und_armed"])
+	require.Equal(t, 2.0, pos.CustomState["chand_und_arm_bar_idx"])
+
+	// Bar 3: rising high 153. HHV = max(152, 153) = 153. Trail = 153 - 1 = 152.
+	ctx.BarHigh = 153
+	ctx.BarLow = 152.5
+	now = entryTime.Add(15 * time.Minute)
+	fired, _ = Evaluate(rule, pos, 152.5, now, ctx)
+	require.False(t, fired, "price 152.5 above trail 152.0")
+
+	// Bar 4: retrace to 151.5 — under trail 152.0 -> fires using armed mult.
+	ctx.BarHigh = 152
+	ctx.BarLow = 151.5
+	now = entryTime.Add(20 * time.Minute)
+	fired, reason := Evaluate(rule, pos, 151.5, now, ctx)
+	assert.True(t, fired, "expected fire at 151.5 (trail=152.0)")
+	assert.Contains(t, reason, "chandelier_trail_underlying(long)")
+	assert.Contains(t, reason, "mult=1.00", "armed_atr_mult=1.0 must be the multiplier reported")
+	assert.InDelta(t, 153.0, pos.CustomState["underlying_hhv"], 1e-9)
+}
+
+// Pre-arm bars seed high=100 across the ring. Arm bar has high=98. Post-arm
+// bar has high=99. HHV after arm must be max(98, 99) = 99 — never 100.
+func TestChandelierTrailUnderlying_MFEArm_HHVResetsAtArm(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 5, 12, 10, 0, 0, 0, etLoc)
+	rule := domain.ExitRule{
+		Type: domain.ExitRuleChandelierTrailUnderlying,
+		Params: map[string]float64{
+			"atr_mult":           2.0,
+			"lookback_bars":      10,
+			"arm_on_premium_mfe": 0.02,
+			"armed_atr_mult":     1.0,
+			"pre_arm_atr_mult":   5.0, // pre-arm trail must be wide enough that pre-arm bars don't fire.
+		},
+	}
+	pos := newOptionPosition(t, 95, entryTime, 5.00, 0.50)
+	pos.Side = "BUY"
+
+	ctx := newEvalContext()
+	ctx.BarDuration = 5 * time.Minute
+	ctx.ATR = 1.0
+	pos.CustomState["premium_mfe_pct"] = 0.01
+
+	// Three pre-arm bars all with high=100.
+	for i := 0; i < 3; i++ {
+		now := entryTime.Add(time.Duration(i+1) * 5 * time.Minute)
+		ctx.BarHigh = 100
+		ctx.BarLow = 99.5
+		fired, _ := Evaluate(rule, pos, 99.8, now, ctx)
+		require.False(t, fired, "pre-arm bar %d unexpected fire", i)
+	}
+	require.Equal(t, 0.0, pos.CustomState["chand_und_armed"])
+
+	// Arm bar: MFE crosses, ctx.BarHigh=98 (lower than pre-arm highs).
+	pos.CustomState["premium_mfe_pct"] = 0.03
+	ctx.BarHigh = 98
+	ctx.BarLow = 97.5
+	now := entryTime.Add(4 * 5 * time.Minute)
+	fired, _ := Evaluate(rule, pos, 97.8, now, ctx)
+	require.False(t, fired)
+	require.Equal(t, 1.0, pos.CustomState["chand_und_armed"])
+	// At this point ring should contain ONLY the arm-bar high (98). Verify by
+	// scanning all chand_und_high_* keys.
+	for i := 0; i < 10; i++ {
+		key := fmt.Sprintf("chand_und_high_%d", i)
+		v, ok := pos.CustomState[key]
+		if i == 0 {
+			require.True(t, ok && v == 98, "expected chand_und_high_0=98, got ok=%v v=%v", ok, v)
+		} else {
+			require.False(t, ok, "expected %s cleared after arm, got %v", key, v)
+		}
+	}
+
+	// Post-arm bar: high=99. HHV must be max(98, 99) = 99.
+	ctx.BarHigh = 99
+	ctx.BarLow = 98.5
+	now = entryTime.Add(5 * 5 * time.Minute)
+	// Trail = 99 - 1*1 = 98. Price 98.5 above trail -> no fire; reads HHV.
+	fired, _ = Evaluate(rule, pos, 98.5, now, ctx)
+	require.False(t, fired)
+	assert.InDelta(t, 99.0, pos.CustomState["underlying_hhv"], 1e-9,
+		"HHV must reset at arm — pre-arm 100 must not leak into post-arm trail")
+}
+
+// ---------------------------------------------------------------------------
+// tradingthetrend_v1 Phase 3b: ATR_EXTENSION_TIME_STOP
+// ---------------------------------------------------------------------------
+
+func TestEvaluate_ATRExtensionTimeStop_FiresWhenUnextended(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 5, 12, 10, 0, 0, 0, etLoc)
+	rule := domain.ExitRule{
+		Type: domain.ExitRuleATRExtensionTimeStop,
+		Params: map[string]float64{
+			"time_stop_bars":     12,
+			"extension_atr_mult": 0.5,
+		},
+	}
+	// Long call. Trigger=150, entry ATR=1.0 -> required extension = 0.5.
+	// At held=12 bars with current price 150.2, extension=0.2 < 0.5 -> fires.
+	pos := newOptionPosition(t, 150, entryTime, 5.00, 0.50)
+	pos.Side = "BUY"
+	pos.CustomState["ttt_trigger_price"] = 150.0
+	pos.CustomState["ttt_entry_atr"] = 1.0
+
+	ctx := newEvalContext()
+	ctx.BarDuration = 5 * time.Minute
+	now := entryTime.Add(12 * 5 * time.Minute)
+
+	fired, reason := Evaluate(rule, pos, 150.2, now, ctx)
+	assert.True(t, fired)
+	assert.Contains(t, reason, "atr_extension_time_stop(long)")
+	// Latch set so a subsequent call does not double-fire.
+	assert.InDelta(t, 1.0, pos.CustomState["ttt_atr_ext_checked"], 1e-9)
+	fired2, _ := Evaluate(rule, pos, 150.1, now.Add(5*time.Minute), ctx)
+	assert.False(t, fired2)
+}
+
+func TestEvaluate_ATRExtensionTimeStop_NoFireWhenExtended(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 5, 12, 10, 0, 0, 0, etLoc)
+	rule := domain.ExitRule{
+		Type:   domain.ExitRuleATRExtensionTimeStop,
+		Params: map[string]float64{"time_stop_bars": 12, "extension_atr_mult": 0.5},
+	}
+	// Trigger=150, ATR=1.0, required=0.5. At price 150.7, extension=0.7 >= 0.5 -> no fire.
+	pos := newOptionPosition(t, 150, entryTime, 5.00, 0.50)
+	pos.Side = "BUY"
+	pos.CustomState["ttt_trigger_price"] = 150.0
+	pos.CustomState["ttt_entry_atr"] = 1.0
+
+	ctx := newEvalContext()
+	ctx.BarDuration = 5 * time.Minute
+	now := entryTime.Add(12 * 5 * time.Minute)
+	fired, _ := Evaluate(rule, pos, 150.7, now, ctx)
+	assert.False(t, fired)
+}
+
+func TestEvaluate_ATRExtensionTimeStop_NoFireBeforeTimeStop(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 5, 12, 10, 0, 0, 0, etLoc)
+	rule := domain.ExitRule{
+		Type:   domain.ExitRuleATRExtensionTimeStop,
+		Params: map[string]float64{"time_stop_bars": 12, "extension_atr_mult": 0.5},
+	}
+	pos := newOptionPosition(t, 150, entryTime, 5.00, 0.50)
+	pos.Side = "BUY"
+	pos.CustomState["ttt_trigger_price"] = 150.0
+	pos.CustomState["ttt_entry_atr"] = 1.0
+
+	ctx := newEvalContext()
+	ctx.BarDuration = 5 * time.Minute
+	// 11 bars elapsed — time_stop_bars=12 has not yet fired.
+	now := entryTime.Add(11 * 5 * time.Minute)
+	fired, _ := Evaluate(rule, pos, 150.0, now, ctx)
+	assert.False(t, fired)
+}
+
+func TestEvaluate_ATRExtensionTimeStop_NoOpOnMissingCustomState(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 5, 12, 10, 0, 0, 0, etLoc)
+	rule := domain.ExitRule{
+		Type:   domain.ExitRuleATRExtensionTimeStop,
+		Params: map[string]float64{"time_stop_bars": 12, "extension_atr_mult": 0.5},
+	}
+	// Position from another strategy: no ttt_trigger_price / ttt_entry_atr.
+	pos := newOptionPosition(t, 150, entryTime, 5.00, 0.50)
+	pos.Side = "BUY"
+	ctx := newEvalContext()
+	ctx.BarDuration = 5 * time.Minute
+	now := entryTime.Add(12 * 5 * time.Minute)
+	fired, _ := Evaluate(rule, pos, 145, now, ctx)
+	assert.False(t, fired)
+}
+
+func TestEvaluate_ATRExtensionTimeStop_PutDirection(t *testing.T) {
+	etLoc := mustETLocation(t)
+	entryTime := time.Date(2026, 5, 12, 10, 0, 0, 0, etLoc)
+	rule := domain.ExitRule{
+		Type:   domain.ExitRuleATRExtensionTimeStop,
+		Params: map[string]float64{"time_stop_bars": 12, "extension_atr_mult": 0.5},
+	}
+	// Long put: trigger=150, ATR=1.0, required=0.5. Price at 149.8 -> extension=0.2 < 0.5 -> fires.
+	pos := newOptionPosition(t, 150, entryTime, 5.00, -0.50)
+	pos.OptionRight = "PUT"
+	pos.CustomState["ttt_trigger_price"] = 150.0
+	pos.CustomState["ttt_entry_atr"] = 1.0
+
+	ctx := newEvalContext()
+	ctx.BarDuration = 5 * time.Minute
+	now := entryTime.Add(12 * 5 * time.Minute)
+	fired, reason := Evaluate(rule, pos, 149.8, now, ctx)
+	assert.True(t, fired)
+	assert.Contains(t, reason, "atr_extension_time_stop(short)")
 }

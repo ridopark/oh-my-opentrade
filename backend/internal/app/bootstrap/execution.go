@@ -177,6 +177,36 @@ func BuildExecutionService(deps ExecutionDeps) (*ExecutionBundle, error) {
 	}, nil
 }
 
+// BuildAuthorMirrorBucket constructs the combined budget bucket shared
+// between author-mirror strategies (copytrade_v1 + tradingthetrend_v1).
+// Returns nil when the config is disabled (CapMult <= 0 or Members empty),
+// matching the bucket's own runtime no-op behavior. Bootstrap callers can
+// then unconditionally pass execution.WithAuthorMirrorBucket(bucket) and
+// the option is a no-op when nil.
+func BuildAuthorMirrorBucket(
+	cfg config.AuthorMirrorBucketConfig,
+	maxRiskPct float64,
+	posSource risk.PositionSource,
+	equitySource risk.EquitySource,
+	clock func() time.Time,
+	log zerolog.Logger,
+) *risk.AuthorMirrorBucket {
+	if cfg.CapMult <= 0 || len(cfg.Members) == 0 || cfg.MaxFires <= 0 {
+		return nil
+	}
+	window := time.Duration(cfg.FireWindowSecs) * time.Second
+	if window <= 0 {
+		window = 5 * time.Minute
+	}
+	return risk.NewAuthorMirrorBucket(risk.AuthorMirrorConfig{
+		Members:    cfg.Members,
+		CapMult:    cfg.CapMult,
+		FireWindow: window,
+		MaxFires:   cfg.MaxFires,
+		MaxRiskPct: maxRiskPct,
+	}, posSource, equitySource, clock, log)
+}
+
 // BuildPortfolioHeat constructs the Sprint 4 portfolio-heat guard from a
 // position source (typically positionmonitor.Service) and an equity
 // provider. Intended to be called by callers that assemble

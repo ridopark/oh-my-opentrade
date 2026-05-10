@@ -1,0 +1,197 @@
+schema_version = 2
+
+[strategy]
+id = "tradingthetrend_v1"
+version = "1.0.0"
+name = "TradingTheTrend v1 - Discord Watchlist Break-Retest"
+description = "Validates Discord watchlist signals with a 3-phase break-and-retest state machine on the underlying, then buys the locked OCC option contract."
+author = "system"
+created_at = "2026-05-08T00:00:00Z"
+
+# Activated for paper after 2026-05-09 tune session: walk-forward shows
+# +$10,890 / +10.89% over 3 months at risk_per_trade_bps=3000 (n=4 trades,
+# fat-tail-dependent — AAPL alone = 66% of P&L). paper_only locked on until
+# OOS validates over n>=20.
+[lifecycle]
+state = "PaperActive"
+paper_only = true
+
+[routing]
+# Sentinel symbol so the runner has exactly one instance to register at
+# bootstrap time. Per-ticker bar routing is added dynamically by the
+# runner's handleTradingTheTrendSignal handler via Router.AddSymbol when
+# each watchlist signal arrives, so bar dispatch follows the actual
+# watchlist tickers (no pre-pinning).
+symbols = ["__tradingthetrend__"]
+timeframes = ["5m"]
+priority = 90
+conflict_policy = "priority_wins"
+exclusive_per_symbol = false
+watchlist_mode = "dynamic"
+asset_classes = ["OPTION"]
+allowed_directions = ["LONG", "SHORT"]
+
+[screening]
+description = "No screening. Author membership is the vetting layer."
+
+[params]
+# Risk sizing — required for the options pipeline. risk_per_trade_bps caps
+# the per-trade premium spend (system default 10 bps = $10 on $100k, which
+# rejects every option contract); 1000 bps matches copytrade_v1's setting.
+risk_per_trade_bps = 3000     # tuned 2026-05-09: 3x sizing on 100% WR backtest
+max_position_bps   = 3000
+
+# Entry knobs from prereg section 3 (locked).
+expiry_dte             = 0       # 0 = nearest weekly Friday; positive int adds days
+min_dte                = 2       # skip 0DTE
+atr_breakout_mult      = 1.5
+breakout_buffer_atr    = 0.2
+body_range_ratio       = 0.5
+vol_surge_mult         = 1.2     # tuned 2026-05-09: 1.2 catches AAPL fat-tail (MFE 63.8%) that 1.5 misses
+max_wick_ratio         = 0.4
+retest_band_atr        = 0.30
+retest_expiry_bars     = 25
+invalidation_atr       = 0.5
+retest_quality_gate    = true    # LOCKED ON per prereg
+entry_cutoff_et        = "13:30"
+trigger_drift_pct      = 0.5
+freshness_max_age_secs = 60
+
+# Follow-through entry path (NEW): when underlying walks past trigger without
+# retracing, enter on the bar where close >= breakout_high + N*ATR. Captures
+# the "walk-up" pattern that the retest-only logic misses (~93/271 signals
+# break and hold per session 2026-05-09 funnel diagnostic).
+followthrough_enabled  = true
+followthrough_atr_mult = 1.0
+followthrough_min_bars = 3   # require 3 bars of post-WaitingRetest time to filter 1-bar fakeouts
+
+# Contract selection: when use_author_strike=false, the risk sizer's
+# ContractSelectionService picks the strike via target_delta_low/high in
+# [options.defaults] (slightly OTM = 30-40 delta) instead of pinning to
+# the author's posted strike. The author's strike tends to be AT the
+# breakout level, so by the time the strategy fires, the underlying has
+# crossed it and contracts are ATM-to-slightly-ITM. Switching to delta
+# selection gives slightly OTM at fill (cheaper premium, more leverage,
+# higher per-trade max-loss-to-zero).
+use_author_strike = false
+
+
+# Options microstructure (Phase 3d). Enforced at the execution layer by
+# the existing OptionsRiskEngine + SpreadGuard; no per-strategy code reads
+# these yet — they sit here so account-level operators can pin TTT-specific
+# limits when wiring lands. Flat-prefixed under [params] per schema_version=2.
+options_max_spread_pct          = 0.05
+options_mega_cap_max_spread_pct = 0.03
+options_min_open_interest       = 500
+options_order_type              = "marketable_limit"
+options_limit_offset_ticks      = 2
+
+# Risk floors per prereg + plan 5e. account_equity_floor is read by the
+# (deferred) live-only kill switch; the rolling-5d PDT counter is enforced
+# system-wide via risk.PDTGuard regardless of this knob.
+risk_account_equity_floor       = 30000
+risk_pdt_max_day_trades         = 3
+
+# Live-only kill switches deferred to Phase 5b wiring (strategy is
+# Deactivated; backtest does not exercise them per plan section 5d:
+# "Live-only kill switches do not apply in backtest"):
+#   - strategy_dd_threshold_pct  = 15    (15% from rolling-5d HWM)
+#   - strategy_dd_window_days    = 5
+#   - sidecar_heartbeat_max_secs = 45
+#   - parse_error_rate_threshold = 0.10  (over last 20 messages)
+#   - realized_slippage_mult     = 3     (over last 5 trades)
+
+[hooks]
+signals = { engine = "builtin", name = "tradingthetrend_v1" }
+
+[dynamic_risk]
+enabled = false
+
+# Mechanical exits (Phase 3b). Order-of-evaluation is the array order
+# below; the prereg locks it as: TIERED_PREMIUM_STOP_DTE > EOD_FLATTEN >
+# ATR_EXTENSION_TIME_STOP > CHANDELIER_TRAIL_UNDERLYING. Strategy stays
+# Deactivated until backtest passes the prereg's section 6 gates.
+
+## EARLY_PREMIUM_STOP catches "instant fakeout" patterns where premium
+## crashes within minutes of entry — surgically targets the DELL-style
+## case (-27% in 3 minutes) without affecting trades that go deep red
+## later then recover (GOOGL/IWM peaked AFTER deep MAE).
+[[exit_rules]]
+type = "EARLY_PREMIUM_STOP"
+[exit_rules.params]
+threshold       = 0.15   # exit if premium drops 15% from entry
+max_age_minutes = 5      # only fires in first 5 minutes after fill
+
+[[exit_rules]]
+type = "TIERED_PREMIUM_STOP_DTE"
+[exit_rules.params]
+tier_0_dte      = 0.25
+tier_1_4_dte    = 0.30
+tier_5_plus_dte = 0.40
+
+[[exit_rules]]
+type = "EOD_FLATTEN"
+[exit_rules.params]
+minutes_before_close = 15
+
+[[exit_rules]]
+type = "ATR_EXTENSION_TIME_STOP"
+[exit_rules.params]
+time_stop_bars     = 12
+extension_atr_mult = 0.5
+
+## CHANDELIER_TRAIL_UNDERLYING was structurally wrong for OTM contracts:
+## the underlying-ATR trail width doesn't translate to premium-space giveback
+## because OTM premium is non-linear (gamma + IV). 30-delta contracts saw
+## the trail capture only 14-29% of premium MFE peak. Replaced with
+## PREMIUM_TRAIL which trails on premium directly.
+# [[exit_rules]]
+# type = "CHANDELIER_TRAIL_UNDERLYING"
+# [exit_rules.params]
+# atr_period         = 14
+# atr_mult           = 2.5
+# lookback_bars      = 20
+# activate_pct       = 0.0
+# arm_on_premium_mfe = 0.02
+# armed_atr_mult     = 1.25
+# pre_arm_atr_mult   = 2.5
+
+## BREAKEVEN_STOP fires once premium MFE >= 10%, locking the floor at entry +
+## buffer. Closes PREMIUM_TRAIL's "dead zone" (10% < peak MFE < 25% would
+## otherwise lock a loss when the trail's 20% giveback bottoms below entry).
+## Option-aware as of 2026-05-09 — reads pos.CustomState["premium_mfe_pct"]
+## and compares against pos.EstimatedPremium(underlying, now).
+[[exit_rules]]
+type = "BREAKEVEN_STOP"
+[exit_rules.params]
+activation_pct = 0.10   # activate once premium MFE >= 10%
+buffer_pct     = 0.005  # stop fires just below entry × 1.005
+
+[[exit_rules]]
+type = "PREMIUM_TRAIL"
+[exit_rules.params]
+min_activation = 0.10   # arm trail at +10% premium MFE
+trail_pct      = 0.20   # exit when premium drops 20% from peak (preserves 80% of MFE)
+
+# --- Options ---
+# Required for the risk sizer to dispatch through the options pipeline. The
+# strategy uses the force-contract path (force_expiry/force_strike/force_right
+# tags from the Discord watchlist) so delta/DTE selection in [options.defaults]
+# is bypassed at sizing time — the contract is pinned. Defaults still cover the
+# liquidity gates (OI, spread) applied downstream.
+
+[options]
+enabled = true
+max_contracts = 100     # tuned 2026-05-09: lifted from 50 so fat-tail winners (AAPL +63.8% MFE) scale
+limit_spread_pct = 1.00
+limit_buffer_bps = 500
+stale_cancel_secs = 60
+
+[options.defaults]
+min_dte           = 2
+max_dte           = 9
+target_delta_low  = 0.30   # slightly OTM band: 30-40 delta
+target_delta_high = 0.40
+min_open_interest = 25
+max_spread_pct    = 0.25
+max_iv            = 2.0

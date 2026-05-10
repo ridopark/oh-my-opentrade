@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
-from discord_dom import extract_recent
+from discord_common.discord_dom import extract_recent
 from emit import Emitter, SignalPayload, iso_date
 from parser import parse_message
 

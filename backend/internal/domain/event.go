@@ -133,6 +133,13 @@ const (
 	// position in the strategy (race: TTL sweep freed the slot just before the
 	// broker fill). notify.Service subscribes and alerts operators via Discord.
 	EventCopytradeOrphanFill EventType = "CopytradeOrphanFill"
+
+	// TradingTheTrend: a Discord watchlist line arrived from the
+	// discord-tradingthetrend sidecar. Distinct from copytrade because the
+	// payload schema differs (Trigger field, no Action/Expiry/Price) and the
+	// strategy applies a break-and-retest entry filter rather than mirroring
+	// the author's order.
+	EventTradingTheTrendSignalReceived EventType = "TradingTheTrendSignalReceived"
 )
 
 type SymbolsActivatedPayload struct {

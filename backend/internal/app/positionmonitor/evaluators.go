@@ -31,6 +31,13 @@ type EvalContext struct {
 	BarHigh float64
 	BarLow  float64
 
+	// HTFDailyATR is the latest ATR(14) computed on daily bars. Populated
+	// from IndicatorSnapshot.HTFDailyATR(). Zero when daily HTF data is
+	// not available for the symbol. Used by CHANDELIER_TRAIL_UNDERLYING
+	// when atr_timeframe="1d" to size the trail to overnight-noise scale
+	// for multi-day swing positions.
+	HTFDailyATR float64
+
 	// TrailMult scales PREMIUM_TRAIL.trail_pct by an ATR%-bucket multiplier
 	// computed at position entry (see [exits.atr_trail] in config). Defaults
 	// to 1.0 via newEvalContext() — anything else risks the rule firing at
@@ -76,7 +83,7 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 	case domain.ExitRuleStagnationExit:
 		return evaluateStagnationExit(rule, pos, currentPrice, now, ctx)
 	case domain.ExitRuleBreakevenStop:
-		return evaluateBreakevenStop(rule, pos, currentPrice)
+		return evaluateBreakevenStop(rule, pos, currentPrice, now)
 	case domain.ExitRuleDTEFloor:
 		return evaluateDTEFloor(rule, pos, now)
 	case domain.ExitRuleExpiryWatch:
@@ -87,6 +94,8 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 		return evaluateTimePartial(rule, pos, currentPrice, now)
 	case domain.ExitRulePremiumStop:
 		return evaluatePremiumStop(rule, pos, currentPrice, now)
+	case domain.ExitRuleEarlyPremiumStop:
+		return evaluateEarlyPremiumStop(rule, pos, currentPrice, now)
 	case domain.ExitRulePremiumTrail:
 		return evaluatePremiumTrail(rule, pos, currentPrice, now, ctx)
 	case domain.ExitRulePremiumTarget:
@@ -95,9 +104,349 @@ func Evaluate(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice 
 		return evaluateFastFail(rule, pos, now)
 	case domain.ExitRuleChandelierTrail:
 		return evaluateChandelierTrail(rule, pos, currentPrice, now)
+	case domain.ExitRuleTieredPremiumStopDTE:
+		return evaluateTieredPremiumStopDTE(rule, pos, currentPrice, now)
+	case domain.ExitRuleChandelierTrailUnderlying:
+		return evaluateChandelierTrailUnderlying(rule, pos, currentPrice, now, ctx)
+	case domain.ExitRuleATRExtensionTimeStop:
+		return evaluateATRExtensionTimeStop(rule, pos, currentPrice, now, ctx)
 	default:
 		return false, ""
 	}
+}
+
+// evaluateTieredPremiumStopDTE is the prereg-locked DTE-bucketed premium hard
+// stop for tradingthetrend_v1 (and any other strategy adopting the same
+// schedule). It mirrors evaluatePremiumStop's machinery but selects the
+// threshold from one of three buckets based on calendar DTE to expiry:
+//
+//	0 DTE        → tier_0_dte    (default 0.25)
+//	1-4 DTE      → tier_1_4_dte  (default 0.30)
+//	5+ DTE       → tier_5_plus_dte (default 0.40)
+//
+// Skipping 0DTE entirely is enforced upstream (tradingthetrend min_dte=2);
+// the 0DTE bucket exists for safety so a misconfigured caller still gets a
+// finite threshold. Non-options and missing OptionExpiry are no-ops.
+//
+// Params:
+//
+//	"tier_0_dte"      — premium loss fraction for 0 DTE
+//	"tier_1_4_dte"    — premium loss fraction for 1-4 DTE inclusive
+//	"tier_5_plus_dte" — premium loss fraction for >= 5 DTE
+func evaluateTieredPremiumStopDTE(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time) (bool, string) {
+	if pos.InstrumentType != domain.InstrumentTypeOption || pos.OptionExpiry.IsZero() {
+		return false, ""
+	}
+	dte := dteCalendarDays(now, pos.OptionExpiry)
+	var threshold float64
+	var bucket string
+	switch {
+	case dte <= 0:
+		threshold = rule.Param("tier_0_dte", 0)
+		bucket = "0DTE"
+	case dte <= 4:
+		threshold = rule.Param("tier_1_4_dte", 0)
+		bucket = "1-4DTE"
+	default:
+		threshold = rule.Param("tier_5_plus_dte", 0)
+		bucket = "5+DTE"
+	}
+	if threshold <= 0 {
+		return false, ""
+	}
+	entryPremium, ok := pos.CustomState["option_premium"]
+	if !ok || entryPremium <= 0 {
+		return false, ""
+	}
+	estPremium := pos.EstimatedPremium(currentPrice, now)
+	if estPremium <= 0 {
+		// Mirror evaluatePremiumStop's post-restart guard: if neither BSM
+		// inputs nor delta_at_entry are present we cannot trust the zero
+		// estimate as a real exit signal.
+		_, hasDelta := pos.CustomState["delta_at_entry"]
+		if !pos.HasBSMInputs() && !hasDelta {
+			return false, ""
+		}
+		return true, fmt.Sprintf("tiered_premium_stop_dte: premium exhausted (entry=%.2f, est=0.00, bucket=%s, threshold=%.0f%%)",
+			entryPremium, bucket, threshold*100)
+	}
+	loss := (entryPremium - estPremium) / entryPremium
+	if loss >= threshold {
+		return true, fmt.Sprintf("tiered_premium_stop_dte: loss %.2f%% >= threshold %.2f%% (bucket=%s, dte=%d, entry=%.2f, est=%.2f)",
+			loss*100, threshold*100, bucket, dte, entryPremium, estPremium)
+	}
+	return false, ""
+}
+
+// evaluateChandelierTrailUnderlying is the prereg-locked Phase-3b chandelier
+// trail computed on the UNDERLYING spot — not on premium. For long calls the
+// trail is HHV(underlying_high, lookback_bars) - atr_mult * ATR; the option
+// exits when underlying spot touches that level. Mirror inversion for puts
+// (long puts trail by LLV(underlying_low) + atr_mult * ATR).
+//
+// Architectural note: state lives entirely on pos.CustomState (ring buffer
+// of recent bar highs/lows + cached HHV/LLV + activation flag). The tick
+// loop already feeds ctx.BarHigh/BarLow and ctx.ATR; no new event or port
+// is needed. The buffer is keyed off pos.EntryTime to deduplicate same-bar
+// re-evaluations (backtest mode evaluates per-symbol, not per-bar).
+//
+// Params:
+//
+//	"atr_period"     — ATR period in BARS (informational; ATR comes from ctx)
+//	"atr_mult"       — multiplier for ATR distance off HHV (default 2.5)
+//	"lookback_bars"  — HHV/LLV window in bars (default 20)
+//	"activate_pct"   — minimum unrealized P&L (on underlying) before trail arms
+//
+// Non-option positions or missing ATR/bar high are no-ops.
+func evaluateChandelierTrailUnderlying(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time, ctx EvalContext) (bool, string) {
+	if pos.InstrumentType != domain.InstrumentTypeOption {
+		return false, ""
+	}
+	// atr_use_daily selects which ATR feeds the trail width. 0 (default) uses
+	// ctx.ATR (primary timeframe — current behavior). 1 uses ctx.HTFDailyATR,
+	// sized to overnight-noise scale for multi-day swing positions. Plumbed
+	// end-to-end via IndicatorSnapshot.HTFDailyATR(); when the daily HTF
+	// aggregator hasn't produced a value (warmup, missing daily bars), the
+	// rule is a no-op rather than falling back to 5m ATR (which would silently
+	// produce an intraday-tight trail on a swing-config position).
+	atrSource := ctx.ATR
+	if rule.Param("atr_use_daily", 0) > 0 {
+		atrSource = ctx.HTFDailyATR
+	}
+	if atrSource <= 0 {
+		return false, ""
+	}
+	atrMult := rule.Param("atr_mult", 2.5)
+	lookback := int(rule.Param("lookback_bars", 20))
+	if atrMult <= 0 || lookback < 2 {
+		return false, ""
+	}
+	if pos.CustomState == nil {
+		return false, ""
+	}
+
+	// MFE-arm extension params. When armOnMFE == 0, this block is inert and
+	// the legacy behavior below runs unchanged.
+	armOnMFE := rule.Param("arm_on_premium_mfe", 0)
+	armedATRMult := rule.Param("armed_atr_mult", 0)
+	preArmATRMult := rule.Param("pre_arm_atr_mult", 0)
+
+	// Activation gate (default 0 = arm immediately on entry).
+	activatePct := rule.Param("activate_pct", 0)
+	if activatePct > 0 {
+		pnl := pos.UnrealizedPnLPct(currentPrice)
+		if pnl < activatePct {
+			return false, ""
+		}
+	}
+
+	// Bar high/low source: prefer ctx.BarHigh/BarLow, fall back to currentPrice.
+	barHigh := ctx.BarHigh
+	if barHigh <= 0 {
+		barHigh = currentPrice
+	}
+	barLow := ctx.BarLow
+	if barLow <= 0 {
+		barLow = currentPrice
+	}
+
+	barDur := ctx.BarDuration
+	if barDur <= 0 {
+		barDur = 5 * time.Minute
+	}
+	barCount := int(now.Sub(pos.EntryTime) / barDur)
+
+	// MFE-arm gate. Sticky: once armed, never disarms. On the arm transition,
+	// clear the HHV/LLV ring so post-arm trail anchors from the arm bar — not
+	// from any pre-arm extreme that the entry-time trail had been tracking.
+	effectiveATRMult := atrMult
+	if armOnMFE > 0 {
+		armed := pos.CustomState["chand_und_armed"] > 0
+		if !armed {
+			if mfe, ok := pos.CustomState["premium_mfe_pct"]; ok && mfe >= armOnMFE {
+				pos.CustomState["chand_und_armed"] = 1
+				pos.CustomState["chand_und_arm_bar_idx"] = float64(barCount)
+				for i := 0; i < lookback; i++ {
+					delete(pos.CustomState, fmt.Sprintf("chand_und_high_%d", i))
+					delete(pos.CustomState, fmt.Sprintf("chand_und_low_%d", i))
+				}
+				if pos.IsShort() {
+					pos.CustomState["chand_und_low_0"] = barLow
+				} else {
+					pos.CustomState["chand_und_high_0"] = barHigh
+				}
+				pos.CustomState["chand_und_ring_idx"] = 1
+				pos.CustomState["chand_und_seeded"] = 1
+				pos.CustomState["chand_und_last_bar_idx"] = float64(barCount)
+				armed = true
+			}
+		}
+		if armed {
+			if armedATRMult > 0 {
+				effectiveATRMult = armedATRMult
+			}
+		} else {
+			if preArmATRMult <= 0 {
+				return false, ""
+			}
+			effectiveATRMult = preArmATRMult
+		}
+	}
+
+	// Same dedup pattern as evaluateSwingStop: only advance the ring on a
+	// new bar boundary. The mutation is local to one rule's CustomState
+	// keys, so it does not collide with swing_stop's swing_high_<i>/etc.
+	//
+	// Multi-day-hold safety: only advance when ctx.BarHigh/BarLow are
+	// populated by a real bar. On non-RTH evaluator ticks (overnight,
+	// weekend) the position monitor still fires the rule but BarHigh/BarLow
+	// are zero and the per-tick fallback to currentPrice would write the
+	// last RTH close into the HHV/LLV ring. For multi-day swing positions
+	// that would steadily fill the ring with stale closes and corrupt the
+	// trail. Gate the write on a real bar; the fallback only affects the
+	// initial seed (single bar of the ring).
+	hasRealBar := ctx.BarHigh > 0 && ctx.BarLow > 0
+	lastBarIdx := int(pos.CustomState["chand_und_last_bar_idx"])
+	ringIdx := int(pos.CustomState["chand_und_ring_idx"])
+	seedNeeded := lastBarIdx == 0 && pos.CustomState["chand_und_seeded"] == 0
+	if (hasRealBar && barCount != lastBarIdx) || seedNeeded {
+		pos.CustomState["chand_und_last_bar_idx"] = float64(barCount)
+		pos.CustomState["chand_und_seeded"] = 1
+		if pos.IsShort() {
+			pos.CustomState[fmt.Sprintf("chand_und_low_%d", ringIdx)] = barLow
+		} else {
+			pos.CustomState[fmt.Sprintf("chand_und_high_%d", ringIdx)] = barHigh
+		}
+		pos.CustomState["chand_und_ring_idx"] = float64((ringIdx + 1) % lookback)
+	}
+
+	if pos.IsShort() {
+		// Long puts: track LLV of underlying lows; trail = LLV + atr_mult*ATR.
+		// Exit when underlying rises and touches the trail.
+		llv := 0.0
+		for i := 0; i < lookback; i++ {
+			l := pos.CustomState[fmt.Sprintf("chand_und_low_%d", i)]
+			if l > 0 && (llv == 0 || l < llv) {
+				llv = l
+			}
+		}
+		if llv <= 0 {
+			return false, ""
+		}
+		pos.CustomState["underlying_llv"] = llv
+		pos.CustomState["underlying_atr"] = atrSource
+		trail := llv + effectiveATRMult*atrSource
+		if currentPrice >= trail {
+			return true, fmt.Sprintf("chandelier_trail_underlying(short): price %.4f >= trail %.4f (llv=%.4f, atr=%.6f, mult=%.2f, lookback=%d)",
+				currentPrice, trail, llv, atrSource, effectiveATRMult, lookback)
+		}
+		return false, ""
+	}
+
+	// Long calls: track HHV of underlying highs; trail = HHV - atr_mult*ATR.
+	hhv := 0.0
+	for i := 0; i < lookback; i++ {
+		h := pos.CustomState[fmt.Sprintf("chand_und_high_%d", i)]
+		if h > hhv {
+			hhv = h
+		}
+	}
+	if hhv <= 0 {
+		return false, ""
+	}
+	pos.CustomState["underlying_hhv"] = hhv
+	pos.CustomState["underlying_atr"] = atrSource
+	trail := hhv - effectiveATRMult*atrSource
+	if currentPrice <= trail {
+		return true, fmt.Sprintf("chandelier_trail_underlying(long): price %.4f <= trail %.4f (hhv=%.4f, atr=%.6f, mult=%.2f, lookback=%d)",
+			currentPrice, trail, hhv, atrSource, effectiveATRMult, lookback)
+	}
+	return false, ""
+}
+
+// evaluateATRExtensionTimeStop fires when a breakout fails to extend at least
+// extension_atr_mult * entry_ATR beyond the trigger price within time_stop_bars
+// bars of entry. The strategy stashes the trigger price and the entry-time ATR
+// snapshot into pos.CustomState at fill time (tradingthetrend_v1.go does this
+// via signal tags ttt_trigger_price and ttt_entry_atr; service.go extracts them
+// into CustomState during processFill). When either key is missing the rule is
+// a defensive no-op so it cannot fire on positions from other strategies.
+//
+// Direction:
+//   - Long calls (Side=BUY, IsShort=false): require price >= trigger + ext*ATR
+//   - Long puts  (IsShort=true via OptionRight=PUT): require price <= trigger - ext*ATR
+//
+// Params:
+//
+//	"time_stop_bars"     — bars after entry at which the check fires (default 12)
+//	"extension_atr_mult" — required extension in ATR multiples (default 0.5)
+func evaluateATRExtensionTimeStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time, ctx EvalContext) (bool, string) {
+	timeStopBars := rule.Param("time_stop_bars", 0)
+	extMult := rule.Param("extension_atr_mult", 0)
+	if timeStopBars <= 0 || extMult <= 0 {
+		return false, ""
+	}
+	if pos.CustomState == nil {
+		return false, ""
+	}
+	trigger, hasTrigger := pos.CustomState["ttt_trigger_price"]
+	entryATR, hasATR := pos.CustomState["ttt_entry_atr"]
+	if !hasTrigger || !hasATR || trigger <= 0 || entryATR <= 0 {
+		return false, ""
+	}
+
+	barDur := ctx.BarDuration
+	if barDur <= 0 {
+		barDur = 5 * time.Minute
+	}
+	heldBars := int(now.Sub(pos.EntryTime) / barDur)
+	if heldBars < int(timeStopBars) {
+		return false, ""
+	}
+
+	// Latch so we don't keep firing every subsequent bar even if ExitPending
+	// momentarily clears (defensive — tick loop's ExitPending guard already
+	// covers the common case).
+	if pos.CustomState["ttt_atr_ext_checked"] > 0 {
+		return false, ""
+	}
+	pos.CustomState["ttt_atr_ext_checked"] = 1
+
+	required := extMult * entryATR
+	if pos.IsShort() {
+		// Puts: extension = trigger - currentPrice (price moves DOWN past trigger)
+		extension := trigger - currentPrice
+		if extension >= required {
+			return false, ""
+		}
+		return true, fmt.Sprintf("atr_extension_time_stop(short): extension %.4f < required %.4f (trigger=%.4f, current=%.4f, entry_atr=%.6f, ext_mult=%.2f, held %d/%d bars)",
+			extension, required, trigger, currentPrice, entryATR, extMult, heldBars, int(timeStopBars))
+	}
+	extension := currentPrice - trigger
+	if extension >= required {
+		return false, ""
+	}
+	return true, fmt.Sprintf("atr_extension_time_stop(long): extension %.4f < required %.4f (trigger=%.4f, current=%.4f, entry_atr=%.6f, ext_mult=%.2f, held %d/%d bars)",
+		extension, required, trigger, currentPrice, entryATR, extMult, heldBars, int(timeStopBars))
+}
+
+// dteCalendarDays returns the number of calendar days between now (in ET) and
+// the option's expiry date. Negative values are clamped to 0 (already
+// expired). Same calendar-day basis as the prereg's DTE buckets.
+func dteCalendarDays(now, expiry time.Time) int {
+	if expiry.IsZero() {
+		return 0
+	}
+	loc := domain.NYLocation()
+	nowET := now.In(loc)
+	expET := expiry.In(loc)
+	startDay := time.Date(nowET.Year(), nowET.Month(), nowET.Day(), 0, 0, 0, 0, loc)
+	endDay := time.Date(expET.Year(), expET.Month(), expET.Day(), 0, 0, 0, 0, loc)
+	days := int(endDay.Sub(startDay).Hours() / 24)
+	if days < 0 {
+		return 0
+	}
+	return days
 }
 
 // evaluateChandelierTrail trails a fraction of the maximum favorable excursion
@@ -861,6 +1210,23 @@ func UpdateBreakevenStopState(pos *domain.MonitoredPosition, currentPrice float6
 	if pos.CustomState["breakeven_activated"] > 0 {
 		return
 	}
+	// Option-aware branch: activation and stop level live in PREMIUM space.
+	// Long puts profit when premium rises (same as long calls at the option
+	// level), so the IsShort()-style inversion used for equity shorts does
+	// not apply here.
+	if pos.InstrumentType == domain.InstrumentTypeOption {
+		mfe, ok := pos.CustomState["premium_mfe_pct"]
+		if !ok || mfe < activationPct {
+			return
+		}
+		entryPremium, ok := pos.CustomState["option_premium"]
+		if !ok || entryPremium <= 0 {
+			return
+		}
+		pos.CustomState["breakeven_activated"] = 1
+		pos.CustomState["breakeven_stop_level"] = entryPremium * (1 + bufferPct)
+		return
+	}
 	pnlPct := pos.UnrealizedPnLPct(currentPrice)
 	if pnlPct >= activationPct {
 		pos.CustomState["breakeven_activated"] = 1
@@ -878,7 +1244,7 @@ func UpdateBreakevenStopState(pos *domain.MonitoredPosition, currentPrice float6
 // The stop level is set by UpdateBreakevenStopState — this evaluator only reads state.
 //
 // Params: none (stop level comes from CustomState, set by tick loop)
-func evaluateBreakevenStop(_ domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64) (bool, string) {
+func evaluateBreakevenStop(_ domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time) (bool, string) {
 	if pos.CustomState == nil {
 		return false, ""
 	}
@@ -887,6 +1253,21 @@ func evaluateBreakevenStop(_ domain.ExitRule, pos *domain.MonitoredPosition, cur
 	}
 	stopLevel := pos.CustomState["breakeven_stop_level"]
 	if stopLevel <= 0 {
+		return false, ""
+	}
+	// Option-aware branch: stop level is in PREMIUM space. Compare current
+	// estimated premium against it. Firing means premium retraced back to
+	// entry+buffer regardless of underlying direction.
+	if pos.InstrumentType == domain.InstrumentTypeOption {
+		currentPremium := pos.EstimatedPremium(currentPrice, now)
+		if currentPremium <= 0 {
+			return false, ""
+		}
+		if currentPremium <= stopLevel {
+			entryPremium := pos.CustomState["option_premium"]
+			return true, fmt.Sprintf("breakeven_stop(option): premium %.4f <= stop %.4f (entry_premium=%.4f, buffer=%.4f)",
+				currentPremium, stopLevel, entryPremium, stopLevel-entryPremium)
+		}
 		return false, ""
 	}
 	if pos.IsShort() {
@@ -1099,6 +1480,51 @@ func evaluatePremiumStop(rule domain.ExitRule, pos *domain.MonitoredPosition, cu
 	if loss >= threshold {
 		return true, fmt.Sprintf("premium_stop: loss %.2f%% >= threshold %.2f%% (entry=%.2f, est=%.2f)",
 			loss*100, threshold*100, entryPremium, estPremium)
+	}
+	return false, ""
+}
+
+// evaluateEarlyPremiumStop fires for option positions whose premium has dropped
+// by `threshold` (e.g. 0.15 = 15% loss from entry) within the first
+// `max_age_minutes` since entry. Designed for "instant fakeout" patterns where
+// a directional bet immediately reverses; ignores trades whose deep MAE
+// happens later (those are handled by TIERED_PREMIUM_STOP_DTE / BREAKEVEN_STOP).
+//
+// Params:
+//
+//	"threshold"        — premium drawdown fraction from entry (e.g. 0.15)
+//	"max_age_minutes"  — minutes after entry the rule remains active (e.g. 5)
+//
+// Both default to 0 = disabled. Non-option positions are no-ops.
+func evaluateEarlyPremiumStop(rule domain.ExitRule, pos *domain.MonitoredPosition, currentPrice float64, now time.Time) (bool, string) {
+	if pos.InstrumentType != domain.InstrumentTypeOption {
+		return false, ""
+	}
+	threshold := rule.Param("threshold", 0)
+	maxAge := rule.Param("max_age_minutes", 0)
+	if threshold <= 0 || maxAge <= 0 {
+		return false, ""
+	}
+
+	elapsedMin := now.Sub(pos.EntryTime).Minutes()
+	if elapsedMin > maxAge {
+		return false, ""
+	}
+
+	entryPremium := pos.CustomState["option_premium"]
+	if entryPremium <= 0 {
+		return false, ""
+	}
+
+	currentPremium := pos.EstimatedPremium(currentPrice, now)
+	if currentPremium <= 0 {
+		return false, ""
+	}
+
+	drawdown := (entryPremium - currentPremium) / entryPremium
+	if drawdown >= threshold {
+		return true, fmt.Sprintf("early_premium_stop: drawdown %.2f%% >= threshold %.2f%% (elapsed %.1f min, window %.0f min)",
+			drawdown*100, threshold*100, elapsedMin, maxAge)
 	}
 	return false, ""
 }

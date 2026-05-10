@@ -129,6 +129,39 @@ func (r *Router) Replace(oldID start.InstanceID, newInst *Instance) *Instance {
 	return old
 }
 
+// AddSymbol attaches an additional symbol to an already-registered
+// instance's routing entry. Used by sentinel-rooted dynamic-watchlist
+// strategies (e.g. tradingthetrend_v1) that grow their per-shard symbol
+// set as signals arrive — the bootstrap registers the instance under a
+// sentinel symbol like "__tradingthetrend__", and on the first signal
+// for ticker T the runner calls AddSymbol(instID, T) so subsequent bars
+// for T dispatch to the same instance. Idempotent: repeat calls are
+// no-ops. Returns false if the instance is not registered.
+func (r *Router) AddSymbol(id start.InstanceID, symbol string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	inst, ok := r.instances[id]
+	if !ok {
+		return false
+	}
+	ids := r.symbolMap[symbol]
+	for _, existing := range ids {
+		if existing == id {
+			return true // already routed
+		}
+	}
+	ids = append(ids, id)
+	sort.Slice(ids, func(i, j int) bool {
+		a := r.instances[ids[i]]
+		b := r.instances[ids[j]]
+		return a.Assignment().Priority > b.Assignment().Priority
+	})
+	r.symbolMap[symbol] = ids
+	_ = inst
+	return true
+}
+
 // InstancesForSymbol returns active instances assigned to the given symbol,
 // sorted by priority (highest first).
 func (r *Router) InstancesForSymbol(symbol string) []*Instance {
@@ -180,6 +213,31 @@ func (r *Router) Instance(id start.InstanceID) (*Instance, bool) {
 	defer r.mu.RUnlock()
 	inst, ok := r.instances[id]
 	return inst, ok
+}
+
+// SymbolsForInstance returns every symbol that routes to the given instance,
+// including both the instance's declared Assignment().Symbols and any symbols
+// added via AddSymbol (sentinel-rooted dynamic-watchlist case). Sentinel
+// routing keys (shaped __name__) are excluded — callers that need HTF
+// callbacks want real tradable tickers, not routing placeholders.
+func (r *Router) SymbolsForInstance(id start.InstanceID) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var out []string
+	for sym, ids := range r.symbolMap {
+		if len(sym) >= 4 && sym[:2] == "__" && sym[len(sym)-2:] == "__" {
+			continue
+		}
+		for _, iid := range ids {
+			if iid == id {
+				out = append(out, sym)
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Symbols returns all symbols that have at least one instance assigned.

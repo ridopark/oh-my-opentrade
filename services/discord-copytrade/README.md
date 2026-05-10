@@ -7,11 +7,13 @@ sizing, state, and execution.
 ## Layout
 
 - `parser.py` — regex parser for `BTO|STC|AVG TICKER M/D STRIKE(C|P) @ PRICE` lines. Tested.
-- `discord_dom.py` — DOM extraction helpers (breaks here if Discord changes selectors).
 - `watcher.py` — polling loop that scrapes new messages and POSTs to omo-core.
-- `bootstrap.py` — one-time visible-browser login flow.
 - `emit.py` — HTTP client to `/internal/copytrade/signal`.
 - `test_parser.py` — 40 unit tests covering sample + adversarial cases.
+
+DOM extraction (`discord_common.discord_dom`) and the one-time login flow
+(`discord_common.bootstrap`) live in `services/discord_common/` and are
+shared with other Discord-following sidecars.
 
 ## One-time setup
 

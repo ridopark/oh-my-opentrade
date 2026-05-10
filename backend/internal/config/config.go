@@ -451,7 +451,19 @@ type rawConfig struct {
 // (see PositionRiskCapConfig). Default-on, defense-in-depth for
 // high-premium options that slip through notional sizing.
 type RiskConfig struct {
-	PositionCap PositionRiskCapConfig `yaml:"position_cap"`
+	PositionCap  PositionRiskCapConfig  `yaml:"position_cap"`
+	AuthorMirror AuthorMirrorBucketConfig `yaml:"author_mirror"`
+}
+
+// AuthorMirrorBucketConfig configures the combined budget bucket shared
+// between author-mirror strategies (copytrade_v1 + tradingthetrend_v1) so
+// they cannot collectively over-allocate on correlated entries. Disabled
+// when CapMult <= 0 or Members is empty.
+type AuthorMirrorBucketConfig struct {
+	Members        []string `yaml:"members"`
+	CapMult        float64  `yaml:"cap_mult"`         // multiplier on per-strategy max-risk for the bucket cap
+	FireWindowSecs int      `yaml:"fire_window_secs"` // rolling-window length, e.g. 300 for 5min
+	MaxFires       int      `yaml:"max_fires"`        // max fires across the window
 }
 
 // PositionRiskCapConfig bounds a single trade's expected loss at stop

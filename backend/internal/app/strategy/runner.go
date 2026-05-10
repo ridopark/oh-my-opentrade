@@ -878,11 +878,15 @@ func (r *Runner) InitAggregators(sessionOpen time.Time) {
 		if len(tfs) == 0 {
 			tfs = []string{"1m"}
 		}
+		// Use router-routed symbols (Assignment + AddSymbol) so sentinel-
+		// rooted dynamic-watchlist instances (TTT) subscribe HTF callbacks
+		// for every real ticker, not just the sentinel routing key.
+		routedSymbols := r.router.SymbolsForInstance(inst.ID())
 		for _, tf := range tfs {
 			if tf == "1m" {
 				continue
 			}
-			for _, sym := range inst.Assignment().Symbols {
+			for _, sym := range routedSymbols {
 				key := sym + ":" + tf
 				if _, exists := r.htfUnsubs[key]; exists {
 					continue
@@ -892,6 +896,38 @@ func (r *Runner) InitAggregators(sessionOpen time.Time) {
 				r.logger.Info("HTF subscriber registered", "symbol", sym, "timeframe", tf)
 			}
 		}
+	}
+}
+
+// subscribeHTFForInstanceSymbol wires HTF callbacks for a (instance, symbol)
+// pair when a sentinel-routed ticker is added at runtime via AddSymbol. Bootstrap
+// pre-registration is covered by InitAggregators; this path covers dynamic
+// arrivals (live mode, late-day Discord watchlist updates). Idempotent — repeat
+// calls reuse the existing subscription.
+func (r *Runner) subscribeHTFForInstanceSymbol(inst *Instance, symbol string) {
+	if r.indicator == nil || inst == nil {
+		return
+	}
+	tfs := inst.Assignment().Timeframes
+	if len(tfs) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.htfUnsubs == nil {
+		r.htfUnsubs = make(map[string]func())
+	}
+	for _, tf := range tfs {
+		if tf == "1m" {
+			continue
+		}
+		key := symbol + ":" + tf
+		if _, exists := r.htfUnsubs[key]; exists {
+			continue
+		}
+		cb := r.makeHTFCallback(tf)
+		r.htfUnsubs[key] = r.indicator.Subscribe(domain.Symbol(symbol), domain.Timeframe(tf), cb)
+		r.logger.Info("HTF subscriber registered (dynamic)", "symbol", symbol, "timeframe", tf)
 	}
 }
 
@@ -967,6 +1003,10 @@ func (r *Runner) Start(ctx context.Context) error {
 	}
 	if err := r.eventBus.Subscribe(ctx, domain.EventCopytradeExitRejected, r.handleCopytradeExitRejected); err != nil {
 		r.logger.Warn("failed to subscribe to CopytradeExitRejected (non-fatal)", "error", err)
+	}
+	if err := r.eventBus.Subscribe(ctx, domain.EventTradingTheTrendSignalReceived, r.handleTradingTheTrendSignal); err != nil {
+		r.logger.Warn("failed to subscribe to TradingTheTrendSignalReceived (non-fatal)", "error", err)
+		// Non-fatal: most deployments/backtests don't run the tradingthetrend strategy.
 	}
 	r.logger.Info("strategy runner subscribed to MarketBarSanitized events")
 	r.lastBarTime.Store(time.Now().UnixNano())
@@ -2903,6 +2943,122 @@ func (r *Runner) DrainCopytradeCallbacks() {
 			fn()
 		}
 	}
+}
+
+// handleTradingTheTrendSignal routes a parsed Discord watchlist line from
+// the discord-tradingthetrend sidecar to the single tradingthetrend
+// instance, keying state by ticker (one arm per ticker per session).
+//
+// Unlike copytrade, TTT has watchlist_mode=dynamic with symbols=[]; per-
+// ticker state is lazy-initialized on the first signal for that ticker.
+// The strategy's OnBar then drives the break-and-retest state machine
+// against bars on that underlying.
+func (r *Runner) handleTradingTheTrendSignal(ctx context.Context, event domain.Event) error {
+	payload, ok := event.Payload.(domain.TradingTheTrendSignalPayload)
+	if !ok {
+		return nil
+	}
+
+	ticker := string(payload.Ticker)
+	if ticker == "" {
+		r.logger.Warn("handleTradingTheTrendSignal: empty ticker, dropping signal",
+			"signal_id", payload.SignalID)
+		return nil
+	}
+
+	// TTT registers as a single sentinel-rooted instance per shard
+	// (symbols = ["__tradingthetrend__"] in TOML); per-ticker bar routing
+	// is grown dynamically as signals arrive. This handler:
+	//   1. Finds the sentinel instance
+	//   2. Lazy-inits per-ticker state on it (one arm per ticker per session)
+	//   3. Adds the ticker to the router so subsequent bars dispatch to the
+	//      sentinel instance — bar routing follows the watchlist, not the
+	//      universe slab.
+	inst := r.findInstanceByStrategy("tradingthetrend_v1")
+	if inst == nil {
+		r.logger.Debug("handleTradingTheTrendSignal: no active tradingthetrend_v1 instance")
+		return nil
+	}
+
+	if _, seeded := inst.GetState(ticker); !seeded {
+		initCtx := &instanceContext{
+			ctx:      ctx,
+			now:      r.handlerNow(event, "handleTradingTheTrendSignal.init"),
+			logger:   r.logger.With("instance_id", inst.ID().String(), "symbol", ticker),
+			tenantID: r.tenantID,
+			envMode:  r.envMode,
+			runner:   r,
+		}
+		if err := inst.InitSymbol(initCtx, ticker, nil); err != nil {
+			r.logger.Error("handleTradingTheTrendSignal: InitSymbol failed",
+				"instance_id", inst.ID().String(),
+				"ticker", ticker,
+				"error", err,
+			)
+			return nil
+		}
+		// Register the ticker in the router so subsequent bars for it
+		// dispatch to this sentinel-rooted instance. Bar routing follows
+		// the watchlist union, not the universe slab.
+		if r.router != nil {
+			r.router.AddSymbol(inst.ID(), ticker)
+		}
+		// Wire HTF subscribers for the new ticker so 5m/15m/etc. closes
+		// drive the strategy's OnBar. Without this, late-arriving symbols
+		// land in the router but the indicator service never calls back
+		// for them on HTF boundaries (InitAggregators ran at bootstrap
+		// before this ticker existed).
+		r.subscribeHTFForInstanceSymbol(inst, ticker)
+	}
+
+	tttSig := start.TradingTheTrendSignal{
+		SignalID:  payload.SignalID,
+		MessageID: payload.MessageID,
+		Author:    payload.Author,
+		PostedAt:  payload.PostedAt,
+		Ticker:    ticker,
+		Strike:    payload.Strike,
+		Right:     string(payload.Right),
+		Trigger:   payload.Trigger,
+		RawLine:   payload.RawLine,
+	}
+
+	instCtx := &instanceContext{
+		ctx:      ctx,
+		now:      r.handlerNow(event, "handleTradingTheTrendSignal"),
+		logger:   r.logger.With("instance_id", inst.ID().String(), "ticker", ticker, "author", payload.Author),
+		tenantID: r.tenantID,
+		envMode:  r.envMode,
+		runner:   r,
+	}
+
+	r.mu.Lock()
+	signals, err := inst.OnEvent(instCtx, ticker, tttSig)
+	r.mu.Unlock()
+	if err != nil {
+		r.logger.Error("handleTradingTheTrendSignal: OnEvent failed",
+			"instance_id", inst.ID().String(),
+			"error", err,
+		)
+		return nil
+	}
+
+	for i := range signals {
+		signals[i].StrategyInstanceID = inst.ID()
+	}
+	for _, sig := range signals {
+		if !sig.Type.IsActionable() {
+			continue
+		}
+		if emitErr := r.emitSignal(ctx, r.tenantID, r.envMode, sig); emitErr != nil {
+			r.logger.Error("handleTradingTheTrendSignal: emitSignal failed",
+				"instance_id", inst.ID().String(),
+				"symbol", sig.Symbol,
+				"error", emitErr,
+			)
+		}
+	}
+	return nil
 }
 
 // findInstanceByStrategy returns the first active instance matching the given
