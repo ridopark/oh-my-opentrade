@@ -1167,7 +1167,18 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		return nil
 	}
 	submitStart := s.nowFn()
-	intent.DecidedAt = submitStart
+	// DecidedAt is the sim-time the strategy emitted this intent, not the
+	// async-handler-runtime sim time. handleIntent is SubscribeAsync (see
+	// line ~235); s.nowFn() reads the latest atomically-stored bar tick at
+	// handler runtime, which can race the actual publish moment. The bus
+	// event carries OccurredAt set by the publisher (NewBacktestEvent),
+	// which IS the publish moment. Prefer that; fall back to submitStart
+	// for events with zero OccurredAt (defensive; live path or test stubs).
+	decidedAt := event.OccurredAt
+	if decidedAt.IsZero() {
+		decidedAt = submitStart
+	}
+	intent.DecidedAt = decidedAt
 	if parity.Enabled() {
 		l.Info().
 			Str("stage", parity.StageOrderSubmitted).

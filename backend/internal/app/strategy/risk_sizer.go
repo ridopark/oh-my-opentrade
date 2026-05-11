@@ -1465,6 +1465,14 @@ func (rs *RiskSizer) emit(ctx context.Context, eventType string, tenantID string
 	if err != nil {
 		return
 	}
+	// Overwrite OccurredAt with rs.nowFn() so backtest events carry sim-time
+	// (rs.nowFn returns currentBarTime). Downstream async subscribers (e.g.
+	// execution.Service.handleIntent) read event.OccurredAt for DecidedAt;
+	// without this override the event carries domain.NewEvent's time.Now()
+	// default, which is wall clock and breaks causal consistency in backtest.
+	if rs.nowFn != nil {
+		ev.OccurredAt = rs.nowFn()
+	}
 	_ = rs.eventBus.Publish(ctx, *ev)
 }
 
